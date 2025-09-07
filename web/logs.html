@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>请求日志 - Claude Proxy</title>
   <link rel="stylesheet" href="/web/styles.css">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.loli.net">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.loli.net/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
   <div class="app-container">
@@ -365,10 +365,13 @@
       for (const entry of data) {
         const tr = document.createElement('tr');
         
-        const configInfo = entry.channel_name || entry.channel_id || '未知';
+        const configInfo = entry.channel_name || 
+          (entry.channel_id ? `渠道 #${entry.channel_id}` : 
+           (entry.message === 'exhausted backends' ? '系统（所有渠道失败）' : 
+            entry.message === 'no available upstream (all cooled or none)' ? '系统（无可用渠道）' : '系统'));
         const configDisplay = entry.channel_id ? 
           `<a class="channel-link" href="/web/channels.html#channel-${entry.channel_id}">${escapeHtml(entry.channel_name||'')} <small>(#${entry.channel_id})</small></a>` : 
-          escapeHtml(configInfo);
+          `<span style="color: var(--neutral-500);">${escapeHtml(configInfo)}</span>`;
         
         const statusClass = (entry.status_code >= 200 && entry.status_code < 300) ? 
           'status-success' : 'status-error';
@@ -528,7 +531,7 @@
 
     // 页面初始化
     document.addEventListener('DOMContentLoaded', function() {
-      if (window.initTopbar) initTopbar('errors');
+      if (window.initTopbar) initTopbar('logs');
       initFilters();
       load();
       

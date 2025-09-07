@@ -212,7 +212,7 @@ func (s *Server) handleWebFiles(w http.ResponseWriter, r *http.Request) {
 	// 需要身份验证的页面
 	authRequiredPages := []string{
 		"/web/channels.html",
-		"/web/errors.html",
+		"/web/logs.html",
 		"/web/stats.html",
 	}
 

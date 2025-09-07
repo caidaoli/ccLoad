@@ -11,7 +11,7 @@ ccLoad 是一个 Claude API 代理服务，使用 Go 构建。主要功能：
 - **故障切换**：失败时自动切换渠道并实施指数退避冷却（起始1秒，错误翻倍，封顶30分钟）
 - **身份验证**：管理页面需要密码登录，支持session管理和自动过期
 - **统计监控**：首页公开显示请求统计，管理界面提供详细的趋势和日志分析
-- **前端管理**：提供现代化 Web 界面管理渠道、查看趋势、错误日志和调用统计
+- **前端管理**：提供现代化 Web 界面管理渠道、查看趋势、日志和调用统计
 
 ## 核心架构
 
@@ -20,11 +20,11 @@ ccLoad 是一个 Claude API 代理服务，使用 Go 构建。主要功能：
 - `server.go`: HTTP服务器实现，路由注册、JSON工具函数和完整的身份验证系统
 - `proxy.go`: 核心代理逻辑，处理`/v1/messages`请求转发
 - `selector.go`: 候选渠道选择算法（优先级+轮询）
-- `admin.go`: 管理API实现（渠道CRUD、错误日志、趋势数据、公开统计API）
+- `admin.go`: 管理API实现（渠道CRUD、请求日志、趋势数据、公开统计API）
 - `middleware.go`: HTTP中间件（请求日志等）  
 - `sqlite_store.go`: SQLite存储实现，管理渠道、冷却状态、日志和轮询指针
 - `models.go`: 数据模型和Store接口定义
-- `web/`: 前端静态文件（index.html、channels.html、trend.html、errors.html、stats.html、login.html）
+- `web/`: 前端静态文件（index.html、channels.html、trend.html、logs.html、stats.html、login.html）
 
 ### 关键数据结构
 - `Config`（渠道）: 渠道配置（API Key、URL、优先级、支持的模型列表）
@@ -113,11 +113,11 @@ GET  /web/login.html       # 登录页面
 ```
 GET/POST    /admin/channels       # 渠道列表和创建
 GET/PUT/DEL /admin/channels/{id}  # 渠道详情、更新、删除
-GET         /admin/errors         # 错误日志列表（支持分页）
+GET         /admin/errors         # 请求日志列表（支持分页）
 GET         /admin/stats          # 调用统计数据
 GET         /admin/metrics        # 趋势数据（支持hours和bucket_min参数）
 GET         /web/channels.html    # 渠道管理页面
-GET         /web/errors.html      # 错误日志页面
+GET         /web/logs.html        # 请求日志页面
 GET         /web/stats.html       # 调用统计页面
 GET         /web/trend.html       # 趋势图表页面
 ```
@@ -155,7 +155,7 @@ GET         /web/trend.html       # 趋势图表页面
 - `web/index.html`: 首页，显示24小时请求统计
 - `web/login.html`: 登录页面
 - `web/channels.html`: 渠道管理（CRUD操作）
-- `web/errors.html`: 错误日志（支持分页）
+- `web/logs.html`: 请求日志（支持分页）
 - `web/stats.html`: 调用统计（按渠道/模型分组）
 - `web/trend.html`: 趋势图表（SVG绘制24小时曲线）
 - `web/styles.css`: 共享样式文件

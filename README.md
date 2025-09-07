@@ -14,10 +14,10 @@
 - 管理与观测：
   - `GET /admin/channels`、`POST/PUT/DELETE /admin/channels/{id}`：管理渠道。
   - `GET /admin/metrics?hours=24&bucket_min=5`：24 小时请求趋势（按桶聚合，默认 5 分钟）。
-  - `GET /admin/errors?hours=24&limit=200&offset=0`：错误日志。
+  - `GET /admin/errors?hours=24&limit=200&offset=0`：请求日志。
 - 前端（静态页，前后端分离）：
   - `/web/trend.html`：24 小时请求趋势（成功/错误折线）。
-  - `/web/errors.html`：错误日志表格。
+  - `/web/logs.html`：请求日志表格。
   - `/web/channels.html`：渠道管理（增删改启停）。
 
 ## 启动
@@ -41,7 +41,7 @@ PORT=8080 go run .
 
 ## SQLite 说明
 
-默认使用 SQLite 存储（纯 Go 驱动 `modernc.org/sqlite`）。若 SQLite 初始化失败，程序会直接退出并打印错误日志。
+默认使用 SQLite 存储（纯 Go 驱动 `modernc.org/sqlite`）。若 SQLite 初始化失败，程序会直接退出并打印错误信息。
 
 ## 设计要点与取舍
 

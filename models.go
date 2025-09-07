@@ -54,22 +54,6 @@ type StatsEntry struct {
 	Total       int    `json:"total"`
 }
 
-type StatsResponse struct {
-	Stats      []StatsEntry `json:"stats"`
-	Total      int          `json:"total"`
-	Page       int          `json:"page"`
-	PageSize   int          `json:"page_size"`
-	TotalPages int          `json:"total_pages"`
-}
-
-type memoryState struct {
-	NextID    int64               `json:"next_id"`
-	Configs   []*Config           `json:"configs"`
-	Cooldowns map[int64]time.Time `json:"cooldowns"`
-	Logs      []*LogEntry         `json:"logs"`
-	RR        map[string]int      `json:"rr"`
-}
-
 // Store 接口
 type Store interface {
 	// config mgmt

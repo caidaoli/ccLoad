@@ -7,7 +7,7 @@
     { key: 'channels', label: '渠道管理', href: '/web/channels.html', icon: iconSettings },
     { key: 'stats', label: '调用统计', href: '/web/stats.html', icon: iconBars },
     { key: 'trend', label: '请求趋势', href: '/web/trend.html', icon: iconTrend },
-    { key: 'errors', label: '错误日志', href: '/web/errors.html', icon: iconAlert },
+    { key: 'logs', label: '日志', href: '/web/logs.html', icon: iconAlert },
   ];
 
   function h(tag, attrs = {}, children = []) {

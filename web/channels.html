@@ -5,9 +5,248 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>渠道管理 - Claude Proxy</title>
   <link rel="stylesheet" href="/web/styles.css">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.loli.net">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.loli.net/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    .modal {
+      display: none;
+      position: fixed;
+      z-index: 1000;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0, 0, 0, 0.5);
+      backdrop-filter: blur(4px);
+    }
+    .modal.show {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-content {
+      background: var(--glass-bg);
+      backdrop-filter: blur(10px);
+      border: 1px solid var(--glass-border);
+      border-radius: 12px;
+      padding: 24px;
+      width: 90%;
+      max-width: 500px;
+      max-height: 90vh;
+      overflow-y: auto;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+    }
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    .modal-title {
+      font-size: 1.25rem;
+      font-weight: 600;
+      color: var(--neutral-800);
+    }
+    .close-btn {
+      background: none;
+      border: none;
+      font-size: 1.5rem;
+      cursor: pointer;
+      color: var(--neutral-500);
+      padding: 0;
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      transition: all 0.2s;
+    }
+    .close-btn:hover {
+      background: var(--neutral-100);
+      color: var(--neutral-700);
+    }
+    .form-group {
+      margin-bottom: 16px;
+    }
+    .form-label {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--neutral-700);
+    }
+    .form-input {
+      width: 100%;
+      padding: 8px 12px;
+      border: 1px solid var(--neutral-300);
+      border-radius: 6px;
+      font-size: 0.875rem;
+      background: white;
+      transition: all 0.2s;
+    }
+    .form-input:focus {
+      outline: none;
+      border-color: var(--primary-500);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    }
+    .form-input.error {
+      border-color: var(--error-500);
+    }
+    .form-error {
+      color: var(--error-600);
+      font-size: 0.75rem;
+      margin-top: 4px;
+    }
+    
+    /* Filter Bar Styles */
+    .filter-bar {
+      background: var(--glass-bg);
+      backdrop-filter: blur(10px);
+      border: 1px solid var(--glass-border);
+      border-radius: 12px;
+      padding: var(--space-4);
+      margin-bottom: var(--space-6);
+    }
+    
+    .filter-controls {
+      display: flex;
+      gap: var(--space-4);
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    
+    .filter-group {
+      flex: 1;
+      min-width: 200px;
+    }
+    
+    .filter-input,
+    .filter-select {
+      width: 100%;
+      padding: var(--space-2) var(--space-3);
+      border: 1px solid var(--neutral-300);
+      border-radius: var(--radius-base);
+      font-size: var(--text-sm);
+      background: rgba(255, 255, 255, 0.9);
+      transition: all var(--duration-fast);
+    }
+    
+    .filter-input:focus,
+    .filter-select:focus {
+      outline: none;
+      border-color: var(--primary-500);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    }
+    
+    .filter-label {
+      display: block;
+      font-size: var(--text-xs);
+      font-weight: 500;
+      color: var(--neutral-600);
+      margin-bottom: var(--space-1);
+    }
+    
+    .filter-info {
+      margin-left: auto;
+      font-size: var(--text-sm);
+      color: var(--neutral-600);
+      white-space: nowrap;
+    }
+    
+    @media (max-width: 768px) {
+      .filter-controls {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      
+      .filter-group {
+        min-width: 100%;
+      }
+      
+      .filter-info {
+        margin-left: 0;
+        text-align: center;
+        margin-top: var(--space-2);
+      }
+    }
+    .form-actions {
+      display: flex;
+      gap: 12px;
+      justify-content: flex-end;
+      margin-top: 24px;
+    }
+    .channel-actions {
+      display: flex;
+      gap: 8px;
+    }
+    .btn-icon {
+      background: white;
+      border: 1px solid var(--neutral-300);
+      color: var(--neutral-600);
+      padding: 6px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.875rem;
+      transition: all 0.2s;
+    }
+    .btn-icon:hover {
+      background: var(--neutral-50);
+      border-color: var(--neutral-400);
+      color: var(--neutral-700);
+    }
+    .btn-danger {
+      background: var(--error-500);
+      color: white;
+      border: none;
+    }
+    .btn-danger:hover {
+      background: var(--error-600);
+    }
+    .add-channel-btn {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      background: var(--primary-500);
+      color: white;
+      border: none;
+      font-size: 24px;
+      cursor: pointer;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+      transition: all 0.2s;
+      z-index: 100;
+    }
+    .add-channel-btn:hover {
+      background: var(--primary-600);
+      transform: scale(1.1);
+      box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+    }
+    .models-input-wrapper {
+      position: relative;
+    }
+    .models-hint {
+      font-size: 0.75rem;
+      color: var(--neutral-500);
+      margin-top: 4px;
+    }
+    .confirm-modal {
+      text-align: center;
+    }
+    .confirm-modal p {
+      margin: 20px 0;
+      color: var(--neutral-600);
+    }
+    .confirm-actions {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      margin-top: 24px;
+    }
+  </style>
 </head>
 <body>
   <div class="app-container">
@@ -16,9 +255,39 @@
         <header class="mb-8">
           <div class="glass-card animate-slide-up" style="padding: var(--space-6);">
             <h1 class="page-title mb-2">渠道管理</h1>
-            <p class="page-subtitle">编辑、启停与优先级</p>
+            <p class="page-subtitle">配置API渠道、优先级和模型支持</p>
           </div>
         </header>
+
+        <!-- Filter Bar -->
+        <div class="filter-bar">
+          <div class="filter-controls">
+            <div class="filter-group">
+              <label class="filter-label">搜索渠道</label>
+              <input type="text" id="searchInput" class="filter-input" placeholder="输入渠道名称...">
+            </div>
+            
+            <div class="filter-group">
+              <label class="filter-label">状态</label>
+              <select id="statusFilter" class="filter-select">
+                <option value="all">所有状态</option>
+                <option value="enabled">已启用</option>
+                <option value="disabled">已禁用</option>
+              </select>
+            </div>
+            
+            <div class="filter-group">
+              <label class="filter-label">模型</label>
+              <select id="modelFilter" class="filter-select">
+                <option value="all">所有模型</option>
+              </select>
+            </div>
+            
+            <div class="filter-info" id="filterInfo">
+              显示 <span id="filteredCount">0</span> / <span id="totalCount">0</span> 个渠道
+            </div>
+          </div>
+        </div>
 
         <section>
           <div id="channels-container" class="grid grid-cols-1 gap-6"></div>
@@ -27,76 +296,381 @@
     </main>
   </div>
 
+  <!-- 添加渠道按钮 -->
+  <button class="add-channel-btn" onclick="showAddModal()" title="添加渠道">+</button>
+
+  <!-- 添加/编辑渠道模态框 -->
+  <div id="channelModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title" id="modalTitle">添加渠道</h2>
+        <button class="close-btn" onclick="closeModal()">&times;</button>
+      </div>
+      <form id="channelForm" onsubmit="saveChannel(event)">
+        <div class="form-group">
+          <label class="form-label" for="channelName">渠道名称 *</label>
+          <input type="text" id="channelName" class="form-input" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="channelUrl">API URL *</label>
+          <input type="url" id="channelUrl" class="form-input" placeholder="https://api.anthropic.com/v1/messages" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="channelApiKey">API Key *</label>
+          <input type="password" id="channelApiKey" class="form-input" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="channelPriority">优先级</label>
+          <input type="number" id="channelPriority" class="form-input" value="0" min="-999" max="999">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="channelModels">支持的模型 *</label>
+          <div class="models-input-wrapper">
+            <input type="text" id="channelModels" class="form-input" placeholder="claude-3-5-sonnet-20241022,claude-3-opus-20240229" required>
+            <div class="models-hint">多个模型用英文逗号分隔</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">
+            <input type="checkbox" id="channelEnabled" checked> 启用渠道
+          </label>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+          <button type="submit" class="btn btn-primary">保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 删除确认模态框 -->
+  <div id="deleteModal" class="modal">
+    <div class="modal-content confirm-modal">
+      <h2 class="modal-title">确认删除</h2>
+      <p>确定要删除渠道 "<span id="deleteChannelName"></span>" 吗？</p>
+      <p style="color: var(--error-600); font-size: 0.875rem;">此操作不可恢复！</p>
+      <div class="confirm-actions">
+        <button class="btn btn-secondary" onclick="closeDeleteModal()">取消</button>
+        <button class="btn btn-danger" onclick="confirmDelete()">删除</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     let channels = [];
+    let editingChannelId = null;
+    let deletingChannelId = null;
+    
+    // Filter state
+    let filters = {
+      search: '',
+      status: 'all',
+      model: 'all'
+    };
+    
+    // Debounce function for search input
+    function debounce(func, wait) {
+      let timeout;
+      return function executedFunction(...args) {
+        const later = () => {
+          clearTimeout(timeout);
+          func(...args);
+        };
+        clearTimeout(timeout);
+        timeout = setTimeout(later, wait);
+      };
+    }
+    
+    // Filter channels based on current filters
+    function filterChannels() {
+      const filtered = channels.filter(channel => {
+        // Name search
+        if (filters.search && !channel.name.toLowerCase().includes(filters.search.toLowerCase())) {
+          return false;
+        }
+        
+        // Status filter
+        if (filters.status !== 'all') {
+          if (filters.status === 'enabled' && !channel.enabled) return false;
+          if (filters.status === 'disabled' && channel.enabled) return false;
+        }
+        
+        // Model filter
+        if (filters.model !== 'all' && !channel.models.includes(filters.model)) {
+          return false;
+        }
+        
+        return true;
+      });
+      
+      renderChannels(filtered);
+      updateFilterInfo(filtered.length, channels.length);
+    }
+    
+    // Update filter info display
+    function updateFilterInfo(filtered, total) {
+      document.getElementById('filteredCount').textContent = filtered;
+      document.getElementById('totalCount').textContent = total;
+    }
+    
+    // Update model filter options
+    function updateModelOptions() {
+      const modelSet = new Set();
+      channels.forEach(channel => {
+        if (Array.isArray(channel.models)) {
+          channel.models.forEach(model => modelSet.add(model));
+        }
+      });
+      
+      const modelFilter = document.getElementById('modelFilter');
+      const currentValue = modelFilter.value;
+      
+      // Clear existing options (keep "All Models")
+      modelFilter.innerHTML = '<option value="all">所有模型</option>';
+      
+      // Add model options
+      Array.from(modelSet).sort().forEach(model => {
+        const option = document.createElement('option');
+        option.value = model;
+        option.textContent = model;
+        modelFilter.appendChild(option);
+      });
+      
+      // Restore selection
+      modelFilter.value = currentValue;
+    }
+    
+    // Setup filter event listeners
+    function setupFilterListeners() {
+      // Search input with debounce
+      const searchInput = document.getElementById('searchInput');
+      const debouncedFilter = debounce(() => {
+        filters.search = searchInput.value;
+        filterChannels();
+      }, 300);
+      
+      searchInput.addEventListener('input', debouncedFilter);
+      
+      // Status filter
+      document.getElementById('statusFilter').addEventListener('change', (e) => {
+        filters.status = e.target.value;
+        filterChannels();
+      });
+      
+      // Model filter
+      document.getElementById('modelFilter').addEventListener('change', (e) => {
+        filters.model = e.target.value;
+        filterChannels();
+      });
+    }
+
     async function loadChannels() {
       try {
         const res = await fetch('/admin/channels');
         if (!res.ok) throw new Error('HTTP ' + res.status);
         channels = await res.json();
-        renderChannels();
+        updateModelOptions();
+        filterChannels(); // Use filterChannels instead of direct render
       } catch (e) {
         console.error('加载渠道失败', e);
         if (window.showError) showError('加载渠道失败');
       }
     }
-    function renderChannels() {
+
+    function renderChannels(channelsToRender = channels) {
       const el = document.getElementById('channels-container');
-      if (!channels || channels.length === 0) {
-        el.innerHTML = '<div class="glass-card">暂无渠道</div>';
+      if (!channelsToRender || channelsToRender.length === 0) {
+        el.innerHTML = '<div class="glass-card">暂无符合条件的渠道</div>';
         return;
       }
       el.innerHTML = channels.map(c => `
         <div class="glass-card" id="channel-${c.id}">
           <div class="flex justify-between items-center">
-            <div>
+            <div style="flex: 1;">
               <div class="section-title">${escapeHtml(c.name)}</div>
-              <div class="text-sm" style="color: var(--neutral-600);">优先级: ${c.priority} · 模型: ${Array.isArray(c.models)? c.models.join(', ') : ''}</div>
+              <div class="text-sm" style="color: var(--neutral-600); margin-top: 4px;">
+                <div>URL: ${escapeHtml(c.url)}</div>
+                <div>优先级: ${c.priority} · ${c.enabled ? '已启用' : '已禁用'}</div>
+                <div>模型: ${Array.isArray(c.models) ? c.models.join(', ') : ''}</div>
+              </div>
               ${cooldownBadge(c)}
             </div>
-            <div>
-              <button class="btn btn-secondary" onclick="toggleChannel(${c.id}, ${!c.enabled})">${c.enabled? '禁用' : '启用'}</button>
+            <div class="channel-actions">
+              <button class="btn-icon" onclick="editChannel(${c.id})" title="编辑">编辑</button>
+              <button class="btn-icon" onclick="toggleChannel(${c.id}, ${!c.enabled})">${c.enabled ? '禁用' : '启用'}</button>
+              <button class="btn-icon btn-danger" onclick="deleteChannel(${c.id}, '${escapeHtml(c.name)}')" title="删除">删除</button>
             </div>
           </div>
         </div>
       `).join('');
     }
+
     function cooldownBadge(c) {
       const ms = c.cooldown_remaining_ms || 0;
       if (!ms || ms <= 0) return '';
       const text = humanizeMS(ms);
-      return `<div class="text-xs" style="margin-top:4px;color:var(--error-600);">
-        冷却中 · 剩余 ${text}
+      return `<div class="text-xs" style="margin-top:8px;padding:4px 8px;background:var(--error-50);color:var(--error-700);border-radius:4px;display:inline-block;">
+        ⏱ 冷却中 · 剩余 ${text}
       </div>`;
     }
+
     function humanizeMS(ms) {
-      let s = Math.ceil(ms/1000);
-      const m = Math.floor(s/60); s = s%60;
-      const h = Math.floor(m/60); const m2 = m%60;
-      if (h>0) return `${h}小时${m2}分`;
-      if (m>0) return `${m}分${s}秒`;
+      let s = Math.ceil(ms / 1000);
+      const h = Math.floor(s / 3600);
+      s = s % 3600;
+      const m = Math.floor(s / 60);
+      s = s % 60;
+      
+      if (h > 0) return `${h}小时${m}分`;
+      if (m > 0) return `${m}分${s}秒`;
       return `${s}秒`;
     }
-    async function toggleChannel(id, enabled) {
+
+    function showAddModal() {
+      editingChannelId = null;
+      document.getElementById('modalTitle').textContent = '添加渠道';
+      document.getElementById('channelForm').reset();
+      document.getElementById('channelEnabled').checked = true;
+      document.getElementById('channelModal').classList.add('show');
+    }
+
+    function editChannel(id) {
+      const channel = channels.find(c => c.id === id);
+      if (!channel) return;
+      
+      editingChannelId = id;
+      document.getElementById('modalTitle').textContent = '编辑渠道';
+      document.getElementById('channelName').value = channel.name;
+      document.getElementById('channelUrl').value = channel.url;
+      document.getElementById('channelApiKey').value = channel.api_key;
+      document.getElementById('channelPriority').value = channel.priority;
+      document.getElementById('channelModels').value = channel.models.join(',');
+      document.getElementById('channelEnabled').checked = channel.enabled;
+      document.getElementById('channelModal').classList.add('show');
+    }
+
+    function closeModal() {
+      document.getElementById('channelModal').classList.remove('show');
+      editingChannelId = null;
+    }
+
+    async function saveChannel(event) {
+      event.preventDefault();
+      
+      const formData = {
+        name: document.getElementById('channelName').value.trim(),
+        url: document.getElementById('channelUrl').value.trim(),
+        api_key: document.getElementById('channelApiKey').value.trim(),
+        priority: parseInt(document.getElementById('channelPriority').value) || 0,
+        models: document.getElementById('channelModels').value.split(',').map(m => m.trim()).filter(m => m),
+        enabled: document.getElementById('channelEnabled').checked
+      };
+
+      if (!formData.name || !formData.url || !formData.api_key || formData.models.length === 0) {
+        if (window.showError) showError('请填写所有必填字段');
+        return;
+      }
+
       try {
-        const res = await fetch(`/admin/channels/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
+        let res;
+        if (editingChannelId) {
+          // 编辑现有渠道
+          res = await fetch(`/admin/channels/${editingChannelId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(formData)
+          });
+        } else {
+          // 添加新渠道
+          res = await fetch('/admin/channels', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(formData)
+          });
+        }
+
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(text || 'HTTP ' + res.status);
+        }
+
+        closeModal();
         await loadChannels();
-        if (window.showSuccess) showSuccess('已保存');
+        if (window.showSuccess) showSuccess(editingChannelId ? '渠道已更新' : '渠道已添加');
       } catch (e) {
-        console.error('切换失败', e);
-        if (window.showError) showError('切换失败');
+        console.error('保存渠道失败', e);
+        if (window.showError) showError('保存失败: ' + e.message);
       }
     }
-    function escapeHtml(s){return (s||'').replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]))}
+
+    function deleteChannel(id, name) {
+      deletingChannelId = id;
+      document.getElementById('deleteChannelName').textContent = name;
+      document.getElementById('deleteModal').classList.add('show');
+    }
+
+    function closeDeleteModal() {
+      document.getElementById('deleteModal').classList.remove('show');
+      deletingChannelId = null;
+    }
+
+    async function confirmDelete() {
+      if (!deletingChannelId) return;
+      
+      try {
+        const res = await fetch(`/admin/channels/${deletingChannelId}`, {
+          method: 'DELETE'
+        });
+        
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(text || 'HTTP ' + res.status);
+        }
+
+        closeDeleteModal();
+        await loadChannels();
+        if (window.showSuccess) showSuccess('渠道已删除');
+      } catch (e) {
+        console.error('删除渠道失败', e);
+        if (window.showError) showError('删除失败: ' + e.message);
+      }
+    }
+
+    async function toggleChannel(id, enabled) {
+      try {
+        const res = await fetch(`/admin/channels/${id}`, { 
+          method: 'PUT', 
+          headers: { 'Content-Type': 'application/json' }, 
+          body: JSON.stringify({ enabled }) 
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        await loadChannels();
+        if (window.showSuccess) showSuccess(enabled ? '渠道已启用' : '渠道已禁用');
+      } catch (e) {
+        console.error('切换失败', e);
+        if (window.showError) showError('操作失败');
+      }
+    }
+
+    function escapeHtml(s) {
+      return (s || '').replace(/[&<>"']/g, c => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        "\"": "&quot;",
+        "'": "&#39;"
+      }[c]));
+    }
+
     document.addEventListener('DOMContentLoaded', () => {
       if (window.initTopbar) initTopbar('channels');
+      setupFilterListeners();
       loadChannels().then(() => highlightFromHash());
       window.addEventListener('hashchange', highlightFromHash);
     });
 
     function highlightFromHash() {
-      const m = (location.hash||'').match(/^#channel-(\d+)$/);
+      const m = (location.hash || '').match(/^#channel-(\d+)$/);
       if (!m) return;
       const el = document.getElementById(`channel-${m[1]}`);
       if (!el) return;
@@ -110,6 +684,14 @@
         el.style.background = '';
       }, 1600);
     }
+
+    // ESC键关闭模态框
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closeModal();
+        closeDeleteModal();
+      }
+    });
   </script>
   <script src="/web/ui.js"></script>
 </body>

@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>调用统计 - Claude Proxy</title>
   <link rel="stylesheet" href="/web/styles.css">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.loli.net">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.loli.net/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
   <div class="app-container">
@@ -346,7 +346,7 @@
       let totalError = 0;
 
       statsData.stats.forEach(entry => {
-        configs.add(entry.channel_name || '未知渠道');
+        configs.add(entry.channel_name);
         models.add(entry.model || '未知模型');
         totalSuccess += entry.success || 0;
         totalError += entry.error || 0;
@@ -394,7 +394,7 @@
           '<span style="color: var(--neutral-500);">未知模型</span>';
         
         tr.innerHTML = `
-          <td><span class="config-name">${escapeHtml(entry.channel_name || '未知渠道')}</span></td>
+          <td><span class="config-name">${escapeHtml(entry.channel_name)}</span></td>
           <td>${modelDisplay}</td>
           <td><span class="success-count">${formatNumber(entry.success || 0)}</span></td>
           <td><span class="error-count">${formatNumber(entry.error || 0)}</span></td>

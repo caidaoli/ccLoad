@@ -5,14 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>请求趋势 - Claude Proxy</title>
   <link rel="stylesheet" href="/web/styles.css">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.loli.net">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.loli.net/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <!-- 引入 ECharts -->
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
 </head>
 <body>
   <div class="app-container">
-    
-
     <!-- 主内容区域 -->
     <main class="main-content">
       <div class="content-area">
@@ -84,20 +84,6 @@
                   <div class="toggle-btn active" data-range="24">24小时</div>
                   <div class="toggle-btn" data-range="168">7天</div>
                 </div>
-                <div class="toggle-group" id="series-group">
-                  <div class="toggle-btn active" data-series="success">成功</div>
-                  <div class="toggle-btn active" data-series="error">失败</div>
-                </div>
-                <div class="chart-legend" style="margin-left: auto;">
-                  <div class="legend-item">
-                    <div class="legend-color success"></div>
-                    <span>成功请求</span>
-                  </div>
-                  <div class="legend-item">
-                    <div class="legend-color error"></div>
-                    <span>失败请求</span>
-                  </div>
-                </div>
                 <button class="btn btn-primary btn-sm" onclick="loadData()">刷新</button>
               </div>
             </div>
@@ -115,7 +101,8 @@
                 <div class="error-title">加载失败</div>
                 <div class="error-message">请检查网络连接或重试</div>
               </div>
-              <svg id="chart" viewBox="0 0 800 400" preserveAspectRatio="xMidYMid meet" style="display: none;"></svg>
+              <!-- ECharts 容器 -->
+              <div id="chart" style="width: 100%; height: 100%; display: none;"></div>
             </div>
 
             <!-- 图表时间范围提示 -->
@@ -139,18 +126,17 @@
     </main>
   </div>
 
-  
-
   <!-- 样式 -->
   <style>
     .chart-container {
       position: relative;
       width: 100%;
-      height: 400px;
-      background: rgba(255, 255, 255, 0.9);
+      height: 500px;
+      background: rgba(255, 255, 255, 0.95);
       border-radius: var(--radius-lg);
       border: 1px solid var(--neutral-200);
       overflow: hidden;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
     }
 
     .chart-loading,
@@ -178,44 +164,6 @@
       font-size: var(--text-sm);
     }
 
-    #chart {
-      width: 100%;
-      height: 100%;
-      background: transparent;
-    }
-
-    .chart-legend {
-      display: flex;
-      gap: var(--space-6);
-      align-items: center;
-    }
-
-    .legend-item {
-      display: flex;
-      align-items: center;
-      gap: var(--space-2);
-      font-size: var(--text-sm);
-      color: var(--neutral-800);
-      font-weight: var(--font-medium);
-    }
-
-    .legend-color {
-      width: 12px;
-      height: 12px;
-      border-radius: var(--radius-sm);
-      flex-shrink: 0;
-    }
-
-    .legend-color.success {
-      background: var(--success-500);
-      box-shadow: 0 0 8px rgba(16, 185, 129, 0.4);
-    }
-
-    .legend-color.error {
-      background: var(--error-500);
-      box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
-    }
-
     .chart-info {
       display: flex;
       justify-content: space-between;
@@ -233,77 +181,10 @@
       gap: var(--space-2);
     }
 
-    /* SVG图表样式 */
-    .chart-grid {
-      stroke: var(--neutral-300);
-      stroke-width: 1;
-    }
-
-    .chart-axis {
-      stroke: var(--neutral-400);
-      stroke-width: 1;
-    }
-
-    .chart-line-success {
-      fill: none;
-      stroke: var(--success-400);
-      stroke-width: 3;
-      stroke-linecap: round;
-      stroke-linejoin: round;
-      filter: drop-shadow(0 2px 4px rgba(16, 185, 129, 0.3));
-    }
-
-    .chart-line-error {
-      fill: none;
-      stroke: var(--error-400);
-      stroke-width: 3;
-      stroke-linecap: round;
-      stroke-linejoin: round;
-      filter: drop-shadow(0 2px 4px rgba(239, 68, 68, 0.3));
-    }
-
-    .chart-area-success {
-      fill: url(#gradient-success);
-      opacity: 0.3;
-    }
-
-    .chart-area-error {
-      fill: url(#gradient-error);
-      opacity: 0.3;
-    }
-
-    .chart-point {
-      transition: all var(--duration-fast);
-    }
-
-    .chart-point:hover {
-      r: 6;
-      filter: drop-shadow(0 0 8px currentColor);
-    }
-
-    .chart-tooltip {
-      display: none;
-      position: absolute;
-      background: rgba(0, 0, 0, 0.9);
-      color: white;
-      padding: var(--space-2) var(--space-3);
-      border-radius: var(--radius-base);
-      font-size: var(--text-xs);
-      pointer-events: none;
-      z-index: 1000;
-      border: 1px solid rgba(255, 255, 255, 0.2);
-      backdrop-filter: blur(8px);
-    }
-
     /* 响应式设计 */
     @media (max-width: 768px) {
       .chart-container {
-        height: 320px;
-      }
-      
-      .chart-legend {
-        gap: var(--space-4);
-        flex-wrap: wrap;
+        height: 400px;
       }
       
       .chart-info {
@@ -316,12 +197,18 @@
         grid-template-columns: repeat(2, 1fr);
       }
     }
+
+    @media (max-width: 480px) {
+      .chart-container {
+        height: 320px;
+      }
+    }
   </style>
 
   <script>
     let trendData = null;
     let currentHours = 24;
-    let showSeries = { success: true, error: true };
+    let chartInstance = null;
 
     async function loadData() {
       try {
@@ -333,6 +220,7 @@
         trendData = await res.json();
         updateSummaryCards();
         renderChart();
+        
         // 更新分桶提示
         const iv = document.getElementById('bucket-interval');
         if (iv) iv.textContent = `数据更新间隔：${formatInterval(bucketMin)}`;
@@ -344,7 +232,7 @@
       }
     }
 
-    function computeBucketMin(hours){
+    function computeBucketMin(hours) {
       if (hours <= 1) return 1; // 1分钟
       if (hours <= 6) return 2; // 2分钟
       if (hours <= 24) return 5; // 5分钟
@@ -359,7 +247,8 @@
       
       // 重置摘要卡片
       ['total-requests', 'peak-success', 'peak-error', 'avg-success-rate'].forEach(id => {
-        document.getElementById(id).textContent = '--';
+        const el = document.getElementById(id);
+        if (el) el.textContent = '--';
       });
     }
 
@@ -401,338 +290,245 @@
         return;
       }
 
-      const svg = document.getElementById('chart');
-      const W = 800, H = 400;
-      const PADDING = { top: 40, right: 40, bottom: 64, left: 64 };
-      const CHART_W = W - PADDING.left - PADDING.right;
-      const CHART_H = H - PADDING.top - PADDING.bottom;
-
-      // 计算数据范围
-      const maxSuccess = Math.max(1, ...trendData.map(p => p.success || 0));
-      const maxError = Math.max(1, ...trendData.map(p => p.error || 0));
-      const maxY = Math.max(maxSuccess, maxError);
-
-      // 坐标转换函数
-      function x(index) {
-        return PADDING.left + (CHART_W * index) / Math.max(1, trendData.length - 1);
-      }
-
-      function y(value) {
-        return PADDING.top + CHART_H - (CHART_H * value) / maxY;
-      }
-
-      // 清空SVG
-      svg.innerHTML = '';
-      
-      // 创建渐变定义
-      const defs = createSVGElement('defs');
-      
-      // 成功请求渐变
-      const gradientSuccess = createSVGElement('linearGradient', {
-        id: 'gradient-success',
-        x1: '0%',
-        y1: '0%',
-        x2: '0%',
-        y2: '100%'
-      });
-      gradientSuccess.innerHTML = `
-        <stop offset="0%" style="stop-color:var(--success-400);stop-opacity:0.4" />
-        <stop offset="100%" style="stop-color:var(--success-400);stop-opacity:0.05" />
-      `;
-      defs.appendChild(gradientSuccess);
-      
-      // 错误请求渐变
-      const gradientError = createSVGElement('linearGradient', {
-        id: 'gradient-error',
-        x1: '0%',
-        y1: '0%',
-        x2: '0%',
-        y2: '100%'
-      });
-      gradientError.innerHTML = `
-        <stop offset="0%" style="stop-color:var(--error-400);stop-opacity:0.4" />
-        <stop offset="100%" style="stop-color:var(--error-400);stop-opacity:0.05" />
-      `;
-      defs.appendChild(gradientError);
-      
-      svg.appendChild(defs);
-
-      // 绘制网格线 + 轴 + 刻度/标签
-      drawGrid(svg, W, H, PADDING, maxY);
-      drawAxes(svg, W, H, PADDING);
-      drawTicksAndLabels(svg, W, H, PADDING, maxY);
-      
-      // 绘制数据线条和区域
-      drawDataLines(svg, trendData, x, y);
-      setupInteractions(svg, W, H, PADDING, x, y);
-      
-      // 显示图表
+      // 显示图表容器
       document.getElementById('chart-loading').style.display = 'none';
       document.getElementById('chart-error').style.display = 'none';
       document.getElementById('chart').style.display = 'block';
-    }
 
-    function createSVGElement(tag, attributes = {}) {
-      const element = document.createElementNS('http://www.w3.org/2000/svg', tag);
-      Object.entries(attributes).forEach(([key, value]) => {
-        element.setAttribute(key, value);
-      });
-      return element;
-    }
+      // 初始化或获取 ECharts 实例
+      const chartDom = document.getElementById('chart');
+      if (!chartInstance) {
+        chartInstance = echarts.init(chartDom, null, {
+          renderer: 'canvas'
+        });
+      }
 
-    function drawGrid(svg, W, H, PADDING, maxY) {
-      const gridGroup = createSVGElement('g', { class: 'chart-grid' });
-      
-      // 水平网格线
-      for (let i = 0; i <= 5; i++) {
-        const yPos = PADDING.top + (H - PADDING.top - PADDING.bottom) * i / 5;
-        const line = createSVGElement('line', {
-          x1: PADDING.left,
-          y1: yPos,
-          x2: W - PADDING.right,
-          y2: yPos,
-          class: 'chart-grid'
-        });
-        gridGroup.appendChild(line);
-      }
-      // 垂直网格线（6列）
-      for (let i = 0; i <= 6; i++) {
-        const xPos = PADDING.left + (W - PADDING.left - PADDING.right) * i / 6;
-        const vline = createSVGElement('line', {
-          x1: xPos,
-          y1: PADDING.top,
-          x2: xPos,
-          y2: H - PADDING.bottom,
-          class: 'chart-grid'
-        });
-        gridGroup.appendChild(vline);
-      }
-      
-      svg.appendChild(gridGroup);
-    }
-
-    function drawAxes(svg, W, H, PADDING) {
-      // Y轴
-      const yAxis = createSVGElement('line', {
-        x1: PADDING.left,
-        y1: PADDING.top,
-        x2: PADDING.left,
-        y2: H - PADDING.bottom,
-        class: 'chart-axis'
-      });
-      svg.appendChild(yAxis);
-      
-      // X轴
-      const xAxis = createSVGElement('line', {
-        x1: PADDING.left,
-        y1: H - PADDING.bottom,
-        x2: W - PADDING.right,
-        y2: H - PADDING.bottom,
-        class: 'chart-axis'
-      });
-      svg.appendChild(xAxis);
-    }
-
-    function drawTicksAndLabels(svg, W, H, PADDING, maxY) {
-      const labelGroup = createSVGElement('g');
-      const steps = 5;
-      const stepVal = Math.max(1, Math.ceil(maxY / steps));
-      for (let i = 0; i <= steps; i++) {
-        const yVal = i * stepVal;
-        const yPos = PADDING.top + (H - PADDING.top - PADDING.bottom) * (steps - i) / steps;
-        const tick = createSVGElement('line', {
-          x1: PADDING.left - 6,
-          y1: yPos,
-          x2: PADDING.left,
-          y2: yPos,
-          stroke: 'var(--neutral-400)',
-          'stroke-width': 1
-        });
-        labelGroup.appendChild(tick);
-        const txt = createSVGElement('text', {
-          x: PADDING.left - 10,
-          y: yPos + 4,
-          fill: 'var(--neutral-700)',
-          'font-size': '11px',
-          'text-anchor': 'end'
-        });
-        txt.textContent = formatNumber(yVal);
-        labelGroup.appendChild(txt);
-      }
-      const columns = 6;
-      const n = Math.max(1, trendData.length - 1);
-      for (let i = 0; i <= columns; i++) {
-        const idx = Math.round(n * i / columns);
-        const xPos = PADDING.left + (W - PADDING.left - PADDING.right) * i / columns;
-        const tick = createSVGElement('line', {
-          x1: xPos,
-          y1: H - PADDING.bottom,
-          x2: xPos,
-          y2: H - PADDING.bottom + 6,
-          stroke: 'var(--neutral-400)',
-          'stroke-width': 1
-        });
-        labelGroup.appendChild(tick);
-        const t = trendData[Math.min(idx, trendData.length - 1)].ts || trendData[Math.min(idx, trendData.length - 1)].Ts;
-        const d = new Date(t);
-        const label = currentHours > 24 ? `${d.getMonth()+1}/${d.getDate()} ${pad(d.getHours())}:00` : `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-        const txt = createSVGElement('text', {
-          x: xPos,
-          y: H - PADDING.bottom + 22,
-          fill: 'var(--neutral-700)',
-          'font-size': '11px',
-          'text-anchor': 'middle'
-        });
-        txt.textContent = label;
-        labelGroup.appendChild(txt);
-      }
-      svg.appendChild(labelGroup);
-    }
-
-    function drawDataLines(svg, data, xFunc, yFunc) {
-      if (!data.length) return;
-      
-      // 构建路径数据
-      const successPath = data.map((point, i) => 
-        `${i === 0 ? 'M' : 'L'} ${xFunc(i)} ${yFunc((point.success ?? point.Success) || 0)}`
-      ).join(' ');
-      
-      const errorPath = data.map((point, i) => 
-        `${i === 0 ? 'M' : 'L'} ${xFunc(i)} ${yFunc((point.error ?? point.Error) || 0)}`
-      ).join(' ');
-      
-      // 构建区域路径（用于填充）
-      const successArea = successPath + 
-        ` L ${xFunc(data.length - 1)} ${yFunc(0)} L ${xFunc(0)} ${yFunc(0)} Z`;
-      
-      const errorArea = errorPath + 
-        ` L ${xFunc(data.length - 1)} ${yFunc(0)} L ${xFunc(0)} ${yFunc(0)} Z`;
-      
-      // 绘制填充区域
-      if (showSeries.success) {
-        const successAreaPath = createSVGElement('path', { d: successArea, class: 'chart-area-success' });
-        svg.appendChild(successAreaPath);
-      }
-      if (showSeries.error) {
-        const errorAreaPath = createSVGElement('path', { d: errorArea, class: 'chart-area-error' });
-        svg.appendChild(errorAreaPath);
-      }
-      
-      // 绘制线条
-      if (showSeries.success) {
-        const successLine = createSVGElement('path', { d: successPath, class: 'chart-line-success' });
-        svg.appendChild(successLine);
-      }
-      if (showSeries.error) {
-        const errorLine = createSVGElement('path', { d: errorPath, class: 'chart-line-error' });
-        svg.appendChild(errorLine);
-      }
-      
-      // 绘制数据点
-      data.forEach((point, i) => {
-        // 成功请求点
-        const sVal = (point.success ?? point.Success) || 0;
-        const eVal = (point.error ?? point.Error) || 0;
-        if (showSeries.success && sVal > 0) {
-          const successPoint = createSVGElement('circle', {
-            cx: xFunc(i),
-            cy: yFunc(sVal),
-            r: 4,
-            fill: 'var(--success-400)',
-            class: 'chart-point'
-          });
-          svg.appendChild(successPoint);
-        }
-        
-        // 错误请求点
-        if (showSeries.error && eVal > 0) {
-          const errorPoint = createSVGElement('circle', {
-            cx: xFunc(i),
-            cy: yFunc(eVal),
-            r: 4,
-            fill: 'var(--error-400)',
-            class: 'chart-point'
-          });
-          svg.appendChild(errorPoint);
+      // 准备数据
+      const timestamps = trendData.map(point => {
+        const date = new Date(point.ts || point.Ts);
+        if (currentHours > 24) {
+          return `${date.getMonth()+1}/${date.getDate()} ${pad(date.getHours())}:00`;
+        } else {
+          return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
         }
       });
-    }
 
-    // 交互：hover 十字线与 tooltip
-    let hoverLine = null;
-    function setupInteractions(svg, W, H, PADDING, xFunc, yFunc){
-      const n = Math.max(1, trendData.length - 1);
-      // 覆盖层用于捕获鼠标
-      const overlay = createSVGElement('rect', {
-        x: PADDING.left, y: PADDING.top,
-        width: W - PADDING.left - PADDING.right,
-        height: H - PADDING.top - PADDING.bottom,
-        fill: 'transparent'
+      const successData = trendData.map(point => point.success || 0);
+      const errorData = trendData.map(point => point.error || 0);
+
+      // ECharts 配置
+      const option = {
+        backgroundColor: 'transparent',
+        title: {
+          show: false
+        },
+        tooltip: {
+          trigger: 'axis',
+          backgroundColor: 'rgba(0, 0, 0, 0.85)',
+          borderColor: 'rgba(255, 255, 255, 0.1)',
+          borderWidth: 1,
+          textStyle: {
+            color: '#fff',
+            fontSize: 12
+          },
+          axisPointer: {
+            type: 'cross',
+            crossStyle: {
+              color: '#999',
+              width: 1,
+              type: 'dashed'
+            }
+          },
+          formatter: function(params) {
+            let html = `<div style="font-weight: 600; margin-bottom: 8px;">${params[0].axisValue}</div>`;
+            params.forEach(param => {
+              const color = param.seriesName === '成功请求' ? '#10b981' : '#ef4444';
+              html += `
+                <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+                  <span style="display: inline-block; width: 10px; height: 10px; background: ${color}; border-radius: 50%;"></span>
+                  <span>${param.seriesName}: ${param.value}</span>
+                </div>
+              `;
+            });
+            return html;
+          }
+        },
+        legend: {
+          data: ['成功请求', '失败请求'],
+          top: 10,
+          right: 20,
+          textStyle: {
+            color: '#666',
+            fontSize: 12
+          },
+          itemWidth: 20,
+          itemHeight: 10,
+          itemGap: 20
+        },
+        grid: {
+          left: '3%',
+          right: '3%',
+          bottom: '12%',
+          top: '15%',
+          containLabel: true
+        },
+        xAxis: {
+          type: 'category',
+          boundaryGap: false,
+          data: timestamps,
+          axisLine: {
+            lineStyle: {
+              color: '#e5e7eb'
+            }
+          },
+          axisLabel: {
+            color: '#6b7280',
+            fontSize: 11,
+            rotate: currentHours > 24 ? 45 : 0,
+            interval: Math.floor(timestamps.length / 10) // 动态间隔
+          },
+          splitLine: {
+            show: true,
+            lineStyle: {
+              color: '#f3f4f6',
+              type: 'dashed'
+            }
+          }
+        },
+        yAxis: {
+          type: 'value',
+          axisLine: {
+            lineStyle: {
+              color: '#e5e7eb'
+            }
+          },
+          axisLabel: {
+            color: '#6b7280',
+            fontSize: 11,
+            formatter: function(value) {
+              if (value >= 1000000) return (value / 1000000) + 'M';
+              if (value >= 1000) return (value / 1000) + 'K';
+              return value;
+            }
+          },
+          splitLine: {
+            lineStyle: {
+              color: '#f3f4f6',
+              type: 'dashed'
+            }
+          }
+        },
+        series: [
+          {
+            name: '成功请求',
+            type: 'line',
+            smooth: true,
+            symbol: 'circle',
+            symbolSize: 6,
+            sampling: 'lttb',
+            itemStyle: {
+              color: '#10b981'
+            },
+            lineStyle: {
+              width: 3,
+              color: '#10b981'
+            },
+            areaStyle: {
+              color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                {
+                  offset: 0,
+                  color: 'rgba(16, 185, 129, 0.3)'
+                },
+                {
+                  offset: 1,
+                  color: 'rgba(16, 185, 129, 0.05)'
+                }
+              ])
+            },
+            emphasis: {
+              focus: 'series',
+              itemStyle: {
+                shadowBlur: 10,
+                shadowColor: 'rgba(16, 185, 129, 0.5)'
+              }
+            },
+            data: successData
+          },
+          {
+            name: '失败请求',
+            type: 'line',
+            smooth: true,
+            symbol: 'circle',
+            symbolSize: 6,
+            sampling: 'lttb',
+            itemStyle: {
+              color: '#ef4444'
+            },
+            lineStyle: {
+              width: 3,
+              color: '#ef4444'
+            },
+            areaStyle: {
+              color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                {
+                  offset: 0,
+                  color: 'rgba(239, 68, 68, 0.3)'
+                },
+                {
+                  offset: 1,
+                  color: 'rgba(239, 68, 68, 0.05)'
+                }
+              ])
+            },
+            emphasis: {
+              focus: 'series',
+              itemStyle: {
+                shadowBlur: 10,
+                shadowColor: 'rgba(239, 68, 68, 0.5)'
+              }
+            },
+            data: errorData
+          }
+        ],
+        dataZoom: currentHours > 24 ? [
+          {
+            type: 'inside',
+            start: 0,
+            end: 100,
+            minValueSpan: 10
+          },
+          {
+            show: true,
+            type: 'slider',
+            bottom: '2%',
+            start: 0,
+            end: 100,
+            height: 20,
+            borderColor: '#e5e7eb',
+            fillerColor: 'rgba(59, 130, 246, 0.15)',
+            handleStyle: {
+              color: '#3b82f6',
+              borderColor: '#3b82f6'
+            },
+            textStyle: {
+              color: '#6b7280',
+              fontSize: 10
+            }
+          }
+        ] : [],
+        animationDuration: 1000,
+        animationEasing: 'cubicInOut'
+      };
+
+      // 设置配置并渲染
+      chartInstance.setOption(option);
+
+      // 响应式调整
+      window.addEventListener('resize', () => {
+        if (chartInstance) {
+          chartInstance.resize();
+        }
       });
-      svg.appendChild(overlay);
-
-      if (!hoverLine) {
-        hoverLine = createSVGElement('line', {
-          x1: PADDING.left, y1: PADDING.top,
-          x2: PADDING.left, y2: H - PADDING.bottom,
-          stroke: 'var(--neutral-400)', 'stroke-width': 1
-        });
-        svg.appendChild(hoverLine);
-        hoverLine.style.display = 'none';
-      }
-
-      const tooltip = ensureTooltip();
-      const container = document.querySelector('.chart-container');
-
-      function onMove(evt){
-        const bbox = svg.getBoundingClientRect();
-        const relX = ((evt.clientX - bbox.left) / bbox.width) * W;
-        const t = Math.max(0, Math.min(1, (relX - PADDING.left) / (W - PADDING.left - PADDING.right)));
-        const idx = Math.round(n * t);
-        const i = Math.max(0, Math.min(trendData.length - 1, idx));
-        const cx = xFunc(i);
-        hoverLine.setAttribute('x1', cx);
-        hoverLine.setAttribute('x2', cx);
-        hoverLine.style.display = 'block';
-
-        const p = trendData[i];
-        const sVal = (p.success ?? p.Success) || 0;
-        const eVal = (p.error ?? p.Error) || 0;
-        const ts = new Date(p.ts || p.Ts);
-        const title = currentHours > 24 ? `${ts.getMonth()+1}/${ts.getDate()} ${pad(ts.getHours())}:00` : `${pad(ts.getHours())}:${pad(ts.getMinutes())}`;
-
-        tooltip.innerHTML = `
-          <div style="font-weight:600;margin-bottom:4px;color:#fff;">${title}</div>
-          <div style="display:flex;gap:12px;color:#fff;">
-            <div><span style="display:inline-block;width:8px;height:8px;background:var(--success-500);border-radius:2px;margin-right:6px"></span>成功: ${sVal}</div>
-            <div><span style="display:inline-block;width:8px;height:8px;background:var(--error-500);border-radius:2px;margin-right:6px"></span>失败: ${eVal}</div>
-          </div>`;
-
-        const cb = container.getBoundingClientRect();
-        const tx = evt.clientX - cb.left + 12;
-        const ty = evt.clientY - cb.top - 24;
-        tooltip.style.left = Math.max(8, Math.min(cb.width - 180, tx)) + 'px';
-        tooltip.style.top  = Math.max(8, ty) + 'px';
-        tooltip.style.display = 'block';
-      }
-      function onLeave(){
-        hoverLine.style.display = 'none';
-        tooltip.style.display = 'none';
-      }
-
-      overlay.addEventListener('mousemove', onMove);
-      overlay.addEventListener('mouseleave', onLeave);
-    }
-
-    function ensureTooltip(){
-      let el = document.querySelector('.chart-container .chart-tooltip');
-      if (!el){
-        el = document.createElement('div');
-        el.className = 'chart-tooltip';
-        const container = document.querySelector('.chart-container');
-        container.appendChild(el);
-      }
-      return el;
     }
 
     function formatNumber(num) {
@@ -740,14 +536,67 @@
       if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
       return num.toString();
     }
-    function formatInterval(min){ return min >= 60 ? (min/60)+ '小时' : min + '分钟' }
+
+    function formatInterval(min) { 
+      return min >= 60 ? (min/60) + '小时' : min + '分钟';
+    }
 
     // 工具函数
-    function pad(n){ return (n<10? '0':'')+n }
+    function pad(n) { 
+      return (n < 10 ? '0' : '') + n;
+    }
 
-    // 顶栏布局下，无需侧栏响应逻辑
-    function toggleSidebar() {}
-    function closeSidebar() {}
+    // 页面初始化
+    document.addEventListener('DOMContentLoaded', function() {
+      if (window.initTopbar) initTopbar('trend');
+      restoreState();
+      applyRangeUI();
+      bindToggles();
+      loadData();
+      
+      // 定期刷新数据（每5分钟）
+      setInterval(loadData, 5 * 60 * 1000);
+    });
+
+    function bindToggles() {
+      const rangeGroup = document.getElementById('range-group');
+      rangeGroup.addEventListener('click', (e) => {
+        const t = e.target.closest('.toggle-btn');
+        if (!t) return;
+        rangeGroup.querySelectorAll('.toggle-btn').forEach(btn => btn.classList.remove('active'));
+        t.classList.add('active');
+        const hours = parseInt(t.getAttribute('data-range') || '24', 10);
+        currentHours = hours;
+        const label = document.getElementById('data-timerange');
+        if (label) label.textContent = hours === 168 ? '7天数据展示' : `${hours}小时数据展示`;
+        persistState();
+        loadData();
+      });
+    }
+
+    function persistState() {
+      try {
+        localStorage.setItem('trend.rangeHours', String(currentHours));
+      } catch (_) {}
+    }
+
+    function restoreState() {
+      try {
+        const h = parseInt(localStorage.getItem('trend.rangeHours') || '24', 10);
+        if ([1, 6, 24, 168].includes(h)) currentHours = h;
+        const label = document.getElementById('data-timerange');
+        if (label) label.textContent = currentHours === 168 ? '7天数据展示' : `${currentHours}小时数据展示`;
+      } catch (_) {}
+    }
+
+    function applyRangeUI() {
+      const rangeGroup = document.getElementById('range-group');
+      if (!rangeGroup) return;
+      rangeGroup.querySelectorAll('.toggle-btn').forEach(btn => {
+        const h = parseInt(btn.getAttribute('data-range') || '24', 10);
+        btn.classList.toggle('active', h === currentHours);
+      });
+    }
 
     // 注销功能
     function logout() {
@@ -760,93 +609,6 @@
             window.location.href = '/web/login.html';
           });
       }
-    }
-
-    // 响应式处理
-    function handleResize() {}
-
-    // 页面初始化
-    document.addEventListener('DOMContentLoaded', function() {
-      if (window.initTopbar) initTopbar('trend');
-      restoreState();
-      applyRangeUI();
-      applySeriesUI();
-      bindToggles();
-      loadData();
-      
-      // 响应式处理
-      handleResize();
-      window.addEventListener('resize', handleResize);
-      
-      // 定期刷新数据（每5分钟）
-      setInterval(loadData, 5 * 60 * 1000);
-    });
-
-    function bindToggles(){
-      const rangeGroup = document.getElementById('range-group');
-      const seriesGroup = document.getElementById('series-group');
-      rangeGroup.addEventListener('click', (e)=>{
-        const t = e.target.closest('.toggle-btn');
-        if (!t) return;
-        rangeGroup.querySelectorAll('.toggle-btn').forEach(btn=>btn.classList.remove('active'));
-        t.classList.add('active');
-        const hours = parseInt(t.getAttribute('data-range')||'24', 10);
-        currentHours = hours;
-        const label = document.getElementById('data-timerange');
-        if (label) label.textContent = `${hours}小时数据展示`;
-        persistState();
-        loadData();
-      });
-      seriesGroup.addEventListener('click', (e)=>{
-        const t = e.target.closest('.toggle-btn');
-        if (!t) return;
-        const key = t.getAttribute('data-series');
-        t.classList.toggle('active');
-        const active = t.classList.contains('active');
-        showSeries[key] = active;
-        persistState();
-        renderChart();
-      });
-    }
-
-    function persistState(){
-      try {
-        localStorage.setItem('trend.rangeHours', String(currentHours));
-        localStorage.setItem('trend.series', JSON.stringify(showSeries));
-      } catch (_) {}
-    }
-
-    function restoreState(){
-      try {
-        const h = parseInt(localStorage.getItem('trend.rangeHours')||'24', 10);
-        if ([1,6,24,168].includes(h)) currentHours = h;
-        const s = localStorage.getItem('trend.series');
-        if (s) {
-          const obj = JSON.parse(s);
-          showSeries.success = !!obj.success;
-          showSeries.error = !!obj.error;
-        }
-        const label = document.getElementById('data-timerange');
-        if (label) label.textContent = `${currentHours}小时数据展示`;
-      } catch (_) {}
-    }
-
-    function applyRangeUI(){
-      const rangeGroup = document.getElementById('range-group');
-      if (!rangeGroup) return;
-      rangeGroup.querySelectorAll('.toggle-btn').forEach(btn=>{
-        const h = parseInt(btn.getAttribute('data-range')||'24', 10);
-        btn.classList.toggle('active', h === currentHours);
-      });
-    }
-
-    function applySeriesUI(){
-      const seriesGroup = document.getElementById('series-group');
-      if (!seriesGroup) return;
-      seriesGroup.querySelectorAll('.toggle-btn').forEach(btn=>{
-        const k = btn.getAttribute('data-series');
-        btn.classList.toggle('active', !!showSeries[k]);
-      });
     }
   </script>
   <script src="/web/ui.js"></script>

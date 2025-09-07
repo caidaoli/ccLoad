@@ -1,5 +1,47 @@
+# IDE and editor files
 .gocache
 .idea
-data
+.vscode
+*.swp
+*.swo
+*~
+
+# Data and database files
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Build artifacts
 ccLoad
+/tmp/ccload*
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test files
+*_test.go
+*.test
+*.out
+test*.sh
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+/tmp/
+
+# Log files
+*.log
+
+# Playwright MCP
 .playwright-mcp
