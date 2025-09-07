@@ -1,0 +1,164 @@
+// 共享UI：顶部导航与背景动画（KISS/DRY）
+// 使用方式：在页面底部引入本文件，并调用 initTopbar('index'|'configs'|'stats'|'trend'|'errors')
+
+(function () {
+  const NAVS = [
+    { key: 'index', label: '概览', href: '/web/index.html', icon: iconHome },
+    { key: 'channels', label: '渠道管理', href: '/web/channels.html', icon: iconSettings },
+    { key: 'stats', label: '调用统计', href: '/web/stats.html', icon: iconBars },
+    { key: 'trend', label: '请求趋势', href: '/web/trend.html', icon: iconTrend },
+    { key: 'errors', label: '错误日志', href: '/web/errors.html', icon: iconAlert },
+  ];
+
+  function h(tag, attrs = {}, children = []) {
+    const el = document.createElement(tag);
+    Object.entries(attrs).forEach(([k, v]) => {
+      if (k === 'class') el.className = v;
+      else if (k === 'style') el.style.cssText = v;
+      else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v);
+      else el.setAttribute(k, v);
+    });
+    (Array.isArray(children) ? children : [children]).forEach((c) => {
+      if (c == null) return;
+      if (typeof c === 'string') el.appendChild(document.createTextNode(c));
+      else el.appendChild(c);
+    });
+    return el;
+  }
+
+  function iconHome() {
+    return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2H5a2 2 0 00-2-2z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5a2 2 0 012-2h4a2 2 0 012 2v0a2 2 0 01-2 2H10a2 2 0 01-2-2v0z"/>`);
+  }
+  function iconSettings() {
+    return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>`);
+  }
+  function iconBars() {
+    return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>`);
+  }
+  function iconTrend() {
+    return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 21l4-4 4 4"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4h18"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"/>`);
+  }
+  function iconAlert() {
+    return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.864-.833-2.634 0L4.18 16.5c-.77.833.192 2.5 1.732 2.5z"/>`);
+  }
+  function svg(inner) {
+    const el = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    el.setAttribute('fill', 'none');
+    el.setAttribute('stroke', 'currentColor');
+    el.setAttribute('viewBox', '0 0 24 24');
+    el.classList.add('w-5', 'h-5');
+    el.innerHTML = inner;
+    return el;
+  }
+
+  function buildTopbar(active) {
+    const bar = h('header', { class: 'topbar' });
+    const left = h('div', { class: 'topbar-left' }, [
+      h('div', { class: 'brand' }, [
+        h('div', { class: 'brand-icon' }, 'C'),
+        h('div', { class: 'brand-text' }, 'Claude Proxy')
+      ])
+    ]);
+    const nav = h('nav', { class: 'topnav' }, [
+      ...NAVS.map(n => h('a', {
+        class: `topnav-link ${n.key === active ? 'active' : ''}`,
+        href: n.href
+      }, [n.icon(), h('span', {}, n.label)]) )
+    ]);
+    const right = h('div', { class: 'topbar-right' }, [
+      h('button', { class: 'btn btn-secondary btn-sm', onclick: onLogout }, '注销')
+    ]);
+    bar.appendChild(left); bar.appendChild(nav); bar.appendChild(right);
+    return bar;
+  }
+
+  function onLogout() {
+    if (!confirm('确定要注销吗？')) return;
+    fetch('/logout', { method: 'POST' })
+      .then(() => location.href = '/web/login.html')
+      .catch(() => location.href = '/web/login.html');
+  }
+
+  function injectBackground() {
+    if (document.querySelector('.bg-anim')) return;
+    const bg = h('div', { class: 'bg-anim' });
+    document.body.appendChild(bg);
+  }
+
+  window.initTopbar = function initTopbar(activeKey) {
+    document.body.classList.add('top-layout');
+    const app = document.querySelector('.app-container') || document.body;
+    // 隐藏侧边栏与移动按钮
+    const sidebar = document.getElementById('sidebar');
+    if (sidebar) sidebar.style.display = 'none';
+    const mobileBtn = document.getElementById('mobile-menu-btn');
+    if (mobileBtn) mobileBtn.style.display = 'none';
+
+    // 插入顶部条
+    const topbar = buildTopbar(activeKey);
+    document.body.appendChild(topbar);
+
+    // 背景动效
+    injectBackground();
+  }
+
+  // 通知系统（全局复用，DRY）
+  function ensureNotifyHost() {
+    let host = document.getElementById('notify-host');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'notify-host';
+      host.style.cssText = `position: fixed; top: var(--space-6); right: var(--space-6); display: flex; flex-direction: column; gap: var(--space-2); z-index: 9999; pointer-events: none;`;
+      document.body.appendChild(host);
+    }
+    return host;
+  }
+
+  window.showNotification = function(message, type = 'info') {
+    const el = document.createElement('div');
+    el.className = `notification notification-${type}`;
+    el.style.cssText = `
+      background: var(--glass-bg);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--glass-border);
+      border-radius: var(--radius-lg);
+      padding: var(--space-4) var(--space-6);
+      color: var(--neutral-900);
+      font-weight: var(--font-medium);
+      opacity: 0;
+      transform: translateX(20px);
+      transition: all var(--duration-normal) var(--timing-function);
+      max-width: 360px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.12);
+      overflow: hidden;
+      isolation: isolate;
+      pointer-events: auto;
+    `;
+    if (type === 'success') {
+      // 高可读：浅底深字
+      el.style.background = 'var(--success-50)';
+      el.style.color = 'var(--success-600)';
+      el.style.borderColor = 'var(--success-500)';
+      el.style.boxShadow = '0 6px 28px rgba(16,185,129,0.18)';
+    } else if (type === 'error') {
+      el.style.background = 'var(--error-50)';
+      el.style.color = 'var(--error-600)';
+      el.style.borderColor = 'var(--error-500)';
+      el.style.boxShadow = '0 6px 28px rgba(239,68,68,0.18)';
+    } else if (type === 'info') {
+      el.style.background = 'var(--info-50)';
+      el.style.color = 'var(--neutral-800)';
+      el.style.borderColor = 'rgba(0,0,0,0.08)';
+    }
+    el.textContent = message;
+    const host = ensureNotifyHost();
+    host.appendChild(el);
+    requestAnimationFrame(() => { el.style.opacity = '1'; el.style.transform = 'translateX(0)'; });
+    setTimeout(() => {
+      el.style.opacity = '0'; el.style.transform = 'translateX(20px)';
+      setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 320);
+    }, 3600);
+  }
+  window.showSuccess = (msg) => window.showNotification(msg, 'success');
+  window.showError = (msg) => window.showNotification(msg, 'error');
+})();

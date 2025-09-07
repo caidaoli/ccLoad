@@ -1,0 +1,854 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>请求趋势 - Claude Proxy</title>
+  <link rel="stylesheet" href="/web/styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    
+
+    <!-- 主内容区域 -->
+    <main class="main-content">
+      <div class="content-area">
+        <!-- 页面标题 -->
+        <header class="mb-8">
+          <div class="glass-card animate-slide-up" style="padding: var(--space-6);">
+            <div class="flex justify-between items-center">
+              <div>
+                <h1 class="page-title mb-2">
+                  请求趋势
+                </h1>
+                <p class="page-subtitle">
+                  24小时内请求成功率和错误率的实时趋势分析
+                </p>
+              </div>
+              <div>
+                <button class="btn btn-primary" onclick="loadData()">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                  </svg>
+                  刷新数据
+                </button>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        <!-- 趋势摘要卡片 -->
+        <section class="mb-8">
+          <div class="grid grid-cols-4 animate-slide-up" style="animation-delay: 0.1s;">
+            <div class="metric-card">
+              <div class="metric-number" id="total-requests" style="color: var(--primary-500);">--</div>
+              <div class="metric-label">总请求</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-number" id="peak-success" style="color: var(--success-500);">--</div>
+              <div class="metric-label">峰值成功</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-number" id="peak-error" style="color: var(--error-500);">--</div>
+              <div class="metric-label">峰值错误</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-number" id="avg-success-rate">--.-%</div>
+              <div class="metric-label">平均成功率</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 趋势图表 -->
+        <section class="mb-8">
+          <div class="glass-card animate-slide-up" style="animation-delay: 0.2s;">
+            <div class="flex justify-between items-center mb-6">
+              <h3 class="text-xl font-semibold">
+                <svg class="inline-block w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4"/>
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 21l4-4 4 4"/>
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4h18"/>
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"/>
+                </svg>
+                24小时趋势图表
+              </h3>
+              
+              <!-- 控件与图例 -->
+              <div class="flex items-center" style="gap:12px; flex-wrap: wrap;">
+                <div class="toggle-group" id="range-group">
+                  <div class="toggle-btn" data-range="1">1小时</div>
+                  <div class="toggle-btn" data-range="6">6小时</div>
+                  <div class="toggle-btn active" data-range="24">24小时</div>
+                  <div class="toggle-btn" data-range="168">7天</div>
+                </div>
+                <div class="toggle-group" id="series-group">
+                  <div class="toggle-btn active" data-series="success">成功</div>
+                  <div class="toggle-btn active" data-series="error">失败</div>
+                </div>
+                <div class="chart-legend" style="margin-left: auto;">
+                  <div class="legend-item">
+                    <div class="legend-color success"></div>
+                    <span>成功请求</span>
+                  </div>
+                  <div class="legend-item">
+                    <div class="legend-color error"></div>
+                    <span>失败请求</span>
+                  </div>
+                </div>
+                <button class="btn btn-primary btn-sm" onclick="loadData()">刷新</button>
+              </div>
+            </div>
+
+            <!-- 图表容器 -->
+            <div class="chart-container">
+              <div class="chart-loading" id="chart-loading">
+                <div class="loading-spinner"></div>
+                <div>正在加载趋势数据...</div>
+              </div>
+              <div class="chart-error" id="chart-error" style="display: none;">
+                <svg class="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.864-.833-2.634 0L4.18 16.5c-.77.833.192 2.5 1.732 2.5z"/>
+                </svg>
+                <div class="error-title">加载失败</div>
+                <div class="error-message">请检查网络连接或重试</div>
+              </div>
+              <svg id="chart" viewBox="0 0 800 400" preserveAspectRatio="xMidYMid meet" style="display: none;"></svg>
+            </div>
+
+            <!-- 图表时间范围提示 -->
+            <div class="chart-info">
+              <div class="info-item">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <span id="bucket-interval">数据更新间隔：--</span>
+              </div>
+              <div class="info-item">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                </svg>
+                <span id="data-timerange">24小时数据展示</span>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  
+
+  <!-- 样式 -->
+  <style>
+    .chart-container {
+      position: relative;
+      width: 100%;
+      height: 400px;
+      background: rgba(255, 255, 255, 0.9);
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--neutral-200);
+      overflow: hidden;
+    }
+
+    .chart-loading,
+    .chart-error {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--neutral-700);
+      text-align: center;
+    }
+
+    .chart-error {
+      color: var(--neutral-600);
+    }
+
+    .error-title {
+      color: var(--error-400);
+      font-weight: var(--font-medium);
+      margin: var(--space-2) 0 var(--space-1) 0;
+    }
+
+    .error-message {
+      font-size: var(--text-sm);
+    }
+
+    #chart {
+      width: 100%;
+      height: 100%;
+      background: transparent;
+    }
+
+    .chart-legend {
+      display: flex;
+      gap: var(--space-6);
+      align-items: center;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      font-size: var(--text-sm);
+      color: var(--neutral-800);
+      font-weight: var(--font-medium);
+    }
+
+    .legend-color {
+      width: 12px;
+      height: 12px;
+      border-radius: var(--radius-sm);
+      flex-shrink: 0;
+    }
+
+    .legend-color.success {
+      background: var(--success-500);
+      box-shadow: 0 0 8px rgba(16, 185, 129, 0.4);
+    }
+
+    .legend-color.error {
+      background: var(--error-500);
+      box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
+    }
+
+    .chart-info {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: var(--space-4);
+      padding-top: var(--space-4);
+      border-top: 1px solid var(--neutral-200);
+      font-size: var(--text-sm);
+      color: var(--neutral-700);
+    }
+
+    .info-item {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+    }
+
+    /* SVG图表样式 */
+    .chart-grid {
+      stroke: var(--neutral-300);
+      stroke-width: 1;
+    }
+
+    .chart-axis {
+      stroke: var(--neutral-400);
+      stroke-width: 1;
+    }
+
+    .chart-line-success {
+      fill: none;
+      stroke: var(--success-400);
+      stroke-width: 3;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      filter: drop-shadow(0 2px 4px rgba(16, 185, 129, 0.3));
+    }
+
+    .chart-line-error {
+      fill: none;
+      stroke: var(--error-400);
+      stroke-width: 3;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      filter: drop-shadow(0 2px 4px rgba(239, 68, 68, 0.3));
+    }
+
+    .chart-area-success {
+      fill: url(#gradient-success);
+      opacity: 0.3;
+    }
+
+    .chart-area-error {
+      fill: url(#gradient-error);
+      opacity: 0.3;
+    }
+
+    .chart-point {
+      transition: all var(--duration-fast);
+    }
+
+    .chart-point:hover {
+      r: 6;
+      filter: drop-shadow(0 0 8px currentColor);
+    }
+
+    .chart-tooltip {
+      display: none;
+      position: absolute;
+      background: rgba(0, 0, 0, 0.9);
+      color: white;
+      padding: var(--space-2) var(--space-3);
+      border-radius: var(--radius-base);
+      font-size: var(--text-xs);
+      pointer-events: none;
+      z-index: 1000;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      backdrop-filter: blur(8px);
+    }
+
+    /* 响应式设计 */
+    @media (max-width: 768px) {
+      .chart-container {
+        height: 320px;
+      }
+      
+      .chart-legend {
+        gap: var(--space-4);
+        flex-wrap: wrap;
+      }
+      
+      .chart-info {
+        flex-direction: column;
+        gap: var(--space-2);
+        align-items: flex-start;
+      }
+      
+      .grid-cols-4 {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+  </style>
+
+  <script>
+    let trendData = null;
+    let currentHours = 24;
+    let showSeries = { success: true, error: true };
+
+    async function loadData() {
+      try {
+        showLoading();
+        const bucketMin = computeBucketMin(currentHours);
+        const res = await fetch(`/admin/metrics?hours=${currentHours}&bucket_min=${bucketMin}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        
+        trendData = await res.json();
+        updateSummaryCards();
+        renderChart();
+        // 更新分桶提示
+        const iv = document.getElementById('bucket-interval');
+        if (iv) iv.textContent = `数据更新间隔：${formatInterval(bucketMin)}`;
+        
+      } catch (error) {
+        console.error('加载趋势数据失败:', error);
+        try { if (window.showError) window.showError('无法加载趋势数据'); } catch(_){}
+        showError();
+      }
+    }
+
+    function computeBucketMin(hours){
+      if (hours <= 1) return 1; // 1分钟
+      if (hours <= 6) return 2; // 2分钟
+      if (hours <= 24) return 5; // 5分钟
+      if (hours <= 72) return 15; // 15分钟
+      return 60; // 1小时
+    }
+
+    function showLoading() {
+      document.getElementById('chart-loading').style.display = 'flex';
+      document.getElementById('chart-error').style.display = 'none';
+      document.getElementById('chart').style.display = 'none';
+      
+      // 重置摘要卡片
+      ['total-requests', 'peak-success', 'peak-error', 'avg-success-rate'].forEach(id => {
+        document.getElementById(id).textContent = '--';
+      });
+    }
+
+    function showError() {
+      document.getElementById('chart-loading').style.display = 'none';
+      document.getElementById('chart-error').style.display = 'flex';
+      document.getElementById('chart').style.display = 'none';
+    }
+
+    function updateSummaryCards() {
+      if (!trendData || !trendData.length) return;
+
+      let totalRequests = 0;
+      let totalSuccess = 0;
+      let peakSuccess = 0;
+      let peakError = 0;
+
+      trendData.forEach(point => {
+        const success = point.success || 0;
+        const error = point.error || 0;
+        totalRequests += success + error;
+        totalSuccess += success;
+        peakSuccess = Math.max(peakSuccess, success);
+        peakError = Math.max(peakError, error);
+      });
+
+      const avgSuccessRate = totalRequests > 0 ? ((totalSuccess / totalRequests) * 100) : 0;
+
+      // 更新摘要卡片
+      document.getElementById('total-requests').textContent = formatNumber(totalRequests);
+      document.getElementById('peak-success').textContent = formatNumber(peakSuccess);
+      document.getElementById('peak-error').textContent = formatNumber(peakError);
+      document.getElementById('avg-success-rate').textContent = avgSuccessRate.toFixed(1) + '%';
+    }
+
+    function renderChart() {
+      if (!trendData || !trendData.length) {
+        showError();
+        return;
+      }
+
+      const svg = document.getElementById('chart');
+      const W = 800, H = 400;
+      const PADDING = { top: 40, right: 40, bottom: 64, left: 64 };
+      const CHART_W = W - PADDING.left - PADDING.right;
+      const CHART_H = H - PADDING.top - PADDING.bottom;
+
+      // 计算数据范围
+      const maxSuccess = Math.max(1, ...trendData.map(p => p.success || 0));
+      const maxError = Math.max(1, ...trendData.map(p => p.error || 0));
+      const maxY = Math.max(maxSuccess, maxError);
+
+      // 坐标转换函数
+      function x(index) {
+        return PADDING.left + (CHART_W * index) / Math.max(1, trendData.length - 1);
+      }
+
+      function y(value) {
+        return PADDING.top + CHART_H - (CHART_H * value) / maxY;
+      }
+
+      // 清空SVG
+      svg.innerHTML = '';
+      
+      // 创建渐变定义
+      const defs = createSVGElement('defs');
+      
+      // 成功请求渐变
+      const gradientSuccess = createSVGElement('linearGradient', {
+        id: 'gradient-success',
+        x1: '0%',
+        y1: '0%',
+        x2: '0%',
+        y2: '100%'
+      });
+      gradientSuccess.innerHTML = `
+        <stop offset="0%" style="stop-color:var(--success-400);stop-opacity:0.4" />
+        <stop offset="100%" style="stop-color:var(--success-400);stop-opacity:0.05" />
+      `;
+      defs.appendChild(gradientSuccess);
+      
+      // 错误请求渐变
+      const gradientError = createSVGElement('linearGradient', {
+        id: 'gradient-error',
+        x1: '0%',
+        y1: '0%',
+        x2: '0%',
+        y2: '100%'
+      });
+      gradientError.innerHTML = `
+        <stop offset="0%" style="stop-color:var(--error-400);stop-opacity:0.4" />
+        <stop offset="100%" style="stop-color:var(--error-400);stop-opacity:0.05" />
+      `;
+      defs.appendChild(gradientError);
+      
+      svg.appendChild(defs);
+
+      // 绘制网格线 + 轴 + 刻度/标签
+      drawGrid(svg, W, H, PADDING, maxY);
+      drawAxes(svg, W, H, PADDING);
+      drawTicksAndLabels(svg, W, H, PADDING, maxY);
+      
+      // 绘制数据线条和区域
+      drawDataLines(svg, trendData, x, y);
+      setupInteractions(svg, W, H, PADDING, x, y);
+      
+      // 显示图表
+      document.getElementById('chart-loading').style.display = 'none';
+      document.getElementById('chart-error').style.display = 'none';
+      document.getElementById('chart').style.display = 'block';
+    }
+
+    function createSVGElement(tag, attributes = {}) {
+      const element = document.createElementNS('http://www.w3.org/2000/svg', tag);
+      Object.entries(attributes).forEach(([key, value]) => {
+        element.setAttribute(key, value);
+      });
+      return element;
+    }
+
+    function drawGrid(svg, W, H, PADDING, maxY) {
+      const gridGroup = createSVGElement('g', { class: 'chart-grid' });
+      
+      // 水平网格线
+      for (let i = 0; i <= 5; i++) {
+        const yPos = PADDING.top + (H - PADDING.top - PADDING.bottom) * i / 5;
+        const line = createSVGElement('line', {
+          x1: PADDING.left,
+          y1: yPos,
+          x2: W - PADDING.right,
+          y2: yPos,
+          class: 'chart-grid'
+        });
+        gridGroup.appendChild(line);
+      }
+      // 垂直网格线（6列）
+      for (let i = 0; i <= 6; i++) {
+        const xPos = PADDING.left + (W - PADDING.left - PADDING.right) * i / 6;
+        const vline = createSVGElement('line', {
+          x1: xPos,
+          y1: PADDING.top,
+          x2: xPos,
+          y2: H - PADDING.bottom,
+          class: 'chart-grid'
+        });
+        gridGroup.appendChild(vline);
+      }
+      
+      svg.appendChild(gridGroup);
+    }
+
+    function drawAxes(svg, W, H, PADDING) {
+      // Y轴
+      const yAxis = createSVGElement('line', {
+        x1: PADDING.left,
+        y1: PADDING.top,
+        x2: PADDING.left,
+        y2: H - PADDING.bottom,
+        class: 'chart-axis'
+      });
+      svg.appendChild(yAxis);
+      
+      // X轴
+      const xAxis = createSVGElement('line', {
+        x1: PADDING.left,
+        y1: H - PADDING.bottom,
+        x2: W - PADDING.right,
+        y2: H - PADDING.bottom,
+        class: 'chart-axis'
+      });
+      svg.appendChild(xAxis);
+    }
+
+    function drawTicksAndLabels(svg, W, H, PADDING, maxY) {
+      const labelGroup = createSVGElement('g');
+      const steps = 5;
+      const stepVal = Math.max(1, Math.ceil(maxY / steps));
+      for (let i = 0; i <= steps; i++) {
+        const yVal = i * stepVal;
+        const yPos = PADDING.top + (H - PADDING.top - PADDING.bottom) * (steps - i) / steps;
+        const tick = createSVGElement('line', {
+          x1: PADDING.left - 6,
+          y1: yPos,
+          x2: PADDING.left,
+          y2: yPos,
+          stroke: 'var(--neutral-400)',
+          'stroke-width': 1
+        });
+        labelGroup.appendChild(tick);
+        const txt = createSVGElement('text', {
+          x: PADDING.left - 10,
+          y: yPos + 4,
+          fill: 'var(--neutral-700)',
+          'font-size': '11px',
+          'text-anchor': 'end'
+        });
+        txt.textContent = formatNumber(yVal);
+        labelGroup.appendChild(txt);
+      }
+      const columns = 6;
+      const n = Math.max(1, trendData.length - 1);
+      for (let i = 0; i <= columns; i++) {
+        const idx = Math.round(n * i / columns);
+        const xPos = PADDING.left + (W - PADDING.left - PADDING.right) * i / columns;
+        const tick = createSVGElement('line', {
+          x1: xPos,
+          y1: H - PADDING.bottom,
+          x2: xPos,
+          y2: H - PADDING.bottom + 6,
+          stroke: 'var(--neutral-400)',
+          'stroke-width': 1
+        });
+        labelGroup.appendChild(tick);
+        const t = trendData[Math.min(idx, trendData.length - 1)].ts || trendData[Math.min(idx, trendData.length - 1)].Ts;
+        const d = new Date(t);
+        const label = currentHours > 24 ? `${d.getMonth()+1}/${d.getDate()} ${pad(d.getHours())}:00` : `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        const txt = createSVGElement('text', {
+          x: xPos,
+          y: H - PADDING.bottom + 22,
+          fill: 'var(--neutral-700)',
+          'font-size': '11px',
+          'text-anchor': 'middle'
+        });
+        txt.textContent = label;
+        labelGroup.appendChild(txt);
+      }
+      svg.appendChild(labelGroup);
+    }
+
+    function drawDataLines(svg, data, xFunc, yFunc) {
+      if (!data.length) return;
+      
+      // 构建路径数据
+      const successPath = data.map((point, i) => 
+        `${i === 0 ? 'M' : 'L'} ${xFunc(i)} ${yFunc((point.success ?? point.Success) || 0)}`
+      ).join(' ');
+      
+      const errorPath = data.map((point, i) => 
+        `${i === 0 ? 'M' : 'L'} ${xFunc(i)} ${yFunc((point.error ?? point.Error) || 0)}`
+      ).join(' ');
+      
+      // 构建区域路径（用于填充）
+      const successArea = successPath + 
+        ` L ${xFunc(data.length - 1)} ${yFunc(0)} L ${xFunc(0)} ${yFunc(0)} Z`;
+      
+      const errorArea = errorPath + 
+        ` L ${xFunc(data.length - 1)} ${yFunc(0)} L ${xFunc(0)} ${yFunc(0)} Z`;
+      
+      // 绘制填充区域
+      if (showSeries.success) {
+        const successAreaPath = createSVGElement('path', { d: successArea, class: 'chart-area-success' });
+        svg.appendChild(successAreaPath);
+      }
+      if (showSeries.error) {
+        const errorAreaPath = createSVGElement('path', { d: errorArea, class: 'chart-area-error' });
+        svg.appendChild(errorAreaPath);
+      }
+      
+      // 绘制线条
+      if (showSeries.success) {
+        const successLine = createSVGElement('path', { d: successPath, class: 'chart-line-success' });
+        svg.appendChild(successLine);
+      }
+      if (showSeries.error) {
+        const errorLine = createSVGElement('path', { d: errorPath, class: 'chart-line-error' });
+        svg.appendChild(errorLine);
+      }
+      
+      // 绘制数据点
+      data.forEach((point, i) => {
+        // 成功请求点
+        const sVal = (point.success ?? point.Success) || 0;
+        const eVal = (point.error ?? point.Error) || 0;
+        if (showSeries.success && sVal > 0) {
+          const successPoint = createSVGElement('circle', {
+            cx: xFunc(i),
+            cy: yFunc(sVal),
+            r: 4,
+            fill: 'var(--success-400)',
+            class: 'chart-point'
+          });
+          svg.appendChild(successPoint);
+        }
+        
+        // 错误请求点
+        if (showSeries.error && eVal > 0) {
+          const errorPoint = createSVGElement('circle', {
+            cx: xFunc(i),
+            cy: yFunc(eVal),
+            r: 4,
+            fill: 'var(--error-400)',
+            class: 'chart-point'
+          });
+          svg.appendChild(errorPoint);
+        }
+      });
+    }
+
+    // 交互：hover 十字线与 tooltip
+    let hoverLine = null;
+    function setupInteractions(svg, W, H, PADDING, xFunc, yFunc){
+      const n = Math.max(1, trendData.length - 1);
+      // 覆盖层用于捕获鼠标
+      const overlay = createSVGElement('rect', {
+        x: PADDING.left, y: PADDING.top,
+        width: W - PADDING.left - PADDING.right,
+        height: H - PADDING.top - PADDING.bottom,
+        fill: 'transparent'
+      });
+      svg.appendChild(overlay);
+
+      if (!hoverLine) {
+        hoverLine = createSVGElement('line', {
+          x1: PADDING.left, y1: PADDING.top,
+          x2: PADDING.left, y2: H - PADDING.bottom,
+          stroke: 'var(--neutral-400)', 'stroke-width': 1
+        });
+        svg.appendChild(hoverLine);
+        hoverLine.style.display = 'none';
+      }
+
+      const tooltip = ensureTooltip();
+      const container = document.querySelector('.chart-container');
+
+      function onMove(evt){
+        const bbox = svg.getBoundingClientRect();
+        const relX = ((evt.clientX - bbox.left) / bbox.width) * W;
+        const t = Math.max(0, Math.min(1, (relX - PADDING.left) / (W - PADDING.left - PADDING.right)));
+        const idx = Math.round(n * t);
+        const i = Math.max(0, Math.min(trendData.length - 1, idx));
+        const cx = xFunc(i);
+        hoverLine.setAttribute('x1', cx);
+        hoverLine.setAttribute('x2', cx);
+        hoverLine.style.display = 'block';
+
+        const p = trendData[i];
+        const sVal = (p.success ?? p.Success) || 0;
+        const eVal = (p.error ?? p.Error) || 0;
+        const ts = new Date(p.ts || p.Ts);
+        const title = currentHours > 24 ? `${ts.getMonth()+1}/${ts.getDate()} ${pad(ts.getHours())}:00` : `${pad(ts.getHours())}:${pad(ts.getMinutes())}`;
+
+        tooltip.innerHTML = `
+          <div style="font-weight:600;margin-bottom:4px;color:#fff;">${title}</div>
+          <div style="display:flex;gap:12px;color:#fff;">
+            <div><span style="display:inline-block;width:8px;height:8px;background:var(--success-500);border-radius:2px;margin-right:6px"></span>成功: ${sVal}</div>
+            <div><span style="display:inline-block;width:8px;height:8px;background:var(--error-500);border-radius:2px;margin-right:6px"></span>失败: ${eVal}</div>
+          </div>`;
+
+        const cb = container.getBoundingClientRect();
+        const tx = evt.clientX - cb.left + 12;
+        const ty = evt.clientY - cb.top - 24;
+        tooltip.style.left = Math.max(8, Math.min(cb.width - 180, tx)) + 'px';
+        tooltip.style.top  = Math.max(8, ty) + 'px';
+        tooltip.style.display = 'block';
+      }
+      function onLeave(){
+        hoverLine.style.display = 'none';
+        tooltip.style.display = 'none';
+      }
+
+      overlay.addEventListener('mousemove', onMove);
+      overlay.addEventListener('mouseleave', onLeave);
+    }
+
+    function ensureTooltip(){
+      let el = document.querySelector('.chart-container .chart-tooltip');
+      if (!el){
+        el = document.createElement('div');
+        el.className = 'chart-tooltip';
+        const container = document.querySelector('.chart-container');
+        container.appendChild(el);
+      }
+      return el;
+    }
+
+    function formatNumber(num) {
+      if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+      if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+      return num.toString();
+    }
+    function formatInterval(min){ return min >= 60 ? (min/60)+ '小时' : min + '分钟' }
+
+    // 工具函数
+    function pad(n){ return (n<10? '0':'')+n }
+
+    // 顶栏布局下，无需侧栏响应逻辑
+    function toggleSidebar() {}
+    function closeSidebar() {}
+
+    // 注销功能
+    function logout() {
+      if (confirm('确定要注销吗？')) {
+        fetch('/logout', { method: 'POST' })
+          .then(() => {
+            window.location.href = '/web/login.html';
+          })
+          .catch(() => {
+            window.location.href = '/web/login.html';
+          });
+      }
+    }
+
+    // 响应式处理
+    function handleResize() {}
+
+    // 页面初始化
+    document.addEventListener('DOMContentLoaded', function() {
+      if (window.initTopbar) initTopbar('trend');
+      restoreState();
+      applyRangeUI();
+      applySeriesUI();
+      bindToggles();
+      loadData();
+      
+      // 响应式处理
+      handleResize();
+      window.addEventListener('resize', handleResize);
+      
+      // 定期刷新数据（每5分钟）
+      setInterval(loadData, 5 * 60 * 1000);
+    });
+
+    function bindToggles(){
+      const rangeGroup = document.getElementById('range-group');
+      const seriesGroup = document.getElementById('series-group');
+      rangeGroup.addEventListener('click', (e)=>{
+        const t = e.target.closest('.toggle-btn');
+        if (!t) return;
+        rangeGroup.querySelectorAll('.toggle-btn').forEach(btn=>btn.classList.remove('active'));
+        t.classList.add('active');
+        const hours = parseInt(t.getAttribute('data-range')||'24', 10);
+        currentHours = hours;
+        const label = document.getElementById('data-timerange');
+        if (label) label.textContent = `${hours}小时数据展示`;
+        persistState();
+        loadData();
+      });
+      seriesGroup.addEventListener('click', (e)=>{
+        const t = e.target.closest('.toggle-btn');
+        if (!t) return;
+        const key = t.getAttribute('data-series');
+        t.classList.toggle('active');
+        const active = t.classList.contains('active');
+        showSeries[key] = active;
+        persistState();
+        renderChart();
+      });
+    }
+
+    function persistState(){
+      try {
+        localStorage.setItem('trend.rangeHours', String(currentHours));
+        localStorage.setItem('trend.series', JSON.stringify(showSeries));
+      } catch (_) {}
+    }
+
+    function restoreState(){
+      try {
+        const h = parseInt(localStorage.getItem('trend.rangeHours')||'24', 10);
+        if ([1,6,24,168].includes(h)) currentHours = h;
+        const s = localStorage.getItem('trend.series');
+        if (s) {
+          const obj = JSON.parse(s);
+          showSeries.success = !!obj.success;
+          showSeries.error = !!obj.error;
+        }
+        const label = document.getElementById('data-timerange');
+        if (label) label.textContent = `${currentHours}小时数据展示`;
+      } catch (_) {}
+    }
+
+    function applyRangeUI(){
+      const rangeGroup = document.getElementById('range-group');
+      if (!rangeGroup) return;
+      rangeGroup.querySelectorAll('.toggle-btn').forEach(btn=>{
+        const h = parseInt(btn.getAttribute('data-range')||'24', 10);
+        btn.classList.toggle('active', h === currentHours);
+      });
+    }
+
+    function applySeriesUI(){
+      const seriesGroup = document.getElementById('series-group');
+      if (!seriesGroup) return;
+      seriesGroup.querySelectorAll('.toggle-btn').forEach(btn=>{
+        const k = btn.getAttribute('data-series');
+        btn.classList.toggle('active', !!showSeries[k]);
+      });
+    }
+  </script>
+  <script src="/web/ui.js"></script>
+</body>
+</html>

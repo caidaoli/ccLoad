@@ -1,0 +1,739 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>登录 - Claude Proxy</title>
+  <link rel="stylesheet" href="/web/styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- 动画背景 -->
+  <div class="login-background">
+    <div class="floating-shapes">
+      <div class="shape shape-1"></div>
+      <div class="shape shape-2"></div>
+      <div class="shape shape-3"></div>
+      <div class="shape shape-4"></div>
+      <div class="shape shape-5"></div>
+    </div>
+  </div>
+
+  <div class="login-page">
+    <div class="login-container animate-slide-up">
+      <!-- Logo和品牌 -->
+      <div class="login-brand">
+        <div class="brand-logo">
+          <div class="logo-icon animate-float">C</div>
+        </div>
+        <h1 class="brand-title">Claude Proxy</h1>
+        <p class="brand-subtitle">智能API代理管理系统</p>
+      </div>
+
+      <!-- 登录表单 -->
+      <div class="login-form-container">
+        <div class="login-header">
+          <h2>管理员登录</h2>
+          <p>请输入您的管理密码以访问系统</p>
+        </div>
+
+        <div id="error-message" class="error-notification" style="display: none;">
+          <svg class="error-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.864-.833-2.634 0L4.18 16.5c-.77.833.192 2.5 1.732 2.5z"/>
+          </svg>
+          <span id="error-text"></span>
+        </div>
+
+        <form id="login-form" class="login-form">
+          <div class="form-group">
+            <label for="password" class="form-label">
+              <svg class="label-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+              </svg>
+              管理密码
+            </label>
+            <div class="input-container">
+              <input type="password" id="password" name="password" class="form-input" required autofocus placeholder="请输入管理密码" />
+              <div class="input-decoration"></div>
+            </div>
+          </div>
+
+          <button type="submit" class="login-button" id="login-button">
+            <span class="button-content">
+              <svg class="button-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"/>
+              </svg>
+              <span class="button-text">登录系统</span>
+            </span>
+            <div class="button-loader">
+              <div class="spinner"></div>
+            </div>
+          </button>
+        </form>
+
+        <!-- 安全提示 -->
+        <div class="security-notice">
+          <svg class="notice-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.031 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+          </svg>
+          <div class="notice-text">
+            <div class="notice-title">安全保护</div>
+            <div class="notice-desc">您的登录会话将在24小时后自动过期</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 功能特色展示 -->
+    <div class="features-showcase animate-slide-up" style="animation-delay: 0.2s;">
+      <h3>系统特性</h3>
+      <div class="features-grid">
+        <div class="feature-item">
+          <div class="feature-icon">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+            </svg>
+          </div>
+          <div class="feature-content">
+            <h4>智能路由</h4>
+            <p>基于负载均衡的智能请求分发</p>
+          </div>
+        </div>
+        <div class="feature-item">
+          <div class="feature-icon">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+          </div>
+          <div class="feature-content">
+            <h4>故障切换</h4>
+            <p>自动检测并切换到可用节点</p>
+          </div>
+        </div>
+        <div class="feature-item">
+          <div class="feature-icon">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+            </svg>
+          </div>
+          <div class="feature-content">
+            <h4>实时监控</h4>
+            <p>详细的请求统计和性能分析</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <style>
+    /* 登录页面专用样式 */
+    .login-background {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: 
+        radial-gradient(1200px 600px at -10% -10%, rgba(99,102,241,0.35), transparent 60%),
+        radial-gradient(900px 600px at 110% -10%, rgba(236,72,153,0.25), transparent 60%),
+        linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      z-index: -1;
+    }
+
+    .floating-shapes {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    .shape {
+      position: absolute;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: var(--radius-full);
+      animation: float 6s ease-in-out infinite;
+    }
+
+    .shape-1 {
+      width: 120px;
+      height: 120px;
+      top: 10%;
+      left: 10%;
+      animation-delay: 0s;
+    }
+
+    .shape-2 {
+      width: 80px;
+      height: 80px;
+      top: 20%;
+      right: 15%;
+      animation-delay: -2s;
+    }
+
+    .shape-3 {
+      width: 100px;
+      height: 100px;
+      bottom: 20%;
+      left: 20%;
+      animation-delay: -4s;
+    }
+
+    .shape-4 {
+      width: 60px;
+      height: 60px;
+      bottom: 30%;
+      right: 20%;
+      animation-delay: -1s;
+    }
+
+    .shape-5 {
+      width: 40px;
+      height: 40px;
+      top: 50%;
+      left: 5%;
+      animation-delay: -3s;
+    }
+
+    .login-page {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-12);
+      padding: var(--space-6);
+      position: relative;
+    }
+
+    .login-container {
+      background: rgba(255, 255, 255, 0.96);
+      backdrop-filter: blur(20px) saturate(180%);
+      border: 1px solid rgba(0, 0, 0, 0.06);
+      border-radius: var(--radius-2xl);
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.12);
+      padding: var(--space-10);
+      width: 100%;
+      max-width: 420px;
+      position: relative;
+      overflow: hidden;
+      color: var(--neutral-900);
+    }
+
+    .login-container::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--primary-400), var(--primary-600), var(--primary-400));
+      background-size: 200% 100%;
+      animation: shimmer 2s ease-in-out infinite;
+    }
+
+    .login-brand {
+      text-align: center;
+      margin-bottom: var(--space-10);
+    }
+
+    .brand-logo {
+      margin-bottom: var(--space-4);
+    }
+
+    .logo-icon {
+      width: 64px;
+      height: 64px;
+      background: linear-gradient(135deg, var(--primary-500), var(--primary-600));
+      border-radius: var(--radius-xl);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-size: var(--text-2xl);
+      font-weight: var(--font-bold);
+      box-shadow: 0 8px 32px rgba(59, 130, 246, 0.3);
+    }
+
+    .brand-title {
+      font-size: var(--text-2xl);
+      font-weight: var(--font-bold);
+      color: var(--neutral-900);
+      margin: var(--space-4) 0 var(--space-2) 0;
+      letter-spacing: -0.01em;
+    }
+
+    .brand-subtitle {
+      color: var(--neutral-600);
+      font-size: var(--text-sm);
+      margin: 0;
+      font-weight: var(--font-medium);
+      letter-spacing: 0.01em;
+    }
+
+    .login-form-container {
+      margin-bottom: var(--space-8);
+    }
+
+    .login-header {
+      text-align: center;
+      margin-bottom: var(--space-8);
+    }
+
+    .login-header h2 {
+      font-size: var(--text-xl);
+      font-weight: var(--font-semibold);
+      color: var(--neutral-900);
+      margin: 0 0 var(--space-2) 0;
+    }
+
+    .login-header p {
+      color: var(--neutral-600);
+      font-size: var(--text-sm);
+      margin: 0;
+    }
+
+    .error-notification {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+      background: #DC2626;
+      border: 1px solid #B91C1C;
+      border-radius: var(--radius-lg);
+      padding: var(--space-4);
+      margin-bottom: var(--space-6);
+      color: #FFFFFF;
+      font-size: var(--text-sm);
+      font-weight: var(--font-semibold);
+      animation: slideInUp 0.3s ease-out;
+      box-shadow: 0 4px 12px rgba(220, 38, 38, 0.25);
+    }
+
+    .error-icon {
+      width: 20px;
+      height: 20px;
+      flex-shrink: 0;
+      color: #FFFFFF;
+    }
+
+    .login-form {
+      margin-bottom: var(--space-8);
+    }
+
+    .label-icon {
+      width: 16px;
+      height: 16px;
+      margin-right: var(--space-2);
+    }
+
+    .form-label {
+      display: flex;
+      align-items: center;
+      margin-bottom: var(--space-2);
+      font-size: var(--text-sm);
+      font-weight: var(--font-medium);
+      color: var(--neutral-700);
+    }
+
+    .form-input {
+      width: 100%;
+      padding: var(--space-3) var(--space-4);
+      border: 1px solid var(--neutral-200);
+      border-radius: var(--radius-lg);
+      font-size: var(--text-base);
+      background: #ffffff;
+      transition: all var(--duration-fast) var(--timing-function);
+      color: var(--neutral-900);
+    }
+
+    .form-input:focus {
+      outline: none;
+      border-color: #0A84FF;
+      box-shadow: 0 0 0 4px rgba(10, 132, 255, 0.15);
+      transform: translateY(-1px);
+      background: #ffffff;
+    }
+
+    .form-input::placeholder {
+      color: var(--neutral-400);
+    }
+
+    .input-container {
+      position: relative;
+    }
+
+    .input-decoration {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--primary-400), var(--primary-600));
+      transform: scaleX(0);
+      transition: transform var(--duration-normal) var(--timing-function);
+      border-radius: var(--radius-full);
+    }
+
+    .form-input:focus + .input-decoration {
+      transform: scaleX(1);
+    }
+
+    .login-button {
+      width: 100%;
+      padding: var(--space-4) var(--space-6);
+      background: linear-gradient(135deg, #0A84FF, #0060DF);
+      color: #ffffff;
+      border: none;
+      border-radius: var(--radius-xl);
+      font-size: var(--text-base);
+      font-weight: var(--font-medium);
+      cursor: pointer;
+      transition: all var(--duration-normal) var(--timing-function);
+      position: relative;
+      overflow: hidden;
+      margin-top: var(--space-6);
+      box-shadow: 0 10px 28px rgba(10, 132, 255, 0.32);
+    }
+
+    .login-button::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
+      transition: left var(--duration-slow);
+    }
+
+    .login-button:hover::before {
+      left: 100%;
+    }
+
+    .login-button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 12px 36px rgba(10, 132, 255, 0.35);
+    }
+
+    .login-button:active {
+      transform: translateY(0);
+    }
+
+    .login-button:disabled {
+      opacity: 0.7;
+      cursor: not-allowed;
+      transform: none !important;
+    }
+
+    .button-content {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-2);
+      transition: opacity var(--duration-normal);
+    }
+
+    .button-icon {
+      width: 18px;
+      height: 18px;
+    }
+
+    .button-loader {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      opacity: 0;
+      transition: opacity var(--duration-normal);
+    }
+
+    .login-button.loading .button-content {
+      opacity: 0;
+    }
+
+    .login-button.loading .button-loader {
+      opacity: 1;
+    }
+
+    .spinner {
+      width: 20px;
+      height: 20px;
+      border: 2px solid rgba(255, 255, 255, 0.35);
+      border-top: 2px solid #fff;
+      border-radius: var(--radius-full);
+      animation: spin 1s linear infinite;
+    }
+
+    .security-notice {
+      display: flex;
+      align-items: flex-start;
+      gap: var(--space-3);
+      padding: var(--space-4);
+      background: #F0F9FF;
+      border: 1px solid #BAE6FD;
+      border-radius: var(--radius-lg);
+      color: var(--neutral-800);
+    }
+
+    .notice-icon {
+      width: 20px;
+      height: 20px;
+      color: #0284C7;
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+
+    .notice-title {
+      font-size: var(--text-sm);
+      font-weight: var(--font-medium);
+      margin-bottom: var(--space-1);
+      color: var(--neutral-900);
+    }
+
+    .notice-desc {
+      font-size: var(--text-xs);
+      color: var(--neutral-600);
+    }
+
+    .features-showcase {
+      background: rgba(255, 255, 255, 0.96);
+      backdrop-filter: blur(16px) saturate(180%);
+      border: 1px solid rgba(0, 0, 0, 0.06);
+      border-radius: var(--radius-2xl);
+      padding: var(--space-8);
+      width: 100%;
+      max-width: 380px;
+      height: fit-content;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.12);
+      color: var(--neutral-900);
+    }
+
+    .features-showcase h3 {
+      font-size: var(--text-xl);
+      font-weight: var(--font-semibold);
+      color: var(--neutral-900);
+      margin: 0 0 var(--space-6) 0;
+      text-align: center;
+    }
+
+    .features-grid {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-6);
+    }
+
+    .feature-item {
+      display: flex;
+      align-items: flex-start;
+      gap: var(--space-4);
+    }
+
+    .feature-icon {
+      width: 40px;
+      height: 40px;
+      background: linear-gradient(135deg, rgba(10, 132, 255, 0.12), rgba(10, 132, 255, 0.08));
+      border-radius: var(--radius-lg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #0A84FF;
+      flex-shrink: 0;
+    }
+
+    .feature-icon svg {
+      width: 20px;
+      height: 20px;
+    }
+
+    .feature-content h4 {
+      font-size: var(--text-base);
+      font-weight: var(--font-medium);
+      color: var(--neutral-900);
+      margin: 0 0 var(--space-1) 0;
+    }
+
+    .feature-content p {
+      font-size: var(--text-sm);
+      color: var(--neutral-600);
+      margin: 0;
+      line-height: var(--leading-relaxed);
+      font-weight: var(--font-normal);
+    }
+
+    /* 响应式设计 */
+    @media (max-width: 1024px) {
+      .login-page {
+        flex-direction: column;
+        gap: var(--space-8);
+      }
+
+      .features-showcase {
+        max-width: 420px;
+      }
+    }
+
+    @media (max-width: 768px) {
+      .login-page {
+        padding: var(--space-4);
+      }
+
+      .login-container,
+      .features-showcase {
+        padding: var(--space-6);
+      }
+
+      .features-showcase {
+        order: -1;
+      }
+
+      .features-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: var(--space-4);
+      }
+
+      .feature-item {
+        gap: var(--space-3);
+      }
+
+      .feature-icon {
+        width: 36px;
+        height: 36px;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .login-container {
+        padding: var(--space-5);
+      }
+
+      .brand-title {
+        font-size: var(--text-xl);
+      }
+
+      .logo-icon {
+        width: 56px;
+        height: 56px;
+      }
+    }
+  </style>
+
+  <script>
+    const form = document.getElementById('login-form');
+    const errorMessage = document.getElementById('error-message');
+    const errorText = document.getElementById('error-text');
+    const loginButton = document.getElementById('login-button');
+    const passwordInput = document.getElementById('password');
+
+    function showError(message) {
+      if (window.showError) try { window.showError(message); } catch (_) {}
+      errorText.textContent = message;
+      errorMessage.style.display = 'flex';
+      
+      // 添加摇晃动画
+      errorMessage.style.animation = 'none';
+      errorMessage.offsetHeight; // 触发重绘
+      errorMessage.style.animation = 'slideInUp 0.3s ease-out';
+    }
+
+    function hideError() {
+      errorMessage.style.display = 'none';
+    }
+
+    function setLoading(loading) {
+      if (loading) {
+        loginButton.classList.add('loading');
+        loginButton.disabled = true;
+        passwordInput.disabled = true;
+      } else {
+        loginButton.classList.remove('loading');
+        loginButton.disabled = false;
+        passwordInput.disabled = false;
+      }
+    }
+
+    // 表单提交处理
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      hideError();
+      setLoading(true);
+
+      const password = passwordInput.value;
+
+      try {
+        const response = await fetch('/login', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ password }),
+        });
+
+        if (response.ok) {
+          // 登录成功，添加成功动画
+          loginButton.style.background = 'linear-gradient(135deg, var(--success-500), var(--success-600))';
+          
+          setTimeout(() => {
+            const urlParams = new URLSearchParams(window.location.search);
+            const redirect = urlParams.get('redirect') || '/web/index.html';
+            window.location.href = redirect;
+          }, 500);
+        } else {
+          const errorData = await response.json().catch(() => ({}));
+          showError(errorData.error || '密码错误，请重试');
+          
+          // 添加输入框摇晃动画
+          passwordInput.style.animation = 'none';
+          passwordInput.offsetHeight;
+          passwordInput.style.animation = 'shake 0.5s ease-in-out';
+          
+          setTimeout(() => {
+            passwordInput.style.animation = '';
+          }, 500);
+        }
+      } catch (error) {
+        console.error('Login error:', error);
+        showError('网络连接错误，请检查网络后重试');
+      } finally {
+        setLoading(false);
+      }
+    });
+
+    // 输入框焦点处理
+    passwordInput.addEventListener('focus', hideError);
+    
+    // 键盘快捷键
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        hideError();
+      }
+    });
+
+    // 检查URL参数中的错误信息
+    const urlParams = new URLSearchParams(window.location.search);
+    const errorParam = urlParams.get('error');
+    if (errorParam) {
+      showError(decodeURIComponent(errorParam));
+    }
+
+    // 页面加载完成后的初始化
+    document.addEventListener('DOMContentLoaded', function() {
+      // 聚焦到密码输入框
+      setTimeout(() => {
+        passwordInput.focus();
+      }, 500);
+
+      // 添加输入框摇晃动画关键帧
+      const style = document.createElement('style');
+      style.textContent = `
+        @keyframes shake {
+          0%, 100% { transform: translateX(0); }
+          10%, 30%, 50%, 70%, 90% { transform: translateX(-8px); }
+          20%, 40%, 60%, 80% { transform: translateX(8px); }
+        }
+      `;
+      document.head.appendChild(style);
+    });
+  </script>
+  <script src="/web/ui.js"></script>
+</body>
+</html>

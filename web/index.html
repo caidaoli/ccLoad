@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Claude Proxy 代理服务</title>
+  <link rel="stylesheet" href="/web/styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+
+    <!-- 主内容区域 -->
+    <main class="main-content">
+      <div class="content-area">
+        <!-- 页面标题 -->
+        <header class="mb-8">
+          <div class="glass-card animate-slide-up" style="padding: var(--space-6);">
+            <h1 class="page-title mb-2">
+              Claude API 代理服务
+            </h1>
+            <p class="page-subtitle">
+              智能路由 · 故障切换 · 统计分析
+            </p>
+          </div>
+        </header>
+
+        <!-- 实时状态栏 -->
+        <section class="mb-8">
+          <div class="grid grid-cols-4 animate-slide-up" style="animation-delay: 0.1s;">
+            <div class="metric-card">
+              <div class="status-dot online"></div>
+              <div class="metric-number" id="total-requests">--</div>
+              <div class="metric-label">总请求数</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-number status-online" id="success-requests">--</div>
+              <div class="metric-label">成功请求</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-number status-offline" id="error-requests">--</div>
+              <div class="metric-label">失败请求</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-number" id="success-rate">--.-%</div>
+              <div class="metric-label">成功率</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 服务详情 -->
+        <section class="mb-8">
+          <div class="grid grid-cols-2" style="gap: var(--space-6);">
+            <!-- 服务配置 -->
+            <div class="glass-card animate-slide-up" style="animation-delay: 0.2s;">
+              <h3 class="text-xl font-semibold mb-6">
+                <svg class="inline-block w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                </svg>
+                服务渠道
+              </h3>
+              <div class="space-y-4">
+                <div class="flex justify-between items-center">
+                  <span>活跃渠道</span>
+                  <span class="font-semibold" id="active-channels">--</span>
+                </div>
+                <div class="flex justify-between items-center">
+                  <span>支持模型</span>
+                  <span class="font-semibold" id="active-models">--</span>
+                </div>
+                <div class="flex justify-between items-center">
+                  <span>统计周期</span>
+                  <span class="font-semibold">24小时</span>
+                </div>
+              </div>
+              <div class="mt-6">
+                <a href="/web/channels.html" class="btn btn-primary w-full">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                  </svg>
+                  管理渠道
+                </a>
+              </div>
+            </div>
+
+            <!-- API接口 -->
+            <div class="glass-card animate-slide-up" style="animation-delay: 0.3s;">
+              <h3 class="text-xl font-semibold mb-6">
+                <svg class="inline-block w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2-2v16z"/>
+                </svg>
+                API 接口
+              </h3>
+              <div class="space-y-3">
+                <div class="bg-neutral-100 bg-opacity-90 rounded-lg p-3 border border-neutral-200">
+                  <div class="text-xs font-mono font-semibold" style="color: var(--success-600);">POST</div>
+                  <div class="font-mono text-sm font-medium" style="color: var(--neutral-800);">/v1/messages</div>
+                  <div class="text-xs mt-1" style="color: var(--neutral-600);">Claude API 透明代理</div>
+                </div>
+                <div class="bg-neutral-100 bg-opacity-90 rounded-lg p-3 border border-neutral-200">
+                  <div class="text-xs font-mono font-semibold" style="color: var(--primary-600);">GET</div>
+                  <div class="font-mono text-sm font-medium" style="color: var(--neutral-800);">/public/summary</div>
+                  <div class="text-xs mt-1" style="color: var(--neutral-600);">公开统计数据</div>
+                </div>
+              </div>
+              <div class="mt-6 p-3 bg-info-50 rounded-lg border border-info-200">
+                <div class="text-xs font-semibold" style="color: var(--info-600);">提示</div>
+                <div class="text-sm mt-1" style="color: var(--neutral-700);">
+                  管理功能需要登录访问，代理服务公开使用
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 快捷操作 -->
+        <section class="mb-8">
+          <div class="glass-card animate-slide-up" style="animation-delay: 0.4s;">
+            <h3 class="text-xl font-semibold mb-6">
+              <svg class="inline-block w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+              </svg>
+              快捷操作
+            </h3>
+            <div class="grid grid-cols-4" style="gap: var(--space-4);">
+              <a href="/web/stats.html" class="btn btn-secondary">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                </svg>
+                查看统计
+              </a>
+              <a href="/web/trend.html" class="btn btn-secondary">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4"/>
+                </svg>
+                请求趋势
+              </a>
+              <a href="/web/errors.html" class="btn btn-secondary">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.864-.833-2.634 0L4.18 16.5c-.77.833.192 2.5 1.732 2.5z"/>
+                </svg>
+                错误日志
+              </a>
+              <button class="btn btn-secondary" onclick="refreshStats()">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                </svg>
+                刷新数据
+              </button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+
+  <script>
+    // 统计数据管理
+    let statsData = {
+      total_requests: 0,
+      success_requests: 0,
+      error_requests: 0,
+      active_channels: 0,
+      active_models: 0
+    };
+
+    // 加载统计数据
+    async function loadStats() {
+      try {
+        // 添加加载状态
+        document.querySelectorAll('.metric-number').forEach(el => {
+          el.classList.add('animate-pulse');
+        });
+
+        const response = await fetch('/public/summary?hours=24');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        
+        statsData = await response.json();
+        updateStatsDisplay();
+        
+      } catch (error) {
+        console.error('Failed to load stats:', error);
+        showError('无法加载统计数据');
+      } finally {
+        // 移除加载状态
+        document.querySelectorAll('.metric-number').forEach(el => {
+          el.classList.remove('animate-pulse');
+        });
+      }
+    }
+
+    // 更新统计显示
+    function updateStatsDisplay() {
+      const successRate = statsData.total_requests > 0 
+        ? ((statsData.success_requests / statsData.total_requests) * 100).toFixed(1)
+        : '0.0';
+
+      // 更新数字显示
+      document.getElementById('total-requests').textContent = formatNumber(statsData.total_requests || 0);
+      document.getElementById('success-requests').textContent = formatNumber(statsData.success_requests || 0);
+      document.getElementById('error-requests').textContent = formatNumber(statsData.error_requests || 0);
+      document.getElementById('success-rate').textContent = successRate + '%';
+      document.getElementById('active-channels').textContent = statsData.active_channels || 0;
+      document.getElementById('active-models').textContent = statsData.active_models || 0;
+
+      // 添加数字滚动动画
+      animateCountUp('total-requests', statsData.total_requests || 0);
+      animateCountUp('success-requests', statsData.success_requests || 0);
+      animateCountUp('error-requests', statsData.error_requests || 0);
+    }
+
+    // 格式化数字显示
+    function formatNumber(num) {
+      if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+      if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+      return num.toString();
+    }
+
+    // 数字滚动动画
+    function animateCountUp(elementId, target, duration = 1000) {
+      const element = document.getElementById(elementId);
+      const start = 0;
+      const startTime = performance.now();
+
+      function updateCount(currentTime) {
+        const elapsed = currentTime - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        
+        const current = Math.floor(start + (target - start) * progress);
+        element.textContent = formatNumber(current);
+        
+        if (progress < 1) {
+          requestAnimationFrame(updateCount);
+        } else {
+          element.textContent = formatNumber(target);
+        }
+      }
+      
+      requestAnimationFrame(updateCount);
+    }
+
+    // 刷新统计数据
+    function refreshStats() {
+      loadStats();
+      showSuccess('数据已刷新');
+    }
+
+    // 通知系统统一由 ui.js 提供（showSuccess/showError/showNotification）
+
+    // 注销功能
+    function logout() {
+      if (confirm('确定要注销吗？')) {
+        fetch('/logout', { method: 'POST' })
+          .then(() => {
+            window.location.href = '/web/login.html';
+          })
+          .catch(() => {
+            window.location.href = '/web/login.html';
+          });
+      }
+    }
+
+    // 页面初始化
+    document.addEventListener('DOMContentLoaded', function() {
+      if (window.initTopbar) initTopbar('index');
+      // 加载统计数据
+      loadStats();
+      
+      // 设置自动刷新（每30秒）
+      setInterval(loadStats, 30000);
+      
+      // 添加页面动画
+      document.querySelectorAll('.animate-slide-up').forEach((el, index) => {
+        el.style.animationDelay = `${index * 0.1}s`;
+      });
+    });
+  </script>
+  <script src="/web/ui.js"></script>
+</body>
+</html>

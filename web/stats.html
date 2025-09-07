@@ -1,0 +1,503 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>调用统计 - Claude Proxy</title>
+  <link rel="stylesheet" href="/web/styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    
+
+    <!-- 主内容区域 -->
+    <main class="main-content">
+      <div class="content-area">
+        <!-- 页面标题 -->
+        <header class="mb-8">
+          <div class="glass-card animate-slide-up" style="padding: var(--space-6);">
+            <div class="flex justify-between items-center">
+              <div>
+                <h1 class="page-title mb-2">
+                  调用统计
+                </h1>
+                <p class="page-subtitle">
+                  按渠道名称和模型分组的详细调用统计分析
+                </p>
+              </div>
+              <div>
+                <button class="btn btn-primary" onclick="loadStats()">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                  </svg>
+                  刷新数据
+                </button>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        <!-- 筛选区域 -->
+        <section class="mb-8">
+          <div class="glass-card animate-slide-up" style="animation-delay: 0.1s;">
+            <h3 class="section-title mb-6">
+              <svg class="inline-block w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"/>
+              </svg>
+              筛选条件
+            </h3>
+            <div class="filter-container" style="display: flex; gap: var(--space-3); margin-bottom: var(--space-6); flex-wrap: wrap;">
+              <div class="form-group" style="flex: 0 0 auto; min-width: 120px;">
+                <label for="f_hours" class="form-label">最近小时</label>
+                <input id="f_hours" type="number" min="1" max="168" class="form-input" value="24" style="width: 100%;" />
+              </div>
+              <div class="form-group" style="flex: 0 0 auto; min-width: 120px;">
+                <label for="f_id" class="form-label">渠道ID</label>
+                <input id="f_id" type="number" class="form-input" placeholder="精确ID" style="width: 100%;" />
+              </div>
+              <div class="form-group" style="flex: 1 1 auto; min-width: 140px;">
+                <label for="f_name" class="form-label">渠道名包含</label>
+                <input id="f_name" type="text" class="form-input" placeholder="关键字" style="width: 100%;" />
+              </div>
+              <div class="form-group" style="flex: 1 1 auto; min-width: 140px;">
+                <label for="f_model" class="form-label">模型</label>
+                <input id="f_model" type="text" class="form-input" placeholder="精确模型" style="width: 100%;" />
+              </div>
+              <div class="form-group" style="flex: 1 1 auto; min-width: 140px;">
+                <label for="f_model_like" class="form-label">模型包含</label>
+                <input id="f_model_like" type="text" class="form-input" placeholder="关键字" style="width: 100%;" />
+              </div>
+              <div class="form-group" style="flex: 0 0 auto; min-width: 100px; display: flex; align-items: end;">
+                <button id="btn_filter" class="btn btn-primary" style="width: 100%;">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                  </svg>
+                  筛选
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 统计摘要卡片 -->
+        <section class="mb-8">
+          <div class="grid grid-cols-4 animate-slide-up" style="animation-delay: 0.2s;">
+            <div class="metric-card">
+              <div class="metric-number" id="total-channels" style="color: var(--primary-500);">--</div>
+              <div class="metric-label">渠道数量</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-number" id="total-models" style="color: var(--info-500);">--</div>
+              <div class="metric-label">模型数量</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-number" id="total-success" style="color: var(--success-500);">--</div>
+              <div class="metric-label">成功调用</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-number" id="total-error" style="color: var(--error-500);">--</div>
+              <div class="metric-label">失败调用</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 统计详情表格 -->
+        <section class="mb-8">
+          <div class="glass-card animate-slide-up" style="animation-delay: 0.3s;">
+            <h3 class="section-title mb-6">
+              <svg class="inline-block w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+              </svg>
+              详细统计数据
+              <small style="color: var(--neutral-600); font-weight: var(--font-normal); margin-left: var(--space-2);">
+                按渠道名称、模型名称排序
+              </small>
+            </h3>
+            
+            <!-- 统计表格 -->
+            <div class="table-container">
+              <table class="modern-table">
+                <thead>
+                  <tr>
+                    <th>渠道名称</th>
+                    <th>模型</th>
+                    <th style="color: var(--success-400);">成功次数</th>
+                    <th style="color: var(--error-400);">失败次数</th>
+                    <th>总次数</th>
+                    <th>成功率</th>
+                  </tr>
+                </thead>
+                <tbody id="stats_tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  
+
+  <!-- 样式 -->
+  <style>
+    .table-container {
+      overflow-x: auto;
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--neutral-200);
+      background: rgba(255, 255, 255, 0.9);
+    }
+
+    .modern-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: var(--text-sm);
+      color: var(--neutral-800);
+    }
+
+    .modern-table thead {
+      background: var(--neutral-100);
+    }
+
+    .modern-table th {
+      padding: var(--space-4);
+      text-align: left;
+      font-weight: var(--font-semibold);
+      color: var(--neutral-800);
+      border-bottom: 2px solid var(--neutral-200);
+    }
+
+    .modern-table td {
+      padding: var(--space-3) var(--space-4);
+      border-bottom: 1px solid var(--neutral-200);
+      transition: background-color var(--duration-fast);
+    }
+
+    .modern-table tbody tr:hover {
+      background: rgba(0, 0, 0, 0.02);
+    }
+
+    .config-name {
+      font-weight: var(--font-medium);
+      color: var(--neutral-800);
+    }
+
+    .model-tag {
+      display: inline-block;
+      background: rgba(59, 130, 246, 0.2);
+      color: var(--primary-400);
+      padding: var(--space-1) var(--space-2);
+      border-radius: var(--radius-sm);
+      font-size: var(--text-xs);
+      font-weight: var(--font-medium);
+      border: 1px solid rgba(59, 130, 246, 0.3);
+    }
+
+    .success-count {
+      color: var(--success-400);
+      font-weight: var(--font-semibold);
+    }
+
+    .error-count {
+      color: var(--error-400);
+      font-weight: var(--font-semibold);
+    }
+
+    .success-rate {
+      font-weight: var(--font-medium);
+      color: var(--neutral-800);
+    }
+
+    .success-rate.high {
+      color: var(--success-400);
+    }
+
+    .success-rate.low {
+      color: var(--error-400);
+    }
+
+    .progress-bar {
+      height: 4px;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: var(--radius-full);
+      overflow: hidden;
+      margin-top: var(--space-1);
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--success-400), var(--success-500));
+      border-radius: var(--radius-full);
+      transition: width var(--duration-normal);
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: var(--space-12) var(--space-6);
+      color: var(--neutral-600);
+    }
+
+    .loading-state {
+      text-align: center;
+      padding: var(--space-8);
+      color: var(--neutral-700);
+    }
+
+    /* 响应式设计 */
+    @media (max-width: 768px) {
+      .grid-cols-4 {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      
+      .filter-container {
+        flex-direction: column !important;
+        gap: var(--space-3) !important;
+      }
+
+      .filter-container .form-group {
+        flex: 1 1 100% !important;
+        min-width: unset !important;
+      }
+      
+      .table-container {
+        font-size: var(--text-xs);
+      }
+      
+      .modern-table th,
+      .modern-table td {
+        padding: var(--space-2) var(--space-3);
+      }
+    }
+  </style>
+
+  <script>
+    let statsData = null;
+
+    async function loadStats() {
+      try {
+        showLoading();
+        
+        const u = new URLSearchParams(location.search);
+        const params = new URLSearchParams({
+          hours: (u.get('hours')||'24')
+        });
+        
+        // 复用筛选条件
+        if (u.get('channel_id')) params.set('channel_id', u.get('channel_id'));
+        if (u.get('channel_name')) params.set('channel_name', u.get('channel_name'));
+        if (u.get('channel_name_like')) params.set('channel_name_like', u.get('channel_name_like'));
+        if (u.get('model')) params.set('model', u.get('model'));
+        if (u.get('model_like')) params.set('model_like', u.get('model_like'));
+
+        const res = await fetch('/admin/stats?' + params.toString());
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        
+        statsData = await res.json();
+        updateSummaryCards();
+        renderStatsTable();
+        
+      } catch (error) {
+        console.error('加载统计数据失败:', error);
+        if (window.showError) try { window.showError('无法加载统计数据'); } catch(_){}
+        showError();
+      }
+    }
+
+    function showLoading() {
+      const tbody = document.getElementById('stats_tbody');
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="6" class="loading-state">
+            <div class="loading-spinner" style="margin: 0 auto var(--space-2)"></div>
+            正在加载统计数据...
+          </td>
+        </tr>
+      `;
+      
+      // 重置摘要卡片
+      ['total-channels', 'total-models', 'total-success', 'total-error'].forEach(id => {
+        document.getElementById(id).textContent = '--';
+      });
+    }
+
+    function showError() {
+      const tbody = document.getElementById('stats_tbody');
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="6" class="empty-state">
+            <svg class="w-12 h-12 mx-auto mb-4" style="color: var(--error-400);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.864-.833-2.634 0L4.18 16.5c-.77.833.192 2.5 1.732 2.5z"/>
+            </svg>
+            <div style="color: var(--error-400); font-weight: var(--font-medium); margin-bottom: var(--space-1);">加载失败</div>
+            <div>请检查网络连接或重试</div>
+          </td>
+        </tr>
+      `;
+    }
+
+    function updateSummaryCards() {
+      if (!statsData || !statsData.stats) return;
+
+      const configs = new Set();
+      const models = new Set();
+      let totalSuccess = 0;
+      let totalError = 0;
+
+      statsData.stats.forEach(entry => {
+        configs.add(entry.channel_name || '未知渠道');
+        models.add(entry.model || '未知模型');
+        totalSuccess += entry.success || 0;
+        totalError += entry.error || 0;
+      });
+
+      // 更新摘要卡片
+      document.getElementById('total-channels').textContent = configs.size;
+      document.getElementById('total-models').textContent = models.size;
+      document.getElementById('total-success').textContent = formatNumber(totalSuccess);
+      document.getElementById('total-error').textContent = formatNumber(totalError);
+    }
+
+    function renderStatsTable() {
+      const tbody = document.getElementById('stats_tbody');
+      
+      if (!statsData || !statsData.stats || statsData.stats.length === 0) {
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="6" class="empty-state">
+              <svg class="w-12 h-12 mx-auto mb-4" style="color: var(--neutral-400);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+              </svg>
+              <div style="font-weight: var(--font-medium); margin-bottom: var(--space-1); color: var(--neutral-700);">暂无统计数据</div>
+              <div>请调整筛选条件或检查时间范围</div>
+            </td>
+          </tr>
+        `;
+        return;
+      }
+
+      tbody.innerHTML = '';
+      for (const entry of statsData.stats) {
+        const tr = document.createElement('tr');
+        
+        const successRate = entry.total > 0 ? ((entry.success / entry.total) * 100) : 0;
+        const successRateText = successRate.toFixed(1) + '%';
+        
+        // 根据成功率设置颜色类
+        let successRateClass = 'success-rate';
+        if (successRate >= 95) successRateClass += ' high';
+        else if (successRate < 80) successRateClass += ' low';
+        
+        const modelDisplay = entry.model ? 
+          `<span class="model-tag">${escapeHtml(entry.model)}</span>` : 
+          '<span style="color: var(--neutral-500);">未知模型</span>';
+        
+        tr.innerHTML = `
+          <td><span class="config-name">${escapeHtml(entry.channel_name || '未知渠道')}</span></td>
+          <td>${modelDisplay}</td>
+          <td><span class="success-count">${formatNumber(entry.success || 0)}</span></td>
+          <td><span class="error-count">${formatNumber(entry.error || 0)}</span></td>
+          <td><strong>${formatNumber(entry.total || 0)}</strong></td>
+          <td>
+            <div class="${successRateClass}">${successRateText}</div>
+            <div class="progress-bar">
+              <div class="progress-fill" style="width: ${successRate}%"></div>
+            </div>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      }
+    }
+
+    function applyFilter() {
+      const hours = document.getElementById('f_hours').value.trim();
+      const id = document.getElementById('f_id').value.trim();
+      const name = document.getElementById('f_name').value.trim();
+      const model = document.getElementById('f_model').value.trim();
+      const modelLike = document.getElementById('f_model_like').value.trim();
+      
+      const q = new URLSearchParams(location.search);
+      if (hours) q.set('hours', hours); else q.delete('hours');
+      if (id) q.set('channel_id', id); else q.delete('channel_id');
+      // 使用模糊匹配参数
+      if (name) { q.set('channel_name_like', name); q.delete('channel_name'); }
+      else { q.delete('channel_name_like'); }
+      if (modelLike) { q.set('model_like', modelLike); q.delete('model'); }
+      else { if (model) q.set('model', model); else q.delete('model'); q.delete('model_like'); }
+      location.search = '?' + q.toString();
+    }
+
+    function initFilters() {
+      const u = new URLSearchParams(location.search);
+      const id = u.get('channel_id') || '';
+      const name = u.get('channel_name_like') || u.get('channel_name') || '';
+      const hours = u.get('hours') || '24';
+      const model = u.get('model') || '';
+      const modelLike = u.get('model_like') || '';
+      
+      document.getElementById('f_hours').value = hours;
+      document.getElementById('f_id').value = id;
+      document.getElementById('f_name').value = name;
+      document.getElementById('f_model').value = model;
+      document.getElementById('f_model_like').value = modelLike;
+      
+      // 事件监听
+      document.getElementById('btn_filter').addEventListener('click', applyFilter);
+      
+      // 回车键筛选
+      ['f_hours', 'f_id', 'f_name', 'f_model', 'f_model_like'].forEach(id => {
+        document.getElementById(id).addEventListener('keydown', e => {
+          if (e.key === 'Enter') applyFilter();
+        });
+      });
+    }
+
+    function formatNumber(num) {
+      if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+      if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+      return num.toString();
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return str.replace(/[&<>"']/g, c => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      }[c]));
+    }
+
+
+    // 注销功能
+    function logout() {
+      if (confirm('确定要注销吗？')) {
+        fetch('/logout', { method: 'POST' })
+          .then(() => {
+            window.location.href = '/web/login.html';
+          })
+          .catch(() => {
+            window.location.href = '/web/login.html';
+          });
+      }
+    }
+
+    // 顶栏布局下，无需侧栏响应逻辑
+    function handleResize() {}
+
+    // 页面初始化
+    document.addEventListener('DOMContentLoaded', function() {
+      if (window.initTopbar) initTopbar('stats');
+      initFilters();
+      loadStats();
+      
+      // 响应式处理
+      handleResize();
+      window.addEventListener('resize', handleResize);
+    });
+  </script>
+  <script src="/web/ui.js"></script>
+</body>
+</html>

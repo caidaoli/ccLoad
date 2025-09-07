@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>渠道管理 - Claude Proxy</title>
+  <link rel="stylesheet" href="/web/styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    <main class="main-content">
+      <div class="content-area">
+        <header class="mb-8">
+          <div class="glass-card animate-slide-up" style="padding: var(--space-6);">
+            <h1 class="page-title mb-2">渠道管理</h1>
+            <p class="page-subtitle">编辑、启停与优先级</p>
+          </div>
+        </header>
+
+        <section>
+          <div id="channels-container" class="grid grid-cols-1 gap-6"></div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    let channels = [];
+    async function loadChannels() {
+      try {
+        const res = await fetch('/admin/channels');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        channels = await res.json();
+        renderChannels();
+      } catch (e) {
+        console.error('加载渠道失败', e);
+        if (window.showError) showError('加载渠道失败');
+      }
+    }
+    function renderChannels() {
+      const el = document.getElementById('channels-container');
+      if (!channels || channels.length === 0) {
+        el.innerHTML = '<div class="glass-card">暂无渠道</div>';
+        return;
+      }
+      el.innerHTML = channels.map(c => `
+        <div class="glass-card" id="channel-${c.id}">
+          <div class="flex justify-between items-center">
+            <div>
+              <div class="section-title">${escapeHtml(c.name)}</div>
+              <div class="text-sm" style="color: var(--neutral-600);">优先级: ${c.priority} · 模型: ${Array.isArray(c.models)? c.models.join(', ') : ''}</div>
+              ${cooldownBadge(c)}
+            </div>
+            <div>
+              <button class="btn btn-secondary" onclick="toggleChannel(${c.id}, ${!c.enabled})">${c.enabled? '禁用' : '启用'}</button>
+            </div>
+          </div>
+        </div>
+      `).join('');
+    }
+    function cooldownBadge(c) {
+      const ms = c.cooldown_remaining_ms || 0;
+      if (!ms || ms <= 0) return '';
+      const text = humanizeMS(ms);
+      return `<div class="text-xs" style="margin-top:4px;color:var(--error-600);">
+        冷却中 · 剩余 ${text}
+      </div>`;
+    }
+    function humanizeMS(ms) {
+      let s = Math.ceil(ms/1000);
+      const m = Math.floor(s/60); s = s%60;
+      const h = Math.floor(m/60); const m2 = m%60;
+      if (h>0) return `${h}小时${m2}分`;
+      if (m>0) return `${m}分${s}秒`;
+      return `${s}秒`;
+    }
+    async function toggleChannel(id, enabled) {
+      try {
+        const res = await fetch(`/admin/channels/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        await loadChannels();
+        if (window.showSuccess) showSuccess('已保存');
+      } catch (e) {
+        console.error('切换失败', e);
+        if (window.showError) showError('切换失败');
+      }
+    }
+    function escapeHtml(s){return (s||'').replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]))}
+    document.addEventListener('DOMContentLoaded', () => {
+      if (window.initTopbar) initTopbar('channels');
+      loadChannels().then(() => highlightFromHash());
+      window.addEventListener('hashchange', highlightFromHash);
+    });
+
+    function highlightFromHash() {
+      const m = (location.hash||'').match(/^#channel-(\d+)$/);
+      if (!m) return;
+      const el = document.getElementById(`channel-${m[1]}`);
+      if (!el) return;
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const prev = el.style.boxShadow;
+      el.style.transition = 'box-shadow 0.3s ease, background 0.3s ease';
+      el.style.boxShadow = '0 0 0 3px rgba(59,130,246,0.35), 0 10px 25px rgba(59,130,246,0.20)';
+      el.style.background = 'rgba(59,130,246,0.06)';
+      setTimeout(() => {
+        el.style.boxShadow = prev || '';
+        el.style.background = '';
+      }, 1600);
+    }
+  </script>
+  <script src="/web/ui.js"></script>
+</body>
+</html>
