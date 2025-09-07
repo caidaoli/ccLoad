@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 	
@@ -20,6 +21,9 @@ type Server struct {
 	password       string
 	sessions       map[string]time.Time // sessionID -> expireTime
 	sessMux        sync.RWMutex
+	
+	// API 认证
+	authTokens     map[string]bool // 允许的认证令牌
 	
 	// 缓存和异步优化
 	configCache    []*Config
@@ -37,6 +41,18 @@ func NewServer(store Store) *Server {
 	password := os.Getenv("CCLOAD_PASS")
 	if password == "" {
 		password = "admin" // 默认密码，生产环境应该设置环境变量
+	}
+	
+	// 解析 API 认证令牌
+	authTokens := make(map[string]bool)
+	if authEnv := os.Getenv("CCLOAD_AUTH"); authEnv != "" {
+		tokens := strings.Split(authEnv, ",")
+		for _, token := range tokens {
+			token = strings.TrimSpace(token)
+			if token != "" {
+				authTokens[token] = true
+			}
+		}
 	}
 	
 	// 优化 HTTP 客户端配置
@@ -57,6 +73,7 @@ func NewServer(store Store) *Server {
 		},
 		password:     password,
 		sessions:     make(map[string]time.Time),
+		authTokens:   authTokens,
 		logChan:      make(chan *LogEntry, 1000), // 缓冲1000条日志
 		logWorkers:   3,                          // 3个日志工作协程
 	}
@@ -156,6 +173,39 @@ func (s *Server) requireAuth(handler http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// API 认证中间件
+func (s *Server) requireAPIAuth(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// 如果没有配置认证令牌，则跳过验证
+		if len(s.authTokens) == 0 {
+			handler(w, r)
+			return
+		}
+		
+		// 检查 Authorization 头
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing authorization header"})
+			return
+		}
+		
+		// 解析 Bearer token
+		const prefix = "Bearer "
+		if !strings.HasPrefix(authHeader, prefix) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid authorization format"})
+			return
+		}
+		
+		token := strings.TrimPrefix(authHeader, prefix)
+		if !s.authTokens[token] {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token"})
+			return
+		}
+		
+		handler(w, r)
+	}
+}
+
 // 登录处理程序
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -217,8 +267,8 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 // routes
 func (s *Server) routes(mux *http.ServeMux) {
-	// 公开访问的API（代理服务）
-	mux.HandleFunc("/v1/messages", s.handleMessages)
+	// 公开访问的API（代理服务）- 需要 API 认证
+	mux.HandleFunc("/v1/messages", s.requireAPIAuth(s.handleMessages))
 
 	// 公开访问的API（基础统计）
 	mux.HandleFunc("/public/summary", s.handlePublicSummary)

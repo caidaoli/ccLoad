@@ -68,10 +68,11 @@ ccLoad 是一个 Claude Code API 代理服务，使用 Go 构建。主要功能�
 go run .
 
 # 使用环境变量配置
-CCLOAD_PASS=your_password SQLITE_PATH=./data/ccload.db PORT=8080 go run .
+CCLOAD_PASS=your_password CCLOAD_AUTH=token1,token2 SQLITE_PATH=./data/ccload.db PORT=8080 go run .
 
 # 使用.env文件配置（推荐）
 echo "CCLOAD_PASS=your_password" > .env
+echo "CCLOAD_AUTH=your_api_token" >> .env
 echo "SQLITE_PATH=./data/ccload.db" >> .env  
 echo "PORT=8080" >> .env
 go run .
@@ -101,6 +102,7 @@ go test ./...    # 运行测试（当前项目暂无测试文件）
 
 ### 环境变量
 - `CCLOAD_PASS`: 管理后台密码（默认: "admin"，生产环境必须设置）
+- `CCLOAD_AUTH`: API访问令牌（可选，多个令牌用逗号分隔。设置后所有`/v1/messages`请求需提供`Authorization: Bearer <token>`头）
 - `SQLITE_PATH`: SQLite数据库路径（默认: "data/ccload.db"）
 - `PORT`: HTTP服务端口（默认: "8080"）
 
@@ -110,11 +112,17 @@ go test ./...    # 运行测试（当前项目暂无测试文件）
 
 ### 公开端点（无需认证）
 ```
-POST /v1/messages          # Claude API 透明代理
 GET  /public/summary       # 基础统计数据
 GET  /web/index.html       # 首页
 GET  /web/login.html       # 登录页面
 ```
+
+### 需要API认证的端点
+```
+POST /v1/messages          # Claude API 透明代理（需要 CCLOAD_AUTH）
+```
+
+**注意**: 当设置了 `CCLOAD_AUTH` 环境变量时，`/v1/messages` 端点需要提供有效的 `Authorization: Bearer <token>` 请求头。未设置 `CCLOAD_AUTH` 时，该端点无需认证即可访问。
 
 ### 管理端点（需要登录）
 ```
@@ -150,6 +158,12 @@ GET         /web/trend.html       # 趋势图表页面
 - 24小时会话有效期，每小时自动清理过期session
 - 后台协程定期清理，避免内存泄漏
 
+**API 认证系统** (server.go:177-207):
+- 支持通过 `CCLOAD_AUTH` 环境变量配置多个访问令牌
+- 使用 Bearer Token 认证方式：`Authorization: Bearer <token>`
+- 未设置 `CCLOAD_AUTH` 时，`/v1/messages` 端点无需认证
+- 认证失败返回 401 状态码和错误信息
+
 **性能优化架构**:
 - **缓存层**: 渠道配置60秒缓存，减少90%数据库查询
 - **异步日志**: 带缓冲的channel，3个worker协程批量处理
@@ -159,8 +173,10 @@ GET         /web/trend.html       # 趋势图表页面
 
 **安全注意**:
 - 生产环境必须设置强密码 `CCLOAD_PASS`
+- 建议设置 `CCLOAD_AUTH` 以保护 `/v1/messages` 端点，防止未授权访问
 - API Key不记录到日志中，仅在内存中使用
 - 生产环境需限制 `data/` 目录访问权限
+- 使用 HTTPS 部署以保护传输中的认证令牌
 
 ## 前端架构
 
