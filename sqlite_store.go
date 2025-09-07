@@ -27,7 +27,9 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(5 * time.Minute)
 	s := &SQLiteStore{db: db}
 	if err := s.migrate(context.Background()); err != nil {
 		_ = db.Close()
@@ -525,6 +527,12 @@ func (s *SQLiteStore) NextRR(ctx context.Context, model string, priority int, n 
 	
 	_ = tx.Commit()
 	return cur
+}
+
+func (s *SQLiteStore) SetRR(ctx context.Context, model string, priority int, idx int) error {
+	key := fmt.Sprintf("%s|%d", model, priority)
+	_, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO rr (key, idx) VALUES (?, ?)`, key, idx)
+	return err
 }
 
 // GetStats 实现统计功能，按渠道和模型统计成功/失败次数

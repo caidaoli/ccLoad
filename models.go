@@ -82,4 +82,5 @@ type Store interface {
 
 	// round-robin pointer per (model, priority)
 	NextRR(ctx context.Context, model string, priority int, n int) int
+	SetRR(ctx context.Context, model string, priority int, idx int) error
 }

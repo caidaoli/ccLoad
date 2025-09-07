@@ -119,7 +119,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	// If no candidates available (all cooled or none support), return 503
 	if len(cands) == 0 {
-		_ = s.store.AddLog(ctx, &LogEntry{Time: time.Now(), Model: reqModel.Model, StatusCode: 503, Message: "no available upstream (all cooled or none)"})
+		s.addLogAsync(&LogEntry{Time: time.Now(), Model: reqModel.Model, StatusCode: 503, Message: "no available upstream (all cooled or none)"})
 		http.Error(w, "no available upstream (all cooled or none)", http.StatusServiceUnavailable)
 		return
 	}
@@ -132,8 +132,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		res, duration, err := s.forwardOnce(ctx, cfg, body, r.Header, r.URL.RawQuery)
 		if err != nil {
 			// 网络错误：指数退避冷却
-			_, _ = s.store.BumpCooldownOnError(ctx, cfg.ID, time.Now())
-			_ = s.store.AddLog(ctx, &LogEntry{Time: time.Now(), Model: reqModel.Model, ChannelID: &cfg.ID, StatusCode: 0, Message: truncateErr(err.Error()), Duration: duration})
+			cooldownUntil := time.Now()
+			s.cooldownCache.Store(cfg.ID, cooldownUntil)
+			_, _ = s.store.BumpCooldownOnError(ctx, cfg.ID, cooldownUntil)
+			s.addLogAsync(&LogEntry{Time: time.Now(), Model: reqModel.Model, ChannelID: &cfg.ID, StatusCode: 0, Message: truncateErr(err.Error()), Duration: duration})
 			lastStatus = 0
 			lastBody = []byte(err.Error())
 			lastHeader = nil
@@ -141,8 +143,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 		if res.Status >= 200 && res.Status < 300 && res.Resp != nil {
 			// success - stream response transparently
+			s.cooldownCache.Delete(cfg.ID)
 			_ = s.store.ResetCooldown(ctx, cfg.ID)
-			_ = s.store.AddLog(ctx, &LogEntry{Time: time.Now(), Model: reqModel.Model, ChannelID: &cfg.ID, StatusCode: res.Status, Message: "ok", Duration: duration})
+			s.addLogAsync(&LogEntry{Time: time.Now(), Model: reqModel.Model, ChannelID: &cfg.ID, StatusCode: res.Status, Message: "ok", Duration: duration})
 			for k, vs := range res.Header {
 				// avoid hop-by-hop headers
 				if strings.EqualFold(k, "Connection") || strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Transfer-Encoding") {
@@ -157,7 +160,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			if res.Resp.Body != nil {
 				defer res.Resp.Body.Close()
 				if fl, ok := w.(http.Flusher); ok {
-					buf := make([]byte, 32*1024)
+					buf := make([]byte, 64*1024) // 增大缓冲区到 64KB
 					for {
 						n, readErr := res.Resp.Body.Read(buf)
 						if n > 0 {
@@ -177,19 +180,21 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// 非2xx：指数退避冷却并尝试下一个
-		_, _ = s.store.BumpCooldownOnError(ctx, cfg.ID, time.Now())
+		cooldownUntil := time.Now()
+		s.cooldownCache.Store(cfg.ID, cooldownUntil)
+		_, _ = s.store.BumpCooldownOnError(ctx, cfg.ID, cooldownUntil)
 		msg := fmt.Sprintf("upstream status %d", res.Status)
 		if len(res.Body) > 0 {
 			msg = fmt.Sprintf("%s: %s", msg, truncateErr(string(res.Body)))
 		}
-		_ = s.store.AddLog(ctx, &LogEntry{Time: time.Now(), Model: reqModel.Model, ChannelID: &cfg.ID, StatusCode: res.Status, Message: msg, Duration: duration})
+		s.addLogAsync(&LogEntry{Time: time.Now(), Model: reqModel.Model, ChannelID: &cfg.ID, StatusCode: res.Status, Message: msg, Duration: duration})
 		lastStatus = res.Status
 		lastBody = res.Body
 		lastHeader = res.Header
 	}
 
 	// All failed
-	_ = s.store.AddLog(ctx, &LogEntry{Time: time.Now(), Model: reqModel.Model, StatusCode: 503, Message: "exhausted backends"})
+	s.addLogAsync(&LogEntry{Time: time.Now(), Model: reqModel.Model, StatusCode: 503, Message: "exhausted backends"})
 	if lastStatus != 0 {
 		// surface last upstream response info
 		for k, vs := range lastHeader {

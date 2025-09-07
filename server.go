@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -9,14 +10,27 @@ import (
 	"strconv"
 	"sync"
 	"time"
+	
+	"sync/atomic"
 )
 
 type Server struct {
-	store    Store
-	client   *http.Client
-	password string
-	sessions map[string]time.Time // sessionID -> expireTime
-	sessMux  sync.RWMutex
+	store          Store
+	client         *http.Client
+	password       string
+	sessions       map[string]time.Time // sessionID -> expireTime
+	sessMux        sync.RWMutex
+	
+	// 缓存和异步优化
+	configCache    []*Config
+	configCacheMux sync.RWMutex
+	configCacheExp atomic.Int64 // 缓存过期时间戳
+	
+	rrCache      sync.Map // model_priority -> nextIndex
+	cooldownCache sync.Map // channelID -> expireTime
+	
+	logChan      chan *LogEntry // 异步日志通道
+	logWorkers   int            // 日志工作协程数
 }
 
 func NewServer(store Store) *Server {
@@ -24,12 +38,39 @@ func NewServer(store Store) *Server {
 	if password == "" {
 		password = "admin" // 默认密码，生产环境应该设置环境变量
 	}
-	return &Server{
-		store:    store,
-		client:   &http.Client{Timeout: 0},
-		password: password,
-		sessions: make(map[string]time.Time),
+	
+	// 优化 HTTP 客户端配置
+	transport := &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+		DisableCompression:  false,
+		DisableKeepAlives:   false,
+		MaxConnsPerHost:     100,
 	}
+	
+	s := &Server{
+		store:        store,
+		client: &http.Client{
+			Transport: transport,
+			Timeout:   0,
+		},
+		password:     password,
+		sessions:     make(map[string]time.Time),
+		logChan:      make(chan *LogEntry, 1000), // 缓冲1000条日志
+		logWorkers:   3,                          // 3个日志工作协程
+	}
+	
+	// 启动日志工作协程
+	for i := 0; i < s.logWorkers; i++ {
+		go s.logWorker()
+	}
+	
+	// 启动后台清理协程
+	go s.cleanupExpiredCooldowns()
+	go s.cleanExpiredSessions()
+	
+	return s
 }
 
 // helper: write JSON
@@ -249,5 +290,91 @@ func (s *Server) sessionCleanupLoop() {
 
 	for range ticker.C {
 		s.cleanExpiredSessions()
+	}
+}
+
+// 获取缓存的配置
+func (s *Server) getCachedConfigs(ctx context.Context) ([]*Config, error) {
+	now := time.Now().Unix()
+	exp := s.configCacheExp.Load()
+	
+	// 缓存未过期，直接返回
+	if exp > now {
+		s.configCacheMux.RLock()
+		defer s.configCacheMux.RUnlock()
+		if s.configCache != nil {
+			return s.configCache, nil
+		}
+	}
+	
+	// 需要刷新缓存
+	cfgs, err := s.store.ListConfigs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	
+	s.configCacheMux.Lock()
+	defer s.configCacheMux.Unlock()
+	s.configCache = cfgs
+	s.configCacheExp.Store(now + 60) // 缓存60秒
+	
+	return cfgs, nil
+}
+
+// 异步日志工作协程
+func (s *Server) logWorker() {
+	batch := make([]*LogEntry, 0, 100)
+	timer := time.NewTimer(1 * time.Second)
+	defer timer.Stop()
+	
+	for {
+		select {
+		case entry := <-s.logChan:
+			batch = append(batch, entry)
+			if len(batch) >= 100 {
+				s.flushLogs(batch)
+				batch = batch[:0]
+			}
+			timer.Reset(1 * time.Second)
+		case <-timer.C:
+			if len(batch) > 0 {
+				s.flushLogs(batch)
+				batch = batch[:0]
+			}
+		}
+	}
+}
+
+// 批量写入日志
+func (s *Server) flushLogs(logs []*LogEntry) {
+	ctx := context.Background()
+	for _, log := range logs {
+		_ = s.store.AddLog(ctx, log)
+	}
+}
+
+// 异步添加日志
+func (s *Server) addLogAsync(entry *LogEntry) {
+	select {
+	case s.logChan <- entry:
+		// 成功放入队列
+	default:
+		// 队列满，丢弃日志（生产环境可以考虑监控）
+	}
+}
+
+// 清理过期的冷却状态
+func (s *Server) cleanupExpiredCooldowns() {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+	
+	for range ticker.C {
+		now := time.Now()
+		s.cooldownCache.Range(func(key, value interface{}) bool {
+			if expireTime, ok := value.(time.Time); ok && now.After(expireTime) {
+				s.cooldownCache.Delete(key)
+			}
+			return true
+		})
 	}
 }

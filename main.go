@@ -32,6 +32,9 @@ func main() {
 	srv := NewServer(store)
 	mux := http.NewServeMux()
 	srv.routes(mux)
+	
+	// 启动 session 清理循环
+	go srv.sessionCleanupLoop()
 
 	addr := ":8080"
 	if v := os.Getenv("PORT"); v != "" {

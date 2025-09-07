@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"time"
 )
@@ -16,7 +17,7 @@ func containsStr(list []string, v string) bool {
 }
 
 func (s *Server) selectCandidates(ctx context.Context, model string) ([]*Config, error) {
-	cfgs, err := s.store.ListConfigs(ctx)
+	cfgs, err := s.getCachedConfigs(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -29,9 +30,11 @@ func (s *Server) selectCandidates(ctx context.Context, model string) ([]*Config,
 		if !containsStr(c.Models, model) {
 			continue
 		}
-		if until, ok := s.store.GetCooldownUntil(ctx, c.ID); ok && until.After(now) {
-			// skip cooled down ones (design choice: allow fallback to others)
-			continue
+		// 检查内存中的冷却状态
+		if expireTime, ok := s.cooldownCache.Load(c.ID); ok {
+			if expireTime.(time.Time).After(now) {
+				continue
+			}
 		}
 		groups[c.Priority] = append(groups[c.Priority], c)
 	}
@@ -51,12 +54,28 @@ func (s *Server) selectCandidates(ctx context.Context, model string) ([]*Config,
 		}
 		// stable order by ID for deterministic rotation baseline
 		sort.Slice(g, func(i, j int) bool { return g[i].ID < g[j].ID })
-		start := s.store.NextRR(ctx, model, p, len(g))
+		
+		// 使用内存轮询缓存
+		key := fmt.Sprintf("%s_%d", model, p)
+		start := 0
+		if idx, ok := s.rrCache.Load(key); ok {
+			start = idx.(int)
+		} else {
+			// 从数据库加载持久化的轮询指针
+			start = s.store.NextRR(ctx, model, p, len(g))
+			s.rrCache.Store(key, start)
+		}
+		
 		// rotate: g[start:], then g[:start]
 		out = append(out, g[start:]...)
 		if start > 0 {
 			out = append(out, g[:start]...)
 		}
+		
+		// 更新轮询指针
+		next := (start + 1) % len(g)
+		s.rrCache.Store(key, next)
+		_ = s.store.SetRR(ctx, model, p, next)
 	}
 	return out, nil
 }
