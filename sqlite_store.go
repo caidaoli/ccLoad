@@ -612,6 +612,7 @@ func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *Log
 	// 统计查询：按channel_name和model分组统计成功/失败次数
 	statsQuery := fmt.Sprintf(`
 		SELECT 
+			l.channel_id,
 			COALESCE(c.name, '系统') as channel_name,
 			COALESCE(l.model, '') as model,
 			SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN 1 ELSE 0 END) as success,
@@ -620,7 +621,7 @@ func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *Log
 		FROM logs l 
 		LEFT JOIN channels c ON c.id = l.channel_id 
 		WHERE %s
-		GROUP BY c.name, l.model 
+		GROUP BY l.channel_id, c.name, l.model 
 		ORDER BY channel_name ASC, model ASC
 	`, where)
 
@@ -633,7 +634,7 @@ func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *Log
 	var stats []StatsEntry
 	for rows.Next() {
 		var entry StatsEntry
-		err := rows.Scan(&entry.ChannelName, &entry.Model,
+		err := rows.Scan(&entry.ChannelID, &entry.ChannelName, &entry.Model,
 			&entry.Success, &entry.Error, &entry.Total)
 		if err != nil {
 			return nil, err

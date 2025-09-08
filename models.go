@@ -49,6 +49,7 @@ type MetricPoint struct {
 
 // 统计数据结构
 type StatsEntry struct {
+	ChannelID   *int   `json:"channel_id,omitempty"`
 	ChannelName string `json:"channel_name"`
 	Model       string `json:"model"`
 	Success     int    `json:"success"`

@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -55,14 +57,35 @@ func NewServer(store Store) *Server {
 		}
 	}
 
-	// 优化 HTTP 客户端配置
-	transport := &http.Transport{
+	// 优化 HTTP 客户端配置 - 重点优化连接建立阶段的超时控制
+	dialer := &net.Dialer{
+		Timeout:   5 * time.Second,  // DNS解析+TCP连接建立超时
+		KeepAlive: 30 * time.Second, // TCP keepalive间隔
+	}
+	
+    transport := &http.Transport{
+		// 连接池配置
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
 		IdleConnTimeout:     90 * time.Second,
-		DisableCompression:  false,
-		DisableKeepAlives:   false,
 		MaxConnsPerHost:     100,
+		
+		// 使用优化的Dialer
+		DialContext:              dialer.DialContext,
+		
+		// 关键超时配置 - 直接影响TTFB性能
+		TLSHandshakeTimeout:      5 * time.Second,   // TLS握手超时
+		ResponseHeaderTimeout:    10 * time.Second,  // 响应头读取超时(影响TTFB)
+		ExpectContinueTimeout:    1 * time.Second,   // 100-continue超时
+		
+		// 传输优化
+		DisableCompression:       false,
+		DisableKeepAlives:        false,
+		ForceAttemptHTTP2:        true,              // 优先使用HTTP/2
+		WriteBufferSize:          64 * 1024,         // 64KB写缓冲区
+		ReadBufferSize:           64 * 1024,         // 64KB读缓冲区
+        // 启用TLS会话缓存，减少重复握手耗时
+        TLSClientConfig:        &tls.Config{ClientSessionCache: tls.NewLRUClientSessionCache(1024)},
 	}
 
 	s := &Server{
@@ -184,25 +207,26 @@ func (s *Server) requireAPIAuth(handler http.HandlerFunc) http.HandlerFunc {
 
 		// 检查 Authorization 头
 		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing authorization header"})
+		if authHeader != "" {
+			// 解析 Bearer token
+			const prefix = "Bearer "
+			if strings.HasPrefix(authHeader, prefix) {
+				token := strings.TrimPrefix(authHeader, prefix)
+				if s.authTokens[token] {
+					handler(w, r)
+					return
+				}
+			}
+		}
+
+		// 检查 X-API-Key 头
+		apiKey := r.Header.Get("X-API-Key")
+		if apiKey != "" && s.authTokens[apiKey] {
+			handler(w, r)
 			return
 		}
 
-		// 解析 Bearer token
-		const prefix = "Bearer "
-		if !strings.HasPrefix(authHeader, prefix) {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid authorization format"})
-			return
-		}
-
-		token := strings.TrimPrefix(authHeader, prefix)
-		if !s.authTokens[token] {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token"})
-			return
-		}
-
-		handler(w, r)
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or missing authorization"})
 	}
 }
 

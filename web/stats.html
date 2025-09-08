@@ -202,6 +202,24 @@
       color: var(--neutral-800);
     }
 
+    .channel-link {
+      color: var(--primary-600);
+      text-decoration: none;
+      transition: color var(--duration-fast);
+    }
+
+    .channel-link:hover {
+      color: var(--primary-700);
+      text-decoration: underline;
+    }
+
+    .channel-id {
+      color: var(--neutral-500);
+      font-size: var(--text-xs);
+      font-weight: var(--font-normal);
+      margin-left: var(--space-2);
+    }
+
     .model-tag {
       display: inline-block;
       background: rgba(59, 130, 246, 0.2);
@@ -571,7 +589,12 @@
           '<span style="color: var(--neutral-500);">未知模型</span>';
         
         tr.innerHTML = `
-          <td><span class="config-name">${escapeHtml(entry.channel_name)}</span></td>
+          <td>
+            <a href="/web/channels.html?id=${entry.channel_id}" class="config-name channel-link" title="跳转到渠道管理">
+              ${escapeHtml(entry.channel_name)}
+            </a>
+            ${entry.channel_id ? `<span class="channel-id">(ID: ${entry.channel_id})</span>` : ''}
+          </td>
           <td>${modelDisplay}</td>
           <td><span class="success-count">${formatNumber(entry.success || 0)}</span></td>
           <td><span class="error-count">${formatNumber(entry.error || 0)}</span></td>

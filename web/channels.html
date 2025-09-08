@@ -246,6 +246,82 @@
       justify-content: center;
       margin-top: 24px;
     }
+    
+    /* Cooldown status styles */
+    .cooldown-badge {
+      margin-top: 8px;
+      padding: 6px 12px;
+      border-radius: 6px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.75rem;
+      font-weight: 500;
+      background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%);
+      color: #dc2626;
+      border: 1px solid #fca5a5;
+      box-shadow: 0 1px 3px rgba(220, 38, 38, 0.1);
+      animation: cooldown-pulse 2s infinite;
+    }
+    
+    .cooldown-icon {
+      font-size: 0.875rem;
+      animation: cooldown-spin 3s linear infinite;
+    }
+    
+    .channel-card-cooldown {
+      border-color: #fca5a5 !important;
+      background: linear-gradient(135deg, rgba(254, 226, 226, 0.3) 0%, rgba(254, 202, 202, 0.1) 100%) !important;
+      position: relative;
+    }
+    
+    .channel-card-cooldown::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, #dc2626, #ef4444, #dc2626);
+      border-radius: 12px 12px 0 0;
+      animation: cooldown-bar 2s ease-in-out infinite;
+    }
+    
+    @keyframes cooldown-pulse {
+      0%, 100% {
+        transform: scale(1);
+        opacity: 1;
+      }
+      50% {
+        transform: scale(1.02);
+        opacity: 0.95;
+      }
+    }
+    
+    @keyframes cooldown-spin {
+      from {
+        transform: rotate(0deg);
+      }
+      to {
+        transform: rotate(360deg);
+      }
+    }
+    
+    @keyframes cooldown-bar {
+      0%, 100% {
+        opacity: 0.8;
+      }
+      50% {
+        opacity: 1;
+        box-shadow: 0 0 8px rgba(220, 38, 38, 0.3);
+      }
+    }
+    
+    /* Enhance disabled channel visual feedback */
+    .channel-disabled {
+      opacity: 0.6;
+      filter: grayscale(20%);
+    }
   </style>
 </head>
 <body>
@@ -278,6 +354,7 @@
                 <option value="all">所有状态</option>
                 <option value="enabled">已启用</option>
                 <option value="disabled">已禁用</option>
+                <option value="cooldown">冷却中</option>
               </select>
             </div>
             
@@ -409,6 +486,7 @@
         if (filters.status !== 'all') {
           if (filters.status === 'enabled' && !channel.enabled) return false;
           if (filters.status === 'disabled' && channel.enabled) return false;
+          if (filters.status === 'cooldown' && !(channel.cooldown_remaining_ms > 0)) return false;
         }
         
         // Model filter
@@ -552,33 +630,46 @@
         el.innerHTML = '<div class="glass-card">暂无符合条件的渠道</div>';
         return;
       }
-      el.innerHTML = channelsToRender.map(c => `
-        <div class="glass-card" id="channel-${c.id}">
-          <div class="flex justify-between items-center">
-            <div style="flex: 1;">
-              <div class="section-title">${escapeHtml(c.name)}</div>
-              <div class="text-sm" style="color: var(--neutral-600); margin-top: 4px;">
-                <div>URL: ${escapeHtml(c.url)} | 优先级: ${c.priority} | ${c.enabled ? '已启用' : '已禁用'}</div>
-                <div>模型: ${Array.isArray(c.models) ? c.models.join(', ') : ''}</div>
+      el.innerHTML = channelsToRender.map(c => {
+        const isCooldown = c.cooldown_remaining_ms > 0;
+        const cardClasses = ['glass-card'];
+        
+        if (isCooldown) {
+          cardClasses.push('channel-card-cooldown');
+        }
+        if (!c.enabled) {
+          cardClasses.push('channel-disabled');
+        }
+        
+        return `
+          <div class="${cardClasses.join(' ')}" id="channel-${c.id}">
+            <div class="flex justify-between items-center">
+              <div style="flex: 1;">
+                <div class="section-title">${escapeHtml(c.name)}</div>
+                <div class="text-sm" style="color: var(--neutral-600); margin-top: 4px;">
+                  <div>URL: ${escapeHtml(c.url)} | 优先级: ${c.priority} | ${c.enabled ? '已启用' : '已禁用'}</div>
+                  <div>模型: ${Array.isArray(c.models) ? c.models.join(', ') : ''}</div>
+                </div>
+                ${cooldownBadge(c)}
               </div>
-              ${cooldownBadge(c)}
-            </div>
-            <div class="channel-actions">
-              <button class="btn-icon" onclick="editChannel(${c.id})" title="编辑">编辑</button>
-              <button class="btn-icon" onclick="toggleChannel(${c.id}, ${!c.enabled})">${c.enabled ? '禁用' : '启用'}</button>
-              <button class="btn-icon btn-danger" onclick="deleteChannel(${c.id}, '${escapeHtml(c.name)}')" title="删除">删除</button>
+              <div class="channel-actions">
+                <button class="btn-icon" onclick="editChannel(${c.id})" title="编辑">编辑</button>
+                <button class="btn-icon" onclick="toggleChannel(${c.id}, ${!c.enabled})">${c.enabled ? '禁用' : '启用'}</button>
+                <button class="btn-icon btn-danger" onclick="deleteChannel(${c.id}, '${escapeHtml(c.name)}')" title="删除">删除</button>
+              </div>
             </div>
           </div>
-        </div>
-      `).join('');
+        `;
+      }).join('');
     }
 
     function cooldownBadge(c) {
       const ms = c.cooldown_remaining_ms || 0;
       if (!ms || ms <= 0) return '';
       const text = humanizeMS(ms);
-      return `<div class="text-xs" style="margin-top:8px;padding:4px 8px;background:var(--error-50);color:var(--error-700);border-radius:4px;display:inline-block;">
-        ⏱ 冷却中 · 剩余 ${text}
+      return `<div class="cooldown-badge">
+        <span class="cooldown-icon">⚠️</span>
+        <span>冷却中 · 剩余 ${text}</span>
       </div>`;
     }
 
