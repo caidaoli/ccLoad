@@ -14,10 +14,11 @@ import (
 )
 
 type fwResult struct {
-	Status int
-	Header http.Header
-	Body   []byte         // filled for non-2xx or when needed
-	Resp   *http.Response // non-nil only when Status is 2xx to support streaming
+	Status        int
+	Header        http.Header
+	Body          []byte         // filled for non-2xx or when needed
+	Resp          *http.Response // non-nil only when Status is 2xx to support streaming
+	FirstByteTime float64        // 首字节响应时间（秒）
 }
 
 func (s *Server) forwardOnce(ctx context.Context, cfg *Config, body []byte, hdr http.Header, rawQuery string) (*fwResult, float64, error) {
@@ -63,19 +64,23 @@ func (s *Server) forwardOnce(ctx context.Context, cfg *Config, body []byte, hdr 
 	}
 
 	resp, err := s.client.Do(req)
-	duration := time.Since(startTime).Seconds()
-
 	if err != nil {
+		duration := time.Since(startTime).Seconds()
 		return nil, duration, err
 	}
-	// If non-2xx, read body for error and close
+
+	// 记录首字节响应时间（接收到响应头的时间）
+	firstByteTime := time.Since(startTime).Seconds()
+
+	// If non-2xx, read body for error and close (非流式，计算最终耗时)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		rb, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		return &fwResult{Status: resp.StatusCode, Header: resp.Header.Clone(), Body: rb, Resp: nil}, duration, nil
+		duration := time.Since(startTime).Seconds()
+		return &fwResult{Status: resp.StatusCode, Header: resp.Header.Clone(), Body: rb, Resp: nil, FirstByteTime: firstByteTime}, duration, nil
 	}
-	// For success, return resp for streaming
-	return &fwResult{Status: resp.StatusCode, Header: resp.Header.Clone(), Resp: resp}, duration, nil
+	// For success, return resp for streaming (Duration will be calculated after streaming completes)
+	return &fwResult{Status: resp.StatusCode, Header: resp.Header.Clone(), Resp: resp, FirstByteTime: firstByteTime}, 0, nil
 }
 
 // POST /v1/messages
@@ -92,9 +97,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = r.Body.Close()
 
-	// Parse to extract model (keep raw body for forward)
+	// Parse to extract model and stream flag (keep raw body for forward)
 	var reqModel struct {
-		Model string `json:"model"`
+		Model  string `json:"model"`
+		Stream bool   `json:"stream"`
 	}
 	if err := json.Unmarshal(body, &reqModel); err != nil || reqModel.Model == "" {
 		http.Error(w, "invalid JSON or missing model", http.StatusBadRequest)
@@ -119,7 +125,13 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	// If no candidates available (all cooled or none support), return 503
 	if len(cands) == 0 {
-		s.addLogAsync(&LogEntry{Time: time.Now(), Model: reqModel.Model, StatusCode: 503, Message: "no available upstream (all cooled or none)"})
+		s.addLogAsync(&LogEntry{
+			Time:        time.Now(),
+			Model:       reqModel.Model,
+			StatusCode:  503,
+			Message:     "no available upstream (all cooled or none)",
+			IsStreaming: reqModel.Stream,
+		})
 		http.Error(w, "no available upstream (all cooled or none)", http.StatusServiceUnavailable)
 		return
 	}
@@ -135,7 +147,15 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			cooldownUntil := time.Now()
 			s.cooldownCache.Store(cfg.ID, cooldownUntil)
 			_, _ = s.store.BumpCooldownOnError(ctx, cfg.ID, cooldownUntil)
-			s.addLogAsync(&LogEntry{Time: time.Now(), Model: reqModel.Model, ChannelID: &cfg.ID, StatusCode: 0, Message: truncateErr(err.Error()), Duration: duration})
+			s.addLogAsync(&LogEntry{
+				Time:        time.Now(),
+				Model:       reqModel.Model,
+				ChannelID:   &cfg.ID,
+				StatusCode:  0,
+				Message:     truncateErr(err.Error()),
+				Duration:    duration,
+				IsStreaming: reqModel.Stream,
+			})
 			lastStatus = 0
 			lastBody = []byte(err.Error())
 			lastHeader = nil
@@ -143,9 +163,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 		if res.Status >= 200 && res.Status < 300 && res.Resp != nil {
 			// success - stream response transparently
+			streamStartTime := time.Now() // 记录流式传输开始时间
 			s.cooldownCache.Delete(cfg.ID)
 			_ = s.store.ResetCooldown(ctx, cfg.ID)
-			s.addLogAsync(&LogEntry{Time: time.Now(), Model: reqModel.Model, ChannelID: &cfg.ID, StatusCode: res.Status, Message: "ok", Duration: duration})
+
 			for k, vs := range res.Header {
 				// avoid hop-by-hop headers
 				if strings.EqualFold(k, "Connection") || strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Transfer-Encoding") {
@@ -156,7 +177,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			w.WriteHeader(res.Status)
-			// stream copy
+
+			// 流式复制数据
+			var streamErr error
 			if res.Resp.Body != nil {
 				defer res.Resp.Body.Close()
 				if fl, ok := w.(http.Flusher); ok {
@@ -165,18 +188,48 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 						n, readErr := res.Resp.Body.Read(buf)
 						if n > 0 {
 							if _, err := w.Write(buf[:n]); err != nil {
+								streamErr = err
 								break
 							}
 							fl.Flush()
 						}
 						if readErr != nil {
+							if readErr != io.EOF {
+								streamErr = readErr
+							}
 							break
 						}
 					}
 				} else {
-					_, _ = io.Copy(w, res.Resp.Body)
+					_, streamErr = io.Copy(w, res.Resp.Body)
 				}
 			}
+
+			// 流式传输完成后记录日志，计算真实总耗时
+			totalDuration := time.Since(streamStartTime).Seconds() + res.FirstByteTime
+
+			// 记录成功日志（现在含有准确的耗时）
+			logEntry := &LogEntry{
+				Time:        time.Now(),
+				Model:       reqModel.Model,
+				ChannelID:   &cfg.ID,
+				StatusCode:  res.Status,
+				Duration:    totalDuration,
+				IsStreaming: reqModel.Stream,
+			}
+
+			if streamErr != nil {
+				logEntry.Message = fmt.Sprintf("streaming error: %v", streamErr)
+			} else {
+				logEntry.Message = "ok"
+			}
+
+			// 流式请求记录首字节响应时间
+			if reqModel.Stream {
+				logEntry.FirstByteTime = &res.FirstByteTime
+			}
+
+			s.addLogAsync(logEntry)
 			return
 		}
 		// 非2xx：指数退避冷却并尝试下一个
@@ -187,14 +240,34 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		if len(res.Body) > 0 {
 			msg = fmt.Sprintf("%s: %s", msg, truncateErr(string(res.Body)))
 		}
-		s.addLogAsync(&LogEntry{Time: time.Now(), Model: reqModel.Model, ChannelID: &cfg.ID, StatusCode: res.Status, Message: msg, Duration: duration})
+
+		// 计算真实耗时（错误响应不是流式，已在forwardOnce中计算）
+		logEntry := &LogEntry{
+			Time:        time.Now(),
+			Model:       reqModel.Model,
+			ChannelID:   &cfg.ID,
+			StatusCode:  res.Status,
+			Message:     msg,
+			Duration:    duration, // 非2xx响应的duration已在forwardOnce中正确计算
+			IsStreaming: reqModel.Stream,
+		}
+		if reqModel.Stream {
+			logEntry.FirstByteTime = &res.FirstByteTime
+		}
+		s.addLogAsync(logEntry)
 		lastStatus = res.Status
 		lastBody = res.Body
 		lastHeader = res.Header
 	}
 
 	// All failed
-	s.addLogAsync(&LogEntry{Time: time.Now(), Model: reqModel.Model, StatusCode: 503, Message: "exhausted backends"})
+	s.addLogAsync(&LogEntry{
+		Time:        time.Now(),
+		Model:       reqModel.Model,
+		StatusCode:  503,
+		Message:     "exhausted backends",
+		IsStreaming: reqModel.Stream,
+	})
 	if lastStatus != 0 {
 		// surface last upstream response info
 		for k, vs := range lastHeader {

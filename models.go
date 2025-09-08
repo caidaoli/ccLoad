@@ -20,14 +20,16 @@ type Config struct {
 }
 
 type LogEntry struct {
-	ID          int64     `json:"id"`
-	Time        time.Time `json:"time"`
-	Model       string    `json:"model"`
-	ChannelID   *int64    `json:"channel_id,omitempty"`
-	ChannelName string    `json:"channel_name,omitempty"`
-	StatusCode  int       `json:"status_code"`
-	Message     string    `json:"message"`
-	Duration    float64   `json:"duration"` // 耗时（秒）
+	ID            int64     `json:"id"`
+	Time          time.Time `json:"time"`
+	Model         string    `json:"model"`
+	ChannelID     *int64    `json:"channel_id,omitempty"`
+	ChannelName   string    `json:"channel_name,omitempty"`
+	StatusCode    int       `json:"status_code"`
+	Message       string    `json:"message"`
+	Duration      float64   `json:"duration"`                  // 总耗时（秒）
+	IsStreaming   bool      `json:"is_streaming"`              // 是否为流式请求
+	FirstByteTime *float64  `json:"first_byte_time,omitempty"` // 首字节响应时间（秒）
 }
 
 // 日志查询过滤条件

@@ -167,8 +167,8 @@ ccLoad
 
 - `channels` - 渠道配置
 - `logs` - 请求日志
-- `cooldowns` - 冷却状态
-- `rr` - 轮询指针
+- `cooldowns` - 冷却状态（channel_id, until, duration_ms）
+- `rr` - 轮询指针（model, priority, next_index）
 
 ## 🛡️ 安全考虑
 

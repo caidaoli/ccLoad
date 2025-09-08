@@ -54,7 +54,7 @@ func (s *Server) selectCandidates(ctx context.Context, model string) ([]*Config,
 		}
 		// stable order by ID for deterministic rotation baseline
 		sort.Slice(g, func(i, j int) bool { return g[i].ID < g[j].ID })
-		
+
 		// 使用内存轮询缓存
 		key := fmt.Sprintf("%s_%d", model, p)
 		start := 0
@@ -65,13 +65,13 @@ func (s *Server) selectCandidates(ctx context.Context, model string) ([]*Config,
 			start = s.store.NextRR(ctx, model, p, len(g))
 			s.rrCache.Store(key, start)
 		}
-		
+
 		// rotate: g[start:], then g[:start]
 		out = append(out, g[start:]...)
 		if start > 0 {
 			out = append(out, g[:start]...)
 		}
-		
+
 		// 更新轮询指针
 		next := (start + 1) % len(g)
 		s.rrCache.Store(key, next)

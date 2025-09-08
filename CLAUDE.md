@@ -4,12 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-ccLoad 是一个 Claude Code API 代理服务，使用 Go 构建。主要功能：
+ccLoad 是一个 Claude API 透明代理服务，使用 Go 构建。主要功能：
 
-- **透明代理**：将 `/v1/messages` 请求转发到上游 Claude Code API，仅替换 API Key
-- **智能路由**：基于模型支持、优先级和轮询策略选择渠道
+- **透明代理**：将 `/v1/messages` 请求转发到上游 Claude API，仅替换 API Key
+- **智能路由**：基于模型支持、优先级和轮询策略选择渠道  
 - **故障切换**：失败时自动切换渠道并实施指数退避冷却（起始1秒，错误翻倍，封顶30分钟）
-- **身份验证**：管理页面需要密码登录，支持session管理和自动过期
+- **身份验证**：管理页面需要密码登录，支持session管理和自动过期；API端点支持可选令牌认证
 - **统计监控**：首页公开显示请求统计，管理界面提供详细的趋势和日志分析
 - **前端管理**：提供现代化 Web 界面管理渠道、查看趋势、日志和调用统计
 
@@ -64,8 +64,9 @@ ccLoad 是一个 Claude Code API 代理服务，使用 Go 构建。主要功能�
 
 ### 构建和运行
 ```bash
-# 开发环境运行（使用默认配置：端口8080，数据库data/ccload.db）
+# 开发环境运行（使用默认配置）
 go run .
+make dev         # Makefile 开发模式
 
 # 使用环境变量配置
 CCLOAD_PASS=your_password CCLOAD_AUTH=token1,token2 SQLITE_PATH=./data/ccload.db PORT=8080 go run .
@@ -79,9 +80,24 @@ go run .
 
 # 构建生产版本
 go build -o ccload .
+make build       # Makefile 构建
 
-# 构建到临时目录（避免污染工作空间）
+# 构建到临时目录
 go build -o /tmp/ccload .
+```
+
+### macOS 服务管理（使用 Makefile）
+```bash
+make install-service    # 安装并启动 LaunchAgent 服务
+make start             # 启动服务
+make stop              # 停止服务
+make restart           # 重启服务
+make status            # 查看服务状态
+make logs              # 查看服务日志
+make error-logs        # 查看错误日志
+make uninstall-service # 卸载服务
+make clean             # 清理构建文件和日志
+make info              # 显示服务详细信息
 ```
 
 ### 依赖管理
@@ -91,7 +107,7 @@ go mod verify    # 验证依赖
 go mod download  # 下载依赖
 ```
 
-### 代码格式化和测试
+### 代码检查
 ```bash
 go fmt ./...     # 格式化代码
 go vet ./...     # 静态检查
@@ -143,14 +159,14 @@ GET         /web/trend.html       # 趋势图表页面
 - **channels**: 渠道配置（id, name, api_key, url, priority, models, enabled, created_at, updated_at）
 - **logs**: 请求日志（id, time, model, channel_id, status_code, message）
 - **cooldowns**: 冷却状态（channel_id, until, duration_ms）
-- **round_robin**: 轮询指针（model, priority, next_index）
+- **rr**: 轮询指针（model, priority, next_index）
 
 ### 重要注意事项
 
 **透明转发原则**:
-- 仅替换 `x-api-key` 头，其他请求头和请求体保持原样
+- 仅替换 `x-api-key` 和 `Authorization` 头为配置的 API Key，其他请求头和请求体保持原样
 - 客户端需自行设置 `anthropic-version` 等必需头
-- 2xx 响应支持流式转发
+- 2xx 响应支持流式转发，使用 64KB 缓冲区
 
 **身份验证系统** (server.go:14-380):
 - Session基于随机ID和内存存储，支持并发安全
@@ -158,7 +174,7 @@ GET         /web/trend.html       # 趋势图表页面
 - 24小时会话有效期，每小时自动清理过期session
 - 后台协程定期清理，避免内存泄漏
 
-**API 认证系统** (server.go:177-207):
+### API 认证系统** (server.go:177-207):
 - 支持通过 `CCLOAD_AUTH` 环境变量配置多个访问令牌
 - 使用 Bearer Token 认证方式：`Authorization: Bearer <token>`
 - 未设置 `CCLOAD_AUTH` 时，`/v1/messages` 端点无需认证

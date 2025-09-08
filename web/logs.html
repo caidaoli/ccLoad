@@ -100,9 +100,11 @@
                   <tr>
                     <th>时间</th>
                     <th>模型</th>
-                  <th>渠道</th>
+                    <th>渠道</th>
                     <th>状态码</th>
+                    <th>类型</th>
                     <th>耗时(秒)</th>
+                    <th>首字节(秒)</th>
                     <th>信息</th>
                   </tr>
                 </thead>
@@ -210,6 +212,28 @@
       font-size: var(--text-xs);
       font-weight: var(--font-medium);
       border: 1px solid rgba(59, 130, 246, 0.3);
+    }
+
+    .stream-tag {
+      display: inline-block;
+      background: rgba(34, 197, 94, 0.2);
+      color: var(--success-400);
+      padding: var(--space-1) var(--space-2);
+      border-radius: var(--radius-sm);
+      font-size: var(--text-xs);
+      font-weight: var(--font-medium);
+      border: 1px solid rgba(34, 197, 94, 0.3);
+    }
+
+    .batch-tag {
+      display: inline-block;
+      background: rgba(156, 163, 175, 0.2);
+      color: var(--neutral-500);
+      padding: var(--space-1) var(--space-2);
+      border-radius: var(--radius-sm);
+      font-size: var(--text-xs);
+      font-weight: var(--font-medium);
+      border: 1px solid rgba(156, 163, 175, 0.3);
     }
 
     .pagination-controls {
@@ -320,7 +344,7 @@
       const tbody = document.getElementById('tbody');
       tbody.innerHTML = `
         <tr>
-          <td colspan="6" class="loading-state">
+          <td colspan="8" class="loading-state">
             <div class="loading-spinner" style="margin: 0 auto var(--space-2)"></div>
             正在加载日志...
           </td>
@@ -332,7 +356,7 @@
       const tbody = document.getElementById('tbody');
       tbody.innerHTML = `
         <tr>
-          <td colspan="6" class="empty-state">
+          <td colspan="8" class="empty-state">
             <svg class="w-12 h-12 mx-auto mb-4" style="color: var(--error-400);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.864-.833-2.634 0L4.18 16.5c-.77.833.192 2.5 1.732 2.5z"/>
             </svg>
@@ -349,7 +373,7 @@
       if (data.length === 0) {
         tbody.innerHTML = `
           <tr>
-            <td colspan="6" class="empty-state">
+            <td colspan="8" class="empty-state">
               <svg class="w-12 h-12 mx-auto mb-4" style="color: var(--neutral-400);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
               </svg>
@@ -380,9 +404,19 @@
           `<span class="model-tag">${escapeHtml(entry.model)}</span>` : 
           '<span style="color: var(--neutral-500);">-</span>';
         
+        // 请求类型显示
+        const typeDisplay = entry.is_streaming ? 
+          '<span class="stream-tag">流式</span>' : 
+          '<span class="batch-tag">批量</span>';
+        
         // 格式化耗时显示
         const durationDisplay = entry.duration !== undefined && entry.duration !== null ? 
           `<span style="color: var(--neutral-700);">${entry.duration.toFixed(3)}</span>` : 
+          '<span style="color: var(--neutral-500);">-</span>';
+          
+        // 格式化首字节时间显示（仅流式请求）
+        const firstByteDisplay = entry.is_streaming && entry.first_byte_time !== undefined && entry.first_byte_time !== null ? 
+          `<span style="color: var(--success-600);">${entry.first_byte_time.toFixed(3)}</span>` : 
           '<span style="color: var(--neutral-500);">-</span>';
         
         tr.innerHTML = `
@@ -390,7 +424,9 @@
           <td>${modelDisplay}</td>
           <td class="config-info">${configDisplay}</td>
           <td><span class="${statusClass}">${entry.status_code}</span></td>
+          <td style="text-align: center;">${typeDisplay}</td>
           <td style="text-align: right; white-space: nowrap;">${durationDisplay}</td>
+          <td style="text-align: right; white-space: nowrap;">${firstByteDisplay}</td>
           <td style="max-width: 300px; word-break: break-word;">${escapeHtml(entry.message || '')}</td>
         `;
         tbody.appendChild(tr);

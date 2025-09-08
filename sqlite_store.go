@@ -79,11 +79,17 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 			status_code INTEGER NOT NULL,
 			message TEXT,
 			duration REAL,
+			is_streaming INTEGER NOT NULL DEFAULT 0,
+			first_byte_time REAL,
 			FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE SET NULL
 		);
 	`); err != nil {
 		return fmt.Errorf("create logs table: %w", err)
 	}
+
+	// 添加新字段（兼容已有数据库）
+	s.addColumnIfNotExists(ctx, "logs", "is_streaming", "INTEGER NOT NULL DEFAULT 0")
+	s.addColumnIfNotExists(ctx, "logs", "first_byte_time", "REAL")
 
 	// 创建 rr (round-robin) 表
 	if _, err := s.db.ExecContext(ctx, `
@@ -119,8 +125,40 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	return nil
 }
 
-func (s *SQLiteStore) Close() error { 
-	return s.db.Close() 
+// addColumnIfNotExists 添加列如果不存在（用于数据库升级兼容）
+func (s *SQLiteStore) addColumnIfNotExists(ctx context.Context, tableName, columnName, columnDef string) {
+	// 检查列是否存在
+	query := fmt.Sprintf("PRAGMA table_info(%s)", tableName)
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	exists := false
+	for rows.Next() {
+		var cid int
+		var name, dataType string
+		var notNull, pk int
+		var dfltValue sql.NullString
+
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &dfltValue, &pk); err != nil {
+			continue
+		}
+		if name == columnName {
+			exists = true
+			break
+		}
+	}
+
+	if !exists {
+		alterQuery := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", tableName, columnName, columnDef)
+		s.db.ExecContext(ctx, alterQuery)
+	}
+}
+
+func (s *SQLiteStore) Close() error {
+	return s.db.Close()
 }
 
 // ---- Store interface impl ----
@@ -135,13 +173,13 @@ func (s *SQLiteStore) ListConfigs(ctx context.Context) ([]*Config, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	
+
 	var out []*Config
 	for rows.Next() {
 		var c Config
 		var modelsStr string
 		var enabledInt int
-		if err := rows.Scan(&c.ID, &c.Name, &c.APIKey, &c.URL, &c.Priority, 
+		if err := rows.Scan(&c.ID, &c.Name, &c.APIKey, &c.URL, &c.Priority,
 			&modelsStr, &enabledInt, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -161,11 +199,11 @@ func (s *SQLiteStore) GetConfig(ctx context.Context, id int64) (*Config, error) 
 		FROM channels 
 		WHERE id = ?
 	`, id)
-	
+
 	var c Config
 	var modelsStr string
 	var enabledInt int
-	if err := row.Scan(&c.ID, &c.Name, &c.APIKey, &c.URL, &c.Priority, 
+	if err := row.Scan(&c.ID, &c.Name, &c.APIKey, &c.URL, &c.Priority,
 		&modelsStr, &enabledInt, &c.CreatedAt, &c.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, errors.New("not found")
@@ -180,13 +218,13 @@ func (s *SQLiteStore) GetConfig(ctx context.Context, id int64) (*Config, error) 
 func (s *SQLiteStore) CreateConfig(ctx context.Context, c *Config) (*Config, error) {
 	now := time.Now()
 	modelsStr, _ := json.Marshal(c.Models)
-	
+
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO channels(name, api_key, url, priority, models, enabled, created_at, updated_at) 
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-	`, c.Name, c.APIKey, c.URL, c.Priority, string(modelsStr), 
+	`, c.Name, c.APIKey, c.URL, c.Priority, string(modelsStr),
 		boolToInt(c.Enabled), now, now)
-	
+
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +237,7 @@ func (s *SQLiteStore) UpdateConfig(ctx context.Context, id int64, upd *Config) (
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// 合并更新字段
 	if upd.Name != "" {
 		cur.Name = upd.Name
@@ -216,24 +254,24 @@ func (s *SQLiteStore) UpdateConfig(ctx context.Context, id int64, upd *Config) (
 	if upd.Models != nil {
 		cur.Models = upd.Models
 	}
-	
+
 	// enabled 语义：若仅传 enabled 切换，否则保持
 	if upd.Name == "" && upd.APIKey == "" && upd.URL == "" && upd.Priority == 0 && upd.Models == nil {
 		cur.Enabled = upd.Enabled
 	} else if upd.Enabled != cur.Enabled {
 		cur.Enabled = upd.Enabled
 	}
-	
+
 	cur.UpdatedAt = time.Now()
 	modelsStr, _ := json.Marshal(cur.Models)
-	
+
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE channels 
 		SET name=?, api_key=?, url=?, priority=?, models=?, enabled=?, updated_at=? 
 		WHERE id=?
-	`, cur.Name, cur.APIKey, cur.URL, cur.Priority, string(modelsStr), 
+	`, cur.Name, cur.APIKey, cur.URL, cur.Priority, string(modelsStr),
 		boolToInt(cur.Enabled), cur.UpdatedAt, id)
-	
+
 	if err != nil {
 		return nil, err
 	}
@@ -263,7 +301,7 @@ func (s *SQLiteStore) SetCooldown(ctx context.Context, configID int64, until tim
 			durMs = int64(until.Sub(now) / time.Millisecond)
 		}
 	}
-	
+
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO cooldowns(channel_id, until, duration_ms) VALUES(?, ?, ?)
 		ON CONFLICT(channel_id) DO UPDATE SET 
@@ -282,11 +320,11 @@ func (s *SQLiteStore) BumpCooldownOnError(ctx context.Context, configID int64, n
 		FROM cooldowns 
 		WHERE channel_id = ?
 	`, configID).Scan(&until, &durMs)
-	
+
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return 0, err
 	}
-	
+
 	prev := time.Duration(durMs) * time.Millisecond
 	if prev <= 0 {
 		// 如果表里没有记录，但 until 在未来，取其差值；否则从1s开始
@@ -296,7 +334,7 @@ func (s *SQLiteStore) BumpCooldownOnError(ctx context.Context, configID int64, n
 			prev = time.Second
 		}
 	}
-	
+
 	// 错误一次翻倍
 	next := prev * 2
 	if next < time.Second {
@@ -305,7 +343,7 @@ func (s *SQLiteStore) BumpCooldownOnError(ctx context.Context, configID int64, n
 	if next > 30*time.Minute {
 		next = 30 * time.Minute
 	}
-	
+
 	newUntil := now.Add(next)
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO cooldowns(channel_id, until, duration_ms) VALUES(?, ?, ?)
@@ -313,7 +351,7 @@ func (s *SQLiteStore) BumpCooldownOnError(ctx context.Context, configID int64, n
 			until = excluded.until, 
 			duration_ms = excluded.duration_ms
 	`, configID, newUntil, int64(next/time.Millisecond))
-	
+
 	if err != nil {
 		return 0, err
 	}
@@ -336,9 +374,9 @@ func (s *SQLiteStore) AddLog(ctx context.Context, e *LogEntry) error {
 	_ = s.cleanupOldLogs(ctx)
 
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO logs(time, model, channel_id, status_code, message, duration) 
-		VALUES(?, ?, ?, ?, ?, ?)
-	`, e.Time, e.Model, e.ChannelID, e.StatusCode, e.Message, e.Duration)
+		INSERT INTO logs(time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time) 
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+	`, e.Time, e.Model, e.ChannelID, e.StatusCode, e.Message, e.Duration, e.IsStreaming, e.FirstByteTime)
 	return err
 }
 
@@ -353,7 +391,7 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 	// 动态构建 WHERE 条件
 	where := "l.time >= ?"
 	args := []any{since}
-	
+
 	if filter != nil {
 		if filter.ChannelID != nil {
 			where += " AND l.channel_id = ?"
@@ -376,36 +414,38 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 			args = append(args, "%"+filter.ModelLike+"%")
 		}
 	}
-	
+
 	args = append(args, limit, offset)
 	query := fmt.Sprintf(`
 		SELECT l.id, l.time, l.model, l.channel_id, c.name as channel_name, 
-		       l.status_code, l.message, l.duration
+		       l.status_code, l.message, l.duration, l.is_streaming, l.first_byte_time
 		FROM logs l
 		LEFT JOIN channels c ON c.id = l.channel_id
 		WHERE %s
 		ORDER BY l.time DESC
 		LIMIT ? OFFSET ?
 	`, where)
-	
+
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	
+
 	out := []*LogEntry{}
 	for rows.Next() {
 		var e LogEntry
 		var cfgID sql.NullInt64
 		var chName sql.NullString
 		var duration sql.NullFloat64
-		
-		if err := rows.Scan(&e.ID, &e.Time, &e.Model, &cfgID, &chName, 
-			&e.StatusCode, &e.Message, &duration); err != nil {
+		var isStreamingInt int
+		var firstByteTime sql.NullFloat64
+
+		if err := rows.Scan(&e.ID, &e.Time, &e.Model, &cfgID, &chName,
+			&e.StatusCode, &e.Message, &duration, &isStreamingInt, &firstByteTime); err != nil {
 			return nil, err
 		}
-		
+
 		if cfgID.Valid {
 			id := cfgID.Int64
 			e.ChannelID = &id
@@ -415,6 +455,11 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 		}
 		if duration.Valid {
 			e.Duration = duration.Float64
+		}
+		e.IsStreaming = isStreamingInt != 0
+		if firstByteTime.Valid {
+			fbt := firstByteTime.Float64
+			e.FirstByteTime = &fbt
 		}
 		out = append(out, &e)
 	}
@@ -432,13 +477,13 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 		return nil, err
 	}
 	defer rows.Close()
-	
+
 	type pair struct {
 		t      time.Time
 		status int
 	}
 	arr := make([]pair, 0, 1024)
-	
+
 	for rows.Next() {
 		var t time.Time
 		var sc int
@@ -447,7 +492,7 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 		}
 		arr = append(arr, pair{t: t, status: sc})
 	}
-	
+
 	// 按时间桶聚合
 	mapp := map[int64]*MetricPoint{}
 	for _, e := range arr {
@@ -467,7 +512,7 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 			mp.Error++
 		}
 	}
-	
+
 	// 生成完整的时间序列
 	out := []MetricPoint{}
 	now := time.Now().Truncate(bucket)
@@ -479,10 +524,10 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 			out = append(out, MetricPoint{Ts: t})
 		}
 	}
-	
+
 	// 保证按时间升序
-	sort.Slice(out, func(i, j int) bool { 
-		return out[i].Ts.Before(out[j].Ts) 
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Ts.Before(out[j].Ts)
 	})
 	return out, nil
 }
@@ -491,14 +536,14 @@ func (s *SQLiteStore) NextRR(ctx context.Context, model string, priority int, n 
 	if n <= 0 {
 		return 0
 	}
-	
+
 	key := fmt.Sprintf("%s|%d", model, priority)
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
 		return 0
 	}
 	defer func() { _ = tx.Rollback() }()
-	
+
 	var cur int
 	err = tx.QueryRowContext(ctx, `SELECT idx FROM rr WHERE key = ?`, key).Scan(&cur)
 	if err != nil {
@@ -511,20 +556,20 @@ func (s *SQLiteStore) NextRR(ctx context.Context, model string, priority int, n 
 			return 0
 		}
 	}
-	
+
 	if cur >= n {
 		cur = 0
 	}
-	
+
 	next := cur + 1
 	if next >= n {
 		next = 0
 	}
-	
+
 	if _, err := tx.ExecContext(ctx, `UPDATE rr SET idx = ? WHERE key = ?`, next, key); err != nil {
 		return cur
 	}
-	
+
 	_ = tx.Commit()
 	return cur
 }
@@ -588,7 +633,7 @@ func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *Log
 	var stats []StatsEntry
 	for rows.Next() {
 		var entry StatsEntry
-		err := rows.Scan(&entry.ChannelName, &entry.Model, 
+		err := rows.Scan(&entry.ChannelName, &entry.Model,
 			&entry.Success, &entry.Error, &entry.Total)
 		if err != nil {
 			return nil, err
