@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"github.com/bytedance/sonic"
 	"io"
 	"net/http"
@@ -62,9 +64,16 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// Admin: /admin/channels/{id} (GET, PUT, DELETE)
+// Admin: /admin/channels/{id} (GET, PUT, DELETE) 和 /admin/channels/{id}/test (POST)
 func (s *Server) handleChannelByID(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/admin/channels/")
+	
+	// 检查是否是测试路径
+	if strings.Contains(rest, "/test") {
+		s.handleChannelTest(w, r)
+		return
+	}
+	
 	id, err := parseInt64Param(rest)
 	if err != nil {
 		http.Error(w, "bad id", http.StatusBadRequest)
@@ -246,4 +255,191 @@ func (s *Server) handlePublicSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, response)
+}
+
+// Admin: /admin/channels/{id}/test (POST)
+func (s *Server) handleChannelTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// 解析渠道ID
+	pathParts := strings.Split(strings.TrimPrefix(r.URL.Path, "/admin/channels/"), "/")
+	if len(pathParts) < 2 || pathParts[1] != "test" {
+		http.Error(w, "bad path", http.StatusBadRequest)
+		return
+	}
+	
+	id, err := parseInt64Param(pathParts[0])
+	if err != nil {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+
+	// 解析请求体
+	var testReq struct {
+		Model string `json:"model"`
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "failed to read body", http.StatusBadRequest)
+		return
+	}
+	if err := sonic.Unmarshal(body, &testReq); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if testReq.Model == "" {
+		http.Error(w, "missing model field", http.StatusBadRequest)
+		return
+	}
+
+	// 获取渠道配置
+	cfg, err := s.store.GetConfig(r.Context(), id)
+	if err != nil {
+		http.Error(w, "channel not found", http.StatusNotFound)
+		return
+	}
+
+	// 检查模型是否支持
+	modelSupported := false
+	for _, model := range cfg.Models {
+		if model == testReq.Model {
+			modelSupported = true
+			break
+		}
+	}
+	if !modelSupported {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"success": false,
+			"error":   "模型 " + testReq.Model + " 不在此渠道的支持列表中",
+		})
+		return
+	}
+
+	// 执行测试
+	testResult := s.testChannelAPI(cfg, testReq.Model)
+	writeJSON(w, http.StatusOK, testResult)
+}
+
+// 测试渠道API连通性
+func (s *Server) testChannelAPI(cfg *Config, model string) map[string]interface{} {
+	// 创建测试请求
+	testMessage := map[string]interface{}{
+		"model":      model,
+		"max_tokens": 10,
+		"messages": []map[string]interface{}{
+			{
+				"role":    "user",
+				"content": "test",
+			},
+		},
+		"system": "You are Claude Code, Anthropic's official CLI for Claude.",
+	}
+
+	reqBody, err := sonic.Marshal(testMessage)
+	if err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "构造测试请求失败: " + err.Error(),
+		}
+	}
+
+	// 创建HTTP请求
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// 构建完整的API URL (与proxy.go保持一致)
+	fullURL := strings.TrimRight(cfg.URL, "/") + "/v1/messages"
+	req, err := http.NewRequestWithContext(ctx, "POST", fullURL, bytes.NewReader(reqBody))
+	if err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "创建HTTP请求失败: " + err.Error(),
+		}
+	}
+
+	// 设置请求头
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", cfg.APIKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("User-Agent", "ccLoad/1.0")
+
+	// 发送请求
+	start := time.Now()
+	resp, err := s.client.Do(req)
+	duration := time.Since(start)
+
+	if err != nil {
+		return map[string]interface{}{
+			"success":     false,
+			"error":       "网络请求失败: " + err.Error(),
+			"duration_ms": duration.Milliseconds(),
+		}
+	}
+	defer resp.Body.Close()
+
+	// 读取响应
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return map[string]interface{}{
+			"success":     false,
+			"error":       "读取响应失败: " + err.Error(),
+			"duration_ms": duration.Milliseconds(),
+			"status_code": resp.StatusCode,
+		}
+	}
+
+	// 根据状态码判断成功或失败
+	result := map[string]interface{}{
+		"success":     resp.StatusCode >= 200 && resp.StatusCode < 300,
+		"status_code": resp.StatusCode,
+		"duration_ms": duration.Milliseconds(),
+	}
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		// 成功响应
+		var apiResp map[string]interface{}
+		if err := sonic.Unmarshal(respBody, &apiResp); err == nil {
+			// 提取响应文本
+			if content, ok := apiResp["content"].([]interface{}); ok && len(content) > 0 {
+				if textBlock, ok := content[0].(map[string]interface{}); ok {
+					if text, ok := textBlock["text"].(string); ok {
+						result["response_text"] = text
+					}
+				}
+			}
+			// 添加完整的API响应
+			result["api_response"] = apiResp
+		} else {
+			// JSON解析失败，返回原始响应
+			result["raw_response"] = string(respBody)
+		}
+		result["message"] = "API测试成功"
+	} else {
+		// 错误响应
+		var errorMsg string
+		var apiError map[string]interface{}
+		if err := sonic.Unmarshal(respBody, &apiError); err == nil {
+			if errInfo, ok := apiError["error"].(map[string]interface{}); ok {
+				if msg, ok := errInfo["message"].(string); ok {
+					errorMsg = msg
+				} else if typeStr, ok := errInfo["type"].(string); ok {
+					errorMsg = typeStr
+				}
+			}
+			// 添加完整的错误响应
+			result["api_error"] = apiError
+		} else {
+			// JSON解析失败，返回原始响应
+			result["raw_response"] = string(respBody)
+		}
+		if errorMsg == "" {
+			errorMsg = "API返回错误状态: " + resp.Status
+		}
+		result["error"] = errorMsg
+	}
+
+	return result
 }

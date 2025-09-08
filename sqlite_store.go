@@ -374,6 +374,9 @@ func (s *SQLiteStore) AddLog(ctx context.Context, e *LogEntry) error {
 		e.Time = JSONTime{time.Now()}
 	}
 
+	// 清理单调时钟信息，确保时间格式标准化
+	cleanTime := e.Time.Time.Round(0) // 移除单调时钟部分
+
 	// 在添加新日志前，先清理3天前的日志
 	// 清理失败不影响日志记录，静默忽略错误
 	_ = s.cleanupOldLogs(ctx)
@@ -381,7 +384,7 @@ func (s *SQLiteStore) AddLog(ctx context.Context, e *LogEntry) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO logs(time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time) 
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-	`, e.Time.Time, e.Model, e.ChannelID, e.StatusCode, e.Message, e.Duration, e.IsStreaming, e.FirstByteTime)
+	`, cleanTime, e.Model, e.ChannelID, e.StatusCode, e.Message, e.Duration, e.IsStreaming, e.FirstByteTime)
 	return err
 }
 

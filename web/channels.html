@@ -322,6 +322,132 @@
       opacity: 0.6;
       filter: grayscale(20%);
     }
+    
+    /* Test Modal Styles */
+    .test-modal-content {
+      max-width: 600px;
+    }
+    
+    .model-select {
+      width: 100%;
+      padding: 8px 12px;
+      border: 1px solid var(--neutral-300);
+      border-radius: 6px;
+      font-size: 0.875rem;
+      background: white;
+      transition: all 0.2s;
+      margin-bottom: 16px;
+    }
+    
+    .model-select:focus {
+      outline: none;
+      border-color: var(--primary-500);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    }
+    
+    .test-progress {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      margin: 16px 0;
+      padding: 12px;
+      background: rgba(59, 130, 246, 0.1);
+      border: 1px solid rgba(59, 130, 246, 0.2);
+      border-radius: 6px;
+    }
+    
+    .test-progress.show {
+      display: flex;
+    }
+    
+    .test-spinner {
+      width: 20px;
+      height: 20px;
+      border: 2px solid #e5e7eb;
+      border-top: 2px solid var(--primary-500);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    
+    .test-result {
+      margin: 16px 0;
+      padding: 12px;
+      border-radius: 6px;
+      display: none;
+    }
+    
+    .test-result.show {
+      display: block;
+    }
+    
+    .test-result.success {
+      background: rgba(34, 197, 94, 0.1);
+      border: 1px solid rgba(34, 197, 94, 0.2);
+      color: #059669;
+    }
+    
+    .test-result.error {
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.2);
+      color: #dc2626;
+    }
+    
+    .test-details {
+      margin-top: 8px;
+      font-size: 0.75rem;
+      opacity: 0.8;
+    }
+    
+    .response-section {
+      margin-top: 12px;
+      padding: 12px;
+      background: rgba(255, 255, 255, 0.5);
+      border: 1px solid rgba(0, 0, 0, 0.1);
+      border-radius: 6px;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+    
+    .response-section h4 {
+      margin: 0 0 8px 0;
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: var(--neutral-700);
+    }
+    
+    .response-content {
+      font-size: 0.8rem;
+      font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: rgba(0, 0, 0, 0.05);
+      padding: 8px;
+      border-radius: 4px;
+      border: 1px solid rgba(0, 0, 0, 0.1);
+    }
+    
+    .toggle-btn {
+      background: none;
+      border: 1px solid var(--neutral-300);
+      color: var(--primary-600);
+      font-size: 0.75rem;
+      padding: 4px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-top: 8px;
+      transition: all 0.2s;
+    }
+    
+    .toggle-btn:hover {
+      background: var(--neutral-50);
+      border-color: var(--primary-400);
+    }
   </style>
 </head>
 <body>
@@ -449,10 +575,44 @@
     </div>
   </div>
 
+  <!-- 测试渠道模态框 -->
+  <div id="testModal" class="modal">
+    <div class="modal-content test-modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title">测试渠道 - <span id="testChannelName"></span></h2>
+        <button class="close-btn" onclick="closeTestModal()">&times;</button>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="testModelSelect">选择测试模型</label>
+        <select id="testModelSelect" class="model-select">
+          <!-- 动态填充模型选项 -->
+        </select>
+      </div>
+      
+      <!-- 测试进度 -->
+      <div id="testProgress" class="test-progress">
+        <div class="test-spinner"></div>
+        <span>正在测试API连接...</span>
+      </div>
+      
+      <!-- 测试结果 -->
+      <div id="testResult" class="test-result">
+        <div id="testResultContent"></div>
+        <div id="testResultDetails" class="test-details"></div>
+      </div>
+      
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" onclick="closeTestModal()">关闭</button>
+        <button type="button" id="runTestBtn" class="btn btn-primary" onclick="runChannelTest()">开始测试</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     let channels = [];
     let editingChannelId = null;
     let deletingChannelId = null;
+    let testingChannelId = null;
     
     // Filter state
     let filters = {
@@ -654,6 +814,7 @@
               </div>
               <div class="channel-actions">
                 <button class="btn-icon" onclick="editChannel(${c.id})" title="编辑">编辑</button>
+                <button class="btn-icon" onclick="testChannel(${c.id}, '${escapeHtml(c.name)}')" title="测试API Key">测试</button>
                 <button class="btn-icon" onclick="toggleChannel(${c.id}, ${!c.enabled})">${c.enabled ? '禁用' : '启用'}</button>
                 <button class="btn-icon btn-danger" onclick="deleteChannel(${c.id}, '${escapeHtml(c.name)}')" title="删除">删除</button>
               </div>
@@ -864,8 +1025,187 @@
       if (e.key === 'Escape') {
         closeModal();
         closeDeleteModal();
+        closeTestModal();
       }
     });
+
+    // 测试渠道相关函数
+    function testChannel(id, name) {
+      const channel = channels.find(c => c.id === id);
+      if (!channel) return;
+
+      testingChannelId = id;
+      document.getElementById('testChannelName').textContent = name;
+
+      // 填充模型选择下拉框
+      const modelSelect = document.getElementById('testModelSelect');
+      modelSelect.innerHTML = '';
+      channel.models.forEach(model => {
+        const option = document.createElement('option');
+        option.value = model;
+        option.textContent = model;
+        modelSelect.appendChild(option);
+      });
+
+      // 重置状态
+      resetTestModal();
+
+      document.getElementById('testModal').classList.add('show');
+    }
+
+    function closeTestModal() {
+      document.getElementById('testModal').classList.remove('show');
+      testingChannelId = null;
+    }
+
+    function resetTestModal() {
+      document.getElementById('testProgress').classList.remove('show');
+      document.getElementById('testResult').classList.remove('show', 'success', 'error');
+      document.getElementById('runTestBtn').disabled = false;
+    }
+
+    async function runChannelTest() {
+      if (!testingChannelId) return;
+
+      const modelSelect = document.getElementById('testModelSelect');
+      const selectedModel = modelSelect.value;
+      if (!selectedModel) {
+        if (window.showError) showError('请选择一个模型');
+        return;
+      }
+
+      // 显示进度
+      document.getElementById('testProgress').classList.add('show');
+      document.getElementById('testResult').classList.remove('show');
+      document.getElementById('runTestBtn').disabled = true;
+
+      try {
+        const res = await fetch(`/admin/channels/${testingChannelId}/test`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: selectedModel })
+        });
+
+        if (!res.ok) {
+          throw new Error('HTTP ' + res.status);
+        }
+
+        const result = await res.json();
+        displayTestResult(result);
+      } catch (e) {
+        console.error('测试失败', e);
+        displayTestResult({
+          success: false,
+          error: '测试请求失败: ' + e.message
+        });
+      } finally {
+        document.getElementById('testProgress').classList.remove('show');
+        document.getElementById('runTestBtn').disabled = false;
+      }
+    }
+
+    function displayTestResult(result) {
+      const testResultDiv = document.getElementById('testResult');
+      const contentDiv = document.getElementById('testResultContent');
+      const detailsDiv = document.getElementById('testResultDetails');
+
+      testResultDiv.classList.remove('success', 'error');
+      testResultDiv.classList.add('show');
+
+      if (result.success) {
+        testResultDiv.classList.add('success');
+        contentDiv.innerHTML = `
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 18px;">✅</span>
+            <strong>${result.message || 'API测试成功'}</strong>
+          </div>
+        `;
+        
+        let details = `响应时间: ${result.duration_ms}ms`;
+        if (result.status_code) {
+          details += ` | 状态码: ${result.status_code}`;
+        }
+        
+        // 显示响应文本（如果有的话）
+        if (result.response_text) {
+          details += `
+            <div class="response-section">
+              <h4>API 响应内容</h4>
+              <div class="response-content">${escapeHtml(result.response_text)}</div>
+            </div>
+          `;
+        }
+        
+        // 显示完整API响应
+        if (result.api_response) {
+          const responseId = 'api-response-' + Date.now();
+          details += `
+            <div class="response-section">
+              <h4>完整 API 响应</h4>
+              <button class="toggle-btn" onclick="toggleResponse('${responseId}')">显示/隐藏 JSON</button>
+              <div id="${responseId}" class="response-content" style="display: none;">${escapeHtml(JSON.stringify(result.api_response, null, 2))}</div>
+            </div>
+          `;
+        } else if (result.raw_response) {
+          const rawId = 'raw-response-' + Date.now();
+          details += `
+            <div class="response-section">
+              <h4>原始响应</h4>
+              <button class="toggle-btn" onclick="toggleResponse('${rawId}')">显示/隐藏</button>
+              <div id="${rawId}" class="response-content" style="display: none;">${escapeHtml(result.raw_response)}</div>
+            </div>
+          `;
+        }
+        
+        detailsDiv.innerHTML = details;
+      } else {
+        testResultDiv.classList.add('error');
+        contentDiv.innerHTML = `
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 18px;">❌</span>
+            <strong>测试失败</strong>
+          </div>
+        `;
+        
+        let details = result.error || '未知错误';
+        if (result.duration_ms) {
+          details += `<br>响应时间: ${result.duration_ms}ms`;
+        }
+        if (result.status_code) {
+          details += ` | 状态码: ${result.status_code}`;
+        }
+        
+        // 显示完整错误响应
+        if (result.api_error) {
+          const errorId = 'api-error-' + Date.now();
+          details += `
+            <div class="response-section">
+              <h4>完整错误响应</h4>
+              <button class="toggle-btn" onclick="toggleResponse('${errorId}')">显示/隐藏 JSON</button>
+              <div id="${errorId}" class="response-content" style="display: none;">${escapeHtml(JSON.stringify(result.api_error, null, 2))}</div>
+            </div>
+          `;
+        } else if (result.raw_response) {
+          const rawId = 'raw-error-' + Date.now();
+          details += `
+            <div class="response-section">
+              <h4>原始错误响应</h4>
+              <button class="toggle-btn" onclick="toggleResponse('${rawId}')">显示/隐藏</button>
+              <div id="${rawId}" class="response-content" style="display: none;">${escapeHtml(result.raw_response)}</div>
+            </div>
+          `;
+        }
+        
+        detailsDiv.innerHTML = details;
+      }
+    }
+
+    function toggleResponse(elementId) {
+      const element = document.getElementById(elementId);
+      if (element) {
+        element.style.display = element.style.display === 'none' ? 'block' : 'none';
+      }
+    }
   </script>
   <script src="/web/ui.js"></script>
 </body>
