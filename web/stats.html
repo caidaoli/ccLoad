@@ -122,12 +122,30 @@
               <table class="modern-table">
                 <thead>
                   <tr>
-                    <th>渠道名称</th>
-                    <th>模型</th>
-                    <th style="color: var(--success-400);">成功次数</th>
-                    <th style="color: var(--error-400);">失败次数</th>
-                    <th>总次数</th>
-                    <th>成功率</th>
+                    <th class="sortable" data-column="channel_name" onclick="sortTable('channel_name')">
+                      渠道名称
+                      <span class="sort-indicator" id="sort-channel_name"></span>
+                    </th>
+                    <th class="sortable" data-column="model" onclick="sortTable('model')">
+                      模型
+                      <span class="sort-indicator" id="sort-model"></span>
+                    </th>
+                    <th class="sortable" data-column="success" onclick="sortTable('success')" style="color: var(--success-400);">
+                      成功次数
+                      <span class="sort-indicator" id="sort-success"></span>
+                    </th>
+                    <th class="sortable" data-column="error" onclick="sortTable('error')" style="color: var(--error-400);">
+                      失败次数
+                      <span class="sort-indicator" id="sort-error"></span>
+                    </th>
+                    <th class="sortable" data-column="total" onclick="sortTable('total')">
+                      总次数
+                      <span class="sort-indicator" id="sort-total"></span>
+                    </th>
+                    <th class="sortable" data-column="success_rate" onclick="sortTable('success_rate')">
+                      成功率
+                      <span class="sort-indicator" id="sort-success_rate"></span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody id="stats_tbody"></tbody>
@@ -218,6 +236,54 @@
       color: var(--error-400);
     }
 
+    /* 排序功能样式 */
+    .sortable {
+      cursor: pointer;
+      user-select: none;
+      position: relative;
+      transition: background-color 0.2s ease;
+    }
+
+    .sortable:hover {
+      background: rgba(0, 0, 0, 0.05) !important;
+    }
+
+    .sort-indicator {
+      position: absolute;
+      right: 8px;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 12px;
+      color: var(--neutral-400);
+      opacity: 0;
+      transition: all 0.2s ease;
+    }
+
+    .sortable:hover .sort-indicator {
+      opacity: 0.5;
+    }
+
+    .sortable.sorted .sort-indicator {
+      opacity: 1;
+      color: var(--primary-500);
+    }
+
+    .sortable.sorted:hover .sort-indicator {
+      opacity: 1;
+    }
+
+    .sort-indicator::after {
+      content: '⇅';
+    }
+
+    .sortable[data-sort-order="asc"] .sort-indicator::after {
+      content: '↑';
+    }
+
+    .sortable[data-sort-order="desc"] .sort-indicator::after {
+      content: '↓';
+    }
+
     .progress-bar {
       height: 4px;
       background: rgba(255, 255, 255, 0.1);
@@ -274,6 +340,10 @@
 
   <script>
     let statsData = null;
+    let sortState = {
+      column: null,
+      order: null // null, 'asc', 'desc'
+    };
 
     async function loadStats() {
       try {
@@ -357,6 +427,113 @@
       document.getElementById('total-models').textContent = models.size;
       document.getElementById('total-success').textContent = formatNumber(totalSuccess);
       document.getElementById('total-error').textContent = formatNumber(totalError);
+    }
+
+    // 表格排序功能
+    function sortTable(column) {
+      if (!statsData || !statsData.stats || statsData.stats.length === 0) return;
+      
+      // 确定排序状态：null -> desc -> asc -> null (三态循环)
+      let newOrder;
+      if (sortState.column !== column) {
+        // 切换到新列，从desc开始
+        newOrder = 'desc';
+      } else {
+        // 同一列循环：null -> desc -> asc -> null
+        if (sortState.order === null) {
+          newOrder = 'desc';
+        } else if (sortState.order === 'desc') {
+          newOrder = 'asc';
+        } else {
+          newOrder = null;
+        }
+      }
+      
+      // 更新排序状态
+      sortState.column = newOrder ? column : null;
+      sortState.order = newOrder;
+      
+      // 更新表头样式
+      updateSortHeaders();
+      
+      // 执行排序并重新渲染
+      applySorting();
+      renderStatsTable();
+    }
+
+    function updateSortHeaders() {
+      // 清除所有列的排序样式
+      document.querySelectorAll('.sortable').forEach(th => {
+        th.classList.remove('sorted');
+        th.removeAttribute('data-sort-order');
+      });
+      
+      // 如果有排序状态，设置当前列的样式
+      if (sortState.column && sortState.order) {
+        const currentHeader = document.querySelector(`[data-column="${sortState.column}"]`);
+        if (currentHeader) {
+          currentHeader.classList.add('sorted');
+          currentHeader.setAttribute('data-sort-order', sortState.order);
+        }
+      }
+    }
+
+    function applySorting() {
+      if (!sortState.column || !sortState.order) {
+        // 无排序状态，恢复原始顺序
+        statsData.stats = [...statsData.originalStats || statsData.stats];
+        return;
+      }
+      
+      // 保存原始数据（如果还没有保存）
+      if (!statsData.originalStats) {
+        statsData.originalStats = [...statsData.stats];
+      }
+      
+      const column = sortState.column;
+      const isAsc = sortState.order === 'asc';
+      
+      statsData.stats.sort((a, b) => {
+        let valueA, valueB;
+        
+        switch (column) {
+          case 'channel_name':
+            valueA = (a.channel_name || '').toLowerCase();
+            valueB = (b.channel_name || '').toLowerCase();
+            break;
+          case 'model':
+            valueA = (a.model || '').toLowerCase();
+            valueB = (b.model || '').toLowerCase();
+            break;
+          case 'success':
+            valueA = a.success || 0;
+            valueB = b.success || 0;
+            break;
+          case 'error':
+            valueA = a.error || 0;
+            valueB = b.error || 0;
+            break;
+          case 'total':
+            valueA = a.total || 0;
+            valueB = b.total || 0;
+            break;
+          case 'success_rate':
+            valueA = a.total > 0 ? (a.success / a.total) : 0;
+            valueB = b.total > 0 ? (b.success / b.total) : 0;
+            break;
+          default:
+            return 0;
+        }
+        
+        let result;
+        if (typeof valueA === 'string') {
+          result = valueA.localeCompare(valueB, 'zh-CN');
+        } else {
+          result = valueA - valueB;
+        }
+        
+        return isAsc ? result : -result;
+      });
     }
 
     function renderStatsTable() {

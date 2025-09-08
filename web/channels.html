@@ -264,7 +264,12 @@
           <div class="filter-controls">
             <div class="filter-group">
               <label class="filter-label">搜索渠道</label>
-              <input type="text" id="searchInput" class="filter-input" placeholder="输入渠道名称...">
+              <div style="position: relative;">
+                <input type="text" id="searchInput" class="filter-input" placeholder="输入渠道名称..." style="padding-right: 36px;">
+                <button id="clearSearchBtn" type="button" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--neutral-500); cursor: pointer; font-size: 14px; padding: 2px; opacity: 0; transition: opacity 0.2s; border-radius: 3px;" title="清空搜索" onmouseover="this.style.background='var(--neutral-100)'" onmouseout="this.style.background='none'">
+                  ✕
+                </button>
+              </div>
             </div>
             
             <div class="filter-group">
@@ -285,6 +290,12 @@
             
             <div class="filter-info" id="filterInfo">
               显示 <span id="filteredCount">0</span> / <span id="totalCount">0</span> 个渠道
+            </div>
+            
+            <div>
+              <button id="resetFiltersBtn" type="button" class="btn btn-secondary" style="padding: 8px 16px; font-size: 14px;" title="重置所有筛选条件">
+                重置筛选
+              </button>
             </div>
           </div>
         </div>
@@ -317,7 +328,12 @@
         </div>
         <div class="form-group">
           <label class="form-label" for="channelApiKey">API Key *</label>
-          <input type="password" id="channelApiKey" class="form-input" required>
+          <div style="position: relative;">
+            <input type="password" id="channelApiKey" class="form-input" required style="padding-right: 45px;">
+            <button type="button" id="toggleApiKeyBtn" onclick="toggleApiKeyVisibility()" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--neutral-500); cursor: pointer; padding: 4px; border-radius: 3px; font-size: 14px;" title="显示/隐藏API Key">
+              👁️
+            </button>
+          </div>
         </div>
         <div class="form-group">
           <label class="form-label" for="channelPriority">优先级</label>
@@ -444,12 +460,29 @@
     function setupFilterListeners() {
       // Search input with debounce
       const searchInput = document.getElementById('searchInput');
+      const clearSearchBtn = document.getElementById('clearSearchBtn');
+      
       const debouncedFilter = debounce(() => {
         filters.search = searchInput.value;
         filterChannels();
+        updateClearButton();
       }, 300);
       
       searchInput.addEventListener('input', debouncedFilter);
+      
+      // Clear search button
+      clearSearchBtn.addEventListener('click', () => {
+        searchInput.value = '';
+        filters.search = '';
+        filterChannels();
+        updateClearButton();
+        searchInput.focus();
+      });
+      
+      // Update clear button visibility
+      function updateClearButton() {
+        clearSearchBtn.style.opacity = searchInput.value ? '1' : '0';
+      }
       
       // Status filter
       document.getElementById('statusFilter').addEventListener('change', (e) => {
@@ -462,6 +495,42 @@
         filters.model = e.target.value;
         filterChannels();
       });
+      
+      // Reset filters button
+      document.getElementById('resetFiltersBtn').addEventListener('click', () => {
+        // Reset filter values
+        filters = {
+          search: '',
+          status: 'all',
+          model: 'all'
+        };
+        
+        // Reset form elements
+        searchInput.value = '';
+        document.getElementById('statusFilter').value = 'all';
+        document.getElementById('modelFilter').value = 'all';
+        
+        // Update display
+        filterChannels();
+        updateClearButton();
+        searchInput.focus();
+      });
+    }
+
+    // Toggle API Key visibility
+    function toggleApiKeyVisibility() {
+      const apiKeyInput = document.getElementById('channelApiKey');
+      const toggleBtn = document.getElementById('toggleApiKeyBtn');
+      
+      if (apiKeyInput.type === 'password') {
+        apiKeyInput.type = 'text';
+        toggleBtn.textContent = '🙈';
+        toggleBtn.title = '隐藏API Key';
+      } else {
+        apiKeyInput.type = 'password';
+        toggleBtn.textContent = '👁️';
+        toggleBtn.title = '显示API Key';
+      }
     }
 
     async function loadChannels() {
@@ -483,14 +552,13 @@
         el.innerHTML = '<div class="glass-card">暂无符合条件的渠道</div>';
         return;
       }
-      el.innerHTML = channels.map(c => `
+      el.innerHTML = channelsToRender.map(c => `
         <div class="glass-card" id="channel-${c.id}">
           <div class="flex justify-between items-center">
             <div style="flex: 1;">
               <div class="section-title">${escapeHtml(c.name)}</div>
               <div class="text-sm" style="color: var(--neutral-600); margin-top: 4px;">
-                <div>URL: ${escapeHtml(c.url)}</div>
-                <div>优先级: ${c.priority} · ${c.enabled ? '已启用' : '已禁用'}</div>
+                <div>URL: ${escapeHtml(c.url)} | 优先级: ${c.priority} | ${c.enabled ? '已启用' : '已禁用'}</div>
                 <div>模型: ${Array.isArray(c.models) ? c.models.join(', ') : ''}</div>
               </div>
               ${cooldownBadge(c)}
@@ -531,6 +599,13 @@
       document.getElementById('modalTitle').textContent = '添加渠道';
       document.getElementById('channelForm').reset();
       document.getElementById('channelEnabled').checked = true;
+      // 重置API Key输入框可见性
+      const apiKeyInput = document.getElementById('channelApiKey');
+      const toggleBtn = document.getElementById('toggleApiKeyBtn');
+      apiKeyInput.type = 'password';
+      toggleBtn.textContent = '👁️';
+      toggleBtn.title = '显示API Key';
+      
       document.getElementById('channelModal').classList.add('show');
     }
 
@@ -546,6 +621,14 @@
       document.getElementById('channelPriority').value = channel.priority;
       document.getElementById('channelModels').value = channel.models.join(',');
       document.getElementById('channelEnabled').checked = channel.enabled;
+      
+      // 编辑时默认显示API Key以便核对
+      const apiKeyInput = document.getElementById('channelApiKey');
+      const toggleBtn = document.getElementById('toggleApiKeyBtn');
+      apiKeyInput.type = 'text';
+      toggleBtn.textContent = '🙈';
+      toggleBtn.title = '隐藏API Key';
+      
       document.getElementById('channelModal').classList.add('show');
     }
 
