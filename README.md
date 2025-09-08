@@ -36,11 +36,13 @@ go run .
 ```bash
 # 设置环境变量
 export CCLOAD_PASS=your_admin_password
+export CCLOAD_AUTH=token1,token2,token3  # 可选，API 访问令牌
 export PORT=8080
 export SQLITE_PATH=./data/ccload.db
 
 # 或使用 .env 文件
 echo "CCLOAD_PASS=your_admin_password" > .env
+echo "CCLOAD_AUTH=your_api_token" >> .env
 echo "PORT=8080" >> .env
 echo "SQLITE_PATH=./data/ccload.db" >> .env
 
@@ -59,8 +61,26 @@ echo "SQLITE_PATH=./data/ccload.db" >> .env
 发送请求到 Claude API：
 
 ```bash
+# 无需认证（未设置 CCLOAD_AUTH）
 curl -X POST http://localhost:8080/v1/messages \
   -H "Content-Type: application/json" \
+  -H "x-api-key: your-claude-api-key" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{
+    "model": "claude-3-sonnet-20240229",
+    "max_tokens": 1024,
+    "messages": [
+      {
+        "role": "user",
+        "content": "Hello, Claude!"
+      }
+    ]
+  }'
+
+# 需要认证（设置了 CCLOAD_AUTH）
+curl -X POST http://localhost:8080/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-api-token" \
   -H "x-api-key: your-claude-api-key" \
   -H "anthropic-version: 2023-06-01" \
   -d '{
@@ -139,6 +159,7 @@ ccLoad
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
 | `CCLOAD_PASS` | "admin" | 管理界面密码 |
+| `CCLOAD_AUTH` | 无 | API 访问令牌（多个用逗号分隔） |
 | `PORT` | "8080" | 服务端口 |
 | `SQLITE_PATH` | "data/ccload.db" | 数据库文件路径 |
 
@@ -151,7 +172,8 @@ ccLoad
 
 ## 🛡️ 安全考虑
 
-- 生产环境必须设置强密码
+- 生产环境必须设置强密码 `CCLOAD_PASS`
+- 建议设置 `CCLOAD_AUTH` 以保护 API 端点访问
 - API Key 仅在内存使用，不记录日志
 - 支持 HttpOnly 和 SameSite Cookie
 - 建议使用 HTTPS 反向代理
