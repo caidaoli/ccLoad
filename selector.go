@@ -58,12 +58,13 @@ func (s *Server) selectCandidates(ctx context.Context, model string) ([]*Config,
 		// 使用内存轮询缓存
 		key := fmt.Sprintf("%s_%d", model, p)
 		start := 0
-		if idx, ok := s.rrCache.Load(key); ok {
-			start = idx.(int)
+		val, found := s.rrCache.Get(key)
+		if found {
+			start = val
 		} else {
 			// 从数据库加载持久化的轮询指针
 			start = s.store.NextRR(ctx, model, p, len(g))
-			s.rrCache.Store(key, start)
+			s.rrCache.Set(key, start, 1)
 		}
 
 		// rotate: g[start:], then g[:start]
@@ -74,7 +75,7 @@ func (s *Server) selectCandidates(ctx context.Context, model string) ([]*Config,
 
 		// 更新轮询指针
 		next := (start + 1) % len(g)
-		s.rrCache.Store(key, next)
+		s.rrCache.Set(key, next, 1)
 		_ = s.store.SetRR(ctx, model, p, next)
 	}
 	return out, nil

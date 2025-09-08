@@ -17,7 +17,7 @@
     <key>StandardOutPath</key>
     <string>/Users/caidaoli/Share/Source/go/ccLoad/logs/ccload.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/caidaoli/Share/Source/go/ccLoad/logs/ccload.error.log</string>
+    <string>/Users/caidaoli/Share/Source/go/ccLoad/logs/ccload.log</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>

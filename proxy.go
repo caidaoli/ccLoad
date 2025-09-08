@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/bytedance/sonic"
 )
 
 type fwResult struct {
@@ -126,7 +127,7 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, body []byte,
 		rb, readErr := io.ReadAll(resp.Body)
 		if readErr != nil {
 			// 记录读取错误，但仍返回可用部分
-			s.addLogAsync(&LogEntry{Time: time.Now(), Message: fmt.Sprintf("error reading upstream body: %v", readErr)})
+			s.addLogAsync(&LogEntry{Time: JSONTime{time.Now()}, Message: fmt.Sprintf("error reading upstream body: %v", readErr)})
 		}
 		_ = resp.Body.Close()
 		duration := time.Since(startTime).Seconds()
@@ -152,7 +153,8 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, body []byte,
 
 	// 使用小缓冲区实现低延迟传输，支持ctx取消
 	buf := make([]byte, 8*1024) // 8KB缓冲区，平衡延迟与系统调用开销
-	streamLoop: for {
+streamLoop:
+	for {
 		// 尝试上下文取消
 		select {
 		case <-ctx.Done():
@@ -219,7 +221,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Model  string `json:"model"`
 		Stream bool   `json:"stream"`
 	}
-	if err := json.Unmarshal(all, &reqModel); err != nil || reqModel.Model == "" {
+	if err := sonic.Unmarshal(all, &reqModel); err != nil || reqModel.Model == "" {
 		http.Error(w, "invalid JSON or missing model", http.StatusBadRequest)
 		return
 	}
@@ -243,7 +245,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// If no candidates available (all cooled or none support), return 503
 	if len(cands) == 0 {
 		s.addLogAsync(&LogEntry{
-			Time:        time.Now(),
+			Time:        JSONTime{time.Now()},
 			Model:       reqModel.Model,
 			StatusCode:  503,
 			Message:     "no available upstream (all cooled or none)",
@@ -266,7 +268,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			s.cooldownCache.Store(cfg.ID, cooldownUntil)
 			_, _ = s.store.BumpCooldownOnError(ctx, cfg.ID, cooldownUntil)
 			s.addLogAsync(&LogEntry{
-				Time:        time.Now(),
+				Time:        JSONTime{time.Now()},
 				Model:       reqModel.Model,
 				ChannelID:   &cfg.ID,
 				StatusCode:  0,
@@ -286,7 +288,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 			// 记录成功日志
 			logEntry := &LogEntry{
-				Time:        time.Now(),
+				Time:        JSONTime{time.Now()},
 				Model:       reqModel.Model,
 				ChannelID:   &cfg.ID,
 				StatusCode:  res.Status,
@@ -314,7 +316,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 		// 记录错误日志
 		logEntry := &LogEntry{
-			Time:        time.Now(),
+			Time:        JSONTime{time.Now()},
 			Model:       reqModel.Model,
 			ChannelID:   &cfg.ID,
 			StatusCode:  res.Status,
@@ -333,7 +335,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	// All failed
 	s.addLogAsync(&LogEntry{
-		Time:        time.Now(),
+		Time:        JSONTime{time.Now()},
 		Model:       reqModel.Model,
 		StatusCode:  503,
 		Message:     "exhausted backends",

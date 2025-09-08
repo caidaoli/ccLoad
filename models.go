@@ -19,9 +19,32 @@ type Config struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// 自定义时间类型，强制使用RFC3339格式进行JSON序列化
+type JSONTime struct {
+	time.Time
+}
+
+func (jt JSONTime) MarshalJSON() ([]byte, error) {
+	return []byte(`"` + jt.Time.Format(time.RFC3339) + `"`), nil
+}
+
+func (jt *JSONTime) UnmarshalJSON(data []byte) error {
+	str := string(data)
+	if str == "null" {
+		return nil
+	}
+	str = str[1 : len(str)-1] // 去掉引号
+	t, err := time.Parse(time.RFC3339, str)
+	if err != nil {
+		return err
+	}
+	jt.Time = t
+	return nil
+}
+
 type LogEntry struct {
 	ID            int64     `json:"id"`
-	Time          time.Time `json:"time"`
+	Time          JSONTime  `json:"time"`
 	Model         string    `json:"model"`
 	ChannelID     *int64    `json:"channel_id,omitempty"`
 	ChannelName   string    `json:"channel_name,omitempty"`

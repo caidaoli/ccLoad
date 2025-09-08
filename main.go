@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
@@ -23,6 +24,9 @@ func main() {
 	s, err := NewSQLiteStore(dbPath)
 	if err != nil {
 		log.Fatalf("sqlite 初始化失败: %v", err)
+	}
+	if err := s.Vacuum(context.Background()); err != nil {
+		log.Printf("VACUUM 执行失败: %v", err)
 	}
 	log.Printf("using sqlite store: %s", dbPath)
 	var store Store = s

@@ -524,6 +524,9 @@
     function formatTime(timeStr) {
       try {
         const date = new Date(timeStr);
+        if (isNaN(date.getTime()) || date.getFullYear() < 2020) {
+          return '-';
+        }
         return date.toLocaleString('zh-CN', {
           year: 'numeric',
           month: '2-digit',
@@ -533,7 +536,7 @@
           second: '2-digit'
         });
       } catch (e) {
-        return timeStr || '-';
+        return '-';
       }
     }
     

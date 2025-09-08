@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
+	"github.com/bytedance/sonic"
 	"errors"
 	"fmt"
 	"os"
@@ -11,7 +11,7 @@ import (
 	"sort"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 type SQLiteStore struct {
@@ -22,8 +22,8 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_foreign_keys=on", path)
-	db, err := sql.Open("sqlite", dsn)
+	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_foreign_keys=on&_pragma=journal_mode=WAL", path)
+	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -161,6 +161,11 @@ func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
 
+func (s *SQLiteStore) Vacuum(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, "VACUUM")
+	return err
+}
+
 // ---- Store interface impl ----
 
 func (s *SQLiteStore) ListConfigs(ctx context.Context) ([]*Config, error) {
@@ -184,7 +189,7 @@ func (s *SQLiteStore) ListConfigs(ctx context.Context) ([]*Config, error) {
 			return nil, err
 		}
 		c.Enabled = enabledInt != 0
-		if err := json.Unmarshal([]byte(modelsStr), &c.Models); err != nil {
+		if err := sonic.Unmarshal([]byte(modelsStr), &c.Models); err != nil {
 			c.Models = nil
 		}
 		cc := c
@@ -211,13 +216,13 @@ func (s *SQLiteStore) GetConfig(ctx context.Context, id int64) (*Config, error) 
 		return nil, err
 	}
 	c.Enabled = enabledInt != 0
-	_ = json.Unmarshal([]byte(modelsStr), &c.Models)
+	_ = sonic.Unmarshal([]byte(modelsStr), &c.Models)
 	return &c, nil
 }
 
 func (s *SQLiteStore) CreateConfig(ctx context.Context, c *Config) (*Config, error) {
 	now := time.Now()
-	modelsStr, _ := json.Marshal(c.Models)
+	modelsStr, _ := sonic.Marshal(c.Models)
 
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO channels(name, api_key, url, priority, models, enabled, created_at, updated_at) 
@@ -263,7 +268,7 @@ func (s *SQLiteStore) UpdateConfig(ctx context.Context, id int64, upd *Config) (
 	}
 
 	cur.UpdatedAt = time.Now()
-	modelsStr, _ := json.Marshal(cur.Models)
+	modelsStr, _ := sonic.Marshal(cur.Models)
 
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE channels 
@@ -365,8 +370,8 @@ func (s *SQLiteStore) ResetCooldown(ctx context.Context, configID int64) error {
 }
 
 func (s *SQLiteStore) AddLog(ctx context.Context, e *LogEntry) error {
-	if e.Time.IsZero() {
-		e.Time = time.Now()
+	if e.Time.Time.IsZero() {
+		e.Time = JSONTime{time.Now()}
 	}
 
 	// 在添加新日志前，先清理3天前的日志
@@ -376,7 +381,7 @@ func (s *SQLiteStore) AddLog(ctx context.Context, e *LogEntry) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO logs(time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time) 
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-	`, e.Time, e.Model, e.ChannelID, e.StatusCode, e.Message, e.Duration, e.IsStreaming, e.FirstByteTime)
+	`, e.Time.Time, e.Model, e.ChannelID, e.StatusCode, e.Message, e.Duration, e.IsStreaming, e.FirstByteTime)
 	return err
 }
 
@@ -440,11 +445,14 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 		var duration sql.NullFloat64
 		var isStreamingInt int
 		var firstByteTime sql.NullFloat64
+		var rawTime time.Time
 
-		if err := rows.Scan(&e.ID, &e.Time, &e.Model, &cfgID, &chName,
+		if err := rows.Scan(&e.ID, &rawTime, &e.Model, &cfgID, &chName,
 			&e.StatusCode, &e.Message, &duration, &isStreamingInt, &firstByteTime); err != nil {
 			return nil, err
 		}
+
+		e.Time = JSONTime{rawTime}
 
 		if cfgID.Valid {
 			id := cfgID.Int64

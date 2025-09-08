@@ -5,16 +5,18 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/hex"
-	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"sync/atomic"
+	"github.com/bytedance/sonic"
+	ristretto "github.com/dgraph-io/ristretto/v2"
 )
 
 type Server struct {
@@ -32,7 +34,7 @@ type Server struct {
 	configCacheMux sync.RWMutex
 	configCacheExp atomic.Int64 // 缓存过期时间戳
 
-	rrCache       sync.Map // model_priority -> nextIndex
+	rrCache       *ristretto.Cache[string, int]
 	cooldownCache sync.Map // channelID -> expireTime
 
 	logChan    chan *LogEntry // 异步日志通道
@@ -62,30 +64,30 @@ func NewServer(store Store) *Server {
 		Timeout:   5 * time.Second,  // DNS解析+TCP连接建立超时
 		KeepAlive: 30 * time.Second, // TCP keepalive间隔
 	}
-	
-    transport := &http.Transport{
+
+	transport := &http.Transport{
 		// 连接池配置
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
 		IdleConnTimeout:     90 * time.Second,
 		MaxConnsPerHost:     100,
-		
+
 		// 使用优化的Dialer
-		DialContext:              dialer.DialContext,
-		
+		DialContext: dialer.DialContext,
+
 		// 关键超时配置 - 直接影响TTFB性能
-		TLSHandshakeTimeout:      5 * time.Second,   // TLS握手超时
-		ResponseHeaderTimeout:    10 * time.Second,  // 响应头读取超时(影响TTFB)
-		ExpectContinueTimeout:    1 * time.Second,   // 100-continue超时
-		
+		TLSHandshakeTimeout:   5 * time.Second,  // TLS握手超时
+		ResponseHeaderTimeout: 10 * time.Second, // 响应头读取超时(影响TTFB)
+		ExpectContinueTimeout: 1 * time.Second,  // 100-continue超时
+
 		// 传输优化
-		DisableCompression:       false,
-		DisableKeepAlives:        false,
-		ForceAttemptHTTP2:        true,              // 优先使用HTTP/2
-		WriteBufferSize:          64 * 1024,         // 64KB写缓冲区
-		ReadBufferSize:           64 * 1024,         // 64KB读缓冲区
-        // 启用TLS会话缓存，减少重复握手耗时
-        TLSClientConfig:        &tls.Config{ClientSessionCache: tls.NewLRUClientSessionCache(1024)},
+		DisableCompression: false,
+		DisableKeepAlives:  false,
+		ForceAttemptHTTP2:  true,      // 优先使用HTTP/2
+		WriteBufferSize:    64 * 1024, // 64KB写缓冲区
+		ReadBufferSize:     64 * 1024, // 64KB读缓冲区
+		// 启用TLS会话缓存，减少重复握手耗时
+		TLSClientConfig: &tls.Config{ClientSessionCache: tls.NewLRUClientSessionCache(1024)},
 	}
 
 	s := &Server{
@@ -101,6 +103,16 @@ func NewServer(store Store) *Server {
 		logWorkers: 3,                          // 3个日志工作协程
 	}
 
+	rrCfg := &ristretto.Config[string, int]{
+		NumCounters: 10000,
+		MaxCost:     1 << 20,
+		BufferItems: 64,
+	}
+	var err error
+	s.rrCache, err = ristretto.NewCache(rrCfg)
+	if err != nil {
+		panic("failed to create rrCache: " + err.Error())
+	}
 	// 启动日志工作协程
 	for i := 0; i < s.logWorkers; i++ {
 		go s.logWorker()
@@ -111,13 +123,15 @@ func NewServer(store Store) *Server {
 	go s.cleanExpiredSessions()
 
 	return s
+
 }
 
 // helper: write JSON
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	data, _ := sonic.Marshal(v)
+	w.Write(data)
 }
 
 func parseInt64Param(s string) (int64, error) {
@@ -241,7 +255,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Failed to read request body"})
+		return
+	}
+
+	if err := sonic.Unmarshal(body, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request format"})
 		return
 	}

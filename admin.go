@@ -1,7 +1,8 @@
 package main
 
 import (
-	"encoding/json"
+	"github.com/bytedance/sonic"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -37,7 +38,12 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, out)
 	case http.MethodPost:
 		var in Config
-		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "failed to read body", http.StatusBadRequest)
+			return
+		}
+		if err := sonic.Unmarshal(body, &in); err != nil {
 			http.Error(w, "bad json", http.StatusBadRequest)
 			return
 		}
@@ -74,7 +80,12 @@ func (s *Server) handleChannelByID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, cfg)
 	case http.MethodPut:
 		var in Config
-		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "failed to read body", http.StatusBadRequest)
+			return
+		}
+		if err := sonic.Unmarshal(body, &in); err != nil {
 			http.Error(w, "bad json", http.StatusBadRequest)
 			return
 		}
