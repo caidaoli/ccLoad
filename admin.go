@@ -62,7 +62,7 @@ func (s *Server) handleChannels(c *gin.Context) {
 	router := NewMethodRouter().
 		GET(s.handleListChannels).
 		POST(s.handleCreateChannel)
-	
+
 	router.Handle(c)
 }
 
@@ -73,7 +73,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
-	
+
 	// 附带冷却状态
 	now := time.Now()
 	out := make([]ChannelWithCooldown, 0, len(cfgs))
@@ -86,7 +86,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		}
 		out = append(out, oc)
 	}
-	
+
 	RespondJSON(c, http.StatusOK, out)
 }
 
@@ -97,13 +97,13 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid request: "+err.Error())
 		return
 	}
-	
+
 	created, err := s.store.CreateConfig(c.Request.Context(), req.ToConfig())
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
-	
+
 	RespondJSON(c, http.StatusCreated, created)
 }
 
@@ -114,12 +114,12 @@ func (s *Server) handleChannelByID(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel id")
 		return
 	}
-	
+
 	router := NewMethodRouter().
 		GET(func(c *gin.Context) { s.handleGetChannel(c, id) }).
 		PUT(func(c *gin.Context) { s.handleUpdateChannel(c, id) }).
 		DELETE(func(c *gin.Context) { s.handleDeleteChannel(c, id) })
-	
+
 	router.Handle(c)
 }
 
@@ -141,14 +141,14 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		RespondError(c, http.StatusNotFound, fmt.Errorf("channel not found"))
 		return
 	}
-	
+
 	// 解析请求为通用map以支持部分更新
 	var rawReq map[string]interface{}
 	if err := c.ShouldBindJSON(&rawReq); err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid request format")
 		return
 	}
-	
+
 	// 检查是否为简单的enabled字段更新
 	if len(rawReq) == 1 {
 		if enabled, ok := rawReq["enabled"].(bool); ok {
@@ -162,25 +162,25 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 			return
 		}
 	}
-	
+
 	// 处理完整更新：重新序列化为ChannelRequest
 	reqBytes, err := sonic.Marshal(rawReq)
 	if err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid request format")
 		return
 	}
-	
+
 	var req ChannelRequest
 	if err := sonic.Unmarshal(reqBytes, &req); err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid request format")
 		return
 	}
-	
+
 	if err := req.Validate(); err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	
+
 	upd, err := s.store.UpdateConfig(c.Request.Context(), id, req.ToConfig())
 	if err != nil {
 		RespondError(c, http.StatusNotFound, err)
@@ -201,7 +201,7 @@ func (s *Server) handleDeleteChannel(c *gin.Context, id int64) {
 // Admin: /admin/errors?hours=24&limit=100&offset=0 - 重构版本
 func (s *Server) handleErrors(c *gin.Context) {
 	params := ParsePaginationParams(c)
-	
+
 	// 过滤：按渠道ID或渠道名
 	var lf LogFilter
 	if cidStr := strings.TrimSpace(c.Query("channel_id")); cidStr != "" {
@@ -221,14 +221,14 @@ func (s *Server) handleErrors(c *gin.Context) {
 	if ml := strings.TrimSpace(c.Query("model_like")); ml != "" {
 		lf.ModelLike = ml
 	}
-	
+
 	since := params.GetSinceTime()
 	logs, err := s.store.ListLogs(c.Request.Context(), since, params.Limit, params.Offset, &lf)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
-	
+
 	RespondJSON(c, http.StatusOK, logs)
 }
 
@@ -239,31 +239,31 @@ func (s *Server) handleMetrics(c *gin.Context) {
 	if bucketMin <= 0 {
 		bucketMin = 5
 	}
-	
+
 	since := params.GetSinceTime()
 	pts, err := s.store.Aggregate(c.Request.Context(), since, time.Duration(bucketMin)*time.Minute)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
-	
+
 	// 添加调试信息
 	totalReqs := 0
 	for _, pt := range pts {
 		totalReqs += pt.Success + pt.Error
 	}
-	
+
 	c.Header("X-Debug-Since", since.Format(time.RFC3339))
 	c.Header("X-Debug-Points", fmt.Sprintf("%d", len(pts)))
 	c.Header("X-Debug-Total", fmt.Sprintf("%d", totalReqs))
-	
+
 	RespondJSON(c, http.StatusOK, pts)
 }
 
 // Admin: /admin/stats?hours=24&channel_name_like=xxx&model_like=xxx - 重构版本
 func (s *Server) handleStats(c *gin.Context) {
 	params := ParsePaginationParams(c)
-	
+
 	// 构建过滤条件（复用errors API的逻辑）
 	var lf LogFilter
 	if cidStr := strings.TrimSpace(c.Query("channel_id")); cidStr != "" {
@@ -283,14 +283,14 @@ func (s *Server) handleStats(c *gin.Context) {
 	if ml := strings.TrimSpace(c.Query("model_like")); ml != "" {
 		lf.ModelLike = ml
 	}
-	
+
 	since := params.GetSinceTime()
 	stats, err := s.store.GetStats(c.Request.Context(), since, &lf)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
-	
+
 	RespondJSON(c, http.StatusOK, gin.H{"stats": stats})
 }
 
@@ -303,20 +303,20 @@ func (s *Server) handlePublicSummary(c *gin.Context) {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
-	
+
 	// 计算总体统计
 	totalSuccess := 0
 	totalError := 0
 	totalChannels := make(map[string]bool)
 	totalModels := make(map[string]bool)
-	
+
 	for _, stat := range stats {
 		totalSuccess += stat.Success
 		totalError += stat.Error
 		totalChannels[stat.ChannelName] = true
 		totalModels[stat.Model] = true
 	}
-	
+
 	response := gin.H{
 		"total_requests":   totalSuccess + totalError,
 		"success_requests": totalSuccess,
@@ -325,7 +325,7 @@ func (s *Server) handlePublicSummary(c *gin.Context) {
 		"active_models":    len(totalModels),
 		"hours":            params.Hours,
 	}
-	
+
 	RespondJSON(c, http.StatusOK, response)
 }
 
@@ -350,21 +350,21 @@ func (s *Server) handleChannelTest(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel id")
 		return
 	}
-	
+
 	// 解析请求体
 	var testReq TestChannelRequest
 	if err := BindAndValidate(c, &testReq); err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid request: "+err.Error())
 		return
 	}
-	
+
 	// 获取渠道配置
 	cfg, err := s.store.GetConfig(c.Request.Context(), id)
 	if err != nil {
 		RespondError(c, http.StatusNotFound, fmt.Errorf("channel not found"))
 		return
 	}
-	
+
 	// 检查模型是否支持
 	modelSupported := false
 	for _, model := range cfg.Models {
@@ -380,7 +380,7 @@ func (s *Server) handleChannelTest(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	// 执行测试
 	testResult := s.testChannelAPI(cfg, testReq.Model)
 	RespondJSON(c, http.StatusOK, testResult)
@@ -398,7 +398,15 @@ func (s *Server) testChannelAPI(cfg *Config, model string) map[string]interface{
 				"content": "test",
 			},
 		},
-		"system": "You are Claude Code, Anthropic's official CLI for Claude.",
+		"system": []map[string]interface{}{
+			{
+				"type": "text",
+				"text": "You are Claude Code, Anthropic's official CLI for Claude.",
+				"cache_control": map[string]interface{}{
+					"type": "ephemeral",
+				},
+			},
+		},
 	}
 
 	reqBody, err := sonic.Marshal(testMessage)

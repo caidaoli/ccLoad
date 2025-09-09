@@ -1093,7 +1093,9 @@
         }
 
         const result = await res.json();
-        displayTestResult(result);
+        // 检查是否有嵌套的data字段（标准API响应格式）
+        const testResult = result.data || result;
+        displayTestResult(testResult);
       } catch (e) {
         console.error('测试失败', e);
         displayTestResult({
