@@ -2,14 +2,16 @@
 
 # 变量定义
 SERVICE_NAME = com.ccload.service
+PLIST_TEMPLATE = $(SERVICE_NAME).plist.template
 PLIST_FILE = $(SERVICE_NAME).plist
 LAUNCH_AGENTS_DIR = $(HOME)/Library/LaunchAgents
 TARGET_PLIST = $(LAUNCH_AGENTS_DIR)/$(PLIST_FILE)
 BINARY_NAME = ccload
 LOG_DIR = logs
+PROJECT_DIR = $(shell pwd)
 GOTAGS ?= go_json
 
-.PHONY: help build install-service uninstall-service start stop restart status logs clean
+.PHONY: help build generate-plist install-service uninstall-service start stop restart status logs clean
 
 # 默认目标
 help:
@@ -17,6 +19,7 @@ help:
 	@echo ""
 	@echo "可用命令:"
 	@echo "  build             - 构建二进制文件"
+	@echo "  generate-plist    - 从模板生成 plist 文件"
 	@echo "  install-service   - 安装 LaunchAgent 服务"
 	@echo "  uninstall-service - 卸载 LaunchAgent 服务"
 	@echo "  start            - 启动服务"
@@ -34,8 +37,14 @@ build:
 
 # 创建必要的目录
 
+# 生成 plist 文件（从模板动态替换路径）
+generate-plist:
+	@echo "从模板生成 plist 文件..."
+	@sed 's|{{PROJECT_DIR}}|$(PROJECT_DIR)|g' $(PLIST_TEMPLATE) > $(PLIST_FILE)
+	@echo "plist 文件已生成: $(PLIST_FILE)"
+
 # 安装服务
-install-service: build
+install-service: build generate-plist
 	@echo "安装 LaunchAgent 服务..."
 	@mkdir -p $(LOG_DIR)
 	@mkdir -p $(LAUNCH_AGENTS_DIR)
@@ -103,6 +112,7 @@ error-logs:
 clean:
 	@echo "清理构建文件和日志..."
 	@rm -f $(BINARY_NAME)
+	@rm -f $(PLIST_FILE)
 	@rm -rf $(LOG_DIR)
 	@echo "清理完成"
 
