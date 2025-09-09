@@ -671,6 +671,36 @@ body {
   color: var(--warning-500);
 }
 
+/* ===== 统计卡片语义化颜色 ===== */
+.metric-total {
+  color: var(--primary-600);
+}
+
+.metric-success {
+  color: var(--success-500);
+}
+
+.metric-error {
+  color: var(--error-500);
+}
+
+.metric-rate {
+  color: var(--primary-600);
+}
+
+/* 成功率动态颜色 */
+.metric-rate.high-performance {
+  color: var(--success-500);
+}
+
+.metric-rate.medium-performance {
+  color: var(--warning-500);
+}
+
+.metric-rate.low-performance {
+  color: var(--error-500);
+}
+
 .status-dot {
   display: inline-block;
   width: 8px;
