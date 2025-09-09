@@ -14,105 +14,194 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Admin: /admin/channels (GET, POST) - Gin版本
-func (s *Server) handleChannels(c *gin.Context) {
-	switch c.Request.Method {
-	case http.MethodGet:
-		cfgs, err := s.store.ListConfigs(c.Request.Context())
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		// 附带冷却状态（until与剩余毫秒）
-		type outCh struct {
-			*Config
-			CooldownUntil       *time.Time `json:"cooldown_until,omitempty"`
-			CooldownRemainingMS int64      `json:"cooldown_remaining_ms,omitempty"`
-		}
-		now := time.Now()
-		out := make([]outCh, 0, len(cfgs))
-		for _, cfg := range cfgs {
-			oc := outCh{Config: cfg}
-			if until, ok := s.store.GetCooldownUntil(c.Request.Context(), cfg.ID); ok && until.After(now) {
-				u := until // capture
-				oc.CooldownUntil = &u
-				oc.CooldownRemainingMS = int64(until.Sub(now) / time.Millisecond)
-			}
-			out = append(out, oc)
-		}
-		c.JSON(http.StatusOK, out)
-	case http.MethodPost:
-		var in Config
-		if err := c.ShouldBindJSON(&in); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "bad json"})
-			return
-		}
-		if in.Name == "" || in.APIKey == "" || in.URL == "" || len(in.Models) == 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "missing fields name/api_key/url/models"})
-			return
-		}
-		created, err := s.store.CreateConfig(c.Request.Context(), &in)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusCreated, created)
-	default:
-		c.JSON(http.StatusMethodNotAllowed, gin.H{"error": "method not allowed"})
+// ChannelRequest 渠道创建/更新请求结构
+type ChannelRequest struct {
+	Name     string   `json:"name" binding:"required"`
+	APIKey   string   `json:"api_key" binding:"required"`
+	URL      string   `json:"url" binding:"required,url"`
+	Priority int      `json:"priority"`
+	Models   []string `json:"models" binding:"required,min=1"`
+	Enabled  bool     `json:"enabled"`
+}
+
+// Validate 实现RequestValidator接口
+func (cr *ChannelRequest) Validate() error {
+	if strings.TrimSpace(cr.Name) == "" {
+		return fmt.Errorf("name cannot be empty")
+	}
+	if strings.TrimSpace(cr.APIKey) == "" {
+		return fmt.Errorf("api_key cannot be empty")
+	}
+	if len(cr.Models) == 0 {
+		return fmt.Errorf("models cannot be empty")
+	}
+	return nil
+}
+
+// ToConfig 转换为Config结构
+func (cr *ChannelRequest) ToConfig() *Config {
+	return &Config{
+		Name:     strings.TrimSpace(cr.Name),
+		APIKey:   strings.TrimSpace(cr.APIKey),
+		URL:      strings.TrimSpace(cr.URL),
+		Priority: cr.Priority,
+		Models:   cr.Models,
+		Enabled:  cr.Enabled,
 	}
 }
 
-// Admin: /admin/channels/{id} (GET, PUT, DELETE) - Gin版本
-func (s *Server) handleChannelByID(c *gin.Context) {
-	idStr := c.Param("id")
-	id, err := parseInt64Param(idStr)
+// ChannelWithCooldown 带冷却状态的渠道响应结构
+type ChannelWithCooldown struct {
+	*Config
+	CooldownUntil       *time.Time `json:"cooldown_until,omitempty"`
+	CooldownRemainingMS int64      `json:"cooldown_remaining_ms,omitempty"`
+}
+
+// Admin: /admin/channels (GET, POST) - 重构版本
+func (s *Server) handleChannels(c *gin.Context) {
+	router := NewMethodRouter().
+		GET(s.handleListChannels).
+		POST(s.handleCreateChannel)
+	
+	router.Handle(c)
+}
+
+// 获取渠道列表
+func (s *Server) handleListChannels(c *gin.Context) {
+	cfgs, err := s.store.ListConfigs(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "bad id"})
+		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
 	
-	switch c.Request.Method {
-	case http.MethodGet:
-		cfg, err := s.store.GetConfig(c.Request.Context(), id)
-		if err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
-			return
+	// 附带冷却状态
+	now := time.Now()
+	out := make([]ChannelWithCooldown, 0, len(cfgs))
+	for _, cfg := range cfgs {
+		oc := ChannelWithCooldown{Config: cfg}
+		if until, ok := s.store.GetCooldownUntil(c.Request.Context(), cfg.ID); ok && until.After(now) {
+			u := until
+			oc.CooldownUntil = &u
+			oc.CooldownRemainingMS = int64(until.Sub(now) / time.Millisecond)
 		}
-		c.JSON(http.StatusOK, cfg)
-	case http.MethodPut:
-		var in Config
-		if err := c.ShouldBindJSON(&in); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "bad json"})
-			return
-		}
-		upd, err := s.store.UpdateConfig(c.Request.Context(), id, &in)
-		if err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, upd)
-	case http.MethodDelete:
-		if err := s.store.DeleteConfig(c.Request.Context(), id); err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-			return
-		}
-		c.Status(http.StatusNoContent)
-	default:
-		c.JSON(http.StatusMethodNotAllowed, gin.H{"error": "method not allowed"})
+		out = append(out, oc)
 	}
+	
+	RespondJSON(c, http.StatusOK, out)
 }
 
-// Admin: /admin/errors?hours=24&limit=100&offset=0 - Gin版本
+// 创建新渠道
+func (s *Server) handleCreateChannel(c *gin.Context) {
+	var req ChannelRequest
+	if err := BindAndValidate(c, &req); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid request: "+err.Error())
+		return
+	}
+	
+	created, err := s.store.CreateConfig(c.Request.Context(), req.ToConfig())
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	
+	RespondJSON(c, http.StatusCreated, created)
+}
+
+// Admin: /admin/channels/{id} (GET, PUT, DELETE) - 重构版本
+func (s *Server) handleChannelByID(c *gin.Context) {
+	id, err := ParseInt64Param(c, "id")
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+	
+	router := NewMethodRouter().
+		GET(func(c *gin.Context) { s.handleGetChannel(c, id) }).
+		PUT(func(c *gin.Context) { s.handleUpdateChannel(c, id) }).
+		DELETE(func(c *gin.Context) { s.handleDeleteChannel(c, id) })
+	
+	router.Handle(c)
+}
+
+// 获取单个渠道
+func (s *Server) handleGetChannel(c *gin.Context, id int64) {
+	cfg, err := s.store.GetConfig(c.Request.Context(), id)
+	if err != nil {
+		RespondError(c, http.StatusNotFound, fmt.Errorf("channel not found"))
+		return
+	}
+	RespondJSON(c, http.StatusOK, cfg)
+}
+
+// 更新渠道
+func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
+	// 先获取现有配置
+	existing, err := s.store.GetConfig(c.Request.Context(), id)
+	if err != nil {
+		RespondError(c, http.StatusNotFound, fmt.Errorf("channel not found"))
+		return
+	}
+	
+	// 解析请求为通用map以支持部分更新
+	var rawReq map[string]interface{}
+	if err := c.ShouldBindJSON(&rawReq); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid request format")
+		return
+	}
+	
+	// 检查是否为简单的enabled字段更新
+	if len(rawReq) == 1 {
+		if enabled, ok := rawReq["enabled"].(bool); ok {
+			existing.Enabled = enabled
+			upd, err := s.store.UpdateConfig(c.Request.Context(), id, existing)
+			if err != nil {
+				RespondError(c, http.StatusInternalServerError, err)
+				return
+			}
+			RespondJSON(c, http.StatusOK, upd)
+			return
+		}
+	}
+	
+	// 处理完整更新：重新序列化为ChannelRequest
+	reqBytes, err := sonic.Marshal(rawReq)
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid request format")
+		return
+	}
+	
+	var req ChannelRequest
+	if err := sonic.Unmarshal(reqBytes, &req); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid request format")
+		return
+	}
+	
+	if err := req.Validate(); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	
+	upd, err := s.store.UpdateConfig(c.Request.Context(), id, req.ToConfig())
+	if err != nil {
+		RespondError(c, http.StatusNotFound, err)
+		return
+	}
+	RespondJSON(c, http.StatusOK, upd)
+}
+
+// 删除渠道
+func (s *Server) handleDeleteChannel(c *gin.Context, id int64) {
+	if err := s.store.DeleteConfig(c.Request.Context(), id); err != nil {
+		RespondError(c, http.StatusNotFound, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// Admin: /admin/errors?hours=24&limit=100&offset=0 - 重构版本
 func (s *Server) handleErrors(c *gin.Context) {
-	hours, _ := strconv.Atoi(c.DefaultQuery("hours", "24"))
-	if hours <= 0 {
-		hours = 24
-	}
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "200"))
-	if limit <= 0 {
-		limit = 200
-	}
-	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	params := ParsePaginationParams(c)
+	
 	// 过滤：按渠道ID或渠道名
 	var lf LogFilter
 	if cidStr := strings.TrimSpace(c.Query("channel_id")); cidStr != "" {
@@ -132,29 +221,29 @@ func (s *Server) handleErrors(c *gin.Context) {
 	if ml := strings.TrimSpace(c.Query("model_like")); ml != "" {
 		lf.ModelLike = ml
 	}
-	since := time.Now().Add(-time.Duration(hours) * time.Hour)
-	logs, err := s.store.ListLogs(c.Request.Context(), since, limit, offset, &lf)
+	
+	since := params.GetSinceTime()
+	logs, err := s.store.ListLogs(c.Request.Context(), since, params.Limit, params.Offset, &lf)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
-	c.JSON(http.StatusOK, logs)
+	
+	RespondJSON(c, http.StatusOK, logs)
 }
 
-// Admin: /admin/metrics?hours=24&bucket_min=5 - Gin版本
+// Admin: /admin/metrics?hours=24&bucket_min=5 - 重构版本
 func (s *Server) handleMetrics(c *gin.Context) {
-	hours, _ := strconv.Atoi(c.DefaultQuery("hours", "24"))
-	if hours <= 0 {
-		hours = 24
-	}
+	params := ParsePaginationParams(c)
 	bucketMin, _ := strconv.Atoi(c.DefaultQuery("bucket_min", "5"))
 	if bucketMin <= 0 {
 		bucketMin = 5
 	}
-	since := time.Now().Add(-time.Duration(hours) * time.Hour)
+	
+	since := params.GetSinceTime()
 	pts, err := s.store.Aggregate(c.Request.Context(), since, time.Duration(bucketMin)*time.Minute)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
 	
@@ -168,16 +257,13 @@ func (s *Server) handleMetrics(c *gin.Context) {
 	c.Header("X-Debug-Points", fmt.Sprintf("%d", len(pts)))
 	c.Header("X-Debug-Total", fmt.Sprintf("%d", totalReqs))
 	
-	c.JSON(http.StatusOK, pts)
+	RespondJSON(c, http.StatusOK, pts)
 }
 
-// Admin: /admin/stats?hours=24&channel_name_like=xxx&model_like=xxx - Gin版本
+// Admin: /admin/stats?hours=24&channel_name_like=xxx&model_like=xxx - 重构版本
 func (s *Server) handleStats(c *gin.Context) {
-	hours, _ := strconv.Atoi(c.DefaultQuery("hours", "24"))
-	if hours <= 0 {
-		hours = 24
-	}
-
+	params := ParsePaginationParams(c)
+	
 	// 构建过滤条件（复用errors API的逻辑）
 	var lf LogFilter
 	if cidStr := strings.TrimSpace(c.Query("channel_id")); cidStr != "" {
@@ -197,86 +283,88 @@ func (s *Server) handleStats(c *gin.Context) {
 	if ml := strings.TrimSpace(c.Query("model_like")); ml != "" {
 		lf.ModelLike = ml
 	}
-
-	since := time.Now().Add(-time.Duration(hours) * time.Hour)
+	
+	since := params.GetSinceTime()
 	stats, err := s.store.GetStats(c.Request.Context(), since, &lf)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
-
-	// 包装成简单响应格式
-	response := gin.H{
-		"stats": stats,
-	}
-	c.JSON(http.StatusOK, response)
+	
+	RespondJSON(c, http.StatusOK, gin.H{"stats": stats})
 }
 
-// Public: /public/summary 基础请求统计（不需要身份验证）- Gin版本
+// Public: /public/summary 基础请求统计（不需要身份验证）- 重构版本
 func (s *Server) handlePublicSummary(c *gin.Context) {
-	hours, _ := strconv.Atoi(c.DefaultQuery("hours", "24"))
-	if hours <= 0 {
-		hours = 24 // 默认24小时
-	}
-
-	since := time.Now().Add(-time.Duration(hours) * time.Hour)
+	params := ParsePaginationParams(c)
+	since := params.GetSinceTime()
 	stats, err := s.store.GetStats(c.Request.Context(), since, nil) // 不使用过滤条件
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
-
+	
 	// 计算总体统计
 	totalSuccess := 0
 	totalError := 0
 	totalChannels := make(map[string]bool)
 	totalModels := make(map[string]bool)
-
+	
 	for _, stat := range stats {
 		totalSuccess += stat.Success
 		totalError += stat.Error
 		totalChannels[stat.ChannelName] = true
 		totalModels[stat.Model] = true
 	}
-
+	
 	response := gin.H{
 		"total_requests":   totalSuccess + totalError,
 		"success_requests": totalSuccess,
 		"error_requests":   totalError,
 		"active_channels":  len(totalChannels),
 		"active_models":    len(totalModels),
-		"hours":            hours,
+		"hours":            params.Hours,
 	}
-
-	c.JSON(http.StatusOK, response)
+	
+	RespondJSON(c, http.StatusOK, response)
 }
 
-// Admin: /admin/channels/{id}/test (POST) - Gin版本
+// TestChannelRequest 渠道测试请求结构
+type TestChannelRequest struct {
+	Model string `json:"model" binding:"required"`
+}
+
+// Validate 实现RequestValidator接口
+func (tcr *TestChannelRequest) Validate() error {
+	if strings.TrimSpace(tcr.Model) == "" {
+		return fmt.Errorf("model cannot be empty")
+	}
+	return nil
+}
+
+// Admin: /admin/channels/{id}/test (POST) - 重构版本
 func (s *Server) handleChannelTest(c *gin.Context) {
 	// 解析渠道ID
-	idStr := c.Param("id")
-	id, err := parseInt64Param(idStr)
+	id, err := ParseInt64Param(c, "id")
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "bad id"})
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel id")
 		return
 	}
-
+	
 	// 解析请求体
-	var testReq struct {
-		Model string `json:"model" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&testReq); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "bad json or missing model field"})
+	var testReq TestChannelRequest
+	if err := BindAndValidate(c, &testReq); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid request: "+err.Error())
 		return
 	}
-
+	
 	// 获取渠道配置
 	cfg, err := s.store.GetConfig(c.Request.Context(), id)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "channel not found"})
+		RespondError(c, http.StatusNotFound, fmt.Errorf("channel not found"))
 		return
 	}
-
+	
 	// 检查模型是否支持
 	modelSupported := false
 	for _, model := range cfg.Models {
@@ -286,16 +374,16 @@ func (s *Server) handleChannelTest(c *gin.Context) {
 		}
 	}
 	if !modelSupported {
-		c.JSON(http.StatusOK, gin.H{
+		RespondJSON(c, http.StatusOK, gin.H{
 			"success": false,
 			"error":   "模型 " + testReq.Model + " 不在此渠道的支持列表中",
 		})
 		return
 	}
-
+	
 	// 执行测试
 	testResult := s.testChannelAPI(cfg, testReq.Model)
-	c.JSON(http.StatusOK, testResult)
+	RespondJSON(c, http.StatusOK, testResult)
 }
 
 // 测试渠道API连通性

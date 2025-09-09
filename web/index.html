@@ -178,7 +178,8 @@
         const response = await fetch('/public/summary?hours=24');
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         
-        statsData = await response.json();
+        const responseData = await response.json();
+        statsData = responseData.success ? (responseData.data || responseData) : responseData;
         updateStatsDisplay();
         
       } catch (error) {
@@ -205,11 +206,6 @@
       document.getElementById('success-rate').textContent = successRate + '%';
       document.getElementById('active-channels').textContent = statsData.active_channels || 0;
       document.getElementById('active-models').textContent = statsData.active_models || 0;
-
-      // 添加数字滚动动画
-      animateCountUp('total-requests', statsData.total_requests || 0);
-      animateCountUp('success-requests', statsData.success_requests || 0);
-      animateCountUp('error-requests', statsData.error_requests || 0);
     }
 
     // 格式化数字显示

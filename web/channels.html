@@ -775,7 +775,9 @@
       try {
         const res = await fetch('/admin/channels');
         if (!res.ok) throw new Error('HTTP ' + res.status);
-        channels = await res.json();
+        const response = await res.json();
+        // 处理新的API响应格式：{ success: true, data: [...] }
+        channels = response.success ? (response.data || []) : (response || []);
         updateModelOptions();
         filterChannels(); // Use filterChannels instead of direct render
       } catch (e) {

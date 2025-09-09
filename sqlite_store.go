@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"github.com/bytedance/sonic"
 	"errors"
 	"fmt"
 	"os"
@@ -179,23 +178,9 @@ func (s *SQLiteStore) ListConfigs(ctx context.Context) ([]*Config, error) {
 	}
 	defer rows.Close()
 
-	var out []*Config
-	for rows.Next() {
-		var c Config
-		var modelsStr string
-		var enabledInt int
-		if err := rows.Scan(&c.ID, &c.Name, &c.APIKey, &c.URL, &c.Priority,
-			&modelsStr, &enabledInt, &c.CreatedAt, &c.UpdatedAt); err != nil {
-			return nil, err
-		}
-		c.Enabled = enabledInt != 0
-		if err := sonic.Unmarshal([]byte(modelsStr), &c.Models); err != nil {
-			c.Models = nil
-		}
-		cc := c
-		out = append(out, &cc)
-	}
-	return out, nil
+	// 使用统一的扫描器
+	scanner := NewConfigScanner()
+	return scanner.ScanConfigs(rows)
 }
 
 func (s *SQLiteStore) GetConfig(ctx context.Context, id int64) (*Config, error) {
@@ -205,29 +190,26 @@ func (s *SQLiteStore) GetConfig(ctx context.Context, id int64) (*Config, error) 
 		WHERE id = ?
 	`, id)
 
-	var c Config
-	var modelsStr string
-	var enabledInt int
-	if err := row.Scan(&c.ID, &c.Name, &c.APIKey, &c.URL, &c.Priority,
-		&modelsStr, &enabledInt, &c.CreatedAt, &c.UpdatedAt); err != nil {
+	// 使用统一的扫描器
+	scanner := NewConfigScanner()
+	config, err := scanner.ScanConfig(row)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, errors.New("not found")
 		}
 		return nil, err
 	}
-	c.Enabled = enabledInt != 0
-	_ = sonic.Unmarshal([]byte(modelsStr), &c.Models)
-	return &c, nil
+	return config, nil
 }
 
 func (s *SQLiteStore) CreateConfig(ctx context.Context, c *Config) (*Config, error) {
 	now := time.Now()
-	modelsStr, _ := sonic.Marshal(c.Models)
+	modelsStr, _ := serializeModels(c.Models)
 
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO channels(name, api_key, url, priority, models, enabled, created_at, updated_at) 
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-	`, c.Name, c.APIKey, c.URL, c.Priority, string(modelsStr),
+	`, c.Name, c.APIKey, c.URL, c.Priority, modelsStr,
 		boolToInt(c.Enabled), now, now)
 
 	if err != nil {
@@ -268,13 +250,13 @@ func (s *SQLiteStore) UpdateConfig(ctx context.Context, id int64, upd *Config) (
 	}
 
 	cur.UpdatedAt = time.Now()
-	modelsStr, _ := sonic.Marshal(cur.Models)
+	modelsStr, _ := serializeModels(cur.Models)
 
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE channels 
 		SET name=?, api_key=?, url=?, priority=?, models=?, enabled=?, updated_at=? 
 		WHERE id=?
-	`, cur.Name, cur.APIKey, cur.URL, cur.Priority, string(modelsStr),
+	`, cur.Name, cur.APIKey, cur.URL, cur.Priority, modelsStr,
 		boolToInt(cur.Enabled), cur.UpdatedAt, id)
 
 	if err != nil {
@@ -396,43 +378,20 @@ func (s *SQLiteStore) cleanupOldLogs(ctx context.Context) error {
 }
 
 func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offset int, filter *LogFilter) ([]*LogEntry, error) {
-	// 动态构建 WHERE 条件
-	where := "l.time >= ?"
-	args := []any{since}
-
-	if filter != nil {
-		if filter.ChannelID != nil {
-			where += " AND l.channel_id = ?"
-			args = append(args, *filter.ChannelID)
-		}
-		if filter.ChannelName != "" {
-			where += " AND c.name = ?"
-			args = append(args, filter.ChannelName)
-		}
-		if filter.ChannelNameLike != "" {
-			where += " AND c.name LIKE ?"
-			args = append(args, "%"+filter.ChannelNameLike+"%")
-		}
-		if filter.Model != "" {
-			where += " AND l.model = ?"
-			args = append(args, filter.Model)
-		}
-		if filter.ModelLike != "" {
-			where += " AND l.model LIKE ?"
-			args = append(args, "%"+filter.ModelLike+"%")
-		}
-	}
-
-	args = append(args, limit, offset)
-	query := fmt.Sprintf(`
+	// 使用查询构建器构建复杂查询
+	baseQuery := `
 		SELECT l.id, l.time, l.model, l.channel_id, c.name as channel_name, 
 		       l.status_code, l.message, l.duration, l.is_streaming, l.first_byte_time
 		FROM logs l
-		LEFT JOIN channels c ON c.id = l.channel_id
-		WHERE %s
-		ORDER BY l.time DESC
-		LIMIT ? OFFSET ?
-	`, where)
+		LEFT JOIN channels c ON c.id = l.channel_id`
+	
+	qb := NewQueryBuilder(baseQuery).
+		Where("l.time >= ?", since).
+		ApplyFilter(filter)
+	
+	suffix := "ORDER BY l.time DESC LIMIT ? OFFSET ?"
+	query, args := qb.BuildWithSuffix(suffix)
+	args = append(args, limit, offset)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -596,35 +555,8 @@ func (s *SQLiteStore) SetRR(ctx context.Context, model string, priority int, idx
 
 // GetStats 实现统计功能，按渠道和模型统计成功/失败次数
 func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *LogFilter) ([]StatsEntry, error) {
-	// 构建WHERE条件
-	where := "l.time >= ?"
-	args := []any{since}
-
-	if filter != nil {
-		if filter.ChannelID != nil {
-			where += " AND l.channel_id = ?"
-			args = append(args, *filter.ChannelID)
-		}
-		if filter.ChannelName != "" {
-			where += " AND c.name = ?"
-			args = append(args, filter.ChannelName)
-		}
-		if filter.ChannelNameLike != "" {
-			where += " AND c.name LIKE ?"
-			args = append(args, "%"+filter.ChannelNameLike+"%")
-		}
-		if filter.Model != "" {
-			where += " AND l.model = ?"
-			args = append(args, filter.Model)
-		}
-		if filter.ModelLike != "" {
-			where += " AND l.model LIKE ?"
-			args = append(args, "%"+filter.ModelLike+"%")
-		}
-	}
-
-	// 统计查询：按channel_name和model分组统计成功/失败次数
-	statsQuery := fmt.Sprintf(`
+	// 使用查询构建器构建统计查询
+	baseQuery := `
 		SELECT 
 			l.channel_id,
 			COALESCE(c.name, '系统') as channel_name,
@@ -633,13 +565,16 @@ func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *Log
 			SUM(CASE WHEN l.status_code < 200 OR l.status_code >= 300 THEN 1 ELSE 0 END) as error,
 			COUNT(*) as total
 		FROM logs l 
-		LEFT JOIN channels c ON c.id = l.channel_id 
-		WHERE %s
-		GROUP BY l.channel_id, c.name, l.model 
-		ORDER BY channel_name ASC, model ASC
-	`, where)
+		LEFT JOIN channels c ON c.id = l.channel_id`
+	
+	qb := NewQueryBuilder(baseQuery).
+		Where("l.time >= ?", since).
+		ApplyFilter(filter)
+	
+	suffix := "GROUP BY l.channel_id, c.name, l.model ORDER BY channel_name ASC, model ASC"
+	query, args := qb.BuildWithSuffix(suffix)
 
-	rows, err := s.db.QueryContext(ctx, statsQuery, args...)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

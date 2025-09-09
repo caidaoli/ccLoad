@@ -13,53 +13,6 @@ ccLoad 是一个高性能的 Claude Code API 透明代理服务，使用 Go 1.24
 - **统计监控**：首页公开显示请求统计，管理界面提供详细的趋势和日志分析
 - **前端管理**：提供现代化 Web 界面管理渠道、查看趋势、日志和调用统计
 
-## 核心架构
-
-### 主要组件
-- `main.go`: 程序入口，初始化SQLite存储和HTTP服务器，支持.env文件读取
-- `server.go`: HTTP服务器实现，路由注册、JSON工具函数、身份验证系统和性能优化组件
-- `proxy.go`: 核心代理逻辑，处理`/v1/messages`请求转发和流式传输
-- `selector.go`: 候选渠道选择算法（优先级+轮询），使用缓存优化
-- `admin.go`: 管理API实现（渠道CRUD、请求日志、趋势数据、公开统计API）
-- `middleware.go`: HTTP中间件（请求日志等）  
-- `sqlite_store.go`: SQLite存储实现，管理渠道、冷却状态、日志和轮询指针
-- `models.go`: 数据模型和Store接口定义
-- `web/`: 前端静态文件（index.html、channels.html、trend.html、logs.html、stats.html、login.html）
-
-### 关键数据结构
-- `Config`（渠道）: 渠道配置（API Key、URL、优先级、支持的模型列表）
-- `LogEntry`: 请求日志（时间、模型、渠道ID、状态码、消息）
-- `Store` 接口: 数据持久化抽象层
-- `MetricPoint`: 时间序列数据点（用于趋势分析）
-- `StatsEntry`: 统计数据聚合（按渠道和模型分组）
-
-### 核心算法
-**候选选择策略** (`selectCandidates` in selector.go:18-80):
-1. 从缓存获取渠道配置（60秒TTL，避免频繁数据库查询）
-2. 过滤启用且支持指定模型的渠道
-3. 排除冷却中的渠道（使用内存缓存，快速查询）
-4. 按优先级降序分组
-5. 同优先级内使用轮询算法（内存缓存轮询指针，定期持久化）
-
-**代理转发流程** (`forwardOnce` in proxy.go):
-1. 构建上游请求URL，合并查询参数
-2. 复制请求头，跳过授权相关头，覆盖`x-api-key`
-3. 发送POST请求到上游API（使用优化的HTTP客户端连接池）
-4. 处理响应：2xx响应支持流式转发（64KB缓冲区），其他响应读取完整body
-5. 异步记录日志到队列（批量写入数据库）
-
-**故障切换机制**:
-- 非2xx响应或网络错误触发切换
-- 失败渠道按指数退避进入冷却（内存+数据库双重存储）
-- 按候选列表顺序尝试下一个渠道
-- 所有候选失败返回503 Service Unavailable
-
-**性能优化特性**:
-- **连接池优化**: SQLite连接数从1增加到25，HTTP客户端最大100连接
-- **多级缓存**: 渠道配置缓存60秒，轮询指针内存化，冷却状态缓存
-- **异步处理**: 日志批量写入，3个工作协程处理，1000条缓冲队列
-- **流式传输**: 64KB缓冲区，减少系统调用次数
-
 ## 开发命令
 
 ### 构建和运行
@@ -100,14 +53,7 @@ make clean             # 清理构建文件和日志
 make info              # 显示服务详细信息
 ```
 
-### 依赖管理
-```bash
-go mod tidy      # 整理依赖
-go mod verify    # 验证依赖
-go mod download  # 下载依赖
-```
-
-### 代码检查和构建标签
+### 构建标签
 ```bash
 go fmt ./...     # 格式化代码
 go vet ./...     # 静态检查
@@ -118,17 +64,115 @@ GOTAGS=go_json go build -tags go_json .     # 启用 goccy/go-json 构建标签�
 GOTAGS=std go build -tags std .             # 使用标准库 JSON
 ```
 
+## 核心架构
+
+### 系统组件分层
+
+**HTTP层** (`server.go`, `admin.go`, `handlers.go`):
+- `Server`: 主服务器结构，管理HTTP客户端、缓存、身份验证
+- `handlers.go`: 通用HTTP处理工具（参数解析、响应处理、方法路由）
+- `admin.go`: 管理API实现（渠道CRUD、日志查询、统计分析）
+- 身份验证：Session-based管理界面 + 可选Bearer token API认证
+
+**业务逻辑层** (`proxy.go`, `selector.go`):
+- `proxy.go`: 核心代理逻辑，处理`/v1/messages`转发和流式响应
+- `selector.go`: 智能渠道选择算法（优先级分组 + 组内轮询 + 故障排除）
+
+**数据持久层** (`sqlite_store.go`, `query_builder.go`, `models.go`):
+- `models.go`: 数据模型和Store接口定义
+- `sqlite_store.go`: SQLite存储实现，支持连接池和事务
+- `query_builder.go`: 查询构建器，消除SQL构建重复逻辑
+
+### 关键数据结构
+- `Config`（渠道）: 渠道配置（API Key、URL、优先级、支持的模型列表）
+- `LogEntry`: 请求日志（时间、模型、渠道ID、状态码、性能指标）
+- `Store` 接口: 数据持久化抽象层，支持配置、日志、统计、冷却管理
+- `MetricPoint`: 时间序列数据点（用于趋势分析）
+- `StatsEntry`: 统计数据聚合（按渠道和模型分组）
+
+### 核心算法实现
+
+**渠道选择算法** (`selectCandidates` in selector.go):
+1. 从缓存获取渠道配置（60秒TTL，避免频繁数据库查询）
+2. 过滤启用且支持指定模型的渠道
+3. 排除冷却中的渠道（使用内存缓存，快速查询）
+4. 按优先级降序分组
+5. 同优先级内使用轮询算法（内存缓存轮询指针，定期持久化）
+
+**代理转发流程** (`forwardOnce` in proxy.go):
+1. 构建上游请求URL，合并查询参数
+2. 复制请求头，跳过授权相关头，覆盖`x-api-key`
+3. 发送POST请求到上游API（使用优化的HTTP客户端连接池）
+4. 处理响应：2xx响应支持流式转发（64KB缓冲区），其他响应读取完整body
+5. 异步记录日志到队列（批量写入数据库）
+
+**故障切换机制**:
+- 非2xx响应或网络错误触发切换
+- 失败渠道按指数退避进入冷却（内存+数据库双重存储）
+- 按候选列表顺序尝试下一个渠道
+- 所有候选失败返回503 Service Unavailable
+
+## 性能优化架构
+
+**多级缓存系统**:
+- **渠道配置缓存**: 60秒TTL，减少90%数据库查询
+- **轮询指针缓存**: 内存存储，定期持久化，支持高并发
+- **冷却状态缓存**: sync.Map实现，快速故障检测
+
+**异步处理**:
+- **日志系统**: 1000条缓冲队列，3个worker协程，批量写入
+- **会话清理**: 后台协程每小时清理过期session
+- **冷却清理**: 每分钟清理过期冷却状态
+
+**连接池优化**:
+- **SQLite连接池**: 25个连接，5分钟生命周期
+- **HTTP客户端**: 100最大连接，10秒连接超时，keepalive优化
+- **TLS优化**: LRU会话缓存，减少握手耗时
+
+## 重构架构说明
+
+项目经过大规模重构，采用现代Go开发模式：
+
+**HTTP处理器模式** (`handlers.go`):
+- `PaginationParams`: 统一参数解析和验证
+- `APIResponse[T]`: 类型安全的泛型响应结构
+- `MethodRouter`: 声明式HTTP方法路由，替代switch-case
+- `RequestValidator`: 接口驱动的请求验证
+
+**查询构建器模式** (`query_builder.go`):
+- `WhereBuilder`: 动态SQL条件构建，防止SQL注入
+- `QueryBuilder`: 组合式查询构建，支持链式调用
+- `ConfigScanner`: 统一数据库行扫描，消除重复逻辑
+
 ## 环境配置
 
 ### 环境变量
 - `CCLOAD_PASS`: 管理后台密码（默认: "admin"，生产环境必须设置）
-- `CCLOAD_AUTH`: API访问令牌（可选，多个令牌用逗号分隔。设置后所有`/v1/messages`请求需提供`Authorization: Bearer <token>`头）
+- `CCLOAD_AUTH`: API访问令牌（可选，多个令牌用逗号分隔）
 - `SQLITE_PATH`: SQLite数据库路径（默认: "data/ccload.db"）
 - `PORT`: HTTP服务端口（默认: "8080"）
 
-项目支持 `.env` 文件配置（优先于系统环境变量）
+支持 `.env` 文件配置（优先于系统环境变量）
 
-## API端点
+### API身份验证系统
+- **管理界面**: 基于Session的认证，24小时有效期
+- **API端点**: 当设置`CCLOAD_AUTH`时，`/v1/messages`需要`Authorization: Bearer <token>`
+- **安全特性**: HttpOnly Cookie、SameSite保护、自动过期清理
+
+## 数据库架构
+
+### 核心表结构
+- **channels**: 渠道配置（id, name, api_key, url, priority, models, enabled, timestamps）
+- **logs**: 请求日志（id, time, model, channel_id, status_code, message, performance_metrics）
+- **cooldowns**: 冷却状态（channel_id, until, duration_ms）
+- **rr**: 轮询指针（key="model|priority", idx）
+
+### 性能优化索引
+- `idx_logs_time`: 日志时间索引，优化时间范围查询
+- `idx_channels_name`: 渠道名称索引，优化过滤查询
+- `idx_logs_status`: 状态码索引，优化错误统计
+
+## API端点架构
 
 ### 公开端点（无需认证）
 ```
@@ -137,70 +181,24 @@ GET  /web/index.html       # 首页
 GET  /web/login.html       # 登录页面
 ```
 
-### 需要API认证的端点
+### API认证端点
 ```
-POST /v1/messages          # Claude API 透明代理（需要 CCLOAD_AUTH）
+POST /v1/messages          # Claude API 透明代理（条件认证）
 ```
-
-**注意**: 当设置了 `CCLOAD_AUTH` 环境变量时，`/v1/messages` 端点需要提供有效的 `Authorization: Bearer <token>` 请求头。未设置 `CCLOAD_AUTH` 时，该端点无需认证即可访问。
 
 ### 管理端点（需要登录）
 ```
 GET/POST    /admin/channels       # 渠道列表和创建
 GET/PUT/DEL /admin/channels/{id}  # 渠道详情、更新、删除
-GET         /admin/errors         # 请求日志列表（支持分页）
+POST        /admin/channels/{id}/test  # 渠道测试
+GET         /admin/errors         # 请求日志列表（支持分页和过滤）
 GET         /admin/stats          # 调用统计数据
 GET         /admin/metrics        # 趋势数据（支持hours和bucket_min参数）
-GET         /web/channels.html    # 渠道管理页面
-GET         /web/logs.html        # 请求日志页面
-GET         /web/stats.html       # 调用统计页面
-GET         /web/trend.html       # 趋势图表页面
 ```
-
-## SQLite数据库架构
-
-### 数据表结构
-- **channels**: 渠道配置（id, name, api_key, url, priority, models, enabled, created_at, updated_at）
-- **logs**: 请求日志（id, time, model, channel_id, status_code, message）
-- **cooldowns**: 冷却状态（channel_id, until, duration_ms）
-- **rr**: 轮询指针（model, priority, next_index）
-
-### 重要注意事项
-
-**透明转发原则**:
-- 仅替换 `x-api-key` 和 `Authorization` 头为配置的 API Key，其他请求头和请求体保持原样
-- 客户端需自行设置 `anthropic-version` 等必需头
-- 2xx 响应支持流式转发，使用 64KB 缓冲区
-
-**身份验证系统** (server.go:14-380):
-- Session基于随机ID和内存存储，支持并发安全
-- Cookie使用HttpOnly和SameSite保护
-- 24小时会话有效期，每小时自动清理过期session
-- 后台协程定期清理，避免内存泄漏
-
-### API 认证系统** (server.go:177-207):
-- 支持通过 `CCLOAD_AUTH` 环境变量配置多个访问令牌
-- 使用 Bearer Token 认证方式：`Authorization: Bearer <token>`
-- 未设置 `CCLOAD_AUTH` 时，`/v1/messages` 端点无需认证
-- 认证失败返回 401 状态码和错误信息
-
-**性能优化架构**:
-- **缓存层**: 渠道配置60秒缓存，减少90%数据库查询
-- **异步日志**: 带缓冲的channel，3个worker协程批量处理
-- **连接池**: SQLite(25连接) + HTTP(100连接)提升并发能力
-- **内存优化**: sync.Map存储轮询指针和冷却状态，支持高并发
-- **透明代理**: 保持零干预，不主动断开连接
-
-**安全注意**:
-- 生产环境必须设置强密码 `CCLOAD_PASS`
-- 建议设置 `CCLOAD_AUTH` 以保护 `/v1/messages` 端点，防止未授权访问
-- API Key不记录到日志中，仅在内存中使用
-- 生产环境需限制 `data/` 目录访问权限
-- 使用 HTTPS 部署以保护传输中的认证令牌
 
 ## 前端架构
 
-前后端分离设计，纯HTML/CSS/JavaScript实现，无框架依赖：
+纯HTML/CSS/JavaScript实现，无框架依赖的单页应用：
 
 ### 页面文件
 - `web/index.html`: 首页，显示24小时请求统计
@@ -212,18 +210,25 @@ GET         /web/trend.html       # 趋势图表页面
 - `web/styles.css`: 共享样式文件
 - `web/ui.js`: 共享JavaScript工具函数
 
-## 项目特点
+### 技术特点
+- 响应式设计，支持移动端
+- 实时数据更新和图表渲染
+- 模态框交互和表单验证
+- 深色模式兼容的配色方案
 
-- **单二进制部署**：纯Go 1.24.0实现，使用嵌入式SQLite，无外部依赖
-- **高性能框架**：基于Gin框架，支持1000+并发连接
-- **透明代理**：仅替换API Key，保持请求完整性，不干预连接生命周期
-- **智能路由**：优先级分组 + 组内轮询 + 故障切换
-- **指数退避**：失败渠道冷却时间1s→2s→4s...最大30分钟
-- **前后端分离**：静态HTML + JSON API，无框架依赖
-- **Session认证**：基于内存的安全会话管理
-- **高性能架构**：多级缓存 + 异步处理 + 连接池优化，响应延迟降低50-80%
-- **构建优化**：支持构建标签，默认使用高性能JSON库（sonic/goccy/go-json）
-- **平台服务**：macOS LaunchAgent服务支持，自动启动和管理
+## 重要注意事项
+
+**透明转发原则**:
+- 仅替换 `x-api-key` 和 `Authorization` 头为配置的 API Key
+- 客户端需自行设置 `anthropic-version` 等必需头
+- 2xx 响应支持流式转发，使用 64KB 缓冲区
+
+**安全考虑**:
+- 生产环境必须设置强密码 `CCLOAD_PASS`
+- 建议设置 `CCLOAD_AUTH` 以保护 `/v1/messages` 端点
+- API Key不记录到日志中，仅在内存中使用
+- 生产环境需限制 `data/` 目录访问权限
+- 使用 HTTPS 部署以保护传输中的认证令牌
 
 ## 技术栈
 

@@ -218,7 +218,8 @@
         const res = await fetch(`/admin/metrics?hours=${window.currentHours}&bucket_min=${bucketMin}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         
-        window.trendData = await res.json();
+        const response = await res.json();
+        window.trendData = response.success ? (response.data || []) : (response || []);
         
         // 添加调试信息显示
         const debugSince = res.headers.get('X-Debug-Since');
