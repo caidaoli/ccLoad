@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-ccLoad 是一个 Claude API 透明代理服务，使用 Go 构建。主要功能：
+ccLoad 是一个高性能的 Claude Code API 透明代理服务，使用 Go 1.24.0 构建，基于 Gin 框架。主要功能：
 
 - **透明代理**：将 `/v1/messages` 请求转发到上游 Claude API，仅替换 API Key
 - **智能路由**：基于模型支持、优先级和轮询策略选择渠道  
@@ -107,11 +107,15 @@ go mod verify    # 验证依赖
 go mod download  # 下载依赖
 ```
 
-### 代码检查
+### 代码检查和构建标签
 ```bash
 go fmt ./...     # 格式化代码
 go vet ./...     # 静态检查
 go test ./...    # 运行测试（当前项目暂无测试文件）
+
+# 支持构建标签（GOTAGS）
+GOTAGS=go_json go build -tags go_json .     # 启用 goccy/go-json 构建标签（默认）
+GOTAGS=std go build -tags std .             # 使用标准库 JSON
 ```
 
 ## 环境配置
@@ -210,11 +214,23 @@ GET         /web/trend.html       # 趋势图表页面
 
 ## 项目特点
 
-- **单二进制部署**：纯Go实现，使用嵌入式SQLite，无外部依赖
+- **单二进制部署**：纯Go 1.24.0实现，使用嵌入式SQLite，无外部依赖
+- **高性能框架**：基于Gin框架，支持1000+并发连接
 - **透明代理**：仅替换API Key，保持请求完整性，不干预连接生命周期
 - **智能路由**：优先级分组 + 组内轮询 + 故障切换
 - **指数退避**：失败渠道冷却时间1s→2s→4s...最大30分钟
 - **前后端分离**：静态HTML + JSON API，无框架依赖
 - **Session认证**：基于内存的安全会话管理
-- **高性能架构**：多级缓存 + 异步处理 + 连接池优化
-- **并发友好**：支持高并发请求，响应延迟降低50-80%
+- **高性能架构**：多级缓存 + 异步处理 + 连接池优化，响应延迟降低50-80%
+- **构建优化**：支持构建标签，默认使用高性能JSON库（sonic/goccy/go-json）
+- **平台服务**：macOS LaunchAgent服务支持，自动启动和管理
+
+## 技术栈
+
+- **语言**: Go 1.24.0
+- **框架**: Gin v1.10.1
+- **数据库**: SQLite3 v1.14.32（嵌入式）
+- **缓存**: Ristretto v2.3.0（内存缓存）
+- **JSON**: Sonic v1.14.1（高性能JSON库）
+- **环境配置**: godotenv v1.5.1
+- **前端**: 原生HTML/CSS/JavaScript（无框架依赖）

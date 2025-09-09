@@ -1,19 +1,85 @@
 # ccLoad - Claude Code API 代理服务
 
-[![Go](https://img.shields.io/badge/Go-1.21+-00ADD8.svg)](https://golang.org)
+[![Go](https://img.shields.io/badge/Go-1.24+-00ADD8.svg)](https://golang.org)
+[![Gin](https://img.shields.io/badge/Gin-v1.10+-blue.svg)](https://github.com/gin-gonic/gin)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-一个高性能的 Claude Code API 透明代理服务，使用 Go 构建。支持多渠道负载均衡、故障切换和实时监控。
+一个高性能的 Claude Code API 透明代理服务，使用 Go 1.24.0 和 Gin 框架构建。支持多渠道负载均衡、故障切换和实时监控。
+
+## 🎯 痛点解决
+
+在使用 Claude API 服务时，用户通常会面临以下痛点：
+
+- **多渠道管理复杂**：需要同时管理多个 API 渠道，有的渠道时效短，有的渠道每天有限量
+- **手动切换不便**：每次手动切换渠道费时费力，影响工作效率
+- **故障处理困难**：当某个渠道出现故障时，需要手动切换到其他可用渠道
+
+ccLoad 通过以下特性解决这些痛点：
+
+- **智能路由**：根据渠道优先级优先请求高优先级渠道，相同优先级则轮询调用
+- **自动故障切换**：当渠道出现故障时，自动切换到其他可用渠道
+- **指数级冷却机制**：故障渠道使用指数级别冷却时间，避免持续请求故障服务
+- **零手动干预**：客户端无需手动切换上游渠道，系统自动处理
 
 ## ✨ 主要特性
 
-- 🚀 **高性能架构** - 支持 1000+ 并发连接，响应延迟降低 50-80%
+- 🚀 **高性能架构** - 基于 Gin 框架，支持 1000+ 并发连接，响应延迟降低 50-80%
+- ⚡ **性能优化** - Sonic JSON 库 + Ristretto 缓存 + 连接池优化
 - 🔀 **智能路由** - 基于优先级和轮询的渠道选择算法
 - 🛡️ **故障切换** - 自动失败检测和指数退避冷却机制
 - 📊 **实时监控** - 内置趋势分析、日志记录和统计面板
 - 🎯 **透明代理** - 仅替换 API Key，保持请求完整性
 - 📦 **单文件部署** - 无外部依赖，包含嵌入式 SQLite
 - 🔒 **安全认证** - 基于 Session 的管理界面访问控制
+- 🏷️ **构建标签** - 支持 GOTAGS，默认启用高性能 JSON 库
+
+## 🏗️ 架构概览
+
+```mermaid
+graph TB
+    subgraph "客户端"
+        A[用户应用] --> B[ccLoad代理]
+    end
+    
+    subgraph "ccLoad服务"
+        B --> C[认证层]
+        C --> D[路由分发]
+        D --> E[渠道选择器]
+        E --> F[负载均衡器]
+        
+        subgraph "核心组件"
+            F --> G[渠道A<br/>优先级:10]
+            F --> H[渠道B<br/>优先级:5]
+            F --> I[渠道C<br/>优先级:5]
+        end
+        
+        subgraph "存储层"
+            J[(SQLite数据库)]
+        end
+        
+        subgraph "监控层"
+            K[日志系统]
+            L[统计分析]
+            M[趋势图表]
+        end
+    end
+    
+    subgraph "上游服务"
+        G --> N[Claude API]
+        H --> O[Claude API]
+        I --> P[Claude API]
+    end
+    
+    E <--> J
+    F <--> J
+    K <--> J
+    L <--> J
+    M <--> J
+    
+    style B fill:#4F46E5,stroke:#000,color:#fff
+    style F fill:#059669,stroke:#000,color:#fff
+    style E fill:#0EA5E9,stroke:#000,color:#fff
+```
 
 ## 🚀 快速开始
 
@@ -24,11 +90,16 @@
 git clone <repository-url>
 cd ccLoad
 
-# 构建项目
-go build -o ccload .
+# 构建项目（默认使用高性能 JSON 库）
+go build -tags go_json -o ccload .
 
-# 或直接运行
-go run .
+# 或使用 Makefile
+make build
+
+# 直接运行开发模式
+go run -tags go_json .
+# 或
+make dev
 ```
 
 ### 基本配置
@@ -113,37 +184,6 @@ curl -X POST http://localhost:8080/admin/channels \
   }'
 ```
 
-## 🏗️ 架构设计
-
-### 核心组件
-
-```
-ccLoad
-├── main.go           # 程序入口
-├── server.go         # HTTP 服务器 & 缓存管理
-├── proxy.go          # 代理转发逻辑
-├── selector.go       # 渠道选择算法
-├── admin.go          # 管理 API
-├── sqlite_store.go   # SQLite 存储层
-├── models.go         # 数据模型
-└── web/              # 前端静态文件
-```
-
-### 性能优化
-
-- **多级缓存**：渠道配置缓存 60 秒，轮询指针内存化
-- **异步日志**：3 个工作协程批量处理，1000 条缓冲队列
-- **连接池**：SQLite 25 连接 + HTTP 100 连接池
-- **流式传输**：64KB 缓冲区优化
-- **内存优化**：sync.Map 存储热数据
-
-### 路由算法
-
-1. 按优先级分组渠道
-2. 同优先级内轮询分发
-3. 失败自动切换到下一渠道
-4. 指数退避冷却（1s → 2s → 4s ... 最大 30m）
-
 ## 📊 监控指标
 
 访问管理界面查看：
@@ -162,6 +202,7 @@ ccLoad
 | `CCLOAD_AUTH` | 无 | API 访问令牌（多个用逗号分隔） |
 | `PORT` | "8080" | 服务端口 |
 | `SQLITE_PATH` | "data/ccload.db" | 数据库文件路径 |
+| `GOTAGS` | "go_json" | 构建标签（go_json/std） |
 
 ### 数据库结构
 
@@ -177,7 +218,6 @@ ccLoad
 - API Key 仅在内存使用，不记录日志
 - 支持 HttpOnly 和 SameSite Cookie
 - 建议使用 HTTPS 反向代理
-
 
 ## 🤝 贡献
 
