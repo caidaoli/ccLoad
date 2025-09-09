@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -156,6 +157,17 @@ func (s *Server) handleMetrics(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	
+	// 添加调试信息
+	totalReqs := 0
+	for _, pt := range pts {
+		totalReqs += pt.Success + pt.Error
+	}
+	
+	c.Header("X-Debug-Since", since.Format(time.RFC3339))
+	c.Header("X-Debug-Points", fmt.Sprintf("%d", len(pts)))
+	c.Header("X-Debug-Total", fmt.Sprintf("%d", totalReqs))
+	
 	c.JSON(http.StatusOK, pts)
 }
 

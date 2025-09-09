@@ -206,24 +206,38 @@
   </style>
 
   <script>
-    let trendData = null;
-    let currentHours = 24;
-    let chartInstance = null;
+    // 全局变量 
+    window.trendData = null;
+    window.currentHours = 24;
+    window.chartInstance = null;
 
     async function loadData() {
       try {
         showLoading();
-        const bucketMin = computeBucketMin(currentHours);
-        const res = await fetch(`/admin/metrics?hours=${currentHours}&bucket_min=${bucketMin}`);
+        const bucketMin = computeBucketMin(window.currentHours);
+        const res = await fetch(`/admin/metrics?hours=${window.currentHours}&bucket_min=${bucketMin}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         
-        trendData = await res.json();
+        window.trendData = await res.json();
+        
+        // 添加调试信息显示
+        const debugSince = res.headers.get('X-Debug-Since');
+        const debugPoints = res.headers.get('X-Debug-Points');
+        const debugTotal = res.headers.get('X-Debug-Total');
+        
+        console.log('趋势数据调试信息:', {
+          since: debugSince,
+          points: debugPoints,
+          total: debugTotal,
+          dataLength: trendData.length
+        });
+        
         updateSummaryCards();
         renderChart();
         
         // 更新分桶提示
         const iv = document.getElementById('bucket-interval');
-        if (iv) iv.textContent = `数据更新间隔：${formatInterval(bucketMin)}`;
+        if (iv) iv.textContent = `数据更新间隔：${formatInterval(bucketMin)} | 数据点：${trendData.length} | 总请求：${debugTotal || '未知'}`;
         
       } catch (error) {
         console.error('加载趋势数据失败:', error);
@@ -259,14 +273,14 @@
     }
 
     function updateSummaryCards() {
-      if (!trendData || !trendData.length) return;
+      if (!window.trendData || !window.trendData.length) return;
 
       let totalRequests = 0;
       let totalSuccess = 0;
       let peakSuccess = 0;
       let peakError = 0;
 
-      trendData.forEach(point => {
+      window.trendData.forEach(point => {
         const success = point.success || 0;
         const error = point.error || 0;
         totalRequests += success + error;
@@ -285,7 +299,7 @@
     }
 
     function renderChart() {
-      if (!trendData || !trendData.length) {
+      if (!window.trendData || !window.trendData.length) {
         showError();
         return;
       }
@@ -297,24 +311,24 @@
 
       // 初始化或获取 ECharts 实例
       const chartDom = document.getElementById('chart');
-      if (!chartInstance) {
-        chartInstance = echarts.init(chartDom, null, {
+      if (!window.chartInstance) {
+        window.chartInstance = echarts.init(chartDom, null, {
           renderer: 'canvas'
         });
       }
 
       // 准备数据
-      const timestamps = trendData.map(point => {
+      const timestamps = window.trendData.map(point => {
         const date = new Date(point.ts || point.Ts);
-        if (currentHours > 24) {
+        if (window.currentHours > 24) {
           return `${date.getMonth()+1}/${date.getDate()} ${pad(date.getHours())}:00`;
         } else {
           return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
         }
       });
 
-      const successData = trendData.map(point => point.success || 0);
-      const errorData = trendData.map(point => point.error || 0);
+      const successData = window.trendData.map(point => point.success || 0);
+      const errorData = window.trendData.map(point => point.error || 0);
 
       // ECharts 配置
       const option = {
@@ -384,7 +398,7 @@
           axisLabel: {
             color: '#6b7280',
             fontSize: 11,
-            rotate: currentHours > 24 ? 45 : 0,
+            rotate: window.currentHours > 24 ? 45 : 0,
             interval: Math.floor(timestamps.length / 10) // 动态间隔
           },
           splitLine: {
@@ -490,7 +504,7 @@
             data: errorData
           }
         ],
-        dataZoom: currentHours > 24 ? [
+        dataZoom: window.currentHours > 24 ? [
           {
             type: 'inside',
             start: 0,
@@ -521,12 +535,12 @@
       };
 
       // 设置配置并渲染
-      chartInstance.setOption(option);
+      window.chartInstance.setOption(option);
 
       // 响应式调整
       window.addEventListener('resize', () => {
-        if (chartInstance) {
-          chartInstance.resize();
+        if (window.chartInstance) {
+          window.chartInstance.resize();
         }
       });
     }
@@ -566,7 +580,7 @@
         rangeGroup.querySelectorAll('.toggle-btn').forEach(btn => btn.classList.remove('active'));
         t.classList.add('active');
         const hours = parseInt(t.getAttribute('data-range') || '24', 10);
-        currentHours = hours;
+        window.currentHours = hours;
         const label = document.getElementById('data-timerange');
         if (label) label.textContent = hours === 168 ? '7天数据展示' : `${hours}小时数据展示`;
         persistState();
@@ -576,16 +590,16 @@
 
     function persistState() {
       try {
-        localStorage.setItem('trend.rangeHours', String(currentHours));
+        localStorage.setItem('trend.rangeHours', String(window.currentHours));
       } catch (_) {}
     }
 
     function restoreState() {
       try {
         const h = parseInt(localStorage.getItem('trend.rangeHours') || '24', 10);
-        if ([1, 6, 24, 168].includes(h)) currentHours = h;
+        if ([1, 6, 24, 168].includes(h)) window.currentHours = h;
         const label = document.getElementById('data-timerange');
-        if (label) label.textContent = currentHours === 168 ? '7天数据展示' : `${currentHours}小时数据展示`;
+        if (label) label.textContent = window.currentHours === 168 ? '7天数据展示' : `${window.currentHours}小时数据展示`;
       } catch (_) {}
     }
 
@@ -594,7 +608,7 @@
       if (!rangeGroup) return;
       rangeGroup.querySelectorAll('.toggle-btn').forEach(btn => {
         const h = parseInt(btn.getAttribute('data-range') || '24', 10);
-        btn.classList.toggle('active', h === currentHours);
+        btn.classList.toggle('active', h === window.currentHours);
       });
     }
 

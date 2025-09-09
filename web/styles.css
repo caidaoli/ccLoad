@@ -411,10 +411,47 @@ body {
   min-width: fit-content;
 }
 
-/* 切换按钮组（趋势页复用） */
-.toggle-group { display: inline-flex; gap: 6px; background: rgba(255,255,255,0.06); padding: 4px; border-radius: var(--radius-lg); border: 1px solid var(--glass-border); }
-.toggle-btn { padding: 6px 10px; border-radius: var(--radius-base); color: rgba(255,255,255,0.85); font-weight: var(--font-medium); cursor: pointer; user-select: none; }
-.toggle-btn.active { background: rgba(255,255,255,0.16); color: white; border: 1px solid rgba(255,255,255,0.18); }
+/* 切换按钮组（趋势页复用） - Apple UI 风格 (可用性优先) */
+.toggle-group { 
+  display: inline-flex; 
+  gap: 2px; 
+  background: rgba(255, 255, 255, 0.25); 
+  padding: 2px; 
+  border-radius: 10px; 
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  backdrop-filter: blur(30px) saturate(1.8);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+}
+.toggle-btn { 
+  padding: 7px 14px; 
+  border-radius: 7px; 
+  color: rgba(0, 0, 0, 0.7); 
+  font-weight: 600; 
+  font-size: 13px;
+  line-height: 1.2;
+  cursor: pointer; 
+  user-select: none; 
+  transition: all 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94); 
+  border: none;
+  background: rgba(255, 255, 255, 0.1);
+  position: relative;
+  overflow: hidden;
+  letter-spacing: -0.01em;
+  text-shadow: none;
+}
+.toggle-btn:hover { 
+  color: rgba(0, 0, 0, 0.85);
+  background: rgba(255, 255, 255, 0.18);
+  transform: scale(1.02);
+}
+.toggle-btn.active { 
+  background: rgba(255, 255, 255, 0.95);
+  color: #4f46e5; 
+  font-weight: 650;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15), 0 1px 3px rgba(0, 0, 0, 0.1);
+  transform: scale(1.02);
+  text-shadow: none;
+}
 
 
 .btn::before {

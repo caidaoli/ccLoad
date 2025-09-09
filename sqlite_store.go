@@ -524,10 +524,13 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 		}
 	}
 
-	// 生成完整的时间序列
+	// 生成完整的时间序列 - 扩展到当前时间桶+1个桶，确保包含最新数据
 	out := []MetricPoint{}
-	now := time.Now().Truncate(bucket)
-	for t := since.Truncate(bucket); !t.After(now); t = t.Add(bucket) {
+	now := time.Now()
+	endTime := now.Truncate(bucket).Add(bucket) // 包含当前时间桶
+	startTime := since.Truncate(bucket)
+	
+	for t := startTime; t.Before(endTime); t = t.Add(bucket) {
 		key := t.Unix()
 		if mp, ok := mapp[key]; ok {
 			out = append(out, *mp)

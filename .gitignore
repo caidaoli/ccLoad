@@ -46,3 +46,4 @@ Thumbs.db
 # Playwright MCP
 .playwright-mcp
 .env.example
+.claude/settings.local.json
