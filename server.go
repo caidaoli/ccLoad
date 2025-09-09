@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -60,7 +61,7 @@ func NewServer(store Store) *Server {
 
 	// 优化 HTTP 客户端配置 - 重点优化连接建立阶段的超时控制
 	dialer := &net.Dialer{
-		Timeout:   5 * time.Second,  // DNS解析+TCP连接建立超时
+		Timeout:   10 * time.Second, // DNS解析+TCP连接建立超时
 		KeepAlive: 30 * time.Second, // TCP keepalive间隔
 	}
 
@@ -74,15 +75,10 @@ func NewServer(store Store) *Server {
 		// 使用优化的Dialer
 		DialContext: dialer.DialContext,
 
-		// 关键超时配置 - 直接影响TTFB性能
-		TLSHandshakeTimeout:   5 * time.Second,  // TLS握手超时
-		ResponseHeaderTimeout: 10 * time.Second, // 响应头读取超时(影响TTFB)
-		ExpectContinueTimeout: 1 * time.Second,  // 100-continue超时
-
 		// 传输优化
 		DisableCompression: false,
 		DisableKeepAlives:  false,
-		ForceAttemptHTTP2:  true,      // 优先使用HTTP/2
+		ForceAttemptHTTP2:  false,     // 允许自动协议协商，避免HTTP/2超时
 		WriteBufferSize:    64 * 1024, // 64KB写缓冲区
 		ReadBufferSize:     64 * 1024, // 64KB读缓冲区
 		// 启用TLS会话缓存，减少重复握手耗时
@@ -330,13 +326,7 @@ func (s *Server) handleWebFiles(c *gin.Context) {
 		"/stats.html",
 	}
 
-	needsAuth := false
-	for _, page := range authRequiredPages {
-		if filepath == page {
-			needsAuth = true
-			break
-		}
-	}
+	needsAuth := slices.Contains(authRequiredPages, filepath)
 
 	if needsAuth {
 		// 检查身份验证
