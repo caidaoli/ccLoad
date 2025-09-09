@@ -3,11 +3,11 @@ package main
 import (
 	"context"
 	"log"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 )
 
@@ -16,6 +16,12 @@ func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Printf("No .env file found: %v", err)
 	}
+
+	// 设置Gin运行模式
+	if os.Getenv("GIN_MODE") == "" {
+		gin.SetMode(gin.ReleaseMode) // 生产模式
+	}
+
 	// 优先使用 SQLite 存储
 	dbPath := os.Getenv("SQLITE_PATH")
 	if dbPath == "" {
@@ -34,8 +40,16 @@ func main() {
 	// 渠道仅从 SQLite 管理与读取；不再从本地文件初始化。
 
 	srv := NewServer(store)
-	mux := http.NewServeMux()
-	srv.routes(mux)
+	
+	// 创建Gin引擎
+	r := gin.New()
+	
+	// 添加基础中间件
+	r.Use(gin.Logger())
+	r.Use(gin.Recovery())
+	
+	// 注册路由
+	srv.setupRoutes(r)
 
 	// 启动 session 清理循环
 	go srv.sessionCleanupLoop()
@@ -48,7 +62,7 @@ func main() {
 		addr = v
 	}
 	log.Printf("listening on %s", addr)
-	if err := http.ListenAndServe(addr, logRequest(mux)); err != nil {
+	if err := r.Run(addr); err != nil {
 		log.Fatal(err)
 	}
 }

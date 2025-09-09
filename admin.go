@@ -3,21 +3,23 @@ package main
 import (
 	"bytes"
 	"context"
-	"github.com/bytedance/sonic"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/bytedance/sonic"
+	"github.com/gin-gonic/gin"
 )
 
-// Admin: /admin/channels (GET, POST)
-func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
+// Admin: /admin/channels (GET, POST) - Gin版本
+func (s *Server) handleChannels(c *gin.Context) {
+	switch c.Request.Method {
 	case http.MethodGet:
-		cfgs, err := s.store.ListConfigs(r.Context())
+		cfgs, err := s.store.ListConfigs(c.Request.Context())
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
 		// 附带冷却状态（until与剩余毫秒）
@@ -28,207 +30,187 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 		}
 		now := time.Now()
 		out := make([]outCh, 0, len(cfgs))
-		for _, c := range cfgs {
-			oc := outCh{Config: c}
-			if until, ok := s.store.GetCooldownUntil(r.Context(), c.ID); ok && until.After(now) {
+		for _, cfg := range cfgs {
+			oc := outCh{Config: cfg}
+			if until, ok := s.store.GetCooldownUntil(c.Request.Context(), cfg.ID); ok && until.After(now) {
 				u := until // capture
 				oc.CooldownUntil = &u
 				oc.CooldownRemainingMS = int64(until.Sub(now) / time.Millisecond)
 			}
 			out = append(out, oc)
 		}
-		writeJSON(w, http.StatusOK, out)
+		c.JSON(http.StatusOK, out)
 	case http.MethodPost:
 		var in Config
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			http.Error(w, "failed to read body", http.StatusBadRequest)
-			return
-		}
-		if err := sonic.Unmarshal(body, &in); err != nil {
-			http.Error(w, "bad json", http.StatusBadRequest)
+		if err := c.ShouldBindJSON(&in); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "bad json"})
 			return
 		}
 		if in.Name == "" || in.APIKey == "" || in.URL == "" || len(in.Models) == 0 {
-			http.Error(w, "missing fields name/api_key/url/models", http.StatusBadRequest)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "missing fields name/api_key/url/models"})
 			return
 		}
-		created, err := s.store.CreateConfig(r.Context(), &in)
+		created, err := s.store.CreateConfig(c.Request.Context(), &in)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusCreated, created)
+		c.JSON(http.StatusCreated, created)
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		c.JSON(http.StatusMethodNotAllowed, gin.H{"error": "method not allowed"})
 	}
 }
 
-// Admin: /admin/channels/{id} (GET, PUT, DELETE) 和 /admin/channels/{id}/test (POST)
-func (s *Server) handleChannelByID(w http.ResponseWriter, r *http.Request) {
-	rest := strings.TrimPrefix(r.URL.Path, "/admin/channels/")
-	
-	// 检查是否是测试路径
-	if strings.Contains(rest, "/test") {
-		s.handleChannelTest(w, r)
-		return
-	}
-	
-	id, err := parseInt64Param(rest)
+// Admin: /admin/channels/{id} (GET, PUT, DELETE) - Gin版本
+func (s *Server) handleChannelByID(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := parseInt64Param(idStr)
 	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad id"})
 		return
 	}
-	switch r.Method {
+	
+	switch c.Request.Method {
 	case http.MethodGet:
-		cfg, err := s.store.GetConfig(r.Context(), id)
+		cfg, err := s.store.GetConfig(c.Request.Context(), id)
 		if err != nil {
-			http.Error(w, "not found", http.StatusNotFound)
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 			return
 		}
-		writeJSON(w, http.StatusOK, cfg)
+		c.JSON(http.StatusOK, cfg)
 	case http.MethodPut:
 		var in Config
-		body, err := io.ReadAll(r.Body)
+		if err := c.ShouldBindJSON(&in); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "bad json"})
+			return
+		}
+		upd, err := s.store.UpdateConfig(c.Request.Context(), id, &in)
 		if err != nil {
-			http.Error(w, "failed to read body", http.StatusBadRequest)
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 			return
 		}
-		if err := sonic.Unmarshal(body, &in); err != nil {
-			http.Error(w, "bad json", http.StatusBadRequest)
-			return
-		}
-		upd, err := s.store.UpdateConfig(r.Context(), id, &in)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
-		}
-		writeJSON(w, http.StatusOK, upd)
+		c.JSON(http.StatusOK, upd)
 	case http.MethodDelete:
-		if err := s.store.DeleteConfig(r.Context(), id); err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
+		if err := s.store.DeleteConfig(c.Request.Context(), id); err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		c.Status(http.StatusNoContent)
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		c.JSON(http.StatusMethodNotAllowed, gin.H{"error": "method not allowed"})
 	}
 }
 
-// Admin: /admin/errors?hours=24&limit=100&offset=0
-func (s *Server) handleErrors(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	hours, _ := strconv.Atoi(q.Get("hours"))
+// Admin: /admin/errors?hours=24&limit=100&offset=0 - Gin版本
+func (s *Server) handleErrors(c *gin.Context) {
+	hours, _ := strconv.Atoi(c.DefaultQuery("hours", "24"))
 	if hours <= 0 {
 		hours = 24
 	}
-	limit, _ := strconv.Atoi(q.Get("limit"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "200"))
 	if limit <= 0 {
 		limit = 200
 	}
-	offset, _ := strconv.Atoi(q.Get("offset"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	// 过滤：按渠道ID或渠道名
 	var lf LogFilter
-	if cidStr := strings.TrimSpace(q.Get("channel_id")); cidStr != "" {
+	if cidStr := strings.TrimSpace(c.Query("channel_id")); cidStr != "" {
 		if id, err := strconv.ParseInt(cidStr, 10, 64); err == nil && id > 0 {
 			lf.ChannelID = &id
 		}
 	}
-	if cn := strings.TrimSpace(q.Get("channel_name")); cn != "" {
+	if cn := strings.TrimSpace(c.Query("channel_name")); cn != "" {
 		lf.ChannelName = cn
 	}
-	if cnl := strings.TrimSpace(q.Get("channel_name_like")); cnl != "" {
+	if cnl := strings.TrimSpace(c.Query("channel_name_like")); cnl != "" {
 		lf.ChannelNameLike = cnl
 	}
-	if m := strings.TrimSpace(q.Get("model")); m != "" {
+	if m := strings.TrimSpace(c.Query("model")); m != "" {
 		lf.Model = m
 	}
-	if ml := strings.TrimSpace(q.Get("model_like")); ml != "" {
+	if ml := strings.TrimSpace(c.Query("model_like")); ml != "" {
 		lf.ModelLike = ml
 	}
 	since := time.Now().Add(-time.Duration(hours) * time.Hour)
-	logs, err := s.store.ListLogs(r.Context(), since, limit, offset, &lf)
+	logs, err := s.store.ListLogs(c.Request.Context(), since, limit, offset, &lf)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, logs)
+	c.JSON(http.StatusOK, logs)
 }
 
-// Admin: /admin/metrics?hours=24&bucket_min=5
-func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	hours, _ := strconv.Atoi(q.Get("hours"))
+// Admin: /admin/metrics?hours=24&bucket_min=5 - Gin版本
+func (s *Server) handleMetrics(c *gin.Context) {
+	hours, _ := strconv.Atoi(c.DefaultQuery("hours", "24"))
 	if hours <= 0 {
 		hours = 24
 	}
-	bucketMin, _ := strconv.Atoi(q.Get("bucket_min"))
+	bucketMin, _ := strconv.Atoi(c.DefaultQuery("bucket_min", "5"))
 	if bucketMin <= 0 {
 		bucketMin = 5
 	}
 	since := time.Now().Add(-time.Duration(hours) * time.Hour)
-	pts, err := s.store.Aggregate(r.Context(), since, time.Duration(bucketMin)*time.Minute)
+	pts, err := s.store.Aggregate(c.Request.Context(), since, time.Duration(bucketMin)*time.Minute)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, pts)
+	c.JSON(http.StatusOK, pts)
 }
 
-// Admin: /admin/stats?hours=24&channel_name_like=xxx&model_like=xxx
-func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	hours, _ := strconv.Atoi(q.Get("hours"))
+// Admin: /admin/stats?hours=24&channel_name_like=xxx&model_like=xxx - Gin版本
+func (s *Server) handleStats(c *gin.Context) {
+	hours, _ := strconv.Atoi(c.DefaultQuery("hours", "24"))
 	if hours <= 0 {
 		hours = 24
 	}
 
 	// 构建过滤条件（复用errors API的逻辑）
 	var lf LogFilter
-	if cidStr := strings.TrimSpace(q.Get("channel_id")); cidStr != "" {
+	if cidStr := strings.TrimSpace(c.Query("channel_id")); cidStr != "" {
 		if id, err := strconv.ParseInt(cidStr, 10, 64); err == nil && id > 0 {
 			lf.ChannelID = &id
 		}
 	}
-	if cn := strings.TrimSpace(q.Get("channel_name")); cn != "" {
+	if cn := strings.TrimSpace(c.Query("channel_name")); cn != "" {
 		lf.ChannelName = cn
 	}
-	if cnl := strings.TrimSpace(q.Get("channel_name_like")); cnl != "" {
+	if cnl := strings.TrimSpace(c.Query("channel_name_like")); cnl != "" {
 		lf.ChannelNameLike = cnl
 	}
-	if m := strings.TrimSpace(q.Get("model")); m != "" {
+	if m := strings.TrimSpace(c.Query("model")); m != "" {
 		lf.Model = m
 	}
-	if ml := strings.TrimSpace(q.Get("model_like")); ml != "" {
+	if ml := strings.TrimSpace(c.Query("model_like")); ml != "" {
 		lf.ModelLike = ml
 	}
 
 	since := time.Now().Add(-time.Duration(hours) * time.Hour)
-	stats, err := s.store.GetStats(r.Context(), since, &lf)
+	stats, err := s.store.GetStats(c.Request.Context(), since, &lf)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	// 包装成简单响应格式
-	response := map[string]interface{}{
+	response := gin.H{
 		"stats": stats,
 	}
-	writeJSON(w, http.StatusOK, response)
+	c.JSON(http.StatusOK, response)
 }
 
-// Public: /public/summary 基础请求统计（不需要身份验证）
-func (s *Server) handlePublicSummary(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	hours, _ := strconv.Atoi(q.Get("hours"))
+// Public: /public/summary 基础请求统计（不需要身份验证）- Gin版本
+func (s *Server) handlePublicSummary(c *gin.Context) {
+	hours, _ := strconv.Atoi(c.DefaultQuery("hours", "24"))
 	if hours <= 0 {
 		hours = 24 // 默认24小时
 	}
 
 	since := time.Now().Add(-time.Duration(hours) * time.Hour)
-	stats, err := s.store.GetStats(r.Context(), since, nil) // 不使用过滤条件
+	stats, err := s.store.GetStats(c.Request.Context(), since, nil) // 不使用过滤条件
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -245,7 +227,7 @@ func (s *Server) handlePublicSummary(w http.ResponseWriter, r *http.Request) {
 		totalModels[stat.Model] = true
 	}
 
-	response := map[string]interface{}{
+	response := gin.H{
 		"total_requests":   totalSuccess + totalError,
 		"success_requests": totalSuccess,
 		"error_requests":   totalError,
@@ -254,51 +236,32 @@ func (s *Server) handlePublicSummary(w http.ResponseWriter, r *http.Request) {
 		"hours":            hours,
 	}
 
-	writeJSON(w, http.StatusOK, response)
+	c.JSON(http.StatusOK, response)
 }
 
-// Admin: /admin/channels/{id}/test (POST)
-func (s *Server) handleChannelTest(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
+// Admin: /admin/channels/{id}/test (POST) - Gin版本
+func (s *Server) handleChannelTest(c *gin.Context) {
 	// 解析渠道ID
-	pathParts := strings.Split(strings.TrimPrefix(r.URL.Path, "/admin/channels/"), "/")
-	if len(pathParts) < 2 || pathParts[1] != "test" {
-		http.Error(w, "bad path", http.StatusBadRequest)
-		return
-	}
-	
-	id, err := parseInt64Param(pathParts[0])
+	idStr := c.Param("id")
+	id, err := parseInt64Param(idStr)
 	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad id"})
 		return
 	}
 
 	// 解析请求体
 	var testReq struct {
-		Model string `json:"model"`
+		Model string `json:"model" binding:"required"`
 	}
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "failed to read body", http.StatusBadRequest)
-		return
-	}
-	if err := sonic.Unmarshal(body, &testReq); err != nil {
-		http.Error(w, "bad json", http.StatusBadRequest)
-		return
-	}
-	if testReq.Model == "" {
-		http.Error(w, "missing model field", http.StatusBadRequest)
+	if err := c.ShouldBindJSON(&testReq); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad json or missing model field"})
 		return
 	}
 
 	// 获取渠道配置
-	cfg, err := s.store.GetConfig(r.Context(), id)
+	cfg, err := s.store.GetConfig(c.Request.Context(), id)
 	if err != nil {
-		http.Error(w, "channel not found", http.StatusNotFound)
+		c.JSON(http.StatusNotFound, gin.H{"error": "channel not found"})
 		return
 	}
 
@@ -311,7 +274,7 @@ func (s *Server) handleChannelTest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !modelSupported {
-		writeJSON(w, http.StatusOK, map[string]interface{}{
+		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"error":   "模型 " + testReq.Model + " 不在此渠道的支持列表中",
 		})
@@ -320,7 +283,7 @@ func (s *Server) handleChannelTest(w http.ResponseWriter, r *http.Request) {
 
 	// 执行测试
 	testResult := s.testChannelAPI(cfg, testReq.Model)
-	writeJSON(w, http.StatusOK, testResult)
+	c.JSON(http.StatusOK, testResult)
 }
 
 // 测试渠道API连通性

@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/hex"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -15,8 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bytedance/sonic"
 	ristretto "github.com/dgraph-io/ristretto/v2"
+	"github.com/gin-gonic/gin"
 )
 
 type Server struct {
@@ -126,14 +125,6 @@ func NewServer(store Store) *Server {
 
 }
 
-// helper: write JSON
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	data, _ := sonic.Marshal(v)
-	w.Write(data)
-}
-
 func parseInt64Param(s string) (int64, error) {
 	return strconv.ParseInt(s, 10, 64)
 }
@@ -192,82 +183,73 @@ func (s *Server) cleanExpiredSessions() {
 	}
 }
 
-// 身份验证中间件
-func (s *Server) requireAuth(handler http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+// 身份验证中间件 - Gin版本
+func (s *Server) requireAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
 		// 检查cookie中的session
-		cookie, err := r.Cookie("ccload_session")
-		if err != nil || !s.validateSession(cookie.Value) {
+		sessionID, err := c.Cookie("ccload_session")
+		if err != nil || !s.validateSession(sessionID) {
 			// 未登录，重定向到登录页面
-			loginURL := "/web/login.html?redirect=" + r.URL.Path
-			if r.URL.RawQuery != "" {
-				loginURL += "%3F" + r.URL.RawQuery // 编码查询参数
+			loginURL := "/web/login.html?redirect=" + c.Request.URL.Path
+			if c.Request.URL.RawQuery != "" {
+				loginURL += "%3F" + c.Request.URL.RawQuery // 编码查询参数
 			}
-			http.Redirect(w, r, loginURL, http.StatusFound)
+			c.Redirect(http.StatusFound, loginURL)
+			c.Abort()
 			return
 		}
-		handler(w, r)
+		c.Next()
 	}
 }
 
-// API 认证中间件
-func (s *Server) requireAPIAuth(handler http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+// API 认证中间件 - Gin版本
+func (s *Server) requireAPIAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
 		// 如果没有配置认证令牌，则跳过验证
 		if len(s.authTokens) == 0 {
-			handler(w, r)
+			c.Next()
 			return
 		}
 
 		// 检查 Authorization 头
-		authHeader := r.Header.Get("Authorization")
+		authHeader := c.GetHeader("Authorization")
 		if authHeader != "" {
 			// 解析 Bearer token
 			const prefix = "Bearer "
 			if strings.HasPrefix(authHeader, prefix) {
 				token := strings.TrimPrefix(authHeader, prefix)
 				if s.authTokens[token] {
-					handler(w, r)
+					c.Next()
 					return
 				}
 			}
 		}
 
 		// 检查 X-API-Key 头
-		apiKey := r.Header.Get("X-API-Key")
+		apiKey := c.GetHeader("X-API-Key")
 		if apiKey != "" && s.authTokens[apiKey] {
-			handler(w, r)
+			c.Next()
 			return
 		}
 
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or missing authorization"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or missing authorization"})
+		c.Abort()
 	}
 }
 
-// 登录处理程序
-func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
+// 登录处理程序 - Gin版本
+func (s *Server) handleLogin(c *gin.Context) {
 	var req struct {
-		Password string `json:"password"`
+		Password string `json:"password" binding:"required"`
 	}
 
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Failed to read request body"})
-		return
-	}
-
-	if err := sonic.Unmarshal(body, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request format"})
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
 		return
 	}
 
 	if req.Password != s.password {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Invalid password"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid password"})
 		return
 	}
 
@@ -275,85 +257,82 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	sessionID := s.createSession()
 
 	// 设置cookie
-	http.SetCookie(w, &http.Cookie{
-		Name:     "ccload_session",
-		Value:    sessionID,
-		Path:     "/",
-		MaxAge:   24 * 60 * 60, // 24小时
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-	})
-
-	writeJSON(w, http.StatusOK, map[string]string{"status": "success"})
+	c.SetCookie("ccload_session", sessionID, 24*60*60, "/", "", false, true)
+	c.JSON(http.StatusOK, gin.H{"status": "success"})
 }
 
-// 登出处理程序
-func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+// 登出处理程序 - Gin版本
+func (s *Server) handleLogout(c *gin.Context) {
 	// 清除cookie
-	http.SetCookie(w, &http.Cookie{
-		Name:     "ccload_session",
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1,
-		HttpOnly: true,
-	})
+	c.SetCookie("ccload_session", "", -1, "/", "", false, true)
 
 	// 清除服务器端session
-	cookie, err := r.Cookie("ccload_session")
-	if err == nil {
+	if sessionID, err := c.Cookie("ccload_session"); err == nil {
 		s.sessMux.Lock()
-		delete(s.sessions, cookie.Value)
+		delete(s.sessions, sessionID)
 		s.sessMux.Unlock()
 	}
 
-	http.Redirect(w, r, "/web/login.html", http.StatusFound)
+	c.Redirect(http.StatusFound, "/web/login.html")
 }
 
-// routes
-func (s *Server) routes(mux *http.ServeMux) {
+// setupRoutes - 新的路由设置函数，适配Gin
+func (s *Server) setupRoutes(r *gin.Engine) {
 	// 公开访问的API（代理服务）- 需要 API 认证
-	mux.HandleFunc("/v1/messages", s.requireAPIAuth(s.handleMessages))
+	api := r.Group("/v1")
+	api.Use(s.requireAPIAuth())
+	{
+		api.POST("/messages", s.handleMessages)
+	}
 
 	// 公开访问的API（基础统计）
-	mux.HandleFunc("/public/summary", s.handlePublicSummary)
+	public := r.Group("/public")
+	{
+		public.GET("/summary", s.handlePublicSummary)
+	}
 
 	// 登录相关（公开访问）
-	mux.HandleFunc("/login", s.handleLogin)
-	mux.HandleFunc("/logout", s.handleLogout)
+	r.POST("/login", s.handleLogin)
+	r.GET("/logout", s.handleLogout)
 
 	// 需要身份验证的admin APIs
-	mux.HandleFunc("/admin/channels", s.requireAuth(s.handleChannels))
-	mux.HandleFunc("/admin/channels/", s.requireAuth(s.handleChannelByID))
-	mux.HandleFunc("/admin/errors", s.requireAuth(s.handleErrors))
-	mux.HandleFunc("/admin/metrics", s.requireAuth(s.handleMetrics))
-	mux.HandleFunc("/admin/stats", s.requireAuth(s.handleStats))
+	admin := r.Group("/admin")
+	admin.Use(s.requireAuth())
+	{
+		admin.GET("/channels", s.handleChannels)
+		admin.POST("/channels", s.handleChannels)
+		admin.GET("/channels/:id", s.handleChannelByID)
+		admin.PUT("/channels/:id", s.handleChannelByID)
+		admin.DELETE("/channels/:id", s.handleChannelByID)
+		admin.POST("/channels/:id/test", s.handleChannelTest)
+		admin.GET("/errors", s.handleErrors)
+		admin.GET("/metrics", s.handleMetrics)
+		admin.GET("/stats", s.handleStats)
+	}
 
-	// 静态文件服务（需要验证的页面会通过中间件处理）
-	mux.HandleFunc("/web/", s.handleWebFiles)
+	// 静态文件服务
+	r.GET("/web/*filepath", s.handleWebFiles)
 
 	// 默认首页重定向
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/web/index.html", http.StatusFound)
+	r.GET("/", func(c *gin.Context) {
+		c.Redirect(http.StatusFound, "/web/index.html")
 	})
-
-	// 启动session清理goroutine
-	go s.sessionCleanupLoop()
 }
 
-// 处理web静态文件，对管理页面进行身份验证
-func (s *Server) handleWebFiles(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
+// 处理web静态文件，对管理页面进行身份验证 - Gin版本
+func (s *Server) handleWebFiles(c *gin.Context) {
+	filepath := c.Param("filepath")
 
 	// 需要身份验证的页面
 	authRequiredPages := []string{
-		"/web/channels.html",
-		"/web/logs.html",
-		"/web/stats.html",
+		"/channels.html",
+		"/logs.html",
+		"/stats.html",
 	}
 
 	needsAuth := false
 	for _, page := range authRequiredPages {
-		if path == page {
+		if filepath == page {
 			needsAuth = true
 			break
 		}
@@ -361,20 +340,19 @@ func (s *Server) handleWebFiles(w http.ResponseWriter, r *http.Request) {
 
 	if needsAuth {
 		// 检查身份验证
-		cookie, err := r.Cookie("ccload_session")
-		if err != nil || !s.validateSession(cookie.Value) {
-			loginURL := "/web/login.html?redirect=" + r.URL.Path
-			if r.URL.RawQuery != "" {
-				loginURL += "%3F" + r.URL.RawQuery
+		sessionID, err := c.Cookie("ccload_session")
+		if err != nil || !s.validateSession(sessionID) {
+			loginURL := "/web/login.html?redirect=" + c.Request.URL.Path
+			if c.Request.URL.RawQuery != "" {
+				loginURL += "%3F" + c.Request.URL.RawQuery
 			}
-			http.Redirect(w, r, loginURL, http.StatusFound)
+			c.Redirect(http.StatusFound, loginURL)
 			return
 		}
 	}
 
 	// 提供静态文件服务
-	fs := http.FileServer(http.Dir("web"))
-	http.StripPrefix("/web/", fs).ServeHTTP(w, r)
+	c.File("web" + filepath)
 }
 
 // session清理循环

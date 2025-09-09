@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/gin-gonic/gin"
 )
 
 type fwResult struct {
@@ -204,33 +205,28 @@ streamLoop:
 	}, totalDuration, streamErr
 }
 
-// POST /v1/messages
-func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+// POST /v1/messages - Gin版本
+func (s *Server) handleMessages(c *gin.Context) {
 	// 全量读取再转发，KISS
-	all, err := io.ReadAll(r.Body)
+	all, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		http.Error(w, "failed to read body", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
 		return
 	}
-	_ = r.Body.Close()
+	_ = c.Request.Body.Close()
 	var reqModel struct {
 		Model  string `json:"model"`
 		Stream bool   `json:"stream"`
 	}
 	if err := sonic.Unmarshal(all, &reqModel); err != nil || reqModel.Model == "" {
-		http.Error(w, "invalid JSON or missing model", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON or missing model"})
 		return
 	}
 
 	// 解析超时
-	q := r.URL.Query()
-	timeout := parseTimeout(q, r.Header)
+	timeout := parseTimeout(c.Request.URL.Query(), c.Request.Header)
 
-	ctx := r.Context()
+	ctx := c.Request.Context()
 	var cancel context.CancelFunc
 	if timeout > 0 {
 		ctx, cancel = context.WithTimeout(ctx, timeout)
@@ -239,7 +235,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// Build candidate list
 	cands, err := s.selectCandidates(ctx, reqModel.Model)
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		return
 	}
 	// If no candidates available (all cooled or none support), return 503
@@ -251,7 +247,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			Message:     "no available upstream (all cooled or none)",
 			IsStreaming: reqModel.Stream,
 		})
-		http.Error(w, "no available upstream (all cooled or none)", http.StatusServiceUnavailable)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no available upstream (all cooled or none)"})
 		return
 	}
 
@@ -261,7 +257,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	var lastHeader http.Header
 	for _, cfg := range cands {
 		// 首先尝试异步流式转发（适用于成功响应）
-		res, duration, err := s.forwardOnceAsync(ctx, cfg, all, r.Header, r.URL.RawQuery, w)
+		res, duration, err := s.forwardOnceAsync(ctx, cfg, all, c.Request.Header, c.Request.URL.RawQuery, c.Writer)
 		if err != nil {
 			// 网络错误：指数退避冷却
 			cooldownUntil := time.Now()
@@ -348,14 +344,13 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			for _, v := range vs {
-				w.Header().Add(k, v)
+				c.Header(k, v)
 			}
 		}
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write(lastBody)
+		c.Data(http.StatusServiceUnavailable, "application/json", lastBody)
 		return
 	}
-	http.Error(w, "no upstream available", http.StatusServiceUnavailable)
+	c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no upstream available"})
 }
 
 func truncateErr(s string) string {
