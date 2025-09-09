@@ -260,9 +260,10 @@ func (s *Server) handleMessages(c *gin.Context) {
 		res, duration, err := s.forwardOnceAsync(ctx, cfg, all, c.Request.Header, c.Request.URL.RawQuery, c.Writer)
 		if err != nil {
 			// 网络错误：指数退避冷却
-			cooldownUntil := time.Now()
+			now := time.Now()
+			cooldownDur, _ := s.store.BumpCooldownOnError(ctx, cfg.ID, now)
+			cooldownUntil := now.Add(cooldownDur)
 			s.cooldownCache.Store(cfg.ID, cooldownUntil)
-			_, _ = s.store.BumpCooldownOnError(ctx, cfg.ID, cooldownUntil)
 			s.addLogAsync(&LogEntry{
 				Time:        JSONTime{time.Now()},
 				Model:       reqModel.Model,
@@ -302,9 +303,10 @@ func (s *Server) handleMessages(c *gin.Context) {
 			return // 成功完成，直接返回
 		}
 		// 非2xx：指数退避冷却并尝试下一个
-		cooldownUntil := time.Now()
+		now := time.Now()
+		cooldownDur, _ := s.store.BumpCooldownOnError(ctx, cfg.ID, now)
+		cooldownUntil := now.Add(cooldownDur)
 		s.cooldownCache.Store(cfg.ID, cooldownUntil)
-		_, _ = s.store.BumpCooldownOnError(ctx, cfg.ID, cooldownUntil)
 		msg := fmt.Sprintf("upstream status %d", res.Status)
 		if len(res.Body) > 0 {
 			msg = fmt.Sprintf("%s: %s", msg, truncateErr(string(res.Body)))
