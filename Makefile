@@ -7,6 +7,7 @@ LAUNCH_AGENTS_DIR = $(HOME)/Library/LaunchAgents
 TARGET_PLIST = $(LAUNCH_AGENTS_DIR)/$(PLIST_FILE)
 BINARY_NAME = ccload
 LOG_DIR = logs
+GOTAGS ?= go_json
 
 .PHONY: help build install-service uninstall-service start stop restart status logs clean
 
@@ -28,7 +29,7 @@ help:
 # 构建二进制文件
 build:
 	@echo "构建 $(BINARY_NAME)..."
-	@go build -o $(BINARY_NAME) .
+	@go build -tags "$(GOTAGS)" -o $(BINARY_NAME) .
 	@echo "构建完成: $(BINARY_NAME)"
 
 # 创建必要的目录
@@ -108,7 +109,7 @@ clean:
 # 开发模式运行（不作为服务）
 dev:
 	@echo "开发模式运行..."
-	@go run .
+	@go run -tags "$(GOTAGS)" .
 
 # 查看完整服务信息
 info:
