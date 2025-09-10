@@ -333,8 +333,8 @@ func (s *Server) handlePublicSummary(c *gin.Context) {
 type TestChannelRequest struct {
 	Model     string            `json:"model" binding:"required"`
 	MaxTokens int               `json:"max_tokens,omitempty"` // 可选，默认512
-	Beta      bool              `json:"beta,omitempty"`       // 可选，添加beta=true查询参数
 	Stream    bool              `json:"stream,omitempty"`     // 可选，流式响应
+	Content   string            `json:"content,omitempty"`    // 可选，测试内容，默认"test"
 	Headers   map[string]string `json:"headers,omitempty"`    // 可选，自定义请求头
 }
 
@@ -400,6 +400,11 @@ func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[st
 		maxTokens = 512 // 使用curl命令中的默认值
 	}
 
+	testContent := testReq.Content
+	if testContent == "" {
+		testContent = "test" // 默认测试内容
+	}
+
 	// 创建测试请求（模拟curl命令的结构）
 	testMessage := map[string]interface{}{
 		"model":      testReq.Model,
@@ -407,10 +412,13 @@ func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[st
 		"messages": []map[string]interface{}{
 			{
 				"role":    "user",
-				"content": "test",
+				"content": testContent,
 			},
 		},
 		"stream": testReq.Stream,
+		"metadata": map[string]interface{}{
+			"user_id": "test",
+		},
 	}
 
 	reqBody, err := sonic.Marshal(testMessage)
@@ -426,16 +434,9 @@ func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[st
 	defer cancel()
 
 	// 构建完整的API URL（模拟curl命令的URL结构）
-	fullURL := strings.TrimRight(cfg.URL, "/") + "/v1/messages?beta=true"
+	fullURL := strings.TrimRight(cfg.URL, "/") + "/v1/messages"
+	fullURL += "?beta=true"
 
-	// 添加查询参数
-	if testReq.Beta {
-		if strings.Contains(fullURL, "?") {
-			fullURL += "&beta=true"
-		} else {
-			fullURL += "?beta=true"
-		}
-	}
 	req, err := http.NewRequestWithContext(ctx, "POST", fullURL, bytes.NewReader(reqBody))
 	if err != nil {
 		return map[string]interface{}{

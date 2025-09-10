@@ -589,6 +589,12 @@
         </select>
       </div>
       
+      <div class="form-group">
+        <label class="form-label" for="testContentInput">测试内容</label>
+        <textarea id="testContentInput" class="form-input" rows="3" placeholder="输入测试内容..." style="resize: vertical; min-height: 80px;">test</textarea>
+        <div class="models-hint">默认内容为 "test"，可以修改为其他测试内容</div>
+      </div>
+      
       <!-- 测试进度 -->
       <div id="testProgress" class="test-progress">
         <div class="test-spinner"></div>
@@ -1064,13 +1070,18 @@
       document.getElementById('testProgress').classList.remove('show');
       document.getElementById('testResult').classList.remove('show', 'success', 'error');
       document.getElementById('runTestBtn').disabled = false;
+      // 重置内容输入框为默认值
+      document.getElementById('testContentInput').value = 'test';
     }
 
     async function runChannelTest() {
       if (!testingChannelId) return;
 
       const modelSelect = document.getElementById('testModelSelect');
+      const contentInput = document.getElementById('testContentInput');
       const selectedModel = modelSelect.value;
+      const testContent = contentInput.value.trim() || 'test'; // 默认为"test"
+      
       if (!selectedModel) {
         if (window.showError) showError('请选择一个模型');
         return;
@@ -1082,10 +1093,19 @@
       document.getElementById('runTestBtn').disabled = true;
 
       try {
+        // 使用新的参数结构，支持自定义内容和beta参数
+        const testRequest = {
+          model: selectedModel,
+          max_tokens: 512,
+          beta: true,
+          stream: false,
+          content: testContent
+        };
+        
         const res = await fetch(`/admin/channels/${testingChannelId}/test`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: selectedModel })
+          body: JSON.stringify(testRequest)
         });
 
         if (!res.ok) {
