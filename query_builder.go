@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
-	
+
 	"github.com/bytedance/sonic"
 )
 
@@ -40,7 +40,7 @@ func (wb *WhereBuilder) ApplyLogFilter(filter *LogFilter) *WhereBuilder {
 	if filter == nil {
 		return wb
 	}
-	
+
 	if filter.ChannelID != nil {
 		wb.AddCondition("l.channel_id = ?", *filter.ChannelID)
 	}
@@ -85,18 +85,18 @@ func NewConfigScanner() *ConfigScanner {
 }
 
 // ScanConfig 扫描单行配置数据，消除重复的扫描逻辑
-func (cs *ConfigScanner) ScanConfig(scanner interface{
+func (cs *ConfigScanner) ScanConfig(scanner interface {
 	Scan(...any) error
 }) (*Config, error) {
 	var c Config
 	var modelsStr string
 	var enabledInt int
-	
+
 	if err := scanner.Scan(&c.ID, &c.Name, &c.APIKey, &c.URL, &c.Priority,
 		&modelsStr, &enabledInt, &c.CreatedAt, &c.UpdatedAt); err != nil {
 		return nil, err
 	}
-	
+
 	c.Enabled = enabledInt != 0
 	if err := parseModelsJSON(modelsStr, &c.Models); err != nil {
 		c.Models = nil // 解析失败时使用空切片
@@ -105,12 +105,12 @@ func (cs *ConfigScanner) ScanConfig(scanner interface{
 }
 
 // ScanConfigs 扫描多行配置数据
-func (cs *ConfigScanner) ScanConfigs(rows interface{
+func (cs *ConfigScanner) ScanConfigs(rows interface {
 	Next() bool
 	Scan(...any) error
 }) ([]*Config, error) {
 	var configs []*Config
-	
+
 	for rows.Next() {
 		config, err := cs.ScanConfig(rows)
 		if err != nil {
@@ -118,7 +118,7 @@ func (cs *ConfigScanner) ScanConfigs(rows interface{
 		}
 		configs = append(configs, config)
 	}
-	
+
 	return configs, nil
 }
 
@@ -151,12 +151,12 @@ func (qb *QueryBuilder) ApplyFilter(filter *LogFilter) *QueryBuilder {
 // Build 构建最终查询
 func (qb *QueryBuilder) Build() (string, []any) {
 	whereClause, args := qb.wb.BuildWithPrefix("WHERE")
-	
+
 	query := qb.baseQuery
 	if whereClause != "" {
 		query += " " + whereClause
 	}
-	
+
 	return query, args
 }
 
@@ -192,17 +192,17 @@ func parseModelsJSON(modelsStr string, models *[]string) error {
 		*models = []string{}
 		return nil
 	}
-	
+
 	// 使用现有的sonic库进行解析
 	return sonic.Unmarshal([]byte(modelsStr), models)
 }
 
-// 辅助函数：序列化模型为JSON  
+// 辅助函数：序列化模型为JSON
 func serializeModels(models []string) (string, error) {
 	if len(models) == 0 {
 		return "[]", nil
 	}
-	
+
 	bytes, err := sonic.Marshal(models)
 	if err != nil {
 		return "[]", err

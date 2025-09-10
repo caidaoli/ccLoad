@@ -384,11 +384,11 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 		       l.status_code, l.message, l.duration, l.is_streaming, l.first_byte_time
 		FROM logs l
 		LEFT JOIN channels c ON c.id = l.channel_id`
-	
+
 	qb := NewQueryBuilder(baseQuery).
 		Where("l.time >= ?", since).
 		ApplyFilter(filter)
-	
+
 	suffix := "ORDER BY l.time DESC LIMIT ? OFFSET ?"
 	query, args := qb.BuildWithSuffix(suffix)
 	args = append(args, limit, offset)
@@ -488,7 +488,7 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 	now := time.Now()
 	endTime := now.Truncate(bucket).Add(bucket) // 包含当前时间桶
 	startTime := since.Truncate(bucket)
-	
+
 	for t := startTime; t.Before(endTime); t = t.Add(bucket) {
 		key := t.Unix()
 		if mp, ok := mapp[key]; ok {
@@ -566,11 +566,11 @@ func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *Log
 			COUNT(*) as total
 		FROM logs l 
 		LEFT JOIN channels c ON c.id = l.channel_id`
-	
+
 	qb := NewQueryBuilder(baseQuery).
 		Where("l.time >= ?", since).
 		ApplyFilter(filter)
-	
+
 	suffix := "GROUP BY l.channel_id, c.name, l.model ORDER BY channel_name ASC, model ASC"
 	query, args := qb.BuildWithSuffix(suffix)
 

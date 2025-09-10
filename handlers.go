@@ -32,7 +32,7 @@ func (p *PaginationParams) GetSinceTime() time.Time {
 // ParsePaginationParams 解析通用分页参数
 func ParsePaginationParams(c *gin.Context) *PaginationParams {
 	var params PaginationParams
-	
+
 	// 使用传统方式解析以保持向后兼容
 	if hours, err := strconv.Atoi(c.DefaultQuery("hours", "24")); err == nil && hours > 0 {
 		params.Hours = hours
@@ -43,7 +43,7 @@ func ParsePaginationParams(c *gin.Context) *PaginationParams {
 	if offset, err := strconv.Atoi(c.DefaultQuery("offset", "0")); err == nil && offset >= 0 {
 		params.Offset = offset
 	}
-	
+
 	params.SetDefaults()
 	return &params
 }
@@ -81,7 +81,7 @@ func RespondError(c *gin.Context, code int, err error) {
 	} else {
 		errMsg = "unknown error"
 	}
-	
+
 	c.JSON(code, APIResponse[any]{
 		Success: false,
 		Error:   errMsg,

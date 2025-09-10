@@ -40,14 +40,14 @@ func main() {
 	// 渠道仅从 SQLite 管理与读取；不再从本地文件初始化。
 
 	srv := NewServer(store)
-	
+
 	// 创建Gin引擎
 	r := gin.New()
-	
+
 	// 添加基础中间件
 	r.Use(gin.Logger())
 	r.Use(gin.Recovery())
-	
+
 	// 注册路由
 	srv.setupRoutes(r)
 

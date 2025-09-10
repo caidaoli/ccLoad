@@ -331,7 +331,11 @@ func (s *Server) handlePublicSummary(c *gin.Context) {
 
 // TestChannelRequest 渠道测试请求结构
 type TestChannelRequest struct {
-	Model string `json:"model" binding:"required"`
+	Model     string            `json:"model" binding:"required"`
+	MaxTokens int               `json:"max_tokens,omitempty"` // 可选，默认512
+	Beta      bool              `json:"beta,omitempty"`       // 可选，添加beta=true查询参数
+	Stream    bool              `json:"stream,omitempty"`     // 可选，流式响应
+	Headers   map[string]string `json:"headers,omitempty"`    // 可选，自定义请求头
 }
 
 // Validate 实现RequestValidator接口
@@ -375,38 +379,38 @@ func (s *Server) handleChannelTest(c *gin.Context) {
 	}
 	if !modelSupported {
 		RespondJSON(c, http.StatusOK, gin.H{
-			"success": false,
-			"error":   "模型 " + testReq.Model + " 不在此渠道的支持列表中",
+			"success":          false,
+			"error":            "模型 " + testReq.Model + " 不在此渠道的支持列表中",
+			"model":            testReq.Model,
+			"supported_models": cfg.Models,
 		})
 		return
 	}
 
 	// 执行测试
-	testResult := s.testChannelAPI(cfg, testReq.Model)
+	testResult := s.testChannelAPI(cfg, &testReq)
 	RespondJSON(c, http.StatusOK, testResult)
 }
 
 // 测试渠道API连通性
-func (s *Server) testChannelAPI(cfg *Config, model string) map[string]interface{} {
-	// 创建测试请求
+func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[string]interface{} {
+	// 设置默认值
+	maxTokens := testReq.MaxTokens
+	if maxTokens == 0 {
+		maxTokens = 512 // 使用curl命令中的默认值
+	}
+
+	// 创建测试请求（模拟curl命令的结构）
 	testMessage := map[string]interface{}{
-		"model":      model,
-		"max_tokens": 10,
+		"model":      testReq.Model,
+		"max_tokens": maxTokens,
 		"messages": []map[string]interface{}{
 			{
 				"role":    "user",
 				"content": "test",
 			},
 		},
-		"system": []map[string]interface{}{
-			{
-				"type": "text",
-				"text": "You are Claude Code, Anthropic's official CLI for Claude.",
-				"cache_control": map[string]interface{}{
-					"type": "ephemeral",
-				},
-			},
-		},
+		"stream": testReq.Stream,
 	}
 
 	reqBody, err := sonic.Marshal(testMessage)
@@ -421,8 +425,17 @@ func (s *Server) testChannelAPI(cfg *Config, model string) map[string]interface{
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// 构建完整的API URL (与proxy.go保持一致)
-	fullURL := strings.TrimRight(cfg.URL, "/") + "/v1/messages"
+	// 构建完整的API URL（模拟curl命令的URL结构）
+	fullURL := strings.TrimRight(cfg.URL, "/") + "/v1/messages?beta=true"
+
+	// 添加查询参数
+	if testReq.Beta {
+		if strings.Contains(fullURL, "?") {
+			fullURL += "&beta=true"
+		} else {
+			fullURL += "?beta=true"
+		}
+	}
 	req, err := http.NewRequestWithContext(ctx, "POST", fullURL, bytes.NewReader(reqBody))
 	if err != nil {
 		return map[string]interface{}{
@@ -431,11 +444,16 @@ func (s *Server) testChannelAPI(cfg *Config, model string) map[string]interface{
 		}
 	}
 
-	// 设置请求头
+	// 设置请求头（模拟curl命令的headers）
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", cfg.APIKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-	req.Header.Set("User-Agent", "ccLoad/1.0")
+	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)              // 使用Bearer认证
+	req.Header.Set("User-Agent", "claude-cli/1.0.110 (external, cli)") // 模拟claude-cli
+	req.Header.Set("x-app", "cli")                                     // 模拟curl命令中的x-app头
+
+	// 添加自定义请求头
+	for key, value := range testReq.Headers {
+		req.Header.Set(key, value)
+	}
 
 	// 发送请求
 	start := time.Now()
