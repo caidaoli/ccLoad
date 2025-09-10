@@ -239,3 +239,35 @@ GET         /admin/metrics        # 趋势数据（支持hours和bucket_min参�
 - **JSON**: Sonic v1.14.1（高性能JSON库）
 - **环境配置**: godotenv v1.5.1
 - **前端**: 原生HTML/CSS/JavaScript（无框架依赖）
+
+## 代码规范
+
+### Go 语言现代化要求
+
+**类型声明现代化**:
+- ✅ **使用 `any` 替代 `interface{}`**: 遵循 Go 1.18+ 社区最佳实践
+- ✅ **泛型优先**: 在合适场景使用 Go 1.18+ 泛型语法
+- ✅ **类型推导**: 充分利用现代Go的类型推导能力
+
+**代码质量标准**:
+- **KISS原则**: 优先选择更简洁、可读性更强的现代语法
+- **一致性要求**: 全项目统一使用现代Go语法规范
+- **向前兼容**: 充分利用Go语言版本特性，保持技术栈先进性
+
+**具体规范**:
+```go
+// ✅ 推荐：使用现代语法
+func processData(data map[string]any) any {
+    return data["result"]
+}
+
+// ❌ 避免：过时语法  
+func processData(data map[string]interface{}) interface{} {
+    return data["result"]
+}
+```
+
+**工具链要求**:
+- **go fmt**: 强制代码格式化
+- **go vet**: 静态分析检查
+- **现代化检查**: 定期审查并升级代码语法到最新标准

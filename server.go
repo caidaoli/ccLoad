@@ -427,7 +427,7 @@ func (s *Server) cleanupExpiredCooldowns() {
 
 	for range ticker.C {
 		now := time.Now()
-		s.cooldownCache.Range(func(key, value interface{}) bool {
+		s.cooldownCache.Range(func(key, value any) bool {
 			if expireTime, ok := value.(time.Time); ok && now.After(expireTime) {
 				s.cooldownCache.Delete(key)
 			}

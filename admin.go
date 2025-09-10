@@ -143,7 +143,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	}
 
 	// 解析请求为通用map以支持部分更新
-	var rawReq map[string]interface{}
+	var rawReq map[string]any
 	if err := c.ShouldBindJSON(&rawReq); err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid request format")
 		return
@@ -393,7 +393,7 @@ func (s *Server) handleChannelTest(c *gin.Context) {
 }
 
 // 测试渠道API连通性
-func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[string]interface{} {
+func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[string]any {
 	// 设置默认值
 	maxTokens := testReq.MaxTokens
 	if maxTokens == 0 {
@@ -406,24 +406,24 @@ func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[st
 	}
 
 	// 创建测试请求（模拟curl命令的结构）
-	testMessage := map[string]interface{}{
+	testMessage := map[string]any{
 		"model":      testReq.Model,
 		"max_tokens": maxTokens,
-		"messages": []map[string]interface{}{
+		"messages": []map[string]any{
 			{
 				"role":    "user",
 				"content": testContent,
 			},
 		},
 		"stream": testReq.Stream,
-		"metadata": map[string]interface{}{
+		"metadata": map[string]any{
 			"user_id": "test",
 		},
 	}
 
 	reqBody, err := sonic.Marshal(testMessage)
 	if err != nil {
-		return map[string]interface{}{
+		return map[string]any{
 			"success": false,
 			"error":   "构造测试请求失败: " + err.Error(),
 		}
@@ -439,7 +439,7 @@ func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[st
 
 	req, err := http.NewRequestWithContext(ctx, "POST", fullURL, bytes.NewReader(reqBody))
 	if err != nil {
-		return map[string]interface{}{
+		return map[string]any{
 			"success": false,
 			"error":   "创建HTTP请求失败: " + err.Error(),
 		}
@@ -462,7 +462,7 @@ func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[st
 	duration := time.Since(start)
 
 	if err != nil {
-		return map[string]interface{}{
+		return map[string]any{
 			"success":     false,
 			"error":       "网络请求失败: " + err.Error(),
 			"duration_ms": duration.Milliseconds(),
@@ -473,7 +473,7 @@ func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[st
 	// 读取响应
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return map[string]interface{}{
+		return map[string]any{
 			"success":     false,
 			"error":       "读取响应失败: " + err.Error(),
 			"duration_ms": duration.Milliseconds(),
@@ -482,7 +482,7 @@ func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[st
 	}
 
 	// 根据状态码判断成功或失败
-	result := map[string]interface{}{
+	result := map[string]any{
 		"success":     resp.StatusCode >= 200 && resp.StatusCode < 300,
 		"status_code": resp.StatusCode,
 		"duration_ms": duration.Milliseconds(),
@@ -490,11 +490,11 @@ func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[st
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		// 成功响应
-		var apiResp map[string]interface{}
+		var apiResp map[string]any
 		if err := sonic.Unmarshal(respBody, &apiResp); err == nil {
 			// 提取响应文本
-			if content, ok := apiResp["content"].([]interface{}); ok && len(content) > 0 {
-				if textBlock, ok := content[0].(map[string]interface{}); ok {
+			if content, ok := apiResp["content"].([]any); ok && len(content) > 0 {
+				if textBlock, ok := content[0].(map[string]any); ok {
 					if text, ok := textBlock["text"].(string); ok {
 						result["response_text"] = text
 					}
@@ -510,9 +510,9 @@ func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[st
 	} else {
 		// 错误响应
 		var errorMsg string
-		var apiError map[string]interface{}
+		var apiError map[string]any
 		if err := sonic.Unmarshal(respBody, &apiError); err == nil {
-			if errInfo, ok := apiError["error"].(map[string]interface{}); ok {
+			if errInfo, ok := apiError["error"].(map[string]any); ok {
 				if msg, ok := errInfo["message"].(string); ok {
 					errorMsg = msg
 				} else if typeStr, ok := errInfo["type"].(string); ok {
