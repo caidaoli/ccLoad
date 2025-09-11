@@ -56,7 +56,7 @@
     const left = h('div', { class: 'topbar-left' }, [
       h('div', { class: 'brand' }, [
         h('div', { class: 'brand-icon' }, 'C'),
-        h('div', { class: 'brand-text' }, 'Claude Proxy')
+        h('div', { class: 'brand-text' }, 'Claude Code Proxy')
       ])
     ]);
     const nav = h('nav', { class: 'topnav' }, [
