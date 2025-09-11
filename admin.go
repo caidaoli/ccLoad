@@ -407,15 +407,36 @@ func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[st
 
 	// 创建测试请求（模拟curl命令的结构）
 	testMessage := map[string]any{
-		"model":      testReq.Model,
-		"max_tokens": maxTokens,
-		"messages": []map[string]any{
+		"system": []map[string]any{
 			{
-				"role":    "user",
-				"content": testContent,
+				"type": "text",
+				"text": "You are Claude Code, Anthropic's official CLI for Claude.",
+				"cache_control": map[string]any{
+					"type": "ephemeral",
+				},
 			},
 		},
-		"stream": testReq.Stream,
+		"stream": false,
+		"messages": []map[string]any{
+			{
+				"content": []map[string]any{
+					{
+						"type": "text",
+						"text": "<system-reminder>\nThis is a reminder that your todo list is currently empty. DO NOT mention this to the user explicitly because they are already aware. If you are working on tasks that would benefit from a todo list please use the TodoWrite tool to create one. If not, please feel free to ignore. Again do not mention this message to the user.\n</system-reminder>",
+					},
+					{
+						"type": "text",
+						"text": testContent,
+						"cache_control": map[string]any{
+							"type": "ephemeral",
+						},
+					},
+				},
+				"role": "user",
+			},
+		},
+		"model":      testReq.Model,
+		"max_tokens": maxTokens,
 		"metadata": map[string]any{
 			"user_id": "test",
 		},
