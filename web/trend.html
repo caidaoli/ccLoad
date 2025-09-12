@@ -363,13 +363,25 @@
         window.trendData = metricsResponse.success ? (metricsResponse.data || []) : (metricsResponse || []);
         window.channels = channelsResponse.success ? (channelsResponse.data || []) : (channelsResponse || []);
         
-        // 初始化显示所有渠道
+        // 初始化显示所有渠道 - 添加调试日志
         if (window.visibleChannels.size === 0) {
+          console.log('初始化渠道显示状态...');
           window.channels.forEach(ch => {
             if (ch.enabled) {
-              window.visibleChannels.add(ch.name);
+              // 检查渠道是否有数据
+              const hasData = hasChannelData(ch.name, window.trendData);
+              console.log(`渠道 ${ch.name}: enabled=${ch.enabled}, hasData=${hasData}`);
+              
+              // 只添加有数据的渠道
+              if (hasData) {
+                window.visibleChannels.add(ch.name);
+                console.log(`添加有数据的渠道: ${ch.name}`);
+              } else {
+                console.log(`跳过无数据的渠道: ${ch.name}`);
+              }
             }
           });
+          console.log('初始化完成，可见渠道:', Array.from(window.visibleChannels));
         }
         
         // 添加调试信息显示
@@ -522,53 +534,79 @@
         data: window.trendData.map(point => point.error || 0)
       });
       
-      // 为每个可见渠道添加成功/失败线
+      // 为每个可见渠道添加成功/失败线 - 添加数据验证
+      console.log('开始渲染渠道数据，可见渠道:', Array.from(window.visibleChannels));
+      
       Array.from(window.visibleChannels).forEach(channelName => {
         const color = channelColors[channelName];
         
-        // 成功线
-        series.push({
-          name: `${channelName}(成功)`,
-          type: 'line',
-          smooth: true,
-          symbol: 'none',
-          sampling: 'lttb',
-          itemStyle: {
-            color: color
-          },
-          lineStyle: {
-            width: 1.5,
-            color: color,
-            type: 'solid'
-          },
-          data: window.trendData.map(point => {
-            const channels = point.channels || {};
-            const channelData = channels[channelName] || { success: 0, error: 0 };
-            return channelData.success;
-          })
+        // 计算渠道数据总和用于验证
+        let successTotal = 0;
+        let errorTotal = 0;
+        const successData = window.trendData.map(point => {
+          const channels = point.channels || {};
+          const channelData = channels[channelName] || { success: 0, error: 0 };
+          const success = channelData.success || 0;
+          successTotal += success;
+          return success;
         });
         
-        // 失败线
-        series.push({
-          name: `${channelName}(失败)`,
-          type: 'line',
-          smooth: true,
-          symbol: 'none',
-          sampling: 'lttb',
-          itemStyle: {
-            color: color
-          },
-          lineStyle: {
-            width: 1.5,
-            color: color,
-            type: 'dashed'
-          },
-          data: window.trendData.map(point => {
-            const channels = point.channels || {};
-            const channelData = channels[channelName] || { success: 0, error: 0 };
-            return channelData.error;
-          })
+        const errorData = window.trendData.map(point => {
+          const channels = point.channels || {};
+          const channelData = channels[channelName] || { success: 0, error: 0 };
+          const error = channelData.error || 0;
+          errorTotal += error;
+          return error;
         });
+        
+        console.log(`渠道 ${channelName} 数据统计: 成功总数=${successTotal}, 错误总数=${errorTotal}`);
+        
+        // 只有当渠道有数据时才添加到图表
+        if (successTotal > 0 || errorTotal > 0) {
+          console.log(`添加有数据的渠道到图表: ${channelName}`);
+          
+          // 成功线 - 只有成功数据大于0才添加
+          if (successTotal > 0) {
+            series.push({
+              name: `${channelName}(成功)`,
+              type: 'line',
+              smooth: true,
+              symbol: 'none',
+              sampling: 'lttb',
+              itemStyle: {
+                color: color
+              },
+              lineStyle: {
+                width: 1.5,
+                color: color,
+                type: 'solid'
+              },
+              data: successData
+            });
+          }
+          
+          // 失败线 - 只有失败数据大于0才添加
+          if (errorTotal > 0) {
+            series.push({
+              name: `${channelName}(失败)`,
+              type: 'line',
+              smooth: true,
+              symbol: 'none',
+              sampling: 'lttb',
+              itemStyle: {
+                color: color
+              },
+              lineStyle: {
+                width: 1.5,
+                color: color,
+                type: 'dashed'
+              },
+              data: errorData
+            });
+          }
+        } else {
+          console.log(`跳过无数据的渠道: ${channelName}`);
+        }
       });
 
       // ECharts 配置
@@ -734,8 +772,30 @@
     }
 
     // 工具函数
-    function pad(n) { 
+    function pad(n) {
       return (n < 10 ? '0' : '') + n;
+    }
+    
+    // 检查渠道是否有数据的函数
+    function hasChannelData(channelName, trendData) {
+      if (!trendData || !trendData.length) {
+        console.log(`hasChannelData: 没有趋势数据 for ${channelName}`);
+        return false;
+      }
+      
+      let totalSuccess = 0;
+      let totalError = 0;
+      
+      trendData.forEach(point => {
+        const channels = point.channels || {};
+        const channelData = channels[channelName] || { success: 0, error: 0 };
+        totalSuccess += channelData.success || 0;
+        totalError += channelData.error || 0;
+      });
+      
+      const hasData = (totalSuccess + totalError) > 0;
+      console.log(`hasChannelData: ${channelName} - success=${totalSuccess}, error=${totalError}, hasData=${hasData}`);
+      return hasData;
     }
     
     // 生成渠道颜色
@@ -756,7 +816,7 @@
       return channelColors;
     }
     
-    // 更新渠道筛选器
+    // 更新渠道筛选器 - 只显示有数据的渠道
     function updateChannelFilter() {
       if (!window.channels) return;
       
@@ -766,8 +826,19 @@
       const channelColors = generateChannelColors(window.channels.map(ch => ch.name));
       
       filterList.innerHTML = '';
+      console.log('更新渠道筛选器...');
+      
       window.channels.forEach(channel => {
         if (!channel.enabled) return; // 只显示启用的渠道
+        
+        // 检查渠道是否有数据
+        const hasData = hasChannelData(channel.name, window.trendData);
+        console.log(`筛选器中的渠道 ${channel.name}: enabled=${channel.enabled}, hasData=${hasData}`);
+        
+        if (!hasData) {
+          console.log(`筛选器跳过无数据的渠道: ${channel.name}`);
+          return; // 跳过没有数据的渠道
+        }
         
         const item = document.createElement('div');
         item.className = 'channel-filter-item';
@@ -781,6 +852,7 @@
         `;
         
         filterList.appendChild(item);
+        console.log(`筛选器添加有数据的渠道: ${channel.name}`);
       });
     }
     
@@ -797,10 +869,10 @@
       persistChannelState();
     }
     
-    // 全选渠道
+    // 全选渠道 - 只选择有数据的渠道
     function selectAllChannels() {
       window.channels.forEach(ch => {
-        if (ch.enabled) {
+        if (ch.enabled && hasChannelData(ch.name, window.trendData)) {
           window.visibleChannels.add(ch.name);
         }
       });

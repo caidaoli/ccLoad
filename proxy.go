@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,32 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
 )
+
+// 错误类型常量定义
+const (
+	StatusClientClosedRequest = 499 // 客户端取消请求 (Nginx扩展状态码)
+	StatusNetworkError       = 0    // 网络连接错误（保持现有逻辑）
+)
+
+// classifyError 分类错误类型，返回状态码和是否应该重试
+func classifyError(err error) (statusCode int, shouldRetry bool) {
+	if err == nil {
+		return 200, false
+	}
+	
+	// Context canceled - 客户端取消，不应重试
+	if errors.Is(err, context.Canceled) {
+		return StatusClientClosedRequest, false
+	}
+	
+	// Context deadline exceeded - 超时，不应重试
+	if errors.Is(err, context.DeadlineExceeded) {
+		return StatusClientClosedRequest, false
+	}
+	
+	// 其他网络错误 - 可以重试
+	return StatusNetworkError, true
+}
 
 type fwResult struct {
 	Status        int
@@ -110,7 +137,21 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, body []byte,
 	resp, err := s.client.Do(req)
 	if err != nil {
 		duration := time.Since(startTime).Seconds()
-		return nil, duration, err
+		statusCode, _ := classifyError(err)
+		return &fwResult{
+			Status:        statusCode,
+			Header:        nil,
+			Body:          []byte(err.Error()),
+			Resp:          nil,
+			FirstByteTime: duration,
+			Trace: &traceBreakdown{
+				DNS:       tDNS,
+				Connect:   tConn,
+				TLS:       tTLS,
+				WroteReq:  tWrote,
+				FirstByte: duration,
+			},
+		}, duration, err
 	}
 
 	// 记录首字节响应时间（接收到响应头的时间）
@@ -259,21 +300,33 @@ func (s *Server) handleMessages(c *gin.Context) {
 		// 首先尝试异步流式转发（适用于成功响应）
 		res, duration, err := s.forwardOnceAsync(ctx, cfg, all, c.Request.Header, c.Request.URL.RawQuery, c.Writer)
 		if err != nil {
-			// 网络错误：指数退避冷却
-			now := time.Now()
-			cooldownDur, _ := s.store.BumpCooldownOnError(ctx, cfg.ID, now)
-			cooldownUntil := now.Add(cooldownDur)
-			s.cooldownCache.Store(cfg.ID, cooldownUntil)
+			// 分类错误类型
+			statusCode, shouldRetry := classifyError(err)
+			
+			// 记录日志
 			s.addLogAsync(&LogEntry{
 				Time:        JSONTime{time.Now()},
 				Model:       reqModel.Model,
 				ChannelID:   &cfg.ID,
-				StatusCode:  0,
+				StatusCode:  statusCode,
 				Message:     truncateErr(err.Error()),
 				Duration:    duration,
 				IsStreaming: reqModel.Stream,
 			})
-			lastStatus = 0
+			
+			// 如果是不可重试的错误（如context canceled），直接返回
+			if !shouldRetry {
+				c.JSON(statusCode, gin.H{"error": truncateErr(err.Error())})
+				return
+			}
+			
+			// 可重试错误：继续现有的冷却和重试逻辑
+			now := time.Now()
+			cooldownDur, _ := s.store.BumpCooldownOnError(ctx, cfg.ID, now)
+			cooldownUntil := now.Add(cooldownDur)
+			s.cooldownCache.Store(cfg.ID, cooldownUntil)
+			
+			lastStatus = statusCode
 			lastBody = []byte(err.Error())
 			lastHeader = nil
 			continue
@@ -302,7 +355,36 @@ func (s *Server) handleMessages(c *gin.Context) {
 			s.addLogAsync(logEntry)
 			return // 成功完成，直接返回
 		}
-		// 非2xx：指数退避冷却并尝试下一个
+		
+		// 非2xx响应：检查是否为特殊状态码（如499）
+		if res.Status == StatusClientClosedRequest {
+			// 客户端取消请求，直接返回，不尝试其他渠道
+			msg := fmt.Sprintf("upstream status %d", res.Status)
+			if len(res.Body) > 0 {
+				msg = fmt.Sprintf("%s: %s", msg, truncateErr(string(res.Body)))
+			}
+			
+			// 记录日志
+			logEntry := &LogEntry{
+				Time:        JSONTime{time.Now()},
+				Model:       reqModel.Model,
+				ChannelID:   &cfg.ID,
+				StatusCode:  res.Status,
+				Message:     msg,
+				Duration:    duration,
+				IsStreaming: reqModel.Stream,
+			}
+			if reqModel.Stream {
+				logEntry.FirstByteTime = &res.FirstByteTime
+			}
+			s.addLogAsync(logEntry)
+			
+			// 直接返回，不切换渠道
+			c.JSON(res.Status, gin.H{"error": msg})
+			return
+		}
+		
+		// 其他非2xx：指数退避冷却并尝试下一个
 		now := time.Now()
 		cooldownDur, _ := s.store.BumpCooldownOnError(ctx, cfg.ID, now)
 		cooldownUntil := now.Add(cooldownDur)
