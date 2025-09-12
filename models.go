@@ -65,9 +65,15 @@ type LogFilter struct {
 }
 
 type MetricPoint struct {
-	Ts      time.Time `json:"ts"`
-	Success int       `json:"success"`
-	Error   int       `json:"error"`
+	Ts       time.Time                `json:"ts"`
+	Success  int                      `json:"success"`
+	Error    int                      `json:"error"`
+	Channels map[string]ChannelMetric `json:"channels,omitempty"`
+}
+
+type ChannelMetric struct {
+	Success int `json:"success"`
+	Error   int `json:"error"`
 }
 
 // 统计数据结构

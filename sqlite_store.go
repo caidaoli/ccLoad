@@ -437,30 +437,37 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 }
 
 func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket time.Duration) ([]MetricPoint, error) {
-	// 拉取时间范围内的日志，在应用层做桶聚合
+	// 拉取时间范围内的日志和渠道信息，在应用层做桶聚合
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT time, status_code 
-		FROM logs 
-		WHERE time >= ?
+		SELECT l.time, l.status_code, c.name as channel_name
+		FROM logs l
+		LEFT JOIN channels c ON l.channel_id = c.id
+		WHERE l.time >= ?
 	`, since)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	type pair struct {
-		t      time.Time
-		status int
+	type logRecord struct {
+		t           time.Time
+		status      int
+		channelName string
 	}
-	arr := make([]pair, 0, 1024)
+	arr := make([]logRecord, 0, 1024)
 
 	for rows.Next() {
 		var t time.Time
 		var sc int
-		if err := rows.Scan(&t, &sc); err != nil {
+		var channelName sql.NullString
+		if err := rows.Scan(&t, &sc, &channelName); err != nil {
 			return nil, err
 		}
-		arr = append(arr, pair{t: t, status: sc})
+		cname := "未知渠道"
+		if channelName.Valid {
+			cname = channelName.String
+		}
+		arr = append(arr, logRecord{t: t, status: sc, channelName: cname})
 	}
 
 	// 按时间桶聚合
@@ -473,14 +480,28 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 		key := ts.Unix()
 		mp, ok := mapp[key]
 		if !ok {
-			mp = &MetricPoint{Ts: ts}
+			mp = &MetricPoint{
+				Ts:       ts,
+				Channels: make(map[string]ChannelMetric),
+			}
 			mapp[key] = mp
 		}
+
+		// 更新总体统计
 		if e.status >= 200 && e.status < 300 {
 			mp.Success++
 		} else {
 			mp.Error++
 		}
+
+		// 更新渠道统计
+		chMetric := mp.Channels[e.channelName]
+		if e.status >= 200 && e.status < 300 {
+			chMetric.Success++
+		} else {
+			chMetric.Error++
+		}
+		mp.Channels[e.channelName] = chMetric
 	}
 
 	// 生成完整的时间序列 - 扩展到当前时间桶+1个桶，确保包含最新数据
@@ -494,7 +515,10 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 		if mp, ok := mapp[key]; ok {
 			out = append(out, *mp)
 		} else {
-			out = append(out, MetricPoint{Ts: t})
+			out = append(out, MetricPoint{
+				Ts:       t,
+				Channels: make(map[string]ChannelMetric),
+			})
 		}
 	}
 
