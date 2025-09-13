@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptrace"
 	neturl "net/url"
@@ -22,13 +23,23 @@ import (
 // 错误类型常量定义
 const (
 	StatusClientClosedRequest = 499 // 客户端取消请求 (Nginx扩展状态码)
-	StatusNetworkError       = 0    // 网络连接错误（保持现有逻辑）
+	StatusNetworkError       = 0    // 可重试的网络错误
+	StatusConnectionReset    = 502  // Connection Reset - 不可重试
 )
 
 // classifyError 分类错误类型，返回状态码和是否应该重试
 func classifyError(err error) (statusCode int, shouldRetry bool) {
 	if err == nil {
 		return 200, false
+	}
+	
+	errStr := strings.ToLower(err.Error())
+	
+	// Connection reset by peer - 不应重试
+	if strings.Contains(errStr, "connection reset by peer") ||
+	   strings.Contains(errStr, "broken pipe") ||
+	   strings.Contains(errStr, "connection refused") {
+		return StatusConnectionReset, false
 	}
 	
 	// Context canceled - 客户端取消，不应重试
@@ -39,6 +50,14 @@ func classifyError(err error) (statusCode int, shouldRetry bool) {
 	// Context deadline exceeded - 超时，不应重试
 	if errors.Is(err, context.DeadlineExceeded) {
 		return StatusClientClosedRequest, false
+	}
+	
+	// 检查系统级错误
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if netErr.Timeout() {
+			return 504, false // Gateway Timeout
+		}
 	}
 	
 	// 其他网络错误 - 可以重试
@@ -314,9 +333,19 @@ func (s *Server) handleMessages(c *gin.Context) {
 				IsStreaming: reqModel.Stream,
 			})
 			
-			// 如果是不可重试的错误（如context canceled），直接返回
+			// 如果是不可重试的错误，直接返回
 			if !shouldRetry {
-				c.JSON(statusCode, gin.H{"error": truncateErr(err.Error())})
+				// 根据错误类型返回适当的响应
+				switch statusCode {
+				case StatusConnectionReset:
+					c.JSON(502, gin.H{"error": "upstream connection reset"})
+				case StatusClientClosedRequest:
+					c.JSON(499, gin.H{"error": "request cancelled"})
+				case 504:
+					c.JSON(504, gin.H{"error": "gateway timeout"})
+				default:
+					c.JSON(statusCode, gin.H{"error": truncateErr(err.Error())})
+				}
 				return
 			}
 			
