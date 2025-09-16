@@ -2,6 +2,8 @@
 
 [![Go](https://img.shields.io/badge/Go-1.24+-00ADD8.svg)](https://golang.org)
 [![Gin](https://img.shields.io/badge/Gin-v1.10+-blue.svg)](https://github.com/gin-gonic/gin)
+[![Docker](https://img.shields.io/badge/Docker-Supported-2496ED.svg)](https://hub.docker.com)
+[![GitHub Actions](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-2088FF.svg)](https://github.com/features/actions)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 一个高性能的 Claude Code API 透明代理服务，使用 Go 1.24.0 和 Gin 框架构建。支持多渠道负载均衡、故障切换和实时监控。
@@ -32,6 +34,8 @@ ccLoad 通过以下特性解决这些痛点：
 - 📦 **单文件部署** - 无外部依赖，包含嵌入式 SQLite
 - 🔒 **安全认证** - 基于 Session 的管理界面访问控制
 - 🏷️ **构建标签** - 支持 GOTAGS，默认启用高性能 JSON 库
+- 🐳 **Docker 支持** - 多架构镜像（amd64/arm64），自动化 CI/CD
+- ☁️ **云原生** - 支持容器化部署，GitHub Actions 自动构建
 
 ## 🏗️ 架构概览
 
@@ -83,11 +87,32 @@ graph TB
 
 ## 🚀 快速开始
 
-### 安装
+### 方式一：Docker 部署（推荐）
+
+```bash
+# 拉取预构建镜像
+docker pull ghcr.io/caidaoli/ccload:latest
+
+# 运行容器
+docker run -d --name ccload \
+  -p 8080:8080 \
+  -e CCLOAD_PASS=your_secure_password \
+  -e CCLOAD_AUTH=your_api_token \
+  -v ccload_data:/app/data \
+  ghcr.io/caidaoli/ccload:latest
+
+# 或使用 docker-compose
+curl -o docker-compose.yml https://raw.githubusercontent.com/caidaoli/ccLoad/master/docker-compose.yml
+curl -o .env https://raw.githubusercontent.com/caidaoli/ccLoad/master/.env.docker.example
+# 编辑 .env 文件设置密码
+docker-compose up -d
+```
+
+### 方式二：源码编译
 
 ```bash
 # 克隆项目
-git clone <repository-url>
+git clone https://github.com/caidaoli/ccLoad.git
 cd ccLoad
 
 # 构建项目（默认使用高性能 JSON 库）
@@ -100,6 +125,15 @@ make build
 go run -tags go_json .
 # 或
 make dev
+```
+
+### 方式三：二进制下载
+
+```bash
+# 从 GitHub Releases 下载对应平台的二进制文件
+wget https://github.com/caidaoli/ccLoad/releases/latest/download/ccload-linux-amd64
+chmod +x ccload-linux-amd64
+./ccload-linux-amd64
 ```
 
 ### 基本配置
@@ -204,6 +238,32 @@ curl -X POST http://localhost:8080/admin/channels \
 | `SQLITE_PATH` | "data/ccload.db" | 数据库文件路径 |
 | `GOTAGS` | "go_json" | 构建标签（go_json/std） |
 
+### Docker 镜像
+
+项目支持多架构 Docker 镜像：
+
+- **支持架构**：`linux/amd64`, `linux/arm64`
+- **镜像仓库**：`ghcr.io/caidaoli/ccload`
+- **可用标签**：
+  - `latest` - 最新稳定版本
+  - `v0.1.0` - 具体版本号
+  - `v0.1` - 主要.次要版本
+  - `v0` - 主要版本
+
+### 镜像标签说明
+
+```bash
+# 拉取最新版本
+docker pull ghcr.io/caidaoli/ccload:latest
+
+# 拉取指定版本
+docker pull ghcr.io/caidaoli/ccload:v0.1.0
+
+# 指定架构（Docker 通常自动选择）
+docker pull --platform linux/amd64 ghcr.io/caidaoli/ccload:latest
+docker pull --platform linux/arm64 ghcr.io/caidaoli/ccload:latest
+```
+
 ### 数据库结构
 
 - `channels` - 渠道配置
@@ -218,10 +278,45 @@ curl -X POST http://localhost:8080/admin/channels \
 - API Key 仅在内存使用，不记录日志
 - 支持 HttpOnly 和 SameSite Cookie
 - 建议使用 HTTPS 反向代理
+- Docker 镜像使用非 root 用户运行，增强安全性
+
+## 🔄 CI/CD
+
+项目使用 GitHub Actions 实现自动化 CI/CD：
+
+- **触发条件**：推送版本标签（`v*`）或手动触发
+- **构建输出**：多架构 Docker 镜像推送到 GitHub Container Registry
+- **版本管理**：自动生成语义化版本标签
+- **缓存优化**：利用 GitHub Actions 缓存加速构建
+
+### 发布新版本
+
+```bash
+# 创建并推送版本标签
+git tag v0.2.0
+git push origin v0.2.0
+
+# 自动触发构建，生成镜像：
+# - ghcr.io/caidaoli/ccload:v0.2.0
+# - ghcr.io/caidaoli/ccload:v0.2
+# - ghcr.io/caidaoli/ccload:v0
+# - ghcr.io/caidaoli/ccload:latest
+```
 
 ## 🤝 贡献
 
 欢迎提交 Issue 和 Pull Request！
+
+### 开发环境
+
+```bash
+# 本地开发
+go run -tags go_json .
+
+# 本地 Docker 测试
+docker build -t ccload:dev .
+docker run --rm -p 8080:8080 -e CCLOAD_PASS=test123 ccload:dev
+```
 
 ## 📄 许可证
 
