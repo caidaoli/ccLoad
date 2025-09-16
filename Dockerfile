@@ -2,7 +2,7 @@
 # 基于 Alpine Linux 的多阶段构建，优化镜像大小和安全性
 
 # 构建阶段
-FROM golang:1.24.0-alpine AS builder
+FROM golang:1.25.0-alpine AS builder
 
 # 设置工作目录
 WORKDIR /app
@@ -19,7 +19,7 @@ RUN go mod download
 # 复制源代码
 COPY . .
 
-# 构建二进制文件（移除-a标志避免Sonic库兼容性问题）
+# 构建二进制文件（使用Go 1.25解决Sonic库兼容性问题）
 RUN CGO_ENABLED=1 GOOS=linux go build -tags go_json -ldflags="-s -w" -o ccload .
 
 # 运行阶段
