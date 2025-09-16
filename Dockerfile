@@ -19,8 +19,8 @@ RUN go mod download
 # 复制源代码
 COPY . .
 
-# 构建二进制文件（使用go_json构建标签优化性能）
-RUN CGO_ENABLED=1 GOOS=linux go build -tags go_json -a -installsuffix cgo -o ccload .
+# 构建二进制文件（移除-a标志避免Sonic库兼容性问题）
+RUN CGO_ENABLED=1 GOOS=linux go build -tags go_json -ldflags="-s -w" -o ccload .
 
 # 运行阶段
 FROM alpine:latest
