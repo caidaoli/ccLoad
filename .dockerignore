@@ -1,0 +1,46 @@
+# Git 相关
+.git
+.gitignore
+
+# 开发工具
+.vscode
+.idea
+*.swp
+*.swo
+
+# 日志文件
+logs/
+*.log
+
+# 数据文件
+data/
+*.db
+*.db-journal
+
+# 构建产物
+ccload
+/tmp/
+
+# macOS LaunchAgent 相关
+*.plist
+*.plist.template
+com.ccload.service.plist
+
+# 测试文件
+*_test.go
+test_*
+
+# 文档
+README.md
+CLAUDE.md
+
+# 依赖和模块缓存
+vendor/
+
+# 环境配置
+.env
+.env.local
+.env.*.local
+
+# Makefile（容器内不需要）
+Makefile

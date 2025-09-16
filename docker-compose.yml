@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  ccload:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ccload:latest
+    container_name: ccload
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - SQLITE_PATH=/app/data/ccload.db
+      - GIN_MODE=release
+      # 请根据需要设置以下环境变量
+      # - CCLOAD_PASS=your_admin_password
+      # - CCLOAD_AUTH=your_api_tokens
+    volumes:
+      - ccload_data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/public/summary"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  ccload_data:
+    driver: local
