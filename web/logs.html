@@ -63,8 +63,8 @@
                 <input id="f_name" type="text" class="form-input" placeholder="关键字" style="width: 100%;" />
               </div>
               <div class="form-group" style="flex: 1 1 auto; min-width: 140px;">
-                <label for="f_model" class="form-label">模型</label>
-                <input id="f_model" type="text" class="form-input" placeholder="精确模型" style="width: 100%;" />
+                <label for="f_model" class="form-label">模型包含</label>
+                <input id="f_model" type="text" class="form-input" placeholder="关键字" style="width: 100%;" />
               </div>
               <div class="form-group" style="flex: 1 1 auto; min-width: 140px;">
                 <label for="f_model_like" class="form-label">模型包含</label>
@@ -491,8 +491,8 @@
       if (id) q.set('channel_id', id); else q.delete('channel_id');
       if (name) { q.set('channel_name_like', name); q.delete('channel_name'); }
       else { q.delete('channel_name_like'); }
-      if (modelLike) { q.set('model_like', modelLike); q.delete('model'); }
-      else { if (model) q.set('model', model); else q.delete('model'); q.delete('model_like'); }
+      if (model) { q.set('model_like', model); q.delete('model'); }
+      else { if (modelLike) q.set('model_like', modelLike); else q.delete('model_like'); q.delete('model'); }
       
       location.search = '?' + q.toString();
     }
