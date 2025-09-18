@@ -813,7 +813,7 @@
           <div class="${cardClasses.join(' ')}" id="channel-${c.id}">
             <div class="flex justify-between items-center">
               <div style="flex: 1;">
-                <div class="section-title">${escapeHtml(c.name)}</div>
+                <div class="section-title">${escapeHtml(c.name)} <span style="color: var(--neutral-500); font-size: 0.875rem; font-weight: 400;">(ID: ${c.id})</span></div>
                 <div class="text-sm" style="color: var(--neutral-600); margin-top: 4px;">
                   <div>URL: ${escapeHtml(c.url)} | 优先级: ${c.priority} | ${c.enabled ? '已启用' : '已禁用'}</div>
                   <div>模型: ${Array.isArray(c.models) ? c.models.join(', ') : ''}</div>
