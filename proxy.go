@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	neturl "net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -23,8 +22,8 @@ import (
 // 错误类型常量定义
 const (
 	StatusClientClosedRequest = 499 // 客户端取消请求 (Nginx扩展状态码)
-	StatusNetworkError       = 0    // 可重试的网络错误
-	StatusConnectionReset    = 502  // Connection Reset - 不可重试
+	StatusNetworkError        = 0   // 可重试的网络错误
+	StatusConnectionReset     = 502 // Connection Reset - 不可重试
 )
 
 // classifyError 分类错误类型，返回状态码和是否应该重试
@@ -32,26 +31,26 @@ func classifyError(err error) (statusCode int, shouldRetry bool) {
 	if err == nil {
 		return 200, false
 	}
-	
+
 	errStr := strings.ToLower(err.Error())
-	
+
 	// Connection reset by peer - 不应重试
 	if strings.Contains(errStr, "connection reset by peer") ||
-	   strings.Contains(errStr, "broken pipe") ||
-	   strings.Contains(errStr, "connection refused") {
+		strings.Contains(errStr, "broken pipe") ||
+		strings.Contains(errStr, "connection refused") {
 		return StatusConnectionReset, false
 	}
-	
+
 	// Context canceled - 客户端取消，不应重试
 	if errors.Is(err, context.Canceled) {
 		return StatusClientClosedRequest, false
 	}
-	
+
 	// Context deadline exceeded - 超时，不应重试
 	if errors.Is(err, context.DeadlineExceeded) {
 		return StatusClientClosedRequest, false
 	}
-	
+
 	// 检查系统级错误
 	var netErr net.Error
 	if errors.As(err, &netErr) {
@@ -59,7 +58,7 @@ func classifyError(err error) (statusCode int, shouldRetry bool) {
 			return 504, false // Gateway Timeout
 		}
 	}
-	
+
 	// 其他网络错误 - 可以重试
 	return StatusNetworkError, true
 }
@@ -176,12 +175,8 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, body []byte,
 	// 记录首字节响应时间（接收到响应头的时间）
 	firstByteTime := time.Since(startTime).Seconds()
 
-	// 克隆响应头用于追踪
+	// 克隆响应头
 	hdrClone := resp.Header.Clone()
-	if os.Getenv("CCLOAD_TRACE") == "1" {
-		hdrClone.Set("X-Proxy-First-Byte", fmt.Sprintf("%.3f", firstByteTime))
-		hdrClone.Set("X-Proxy-Timing", fmt.Sprintf("dns=%.3f,conn=%.3f,tls=%.3f,wrote=%.3f,first=%.3f", tDNS, tConn, tTLS, tWrote, firstByteTime))
-	}
 
 	// 如果是错误状态，读取错误体后返回
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -321,7 +316,7 @@ func (s *Server) handleMessages(c *gin.Context) {
 		if err != nil {
 			// 分类错误类型
 			statusCode, shouldRetry := classifyError(err)
-			
+
 			// 记录日志
 			s.addLogAsync(&LogEntry{
 				Time:        JSONTime{time.Now()},
@@ -332,7 +327,7 @@ func (s *Server) handleMessages(c *gin.Context) {
 				Duration:    duration,
 				IsStreaming: reqModel.Stream,
 			})
-			
+
 			// 如果是不可重试的错误，直接返回
 			if !shouldRetry {
 				// 根据错误类型返回适当的响应
@@ -348,13 +343,13 @@ func (s *Server) handleMessages(c *gin.Context) {
 				}
 				return
 			}
-			
+
 			// 可重试错误：继续现有的冷却和重试逻辑
 			now := time.Now()
 			cooldownDur, _ := s.store.BumpCooldownOnError(ctx, cfg.ID, now)
 			cooldownUntil := now.Add(cooldownDur)
 			s.cooldownCache.Store(cfg.ID, cooldownUntil)
-			
+
 			lastStatus = statusCode
 			lastBody = []byte(err.Error())
 			lastHeader = nil
@@ -384,7 +379,7 @@ func (s *Server) handleMessages(c *gin.Context) {
 			s.addLogAsync(logEntry)
 			return // 成功完成，直接返回
 		}
-		
+
 		// 非2xx响应：检查是否为特殊状态码（如499）
 		if res.Status == StatusClientClosedRequest {
 			// 客户端取消请求，直接返回，不尝试其他渠道
@@ -392,7 +387,7 @@ func (s *Server) handleMessages(c *gin.Context) {
 			if len(res.Body) > 0 {
 				msg = fmt.Sprintf("%s: %s", msg, truncateErr(string(res.Body)))
 			}
-			
+
 			// 记录日志
 			logEntry := &LogEntry{
 				Time:        JSONTime{time.Now()},
@@ -407,12 +402,12 @@ func (s *Server) handleMessages(c *gin.Context) {
 				logEntry.FirstByteTime = &res.FirstByteTime
 			}
 			s.addLogAsync(logEntry)
-			
+
 			// 直接返回，不切换渠道
 			c.JSON(res.Status, gin.H{"error": msg})
 			return
 		}
-		
+
 		// 其他非2xx：指数退避冷却并尝试下一个
 		now := time.Now()
 		cooldownDur, _ := s.store.BumpCooldownOnError(ctx, cfg.ID, now)
