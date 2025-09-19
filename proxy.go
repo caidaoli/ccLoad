@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -385,7 +386,7 @@ func (s *Server) handleMessages(c *gin.Context) {
 			// 客户端取消请求，直接返回，不尝试其他渠道
 			msg := fmt.Sprintf("upstream status %d", res.Status)
 			if len(res.Body) > 0 {
-				msg = fmt.Sprintf("%s: %s", msg, truncateErr(string(res.Body)))
+				msg = fmt.Sprintf("%s: %s", msg, truncateErr(safeBodyToString(res.Body)))
 			}
 
 			// 记录日志
@@ -415,7 +416,7 @@ func (s *Server) handleMessages(c *gin.Context) {
 		s.cooldownCache.Store(cfg.ID, cooldownUntil)
 		msg := fmt.Sprintf("upstream status %d", res.Status)
 		if len(res.Body) > 0 {
-			msg = fmt.Sprintf("%s: %s", msg, truncateErr(string(res.Body)))
+			msg = fmt.Sprintf("%s: %s", msg, truncateErr(safeBodyToString(res.Body)))
 		}
 
 		// 记录错误日志
@@ -467,6 +468,37 @@ func truncateErr(s string) string {
 		return s[:512]
 	}
 	return s
+}
+
+// safeBodyToString 安全地将响应体转换为字符串，处理可能的gzip压缩
+func safeBodyToString(data []byte) string {
+	if len(data) == 0 {
+		return ""
+	}
+
+	// 检查gzip魔数 (0x1f, 0x8b)
+	if len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b {
+		// 尝试解压gzip
+		if decompressed, err := decompressGzip(data); err == nil {
+			return string(decompressed)
+		}
+		// 解压失败，返回友好提示
+		return "[compressed error response]"
+	}
+
+	// 非压缩数据，直接转换
+	return string(data)
+}
+
+// decompressGzip 解压gzip数据
+func decompressGzip(data []byte) ([]byte, error) {
+	reader, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
+	return io.ReadAll(reader)
 }
 
 func parseTimeout(q map[string][]string, h http.Header) time.Duration {
