@@ -454,9 +454,9 @@
   <div class="app-container">
     <main class="main-content">
       <div class="content-area">
-        <header class="mb-8">
+        <header class="mb-2">
         </header>
-        <header class="mb-8">
+        <header class="mb-4">
           <div class="glass-card animate-slide-up" style="padding: var(--space-6);">
             <p class="page-subtitle">配置API渠道、优先级和模型支持（<b>优先请求高优先级渠道，相同优先级则轮询调用</b>）</p>
           </div>
@@ -814,12 +814,10 @@
           <div class="${cardClasses.join(' ')}" id="channel-${c.id}">
             <div class="flex justify-between items-center">
               <div style="flex: 1;">
-                <div class="section-title">${escapeHtml(c.name)} <span style="color: var(--neutral-500); font-size: 0.875rem; font-weight: 400;">(ID: ${c.id})</span></div>
+                <div class="section-title">${escapeHtml(c.name)} <span style="color: var(--neutral-500); font-size: 0.875rem; font-weight: 400;">(ID: ${c.id})</span> <span style="color: var(--neutral-600); font-size: 1rem; font-weight: 400;">模型: ${Array.isArray(c.models) ? c.models.join(', ') : ''}</span>${inlineCooldownBadge(c)}</div>
                 <div class="text-sm" style="color: var(--neutral-600); margin-top: 4px;">
                   <div>URL: ${escapeHtml(c.url)} | 优先级: ${c.priority} | ${c.enabled ? '已启用' : '已禁用'}</div>
-                  <div>模型: ${Array.isArray(c.models) ? c.models.join(', ') : ''}</div>
                 </div>
-                ${cooldownBadge(c)}
               </div>
               <div class="channel-actions">
                 <button class="btn-icon" onclick="editChannel(${c.id})" title="编辑">编辑</button>
@@ -841,6 +839,13 @@
         <span class="cooldown-icon">⚠️</span>
         <span>冷却中 · 剩余 ${text}</span>
       </div>`;
+    }
+
+    function inlineCooldownBadge(c) {
+      const ms = c.cooldown_remaining_ms || 0;
+      if (!ms || ms <= 0) return '';
+      const text = humanizeMS(ms);
+      return ` <span style="color: #dc2626; font-size: 0.875rem; font-weight: 500; background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%); padding: 2px 8px; border-radius: 4px; border: 1px solid #fca5a5;">⚠️ 冷却中·${text}</span>`;
     }
 
     function humanizeMS(ms) {
