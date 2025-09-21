@@ -412,32 +412,36 @@ body {
 }
 
 /* 切换按钮组（趋势页复用） - Apple UI 风格 (可用性优先) */
-.toggle-group { 
-  display: inline-flex; 
-  gap: 2px; 
-  background: rgba(255, 255, 255, 0.25); 
-  padding: 2px; 
-  border-radius: 10px; 
+.toggle-group {
+  display: inline-flex;
+  gap: 2px;
+  background: rgba(255, 255, 255, 0.25);
+  padding: 2px;
+  border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.3);
   backdrop-filter: blur(30px) saturate(1.8);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
 }
-.toggle-btn { 
-  padding: 7px 14px; 
-  border-radius: 7px; 
-  color: rgba(0, 0, 0, 0.7); 
-  font-weight: 600; 
+.toggle-btn {
+  padding: 7px 14px;
+  border-radius: 7px;
+  color: rgba(0, 0, 0, 0.7);
+  font-weight: 600;
   font-size: 13px;
-  line-height: 1.2;
-  cursor: pointer; 
-  user-select: none; 
-  transition: all 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94); 
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
   border: none;
   background: rgba(255, 255, 255, 0.1);
   position: relative;
   overflow: hidden;
   letter-spacing: -0.01em;
   text-shadow: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
 }
 .toggle-btn:hover { 
   color: rgba(0, 0, 0, 0.85);
@@ -1221,22 +1225,6 @@ body {
   border: 1px solid rgba(0, 0, 0, 0.1);
 }
 
-.toggle-btn {
-  background: none;
-  border: 1px solid var(--neutral-300);
-  color: var(--primary-600);
-  font-size: 0.75rem;
-  padding: 4px 8px;
-  border-radius: 4px;
-  cursor: pointer;
-  margin-top: 8px;
-  transition: all 0.2s;
-}
-
-.toggle-btn:hover {
-  background: var(--neutral-50);
-  border-color: var(--primary-400);
-}
 
 /* ===== 日志和统计页面样式 ===== */
 .status-error {
