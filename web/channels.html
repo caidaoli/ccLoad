@@ -379,6 +379,7 @@
                 </div>
               </div>
               <div class="channel-actions">
+                <button class="btn-icon" onclick="copyChannel(${c.id}, '${escapeHtml(c.name)}')" title="复制渠道">复制</button>
                 <button class="btn-icon" onclick="editChannel(${c.id})" title="编辑">编辑</button>
                 <button class="btn-icon" onclick="testChannel(${c.id}, '${escapeHtml(c.name)}')" title="测试API Key">测试</button>
                 <button class="btn-icon" onclick="toggleChannel(${c.id}, ${!c.enabled})">${c.enabled ? '禁用' : '启用'}</button>
@@ -546,10 +547,10 @@
 
     async function toggleChannel(id, enabled) {
       try {
-        const res = await fetch(`/admin/channels/${id}`, { 
-          method: 'PUT', 
-          headers: { 'Content-Type': 'application/json' }, 
-          body: JSON.stringify({ enabled }) 
+        const res = await fetch(`/admin/channels/${id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled })
         });
         if (!res.ok) throw new Error('HTTP ' + res.status);
         await loadChannels();
@@ -558,6 +559,58 @@
         console.error('切换失败', e);
         if (window.showError) showError('操作失败');
       }
+    }
+
+    function copyChannel(id, name) {
+      const channel = channels.find(c => c.id === id);
+      if (!channel) return;
+
+      // 生成复制的渠道名称，添加"复制"字样
+      const copiedName = generateCopyName(name);
+
+      // 填充表单数据
+      editingChannelId = null; // 确保是新建模式
+      document.getElementById('modalTitle').textContent = '复制渠道';
+      document.getElementById('channelName').value = copiedName;
+      document.getElementById('channelUrl').value = channel.url;
+      document.getElementById('channelApiKey').value = channel.api_key;
+      document.getElementById('channelPriority').value = channel.priority;
+      document.getElementById('channelModels').value = channel.models.join(',');
+      document.getElementById('channelEnabled').checked = true; // 复制的渠道默认启用
+
+      // 复制时默认显示API Key以便用户核对
+      const apiKeyInput = document.getElementById('channelApiKey');
+      const toggleBtn = document.getElementById('toggleApiKeyBtn');
+      apiKeyInput.type = 'text';
+      toggleBtn.textContent = '🙈';
+      toggleBtn.title = '隐藏API Key';
+
+      document.getElementById('channelModal').classList.add('show');
+    }
+
+    function generateCopyName(originalName) {
+      // 生成复制的渠道名称
+      const copyPattern = /^(.+?)(?:\s*-\s*复制(?:\s*(\d+))?)?$/;
+      const match = originalName.match(copyPattern);
+
+      if (!match) {
+        return originalName + ' - 复制';
+      }
+
+      const baseName = match[1];
+      const copyNumber = match[2] ? parseInt(match[2]) + 1 : 1;
+
+      // 检查是否存在重名
+      const proposedName = copyNumber === 1 ? `${baseName} - 复制` : `${baseName} - 复制 ${copyNumber}`;
+
+      // 检查是否与现有渠道重名
+      const existingNames = channels.map(c => c.name.toLowerCase());
+      if (existingNames.includes(proposedName.toLowerCase())) {
+        // 如果重名，递归生成新名称
+        return generateCopyName(proposedName);
+      }
+
+      return proposedName;
     }
 
     function escapeHtml(s) {
