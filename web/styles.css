@@ -117,16 +117,6 @@
   --topbar-fg-muted: var(--neutral-700);
 }
 
-/* 暗色主题变量 */
-[data-theme="dark"] {
-  --glass-bg: rgba(0, 0, 0, 0.4);
-  --glass-border: rgba(255, 255, 255, 0.1);
-  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-  --glass-shadow-hover: 0 12px 40px rgba(0, 0, 0, 0.4);
-
-  --neumorphism-light: #2a2a2a;
-  --neumorphism-dark: #1a1a1a;
-}
 
 /* ===== 基础重置和全局样式 ===== */
 * {
@@ -803,12 +793,6 @@ body {
   }
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --glass-bg: rgba(0, 0, 0, 0.4);
-    --glass-border: rgba(255, 255, 255, 0.1);
-  }
-}
 
 /* ===== 模态框组件 ===== */
 .modal {
