@@ -99,20 +99,23 @@
           </div>
         </div>
         <div class="form-group">
-          <label class="form-label" for="channelPriority">优先级</label>
-          <input type="number" id="channelPriority" class="form-input" value="0" min="-999" max="999">
-        </div>
-        <div class="form-group">
           <label class="form-label" for="channelModels">支持的模型 *</label>
           <div class="models-input-wrapper">
-            <input type="text" id="channelModels" class="form-input" placeholder="claude-3-5-sonnet-20241022,claude-3-opus-20240229" required>
+            <textarea id="channelModels" class="form-input" placeholder="claude-3-5-sonnet-20241022,claude-3-opus-20240229" required rows="3"></textarea>
+
             <div class="models-hint">多个模型用英文逗号分隔</div>
           </div>
         </div>
         <div class="form-group">
-          <label class="form-label">
-            <input type="checkbox" id="channelEnabled" checked> 启用渠道
-          </label>
+          <div style="display: flex; align-items: center; gap: 16px;">
+            <label class="form-label" style="margin: 0;">
+              <input type="checkbox" id="channelEnabled" checked> 启用渠道
+            </label>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <label class="form-label" for="channelPriority" style="margin: 0; white-space: nowrap;">优先级</label>
+              <input type="number" id="channelPriority" class="form-input" value="0" min="-99999" max="99999" style="width: 80px; min-width: 80px;">
+            </div>
+          </div>
         </div>
         <div class="form-actions">
           <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
@@ -379,10 +382,10 @@
                 </div>
               </div>
               <div class="channel-actions">
-                <button class="btn-icon" onclick="copyChannel(${c.id}, '${escapeHtml(c.name)}')" title="复制渠道">复制</button>
                 <button class="btn-icon" onclick="editChannel(${c.id})" title="编辑">编辑</button>
                 <button class="btn-icon" onclick="testChannel(${c.id}, '${escapeHtml(c.name)}')" title="测试API Key">测试</button>
                 <button class="btn-icon" onclick="toggleChannel(${c.id}, ${!c.enabled})">${c.enabled ? '禁用' : '启用'}</button>
+                <button class="btn-icon" onclick="copyChannel(${c.id}, '${escapeHtml(c.name)}')" title="复制渠道">复制</button>
                 <button class="btn-icon btn-danger" onclick="deleteChannel(${c.id}, '${escapeHtml(c.name)}')" title="删除">删除</button>
               </div>
             </div>

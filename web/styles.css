@@ -835,8 +835,8 @@ body {
   border: 1px solid var(--glass-border);
   border-radius: 12px;
   padding: 24px;
-  width: 90%;
-  max-width: 500px;
+  width: 70%;
+  max-width: none;
   max-height: 90vh;
   overflow-y: auto;
   box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
@@ -885,6 +885,9 @@ body {
 
 .confirm-modal {
   text-align: center;
+  width: auto !important;
+  max-width: 460px !important;
+  min-width: 300px;
 }
 
 .confirm-modal p {
@@ -2039,6 +2042,11 @@ body {
     width: 36px;
     height: 36px;
   }
+
+  .modal-content {
+    width: 85%;
+    padding: var(--space-4);
+  }
 }
 
 @media (max-width: 480px) {
@@ -2057,6 +2065,11 @@ body {
   .logo-icon {
     width: 56px;
     height: 56px;
+  }
+
+  .modal-content {
+    width: 90%;
+    padding: var(--space-3);
   }
 }
 
