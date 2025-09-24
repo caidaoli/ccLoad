@@ -270,10 +270,11 @@ func (s *Server) handleLogout(c *gin.Context) {
 // setupRoutes - 新的路由设置函数，适配Gin
 func (s *Server) setupRoutes(r *gin.Engine) {
 	// 公开访问的API（代理服务）- 需要 API 认证
+	// 透明代理：统一处理所有 /v1/* 端点
 	api := r.Group("/v1")
 	api.Use(s.requireAPIAuth())
 	{
-		api.POST("/messages", s.handleMessages)
+		api.POST("/*path", s.handleProxyRequest)
 	}
 
 	// 公开访问的API（基础统计）

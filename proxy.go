@@ -81,8 +81,10 @@ type traceBreakdown struct {
 	FirstByte float64
 }
 
-// forwardOnceAsync: 异步流式转发，一旦接收到响应头就立即开始转发
-func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, body []byte, hdr http.Header, rawQuery string, w http.ResponseWriter) (*fwResult, float64, error) {
+// 移除EndpointStrategy - 实现真正的透明代理
+
+// forwardOnceAsync: 异步流式转发，透明转发客户端原始请求
+func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, body []byte, hdr http.Header, rawQuery, requestPath string, w http.ResponseWriter) (*fwResult, float64, error) {
 	startTime := time.Now()
 
 	// HTTP trace for timing breakdown
@@ -113,23 +115,15 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, body []byte,
 	}
 	ctx = httptrace.WithClientTrace(ctx, trace)
 
-	// Build upstream request
-	base := strings.TrimRight(cfg.URL, "/") + "/v1/messages"
-	u, err := neturl.Parse(base)
+	// 透明代理：完全保持客户端原始请求路径和参数
+	upstreamURL := strings.TrimRight(cfg.URL, "/") + requestPath
+	if rawQuery != "" {
+		upstreamURL += "?" + rawQuery
+	}
+
+	u, err := neturl.Parse(upstreamURL)
 	if err != nil {
 		return nil, 0, err
-	}
-	// merge incoming query as-is
-	if rawQuery != "" {
-		// Merge existing + incoming query
-		tgt := u.Query()
-		src, _ := neturl.ParseQuery(rawQuery)
-		for k, vs := range src {
-			for _, v := range vs {
-				tgt.Add(k, v)
-			}
-		}
-		u.RawQuery = tgt.Encode()
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(body))
 	if err != nil {
@@ -261,8 +255,11 @@ streamLoop:
 	}, totalDuration, streamErr
 }
 
-// POST /v1/messages - Gin版本
-func (s *Server) handleMessages(c *gin.Context) {
+// 通用透明代理处理器
+func (s *Server) handleProxyRequest(c *gin.Context) {
+	// 获取客户端原始请求路径（透明转发的关键）
+	requestPath := c.Request.URL.Path
+
 	// 全量读取再转发，KISS
 	all, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -312,8 +309,8 @@ func (s *Server) handleMessages(c *gin.Context) {
 	var lastBody []byte
 	var lastHeader http.Header
 	for _, cfg := range cands {
-		// 首先尝试异步流式转发（适用于成功响应）
-		res, duration, err := s.forwardOnceAsync(ctx, cfg, all, c.Request.Header, c.Request.URL.RawQuery, c.Writer)
+		// 透明转发：直接使用客户端原始请求路径
+		res, duration, err := s.forwardOnceAsync(ctx, cfg, all, c.Request.Header, c.Request.URL.RawQuery, requestPath, c.Writer)
 		if err != nil {
 			// 分类错误类型
 			statusCode, shouldRetry := classifyError(err)
@@ -461,6 +458,8 @@ func (s *Server) handleMessages(c *gin.Context) {
 	}
 	c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no upstream available"})
 }
+
+// 移除具体端点处理函数 - 现在使用统一的透明代理处理器
 
 func truncateErr(s string) string {
 	s = strings.TrimSpace(s)
