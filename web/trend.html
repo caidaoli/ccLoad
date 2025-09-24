@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>请求趋势 - Claude Code Proxy</title>
+  <title>请求趋势 - Claude Code & Codex Proxy</title>
   <link rel="stylesheet" href="/web/styles.css">
   <link rel="preconnect" href="https://fonts.loli.net">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -53,15 +53,15 @@
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4h18"/>
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"/>
                 </svg>
-                24小时趋势图表
+请求趋势图表
               </h3>
               
               <!-- 控件与图例 -->
               <div class="flex items-center" style="gap:12px; flex-wrap: wrap;">
                 <div class="toggle-group" id="range-group">
-                  <div class="toggle-btn" data-range="1">1小时</div>
+                  <div class="toggle-btn active" data-range="1">1小时</div>
                   <div class="toggle-btn" data-range="6">6小时</div>
-                  <div class="toggle-btn active" data-range="24">24小时</div>
+                  <div class="toggle-btn" data-range="24">24小时</div>
                   <div class="toggle-btn" data-range="168">7天</div>
                 </div>
                 <!-- 渠道筛选器 -->
@@ -118,7 +118,7 @@
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                 </svg>
-                <span id="data-timerange">24小时数据展示</span>
+                <span id="data-timerange">1小时数据展示</span>
               </div>
             </div>
           </div>
@@ -131,7 +131,7 @@
   <script>
     // 全局变量 
     window.trendData = null;
-    window.currentHours = 24;
+    window.currentHours = 1;
     window.chartInstance = null;
     window.channels = [];
     window.visibleChannels = new Set(); // 可见渠道集合
@@ -768,7 +768,7 @@
 
     function restoreState() {
       try {
-        const h = parseInt(localStorage.getItem('trend.rangeHours') || '24', 10);
+        const h = parseInt(localStorage.getItem('trend.rangeHours') || '1', 10);
         if ([1, 6, 24, 168].includes(h)) window.currentHours = h;
         const label = document.getElementById('data-timerange');
         if (label) label.textContent = window.currentHours === 168 ? '7天数据展示' : `${window.currentHours}小时数据展示`;

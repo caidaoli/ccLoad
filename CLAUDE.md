@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-ccLoad 是一个高性能的 Claude Code API 透明代理服务，使用 Go 1.24.0 构建，基于 Gin 框架。主要功能：
+ccLoad 是一个高性能的 Claude Code & Codex API 透明代理服务，使用 Go 1.24.0 构建，基于 Gin 框架。主要功能：
 
 - **透明代理**：将 `/v1/messages` 请求转发到上游 Claude API，仅替换 API Key
 - **智能路由**：基于模型支持、优先级和轮询策略选择渠道  
