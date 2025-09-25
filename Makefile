@@ -11,7 +11,7 @@ LOG_DIR = logs
 PROJECT_DIR = $(shell pwd)
 GOTAGS ?= go_json
 
-.PHONY: help build generate-plist install-service uninstall-service start stop restart status logs clean
+.PHONY: help build generate-plist inject-env-vars install-service uninstall-service start stop restart status logs clean
 
 # 默认目标
 help:
@@ -19,7 +19,7 @@ help:
 	@echo ""
 	@echo "可用命令:"
 	@echo "  build             - 构建二进制文件"
-	@echo "  generate-plist    - 从模板生成 plist 文件"
+	@echo "  generate-plist    - 从模板生成 plist 文件（自动读取 .env 配置）"
 	@echo "  install-service   - 安装 LaunchAgent 服务"
 	@echo "  uninstall-service - 卸载 LaunchAgent 服务"
 	@echo "  start            - 启动服务"
@@ -37,11 +37,39 @@ build:
 
 # 创建必要的目录
 
-# 生成 plist 文件（从模板动态替换路径）
+# 生成 plist 文件（从模板动态替换路径和环境变量）
 generate-plist:
 	@echo "从模板生成 plist 文件..."
-	@sed 's|{{PROJECT_DIR}}|$(PROJECT_DIR)|g' $(PLIST_TEMPLATE) > $(PLIST_FILE)
+	@# 首先进行基础路径替换
+	@sed 's|{{PROJECT_DIR}}|$(PROJECT_DIR)|g' $(PLIST_TEMPLATE) > $(PLIST_FILE).tmp
+	@# 如果存在 .env 文件，则注入环境变量
+	@if [ -f ".env" ]; then \
+		echo "检测到 .env 文件，注入环境变量..."; \
+		$(MAKE) inject-env-vars; \
+	else \
+		echo "未找到 .env 文件，使用默认环境变量"; \
+		mv $(PLIST_FILE).tmp $(PLIST_FILE); \
+	fi
 	@echo "plist 文件已生成: $(PLIST_FILE)"
+
+# 注入 .env 文件中的环境变量到 plist 文件
+inject-env-vars:
+	@# 创建环境变量临时文件
+	@echo "" > .env_vars.tmp
+	@# 解析 .env 文件
+	@grep -v '^[[:space:]]*#' .env | grep -v '^[[:space:]]*$$' | while IFS='=' read -r key value; do \
+		if [ -n "$$key" ]; then \
+			key=$$(echo "$$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$$//'); \
+			value=$$(echo "$$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$$//' | sed 's/^["'\'']\(.*\)["'\'']$$/\1/'); \
+			value=$$(echo "$$value" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'\''/\&#39;/g'); \
+			echo "        <key>$$key</key>" >> .env_vars.tmp; \
+			echo "        <string>$$value</string>" >> .env_vars.tmp; \
+		fi; \
+	done
+	@# 在 PATH 后插入环境变量
+	@awk '/<string>\/usr\/local\/bin:\/usr\/bin:\/bin<\/string>/{print; system("cat .env_vars.tmp"); next}1' $(PLIST_FILE).tmp > $(PLIST_FILE)
+	@# 清理临时文件
+	@rm -f $(PLIST_FILE).tmp .env_vars.tmp
 
 # 安装服务
 install-service: build generate-plist
