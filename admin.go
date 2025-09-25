@@ -331,11 +331,12 @@ func (s *Server) handlePublicSummary(c *gin.Context) {
 
 // TestChannelRequest 渠道测试请求结构
 type TestChannelRequest struct {
-	Model     string            `json:"model" binding:"required"`
-	MaxTokens int               `json:"max_tokens,omitempty"` // 可选，默认512
-	Stream    bool              `json:"stream,omitempty"`     // 可选，流式响应
-	Content   string            `json:"content,omitempty"`    // 可选，测试内容，默认"test"
-	Headers   map[string]string `json:"headers,omitempty"`    // 可选，自定义请求头
+	Model       string            `json:"model" binding:"required"`
+	MaxTokens   int               `json:"max_tokens,omitempty"`   // 可选，默认512
+	Stream      bool              `json:"stream,omitempty"`       // 可选，流式响应
+	Content     string            `json:"content,omitempty"`      // 可选，测试内容，默认"test"
+	Headers     map[string]string `json:"headers,omitempty"`      // 可选，自定义请求头
+	ChannelType string            `json:"channel_type,omitempty"` // 可选，渠道类型：anthropic(默认)、openai
 }
 
 // Validate 实现RequestValidator接口
@@ -397,7 +398,13 @@ func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[st
 	// 设置默认值
 	maxTokens := testReq.MaxTokens
 	if maxTokens == 0 {
-		maxTokens = 512 // 使用curl命令中的默认值
+		maxTokens = 4096
+	}
+
+	// 确定渠道类型
+	channelType := testReq.ChannelType
+	if channelType == "" {
+		channelType = "anthropic" // 默认为anthropic类型
 	}
 
 	testContent := testReq.Content
@@ -405,41 +412,66 @@ func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[st
 		testContent = "test" // 默认测试内容
 	}
 
-	// 创建测试请求（模拟curl命令的结构）
-	testMessage := map[string]any{
-		"system": []map[string]any{
-			{
-				"type": "text",
-				"text": "You are Claude Code, Anthropic's official CLI for Claude.",
-				"cache_control": map[string]any{
-					"type": "ephemeral",
-				},
-			},
-		},
-		"stream": false,
-		"messages": []map[string]any{
-			{
-				"content": []map[string]any{
-					{
-						"type": "text",
-						"text": "<system-reminder>\nThis is a reminder that your todo list is currently empty. DO NOT mention this to the user explicitly because they are already aware. If you are working on tasks that would benefit from a todo list please use the TodoWrite tool to create one. If not, please feel free to ignore. Again do not mention this message to the user.\n</system-reminder>",
-					},
-					{
-						"type": "text",
-						"text": testContent,
-						"cache_control": map[string]any{
-							"type": "ephemeral",
+	// 根据渠道类型创建不同格式的测试请求
+	var testMessage map[string]any
+
+	switch channelType {
+	case "codex":
+		// OpenAI GPT-5 Codex格式请求
+		testMessage = map[string]any{
+			"model":        testReq.Model,
+			"stream":       testReq.Stream,
+			"instructions": "You are Codex, based on GPT-5. You are running as a coding agent in the Codex CLI on a user's computer.",
+			"input": []map[string]any{
+				{
+					"type": "message",
+					"role": "user",
+					"content": []map[string]any{
+						{
+							"type": "input_text",
+							"text": testContent,
 						},
 					},
 				},
-				"role": "user",
 			},
-		},
-		"model":      testReq.Model,
-		"max_tokens": maxTokens,
-		"metadata": map[string]any{
-			"user_id": "test",
-		},
+		}
+	case "anthropic":
+		// Anthropic格式请求
+		testMessage = map[string]any{
+			"system": []map[string]any{
+				{
+					"type": "text",
+					"text": "You are Claude Code, Anthropic's official CLI for Claude.",
+					"cache_control": map[string]any{
+						"type": "ephemeral",
+					},
+				},
+			},
+			"stream": testReq.Stream,
+			"messages": []map[string]any{
+				{
+					"content": []map[string]any{
+						{
+							"type": "text",
+							"text": "<system-reminder>\nThis is a reminder that your todo list is currently empty. DO NOT mention this to the user explicitly because they are already aware. If you are working on tasks that would benefit from a todo list please use the TodoWrite tool to create one. If not, please feel free to ignore. Again do not mention this message to the user.\n</system-reminder>",
+						},
+						{
+							"type": "text",
+							"text": testContent,
+							"cache_control": map[string]any{
+								"type": "ephemeral",
+							},
+						},
+					},
+					"role": "user",
+				},
+			},
+			"model":      testReq.Model,
+			"max_tokens": maxTokens,
+			"metadata": map[string]any{
+				"user_id": "test",
+			},
+		}
 	}
 
 	reqBody, err := sonic.Marshal(testMessage)
@@ -454,9 +486,16 @@ func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[st
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// 构建完整的API URL（模拟curl命令的URL结构）
-	fullURL := strings.TrimRight(cfg.URL, "/") + "/v1/messages"
-	fullURL += "?beta=true"
+	// 构建完整的API URL，根据渠道类型确定路径和参数
+	var fullURL string
+	baseURL := strings.TrimRight(cfg.URL, "/")
+
+	switch channelType {
+	case "anthropic":
+		fullURL = baseURL + "/v1/messages?beta=true"
+	case "codex":
+		fullURL = baseURL + "/v1/responses"
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", fullURL, bytes.NewReader(reqBody))
 	if err != nil {
@@ -466,11 +505,22 @@ func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[st
 		}
 	}
 
-	// 设置请求头（模拟curl命令的headers）
+	// 根据渠道类型设置不同的请求头
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)              // 使用Bearer认证
-	req.Header.Set("User-Agent", "claude-cli/1.0.110 (external, cli)") // 模拟claude-cli
-	req.Header.Set("x-app", "cli")                                     // 模拟curl命令中的x-app头
+	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+
+	switch channelType {
+	case "codex":
+		// OpenAI GPT-5 Codex特定的请求头
+		req.Header.Set("User-Agent", "codex_cli_rs/0.41.0 (Mac OS 26.0.0; arm64) iTerm.app/3.6.1")
+		req.Header.Set("Openai-Beta", "responses=experimental")
+		req.Header.Set("Originator", "codex_cli_rs")
+	case "anthropic":
+		// Anthropic特定的请求头（默认）
+		req.Header.Set("User-Agent", "claude-cli/1.0.110 (external, cli)")
+		req.Header.Set("x-app", "cli")
+		req.Header.Set("anthropic-version", "2023-06-01")
+	}
 
 	// 添加自定义请求头
 	for key, value := range testReq.Headers {
@@ -513,11 +563,37 @@ func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[st
 		// 成功响应
 		var apiResp map[string]any
 		if err := sonic.Unmarshal(respBody, &apiResp); err == nil {
-			// 提取响应文本
-			if content, ok := apiResp["content"].([]any); ok && len(content) > 0 {
-				if textBlock, ok := content[0].(map[string]any); ok {
-					if text, ok := textBlock["text"].(string); ok {
-						result["response_text"] = text
+			// 根据渠道类型解析响应
+			switch channelType {
+			case "codex":
+				// 解析OpenAI GPT-5 Codex响应
+				if output, ok := apiResp["output"].([]any); ok {
+					for _, item := range output {
+						if outputItem, ok := item.(map[string]any); ok {
+							if outputType, ok := outputItem["type"].(string); ok && outputType == "message" {
+								if content, ok := outputItem["content"].([]any); ok && len(content) > 0 {
+									if textBlock, ok := content[0].(map[string]any); ok {
+										if text, ok := textBlock["text"].(string); ok {
+											result["response_text"] = text
+											break
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+				// 添加使用统计信息
+				if usage, ok := apiResp["usage"].(map[string]any); ok {
+					result["usage"] = usage
+				}
+			case "anthropic":
+				// 原有的Anthropic解析逻辑
+				if content, ok := apiResp["content"].([]any); ok && len(content) > 0 {
+					if textBlock, ok := content[0].(map[string]any); ok {
+						if text, ok := textBlock["text"].(string); ok {
+							result["response_text"] = text
+						}
 					}
 				}
 			}

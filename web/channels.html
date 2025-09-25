@@ -113,7 +113,7 @@
             </label>
             <div style="display: flex; align-items: center; gap: 8px;">
               <label class="form-label" for="channelPriority" style="margin: 0; white-space: nowrap;">优先级</label>
-              <input type="number" id="channelPriority" class="form-input" value="0" min="-99999" max="99999" style="width: 80px; min-width: 80px;">
+              <input type="number" id="channelPriority" class="form-input" value="0" min="-99999" max="99999" style="width: 100px; min-width: 100px;">
             </div>
           </div>
         </div>
@@ -145,6 +145,14 @@
         <h2 class="modal-title">测试渠道 - <span id="testChannelName"></span></h2>
         <button class="close-btn" onclick="closeTestModal()">&times;</button>
       </div>
+      <div class="form-group">
+        <label class="form-label" for="testChannelType">渠道类型</label>
+        <select id="testChannelType" class="form-input" onchange="updateTestURL()">
+          <option value="anthropic" selected>Claude Code</option>
+          <option value="codex">Codex</option>
+        </select>
+      </div>
+
       <div class="form-group">
         <label class="form-label" for="testModelSelect">选择测试模型</label>
         <select id="testModelSelect" class="model-select">
@@ -693,6 +701,13 @@
       document.getElementById('runTestBtn').disabled = false;
       // 重置内容输入框为默认值
       document.getElementById('testContentInput').value = 'test';
+      // 重置渠道类型为默认值
+      document.getElementById('testChannelType').value = 'anthropic';
+    }
+
+    function updateTestURL() {
+      // 当渠道类型改变时，可以在这里添加额外的逻辑
+      // 目前只是为了保持接口一致性
     }
 
     async function runChannelTest() {
@@ -700,9 +715,11 @@
 
       const modelSelect = document.getElementById('testModelSelect');
       const contentInput = document.getElementById('testContentInput');
+      const channelTypeSelect = document.getElementById('testChannelType');
       const selectedModel = modelSelect.value;
       const testContent = contentInput.value.trim() || 'test'; // 默认为"test"
-      
+      const channelType = channelTypeSelect.value;
+
       if (!selectedModel) {
         if (window.showError) showError('请选择一个模型');
         return;
@@ -714,15 +731,15 @@
       document.getElementById('runTestBtn').disabled = true;
 
       try {
-        // 使用新的参数结构，支持自定义内容和beta参数
+        // 使用新的参数结构，支持渠道类型、自定义内容和beta参数
         const testRequest = {
           model: selectedModel,
           max_tokens: 512,
-          beta: true,
           stream: false,
-          content: testContent
+          content: testContent,
+          channel_type: channelType
         };
-        
+
         const res = await fetch(`/admin/channels/${testingChannelId}/test`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
