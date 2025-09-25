@@ -330,12 +330,8 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 			if !shouldRetry {
 				// 根据错误类型返回适当的响应
 				switch statusCode {
-				case StatusConnectionReset:
-					c.JSON(502, gin.H{"error": "upstream connection reset"})
 				case StatusClientClosedRequest:
 					c.JSON(499, gin.H{"error": "request cancelled"})
-				case 504:
-					c.JSON(504, gin.H{"error": "gateway timeout"})
 				default:
 					c.JSON(statusCode, gin.H{"error": truncateErr(err.Error())})
 				}
