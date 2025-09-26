@@ -37,9 +37,22 @@ func classifyError(err error) (statusCode int, shouldRetry bool) {
 
 	// Connection reset by peer - 不应重试
 	if strings.Contains(errStr, "connection reset by peer") ||
-		strings.Contains(errStr, "broken pipe") ||
-		strings.Contains(errStr, "connection refused") {
+		strings.Contains(errStr, "broken pipe") {
 		return StatusConnectionReset, false
+	}
+
+	// Connection refused - 应该重试其他渠道
+	if strings.Contains(errStr, "connection refused") {
+		return 502, true
+	}
+
+	// 其他常见的网络连接错误也应该重试
+	if strings.Contains(errStr, "no such host") ||
+		strings.Contains(errStr, "host unreachable") ||
+		strings.Contains(errStr, "network unreachable") ||
+		strings.Contains(errStr, "connection timeout") ||
+		strings.Contains(errStr, "no route to host") {
+		return 502, true
 	}
 
 	// Context canceled - 客户端取消，不应重试
@@ -330,8 +343,12 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 			if !shouldRetry {
 				// 根据错误类型返回适当的响应
 				switch statusCode {
+				case StatusConnectionReset:
+					c.JSON(502, gin.H{"error": "upstream connection reset"})
 				case StatusClientClosedRequest:
 					c.JSON(499, gin.H{"error": "request cancelled"})
+				case 504:
+					c.JSON(504, gin.H{"error": "gateway timeout"})
 				default:
 					c.JSON(statusCode, gin.H{"error": truncateErr(err.Error())})
 				}
