@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/csv"
 	"fmt"
 	"io"
 	"net/http"
@@ -57,6 +58,15 @@ type ChannelWithCooldown struct {
 	CooldownRemainingMS int64      `json:"cooldown_remaining_ms,omitempty"`
 }
 
+// ChannelImportSummary 导入结果统计
+type ChannelImportSummary struct {
+	Created   int      `json:"created"`
+	Updated   int      `json:"updated"`
+	Skipped   int      `json:"skipped"`
+	Processed int      `json:"processed"`
+	Errors    []string `json:"errors,omitempty"`
+}
+
 // Admin: /admin/channels (GET, POST) - 重构版本
 func (s *Server) handleChannels(c *gin.Context) {
 	router := NewMethodRouter().
@@ -105,6 +115,205 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 	}
 
 	RespondJSON(c, http.StatusCreated, created)
+}
+
+// 导出渠道为CSV
+func (s *Server) handleExportChannelsCSV(c *gin.Context) {
+	cfgs, err := s.store.ListConfigs(c.Request.Context())
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	buf := &bytes.Buffer{}
+	// 添加 UTF-8 BOM，兼容 Excel 等工具
+	buf.WriteString("\ufeff")
+
+	writer := csv.NewWriter(buf)
+	defer writer.Flush()
+
+	header := []string{"id", "name", "api_key", "url", "priority", "models", "enabled"}
+	if err := writer.Write(header); err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	for _, cfg := range cfgs {
+		record := []string{
+			strconv.FormatInt(cfg.ID, 10),
+			cfg.Name,
+			cfg.APIKey,
+			cfg.URL,
+			strconv.Itoa(cfg.Priority),
+			strings.Join(cfg.Models, ","),
+			strconv.FormatBool(cfg.Enabled),
+		}
+		if err := writer.Write(record); err != nil {
+			RespondError(c, http.StatusInternalServerError, err)
+			return
+		}
+	}
+
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	filename := fmt.Sprintf("channels-%s.csv", time.Now().Format("20060102-150405"))
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
+	c.Header("Cache-Control", "no-cache")
+	c.String(http.StatusOK, buf.String())
+}
+
+// 导入渠道CSV
+func (s *Server) handleImportChannelsCSV(c *gin.Context) {
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "缺少上传文件")
+		return
+	}
+
+	src, err := fileHeader.Open()
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	defer src.Close()
+
+	reader := csv.NewReader(src)
+	reader.TrimLeadingSpace = true
+
+	headerRow, err := reader.Read()
+	if err == io.EOF {
+		RespondErrorMsg(c, http.StatusBadRequest, "CSV内容为空")
+		return
+	}
+	if err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
+
+	columnIndex := buildCSVColumnIndex(headerRow)
+	required := []string{"name", "api_key", "url", "models"}
+	for _, key := range required {
+		if _, ok := columnIndex[key]; !ok {
+			RespondErrorMsg(c, http.StatusBadRequest, fmt.Sprintf("缺少必需列: %s", key))
+			return
+		}
+	}
+
+	summary := ChannelImportSummary{}
+	lineNo := 1
+
+	for {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		lineNo++
+
+		if err != nil {
+			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行读取失败: %v", lineNo, err))
+			summary.Skipped++
+			continue
+		}
+
+		if isCSVRecordEmpty(record) {
+			summary.Skipped++
+			continue
+		}
+
+		fetch := func(key string) string {
+			idx, ok := columnIndex[key]
+			if !ok || idx >= len(record) {
+				return ""
+			}
+			return strings.TrimSpace(record[idx])
+		}
+
+		name := fetch("name")
+		apiKey := fetch("api_key")
+		url := fetch("url")
+		modelsRaw := fetch("models")
+
+		if name == "" || apiKey == "" || url == "" || modelsRaw == "" {
+			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行缺少必填字段", lineNo))
+			summary.Skipped++
+			continue
+		}
+
+		models := parseImportModels(modelsRaw)
+		if len(models) == 0 {
+			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行模型格式无效", lineNo))
+			summary.Skipped++
+			continue
+		}
+
+		priority := 0
+		if pRaw := fetch("priority"); pRaw != "" {
+			p, err := strconv.Atoi(pRaw)
+			if err != nil {
+				summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行优先级格式错误: %v", lineNo, err))
+				summary.Skipped++
+				continue
+			}
+			priority = p
+		}
+
+		enabled := true
+		if eRaw := fetch("enabled"); eRaw != "" {
+			if val, ok := parseImportEnabled(eRaw); ok {
+				enabled = val
+			} else {
+				summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行启用状态格式错误: %s", lineNo, eRaw))
+				summary.Skipped++
+				continue
+			}
+		}
+
+		cfg := &Config{
+			Name:     name,
+			APIKey:   apiKey,
+			URL:      url,
+			Priority: priority,
+			Models:   models,
+			Enabled:  enabled,
+		}
+
+		if idRaw := fetch("id"); idRaw != "" {
+			id, err := strconv.ParseInt(idRaw, 10, 64)
+			if err != nil {
+				summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行ID格式错误: %v", lineNo, err))
+				summary.Skipped++
+				continue
+			}
+			if id > 0 {
+				if _, err := s.store.UpdateConfig(c.Request.Context(), id, cfg); err == nil {
+					summary.Updated++
+					continue
+				}
+				if _, err := s.store.CreateConfig(c.Request.Context(), cfg); err != nil {
+					summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行更新失败: %v", lineNo, err))
+					summary.Skipped++
+					continue
+				}
+				summary.Created++
+				continue
+			}
+		}
+
+		if _, err := s.store.CreateConfig(c.Request.Context(), cfg); err != nil {
+			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行创建失败: %v", lineNo, err))
+			summary.Skipped++
+			continue
+		}
+		summary.Created++
+	}
+
+	summary.Processed = summary.Created + summary.Updated + summary.Skipped
+	RespondJSON(c, http.StatusOK, summary)
 }
 
 // Admin: /admin/channels/{id} (GET, PUT, DELETE) - 重构版本
@@ -629,4 +838,85 @@ func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[st
 	}
 
 	return result
+}
+
+func buildCSVColumnIndex(header []string) map[string]int {
+	index := make(map[string]int, len(header))
+	for i, col := range header {
+		norm := normalizeCSVHeader(col)
+		if norm == "" {
+			continue
+		}
+		index[norm] = i
+	}
+	return index
+}
+
+func normalizeCSVHeader(name string) string {
+	trimmed := strings.TrimSpace(name)
+	trimmed = strings.TrimPrefix(trimmed, "\ufeff")
+	lower := strings.ToLower(trimmed)
+	switch lower {
+	case "apikey", "api-key", "api key":
+		return "api_key"
+	case "model", "model_list", "model(s)":
+		return "models"
+	case "status":
+		return "enabled"
+	default:
+		return lower
+	}
+}
+
+func isCSVRecordEmpty(record []string) bool {
+	for _, cell := range record {
+		if strings.TrimSpace(cell) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func parseImportModels(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	splitter := func(r rune) bool {
+		switch r {
+		case ',', ';', '|', '\n', '\r', '\t':
+			return true
+		default:
+			return false
+		}
+	}
+	parts := strings.FieldsFunc(raw, splitter)
+	if len(parts) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, p := range parts {
+		clean := strings.TrimSpace(p)
+		if clean == "" {
+			continue
+		}
+		if _, exists := seen[clean]; exists {
+			continue
+		}
+		seen[clean] = struct{}{}
+		out = append(out, clean)
+	}
+	return out
+}
+
+func parseImportEnabled(raw string) (bool, bool) {
+	val := strings.TrimSpace(strings.ToLower(raw))
+	switch val {
+	case "1", "true", "yes", "y", "启用", "enabled", "on":
+		return true, true
+	case "0", "false", "no", "n", "禁用", "disabled", "off":
+		return false, true
+	default:
+		return false, false
+	}
 }

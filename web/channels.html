@@ -55,10 +55,17 @@
               显示 <span id="filteredCount">0</span> / <span id="totalCount">0</span> 个渠道
             </div>
             
-            <div>
+            <div style="flex: none; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
               <button id="resetFiltersBtn" type="button" class="btn btn-secondary" style="padding: 8px 16px; font-size: 14px;" title="重置所有筛选条件">
                 重置筛选
               </button>
+              <button id="exportCsvBtn" type="button" class="btn btn-secondary" style="padding: 8px 16px; font-size: 14px;" title="导出渠道列表为CSV">
+                导出 CSV
+              </button>
+              <button id="importCsvBtn" type="button" class="btn btn-primary" style="padding: 8px 16px; font-size: 14px;" title="从CSV导入渠道">
+                导入 CSV
+              </button>
+              <input type="file" id="importCsvInput" accept=".csv" style="display: none;" />
             </div>
           </div>
         </div>
@@ -634,9 +641,115 @@
       }[c]));
     }
 
+    function formatTimestampForFilename() {
+      const pad = (n) => String(n).padStart(2, '0');
+      const now = new Date();
+      return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    }
+
+    function setupImportExport() {
+      const exportBtn = document.getElementById('exportCsvBtn');
+      const importBtn = document.getElementById('importCsvBtn');
+      const importInput = document.getElementById('importCsvInput');
+
+      if (exportBtn) {
+        exportBtn.addEventListener('click', () => exportChannelsCSV(exportBtn));
+      }
+
+      if (importBtn && importInput) {
+        importBtn.addEventListener('click', () => importInput.click());
+        importInput.addEventListener('change', (event) => handleImportCSV(event, importBtn));
+      }
+    }
+
+    async function exportChannelsCSV(buttonEl) {
+      try {
+        if (buttonEl) buttonEl.disabled = true;
+        const res = await fetch('/admin/channels/export');
+        if (!res.ok) {
+          const errorText = await res.text();
+          throw new Error(errorText || `导出失败 (HTTP ${res.status})`);
+        }
+
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `channels-${formatTimestampForFilename()}.csv`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+
+        if (window.showSuccess) showSuccess('导出成功');
+      } catch (err) {
+        console.error('导出CSV失败', err);
+        if (window.showError) showError(err.message || '导出失败');
+      } finally {
+        if (buttonEl) buttonEl.disabled = false;
+      }
+    }
+
+    async function handleImportCSV(event, importBtn) {
+      const input = event.target;
+      if (!input.files || input.files.length === 0) {
+        return;
+      }
+
+      const file = input.files[0];
+      const formData = new FormData();
+      formData.append('file', file);
+
+      if (importBtn) importBtn.disabled = true;
+
+      try {
+        const res = await fetch('/admin/channels/import', {
+          method: 'POST',
+          body: formData
+        });
+
+        const responseText = await res.text();
+        let payload = null;
+        if (responseText) {
+          try {
+            payload = JSON.parse(responseText);
+          } catch (e) {
+            payload = null;
+          }
+        }
+
+        if (!res.ok) {
+          const message = (payload && payload.error) || responseText || `导入失败 (HTTP ${res.status})`;
+          throw new Error(message);
+        }
+
+        const summary = payload && payload.data ? payload.data : payload;
+        if (summary) {
+          const msg = `导入完成：新增 ${summary.created || 0}，更新 ${summary.updated || 0}，跳过 ${summary.skipped || 0}`;
+          if (window.showSuccess) showSuccess(msg);
+          if (summary.errors && summary.errors.length) {
+            const preview = summary.errors.slice(0, 3).join('；');
+            const extra = summary.errors.length > 3 ? ` 等${summary.errors.length}条记录` : '';
+            if (window.showError) showError(`部分记录导入失败：${preview}${extra}`);
+          }
+        } else if (window.showSuccess) {
+          showSuccess('导入完成');
+        }
+
+        await loadChannels();
+      } catch (err) {
+        console.error('导入CSV失败', err);
+        if (window.showError) showError(err.message || '导入失败');
+      } finally {
+        if (importBtn) importBtn.disabled = false;
+        input.value = '';
+      }
+    }
+
     document.addEventListener('DOMContentLoaded', () => {
       if (window.initTopbar) initTopbar('channels');
       setupFilterListeners();
+      setupImportExport();
       loadChannels().then(() => highlightFromHash());
       window.addEventListener('hashchange', highlightFromHash);
     });

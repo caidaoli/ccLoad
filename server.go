@@ -293,6 +293,8 @@ func (s *Server) setupRoutes(r *gin.Engine) {
 	{
 		admin.GET("/channels", s.handleChannels)
 		admin.POST("/channels", s.handleChannels)
+		admin.GET("/channels/export", s.handleExportChannelsCSV)
+		admin.POST("/channels/import", s.handleImportChannelsCSV)
 		admin.GET("/channels/:id", s.handleChannelByID)
 		admin.PUT("/channels/:id", s.handleChannelByID)
 		admin.DELETE("/channels/:id", s.handleChannelByID)

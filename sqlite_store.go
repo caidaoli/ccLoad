@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -220,48 +221,31 @@ func (s *SQLiteStore) CreateConfig(ctx context.Context, c *Config) (*Config, err
 }
 
 func (s *SQLiteStore) UpdateConfig(ctx context.Context, id int64, upd *Config) (*Config, error) {
-	cur, err := s.GetConfig(ctx, id)
-	if err != nil {
+	if upd == nil {
+		return nil, errors.New("update payload cannot be nil")
+	}
+
+	// 确认目标存在，保持与之前逻辑一致
+	if _, err := s.GetConfig(ctx, id); err != nil {
 		return nil, err
 	}
 
-	// 合并更新字段
-	if upd.Name != "" {
-		cur.Name = upd.Name
-	}
-	if upd.APIKey != "" {
-		cur.APIKey = upd.APIKey
-	}
-	if upd.URL != "" {
-		cur.URL = upd.URL
-	}
-	if upd.Priority != 0 {
-		cur.Priority = upd.Priority
-	}
-	if upd.Models != nil {
-		cur.Models = upd.Models
-	}
+	name := strings.TrimSpace(upd.Name)
+	apiKey := strings.TrimSpace(upd.APIKey)
+	url := strings.TrimSpace(upd.URL)
+	modelsStr, _ := serializeModels(upd.Models)
+	updatedAt := time.Now()
 
-	// enabled 语义：若仅传 enabled 切换，否则保持
-	if upd.Name == "" && upd.APIKey == "" && upd.URL == "" && upd.Priority == 0 && upd.Models == nil {
-		cur.Enabled = upd.Enabled
-	} else if upd.Enabled != cur.Enabled {
-		cur.Enabled = upd.Enabled
-	}
-
-	cur.UpdatedAt = time.Now()
-	modelsStr, _ := serializeModels(cur.Models)
-
-	_, err = s.db.ExecContext(ctx, `
+	_, err := s.db.ExecContext(ctx, `
 		UPDATE channels 
 		SET name=?, api_key=?, url=?, priority=?, models=?, enabled=?, updated_at=? 
 		WHERE id=?
-	`, cur.Name, cur.APIKey, cur.URL, cur.Priority, modelsStr,
-		boolToInt(cur.Enabled), cur.UpdatedAt, id)
-
+	`, name, apiKey, url, upd.Priority, modelsStr,
+		boolToInt(upd.Enabled), updatedAt, id)
 	if err != nil {
 		return nil, err
 	}
+
 	return s.GetConfig(ctx, id)
 }
 
