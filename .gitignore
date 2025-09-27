@@ -48,3 +48,4 @@ Thumbs.db
 .env.example
 .claude/settings.local.json
 com.ccload.service.plist
+.dataX

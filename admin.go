@@ -282,34 +282,34 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 			Enabled:  enabled,
 		}
 
-		if idRaw := fetch("id"); idRaw != "" {
-			id, err := strconv.ParseInt(idRaw, 10, 64)
-			if err != nil {
-				summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行ID格式错误: %v", lineNo, err))
-				summary.Skipped++
-				continue
-			}
-			if id > 0 {
-				if _, err := s.store.UpdateConfig(c.Request.Context(), id, cfg); err == nil {
-					summary.Updated++
-					continue
-				}
-				if _, err := s.store.CreateConfig(c.Request.Context(), cfg); err != nil {
-					summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行更新失败: %v", lineNo, err))
-					summary.Skipped++
-					continue
-				}
-				summary.Created++
-				continue
-			}
-		}
-
-		if _, err := s.store.CreateConfig(c.Request.Context(), cfg); err != nil {
-			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行创建失败: %v", lineNo, err))
+		// 检查渠道是否已存在（基于名称）
+		existingConfigs, err := s.store.ListConfigs(c.Request.Context())
+		if err != nil {
+			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行检查现有渠道失败: %v", lineNo, err))
 			summary.Skipped++
 			continue
 		}
-		summary.Created++
+
+		isUpdate := false
+		for _, existing := range existingConfigs {
+			if existing.Name == name {
+				isUpdate = true
+				break
+			}
+		}
+
+		// 使用ReplaceConfig进行插入或更新
+		if _, err := s.store.ReplaceConfig(c.Request.Context(), cfg); err != nil {
+			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行处理失败: %v", lineNo, err))
+			summary.Skipped++
+			continue
+		}
+
+		if isUpdate {
+			summary.Updated++
+		} else {
+			summary.Created++
+		}
 	}
 
 	summary.Processed = summary.Created + summary.Updated + summary.Skipped

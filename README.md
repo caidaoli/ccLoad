@@ -1,12 +1,12 @@
 # ccLoad - Claude Code & Codex API 代理服务
 
-[![Go](https://img.shields.io/badge/Go-1.24+-00ADD8.svg)](https://golang.org)
+[![Go](https://img.shields.io/badge/Go-1.25+-00ADD8.svg)](https://golang.org)
 [![Gin](https://img.shields.io/badge/Gin-v1.10+-blue.svg)](https://github.com/gin-gonic/gin)
 [![Docker](https://img.shields.io/badge/Docker-Supported-2496ED.svg)](https://hub.docker.com)
 [![GitHub Actions](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-2088FF.svg)](https://github.com/features/actions)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-一个高性能的 Claude Code & Codex API 透明代理服务，使用 Go 1.24.0 和 Gin 框架构建。支持多渠道负载均衡、故障切换和实时监控。
+一个高性能的 Claude Code & Codex API 透明代理服务，使用 Go 1.25.0 和 Gin 框架构建。支持多渠道负载均衡、故障切换和实时监控。
 
 ## 🎯 痛点解决
 
@@ -218,6 +218,40 @@ curl -X POST http://localhost:8080/admin/channels \
   }'
 ```
 
+### 批量数据管理
+
+支持CSV格式的渠道配置导入导出：
+
+**导出配置**:
+```bash
+# Web界面: 访问 /web/channels.html，点击"导出CSV"按钮
+# API调用:
+curl -H "Cookie: session=xxx" \
+  http://localhost:8080/admin/channels/export > channels.csv
+```
+
+**导入配置**:
+```bash
+# Web界面: 访问 /web/channels.html，点击"导入CSV"按钮
+# API调用:
+curl -X POST -H "Cookie: session=xxx" \
+  -F "file=@channels.csv" \
+  http://localhost:8080/admin/channels/import
+```
+
+**CSV格式示例**:
+```csv
+name,api_key,url,priority,models,enabled
+Claude-API-1,sk-ant-xxx,https://api.anthropic.com,10,"[\"claude-3-sonnet-20240229\"]",true
+Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"]",true
+```
+
+**特性**:
+- 支持中英文列名自动映射
+- 智能数据验证和错误提示
+- 增量导入和覆盖更新
+- UTF-8编码，Excel兼容
+
 ## 📊 监控指标
 
 访问管理界面查看：
@@ -266,10 +300,15 @@ docker pull --platform linux/arm64 ghcr.io/caidaoli/ccload:latest
 
 ### 数据库结构
 
-- `channels` - 渠道配置
+- `channels` - 渠道配置（具有name字段UNIQUE约束）
 - `logs` - 请求日志
 - `cooldowns` - 冷却状态（channel_id, until, duration_ms）
 - `rr` - 轮询指针（model, priority, next_index）
+
+**向后兼容迁移**:
+- 自动检测并修复重复渠道名称
+- 智能添加UNIQUE约束，确保数据完整性
+- 启动时自动执行，无需手动干预
 
 ## 🛡️ 安全考虑
 
@@ -316,6 +355,30 @@ go run -tags go_json .
 # 本地 Docker 测试
 docker build -t ccload:dev .
 docker run --rm -p 8080:8080 -e CCLOAD_PASS=test123 ccload:dev
+```
+
+### 故障排除
+
+**端口被占用**:
+```bash
+# 查找并终止占用 8080 端口的进程
+lsof -i :8080 && kill -9 <PID>
+```
+
+**容器问题**:
+```bash
+# 查看容器日志
+docker logs ccload -f
+# 检查容器健康状态
+docker inspect ccload --format='{{.State.Health.Status}}'
+```
+
+**配置验证**:
+```bash
+# 测试服务是否正常响应
+curl -s http://localhost:8080/public/summary
+# 检查环境变量配置
+env | grep CCLOAD
 ```
 
 ## 📄 许可证

@@ -44,7 +44,7 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS channels (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT NOT NULL,
+			NAME TEXT NOT NULL,
 			api_key TEXT NOT NULL,
 			url TEXT NOT NULL,
 			priority INTEGER NOT NULL DEFAULT 0,
@@ -73,7 +73,7 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			time TIMESTAMP NOT NULL,
+			TIME TIMESTAMP NOT NULL,
 			model TEXT,
 			channel_id INTEGER,
 			status_code INTEGER NOT NULL,
@@ -94,7 +94,7 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	// 创建 rr (round-robin) 表
 	if _, err := s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS rr (
-			key TEXT PRIMARY KEY,
+			KEY TEXT PRIMARY KEY,
 			idx INTEGER NOT NULL
 		);
 	`); err != nil {
@@ -103,14 +103,14 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 
 	// 创建索引优化查询性能
 	if _, err := s.db.ExecContext(ctx, `
-		CREATE INDEX IF NOT EXISTS idx_logs_time ON logs(time);
+		CREATE INDEX IF NOT EXISTS idx_logs_time ON logs(TIME);
 	`); err != nil {
 		return fmt.Errorf("create logs time index: %w", err)
 	}
 
 	// 创建渠道名称索引
 	if _, err := s.db.ExecContext(ctx, `
-		CREATE INDEX IF NOT EXISTS idx_channels_name ON channels(name);
+		CREATE INDEX IF NOT EXISTS idx_channels_name ON channels(NAME);
 	`); err != nil {
 		return fmt.Errorf("create channels name index: %w", err)
 	}
@@ -120,6 +120,11 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_logs_status ON logs(status_code);
 	`); err != nil {
 		return fmt.Errorf("create logs status index: %w", err)
+	}
+
+	// 确保channels表的name字段具有UNIQUE约束（向后兼容）
+	if err := s.ensureChannelNameUnique(ctx); err != nil {
+		return fmt.Errorf("ensure channel name unique: %w", err)
 	}
 
 	return nil
@@ -155,6 +160,79 @@ func (s *SQLiteStore) addColumnIfNotExists(ctx context.Context, tableName, colum
 		alterQuery := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", tableName, columnName, columnDef)
 		s.db.ExecContext(ctx, alterQuery)
 	}
+}
+
+// ensureChannelNameUnique 确保channels表的name字段具有UNIQUE约束
+// 简化的四步迁移方案，遵循KISS原则
+func (s *SQLiteStore) ensureChannelNameUnique(ctx context.Context) error {
+	// 第一步: 删除旧的普通索引
+	if _, err := s.db.ExecContext(ctx, "DROP INDEX IF EXISTS idx_channels_name"); err != nil {
+		return fmt.Errorf("drop old index: %w", err)
+	}
+
+	// 第二步: 检查是否已存在UNIQUE索引
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_channels_unique_name'",
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check unique index exists: %w", err)
+	}
+	if count > 0 {
+		return nil // 索引已存在，退出
+	}
+
+	// 第三步: 修复重复的name数据
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT name, GROUP_CONCAT(id) AS ids
+		FROM channels
+		GROUP BY name
+		HAVING COUNT(*) > 1
+	`)
+	if err != nil {
+		return fmt.Errorf("find duplicates: %w", err)
+	}
+	defer rows.Close()
+
+	duplicateCount := 0
+	for rows.Next() {
+		var name, idsStr string
+		if err := rows.Scan(&name, &idsStr); err != nil {
+			continue
+		}
+
+		ids := strings.Split(idsStr, ",")
+		if len(ids) <= 1 {
+			continue
+		}
+
+		duplicateCount++
+
+		// 保留第一个ID的name不变，其他ID的name改为 "原name+id"
+		for i := 1; i < len(ids); i++ {
+			newName := fmt.Sprintf("%s%s", name, ids[i])
+			_, err = s.db.ExecContext(ctx, `
+				UPDATE channels SET name = ?, updated_at = datetime('now')
+				WHERE id = ?
+			`, newName, ids[i])
+			if err != nil {
+				return fmt.Errorf("fix duplicate name for id %s: %w", ids[i], err)
+			}
+		}
+	}
+
+	if duplicateCount > 0 {
+		fmt.Printf("Fixed %d duplicate channel names\n", duplicateCount)
+	}
+
+	// 第四步: 创建UNIQUE索引
+	if _, err := s.db.ExecContext(ctx,
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_unique_name ON channels (NAME)",
+	); err != nil {
+		return fmt.Errorf("create unique index: %w", err)
+	}
+
+	return nil
 }
 
 func (s *SQLiteStore) Close() error {
@@ -246,6 +324,34 @@ func (s *SQLiteStore) UpdateConfig(ctx context.Context, id int64, upd *Config) (
 		return nil, err
 	}
 
+	return s.GetConfig(ctx, id)
+}
+
+func (s *SQLiteStore) ReplaceConfig(ctx context.Context, c *Config) (*Config, error) {
+	now := time.Now()
+	modelsStr, _ := serializeModels(c.Models)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO channels(name, api_key, url, priority, models, enabled, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(NAME) DO UPDATE SET
+			api_key = excluded.api_key,
+			url = excluded.url,
+			priority = excluded.priority,
+			models = excluded.models,
+			enabled = excluded.enabled,
+			updated_at = excluded.updated_at
+	`, c.Name, c.APIKey, c.URL, c.Priority, modelsStr,
+		boolToInt(c.Enabled), now, now)
+	if err != nil {
+		return nil, err
+	}
+
+	// 获取实际的记录ID（可能是新创建的或已存在的）
+	var id int64
+	err = s.db.QueryRowContext(ctx, `SELECT id FROM channels WHERE name = ?`, c.Name).Scan(&id)
+	if err != nil {
+		return nil, err
+	}
 	return s.GetConfig(ctx, id)
 }
 
@@ -357,14 +463,14 @@ func (s *SQLiteStore) AddLog(ctx context.Context, e *LogEntry) error {
 // cleanupOldLogs 删除3天前的日志
 func (s *SQLiteStore) cleanupOldLogs(ctx context.Context) error {
 	cutoff := time.Now().AddDate(0, 0, -3) // 3天前
-	_, err := s.db.ExecContext(ctx, `DELETE FROM logs WHERE time < ?`, cutoff)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM logs WHERE TIME < ?`, cutoff)
 	return err
 }
 
 func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offset int, filter *LogFilter) ([]*LogEntry, error) {
 	// 使用查询构建器构建复杂查询
 	baseQuery := `
-		SELECT l.id, l.time, l.model, l.channel_id, c.name as channel_name, 
+		SELECT l.id, l.time, l.model, l.channel_id, c.name AS channel_name, 
 		       l.status_code, l.message, l.duration, l.is_streaming, l.first_byte_time
 		FROM logs l
 		LEFT JOIN channels c ON c.id = l.channel_id`
@@ -423,7 +529,7 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket time.Duration) ([]MetricPoint, error) {
 	// 拉取时间范围内的日志和渠道信息，在应用层做桶聚合
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT l.time, l.status_code, c.name as channel_name
+		SELECT l.time, l.status_code, c.name AS channel_name
 		FROM logs l
 		LEFT JOIN channels c ON l.channel_id = c.id
 		WHERE l.time >= ?
@@ -526,7 +632,7 @@ func (s *SQLiteStore) NextRR(ctx context.Context, model string, priority int, n 
 	defer func() { _ = tx.Rollback() }()
 
 	var cur int
-	err = tx.QueryRowContext(ctx, `SELECT idx FROM rr WHERE key = ?`, key).Scan(&cur)
+	err = tx.QueryRowContext(ctx, `SELECT idx FROM rr WHERE KEY = ?`, key).Scan(&cur)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			cur = 0
@@ -547,7 +653,7 @@ func (s *SQLiteStore) NextRR(ctx context.Context, model string, priority int, n 
 		next = 0
 	}
 
-	if _, err := tx.ExecContext(ctx, `UPDATE rr SET idx = ? WHERE key = ?`, next, key); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE rr SET idx = ? WHERE KEY = ?`, next, key); err != nil {
 		return cur
 	}
 
@@ -567,11 +673,11 @@ func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *Log
 	baseQuery := `
 		SELECT 
 			l.channel_id,
-			COALESCE(c.name, '系统') as channel_name,
-			COALESCE(l.model, '') as model,
-			SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN 1 ELSE 0 END) as success,
-			SUM(CASE WHEN l.status_code < 200 OR l.status_code >= 300 THEN 1 ELSE 0 END) as error,
-			COUNT(*) as total
+			COALESCE(c.name, '系统') AS channel_name,
+			COALESCE(l.model, '') AS model,
+			SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN 1 ELSE 0 END) AS success,
+			SUM(CASE WHEN l.status_code < 200 OR l.status_code >= 300 THEN 1 ELSE 0 END) AS error,
+			COUNT(*) AS total
 		FROM logs l 
 		LEFT JOIN channels c ON c.id = l.channel_id`
 

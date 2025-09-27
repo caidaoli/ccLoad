@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-ccLoad 是一个高性能的 Claude Code & Codex API 透明代理服务，使用 Go 1.24.0 构建，基于 Gin 框架。主要功能：
+ccLoad 是一个高性能的 Claude Code & Codex API 透明代理服务，使用 Go 1.25.0 构建，基于 Gin 框架。主要功能：
 
 - **透明代理**：将 `/v1/messages` 请求转发到上游 Claude API，仅替换 API Key
 - **智能路由**：基于模型支持、优先级和轮询策略选择渠道  
@@ -53,15 +53,19 @@ make clean             # 清理构建文件和日志
 make info              # 显示服务详细信息
 ```
 
-### 构建标签
+### 代码质量检查
 ```bash
 go fmt ./...     # 格式化代码
 go vet ./...     # 静态检查
 go test ./...    # 运行测试（当前项目暂无测试文件）
 
 # 支持构建标签（GOTAGS）
-GOTAGS=go_json go build -tags go_json .     # 启用 goccy/go-json 构建标签（默认）
+GOTAGS=go_json go build -tags go_json .     # 启用高性能 JSON 库（默认）
 GOTAGS=std go build -tags std .             # 使用标准库 JSON
+
+# Docker 构建
+docker build -t ccload:dev .               # 本地构建测试镜像
+docker-compose up -d                       # 使用 compose 启动服务
 ```
 
 ## 核心架构
@@ -159,17 +163,34 @@ GOTAGS=std go build -tags std .             # 使用标准库 JSON
 - **API端点**: 当设置`CCLOAD_AUTH`时，`/v1/messages`需要`Authorization: Bearer <token>`
 - **安全特性**: HttpOnly Cookie、SameSite保护、自动过期清理
 
-## 数据库架构
+## 数据库架构和迁移
 
 ### 核心表结构
 - **channels**: 渠道配置（id, name, api_key, url, priority, models, enabled, timestamps）
+  - `name`字段具有UNIQUE约束（通过`idx_channels_unique_name`索引实现）
 - **logs**: 请求日志（id, time, model, channel_id, status_code, message, performance_metrics）
 - **cooldowns**: 冷却状态（channel_id, until, duration_ms）
 - **rr**: 轮询指针（key="model|priority", idx）
 
+### 向后兼容的数据库迁移
+
+项目实现了智能的数据库架构升级机制，确保向后兼容：
+
+**UNIQUE约束迁移** (`ensureChannelNameUnique` in sqlite_store.go):
+1. **清理旧索引**: `DROP INDEX IF EXISTS idx_channels_name`
+2. **幂等检查**: 检查`idx_channels_unique_name`是否已存在，存在则跳过
+3. **数据修复**: 查找重复name，自动重命名为`原name+id`格式
+4. **创建约束**: `CREATE UNIQUE INDEX idx_channels_unique_name ON channels (name)`
+
+**迁移特性**:
+- **自动执行**: 服务启动时自动运行，无需手动干预
+- **数据保护**: 重复数据自动重命名而非删除（如`api-1`变成`api-12`, `api-14`）
+- **幂等操作**: 支持重复执行，不会产生副作用
+- **KISS原则**: 简化的四步流程，代码简洁可靠
+
 ### 性能优化索引
 - `idx_logs_time`: 日志时间索引，优化时间范围查询
-- `idx_channels_name`: 渠道名称索引，优化过滤查询
+- `idx_channels_unique_name`: 渠道名称UNIQUE索引，确保数据唯一性
 - `idx_logs_status`: 状态码索引，优化错误统计
 
 ## API端点架构
@@ -191,10 +212,58 @@ POST /v1/messages          # Claude API 透明代理（条件认证）
 GET/POST    /admin/channels       # 渠道列表和创建
 GET/PUT/DEL /admin/channels/{id}  # 渠道详情、更新、删除
 POST        /admin/channels/{id}/test  # 渠道测试
+GET         /admin/channels/export     # 导出渠道配置为CSV
+POST        /admin/channels/import     # 从CSV导入渠道配置
 GET         /admin/errors         # 请求日志列表（支持分页和过滤）
 GET         /admin/stats          # 调用统计数据
 GET         /admin/metrics        # 趋势数据（支持hours和bucket_min参数）
 ```
+
+## 渠道数据管理
+
+### CSV导入导出功能
+
+项目支持批量管理渠道配置，通过CSV格式进行导入导出：
+
+**导出功能** (`/admin/channels/export`):
+- 导出所有渠道配置为CSV文件
+- 包含完整渠道信息：名称、API Key、URL、优先级、支持模型、启用状态
+- 文件名格式：`channels-YYYYMMDD-HHMMSS.csv`
+- 支持UTF-8编码，Excel兼容
+
+**导入功能** (`/admin/channels/import`):
+- 支持从CSV文件批量导入渠道配置
+- 智能列名映射（支持中英文列名）
+- 数据验证和错误提示
+- 支持增量导入和覆盖更新
+
+**CSV格式示例**:
+```csv
+name,api_key,url,priority,models,enabled
+Claude-API-1,sk-ant-xxx,https://api.anthropic.com,10,"[\"claude-3-sonnet-20240229\"]",true
+Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"]",true
+```
+
+**列名映射支持**:
+- `name/名称` → 渠道名称
+- `api_key/密钥/API密钥` → API密钥
+- `url/地址/URL` → API地址
+- `priority/优先级` → 优先级（数字）
+- `models/模型/支持模型` → 支持的模型列表（JSON数组字符串）
+- `enabled/启用/状态` → 启用状态（true/false）
+
+**使用方式**:
+- **Web界面**: 访问`/web/channels.html`，使用"导出CSV"和"导入CSV"按钮
+- **API调用**:
+  ```bash
+  # 导出
+  curl -H "Cookie: session=xxx" http://localhost:8080/admin/channels/export > channels.csv
+
+  # 导入
+  curl -X POST -H "Cookie: session=xxx" \
+    -F "file=@channels.csv" \
+    http://localhost:8080/admin/channels/import
+  ```
 
 ## 前端架构
 
@@ -232,7 +301,7 @@ GET         /admin/metrics        # 趋势数据（支持hours和bucket_min参�
 
 ## 技术栈
 
-- **语言**: Go 1.24.0
+- **语言**: Go 1.25.0
 - **框架**: Gin v1.10.1
 - **数据库**: SQLite3 v1.14.32（嵌入式）
 - **缓存**: Ristretto v2.3.0（内存缓存）
@@ -271,3 +340,48 @@ func processData(data map[string]interface{}) interface{} {
 - **go fmt**: 强制代码格式化
 - **go vet**: 静态分析检查
 - **现代化检查**: 定期审查并升级代码语法到最新标准
+
+## 调试和故障排除
+
+### 常见开发问题
+
+**端口被占用**:
+```bash
+# 查找占用8080端口的进程
+lsof -i :8080
+# 终止进程
+kill -9 <PID>
+```
+
+**SQLite数据库锁定**:
+```bash
+# 检查数据库状态
+sqlite3 data/ccload.db ".timeout 3000"
+# 清理WAL文件（服务停止时）
+rm -f data/ccload.db-wal data/ccload.db-shm
+```
+
+**容器调试**:
+```bash
+# 查看容器日志
+docker logs ccload -f
+# 进入容器调试
+docker exec -it ccload /bin/sh
+# 检查健康状态
+docker inspect ccload --format='{{.State.Health.Status}}'
+```
+
+**性能监控**:
+- 管理界面：`http://localhost:8080/web/trend.html` 查看趋势图
+- 日志分析：`http://localhost:8080/web/logs.html` 查看请求日志
+- API统计：`GET /admin/stats` 获取统计数据
+
+### 配置验证
+```bash
+# 检查环境变量
+env | grep CCLOAD
+# 验证数据库连接
+sqlite3 data/ccload.db "SELECT COUNT(*) FROM channels;"
+# 测试API端点
+curl -s http://localhost:8080/public/summary | jq
+```

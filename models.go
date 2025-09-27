@@ -94,6 +94,7 @@ type Store interface {
 	CreateConfig(ctx context.Context, c *Config) (*Config, error)
 	UpdateConfig(ctx context.Context, id int64, upd *Config) (*Config, error)
 	DeleteConfig(ctx context.Context, id int64) error
+	ReplaceConfig(ctx context.Context, c *Config) (*Config, error)
 
 	// cooldown
 	GetCooldownUntil(ctx context.Context, configID int64) (time.Time, bool)
