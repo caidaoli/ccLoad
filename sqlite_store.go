@@ -15,10 +15,11 @@ import (
 )
 
 type SQLiteStore struct {
-	db *sql.DB
+	db        *sql.DB
+	redisSync *RedisSync // Redis同步客户端 (OCP: 开放扩展，封闭修改)
 }
 
-func NewSQLiteStore(path string) (*SQLiteStore, error) {
+func NewSQLiteStore(path string, redisSync *RedisSync) (*SQLiteStore, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
@@ -30,7 +31,7 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	db.SetMaxOpenConns(25)
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(5 * time.Minute)
-	s := &SQLiteStore{db: db}
+	s := &SQLiteStore{db: db, redisSync: redisSync}
 	if err := s.migrate(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -286,7 +287,7 @@ func (s *SQLiteStore) CreateConfig(ctx context.Context, c *Config) (*Config, err
 	modelsStr, _ := serializeModels(c.Models)
 
 	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO channels(name, api_key, url, priority, models, enabled, created_at, updated_at) 
+		INSERT INTO channels(name, api_key, url, priority, models, enabled, created_at, updated_at)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
 	`, c.Name, c.APIKey, c.URL, c.Priority, modelsStr,
 		boolToInt(c.Enabled), now, now)
@@ -295,7 +296,19 @@ func (s *SQLiteStore) CreateConfig(ctx context.Context, c *Config) (*Config, err
 		return nil, err
 	}
 	id, _ := res.LastInsertId()
-	return s.GetConfig(ctx, id)
+
+	// 获取完整的配置信息
+	config, err := s.GetConfig(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	// 同步到Redis (故障隔离: Redis错误不影响主要功能)
+	if syncErr := s.redisSync.SyncChannelCreate(ctx, config); syncErr != nil {
+		fmt.Printf("Warning: Redis sync failed for channel create %s: %v\n", config.Name, syncErr)
+	}
+
+	return config, nil
 }
 
 func (s *SQLiteStore) UpdateConfig(ctx context.Context, id int64, upd *Config) (*Config, error) {
@@ -315,8 +328,8 @@ func (s *SQLiteStore) UpdateConfig(ctx context.Context, id int64, upd *Config) (
 	updatedAt := time.Now()
 
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE channels 
-		SET name=?, api_key=?, url=?, priority=?, models=?, enabled=?, updated_at=? 
+		UPDATE channels
+		SET name=?, api_key=?, url=?, priority=?, models=?, enabled=?, updated_at=?
 		WHERE id=?
 	`, name, apiKey, url, upd.Priority, modelsStr,
 		boolToInt(upd.Enabled), updatedAt, id)
@@ -324,7 +337,18 @@ func (s *SQLiteStore) UpdateConfig(ctx context.Context, id int64, upd *Config) (
 		return nil, err
 	}
 
-	return s.GetConfig(ctx, id)
+	// 获取更新后的配置
+	config, err := s.GetConfig(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	// 同步到Redis (故障隔离: Redis错误不影响主要功能)
+	if syncErr := s.redisSync.SyncChannelUpdate(ctx, config); syncErr != nil {
+		fmt.Printf("Warning: Redis sync failed for channel update %s: %v\n", config.Name, syncErr)
+	}
+
+	return config, nil
 }
 
 func (s *SQLiteStore) ReplaceConfig(ctx context.Context, c *Config) (*Config, error) {
@@ -352,12 +376,44 @@ func (s *SQLiteStore) ReplaceConfig(ctx context.Context, c *Config) (*Config, er
 	if err != nil {
 		return nil, err
 	}
-	return s.GetConfig(ctx, id)
+
+	// 获取完整的配置信息
+	config, err := s.GetConfig(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	// 同步到Redis (ReplaceConfig用于CSV导入)
+	if syncErr := s.redisSync.SyncChannelUpdate(ctx, config); syncErr != nil {
+		fmt.Printf("Warning: Redis sync failed for channel replace %s: %v\n", config.Name, syncErr)
+	}
+
+	return config, nil
 }
 
 func (s *SQLiteStore) DeleteConfig(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM channels WHERE id = ?`, id)
-	return err
+	// 先获取渠道信息（用于Redis同步）
+	config, err := s.GetConfig(ctx, id)
+	if err != nil {
+		// 如果记录不存在，直接返回（幂等性）
+		if strings.Contains(err.Error(), "not found") {
+			return nil
+		}
+		return err
+	}
+
+	// 从SQLite删除
+	_, err = s.db.ExecContext(ctx, `DELETE FROM channels WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+
+	// 从Redis删除 (故障隔离: Redis错误不影响主要功能)
+	if syncErr := s.redisSync.SyncChannelDelete(ctx, config.Name); syncErr != nil {
+		fmt.Printf("Warning: Redis sync failed for channel delete %s: %v\n", config.Name, syncErr)
+	}
+
+	return nil
 }
 
 func (s *SQLiteStore) GetCooldownUntil(ctx context.Context, configID int64) (time.Time, bool) {
@@ -706,6 +762,94 @@ func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *Log
 	}
 
 	return stats, nil
+}
+
+// LoadChannelsFromRedis 从Redis恢复渠道数据到SQLite (启动时数据库恢复机制)
+func (s *SQLiteStore) LoadChannelsFromRedis(ctx context.Context) error {
+	if !s.redisSync.IsEnabled() {
+		return nil
+	}
+
+	// 从Redis加载所有渠道配置
+	configs, err := s.redisSync.LoadChannelsFromRedis(ctx)
+	if err != nil {
+		return fmt.Errorf("load from redis: %w", err)
+	}
+
+	if len(configs) == 0 {
+		fmt.Println("No channels found in Redis")
+		return nil
+	}
+
+	fmt.Printf("Restoring %d channels from Redis...\n", len(configs))
+
+	// 使用事务确保数据一致性 (ACID原则)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	now := time.Now()
+	successCount := 0
+
+	for _, config := range configs {
+		modelsStr, _ := serializeModels(config.Models)
+
+		// 使用INSERT OR REPLACE确保幂等性
+		_, err := tx.ExecContext(ctx, `
+			INSERT OR REPLACE INTO channels(name, api_key, url, priority, models, enabled, created_at, updated_at)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+		`, config.Name, config.APIKey, config.URL, config.Priority, modelsStr,
+			boolToInt(config.Enabled), now, now)
+
+		if err != nil {
+			fmt.Printf("Warning: failed to restore channel %s: %v\n", config.Name, err)
+			continue
+		}
+		successCount++
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+
+	fmt.Printf("Successfully restored %d/%d channels from Redis\n", successCount, len(configs))
+	return nil
+}
+
+// SyncAllChannelsToRedis 将所有渠道同步到Redis (批量同步，初始化时使用)
+func (s *SQLiteStore) SyncAllChannelsToRedis(ctx context.Context) error {
+	if !s.redisSync.IsEnabled() {
+		return nil
+	}
+
+	configs, err := s.ListConfigs(ctx)
+	if err != nil {
+		return fmt.Errorf("list configs: %w", err)
+	}
+
+	if len(configs) == 0 {
+		fmt.Println("No channels to sync to Redis")
+		return nil
+	}
+
+	fmt.Printf("Syncing %d channels to Redis...\n", len(configs))
+
+	if err := s.redisSync.SyncAllChannels(ctx, configs); err != nil {
+		return fmt.Errorf("sync to redis: %w", err)
+	}
+
+	fmt.Printf("Successfully synced %d channels to Redis\n", len(configs))
+	return nil
+}
+
+// CheckDatabaseExists 检查SQLite数据库文件是否存在
+func CheckDatabaseExists(dbPath string) bool {
+	if _, err := os.Stat(dbPath); err != nil {
+		return false
+	}
+	return true
 }
 
 // 辅助函数

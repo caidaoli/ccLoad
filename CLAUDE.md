@@ -82,10 +82,11 @@ docker-compose up -d                       # 使用 compose 启动服务
 - `proxy.go`: 核心代理逻辑，处理`/v1/messages`转发和流式响应
 - `selector.go`: 智能渠道选择算法（优先级分组 + 组内轮询 + 故障排除）
 
-**数据持久层** (`sqlite_store.go`, `query_builder.go`, `models.go`):
+**数据持久层** (`sqlite_store.go`, `query_builder.go`, `models.go`, `redis_sync.go`):
 - `models.go`: 数据模型和Store接口定义
 - `sqlite_store.go`: SQLite存储实现，支持连接池和事务
 - `query_builder.go`: 查询构建器，消除SQL构建重复逻辑
+- `redis_sync.go`: Redis同步模块，提供可选的渠道数据备份和恢复功能
 
 ### 关键数据结构
 - `Config`（渠道）: 渠道配置（API Key、URL、优先级、支持的模型列表）
@@ -155,6 +156,7 @@ docker-compose up -d                       # 使用 compose 启动服务
 - `CCLOAD_AUTH`: API访问令牌（可选，多个令牌用逗号分隔）
 - `SQLITE_PATH`: SQLite数据库路径（默认: "data/ccload.db"）
 - `PORT`: HTTP服务端口（默认: "8080"）
+- `REDIS_URL`: Redis连接URL（可选，用于渠道数据同步备份）
 
 支持 `.env` 文件配置（优先于系统环境变量）
 
@@ -299,12 +301,54 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 - 生产环境需限制 `data/` 目录访问权限
 - 使用 HTTPS 部署以保护传输中的认证令牌
 
+## Redis同步功能
+
+### 功能概述
+ccLoad现已支持可选的Redis同步功能，用于渠道配置的备份和恢复：
+
+**核心特性**:
+- **可选启用**: 设置`REDIS_URL`环境变量启用，未设置则使用纯SQLite模式
+- **实时同步**: 渠道增删改操作自动同步到Redis
+- **启动恢复**: 数据库文件不存在时自动从Redis恢复渠道配置
+- **故障隔离**: Redis操作失败不影响核心功能
+- **数据一致性**: 使用事务确保SQLite和Redis数据同步
+
+### Redis数据结构
+- **Key格式**: `ccload:channels` (Hash类型)
+- **Field**: 渠道名称 (确保唯一性)
+- **Value**: JSON序列化的完整渠道配置
+
+### 使用场景
+1. **多实例部署**: 不同实例间共享渠道配置
+2. **数据备份**: Redis作为渠道配置的实时备份
+3. **快速恢复**: 新环境快速从Redis恢复配置
+4. **配置同步**: 开发、测试、生产环境配置同步
+
+### 配置示例
+```bash
+# 启用Redis同步
+export REDIS_URL="redis://localhost:6379"
+# 或使用密码认证
+export REDIS_URL="redis://user:password@localhost:6379/0"
+# 或使用TLS
+export REDIS_URL="rediss://user:password@redis.example.com:6380/0"
+
+# 测试Redis功能
+go run . test-redis
+```
+
+### 启动行为
+- **数据库不存在 + Redis启用**: 从Redis恢复渠道配置到SQLite
+- **数据库存在 + Redis启用**: 同步SQLite中的渠道配置到Redis
+- **Redis未配置**: 使用纯SQLite模式，无同步功能
+
 ## 技术栈
 
 - **语言**: Go 1.25.0
 - **框架**: Gin v1.10.1
 - **数据库**: SQLite3 v1.14.32（嵌入式）
 - **缓存**: Ristretto v2.3.0（内存缓存）
+- **Redis客户端**: go-redis v9.7.0（可选同步功能）
 - **JSON**: Sonic v1.14.1（高性能JSON库）
 - **环境配置**: godotenv v1.5.1
 - **前端**: 原生HTML/CSS/JavaScript（无框架依赖）

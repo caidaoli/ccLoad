@@ -725,12 +725,30 @@
 
         const summary = payload && payload.data ? payload.data : payload;
         if (summary) {
-          const msg = `导入完成：新增 ${summary.created || 0}，更新 ${summary.updated || 0}，跳过 ${summary.skipped || 0}`;
+          // 基础导入信息
+          let msg = `导入完成：新增 ${summary.created || 0}，更新 ${summary.updated || 0}，跳过 ${summary.skipped || 0}`;
+
+          // Redis同步状态信息 (Integration: 新功能无缝集成)
+          if (summary.redis_sync_enabled) {
+            if (summary.redis_sync_success) {
+              msg += `，已同步 ${summary.redis_synced_channels || 0} 个渠道到Redis`;
+            } else {
+              msg += '，Redis同步失败';
+            }
+          }
+
           if (window.showSuccess) showSuccess(msg);
+
+          // 显示导入错误（如果有）
           if (summary.errors && summary.errors.length) {
             const preview = summary.errors.slice(0, 3).join('；');
             const extra = summary.errors.length > 3 ? ` 等${summary.errors.length}条记录` : '';
             if (window.showError) showError(`部分记录导入失败：${preview}${extra}`);
+          }
+
+          // 显示Redis同步错误（如果有）
+          if (summary.redis_sync_enabled && !summary.redis_sync_success && summary.redis_sync_error) {
+            if (window.showError) showError(`Redis同步失败：${summary.redis_sync_error}`);
           }
         } else if (window.showSuccess) {
           showSuccess('导入完成');

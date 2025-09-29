@@ -65,6 +65,11 @@ type ChannelImportSummary struct {
 	Skipped   int      `json:"skipped"`
 	Processed int      `json:"processed"`
 	Errors    []string `json:"errors,omitempty"`
+	// Redis同步相关字段 (OCP: 开放扩展)
+	RedisSyncEnabled   bool   `json:"redis_sync_enabled"`              // Redis同步是否启用
+	RedisSyncSuccess   bool   `json:"redis_sync_success,omitempty"`    // Redis同步是否成功
+	RedisSyncError     string `json:"redis_sync_error,omitempty"`      // Redis同步错误信息
+	RedisSyncedChannels int   `json:"redis_synced_channels,omitempty"` // 成功同步到Redis的渠道数量
 }
 
 // Admin: /admin/channels (GET, POST) - 重构版本
@@ -313,6 +318,26 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 	}
 
 	summary.Processed = summary.Created + summary.Updated + summary.Skipped
+
+	// 导入完成后，批量同步所有渠道到Redis (DRY: 避免逐个同步的重复操作)
+	summary.RedisSyncEnabled = false
+	if sqliteStore, ok := s.store.(*SQLiteStore); ok && sqliteStore.redisSync.IsEnabled() {
+		summary.RedisSyncEnabled = true
+
+		// 批量同步所有渠道到Redis
+		if err := sqliteStore.SyncAllChannelsToRedis(c.Request.Context()); err != nil {
+			summary.RedisSyncSuccess = false
+			summary.RedisSyncError = fmt.Sprintf("Redis同步失败: %v", err)
+			// Redis同步失败不影响导入结果，仅记录错误
+		} else {
+			summary.RedisSyncSuccess = true
+			// 获取当前渠道总数作为同步数量
+			if configs, err := s.store.ListConfigs(c.Request.Context()); err == nil {
+				summary.RedisSyncedChannels = len(configs)
+			}
+		}
+	}
+
 	RespondJSON(c, http.StatusOK, summary)
 }
 
