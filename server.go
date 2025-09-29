@@ -80,8 +80,11 @@ func NewServer(store Store) *Server {
 		ForceAttemptHTTP2:  false,     // 允许自动协议协商，避免HTTP/2超时
 		WriteBufferSize:    64 * 1024, // 64KB写缓冲区
 		ReadBufferSize:     64 * 1024, // 64KB读缓冲区
-		// 启用TLS会话缓存，减少重复握手耗时
-		TLSClientConfig: &tls.Config{ClientSessionCache: tls.NewLRUClientSessionCache(1024)},
+		// 启用TLS会话缓存，减少重复握手耗时，跳过证书验证
+		TLSClientConfig: &tls.Config{
+			ClientSessionCache:    tls.NewLRUClientSessionCache(1024),
+			InsecureSkipVerify:    true, // 跳过证书验证
+		},
 	}
 
 	s := &Server{
