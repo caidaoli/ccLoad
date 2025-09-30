@@ -17,12 +17,13 @@ import (
 
 // ChannelRequest 渠道创建/更新请求结构
 type ChannelRequest struct {
-	Name     string   `json:"name" binding:"required"`
-	APIKey   string   `json:"api_key" binding:"required"`
-	URL      string   `json:"url" binding:"required,url"`
-	Priority int      `json:"priority"`
-	Models   []string `json:"models" binding:"required,min=1"`
-	Enabled  bool     `json:"enabled"`
+	Name           string            `json:"name" binding:"required"`
+	APIKey         string            `json:"api_key" binding:"required"`
+	URL            string            `json:"url" binding:"required,url"`
+	Priority       int               `json:"priority"`
+	Models         []string          `json:"models" binding:"required,min=1"`
+	ModelRedirects map[string]string `json:"model_redirects,omitempty"` // 可选的模型重定向映射
+	Enabled        bool              `json:"enabled"`
 }
 
 // Validate 实现RequestValidator接口
@@ -42,12 +43,13 @@ func (cr *ChannelRequest) Validate() error {
 // ToConfig 转换为Config结构
 func (cr *ChannelRequest) ToConfig() *Config {
 	return &Config{
-		Name:     strings.TrimSpace(cr.Name),
-		APIKey:   strings.TrimSpace(cr.APIKey),
-		URL:      strings.TrimSpace(cr.URL),
-		Priority: cr.Priority,
-		Models:   cr.Models,
-		Enabled:  cr.Enabled,
+		Name:           strings.TrimSpace(cr.Name),
+		APIKey:         strings.TrimSpace(cr.APIKey),
+		URL:            strings.TrimSpace(cr.URL),
+		Priority:       cr.Priority,
+		Models:         cr.Models,
+		ModelRedirects: cr.ModelRedirects,
+		Enabled:        cr.Enabled,
 	}
 }
 
@@ -137,13 +139,21 @@ func (s *Server) handleExportChannelsCSV(c *gin.Context) {
 	writer := csv.NewWriter(buf)
 	defer writer.Flush()
 
-	header := []string{"id", "name", "api_key", "url", "priority", "models", "enabled"}
+	header := []string{"id", "name", "api_key", "url", "priority", "models", "model_redirects", "enabled"}
 	if err := writer.Write(header); err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
 
 	for _, cfg := range cfgs {
+		// 序列化模型重定向为JSON字符串
+		modelRedirectsJSON := "{}"
+		if len(cfg.ModelRedirects) > 0 {
+			if jsonBytes, err := sonic.Marshal(cfg.ModelRedirects); err == nil {
+				modelRedirectsJSON = string(jsonBytes)
+			}
+		}
+
 		record := []string{
 			strconv.FormatInt(cfg.ID, 10),
 			cfg.Name,
@@ -151,6 +161,7 @@ func (s *Server) handleExportChannelsCSV(c *gin.Context) {
 			cfg.URL,
 			strconv.Itoa(cfg.Priority),
 			strings.Join(cfg.Models, ","),
+			modelRedirectsJSON,
 			strconv.FormatBool(cfg.Enabled),
 		}
 		if err := writer.Write(record); err != nil {
@@ -242,6 +253,7 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 		apiKey := fetch("api_key")
 		url := fetch("url")
 		modelsRaw := fetch("models")
+		modelRedirectsRaw := fetch("model_redirects")
 
 		if name == "" || apiKey == "" || url == "" || modelsRaw == "" {
 			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行缺少必填字段", lineNo))
@@ -254,6 +266,16 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行模型格式无效", lineNo))
 			summary.Skipped++
 			continue
+		}
+
+		// 解析模型重定向（可选字段）
+		var modelRedirects map[string]string
+		if modelRedirectsRaw != "" && modelRedirectsRaw != "{}" {
+			if err := sonic.Unmarshal([]byte(modelRedirectsRaw), &modelRedirects); err != nil {
+				summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行模型重定向格式错误: %v", lineNo, err))
+				summary.Skipped++
+				continue
+			}
 		}
 
 		priority := 0
@@ -279,12 +301,13 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 		}
 
 		cfg := &Config{
-			Name:     name,
-			APIKey:   apiKey,
-			URL:      url,
-			Priority: priority,
-			Models:   models,
-			Enabled:  enabled,
+			Name:           name,
+			APIKey:         apiKey,
+			URL:            url,
+			Priority:       priority,
+			Models:         models,
+			ModelRedirects: modelRedirects,
+			Enabled:        enabled,
 		}
 
 		// 检查渠道是否已存在（基于名称）
@@ -886,6 +909,8 @@ func normalizeCSVHeader(name string) string {
 		return "api_key"
 	case "model", "model_list", "model(s)":
 		return "models"
+	case "model_redirect", "model-redirects", "modelredirects", "redirects":
+		return "model_redirects"
 	case "status":
 		return "enabled"
 	default:

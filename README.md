@@ -3,6 +3,7 @@
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8.svg)](https://golang.org)
 [![Gin](https://img.shields.io/badge/Gin-v1.10+-blue.svg)](https://github.com/gin-gonic/gin)
 [![Docker](https://img.shields.io/badge/Docker-Supported-2496ED.svg)](https://hub.docker.com)
+[![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-yellow)](https://huggingface.co/spaces)
 [![GitHub Actions](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-2088FF.svg)](https://github.com/features/actions)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -36,6 +37,7 @@ ccLoad 通过以下特性解决这些痛点：
 - 🏷️ **构建标签** - 支持 GOTAGS，默认启用高性能 JSON 库
 - 🐳 **Docker 支持** - 多架构镜像（amd64/arm64），自动化 CI/CD
 - ☁️ **云原生** - 支持容器化部署，GitHub Actions 自动构建
+- 🤗 **Hugging Face** - 支持一键部署到 Hugging Face Spaces，免费托管
 
 ## 🏗️ 架构概览
 
@@ -87,6 +89,15 @@ graph TB
 
 ## 🚀 快速开始
 
+选择最适合你的部署方式：
+
+| 部署方式 | 难度 | 成本 | 适用场景 | HTTPS | 持久化 |
+|---------|------|------|----------|-------|--------|
+| 🐳 **Docker** | ⭐⭐ | 需VPS | 生产环境、高性能需求 | 需配置 | ✅ |
+| 🤗 **Hugging Face** | ⭐ | **免费** | 个人使用、快速体验 | ✅自动 | ✅ |
+| 🔧 **源码编译** | ⭐⭐⭐ | 需服务器 | 开发调试、定制化 | 需配置 | ✅ |
+| 📦 **二进制** | ⭐⭐ | 需服务器 | 轻量部署、简单环境 | 需配置 | ✅ |
+
 ### 方式一：Docker 部署（推荐）
 
 ```bash
@@ -134,6 +145,187 @@ make dev
 wget https://github.com/caidaoli/ccLoad/releases/latest/download/ccload-linux-amd64
 chmod +x ccload-linux-amd64
 ./ccload-linux-amd64
+```
+
+### 方式四：Hugging Face Spaces 部署
+
+Hugging Face Spaces 提供免费的容器托管服务，支持 Docker 应用，适合个人和小团队使用。
+
+#### 部署步骤
+
+1. **登录 Hugging Face**
+
+   访问 [huggingface.co](https://huggingface.co) 并登录你的账户
+
+2. **创建新 Space**
+
+   - 点击右上角 "New" → "Space"
+   - **Space name**: `ccload`（或自定义名称）
+   - **License**: `MIT`
+   - **Select the SDK**: `Docker`
+   - **Visibility**: `Public` 或 `Private`（私有需付费订阅）
+   - 点击 "Create Space"
+
+3. **创建 Dockerfile**
+
+   在 Space 仓库中创建 `Dockerfile` 文件，内容如下：
+
+   ```dockerfile
+   FROM ghcr.io/caidaoli/ccload:latest
+   ENV TZ=Asia/Shanghai
+   ENV PORT=7860
+   ENV SQLITE_PATH=/tmp/ccload.db
+   EXPOSE 7860
+   ```
+
+   可以通过以下方式创建：
+
+   **方式 A - Web 界面**（推荐）:
+   - 在 Space 页面点击 "Files" 标签
+   - 点击 "Add file" → "Create a new file"
+   - 文件名输入 `Dockerfile`
+   - 粘贴上述内容
+   - 点击 "Commit new file to main"
+
+   **方式 B - Git 命令行**:
+   ```bash
+   # 克隆你的 Space 仓库
+   git clone https://huggingface.co/spaces/YOUR_USERNAME/ccload
+   cd ccload
+
+   # 创建 Dockerfile
+   cat > Dockerfile << 'EOF'
+   FROM ghcr.io/caidaoli/ccload:latest
+   ENV TZ=Asia/Shanghai
+   ENV PORT=7860
+   ENV SQLITE_PATH=/tmp/ccload.db
+   EXPOSE 7860
+   EOF
+
+   # 提交并推送
+   git add Dockerfile
+   git commit -m "Add Dockerfile for ccLoad deployment"
+   git push
+   ```
+
+4. **配置环境变量（Secrets）**
+
+   在 Space 设置页面（Settings → Variables and secrets → New secret）添加：
+
+   | 变量名 | 值 | 必填 | 说明 |
+   |--------|-----|------|------|
+   | `CCLOAD_PASS` | `your_admin_password` | ✅ **必填** | 管理界面密码 |
+   | `CCLOAD_AUTH` | `token1,token2` | ⚪ 可选 | API 访问令牌（多个用逗号分隔） |
+   | `REDIS_URL` | `rediss://user:pass@host:port` | ⚪ 可选 | Redis 连接地址，用于渠道数据备份和恢复 |
+
+   **Redis URL 格式说明**:
+   ```
+   rediss://用户名:密码@服务器地址:端口
+
+   示例:
+   rediss://default:mypassword@redis.example.com:6379
+   rediss://user123:pass456@127.0.0.1:6380
+   ```
+
+   **注意**:
+   - `PORT` 和 `SQLITE_PATH` 已在 Dockerfile 中设置，无需配置
+   - Hugging Face Spaces 重启后 `/tmp` 目录会清空
+   - 配置 `REDIS_URL` 后，渠道数据会自动从 Redis 恢复
+
+5. **等待构建和启动**
+
+   推送 Dockerfile 后，Hugging Face 会自动：
+   - 拉取预构建镜像（约 30 秒）
+   - 启动应用容器（约 10 秒）
+   - 总耗时约 1-2 分钟（比从源码构建快 3-5 倍）
+
+6. **访问应用**
+
+   构建完成后，通过以下地址访问：
+   - **应用地址**: `https://YOUR_USERNAME-ccload.hf.space`
+   - **管理界面**: `https://YOUR_USERNAME-ccload.hf.space/web/`
+   - **API 端点**: `https://YOUR_USERNAME-ccload.hf.space/v1/messages`
+
+   **首次访问提示**:
+   - 如果 Space 处于休眠状态，首次访问需等待 20-30 秒唤醒
+   - 后续访问会立即响应
+
+#### Hugging Face 部署特点
+
+**优势**:
+- ✅ **完全免费**: 公开 Space 永久免费，包含 CPU 和存储
+- ✅ **极速部署**: 使用预构建镜像，1-2 分钟即可完成（比源码构建快 3-5 倍）
+- ✅ **自动 HTTPS**: 无需配置 SSL 证书，自动提供安全连接
+- ✅ **Redis 备份**: 配置 Redis 后渠道数据自动备份，重启自动恢复
+- ✅ **自动重启**: 应用崩溃后自动重启
+- ✅ **版本控制**: 基于 Git，方便回滚和协作
+- ✅ **简单维护**: 仅需 5 行 Dockerfile，无需管理源码
+
+**限制**:
+- ⚠️ **资源限制**: 免费版提供 2 CPU + 16GB RAM
+- ⚠️ **休眠策略**: 48 小时无访问会进入休眠，首次访问需等待唤醒（约 20-30 秒）
+- ⚠️ **固定端口**: 必须使用 7860 端口
+- ⚠️ **公网访问**: Space 默认公开，建议使用 `CCLOAD_AUTH` 保护 API 端点
+
+#### 数据持久化
+
+**重要**: Hugging Face Spaces 的存储策略
+
+由于 Hugging Face Spaces 的限制，推荐使用 **Redis 备份方案**：
+
+**方案一：Redis 备份（推荐）**
+- ✅ **自动恢复**: Space 重启后自动从 Redis 恢复渠道配置
+- ✅ **实时同步**: 渠道增删改自动同步到 Redis
+- ✅ **数据安全**: Redis 数据不受 Space 重启影响
+- 配置方法: 在 Secrets 中添加 `REDIS_URL` 环境变量
+
+**方案二：仅本地存储（不推荐）**
+- ⚠️ **数据丢失**: Space 重启后 `/tmp` 目录会清空，渠道配置会丢失
+- ⚠️ **手动恢复**: 需要重新通过 Web 界面或 CSV 导入配置渠道
+- 使用场景: 仅用于临时测试
+
+**Redis 备份工作流程**:
+1. **首次启动**: 如果 `/tmp/ccload.db` 不存在且配置了 `REDIS_URL`，自动从 Redis 恢复渠道
+2. **运行期间**: 渠道增删改自动同步到 Redis
+3. **Space 重启**: `/tmp` 清空，应用启动时从 Redis 恢复渠道配置
+4. **日志数据**: 存储在 `/tmp`，重启后清空（可通过 Web 界面导出历史日志）
+
+**推荐的免费 Redis 服务**:
+- [Upstash Redis](https://upstash.com/) - 免费 10,000 命令/天，支持 TLS
+- [Redis Cloud](https://redis.com/try-free/) - 免费 30MB 存储
+- [Railway Redis](https://railway.app/) - 免费 512MB
+
+**配置示例（以 Upstash 为例）**:
+1. 注册 [Upstash](https://upstash.com/) 账户
+2. 创建 Redis 数据库（选择 TLS 启用）
+3. 复制连接地址（格式：`rediss://default:xxx@xxx.upstash.io:6379`）
+4. 在 Hugging Face Space 的 Secrets 中添加 `REDIS_URL` 变量，粘贴连接地址
+5. 重启 Space，渠道数据会自动同步到 Redis
+
+#### 更新部署
+
+由于使用预构建镜像，更新非常简单：
+
+**自动更新**:
+- 当官方发布新版本镜像（`ghcr.io/caidaoli/ccload:latest`）时
+- 在 Space 设置中点击 "Factory reboot" 即可自动拉取最新镜像
+- 或等待 Hugging Face 自动重启（通常 48 小时后）
+
+**手动触发更新**:
+```bash
+# 在 Space 仓库中添加一个空提交来触发重建
+git commit --allow-empty -m "Trigger rebuild to pull latest image"
+git push
+```
+
+**版本锁定**（可选）:
+如果需要锁定特定版本，修改 Dockerfile：
+```dockerfile
+FROM ghcr.io/caidaoli/ccload:v0.2.0  # 指定版本号
+ENV TZ=Asia/Shanghai
+ENV PORT=7860
+ENV SQLITE_PATH=/tmp/ccload.db
+EXPOSE 7860
 ```
 
 ### 基本配置

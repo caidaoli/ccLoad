@@ -91,6 +91,7 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	// 添加新字段（兼容已有数据库）
 	s.addColumnIfNotExists(ctx, "logs", "is_streaming", "INTEGER NOT NULL DEFAULT 0")
 	s.addColumnIfNotExists(ctx, "logs", "first_byte_time", "REAL")
+	s.addColumnIfNotExists(ctx, "channels", "model_redirects", "TEXT DEFAULT '{}'") // 模型重定向字段，JSON格式
 
 	// 创建 rr (round-robin) 表
 	if _, err := s.db.ExecContext(ctx, `
@@ -249,7 +250,7 @@ func (s *SQLiteStore) Vacuum(ctx context.Context) error {
 
 func (s *SQLiteStore) ListConfigs(ctx context.Context) ([]*Config, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, api_key, url, priority, models, enabled, created_at, updated_at 
+		SELECT id, name, api_key, url, priority, models, model_redirects, enabled, created_at, updated_at
 		FROM channels
 		ORDER BY priority DESC, id ASC
 	`)
@@ -265,8 +266,8 @@ func (s *SQLiteStore) ListConfigs(ctx context.Context) ([]*Config, error) {
 
 func (s *SQLiteStore) GetConfig(ctx context.Context, id int64) (*Config, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, api_key, url, priority, models, enabled, created_at, updated_at 
-		FROM channels 
+		SELECT id, name, api_key, url, priority, models, model_redirects, enabled, created_at, updated_at
+		FROM channels
 		WHERE id = ?
 	`, id)
 
@@ -285,11 +286,12 @@ func (s *SQLiteStore) GetConfig(ctx context.Context, id int64) (*Config, error) 
 func (s *SQLiteStore) CreateConfig(ctx context.Context, c *Config) (*Config, error) {
 	now := time.Now()
 	modelsStr, _ := serializeModels(c.Models)
+	modelRedirectsStr, _ := serializeModelRedirects(c.ModelRedirects)
 
 	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO channels(name, api_key, url, priority, models, enabled, created_at, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-	`, c.Name, c.APIKey, c.URL, c.Priority, modelsStr,
+		INSERT INTO channels(name, api_key, url, priority, models, model_redirects, enabled, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, c.Name, c.APIKey, c.URL, c.Priority, modelsStr, modelRedirectsStr,
 		boolToInt(c.Enabled), now, now)
 
 	if err != nil {
@@ -325,13 +327,14 @@ func (s *SQLiteStore) UpdateConfig(ctx context.Context, id int64, upd *Config) (
 	apiKey := strings.TrimSpace(upd.APIKey)
 	url := strings.TrimSpace(upd.URL)
 	modelsStr, _ := serializeModels(upd.Models)
+	modelRedirectsStr, _ := serializeModelRedirects(upd.ModelRedirects)
 	updatedAt := time.Now()
 
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE channels
-		SET name=?, api_key=?, url=?, priority=?, models=?, enabled=?, updated_at=?
+		SET name=?, api_key=?, url=?, priority=?, models=?, model_redirects=?, enabled=?, updated_at=?
 		WHERE id=?
-	`, name, apiKey, url, upd.Priority, modelsStr,
+	`, name, apiKey, url, upd.Priority, modelsStr, modelRedirectsStr,
 		boolToInt(upd.Enabled), updatedAt, id)
 	if err != nil {
 		return nil, err
@@ -354,17 +357,19 @@ func (s *SQLiteStore) UpdateConfig(ctx context.Context, id int64, upd *Config) (
 func (s *SQLiteStore) ReplaceConfig(ctx context.Context, c *Config) (*Config, error) {
 	now := time.Now()
 	modelsStr, _ := serializeModels(c.Models)
+	modelRedirectsStr, _ := serializeModelRedirects(c.ModelRedirects)
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO channels(name, api_key, url, priority, models, enabled, created_at, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO channels(name, api_key, url, priority, models, model_redirects, enabled, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(NAME) DO UPDATE SET
 			api_key = excluded.api_key,
 			url = excluded.url,
 			priority = excluded.priority,
 			models = excluded.models,
+			model_redirects = excluded.model_redirects,
 			enabled = excluded.enabled,
 			updated_at = excluded.updated_at
-	`, c.Name, c.APIKey, c.URL, c.Priority, modelsStr,
+	`, c.Name, c.APIKey, c.URL, c.Priority, modelsStr, modelRedirectsStr,
 		boolToInt(c.Enabled), now, now)
 	if err != nil {
 		return nil, err

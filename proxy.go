@@ -289,6 +289,9 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 		return
 	}
 
+	// 保存原始请求模型（用于日志记录和渠道选择）
+	originalModel := reqModel.Model
+
 	// 解析超时
 	timeout := parseTimeout(c.Request.URL.Query(), c.Request.Header)
 
@@ -299,7 +302,7 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 		defer cancel()
 	}
 	// Build candidate list
-	cands, err := s.selectCandidates(ctx, reqModel.Model)
+	cands, err := s.selectCandidates(ctx, originalModel)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		return
@@ -308,7 +311,7 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 	if len(cands) == 0 {
 		s.addLogAsync(&LogEntry{
 			Time:        JSONTime{time.Now()},
-			Model:       reqModel.Model,
+			Model:       originalModel,
 			StatusCode:  503,
 			Message:     "no available upstream (all cooled or none)",
 			IsStreaming: reqModel.Stream,
@@ -322,16 +325,36 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 	var lastBody []byte
 	var lastHeader http.Header
 	for _, cfg := range cands {
+		// 模型重定向：检查渠道是否配置了模型重定向映射
+		actualModel := originalModel
+		if len(cfg.ModelRedirects) > 0 {
+			if redirectModel, ok := cfg.ModelRedirects[originalModel]; ok && redirectModel != "" {
+				actualModel = redirectModel
+			}
+		}
+
+		// 如果模型发生重定向，修改请求体中的模型字段
+		bodyToSend := all
+		if actualModel != originalModel {
+			var reqData map[string]any
+			if err := sonic.Unmarshal(all, &reqData); err == nil {
+				reqData["model"] = actualModel
+				if modifiedBody, err := sonic.Marshal(reqData); err == nil {
+					bodyToSend = modifiedBody
+				}
+			}
+		}
+
 		// 透明转发：直接使用客户端原始请求路径
-		res, duration, err := s.forwardOnceAsync(ctx, cfg, all, c.Request.Header, c.Request.URL.RawQuery, requestPath, c.Writer)
+		res, duration, err := s.forwardOnceAsync(ctx, cfg, bodyToSend, c.Request.Header, c.Request.URL.RawQuery, requestPath, c.Writer)
 		if err != nil {
 			// 分类错误类型
 			statusCode, shouldRetry := classifyError(err)
 
-			// 记录日志
+			// 记录日志（使用原始模型）
 			s.addLogAsync(&LogEntry{
 				Time:        JSONTime{time.Now()},
-				Model:       reqModel.Model,
+				Model:       originalModel,
 				ChannelID:   &cfg.ID,
 				StatusCode:  statusCode,
 				Message:     truncateErr(err.Error()),
@@ -371,10 +394,10 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 			s.cooldownCache.Delete(cfg.ID)
 			_ = s.store.ResetCooldown(ctx, cfg.ID)
 
-			// 记录成功日志
+			// 记录成功日志（使用原始模型）
 			logEntry := &LogEntry{
 				Time:        JSONTime{time.Now()},
-				Model:       reqModel.Model,
+				Model:       originalModel,
 				ChannelID:   &cfg.ID,
 				StatusCode:  res.Status,
 				Duration:    duration,
@@ -399,10 +422,10 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 				msg = fmt.Sprintf("%s: %s", msg, truncateErr(safeBodyToString(res.Body)))
 			}
 
-			// 记录日志
+			// 记录日志（使用原始模型）
 			logEntry := &LogEntry{
 				Time:        JSONTime{time.Now()},
-				Model:       reqModel.Model,
+				Model:       originalModel,
 				ChannelID:   &cfg.ID,
 				StatusCode:  res.Status,
 				Message:     msg,
@@ -429,10 +452,10 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 			msg = fmt.Sprintf("%s: %s", msg, truncateErr(safeBodyToString(res.Body)))
 		}
 
-		// 记录错误日志
+		// 记录错误日志（使用原始模型）
 		logEntry := &LogEntry{
 			Time:        JSONTime{time.Now()},
-			Model:       reqModel.Model,
+			Model:       originalModel,
 			ChannelID:   &cfg.ID,
 			StatusCode:  res.Status,
 			Message:     msg,
@@ -451,7 +474,7 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 	// All failed
 	s.addLogAsync(&LogEntry{
 		Time:        JSONTime{time.Now()},
-		Model:       reqModel.Model,
+		Model:       originalModel,
 		StatusCode:  503,
 		Message:     "exhausted backends",
 		IsStreaming: reqModel.Stream,

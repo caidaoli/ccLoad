@@ -106,15 +106,19 @@
           </div>
         </div>
         <div class="form-group">
-          <label class="form-label" for="channelModels">支持的模型 *</label>
-          <div class="models-input-wrapper">
-            <textarea id="channelModels" class="form-input" placeholder="claude-3-5-sonnet-20241022,claude-3-opus-20240229" required rows="3"></textarea>
-
-            <div class="models-hint">多个模型用英文逗号分隔</div>
-          </div>
+          <label class="form-label" for="channelModels">
+            支持的模型 * <span class="models-hint" style="margin-left: 8px; margin-top: 0;">多个模型用英文逗号分隔</span>
+          </label>
+          <textarea id="channelModels" class="form-input" placeholder="claude-3-5-sonnet-20241022,claude-3-opus-20240229" required rows="2"></textarea>
         </div>
         <div class="form-group">
-          <div style="display: flex; align-items: center; gap: 16px;">
+          <label class="form-label" for="channelModelRedirects">
+            模型重定向（可选） <span class="models-hint" style="margin-left: 8px; margin-top: 0;">JSON格式，将请求模型映射到实际转发模型。例如：{"请求模型":"实际模型"}</span>
+          </label>
+          <textarea id="channelModelRedirects" class="form-input" placeholder='{"claude-3-opus-20240229":"claude-3-5-sonnet-20241022"}' rows="8"></textarea>
+        </div>
+        <div class="form-group">
+          <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
             <label class="form-label" style="margin: 0;">
               <input type="checkbox" id="channelEnabled" checked> 启用渠道
             </label>
@@ -122,11 +126,11 @@
               <label class="form-label" for="channelPriority" style="margin: 0; white-space: nowrap;">优先级</label>
               <input type="number" id="channelPriority" class="form-input" value="0" min="-99999" max="99999" style="width: 100px; min-width: 100px;">
             </div>
+            <div style="margin-left: auto; display: flex; gap: 12px;">
+              <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+              <button type="submit" class="btn btn-primary">保存</button>
+            </div>
           </div>
-        </div>
-        <div class="form-actions">
-          <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
-          <button type="submit" class="btn btn-primary">保存</button>
         </div>
       </form>
     </div>
@@ -443,20 +447,21 @@
       document.getElementById('modalTitle').textContent = '添加渠道';
       document.getElementById('channelForm').reset();
       document.getElementById('channelEnabled').checked = true;
+      document.getElementById('channelModelRedirects').value = ''; // 清空模型重定向字段
       // 重置API Key输入框可见性
       const apiKeyInput = document.getElementById('channelApiKey');
       const toggleBtn = document.getElementById('toggleApiKeyBtn');
       apiKeyInput.type = 'password';
       toggleBtn.textContent = '👁️';
       toggleBtn.title = '显示API Key';
-      
+
       document.getElementById('channelModal').classList.add('show');
     }
 
     function editChannel(id) {
       const channel = channels.find(c => c.id === id);
       if (!channel) return;
-      
+
       editingChannelId = id;
       document.getElementById('modalTitle').textContent = '编辑渠道';
       document.getElementById('channelName').value = channel.name;
@@ -465,14 +470,20 @@
       document.getElementById('channelPriority').value = channel.priority;
       document.getElementById('channelModels').value = channel.models.join(',');
       document.getElementById('channelEnabled').checked = channel.enabled;
-      
+
+      // 设置模型重定向字段
+      const modelRedirects = channel.model_redirects || {};
+      document.getElementById('channelModelRedirects').value = Object.keys(modelRedirects).length > 0
+        ? JSON.stringify(modelRedirects, null, 2)
+        : '';
+
       // 编辑时默认显示API Key以便核对
       const apiKeyInput = document.getElementById('channelApiKey');
       const toggleBtn = document.getElementById('toggleApiKeyBtn');
       apiKeyInput.type = 'text';
       toggleBtn.textContent = '🙈';
       toggleBtn.title = '隐藏API Key';
-      
+
       document.getElementById('channelModal').classList.add('show');
     }
 
@@ -483,13 +494,30 @@
 
     async function saveChannel(event) {
       event.preventDefault();
-      
+
+      // 解析模型重定向JSON
+      let modelRedirects = {};
+      const modelRedirectsText = document.getElementById('channelModelRedirects').value.trim();
+      if (modelRedirectsText) {
+        try {
+          modelRedirects = JSON.parse(modelRedirectsText);
+          if (typeof modelRedirects !== 'object' || Array.isArray(modelRedirects)) {
+            alert('模型重定向必须是JSON对象格式，例如: {"key":"value"}');
+            return;
+          }
+        } catch (e) {
+          alert('模型重定向JSON格式错误: ' + e.message);
+          return;
+        }
+      }
+
       const formData = {
         name: document.getElementById('channelName').value.trim(),
         url: document.getElementById('channelUrl').value.trim(),
         api_key: document.getElementById('channelApiKey').value.trim(),
         priority: parseInt(document.getElementById('channelPriority').value) || 0,
         models: document.getElementById('channelModels').value.split(',').map(m => m.trim()).filter(m => m),
+        model_redirects: modelRedirects,
         enabled: document.getElementById('channelEnabled').checked
       };
 
@@ -595,6 +623,12 @@
       document.getElementById('channelPriority').value = channel.priority;
       document.getElementById('channelModels').value = channel.models.join(',');
       document.getElementById('channelEnabled').checked = true; // 复制的渠道默认启用
+
+      // 复制模型重定向字段
+      const modelRedirects = channel.model_redirects || {};
+      document.getElementById('channelModelRedirects').value = Object.keys(modelRedirects).length > 0
+        ? JSON.stringify(modelRedirects, null, 2)
+        : '';
 
       // 复制时默认显示API Key以便用户核对
       const apiKeyInput = document.getElementById('channelApiKey');

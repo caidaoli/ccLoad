@@ -89,17 +89,20 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	Scan(...any) error
 }) (*Config, error) {
 	var c Config
-	var modelsStr string
+	var modelsStr, modelRedirectsStr string
 	var enabledInt int
 
 	if err := scanner.Scan(&c.ID, &c.Name, &c.APIKey, &c.URL, &c.Priority,
-		&modelsStr, &enabledInt, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		&modelsStr, &modelRedirectsStr, &enabledInt, &c.CreatedAt, &c.UpdatedAt); err != nil {
 		return nil, err
 	}
 
 	c.Enabled = enabledInt != 0
 	if err := parseModelsJSON(modelsStr, &c.Models); err != nil {
 		c.Models = nil // 解析失败时使用空切片
+	}
+	if err := parseModelRedirectsJSON(modelRedirectsStr, &c.ModelRedirects); err != nil {
+		c.ModelRedirects = nil // 解析失败时使用空映射
 	}
 	return &c, nil
 }
@@ -206,6 +209,29 @@ func serializeModels(models []string) (string, error) {
 	bytes, err := sonic.Marshal(models)
 	if err != nil {
 		return "[]", err
+	}
+	return string(bytes), nil
+}
+
+// 辅助函数：解析模型重定向JSON
+func parseModelRedirectsJSON(redirectsStr string, redirects *map[string]string) error {
+	if redirectsStr == "" || redirectsStr == "{}" {
+		*redirects = make(map[string]string)
+		return nil
+	}
+
+	return sonic.Unmarshal([]byte(redirectsStr), redirects)
+}
+
+// 辅助函数：序列化模型重定向为JSON
+func serializeModelRedirects(redirects map[string]string) (string, error) {
+	if len(redirects) == 0 {
+		return "{}", nil
+	}
+
+	bytes, err := sonic.Marshal(redirects)
+	if err != nil {
+		return "{}", err
 	}
 	return string(bytes), nil
 }

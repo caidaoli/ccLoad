@@ -8,15 +8,16 @@ import (
 // 数据模型与接口定义
 
 type Config struct {
-	ID        int64     `json:"id"`
-	Name      string    `json:"name"`
-	APIKey    string    `json:"api_key"`
-	URL       string    `json:"url"`
-	Priority  int       `json:"priority"`
-	Models    []string  `json:"models"`
-	Enabled   bool      `json:"enabled"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID             int64             `json:"id"`
+	Name           string            `json:"name"`
+	APIKey         string            `json:"api_key"`
+	URL            string            `json:"url"`
+	Priority       int               `json:"priority"`
+	Models         []string          `json:"models"`
+	ModelRedirects map[string]string `json:"model_redirects,omitempty"` // 模型重定向映射：请求模型 -> 实际转发模型
+	Enabled        bool              `json:"enabled"`
+	CreatedAt      time.Time         `json:"created_at"`
+	UpdatedAt      time.Time         `json:"updated_at"`
 }
 
 // 自定义时间类型，强制使用RFC3339格式进行JSON序列化

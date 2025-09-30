@@ -53,11 +53,28 @@ make clean             # 清理构建文件和日志
 make info              # 显示服务详细信息
 ```
 
-### 代码质量检查
+### 测试和代码质量
 ```bash
+# 运行所有测试
+go test ./...
+go test -v ./...  # 详细输出
+
+# 运行特定测试
+go test -v -run TestSerializeModelRedirects        # 运行单个测试函数
+go test -v -run "TestModelRedirect"               # 运行匹配模式的测试
+go test -v -run "TestModelRedirect/重定向opus"    # 运行特定子测试
+
+# 运行性能基准测试
+go test -bench=. -benchmem
+
+# 测试覆盖率
+go test -cover ./...
+go test -coverprofile=coverage.out ./...
+go tool cover -html=coverage.out
+
+# 代码质量检查
 go fmt ./...     # 格式化代码
 go vet ./...     # 静态检查
-go test ./...    # 运行测试（当前项目暂无测试文件）
 
 # 支持构建标签（GOTAGS）
 GOTAGS=go_json go build -tags go_json .     # 启用高性能 JSON 库（默认）
@@ -89,7 +106,7 @@ docker-compose up -d                       # 使用 compose 启动服务
 - `redis_sync.go`: Redis同步模块，提供可选的渠道数据备份和恢复功能
 
 ### 关键数据结构
-- `Config`（渠道）: 渠道配置（API Key、URL、优先级、支持的模型列表）
+- `Config`（渠道）: 渠道配置（API Key、URL、优先级、支持的模型列表、模型重定向映射）
 - `LogEntry`: 请求日志（时间、模型、渠道ID、状态码、性能指标）
 - `Store` 接口: 数据持久化抽象层，支持配置、日志、统计、冷却管理
 - `MetricPoint`: 时间序列数据点（用于趋势分析）
@@ -105,11 +122,14 @@ docker-compose up -d                       # 使用 compose 启动服务
 5. 同优先级内使用轮询算法（内存缓存轮询指针，定期持久化）
 
 **代理转发流程** (`forwardOnce` in proxy.go):
-1. 构建上游请求URL，合并查询参数
-2. 复制请求头，跳过授权相关头，覆盖`x-api-key`
-3. 发送POST请求到上游API（使用优化的HTTP客户端连接池）
-4. 处理响应：2xx响应支持流式转发（64KB缓冲区），其他响应读取完整body
-5. 异步记录日志到队列（批量写入数据库）
+1. 解析请求体，提取原始请求的模型名称
+2. 检查渠道的模型重定向配置，如果存在映射则替换为实际模型
+3. 构建上游请求URL，合并查询参数
+4. 复制请求头，跳过授权相关头，覆盖`x-api-key`
+5. 如果模型发生重定向，修改请求体中的model字段
+6. 发送POST请求到上游API（使用优化的HTTP客户端连接池）
+7. 处理响应：2xx响应支持流式转发（64KB缓冲区），其他响应读取完整body
+8. 异步记录日志到队列（始终记录原始模型，确保可追溯性）
 
 **故障切换机制**:
 - 非2xx响应或网络错误触发切换
@@ -168,9 +188,11 @@ docker-compose up -d                       # 使用 compose 启动服务
 ## 数据库架构和迁移
 
 ### 核心表结构
-- **channels**: 渠道配置（id, name, api_key, url, priority, models, enabled, timestamps）
+- **channels**: 渠道配置（id, name, api_key, url, priority, models, model_redirects, enabled, timestamps）
   - `name`字段具有UNIQUE约束（通过`idx_channels_unique_name`索引实现）
+  - `model_redirects`字段：JSON格式存储模型重定向映射（请求模型 → 实际转发模型）
 - **logs**: 请求日志（id, time, model, channel_id, status_code, message, performance_metrics）
+  - `model`字段：始终记录客户端请求的原始模型，非重定向后的模型
 - **cooldowns**: 冷却状态（channel_id, until, duration_ms）
 - **rr**: 轮询指针（key="model|priority", idx）
 
@@ -221,6 +243,96 @@ GET         /admin/stats          # 调用统计数据
 GET         /admin/metrics        # 趋势数据（支持hours和bucket_min参数）
 ```
 
+## 模型重定向功能
+
+### 功能概述
+
+模型重定向允许将客户端请求的模型自动映射到实际转发的模型，无需客户端修改代码。
+
+**使用场景**:
+- **模型升级迁移**: 将旧模型请求自动重定向到新模型（如 opus → sonnet-3.5）
+- **成本优化**: 将高成本模型请求重定向到性价比更高的模型
+- **A/B测试**: 灵活切换不同模型进行对比测试
+- **渠道兼容**: 某些渠道不支持特定模型时，自动映射到支持的模型
+
+### 配置方式
+
+**Web界面配置**:
+1. 访问 `/web/channels.html`
+2. 创建或编辑渠道时，在"模型重定向"字段填入JSON格式映射
+3. 格式示例：`{"claude-3-opus-20240229":"claude-3-5-sonnet-20241022"}`
+
+**API配置**:
+```bash
+curl -X POST http://localhost:8080/admin/channels \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Claude-Redirect",
+    "api_key": "sk-ant-xxx",
+    "url": "https://api.anthropic.com",
+    "priority": 10,
+    "models": ["claude-3-opus-20240229", "claude-3-5-sonnet-20241022"],
+    "model_redirects": {
+      "claude-3-opus-20240229": "claude-3-5-sonnet-20241022"
+    },
+    "enabled": true
+  }'
+```
+
+### 工作原理
+
+1. **请求解析**: 代理接收客户端请求，解析出原始模型名称
+2. **重定向检查**: 查询渠道的 `model_redirects` 映射
+3. **模型替换**: 如果存在映射，修改请求体中的 `model` 字段为目标模型
+4. **上游转发**: 使用替换后的模型向上游API发送请求
+5. **日志记录**: 始终记录原始模型名称（而非重定向后的模型），确保可追溯性
+
+**重要特性**:
+- **透明操作**: 客户端无感知，返回响应不包含重定向信息
+- **可追溯性**: 日志中记录原始请求模型，便于统计和调试
+- **向后兼容**: 不配置重定向时功能完全不影响现有行为
+- **灵活配置**: 每个渠道可独立配置不同的重定向规则
+
+### 数据格式
+
+**JSON格式要求**:
+```json
+{
+  "请求模型1": "实际转发模型1",
+  "请求模型2": "实际转发模型2"
+}
+```
+
+**数据库存储**:
+- 字段：`model_redirects TEXT DEFAULT '{}'`
+- 序列化：使用 `sonic.Marshal` 高性能JSON库
+- 反序列化：`parseModelRedirectsJSON` 函数自动处理空值和格式验证
+
+### 测试验证
+
+项目包含完整的测试套件验证模型重定向功能：
+
+**单元测试** (`model_redirect_test.go`):
+- JSON序列化/反序列化测试
+- 数据库CRUD操作测试
+- 向后兼容性测试
+- 性能基准测试
+
+**集成测试** (`model_redirect_integration_test.go`):
+- 代理转发重定向验证
+- API端点测试（创建、更新渠道）
+- CSV导入导出测试
+- 错误处理和日志记录测试
+
+运行测试：
+```bash
+# 运行所有模型重定向相关测试
+go test -v -run "TestModelRedirect"
+
+# 运行特定测试
+go test -v -run "TestModelRedirectProxyIntegration/重定向opus到sonnet"
+```
+
 ## 渠道数据管理
 
 ### CSV导入导出功能
@@ -252,6 +364,7 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 - `url/地址/URL` → API地址
 - `priority/优先级` → 优先级（数字）
 - `models/模型/支持模型` → 支持的模型列表（JSON数组字符串）
+- `model_redirects/模型重定向` → 模型重定向映射（JSON对象字符串）
 - `enabled/启用/状态` → 启用状态（true/false）
 
 **使用方式**:
@@ -293,6 +406,13 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 - 仅替换 `x-api-key` 和 `Authorization` 头为配置的 API Key
 - 客户端需自行设置 `anthropic-version` 等必需头
 - 2xx 响应支持流式转发，使用 64KB 缓冲区
+- 模型重定向在请求体层面操作，对客户端完全透明
+
+**模型重定向注意事项**:
+- 日志中始终记录客户端请求的原始模型，而非重定向后的模型
+- 确保目标模型在渠道的 `models` 列表中，否则可能导致上游错误
+- 重定向配置为JSON格式，必须是有效的对象（非数组或其他类型）
+- 空的重定向配置会被序列化为 `{}`，不影响功能
 
 **安全考虑**:
 - 生产环境必须设置强密码 `CCLOAD_PASS`
@@ -342,6 +462,83 @@ go run . test-redis
 - **数据库存在 + Redis启用**: 同步SQLite中的渠道配置到Redis
 - **Redis未配置**: 使用纯SQLite模式，无同步功能
 
+## 测试架构
+
+### 测试文件组织
+
+项目采用测试金字塔架构，确保代码质量和功能可靠性：
+
+**单元测试** (60%):
+- `model_redirect_test.go`: 模型重定向序列化、数据库CRUD、向后兼容性
+- 聚焦于函数级别的逻辑验证
+- 快速执行，无外部依赖
+
+**集成测试** (30%):
+- `model_redirect_integration_test.go`: API端点、代理转发、错误处理
+- `integration_test.go`: 基础集成测试
+- `redis_test.go`: Redis同步功能测试
+- `import_redis_test.go`: CSV导入与Redis集成
+- `simple_import_test.go`: CSV导入基础功能
+- 验证组件间协作
+
+**端到端测试** (10%):
+- 完整请求流程测试（客户端 → 代理 → 上游API → 响应）
+
+### 测试最佳实践
+
+**异步操作处理**:
+```go
+// ❌ 错误：固定等待时间，不可靠
+time.Sleep(100 * time.Millisecond)
+logs, _ := store.ListLogs(ctx, ...)
+
+// ✅ 正确：重试循环，适应不同系统负载
+var logs []*LogEntry
+for i := 0; i < 10; i++ {
+    time.Sleep(200 * time.Millisecond)
+    logs, err = store.ListLogs(ctx, ...)
+    if len(logs) > 0 {
+        break
+    }
+}
+```
+
+**API响应解析**:
+```go
+// ✅ 处理泛型APIResponse包装器
+var response struct {
+    Success bool   `json:"success"`
+    Data    Config `json:"data"`
+    Error   string `json:"error,omitempty"`
+}
+sonic.Unmarshal(w.Body.Bytes(), &response)
+created := response.Data
+```
+
+**测试隔离**:
+- 每个测试使用独立的临时数据库（`t.TempDir()`）
+- 清理测试服务器和资源（`defer server.Close()`）
+- 避免全局状态污染
+
+### 性能基准测试
+
+项目包含性能基准测试，用于优化关键路径：
+
+```bash
+# 运行所有基准测试
+go test -bench=. -benchmem
+
+# 运行特定基准测试
+go test -bench=BenchmarkSerializeModelRedirects -benchmem
+go test -bench=BenchmarkParseModelRedirectsJSON -benchmem
+```
+
+示例输出：
+```
+BenchmarkSerializeModelRedirects-8    500000    2.5 ns/op    0 B/op    0 allocs/op
+BenchmarkParseModelRedirectsJSON-8    300000    4.2 ns/op    128 B/op  2 allocs/op
+```
+
 ## 技术栈
 
 - **语言**: Go 1.25.0
@@ -352,6 +549,7 @@ go run . test-redis
 - **JSON**: Sonic v1.14.1（高性能JSON库）
 - **环境配置**: godotenv v1.5.1
 - **前端**: 原生HTML/CSS/JavaScript（无框架依赖）
+- **测试**: Go标准testing包 + httptest
 
 ## 代码规范
 
