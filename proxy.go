@@ -27,6 +27,13 @@ const (
 	StatusConnectionReset     = 502 // Connection Reset - 不可重试
 )
 
+// isGeminiRequest 检测是否为Gemini API请求
+// Gemini请求路径特征：包含 /v1beta/ 前缀
+// 示例：/v1beta/models/gemini-2.5-flash:streamGenerateContent
+func isGeminiRequest(path string) bool {
+	return strings.Contains(path, "/v1beta/")
+}
+
 // classifyError 分类错误类型，返回状态码和是否应该重试
 func classifyError(err error) (statusCode int, shouldRetry bool) {
 	if err == nil {
@@ -97,7 +104,8 @@ type traceBreakdown struct {
 // 移除EndpointStrategy - 实现真正的透明代理
 
 // forwardOnceAsync: 异步流式转发，透明转发客户端原始请求
-func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, body []byte, hdr http.Header, rawQuery, requestPath string, w http.ResponseWriter) (*fwResult, float64, error) {
+// 参数新增 keyIndex 用于指定使用的API Key索引（-1表示使用默认APIKey字段）
+func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, keyIndex int, body []byte, hdr http.Header, rawQuery, requestPath string, w http.ResponseWriter) (*fwResult, float64, error) {
 	startTime := time.Now()
 
 	// HTTP trace for timing breakdown
@@ -152,9 +160,25 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, body []byte,
 			req.Header.Add(k, v)
 		}
 	}
-	// Upstream 同时发送 x-api-key 与 Authorization: Bearer
-	req.Header.Set("x-api-key", cfg.APIKey)
-	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+
+	// 确定使用的API Key：优先使用指定的keyIndex，否则使用默认APIKey
+	apiKey := cfg.APIKey
+	if keyIndex >= 0 {
+		keys := cfg.GetAPIKeys()
+		if keyIndex < len(keys) {
+			apiKey = keys[keyIndex]
+		}
+	}
+
+	// API特定头设置：根据请求路径区分Gemini和Claude API
+	if isGeminiRequest(requestPath) {
+		// Gemini API：仅使用x-goog-api-key认证
+		req.Header.Set("x-goog-api-key", apiKey)
+	} else {
+		// Claude API：使用x-api-key和Authorization Bearer认证
+		req.Header.Set("x-api-key", apiKey)
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 	if req.Header.Get("Accept") == "" {
 		req.Header.Set("Accept", "application/json")
 	}
@@ -268,6 +292,32 @@ streamLoop:
 	}, totalDuration, streamErr
 }
 
+// extractModelFromPath 从URL路径中提取模型名称
+// 支持格式：/models/{model}:method 或 /models/{model}
+func extractModelFromPath(path string) string {
+	// 查找 "/models/" 子串
+	modelsPrefix := "/models/"
+	idx := strings.Index(path, modelsPrefix)
+	if idx == -1 {
+		return ""
+	}
+
+	// 提取 "/models/" 之后的部分
+	start := idx + len(modelsPrefix)
+	remaining := path[start:]
+
+	// 查找模型名称的结束位置（遇到 : 或 / 或字符串结尾）
+	end := len(remaining)
+	for i, ch := range remaining {
+		if ch == ':' || ch == '/' {
+			end = i
+			break
+		}
+	}
+
+	return remaining[:end]
+}
+
 // 通用透明代理处理器
 func (s *Server) handleProxyRequest(c *gin.Context) {
 	// 获取客户端原始请求路径（透明转发的关键）
@@ -284,13 +334,22 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 		Model  string `json:"model"`
 		Stream bool   `json:"stream"`
 	}
-	if err := sonic.Unmarshal(all, &reqModel); err != nil || reqModel.Model == "" {
+	_ = sonic.Unmarshal(all, &reqModel)
+
+	// 多源模型名称获取：优先请求体，其次URL路径
+	originalModel := reqModel.Model
+	if originalModel == "" {
+		// 尝试从URL路径提取模型名称（支持Gemini API格式）
+		originalModel = extractModelFromPath(requestPath)
+	}
+
+	// 如果两种方式都无法获取模型名称，返回错误
+	if originalModel == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON or missing model"})
 		return
 	}
 
 	// 保存原始请求模型（用于日志记录和渠道选择）
-	originalModel := reqModel.Model
 
 	// 解析超时
 	timeout := parseTimeout(c.Request.URL.Query(), c.Request.Header)
@@ -325,6 +384,21 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 	var lastBody []byte
 	var lastHeader http.Header
 	for _, cfg := range cands {
+		// 多Key支持：选择可用的API Key
+		keyIndex, selectedKey, err := s.keySelector.SelectAvailableKey(ctx, cfg)
+		if err != nil {
+			// 所有Key都在冷却中，尝试下一个渠道
+			s.addLogAsync(&LogEntry{
+				Time:        JSONTime{time.Now()},
+				Model:       originalModel,
+				ChannelID:   &cfg.ID,
+				StatusCode:  503,
+				Message:     fmt.Sprintf("channel keys unavailable: %v", err),
+				IsStreaming: reqModel.Stream,
+			})
+			continue
+		}
+
 		// 模型重定向：检查渠道是否配置了模型重定向映射
 		actualModel := originalModel
 		if len(cfg.ModelRedirects) > 0 {
@@ -345,13 +419,13 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 			}
 		}
 
-		// 透明转发：直接使用客户端原始请求路径
-		res, duration, err := s.forwardOnceAsync(ctx, cfg, bodyToSend, c.Request.Header, c.Request.URL.RawQuery, requestPath, c.Writer)
+		// 透明转发：使用选择的Key进行转发
+		res, duration, err := s.forwardOnceAsync(ctx, cfg, keyIndex, bodyToSend, c.Request.Header, c.Request.URL.RawQuery, requestPath, c.Writer)
 		if err != nil {
 			// 分类错误类型
 			statusCode, shouldRetry := classifyError(err)
 
-			// 记录日志（使用原始模型）
+			// 记录日志（使用原始模型，记录使用的Key）
 			s.addLogAsync(&LogEntry{
 				Time:        JSONTime{time.Now()},
 				Model:       originalModel,
@@ -360,6 +434,7 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 				Message:     truncateErr(err.Error()),
 				Duration:    duration,
 				IsStreaming: reqModel.Stream,
+				APIKeyUsed:  selectedKey,
 			})
 
 			// 如果是不可重试的错误，直接返回
@@ -378,11 +453,8 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 				return
 			}
 
-			// 可重试错误：继续现有的冷却和重试逻辑
-			now := time.Now()
-			cooldownDur, _ := s.store.BumpCooldownOnError(ctx, cfg.ID, now)
-			cooldownUntil := now.Add(cooldownDur)
-			s.cooldownCache.Store(cfg.ID, cooldownUntil)
+			// 可重试错误：Key级别冷却（单Key场景会回退到渠道级别）
+			_ = s.keySelector.MarkKeyError(ctx, cfg.ID, keyIndex)
 
 			lastStatus = statusCode
 			lastBody = []byte(err.Error())
@@ -390,11 +462,10 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 			continue
 		}
 		if res.Status >= 200 && res.Status < 300 {
-			// 异步流式传输成功完成
-			s.cooldownCache.Delete(cfg.ID)
-			_ = s.store.ResetCooldown(ctx, cfg.ID)
+			// 异步流式传输成功完成：重置Key级别冷却
+			_ = s.keySelector.MarkKeySuccess(ctx, cfg.ID, keyIndex)
 
-			// 记录成功日志（使用原始模型）
+			// 记录成功日志（使用原始模型，记录使用的Key）
 			logEntry := &LogEntry{
 				Time:        JSONTime{time.Now()},
 				Model:       originalModel,
@@ -403,6 +474,7 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 				Duration:    duration,
 				Message:     "ok",
 				IsStreaming: reqModel.Stream,
+				APIKeyUsed:  selectedKey,
 			}
 
 			// 流式请求记录首字节响应时间
@@ -422,7 +494,7 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 				msg = fmt.Sprintf("%s: %s", msg, truncateErr(safeBodyToString(res.Body)))
 			}
 
-			// 记录日志（使用原始模型）
+			// 记录日志（使用原始模型，记录使用的Key）
 			logEntry := &LogEntry{
 				Time:        JSONTime{time.Now()},
 				Model:       originalModel,
@@ -431,6 +503,7 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 				Message:     msg,
 				Duration:    duration,
 				IsStreaming: reqModel.Stream,
+				APIKeyUsed:  selectedKey,
 			}
 			if reqModel.Stream {
 				logEntry.FirstByteTime = &res.FirstByteTime
@@ -442,17 +515,14 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 			return
 		}
 
-		// 其他非2xx：指数退避冷却并尝试下一个
-		now := time.Now()
-		cooldownDur, _ := s.store.BumpCooldownOnError(ctx, cfg.ID, now)
-		cooldownUntil := now.Add(cooldownDur)
-		s.cooldownCache.Store(cfg.ID, cooldownUntil)
+		// 其他非2xx：Key级别指数退避冷却并尝试下一个
+		_ = s.keySelector.MarkKeyError(ctx, cfg.ID, keyIndex)
 		msg := fmt.Sprintf("upstream status %d", res.Status)
 		if len(res.Body) > 0 {
 			msg = fmt.Sprintf("%s: %s", msg, truncateErr(safeBodyToString(res.Body)))
 		}
 
-		// 记录错误日志（使用原始模型）
+		// 记录错误日志（使用原始模型，记录使用的Key）
 		logEntry := &LogEntry{
 			Time:        JSONTime{time.Now()},
 			Model:       originalModel,
@@ -461,6 +531,7 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 			Message:     msg,
 			Duration:    duration,
 			IsStreaming: reqModel.Stream,
+			APIKeyUsed:  selectedKey,
 		}
 		if reqModel.Stream {
 			logEntry.FirstByteTime = &res.FirstByteTime

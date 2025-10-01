@@ -19,6 +19,14 @@ type SQLiteStore struct {
 	redisSync *RedisSync // Redis同步客户端 (OCP: 开放扩展，封闭修改)
 }
 
+// maskAPIKey 将API Key掩码为 "abcd...klmn" 格式（前4位 + ... + 后4位）
+func maskAPIKey(key string) string {
+	if len(key) <= 8 {
+		return key // 短key直接返回
+	}
+	return key[:4] + "..." + key[len(key)-4:]
+}
+
 func NewSQLiteStore(path string, redisSync *RedisSync) (*SQLiteStore, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
@@ -91,7 +99,35 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	// 添加新字段（兼容已有数据库）
 	s.addColumnIfNotExists(ctx, "logs", "is_streaming", "INTEGER NOT NULL DEFAULT 0")
 	s.addColumnIfNotExists(ctx, "logs", "first_byte_time", "REAL")
+	s.addColumnIfNotExists(ctx, "logs", "api_key_used", "TEXT")                     // 使用的API Key（完整值）
 	s.addColumnIfNotExists(ctx, "channels", "model_redirects", "TEXT DEFAULT '{}'") // 模型重定向字段，JSON格式
+	s.addColumnIfNotExists(ctx, "channels", "api_keys", "TEXT DEFAULT '[]'")        // 多Key支持，JSON数组
+	s.addColumnIfNotExists(ctx, "channels", "key_strategy", "TEXT DEFAULT 'sequential'") // Key使用策略
+
+	// 创建 key_cooldowns 表（Key级别冷却）
+	if _, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS key_cooldowns (
+			channel_id INTEGER NOT NULL,
+			key_index INTEGER NOT NULL,
+			until TIMESTAMP NOT NULL,
+			duration_ms INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY(channel_id, key_index),
+			FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
+		);
+	`); err != nil {
+		return fmt.Errorf("create key_cooldowns table: %w", err)
+	}
+
+	// 创建 key_rr 表（Key级别轮询指针）
+	if _, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS key_rr (
+			channel_id INTEGER PRIMARY KEY,
+			idx INTEGER NOT NULL,
+			FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
+		);
+	`); err != nil {
+		return fmt.Errorf("create key_rr table: %w", err)
+	}
 
 	// 创建 rr (round-robin) 表
 	if _, err := s.db.ExecContext(ctx, `
@@ -306,8 +342,10 @@ func (s *SQLiteStore) CreateConfig(ctx context.Context, c *Config) (*Config, err
 	}
 
 	// 同步到Redis (故障隔离: Redis错误不影响主要功能)
-	if syncErr := s.redisSync.SyncChannelCreate(ctx, config); syncErr != nil {
-		fmt.Printf("Warning: Redis sync failed for channel create %s: %v\n", config.Name, syncErr)
+	if s.redisSync != nil {
+		if syncErr := s.redisSync.SyncChannelCreate(ctx, config); syncErr != nil {
+			fmt.Printf("Warning: Redis sync failed for channel create %s: %v\n", config.Name, syncErr)
+		}
 	}
 
 	return config, nil
@@ -347,8 +385,10 @@ func (s *SQLiteStore) UpdateConfig(ctx context.Context, id int64, upd *Config) (
 	}
 
 	// 同步到Redis (故障隔离: Redis错误不影响主要功能)
-	if syncErr := s.redisSync.SyncChannelUpdate(ctx, config); syncErr != nil {
-		fmt.Printf("Warning: Redis sync failed for channel update %s: %v\n", config.Name, syncErr)
+	if s.redisSync != nil {
+		if syncErr := s.redisSync.SyncChannelUpdate(ctx, config); syncErr != nil {
+			fmt.Printf("Warning: Redis sync failed for channel update %s: %v\n", config.Name, syncErr)
+		}
 	}
 
 	return config, nil
@@ -389,8 +429,10 @@ func (s *SQLiteStore) ReplaceConfig(ctx context.Context, c *Config) (*Config, er
 	}
 
 	// 同步到Redis (ReplaceConfig用于CSV导入)
-	if syncErr := s.redisSync.SyncChannelUpdate(ctx, config); syncErr != nil {
-		fmt.Printf("Warning: Redis sync failed for channel replace %s: %v\n", config.Name, syncErr)
+	if s.redisSync != nil {
+		if syncErr := s.redisSync.SyncChannelUpdate(ctx, config); syncErr != nil {
+			fmt.Printf("Warning: Redis sync failed for channel replace %s: %v\n", config.Name, syncErr)
+		}
 	}
 
 	return config, nil
@@ -414,8 +456,10 @@ func (s *SQLiteStore) DeleteConfig(ctx context.Context, id int64) error {
 	}
 
 	// 从Redis删除 (故障隔离: Redis错误不影响主要功能)
-	if syncErr := s.redisSync.SyncChannelDelete(ctx, config.Name); syncErr != nil {
-		fmt.Printf("Warning: Redis sync failed for channel delete %s: %v\n", config.Name, syncErr)
+	if s.redisSync != nil {
+		if syncErr := s.redisSync.SyncChannelDelete(ctx, config.Name); syncErr != nil {
+			fmt.Printf("Warning: Redis sync failed for channel delete %s: %v\n", config.Name, syncErr)
+		}
 	}
 
 	return nil
@@ -515,9 +559,9 @@ func (s *SQLiteStore) AddLog(ctx context.Context, e *LogEntry) error {
 	_ = s.cleanupOldLogs(ctx)
 
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO logs(time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time) 
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-	`, cleanTime, e.Model, e.ChannelID, e.StatusCode, e.Message, e.Duration, e.IsStreaming, e.FirstByteTime)
+		INSERT INTO logs(time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, cleanTime, e.Model, e.ChannelID, e.StatusCode, e.Message, e.Duration, e.IsStreaming, e.FirstByteTime, e.APIKeyUsed)
 	return err
 }
 
@@ -531,8 +575,8 @@ func (s *SQLiteStore) cleanupOldLogs(ctx context.Context) error {
 func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offset int, filter *LogFilter) ([]*LogEntry, error) {
 	// 使用查询构建器构建复杂查询
 	baseQuery := `
-		SELECT l.id, l.time, l.model, l.channel_id, c.name AS channel_name, 
-		       l.status_code, l.message, l.duration, l.is_streaming, l.first_byte_time
+		SELECT l.id, l.time, l.model, l.channel_id, c.name AS channel_name,
+		       l.status_code, l.message, l.duration, l.is_streaming, l.first_byte_time, l.api_key_used
 		FROM logs l
 		LEFT JOIN channels c ON c.id = l.channel_id`
 
@@ -559,9 +603,10 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 		var isStreamingInt int
 		var firstByteTime sql.NullFloat64
 		var rawTime time.Time
+		var apiKeyUsed sql.NullString
 
 		if err := rows.Scan(&e.ID, &rawTime, &e.Model, &cfgID, &chName,
-			&e.StatusCode, &e.Message, &duration, &isStreamingInt, &firstByteTime); err != nil {
+			&e.StatusCode, &e.Message, &duration, &isStreamingInt, &firstByteTime, &apiKeyUsed); err != nil {
 			return nil, err
 		}
 
@@ -581,6 +626,9 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 		if firstByteTime.Valid {
 			fbt := firstByteTime.Float64
 			e.FirstByteTime = &fbt
+		}
+		if apiKeyUsed.Valid && apiKeyUsed.String != "" {
+			e.APIKeyUsed = maskAPIKey(apiKeyUsed.String)
 		}
 		out = append(out, &e)
 	}
@@ -863,4 +911,106 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// ==================== Key级别冷却机制 ====================
+
+// GetKeyCooldownUntil 查询指定Key的冷却截止时间
+func (s *SQLiteStore) GetKeyCooldownUntil(ctx context.Context, configID int64, keyIndex int) (time.Time, bool) {
+	var until time.Time
+	err := s.db.QueryRowContext(ctx, `
+		SELECT until FROM key_cooldowns
+		WHERE channel_id = ? AND key_index = ?
+	`, configID, keyIndex).Scan(&until)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return until, true
+}
+
+// BumpKeyCooldownOnError Key级别指数退避：错误翻倍（最小1s，最大30m）
+func (s *SQLiteStore) BumpKeyCooldownOnError(ctx context.Context, configID int64, keyIndex int, now time.Time) (time.Duration, error) {
+	var until time.Time
+	var durMs int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT until, COALESCE(duration_ms, 0)
+		FROM key_cooldowns
+		WHERE channel_id = ? AND key_index = ?
+	`, configID, keyIndex).Scan(&until, &durMs)
+
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+
+	prev := time.Duration(durMs) * time.Millisecond
+	if prev <= 0 {
+		// 如果表里没有记录，但 until 在未来，取其差值；否则从1s开始
+		if !until.IsZero() && until.After(now) {
+			prev = until.Sub(now)
+		} else {
+			prev = time.Second
+		}
+	}
+
+	// 错误一次翻倍
+	next := prev * 2
+	if next < time.Second {
+		next = time.Second
+	}
+	if next > 30*time.Minute {
+		next = 30 * time.Minute
+	}
+
+	newUntil := now.Add(next)
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO key_cooldowns(channel_id, key_index, until, duration_ms) VALUES(?, ?, ?, ?)
+		ON CONFLICT(channel_id, key_index) DO UPDATE SET
+			until = excluded.until,
+			duration_ms = excluded.duration_ms
+	`, configID, keyIndex, newUntil, int64(next/time.Millisecond))
+
+	if err != nil {
+		return 0, err
+	}
+	return next, nil
+}
+
+// ResetKeyCooldown 重置指定Key的冷却状态
+func (s *SQLiteStore) ResetKeyCooldown(ctx context.Context, configID int64, keyIndex int) error {
+	_, err := s.db.ExecContext(ctx, `
+		DELETE FROM key_cooldowns
+		WHERE channel_id = ? AND key_index = ?
+	`, configID, keyIndex)
+	return err
+}
+
+// ==================== Key级别轮询机制 ====================
+
+// NextKeyRR 获取下一个轮询Key索引（带自动增量）
+func (s *SQLiteStore) NextKeyRR(ctx context.Context, configID int64, keyCount int) int {
+	if keyCount <= 0 {
+		return 0
+	}
+
+	var idx int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT idx FROM key_rr WHERE channel_id = ?
+	`, configID).Scan(&idx)
+
+	if err != nil {
+		// 没有记录，从0开始
+		return 0
+	}
+
+	// 确保索引在有效范围内
+	return idx % keyCount
+}
+
+// SetKeyRR 设置渠道的Key轮询指针
+func (s *SQLiteStore) SetKeyRR(ctx context.Context, configID int64, idx int) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO key_rr(channel_id, idx) VALUES(?, ?)
+		ON CONFLICT(channel_id) DO UPDATE SET idx = excluded.idx
+	`, configID, idx)
+	return err
 }

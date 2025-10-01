@@ -97,13 +97,22 @@
           <input type="url" id="channelUrl" class="form-input" placeholder="https://api.anthropic.com/v1/messages" required>
         </div>
         <div class="form-group">
-          <label class="form-label" for="channelApiKey">API Key *</label>
+          <label class="form-label" for="channelApiKey">
+            API Key * <span class="models-hint" style="margin-left: 8px; margin-top: 0;">多个Key用英文逗号分隔（支持故障切换）</span>
+          </label>
           <div style="position: relative;">
-            <input type="password" id="channelApiKey" class="form-input" required style="padding-right: 45px;">
+            <input type="password" id="channelApiKey" class="form-input" required style="padding-right: 45px;" placeholder="sk-ant-xxx,sk-ant-yyy">
             <button type="button" id="toggleApiKeyBtn" onclick="toggleApiKeyVisibility()" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--neutral-500); cursor: pointer; padding: 4px; border-radius: 3px; font-size: 14px;" title="显示/隐藏API Key">
               👁️
             </button>
           </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="channelKeyStrategy">Key使用策略（多Key时生效）</label>
+          <select id="channelKeyStrategy" class="form-input">
+            <option value="sequential">顺序访问（按顺序尝试，失败时切换）</option>
+            <option value="round_robin">轮询访问（均匀分配请求）</option>
+          </select>
         </div>
         <div class="form-group">
           <label class="form-label" for="channelModels">
@@ -447,6 +456,7 @@
       document.getElementById('modalTitle').textContent = '添加渠道';
       document.getElementById('channelForm').reset();
       document.getElementById('channelEnabled').checked = true;
+      document.getElementById('channelKeyStrategy').value = 'sequential'; // 默认顺序策略
       document.getElementById('channelModelRedirects').value = ''; // 清空模型重定向字段
       // 重置API Key输入框可见性
       const apiKeyInput = document.getElementById('channelApiKey');
@@ -467,6 +477,7 @@
       document.getElementById('channelName').value = channel.name;
       document.getElementById('channelUrl').value = channel.url;
       document.getElementById('channelApiKey').value = channel.api_key;
+      document.getElementById('channelKeyStrategy').value = channel.key_strategy || 'sequential';
       document.getElementById('channelPriority').value = channel.priority;
       document.getElementById('channelModels').value = channel.models.join(',');
       document.getElementById('channelEnabled').checked = channel.enabled;
@@ -515,6 +526,7 @@
         name: document.getElementById('channelName').value.trim(),
         url: document.getElementById('channelUrl').value.trim(),
         api_key: document.getElementById('channelApiKey').value.trim(),
+        key_strategy: document.getElementById('channelKeyStrategy').value,
         priority: parseInt(document.getElementById('channelPriority').value) || 0,
         models: document.getElementById('channelModels').value.split(',').map(m => m.trim()).filter(m => m),
         model_redirects: modelRedirects,
@@ -620,6 +632,7 @@
       document.getElementById('channelName').value = copiedName;
       document.getElementById('channelUrl').value = channel.url;
       document.getElementById('channelApiKey').value = channel.api_key;
+      document.getElementById('channelKeyStrategy').value = channel.key_strategy || 'sequential';
       document.getElementById('channelPriority').value = channel.priority;
       document.getElementById('channelModels').value = channel.models.join(',');
       document.getElementById('channelEnabled').checked = true; // 复制的渠道默认启用

@@ -63,12 +63,6 @@ func main() {
 		if err := s.LoadChannelsFromRedis(ctx); err != nil {
 			log.Printf("从Redis恢复失败: %v", err)
 		}
-	} else if dbExists && redisSync.IsEnabled() {
-		// 数据库存在时，同步当前数据到Redis
-		log.Printf("同步现有渠道数据到Redis...")
-		if err := s.SyncAllChannelsToRedis(ctx); err != nil {
-			log.Printf("同步到Redis失败: %v", err)
-		}
 	}
 
 	if err := s.Vacuum(ctx); err != nil {

@@ -19,11 +19,12 @@ import (
 )
 
 type Server struct {
-	store    Store
-	client   *http.Client
-	password string
-	sessions map[string]time.Time // sessionID -> expireTime
-	sessMux  sync.RWMutex
+	store       Store
+	keySelector *KeySelector // Key选择器（多Key支持）
+	client      *http.Client
+	password    string
+	sessions    map[string]time.Time // sessionID -> expireTime
+	sessMux     sync.RWMutex
 
 	// API 认证
 	authTokens map[string]bool // 允许的认证令牌
@@ -82,13 +83,14 @@ func NewServer(store Store) *Server {
 		ReadBufferSize:     64 * 1024, // 64KB读缓冲区
 		// 启用TLS会话缓存，减少重复握手耗时，跳过证书验证
 		TLSClientConfig: &tls.Config{
-			ClientSessionCache:    tls.NewLRUClientSessionCache(1024),
-			InsecureSkipVerify:    true, // 跳过证书验证
+			ClientSessionCache: tls.NewLRUClientSessionCache(1024),
+			InsecureSkipVerify: true, // 跳过证书验证
 		},
 	}
 
 	s := &Server{
-		store: store,
+		store:       store,
+		keySelector: NewKeySelector(store), // 初始化Key选择器
 		client: &http.Client{
 			Transport: transport,
 			Timeout:   0,
@@ -226,6 +228,13 @@ func (s *Server) requireAPIAuth() gin.HandlerFunc {
 			return
 		}
 
+		// 检查 x-goog-api-key 头（Google API格式）
+		googApiKey := c.GetHeader("x-goog-api-key")
+		if googApiKey != "" && s.authTokens[googApiKey] {
+			c.Next()
+			return
+		}
+
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or missing authorization"})
 		c.Abort()
 	}
@@ -274,10 +283,15 @@ func (s *Server) handleLogout(c *gin.Context) {
 func (s *Server) setupRoutes(r *gin.Engine) {
 	// 公开访问的API（代理服务）- 需要 API 认证
 	// 透明代理：统一处理所有 /v1/* 端点
-	api := r.Group("/v1")
-	api.Use(s.requireAPIAuth())
+	apiV1 := r.Group("/v1")
+	apiV1.Use(s.requireAPIAuth())
 	{
-		api.POST("/*path", s.handleProxyRequest)
+		apiV1.POST("/*path", s.handleProxyRequest)
+	}
+	apiV1Beta := r.Group("/v1beta")
+	apiV1Beta.Use(s.requireAPIAuth())
+	{
+		apiV1Beta.POST("/*path", s.handleProxyRequest)
 	}
 
 	// 公开访问的API（基础统计）

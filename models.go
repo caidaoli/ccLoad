@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -10,7 +11,9 @@ import (
 type Config struct {
 	ID             int64             `json:"id"`
 	Name           string            `json:"name"`
-	APIKey         string            `json:"api_key"`
+	APIKey         string            `json:"api_key"`          // 向后兼容：单Key场景
+	APIKeys        []string          `json:"api_keys"`         // 多Key支持：逗号分割的Key数组
+	KeyStrategy    string            `json:"key_strategy"`     // Key使用策略: "sequential"（顺序） | "round_robin"（轮询），默认顺序
 	URL            string            `json:"url"`
 	Priority       int               `json:"priority"`
 	Models         []string          `json:"models"`
@@ -18,6 +21,42 @@ type Config struct {
 	Enabled        bool              `json:"enabled"`
 	CreatedAt      time.Time         `json:"created_at"`
 	UpdatedAt      time.Time         `json:"updated_at"`
+}
+
+// GetAPIKeys 返回标准化的API Key列表
+// 规则：
+// 1. 优先使用APIKeys数组
+// 2. 如果APIKeys为空且APIKey不为空，将APIKey拆分（兼容旧数据）
+// 3. 支持逗号分割的多个Key（去除空格）
+func (c *Config) GetAPIKeys() []string {
+	// 优先使用新字段APIKeys
+	if len(c.APIKeys) > 0 {
+		return c.APIKeys
+	}
+
+	// 向后兼容：从旧字段APIKey解析
+	if c.APIKey == "" {
+		return []string{}
+	}
+
+	// 支持逗号分割的多Key
+	keys := strings.Split(c.APIKey, ",")
+	result := make([]string, 0, len(keys))
+	for _, k := range keys {
+		trimmed := strings.TrimSpace(k)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
+}
+
+// GetKeyStrategy 返回Key使用策略（默认顺序）
+func (c *Config) GetKeyStrategy() string {
+	if c.KeyStrategy == "" {
+		return "sequential" // 默认顺序访问
+	}
+	return c.KeyStrategy
 }
 
 // 自定义时间类型，强制使用RFC3339格式进行JSON序列化
@@ -54,6 +93,7 @@ type LogEntry struct {
 	Duration      float64  `json:"duration"`                  // 总耗时（秒）
 	IsStreaming   bool     `json:"is_streaming"`              // 是否为流式请求
 	FirstByteTime *float64 `json:"first_byte_time,omitempty"` // 首字节响应时间（秒）
+	APIKeyUsed    string   `json:"api_key_used,omitempty"`    // 使用的API Key（查询时自动脱敏为 abcd...klmn 格式）
 }
 
 // 日志查询过滤条件
@@ -97,12 +137,21 @@ type Store interface {
 	DeleteConfig(ctx context.Context, id int64) error
 	ReplaceConfig(ctx context.Context, c *Config) (*Config, error)
 
-	// cooldown
+	// cooldown (channel-level)
 	GetCooldownUntil(ctx context.Context, configID int64) (time.Time, bool)
 	SetCooldown(ctx context.Context, configID int64, until time.Time) error
 	// 指数退避：错误时翻倍，成功时清零
 	BumpCooldownOnError(ctx context.Context, configID int64, now time.Time) (time.Duration, error)
 	ResetCooldown(ctx context.Context, configID int64) error
+
+	// key-level cooldown (新增)
+	GetKeyCooldownUntil(ctx context.Context, configID int64, keyIndex int) (time.Time, bool)
+	BumpKeyCooldownOnError(ctx context.Context, configID int64, keyIndex int, now time.Time) (time.Duration, error)
+	ResetKeyCooldown(ctx context.Context, configID int64, keyIndex int) error
+
+	// key-level round-robin (新增)
+	NextKeyRR(ctx context.Context, configID int64, keyCount int) int
+	SetKeyRR(ctx context.Context, configID int64, idx int) error
 
 	// logs
 	AddLog(ctx context.Context, e *LogEntry) error

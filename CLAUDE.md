@@ -6,9 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ccLoad 是一个高性能的 Claude Code & Codex API 透明代理服务，使用 Go 1.25.0 构建，基于 Gin 框架。主要功能：
 
-- **透明代理**：将 `/v1/messages` 请求转发到上游 Claude API，仅替换 API Key
-- **智能路由**：基于模型支持、优先级和轮询策略选择渠道  
-- **故障切换**：失败时自动切换渠道并实施指数退避冷却（起始1秒，错误翻倍，封顶30分钟）
+- **透明代理**：支持Claude API（`/v1/messages`）和Gemini API（`/v1beta/*`）请求转发，智能识别并设置正确的认证头
+- **智能路由**：基于模型支持、优先级和轮询策略选择渠道
+- **多Key支持**：渠道支持配置多个API Key，提供顺序/轮询两种使用策略，Key级别故障切换和冷却
+- **故障切换**：失败时自动切换Key/渠道并实施指数退避冷却（起始1秒，错误翻倍，封顶30分钟）
 - **身份验证**：管理页面需要密码登录，支持session管理和自动过期；API端点支持可选令牌认证
 - **统计监控**：首页公开显示请求统计，管理界面提供详细的趋势和日志分析
 - **前端管理**：提供现代化 Web 界面管理渠道、查看趋势、日志和调用统计
@@ -95,9 +96,10 @@ docker-compose up -d                       # 使用 compose 启动服务
 - `admin.go`: 管理API实现（渠道CRUD、日志查询、统计分析）
 - 身份验证：Session-based管理界面 + 可选Bearer token API认证
 
-**业务逻辑层** (`proxy.go`, `selector.go`):
+**业务逻辑层** (`proxy.go`, `selector.go`, `key_selector.go`):
 - `proxy.go`: 核心代理逻辑，处理`/v1/messages`转发和流式响应
 - `selector.go`: 智能渠道选择算法（优先级分组 + 组内轮询 + 故障排除）
+- `key_selector.go`: Key选择器，实现多Key管理、策略选择和Key级别冷却（SRP原则）
 
 **数据持久层** (`sqlite_store.go`, `query_builder.go`, `models.go`, `redis_sync.go`):
 - `models.go`: 数据模型和Store接口定义
@@ -403,8 +405,10 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 ## 重要注意事项
 
 **透明转发原则**:
-- 仅替换 `x-api-key` 和 `Authorization` 头为配置的 API Key
-- 客户端需自行设置 `anthropic-version` 等必需头
+- 智能识别API类型，自动设置正确的认证头：
+  - **Claude API** (`/v1/messages` 等)：设置 `x-api-key` 和 `Authorization: Bearer`
+  - **Gemini API** (`/v1beta/*`)：仅设置 `x-goog-api-key`
+- 客户端需自行设置 `anthropic-version`（Claude）或其他API特定头
 - 2xx 响应支持流式转发，使用 64KB 缓冲区
 - 模型重定向在请求体层面操作，对客户端完全透明
 
@@ -627,3 +631,261 @@ sqlite3 data/ccload.db "SELECT COUNT(*) FROM channels;"
 # 测试API端点
 curl -s http://localhost:8080/public/summary | jq
 ```
+
+## 多Key支持功能
+
+### 功能概述
+
+从v1.0开始，ccLoad支持为单个渠道配置多个API Key，实现更细粒度的故障切换和负载均衡。
+
+**核心特性**：
+- **多Key配置**：在单个渠道中使用逗号分割配置多个API Key
+- **Key级别冷却**：每个Key独立冷却，不影响同渠道其他Key的可用性
+- **灵活策略**：支持顺序访问（sequential）和轮询访问（round_robin）两种模式
+- **向后兼容**：单Key场景完全兼容旧版本，无需修改配置
+
+### 使用场景
+
+1. **提高可用性**：单个Key被限流时自动切换到备用Key
+2. **负载均衡**：使用轮询策略均匀分配请求到多个Key
+3. **成本优化**：合理利用多个Key的额度限制
+4. **灵活扩展**：无需创建多个渠道即可实现Key级别管理
+
+### 配置方式
+
+**Web界面配置**：
+1. 访问 `/web/channels.html` 渠道管理页面
+2. 在"API Key"字段输入多个Key，用英文逗号分隔：
+   ```
+   sk-ant-key1,sk-ant-key2,sk-ant-key3
+   ```
+3. 选择"Key使用策略"：
+   - **顺序访问**（默认）：按顺序尝试，失败时切换到下一个
+   - **轮询访问**：请求均匀分配到所有可用Key
+
+**API配置示例**：
+```bash
+curl -X POST http://localhost:8080/admin/channels \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Claude-MultiKey",
+    "api_key": "sk-ant-key1,sk-ant-key2,sk-ant-key3",
+    "key_strategy": "round_robin",
+    "url": "https://api.anthropic.com",
+    "priority": 10,
+    "models": ["claude-3-5-sonnet-20241022"],
+    "enabled": true
+  }'
+```
+
+### 工作原理
+
+**顺序访问策略（sequential）**：
+1. 从第一个Key开始尝试
+2. 如果Key失败或冷却中，自动切换到下一个可用Key
+3. 所有Key都不可用时返回错误
+
+**轮询访问策略（round_robin）**：
+1. 使用轮询指针均匀分配请求
+2. 自动跳过冷却中的Key
+3. 轮询状态持久化，服务重启后保持
+
+**Key级别冷却机制**：
+- **触发条件**：Key返回错误或非2xx响应
+- **冷却时长**：指数退避（1s → 2s → 4s → ... → 最大30分钟）
+- **独立冷却**：每个Key的冷却状态互不影响
+- **自动恢复**：Key成功响应后立即重置冷却状态
+
+### 数据库架构
+
+新增表结构支持Key级别管理：
+
+```sql
+-- Key级别冷却表
+CREATE TABLE key_cooldowns (
+  channel_id INTEGER NOT NULL,
+  key_index INTEGER NOT NULL,
+  until TIMESTAMP NOT NULL,
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(channel_id, key_index)
+);
+
+-- Key轮询指针表
+CREATE TABLE key_rr (
+  channel_id INTEGER PRIMARY KEY,
+  idx INTEGER NOT NULL
+);
+```
+
+渠道表新增字段：
+- `api_keys`：JSON数组存储多个Key（优先级高于`api_key`）
+- `key_strategy`：Key使用策略（`sequential` | `round_robin`）
+
+### 向后兼容性
+
+**单Key场景**：
+- 继续使用`api_key`字段，无需修改
+- 自动识别为单Key模式，不触发多Key逻辑
+- 性能与旧版本完全一致（YAGNI原则）
+
+**旧数据迁移**：
+- 数据库自动添加新字段（默认值兼容）
+- `api_key`字段支持逗号分割，自动解析为多Key
+- 前端界面兼容新旧两种配置方式
+
+### 监控和调试
+
+**查看Key冷却状态**：
+```bash
+# 查询特定渠道的Key冷却信息
+sqlite3 data/ccload.db \
+  "SELECT channel_id, key_index, until, duration_ms FROM key_cooldowns WHERE channel_id = 1;"
+```
+
+**日志跟踪**：
+- 日志中记录使用的Key索引（脱敏处理）
+- 错误日志包含"channel keys unavailable"标识
+- 成功日志不暴露具体Key内容
+
+### 测试验证
+
+项目包含完整的测试套件：
+
+```bash
+# 运行多Key功能测试
+go test -v -run "TestKeySelector"
+
+# 覆盖测试场景：
+# - 单Key兼容性
+# - 顺序访问策略
+# - 轮询访问策略
+# - 全Key冷却场景
+# - 指数退避验证
+```
+
+### 最佳实践
+
+1. **Key数量**：建议配置2-3个Key，平衡可用性与管理复杂度
+2. **策略选择**：
+   - 备用场景：使用顺序策略，主Key失败时切换备用
+   - 负载均衡：使用轮询策略，平均分配请求负载
+3. **监控**：定期检查日志中的"keys unavailable"错误，及时补充Key
+4. **安全**：使用环境变量或配置文件管理Key，不要硬编码
+## API兼容性支持
+
+### 支持的API类型
+
+ccLoad现已支持多种AI API的透明代理，通过智能路径检测自动适配不同API的认证方式：
+
+#### Claude API（Anthropic）
+- **路径特征**：`/v1/messages`、`/v1/complete` 等非 `/v1beta/` 路径
+- **认证头设置**：
+  ```
+  x-api-key: <API_KEY>
+  Authorization: Bearer <API_KEY>
+  ```
+- **客户端要求**：需自行设置 `anthropic-version` 头（如 `2023-06-01`）
+- **示例请求**：
+  ```bash
+  curl -X POST http://localhost:8080/v1/messages \
+    -H "Content-Type: application/json" \
+    -d '{"model":"claude-3-5-sonnet-20241022","messages":[...],"max_tokens":1024}'
+  ```
+
+#### Gemini API（Google）
+- **路径特征**：包含 `/v1beta/` 的路径
+- **认证头设置**：
+  ```
+  x-goog-api-key: <API_KEY>
+  ```
+  注意：**不**发送 `x-api-key` 和 `Authorization` 头
+- **典型路径格式**：
+  ```
+  /v1beta/models/{model}:streamGenerateContent?alt=sse
+  /v1beta/models/{model}:generateContent
+  ```
+- **示例请求**：
+  ```bash
+  curl -X POST "http://localhost:8080/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse" \
+    -H "Content-Type: application/json" \
+    -d '{"contents":[{"parts":[{"text":"Hello"}]}]}'
+  ```
+
+### 路径检测逻辑
+
+**实现位置**：`proxy.go:isGeminiRequest(path string) bool`
+
+**检测规则**：
+- 使用 `strings.Contains(path, "/v1beta/")` 检测路径
+- 大小写敏感（`/v1beta/` 不匹配 `/V1BETA/`）
+- 适用于所有包含该子串的路径（如 `/api/v1beta/test` 也被识别为Gemini）
+
+**性能特点**：
+- 单次检测耗时 ~2-3ns（基准测试验证）
+- 零额外内存分配
+- 对代理性能影响可忽略
+
+### 测试覆盖
+
+项目包含完整的API兼容性测试套件：
+
+**单元测试** (`proxy_api_test.go`):
+```bash
+# 路径检测测试（9个测试用例）
+go test -v -run TestIsGeminiRequest
+
+# 性能基准测试
+go test -bench=BenchmarkIsGeminiRequest -benchmem
+```
+
+**集成测试** (`goog_api_key_test.go`):
+```bash
+# Claude API头设置验证
+go test -v -run TestGoogAPIKeyUpstream
+
+# Gemini API头设置验证
+go test -v -run TestGeminiRequestHeaders
+```
+
+### 扩展新API
+
+如需支持新的API类型（如OpenAI、Azure等），按以下步骤扩展：
+
+1. **添加检测函数**（proxy.go）：
+   ```go
+   func isOpenAIRequest(path string) bool {
+       return strings.HasPrefix(path, "/v1/chat/completions")
+   }
+   ```
+
+2. **修改头设置逻辑**（proxy.go:166-174）：
+   ```go
+   if isGeminiRequest(requestPath) {
+       req.Header.Set("x-goog-api-key", apiKey)
+   } else if isOpenAIRequest(requestPath) {
+       req.Header.Set("Authorization", "Bearer "+apiKey)
+   } else {
+       // Claude默认逻辑
+       req.Header.Set("x-api-key", apiKey)
+       req.Header.Set("Authorization", "Bearer "+apiKey)
+   }
+   ```
+
+3. **添加测试**（新建或扩展 `*_test.go`）：
+   - 路径检测单元测试
+   - 头设置集成测试
+   - 完整请求-响应端到端测试
+
+### 设计原则
+
+**KISS（Keep It Simple）**：
+- 使用简单字符串匹配，无需正则表达式
+- 路径检测函数单一职责，易于测试和维护
+
+**性能优先**：
+- 避免反射和复杂逻辑
+- 快速路径检测不影响代理性能
+
+**向后兼容**：
+- Claude API作为默认行为，确保现有用户无感知
+- 新API通过显式路径特征识别，不影响其他请求
