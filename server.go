@@ -40,6 +40,13 @@ type Server struct {
 	// 重试配置
 	maxKeyRetries int // 单个渠道内最大Key重试次数（默认3次）
 
+	// 性能优化开关
+	enableTrace bool // HTTP Trace开关（性能优化：默认关闭，节省0.5-1ms/请求）
+
+	// 并发控制
+	concurrencySem chan struct{} // 信号量：限制最大并发请求数（防止goroutine爆炸）
+	maxConcurrency int            // 最大并发数（默认1000）
+
 	// 缓存和异步优化
 	configCache    atomic.Value // 无锁缓存，存储 []*Config（性能优化：消除读锁争用）
 	configCacheExp atomic.Int64 // 缓存过期时间戳
@@ -82,6 +89,20 @@ func NewServer(store Store) *Server {
 		}
 	}
 
+	// 解析HTTP Trace开关（性能优化：默认关闭，节省0.5-1ms/请求）
+	enableTrace := false
+	if traceEnv := os.Getenv("CCLOAD_ENABLE_TRACE"); traceEnv == "1" || traceEnv == "true" {
+		enableTrace = true
+	}
+
+	// 解析最大并发数（性能优化：防止goroutine爆炸）
+	maxConcurrency := 1000 // 默认1000并发
+	if concEnv := os.Getenv("CCLOAD_MAX_CONCURRENCY"); concEnv != "" {
+		if val, err := strconv.Atoi(concEnv); err == nil && val > 0 {
+			maxConcurrency = val
+		}
+	}
+
 	// 优化 HTTP 客户端配置 - 重点优化连接建立阶段的超时控制
 	dialer := &net.Dialer{
 		Timeout:   10 * time.Second, // DNS解析+TCP连接建立超时
@@ -115,6 +136,7 @@ func NewServer(store Store) *Server {
 		store:         store,
 		keySelector:   NewKeySelector(store), // 初始化Key选择器
 		maxKeyRetries: maxKeyRetries,         // 单个渠道最大Key重试次数
+		enableTrace:   enableTrace,           // HTTP Trace开关
 		client: &http.Client{
 			Transport: transport,
 			Timeout:   0,
@@ -124,6 +146,10 @@ func NewServer(store Store) *Server {
 		authTokens: authTokens,
 		logChan:    make(chan *LogEntry, 1000), // 缓冲1000条日志
 		logWorkers: 3,                          // 3个日志工作协程
+
+		// 并发控制：使用信号量限制最大并发请求数
+		concurrencySem: make(chan struct{}, maxConcurrency),
+		maxConcurrency: maxConcurrency,
 
 		// 性能优化：批量轮询持久化配置
 		rrUpdateChan:    make(chan rrUpdate, 500), // 缓冲500条更新
@@ -152,6 +178,7 @@ func NewServer(store Store) *Server {
 	// 启动后台清理协程
 	go s.cleanupExpiredCooldowns()
 	go s.cleanExpiredSessions()
+	go s.cleanupOldLogsLoop() // 定期清理3天前的日志（性能优化：避免每次插入时清理）
 
 	return s
 
@@ -496,6 +523,21 @@ func (s *Server) cleanupExpiredCooldowns() {
 			}
 			return true
 		})
+	}
+}
+
+// cleanupOldLogsLoop 定期清理旧日志（性能优化：避免每次插入时清理）
+// 每小时检查一次，删除3天前的日志
+func (s *Server) cleanupOldLogsLoop() {
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		ctx := context.Background()
+		cutoff := time.Now().AddDate(0, 0, -3) // 3天前
+
+		// 使用DELETE直接删除，忽略错误（非关键操作）
+		_, _ = s.store.(*SQLiteStore).db.ExecContext(ctx, `DELETE FROM logs WHERE time < ?`, cutoff)
 	}
 }
 
