@@ -85,7 +85,22 @@
                 </button>
               </div>
             </div>
-            
+
+            <div class="filter-group">
+              <label class="filter-label">渠道ID</label>
+              <input type="text" id="idFilter" class="filter-input" placeholder="输入ID..." style="width: 100px;">
+            </div>
+
+            <div class="filter-group">
+              <label class="filter-label">渠道类型</label>
+              <select id="channelTypeFilter" class="filter-select">
+                <option value="all">所有类型</option>
+                <option value="anthropic">Claude</option>
+                <option value="openai">OpenAI</option>
+                <option value="gemini">Gemini</option>
+              </select>
+            </div>
+
             <div class="filter-group">
               <label class="filter-label">状态</label>
               <select id="statusFilter" class="filter-select">
@@ -95,7 +110,7 @@
                 <option value="cooldown">冷却中</option>
               </select>
             </div>
-            
+
             <div class="filter-group">
               <label class="filter-label">模型</label>
               <select id="modelFilter" class="filter-select">
@@ -355,6 +370,8 @@
     // Filter state
     let filters = {
       search: '',
+      id: '',
+      channelType: 'all',
       status: 'all',
       model: 'all'
     };
@@ -379,22 +396,42 @@
         if (filters.search && !channel.name.toLowerCase().includes(filters.search.toLowerCase())) {
           return false;
         }
-        
+
+        // ID filter (支持精确ID或逗号分隔的多个ID)
+        if (filters.id) {
+          const idStr = filters.id.trim();
+          if (idStr) {
+            // 支持逗号分隔的多个ID
+            const ids = idStr.split(',').map(id => id.trim()).filter(id => id);
+            if (ids.length > 0 && !ids.includes(String(channel.id))) {
+              return false;
+            }
+          }
+        }
+
+        // Channel type filter
+        if (filters.channelType !== 'all') {
+          const channelType = channel.channel_type || 'anthropic';
+          if (channelType !== filters.channelType) {
+            return false;
+          }
+        }
+
         // Status filter
         if (filters.status !== 'all') {
           if (filters.status === 'enabled' && !channel.enabled) return false;
           if (filters.status === 'disabled' && channel.enabled) return false;
           if (filters.status === 'cooldown' && !(channel.cooldown_remaining_ms > 0)) return false;
         }
-        
+
         // Model filter
         if (filters.model !== 'all' && !channel.models.includes(filters.model)) {
           return false;
         }
-        
+
         return true;
       });
-      
+
       renderChannels(filtered);
       updateFilterInfo(filtered.length, channels.length);
     }
@@ -437,15 +474,15 @@
       // Search input with debounce
       const searchInput = document.getElementById('searchInput');
       const clearSearchBtn = document.getElementById('clearSearchBtn');
-      
+
       const debouncedFilter = debounce(() => {
         filters.search = searchInput.value;
         filterChannels();
         updateClearButton();
       }, 300);
-      
+
       searchInput.addEventListener('input', debouncedFilter);
-      
+
       // Clear search button
       clearSearchBtn.addEventListener('click', () => {
         searchInput.value = '';
@@ -454,12 +491,26 @@
         updateClearButton();
         searchInput.focus();
       });
-      
+
       // Update clear button visibility
       function updateClearButton() {
         clearSearchBtn.style.opacity = searchInput.value ? '1' : '0';
       }
-      
+
+      // ID filter with debounce
+      const idFilter = document.getElementById('idFilter');
+      const debouncedIdFilter = debounce(() => {
+        filters.id = idFilter.value;
+        filterChannels();
+      }, 300);
+      idFilter.addEventListener('input', debouncedIdFilter);
+
+      // Channel type filter
+      document.getElementById('channelTypeFilter').addEventListener('change', (e) => {
+        filters.channelType = e.target.value;
+        filterChannels();
+      });
+
       // Status filter
       document.getElementById('statusFilter').addEventListener('change', (e) => {
         filters.status = e.target.value;
@@ -477,15 +528,19 @@
         // Reset filter values
         filters = {
           search: '',
+          id: '',
+          channelType: 'all',
           status: 'all',
           model: 'all'
         };
-        
+
         // Reset form elements
         searchInput.value = '';
+        document.getElementById('idFilter').value = '';
+        document.getElementById('channelTypeFilter').value = 'all';
         document.getElementById('statusFilter').value = 'all';
         document.getElementById('modelFilter').value = 'all';
-        
+
         // Update display
         filterChannels();
         updateClearButton();
@@ -570,9 +625,9 @@
           <div class="${cardClasses.join(' ')}" id="channel-${c.id}">
             <div class="flex justify-between items-center">
               <div style="flex: 1;">
-                <div class="section-title">${escapeHtml(c.name)} ${channelTypeBadge} <span style="color: var(--neutral-500); font-size: 0.875rem; font-weight: 400;">(ID: ${c.id})</span> <span style="color: var(--neutral-600); font-size: 1rem; font-weight: 400;">模型: ${Array.isArray(c.models) ? c.models.join(', ') : ''}</span>${inlineCooldownBadge(c)}</div>
+                <div class="section-title">${escapeHtml(c.name)} ${channelTypeBadge} <span style="color: var(--neutral-500); font-size: 0.875rem; font-weight: 400;">(ID: ${c.id})</span> <span style="color: var(--neutral-600); font-size: 1rem; font-weight: 400;">模型: ${Array.isArray(c.models) ? c.models.join(', ') : ''}</span></div>
                 <div class="text-sm" style="color: var(--neutral-600); margin-top: 4px;">
-                  <div>URL: ${escapeHtml(c.url)} | 优先级: ${c.priority} | ${c.enabled ? '已启用' : '已禁用'}</div>
+                  <div>URL: ${escapeHtml(c.url)} | 优先级: ${c.priority} | ${c.enabled ? '已启用' : '已禁用'}${inlineCooldownBadge(c)}</div>
                 </div>
               </div>
               <div class="channel-actions">

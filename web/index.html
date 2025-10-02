@@ -53,39 +53,8 @@
 
         <!-- 服务详情 -->
         <section class="mb-8">
-          <div class="grid grid-cols-2" style="gap: var(--space-6);">
-            <!-- 服务配置 -->
-            <div class="glass-card animate-slide-up" style="animation-delay: 0.2s;">
-              <h3 class="text-xl font-semibold mb-6">
-                <svg class="inline-block w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
-                </svg>
-                服务渠道
-              </h3>
-              <div class="space-y-4">
-                <div class="flex justify-between items-center">
-                  <span>活跃渠道</span>
-                  <span class="font-semibold" id="active-channels">--</span>
-                </div>
-                <div class="flex justify-between items-center">
-                  <span>支持模型</span>
-                  <span class="font-semibold" id="active-models">--</span>
-                </div>
-                <div class="flex justify-between items-center">
-                  <span>统计周期</span>
-                  <span class="font-semibold">24小时</span>
-                </div>
-              </div>
-              <div class="mt-6">
-                <a href="/web/channels.html" class="btn btn-primary w-full">
-                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
-                  </svg>
-                  管理渠道
-                </a>
-              </div>
-            </div>
+            <div class="glass-card animate-slide-up" style="animation-delay: 0.4s;">
+
 
             <!-- API接口 -->
             <div class="glass-card animate-slide-up" style="animation-delay: 0.3s;">
@@ -105,6 +74,11 @@
                   <div class="text-xs font-mono font-semibold" style="color: var(--success-600);">POST</div>
                   <div class="font-mono text-sm font-medium" style="color: var(--neutral-800);">/v1/responses</div>
                   <div class="text-xs mt-1" style="color: var(--neutral-600);">Codex API 透明代理</div>
+                </div>  
+                <div class="bg-neutral-100 bg-opacity-90 rounded-lg p-3 border border-neutral-200">
+                  <div class="text-xs font-mono font-semibold" style="color: var(--success-600);">POST</div>
+                  <div class="font-mono text-sm font-medium" style="color: var(--neutral-800);">/v1beta</div>
+                  <div class="text-xs mt-1" style="color: var(--neutral-600);">Gemini 透明代理</div>
                 </div>
                 <div class="bg-neutral-100 bg-opacity-90 rounded-lg p-3 border border-neutral-200">
                   <div class="text-xs font-mono font-semibold" style="color: var(--primary-600);">GET</div>
@@ -122,43 +96,6 @@
           </div>
         </section>
 
-        <!-- 快捷操作 -->
-        <section class="mb-8">
-          <div class="glass-card animate-slide-up" style="animation-delay: 0.4s;">
-            <h3 class="text-xl font-semibold mb-6">
-              <svg class="inline-block w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
-              </svg>
-              快捷操作
-            </h3>
-            <div class="grid grid-cols-4" style="gap: var(--space-4);">
-              <a href="/web/stats.html" class="btn btn-secondary">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
-                </svg>
-                查看统计
-              </a>
-              <a href="/web/trend.html" class="btn btn-secondary">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4"/>
-                </svg>
-                请求趋势
-              </a>
-              <a href="/web/logs.html" class="btn btn-secondary">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.864-.833-2.634 0L4.18 16.5c-.77.833.192 2.5 1.732 2.5z"/>
-                </svg>
-                日志
-              </a>
-              <button class="btn btn-secondary" onclick="refreshStats()">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-                </svg>
-                刷新数据
-              </button>
-            </div>
-          </div>
-        </section>
       </div>
     </main>
   </div>
@@ -211,8 +148,6 @@
       document.getElementById('success-requests').textContent = formatNumber(statsData.success_requests || 0);
       document.getElementById('error-requests').textContent = formatNumber(statsData.error_requests || 0);
       document.getElementById('success-rate').textContent = successRate + '%';
-      document.getElementById('active-channels').textContent = statsData.active_channels || 0;
-      document.getElementById('active-models').textContent = statsData.active_models || 0;
     }
 
     // 格式化数字显示
