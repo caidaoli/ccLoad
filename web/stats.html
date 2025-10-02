@@ -20,43 +20,52 @@
         <header class="mb-2">
         </header>
 
-        <!-- 筛选区域 -->
+        <!-- 筛选区域：采用水平布局，参考channels.html设计 -->
         <section class="mb-4">
           <div class="glass-card animate-slide-up" style="animation-delay: 0.1s;">
-            <h3 class="section-title mb-6">
-              <svg class="inline-block w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"/>
-              </svg>
-              筛选条件
-            </h3>
-            <div class="filter-container" style="display: flex; gap: var(--space-3); margin-bottom: var(--space-6); flex-wrap: wrap;">
-              <div class="form-group" style="flex: 0 0 auto; min-width: 120px;">
-                <label for="f_hours" class="form-label">最近小时</label>
-                <input id="f_hours" type="number" min="1" max="168" class="form-input" value="24" style="width: 100%;" />
-              </div>
-              <div class="form-group" style="flex: 0 0 auto; min-width: 120px;">
-                <label for="f_id" class="form-label">渠道ID</label>
-                <input id="f_id" type="number" class="form-input" placeholder="精确ID" style="width: 100%;" />
-              </div>
-              <div class="form-group" style="flex: 1 1 auto; min-width: 140px;">
-                <label for="f_name" class="form-label">渠道名包含</label>
-                <input id="f_name" type="text" class="form-input" placeholder="关键字" style="width: 100%;" />
-              </div>
-              <div class="form-group" style="flex: 1 1 auto; min-width: 140px;">
-                <label for="f_model" class="form-label">模型包含</label>
-                <input id="f_model" type="text" class="form-input" placeholder="关键字" style="width: 100%;" />
-              </div>
-              <div class="form-group" style="flex: 1 1 auto; min-width: 140px;">
-                <label for="f_model_like" class="form-label">模型包含</label>
-                <input id="f_model_like" type="text" class="form-input" placeholder="关键字" style="width: 100%;" />
-              </div>
-              <div class="form-group" style="flex: 0 0 auto; min-width: 100px; display: flex; align-items: end;">
-                <button id="btn_filter" class="btn btn-primary" style="width: 100%;">
-                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
-                  </svg>
-                  筛选
-                </button>
+            <div class="filter-bar">
+              <div class="filter-controls">
+                <!-- 最近小时筛选 -->
+                <div class="filter-group">
+                  <label for="f_hours" class="filter-label">最近小时</label>
+                  <select id="f_hours" class="filter-select" style="min-width: 100px;">
+                    <option value="1">1小时</option>
+                    <option value="3">3小时</option>
+                    <option value="6">6小时</option>
+                    <option value="12">12小时</option>
+                    <option value="24" selected>24小时</option>
+                    <option value="48">48小时</option>
+                    <option value="72">72小时</option>
+                  </select>
+                </div>
+
+                <!-- 渠道ID筛选 -->
+                <div class="filter-group">
+                  <label for="f_id" class="filter-label">渠道ID</label>
+                  <input type="number" id="f_id" class="filter-input" placeholder="输入ID..." style="max-width: 100px;">
+                </div>
+
+                <!-- 渠道名筛选 -->
+                <div class="filter-group">
+                  <label for="f_name" class="filter-label">渠道名</label>
+                  <input type="text" id="f_name" class="filter-input" placeholder="包含文本...">
+                </div>
+
+                <!-- 模型筛选（合并重复字段） -->
+                <div class="filter-group">
+                  <label for="f_model" class="filter-label">模型</label>
+                  <input type="text" id="f_model" class="filter-input" placeholder="包含文本...">
+                </div>
+
+                <!-- 统计信息 -->
+                <div class="filter-info">
+                  共 <span id="statsCount">0</span> 条记录
+                </div>
+
+                <!-- 操作按钮组 -->
+                <div style="flex: none;">
+                  <button id="btn_filter" type="button" class="btn btn-primary" style="padding: 8px 16px; font-size: 14px;">筛选</button>
+                </div>
               </div>
             </div>
           </div>
@@ -170,7 +179,8 @@
         statsData = response.success ? (response.data || []) : (response || []);
         updateSummaryCards();
         renderStatsTable();
-        
+        updateStatsCount();
+
       } catch (error) {
         console.error('加载统计数据失败:', error);
         if (window.showError) try { window.showError('无法加载统计数据'); } catch(_){}
@@ -400,15 +410,14 @@
       const id = document.getElementById('f_id').value.trim();
       const name = document.getElementById('f_name').value.trim();
       const model = document.getElementById('f_model').value.trim();
-      const modelLike = document.getElementById('f_model_like').value.trim();
-      
+
       const q = new URLSearchParams(location.search);
       if (hours) q.set('hours', hours); else q.delete('hours');
       if (id) q.set('channel_id', id); else q.delete('channel_id');
       if (name) { q.set('channel_name_like', name); q.delete('channel_name'); }
       else { q.delete('channel_name_like'); }
       if (model) { q.set('model_like', model); q.delete('model'); }
-      else { if (modelLike) q.set('model_like', modelLike); else q.delete('model_like'); q.delete('model'); }
+      else { q.delete('model_like'); q.delete('model'); }
       location.search = '?' + q.toString();
     }
 
@@ -417,24 +426,33 @@
       const id = u.get('channel_id') || '';
       const name = u.get('channel_name_like') || u.get('channel_name') || '';
       const hours = u.get('hours') || '24';
-      const model = u.get('model') || '';
-      const modelLike = u.get('model_like') || '';
-      
+      const model = u.get('model_like') || u.get('model') || '';
+
       document.getElementById('f_hours').value = hours;
       document.getElementById('f_id').value = id;
       document.getElementById('f_name').value = name;
       document.getElementById('f_model').value = model;
-      document.getElementById('f_model_like').value = modelLike;
-      
+
       // 事件监听
       document.getElementById('btn_filter').addEventListener('click', applyFilter);
-      
+
       // 回车键筛选
-      ['f_hours', 'f_id', 'f_name', 'f_model', 'f_model_like'].forEach(id => {
-        document.getElementById(id).addEventListener('keydown', e => {
-          if (e.key === 'Enter') applyFilter();
-        });
+      ['f_hours', 'f_id', 'f_name', 'f_model'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+          el.addEventListener('keydown', e => {
+            if (e.key === 'Enter') applyFilter();
+          });
+        }
       });
+    }
+
+    function updateStatsCount() {
+      // 更新筛选器统计信息
+      const statsCountEl = document.getElementById('statsCount');
+      if (statsCountEl && statsData && statsData.stats) {
+        statsCountEl.textContent = statsData.stats.length;
+      }
     }
 
     function formatNumber(num) {

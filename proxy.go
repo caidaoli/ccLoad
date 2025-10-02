@@ -454,7 +454,10 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 				if keyRetry == 0 {
 					// 仅在第一次尝试时触发冷却，避免重复操作
 					// 触发渠道级别冷却，防止后续请求重复尝试该渠道
-					_, _ = s.store.BumpCooldownOnError(ctx, cfg.ID, time.Now())
+					if cooldownDur, cooldownErr := s.store.BumpCooldownOnError(ctx, cfg.ID, time.Now()); cooldownErr == nil {
+						// 同步更新内存缓存，确保渠道选择器能正确过滤冷却中的渠道
+						s.cooldownCache.Store(cfg.ID, time.Now().Add(cooldownDur))
+					}
 				}
 				channelExhausted = true
 				break // 跳出Key重试循环，尝试下一个渠道
@@ -523,7 +526,10 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 				continue // 继续Key重试循环
 			}
 			if res.Status >= 200 && res.Status < 300 {
-				// 异步流式传输成功完成：重置Key级别冷却
+				// 成功时清除渠道级和Key级冷却状态
+				// 清除渠道级冷却缓存（避免内存泄漏，确保缓存一致性）
+				s.cooldownCache.Delete(cfg.ID)
+				// 重置Key级别冷却（保留原有逻辑）
 				_ = s.keySelector.MarkKeySuccess(ctx, cfg.ID, keyIndex)
 
 				// 记录成功日志（使用原始模型，记录使用的Key）
@@ -576,8 +582,9 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 				return
 			}
 
-			// 其他非2xx：Key级别指数退避冷却，继续尝试当前渠道的其他Key
-			_ = s.keySelector.MarkKeyError(ctx, cfg.ID, keyIndex)
+			// 其他非2xx响应：记录日志并触发渠道级冷却
+			// 设计原则（SRP）：401/429/500等错误本质上是渠道级问题（配置错误/欠费/限流）
+			// 而非单个Key问题，因此应该直接冷却整个渠道，切换到其他渠道重试
 			msg := fmt.Sprintf("upstream status %d", res.Status)
 			if len(res.Body) > 0 {
 				msg = fmt.Sprintf("%s: %s", msg, truncateErr(safeBodyToString(res.Body)))
@@ -598,15 +605,27 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 				logEntry.FirstByteTime = &res.FirstByteTime
 			}
 			s.addLogAsync(logEntry)
+
+			// 触发渠道级冷却（指数退避：1s -> 2s -> 4s -> ... -> 30分钟）
+			if cooldownDur, err := s.store.BumpCooldownOnError(ctx, cfg.ID, time.Now()); err == nil {
+				// 同步更新内存缓存，确保渠道选择器能正确过滤冷却中的渠道
+				s.cooldownCache.Store(cfg.ID, time.Now().Add(cooldownDur))
+			}
+
+			// 保存最后的响应信息（用于最终的503响应）
 			lastStatus = res.Status
 			lastBody = res.Body
 			lastHeader = res.Header
-			// 继续Key重试循环，尝试下一个可用Key
+
+			// 立即跳过当前渠道，尝试下一个候选渠道
+			// 不再进行Key级别重试，因为这类错误通常是渠道整体问题
+			break // 跳出Key重试循环
 		}
 
-		// Key重试循环结束，检查是否需要跳过当前渠道
+		// Key重试循环结束，检查是否因为"所有Key都在冷却中"而退出
 		if channelExhausted {
-			continue // 跳到下一个渠道
+			// 渠道冷却已在第457行触发，直接跳到下一个渠道
+			continue
 		}
 	}
 
