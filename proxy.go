@@ -34,6 +34,24 @@ func isGeminiRequest(path string) bool {
 	return strings.Contains(path, "/v1beta/")
 }
 
+// isStreamingRequest 检测是否为流式请求
+// 支持多种API的流式标识方式：
+// - Gemini: 路径包含 :streamGenerateContent
+// - Claude/OpenAI: 请求体中 stream=true
+func isStreamingRequest(path string, body []byte) bool {
+	// Gemini流式请求特征：路径包含 :streamGenerateContent
+	if strings.Contains(path, ":streamGenerateContent") {
+		return true
+	}
+
+	// Claude/OpenAI流式请求特征：请求体中 stream=true
+	var reqModel struct {
+		Stream bool `json:"stream"`
+	}
+	_ = sonic.Unmarshal(body, &reqModel)
+	return reqModel.Stream
+}
+
 // classifyError 分类错误类型，返回状态码和是否应该重试
 func classifyError(err error) (statusCode int, shouldRetry bool) {
 	if err == nil {
@@ -344,10 +362,12 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 	}
 	_ = c.Request.Body.Close()
 	var reqModel struct {
-		Model  string `json:"model"`
-		Stream bool   `json:"stream"`
+		Model string `json:"model"`
 	}
 	_ = sonic.Unmarshal(all, &reqModel)
+
+	// 智能检测流式请求（支持Gemini路径特征和Claude/OpenAI请求体标识）
+	isStreaming := isStreamingRequest(requestPath, all)
 
 	// 多源模型名称获取：优先请求体，其次URL路径
 	originalModel := reqModel.Model
@@ -400,7 +420,7 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 			Model:       originalModel,
 			StatusCode:  503,
 			Message:     "no available upstream (all cooled or none)",
-			IsStreaming: reqModel.Stream,
+			IsStreaming: isStreaming,
 		})
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no available upstream (all cooled or none)"})
 		return
@@ -437,7 +457,7 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 						ChannelID:   &cfg.ID,
 						StatusCode:  503,
 						Message:     fmt.Sprintf("channel keys unavailable: %v", err),
-						IsStreaming: reqModel.Stream,
+						IsStreaming: isStreaming,
 					})
 				}
 				channelExhausted = true
@@ -478,7 +498,7 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 					StatusCode:  statusCode,
 					Message:     truncateErr(err.Error()),
 					Duration:    duration,
-					IsStreaming: reqModel.Stream,
+					IsStreaming: isStreaming,
 					APIKeyUsed:  selectedKey,
 				})
 
@@ -518,12 +538,12 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 					StatusCode:  res.Status,
 					Duration:    duration,
 					Message:     "ok",
-					IsStreaming: reqModel.Stream,
+					IsStreaming: isStreaming,
 					APIKeyUsed:  selectedKey,
 				}
 
 				// 流式请求记录首字节响应时间
-				if reqModel.Stream {
+				if isStreaming {
 					logEntry.FirstByteTime = &res.FirstByteTime
 				}
 
@@ -547,10 +567,10 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 					StatusCode:  res.Status,
 					Message:     msg,
 					Duration:    duration,
-					IsStreaming: reqModel.Stream,
+					IsStreaming: isStreaming,
 					APIKeyUsed:  selectedKey,
 				}
-				if reqModel.Stream {
+				if isStreaming {
 					logEntry.FirstByteTime = &res.FirstByteTime
 				}
 				s.addLogAsync(logEntry)
@@ -575,10 +595,10 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 				StatusCode:  res.Status,
 				Message:     msg,
 				Duration:    duration,
-				IsStreaming: reqModel.Stream,
+				IsStreaming: isStreaming,
 				APIKeyUsed:  selectedKey,
 			}
-			if reqModel.Stream {
+			if isStreaming {
 				logEntry.FirstByteTime = &res.FirstByteTime
 			}
 			s.addLogAsync(logEntry)
@@ -600,7 +620,7 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 		Model:       originalModel,
 		StatusCode:  503,
 		Message:     "exhausted backends",
-		IsStreaming: reqModel.Stream,
+		IsStreaming: isStreaming,
 	})
 	if lastStatus != 0 {
 		// surface last upstream response info
