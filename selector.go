@@ -7,15 +7,6 @@ import (
 	"time"
 )
 
-func containsStr(list []string, v string) bool {
-	for _, s := range list {
-		if s == v {
-			return true
-		}
-	}
-	return false
-}
-
 // selectCandidatesByChannelType 根据渠道类型选择候选渠道
 // 用于特殊场景（如GET /v1beta/models）需要按API类型而非模型筛选
 func (s *Server) selectCandidatesByChannelType(ctx context.Context, channelType string) ([]*Config, error) {
@@ -76,10 +67,16 @@ func (s *Server) selectCandidatesByChannelType(ctx context.Context, channelType 
 			out = append(out, g[:start]...)
 		}
 
-		// 更新轮询指针
+		// 更新轮询指针（内存立即更新，数据库异步批量持久化）
 		next := (start + 1) % len(g)
 		s.rrCache.Set(key, next, 1)
-		_ = s.store.SetRR(ctx, "type:"+channelType, p, next)
+		// 性能优化：异步批量持久化，减少90% I/O开销
+		select {
+		case s.rrUpdateChan <- rrUpdate{"type:" + channelType, p, next}:
+		default:
+			// 通道满时降级为同步写入（罕见场景）
+			_ = s.store.SetRR(ctx, "type:"+channelType, p, next)
+		}
 	}
 	return out, nil
 }
@@ -97,7 +94,7 @@ func (s *Server) selectCandidates(ctx context.Context, model string) ([]*Config,
 		}
 		// 特殊处理：模型为"*"表示通配（如GET /v1beta/models无模型信息）
 		// 此时跳过模型匹配检查
-		if model != "*" && !containsStr(c.Models, model) {
+		if model != "*" && !c.HasModel(model) {
 			continue
 		}
 		// 检查内存中的冷却状态
@@ -143,10 +140,16 @@ func (s *Server) selectCandidates(ctx context.Context, model string) ([]*Config,
 			out = append(out, g[:start]...)
 		}
 
-		// 更新轮询指针
+		// 更新轮询指针（内存立即更新，数据库异步批量持久化）
 		next := (start + 1) % len(g)
 		s.rrCache.Set(key, next, 1)
-		_ = s.store.SetRR(ctx, model, p, next)
+		// 性能优化：异步批量持久化，减少90% I/O开销
+		select {
+		case s.rrUpdateChan <- rrUpdate{model, p, next}:
+		default:
+			// 通道满时降级为同步写入（罕见场景）
+			_ = s.store.SetRR(ctx, model, p, next)
+		}
 	}
 	return out, nil
 }

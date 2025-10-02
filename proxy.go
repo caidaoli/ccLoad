@@ -448,9 +448,9 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 			// 多Key支持：选择可用的API Key
 			keyIndex, selectedKey, err := s.keySelector.SelectAvailableKey(ctx, cfg)
 			if err != nil {
-				// 所有Key都在冷却中，标记渠道耗尽，跳到下一个渠道
+				// 所有Key都在冷却中，触发渠道级别冷却并跳到下一个渠道
 				if keyRetry == 0 {
-					// 仅在第一次尝试时记录日志，避免重复日志
+					// 仅在第一次尝试时记录日志和触发冷却，避免重复操作
 					s.addLogAsync(&LogEntry{
 						Time:        JSONTime{time.Now()},
 						Model:       originalModel,
@@ -459,6 +459,9 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 						Message:     fmt.Sprintf("channel keys unavailable: %v", err),
 						IsStreaming: isStreaming,
 					})
+
+					// 修复：触发渠道级别冷却，防止后续请求重复尝试该渠道
+					_, _ = s.store.BumpCooldownOnError(ctx, cfg.ID, time.Now())
 				}
 				channelExhausted = true
 				break // 跳出Key重试循环，尝试下一个渠道
