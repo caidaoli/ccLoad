@@ -498,12 +498,14 @@ body {
 }
 
 .btn-danger {
-  background: linear-gradient(135deg, var(--error-500), var(--error-600));
+  background: #ef4444;
   color: white;
+  transition: all 0.2s;
 }
 
 .btn-danger:hover {
-  transform: translateY(-2px);
+  background: #dc2626;
+  transform: translateY(-2px) scale(1.05);
   box-shadow: 0 8px 25px rgba(239, 68, 68, 0.4);
 }
 
