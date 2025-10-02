@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	_ "modernc.org/sqlite"
 )
 
@@ -102,7 +103,8 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	s.addColumnIfNotExists(ctx, "logs", "api_key_used", "TEXT")                     // 使用的API Key（完整值）
 	s.addColumnIfNotExists(ctx, "channels", "model_redirects", "TEXT DEFAULT '{}'") // 模型重定向字段，JSON格式
 	s.addColumnIfNotExists(ctx, "channels", "api_keys", "TEXT DEFAULT '[]'")        // 多Key支持，JSON数组
-	s.addColumnIfNotExists(ctx, "channels", "key_strategy", "TEXT DEFAULT 'sequential'") // Key使用策略
+	s.addColumnIfNotExists(ctx, "channels", "key_strategy", "TEXT DEFAULT 'sequential'")     // Key使用策略
+	s.addColumnIfNotExists(ctx, "channels", "channel_type", "TEXT DEFAULT 'anthropic'") // 渠道类型
 
 	// 创建 key_cooldowns 表（Key级别冷却）
 	if _, err := s.db.ExecContext(ctx, `
@@ -286,7 +288,7 @@ func (s *SQLiteStore) Vacuum(ctx context.Context) error {
 
 func (s *SQLiteStore) ListConfigs(ctx context.Context) ([]*Config, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, api_key, url, priority, models, model_redirects, enabled, created_at, updated_at
+		SELECT id, name, api_key, api_keys, key_strategy, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at
 		FROM channels
 		ORDER BY priority DESC, id ASC
 	`)
@@ -302,7 +304,7 @@ func (s *SQLiteStore) ListConfigs(ctx context.Context) ([]*Config, error) {
 
 func (s *SQLiteStore) GetConfig(ctx context.Context, id int64) (*Config, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, api_key, url, priority, models, model_redirects, enabled, created_at, updated_at
+		SELECT id, name, api_key, api_keys, key_strategy, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at
 		FROM channels
 		WHERE id = ?
 	`, id)
@@ -323,11 +325,16 @@ func (s *SQLiteStore) CreateConfig(ctx context.Context, c *Config) (*Config, err
 	now := time.Now()
 	modelsStr, _ := serializeModels(c.Models)
 	modelRedirectsStr, _ := serializeModelRedirects(c.ModelRedirects)
+	apiKeysStr, _ := sonic.Marshal(c.APIKeys) // 序列化多Key数组
+
+	// 使用GetChannelType确保默认值
+	channelType := c.GetChannelType()
+	keyStrategy := c.GetKeyStrategy() // 确保默认值
 
 	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO channels(name, api_key, url, priority, models, model_redirects, enabled, created_at, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, c.Name, c.APIKey, c.URL, c.Priority, modelsStr, modelRedirectsStr,
+		INSERT INTO channels(name, api_key, api_keys, key_strategy, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, c.Name, c.APIKey, string(apiKeysStr), keyStrategy, c.URL, c.Priority, modelsStr, modelRedirectsStr, channelType,
 		boolToInt(c.Enabled), now, now)
 
 	if err != nil {
@@ -366,13 +373,16 @@ func (s *SQLiteStore) UpdateConfig(ctx context.Context, id int64, upd *Config) (
 	url := strings.TrimSpace(upd.URL)
 	modelsStr, _ := serializeModels(upd.Models)
 	modelRedirectsStr, _ := serializeModelRedirects(upd.ModelRedirects)
+	apiKeysStr, _ := sonic.Marshal(upd.APIKeys) // 序列化多Key数组
+	channelType := upd.GetChannelType()         // 确保默认值
+	keyStrategy := upd.GetKeyStrategy()         // 确保默认值
 	updatedAt := time.Now()
 
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE channels
-		SET name=?, api_key=?, url=?, priority=?, models=?, model_redirects=?, enabled=?, updated_at=?
+		SET name=?, api_key=?, api_keys=?, key_strategy=?, url=?, priority=?, models=?, model_redirects=?, channel_type=?, enabled=?, updated_at=?
 		WHERE id=?
-	`, name, apiKey, url, upd.Priority, modelsStr, modelRedirectsStr,
+	`, name, apiKey, string(apiKeysStr), keyStrategy, url, upd.Priority, modelsStr, modelRedirectsStr, channelType,
 		boolToInt(upd.Enabled), updatedAt, id)
 	if err != nil {
 		return nil, err
@@ -398,18 +408,24 @@ func (s *SQLiteStore) ReplaceConfig(ctx context.Context, c *Config) (*Config, er
 	now := time.Now()
 	modelsStr, _ := serializeModels(c.Models)
 	modelRedirectsStr, _ := serializeModelRedirects(c.ModelRedirects)
+	apiKeysStr, _ := sonic.Marshal(c.APIKeys) // 序列化多Key数组
+	channelType := c.GetChannelType()         // 确保默认值
+	keyStrategy := c.GetKeyStrategy()         // 确保默认值
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO channels(name, api_key, url, priority, models, model_redirects, enabled, created_at, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO channels(name, api_key, api_keys, key_strategy, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(NAME) DO UPDATE SET
 			api_key = excluded.api_key,
+			api_keys = excluded.api_keys,
+			key_strategy = excluded.key_strategy,
 			url = excluded.url,
 			priority = excluded.priority,
 			models = excluded.models,
 			model_redirects = excluded.model_redirects,
+			channel_type = excluded.channel_type,
 			enabled = excluded.enabled,
 			updated_at = excluded.updated_at
-	`, c.Name, c.APIKey, c.URL, c.Priority, modelsStr, modelRedirectsStr,
+	`, c.Name, c.APIKey, string(apiKeysStr), keyStrategy, c.URL, c.Priority, modelsStr, modelRedirectsStr, channelType,
 		boolToInt(c.Enabled), now, now)
 	if err != nil {
 		return nil, err

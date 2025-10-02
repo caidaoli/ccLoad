@@ -105,7 +105,8 @@ type traceBreakdown struct {
 
 // forwardOnceAsync: 异步流式转发，透明转发客户端原始请求
 // 参数新增 keyIndex 用于指定使用的API Key索引（-1表示使用默认APIKey字段）
-func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, keyIndex int, body []byte, hdr http.Header, rawQuery, requestPath string, w http.ResponseWriter) (*fwResult, float64, error) {
+// 参数新增 method 用于支持任意HTTP方法（GET、POST、PUT、DELETE等）
+func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, keyIndex int, method string, body []byte, hdr http.Header, rawQuery, requestPath string, w http.ResponseWriter) (*fwResult, float64, error) {
 	startTime := time.Now()
 
 	// HTTP trace for timing breakdown
@@ -146,7 +147,12 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, keyIndex int
 	if err != nil {
 		return nil, 0, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(body))
+	// 使用客户端原始HTTP方法，支持GET（无body）和POST（有body）等所有方法
+	var bodyReader io.Reader
+	if len(body) > 0 {
+		bodyReader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u.String(), bodyReader)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -320,10 +326,17 @@ func extractModelFromPath(path string) string {
 
 // 通用透明代理处理器
 func (s *Server) handleProxyRequest(c *gin.Context) {
-	// 获取客户端原始请求路径（透明转发的关键）
+	// 获取客户端原始请求路径和方法（透明转发的关键）
 	requestPath := c.Request.URL.Path
+	requestMethod := c.Request.Method
 
-	// 全量读取再转发，KISS
+	// 特殊处理：拦截 GET /v1beta/models 请求，返回本地模型列表
+	if requestMethod == http.MethodGet && (requestPath == "/v1beta/models" || requestPath == "/v1/models") {
+		s.handleListGeminiModels(c)
+		return
+	}
+
+	// 全量读取再转发，KISS（GET请求body通常为空）
 	all, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
@@ -343,10 +356,15 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 		originalModel = extractModelFromPath(requestPath)
 	}
 
-	// 如果两种方式都无法获取模型名称，返回错误
+	// 对于GET请求，如果无法提取模型名称，使用默认值"*"表示通配
+	// 这允许列出所有模型等操作（如 GET /v1beta/models）
 	if originalModel == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON or missing model"})
-		return
+		if requestMethod == http.MethodGet {
+			originalModel = "*" // 通配符，匹配所有渠道
+		} else {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON or missing model"})
+			return
+		}
 	}
 
 	// 保存原始请求模型（用于日志记录和渠道选择）
@@ -360,8 +378,17 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	// Build candidate list
-	cands, err := s.selectCandidates(ctx, originalModel)
+
+	// 智能路由选择：根据请求类型选择不同的路由策略
+	var cands []*Config
+	// 特殊处理：GET /v1beta/models 等Gemini API元数据请求，使用渠道类型路由
+	if requestMethod == http.MethodGet && isGeminiRequest(requestPath) {
+		// 按渠道类型筛选Gemini渠道（不依赖模型匹配）
+		cands, err = s.selectCandidatesByChannelType(ctx, "gemini")
+	} else {
+		// 正常流程：按模型匹配渠道
+		cands, err = s.selectCandidates(ctx, originalModel)
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		return
@@ -384,117 +411,163 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 	var lastBody []byte
 	var lastHeader http.Header
 	for _, cfg := range cands {
-		// 多Key支持：选择可用的API Key
-		keyIndex, selectedKey, err := s.keySelector.SelectAvailableKey(ctx, cfg)
-		if err != nil {
-			// 所有Key都在冷却中，尝试下一个渠道
-			s.addLogAsync(&LogEntry{
-				Time:        JSONTime{time.Now()},
-				Model:       originalModel,
-				ChannelID:   &cfg.ID,
-				StatusCode:  503,
-				Message:     fmt.Sprintf("channel keys unavailable: %v", err),
-				IsStreaming: reqModel.Stream,
-			})
-			continue
+		// 渠道内Key级别重试循环：限制重试次数避免过多延迟
+		actualKeyCount := len(cfg.GetAPIKeys())
+		if actualKeyCount == 0 {
+			actualKeyCount = 1 // 至少尝试一次（兼容旧的APIKey字段）
 		}
 
-		// 模型重定向：检查渠道是否配置了模型重定向映射
-		actualModel := originalModel
-		if len(cfg.ModelRedirects) > 0 {
-			if redirectModel, ok := cfg.ModelRedirects[originalModel]; ok && redirectModel != "" {
-				actualModel = redirectModel
+		// 使用配置的最大重试次数，但不超过实际Key数量
+		maxKeyRetries := s.maxKeyRetries
+		if maxKeyRetries > actualKeyCount {
+			maxKeyRetries = actualKeyCount
+		}
+
+		var channelExhausted bool
+		for keyRetry := 0; keyRetry < maxKeyRetries; keyRetry++ {
+			// 多Key支持：选择可用的API Key
+			keyIndex, selectedKey, err := s.keySelector.SelectAvailableKey(ctx, cfg)
+			if err != nil {
+				// 所有Key都在冷却中，标记渠道耗尽，跳到下一个渠道
+				if keyRetry == 0 {
+					// 仅在第一次尝试时记录日志，避免重复日志
+					s.addLogAsync(&LogEntry{
+						Time:        JSONTime{time.Now()},
+						Model:       originalModel,
+						ChannelID:   &cfg.ID,
+						StatusCode:  503,
+						Message:     fmt.Sprintf("channel keys unavailable: %v", err),
+						IsStreaming: reqModel.Stream,
+					})
+				}
+				channelExhausted = true
+				break // 跳出Key重试循环，尝试下一个渠道
 			}
-		}
 
-		// 如果模型发生重定向，修改请求体中的模型字段
-		bodyToSend := all
-		if actualModel != originalModel {
-			var reqData map[string]any
-			if err := sonic.Unmarshal(all, &reqData); err == nil {
-				reqData["model"] = actualModel
-				if modifiedBody, err := sonic.Marshal(reqData); err == nil {
-					bodyToSend = modifiedBody
+			// 模型重定向：检查渠道是否配置了模型重定向映射
+			actualModel := originalModel
+			if len(cfg.ModelRedirects) > 0 {
+				if redirectModel, ok := cfg.ModelRedirects[originalModel]; ok && redirectModel != "" {
+					actualModel = redirectModel
 				}
 			}
-		}
 
-		// 透明转发：使用选择的Key进行转发
-		res, duration, err := s.forwardOnceAsync(ctx, cfg, keyIndex, bodyToSend, c.Request.Header, c.Request.URL.RawQuery, requestPath, c.Writer)
-		if err != nil {
-			// 分类错误类型
-			statusCode, shouldRetry := classifyError(err)
-
-			// 记录日志（使用原始模型，记录使用的Key）
-			s.addLogAsync(&LogEntry{
-				Time:        JSONTime{time.Now()},
-				Model:       originalModel,
-				ChannelID:   &cfg.ID,
-				StatusCode:  statusCode,
-				Message:     truncateErr(err.Error()),
-				Duration:    duration,
-				IsStreaming: reqModel.Stream,
-				APIKeyUsed:  selectedKey,
-			})
-
-			// 如果是不可重试的错误，直接返回
-			if !shouldRetry {
-				// 根据错误类型返回适当的响应
-				switch statusCode {
-				case StatusConnectionReset:
-					c.JSON(502, gin.H{"error": "upstream connection reset"})
-				case StatusClientClosedRequest:
-					c.JSON(499, gin.H{"error": "request cancelled"})
-				case 504:
-					c.JSON(504, gin.H{"error": "gateway timeout"})
-				default:
-					c.JSON(statusCode, gin.H{"error": truncateErr(err.Error())})
+			// 如果模型发生重定向，修改请求体中的模型字段
+			bodyToSend := all
+			if actualModel != originalModel {
+				var reqData map[string]any
+				if err := sonic.Unmarshal(all, &reqData); err == nil {
+					reqData["model"] = actualModel
+					if modifiedBody, err := sonic.Marshal(reqData); err == nil {
+						bodyToSend = modifiedBody
+					}
 				}
+			}
+
+			// 透明转发：使用选择的Key和HTTP方法进行转发
+			res, duration, err := s.forwardOnceAsync(ctx, cfg, keyIndex, requestMethod, bodyToSend, c.Request.Header, c.Request.URL.RawQuery, requestPath, c.Writer)
+			if err != nil {
+				// 分类错误类型
+				statusCode, shouldRetry := classifyError(err)
+
+				// 记录日志（使用原始模型，记录使用的Key）
+				s.addLogAsync(&LogEntry{
+					Time:        JSONTime{time.Now()},
+					Model:       originalModel,
+					ChannelID:   &cfg.ID,
+					StatusCode:  statusCode,
+					Message:     truncateErr(err.Error()),
+					Duration:    duration,
+					IsStreaming: reqModel.Stream,
+					APIKeyUsed:  selectedKey,
+				})
+
+				// 如果是不可重试的错误，直接返回
+				if !shouldRetry {
+					// 根据错误类型返回适当的响应
+					switch statusCode {
+					case StatusConnectionReset:
+						c.JSON(502, gin.H{"error": "upstream connection reset"})
+					case StatusClientClosedRequest:
+						c.JSON(499, gin.H{"error": "request cancelled"})
+					case 504:
+						c.JSON(504, gin.H{"error": "gateway timeout"})
+					default:
+						c.JSON(statusCode, gin.H{"error": truncateErr(err.Error())})
+					}
+					return
+				}
+
+				// 可重试错误：Key级别冷却，继续尝试当前渠道的其他Key
+				_ = s.keySelector.MarkKeyError(ctx, cfg.ID, keyIndex)
+
+				lastStatus = statusCode
+				lastBody = []byte(err.Error())
+				lastHeader = nil
+				continue // 继续Key重试循环
+			}
+			if res.Status >= 200 && res.Status < 300 {
+				// 异步流式传输成功完成：重置Key级别冷却
+				_ = s.keySelector.MarkKeySuccess(ctx, cfg.ID, keyIndex)
+
+				// 记录成功日志（使用原始模型，记录使用的Key）
+				logEntry := &LogEntry{
+					Time:        JSONTime{time.Now()},
+					Model:       originalModel,
+					ChannelID:   &cfg.ID,
+					StatusCode:  res.Status,
+					Duration:    duration,
+					Message:     "ok",
+					IsStreaming: reqModel.Stream,
+					APIKeyUsed:  selectedKey,
+				}
+
+				// 流式请求记录首字节响应时间
+				if reqModel.Stream {
+					logEntry.FirstByteTime = &res.FirstByteTime
+				}
+
+				s.addLogAsync(logEntry)
+				return // 成功完成，直接返回
+			}
+
+			// 非2xx响应：检查是否为特殊状态码（如499）
+			if res.Status == StatusClientClosedRequest {
+				// 客户端取消请求，直接返回，不尝试其他Key和渠道
+				msg := fmt.Sprintf("upstream status %d", res.Status)
+				if len(res.Body) > 0 {
+					msg = fmt.Sprintf("%s: %s", msg, truncateErr(safeBodyToString(res.Body)))
+				}
+
+				// 记录日志（使用原始模型，记录使用的Key）
+				logEntry := &LogEntry{
+					Time:        JSONTime{time.Now()},
+					Model:       originalModel,
+					ChannelID:   &cfg.ID,
+					StatusCode:  res.Status,
+					Message:     msg,
+					Duration:    duration,
+					IsStreaming: reqModel.Stream,
+					APIKeyUsed:  selectedKey,
+				}
+				if reqModel.Stream {
+					logEntry.FirstByteTime = &res.FirstByteTime
+				}
+				s.addLogAsync(logEntry)
+
+				// 直接返回，不切换Key和渠道
+				c.JSON(res.Status, gin.H{"error": msg})
 				return
 			}
 
-			// 可重试错误：Key级别冷却（单Key场景会回退到渠道级别）
+			// 其他非2xx：Key级别指数退避冷却，继续尝试当前渠道的其他Key
 			_ = s.keySelector.MarkKeyError(ctx, cfg.ID, keyIndex)
-
-			lastStatus = statusCode
-			lastBody = []byte(err.Error())
-			lastHeader = nil
-			continue
-		}
-		if res.Status >= 200 && res.Status < 300 {
-			// 异步流式传输成功完成：重置Key级别冷却
-			_ = s.keySelector.MarkKeySuccess(ctx, cfg.ID, keyIndex)
-
-			// 记录成功日志（使用原始模型，记录使用的Key）
-			logEntry := &LogEntry{
-				Time:        JSONTime{time.Now()},
-				Model:       originalModel,
-				ChannelID:   &cfg.ID,
-				StatusCode:  res.Status,
-				Duration:    duration,
-				Message:     "ok",
-				IsStreaming: reqModel.Stream,
-				APIKeyUsed:  selectedKey,
-			}
-
-			// 流式请求记录首字节响应时间
-			if reqModel.Stream {
-				logEntry.FirstByteTime = &res.FirstByteTime
-			}
-
-			s.addLogAsync(logEntry)
-			return // 成功完成，直接返回
-		}
-
-		// 非2xx响应：检查是否为特殊状态码（如499）
-		if res.Status == StatusClientClosedRequest {
-			// 客户端取消请求，直接返回，不尝试其他渠道
 			msg := fmt.Sprintf("upstream status %d", res.Status)
 			if len(res.Body) > 0 {
 				msg = fmt.Sprintf("%s: %s", msg, truncateErr(safeBodyToString(res.Body)))
 			}
 
-			// 记录日志（使用原始模型，记录使用的Key）
+			// 记录错误日志（使用原始模型，记录使用的Key）
 			logEntry := &LogEntry{
 				Time:        JSONTime{time.Now()},
 				Model:       originalModel,
@@ -509,37 +582,16 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 				logEntry.FirstByteTime = &res.FirstByteTime
 			}
 			s.addLogAsync(logEntry)
-
-			// 直接返回，不切换渠道
-			c.JSON(res.Status, gin.H{"error": msg})
-			return
+			lastStatus = res.Status
+			lastBody = res.Body
+			lastHeader = res.Header
+			// 继续Key重试循环，尝试下一个可用Key
 		}
 
-		// 其他非2xx：Key级别指数退避冷却并尝试下一个
-		_ = s.keySelector.MarkKeyError(ctx, cfg.ID, keyIndex)
-		msg := fmt.Sprintf("upstream status %d", res.Status)
-		if len(res.Body) > 0 {
-			msg = fmt.Sprintf("%s: %s", msg, truncateErr(safeBodyToString(res.Body)))
+		// Key重试循环结束，检查是否需要跳过当前渠道
+		if channelExhausted {
+			continue // 跳到下一个渠道
 		}
-
-		// 记录错误日志（使用原始模型，记录使用的Key）
-		logEntry := &LogEntry{
-			Time:        JSONTime{time.Now()},
-			Model:       originalModel,
-			ChannelID:   &cfg.ID,
-			StatusCode:  res.Status,
-			Message:     msg,
-			Duration:    duration,
-			IsStreaming: reqModel.Stream,
-			APIKeyUsed:  selectedKey,
-		}
-		if reqModel.Stream {
-			logEntry.FirstByteTime = &res.FirstByteTime
-		}
-		s.addLogAsync(logEntry)
-		lastStatus = res.Status
-		lastBody = res.Body
-		lastHeader = res.Header
 	}
 
 	// All failed
@@ -638,4 +690,63 @@ func first(q map[string][]string, k string) string {
 		return vs[0]
 	}
 	return ""
+}
+
+// handleListGeminiModels 处理 GET /v1beta/models 请求，返回本地 Gemini 模型列表
+func (s *Server) handleListGeminiModels(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	// 获取所有 gemini 渠道的去重模型列表
+	models, err := s.getGeminiModels(ctx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load models"})
+		return
+	}
+
+	// 构造 Gemini API 响应格式
+	type ModelInfo struct {
+		Name        string `json:"name"`
+		DisplayName string `json:"displayName"`
+	}
+
+	modelList := make([]ModelInfo, 0, len(models))
+	for _, model := range models {
+		modelList = append(modelList, ModelInfo{
+			Name:        "models/" + model,
+			DisplayName: formatModelDisplayName(model),
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"models": modelList,
+	})
+}
+
+// formatModelDisplayName 将模型ID转换为友好的显示名称
+func formatModelDisplayName(modelID string) string {
+	// 简单的格式化：移除日期后缀，首字母大写
+	// 例如：gemini-2.5-flash → Gemini 2.5 Flash
+	parts := strings.Split(modelID, "-")
+	var words []string
+	for _, part := range parts {
+		// 跳过日期格式（8位数字）
+		if len(part) == 8 && isNumeric(part) {
+			continue
+		}
+		// 首字母大写
+		if len(part) > 0 {
+			words = append(words, strings.ToUpper(string(part[0]))+part[1:])
+		}
+	}
+	return strings.Join(words, " ")
+}
+
+// isNumeric 检查字符串是否全是数字
+func isNumeric(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }

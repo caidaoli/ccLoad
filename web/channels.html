@@ -108,6 +108,14 @@
           </div>
         </div>
         <div class="form-group">
+          <label class="form-label" for="channelType">渠道类型 *</label>
+          <select id="channelType" class="form-input" required>
+            <option value="anthropic">Claude (Anthropic)</option>
+            <option value="openai">OpenAI</option>
+            <option value="gemini">Google Gemini</option>
+          </select>
+        </div>
+        <div class="form-group">
           <label class="form-label" for="channelKeyStrategy">Key使用策略（多Key时生效）</label>
           <select id="channelKeyStrategy" class="form-input">
             <option value="sequential">顺序访问（按顺序尝试，失败时切换）</option>
@@ -392,19 +400,43 @@
       el.innerHTML = channelsToRender.map(c => {
         const isCooldown = c.cooldown_remaining_ms > 0;
         const cardClasses = ['glass-card'];
-        
+
         if (isCooldown) {
           cardClasses.push('channel-card-cooldown');
         }
         if (!c.enabled) {
           cardClasses.push('channel-disabled');
         }
-        
+
+        // 渠道类型显示标签（优化版：更鲜明的颜色和边框）
+        const channelTypeLabels = {
+          'anthropic': {
+            text: 'Claude',
+            color: '#8b5cf6',      // 紫色 - Anthropic品牌色
+            bgColor: '#f3e8ff',    // 浅紫背景
+            borderColor: '#c4b5fd' // 紫色边框
+          },
+          'openai': {
+            text: 'OpenAI',
+            color: '#059669',      // 绿色 - OpenAI品牌色
+            bgColor: '#d1fae5',    // 浅绿背景
+            borderColor: '#6ee7b7' // 绿色边框
+          },
+          'gemini': {
+            text: 'Gemini',
+            color: '#2563eb',      // 蓝色 - Google品牌色
+            bgColor: '#dbeafe',    // 浅蓝背景
+            borderColor: '#93c5fd' // 蓝色边框
+          }
+        };
+        const channelTypeInfo = channelTypeLabels[c.channel_type || 'anthropic'];
+        const channelTypeBadge = `<span style="background: ${channelTypeInfo.bgColor}; color: ${channelTypeInfo.color}; padding: 3px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; margin-left: 8px; border: 1.5px solid ${channelTypeInfo.borderColor}; letter-spacing: 0.025em; text-transform: uppercase;">${channelTypeInfo.text}</span>`;
+
         return `
           <div class="${cardClasses.join(' ')}" id="channel-${c.id}">
             <div class="flex justify-between items-center">
               <div style="flex: 1;">
-                <div class="section-title">${escapeHtml(c.name)} <span style="color: var(--neutral-500); font-size: 0.875rem; font-weight: 400;">(ID: ${c.id})</span> <span style="color: var(--neutral-600); font-size: 1rem; font-weight: 400;">模型: ${Array.isArray(c.models) ? c.models.join(', ') : ''}</span>${inlineCooldownBadge(c)}</div>
+                <div class="section-title">${escapeHtml(c.name)} ${channelTypeBadge} <span style="color: var(--neutral-500); font-size: 0.875rem; font-weight: 400;">(ID: ${c.id})</span> <span style="color: var(--neutral-600); font-size: 1rem; font-weight: 400;">模型: ${Array.isArray(c.models) ? c.models.join(', ') : ''}</span>${inlineCooldownBadge(c)}</div>
                 <div class="text-sm" style="color: var(--neutral-600); margin-top: 4px;">
                   <div>URL: ${escapeHtml(c.url)} | 优先级: ${c.priority} | ${c.enabled ? '已启用' : '已禁用'}</div>
                 </div>
@@ -456,6 +488,7 @@
       document.getElementById('modalTitle').textContent = '添加渠道';
       document.getElementById('channelForm').reset();
       document.getElementById('channelEnabled').checked = true;
+      document.getElementById('channelType').value = 'anthropic'; // 默认Claude
       document.getElementById('channelKeyStrategy').value = 'sequential'; // 默认顺序策略
       document.getElementById('channelModelRedirects').value = ''; // 清空模型重定向字段
       // 重置API Key输入框可见性
@@ -477,6 +510,7 @@
       document.getElementById('channelName').value = channel.name;
       document.getElementById('channelUrl').value = channel.url;
       document.getElementById('channelApiKey').value = channel.api_key;
+      document.getElementById('channelType').value = channel.channel_type || 'anthropic';
       document.getElementById('channelKeyStrategy').value = channel.key_strategy || 'sequential';
       document.getElementById('channelPriority').value = channel.priority;
       document.getElementById('channelModels').value = channel.models.join(',');
@@ -526,6 +560,7 @@
         name: document.getElementById('channelName').value.trim(),
         url: document.getElementById('channelUrl').value.trim(),
         api_key: document.getElementById('channelApiKey').value.trim(),
+        channel_type: document.getElementById('channelType').value,
         key_strategy: document.getElementById('channelKeyStrategy').value,
         priority: parseInt(document.getElementById('channelPriority').value) || 0,
         models: document.getElementById('channelModels').value.split(',').map(m => m.trim()).filter(m => m),
@@ -632,6 +667,7 @@
       document.getElementById('channelName').value = copiedName;
       document.getElementById('channelUrl').value = channel.url;
       document.getElementById('channelApiKey').value = channel.api_key;
+      document.getElementById('channelType').value = channel.channel_type || 'anthropic';
       document.getElementById('channelKeyStrategy').value = channel.key_strategy || 'sequential';
       document.getElementById('channelPriority').value = channel.priority;
       document.getElementById('channelModels').value = channel.models.join(',');

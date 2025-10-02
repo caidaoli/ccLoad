@@ -89,11 +89,11 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	Scan(...any) error
 }) (*Config, error) {
 	var c Config
-	var modelsStr, modelRedirectsStr string
+	var modelsStr, modelRedirectsStr, apiKeysStr string
 	var enabledInt int
 
-	if err := scanner.Scan(&c.ID, &c.Name, &c.APIKey, &c.URL, &c.Priority,
-		&modelsStr, &modelRedirectsStr, &enabledInt, &c.CreatedAt, &c.UpdatedAt); err != nil {
+	if err := scanner.Scan(&c.ID, &c.Name, &c.APIKey, &apiKeysStr, &c.KeyStrategy, &c.URL, &c.Priority,
+		&modelsStr, &modelRedirectsStr, &c.ChannelType, &enabledInt, &c.CreatedAt, &c.UpdatedAt); err != nil {
 		return nil, err
 	}
 
@@ -103,6 +103,12 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	}
 	if err := parseModelRedirectsJSON(modelRedirectsStr, &c.ModelRedirects); err != nil {
 		c.ModelRedirects = nil // 解析失败时使用空映射
+	}
+	// 解析多Key数组（如果存在）
+	if apiKeysStr != "" && apiKeysStr != "[]" {
+		if err := sonic.Unmarshal([]byte(apiKeysStr), &c.APIKeys); err != nil {
+			c.APIKeys = nil
+		}
 	}
 	return &c, nil
 }

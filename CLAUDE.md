@@ -176,11 +176,18 @@ docker-compose up -d                       # 使用 compose 启动服务
 ### 环境变量
 - `CCLOAD_PASS`: 管理后台密码（默认: "admin"，生产环境必须设置）
 - `CCLOAD_AUTH`: API访问令牌（可选，多个令牌用逗号分隔）
+- `CCLOAD_MAX_KEY_RETRIES`: 单个渠道内最大Key重试次数（默认: "3"，避免key过多时重试次数过多导致延迟）
 - `SQLITE_PATH`: SQLite数据库路径（默认: "data/ccload.db"）
 - `PORT`: HTTP服务端口（默认: "8080"）
 - `REDIS_URL`: Redis连接URL（可选，用于渠道数据同步备份）
 
 支持 `.env` 文件配置（优先于系统环境变量）
+
+**重试次数优化**：
+- 系统会自动取 `min(CCLOAD_MAX_KEY_RETRIES, 实际Key数量)` 作为重试上限
+- 例如：配置了8个Key但`CCLOAD_MAX_KEY_RETRIES=3`，则最多重试3次
+- 单Key场景：无论配置多少，只尝试1次
+- 推荐配置：2-5次，平衡可用性与响应速度
 
 ### API身份验证系统
 - **管理界面**: 基于Session的认证，24小时有效期
@@ -642,6 +649,7 @@ curl -s http://localhost:8080/public/summary | jq
 - **多Key配置**：在单个渠道中使用逗号分割配置多个API Key
 - **Key级别冷却**：每个Key独立冷却，不影响同渠道其他Key的可用性
 - **灵活策略**：支持顺序访问（sequential）和轮询访问（round_robin）两种模式
+- **重试次数限制**：通过`CCLOAD_MAX_KEY_RETRIES`环境变量控制单个渠道内最大重试次数（默认3次），避免key过多时延迟过高
 - **向后兼容**：单Key场景完全兼容旧版本，无需修改配置
 
 ### 使用场景
@@ -683,12 +691,21 @@ curl -X POST http://localhost:8080/admin/channels \
 **顺序访问策略（sequential）**：
 1. 从第一个Key开始尝试
 2. 如果Key失败或冷却中，自动切换到下一个可用Key
-3. 所有Key都不可用时返回错误
+3. 最多尝试 `min(CCLOAD_MAX_KEY_RETRIES, 实际Key数量)` 次
+4. 所有重试都失败时返回错误
 
 **轮询访问策略（round_robin）**：
 1. 使用轮询指针均匀分配请求
 2. 自动跳过冷却中的Key
-3. 轮询状态持久化，服务重启后保持
+3. 最多尝试 `min(CCLOAD_MAX_KEY_RETRIES, 实际Key数量)` 次
+4. 轮询状态持久化，服务重启后保持
+
+**重试次数限制机制**：
+- **默认值**：3次（可通过环境变量`CCLOAD_MAX_KEY_RETRIES`配置）
+- **计算规则**：实际重试次数 = `min(配置值, 渠道Key数量)`
+- **示例1**：8个Key + 默认配置(3) = 最多重试3次
+- **示例2**：2个Key + 配置为5 = 最多重试2次（受Key数量限制）
+- **优势**：避免渠道配置过多Key时，单个请求重试次数过多导致延迟累积
 
 **Key级别冷却机制**：
 - **触发条件**：Key返回错误或非2xx响应
@@ -766,11 +783,16 @@ go test -v -run "TestKeySelector"
 ### 最佳实践
 
 1. **Key数量**：建议配置2-3个Key，平衡可用性与管理复杂度
-2. **策略选择**：
+2. **重试次数配置**：
+   - 默认值（3次）适合大多数场景，平衡可用性与响应速度
+   - 高可用要求：设置为5-10次（需确保Key质量，避免无效重试）
+   - 低延迟要求：设置为1-2次，快速失败切换到其他渠道
+   - 通过`.env`文件配置：`CCLOAD_MAX_KEY_RETRIES=5`
+3. **策略选择**：
    - 备用场景：使用顺序策略，主Key失败时切换备用
    - 负载均衡：使用轮询策略，平均分配请求负载
-3. **监控**：定期检查日志中的"keys unavailable"错误，及时补充Key
-4. **安全**：使用环境变量或配置文件管理Key，不要硬编码
+4. **监控**：定期检查日志中的"keys unavailable"错误，及时补充Key
+5. **安全**：使用环境变量或配置文件管理Key，不要硬编码
 ## API兼容性支持
 
 ### 支持的API类型
@@ -889,3 +911,229 @@ go test -v -run TestGeminiRequestHeaders
 **向后兼容**：
 - Claude API作为默认行为，确保现有用户无感知
 - 新API通过显式路径特征识别，不影响其他请求
+
+## 渠道类型管理
+
+### 功能概述
+
+渠道类型（channel_type）功能允许为每个渠道指定API提供商类型，实现更精准的路由控制和认证方式管理。
+
+**核心特性**：
+- **类型分类**：支持三种渠道类型 - `anthropic`（Claude）、`openai`、`gemini`（Google）
+- **智能路由**：特定请求（如 GET `/v1beta/models`）按渠道类型路由，无需模型匹配
+- **向后兼容**：默认类型为 `anthropic`，现有渠道无需修改即可正常工作
+- **完整支持**：渠道创建、更新、CSV导入导出、Redis同步均支持渠道类型
+
+### 使用场景
+
+1. **元数据请求路由**：GET `/v1beta/models` 等不包含model参数的请求自动路由到gemini渠道
+2. **API提供商管理**：清晰区分不同API提供商的渠道，便于统计和监控
+3. **批量配置**：通过CSV导入时指定渠道类型，快速配置多个不同类型的渠道
+4. **可视化管理**：Web界面通过颜色徽章直观显示渠道类型
+
+### 配置方式
+
+#### Web界面配置
+
+1. 访问 `/web/channels.html` 渠道管理页面
+2. 创建或编辑渠道时，从"渠道类型"下拉菜单选择：
+   - **Claude (Anthropic)** - 默认选项，适用于Claude API
+   - **OpenAI** - 适用于OpenAI兼容API
+   - **Google Gemini** - 适用于Google Gemini API
+3. 保存后渠道类型将显示为彩色徽章
+
+#### API配置示例
+
+```bash
+# 创建Gemini类型渠道
+curl -X POST http://localhost:8080/admin/channels \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Gemini-Pro",
+    "api_key": "AIza...",
+    "channel_type": "gemini",
+    "url": "https://generativelanguage.googleapis.com",
+    "priority": 10,
+    "models": ["gemini-pro", "gemini-flash"],
+    "enabled": true
+  }'
+
+# 创建OpenAI类型渠道
+curl -X POST http://localhost:8080/admin/channels \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "OpenAI-GPT4",
+    "api_key": "sk-...",
+    "channel_type": "openai",
+    "url": "https://api.openai.com",
+    "priority": 5,
+    "models": ["gpt-4", "gpt-3.5-turbo"],
+    "enabled": true
+  }'
+```
+
+#### CSV批量配置
+
+CSV文件格式（第8列为channel_type）：
+```csv
+name,api_key,url,priority,models,model_redirects,channel_type,enabled
+Claude-Main,sk-ant-xxx,https://api.anthropic.com,10,"claude-3-5-sonnet",{},anthropic,true
+Gemini-Flash,AIza-xxx,https://generativelanguage.googleapis.com,8,"gemini-flash",{},gemini,true
+OpenAI-GPT4,sk-xxx,https://api.openai.com,5,"gpt-4,gpt-3.5-turbo",{},openai,true
+```
+
+导入命令：
+```bash
+curl -X POST http://localhost:8080/admin/channels/import \
+  -H "Cookie: session=xxx" \
+  -F "file=@channels.csv"
+```
+
+### 工作原理
+
+#### 智能路由策略
+
+系统根据请求类型采用不同的路由策略（`proxy.go:117-128`）：
+
+```go
+// 特殊处理：GET /v1beta/models 等Gemini API元数据请求
+if requestMethod == http.MethodGet && isGeminiRequest(requestPath) {
+    // 按渠道类型筛选Gemini渠道（不依赖模型匹配）
+    cands, err = s.selectCandidatesByChannelType(ctx, "gemini")
+} else {
+    // 正常流程：按模型匹配渠道（支持所有类型）
+    cands, err = s.selectCandidates(ctx, originalModel)
+}
+```
+
+**路由逻辑**：
+- **类型路由**：用于元数据请求（如列出模型列表），按 `channel_type` 筛选可用渠道
+- **模型路由**：用于推理请求，按 `models` 字段匹配，不限制渠道类型
+
+#### 渠道类型验证
+
+**验证函数**（`models.go:37-45`）：
+```go
+func IsValidChannelType(t string) bool {
+    switch t {
+    case "anthropic", "openai", "gemini":
+        return true
+    default:
+        return false
+    }
+}
+```
+
+**验证时机**：
+- 渠道创建/更新时
+- CSV导入时（非法值会被跳过并记录错误）
+- 空值自动使用默认值 `anthropic`
+
+### 数据结构
+
+#### Config模型扩展
+
+```go
+type Config struct {
+    ID             int64             `json:"id"`
+    Name           string            `json:"name"`
+    APIKey         string            `json:"api_key"`
+    ChannelType    string            `json:"channel_type"`     // 新增字段
+    URL            string            `json:"url"`
+    Priority       int               `json:"priority"`
+    Models         []string          `json:"models"`
+    Enabled        bool              `json:"enabled"`
+    // ... 其他字段
+}
+
+// GetChannelType 返回渠道类型（默认anthropic）
+func (c *Config) GetChannelType() string {
+    if c.ChannelType == "" {
+        return "anthropic" // 默认值
+    }
+    return c.ChannelType
+}
+```
+
+#### 数据库表结构
+
+```sql
+ALTER TABLE channels ADD COLUMN channel_type TEXT DEFAULT 'anthropic';
+```
+
+**特点**：
+- 使用 `DEFAULT 'anthropic'` 确保向后兼容
+- 现有数据自动填充默认值
+- 新渠道可显式指定类型
+
+### 向后兼容性
+
+系统设计充分考虑向后兼容：
+
+**数据层面**：
+- 数据库迁移自动添加 `channel_type` 列，默认值 `anthropic`
+- 现有渠道无需手动更新即可正常工作
+
+**代码层面**：
+- `GetChannelType()` 方法处理空值，返回默认值
+- CSV导入时空白列自动填充 `anthropic`
+
+**行为层面**：
+- 模型匹配路由不受渠道类型限制
+- 仅特定路径（如 `/v1beta/models`）使用类型路由
+- 默认行为与旧版本完全一致
+
+### 与API兼容性的关系
+
+渠道类型与API兼容性功能协同工作：
+
+**认证头设置**（由API兼容性功能处理）：
+- `isGeminiRequest(path)` 检测路径 → 设置 `x-goog-api-key`
+- 非Gemini路径 → 设置 `x-api-key` 和 `Authorization`
+
+**渠道选择**（由渠道类型功能处理）：
+- GET `/v1beta/*` → 按 `channel_type="gemini"` 筛选
+- POST `/v1/messages` → 按 `models` 匹配（不限类型）
+
+**设计优势**：
+- **职责分离**：路径检测处理认证，渠道类型处理路由
+- **灵活组合**：可以创建支持Gemini模型的anthropic渠道（用于自定义网关）
+- **扩展性强**：新增API类型只需添加类型验证，无需修改路由逻辑
+
+### 监控和调试
+
+#### 查看渠道类型分布
+
+```bash
+# 获取所有渠道及其类型
+curl -b session_cookie http://localhost:8080/admin/channels | \
+  jq '.data[] | {name, channel_type, enabled}'
+```
+
+#### 查看日志中的渠道使用
+
+```bash
+# 查看最近请求使用的渠道
+curl -b session_cookie "http://localhost:8080/admin/errors?limit=10" | \
+  jq '.data[] | {time, model, channel_id, status_code}'
+```
+
+#### 数据库查询
+
+```bash
+# 统计各类型渠道数量
+sqlite3 data/ccload.db "
+  SELECT channel_type, COUNT(*) as count,
+         SUM(CASE WHEN enabled=1 THEN 1 ELSE 0 END) as enabled_count
+  FROM channels
+  GROUP BY channel_type;
+"
+```
+
+### 最佳实践
+
+1. **明确类型**：为所有渠道显式设置 `channel_type`，避免依赖默认值
+2. **类型一致**：同一API提供商的渠道使用相同类型，便于管理
+3. **CSV模板**：使用导出的CSV作为模板，确保格式正确
+4. **定期检查**：通过Web界面查看渠道类型徽章，确保配置正确
+5. **测试验证**：创建新类型渠道后，使用对应API端点测试路由是否正确

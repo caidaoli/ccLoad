@@ -14,6 +14,7 @@ type Config struct {
 	APIKey         string            `json:"api_key"`          // 向后兼容：单Key场景
 	APIKeys        []string          `json:"api_keys"`         // 多Key支持：逗号分割的Key数组
 	KeyStrategy    string            `json:"key_strategy"`     // Key使用策略: "sequential"（顺序） | "round_robin"（轮询），默认顺序
+	ChannelType    string            `json:"channel_type"`     // 渠道类型: "anthropic" | "openai" | "gemini"，默认anthropic
 	URL            string            `json:"url"`
 	Priority       int               `json:"priority"`
 	Models         []string          `json:"models"`
@@ -57,6 +58,24 @@ func (c *Config) GetKeyStrategy() string {
 		return "sequential" // 默认顺序访问
 	}
 	return c.KeyStrategy
+}
+
+// GetChannelType 返回渠道类型（默认anthropic）
+func (c *Config) GetChannelType() string {
+	if c.ChannelType == "" {
+		return "anthropic" // 默认Claude API
+	}
+	return c.ChannelType
+}
+
+// IsValidChannelType 验证渠道类型是否合法
+func IsValidChannelType(t string) bool {
+	switch t {
+	case "anthropic", "openai", "gemini":
+		return true
+	default:
+		return false
+	}
 }
 
 // 自定义时间类型，强制使用RFC3339格式进行JSON序列化

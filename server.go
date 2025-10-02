@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,6 +29,9 @@ type Server struct {
 
 	// API 认证
 	authTokens map[string]bool // 允许的认证令牌
+
+	// 重试配置
+	maxKeyRetries int // 单个渠道内最大Key重试次数（默认3次）
 
 	// 缓存和异步优化
 	configCache    []*Config
@@ -56,6 +60,14 @@ func NewServer(store Store) *Server {
 			if token != "" {
 				authTokens[token] = true
 			}
+		}
+	}
+
+	// 解析最大Key重试次数（避免key过多时重试次数过多）
+	maxKeyRetries := 3 // 默认值
+	if retryEnv := os.Getenv("CCLOAD_MAX_KEY_RETRIES"); retryEnv != "" {
+		if val, err := strconv.Atoi(retryEnv); err == nil && val > 0 {
+			maxKeyRetries = val
 		}
 	}
 
@@ -89,8 +101,9 @@ func NewServer(store Store) *Server {
 	}
 
 	s := &Server{
-		store:       store,
-		keySelector: NewKeySelector(store), // 初始化Key选择器
+		store:         store,
+		keySelector:   NewKeySelector(store), // 初始化Key选择器
+		maxKeyRetries: maxKeyRetries,         // 单个渠道最大Key重试次数
 		client: &http.Client{
 			Transport: transport,
 			Timeout:   0,
@@ -282,16 +295,16 @@ func (s *Server) handleLogout(c *gin.Context) {
 // setupRoutes - 新的路由设置函数，适配Gin
 func (s *Server) setupRoutes(r *gin.Engine) {
 	// 公开访问的API（代理服务）- 需要 API 认证
-	// 透明代理：统一处理所有 /v1/* 端点
+	// 透明代理：统一处理所有 /v1/* 端点，支持所有HTTP方法
 	apiV1 := r.Group("/v1")
 	apiV1.Use(s.requireAPIAuth())
 	{
-		apiV1.POST("/*path", s.handleProxyRequest)
+		apiV1.Any("/*path", s.handleProxyRequest)
 	}
 	apiV1Beta := r.Group("/v1beta")
 	apiV1Beta.Use(s.requireAPIAuth())
 	{
-		apiV1Beta.POST("/*path", s.handleProxyRequest)
+		apiV1Beta.Any("/*path", s.handleProxyRequest)
 	}
 
 	// 公开访问的API（基础统计）
@@ -398,6 +411,14 @@ func (s *Server) getCachedConfigs(ctx context.Context) ([]*Config, error) {
 	return cfgs, nil
 }
 
+// 立即使配置缓存失效（用于创建/更新/删除渠道后立即生效）
+func (s *Server) invalidateConfigCache() {
+	s.configCacheMux.Lock()
+	defer s.configCacheMux.Unlock()
+	s.configCache = nil
+	s.configCacheExp.Store(0) // 将过期时间设为0，强制下次刷新
+}
+
 // 异步日志工作协程
 func (s *Server) logWorker() {
 	batch := make([]*LogEntry, 0, 100)
@@ -454,4 +475,42 @@ func (s *Server) cleanupExpiredCooldowns() {
 			return true
 		})
 	}
+}
+
+// getGeminiModels 获取所有 gemini 渠道的去重模型列表
+func (s *Server) getGeminiModels(ctx context.Context) ([]string, error) {
+	// 获取所有渠道配置
+	configs, err := s.getCachedConfigs(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// 使用 map 去重
+	modelSet := make(map[string]bool)
+
+	// 遍历所有启用的 gemini 渠道
+	for _, cfg := range configs {
+		if !cfg.Enabled {
+			continue
+		}
+		if cfg.GetChannelType() != "gemini" {
+			continue
+		}
+
+		// 收集该渠道的所有模型
+		for _, model := range cfg.Models {
+			modelSet[model] = true
+		}
+	}
+
+	// 转换为切片
+	models := make([]string, 0, len(modelSet))
+	for model := range modelSet {
+		models = append(models, model)
+	}
+
+	// 排序（可选，提供稳定的输出）
+	slices.Sort(models)
+
+	return models, nil
 }

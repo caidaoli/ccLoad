@@ -59,7 +59,7 @@ func (ks *KeySelector) SelectAvailableKey(ctx context.Context, cfg *Config) (int
 }
 
 // selectSequential 顺序选择：从第一个开始，跳过冷却中的Key
-func (ks *KeySelector) selectSequential(ctx context.Context, channelID int64, keys []string, now time.Time) (int, string, error) {
+func (ks *KeySelector) selectSequential(_ context.Context, channelID int64, keys []string, _ time.Time) (int, string, error) {
 	for i, key := range keys {
 		if !ks.isKeyCooledDown(channelID, i) {
 			return i, key, nil
@@ -69,7 +69,7 @@ func (ks *KeySelector) selectSequential(ctx context.Context, channelID int64, ke
 }
 
 // selectRoundRobin 轮询选择：使用轮询指针，跳过冷却中的Key
-func (ks *KeySelector) selectRoundRobin(ctx context.Context, channelID int64, keys []string, now time.Time) (int, string, error) {
+func (ks *KeySelector) selectRoundRobin(ctx context.Context, channelID int64, keys []string, _ time.Time) (int, string, error) {
 	keyCount := len(keys)
 
 	// 从内存缓存获取轮询指针

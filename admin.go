@@ -19,6 +19,7 @@ import (
 type ChannelRequest struct {
 	Name           string            `json:"name" binding:"required"`
 	APIKey         string            `json:"api_key" binding:"required"`
+	ChannelType    string            `json:"channel_type,omitempty"` // 渠道类型：anthropic, openai, gemini
 	URL            string            `json:"url" binding:"required,url"`
 	Priority       int               `json:"priority"`
 	Models         []string          `json:"models" binding:"required,min=1"`
@@ -45,6 +46,7 @@ func (cr *ChannelRequest) ToConfig() *Config {
 	return &Config{
 		Name:           strings.TrimSpace(cr.Name),
 		APIKey:         strings.TrimSpace(cr.APIKey),
+		ChannelType:    strings.TrimSpace(cr.ChannelType), // 传递渠道类型
 		URL:            strings.TrimSpace(cr.URL),
 		Priority:       cr.Priority,
 		Models:         cr.Models,
@@ -121,6 +123,9 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 		return
 	}
 
+	// 使配置缓存失效，确保新渠道立即可用
+	s.invalidateConfigCache()
+
 	RespondJSON(c, http.StatusCreated, created)
 }
 
@@ -139,7 +144,7 @@ func (s *Server) handleExportChannelsCSV(c *gin.Context) {
 	writer := csv.NewWriter(buf)
 	defer writer.Flush()
 
-	header := []string{"id", "name", "api_key", "url", "priority", "models", "model_redirects", "enabled"}
+	header := []string{"id", "name", "api_key", "url", "priority", "models", "model_redirects", "channel_type", "enabled"}
 	if err := writer.Write(header); err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -162,6 +167,7 @@ func (s *Server) handleExportChannelsCSV(c *gin.Context) {
 			strconv.Itoa(cfg.Priority),
 			strings.Join(cfg.Models, ","),
 			modelRedirectsJSON,
+			cfg.GetChannelType(), // 使用GetChannelType确保默认值
 			strconv.FormatBool(cfg.Enabled),
 		}
 		if err := writer.Write(record); err != nil {
@@ -254,9 +260,19 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 		url := fetch("url")
 		modelsRaw := fetch("models")
 		modelRedirectsRaw := fetch("model_redirects")
+		channelType := fetch("channel_type")
 
 		if name == "" || apiKey == "" || url == "" || modelsRaw == "" {
 			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行缺少必填字段", lineNo))
+			summary.Skipped++
+			continue
+		}
+
+		// 验证渠道类型（可选字段，默认anthropic）
+		if channelType == "" {
+			channelType = "anthropic" // 默认值
+		} else if !IsValidChannelType(channelType) {
+			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行渠道类型无效: %s（仅支持anthropic/openai/gemini）", lineNo, channelType))
 			summary.Skipped++
 			continue
 		}
@@ -307,6 +323,7 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 			Priority:       priority,
 			Models:         models,
 			ModelRedirects: modelRedirects,
+			ChannelType:    channelType,
 			Enabled:        enabled,
 		}
 
@@ -360,6 +377,9 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 			}
 		}
 	}
+
+	// CSV导入完成后使配置缓存失效，确保新导入的渠道立即可用
+	s.invalidateConfigCache()
 
 	RespondJSON(c, http.StatusOK, summary)
 }
@@ -415,6 +435,8 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 				RespondError(c, http.StatusInternalServerError, err)
 				return
 			}
+			// 使配置缓存失效
+			s.invalidateConfigCache()
 			RespondJSON(c, http.StatusOK, upd)
 			return
 		}
@@ -443,6 +465,8 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		RespondError(c, http.StatusNotFound, err)
 		return
 	}
+	// 使配置缓存失效
+	s.invalidateConfigCache()
 	RespondJSON(c, http.StatusOK, upd)
 }
 
@@ -452,6 +476,8 @@ func (s *Server) handleDeleteChannel(c *gin.Context, id int64) {
 		RespondError(c, http.StatusNotFound, err)
 		return
 	}
+	// 使配置缓存失效，确保已删除的渠道不会被使用
+	s.invalidateConfigCache()
 	c.Status(http.StatusNoContent)
 }
 
