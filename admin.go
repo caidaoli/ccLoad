@@ -19,7 +19,8 @@ import (
 type ChannelRequest struct {
 	Name           string            `json:"name" binding:"required"`
 	APIKey         string            `json:"api_key" binding:"required"`
-	ChannelType    string            `json:"channel_type,omitempty"` // 渠道类型：anthropic, openai, gemini
+	ChannelType    string            `json:"channel_type,omitempty"`    // 渠道类型：anthropic, openai, gemini
+	KeyStrategy    string            `json:"key_strategy,omitempty"`    // Key使用策略：sequential, round_robin
 	URL            string            `json:"url" binding:"required,url"`
 	Priority       int               `json:"priority"`
 	Models         []string          `json:"models" binding:"required,min=1"`
@@ -47,6 +48,7 @@ func (cr *ChannelRequest) ToConfig() *Config {
 		Name:           strings.TrimSpace(cr.Name),
 		APIKey:         strings.TrimSpace(cr.APIKey),
 		ChannelType:    strings.TrimSpace(cr.ChannelType), // 传递渠道类型
+		KeyStrategy:    strings.TrimSpace(cr.KeyStrategy), // 传递Key使用策略
 		URL:            strings.TrimSpace(cr.URL),
 		Priority:       cr.Priority,
 		Models:         cr.Models,
@@ -144,7 +146,7 @@ func (s *Server) handleExportChannelsCSV(c *gin.Context) {
 	writer := csv.NewWriter(buf)
 	defer writer.Flush()
 
-	header := []string{"id", "name", "api_key", "url", "priority", "models", "model_redirects", "channel_type", "enabled"}
+	header := []string{"id", "name", "api_key", "url", "priority", "models", "model_redirects", "channel_type", "key_strategy", "enabled"}
 	if err := writer.Write(header); err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -167,7 +169,8 @@ func (s *Server) handleExportChannelsCSV(c *gin.Context) {
 			strconv.Itoa(cfg.Priority),
 			strings.Join(cfg.Models, ","),
 			modelRedirectsJSON,
-			cfg.GetChannelType(), // 使用GetChannelType确保默认值
+			cfg.GetChannelType(),    // 使用GetChannelType确保默认值
+			cfg.GetKeyStrategy(),    // 使用GetKeyStrategy确保默认值
 			strconv.FormatBool(cfg.Enabled),
 		}
 		if err := writer.Write(record); err != nil {
@@ -261,6 +264,7 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 		modelsRaw := fetch("models")
 		modelRedirectsRaw := fetch("model_redirects")
 		channelType := fetch("channel_type")
+		keyStrategy := fetch("key_strategy")
 
 		if name == "" || apiKey == "" || url == "" || modelsRaw == "" {
 			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行缺少必填字段", lineNo))
@@ -273,6 +277,15 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 			channelType = "anthropic" // 默认值
 		} else if !IsValidChannelType(channelType) {
 			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行渠道类型无效: %s（仅支持anthropic/openai/gemini）", lineNo, channelType))
+			summary.Skipped++
+			continue
+		}
+
+		// 验证Key使用策略（可选字段，默认sequential）
+		if keyStrategy == "" {
+			keyStrategy = "sequential" // 默认值
+		} else if keyStrategy != "sequential" && keyStrategy != "round_robin" {
+			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行Key使用策略无效: %s（仅支持sequential/round_robin）", lineNo, keyStrategy))
 			summary.Skipped++
 			continue
 		}
@@ -324,6 +337,7 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 			Models:         models,
 			ModelRedirects: modelRedirects,
 			ChannelType:    channelType,
+			KeyStrategy:    keyStrategy,
 			Enabled:        enabled,
 		}
 
@@ -937,6 +951,8 @@ func normalizeCSVHeader(name string) string {
 		return "models"
 	case "model_redirect", "model-redirects", "modelredirects", "redirects":
 		return "model_redirects"
+	case "key_strategy", "key-strategy", "keystrategy", "策略", "使用策略":
+		return "key_strategy"
 	case "status":
 		return "enabled"
 	default:

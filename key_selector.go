@@ -35,11 +35,10 @@ func (ks *KeySelector) SelectAvailableKey(ctx context.Context, cfg *Config) (int
 		return -1, "", fmt.Errorf("no API keys configured for channel %d", cfg.ID)
 	}
 
-	// 单Key场景：直接返回（YAGNI：不需要复杂逻辑）
+	// 单Key场景：直接返回，不使用Key级别冷却（YAGNI原则）
+	// 原因：单Key渠道应完全依赖渠道级别冷却（在selector.go中已实现）
+	// 如果渠道被选中，说明渠道不在冷却中，直接返回唯一的Key
 	if len(keys) == 1 {
-		if ks.isKeyCooledDown(cfg.ID, 0) {
-			return -1, "", fmt.Errorf("the only API key is in cooldown")
-		}
 		return 0, keys[0], nil
 	}
 

@@ -449,18 +449,11 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 			keyIndex, selectedKey, err := s.keySelector.SelectAvailableKey(ctx, cfg)
 			if err != nil {
 				// 所有Key都在冷却中，触发渠道级别冷却并跳到下一个渠道
+				// 注意：不记录日志，因为这是内部状态，不是上游API的真实错误
+				// 只有真正调用上游API并得到响应时才记录日志
 				if keyRetry == 0 {
-					// 仅在第一次尝试时记录日志和触发冷却，避免重复操作
-					s.addLogAsync(&LogEntry{
-						Time:        JSONTime{time.Now()},
-						Model:       originalModel,
-						ChannelID:   &cfg.ID,
-						StatusCode:  503,
-						Message:     fmt.Sprintf("channel keys unavailable: %v", err),
-						IsStreaming: isStreaming,
-					})
-
-					// 修复：触发渠道级别冷却，防止后续请求重复尝试该渠道
+					// 仅在第一次尝试时触发冷却，避免重复操作
+					// 触发渠道级别冷却，防止后续请求重复尝试该渠道
 					_, _ = s.store.BumpCooldownOnError(ctx, cfg.ID, time.Now())
 				}
 				channelExhausted = true

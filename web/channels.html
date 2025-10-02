@@ -69,31 +69,34 @@
         </header>
         <header class="mb-4">
           <div class="glass-card animate-slide-up" style="padding: var(--space-6);">
-            <p class="page-subtitle">配置API渠道、优先级和模型支持（<b>优先请求高优先级渠道，相同优先级则轮询调用</b>）</p>
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;">
+              <p class="page-subtitle" style="margin: 0;">配置API渠道、优先级和模型支持（<b>优先请求高优先级渠道，相同优先级则轮询调用</b>）</p>
+              <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+                <button id="exportCsvBtn" type="button" class="btn btn-secondary" style="padding: 8px 16px; font-size: 14px;" title="导出渠道列表为CSV">
+                  导出 CSV
+                </button>
+                <button id="importCsvBtn" type="button" class="btn btn-primary" style="padding: 8px 16px; font-size: 14px;" title="从CSV导入渠道">
+                  导入 CSV
+                </button>
+                <input type="file" id="importCsvInput" accept=".csv" style="display: none;" />
+              </div>
+            </div>
           </div>
         </header>
 
         <!-- Filter Bar -->
         <div class="filter-bar">
           <div class="filter-controls">
-            <div class="filter-group">
-              <label class="filter-label">搜索渠道</label>
-              <div style="position: relative;">
-                <input type="text" id="searchInput" class="filter-input" placeholder="输入渠道名称..." style="padding-right: 36px;">
-                <button id="clearSearchBtn" type="button" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--neutral-500); cursor: pointer; font-size: 14px; padding: 2px; opacity: 0; transition: opacity 0.2s; border-radius: 3px;" title="清空搜索" onmouseover="this.style.background='var(--neutral-100)'" onmouseout="this.style.background='none'">
-                  ✕
-                </button>
-              </div>
-            </div>
+           
 
-            <div class="filter-group">
+            <div class="">
               <label class="filter-label">渠道ID</label>
-              <input type="text" id="idFilter" class="filter-input" placeholder="输入ID..." style="width: 100px;">
+              <input type="text" id="idFilter" class="filter-input" placeholder="输入ID..." style="max-width: 100px;">
             </div>
 
             <div class="filter-group">
               <label class="filter-label">渠道类型</label>
-              <select id="channelTypeFilter" class="filter-select">
+              <select id="channelTypeFilter" class="filter-select" style="min-width: 100px;">
                 <option value="all">所有类型</option>
                 <option value="anthropic">Claude</option>
                 <option value="openai">OpenAI</option>
@@ -103,7 +106,7 @@
 
             <div class="filter-group">
               <label class="filter-label">状态</label>
-              <select id="statusFilter" class="filter-select">
+              <select id="statusFilter" class="filter-select" style="min-width: 100px;">
                 <option value="all">所有状态</option>
                 <option value="enabled">已启用</option>
                 <option value="disabled">已禁用</option>
@@ -113,26 +116,26 @@
 
             <div class="filter-group">
               <label class="filter-label">模型</label>
-              <select id="modelFilter" class="filter-select">
+              <select id="modelFilter" class="filter-select" style="min-width: 100px;">
                 <option value="all">所有模型</option>
               </select>
             </div>
-            
-            <div class="filter-info" id="filterInfo">
-              显示 <span id="filteredCount">0</span> / <span id="totalCount">0</span> 个渠道
+             <div class="filter-group">
+              <label class="filter-label">搜索渠道</label>
+              <div style="position: relative; flex: 1; min-width: 140px;">
+                <input type="text" id="searchInput" class="filter-input" placeholder="输入渠道名称..." style="padding-right: 36px;">
+                <button id="clearSearchBtn" type="button" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--neutral-500); cursor: pointer; font-size: 14px; padding: 2px; opacity: 0; transition: opacity 0.2s; border-radius: 3px;" title="清空搜索" onmouseover="this.style.background='var(--neutral-100)'" onmouseout="this.style.background='none'">
+                  ✕
+                </button>
+              </div>
             </div>
-            
-            <div style="flex: none; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+            <div class="filter-info" id="filterInfo"><span id="filteredCount">0</span> / <span id="totalCount">0</span> 个渠道
+            </div>
+
+            <div style="flex: none;">
               <button id="resetFiltersBtn" type="button" class="btn btn-secondary" style="padding: 8px 16px; font-size: 14px;" title="重置所有筛选条件">
                 重置筛选
               </button>
-              <button id="exportCsvBtn" type="button" class="btn btn-secondary" style="padding: 8px 16px; font-size: 14px;" title="导出渠道列表为CSV">
-                导出 CSV
-              </button>
-              <button id="importCsvBtn" type="button" class="btn btn-primary" style="padding: 8px 16px; font-size: 14px;" title="从CSV导入渠道">
-                导入 CSV
-              </button>
-              <input type="file" id="importCsvInput" accept=".csv" style="display: none;" />
             </div>
           </div>
         </div>
