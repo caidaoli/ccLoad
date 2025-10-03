@@ -15,9 +15,9 @@
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>{{PROJECT_DIR}}/logs/ccload.log</string>
+    <string>/dev/null</string>
     <key>StandardErrorPath</key>
-    <string>{{PROJECT_DIR}}/logs/ccload.log</string>
+    <string>/dev/null</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>

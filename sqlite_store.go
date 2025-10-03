@@ -347,54 +347,58 @@ func (s *SQLiteStore) migrateCooldownToUnixTimestamp(ctx context.Context) error 
 	return nil
 }
 
-// rebuildCooldownsTable 重建cooldowns表，迁移现有数据
-func (s *SQLiteStore) rebuildCooldownsTable(ctx context.Context) error {
+// rebuildTimestampTable 通用表重建函数，用于TIMESTAMP到Unix时间戳迁移
+// 遵循DRY原则，消除重复的表重建逻辑
+func (s *SQLiteStore) rebuildTimestampTable(ctx context.Context, tableName, createTableSQL string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
+	tempTableName := tableName + "_new"
+
 	// 1. 创建临时表（新结构）
-	if _, err := tx.ExecContext(ctx, `
-		CREATE TABLE cooldowns_new (
-			channel_id INTEGER PRIMARY KEY,
-			until INTEGER NOT NULL,
-			duration_ms INTEGER NOT NULL DEFAULT 0,
-			FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
-		)
-	`); err != nil {
+	createSQL := strings.ReplaceAll(createTableSQL, tableName, tempTableName)
+	if _, err := tx.ExecContext(ctx, createSQL); err != nil {
 		return fmt.Errorf("create temp table: %w", err)
 	}
 
-	// 2. 迁移数据：删除所有现有冷却记录（它们已经过期或格式错误）
-	// 原因：旧的TIMESTAMP格式数据无法可靠转换，直接清空更安全
-	fmt.Println("  清理旧的冷却记录（格式不兼容）")
+	// 2. 清理旧数据（TIMESTAMP格式无法可靠转换）
+	fmt.Printf("  清理旧的%s记录（格式不兼容）\n", tableName)
 
 	// 3. 删除旧表
-	if _, err := tx.ExecContext(ctx, "DROP TABLE cooldowns"); err != nil {
+	dropSQL := fmt.Sprintf("DROP TABLE %s", tableName)
+	if _, err := tx.ExecContext(ctx, dropSQL); err != nil {
 		return fmt.Errorf("drop old table: %w", err)
 	}
 
 	// 4. 重命名新表
-	if _, err := tx.ExecContext(ctx, "ALTER TABLE cooldowns_new RENAME TO cooldowns"); err != nil {
+	renameSQL := fmt.Sprintf("ALTER TABLE %s RENAME TO %s", tempTableName, tableName)
+	if _, err := tx.ExecContext(ctx, renameSQL); err != nil {
 		return fmt.Errorf("rename table: %w", err)
 	}
 
 	return tx.Commit()
 }
 
+// rebuildCooldownsTable 重建cooldowns表，迁移现有数据
+func (s *SQLiteStore) rebuildCooldownsTable(ctx context.Context) error {
+	createSQL := `
+		CREATE TABLE cooldowns (
+			channel_id INTEGER PRIMARY KEY,
+			until INTEGER NOT NULL,
+			duration_ms INTEGER NOT NULL DEFAULT 0,
+			FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
+		)
+	`
+	return s.rebuildTimestampTable(ctx, "cooldowns", createSQL)
+}
+
 // rebuildKeyCooldownsTable 重建key_cooldowns表，迁移现有数据
 func (s *SQLiteStore) rebuildKeyCooldownsTable(ctx context.Context) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	// 1. 创建临时表（新结构）
-	if _, err := tx.ExecContext(ctx, `
-		CREATE TABLE key_cooldowns_new (
+	createSQL := `
+		CREATE TABLE key_cooldowns (
 			channel_id INTEGER NOT NULL,
 			key_index INTEGER NOT NULL,
 			until INTEGER NOT NULL,
@@ -402,24 +406,8 @@ func (s *SQLiteStore) rebuildKeyCooldownsTable(ctx context.Context) error {
 			PRIMARY KEY(channel_id, key_index),
 			FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
 		)
-	`); err != nil {
-		return fmt.Errorf("create temp table: %w", err)
-	}
-
-	// 2. 迁移数据：删除所有现有Key冷却记录（格式错误或已过期）
-	fmt.Println("  清理旧的Key冷却记录（格式不兼容）")
-
-	// 3. 删除旧表
-	if _, err := tx.ExecContext(ctx, "DROP TABLE key_cooldowns"); err != nil {
-		return fmt.Errorf("drop old table: %w", err)
-	}
-
-	// 4. 重命名新表
-	if _, err := tx.ExecContext(ctx, "ALTER TABLE key_cooldowns_new RENAME TO key_cooldowns"); err != nil {
-		return fmt.Errorf("rename table: %w", err)
-	}
-
-	return tx.Commit()
+	`
+	return s.rebuildTimestampTable(ctx, "key_cooldowns", createSQL)
 }
 
 func (s *SQLiteStore) Close() error {
@@ -672,28 +660,14 @@ func (s *SQLiteStore) DeleteConfig(ctx context.Context, id int64) error {
 
 func (s *SQLiteStore) GetCooldownUntil(ctx context.Context, configID int64) (time.Time, bool) {
 	row := s.db.QueryRowContext(ctx, `SELECT until FROM cooldowns WHERE channel_id = ?`, configID)
-	var unixTime int64
-	if err := row.Scan(&unixTime); err != nil {
-		return time.Time{}, false
-	}
-	return time.Unix(unixTime, 0), true
+	return scanUnixTimestamp(row)
 }
 
 func (s *SQLiteStore) SetCooldown(ctx context.Context, configID int64, until time.Time) error {
-	// 计算冷却持续时间
-	durMs := int64(0)
-	if !until.IsZero() {
-		now := time.Now()
-		if until.After(now) {
-			durMs = int64(until.Sub(now) / time.Millisecond)
-		}
-	}
-
-	// 转换为Unix时间戳存储
-	unixTime := int64(0)
-	if !until.IsZero() {
-		unixTime = until.Unix()
-	}
+	now := time.Now()
+	// 使用工具函数计算冷却持续时间和时间戳
+	durMs := calculateCooldownDuration(until, now)
+	unixTime := toUnixTimestamp(until)
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO cooldowns(channel_id, until, duration_ms) VALUES(?, ?, ?)
@@ -721,24 +695,8 @@ func (s *SQLiteStore) BumpCooldownOnError(ctx context.Context, configID int64, n
 	// 从Unix时间戳转换为time.Time
 	until := time.Unix(unixTime, 0)
 
-	prev := time.Duration(durMs) * time.Millisecond
-	if prev <= 0 {
-		// 如果表里没有记录，但 until 在未来，取其差值；否则从1s开始
-		if unixTime > 0 && until.After(now) {
-			prev = until.Sub(now)
-		} else {
-			prev = time.Second
-		}
-	}
-
-	// 错误一次翻倍
-	next := prev * 2
-	if next < time.Second {
-		next = time.Second
-	}
-	if next > 30*time.Minute {
-		next = 30 * time.Minute
-	}
+	// 使用工具函数计算指数退避时间
+	next := calculateBackoffDuration(durMs, until, now)
 
 	newUntil := now.Add(next)
 	// 转换为Unix时间戳存储
@@ -1122,15 +1080,11 @@ func boolToInt(b bool) int {
 
 // GetKeyCooldownUntil 查询指定Key的冷却截止时间
 func (s *SQLiteStore) GetKeyCooldownUntil(ctx context.Context, configID int64, keyIndex int) (time.Time, bool) {
-	var unixTime int64
-	err := s.db.QueryRowContext(ctx, `
+	row := s.db.QueryRowContext(ctx, `
 		SELECT until FROM key_cooldowns
 		WHERE channel_id = ? AND key_index = ?
-	`, configID, keyIndex).Scan(&unixTime)
-	if err != nil {
-		return time.Time{}, false
-	}
-	return time.Unix(unixTime, 0), true
+	`, configID, keyIndex)
+	return scanUnixTimestamp(row)
 }
 
 // BumpKeyCooldownOnError Key级别指数退避：错误翻倍（最小1s，最大30m）
@@ -1150,24 +1104,8 @@ func (s *SQLiteStore) BumpKeyCooldownOnError(ctx context.Context, configID int64
 	// 从Unix时间戳转换为time.Time
 	until := time.Unix(unixTime, 0)
 
-	prev := time.Duration(durMs) * time.Millisecond
-	if prev <= 0 {
-		// 如果表里没有记录，但 until 在未来，取其差值；否则从1s开始
-		if unixTime > 0 && until.After(now) {
-			prev = until.Sub(now)
-		} else {
-			prev = time.Second
-		}
-	}
-
-	// 错误一次翻倍
-	next := prev * 2
-	if next < time.Second {
-		next = time.Second
-	}
-	if next > 30*time.Minute {
-		next = 30 * time.Minute
-	}
+	// 使用工具函数计算指数退避时间
+	next := calculateBackoffDuration(durMs, until, now)
 
 	newUntil := now.Add(next)
 	// 转换为Unix时间戳存储

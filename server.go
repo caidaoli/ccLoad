@@ -45,7 +45,7 @@ type Server struct {
 
 	// 并发控制
 	concurrencySem chan struct{} // 信号量：限制最大并发请求数（防止goroutine爆炸）
-	maxConcurrency int            // 最大并发数（默认1000）
+	maxConcurrency int           // 最大并发数（默认1000）
 
 	// 缓存和异步优化
 	configCache    atomic.Value // 无锁缓存，存储 []*Config（性能优化：消除读锁争用）
@@ -58,9 +58,9 @@ type Server struct {
 	logWorkers int            // 日志工作协程数
 
 	// 性能优化：批量轮询指针持久化
-	rrUpdateChan    chan rrUpdate  // 轮询指针更新通道
-	rrBatchSize     int            // 批量写入大小
-	rrFlushInterval time.Duration  // 刷新间隔
+	rrUpdateChan    chan rrUpdate // 轮询指针更新通道
+	rrBatchSize     int           // 批量写入大小
+	rrFlushInterval time.Duration // 刷新间隔
 }
 
 func NewServer(store Store) *Server {

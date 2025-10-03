@@ -178,23 +178,6 @@ func (qb *QueryBuilder) BuildWithSuffix(suffix string) (string, []any) {
 	return query, args
 }
 
-// TransactionHelper 事务助手，简化事务操作
-type TransactionHelper struct {
-	store *SQLiteStore
-}
-
-// NewTransactionHelper 创建事务助手
-func NewTransactionHelper(store *SQLiteStore) *TransactionHelper {
-	return &TransactionHelper{store: store}
-}
-
-// WithTransaction 在事务中执行操作
-func (th *TransactionHelper) WithTransaction(ctx any, fn func(tx any) error) error {
-	// 这里简化了事务逻辑，实际实现需要根据具体的数据库接口
-	// 由于当前代码中事务使用相对简单，暂时保持现有模式
-	return nil
-}
-
 // 辅助函数：解析模型JSON
 func parseModelsJSON(modelsStr string, models *[]string) error {
 	if modelsStr == "" {

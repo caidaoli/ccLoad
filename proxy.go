@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -29,8 +30,11 @@ const (
 )
 
 // 错误分类缓存（性能优化：减少字符串操作开销60%）
+// 使用LRU缓存防止内存无限增长
 var (
-	errClassCache sync.Map // key: error string, value: [2]int{statusCode, shouldRetry(0/1)}
+	errClassCache   sync.Map // key: error string, value: [2]int{statusCode, shouldRetry(0/1)}
+	errCacheSize    atomic.Int64
+	errCacheMaxSize = int64(1000) // 最大缓存1000个不同的错误字符串
 )
 
 // isGeminiRequest 检测是否为Gemini API请求
@@ -123,6 +127,15 @@ func classifyError(err error) (statusCode int, shouldRetry bool) {
 	if retry {
 		retryInt = 1
 	}
+
+	// 容量控制：超过阈值时清空缓存（简单有效的防泄漏策略）
+	currentSize := errCacheSize.Add(1)
+	if currentSize > errCacheMaxSize {
+		// 清空缓存并重置计数器
+		errClassCache = sync.Map{}
+		errCacheSize.Store(0)
+	}
+
 	errClassCache.Store(errStr, [2]int{code, retryInt})
 
 	return code, retry
@@ -482,6 +495,152 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *Config, keyIndex int
 	}
 }
 
+// prepareRequestBody 准备请求体（处理模型重定向）
+// 遵循SRP原则：单一职责 - 仅负责模型重定向和请求体准备
+func prepareRequestBody(cfg *Config, reqCtx *proxyRequestContext) (actualModel string, bodyToSend []byte) {
+	actualModel = reqCtx.originalModel
+
+	// 检查模型重定向
+	if len(cfg.ModelRedirects) > 0 {
+		if redirectModel, ok := cfg.ModelRedirects[reqCtx.originalModel]; ok && redirectModel != "" {
+			actualModel = redirectModel
+		}
+	}
+
+	bodyToSend = reqCtx.body
+
+	// 如果模型发生重定向，修改请求体
+	if actualModel != reqCtx.originalModel {
+		var reqData map[string]any
+		if err := sonic.Unmarshal(reqCtx.body, &reqData); err == nil {
+			reqData["model"] = actualModel
+			if modifiedBody, err := sonic.Marshal(reqData); err == nil {
+				bodyToSend = modifiedBody
+			}
+		}
+	}
+
+	return actualModel, bodyToSend
+}
+
+// forwardAttempt 单次转发尝试（包含错误处理和日志记录）
+// 返回：(proxyResult, shouldContinueRetry, shouldBreakToNextChannel)
+func (s *Server) forwardAttempt(
+	ctx context.Context,
+	cfg *Config,
+	keyIndex int,
+	selectedKey string,
+	reqCtx *proxyRequestContext,
+	bodyToSend []byte,
+	w http.ResponseWriter,
+) (*proxyResult, bool, bool) {
+	// 转发请求
+	res, duration, err := s.forwardOnceAsync(ctx, cfg, keyIndex, reqCtx.requestMethod,
+		bodyToSend, reqCtx.header, reqCtx.rawQuery, reqCtx.requestPath, w)
+
+	// 处理网络错误
+	if err != nil {
+		return s.handleNetworkError(ctx, cfg, keyIndex, reqCtx, selectedKey, duration, err)
+	}
+
+	// 处理成功响应
+	if res.Status >= 200 && res.Status < 300 {
+		return s.handleSuccessResponse(ctx, cfg, keyIndex, reqCtx, selectedKey, res, duration)
+	}
+
+	// 处理错误响应
+	return s.handleErrorResponse(ctx, cfg, keyIndex, reqCtx, selectedKey, res, duration)
+}
+
+// handleNetworkError 处理网络错误
+func (s *Server) handleNetworkError(
+	ctx context.Context,
+	cfg *Config,
+	keyIndex int,
+	reqCtx *proxyRequestContext,
+	selectedKey string,
+	duration float64,
+	err error,
+) (*proxyResult, bool, bool) {
+	statusCode, _ := classifyError(err)
+	s.addLogAsync(buildLogEntry(reqCtx.originalModel, &cfg.ID, statusCode,
+		duration, reqCtx.isStreaming, selectedKey, nil, err.Error()))
+
+	action, _ := s.handleProxyError(ctx, cfg, keyIndex, nil, err)
+	if action == ActionReturnClient {
+		return &proxyResult{
+			status:    statusCode,
+			body:      []byte(err.Error()),
+			channelID: &cfg.ID,
+			message:   truncateErr(err.Error()),
+			duration:  duration,
+			succeeded: false,
+		}, false, false
+	}
+
+	return nil, true, false // 继续重试
+}
+
+// handleSuccessResponse 处理成功响应
+func (s *Server) handleSuccessResponse(
+	ctx context.Context,
+	cfg *Config,
+	keyIndex int,
+	reqCtx *proxyRequestContext,
+	selectedKey string,
+	res *fwResult,
+	duration float64,
+) (*proxyResult, bool, bool) {
+	// 清除冷却状态
+	s.cooldownCache.Delete(cfg.ID)
+	_ = s.keySelector.MarkKeySuccess(ctx, cfg.ID, keyIndex)
+
+	// 记录成功日志
+	s.addLogAsync(buildLogEntry(reqCtx.originalModel, &cfg.ID, res.Status,
+		duration, reqCtx.isStreaming, selectedKey, res, ""))
+
+	return &proxyResult{
+		status:    res.Status,
+		header:    res.Header,
+		channelID: &cfg.ID,
+		message:   "ok",
+		duration:  duration,
+		succeeded: true,
+	}, false, false
+}
+
+// handleErrorResponse 处理错误响应
+func (s *Server) handleErrorResponse(
+	ctx context.Context,
+	cfg *Config,
+	keyIndex int,
+	reqCtx *proxyRequestContext,
+	selectedKey string,
+	res *fwResult,
+	duration float64,
+) (*proxyResult, bool, bool) {
+	s.addLogAsync(buildLogEntry(reqCtx.originalModel, &cfg.ID, res.Status,
+		duration, reqCtx.isStreaming, selectedKey, res, ""))
+
+	action, _ := s.handleProxyError(ctx, cfg, keyIndex, res, nil)
+	if action == ActionReturnClient {
+		return &proxyResult{
+			status:    res.Status,
+			header:    res.Header,
+			body:      res.Body,
+			channelID: &cfg.ID,
+			duration:  duration,
+			succeeded: false,
+		}, false, false
+	}
+
+	if action == ActionRetryChannel {
+		return nil, false, true // 切换到下一个渠道
+	}
+
+	return nil, true, false // 继续重试下一个Key
+}
+
 // tryChannelWithKeys 在单个渠道内尝试多个Key（Key级重试）
 // 遵循SRP原则：职责单一 - 仅负责Key级别的重试逻辑
 func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *Config, reqCtx *proxyRequestContext, w http.ResponseWriter) (*proxyResult, error) {
@@ -496,10 +655,10 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *Config, reqCtx *pr
 		maxKeyRetries = actualKeyCount
 	}
 
-	var lastStatus int
-	var lastBody []byte
-	var lastHeader http.Header
 	triedKeys := make(map[int]bool) // 本次请求内已尝试过的Key
+
+	// 准备请求体（处理模型重定向）
+	_, bodyToSend := prepareRequestBody(cfg, reqCtx)
 
 	// Key重试循环
 	for keyRetry := 0; keyRetry < maxKeyRetries; keyRetry++ {
@@ -510,186 +669,127 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *Config, reqCtx *pr
 			return nil, fmt.Errorf("channel keys unavailable: %w", err)
 		}
 
-		// 模型重定向
-		actualModel := reqCtx.originalModel
-		if len(cfg.ModelRedirects) > 0 {
-			if redirectModel, ok := cfg.ModelRedirects[reqCtx.originalModel]; ok && redirectModel != "" {
-				actualModel = redirectModel
-			}
-		}
-
-		// 如果模型发生重定向，修改请求体
-		bodyToSend := reqCtx.body
-		if actualModel != reqCtx.originalModel {
-			var reqData map[string]any
-			if err := sonic.Unmarshal(reqCtx.body, &reqData); err == nil {
-				reqData["model"] = actualModel
-				if modifiedBody, err := sonic.Marshal(reqData); err == nil {
-					bodyToSend = modifiedBody
-				}
-			}
-		}
-
-		// 转发请求
-		res, duration, err := s.forwardOnceAsync(ctx, cfg, keyIndex, reqCtx.requestMethod,
-			bodyToSend, reqCtx.header, reqCtx.rawQuery, reqCtx.requestPath, w)
-
 		// 标记Key为已尝试
 		triedKeys[keyIndex] = true
 
-		// 处理网络错误
-		if err != nil {
-			statusCode, _ := classifyError(err)
-			s.addLogAsync(buildLogEntry(reqCtx.originalModel, &cfg.ID, statusCode,
-				duration, reqCtx.isStreaming, selectedKey, nil, err.Error()))
+		// 单次转发尝试
+		result, shouldContinue, shouldBreak := s.forwardAttempt(
+			ctx, cfg, keyIndex, selectedKey, reqCtx, bodyToSend, w)
 
-			action, saveResp := s.handleProxyError(ctx, cfg, keyIndex, nil, err)
-			if action == ActionReturnClient {
-				return &proxyResult{
-					status:    statusCode,
-					body:      []byte(err.Error()),
-					channelID: &cfg.ID,
-					message:   truncateErr(err.Error()),
-					duration:  duration,
-					succeeded: false,
-				}, nil
-			}
-
-			if saveResp {
-				lastStatus = statusCode
-				lastBody = []byte(err.Error())
-				lastHeader = nil
-			}
-			continue // 重试下一个Key
+		// 如果返回了结果，直接返回
+		if result != nil {
+			return result, nil
 		}
 
-		// 处理成功响应
-		if res.Status >= 200 && res.Status < 300 {
-			// 清除冷却状态
-			s.cooldownCache.Delete(cfg.ID)
-			_ = s.keySelector.MarkKeySuccess(ctx, cfg.ID, keyIndex)
-
-			// 记录成功日志
-			s.addLogAsync(buildLogEntry(reqCtx.originalModel, &cfg.ID, res.Status,
-				duration, reqCtx.isStreaming, selectedKey, res, ""))
-
-			return &proxyResult{
-				status:    res.Status,
-				header:    res.Header,
-				channelID: &cfg.ID,
-				message:   "ok",
-				duration:  duration,
-				succeeded: true,
-			}, nil
-		}
-
-		// 处理错误响应
-		s.addLogAsync(buildLogEntry(reqCtx.originalModel, &cfg.ID, res.Status,
-			duration, reqCtx.isStreaming, selectedKey, res, ""))
-
-		action, saveResp := s.handleProxyError(ctx, cfg, keyIndex, res, nil)
-		if action == ActionReturnClient {
-			return &proxyResult{
-				status:    res.Status,
-				header:    res.Header,
-				body:      res.Body,
-				channelID: &cfg.ID,
-				duration:  duration,
-				succeeded: false,
-			}, nil
-		}
-
-		if saveResp {
-			lastStatus = res.Status
-			lastBody = res.Body
-			lastHeader = res.Header
-		}
-
-		if action == ActionRetryChannel {
-			// 需要切换渠道，跳出Key循环
+		// 需要切换到下一个渠道
+		if shouldBreak {
 			break
 		}
 
-		// ActionRetryKey：继续尝试下一个Key
+		// 继续重试下一个Key
+		if !shouldContinue {
+			break
+		}
 	}
 
-	// Key重试循环结束，返回最后的错误信息
-	if lastStatus != 0 {
-		return &proxyResult{
-			status:    lastStatus,
-			header:    lastHeader,
-			body:      lastBody,
-			channelID: &cfg.ID,
-			duration:  0,
-			succeeded: false,
-		}, nil
-	}
-
+	// Key重试循环结束，所有Key都失败
 	return nil, fmt.Errorf("all keys exhausted")
 }
 
-// 通用透明代理处理器
-func (s *Server) handleProxyRequest(c *gin.Context) {
-	// 性能优化：并发控制 - 使用信号量限制最大并发请求数
-	// 获取信号量（阻塞直到有槽位可用）
+// acquireConcurrencySlot 获取并发槽位
+// 返回 true 表示成功获取，false 表示客户端取消
+func (s *Server) acquireConcurrencySlot(c *gin.Context) (release func(), ok bool) {
 	select {
 	case s.concurrencySem <- struct{}{}:
-		// 成功获取槽位，确保函数结束时释放
-		defer func() { <-s.concurrencySem }()
+		// 成功获取槽位
+		return func() { <-s.concurrencySem }, true
 	case <-c.Request.Context().Done():
-		// 客户端已取消请求，直接返回
+		// 客户端已取消请求
 		c.JSON(StatusClientClosedRequest, gin.H{"error": "request cancelled while waiting for slot"})
-		return
+		return nil, false
 	}
+}
 
-	// 获取客户端原始请求路径和方法（透明转发的关键）
+// parseIncomingRequest 解析传入的代理请求
+// 返回：(originalModel, body, isStreaming, error)
+func parseIncomingRequest(c *gin.Context) (string, []byte, bool, error) {
 	requestPath := c.Request.URL.Path
 	requestMethod := c.Request.Method
 
-	// 特殊处理：拦截 GET /v1beta/models 请求，返回本地模型列表
-	if requestMethod == http.MethodGet && (requestPath == "/v1beta/models" || requestPath == "/v1/models") {
-		s.handleListGeminiModels(c)
-		return
-	}
-
-	// 全量读取再转发，KISS（GET请求body通常为空）
+	// 读取请求体
 	all, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
-		return
+		return "", nil, false, fmt.Errorf("failed to read body: %w", err)
 	}
 	_ = c.Request.Body.Close()
+
 	var reqModel struct {
 		Model string `json:"model"`
 	}
 	_ = sonic.Unmarshal(all, &reqModel)
 
-	// 智能检测流式请求（支持Gemini路径特征和Claude/OpenAI请求体标识）
+	// 智能检测流式请求
 	isStreaming := isStreamingRequest(requestPath, all)
 
 	// 多源模型名称获取：优先请求体，其次URL路径
 	originalModel := reqModel.Model
 	if originalModel == "" {
-		// 尝试从URL路径提取模型名称（支持Gemini API格式）
 		originalModel = extractModelFromPath(requestPath)
 	}
 
-	// 对于GET请求，如果无法提取模型名称，使用默认值"*"表示通配
-	// 这允许列出所有模型等操作（如 GET /v1beta/models）
+	// 对于GET请求，如果无法提取模型名称，使用通配符
 	if originalModel == "" {
 		if requestMethod == http.MethodGet {
-			originalModel = "*" // 通配符，匹配所有渠道
+			originalModel = "*"
 		} else {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON or missing model"})
-			return
+			return "", nil, false, fmt.Errorf("invalid JSON or missing model")
 		}
 	}
 
-	// 保存原始请求模型（用于日志记录和渠道选择）
+	return originalModel, all, isStreaming, nil
+}
 
-	// 解析超时
+// selectRouteCandidates 根据请求选择路由候选
+func (s *Server) selectRouteCandidates(ctx context.Context, c *gin.Context, originalModel string) ([]*Config, error) {
+	requestPath := c.Request.URL.Path
+	requestMethod := c.Request.Method
+
+	// 智能路由选择：根据请求类型选择不同的路由策略
+	if requestMethod == http.MethodGet && isGeminiRequest(requestPath) {
+		// 按渠道类型筛选Gemini渠道
+		return s.selectCandidatesByChannelType(ctx, "gemini")
+	}
+
+	// 正常流程：按模型匹配渠道
+	return s.selectCandidates(ctx, originalModel)
+}
+
+// 通用透明代理处理器
+func (s *Server) handleProxyRequest(c *gin.Context) {
+	// 并发控制
+	release, ok := s.acquireConcurrencySlot(c)
+	if !ok {
+		return
+	}
+	defer release()
+
+	// 特殊处理：拦截模型列表请求
+	requestPath := c.Request.URL.Path
+	requestMethod := c.Request.Method
+	if requestMethod == http.MethodGet && (requestPath == "/v1beta/models" || requestPath == "/v1/models") {
+		s.handleListGeminiModels(c)
+		return
+	}
+
+	// 解析请求
+	originalModel, all, isStreaming, err := parseIncomingRequest(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 设置超时上下文
 	timeout := parseTimeout(c.Request.URL.Query(), c.Request.Header)
-
 	ctx := c.Request.Context()
 	var cancel context.CancelFunc
 	if timeout > 0 {
@@ -697,21 +797,14 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 		defer cancel()
 	}
 
-	// 智能路由选择：根据请求类型选择不同的路由策略
-	var cands []*Config
-	// 特殊处理：GET /v1beta/models 等Gemini API元数据请求，使用渠道类型路由
-	if requestMethod == http.MethodGet && isGeminiRequest(requestPath) {
-		// 按渠道类型筛选Gemini渠道（不依赖模型匹配）
-		cands, err = s.selectCandidatesByChannelType(ctx, "gemini")
-	} else {
-		// 正常流程：按模型匹配渠道
-		cands, err = s.selectCandidates(ctx, originalModel)
-	}
+	// 选择路由候选
+	cands, err := s.selectRouteCandidates(ctx, c, originalModel)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		return
 	}
-	// If no candidates available (all cooled or none support), return 503
+
+	// 检查是否有可用候选
 	if len(cands) == 0 {
 		s.addLogAsync(&LogEntry{
 			Time:        JSONTime{time.Now()},

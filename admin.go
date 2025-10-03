@@ -19,8 +19,8 @@ import (
 type ChannelRequest struct {
 	Name           string            `json:"name" binding:"required"`
 	APIKey         string            `json:"api_key" binding:"required"`
-	ChannelType    string            `json:"channel_type,omitempty"`    // 渠道类型：anthropic, openai, gemini
-	KeyStrategy    string            `json:"key_strategy,omitempty"`    // Key使用策略：sequential, round_robin
+	ChannelType    string            `json:"channel_type,omitempty"` // 渠道类型：anthropic, openai, gemini
+	KeyStrategy    string            `json:"key_strategy,omitempty"` // Key使用策略：sequential, round_robin
 	URL            string            `json:"url" binding:"required,url"`
 	Priority       int               `json:"priority"`
 	Models         []string          `json:"models" binding:"required,min=1"`
@@ -67,9 +67,9 @@ type KeyCooldownInfo struct {
 
 type ChannelWithCooldown struct {
 	*Config
-	CooldownUntil       *time.Time         `json:"cooldown_until,omitempty"`
-	CooldownRemainingMS int64              `json:"cooldown_remaining_ms,omitempty"`
-	KeyCooldowns        []KeyCooldownInfo  `json:"key_cooldowns,omitempty"`
+	CooldownUntil       *time.Time        `json:"cooldown_until,omitempty"`
+	CooldownRemainingMS int64             `json:"cooldown_remaining_ms,omitempty"`
+	KeyCooldowns        []KeyCooldownInfo `json:"key_cooldowns,omitempty"`
 }
 
 // ChannelImportSummary 导入结果统计
@@ -80,10 +80,10 @@ type ChannelImportSummary struct {
 	Processed int      `json:"processed"`
 	Errors    []string `json:"errors,omitempty"`
 	// Redis同步相关字段 (OCP: 开放扩展)
-	RedisSyncEnabled   bool   `json:"redis_sync_enabled"`              // Redis同步是否启用
-	RedisSyncSuccess   bool   `json:"redis_sync_success,omitempty"`    // Redis同步是否成功
-	RedisSyncError     string `json:"redis_sync_error,omitempty"`      // Redis同步错误信息
-	RedisSyncedChannels int   `json:"redis_synced_channels,omitempty"` // 成功同步到Redis的渠道数量
+	RedisSyncEnabled    bool   `json:"redis_sync_enabled"`              // Redis同步是否启用
+	RedisSyncSuccess    bool   `json:"redis_sync_success,omitempty"`    // Redis同步是否成功
+	RedisSyncError      string `json:"redis_sync_error,omitempty"`      // Redis同步错误信息
+	RedisSyncedChannels int    `json:"redis_synced_channels,omitempty"` // 成功同步到Redis的渠道数量
 }
 
 // Admin: /admin/channels (GET, POST) - 重构版本
@@ -108,14 +108,14 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	out := make([]ChannelWithCooldown, 0, len(cfgs))
 	for _, cfg := range cfgs {
 		oc := ChannelWithCooldown{Config: cfg}
-		
+
 		// 渠道级别冷却
 		if until, ok := s.store.GetCooldownUntil(c.Request.Context(), cfg.ID); ok && until.After(now) {
 			u := until
 			oc.CooldownUntil = &u
 			oc.CooldownRemainingMS = int64(until.Sub(now) / time.Millisecond)
 		}
-		
+
 		// Key级别冷却：返回所有Key的状态信息（包括正常和冷却）
 		keys := cfg.GetAPIKeys()
 		if len(keys) > 1 { // 只有多Key渠道才需要显示Key级别状态
@@ -134,7 +134,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 			}
 			oc.KeyCooldowns = keyCooldowns
 		}
-		
+
 		out = append(out, oc)
 	}
 
@@ -199,8 +199,8 @@ func (s *Server) handleExportChannelsCSV(c *gin.Context) {
 			strconv.Itoa(cfg.Priority),
 			strings.Join(cfg.Models, ","),
 			modelRedirectsJSON,
-			cfg.GetChannelType(),    // 使用GetChannelType确保默认值
-			cfg.GetKeyStrategy(),    // 使用GetKeyStrategy确保默认值
+			cfg.GetChannelType(), // 使用GetChannelType确保默认值
+			cfg.GetKeyStrategy(), // 使用GetKeyStrategy确保默认值
 			strconv.FormatBool(cfg.Enabled),
 		}
 		if err := writer.Write(record); err != nil {

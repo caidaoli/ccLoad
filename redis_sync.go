@@ -11,10 +11,10 @@ import (
 
 // RedisSync 负责Redis同步操作的结构体
 type RedisSync struct {
-	client   *redis.Client
-	enabled  bool
-	hashKey  string // Redis Hash key: "ccload:channels"
-	timeout  time.Duration
+	client  *redis.Client
+	enabled bool
+	hashKey string // Redis Hash key: "ccload:channels"
+	timeout time.Duration
 }
 
 // NewRedisSync 创建Redis同步客户端
