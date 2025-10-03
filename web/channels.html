@@ -317,6 +317,7 @@
         <select id="testChannelType" class="form-input" onchange="updateTestURL()">
           <option value="anthropic" selected>Claude Code</option>
           <option value="codex">Codex</option>
+          <option value="gemini">Gemini</option>
         </select>
       </div>
 
@@ -326,7 +327,17 @@
           <!-- 动态填充模型选项 -->
         </select>
       </div>
-      
+
+      <div class="form-group" id="testKeySelectGroup" style="display: none;">
+        <label class="form-label" for="testKeySelect">
+          选择 API Key
+          <span class="models-hint" style="margin-left: 8px;">测试时使用的 Key（默认第一个）</span>
+        </label>
+        <select id="testKeySelect" class="form-input">
+          <!-- 动态填充 Key 选项 -->
+        </select>
+      </div>
+
       <div class="form-group">
         <label class="form-label" for="testContentInput">测试内容</label>
         <textarea id="testContentInput" class="form-input" rows="3" placeholder="输入测试内容..." style="resize: vertical; min-height: 80px;">test</textarea>
@@ -1205,8 +1216,39 @@
         modelSelect.appendChild(option);
       });
 
+      // 填充 Key 选择下拉框
+      const keys = parseKeys(channel.api_key);
+      const keySelect = document.getElementById('testKeySelect');
+      const keySelectGroup = document.getElementById('testKeySelectGroup');
+
+      if (keys.length > 1) {
+        // 多个 Key 时显示选择框
+        keySelectGroup.style.display = 'block';
+        keySelect.innerHTML = '';
+        keys.forEach((key, index) => {
+          const option = document.createElement('option');
+          option.value = index;
+          option.textContent = `Key ${index + 1}: ${maskKey(key)}`;
+          keySelect.appendChild(option);
+        });
+      } else {
+        // 单个 Key 时隐藏选择框
+        keySelectGroup.style.display = 'none';
+      }
+
       // 重置状态
       resetTestModal();
+
+      // 根据渠道类型自动设置测试类型
+      const channelType = channel.channel_type || 'anthropic';
+      const testChannelTypeSelect = document.getElementById('testChannelType');
+      if (channelType === 'openai') {
+        testChannelTypeSelect.value = 'codex';
+      } else if (channelType === 'gemini') {
+        testChannelTypeSelect.value = 'gemini';
+      } else {
+        testChannelTypeSelect.value = 'anthropic';
+      }
 
       document.getElementById('testModal').classList.add('show');
     }
@@ -1237,6 +1279,7 @@
       const modelSelect = document.getElementById('testModelSelect');
       const contentInput = document.getElementById('testContentInput');
       const channelTypeSelect = document.getElementById('testChannelType');
+      const keySelect = document.getElementById('testKeySelect');
       const selectedModel = modelSelect.value;
       const testContent = contentInput.value.trim() || 'test'; // 默认为"test"
       const channelType = channelTypeSelect.value;
@@ -1252,7 +1295,7 @@
       document.getElementById('runTestBtn').disabled = true;
 
       try {
-        // 使用新的参数结构，支持渠道类型、自定义内容和beta参数
+        // 使用新的参数结构，支持渠道类型、自定义内容和 key_index
         const testRequest = {
           model: selectedModel,
           max_tokens: 512,
@@ -1260,6 +1303,11 @@
           content: testContent,
           channel_type: channelType
         };
+
+        // 如果显示了 Key 选择框，则添加 key_index 参数
+        if (keySelect && keySelect.parentElement.style.display !== 'none') {
+          testRequest.key_index = parseInt(keySelect.value) || 0;
+        }
 
         const res = await fetch(`/admin/channels/${testingChannelId}/test`, {
           method: 'POST',

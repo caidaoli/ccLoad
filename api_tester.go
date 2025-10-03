@@ -92,6 +92,72 @@ func (t *OpenAITester) Parse(statusCode int, respBody []byte) map[string]any {
     return out
 }
 
+// GeminiTester 实现 Google Gemini 测试协议
+type GeminiTester struct{}
+
+func (t *GeminiTester) Build(cfg *Config, req *TestChannelRequest) (string, http.Header, []byte, error) {
+	testContent := req.Content
+	if strings.TrimSpace(testContent) == "" {
+		testContent = "test"
+	}
+
+	msg := map[string]any{
+		"contents": []map[string]any{
+			{
+				"parts": []map[string]any{
+					{
+						"text": testContent,
+					},
+				},
+			},
+		},
+	}
+
+	body, err := sonic.Marshal(msg)
+	if err != nil {
+		return "", nil, nil, err
+	}
+
+	baseURL := strings.TrimRight(cfg.URL, "/")
+	// Gemini API 路径格式: /v1beta/models/{model}:generateContent
+	fullURL := baseURL + "/v1beta/models/" + req.Model + ":generateContent"
+
+	h := make(http.Header)
+	h.Set("Content-Type", "application/json")
+	h.Set("x-goog-api-key", cfg.APIKey)
+
+	return fullURL, h, body, nil
+}
+
+func (t *GeminiTester) Parse(statusCode int, respBody []byte) map[string]any {
+	out := map[string]any{}
+	var apiResp map[string]any
+	if err := sonic.Unmarshal(respBody, &apiResp); err == nil {
+		// 提取文本响应
+		if candidates, ok := apiResp["candidates"].([]any); ok && len(candidates) > 0 {
+			if candidate, ok := candidates[0].(map[string]any); ok {
+				if content, ok := candidate["content"].(map[string]any); ok {
+					if parts, ok := content["parts"].([]any); ok && len(parts) > 0 {
+						if part, ok := parts[0].(map[string]any); ok {
+							if text, ok := part["text"].(string); ok {
+								out["response_text"] = text
+							}
+						}
+					}
+				}
+			}
+		}
+		// usage 信息
+		if usageMetadata, ok := apiResp["usageMetadata"].(map[string]any); ok {
+			out["usage"] = usageMetadata
+		}
+		out["api_response"] = apiResp
+		return out
+	}
+	out["raw_response"] = string(respBody)
+	return out
+}
+
 // AnthropicTester 实现 Anthropic 测试协议
 type AnthropicTester struct{}
 

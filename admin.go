@@ -15,6 +15,22 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// parseAPIKeys 解析 API Key 字符串（支持逗号分隔的多个 Key）
+func parseAPIKeys(apiKey string) []string {
+	if apiKey == "" {
+		return []string{}
+	}
+	parts := strings.Split(apiKey, ",")
+	keys := make([]string, 0, len(parts))
+	for _, k := range parts {
+		k = strings.TrimSpace(k)
+		if k != "" {
+			keys = append(keys, k)
+		}
+	}
+	return keys
+}
+
 // ChannelRequest 渠道创建/更新请求结构
 type ChannelRequest struct {
 	Name           string            `json:"name" binding:"required"`
@@ -662,7 +678,8 @@ type TestChannelRequest struct {
 	Stream      bool              `json:"stream,omitempty"`       // 可选，流式响应
 	Content     string            `json:"content,omitempty"`      // 可选，测试内容，默认"test"
 	Headers     map[string]string `json:"headers,omitempty"`      // 可选，自定义请求头
-	ChannelType string            `json:"channel_type,omitempty"` // 可选，渠道类型：anthropic(默认)、openai
+	ChannelType string            `json:"channel_type,omitempty"` // 可选，渠道类型：anthropic(默认)、openai、gemini
+	KeyIndex    int               `json:"key_index,omitempty"`    // 可选，指定测试的Key索引，默认0（第一个）
 }
 
 // Validate 实现RequestValidator接口
@@ -696,9 +713,29 @@ func (s *Server) handleChannelTest(c *gin.Context) {
 		return
 	}
 
+	// 解析 API Keys（支持多 Key）
+	keys := parseAPIKeys(cfg.APIKey)
+	if len(keys) == 0 {
+		RespondJSON(c, http.StatusOK, gin.H{
+			"success": false,
+			"error":   "渠道未配置有效的 API Key",
+		})
+		return
+	}
+
+	// 验证并选择 Key 索引
+	keyIndex := testReq.KeyIndex
+	if keyIndex < 0 || keyIndex >= len(keys) {
+		keyIndex = 0 // 默认使用第一个 Key
+	}
+
+	// 创建测试用的配置副本，使用选定的 Key
+	testCfg := *cfg
+	testCfg.APIKey = keys[keyIndex]
+
 	// 检查模型是否支持
 	modelSupported := false
-	for _, model := range cfg.Models {
+	for _, model := range testCfg.Models {
 		if model == testReq.Model {
 			modelSupported = true
 			break
@@ -709,13 +746,16 @@ func (s *Server) handleChannelTest(c *gin.Context) {
 			"success":          false,
 			"error":            "模型 " + testReq.Model + " 不在此渠道的支持列表中",
 			"model":            testReq.Model,
-			"supported_models": cfg.Models,
+			"supported_models": testCfg.Models,
 		})
 		return
 	}
 
 	// 执行测试
-	testResult := s.testChannelAPI(cfg, &testReq)
+	testResult := s.testChannelAPI(&testCfg, &testReq)
+	// 添加测试的 Key 索引信息到结果中
+	testResult["tested_key_index"] = keyIndex
+	testResult["total_keys"] = len(keys)
 	RespondJSON(c, http.StatusOK, testResult)
 }
 
@@ -727,6 +767,8 @@ func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[st
     switch channelType {
     case "openai":
         tester = &OpenAITester{}
+    case "gemini":
+        tester = &GeminiTester{}
     case "anthropic":
         tester = &AnthropicTester{}
     default:
