@@ -38,10 +38,10 @@ func getSliceItem[T any](slice []any, index int) (T, bool) {
 	return typed, ok
 }
 
-// OpenAITester 兼容 Codex 风格（渠道类型: codex）
-type OpenAITester struct{}
+// CodexTester 兼容 Codex 风格（渠道类型: codex）
+type CodexTester struct{}
 
-func (t *OpenAITester) Build(cfg *Config, req *TestChannelRequest) (string, http.Header, []byte, error) {
+func (t *CodexTester) Build(cfg *Config, req *TestChannelRequest) (string, http.Header, []byte, error) {
 	testContent := req.Content
 	if strings.TrimSpace(testContent) == "" {
 		testContent = "test"
@@ -83,8 +83,8 @@ func (t *OpenAITester) Build(cfg *Config, req *TestChannelRequest) (string, http
 	return fullURL, h, body, nil
 }
 
-// extractOpenAIResponseText 从OpenAI响应中提取文本（消除6层嵌套）
-func extractOpenAIResponseText(apiResp map[string]any) (string, bool) {
+// extractCodexResponseText 从Codex响应中提取文本（消除6层嵌套）
+func extractCodexResponseText(apiResp map[string]any) (string, bool) {
 	output, ok := getTypedValue[[]any](apiResp, "output")
 	if !ok {
 		return "", false
@@ -119,12 +119,12 @@ func extractOpenAIResponseText(apiResp map[string]any) (string, bool) {
 	return "", false
 }
 
-func (t *OpenAITester) Parse(statusCode int, respBody []byte) map[string]any {
+func (t *CodexTester) Parse(statusCode int, respBody []byte) map[string]any {
 	out := map[string]any{}
 	var apiResp map[string]any
 	if err := sonic.Unmarshal(respBody, &apiResp); err == nil {
 		// 提取文本（使用辅助函数）
-		if text, ok := extractOpenAIResponseText(apiResp); ok {
+		if text, ok := extractCodexResponseText(apiResp); ok {
 			out["response_text"] = text
 		}
 

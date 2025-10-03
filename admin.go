@@ -766,7 +766,7 @@ func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[st
 	var tester ChannelTester
 	switch channelType {
 	case "codex":
-		tester = &OpenAITester{}
+		tester = &CodexTester{}
 	case "gemini":
 		tester = &GeminiTester{}
 	case "anthropic":
