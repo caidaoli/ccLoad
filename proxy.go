@@ -1,22 +1,22 @@
 package main
 
 import (
-	"bytes"
-	"compress/gzip"
-	"context"
-	"crypto/tls"
-	"errors"
-	"fmt"
-	"io"
-	"net"
-	"net/http"
-	"net/http/httptrace"
-	neturl "net/url"
-	"strconv"
-	"strings"
-	"sync"
-	"sync/atomic"
-	"time"
+    "bytes"
+    "compress/gzip"
+    "context"
+    "crypto/tls"
+    "errors"
+    "fmt"
+    "io"
+    "net"
+    "net/http"
+    "net/http/httptrace"
+    neturl "net/url"
+    "strconv"
+    "strings"
+    "sync"
+    "sync/atomic"
+    "time"
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
@@ -160,11 +160,108 @@ type traceBreakdown struct {
 
 // 移除EndpointStrategy - 实现真正的透明代理
 
+// 辅助函数：构建上游完整URL（KISS）
+func buildUpstreamURL(cfg *Config, requestPath, rawQuery string) string {
+    upstreamURL := strings.TrimRight(cfg.URL, "/") + requestPath
+    if rawQuery != "" {
+        upstreamURL += "?" + rawQuery
+    }
+    return upstreamURL
+}
+
+// 辅助函数：创建带上下文的HTTP请求
+func buildUpstreamRequest(ctx context.Context, method, upstreamURL string, body []byte) (*http.Request, error) {
+    var bodyReader io.Reader
+    if len(body) > 0 {
+        bodyReader = bytes.NewReader(body)
+    }
+    u, err := neturl.Parse(upstreamURL)
+    if err != nil {
+        return nil, err
+    }
+    return http.NewRequestWithContext(ctx, method, u.String(), bodyReader)
+}
+
+// 辅助函数：复制请求头，跳过认证相关（DRY）
+func copyRequestHeaders(dst *http.Request, src http.Header) {
+    for k, vs := range src {
+        if strings.EqualFold(k, "Authorization") || strings.EqualFold(k, "X-Api-Key") {
+            continue
+        }
+        for _, v := range vs {
+            dst.Header.Add(k, v)
+        }
+    }
+    if dst.Header.Get("Accept") == "" {
+        dst.Header.Set("Accept", "application/json")
+    }
+}
+
+// 辅助函数：按路径类型注入API Key头（Gemini vs Claude）
+func injectAPIKeyHeaders(req *http.Request, cfg *Config, keyIndex int, requestPath string) {
+    apiKey := cfg.APIKey
+    if keyIndex >= 0 {
+        keys := cfg.GetAPIKeys()
+        if keyIndex < len(keys) {
+            apiKey = keys[keyIndex]
+        }
+    }
+
+    if isGeminiRequest(requestPath) {
+        req.Header.Set("x-goog-api-key", apiKey)
+    } else {
+        req.Header.Set("x-api-key", apiKey)
+        req.Header.Set("Authorization", "Bearer "+apiKey)
+    }
+    if req.Header.Get("Accept") == "" {
+        req.Header.Set("Accept", "application/json")
+    }
+}
+
+// 辅助函数：过滤并写回响应头（DRY）
+func filterAndWriteResponseHeaders(w http.ResponseWriter, hdr http.Header) {
+    for k, vs := range hdr {
+        if strings.EqualFold(k, "Connection") || strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Transfer-Encoding") {
+            continue
+        }
+        for _, v := range vs {
+            w.Header().Add(k, v)
+        }
+    }
+}
+
+// 辅助函数：流式复制（支持flusher与ctx取消）
+func streamCopy(ctx context.Context, src io.Reader, dst http.ResponseWriter) error {
+    buf := make([]byte, 8*1024)
+    for {
+        select {
+        case <-ctx.Done():
+            return ctx.Err()
+        default:
+        }
+        n, readErr := src.Read(buf)
+        if n > 0 {
+            if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
+                return writeErr
+            }
+            if flusher, ok := dst.(http.Flusher); ok {
+                flusher.Flush()
+            }
+        }
+        if readErr != nil {
+            if readErr == io.EOF {
+                return nil
+            }
+            return readErr
+        }
+    }
+}
+
 // forwardOnceAsync: 异步流式转发，透明转发客户端原始请求
 // 参数新增 keyIndex 用于指定使用的API Key索引（-1表示使用默认APIKey字段）
 // 参数新增 method 用于支持任意HTTP方法（GET、POST、PUT、DELETE等）
 func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, keyIndex int, method string, body []byte, hdr http.Header, rawQuery, requestPath string, w http.ResponseWriter) (*fwResult, float64, error) {
-	startTime := time.Now()
+    startTime := time.Now()
 
 	// 性能优化：条件启用HTTP trace（默认关闭，节省0.5-1ms/请求）
 	var (
@@ -197,57 +294,15 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, keyIndex int
 		ctx = httptrace.WithClientTrace(ctx, trace)
 	}
 
-	// 透明代理：完全保持客户端原始请求路径和参数
-	upstreamURL := strings.TrimRight(cfg.URL, "/") + requestPath
-	if rawQuery != "" {
-		upstreamURL += "?" + rawQuery
-	}
-
-	u, err := neturl.Parse(upstreamURL)
-	if err != nil {
-		return nil, 0, err
-	}
-	// 使用客户端原始HTTP方法，支持GET（无body）和POST（有body）等所有方法
-	var bodyReader io.Reader
-	if len(body) > 0 {
-		bodyReader = bytes.NewReader(body)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, u.String(), bodyReader)
-	if err != nil {
-		return nil, 0, err
-	}
-	// Copy headers but override API key
-	for k, vs := range hdr {
-		// Skip hop-by-hop and auth
-		if strings.EqualFold(k, "Authorization") || strings.EqualFold(k, "X-Api-Key") {
-			continue
-		}
-		for _, v := range vs {
-			req.Header.Add(k, v)
-		}
-	}
-
-	// 确定使用的API Key：优先使用指定的keyIndex，否则使用默认APIKey
-	apiKey := cfg.APIKey
-	if keyIndex >= 0 {
-		keys := cfg.GetAPIKeys()
-		if keyIndex < len(keys) {
-			apiKey = keys[keyIndex]
-		}
-	}
-
-	// API特定头设置：根据请求路径区分Gemini和Claude API
-	if isGeminiRequest(requestPath) {
-		// Gemini API：仅使用x-goog-api-key认证
-		req.Header.Set("x-goog-api-key", apiKey)
-	} else {
-		// Claude API：使用x-api-key和Authorization Bearer认证
-		req.Header.Set("x-api-key", apiKey)
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-	if req.Header.Get("Accept") == "" {
-		req.Header.Set("Accept", "application/json")
-	}
+    // 透明代理：构建完整URL与请求
+    upstreamURL := buildUpstreamURL(cfg, requestPath, rawQuery)
+    req, err := buildUpstreamRequest(ctx, method, upstreamURL, body)
+    if err != nil {
+        return nil, 0, err
+    }
+    // 复制原始请求头并注入认证头
+    copyRequestHeaders(req, hdr)
+    injectAPIKeyHeaders(req, cfg, keyIndex, requestPath)
 
 	// 异步发送请求，一旦收到响应头立即开始转发
 	resp, err := s.client.Do(req)
@@ -288,54 +343,17 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, keyIndex int
 		return &fwResult{Status: resp.StatusCode, Header: hdrClone, Body: rb, Resp: nil, FirstByteTime: firstByteTime, Trace: &traceBreakdown{DNS: tDNS, Connect: tConn, TLS: tTLS, WroteReq: tWrote, FirstByte: firstByteTime}}, duration, nil
 	}
 
-	// 成功响应：立即写入响应头，开始异步流式转发
-	for k, vs := range resp.Header {
-		// 跳过hop-by-hop头
-		if strings.EqualFold(k, "Connection") || strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Transfer-Encoding") {
-			continue
-		}
-		for _, v := range vs {
-			w.Header().Add(k, v)
-		}
-	}
-	w.WriteHeader(resp.StatusCode)
+    // 成功响应：立即写入响应头，开始异步流式转发
+    filterAndWriteResponseHeaders(w, resp.Header)
+    w.WriteHeader(resp.StatusCode)
 
 	// 启动异步流式传输（管道式）
 	var streamErr error
 
 	defer resp.Body.Close()
 
-	// 使用小缓冲区实现低延迟传输，支持ctx取消
-	buf := make([]byte, 8*1024) // 8KB缓冲区，平衡延迟与系统调用开销
-streamLoop:
-	for {
-		// 尝试上下文取消
-		select {
-		case <-ctx.Done():
-			streamErr = ctx.Err()
-			break streamLoop
-		default:
-		}
-
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			// 立即写入
-			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
-				streamErr = writeErr
-				break streamLoop
-			}
-			// 如果支持flusher，刷新减少延迟
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
-			}
-		}
-		if readErr != nil {
-			if readErr != io.EOF {
-				streamErr = readErr
-			}
-			break streamLoop
-		}
-	}
+    // 流式复制
+    streamErr = streamCopy(ctx, resp.Body, w)
 	// 已统一到上面的循环，支持ctx取消，无需else分支
 
 	// 计算总传输时间（从startTime开始）

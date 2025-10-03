@@ -259,8 +259,19 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 		}
 	}
 
-	summary := ChannelImportSummary{}
-	lineNo := 1
+    summary := ChannelImportSummary{}
+    lineNo := 1
+
+    // 预加载现有渠道名称，O(n) 替代 O(n^2)（KISS/DRY/性能优化）
+    existingConfigs, err := s.store.ListConfigs(c.Request.Context())
+    if err != nil {
+        RespondError(c, http.StatusInternalServerError, err)
+        return
+    }
+    existingNames := make(map[string]struct{}, len(existingConfigs))
+    for _, ec := range existingConfigs {
+        existingNames[ec.Name] = struct{}{}
+    }
 
 	for {
 		record, err := reader.Read()
@@ -293,8 +304,8 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 		url := fetch("url")
 		modelsRaw := fetch("models")
 		modelRedirectsRaw := fetch("model_redirects")
-		channelType := fetch("channel_type")
-		keyStrategy := fetch("key_strategy")
+        channelType := fetch("channel_type")
+        keyStrategy := fetch("key_strategy")
 
 		if name == "" || apiKey == "" || url == "" || modelsRaw == "" {
 			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行缺少必填字段", lineNo))
@@ -302,14 +313,13 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 			continue
 		}
 
-		// 验证渠道类型（可选字段，默认anthropic）
-		if channelType == "" {
-			channelType = "anthropic" // 默认值
-		} else if !IsValidChannelType(channelType) {
-			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行渠道类型无效: %s（仅支持anthropic/openai/gemini）", lineNo, channelType))
-			summary.Skipped++
-			continue
-		}
+        // 渠道类型规范化与校验（codex → openai，空值 → anthropic）
+        channelType = normalizeChannelType(channelType)
+        if !IsValidChannelType(channelType) {
+            summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行渠道类型无效: %s（仅支持anthropic/openai/gemini）", lineNo, channelType))
+            summary.Skipped++
+            continue
+        }
 
 		// 验证Key使用策略（可选字段，默认sequential）
 		if keyStrategy == "" {
@@ -371,21 +381,8 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 			Enabled:        enabled,
 		}
 
-		// 检查渠道是否已存在（基于名称）
-		existingConfigs, err := s.store.ListConfigs(c.Request.Context())
-		if err != nil {
-			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行检查现有渠道失败: %v", lineNo, err))
-			summary.Skipped++
-			continue
-		}
-
-		isUpdate := false
-		for _, existing := range existingConfigs {
-			if existing.Name == name {
-				isUpdate = true
-				break
-			}
-		}
+        // 检查渠道是否已存在（基于名称）- 使用预加载集合
+        _, isUpdate := existingNames[name]
 
 		// 使用ReplaceConfig进行插入或更新
 		if _, err := s.store.ReplaceConfig(c.Request.Context(), cfg); err != nil {
@@ -394,11 +391,13 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 			continue
 		}
 
-		if isUpdate {
-			summary.Updated++
-		} else {
-			summary.Created++
-		}
+        if isUpdate {
+            summary.Updated++
+        } else {
+            summary.Created++
+            // 新创建的渠道加入已存在集合，避免后续重复计算
+            existingNames[name] = struct{}{}
+        }
 	}
 
 	summary.Processed = summary.Created + summary.Updated + summary.Skipped
@@ -722,240 +721,96 @@ func (s *Server) handleChannelTest(c *gin.Context) {
 
 // 测试渠道API连通性
 func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[string]any {
-	// 设置默认值
-	maxTokens := testReq.MaxTokens
-	if maxTokens == 0 {
-		maxTokens = 4096
-	}
+    // 选择并规范化渠道类型
+    channelType := normalizeChannelType(testReq.ChannelType)
+    var tester ChannelTester
+    switch channelType {
+    case "openai":
+        tester = &OpenAITester{}
+    case "anthropic":
+        tester = &AnthropicTester{}
+    default:
+        tester = &AnthropicTester{}
+    }
 
-	// 确定渠道类型
-	channelType := testReq.ChannelType
-	if channelType == "" {
-		channelType = "anthropic" // 默认为anthropic类型
-	}
+    // 构建请求
+    fullURL, baseHeaders, body, err := tester.Build(cfg, testReq)
+    if err != nil {
+        return map[string]any{"success": false, "error": "构造测试请求失败: " + err.Error()}
+    }
 
-	testContent := testReq.Content
-	if testContent == "" {
-		testContent = "test" // 默认测试内容
-	}
+    // 创建HTTP请求
+    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+    defer cancel()
 
-	// 根据渠道类型创建不同格式的测试请求
-	var testMessage map[string]any
+    req, err := http.NewRequestWithContext(ctx, "POST", fullURL, bytes.NewReader(body))
+    if err != nil {
+        return map[string]any{"success": false, "error": "创建HTTP请求失败: " + err.Error()}
+    }
 
-	switch channelType {
-	case "codex":
-		// OpenAI GPT-5 Codex格式请求
-		testMessage = map[string]any{
-			"model":        testReq.Model,
-			"stream":       testReq.Stream,
-			"instructions": "You are Codex, based on GPT-5. You are running as a coding agent in the Codex CLI on a user's computer.",
-			"input": []map[string]any{
-				{
-					"type": "message",
-					"role": "user",
-					"content": []map[string]any{
-						{
-							"type": "input_text",
-							"text": testContent,
-						},
-					},
-				},
-			},
-		}
-	case "anthropic":
-		// Anthropic格式请求
-		testMessage = map[string]any{
-			"system": []map[string]any{
-				{
-					"type": "text",
-					"text": "You are Claude Code, Anthropic's official CLI for Claude.",
-					"cache_control": map[string]any{
-						"type": "ephemeral",
-					},
-				},
-			},
-			"stream": testReq.Stream,
-			"messages": []map[string]any{
-				{
-					"content": []map[string]any{
-						{
-							"type": "text",
-							"text": "<system-reminder>\nThis is a reminder that your todo list is currently empty. DO NOT mention this to the user explicitly because they are already aware. If you are working on tasks that would benefit from a todo list please use the TodoWrite tool to create one. If not, please feel free to ignore. Again do not mention this message to the user.\n</system-reminder>",
-						},
-						{
-							"type": "text",
-							"text": testContent,
-							"cache_control": map[string]any{
-								"type": "ephemeral",
-							},
-						},
-					},
-					"role": "user",
-				},
-			},
-			"model":      testReq.Model,
-			"max_tokens": maxTokens,
-			"metadata": map[string]any{
-				"user_id": "test",
-			},
-		}
-	}
+    // 设置基础请求头
+    for k, vs := range baseHeaders {
+        for _, v := range vs {
+            req.Header.Add(k, v)
+        }
+    }
+    // 添加/覆盖自定义请求头
+    for key, value := range testReq.Headers {
+        req.Header.Set(key, value)
+    }
 
-	reqBody, err := sonic.Marshal(testMessage)
-	if err != nil {
-		return map[string]any{
-			"success": false,
-			"error":   "构造测试请求失败: " + err.Error(),
-		}
-	}
+    // 发送请求
+    start := time.Now()
+    resp, err := s.client.Do(req)
+    duration := time.Since(start)
+    if err != nil {
+        return map[string]any{"success": false, "error": "网络请求失败: " + err.Error(), "duration_ms": duration.Milliseconds()}
+    }
+    defer resp.Body.Close()
 
-	// 创建HTTP请求
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+    // 读取响应
+    respBody, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return map[string]any{"success": false, "error": "读取响应失败: " + err.Error(), "duration_ms": duration.Milliseconds(), "status_code": resp.StatusCode}
+    }
 
-	// 构建完整的API URL，根据渠道类型确定路径和参数
-	var fullURL string
-	baseURL := strings.TrimRight(cfg.URL, "/")
+    // 通用结果
+    result := map[string]any{
+        "success":     resp.StatusCode >= 200 && resp.StatusCode < 300,
+        "status_code": resp.StatusCode,
+        "duration_ms": duration.Milliseconds(),
+    }
 
-	switch channelType {
-	case "anthropic":
-		fullURL = baseURL + "/v1/messages?beta=true"
-	case "codex":
-		fullURL = baseURL + "/v1/responses"
-	}
+    if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+        // 成功：委托给 tester 解析
+        parsed := tester.Parse(resp.StatusCode, respBody)
+        for k, v := range parsed {
+            result[k] = v
+        }
+        result["message"] = "API测试成功"
+    } else {
+        // 错误：统一解析
+        var errorMsg string
+        var apiError map[string]any
+        if err := sonic.Unmarshal(respBody, &apiError); err == nil {
+            if errInfo, ok := apiError["error"].(map[string]any); ok {
+                if msg, ok := errInfo["message"].(string); ok {
+                    errorMsg = msg
+                } else if typeStr, ok := errInfo["type"].(string); ok {
+                    errorMsg = typeStr
+                }
+            }
+            result["api_error"] = apiError
+        } else {
+            result["raw_response"] = string(respBody)
+        }
+        if errorMsg == "" {
+            errorMsg = "API返回错误状态: " + resp.Status
+        }
+        result["error"] = errorMsg
+    }
 
-	req, err := http.NewRequestWithContext(ctx, "POST", fullURL, bytes.NewReader(reqBody))
-	if err != nil {
-		return map[string]any{
-			"success": false,
-			"error":   "创建HTTP请求失败: " + err.Error(),
-		}
-	}
-
-	// 根据渠道类型设置不同的请求头
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
-
-	switch channelType {
-	case "codex":
-		// OpenAI GPT-5 Codex特定的请求头
-		req.Header.Set("User-Agent", "codex_cli_rs/0.41.0 (Mac OS 26.0.0; arm64) iTerm.app/3.6.1")
-		req.Header.Set("Openai-Beta", "responses=experimental")
-		req.Header.Set("Originator", "codex_cli_rs")
-	case "anthropic":
-		// Anthropic特定的请求头（默认）
-		req.Header.Set("User-Agent", "claude-cli/1.0.110 (external, cli)")
-		req.Header.Set("x-app", "cli")
-		req.Header.Set("anthropic-version", "2023-06-01")
-	}
-
-	// 添加自定义请求头
-	for key, value := range testReq.Headers {
-		req.Header.Set(key, value)
-	}
-
-	// 发送请求
-	start := time.Now()
-	resp, err := s.client.Do(req)
-	duration := time.Since(start)
-
-	if err != nil {
-		return map[string]any{
-			"success":     false,
-			"error":       "网络请求失败: " + err.Error(),
-			"duration_ms": duration.Milliseconds(),
-		}
-	}
-	defer resp.Body.Close()
-
-	// 读取响应
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return map[string]any{
-			"success":     false,
-			"error":       "读取响应失败: " + err.Error(),
-			"duration_ms": duration.Milliseconds(),
-			"status_code": resp.StatusCode,
-		}
-	}
-
-	// 根据状态码判断成功或失败
-	result := map[string]any{
-		"success":     resp.StatusCode >= 200 && resp.StatusCode < 300,
-		"status_code": resp.StatusCode,
-		"duration_ms": duration.Milliseconds(),
-	}
-
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		// 成功响应
-		var apiResp map[string]any
-		if err := sonic.Unmarshal(respBody, &apiResp); err == nil {
-			// 根据渠道类型解析响应
-			switch channelType {
-			case "codex":
-				// 解析OpenAI GPT-5 Codex响应
-				if output, ok := apiResp["output"].([]any); ok {
-					for _, item := range output {
-						if outputItem, ok := item.(map[string]any); ok {
-							if outputType, ok := outputItem["type"].(string); ok && outputType == "message" {
-								if content, ok := outputItem["content"].([]any); ok && len(content) > 0 {
-									if textBlock, ok := content[0].(map[string]any); ok {
-										if text, ok := textBlock["text"].(string); ok {
-											result["response_text"] = text
-											break
-										}
-									}
-								}
-							}
-						}
-					}
-				}
-				// 添加使用统计信息
-				if usage, ok := apiResp["usage"].(map[string]any); ok {
-					result["usage"] = usage
-				}
-			case "anthropic":
-				// 原有的Anthropic解析逻辑
-				if content, ok := apiResp["content"].([]any); ok && len(content) > 0 {
-					if textBlock, ok := content[0].(map[string]any); ok {
-						if text, ok := textBlock["text"].(string); ok {
-							result["response_text"] = text
-						}
-					}
-				}
-			}
-			// 添加完整的API响应
-			result["api_response"] = apiResp
-		} else {
-			// JSON解析失败，返回原始响应
-			result["raw_response"] = string(respBody)
-		}
-		result["message"] = "API测试成功"
-	} else {
-		// 错误响应
-		var errorMsg string
-		var apiError map[string]any
-		if err := sonic.Unmarshal(respBody, &apiError); err == nil {
-			if errInfo, ok := apiError["error"].(map[string]any); ok {
-				if msg, ok := errInfo["message"].(string); ok {
-					errorMsg = msg
-				} else if typeStr, ok := errInfo["type"].(string); ok {
-					errorMsg = typeStr
-				}
-			}
-			// 添加完整的错误响应
-			result["api_error"] = apiError
-		} else {
-			// JSON解析失败，返回原始响应
-			result["raw_response"] = string(respBody)
-		}
-		if errorMsg == "" {
-			errorMsg = "API返回错误状态: " + resp.Status
-		}
-		result["error"] = errorMsg
-	}
-
-	return result
+    return result
 }
 
 func buildCSVColumnIndex(header []string) map[string]int {

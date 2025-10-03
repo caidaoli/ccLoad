@@ -98,12 +98,25 @@ func (c *Config) HasModel(model string) bool {
 
 // IsValidChannelType 验证渠道类型是否合法
 func IsValidChannelType(t string) bool {
-	switch t {
-	case "anthropic", "openai", "gemini":
-		return true
-	default:
-		return false
-	}
+    switch t {
+    case "anthropic", "openai", "gemini":
+        return true
+    default:
+        return false
+    }
+}
+
+// normalizeChannelType 规范化渠道类型命名
+// 将别名统一到标准类型：例如 codex → openai；空值 → anthropic
+func normalizeChannelType(t string) string {
+    lower := strings.ToLower(strings.TrimSpace(t))
+    if lower == "" {
+        return "anthropic"
+    }
+    if lower == "codex" {
+        return "openai"
+    }
+    return lower
 }
 
 // 自定义时间类型，强制使用RFC3339格式进行JSON序列化
@@ -204,13 +217,16 @@ type Store interface {
 	AddLog(ctx context.Context, e *LogEntry) error
 	ListLogs(ctx context.Context, since time.Time, limit, offset int, filter *LogFilter) ([]*LogEntry, error)
 
-	// metrics
-	Aggregate(ctx context.Context, since time.Time, bucket time.Duration) ([]MetricPoint, error)
+    // metrics
+    Aggregate(ctx context.Context, since time.Time, bucket time.Duration) ([]MetricPoint, error)
 
 	// stats - 新增统计功能
 	GetStats(ctx context.Context, since time.Time, filter *LogFilter) ([]StatsEntry, error)
 
-	// round-robin pointer per (model, priority)
-	NextRR(ctx context.Context, model string, priority int, n int) int
-	SetRR(ctx context.Context, model string, priority int, idx int) error
+    // round-robin pointer per (model, priority)
+    NextRR(ctx context.Context, model string, priority int, n int) int
+    SetRR(ctx context.Context, model string, priority int, idx int) error
+
+    // maintenance
+    CleanupLogsBefore(ctx context.Context, cutoff time.Time) error
 }

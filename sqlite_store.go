@@ -411,12 +411,18 @@ func (s *SQLiteStore) rebuildKeyCooldownsTable(ctx context.Context) error {
 }
 
 func (s *SQLiteStore) Close() error {
-	return s.db.Close()
+    return s.db.Close()
 }
 
 func (s *SQLiteStore) Vacuum(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, "VACUUM")
-	return err
+    _, err := s.db.ExecContext(ctx, "VACUUM")
+    return err
+}
+
+// CleanupLogsBefore 清理截止时间之前的日志（DIP：通过接口暴露维护操作）
+func (s *SQLiteStore) CleanupLogsBefore(ctx context.Context, cutoff time.Time) error {
+    _, err := s.db.ExecContext(ctx, `DELETE FROM logs WHERE time < ?`, cutoff)
+    return err
 }
 
 // prepareStmt 获取或创建预编译语句（性能优化：减少SQL解析开销）

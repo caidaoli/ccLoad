@@ -529,16 +529,16 @@ func (s *Server) cleanupExpiredCooldowns() {
 // cleanupOldLogsLoop 定期清理旧日志（性能优化：避免每次插入时清理）
 // 每小时检查一次，删除3天前的日志
 func (s *Server) cleanupOldLogsLoop() {
-	ticker := time.NewTicker(1 * time.Hour)
-	defer ticker.Stop()
+    ticker := time.NewTicker(1 * time.Hour)
+    defer ticker.Stop()
 
-	for range ticker.C {
-		ctx := context.Background()
-		cutoff := time.Now().AddDate(0, 0, -3) // 3天前
+    for range ticker.C {
+        ctx := context.Background()
+        cutoff := time.Now().AddDate(0, 0, -3) // 3天前
 
-		// 使用DELETE直接删除，忽略错误（非关键操作）
-		_, _ = s.store.(*SQLiteStore).db.ExecContext(ctx, `DELETE FROM logs WHERE time < ?`, cutoff)
-	}
+        // 通过Store接口清理旧日志，忽略错误（非关键操作）
+        _ = s.store.CleanupLogsBefore(ctx, cutoff)
+    }
 }
 
 // getGeminiModels 获取所有 gemini 渠道的去重模型列表
