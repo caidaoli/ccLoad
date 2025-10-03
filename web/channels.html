@@ -97,10 +97,7 @@
             <div class="filter-group">
               <label class="filter-label">渠道类型</label>
               <select id="channelTypeFilter" class="filter-select" style="min-width: 100px;">
-                <option value="all">所有类型</option>
-                <option value="anthropic">Claude</option>
-                <option value="openai">OpenAI</option>
-                <option value="gemini">Gemini</option>
+                <!-- 动态加载渠道类型 -->
               </select>
             </div>
 
@@ -1155,6 +1152,7 @@
 
       // 初始化渠道类型（动态加载配置）
       await window.ChannelTypeManager.renderChannelTypeRadios('channelTypeRadios');
+      await window.ChannelTypeManager.renderChannelTypeFilter('channelTypeFilter');
 
       loadChannels().then(() => highlightFromHash());
       window.addEventListener('hashchange', highlightFromHash);

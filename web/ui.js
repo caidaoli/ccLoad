@@ -261,11 +261,33 @@
     return type ? type.display_name : value;
   }
 
+  /**
+   * 渲染渠道类型过滤器下拉框（包含"所有类型"选项）
+   * @param {string} selectId - select元素ID
+   */
+  async function renderChannelTypeFilter(selectId) {
+    const select = document.getElementById(selectId);
+    if (!select) {
+      console.error('select元素不存在:', selectId);
+      return;
+    }
+
+    const types = await getChannelTypes();
+
+    select.innerHTML = '<option value="all">所有类型</option>' +
+      types.map(type => `
+        <option value="${type.value}" title="${type.description}">
+          ${type.display_name}
+        </option>
+      `).join('');
+  }
+
   // 导出到全局作用域
   window.ChannelTypeManager = {
     getChannelTypes,
     renderChannelTypeRadios,
     renderChannelTypeSelect,
+    renderChannelTypeFilter,
     getChannelTypeDisplayName
   };
 })();
