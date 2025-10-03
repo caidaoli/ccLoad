@@ -133,23 +133,22 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		}
 
 		// Key级别冷却：返回所有Key的状态信息（包括正常和冷却）
+		// 修复：单Key渠道也需要显示Key冷却状态（单Key升级逻辑会触发Key级冷却）
 		keys := cfg.GetAPIKeys()
-		if len(keys) > 1 { // 只有多Key渠道才需要显示Key级别状态
-			keyCooldowns := make([]KeyCooldownInfo, 0, len(keys))
-			for i := range keys {
-				keyInfo := KeyCooldownInfo{KeyIndex: i}
+		keyCooldowns := make([]KeyCooldownInfo, 0, len(keys))
+		for i := range keys {
+			keyInfo := KeyCooldownInfo{KeyIndex: i}
 
-				// 检查是否在冷却中
-				if until, ok := s.store.GetKeyCooldownUntil(c.Request.Context(), cfg.ID, i); ok && until.After(now) {
-					u := until
-					keyInfo.CooldownUntil = &u
-					keyInfo.CooldownRemainingMS = int64(until.Sub(now) / time.Millisecond)
-				}
-
-				keyCooldowns = append(keyCooldowns, keyInfo)
+			// 检查是否在冷却中
+			if until, ok := s.store.GetKeyCooldownUntil(c.Request.Context(), cfg.ID, i); ok && until.After(now) {
+				u := until
+				keyInfo.CooldownUntil = &u
+				keyInfo.CooldownRemainingMS = int64(until.Sub(now) / time.Millisecond)
 			}
-			oc.KeyCooldowns = keyCooldowns
+
+			keyCooldowns = append(keyCooldowns, keyInfo)
 		}
+		oc.KeyCooldowns = keyCooldowns
 
 		out = append(out, oc)
 	}
