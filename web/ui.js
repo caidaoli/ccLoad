@@ -177,3 +177,95 @@
   window.showSuccess = (msg) => window.showNotification(msg, 'success');
   window.showError = (msg) => window.showNotification(msg, 'error');
 })();
+
+// ============================================================
+// 渠道类型管理模块（动态加载配置，单一数据源）
+// ============================================================
+(function() {
+  let channelTypesCache = null;
+
+  /**
+   * 获取渠道类型配置（带缓存）
+   */
+  async function getChannelTypes() {
+    if (channelTypesCache) {
+      return channelTypesCache;
+    }
+
+    const res = await fetch('/public/channel-types');
+    if (!res.ok) {
+      throw new Error(`获取渠道类型配置失败: ${res.status}`);
+    }
+    const data = await res.json();
+    channelTypesCache = data.data || [];
+    return channelTypesCache;
+  }
+
+  /**
+   * 渲染渠道类型单选按钮组（用于编辑渠道界面）
+   * @param {string} containerId - 容器元素ID
+   * @param {string} selectedValue - 选中的值（默认'anthropic'）
+   */
+  async function renderChannelTypeRadios(containerId, selectedValue = 'anthropic') {
+    const container = document.getElementById(containerId);
+    if (!container) {
+      console.error('容器元素不存在:', containerId);
+      return;
+    }
+
+    const types = await getChannelTypes();
+
+    container.innerHTML = types.map(type => `
+      <label style="margin-right: 15px; cursor: pointer; display: inline-flex; align-items: center;">
+        <input type="radio"
+               name="channel_type"
+               value="${type.value}"
+               ${type.value === selectedValue ? 'checked' : ''}
+               style="margin-right: 5px;">
+        <span title="${type.description}">${type.display_name}</span>
+      </label>
+    `).join('');
+  }
+
+  /**
+   * 渲染渠道类型下拉选择框（用于测试渠道界面）
+   * @param {string} selectId - select元素ID
+   * @param {string} selectedValue - 选中的值（默认'anthropic'）
+   */
+  async function renderChannelTypeSelect(selectId, selectedValue = 'anthropic') {
+    const select = document.getElementById(selectId);
+    if (!select) {
+      console.error('select元素不存在:', selectId);
+      return;
+    }
+
+    const types = await getChannelTypes();
+
+    select.innerHTML = types.map(type => `
+      <option value="${type.value}"
+              ${type.value === selectedValue ? 'selected' : ''}
+              title="${type.description}">
+        ${type.display_name}
+      </option>
+    `).join('');
+  }
+
+  /**
+   * 获取渠道类型的显示名称
+   * @param {string} value - 渠道类型内部值
+   * @returns {Promise<string>} 显示名称
+   */
+  async function getChannelTypeDisplayName(value) {
+    const types = await getChannelTypes();
+    const type = types.find(t => t.value === value);
+    return type ? type.display_name : value;
+  }
+
+  // 导出到全局作用域
+  window.ChannelTypeManager = {
+    getChannelTypes,
+    renderChannelTypeRadios,
+    renderChannelTypeSelect,
+    getChannelTypeDisplayName
+  };
+})();

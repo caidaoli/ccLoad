@@ -35,7 +35,7 @@ func parseAPIKeys(apiKey string) []string {
 type ChannelRequest struct {
 	Name           string            `json:"name" binding:"required"`
 	APIKey         string            `json:"api_key" binding:"required"`
-	ChannelType    string            `json:"channel_type,omitempty"` // 渠道类型：anthropic, openai, gemini
+	ChannelType    string            `json:"channel_type,omitempty"` // 渠道类型：anthropic, codex, gemini
 	KeyStrategy    string            `json:"key_strategy,omitempty"` // Key使用策略：sequential, round_robin
 	URL            string            `json:"url" binding:"required,url"`
 	Priority       int               `json:"priority"`
@@ -329,10 +329,10 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 			continue
 		}
 
-		// 渠道类型规范化与校验（codex → openai，空值 → anthropic）
+		// 渠道类型规范化与校验（openai → codex，空值 → anthropic）
 		channelType = normalizeChannelType(channelType)
 		if !IsValidChannelType(channelType) {
-			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行渠道类型无效: %s（仅支持anthropic/openai/gemini）", lineNo, channelType))
+			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行渠道类型无效: %s（仅支持anthropic/codex/gemini）", lineNo, channelType))
 			summary.Skipped++
 			continue
 		}
@@ -678,7 +678,7 @@ type TestChannelRequest struct {
 	Stream      bool              `json:"stream,omitempty"`       // 可选，流式响应
 	Content     string            `json:"content,omitempty"`      // 可选，测试内容，默认"test"
 	Headers     map[string]string `json:"headers,omitempty"`      // 可选，自定义请求头
-	ChannelType string            `json:"channel_type,omitempty"` // 可选，渠道类型：anthropic(默认)、openai、gemini
+	ChannelType string            `json:"channel_type,omitempty"` // 可选，渠道类型：anthropic(默认)、codex、gemini
 	KeyIndex    int               `json:"key_index,omitempty"`    // 可选，指定测试的Key索引，默认0（第一个）
 }
 
@@ -765,7 +765,7 @@ func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[st
 	channelType := normalizeChannelType(testReq.ChannelType)
 	var tester ChannelTester
 	switch channelType {
-	case "openai":
+	case "codex":
 		tester = &OpenAITester{}
 	case "gemini":
 		tester = &GeminiTester{}
@@ -938,4 +938,11 @@ func parseImportEnabled(raw string) (bool, bool) {
 	default:
 		return false, false
 	}
+}
+
+// handleGetChannelTypes 获取渠道类型配置（公开端点，前端动态加载）
+func (s *Server) handleGetChannelTypes(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"data": ChannelTypes,
+	})
 }

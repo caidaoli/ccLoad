@@ -882,7 +882,7 @@ ccLoad现已支持多种AI API的透明代理，通过智能路径检测自动�
 渠道类型（channel_type）功能允许为每个渠道指定API提供商类型，实现更精准的路由控制和认证方式管理。
 
 **核心特性**：
-- **类型分类**：支持三种渠道类型 - `anthropic`（Claude）、`openai`、`gemini`（Google）
+- **类型分类**：支持三种渠道类型 - `anthropic`（Claude）、`codex`、`gemini`（Google）
 - **智能路由**：特定请求（如 GET `/v1beta/models`）按渠道类型路由，无需模型匹配
 - **向后兼容**：默认类型为 `anthropic`，现有渠道无需修改即可正常工作
 - **完整支持**：渠道创建、更新、CSV导入导出、Redis同步均支持渠道类型
@@ -900,8 +900,8 @@ ccLoad现已支持多种AI API的透明代理，通过智能路径检测自动�
 
 1. 访问 `/web/channels.html` 渠道管理页面
 2. 创建或编辑渠道时，从"渠道类型"下拉菜单选择：
-   - **Claude (Anthropic)** - 默认选项，适用于Claude API
-   - **OpenAI** - 适用于OpenAI兼容API
+   - **Claude Code** - 默认选项，适用于Claude API
+   - **OpenAI** - 适用于OpenAI兼容API（内部值为codex）
    - **Google Gemini** - 适用于Google Gemini API
 3. 保存后渠道类型将显示为彩色徽章
 
@@ -921,13 +921,13 @@ curl -X POST http://localhost:8080/admin/channels \
     "enabled": true
   }'
 
-# 创建OpenAI类型渠道
+# 创建Codex类型渠道
 curl -X POST http://localhost:8080/admin/channels \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "OpenAI-GPT4",
+    "name": "Codex-GPT4",
     "api_key": "sk-...",
-    "channel_type": "openai",
+    "channel_type": "codex",
     "url": "https://api.openai.com",
     "priority": 5,
     "models": ["gpt-4", "gpt-3.5-turbo"],
@@ -942,7 +942,7 @@ CSV文件格式（第8列为channel_type）：
 name,api_key,url,priority,models,model_redirects,channel_type,enabled
 Claude-Main,sk-ant-xxx,https://api.anthropic.com,10,"claude-3-5-sonnet",{},anthropic,true
 Gemini-Flash,AIza-xxx,https://generativelanguage.googleapis.com,8,"gemini-flash",{},gemini,true
-OpenAI-GPT4,sk-xxx,https://api.openai.com,5,"gpt-4,gpt-3.5-turbo",{},openai,true
+Codex-GPT4,sk-xxx,https://api.openai.com,5,"gpt-4,gpt-3.5-turbo",{},codex,true
 ```
 
 导入命令：
@@ -975,17 +975,19 @@ if requestMethod == http.MethodGet && isGeminiRequest(requestPath) {
 
 #### 渠道类型验证
 
-**验证函数**（`models.go:37-45`）：
+**验证函数**（`channel_types.go:IsValidChannelType`）：
 ```go
-func IsValidChannelType(t string) bool {
-    switch t {
-    case "anthropic", "openai", "gemini":
-        return true
-    default:
-        return false
+func IsValidChannelType(value string) bool {
+    for _, ct := range ChannelTypes {
+        if ct.Value == value {
+            return true
+        }
     }
+    return false
 }
 ```
+
+**支持的类型**：`anthropic`、`codex`、`gemini`
 
 **验证时机**：
 - 渠道创建/更新时

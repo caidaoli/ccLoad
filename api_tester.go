@@ -38,7 +38,7 @@ func getSliceItem[T any](slice []any, index int) (T, bool) {
 	return typed, ok
 }
 
-// OpenAITester 兼容 Codex 风格（归一化为 openai）
+// OpenAITester 兼容 Codex 风格（渠道类型: codex）
 type OpenAITester struct{}
 
 func (t *OpenAITester) Build(cfg *Config, req *TestChannelRequest) (string, http.Header, []byte, error) {

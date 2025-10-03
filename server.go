@@ -368,6 +368,7 @@ func (s *Server) setupRoutes(r *gin.Engine) {
 	public := r.Group("/public")
 	{
 		public.GET("/summary", s.handlePublicSummary)
+		public.GET("/channel-types", s.handleGetChannelTypes)
 	}
 
 	// 登录相关（公开访问）

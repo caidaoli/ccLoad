@@ -14,7 +14,7 @@ type Config struct {
 	APIKey         string            `json:"api_key"`      // 向后兼容：单Key场景
 	APIKeys        []string          `json:"api_keys"`     // 多Key支持：逗号分割的Key数组
 	KeyStrategy    string            `json:"key_strategy"` // Key使用策略: "sequential"（顺序） | "round_robin"（轮询），默认顺序
-	ChannelType    string            `json:"channel_type"` // 渠道类型: "anthropic" | "openai" | "gemini"，默认anthropic
+	ChannelType    string            `json:"channel_type"` // 渠道类型: "anthropic" | "codex" | "gemini"，默认anthropic
 	URL            string            `json:"url"`
 	Priority       int               `json:"priority"`
 	Models         []string          `json:"models"`
@@ -96,25 +96,15 @@ func (c *Config) HasModel(model string) bool {
 	return exists
 }
 
-// IsValidChannelType 验证渠道类型是否合法
-func IsValidChannelType(t string) bool {
-	switch t {
-	case "anthropic", "openai", "gemini":
-		return true
-	default:
-		return false
-	}
-}
-
 // normalizeChannelType 规范化渠道类型命名
-// 将别名统一到标准类型：例如 codex → openai；空值 → anthropic
+// 将别名统一到标准类型：例如 openai → codex；空值 → anthropic
 func normalizeChannelType(t string) string {
 	lower := strings.ToLower(strings.TrimSpace(t))
 	if lower == "" {
 		return "anthropic"
 	}
-	if lower == "codex" {
-		return "openai"
+	if lower == "openai" {
+		return "codex"
 	}
 	return lower
 }

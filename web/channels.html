@@ -170,18 +170,7 @@
               <div style="display: flex; align-items: center; gap: 8px;">
                 <label style="margin: 0; font-size: 13px; white-space: nowrap; color: var(--neutral-700);">渠道类型 *</label>
                 <div style="display: flex; gap: 12px;" id="channelTypeRadios">
-                  <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 13px;">
-                    <input type="radio" name="channelType" value="anthropic" checked>
-                    <span>Claude</span>
-                  </label>
-                  <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 13px;">
-                    <input type="radio" name="channelType" value="openai">
-                    <span>OpenAI</span>
-                  </label>
-                  <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 13px;">
-                    <input type="radio" name="channelType" value="gemini">
-                    <span>Gemini</span>
-                  </label>
+                  <!-- 动态加载渠道类型 -->
                 </div>
               </div>
 
@@ -315,9 +304,7 @@
       <div class="form-group">
         <label class="form-label" for="testChannelType">渠道类型</label>
         <select id="testChannelType" class="form-input" onchange="updateTestURL()">
-          <option value="anthropic" selected>Claude Code</option>
-          <option value="codex">Codex</option>
-          <option value="gemini">Gemini</option>
+          <!-- 动态加载渠道类型 -->
         </select>
       </div>
 
@@ -754,15 +741,15 @@
       document.getElementById('channelModal').classList.add('show');
     }
 
-    function editChannel(id) {
+    async function editChannel(id) {
       const channel = channels.find(c => c.id === id);
       if (!channel) return;
 
       editingChannelId = id;
-      
+
       // 保存Key冷却信息
       currentChannelKeyCooldowns = channel.key_cooldowns || [];
-      
+
       document.getElementById('modalTitle').textContent = '编辑渠道';
       document.getElementById('channelName').value = channel.name;
       document.getElementById('channelUrl').value = channel.url;
@@ -779,12 +766,9 @@
       document.getElementById('inlineEyeOffIcon').style.display = 'block';
       renderInlineKeyTable();
 
-      // 设置渠道类型单选框
+      // 动态渲染渠道类型单选框（使用当前渠道的类型）
       const channelType = channel.channel_type || 'anthropic';
-      const radioButton = document.querySelector(`input[name="channelType"][value="${channelType}"]`);
-      if (radioButton) {
-        radioButton.checked = true;
-      }
+      await window.ChannelTypeManager.renderChannelTypeRadios('channelTypeRadios', channelType);
       // 设置Key策略单选框
       const keyStrategy = channel.key_strategy || 'sequential';
       const strategyRadio = document.querySelector(`input[name="keyStrategy"][value="${keyStrategy}"]`);
@@ -1163,11 +1147,15 @@
       }
     }
 
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', async () => {
       if (window.initTopbar) initTopbar('channels');
       setupFilterListeners();
       setupImportExport();
       setupKeyImportPreview(); // DRY原则：统一初始化所有功能模块
+
+      // 初始化渠道类型（动态加载配置）
+      await window.ChannelTypeManager.renderChannelTypeRadios('channelTypeRadios');
+
       loadChannels().then(() => highlightFromHash());
       window.addEventListener('hashchange', highlightFromHash);
     });
@@ -1199,7 +1187,7 @@
     });
 
     // 测试渠道相关函数
-    function testChannel(id, name) {
+    async function testChannel(id, name) {
       const channel = channels.find(c => c.id === id);
       if (!channel) return;
 
@@ -1239,16 +1227,9 @@
       // 重置状态
       resetTestModal();
 
-      // 根据渠道类型自动设置测试类型
+      // 动态渲染渠道类型下拉框（使用当前渠道的类型）
       const channelType = channel.channel_type || 'anthropic';
-      const testChannelTypeSelect = document.getElementById('testChannelType');
-      if (channelType === 'openai') {
-        testChannelTypeSelect.value = 'codex';
-      } else if (channelType === 'gemini') {
-        testChannelTypeSelect.value = 'gemini';
-      } else {
-        testChannelTypeSelect.value = 'anthropic';
-      }
+      await window.ChannelTypeManager.renderChannelTypeSelect('testChannelType', channelType);
 
       document.getElementById('testModal').classList.add('show');
     }
