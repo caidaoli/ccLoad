@@ -27,9 +27,10 @@ func NewKeySelector(store Store) *KeySelector {
 // SelectAvailableKey 为渠道选择一个可用的API Key
 // 返回：(keyIndex, apiKey, error)
 // 策略：
-// - sequential: 顺序尝试，跳过冷却中的Key
-// - round_robin: 轮询选择，跳过冷却中的Key
-func (ks *KeySelector) SelectAvailableKey(ctx context.Context, cfg *Config) (int, string, error) {
+// - sequential: 顺序尝试，跳过冷却中的Key和已尝试的Key
+// - round_robin: 轮询选择，跳过冷却中的Key和已尝试的Key
+// excludeKeys: 本次请求中已尝试过的Key索引集合（避免同一请求内重复尝试）
+func (ks *KeySelector) SelectAvailableKey(ctx context.Context, cfg *Config, excludeKeys map[int]bool) (int, string, error) {
 	keys := cfg.GetAPIKeys()
 	if len(keys) == 0 {
 		return -1, "", fmt.Errorf("no API keys configured for channel %d", cfg.ID)
@@ -39,6 +40,10 @@ func (ks *KeySelector) SelectAvailableKey(ctx context.Context, cfg *Config) (int
 	// 原因：单Key渠道应完全依赖渠道级别冷却（在selector.go中已实现）
 	// 如果渠道被选中，说明渠道不在冷却中，直接返回唯一的Key
 	if len(keys) == 1 {
+		// 检查是否已尝试过（单Key场景下第二次调用应该返回错误）
+		if excludeKeys != nil && excludeKeys[0] {
+			return -1, "", fmt.Errorf("single key already tried in this request")
+		}
 		return 0, keys[0], nil
 	}
 
@@ -48,27 +53,32 @@ func (ks *KeySelector) SelectAvailableKey(ctx context.Context, cfg *Config) (int
 
 	switch strategy {
 	case "round_robin":
-		return ks.selectRoundRobin(ctx, cfg.ID, keys, now)
+		return ks.selectRoundRobin(ctx, cfg.ID, keys, now, excludeKeys)
 	case "sequential":
-		return ks.selectSequential(ctx, cfg.ID, keys, now)
+		return ks.selectSequential(ctx, cfg.ID, keys, now, excludeKeys)
 	default:
 		// 默认使用顺序策略
-		return ks.selectSequential(ctx, cfg.ID, keys, now)
+		return ks.selectSequential(ctx, cfg.ID, keys, now, excludeKeys)
 	}
 }
 
-// selectSequential 顺序选择：从第一个开始，跳过冷却中的Key
-func (ks *KeySelector) selectSequential(_ context.Context, channelID int64, keys []string, _ time.Time) (int, string, error) {
+// selectSequential 顺序选择：从第一个开始，跳过冷却中的Key和已尝试的Key
+func (ks *KeySelector) selectSequential(_ context.Context, channelID int64, keys []string, _ time.Time, excludeKeys map[int]bool) (int, string, error) {
 	for i, key := range keys {
+		// 跳过本次请求已尝试过的Key
+		if excludeKeys != nil && excludeKeys[i] {
+			continue
+		}
+		// 跳过冷却中的Key
 		if !ks.isKeyCooledDown(channelID, i) {
 			return i, key, nil
 		}
 	}
-	return -1, "", fmt.Errorf("all API keys are in cooldown")
+	return -1, "", fmt.Errorf("all API keys are in cooldown or already tried")
 }
 
-// selectRoundRobin 轮询选择：使用轮询指针，跳过冷却中的Key
-func (ks *KeySelector) selectRoundRobin(ctx context.Context, channelID int64, keys []string, _ time.Time) (int, string, error) {
+// selectRoundRobin 轮询选择：使用轮询指针，跳过冷却中的Key和已尝试的Key
+func (ks *KeySelector) selectRoundRobin(ctx context.Context, channelID int64, keys []string, _ time.Time, excludeKeys map[int]bool) (int, string, error) {
 	keyCount := len(keys)
 
 	// 从内存缓存获取轮询指针
@@ -84,6 +94,11 @@ func (ks *KeySelector) selectRoundRobin(ctx context.Context, channelID int64, ke
 	// 从startIdx开始轮询，最多尝试keyCount次
 	for i := 0; i < keyCount; i++ {
 		idx := (startIdx + i) % keyCount
+		// 跳过本次请求已尝试过的Key
+		if excludeKeys != nil && excludeKeys[idx] {
+			continue
+		}
+		// 跳过冷却中的Key
 		if !ks.isKeyCooledDown(channelID, idx) {
 			// 更新轮询指针到下一个位置
 			nextIdx := (idx + 1) % keyCount
@@ -93,10 +108,10 @@ func (ks *KeySelector) selectRoundRobin(ctx context.Context, channelID int64, ke
 		}
 	}
 
-	return -1, "", fmt.Errorf("all API keys are in cooldown")
+	return -1, "", fmt.Errorf("all API keys are in cooldown or already tried")
 }
 
-// isKeyCooledDown 检查指定Key是否在冷却中（优先内存缓存）
+// isKeyCooledDown 检查指定Key是否在冷却中（优先内存缓存，fallback数据库）
 func (ks *KeySelector) isKeyCooledDown(channelID int64, keyIndex int) bool {
 	cacheKey := fmt.Sprintf("%d_%d", channelID, keyIndex)
 	now := time.Now()
@@ -109,6 +124,15 @@ func (ks *KeySelector) isKeyCooledDown(channelID int64, keyIndex int) bool {
 		}
 		// 缓存过期，删除
 		ks.keyCooldown.Delete(cacheKey)
+		return false
+	}
+
+	// 内存缓存未命中，查询数据库（修复：避免服务重启后丢失冷却状态）
+	until, ok := ks.store.GetKeyCooldownUntil(context.Background(), channelID, keyIndex)
+	if ok && until.After(now) {
+		// 回填内存缓存，避免重复数据库查询
+		ks.keyCooldown.Store(cacheKey, until)
+		return true
 	}
 
 	return false

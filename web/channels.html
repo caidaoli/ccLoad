@@ -251,6 +251,7 @@
                 <tr style="border-bottom: 2px solid var(--neutral-300);">
                   <th style="padding: 6px 10px; text-align: left; font-weight: 600; font-size: 13px; width: 50px;">#</th>
                   <th style="padding: 6px 10px; text-align: left; font-weight: 600; font-size: 13px;">API Key</th>
+                  <th style="padding: 6px 10px; text-align: left; font-weight: 600; font-size: 13px; width: 200px;">状态</th>
                   <th style="padding: 6px 10px; text-align: center; font-weight: 600; font-size: 13px; width: 80px;">操作</th>
                 </tr>
               </thead>
@@ -413,6 +414,7 @@
     let editingChannelId = null;
     let deletingChannelId = null;
     let testingChannelId = null;
+    let currentChannelKeyCooldowns = []; // 当前编辑渠道的Key冷却信息
     
     // Filter state
     let filters = {
@@ -721,6 +723,8 @@
 
     function showAddModal() {
       editingChannelId = null;
+      currentChannelKeyCooldowns = []; // 清空冷却信息
+      
       document.getElementById('modalTitle').textContent = '添加渠道';
       document.getElementById('channelForm').reset();
       document.getElementById('channelEnabled').checked = true;
@@ -744,6 +748,10 @@
       if (!channel) return;
 
       editingChannelId = id;
+      
+      // 保存Key冷却信息
+      currentChannelKeyCooldowns = channel.key_cooldowns || [];
+      
       document.getElementById('modalTitle').textContent = '编辑渠道';
       document.getElementById('channelName').value = channel.name;
       document.getElementById('channelUrl').value = channel.url;
@@ -930,6 +938,7 @@
 
       // 填充表单数据
       editingChannelId = null; // 确保是新建模式
+      currentChannelKeyCooldowns = []; // 清空冷却信息（复制的渠道不继承冷却状态）
       document.getElementById('modalTitle').textContent = '复制渠道';
       document.getElementById('channelName').value = copiedName;
       document.getElementById('channelUrl').value = channel.url;
@@ -1399,7 +1408,7 @@
       if (inlineKeyTableData.length === 0) {
         tbody.innerHTML = `
           <tr>
-            <td colspan="3" style="padding: 30px; text-align: center; color: var(--neutral-500); font-size: 14px;">
+            <td colspan="4" style="padding: 30px; text-align: center; color: var(--neutral-500); font-size: 14px;">
               暂无API Key，点击"添加"或"导入"按钮添加
             </td>
           </tr>
@@ -1410,6 +1419,15 @@
       inlineKeyTableData.forEach((key, index) => {
         const row = document.createElement('tr');
         row.style.borderBottom = '1px solid var(--neutral-200)';
+
+        // 查找当前Key的冷却信息
+        const keyCooldown = currentChannelKeyCooldowns.find(kc => kc.key_index === index);
+        let cooldownHtml = '<span style="color: var(--success-600); font-size: 12px;">✓ 正常</span>';
+        
+        if (keyCooldown && keyCooldown.cooldown_remaining_ms > 0) {
+          const cooldownText = humanizeMS(keyCooldown.cooldown_remaining_ms);
+          cooldownHtml = `<span style="color: #dc2626; font-size: 12px; font-weight: 500; background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%); padding: 2px 8px; border-radius: 4px; border: 1px solid #fca5a5; white-space: nowrap;">⚠️ 冷却中·${cooldownText}</span>`;
+        }
 
         const displayKey = inlineKeyVisible ? key : maskKey(key);
 
@@ -1425,6 +1443,9 @@
               onfocus="this.style.borderColor='var(--primary-500)'; this.style.boxShadow='0 0 0 3px rgba(59,130,246,0.1)'"
               onblur="this.style.borderColor='var(--neutral-300)'; this.style.boxShadow='none'"
             >
+          </td>
+          <td style="padding: 6px 10px;">
+            ${cooldownHtml}
           </td>
           <td style="padding: 6px 10px; text-align: center;">
             <button

@@ -58,10 +58,18 @@ func (cr *ChannelRequest) ToConfig() *Config {
 }
 
 // ChannelWithCooldown 带冷却状态的渠道响应结构
-type ChannelWithCooldown struct {
-	*Config
+// KeyCooldownInfo Key级别冷却信息
+type KeyCooldownInfo struct {
+	KeyIndex            int        `json:"key_index"`
 	CooldownUntil       *time.Time `json:"cooldown_until,omitempty"`
 	CooldownRemainingMS int64      `json:"cooldown_remaining_ms,omitempty"`
+}
+
+type ChannelWithCooldown struct {
+	*Config
+	CooldownUntil       *time.Time         `json:"cooldown_until,omitempty"`
+	CooldownRemainingMS int64              `json:"cooldown_remaining_ms,omitempty"`
+	KeyCooldowns        []KeyCooldownInfo  `json:"key_cooldowns,omitempty"`
 }
 
 // ChannelImportSummary 导入结果统计
@@ -100,11 +108,33 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	out := make([]ChannelWithCooldown, 0, len(cfgs))
 	for _, cfg := range cfgs {
 		oc := ChannelWithCooldown{Config: cfg}
+		
+		// 渠道级别冷却
 		if until, ok := s.store.GetCooldownUntil(c.Request.Context(), cfg.ID); ok && until.After(now) {
 			u := until
 			oc.CooldownUntil = &u
 			oc.CooldownRemainingMS = int64(until.Sub(now) / time.Millisecond)
 		}
+		
+		// Key级别冷却：返回所有Key的状态信息（包括正常和冷却）
+		keys := cfg.GetAPIKeys()
+		if len(keys) > 1 { // 只有多Key渠道才需要显示Key级别状态
+			keyCooldowns := make([]KeyCooldownInfo, 0, len(keys))
+			for i := range keys {
+				keyInfo := KeyCooldownInfo{KeyIndex: i}
+
+				// 检查是否在冷却中
+				if until, ok := s.store.GetKeyCooldownUntil(c.Request.Context(), cfg.ID, i); ok && until.After(now) {
+					u := until
+					keyInfo.CooldownUntil = &u
+					keyInfo.CooldownRemainingMS = int64(until.Sub(now) / time.Millisecond)
+				}
+
+				keyCooldowns = append(keyCooldowns, keyInfo)
+			}
+			oc.KeyCooldowns = keyCooldowns
+		}
+		
 		out = append(out, oc)
 	}
 

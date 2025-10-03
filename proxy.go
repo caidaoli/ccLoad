@@ -371,6 +371,263 @@ func extractModelFromPath(path string) string {
 	return remaining[:end]
 }
 
+// proxyRequestContext 代理请求上下文（封装请求信息，遵循DIP原则）
+type proxyRequestContext struct {
+	originalModel string
+	requestMethod string
+	requestPath   string
+	rawQuery      string
+	body          []byte
+	header        http.Header
+	isStreaming   bool
+}
+
+// proxyResult 代理请求结果
+type proxyResult struct {
+	status    int
+	header    http.Header
+	body      []byte
+	channelID *int64
+	message   string
+	duration  float64
+	succeeded bool
+}
+
+// buildLogEntry 构建日志条目（消除重复代码，遵循DRY原则）
+func buildLogEntry(originalModel string, channelID *int64, statusCode int,
+	duration float64, isStreaming bool, apiKeyUsed string,
+	res *fwResult, errMsg string) *LogEntry {
+
+	entry := &LogEntry{
+		Time:        JSONTime{time.Now()},
+		Model:       originalModel,
+		ChannelID:   channelID,
+		StatusCode:  statusCode,
+		Duration:    duration,
+		IsStreaming: isStreaming,
+		APIKeyUsed:  apiKeyUsed,
+	}
+
+	if errMsg != "" {
+		entry.Message = truncateErr(errMsg)
+	} else if res != nil {
+		if statusCode >= 200 && statusCode < 300 {
+			entry.Message = "ok"
+		} else {
+			msg := fmt.Sprintf("upstream status %d", statusCode)
+			if len(res.Body) > 0 {
+				msg = fmt.Sprintf("%s: %s", msg, truncateErr(safeBodyToString(res.Body)))
+			}
+			entry.Message = msg
+		}
+
+		// 流式请求记录首字节响应时间
+		if isStreaming && res.FirstByteTime > 0 {
+			entry.FirstByteTime = &res.FirstByteTime
+		}
+	} else {
+		entry.Message = "unknown"
+	}
+
+	return entry
+}
+
+// ErrorAction 错误处理动作
+type ErrorAction int
+
+const (
+	ActionRetryKey     ErrorAction = iota // 重试当前渠道的其他Key
+	ActionRetryChannel                    // 切换到下一个渠道
+	ActionReturnClient                    // 直接返回给客户端
+)
+
+// handleProxyError 统一错误处理与冷却决策（遵循OCP原则）
+// 返回：(处理动作, 是否需要保存响应信息)
+func (s *Server) handleProxyError(ctx context.Context, cfg *Config, keyIndex int,
+	res *fwResult, err error) (ErrorAction, bool) {
+
+	// 网络错误处理
+	if err != nil {
+		_, shouldRetry := classifyError(err)
+		if !shouldRetry {
+			return ActionReturnClient, false
+		}
+		// 可重试错误：Key级别冷却
+		_ = s.keySelector.MarkKeyError(ctx, cfg.ID, keyIndex)
+		return ActionRetryKey, true
+	}
+
+	// HTTP错误处理
+	errLevel := classifyHTTPStatus(res.Status)
+	switch errLevel {
+	case ErrorLevelClient:
+		// 客户端错误：不冷却，直接返回
+		return ActionReturnClient, false
+
+	case ErrorLevelKey:
+		// Key级错误：冷却当前Key，继续尝试其他Key
+		_ = s.keySelector.MarkKeyError(ctx, cfg.ID, keyIndex)
+		return ActionRetryKey, true
+
+	case ErrorLevelChannel:
+		// 渠道级错误：冷却整个渠道，切换到其他渠道
+		if cooldownDur, err := s.store.BumpCooldownOnError(ctx, cfg.ID, time.Now()); err == nil {
+			s.cooldownCache.Store(cfg.ID, time.Now().Add(cooldownDur))
+		}
+		return ActionRetryChannel, true
+
+	default:
+		// 未知错误级别：保守策略，直接返回
+		return ActionReturnClient, false
+	}
+}
+
+// tryChannelWithKeys 在单个渠道内尝试多个Key（Key级重试）
+// 遵循SRP原则：职责单一 - 仅负责Key级别的重试逻辑
+func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *Config, reqCtx *proxyRequestContext, w http.ResponseWriter) (*proxyResult, error) {
+	// 计算实际重试次数
+	actualKeyCount := len(cfg.GetAPIKeys())
+	if actualKeyCount == 0 {
+		actualKeyCount = 1 // 至少尝试一次（兼容旧的APIKey字段）
+	}
+
+	maxKeyRetries := s.maxKeyRetries
+	if maxKeyRetries > actualKeyCount {
+		maxKeyRetries = actualKeyCount
+	}
+
+	var lastStatus int
+	var lastBody []byte
+	var lastHeader http.Header
+	triedKeys := make(map[int]bool) // 本次请求内已尝试过的Key
+
+	// Key重试循环
+	for keyRetry := 0; keyRetry < maxKeyRetries; keyRetry++ {
+		// 选择可用的API Key
+		keyIndex, selectedKey, err := s.keySelector.SelectAvailableKey(ctx, cfg, triedKeys)
+		if err != nil {
+			// 所有Key都在冷却中，返回特殊错误标识
+			return nil, fmt.Errorf("channel keys unavailable: %w", err)
+		}
+
+		// 模型重定向
+		actualModel := reqCtx.originalModel
+		if len(cfg.ModelRedirects) > 0 {
+			if redirectModel, ok := cfg.ModelRedirects[reqCtx.originalModel]; ok && redirectModel != "" {
+				actualModel = redirectModel
+			}
+		}
+
+		// 如果模型发生重定向，修改请求体
+		bodyToSend := reqCtx.body
+		if actualModel != reqCtx.originalModel {
+			var reqData map[string]any
+			if err := sonic.Unmarshal(reqCtx.body, &reqData); err == nil {
+				reqData["model"] = actualModel
+				if modifiedBody, err := sonic.Marshal(reqData); err == nil {
+					bodyToSend = modifiedBody
+				}
+			}
+		}
+
+		// 转发请求
+		res, duration, err := s.forwardOnceAsync(ctx, cfg, keyIndex, reqCtx.requestMethod,
+			bodyToSend, reqCtx.header, reqCtx.rawQuery, reqCtx.requestPath, w)
+
+		// 标记Key为已尝试
+		triedKeys[keyIndex] = true
+
+		// 处理网络错误
+		if err != nil {
+			statusCode, _ := classifyError(err)
+			s.addLogAsync(buildLogEntry(reqCtx.originalModel, &cfg.ID, statusCode,
+				duration, reqCtx.isStreaming, selectedKey, nil, err.Error()))
+
+			action, saveResp := s.handleProxyError(ctx, cfg, keyIndex, nil, err)
+			if action == ActionReturnClient {
+				return &proxyResult{
+					status:    statusCode,
+					body:      []byte(err.Error()),
+					channelID: &cfg.ID,
+					message:   truncateErr(err.Error()),
+					duration:  duration,
+					succeeded: false,
+				}, nil
+			}
+
+			if saveResp {
+				lastStatus = statusCode
+				lastBody = []byte(err.Error())
+				lastHeader = nil
+			}
+			continue // 重试下一个Key
+		}
+
+		// 处理成功响应
+		if res.Status >= 200 && res.Status < 300 {
+			// 清除冷却状态
+			s.cooldownCache.Delete(cfg.ID)
+			_ = s.keySelector.MarkKeySuccess(ctx, cfg.ID, keyIndex)
+
+			// 记录成功日志
+			s.addLogAsync(buildLogEntry(reqCtx.originalModel, &cfg.ID, res.Status,
+				duration, reqCtx.isStreaming, selectedKey, res, ""))
+
+			return &proxyResult{
+				status:    res.Status,
+				header:    res.Header,
+				channelID: &cfg.ID,
+				message:   "ok",
+				duration:  duration,
+				succeeded: true,
+			}, nil
+		}
+
+		// 处理错误响应
+		s.addLogAsync(buildLogEntry(reqCtx.originalModel, &cfg.ID, res.Status,
+			duration, reqCtx.isStreaming, selectedKey, res, ""))
+
+		action, saveResp := s.handleProxyError(ctx, cfg, keyIndex, res, nil)
+		if action == ActionReturnClient {
+			return &proxyResult{
+				status:    res.Status,
+				header:    res.Header,
+				body:      res.Body,
+				channelID: &cfg.ID,
+				duration:  duration,
+				succeeded: false,
+			}, nil
+		}
+
+		if saveResp {
+			lastStatus = res.Status
+			lastBody = res.Body
+			lastHeader = res.Header
+		}
+
+		if action == ActionRetryChannel {
+			// 需要切换渠道，跳出Key循环
+			break
+		}
+
+		// ActionRetryKey：继续尝试下一个Key
+	}
+
+	// Key重试循环结束，返回最后的错误信息
+	if lastStatus != 0 {
+		return &proxyResult{
+			status:    lastStatus,
+			header:    lastHeader,
+			body:      lastBody,
+			channelID: &cfg.ID,
+			duration:  0,
+			succeeded: false,
+		}, nil
+	}
+
+	return nil, fmt.Errorf("all keys exhausted")
+}
+
 // 通用透明代理处理器
 func (s *Server) handleProxyRequest(c *gin.Context) {
 	// 性能优化：并发控制 - 使用信号量限制最大并发请求数
@@ -467,210 +724,51 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 		return
 	}
 
-	// 异步代理：按候选顺序尝试，使用管道式流转发减少延迟
-	var lastStatus int
-	var lastBody []byte
-	var lastHeader http.Header
-	for _, cfg := range cands {
-		// 渠道内Key级别重试循环：限制重试次数避免过多延迟
-		actualKeyCount := len(cfg.GetAPIKeys())
-		if actualKeyCount == 0 {
-			actualKeyCount = 1 // 至少尝试一次（兼容旧的APIKey字段）
-		}
-
-		// 使用配置的最大重试次数，但不超过实际Key数量
-		maxKeyRetries := s.maxKeyRetries
-		if maxKeyRetries > actualKeyCount {
-			maxKeyRetries = actualKeyCount
-		}
-
-		var channelExhausted bool
-		for keyRetry := 0; keyRetry < maxKeyRetries; keyRetry++ {
-			// 多Key支持：选择可用的API Key
-			keyIndex, selectedKey, err := s.keySelector.SelectAvailableKey(ctx, cfg)
-			if err != nil {
-				// 所有Key都在冷却中，触发渠道级别冷却并跳到下一个渠道
-				// 注意：不记录日志，因为这是内部状态，不是上游API的真实错误
-				// 只有真正调用上游API并得到响应时才记录日志
-				if keyRetry == 0 {
-					// 仅在第一次尝试时触发冷却，避免重复操作
-					// 触发渠道级别冷却，防止后续请求重复尝试该渠道
-					if cooldownDur, cooldownErr := s.store.BumpCooldownOnError(ctx, cfg.ID, time.Now()); cooldownErr == nil {
-						// 同步更新内存缓存，确保渠道选择器能正确过滤冷却中的渠道
-						s.cooldownCache.Store(cfg.ID, time.Now().Add(cooldownDur))
-					}
-				}
-				channelExhausted = true
-				break // 跳出Key重试循环，尝试下一个渠道
-			}
-
-			// 模型重定向：检查渠道是否配置了模型重定向映射
-			actualModel := originalModel
-			if len(cfg.ModelRedirects) > 0 {
-				if redirectModel, ok := cfg.ModelRedirects[originalModel]; ok && redirectModel != "" {
-					actualModel = redirectModel
-				}
-			}
-
-			// 如果模型发生重定向，修改请求体中的模型字段
-			bodyToSend := all
-			if actualModel != originalModel {
-				var reqData map[string]any
-				if err := sonic.Unmarshal(all, &reqData); err == nil {
-					reqData["model"] = actualModel
-					if modifiedBody, err := sonic.Marshal(reqData); err == nil {
-						bodyToSend = modifiedBody
-					}
-				}
-			}
-
-			// 透明转发：使用选择的Key和HTTP方法进行转发
-			res, duration, err := s.forwardOnceAsync(ctx, cfg, keyIndex, requestMethod, bodyToSend, c.Request.Header, c.Request.URL.RawQuery, requestPath, c.Writer)
-			if err != nil {
-				// 分类错误类型
-				statusCode, shouldRetry := classifyError(err)
-
-				// 记录日志（使用原始模型，记录使用的Key）
-				s.addLogAsync(&LogEntry{
-					Time:        JSONTime{time.Now()},
-					Model:       originalModel,
-					ChannelID:   &cfg.ID,
-					StatusCode:  statusCode,
-					Message:     truncateErr(err.Error()),
-					Duration:    duration,
-					IsStreaming: isStreaming,
-					APIKeyUsed:  selectedKey,
-				})
-
-				// 如果是不可重试的错误，直接返回
-				if !shouldRetry {
-					// 根据错误类型返回适当的响应
-					switch statusCode {
-					case StatusConnectionReset:
-						c.JSON(502, gin.H{"error": "upstream connection reset"})
-					case StatusClientClosedRequest:
-						c.JSON(499, gin.H{"error": "request cancelled"})
-					case 504:
-						c.JSON(504, gin.H{"error": "gateway timeout"})
-					default:
-						c.JSON(statusCode, gin.H{"error": truncateErr(err.Error())})
-					}
-					return
-				}
-
-				// 可重试错误：Key级别冷却，继续尝试当前渠道的其他Key
-				_ = s.keySelector.MarkKeyError(ctx, cfg.ID, keyIndex)
-
-				lastStatus = statusCode
-				lastBody = []byte(err.Error())
-				lastHeader = nil
-				continue // 继续Key重试循环
-			}
-			if res.Status >= 200 && res.Status < 300 {
-				// 成功时清除渠道级和Key级冷却状态
-				// 清除渠道级冷却缓存（避免内存泄漏，确保缓存一致性）
-				s.cooldownCache.Delete(cfg.ID)
-				// 重置Key级别冷却（保留原有逻辑）
-				_ = s.keySelector.MarkKeySuccess(ctx, cfg.ID, keyIndex)
-
-				// 记录成功日志（使用原始模型，记录使用的Key）
-				logEntry := &LogEntry{
-					Time:        JSONTime{time.Now()},
-					Model:       originalModel,
-					ChannelID:   &cfg.ID,
-					StatusCode:  res.Status,
-					Duration:    duration,
-					Message:     "ok",
-					IsStreaming: isStreaming,
-					APIKeyUsed:  selectedKey,
-				}
-
-				// 流式请求记录首字节响应时间
-				if isStreaming {
-					logEntry.FirstByteTime = &res.FirstByteTime
-				}
-
-				s.addLogAsync(logEntry)
-				return // 成功完成，直接返回
-			}
-
-			// 非2xx响应：检查是否为特殊状态码（如499）
-			if res.Status == StatusClientClosedRequest {
-				// 客户端取消请求，直接返回，不尝试其他Key和渠道
-				msg := fmt.Sprintf("upstream status %d", res.Status)
-				if len(res.Body) > 0 {
-					msg = fmt.Sprintf("%s: %s", msg, truncateErr(safeBodyToString(res.Body)))
-				}
-
-				// 记录日志（使用原始模型，记录使用的Key）
-				logEntry := &LogEntry{
-					Time:        JSONTime{time.Now()},
-					Model:       originalModel,
-					ChannelID:   &cfg.ID,
-					StatusCode:  res.Status,
-					Message:     msg,
-					Duration:    duration,
-					IsStreaming: isStreaming,
-					APIKeyUsed:  selectedKey,
-				}
-				if isStreaming {
-					logEntry.FirstByteTime = &res.FirstByteTime
-				}
-				s.addLogAsync(logEntry)
-
-				// 直接返回，不切换Key和渠道
-				c.JSON(res.Status, gin.H{"error": msg})
-				return
-			}
-
-			// 其他非2xx响应：记录日志并触发渠道级冷却
-			// 设计原则（SRP）：401/429/500等错误本质上是渠道级问题（配置错误/欠费/限流）
-			// 而非单个Key问题，因此应该直接冷却整个渠道，切换到其他渠道重试
-			msg := fmt.Sprintf("upstream status %d", res.Status)
-			if len(res.Body) > 0 {
-				msg = fmt.Sprintf("%s: %s", msg, truncateErr(safeBodyToString(res.Body)))
-			}
-
-			// 记录错误日志（使用原始模型，记录使用的Key）
-			logEntry := &LogEntry{
-				Time:        JSONTime{time.Now()},
-				Model:       originalModel,
-				ChannelID:   &cfg.ID,
-				StatusCode:  res.Status,
-				Message:     msg,
-				Duration:    duration,
-				IsStreaming: isStreaming,
-				APIKeyUsed:  selectedKey,
-			}
-			if isStreaming {
-				logEntry.FirstByteTime = &res.FirstByteTime
-			}
-			s.addLogAsync(logEntry)
-
-			// 触发渠道级冷却（指数退避：1s -> 2s -> 4s -> ... -> 30分钟）
-			if cooldownDur, err := s.store.BumpCooldownOnError(ctx, cfg.ID, time.Now()); err == nil {
-				// 同步更新内存缓存，确保渠道选择器能正确过滤冷却中的渠道
-				s.cooldownCache.Store(cfg.ID, time.Now().Add(cooldownDur))
-			}
-
-			// 保存最后的响应信息（用于最终的503响应）
-			lastStatus = res.Status
-			lastBody = res.Body
-			lastHeader = res.Header
-
-			// 立即跳过当前渠道，尝试下一个候选渠道
-			// 不再进行Key级别重试，因为这类错误通常是渠道整体问题
-			break // 跳出Key重试循环
-		}
-
-		// Key重试循环结束，检查是否因为"所有Key都在冷却中"而退出
-		if channelExhausted {
-			// 渠道冷却已在第457行触发，直接跳到下一个渠道
-			continue
-		}
+	// 构建请求上下文（遵循DIP原则：依赖抽象而非实现细节）
+	reqCtx := &proxyRequestContext{
+		originalModel: originalModel,
+		requestMethod: requestMethod,
+		requestPath:   requestPath,
+		rawQuery:      c.Request.URL.RawQuery,
+		body:          all,
+		header:        c.Request.Header,
+		isStreaming:   isStreaming,
 	}
 
-	// All failed
+	// 渠道级重试循环：按优先级遍历候选渠道
+	var lastResult *proxyResult
+	for _, cfg := range cands {
+		// 尝试当前渠道（包含Key级重试）
+		result, err := s.tryChannelWithKeys(ctx, cfg, reqCtx, c.Writer)
+
+		// 处理"所有Key都在冷却中"的特殊错误
+		if err != nil && strings.Contains(err.Error(), "channel keys unavailable") {
+			// 触发渠道级别冷却，防止后续请求重复尝试该渠道
+			if cooldownDur, cooldownErr := s.store.BumpCooldownOnError(ctx, cfg.ID, time.Now()); cooldownErr == nil {
+				s.cooldownCache.Store(cfg.ID, time.Now().Add(cooldownDur))
+			}
+			continue // 尝试下一个渠道
+		}
+
+		// 成功或需要直接返回客户端的情况
+		if result != nil {
+			if result.succeeded {
+				return // 成功完成，forwardOnceAsync已写入响应
+			}
+
+			// 保存最后的错误响应
+			lastResult = result
+
+			// 如果是客户端级错误，直接返回
+			if result.status < 500 {
+				break
+			}
+		}
+
+		// 继续尝试下一个渠道
+	}
+
+	// 所有渠道都失败，返回503
 	s.addLogAsync(&LogEntry{
 		Time:        JSONTime{time.Now()},
 		Model:       originalModel,
@@ -678,9 +776,11 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 		Message:     "exhausted backends",
 		IsStreaming: isStreaming,
 	})
-	if lastStatus != 0 {
-		// surface last upstream response info
-		for k, vs := range lastHeader {
+
+	// 返回最后一个渠道的错误响应（如果有）
+	if lastResult != nil && lastResult.status != 0 {
+		// 复制响应头
+		for k, vs := range lastResult.header {
 			if strings.EqualFold(k, "Connection") || strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Transfer-Encoding") {
 				continue
 			}
@@ -688,9 +788,10 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 				c.Header(k, v)
 			}
 		}
-		c.Data(http.StatusServiceUnavailable, "application/json", lastBody)
+		c.Data(http.StatusServiceUnavailable, "application/json", lastResult.body)
 		return
 	}
+
 	c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no upstream available"})
 }
 

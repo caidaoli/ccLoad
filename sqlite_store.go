@@ -34,7 +34,8 @@ func NewSQLiteStore(path string, redisSync *RedisSync) (*SQLiteStore, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_foreign_keys=on&_pragma=journal_mode=WAL", path)
+	// 修复时区问题：强制使用本地时区解析时间戳，避免UTC/本地时区混淆导致冷却时间计算错误
+	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_foreign_keys=on&_pragma=journal_mode=WAL&_loc=Local", path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -69,11 +70,11 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		return fmt.Errorf("create channels table: %w", err)
 	}
 
-	// 创建 cooldowns 表
+	// 创建 cooldowns 表（使用Unix时间戳替代TIMESTAMP，消除格式差异）
 	if _, err := s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS cooldowns (
 			channel_id INTEGER PRIMARY KEY,
-			until TIMESTAMP NOT NULL,
+			until INTEGER NOT NULL,
 			duration_ms INTEGER NOT NULL DEFAULT 0,
 			FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
 		);
@@ -108,12 +109,12 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	s.addColumnIfNotExists(ctx, "channels", "key_strategy", "TEXT DEFAULT 'sequential'") // Key使用策略
 	s.addColumnIfNotExists(ctx, "channels", "channel_type", "TEXT DEFAULT 'anthropic'")  // 渠道类型
 
-	// 创建 key_cooldowns 表（Key级别冷却）
+	// 创建 key_cooldowns 表（Key级别冷却，使用Unix时间戳）
 	if _, err := s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS key_cooldowns (
 			channel_id INTEGER NOT NULL,
 			key_index INTEGER NOT NULL,
-			until TIMESTAMP NOT NULL,
+			until INTEGER NOT NULL,
 			duration_ms INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY(channel_id, key_index),
 			FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
@@ -167,6 +168,11 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	// 确保channels表的name字段具有UNIQUE约束（向后兼容）
 	if err := s.ensureChannelNameUnique(ctx); err != nil {
 		return fmt.Errorf("ensure channel name unique: %w", err)
+	}
+
+	// 迁移冷却表的until字段从TIMESTAMP到Unix时间戳（向后兼容）
+	if err := s.migrateCooldownToUnixTimestamp(ctx); err != nil {
+		return fmt.Errorf("migrate cooldown to unix timestamp: %w", err)
 	}
 
 	return nil
@@ -275,6 +281,145 @@ func (s *SQLiteStore) ensureChannelNameUnique(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// migrateCooldownToUnixTimestamp 迁移冷却表的until字段从TIMESTAMP到Unix时间戳
+// 策略：检测字段类型，如果是TEXT/TIMESTAMP则重建表，如果已经是INTEGER则跳过
+func (s *SQLiteStore) migrateCooldownToUnixTimestamp(ctx context.Context) error {
+	// 检查cooldowns表的until字段类型
+	needMigrateCooldowns := false
+	rows, err := s.db.QueryContext(ctx, "PRAGMA table_info(cooldowns)")
+	if err != nil {
+		return fmt.Errorf("check cooldowns table: %w", err)
+	}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dfltValue any
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dfltValue, &pk); err != nil {
+			continue
+		}
+		if name == "until" && typ != "INTEGER" {
+			needMigrateCooldowns = true
+			break
+		}
+	}
+	rows.Close()
+
+	if needMigrateCooldowns {
+		// 重建cooldowns表
+		if err := s.rebuildCooldownsTable(ctx); err != nil {
+			return fmt.Errorf("rebuild cooldowns table: %w", err)
+		}
+		fmt.Println("✅ 迁移 cooldowns 表：TIMESTAMP → Unix时间戳")
+	}
+
+	// 检查key_cooldowns表的until字段类型
+	needMigrateKeyCooldowns := false
+	rows, err = s.db.QueryContext(ctx, "PRAGMA table_info(key_cooldowns)")
+	if err != nil {
+		return fmt.Errorf("check key_cooldowns table: %w", err)
+	}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dfltValue any
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dfltValue, &pk); err != nil {
+			continue
+		}
+		if name == "until" && typ != "INTEGER" {
+			needMigrateKeyCooldowns = true
+			break
+		}
+	}
+	rows.Close()
+
+	if needMigrateKeyCooldowns {
+		// 重建key_cooldowns表
+		if err := s.rebuildKeyCooldownsTable(ctx); err != nil {
+			return fmt.Errorf("rebuild key_cooldowns table: %w", err)
+		}
+		fmt.Println("✅ 迁移 key_cooldowns 表：TIMESTAMP → Unix时间戳")
+	}
+
+	return nil
+}
+
+// rebuildCooldownsTable 重建cooldowns表，迁移现有数据
+func (s *SQLiteStore) rebuildCooldownsTable(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// 1. 创建临时表（新结构）
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TABLE cooldowns_new (
+			channel_id INTEGER PRIMARY KEY,
+			until INTEGER NOT NULL,
+			duration_ms INTEGER NOT NULL DEFAULT 0,
+			FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
+		)
+	`); err != nil {
+		return fmt.Errorf("create temp table: %w", err)
+	}
+
+	// 2. 迁移数据：删除所有现有冷却记录（它们已经过期或格式错误）
+	// 原因：旧的TIMESTAMP格式数据无法可靠转换，直接清空更安全
+	fmt.Println("  清理旧的冷却记录（格式不兼容）")
+
+	// 3. 删除旧表
+	if _, err := tx.ExecContext(ctx, "DROP TABLE cooldowns"); err != nil {
+		return fmt.Errorf("drop old table: %w", err)
+	}
+
+	// 4. 重命名新表
+	if _, err := tx.ExecContext(ctx, "ALTER TABLE cooldowns_new RENAME TO cooldowns"); err != nil {
+		return fmt.Errorf("rename table: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// rebuildKeyCooldownsTable 重建key_cooldowns表，迁移现有数据
+func (s *SQLiteStore) rebuildKeyCooldownsTable(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// 1. 创建临时表（新结构）
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TABLE key_cooldowns_new (
+			channel_id INTEGER NOT NULL,
+			key_index INTEGER NOT NULL,
+			until INTEGER NOT NULL,
+			duration_ms INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY(channel_id, key_index),
+			FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
+		)
+	`); err != nil {
+		return fmt.Errorf("create temp table: %w", err)
+	}
+
+	// 2. 迁移数据：删除所有现有Key冷却记录（格式错误或已过期）
+	fmt.Println("  清理旧的Key冷却记录（格式不兼容）")
+
+	// 3. 删除旧表
+	if _, err := tx.ExecContext(ctx, "DROP TABLE key_cooldowns"); err != nil {
+		return fmt.Errorf("drop old table: %w", err)
+	}
+
+	// 4. 重命名新表
+	if _, err := tx.ExecContext(ctx, "ALTER TABLE key_cooldowns_new RENAME TO key_cooldowns"); err != nil {
+		return fmt.Errorf("rename table: %w", err)
+	}
+
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) Close() error {
@@ -527,11 +672,11 @@ func (s *SQLiteStore) DeleteConfig(ctx context.Context, id int64) error {
 
 func (s *SQLiteStore) GetCooldownUntil(ctx context.Context, configID int64) (time.Time, bool) {
 	row := s.db.QueryRowContext(ctx, `SELECT until FROM cooldowns WHERE channel_id = ?`, configID)
-	var t time.Time
-	if err := row.Scan(&t); err != nil {
+	var unixTime int64
+	if err := row.Scan(&unixTime); err != nil {
 		return time.Time{}, false
 	}
-	return t, true
+	return time.Unix(unixTime, 0), true
 }
 
 func (s *SQLiteStore) SetCooldown(ctx context.Context, configID int64, until time.Time) error {
@@ -544,33 +689,42 @@ func (s *SQLiteStore) SetCooldown(ctx context.Context, configID int64, until tim
 		}
 	}
 
+	// 转换为Unix时间戳存储
+	unixTime := int64(0)
+	if !until.IsZero() {
+		unixTime = until.Unix()
+	}
+
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO cooldowns(channel_id, until, duration_ms) VALUES(?, ?, ?)
-		ON CONFLICT(channel_id) DO UPDATE SET 
-			until = excluded.until, 
+		ON CONFLICT(channel_id) DO UPDATE SET
+			until = excluded.until,
 			duration_ms = excluded.duration_ms
-	`, configID, until, durMs)
+	`, configID, unixTime, durMs)
 	return err
 }
 
 // BumpCooldownOnError 指数退避：错误翻倍（最小1s，最大30m），成功清零
 func (s *SQLiteStore) BumpCooldownOnError(ctx context.Context, configID int64, now time.Time) (time.Duration, error) {
-	var until time.Time
+	var unixTime int64
 	var durMs int64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT until, COALESCE(duration_ms, 0) 
-		FROM cooldowns 
+		SELECT until, COALESCE(duration_ms, 0)
+		FROM cooldowns
 		WHERE channel_id = ?
-	`, configID).Scan(&until, &durMs)
+	`, configID).Scan(&unixTime, &durMs)
 
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return 0, err
 	}
 
+	// 从Unix时间戳转换为time.Time
+	until := time.Unix(unixTime, 0)
+
 	prev := time.Duration(durMs) * time.Millisecond
 	if prev <= 0 {
 		// 如果表里没有记录，但 until 在未来，取其差值；否则从1s开始
-		if !until.IsZero() && until.After(now) {
+		if unixTime > 0 && until.After(now) {
 			prev = until.Sub(now)
 		} else {
 			prev = time.Second
@@ -587,12 +741,13 @@ func (s *SQLiteStore) BumpCooldownOnError(ctx context.Context, configID int64, n
 	}
 
 	newUntil := now.Add(next)
+	// 转换为Unix时间戳存储
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO cooldowns(channel_id, until, duration_ms) VALUES(?, ?, ?)
-		ON CONFLICT(channel_id) DO UPDATE SET 
-			until = excluded.until, 
+		ON CONFLICT(channel_id) DO UPDATE SET
+			until = excluded.until,
 			duration_ms = excluded.duration_ms
-	`, configID, newUntil, int64(next/time.Millisecond))
+	`, configID, newUntil.Unix(), int64(next/time.Millisecond))
 
 	if err != nil {
 		return 0, err
@@ -967,35 +1122,38 @@ func boolToInt(b bool) int {
 
 // GetKeyCooldownUntil 查询指定Key的冷却截止时间
 func (s *SQLiteStore) GetKeyCooldownUntil(ctx context.Context, configID int64, keyIndex int) (time.Time, bool) {
-	var until time.Time
+	var unixTime int64
 	err := s.db.QueryRowContext(ctx, `
 		SELECT until FROM key_cooldowns
 		WHERE channel_id = ? AND key_index = ?
-	`, configID, keyIndex).Scan(&until)
+	`, configID, keyIndex).Scan(&unixTime)
 	if err != nil {
 		return time.Time{}, false
 	}
-	return until, true
+	return time.Unix(unixTime, 0), true
 }
 
 // BumpKeyCooldownOnError Key级别指数退避：错误翻倍（最小1s，最大30m）
 func (s *SQLiteStore) BumpKeyCooldownOnError(ctx context.Context, configID int64, keyIndex int, now time.Time) (time.Duration, error) {
-	var until time.Time
+	var unixTime int64
 	var durMs int64
 	err := s.db.QueryRowContext(ctx, `
 		SELECT until, COALESCE(duration_ms, 0)
 		FROM key_cooldowns
 		WHERE channel_id = ? AND key_index = ?
-	`, configID, keyIndex).Scan(&until, &durMs)
+	`, configID, keyIndex).Scan(&unixTime, &durMs)
 
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return 0, err
 	}
 
+	// 从Unix时间戳转换为time.Time
+	until := time.Unix(unixTime, 0)
+
 	prev := time.Duration(durMs) * time.Millisecond
 	if prev <= 0 {
 		// 如果表里没有记录，但 until 在未来，取其差值；否则从1s开始
-		if !until.IsZero() && until.After(now) {
+		if unixTime > 0 && until.After(now) {
 			prev = until.Sub(now)
 		} else {
 			prev = time.Second
@@ -1012,12 +1170,13 @@ func (s *SQLiteStore) BumpKeyCooldownOnError(ctx context.Context, configID int64
 	}
 
 	newUntil := now.Add(next)
+	// 转换为Unix时间戳存储
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO key_cooldowns(channel_id, key_index, until, duration_ms) VALUES(?, ?, ?, ?)
 		ON CONFLICT(channel_id, key_index) DO UPDATE SET
 			until = excluded.until,
 			duration_ms = excluded.duration_ms
-	`, configID, keyIndex, newUntil, int64(next/time.Millisecond))
+	`, configID, keyIndex, newUntil.Unix(), int64(next/time.Millisecond))
 
 	if err != nil {
 		return 0, err

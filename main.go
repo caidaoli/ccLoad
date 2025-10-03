@@ -31,7 +31,7 @@ func main() {
 	defer redisSync.Close()
 
 	if redisSync.IsEnabled() {
-		log.Printf("Redis同步已启用: %s", redisURL)
+		log.Printf("Redis同步已启用")
 	} else {
 		log.Printf("Redis同步未配置，使用纯SQLite模式")
 	}
