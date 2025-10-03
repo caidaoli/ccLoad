@@ -79,10 +79,25 @@
       .catch(() => location.href = '/web/login.html');
   }
 
+  let bgAnimElement = null;
+
   function injectBackground() {
     if (document.querySelector('.bg-anim')) return;
-    const bg = h('div', { class: 'bg-anim' });
-    document.body.appendChild(bg);
+    bgAnimElement = h('div', { class: 'bg-anim' });
+    document.body.appendChild(bgAnimElement);
+  }
+
+  // 暂停/恢复背景动画（性能优化：减少文件选择器打开时的CPU占用）
+  window.pauseBackgroundAnimation = function() {
+    if (bgAnimElement) {
+      bgAnimElement.style.animationPlayState = 'paused';
+    }
+  }
+
+  window.resumeBackgroundAnimation = function() {
+    if (bgAnimElement) {
+      bgAnimElement.style.animationPlayState = 'running';
+    }
   }
 
   window.initTopbar = function initTopbar(activeKey) {

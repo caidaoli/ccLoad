@@ -1031,8 +1031,22 @@
       }
 
       if (importBtn && importInput) {
-        importBtn.addEventListener('click', () => importInput.click());
-        importInput.addEventListener('change', (event) => handleImportCSV(event, importBtn));
+        importBtn.addEventListener('click', () => {
+          // 暂停背景动画以减少文件选择器打开时的CPU占用
+          if (window.pauseBackgroundAnimation) window.pauseBackgroundAnimation();
+          importInput.click();
+        });
+
+        importInput.addEventListener('change', (event) => {
+          // 恢复背景动画
+          if (window.resumeBackgroundAnimation) window.resumeBackgroundAnimation();
+          handleImportCSV(event, importBtn);
+        });
+
+        // 监听文件选择器的取消操作（用户未选择文件时也要恢复动画）
+        importInput.addEventListener('cancel', () => {
+          if (window.resumeBackgroundAnimation) window.resumeBackgroundAnimation();
+        });
       }
     }
 
@@ -1142,6 +1156,7 @@
       if (window.initTopbar) initTopbar('channels');
       setupFilterListeners();
       setupImportExport();
+      setupKeyImportPreview(); // DRY原则：统一初始化所有功能模块
       loadChannels().then(() => highlightFromHash());
       window.addEventListener('hashchange', highlightFromHash);
     });
@@ -1591,29 +1606,29 @@
       document.getElementById('keyImportModal').classList.remove('show');
     }
 
-    // 实时预览导入的Key数量
-    document.addEventListener('DOMContentLoaded', () => {
+    // 实时预览导入的Key数量（DRY原则：提取为独立函数，由统一的DOMContentLoaded调用）
+    function setupKeyImportPreview() {
       const textarea = document.getElementById('keyImportTextarea');
-      if (textarea) {
-        textarea.addEventListener('input', () => {
-          const input = textarea.value.trim();
-          const preview = document.getElementById('keyImportPreview');
-          const countSpan = document.getElementById('keyImportCount');
+      if (!textarea) return;
 
-          if (input) {
-            const keys = parseKeys(input);
-            if (keys.length > 0) {
-              countSpan.textContent = keys.length;
-              preview.style.display = 'block';
-            } else {
-              preview.style.display = 'none';
-            }
+      textarea.addEventListener('input', () => {
+        const input = textarea.value.trim();
+        const preview = document.getElementById('keyImportPreview');
+        const countSpan = document.getElementById('keyImportCount');
+
+        if (input) {
+          const keys = parseKeys(input);
+          if (keys.length > 0) {
+            countSpan.textContent = keys.length;
+            preview.style.display = 'block';
           } else {
             preview.style.display = 'none';
           }
-        });
-      }
-    });
+        } else {
+          preview.style.display = 'none';
+        }
+      });
+    }
 
     function escapeHtml(text) {
       const div = document.createElement('div');
