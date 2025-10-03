@@ -20,6 +20,10 @@ type SQLiteStore struct {
 	redisSync *RedisSync // Redis同步客户端 (OCP: 开放扩展，封闭修改)
 	stmtCache sync.Map   // 预编译语句缓存 (性能优化: 减少SQL解析开销20-30%)
 	stmtMux   sync.Mutex // 保护预编译语句创建过程
+
+	// 异步Redis同步机制（性能优化: 避免同步等待）
+	syncCh chan struct{} // 同步触发信号（无缓冲，去重合并多个请求）
+	done   chan struct{} // 优雅关闭信号
 }
 
 // maskAPIKey 将API Key掩码为 "abcd...klmn" 格式（前4位 + ... + 后4位）
@@ -43,11 +47,24 @@ func NewSQLiteStore(path string, redisSync *RedisSync) (*SQLiteStore, error) {
 	db.SetMaxOpenConns(25)
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(5 * time.Minute)
-	s := &SQLiteStore{db: db, redisSync: redisSync}
+
+	s := &SQLiteStore{
+		db:        db,
+		redisSync: redisSync,
+		syncCh:    make(chan struct{}, 1), // 缓冲区=1，允许一个待处理任务
+		done:      make(chan struct{}),
+	}
+
 	if err := s.migrate(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
+
+	// 启动异步Redis同步worker（仅当Redis启用时）
+	if redisSync != nil && redisSync.IsEnabled() {
+		go s.redisSyncWorker()
+	}
+
 	return s, nil
 }
 
@@ -411,18 +428,26 @@ func (s *SQLiteStore) rebuildKeyCooldownsTable(ctx context.Context) error {
 }
 
 func (s *SQLiteStore) Close() error {
-    return s.db.Close()
+	// 优雅关闭：通知worker退出
+	if s.done != nil {
+		close(s.done)
+	}
+
+	// 等待worker处理完最后的同步任务（最多等待3秒）
+	time.Sleep(100 * time.Millisecond)
+
+	return s.db.Close()
 }
 
 func (s *SQLiteStore) Vacuum(ctx context.Context) error {
-    _, err := s.db.ExecContext(ctx, "VACUUM")
-    return err
+	_, err := s.db.ExecContext(ctx, "VACUUM")
+	return err
 }
 
 // CleanupLogsBefore 清理截止时间之前的日志（DIP：通过接口暴露维护操作）
 func (s *SQLiteStore) CleanupLogsBefore(ctx context.Context, cutoff time.Time) error {
-    _, err := s.db.ExecContext(ctx, `DELETE FROM logs WHERE time < ?`, cutoff)
-    return err
+	_, err := s.db.ExecContext(ctx, `DELETE FROM logs WHERE time < ?`, cutoff)
+	return err
 }
 
 // prepareStmt 获取或创建预编译语句（性能优化：减少SQL解析开销）
@@ -531,12 +556,8 @@ func (s *SQLiteStore) CreateConfig(ctx context.Context, c *Config) (*Config, err
 		return nil, err
 	}
 
-	// 同步到Redis (故障隔离: Redis错误不影响主要功能)
-	if s.redisSync != nil {
-		if syncErr := s.redisSync.SyncChannelCreate(ctx, config); syncErr != nil {
-			fmt.Printf("Warning: Redis sync failed for channel create %s: %v\n", config.Name, syncErr)
-		}
-	}
+	// 异步全量同步所有渠道到Redis（非阻塞，立即返回）
+	s.triggerAsyncSync()
 
 	return config, nil
 }
@@ -577,12 +598,8 @@ func (s *SQLiteStore) UpdateConfig(ctx context.Context, id int64, upd *Config) (
 		return nil, err
 	}
 
-	// 同步到Redis (故障隔离: Redis错误不影响主要功能)
-	if s.redisSync != nil {
-		if syncErr := s.redisSync.SyncChannelUpdate(ctx, config); syncErr != nil {
-			fmt.Printf("Warning: Redis sync failed for channel update %s: %v\n", config.Name, syncErr)
-		}
-	}
+	// 异步全量同步所有渠道到Redis（非阻塞，立即返回）
+	s.triggerAsyncSync()
 
 	return config, nil
 }
@@ -627,39 +644,29 @@ func (s *SQLiteStore) ReplaceConfig(ctx context.Context, c *Config) (*Config, er
 		return nil, err
 	}
 
-	// 同步到Redis (ReplaceConfig用于CSV导入)
-	if s.redisSync != nil {
-		if syncErr := s.redisSync.SyncChannelUpdate(ctx, config); syncErr != nil {
-			fmt.Printf("Warning: Redis sync failed for channel replace %s: %v\n", config.Name, syncErr)
-		}
-	}
+	// 注意: ReplaceConfig通常在批量导入时使用，最后会统一调用SyncAllChannelsToRedis
+	// 这里不做单独同步，避免CSV导入时的N次Redis操作
 
 	return config, nil
 }
 
 func (s *SQLiteStore) DeleteConfig(ctx context.Context, id int64) error {
-	// 先获取渠道信息（用于Redis同步）
-	config, err := s.GetConfig(ctx, id)
-	if err != nil {
-		// 如果记录不存在，直接返回（幂等性）
+	// 检查记录是否存在（幂等性）
+	if _, err := s.GetConfig(ctx, id); err != nil {
 		if strings.Contains(err.Error(), "not found") {
-			return nil
+			return nil // 记录不存在，直接返回
 		}
 		return err
 	}
 
 	// 从SQLite删除
-	_, err = s.db.ExecContext(ctx, `DELETE FROM channels WHERE id = ?`, id)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM channels WHERE id = ?`, id)
 	if err != nil {
 		return err
 	}
 
-	// 从Redis删除 (故障隔离: Redis错误不影响主要功能)
-	if s.redisSync != nil {
-		if syncErr := s.redisSync.SyncChannelDelete(ctx, config.Name); syncErr != nil {
-			fmt.Printf("Warning: Redis sync failed for channel delete %s: %v\n", config.Name, syncErr)
-		}
-	}
+	// 异步全量同步所有渠道到Redis（非阻塞，立即返回）
+	s.triggerAsyncSync()
 
 	return nil
 }
@@ -1064,6 +1071,54 @@ func (s *SQLiteStore) SyncAllChannelsToRedis(ctx context.Context) error {
 
 	fmt.Printf("Successfully synced %d channels to Redis\n", len(configs))
 	return nil
+}
+
+// redisSyncWorker 异步Redis同步worker（后台goroutine）
+func (s *SQLiteStore) redisSyncWorker() {
+	ctx := context.Background()
+
+	for {
+		select {
+		case <-s.syncCh:
+			// 执行同步操作
+			if err := s.doSyncAllChannels(ctx); err != nil {
+				fmt.Printf("Warning: Async Redis sync failed: %v\n", err)
+			}
+		case <-s.done:
+			// 优雅关闭：处理完最后一个任务（如果有）
+			select {
+			case <-s.syncCh:
+				_ = s.doSyncAllChannels(ctx)
+			default:
+			}
+			return
+		}
+	}
+}
+
+// triggerAsyncSync 触发异步Redis同步（非阻塞）
+func (s *SQLiteStore) triggerAsyncSync() {
+	if s.redisSync == nil || !s.redisSync.IsEnabled() {
+		return
+	}
+
+	// 非阻塞发送（如果channel已满则跳过，避免阻塞主流程）
+	select {
+	case s.syncCh <- struct{}{}:
+		// 成功发送信号
+	default:
+		// channel已有待处理任务，跳过（去重）
+	}
+}
+
+// doSyncAllChannels 实际执行同步操作（worker内部调用）
+func (s *SQLiteStore) doSyncAllChannels(ctx context.Context) error {
+	configs, err := s.ListConfigs(ctx)
+	if err != nil {
+		return fmt.Errorf("list configs: %w", err)
+	}
+
+	return s.redisSync.SyncAllChannels(ctx, configs)
 }
 
 // CheckDatabaseExists 检查SQLite数据库文件是否存在
