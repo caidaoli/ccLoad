@@ -477,22 +477,24 @@ const (
 func (s *Server) handleProxyError(ctx context.Context, cfg *Config, keyIndex int,
 	res *fwResult, err error) (ErrorAction, bool) {
 
+	var errLevel ErrorLevel
+
 	// 网络错误处理
 	if err != nil {
 		_, shouldRetry := classifyError(err)
 		if !shouldRetry {
 			return ActionReturnClient, false
 		}
-		// 可重试错误：Key级别冷却
-		_ = s.keySelector.MarkKeyError(ctx, cfg.ID, keyIndex)
-		return ActionRetryKey, true
+		// 可重试的网络错误：默认为Key级错误
+		errLevel = ErrorLevelKey
+	} else {
+		// HTTP错误处理：使用智能分类器（结合响应体内容）
+		errLevel = classifyHTTPStatusWithBody(res.Status, res.Body)
 	}
-
-	// HTTP错误处理：使用智能分类器（结合响应体内容）
-	errLevel := classifyHTTPStatusWithBody(res.Status, res.Body)
 
 	// 🎯 动态调整：单Key渠道的Key级错误应该直接冷却渠道
 	// 设计原则：如果没有其他Key可以重试，Key级错误等同于渠道级错误
+	// 适用于：网络错误 + HTTP 401/403等Key级错误
 	if errLevel == ErrorLevelKey {
 		keyCount := len(cfg.GetAPIKeys())
 		if keyCount <= 1 {
