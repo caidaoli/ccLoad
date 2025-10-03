@@ -159,72 +159,105 @@
       </div>
       <form id="channelForm" onsubmit="saveChannel(event)">
         <div class="form-group">
-          <label class="form-label" for="channelName">渠道名称 *</label>
-          <input type="text" id="channelName" class="form-input" required>
-        </div>
-
-        <div class="form-group">
-          <label class="form-label" for="channelUrl">API URL *</label>
-          <input type="url" id="channelUrl" class="form-input" placeholder="https://api.anthropic.com/v1/messages" required>
-        </div>
-
-        <!-- 渠道类型和Key使用策略放在同一行 -->
-        <div class="form-group">
-          <div class="form-row-flex" style="gap: 40px; flex-wrap: wrap;">
-            <div style="flex: 1; min-width: 200px;">
-              <label class="form-label" style="margin-bottom: 8px;">渠道类型 *</label>
-              <div style="display: flex; gap: 20px; flex-wrap: wrap;" id="channelTypeRadios">
-                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-                  <input type="radio" name="channelType" value="anthropic" checked>
-                  <span>Claude</span>
-                </label>
-                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-                  <input type="radio" name="channelType" value="openai">
-                  <span>OpenAI</span>
-                </label>
-                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-                  <input type="radio" name="channelType" value="gemini">
-                  <span>Gemini</span>
-                </label>
-              </div>
+          <!-- 渠道名称、类型和策略全部在一行 -->
+          <div style="display: flex; gap: 12px; align-items: center; justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 8px; flex: 0 0 auto;">
+              <label class="form-label" style="margin: 0; white-space: nowrap;">渠道名称 *</label>
+              <input type="text" id="channelName" class="form-input" required style="width: 300px;">
             </div>
-            <div style="flex: 1; min-width: 200px;">
-              <label class="form-label" style="margin-bottom: 8px;">Key使用策略</label>
-              <div style="display: flex; gap: 20px; flex-wrap: wrap;" id="keyStrategyRadios">
-                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-                  <input type="radio" name="keyStrategy" value="sequential" checked>
-                  <span>顺序访问</span>
-                </label>
-                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-                  <input type="radio" name="keyStrategy" value="round_robin">
-                  <span>轮询访问</span>
-                </label>
+
+            <div style="display: flex; align-items: center; gap: 20px;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <label style="margin: 0; font-size: 13px; white-space: nowrap; color: var(--neutral-700);">渠道类型 *</label>
+                <div style="display: flex; gap: 12px;" id="channelTypeRadios">
+                  <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 13px;">
+                    <input type="radio" name="channelType" value="anthropic" checked>
+                    <span>Claude</span>
+                  </label>
+                  <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 13px;">
+                    <input type="radio" name="channelType" value="openai">
+                    <span>OpenAI</span>
+                  </label>
+                  <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 13px;">
+                    <input type="radio" name="channelType" value="gemini">
+                    <span>Gemini</span>
+                  </label>
+                </div>
+              </div>
+
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <label style="margin: 0; font-size: 13px; white-space: nowrap; color: var(--neutral-700);">Key策略</label>
+                <div style="display: flex; gap: 12px;" id="keyStrategyRadios">
+                  <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 13px;">
+                    <input type="radio" name="keyStrategy" value="sequential" checked>
+                    <span>顺序</span>
+                  </label>
+                  <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 13px;">
+                    <input type="radio" name="keyStrategy" value="round_robin">
+                    <span>轮询</span>
+                  </label>
+                </div>
               </div>
             </div>
           </div>
         </div>
 
         <div class="form-group">
-          <label class="form-label" for="channelApiKey">
-            API Key * <span class="models-hint" style="margin-left: 8px; margin-top: 0;">多个Key用英文逗号分隔（支持故障切换）</span>
-          </label>
-          <div style="position: relative;">
-            <input type="password" id="channelApiKey" class="form-input" required style="padding-right: 85px;" placeholder="sk-ant-xxx,sk-ant-yyy">
-            <button type="button" id="tableEditBtn" onclick="openKeyTableEditor()" style="position: absolute; right: 48px; top: 50%; transform: translateY(-50%); width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--neutral-300); background: white; color: var(--neutral-500); cursor: pointer; padding: 0; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;" title="表格模式编辑" onmouseover="this.style.background='var(--primary-50)'; this.style.borderColor='var(--primary-400)'; this.style.color='var(--primary-600)';" onmouseout="this.style.background='white'; this.style.borderColor='var(--neutral-300)'; this.style.color='var(--neutral-500)';">
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect x="2.5" y="2.5" width="11" height="11" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
-                <path d="M2.5 6H13.5M6 2.5V13.5M10 2.5V13.5" stroke="currentColor" stroke-width="1.2"/>
-              </svg>
-            </button>
-            <button type="button" id="toggleApiKeyBtn" onclick="toggleApiKeyVisibility()" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--neutral-300); background: white; color: var(--neutral-500); cursor: pointer; padding: 0; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;" title="显示/隐藏API Key" onmouseover="this.style.background='var(--neutral-50)'; this.style.borderColor='var(--neutral-400)';" onmouseout="this.style.background='white'; this.style.borderColor='var(--neutral-300)';">
-              <svg id="eyeIcon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M1.5 8C1.5 8 3.5 3.5 8 3.5C12.5 3.5 14.5 8 14.5 8C14.5 8 12.5 12.5 8 12.5C3.5 12.5 1.5 8 1.5 8Z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-                <circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-              <svg id="eyeOffIcon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="display: none;">
-                <path d="M2 2L14 14M6.5 6.5C6.96785 6.03214 7.60786 5.75 8.3 5.75C9.73071 5.75 10.9 6.91929 10.9 8.35C10.9 9.04214 10.6179 9.68215 10.15 10.15M4.5 4.5C2.73 5.67 1.5 8 1.5 8C1.5 8 3.5 12.5 8 12.5C9.35 12.5 10.58 11.97 11.55 11.5M12.85 11.85C13.97 10.73 14.5 8 14.5 8C14.5 8 12.5 3.5 8 3.5C7.23 3.5 6.5 3.73 5.85 4.05" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-            </button>
+          <div style="display: flex; align-items: center; gap: 8px;">
+          <label class="form-label" for="channelUrl">API URL *</label>
+          <input type="url" id="channelUrl" class="form-input" placeholder="https://api.anthropic.com/v1/messages" required style="flex: 1;">
+          </div>
+        </div>
+
+        <div class="form-group">
+          <!-- API Key标签行：包含标签、Key计数和操作按钮 -->
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <label class="form-label" style="margin: 0;">
+              API Key * <span class="models-hint" style="margin-left: 8px; margin-top: 0;">共 <span id="inlineKeyCount">0</span> 个Key</span>
+            </label>
+            <div style="display: flex; gap: 6px;">
+              <button type="button" class="btn btn-secondary btn-sm" onclick="openInlineKeyImport()" style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px;">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M8 3.5V12M8 12L5 9M8 12L11 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M2 13.5H14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                </svg>
+                <span>导入</span>
+              </button>
+              <button type="button" class="btn btn-primary btn-sm" onclick="addInlineKey()" style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px;">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M8 3.5V12.5M3.5 8H12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span>添加</span>
+              </button>
+              <button type="button" id="toggleInlineKeyBtn" onclick="toggleInlineKeyVisibility()" style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--neutral-300); background: white; color: var(--neutral-500); cursor: pointer; padding: 0; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;" title="显示/隐藏API Key" onmouseover="this.style.background='var(--neutral-50)'; this.style.borderColor='var(--neutral-400)';" onmouseout="this.style.background='white'; this.style.borderColor='var(--neutral-300)';">
+                <svg id="inlineEyeIcon" width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M1.5 8C1.5 8 3.5 3.5 8 3.5C12.5 3.5 14.5 8 14.5 8C14.5 8 12.5 12.5 8 12.5C3.5 12.5 1.5 8 1.5 8Z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                  <circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <svg id="inlineEyeOffIcon" width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                  <path d="M2 2L14 14M6.5 6.5C6.96785 6.03214 7.60786 5.75 8.3 5.75C9.73071 5.75 10.9 6.91929 10.9 8.35C10.9 9.04214 10.6179 9.68215 10.15 10.15M4.5 4.5C2.73 5.67 1.5 8 1.5 8C1.5 8 3.5 12.5 8 12.5C9.35 12.5 10.58 11.97 11.55 11.5M12.85 11.85C13.97 10.73 14.5 8 14.5 8C14.5 8 12.5 3.5 8 3.5C7.23 3.5 6.5 3.73 5.85 4.05" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- 隐藏的input用于表单验证和提交 -->
+          <input type="hidden" id="channelApiKey" required>
+
+          <!-- Key表格容器（最多显示5行+滚动） -->
+          <div style="max-height: 250px; overflow-y: auto; border: 1px solid var(--neutral-200); border-radius: 8px; background: white;">
+            <table style="width: 100%; border-collapse: collapse;">
+              <thead style="position: sticky; top: 0; z-index: 1; background: var(--neutral-100);">
+                <tr style="border-bottom: 2px solid var(--neutral-300);">
+                  <th style="padding: 6px 10px; text-align: left; font-weight: 600; font-size: 13px; width: 50px;">#</th>
+                  <th style="padding: 6px 10px; text-align: left; font-weight: 600; font-size: 13px;">API Key</th>
+                  <th style="padding: 6px 10px; text-align: center; font-weight: 600; font-size: 13px; width: 80px;">操作</th>
+                </tr>
+              </thead>
+              <tbody id="inlineKeyTableBody">
+                <!-- Key行动态渲染 -->
+              </tbody>
+            </table>
           </div>
         </div>
         <div class="form-group">
@@ -318,51 +351,62 @@
     </div>
   </div>
 
-  <!-- Key表格编辑模态框 -->
-  <div id="keyTableModal" class="modal">
-    <div class="modal-content" style="max-width: 800px;">
+  <!-- Key导入模态框 -->
+  <div id="keyImportModal" class="modal">
+    <div class="modal-content" style="max-width: 600px;">
       <div class="modal-header">
-        <h2 class="modal-title">API Key 表格编辑</h2>
-        <button class="close-btn" onclick="closeKeyTableModal()" style="width: 28px; height: 28px; border-radius: 50%; border: none; background: var(--neutral-100); color: var(--neutral-600); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;" onmouseover="this.style.background='var(--neutral-200)'" onmouseout="this.style.background='var(--neutral-100)'">
+        <h2 class="modal-title">批量导入 API Keys</h2>
+        <button class="close-btn" onclick="closeKeyImportModal()" style="width: 28px; height: 28px; border-radius: 50%; border: none; background: var(--neutral-100); color: var(--neutral-600); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;" onmouseover="this.style.background='var(--neutral-200)'" onmouseout="this.style.background='var(--neutral-100)'">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M10.5 3.5L3.5 10.5M3.5 3.5L10.5 10.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
         </button>
       </div>
       <div style="padding: 20px;">
-        <div style="margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
-          <span style="color: var(--neutral-600); font-size: 14px;">共 <span id="keyCount">0</span> 个Key</span>
-          <button type="button" class="btn btn-primary" onclick="addKeyRow()" style="padding: 8px 16px; font-size: 14px; display: inline-flex; align-items: center; gap: 6px;">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M8 3.5V12.5M3.5 8H12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <div class="form-group" style="margin-bottom: 12px;">
+          <label class="form-label" style="margin-bottom: 8px;">粘贴API Keys <span style="color: var(--neutral-500); font-size: 13px; font-weight: normal;">(支持逗号或换行分隔)</span></label>
+          <textarea
+            id="keyImportTextarea"
+            class="form-input"
+            rows="10"
+            placeholder="sk-ant-key1,sk-ant-key2&#10;sk-ant-key3&#10;sk-ant-key4"
+            style="resize: vertical; min-height: 200px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace; font-size: 13px;"
+          ></textarea>
+        </div>
+        <div style="padding: 12px; background: var(--info-50); border: 1px solid var(--info-500); border-radius: 6px; color: var(--neutral-700); font-size: 13px; margin-bottom: 16px;">
+          <div style="display: flex; align-items: flex-start; gap: 8px;">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex-shrink: 0; margin-top: 2px;">
+              <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M8 5V8.5M8 11H8.005" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
             </svg>
-            <span>添加Key</span>
-          </button>
+            <div>
+              <strong>使用说明：</strong>
+              <ul style="margin: 6px 0 0 0; padding-left: 16px; line-height: 1.6;">
+                <li>支持逗号分隔：<code style="background: rgba(0,0,0,0.05); padding: 2px 4px; border-radius: 3px;">key1,key2,key3</code></li>
+                <li>支持换行分隔：每行一个Key</li>
+                <li>自动去除空格、空行和重复Key</li>
+              </ul>
+            </div>
+          </div>
         </div>
-        <div style="overflow-x: auto;">
-          <table style="width: 100%; border-collapse: collapse; min-width: 500px;">
-            <thead>
-              <tr style="background: var(--neutral-100); border-bottom: 2px solid var(--neutral-300);">
-                <th style="padding: 12px; text-align: left; font-weight: 600; width: 60px;">#</th>
-                <th style="padding: 12px; text-align: left; font-weight: 600;">API Key</th>
-                <th style="padding: 12px; text-align: center; font-weight: 600; width: 100px;">操作</th>
-              </tr>
-            </thead>
-            <tbody id="keyTableBody">
-              <!-- Key行将动态插入这里 -->
-            </tbody>
-          </table>
-        </div>
-        <div style="margin-top: 20px; color: var(--neutral-600); font-size: 14px; padding: 12px; background: var(--neutral-50); border-radius: 6px;">
-          💡 <strong>提示：</strong>多个Key将按顺序或轮询策略使用，失败时自动切换到下一个可用Key
+        <div id="keyImportPreview" style="display: none; margin-bottom: 16px;">
+          <div style="padding: 12px; background: var(--success-50); border: 1px solid var(--success-500); border-radius: 6px; color: var(--success-600);">
+            <div style="display: flex; align-items: center; gap: 8px; font-weight: 600;">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M3 8L6.5 11.5L13 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span>解析成功：将导入 <span id="keyImportCount">0</span> 个Key</span>
+            </div>
+          </div>
         </div>
       </div>
       <div class="form-actions">
-        <button type="button" class="btn btn-secondary" onclick="closeKeyTableModal()">取消</button>
-        <button type="button" class="btn btn-primary" onclick="saveKeyTable()">保存</button>
+        <button type="button" class="btn btn-secondary" onclick="closeKeyImportModal()">取消</button>
+        <button type="button" class="btn btn-primary" onclick="confirmInlineKeyImport()">确认导入</button>
       </div>
     </div>
   </div>
+
 
   <script>
     let channels = [];
@@ -684,13 +728,13 @@
       document.querySelector('input[name="channelType"][value="anthropic"]').checked = true;
       document.querySelector('input[name="keyStrategy"][value="sequential"]').checked = true;
       document.getElementById('channelModelRedirects').value = ''; // 清空模型重定向字段
-      // 重置API Key输入框可见性
-      const apiKeyInput = document.getElementById('channelApiKey');
-      const eyeIcon = document.getElementById('eyeIcon');
-      const eyeOffIcon = document.getElementById('eyeOffIcon');
-      apiKeyInput.type = 'password';
-      eyeIcon.style.display = 'block';
-      eyeOffIcon.style.display = 'none';
+
+      // 初始化内联Key表格（添加模式默认一个空Key）
+      inlineKeyTableData = [''];
+      inlineKeyVisible = false;
+      document.getElementById('inlineEyeIcon').style.display = 'block';
+      document.getElementById('inlineEyeOffIcon').style.display = 'none';
+      renderInlineKeyTable();
 
       document.getElementById('channelModal').classList.add('show');
     }
@@ -703,7 +747,19 @@
       document.getElementById('modalTitle').textContent = '编辑渠道';
       document.getElementById('channelName').value = channel.name;
       document.getElementById('channelUrl').value = channel.url;
-      document.getElementById('channelApiKey').value = channel.api_key;
+
+      // 加载API Keys到内联表格
+      inlineKeyTableData = parseKeys(channel.api_key);
+      if (inlineKeyTableData.length === 0) {
+        inlineKeyTableData = [''];
+      }
+
+      // 编辑时默认显示Key以便核对
+      inlineKeyVisible = true;
+      document.getElementById('inlineEyeIcon').style.display = 'none';
+      document.getElementById('inlineEyeOffIcon').style.display = 'block';
+      renderInlineKeyTable();
+
       // 设置渠道类型单选框
       const channelType = channel.channel_type || 'anthropic';
       const radioButton = document.querySelector(`input[name="channelType"][value="${channelType}"]`);
@@ -726,14 +782,6 @@
         ? JSON.stringify(modelRedirects, null, 2)
         : '';
 
-      // 编辑时默认显示API Key以便核对
-      const apiKeyInput = document.getElementById('channelApiKey');
-      const eyeIcon = document.getElementById('eyeIcon');
-      const eyeOffIcon = document.getElementById('eyeOffIcon');
-      apiKeyInput.type = 'text';
-      eyeIcon.style.display = 'none';
-      eyeOffIcon.style.display = 'block';
-
       document.getElementById('channelModal').classList.add('show');
     }
 
@@ -744,6 +792,16 @@
 
     async function saveChannel(event) {
       event.preventDefault();
+
+      // 验证内联Key表格（过滤空Key）
+      const validKeys = inlineKeyTableData.filter(k => k && k.trim());
+      if (validKeys.length === 0) {
+        alert('请至少添加一个有效的API Key');
+        return;
+      }
+
+      // 更新隐藏input（确保最新数据）
+      document.getElementById('channelApiKey').value = validKeys.join(',');
 
       // 解析模型重定向JSON
       let modelRedirects = {};
@@ -768,7 +826,7 @@
       const formData = {
         name: document.getElementById('channelName').value.trim(),
         url: document.getElementById('channelUrl').value.trim(),
-        api_key: document.getElementById('channelApiKey').value.trim(),
+        api_key: validKeys.join(','),
         channel_type: channelType,
         key_strategy: keyStrategy,
         priority: parseInt(document.getElementById('channelPriority').value) || 0,
@@ -875,7 +933,19 @@
       document.getElementById('modalTitle').textContent = '复制渠道';
       document.getElementById('channelName').value = copiedName;
       document.getElementById('channelUrl').value = channel.url;
-      document.getElementById('channelApiKey').value = channel.api_key;
+
+      // 加载API Keys到内联表格
+      inlineKeyTableData = parseKeys(channel.api_key);
+      if (inlineKeyTableData.length === 0) {
+        inlineKeyTableData = [''];
+      }
+
+      // 复制时默认显示Key以便用户核对
+      inlineKeyVisible = true;
+      document.getElementById('inlineEyeIcon').style.display = 'none';
+      document.getElementById('inlineEyeOffIcon').style.display = 'block';
+      renderInlineKeyTable();
+
       // 设置渠道类型单选框
       const channelType = channel.channel_type || 'anthropic';
       const radioButton = document.querySelector(`input[name="channelType"][value="${channelType}"]`);
@@ -897,14 +967,6 @@
       document.getElementById('channelModelRedirects').value = Object.keys(modelRedirects).length > 0
         ? JSON.stringify(modelRedirects, null, 2)
         : '';
-
-      // 复制时默认显示API Key以便用户核对
-      const apiKeyInput = document.getElementById('channelApiKey');
-      const eyeIcon = document.getElementById('eyeIcon');
-      const eyeOffIcon = document.getElementById('eyeOffIcon');
-      apiKeyInput.type = 'text';
-      eyeIcon.style.display = 'none';
-      eyeOffIcon.style.display = 'block';
 
       document.getElementById('channelModal').classList.add('show');
     }
@@ -1097,6 +1159,7 @@
         closeModal();
         closeDeleteModal();
         closeTestModal();
+        closeKeyImportModal();
       }
     });
 
@@ -1303,74 +1366,76 @@
       }
     }
 
-    // Key表格编辑相关函数
-    let keyTableData = [];
+    // 内联Key表格管理（主表单内的表格显示）
+    let inlineKeyTableData = [];
+    let inlineKeyVisible = false; // 密码可见性状态
 
-    function openKeyTableEditor() {
-      // 从API Key输入框读取当前值
-      const apiKeyInput = document.getElementById('channelApiKey');
-      const apiKeys = apiKeyInput.value.trim();
+    // 统一Key解析函数（DRY原则）
+    function parseKeys(input) {
+      if (!input || !input.trim()) return [];
 
-      // 解析为数组
-      keyTableData = apiKeys ? apiKeys.split(',').map(k => k.trim()).filter(k => k) : [];
+      // 支持逗号和换行分割
+      const keys = input
+        .split(/[,\n]/)
+        .map(k => k.trim())
+        .filter(k => k);
 
-      // 渲染表格
-      renderKeyTable();
-
-      // 显示模态框
-      document.getElementById('keyTableModal').classList.add('show');
+      // 去重
+      return [...new Set(keys)];
     }
 
-    function closeKeyTableModal() {
-      document.getElementById('keyTableModal').classList.remove('show');
-      keyTableData = [];
-    }
-
-    function renderKeyTable() {
-      const tbody = document.getElementById('keyTableBody');
-      const keyCount = document.getElementById('keyCount');
+    // 渲染内联Key表格
+    function renderInlineKeyTable() {
+      const tbody = document.getElementById('inlineKeyTableBody');
+      const keyCount = document.getElementById('inlineKeyCount');
 
       tbody.innerHTML = '';
-      keyCount.textContent = keyTableData.length;
+      keyCount.textContent = inlineKeyTableData.length;
 
-      if (keyTableData.length === 0) {
+      // 同步到隐藏input（用于表单验证）
+      const hiddenInput = document.getElementById('channelApiKey');
+      hiddenInput.value = inlineKeyTableData.join(',');
+
+      if (inlineKeyTableData.length === 0) {
         tbody.innerHTML = `
           <tr>
-            <td colspan="3" style="padding: 40px; text-align: center; color: var(--neutral-500);">
-              暂无API Key，点击"添加Key"按钮添加
+            <td colspan="3" style="padding: 30px; text-align: center; color: var(--neutral-500); font-size: 14px;">
+              暂无API Key，点击"添加"或"导入"按钮添加
             </td>
           </tr>
         `;
         return;
       }
 
-      keyTableData.forEach((key, index) => {
+      inlineKeyTableData.forEach((key, index) => {
         const row = document.createElement('tr');
         row.style.borderBottom = '1px solid var(--neutral-200)';
+
+        const displayKey = inlineKeyVisible ? key : maskKey(key);
+
         row.innerHTML = `
-          <td style="padding: 12px; color: var(--neutral-600); font-weight: 500;">${index + 1}</td>
-          <td style="padding: 12px;">
+          <td style="padding: 6px 10px; color: var(--neutral-600); font-weight: 500; font-size: 13px;">${index + 1}</td>
+          <td style="padding: 6px 10px;">
             <input
               type="text"
               value="${escapeHtml(key)}"
-              onchange="updateKeyValue(${index}, this.value)"
-              style="width: 100%; padding: 8px 12px; border: 1px solid var(--neutral-300); border-radius: 4px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace; font-size: 13px;"
-              placeholder="输入API Key"
+              onchange="updateInlineKey(${index}, this.value)"
+              class="inline-key-input"
+              style="width: 100%; padding: 5px 8px; border: 1px solid var(--neutral-300); border-radius: 6px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace; font-size: 13px; transition: all 0.2s;"
+              onfocus="this.style.borderColor='var(--primary-500)'; this.style.boxShadow='0 0 0 3px rgba(59,130,246,0.1)'"
+              onblur="this.style.borderColor='var(--neutral-300)'; this.style.boxShadow='none'"
             >
           </td>
-          <td style="padding: 12px; text-align: center;">
+          <td style="padding: 6px 10px; text-align: center;">
             <button
               type="button"
-              onclick="deleteKeyRow(${index})"
+              onclick="deleteInlineKey(${index})"
               title="删除此Key"
-              class="key-delete-btn"
-              style="width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--neutral-200); background: white; color: var(--neutral-500); cursor: pointer; transition: all 0.2s ease; display: inline-flex; align-items: center; justify-content: center; padding: 0; font-size: 16px;"
-              onmouseover="this.style.background='#fef2f2'; this.style.borderColor='#fca5a5'; this.style.color='#dc2626'; this.style.transform='scale(1.05)';"
-              onmouseout="this.style.background='white'; this.style.borderColor='var(--neutral-200)'; this.style.color='var(--neutral-500)'; this.style.transform='scale(1)';"
-              onmousedown="this.style.transform='scale(0.95)';"
-              onmouseup="this.style.transform='scale(1.05)';"
+              style="width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--neutral-200); background: white; color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;"
+              onmouseover="this.style.background='#fef2f2'; this.style.borderColor='#fca5a5'; this.style.color='#dc2626'"
+              onmouseout="this.style.background='white'; this.style.borderColor='var(--neutral-200)'; this.style.color='var(--neutral-500)'"
             >
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg" style="pointer-events: none;">
+              <svg width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <path d="M5.5 2.5V1.5C5.5 1.22386 5.72386 1 6 1H8C8.27614 1 8.5 1.22386 8.5 1.5V2.5M2 3.5H12M3 3.5V11.5C3 12.0523 3.44772 12.5 4 12.5H10C10.5523 12.5 11 12.0523 11 11.5V3.5M5.5 6.5V9.5M8.5 6.5V9.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
               </svg>
             </button>
@@ -1378,51 +1443,156 @@
         `;
         tbody.appendChild(row);
       });
+
+      // 应用密码显示/隐藏状态
+      applyInlineKeyVisibility();
     }
 
-    function addKeyRow() {
-      keyTableData.push('');
-      renderKeyTable();
+    // 遮罩Key显示（保留前后各4个字符）
+    function maskKey(key) {
+      if (key.length <= 8) return '***';
+      return key.slice(0, 4) + '***' + key.slice(-4);
+    }
+
+    // 应用密码可见性到所有输入框
+    function applyInlineKeyVisibility() {
+      const inputs = document.querySelectorAll('.inline-key-input');
+      inputs.forEach((input, index) => {
+        input.type = inlineKeyVisible ? 'text' : 'password';
+      });
+    }
+
+    // 切换密码可见性
+    function toggleInlineKeyVisibility() {
+      inlineKeyVisible = !inlineKeyVisible;
+      const eyeIcon = document.getElementById('inlineEyeIcon');
+      const eyeOffIcon = document.getElementById('inlineEyeOffIcon');
+
+      if (inlineKeyVisible) {
+        eyeIcon.style.display = 'none';
+        eyeOffIcon.style.display = 'block';
+      } else {
+        eyeIcon.style.display = 'block';
+        eyeOffIcon.style.display = 'none';
+      }
+
+      applyInlineKeyVisibility();
+    }
+
+    // 添加新Key
+    function addInlineKey() {
+      inlineKeyTableData.push('');
+      renderInlineKeyTable();
 
       // 聚焦到新添加的输入框
       setTimeout(() => {
-        const inputs = document.querySelectorAll('#keyTableBody input[type="text"]');
+        const inputs = document.querySelectorAll('.inline-key-input');
         if (inputs.length > 0) {
           inputs[inputs.length - 1].focus();
         }
-      }, 100);
+      }, 50);
     }
 
-    function updateKeyValue(index, value) {
-      keyTableData[index] = value.trim();
+    // 更新Key值
+    function updateInlineKey(index, value) {
+      inlineKeyTableData[index] = value.trim();
+      renderInlineKeyTable();
     }
 
-    function deleteKeyRow(index) {
-      if (confirm(`确定要删除第 ${index + 1} 个Key吗？`)) {
-        keyTableData.splice(index, 1);
-        renderKeyTable();
-      }
-    }
-
-    function saveKeyTable() {
-      // 过滤掉空值
-      const validKeys = keyTableData.filter(k => k.trim());
-
-      if (validKeys.length === 0) {
-        alert('请至少添加一个API Key');
+    // 删除Key
+    function deleteInlineKey(index) {
+      if (inlineKeyTableData.length === 1) {
+        alert('至少需要保留一个API Key');
         return;
       }
 
-      // 更新到API Key输入框
-      const apiKeyInput = document.getElementById('channelApiKey');
-      apiKeyInput.value = validKeys.join(',');
-
-      // 关闭模态框
-      closeKeyTableModal();
-
-      // 显示成功提示
-      showToast(`已保存 ${validKeys.length} 个API Key`);
+      if (confirm(`确定要删除第 ${index + 1} 个Key吗？`)) {
+        inlineKeyTableData.splice(index, 1);
+        renderInlineKeyTable();
+      }
     }
+
+    // 打开内联导入模态框
+    function openInlineKeyImport() {
+      // 复用原有的导入模态框
+      openKeyImportModal();
+    }
+
+    // 内联导入确认（替换原confirmKeyImport）
+    function confirmInlineKeyImport() {
+      const textarea = document.getElementById('keyImportTextarea');
+      const input = textarea.value.trim();
+
+      if (!input) {
+        alert('请输入至少一个API Key');
+        return;
+      }
+
+      const newKeys = parseKeys(input);
+
+      if (newKeys.length === 0) {
+        alert('未能解析到有效的API Key，请检查格式');
+        return;
+      }
+
+      // 添加到内联表格（去重）
+      const existingKeys = new Set(inlineKeyTableData);
+      let addedCount = 0;
+
+      newKeys.forEach(key => {
+        if (!existingKeys.has(key)) {
+          inlineKeyTableData.push(key);
+          existingKeys.add(key);
+          addedCount++;
+        }
+      });
+
+      closeKeyImportModal();
+      renderInlineKeyTable();
+
+      showToast(`成功导入 ${addedCount} 个新Key${newKeys.length - addedCount > 0 ? `，${newKeys.length - addedCount} 个重复已忽略` : ''}`);
+    }
+
+    // Key导入模态框函数
+    function openKeyImportModal() {
+      // 重置输入框
+      document.getElementById('keyImportTextarea').value = '';
+      document.getElementById('keyImportPreview').style.display = 'none';
+
+      // 显示模态框
+      document.getElementById('keyImportModal').classList.add('show');
+
+      // 聚焦到文本框
+      setTimeout(() => document.getElementById('keyImportTextarea').focus(), 100);
+    }
+
+    function closeKeyImportModal() {
+      document.getElementById('keyImportModal').classList.remove('show');
+    }
+
+    // 实时预览导入的Key数量
+    document.addEventListener('DOMContentLoaded', () => {
+      const textarea = document.getElementById('keyImportTextarea');
+      if (textarea) {
+        textarea.addEventListener('input', () => {
+          const input = textarea.value.trim();
+          const preview = document.getElementById('keyImportPreview');
+          const countSpan = document.getElementById('keyImportCount');
+
+          if (input) {
+            const keys = parseKeys(input);
+            if (keys.length > 0) {
+              countSpan.textContent = keys.length;
+              preview.style.display = 'block';
+            } else {
+              preview.style.display = 'none';
+            }
+          } else {
+            preview.style.display = 'none';
+          }
+        });
+      }
+    });
 
     function escapeHtml(text) {
       const div = document.createElement('div');

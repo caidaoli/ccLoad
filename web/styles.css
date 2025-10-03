@@ -521,7 +521,7 @@ body {
 
 /* ===== 表单组件 ===== */
 .form-group {
-  margin-bottom: var(--space-6);
+  margin-bottom: var(--space-4);
 }
 
 .form-label {
@@ -534,7 +534,7 @@ body {
 
 .form-input {
   width: 100%;
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-2) var(--space-2);
   border: 2px solid var(--neutral-200);
   border-radius: var(--radius-lg);
   font-size: var(--text-base);
@@ -820,7 +820,7 @@ body {
   backdrop-filter: blur(10px);
   border: 1px solid var(--glass-border);
   border-radius: 12px;
-  padding: 24px;
+  padding: 16px;
   width: 70%;
   max-width: none;
   max-height: 90vh;
@@ -832,7 +832,7 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 20px;
+  margin-bottom: 10px;
 }
 
 .modal-title {
@@ -1127,7 +1127,7 @@ body {
   font-size: 0.875rem;
   background: white;
   transition: all 0.2s;
-  margin-bottom: 16px;
+  margin-bottom: 8px;
 }
 
 .model-select:focus {
@@ -1140,7 +1140,7 @@ body {
   display: none;
   align-items: center;
   gap: 8px;
-  margin: 16px 0;
+  margin: 8px 0;
   padding: 12px;
   background: rgba(59, 130, 246, 0.1);
   border: 1px solid rgba(59, 130, 246, 0.2);
@@ -2034,8 +2034,8 @@ body {
   }
 
   .modal-content {
-    width: 85%;
-    padding: var(--space-4);
+    width: 100%;
+    padding: var(--space-2);
   }
 }
 
