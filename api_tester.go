@@ -15,6 +15,29 @@ type ChannelTester interface {
 	Parse(statusCode int, respBody []byte) map[string]any
 }
 
+// === 泛型类型安全工具函数 ===
+
+// getTypedValue 从map中安全获取指定类型的值（消除类型断言嵌套）
+func getTypedValue[T any](m map[string]any, key string) (T, bool) {
+	var zero T
+	v, ok := m[key]
+	if !ok {
+		return zero, false
+	}
+	typed, ok := v.(T)
+	return typed, ok
+}
+
+// getSliceItem 从切片中安全获取指定索引的指定类型元素
+func getSliceItem[T any](slice []any, index int) (T, bool) {
+	var zero T
+	if index < 0 || index >= len(slice) {
+		return zero, false
+	}
+	typed, ok := slice[index].(T)
+	return typed, ok
+}
+
 // OpenAITester 兼容 Codex 风格（归一化为 openai）
 type OpenAITester struct{}
 
@@ -60,31 +83,56 @@ func (t *OpenAITester) Build(cfg *Config, req *TestChannelRequest) (string, http
 	return fullURL, h, body, nil
 }
 
+// extractOpenAIResponseText 从OpenAI响应中提取文本（消除6层嵌套）
+func extractOpenAIResponseText(apiResp map[string]any) (string, bool) {
+	output, ok := getTypedValue[[]any](apiResp, "output")
+	if !ok {
+		return "", false
+	}
+
+	for _, item := range output {
+		outputItem, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		outputType, ok := getTypedValue[string](outputItem, "type")
+		if !ok || outputType != "message" {
+			continue
+		}
+
+		content, ok := getTypedValue[[]any](outputItem, "content")
+		if !ok || len(content) == 0 {
+			continue
+		}
+
+		textBlock, ok := getSliceItem[map[string]any](content, 0)
+		if !ok {
+			continue
+		}
+
+		text, ok := getTypedValue[string](textBlock, "text")
+		if ok {
+			return text, true
+		}
+	}
+	return "", false
+}
+
 func (t *OpenAITester) Parse(statusCode int, respBody []byte) map[string]any {
 	out := map[string]any{}
 	var apiResp map[string]any
 	if err := sonic.Unmarshal(respBody, &apiResp); err == nil {
-		// 提取文本
-		if output, ok := apiResp["output"].([]any); ok {
-			for _, item := range output {
-				if outputItem, ok := item.(map[string]any); ok {
-					if outputType, ok := outputItem["type"].(string); ok && outputType == "message" {
-						if content, ok := outputItem["content"].([]any); ok && len(content) > 0 {
-							if textBlock, ok := content[0].(map[string]any); ok {
-								if text, ok := textBlock["text"].(string); ok {
-									out["response_text"] = text
-									break
-								}
-							}
-						}
-					}
-				}
-			}
+		// 提取文本（使用辅助函数）
+		if text, ok := extractOpenAIResponseText(apiResp); ok {
+			out["response_text"] = text
 		}
-		// usage
-		if usage, ok := apiResp["usage"].(map[string]any); ok {
+
+		// 提取usage（使用泛型工具）
+		if usage, ok := getTypedValue[map[string]any](apiResp, "usage"); ok {
 			out["usage"] = usage
 		}
+
 		out["api_response"] = apiResp
 		return out
 	}
@@ -129,28 +177,51 @@ func (t *GeminiTester) Build(cfg *Config, req *TestChannelRequest) (string, http
 	return fullURL, h, body, nil
 }
 
+// extractGeminiResponseText 从Gemini响应中提取文本（消除5层嵌套）
+func extractGeminiResponseText(apiResp map[string]any) (string, bool) {
+	candidates, ok := getTypedValue[[]any](apiResp, "candidates")
+	if !ok || len(candidates) == 0 {
+		return "", false
+	}
+
+	candidate, ok := getSliceItem[map[string]any](candidates, 0)
+	if !ok {
+		return "", false
+	}
+
+	content, ok := getTypedValue[map[string]any](candidate, "content")
+	if !ok {
+		return "", false
+	}
+
+	parts, ok := getTypedValue[[]any](content, "parts")
+	if !ok || len(parts) == 0 {
+		return "", false
+	}
+
+	part, ok := getSliceItem[map[string]any](parts, 0)
+	if !ok {
+		return "", false
+	}
+
+	text, ok := getTypedValue[string](part, "text")
+	return text, ok
+}
+
 func (t *GeminiTester) Parse(statusCode int, respBody []byte) map[string]any {
 	out := map[string]any{}
 	var apiResp map[string]any
 	if err := sonic.Unmarshal(respBody, &apiResp); err == nil {
-		// 提取文本响应
-		if candidates, ok := apiResp["candidates"].([]any); ok && len(candidates) > 0 {
-			if candidate, ok := candidates[0].(map[string]any); ok {
-				if content, ok := candidate["content"].(map[string]any); ok {
-					if parts, ok := content["parts"].([]any); ok && len(parts) > 0 {
-						if part, ok := parts[0].(map[string]any); ok {
-							if text, ok := part["text"].(string); ok {
-								out["response_text"] = text
-							}
-						}
-					}
-				}
-			}
+		// 提取文本响应（使用辅助函数）
+		if text, ok := extractGeminiResponseText(apiResp); ok {
+			out["response_text"] = text
 		}
-		// usage 信息
-		if usageMetadata, ok := apiResp["usageMetadata"].(map[string]any); ok {
+
+		// 提取usage信息（使用泛型工具）
+		if usageMetadata, ok := getTypedValue[map[string]any](apiResp, "usageMetadata"); ok {
 			out["usage"] = usageMetadata
 		}
+
 		out["api_response"] = apiResp
 		return out
 	}
@@ -219,17 +290,31 @@ func (t *AnthropicTester) Build(cfg *Config, req *TestChannelRequest) (string, h
 	return fullURL, h, body, nil
 }
 
+// extractAnthropicResponseText 从Anthropic响应中提取文本（消除3层嵌套）
+func extractAnthropicResponseText(apiResp map[string]any) (string, bool) {
+	content, ok := getTypedValue[[]any](apiResp, "content")
+	if !ok || len(content) == 0 {
+		return "", false
+	}
+
+	textBlock, ok := getSliceItem[map[string]any](content, 0)
+	if !ok {
+		return "", false
+	}
+
+	text, ok := getTypedValue[string](textBlock, "text")
+	return text, ok
+}
+
 func (t *AnthropicTester) Parse(statusCode int, respBody []byte) map[string]any {
 	out := map[string]any{}
 	var apiResp map[string]any
 	if err := sonic.Unmarshal(respBody, &apiResp); err == nil {
-		if content, ok := apiResp["content"].([]any); ok && len(content) > 0 {
-			if textBlock, ok := content[0].(map[string]any); ok {
-				if text, ok := textBlock["text"].(string); ok {
-					out["response_text"] = text
-				}
-			}
+		// 提取文本响应（使用辅助函数）
+		if text, ok := extractAnthropicResponseText(apiResp); ok {
+			out["response_text"] = text
 		}
+
 		out["api_response"] = apiResp
 		return out
 	}
