@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"time"
 )
@@ -85,12 +86,7 @@ func (c *Config) BuildModelsSet() {
 func (c *Config) HasModel(model string) bool {
 	if c.modelsSet == nil {
 		// 降级到线性查找（向后兼容未初始化索引的场景）
-		for _, m := range c.Models {
-			if m == model {
-				return true
-			}
-		}
-		return false
+		return slices.Contains(c.Models, model)
 	}
 	_, exists := c.modelsSet[model]
 	return exists
@@ -103,7 +99,7 @@ func normalizeChannelType(t string) string {
 	if lower == "" {
 		return "anthropic"
 	}
-	if lower == "openai" {
+	if lower == "codex" {
 		return "codex"
 	}
 	return lower

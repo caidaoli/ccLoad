@@ -12,12 +12,12 @@ var ChannelTypes = []ChannelTypeConfig{
 	{
 		Value:       "anthropic",
 		DisplayName: "Claude Code",
-		Description: "Anthropic Claude API（Code风格）",
+		Description: "Claude Code兼容API",
 	},
 	{
 		Value:       "codex",
-		DisplayName: "OpenAI",
-		Description: "OpenAI兼容API",
+		DisplayName: "Codex",
+		Description: "Codex兼容API",
 	},
 	{
 		Value:       "gemini",
