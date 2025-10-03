@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bytedance/sonic"
 )
@@ -91,13 +92,18 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	var c Config
 	var modelsStr, modelRedirectsStr, apiKeysStr string
 	var enabledInt int
+	var createdAtUnix, updatedAtUnix int64
 
 	if err := scanner.Scan(&c.ID, &c.Name, &c.APIKey, &apiKeysStr, &c.KeyStrategy, &c.URL, &c.Priority,
-		&modelsStr, &modelRedirectsStr, &c.ChannelType, &enabledInt, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		&modelsStr, &modelRedirectsStr, &c.ChannelType, &enabledInt, &createdAtUnix, &updatedAtUnix); err != nil {
 		return nil, err
 	}
 
 	c.Enabled = enabledInt != 0
+	// 转换Unix秒时间戳为time.Time
+	c.CreatedAt = time.Unix(createdAtUnix, 0)
+	c.UpdatedAt = time.Unix(updatedAtUnix, 0)
+
 	if err := parseModelsJSON(modelsStr, &c.Models); err != nil {
 		c.Models = nil // 解析失败时使用空切片
 	}

@@ -93,14 +93,11 @@ func (c *Config) HasModel(model string) bool {
 }
 
 // normalizeChannelType 规范化渠道类型命名
-// 将别名统一到标准类型：例如 openai → codex；空值 → anthropic
+// 空值返回默认类型 anthropic，其他值原样返回（保持灵活性，支持未来扩展）
 func normalizeChannelType(t string) string {
 	lower := strings.ToLower(strings.TrimSpace(t))
 	if lower == "" {
 		return "anthropic"
-	}
-	if lower == "codex" {
-		return "codex"
 	}
 	return lower
 }

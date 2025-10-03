@@ -655,6 +655,12 @@
             bgColor: '#d1fae5',    // 浅绿背景
             borderColor: '#6ee7b7' // 绿色边框
           },
+          'openai': {
+            text: 'OpenAI',
+            color: '#10b981',      // 绿色 - OpenAI品牌色
+            bgColor: '#d1fae5',    // 浅绿背景
+            borderColor: '#6ee7b7' // 绿色边框
+          },
           'gemini': {
             text: 'Gemini',
             color: '#2563eb',      // 蓝色 - Google品牌色
@@ -662,7 +668,8 @@
             borderColor: '#93c5fd' // 蓝色边框
           }
         };
-        const channelTypeInfo = channelTypeLabels[c.channel_type || 'anthropic'];
+        // 防御性编程：如果类型未定义，使用默认值（KISS原则）
+        const channelTypeInfo = channelTypeLabels[c.channel_type || 'anthropic'] || channelTypeLabels['anthropic'];
         const channelTypeBadge = `<span style="background: ${channelTypeInfo.bgColor}; color: ${channelTypeInfo.color}; padding: 3px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; margin-left: 8px; border: 1.5px solid ${channelTypeInfo.borderColor}; letter-spacing: 0.025em; text-transform: uppercase;">${channelTypeInfo.text}</span>`;
 
         return `

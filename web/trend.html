@@ -156,25 +156,93 @@
         window.trendData = metricsResponse.success ? (metricsResponse.data || []) : (metricsResponse || []);
         window.channels = channelsResponse.success ? (channelsResponse.data || []) : (channelsResponse || []);
         
-        // 初始化显示所有渠道 - 添加调试日志
+        // 修复：智能初始化渠道显示状态（处理localStorage过时数据）
         if (window.visibleChannels.size === 0) {
-          console.log('初始化渠道显示状态...');
-          window.channels.forEach(ch => {
-            if (ch.enabled) {
-              // 检查渠道是否有数据
-              const hasData = hasChannelData(ch.name, window.trendData);
-              console.log(`渠道 ${ch.name}: enabled=${ch.enabled}, hasData=${hasData}`);
-              
-              // 只添加有数据的渠道
-              if (hasData) {
-                window.visibleChannels.add(ch.name);
-                console.log(`添加有数据的渠道: ${ch.name}`);
-              } else {
-                console.log(`跳过无数据的渠道: ${ch.name}`);
-              }
+          // 首次访问：完整初始化
+          console.log('初始化渠道显示状态（首次访问）...');
+
+          // 从趋势数据中提取所有实际存在的渠道名称
+          const channelsInData = new Set();
+          window.trendData.forEach(point => {
+            if (point.channels) {
+              Object.keys(point.channels).forEach(name => {
+                const chData = point.channels[name];
+                if ((chData.success || 0) + (chData.error || 0) > 0) {
+                  channelsInData.add(name);
+                }
+              });
             }
           });
+          console.log('趋势数据中的渠道:', Array.from(channelsInData));
+
+          // 添加启用的已配置渠道
+          window.channels.forEach(ch => {
+            if (ch.enabled && hasChannelData(ch.name, window.trendData)) {
+              window.visibleChannels.add(ch.name);
+              console.log(`添加已配置渠道: ${ch.name}`);
+            }
+          });
+
+          // 添加数据中存在但不在配置列表中的渠道（如"未知渠道"）
+          channelsInData.forEach(name => {
+            if (!window.channels.find(ch => ch.name === name)) {
+              window.visibleChannels.add(name);
+              console.log(`添加数据中的未配置渠道: ${name}`);
+            }
+          });
+
           console.log('初始化完成，可见渠道:', Array.from(window.visibleChannels));
+
+          // 修复：持久化初始化状态（避免每次刷新都重新初始化）
+          persistChannelState();
+        } else {
+          // 修复：验证并清理localStorage中过时的渠道选择
+          console.log('验证现有渠道选择状态...', Array.from(window.visibleChannels));
+          const validChannels = new Set();
+          let hasInvalidChannels = false;
+
+          // 检查每个已保存渠道是否在当前数据中存在
+          window.visibleChannels.forEach(channelName => {
+            if (hasChannelData(channelName, window.trendData)) {
+              validChannels.add(channelName);
+            } else {
+              console.log(`清理过时渠道: ${channelName}（数据中不存在）`);
+              hasInvalidChannels = true;
+            }
+          });
+
+          // 如果清理后为空且有数据，重新初始化所有可见渠道
+          if (validChannels.size === 0 && window.trendData.length > 0) {
+            console.log('所有保存的渠道已失效，重新初始化...');
+
+            // 从趋势数据中提取所有有数据的渠道
+            window.trendData.forEach(point => {
+              if (point.channels) {
+                Object.keys(point.channels).forEach(name => {
+                  const chData = point.channels[name];
+                  if ((chData.success || 0) + (chData.error || 0) > 0) {
+                    validChannels.add(name);
+                  }
+                });
+              }
+            });
+
+            // 添加已配置的启用渠道
+            window.channels.forEach(ch => {
+              if (ch.enabled && hasChannelData(ch.name, window.trendData)) {
+                validChannels.add(ch.name);
+              }
+            });
+          }
+
+          // 更新visibleChannels为验证后的集合
+          window.visibleChannels = validChannels;
+
+          // 如果有清理或重新初始化，保存新状态
+          if (hasInvalidChannels || validChannels.size > 0) {
+            persistChannelState();
+            console.log('更新后的可见渠道:', Array.from(window.visibleChannels));
+          }
         }
         
         // 添加调试信息显示
@@ -545,13 +613,6 @@
 
       // 设置配置并渲染
       window.chartInstance.setOption(option, true); // true 表示不合并，全量更新
-
-      // 响应式调整
-      window.addEventListener('resize', () => {
-        if (window.chartInstance) {
-          window.chartInstance.resize();
-        }
-      });
     }
 
     function formatNumber(num) {
@@ -609,43 +670,64 @@
       return channelColors;
     }
     
-    // 更新渠道筛选器 - 只显示有数据的渠道
+    // 更新渠道筛选器 - 显示所有有数据的渠道（包括未配置的渠道）
     function updateChannelFilter() {
-      if (!window.channels) return;
-      
       const filterList = document.getElementById('channel-filter-list');
       if (!filterList) return;
       
-      const channelColors = generateChannelColors(window.channels.map(ch => ch.name));
+      // 收集所有有数据的渠道名称
+      const allChannelNames = new Set();
+      
+      // 添加已配置的启用渠道
+      if (window.channels) {
+        window.channels.forEach(ch => {
+          if (ch.enabled && hasChannelData(ch.name, window.trendData)) {
+            allChannelNames.add(ch.name);
+          }
+        });
+      }
+      
+      // 添加趋势数据中存在但未配置的渠道（如"未知渠道"）
+      if (window.trendData) {
+        window.trendData.forEach(point => {
+          if (point.channels) {
+            Object.keys(point.channels).forEach(name => {
+              const chData = point.channels[name];
+              if ((chData.success || 0) + (chData.error || 0) > 0) {
+                allChannelNames.add(name);
+              }
+            });
+          }
+        });
+      }
+      
+      console.log('筛选器中的所有渠道:', Array.from(allChannelNames));
+      
+      // 生成颜色映射
+      const channelColors = generateChannelColors(allChannelNames);
       
       filterList.innerHTML = '';
-      console.log('更新渠道筛选器...');
       
-      window.channels.forEach(channel => {
-        if (!channel.enabled) return; // 只显示启用的渠道
-        
-        // 检查渠道是否有数据
-        const hasData = hasChannelData(channel.name, window.trendData);
-        console.log(`筛选器中的渠道 ${channel.name}: enabled=${channel.enabled}, hasData=${hasData}`);
-        
-        if (!hasData) {
-          console.log(`筛选器跳过无数据的渠道: ${channel.name}`);
-          return; // 跳过没有数据的渠道
-        }
-        
+      // 渲染渠道列表
+      Array.from(allChannelNames).sort().forEach(channelName => {
         const item = document.createElement('div');
         item.className = 'channel-filter-item';
-        item.onclick = () => toggleChannel(channel.name);
+        item.onclick = () => toggleChannel(channelName);
         
-        const isVisible = window.visibleChannels.has(channel.name);
+        const isVisible = window.visibleChannels.has(channelName);
+        
+        // 为"未知渠道"添加特殊标识
+        const displayName = channelName === '未知渠道' 
+          ? `${channelName} ⚠️` 
+          : channelName;
+        
         item.innerHTML = `
           <div class="channel-checkbox ${isVisible ? 'checked' : ''}"></div>
-          <div class="channel-color-indicator" style="background-color: ${channelColors[channel.name]}"></div>
-          <div class="channel-name">${channel.name}</div>
+          <div class="channel-color-indicator" style="background-color: ${channelColors[channelName]}"></div>
+          <div class="channel-name">${displayName}</div>
         `;
         
         filterList.appendChild(item);
-        console.log(`筛选器添加有数据的渠道: ${channel.name}`);
       });
     }
     
@@ -662,13 +744,30 @@
       persistChannelState();
     }
     
-    // 全选渠道 - 只选择有数据的渠道
+    // 全选渠道 - 选择所有有数据的渠道（包括未配置的渠道）
     function selectAllChannels() {
-      window.channels.forEach(ch => {
-        if (ch.enabled && hasChannelData(ch.name, window.trendData)) {
-          window.visibleChannels.add(ch.name);
-        }
-      });
+      // 添加已配置的启用渠道
+      if (window.channels) {
+        window.channels.forEach(ch => {
+          if (ch.enabled && hasChannelData(ch.name, window.trendData)) {
+            window.visibleChannels.add(ch.name);
+          }
+        });
+      }
+      
+      // 添加趋势数据中存在但未配置的渠道
+      if (window.trendData) {
+        window.trendData.forEach(point => {
+          if (point.channels) {
+            Object.keys(point.channels).forEach(name => {
+              const chData = point.channels[name];
+              if ((chData.success || 0) + (chData.error || 0) > 0) {
+                window.visibleChannels.add(name);
+              }
+            });
+          }
+        });
+      }
       
       updateChannelFilter();
       renderChart();
@@ -739,7 +838,14 @@
       applyRangeUI();
       bindToggles();
       loadData();
-      
+
+      // 修复：全局注册resize监听器（仅一次，避免内存泄漏）
+      window.addEventListener('resize', () => {
+        if (window.chartInstance) {
+          window.chartInstance.resize();
+        }
+      });
+
       // 定期刷新数据（每5分钟）
       setInterval(loadData, 5 * 60 * 1000);
     });
