@@ -58,10 +58,10 @@ func main() {
 		if err := s.LoadChannelsFromRedis(ctx); err != nil {
 			log.Printf("从Redis恢复失败: %v", err)
 		}
-	}
-
-	if err := s.Vacuum(ctx); err != nil {
-		log.Printf("VACUUM 执行失败: %v", err)
+	} else {
+		if err := s.Vacuum(ctx); err != nil {
+			log.Printf("VACUUM 执行失败: %v", err)
+		}
 	}
 	log.Printf("using sqlite store: %s", dbPath)
 	var store Store = s
