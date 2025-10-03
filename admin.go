@@ -275,19 +275,19 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 		}
 	}
 
-    summary := ChannelImportSummary{}
-    lineNo := 1
+	summary := ChannelImportSummary{}
+	lineNo := 1
 
-    // 预加载现有渠道名称，O(n) 替代 O(n^2)（KISS/DRY/性能优化）
-    existingConfigs, err := s.store.ListConfigs(c.Request.Context())
-    if err != nil {
-        RespondError(c, http.StatusInternalServerError, err)
-        return
-    }
-    existingNames := make(map[string]struct{}, len(existingConfigs))
-    for _, ec := range existingConfigs {
-        existingNames[ec.Name] = struct{}{}
-    }
+	// 预加载现有渠道名称，O(n) 替代 O(n^2)（KISS/DRY/性能优化）
+	existingConfigs, err := s.store.ListConfigs(c.Request.Context())
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	existingNames := make(map[string]struct{}, len(existingConfigs))
+	for _, ec := range existingConfigs {
+		existingNames[ec.Name] = struct{}{}
+	}
 
 	for {
 		record, err := reader.Read()
@@ -320,8 +320,8 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 		url := fetch("url")
 		modelsRaw := fetch("models")
 		modelRedirectsRaw := fetch("model_redirects")
-        channelType := fetch("channel_type")
-        keyStrategy := fetch("key_strategy")
+		channelType := fetch("channel_type")
+		keyStrategy := fetch("key_strategy")
 
 		if name == "" || apiKey == "" || url == "" || modelsRaw == "" {
 			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行缺少必填字段", lineNo))
@@ -329,13 +329,13 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 			continue
 		}
 
-        // 渠道类型规范化与校验（codex → openai，空值 → anthropic）
-        channelType = normalizeChannelType(channelType)
-        if !IsValidChannelType(channelType) {
-            summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行渠道类型无效: %s（仅支持anthropic/openai/gemini）", lineNo, channelType))
-            summary.Skipped++
-            continue
-        }
+		// 渠道类型规范化与校验（codex → openai，空值 → anthropic）
+		channelType = normalizeChannelType(channelType)
+		if !IsValidChannelType(channelType) {
+			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行渠道类型无效: %s（仅支持anthropic/openai/gemini）", lineNo, channelType))
+			summary.Skipped++
+			continue
+		}
 
 		// 验证Key使用策略（可选字段，默认sequential）
 		if keyStrategy == "" {
@@ -397,8 +397,8 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 			Enabled:        enabled,
 		}
 
-        // 检查渠道是否已存在（基于名称）- 使用预加载集合
-        _, isUpdate := existingNames[name]
+		// 检查渠道是否已存在（基于名称）- 使用预加载集合
+		_, isUpdate := existingNames[name]
 
 		// 使用ReplaceConfig进行插入或更新
 		if _, err := s.store.ReplaceConfig(c.Request.Context(), cfg); err != nil {
@@ -407,13 +407,13 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 			continue
 		}
 
-        if isUpdate {
-            summary.Updated++
-        } else {
-            summary.Created++
-            // 新创建的渠道加入已存在集合，避免后续重复计算
-            existingNames[name] = struct{}{}
-        }
+		if isUpdate {
+			summary.Updated++
+		} else {
+			summary.Created++
+			// 新创建的渠道加入已存在集合，避免后续重复计算
+			existingNames[name] = struct{}{}
+		}
 	}
 
 	summary.Processed = summary.Created + summary.Updated + summary.Skipped
@@ -761,98 +761,98 @@ func (s *Server) handleChannelTest(c *gin.Context) {
 
 // 测试渠道API连通性
 func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[string]any {
-    // 选择并规范化渠道类型
-    channelType := normalizeChannelType(testReq.ChannelType)
-    var tester ChannelTester
-    switch channelType {
-    case "openai":
-        tester = &OpenAITester{}
-    case "gemini":
-        tester = &GeminiTester{}
-    case "anthropic":
-        tester = &AnthropicTester{}
-    default:
-        tester = &AnthropicTester{}
-    }
+	// 选择并规范化渠道类型
+	channelType := normalizeChannelType(testReq.ChannelType)
+	var tester ChannelTester
+	switch channelType {
+	case "openai":
+		tester = &OpenAITester{}
+	case "gemini":
+		tester = &GeminiTester{}
+	case "anthropic":
+		tester = &AnthropicTester{}
+	default:
+		tester = &AnthropicTester{}
+	}
 
-    // 构建请求
-    fullURL, baseHeaders, body, err := tester.Build(cfg, testReq)
-    if err != nil {
-        return map[string]any{"success": false, "error": "构造测试请求失败: " + err.Error()}
-    }
+	// 构建请求
+	fullURL, baseHeaders, body, err := tester.Build(cfg, testReq)
+	if err != nil {
+		return map[string]any{"success": false, "error": "构造测试请求失败: " + err.Error()}
+	}
 
-    // 创建HTTP请求
-    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-    defer cancel()
+	// 创建HTTP请求
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-    req, err := http.NewRequestWithContext(ctx, "POST", fullURL, bytes.NewReader(body))
-    if err != nil {
-        return map[string]any{"success": false, "error": "创建HTTP请求失败: " + err.Error()}
-    }
+	req, err := http.NewRequestWithContext(ctx, "POST", fullURL, bytes.NewReader(body))
+	if err != nil {
+		return map[string]any{"success": false, "error": "创建HTTP请求失败: " + err.Error()}
+	}
 
-    // 设置基础请求头
-    for k, vs := range baseHeaders {
-        for _, v := range vs {
-            req.Header.Add(k, v)
-        }
-    }
-    // 添加/覆盖自定义请求头
-    for key, value := range testReq.Headers {
-        req.Header.Set(key, value)
-    }
+	// 设置基础请求头
+	for k, vs := range baseHeaders {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+	// 添加/覆盖自定义请求头
+	for key, value := range testReq.Headers {
+		req.Header.Set(key, value)
+	}
 
-    // 发送请求
-    start := time.Now()
-    resp, err := s.client.Do(req)
-    duration := time.Since(start)
-    if err != nil {
-        return map[string]any{"success": false, "error": "网络请求失败: " + err.Error(), "duration_ms": duration.Milliseconds()}
-    }
-    defer resp.Body.Close()
+	// 发送请求
+	start := time.Now()
+	resp, err := s.client.Do(req)
+	duration := time.Since(start)
+	if err != nil {
+		return map[string]any{"success": false, "error": "网络请求失败: " + err.Error(), "duration_ms": duration.Milliseconds()}
+	}
+	defer resp.Body.Close()
 
-    // 读取响应
-    respBody, err := io.ReadAll(resp.Body)
-    if err != nil {
-        return map[string]any{"success": false, "error": "读取响应失败: " + err.Error(), "duration_ms": duration.Milliseconds(), "status_code": resp.StatusCode}
-    }
+	// 读取响应
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return map[string]any{"success": false, "error": "读取响应失败: " + err.Error(), "duration_ms": duration.Milliseconds(), "status_code": resp.StatusCode}
+	}
 
-    // 通用结果
-    result := map[string]any{
-        "success":     resp.StatusCode >= 200 && resp.StatusCode < 300,
-        "status_code": resp.StatusCode,
-        "duration_ms": duration.Milliseconds(),
-    }
+	// 通用结果
+	result := map[string]any{
+		"success":     resp.StatusCode >= 200 && resp.StatusCode < 300,
+		"status_code": resp.StatusCode,
+		"duration_ms": duration.Milliseconds(),
+	}
 
-    if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-        // 成功：委托给 tester 解析
-        parsed := tester.Parse(resp.StatusCode, respBody)
-        for k, v := range parsed {
-            result[k] = v
-        }
-        result["message"] = "API测试成功"
-    } else {
-        // 错误：统一解析
-        var errorMsg string
-        var apiError map[string]any
-        if err := sonic.Unmarshal(respBody, &apiError); err == nil {
-            if errInfo, ok := apiError["error"].(map[string]any); ok {
-                if msg, ok := errInfo["message"].(string); ok {
-                    errorMsg = msg
-                } else if typeStr, ok := errInfo["type"].(string); ok {
-                    errorMsg = typeStr
-                }
-            }
-            result["api_error"] = apiError
-        } else {
-            result["raw_response"] = string(respBody)
-        }
-        if errorMsg == "" {
-            errorMsg = "API返回错误状态: " + resp.Status
-        }
-        result["error"] = errorMsg
-    }
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		// 成功：委托给 tester 解析
+		parsed := tester.Parse(resp.StatusCode, respBody)
+		for k, v := range parsed {
+			result[k] = v
+		}
+		result["message"] = "API测试成功"
+	} else {
+		// 错误：统一解析
+		var errorMsg string
+		var apiError map[string]any
+		if err := sonic.Unmarshal(respBody, &apiError); err == nil {
+			if errInfo, ok := apiError["error"].(map[string]any); ok {
+				if msg, ok := errInfo["message"].(string); ok {
+					errorMsg = msg
+				} else if typeStr, ok := errInfo["type"].(string); ok {
+					errorMsg = typeStr
+				}
+			}
+			result["api_error"] = apiError
+		} else {
+			result["raw_response"] = string(respBody)
+		}
+		if errorMsg == "" {
+			errorMsg = "API返回错误状态: " + resp.Status
+		}
+		result["error"] = errorMsg
+	}
 
-    return result
+	return result
 }
 
 func buildCSVColumnIndex(header []string) map[string]int {
