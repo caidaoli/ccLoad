@@ -668,10 +668,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *Config, reqCtx *pr
 		actualKeyCount = 1 // 至少尝试一次（兼容旧的APIKey字段）
 	}
 
-	maxKeyRetries := s.maxKeyRetries
-	if maxKeyRetries > actualKeyCount {
-		maxKeyRetries = actualKeyCount
-	}
+	maxKeyRetries := min(s.maxKeyRetries, actualKeyCount)
 
 	triedKeys := make(map[int]bool) // 本次请求内已尝试过的Key
 
@@ -679,7 +676,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *Config, reqCtx *pr
 	_, bodyToSend := prepareRequestBody(cfg, reqCtx)
 
 	// Key重试循环
-	for keyRetry := 0; keyRetry < maxKeyRetries; keyRetry++ {
+	for range maxKeyRetries {
 		// 选择可用的API Key
 		keyIndex, selectedKey, err := s.keySelector.SelectAvailableKey(ctx, cfg, triedKeys)
 		if err != nil {
