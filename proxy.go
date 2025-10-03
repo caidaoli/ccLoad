@@ -488,8 +488,19 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *Config, keyIndex int
 		return ActionRetryKey, true
 	}
 
-	// HTTP错误处理
-	errLevel := classifyHTTPStatus(res.Status)
+	// HTTP错误处理：使用智能分类器（结合响应体内容）
+	errLevel := classifyHTTPStatusWithBody(res.Status, res.Body)
+
+	// 🎯 动态调整：单Key渠道的Key级错误应该直接冷却渠道
+	// 设计原则：如果没有其他Key可以重试，Key级错误等同于渠道级错误
+	if errLevel == ErrorLevelKey {
+		keyCount := len(cfg.GetAPIKeys())
+		if keyCount <= 1 {
+			// 单Key渠道：直接升级为渠道级错误
+			errLevel = ErrorLevelChannel
+		}
+	}
+
 	switch errLevel {
 	case ErrorLevelClient:
 		// 客户端错误：不冷却，直接返回
