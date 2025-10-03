@@ -699,13 +699,10 @@ func (s *Server) warmHTTPConnections(ctx context.Context) {
 	}
 
 	// 预热前5个高优先级渠道（按优先级降序）
-	warmCount := 5
-	if len(configs) < warmCount {
-		warmCount = len(configs)
-	}
+	warmCount := min(len(configs), 5)
 
 	warmedCount := 0
-	for i := 0; i < warmCount; i++ {
+	for i := range warmCount {
 		cfg := configs[i]
 		if cfg.URL == "" {
 			continue
