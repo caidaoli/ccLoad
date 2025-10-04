@@ -2222,6 +2222,7 @@ body {
 .text-xl { font-size: var(--text-xl); }
 .text-2xl { font-size: var(--text-2xl); }
 .text-3xl { font-size: var(--text-3xl); }
+.w-12 { width: 48px; } .h-12 { height: 48px; }
 .w-5 { width: 20px; } .h-5 { height: 20px; }
 .w-4 { width: 16px; } .h-4 { height: 16px; }
 
