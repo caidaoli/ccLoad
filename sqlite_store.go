@@ -215,6 +215,11 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		return fmt.Errorf("ensure channel name unique: %w", err)
 	}
 
+	// 迁移api_keys字段：修复历史数据中的"null"字符串问题
+	if err := s.migrateAPIKeysField(ctx); err != nil {
+		return fmt.Errorf("migrate api_keys field: %w", err)
+	}
+
 	// 迁移冷却表的until字段从TIMESTAMP到Unix时间戳
 	if err := s.migrateCooldownToUnixTimestamp(ctx); err != nil {
 		return fmt.Errorf("migrate cooldown to unix timestamp: %w", err)
@@ -261,6 +266,66 @@ func (s *SQLiteStore) addColumnIfNotExists(ctx context.Context, tableName, colum
 		alterQuery := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", tableName, columnName, columnDef)
 		s.db.ExecContext(ctx, alterQuery)
 	}
+}
+
+// migrateAPIKeysField 数据库迁移：修复api_keys字段的脏数据
+// 问题：历史数据中api_keys可能存储为"null"字符串，导致GetAPIKeys()返回空数组
+// 解决方案：将api_key字段（逗号分隔）转换为api_keys JSON数组
+// 执行时机：服务启动时自动运行（在ensureChannelNameUnique之后）
+func (s *SQLiteStore) migrateAPIKeysField(ctx context.Context) error {
+	// 查询所有需要迁移的渠道：api_keys为"null"或空字符串，但api_key不为空
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, api_key
+		FROM channels
+		WHERE (api_keys IS NULL OR api_keys = 'null' OR api_keys = '' OR api_keys = '[]')
+		  AND api_key IS NOT NULL
+		  AND api_key != ''
+	`)
+	if err != nil {
+		return fmt.Errorf("query channels for migration: %w", err)
+	}
+	defer rows.Close()
+
+	migratedCount := 0
+	for rows.Next() {
+		var id int64
+		var apiKey string
+		if err := rows.Scan(&id, &apiKey); err != nil {
+			continue // 跳过错误行
+		}
+
+		// 使用normalizeAPIKeys的相同逻辑：分割api_key字段
+		keys := strings.Split(apiKey, ",")
+		apiKeys := make([]string, 0, len(keys))
+		for _, k := range keys {
+			trimmed := strings.TrimSpace(k)
+			if trimmed != "" {
+				apiKeys = append(apiKeys, trimmed)
+			}
+		}
+
+		// 序列化为JSON数组
+		apiKeysJSON, err := sonic.Marshal(apiKeys)
+		if err != nil {
+			continue // 跳过序列化失败的
+		}
+
+		// 更新数据库
+		_, err = s.db.ExecContext(ctx, `
+			UPDATE channels
+			SET api_keys = ?
+			WHERE id = ?
+		`, string(apiKeysJSON), id)
+		if err == nil {
+			migratedCount++
+		}
+	}
+
+	if migratedCount > 0 {
+		fmt.Printf("✅ api_keys字段迁移完成：修复 %d 条渠道记录\n", migratedCount)
+	}
+
+	return nil
 }
 
 // ensureChannelNameUnique 确保channels表的name字段具有UNIQUE约束
@@ -819,6 +884,9 @@ func (s *SQLiteStore) CreateConfig(ctx context.Context, c *Config) (*Config, err
 	nowUnix := time.Now().Unix() // Unix秒时间戳
 	modelsStr, _ := serializeModels(c.Models)
 	modelRedirectsStr, _ := serializeModelRedirects(c.ModelRedirects)
+
+	// 规范化APIKeys字段（DRY：统一处理，避免"null"字符串）
+	normalizeAPIKeys(c)
 	apiKeysStr, _ := sonic.Marshal(c.APIKeys) // 序列化多Key数组
 
 	// 使用GetChannelType确保默认值
@@ -863,6 +931,9 @@ func (s *SQLiteStore) UpdateConfig(ctx context.Context, id int64, upd *Config) (
 	url := strings.TrimSpace(upd.URL)
 	modelsStr, _ := serializeModels(upd.Models)
 	modelRedirectsStr, _ := serializeModelRedirects(upd.ModelRedirects)
+
+	// 规范化APIKeys字段（DRY：统一处理，避免"null"字符串）
+	normalizeAPIKeys(upd)
 	apiKeysStr, _ := sonic.Marshal(upd.APIKeys) // 序列化多Key数组
 	channelType := upd.GetChannelType()         // 确保默认值
 	keyStrategy := upd.GetKeyStrategy()         // 确保默认值
@@ -894,6 +965,9 @@ func (s *SQLiteStore) ReplaceConfig(ctx context.Context, c *Config) (*Config, er
 	nowUnix := time.Now().Unix() // Unix秒时间戳
 	modelsStr, _ := serializeModels(c.Models)
 	modelRedirectsStr, _ := serializeModelRedirects(c.ModelRedirects)
+
+	// 规范化APIKeys字段（DRY：统一处理，避免"null"字符串）
+	normalizeAPIKeys(c)
 	apiKeysStr, _ := sonic.Marshal(c.APIKeys) // 序列化多Key数组
 	channelType := c.GetChannelType()         // 确保默认值
 	keyStrategy := c.GetKeyStrategy()         // 确保默认值
@@ -1515,6 +1589,19 @@ func (s *SQLiteStore) BumpKeyCooldownOnError(ctx context.Context, configID int64
 		return 0, err
 	}
 	return next, nil
+}
+
+// SetKeyCooldown 设置指定Key的冷却截止时间
+func (s *SQLiteStore) SetKeyCooldown(ctx context.Context, configID int64, keyIndex int, until time.Time) error {
+	now := time.Now()
+	durationMs := calculateCooldownDuration(until, now)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO key_cooldowns(channel_id, key_index, until, duration_ms) VALUES(?, ?, ?, ?)
+		ON CONFLICT(channel_id, key_index) DO UPDATE SET
+			until = excluded.until,
+			duration_ms = excluded.duration_ms
+	`, configID, keyIndex, until.Unix(), durationMs)
+	return err
 }
 
 // ResetKeyCooldown 重置指定Key的冷却状态

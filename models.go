@@ -193,6 +193,7 @@ type Store interface {
 
 	// key-level cooldown (新增)
 	GetKeyCooldownUntil(ctx context.Context, configID int64, keyIndex int) (time.Time, bool)
+	SetKeyCooldown(ctx context.Context, configID int64, keyIndex int, until time.Time) error
 	BumpKeyCooldownOnError(ctx context.Context, configID int64, keyIndex int, now time.Time) (time.Duration, error)
 	ResetKeyCooldown(ctx context.Context, configID int64, keyIndex int) error
 

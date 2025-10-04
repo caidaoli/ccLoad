@@ -232,6 +232,10 @@ func (m *MockStore) BumpKeyCooldownOnError(ctx context.Context, configID int64, 
 	return time.Second, nil
 }
 
+func (m *MockStore) SetKeyCooldown(ctx context.Context, configID int64, keyIndex int, until time.Time) error {
+	return nil
+}
+
 func (m *MockStore) ResetKeyCooldown(ctx context.Context, configID int64, keyIndex int) error {
 	return nil
 }
@@ -460,6 +464,9 @@ func (m *MockStoreAllKeysCooled) ResetCooldown(ctx context.Context, configID int
 }
 func (m *MockStoreAllKeysCooled) BumpKeyCooldownOnError(ctx context.Context, configID int64, keyIndex int, now time.Time) (time.Duration, error) {
 	return time.Second, nil
+}
+func (m *MockStoreAllKeysCooled) SetKeyCooldown(ctx context.Context, configID int64, keyIndex int, until time.Time) error {
+	return nil
 }
 func (m *MockStoreAllKeysCooled) ResetKeyCooldown(ctx context.Context, configID int64, keyIndex int) error {
 	return nil

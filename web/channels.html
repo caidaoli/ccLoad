@@ -199,7 +199,7 @@
           <!-- API Key标签行：包含标签、Key计数和操作按钮 -->
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
             <label class="form-label" style="margin: 0;">
-              API Key * <span class="models-hint" style="margin-left: 8px; margin-top: 0;">共 <span id="inlineKeyCount">0</span> 个Key</span>
+              API Key * <span class="models-hint" style="margin-left: 8px; margin-top: 0;">共 <span id="inlineKeyCount">0</span> 个Key <span id="virtualScrollHint" style="display: none; color: var(--primary-600); font-weight: 600;">· 虚拟滚动已启用</span></span>
             </label>
             <div style="display: flex; gap: 6px;">
               <button type="button" class="btn btn-secondary btn-sm" onclick="openInlineKeyImport()" style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px;">
@@ -315,10 +315,10 @@
       <div class="form-group" id="testKeySelectGroup" style="display: none;">
         <label class="form-label" for="testKeySelect">
           选择 API Key
-          <span class="models-hint" style="margin-left: 8px;">测试时使用的 Key（默认第一个）</span>
+          <span class="models-hint" style="margin-left: 8px;">单次测试时使用的 Key（最多显示前10个）</span>
         </label>
         <select id="testKeySelect" class="form-input">
-          <!-- 动态填充 Key 选项 -->
+          <!-- 动态填充 Key 选项（限制前10个） -->
         </select>
       </div>
 
@@ -327,11 +327,42 @@
         <textarea id="testContentInput" class="form-input" rows="3" placeholder="输入测试内容..." style="resize: vertical; min-height: 80px;">test</textarea>
         <div class="models-hint">默认内容为 "test"，可以修改为其他测试内容</div>
       </div>
+
+      <div class="form-group">
+        <div style="display: flex; gap: 24px; align-items: flex-start;">
+          <div style="flex: 1;">
+            <label class="form-label" for="testCooldownMinutes">
+              失败冷却时间（分钟）
+              <span class="models-hint" style="margin-left: 8px;">测试失败时自动冷却对应Key的时间</span>
+            </label>
+            <input type="number" id="testCooldownMinutes" class="form-input" value="5" min="1" max="60" style="width: 150px;">
+          </div>
+          <div style="flex: 1;">
+            <label class="form-label" for="testConcurrency">
+              批量测试并发数
+              <span class="models-hint" style="margin-left: 8px;">同时测试的Key数量（建议5-20）</span>
+            </label>
+            <input type="number" id="testConcurrency" class="form-input" value="10" min="1" max="50" style="width: 150px;">
+          </div>
+        </div>
+      </div>
       
       <!-- 测试进度 -->
       <div id="testProgress" class="test-progress">
         <div class="test-spinner"></div>
-        <span>正在测试API连接...</span>
+        <span id="testProgressText">正在测试API连接...</span>
+      </div>
+
+      <!-- 批量测试进度 -->
+      <div id="batchTestProgress" style="display: none; margin-top: 16px; padding: 16px; background: var(--neutral-50); border-radius: 8px; border: 1px solid var(--neutral-200);">
+        <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+          <span style="font-weight: 600; color: var(--neutral-700);">批量测试进度</span>
+          <span id="batchTestCounter" style="color: var(--neutral-600);">0 / 0</span>
+        </div>
+        <div style="width: 100%; height: 8px; background: var(--neutral-200); border-radius: 4px; overflow: hidden;">
+          <div id="batchTestProgressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, var(--primary-500), var(--primary-600)); transition: width 0.3s;"></div>
+        </div>
+        <div id="batchTestStatus" style="margin-top: 8px; font-size: 13px; color: var(--neutral-600);"></div>
       </div>
       
       <!-- 测试结果 -->
@@ -342,7 +373,8 @@
       
       <div class="form-actions">
         <button type="button" class="btn btn-secondary" onclick="closeTestModal()">关闭</button>
-        <button type="button" id="runTestBtn" class="btn btn-primary" onclick="runChannelTest()">开始测试</button>
+        <button type="button" id="runTestBtn" class="btn btn-primary" onclick="runChannelTest()">单个测试</button>
+        <button type="button" id="batchTestBtn" class="btn btn-primary" onclick="runBatchTest()" style="display: none;">批量测试所有Key</button>
       </div>
     </div>
   </div>
@@ -1209,24 +1241,37 @@
         modelSelect.appendChild(option);
       });
 
-      // 填充 Key 选择下拉框
+      // 填充 Key 选择下拉框（限制前10个）
       const keys = parseKeys(channel.api_key);
       const keySelect = document.getElementById('testKeySelect');
       const keySelectGroup = document.getElementById('testKeySelectGroup');
+      const batchTestBtn = document.getElementById('batchTestBtn');
 
       if (keys.length > 1) {
-        // 多个 Key 时显示选择框
+        // 多个 Key 时显示选择框和批量测试按钮
         keySelectGroup.style.display = 'block';
+        batchTestBtn.style.display = 'inline-block';
+        
         keySelect.innerHTML = '';
-        keys.forEach((key, index) => {
+        const maxKeys = Math.min(keys.length, 10); // 限制显示前10个
+        for (let i = 0; i < maxKeys; i++) {
           const option = document.createElement('option');
-          option.value = index;
-          option.textContent = `Key ${index + 1}: ${maskKey(key)}`;
+          option.value = i;
+          option.textContent = `Key ${i + 1}: ${maskKey(keys[i])}`;
           keySelect.appendChild(option);
-        });
+        }
+        
+        // 如果Key总数超过10个，添加提示
+        if (keys.length > 10) {
+          const hintOption = document.createElement('option');
+          hintOption.disabled = true;
+          hintOption.textContent = `... 还有 ${keys.length - 10} 个Key（使用批量测试）`;
+          keySelect.appendChild(hintOption);
+        }
       } else {
-        // 单个 Key 时隐藏选择框
+        // 单个 Key 时隐藏选择框和批量测试按钮
         keySelectGroup.style.display = 'none';
+        batchTestBtn.style.display = 'none';
       }
 
       // 重置状态
@@ -1246,12 +1291,18 @@
 
     function resetTestModal() {
       document.getElementById('testProgress').classList.remove('show');
+      document.getElementById('batchTestProgress').style.display = 'none';
       document.getElementById('testResult').classList.remove('show', 'success', 'error');
       document.getElementById('runTestBtn').disabled = false;
+      document.getElementById('batchTestBtn').disabled = false;
       // 重置内容输入框为默认值
       document.getElementById('testContentInput').value = 'test';
       // 重置渠道类型为默认值
       document.getElementById('testChannelType').value = 'anthropic';
+      // 重置冷却时间为默认值
+      document.getElementById('testCooldownMinutes').value = '5';
+      // 重置并发数为默认值
+      document.getElementById('testConcurrency').value = '10';
     }
 
     function updateTestURL() {
@@ -1308,9 +1359,23 @@
         const result = await res.json();
         // 检查是否有嵌套的data字段（标准API响应格式）
         const testResult = result.data || result;
+        
+        // 如果测试失败，自动冷却对应的Key
+        if (!testResult.success) {
+          const cooldownMinutes = parseInt(document.getElementById('testCooldownMinutes').value) || 5;
+          const keyIndex = testRequest.key_index !== undefined ? testRequest.key_index : null;
+          await setCooldownForKey(testingChannelId, keyIndex, cooldownMinutes);
+        }
+        
         displayTestResult(testResult);
       } catch (e) {
         console.error('测试失败', e);
+        
+        // 测试失败也自动冷却
+        const cooldownMinutes = parseInt(document.getElementById('testCooldownMinutes').value) || 5;
+        const keyIndex = testRequest.key_index !== undefined ? testRequest.key_index : null;
+        await setCooldownForKey(testingChannelId, keyIndex, cooldownMinutes);
+        
         displayTestResult({
           success: false,
           error: '测试请求失败: ' + e.message
@@ -1318,6 +1383,222 @@
       } finally {
         document.getElementById('testProgress').classList.remove('show');
         document.getElementById('runTestBtn').disabled = false;
+      }
+    }
+
+    // 为指定Key设置冷却时间
+    async function setCooldownForKey(channelId, keyIndex, minutes) {
+      try {
+        const durationMs = minutes * 60 * 1000;
+        
+        // 如果指定了keyIndex，则冷却特定Key；否则冷却整个渠道
+        const endpoint = keyIndex !== null 
+          ? `/admin/channels/${channelId}/keys/${keyIndex}/cooldown`
+          : `/admin/channels/${channelId}/cooldown`;
+        
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ duration_ms: durationMs })
+        });
+        
+        if (res.ok) {
+          const msg = keyIndex !== null 
+            ? `Key #${keyIndex + 1} 已冷却 ${minutes} 分钟`
+            : `渠道已冷却 ${minutes} 分钟`;
+          console.log(msg);
+        } else {
+          console.warn('设置冷却失败:', await res.text());
+        }
+      } catch (e) {
+        console.error('设置冷却时出错:', e);
+      }
+    }
+
+    // 批量测试所有Key（并发版本）
+    async function runBatchTest() {
+      if (!testingChannelId) return;
+
+      const channel = channels.find(c => c.id === testingChannelId);
+      if (!channel) return;
+
+      const keys = parseKeys(channel.api_key);
+      if (keys.length === 0) {
+        if (window.showError) showError('没有可用的API Key');
+        return;
+      }
+
+      const modelSelect = document.getElementById('testModelSelect');
+      const contentInput = document.getElementById('testContentInput');
+      const channelTypeSelect = document.getElementById('testChannelType');
+      const cooldownInput = document.getElementById('testCooldownMinutes');
+      const concurrencyInput = document.getElementById('testConcurrency');
+      
+      const selectedModel = modelSelect.value;
+      const testContent = contentInput.value.trim() || 'test';
+      const channelType = channelTypeSelect.value;
+      const cooldownMinutes = parseInt(cooldownInput.value) || 5;
+      const concurrency = Math.max(1, Math.min(50, parseInt(concurrencyInput.value) || 10)); // 限制1-50
+
+      if (!selectedModel) {
+        if (window.showError) showError('请选择一个模型');
+        return;
+      }
+
+      // 禁用按钮
+      document.getElementById('runTestBtn').disabled = true;
+      document.getElementById('batchTestBtn').disabled = true;
+
+      // 显示批量测试进度
+      const progressDiv = document.getElementById('batchTestProgress');
+      const counterSpan = document.getElementById('batchTestCounter');
+      const progressBar = document.getElementById('batchTestProgressBar');
+      const statusDiv = document.getElementById('batchTestStatus');
+      
+      progressDiv.style.display = 'block';
+      document.getElementById('testResult').classList.remove('show');
+
+      let successCount = 0;
+      let failedCount = 0;
+      const failedKeys = [];
+      let completedCount = 0;
+
+      // 更新进度的辅助函数
+      const updateProgress = () => {
+        const progress = (completedCount / keys.length * 100).toFixed(0);
+        counterSpan.textContent = `${completedCount} / ${keys.length}`;
+        progressBar.style.width = `${progress}%`;
+        statusDiv.textContent = `已完成 ${completedCount} / ${keys.length}（并发数: ${concurrency}）`;
+      };
+
+      // 测试单个Key的函数
+      const testSingleKey = async (keyIndex) => {
+        try {
+          const testRequest = {
+            model: selectedModel,
+            max_tokens: 512,
+            stream: false,
+            content: testContent,
+            channel_type: channelType,
+            key_index: keyIndex
+          };
+
+          const res = await fetch(`/admin/channels/${testingChannelId}/test`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(testRequest)
+          });
+
+          const result = await res.json();
+          const testResult = result.data || result;
+
+          if (testResult.success) {
+            successCount++;
+          } else {
+            failedCount++;
+            failedKeys.push({ index: keyIndex, key: maskKey(keys[keyIndex]), error: testResult.error });
+            
+            // 失败时自动冷却
+            await setCooldownForKey(testingChannelId, keyIndex, cooldownMinutes);
+          }
+        } catch (e) {
+          failedCount++;
+          failedKeys.push({ index: keyIndex, key: maskKey(keys[keyIndex]), error: e.message });
+          
+          // 异常时也冷却
+          await setCooldownForKey(testingChannelId, keyIndex, cooldownMinutes);
+        } finally {
+          completedCount++;
+          updateProgress();
+        }
+      };
+
+      // 分批并发测试
+      const batches = [];
+      for (let i = 0; i < keys.length; i += concurrency) {
+        const batchIndexes = [];
+        for (let j = i; j < Math.min(i + concurrency, keys.length); j++) {
+          batchIndexes.push(j);
+        }
+        batches.push(batchIndexes);
+      }
+
+      // 初始化进度
+      updateProgress();
+
+      // 逐批执行（每批内并发）
+      for (const batch of batches) {
+        const batchPromises = batch.map(keyIndex => testSingleKey(keyIndex));
+        await Promise.all(batchPromises);
+      }
+
+      // 显示批量测试结果
+      displayBatchTestResult(successCount, failedCount, keys.length, failedKeys);
+
+      // 重新启用按钮
+      document.getElementById('runTestBtn').disabled = false;
+      document.getElementById('batchTestBtn').disabled = false;
+      
+      // 刷新渠道列表（更新冷却状态）
+      await loadChannels();
+    }
+
+    // 显示批量测试结果
+    function displayBatchTestResult(successCount, failedCount, totalCount, failedKeys) {
+      const testResultDiv = document.getElementById('testResult');
+      const contentDiv = document.getElementById('testResultContent');
+      const detailsDiv = document.getElementById('testResultDetails');
+      const statusDiv = document.getElementById('batchTestStatus');
+
+      testResultDiv.classList.remove('success', 'error');
+      testResultDiv.classList.add('show');
+
+      // 更新状态文本
+      statusDiv.textContent = `完成！成功: ${successCount}, 失败: ${failedCount}`;
+
+      if (failedCount === 0) {
+        // 全部成功
+        testResultDiv.classList.add('success');
+        contentDiv.innerHTML = `
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 18px;">✅</span>
+            <strong>批量测试完成：全部 ${totalCount} 个Key测试成功</strong>
+          </div>
+        `;
+        detailsDiv.innerHTML = '';
+      } else if (successCount === 0) {
+        // 全部失败
+        testResultDiv.classList.add('error');
+        contentDiv.innerHTML = `
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 18px;">❌</span>
+            <strong>批量测试完成：全部 ${totalCount} 个Key测试失败</strong>
+          </div>
+        `;
+        
+        let details = '<h4 style="margin-top: 12px; color: var(--error-600);">失败详情：</h4><ul style="margin: 8px 0; padding-left: 20px;">';
+        failedKeys.forEach(({ index, key, error }) => {
+          details += `<li style="margin: 4px 0;"><strong>Key #${index + 1}</strong> (${key}): ${escapeHtml(error)}</li>`;
+        });
+        details += '</ul><p style="color: var(--error-600); margin-top: 8px;">失败的Key已自动冷却</p>';
+        detailsDiv.innerHTML = details;
+      } else {
+        // 部分成功
+        testResultDiv.classList.add('success');
+        contentDiv.innerHTML = `
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 18px;">⚠️</span>
+            <strong>批量测试完成：${successCount} 个成功，${failedCount} 个失败</strong>
+          </div>
+        `;
+        
+        let details = `<p style="color: var(--success-600);">✅ ${successCount} 个Key可用</p>`;
+        details += '<h4 style="margin-top: 12px; color: var(--error-600);">失败详情：</h4><ul style="margin: 8px 0; padding-left: 20px;">';
+        failedKeys.forEach(({ index, key, error }) => {
+          details += `<li style="margin: 4px 0;"><strong>Key #${index + 1}</strong> (${key}): ${escapeHtml(error)}</li>`;
+        });
+        details += '</ul><p style="color: var(--error-600); margin-top: 8px;">失败的Key已自动冷却</p>';
+        detailsDiv.innerHTML = details;
       }
     }
 
@@ -1442,10 +1723,177 @@
       return [...new Set(keys)];
     }
 
-    // 渲染内联Key表格
+    // ============================================================
+    // 虚拟滚动实现：优化大量Key时的渲染性能
+    // ============================================================
+    const VIRTUAL_SCROLL_CONFIG = {
+      ROW_HEIGHT: 40,           // 每行高度（像素）
+      BUFFER_SIZE: 5,           // 上下缓冲区行数（减少滚动时的闪烁）
+      ENABLE_THRESHOLD: 50,     // 启用虚拟滚动的阈值（Key数量）
+      CONTAINER_HEIGHT: 250     // 容器固定高度（像素）
+    };
+
+    let virtualScrollState = {
+      enabled: false,
+      scrollTop: 0,
+      visibleStart: 0,
+      visibleEnd: 0,
+      rafId: null
+    };
+
+    // 虚拟滚动：计算可见范围
+    function calculateVisibleRange() {
+      const { ROW_HEIGHT, BUFFER_SIZE, CONTAINER_HEIGHT } = VIRTUAL_SCROLL_CONFIG;
+      const { scrollTop } = virtualScrollState;
+
+      const visibleRowCount = Math.ceil(CONTAINER_HEIGHT / ROW_HEIGHT);
+      const startIndex = Math.floor(scrollTop / ROW_HEIGHT);
+      
+      // 添加上下缓冲区
+      const visibleStart = Math.max(0, startIndex - BUFFER_SIZE);
+      const visibleEnd = Math.min(
+        inlineKeyTableData.length,
+        startIndex + visibleRowCount + BUFFER_SIZE
+      );
+
+      return { visibleStart, visibleEnd };
+    }
+
+    // 虚拟滚动：渲染可见行
+    function renderVirtualRows(tbody, visibleStart, visibleEnd) {
+      const { ROW_HEIGHT } = VIRTUAL_SCROLL_CONFIG;
+      const totalHeight = inlineKeyTableData.length * ROW_HEIGHT;
+
+      // 清空tbody
+      tbody.innerHTML = '';
+
+      // 添加顶部占位元素（保持滚动条位置）
+      if (visibleStart > 0) {
+        const topSpacer = document.createElement('tr');
+        topSpacer.innerHTML = `<td colspan="4" style="height: ${visibleStart * ROW_HEIGHT}px; padding: 0; border: none;"></td>`;
+        tbody.appendChild(topSpacer);
+      }
+
+      // 渲染可见行
+      for (let i = visibleStart; i < visibleEnd; i++) {
+        const row = createKeyRow(i);
+        tbody.appendChild(row);
+      }
+
+      // 添加底部占位元素
+      if (visibleEnd < inlineKeyTableData.length) {
+        const bottomSpacer = document.createElement('tr');
+        const bottomHeight = (inlineKeyTableData.length - visibleEnd) * ROW_HEIGHT;
+        bottomSpacer.innerHTML = `<td colspan="4" style="height: ${bottomHeight}px; padding: 0; border: none;"></td>`;
+        tbody.appendChild(bottomSpacer);
+      }
+    }
+
+    // 创建单行Key元素（提取公共逻辑，DRY原则）
+    function createKeyRow(index) {
+      const key = inlineKeyTableData[index];
+      const row = document.createElement('tr');
+      row.style.borderBottom = '1px solid var(--neutral-200)';
+      row.style.height = VIRTUAL_SCROLL_CONFIG.ROW_HEIGHT + 'px';
+
+      // 查找当前Key的冷却信息
+      const keyCooldown = currentChannelKeyCooldowns.find(kc => kc.key_index === index);
+      let cooldownHtml = '<span style="color: var(--success-600); font-size: 12px;">✓ 正常</span>';
+      
+      if (keyCooldown && keyCooldown.cooldown_remaining_ms > 0) {
+        const cooldownText = humanizeMS(keyCooldown.cooldown_remaining_ms);
+        cooldownHtml = `<span style="color: #dc2626; font-size: 12px; font-weight: 500; background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%); padding: 2px 8px; border-radius: 4px; border: 1px solid #fca5a5; white-space: nowrap;">⚠️ 冷却中·${cooldownText}</span>`;
+      }
+
+      row.innerHTML = `
+        <td style="padding: 6px 10px; color: var(--neutral-600); font-weight: 500; font-size: 13px;">${index + 1}</td>
+        <td style="padding: 6px 10px;">
+          <input
+            type="${inlineKeyVisible ? 'text' : 'password'}"
+            value="${escapeHtml(key)}"
+            onchange="updateInlineKey(${index}, this.value)"
+            class="inline-key-input"
+            data-index="${index}"
+            style="width: 100%; padding: 5px 8px; border: 1px solid var(--neutral-300); border-radius: 6px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace; font-size: 13px; transition: all 0.2s;"
+            onfocus="this.style.borderColor='var(--primary-500)'; this.style.boxShadow='0 0 0 3px rgba(59,130,246,0.1)'"
+            onblur="this.style.borderColor='var(--neutral-300)'; this.style.boxShadow='none'"
+          >
+        </td>
+        <td style="padding: 6px 10px;">
+          ${cooldownHtml}
+        </td>
+        <td style="padding: 6px 10px; text-align: center;">
+          <button
+            type="button"
+            onclick="deleteInlineKey(${index})"
+            title="删除此Key"
+            style="width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--neutral-200); background: white; color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;"
+            onmouseover="this.style.background='#fef2f2'; this.style.borderColor='#fca5a5'; this.style.color='#dc2626'"
+            onmouseout="this.style.background='white'; this.style.borderColor='var(--neutral-200)'; this.style.color='var(--neutral-500)'"
+          >
+            <svg width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M5.5 2.5V1.5C5.5 1.22386 5.72386 1 6 1H8C8.27614 1 8.5 1.22386 8.5 1.5V2.5M2 3.5H12M3 3.5V11.5C3 12.0523 3.44772 12.5 4 12.5H10C10.5523 12.5 11 12.0523 11 11.5V3.5M5.5 6.5V9.5M8.5 6.5V9.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+        </td>
+      `;
+
+      return row;
+    }
+
+    // 虚拟滚动：处理滚动事件（使用requestAnimationFrame节流）
+    function handleVirtualScroll(event) {
+      const container = event.target;
+      virtualScrollState.scrollTop = container.scrollTop;
+
+      // 取消之前的渲染请求
+      if (virtualScrollState.rafId) {
+        cancelAnimationFrame(virtualScrollState.rafId);
+      }
+
+      // 使用requestAnimationFrame节流，优化性能
+      virtualScrollState.rafId = requestAnimationFrame(() => {
+        const { visibleStart, visibleEnd } = calculateVisibleRange();
+
+        // 仅当可见范围变化时才重新渲染
+        if (visibleStart !== virtualScrollState.visibleStart || 
+            visibleEnd !== virtualScrollState.visibleEnd) {
+          virtualScrollState.visibleStart = visibleStart;
+          virtualScrollState.visibleEnd = visibleEnd;
+          
+          const tbody = document.getElementById('inlineKeyTableBody');
+          renderVirtualRows(tbody, visibleStart, visibleEnd);
+        }
+      });
+    }
+
+    // 初始化虚拟滚动（绑定事件监听器）
+    function initVirtualScroll() {
+      const tableContainer = document.querySelector('#inlineKeyTableBody').closest('div[style*="max-height"]');
+      if (tableContainer) {
+        // 移除旧的监听器（避免重复绑定）
+        tableContainer.removeEventListener('scroll', handleVirtualScroll);
+        tableContainer.addEventListener('scroll', handleVirtualScroll, { passive: true });
+      }
+    }
+
+    // 清理虚拟滚动（禁用时）
+    function cleanupVirtualScroll() {
+      const tableContainer = document.querySelector('#inlineKeyTableBody').closest('div[style*="max-height"]');
+      if (tableContainer) {
+        tableContainer.removeEventListener('scroll', handleVirtualScroll);
+      }
+      if (virtualScrollState.rafId) {
+        cancelAnimationFrame(virtualScrollState.rafId);
+        virtualScrollState.rafId = null;
+      }
+    }
+
+    // 渲染内联Key表格（主入口函数）
     function renderInlineKeyTable() {
       const tbody = document.getElementById('inlineKeyTableBody');
       const keyCount = document.getElementById('inlineKeyCount');
+      const virtualScrollHint = document.getElementById('virtualScrollHint');
 
       tbody.innerHTML = '';
       keyCount.textContent = inlineKeyTableData.length;
@@ -1454,6 +1902,7 @@
       const hiddenInput = document.getElementById('channelApiKey');
       hiddenInput.value = inlineKeyTableData.join(',');
 
+      // 空状态
       if (inlineKeyTableData.length === 0) {
         tbody.innerHTML = `
           <tr>
@@ -1462,60 +1911,41 @@
             </td>
           </tr>
         `;
+        cleanupVirtualScroll();
+        virtualScrollState.enabled = false;
+        if (virtualScrollHint) virtualScrollHint.style.display = 'none';
         return;
       }
 
-      inlineKeyTableData.forEach((key, index) => {
-        const row = document.createElement('tr');
-        row.style.borderBottom = '1px solid var(--neutral-200)';
+      // 判断是否启用虚拟滚动
+      const shouldUseVirtualScroll = inlineKeyTableData.length >= VIRTUAL_SCROLL_CONFIG.ENABLE_THRESHOLD;
 
-        // 查找当前Key的冷却信息
-        const keyCooldown = currentChannelKeyCooldowns.find(kc => kc.key_index === index);
-        let cooldownHtml = '<span style="color: var(--success-600); font-size: 12px;">✓ 正常</span>';
+      // 更新虚拟滚动提示
+      if (virtualScrollHint) {
+        virtualScrollHint.style.display = shouldUseVirtualScroll ? 'inline' : 'none';
+      }
+
+      if (shouldUseVirtualScroll) {
+        // 启用虚拟滚动模式
+        virtualScrollState.enabled = true;
+        virtualScrollState.scrollTop = 0;
         
-        if (keyCooldown && keyCooldown.cooldown_remaining_ms > 0) {
-          const cooldownText = humanizeMS(keyCooldown.cooldown_remaining_ms);
-          cooldownHtml = `<span style="color: #dc2626; font-size: 12px; font-weight: 500; background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%); padding: 2px 8px; border-radius: 4px; border: 1px solid #fca5a5; white-space: nowrap;">⚠️ 冷却中·${cooldownText}</span>`;
-        }
+        const { visibleStart, visibleEnd } = calculateVisibleRange();
+        virtualScrollState.visibleStart = visibleStart;
+        virtualScrollState.visibleEnd = visibleEnd;
 
-        const displayKey = inlineKeyVisible ? key : maskKey(key);
+        renderVirtualRows(tbody, visibleStart, visibleEnd);
+        initVirtualScroll();
+      } else {
+        // 使用传统渲染（少量Key时无性能问题）
+        cleanupVirtualScroll();
+        virtualScrollState.enabled = false;
 
-        row.innerHTML = `
-          <td style="padding: 6px 10px; color: var(--neutral-600); font-weight: 500; font-size: 13px;">${index + 1}</td>
-          <td style="padding: 6px 10px;">
-            <input
-              type="text"
-              value="${escapeHtml(key)}"
-              onchange="updateInlineKey(${index}, this.value)"
-              class="inline-key-input"
-              style="width: 100%; padding: 5px 8px; border: 1px solid var(--neutral-300); border-radius: 6px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace; font-size: 13px; transition: all 0.2s;"
-              onfocus="this.style.borderColor='var(--primary-500)'; this.style.boxShadow='0 0 0 3px rgba(59,130,246,0.1)'"
-              onblur="this.style.borderColor='var(--neutral-300)'; this.style.boxShadow='none'"
-            >
-          </td>
-          <td style="padding: 6px 10px;">
-            ${cooldownHtml}
-          </td>
-          <td style="padding: 6px 10px; text-align: center;">
-            <button
-              type="button"
-              onclick="deleteInlineKey(${index})"
-              title="删除此Key"
-              style="width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--neutral-200); background: white; color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;"
-              onmouseover="this.style.background='#fef2f2'; this.style.borderColor='#fca5a5'; this.style.color='#dc2626'"
-              onmouseout="this.style.background='white'; this.style.borderColor='var(--neutral-200)'; this.style.color='var(--neutral-500)'"
-            >
-              <svg width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M5.5 2.5V1.5C5.5 1.22386 5.72386 1 6 1H8C8.27614 1 8.5 1.22386 8.5 1.5V2.5M2 3.5H12M3 3.5V11.5C3 12.0523 3.44772 12.5 4 12.5H10C10.5523 12.5 11 12.0523 11 11.5V3.5M5.5 6.5V9.5M8.5 6.5V9.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-            </button>
-          </td>
-        `;
-        tbody.appendChild(row);
-      });
-
-      // 应用密码显示/隐藏状态
-      applyInlineKeyVisibility();
+        inlineKeyTableData.forEach((key, index) => {
+          const row = createKeyRow(index);
+          tbody.appendChild(row);
+        });
+      }
     }
 
     // 遮罩Key显示（保留前后各4个字符）
@@ -1524,15 +1954,7 @@
       return key.slice(0, 4) + '***' + key.slice(-4);
     }
 
-    // 应用密码可见性到所有输入框
-    function applyInlineKeyVisibility() {
-      const inputs = document.querySelectorAll('.inline-key-input');
-      inputs.forEach((input, index) => {
-        input.type = inlineKeyVisible ? 'text' : 'password';
-      });
-    }
-
-    // 切换密码可见性
+    // 切换密码可见性（虚拟滚动优化：直接重新渲染）
     function toggleInlineKeyVisibility() {
       inlineKeyVisible = !inlineKeyVisible;
       const eyeIcon = document.getElementById('inlineEyeIcon');
@@ -1546,30 +1968,57 @@
         eyeOffIcon.style.display = 'none';
       }
 
-      applyInlineKeyVisibility();
+      // 重新渲染表格以应用可见性变化
+      renderInlineKeyTable();
     }
 
-    // 添加新Key
+    // 添加新Key（虚拟滚动优化：保持滚动位置）
     function addInlineKey() {
       inlineKeyTableData.push('');
+      
+      // 如果启用了虚拟滚动，先保存滚动位置
+      const tableContainer = document.querySelector('#inlineKeyTableBody').closest('div[style*="max-height"]');
+      const scrollTop = tableContainer ? tableContainer.scrollTop : 0;
+      
       renderInlineKeyTable();
 
-      // 聚焦到新添加的输入框
+      // 恢复滚动位置并聚焦到新添加的输入框
       setTimeout(() => {
+        if (tableContainer) {
+          tableContainer.scrollTop = scrollTop;
+        }
+        
         const inputs = document.querySelectorAll('.inline-key-input');
         if (inputs.length > 0) {
-          inputs[inputs.length - 1].focus();
+          const lastInput = inputs[inputs.length - 1];
+          if (lastInput) {
+            lastInput.focus();
+            // 如果新Key在虚拟滚动范围外，滚动到底部
+            if (virtualScrollState.enabled && inlineKeyTableData.length - 1 >= virtualScrollState.visibleEnd) {
+              const container = tableContainer;
+              if (container) {
+                container.scrollTop = container.scrollHeight;
+              }
+            }
+          }
         }
       }, 50);
     }
 
-    // 更新Key值
+    // 更新Key值（虚拟滚动优化：只更新数据，不重新渲染）
     function updateInlineKey(index, value) {
       inlineKeyTableData[index] = value.trim();
-      renderInlineKeyTable();
+      
+      // 同步到隐藏input（用于表单验证）
+      const hiddenInput = document.getElementById('channelApiKey');
+      if (hiddenInput) {
+        hiddenInput.value = inlineKeyTableData.join(',');
+      }
+      
+      // 无需重新渲染整个表格，输入框已经更新了值
     }
 
-    // 删除Key
+    // 删除Key（虚拟滚动优化：保持滚动位置）
     function deleteInlineKey(index) {
       if (inlineKeyTableData.length === 1) {
         alert('至少需要保留一个API Key');
@@ -1577,8 +2026,25 @@
       }
 
       if (confirm(`确定要删除第 ${index + 1} 个Key吗？`)) {
+        // 如果启用了虚拟滚动，先保存滚动位置
+        const tableContainer = document.querySelector('#inlineKeyTableBody').closest('div[style*="max-height"]');
+        const scrollTop = tableContainer ? tableContainer.scrollTop : 0;
+        
         inlineKeyTableData.splice(index, 1);
+        
+        // 更新冷却信息的索引（因为删除了一个Key）
+        currentChannelKeyCooldowns = currentChannelKeyCooldowns
+          .filter(kc => kc.key_index !== index)
+          .map(kc => kc.key_index > index ? { ...kc, key_index: kc.key_index - 1 } : kc);
+        
         renderInlineKeyTable();
+        
+        // 恢复滚动位置
+        setTimeout(() => {
+          if (tableContainer) {
+            tableContainer.scrollTop = Math.min(scrollTop, tableContainer.scrollHeight - tableContainer.clientHeight);
+          }
+        }, 50);
       }
     }
 

@@ -396,6 +396,11 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 			Enabled:        enabled,
 		}
 
+		// CSV导入特殊处理：确保APIKeys字段被正确设置
+		// 因为CSV只有api_key列，需要调用normalizeAPIKeys转换
+		// 这样ReplaceConfig才能序列化正确的JSON数组
+		normalizeAPIKeys(cfg)
+
 		// 检查渠道是否已存在（基于名称）- 使用预加载集合
 		_, isUpdate := existingNames[name]
 
@@ -956,5 +961,73 @@ func parseImportEnabled(raw string) (bool, bool) {
 func (s *Server) handleGetChannelTypes(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"data": ChannelTypes,
+	})
+}
+
+// CooldownRequest 冷却设置请求结构
+type CooldownRequest struct {
+	DurationMs int64 `json:"duration_ms" binding:"required,min=1000"` // 最少1秒
+}
+
+// handleSetChannelCooldown 设置渠道级别冷却
+func (s *Server) handleSetChannelCooldown(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid channel ID"})
+		return
+	}
+
+	var req CooldownRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+
+	until := time.Now().Add(time.Duration(req.DurationMs) * time.Millisecond)
+	err = s.store.SetCooldown(c.Request.Context(), id, until)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": fmt.Sprintf("渠道已冷却 %d 毫秒", req.DurationMs),
+	})
+}
+
+// handleSetKeyCooldown 设置Key级别冷却
+func (s *Server) handleSetKeyCooldown(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid channel ID"})
+		return
+	}
+
+	keyIndexStr := c.Param("keyIndex")
+	keyIndex, err := strconv.Atoi(keyIndexStr)
+	if err != nil || keyIndex < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid key index"})
+		return
+	}
+
+	var req CooldownRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+
+	until := time.Now().Add(time.Duration(req.DurationMs) * time.Millisecond)
+	err = s.store.SetKeyCooldown(c.Request.Context(), id, keyIndex, until)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": fmt.Sprintf("Key #%d 已冷却 %d 毫秒", keyIndex+1, req.DurationMs),
 	})
 }

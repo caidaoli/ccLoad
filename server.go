@@ -394,6 +394,8 @@ func (s *Server) setupRoutes(r *gin.Engine) {
 		admin.PUT("/channels/:id", s.handleChannelByID)
 		admin.DELETE("/channels/:id", s.handleChannelByID)
 		admin.POST("/channels/:id/test", s.handleChannelTest)
+		admin.POST("/channels/:id/cooldown", s.handleSetChannelCooldown)          // 设置渠道级别冷却
+		admin.POST("/channels/:id/keys/:keyIndex/cooldown", s.handleSetKeyCooldown) // 设置Key级别冷却
 		admin.GET("/errors", s.handleErrors)
 		admin.GET("/metrics", s.handleMetrics)
 		admin.GET("/stats", s.handleStats)
@@ -489,7 +491,8 @@ func (s *Server) getCachedConfigs(ctx context.Context) ([]*Config, error) {
 // invalidateConfigCache 立即使配置缓存失效（用于创建/更新/删除渠道后立即生效）
 // 无锁实现：仅设置过期时间戳为0，下次读取时自动重新加载
 func (s *Server) invalidateConfigCache() {
-	s.configCacheExp.Store(0) // 将过期时间设为0，强制下次刷新
+	s.configCacheExp.Store(0)    // 将过期时间设为0，强制下次刷新
+	s.channelIndex.Store((*channelIndex)(nil)) // 同时清空索引缓存，确保下次重建
 }
 
 // buildChannelIndex 构建渠道索引（阶段2优化：预计算模型→渠道映射）
