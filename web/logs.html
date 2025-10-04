@@ -377,7 +377,14 @@
 
     function formatTime(timeStr) {
       try {
-        const date = new Date(timeStr);
+        // 处理Unix timestamp（秒）或ISO字符串
+        let timestamp = timeStr;
+        if (typeof timeStr === 'number' || /^\d+$/.test(timeStr)) {
+          // Unix timestamp（秒）转换为毫秒
+          timestamp = parseInt(timeStr) * 1000;
+        }
+
+        const date = new Date(timestamp);
         if (isNaN(date.getTime()) || date.getFullYear() < 2020) {
           return '-';
         }

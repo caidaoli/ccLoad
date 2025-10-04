@@ -459,9 +459,12 @@ func (s *Server) getCachedConfigs(ctx context.Context) ([]*Config, error) {
 	exp := s.configCacheExp.Load()
 
 	// 缓存未过期，无锁快速路径
+	// 注意：必须同时检查配置缓存和索引缓存，确保缓存一致性
 	if exp > now {
 		if cached := s.configCache.Load(); cached != nil {
-			return cached.([]*Config), nil
+			if idx := s.channelIndex.Load(); idx != nil {
+				return cached.([]*Config), nil
+			}
 		}
 	}
 

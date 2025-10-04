@@ -23,6 +23,12 @@ func (s *Server) selectCandidatesByChannelType(ctx context.Context, channelType 
 	}
 
 	channelIdx := idx.(*channelIndex)
+
+	// 防御性检查：确保索引结构完整（防止并发竞态导致的nil map）
+	if channelIdx.byModel == nil || channelIdx.byType == nil {
+		return nil, fmt.Errorf("channel index corrupted: nil map")
+	}
+
 	now := time.Now()
 
 	// O(1)查找：从byType索引获取指定类型的渠道
@@ -61,6 +67,12 @@ func (s *Server) selectCandidates(ctx context.Context, model string) ([]*Config,
 	}
 
 	channelIdx := idx.(*channelIndex)
+
+	// 防御性检查：确保索引结构完整（防止并发竞态导致的nil map）
+	if channelIdx.byModel == nil || channelIdx.byType == nil {
+		return nil, fmt.Errorf("channel index corrupted: nil map")
+	}
+
 	now := time.Now()
 
 	// O(1)查找：从索引直接获取支持该模型的渠道（已按优先级排序）
