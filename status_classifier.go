@@ -97,10 +97,10 @@ func classifyHTTPStatusWithBody(statusCode int, responseBody []byte) ErrorLevel 
 	// 设计原则：保守策略，只有明确是渠道级错误时才返回ErrorLevelChannel
 	channelErrorPatterns := []string{
 		// 账户状态（不可逆）
-		"account suspended",  // 账户暂停
-		"account disabled",   // 账户禁用
-		"account banned",     // 账户封禁
-		"service disabled",   // 服务禁用
+		"account suspended", // 账户暂停
+		"account disabled",  // 账户禁用
+		"account banned",    // 账户封禁
+		"service disabled",  // 服务禁用
 
 		// 注意：以下错误已移除（改为Key级，让系统先尝试其他Key）：
 		// - "额度已用尽", "quota_exceeded" → 可能只是单个Key额度用尽

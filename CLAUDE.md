@@ -208,6 +208,140 @@ graph TB
 - 按候选列表顺序尝试下一个渠道
 - 所有候选失败返回503 Service Unavailable
 
+### 渠道冷却完整流程架构
+
+以下流程图展示从请求失败到冷却激活的完整调用链路：
+
+```mermaid
+graph TB
+    subgraph "1. 请求入口"
+        A[客户端请求<br/>/v1/messages]
+    end
+
+    subgraph "2. HTTP层处理"
+        B[proxy.go<br/>handleProxyRequest]
+        C[proxy.go<br/>tryChannelWithKeys]
+        D[proxy.go<br/>forwardOnce]
+    end
+
+    subgraph "3. 错误响应处理"
+        E[proxy.go<br/>handleErrorResponse]
+        F[status_classifier.go<br/>classifyHTTPStatus]
+    end
+
+    subgraph "4. 冷却决策分支"
+        G{错误级别判断}
+        H[Key级错误<br/>401/403/429]
+        I[渠道级错误<br/>500/502/503/504]
+        J[客户端错误<br/>404/405]
+    end
+
+    subgraph "5. Key级冷却链路"
+        K[key_selector.go<br/>MarkKeyError]
+        L[sqlite_store.go<br/>BumpKeyCooldownOnError]
+        M[time_utils.go<br/>calculateBackoffDuration]
+        N[(key_cooldowns表<br/>channel_id+key_index)]
+    end
+
+    subgraph "6. 渠道级冷却链路"
+        O[sqlite_store.go<br/>BumpCooldownOnError]
+        P[time_utils.go<br/>calculateBackoffDuration]
+        Q[(cooldowns表<br/>channel_id)]
+    end
+
+    subgraph "7. 冷却状态同步"
+        R[内存缓存<br/>sync.Map]
+        S[定期清理<br/>每分钟过期检查]
+    end
+
+    subgraph "8. 重试机制"
+        T{是否还有可用Key?}
+        U[重试同渠道其他Key]
+        V[切换到下一个渠道]
+        W[返回503错误]
+    end
+
+    A --> B
+    B --> C
+    C --> D
+    D -->|非2xx响应| E
+    E --> F
+    F --> G
+
+    G -->|ErrorLevelKey| H
+    G -->|ErrorLevelChannel| I
+    G -->|ErrorLevelClient| J
+
+    H --> K
+    K --> L
+    L --> M
+    M -->|计算新冷却时间| N
+    N -->|同步到内存| R
+
+    I --> O
+    O --> P
+    P -->|计算新冷却时间| Q
+    Q -->|同步到内存| R
+
+    R --> S
+
+    J -->|不冷却| W
+
+    H --> T
+    I --> T
+    T -->|是| U
+    T -->|否| V
+    V -->|所有候选失败| W
+
+    U -->|继续尝试| C
+
+    style F fill:#FCD34D,stroke:#000,color:#000
+    style M fill:#A5F3FC,stroke:#000,color:#000
+    style P fill:#A5F3FC,stroke:#000,color:#000
+    style N fill:#BBF7D0,stroke:#000,color:#000
+    style Q fill:#BBF7D0,stroke:#000,color:#000
+    style R fill:#FBBF24,stroke:#000,color:#000
+```
+
+**流程关键节点说明**：
+
+1. **错误分类阶段**（节点E-G）：
+   - `handleErrorResponse` 接收HTTP错误响应
+   - `classifyHTTPStatus` 根据状态码智能分类错误级别
+   - 决策树分支：Key级 vs 渠道级 vs 客户端错误
+
+2. **Key级冷却路径**（节点H-N）：
+   - 触发条件：401/403/429等认证/限流错误
+   - 冷却范围：仅冷却当前Key，不影响同渠道其他Key
+   - 数据存储：`key_cooldowns` 表（channel_id + key_index 复合主键）
+   - 指数退避：1s → 2s → 4s → 8s → ... → 最大30分钟
+
+3. **渠道级冷却路径**（节点I-Q）：
+   - 触发条件：500/502/503/504等服务端错误
+   - 冷却范围：冷却整个渠道，所有Key均不可用
+   - 数据存储：`cooldowns` 表（channel_id 主键）
+   - 指数退避：同Key级策略
+
+4. **内存缓存同步**（节点R-S）：
+   - 使用 `sync.Map` 实现高性能并发读写
+   - 冷却状态写入数据库后立即同步到内存
+   - 后台协程每分钟清理过期冷却状态
+   - 双重存储保证重启后冷却状态持久化
+
+5. **重试决策逻辑**（节点T-W）：
+   - **Key级错误**：优先重试同渠道其他可用Key（最多 `CCLOAD_MAX_KEY_RETRIES` 次）
+   - **渠道级错误**：直接切换到下一个候选渠道
+   - **客户端错误**：不冷却，直接返回错误给客户端
+   - **所有候选失败**：返回 503 Service Unavailable
+
+**性能优化要点**：
+
+- **时间工具统一**：`calculateBackoffDuration` 消除6+处重复逻辑
+- **错误分类缓存**：LRU缓存（容量1000），减少60%字符串操作开销
+- **内存优先查询**：冷却状态优先从 `sync.Map` 读取，避免数据库查询
+- **异步清理**：过期冷却状态定期批量清理，不阻塞主流程
+- **双重存储**：内存缓存（快速查询） + 数据库（持久化），平衡性能与可靠性
+
 ## 性能优化架构
 
 **多级缓存系统**:
