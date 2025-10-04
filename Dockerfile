@@ -1,39 +1,50 @@
 # ccLoad Docker镜像构建文件
-# 基于 Alpine Linux 的多阶段构建，优化镜像大小和安全性
+# 使用交叉编译架构，彻底解决ARM64构建慢的问题
+# 技术方案：tonistiigi/xx + Clang/LLVM交叉编译（无QEMU开销）
 
-# 构建阶段
-FROM golang:1.25.0-alpine AS builder
+# 语法特性：启用BuildKit新特性
+# syntax=docker/dockerfile:1.4
+
+# 构建阶段 - 关键：使用BUILDPLATFORM在原生架构执行
+FROM --platform=$BUILDPLATFORM golang:1.25.0-alpine AS builder
+
+# 安装交叉编译工具链
+# tonistiigi/xx提供跨架构编译辅助工具
+COPY --from=tonistiigi/xx:1.6.1 / /
+RUN apk add --no-cache git ca-certificates tzdata clang lld
 
 # 设置工作目录
 WORKDIR /app
 
-# 安装构建依赖
-RUN apk add --no-cache git ca-certificates tzdata gcc musl-dev
-
-# 设置Go模块代理和构建缓存（加速跨架构构建）
+# 设置Go模块代理
 ENV GOPROXY=https://proxy.golang.org,direct
-ENV GOMODCACHE=/root/.cache/go-mod
-ENV GOCACHE=/root/.cache/go-build
 
-# 复制 go mod 文件
+# 配置目标平台的交叉编译工具链
+# ARG TARGETPLATFORM由buildx自动注入（如linux/arm64）
+ARG TARGETPLATFORM
+RUN xx-apk add musl-dev gcc
+
+# 复制go mod文件
 COPY go.mod go.sum ./
 
-# 下载依赖（使用--mount缓存加速）
+# 下载依赖（在原生平台执行，速度快）
 RUN --mount=type=cache,target=/root/.cache/go-mod \
     go mod download
 
 # 复制源代码
 COPY . .
 
-# 构建二进制文件（使用Go 1.25解决Sonic库兼容性问题）
-# 启用构建缓存挂载，显著加速重复构建（尤其是ARM64架构）
+# 交叉编译二进制文件
+# xx-go自动设置GOOS/GOARCH/CC等环境变量
+# 关键优势：AMD64主机直接生成ARM64二进制，完全避免QEMU模拟
+ENV CGO_ENABLED=1
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/root/.cache/go-mod \
-    CGO_ENABLED=1 GOOS=linux go build \
+    xx-go build \
     -tags go_json \
     -ldflags="-s -w" \
-    -trimpath \
-    -o ccload .
+    -o ccload . && \
+    xx-verify ccload
 
 # 运行阶段
 FROM alpine:latest
