@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -92,17 +93,19 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	var c Config
 	var modelsStr, modelRedirectsStr, apiKeysStr string
 	var enabledInt int
-	var createdAtUnix, updatedAtUnix int64
+	var createdAtRaw, updatedAtRaw any // 使用any接受任意类型（ultrathink：兼容字符串或整数）
 
 	if err := scanner.Scan(&c.ID, &c.Name, &c.APIKey, &apiKeysStr, &c.KeyStrategy, &c.URL, &c.Priority,
-		&modelsStr, &modelRedirectsStr, &c.ChannelType, &enabledInt, &createdAtUnix, &updatedAtUnix); err != nil {
+		&modelsStr, &modelRedirectsStr, &c.ChannelType, &enabledInt, &createdAtRaw, &updatedAtRaw); err != nil {
 		return nil, err
 	}
 
 	c.Enabled = enabledInt != 0
-	// 转换Unix秒时间戳为time.Time
-	c.CreatedAt = time.Unix(createdAtUnix, 0)
-	c.UpdatedAt = time.Unix(updatedAtUnix, 0)
+
+	// 转换时间戳为time.Time（ultrathink：简单容错，非unixtime直接用当前时间）
+	now := time.Now()
+	c.CreatedAt = parseTimestampOrNow(createdAtRaw, now)
+	c.UpdatedAt = parseTimestampOrNow(updatedAtRaw, now)
 
 	if err := parseModelsJSON(modelsStr, &c.Models); err != nil {
 		c.Models = nil // 解析失败时使用空切片
@@ -135,6 +138,29 @@ func (cs *ConfigScanner) ScanConfigs(rows interface {
 	}
 
 	return configs, nil
+}
+
+// parseTimestampOrNow 解析时间戳或使用当前时间（ultrathink：简单容错）
+// 如果val是有效的Unix时间戳（int64 > 0），转换为time.Time
+// 否则使用fallback（通常是当前时间）
+func parseTimestampOrNow(val any, fallback time.Time) time.Time {
+	switch v := val.(type) {
+	case int64:
+		if v > 0 {
+			return time.Unix(v, 0)
+		}
+	case int:
+		if v > 0 {
+			return time.Unix(int64(v), 0)
+		}
+	case string:
+		// 尝试解析字符串为整数
+		if ts, err := strconv.ParseInt(v, 10, 64); err == nil && ts > 0 {
+			return time.Unix(ts, 0)
+		}
+	}
+	// 非法值：返回fallback
+	return fallback
 }
 
 // QueryBuilder 通用查询构建器
