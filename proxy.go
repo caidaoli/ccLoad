@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -828,6 +829,9 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 	// 选择路由候选
 	cands, err := s.selectRouteCandidates(ctx, c, originalModel)
 	if err != nil {
+		// 记录错误日志用于调试
+		log.Printf("[ERROR] selectRouteCandidates failed: model=%s, path=%s, error=%v",
+			originalModel, c.Request.URL.Path, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		return
 	}
