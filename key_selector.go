@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -11,16 +12,18 @@ import (
 // 遵循SRP原则：职责单一，仅负责Key选择逻辑
 type KeySelector struct {
 	store          Store
-	keyCooldown    sync.Map // 内存缓存：key=fmt.Sprintf("%d_%d", channelID, keyIndex) -> time.Time
-	keyRRCache     sync.Map // 内存缓存：key=channelID -> keyIndex
+	keyCooldown    sync.Map      // 内存缓存：key=fmt.Sprintf("%d_%d", channelID, keyIndex) -> time.Time
+	keyRRCache     sync.Map      // 内存缓存：key=channelID -> keyIndex
 	keyCooldownTTL time.Duration
+	cooldownGauge  *atomic.Int64 // 监控指标：当前活跃的Key级冷却数量（P2优化）
 }
 
 // NewKeySelector 创建Key选择器
-func NewKeySelector(store Store) *KeySelector {
+func NewKeySelector(store Store, gauge *atomic.Int64) *KeySelector {
 	return &KeySelector{
 		store:          store,
 		keyCooldownTTL: 5 * time.Second, // 冷却状态缓存5秒
+		cooldownGauge:  gauge,
 	}
 }
 
@@ -151,6 +154,11 @@ func (ks *KeySelector) MarkKeyError(ctx context.Context, channelID int64, keyInd
 	cooldownUntil := now.Add(cooldownDur)
 	ks.keyCooldown.Store(cacheKey, cooldownUntil)
 
+	// 更新监控指标（P2优化）
+	if ks.cooldownGauge != nil {
+		ks.cooldownGauge.Add(1)
+	}
+
 	return nil
 }
 
@@ -245,6 +253,10 @@ func (ks *KeySelector) CleanupExpiredKeyCooldowns() {
 		ks.keyCooldown.Range(func(key, value any) bool {
 			if expireTime, ok := value.(time.Time); ok && now.After(expireTime) {
 				ks.keyCooldown.Delete(key)
+				// 更新监控指标（P2优化）
+				if ks.cooldownGauge != nil {
+					ks.cooldownGauge.Add(-1)
+				}
 			}
 			return true
 		})

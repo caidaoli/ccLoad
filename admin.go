@@ -670,6 +670,17 @@ func (s *Server) handlePublicSummary(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, response)
 }
 
+// handleCooldownStats 获取当前冷却状态监控指标（P2优化）
+// GET /admin/cooldown/stats
+// 返回：当前活跃的渠道级和Key级冷却数量
+func (s *Server) handleCooldownStats(c *gin.Context) {
+	response := gin.H{
+		"channel_cooldowns": s.channelCooldownGauge.Load(),
+		"key_cooldowns":     s.keyCooldownGauge.Load(),
+	}
+	RespondJSON(c, http.StatusOK, response)
+}
+
 // TestChannelRequest 渠道测试请求结构
 type TestChannelRequest struct {
 	Model       string            `json:"model" binding:"required"`

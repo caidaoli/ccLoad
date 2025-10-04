@@ -533,6 +533,8 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *Config, keyIndex int
 		// 渠道级错误：冷却整个渠道，切换到其他渠道
 		if cooldownDur, err := s.store.BumpCooldownOnError(ctx, cfg.ID, time.Now()); err == nil {
 			s.cooldownCache.Store(cfg.ID, time.Now().Add(cooldownDur))
+			// 更新监控指标（P2优化）
+			s.channelCooldownGauge.Add(1)
 		}
 		return ActionRetryChannel, true
 
@@ -886,6 +888,8 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 			// 触发渠道级别冷却，防止后续请求重复尝试该渠道
 			if cooldownDur, cooldownErr := s.store.BumpCooldownOnError(ctx, cfg.ID, time.Now()); cooldownErr == nil {
 				s.cooldownCache.Store(cfg.ID, time.Now().Add(cooldownDur))
+				// 更新监控指标（P2优化）
+				s.channelCooldownGauge.Add(1)
 			}
 			continue // 尝试下一个渠道
 		}

@@ -72,6 +72,10 @@ type Server struct {
 	rrUpdateChan    chan rrUpdate // 轮询指针更新通道
 	rrBatchSize     int           // 批量写入大小
 	rrFlushInterval time.Duration // 刷新间隔
+
+	// 监控指标（P2优化：实时统计冷却状态）
+	channelCooldownGauge atomic.Int64 // 当前活跃的渠道级冷却数量
+	keyCooldownGauge     atomic.Int64 // 当前活跃的Key级冷却数量
 }
 
 func NewServer(store Store) *Server {
@@ -145,9 +149,8 @@ func NewServer(store Store) *Server {
 
 	s := &Server{
 		store:         store,
-		keySelector:   NewKeySelector(store), // 初始化Key选择器
-		maxKeyRetries: maxKeyRetries,         // 单个渠道最大Key重试次数
-		enableTrace:   enableTrace,           // HTTP Trace开关
+		maxKeyRetries: maxKeyRetries, // 单个渠道最大Key重试次数
+		enableTrace:   enableTrace,   // HTTP Trace开关
 		client: &http.Client{
 			Transport: transport,
 			Timeout:   0,
@@ -167,6 +170,9 @@ func NewServer(store Store) *Server {
 		rrBatchSize:     50,                       // 每批50条
 		rrFlushInterval: 5 * time.Second,          // 每5秒强制刷新
 	}
+
+	// 初始化Key选择器（传递Key冷却监控指标）
+	s.keySelector = NewKeySelector(store, &s.keyCooldownGauge)
 
 	rrCfg := &ristretto.Config[string, int]{
 		NumCounters: 10000,
@@ -391,6 +397,7 @@ func (s *Server) setupRoutes(r *gin.Engine) {
 		admin.GET("/errors", s.handleErrors)
 		admin.GET("/metrics", s.handleMetrics)
 		admin.GET("/stats", s.handleStats)
+		admin.GET("/cooldown/stats", s.handleCooldownStats) // P2优化：冷却状态监控
 	}
 
 	// 静态文件服务
@@ -578,6 +585,8 @@ func (s *Server) cleanupExpiredCooldowns() {
 		s.cooldownCache.Range(func(key, value any) bool {
 			if expireTime, ok := value.(time.Time); ok && now.After(expireTime) {
 				s.cooldownCache.Delete(key)
+				// 更新监控指标（P2优化）
+				s.channelCooldownGauge.Add(-1)
 			}
 			return true
 		})
