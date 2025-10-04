@@ -235,10 +235,42 @@
             <table style="width: 100%; border-collapse: collapse;">
               <thead style="position: sticky; top: 0; z-index: 1; background: var(--neutral-100);">
                 <tr style="border-bottom: 2px solid var(--neutral-300);">
-                  <th style="padding: 6px 10px; text-align: left; font-weight: 600; font-size: 13px; width: 50px;">#</th>
+                  <th style="padding: 6px 10px; text-align: left; font-weight: 600; font-size: 13px; width: 70px;">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                      <input
+                        type="checkbox"
+                        id="selectAllKeys"
+                        onchange="toggleSelectAllKeys(this.checked)"
+                        style="width: 16px; height: 16px; cursor: pointer; accent-color: var(--primary-500);"
+                        title="全选/取消全选"
+                      >
+                      <span>#</span>
+                    </div>
+                  </th>
                   <th style="padding: 6px 10px; text-align: left; font-weight: 600; font-size: 13px;">API Key</th>
-                  <th style="padding: 6px 10px; text-align: left; font-weight: 600; font-size: 13px; width: 200px;">状态</th>
-                  <th style="padding: 6px 10px; text-align: center; font-weight: 600; font-size: 13px; width: 80px;">操作</th>
+                  <th style="padding: 6px 10px; text-align: left; font-weight: 600; font-size: 13px; width: 200px;">
+                    <select
+                      id="keyStatusFilter"
+                      onchange="filterKeysByStatus(this.value)"
+                      style="width: 100%; padding: 4px 8px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; background: white;"
+                    >
+                      <option value="all">全部</option>
+                      <option value="normal">正常</option>
+                      <option value="cooldown">冷却中</option>
+                    </select>
+                  </th>
+                  <th style="padding: 6px 10px; text-align: center; font-weight: 600; font-size: 13px; width: 120px;">
+                    <button
+                      type="button"
+                      id="batchDeleteKeysBtn"
+                      onclick="batchDeleteSelectedKeys()"
+                      disabled
+                      title="批量删除选中的Keys"
+                      style="padding: 4px 12px; border-radius: 6px; border: 1px solid var(--neutral-300); background: white; color: var(--neutral-500); cursor: not-allowed; font-size: 12px; font-weight: 500; transition: all 0.2s;"
+                    >
+                      删除选中
+                    </button>
+                  </th>
                 </tr>
               </thead>
               <tbody id="inlineKeyTableBody">
@@ -1708,6 +1740,8 @@
     // 内联Key表格管理（主表单内的表格显示）
     let inlineKeyTableData = [];
     let inlineKeyVisible = false; // 密码可见性状态
+    let selectedKeyIndices = new Set(); // 选中的Key索引集合
+    let currentKeyStatusFilter = 'all'; // 当前状态筛选：all/normal/cooldown
 
     // 统一Key解析函数（DRY原则）
     function parseKeys(input) {
@@ -1738,31 +1772,32 @@
       scrollTop: 0,
       visibleStart: 0,
       visibleEnd: 0,
-      rafId: null
+      rafId: null,
+      filteredIndices: [] // 存储筛选后的索引列表（支持状态筛选）
     };
 
-    // 虚拟滚动：计算可见范围
-    function calculateVisibleRange() {
+    // 虚拟滚动：计算可见范围（支持筛选）
+    function calculateVisibleRange(totalItems) {
       const { ROW_HEIGHT, BUFFER_SIZE, CONTAINER_HEIGHT } = VIRTUAL_SCROLL_CONFIG;
       const { scrollTop } = virtualScrollState;
 
       const visibleRowCount = Math.ceil(CONTAINER_HEIGHT / ROW_HEIGHT);
       const startIndex = Math.floor(scrollTop / ROW_HEIGHT);
-      
+
       // 添加上下缓冲区
       const visibleStart = Math.max(0, startIndex - BUFFER_SIZE);
       const visibleEnd = Math.min(
-        inlineKeyTableData.length,
+        totalItems,
         startIndex + visibleRowCount + BUFFER_SIZE
       );
 
       return { visibleStart, visibleEnd };
     }
 
-    // 虚拟滚动：渲染可见行
-    function renderVirtualRows(tbody, visibleStart, visibleEnd) {
+    // 虚拟滚动：渲染可见行（支持筛选）
+    function renderVirtualRows(tbody, visibleStart, visibleEnd, filteredIndices) {
       const { ROW_HEIGHT } = VIRTUAL_SCROLL_CONFIG;
-      const totalHeight = inlineKeyTableData.length * ROW_HEIGHT;
+      const totalHeight = filteredIndices.length * ROW_HEIGHT;
 
       // 清空tbody
       tbody.innerHTML = '';
@@ -1774,16 +1809,17 @@
         tbody.appendChild(topSpacer);
       }
 
-      // 渲染可见行
+      // 渲染可见行（使用筛选后的索引）
       for (let i = visibleStart; i < visibleEnd; i++) {
-        const row = createKeyRow(i);
+        const actualIndex = filteredIndices[i]; // 获取实际Key索引
+        const row = createKeyRow(actualIndex);
         tbody.appendChild(row);
       }
 
       // 添加底部占位元素
-      if (visibleEnd < inlineKeyTableData.length) {
+      if (visibleEnd < filteredIndices.length) {
         const bottomSpacer = document.createElement('tr');
-        const bottomHeight = (inlineKeyTableData.length - visibleEnd) * ROW_HEIGHT;
+        const bottomHeight = (filteredIndices.length - visibleEnd) * ROW_HEIGHT;
         bottomSpacer.innerHTML = `<td colspan="4" style="height: ${bottomHeight}px; padding: 0; border: none;"></td>`;
         tbody.appendChild(bottomSpacer);
       }
@@ -1805,8 +1841,22 @@
         cooldownHtml = `<span style="color: #dc2626; font-size: 12px; font-weight: 500; background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%); padding: 2px 8px; border-radius: 4px; border: 1px solid #fca5a5; white-space: nowrap;">⚠️ 冷却中·${cooldownText}</span>`;
       }
 
+      const isSelected = selectedKeyIndices.has(index);
+
       row.innerHTML = `
-        <td style="padding: 6px 10px; color: var(--neutral-600); font-weight: 500; font-size: 13px;">${index + 1}</td>
+        <td style="padding: 6px 10px;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <input
+              type="checkbox"
+              class="key-checkbox"
+              data-index="${index}"
+              ${isSelected ? 'checked' : ''}
+              onchange="toggleKeySelection(${index}, this.checked)"
+              style="width: 16px; height: 16px; cursor: pointer; accent-color: var(--primary-500);"
+            >
+            <span style="color: var(--neutral-600); font-weight: 500; font-size: 13px;">${index + 1}</span>
+          </div>
+        </td>
         <td style="padding: 6px 10px;">
           <input
             type="${inlineKeyVisible ? 'text' : 'password'}"
@@ -1853,16 +1903,16 @@
 
       // 使用requestAnimationFrame节流，优化性能
       virtualScrollState.rafId = requestAnimationFrame(() => {
-        const { visibleStart, visibleEnd } = calculateVisibleRange();
+        const { visibleStart, visibleEnd } = calculateVisibleRange(virtualScrollState.filteredIndices.length);
 
         // 仅当可见范围变化时才重新渲染
-        if (visibleStart !== virtualScrollState.visibleStart || 
+        if (visibleStart !== virtualScrollState.visibleStart ||
             visibleEnd !== virtualScrollState.visibleEnd) {
           virtualScrollState.visibleStart = visibleStart;
           virtualScrollState.visibleEnd = visibleEnd;
-          
+
           const tbody = document.getElementById('inlineKeyTableBody');
-          renderVirtualRows(tbody, visibleStart, visibleEnd);
+          renderVirtualRows(tbody, visibleStart, visibleEnd, virtualScrollState.filteredIndices);
         }
       });
     }
@@ -1917,35 +1967,48 @@
         return;
       }
 
-      // 判断是否启用虚拟滚动
-      const shouldUseVirtualScroll = inlineKeyTableData.length >= VIRTUAL_SCROLL_CONFIG.ENABLE_THRESHOLD;
+      // 获取要显示的Keys（考虑状态筛选）
+      const visibleIndices = getVisibleKeyIndices();
 
-      // 更新虚拟滚动提示
-      if (virtualScrollHint) {
-        virtualScrollHint.style.display = shouldUseVirtualScroll ? 'inline' : 'none';
-      }
-
-      if (shouldUseVirtualScroll) {
-        // 启用虚拟滚动模式
-        virtualScrollState.enabled = true;
-        virtualScrollState.scrollTop = 0;
-        
-        const { visibleStart, visibleEnd } = calculateVisibleRange();
-        virtualScrollState.visibleStart = visibleStart;
-        virtualScrollState.visibleEnd = visibleEnd;
-
-        renderVirtualRows(tbody, visibleStart, visibleEnd);
-        initVirtualScroll();
-      } else {
-        // 使用传统渲染（少量Key时无性能问题）
+      // 筛选后为空
+      if (visibleIndices.length === 0) {
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="4" style="padding: 30px; text-align: center; color: var(--neutral-500); font-size: 14px;">
+              ${currentKeyStatusFilter === 'normal' ? '当前无正常状态的Key' : '当前无冷却中的Key'}
+            </td>
+          </tr>
+        `;
         cleanupVirtualScroll();
         virtualScrollState.enabled = false;
-
-        inlineKeyTableData.forEach((key, index) => {
-          const row = createKeyRow(index);
-          tbody.appendChild(row);
-        });
+        if (virtualScrollHint) virtualScrollHint.style.display = 'none';
+        return;
       }
+
+      // 统一使用虚拟滚动（支持少量和大量Keys）
+      virtualScrollState.enabled = true;
+      virtualScrollState.scrollTop = 0;
+      virtualScrollState.filteredIndices = visibleIndices; // 保存筛选后的索引
+
+      const { visibleStart, visibleEnd } = calculateVisibleRange(visibleIndices.length);
+      virtualScrollState.visibleStart = visibleStart;
+      virtualScrollState.visibleEnd = visibleEnd;
+
+      // 渲染可见行
+      renderVirtualRows(tbody, visibleStart, visibleEnd, visibleIndices);
+
+      // 初始化虚拟滚动事件监听
+      initVirtualScroll();
+
+      // 更新虚拟滚动提示（显示总Key数）
+      if (virtualScrollHint) {
+        const showHint = visibleIndices.length >= VIRTUAL_SCROLL_CONFIG.ENABLE_THRESHOLD;
+        virtualScrollHint.style.display = showHint ? 'inline' : 'none';
+      }
+
+      // 更新全选checkbox和删除按钮状态
+      updateSelectAllCheckbox();
+      updateBatchDeleteButton();
     }
 
     // 遮罩Key显示（保留前后各4个字符）
@@ -2029,16 +2092,20 @@
         // 如果启用了虚拟滚动，先保存滚动位置
         const tableContainer = document.querySelector('#inlineKeyTableBody').closest('div[style*="max-height"]');
         const scrollTop = tableContainer ? tableContainer.scrollTop : 0;
-        
+
         inlineKeyTableData.splice(index, 1);
-        
+
         // 更新冷却信息的索引（因为删除了一个Key）
         currentChannelKeyCooldowns = currentChannelKeyCooldowns
           .filter(kc => kc.key_index !== index)
           .map(kc => kc.key_index > index ? { ...kc, key_index: kc.key_index - 1 } : kc);
-        
+
+        // 清除选中状态（删除后索引会变化）
+        selectedKeyIndices.clear();
+        updateBatchDeleteButton();
+
         renderInlineKeyTable();
-        
+
         // 恢复滚动位置
         setTimeout(() => {
           if (tableContainer) {
@@ -2046,6 +2113,172 @@
           }
         }, 50);
       }
+    }
+
+    // ============================================================
+    // 批量选择和删除功能
+    // ============================================================
+
+    // 切换单个Key的选中状态
+    function toggleKeySelection(index, checked) {
+      if (checked) {
+        selectedKeyIndices.add(index);
+      } else {
+        selectedKeyIndices.delete(index);
+      }
+      updateBatchDeleteButton();
+      updateSelectAllCheckbox();
+    }
+
+    // 全选/取消全选
+    function toggleSelectAllKeys(checked) {
+      selectedKeyIndices.clear();
+
+      if (checked) {
+        // 获取当前可见的Keys（考虑筛选）
+        const visibleIndices = getVisibleKeyIndices();
+        visibleIndices.forEach(index => selectedKeyIndices.add(index));
+      }
+
+      updateBatchDeleteButton();
+      renderInlineKeyTable(); // 重新渲染以更新checkbox状态
+    }
+
+    // 更新批量删除按钮状态
+    function updateBatchDeleteButton() {
+      const btn = document.getElementById('batchDeleteKeysBtn');
+      const count = selectedKeyIndices.size;
+
+      if (count > 0) {
+        btn.disabled = false;
+        btn.textContent = `删除选中 (${count})`;
+        btn.style.cursor = 'pointer';
+        btn.style.background = 'linear-gradient(135deg, #fef2f2 0%, #fecaca 100%)';
+        btn.style.borderColor = '#fca5a5';
+        btn.style.color = '#dc2626';
+        btn.style.fontWeight = '600';
+      } else {
+        btn.disabled = true;
+        btn.textContent = '删除选中';
+        btn.style.cursor = 'not-allowed';
+        btn.style.background = 'white';
+        btn.style.borderColor = 'var(--neutral-300)';
+        btn.style.color = 'var(--neutral-500)';
+        btn.style.fontWeight = '500';
+      }
+    }
+
+    // 更新全选checkbox状态
+    function updateSelectAllCheckbox() {
+      const checkbox = document.getElementById('selectAllKeys');
+      if (!checkbox) return;
+
+      const visibleIndices = getVisibleKeyIndices();
+      const allSelected = visibleIndices.length > 0 &&
+                         visibleIndices.every(index => selectedKeyIndices.has(index));
+
+      checkbox.checked = allSelected;
+      checkbox.indeterminate = !allSelected &&
+                               visibleIndices.some(index => selectedKeyIndices.has(index));
+    }
+
+    // 批量删除选中的Keys
+    function batchDeleteSelectedKeys() {
+      const count = selectedKeyIndices.size;
+      if (count === 0) return;
+
+      if (inlineKeyTableData.length - count < 1) {
+        alert('至少需要保留一个API Key');
+        return;
+      }
+
+      if (!confirm(`确定要删除选中的 ${count} 个Key吗？`)) {
+        return;
+      }
+
+      // 保存滚动位置
+      const tableContainer = document.querySelector('#inlineKeyTableBody').closest('div[style*="max-height"]');
+      const scrollTop = tableContainer ? tableContainer.scrollTop : 0;
+
+      // 获取要删除的索引（降序排序，从后往前删除避免索引变化问题）
+      const indicesToDelete = Array.from(selectedKeyIndices).sort((a, b) => b - a);
+
+      // 删除Keys
+      indicesToDelete.forEach(index => {
+        inlineKeyTableData.splice(index, 1);
+
+        // 更新冷却信息
+        currentChannelKeyCooldowns = currentChannelKeyCooldowns
+          .filter(kc => kc.key_index !== index)
+          .map(kc => kc.key_index > index ? { ...kc, key_index: kc.key_index - 1 } : kc);
+      });
+
+      // 清空选中状态
+      selectedKeyIndices.clear();
+      updateBatchDeleteButton();
+
+      renderInlineKeyTable();
+
+      // 恢复滚动位置
+      setTimeout(() => {
+        if (tableContainer) {
+          tableContainer.scrollTop = Math.min(scrollTop, tableContainer.scrollHeight - tableContainer.clientHeight);
+        }
+      }, 50);
+    }
+
+    // ============================================================
+    // 状态筛选功能
+    // ============================================================
+
+    // 根据状态筛选Keys
+    function filterKeysByStatus(status) {
+      currentKeyStatusFilter = status;
+      renderInlineKeyTable();
+
+      // 重置全选checkbox
+      updateSelectAllCheckbox();
+    }
+
+    // 获取当前可见的Key索引（考虑筛选）
+    function getVisibleKeyIndices() {
+      if (currentKeyStatusFilter === 'all') {
+        return inlineKeyTableData.map((_, index) => index);
+      }
+
+      return inlineKeyTableData
+        .map((_, index) => {
+          const keyCooldown = currentChannelKeyCooldowns.find(kc => kc.key_index === index);
+          const isCoolingDown = keyCooldown && keyCooldown.cooldown_remaining_ms > 0;
+
+          if (currentKeyStatusFilter === 'normal' && !isCoolingDown) {
+            return index;
+          }
+          if (currentKeyStatusFilter === 'cooldown' && isCoolingDown) {
+            return index;
+          }
+          return null;
+        })
+        .filter(index => index !== null);
+    }
+
+    // 检查Key是否应该显示（根据筛选条件）
+    function shouldShowKey(index) {
+      if (currentKeyStatusFilter === 'all') {
+        return true;
+      }
+
+      const keyCooldown = currentChannelKeyCooldowns.find(kc => kc.key_index === index);
+      const isCoolingDown = keyCooldown && keyCooldown.cooldown_remaining_ms > 0;
+
+      if (currentKeyStatusFilter === 'normal') {
+        return !isCoolingDown;
+      }
+      if (currentKeyStatusFilter === 'cooldown') {
+        return isCoolingDown;
+      }
+
+      return true;
     }
 
     // 打开内联导入模态框
