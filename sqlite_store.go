@@ -1316,18 +1316,26 @@ func (s *SQLiteStore) LoadChannelsFromRedis(ctx context.Context) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	now := time.Now()
+	nowUnix := time.Now().Unix()
 	successCount := 0
 
 	for _, config := range configs {
+		// 标准化数据：确保默认值正确填充
 		modelsStr, _ := serializeModels(config.Models)
+		modelRedirectsStr, _ := serializeModelRedirects(config.ModelRedirects)
+		apiKeysStr, _ := sonic.Marshal(config.APIKeys)
+		channelType := config.GetChannelType() // 强制使用默认值anthropic
+		keyStrategy := config.GetKeyStrategy() // 强制使用默认值sequential
 
-		// 使用INSERT OR REPLACE确保幂等性
+		// 使用完整字段列表确保数据一致性（包含所有新字段）
 		_, err := tx.ExecContext(ctx, `
-			INSERT OR REPLACE INTO channels(name, api_key, url, priority, models, enabled, created_at, updated_at)
-			VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-		`, config.Name, config.APIKey, config.URL, config.Priority, modelsStr,
-			boolToInt(config.Enabled), now, now)
+			INSERT OR REPLACE INTO channels(
+				name, api_key, api_keys, key_strategy, url, priority,
+				models, model_redirects, channel_type, enabled, created_at, updated_at
+			)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, config.Name, config.APIKey, string(apiKeysStr), keyStrategy, config.URL, config.Priority,
+			modelsStr, modelRedirectsStr, channelType, boolToInt(config.Enabled), nowUnix, nowUnix)
 
 		if err != nil {
 			fmt.Printf("Warning: failed to restore channel %s: %v\n", config.Name, err)
@@ -1359,6 +1367,9 @@ func (s *SQLiteStore) SyncAllChannelsToRedis(ctx context.Context) error {
 		fmt.Println("No channels to sync to Redis")
 		return nil
 	}
+
+	// 规范化所有Config对象的默认值（确保Redis中数据完整性）
+	normalizeConfigDefaults(configs)
 
 	fmt.Printf("Syncing %d channels to Redis...\n", len(configs))
 
@@ -1415,7 +1426,33 @@ func (s *SQLiteStore) doSyncAllChannels(ctx context.Context) error {
 		return fmt.Errorf("list configs: %w", err)
 	}
 
+	// 规范化默认值后再同步（与SyncAllChannelsToRedis保持一致）
+	normalizeConfigDefaults(configs)
+
 	return s.redisSync.SyncAllChannels(ctx, configs)
+}
+
+// normalizeConfigDefaults 规范化Config对象的默认值字段（DRY原则：统一规范化逻辑）
+// 确保序列化到Redis时所有字段都有正确的默认值，避免空值污染
+func normalizeConfigDefaults(configs []*Config) {
+	for _, config := range configs {
+		// 强制填充channel_type默认值（避免空字符串序列化到Redis）
+		if config.ChannelType == "" {
+			config.ChannelType = "anthropic"
+		}
+		// 强制填充key_strategy默认值
+		if config.KeyStrategy == "" {
+			config.KeyStrategy = "sequential"
+		}
+		// 确保model_redirects不为nil（避免序列化为null）
+		if config.ModelRedirects == nil {
+			config.ModelRedirects = make(map[string]string)
+		}
+		// 确保api_keys不为nil
+		if config.APIKeys == nil {
+			config.APIKeys = []string{}
+		}
+	}
 }
 
 // CheckDatabaseExists 检查SQLite数据库文件是否存在

@@ -93,7 +93,7 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	var c Config
 	var modelsStr, modelRedirectsStr, apiKeysStr string
 	var enabledInt int
-	var createdAtRaw, updatedAtRaw any // 使用any接受任意类型（ultrathink：兼容字符串或整数）
+	var createdAtRaw, updatedAtRaw any // 使用any接受任意类型（兼容字符串、整数或RFC3339）
 
 	if err := scanner.Scan(&c.ID, &c.Name, &c.APIKey, &apiKeysStr, &c.KeyStrategy, &c.URL, &c.Priority,
 		&modelsStr, &modelRedirectsStr, &c.ChannelType, &enabledInt, &createdAtRaw, &updatedAtRaw); err != nil {
@@ -102,10 +102,10 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 
 	c.Enabled = enabledInt != 0
 
-	// 转换时间戳为time.Time（ultrathink：简单容错，非unixtime直接用当前时间）
+	// 转换时间戳为JSONTime（支持Unix时间戳和RFC3339格式）
 	now := time.Now()
-	c.CreatedAt = parseTimestampOrNow(createdAtRaw, now)
-	c.UpdatedAt = parseTimestampOrNow(updatedAtRaw, now)
+	c.CreatedAt = JSONTime{Time: parseTimestampOrNow(createdAtRaw, now)}
+	c.UpdatedAt = JSONTime{Time: parseTimestampOrNow(updatedAtRaw, now)}
 
 	if err := parseModelsJSON(modelsStr, &c.Models); err != nil {
 		c.Models = nil // 解析失败时使用空切片
@@ -140,9 +140,8 @@ func (cs *ConfigScanner) ScanConfigs(rows interface {
 	return configs, nil
 }
 
-// parseTimestampOrNow 解析时间戳或使用当前时间（ultrathink：简单容错）
-// 如果val是有效的Unix时间戳（int64 > 0），转换为time.Time
-// 否则使用fallback（通常是当前时间）
+// parseTimestampOrNow 解析时间戳或使用当前时间（支持Unix时间戳和RFC3339格式）
+// 优先级：int64 > int > string(数字) > string(RFC3339) > fallback
 func parseTimestampOrNow(val any, fallback time.Time) time.Time {
 	switch v := val.(type) {
 	case int64:
@@ -154,9 +153,23 @@ func parseTimestampOrNow(val any, fallback time.Time) time.Time {
 			return time.Unix(int64(v), 0)
 		}
 	case string:
-		// 尝试解析字符串为整数
+		// 1. 尝试解析字符串为Unix时间戳
 		if ts, err := strconv.ParseInt(v, 10, 64); err == nil && ts > 0 {
 			return time.Unix(ts, 0)
+		}
+		// 2. 尝试解析RFC3339格式（Redis恢复场景）
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			return t
+		}
+		// 3. 尝试解析常见ISO8601变体（兼容数据库TIMESTAMP格式）
+		for _, layout := range []string{
+			time.RFC3339Nano,
+			"2006-01-02T15:04:05.999999999Z07:00",
+			"2006-01-02 15:04:05.999999999 -07:00 MST",
+		} {
+			if t, err := time.Parse(layout, v); err == nil {
+				return t
+			}
 		}
 	}
 	// 非法值：返回fallback

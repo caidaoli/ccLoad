@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -21,8 +22,8 @@ type Config struct {
 	Models         []string          `json:"models"`
 	ModelRedirects map[string]string `json:"model_redirects,omitempty"` // 模型重定向映射：请求模型 -> 实际转发模型
 	Enabled        bool              `json:"enabled"`
-	CreatedAt      time.Time         `json:"created_at"`
-	UpdatedAt      time.Time         `json:"updated_at"`
+	CreatedAt      JSONTime          `json:"created_at"` // 使用JSONTime确保序列化格式一致（RFC3339）
+	UpdatedAt      JSONTime          `json:"updated_at"` // 使用JSONTime确保序列化格式一致（RFC3339）
 
 	// 性能优化：模型查找索引（内存缓存，不序列化）
 	modelsSet map[string]struct{} `json:"-"`
@@ -102,26 +103,29 @@ func normalizeChannelType(t string) string {
 	return lower
 }
 
-// 自定义时间类型，强制使用RFC3339格式进行JSON序列化
+// 自定义时间类型，使用Unix时间戳进行JSON序列化
+// 设计原则：与数据库格式统一，减少转换复杂度（KISS原则）
 type JSONTime struct {
 	time.Time
 }
 
 func (jt JSONTime) MarshalJSON() ([]byte, error) {
-	return []byte(`"` + jt.Time.Format(time.RFC3339) + `"`), nil
+	if jt.Time.IsZero() {
+		return []byte("0"), nil
+	}
+	return []byte(strconv.FormatInt(jt.Time.Unix(), 10)), nil
 }
 
 func (jt *JSONTime) UnmarshalJSON(data []byte) error {
-	str := string(data)
-	if str == "null" {
+	if string(data) == "null" || string(data) == "0" {
+		jt.Time = time.Time{}
 		return nil
 	}
-	str = str[1 : len(str)-1] // 去掉引号
-	t, err := time.Parse(time.RFC3339, str)
+	ts, err := strconv.ParseInt(string(data), 10, 64)
 	if err != nil {
 		return err
 	}
-	jt.Time = t
+	jt.Time = time.Unix(ts, 0)
 	return nil
 }
 
