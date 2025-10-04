@@ -233,3 +233,20 @@ func (ks *KeySelector) WarmCooldownCache(ctx context.Context) error {
 
 	return nil
 }
+
+// CleanupExpiredKeyCooldowns 定期清理过期的Key级冷却缓存（性能优化：防止内存泄漏）
+// 设计原则：与渠道级冷却清理（cleanupExpiredCooldowns）保持一致，每分钟扫描一次
+func (ks *KeySelector) CleanupExpiredKeyCooldowns() {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		now := time.Now()
+		ks.keyCooldown.Range(func(key, value any) bool {
+			if expireTime, ok := value.(time.Time); ok && now.After(expireTime) {
+				ks.keyCooldown.Delete(key)
+			}
+			return true
+		})
+	}
+}

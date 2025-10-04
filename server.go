@@ -187,7 +187,8 @@ func NewServer(store Store) *Server {
 	go s.rrBatchWriter()
 
 	// 启动后台清理协程
-	go s.cleanupExpiredCooldowns()
+	go s.cleanupExpiredCooldowns()                // 渠道级冷却清理
+	go s.keySelector.CleanupExpiredKeyCooldowns() // Key级冷却清理（P1优化：防止内存泄漏）
 	go s.cleanExpiredSessions()
 	go s.cleanupOldLogsLoop() // 定期清理3天前的日志（性能优化：避免每次插入时清理）
 
