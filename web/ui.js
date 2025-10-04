@@ -218,7 +218,7 @@
     container.innerHTML = types.map(type => `
       <label style="margin-right: 15px; cursor: pointer; display: inline-flex; align-items: center;">
         <input type="radio"
-               name="channel_type"
+               name="channelType"
                value="${type.value}"
                ${type.value === selectedValue ? 'checked' : ''}
                style="margin-right: 5px;">

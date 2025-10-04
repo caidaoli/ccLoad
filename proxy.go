@@ -45,6 +45,15 @@ func isGeminiRequest(path string) bool {
 	return strings.Contains(path, "/v1beta/")
 }
 
+// isOpenAIRequest 检测是否为OpenAI API请求
+// OpenAI请求路径特征：/v1/chat/completions, /v1/completions, /v1/embeddings 等
+// 示例：/v1/chat/completions
+func isOpenAIRequest(path string) bool {
+	return strings.HasPrefix(path, "/v1/chat/completions") ||
+		strings.HasPrefix(path, "/v1/completions") ||
+		strings.HasPrefix(path, "/v1/embeddings")
+}
+
 // isStreamingRequest 检测是否为流式请求
 // 支持多种API的流式标识方式：
 // - Gemini: 路径包含 :streamGenerateContent
@@ -208,9 +217,15 @@ func injectAPIKeyHeaders(req *http.Request, cfg *Config, keyIndex int, requestPa
 		}
 	}
 
+	// 根据API类型设置不同的认证头
 	if isGeminiRequest(requestPath) {
+		// Gemini API: 仅使用 x-goog-api-key
 		req.Header.Set("x-goog-api-key", apiKey)
+	} else if isOpenAIRequest(requestPath) {
+		// OpenAI API: 仅使用 Authorization Bearer
+		req.Header.Set("Authorization", "Bearer "+apiKey)
 	} else {
+		// Claude/Anthropic API: 同时设置两个头
 		req.Header.Set("x-api-key", apiKey)
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}

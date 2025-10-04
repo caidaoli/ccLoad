@@ -140,6 +140,71 @@ func (t *CodexTester) Parse(statusCode int, respBody []byte) map[string]any {
 	return out
 }
 
+// OpenAITester 标准OpenAI API格式（渠道类型: openai）
+type OpenAITester struct{}
+
+func (t *OpenAITester) Build(cfg *Config, req *TestChannelRequest) (string, http.Header, []byte, error) {
+	testContent := req.Content
+	if strings.TrimSpace(testContent) == "" {
+		testContent = "test"
+	}
+
+	// 标准OpenAI Chat Completions格式
+	msg := map[string]any{
+		"model": req.Model,
+		"messages": []map[string]any{
+			{
+				"role":    "user",
+				"content": testContent,
+			},
+		},
+		"max_tokens": req.MaxTokens,
+		"stream":     req.Stream,
+	}
+
+	body, err := sonic.Marshal(msg)
+	if err != nil {
+		return "", nil, nil, err
+	}
+
+	// 使用标准OpenAI API路径
+	baseURL := strings.TrimRight(cfg.URL, "/")
+	fullURL := baseURL + "/v1/chat/completions"
+
+	h := make(http.Header)
+	h.Set("Content-Type", "application/json")
+	h.Set("Authorization", "Bearer "+cfg.APIKey)
+
+	return fullURL, h, body, nil
+}
+
+func (t *OpenAITester) Parse(statusCode int, respBody []byte) map[string]any {
+	out := map[string]any{}
+	var apiResp map[string]any
+	if err := sonic.Unmarshal(respBody, &apiResp); err == nil {
+		// 提取choices[0].message.content
+		if choices, ok := getTypedValue[[]any](apiResp, "choices"); ok && len(choices) > 0 {
+			if choice, ok := getSliceItem[map[string]any](choices, 0); ok {
+				if message, ok := getTypedValue[map[string]any](choice, "message"); ok {
+					if content, ok := getTypedValue[string](message, "content"); ok {
+						out["response_text"] = content
+					}
+				}
+			}
+		}
+
+		// 提取usage
+		if usage, ok := getTypedValue[map[string]any](apiResp, "usage"); ok {
+			out["usage"] = usage
+		}
+
+		out["api_response"] = apiResp
+		return out
+	}
+	out["raw_response"] = string(respBody)
+	return out
+}
+
 // GeminiTester 实现 Google Gemini 测试协议
 type GeminiTester struct{}
 

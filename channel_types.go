@@ -20,6 +20,11 @@ var ChannelTypes = []ChannelTypeConfig{
 		Description: "Codex兼容API",
 	},
 	{
+		Value:       "openai",
+		DisplayName: "OpenAI",
+		Description: "OpenAI API (GPT系列)",
+	},
+	{
 		Value:       "gemini",
 		DisplayName: "Google Gemini",
 		Description: "Google Gemini API",
