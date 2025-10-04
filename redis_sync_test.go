@@ -1,0 +1,285 @@
+package main
+
+import (
+	"testing"
+	"time"
+
+	"github.com/bytedance/sonic"
+)
+
+// ==================== Redis序列化/反序列化集成测试 ====================
+
+func TestRedisSync_Serialization(t *testing.T) {
+	now := time.Now()
+
+	// 创建测试Config对象（包含边界条件）
+	configs := []*Config{
+		{
+			ID:             1,
+			Name:           "test-anthropic",
+			ChannelType:    "anthropic",
+			KeyStrategy:    "sequential",
+			APIKey:         "sk-test-1",
+			APIKeys:        []string{"key1", "key2"},
+			URL:            "https://api.anthropic.com",
+			Priority:       10,
+			Models:         []string{"claude-3-sonnet"},
+			ModelRedirects: map[string]string{"old": "new"},
+			Enabled:        true,
+			CreatedAt:      JSONTime{Time: now},
+			UpdatedAt:      JSONTime{Time: now},
+		},
+		{
+			ID:             2,
+			Name:           "test-empty-defaults",
+			ChannelType:    "", // 空值，应被规范化为anthropic
+			KeyStrategy:    "", // 空值，应被规范化为sequential
+			APIKey:         "sk-test-2",
+			APIKeys:        nil, // nil，应被规范化为[]
+			URL:            "https://api.example.com",
+			Priority:       5,
+			Models:         []string{"test-model"},
+			ModelRedirects: nil, // nil，应被规范化为{}
+			Enabled:        true,
+			CreatedAt:      JSONTime{Time: now},
+			UpdatedAt:      JSONTime{Time: now},
+		},
+	}
+
+	// 步骤1：规范化默认值（模拟SyncAllChannelsToRedis）
+	normalizeConfigDefaults(configs)
+
+	// 验证规范化结果
+	if configs[1].ChannelType != "anthropic" {
+		t.Errorf("规范化失败：channel_type应为anthropic，实际为 %s", configs[1].ChannelType)
+	}
+
+	if configs[1].KeyStrategy != "sequential" {
+		t.Errorf("规范化失败：key_strategy应为sequential，实际为 %s", configs[1].KeyStrategy)
+	}
+
+	if configs[1].APIKeys == nil {
+		t.Errorf("规范化失败：api_keys应初始化为[]，实际为nil")
+	}
+
+	if configs[1].ModelRedirects == nil {
+		t.Errorf("规范化失败：model_redirects应初始化为{}，实际为nil")
+	}
+
+	// 步骤2：序列化到JSON（模拟Redis存储）
+	data, err := sonic.Marshal(configs)
+	if err != nil {
+		t.Fatalf("序列化失败: %v", err)
+	}
+
+	// 验证序列化格式
+	var jsonCheck []map[string]any
+	if err := sonic.Unmarshal(data, &jsonCheck); err != nil {
+		t.Fatalf("JSON格式验证失败: %v", err)
+	}
+
+	// 验证时间字段为Unix时间戳（整数）
+	createdAtRaw := jsonCheck[0]["created_at"]
+	var createdAtTS int64
+	switch v := createdAtRaw.(type) {
+	case float64:
+		createdAtTS = int64(v)
+	case int64:
+		createdAtTS = v
+	default:
+		t.Errorf("created_at应为数字类型，实际为 %T", createdAtRaw)
+	}
+
+	if createdAtTS <= 0 {
+		t.Errorf("created_at时间戳应为正数，实际为 %d", createdAtTS)
+	}
+
+	// 验证channel_type非空（已规范化）
+	channelType, ok := jsonCheck[1]["channel_type"].(string)
+	if !ok || channelType == "" {
+		t.Errorf("channel_type应为非空字符串，实际为 %v", jsonCheck[1]["channel_type"])
+	}
+
+	// 步骤3：反序列化（模拟从Redis恢复）
+	var restored []*Config
+	if err := sonic.Unmarshal(data, &restored); err != nil {
+		t.Fatalf("反序列化失败: %v", err)
+	}
+
+	// 验证恢复数据的完整性
+	if len(restored) != 2 {
+		t.Fatalf("恢复数据数量错误：期望2，实际 %d", len(restored))
+	}
+
+	// 验证第一个Config
+	if restored[0].ChannelType != "anthropic" {
+		t.Errorf("Config[0] channel_type错误: %s", restored[0].ChannelType)
+	}
+
+	if !restored[0].CreatedAt.Time.Truncate(time.Second).Equal(now.Truncate(time.Second)) {
+		t.Errorf("Config[0] 时间恢复错误:\n期望: %v\n实际: %v", now, restored[0].CreatedAt.Time)
+	}
+
+	// 验证第二个Config（边界条件）
+	if restored[1].ChannelType != "anthropic" {
+		t.Errorf("Config[1] channel_type应恢复为anthropic，实际为 %s", restored[1].ChannelType)
+	}
+
+	if restored[1].KeyStrategy != "sequential" {
+		t.Errorf("Config[1] key_strategy应恢复为sequential，实际为 %s", restored[1].KeyStrategy)
+	}
+
+	if len(restored[1].APIKeys) != 0 {
+		t.Errorf("Config[1] api_keys应为空数组，实际长度 %d", len(restored[1].APIKeys))
+	}
+
+	if len(restored[1].ModelRedirects) != 0 {
+		t.Errorf("Config[1] model_redirects应为空map，实际长度 %d", len(restored[1].ModelRedirects))
+	}
+}
+
+// ==================== Redis恢复时默认值填充测试 ====================
+
+func TestRedisRestore_DefaultValuesFilling(t *testing.T) {
+	// 模拟从Redis恢复的原始数据（包含空值，时间为Unix时间戳）
+	rawJSON := `[
+		{
+			"id": 1,
+			"name": "test-redis",
+			"api_key": "sk-test",
+			"channel_type": "",
+			"key_strategy": "",
+			"url": "https://api.example.com",
+			"priority": 10,
+			"models": ["test-model"],
+			"model_redirects": {},
+			"api_keys": [],
+			"enabled": true,
+			"created_at": 1759575045,
+			"updated_at": 1759575045
+		}
+	]`
+
+	// 反序列化
+	var configs []*Config
+	if err := sonic.Unmarshal([]byte(rawJSON), &configs); err != nil {
+		t.Fatalf("反序列化失败: %v", err)
+	}
+
+	// 验证：GetChannelType()返回默认值（但不修改字段）
+	if configs[0].GetChannelType() != "anthropic" {
+		t.Errorf("GetChannelType()应返回anthropic，实际为 %s", configs[0].GetChannelType())
+	}
+
+	if configs[0].ChannelType != "" {
+		t.Errorf("原始channel_type字段应保持为空，实际为 %s", configs[0].ChannelType)
+	}
+
+	// 模拟LoadChannelsFromRedis的填充逻辑
+	channelType := configs[0].GetChannelType() // 获取默认值
+	configs[0].ChannelType = channelType       // 强制赋值
+
+	// 验证填充后的值
+	if configs[0].ChannelType != "anthropic" {
+		t.Errorf("填充后channel_type应为anthropic，实际为 %s", configs[0].ChannelType)
+	}
+}
+
+// ==================== 时间解析兼容性测试 ====================
+
+func TestParseTimestampOrNow_Compatibility(t *testing.T) {
+	fallback := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name     string
+		input    any
+		expected time.Time
+	}{
+		{
+			name:     "Unix时间戳int64",
+			input:    int64(1759546478),
+			expected: time.Unix(1759546478, 0),
+		},
+		{
+			name:     "Unix时间戳int",
+			input:    int(1759546478),
+			expected: time.Unix(1759546478, 0),
+		},
+		{
+			name:     "Unix时间戳字符串",
+			input:    "1759546478",
+			expected: time.Unix(1759546478, 0),
+		},
+		{
+			name:     "RFC3339格式字符串",
+			input:    "2025-10-04T10:30:45+08:00",
+			expected: time.Date(2025, 10, 4, 10, 30, 45, 0, time.FixedZone("CST", 8*3600)),
+		},
+		{
+			name:     "RFC3339Nano格式",
+			input:    "2025-10-04T10:30:45.123456789+08:00",
+			expected: time.Date(2025, 10, 4, 10, 30, 45, 123456789, time.FixedZone("CST", 8*3600)),
+		},
+		{
+			name:     "无效值返回fallback",
+			input:    "invalid-timestamp",
+			expected: fallback,
+		},
+		{
+			name:     "零值返回fallback",
+			input:    int64(0),
+			expected: fallback,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseTimestampOrNow(tt.input, fallback)
+
+			// 时间比较允许纳秒级差异
+			if !result.Equal(tt.expected) {
+				t.Errorf("解析结果不匹配:\n期望: %v\n实际: %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+// ==================== Benchmark 性能测试 ====================
+
+func BenchmarkNormalizeConfigDefaults(b *testing.B) {
+	configs := make([]*Config, 100)
+	for i := 0; i < 100; i++ {
+		configs[i] = &Config{
+			ID:             int64(i),
+			Name:           "test",
+			ChannelType:    "",
+			KeyStrategy:    "",
+			ModelRedirects: nil,
+			APIKeys:        nil,
+		}
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		normalizeConfigDefaults(configs)
+	}
+}
+
+func BenchmarkJSONTime_Marshal(b *testing.B) {
+	jt := JSONTime{Time: time.Now()}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = sonic.Marshal(jt)
+	}
+}
+
+func BenchmarkJSONTime_Unmarshal(b *testing.B) {
+	data := []byte(`"2025-10-04T10:30:45+08:00"`)
+	var jt JSONTime
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = sonic.Unmarshal(data, &jt)
+	}
+}

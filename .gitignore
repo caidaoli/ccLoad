@@ -21,7 +21,6 @@ ccLoad
 *.dylib
 
 # Test files
-*_test.go
 *.test
 *.out
 test*.sh
