@@ -59,8 +59,15 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # 多级缓存策略：GHA缓存 + BuildKit缓存挂载
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # 构建参数优化（加速ARM64编译）
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
+          # 启用BuildKit缓存挂载（需Buildx v0.8+）
+          # 这将显著加速go mod download和go build步骤
+          provenance: false
 
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@v1

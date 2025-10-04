@@ -10,17 +10,30 @@ WORKDIR /app
 # 安装构建依赖
 RUN apk add --no-cache git ca-certificates tzdata gcc musl-dev
 
+# 设置Go模块代理和构建缓存（加速跨架构构建）
+ENV GOPROXY=https://proxy.golang.org,direct
+ENV GOMODCACHE=/root/.cache/go-mod
+ENV GOCACHE=/root/.cache/go-build
+
 # 复制 go mod 文件
 COPY go.mod go.sum ./
 
-# 下载依赖
-RUN go mod download
+# 下载依赖（使用--mount缓存加速）
+RUN --mount=type=cache,target=/root/.cache/go-mod \
+    go mod download
 
 # 复制源代码
 COPY . .
 
 # 构建二进制文件（使用Go 1.25解决Sonic库兼容性问题）
-RUN CGO_ENABLED=1 GOOS=linux go build -tags go_json -ldflags="-s -w" -o ccload .
+# 启用构建缓存挂载，显著加速重复构建（尤其是ARM64架构）
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/root/.cache/go-mod \
+    CGO_ENABLED=1 GOOS=linux go build \
+    -tags go_json \
+    -ldflags="-s -w" \
+    -trimpath \
+    -o ccload .
 
 # 运行阶段
 FROM alpine:latest
