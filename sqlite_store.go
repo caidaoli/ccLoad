@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -19,8 +18,6 @@ type SQLiteStore struct {
 	db        *sql.DB    // 主数据库（channels, cooldowns, rr）
 	logDB     *sql.DB    // 日志数据库（logs）- 拆分以减少锁竞争和简化备份
 	redisSync *RedisSync // Redis同步客户端 (OCP: 开放扩展，封闭修改)
-	stmtCache sync.Map   // 预编译语句缓存 (性能优化: 减少SQL解析开销20-30%)
-	stmtMux   sync.Mutex // 保护预编译语句创建过程
 
 	// 异步Redis同步机制（性能优化: 避免同步等待）
 	syncCh chan struct{} // 同步触发信号（无缓冲，去重合并多个请求）
@@ -98,12 +95,6 @@ func NewSQLiteStore(path string, redisSync *RedisSync) (*SQLiteStore, error) {
 	// 启动异步Redis同步worker（仅当Redis启用时）
 	if redisSync != nil && redisSync.IsEnabled() {
 		go s.redisSyncWorker()
-	}
-
-	// 性能优化：预编译所有热查询（阶段1优化）
-	if err := s.prepareAllHotQueries(context.Background()); err != nil {
-		// 预编译失败不影响启动，仅记录警告
-		fmt.Printf("警告：预编译热查询失败: %v\n", err)
 	}
 
 	return s, nil
@@ -658,83 +649,15 @@ func (s *SQLiteStore) CleanupLogsBefore(ctx context.Context, cutoff time.Time) e
 	return err
 }
 
-// prepareStmt 获取或创建预编译语句（性能优化：减少SQL解析开销）
-// 使用双重检查锁定模式避免重复编译：先无锁快速查找，未找到时加锁创建
-func (s *SQLiteStore) prepareStmt(ctx context.Context, query string) (*sql.Stmt, error) {
-	// 快速路径：从缓存获取（无锁）
-	if cached, ok := s.stmtCache.Load(query); ok {
-		return cached.(*sql.Stmt), nil
-	}
-
-	// 慢速路径：编译新语句（需要加锁避免重复编译）
-	s.stmtMux.Lock()
-	defer s.stmtMux.Unlock()
-
-	// 双重检查：再次尝试从缓存获取（避免锁竞争期间其他goroutine已创建）
-	if cached, ok := s.stmtCache.Load(query); ok {
-		return cached.(*sql.Stmt), nil
-	}
-
-	// 编译新语句
-	stmt, err := s.db.PrepareContext(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("prepare statement: %w", err)
-	}
-
-	// 缓存语句
-	s.stmtCache.Store(query, stmt)
-	return stmt, nil
-}
-
-// prepareAllHotQueries 预编译所有热查询（性能优化：启动时一次性编译）
-// 作用：消除首次查询的编译延迟20-30%，提升冷启动性能
-func (s *SQLiteStore) prepareAllHotQueries(ctx context.Context) error {
-	hotQueries := []string{
-		// 渠道查询（最热）
-		`SELECT id, name, api_key, api_keys, key_strategy, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at
-		FROM channels
-		WHERE id = ?`,
-
-		`SELECT id, name, api_key, api_keys, key_strategy, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at
-		FROM channels
-		ORDER BY priority DESC, id ASC`,
-
-		// 冷却状态查询（热路径）
-		`SELECT until FROM cooldowns WHERE channel_id = ?`,
-		`SELECT until FROM key_cooldowns WHERE channel_id = ? AND key_index = ?`,
-
-		// 轮询指针查询
-		`SELECT idx FROM rr WHERE key = ?`,
-		`SELECT idx FROM key_rr WHERE channel_id = ?`,
-	}
-
-	preparedCount := 0
-	for _, query := range hotQueries {
-		if _, err := s.prepareStmt(ctx, query); err != nil {
-			return fmt.Errorf("prepare query failed: %w", err)
-		}
-		preparedCount++
-	}
-
-	fmt.Printf("✅ 热查询预编译完成：%d 条语句\n", preparedCount)
-	return nil
-}
-
 // ---- Store interface impl ----
 
 func (s *SQLiteStore) ListConfigs(ctx context.Context) ([]*Config, error) {
-	// 性能优化：使用预编译语句减少SQL解析开销
 	query := `
 		SELECT id, name, api_key, api_keys, key_strategy, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at
 		FROM channels
 		ORDER BY priority DESC, id ASC
 	`
-	stmt, err := s.prepareStmt(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-
-	rows, err := stmt.QueryContext(ctx)
+	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -746,18 +669,12 @@ func (s *SQLiteStore) ListConfigs(ctx context.Context) ([]*Config, error) {
 }
 
 func (s *SQLiteStore) GetConfig(ctx context.Context, id int64) (*Config, error) {
-	// 性能优化：使用预编译语句
 	query := `
 		SELECT id, name, api_key, api_keys, key_strategy, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at
 		FROM channels
 		WHERE id = ?
 	`
-	stmt, err := s.prepareStmt(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-
-	row := stmt.QueryRowContext(ctx, id)
+	row := s.db.QueryRowContext(ctx, query, id)
 
 	// 使用统一的扫描器
 	scanner := NewConfigScanner()
@@ -772,36 +689,40 @@ func (s *SQLiteStore) GetConfig(ctx context.Context, id int64) (*Config, error) 
 }
 
 // GetEnabledChannelsByModel 查询支持指定模型的启用渠道（按优先级排序）
-// 简化方案：直接数据库查询，利用 SQLite 索引，避免内存缓存复杂性
+// 性能优化：使用 LEFT JOIN 一次性查询渠道和冷却状态，消除 N+1 查询问题
 func (s *SQLiteStore) GetEnabledChannelsByModel(ctx context.Context, model string) ([]*Config, error) {
 	var query string
-	var args []interface{}
+	var args []any
+	nowUnix := time.Now().Unix()
 
 	if model == "*" {
-		// 通配符：返回所有启用的渠道
+		// 通配符：返回所有启用且未冷却的渠道
 		query = `
-			SELECT id, name, api_key, api_keys, key_strategy, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at
-			FROM channels
-			WHERE enabled = 1
-			ORDER BY priority DESC, id ASC
+			SELECT c.id, c.name, c.api_key, c.api_keys, c.key_strategy, c.url, c.priority,
+			       c.models, c.model_redirects, c.channel_type, c.enabled, c.created_at, c.updated_at
+			FROM channels c
+			LEFT JOIN cooldowns cd ON c.id = cd.channel_id
+			WHERE c.enabled = 1
+			  AND (cd.until IS NULL OR cd.until <= ?)
+			ORDER BY c.priority DESC, c.id ASC
 		`
+		args = []any{nowUnix}
 	} else {
-		// 精确匹配：查询models字段包含该模型（JSON数组存储）
+		// 精确匹配：查询支持该模型且未冷却的渠道
 		query = `
-			SELECT id, name, api_key, api_keys, key_strategy, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at
-			FROM channels
-			WHERE enabled = 1 AND models LIKE ?
-			ORDER BY priority DESC, id ASC
+			SELECT c.id, c.name, c.api_key, c.api_keys, c.key_strategy, c.url, c.priority,
+			       c.models, c.model_redirects, c.channel_type, c.enabled, c.created_at, c.updated_at
+			FROM channels c
+			LEFT JOIN cooldowns cd ON c.id = cd.channel_id
+			WHERE c.enabled = 1
+			  AND c.models LIKE ?
+			  AND (cd.until IS NULL OR cd.until <= ?)
+			ORDER BY c.priority DESC, c.id ASC
 		`
-		args = []interface{}{"%" + model + "%"}
+		args = []any{"%" + model + "%", nowUnix}
 	}
 
-	stmt, err := s.prepareStmt(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-
-	rows, err := stmt.QueryContext(ctx, args...)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -812,20 +733,21 @@ func (s *SQLiteStore) GetEnabledChannelsByModel(ctx context.Context, model strin
 }
 
 // GetEnabledChannelsByType 查询指定类型的启用渠道（按优先级排序）
+// 性能优化：使用 LEFT JOIN 一次性查询渠道和冷却状态，消除 N+1 查询问题
 func (s *SQLiteStore) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*Config, error) {
+	nowUnix := time.Now().Unix()
 	query := `
-		SELECT id, name, api_key, api_keys, key_strategy, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at
-		FROM channels
-		WHERE enabled = 1 AND channel_type = ?
-		ORDER BY priority DESC, id ASC
+		SELECT c.id, c.name, c.api_key, c.api_keys, c.key_strategy, c.url, c.priority,
+		       c.models, c.model_redirects, c.channel_type, c.enabled, c.created_at, c.updated_at
+		FROM channels c
+		LEFT JOIN cooldowns cd ON c.id = cd.channel_id
+		WHERE c.enabled = 1
+		  AND c.channel_type = ?
+		  AND (cd.until IS NULL OR cd.until <= ?)
+		ORDER BY c.priority DESC, c.id ASC
 	`
 
-	stmt, err := s.prepareStmt(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-
-	rows, err := stmt.QueryContext(ctx, channelType)
+	rows, err := s.db.QueryContext(ctx, query, channelType, nowUnix)
 	if err != nil {
 		return nil, err
 	}

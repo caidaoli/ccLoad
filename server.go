@@ -100,6 +100,15 @@ func NewServer(store Store) *Server {
 		}
 	}
 
+	// TLS证书验证配置（安全优化：默认启用证书验证）
+	skipTLSVerify := false
+	if os.Getenv("CCLOAD_SKIP_TLS_VERIFY") == "true" {
+		skipTLSVerify = true
+		fmt.Println("⚠️  警告：TLS证书验证已禁用（CCLOAD_SKIP_TLS_VERIFY=true）")
+		fmt.Println("   仅用于开发/测试环境，生产环境严禁使用！")
+		fmt.Println("   当前配置存在中间人攻击风险，API Key可能泄漏")
+	}
+
 	// 优化 HTTP 客户端配置 - 重点优化连接建立阶段的超时控制
 	dialer := &net.Dialer{
 		Timeout:   10 * time.Second, // DNS解析+TCP连接建立超时
@@ -122,10 +131,11 @@ func NewServer(store Store) *Server {
 		ForceAttemptHTTP2:  false,     // 允许自动协议协商，避免HTTP/2超时
 		WriteBufferSize:    64 * 1024, // 64KB写缓冲区
 		ReadBufferSize:     64 * 1024, // 64KB读缓冲区
-		// 启用TLS会话缓存，减少重复握手耗时，跳过证书验证
+		// 启用TLS会话缓存，减少重复握手耗时
 		TLSClientConfig: &tls.Config{
 			ClientSessionCache: tls.NewLRUClientSessionCache(1024),
-			InsecureSkipVerify: true, // 跳过证书验证
+			MinVersion:         tls.VersionTLS12,  // 强制 TLS 1.2+
+			InsecureSkipVerify: skipTLSVerify,     // 默认false（启用证书验证）
 		},
 	}
 
