@@ -58,6 +58,7 @@ type Server struct {
 	// 监控指标（P2优化：实时统计冷却状态）
 	channelCooldownGauge atomic.Int64 // 当前活跃的渠道级冷却数量
 	keyCooldownGauge     atomic.Int64 // 当前活跃的Key级冷却数量
+	logDropCount         atomic.Int64 // 日志丢弃计数器（P1修复 2025-10-05）
 }
 
 func NewServer(store Store) *Server {
@@ -175,7 +176,7 @@ func NewServer(store Store) *Server {
 	go s.rrBatchWriter()
 
 	// 启动后台清理协程
-	go s.keySelector.CleanupExpiredKeyCooldowns() // Key级冷却清理（P1优化：防止内存泄漏）
+	// 注意：已移除 CleanupExpiredKeyCooldowns() 调用，SQLite查询时自动过滤过期数据
 	go s.cleanExpiredSessions()
 	go s.cleanupOldLogsLoop() // 定期清理3天前的日志（性能优化：避免每次插入时清理）
 
@@ -465,12 +466,20 @@ func (s *Server) flushLogs(logs []*LogEntry) {
 }
 
 // 异步添加日志
+// P1修复 (2025-10-05): 添加丢弃计数和告警机制
 func (s *Server) addLogAsync(entry *LogEntry) {
 	select {
 	case s.logChan <- entry:
 		// 成功放入队列
 	default:
-		// 队列满，丢弃日志（生产环境可以考虑监控）
+		// 队列满，丢弃日志并计数
+		dropCount := s.logDropCount.Add(1)
+
+		// 告警阈值：每丢弃1000条打印一次警告
+		if dropCount%1000 == 0 {
+			fmt.Printf("⚠️  严重警告: 日志丢弃计数达到 %d 条！请检查系统负载或增加日志队列容量\n", dropCount)
+			fmt.Printf("   建议: 1) 增加CCLOAD_LOG_BUFFER环境变量 2) 增加日志Worker数量 3) 优化磁盘I/O性能\n")
+		}
 	}
 }
 

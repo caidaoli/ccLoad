@@ -24,11 +24,40 @@ func NewWhereBuilder() *WhereBuilder {
 }
 
 // AddCondition 添加条件
+// P0修复 (2025-10-05): 强制参数化查询，防止SQL注入
 func (wb *WhereBuilder) AddCondition(condition string, args ...any) *WhereBuilder {
-	if condition != "" {
-		wb.conditions = append(wb.conditions, condition)
-		wb.args = append(wb.args, args...)
+	if condition == "" {
+		return wb
 	}
+
+	// SQL注入防护：如果提供了参数，条件中必须包含占位符
+	if len(args) > 0 && !strings.Contains(condition, "?") {
+		panic(fmt.Sprintf("安全错误: SQL条件必须使用占位符 '?'，禁止直接拼接参数。条件: %s", condition))
+	}
+
+	// SQL注入防护：检查条件字符串是否包含危险关键字（基础黑名单）
+	conditionLower := strings.ToLower(condition)
+	dangerousPatterns := []string{
+		"; drop ",
+		"; delete ",
+		"; update ",
+		"; insert ",
+		"-- ",     // SQL注释
+		"/*",      // 多行注释开始
+		"*/",      // 多行注释结束
+		"union ",  // UNION注入
+		" or 1=1", // 经典注入
+		" or '1'='1",
+	}
+
+	for _, pattern := range dangerousPatterns {
+		if strings.Contains(conditionLower, pattern) {
+			panic(fmt.Sprintf("安全错误: 检测到潜在SQL注入模式 '%s'。条件: %s", pattern, condition))
+		}
+	}
+
+	wb.conditions = append(wb.conditions, condition)
+	wb.args = append(wb.args, args...)
 	return wb
 }
 

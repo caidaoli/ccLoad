@@ -112,6 +112,7 @@ func (s *Server) handleChannels(c *gin.Context) {
 }
 
 // 获取渠道列表
+// P1修复 (2025-10-05): 使用批量查询优化N+1问题
 func (s *Server) handleListChannels(c *gin.Context) {
 	cfgs, err := s.store.ListConfigs(c.Request.Context())
 	if err != nil {
@@ -121,6 +122,15 @@ func (s *Server) handleListChannels(c *gin.Context) {
 
 	// 附带冷却状态
 	now := time.Now()
+
+	// 性能优化：批量查询所有Key冷却状态（一次查询替代 N*M 次）
+	allKeyCooldowns, err := s.store.GetAllKeyCooldowns(c.Request.Context())
+	if err != nil {
+		// Key冷却查询失败不影响主流程，仅记录错误
+		fmt.Printf("⚠️  警告: 批量查询Key冷却状态失败: %v\n", err)
+		allKeyCooldowns = make(map[int64]map[int]time.Time)
+	}
+
 	out := make([]ChannelWithCooldown, 0, len(cfgs))
 	for _, cfg := range cfgs {
 		oc := ChannelWithCooldown{Config: cfg}
@@ -141,15 +151,18 @@ func (s *Server) handleListChannels(c *gin.Context) {
 			oc.CooldownRemainingMS = cooldownRemainingMS
 		}
 
-		// Key级别冷却：返回所有Key的状态信息（包括正常和冷却）
-		// 修复：单Key渠道也需要显示Key冷却状态（单Key升级逻辑会触发Key级冷却）
+		// Key级别冷却：使用批量查询结果（性能提升：N*M -> 1 次查询）
 		keys := cfg.GetAPIKeys()
 		keyCooldowns := make([]KeyCooldownInfo, 0, len(keys))
+
+		// 从批量查询结果中获取该渠道的所有Key冷却状态
+		channelKeyCooldowns := allKeyCooldowns[cfg.ID]
+
 		for i := range keys {
 			keyInfo := KeyCooldownInfo{KeyIndex: i}
 
 			// 检查是否在冷却中
-			if until, ok := s.store.GetKeyCooldownUntil(c.Request.Context(), cfg.ID, i); ok && until.After(now) {
+			if until, cooled := channelKeyCooldowns[i]; cooled && until.After(now) {
 				u := until
 				keyInfo.CooldownUntil = &u
 				keyInfo.CooldownRemainingMS = int64(until.Sub(now) / time.Millisecond)

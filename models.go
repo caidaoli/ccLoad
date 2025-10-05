@@ -196,6 +196,7 @@ type Store interface {
 
 	// key-level cooldown (新增)
 	GetKeyCooldownUntil(ctx context.Context, configID int64, keyIndex int) (time.Time, bool)
+	GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int]time.Time, error) // P1修复: 批量查询所有Key冷却状态
 	SetKeyCooldown(ctx context.Context, configID int64, keyIndex int, until time.Time) error
 	BumpKeyCooldownOnError(ctx context.Context, configID int64, keyIndex int, now time.Time) (time.Duration, error)
 	ResetKeyCooldown(ctx context.Context, configID int64, keyIndex int) error

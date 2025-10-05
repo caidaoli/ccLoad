@@ -228,6 +228,10 @@ func (m *MockStore) GetKeyCooldownUntil(ctx context.Context, configID int64, key
 	return time.Time{}, false
 }
 
+func (m *MockStore) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int]time.Time, error) {
+	return make(map[int64]map[int]time.Time), nil
+}
+
 func (m *MockStore) BumpKeyCooldownOnError(ctx context.Context, configID int64, keyIndex int, now time.Time) (time.Duration, error) {
 	return time.Second, nil
 }
@@ -479,6 +483,9 @@ func (m *MockStoreAllKeysCooled) ResetKeyCooldown(ctx context.Context, configID 
 }
 func (m *MockStoreAllKeysCooled) ClearAllKeyCooldowns(ctx context.Context, configID int64) error {
 	return nil
+}
+func (m *MockStoreAllKeysCooled) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int]time.Time, error) {
+	return make(map[int64]map[int]time.Time), nil
 }
 func (m *MockStoreAllKeysCooled) SetKeyRR(ctx context.Context, configID int64, idx int) error {
 	return nil

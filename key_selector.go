@@ -146,16 +146,7 @@ func (ks *KeySelector) GetKeyCooldownInfo(ctx context.Context, channelID int64, 
 	return time.Time{}, false
 }
 
-// CleanupExpiredKeyCooldowns 定期清理过期的Key级冷却（数据库层面）
-// 保留此函数以维持API兼容性，但实际上SQLite会自动处理过期数据查询
-func (ks *KeySelector) CleanupExpiredKeyCooldowns() {
-	// 重构后：不再需要清理内存缓存
-	// SQLite查询时自动过滤过期数据（WHERE until > NOW()）
-	// 保留此函数框架避免server.go调用报错，但实际不执行任何操作
-	ticker := time.NewTicker(1 * time.Hour) // 降低频率，仅作占位
-	defer ticker.Stop()
-
-	for range ticker.C {
-		// 不执行任何操作（已移除内存缓存扫描逻辑）
-	}
-}
+// CleanupExpiredKeyCooldowns 已废弃：SQLite查询时自动过滤过期数据（WHERE until > NOW()）
+// 该函数已被移除以消除goroutine泄漏风险
+// 历史原因：重构后移除了内存缓存，此函数不再需要
+// 修复日期：2025-10-05 (代码审查发现的P0问题)

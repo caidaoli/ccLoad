@@ -138,12 +138,18 @@ func classifyError(err error) (statusCode int, shouldRetry bool) {
 		retryInt = 1
 	}
 
-	// 容量控制：超过阈值时清空缓存（简单有效的防泄漏策略）
+	// 容量控制：使用原子操作清空缓存，避免竞态条件（P1修复 2025-10-05）
 	currentSize := errCacheSize.Add(1)
 	if currentSize > errCacheMaxSize {
-		// 清空缓存并重置计数器
-		errClassCache = sync.Map{}
+		// 原子清空缓存：使用Range+Delete而非替换sync.Map
+		// 避免并发读取到半初始化状态
+		errClassCache.Range(func(key, value any) bool {
+			errClassCache.Delete(key)
+			return true
+		})
 		errCacheSize.Store(0)
+		// 重新计数当前条目
+		errCacheSize.Store(1)
 	}
 
 	errClassCache.Store(errStr, [2]int{code, retryInt})

@@ -1478,26 +1478,70 @@ func (s *SQLiteStore) SyncAllChannelsToRedis(ctx context.Context) error {
 }
 
 // redisSyncWorker 异步Redis同步worker（后台goroutine）
+// 修复：增加重试机制，避免瞬时网络故障导致数据丢失（P0修复 2025-10-05）
 func (s *SQLiteStore) redisSyncWorker() {
 	ctx := context.Background()
+
+	// 指数退避重试配置
+	retryBackoff := []time.Duration{
+		1 * time.Second,   // 第1次重试：1秒后
+		5 * time.Second,   // 第2次重试：5秒后
+		15 * time.Second,  // 第3次重试：15秒后
+	}
 
 	for {
 		select {
 		case <-s.syncCh:
-			// 执行同步操作
-			if err := s.doSyncAllChannels(ctx); err != nil {
-				fmt.Printf("Warning: Async Redis sync failed: %v\n", err)
+			// 执行同步操作，支持重试
+			syncErr := s.doSyncAllChannelsWithRetry(ctx, retryBackoff)
+			if syncErr != nil {
+				// 所有重试都失败，记录致命错误
+				fmt.Printf("❌ 严重错误: Redis同步失败（已重试%d次）: %v\n", len(retryBackoff), syncErr)
+				fmt.Printf("   警告: 服务重启后可能丢失渠道配置，请检查Redis连接或手动备份数据库\n")
 			}
+
 		case <-s.done:
 			// 优雅关闭：处理完最后一个任务（如果有）
 			select {
 			case <-s.syncCh:
+				// 关闭时不重试，快速同步一次即可
 				_ = s.doSyncAllChannels(ctx)
 			default:
 			}
 			return
 		}
 	}
+}
+
+// doSyncAllChannelsWithRetry 带重试机制的同步操作（P0修复新增）
+func (s *SQLiteStore) doSyncAllChannelsWithRetry(ctx context.Context, retryBackoff []time.Duration) error {
+	var lastErr error
+
+	// 首次尝试
+	if err := s.doSyncAllChannels(ctx); err == nil {
+		return nil // 成功
+	} else {
+		lastErr = err
+		fmt.Printf("⚠️  Redis同步失败（将自动重试）: %v\n", err)
+	}
+
+	// 重试逻辑
+	for attempt := 0; attempt < len(retryBackoff); attempt++ {
+		// 等待退避时间
+		time.Sleep(retryBackoff[attempt])
+
+		// 重试同步
+		if err := s.doSyncAllChannels(ctx); err == nil {
+			fmt.Printf("✅ Redis同步恢复成功（第%d次重试）\n", attempt+1)
+			return nil // 成功
+		} else {
+			lastErr = err
+			fmt.Printf("⚠️  Redis同步重试失败（第%d次）: %v\n", attempt+1, err)
+		}
+	}
+
+	// 所有重试都失败
+	return fmt.Errorf("all %d retries failed: %w", len(retryBackoff), lastErr)
 }
 
 // triggerAsyncSync 触发异步Redis同步（非阻塞）
@@ -1576,6 +1620,43 @@ func (s *SQLiteStore) GetKeyCooldownUntil(ctx context.Context, configID int64, k
 		WHERE channel_id = ? AND key_index = ?
 	`, configID, keyIndex)
 	return scanUnixTimestamp(row)
+}
+
+// GetAllKeyCooldowns 批量查询所有Key冷却状态（P1修复 2025-10-05）
+// 返回: map[channelID]map[keyIndex]cooldownUntil
+// 性能优化: 一次查询替代 N*M 次独立查询（N=渠道数, M=Key数）
+func (s *SQLiteStore) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int]time.Time, error) {
+	now := time.Now().Unix()
+	query := `SELECT channel_id, key_index, until FROM key_cooldowns WHERE until > ?`
+
+	rows, err := s.db.QueryContext(ctx, query, now)
+	if err != nil {
+		return nil, fmt.Errorf("query all key cooldowns: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[int64]map[int]time.Time)
+	for rows.Next() {
+		var channelID int64
+		var keyIndex int
+		var until int64
+
+		if err := rows.Scan(&channelID, &keyIndex, &until); err != nil {
+			return nil, fmt.Errorf("scan key cooldown: %w", err)
+		}
+
+		// 初始化渠道级map
+		if result[channelID] == nil {
+			result[channelID] = make(map[int]time.Time)
+		}
+		result[channelID][keyIndex] = time.Unix(until, 0)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+
+	return result, nil
 }
 
 // BumpKeyCooldownOnError Key级别指数退避：错误翻倍（最小1s，最大30m）
