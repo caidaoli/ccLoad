@@ -541,11 +541,9 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *Config, keyIndex int
 
 	case ErrorLevelChannel:
 		// 渠道级错误：冷却整个渠道，切换到其他渠道
-		if cooldownDur, err := s.store.BumpCooldownOnError(ctx, cfg.ID, time.Now()); err == nil {
-			s.cooldownCache.Store(cfg.ID, time.Now().Add(cooldownDur))
-			// 更新监控指标（P2优化）
-			s.channelCooldownGauge.Add(1)
-		}
+		_, _ = s.store.BumpCooldownOnError(ctx, cfg.ID, time.Now())
+		// 更新监控指标（P2优化）
+		s.channelCooldownGauge.Add(1)
 		return ActionRetryChannel, true
 
 	default:
@@ -650,8 +648,8 @@ func (s *Server) handleSuccessResponse(
 	res *fwResult,
 	duration float64,
 ) (*proxyResult, bool, bool) {
-	// 清除冷却状态
-	s.cooldownCache.Delete(cfg.ID)
+	// 清除冷却状态（直接操作数据库）
+	_ = s.store.ResetCooldown(ctx, cfg.ID)
 	_ = s.keySelector.MarkKeySuccess(ctx, cfg.ID, keyIndex)
 
 	// 记录成功日志
@@ -837,6 +835,12 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 		return
 	}
 
+	// 拦截不支持的端点
+	if requestPath == "/v1/messages/count_tokens" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "endpoint not supported"})
+		return
+	}
+
 	// 解析请求
 	originalModel, all, isStreaming, err := parseIncomingRequest(c)
 	if err != nil {
@@ -896,11 +900,9 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 		// 处理"所有Key都在冷却中"的特殊错误
 		if err != nil && strings.Contains(err.Error(), "channel keys unavailable") {
 			// 触发渠道级别冷却，防止后续请求重复尝试该渠道
-			if cooldownDur, cooldownErr := s.store.BumpCooldownOnError(ctx, cfg.ID, time.Now()); cooldownErr == nil {
-				s.cooldownCache.Store(cfg.ID, time.Now().Add(cooldownDur))
-				// 更新监控指标（P2优化）
-				s.channelCooldownGauge.Add(1)
-			}
+			_, _ = s.store.BumpCooldownOnError(ctx, cfg.ID, time.Now())
+			// 更新监控指标（P2优化）
+			s.channelCooldownGauge.Add(1)
 			continue // 尝试下一个渠道
 		}
 

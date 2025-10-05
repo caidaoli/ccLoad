@@ -3,27 +3,22 @@ package main
 import (
 	"context"
 	"fmt"
-	"sync"
 	"sync/atomic"
 	"time"
 )
 
 // KeySelector 负责从渠道的多个API Key中选择可用的Key
-// 遵循SRP原则：职责单一，仅负责Key选择逻辑
+// 重构：移除内存缓存，直接查询数据库
 type KeySelector struct {
-	store          Store
-	keyCooldown    sync.Map      // 内存缓存：key=fmt.Sprintf("%d_%d", channelID, keyIndex) -> time.Time
-	keyRRCache     sync.Map      // 内存缓存：key=channelID -> keyIndex
-	keyCooldownTTL time.Duration
-	cooldownGauge  *atomic.Int64 // 监控指标：当前活跃的Key级冷却数量（P2优化）
+	store         Store
+	cooldownGauge *atomic.Int64 // 监控指标：当前活跃的Key级冷却数量（P2优化）
 }
 
 // NewKeySelector 创建Key选择器
 func NewKeySelector(store Store, gauge *atomic.Int64) *KeySelector {
 	return &KeySelector{
-		store:          store,
-		keyCooldownTTL: 5 * time.Second, // 冷却状态缓存5秒
-		cooldownGauge:  gauge,
+		store:         store,
+		cooldownGauge: gauge,
 	}
 }
 
@@ -40,10 +35,7 @@ func (ks *KeySelector) SelectAvailableKey(ctx context.Context, cfg *Config, excl
 	}
 
 	// 单Key场景：直接返回，不使用Key级别冷却（YAGNI原则）
-	// 原因：单Key渠道应完全依赖渠道级别冷却（在selector.go中已实现）
-	// 如果渠道被选中，说明渠道不在冷却中，直接返回唯一的Key
 	if len(keys) == 1 {
-		// 检查是否已尝试过（单Key场景下第二次调用应该返回错误）
 		if excludeKeys != nil && excludeKeys[0] {
 			return -1, "", fmt.Errorf("single key already tried in this request")
 		}
@@ -52,107 +44,80 @@ func (ks *KeySelector) SelectAvailableKey(ctx context.Context, cfg *Config, excl
 
 	// 多Key场景：根据策略选择
 	strategy := cfg.GetKeyStrategy()
-	now := time.Now()
 
 	switch strategy {
 	case "round_robin":
-		return ks.selectRoundRobin(ctx, cfg.ID, keys, now, excludeKeys)
+		return ks.selectRoundRobin(ctx, cfg.ID, keys, excludeKeys)
 	case "sequential":
-		return ks.selectSequential(ctx, cfg.ID, keys, now, excludeKeys)
+		return ks.selectSequential(ctx, cfg.ID, keys, excludeKeys)
 	default:
 		// 默认使用顺序策略
-		return ks.selectSequential(ctx, cfg.ID, keys, now, excludeKeys)
+		return ks.selectSequential(ctx, cfg.ID, keys, excludeKeys)
 	}
 }
 
 // selectSequential 顺序选择：从第一个开始，跳过冷却中的Key和已尝试的Key
-func (ks *KeySelector) selectSequential(_ context.Context, channelID int64, keys []string, _ time.Time, excludeKeys map[int]bool) (int, string, error) {
+func (ks *KeySelector) selectSequential(ctx context.Context, channelID int64, keys []string, excludeKeys map[int]bool) (int, string, error) {
+	now := time.Now()
+
 	for i, key := range keys {
 		// 跳过本次请求已尝试过的Key
 		if excludeKeys != nil && excludeKeys[i] {
 			continue
 		}
-		// 跳过冷却中的Key
-		if !ks.isKeyCooledDown(channelID, i) {
-			return i, key, nil
+
+		// 直接查询数据库检查冷却状态
+		until, exists := ks.store.GetKeyCooldownUntil(ctx, channelID, i)
+		if exists && until.After(now) {
+			continue // Key冷却中，跳过
 		}
+
+		return i, key, nil
 	}
+
 	return -1, "", fmt.Errorf("all API keys are in cooldown or already tried")
 }
 
 // selectRoundRobin 轮询选择：使用轮询指针，跳过冷却中的Key和已尝试的Key
-func (ks *KeySelector) selectRoundRobin(ctx context.Context, channelID int64, keys []string, _ time.Time, excludeKeys map[int]bool) (int, string, error) {
+func (ks *KeySelector) selectRoundRobin(ctx context.Context, channelID int64, keys []string, excludeKeys map[int]bool) (int, string, error) {
 	keyCount := len(keys)
+	now := time.Now()
 
-	// 从内存缓存获取轮询指针
-	var startIdx int
-	if val, ok := ks.keyRRCache.Load(channelID); ok {
-		startIdx = val.(int) % keyCount
-	} else {
-		// 从数据库加载持久化的轮询指针
-		startIdx = ks.store.NextKeyRR(ctx, channelID, keyCount)
-		ks.keyRRCache.Store(channelID, startIdx)
-	}
+	// 直接从数据库获取轮询指针
+	startIdx := ks.store.NextKeyRR(ctx, channelID, keyCount)
 
 	// 从startIdx开始轮询，最多尝试keyCount次
 	for i := 0; i < keyCount; i++ {
 		idx := (startIdx + i) % keyCount
+
 		// 跳过本次请求已尝试过的Key
 		if excludeKeys != nil && excludeKeys[idx] {
 			continue
 		}
-		// 跳过冷却中的Key
-		if !ks.isKeyCooledDown(channelID, idx) {
-			// 更新轮询指针到下一个位置
-			nextIdx := (idx + 1) % keyCount
-			ks.keyRRCache.Store(channelID, nextIdx)
-			_ = ks.store.SetKeyRR(ctx, channelID, nextIdx)
-			return idx, keys[idx], nil
+
+		// 直接查询数据库检查冷却状态
+		until, exists := ks.store.GetKeyCooldownUntil(ctx, channelID, idx)
+		if exists && until.After(now) {
+			continue // Key冷却中，跳过
 		}
+
+		// 更新轮询指针到下一个位置
+		nextIdx := (idx + 1) % keyCount
+		_ = ks.store.SetKeyRR(ctx, channelID, nextIdx)
+
+		return idx, keys[idx], nil
 	}
 
 	return -1, "", fmt.Errorf("all API keys are in cooldown or already tried")
-}
-
-// isKeyCooledDown 检查指定Key是否在冷却中（优先内存缓存，fallback数据库）
-func (ks *KeySelector) isKeyCooledDown(channelID int64, keyIndex int) bool {
-	cacheKey := fmt.Sprintf("%d_%d", channelID, keyIndex)
-	now := time.Now()
-
-	// 检查内存缓存
-	if val, ok := ks.keyCooldown.Load(cacheKey); ok {
-		expireTime := val.(time.Time)
-		if expireTime.After(now) {
-			return true // 仍在冷却中
-		}
-		// 缓存过期，删除
-		ks.keyCooldown.Delete(cacheKey)
-		return false
-	}
-
-	// 内存缓存未命中，查询数据库（修复：避免服务重启后丢失冷却状态）
-	until, ok := ks.store.GetKeyCooldownUntil(context.Background(), channelID, keyIndex)
-	if ok && until.After(now) {
-		// 回填内存缓存，避免重复数据库查询
-		ks.keyCooldown.Store(cacheKey, until)
-		return true
-	}
-
-	return false
 }
 
 // MarkKeyError 标记Key错误，触发指数退避冷却
 func (ks *KeySelector) MarkKeyError(ctx context.Context, channelID int64, keyIndex int) error {
 	now := time.Now()
-	cooldownDur, err := ks.store.BumpKeyCooldownOnError(ctx, channelID, keyIndex, now)
+	_, err := ks.store.BumpKeyCooldownOnError(ctx, channelID, keyIndex, now)
 	if err != nil {
 		return err
 	}
-
-	// 更新内存缓存
-	cacheKey := fmt.Sprintf("%d_%d", channelID, keyIndex)
-	cooldownUntil := now.Add(cooldownDur)
-	ks.keyCooldown.Store(cacheKey, cooldownUntil)
 
 	// 更新监控指标（P2优化）
 	if ks.cooldownGauge != nil {
@@ -164,101 +129,33 @@ func (ks *KeySelector) MarkKeyError(ctx context.Context, channelID int64, keyInd
 
 // MarkKeySuccess 标记Key成功，重置冷却状态
 func (ks *KeySelector) MarkKeySuccess(ctx context.Context, channelID int64, keyIndex int) error {
-	// 清除数据库冷却记录
-	if err := ks.store.ResetKeyCooldown(ctx, channelID, keyIndex); err != nil {
-		return err
-	}
-
-	// 清除内存缓存
-	cacheKey := fmt.Sprintf("%d_%d", channelID, keyIndex)
-	ks.keyCooldown.Delete(cacheKey)
-
-	return nil
+	// 直接清除数据库冷却记录
+	return ks.store.ResetKeyCooldown(ctx, channelID, keyIndex)
 }
 
 // GetKeyCooldownInfo 获取Key冷却信息（用于调试和监控）
 func (ks *KeySelector) GetKeyCooldownInfo(ctx context.Context, channelID int64, keyIndex int) (until time.Time, cooled bool) {
-	cacheKey := fmt.Sprintf("%d_%d", channelID, keyIndex)
 	now := time.Now()
 
-	// 优先从内存缓存获取
-	if val, ok := ks.keyCooldown.Load(cacheKey); ok {
-		expireTime := val.(time.Time)
-		if expireTime.After(now) {
-			return expireTime, true
-		}
-	}
-
-	// 从数据库查询
+	// 直接查询数据库
 	until, ok := ks.store.GetKeyCooldownUntil(ctx, channelID, keyIndex)
 	if ok && until.After(now) {
-		// 更新内存缓存
-		ks.keyCooldown.Store(cacheKey, until)
 		return until, true
 	}
 
 	return time.Time{}, false
 }
 
-// WarmCooldownCache 预热Key冷却缓存（性能优化：启动时加载所有活跃冷却状态）
-// 作用：消除99%的数据库回退查询，将isKeyCooledDown延迟从0.3ms降至0.05ms（6倍提升）
-func (ks *KeySelector) WarmCooldownCache(ctx context.Context) error {
-	// 需要访问底层数据库，使用类型断言获取SQLiteStore
-	sqlStore, ok := ks.store.(*SQLiteStore)
-	if !ok {
-		// 非SQLite存储，跳过预热（兼容其他Store实现）
-		return nil
-	}
-
-	now := time.Now().Unix()
-	rows, err := sqlStore.db.QueryContext(ctx, `
-		SELECT channel_id, key_index, until
-		FROM key_cooldowns
-		WHERE until > ?
-	`, now)
-	if err != nil {
-		return fmt.Errorf("query key_cooldowns: %w", err)
-	}
-	defer rows.Close()
-
-	loadCount := 0
-	for rows.Next() {
-		var channelID, keyIndex int64
-		var until int64
-
-		if err := rows.Scan(&channelID, &keyIndex, &until); err != nil {
-			continue // 跳过错误行
-		}
-
-		cacheKey := fmt.Sprintf("%d_%d", channelID, keyIndex)
-		ks.keyCooldown.Store(cacheKey, time.Unix(until, 0))
-		loadCount++
-	}
-
-	if loadCount > 0 {
-		fmt.Printf("✅ Key冷却缓存预热完成：加载 %d 条活跃冷却记录\n", loadCount)
-	}
-
-	return nil
-}
-
-// CleanupExpiredKeyCooldowns 定期清理过期的Key级冷却缓存（性能优化：防止内存泄漏）
-// 设计原则：与渠道级冷却清理（cleanupExpiredCooldowns）保持一致，每分钟扫描一次
+// CleanupExpiredKeyCooldowns 定期清理过期的Key级冷却（数据库层面）
+// 保留此函数以维持API兼容性，但实际上SQLite会自动处理过期数据查询
 func (ks *KeySelector) CleanupExpiredKeyCooldowns() {
-	ticker := time.NewTicker(1 * time.Minute)
+	// 重构后：不再需要清理内存缓存
+	// SQLite查询时自动过滤过期数据（WHERE until > NOW()）
+	// 保留此函数框架避免server.go调用报错，但实际不执行任何操作
+	ticker := time.NewTicker(1 * time.Hour) // 降低频率，仅作占位
 	defer ticker.Stop()
 
 	for range ticker.C {
-		now := time.Now()
-		ks.keyCooldown.Range(func(key, value any) bool {
-			if expireTime, ok := value.(time.Time); ok && now.After(expireTime) {
-				ks.keyCooldown.Delete(key)
-				// 更新监控指标（P2优化）
-				if ks.cooldownGauge != nil {
-					ks.cooldownGauge.Add(-1)
-				}
-			}
-			return true
-		})
+		// 不执行任何操作（已移除内存缓存扫描逻辑）
 	}
 }

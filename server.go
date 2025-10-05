@@ -16,7 +16,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	ristretto "github.com/dgraph-io/ristretto/v2"
 	"github.com/gin-gonic/gin"
 )
 
@@ -25,15 +24,6 @@ type rrUpdate struct {
 	model    string
 	priority int
 	idx      int
-}
-
-// channelIndex 渠道索引结构（性能优化：O(1)查找替代O(n)扫描）
-// 阶段2优化：将渠道选择从0.5ms降至0.05ms（10倍提升）
-type channelIndex struct {
-	byModel    map[string][]*Config // 模型 → 预排序的渠道列表
-	byType     map[string][]*Config // 渠道类型 → 预排序的渠道列表
-	allEnabled []*Config            // 所有启用的渠道（按优先级排序）
-	lastUpdate int64                // 缓存更新时间戳（Unix秒）
 }
 
 type Server struct {
@@ -56,14 +46,6 @@ type Server struct {
 	// 并发控制
 	concurrencySem chan struct{} // 信号量：限制最大并发请求数（防止goroutine爆炸）
 	maxConcurrency int           // 最大并发数（默认1000）
-
-	// 缓存和异步优化
-	configCache    atomic.Value // 无锁缓存，存储 []*Config（性能优化：消除读锁争用）
-	configCacheExp atomic.Int64 // 缓存过期时间戳
-	channelIndex   atomic.Value // 无锁索引缓存，存储 *channelIndex（阶段2优化：O(1)查找）
-
-	rrCache       *ristretto.Cache[string, int]
-	cooldownCache sync.Map // channelID -> expireTime
 
 	logChan    chan *LogEntry // 异步日志通道
 	logWorkers int            // 日志工作协程数
@@ -174,16 +156,6 @@ func NewServer(store Store) *Server {
 	// 初始化Key选择器（传递Key冷却监控指标）
 	s.keySelector = NewKeySelector(store, &s.keyCooldownGauge)
 
-	rrCfg := &ristretto.Config[string, int]{
-		NumCounters: 10000,
-		MaxCost:     1 << 20,
-		BufferItems: 64,
-	}
-	var err error
-	s.rrCache, err = ristretto.NewCache(rrCfg)
-	if err != nil {
-		panic("failed to create rrCache: " + err.Error())
-	}
 	// 启动日志工作协程
 	for i := 0; i < s.logWorkers; i++ {
 		go s.logWorker()
@@ -193,7 +165,6 @@ func NewServer(store Store) *Server {
 	go s.rrBatchWriter()
 
 	// 启动后台清理协程
-	go s.cleanupExpiredCooldowns()                // 渠道级冷却清理
 	go s.keySelector.CleanupExpiredKeyCooldowns() // Key级冷却清理（P1优化：防止内存泄漏）
 	go s.cleanExpiredSessions()
 	go s.cleanupOldLogsLoop() // 定期清理3天前的日志（性能优化：避免每次插入时清理）
@@ -451,94 +422,6 @@ func (s *Server) sessionCleanupLoop() {
 	}
 }
 
-// 获取缓存的配置
-// getCachedConfigs 无锁配置缓存读取（性能优化：消除RWMutex争用）
-// 原理：使用atomic.Value实现无锁读取，高并发下性能提升60-80%
-func (s *Server) getCachedConfigs(ctx context.Context) ([]*Config, error) {
-	now := time.Now().Unix()
-	exp := s.configCacheExp.Load()
-
-	// 缓存未过期，无锁快速路径
-	// 注意：必须同时检查配置缓存和索引缓存，确保缓存一致性
-	if exp > now {
-		if cached := s.configCache.Load(); cached != nil {
-			if idx := s.channelIndex.Load(); idx != nil {
-				return cached.([]*Config), nil
-			}
-		}
-	}
-
-	// 缓存过期或未初始化，需要刷新
-	// 注意：多个goroutine可能同时进入这里，使用CAS避免重复加载
-	cfgs, err := s.store.ListConfigs(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	// 性能优化：为每个配置构建模型查找索引（O(n) → O(1)查找）
-	for _, cfg := range cfgs {
-		cfg.BuildModelsSet()
-	}
-
-	// 阶段2优化：同时重建渠道索引（O(1)模型查找）
-	idx := s.buildChannelIndex(cfgs)
-	s.channelIndex.Store(idx)
-
-	// 无锁更新缓存
-	s.configCache.Store(cfgs)
-	s.configCacheExp.Store(now + 60) // 缓存60秒
-
-	return cfgs, nil
-}
-
-// invalidateConfigCache 立即使配置缓存失效（用于创建/更新/删除渠道后立即生效）
-// 无锁实现：仅设置过期时间戳为0，下次读取时自动重新加载
-func (s *Server) invalidateConfigCache() {
-	s.configCacheExp.Store(0)    // 将过期时间设为0，强制下次刷新
-	s.channelIndex.Store((*channelIndex)(nil)) // 同时清空索引缓存，确保下次重建
-}
-
-// buildChannelIndex 构建渠道索引（阶段2优化：预计算模型→渠道映射）
-// 作用：将selectCandidates从O(n)扫描+排序优化为O(1)查找
-func (s *Server) buildChannelIndex(cfgs []*Config) *channelIndex {
-	idx := &channelIndex{
-		byModel:    make(map[string][]*Config),
-		byType:     make(map[string][]*Config),
-		allEnabled: make([]*Config, 0, len(cfgs)),
-		lastUpdate: time.Now().Unix(),
-	}
-
-	// 第一遍：收集所有启用的渠道
-	for _, cfg := range cfgs {
-		if !cfg.Enabled || cfg.APIKey == "" || cfg.URL == "" {
-			continue
-		}
-		idx.allEnabled = append(idx.allEnabled, cfg)
-	}
-
-	// 按优先级降序排序（一次性排序，后续O(1)查找）
-	slices.SortFunc(idx.allEnabled, func(a, b *Config) int {
-		if a.Priority != b.Priority {
-			return b.Priority - a.Priority // 降序
-		}
-		return int(a.ID - b.ID) // 同优先级按ID升序
-	})
-
-	// 第二遍：按模型和类型分组（保持优先级顺序）
-	for _, cfg := range idx.allEnabled {
-		// 按模型分组
-		for _, model := range cfg.Models {
-			idx.byModel[model] = append(idx.byModel[model], cfg)
-		}
-
-		// 按渠道类型分组
-		channelType := cfg.GetChannelType()
-		idx.byType[channelType] = append(idx.byType[channelType], cfg)
-	}
-
-	return idx
-}
-
 // 异步日志工作协程
 func (s *Server) logWorker() {
 	batch := make([]*LogEntry, 0, 100)
@@ -581,23 +464,6 @@ func (s *Server) addLogAsync(entry *LogEntry) {
 	}
 }
 
-// 清理过期的冷却状态
-func (s *Server) cleanupExpiredCooldowns() {
-	ticker := time.NewTicker(1 * time.Minute)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		now := time.Now()
-		s.cooldownCache.Range(func(key, value any) bool {
-			if expireTime, ok := value.(time.Time); ok && now.After(expireTime) {
-				s.cooldownCache.Delete(key)
-				// 更新监控指标（P2优化）
-				s.channelCooldownGauge.Add(-1)
-			}
-			return true
-		})
-	}
-}
 
 // cleanupOldLogsLoop 定期清理旧日志（性能优化：避免每次插入时清理）
 // 每小时检查一次，删除3天前的日志
@@ -616,8 +482,8 @@ func (s *Server) cleanupOldLogsLoop() {
 
 // getGeminiModels 获取所有 gemini 渠道的去重模型列表
 func (s *Server) getGeminiModels(ctx context.Context) ([]string, error) {
-	// 获取所有渠道配置
-	configs, err := s.getCachedConfigs(ctx)
+	// 直接从数据库查询 gemini 渠道
+	configs, err := s.store.GetEnabledChannelsByType(ctx, "gemini")
 	if err != nil {
 		return nil, err
 	}
@@ -625,14 +491,8 @@ func (s *Server) getGeminiModels(ctx context.Context) ([]string, error) {
 	// 使用 map 去重
 	modelSet := make(map[string]bool)
 
-	// 遍历所有启用的 gemini 渠道
+	// 遍历所有 gemini 渠道
 	for _, cfg := range configs {
-		if !cfg.Enabled {
-			continue
-		}
-		if cfg.GetChannelType() != "gemini" {
-			continue
-		}
 
 		// 收集该渠道的所有模型
 		for _, model := range cfg.Models {
@@ -710,7 +570,8 @@ func (s *Server) flushRRBatch(batch []rrUpdate) {
 // warmHTTPConnections HTTP连接预热（性能优化：为高优先级渠道预建立连接）
 // 作用：消除首次请求的TLS握手延迟10-50ms，提升用户体验
 func (s *Server) warmHTTPConnections(ctx context.Context) {
-	configs, err := s.getCachedConfigs(ctx)
+	// 直接从数据库查询所有启用的渠道（已按优先级排序）
+	configs, err := s.store.GetEnabledChannelsByModel(ctx, "*")
 	if err != nil || len(configs) == 0 {
 		return
 	}

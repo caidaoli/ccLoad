@@ -58,10 +58,6 @@ func main() {
 		if err := s.LoadChannelsFromRedis(ctx); err != nil {
 			log.Printf("从Redis恢复失败: %v", err)
 		}
-	} else {
-		if err := s.Vacuum(ctx); err != nil {
-			log.Printf("VACUUM 执行失败: %v", err)
-		}
 	}
 	log.Printf("using sqlite store: %s", dbPath)
 	var store Store = s
@@ -70,14 +66,9 @@ func main() {
 
 	srv := NewServer(store)
 
-	// ========== 性能优化：启动时预热关键缓存（阶段1优化）==========
+	// ========== 性能优化：启动时预热（阶段1优化）==========
 
-	// 1. Key冷却缓存预热（消除99%数据库查询，提升6倍）
-	if err := srv.keySelector.WarmCooldownCache(ctx); err != nil {
-		log.Printf("Key冷却缓存预热失败: %v", err)
-	}
-
-	// 2. HTTP连接预热（消除首次请求TLS握手10-50ms）
+	// HTTP连接预热（消除首次请求TLS握手10-50ms）
 	srv.warmHTTPConnections(ctx)
 
 	// 等待连接预热完成（最多100ms）

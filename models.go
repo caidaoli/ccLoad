@@ -183,6 +183,9 @@ type Store interface {
 	UpdateConfig(ctx context.Context, id int64, upd *Config) (*Config, error)
 	DeleteConfig(ctx context.Context, id int64) error
 	ReplaceConfig(ctx context.Context, c *Config) (*Config, error)
+	// 简化查询：直接从数据库按条件查询（利用索引）
+	GetEnabledChannelsByModel(ctx context.Context, model string) ([]*Config, error)
+	GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*Config, error)
 
 	// cooldown (channel-level)
 	GetCooldownUntil(ctx context.Context, configID int64) (time.Time, bool)
@@ -196,6 +199,7 @@ type Store interface {
 	SetKeyCooldown(ctx context.Context, configID int64, keyIndex int, until time.Time) error
 	BumpKeyCooldownOnError(ctx context.Context, configID int64, keyIndex int, now time.Time) (time.Duration, error)
 	ResetKeyCooldown(ctx context.Context, configID int64, keyIndex int) error
+	ClearAllKeyCooldowns(ctx context.Context, configID int64) error // 清理渠道的所有Key冷却数据（用于Key变更时）
 
 	// key-level round-robin (新增)
 	NextKeyRR(ctx context.Context, configID int64, keyCount int) int
