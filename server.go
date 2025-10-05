@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -204,21 +205,21 @@ func (s *Server) createSession() string {
 
 // 验证session
 func (s *Server) validateSession(sessionID string) bool {
+	// 第一阶段：读取session信息（使用读锁）
 	s.sessMux.RLock()
-	defer s.sessMux.RUnlock()
-
 	expireTime, exists := s.sessions[sessionID]
+	s.sessMux.RUnlock()
+
 	if !exists {
 		return false
 	}
 
+	// 检查是否过期
 	if time.Now().After(expireTime) {
-		// session已过期，删除它
-		s.sessMux.RUnlock()
+		// 第二阶段：删除过期session（使用写锁）
 		s.sessMux.Lock()
 		delete(s.sessions, sessionID)
 		s.sessMux.Unlock()
-		s.sessMux.RLock()
 		return false
 	}
 
@@ -616,7 +617,12 @@ func (s *Server) warmHTTPConnections(ctx context.Context) {
 		// 异步预热（不阻塞启动）
 		go func(r *http.Request, c func()) {
 			defer c()
-			_, _ = s.client.Do(r) // 忽略响应和错误
+			resp, err := s.client.Do(r)
+			if err == nil && resp != nil && resp.Body != nil {
+				// 正确关闭响应体，防止连接泄漏
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			}
 		}(req, cancel)
 
 		warmedCount++

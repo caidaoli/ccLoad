@@ -138,18 +138,18 @@ func classifyError(err error) (statusCode int, shouldRetry bool) {
 		retryInt = 1
 	}
 
-	// 容量控制：使用原子操作清空缓存，避免竞态条件（P1修复 2025-10-05）
+	// 容量控制：使用CAS操作确保只有一个goroutine执行清理（P0修复 2025-10-05）
 	currentSize := errCacheSize.Add(1)
 	if currentSize > errCacheMaxSize {
-		// 原子清空缓存：使用Range+Delete而非替换sync.Map
-		// 避免并发读取到半初始化状态
-		errClassCache.Range(func(key, value any) bool {
-			errClassCache.Delete(key)
-			return true
-		})
-		errCacheSize.Store(0)
-		// 重新计数当前条目
-		errCacheSize.Store(1)
+		// 使用CompareAndSwap确保原子性，只有一个goroutine执行清理
+		if errCacheSize.CompareAndSwap(currentSize, 1) {
+			// 清空缓存（其他goroutine在清理期间可能读取到旧数据，但不会崩溃）
+			errClassCache.Range(func(key, value any) bool {
+				errClassCache.Delete(key)
+				return true
+			})
+		}
+		// 如果CAS失败，说明其他goroutine正在清理，当前goroutine继续执行即可
 	}
 
 	errClassCache.Store(errStr, [2]int{code, retryInt})
