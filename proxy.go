@@ -835,9 +835,9 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 		return
 	}
 
-	// 拦截不支持的端点
-	if requestPath == "/v1/messages/count_tokens" {
-		c.JSON(http.StatusNotFound, gin.H{"error": "endpoint not supported"})
+	// 拦截并本地实现token计数接口
+	if requestPath == "/v1/messages/count_tokens" && requestMethod == http.MethodPost {
+		s.handleCountTokens(c)
 		return
 	}
 
