@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -347,6 +348,56 @@ func TestEstimateTokens_MixedLanguageLongText(t *testing.T) {
 	if tokens < 1200 || tokens > 1500 {
 		t.Errorf("混合语言长文本token估算异常: %d, 期望 1200-1500", tokens)
 	}
+}
+
+func TestEstimateTokens_ManyTools(t *testing.T) {
+	// 测试大量工具场景（10个工具）的自适应开销
+	tools := make([]Tool, 10)
+	for i := 0; i < 10; i++ {
+		tools[i] = Tool{
+			Name:        fmt.Sprintf("tool_%d", i),
+			Description: "This is a test tool for validating token estimation",
+			InputSchema: map[string]any{
+				"$schema": "http://json-schema.org/draft-07/schema#",
+				"type":    "object",
+				"properties": map[string]any{
+					"param": map[string]any{
+						"type":        "string",
+						"description": "A parameter",
+					},
+				},
+				"required":             []string{"param"},
+				"additionalProperties": false,
+			},
+		}
+	}
+
+	req := &CountTokensRequest{
+		Model: "claude-3-5-sonnet-20241022",
+		Messages: []MessageParam{
+			{
+				Role:    "user",
+				Content: "Test message",
+			},
+		},
+		Tools: tools,
+	}
+
+	tokens := estimateTokens(req)
+
+	// 大量工具场景（>5）：
+	// 基础开销: 250
+	// 10个工具 × 80增量 = 800
+	// 每个工具内容: name(~5) + desc(~12) + schema(~100) ≈ 117
+	// 工具总计: 250 + 800 + 10×117 = 2220
+	// 消息: ~15
+	// 总计: 约2250
+	// 允许 ±15% 误差范围（1900-2600）
+	if tokens < 1900 || tokens > 2600 {
+		t.Errorf("大量工具场景token估算异常: %d, 期望 1900-2600", tokens)
+	}
+
+	t.Logf("10个工具的估算结果: %d tokens", tokens)
 }
 
 // ==================== 性能基准测试 ====================

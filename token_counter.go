@@ -115,43 +115,78 @@ func estimateTokens(req *CountTokensRequest) int {
 	}
 
 	// 3. 工具定义（tools）
-	for _, tool := range req.Tools {
-		// 工具基础固定开销（根据官方API实测调整）
-		// 实测：单个简单工具约400-420 tokens基础开销
-		// 包括：tool对象结构、name/description/input_schema字段标记、类型信息、JSON格式开销、API元数据
-		baseToolOverhead := 400
+	toolCount := len(req.Tools)
+	if toolCount > 0 {
+		// 工具开销策略：根据工具数量自适应调整
+		// - 少量工具（1-3个）：每个工具高开销（包含大量元数据和结构信息）
+		// - 大量工具（10+个）：共享开销 + 小增量（避免线性叠加过高）
+		var baseToolsOverhead int
+		var perToolOverhead int
 
-		// 工具名称（特殊处理：下划线分词导致token数增加）
-		// 例如: "mcp__Playwright__browser_navigate_back" 可能被分为15-20个tokens
-		nameTokens := estimateToolName(tool.Name)
-		totalTokens += nameTokens
-
-		// 工具描述
-		totalTokens += estimateTextTokens(tool.Description)
-
-		// 工具schema（JSON Schema）- 官方tokenizer对schema编码开销极高
-		if tool.InputSchema != nil {
-			if jsonBytes, err := sonic.Marshal(tool.InputSchema); err == nil {
-				// 官方对JSON Schema的token编码极其密集
-				// 实测发现：每1.5-1.8个字符约1个token
-				// 每个JSON字段、括号、逗号、冒号都可能是独立token
-				schemaLen := len(jsonBytes)
-				schemaTokens := int(float64(schemaLen) / 1.6)
-
-				// 特殊字段额外开销（$schema等元数据字段）
-				if strings.Contains(string(jsonBytes), "$schema") {
-					schemaTokens += 15 // $schema字段的URL很长
-				}
-
-				if schemaTokens < 80 {
-					schemaTokens = 80 // 即使是最简单的schema也有相当高的开销
-				}
-				totalTokens += schemaTokens
-			}
+		if toolCount == 1 {
+			// 单工具场景：高开销（包含tools数组初始化、类型信息等）
+			baseToolsOverhead = 0
+			perToolOverhead = 400
+		} else if toolCount <= 5 {
+			// 少量工具：中等开销
+			baseToolsOverhead = 150
+			perToolOverhead = 150
+		} else {
+			// 大量工具：共享开销 + 低增量
+			baseToolsOverhead = 250
+			perToolOverhead = 80
 		}
 
-		// 应用基础工具开销
-		totalTokens += baseToolOverhead
+		totalTokens += baseToolsOverhead
+
+		for _, tool := range req.Tools {
+			// 工具名称（特殊处理：下划线分词导致token数增加）
+			nameTokens := estimateToolName(tool.Name)
+			totalTokens += nameTokens
+
+			// 工具描述
+			totalTokens += estimateTextTokens(tool.Description)
+
+			// 工具schema（JSON Schema）
+			if tool.InputSchema != nil {
+				if jsonBytes, err := sonic.Marshal(tool.InputSchema); err == nil {
+					// Schema编码密度：根据工具数量自适应
+					var schemaCharsPerToken float64
+					if toolCount == 1 {
+						schemaCharsPerToken = 1.6 // 单工具密集编码
+					} else if toolCount <= 5 {
+						schemaCharsPerToken = 1.9 // 少量工具
+					} else {
+						schemaCharsPerToken = 2.2 // 大量工具更宽松
+					}
+
+					schemaLen := len(jsonBytes)
+					schemaTokens := int(float64(schemaLen) / schemaCharsPerToken)
+
+					// $schema字段URL开销
+					if strings.Contains(string(jsonBytes), "$schema") {
+						if toolCount == 1 {
+							schemaTokens += 15
+						} else {
+							schemaTokens += 8
+						}
+					}
+
+					// 最小schema开销
+					minSchemaTokens := 80
+					if toolCount > 5 {
+						minSchemaTokens = 40
+					}
+					if schemaTokens < minSchemaTokens {
+						schemaTokens = minSchemaTokens
+					}
+
+					totalTokens += schemaTokens
+				}
+			}
+
+			totalTokens += perToolOverhead
+		}
 	}
 
 	// 4. 基础请求开销（API格式固定开销）
