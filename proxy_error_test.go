@@ -220,7 +220,7 @@ func (m *MockStore) SetCooldown(ctx context.Context, configID int64, until time.
 	return nil
 }
 
-func (m *MockStore) BumpCooldownOnError(ctx context.Context, configID int64, now time.Time) (time.Duration, error) {
+func (m *MockStore) BumpCooldownOnError(ctx context.Context, configID int64, now time.Time, statusCode int) (time.Duration, error) {
 	return time.Second, nil
 }
 
@@ -236,7 +236,7 @@ func (m *MockStore) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int]t
 	return make(map[int64]map[int]time.Time), nil
 }
 
-func (m *MockStore) BumpKeyCooldownOnError(ctx context.Context, configID int64, keyIndex int, now time.Time) (time.Duration, error) {
+func (m *MockStore) BumpKeyCooldownOnError(ctx context.Context, configID int64, keyIndex int, now time.Time, statusCode int) (time.Duration, error) {
 	return time.Second, nil
 }
 
@@ -473,13 +473,13 @@ func (m *MockStoreAllKeysCooled) GetAllChannelCooldowns(ctx context.Context) (ma
 func (m *MockStoreAllKeysCooled) SetCooldown(ctx context.Context, configID int64, until time.Time) error {
 	return nil
 }
-func (m *MockStoreAllKeysCooled) BumpCooldownOnError(ctx context.Context, configID int64, now time.Time) (time.Duration, error) {
+func (m *MockStoreAllKeysCooled) BumpCooldownOnError(ctx context.Context, configID int64, now time.Time, statusCode int) (time.Duration, error) {
 	return time.Second, nil
 }
 func (m *MockStoreAllKeysCooled) ResetCooldown(ctx context.Context, configID int64) error {
 	return nil
 }
-func (m *MockStoreAllKeysCooled) BumpKeyCooldownOnError(ctx context.Context, configID int64, keyIndex int, now time.Time) (time.Duration, error) {
+func (m *MockStoreAllKeysCooled) BumpKeyCooldownOnError(ctx context.Context, configID int64, keyIndex int, now time.Time, statusCode int) (time.Duration, error) {
 	return time.Second, nil
 }
 func (m *MockStoreAllKeysCooled) SetKeyCooldown(ctx context.Context, configID int64, keyIndex int, until time.Time) error {

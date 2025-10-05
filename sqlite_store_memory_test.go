@@ -295,9 +295,14 @@ func TestMemoryDBDSNNoWAL(t *testing.T) {
 		t.Error("Memory database DSN should NOT contain journal_mode=WAL (incompatible with :memory:)")
 	}
 
-	// 验证DSN包含必要的参数
-	if !strings.Contains(dsn, "file::memory:") {
-		t.Error("Expected DSN to use :memory: database")
+	// 验证DSN使用命名内存数据库（2025-10-05修复：改用命名数据库而非匿名:memory:）
+	if !strings.Contains(dsn, "file:ccload_mem_db") {
+		t.Error("Expected DSN to use named memory database (file:ccload_mem_db)")
+	}
+
+	// 验证DSN包含mode=memory参数
+	if !strings.Contains(dsn, "mode=memory") {
+		t.Error("Expected DSN to contain mode=memory parameter")
 	}
 
 	if !strings.Contains(dsn, "cache=shared") {

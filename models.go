@@ -191,15 +191,15 @@ type Store interface {
 	GetCooldownUntil(ctx context.Context, configID int64) (time.Time, bool)
 	GetAllChannelCooldowns(ctx context.Context) (map[int64]time.Time, error) // P0优化: 批量查询所有渠道冷却状态
 	SetCooldown(ctx context.Context, configID int64, until time.Time) error
-	// 指数退避：错误时翻倍，成功时清零
-	BumpCooldownOnError(ctx context.Context, configID int64, now time.Time) (time.Duration, error)
+	// 指数退避：错误时翻倍（认证错误5分钟起，其他1秒起），成功时清零
+	BumpCooldownOnError(ctx context.Context, configID int64, now time.Time, statusCode int) (time.Duration, error)
 	ResetCooldown(ctx context.Context, configID int64) error
 
 	// key-level cooldown (新增)
 	GetKeyCooldownUntil(ctx context.Context, configID int64, keyIndex int) (time.Time, bool)
 	GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int]time.Time, error) // P1修复: 批量查询所有Key冷却状态
 	SetKeyCooldown(ctx context.Context, configID int64, keyIndex int, until time.Time) error
-	BumpKeyCooldownOnError(ctx context.Context, configID int64, keyIndex int, now time.Time) (time.Duration, error)
+	BumpKeyCooldownOnError(ctx context.Context, configID int64, keyIndex int, now time.Time, statusCode int) (time.Duration, error)
 	ResetKeyCooldown(ctx context.Context, configID int64, keyIndex int) error
 	ClearAllKeyCooldowns(ctx context.Context, configID int64) error // 清理渠道的所有Key冷却数据（用于Key变更时）
 

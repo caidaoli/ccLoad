@@ -112,9 +112,9 @@ func (ks *KeySelector) selectRoundRobin(ctx context.Context, channelID int64, ke
 }
 
 // MarkKeyError 标记Key错误，触发指数退避冷却
-func (ks *KeySelector) MarkKeyError(ctx context.Context, channelID int64, keyIndex int) error {
+func (ks *KeySelector) MarkKeyError(ctx context.Context, channelID int64, keyIndex int, statusCode int) error {
 	now := time.Now()
-	_, err := ks.store.BumpKeyCooldownOnError(ctx, channelID, keyIndex, now)
+	_, err := ks.store.BumpKeyCooldownOnError(ctx, channelID, keyIndex, now, statusCode)
 	if err != nil {
 		return err
 	}

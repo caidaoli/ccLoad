@@ -141,29 +141,43 @@ func NewServer(store Store) *Server {
 		},
 	}
 
-	s := &Server{
-		store:         store,
-		maxKeyRetries: maxKeyRetries, // 单个渠道最大Key重试次数
-		enableTrace:   enableTrace,   // HTTP Trace开关
-		client: &http.Client{
-			Transport: transport,
-			Timeout:   0,
-		},
-		password:   password,
-		sessions:   make(map[string]time.Time),
-		authTokens: authTokens,
-		logChan:    make(chan *LogEntry, 1000), // 缓冲1000条日志
-		logWorkers: 3,                          // 3个日志工作协程
+    // 可配置的日志缓冲与工作协程（修复：支持环境变量）
+    logBuf := 1000
+    if v := os.Getenv("CCLOAD_LOG_BUFFER"); v != "" {
+        if n, err := strconv.Atoi(v); err == nil && n > 0 {
+            logBuf = n
+        }
+    }
+    logWorkers := 3
+    if v := os.Getenv("CCLOAD_LOG_WORKERS"); v != "" {
+        if n, err := strconv.Atoi(v); err == nil && n > 0 {
+            logWorkers = n
+        }
+    }
 
-		// 并发控制：使用信号量限制最大并发请求数
-		concurrencySem: make(chan struct{}, maxConcurrency),
-		maxConcurrency: maxConcurrency,
+    s := &Server{
+        store:         store,
+        maxKeyRetries: maxKeyRetries, // 单个渠道最大Key重试次数
+        enableTrace:   enableTrace,   // HTTP Trace开关
+        client: &http.Client{
+            Transport: transport,
+            Timeout:   0,
+        },
+        password:   password,
+        sessions:   make(map[string]time.Time),
+        authTokens: authTokens,
+        logChan:    make(chan *LogEntry, logBuf), // 可配置日志缓冲
+        logWorkers: logWorkers,                   // 可配置日志worker数量
 
-		// 性能优化：批量轮询持久化配置
-		rrUpdateChan:    make(chan rrUpdate, 500), // 缓冲500条更新
-		rrBatchSize:     50,                       // 每批50条
-		rrFlushInterval: 5 * time.Second,          // 每5秒强制刷新
-	}
+        // 并发控制：使用信号量限制最大并发请求数
+        concurrencySem: make(chan struct{}, maxConcurrency),
+        maxConcurrency: maxConcurrency,
+
+        // 性能优化：批量轮询持久化配置
+        rrUpdateChan:    make(chan rrUpdate, 500), // 缓冲500条更新
+        rrBatchSize:     50,                       // 每批50条
+        rrFlushInterval: 5 * time.Second,          // 每5秒强制刷新
+    }
 
 	// 初始化Key选择器（传递Key冷却监控指标）
 	s.keySelector = NewKeySelector(store, &s.keyCooldownGauge)
@@ -599,12 +613,12 @@ func (s *Server) warmHTTPConnections(ctx context.Context) {
 	// 预热前5个高优先级渠道（按优先级降序）
 	warmCount := min(len(configs), 5)
 
-	warmedCount := 0
-	for i := range warmCount {
-		cfg := configs[i]
-		if cfg.URL == "" {
-			continue
-		}
+    warmedCount := 0
+    for i := 0; i < warmCount; i++ {
+        cfg := configs[i]
+        if cfg.URL == "" {
+            continue
+        }
 
 		// 发送轻量HEAD请求预建立连接（非阻塞，超时1秒）
 		reqCtx, cancel := context.WithTimeout(ctx, 1*time.Second)

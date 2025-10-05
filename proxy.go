@@ -510,6 +510,7 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *Config, keyIndex int
 	res *fwResult, err error) (ErrorAction, bool) {
 
 	var errLevel ErrorLevel
+	var statusCode int
 
 	// 网络错误处理
 	if err != nil {
@@ -519,9 +520,11 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *Config, keyIndex int
 		}
 		// 可重试的网络错误：默认为Key级错误
 		errLevel = ErrorLevelKey
+		statusCode = 0 // 网络错误无状态码
 	} else {
 		// HTTP错误处理：使用智能分类器（结合响应体内容）
-		errLevel = classifyHTTPStatusWithBody(res.Status, res.Body)
+		statusCode = res.Status
+		errLevel = classifyHTTPStatusWithBody(statusCode, res.Body)
 	}
 
 	// 🎯 动态调整：单Key渠道的Key级错误应该直接冷却渠道
@@ -542,12 +545,12 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *Config, keyIndex int
 
 	case ErrorLevelKey:
 		// Key级错误：冷却当前Key，继续尝试其他Key
-		_ = s.keySelector.MarkKeyError(ctx, cfg.ID, keyIndex)
+		_ = s.keySelector.MarkKeyError(ctx, cfg.ID, keyIndex, statusCode)
 		return ActionRetryKey, true
 
 	case ErrorLevelChannel:
 		// 渠道级错误：冷却整个渠道，切换到其他渠道
-		_, _ = s.store.BumpCooldownOnError(ctx, cfg.ID, time.Now())
+		_, _ = s.store.BumpCooldownOnError(ctx, cfg.ID, time.Now(), statusCode)
 		// 更新监控指标（P2优化）
 		s.channelCooldownGauge.Add(1)
 		return ActionRetryChannel, true
@@ -906,7 +909,8 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 		// 处理"所有Key都在冷却中"的特殊错误
 		if err != nil && strings.Contains(err.Error(), "channel keys unavailable") {
 			// 触发渠道级别冷却，防止后续请求重复尝试该渠道
-			_, _ = s.store.BumpCooldownOnError(ctx, cfg.ID, time.Now())
+			// 使用503状态码表示服务不可用（所有Key冷却）
+			_, _ = s.store.BumpCooldownOnError(ctx, cfg.ID, time.Now(), 503)
 			// 更新监控指标（P2优化）
 			s.channelCooldownGauge.Add(1)
 			continue // 尝试下一个渠道

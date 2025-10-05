@@ -4,6 +4,22 @@ import (
 	"time"
 )
 
+// 冷却时间常量定义
+const (
+	// AuthErrorInitialCooldown 认证错误（401/403）的初始冷却时间
+	// 设计目标：减少认证失败的无效重试，避免API配额浪费
+	AuthErrorInitialCooldown = 5 * time.Minute
+
+	// OtherErrorInitialCooldown 其他错误（429/500等）的初始冷却时间
+	OtherErrorInitialCooldown = 1 * time.Second
+
+	// MaxCooldownDuration 最大冷却时长（指数退避上限）
+	MaxCooldownDuration = 30 * time.Minute
+
+	// MinCooldownDuration 最小冷却时长（指数退避下限）
+	MinCooldownDuration = 1 * time.Second
+)
+
 // scanUnixTimestamp 统一的Unix时间戳扫描器
 // 消除代码中8+处重复的时间戳转换逻辑
 // 使用场景: GetCooldownUntil, GetKeyCooldownUntil, BumpCooldownOnError等
@@ -24,15 +40,18 @@ func scanUnixTimestamp(scanner scannable) (time.Time, bool) {
 }
 
 // calculateBackoffDuration 计算指数退避冷却时间
-// 统一冷却策略: 起始1秒，错误翻倍，上限30分钟
+// 统一冷却策略:
+//   - 认证错误(401/403): 起始5分钟，后续翻倍，上限30分钟
+//   - 其他错误: 起始1秒，后续翻倍，上限30分钟
 //
 // 参数:
 //   - prevMs: 上次冷却持续时间（毫秒）
 //   - until: 上次冷却截止时间
 //   - now: 当前时间
+//   - statusCode: HTTP状态码（可选，用于首次错误时确定初始冷却时间）
 //
 // 返回: 新的冷却持续时间
-func calculateBackoffDuration(prevMs int64, until time.Time, now time.Time) time.Duration {
+func calculateBackoffDuration(prevMs int64, until time.Time, now time.Time, statusCode *int) time.Duration {
 	// 转换上次冷却持续时间
 	prev := time.Duration(prevMs) * time.Millisecond
 
@@ -41,20 +60,26 @@ func calculateBackoffDuration(prevMs int64, until time.Time, now time.Time) time
 		if !until.IsZero() && until.After(now) {
 			prev = until.Sub(now)
 		} else {
-			// 首次错误，从1秒开始
-			prev = time.Second
+			// 首次错误：根据状态码确定初始冷却时间（直接返回，不翻倍）
+			if statusCode != nil && (*statusCode == 401 || *statusCode == 403) {
+				// 认证错误：使用常量定义的初始冷却时间
+				return AuthErrorInitialCooldown
+			} else {
+				// 其他错误：使用常量定义的初始冷却时间
+				return OtherErrorInitialCooldown
+			}
 		}
 	}
 
-	// 指数退避：错误一次翻倍
+	// 后续错误：指数退避翻倍
 	next := prev * 2
 
-	// 边界限制
-	if next < time.Second {
-		next = time.Second
+	// 边界限制（使用常量）
+	if next < MinCooldownDuration {
+		next = MinCooldownDuration
 	}
-	if next > 30*time.Minute {
-		next = 30 * time.Minute
+	if next > MaxCooldownDuration {
+		next = MaxCooldownDuration
 	}
 
 	return next
