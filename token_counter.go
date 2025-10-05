@@ -116,24 +116,79 @@ func estimateTokens(req *CountTokensRequest) int {
 
 	// 3. 工具定义（tools）
 	for _, tool := range req.Tools {
-		// 工具名称和描述
-		totalTokens += estimateTextTokens(tool.Name)
+		// 工具基础固定开销（根据官方API实测调整）
+		// 实测：单个简单工具约400-420 tokens基础开销
+		// 包括：tool对象结构、name/description/input_schema字段标记、类型信息、JSON格式开销、API元数据
+		baseToolOverhead := 400
+
+		// 工具名称（特殊处理：下划线分词导致token数增加）
+		// 例如: "mcp__Playwright__browser_navigate_back" 可能被分为15-20个tokens
+		nameTokens := estimateToolName(tool.Name)
+		totalTokens += nameTokens
+
+		// 工具描述
 		totalTokens += estimateTextTokens(tool.Description)
 
-		// 工具schema（JSON Schema）
+		// 工具schema（JSON Schema）- 官方tokenizer对schema编码开销极高
 		if tool.InputSchema != nil {
 			if jsonBytes, err := sonic.Marshal(tool.InputSchema); err == nil {
-				// JSON Schema通常较冗长，使用更保守的估算
-				totalTokens += len(jsonBytes) / 3
+				// 官方对JSON Schema的token编码极其密集
+				// 实测发现：每1.5-1.8个字符约1个token
+				// 每个JSON字段、括号、逗号、冒号都可能是独立token
+				schemaLen := len(jsonBytes)
+				schemaTokens := int(float64(schemaLen) / 1.6)
+
+				// 特殊字段额外开销（$schema等元数据字段）
+				if strings.Contains(string(jsonBytes), "$schema") {
+					schemaTokens += 15 // $schema字段的URL很长
+				}
+
+				if schemaTokens < 80 {
+					schemaTokens = 80 // 即使是最简单的schema也有相当高的开销
+				}
+				totalTokens += schemaTokens
 			}
 		}
 
-		// 工具固定开销
-		totalTokens += 20
+		// 应用基础工具开销
+		totalTokens += baseToolOverhead
 	}
 
 	// 4. 基础请求开销（API格式固定开销）
 	totalTokens += 10
+
+	return totalTokens
+}
+
+// estimateToolName 估算工具名称的token数量
+// 工具名称通常包含下划线、驼峰等特殊结构，tokenizer会进行更细粒度的分词
+// 例如: "mcp__Playwright__browser_navigate_back"
+// 可能被分为: ["mcp", "__", "Play", "wright", "__", "browser", "_", "navigate", "_", "back"]
+func estimateToolName(name string) int {
+	if name == "" {
+		return 0
+	}
+
+	// 基础估算：按字符长度
+	baseTokens := len(name) / 2 // 工具名称通常极其密集（比普通文本密集2倍）
+
+	// 下划线分词惩罚：每个下划线可能导致额外的token
+	underscoreCount := strings.Count(name, "_")
+	underscorePenalty := underscoreCount // 每个下划线约1个额外token
+
+	// 驼峰分词惩罚：大写字母可能是分词边界
+	camelCaseCount := 0
+	for _, r := range name {
+		if r >= 'A' && r <= 'Z' {
+			camelCaseCount++
+		}
+	}
+	camelCasePenalty := camelCaseCount / 2 // 每2个大写字母约1个额外token
+
+	totalTokens := baseTokens + underscorePenalty + camelCasePenalty
+	if totalTokens < 2 {
+		totalTokens = 2 // 最少2个token
+	}
 
 	return totalTokens
 }

@@ -210,9 +210,10 @@ func TestEstimateTokens_WithTools(t *testing.T) {
 
 	tokens := estimateTokens(req)
 
-	// 期望: 消息(3+10) + 工具定义(约80-120) + 基础(10) ≈ 103-143
-	if tokens < 80 || tokens > 150 {
-		t.Errorf("带工具的消息token估算异常: %d, 期望 80-150", tokens)
+	// 期望: 消息(3+10) + 工具基础开销(400) + 工具名称(~7) + 工具描述(~8) + schema(~100) + 基础(10) ≈ 520-550
+	// 实测：约536 tokens
+	if tokens < 500 || tokens > 580 {
+		t.Errorf("带工具的消息token估算异常: %d, 期望 500-580", tokens)
 	}
 }
 
