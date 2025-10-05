@@ -16,7 +16,8 @@ import (
 )
 
 type SQLiteStore struct {
-	db        *sql.DB
+	db        *sql.DB    // 主数据库（channels, cooldowns, rr）
+	logDB     *sql.DB    // 日志数据库（logs）- 拆分以减少锁竞争和简化备份
 	redisSync *RedisSync // Redis同步客户端 (OCP: 开放扩展，封闭修改)
 	stmtCache sync.Map   // 预编译语句缓存 (性能优化: 减少SQL解析开销20-30%)
 	stmtMux   sync.Mutex // 保护预编译语句创建过程
@@ -34,10 +35,22 @@ func maskAPIKey(key string) string {
 	return key[:4] + "..." + key[len(key)-4:]
 }
 
+// generateLogDBPath 从主数据库路径生成日志数据库路径
+// 例如: ./data/ccload.db -> ./data/ccload-log.db
+func generateLogDBPath(mainDBPath string) string {
+	dir := filepath.Dir(mainDBPath)
+	base := filepath.Base(mainDBPath)
+	ext := filepath.Ext(base)
+	name := strings.TrimSuffix(base, ext)
+	return filepath.Join(dir, name+"-log"+ext)
+}
+
 func NewSQLiteStore(path string, redisSync *RedisSync) (*SQLiteStore, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
+
+	// 打开主数据库（channels, cooldowns, rr）
 	// 修复时区问题：强制使用本地时区解析时间戳，避免UTC/本地时区混淆导致冷却时间计算错误
 	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_foreign_keys=on&_pragma=journal_mode=WAL&_loc=Local", path)
 	db, err := sql.Open("sqlite", dsn)
@@ -48,15 +61,37 @@ func NewSQLiteStore(path string, redisSync *RedisSync) (*SQLiteStore, error) {
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(5 * time.Minute)
 
+	// 打开日志数据库（logs）- 拆分以减少锁竞争
+	logDBPath := generateLogDBPath(path)
+	logDSN := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode=WAL&_loc=Local", logDBPath)
+	logDB, err := sql.Open("sqlite", logDSN)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("open log database: %w", err)
+	}
+	logDB.SetMaxOpenConns(10)
+	logDB.SetMaxIdleConns(2)
+	logDB.SetConnMaxLifetime(5 * time.Minute)
+
 	s := &SQLiteStore{
 		db:        db,
+		logDB:     logDB,
 		redisSync: redisSync,
 		syncCh:    make(chan struct{}, 1), // 缓冲区=1，允许一个待处理任务
 		done:      make(chan struct{}),
 	}
 
+	// 迁移主数据库表结构
 	if err := s.migrate(context.Background()); err != nil {
 		_ = db.Close()
+		_ = logDB.Close()
+		return nil, err
+	}
+
+	// 迁移日志数据库表结构
+	if err := s.migrateLogDB(context.Background()); err != nil {
+		_ = db.Close()
+		_ = logDB.Close()
 		return nil, err
 	}
 
@@ -105,28 +140,7 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		return fmt.Errorf("create cooldowns table: %w", err)
 	}
 
-	// 创建 logs 表（time使用BIGINT Unix毫秒时间戳）
-	if _, err := s.db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS logs (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			TIME BIGINT NOT NULL,
-			model TEXT,
-			channel_id INTEGER,
-			status_code INTEGER NOT NULL,
-			message TEXT,
-			duration REAL,
-			is_streaming INTEGER NOT NULL DEFAULT 0,
-			first_byte_time REAL,
-			FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE SET NULL
-		);
-	`); err != nil {
-		return fmt.Errorf("create logs table: %w", err)
-	}
-
 	// 添加新字段（兼容已有数据库）
-	s.addColumnIfNotExists(ctx, "logs", "is_streaming", "INTEGER NOT NULL DEFAULT 0")
-	s.addColumnIfNotExists(ctx, "logs", "first_byte_time", "REAL")
-	s.addColumnIfNotExists(ctx, "logs", "api_key_used", "TEXT")                          // 使用的API Key（完整值）
 	s.addColumnIfNotExists(ctx, "channels", "model_redirects", "TEXT DEFAULT '{}'")      // 模型重定向字段，JSON格式
 	s.addColumnIfNotExists(ctx, "channels", "api_keys", "TEXT DEFAULT '[]'")             // 多Key支持，JSON数组
 	s.addColumnIfNotExists(ctx, "channels", "key_strategy", "TEXT DEFAULT 'sequential'") // Key使用策略
@@ -167,47 +181,11 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		return fmt.Errorf("create rr table: %w", err)
 	}
 
-	// 创建索引优化查询性能
-	if _, err := s.db.ExecContext(ctx, `
-		CREATE INDEX IF NOT EXISTS idx_logs_time ON logs(TIME);
-	`); err != nil {
-		return fmt.Errorf("create logs time index: %w", err)
-	}
-
 	// 创建渠道名称索引
 	if _, err := s.db.ExecContext(ctx, `
 		CREATE INDEX IF NOT EXISTS idx_channels_name ON channels(NAME);
 	`); err != nil {
 		return fmt.Errorf("create channels name index: %w", err)
-	}
-
-	// 创建日志状态码索引
-	if _, err := s.db.ExecContext(ctx, `
-		CREATE INDEX IF NOT EXISTS idx_logs_status ON logs(status_code);
-	`); err != nil {
-		return fmt.Errorf("create logs status index: %w", err)
-	}
-
-	// 性能优化：创建复合索引优化常见查询（阶段1优化）
-	// idx_logs_time_model - 优化按时间+模型查询（stats、metrics接口）
-	if _, err := s.db.ExecContext(ctx, `
-		CREATE INDEX IF NOT EXISTS idx_logs_time_model ON logs(time, model);
-	`); err != nil {
-		return fmt.Errorf("create logs time_model index: %w", err)
-	}
-
-	// idx_logs_time_channel - 优化按时间+渠道查询（metrics接口渠道分组）
-	if _, err := s.db.ExecContext(ctx, `
-		CREATE INDEX IF NOT EXISTS idx_logs_time_channel ON logs(time, channel_id);
-	`); err != nil {
-		return fmt.Errorf("create logs time_channel index: %w", err)
-	}
-
-	// idx_logs_time_status - 优化按时间+状态码查询（错误日志过滤）
-	if _, err := s.db.ExecContext(ctx, `
-		CREATE INDEX IF NOT EXISTS idx_logs_time_status ON logs(time, status_code);
-	`); err != nil {
-		return fmt.Errorf("create logs time_status index: %w", err)
 	}
 
 	// 确保channels表的name字段具有UNIQUE约束
@@ -226,11 +204,47 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	}
 
 	// Unix时间戳重构：重建表结构（TIMESTAMP → BIGINT）
-	if err := s.rebuildLogsTableToUnixTimestamp(ctx); err != nil {
-		return fmt.Errorf("rebuild logs table: %w", err)
-	}
 	if err := s.rebuildChannelsTableToUnixTimestamp(ctx); err != nil {
 		return fmt.Errorf("rebuild channels table: %w", err)
+	}
+
+	return nil
+}
+
+// migrateLogDB 创建日志数据库表结构（独立数据库，从零开始，无需兼容）
+func (s *SQLiteStore) migrateLogDB(ctx context.Context) error {
+	// 创建 logs 表（BIGINT Unix毫秒时间戳，所有字段一次性创建）
+	// 注意：无 FOREIGN KEY 约束，因为 channels 表在主数据库中
+	if _, err := s.logDB.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS logs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			time BIGINT NOT NULL,
+			model TEXT,
+			channel_id INTEGER,
+			status_code INTEGER NOT NULL,
+			message TEXT,
+			duration REAL,
+			is_streaming INTEGER NOT NULL DEFAULT 0,
+			first_byte_time REAL,
+			api_key_used TEXT
+		);
+	`); err != nil {
+		return fmt.Errorf("create logs table: %w", err)
+	}
+
+	// 创建索引（一次性创建，无需兼容检查）
+	indexes := []string{
+		"CREATE INDEX IF NOT EXISTS idx_logs_time ON logs(time)",
+		"CREATE INDEX IF NOT EXISTS idx_logs_status ON logs(status_code)",
+		"CREATE INDEX IF NOT EXISTS idx_logs_time_model ON logs(time, model)",
+		"CREATE INDEX IF NOT EXISTS idx_logs_time_channel ON logs(time, channel_id)",
+		"CREATE INDEX IF NOT EXISTS idx_logs_time_status ON logs(time, status_code)",
+	}
+
+	for _, indexSQL := range indexes {
+		if _, err := s.logDB.ExecContext(ctx, indexSQL); err != nil {
+			return fmt.Errorf("create index: %w", err)
+		}
 	}
 
 	return nil
@@ -466,114 +480,6 @@ func (s *SQLiteStore) migrateCooldownToUnixTimestamp(ctx context.Context) error 
 	return nil
 }
 
-// migrateLogsToUnixTimestamp 迁移logs表的time列到time_ms（Unix毫秒时间戳）
-// 根本解决strftime无法解析时区的问题
-// rebuildLogsTableToUnixTimestamp 重建logs表，将time字段从TIMESTAMP改为BIGINT毫秒
-func (s *SQLiteStore) rebuildLogsTableToUnixTimestamp(ctx context.Context) error {
-	// 检查time字段类型是否需要重建
-	var fieldType string
-	err := s.db.QueryRowContext(ctx, `
-		SELECT type FROM pragma_table_info('logs') WHERE name = 'time'
-	`).Scan(&fieldType)
-	if err != nil {
-		return nil // 表不存在或字段不存在，跳过
-	}
-
-	// 如果已经是INTEGER/BIGINT，跳过重建
-	if fieldType == "INTEGER" || fieldType == "BIGINT" {
-		return nil
-	}
-
-	fmt.Println("🔄 重建 logs 表：time(TIMESTAMP) → time(BIGINT 毫秒)")
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	// 1. 创建新表
-	_, err = tx.ExecContext(ctx, `
-		CREATE TABLE logs_new (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			time BIGINT NOT NULL,
-			model TEXT,
-			channel_id INTEGER,
-			status_code INTEGER NOT NULL,
-			message TEXT,
-			duration REAL,
-			is_streaming INTEGER NOT NULL DEFAULT 0,
-			first_byte_time REAL,
-			api_key_used TEXT,
-			FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE SET NULL
-		)
-	`)
-	if err != nil {
-		return fmt.Errorf("create new logs table: %w", err)
-	}
-
-	// 2. 迁移数据：转换TIMESTAMP为Unix毫秒时间戳
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO logs_new (id, time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used)
-		SELECT
-			id,
-			CAST(strftime('%s', substr(time, 1, 19)) AS INTEGER) * 1000 as time,
-			model,
-			channel_id,
-			status_code,
-			message,
-			duration,
-			is_streaming,
-			first_byte_time,
-			api_key_used
-		FROM logs
-	`)
-	if err != nil {
-		return fmt.Errorf("migrate logs data: %w", err)
-	}
-
-	// 3. 删除旧表
-	_, err = tx.ExecContext(ctx, `DROP TABLE logs`)
-	if err != nil {
-		return fmt.Errorf("drop old logs table: %w", err)
-	}
-
-	// 4. 重命名新表
-	_, err = tx.ExecContext(ctx, `ALTER TABLE logs_new RENAME TO logs`)
-	if err != nil {
-		return fmt.Errorf("rename logs table: %w", err)
-	}
-
-	// 5. 重建索引
-	_, err = tx.ExecContext(ctx, `CREATE INDEX idx_logs_time ON logs(time)`)
-	if err != nil {
-		return fmt.Errorf("create time index: %w", err)
-	}
-	_, err = tx.ExecContext(ctx, `CREATE INDEX idx_logs_status ON logs(status_code)`)
-	if err != nil {
-		return fmt.Errorf("create status index: %w", err)
-	}
-	_, err = tx.ExecContext(ctx, `CREATE INDEX idx_logs_time_model ON logs(time, model)`)
-	if err != nil {
-		return fmt.Errorf("create time_model index: %w", err)
-	}
-	_, err = tx.ExecContext(ctx, `CREATE INDEX idx_logs_time_channel ON logs(time, channel_id)`)
-	if err != nil {
-		return fmt.Errorf("create time_channel index: %w", err)
-	}
-	_, err = tx.ExecContext(ctx, `CREATE INDEX idx_logs_time_status ON logs(time, status_code)`)
-	if err != nil {
-		return fmt.Errorf("create time_status index: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
-	}
-
-	fmt.Println("✅ logs 表重建完成")
-	return nil
-}
-
 // rebuildChannelsTableToUnixTimestamp 重建channels表，将created_at/updated_at从TIMESTAMP改为BIGINT秒
 func (s *SQLiteStore) rebuildChannelsTableToUnixTimestamp(ctx context.Context) error {
 	// 检查created_at字段类型是否需要重建
@@ -744,16 +650,11 @@ func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
 
-func (s *SQLiteStore) Vacuum(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, "VACUUM")
-	return err
-}
-
 // CleanupLogsBefore 清理截止时间之前的日志（DIP：通过接口暴露维护操作）
 func (s *SQLiteStore) CleanupLogsBefore(ctx context.Context, cutoff time.Time) error {
-	// time字段现在是BIGINT毫秒时间戳
+	// time字段现在是BIGINT毫秒时间戳（使用 logDB）
 	cutoffMs := cutoff.UnixMilli()
-	_, err := s.db.ExecContext(ctx, `DELETE FROM logs WHERE time < ?`, cutoffMs)
+	_, err := s.logDB.ExecContext(ctx, `DELETE FROM logs WHERE time < ?`, cutoffMs)
 	return err
 }
 
@@ -802,19 +703,9 @@ func (s *SQLiteStore) prepareAllHotQueries(ctx context.Context) error {
 		`SELECT until FROM cooldowns WHERE channel_id = ?`,
 		`SELECT until FROM key_cooldowns WHERE channel_id = ? AND key_index = ?`,
 
-		// 日志插入（高频）
-		`INSERT INTO logs(time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-
-		// 统计查询（定期调用）
-		`SELECT channel_id, COALESCE(c.name, '系统') AS channel_name, COALESCE(l.model, '') AS model,
-			SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN 1 ELSE 0 END) AS success,
-			SUM(CASE WHEN l.status_code < 200 OR l.status_code >= 300 THEN 1 ELSE 0 END) AS error,
-			COUNT(*) AS total
-		FROM logs l 
-		LEFT JOIN channels c ON c.id = l.channel_id
-		WHERE l.time >= ?
-		GROUP BY l.channel_id, c.name, l.model ORDER BY channel_name ASC, model ASC`,
+		// 轮询指针查询
+		`SELECT idx FROM rr WHERE key = ?`,
+		`SELECT idx FROM key_rr WHERE channel_id = ?`,
 	}
 
 	preparedCount := 0
@@ -878,6 +769,70 @@ func (s *SQLiteStore) GetConfig(ctx context.Context, id int64) (*Config, error) 
 		return nil, err
 	}
 	return config, nil
+}
+
+// GetEnabledChannelsByModel 查询支持指定模型的启用渠道（按优先级排序）
+// 简化方案：直接数据库查询，利用 SQLite 索引，避免内存缓存复杂性
+func (s *SQLiteStore) GetEnabledChannelsByModel(ctx context.Context, model string) ([]*Config, error) {
+	var query string
+	var args []interface{}
+
+	if model == "*" {
+		// 通配符：返回所有启用的渠道
+		query = `
+			SELECT id, name, api_key, api_keys, key_strategy, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at
+			FROM channels
+			WHERE enabled = 1
+			ORDER BY priority DESC, id ASC
+		`
+	} else {
+		// 精确匹配：查询models字段包含该模型（JSON数组存储）
+		query = `
+			SELECT id, name, api_key, api_keys, key_strategy, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at
+			FROM channels
+			WHERE enabled = 1 AND models LIKE ?
+			ORDER BY priority DESC, id ASC
+		`
+		args = []interface{}{"%" + model + "%"}
+	}
+
+	stmt, err := s.prepareStmt(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := stmt.QueryContext(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	scanner := NewConfigScanner()
+	return scanner.ScanConfigs(rows)
+}
+
+// GetEnabledChannelsByType 查询指定类型的启用渠道（按优先级排序）
+func (s *SQLiteStore) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*Config, error) {
+	query := `
+		SELECT id, name, api_key, api_keys, key_strategy, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at
+		FROM channels
+		WHERE enabled = 1 AND channel_type = ?
+		ORDER BY priority DESC, id ASC
+	`
+
+	stmt, err := s.prepareStmt(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := stmt.QueryContext(ctx, channelType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	scanner := NewConfigScanner()
+	return scanner.ScanConfigs(rows)
 }
 
 func (s *SQLiteStore) CreateConfig(ctx context.Context, c *Config) (*Config, error) {
@@ -1019,10 +974,36 @@ func (s *SQLiteStore) DeleteConfig(ctx context.Context, id int64) error {
 		return err
 	}
 
-	// 从SQLite删除
-	_, err := s.db.ExecContext(ctx, `DELETE FROM channels WHERE id = ?`, id)
+	// 级联删除所有关联资源（事务保证原子性）
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 1. 删除渠道配置
+	if _, err := tx.ExecContext(ctx, `DELETE FROM channels WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("delete channel: %w", err)
+	}
+
+	// 2. 级联删除渠道级冷却数据
+	if _, err := tx.ExecContext(ctx, `DELETE FROM cooldowns WHERE channel_id = ?`, id); err != nil {
+		return fmt.Errorf("delete cooldowns: %w", err)
+	}
+
+	// 3. 级联删除Key级冷却数据
+	if _, err := tx.ExecContext(ctx, `DELETE FROM key_cooldowns WHERE channel_id = ?`, id); err != nil {
+		return fmt.Errorf("delete key_cooldowns: %w", err)
+	}
+
+	// 4. 级联删除Key轮询指针
+	if _, err := tx.ExecContext(ctx, `DELETE FROM key_rr WHERE channel_id = ?`, id); err != nil {
+		return fmt.Errorf("delete key_rr: %w", err)
+	}
+
+	// 提交事务
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
 	}
 
 	// 异步全量同步所有渠道到Redis（非阻塞，立即返回）
@@ -1103,57 +1084,52 @@ func (s *SQLiteStore) AddLog(ctx context.Context, e *LogEntry) error {
 	// Unix时间戳：直接存储毫秒级Unix时间戳
 	timeMs := cleanTime.UnixMilli()
 
-	// 性能优化：使用预编译语句
+	// 直接写入日志数据库（简化预编译语句缓存）
 	query := `
 		INSERT INTO logs(time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
-	stmt, err := s.prepareStmt(ctx, query)
-	if err != nil {
-		return err
-	}
 
-	_, err = stmt.ExecContext(ctx, timeMs, e.Model, e.ChannelID, e.StatusCode, e.Message, e.Duration, e.IsStreaming, e.FirstByteTime, e.APIKeyUsed)
+	_, err := s.logDB.ExecContext(ctx, query, timeMs, e.Model, e.ChannelID, e.StatusCode, e.Message, e.Duration, e.IsStreaming, e.FirstByteTime, e.APIKeyUsed)
 	return err
 }
 
 func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offset int, filter *LogFilter) ([]*LogEntry, error) {
-	// 使用查询构建器构建复杂查询
+	// 使用查询构建器构建复杂查询（从 logDB 查询）
 	baseQuery := `
-		SELECT l.id, l.time, l.model, l.channel_id, c.name AS channel_name,
-		       l.status_code, l.message, l.duration, l.is_streaming, l.first_byte_time, l.api_key_used
-		FROM logs l
-		LEFT JOIN channels c ON c.id = l.channel_id`
+		SELECT id, time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used
+		FROM logs`
 
 	// time字段现在是BIGINT毫秒时间戳，需要转换为Unix毫秒进行比较
 	sinceMs := since.UnixMilli()
 
 	qb := NewQueryBuilder(baseQuery).
-		Where("l.time >= ?", sinceMs).
+		Where("time >= ?", sinceMs).
 		ApplyFilter(filter)
 
-	suffix := "ORDER BY l.time DESC LIMIT ? OFFSET ?"
+	suffix := "ORDER BY time DESC LIMIT ? OFFSET ?"
 	query, args := qb.BuildWithSuffix(suffix)
 	args = append(args, limit, offset)
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.logDB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
 	out := []*LogEntry{}
+	channelIDsToFetch := make(map[int64]bool)
+
 	for rows.Next() {
 		var e LogEntry
 		var cfgID sql.NullInt64
-		var chName sql.NullString
 		var duration sql.NullFloat64
 		var isStreamingInt int
 		var firstByteTime sql.NullFloat64
 		var timeMs int64 // Unix毫秒时间戳
 		var apiKeyUsed sql.NullString
 
-		if err := rows.Scan(&e.ID, &timeMs, &e.Model, &cfgID, &chName,
+		if err := rows.Scan(&e.ID, &timeMs, &e.Model, &cfgID,
 			&e.StatusCode, &e.Message, &duration, &isStreamingInt, &firstByteTime, &apiKeyUsed); err != nil {
 			return nil, err
 		}
@@ -1164,9 +1140,7 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 		if cfgID.Valid {
 			id := cfgID.Int64
 			e.ChannelID = &id
-		}
-		if chName.Valid {
-			e.ChannelName = chName.String
+			channelIDsToFetch[id] = true
 		}
 		if duration.Valid {
 			e.Duration = duration.Float64
@@ -1181,6 +1155,28 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 		}
 		out = append(out, &e)
 	}
+
+	// 查询渠道名称（从主数据库）
+	if len(channelIDsToFetch) > 0 {
+		channelNames := make(map[int64]string)
+		for channelID := range channelIDsToFetch {
+			var name string
+			err := s.db.QueryRowContext(ctx, "SELECT name FROM channels WHERE id = ?", channelID).Scan(&name)
+			if err == nil {
+				channelNames[channelID] = name
+			}
+		}
+
+		// 填充渠道名称
+		for _, e := range out {
+			if e.ChannelID != nil {
+				if name, ok := channelNames[*e.ChannelID]; ok {
+					e.ChannelName = name
+				}
+			}
+		}
+	}
+
 	return out, nil
 }
 
@@ -1192,27 +1188,22 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 	bucketSeconds := int64(bucket.Seconds())
 	sinceUnix := since.Unix()
 
-	// SQL聚合查询：使用Unix时间戳除法实现时间桶分组
+	// SQL聚合查询：使用Unix时间戳除法实现时间桶分组（从 logDB）
 	// 性能优化：time字段为BIGINT毫秒时间戳，查询速度提升10-100倍
 	// bucket_ts = (unix_timestamp_seconds / bucket_seconds) * bucket_seconds
 	query := `
 		SELECT
-			((l.time / 1000) / ?) * ? AS bucket_ts,
-			COALESCE(c.name, '未知渠道') AS channel_name,
-			SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN 1 ELSE 0 END) AS success,
-			SUM(CASE WHEN l.status_code < 200 OR l.status_code >= 300 THEN 1 ELSE 0 END) AS error
-		FROM logs l
-		LEFT JOIN channels c ON l.channel_id = c.id
-		WHERE (l.time / 1000) >= ?
-		GROUP BY bucket_ts, channel_name
+			((time / 1000) / ?) * ? AS bucket_ts,
+			channel_id,
+			SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success,
+			SUM(CASE WHEN status_code < 200 OR status_code >= 300 THEN 1 ELSE 0 END) AS error
+		FROM logs
+		WHERE (time / 1000) >= ?
+		GROUP BY bucket_ts, channel_id
 		ORDER BY bucket_ts ASC
 	`
-	stmt, err := s.prepareStmt(ctx, query)
-	if err != nil {
-		return nil, err
-	}
 
-	rows, err := stmt.QueryContext(ctx, bucketSeconds, bucketSeconds, sinceUnix)
+	rows, err := s.logDB.QueryContext(ctx, query, bucketSeconds, bucketSeconds, sinceUnix)
 	if err != nil {
 		return nil, err
 	}
@@ -1220,12 +1211,14 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 
 	// 解析聚合结果，按时间桶重组
 	mapp := make(map[int64]*MetricPoint)
+	channelIDsToFetch := make(map[int64]bool)
+
 	for rows.Next() {
 		var bucketTs int64
-		var channelName string
+		var channelID sql.NullInt64
 		var success, errorCount int
 
-		if err := rows.Scan(&bucketTs, &channelName, &success, &errorCount); err != nil {
+		if err := rows.Scan(&bucketTs, &channelID, &success, &errorCount); err != nil {
 			return nil, err
 		}
 
@@ -1243,11 +1236,49 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 		mp.Success += success
 		mp.Error += errorCount
 
-		// 更新渠道统计
-		mp.Channels[channelName] = ChannelMetric{
+		// 暂时使用 channel_id 作为 key，稍后替换为 name
+		channelKey := "未知渠道"
+		if channelID.Valid {
+			channelKey = fmt.Sprintf("ch_%d", channelID.Int64)
+			channelIDsToFetch[channelID.Int64] = true
+		}
+
+		mp.Channels[channelKey] = ChannelMetric{
 			Success: success,
 			Error:   errorCount,
 		}
+	}
+
+	// 查询渠道名称（从主数据库）
+	channelNames := make(map[int64]string)
+	if len(channelIDsToFetch) > 0 {
+		for channelID := range channelIDsToFetch {
+			var name string
+			err := s.db.QueryRowContext(ctx, "SELECT name FROM channels WHERE id = ?", channelID).Scan(&name)
+			if err == nil {
+				channelNames[channelID] = name
+			}
+		}
+	}
+
+	// 替换 channel_id 为 channel_name
+	for _, mp := range mapp {
+		newChannels := make(map[string]ChannelMetric)
+		for key, metric := range mp.Channels {
+			if key == "未知渠道" {
+				newChannels[key] = metric
+			} else {
+				// 解析 ch_123 格式
+				var channelID int64
+				fmt.Sscanf(key, "ch_%d", &channelID)
+				if name, ok := channelNames[channelID]; ok {
+					newChannels[name] = metric
+				} else {
+					newChannels["未知渠道"] = metric
+				}
+			}
+		}
+		mp.Channels = newChannels
 	}
 
 	// 生成完整的时间序列（填充空桶）
@@ -1320,45 +1351,79 @@ func (s *SQLiteStore) SetRR(ctx context.Context, model string, priority int, idx
 	return err
 }
 
-// GetStats 实现统计功能，按渠道和模型统计成功/失败次数
+// GetStats 实现统计功能，按渠道和模型统计成功/失败次数（从 logDB）
 func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *LogFilter) ([]StatsEntry, error) {
-	// 使用查询构建器构建统计查询
+	// 使用查询构建器构建统计查询（从 logDB）
 	baseQuery := `
 		SELECT
-			l.channel_id,
-			COALESCE(c.name, '系统') AS channel_name,
-			COALESCE(l.model, '') AS model,
-			SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN 1 ELSE 0 END) AS success,
-			SUM(CASE WHEN l.status_code < 200 OR l.status_code >= 300 THEN 1 ELSE 0 END) AS error,
+			channel_id,
+			COALESCE(model, '') AS model,
+			SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success,
+			SUM(CASE WHEN status_code < 200 OR status_code >= 300 THEN 1 ELSE 0 END) AS error,
 			COUNT(*) AS total
-		FROM logs l
-		LEFT JOIN channels c ON c.id = l.channel_id`
+		FROM logs`
 
 	// time字段现在是BIGINT毫秒时间戳
 	sinceMs := since.UnixMilli()
 
 	qb := NewQueryBuilder(baseQuery).
-		Where("l.time >= ?", sinceMs).
+		Where("time >= ?", sinceMs).
 		ApplyFilter(filter)
 
-	suffix := "GROUP BY l.channel_id, c.name, l.model ORDER BY channel_name ASC, model ASC"
+	suffix := "GROUP BY channel_id, model ORDER BY channel_id ASC, model ASC"
 	query, args := qb.BuildWithSuffix(suffix)
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.logDB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
 	var stats []StatsEntry
+	channelIDsToFetch := make(map[int64]bool)
+
 	for rows.Next() {
 		var entry StatsEntry
-		err := rows.Scan(&entry.ChannelID, &entry.ChannelName, &entry.Model,
+		err := rows.Scan(&entry.ChannelID, &entry.Model,
 			&entry.Success, &entry.Error, &entry.Total)
 		if err != nil {
 			return nil, err
 		}
+
+		if entry.ChannelID != nil {
+			channelIDsToFetch[int64(*entry.ChannelID)] = true
+		}
 		stats = append(stats, entry)
+	}
+
+	// 查询渠道名称（从主数据库）
+	if len(channelIDsToFetch) > 0 {
+		channelNames := make(map[int64]string)
+		for channelID := range channelIDsToFetch {
+			var name string
+			err := s.db.QueryRowContext(ctx, "SELECT name FROM channels WHERE id = ?", channelID).Scan(&name)
+			if err == nil {
+				channelNames[channelID] = name
+			}
+		}
+
+		// 填充渠道名称
+		for i := range stats {
+			if stats[i].ChannelID != nil {
+				if name, ok := channelNames[int64(*stats[i].ChannelID)]; ok {
+					stats[i].ChannelName = name
+				} else {
+					stats[i].ChannelName = "系统"
+				}
+			} else {
+				stats[i].ChannelName = "系统"
+			}
+		}
+	} else {
+		// 没有渠道ID，全部标记为系统
+		for i := range stats {
+			stats[i].ChannelName = "系统"
+		}
 	}
 
 	return stats, nil
@@ -1610,6 +1675,15 @@ func (s *SQLiteStore) ResetKeyCooldown(ctx context.Context, configID int64, keyI
 		DELETE FROM key_cooldowns
 		WHERE channel_id = ? AND key_index = ?
 	`, configID, keyIndex)
+	return err
+}
+
+// ClearAllKeyCooldowns 清理渠道的所有Key冷却数据（用于Key变更时避免索引错位）
+func (s *SQLiteStore) ClearAllKeyCooldowns(ctx context.Context, configID int64) error {
+	_, err := s.db.ExecContext(ctx, `
+		DELETE FROM key_cooldowns
+		WHERE channel_id = ?
+	`, configID)
 	return err
 }
 

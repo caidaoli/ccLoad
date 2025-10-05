@@ -38,25 +38,23 @@ func (wb *WhereBuilder) AddTimeRange(timeField string, since any) *WhereBuilder 
 }
 
 // ApplyLogFilter 应用日志过滤器，消除重复的过滤逻辑
+// 重构：移除表别名，直接使用列名（修复SQL错误）
 func (wb *WhereBuilder) ApplyLogFilter(filter *LogFilter) *WhereBuilder {
 	if filter == nil {
 		return wb
 	}
 
 	if filter.ChannelID != nil {
-		wb.AddCondition("l.channel_id = ?", *filter.ChannelID)
+		wb.AddCondition("channel_id = ?", *filter.ChannelID)
 	}
-	if filter.ChannelName != "" {
-		wb.AddCondition("c.name = ?", filter.ChannelName)
-	}
-	if filter.ChannelNameLike != "" {
-		wb.AddCondition("c.name LIKE ?", "%"+filter.ChannelNameLike+"%")
-	}
+	// 注意：ChannelName和ChannelNameLike需要JOIN channels表才能使用
+	// 当前ListLogs查询不包含JOIN，因此这些过滤器会被忽略
+	// 如需支持，需要修改sqlite_store.go的ListLogs查询添加LEFT JOIN
 	if filter.Model != "" {
-		wb.AddCondition("l.model = ?", filter.Model)
+		wb.AddCondition("model = ?", filter.Model)
 	}
 	if filter.ModelLike != "" {
-		wb.AddCondition("l.model LIKE ?", "%"+filter.ModelLike+"%")
+		wb.AddCondition("model LIKE ?", "%"+filter.ModelLike+"%")
 	}
 	return wb
 }

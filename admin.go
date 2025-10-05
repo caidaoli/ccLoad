@@ -125,11 +125,20 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	for _, cfg := range cfgs {
 		oc := ChannelWithCooldown{Config: cfg}
 
-		// 渠道级别冷却
+		// 渠道级别冷却：直接查询数据库（已移除内存缓存）
+		var cooldownUntil *time.Time
+		var cooldownRemainingMS int64
+
+		// 查询数据库获取冷却状态
 		if until, ok := s.store.GetCooldownUntil(c.Request.Context(), cfg.ID); ok && until.After(now) {
-			u := until
-			oc.CooldownUntil = &u
-			oc.CooldownRemainingMS = int64(until.Sub(now) / time.Millisecond)
+			cooldownUntil = &until
+			cooldownRemainingMS = int64(until.Sub(now) / time.Millisecond)
+		}
+
+		// 更新响应
+		if cooldownUntil != nil {
+			oc.CooldownUntil = cooldownUntil
+			oc.CooldownRemainingMS = cooldownRemainingMS
 		}
 
 		// Key级别冷却：返回所有Key的状态信息（包括正常和冷却）
@@ -169,9 +178,6 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
-
-	// 使配置缓存失效，确保新渠道立即可用
-	s.invalidateConfigCache()
 
 	RespondJSON(c, http.StatusCreated, created)
 }
@@ -441,9 +447,6 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 		}
 	}
 
-	// CSV导入完成后使配置缓存失效，确保新导入的渠道立即可用
-	s.invalidateConfigCache()
-
 	RespondJSON(c, http.StatusOK, summary)
 }
 
@@ -498,8 +501,6 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 				RespondError(c, http.StatusInternalServerError, err)
 				return
 			}
-			// 使配置缓存失效
-			s.invalidateConfigCache()
 			RespondJSON(c, http.StatusOK, upd)
 			return
 		}
@@ -523,13 +524,23 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		return
 	}
 
+	// 检测api_key是否变化（防止Key索引错位）
+	keyChanged := existing.APIKey != req.APIKey
+
 	upd, err := s.store.UpdateConfig(c.Request.Context(), id, req.ToConfig())
 	if err != nil {
 		RespondError(c, http.StatusNotFound, err)
 		return
 	}
-	// 使配置缓存失效
-	s.invalidateConfigCache()
+
+	// Key变化时清理所有key冷却数据（避免索引错位）
+	if keyChanged {
+		if err := s.store.ClearAllKeyCooldowns(c.Request.Context(), id); err != nil {
+			// 清理失败仅记录警告，不影响更新流程
+			fmt.Printf("warning: failed to clear key cooldowns for channel %d: %v\n", id, err)
+		}
+	}
+
 	RespondJSON(c, http.StatusOK, upd)
 }
 
@@ -539,8 +550,7 @@ func (s *Server) handleDeleteChannel(c *gin.Context, id int64) {
 		RespondError(c, http.StatusNotFound, err)
 		return
 	}
-	// 使配置缓存失效，确保已删除的渠道不会被使用
-	s.invalidateConfigCache()
+	// 数据库级联删除会自动清理冷却数据（无需手动清理缓存）
 	c.Status(http.StatusNoContent)
 }
 

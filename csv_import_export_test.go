@@ -149,21 +149,13 @@ test-with-values,sk-test-2,https://api.google.com,5,gemini-flash,{},gemini,round
 		t.Errorf("空key_strategy应填充为sequential，实际为: %s", keyStrategy)
 	}
 
-	// 创建Config对象（模拟admin.go:387-397）
-	cfg := &Config{
-		Name:        "test-empty",
-		APIKey:      "sk-test",
-		ChannelType: channelType, // 已规范化为anthropic
-		KeyStrategy: keyStrategy, // 已填充为sequential
+	// 验证规范化后的值（直接验证变量，无需创建Config对象）
+	if channelType != "anthropic" {
+		t.Errorf("规范化后的channel_type应为anthropic，实际为: %s", channelType)
 	}
 
-	// 验证Config对象
-	if cfg.ChannelType != "anthropic" {
-		t.Errorf("Config的channel_type应为anthropic，实际为: %s", cfg.ChannelType)
-	}
-
-	if cfg.KeyStrategy != "sequential" {
-		t.Errorf("Config的key_strategy应为sequential，实际为: %s", cfg.KeyStrategy)
+	if keyStrategy != "sequential" {
+		t.Errorf("填充后的key_strategy应为sequential，实际为: %s", keyStrategy)
 	}
 }
 
@@ -199,28 +191,17 @@ func TestCSVExportImportCycle(t *testing.T) {
 		t.Fatalf("导入channel_type应为anthropic，实际为: %s", importedChannelType)
 	}
 
-	// 步骤4：创建新Config
-	imported := &Config{
-		Name:        "test-cycle",
-		APIKey:      "sk-test",
-		ChannelType: importedChannelType, // anthropic
-		URL:         "https://api.example.com",
-		Priority:    10,
-		Models:      []string{"test-model"},
-		Enabled:     true,
-	}
-
-	// 验证：导入后的Config channel_type是anthropic（非空）
-	if imported.ChannelType != "anthropic" {
-		t.Errorf("导入后Config的channel_type应为anthropic，实际为: %s", imported.ChannelType)
+	// 验证：导入后的channel_type是anthropic（非空）
+	if importedChannelType != "anthropic" {
+		t.Errorf("导入后的channel_type应为anthropic，实际为: %s", importedChannelType)
 	}
 
 	// 关键验证：原始Config的空值在导出导入循环后被修复
 	t.Logf("原始Config channel_type: '%s' (空=%v)", original.ChannelType, original.ChannelType == "")
-	t.Logf("导入后Config channel_type: '%s' (空=%v)", imported.ChannelType, imported.ChannelType == "")
+	t.Logf("导入后channel_type: '%s' (空=%v)", importedChannelType, importedChannelType == "")
 
 	// 结论：CSV导出导入可以间接修复数据库中的空channel_type
-	if imported.ChannelType == "" {
+	if importedChannelType == "" {
 		t.Error("CSV导入应修复空channel_type为默认值")
 	}
 }

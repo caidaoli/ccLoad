@@ -240,6 +240,10 @@ func (m *MockStore) ResetKeyCooldown(ctx context.Context, configID int64, keyInd
 	return nil
 }
 
+func (m *MockStore) ClearAllKeyCooldowns(ctx context.Context, configID int64) error {
+	return nil
+}
+
 func (m *MockStore) NextKeyRR(ctx context.Context, configID int64, keyCount int) int {
 	return 0
 }
@@ -276,12 +280,14 @@ func (m *MockStore) Close() error {
 	return nil
 }
 
-func (m *MockStore) Vacuum(ctx context.Context) error {
-	return nil
-}
-
 func (m *MockStore) CleanupLogsBefore(ctx context.Context, cutoff time.Time) error {
 	return nil
+}
+func (m *MockStore) GetEnabledChannelsByModel(ctx context.Context, model string) ([]*Config, error) {
+	return nil, nil
+}
+func (m *MockStore) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*Config, error) {
+	return nil, nil
 }
 
 // ==================== P2 边界测试：多Key渠道所有Key冷却场景 ====================
@@ -471,6 +477,9 @@ func (m *MockStoreAllKeysCooled) SetKeyCooldown(ctx context.Context, configID in
 func (m *MockStoreAllKeysCooled) ResetKeyCooldown(ctx context.Context, configID int64, keyIndex int) error {
 	return nil
 }
+func (m *MockStoreAllKeysCooled) ClearAllKeyCooldowns(ctx context.Context, configID int64) error {
+	return nil
+}
 func (m *MockStoreAllKeysCooled) SetKeyRR(ctx context.Context, configID int64, idx int) error {
 	return nil
 }
@@ -495,11 +504,15 @@ func (m *MockStoreAllKeysCooled) GetStats(ctx context.Context, since time.Time, 
 func (m *MockStoreAllKeysCooled) Close() error {
 	return nil
 }
-func (m *MockStoreAllKeysCooled) Vacuum(ctx context.Context) error {
-	return nil
-}
+
 func (m *MockStoreAllKeysCooled) CleanupLogsBefore(ctx context.Context, cutoff time.Time) error {
 	return nil
+}
+func (m *MockStoreAllKeysCooled) GetEnabledChannelsByModel(ctx context.Context, model string) ([]*Config, error) {
+	return nil, nil
+}
+func (m *MockStoreAllKeysCooled) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*Config, error) {
+	return nil, nil
 }
 
 // contains 检查字符串是否包含子串（辅助函数）
