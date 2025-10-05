@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -243,6 +245,70 @@ func TestLogDBAlwaysUsesFile(t *testing.T) {
 
 	if !foundTestLog {
 		t.Error("Expected to find test log entry after database reopen")
+	}
+}
+
+// TestGenerateLogDBPath 验证日志数据库路径生成逻辑
+func TestGenerateLogDBPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "正常文件路径",
+			input:    "./data/ccload.db",
+			expected: "data/ccload-log.db",
+		},
+		{
+			name:     "特殊内存标识",
+			input:    ":memory:",
+			expected: filepath.Join(os.TempDir(), "ccload-test-log.db"),
+		},
+		{
+			name:     "临时文件路径",
+			input:    "/tmp/test.db",
+			expected: "/tmp/test-log.db",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := generateLogDBPath(tt.input)
+			if result != tt.expected {
+				t.Errorf("generateLogDBPath(%q) = %q, expected %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestMemoryDBDSNNoWAL 验证内存数据库DSN不包含WAL模式
+// 回归测试：防止WAL+memory组合导致表创建失败的bug（2025-10-05修复）
+func TestMemoryDBDSNNoWAL(t *testing.T) {
+	os.Setenv("CCLOAD_USE_MEMORY_DB", "true")
+	defer os.Unsetenv("CCLOAD_USE_MEMORY_DB")
+
+	dsn := buildMainDBDSN("/tmp/test.db")
+
+	// 验证DSN不包含journal_mode=WAL
+	if strings.Contains(dsn, "journal_mode=WAL") {
+		t.Error("Memory database DSN should NOT contain journal_mode=WAL (incompatible with :memory:)")
+	}
+
+	// 验证DSN包含必要的参数
+	if !strings.Contains(dsn, "file::memory:") {
+		t.Error("Expected DSN to use :memory: database")
+	}
+
+	if !strings.Contains(dsn, "cache=shared") {
+		t.Error("Expected DSN to use shared cache for multi-connection support")
+	}
+
+	// 验证文件模式仍然使用WAL
+	os.Setenv("CCLOAD_USE_MEMORY_DB", "false")
+	fileDSN := buildMainDBDSN("/tmp/test.db")
+	if !strings.Contains(fileDSN, "journal_mode=WAL") {
+		t.Error("File mode DSN should contain journal_mode=WAL for performance")
 	}
 }
 

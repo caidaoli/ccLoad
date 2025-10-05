@@ -34,7 +34,13 @@ func maskAPIKey(key string) string {
 
 // generateLogDBPath 从主数据库路径生成日志数据库路径
 // 例如: ./data/ccload.db -> ./data/ccload-log.db
+// 特殊处理: :memory: -> /tmp/ccload-test-log.db（测试场景）
 func generateLogDBPath(mainDBPath string) string {
+	// 检测特殊的内存数据库标识（用于测试）
+	if mainDBPath == ":memory:" {
+		return filepath.Join(os.TempDir(), "ccload-test-log.db")
+	}
+
 	dir := filepath.Dir(mainDBPath)
 	base := filepath.Base(mainDBPath)
 	ext := filepath.Ext(base)
@@ -45,12 +51,16 @@ func generateLogDBPath(mainDBPath string) string {
 // buildMainDBDSN 构建主数据库DSN（支持内存模式）
 // 内存模式：CCLOAD_USE_MEMORY_DB=true -> file::memory:?cache=shared
 // 文件模式：默认 -> file:/path/to/db?_pragma=...
+//
+// ⚠️ 重要：内存数据库不支持WAL模式（journal_mode=WAL）
+// SQLite文档：WAL需要持久化文件系统，无法用于:memory:数据库
 func buildMainDBDSN(path string) string {
 	useMemory := os.Getenv("CCLOAD_USE_MEMORY_DB") == "true"
 
 	if useMemory {
-		// 内存模式：使用共享缓存确保多连接访问同一数据库实例
-		return "file::memory:?cache=shared&_pragma=busy_timeout(5000)&_foreign_keys=on&_pragma=journal_mode=WAL&_loc=Local"
+		// 内存模式：移除WAL（WAL模式要求持久化文件系统，与:memory:不兼容）
+		// 使用共享缓存确保多连接访问同一数据库实例
+		return "file::memory:?cache=shared&_pragma=busy_timeout(5000)&_foreign_keys=on&_loc=Local"
 	}
 
 	// 文件模式：保持原有逻辑
@@ -313,6 +323,12 @@ func (s *SQLiteStore) addColumnIfNotExists(ctx context.Context, tableName, colum
 // 解决方案：将api_key字段（逗号分隔）转换为api_keys JSON数组
 // 执行时机：服务启动时自动运行（在ensureChannelNameUnique之后）
 func (s *SQLiteStore) migrateAPIKeysField(ctx context.Context) error {
+	// 内存数据库模式：跳过历史数据修复（KISS原则：内存DB无历史数据）
+	useMemory := os.Getenv("CCLOAD_USE_MEMORY_DB") == "true"
+	if useMemory {
+		return nil
+	}
+
 	// 查询所有需要迁移的渠道：api_keys为"null"或空字符串，但api_key不为空
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, api_key
@@ -371,6 +387,18 @@ func (s *SQLiteStore) migrateAPIKeysField(ctx context.Context) error {
 // ensureChannelNameUnique 确保channels表的name字段具有UNIQUE约束
 // 简化的四步迁移方案，遵循KISS原则
 func (s *SQLiteStore) ensureChannelNameUnique(ctx context.Context) error {
+	// 内存数据库模式优化：跳过重复数据检查，直接创建索引（YAGNI：内存DB无历史重复数据）
+	useMemory := os.Getenv("CCLOAD_USE_MEMORY_DB") == "true"
+	if useMemory {
+		// 直接创建UNIQUE索引（CREATE IF NOT EXISTS保证幂等性）
+		if _, err := s.db.ExecContext(ctx,
+			"CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_unique_name ON channels (NAME)",
+		); err != nil {
+			return fmt.Errorf("create unique index: %w", err)
+		}
+		return nil
+	}
+
 	// 第一步: 删除旧的普通索引
 	if _, err := s.db.ExecContext(ctx, "DROP INDEX IF EXISTS idx_channels_name"); err != nil {
 		return fmt.Errorf("drop old index: %w", err)
@@ -445,6 +473,12 @@ func (s *SQLiteStore) ensureChannelNameUnique(ctx context.Context) error {
 // migrateCooldownToUnixTimestamp 迁移冷却表的until字段从TIMESTAMP到Unix时间戳
 // 策略：检测字段类型，如果是TEXT/TIMESTAMP则重建表，如果已经是INTEGER则跳过
 func (s *SQLiteStore) migrateCooldownToUnixTimestamp(ctx context.Context) error {
+	// 内存数据库模式：跳过冷却表迁移（KISS原则：内存DB字段类型已正确）
+	useMemory := os.Getenv("CCLOAD_USE_MEMORY_DB") == "true"
+	if useMemory {
+		return nil
+	}
+
 	// 检查cooldowns表的until字段类型
 	needMigrateCooldowns := false
 	rows, err := s.db.QueryContext(ctx, "PRAGMA table_info(cooldowns)")
@@ -508,6 +542,13 @@ func (s *SQLiteStore) migrateCooldownToUnixTimestamp(ctx context.Context) error 
 
 // rebuildChannelsTableToUnixTimestamp 重建channels表，将created_at/updated_at从TIMESTAMP改为BIGINT秒
 func (s *SQLiteStore) rebuildChannelsTableToUnixTimestamp(ctx context.Context) error {
+	// 内存数据库模式：跳过表重建（KISS原则：内存DB总是全新的，无需向后兼容迁移）
+	// 原因：内存数据库在启动时已创建正确的BIGINT字段类型，重建操作不仅无必要，还引入竞态条件风险
+	useMemory := os.Getenv("CCLOAD_USE_MEMORY_DB") == "true"
+	if useMemory {
+		return nil // 内存模式直接跳过，避免DROP TABLE的并发竞态窗口
+	}
+
 	// 检查created_at字段类型是否需要重建
 	var fieldType string
 	err := s.db.QueryRowContext(ctx, `
