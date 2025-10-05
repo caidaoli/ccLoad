@@ -2,6 +2,7 @@ package main
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -159,4 +160,44 @@ func BindAndValidate(c *gin.Context, obj RequestValidator) error {
 		return err
 	}
 	return obj.Validate()
+}
+
+// BuildLogFilter 从查询参数构建LogFilter（DRY原则：消除重复的过滤逻辑）
+// 支持的查询参数：
+// - channel_id: 精确匹配渠道ID
+// - channel_name: 精确匹配渠道名称
+// - channel_name_like: 模糊匹配渠道名称
+// - model: 精确匹配模型名称
+// - model_like: 模糊匹配模型名称
+func BuildLogFilter(c *gin.Context) LogFilter {
+	var lf LogFilter
+
+	// 渠道ID过滤
+	if cidStr := strings.TrimSpace(c.Query("channel_id")); cidStr != "" {
+		if id, err := strconv.ParseInt(cidStr, 10, 64); err == nil && id > 0 {
+			lf.ChannelID = &id
+		}
+	}
+
+	// 渠道名称精确匹配
+	if cn := strings.TrimSpace(c.Query("channel_name")); cn != "" {
+		lf.ChannelName = cn
+	}
+
+	// 渠道名称模糊匹配
+	if cnl := strings.TrimSpace(c.Query("channel_name_like")); cnl != "" {
+		lf.ChannelNameLike = cnl
+	}
+
+	// 模型名称精确匹配
+	if m := strings.TrimSpace(c.Query("model")); m != "" {
+		lf.Model = m
+	}
+
+	// 模型名称模糊匹配
+	if ml := strings.TrimSpace(c.Query("model_like")); ml != "" {
+		lf.ModelLike = ml
+	}
+
+	return lf
 }

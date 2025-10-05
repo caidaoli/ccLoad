@@ -212,6 +212,10 @@ func (m *MockStore) GetCooldownUntil(ctx context.Context, configID int64) (time.
 	return time.Time{}, false
 }
 
+func (m *MockStore) GetAllChannelCooldowns(ctx context.Context) (map[int64]time.Time, error) {
+	return make(map[int64]time.Time), nil
+}
+
 func (m *MockStore) SetCooldown(ctx context.Context, configID int64, until time.Time) error {
 	return nil
 }
@@ -462,6 +466,9 @@ func (m *MockStoreAllKeysCooled) DeleteConfig(ctx context.Context, id int64) err
 }
 func (m *MockStoreAllKeysCooled) GetCooldownUntil(ctx context.Context, configID int64) (time.Time, bool) {
 	return time.Time{}, false
+}
+func (m *MockStoreAllKeysCooled) GetAllChannelCooldowns(ctx context.Context) (map[int64]time.Time, error) {
+	return make(map[int64]time.Time), nil
 }
 func (m *MockStoreAllKeysCooled) SetCooldown(ctx context.Context, configID int64, until time.Time) error {
 	return nil

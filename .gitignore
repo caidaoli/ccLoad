@@ -44,7 +44,6 @@ Thumbs.db
 
 # Playwright MCP
 .playwright-mcp
-.env.example
 .claude/settings.local.json
 com.ccload.service.plist
 .dataX

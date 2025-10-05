@@ -189,6 +189,7 @@ type Store interface {
 
 	// cooldown (channel-level)
 	GetCooldownUntil(ctx context.Context, configID int64) (time.Time, bool)
+	GetAllChannelCooldowns(ctx context.Context) (map[int64]time.Time, error) // P0优化: 批量查询所有渠道冷却状态
 	SetCooldown(ctx context.Context, configID int64, until time.Time) error
 	// 指数退避：错误时翻倍，成功时清零
 	BumpCooldownOnError(ctx context.Context, configID int64, now time.Time) (time.Duration, error)

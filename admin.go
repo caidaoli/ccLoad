@@ -15,22 +15,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// parseAPIKeys 解析 API Key 字符串（支持逗号分隔的多个 Key）
-func parseAPIKeys(apiKey string) []string {
-	if apiKey == "" {
-		return []string{}
-	}
-	parts := strings.Split(apiKey, ",")
-	keys := make([]string, 0, len(parts))
-	for _, k := range parts {
-		k = strings.TrimSpace(k)
-		if k != "" {
-			keys = append(keys, k)
-		}
-	}
-	return keys
-}
-
 // ChannelRequest 渠道创建/更新请求结构
 type ChannelRequest struct {
 	Name           string            `json:"name" binding:"required"`
@@ -123,6 +107,14 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	// 附带冷却状态
 	now := time.Now()
 
+	// P0性能优化：批量查询所有渠道冷却状态（一次查询替代 N 次）
+	allChannelCooldowns, err := s.store.GetAllChannelCooldowns(c.Request.Context())
+	if err != nil {
+		// 渠道冷却查询失败不影响主流程，仅记录错误
+		fmt.Printf("⚠️  警告: 批量查询渠道冷却状态失败: %v\n", err)
+		allChannelCooldowns = make(map[int64]time.Time)
+	}
+
 	// 性能优化：批量查询所有Key冷却状态（一次查询替代 N*M 次）
 	allKeyCooldowns, err := s.store.GetAllKeyCooldowns(c.Request.Context())
 	if err != nil {
@@ -135,19 +127,10 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	for _, cfg := range cfgs {
 		oc := ChannelWithCooldown{Config: cfg}
 
-		// 渠道级别冷却：直接查询数据库（已移除内存缓存）
-		var cooldownUntil *time.Time
-		var cooldownRemainingMS int64
-
-		// 查询数据库获取冷却状态
-		if until, ok := s.store.GetCooldownUntil(c.Request.Context(), cfg.ID); ok && until.After(now) {
-			cooldownUntil = &until
-			cooldownRemainingMS = int64(until.Sub(now) / time.Millisecond)
-		}
-
-		// 更新响应
-		if cooldownUntil != nil {
-			oc.CooldownUntil = cooldownUntil
+		// 渠道级别冷却：使用批量查询结果（性能提升：N -> 1 次查询）
+		if until, cooled := allChannelCooldowns[cfg.ID]; cooled && until.After(now) {
+			oc.CooldownUntil = &until
+			cooldownRemainingMS := int64(until.Sub(now) / time.Millisecond)
 			oc.CooldownRemainingMS = cooldownRemainingMS
 		}
 
@@ -570,26 +553,7 @@ func (s *Server) handleDeleteChannel(c *gin.Context, id int64) {
 // Admin: /admin/errors?hours=24&limit=100&offset=0 - 重构版本
 func (s *Server) handleErrors(c *gin.Context) {
 	params := ParsePaginationParams(c)
-
-	// 过滤：按渠道ID或渠道名
-	var lf LogFilter
-	if cidStr := strings.TrimSpace(c.Query("channel_id")); cidStr != "" {
-		if id, err := strconv.ParseInt(cidStr, 10, 64); err == nil && id > 0 {
-			lf.ChannelID = &id
-		}
-	}
-	if cn := strings.TrimSpace(c.Query("channel_name")); cn != "" {
-		lf.ChannelName = cn
-	}
-	if cnl := strings.TrimSpace(c.Query("channel_name_like")); cnl != "" {
-		lf.ChannelNameLike = cnl
-	}
-	if m := strings.TrimSpace(c.Query("model")); m != "" {
-		lf.Model = m
-	}
-	if ml := strings.TrimSpace(c.Query("model_like")); ml != "" {
-		lf.ModelLike = ml
-	}
+	lf := BuildLogFilter(c)
 
 	since := params.GetSinceTime()
 	logs, err := s.store.ListLogs(c.Request.Context(), since, params.Limit, params.Offset, &lf)
@@ -632,26 +596,7 @@ func (s *Server) handleMetrics(c *gin.Context) {
 // Admin: /admin/stats?hours=24&channel_name_like=xxx&model_like=xxx - 重构版本
 func (s *Server) handleStats(c *gin.Context) {
 	params := ParsePaginationParams(c)
-
-	// 构建过滤条件（复用errors API的逻辑）
-	var lf LogFilter
-	if cidStr := strings.TrimSpace(c.Query("channel_id")); cidStr != "" {
-		if id, err := strconv.ParseInt(cidStr, 10, 64); err == nil && id > 0 {
-			lf.ChannelID = &id
-		}
-	}
-	if cn := strings.TrimSpace(c.Query("channel_name")); cn != "" {
-		lf.ChannelName = cn
-	}
-	if cnl := strings.TrimSpace(c.Query("channel_name_like")); cnl != "" {
-		lf.ChannelNameLike = cnl
-	}
-	if m := strings.TrimSpace(c.Query("model")); m != "" {
-		lf.Model = m
-	}
-	if ml := strings.TrimSpace(c.Query("model_like")); ml != "" {
-		lf.ModelLike = ml
-	}
+	lf := BuildLogFilter(c)
 
 	since := params.GetSinceTime()
 	stats, err := s.store.GetStats(c.Request.Context(), since, &lf)
@@ -752,7 +697,7 @@ func (s *Server) handleChannelTest(c *gin.Context) {
 	}
 
 	// 解析 API Keys（支持多 Key）
-	keys := parseAPIKeys(cfg.APIKey)
+	keys := ParseAPIKeys(cfg.APIKey)
 	if len(keys) == 0 {
 		RespondJSON(c, http.StatusOK, gin.H{
 			"success": false,

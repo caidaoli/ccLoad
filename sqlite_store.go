@@ -974,6 +974,37 @@ func (s *SQLiteStore) GetCooldownUntil(ctx context.Context, configID int64) (tim
 	return scanUnixTimestamp(row)
 }
 
+// GetAllChannelCooldowns 批量查询所有渠道冷却状态（P0性能优化）
+// 性能提升：N次查询 → 1次查询，消除N+1问题
+func (s *SQLiteStore) GetAllChannelCooldowns(ctx context.Context) (map[int64]time.Time, error) {
+	now := time.Now().Unix()
+	query := `SELECT channel_id, until FROM cooldowns WHERE until > ?`
+
+	rows, err := s.db.QueryContext(ctx, query, now)
+	if err != nil {
+		return nil, fmt.Errorf("query all channel cooldowns: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[int64]time.Time)
+	for rows.Next() {
+		var channelID int64
+		var until int64
+
+		if err := rows.Scan(&channelID, &until); err != nil {
+			return nil, fmt.Errorf("scan channel cooldown: %w", err)
+		}
+
+		result[channelID] = time.Unix(until, 0)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate channel cooldowns: %w", err)
+	}
+
+	return result, nil
+}
+
 func (s *SQLiteStore) SetCooldown(ctx context.Context, configID int64, until time.Time) error {
 	now := time.Now()
 	// 使用工具函数计算冷却持续时间和时间戳
