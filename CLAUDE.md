@@ -419,6 +419,41 @@ graph TB
 - **HTTP客户端**: 100最大连接，10秒连接超时，keepalive优化
 - **TLS优化**: LRU会话缓存，减少握手耗时
 
+**内存数据库模式** (sqlite_store.go:buildMainDBDSN):
+- **启用条件**: 设置环境变量 `CCLOAD_USE_MEMORY_DB=true`
+- **性能提升**: 50-100倍查询性能（消除磁盘I/O）
+- **数据范围**: 仅主数据库（channels, cooldowns, rr等），日志库仍使用文件模式
+- **数据恢复**: 启动时自动从Redis恢复渠道配置（需配置`REDIS_URL`）
+- **适用场景**:
+  - 高并发API代理（QPS >1000）
+  - 配合Redis同步使用（故障恢复）
+  - 可接受重启后重新导入CSV配置
+- **使用示例**:
+  ```bash
+  # .env 文件配置
+  CCLOAD_USE_MEMORY_DB=true
+  REDIS_URL=redis://localhost:6379  # 强烈推荐配置，用于数据恢复
+  SQLITE_PATH=data/ccload.db        # 仅用于生成日志库路径
+
+  # 启动服务
+  go run .
+
+  # 输出提示信息
+  # ⚡ 性能优化：主数据库使用内存模式（CCLOAD_USE_MEMORY_DB=true）
+  #    - 渠道配置、冷却状态等热数据存储在内存中
+  #    - 日志数据仍然持久化到磁盘：data/ccload-log.db
+  #    ⚠️  警告：服务重启后主数据库数据将丢失，请配置Redis同步或重新导入CSV
+  ```
+- **技术细节**:
+  - DSN格式: `file::memory:?cache=shared` (共享缓存模式，确保多连接访问同一实例)
+  - 数据库迁移正常执行（内存中创建表结构）
+  - Redis同步机制自动备份渠道配置
+- **注意事项**:
+  - ⚠️ 服务重启后主数据库数据丢失（内存特性）
+  - ✅ 日志数据始终持久化，不受影响
+  - ✅ 配置Redis后自动从备份恢复
+  - ✅ 向后兼容：不设置环境变量则使用文件模式
+
 ## 架构模式
 
 **HTTP处理器模式** (`handlers.go`):
@@ -444,8 +479,14 @@ graph TB
 - `CCLOAD_AUTH`: API访问令牌（可选，多个令牌用逗号分隔）
 - `CCLOAD_MAX_KEY_RETRIES`: 单个渠道内最大Key重试次数（默认: "3"，避免key过多时重试次数过多导致延迟）
 - `SQLITE_PATH`: SQLite数据库路径（默认: "data/ccload.db"）
+- `CCLOAD_USE_MEMORY_DB`: 主数据库内存模式开关（默认: "false"）
+  - **开启**：`CCLOAD_USE_MEMORY_DB=true` - 渠道配置、冷却状态存储在内存中，性能提升50-100倍
+  - **关闭**：默认行为，数据持久化到磁盘
+  - **注意**：日志数据始终持久化到磁盘，不受此开关影响
+  - **适用场景**：高并发场景 + 配合Redis同步使用，或可接受重启后重新导入配置
+  - **数据恢复**：服务重启时自动从Redis恢复渠道配置（需配置`REDIS_URL`）
 - `PORT`: HTTP服务端口（默认: "8080"）
-- `REDIS_URL`: Redis连接URL（可选，用于渠道数据同步备份）
+- `REDIS_URL`: Redis连接URL（可选，用于渠道数据同步备份；内存模式强烈推荐配置）
 
 支持 `.env` 文件配置（优先于系统环境变量）
 

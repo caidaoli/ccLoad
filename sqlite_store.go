@@ -42,14 +42,41 @@ func generateLogDBPath(mainDBPath string) string {
 	return filepath.Join(dir, name+"-log"+ext)
 }
 
+// buildMainDBDSN 构建主数据库DSN（支持内存模式）
+// 内存模式：CCLOAD_USE_MEMORY_DB=true -> file::memory:?cache=shared
+// 文件模式：默认 -> file:/path/to/db?_pragma=...
+func buildMainDBDSN(path string) string {
+	useMemory := os.Getenv("CCLOAD_USE_MEMORY_DB") == "true"
+
+	if useMemory {
+		// 内存模式：使用共享缓存确保多连接访问同一数据库实例
+		return "file::memory:?cache=shared&_pragma=busy_timeout(5000)&_foreign_keys=on&_pragma=journal_mode=WAL&_loc=Local"
+	}
+
+	// 文件模式：保持原有逻辑
+	return fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_foreign_keys=on&_pragma=journal_mode=WAL&_loc=Local", path)
+}
+
+// buildLogDBDSN 构建日志数据库DSN（始终使用文件模式）
+// 日志库不使用内存模式，确保数据持久性
+func buildLogDBDSN(path string) string {
+	return fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode=WAL&_loc=Local", path)
+}
+
 func NewSQLiteStore(path string, redisSync *RedisSync) (*SQLiteStore, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, err
+	// 检查是否启用内存模式
+	useMemory := os.Getenv("CCLOAD_USE_MEMORY_DB") == "true"
+
+	if !useMemory {
+		// 文件模式：创建数据目录（内存模式无需创建目录）
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return nil, err
+		}
 	}
 
 	// 打开主数据库（channels, cooldowns, rr）
-	// 修复时区问题：强制使用本地时区解析时间戳，避免UTC/本地时区混淆导致冷却时间计算错误
-	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_foreign_keys=on&_pragma=journal_mode=WAL&_loc=Local", path)
+	// 使用抽象的DSN构建函数，支持内存/文件模式切换
+	dsn := buildMainDBDSN(path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -58,9 +85,9 @@ func NewSQLiteStore(path string, redisSync *RedisSync) (*SQLiteStore, error) {
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(5 * time.Minute)
 
-	// 打开日志数据库（logs）- 拆分以减少锁竞争
+	// 打开日志数据库（logs）- 始终使用文件模式
 	logDBPath := generateLogDBPath(path)
-	logDSN := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode=WAL&_loc=Local", logDBPath)
+	logDSN := buildLogDBDSN(logDBPath)
 	logDB, err := sql.Open("sqlite", logDSN)
 	if err != nil {
 		_ = db.Close()
@@ -69,6 +96,14 @@ func NewSQLiteStore(path string, redisSync *RedisSync) (*SQLiteStore, error) {
 	logDB.SetMaxOpenConns(10)
 	logDB.SetMaxIdleConns(2)
 	logDB.SetConnMaxLifetime(5 * time.Minute)
+
+	// 内存模式提示信息
+	if useMemory {
+		fmt.Println("⚡ 性能优化：主数据库使用内存模式（CCLOAD_USE_MEMORY_DB=true）")
+		fmt.Println("   - 渠道配置、冷却状态等热数据存储在内存中")
+		fmt.Println("   - 日志数据仍然持久化到磁盘：", logDBPath)
+		fmt.Println("   ⚠️  警告：服务重启后主数据库数据将丢失，请配置Redis同步或重新导入CSV")
+	}
 
 	s := &SQLiteStore{
 		db:        db,
