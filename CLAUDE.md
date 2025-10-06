@@ -494,6 +494,10 @@ graph TB
 - `CCLOAD_PASS`: 管理后台密码（默认: "admin"，生产环境必须设置）
 - `CCLOAD_AUTH`: API访问令牌（可选，多个令牌用逗号分隔）
 - `CCLOAD_MAX_KEY_RETRIES`: 单个渠道内最大Key重试次数（默认: "3"，避免key过多时重试次数过多导致延迟）
+- `CCLOAD_FIRST_BYTE_TIMEOUT`: 流式请求首字节超时时间（默认: "120"秒，即2分钟）
+  - 设置流式请求等待首字节响应的最大时间（单位：秒）
+  - 超时后会自动切换到下一个可用渠道重试
+  - 建议值：60-300秒，根据上游API响应速度调整
 - `SQLITE_PATH`: SQLite数据库路径（默认: "data/ccload.db"）
 - `CCLOAD_USE_MEMORY_DB`: 主数据库内存模式开关（默认: "false"）
   - **开启**：`CCLOAD_USE_MEMORY_DB=true` - 渠道配置、冷却状态存储在内存中，性能提升50-100倍

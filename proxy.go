@@ -113,9 +113,12 @@ func classifyError(err error) (statusCode int, shouldRetry bool) {
 
 	errLower := strings.ToLower(errStr)
 
-	// Connection reset by peer - 不应重试
-	if strings.Contains(errLower, "connection reset by peer") ||
+	// ✅ 首字节超时 - 应该重试其他渠道（2025-10-06修复）
+	if strings.Contains(errLower, "first byte timeout") {
+		code, retry = 504, true
+	} else if strings.Contains(errLower, "connection reset by peer") ||
 		strings.Contains(errLower, "broken pipe") {
+		// Connection reset by peer - 不应重试
 		code, retry = StatusConnectionReset, false
 	} else if strings.Contains(errLower, "connection refused") {
 		// Connection refused - 应该重试其他渠道
@@ -277,7 +280,7 @@ func filterAndWriteResponseHeaders(w http.ResponseWriter, hdr http.Header) {
 }
 
 // 辅助函数：流式复制（支持flusher与ctx取消）
-func streamCopy(ctx context.Context, src io.Reader, dst http.ResponseWriter) error {
+func streamCopy(ctx context.Context, src io.Reader, dst http.ResponseWriter, firstByteTimeout time.Duration) error {
 	buf := make([]byte, 8*1024)
 	firstByte := true // 首字节标记
 
@@ -288,11 +291,11 @@ func streamCopy(ctx context.Context, src io.Reader, dst http.ResponseWriter) err
 		default:
 		}
 
-		// ✅ P2首字节超时（2025-10-06）：流式请求首字节1分钟超时
+		// ✅ P2首字节超时（2025-10-06）：流式请求首字节超时（可配置，默认2分钟）
 		readCtx := ctx
 		var cancel context.CancelFunc
 		if firstByte {
-			readCtx, cancel = context.WithTimeout(ctx, 60*time.Second)
+			readCtx, cancel = context.WithTimeout(ctx, firstByteTimeout)
 		}
 
 		// 使用带超时的读取通道
@@ -312,7 +315,7 @@ func streamCopy(ctx context.Context, src io.Reader, dst http.ResponseWriter) err
 		case <-readCtx.Done():
 			if firstByte && cancel != nil {
 				cancel()
-				return fmt.Errorf("stream first byte timeout after 60s")
+				return fmt.Errorf("stream first byte timeout after %v", firstByteTimeout)
 			}
 			return readCtx.Err()
 		case res := <-readCh:
@@ -435,8 +438,8 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, keyIndex int
 
 	defer resp.Body.Close()
 
-	// 流式复制
-	streamErr = streamCopy(ctx, resp.Body, w)
+	// 流式复制（使用可配置的首字节超时）
+	streamErr = streamCopy(ctx, resp.Body, w, s.firstByteTimeout)
 	// 已统一到上面的循环，支持ctx取消，无需else分支
 
 	// 计算总传输时间（从startTime开始）

@@ -41,6 +41,9 @@ type Server struct {
 	// 重试配置
 	maxKeyRetries int // 单个渠道内最大Key重试次数（默认3次）
 
+	// 超时配置
+	firstByteTimeout time.Duration // 流式请求首字节超时时间（默认2分钟）
+
 	// 性能优化开关
 	enableTrace bool // HTTP Trace开关（性能优化：默认关闭，节省0.5-1ms/请求）
 
@@ -88,6 +91,14 @@ func NewServer(store Store) *Server {
 		}
 	}
 
+	// 解析首字节超时时间（流式请求首字节响应超时，默认2分钟）
+	firstByteTimeout := 2 * time.Minute // 默认2分钟
+	if timeoutEnv := os.Getenv("CCLOAD_FIRST_BYTE_TIMEOUT"); timeoutEnv != "" {
+		if val, err := strconv.Atoi(timeoutEnv); err == nil && val > 0 {
+			firstByteTimeout = time.Duration(val) * time.Second
+		}
+	}
+
 	// 解析HTTP Trace开关（性能优化：默认关闭，节省0.5-1ms/请求）
 	enableTrace := false
 	if traceEnv := os.Getenv("CCLOAD_ENABLE_TRACE"); traceEnv == "1" || traceEnv == "true" {
@@ -119,16 +130,16 @@ func NewServer(store Store) *Server {
 
 	transport := &http.Transport{
 		// ✅ P2连接池优化（2025-10-06）：防御性配置，避免打爆上游API
-		MaxIdleConns:        100, // 全局空闲连接池
-		MaxIdleConnsPerHost: 5,   // 单host空闲连接（从10→5，减少资源占用）
+		MaxIdleConns:        100,              // 全局空闲连接池
+		MaxIdleConnsPerHost: 5,                // 单host空闲连接（从10→5，减少资源占用）
 		IdleConnTimeout:     30 * time.Second, // 空闲连接超时（从90s→30s，更快回收）
-		MaxConnsPerHost:     50,  // 单host最大连接数（新增，防止打爆上游）
+		MaxConnsPerHost:     50,               // 单host最大连接数（新增，防止打爆上游）
 
 		// ✅ P2握手超时优化（2025-10-06）：仅限制握手阶段，不影响长任务
-		DialContext:           dialer.DialContext,       // DNS+TCP握手超时10秒
-		TLSHandshakeTimeout:   10 * time.Second,         // TLS握手超时10秒
-		ResponseHeaderTimeout: 30 * time.Second,         // 响应头超时30秒
-		ExpectContinueTimeout: 1 * time.Second,          // Expect: 100-continue超时
+		DialContext:           dialer.DialContext, // DNS+TCP握手超时10秒
+		TLSHandshakeTimeout:   10 * time.Second,   // TLS握手超时10秒
+		ResponseHeaderTimeout: 30 * time.Second,   // 响应头超时30秒
+		ExpectContinueTimeout: 1 * time.Second,    // Expect: 100-continue超时
 
 		// 传输优化
 		DisableCompression: false,
@@ -159,9 +170,10 @@ func NewServer(store Store) *Server {
 	}
 
 	s := &Server{
-		store:         store,
-		maxKeyRetries: maxKeyRetries, // 单个渠道最大Key重试次数
-		enableTrace:   enableTrace,   // HTTP Trace开关
+		store:            store,
+		maxKeyRetries:    maxKeyRetries,    // 单个渠道最大Key重试次数
+		firstByteTimeout: firstByteTimeout, // 流式请求首字节超时
+		enableTrace:      enableTrace,      // HTTP Trace开关
 		client: &http.Client{
 			Transport: transport,
 			Timeout:   0, // 不设置全局超时，避免中断长时间任务
