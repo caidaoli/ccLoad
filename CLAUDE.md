@@ -501,6 +501,11 @@ graph TB
   - **注意**：日志数据始终持久化到磁盘，不受此开关影响
   - **适用场景**：高并发场景 + 配合Redis同步使用，或可接受重启后重新导入配置
   - **数据恢复**：服务重启时自动从Redis恢复渠道配置（需配置`REDIS_URL`）
+- `SQLITE_JOURNAL_MODE`: SQLite Journal模式（默认: "WAL"）
+  - **可选值**：WAL | DELETE | TRUNCATE | PERSIST | MEMORY | OFF
+  - **WAL（默认）**：Write-Ahead Logging，高性能，适合本地文件系统
+  - **TRUNCATE**：传统回滚日志，适合Docker/K8s环境或网络存储（NFS等）
+  - **容器环境建议**：`SQLITE_JOURNAL_MODE=TRUNCATE`（避免WAL文件损坏风险）
 - `PORT`: HTTP服务端口（默认: "8080"）
 - `REDIS_URL`: Redis连接URL（可选，用于渠道数据同步备份；内存模式强烈推荐配置）
 

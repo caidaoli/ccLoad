@@ -118,14 +118,17 @@ func NewServer(store Store) *Server {
 	}
 
 	transport := &http.Transport{
-		// 连接池配置
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     90 * time.Second,
-		MaxConnsPerHost:     100,
+		// ✅ P2连接池优化（2025-10-06）：防御性配置，避免打爆上游API
+		MaxIdleConns:        100, // 全局空闲连接池
+		MaxIdleConnsPerHost: 5,   // 单host空闲连接（从10→5，减少资源占用）
+		IdleConnTimeout:     30 * time.Second, // 空闲连接超时（从90s→30s，更快回收）
+		MaxConnsPerHost:     50,  // 单host最大连接数（新增，防止打爆上游）
 
-		// 使用优化的Dialer
-		DialContext: dialer.DialContext,
+		// ✅ P2握手超时优化（2025-10-06）：仅限制握手阶段，不影响长任务
+		DialContext:           dialer.DialContext,       // DNS+TCP握手超时10秒
+		TLSHandshakeTimeout:   10 * time.Second,         // TLS握手超时10秒
+		ResponseHeaderTimeout: 30 * time.Second,         // 响应头超时30秒
+		ExpectContinueTimeout: 1 * time.Second,          // Expect: 100-continue超时
 
 		// 传输优化
 		DisableCompression: false,
@@ -161,7 +164,7 @@ func NewServer(store Store) *Server {
 		enableTrace:   enableTrace,   // HTTP Trace开关
 		client: &http.Client{
 			Transport: transport,
-			Timeout:   0,
+			Timeout:   0, // 不设置全局超时，避免中断长时间任务
 		},
 		password:   password,
 		sessions:   make(map[string]time.Time),
@@ -192,7 +195,7 @@ func NewServer(store Store) *Server {
 
 	// 启动后台清理协程
 	// 注意：已移除 CleanupExpiredKeyCooldowns() 调用，SQLite查询时自动过滤过期数据
-	go s.cleanExpiredSessions()
+	go s.sessionCleanupLoop() // ✅ P1修复：启动session清理循环而非直接调用
 	go s.cleanupOldLogsLoop() // 定期清理3天前的日志（性能优化：避免每次插入时清理）
 
 	return s
@@ -241,15 +244,31 @@ func (s *Server) validateSession(sessionID string) bool {
 }
 
 // 清理过期session
+// ✅ P1并发安全修复（2025-10-06）：使用快照模式避免长时间持锁
+// 设计原则：先收集要删除的session ID，释放锁后再批量删除
 func (s *Server) cleanExpiredSessions() {
-	s.sessMux.Lock()
-	defer s.sessMux.Unlock()
-
 	now := time.Now()
+
+	// 第一阶段：使用读锁快速收集过期session（减少锁竞争）
+	s.sessMux.RLock()
+	toDelete := make([]string, 0, len(s.sessions)/10) // 预估10%过期
 	for sessionID, expireTime := range s.sessions {
 		if now.After(expireTime) {
-			delete(s.sessions, sessionID)
+			toDelete = append(toDelete, sessionID)
 		}
+	}
+	s.sessMux.RUnlock()
+
+	// 第二阶段：如果有过期session，使用写锁批量删除
+	if len(toDelete) > 0 {
+		s.sessMux.Lock()
+		for _, sessionID := range toDelete {
+			// 二次检查（避免RLock和Lock之间的竞争条件）
+			if expireTime, exists := s.sessions[sessionID]; exists && now.After(expireTime) {
+				delete(s.sessions, sessionID)
+			}
+		}
+		s.sessMux.Unlock()
 	}
 }
 

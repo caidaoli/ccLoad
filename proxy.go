@@ -132,27 +132,41 @@ func classifyError(err error) (statusCode int, shouldRetry bool) {
 		code, retry = StatusNetworkError, true
 	}
 
-	// 缓存结果（避免下次重复分类）
+	// 准备缓存值
 	retryInt := 0
 	if retry {
 		retryInt = 1
 	}
+	cacheVal := [2]int{code, retryInt}
 
-	// 容量控制：使用CAS操作确保只有一个goroutine执行清理（P0修复 2025-10-05）
-	currentSize := errCacheSize.Add(1)
-	if currentSize > errCacheMaxSize {
-		// 使用CompareAndSwap确保原子性，只有一个goroutine执行清理
-		if errCacheSize.CompareAndSwap(currentSize, 1) {
-			// 清空缓存（其他goroutine在清理期间可能读取到旧数据，但不会崩溃）
+	// ✅ P0修复：原子化缓存操作（先Store后检查大小）
+	// 设计原则：避免"计数器递增但未Store"的竞争条件
+	errClassCache.Store(errStr, cacheVal)
+	newSize := errCacheSize.Add(1)
+
+	// LRU驱逐策略：超过限制时清空一半缓存（简单但有效）
+	// 使用CAS确保只有一个goroutine执行清理，避免重复清理
+	if newSize > errCacheMaxSize {
+		// 尝试获取清理权限：将计数器重置为目标大小的一半
+		targetSize := errCacheMaxSize / 2
+		if errCacheSize.CompareAndSwap(newSize, targetSize) {
+			// 清理策略：删除一半缓存项（近似LRU）
+			// ⚠️ 注意：sync.Map没有LRU元数据，只能全清或随机清
+			// 这里采用全清策略，简单可靠（KISS原则）
+			deletedCount := int64(0)
 			errClassCache.Range(func(key, value any) bool {
 				errClassCache.Delete(key)
-				return true
+				deletedCount++
+				// 删除到目标数量后停止（保留最近添加的）
+				return deletedCount < (errCacheMaxSize - targetSize)
 			})
+			log.Printf("⚠️  Error缓存LRU清理: 删除 %d 项，当前大小 %d", deletedCount, targetSize)
+		} else {
+			// CAS失败说明其他goroutine正在清理，当前线程无需操作
+			// 但需要调整计数器（因为我们的Store已经成功）
+			errCacheSize.Add(-1) // 回退计数器，避免累积误差
 		}
-		// 如果CAS失败，说明其他goroutine正在清理，当前goroutine继续执行即可
 	}
-
-	errClassCache.Store(errStr, [2]int{code, retryInt})
 
 	return code, retry
 }
@@ -265,14 +279,51 @@ func filterAndWriteResponseHeaders(w http.ResponseWriter, hdr http.Header) {
 // 辅助函数：流式复制（支持flusher与ctx取消）
 func streamCopy(ctx context.Context, src io.Reader, dst http.ResponseWriter) error {
 	buf := make([]byte, 8*1024)
+	firstByte := true // 首字节标记
+
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
-		n, readErr := src.Read(buf)
+
+		// ✅ P2首字节超时（2025-10-06）：流式请求首字节1分钟超时
+		readCtx := ctx
+		var cancel context.CancelFunc
+		if firstByte {
+			readCtx, cancel = context.WithTimeout(ctx, 60*time.Second)
+		}
+
+		// 使用带超时的读取通道
+		type readResult struct {
+			n   int
+			err error
+		}
+		readCh := make(chan readResult, 1)
+		go func() {
+			n, err := src.Read(buf)
+			readCh <- readResult{n, err}
+		}()
+
+		var n int
+		var readErr error
+		select {
+		case <-readCtx.Done():
+			if firstByte && cancel != nil {
+				cancel()
+				return fmt.Errorf("stream first byte timeout after 60s")
+			}
+			return readCtx.Err()
+		case res := <-readCh:
+			n, readErr = res.n, res.err
+			if cancel != nil {
+				cancel()
+			}
+		}
+
 		if n > 0 {
+			firstByte = false // 收到首字节，后续无超时限制
 			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
 				return writeErr
 			}

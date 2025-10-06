@@ -61,6 +61,10 @@ func generateLogDBPath(mainDBPath string) string {
 // - 命名数据库的生命周期绑定到进程，而非最后一个连接
 // - 即使所有连接关闭，只要进程存活，数据库就保留在内存中
 // - 解决了连接池生命周期导致的"no such table"错误
+//
+// ✅ P0修复（2025-10-06）：环境变量控制Journal模式
+// - SQLITE_JOURNAL_MODE: WAL(默认) | DELETE | TRUNCATE | PERSIST | MEMORY | OFF
+// - Docker/K8s环境建议使用TRUNCATE避免WAL文件损坏风险
 func buildMainDBDSN(path string) string {
 	useMemory := os.Getenv("CCLOAD_USE_MEMORY_DB") == "true"
 
@@ -72,14 +76,27 @@ func buildMainDBDSN(path string) string {
 		return "file:ccload_mem_db?mode=memory&cache=shared&_pragma=busy_timeout(5000)&_foreign_keys=on&_loc=Local"
 	}
 
-	// 文件模式：保持原有逻辑
-	return fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_foreign_keys=on&_pragma=journal_mode=WAL&_loc=Local", path)
+	// ✅ P0安全修复：支持环境变量配置Journal模式
+	// 设计原则：生产环境（特别是容器/网络存储）需要灵活控制
+	journalMode := os.Getenv("SQLITE_JOURNAL_MODE")
+	if journalMode == "" {
+		journalMode = "WAL" // 默认本地环境使用WAL（高性能）
+	}
+
+	return fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_foreign_keys=on&_pragma=journal_mode=%s&_loc=Local", path, journalMode)
 }
 
 // buildLogDBDSN 构建日志数据库DSN（始终使用文件模式）
 // 日志库不使用内存模式，确保数据持久性
+// ✅ P0修复（2025-10-06）：与主数据库保持一致的Journal模式控制
 func buildLogDBDSN(path string) string {
-	return fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode=WAL&_loc=Local", path)
+	// 使用与主数据库相同的Journal模式配置
+	journalMode := os.Getenv("SQLITE_JOURNAL_MODE")
+	if journalMode == "" {
+		journalMode = "WAL" // 默认WAL
+	}
+
+	return fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode=%s&_loc=Local", path, journalMode)
 }
 
 func NewSQLiteStore(path string, redisSync *RedisSync) (*SQLiteStore, error) {
@@ -100,18 +117,19 @@ func NewSQLiteStore(path string, redisSync *RedisSync) (*SQLiteStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(5)
-
-	// ⚠️ 关键修复（2025-10-05）：内存模式下移除连接生命周期限制
-	// 原因：SetConnMaxLifetime会导致所有连接定期过期
-	//      如果所有连接同时关闭，命名内存数据库理论上不会销毁
-	//      但为了绝对安全，内存模式下让连接永不过期
-	// 文件模式：保持5分钟生命周期（避免长连接积累资源泄漏）
-	if !useMemory {
-		db.SetConnMaxLifetime(5 * time.Minute)
+	// ✅ P2连接池优化（2025-10-06）：根据模式差异化配置
+	if useMemory {
+		// 内存模式：适度减少连接数（无限并发对内存数据库无益）
+		db.SetMaxOpenConns(10)
+		db.SetMaxIdleConns(5)
+		// 不设置ConnMaxLifetime，连接永不过期（保证数据库始终可用）
+	} else {
+		// WAL文件模式：严格限制写并发（WAL性能瓶颈）
+		db.SetMaxOpenConns(5)
+		db.SetMaxIdleConns(2)
+		// 缩短连接生命周期：5min → 1min（更快资源回收）
+		db.SetConnMaxLifetime(1 * time.Minute)
 	}
-	// 内存模式：不设置ConnMaxLifetime，连接永不过期（保证数据库始终可用）
 
 	// 打开日志数据库（logs）- 始终使用文件模式
 	logDBPath := generateLogDBPath(path)
@@ -121,9 +139,10 @@ func NewSQLiteStore(path string, redisSync *RedisSync) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("open log database: %w", err)
 	}
-	logDB.SetMaxOpenConns(10)
+	// ✅ P2日志库优化（2025-10-06）：与主库对齐，降低资源占用
+	logDB.SetMaxOpenConns(5)  // 10 → 5（日志写入无需高并发）
 	logDB.SetMaxIdleConns(2)
-	logDB.SetConnMaxLifetime(5 * time.Minute)
+	logDB.SetConnMaxLifetime(1 * time.Minute) // 5min → 1min（更快资源回收）
 
 	s := &SQLiteStore{
 		db:        db,
@@ -1161,13 +1180,20 @@ func (s *SQLiteStore) AddLog(ctx context.Context, e *LogEntry) error {
 	// Unix时间戳：直接存储毫秒级Unix时间戳
 	timeMs := cleanTime.UnixMilli()
 
+	// ✅ P0安全修复：API Key在写入时强制脱敏（2025-10-06）
+	// 设计原则：数据库中不应存储完整API Key，避免备份和日志导出时泄露
+	maskedKey := e.APIKeyUsed
+	if maskedKey != "" {
+		maskedKey = maskAPIKey(maskedKey)
+	}
+
 	// 直接写入日志数据库（简化预编译语句缓存）
 	query := `
 		INSERT INTO logs(time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
-	_, err := s.logDB.ExecContext(ctx, query, timeMs, e.Model, e.ChannelID, e.StatusCode, e.Message, e.Duration, e.IsStreaming, e.FirstByteTime, e.APIKeyUsed)
+	_, err := s.logDB.ExecContext(ctx, query, timeMs, e.Model, e.ChannelID, e.StatusCode, e.Message, e.Duration, e.IsStreaming, e.FirstByteTime, maskedKey)
 	return err
 }
 
@@ -1248,6 +1274,7 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 			e.FirstByteTime = &fbt
 		}
 		if apiKeyUsed.Valid && apiKeyUsed.String != "" {
+			// 向后兼容：历史数据可能包含明文Key，maskAPIKey是幂等的
 			e.APIKeyUsed = maskAPIKey(apiKeyUsed.String)
 		}
 		out = append(out, &e)
