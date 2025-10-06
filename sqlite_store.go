@@ -140,7 +140,7 @@ func NewSQLiteStore(path string, redisSync *RedisSync) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("open log database: %w", err)
 	}
 	// ✅ P2日志库优化（2025-10-06）：与主库对齐，降低资源占用
-	logDB.SetMaxOpenConns(5)  // 10 → 5（日志写入无需高并发）
+	logDB.SetMaxOpenConns(5) // 10 → 5（日志写入无需高并发）
 	logDB.SetMaxIdleConns(2)
 	logDB.SetConnMaxLifetime(1 * time.Minute) // 5min → 1min（更快资源回收）
 

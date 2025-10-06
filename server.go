@@ -124,7 +124,7 @@ func NewServer(store Store) *Server {
 
 	// 优化 HTTP 客户端配置 - 重点优化连接建立阶段的超时控制
 	dialer := &net.Dialer{
-		Timeout:   10 * time.Second, // DNS解析+TCP连接建立超时
+		Timeout:   30 * time.Second, // DNS解析+TCP连接建立超时
 		KeepAlive: 30 * time.Second, // TCP keepalive间隔
 	}
 
@@ -136,9 +136,9 @@ func NewServer(store Store) *Server {
 		MaxConnsPerHost:     50,               // 单host最大连接数（新增，防止打爆上游）
 
 		// ✅ P2握手超时优化（2025-10-06）：仅限制握手阶段，不影响长任务
-		DialContext:           dialer.DialContext, // DNS+TCP握手超时10秒
-		TLSHandshakeTimeout:   10 * time.Second,   // TLS握手超时10秒
-		ResponseHeaderTimeout: 30 * time.Second,   // 响应头超时30秒
+		DialContext:           dialer.DialContext, // DNS+TCP握手超时30秒
+		TLSHandshakeTimeout:   30 * time.Second,   // TLS握手超时30秒
+		ResponseHeaderTimeout: 60 * time.Second,   // 响应头超时30秒
 		ExpectContinueTimeout: 1 * time.Second,    // Expect: 100-continue超时
 
 		// 传输优化

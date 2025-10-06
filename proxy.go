@@ -80,13 +80,23 @@ func classifyError(err error) (statusCode int, shouldRetry bool) {
 	}
 
 	// 快速路径1：优先检查最常见的错误类型（避免字符串操作）
-	// Context canceled - 客户端取消，不应重试（最常见）
+	// Context canceled - 客户端主动取消，不应重试（最常见）
 	if errors.Is(err, context.Canceled) {
 		return StatusClientClosedRequest, false
 	}
 
-	// Context deadline exceeded - 超时，不应重试
+	// ⚠️ Context deadline exceeded 需要区分两种情况：
+	// 1. 客户端主动设置的超时（不应重试）
+	// 2. HTTP客户端等待响应头超时（应该重试其他渠道）
+	// 解决方案：检查错误消息，包含"awaiting headers"则应重试
 	if errors.Is(err, context.DeadlineExceeded) {
+		errStr := err.Error()
+		// HTTP客户端等待响应头超时 - 应该重试其他渠道
+		// Go标准库错误格式："Client.Timeout exceeded while awaiting headers"
+		if strings.Contains(errStr, "awaiting headers") {
+			return 504, true // Gateway Timeout，可重试
+		}
+		// 其他超时（客户端主动取消）- 不应重试
 		return StatusClientClosedRequest, false
 	}
 
