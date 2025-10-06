@@ -1181,28 +1181,28 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 	// time字段现在是BIGINT毫秒时间戳，需要转换为Unix毫秒进行比较
 	sinceMs := since.UnixMilli()
 
-    qb := NewQueryBuilder(baseQuery).
-        Where("time >= ?", sinceMs)
+	qb := NewQueryBuilder(baseQuery).
+		Where("time >= ?", sinceMs)
 
-    // 支持按渠道名称过滤（无需跨库JOIN，先解析为渠道ID集合再按channel_id过滤）
-    if filter != nil && (filter.ChannelName != "" || filter.ChannelNameLike != "") {
-        ids, err := s.fetchChannelIDsByNameFilter(ctx, filter.ChannelName, filter.ChannelNameLike)
-        if err != nil {
-            return nil, err
-        }
-        if len(ids) == 0 {
-            return []*LogEntry{}, nil
-        }
-        // 转换为[]any以用于占位符
-        vals := make([]any, 0, len(ids))
-        for _, id := range ids {
-            vals = append(vals, id)
-        }
-        qb.WhereIn("channel_id", vals)
-    }
+	// 支持按渠道名称过滤（无需跨库JOIN，先解析为渠道ID集合再按channel_id过滤）
+	if filter != nil && (filter.ChannelName != "" || filter.ChannelNameLike != "") {
+		ids, err := s.fetchChannelIDsByNameFilter(ctx, filter.ChannelName, filter.ChannelNameLike)
+		if err != nil {
+			return nil, err
+		}
+		if len(ids) == 0 {
+			return []*LogEntry{}, nil
+		}
+		// 转换为[]any以用于占位符
+		vals := make([]any, 0, len(ids))
+		for _, id := range ids {
+			vals = append(vals, id)
+		}
+		qb.WhereIn("channel_id", vals)
+	}
 
-    // 其余过滤条件（model等）
-    qb.ApplyFilter(filter)
+	// 其余过滤条件（model等）
+	qb.ApplyFilter(filter)
 
 	suffix := "ORDER BY time DESC LIMIT ? OFFSET ?"
 	query, args := qb.BuildWithSuffix(suffix)
@@ -1622,9 +1622,9 @@ func (s *SQLiteStore) redisSyncWorker() {
 
 	// 指数退避重试配置
 	retryBackoff := []time.Duration{
-		1 * time.Second,   // 第1次重试：1秒后
-		5 * time.Second,   // 第2次重试：5秒后
-		15 * time.Second,  // 第3次重试：15秒后
+		1 * time.Second,  // 第1次重试：1秒后
+		5 * time.Second,  // 第2次重试：5秒后
+		15 * time.Second, // 第3次重试：15秒后
 	}
 
 	for {
@@ -1771,39 +1771,39 @@ func (s *SQLiteStore) fetchChannelNamesBatch(ctx context.Context, channelIDs map
 // fetchChannelIDsByNameFilter 根据精确/模糊名称获取渠道ID集合
 // 目的：避免跨库JOIN（logs在logDB，channels在主db），先解析为ID再过滤logs
 func (s *SQLiteStore) fetchChannelIDsByNameFilter(ctx context.Context, exact string, like string) ([]int64, error) {
-    // 构建查询
-    var (
-        query string
-        args  []any
-    )
-    if exact != "" {
-        query = "SELECT id FROM channels WHERE name = ?"
-        args = []any{exact}
-    } else if like != "" {
-        query = "SELECT id FROM channels WHERE name LIKE ?"
-        args = []any{"%" + like + "%"}
-    } else {
-        return nil, nil
-    }
+	// 构建查询
+	var (
+		query string
+		args  []any
+	)
+	if exact != "" {
+		query = "SELECT id FROM channels WHERE name = ?"
+		args = []any{exact}
+	} else if like != "" {
+		query = "SELECT id FROM channels WHERE name LIKE ?"
+		args = []any{"%" + like + "%"}
+	} else {
+		return nil, nil
+	}
 
-    rows, err := s.db.QueryContext(ctx, query, args...)
-    if err != nil {
-        return nil, fmt.Errorf("query channel ids by name: %w", err)
-    }
-    defer rows.Close()
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query channel ids by name: %w", err)
+	}
+	defer rows.Close()
 
-    var ids []int64
-    for rows.Next() {
-        var id int64
-        if err := rows.Scan(&id); err != nil {
-            return nil, fmt.Errorf("scan channel id: %w", err)
-        }
-        ids = append(ids, id)
-    }
-    if err := rows.Err(); err != nil {
-        return nil, err
-    }
-    return ids, nil
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan channel id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return ids, nil
 }
 
 // CheckDatabaseExists 检查SQLite数据库文件是否存在

@@ -200,23 +200,23 @@ func buildUpstreamRequest(ctx context.Context, method, upstreamURL string, body 
 
 // 辅助函数：复制请求头，跳过认证相关（DRY）
 func copyRequestHeaders(dst *http.Request, src http.Header) {
-    for k, vs := range src {
-        // 不透传认证头（由上游注入）
-        if strings.EqualFold(k, "Authorization") || strings.EqualFold(k, "X-Api-Key") {
-            continue
-        }
-        // 不透传 Accept-Encoding，避免上游返回 br/gzip 压缩导致错误体乱码
-        // 让 Go Transport 自动设置并透明解压 gzip（DisableCompression=false）
-        if strings.EqualFold(k, "Accept-Encoding") {
-            continue
-        }
-        for _, v := range vs {
-            dst.Header.Add(k, v)
-        }
-    }
-    if dst.Header.Get("Accept") == "" {
-        dst.Header.Set("Accept", "application/json")
-    }
+	for k, vs := range src {
+		// 不透传认证头（由上游注入）
+		if strings.EqualFold(k, "Authorization") || strings.EqualFold(k, "X-Api-Key") {
+			continue
+		}
+		// 不透传 Accept-Encoding，避免上游返回 br/gzip 压缩导致错误体乱码
+		// 让 Go Transport 自动设置并透明解压 gzip（DisableCompression=false）
+		if strings.EqualFold(k, "Accept-Encoding") {
+			continue
+		}
+		for _, v := range vs {
+			dst.Header.Add(k, v)
+		}
+	}
+	if dst.Header.Get("Accept") == "" {
+		dst.Header.Set("Accept", "application/json")
+	}
 }
 
 // 辅助函数：按路径类型注入API Key头（Gemini vs Claude）
@@ -248,18 +248,18 @@ func injectAPIKeyHeaders(req *http.Request, cfg *Config, keyIndex int, requestPa
 
 // 辅助函数：过滤并写回响应头（DRY）
 func filterAndWriteResponseHeaders(w http.ResponseWriter, hdr http.Header) {
-    for k, vs := range hdr {
-        // 过滤不应向客户端透传的头
-        if strings.EqualFold(k, "Connection") ||
-            strings.EqualFold(k, "Content-Length") ||
-            strings.EqualFold(k, "Transfer-Encoding") ||
-            strings.EqualFold(k, "Content-Encoding") { // 避免上游压缩头与实际解压后的body不一致
-            continue
-        }
-        for _, v := range vs {
-            w.Header().Add(k, v)
-        }
-    }
+	for k, vs := range hdr {
+		// 过滤不应向客户端透传的头
+		if strings.EqualFold(k, "Connection") ||
+			strings.EqualFold(k, "Content-Length") ||
+			strings.EqualFold(k, "Transfer-Encoding") ||
+			strings.EqualFold(k, "Content-Encoding") { // 避免上游压缩头与实际解压后的body不一致
+			continue
+		}
+		for _, v := range vs {
+			w.Header().Add(k, v)
+		}
+	}
 }
 
 // 辅助函数：流式复制（支持flusher与ctx取消）
@@ -934,34 +934,34 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 		// 继续尝试下一个渠道
 	}
 
-    // 所有渠道都失败，透传最后一次4xx状态，否则503
-    finalStatus := http.StatusServiceUnavailable
-    if lastResult != nil && lastResult.status != 0 && lastResult.status < 500 {
-        finalStatus = lastResult.status
-    }
+	// 所有渠道都失败，透传最后一次4xx状态，否则503
+	finalStatus := http.StatusServiceUnavailable
+	if lastResult != nil && lastResult.status != 0 && lastResult.status < 500 {
+		finalStatus = lastResult.status
+	}
 
-    // 记录最终返回状态
-    msg := "exhausted backends"
-    if finalStatus < 500 {
-        msg = fmt.Sprintf("upstream status %d", finalStatus)
-    }
-    s.addLogAsync(&LogEntry{
-        Time:        JSONTime{time.Now()},
-        Model:       originalModel,
-        StatusCode:  finalStatus,
-        Message:     msg,
-        IsStreaming: isStreaming,
-    })
+	// 记录最终返回状态
+	msg := "exhausted backends"
+	if finalStatus < 500 {
+		msg = fmt.Sprintf("upstream status %d", finalStatus)
+	}
+	s.addLogAsync(&LogEntry{
+		Time:        JSONTime{time.Now()},
+		Model:       originalModel,
+		StatusCode:  finalStatus,
+		Message:     msg,
+		IsStreaming: isStreaming,
+	})
 
-    // 返回最后一个渠道的错误响应（如果有），并使用最终状态码
-    if lastResult != nil && lastResult.status != 0 {
-        // 统一使用过滤写头逻辑，避免错误体编码不一致（DRY）
-        filterAndWriteResponseHeaders(c.Writer, lastResult.header)
-        c.Data(finalStatus, "application/json", lastResult.body)
-        return
-    }
+	// 返回最后一个渠道的错误响应（如果有），并使用最终状态码
+	if lastResult != nil && lastResult.status != 0 {
+		// 统一使用过滤写头逻辑，避免错误体编码不一致（DRY）
+		filterAndWriteResponseHeaders(c.Writer, lastResult.header)
+		c.Data(finalStatus, "application/json", lastResult.body)
+		return
+	}
 
-    c.JSON(finalStatus, gin.H{"error": "no upstream available"})
+	c.JSON(finalStatus, gin.H{"error": "no upstream available"})
 }
 
 // 移除具体端点处理函数 - 现在使用统一的透明代理处理器

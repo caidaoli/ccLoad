@@ -362,10 +362,10 @@ func isValidClaudeModel(model string) bool {
 
 	// 支持的模型前缀
 	validPrefixes := []string{
-		"claude-",         // 所有Claude模型
-		"gpt-",            // OpenAI兼容模式（codex渠道）
-		"gemini-",         // Gemini兼容模式
-		"text-",           // 传统completion模型
+		"claude-",          // 所有Claude模型
+		"gpt-",             // OpenAI兼容模式（codex渠道）
+		"gemini-",          // Gemini兼容模式
+		"text-",            // 传统completion模型
 		"anthropic.claude", // Bedrock格式
 	}
 

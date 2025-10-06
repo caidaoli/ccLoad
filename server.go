@@ -136,48 +136,48 @@ func NewServer(store Store) *Server {
 		// 启用TLS会话缓存，减少重复握手耗时
 		TLSClientConfig: &tls.Config{
 			ClientSessionCache: tls.NewLRUClientSessionCache(1024),
-			MinVersion:         tls.VersionTLS12,  // 强制 TLS 1.2+
-			InsecureSkipVerify: skipTLSVerify,     // 默认false（启用证书验证）
+			MinVersion:         tls.VersionTLS12, // 强制 TLS 1.2+
+			InsecureSkipVerify: skipTLSVerify,    // 默认false（启用证书验证）
 		},
 	}
 
-    // 可配置的日志缓冲与工作协程（修复：支持环境变量）
-    logBuf := 1000
-    if v := os.Getenv("CCLOAD_LOG_BUFFER"); v != "" {
-        if n, err := strconv.Atoi(v); err == nil && n > 0 {
-            logBuf = n
-        }
-    }
-    logWorkers := 3
-    if v := os.Getenv("CCLOAD_LOG_WORKERS"); v != "" {
-        if n, err := strconv.Atoi(v); err == nil && n > 0 {
-            logWorkers = n
-        }
-    }
+	// 可配置的日志缓冲与工作协程（修复：支持环境变量）
+	logBuf := 1000
+	if v := os.Getenv("CCLOAD_LOG_BUFFER"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			logBuf = n
+		}
+	}
+	logWorkers := 3
+	if v := os.Getenv("CCLOAD_LOG_WORKERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			logWorkers = n
+		}
+	}
 
-    s := &Server{
-        store:         store,
-        maxKeyRetries: maxKeyRetries, // 单个渠道最大Key重试次数
-        enableTrace:   enableTrace,   // HTTP Trace开关
-        client: &http.Client{
-            Transport: transport,
-            Timeout:   0,
-        },
-        password:   password,
-        sessions:   make(map[string]time.Time),
-        authTokens: authTokens,
-        logChan:    make(chan *LogEntry, logBuf), // 可配置日志缓冲
-        logWorkers: logWorkers,                   // 可配置日志worker数量
+	s := &Server{
+		store:         store,
+		maxKeyRetries: maxKeyRetries, // 单个渠道最大Key重试次数
+		enableTrace:   enableTrace,   // HTTP Trace开关
+		client: &http.Client{
+			Transport: transport,
+			Timeout:   0,
+		},
+		password:   password,
+		sessions:   make(map[string]time.Time),
+		authTokens: authTokens,
+		logChan:    make(chan *LogEntry, logBuf), // 可配置日志缓冲
+		logWorkers: logWorkers,                   // 可配置日志worker数量
 
-        // 并发控制：使用信号量限制最大并发请求数
-        concurrencySem: make(chan struct{}, maxConcurrency),
-        maxConcurrency: maxConcurrency,
+		// 并发控制：使用信号量限制最大并发请求数
+		concurrencySem: make(chan struct{}, maxConcurrency),
+		maxConcurrency: maxConcurrency,
 
-        // 性能优化：批量轮询持久化配置
-        rrUpdateChan:    make(chan rrUpdate, 500), // 缓冲500条更新
-        rrBatchSize:     50,                       // 每批50条
-        rrFlushInterval: 5 * time.Second,          // 每5秒强制刷新
-    }
+		// 性能优化：批量轮询持久化配置
+		rrUpdateChan:    make(chan rrUpdate, 500), // 缓冲500条更新
+		rrBatchSize:     50,                       // 每批50条
+		rrFlushInterval: 5 * time.Second,          // 每5秒强制刷新
+	}
 
 	// 初始化Key选择器（传递Key冷却监控指标）
 	s.keySelector = NewKeySelector(store, &s.keyCooldownGauge)
@@ -391,7 +391,7 @@ func (s *Server) setupRoutes(r *gin.Engine) {
 		admin.PUT("/channels/:id", s.handleChannelByID)
 		admin.DELETE("/channels/:id", s.handleChannelByID)
 		admin.POST("/channels/:id/test", s.handleChannelTest)
-		admin.POST("/channels/:id/cooldown", s.handleSetChannelCooldown)          // 设置渠道级别冷却
+		admin.POST("/channels/:id/cooldown", s.handleSetChannelCooldown)            // 设置渠道级别冷却
 		admin.POST("/channels/:id/keys/:keyIndex/cooldown", s.handleSetKeyCooldown) // 设置Key级别冷却
 		admin.GET("/errors", s.handleErrors)
 		admin.GET("/metrics", s.handleMetrics)
@@ -497,7 +497,6 @@ func (s *Server) addLogAsync(entry *LogEntry) {
 		}
 	}
 }
-
 
 // cleanupOldLogsLoop 定期清理旧日志（性能优化：避免每次插入时清理）
 // 每小时检查一次，删除3天前的日志
@@ -613,12 +612,12 @@ func (s *Server) warmHTTPConnections(ctx context.Context) {
 	// 预热前5个高优先级渠道（按优先级降序）
 	warmCount := min(len(configs), 5)
 
-    warmedCount := 0
-    for i := 0; i < warmCount; i++ {
-        cfg := configs[i]
-        if cfg.URL == "" {
-            continue
-        }
+	warmedCount := 0
+	for i := 0; i < warmCount; i++ {
+		cfg := configs[i]
+		if cfg.URL == "" {
+			continue
+		}
 
 		// 发送轻量HEAD请求预建立连接（非阻塞，超时1秒）
 		reqCtx, cancel := context.WithTimeout(ctx, 1*time.Second)

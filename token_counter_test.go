@@ -15,7 +15,7 @@ func TestEstimateTextTokens_EnglishText(t *testing.T) {
 		expected int
 	}{
 		{"空文本", "", 0},
-		{"短句", "Hello, world", 3}, // 12字符 / 4 ≈ 3
+		{"短句", "Hello, world", 3},            // 12字符 / 4 ≈ 3
 		{"中等长度", "What is a quaternion?", 5}, // 21字符 / 4 ≈ 5
 		{"长文本", "The Anthropic Go library provides convenient access to the Anthropic REST API", 19}, // 78字符 / 4 ≈ 19
 	}
@@ -41,7 +41,7 @@ func TestEstimateTextTokens_ChineseText(t *testing.T) {
 	}{
 		{"纯中文短句", "你好世界", 2, 4},           // 4字符 / 1.5 ≈ 3
 		{"纯中文长句", "这是一个测试中文文本的例子", 8, 12}, // 15字符 / 1.5 ≈ 10
-		{"混合语言", "Hello 世界", 2, 4},         // 8字符，约30%中文，≈2.5 tokens
+		{"混合语言", "Hello 世界", 2, 4},        // 8字符，约30%中文，≈2.5 tokens
 	}
 
 	for _, tt := range tests {

@@ -205,8 +205,8 @@ func parseTimestampOrNow(val any, fallback time.Time) time.Time {
 
 // QueryBuilder 通用查询构建器
 type QueryBuilder struct {
-    baseQuery string
-    wb        *WhereBuilder
+	baseQuery string
+	wb        *WhereBuilder
 }
 
 // NewQueryBuilder 创建新的查询构建器
@@ -225,25 +225,25 @@ func (qb *QueryBuilder) Where(condition string, args ...any) *QueryBuilder {
 
 // ApplyFilter 应用过滤器
 func (qb *QueryBuilder) ApplyFilter(filter *LogFilter) *QueryBuilder {
-    qb.wb.ApplyLogFilter(filter)
-    return qb
+	qb.wb.ApplyLogFilter(filter)
+	return qb
 }
 
 // WhereIn 添加 IN 条件，自动生成占位符，防止SQL注入
 func (qb *QueryBuilder) WhereIn(column string, values []any) *QueryBuilder {
-    if len(values) == 0 {
-        // 无值时添加恒为假的条件，确保不返回记录
-        qb.wb.AddCondition("1=0")
-        return qb
-    }
-    // 生成 ?,?,? 占位符
-    placeholders := make([]string, len(values))
-    for i := range values {
-        placeholders[i] = "?"
-    }
-    cond := fmt.Sprintf("%s IN (%s)", column, strings.Join(placeholders, ","))
-    qb.wb.AddCondition(cond, values...)
-    return qb
+	if len(values) == 0 {
+		// 无值时添加恒为假的条件，确保不返回记录
+		qb.wb.AddCondition("1=0")
+		return qb
+	}
+	// 生成 ?,?,? 占位符
+	placeholders := make([]string, len(values))
+	for i := range values {
+		placeholders[i] = "?"
+	}
+	cond := fmt.Sprintf("%s IN (%s)", column, strings.Join(placeholders, ","))
+	qb.wb.AddCondition(cond, values...)
+	return qb
 }
 
 // Build 构建最终查询
