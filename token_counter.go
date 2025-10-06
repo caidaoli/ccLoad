@@ -14,7 +14,7 @@ import (
 type CountTokensRequest struct {
 	Model    string         `json:"model" binding:"required"`
 	Messages []MessageParam `json:"messages" binding:"required"`
-	System   string         `json:"system,omitempty"`
+	System   any            `json:"system,omitempty"` // 支持 string 或 []TextBlock
 	Tools    []Tool         `json:"tools,omitempty"`
 }
 
@@ -86,9 +86,27 @@ func estimateTokens(req *CountTokensRequest) int {
 	totalTokens := 0
 
 	// 1. 系统提示词（system prompt）
-	if req.System != "" {
-		totalTokens += estimateTextTokens(req.System)
-		totalTokens += 5 // 系统提示的固定开销
+	// 支持 string 或 []TextBlock 两种格式
+	if req.System != nil {
+		switch sys := req.System.(type) {
+		case string:
+			// 字符串格式（旧版本兼容）
+			if sys != "" {
+				totalTokens += estimateTextTokens(sys)
+				totalTokens += 5 // 系统提示的固定开销
+			}
+		case []any:
+			// 数组格式（Beta版本）
+			for _, block := range sys {
+				totalTokens += estimateContentBlock(block)
+			}
+			totalTokens += 5 // 系统提示的固定开销
+		default:
+			// 其他格式：尝试JSON序列化估算
+			if jsonBytes, err := sonic.Marshal(sys); err == nil {
+				totalTokens += len(jsonBytes) / 4
+			}
+		}
 	}
 
 	// 2. 消息内容（messages）

@@ -181,6 +181,88 @@ func TestEstimateTokens_WithSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestEstimateTokens_WithSystemPromptArray(t *testing.T) {
+	// 测试Beta版本的system数组格式
+	req := &CountTokensRequest{
+		Model: "claude-3-5-sonnet-20241022",
+		System: []any{
+			map[string]any{
+				"type": "text",
+				"text": "You are a scientist",
+			},
+			map[string]any{
+				"type": "text",
+				"text": "with expertise in quantum mechanics.",
+			},
+		},
+		Messages: []MessageParam{
+			{
+				Role:    "user",
+				Content: "Explain quantum entanglement.",
+			},
+		},
+	}
+
+	tokens := estimateTokens(req)
+
+	// 期望:
+	// - system文本块1: "You are a scientist" ≈ 5 tokens
+	// - system文本块2: "with expertise in quantum mechanics." ≈ 8 tokens
+	// - system开销: 5 tokens
+	// - 消息内容: "Explain quantum entanglement." ≈ 7 tokens
+	// - 角色开销: 10 tokens
+	// - 基础开销: 10 tokens
+	// 总计: 5 + 8 + 5 + 7 + 10 + 10 ≈ 45 tokens
+	// 允许 ±10 误差
+	if tokens < 35 || tokens > 55 {
+		t.Errorf("System数组格式token估算异常: %d, 期望 35-55", tokens)
+	}
+
+	t.Logf("System数组估算结果: %d tokens", tokens)
+}
+
+func TestEstimateTokens_SystemPromptNil(t *testing.T) {
+	// 测试system为nil的情况
+	req := &CountTokensRequest{
+		Model:  "claude-3-5-sonnet-20241022",
+		System: nil,
+		Messages: []MessageParam{
+			{
+				Role:    "user",
+				Content: "Hello",
+			},
+		},
+	}
+
+	tokens := estimateTokens(req)
+
+	// 期望: 消息(2) + 角色(10) + 基础(10) ≈ 22
+	if tokens < 18 || tokens > 28 {
+		t.Errorf("nil system token估算异常: %d, 期望 18-28", tokens)
+	}
+}
+
+func TestEstimateTokens_SystemPromptEmptyString(t *testing.T) {
+	// 测试system为空字符串的情况
+	req := &CountTokensRequest{
+		Model:  "claude-3-5-sonnet-20241022",
+		System: "",
+		Messages: []MessageParam{
+			{
+				Role:    "user",
+				Content: "Hello",
+			},
+		},
+	}
+
+	tokens := estimateTokens(req)
+
+	// 期望: 消息(2) + 角色(10) + 基础(10) ≈ 22（空字符串不计入）
+	if tokens < 18 || tokens > 28 {
+		t.Errorf("空system token估算异常: %d, 期望 18-28", tokens)
+	}
+}
+
 func TestEstimateTokens_WithTools(t *testing.T) {
 	// 包含工具定义
 	req := &CountTokensRequest{
