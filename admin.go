@@ -1,15 +1,16 @@
 package main
 
 import (
-	"bytes"
-	"context"
-	"encoding/csv"
-	"fmt"
-	"io"
-	"net/http"
-	"strconv"
-	"strings"
-	"time"
+    "bytes"
+    "context"
+    "encoding/csv"
+    "fmt"
+    "log"
+    "io"
+    "net/http"
+    "strconv"
+    "strings"
+    "time"
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
@@ -108,20 +109,20 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	now := time.Now()
 
 	// P0性能优化：批量查询所有渠道冷却状态（一次查询替代 N 次）
-	allChannelCooldowns, err := s.store.GetAllChannelCooldowns(c.Request.Context())
-	if err != nil {
-		// 渠道冷却查询失败不影响主流程，仅记录错误
-		fmt.Printf("⚠️  警告: 批量查询渠道冷却状态失败: %v\n", err)
-		allChannelCooldowns = make(map[int64]time.Time)
-	}
+    allChannelCooldowns, err := s.store.GetAllChannelCooldowns(c.Request.Context())
+    if err != nil {
+        // 渠道冷却查询失败不影响主流程，仅记录错误
+        log.Printf("⚠️  警告: 批量查询渠道冷却状态失败: %v", err)
+        allChannelCooldowns = make(map[int64]time.Time)
+    }
 
 	// 性能优化：批量查询所有Key冷却状态（一次查询替代 N*M 次）
-	allKeyCooldowns, err := s.store.GetAllKeyCooldowns(c.Request.Context())
-	if err != nil {
-		// Key冷却查询失败不影响主流程，仅记录错误
-		fmt.Printf("⚠️  警告: 批量查询Key冷却状态失败: %v\n", err)
-		allKeyCooldowns = make(map[int64]map[int]time.Time)
-	}
+    allKeyCooldowns, err := s.store.GetAllKeyCooldowns(c.Request.Context())
+    if err != nil {
+        // Key冷却查询失败不影响主流程，仅记录错误
+        log.Printf("⚠️  警告: 批量查询Key冷却状态失败: %v", err)
+        allKeyCooldowns = make(map[int64]map[int]time.Time)
+    }
 
 	out := make([]ChannelWithCooldown, 0, len(cfgs))
 	for _, cfg := range cfgs {
@@ -531,10 +532,10 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 
 	// Key变化时清理所有key冷却数据（避免索引错位）
 	if keyChanged {
-		if err := s.store.ClearAllKeyCooldowns(c.Request.Context(), id); err != nil {
-			// 清理失败仅记录警告，不影响更新流程
-			fmt.Printf("warning: failed to clear key cooldowns for channel %d: %v\n", id, err)
-		}
+        if err := s.store.ClearAllKeyCooldowns(c.Request.Context(), id); err != nil {
+            // 清理失败仅记录警告，不影响更新流程
+            log.Printf("warning: failed to clear key cooldowns for channel %d: %v", id, err)
+        }
 	}
 
 	RespondJSON(c, http.StatusOK, upd)

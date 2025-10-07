@@ -1,14 +1,15 @@
 package main
 
 import (
-	"context"
-	"database/sql"
-	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
-	"time"
+    "context"
+    "database/sql"
+    "errors"
+    "fmt"
+    "log"
+    "os"
+    "path/filepath"
+    "strings"
+    "time"
 
 	"github.com/bytedance/sonic"
 	_ "modernc.org/sqlite"
@@ -165,13 +166,13 @@ func NewSQLiteStore(path string, redisSync *RedisSync) (*SQLiteStore, error) {
 		s.keeperConn = keeperConn
 
 		// 内存模式提示信息
-		fmt.Println("⚡ 性能优化：主数据库使用内存模式（CCLOAD_USE_MEMORY_DB=true）")
-		fmt.Println("   - 使用命名内存数据库（ccload_mem_db）+ 守护连接机制")
-		fmt.Println("   - 守护连接确保数据库生命周期绑定到服务进程")
-		fmt.Println("   - 连接池无生命周期限制，防止连接过期导致数据库销毁")
-		fmt.Println("   - 渠道配置、冷却状态等热数据存储在内存中")
-		fmt.Println("   - 日志数据仍然持久化到磁盘：", logDBPath)
-		fmt.Println("   ⚠️  警告：服务重启后主数据库数据将丢失，请配置Redis同步或重新导入CSV")
+        log.Print("⚡ 性能优化：主数据库使用内存模式（CCLOAD_USE_MEMORY_DB=true）")
+        log.Print("   - 使用命名内存数据库（ccload_mem_db）+ 守护连接机制")
+        log.Print("   - 守护连接确保数据库生命周期绑定到服务进程")
+        log.Print("   - 连接池无生命周期限制，防止连接过期导致数据库销毁")
+        log.Print("   - 渠道配置、冷却状态等热数据存储在内存中")
+        log.Print("   - 日志数据仍然持久化到磁盘：", logDBPath)
+        log.Print("   ⚠️  警告：服务重启后主数据库数据将丢失，请配置Redis同步或重新导入CSV")
 	}
 
 	// 迁移主数据库表结构
@@ -428,9 +429,9 @@ func (s *SQLiteStore) migrateAPIKeysField(ctx context.Context) error {
 		}
 	}
 
-	if migratedCount > 0 {
-		fmt.Printf("✅ api_keys字段迁移完成：修复 %d 条渠道记录\n", migratedCount)
-	}
+    if migratedCount > 0 {
+        log.Printf("✅ api_keys字段迁移完成：修复 %d 条渠道记录", migratedCount)
+    }
 
 	return nil
 }
@@ -507,9 +508,9 @@ func (s *SQLiteStore) ensureChannelNameUnique(ctx context.Context) error {
 		}
 	}
 
-	if duplicateCount > 0 {
-		fmt.Printf("Fixed %d duplicate channel names\n", duplicateCount)
-	}
+    if duplicateCount > 0 {
+        log.Printf("Fixed %d duplicate channel names", duplicateCount)
+    }
 
 	// 第四步: 创建UNIQUE索引
 	if _, err := s.db.ExecContext(ctx,
@@ -556,7 +557,7 @@ func (s *SQLiteStore) migrateCooldownToUnixTimestamp(ctx context.Context) error 
 		if err := s.rebuildCooldownsTable(ctx); err != nil {
 			return fmt.Errorf("rebuild cooldowns table: %w", err)
 		}
-		fmt.Println("✅ 迁移 cooldowns 表：TIMESTAMP → Unix时间戳")
+    log.Print("✅ 迁移 cooldowns 表：TIMESTAMP → Unix时间戳")
 	}
 
 	// 检查key_cooldowns表的until字段类型
@@ -585,7 +586,7 @@ func (s *SQLiteStore) migrateCooldownToUnixTimestamp(ctx context.Context) error 
 		if err := s.rebuildKeyCooldownsTable(ctx); err != nil {
 			return fmt.Errorf("rebuild key_cooldowns table: %w", err)
 		}
-		fmt.Println("✅ 迁移 key_cooldowns 表：TIMESTAMP → Unix时间戳")
+    log.Print("✅ 迁移 key_cooldowns 表：TIMESTAMP → Unix时间戳")
 	}
 
 	return nil
@@ -614,7 +615,7 @@ func (s *SQLiteStore) rebuildChannelsTableToUnixTimestamp(ctx context.Context) e
 		return nil
 	}
 
-	fmt.Println("🔄 重建 channels 表：created_at/updated_at(TIMESTAMP) → (BIGINT 秒)")
+    log.Print("🔄 重建 channels 表：created_at/updated_at(TIMESTAMP) → (BIGINT 秒)")
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -689,7 +690,7 @@ func (s *SQLiteStore) rebuildChannelsTableToUnixTimestamp(ctx context.Context) e
 		return fmt.Errorf("commit transaction: %w", err)
 	}
 
-	fmt.Println("✅ channels 表重建完成")
+    log.Print("✅ channels 表重建完成")
 	return nil
 }
 
@@ -711,7 +712,7 @@ func (s *SQLiteStore) rebuildTimestampTable(ctx context.Context, tableName, crea
 	}
 
 	// 2. 清理旧数据（TIMESTAMP格式无法可靠转换）
-	fmt.Printf("  清理旧的%s记录（格式不兼容）\n", tableName)
+    log.Printf("  清理旧的%s记录（格式不兼容）", tableName)
 
 	// 3. 删除旧表
 	dropSQL := fmt.Sprintf("DROP TABLE %s", tableName)
@@ -771,7 +772,7 @@ func (s *SQLiteStore) Close() error {
 	if s.keeperConn != nil {
 		if err := s.keeperConn.Close(); err != nil {
 			// 记录错误但不影响后续关闭操作
-			fmt.Printf("⚠️  关闭守护连接失败: %v\n", err)
+            log.Printf("⚠️  关闭守护连接失败: %v", err)
 		}
 	}
 
@@ -834,36 +835,39 @@ func (s *SQLiteStore) GetConfig(ctx context.Context, id int64) (*Config, error) 
 // GetEnabledChannelsByModel 查询支持指定模型的启用渠道（按优先级排序）
 // 性能优化：使用 LEFT JOIN 一次性查询渠道和冷却状态，消除 N+1 查询问题
 func (s *SQLiteStore) GetEnabledChannelsByModel(ctx context.Context, model string) ([]*Config, error) {
-	var query string
-	var args []any
-	nowUnix := time.Now().Unix()
+    var query string
+    var args []any
+    nowUnix := time.Now().Unix()
 
-	if model == "*" {
-		// 通配符：返回所有启用且未冷却的渠道
-		query = `
-			SELECT c.id, c.name, c.api_key, c.api_keys, c.key_strategy, c.url, c.priority,
-			       c.models, c.model_redirects, c.channel_type, c.enabled, c.created_at, c.updated_at
-			FROM channels c
-			LEFT JOIN cooldowns cd ON c.id = cd.channel_id
-			WHERE c.enabled = 1
-			  AND (cd.until IS NULL OR cd.until <= ?)
-			ORDER BY c.priority DESC, c.id ASC
-		`
-		args = []any{nowUnix}
-	} else {
-		// 精确匹配：查询支持该模型且未冷却的渠道
-		query = `
-			SELECT c.id, c.name, c.api_key, c.api_keys, c.key_strategy, c.url, c.priority,
-			       c.models, c.model_redirects, c.channel_type, c.enabled, c.created_at, c.updated_at
-			FROM channels c
-			LEFT JOIN cooldowns cd ON c.id = cd.channel_id
-			WHERE c.enabled = 1
-			  AND c.models LIKE ?
-			  AND (cd.until IS NULL OR cd.until <= ?)
-			ORDER BY c.priority DESC, c.id ASC
-		`
-		args = []any{"%" + model + "%", nowUnix}
-	}
+    if model == "*" {
+        // 通配符：返回所有启用且未冷却的渠道
+        query = `
+            SELECT c.id, c.name, c.api_key, c.api_keys, c.key_strategy, c.url, c.priority,
+                   c.models, c.model_redirects, c.channel_type, c.enabled, c.created_at, c.updated_at
+            FROM channels c
+            LEFT JOIN cooldowns cd ON c.id = cd.channel_id
+            WHERE c.enabled = 1
+              AND (cd.until IS NULL OR cd.until <= ?)
+            ORDER BY c.priority DESC, c.id ASC
+        `
+        args = []any{nowUnix}
+    } else {
+        // 精确匹配：使用 JSON1 解析 models 数组并精确匹配元素
+        query = `
+            SELECT c.id, c.name, c.api_key, c.api_keys, c.key_strategy, c.url, c.priority,
+                   c.models, c.model_redirects, c.channel_type, c.enabled, c.created_at, c.updated_at
+            FROM channels c
+            LEFT JOIN cooldowns cd ON c.id = cd.channel_id
+            WHERE c.enabled = 1
+              AND EXISTS (
+                  SELECT 1 FROM json_each(c.models) je
+                  WHERE je.value = ?
+              )
+              AND (cd.until IS NULL OR cd.until <= ?)
+            ORDER BY c.priority DESC, c.id ASC
+        `
+        args = []any{model, nowUnix}
+    }
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -1197,6 +1201,59 @@ func (s *SQLiteStore) AddLog(ctx context.Context, e *LogEntry) error {
 	return err
 }
 
+// BatchAddLogs 批量写入日志（单事务+预编译语句，提升刷盘性能）
+// OCP：作为扩展方法提供，调用方可通过类型断言优先使用
+func (s *SQLiteStore) BatchAddLogs(ctx context.Context, logs []*LogEntry) error {
+    if len(logs) == 0 {
+        return nil
+    }
+
+    tx, err := s.logDB.BeginTx(ctx, nil)
+    if err != nil {
+        return err
+    }
+    defer func() { _ = tx.Rollback() }()
+
+    stmt, err := tx.PrepareContext(ctx, `
+        INSERT INTO logs(time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    if err != nil {
+        return err
+    }
+    defer stmt.Close()
+
+    for _, e := range logs {
+        t := e.Time.Time
+        if t.IsZero() {
+            t = time.Now()
+        }
+        cleanTime := t.Round(0)
+        timeMs := cleanTime.UnixMilli()
+
+        maskedKey := e.APIKeyUsed
+        if maskedKey != "" {
+            maskedKey = maskAPIKey(maskedKey)
+        }
+
+        if _, err := stmt.ExecContext(ctx,
+            timeMs,
+            e.Model,
+            e.ChannelID,
+            e.StatusCode,
+            e.Message,
+            e.Duration,
+            e.IsStreaming,
+            e.FirstByteTime,
+            maskedKey,
+        ); err != nil {
+            return err
+        }
+    }
+
+    return tx.Commit()
+}
+
 func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offset int, filter *LogFilter) ([]*LogEntry, error) {
 	// 使用查询构建器构建复杂查询（从 logDB 查询）
 	// 性能优化：批量查询渠道名称消除N+1问题（100渠道场景提升50-100倍）
@@ -1285,7 +1342,7 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 		channelNames, err := s.fetchChannelNamesBatch(ctx, channelIDsToFetch)
 		if err != nil {
 			// 降级处理：查询失败不影响日志返回，仅记录错误
-			fmt.Printf("⚠️  批量查询渠道名称失败: %v\n", err)
+            log.Printf("⚠️  批量查询渠道名称失败: %v", err)
 			channelNames = make(map[int64]string)
 		}
 
@@ -1379,7 +1436,7 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 		channelNames, err = s.fetchChannelNamesBatch(ctx, channelIDsToFetch)
 		if err != nil {
 			// 降级处理：查询失败不影响聚合返回，仅记录错误
-			fmt.Printf("⚠️  批量查询渠道名称失败: %v\n", err)
+            log.Printf("⚠️  批量查询渠道名称失败: %v", err)
 			channelNames = make(map[int64]string)
 		}
 	}
@@ -1525,7 +1582,7 @@ func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *Log
 		channelNames, err := s.fetchChannelNamesBatch(ctx, channelIDsToFetch)
 		if err != nil {
 			// 降级处理：查询失败不影响统计返回，仅记录错误
-			fmt.Printf("⚠️  批量查询渠道名称失败: %v\n", err)
+            log.Printf("⚠️  批量查询渠道名称失败: %v", err)
 			channelNames = make(map[int64]string)
 		}
 
@@ -1564,11 +1621,11 @@ func (s *SQLiteStore) LoadChannelsFromRedis(ctx context.Context) error {
 	}
 
 	if len(configs) == 0 {
-		fmt.Println("No channels found in Redis")
+    log.Print("No channels found in Redis")
 		return nil
 	}
 
-	fmt.Printf("Restoring %d channels from Redis...\n", len(configs))
+    log.Printf("Restoring %d channels from Redis...", len(configs))
 
 	// 使用事务确保数据一致性 (ACID原则)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -1599,7 +1656,7 @@ func (s *SQLiteStore) LoadChannelsFromRedis(ctx context.Context) error {
 			modelsStr, modelRedirectsStr, channelType, boolToInt(config.Enabled), nowUnix, nowUnix)
 
 		if err != nil {
-			fmt.Printf("Warning: failed to restore channel %s: %v\n", config.Name, err)
+            log.Printf("Warning: failed to restore channel %s: %v", config.Name, err)
 			continue
 		}
 		successCount++
@@ -1609,7 +1666,7 @@ func (s *SQLiteStore) LoadChannelsFromRedis(ctx context.Context) error {
 		return fmt.Errorf("commit transaction: %w", err)
 	}
 
-	fmt.Printf("Successfully restored %d/%d channels from Redis\n", successCount, len(configs))
+    log.Printf("Successfully restored %d/%d channels from Redis", successCount, len(configs))
 	return nil
 }
 
@@ -1625,20 +1682,20 @@ func (s *SQLiteStore) SyncAllChannelsToRedis(ctx context.Context) error {
 	}
 
 	if len(configs) == 0 {
-		fmt.Println("No channels to sync to Redis")
+    log.Print("No channels to sync to Redis")
 		return nil
 	}
 
 	// 规范化所有Config对象的默认值（确保Redis中数据完整性）
 	normalizeConfigDefaults(configs)
 
-	fmt.Printf("Syncing %d channels to Redis...\n", len(configs))
+    log.Printf("Syncing %d channels to Redis...", len(configs))
 
 	if err := s.redisSync.SyncAllChannels(ctx, configs); err != nil {
 		return fmt.Errorf("sync to redis: %w", err)
 	}
 
-	fmt.Printf("Successfully synced %d channels to Redis\n", len(configs))
+    log.Printf("Successfully synced %d channels to Redis", len(configs))
 	return nil
 }
 
@@ -1661,8 +1718,8 @@ func (s *SQLiteStore) redisSyncWorker() {
 			syncErr := s.doSyncAllChannelsWithRetry(ctx, retryBackoff)
 			if syncErr != nil {
 				// 所有重试都失败，记录致命错误
-				fmt.Printf("❌ 严重错误: Redis同步失败（已重试%d次）: %v\n", len(retryBackoff), syncErr)
-				fmt.Printf("   警告: 服务重启后可能丢失渠道配置，请检查Redis连接或手动备份数据库\n")
+                log.Printf("❌ 严重错误: Redis同步失败（已重试%d次）: %v", len(retryBackoff), syncErr)
+                log.Print("   警告: 服务重启后可能丢失渠道配置，请检查Redis连接或手动备份数据库")
 			}
 
 		case <-s.done:
@@ -1687,7 +1744,7 @@ func (s *SQLiteStore) doSyncAllChannelsWithRetry(ctx context.Context, retryBacko
 		return nil // 成功
 	} else {
 		lastErr = err
-		fmt.Printf("⚠️  Redis同步失败（将自动重试）: %v\n", err)
+        log.Printf("⚠️  Redis同步失败（将自动重试）: %v", err)
 	}
 
 	// 重试逻辑
@@ -1697,11 +1754,11 @@ func (s *SQLiteStore) doSyncAllChannelsWithRetry(ctx context.Context, retryBacko
 
 		// 重试同步
 		if err := s.doSyncAllChannels(ctx); err == nil {
-			fmt.Printf("✅ Redis同步恢复成功（第%d次重试）\n", attempt+1)
+            log.Printf("✅ Redis同步恢复成功（第%d次重试）", attempt+1)
 			return nil // 成功
 		} else {
 			lastErr = err
-			fmt.Printf("⚠️  Redis同步重试失败（第%d次）: %v\n", attempt+1, err)
+            log.Printf("⚠️  Redis同步重试失败（第%d次）: %v", attempt+1, err)
 		}
 	}
 

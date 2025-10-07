@@ -1,16 +1,16 @@
 package main
 
 import (
-	"context"
-	"crypto/rand"
-	"crypto/tls"
-	"encoding/hex"
-	"fmt"
-	"io"
-	"net"
-	"net/http"
-	"os"
-	"slices"
+    "context"
+    "crypto/rand"
+    "crypto/tls"
+    "encoding/hex"
+    "log"
+    "io"
+    "net"
+    "net/http"
+    "os"
+    "slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -115,12 +115,12 @@ func NewServer(store Store) *Server {
 
 	// TLS证书验证配置（安全优化：默认启用证书验证）
 	skipTLSVerify := false
-	if os.Getenv("CCLOAD_SKIP_TLS_VERIFY") == "true" {
-		skipTLSVerify = true
-		fmt.Println("⚠️  警告：TLS证书验证已禁用（CCLOAD_SKIP_TLS_VERIFY=true）")
-		fmt.Println("   仅用于开发/测试环境，生产环境严禁使用！")
-		fmt.Println("   当前配置存在中间人攻击风险，API Key可能泄漏")
-	}
+    if os.Getenv("CCLOAD_SKIP_TLS_VERIFY") == "true" {
+        skipTLSVerify = true
+        log.Print("⚠️  警告：TLS证书验证已禁用（CCLOAD_SKIP_TLS_VERIFY=true）")
+        log.Print("   仅用于开发/测试环境，生产环境严禁使用！")
+        log.Print("   当前配置存在中间人攻击风险，API Key可能泄漏")
+    }
 
 	// 优化 HTTP 客户端配置 - 重点优化连接建立阶段的超时控制
 	dialer := &net.Dialer{
@@ -347,9 +347,9 @@ func (s *Server) requireAPIAuth() gin.HandlerFunc {
 
 // 登录处理程序 - Gin版本
 func (s *Server) handleLogin(c *gin.Context) {
-	var req struct {
-		Password string `json:"password" binding:"required"`
-	}
+    var req struct {
+        Password string `json:"password" binding:"required"`
+    }
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
@@ -364,9 +364,11 @@ func (s *Server) handleLogin(c *gin.Context) {
 	// 密码正确，创建session
 	sessionID := s.createSession()
 
-	// 设置cookie
-	c.SetCookie("ccload_session", sessionID, 24*60*60, "/", "", false, true)
-	c.JSON(http.StatusOK, gin.H{"status": "success"})
+    // 设置cookie（根据是否HTTPS决定Secure；设置SameSite=Lax）
+    c.SetSameSite(http.SameSiteLaxMode)
+    secure := c.Request.TLS != nil
+    c.SetCookie("ccload_session", sessionID, 24*60*60, "/", "", secure, true)
+    c.JSON(http.StatusOK, gin.H{"status": "success"})
 }
 
 // 登出处理程序 - Gin版本
@@ -505,10 +507,16 @@ func (s *Server) logWorker() {
 
 // 批量写入日志
 func (s *Server) flushLogs(logs []*LogEntry) {
-	ctx := context.Background()
-	for _, log := range logs {
-		_ = s.store.AddLog(ctx, log)
-	}
+    ctx := context.Background()
+    // 优先使用SQLite批量写入，加速刷盘
+    if ss, ok := s.store.(*SQLiteStore); ok {
+        _ = ss.BatchAddLogs(ctx, logs)
+        return
+    }
+    // 回退逐条写入
+    for _, e := range logs {
+        _ = s.store.AddLog(ctx, e)
+    }
 }
 
 // 异步添加日志
@@ -523,8 +531,8 @@ func (s *Server) addLogAsync(entry *LogEntry) {
 
 		// 告警阈值：每丢弃1000条打印一次警告
 		if dropCount%1000 == 0 {
-			fmt.Printf("⚠️  严重警告: 日志丢弃计数达到 %d 条！请检查系统负载或增加日志队列容量\n", dropCount)
-			fmt.Printf("   建议: 1) 增加CCLOAD_LOG_BUFFER环境变量 2) 增加日志Worker数量 3) 优化磁盘I/O性能\n")
+            log.Printf("⚠️  严重警告: 日志丢弃计数达到 %d 条！请检查系统负载或增加日志队列容量", dropCount)
+            log.Print("   建议: 1) 增加CCLOAD_LOG_BUFFER环境变量 2) 增加日志Worker数量 3) 优化磁盘I/O性能")
 		}
 	}
 }
@@ -672,7 +680,7 @@ func (s *Server) warmHTTPConnections(ctx context.Context) {
 		warmedCount++
 	}
 
-	if warmedCount > 0 {
-		fmt.Printf("✅ HTTP连接预热：为 %d 个高优先级渠道预建立连接\n", warmedCount)
-	}
+    if warmedCount > 0 {
+        log.Printf("✅ HTTP连接预热：为 %d 个高优先级渠道预建立连接", warmedCount)
+    }
 }
