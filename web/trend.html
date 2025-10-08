@@ -143,8 +143,8 @@
         
         // 并行加载趋势数据和渠道列表
         const [metricsRes, channelsRes] = await Promise.all([
-          fetch(`/admin/metrics?hours=${window.currentHours}&bucket_min=${bucketMin}`),
-          fetch('/admin/channels')
+          fetchWithAuth(`/admin/metrics?hours=${window.currentHours}&bucket_min=${bucketMin}`),
+          fetchWithAuth('/admin/channels')
         ]);
         
         if (!metricsRes.ok) throw new Error(`HTTP ${metricsRes.status}`);
@@ -890,18 +890,7 @@
       });
     }
 
-    // 注销功能
-    function logout() {
-      if (confirm('确定要注销吗？')) {
-        fetch('/logout', { method: 'POST' })
-          .then(() => {
-            window.location.href = '/web/login.html';
-          })
-          .catch(() => {
-            window.location.href = '/web/login.html';
-          });
-      }
-    }
+    // 注销功能（已由 ui.js 的 onLogout 统一处理）
   </script>
   <script src="/web/ui.js"></script>
 </body>

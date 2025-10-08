@@ -15,9 +15,9 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
+    "time"
 
-	"github.com/gin-gonic/gin"
+    "github.com/gin-gonic/gin"
 )
 
 // rrUpdate 轮询指针更新记录（用于批量持久化）
@@ -32,11 +32,13 @@ type Server struct {
 	keySelector *KeySelector // Key选择器（多Key支持）
 	client      *http.Client
 	password    string
-	sessions    map[string]time.Time // sessionID -> expireTime
-	sessMux     sync.RWMutex
+
+	// Token认证系统
+	validTokens map[string]time.Time // 动态Token -> 过期时间
+	tokensMux   sync.RWMutex
 
 	// API 认证
-	authTokens map[string]bool // 允许的认证令牌
+	authTokens map[string]bool // 静态认证令牌（CCLOAD_AUTH配置）
 
 	// 重试配置
 	maxKeyRetries int // 单个渠道内最大Key重试次数（默认3次）
@@ -178,9 +180,9 @@ func NewServer(store Store) *Server {
 			Transport: transport,
 			Timeout:   0, // 不设置全局超时，避免中断长时间任务
 		},
-		password:   password,
-		sessions:   make(map[string]time.Time),
-		authTokens: authTokens,
+		password:    password,
+		validTokens: make(map[string]time.Time),
+		authTokens:  authTokens,
 		logChan:    make(chan *LogEntry, logBuf), // 可配置日志缓冲
 		logWorkers: logWorkers,                   // 可配置日志worker数量
 
@@ -206,100 +208,101 @@ func NewServer(store Store) *Server {
 	go s.rrBatchWriter()
 
 	// 启动后台清理协程
-	// 注意：已移除 CleanupExpiredKeyCooldowns() 调用，SQLite查询时自动过滤过期数据
-	go s.sessionCleanupLoop() // ✅ P1修复：启动session清理循环而非直接调用
+	go s.tokenCleanupLoop()   // Token认证：定期清理过期Token
 	go s.cleanupOldLogsLoop() // 定期清理3天前的日志（性能优化：避免每次插入时清理）
 
 	return s
 
 }
 
-// 生成随机session ID
-func (s *Server) generateSessionID() string {
-	bytes := make([]byte, 32)
-	rand.Read(bytes)
-	return hex.EncodeToString(bytes)
+// ================== Token认证系统 ==================
+
+// 生成安全Token（64字符十六进制）
+func (s *Server) generateToken() string {
+	b := make([]byte, 32)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
-// 创建session
-func (s *Server) createSession() string {
-	s.sessMux.Lock()
-	defer s.sessMux.Unlock()
-
-	sessionID := s.generateSessionID()
-	// session有效期24小时
-	s.sessions[sessionID] = time.Now().Add(24 * time.Hour)
-	return sessionID
-}
-
-// 验证session
-func (s *Server) validateSession(sessionID string) bool {
-	// 第一阶段：读取session信息（使用读锁）
-	s.sessMux.RLock()
-	expireTime, exists := s.sessions[sessionID]
-	s.sessMux.RUnlock()
+// 验证Token有效性（检查过期时间）
+func (s *Server) isValidToken(token string) bool {
+	s.tokensMux.RLock()
+	expiry, exists := s.validTokens[token]
+	s.tokensMux.RUnlock()
 
 	if !exists {
 		return false
 	}
 
 	// 检查是否过期
-	if time.Now().After(expireTime) {
-		// 第二阶段：删除过期session（使用写锁）
-		s.sessMux.Lock()
-		delete(s.sessions, sessionID)
-		s.sessMux.Unlock()
+	if time.Now().After(expiry) {
+		// 异步清理过期Token（避免阻塞）
+		go func() {
+			s.tokensMux.Lock()
+			delete(s.validTokens, token)
+			s.tokensMux.Unlock()
+		}()
 		return false
 	}
 
 	return true
 }
 
-// 清理过期session
-// ✅ P1并发安全修复（2025-10-06）：使用快照模式避免长时间持锁
-// 设计原则：先收集要删除的session ID，释放锁后再批量删除
-func (s *Server) cleanExpiredSessions() {
+// 清理过期Token（定期任务）
+func (s *Server) cleanExpiredTokens() {
 	now := time.Now()
 
-	// 第一阶段：使用读锁快速收集过期session（减少锁竞争）
-	s.sessMux.RLock()
-	toDelete := make([]string, 0, len(s.sessions)/10) // 预估10%过期
-	for sessionID, expireTime := range s.sessions {
-		if now.After(expireTime) {
-			toDelete = append(toDelete, sessionID)
+	// 使用快照模式避免长时间持锁
+	s.tokensMux.RLock()
+	toDelete := make([]string, 0, len(s.validTokens)/10)
+	for token, expiry := range s.validTokens {
+		if now.After(expiry) {
+			toDelete = append(toDelete, token)
 		}
 	}
-	s.sessMux.RUnlock()
+	s.tokensMux.RUnlock()
 
-	// 第二阶段：如果有过期session，使用写锁批量删除
+	// 批量删除过期Token
 	if len(toDelete) > 0 {
-		s.sessMux.Lock()
-		for _, sessionID := range toDelete {
-			// 二次检查（避免RLock和Lock之间的竞争条件）
-			if expireTime, exists := s.sessions[sessionID]; exists && now.After(expireTime) {
-				delete(s.sessions, sessionID)
+		s.tokensMux.Lock()
+		for _, token := range toDelete {
+			if expiry, exists := s.validTokens[token]; exists && now.After(expiry) {
+				delete(s.validTokens, token)
 			}
 		}
-		s.sessMux.Unlock()
+		s.tokensMux.Unlock()
 	}
 }
 
-// 身份验证中间件 - Gin版本
-func (s *Server) requireAuth() gin.HandlerFunc {
+// ================== End Token认证 ==================
+
+// 统一Token认证中间件（管理界面 + API统一使用）
+func (s *Server) requireTokenAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 检查cookie中的session
-		sessionID, err := c.Cookie("ccload_session")
-		if err != nil || !s.validateSession(sessionID) {
-			// 未登录，重定向到登录页面
-			loginURL := "/web/login.html?redirect=" + c.Request.URL.Path
-			if c.Request.URL.RawQuery != "" {
-				loginURL += "%3F" + c.Request.URL.RawQuery // 编码查询参数
+		// 优先从 Authorization 头获取Token
+		authHeader := c.GetHeader("Authorization")
+		if authHeader != "" {
+			const prefix = "Bearer "
+			if strings.HasPrefix(authHeader, prefix) {
+				token := strings.TrimPrefix(authHeader, prefix)
+
+				// 检查动态Token（登录生成的24小时Token）
+				if s.isValidToken(token) {
+					c.Next()
+					return
+				}
+
+				// 检查静态Token（CCLOAD_AUTH配置的永久Token）
+				if len(s.authTokens) > 0 && s.authTokens[token] {
+					c.Next()
+					return
+				}
 			}
-			c.Redirect(http.StatusFound, loginURL)
-			c.Abort()
-			return
 		}
-		c.Next()
+
+		// 未授权
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "未授权访问，请先登录"})
+		c.Abort()
 	}
 }
 
@@ -345,7 +348,7 @@ func (s *Server) requireAPIAuth() gin.HandlerFunc {
 	}
 }
 
-// 登录处理程序 - Gin版本
+// 登录处理程序 - Token认证版本（替代Cookie Session）
 func (s *Server) handleLogin(c *gin.Context) {
     var req struct {
         Password string `json:"password" binding:"required"`
@@ -361,29 +364,37 @@ func (s *Server) handleLogin(c *gin.Context) {
 		return
 	}
 
-	// 密码正确，创建session
-	sessionID := s.createSession()
+	// 密码正确，生成Token
+	token := s.generateToken()
 
-    // 设置cookie（根据是否HTTPS决定Secure；设置SameSite=Lax）
-    c.SetSameSite(http.SameSiteLaxMode)
-    secure := c.Request.TLS != nil
-    c.SetCookie("ccload_session", sessionID, 24*60*60, "/", "", secure, true)
-    c.JSON(http.StatusOK, gin.H{"status": "success"})
+	// 存储Token到内存（24小时有效期）
+	s.tokensMux.Lock()
+	s.validTokens[token] = time.Now().Add(24 * time.Hour)
+	s.tokensMux.Unlock()
+
+	// 返回Token给客户端（前端存储到localStorage）
+	c.JSON(http.StatusOK, gin.H{
+		"status":    "success",
+		"token":     token,
+		"expiresIn": 86400, // 24小时（秒）
+	})
 }
 
-// 登出处理程序 - Gin版本
+// 登出处理程序 - Token认证版本
 func (s *Server) handleLogout(c *gin.Context) {
-	// 清除cookie
-	c.SetCookie("ccload_session", "", -1, "/", "", false, true)
+	// 从Authorization头提取Token
+	authHeader := c.GetHeader("Authorization")
+	const prefix = "Bearer "
+	if strings.HasPrefix(authHeader, prefix) {
+		token := strings.TrimPrefix(authHeader, prefix)
 
-	// 清除服务器端session
-	if sessionID, err := c.Cookie("ccload_session"); err == nil {
-		s.sessMux.Lock()
-		delete(s.sessions, sessionID)
-		s.sessMux.Unlock()
+		// 删除服务器端Token
+		s.tokensMux.Lock()
+		delete(s.validTokens, token)
+		s.tokensMux.Unlock()
 	}
 
-	c.Redirect(http.StatusFound, "/web/login.html")
+	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "已登出"})
 }
 
 // setupRoutes - 新的路由设置函数，适配Gin
@@ -410,11 +421,11 @@ func (s *Server) setupRoutes(r *gin.Engine) {
 
 	// 登录相关（公开访问）
 	r.POST("/login", s.handleLogin)
-	r.GET("/logout", s.handleLogout)
+	r.POST("/logout", s.handleLogout) // 改为POST（前端需携带Token）
 
-	// 需要身份验证的admin APIs
+	// 需要身份验证的admin APIs（使用Token认证）
 	admin := r.Group("/admin")
-	admin.Use(s.requireAuth())
+	admin.Use(s.requireTokenAuth())
 	{
 		admin.GET("/channels", s.handleChannels)
 		admin.POST("/channels", s.handleChannels)
@@ -441,43 +452,20 @@ func (s *Server) setupRoutes(r *gin.Engine) {
 	})
 }
 
-// 处理web静态文件，对管理页面进行身份验证 - Gin版本
+// 处理web静态文件 - Gin版本
+// 注意：认证已迁移到Token机制，由前端fetchWithAuth()和后端API中间件处理
 func (s *Server) handleWebFiles(c *gin.Context) {
 	filepath := c.Param("filepath")
-
-	// 需要身份验证的页面
-	authRequiredPages := []string{
-		"/channels.html",
-		"/logs.html",
-		"/stats.html",
-	}
-
-	needsAuth := slices.Contains(authRequiredPages, filepath)
-
-	if needsAuth {
-		// 检查身份验证
-		sessionID, err := c.Cookie("ccload_session")
-		if err != nil || !s.validateSession(sessionID) {
-			loginURL := "/web/login.html?redirect=" + c.Request.URL.Path
-			if c.Request.URL.RawQuery != "" {
-				loginURL += "%3F" + c.Request.URL.RawQuery
-			}
-			c.Redirect(http.StatusFound, loginURL)
-			return
-		}
-	}
-
-	// 提供静态文件服务
 	c.File("web" + filepath)
 }
 
-// session清理循环
-func (s *Server) sessionCleanupLoop() {
+// Token清理循环（定期清理过期Token）
+func (s *Server) tokenCleanupLoop() {
 	ticker := time.NewTicker(1 * time.Hour) // 每小时清理一次
 	defer ticker.Stop()
 
 	for range ticker.C {
-		s.cleanExpiredSessions()
+		s.cleanExpiredTokens()
 	}
 }
 

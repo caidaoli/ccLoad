@@ -188,18 +188,7 @@
 
     // 通知系统统一由 ui.js 提供（showSuccess/showError/showNotification）
 
-    // 注销功能
-    function logout() {
-      if (confirm('确定要注销吗？')) {
-        fetch('/logout', { method: 'POST' })
-          .then(() => {
-            window.location.href = '/web/login.html';
-          })
-          .catch(() => {
-            window.location.href = '/web/login.html';
-          });
-      }
-    }
+    // 注销功能（已由 ui.js 的 onLogout 统一处理）
 
     // 页面初始化
     document.addEventListener('DOMContentLoaded', function() {

@@ -153,7 +153,7 @@
         if (u.get('model')) params.set('model', u.get('model'));
         if (u.get('model_like')) params.set('model_like', u.get('model_like'));
         
-        const res = await fetch('/admin/errors?' + params.toString());
+        const res = await fetchWithAuth('/admin/errors?' + params.toString());
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         
         const response = await res.json();
@@ -413,18 +413,7 @@
     }
 
 
-    // 注销功能
-    function logout() {
-      if (confirm('确定要注销吗？')) {
-        fetch('/logout', { method: 'POST' })
-          .then(() => {
-            window.location.href = '/web/login.html';
-          })
-          .catch(() => {
-            window.location.href = '/web/login.html';
-          });
-      }
-    }
+    // 注销功能（已由 ui.js 的 onLogout 统一处理）
 
     // 顶栏布局下，无需侧栏响应逻辑
     function handleResize() {}

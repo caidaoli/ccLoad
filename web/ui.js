@@ -1,6 +1,52 @@
+// ============================================================
+// Token认证工具（统一API调用，替代Cookie Session）
+// ============================================================
+(function() {
+  /**
+   * 带Token认证的fetch封装
+   * @param {string} url - 请求URL
+   * @param {Object} options - fetch选项
+   * @returns {Promise<Response>}
+   */
+  async function fetchWithAuth(url, options = {}) {
+    const token = localStorage.getItem('ccload_token');
+    const expiry = localStorage.getItem('ccload_token_expiry');
+
+    // 检查Token过期
+    if (!token || (expiry && Date.now() > parseInt(expiry))) {
+      localStorage.removeItem('ccload_token');
+      localStorage.removeItem('ccload_token_expiry');
+      window.location.href = '/web/login.html?error=' + encodeURIComponent('会话已过期，请重新登录');
+      throw new Error('Token expired');
+    }
+
+    // 合并Authorization头
+    const headers = {
+      ...options.headers,
+      'Authorization': `Bearer ${token}`,
+    };
+
+    const response = await fetch(url, { ...options, headers });
+
+    // 处理401未授权
+    if (response.status === 401) {
+      localStorage.removeItem('ccload_token');
+      localStorage.removeItem('ccload_token_expiry');
+      window.location.href = '/web/login.html?error=' + encodeURIComponent('认证失败，请重新登录');
+      throw new Error('Unauthorized');
+    }
+
+    return response;
+  }
+
+  // 导出到全局作用域
+  window.fetchWithAuth = fetchWithAuth;
+})();
+
+// ============================================================
 // 共享UI：顶部导航与背景动画（KISS/DRY）
 // 使用方式：在页面底部引入本文件，并调用 initTopbar('index'|'configs'|'stats'|'trend'|'errors')
-
+// ============================================================
 (function () {
   const NAVS = [
     { key: 'index', label: '概览', href: '/web/index.html', icon: iconHome },
@@ -72,11 +118,20 @@
     return bar;
   }
 
-  function onLogout() {
+  async function onLogout() {
     if (!confirm('确定要注销吗？')) return;
-    fetch('/logout', { method: 'POST' })
-      .then(() => location.href = '/web/login.html')
-      .catch(() => location.href = '/web/login.html');
+
+    try {
+      // 调用后端登出接口（携带Token）
+      await window.fetchWithAuth('/logout', { method: 'POST' });
+    } catch (error) {
+      console.error('Logout error:', error);
+    } finally {
+      // 清理本地Token
+      localStorage.removeItem('ccload_token');
+      localStorage.removeItem('ccload_token_expiry');
+      location.href = '/web/login.html';
+    }
   }
 
   let bgAnimElement = null;

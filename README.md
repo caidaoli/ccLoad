@@ -34,7 +34,7 @@ ccLoad 通过以下特性解决这些痛点：
 - 📊 **实时监控** - 内置趋势分析、日志记录和统计面板
 - 🎯 **透明代理** - 支持Claude和Gemini API，智能识别认证方式
 - 📦 **单文件部署** - 无外部依赖，包含嵌入式 SQLite
-- 🔒 **安全认证** - 基于 Session 的管理界面访问控制
+- 🔒 **安全认证** - 基于 Token 的管理界面和API访问控制
 - 🏷️ **构建标签** - 支持 GOTAGS，默认启用高性能 JSON 库
 - 🐳 **Docker 支持** - 多架构镜像（amd64/arm64），自动化 CI/CD
 - ☁️ **云原生** - 支持容器化部署，GitHub Actions 自动构建
@@ -447,7 +447,7 @@ curl -X POST http://localhost:8080/admin/channels \
 ```bash
 # Web界面: 访问 /web/channels.html，点击"导出CSV"按钮
 # API调用:
-curl -H "Cookie: session=xxx" \
+curl -H "Authorization: Bearer your_token" \
   http://localhost:8080/admin/channels/export > channels.csv
 ```
 
@@ -455,7 +455,7 @@ curl -H "Cookie: session=xxx" \
 ```bash
 # Web界面: 访问 /web/channels.html，点击"导入CSV"按钮
 # API调用:
-curl -X POST -H "Cookie: session=xxx" \
+curl -X POST -H "Authorization: Bearer your_token" \
   -F "file=@channels.csv" \
   http://localhost:8080/admin/channels/import
 ```
@@ -570,9 +570,48 @@ docker pull --platform linux/arm64 ghcr.io/caidaoli/ccload:latest
 - 生产环境必须设置强密码 `CCLOAD_PASS`
 - 建议设置 `CCLOAD_AUTH` 以保护 API 端点访问
 - API Key 仅在内存使用，不记录日志
-- 支持 HttpOnly 和 SameSite Cookie
+- Token 存储在客户端 localStorage，24小时有效期
 - 建议使用 HTTPS 反向代理
 - Docker 镜像使用非 root 用户运行，增强安全性
+
+### Token 认证系统
+
+ccLoad 使用基于 Token 的认证机制，提供简洁高效的安全访问控制。
+
+**认证方式**：
+- **管理界面**：登录后获取24小时有效期的Token，存储在 `localStorage`
+- **API端点**：支持 `Authorization: Bearer <token>` 头认证
+
+**核心特性**：
+- ✅ **无状态认证**：Token不依赖服务端Session，天然支持水平扩展
+- ✅ **统一认证体系**：API和管理界面使用相同的Token机制
+- ✅ **简洁架构**：纯Token认证，代码简单可靠（KISS原则）
+- ✅ **跨域支持**：Token存储在localStorage，完全支持跨域访问
+
+**使用示例**：
+```bash
+# 1. 登录获取Token
+curl -X POST http://localhost:8080/login \
+  -H "Content-Type: application/json" \
+  -d '{"password":"admin"}' | jq
+
+# 响应示例：
+# {
+#   "status": "success",
+#   "token": "abc123...",  # 64字符十六进制Token
+#   "expiresIn": 86400     # 24小时（秒）
+# }
+
+# 2. 使用Token访问管理API
+curl http://localhost:8080/admin/channels \
+  -H "Authorization: Bearer <your_token>"
+
+# 3. 登出（可选，Token会在24小时后自动过期）
+curl -X POST http://localhost:8080/logout \
+  -H "Authorization: Bearer <your_token>"
+```
+
+**迁移详情**：参见 [TOKEN_AUTH_MIGRATION.md](TOKEN_AUTH_MIGRATION.md)
 
 ## 🔄 CI/CD
 

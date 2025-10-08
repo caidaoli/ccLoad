@@ -675,7 +675,7 @@
 
     async function loadChannels() {
       try {
-        const res = await fetch('/admin/channels');
+        const res = await fetchWithAuth('/admin/channels');
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const response = await res.json();
         // 处理新的API响应格式：{ success: true, data: [...] }
@@ -915,14 +915,14 @@
         let res;
         if (editingChannelId) {
           // 编辑现有渠道
-          res = await fetch(`/admin/channels/${editingChannelId}`, {
+          res = await fetchWithAuth(`/admin/channels/${editingChannelId}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(formData)
           });
         } else {
           // 添加新渠道
-          res = await fetch('/admin/channels', {
+          res = await fetchWithAuth('/admin/channels', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(formData)
@@ -956,12 +956,12 @@
 
     async function confirmDelete() {
       if (!deletingChannelId) return;
-      
+
       try {
-        const res = await fetch(`/admin/channels/${deletingChannelId}`, {
+        const res = await fetchWithAuth(`/admin/channels/${deletingChannelId}`, {
           method: 'DELETE'
         });
-        
+
         if (!res.ok) {
           const text = await res.text();
           throw new Error(text || 'HTTP ' + res.status);
@@ -978,7 +978,7 @@
 
     async function toggleChannel(id, enabled) {
       try {
-        const res = await fetch(`/admin/channels/${id}`, {
+        const res = await fetchWithAuth(`/admin/channels/${id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ enabled })
@@ -1116,7 +1116,7 @@
     async function exportChannelsCSV(buttonEl) {
       try {
         if (buttonEl) buttonEl.disabled = true;
-        const res = await fetch('/admin/channels/export');
+        const res = await fetchWithAuth('/admin/channels/export');
         if (!res.ok) {
           const errorText = await res.text();
           throw new Error(errorText || `导出失败 (HTTP ${res.status})`);
@@ -1154,7 +1154,7 @@
       if (importBtn) importBtn.disabled = true;
 
       try {
-        const res = await fetch('/admin/channels/import', {
+        const res = await fetchWithAuth('/admin/channels/import', {
           method: 'POST',
           body: formData
         });
@@ -1378,7 +1378,7 @@
           testRequest.key_index = parseInt(keySelect.value) || 0;
         }
 
-        const res = await fetch(`/admin/channels/${testingChannelId}/test`, {
+        const res = await fetchWithAuth(`/admin/channels/${testingChannelId}/test`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(testRequest)
@@ -1428,7 +1428,7 @@
           ? `/admin/channels/${channelId}/keys/${keyIndex}/cooldown`
           : `/admin/channels/${channelId}/cooldown`;
         
-        const res = await fetch(endpoint, {
+        const res = await fetchWithAuth(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ duration_ms: durationMs })
@@ -1515,7 +1515,7 @@
             key_index: keyIndex
           };
 
-          const res = await fetch(`/admin/channels/${testingChannelId}/test`, {
+          const res = await fetchWithAuth(`/admin/channels/${testingChannelId}/test`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(testRequest)

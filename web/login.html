@@ -180,9 +180,15 @@
         });
 
         if (response.ok) {
+          const data = await response.json();
+
+          // 存储Token到localStorage
+          localStorage.setItem('ccload_token', data.token);
+          localStorage.setItem('ccload_token_expiry', Date.now() + data.expiresIn * 1000);
+
           // 登录成功，添加成功动画
           loginButton.style.background = 'linear-gradient(135deg, var(--success-500), var(--success-600))';
-          
+
           setTimeout(() => {
             const urlParams = new URLSearchParams(window.location.search);
             const redirect = urlParams.get('redirect') || '/web/index.html';
@@ -191,12 +197,12 @@
         } else {
           const errorData = await response.json().catch(() => ({}));
           showError(errorData.error || '密码错误，请重试');
-          
+
           // 添加输入框摇晃动画
           passwordInput.style.animation = 'none';
           passwordInput.offsetHeight;
           passwordInput.style.animation = 'shake 0.5s ease-in-out';
-          
+
           setTimeout(() => {
             passwordInput.style.animation = '';
           }, 500);
