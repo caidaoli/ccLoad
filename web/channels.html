@@ -1285,8 +1285,20 @@
         modelSelect.appendChild(option);
       });
 
-      // 填充 Key 选择下拉框（限制前10个）
-      const keys = parseKeys(channel.api_key);
+      // ✅ 修复：异步从后端获取 API Keys（2025-10 新架构：api_keys表独立存储）
+      let apiKeys = [];
+      try {
+        const res = await fetchWithAuth(`/admin/channels/${id}/keys`);
+        if (res.ok) {
+          const data = await res.json();
+          apiKeys = (data.success ? data.data : data) || [];
+        }
+      } catch (e) {
+        console.error('获取API Keys失败', e);
+      }
+
+      // ✅ 修复：从 APIKey 对象数组提取实际的 key 字符串
+      const keys = apiKeys.map(k => k.api_key || k);
       const keySelect = document.getElementById('testKeySelect');
       const keySelectGroup = document.getElementById('testKeySelectGroup');
       const batchTestBtn = document.getElementById('batchTestBtn');
@@ -1466,7 +1478,20 @@
       const channel = channels.find(c => c.id === testingChannelId);
       if (!channel) return;
 
-      const keys = parseKeys(channel.api_key);
+      // ✅ 修复：异步从后端获取 API Keys（2025-10 新架构：api_keys表独立存储）
+      let apiKeys = [];
+      try {
+        const res = await fetchWithAuth(`/admin/channels/${testingChannelId}/keys`);
+        if (res.ok) {
+          const data = await res.json();
+          apiKeys = (data.success ? data.data : data) || [];
+        }
+      } catch (e) {
+        console.error('获取API Keys失败', e);
+      }
+
+      // ✅ 修复：从 APIKey 对象数组提取实际的 key 字符串
+      const keys = apiKeys.map(k => k.api_key || k);
       if (keys.length === 0) {
         if (window.showError) showError('没有可用的API Key');
         return;
