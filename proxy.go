@@ -283,33 +283,33 @@ func filterAndWriteResponseHeaders(w http.ResponseWriter, hdr http.Header) {
 }
 
 // 辅助函数：流式复制（支持flusher与ctx取消）
-func streamCopy(ctx context.Context, src io.Reader, dst http.ResponseWriter, firstByteTimeout time.Duration) error {
-    // 简化实现：直接循环读取与写入，避免为每次读取创建goroutine导致泄漏
-    // 首字节超时依赖于上游握手/响应头阶段的超时控制（Transport 配置），此处不再重复实现
-    buf := make([]byte, 32*1024)
-    for {
-        select {
-        case <-ctx.Done():
-            return ctx.Err()
-        default:
-        }
+func streamCopy(ctx context.Context, src io.Reader, dst http.ResponseWriter) error {
+	// 简化实现：直接循环读取与写入，避免为每次读取创建goroutine导致泄漏
+	// 首字节超时依赖于上游握手/响应头阶段的超时控制（Transport 配置），此处不再重复实现
+	buf := make([]byte, 32*1024)
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 
-        n, err := src.Read(buf)
-        if n > 0 {
-            if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
-                return writeErr
-            }
-            if flusher, ok := dst.(http.Flusher); ok {
-                flusher.Flush()
-            }
-        }
-        if err != nil {
-            if err == io.EOF {
-                return nil
-            }
-            return err
-        }
-    }
+		n, err := src.Read(buf)
+		if n > 0 {
+			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
+				return writeErr
+			}
+			if flusher, ok := dst.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+	}
 }
 
 // forwardOnceAsync: 异步流式转发，透明转发客户端原始请求
@@ -408,7 +408,7 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, apiKey strin
 	defer resp.Body.Close()
 
 	// 流式复制（使用可配置的首字节超时）
-	streamErr = streamCopy(ctx, resp.Body, w, s.firstByteTimeout)
+	streamErr = streamCopy(ctx, resp.Body, w)
 	// 已统一到上面的循环，支持ctx取消，无需else分支
 
 	// 计算总传输时间（从startTime开始）
@@ -754,21 +754,21 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *Config, reqCtx *pr
 	// 准备请求体（处理模型重定向）
 	_, bodyToSend := prepareRequestBody(cfg, reqCtx)
 
-    // Key重试循环
-    for i := 0; i < maxKeyRetries; i++ {
-        // 选择可用的API Key
-        keyIndex, selectedKey, err := s.keySelector.SelectAvailableKey(ctx, cfg, triedKeys)
-        if err != nil {
-            // 所有Key都在冷却中，返回特殊错误标识
-            return nil, fmt.Errorf("channel keys unavailable: %w", err)
-        }
+	// Key重试循环
+	for i := 0; i < maxKeyRetries; i++ {
+		// 选择可用的API Key
+		keyIndex, selectedKey, err := s.keySelector.SelectAvailableKey(ctx, cfg, triedKeys)
+		if err != nil {
+			// 所有Key都在冷却中，返回特殊错误标识
+			return nil, fmt.Errorf("channel keys unavailable: %w", err)
+		}
 
-        // 标记Key为已尝试
-        triedKeys[keyIndex] = true
+		// 标记Key为已尝试
+		triedKeys[keyIndex] = true
 
-        // 单次转发尝试（传递实际的API Key字符串）
-        result, shouldContinue, shouldBreak := s.forwardAttempt(
-            ctx, cfg, keyIndex, selectedKey, reqCtx, bodyToSend, w)
+		// 单次转发尝试（传递实际的API Key字符串）
+		result, shouldContinue, shouldBreak := s.forwardAttempt(
+			ctx, cfg, keyIndex, selectedKey, reqCtx, bodyToSend, w)
 
 		// 如果返回了结果，直接返回
 		if result != nil {

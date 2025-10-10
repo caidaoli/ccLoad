@@ -56,15 +56,15 @@ func (ks *KeySelector) SelectAvailableKey(ctx context.Context, cfg *Config, excl
 	case "round_robin":
 		return ks.selectRoundRobin(ctx, cfg.ID, apiKeys, excludeKeys)
 	case "sequential":
-		return ks.selectSequential(ctx, cfg.ID, apiKeys, excludeKeys)
+		return ks.selectSequential(apiKeys, excludeKeys)
 	default:
 		// 默认使用顺序策略
-		return ks.selectSequential(ctx, cfg.ID, apiKeys, excludeKeys)
+		return ks.selectSequential(apiKeys, excludeKeys)
 	}
 }
 
 // selectSequential 顺序选择：从第一个开始，跳过冷却中的Key和已尝试的Key
-func (ks *KeySelector) selectSequential(ctx context.Context, channelID int64, apiKeys []*APIKey, excludeKeys map[int]bool) (int, string, error) {
+func (ks *KeySelector) selectSequential(apiKeys []*APIKey, excludeKeys map[int]bool) (int, string, error) {
 	now := time.Now()
 
 	for _, apiKey := range apiKeys {

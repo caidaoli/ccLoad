@@ -67,39 +67,41 @@ func (rs *RedisSync) IsEnabled() bool {
 	return rs.enabled
 }
 
-// LoadChannelsFromRedis 从Redis加载所有渠道配置 (启动恢复机制)
-func (rs *RedisSync) LoadChannelsFromRedis(ctx context.Context) ([]*Config, error) {
+// LoadChannelsWithKeysFromRedis 从Redis加载所有渠道（含API Keys）
+// ✅ 修复（2025-10-10）：完整恢复渠道和API Keys，解决Redis恢复后缺少Keys的问题
+func (rs *RedisSync) LoadChannelsWithKeysFromRedis(ctx context.Context) ([]*ChannelWithKeys, error) {
 	if !rs.enabled {
 		return nil, nil
 	}
 
-	ctxWithTimeout, cancel := context.WithTimeout(ctx, rs.timeout*2) // 加载操作允许更长超时
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, rs.timeout*2)
 	defer cancel()
 
 	// 使用GET获取完整的JSON数组
 	data, err := rs.client.Get(ctxWithTimeout, rs.key).Result()
 	if err != nil {
 		if err == redis.Nil {
-			return []*Config{}, nil // Key不存在，返回空数组
+			return []*ChannelWithKeys{}, nil // Key不存在，返回空数组
 		}
 		return nil, fmt.Errorf("redis get failed: %w", err)
 	}
 
-	// 解析JSON数组为Config对象切片
-	var configs []*Config
-	if err := sonic.Unmarshal([]byte(data), &configs); err != nil {
-		return nil, fmt.Errorf("unmarshal channels json: %w", err)
+	// 解析JSON数组为ChannelWithKeys对象切片
+	var channelsWithKeys []*ChannelWithKeys
+	if err := sonic.Unmarshal([]byte(data), &channelsWithKeys); err != nil {
+		return nil, fmt.Errorf("unmarshal channels with keys json: %w", err)
 	}
 
-	if configs == nil {
-		return []*Config{}, nil
+	if channelsWithKeys == nil {
+		return []*ChannelWithKeys{}, nil
 	}
 
-	return configs, nil
+	return channelsWithKeys, nil
 }
 
-// SyncAllChannels 全量同步所有渠道到Redis (KISS: 使用简单的SET操作存储完整JSON)
-func (rs *RedisSync) SyncAllChannels(ctx context.Context, configs []*Config) error {
+// SyncAllChannelsWithKeys 全量同步所有渠道（含API Keys）到Redis
+// ✅ 修复（2025-10-10）：完整同步渠道和API Keys，解决Redis恢复后缺少Keys的问题
+func (rs *RedisSync) SyncAllChannelsWithKeys(ctx context.Context, channelsWithKeys []*ChannelWithKeys) error {
 	if !rs.enabled {
 		return nil
 	}
@@ -107,29 +109,30 @@ func (rs *RedisSync) SyncAllChannels(ctx context.Context, configs []*Config) err
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, rs.timeout*2)
 	defer cancel()
 
-	// 序列化整个配置数组为JSON
-	data, err := sonic.Marshal(configs)
+	// 序列化整个ChannelWithKeys数组为JSON
+	data, err := sonic.Marshal(channelsWithKeys)
 	if err != nil {
-		return fmt.Errorf("marshal all configs: %w", err)
+		return fmt.Errorf("marshal channels with keys: %w", err)
 	}
 
-	// 使用SET直接覆盖整个key（原子操作，无需DEL）
+	// 使用SET直接覆盖整个key（原子操作）
 	return rs.client.Set(ctxWithTimeout, rs.key, data, 0).Err()
 }
 
 // GetChannelCount 获取Redis中的渠道数量 (用于健康检查和监控)
+// ✅ 修复（2025-10-10）：切换到新API，支持ChannelWithKeys
 func (rs *RedisSync) GetChannelCount(ctx context.Context) (int64, error) {
 	if !rs.enabled {
 		return 0, nil
 	}
 
-	// 加载所有渠道并返回数量
-	configs, err := rs.LoadChannelsFromRedis(ctx)
+	// 加载所有渠道（含Keys）并返回数量
+	channelsWithKeys, err := rs.LoadChannelsWithKeysFromRedis(ctx)
 	if err != nil {
 		return 0, err
 	}
 
-	return int64(len(configs)), nil
+	return int64(len(channelsWithKeys)), nil
 }
 
 // HealthCheck 检查Redis连接状态

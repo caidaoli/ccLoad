@@ -1,15 +1,15 @@
 package main
 
 import (
-    "context"
-    "database/sql"
-    "errors"
-    "fmt"
-    "log"
-    "os"
-    "path/filepath"
-    "strings"
-    "time"
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -165,13 +165,13 @@ func NewSQLiteStore(path string, redisSync *RedisSync) (*SQLiteStore, error) {
 		s.keeperConn = keeperConn
 
 		// 内存模式提示信息
-        log.Print("⚡ 性能优化：主数据库使用内存模式（CCLOAD_USE_MEMORY_DB=true）")
-        log.Print("   - 使用命名内存数据库（ccload_mem_db）+ 守护连接机制")
-        log.Print("   - 守护连接确保数据库生命周期绑定到服务进程")
-        log.Print("   - 连接池无生命周期限制，防止连接过期导致数据库销毁")
-        log.Print("   - 渠道配置、冷却状态等热数据存储在内存中")
-        log.Print("   - 日志数据仍然持久化到磁盘：", logDBPath)
-        log.Print("   ⚠️  警告：服务重启后主数据库数据将丢失，请配置Redis同步或重新导入CSV")
+		log.Print("⚡ 性能优化：主数据库使用内存模式（CCLOAD_USE_MEMORY_DB=true）")
+		log.Print("   - 使用命名内存数据库（ccload_mem_db）+ 守护连接机制")
+		log.Print("   - 守护连接确保数据库生命周期绑定到服务进程")
+		log.Print("   - 连接池无生命周期限制，防止连接过期导致数据库销毁")
+		log.Print("   - 渠道配置、冷却状态等热数据存储在内存中")
+		log.Print("   - 日志数据仍然持久化到磁盘：", logDBPath)
+		log.Print("   ⚠️  警告：服务重启后主数据库数据将丢失，请配置Redis同步或重新导入CSV")
 	}
 
 	// 迁移主数据库表结构
@@ -305,7 +305,6 @@ func (s *SQLiteStore) migrateLogDB(ctx context.Context) error {
 	return nil
 }
 
-
 func (s *SQLiteStore) Close() error {
 	// 优雅关闭：通知worker退出
 	if s.done != nil {
@@ -321,7 +320,7 @@ func (s *SQLiteStore) Close() error {
 	if s.keeperConn != nil {
 		if err := s.keeperConn.Close(); err != nil {
 			// 记录错误但不影响后续关闭操作
-            log.Printf("⚠️  关闭守护连接失败: %v", err)
+			log.Printf("⚠️  关闭守护连接失败: %v", err)
 		}
 	}
 
@@ -388,13 +387,13 @@ func (s *SQLiteStore) GetConfig(ctx context.Context, id int64) (*Config, error) 
 // GetEnabledChannelsByModel 查询支持指定模型的启用渠道（按优先级排序）
 // 性能优化：使用 LEFT JOIN 一次性查询渠道和冷却状态，消除 N+1 查询问题
 func (s *SQLiteStore) GetEnabledChannelsByModel(ctx context.Context, model string) ([]*Config, error) {
-    var query string
-    var args []any
-    nowUnix := time.Now().Unix()
+	var query string
+	var args []any
+	nowUnix := time.Now().Unix()
 
-    if model == "*" {
-        // 通配符：返回所有启用的渠道（新架构：从 channels 表读取内联冷却字段）
-        query = `
+	if model == "*" {
+		// 通配符：返回所有启用的渠道（新架构：从 channels 表读取内联冷却字段）
+		query = `
             SELECT c.id, c.name, c.url, c.priority,
                    c.models, c.model_redirects, c.channel_type, c.enabled,
                    c.cooldown_until, c.cooldown_duration_ms, c.created_at, c.updated_at
@@ -403,10 +402,10 @@ func (s *SQLiteStore) GetEnabledChannelsByModel(ctx context.Context, model strin
               AND (c.cooldown_until = 0 OR c.cooldown_until <= ?)
             ORDER BY c.priority DESC, c.id ASC
         `
-        args = []any{nowUnix}
-    } else {
-        // 精确匹配：使用 JSON1 解析 models 数组并精确匹配元素
-        query = `
+		args = []any{nowUnix}
+	} else {
+		// 精确匹配：使用 JSON1 解析 models 数组并精确匹配元素
+		query = `
             SELECT c.id, c.name, c.url, c.priority,
                    c.models, c.model_redirects, c.channel_type, c.enabled,
                    c.cooldown_until, c.cooldown_duration_ms, c.created_at, c.updated_at
@@ -419,8 +418,8 @@ func (s *SQLiteStore) GetEnabledChannelsByModel(ctx context.Context, model strin
               AND (c.cooldown_until = 0 OR c.cooldown_until <= ?)
             ORDER BY c.priority DESC, c.id ASC
         `
-        args = []any{model, nowUnix}
-    }
+		args = []any{model, nowUnix}
+	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -739,54 +738,54 @@ func (s *SQLiteStore) AddLog(ctx context.Context, e *LogEntry) error {
 // BatchAddLogs 批量写入日志（单事务+预编译语句，提升刷盘性能）
 // OCP：作为扩展方法提供，调用方可通过类型断言优先使用
 func (s *SQLiteStore) BatchAddLogs(ctx context.Context, logs []*LogEntry) error {
-    if len(logs) == 0 {
-        return nil
-    }
+	if len(logs) == 0 {
+		return nil
+	}
 
-    tx, err := s.logDB.BeginTx(ctx, nil)
-    if err != nil {
-        return err
-    }
-    defer func() { _ = tx.Rollback() }()
+	tx, err := s.logDB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
 
-    stmt, err := tx.PrepareContext(ctx, `
+	stmt, err := tx.PrepareContext(ctx, `
         INSERT INTO logs(time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used)
         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
-    if err != nil {
-        return err
-    }
-    defer stmt.Close()
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
 
-    for _, e := range logs {
-        t := e.Time.Time
-        if t.IsZero() {
-            t = time.Now()
-        }
-        cleanTime := t.Round(0)
-        timeMs := cleanTime.UnixMilli()
+	for _, e := range logs {
+		t := e.Time.Time
+		if t.IsZero() {
+			t = time.Now()
+		}
+		cleanTime := t.Round(0)
+		timeMs := cleanTime.UnixMilli()
 
-        maskedKey := e.APIKeyUsed
-        if maskedKey != "" {
-            maskedKey = maskAPIKey(maskedKey)
-        }
+		maskedKey := e.APIKeyUsed
+		if maskedKey != "" {
+			maskedKey = maskAPIKey(maskedKey)
+		}
 
-        if _, err := stmt.ExecContext(ctx,
-            timeMs,
-            e.Model,
-            e.ChannelID,
-            e.StatusCode,
-            e.Message,
-            e.Duration,
-            e.IsStreaming,
-            e.FirstByteTime,
-            maskedKey,
-        ); err != nil {
-            return err
-        }
-    }
+		if _, err := stmt.ExecContext(ctx,
+			timeMs,
+			e.Model,
+			e.ChannelID,
+			e.StatusCode,
+			e.Message,
+			e.Duration,
+			e.IsStreaming,
+			e.FirstByteTime,
+			maskedKey,
+		); err != nil {
+			return err
+		}
+	}
 
-    return tx.Commit()
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offset int, filter *LogFilter) ([]*LogEntry, error) {
@@ -877,7 +876,7 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 		channelNames, err := s.fetchChannelNamesBatch(ctx, channelIDsToFetch)
 		if err != nil {
 			// 降级处理：查询失败不影响日志返回，仅记录错误
-            log.Printf("⚠️  批量查询渠道名称失败: %v", err)
+			log.Printf("⚠️  批量查询渠道名称失败: %v", err)
 			channelNames = make(map[int64]string)
 		}
 
@@ -971,7 +970,7 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 		channelNames, err = s.fetchChannelNamesBatch(ctx, channelIDsToFetch)
 		if err != nil {
 			// 降级处理：查询失败不影响聚合返回，仅记录错误
-            log.Printf("⚠️  批量查询渠道名称失败: %v", err)
+			log.Printf("⚠️  批量查询渠道名称失败: %v", err)
 			channelNames = make(map[int64]string)
 		}
 	}
@@ -1117,7 +1116,7 @@ func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *Log
 		channelNames, err := s.fetchChannelNamesBatch(ctx, channelIDsToFetch)
 		if err != nil {
 			// 降级处理：查询失败不影响统计返回，仅记录错误
-            log.Printf("⚠️  批量查询渠道名称失败: %v", err)
+			log.Printf("⚠️  批量查询渠道名称失败: %v", err)
 			channelNames = make(map[int64]string)
 		}
 
@@ -1144,23 +1143,22 @@ func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *Log
 }
 
 // LoadChannelsFromRedis 从Redis恢复渠道数据到SQLite (启动时数据库恢复机制)
+// ✅ 修复（2025-10-10）：完整恢复渠道和API Keys，解决Redis恢复后缺少Keys的问题
 func (s *SQLiteStore) LoadChannelsFromRedis(ctx context.Context) error {
 	if !s.redisSync.IsEnabled() {
 		return nil
 	}
 
-	// 从Redis加载所有渠道配置
-	configs, err := s.redisSync.LoadChannelsFromRedis(ctx)
+	// 从Redis加载所有渠道配置（含API Keys）
+	channelsWithKeys, err := s.redisSync.LoadChannelsWithKeysFromRedis(ctx)
 	if err != nil {
 		return fmt.Errorf("load from redis: %w", err)
 	}
 
-	if len(configs) == 0 {
-    log.Print("No channels found in Redis")
+	if len(channelsWithKeys) == 0 {
+		log.Print("No channels found in Redis")
 		return nil
 	}
-
-    log.Printf("Restoring %d channels from Redis...", len(configs))
 
 	// 使用事务确保数据一致性 (ACID原则)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -1171,15 +1169,18 @@ func (s *SQLiteStore) LoadChannelsFromRedis(ctx context.Context) error {
 
 	nowUnix := time.Now().Unix()
 	successCount := 0
+	totalKeysRestored := 0
 
-	for _, config := range configs {
+	for _, cwk := range channelsWithKeys {
+		config := cwk.Config
+
 		// 标准化数据：确保默认值正确填充
 		modelsStr, _ := serializeModels(config.Models)
 		modelRedirectsStr, _ := serializeModelRedirects(config.ModelRedirects)
 		channelType := config.GetChannelType() // 强制使用默认值anthropic
 
-		// 新架构：只恢复渠道基本信息，API Keys 需通过 CreateAPIKey 单独恢复
-		_, err := tx.ExecContext(ctx, `
+		// 1. 恢复渠道基本配置到channels表
+		result, err := tx.ExecContext(ctx, `
 			INSERT OR REPLACE INTO channels(
 				name, url, priority, models, model_redirects, channel_type,
 				enabled, cooldown_until, cooldown_duration_ms, created_at, updated_at
@@ -1190,9 +1191,50 @@ func (s *SQLiteStore) LoadChannelsFromRedis(ctx context.Context) error {
 			boolToInt(config.Enabled), nowUnix, nowUnix)
 
 		if err != nil {
-            log.Printf("Warning: failed to restore channel %s: %v", config.Name, err)
+			log.Printf("Warning: failed to restore channel %s: %v", config.Name, err)
 			continue
 		}
+
+		// 获取渠道ID（对于新插入或更新的记录）
+		var channelID int64
+		if config.ID > 0 {
+			channelID = config.ID
+		} else {
+			channelID, _ = result.LastInsertId()
+		}
+
+		// 查询实际的渠道ID（因为INSERT OR REPLACE可能使用name匹配）
+		err = tx.QueryRowContext(ctx, `SELECT id FROM channels WHERE name = ?`, config.Name).Scan(&channelID)
+		if err != nil {
+			log.Printf("Warning: failed to get channel ID for %s: %v", config.Name, err)
+			continue
+		}
+
+		// 2. 恢复API Keys到api_keys表
+		if len(cwk.APIKeys) > 0 {
+			// 先删除该渠道的所有旧Keys（避免冲突）
+			_, err := tx.ExecContext(ctx, `DELETE FROM api_keys WHERE channel_id = ?`, channelID)
+			if err != nil {
+				log.Printf("Warning: failed to clear old API keys for channel %d: %v", channelID, err)
+			}
+
+			// 插入所有API Keys
+			for _, key := range cwk.APIKeys {
+				_, err := tx.ExecContext(ctx, `
+					INSERT INTO api_keys (channel_id, key_index, api_key, key_strategy,
+					                      cooldown_until, cooldown_duration_ms, created_at, updated_at)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+				`, channelID, key.KeyIndex, key.APIKey, key.KeyStrategy,
+					key.CooldownUntil, key.CooldownDurationMs, nowUnix, nowUnix)
+
+				if err != nil {
+					log.Printf("Warning: failed to restore API key %d for channel %d: %v", key.KeyIndex, channelID, err)
+					continue
+				}
+				totalKeysRestored++
+			}
+		}
+
 		successCount++
 	}
 
@@ -1200,36 +1242,59 @@ func (s *SQLiteStore) LoadChannelsFromRedis(ctx context.Context) error {
 		return fmt.Errorf("commit transaction: %w", err)
 	}
 
-    log.Printf("Successfully restored %d/%d channels from Redis", successCount, len(configs))
+	log.Printf("Successfully restored %d/%d channels and %d API Keys from Redis",
+		successCount, len(channelsWithKeys), totalKeysRestored)
 	return nil
 }
 
 // SyncAllChannelsToRedis 将所有渠道同步到Redis (批量同步，初始化时使用)
+// ✅ 修复（2025-10-10）：完整同步渠道配置和API Keys，解决Redis恢复后缺少Keys的问题
 func (s *SQLiteStore) SyncAllChannelsToRedis(ctx context.Context) error {
 	if !s.redisSync.IsEnabled() {
 		return nil
 	}
 
+	// 1. 查询所有渠道配置
 	configs, err := s.ListConfigs(ctx)
 	if err != nil {
 		return fmt.Errorf("list configs: %w", err)
 	}
 
 	if len(configs) == 0 {
-    log.Print("No channels to sync to Redis")
+		log.Print("No channels to sync to Redis")
 		return nil
 	}
 
-	// 规范化所有Config对象的默认值（确保Redis中数据完整性）
-	normalizeConfigDefaults(configs)
+	// 2. 为每个渠道查询API Keys，构建完整数据结构
+	channelsWithKeys := make([]*ChannelWithKeys, 0, len(configs))
+	for _, config := range configs {
+		// 查询该渠道的所有API Keys
+		keys, err := s.GetAPIKeys(ctx, config.ID)
+		if err != nil {
+			log.Printf("Warning: failed to get API keys for channel %d: %v", config.ID, err)
+			keys = []*APIKey{} // 降级处理：渠道没有Keys继续同步
+		}
 
-    log.Printf("Syncing %d channels to Redis...", len(configs))
+		// 转换为非指针切片（避免额外内存分配）
+		apiKeys := make([]APIKey, len(keys))
+		for i, k := range keys {
+			apiKeys[i] = *k
+		}
 
-	if err := s.redisSync.SyncAllChannels(ctx, configs); err != nil {
+		channelsWithKeys = append(channelsWithKeys, &ChannelWithKeys{
+			Config:  config,
+			APIKeys: apiKeys,
+		})
+	}
+
+	// 3. 规范化所有Config对象的默认值（确保Redis中数据完整性）
+	normalizeChannelsWithKeys(channelsWithKeys)
+
+	// 4. 同步到Redis
+	if err := s.redisSync.SyncAllChannelsWithKeys(ctx, channelsWithKeys); err != nil {
 		return fmt.Errorf("sync to redis: %w", err)
 	}
 
-    log.Printf("Successfully synced %d channels to Redis", len(configs))
 	return nil
 }
 
@@ -1252,8 +1317,8 @@ func (s *SQLiteStore) redisSyncWorker() {
 			syncErr := s.doSyncAllChannelsWithRetry(ctx, retryBackoff)
 			if syncErr != nil {
 				// 所有重试都失败，记录致命错误
-                log.Printf("❌ 严重错误: Redis同步失败（已重试%d次）: %v", len(retryBackoff), syncErr)
-                log.Print("   警告: 服务重启后可能丢失渠道配置，请检查Redis连接或手动备份数据库")
+				log.Printf("❌ 严重错误: Redis同步失败（已重试%d次）: %v", len(retryBackoff), syncErr)
+				log.Print("   警告: 服务重启后可能丢失渠道配置，请检查Redis连接或手动备份数据库")
 			}
 
 		case <-s.done:
@@ -1278,7 +1343,7 @@ func (s *SQLiteStore) doSyncAllChannelsWithRetry(ctx context.Context, retryBacko
 		return nil // 成功
 	} else {
 		lastErr = err
-        log.Printf("⚠️  Redis同步失败（将自动重试）: %v", err)
+		log.Printf("⚠️  Redis同步失败（将自动重试）: %v", err)
 	}
 
 	// 重试逻辑
@@ -1288,11 +1353,11 @@ func (s *SQLiteStore) doSyncAllChannelsWithRetry(ctx context.Context, retryBacko
 
 		// 重试同步
 		if err := s.doSyncAllChannels(ctx); err == nil {
-            log.Printf("✅ Redis同步恢复成功（第%d次重试）", attempt+1)
+			log.Printf("✅ Redis同步恢复成功（第%d次重试）", attempt+1)
 			return nil // 成功
 		} else {
 			lastErr = err
-            log.Printf("⚠️  Redis同步重试失败（第%d次）: %v", attempt+1, err)
+			log.Printf("⚠️  Redis同步重试失败（第%d次）: %v", attempt+1, err)
 		}
 	}
 
@@ -1316,31 +1381,30 @@ func (s *SQLiteStore) triggerAsyncSync() {
 }
 
 // doSyncAllChannels 实际执行同步操作（worker内部调用）
+// ✅ 修复（2025-10-10）：切换到完整同步API，确保API Keys同步
 func (s *SQLiteStore) doSyncAllChannels(ctx context.Context) error {
-	configs, err := s.ListConfigs(ctx)
-	if err != nil {
-		return fmt.Errorf("list configs: %w", err)
-	}
-
-	// 规范化默认值后再同步（与SyncAllChannelsToRedis保持一致）
-	normalizeConfigDefaults(configs)
-
-	return s.redisSync.SyncAllChannels(ctx, configs)
+	// 直接调用SyncAllChannelsToRedis，避免重复逻辑
+	return s.SyncAllChannelsToRedis(ctx)
 }
 
-// normalizeConfigDefaults 规范化Config对象的默认值字段（DRY原则：统一规范化逻辑）
-// 确保序列化到Redis时所有字段都有正确的默认值，避免空值污染
-func normalizeConfigDefaults(configs []*Config) {
-	for _, config := range configs {
-		// 强制填充channel_type默认值（避免空字符串序列化到Redis）
-		if config.ChannelType == "" {
-			config.ChannelType = "anthropic"
+// normalizeChannelsWithKeys 规范化ChannelWithKeys对象的默认值（2025-10-10新增）
+// 确保Redis序列化时所有字段完整，支持API Keys的完整同步
+func normalizeChannelsWithKeys(channelsWithKeys []*ChannelWithKeys) {
+	for _, cwk := range channelsWithKeys {
+		// 规范化Config部分
+		if cwk.Config.ChannelType == "" {
+			cwk.Config.ChannelType = "anthropic"
 		}
-		// 确保model_redirects不为nil（避免序列化为null）
-		if config.ModelRedirects == nil {
-			config.ModelRedirects = make(map[string]string)
+		if cwk.Config.ModelRedirects == nil {
+			cwk.Config.ModelRedirects = make(map[string]string)
 		}
-		// 注意：新架构下，API Keys 不再存储在 Config 中，无需规范化
+
+		// 规范化APIKeys部分：确保key_strategy默认值
+		for i := range cwk.APIKeys {
+			if cwk.APIKeys[i].KeyStrategy == "" {
+				cwk.APIKeys[i].KeyStrategy = "sequential"
+			}
+		}
 	}
 }
 
@@ -1593,7 +1657,6 @@ func (s *SQLiteStore) SetKeyRR(ctx context.Context, configID int64, idx int) err
 	`, configID, idx)
 	return err
 }
-
 
 // ==================== API Keys CRUD 实现 ====================
 
