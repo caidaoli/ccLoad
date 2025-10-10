@@ -740,6 +740,18 @@ func (s *Server) handleChannelTest(c *gin.Context) {
 	// 添加测试的 Key 索引信息到结果中
 	testResult["tested_key_index"] = keyIndex
 	testResult["total_keys"] = len(keys)
+
+	// ✅ 修复：测试成功时清除该Key的冷却状态
+	if success, ok := testResult["success"].(bool); ok && success {
+		if err := s.store.ResetKeyCooldown(c.Request.Context(), id, keyIndex); err != nil {
+			log.Printf("⚠️  警告: 清除Key #%d冷却状态失败: %v", keyIndex, err)
+		}
+
+		// ✨ 优化：同时清除渠道级冷却（因为至少有一个Key可用）
+		// 设计理念：测试成功证明渠道恢复正常，应立即解除渠道级冷却，避免选择器过滤该渠道
+		_ = s.store.ResetCooldown(c.Request.Context(), id)
+	}
+
 	RespondJSON(c, http.StatusOK, testResult)
 }
 
