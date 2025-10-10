@@ -118,12 +118,15 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	Scan(...any) error
 }) (*Config, error) {
 	var c Config
-	var modelsStr, modelRedirectsStr, apiKeysStr string
+	var modelsStr, modelRedirectsStr string
 	var enabledInt int
 	var createdAtRaw, updatedAtRaw any // 使用any接受任意类型（兼容字符串、整数或RFC3339）
 
-	if err := scanner.Scan(&c.ID, &c.Name, &c.APIKey, &apiKeysStr, &c.KeyStrategy, &c.URL, &c.Priority,
-		&modelsStr, &modelRedirectsStr, &c.ChannelType, &enabledInt, &createdAtRaw, &updatedAtRaw); err != nil {
+	// 扫描channels表字段（不再包含api_key/api_keys/key_strategy，新增cooldown_until/cooldown_duration_ms）
+	if err := scanner.Scan(&c.ID, &c.Name, &c.URL, &c.Priority,
+		&modelsStr, &modelRedirectsStr, &c.ChannelType, &enabledInt,
+		&c.CooldownUntil, &c.CooldownDurationMs,
+		&createdAtRaw, &updatedAtRaw); err != nil {
 		return nil, err
 	}
 
@@ -139,12 +142,6 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	}
 	if err := parseModelRedirectsJSON(modelRedirectsStr, &c.ModelRedirects); err != nil {
 		c.ModelRedirects = nil // 解析失败时使用空映射
-	}
-	// 解析多Key数组（如果存在）
-	if apiKeysStr != "" && apiKeysStr != "[]" {
-		if err := sonic.Unmarshal([]byte(apiKeysStr), &c.APIKeys); err != nil {
-			c.APIKeys = nil
-		}
 	}
 	return &c, nil
 }

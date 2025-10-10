@@ -20,7 +20,6 @@ func BenchmarkFetchChannelNamesBatch(b *testing.B) {
 	for i := 1; i <= 100; i++ {
 		cfg := &Config{
 			Name:     fmt.Sprintf("TestChannel-%d", i),
-			APIKey:   fmt.Sprintf("sk-test-%d", i),
 			URL:      "https://api.example.com",
 			Priority: 10,
 			Models:   []string{"test-model"},
@@ -75,7 +74,6 @@ func TestFetchChannelNamesBatch_Correctness(t *testing.T) {
 	for i := 1; i <= 10; i++ {
 		cfg := &Config{
 			Name:     fmt.Sprintf("Channel-%d", i),
-			APIKey:   fmt.Sprintf("sk-key-%d", i),
 			URL:      "https://api.test.com",
 			Priority: i,
 			Models:   []string{"model-a"},
@@ -142,7 +140,6 @@ func TestListLogs_BatchQuery(t *testing.T) {
 	for i := 1; i <= 5; i++ {
 		cfg := &Config{
 			Name:     fmt.Sprintf("LogChannel-%d", i),
-			APIKey:   fmt.Sprintf("sk-log-%d", i),
 			URL:      "https://api.test.com",
 			Priority: i,
 			Models:   []string{"test-model"},

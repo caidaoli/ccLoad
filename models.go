@@ -13,64 +13,57 @@ import (
 type Config struct {
 	ID             int64             `json:"id"`
 	Name           string            `json:"name"`
-	APIKey         string            `json:"api_key"`      // 向后兼容：单Key场景
-	APIKeys        []string          `json:"api_keys"`     // 多Key支持：逗号分割的Key数组
-	KeyStrategy    string            `json:"key_strategy"` // Key使用策略: "sequential"（顺序） | "round_robin"（轮询），默认顺序
 	ChannelType    string            `json:"channel_type"` // 渠道类型: "anthropic" | "codex" | "gemini"，默认anthropic
 	URL            string            `json:"url"`
 	Priority       int               `json:"priority"`
 	Models         []string          `json:"models"`
 	ModelRedirects map[string]string `json:"model_redirects,omitempty"` // 模型重定向映射：请求模型 -> 实际转发模型
 	Enabled        bool              `json:"enabled"`
-	CreatedAt      JSONTime          `json:"created_at"` // 使用JSONTime确保序列化格式一致（RFC3339）
-	UpdatedAt      JSONTime          `json:"updated_at"` // 使用JSONTime确保序列化格式一致（RFC3339）
+
+	// 渠道级冷却（从cooldowns表迁移）
+	CooldownUntil      int64 `json:"cooldown_until"`       // Unix秒时间戳，0表示无冷却
+	CooldownDurationMs int64 `json:"cooldown_duration_ms"` // 冷却持续时间（毫秒）
+
+	CreatedAt JSONTime `json:"created_at"` // 使用JSONTime确保序列化格式一致（RFC3339）
+	UpdatedAt JSONTime `json:"updated_at"` // 使用JSONTime确保序列化格式一致（RFC3339）
 
 	// 性能优化：模型查找索引（内存缓存，不序列化）
 	modelsSet map[string]struct{} `json:"-"`
 }
 
-// GetAPIKeys 返回标准化的API Key列表
-// 规则：
-// 1. 优先使用APIKeys数组
-// 2. 如果APIKeys为空且APIKey不为空，将APIKey拆分（兼容旧数据）
-// 3. 支持逗号分割的多个Key（去除空格）
-func (c *Config) GetAPIKeys() []string {
-	// 优先使用新字段APIKeys
-	if len(c.APIKeys) > 0 {
-		return c.APIKeys
-	}
-
-	// 向后兼容：从旧字段APIKey解析
-	if c.APIKey == "" {
-		return []string{}
-	}
-
-	// 支持逗号分割的多Key
-	keys := strings.Split(c.APIKey, ",")
-	result := make([]string, 0, len(keys))
-	for _, k := range keys {
-		trimmed := strings.TrimSpace(k)
-		if trimmed != "" {
-			result = append(result, trimmed)
-		}
-	}
-	return result
-}
-
-// GetKeyStrategy 返回Key使用策略（默认顺序）
-func (c *Config) GetKeyStrategy() string {
-	if c.KeyStrategy == "" {
-		return "sequential" // 默认顺序访问
-	}
-	return c.KeyStrategy
-}
-
-// GetChannelType 返回渠道类型（默认anthropic）
+// GetChannelType 返回渠道类型（默认anthropic��
 func (c *Config) GetChannelType() string {
 	if c.ChannelType == "" {
 		return "anthropic" // 默认Claude API
 	}
 	return c.ChannelType
+}
+
+// IsCoolingDown 检查渠道是否在冷却中
+func (c *Config) IsCoolingDown(now time.Time) bool {
+	return c.CooldownUntil > now.Unix()
+}
+
+// APIKey 表示单个API Key及其配置
+type APIKey struct {
+	ID        int64  `json:"id"`
+	ChannelID int64  `json:"channel_id"`
+	KeyIndex  int    `json:"key_index"` // Key在渠道中的索引（0,1,2...）
+	APIKey    string `json:"api_key"`   // 实际的API Key
+
+	KeyStrategy string `json:"key_strategy"` // Key使用策略: "sequential" | "round_robin"
+
+	// Key级冷却（从key_cooldowns表迁移）
+	CooldownUntil      int64 `json:"cooldown_until"`       // Unix秒时间戳，0表示无冷却
+	CooldownDurationMs int64 `json:"cooldown_duration_ms"` // 冷却持续时间（毫秒）
+
+	CreatedAt JSONTime `json:"created_at"`
+	UpdatedAt JSONTime `json:"updated_at"`
+}
+
+// IsCoolingDown 检查Key是否在冷却中
+func (k *APIKey) IsCoolingDown(now time.Time) bool {
+	return k.CooldownUntil > now.Unix()
 }
 
 // BuildModelsSet 构建模型查找索引（性能优化：O(1)查找）
@@ -187,25 +180,29 @@ type Store interface {
 	GetEnabledChannelsByModel(ctx context.Context, model string) ([]*Config, error)
 	GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*Config, error)
 
-	// cooldown (channel-level)
-	GetCooldownUntil(ctx context.Context, configID int64) (time.Time, bool)
-	GetAllChannelCooldowns(ctx context.Context) (map[int64]time.Time, error) // P0优化: 批量查询所有渠道冷却状态
-	SetCooldown(ctx context.Context, configID int64, until time.Time) error
-	// 指数退避：错误时翻倍（认证错误5分钟起，其他1秒起），成功时清零
-	BumpCooldownOnError(ctx context.Context, configID int64, now time.Time, statusCode int) (time.Duration, error)
-	ResetCooldown(ctx context.Context, configID int64) error
+	// api_keys mgmt (新增)
+	GetAPIKeys(ctx context.Context, channelID int64) ([]*APIKey, error)
+	GetAPIKey(ctx context.Context, channelID int64, keyIndex int) (*APIKey, error)
+	CreateAPIKey(ctx context.Context, key *APIKey) error
+	UpdateAPIKey(ctx context.Context, key *APIKey) error
+	DeleteAPIKey(ctx context.Context, channelID int64, keyIndex int) error
+	DeleteAllAPIKeys(ctx context.Context, channelID int64) error // 删除渠道的所有Key
 
-	// key-level cooldown (新增)
-	GetKeyCooldownUntil(ctx context.Context, configID int64, keyIndex int) (time.Time, bool)
-	GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int]time.Time, error) // P1修复: 批量查询所有Key冷却状态
-	SetKeyCooldown(ctx context.Context, configID int64, keyIndex int, until time.Time) error
-	BumpKeyCooldownOnError(ctx context.Context, configID int64, keyIndex int, now time.Time, statusCode int) (time.Duration, error)
-	ResetKeyCooldown(ctx context.Context, configID int64, keyIndex int) error
-	ClearAllKeyCooldowns(ctx context.Context, configID int64) error // 清理渠道的所有Key冷却数据（用于Key变更时）
+	// cooldown (channel-level) - 简化接口，冷却数据直接在channels表中
+	GetAllChannelCooldowns(ctx context.Context) (map[int64]time.Time, error)
+	BumpChannelCooldown(ctx context.Context, channelID int64, now time.Time, statusCode int) (time.Duration, error)
+	ResetChannelCooldown(ctx context.Context, channelID int64) error
+	SetChannelCooldown(ctx context.Context, channelID int64, until time.Time) error
 
-	// key-level round-robin (新增)
-	NextKeyRR(ctx context.Context, configID int64, keyCount int) int
-	SetKeyRR(ctx context.Context, configID int64, idx int) error
+	// cooldown (key-level) - 简化接口，冷却数据直接在api_keys表中
+	GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int]time.Time, error)
+	BumpKeyCooldown(ctx context.Context, channelID int64, keyIndex int, now time.Time, statusCode int) (time.Duration, error)
+	ResetKeyCooldown(ctx context.Context, channelID int64, keyIndex int) error
+	SetKeyCooldown(ctx context.Context, channelID int64, keyIndex int, until time.Time) error
+
+	// key-level round-robin
+	NextKeyRR(ctx context.Context, channelID int64, keyCount int) int
+	SetKeyRR(ctx context.Context, channelID int64, idx int) error
 
 	// logs
 	AddLog(ctx context.Context, e *LogEntry) error
@@ -214,7 +211,7 @@ type Store interface {
 	// metrics
 	Aggregate(ctx context.Context, since time.Time, bucket time.Duration) ([]MetricPoint, error)
 
-	// stats - 新增统计功能
+	// stats - 统计功能
 	GetStats(ctx context.Context, since time.Time, filter *LogFilter) ([]StatsEntry, error)
 
 	// round-robin pointer per (model, priority)

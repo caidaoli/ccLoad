@@ -43,13 +43,11 @@ func (cr *ChannelRequest) Validate() error {
 	return nil
 }
 
-// ToConfig 转换为Config结构
+// ToConfig 转换为Config结构（不包含API Key，API Key单独处理）
 func (cr *ChannelRequest) ToConfig() *Config {
 	return &Config{
 		Name:           strings.TrimSpace(cr.Name),
-		APIKey:         strings.TrimSpace(cr.APIKey),
 		ChannelType:    strings.TrimSpace(cr.ChannelType), // 传递渠道类型
-		KeyStrategy:    strings.TrimSpace(cr.KeyStrategy), // 传递Key使用策略
 		URL:            strings.TrimSpace(cr.URL),
 		Priority:       cr.Priority,
 		Models:         cr.Models,
@@ -135,18 +133,23 @@ func (s *Server) handleListChannels(c *gin.Context) {
 			oc.CooldownRemainingMS = cooldownRemainingMS
 		}
 
-		// Key级别冷却：使用批量查询结果（性能提升：N*M -> 1 次查询）
-		keys := cfg.GetAPIKeys()
-		keyCooldowns := make([]KeyCooldownInfo, 0, len(keys))
+		// Key级别冷却：查询数据库获取该渠道的API Keys
+		apiKeys, err := s.store.GetAPIKeys(c.Request.Context(), cfg.ID)
+		if err != nil {
+			log.Printf("⚠️  警告: 查询渠道 %d 的API Keys失败: %v", cfg.ID, err)
+			apiKeys = []*APIKey{} // 空数组，继续处理
+		}
+
+		keyCooldowns := make([]KeyCooldownInfo, 0, len(apiKeys))
 
 		// 从批量查询结果中获取该渠道的所有Key冷却状态
 		channelKeyCooldowns := allKeyCooldowns[cfg.ID]
 
-		for i := range keys {
-			keyInfo := KeyCooldownInfo{KeyIndex: i}
+		for _, apiKey := range apiKeys {
+			keyInfo := KeyCooldownInfo{KeyIndex: apiKey.KeyIndex}
 
 			// 检查是否在冷却中
-			if until, cooled := channelKeyCooldowns[i]; cooled && until.After(now) {
+			if until, cooled := channelKeyCooldowns[apiKey.KeyIndex]; cooled && until.After(now) {
 				u := until
 				keyInfo.CooldownUntil = &u
 				keyInfo.CooldownRemainingMS = int64(until.Sub(now) / time.Millisecond)
@@ -170,10 +173,33 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 		return
 	}
 
+	// 创建渠道（不包含API Key）
 	created, err := s.store.CreateConfig(c.Request.Context(), req.ToConfig())
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
+	}
+
+	// 解析并创建API Keys
+	apiKeys := ParseAPIKeys(req.APIKey)
+	keyStrategy := strings.TrimSpace(req.KeyStrategy)
+	if keyStrategy == "" {
+		keyStrategy = "sequential" // 默认策略
+	}
+
+	now := time.Now()
+	for i, key := range apiKeys {
+		apiKey := &APIKey{
+			ChannelID:   created.ID,
+			KeyIndex:    i,
+			APIKey:      key,
+			KeyStrategy: keyStrategy,
+			CreatedAt:   JSONTime{now},
+			UpdatedAt:   JSONTime{now},
+		}
+		if err := s.store.CreateAPIKey(c.Request.Context(), apiKey); err != nil {
+			log.Printf("⚠️  警告: 创建API Key失败 (channel=%d, index=%d): %v", created.ID, i, err)
+		}
 	}
 
 	RespondJSON(c, http.StatusCreated, created)
@@ -201,6 +227,26 @@ func (s *Server) handleExportChannelsCSV(c *gin.Context) {
 	}
 
 	for _, cfg := range cfgs {
+		// 查询渠道的API Keys
+		apiKeys, err := s.store.GetAPIKeys(c.Request.Context(), cfg.ID)
+		if err != nil {
+			log.Printf("⚠️  警告: 查询渠道 %d 的API Keys失败: %v", cfg.ID, err)
+			apiKeys = []*APIKey{} // 空数组，继续处理
+		}
+
+		// 格式化API Keys为逗号分隔字符串
+		apiKeyStrs := make([]string, 0, len(apiKeys))
+		for _, key := range apiKeys {
+			apiKeyStrs = append(apiKeyStrs, key.APIKey)
+		}
+		apiKeyStr := strings.Join(apiKeyStrs, ",")
+
+		// 获取Key策略（从第一个Key）
+		keyStrategy := "sequential" // 默认值
+		if len(apiKeys) > 0 && apiKeys[0].KeyStrategy != "" {
+			keyStrategy = apiKeys[0].KeyStrategy
+		}
+
 		// 序列化模型重定向为JSON字符串
 		modelRedirectsJSON := "{}"
 		if len(cfg.ModelRedirects) > 0 {
@@ -212,13 +258,13 @@ func (s *Server) handleExportChannelsCSV(c *gin.Context) {
 		record := []string{
 			strconv.FormatInt(cfg.ID, 10),
 			cfg.Name,
-			cfg.APIKey,
+			apiKeyStr,
 			cfg.URL,
 			strconv.Itoa(cfg.Priority),
 			strings.Join(cfg.Models, ","),
 			modelRedirectsJSON,
 			cfg.GetChannelType(), // 使用GetChannelType确保默认值
-			cfg.GetKeyStrategy(), // 使用GetKeyStrategy确保默认值
+			keyStrategy,
 			strconv.FormatBool(cfg.Enabled),
 		}
 		if err := writer.Write(record); err != nil {
@@ -389,29 +435,48 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 
 		cfg := &Config{
 			Name:           name,
-			APIKey:         apiKey,
 			URL:            url,
 			Priority:       priority,
 			Models:         models,
 			ModelRedirects: modelRedirects,
 			ChannelType:    channelType,
-			KeyStrategy:    keyStrategy,
 			Enabled:        enabled,
 		}
-
-		// CSV导入特殊处理：确保APIKeys字段被正确设置
-		// 因为CSV只有api_key列，需要调用normalizeAPIKeys转换
-		// 这样ReplaceConfig才能序列化正确的JSON数组
-		normalizeAPIKeys(cfg)
 
 		// 检查渠道是否已存在（基于名称）- 使用预加载集合
 		_, isUpdate := existingNames[name]
 
 		// 使用ReplaceConfig进行插入或更新
-		if _, err := s.store.ReplaceConfig(c.Request.Context(), cfg); err != nil {
+		replacedCfg, err := s.store.ReplaceConfig(c.Request.Context(), cfg)
+		if err != nil {
 			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行处理失败: %v", lineNo, err))
 			summary.Skipped++
 			continue
+		}
+
+		// 解析并创建/更新API Keys
+		apiKeys := ParseAPIKeys(apiKey)
+		if len(apiKeys) > 0 {
+			// 先删除旧的API Keys（如果是更新操作）
+			if isUpdate {
+				_ = s.store.DeleteAllAPIKeys(c.Request.Context(), replacedCfg.ID)
+			}
+
+			// 创建新的API Keys
+			now := time.Now()
+			for i, key := range apiKeys {
+				apiKeyRecord := &APIKey{
+					ChannelID:   replacedCfg.ID,
+					KeyIndex:    i,
+					APIKey:      key,
+					KeyStrategy: keyStrategy,
+					CreatedAt:   JSONTime{now},
+					UpdatedAt:   JSONTime{now},
+				}
+				if err := s.store.CreateAPIKey(c.Request.Context(), apiKeyRecord); err != nil {
+					log.Printf("⚠️  警告: 创建API Key失败 (channel=%d, index=%d): %v", replacedCfg.ID, i, err)
+				}
+			}
 		}
 
 		if isUpdate {
@@ -521,8 +586,29 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		return
 	}
 
-	// 检测api_key是否变化（防止Key索引错位）
-	keyChanged := existing.APIKey != req.APIKey
+	// 检测api_key是否变化（需要重建API Keys）
+	oldKeys, err := s.store.GetAPIKeys(c.Request.Context(), id)
+	if err != nil {
+		log.Printf("⚠️  警告: 查询旧API Keys失败: %v", err)
+		oldKeys = []*APIKey{}
+	}
+
+	newKeys := ParseAPIKeys(req.APIKey)
+	keyStrategy := strings.TrimSpace(req.KeyStrategy)
+	if keyStrategy == "" {
+		keyStrategy = "sequential"
+	}
+
+	// 比较Key是否变化
+	keyChanged := len(oldKeys) != len(newKeys)
+	if !keyChanged {
+		for i, oldKey := range oldKeys {
+			if i >= len(newKeys) || oldKey.APIKey != newKeys[i] {
+				keyChanged = true
+				break
+			}
+		}
+	}
 
 	upd, err := s.store.UpdateConfig(c.Request.Context(), id, req.ToConfig())
 	if err != nil {
@@ -530,12 +616,26 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		return
 	}
 
-	// Key变化时清理所有key冷却数据（避免索引错位）
+	// Key变化时重建API Keys
 	if keyChanged {
-        if err := s.store.ClearAllKeyCooldowns(c.Request.Context(), id); err != nil {
-            // 清理失败仅记录警告，不影响更新流程
-            log.Printf("warning: failed to clear key cooldowns for channel %d: %v", id, err)
-        }
+		// 删除旧的API Keys
+		_ = s.store.DeleteAllAPIKeys(c.Request.Context(), id)
+
+		// 创建新的API Keys
+		now := time.Now()
+		for i, key := range newKeys {
+			apiKey := &APIKey{
+				ChannelID:   id,
+				KeyIndex:    i,
+				APIKey:      key,
+				KeyStrategy: keyStrategy,
+				CreatedAt:   JSONTime{now},
+				UpdatedAt:   JSONTime{now},
+			}
+			if err := s.store.CreateAPIKey(c.Request.Context(), apiKey); err != nil {
+				log.Printf("⚠️  警告: 创建API Key失败 (channel=%d, index=%d): %v", id, i, err)
+			}
+		}
 	}
 
 	RespondJSON(c, http.StatusOK, upd)
@@ -697,9 +797,9 @@ func (s *Server) handleChannelTest(c *gin.Context) {
 		return
 	}
 
-	// 解析 API Keys（支持多 Key）
-	keys := ParseAPIKeys(cfg.APIKey)
-	if len(keys) == 0 {
+	// 查询渠道的API Keys
+	apiKeys, err := s.store.GetAPIKeys(c.Request.Context(), id)
+	if err != nil || len(apiKeys) == 0 {
 		RespondJSON(c, http.StatusOK, gin.H{
 			"success": false,
 			"error":   "渠道未配置有效的 API Key",
@@ -709,17 +809,15 @@ func (s *Server) handleChannelTest(c *gin.Context) {
 
 	// 验证并选择 Key 索引
 	keyIndex := testReq.KeyIndex
-	if keyIndex < 0 || keyIndex >= len(keys) {
+	if keyIndex < 0 || keyIndex >= len(apiKeys) {
 		keyIndex = 0 // 默认使用第一个 Key
 	}
 
-	// 创建测试用的配置副本，使用选定的 Key
-	testCfg := *cfg
-	testCfg.APIKey = keys[keyIndex]
+	selectedKey := apiKeys[keyIndex].APIKey
 
 	// 检查模型是否支持
 	modelSupported := false
-	for _, model := range testCfg.Models {
+	for _, model := range cfg.Models {
 		if model == testReq.Model {
 			modelSupported = true
 			break
@@ -730,16 +828,16 @@ func (s *Server) handleChannelTest(c *gin.Context) {
 			"success":          false,
 			"error":            "模型 " + testReq.Model + " 不在此渠道的支持列表中",
 			"model":            testReq.Model,
-			"supported_models": testCfg.Models,
+			"supported_models": cfg.Models,
 		})
 		return
 	}
 
-	// 执行测试
-	testResult := s.testChannelAPI(&testCfg, &testReq)
+	// 执行测试（传递实际的API Key字符串）
+	testResult := s.testChannelAPI(cfg, selectedKey, &testReq)
 	// 添加测试的 Key 索引信息到结果中
 	testResult["tested_key_index"] = keyIndex
-	testResult["total_keys"] = len(keys)
+	testResult["total_keys"] = len(apiKeys)
 
 	// ✅ 修复：测试成功时清除该Key的冷却状态
 	if success, ok := testResult["success"].(bool); ok && success {
@@ -749,14 +847,14 @@ func (s *Server) handleChannelTest(c *gin.Context) {
 
 		// ✨ 优化：同时清除渠道级冷却（因为至少有一个Key可用）
 		// 设计理念：测试成功证明渠道恢复正常，应立即解除渠道级冷却，避免选择器过滤该渠道
-		_ = s.store.ResetCooldown(c.Request.Context(), id)
+		_ = s.store.ResetChannelCooldown(c.Request.Context(), id)
 	}
 
 	RespondJSON(c, http.StatusOK, testResult)
 }
 
 // 测试渠道API连通性
-func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[string]any {
+func (s *Server) testChannelAPI(cfg *Config, apiKey string, testReq *TestChannelRequest) map[string]any {
 	// 选择并规范化渠道类型
 	channelType := normalizeChannelType(testReq.ChannelType)
 	var tester ChannelTester
@@ -773,8 +871,8 @@ func (s *Server) testChannelAPI(cfg *Config, testReq *TestChannelRequest) map[st
 		tester = &AnthropicTester{}
 	}
 
-	// 构建请求
-	fullURL, baseHeaders, body, err := tester.Build(cfg, testReq)
+	// 构建请求（传递实际的API Key）
+	fullURL, baseHeaders, body, err := tester.Build(cfg, apiKey, testReq)
 	if err != nil {
 		return map[string]any{"success": false, "error": "构造测试请求失败: " + err.Error()}
 	}
@@ -966,7 +1064,7 @@ func (s *Server) handleSetChannelCooldown(c *gin.Context) {
 	}
 
 	until := time.Now().Add(time.Duration(req.DurationMs) * time.Millisecond)
-	err = s.store.SetCooldown(c.Request.Context(), id, until)
+	err = s.store.SetChannelCooldown(c.Request.Context(), id, until)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return

@@ -242,10 +242,22 @@ graph TB
    - **DRY**: 统一实现，避免重复
    - **KISS**: 简单清晰，易于测试
 
-### 关键数据结构
-- `Config`（渠道）: 渠道配置（API Key、URL、优先级、支持的模型列表、模型重定向映射）
+### 关键数据结构（2025-10重构）
+
+- `Config`（渠道）: 渠道配置（URL、优先级、支持的模型列表、模型重定向映射、冷却状态）
+  - ⚠️ **移除字段**：`APIKey`, `APIKeys`, `KeyStrategy`（已迁移到`APIKey`结构体）
+  - ✅ **新增字段**：`CooldownUntil`, `CooldownDurationMs`（渠道级冷却数据内联）
+
+- `APIKey`（API密钥）: API Key独立结构（channel_id, key_index, api_key, key_strategy, cooldown_until, cooldown_duration_ms）
+  - **设计原则**：一个渠道可以有多个APIKey记录
+  - `IsCoolingDown(now time.Time) bool`: 检查Key是否在冷却中
+
 - `LogEntry`: 请求日志（时间、模型、渠道ID、状态码、性能指标）
-- `Store` 接口: 数据持久化抽象层，支持配置、日志、统计、冷却管理
+
+- `Store` 接口: 数据持久化抽象层，支持配置、API Keys管理、日志、统计、冷却管理
+  - ✅ **新增方法**：`GetAPIKeys()`, `GetAPIKey()`, `CreateAPIKey()`, `UpdateAPIKey()`, `DeleteAPIKey()`, `DeleteAllAPIKeys()`
+  - ✅ **简化方法**：冷却方法直接操作内联字段，移除独立表查询
+
 - `MetricPoint`: 时间序列数据点（用于趋势分析）
 - `StatsEntry`: 统计数据聚合（按渠道和模型分组）
 
@@ -528,30 +540,75 @@ graph TB
 
 ## 数据库架构和迁移
 
-### 核心表结构
-- **channels**: 渠道配置（id, name, api_key, url, priority, models, model_redirects, enabled, timestamps）
+### 核心表结构（2025-10重构）
+
+**2025-10-10重构说明**：数据库架构进行了重大优化，将API Keys独立存储，冷却数据内联到父表。
+
+- **channels**: 渠道配置（id, name, url, priority, models, model_redirects, channel_type, cooldown_until, cooldown_duration_ms, enabled, timestamps）
   - `name`字段具有UNIQUE约束（通过`idx_channels_unique_name`索引实现）
   - `model_redirects`字段：JSON格式存储模型重定向映射（请求模型 → 实际转发模型）
+  - ⚠️ **移除字段**：`api_key`, `api_keys`, `key_strategy`（已迁移到`api_keys`表）
+  - ✅ **新增字段**：`cooldown_until`, `cooldown_duration_ms`（渠道级冷却数据内联存储）
+
+- **api_keys**: API Key独立存储（id, channel_id, key_index, api_key, key_strategy, cooldown_until, cooldown_duration_ms, timestamps）
+  - **设计原则**：一个渠道对应多行记录，每个Key一行
+  - `channel_id + key_index`：复合UNIQUE约束，确保Key索引唯一
+  - `key_strategy`：Key使用策略（`sequential` | `round_robin`）
+  - `cooldown_until`, `cooldown_duration_ms`：Key级冷却数据内联存储
+  - **外键约束**：`FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE`
+
 - **logs**: 请求日志（id, time, model, channel_id, status_code, message, performance_metrics）
   - `model`字段：始终记录客户端请求的原始模型，非重定向后的模型
-- **cooldowns**: 冷却状态（channel_id, until, duration_ms）
-- **rr**: 轮询指针（key="model|priority", idx）
 
-### 向后兼容的数据库迁移
+- **key_rr**: Key轮询指针（channel_id, idx）
+  - 为每个渠道的多Key轮询策略维护轮询状态
 
-项目实现了智能的数据库架构升级机制，确保向后兼容：
+- **rr**: 渠道轮询指针（key="model|priority", idx）
+  - 为同优先级渠道组维护轮询状态
 
-**UNIQUE约束迁移** (`ensureChannelNameUnique` in sqlite_store.go):
+- ⚠️ **废弃表**：`cooldowns`, `key_cooldowns`（冷却数据已内联到`channels`和`api_keys`表）
+
+### 向后兼容的数据库迁移（2025-10重构）
+
+项目实现了智能的数据库架构升级机制，支持从旧版本无缝迁移：
+
+**双路径初始化策略**：
+1. **全新安装** (`migrate()` 函数)：
+   - 直接创建新架构：channels（含冷却字段）、api_keys、key_rr、rr、logs表
+   - 跳过迁移逻辑，避免不必要的操作
+
+2. **旧版本升级** (`migrateToNewSchema()` 函数)：
+   - 检测旧表结构（存在`api_key`字段或独立`cooldowns`表）
+   - 自动迁移数据到新架构
+   - 保留旧表数据以防回滚需求
+
+**API Keys迁移流程** (`migrateAPIKeysField()` 函数)：
+1. **字段存在性检查**：使用`PRAGMA table_info(channels)`检查`api_key`列是否存在
+2. **跳过全新数据库**：若`api_key`列不存在，说明是全新安装，直接返回
+3. **数据迁移**（旧数据库）：
+   - 读取channels表的`api_key`字段（逗号分割的多Key）
+   - 解析为多个APIKey记录并写入`api_keys`表
+   - 设置`key_index`（0, 1, 2...）和`key_strategy`（默认sequential）
+4. **幂等操作**：已迁移的渠道不会重复迁移
+
+**冷却数据迁移流程** (`migrateCooldownsToInline()` 函数)：
+- 从独立的`cooldowns`表读取冷却状态
+- 迁移到channels表的`cooldown_until`和`cooldown_duration_ms`字段
+- 从独立的`key_cooldowns`表读取Key级冷却状态
+- 迁移到api_keys表的冷却字段
+
+**UNIQUE约束迁移** (`ensureChannelNameUnique()` 函数)：
 1. **清理旧索引**: `DROP INDEX IF EXISTS idx_channels_name`
 2. **幂等检查**: 检查`idx_channels_unique_name`是否已存在，存在则跳过
-3. **数据修复**: 查找重复name，自动重命名为`原name+id`格式
+3. **数据修复**: 查找重复name，自动重命名为`原name+id`格式（如`api-1`变成`api-1-12`）
 4. **创建约束**: `CREATE UNIQUE INDEX idx_channels_unique_name ON channels (name)`
 
 **迁移特性**:
 - **自动执行**: 服务启动时自动运行，无需手动干预
-- **数据保护**: 重复数据自动重命名而非删除（如`api-1`变成`api-12`, `api-14`）
+- **数据完整性**: 所有数据（渠道配置、API Keys、冷却状态）完整迁移
 - **幂等操作**: 支持重复执行，不会产生副作用
-- **KISS原则**: 简化的四步流程，代码简洁可靠
+- **向后兼容**: 旧版本数据库自动升级，新版本直接使用新架构
+- **零停机**: 迁移过程快速（通常<1秒），对服务启动时间影响极小
 
 ### 性能优化索引
 - `idx_logs_time`: 日志时间索引，优化时间范围查询
@@ -989,30 +1046,42 @@ curl -X POST http://localhost:8080/admin/channels \
 - **独立冷却**：每个Key的冷却状态互不影响
 - **自动恢复**：Key成功响应后立即重置冷却状态
 
-### 数据库架构
+### 数据库架构（2025-10重构）
 
-新增表结构支持Key级别管理：
+**2025-10-10重大重构**：API Keys和冷却数据迁移到新架构
+
+**新增表结构**：
 
 ```sql
--- Key级别冷却表
-CREATE TABLE key_cooldowns (
+-- API Keys独立存储表
+CREATE TABLE api_keys (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   channel_id INTEGER NOT NULL,
   key_index INTEGER NOT NULL,
-  until TIMESTAMP NOT NULL,
-  duration_ms INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY(channel_id, key_index)
+  api_key TEXT NOT NULL,
+  key_strategy TEXT DEFAULT 'sequential',
+  cooldown_until INTEGER DEFAULT 0,        -- Key级冷却数据内联
+  cooldown_duration_ms INTEGER DEFAULT 0,  -- 冷却持续时间
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
+  UNIQUE(channel_id, key_index),
+  FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
 );
 
--- Key轮询指针表
+-- Key轮询指针表（保持不变）
 CREATE TABLE key_rr (
   channel_id INTEGER PRIMARY KEY,
   idx INTEGER NOT NULL
 );
 ```
 
-渠道表新增字段：
-- `api_keys`：JSON数组存储多个Key（优先级高于`api_key`）
-- `key_strategy`：Key使用策略（`sequential` | `round_robin`）
+**channels表架构变更**：
+- ⚠️ **移除字段**：`api_key`, `api_keys`, `key_strategy`（已迁移到`api_keys`表）
+- ✅ **新增字段**：`cooldown_until`, `cooldown_duration_ms`（渠道级冷却数据内联）
+
+**废弃的独立冷却表**：
+- ❌ `key_cooldowns` 表已废弃（冷却数据内联到`api_keys`表）
+- ❌ `cooldowns` 表已废弃（冷却数据内联到`channels`表）
 
 ### 向后兼容性
 

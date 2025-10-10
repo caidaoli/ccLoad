@@ -54,7 +54,6 @@ func TestAuthErrorInitialCooldown(t *testing.T) {
 			// 创建测试渠道
 			cfg := &Config{
 				Name:    "test-channel",
-				APIKey:  "sk-test-key",
 				URL:     "https://api.example.com",
 				Enabled: true,
 			}
@@ -64,7 +63,7 @@ func TestAuthErrorInitialCooldown(t *testing.T) {
 			}
 
 			// 触发首次错误冷却
-			duration, err := store.BumpCooldownOnError(ctx, created.ID, now, tt.statusCode)
+			duration, err := store.BumpChannelCooldown(ctx, created.ID, now, tt.statusCode)
 			if err != nil {
 				t.Fatalf("BumpCooldownOnError失败: %v", err)
 			}
@@ -76,7 +75,7 @@ func TestAuthErrorInitialCooldown(t *testing.T) {
 			}
 
 			// 验证数据库中的冷却截止时间
-			until, exists := store.GetCooldownUntil(ctx, created.ID)
+			until, exists := getChannelCooldownUntil(ctx, store, created.ID)
 			if !exists {
 				t.Fatal("冷却记录不存在")
 			}
@@ -106,7 +105,6 @@ func TestAuthErrorExponentialBackoff(t *testing.T) {
 	// 创建测试渠道
 	cfg := &Config{
 		Name:    "test-channel-backoff",
-		APIKey:  "sk-test-key",
 		URL:     "https://api.example.com",
 		Enabled: true,
 	}
@@ -126,7 +124,7 @@ func TestAuthErrorExponentialBackoff(t *testing.T) {
 
 	for i, expected := range expectedSequence {
 		// 触发401错误
-		duration, err := store.BumpCooldownOnError(ctx, created.ID, now, 401)
+		duration, err := store.BumpChannelCooldown(ctx, created.ID, now, 401)
 		if err != nil {
 			t.Fatalf("第%d次BumpCooldownOnError失败: %v", i+1, err)
 		}
@@ -157,7 +155,6 @@ func TestKeyLevelAuthErrorCooldown(t *testing.T) {
 	// 创建多Key渠道
 	cfg := &Config{
 		Name:    "multi-key-channel",
-		APIKey:  "sk-key1,sk-key2,sk-key3",
 		URL:     "https://api.example.com",
 		Enabled: true,
 	}
@@ -166,8 +163,21 @@ func TestKeyLevelAuthErrorCooldown(t *testing.T) {
 		t.Fatalf("创建测试渠道失败: %v", err)
 	}
 
+	// 创建3个API Keys
+	for i, key := range []string{"sk-key1", "sk-key2", "sk-key3"} {
+		err = store.CreateAPIKey(ctx, &APIKey{
+			ChannelID:   created.ID,
+			KeyIndex:    i,
+			APIKey:      key,
+			KeyStrategy: "sequential",
+		})
+		if err != nil {
+			t.Fatalf("创建API Key %d失败: %v", i, err)
+		}
+	}
+
 	// 测试Key 0的401错误冷却
-	duration, err := store.BumpKeyCooldownOnError(ctx, created.ID, 0, now, 401)
+	duration, err := store.BumpKeyCooldown(ctx, created.ID, 0, now, 401)
 	if err != nil {
 		t.Fatalf("BumpKeyCooldownOnError失败: %v", err)
 	}
@@ -181,7 +191,7 @@ func TestKeyLevelAuthErrorCooldown(t *testing.T) {
 	}
 
 	// 验证数据库中的Key冷却记录
-	until, exists := store.GetKeyCooldownUntil(ctx, created.ID, 0)
+	until, exists := getKeyCooldownUntil(ctx, store, created.ID, 0)
 	if !exists {
 		t.Fatal("Key冷却记录不存在")
 	}
@@ -207,7 +217,6 @@ func TestMixedErrorCodesCooldown(t *testing.T) {
 	// 创建测试渠道
 	cfg := &Config{
 		Name:    "mixed-errors-channel",
-		APIKey:  "sk-test-key",
 		URL:     "https://api.example.com",
 		Enabled: true,
 	}
@@ -217,7 +226,7 @@ func TestMixedErrorCodesCooldown(t *testing.T) {
 	}
 
 	// 场景：先遇到500错误（1秒起），然后遇到401错误（应该还是5分钟）
-	duration1, err := store.BumpCooldownOnError(ctx, created.ID, now, 500)
+	duration1, err := store.BumpChannelCooldown(ctx, created.ID, now, 500)
 	if err != nil {
 		t.Fatalf("首次500错误失败: %v", err)
 	}
@@ -228,7 +237,7 @@ func TestMixedErrorCodesCooldown(t *testing.T) {
 
 	// 模拟时间推移后遇到401错误
 	now2 := now.Add(2 * time.Second)
-	duration2, err := store.BumpCooldownOnError(ctx, created.ID, now2, 401)
+	duration2, err := store.BumpChannelCooldown(ctx, created.ID, now2, 401)
 	if err != nil {
 		t.Fatalf("后续401错误失败: %v", err)
 	}
@@ -258,7 +267,6 @@ func TestConcurrentCooldownUpdates(t *testing.T) {
 	// 创建测试渠道
 	cfg := &Config{
 		Name:    "concurrent-test",
-		APIKey:  "sk-test-key",
 		URL:     "https://api.example.com",
 		Enabled: true,
 	}
@@ -275,13 +283,13 @@ func TestConcurrentCooldownUpdates(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			// 每次使用当前时间，避免时间戳冲突
-			_, _ = store.BumpCooldownOnError(ctx, created.ID, time.Now(), 401)
+			_, _ = store.BumpChannelCooldown(ctx, created.ID, time.Now(), 401)
 		}()
 	}
 	wg.Wait()
 
 	// 验证数据一致性
-	until, exists := store.GetCooldownUntil(ctx, created.ID)
+	until, exists := getChannelCooldownUntil(ctx, store, created.ID)
 	if !exists {
 		t.Fatal("冷却记录不存在")
 	}
@@ -309,7 +317,6 @@ func TestConcurrentKeyCooldownUpdates(t *testing.T) {
 	// 创建多Key渠道
 	cfg := &Config{
 		Name:    "concurrent-key-test",
-		APIKey:  "sk-key1,sk-key2,sk-key3",
 		URL:     "https://api.example.com",
 		Enabled: true,
 	}
@@ -318,7 +325,20 @@ func TestConcurrentKeyCooldownUpdates(t *testing.T) {
 		t.Fatalf("创建测试渠道失败: %v", err)
 	}
 
-	t.Logf("✅ 创建渠道成功: ID=%d, APIKeys=%v", created.ID, created.APIKeys)
+	// 创建3个API Keys
+	for i, key := range []string{"sk-key1", "sk-key2", "sk-key3"} {
+		err = store.CreateAPIKey(ctx, &APIKey{
+			ChannelID:   created.ID,
+			KeyIndex:    i,
+			APIKey:      key,
+			KeyStrategy: "sequential",
+		})
+		if err != nil {
+			t.Fatalf("创建API Key %d失败: %v", i, err)
+		}
+	}
+
+	t.Logf("✅ 创建渠道成功: ID=%d, 已创建3个API Keys", created.ID)
 
 	// 并发触发多个Key的401错误
 	const concurrency = 50
@@ -333,7 +353,7 @@ func TestConcurrentKeyCooldownUpdates(t *testing.T) {
 			go func(idx int) {
 				defer wg.Done()
 				// 每次使用当前时间
-				duration, err := store.BumpKeyCooldownOnError(ctx, created.ID, idx, time.Now(), 401)
+				duration, err := store.BumpKeyCooldown(ctx, created.ID, idx, time.Now(), 401)
 				if err == nil {
 					mu.Lock()
 					successCount++
@@ -353,7 +373,7 @@ func TestConcurrentKeyCooldownUpdates(t *testing.T) {
 
 	// 验证每个Key的冷却状态
 	for keyIndex := 0; keyIndex < 3; keyIndex++ {
-		until, exists := store.GetKeyCooldownUntil(ctx, created.ID, keyIndex)
+		until, exists := getKeyCooldownUntil(ctx, store, created.ID, keyIndex)
 		if !exists {
 			t.Errorf("Key %d 冷却记录不存在", keyIndex)
 			continue
@@ -382,13 +402,25 @@ func TestRaceConditionDetection(t *testing.T) {
 
 	cfg := &Config{
 		Name:    "race-test",
-		APIKey:  "sk-key1,sk-key2",
 		URL:     "https://api.example.com",
 		Enabled: true,
 	}
 	created, err := store.CreateConfig(ctx, cfg)
 	if err != nil {
 		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+
+	// 创建2个API Keys
+	for i, key := range []string{"sk-key1", "sk-key2"} {
+		err = store.CreateAPIKey(ctx, &APIKey{
+			ChannelID:   created.ID,
+			KeyIndex:    i,
+			APIKey:      key,
+			KeyStrategy: "sequential",
+		})
+		if err != nil {
+			t.Fatalf("创建API Key %d失败: %v", i, err)
+		}
 	}
 
 	// 并发场景：同时读写冷却状态
@@ -399,19 +431,19 @@ func TestRaceConditionDetection(t *testing.T) {
 		// 写操作：更新渠道冷却
 		go func() {
 			defer wg.Done()
-			_, _ = store.BumpCooldownOnError(ctx, created.ID, time.Now(), 401)
+			_, _ = store.BumpChannelCooldown(ctx, created.ID, time.Now(), 401)
 		}()
 
 		// 读操作：查询渠道冷却
 		go func() {
 			defer wg.Done()
-			_, _ = store.GetCooldownUntil(ctx, created.ID)
+			_, _ = getChannelCooldownUntil(ctx, store, created.ID)
 		}()
 
 		// 写操作：更新Key冷却
 		go func() {
 			defer wg.Done()
-			_, _ = store.BumpKeyCooldownOnError(ctx, created.ID, 0, time.Now(), 401)
+			_, _ = store.BumpKeyCooldown(ctx, created.ID, 0, time.Now(), 401)
 		}()
 	}
 	wg.Wait()

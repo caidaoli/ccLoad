@@ -36,7 +36,6 @@ func TestMemoryDBMode(t *testing.T) {
 	// 测试1: 创建渠道配置
 	config := &Config{
 		Name:     "test-memory-channel",
-		APIKey:   "test-key-123",
 		URL:      "https://api.example.com",
 		Priority: 10,
 		Models:   []string{"model-1", "model-2"},
@@ -74,12 +73,12 @@ func TestMemoryDBMode(t *testing.T) {
 
 	// 测试4: 冷却机制（内存模式下应正常工作）
 	until := time.Now().Add(5 * time.Second)
-	err = store.SetCooldown(ctx, created.ID, until)
+	err = store.SetChannelCooldown(ctx, created.ID, until)
 	if err != nil {
-		t.Fatalf("SetCooldown failed: %v", err)
+		t.Fatalf("SetChannelCooldown failed: %v", err)
 	}
 
-	cooldownUntil, exists := store.GetCooldownUntil(ctx, created.ID)
+	cooldownUntil, exists := getChannelCooldownUntil(ctx, store, created.ID)
 	if !exists {
 		t.Error("Expected cooldown to exist")
 	}
@@ -134,7 +133,6 @@ func TestFileDBMode(t *testing.T) {
 	// 创建测试数据
 	config := &Config{
 		Name:     "test-file-channel",
-		APIKey:   "file-key-456",
 		URL:      "https://api.example.com",
 		Priority: 5,
 		Models:   []string{"model-a"},
@@ -330,7 +328,6 @@ func BenchmarkMemoryDBQuery(b *testing.B) {
 	// 创建测试数据
 	config := &Config{
 		Name:     "benchmark-channel",
-		APIKey:   "bench-key",
 		URL:      "https://api.example.com",
 		Priority: 10,
 		Models:   []string{"model-1"},
@@ -361,7 +358,6 @@ func BenchmarkFileDBQuery(b *testing.B) {
 	// 创建测试数据
 	config := &Config{
 		Name:     "benchmark-channel",
-		APIKey:   "bench-key",
 		URL:      "https://api.example.com",
 		Priority: 10,
 		Models:   []string{"model-1"},

@@ -247,15 +247,8 @@ func copyRequestHeaders(dst *http.Request, src http.Header) {
 }
 
 // 辅助函数：按路径类型注入API Key头（Gemini vs Claude）
-func injectAPIKeyHeaders(req *http.Request, cfg *Config, keyIndex int, requestPath string) {
-	apiKey := cfg.APIKey
-	if keyIndex >= 0 {
-		keys := cfg.GetAPIKeys()
-		if keyIndex < len(keys) {
-			apiKey = keys[keyIndex]
-		}
-	}
-
+// 参数简化：直接接受API Key字符串，由调用方从KeySelector获取
+func injectAPIKeyHeaders(req *http.Request, apiKey string, requestPath string) {
 	// 根据API类型设置不同的认证头
 	if isGeminiRequest(requestPath) {
 		// Gemini API: 仅使用 x-goog-api-key
@@ -320,9 +313,9 @@ func streamCopy(ctx context.Context, src io.Reader, dst http.ResponseWriter, fir
 }
 
 // forwardOnceAsync: 异步流式转发，透明转发客户端原始请求
-// 参数新增 keyIndex 用于指定使用的API Key索引（-1表示使用默认APIKey字段）
+// 参数新增 apiKey 用于直接传递已选中的API Key（从KeySelector获取）
 // 参数新增 method 用于支持任意HTTP方法（GET、POST、PUT、DELETE等）
-func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, keyIndex int, method string, body []byte, hdr http.Header, rawQuery, requestPath string, w http.ResponseWriter) (*fwResult, float64, error) {
+func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, apiKey string, method string, body []byte, hdr http.Header, rawQuery, requestPath string, w http.ResponseWriter) (*fwResult, float64, error) {
 	startTime := time.Now()
 
 	// 性能优化：条件启用HTTP trace（默认关闭，节省0.5-1ms/请求）
@@ -364,7 +357,7 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, keyIndex int
 	}
 	// 复制原始请求头并注入认证头
 	copyRequestHeaders(req, hdr)
-	injectAPIKeyHeaders(req, cfg, keyIndex, requestPath)
+	injectAPIKeyHeaders(req, apiKey, requestPath)
 
 	// 异步发送请求，一旦收到响应头立即开始转发
 	resp, err := s.client.Do(req)
@@ -561,9 +554,11 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *Config, keyIndex int
 	// 设计原则：如果没有其他Key可以重试，Key级错误等同于渠道级错误
 	// 适用于：网络错误 + HTTP 401/403等Key级错误
 	if errLevel == ErrorLevelKey {
-		keyCount := len(cfg.GetAPIKeys())
-		if keyCount <= 1 {
-			// 单Key渠道：直接升级为渠道级错误
+		// 查询渠道的API Keys数量
+		apiKeys, err := s.store.GetAPIKeys(ctx, cfg.ID)
+		keyCount := len(apiKeys)
+		if err != nil || keyCount <= 1 {
+			// 单Key渠道或查询失败：直接升级为渠道级错误
 			errLevel = ErrorLevelChannel
 		}
 	}
@@ -580,7 +575,7 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *Config, keyIndex int
 
 	case ErrorLevelChannel:
 		// 渠道级错误：冷却整个渠道，切换到其他渠道
-		_, _ = s.store.BumpCooldownOnError(ctx, cfg.ID, time.Now(), statusCode)
+		_, _ = s.store.BumpChannelCooldown(ctx, cfg.ID, time.Now(), statusCode)
 		// 更新监控指标（P2优化）
 		s.channelCooldownGauge.Add(1)
 		return ActionRetryChannel, true
@@ -630,8 +625,8 @@ func (s *Server) forwardAttempt(
 	bodyToSend []byte,
 	w http.ResponseWriter,
 ) (*proxyResult, bool, bool) {
-	// 转发请求
-	res, duration, err := s.forwardOnceAsync(ctx, cfg, keyIndex, reqCtx.requestMethod,
+	// 转发请求（传递实际的API Key字符串）
+	res, duration, err := s.forwardOnceAsync(ctx, cfg, selectedKey, reqCtx.requestMethod,
 		bodyToSend, reqCtx.header, reqCtx.rawQuery, reqCtx.requestPath, w)
 
 	// 处理网络错误
@@ -688,7 +683,7 @@ func (s *Server) handleSuccessResponse(
 	duration float64,
 ) (*proxyResult, bool, bool) {
 	// 清除冷却状态（直接操作数据库）
-	_ = s.store.ResetCooldown(ctx, cfg.ID)
+	_ = s.store.ResetChannelCooldown(ctx, cfg.ID)
 	_ = s.keySelector.MarkKeySuccess(ctx, cfg.ID, keyIndex)
 
 	// 记录成功日志
@@ -740,10 +735,16 @@ func (s *Server) handleErrorResponse(
 // tryChannelWithKeys 在单个渠道内尝试多个Key（Key级重试）
 // 遵循SRP原则：职责单一 - 仅负责Key级别的重试逻辑
 func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *Config, reqCtx *proxyRequestContext, w http.ResponseWriter) (*proxyResult, error) {
+	// 查询渠道的API Keys（从数据库）
+	apiKeys, err := s.store.GetAPIKeys(ctx, cfg.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get API keys: %w", err)
+	}
+
 	// 计算实际重试次数
-	actualKeyCount := len(cfg.GetAPIKeys())
+	actualKeyCount := len(apiKeys)
 	if actualKeyCount == 0 {
-		actualKeyCount = 1 // 至少尝试一次（兼容旧的APIKey字段）
+		return nil, fmt.Errorf("no API keys configured for channel %d", cfg.ID)
 	}
 
 	maxKeyRetries := min(s.maxKeyRetries, actualKeyCount)
@@ -765,7 +766,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *Config, reqCtx *pr
         // 标记Key为已尝试
         triedKeys[keyIndex] = true
 
-        // 单次转发尝试
+        // 单次转发尝试（传递实际的API Key字符串）
         result, shouldContinue, shouldBreak := s.forwardAttempt(
             ctx, cfg, keyIndex, selectedKey, reqCtx, bodyToSend, w)
 
@@ -940,7 +941,7 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 		if err != nil && strings.Contains(err.Error(), "channel keys unavailable") {
 			// 触发渠道级别冷却，防止后续请求重复尝试该渠道
 			// 使用503状态码表示服务不可用（所有Key冷却）
-			_, _ = s.store.BumpCooldownOnError(ctx, cfg.ID, time.Now(), 503)
+			_, _ = s.store.BumpChannelCooldown(ctx, cfg.ID, time.Now(), 503)
 			// 更新监控指标（P2优化）
 			s.channelCooldownGauge.Add(1)
 			continue // 尝试下一个渠道

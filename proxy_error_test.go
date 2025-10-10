@@ -31,13 +31,11 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 		expectedLevel  string
 		reason         string
 	}{
-		// 单Key渠道测试
+		// 单Key渠道测试（注：新架构中无需APIKey字段，通过api_keys表查询）
 		{
 			name: "single_key_401_should_upgrade_to_channel",
 			cfg: &Config{
-				ID:     1,
-				APIKey: "sk-test-key",
-				// APIKeys为空，表示使用单个APIKey字段
+				ID: 1,
 			},
 			statusCode:     401,
 			responseBody:   []byte(`{"error":"unauthorized"}`),
@@ -48,8 +46,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 		{
 			name: "single_key_403_quota_should_upgrade_to_channel",
 			cfg: &Config{
-				ID:     2,
-				APIKey: "sk-test-key",
+				ID: 2,
 			},
 			statusCode:     403,
 			responseBody:   []byte(`{"error":"quota_exceeded"}`),
@@ -62,9 +59,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 		{
 			name: "multi_key_401_should_stay_key_level",
 			cfg: &Config{
-				ID:      3,
-				APIKey:  "sk-key1,sk-key2,sk-key3",
-				APIKeys: []string{"sk-key1", "sk-key2", "sk-key3"},
+				ID: 3,
 			},
 			statusCode:     401,
 			responseBody:   []byte(`{"error":"unauthorized"}`),
@@ -75,9 +70,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 		{
 			name: "multi_key_403_quota_should_stay_key_level",
 			cfg: &Config{
-				ID:      4,
-				APIKey:  "sk-key1,sk-key2",
-				APIKeys: []string{"sk-key1", "sk-key2"},
+				ID: 4,
 			},
 			statusCode:     403,
 			responseBody:   []byte(`{"error":"quota_exceeded","message":"Daily cost limit reached"}}`),
@@ -90,8 +83,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 		{
 			name: "single_key_500_should_be_channel",
 			cfg: &Config{
-				ID:     5,
-				APIKey: "sk-test-key",
+				ID: 5,
 			},
 			statusCode:     500,
 			responseBody:   []byte(`{"error":"internal server error"}`),
@@ -102,9 +94,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 		{
 			name: "multi_key_500_should_be_channel",
 			cfg: &Config{
-				ID:      6,
-				APIKey:  "sk-key1,sk-key2",
-				APIKeys: []string{"sk-key1", "sk-key2"},
+				ID: 6,
 			},
 			statusCode:     500,
 			responseBody:   []byte(`{"error":"internal server error"}`),
@@ -117,8 +107,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 		{
 			name: "single_key_404_should_return_client",
 			cfg: &Config{
-				ID:     7,
-				APIKey: "sk-test-key",
+				ID: 7,
 			},
 			statusCode:     404,
 			responseBody:   []byte(`{"error":"not found"}`),
@@ -131,8 +120,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 		{
 			name: "single_key_network_error_should_upgrade_to_channel",
 			cfg: &Config{
-				ID:     8,
-				APIKey: "sk-test-key",
+				ID: 8,
 			},
 			networkError:   &net.OpError{Op: "dial", Err: errors.New("connection refused")},
 			expectedAction: ActionRetryChannel,
@@ -142,9 +130,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 		{
 			name: "multi_key_network_error_should_stay_key_level",
 			cfg: &Config{
-				ID:      9,
-				APIKey:  "sk-key1,sk-key2",
-				APIKeys: []string{"sk-key1", "sk-key2"},
+				ID: 9,
 			},
 			networkError:   &net.OpError{Op: "dial", Err: errors.New("connection refused")},
 			expectedAction: ActionRetryKey,
@@ -208,47 +194,85 @@ func (m *MockStore) DeleteConfig(ctx context.Context, id int64) error {
 	return nil
 }
 
-func (m *MockStore) GetCooldownUntil(ctx context.Context, configID int64) (time.Time, bool) {
-	return time.Time{}, false
+// API Keys management
+func (m *MockStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*APIKey, error) {
+	// 根据渠道ID返回不同数量的Key（模拟单Key vs 多Key场景）
+	// ID 1, 2, 5, 7, 8: 单Key渠道
+	// ID 3, 4, 6, 9: 多Key渠道（3个Key）
+	switch channelID {
+	case 1, 2, 5, 7, 8:
+		// 单Key渠道
+		return []*APIKey{
+			{
+				ChannelID:  channelID,
+				KeyIndex:   0,
+				APIKey:     "sk-single-key",
+				KeyStrategy: "sequential",
+			},
+		}, nil
+	case 3, 4, 6, 9:
+		// 多Key渠道（3个Key）
+		return []*APIKey{
+			{ChannelID: channelID, KeyIndex: 0, APIKey: "sk-key1", KeyStrategy: "sequential"},
+			{ChannelID: channelID, KeyIndex: 1, APIKey: "sk-key2", KeyStrategy: "sequential"},
+			{ChannelID: channelID, KeyIndex: 2, APIKey: "sk-key3", KeyStrategy: "sequential"},
+		}, nil
+	default:
+		return nil, nil
+	}
 }
 
+func (m *MockStore) GetAPIKey(ctx context.Context, channelID int64, keyIndex int) (*APIKey, error) {
+	return nil, nil
+}
+
+func (m *MockStore) CreateAPIKey(ctx context.Context, key *APIKey) error {
+	return nil
+}
+
+func (m *MockStore) UpdateAPIKey(ctx context.Context, key *APIKey) error {
+	return nil
+}
+
+func (m *MockStore) DeleteAPIKey(ctx context.Context, channelID int64, keyIndex int) error {
+	return nil
+}
+
+func (m *MockStore) DeleteAllAPIKeys(ctx context.Context, channelID int64) error {
+	return nil
+}
+
+// Channel-level cooldowns
 func (m *MockStore) GetAllChannelCooldowns(ctx context.Context) (map[int64]time.Time, error) {
 	return make(map[int64]time.Time), nil
 }
 
-func (m *MockStore) SetCooldown(ctx context.Context, configID int64, until time.Time) error {
-	return nil
-}
-
-func (m *MockStore) BumpCooldownOnError(ctx context.Context, configID int64, now time.Time, statusCode int) (time.Duration, error) {
+func (m *MockStore) BumpChannelCooldown(ctx context.Context, channelID int64, now time.Time, statusCode int) (time.Duration, error) {
 	return time.Second, nil
 }
 
-func (m *MockStore) ResetCooldown(ctx context.Context, configID int64) error {
+func (m *MockStore) ResetChannelCooldown(ctx context.Context, channelID int64) error {
 	return nil
 }
 
-func (m *MockStore) GetKeyCooldownUntil(ctx context.Context, configID int64, keyIndex int) (time.Time, bool) {
-	return time.Time{}, false
+func (m *MockStore) SetChannelCooldown(ctx context.Context, channelID int64, until time.Time) error {
+	return nil
 }
 
+// Key-level cooldowns
 func (m *MockStore) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int]time.Time, error) {
 	return make(map[int64]map[int]time.Time), nil
 }
 
-func (m *MockStore) BumpKeyCooldownOnError(ctx context.Context, configID int64, keyIndex int, now time.Time, statusCode int) (time.Duration, error) {
+func (m *MockStore) BumpKeyCooldown(ctx context.Context, channelID int64, keyIndex int, now time.Time, statusCode int) (time.Duration, error) {
 	return time.Second, nil
 }
 
-func (m *MockStore) SetKeyCooldown(ctx context.Context, configID int64, keyIndex int, until time.Time) error {
+func (m *MockStore) SetKeyCooldown(ctx context.Context, channelID int64, keyIndex int, until time.Time) error {
 	return nil
 }
 
-func (m *MockStore) ResetKeyCooldown(ctx context.Context, configID int64, keyIndex int) error {
-	return nil
-}
-
-func (m *MockStore) ClearAllKeyCooldowns(ctx context.Context, configID int64) error {
+func (m *MockStore) ResetKeyCooldown(ctx context.Context, channelID int64, keyIndex int) error {
 	return nil
 }
 
@@ -318,13 +342,10 @@ func TestAllKeysCooledDown_UpgradeToChannelCooldown(t *testing.T) {
 	keySelector := NewKeySelector(store, nil) // 测试环境不需要监控指标
 	ctx := context.Background()
 
-	// 配置3个Key的渠道
+	// 配置3个Key的渠道（注：新架构中API Keys在api_keys表）
 	cfg := &Config{
-		ID:          1,
-		Name:        "test-channel",
-		APIKey:      "sk-key1,sk-key2,sk-key3",
-		APIKeys:     []string{"sk-key1", "sk-key2", "sk-key3"},
-		KeyStrategy: "sequential",
+		ID:   1,
+		Name: "test-channel",
 	}
 
 	// 尝试选择可用Key（应该失败，因为所有Key都冷却）
@@ -368,10 +389,7 @@ func TestAllKeysCooledDown_RoundRobinStrategy(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := &Config{
-		ID:          2,
-		APIKey:      "sk-key1,sk-key2,sk-key3",
-		APIKeys:     []string{"sk-key1", "sk-key2", "sk-key3"},
-		KeyStrategy: "round_robin", // 使用轮询策略
+		ID: 2,
 	}
 
 	triedKeys := make(map[int]bool)
@@ -402,10 +420,7 @@ func TestPartialKeysCooled_ShouldSelectAvailable(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := &Config{
-		ID:          3,
-		APIKey:      "sk-key1,sk-key2,sk-key3",
-		APIKeys:     []string{"sk-key1", "sk-key2", "sk-key3"},
-		KeyStrategy: "sequential",
+		ID: 3,
 	}
 
 	triedKeys := make(map[int]bool)
@@ -464,35 +479,67 @@ func (m *MockStoreAllKeysCooled) ReplaceConfig(ctx context.Context, c *Config) (
 func (m *MockStoreAllKeysCooled) DeleteConfig(ctx context.Context, id int64) error {
 	return nil
 }
-func (m *MockStoreAllKeysCooled) GetCooldownUntil(ctx context.Context, configID int64) (time.Time, bool) {
-	return time.Time{}, false
+// API Keys management
+func (m *MockStoreAllKeysCooled) GetAPIKeys(ctx context.Context, channelID int64) ([]*APIKey, error) {
+	// 所有测试渠道都配置3个Key，根据keyCooldowns设置冷却状态
+	keys := []*APIKey{
+		{ChannelID: channelID, KeyIndex: 0, APIKey: "sk-key1", KeyStrategy: "sequential"},
+		{ChannelID: channelID, KeyIndex: 1, APIKey: "sk-key2", KeyStrategy: "sequential"},
+		{ChannelID: channelID, KeyIndex: 2, APIKey: "sk-key3", KeyStrategy: "sequential"},
+	}
+
+	// 设置冷却状态（从keyCooldowns map读取）
+	for _, key := range keys {
+		cooldownKey := fmt.Sprintf("%d_%d", channelID, key.KeyIndex)
+		if until, ok := m.keyCooldowns[cooldownKey]; ok {
+			key.CooldownUntil = until.Unix() // 设置冷却截止时间（Unix时间戳）
+		}
+	}
+
+	return keys, nil
 }
+func (m *MockStoreAllKeysCooled) GetAPIKey(ctx context.Context, channelID int64, keyIndex int) (*APIKey, error) {
+	return nil, nil
+}
+func (m *MockStoreAllKeysCooled) CreateAPIKey(ctx context.Context, key *APIKey) error {
+	return nil
+}
+func (m *MockStoreAllKeysCooled) UpdateAPIKey(ctx context.Context, key *APIKey) error {
+	return nil
+}
+func (m *MockStoreAllKeysCooled) DeleteAPIKey(ctx context.Context, channelID int64, keyIndex int) error {
+	return nil
+}
+func (m *MockStoreAllKeysCooled) DeleteAllAPIKeys(ctx context.Context, channelID int64) error {
+	return nil
+}
+
+// Channel-level cooldowns
 func (m *MockStoreAllKeysCooled) GetAllChannelCooldowns(ctx context.Context) (map[int64]time.Time, error) {
 	return make(map[int64]time.Time), nil
 }
-func (m *MockStoreAllKeysCooled) SetCooldown(ctx context.Context, configID int64, until time.Time) error {
-	return nil
-}
-func (m *MockStoreAllKeysCooled) BumpCooldownOnError(ctx context.Context, configID int64, now time.Time, statusCode int) (time.Duration, error) {
+func (m *MockStoreAllKeysCooled) BumpChannelCooldown(ctx context.Context, channelID int64, now time.Time, statusCode int) (time.Duration, error) {
 	return time.Second, nil
 }
-func (m *MockStoreAllKeysCooled) ResetCooldown(ctx context.Context, configID int64) error {
+func (m *MockStoreAllKeysCooled) ResetChannelCooldown(ctx context.Context, channelID int64) error {
 	return nil
 }
-func (m *MockStoreAllKeysCooled) BumpKeyCooldownOnError(ctx context.Context, configID int64, keyIndex int, now time.Time, statusCode int) (time.Duration, error) {
-	return time.Second, nil
-}
-func (m *MockStoreAllKeysCooled) SetKeyCooldown(ctx context.Context, configID int64, keyIndex int, until time.Time) error {
+func (m *MockStoreAllKeysCooled) SetChannelCooldown(ctx context.Context, channelID int64, until time.Time) error {
 	return nil
 }
-func (m *MockStoreAllKeysCooled) ResetKeyCooldown(ctx context.Context, configID int64, keyIndex int) error {
-	return nil
-}
-func (m *MockStoreAllKeysCooled) ClearAllKeyCooldowns(ctx context.Context, configID int64) error {
-	return nil
-}
+
+// Key-level cooldowns
 func (m *MockStoreAllKeysCooled) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int]time.Time, error) {
 	return make(map[int64]map[int]time.Time), nil
+}
+func (m *MockStoreAllKeysCooled) BumpKeyCooldown(ctx context.Context, channelID int64, keyIndex int, now time.Time, statusCode int) (time.Duration, error) {
+	return time.Second, nil
+}
+func (m *MockStoreAllKeysCooled) SetKeyCooldown(ctx context.Context, channelID int64, keyIndex int, until time.Time) error {
+	return nil
+}
+func (m *MockStoreAllKeysCooled) ResetKeyCooldown(ctx context.Context, channelID int64, keyIndex int) error {
+	return nil
 }
 func (m *MockStoreAllKeysCooled) SetKeyRR(ctx context.Context, configID int64, idx int) error {
 	return nil

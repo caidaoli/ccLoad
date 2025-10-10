@@ -120,9 +120,6 @@ func TestConfig_JSONSerialization(t *testing.T) {
 		ID:             1,
 		Name:           "test-channel",
 		ChannelType:    "gemini",
-		KeyStrategy:    "round_robin",
-		APIKey:         "test-key",
-		APIKeys:        []string{"key1", "key2"},
 		URL:            "https://api.example.com",
 		Priority:       10,
 		Models:         []string{"model-1", "model-2"},
@@ -149,17 +146,21 @@ func TestConfig_JSONSerialization(t *testing.T) {
 		t.Errorf("channel_type不匹配: 期望 gemini, 实际 %s", restored.ChannelType)
 	}
 
-	if restored.KeyStrategy != "round_robin" {
-		t.Errorf("key_strategy不匹配: 期望 round_robin, 实际 %s", restored.KeyStrategy)
+	if restored.Name != "test-channel" {
+		t.Errorf("name不匹配: 期望 test-channel, 实际 %s", restored.Name)
+	}
+
+	if len(restored.Models) != 2 {
+		t.Errorf("models数量不匹配: 期望 2, 实际 %d", len(restored.Models))
+	}
+
+	if len(restored.ModelRedirects) != 1 {
+		t.Errorf("model_redirects数量不匹配: 期望 1, 实际 %d", len(restored.ModelRedirects))
 	}
 
 	// 时间比较：允许1秒误差（JSON序列化精度损失）
 	if !restored.CreatedAt.Time.Truncate(time.Second).Equal(now.Truncate(time.Second)) {
 		t.Errorf("created_at时间不匹配:\n期望: %v\n实际: %v", now, restored.CreatedAt.Time)
-	}
-
-	if len(restored.APIKeys) != 2 {
-		t.Errorf("api_keys数量不匹配: 期望 2, 实际 %d", len(restored.APIKeys))
 	}
 }
 
@@ -200,106 +201,3 @@ func TestConfig_GetChannelType(t *testing.T) {
 	}
 }
 
-// ==================== GetKeyStrategy 默认值测试 ====================
-
-func TestConfig_GetKeyStrategy(t *testing.T) {
-	tests := []struct {
-		name        string
-		keyStrategy string
-		expected    string
-	}{
-		{
-			name:        "非空值原样返回",
-			keyStrategy: "round_robin",
-			expected:    "round_robin",
-		},
-		{
-			name:        "空字符串返回默认值",
-			keyStrategy: "",
-			expected:    "sequential",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			config := &Config{KeyStrategy: tt.keyStrategy}
-			result := config.GetKeyStrategy()
-
-			if result != tt.expected {
-				t.Errorf("GetKeyStrategy()结果不匹配:\n期望: %s\n实际: %s", tt.expected, result)
-			}
-		})
-	}
-}
-
-// ==================== normalizeConfigDefaults 测试 ====================
-
-func TestNormalizeConfigDefaults(t *testing.T) {
-	configs := []*Config{
-		{
-			ID:             1,
-			Name:           "empty-defaults",
-			ChannelType:    "",
-			KeyStrategy:    "",
-			ModelRedirects: nil,
-			APIKeys:        nil,
-		},
-		{
-			ID:             2,
-			Name:           "with-values",
-			ChannelType:    "gemini",
-			KeyStrategy:    "round_robin",
-			ModelRedirects: map[string]string{"test": "value"},
-			APIKeys:        []string{"key1"},
-		},
-	}
-
-	normalizeConfigDefaults(configs)
-
-	// 验证第一个Config（空默认值）
-	if configs[0].ChannelType != "anthropic" {
-		t.Errorf("空channel_type未填充默认值: %s", configs[0].ChannelType)
-	}
-
-	if configs[0].KeyStrategy != "sequential" {
-		t.Errorf("空key_strategy未填充默认值: %s", configs[0].KeyStrategy)
-	}
-
-	if configs[0].ModelRedirects == nil {
-		t.Errorf("nil ModelRedirects未初始化为空map")
-	}
-
-	if configs[0].APIKeys == nil {
-		t.Errorf("nil APIKeys未初始化为空slice")
-	}
-
-	// 验证第二个Config（已有值不被覆盖）
-	if configs[1].ChannelType != "gemini" {
-		t.Errorf("非空channel_type被错误覆盖: %s", configs[1].ChannelType)
-	}
-
-	if configs[1].KeyStrategy != "round_robin" {
-		t.Errorf("非空key_strategy被错误覆盖: %s", configs[1].KeyStrategy)
-	}
-}
-
-// ==================== 边界条件测试 ====================
-
-func TestNormalizeConfigDefaults_EmptySlice(t *testing.T) {
-	var configs []*Config
-	// 不应崩溃
-	normalizeConfigDefaults(configs)
-}
-
-func TestNormalizeConfigDefaults_NilConfig(t *testing.T) {
-	configs := []*Config{nil}
-
-	// 验证nil config会导致panic（当前实现不处理nil）
-	defer func() {
-		if r := recover(); r == nil {
-			t.Errorf("期望panic但未发生")
-		}
-	}()
-
-	normalizeConfigDefaults(configs)
-}

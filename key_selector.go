@@ -29,75 +29,95 @@ func NewKeySelector(store Store, gauge *atomic.Int64) *KeySelector {
 // - round_robin: 轮询选择，跳过冷却中的Key和已尝试的Key
 // excludeKeys: 本次请求中已尝试过的Key索引集合（避免同一请求内重复尝试）
 func (ks *KeySelector) SelectAvailableKey(ctx context.Context, cfg *Config, excludeKeys map[int]bool) (int, string, error) {
-	keys := cfg.GetAPIKeys()
-	if len(keys) == 0 {
+	// 从数据库查询渠道的所有API Keys
+	apiKeys, err := ks.store.GetAPIKeys(ctx, cfg.ID)
+	if err != nil {
+		return -1, "", fmt.Errorf("failed to get API keys for channel %d: %w", cfg.ID, err)
+	}
+	if len(apiKeys) == 0 {
 		return -1, "", fmt.Errorf("no API keys configured for channel %d", cfg.ID)
 	}
 
 	// 单Key场景：直接返回，不使用Key级别冷却（YAGNI原则）
-	if len(keys) == 1 {
+	if len(apiKeys) == 1 {
 		if excludeKeys != nil && excludeKeys[0] {
 			return -1, "", fmt.Errorf("single key already tried in this request")
 		}
-		return 0, keys[0], nil
+		return apiKeys[0].KeyIndex, apiKeys[0].APIKey, nil
 	}
 
-	// 多Key场景：根据策略选择
-	strategy := cfg.GetKeyStrategy()
+	// 多Key场景：根据策略选择（从第一个Key读取策略，所有Key共享策略）
+	strategy := apiKeys[0].KeyStrategy
+	if strategy == "" {
+		strategy = "sequential" // 默认顺序策略
+	}
 
 	switch strategy {
 	case "round_robin":
-		return ks.selectRoundRobin(ctx, cfg.ID, keys, excludeKeys)
+		return ks.selectRoundRobin(ctx, cfg.ID, apiKeys, excludeKeys)
 	case "sequential":
-		return ks.selectSequential(ctx, cfg.ID, keys, excludeKeys)
+		return ks.selectSequential(ctx, cfg.ID, apiKeys, excludeKeys)
 	default:
 		// 默认使用顺序策略
-		return ks.selectSequential(ctx, cfg.ID, keys, excludeKeys)
+		return ks.selectSequential(ctx, cfg.ID, apiKeys, excludeKeys)
 	}
 }
 
 // selectSequential 顺序选择：从第一个开始，跳过冷却中的Key和已尝试的Key
-func (ks *KeySelector) selectSequential(ctx context.Context, channelID int64, keys []string, excludeKeys map[int]bool) (int, string, error) {
+func (ks *KeySelector) selectSequential(ctx context.Context, channelID int64, apiKeys []*APIKey, excludeKeys map[int]bool) (int, string, error) {
 	now := time.Now()
 
-	for i, key := range keys {
+	for _, apiKey := range apiKeys {
+		keyIndex := apiKey.KeyIndex
+
 		// 跳过本次请求已尝试过的Key
-		if excludeKeys != nil && excludeKeys[i] {
+		if excludeKeys != nil && excludeKeys[keyIndex] {
 			continue
 		}
 
-		// 直接查询数据库检查冷却状态
-		until, exists := ks.store.GetKeyCooldownUntil(ctx, channelID, i)
-		if exists && until.After(now) {
+		// 检查Key内联的冷却状态（优化：优先使用内存数据）
+		if apiKey.IsCoolingDown(now) {
 			continue // Key冷却中，跳过
 		}
 
-		return i, key, nil
+		return keyIndex, apiKey.APIKey, nil
 	}
 
 	return -1, "", fmt.Errorf("all API keys are in cooldown or already tried")
 }
 
 // selectRoundRobin 轮询选择：使用轮询指针，跳过冷却中的Key和已尝试的Key
-func (ks *KeySelector) selectRoundRobin(ctx context.Context, channelID int64, keys []string, excludeKeys map[int]bool) (int, string, error) {
-	keyCount := len(keys)
+func (ks *KeySelector) selectRoundRobin(ctx context.Context, channelID int64, apiKeys []*APIKey, excludeKeys map[int]bool) (int, string, error) {
+	keyCount := len(apiKeys)
 	now := time.Now()
 
 	// 直接从数据库获取轮询指针
 	startIdx := ks.store.NextKeyRR(ctx, channelID, keyCount)
 
-	// 从startIdx开始轮询，最多尝试keyCount次
+	// 从startIdx开始轮���，最多尝试keyCount次
 	for i := 0; i < keyCount; i++ {
 		idx := (startIdx + i) % keyCount
+
+		// 在apiKeys中查找对应key_index的Key
+		var selectedKey *APIKey
+		for _, apiKey := range apiKeys {
+			if apiKey.KeyIndex == idx {
+				selectedKey = apiKey
+				break
+			}
+		}
+
+		if selectedKey == nil {
+			continue // Key不存在，跳过（理论上不应该发生）
+		}
 
 		// 跳过本次请求已尝试过的Key
 		if excludeKeys != nil && excludeKeys[idx] {
 			continue
 		}
 
-		// 直接查询数据库检查冷却状态
-		until, exists := ks.store.GetKeyCooldownUntil(ctx, channelID, idx)
-		if exists && until.After(now) {
+		// 检查Key内联的冷却状态（优化：优先使用内存数据）
+		if selectedKey.IsCoolingDown(now) {
 			continue // Key冷却中，跳过
 		}
 
@@ -105,7 +125,7 @@ func (ks *KeySelector) selectRoundRobin(ctx context.Context, channelID int64, ke
 		nextIdx := (idx + 1) % keyCount
 		_ = ks.store.SetKeyRR(ctx, channelID, nextIdx)
 
-		return idx, keys[idx], nil
+		return idx, selectedKey.APIKey, nil
 	}
 
 	return -1, "", fmt.Errorf("all API keys are in cooldown or already tried")
@@ -114,7 +134,7 @@ func (ks *KeySelector) selectRoundRobin(ctx context.Context, channelID int64, ke
 // MarkKeyError 标记Key错误，触发指数退避冷却
 func (ks *KeySelector) MarkKeyError(ctx context.Context, channelID int64, keyIndex int, statusCode int) error {
 	now := time.Now()
-	_, err := ks.store.BumpKeyCooldownOnError(ctx, channelID, keyIndex, now, statusCode)
+	_, err := ks.store.BumpKeyCooldown(ctx, channelID, keyIndex, now, statusCode)
 	if err != nil {
 		return err
 	}
@@ -137,10 +157,15 @@ func (ks *KeySelector) MarkKeySuccess(ctx context.Context, channelID int64, keyI
 func (ks *KeySelector) GetKeyCooldownInfo(ctx context.Context, channelID int64, keyIndex int) (until time.Time, cooled bool) {
 	now := time.Now()
 
-	// 直接查询数据库
-	until, ok := ks.store.GetKeyCooldownUntil(ctx, channelID, keyIndex)
-	if ok && until.After(now) {
-		return until, true
+	// 查询API Key对象（包含内联冷却数据）
+	apiKey, err := ks.store.GetAPIKey(ctx, channelID, keyIndex)
+	if err != nil || apiKey == nil {
+		return time.Time{}, false
+	}
+
+	// 检查冷却状态
+	if apiKey.IsCoolingDown(now) {
+		return time.Unix(apiKey.CooldownUntil, 0), true
 	}
 
 	return time.Time{}, false

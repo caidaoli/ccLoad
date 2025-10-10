@@ -12,15 +12,12 @@ import (
 func TestRedisSync_Serialization(t *testing.T) {
 	now := time.Now()
 
-	// 创建测试Config对象（包含边界条件）
+	// 创建测试Config对象（注：新架构中APIKey在api_keys表）
 	configs := []*Config{
 		{
 			ID:             1,
 			Name:           "test-anthropic",
 			ChannelType:    "anthropic",
-			KeyStrategy:    "sequential",
-			APIKey:         "sk-test-1",
-			APIKeys:        []string{"key1", "key2"},
 			URL:            "https://api.anthropic.com",
 			Priority:       10,
 			Models:         []string{"claude-3-sonnet"},
@@ -32,41 +29,18 @@ func TestRedisSync_Serialization(t *testing.T) {
 		{
 			ID:             2,
 			Name:           "test-empty-defaults",
-			ChannelType:    "", // 空值，应被规范化为anthropic
-			KeyStrategy:    "", // 空值，应被规范化为sequential
-			APIKey:         "sk-test-2",
-			APIKeys:        nil, // nil，应被规范化为[]
+			ChannelType:    "", // 空值，GetChannelType()会返回默认值
 			URL:            "https://api.example.com",
 			Priority:       5,
 			Models:         []string{"test-model"},
-			ModelRedirects: nil, // nil，应被规范化为{}
+			ModelRedirects: map[string]string{}, // 初始化为空map
 			Enabled:        true,
 			CreatedAt:      JSONTime{Time: now},
 			UpdatedAt:      JSONTime{Time: now},
 		},
 	}
 
-	// 步骤1：规范化默认值（模拟SyncAllChannelsToRedis）
-	normalizeConfigDefaults(configs)
-
-	// 验证规范化结果
-	if configs[1].ChannelType != "anthropic" {
-		t.Errorf("规范化失败：channel_type应为anthropic，实际为 %s", configs[1].ChannelType)
-	}
-
-	if configs[1].KeyStrategy != "sequential" {
-		t.Errorf("规范化失败：key_strategy应为sequential，实际为 %s", configs[1].KeyStrategy)
-	}
-
-	if configs[1].APIKeys == nil {
-		t.Errorf("规范化失败：api_keys应初始化为[]，实际为nil")
-	}
-
-	if configs[1].ModelRedirects == nil {
-		t.Errorf("规范化失败：model_redirects应初始化为{}，实际为nil")
-	}
-
-	// 步骤2：序列化到JSON（模拟Redis存储）
+	// 步骤1：序列化到JSON（模拟Redis存储）
 	data, err := sonic.Marshal(configs)
 	if err != nil {
 		t.Fatalf("序列化失败: %v", err)
@@ -94,13 +68,7 @@ func TestRedisSync_Serialization(t *testing.T) {
 		t.Errorf("created_at时间戳应为正数，实际为 %d", createdAtTS)
 	}
 
-	// 验证channel_type非空（已规范化）
-	channelType, ok := jsonCheck[1]["channel_type"].(string)
-	if !ok || channelType == "" {
-		t.Errorf("channel_type应为非空字符串，实际为 %v", jsonCheck[1]["channel_type"])
-	}
-
-	// 步骤3：反序列化（模拟从Redis恢复）
+	// 步骤2：反序列化（模拟从Redis恢复）
 	var restored []*Config
 	if err := sonic.Unmarshal(data, &restored); err != nil {
 		t.Fatalf("反序列化失败: %v", err)
@@ -120,17 +88,9 @@ func TestRedisSync_Serialization(t *testing.T) {
 		t.Errorf("Config[0] 时间恢复错误:\n期望: %v\n实际: %v", now, restored[0].CreatedAt.Time)
 	}
 
-	// 验证第二个Config（边界条件）
-	if restored[1].ChannelType != "anthropic" {
-		t.Errorf("Config[1] channel_type应恢复为anthropic，实际为 %s", restored[1].ChannelType)
-	}
-
-	if restored[1].KeyStrategy != "sequential" {
-		t.Errorf("Config[1] key_strategy应恢复为sequential，实际为 %s", restored[1].KeyStrategy)
-	}
-
-	if len(restored[1].APIKeys) != 0 {
-		t.Errorf("Config[1] api_keys应为空数组，实际长度 %d", len(restored[1].APIKeys))
+	// 验证第二个Config（使用GetChannelType获取默认值）
+	if restored[1].GetChannelType() != "anthropic" {
+		t.Errorf("Config[1] GetChannelType()应返回anthropic，实际为 %s", restored[1].GetChannelType())
 	}
 
 	if len(restored[1].ModelRedirects) != 0 {
@@ -141,19 +101,16 @@ func TestRedisSync_Serialization(t *testing.T) {
 // ==================== Redis恢复时默认值填充测试 ====================
 
 func TestRedisRestore_DefaultValuesFilling(t *testing.T) {
-	// 模拟从Redis恢复的原始数据（包含空值，时间为Unix时间戳）
+	// 模拟从Redis恢复的原始数据（注：APIKey在api_keys表）
 	rawJSON := `[
 		{
 			"id": 1,
 			"name": "test-redis",
-			"api_key": "sk-test",
 			"channel_type": "",
-			"key_strategy": "",
 			"url": "https://api.example.com",
 			"priority": 10,
 			"models": ["test-model"],
 			"model_redirects": {},
-			"api_keys": [],
 			"enabled": true,
 			"created_at": 1759575045,
 			"updated_at": 1759575045
@@ -246,22 +203,24 @@ func TestParseTimestampOrNow_Compatibility(t *testing.T) {
 
 // ==================== Benchmark 性能测试 ====================
 
-func BenchmarkNormalizeConfigDefaults(b *testing.B) {
+func BenchmarkConfigSerialization(b *testing.B) {
 	configs := make([]*Config, 100)
 	for i := 0; i < 100; i++ {
 		configs[i] = &Config{
 			ID:             int64(i),
 			Name:           "test",
-			ChannelType:    "",
-			KeyStrategy:    "",
-			ModelRedirects: nil,
-			APIKeys:        nil,
+			ChannelType:    "anthropic",
+			URL:            "https://api.example.com",
+			Priority:       10,
+			Models:         []string{"model-1"},
+			ModelRedirects: map[string]string{},
+			Enabled:        true,
 		}
 	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		normalizeConfigDefaults(configs)
+		_, _ = sonic.Marshal(configs)
 	}
 }
 

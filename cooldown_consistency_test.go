@@ -29,7 +29,6 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 		// 创建两个独立的测试渠道
 		channelCfg := &Config{
 			Name:    "channel-level-test",
-			APIKey:  "sk-test-channel",
 			URL:     "https://api.example.com",
 			Enabled: true,
 		}
@@ -40,7 +39,6 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 
 		keyCfg := &Config{
 			Name:    "key-level-test",
-			APIKey:  "sk-key1,sk-key2",
 			URL:     "https://api.example.com",
 			Enabled: true,
 		}
@@ -49,14 +47,27 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 			t.Fatalf("创建Key测试配置失败: %v", err)
 		}
 
+		// 为Key测试渠道创建2个API Keys
+		for i, key := range []string{"sk-key1", "sk-key2"} {
+			err = store.CreateAPIKey(ctx, &APIKey{
+				ChannelID:   keyCreated.ID,
+				KeyIndex:    i,
+				APIKey:      key,
+				KeyStrategy: "sequential",
+			})
+			if err != nil {
+				t.Fatalf("创建API Key %d失败: %v", i, err)
+			}
+		}
+
 		// 触发渠道级401错误
-		channelDuration, err := store.BumpCooldownOnError(ctx, channelCreated.ID, now, 401)
+		channelDuration, err := store.BumpChannelCooldown(ctx, channelCreated.ID, now, 401)
 		if err != nil {
 			t.Fatalf("渠道级BumpCooldownOnError失败: %v", err)
 		}
 
 		// 触发Key级401错误
-		keyDuration, err := store.BumpKeyCooldownOnError(ctx, keyCreated.ID, 0, now, 401)
+		keyDuration, err := store.BumpKeyCooldown(ctx, keyCreated.ID, 0, now, 401)
 		if err != nil {
 			t.Fatalf("Key级BumpKeyCooldownOnError失败: %v", err)
 		}
@@ -88,7 +99,6 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 		// 创建两个测试渠道
 		channelCfg := &Config{
 			Name:    "channel-backoff-test",
-			APIKey:  "sk-test-channel",
 			URL:     "https://api.example.com",
 			Enabled: true,
 		}
@@ -99,13 +109,25 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 
 		keyCfg := &Config{
 			Name:    "key-backoff-test",
-			APIKey:  "sk-key1,sk-key2",
 			URL:     "https://api.example.com",
 			Enabled: true,
 		}
 		keyCreated, err := store.CreateConfig(ctx, keyCfg)
 		if err != nil {
 			t.Fatalf("创建Key测试配置失败: %v", err)
+		}
+
+		// 为Key测试渠道创建2个API Keys
+		for i, key := range []string{"sk-key1", "sk-key2"} {
+			err = store.CreateAPIKey(ctx, &APIKey{
+				ChannelID:   keyCreated.ID,
+				KeyIndex:    i,
+				APIKey:      key,
+				KeyStrategy: "sequential",
+			})
+			if err != nil {
+				t.Fatalf("创建API Key %d失败: %v", i, err)
+			}
 		}
 
 		// 预期序列：5min → 10min → 20min → 30min
@@ -119,13 +141,13 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 		currentTime := now
 		for i, expected := range expectedSequence {
 			// 渠道级错误
-			channelDuration, err := store.BumpCooldownOnError(ctx, channelCreated.ID, currentTime, 401)
+			channelDuration, err := store.BumpChannelCooldown(ctx, channelCreated.ID, currentTime, 401)
 			if err != nil {
 				t.Fatalf("第%d次渠道级错误失败: %v", i+1, err)
 			}
 
 			// Key级错误
-			keyDuration, err := store.BumpKeyCooldownOnError(ctx, keyCreated.ID, 0, currentTime, 401)
+			keyDuration, err := store.BumpKeyCooldown(ctx, keyCreated.ID, 0, currentTime, 401)
 			if err != nil {
 				t.Fatalf("第%d次Key级错误失败: %v", i+1, err)
 			}
@@ -155,7 +177,6 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 	t.Run("403错误冷却时间一致性", func(t *testing.T) {
 		channelCfg := &Config{
 			Name:    "channel-403-test",
-			APIKey:  "sk-test-channel",
 			URL:     "https://api.example.com",
 			Enabled: true,
 		}
@@ -166,7 +187,6 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 
 		keyCfg := &Config{
 			Name:    "key-403-test",
-			APIKey:  "sk-key1,sk-key2",
 			URL:     "https://api.example.com",
 			Enabled: true,
 		}
@@ -175,9 +195,22 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 			t.Fatalf("创建Key测试配置失败: %v", err)
 		}
 
+		// 为Key测试渠道创建2个API Keys
+		for i, key := range []string{"sk-key1", "sk-key2"} {
+			err = store.CreateAPIKey(ctx, &APIKey{
+				ChannelID:   keyCreated.ID,
+				KeyIndex:    i,
+				APIKey:      key,
+				KeyStrategy: "sequential",
+			})
+			if err != nil {
+				t.Fatalf("创建API Key %d失败: %v", i, err)
+			}
+		}
+
 		// 触发403错误
-		channelDuration, _ := store.BumpCooldownOnError(ctx, channelCreated.ID, now, 403)
-		keyDuration, _ := store.BumpKeyCooldownOnError(ctx, keyCreated.ID, 0, now, 403)
+		channelDuration, _ := store.BumpChannelCooldown(ctx, channelCreated.ID, now, 403)
+		keyDuration, _ := store.BumpKeyCooldown(ctx, keyCreated.ID, 0, now, 403)
 
 		if channelDuration != keyDuration {
 			t.Errorf("❌ 403错误冷却时间不一致: 渠道级=%v, Key级=%v",
@@ -209,7 +242,6 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				channelCfg := &Config{
 					Name:    "channel-" + tc.name,
-					APIKey:  "sk-test",
 					URL:     "https://api.example.com",
 					Enabled: true,
 				}
@@ -217,14 +249,23 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 
 				keyCfg := &Config{
 					Name:    "key-" + tc.name,
-					APIKey:  "sk-key1,sk-key2",
 					URL:     "https://api.example.com",
 					Enabled: true,
 				}
 				keyCreated, _ := store.CreateConfig(ctx, keyCfg)
 
-				channelDuration, _ := store.BumpCooldownOnError(ctx, channelCreated.ID, now, tc.statusCode)
-				keyDuration, _ := store.BumpKeyCooldownOnError(ctx, keyCreated.ID, 0, now, tc.statusCode)
+				// 为Key测试渠道创建2个API Keys
+				for i, key := range []string{"sk-key1", "sk-key2"} {
+					_ = store.CreateAPIKey(ctx, &APIKey{
+						ChannelID:   keyCreated.ID,
+						KeyIndex:    i,
+						APIKey:      key,
+						KeyStrategy: "sequential",
+					})
+				}
+
+				channelDuration, _ := store.BumpChannelCooldown(ctx, channelCreated.ID, now, tc.statusCode)
+				keyDuration, _ := store.BumpKeyCooldown(ctx, keyCreated.ID, 0, now, tc.statusCode)
 
 				if channelDuration != keyDuration {
 					t.Errorf("❌ %s冷却时间不一致: 渠道级=%v, Key级=%v",

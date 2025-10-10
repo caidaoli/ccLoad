@@ -199,16 +199,19 @@ func NewSQLiteStore(path string, redisSync *RedisSync) (*SQLiteStore, error) {
 
 // migrate 创建数据库表结构（Unix时间戳原生支持）
 func (s *SQLiteStore) migrate(ctx context.Context) error {
-	// 创建 channels 表（created_at/updated_at使用BIGINT Unix秒时间戳）
+	// 创建 channels 表（新架构：API Keys 在独立表，冷却数据内联）
 	if _, err := s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS channels (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			NAME TEXT NOT NULL,
-			api_key TEXT NOT NULL,
+			name TEXT NOT NULL,
 			url TEXT NOT NULL,
 			priority INTEGER NOT NULL DEFAULT 0,
 			models TEXT NOT NULL,
+			model_redirects TEXT DEFAULT '{}',
+			channel_type TEXT DEFAULT 'anthropic',
 			enabled INTEGER NOT NULL DEFAULT 1,
+			cooldown_until INTEGER DEFAULT 0,
+			cooldown_duration_ms INTEGER DEFAULT 0,
 			created_at BIGINT NOT NULL,
 			updated_at BIGINT NOT NULL
 		);
@@ -229,9 +232,8 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	}
 
 	// 添加新字段（兼容已有数据库）
+	// 注意：新架构中 api_keys, key_strategy 已移至 api_keys 表，无需在 channels 表添加
 	s.addColumnIfNotExists(ctx, "channels", "model_redirects", "TEXT DEFAULT '{}'")      // 模型重定向字段，JSON格式
-	s.addColumnIfNotExists(ctx, "channels", "api_keys", "TEXT DEFAULT '[]'")             // 多Key支持，JSON数组
-	s.addColumnIfNotExists(ctx, "channels", "key_strategy", "TEXT DEFAULT 'sequential'") // Key使用策略
 	s.addColumnIfNotExists(ctx, "channels", "channel_type", "TEXT DEFAULT 'anthropic'")  // 渠道类型
 
 	// 创建 key_cooldowns 表（Key级别冷却，使用Unix时间戳）
@@ -246,6 +248,25 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		);
 	`); err != nil {
 		return fmt.Errorf("create key_cooldowns table: %w", err)
+	}
+
+	// 创建 api_keys 表（API Keys 独立存储，包含冷却字段）
+	if _, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS api_keys (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			channel_id INTEGER NOT NULL,
+			key_index INTEGER NOT NULL,
+			api_key TEXT NOT NULL,
+			key_strategy TEXT DEFAULT 'sequential',
+			cooldown_until INTEGER DEFAULT 0,
+			cooldown_duration_ms INTEGER DEFAULT 0,
+			created_at BIGINT NOT NULL,
+			updated_at BIGINT NOT NULL,
+			UNIQUE(channel_id, key_index),
+			FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
+		);
+	`); err != nil {
+		return fmt.Errorf("create api_keys table: %w", err)
 	}
 
 	// 创建 key_rr 表（Key级别轮询指针）
@@ -294,6 +315,11 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	// Unix时间戳重构：重建表结构（TIMESTAMP → BIGINT）
 	if err := s.rebuildChannelsTableToUnixTimestamp(ctx); err != nil {
 		return fmt.Errorf("rebuild channels table: %w", err)
+	}
+
+	// 数据库架构迁移：冷却数据合并 + API Keys 表拆分
+	if err := s.migrateToNewSchema(ctx); err != nil {
+		return fmt.Errorf("migrate to new schema: %w", err)
 	}
 
 	return nil
@@ -378,6 +404,34 @@ func (s *SQLiteStore) migrateAPIKeysField(ctx context.Context) error {
 	// 内存数据库模式：跳过历史数据修复（KISS原则：内存DB无历史数据）
 	useMemory := os.Getenv("CCLOAD_USE_MEMORY_DB") == "true"
 	if useMemory {
+		return nil
+	}
+
+	// 检查 channels 表是否有 api_key 列（全新数据库没有）
+	hasAPIKeyColumn := false
+	tableInfoRows, err := s.db.QueryContext(ctx, "PRAGMA table_info(channels)")
+	if err != nil {
+		return fmt.Errorf("check channels columns: %w", err)
+	}
+	defer tableInfoRows.Close()
+
+	for tableInfoRows.Next() {
+		var cid int
+		var name, dataType string
+		var notNull, pk int
+		var dfltValue any
+		if err := tableInfoRows.Scan(&cid, &name, &dataType, &notNull, &dfltValue, &pk); err != nil {
+			continue
+		}
+		if name == "api_key" {
+			hasAPIKeyColumn = true
+			break
+		}
+	}
+	tableInfoRows.Close()
+
+	// 全新数据库无需迁移
+	if !hasAPIKeyColumn {
 		return nil
 	}
 
@@ -796,8 +850,10 @@ func (s *SQLiteStore) CleanupLogsBefore(ctx context.Context, cutoff time.Time) e
 // ---- Store interface impl ----
 
 func (s *SQLiteStore) ListConfigs(ctx context.Context) ([]*Config, error) {
+	// 新架构：不再查询 api_key, api_keys, key_strategy 字段
 	query := `
-		SELECT id, name, api_key, api_keys, key_strategy, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at
+		SELECT id, name, url, priority, models, model_redirects, channel_type, enabled,
+		       cooldown_until, cooldown_duration_ms, created_at, updated_at
 		FROM channels
 		ORDER BY priority DESC, id ASC
 	`
@@ -813,8 +869,10 @@ func (s *SQLiteStore) ListConfigs(ctx context.Context) ([]*Config, error) {
 }
 
 func (s *SQLiteStore) GetConfig(ctx context.Context, id int64) (*Config, error) {
+	// 新架构：不再查询 api_key, api_keys, key_strategy 字段
 	query := `
-		SELECT id, name, api_key, api_keys, key_strategy, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at
+		SELECT id, name, url, priority, models, model_redirects, channel_type, enabled,
+		       cooldown_until, cooldown_duration_ms, created_at, updated_at
 		FROM channels
 		WHERE id = ?
 	`
@@ -840,30 +898,30 @@ func (s *SQLiteStore) GetEnabledChannelsByModel(ctx context.Context, model strin
     nowUnix := time.Now().Unix()
 
     if model == "*" {
-        // 通配符：返回所有启用且未冷却的渠道
+        // 通配符：返回所有启用的渠道（新架构：从 channels 表读取内联冷却字段）
         query = `
-            SELECT c.id, c.name, c.api_key, c.api_keys, c.key_strategy, c.url, c.priority,
-                   c.models, c.model_redirects, c.channel_type, c.enabled, c.created_at, c.updated_at
+            SELECT c.id, c.name, c.url, c.priority,
+                   c.models, c.model_redirects, c.channel_type, c.enabled,
+                   c.cooldown_until, c.cooldown_duration_ms, c.created_at, c.updated_at
             FROM channels c
-            LEFT JOIN cooldowns cd ON c.id = cd.channel_id
             WHERE c.enabled = 1
-              AND (cd.until IS NULL OR cd.until <= ?)
+              AND (c.cooldown_until = 0 OR c.cooldown_until <= ?)
             ORDER BY c.priority DESC, c.id ASC
         `
         args = []any{nowUnix}
     } else {
         // 精确匹配：使用 JSON1 解析 models 数组并精确匹配元素
         query = `
-            SELECT c.id, c.name, c.api_key, c.api_keys, c.key_strategy, c.url, c.priority,
-                   c.models, c.model_redirects, c.channel_type, c.enabled, c.created_at, c.updated_at
+            SELECT c.id, c.name, c.url, c.priority,
+                   c.models, c.model_redirects, c.channel_type, c.enabled,
+                   c.cooldown_until, c.cooldown_duration_ms, c.created_at, c.updated_at
             FROM channels c
-            LEFT JOIN cooldowns cd ON c.id = cd.channel_id
             WHERE c.enabled = 1
               AND EXISTS (
                   SELECT 1 FROM json_each(c.models) je
                   WHERE je.value = ?
               )
-              AND (cd.until IS NULL OR cd.until <= ?)
+              AND (c.cooldown_until = 0 OR c.cooldown_until <= ?)
             ORDER BY c.priority DESC, c.id ASC
         `
         args = []any{model, nowUnix}
@@ -880,17 +938,17 @@ func (s *SQLiteStore) GetEnabledChannelsByModel(ctx context.Context, model strin
 }
 
 // GetEnabledChannelsByType 查询指定类型的启用渠道（按优先级排序）
-// 性能优化：使用 LEFT JOIN 一次性查询渠道和冷却状态，消除 N+1 查询问题
+// 新架构：从 channels 表读取内联冷却字段，不再 JOIN cooldowns 表
 func (s *SQLiteStore) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*Config, error) {
 	nowUnix := time.Now().Unix()
 	query := `
-		SELECT c.id, c.name, c.api_key, c.api_keys, c.key_strategy, c.url, c.priority,
-		       c.models, c.model_redirects, c.channel_type, c.enabled, c.created_at, c.updated_at
+		SELECT c.id, c.name, c.url, c.priority,
+		       c.models, c.model_redirects, c.channel_type, c.enabled,
+		       c.cooldown_until, c.cooldown_duration_ms, c.created_at, c.updated_at
 		FROM channels c
-		LEFT JOIN cooldowns cd ON c.id = cd.channel_id
 		WHERE c.enabled = 1
 		  AND c.channel_type = ?
-		  AND (cd.until IS NULL OR cd.until <= ?)
+		  AND (c.cooldown_until = 0 OR c.cooldown_until <= ?)
 		ORDER BY c.priority DESC, c.id ASC
 	`
 
@@ -909,18 +967,14 @@ func (s *SQLiteStore) CreateConfig(ctx context.Context, c *Config) (*Config, err
 	modelsStr, _ := serializeModels(c.Models)
 	modelRedirectsStr, _ := serializeModelRedirects(c.ModelRedirects)
 
-	// 规范化APIKeys字段（DRY：统一处理，避免"null"字符串）
-	normalizeAPIKeys(c)
-	apiKeysStr, _ := sonic.Marshal(c.APIKeys) // 序列化多Key数组
-
 	// 使用GetChannelType确保默认值
 	channelType := c.GetChannelType()
-	keyStrategy := c.GetKeyStrategy() // 确保默认值
 
+	// 新架构：API Keys 不再存储在 channels 表中
 	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO channels(name, api_key, api_keys, key_strategy, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, c.Name, c.APIKey, string(apiKeysStr), keyStrategy, c.URL, c.Priority, modelsStr, modelRedirectsStr, channelType,
+		INSERT INTO channels(name, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, c.Name, c.URL, c.Priority, modelsStr, modelRedirectsStr, channelType,
 		boolToInt(c.Enabled), nowUnix, nowUnix)
 
 	if err != nil {
@@ -951,23 +1005,20 @@ func (s *SQLiteStore) UpdateConfig(ctx context.Context, id int64, upd *Config) (
 	}
 
 	name := strings.TrimSpace(upd.Name)
-	apiKey := strings.TrimSpace(upd.APIKey)
 	url := strings.TrimSpace(upd.URL)
 	modelsStr, _ := serializeModels(upd.Models)
 	modelRedirectsStr, _ := serializeModelRedirects(upd.ModelRedirects)
 
-	// 规范化APIKeys字段（DRY：统一处理，避免"null"字符串）
-	normalizeAPIKeys(upd)
-	apiKeysStr, _ := sonic.Marshal(upd.APIKeys) // 序列化多Key数组
-	channelType := upd.GetChannelType()         // 确保默认值
-	keyStrategy := upd.GetKeyStrategy()         // 确保默认值
-	updatedAtUnix := time.Now().Unix()          // Unix秒时间戳
+	// 使用GetChannelType确保默认值
+	channelType := upd.GetChannelType()
+	updatedAtUnix := time.Now().Unix() // Unix秒时间戳
 
+	// 新架构：API Keys 不再存储在 channels 表中，通过单独的 CreateAPIKey/UpdateAPIKey/DeleteAPIKey 管理
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE channels
-		SET name=?, api_key=?, api_keys=?, key_strategy=?, url=?, priority=?, models=?, model_redirects=?, channel_type=?, enabled=?, updated_at=?
+		SET name=?, url=?, priority=?, models=?, model_redirects=?, channel_type=?, enabled=?, updated_at=?
 		WHERE id=?
-	`, name, apiKey, string(apiKeysStr), keyStrategy, url, upd.Priority, modelsStr, modelRedirectsStr, channelType,
+	`, name, url, upd.Priority, modelsStr, modelRedirectsStr, channelType,
 		boolToInt(upd.Enabled), updatedAtUnix, id)
 	if err != nil {
 		return nil, err
@@ -990,18 +1041,14 @@ func (s *SQLiteStore) ReplaceConfig(ctx context.Context, c *Config) (*Config, er
 	modelsStr, _ := serializeModels(c.Models)
 	modelRedirectsStr, _ := serializeModelRedirects(c.ModelRedirects)
 
-	// 规范化APIKeys字段（DRY：统一处理，避免"null"字符串）
-	normalizeAPIKeys(c)
-	apiKeysStr, _ := sonic.Marshal(c.APIKeys) // 序列化多Key数组
-	channelType := c.GetChannelType()         // 确保默认值
-	keyStrategy := c.GetKeyStrategy()         // 确保默认值
+	// 使用GetChannelType确保默认值
+	channelType := c.GetChannelType()
+
+	// 新架构：API Keys 不再存储在 channels 表中，通过单独的 CreateAPIKey 管理
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO channels(name, api_key, api_keys, key_strategy, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO channels(name, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(NAME) DO UPDATE SET
-			api_key = excluded.api_key,
-			api_keys = excluded.api_keys,
-			key_strategy = excluded.key_strategy,
 			url = excluded.url,
 			priority = excluded.priority,
 			models = excluded.models,
@@ -1009,7 +1056,7 @@ func (s *SQLiteStore) ReplaceConfig(ctx context.Context, c *Config) (*Config, er
 			channel_type = excluded.channel_type,
 			enabled = excluded.enabled,
 			updated_at = excluded.updated_at
-	`, c.Name, c.APIKey, string(apiKeysStr), keyStrategy, c.URL, c.Priority, modelsStr, modelRedirectsStr, channelType,
+	`, c.Name, c.URL, c.Priority, modelsStr, modelRedirectsStr, channelType,
 		boolToInt(c.Enabled), nowUnix, nowUnix)
 	if err != nil {
 		return nil, err
@@ -1081,16 +1128,81 @@ func (s *SQLiteStore) DeleteConfig(ctx context.Context, id int64) error {
 	return nil
 }
 
-func (s *SQLiteStore) GetCooldownUntil(ctx context.Context, configID int64) (time.Time, bool) {
-	row := s.db.QueryRowContext(ctx, `SELECT until FROM cooldowns WHERE channel_id = ?`, configID)
-	return scanUnixTimestamp(row)
+// ==================== 渠道级冷却方法（操作 channels 表内联字段）====================
+
+// BumpChannelCooldown 渠道级冷却：指数退避策略（认证错误5分钟起，其他1秒起，最大30分钟）
+func (s *SQLiteStore) BumpChannelCooldown(ctx context.Context, channelID int64, now time.Time, statusCode int) (time.Duration, error) {
+	// 1. 读取当前冷却状态
+	var cooldownUntil, cooldownDurationMs int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT cooldown_until, cooldown_duration_ms
+		FROM channels
+		WHERE id = ?
+	`, channelID).Scan(&cooldownUntil, &cooldownDurationMs)
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, errors.New("channel not found")
+		}
+		return 0, fmt.Errorf("query channel cooldown: %w", err)
+	}
+
+	// 2. 计算新的冷却时间（指数退避）
+	until := time.Unix(cooldownUntil, 0)
+	nextDuration := calculateBackoffDuration(cooldownDurationMs, until, now, &statusCode)
+	newUntil := now.Add(nextDuration)
+
+	// 3. 更新 channels 表
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE channels
+		SET cooldown_until = ?, cooldown_duration_ms = ?, updated_at = ?
+		WHERE id = ?
+	`, newUntil.Unix(), int64(nextDuration/time.Millisecond), now.Unix(), channelID)
+
+	if err != nil {
+		return 0, fmt.Errorf("update channel cooldown: %w", err)
+	}
+
+	return nextDuration, nil
 }
 
-// GetAllChannelCooldowns 批量查询所有渠道冷却状态（P0性能优化）
-// 性能提升：N次查询 → 1次查询，消除N+1问题
+// ResetChannelCooldown 重置渠道冷却状态
+func (s *SQLiteStore) ResetChannelCooldown(ctx context.Context, channelID int64) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE channels
+		SET cooldown_until = 0, cooldown_duration_ms = 0, updated_at = ?
+		WHERE id = ?
+	`, time.Now().Unix(), channelID)
+
+	if err != nil {
+		return fmt.Errorf("reset channel cooldown: %w", err)
+	}
+
+	return nil
+}
+
+// SetChannelCooldown 设置渠道冷却（手动设置冷却时间）
+func (s *SQLiteStore) SetChannelCooldown(ctx context.Context, channelID int64, until time.Time) error {
+	now := time.Now()
+	durationMs := calculateCooldownDuration(until, now)
+
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE channels
+		SET cooldown_until = ?, cooldown_duration_ms = ?, updated_at = ?
+		WHERE id = ?
+	`, until.Unix(), durationMs, now.Unix(), channelID)
+
+	if err != nil {
+		return fmt.Errorf("set channel cooldown: %w", err)
+	}
+
+	return nil
+}
+
+// GetAllChannelCooldowns 批量查询所有渠道冷却状态（从 channels 表读取）
 func (s *SQLiteStore) GetAllChannelCooldowns(ctx context.Context) (map[int64]time.Time, error) {
 	now := time.Now().Unix()
-	query := `SELECT channel_id, until FROM cooldowns WHERE until > ?`
+	query := `SELECT id, cooldown_until FROM channels WHERE cooldown_until > ?`
 
 	rows, err := s.db.QueryContext(ctx, query, now)
 	if err != nil {
@@ -1115,62 +1227,6 @@ func (s *SQLiteStore) GetAllChannelCooldowns(ctx context.Context) (map[int64]tim
 	}
 
 	return result, nil
-}
-
-func (s *SQLiteStore) SetCooldown(ctx context.Context, configID int64, until time.Time) error {
-	now := time.Now()
-	// 使用工具函数计算冷却持续时间和时间戳
-	durMs := calculateCooldownDuration(until, now)
-	unixTime := toUnixTimestamp(until)
-
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO cooldowns(channel_id, until, duration_ms) VALUES(?, ?, ?)
-		ON CONFLICT(channel_id) DO UPDATE SET
-			until = excluded.until,
-			duration_ms = excluded.duration_ms
-	`, configID, unixTime, durMs)
-	return err
-}
-
-// BumpCooldownOnError 指数退避：错误翻倍（认证错误5分钟起，其他1秒起，最大30m），成功清零
-func (s *SQLiteStore) BumpCooldownOnError(ctx context.Context, configID int64, now time.Time, statusCode int) (time.Duration, error) {
-	var unixTime int64
-	var durMs int64
-	err := s.db.QueryRowContext(ctx, `
-		SELECT until, COALESCE(duration_ms, 0)
-		FROM cooldowns
-		WHERE channel_id = ?
-	`, configID).Scan(&unixTime, &durMs)
-
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return 0, err
-	}
-
-	// 从Unix时间戳转换为time.Time
-	until := time.Unix(unixTime, 0)
-
-	// 使用工具函数计算指数退避时间（传递statusCode用于确定初始冷却时间）
-	next := calculateBackoffDuration(durMs, until, now, &statusCode)
-
-	newUntil := now.Add(next)
-	// 转换为Unix时间戳存储
-	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO cooldowns(channel_id, until, duration_ms) VALUES(?, ?, ?)
-		ON CONFLICT(channel_id) DO UPDATE SET
-			until = excluded.until,
-			duration_ms = excluded.duration_ms
-	`, configID, newUntil.Unix(), int64(next/time.Millisecond))
-
-	if err != nil {
-		return 0, err
-	}
-	return next, nil
-}
-
-func (s *SQLiteStore) ResetCooldown(ctx context.Context, configID int64) error {
-	// 删除记录，等效于冷却为0
-	_, err := s.db.ExecContext(ctx, `DELETE FROM cooldowns WHERE channel_id = ?`, configID)
-	return err
 }
 
 func (s *SQLiteStore) AddLog(ctx context.Context, e *LogEntry) error {
@@ -1641,19 +1697,18 @@ func (s *SQLiteStore) LoadChannelsFromRedis(ctx context.Context) error {
 		// 标准化数据：确保默认值正确填充
 		modelsStr, _ := serializeModels(config.Models)
 		modelRedirectsStr, _ := serializeModelRedirects(config.ModelRedirects)
-		apiKeysStr, _ := sonic.Marshal(config.APIKeys)
 		channelType := config.GetChannelType() // 强制使用默认值anthropic
-		keyStrategy := config.GetKeyStrategy() // 强制使用默认值sequential
 
-		// 使用完整字段列表确保数据一致性（包含所有新字段）
+		// 新架构：只恢复渠道基本信息，API Keys 需通过 CreateAPIKey 单独恢复
 		_, err := tx.ExecContext(ctx, `
 			INSERT OR REPLACE INTO channels(
-				name, api_key, api_keys, key_strategy, url, priority,
-				models, model_redirects, channel_type, enabled, created_at, updated_at
+				name, url, priority, models, model_redirects, channel_type,
+				enabled, cooldown_until, cooldown_duration_ms, created_at, updated_at
 			)
-			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, config.Name, config.APIKey, string(apiKeysStr), keyStrategy, config.URL, config.Priority,
-			modelsStr, modelRedirectsStr, channelType, boolToInt(config.Enabled), nowUnix, nowUnix)
+			VALUES(?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+		`, config.Name, config.URL, config.Priority,
+			modelsStr, modelRedirectsStr, channelType,
+			boolToInt(config.Enabled), nowUnix, nowUnix)
 
 		if err != nil {
             log.Printf("Warning: failed to restore channel %s: %v", config.Name, err)
@@ -1802,18 +1857,11 @@ func normalizeConfigDefaults(configs []*Config) {
 		if config.ChannelType == "" {
 			config.ChannelType = "anthropic"
 		}
-		// 强制填充key_strategy默认值
-		if config.KeyStrategy == "" {
-			config.KeyStrategy = "sequential"
-		}
 		// 确保model_redirects不为nil（避免序列化为null）
 		if config.ModelRedirects == nil {
 			config.ModelRedirects = make(map[string]string)
 		}
-		// 确保api_keys不为nil
-		if config.APIKeys == nil {
-			config.APIKeys = []string{}
-		}
+		// 注意：新架构下，API Keys 不再存储在 Config 中，无需规范化
 	}
 }
 
@@ -1906,23 +1954,33 @@ func boolToInt(b bool) int {
 	return 0
 }
 
-// ==================== Key级别冷却机制 ====================
+// ==================== Key级别冷却机制（操作 api_keys 表内联字段）====================
 
-// GetKeyCooldownUntil 查询指定Key的冷却截止时间
+// GetKeyCooldownUntil 查询指定Key的冷却截止时间（从 api_keys 表读取）
 func (s *SQLiteStore) GetKeyCooldownUntil(ctx context.Context, configID int64, keyIndex int) (time.Time, bool) {
-	row := s.db.QueryRowContext(ctx, `
-		SELECT until FROM key_cooldowns
+	var cooldownUntil int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT cooldown_until
+		FROM api_keys
 		WHERE channel_id = ? AND key_index = ?
-	`, configID, keyIndex)
-	return scanUnixTimestamp(row)
+	`, configID, keyIndex).Scan(&cooldownUntil)
+
+	if err != nil {
+		return time.Time{}, false
+	}
+
+	if cooldownUntil == 0 {
+		return time.Time{}, false
+	}
+
+	return time.Unix(cooldownUntil, 0), true
 }
 
-// GetAllKeyCooldowns 批量查询所有Key冷却状态（P1修复 2025-10-05）
+// GetAllKeyCooldowns 批量查询所有Key冷却状态（从 api_keys 表读取）
 // 返回: map[channelID]map[keyIndex]cooldownUntil
-// 性能优化: 一次查询替代 N*M 次独立查询（N=渠道数, M=Key数）
 func (s *SQLiteStore) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int]time.Time, error) {
 	now := time.Now().Unix()
-	query := `SELECT channel_id, key_index, until FROM key_cooldowns WHERE until > ?`
+	query := `SELECT channel_id, key_index, cooldown_until FROM api_keys WHERE cooldown_until > ?`
 
 	rows, err := s.db.QueryContext(ctx, query, now)
 	if err != nil {
@@ -1954,69 +2012,75 @@ func (s *SQLiteStore) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int
 	return result, nil
 }
 
-// BumpKeyCooldownOnError Key级别指数退避：错误翻倍（认证错误5分钟起，其他1秒起，最大30m）
-func (s *SQLiteStore) BumpKeyCooldownOnError(ctx context.Context, configID int64, keyIndex int, now time.Time, statusCode int) (time.Duration, error) {
-	var unixTime int64
-	var durMs int64
+// BumpKeyCooldown Key级别冷却：指数退避策略（认证错误5分钟起，其他1秒起，最大30分钟）
+func (s *SQLiteStore) BumpKeyCooldown(ctx context.Context, configID int64, keyIndex int, now time.Time, statusCode int) (time.Duration, error) {
+	// 1. 读取当前冷却状态
+	var cooldownUntil, cooldownDurationMs int64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT until, COALESCE(duration_ms, 0)
-		FROM key_cooldowns
+		SELECT cooldown_until, cooldown_duration_ms
+		FROM api_keys
 		WHERE channel_id = ? AND key_index = ?
-	`, configID, keyIndex).Scan(&unixTime, &durMs)
-
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return 0, err
-	}
-
-	// 从Unix时间戳转换为time.Time
-	until := time.Unix(unixTime, 0)
-
-	// 使用工具函数计算指数退避时间（传递statusCode用于确定初始冷却时间）
-	next := calculateBackoffDuration(durMs, until, now, &statusCode)
-
-	newUntil := now.Add(next)
-	// 转换为Unix时间戳存储
-	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO key_cooldowns(channel_id, key_index, until, duration_ms) VALUES(?, ?, ?, ?)
-		ON CONFLICT(channel_id, key_index) DO UPDATE SET
-			until = excluded.until,
-			duration_ms = excluded.duration_ms
-	`, configID, keyIndex, newUntil.Unix(), int64(next/time.Millisecond))
+	`, configID, keyIndex).Scan(&cooldownUntil, &cooldownDurationMs)
 
 	if err != nil {
-		return 0, err
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, errors.New("api key not found")
+		}
+		return 0, fmt.Errorf("query key cooldown: %w", err)
 	}
-	return next, nil
+
+	// 2. 计算新的冷却时间（指数退避）
+	until := time.Unix(cooldownUntil, 0)
+	nextDuration := calculateBackoffDuration(cooldownDurationMs, until, now, &statusCode)
+	newUntil := now.Add(nextDuration)
+
+	// 3. 更新 api_keys 表
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE api_keys
+		SET cooldown_until = ?, cooldown_duration_ms = ?, updated_at = ?
+		WHERE channel_id = ? AND key_index = ?
+	`, newUntil.Unix(), int64(nextDuration/time.Millisecond), now.Unix(), configID, keyIndex)
+
+	if err != nil {
+		return 0, fmt.Errorf("update key cooldown: %w", err)
+	}
+
+	return nextDuration, nil
 }
 
-// SetKeyCooldown 设置指定Key的冷却截止时间
+// SetKeyCooldown 设置指定Key的冷却截止时间（操作 api_keys 表）
 func (s *SQLiteStore) SetKeyCooldown(ctx context.Context, configID int64, keyIndex int, until time.Time) error {
 	now := time.Now()
 	durationMs := calculateCooldownDuration(until, now)
+
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO key_cooldowns(channel_id, key_index, until, duration_ms) VALUES(?, ?, ?, ?)
-		ON CONFLICT(channel_id, key_index) DO UPDATE SET
-			until = excluded.until,
-			duration_ms = excluded.duration_ms
-	`, configID, keyIndex, until.Unix(), durationMs)
+		UPDATE api_keys
+		SET cooldown_until = ?, cooldown_duration_ms = ?, updated_at = ?
+		WHERE channel_id = ? AND key_index = ?
+	`, until.Unix(), durationMs, now.Unix(), configID, keyIndex)
+
 	return err
 }
 
-// ResetKeyCooldown 重置指定Key的冷却状态
+// ResetKeyCooldown 重置指定Key的冷却状态（操作 api_keys 表）
 func (s *SQLiteStore) ResetKeyCooldown(ctx context.Context, configID int64, keyIndex int) error {
 	_, err := s.db.ExecContext(ctx, `
-		DELETE FROM key_cooldowns
+		UPDATE api_keys
+		SET cooldown_until = 0, cooldown_duration_ms = 0, updated_at = ?
 		WHERE channel_id = ? AND key_index = ?
-	`, configID, keyIndex)
+	`, time.Now().Unix(), configID, keyIndex)
+
 	return err
 }
 
-// ClearAllKeyCooldowns 清理渠道的所有Key冷却数据（用于Key变更时避免索引错位）
+// ClearAllKeyCooldowns 清理渠道的所有Key冷却数据（操作 api_keys 表）
 func (s *SQLiteStore) ClearAllKeyCooldowns(ctx context.Context, configID int64) error {
 	_, err := s.db.ExecContext(ctx, `
-		DELETE FROM key_cooldowns
+		UPDATE api_keys
+		SET cooldown_until = 0, cooldown_duration_ms = 0, updated_at = ?
 		WHERE channel_id = ?
-	`, configID)
+	`, time.Now().Unix(), configID)
+
 	return err
 }
 
@@ -2049,4 +2113,491 @@ func (s *SQLiteStore) SetKeyRR(ctx context.Context, configID int64, idx int) err
 		ON CONFLICT(channel_id) DO UPDATE SET idx = excluded.idx
 	`, configID, idx)
 	return err
+}
+
+// ==================== 数据库架构迁移：冷却数据合并 + API Keys 表��分 ====================
+
+// migrateToNewSchema 主迁移函数：将冷却数据合并到主表，拆分 API Keys 到独立表
+// 迁移策略：
+// 1. channels 表添加 cooldown_until, cooldown_duration_ms 字段
+// 2. 从 cooldowns 表迁移数据到 channels 表
+// 3. 创建 api_keys 表（包含冷却字段）
+// 4. 从 channels 表的 api_key/api_keys 字段解析并插入到 api_keys 表
+// 5. 从 key_cooldowns 表迁移冷却数据到 api_keys 表
+// 6. 清理旧的 cooldowns, key_cooldowns 表
+// 7. 从 channels 表删除 api_key, api_keys, key_strategy 字段
+func (s *SQLiteStore) migrateToNewSchema(ctx context.Context) error {
+	// 内存数据库模式：跳过迁移（KISS原则：内存DB总是全新的）
+	useMemory := os.Getenv("CCLOAD_USE_MEMORY_DB") == "true"
+	if useMemory {
+		return nil
+	}
+
+	// 检查是否已经迁移过（幂等性检查）
+	// 如果 api_keys 表已存在且 channels 表没有 api_key 字段，说明已迁移
+	var apiKeysTableExists bool
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='api_keys'
+	`).Scan(&apiKeysTableExists)
+	if err != nil {
+		return fmt.Errorf("check api_keys table: %w", err)
+	}
+
+	if apiKeysTableExists {
+		// 检查 channels 表是否还有 api_key 字段
+		rows, err := s.db.QueryContext(ctx, "PRAGMA table_info(channels)")
+		if err != nil {
+			return fmt.Errorf("check channels columns: %w", err)
+		}
+		defer rows.Close()
+
+		hasAPIKeyField := false
+		for rows.Next() {
+			var cid int
+			var name, typ string
+			var notnull, pk int
+			var dfltValue any
+			if err := rows.Scan(&cid, &name, &typ, &notnull, &dfltValue, &pk); err != nil {
+				continue
+			}
+			if name == "api_key" {
+				hasAPIKeyField = true
+				break
+			}
+		}
+		rows.Close()
+
+		if !hasAPIKeyField {
+			// 已迁移完成
+			return nil
+		}
+	}
+
+	log.Print("🔄 开始数据库架构迁移：冷却数据合并 + API Keys 表拆分...")
+
+	// 步骤1：迁移渠道级冷却数据
+	if err := s.migrateChannelCooldownData(ctx); err != nil {
+		return fmt.Errorf("migrate channel cooldown data: %w", err)
+	}
+
+	// 步骤2：创建 api_keys 表并迁移数据
+	if err := s.migrateAPIKeysData(ctx); err != nil {
+		return fmt.Errorf("migrate api keys data: %w", err)
+	}
+
+	// 步骤3：清理旧表和字段
+	if err := s.cleanupOldSchema(ctx); err != nil {
+		return fmt.Errorf("cleanup old schema: %w", err)
+	}
+
+	log.Print("✅ 数据库架构迁移完成")
+	return nil
+}
+
+// migrateChannelCooldownData 迁移渠道级冷却数据：从 cooldowns 表合并到 channels 表
+func (s *SQLiteStore) migrateChannelCooldownData(ctx context.Context) error {
+	// 1. 添加冷却字段到 channels 表
+	s.addColumnIfNotExists(ctx, "channels", "cooldown_until", "INTEGER DEFAULT 0")
+	s.addColumnIfNotExists(ctx, "channels", "cooldown_duration_ms", "INTEGER DEFAULT 0")
+
+	// 2. 从 cooldowns 表迁移数据
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE channels
+		SET cooldown_until = (
+			SELECT until FROM cooldowns WHERE cooldowns.channel_id = channels.id
+		),
+		cooldown_duration_ms = (
+			SELECT COALESCE(duration_ms, 0) FROM cooldowns WHERE cooldowns.channel_id = channels.id
+		)
+		WHERE EXISTS (
+			SELECT 1 FROM cooldowns WHERE cooldowns.channel_id = channels.id
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("migrate cooldown data: %w", err)
+	}
+
+	log.Print("  ✓ 渠道级冷却数据已合并到 channels 表")
+	return nil
+}
+
+// migrateAPIKeysData 创建 api_keys 表并从 channels 表迁移数据
+func (s *SQLiteStore) migrateAPIKeysData(ctx context.Context) error {
+	// 1. 创建 api_keys 表（包含冷却字段）
+	_, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS api_keys (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			channel_id INTEGER NOT NULL,
+			key_index INTEGER NOT NULL,
+			api_key TEXT NOT NULL,
+			key_strategy TEXT DEFAULT 'sequential',
+			cooldown_until INTEGER DEFAULT 0,
+			cooldown_duration_ms INTEGER DEFAULT 0,
+			created_at BIGINT NOT NULL,
+			updated_at BIGINT NOT NULL,
+			UNIQUE(channel_id, key_index),
+			FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("create api_keys table: %w", err)
+	}
+
+	// 2. 查询所有渠道的 API Key 数据
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, api_key, api_keys, key_strategy FROM channels
+	`)
+	if err != nil {
+		return fmt.Errorf("query channels: %w", err)
+	}
+	defer rows.Close()
+
+	nowUnix := time.Now().Unix()
+	insertedCount := 0
+
+	for rows.Next() {
+		var channelID int64
+		var apiKey string
+		var apiKeysJSON sql.NullString
+		var keyStrategy sql.NullString
+
+		if err := rows.Scan(&channelID, &apiKey, &apiKeysJSON, &keyStrategy); err != nil {
+			log.Printf("  ⚠️  扫描渠道 %d 失败: %v", channelID, err)
+			continue
+		}
+
+		// 解析 API Keys
+		var keys []string
+		if apiKeysJSON.Valid && apiKeysJSON.String != "" && apiKeysJSON.String != "[]" && apiKeysJSON.String != "null" {
+			// 使用 api_keys JSON 数组
+			if err := sonic.Unmarshal([]byte(apiKeysJSON.String), &keys); err != nil {
+				log.Printf("  ⚠️  解析渠道 %d 的 api_keys 失败: %v", channelID, err)
+				// 降级：使用 api_key 字段
+				keys = []string{apiKey}
+			}
+		} else {
+			// 降级：使用 api_key 字段（可能逗号分隔）
+			if strings.Contains(apiKey, ",") {
+				parts := strings.Split(apiKey, ",")
+				for _, p := range parts {
+					if trimmed := strings.TrimSpace(p); trimmed != "" {
+						keys = append(keys, trimmed)
+					}
+				}
+			} else {
+				keys = []string{apiKey}
+			}
+		}
+
+		// 确定 key_strategy
+		strategy := "sequential"
+		if keyStrategy.Valid && keyStrategy.String != "" {
+			strategy = keyStrategy.String
+		}
+
+		// 3. 插入到 api_keys 表
+		for keyIndex, key := range keys {
+			if key == "" {
+				continue
+			}
+
+			_, err := s.db.ExecContext(ctx, `
+				INSERT INTO api_keys (channel_id, key_index, api_key, key_strategy, cooldown_until, cooldown_duration_ms, created_at, updated_at)
+				VALUES (?, ?, ?, ?, 0, 0, ?, ?)
+			`, channelID, keyIndex, key, strategy, nowUnix, nowUnix)
+
+			if err != nil {
+				log.Printf("  ⚠️  插入 Key 失败 (channel_id=%d, key_index=%d): %v", channelID, keyIndex, err)
+				continue
+			}
+			insertedCount++
+		}
+	}
+
+	// 4. 从 key_cooldowns 表迁移冷却数据到 api_keys 表
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE api_keys
+		SET cooldown_until = (
+			SELECT until FROM key_cooldowns
+			WHERE key_cooldowns.channel_id = api_keys.channel_id
+			  AND key_cooldowns.key_index = api_keys.key_index
+		),
+		cooldown_duration_ms = (
+			SELECT COALESCE(duration_ms, 0) FROM key_cooldowns
+			WHERE key_cooldowns.channel_id = api_keys.channel_id
+			  AND key_cooldowns.key_index = api_keys.key_index
+		)
+		WHERE EXISTS (
+			SELECT 1 FROM key_cooldowns
+			WHERE key_cooldowns.channel_id = api_keys.channel_id
+			  AND key_cooldowns.key_index = api_keys.key_index
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("migrate key cooldown data: %w", err)
+	}
+
+	log.Printf("  ✓ API Keys 数据已迁移到独立表 (共 %d 条记录)", insertedCount)
+	return nil
+}
+
+// cleanupOldSchema 清理旧的表和字段
+func (s *SQLiteStore) cleanupOldSchema(ctx context.Context) error {
+	// SQLite不支持 ALTER TABLE DROP COLUMN，需要重建表
+	// 但为了安全起见，我们先保留旧字段，只删除旧表
+
+	// 1. 删除 cooldowns 表
+	_, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS cooldowns`)
+	if err != nil {
+		return fmt.Errorf("drop cooldowns table: %w", err)
+	}
+	log.Print("  ✓ 已删除 cooldowns 表")
+
+	// 2. 删除 key_cooldowns 表
+	_, err = s.db.ExecContext(ctx, `DROP TABLE IF EXISTS key_cooldowns`)
+	if err != nil {
+		return fmt.Errorf("drop key_cooldowns table: %w", err)
+	}
+	log.Print("  ✓ 已删除 key_cooldowns 表")
+
+	// 3. 重建 channels 表以删除 api_key, api_keys, key_strategy 字段
+	// 这是最复杂的步骤，需要创建新表、迁移数据、删除旧表、重命名
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 创建新的 channels 表（不包含 api_key, api_keys, key_strategy）
+	_, err = tx.ExecContext(ctx, `
+		CREATE TABLE channels_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			url TEXT NOT NULL,
+			priority INTEGER NOT NULL DEFAULT 0,
+			models TEXT NOT NULL,
+			model_redirects TEXT DEFAULT '{}',
+			channel_type TEXT DEFAULT 'anthropic',
+			enabled INTEGER NOT NULL DEFAULT 1,
+			cooldown_until INTEGER DEFAULT 0,
+			cooldown_duration_ms INTEGER DEFAULT 0,
+			created_at BIGINT NOT NULL,
+			updated_at BIGINT NOT NULL
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("create new channels table: %w", err)
+	}
+
+	// 迁移数据（不包含 api_key, api_keys, key_strategy）
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO channels_new (id, name, url, priority, models, model_redirects, channel_type, enabled, cooldown_until, cooldown_duration_ms, created_at, updated_at)
+		SELECT id, name, url, priority, models,
+		       COALESCE(model_redirects, '{}'),
+		       COALESCE(channel_type, 'anthropic'),
+		       enabled,
+		       COALESCE(cooldown_until, 0),
+		       COALESCE(cooldown_duration_ms, 0),
+		       created_at, updated_at
+		FROM channels
+	`)
+	if err != nil {
+		return fmt.Errorf("migrate channels data: %w", err)
+	}
+
+	// 删除旧表
+	_, err = tx.ExecContext(ctx, `DROP TABLE channels`)
+	if err != nil {
+		return fmt.Errorf("drop old channels table: %w", err)
+	}
+
+	// 重命名新表
+	_, err = tx.ExecContext(ctx, `ALTER TABLE channels_new RENAME TO channels`)
+	if err != nil {
+		return fmt.Errorf("rename channels table: %w", err)
+	}
+
+	// 重建唯一索引
+	_, err = tx.ExecContext(ctx, `CREATE UNIQUE INDEX idx_channels_unique_name ON channels(name)`)
+	if err != nil {
+		return fmt.Errorf("create unique name index: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+
+	log.Print("  ✓ channels 表已重建，删除了 api_key, api_keys, key_strategy 字段")
+	return nil
+}
+
+// ==================== API Keys CRUD 实现 ====================
+
+// GetAPIKeys 获取指定渠道的所有 API Key（按 key_index 升序）
+func (s *SQLiteStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*APIKey, error) {
+	query := `
+		SELECT id, channel_id, key_index, api_key, key_strategy,
+		       cooldown_until, cooldown_duration_ms, created_at, updated_at
+		FROM api_keys
+		WHERE channel_id = ?
+		ORDER BY key_index ASC
+	`
+	rows, err := s.db.QueryContext(ctx, query, channelID)
+	if err != nil {
+		return nil, fmt.Errorf("query api keys: %w", err)
+	}
+	defer rows.Close()
+
+	var keys []*APIKey
+	for rows.Next() {
+		key := &APIKey{}
+		var createdAt, updatedAt int64
+
+		err := rows.Scan(
+			&key.ID,
+			&key.ChannelID,
+			&key.KeyIndex,
+			&key.APIKey,
+			&key.KeyStrategy,
+			&key.CooldownUntil,
+			&key.CooldownDurationMs,
+			&createdAt,
+			&updatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scan api key: %w", err)
+		}
+
+		key.CreatedAt = JSONTime{time.Unix(createdAt, 0)}
+		key.UpdatedAt = JSONTime{time.Unix(updatedAt, 0)}
+		keys = append(keys, key)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate api keys: %w", err)
+	}
+
+	return keys, nil
+}
+
+// GetAPIKey 获取指定渠道的特定 API Key
+func (s *SQLiteStore) GetAPIKey(ctx context.Context, channelID int64, keyIndex int) (*APIKey, error) {
+	query := `
+		SELECT id, channel_id, key_index, api_key, key_strategy,
+		       cooldown_until, cooldown_duration_ms, created_at, updated_at
+		FROM api_keys
+		WHERE channel_id = ? AND key_index = ?
+	`
+	row := s.db.QueryRowContext(ctx, query, channelID, keyIndex)
+
+	key := &APIKey{}
+	var createdAt, updatedAt int64
+
+	err := row.Scan(
+		&key.ID,
+		&key.ChannelID,
+		&key.KeyIndex,
+		&key.APIKey,
+		&key.KeyStrategy,
+		&key.CooldownUntil,
+		&key.CooldownDurationMs,
+		&createdAt,
+		&updatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, errors.New("api key not found")
+		}
+		return nil, fmt.Errorf("query api key: %w", err)
+	}
+
+	key.CreatedAt = JSONTime{time.Unix(createdAt, 0)}
+	key.UpdatedAt = JSONTime{time.Unix(updatedAt, 0)}
+
+	return key, nil
+}
+
+// CreateAPIKey 创建新的 API Key
+func (s *SQLiteStore) CreateAPIKey(ctx context.Context, key *APIKey) error {
+	if key == nil {
+		return errors.New("api key cannot be nil")
+	}
+
+	nowUnix := time.Now().Unix()
+
+	// 确保默认值
+	if key.KeyStrategy == "" {
+		key.KeyStrategy = "sequential"
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO api_keys (channel_id, key_index, api_key, key_strategy,
+		                      cooldown_until, cooldown_duration_ms, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, key.ChannelID, key.KeyIndex, key.APIKey, key.KeyStrategy,
+		key.CooldownUntil, key.CooldownDurationMs, nowUnix, nowUnix)
+
+	if err != nil {
+		return fmt.Errorf("insert api key: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateAPIKey 更新 API Key 信息
+func (s *SQLiteStore) UpdateAPIKey(ctx context.Context, key *APIKey) error {
+	if key == nil {
+		return errors.New("api key cannot be nil")
+	}
+
+	updatedAtUnix := time.Now().Unix()
+
+	// 确保默认值
+	if key.KeyStrategy == "" {
+		key.KeyStrategy = "sequential"
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE api_keys
+		SET api_key = ?, key_strategy = ?,
+		    cooldown_until = ?, cooldown_duration_ms = ?,
+		    updated_at = ?
+		WHERE channel_id = ? AND key_index = ?
+	`, key.APIKey, key.KeyStrategy,
+		key.CooldownUntil, key.CooldownDurationMs,
+		updatedAtUnix, key.ChannelID, key.KeyIndex)
+
+	if err != nil {
+		return fmt.Errorf("update api key: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteAPIKey 删除指定的 API Key
+func (s *SQLiteStore) DeleteAPIKey(ctx context.Context, channelID int64, keyIndex int) error {
+	_, err := s.db.ExecContext(ctx, `
+		DELETE FROM api_keys
+		WHERE channel_id = ? AND key_index = ?
+	`, channelID, keyIndex)
+
+	if err != nil {
+		return fmt.Errorf("delete api key: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteAllAPIKeys 删除渠道的所有 API Key（用于渠道删除时级联清理）
+func (s *SQLiteStore) DeleteAllAPIKeys(ctx context.Context, channelID int64) error {
+	_, err := s.db.ExecContext(ctx, `
+		DELETE FROM api_keys
+		WHERE channel_id = ?
+	`, channelID)
+
+	if err != nil {
+		return fmt.Errorf("delete all api keys: %w", err)
+	}
+
+	return nil
 }

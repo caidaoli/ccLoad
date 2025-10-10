@@ -32,7 +32,6 @@ func TestNamedMemoryDatabasePersistence(t *testing.T) {
 	// 插入测试渠道
 	cfg := &Config{
 		Name:     "test-channel-1",
-		APIKey:   "test-key",
 		URL:      "https://example.com",
 		Priority: 10,
 		Models:   []string{"test-model"},
@@ -121,7 +120,6 @@ func TestMemoryDatabaseNoConnLifetime(t *testing.T) {
 	// 创建测试渠道
 	cfg := &Config{
 		Name:     "test-channel",
-		APIKey:   "test-key",
 		URL:      "https://example.com",
 		Priority: 10,
 		Models:   []string{"test-model"},
