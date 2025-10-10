@@ -538,6 +538,17 @@ func (s *Server) handleGetChannel(c *gin.Context, id int64) {
 	RespondJSON(c, http.StatusOK, cfg)
 }
 
+// ✅ 修复:获取渠道的所有 API Keys(2025-10 新架构支持)
+// GET /admin/channels/{id}/keys
+func (s *Server) handleGetChannelKeys(c *gin.Context, id int64) {
+	apiKeys, err := s.store.GetAPIKeys(c.Request.Context(), id)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	RespondJSON(c, http.StatusOK, apiKeys)
+}
+
 // 更新渠道
 func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	// 先获取现有配置

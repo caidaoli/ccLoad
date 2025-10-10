@@ -434,6 +434,7 @@ func (s *Server) setupRoutes(r *gin.Engine) {
 		admin.GET("/channels/:id", s.handleChannelByID)
 		admin.PUT("/channels/:id", s.handleChannelByID)
 		admin.DELETE("/channels/:id", s.handleChannelByID)
+		admin.GET("/channels/:id/keys", s.handleChannelKeys)                        // ✅ 修复：获取渠道API Keys
 		admin.POST("/channels/:id/test", s.handleChannelTest)
 		admin.POST("/channels/:id/cooldown", s.handleSetChannelCooldown)            // 设置渠道级别冷却
 		admin.POST("/channels/:id/keys/:keyIndex/cooldown", s.handleSetKeyCooldown) // 设置Key级别冷却
@@ -671,4 +672,15 @@ func (s *Server) warmHTTPConnections(ctx context.Context) {
     if warmedCount > 0 {
         log.Printf("✅ HTTP连接预热：为 %d 个高优先级渠道预建立连接", warmedCount)
     }
+}
+
+// ✅ 修复：handleChannelKeys 路由处理器(2025-10新架构支持)
+// GET /admin/channels/:id/keys - 获取渠道的所有API Keys
+func (s *Server) handleChannelKeys(c *gin.Context) {
+	id, err := ParseInt64Param(c, "id")
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+	s.handleGetChannelKeys(c, id)
 }

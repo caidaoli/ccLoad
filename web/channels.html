@@ -822,8 +822,20 @@
       document.getElementById('channelName').value = channel.name;
       document.getElementById('channelUrl').value = channel.url;
 
-      // 加载API Keys到内联表格
-      inlineKeyTableData = parseKeys(channel.api_key);
+      // ✅ 修复：异步从后端获取 API Keys（2025-10 新架构：api_keys表独立存储）
+      let apiKeys = [];
+      try {
+        const res = await fetchWithAuth(`/admin/channels/${id}/keys`);
+        if (res.ok) {
+          const data = await res.json();
+          apiKeys = (data.success ? data.data : data) || [];
+        }
+      } catch (e) {
+        console.error('获取API Keys失败', e);
+      }
+
+      // ✅ 修复：从 APIKey 对象数组提取实际的 key 字符串
+      inlineKeyTableData = apiKeys.map(k => k.api_key || k);
       if (inlineKeyTableData.length === 0) {
         inlineKeyTableData = [''];
       }
