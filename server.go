@@ -20,13 +20,6 @@ import (
     "github.com/gin-gonic/gin"
 )
 
-// rrUpdate 轮询指针更新记录（用于批量持久化）
-type rrUpdate struct {
-	model    string
-	priority int
-	idx      int
-}
-
 type Server struct {
 	store       Store
 	keySelector *KeySelector // Key选择器（多Key支持）
@@ -55,11 +48,6 @@ type Server struct {
 
 	logChan    chan *LogEntry // 异步日志通道
 	logWorkers int            // 日志工作协程数
-
-	// 性能优化：批量轮询指针持久化
-	rrUpdateChan    chan rrUpdate // 轮询指针更新通道
-	rrBatchSize     int           // 批量写入大小
-	rrFlushInterval time.Duration // 刷新间隔
 
 	// 监控指标（P2优化：实时统计冷却状态）
 	channelCooldownGauge atomic.Int64 // 当前活跃的渠道级冷却数量
@@ -189,11 +177,6 @@ func NewServer(store Store) *Server {
 		// 并发控制：使用信号量限制最大并发请求数
 		concurrencySem: make(chan struct{}, maxConcurrency),
 		maxConcurrency: maxConcurrency,
-
-		// 性能优化：批量轮询持久化配置
-		rrUpdateChan:    make(chan rrUpdate, 500), // 缓冲500条更新
-		rrBatchSize:     50,                       // 每批50条
-		rrFlushInterval: 5 * time.Second,          // 每5秒强制刷新
 	}
 
 	// 初始化Key选择器（传递Key冷却监控指标）
@@ -203,9 +186,6 @@ func NewServer(store Store) *Server {
 	for i := 0; i < s.logWorkers; i++ {
 		go s.logWorker()
 	}
-
-	// 启动批量轮询持久化协程（性能优化）
-	go s.rrBatchWriter()
 
 	// 启动后台清理协程
 	go s.tokenCleanupLoop()   // Token认证：定期清理过期Token
@@ -571,61 +551,6 @@ func (s *Server) getGeminiModels(ctx context.Context) ([]string, error) {
 	slices.Sort(models)
 
 	return models, nil
-}
-
-// rrBatchWriter 批量轮询指针持久化协程（性能优化）
-// 原理：聚合多个轮询指针更新，减少数据库I/O频率90%+
-// 策略：满批（50条）立即刷新 或 定时（5秒）强制刷新
-func (s *Server) rrBatchWriter() {
-	ticker := time.NewTicker(s.rrFlushInterval)
-	defer ticker.Stop()
-
-	batch := make([]rrUpdate, 0, s.rrBatchSize)
-	// 使用map去重（相同model+priority只保留最新idx）
-	pending := make(map[string]rrUpdate, s.rrBatchSize)
-
-	for {
-		select {
-		case update := <-s.rrUpdateChan:
-			// 去重：同一个model+priority只保留最新更新
-			key := update.model + "_" + strconv.Itoa(update.priority)
-			pending[key] = update
-
-			// 满批立即刷新
-			if len(pending) >= s.rrBatchSize {
-				for _, upd := range pending {
-					batch = append(batch, upd)
-				}
-				s.flushRRBatch(batch)
-				batch = batch[:0]
-				pending = make(map[string]rrUpdate, s.rrBatchSize)
-			}
-
-		case <-ticker.C:
-			// 定时强制刷新
-			if len(pending) > 0 {
-				for _, upd := range pending {
-					batch = append(batch, upd)
-				}
-				s.flushRRBatch(batch)
-				batch = batch[:0]
-				pending = make(map[string]rrUpdate, s.rrBatchSize)
-			}
-		}
-	}
-}
-
-// flushRRBatch 批量写入轮询指针到数据库
-func (s *Server) flushRRBatch(batch []rrUpdate) {
-	if len(batch) == 0 {
-		return
-	}
-
-	ctx := context.Background()
-	for _, upd := range batch {
-		// 忽略写入错误（轮询指针非关键数据，失败可重试）
-		_ = s.store.SetRR(ctx, upd.model, upd.priority, upd.idx)
-	}
 }
 
 // warmHTTPConnections HTTP连接预热（性能优化：为高优先级渠道预建立连接）

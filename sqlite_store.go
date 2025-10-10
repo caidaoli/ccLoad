@@ -253,16 +253,6 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		return fmt.Errorf("create key_rr table: %w", err)
 	}
 
-	// 创建 rr 表（渠道级别轮询指针）
-	if _, err := s.db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS rr (
-			KEY TEXT PRIMARY KEY,
-			idx INTEGER NOT NULL
-		);
-	`); err != nil {
-		return fmt.Errorf("create rr table: %w", err)
-	}
-
 	return nil
 }
 
@@ -1015,54 +1005,6 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 
 	// 已按时间升序（GROUP BY bucket_ts ASC）
 	return out, nil
-}
-
-func (s *SQLiteStore) NextRR(ctx context.Context, model string, priority int, n int) int {
-	if n <= 0 {
-		return 0
-	}
-
-	key := fmt.Sprintf("%s|%d", model, priority)
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
-	if err != nil {
-		return 0
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	var cur int
-	err = tx.QueryRowContext(ctx, `SELECT idx FROM rr WHERE KEY = ?`, key).Scan(&cur)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			cur = 0
-			if _, err := tx.ExecContext(ctx, `INSERT INTO rr(key, idx) VALUES(?, ?)`, key, 0); err != nil {
-				return 0
-			}
-		} else {
-			return 0
-		}
-	}
-
-	if cur >= n {
-		cur = 0
-	}
-
-	next := cur + 1
-	if next >= n {
-		next = 0
-	}
-
-	if _, err := tx.ExecContext(ctx, `UPDATE rr SET idx = ? WHERE KEY = ?`, next, key); err != nil {
-		return cur
-	}
-
-	_ = tx.Commit()
-	return cur
-}
-
-func (s *SQLiteStore) SetRR(ctx context.Context, model string, priority int, idx int) error {
-	key := fmt.Sprintf("%s|%d", model, priority)
-	_, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO rr (key, idx) VALUES (?, ?)`, key, idx)
-	return err
 }
 
 // GetStats 实现统计功能，按渠道和模型统计成功/失败次数（从 logDB）
