@@ -221,10 +221,6 @@ type Store interface {
 	// stats - 统计功能
 	GetStats(ctx context.Context, since time.Time, filter *LogFilter) ([]StatsEntry, error)
 
-	// round-robin pointer per (model, priority)
-	NextRR(ctx context.Context, model string, priority int, n int) int
-	SetRR(ctx context.Context, model string, priority int, idx int) error
-
 	// maintenance
 	CleanupLogsBefore(ctx context.Context, cutoff time.Time) error
 }

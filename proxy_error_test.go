@@ -296,14 +296,6 @@ func (m *MockStore) Aggregate(ctx context.Context, since time.Time, bucket time.
 	return nil, nil
 }
 
-func (m *MockStore) NextRR(ctx context.Context, model string, priority int, n int) int {
-	return 0
-}
-
-func (m *MockStore) SetRR(ctx context.Context, model string, priority int, idx int) error {
-	return nil
-}
-
 func (m *MockStore) GetStats(ctx context.Context, since time.Time, filter *LogFilter) ([]StatsEntry, error) {
 	return nil, nil
 }
@@ -552,12 +544,6 @@ func (m *MockStoreAllKeysCooled) ListLogs(ctx context.Context, since time.Time, 
 }
 func (m *MockStoreAllKeysCooled) Aggregate(ctx context.Context, since time.Time, bucket time.Duration) ([]MetricPoint, error) {
 	return nil, nil
-}
-func (m *MockStoreAllKeysCooled) NextRR(ctx context.Context, model string, priority int, n int) int {
-	return 0
-}
-func (m *MockStoreAllKeysCooled) SetRR(ctx context.Context, model string, priority int, idx int) error {
-	return nil
 }
 func (m *MockStoreAllKeysCooled) GetStats(ctx context.Context, since time.Time, filter *LogFilter) ([]StatsEntry, error) {
 	return nil, nil
