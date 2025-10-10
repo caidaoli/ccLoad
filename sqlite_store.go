@@ -253,6 +253,9 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		return fmt.Errorf("create key_rr table: %w", err)
 	}
 
+	// 清理废弃表（rr表已不再使用，NextRR/SetRR方法已删除）
+	_, _ = s.db.ExecContext(ctx, `DROP TABLE IF EXISTS rr`)
+
 	return nil
 }
 
