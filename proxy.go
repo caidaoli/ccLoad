@@ -595,6 +595,7 @@ func prepareRequestBody(cfg *Config, reqCtx *proxyRequestContext) (actualModel s
 	if len(cfg.ModelRedirects) > 0 {
 		if redirectModel, ok := cfg.ModelRedirects[reqCtx.originalModel]; ok && redirectModel != "" {
 			actualModel = redirectModel
+			log.Printf("🔄 [模型重定向] 渠道ID=%d, 原始模型=%s, 重定向模型=%s", cfg.ID, reqCtx.originalModel, actualModel)
 		}
 	}
 
@@ -607,8 +608,15 @@ func prepareRequestBody(cfg *Config, reqCtx *proxyRequestContext) (actualModel s
 			reqData["model"] = actualModel
 			if modifiedBody, err := sonic.Marshal(reqData); err == nil {
 				bodyToSend = modifiedBody
+				log.Printf("✅ [请求体修改] 渠道ID=%d, 修改后模型字段=%s", cfg.ID, actualModel)
+			} else {
+				log.Printf("⚠️  [请求体修改失败] 渠道ID=%d, Marshal错误: %v", cfg.ID, err)
 			}
+		} else {
+			log.Printf("⚠️  [请求体解析失败] 渠道ID=%d, Unmarshal错误: %v", cfg.ID, err)
 		}
+	} else {
+		log.Printf("ℹ️  [无需重定向] 渠道ID=%d, 模型=%s", cfg.ID, actualModel)
 	}
 
 	return actualModel, bodyToSend
@@ -622,6 +630,7 @@ func (s *Server) forwardAttempt(
 	keyIndex int,
 	selectedKey string,
 	reqCtx *proxyRequestContext,
+	actualModel string,  // ✅ 新增：重定向后的实际模型名称
 	bodyToSend []byte,
 	w http.ResponseWriter,
 ) (*proxyResult, bool, bool) {
@@ -631,16 +640,16 @@ func (s *Server) forwardAttempt(
 
 	// 处理网络错误
 	if err != nil {
-		return s.handleNetworkError(ctx, cfg, keyIndex, reqCtx, selectedKey, duration, err)
+		return s.handleNetworkError(ctx, cfg, keyIndex, actualModel, selectedKey, duration, err)
 	}
 
 	// 处理成功响应
 	if res.Status >= 200 && res.Status < 300 {
-		return s.handleSuccessResponse(ctx, cfg, keyIndex, reqCtx, selectedKey, res, duration)
+		return s.handleSuccessResponse(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration)
 	}
 
 	// 处理错误响应
-	return s.handleErrorResponse(ctx, cfg, keyIndex, reqCtx, selectedKey, res, duration)
+	return s.handleErrorResponse(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration)
 }
 
 // handleNetworkError 处理网络错误
@@ -648,14 +657,15 @@ func (s *Server) handleNetworkError(
 	ctx context.Context,
 	cfg *Config,
 	keyIndex int,
-	reqCtx *proxyRequestContext,
+	actualModel string,  // ✅ 新增：重定向后的实际模型名称
 	selectedKey string,
 	duration float64,
 	err error,
 ) (*proxyResult, bool, bool) {
 	statusCode, _ := classifyError(err)
-	s.addLogAsync(buildLogEntry(reqCtx.originalModel, &cfg.ID, statusCode,
-		duration, reqCtx.isStreaming, selectedKey, nil, err.Error()))
+	// ✅ 修复：使用 actualModel 而非 reqCtx.originalModel
+	s.addLogAsync(buildLogEntry(actualModel, &cfg.ID, statusCode,
+		duration, false, selectedKey, nil, err.Error()))
 
 	action, _ := s.handleProxyError(ctx, cfg, keyIndex, nil, err)
 	if action == ActionReturnClient {
@@ -677,7 +687,7 @@ func (s *Server) handleSuccessResponse(
 	ctx context.Context,
 	cfg *Config,
 	keyIndex int,
-	reqCtx *proxyRequestContext,
+	actualModel string,  // ✅ 新增：重定向后的实际模型名称
 	selectedKey string,
 	res *fwResult,
 	duration float64,
@@ -687,8 +697,10 @@ func (s *Server) handleSuccessResponse(
 	_ = s.keySelector.MarkKeySuccess(ctx, cfg.ID, keyIndex)
 
 	// 记录成功日志
-	s.addLogAsync(buildLogEntry(reqCtx.originalModel, &cfg.ID, res.Status,
-		duration, reqCtx.isStreaming, selectedKey, res, ""))
+	// ✅ 修复：使用 actualModel 而非 reqCtx.originalModel
+	isStreaming := res.FirstByteTime > 0  // 根据首字节时间判断是否为流式请求
+	s.addLogAsync(buildLogEntry(actualModel, &cfg.ID, res.Status,
+		duration, isStreaming, selectedKey, res, ""))
 
 	return &proxyResult{
 		status:    res.Status,
@@ -705,13 +717,15 @@ func (s *Server) handleErrorResponse(
 	ctx context.Context,
 	cfg *Config,
 	keyIndex int,
-	reqCtx *proxyRequestContext,
+	actualModel string,  // ✅ 新增：重定向后的实际模型名称
 	selectedKey string,
 	res *fwResult,
 	duration float64,
 ) (*proxyResult, bool, bool) {
-	s.addLogAsync(buildLogEntry(reqCtx.originalModel, &cfg.ID, res.Status,
-		duration, reqCtx.isStreaming, selectedKey, res, ""))
+	// ✅ 修复：使用 actualModel 而非 reqCtx.originalModel
+	isStreaming := res.FirstByteTime > 0  // 根据首字节时间判断是否为流式请求
+	s.addLogAsync(buildLogEntry(actualModel, &cfg.ID, res.Status,
+		duration, isStreaming, selectedKey, res, ""))
 
 	action, _ := s.handleProxyError(ctx, cfg, keyIndex, res, nil)
 	if action == ActionReturnClient {
@@ -752,7 +766,8 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *Config, reqCtx *pr
 	triedKeys := make(map[int]bool) // 本次请求内已尝试过的Key
 
 	// 准备请求体（处理模型重定向）
-	_, bodyToSend := prepareRequestBody(cfg, reqCtx)
+	// ✅ 修复：保存重定向后的模型名称，用于日志记录和调试
+	actualModel, bodyToSend := prepareRequestBody(cfg, reqCtx)
 
 	// Key重试循环
 	for i := 0; i < maxKeyRetries; i++ {
@@ -767,8 +782,9 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *Config, reqCtx *pr
 		triedKeys[keyIndex] = true
 
 		// 单次转发尝试（传递实际的API Key字符串）
+		// ✅ 修复：传递 actualModel 用于日志记录
 		result, shouldContinue, shouldBreak := s.forwardAttempt(
-			ctx, cfg, keyIndex, selectedKey, reqCtx, bodyToSend, w)
+			ctx, cfg, keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, w)
 
 		// 如果返回了结果，直接返回
 		if result != nil {

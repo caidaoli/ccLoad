@@ -931,6 +931,24 @@ func (s *Server) handleChannelTest(c *gin.Context) {
 
 // 测试渠道API连通性
 func (s *Server) testChannelAPI(cfg *Config, apiKey string, testReq *TestChannelRequest) map[string]any {
+	// ✅ 修复：应用模型重定向逻辑（与正常代理流程保持一致）
+	originalModel := testReq.Model
+	actualModel := originalModel
+
+	// 检查模型重定向
+	if len(cfg.ModelRedirects) > 0 {
+		if redirectModel, ok := cfg.ModelRedirects[originalModel]; ok && redirectModel != "" {
+			actualModel = redirectModel
+			log.Printf("🔄 [测试-模型重定向] 渠道ID=%d, 原始模型=%s, 重定向模型=%s", cfg.ID, originalModel, actualModel)
+		}
+	}
+
+	// 如果模型发生重定向，更新测试请求中的模型名称
+	if actualModel != originalModel {
+		testReq.Model = actualModel
+		log.Printf("✅ [测试-请求体修改] 渠道ID=%d, 修改后模型=%s", cfg.ID, actualModel)
+	}
+
 	// 选择并规范化渠道类型
 	channelType := normalizeChannelType(testReq.ChannelType)
 	var tester ChannelTester
@@ -947,7 +965,7 @@ func (s *Server) testChannelAPI(cfg *Config, apiKey string, testReq *TestChannel
 		tester = &AnthropicTester{}
 	}
 
-	// 构建请求（传递实际的API Key）
+	// 构建请求（传递实际的API Key和重定向后的模型）
 	fullURL, baseHeaders, body, err := tester.Build(cfg, apiKey, testReq)
 	if err != nil {
 		return map[string]any{"success": false, "error": "构造测试请求失败: " + err.Error()}
