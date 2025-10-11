@@ -26,6 +26,7 @@ ccLoad 是一个高性能的 Claude Code & Codex API 透明代理服务，使用
 **代码质量优化**：
 - **消除重复代码**：提取 `BuildLogFilter()` 公共函数，**删除64行重复逻辑**
 - **统一工具函数**：`ParseAPIKeys()` 统一Key解析，遵循DRY原则
+- **删除冗余代码**：移除自定义 `min` 函数（Go 1.21+ 已内置），**删除11行冗余代码**
 - **重复代码率**：从 ~12% 降至 ~5%（**58%↓**）
 
 ### 文件结构指南
@@ -51,6 +52,7 @@ ccLoad 是一个高性能的 Claude Code & Codex API 透明代理服务，使用
 - `handlers.go` (200行) - 通用HTTP处理工具：参数解析、响应处理、**LogFilter构建**（DRY优化）
 - `channel_types.go` (151行) - 渠道类型管理（anthropic/codex/gemini）
 - `api_keys_helper.go` (60行) - API Key解析和验证工具：**ParseAPIKeys()**统一解析（DRY优化）
+- ~~`util.go`~~ - **已删除**：自定义 min 函数冗余（Go 1.21+ 内置）
 
 **同步和测试**：
 - `redis_sync.go` (349行) - Redis异步同步模块，单worker模式

@@ -66,6 +66,7 @@ type KeyCooldownInfo struct {
 
 type ChannelWithCooldown struct {
 	*Config
+	KeyStrategy         string            `json:"key_strategy,omitempty"` // ✅ 修复 (2025-10-11): 添加key_strategy字段
 	CooldownUntil       *time.Time        `json:"cooldown_until,omitempty"`
 	CooldownRemainingMS int64             `json:"cooldown_remaining_ms,omitempty"`
 	KeyCooldowns        []KeyCooldownInfo `json:"key_cooldowns,omitempty"`
@@ -138,6 +139,13 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		if err != nil {
 			log.Printf("⚠️  警告: 查询渠道 %d 的API Keys失败: %v", cfg.ID, err)
 			apiKeys = []*APIKey{} // 空数组，继续处理
+		}
+
+		// ✅ 修复 (2025-10-11): 填充key_strategy字段（从第一个Key获取，所有Key的策略应该相同）
+		if len(apiKeys) > 0 && apiKeys[0].KeyStrategy != "" {
+			oc.KeyStrategy = apiKeys[0].KeyStrategy
+		} else {
+			oc.KeyStrategy = "sequential" // 默认值
 		}
 
 		keyCooldowns := make([]KeyCooldownInfo, 0, len(apiKeys))
@@ -528,14 +536,50 @@ func (s *Server) handleChannelByID(c *gin.Context) {
 	router.Handle(c)
 }
 
-// 获取单个渠道
+// 获取单个渠道（包含key_strategy信息）
 func (s *Server) handleGetChannel(c *gin.Context, id int64) {
 	cfg, err := s.store.GetConfig(c.Request.Context(), id)
 	if err != nil {
 		RespondError(c, http.StatusNotFound, fmt.Errorf("channel not found"))
 		return
 	}
-	RespondJSON(c, http.StatusOK, cfg)
+
+	// ✅ 修复 (2025-10-11): 附带key_strategy信息
+	// 查询该渠道的第一个API Key以获取策略
+	apiKeys, err := s.store.GetAPIKeys(c.Request.Context(), id)
+	if err != nil {
+		log.Printf("⚠️  警告: 查询渠道 %d 的API Keys失败: %v", id, err)
+	}
+
+	// 构建响应（动态添加key_strategy字段）
+	response := gin.H{
+		"id":              cfg.ID,
+		"name":            cfg.Name,
+		"channel_type":    cfg.ChannelType,
+		"url":             cfg.URL,
+		"priority":        cfg.Priority,
+		"models":          cfg.Models,
+		"model_redirects": cfg.ModelRedirects,
+		"enabled":         cfg.Enabled,
+		"created_at":      cfg.CreatedAt,
+		"updated_at":      cfg.UpdatedAt,
+	}
+
+	// 添加key_strategy（从第一个Key获取，所有Key的策略应该相同）
+	if len(apiKeys) > 0 {
+		response["key_strategy"] = apiKeys[0].KeyStrategy
+		// 同时返回API Keys（逗号分隔）
+		apiKeyStrs := make([]string, 0, len(apiKeys))
+		for _, key := range apiKeys {
+			apiKeyStrs = append(apiKeyStrs, key.APIKey)
+		}
+		response["api_key"] = strings.Join(apiKeyStrs, ",")
+	} else {
+		response["key_strategy"] = "sequential" // 默认值
+		response["api_key"] = ""
+	}
+
+	RespondJSON(c, http.StatusOK, response)
 }
 
 // ✅ 修复:获取渠道的所有 API Keys(2025-10 新架构支持)
@@ -610,7 +654,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		keyStrategy = "sequential"
 	}
 
-	// 比较Key是否变化
+	// 比较Key数量和内容是否变化
 	keyChanged := len(oldKeys) != len(newKeys)
 	if !keyChanged {
 		for i, oldKey := range oldKeys {
@@ -621,15 +665,26 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		}
 	}
 
+	// ✅ 修复 (2025-10-11): 检测策略变化
+	strategyChanged := false
+	if !keyChanged && len(oldKeys) > 0 && len(newKeys) > 0 {
+		// Key内容未变化时，检查策略是否变化
+		oldStrategy := oldKeys[0].KeyStrategy
+		if oldStrategy == "" {
+			oldStrategy = "sequential"
+		}
+		strategyChanged = oldStrategy != keyStrategy
+	}
+
 	upd, err := s.store.UpdateConfig(c.Request.Context(), id, req.ToConfig())
 	if err != nil {
 		RespondError(c, http.StatusNotFound, err)
 		return
 	}
 
-	// Key变化时重建API Keys
+	// Key或策略变化时更新API Keys
 	if keyChanged {
-		// 删除旧的API Keys
+		// Key内容/数量变化：删除旧Key并重建
 		_ = s.store.DeleteAllAPIKeys(c.Request.Context(), id)
 
 		// 创建新的API Keys
@@ -645,6 +700,16 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 			}
 			if err := s.store.CreateAPIKey(c.Request.Context(), apiKey); err != nil {
 				log.Printf("⚠️  警告: 创建API Key失败 (channel=%d, index=%d): %v", id, i, err)
+			}
+		}
+	} else if strategyChanged {
+		// 仅策略变化：高效更新所有Key的策略字段（无需删除重建）
+		now := time.Now()
+		for _, oldKey := range oldKeys {
+			oldKey.KeyStrategy = keyStrategy
+			oldKey.UpdatedAt = JSONTime{now}
+			if err := s.store.UpdateAPIKey(c.Request.Context(), oldKey); err != nil {
+				log.Printf("⚠️  警告: 更新API Key策略失败 (channel=%d, index=%d): %v", id, oldKey.KeyIndex, err)
 			}
 		}
 	}
