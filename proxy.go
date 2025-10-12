@@ -329,19 +329,25 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, apiKey strin
 	// ✅ P0修复 (2025-10-12): 为流式请求添加首字节超时控制
 	// 设计原则：
 	// 1. 仅对流式请求启用首字节超时（非流式请求依赖 Transport.ResponseHeaderTimeout）
-	// 2. 收到响应头后立即取消首字节超时，后续流式传输由客户端 ctx 控制
+	// 2. 使用 defer cancel() 在函数退出时清理上下文，避免资源泄漏
 	// 3. 超时错误明确标识为 "first byte timeout"，确保错误分类器正确识别并触发渠道切换
+	// 4. ⚠️ 关键：不要在流式传输期间取消上下文，等函数完全结束后再清理
 	var reqCtx context.Context
-	var cancelFirstByteTimeout context.CancelFunc
+	var cancel context.CancelFunc
 	isStreaming := isStreamingRequest(requestPath, body)
 
 	if isStreaming && s.firstByteTimeout > 0 {
 		// 流式请求：创建带首字节超时的子上下文
-		reqCtx, cancelFirstByteTimeout = context.WithTimeout(ctx, s.firstByteTimeout)
+		reqCtx, cancel = context.WithTimeout(ctx, s.firstByteTimeout)
+		// ✅ 关键：使用 defer 延迟到函数返回时才取消
+		// 这样可以：
+		// 1. 避免 context 泄漏（满足 Go 最佳实践）
+		// 2. 不在流式传输期间取消上下文（避免 499 错误）
+		// 3. 仅在函数完全结束后清理资源
+		defer cancel()
 	} else {
 		// 非流式请求：使用原始上下文
 		reqCtx = ctx
-		cancelFirstByteTimeout = func() {} // 空操作，避免nil检查
 	}
 
 	// 性能优化：条件启用HTTP trace（默认关闭，节省0.5-1ms/请求）
@@ -379,7 +385,6 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, apiKey strin
 	upstreamURL := buildUpstreamURL(cfg, requestPath, rawQuery)
 	req, err := buildUpstreamRequest(reqCtx, method, upstreamURL, body)
 	if err != nil {
-		cancelFirstByteTimeout() // 清理资源
 		return nil, 0, err
 	}
 	// 复制原始请求头并注入认证头
@@ -389,7 +394,6 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, apiKey strin
 	// 异步发送请求，一旦收到响应头立即开始转发
 	resp, err := s.client.Do(req)
 	if err != nil {
-		cancelFirstByteTimeout() // 清理资源
 		duration := time.Since(startTime).Seconds()
 
 		// ✅ P0修复：包装首字节超时错误，添加明确标识
@@ -418,10 +422,6 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, apiKey strin
 			},
 		}, duration, err
 	}
-
-	// ✅ 关键：收到响应头后立即取消首字节超时
-	// 后续流式传输由客户端上下文（ctx）控制，支持长时间任务
-	cancelFirstByteTimeout()
 
 	// 记录首字节响应时间（接收到响应头的时间）
 	firstByteTime := time.Since(startTime).Seconds()
@@ -658,8 +658,6 @@ func prepareRequestBody(cfg *Config, reqCtx *proxyRequestContext) (actualModel s
 		} else {
 			log.Printf("⚠️  [请求体解析失败] 渠道ID=%d, Unmarshal错误: %v", cfg.ID, err)
 		}
-	} else {
-		log.Printf("ℹ️  [无需重定向] 渠道ID=%d, 模型=%s", cfg.ID, actualModel)
 	}
 
 	return actualModel, bodyToSend
@@ -673,7 +671,7 @@ func (s *Server) forwardAttempt(
 	keyIndex int,
 	selectedKey string,
 	reqCtx *proxyRequestContext,
-	actualModel string,  // ✅ 新增：重定向后的实际模型名称
+	actualModel string, // ✅ 新增：重定向后的实际模型名称
 	bodyToSend []byte,
 	w http.ResponseWriter,
 ) (*proxyResult, bool, bool) {
@@ -700,7 +698,7 @@ func (s *Server) handleNetworkError(
 	ctx context.Context,
 	cfg *Config,
 	keyIndex int,
-	actualModel string,  // ✅ 新增：重定向后的实际模型名称
+	actualModel string, // ✅ 新增：重定向后的实际模型名称
 	selectedKey string,
 	duration float64,
 	err error,
@@ -730,7 +728,7 @@ func (s *Server) handleSuccessResponse(
 	ctx context.Context,
 	cfg *Config,
 	keyIndex int,
-	actualModel string,  // ✅ 新增：重定向后的实际模型名称
+	actualModel string, // ✅ 新增：重定向后的实际模型名称
 	selectedKey string,
 	res *fwResult,
 	duration float64,
@@ -741,7 +739,7 @@ func (s *Server) handleSuccessResponse(
 
 	// 记录成功日志
 	// ✅ 修复：使用 actualModel 而非 reqCtx.originalModel
-	isStreaming := res.FirstByteTime > 0  // 根据首字节时间判断是否为流式请求
+	isStreaming := res.FirstByteTime > 0 // 根据首字节时间判断是否为流式请求
 	s.addLogAsync(buildLogEntry(actualModel, &cfg.ID, res.Status,
 		duration, isStreaming, selectedKey, res, ""))
 
@@ -760,13 +758,13 @@ func (s *Server) handleErrorResponse(
 	ctx context.Context,
 	cfg *Config,
 	keyIndex int,
-	actualModel string,  // ✅ 新增：重定向后的实际模型名称
+	actualModel string, // ✅ 新增：重定向后的实际模型名称
 	selectedKey string,
 	res *fwResult,
 	duration float64,
 ) (*proxyResult, bool, bool) {
 	// ✅ 修复：使用 actualModel 而非 reqCtx.originalModel
-	isStreaming := res.FirstByteTime > 0  // 根据首字节时间判断是否为流式请求
+	isStreaming := res.FirstByteTime > 0 // 根据首字节时间判断是否为流式请求
 	s.addLogAsync(buildLogEntry(actualModel, &cfg.ID, res.Status,
 		duration, isStreaming, selectedKey, res, ""))
 
