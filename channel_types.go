@@ -1,5 +1,7 @@
 package main
 
+import "strings"
+
 // ChannelTypeConfig 渠道类型配置（元数据定义）
 type ChannelTypeConfig struct {
 	Value       string `json:"value"`        // 内部值（数据库存储）
@@ -57,4 +59,24 @@ func GetDefaultChannelType() string {
 		return ChannelTypes[0].Value
 	}
 	return "anthropic" // 最终回退
+}
+
+// normalizeChannelType 规范化渠道类型（支持别名映射和默认值）
+// 例如："openai" -> "codex"，空值 -> "anthropic"
+func normalizeChannelType(channelType string) string {
+	// 去除空格并转小写
+	normalized := strings.ToLower(strings.TrimSpace(channelType))
+
+	// 空值使用默认类型
+	if normalized == "" {
+		return "anthropic"
+	}
+
+	// 已经是有效类型，直接返回
+	if IsValidChannelType(normalized) {
+		return normalized
+	}
+
+	// 无效类型，返回默认值
+	return "anthropic"
 }

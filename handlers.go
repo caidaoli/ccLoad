@@ -1,6 +1,7 @@
 package main
 
 import (
+	"ccLoad/internal/model"
 	"strconv"
 	"strings"
 	"time"
@@ -169,8 +170,8 @@ func BindAndValidate(c *gin.Context, obj RequestValidator) error {
 // - channel_name_like: 模糊匹配渠道名称
 // - model: 精确匹配模型名称
 // - model_like: 模糊匹配模型名称
-func BuildLogFilter(c *gin.Context) LogFilter {
-	var lf LogFilter
+func BuildLogFilter(c *gin.Context) model.LogFilter {
+	var lf model.LogFilter
 
 	// 渠道ID过滤
 	if cidStr := strings.TrimSpace(c.Query("channel_id")); cidStr != "" {

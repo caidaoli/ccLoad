@@ -17,11 +17,15 @@ import (
 	"sync/atomic"
     "time"
 
+    "ccLoad/internal/model"
+    "ccLoad/internal/storage"
+    "ccLoad/internal/storage/sqlite"
+
     "github.com/gin-gonic/gin"
 )
 
 type Server struct {
-	store       Store
+	store       storage.Store
 	keySelector *KeySelector // Key选择器（多Key支持）
 	client      *http.Client
 	password    string
@@ -46,8 +50,8 @@ type Server struct {
 	concurrencySem chan struct{} // 信号量：限制最大并发请求数（防止goroutine爆炸）
 	maxConcurrency int           // 最大并发数（默认1000）
 
-	logChan    chan *LogEntry // 异步日志通道
-	logWorkers int            // 日志工作协程数
+	logChan    chan *model.LogEntry // 异步日志通道
+	logWorkers int                  // 日志工作协程数
 
 	// 监控指标（P2优化：实时统计冷却状态）
 	channelCooldownGauge atomic.Int64 // 当前活跃的渠道级冷却数量
@@ -55,7 +59,7 @@ type Server struct {
 	logDropCount         atomic.Int64 // 日志丢弃计数器（P1修复 2025-10-05）
 }
 
-func NewServer(store Store) *Server {
+func NewServer(store storage.Store) *Server {
 	password := os.Getenv("CCLOAD_PASS")
 	if password == "" {
 		password = "admin" // 默认密码，生产环境应该设置环境变量
@@ -173,8 +177,8 @@ func NewServer(store Store) *Server {
 		password:    password,
 		validTokens: make(map[string]time.Time),
 		authTokens:  authTokens,
-		logChan:    make(chan *LogEntry, logBuf), // 可配置日志缓冲
-		logWorkers: logWorkers,                   // 可配置日志worker数量
+		logChan:    make(chan *model.LogEntry, logBuf), // 可配置日志缓冲
+		logWorkers: logWorkers,                         // 可配置日志worker数量
 
 		// 并发控制：使用信号量限制最大并发请求数
 		concurrencySem: make(chan struct{}, maxConcurrency),
@@ -454,7 +458,7 @@ func (s *Server) tokenCleanupLoop() {
 
 // 异步日志工作协程
 func (s *Server) logWorker() {
-	batch := make([]*LogEntry, 0, 100)
+	batch := make([]*model.LogEntry, 0, 100)
 	timer := time.NewTimer(1 * time.Second)
 	defer timer.Stop()
 
@@ -477,10 +481,10 @@ func (s *Server) logWorker() {
 }
 
 // 批量写入日志
-func (s *Server) flushLogs(logs []*LogEntry) {
+func (s *Server) flushLogs(logs []*model.LogEntry) {
     ctx := context.Background()
     // 优先使用SQLite批量写入，加速刷盘
-    if ss, ok := s.store.(*SQLiteStore); ok {
+    if ss, ok := s.store.(*sqlite.SQLiteStore); ok {
         _ = ss.BatchAddLogs(ctx, logs)
         return
     }
@@ -492,7 +496,7 @@ func (s *Server) flushLogs(logs []*LogEntry) {
 
 // 异步添加日志
 // P1修复 (2025-10-05): 添加丢弃计数和告警机制
-func (s *Server) addLogAsync(entry *LogEntry) {
+func (s *Server) addLogAsync(entry *model.LogEntry) {
 	select {
 	case s.logChan <- entry:
 		// 成功放入队列

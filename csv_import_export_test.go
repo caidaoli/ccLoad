@@ -1,6 +1,7 @@
 package main
 
 import (
+	"ccLoad/internal/model"
 	"testing"
 )
 
@@ -45,7 +46,7 @@ func TestCSVImport_DefaultValues(t *testing.T) {
 func TestCSVExportImportCycle(t *testing.T) {
 	// 测试channel_type的导出导入循环
 	// 场景：数据库中有空channel_type的Config
-	original := &Config{
+	original := &model.Config{
 		ID:          1,
 		Name:        "test-cycle",
 		ChannelType: "", // 数据库中的空值
@@ -111,7 +112,7 @@ func TestNormalizeChannelType(t *testing.T) {
 		{"anthropic", "anthropic"}, // 有效值保持
 		{"gemini", "gemini"},       // 有效值保持
 		{"codex", "codex"},         // 有效值保持
-		{"openai", "openai"},       // openai保持（不再转换为codex）
+		{"openai", "openai"},       // 有效值保持（openai是有效的渠道类型）
 		{"ANTHROPIC", "anthropic"}, // 大写转小写
 		{"  gemini  ", "gemini"},   // 去除空格并转小写
 	}

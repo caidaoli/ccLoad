@@ -1,6 +1,8 @@
 package main
 
 import (
+	"ccLoad/internal/model"
+	"ccLoad/internal/storage/sqlite"
 	"context"
 	"os"
 	"testing"
@@ -15,7 +17,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 	os.Setenv("CCLOAD_USE_MEMORY_DB", "true")
 	defer os.Setenv("CCLOAD_USE_MEMORY_DB", oldValue)
 
-	store, err := NewSQLiteStore(":memory:", nil)
+	store, err := sqlite.NewSQLiteStore(":memory:", nil)
 	if err != nil {
 		t.Fatalf("创建测试数据库失败: %v", err)
 	}
@@ -27,7 +29,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 	// 测试场景：首次401错误
 	t.Run("初始401错误冷却时间一致性", func(t *testing.T) {
 		// 创建两个独立的测试渠道
-		channelCfg := &Config{
+		channelCfg := &model.Config{
 			Name:    "channel-level-test",
 			URL:     "https://api.example.com",
 			Enabled: true,
@@ -37,7 +39,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 			t.Fatalf("创建渠道测试配置失败: %v", err)
 		}
 
-		keyCfg := &Config{
+		keyCfg := &model.Config{
 			Name:    "key-level-test",
 			URL:     "https://api.example.com",
 			Enabled: true,
@@ -49,7 +51,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 
 		// 为Key测试渠道创建2个API Keys
 		for i, key := range []string{"sk-key1", "sk-key2"} {
-			err = store.CreateAPIKey(ctx, &APIKey{
+			err = store.CreateAPIKey(ctx, &model.APIKey{
 				ChannelID:   keyCreated.ID,
 				KeyIndex:    i,
 				APIKey:      key,
@@ -97,7 +99,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 	// 测试场景：指数退避序列一致性
 	t.Run("401错误指数退避序列一致性", func(t *testing.T) {
 		// 创建两个测试渠道
-		channelCfg := &Config{
+		channelCfg := &model.Config{
 			Name:    "channel-backoff-test",
 			URL:     "https://api.example.com",
 			Enabled: true,
@@ -107,7 +109,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 			t.Fatalf("创建渠道测试配置失败: %v", err)
 		}
 
-		keyCfg := &Config{
+		keyCfg := &model.Config{
 			Name:    "key-backoff-test",
 			URL:     "https://api.example.com",
 			Enabled: true,
@@ -119,7 +121,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 
 		// 为Key测试渠道创建2个API Keys
 		for i, key := range []string{"sk-key1", "sk-key2"} {
-			err = store.CreateAPIKey(ctx, &APIKey{
+			err = store.CreateAPIKey(ctx, &model.APIKey{
 				ChannelID:   keyCreated.ID,
 				KeyIndex:    i,
 				APIKey:      key,
@@ -175,7 +177,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 
 	// 测试场景：403错误一致性
 	t.Run("403错误冷却时间一致性", func(t *testing.T) {
-		channelCfg := &Config{
+		channelCfg := &model.Config{
 			Name:    "channel-403-test",
 			URL:     "https://api.example.com",
 			Enabled: true,
@@ -185,7 +187,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 			t.Fatalf("创建渠道测试配置失败: %v", err)
 		}
 
-		keyCfg := &Config{
+		keyCfg := &model.Config{
 			Name:    "key-403-test",
 			URL:     "https://api.example.com",
 			Enabled: true,
@@ -197,7 +199,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 
 		// 为Key测试渠道创建2个API Keys
 		for i, key := range []string{"sk-key1", "sk-key2"} {
-			err = store.CreateAPIKey(ctx, &APIKey{
+			err = store.CreateAPIKey(ctx, &model.APIKey{
 				ChannelID:   keyCreated.ID,
 				KeyIndex:    i,
 				APIKey:      key,
@@ -240,14 +242,14 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
-				channelCfg := &Config{
+				channelCfg := &model.Config{
 					Name:    "channel-" + tc.name,
 					URL:     "https://api.example.com",
 					Enabled: true,
 				}
 				channelCreated, _ := store.CreateConfig(ctx, channelCfg)
 
-				keyCfg := &Config{
+				keyCfg := &model.Config{
 					Name:    "key-" + tc.name,
 					URL:     "https://api.example.com",
 					Enabled: true,
@@ -256,7 +258,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 
 				// 为Key测试渠道创建2个API Keys
 				for i, key := range []string{"sk-key1", "sk-key2"} {
-					_ = store.CreateAPIKey(ctx, &APIKey{
+					_ = store.CreateAPIKey(ctx, &model.APIKey{
 						ChannelID:   keyCreated.ID,
 						KeyIndex:    i,
 						APIKey:      key,

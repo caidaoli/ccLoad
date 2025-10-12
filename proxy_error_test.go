@@ -1,6 +1,7 @@
 package main
 
 import (
+	"ccLoad/internal/model"
 	"context"
 	"errors"
 	"fmt"
@@ -23,7 +24,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		cfg            *Config
+		cfg            *model.Config
 		statusCode     int
 		responseBody   []byte
 		networkError   error
@@ -34,7 +35,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 		// 单Key渠道测试（注：新架构中无需APIKey字段，通过api_keys表查询）
 		{
 			name: "single_key_401_should_upgrade_to_channel",
-			cfg: &Config{
+			cfg: &model.Config{
 				ID: 1,
 			},
 			statusCode:     401,
@@ -45,7 +46,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 		},
 		{
 			name: "single_key_403_quota_should_upgrade_to_channel",
-			cfg: &Config{
+			cfg: &model.Config{
 				ID: 2,
 			},
 			statusCode:     403,
@@ -58,7 +59,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 		// 多Key渠道测试
 		{
 			name: "multi_key_401_should_stay_key_level",
-			cfg: &Config{
+			cfg: &model.Config{
 				ID: 3,
 			},
 			statusCode:     401,
@@ -69,7 +70,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 		},
 		{
 			name: "multi_key_403_quota_should_stay_key_level",
-			cfg: &Config{
+			cfg: &model.Config{
 				ID: 4,
 			},
 			statusCode:     403,
@@ -82,7 +83,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 		// 渠道级错误（无论单Key还是多Key都应该冷却渠道）
 		{
 			name: "single_key_500_should_be_channel",
-			cfg: &Config{
+			cfg: &model.Config{
 				ID: 5,
 			},
 			statusCode:     500,
@@ -93,7 +94,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 		},
 		{
 			name: "multi_key_500_should_be_channel",
-			cfg: &Config{
+			cfg: &model.Config{
 				ID: 6,
 			},
 			statusCode:     500,
@@ -106,7 +107,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 		// 客户端错误（无论单Key还是多Key都应该直接返回）
 		{
 			name: "single_key_404_should_return_client",
-			cfg: &Config{
+			cfg: &model.Config{
 				ID: 7,
 			},
 			statusCode:     404,
@@ -119,7 +120,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 		// 🆕 网络错误测试（修复后应该支持单Key升级）
 		{
 			name: "single_key_network_error_should_upgrade_to_channel",
-			cfg: &Config{
+			cfg: &model.Config{
 				ID: 8,
 			},
 			networkError:   &net.OpError{Op: "dial", Err: errors.New("connection refused")},
@@ -129,7 +130,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 		},
 		{
 			name: "multi_key_network_error_should_stay_key_level",
-			cfg: &Config{
+			cfg: &model.Config{
 				ID: 9,
 			},
 			networkError:   &net.OpError{Op: "dial", Err: errors.New("connection refused")},
@@ -167,26 +168,26 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 	}
 }
 
-// MockStore 用于测试的Mock Store
+// MockStore 用于测试的Mock storage.Store
 type MockStore struct{}
 
-func (m *MockStore) GetConfig(ctx context.Context, id int64) (*Config, error) {
+func (m *MockStore) GetConfig(ctx context.Context, id int64) (*model.Config, error) {
 	return nil, nil
 }
 
-func (m *MockStore) ListConfigs(ctx context.Context) ([]*Config, error) {
+func (m *MockStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
 	return nil, nil
 }
 
-func (m *MockStore) CreateConfig(ctx context.Context, c *Config) (*Config, error) {
+func (m *MockStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Config, error) {
 	return nil, nil
 }
 
-func (m *MockStore) UpdateConfig(ctx context.Context, id int64, c *Config) (*Config, error) {
+func (m *MockStore) UpdateConfig(ctx context.Context, id int64, c *model.Config) (*model.Config, error) {
 	return nil, nil
 }
 
-func (m *MockStore) ReplaceConfig(ctx context.Context, c *Config) (*Config, error) {
+func (m *MockStore) ReplaceConfig(ctx context.Context, c *model.Config) (*model.Config, error) {
 	return nil, nil
 }
 
@@ -195,14 +196,14 @@ func (m *MockStore) DeleteConfig(ctx context.Context, id int64) error {
 }
 
 // API Keys management
-func (m *MockStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*APIKey, error) {
+func (m *MockStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error) {
 	// 根据渠道ID返回不同数量的Key（模拟单Key vs 多Key场景）
 	// ID 1, 2, 5, 7, 8: 单Key渠道
 	// ID 3, 4, 6, 9: 多Key渠道（3个Key）
 	switch channelID {
 	case 1, 2, 5, 7, 8:
 		// 单Key渠道
-		return []*APIKey{
+		return []*model.APIKey{
 			{
 				ChannelID:  channelID,
 				KeyIndex:   0,
@@ -212,7 +213,7 @@ func (m *MockStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*APIKey,
 		}, nil
 	case 3, 4, 6, 9:
 		// 多Key渠道（3个Key）
-		return []*APIKey{
+		return []*model.APIKey{
 			{ChannelID: channelID, KeyIndex: 0, APIKey: "sk-key1", KeyStrategy: "sequential"},
 			{ChannelID: channelID, KeyIndex: 1, APIKey: "sk-key2", KeyStrategy: "sequential"},
 			{ChannelID: channelID, KeyIndex: 2, APIKey: "sk-key3", KeyStrategy: "sequential"},
@@ -222,15 +223,15 @@ func (m *MockStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*APIKey,
 	}
 }
 
-func (m *MockStore) GetAPIKey(ctx context.Context, channelID int64, keyIndex int) (*APIKey, error) {
+func (m *MockStore) GetAPIKey(ctx context.Context, channelID int64, keyIndex int) (*model.APIKey, error) {
 	return nil, nil
 }
 
-func (m *MockStore) CreateAPIKey(ctx context.Context, key *APIKey) error {
+func (m *MockStore) CreateAPIKey(ctx context.Context, key *model.APIKey) error {
 	return nil
 }
 
-func (m *MockStore) UpdateAPIKey(ctx context.Context, key *APIKey) error {
+func (m *MockStore) UpdateAPIKey(ctx context.Context, key *model.APIKey) error {
 	return nil
 }
 
@@ -284,19 +285,19 @@ func (m *MockStore) SetKeyRR(ctx context.Context, configID int64, idx int) error
 	return nil
 }
 
-func (m *MockStore) AddLog(ctx context.Context, e *LogEntry) error {
+func (m *MockStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 	return nil
 }
 
-func (m *MockStore) ListLogs(ctx context.Context, since time.Time, limit, offset int, filter *LogFilter) ([]*LogEntry, error) {
+func (m *MockStore) ListLogs(ctx context.Context, since time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error) {
 	return nil, nil
 }
 
-func (m *MockStore) Aggregate(ctx context.Context, since time.Time, bucket time.Duration) ([]MetricPoint, error) {
+func (m *MockStore) Aggregate(ctx context.Context, since time.Time, bucket time.Duration) ([]model.MetricPoint, error) {
 	return nil, nil
 }
 
-func (m *MockStore) GetStats(ctx context.Context, since time.Time, filter *LogFilter) ([]StatsEntry, error) {
+func (m *MockStore) GetStats(ctx context.Context, since time.Time, filter *model.LogFilter) ([]model.StatsEntry, error) {
 	return nil, nil
 }
 
@@ -307,10 +308,10 @@ func (m *MockStore) Close() error {
 func (m *MockStore) CleanupLogsBefore(ctx context.Context, cutoff time.Time) error {
 	return nil
 }
-func (m *MockStore) GetEnabledChannelsByModel(ctx context.Context, model string) ([]*Config, error) {
+func (m *MockStore) GetEnabledChannelsByModel(ctx context.Context, model string) ([]*model.Config, error) {
 	return nil, nil
 }
-func (m *MockStore) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*Config, error) {
+func (m *MockStore) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*model.Config, error) {
 	return nil, nil
 }
 
@@ -335,7 +336,7 @@ func TestAllKeysCooledDown_UpgradeToChannelCooldown(t *testing.T) {
 	ctx := context.Background()
 
 	// 配置3个Key的渠道（注：新架构中API Keys在api_keys表）
-	cfg := &Config{
+	cfg := &model.Config{
 		ID:   1,
 		Name: "test-channel",
 	}
@@ -380,7 +381,7 @@ func TestAllKeysCooledDown_RoundRobinStrategy(t *testing.T) {
 	keySelector := NewKeySelector(store, nil) // 测试环境不需要监控指标
 	ctx := context.Background()
 
-	cfg := &Config{
+	cfg := &model.Config{
 		ID: 2,
 	}
 
@@ -411,7 +412,7 @@ func TestPartialKeysCooled_ShouldSelectAvailable(t *testing.T) {
 	keySelector := NewKeySelector(store, nil) // 测试环境不需要监控指标
 	ctx := context.Background()
 
-	cfg := &Config{
+	cfg := &model.Config{
 		ID: 3,
 	}
 
@@ -453,28 +454,28 @@ func (m *MockStoreAllKeysCooled) NextKeyRR(ctx context.Context, configID int64, 
 }
 
 // 实现其他Store接口（使用默认MockStore的实现）
-func (m *MockStoreAllKeysCooled) GetConfig(ctx context.Context, id int64) (*Config, error) {
+func (m *MockStoreAllKeysCooled) GetConfig(ctx context.Context, id int64) (*model.Config, error) {
 	return nil, nil
 }
-func (m *MockStoreAllKeysCooled) ListConfigs(ctx context.Context) ([]*Config, error) {
+func (m *MockStoreAllKeysCooled) ListConfigs(ctx context.Context) ([]*model.Config, error) {
 	return nil, nil
 }
-func (m *MockStoreAllKeysCooled) CreateConfig(ctx context.Context, c *Config) (*Config, error) {
+func (m *MockStoreAllKeysCooled) CreateConfig(ctx context.Context, c *model.Config) (*model.Config, error) {
 	return nil, nil
 }
-func (m *MockStoreAllKeysCooled) UpdateConfig(ctx context.Context, id int64, c *Config) (*Config, error) {
+func (m *MockStoreAllKeysCooled) UpdateConfig(ctx context.Context, id int64, c *model.Config) (*model.Config, error) {
 	return nil, nil
 }
-func (m *MockStoreAllKeysCooled) ReplaceConfig(ctx context.Context, c *Config) (*Config, error) {
+func (m *MockStoreAllKeysCooled) ReplaceConfig(ctx context.Context, c *model.Config) (*model.Config, error) {
 	return nil, nil
 }
 func (m *MockStoreAllKeysCooled) DeleteConfig(ctx context.Context, id int64) error {
 	return nil
 }
 // API Keys management
-func (m *MockStoreAllKeysCooled) GetAPIKeys(ctx context.Context, channelID int64) ([]*APIKey, error) {
+func (m *MockStoreAllKeysCooled) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error) {
 	// 所有测试渠道都配置3个Key，根据keyCooldowns设置冷却状态
-	keys := []*APIKey{
+	keys := []*model.APIKey{
 		{ChannelID: channelID, KeyIndex: 0, APIKey: "sk-key1", KeyStrategy: "sequential"},
 		{ChannelID: channelID, KeyIndex: 1, APIKey: "sk-key2", KeyStrategy: "sequential"},
 		{ChannelID: channelID, KeyIndex: 2, APIKey: "sk-key3", KeyStrategy: "sequential"},
@@ -490,13 +491,13 @@ func (m *MockStoreAllKeysCooled) GetAPIKeys(ctx context.Context, channelID int64
 
 	return keys, nil
 }
-func (m *MockStoreAllKeysCooled) GetAPIKey(ctx context.Context, channelID int64, keyIndex int) (*APIKey, error) {
+func (m *MockStoreAllKeysCooled) GetAPIKey(ctx context.Context, channelID int64, keyIndex int) (*model.APIKey, error) {
 	return nil, nil
 }
-func (m *MockStoreAllKeysCooled) CreateAPIKey(ctx context.Context, key *APIKey) error {
+func (m *MockStoreAllKeysCooled) CreateAPIKey(ctx context.Context, key *model.APIKey) error {
 	return nil
 }
-func (m *MockStoreAllKeysCooled) UpdateAPIKey(ctx context.Context, key *APIKey) error {
+func (m *MockStoreAllKeysCooled) UpdateAPIKey(ctx context.Context, key *model.APIKey) error {
 	return nil
 }
 func (m *MockStoreAllKeysCooled) DeleteAPIKey(ctx context.Context, channelID int64, keyIndex int) error {
@@ -536,16 +537,16 @@ func (m *MockStoreAllKeysCooled) ResetKeyCooldown(ctx context.Context, channelID
 func (m *MockStoreAllKeysCooled) SetKeyRR(ctx context.Context, configID int64, idx int) error {
 	return nil
 }
-func (m *MockStoreAllKeysCooled) AddLog(ctx context.Context, e *LogEntry) error {
+func (m *MockStoreAllKeysCooled) AddLog(ctx context.Context, e *model.LogEntry) error {
 	return nil
 }
-func (m *MockStoreAllKeysCooled) ListLogs(ctx context.Context, since time.Time, limit, offset int, filter *LogFilter) ([]*LogEntry, error) {
+func (m *MockStoreAllKeysCooled) ListLogs(ctx context.Context, since time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error) {
 	return nil, nil
 }
-func (m *MockStoreAllKeysCooled) Aggregate(ctx context.Context, since time.Time, bucket time.Duration) ([]MetricPoint, error) {
+func (m *MockStoreAllKeysCooled) Aggregate(ctx context.Context, since time.Time, bucket time.Duration) ([]model.MetricPoint, error) {
 	return nil, nil
 }
-func (m *MockStoreAllKeysCooled) GetStats(ctx context.Context, since time.Time, filter *LogFilter) ([]StatsEntry, error) {
+func (m *MockStoreAllKeysCooled) GetStats(ctx context.Context, since time.Time, filter *model.LogFilter) ([]model.StatsEntry, error) {
 	return nil, nil
 }
 func (m *MockStoreAllKeysCooled) Close() error {
@@ -555,10 +556,10 @@ func (m *MockStoreAllKeysCooled) Close() error {
 func (m *MockStoreAllKeysCooled) CleanupLogsBefore(ctx context.Context, cutoff time.Time) error {
 	return nil
 }
-func (m *MockStoreAllKeysCooled) GetEnabledChannelsByModel(ctx context.Context, model string) ([]*Config, error) {
+func (m *MockStoreAllKeysCooled) GetEnabledChannelsByModel(ctx context.Context, model string) ([]*model.Config, error) {
 	return nil, nil
 }
-func (m *MockStoreAllKeysCooled) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*Config, error) {
+func (m *MockStoreAllKeysCooled) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*model.Config, error) {
 	return nil, nil
 }
 

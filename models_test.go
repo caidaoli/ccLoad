@@ -1,6 +1,7 @@
 package main
 
 import (
+	"ccLoad/internal/model"
 	"encoding/json"
 	"strconv"
 	"testing"
@@ -37,7 +38,7 @@ func TestJSONTime_MarshalJSON(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			jt := JSONTime{Time: tt.time}
+			jt := model.JSONTime{Time: tt.time}
 			data, err := json.Marshal(jt)
 			if err != nil {
 				t.Fatalf("序列化失败: %v", err)
@@ -91,7 +92,7 @@ func TestJSONTime_UnmarshalJSON(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var jt JSONTime
+			var jt model.JSONTime
 			err := json.Unmarshal([]byte(tt.input), &jt)
 
 			if tt.wantErr {
@@ -116,7 +117,7 @@ func TestJSONTime_UnmarshalJSON(t *testing.T) {
 
 func TestConfig_JSONSerialization(t *testing.T) {
 	now := time.Now()
-	config := &Config{
+	config := &model.Config{
 		ID:             1,
 		Name:           "test-channel",
 		ChannelType:    "gemini",
@@ -125,8 +126,8 @@ func TestConfig_JSONSerialization(t *testing.T) {
 		Models:         []string{"model-1", "model-2"},
 		ModelRedirects: map[string]string{"old": "new"},
 		Enabled:        true,
-		CreatedAt:      JSONTime{Time: now},
-		UpdatedAt:      JSONTime{Time: now},
+		CreatedAt:      model.JSONTime{Time: now},
+		UpdatedAt:      model.JSONTime{Time: now},
 	}
 
 	// 序列化
@@ -136,7 +137,7 @@ func TestConfig_JSONSerialization(t *testing.T) {
 	}
 
 	// 反序列化
-	var restored Config
+	var restored model.Config
 	if err := json.Unmarshal(data, &restored); err != nil {
 		t.Fatalf("反序列化失败: %v", err)
 	}
@@ -191,7 +192,7 @@ func TestConfig_GetChannelType(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			config := &Config{ChannelType: tt.channelType}
+			config := &model.Config{ChannelType: tt.channelType}
 			result := config.GetChannelType()
 
 			if result != tt.expected {

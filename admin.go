@@ -12,6 +12,9 @@ import (
     "strings"
     "time"
 
+    "ccLoad/internal/model"
+    "ccLoad/internal/storage/sqlite"
+
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
 )
@@ -44,8 +47,8 @@ func (cr *ChannelRequest) Validate() error {
 }
 
 // ToConfig 转换为Config结构（不包含API Key，API Key单独处理）
-func (cr *ChannelRequest) ToConfig() *Config {
-	return &Config{
+func (cr *ChannelRequest) ToConfig() *model.Config {
+	return &model.Config{
 		Name:           strings.TrimSpace(cr.Name),
 		ChannelType:    strings.TrimSpace(cr.ChannelType), // 传递渠道类型
 		URL:            strings.TrimSpace(cr.URL),
@@ -65,7 +68,7 @@ type KeyCooldownInfo struct {
 }
 
 type ChannelWithCooldown struct {
-	*Config
+	*model.Config
 	KeyStrategy         string            `json:"key_strategy,omitempty"` // ✅ 修复 (2025-10-11): 添加key_strategy字段
 	CooldownUntil       *time.Time        `json:"cooldown_until,omitempty"`
 	CooldownRemainingMS int64             `json:"cooldown_remaining_ms,omitempty"`
@@ -138,7 +141,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		apiKeys, err := s.store.GetAPIKeys(c.Request.Context(), cfg.ID)
 		if err != nil {
 			log.Printf("⚠️  警告: 查询渠道 %d 的API Keys失败: %v", cfg.ID, err)
-			apiKeys = []*APIKey{} // 空数组，继续处理
+			apiKeys = []*model.APIKey{} // 空数组，继续处理
 		}
 
 		// ✅ 修复 (2025-10-11): 填充key_strategy字段（从第一个Key获取，所有Key的策略应该相同）
@@ -197,13 +200,13 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 
 	now := time.Now()
 	for i, key := range apiKeys {
-		apiKey := &APIKey{
+		apiKey := &model.APIKey{
 			ChannelID:   created.ID,
 			KeyIndex:    i,
 			APIKey:      key,
 			KeyStrategy: keyStrategy,
-			CreatedAt:   JSONTime{now},
-			UpdatedAt:   JSONTime{now},
+			CreatedAt:   model.JSONTime{now},
+			UpdatedAt:   model.JSONTime{now},
 		}
 		if err := s.store.CreateAPIKey(c.Request.Context(), apiKey); err != nil {
 			log.Printf("⚠️  警告: 创建API Key失败 (channel=%d, index=%d): %v", created.ID, i, err)
@@ -239,7 +242,7 @@ func (s *Server) handleExportChannelsCSV(c *gin.Context) {
 		apiKeys, err := s.store.GetAPIKeys(c.Request.Context(), cfg.ID)
 		if err != nil {
 			log.Printf("⚠️  警告: 查询渠道 %d 的API Keys失败: %v", cfg.ID, err)
-			apiKeys = []*APIKey{} // 空数组，继续处理
+			apiKeys = []*model.APIKey{} // 空数组，继续处理
 		}
 
 		// 格式化API Keys为逗号分隔字符串
@@ -441,7 +444,7 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 			}
 		}
 
-		cfg := &Config{
+		cfg := &model.Config{
 			Name:           name,
 			URL:            url,
 			Priority:       priority,
@@ -473,13 +476,13 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 			// 创建新的API Keys
 			now := time.Now()
 			for i, key := range apiKeys {
-				apiKeyRecord := &APIKey{
+				apiKeyRecord := &model.APIKey{
 					ChannelID:   replacedCfg.ID,
 					KeyIndex:    i,
 					APIKey:      key,
 					KeyStrategy: keyStrategy,
-					CreatedAt:   JSONTime{now},
-					UpdatedAt:   JSONTime{now},
+					CreatedAt:   model.JSONTime{now},
+					UpdatedAt:   model.JSONTime{now},
 				}
 				if err := s.store.CreateAPIKey(c.Request.Context(), apiKeyRecord); err != nil {
 					log.Printf("⚠️  警告: 创建API Key失败 (channel=%d, index=%d): %v", replacedCfg.ID, i, err)
@@ -500,7 +503,7 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 
 	// 导入完成后，批量同步所有渠道到Redis (DRY: 避免逐个同步的重复操作)
 	summary.RedisSyncEnabled = false
-	if sqliteStore, ok := s.store.(*SQLiteStore); ok && sqliteStore.redisSync.IsEnabled() {
+	if sqliteStore, ok := s.store.(*sqlite.SQLiteStore); ok && sqliteStore.IsRedisEnabled() {
 		summary.RedisSyncEnabled = true
 
 		// 批量同步所有渠道到Redis
@@ -645,7 +648,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	oldKeys, err := s.store.GetAPIKeys(c.Request.Context(), id)
 	if err != nil {
 		log.Printf("⚠️  警告: 查询旧API Keys失败: %v", err)
-		oldKeys = []*APIKey{}
+		oldKeys = []*model.APIKey{}
 	}
 
 	newKeys := ParseAPIKeys(req.APIKey)
@@ -690,13 +693,13 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		// 创建新的API Keys
 		now := time.Now()
 		for i, key := range newKeys {
-			apiKey := &APIKey{
+			apiKey := &model.APIKey{
 				ChannelID:   id,
 				KeyIndex:    i,
 				APIKey:      key,
 				KeyStrategy: keyStrategy,
-				CreatedAt:   JSONTime{now},
-				UpdatedAt:   JSONTime{now},
+				CreatedAt:   model.JSONTime{now},
+				UpdatedAt:   model.JSONTime{now},
 			}
 			if err := s.store.CreateAPIKey(c.Request.Context(), apiKey); err != nil {
 				log.Printf("⚠️  警告: 创建API Key失败 (channel=%d, index=%d): %v", id, i, err)
@@ -707,7 +710,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		now := time.Now()
 		for _, oldKey := range oldKeys {
 			oldKey.KeyStrategy = keyStrategy
-			oldKey.UpdatedAt = JSONTime{now}
+			oldKey.UpdatedAt = model.JSONTime{now}
 			if err := s.store.UpdateAPIKey(c.Request.Context(), oldKey); err != nil {
 				log.Printf("⚠️  警告: 更新API Key策略失败 (channel=%d, index=%d): %v", id, oldKey.KeyIndex, err)
 			}
@@ -930,7 +933,7 @@ func (s *Server) handleChannelTest(c *gin.Context) {
 }
 
 // 测试渠道API连通性
-func (s *Server) testChannelAPI(cfg *Config, apiKey string, testReq *TestChannelRequest) map[string]any {
+func (s *Server) testChannelAPI(cfg *model.Config, apiKey string, testReq *TestChannelRequest) map[string]any {
 	// ✅ 修复：应用模型重定向逻辑（与正常代理流程保持一致）
 	originalModel := testReq.Model
 	actualModel := originalModel

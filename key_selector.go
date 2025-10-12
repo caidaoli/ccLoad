@@ -1,6 +1,8 @@
 package main
 
 import (
+	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
 	"context"
 	"fmt"
 	"sync/atomic"
@@ -10,12 +12,12 @@ import (
 // KeySelector 负责从渠道的多个API Key中选择可用的Key
 // 重构：移除内存缓存，直接查询数据库
 type KeySelector struct {
-	store         Store
+	store         storage.Store
 	cooldownGauge *atomic.Int64 // 监控指标：当前活跃的Key级冷却数量（P2优化）
 }
 
 // NewKeySelector 创建Key选择器
-func NewKeySelector(store Store, gauge *atomic.Int64) *KeySelector {
+func NewKeySelector(store storage.Store, gauge *atomic.Int64) *KeySelector {
 	return &KeySelector{
 		store:         store,
 		cooldownGauge: gauge,
@@ -28,7 +30,7 @@ func NewKeySelector(store Store, gauge *atomic.Int64) *KeySelector {
 // - sequential: 顺序尝试，跳过冷却中的Key和已尝试的Key
 // - round_robin: 轮询选择，跳过冷却中的Key和已尝试的Key
 // excludeKeys: 本次请求中已尝试过的Key索引集合（避免同一请求内重复尝试）
-func (ks *KeySelector) SelectAvailableKey(ctx context.Context, cfg *Config, excludeKeys map[int]bool) (int, string, error) {
+func (ks *KeySelector) SelectAvailableKey(ctx context.Context, cfg *model.Config, excludeKeys map[int]bool) (int, string, error) {
 	// 从数据库查询渠道的所有API Keys
 	apiKeys, err := ks.store.GetAPIKeys(ctx, cfg.ID)
 	if err != nil {
@@ -64,7 +66,7 @@ func (ks *KeySelector) SelectAvailableKey(ctx context.Context, cfg *Config, excl
 }
 
 // selectSequential 顺序选择：从第一个开始，跳过冷却中的Key和已尝试的Key
-func (ks *KeySelector) selectSequential(apiKeys []*APIKey, excludeKeys map[int]bool) (int, string, error) {
+func (ks *KeySelector) selectSequential(apiKeys []*model.APIKey, excludeKeys map[int]bool) (int, string, error) {
 	now := time.Now()
 
 	for _, apiKey := range apiKeys {
@@ -87,7 +89,7 @@ func (ks *KeySelector) selectSequential(apiKeys []*APIKey, excludeKeys map[int]b
 }
 
 // selectRoundRobin 轮询选择：使用轮询指针，跳过冷却中的Key和已尝试的Key
-func (ks *KeySelector) selectRoundRobin(ctx context.Context, channelID int64, apiKeys []*APIKey, excludeKeys map[int]bool) (int, string, error) {
+func (ks *KeySelector) selectRoundRobin(ctx context.Context, channelID int64, apiKeys []*model.APIKey, excludeKeys map[int]bool) (int, string, error) {
 	keyCount := len(apiKeys)
 	now := time.Now()
 
@@ -99,7 +101,7 @@ func (ks *KeySelector) selectRoundRobin(ctx context.Context, channelID int64, ap
 		idx := (startIdx + i) % keyCount
 
 		// 在apiKeys中查找对应key_index的Key
-		var selectedKey *APIKey
+		var selectedKey *model.APIKey
 		for _, apiKey := range apiKeys {
 			if apiKey.KeyIndex == idx {
 				selectedKey = apiKey

@@ -48,18 +48,34 @@ func maskAPIKey(key string) string {
 
 // generateLogDBPath 从主数据库路径生成日志数据库路径
 // 例如: ./data/ccload.db -> ./data/ccload-log.db
-// 特殊处理: :memory: -> /tmp/ccload-test-log.db（测试场景）
+// 已有-log后缀不重复添加: ./data/ccload-log.db -> ./data/ccload-log.db
+// 特殊处理: :memory: -> :memory:（内存模式）
 func generateLogDBPath(mainDBPath string) string {
-	// 检测特殊的内存数据库标识（用于测试）
+	// 检测特殊的内存数据库标识（保持原样）
 	if mainDBPath == ":memory:" {
-		return filepath.Join(os.TempDir(), "ccload-test-log.db")
+		return ":memory:"
 	}
 
+	// 保留原始路径的相对路径前缀（./）
 	dir := filepath.Dir(mainDBPath)
 	base := filepath.Base(mainDBPath)
 	ext := filepath.Ext(base)
 	name := strings.TrimSuffix(base, ext)
-	return filepath.Join(dir, name+"-log"+ext)
+
+	// 如果已经有-log后缀，不重复添加
+	if strings.HasSuffix(name, "-log") {
+		return mainDBPath
+	}
+
+	// 构建新路径，保留./前缀
+	result := filepath.Join(dir, name+"-log"+ext)
+
+	// filepath.Join会清理./前缀，需要手动恢复
+	if strings.HasPrefix(mainDBPath, "./") && !strings.HasPrefix(result, "./") {
+		result = "./" + result
+	}
+
+	return result
 }
 
 // buildMainDBDSN 构建主数据库DSN（支持内存模式）
@@ -208,6 +224,11 @@ func NewSQLiteStore(path string, redisSync RedisSync) (*SQLiteStore, error) {
 
 // 确保SQLiteStore实现了storage.Store接口
 var _ storage.Store = (*SQLiteStore)(nil)
+
+// IsRedisEnabled 检查Redis同步是否启用（公共方法）
+func (s *SQLiteStore) IsRedisEnabled() bool {
+	return s.redisSync != nil && s.redisSync.IsEnabled()
+}
 
 func (s *SQLiteStore) Close() error {
 	// 优雅关闭：通知worker退出

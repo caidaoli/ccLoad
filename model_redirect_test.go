@@ -1,6 +1,7 @@
 package main
 
 import (
+	"ccLoad/internal/model"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -9,7 +10,7 @@ import (
 // TestPrepareRequestBody_WithRedirect 测试模型重定向功能
 func TestPrepareRequestBody_WithRedirect(t *testing.T) {
 	// 准备测试数据
-	cfg := &Config{
+	cfg := &model.Config{
 		ModelRedirects: map[string]string{
 			"gpt-5":                  "gpt-5-2025-08-07",
 			"claude-3-opus":          "claude-3-5-sonnet-20241022",
@@ -109,13 +110,13 @@ func TestPrepareRequestBody_WithRedirect(t *testing.T) {
 func TestPrepareRequestBody_NoRedirectConfig(t *testing.T) {
 	tests := []struct {
 		name          string
-		cfg           *Config
+		cfg           *model.Config
 		originalModel string
 		description   string
 	}{
 		{
 			name: "空重定向映射",
-			cfg: &Config{
+			cfg: &model.Config{
 				ModelRedirects: map[string]string{},
 			},
 			originalModel: "gpt-4o",
@@ -123,7 +124,7 @@ func TestPrepareRequestBody_NoRedirectConfig(t *testing.T) {
 		},
 		{
 			name: "nil重定向映射",
-			cfg: &Config{
+			cfg: &model.Config{
 				ModelRedirects: nil,
 			},
 			originalModel: "claude-3-5-sonnet",
@@ -166,7 +167,7 @@ func TestPrepareRequestBody_NoRedirectConfig(t *testing.T) {
 
 // TestPrepareRequestBody_EmptyRedirect 测试重定向到空字符串的场景
 func TestPrepareRequestBody_EmptyRedirect(t *testing.T) {
-	cfg := &Config{
+	cfg := &model.Config{
 		ModelRedirects: map[string]string{
 			"test-model": "", // 空字符串重定向
 		},
@@ -187,7 +188,7 @@ func TestPrepareRequestBody_EmptyRedirect(t *testing.T) {
 
 // TestPrepareRequestBody_ComplexJSON 测试复杂JSON结构的请求体修改
 func TestPrepareRequestBody_ComplexJSON(t *testing.T) {
-	cfg := &Config{
+	cfg := &model.Config{
 		ModelRedirects: map[string]string{
 			"gpt-4": "gpt-4-turbo",
 		},
@@ -277,7 +278,7 @@ func TestPrepareRequestBody_ComplexJSON(t *testing.T) {
 
 // TestPrepareRequestBody_InvalidJSON 测试无效JSON的容错处理
 func TestPrepareRequestBody_InvalidJSON(t *testing.T) {
-	cfg := &Config{
+	cfg := &model.Config{
 		ModelRedirects: map[string]string{
 			"gpt-4": "gpt-4-turbo",
 		},
@@ -307,7 +308,7 @@ func TestPrepareRequestBody_InvalidJSON(t *testing.T) {
 
 // TestPrepareRequestBody_ModelFieldMissing 测试缺少model字段的请求体
 func TestPrepareRequestBody_ModelFieldMissing(t *testing.T) {
-	cfg := &Config{
+	cfg := &model.Config{
 		ModelRedirects: map[string]string{
 			"default-model": "upgraded-model",
 		},
@@ -348,7 +349,7 @@ func TestPrepareRequestBody_ModelFieldMissing(t *testing.T) {
 
 // BenchmarkPrepareRequestBody 性能基准测试
 func BenchmarkPrepareRequestBody(b *testing.B) {
-	cfg := &Config{
+	cfg := &model.Config{
 		ModelRedirects: map[string]string{
 			"gpt-4": "gpt-4-turbo",
 		},
@@ -368,7 +369,7 @@ func BenchmarkPrepareRequestBody(b *testing.B) {
 
 // BenchmarkPrepareRequestBody_NoRedirect 无重定向场景性能测试
 func BenchmarkPrepareRequestBody_NoRedirect(b *testing.B) {
-	cfg := &Config{
+	cfg := &model.Config{
 		ModelRedirects: map[string]string{
 			"gpt-4": "gpt-4-turbo",
 		},

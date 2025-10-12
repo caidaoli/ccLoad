@@ -1,6 +1,7 @@
-package main
+package sqlite
 
 import (
+	"ccLoad/internal/model"
 	"context"
 	"fmt"
 	"strings"
@@ -12,13 +13,13 @@ import (
 // 对比场景：N+1查询 vs 全表查询+内存过滤
 func BenchmarkFetchChannelNamesBatch(b *testing.B) {
 	ctx := context.Background()
-	store, cleanup := setupTestStore(b)
+	store, cleanup := setupBatchTestStore(b)
 	defer cleanup()
 
 	// 创建测试渠道数据
 	channelIDs := make(map[int64]bool)
 	for i := 1; i <= 100; i++ {
-		cfg := &Config{
+		cfg := &model.Config{
 			Name:     fmt.Sprintf("TestChannel-%d", i),
 			URL:      "https://api.example.com",
 			Priority: 10,
@@ -43,8 +44,8 @@ func BenchmarkFetchChannelNamesBatch(b *testing.B) {
 	}
 }
 
-// setupTestStore 创建测试用SQLite存储（内存模式）
-func setupTestStore(t testing.TB) (*SQLiteStore, func()) {
+// setupBatchTestStore 创建测试用SQLite存储（内存模式）
+func setupBatchTestStore(t testing.TB) (*SQLiteStore, func()) {
 	t.Helper()
 
 	store, err := NewSQLiteStore(":memory:", nil)
@@ -64,7 +65,7 @@ func setupTestStore(t testing.TB) (*SQLiteStore, func()) {
 // TestFetchChannelNamesBatch_Correctness 正确性测试：验证批量查询结果
 func TestFetchChannelNamesBatch_Correctness(t *testing.T) {
 	ctx := context.Background()
-	store, cleanup := setupTestStore(t)
+	store, cleanup := setupBatchTestStore(t)
 	defer cleanup()
 
 	// 创建测试渠道
@@ -72,7 +73,7 @@ func TestFetchChannelNamesBatch_Correctness(t *testing.T) {
 	channelIDs := make(map[int64]bool)
 
 	for i := 1; i <= 10; i++ {
-		cfg := &Config{
+		cfg := &model.Config{
 			Name:     fmt.Sprintf("Channel-%d", i),
 			URL:      "https://api.test.com",
 			Priority: i,
@@ -114,7 +115,7 @@ func TestFetchChannelNamesBatch_Correctness(t *testing.T) {
 // TestFetchChannelNamesBatch_EmptyInput 边界测试：空输入
 func TestFetchChannelNamesBatch_EmptyInput(t *testing.T) {
 	ctx := context.Background()
-	store, cleanup := setupTestStore(t)
+	store, cleanup := setupBatchTestStore(t)
 	defer cleanup()
 
 	emptyMap := make(map[int64]bool)
@@ -132,13 +133,13 @@ func TestFetchChannelNamesBatch_EmptyInput(t *testing.T) {
 // TestListLogs_BatchQuery 集成测试：验证ListLogs使用批量查询
 func TestListLogs_BatchQuery(t *testing.T) {
 	ctx := context.Background()
-	store, cleanup := setupTestStore(t)
+	store, cleanup := setupBatchTestStore(t)
 	defer cleanup()
 
 	// 创建多个渠道
 	channelIDs := make([]int64, 0, 5)
 	for i := 1; i <= 5; i++ {
-		cfg := &Config{
+		cfg := &model.Config{
 			Name:     fmt.Sprintf("LogChannel-%d", i),
 			URL:      "https://api.test.com",
 			Priority: i,
@@ -154,8 +155,8 @@ func TestListLogs_BatchQuery(t *testing.T) {
 
 	// 创建测试日志（分布在不同渠道）
 	for i, channelID := range channelIDs {
-		entry := &LogEntry{
-			Time:       JSONTime{time.Now()},
+		entry := &model.LogEntry{
+			Time:       model.JSONTime{time.Now()},
 			Model:      "test-model",
 			ChannelID:  &channelID,
 			StatusCode: 200,

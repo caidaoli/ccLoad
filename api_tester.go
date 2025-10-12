@@ -1,6 +1,7 @@
 package main
 
 import (
+	"ccLoad/internal/model"
 	"net/http"
 	"strings"
 
@@ -11,7 +12,7 @@ import (
 type ChannelTester interface {
 	// Build 构造完整请求：URL、基础请求头、请求体
 	// apiKey: 实际使用的API Key字符串（由调用方从数据库查询）
-	Build(cfg *Config, apiKey string, req *TestChannelRequest) (fullURL string, headers http.Header, body []byte, err error)
+	Build(cfg *model.Config, apiKey string, req *TestChannelRequest) (fullURL string, headers http.Header, body []byte, err error)
 	// Parse 解析响应体，返回通用结果字段（如 response_text、usage、api_response/api_error/raw_response）
 	Parse(statusCode int, respBody []byte) map[string]any
 }
@@ -42,7 +43,7 @@ func getSliceItem[T any](slice []any, index int) (T, bool) {
 // CodexTester 兼容 Codex 风格（渠道类型: codex）
 type CodexTester struct{}
 
-func (t *CodexTester) Build(cfg *Config, apiKey string, req *TestChannelRequest) (string, http.Header, []byte, error) {
+func (t *CodexTester) Build(cfg *model.Config, apiKey string, req *TestChannelRequest) (string, http.Header, []byte, error) {
 	testContent := req.Content
 	if strings.TrimSpace(testContent) == "" {
 		testContent = "test"
@@ -144,7 +145,7 @@ func (t *CodexTester) Parse(statusCode int, respBody []byte) map[string]any {
 // OpenAITester 标准OpenAI API格式（渠道类型: openai）
 type OpenAITester struct{}
 
-func (t *OpenAITester) Build(cfg *Config, apiKey string, req *TestChannelRequest) (string, http.Header, []byte, error) {
+func (t *OpenAITester) Build(cfg *model.Config, apiKey string, req *TestChannelRequest) (string, http.Header, []byte, error) {
 	testContent := req.Content
 	if strings.TrimSpace(testContent) == "" {
 		testContent = "test"
@@ -209,7 +210,7 @@ func (t *OpenAITester) Parse(statusCode int, respBody []byte) map[string]any {
 // GeminiTester 实现 Google Gemini 测试协议
 type GeminiTester struct{}
 
-func (t *GeminiTester) Build(cfg *Config, apiKey string, req *TestChannelRequest) (string, http.Header, []byte, error) {
+func (t *GeminiTester) Build(cfg *model.Config, apiKey string, req *TestChannelRequest) (string, http.Header, []byte, error) {
 	testContent := req.Content
 	if strings.TrimSpace(testContent) == "" {
 		testContent = "test"
@@ -298,7 +299,7 @@ func (t *GeminiTester) Parse(statusCode int, respBody []byte) map[string]any {
 // AnthropicTester 实现 Anthropic 测试协议
 type AnthropicTester struct{}
 
-func (t *AnthropicTester) Build(cfg *Config, apiKey string, req *TestChannelRequest) (string, http.Header, []byte, error) {
+func (t *AnthropicTester) Build(cfg *model.Config, apiKey string, req *TestChannelRequest) (string, http.Header, []byte, error) {
 	maxTokens := req.MaxTokens
 	if maxTokens == 0 {
 		maxTokens = 4096

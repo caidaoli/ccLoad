@@ -1,6 +1,7 @@
 package main
 
 import (
+	"ccLoad/internal/model"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -212,7 +213,7 @@ type traceBreakdown struct {
 // 移除EndpointStrategy - 实现真正的透明代理
 
 // 辅助函数：构建上游完整URL（KISS）
-func buildUpstreamURL(cfg *Config, requestPath, rawQuery string) string {
+func buildUpstreamURL(cfg *model.Config, requestPath, rawQuery string) string {
 	upstreamURL := strings.TrimRight(cfg.URL, "/") + requestPath
 	if rawQuery != "" {
 		upstreamURL += "?" + rawQuery
@@ -323,7 +324,7 @@ func streamCopy(ctx context.Context, src io.Reader, dst http.ResponseWriter) err
 // forwardOnceAsync: 异步流式转发，透明转发客户端原始请求
 // 参数新增 apiKey 用于直接传递已选中的API Key（从KeySelector获取）
 // 参数新增 method 用于支持任意HTTP方法（GET、POST、PUT、DELETE等）
-func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, apiKey string, method string, body []byte, hdr http.Header, rawQuery, requestPath string, w http.ResponseWriter) (*fwResult, float64, error) {
+func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey string, method string, body []byte, hdr http.Header, rawQuery, requestPath string, w http.ResponseWriter) (*fwResult, float64, error) {
 	startTime := time.Now()
 
 	// ✅ P0修复 (2025-10-12): 为流式请求添加首字节超时控制
@@ -434,7 +435,7 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, apiKey strin
 		rb, readErr := io.ReadAll(resp.Body)
 		if readErr != nil {
 			// 记录读取错误，但仍返回可用部分
-			s.addLogAsync(&LogEntry{Time: JSONTime{time.Now()}, Message: fmt.Sprintf("error reading upstream body: %v", readErr)})
+			s.addLogAsync(&model.LogEntry{Time: model.JSONTime{time.Now()}, Message: fmt.Sprintf("error reading upstream body: %v", readErr)})
 		}
 		_ = resp.Body.Close()
 		duration := time.Since(startTime).Seconds()
@@ -525,10 +526,10 @@ type proxyResult struct {
 // buildLogEntry 构建日志条目（消除重复代码，遵循DRY原则）
 func buildLogEntry(originalModel string, channelID *int64, statusCode int,
 	duration float64, isStreaming bool, apiKeyUsed string,
-	res *fwResult, errMsg string) *LogEntry {
+	res *fwResult, errMsg string) *model.LogEntry {
 
-	entry := &LogEntry{
-		Time:        JSONTime{time.Now()},
+	entry := &model.LogEntry{
+		Time:        model.JSONTime{time.Now()},
 		Model:       originalModel,
 		ChannelID:   channelID,
 		StatusCode:  statusCode,
@@ -572,7 +573,7 @@ const (
 
 // handleProxyError 统一错误处理与冷却决策（遵循OCP原则）
 // 返回：(处理动作, 是否需要保存响应信息)
-func (s *Server) handleProxyError(ctx context.Context, cfg *Config, keyIndex int,
+func (s *Server) handleProxyError(ctx context.Context, cfg *model.Config, keyIndex int,
 	res *fwResult, err error) (ErrorAction, bool) {
 
 	var errLevel ErrorLevel
@@ -631,7 +632,7 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *Config, keyIndex int
 
 // prepareRequestBody 准备请求体（处理模型重定向）
 // 遵循SRP原则：单一职责 - 仅负责模型重定向和请求体准备
-func prepareRequestBody(cfg *Config, reqCtx *proxyRequestContext) (actualModel string, bodyToSend []byte) {
+func prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestContext) (actualModel string, bodyToSend []byte) {
 	actualModel = reqCtx.originalModel
 
 	// 检查模型重定向
@@ -667,7 +668,7 @@ func prepareRequestBody(cfg *Config, reqCtx *proxyRequestContext) (actualModel s
 // 返回：(proxyResult, shouldContinueRetry, shouldBreakToNextChannel)
 func (s *Server) forwardAttempt(
 	ctx context.Context,
-	cfg *Config,
+	cfg *model.Config,
 	keyIndex int,
 	selectedKey string,
 	reqCtx *proxyRequestContext,
@@ -696,7 +697,7 @@ func (s *Server) forwardAttempt(
 // handleNetworkError 处理网络错误
 func (s *Server) handleNetworkError(
 	ctx context.Context,
-	cfg *Config,
+	cfg *model.Config,
 	keyIndex int,
 	actualModel string, // ✅ 新增：重定向后的实际模型名称
 	selectedKey string,
@@ -726,7 +727,7 @@ func (s *Server) handleNetworkError(
 // handleSuccessResponse 处理成功响应
 func (s *Server) handleSuccessResponse(
 	ctx context.Context,
-	cfg *Config,
+	cfg *model.Config,
 	keyIndex int,
 	actualModel string, // ✅ 新增：重定向后的实际模型名称
 	selectedKey string,
@@ -756,7 +757,7 @@ func (s *Server) handleSuccessResponse(
 // handleErrorResponse 处理错误响应
 func (s *Server) handleErrorResponse(
 	ctx context.Context,
-	cfg *Config,
+	cfg *model.Config,
 	keyIndex int,
 	actualModel string, // ✅ 新增：重定向后的实际模型名称
 	selectedKey string,
@@ -789,7 +790,7 @@ func (s *Server) handleErrorResponse(
 
 // tryChannelWithKeys 在单个渠道内尝试多个Key（Key级重试）
 // 遵循SRP原则：职责单一 - 仅负责Key级别的重试逻辑
-func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *Config, reqCtx *proxyRequestContext, w http.ResponseWriter) (*proxyResult, error) {
+func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqCtx *proxyRequestContext, w http.ResponseWriter) (*proxyResult, error) {
 	// 查询渠道的API Keys（从数据库）
 	apiKeys, err := s.store.GetAPIKeys(ctx, cfg.ID)
 	if err != nil {
@@ -901,7 +902,7 @@ func parseIncomingRequest(c *gin.Context) (string, []byte, bool, error) {
 }
 
 // selectRouteCandidates 根据请求选择路由候选
-func (s *Server) selectRouteCandidates(ctx context.Context, c *gin.Context, originalModel string) ([]*Config, error) {
+func (s *Server) selectRouteCandidates(ctx context.Context, c *gin.Context, originalModel string) ([]*model.Config, error) {
 	requestPath := c.Request.URL.Path
 	requestMethod := c.Request.Method
 
@@ -966,8 +967,8 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 
 	// 检查是否有可用候选
 	if len(cands) == 0 {
-		s.addLogAsync(&LogEntry{
-			Time:        JSONTime{time.Now()},
+		s.addLogAsync(&model.LogEntry{
+			Time:        model.JSONTime{time.Now()},
 			Model:       originalModel,
 			StatusCode:  503,
 			Message:     "no available upstream (all cooled or none)",
@@ -1033,8 +1034,8 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 	if finalStatus < 500 {
 		msg = fmt.Sprintf("upstream status %d", finalStatus)
 	}
-	s.addLogAsync(&LogEntry{
-		Time:        JSONTime{time.Now()},
+	s.addLogAsync(&model.LogEntry{
+		Time:        model.JSONTime{time.Now()},
 		Model:       originalModel,
 		StatusCode:  finalStatus,
 		Message:     msg,

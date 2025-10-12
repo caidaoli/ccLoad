@@ -1,6 +1,8 @@
 package main
 
 import (
+	"ccLoad/internal/model"
+	"ccLoad/internal/storage/sqlite"
 	"context"
 	"database/sql"
 	"os"
@@ -24,13 +26,13 @@ func TestNamedMemoryDatabasePersistence(t *testing.T) {
 
 	// 步骤1: 创建SQLiteStore（会创建守护连接）
 	t.Log("创建SQLiteStore（启用守护连接）...")
-	store1, err := NewSQLiteStore(dbPath, nil)
+	store1, err := sqlite.NewSQLiteStore(dbPath, nil)
 	if err != nil {
 		t.Fatalf("创建SQLiteStore失败: %v", err)
 	}
 
 	// 插入测试渠道
-	cfg := &Config{
+	cfg := &model.Config{
 		Name:     "test-channel-1",
 		URL:      "https://example.com",
 		Priority: 10,
@@ -64,7 +66,7 @@ func TestNamedMemoryDatabasePersistence(t *testing.T) {
 
 	// 步骤3: 创建新的SQLiteStore实例（模拟服务重启）
 	t.Log("创建新的SQLiteStore实例（模拟服务重启）...")
-	store2, err := NewSQLiteStore(dbPath, nil)
+	store2, err := sqlite.NewSQLiteStore(dbPath, nil)
 	if err != nil {
 		t.Fatalf("创建第二个SQLiteStore失败: %v", err)
 	}
@@ -106,7 +108,7 @@ func TestMemoryDatabaseNoConnLifetime(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := tmpDir + "/test.db"
 
-	store, err := NewSQLiteStore(dbPath, nil)
+	store, err := sqlite.NewSQLiteStore(dbPath, nil)
 	if err != nil {
 		t.Fatalf("创建SQLiteStore失败: %v", err)
 	}
@@ -118,7 +120,7 @@ func TestMemoryDatabaseNoConnLifetime(t *testing.T) {
 	ctx := context.Background()
 
 	// 创建测试渠道
-	cfg := &Config{
+	cfg := &model.Config{
 		Name:     "test-channel",
 		URL:      "https://example.com",
 		Priority: 10,

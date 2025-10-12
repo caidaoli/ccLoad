@@ -8,6 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"ccLoad/internal/storage"
+	"ccLoad/internal/storage/redis"
+	"ccLoad/internal/storage/sqlite"
+
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 )
@@ -25,7 +29,7 @@ func main() {
 
 	// 初始化Redis同步客户端 (可选功能)
 	redisURL := os.Getenv("REDIS_URL")
-	redisSync, err := NewRedisSync(redisURL)
+	redisSync, err := redis.NewRedisSync(redisURL)
 	if err != nil {
 		log.Fatalf("Redis初始化失败: %v", err)
 	}
@@ -44,9 +48,9 @@ func main() {
 	}
 
 	// 检查数据库文件是否存在 (启动恢复机制的关键判断)
-	dbExists := CheckDatabaseExists(dbPath)
+	dbExists := sqlite.CheckDatabaseExists(dbPath)
 
-	s, err := NewSQLiteStore(dbPath, redisSync)
+	s, err := sqlite.NewSQLiteStore(dbPath, redisSync)
 	if err != nil {
 		log.Fatalf("sqlite 初始化失败: %v", err)
 	}
@@ -60,7 +64,7 @@ func main() {
 		}
 	}
 	log.Printf("using sqlite store: %s", dbPath)
-	var store Store = s
+	var store storage.Store = s
 
 	// 渠道仅从 SQLite 管理与读取；不再从本地文件初始化。
 

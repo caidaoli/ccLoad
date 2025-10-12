@@ -1,10 +1,10 @@
 package main
 
 import (
+	"ccLoad/internal/model"
+	"ccLoad/internal/storage/sqlite"
 	"context"
 	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -25,7 +25,7 @@ func TestMemoryDBMode(t *testing.T) {
 	os.Setenv("CCLOAD_USE_MEMORY_DB", "true")
 
 	// 创建内存数据库实例
-	store, err := NewSQLiteStore("/tmp/test-memory.db", nil)
+	store, err := sqlite.NewSQLiteStore("/tmp/test-memory.db", nil)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore failed: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestMemoryDBMode(t *testing.T) {
 	ctx := context.Background()
 
 	// 测试1: 创建渠道配置
-	config := &Config{
+	config := &model.Config{
 		Name:     "test-memory-channel",
 		URL:      "https://api.example.com",
 		Priority: 10,
@@ -123,7 +123,7 @@ func TestFileDBMode(t *testing.T) {
 	}()
 
 	// 创建文件数据库实例
-	store, err := NewSQLiteStore(dbPath, nil)
+	store, err := sqlite.NewSQLiteStore(dbPath, nil)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore failed: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestFileDBMode(t *testing.T) {
 	ctx := context.Background()
 
 	// 创建测试数据
-	config := &Config{
+	config := &model.Config{
 		Name:     "test-file-channel",
 		URL:      "https://api.example.com",
 		Priority: 5,
@@ -157,7 +157,7 @@ func TestFileDBMode(t *testing.T) {
 	store.Close()
 
 	// 重新打开验证持久化
-	store2, err := NewSQLiteStore(dbPath, nil)
+	store2, err := sqlite.NewSQLiteStore(dbPath, nil)
 	if err != nil {
 		t.Fatalf("Failed to reopen database: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestLogDBAlwaysUsesFile(t *testing.T) {
 		os.Remove(logDBPath)
 	}()
 
-	store, err := NewSQLiteStore(dbPath, nil)
+	store, err := sqlite.NewSQLiteStore(dbPath, nil)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore failed: %v", err)
 	}
@@ -194,8 +194,8 @@ func TestLogDBAlwaysUsesFile(t *testing.T) {
 	ctx := context.Background()
 
 	// 添加日志记录
-	logEntry := &LogEntry{
-		Time:       JSONTime{time.Now()},
+	logEntry := &model.LogEntry{
+		Time:       model.JSONTime{time.Now()},
 		Model:      "test-model",
 		StatusCode: 200,
 		Message:    "Test log entry",
@@ -218,7 +218,7 @@ func TestLogDBAlwaysUsesFile(t *testing.T) {
 	}
 
 	// 重新打开验证日志持久化
-	store2, err := NewSQLiteStore(dbPath, nil)
+	store2, err := sqlite.NewSQLiteStore(dbPath, nil)
 	if err != nil {
 		t.Fatalf("Failed to reopen database: %v", err)
 	}
@@ -246,87 +246,21 @@ func TestLogDBAlwaysUsesFile(t *testing.T) {
 	}
 }
 
-// TestGenerateLogDBPath 验证日志数据库路径生成逻辑
-func TestGenerateLogDBPath(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{
-			name:     "正常文件路径",
-			input:    "./data/ccload.db",
-			expected: "data/ccload-log.db",
-		},
-		{
-			name:     "特殊内存标识",
-			input:    ":memory:",
-			expected: filepath.Join(os.TempDir(), "ccload-test-log.db"),
-		},
-		{
-			name:     "临时文件路径",
-			input:    "/tmp/test.db",
-			expected: "/tmp/test-log.db",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := generateLogDBPath(tt.input)
-			if result != tt.expected {
-				t.Errorf("generateLogDBPath(%q) = %q, expected %q", tt.input, result, tt.expected)
-			}
-		})
-	}
-}
-
-// TestMemoryDBDSNNoWAL 验证内存数据库DSN不包含WAL模式
-// 回归测试：防止WAL+memory组合导致表创建失败的bug（2025-10-05修复）
-func TestMemoryDBDSNNoWAL(t *testing.T) {
-	os.Setenv("CCLOAD_USE_MEMORY_DB", "true")
-	defer os.Unsetenv("CCLOAD_USE_MEMORY_DB")
-
-	dsn := buildMainDBDSN("/tmp/test.db")
-
-	// 验证DSN不包含journal_mode=WAL
-	if strings.Contains(dsn, "journal_mode=WAL") {
-		t.Error("Memory database DSN should NOT contain journal_mode=WAL (incompatible with :memory:)")
-	}
-
-	// 验证DSN使用命名内存数据库（2025-10-05修复：改用命名数据库而非匿名:memory:）
-	if !strings.Contains(dsn, "file:ccload_mem_db") {
-		t.Error("Expected DSN to use named memory database (file:ccload_mem_db)")
-	}
-
-	// 验证DSN包含mode=memory参数
-	if !strings.Contains(dsn, "mode=memory") {
-		t.Error("Expected DSN to contain mode=memory parameter")
-	}
-
-	if !strings.Contains(dsn, "cache=shared") {
-		t.Error("Expected DSN to use shared cache for multi-connection support")
-	}
-
-	// 验证文件模式仍然使用WAL
-	os.Setenv("CCLOAD_USE_MEMORY_DB", "false")
-	fileDSN := buildMainDBDSN("/tmp/test.db")
-	if !strings.Contains(fileDSN, "journal_mode=WAL") {
-		t.Error("File mode DSN should contain journal_mode=WAL for performance")
-	}
-}
+// 注：TestGenerateLogDBPath 和 TestMemoryDBDSNNoWAL 已移至 internal/storage/sqlite/db_config_test.go
+// 原因：这些测试访问私有函数，应作为白盒测试放在包内部
 
 // BenchmarkMemoryDBQuery 内存数据库查询性能基准测试
 func BenchmarkMemoryDBQuery(b *testing.B) {
 	os.Setenv("CCLOAD_USE_MEMORY_DB", "true")
 	defer os.Unsetenv("CCLOAD_USE_MEMORY_DB")
 
-	store, _ := NewSQLiteStore("/tmp/benchmark-memory.db", nil)
+	store, _ := sqlite.NewSQLiteStore("/tmp/benchmark-memory.db", nil)
 	defer store.Close()
 
 	ctx := context.Background()
 
 	// 创建测试数据
-	config := &Config{
+	config := &model.Config{
 		Name:     "benchmark-channel",
 		URL:      "https://api.example.com",
 		Priority: 10,
@@ -350,13 +284,13 @@ func BenchmarkFileDBQuery(b *testing.B) {
 	defer os.Remove(dbPath)
 	defer os.Remove("/tmp/benchmark-file-log.db")
 
-	store, _ := NewSQLiteStore(dbPath, nil)
+	store, _ := sqlite.NewSQLiteStore(dbPath, nil)
 	defer store.Close()
 
 	ctx := context.Background()
 
 	// 创建测试数据
-	config := &Config{
+	config := &model.Config{
 		Name:     "benchmark-channel",
 		URL:      "https://api.example.com",
 		Priority: 10,

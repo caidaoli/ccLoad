@@ -1,6 +1,8 @@
 package main
 
 import (
+	"ccLoad/internal/model"
+	"ccLoad/internal/storage/sqlite"
 	"context"
 	"os"
 	"sync"
@@ -52,7 +54,7 @@ func TestAuthErrorInitialCooldown(t *testing.T) {
 			now := time.Now()
 
 			// 创建测试渠道
-			cfg := &Config{
+			cfg := &model.Config{
 				Name:    "test-channel",
 				URL:     "https://api.example.com",
 				Enabled: true,
@@ -103,7 +105,7 @@ func TestAuthErrorExponentialBackoff(t *testing.T) {
 	now := time.Now()
 
 	// 创建测试渠道
-	cfg := &Config{
+	cfg := &model.Config{
 		Name:    "test-channel-backoff",
 		URL:     "https://api.example.com",
 		Enabled: true,
@@ -153,7 +155,7 @@ func TestKeyLevelAuthErrorCooldown(t *testing.T) {
 	now := time.Now()
 
 	// 创建多Key渠道
-	cfg := &Config{
+	cfg := &model.Config{
 		Name:    "multi-key-channel",
 		URL:     "https://api.example.com",
 		Enabled: true,
@@ -165,7 +167,7 @@ func TestKeyLevelAuthErrorCooldown(t *testing.T) {
 
 	// 创建3个API Keys
 	for i, key := range []string{"sk-key1", "sk-key2", "sk-key3"} {
-		err = store.CreateAPIKey(ctx, &APIKey{
+		err = store.CreateAPIKey(ctx, &model.APIKey{
 			ChannelID:   created.ID,
 			KeyIndex:    i,
 			APIKey:      key,
@@ -215,7 +217,7 @@ func TestMixedErrorCodesCooldown(t *testing.T) {
 	now := time.Now()
 
 	// 创建测试渠道
-	cfg := &Config{
+	cfg := &model.Config{
 		Name:    "mixed-errors-channel",
 		URL:     "https://api.example.com",
 		Enabled: true,
@@ -265,7 +267,7 @@ func TestConcurrentCooldownUpdates(t *testing.T) {
 	ctx := context.Background()
 
 	// 创建测试渠道
-	cfg := &Config{
+	cfg := &model.Config{
 		Name:    "concurrent-test",
 		URL:     "https://api.example.com",
 		Enabled: true,
@@ -315,7 +317,7 @@ func TestConcurrentKeyCooldownUpdates(t *testing.T) {
 	ctx := context.Background()
 
 	// 创建多Key渠道
-	cfg := &Config{
+	cfg := &model.Config{
 		Name:    "concurrent-key-test",
 		URL:     "https://api.example.com",
 		Enabled: true,
@@ -327,7 +329,7 @@ func TestConcurrentKeyCooldownUpdates(t *testing.T) {
 
 	// 创建3个API Keys
 	for i, key := range []string{"sk-key1", "sk-key2", "sk-key3"} {
-		err = store.CreateAPIKey(ctx, &APIKey{
+		err = store.CreateAPIKey(ctx, &model.APIKey{
 			ChannelID:   created.ID,
 			KeyIndex:    i,
 			APIKey:      key,
@@ -400,7 +402,7 @@ func TestRaceConditionDetection(t *testing.T) {
 
 	ctx := context.Background()
 
-	cfg := &Config{
+	cfg := &model.Config{
 		Name:    "race-test",
 		URL:     "https://api.example.com",
 		Enabled: true,
@@ -412,7 +414,7 @@ func TestRaceConditionDetection(t *testing.T) {
 
 	// 创建2个API Keys
 	for i, key := range []string{"sk-key1", "sk-key2"} {
-		err = store.CreateAPIKey(ctx, &APIKey{
+		err = store.CreateAPIKey(ctx, &model.APIKey{
 			ChannelID:   created.ID,
 			KeyIndex:    i,
 			APIKey:      key,
@@ -452,7 +454,7 @@ func TestRaceConditionDetection(t *testing.T) {
 }
 
 // setupAuthErrorTestStore 创建临时测试数据库（专用于认证错误测试）
-func setupAuthErrorTestStore(t *testing.T) (*SQLiteStore, func()) {
+func setupAuthErrorTestStore(t *testing.T) (*sqlite.SQLiteStore, func()) {
 	t.Helper()
 
 	// 设置内存数据库环境变量，强制使用命名内存数据库（确保所有连接共享同一实例）
@@ -460,8 +462,8 @@ func setupAuthErrorTestStore(t *testing.T) (*SQLiteStore, func()) {
 	os.Setenv("CCLOAD_USE_MEMORY_DB", "true")
 
 	// 使用内存数据库加快测试速度
-	// ⚠️ 设置环境变量后，NewSQLiteStore会自动使用命名内存数据库
-	store, err := NewSQLiteStore(":memory:", nil)
+	// ⚠️ 设置环境变量后，sqlite.NewSQLiteStore会自动使用命名内存数据库
+	store, err := sqlite.NewSQLiteStore(":memory:", nil)
 	if err != nil {
 		os.Setenv("CCLOAD_USE_MEMORY_DB", oldValue) // 恢复环境变量
 		t.Fatalf("创建测试数据库失败: %v", err)
