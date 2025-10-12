@@ -1,0 +1,104 @@
+package util
+
+import (
+	"time"
+)
+
+// 冷却时间常量定义
+const (
+	// AuthErrorInitialCooldown 认证错误（401/403）的初始冷却时间
+	// 设计目标：减少认证失败的无效重试，避免API配额浪费
+	AuthErrorInitialCooldown = 5 * time.Minute
+
+	// OtherErrorInitialCooldown 其他错误（429/500等）的初始冷却时间
+	OtherErrorInitialCooldown = 1 * time.Second
+
+	// MaxCooldownDuration 最大冷却时长（指数退避上限）
+	MaxCooldownDuration = 30 * time.Minute
+
+	// MinCooldownDuration 最小冷却时长（指数退避下限）
+	MinCooldownDuration = 1 * time.Second
+)
+
+// scanUnixTimestamp 统一的Unix时间戳扫描器
+// 消除代码中8+处重复的时间戳转换逻辑
+// 使用场景: GetCooldownUntil, GetKeyCooldownUntil, BumpCooldownOnError等
+type scannable interface {
+	Scan(dest ...any) error
+}
+
+// scanUnixTimestamp 从数据库扫描Unix时间戳并转换为time.Time
+func scanUnixTimestamp(scanner scannable) (time.Time, bool) {
+	var unixTime int64
+	if err := scanner.Scan(&unixTime); err != nil {
+		return time.Time{}, false
+	}
+	if unixTime == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(unixTime, 0), true
+}
+
+// calculateBackoffDuration 计算指数退避冷却时间
+// 统一冷却策略:
+//   - 认证错误(401/403): 起始5分钟，后续翻倍，上限30分钟
+//   - 其他错误: 起始1秒，后续翻倍，上限30分钟
+//
+// 参数:
+//   - prevMs: 上次冷却持续时间（毫秒）
+//   - until: 上次冷却截止时间
+//   - now: 当前时间
+//   - statusCode: HTTP状态码（可选，用于首次错误时确定初始冷却时间）
+//
+// 返回: 新的冷却持续时间
+func calculateBackoffDuration(prevMs int64, until time.Time, now time.Time, statusCode *int) time.Duration {
+	// 转换上次冷却持续时间
+	prev := time.Duration(prevMs) * time.Millisecond
+
+	// 如果没有历史记录，检查until字段
+	if prev <= 0 {
+		if !until.IsZero() && until.After(now) {
+			prev = until.Sub(now)
+		} else {
+			// 首次错误：根据状态码确定初始冷却时间（直接返回，不翻倍）
+			if statusCode != nil && (*statusCode == 401 || *statusCode == 403) {
+				// 认证错误：使用常量定义的初始冷却时间
+				return AuthErrorInitialCooldown
+			} else {
+				// 其他错误：使用常量定义的初始冷却时间
+				return OtherErrorInitialCooldown
+			}
+		}
+	}
+
+	// 后续错误：指数退避翻倍
+	next := prev * 2
+
+	// 边界限制（使用常量）
+	if next < MinCooldownDuration {
+		next = MinCooldownDuration
+	}
+	if next > MaxCooldownDuration {
+		next = MaxCooldownDuration
+	}
+
+	return next
+}
+
+// toUnixTimestamp 安全转换time.Time到Unix时间戳
+// 处理零值时间
+func toUnixTimestamp(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
+}
+
+// calculateCooldownDuration 计算冷却持续时间（毫秒）
+// 用于存储到数据库的duration_ms字段
+func calculateCooldownDuration(until time.Time, now time.Time) int64 {
+	if until.IsZero() || !until.After(now) {
+		return 0
+	}
+	return int64(until.Sub(now) / time.Millisecond)
+}
