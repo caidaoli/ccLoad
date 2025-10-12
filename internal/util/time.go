@@ -51,7 +51,8 @@ func scanUnixTimestamp(scanner scannable) (time.Time, bool) {
 //   - statusCode: HTTP状态码（可选，用于首次错误时确定初始冷却时间）
 //
 // 返回: 新的冷却持续时间
-func calculateBackoffDuration(prevMs int64, until time.Time, now time.Time, statusCode *int) time.Duration {
+// CalculateBackoffDuration 计算指数退避冷却时间
+func CalculateBackoffDuration(prevMs int64, until time.Time, now time.Time, statusCode *int) time.Duration {
 	// 转换上次冷却持续时间
 	prev := time.Duration(prevMs) * time.Millisecond
 
@@ -96,7 +97,8 @@ func toUnixTimestamp(t time.Time) int64 {
 
 // calculateCooldownDuration 计算冷却持续时间（毫秒）
 // 用于存储到数据库的duration_ms字段
-func calculateCooldownDuration(until time.Time, now time.Time) int64 {
+// CalculateCooldownDuration 计算冷却持续时间（毫秒）
+func CalculateCooldownDuration(until time.Time, now time.Time) int64 {
 	if until.IsZero() || !until.After(now) {
 		return 0
 	}

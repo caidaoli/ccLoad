@@ -13,7 +13,7 @@ func BenchmarkCalculateBackoffDuration_AuthError(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = calculateBackoffDuration(0, time.Time{}, now, &statusCode)
+		_ = CalculateBackoffDuration(0, time.Time{}, now, &statusCode)
 	}
 }
 
@@ -25,7 +25,7 @@ func BenchmarkCalculateBackoffDuration_OtherError(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = calculateBackoffDuration(0, time.Time{}, now, &statusCode)
+		_ = CalculateBackoffDuration(0, time.Time{}, now, &statusCode)
 	}
 }
 
@@ -38,7 +38,7 @@ func BenchmarkCalculateBackoffDuration_ExponentialBackoff(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = calculateBackoffDuration(prevMs, time.Unix(0, 0), now, &statusCode)
+		_ = CalculateBackoffDuration(prevMs, time.Unix(0, 0), now, &statusCode)
 	}
 }
 
@@ -49,7 +49,7 @@ func BenchmarkCalculateBackoffDuration_NilStatusCode(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = calculateBackoffDuration(0, time.Time{}, now, nil)
+		_ = CalculateBackoffDuration(0, time.Time{}, now, nil)
 	}
 }
 
@@ -62,7 +62,7 @@ func BenchmarkCalculateBackoffDuration_MaxLimit(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = calculateBackoffDuration(prevMs, time.Unix(0, 0), now, &statusCode)
+		_ = CalculateBackoffDuration(prevMs, time.Unix(0, 0), now, &statusCode)
 	}
 }
 
@@ -111,6 +111,6 @@ func BenchmarkCalculateCooldownDuration(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = calculateCooldownDuration(until, now)
+		_ = CalculateCooldownDuration(until, now)
 	}
 }
