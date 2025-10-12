@@ -1,8 +1,7 @@
-package main
+package sqlite
 
 import (
 	"ccLoad/internal/model"
-	"ccLoad/internal/storage/sqlite"
 	"context"
 	"os"
 	"testing"
@@ -25,7 +24,7 @@ func TestMemoryDBMode(t *testing.T) {
 	os.Setenv("CCLOAD_USE_MEMORY_DB", "true")
 
 	// 创建内存数据库实例
-	store, err := sqlite.NewSQLiteStore("/tmp/test-memory.db", nil)
+	store, err := NewSQLiteStore("/tmp/test-memory.db", nil)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore failed: %v", err)
 	}
@@ -123,7 +122,7 @@ func TestFileDBMode(t *testing.T) {
 	}()
 
 	// 创建文件数据库实例
-	store, err := sqlite.NewSQLiteStore(dbPath, nil)
+	store, err := NewSQLiteStore(dbPath, nil)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore failed: %v", err)
 	}
@@ -157,7 +156,7 @@ func TestFileDBMode(t *testing.T) {
 	store.Close()
 
 	// 重新打开验证持久化
-	store2, err := sqlite.NewSQLiteStore(dbPath, nil)
+	store2, err := NewSQLiteStore(dbPath, nil)
 	if err != nil {
 		t.Fatalf("Failed to reopen database: %v", err)
 	}
@@ -186,7 +185,7 @@ func TestLogDBAlwaysUsesFile(t *testing.T) {
 		os.Remove(logDBPath)
 	}()
 
-	store, err := sqlite.NewSQLiteStore(dbPath, nil)
+	store, err := NewSQLiteStore(dbPath, nil)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore failed: %v", err)
 	}
@@ -218,7 +217,7 @@ func TestLogDBAlwaysUsesFile(t *testing.T) {
 	}
 
 	// 重新打开验证日志持久化
-	store2, err := sqlite.NewSQLiteStore(dbPath, nil)
+	store2, err := NewSQLiteStore(dbPath, nil)
 	if err != nil {
 		t.Fatalf("Failed to reopen database: %v", err)
 	}
@@ -254,7 +253,7 @@ func BenchmarkMemoryDBQuery(b *testing.B) {
 	os.Setenv("CCLOAD_USE_MEMORY_DB", "true")
 	defer os.Unsetenv("CCLOAD_USE_MEMORY_DB")
 
-	store, _ := sqlite.NewSQLiteStore("/tmp/benchmark-memory.db", nil)
+	store, _ := NewSQLiteStore("/tmp/benchmark-memory.db", nil)
 	defer store.Close()
 
 	ctx := context.Background()
@@ -284,7 +283,7 @@ func BenchmarkFileDBQuery(b *testing.B) {
 	defer os.Remove(dbPath)
 	defer os.Remove("/tmp/benchmark-file-log.db")
 
-	store, _ := sqlite.NewSQLiteStore(dbPath, nil)
+	store, _ := NewSQLiteStore(dbPath, nil)
 	defer store.Close()
 
 	ctx := context.Background()

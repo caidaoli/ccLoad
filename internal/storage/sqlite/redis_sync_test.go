@@ -1,4 +1,4 @@
-package main
+package sqlite
 
 import (
 	"ccLoad/internal/model"

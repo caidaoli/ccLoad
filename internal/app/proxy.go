@@ -1,7 +1,9 @@
-package main
+package app
 
 import (
 	"ccLoad/internal/model"
+    "ccLoad/internal/util"
+
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -576,7 +578,7 @@ const (
 func (s *Server) handleProxyError(ctx context.Context, cfg *model.Config, keyIndex int,
 	res *fwResult, err error) (ErrorAction, bool) {
 
-	var errLevel ErrorLevel
+	var errLevel util.ErrorLevel
 	var statusCode int
 
 	// 网络错误处理
@@ -586,38 +588,38 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *model.Config, keyInd
 			return ActionReturnClient, false
 		}
 		// 可重试的网络错误：默认为Key级错误
-		errLevel = ErrorLevelKey
+		errLevel = util.ErrorLevelKey
 		statusCode = 0 // 网络错误无状态码
 	} else {
 		// HTTP错误处理：使用智能分类器（结合响应体内容）
 		statusCode = res.Status
-		errLevel = classifyHTTPStatusWithBody(statusCode, res.Body)
+		errLevel = util.ClassifyHTTPStatusWithBody(statusCode, res.Body)
 	}
 
 	// 🎯 动态调整：单Key渠道的Key级错误应该直接冷却渠道
 	// 设计原则：如果没有其他Key可以重试，Key级错误等同于渠道级错误
 	// 适用于：网络错误 + HTTP 401/403等Key级错误
-	if errLevel == ErrorLevelKey {
+	if errLevel == util.ErrorLevelKey {
 		// 查询渠道的API Keys数量
 		apiKeys, err := s.store.GetAPIKeys(ctx, cfg.ID)
 		keyCount := len(apiKeys)
 		if err != nil || keyCount <= 1 {
 			// 单Key渠道或查询失败：直接升级为渠道级错误
-			errLevel = ErrorLevelChannel
+			errLevel = util.ErrorLevelChannel
 		}
 	}
 
 	switch errLevel {
-	case ErrorLevelClient:
+	case util.ErrorLevelClient:
 		// 客户端错误：不冷却，直接返回
 		return ActionReturnClient, false
 
-	case ErrorLevelKey:
+	case util.ErrorLevelKey:
 		// Key级错误：冷却当前Key，继续尝试其他Key
 		_ = s.keySelector.MarkKeyError(ctx, cfg.ID, keyIndex, statusCode)
 		return ActionRetryKey, true
 
-	case ErrorLevelChannel:
+	case util.ErrorLevelChannel:
 		// 渠道级错误：冷却整个渠道，切换到其他渠道
 		_, _ = s.store.BumpChannelCooldown(ctx, cfg.ID, time.Now(), statusCode)
 		// 更新监控指标（P2优化）

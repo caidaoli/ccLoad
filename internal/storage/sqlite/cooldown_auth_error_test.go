@@ -1,8 +1,7 @@
-package main
+package sqlite
 
 import (
 	"ccLoad/internal/model"
-	"ccLoad/internal/storage/sqlite"
 	"context"
 	"os"
 	"sync"
@@ -454,7 +453,7 @@ func TestRaceConditionDetection(t *testing.T) {
 }
 
 // setupAuthErrorTestStore 创建临时测试数据库（专用于认证错误测试）
-func setupAuthErrorTestStore(t *testing.T) (*sqlite.SQLiteStore, func()) {
+func setupAuthErrorTestStore(t *testing.T) (*SQLiteStore, func()) {
 	t.Helper()
 
 	// 设置内存数据库环境变量，强制使用命名内存数据库（确保所有连接共享同一实例）
@@ -462,8 +461,8 @@ func setupAuthErrorTestStore(t *testing.T) (*sqlite.SQLiteStore, func()) {
 	os.Setenv("CCLOAD_USE_MEMORY_DB", "true")
 
 	// 使用内存数据库加快测试速度
-	// ⚠️ 设置环境变量后，sqlite.NewSQLiteStore会自动使用命名内存数据库
-	store, err := sqlite.NewSQLiteStore(":memory:", nil)
+	// ⚠️ 设置环境变量后，NewSQLiteStore会自动使用命名内存数据库
+	store, err := NewSQLiteStore(":memory:", nil)
 	if err != nil {
 		os.Setenv("CCLOAD_USE_MEMORY_DB", oldValue) // 恢复环境变量
 		t.Fatalf("创建测试数据库失败: %v", err)
@@ -478,4 +477,38 @@ func setupAuthErrorTestStore(t *testing.T) (*sqlite.SQLiteStore, func()) {
 	}
 
 	return store, cleanup
+}
+
+// 测试常量定义
+const (
+	AuthErrorInitialCooldown = 5 * time.Minute  // 认证错误初始冷却时间
+	MaxCooldownDuration      = 30 * time.Minute // 最大冷却时间
+)
+
+// getChannelCooldownUntil 获取渠道冷却截止时间（测试辅助函数）
+func getChannelCooldownUntil(ctx context.Context, store *SQLiteStore, channelID int64) (time.Time, bool) {
+	cfg, err := store.GetConfig(ctx, channelID)
+	if err != nil || cfg == nil {
+		return time.Time{}, false
+	}
+	if cfg.CooldownUntil == 0 {
+		return time.Time{}, false
+	}
+	until := time.Unix(cfg.CooldownUntil, 0)
+	// 只有未过期的冷却才返回true
+	return until, time.Now().Before(until)
+}
+
+// getKeyCooldownUntil 获取Key冷却截止时间（测试辅助函数）
+func getKeyCooldownUntil(ctx context.Context, store *SQLiteStore, channelID int64, keyIndex int) (time.Time, bool) {
+	key, err := store.GetAPIKey(ctx, channelID, keyIndex)
+	if err != nil || key == nil {
+		return time.Time{}, false
+	}
+	if key.CooldownUntil == 0 {
+		return time.Time{}, false
+	}
+	until := time.Unix(key.CooldownUntil, 0)
+	// 只有未过期的冷却才返回true
+	return until, time.Now().Before(until)
 }

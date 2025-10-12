@@ -183,7 +183,7 @@ func TestClassifyHTTPStatusWithBody(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := classifyHTTPStatusWithBody(tt.statusCode, tt.responseBody)
+			result := ClassifyHTTPStatusWithBody(tt.statusCode, tt.responseBody)
 			if result != tt.expected {
 				t.Errorf("❌ %s\n  期望: %v\n  实际: %v\n  原因: %s\n  响应体: %s",
 					tt.name, tt.expected, result, tt.reason, string(tt.responseBody))
@@ -215,7 +215,7 @@ func TestClassifyHTTPStatus(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(string(rune(tt.statusCode)), func(t *testing.T) {
-			result := classifyHTTPStatus(tt.statusCode)
+			result := ClassifyHTTPStatus(tt.statusCode)
 			if result != tt.expected {
 				t.Errorf("状态码 %d: 期望 %v, 实际 %v (%s)", tt.statusCode, tt.expected, result, tt.reason)
 			}

@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
     "context"
@@ -20,6 +20,7 @@ import (
     "ccLoad/internal/model"
     "ccLoad/internal/storage"
     "ccLoad/internal/storage/sqlite"
+
 
     "github.com/gin-gonic/gin"
 )
@@ -383,8 +384,8 @@ func (s *Server) handleLogout(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "已登出"})
 }
 
-// setupRoutes - 新的路由设置函数，适配Gin
-func (s *Server) setupRoutes(r *gin.Engine) {
+// SetupRoutes - 新的路由设置函数，适配Gin
+func (s *Server) SetupRoutes(r *gin.Engine) {
 	// 公开访问的API（代理服务）- 需要 API 认证
 	// 透明代理：统一处理所有 /v1/* 端点，支持所有HTTP方法
 	apiV1 := r.Group("/v1")
@@ -559,9 +560,9 @@ func (s *Server) getGeminiModels(ctx context.Context) ([]string, error) {
 	return models, nil
 }
 
-// warmHTTPConnections HTTP连接预热（性能优化：为高优先级渠道预建立连接）
+// WarmHTTPConnections HTTP连接预热（性能优化：为高优先级渠道预建立连接）
 // 作用：消除首次请求的TLS握手延迟10-50ms，提升用户体验
-func (s *Server) warmHTTPConnections(ctx context.Context) {
+func (s *Server) WarmHTTPConnections(ctx context.Context) {
 	// 直接从数据库查询所有启用的渠道（已按优先级排序）
 	configs, err := s.store.GetEnabledChannelsByModel(ctx, "*")
 	if err != nil || len(configs) == 0 {

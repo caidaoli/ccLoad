@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
     "bytes"
@@ -14,6 +14,9 @@ import (
 
     "ccLoad/internal/model"
     "ccLoad/internal/storage/sqlite"
+    "ccLoad/internal/util"
+    "ccLoad/internal/testutil"
+
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
@@ -192,7 +195,7 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 	}
 
 	// 解析并创建API Keys
-	apiKeys := ParseAPIKeys(req.APIKey)
+	apiKeys := util.ParseAPIKeys(req.APIKey)
 	keyStrategy := strings.TrimSpace(req.KeyStrategy)
 	if keyStrategy == "" {
 		keyStrategy = "sequential" // 默认策略
@@ -389,8 +392,8 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 		}
 
 		// 渠道类型规范化与校验（openai → codex，空值 → anthropic）
-		channelType = normalizeChannelType(channelType)
-		if !IsValidChannelType(channelType) {
+		channelType = util.NormalizeChannelType(channelType)
+		if !util.IsValidChannelType(channelType) {
 			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行渠道类型无效: %s（仅支持anthropic/codex/gemini）", lineNo, channelType))
 			summary.Skipped++
 			continue
@@ -466,7 +469,7 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 		}
 
 		// 解析并创建/更新API Keys
-		apiKeys := ParseAPIKeys(apiKey)
+		apiKeys := util.ParseAPIKeys(apiKey)
 		if len(apiKeys) > 0 {
 			// 先删除旧的API Keys（如果是更新操作）
 			if isUpdate {
@@ -651,7 +654,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		oldKeys = []*model.APIKey{}
 	}
 
-	newKeys := ParseAPIKeys(req.APIKey)
+	newKeys := util.ParseAPIKeys(req.APIKey)
 	keyStrategy := strings.TrimSpace(req.KeyStrategy)
 	if keyStrategy == "" {
 		keyStrategy = "sequential"
@@ -834,24 +837,7 @@ func (s *Server) handleCooldownStats(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, response)
 }
 
-// TestChannelRequest 渠道测试请求结构
-type TestChannelRequest struct {
-	Model       string            `json:"model" binding:"required"`
-	MaxTokens   int               `json:"max_tokens,omitempty"`   // 可选，默认512
-	Stream      bool              `json:"stream,omitempty"`       // 可选，流式响应
-	Content     string            `json:"content,omitempty"`      // 可选，测试内容，默认"test"
-	Headers     map[string]string `json:"headers,omitempty"`      // 可选，自定义请求头
-	ChannelType string            `json:"channel_type,omitempty"` // 可选，渠道类型：anthropic(默认)、codex、gemini
-	KeyIndex    int               `json:"key_index,omitempty"`    // 可选，指定测试的Key索引，默认0（第一个）
-}
-
-// Validate 实现RequestValidator接口
-func (tcr *TestChannelRequest) Validate() error {
-	if strings.TrimSpace(tcr.Model) == "" {
-		return fmt.Errorf("model cannot be empty")
-	}
-	return nil
-}
+// testutil.TestChannelRequest 渠道测试请求结构
 
 // Admin: /admin/channels/{id}/test (POST) - 重构版本
 func (s *Server) handleChannelTest(c *gin.Context) {
@@ -863,7 +849,7 @@ func (s *Server) handleChannelTest(c *gin.Context) {
 	}
 
 	// 解析请求体
-	var testReq TestChannelRequest
+	var testReq testutil.TestChannelRequest
 	if err := BindAndValidate(c, &testReq); err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid request: "+err.Error())
 		return
@@ -933,7 +919,7 @@ func (s *Server) handleChannelTest(c *gin.Context) {
 }
 
 // 测试渠道API连通性
-func (s *Server) testChannelAPI(cfg *model.Config, apiKey string, testReq *TestChannelRequest) map[string]any {
+func (s *Server) testChannelAPI(cfg *model.Config, apiKey string, testReq *testutil.TestChannelRequest) map[string]any {
 	// ✅ 修复：应用模型重定向逻辑（与正常代理流程保持一致）
 	originalModel := testReq.Model
 	actualModel := originalModel
@@ -953,19 +939,19 @@ func (s *Server) testChannelAPI(cfg *model.Config, apiKey string, testReq *TestC
 	}
 
 	// 选择并规范化渠道类型
-	channelType := normalizeChannelType(testReq.ChannelType)
-	var tester ChannelTester
+	channelType := util.NormalizeChannelType(testReq.ChannelType)
+	var tester testutil.ChannelTester
 	switch channelType {
 	case "codex":
-		tester = &CodexTester{}
+		tester = &testutil.CodexTester{}
 	case "openai":
-		tester = &OpenAITester{}
+		tester = &testutil.OpenAITester{}
 	case "gemini":
-		tester = &GeminiTester{}
+		tester = &testutil.GeminiTester{}
 	case "anthropic":
-		tester = &AnthropicTester{}
+		tester = &testutil.AnthropicTester{}
 	default:
-		tester = &AnthropicTester{}
+		tester = &testutil.AnthropicTester{}
 	}
 
 	// 构建请求（传递实际的API Key和重定向后的模型）
@@ -1136,7 +1122,7 @@ func parseImportEnabled(raw string) (bool, bool) {
 // handleGetChannelTypes 获取渠道类型配置（公开端点，前端动态加载）
 func (s *Server) handleGetChannelTypes(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
-		"data": ChannelTypes,
+		"data": util.ChannelTypes,
 	})
 }
 

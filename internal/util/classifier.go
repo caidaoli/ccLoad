@@ -22,8 +22,8 @@ const (
 // classifyHTTPStatus 分类HTTP状态码，返回错误级别
 // 遵循SRP原则：单一职责 - 仅负责状态码分类
 //
-// 注意：401/403错误需要结合响应体内容进一步判断（通过classifyHTTPStatusWithBody）
-func classifyHTTPStatus(statusCode int) ErrorLevel {
+// 注意：401/403错误需要结合响应体内容进一步判断（通过ClassifyHTTPStatusWithBody）
+func ClassifyHTTPStatus(statusCode int) ErrorLevel {
 	// 2xx 成功
 	if statusCode >= 200 && statusCode < 300 {
 		return ErrorLevelNone
@@ -80,10 +80,10 @@ func classifyHTTPStatus(statusCode int) ErrorLevel {
 // - 401/403错误**默认为Key级**，让handleProxyError根据渠道Key数量决定是否升级
 // - 只有明确的"账户级不可逆错误"才分类为Channel级（如账户暂停、服务禁用）
 // - "额度用尽"可能是单个Key的问题，应该先尝试其他Key
-func classifyHTTPStatusWithBody(statusCode int, responseBody []byte) ErrorLevel {
+func ClassifyHTTPStatusWithBody(statusCode int, responseBody []byte) ErrorLevel {
 	// 仅分析401和403错误，其他状态码使用标准分类器
 	if statusCode != 401 && statusCode != 403 {
-		return classifyHTTPStatus(statusCode)
+		return ClassifyHTTPStatus(statusCode)
 	}
 
 	// 401/403错误：分析响应体内容

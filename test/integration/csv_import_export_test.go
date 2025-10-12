@@ -1,7 +1,8 @@
-package main
+package integration_test
 
 import (
 	"ccLoad/internal/model"
+	"ccLoad/internal/util"
 	"testing"
 )
 
@@ -25,9 +26,9 @@ func TestCSVImport_DefaultValues(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		result := normalizeChannelType(tt.input)
+		result := util.NormalizeChannelType(tt.input)
 		if result != tt.expected {
-			t.Errorf("normalizeChannelType(%q) = %q, 期望 %q", tt.input, result, tt.expected)
+			t.Errorf("util.NormalizeChannelType(%q) = %q, 期望 %q", tt.input, result, tt.expected)
 		}
 	}
 
@@ -63,7 +64,7 @@ func TestCSVExportImportCycle(t *testing.T) {
 	}
 
 	// 步骤2：导入CSV（规范化channel_type）
-	importedChannelType := normalizeChannelType(exportedChannelType)
+	importedChannelType := util.NormalizeChannelType(exportedChannelType)
 	if importedChannelType != "anthropic" {
 		t.Fatalf("导入channel_type应为anthropic，实际为: %s", importedChannelType)
 	}
@@ -100,7 +101,7 @@ func TestCSVExport_NoTimeFields(t *testing.T) {
 	t.Log("✅ CSV正确省略了时间字段，导入时将使用当前时间")
 }
 
-// ==================== normalizeChannelType 边界条件测试 ====================
+// ==================== util.NormalizeChannelType 边界条件测试 ====================
 
 func TestNormalizeChannelType(t *testing.T) {
 	tests := []struct {
@@ -119,9 +120,9 @@ func TestNormalizeChannelType(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			result := normalizeChannelType(tt.input)
+			result := util.NormalizeChannelType(tt.input)
 			if result != tt.expected {
-				t.Errorf("normalizeChannelType(%q) = %q, 期望 %q", tt.input, result, tt.expected)
+				t.Errorf("util.NormalizeChannelType(%q) = %q, 期望 %q", tt.input, result, tt.expected)
 			}
 		})
 	}

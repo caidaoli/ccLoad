@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"ccLoad/internal/app"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/storage/redis"
 	"ccLoad/internal/storage/sqlite"
@@ -68,12 +69,12 @@ func main() {
 
 	// 渠道仅从 SQLite 管理与读取；不再从本地文件初始化。
 
-	srv := NewServer(store)
+	srv := app.NewServer(store)
 
 	// ========== 性能优化：启动时预热（阶段1优化）==========
 
 	// HTTP连接预热（消除首次请求TLS握手10-50ms）
-	srv.warmHTTPConnections(ctx)
+	srv.WarmHTTPConnections(ctx)
 
 	// 等待连接预热完成（最多100ms）
 	time.Sleep(100 * time.Millisecond)
@@ -90,7 +91,7 @@ func main() {
 	r.Use(gin.Recovery())
 
 	// 注册路由
-	srv.setupRoutes(r)
+	srv.SetupRoutes(r)
 
     // session清理循环在NewServer中已启动，避免重复启动
 

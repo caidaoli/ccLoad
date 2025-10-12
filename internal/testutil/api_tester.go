@@ -1,9 +1,10 @@
-package main
+package testutil
 
 import (
-	"ccLoad/internal/model"
 	"net/http"
 	"strings"
+
+	"ccLoad/internal/model"
 
 	"github.com/bytedance/sonic"
 )

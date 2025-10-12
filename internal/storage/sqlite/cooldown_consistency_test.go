@@ -1,8 +1,7 @@
-package main
+package sqlite
 
 import (
 	"ccLoad/internal/model"
-	"ccLoad/internal/storage/sqlite"
 	"context"
 	"os"
 	"testing"
@@ -17,7 +16,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 	os.Setenv("CCLOAD_USE_MEMORY_DB", "true")
 	defer os.Setenv("CCLOAD_USE_MEMORY_DB", oldValue)
 
-	store, err := sqlite.NewSQLiteStore(":memory:", nil)
+	store, err := NewSQLiteStore(":memory:", nil)
 	if err != nil {
 		t.Fatalf("创建测试数据库失败: %v", err)
 	}
@@ -293,3 +292,8 @@ func abs(d time.Duration) time.Duration {
 	}
 	return d
 }
+
+// 测试常量定义（与cooldown_auth_error_test.go保持一致）
+const (
+	OtherErrorInitialCooldown = 1 * time.Second  // 其他错误初始冷却时间
+)

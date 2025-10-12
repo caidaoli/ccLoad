@@ -1,7 +1,8 @@
-package main
+package app
 
 import (
 	"ccLoad/internal/model"
+
 	"context"
 	"errors"
 	"fmt"
