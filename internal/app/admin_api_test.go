@@ -165,7 +165,8 @@ Import-Test-2,https://import2.example.com,5,"test-model-2,test-model-3","{""old"
 	// 创建Gin测试上下文
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/import", body)
+	// ✅ 修复：使用bytes.NewReader创建新的读取器，避免buffer读取位置问题
+	c.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
 	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
 
 	// 调用handler
@@ -176,10 +177,24 @@ Import-Test-2,https://import2.example.com,5,"test-model-2,test-model-3","{""old"
 		t.Fatalf("期望状态码 200, 实际 %d, 响应: %s", w.Code, w.Body.String())
 	}
 
-	// 解析为ChannelImportSummary结构
-	var summary ChannelImportSummary
-	if err := json.Unmarshal(w.Body.Bytes(), &summary); err != nil {
+	// ✅ 调试：输出原始响应内容
+	t.Logf("📋 原始响应内容: %s", w.Body.String())
+
+	// ✅ 修复：响应被包装在 {"success":true,"data":{...}} 结构中
+	var wrapper map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &wrapper); err != nil {
 		t.Fatalf("解析响应失败: %v, 响应内容: %s", err, w.Body.String())
+	}
+
+	// 提取data字段并解析为ChannelImportSummary
+	dataBytes, err := json.Marshal(wrapper["data"])
+	if err != nil {
+		t.Fatalf("序列化data字段失败: %v", err)
+	}
+
+	var summary ChannelImportSummary
+	if err := json.Unmarshal(dataBytes, &summary); err != nil {
+		t.Fatalf("解析ChannelImportSummary失败: %v, data内容: %s", err, string(dataBytes))
 	}
 
 	// 验证导入结果
@@ -306,7 +321,8 @@ func TestAdminAPI_ExportImportRoundTrip(t *testing.T) {
 
 	importW := httptest.NewRecorder()
 	importC, _ := gin.CreateTestContext(importW)
-	importC.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/import", body)
+	// ✅ 修复：使用bytes.NewReader创建新的读取器
+	importC.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
 	importC.Request.Header.Set("Content-Type", writer.FormDataContentType())
 	server.handleImportChannelsCSV(importC)
 
@@ -369,9 +385,9 @@ func TestAdminAPI_ExportImportRoundTrip(t *testing.T) {
 
 // setupTestServer 创建测试服务器环境
 func setupTestServer(t *testing.T) (*Server, func()) {
-	// 使用内存数据库
-	os.Setenv("CCLOAD_USE_MEMORY_DB", "true")
-	defer os.Unsetenv("CCLOAD_USE_MEMORY_DB")
+	// ✅ 修复：测试环境禁用内存数据库模式，确保每个测试使用独立的临时文件数据库
+	// 原问题：所有测试共享命名内存数据库（ccload_mem_db），导致测试间数据污染
+	os.Unsetenv("CCLOAD_USE_MEMORY_DB")  // 强制禁用内存模式
 
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
@@ -415,7 +431,8 @@ Test-Invalid,https://invalid.com
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/import", body)
+	// ✅ 修复：使用bytes.NewReader创建新的读取器
+	c.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
 	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
 	server.handleImportChannelsCSV(c)
 
@@ -450,9 +467,9 @@ func TestAdminAPI_ImportCSV_DuplicateNames(t *testing.T) {
 		t.Fatalf("创建现有渠道失败: %v", err)
 	}
 
-	// 尝试导入同名渠道
-	duplicateCSV := `name,url,priority,models,channel_type,enabled
-Duplicate-Test,https://duplicate.com,5,"[""model-2""]",gemini,false
+	// 尝试导入同名渠道 - ✅ 修复：添加必需的api_key和key_strategy列
+	duplicateCSV := `name,url,priority,models,model_redirects,channel_type,enabled,api_key,key_strategy
+Duplicate-Test,https://duplicate.com,5,model-2,{},gemini,false,sk-duplicate-key,sequential
 `
 
 	body := &bytes.Buffer{}
@@ -463,7 +480,8 @@ Duplicate-Test,https://duplicate.com,5,"[""model-2""]",gemini,false
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/import", body)
+	// ✅ 修复：使用bytes.NewReader创建新的读取器
+	c.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
 	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
 	server.handleImportChannelsCSV(c)
 
@@ -524,18 +542,21 @@ func TestAdminAPI_LargeCSVImport(t *testing.T) {
 	server, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	// 生成大型CSV（100条记录）
+	// 生成大型CSV（100条记录）- ✅ 修复：添加必需的api_key和key_strategy列
 	var csvBuilder strings.Builder
-	csvBuilder.WriteString("name,url,priority,models,channel_type,enabled\n")
+	csvBuilder.WriteString("name,url,priority,models,model_redirects,channel_type,enabled,api_key,key_strategy\n")
 
 	for i := 0; i < 100; i++ {
 		csvBuilder.WriteString(
 			"Large-Test-" + string(rune('A'+i%26)) + string(rune('0'+i%10)) + "," +
 				"https://large" + string(rune('0'+i%10)) + ".example.com," +
 				"10," +
-				`"[""model-1""]",` +
+				"model-1," +  // ✅ 修复：使用简单字符串而不是JSON数组
+				"{}," +
 				"anthropic," +
-				"true\n")
+				"true," +
+				"sk-large-key-" + string(rune('0'+i%10)) + "," +  // ✅ 添加api_key
+				"sequential\n")  // ✅ 添加key_strategy
 	}
 
 	body := &bytes.Buffer{}
@@ -549,24 +570,38 @@ func TestAdminAPI_LargeCSVImport(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/import", body)
+	// ✅ 修复：使用bytes.NewReader创建新的读取器
+	c.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
 	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
 	server.handleImportChannelsCSV(c)
 
 	duration := time.Since(startTime)
 
 	if w.Code != http.StatusOK {
-		t.Fatalf("大文件导入失败，状态码: %d", w.Code)
+		t.Fatalf("大文件导入失败，状态码: %d, 响应: %s", w.Code, w.Body.String())
 	}
 
-	var resp map[string]any
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	// ✅ 修复：响应被包装在 {"success":true,"data":{...}} 结构中
+	var wrapper map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &wrapper); err != nil {
+		t.Fatalf("解析响应失败: %v, 响应: %s", err, w.Body.String())
+	}
 
-	data := resp["data"].(map[string]any)
-	imported := int(data["imported"].(float64))
+	// 提取data字段并解析为ChannelImportSummary
+	dataBytes, err := json.Marshal(wrapper["data"])
+	if err != nil {
+		t.Fatalf("序列化data字段失败: %v", err)
+	}
+
+	var summary ChannelImportSummary
+	if err := json.Unmarshal(dataBytes, &summary); err != nil {
+		t.Fatalf("解析ChannelImportSummary失败: %v, data内容: %s", err, string(dataBytes))
+	}
+
+	imported := summary.Created + summary.Updated
 
 	t.Logf("✅ 大文件导入测试通过")
-	t.Logf("   记录数: %d", imported)
+	t.Logf("   记录数: %d (Created: %d, Updated: %d, Skipped: %d)", imported, summary.Created, summary.Updated, summary.Skipped)
 	t.Logf("   耗时: %v", duration)
 	t.Logf("   平均速度: %.2f records/sec", float64(imported)/duration.Seconds())
 
