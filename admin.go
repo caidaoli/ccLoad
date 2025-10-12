@@ -205,8 +205,8 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 			KeyIndex:    i,
 			APIKey:      key,
 			KeyStrategy: keyStrategy,
-			CreatedAt:   model.JSONTime{now},
-			UpdatedAt:   model.JSONTime{now},
+			CreatedAt:   model.JSONTime{Time: now},
+			UpdatedAt:   model.JSONTime{Time: now},
 		}
 		if err := s.store.CreateAPIKey(c.Request.Context(), apiKey); err != nil {
 			log.Printf("⚠️  警告: 创建API Key失败 (channel=%d, index=%d): %v", created.ID, i, err)
@@ -481,8 +481,8 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 					KeyIndex:    i,
 					APIKey:      key,
 					KeyStrategy: keyStrategy,
-					CreatedAt:   model.JSONTime{now},
-					UpdatedAt:   model.JSONTime{now},
+					CreatedAt:   model.JSONTime{Time: now},
+					UpdatedAt:   model.JSONTime{Time: now},
 				}
 				if err := s.store.CreateAPIKey(c.Request.Context(), apiKeyRecord); err != nil {
 					log.Printf("⚠️  警告: 创建API Key失败 (channel=%d, index=%d): %v", replacedCfg.ID, i, err)
@@ -698,8 +698,8 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 				KeyIndex:    i,
 				APIKey:      key,
 				KeyStrategy: keyStrategy,
-				CreatedAt:   model.JSONTime{now},
-				UpdatedAt:   model.JSONTime{now},
+				CreatedAt:   model.JSONTime{Time: now},
+				UpdatedAt:   model.JSONTime{Time: now},
 			}
 			if err := s.store.CreateAPIKey(c.Request.Context(), apiKey); err != nil {
 				log.Printf("⚠️  警告: 创建API Key失败 (channel=%d, index=%d): %v", id, i, err)
@@ -710,7 +710,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		now := time.Now()
 		for _, oldKey := range oldKeys {
 			oldKey.KeyStrategy = keyStrategy
-			oldKey.UpdatedAt = model.JSONTime{now}
+			oldKey.UpdatedAt = model.JSONTime{Time: now}
 			if err := s.store.UpdateAPIKey(c.Request.Context(), oldKey); err != nil {
 				log.Printf("⚠️  警告: 更新API Key策略失败 (channel=%d, index=%d): %v", id, oldKey.KeyIndex, err)
 			}

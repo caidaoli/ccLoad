@@ -156,7 +156,7 @@ func TestListLogs_BatchQuery(t *testing.T) {
 	// 创建测试日志（分布在不同渠道）
 	for i, channelID := range channelIDs {
 		entry := &model.LogEntry{
-			Time:       model.JSONTime{time.Now()},
+			Time:       model.JSONTime{Time: time.Now()},
 			Model:      "test-model",
 			ChannelID:  &channelID,
 			StatusCode: 200,

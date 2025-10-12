@@ -435,7 +435,7 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 		rb, readErr := io.ReadAll(resp.Body)
 		if readErr != nil {
 			// 记录读取错误，但仍返回可用部分
-			s.addLogAsync(&model.LogEntry{Time: model.JSONTime{time.Now()}, Message: fmt.Sprintf("error reading upstream body: %v", readErr)})
+			s.addLogAsync(&model.LogEntry{Time: model.JSONTime{Time: time.Now()}, Message: fmt.Sprintf("error reading upstream body: %v", readErr)})
 		}
 		_ = resp.Body.Close()
 		duration := time.Since(startTime).Seconds()
@@ -529,7 +529,7 @@ func buildLogEntry(originalModel string, channelID *int64, statusCode int,
 	res *fwResult, errMsg string) *model.LogEntry {
 
 	entry := &model.LogEntry{
-		Time:        model.JSONTime{time.Now()},
+		Time:        model.JSONTime{Time: time.Now()},
 		Model:       originalModel,
 		ChannelID:   channelID,
 		StatusCode:  statusCode,
@@ -968,7 +968,7 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 	// 检查是否有可用候选
 	if len(cands) == 0 {
 		s.addLogAsync(&model.LogEntry{
-			Time:        model.JSONTime{time.Now()},
+			Time:        model.JSONTime{Time: time.Now()},
 			Model:       originalModel,
 			StatusCode:  503,
 			Message:     "no available upstream (all cooled or none)",
@@ -1035,7 +1035,7 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 		msg = fmt.Sprintf("upstream status %d", finalStatus)
 	}
 	s.addLogAsync(&model.LogEntry{
-		Time:        model.JSONTime{time.Now()},
+		Time:        model.JSONTime{Time: time.Now()},
 		Model:       originalModel,
 		StatusCode:  finalStatus,
 		Message:     msg,

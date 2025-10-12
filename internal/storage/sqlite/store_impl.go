@@ -381,7 +381,7 @@ func (s *SQLiteStore) GetAllChannelCooldowns(ctx context.Context) (map[int64]tim
 
 func (s *SQLiteStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 	if e.Time.Time.IsZero() {
-		e.Time = model.JSONTime{time.Now()}
+		e.Time = model.JSONTime{Time: time.Now()}
 	}
 
 	// 清理单调时钟信息，确保时间格式标准化
@@ -521,7 +521,7 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 		}
 
 		// 转换Unix毫秒时间戳为time.Time
-		e.Time = model.JSONTime{time.UnixMilli(timeMs)}
+		e.Time = model.JSONTime{Time: time.UnixMilli(timeMs)}
 
 		if cfgID.Valid {
 			id := cfgID.Int64
@@ -1306,8 +1306,8 @@ func (s *SQLiteStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model
 			return nil, fmt.Errorf("scan api key: %w", err)
 		}
 
-		key.CreatedAt = model.JSONTime{time.Unix(createdAt, 0)}
-		key.UpdatedAt = model.JSONTime{time.Unix(updatedAt, 0)}
+		key.CreatedAt = model.JSONTime{Time: time.Unix(createdAt, 0)}
+		key.UpdatedAt = model.JSONTime{Time: time.Unix(updatedAt, 0)}
 		keys = append(keys, key)
 	}
 
@@ -1349,8 +1349,8 @@ func (s *SQLiteStore) GetAPIKey(ctx context.Context, channelID int64, keyIndex i
 		return nil, fmt.Errorf("query api key: %w", err)
 	}
 
-	key.CreatedAt = model.JSONTime{time.Unix(createdAt, 0)}
-	key.UpdatedAt = model.JSONTime{time.Unix(updatedAt, 0)}
+	key.CreatedAt = model.JSONTime{Time: time.Unix(createdAt, 0)}
+	key.UpdatedAt = model.JSONTime{Time: time.Unix(updatedAt, 0)}
 
 	return key, nil
 }

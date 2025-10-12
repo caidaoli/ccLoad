@@ -195,7 +195,7 @@ func TestLogDBAlwaysUsesFile(t *testing.T) {
 
 	// 添加日志记录
 	logEntry := &model.LogEntry{
-		Time:       model.JSONTime{time.Now()},
+		Time:       model.JSONTime{Time: time.Now()},
 		Model:      "test-model",
 		StatusCode: 200,
 		Message:    "Test log entry",
