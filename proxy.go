@@ -85,18 +85,26 @@ func classifyError(err error) (statusCode int, shouldRetry bool) {
 		return StatusClientClosedRequest, false
 	}
 
-	// ⚠️ Context deadline exceeded 需要区分两种情况：
-	// 1. 客户端主动设置的超时（不应重试）
-	// 2. HTTP客户端等待响应头超时（应该重试其他渠道）
-	// 解决方案：检查错误消息，包含"awaiting headers"则应重试
+	// ⚠️ Context deadline exceeded 需要区分三种情况：
+	// 1. 流式请求首字节超时（CCLOAD_FIRST_BYTE_TIMEOUT）- 应该重试其他渠道
+	// 2. HTTP客户端等待响应头超时（Transport.ResponseHeaderTimeout）- 应该重试其他渠道
+	// 3. 客户端主动设置的超时 - 不应重试
+	// ✅ P1修复 (2025-10-12): 新增首字节超时专用检测，优先级最高
 	if errors.Is(err, context.DeadlineExceeded) {
 		errStr := err.Error()
-		// HTTP客户端等待响应头超时 - 应该重试其他渠道
+
+		// 优先级1：检测首字节超时标记（由 forwardOnceAsync 包装）
+		if strings.Contains(errStr, "first byte timeout") {
+			return 504, true // ✅ Gateway Timeout，可重试其他渠道
+		}
+
+		// 优先级2：HTTP客户端等待响应头超时 - 应该重试其他渠道
 		// Go标准库错误格式："Client.Timeout exceeded while awaiting headers"
 		if strings.Contains(errStr, "awaiting headers") {
 			return 504, true // Gateway Timeout，可重试
 		}
-		// 其他超时（客户端主动取消）- 不应重试
+
+		// 优先级3：其他超时（客户端主动取消）- 不应重试
 		return StatusClientClosedRequest, false
 	}
 
@@ -123,12 +131,12 @@ func classifyError(err error) (statusCode int, shouldRetry bool) {
 
 	errLower := strings.ToLower(errStr)
 
-	// ✅ 首字节超时 - 应该重试其他渠道（2025-10-06修复）
-	if strings.Contains(errLower, "first byte timeout") {
-		code, retry = 504, true
-	} else if strings.Contains(errLower, "connection reset by peer") ||
+	// ❌ 删除死代码 (P1修复 2025-10-12): 首字节超时检测已迁移到快速路径
+	// 理由：首字节超时错误由 forwardOnceAsync 包装后在快速路径优先检测，此分支永远不会被执行
+
+	// Connection reset by peer - 不应重试
+	if strings.Contains(errLower, "connection reset by peer") ||
 		strings.Contains(errLower, "broken pipe") {
-		// Connection reset by peer - 不应重试
 		code, retry = StatusConnectionReset, false
 	} else if strings.Contains(errLower, "connection refused") {
 		// Connection refused - 应该重试其他渠道
@@ -318,6 +326,24 @@ func streamCopy(ctx context.Context, src io.Reader, dst http.ResponseWriter) err
 func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, apiKey string, method string, body []byte, hdr http.Header, rawQuery, requestPath string, w http.ResponseWriter) (*fwResult, float64, error) {
 	startTime := time.Now()
 
+	// ✅ P0修复 (2025-10-12): 为流式请求添加首字节超时控制
+	// 设计原则：
+	// 1. 仅对流式请求启用首字节超时（非流式请求依赖 Transport.ResponseHeaderTimeout）
+	// 2. 收到响应头后立即取消首字节超时，后续流式传输由客户端 ctx 控制
+	// 3. 超时错误明确标识为 "first byte timeout"，确保错误分类器正确识别并触发渠道切换
+	var reqCtx context.Context
+	var cancelFirstByteTimeout context.CancelFunc
+	isStreaming := isStreamingRequest(requestPath, body)
+
+	if isStreaming && s.firstByteTimeout > 0 {
+		// 流式请求：创建带首字节超时的子上下文
+		reqCtx, cancelFirstByteTimeout = context.WithTimeout(ctx, s.firstByteTimeout)
+	} else {
+		// 非流式请求：使用原始上下文
+		reqCtx = ctx
+		cancelFirstByteTimeout = func() {} // 空操作，避免nil检查
+	}
+
 	// 性能优化：条件启用HTTP trace（默认关闭，节省0.5-1ms/请求）
 	var (
 		dnsStart, connStart, tlsStart time.Time
@@ -346,13 +372,14 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, apiKey strin
 			},
 			WroteRequest: func(info httptrace.WroteRequestInfo) { tWrote = time.Since(startTime).Seconds() },
 		}
-		ctx = httptrace.WithClientTrace(ctx, trace)
+		reqCtx = httptrace.WithClientTrace(reqCtx, trace)
 	}
 
-	// 透明代理：构建完整URL与请求
+	// 透明代理：构建完整URL与请求（使用带超时的上下文）
 	upstreamURL := buildUpstreamURL(cfg, requestPath, rawQuery)
-	req, err := buildUpstreamRequest(ctx, method, upstreamURL, body)
+	req, err := buildUpstreamRequest(reqCtx, method, upstreamURL, body)
 	if err != nil {
+		cancelFirstByteTimeout() // 清理资源
 		return nil, 0, err
 	}
 	// 复制原始请求头并注入认证头
@@ -362,7 +389,19 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, apiKey strin
 	// 异步发送请求，一旦收到响应头立即开始转发
 	resp, err := s.client.Do(req)
 	if err != nil {
+		cancelFirstByteTimeout() // 清理资源
 		duration := time.Since(startTime).Seconds()
+
+		// ✅ P0修复：包装首字节超时错误，添加明确标识
+		// 确保 classifyError 能够正确识别并触发渠道切换
+		if errors.Is(err, context.DeadlineExceeded) && isStreaming {
+			// 流式请求的首字节超时：包装错误消息
+			err = fmt.Errorf("first byte timeout after %.2fs (CCLOAD_FIRST_BYTE_TIMEOUT=%v): %w",
+				duration, s.firstByteTimeout, err)
+			log.Printf("⏱️  [首字节超时] 渠道ID=%d, 超时时长=%.2fs, 配置=%v",
+				cfg.ID, duration, s.firstByteTimeout)
+		}
+
 		statusCode, _ := classifyError(err)
 		return &fwResult{
 			Status:        statusCode,
@@ -379,6 +418,10 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *Config, apiKey strin
 			},
 		}, duration, err
 	}
+
+	// ✅ 关键：收到响应头后立即取消首字节超时
+	// 后续流式传输由客户端上下文（ctx）控制，支持长时间任务
+	cancelFirstByteTimeout()
 
 	// 记录首字节响应时间（接收到响应头的时间）
 	firstByteTime := time.Since(startTime).Seconds()

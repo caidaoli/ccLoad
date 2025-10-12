@@ -126,10 +126,12 @@ func NewServer(store Store) *Server {
 		MaxConnsPerHost:     50,               // 单host最大连接数（新增，防止打爆上游）
 
 		// ✅ P2握手超时优化（2025-10-06）：仅限制握手阶段，不影响长任务
+		// ✅ P2修复（2025-10-12）：修正注释错误，明确各超时配置的作用范围
 		DialContext:           dialer.DialContext, // DNS+TCP握手超时30秒
 		TLSHandshakeTimeout:   30 * time.Second,   // TLS握手超时30秒
-		ResponseHeaderTimeout: 60 * time.Second,   // 响应头超时30秒
-		ExpectContinueTimeout: 1 * time.Second,    // Expect: 100-continue超时
+		ResponseHeaderTimeout: 60 * time.Second,   // 响应头超时60秒（兜底配置，非流式请求使用）
+		// 注意：流式请求使用应用层 firstByteTimeout 控制（默认120秒），更精确且支持运行时配置
+		ExpectContinueTimeout: 1 * time.Second, // Expect: 100-continue超时
 
 		// 传输优化
 		DisableCompression: false,
