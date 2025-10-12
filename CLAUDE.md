@@ -29,46 +29,61 @@ ccLoad 是一个高性能的 Claude Code & Codex API 透明代理服务，使用
 - **删除冗余代码**：移除自定义 `min` 函数（Go 1.21+ 已内置），**删除11行冗余代码**
 - **重复代码率**：从 ~12% 降至 ~5%（**58%↓**）
 
-### 文件结构指南
+### 目录结构（2025-10-12重构）
 
-**核心业务逻辑**（按优先级排序）：
-- `proxy.go` (320行) - 核心代理逻辑，HTTP转发、流式响应、错误处理
-- `selector.go` (156行) - 渠道选择算法，优先级分组、轮询、冷却检查
-- `key_selector.go` (512行) - 多Key管理，策略选择、Key级别冷却
-- `server.go` (163行) - HTTP服务器初始化，路由配置，缓存管理
-
-**数据持久层**：
-- `sqlite_store.go` (519行) - SQLite存储实现，事务管理，异步Redis同步
-- `models.go` (794行) - 数据模型定义，Store接口，JSON序列化
-- `query_builder.go` (706行) - SQL查询构建器，防注入，动态条件
-
-**管理和监控**：
-- `admin.go` (303行) - 管理API实现，渠道CRUD、日志查询、统计分析
-- `token_counter.go` (966行) - 本地Token计数，符合官方API规范
-
-**工具模块**：
-- `status_classifier.go` (439行) - HTTP状态码错误分类器（Key级/渠道级/客户端）
-- `time_utils.go` (194行) - 时间处理工具，统一时间戳转换和冷却计算
-- `handlers.go` (200行) - 通用HTTP处理工具：参数解析、响应处理、**LogFilter构建**（DRY优化）
-- `channel_types.go` (151行) - 渠道类型管理（anthropic/codex/gemini）
-- `api_keys_helper.go` (60行) - API Key解析和验证工具：**ParseAPIKeys()**统一解析（DRY优化）
-- ~~`util.go`~~ - **已删除**：自定义 min 函数冗余（Go 1.21+ 内置）
-
-**同步和测试**：
-- `redis_sync.go` (349行) - Redis异步同步模块，单worker模式
-- `*_test.go` - 完整测试套件（CSV导入导出、多Key、Redis同步、代理错误处理）
-
-**前端**：
-- `web/` - 纯HTML/CSS/JavaScript实现，无框架依赖
-  - `channels.html` - 渠道管理（CRUD、CSV导入导出）
-  - `trend.html` - SVG趋势图表
-  - `logs.html` - 请求日志分页
-  - `stats.html` - 调用统计
-
-**配置和部署**：
+**项目根目录**：
+- `main.go` - 应用入口，服务初始化和启动
 - `Makefile` - macOS服务管理（LaunchAgent）
 - `Dockerfile` - 多架构Docker镜像构建
 - `.env.example` - 环境变量配置模板
+
+**核心应用层** (`internal/app/`)：
+- `server.go` - HTTP服务器，路由配置，缓存管理
+- `proxy.go` - 核心代理逻辑，HTTP转发、流式响应、错误处理
+- `selector.go` - 渠道选择算法，优先级分组、轮询、冷却检查
+- `key_selector.go` - 多Key管理，策略选择、Key级别冷却
+- `admin.go` - 管理API实现，渠道CRUD、日志查询、统计分析
+- `handlers.go` - 通用HTTP处理工具，参数解析、响应处理、LogFilter构建
+- `token_counter.go` - 本地Token计数，符合官方API规范
+- `*_test.go` - 应用层单元测试
+
+**数据存储层** (`internal/storage/sqlite/`)：
+- `sqlite_store.go` - SQLite存储实现，事务管理，异步Redis同步
+- `models.go` - 数据模型定义，Store接口，JSON序列化
+- `query_builder.go` - SQL查询构建器，防注入，动态条件
+- `redis_sync.go` - Redis异步同步模块，单worker模式
+- `*_test.go` - 存储层单元测试（包括冷却一致性、Redis同步等）
+
+**工具模块** (`internal/util/`)：
+- `classifier.go` - HTTP状态码错误分类器（Key级/渠道级/客户端）
+- `time_utils.go` - 时间处理工具，统一时间戳转换和冷却计算
+- `channel_types.go` - 渠道类型管理（anthropic/codex/gemini）
+- `api_keys_helper.go` - API Key解析和验证工具
+- `*_test.go` - 工具函数单元测试
+
+**测试辅助** (`internal/testutil/`)：
+- `types.go` - 测试用数据结构（TestChannelRequest等）
+- `api_tester.go` - API测试工具
+- `test_helpers.go` - 通用测试辅助函数
+
+**集成测试** (`test/integration/`)：
+- `csv_import_export_test.go` - CSV导入导出功能测试
+- `memory_db_persistence_test.go` - 内存数据库持久化测试
+
+**前端界面** (`web/`)：
+- `index.html` - 首页统计看板
+- `channels.html` - 渠道管理（CRUD、CSV导入导出）
+- `logs.html` - 请求日志分页
+- `stats.html` - 调用统计分析
+- `trend.html` - SVG趋势图表
+- `styles.css` - 共享样式
+- `ui.js` - 共享JavaScript工具函数
+
+**设计原则**：
+- **清晰分层**：应用层(app)、存储层(storage)、工具层(util)职责明确
+- **包合并**：server和proxy合并为app包，避免循环依赖（遵循KISS原则）
+- **测试就近**：测试文件与源码在同一包内，便于维护
+- **根目录简洁**：仅保留main.go和必要配置文件，符合Go项目标准
 
 ## 开发命令
 
@@ -148,58 +163,60 @@ docker build -t ccload:dev .
 
 ### 系统组件分层
 
-**HTTP层** (`server.go`, `admin.go`, `handlers.go`):
+**HTTP层** (`internal/app/server.go`, `internal/app/admin.go`, `internal/app/handlers.go`):
 - `Server`: 主服务器结构，管理HTTP客户端、缓存、身份验证
 - `handlers.go`: 通用HTTP处理工具（参数解析、响应处理、方法路由）
 - `admin.go`: 管理API实现（渠道CRUD、日志查询、统计分析）
 - 身份验证：Session-based管理界面 + 可选Bearer token API认证
 
-**业务逻辑层** (`proxy.go`, `selector.go`, `key_selector.go`):
+**业务逻辑层** (`internal/app/proxy.go`, `internal/app/selector.go`, `internal/app/key_selector.go`):
 - `proxy.go`: 核心代理逻辑，处理`/v1/messages`转发和流式响应
 - `selector.go`: 智能渠道选择算法（优先级分组 + 组内轮询 + 故障排除）
 - `key_selector.go`: Key选择器，实现多Key管理、策略选择和Key级别冷却（SRP原则）
 
-**数据持久层** (`sqlite_store.go`, `query_builder.go`, `models.go`, `redis_sync.go`, `time_utils.go`):
+**数据持久层** (`internal/storage/sqlite/`):
 - `models.go`: 数据模型和Store接口定义
 - `sqlite_store.go`: SQLite存储实现，支持连接池、事务和异步Redis同步（单worker模式）
 - `query_builder.go`: 查询构建器，消除SQL构建重复逻辑
-- `time_utils.go`: 时间处理工具（统一时间戳转换和冷却计算，消除60+行重复代码）
 - `redis_sync.go`: Redis同步模块，使用SET全量覆盖简化数据一致性（KISS原则）
 
-**工具层** (`status_classifier.go`):
-- `status_classifier.go`: HTTP状态码错误分类器，区分Key级错误、渠道级错误和客户端错误（SRP原则）
+**工具层** (`internal/util/`):
+- `classifier.go`: HTTP状态码错误分类器，区分Key级错误、渠道级错误和客户端错误（SRP原则）
+- `time_utils.go`: 时间处理工具，统一时间戳转换和冷却计算，消除60+行重复代码
+- `channel_types.go`: 渠道类型管理和验证
+- `api_keys_helper.go`: API Key解析和验证工具
 
 ### 工具模块调用架构
 
-以下架构图展示 `time_utils.go` 和 `status_classifier.go` 在系统中的调用关系：
+以下架构图展示 `time_utils.go` 和 `classifier.go` 在系统中的调用关系：
 
 ```mermaid
 graph TB
     subgraph "HTTP层"
-        A[proxy.go<br/>handleErrorResponse]
+        A[internal/app/proxy.go<br/>handleErrorResponse]
     end
 
     subgraph "工具层"
-        B[status_classifier.go<br/>classifyHTTPStatus]
+        B[internal/util/classifier.go<br/>ClassifyHTTPStatus]
         style B fill:#FCD34D,stroke:#000,color:#000
     end
 
     subgraph "业务逻辑层"
-        C[key_selector.go<br/>MarkKeyError]
+        C[internal/app/key_selector.go<br/>MarkKeyError]
     end
 
     subgraph "数据持久层"
-        D[sqlite_store.go<br/>BumpCooldownOnError]
-        E[sqlite_store.go<br/>BumpKeyCooldownOnError]
-        F[sqlite_store.go<br/>GetCooldownUntil]
-        G[sqlite_store.go<br/>SetCooldown]
+        D[internal/storage/sqlite/sqlite_store.go<br/>BumpChannelCooldown]
+        E[internal/storage/sqlite/sqlite_store.go<br/>BumpKeyCooldown]
+        F[internal/storage/sqlite/sqlite_store.go<br/>GetCooldownUntil]
+        G[internal/storage/sqlite/sqlite_store.go<br/>SetCooldown]
     end
 
     subgraph "工具层"
-        H[time_utils.go<br/>scanUnixTimestamp]
-        I[time_utils.go<br/>calculateBackoffDuration]
-        J[time_utils.go<br/>toUnixTimestamp]
-        K[time_utils.go<br/>calculateCooldownDuration]
+        H[internal/util/time_utils.go<br/>scanUnixTimestamp]
+        I[internal/util/time_utils.go<br/>calculateBackoffDuration]
+        J[internal/util/time_utils.go<br/>toUnixTimestamp]
+        K[internal/util/time_utils.go<br/>calculateCooldownDuration]
         style H fill:#A5F3FC,stroke:#000,color:#000
         style I fill:#A5F3FC,stroke:#000,color:#000
         style J fill:#A5F3FC,stroke:#000,color:#000
@@ -232,11 +249,11 @@ graph TB
 **调用流程说明**:
 
 1. **错误分类路径**:
-   - `proxy.go` 接收HTTP响应 → `status_classifier.go:classifyHTTPStatus()` → 返回错误级别
+   - `internal/app/proxy.go` 接收HTTP响应 → `internal/util/classifier.go:ClassifyHTTPStatus()` → 返回错误级别
    - 根据错误级别决定冷却策略：Key级、渠道级或客户端错误
 
 2. **时间处理路径**:
-   - `sqlite_store.go` 的冷却函数统一调用 `time_utils.go` 工具函数
+   - `internal/storage/sqlite/sqlite_store.go` 的冷却函数统一调用 `internal/util/time_utils.go` 工具函数
    - 统一时间戳转换和指数退避计算
 
 3. **设计原则**:
@@ -265,14 +282,14 @@ graph TB
 
 ### 核心算法实现
 
-**渠道选择算法** (`selectCandidates` in selector.go):
+**渠道选择算法** (`selectCandidates` in internal/app/selector.go):
 1. 从缓存获取渠道配置（60秒TTL，避免频繁数据库查询）
 2. 过滤启用且支持指定模型的渠道
 3. 排除冷却中的渠道（使用内存缓存，快速查询）
 4. 按优先级降序分组
 5. 同优先级内使用轮询算法（内存缓存轮询指针，定期持久化）
 
-**代理转发流程** (`forwardOnce` in proxy.go):
+**代理转发流程** (`forwardOnce` in internal/app/proxy.go):
 1. 解析请求体，提取原始请求的模型名称
 2. 检查渠道的模型重定向配置，如果存在映射则替换为实际模型
 3. 构建上游请求URL，合并查询参数
@@ -284,7 +301,7 @@ graph TB
 
 **故障切换机制**:
 - 非2xx响应或网络错误触发切换
-- 使用 `status_classifier.go` 智能分类错误级别：
+- 使用 `internal/util/classifier.go` 智能分类错误级别：
   - **Key级错误**（401/403/429等）：冷却当前Key，重试同渠道其他Key
   - **渠道级错误**（500/502/503/504等）：冷却整个渠道，切换到其他渠道
   - **客户端错误**（404/405等）：不冷却，直接返回给客户端
@@ -307,14 +324,14 @@ graph TB
     end
 
     subgraph "2. HTTP层处理"
-        B[proxy.go<br/>handleProxyRequest]
-        C[proxy.go<br/>tryChannelWithKeys]
-        D[proxy.go<br/>forwardOnce]
+        B[internal/app/proxy.go<br/>handleProxyRequest]
+        C[internal/app/proxy.go<br/>tryChannelWithKeys]
+        D[internal/app/proxy.go<br/>forwardOnce]
     end
 
     subgraph "3. 错误响应处理"
-        E[proxy.go<br/>handleErrorResponse]
-        F[status_classifier.go<br/>classifyHTTPStatus]
+        E[internal/app/proxy.go<br/>handleErrorResponse]
+        F[internal/util/classifier.go<br/>ClassifyHTTPStatus]
     end
 
     subgraph "4. 冷却决策分支"
@@ -325,16 +342,16 @@ graph TB
     end
 
     subgraph "5. Key级冷却链路"
-        K[key_selector.go<br/>MarkKeyError]
-        L[sqlite_store.go<br/>BumpKeyCooldownOnError]
-        M[time_utils.go<br/>calculateBackoffDuration]
-        N[(key_cooldowns表<br/>channel_id+key_index)]
+        K[internal/app/key_selector.go<br/>MarkKeyError]
+        L[internal/storage/sqlite/sqlite_store.go<br/>BumpKeyCooldown]
+        M[internal/util/time_utils.go<br/>calculateBackoffDuration]
+        N[(api_keys表<br/>channel_id+key_index)]
     end
 
     subgraph "6. 渠道级冷却链路"
-        O[sqlite_store.go<br/>BumpCooldownOnError]
-        P[time_utils.go<br/>calculateBackoffDuration]
-        Q[(cooldowns表<br/>channel_id)]
+        O[internal/storage/sqlite/sqlite_store.go<br/>BumpChannelCooldown]
+        P[internal/util/time_utils.go<br/>calculateBackoffDuration]
+        Q[(channels表<br/>cooldown_until字段)]
     end
 
     subgraph "7. 冷却状态同步"
@@ -395,19 +412,19 @@ graph TB
 
 1. **错误分类阶段**（节点E-G）：
    - `handleErrorResponse` 接收HTTP错误响应
-   - `classifyHTTPStatus` 根据状态码智能分类错误级别
+   - `ClassifyHTTPStatus` 根据状态码智能分类错误级别
    - 决策树分支：Key级 vs 渠道级 vs 客户端错误
 
 2. **Key级冷却路径**（节点H-N）：
    - 触发条件：401/403/429等认证/限流错误
    - 冷却范围：仅冷却当前Key，不影响同渠道其他Key
-   - 数据存储：`key_cooldowns` 表（channel_id + key_index 复合主键）
+   - 数据存储：`api_keys` 表内联字段（cooldown_until, cooldown_duration_ms）
    - 指数退避：1s → 2s → 4s → 8s → ... → 最大30分钟
 
 3. **渠道级冷却路径**（节点I-Q）：
    - 触发条件：500/502/503/504等服务端错误
    - 冷却范围：冷却整个渠道，所有Key均不可用
-   - 数据存储：`cooldowns` 表（channel_id 主键）
+   - 数据存储：`channels` 表内联字段（cooldown_until, cooldown_duration_ms）
    - 指数退避：同Key级策略
 
 4. **内存缓存同步**（节点R-S）：
@@ -449,7 +466,7 @@ graph TB
 - **HTTP客户端**: 100最大连接，10秒连接超时，keepalive优化
 - **TLS优化**: LRU会话缓存，减少握手耗时
 
-**内存数据库模式** (sqlite_store.go:buildMainDBDSN):
+**内存数据库模式** (internal/storage/sqlite/sqlite_store.go:buildMainDBDSN):
 - **启用条件**: 设置环境变量 `CCLOAD_USE_MEMORY_DB=true`
 - **性能提升**: 50-100倍查询性能（消除磁盘I/O）
 - **数据范围**: 仅主数据库（channels, cooldowns, rr等），日志库仍使用文件模式
@@ -486,21 +503,21 @@ graph TB
 
 ## 架构模式
 
-**HTTP处理器模式** (`handlers.go`):
+**HTTP处理器模式** (`internal/app/handlers.go`):
 - `PaginationParams`: 统一参数解析和验证
 - `APIResponse[T]`: 类型安全的泛型响应结构
 - `MethodRouter`: 声明式HTTP方法路由，替代switch-case
 - `RequestValidator`: 接口驱动的请求验证
 
-**查询构建器模式** (`query_builder.go`):
+**查询构建器模式** (`internal/storage/sqlite/query_builder.go`):
 - `WhereBuilder`: 动态SQL条件构建，防止SQL注入
 - `QueryBuilder`: 组合式查询构建，支持链式调用
 - `ConfigScanner`: 统一数据库行扫描，消除重复逻辑
 
 **工具模块设计**:
-- `time_utils.go`: 统一时间戳处理和指数退避计算
-- `status_classifier.go`: HTTP状态码错误分类（Key级/渠道级/客户端）
-- `api_keys_helper.go`: API Key解析和验证
+- `internal/util/time_utils.go`: 统一时间戳处理和指数退避计算
+- `internal/util/classifier.go`: HTTP状态码错误分类（Key级/渠道级/客户端）
+- `internal/util/api_keys_helper.go`: API Key解析和验证
 
 ## 环境配置
 
@@ -1181,7 +1198,7 @@ ccLoad现已支持多种AI API的透明代理，通过智能路径检测自动�
 
 ### 路径检测逻辑
 
-**实现位置**：`proxy.go:isGeminiRequest(path string) bool`
+**实现位置**：`internal/app/proxy.go:isGeminiRequest(path string) bool`
 
 **检测规则**：
 - 使用 `strings.Contains(path, "/v1beta/")` 检测路径
@@ -1199,14 +1216,14 @@ ccLoad现已支持多种AI API的透明代理，通过智能路径检测自动�
 
 如需支持新的API类型（如OpenAI、Azure等），按以下步骤扩展：
 
-1. **添加检测函数**（proxy.go）：
+1. **添加检测函数**（internal/app/proxy.go）：
    ```go
    func isOpenAIRequest(path string) bool {
        return strings.HasPrefix(path, "/v1/chat/completions")
    }
    ```
 
-2. **修改头设置逻辑**（proxy.go:166-174）：
+2. **修改头设置逻辑**（internal/app/proxy.go:166-174）：
    ```go
    if isGeminiRequest(requestPath) {
        req.Header.Set("x-goog-api-key", apiKey)
@@ -1315,7 +1332,7 @@ curl -X POST http://localhost:8080/admin/channels/import \
 
 #### 智能路由策略
 
-系统根据请求类型采用不同的路由策略（`proxy.go:117-128`）：
+系统根据请求类型采用不同的路由策略（`internal/app/proxy.go:117-128`）：
 
 ```go
 // 特殊处理：GET /v1beta/models 等Gemini API元数据请求
@@ -1334,7 +1351,7 @@ if requestMethod == http.MethodGet && isGeminiRequest(requestPath) {
 
 #### 渠道类型验证
 
-**验证函数**（`channel_types.go:IsValidChannelType`）：
+**验证函数**（`internal/util/channel_types.go:IsValidChannelType`）：
 ```go
 func IsValidChannelType(value string) bool {
     for _, ct := range ChannelTypes {
@@ -1513,9 +1530,9 @@ curl -X POST http://localhost:8080/v1/messages/count_tokens \
 
 ### 工作原理
 
-**实现位置**：`token_counter.go:handleCountTokens()`
+**实现位置**：`internal/app/token_counter.go:handleCountTokens()`
 
-**估算算法**（`token_counter.go:estimateTokens()`）：
+**估算算法**（`internal/app/token_counter.go:estimateTokens()`）：
 1. **系统提示词**：4.5 字符/token（优化系数）
 2. **消息内容**：
    - 文本消息：4.2 字符/token
@@ -1533,7 +1550,7 @@ curl -X POST http://localhost:8080/v1/messages/count_tokens \
 
 ### 准确度验证
 
-项目包含完整的基准测试套件（`token_counter_test.go`）：
+项目包含完整的基准测试套件（`internal/app/token_counter_test.go`）：
 
 ```bash
 # 运行Token计数准确度测试
