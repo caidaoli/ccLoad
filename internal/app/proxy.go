@@ -1,6 +1,7 @@
 package app
 
 import (
+	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 
@@ -11,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -38,7 +38,7 @@ const (
 var (
 	errClassCache   sync.Map // key: error string, value: [2]int{statusCode, shouldRetry(0/1)}
 	errCacheSize    atomic.Int64
-	errCacheMaxSize = int64(1000) // 最大缓存1000个不同的错误字符串
+	errCacheMaxSize = int64(config.ErrorCacheMaxSize)
 )
 
 // isGeminiRequest 检测是否为Gemini API请求
@@ -184,7 +184,7 @@ func classifyError(err error) (statusCode int, shouldRetry bool) {
 				// 删除到目标数量后停止（保留最近添加的）
 				return deletedCount < (errCacheMaxSize - targetSize)
 			})
-			log.Printf("⚠️  Error缓存LRU清理: 删除 %d 项，当前大小 %d", deletedCount, targetSize)
+			util.SafePrintf("⚠️  Error缓存LRU清理: 删除 %d 项，当前大小 %d", deletedCount, targetSize)
 		} else {
 			// CAS失败说明其他goroutine正在清理，当前线程无需操作
 			// 但需要调整计数器（因为我们的Store已经成功）
@@ -405,7 +405,7 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 			// 流式请求的首字节超时：包装错误消息
 			err = fmt.Errorf("first byte timeout after %.2fs (CCLOAD_FIRST_BYTE_TIMEOUT=%v): %w",
 				duration, s.firstByteTimeout, err)
-			log.Printf("⏱️  [首字节超时] 渠道ID=%d, 超时时长=%.2fs, 配置=%v",
+			util.SafePrintf("⏱️  [首字节超时] 渠道ID=%d, 超时时长=%.2fs, 配置=%v",
 				cfg.ID, duration, s.firstByteTimeout)
 		}
 
@@ -641,7 +641,7 @@ func prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestContext) (actualM
 	if len(cfg.ModelRedirects) > 0 {
 		if redirectModel, ok := cfg.ModelRedirects[reqCtx.originalModel]; ok && redirectModel != "" {
 			actualModel = redirectModel
-			log.Printf("🔄 [模型重定向] 渠道ID=%d, 原始模型=%s, 重定向模型=%s", cfg.ID, reqCtx.originalModel, actualModel)
+			util.SafePrintf("🔄 [模型重定向] 渠道ID=%d, 原始模型=%s, 重定向模型=%s", cfg.ID, reqCtx.originalModel, actualModel)
 		}
 	}
 
@@ -654,12 +654,12 @@ func prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestContext) (actualM
 			reqData["model"] = actualModel
 			if modifiedBody, err := sonic.Marshal(reqData); err == nil {
 				bodyToSend = modifiedBody
-				log.Printf("✅ [请求体修改] 渠道ID=%d, 修改后模型字段=%s", cfg.ID, actualModel)
+				util.SafePrintf("✅ [请求体修改] 渠道ID=%d, 修改后模型字段=%s", cfg.ID, actualModel)
 			} else {
-				log.Printf("⚠️  [请求体修改失败] 渠道ID=%d, Marshal错误: %v", cfg.ID, err)
+				util.SafePrintf("⚠️  [请求体修改失败] 渠道ID=%d, Marshal错误: %v", cfg.ID, err)
 			}
 		} else {
-			log.Printf("⚠️  [请求体解析失败] 渠道ID=%d, Unmarshal错误: %v", cfg.ID, err)
+			util.SafePrintf("⚠️  [请求体解析失败] 渠道ID=%d, Unmarshal错误: %v", cfg.ID, err)
 		}
 	}
 
@@ -960,8 +960,8 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 	// 选择路由候选
 	cands, err := s.selectRouteCandidates(ctx, c, originalModel)
 	if err != nil {
-		// 记录错误日志用于调试
-		log.Printf("[ERROR] selectRouteCandidates failed: model=%s, path=%s, error=%v",
+		// 记录错误日志用于调试（使用日志消毒）
+		util.SafePrintf("[ERROR] selectRouteCandidates failed: model=%s, path=%s, error=%v",
 			originalModel, c.Request.URL.Path, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		return
@@ -1059,8 +1059,8 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 
 func truncateErr(s string) string {
 	s = strings.TrimSpace(s)
-	if len(s) > 512 {
-		return s[:512]
+	if len(s) > config.LogErrorTruncateLength {
+		return s[:config.LogErrorTruncateLength]
 	}
 	return s
 }

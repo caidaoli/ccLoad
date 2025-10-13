@@ -4,6 +4,7 @@ import (
 	"ccLoad/internal/model"
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -48,8 +49,15 @@ func BenchmarkFetchChannelNamesBatch(b *testing.B) {
 func setupBatchTestStore(t testing.TB) (*SQLiteStore, func()) {
 	t.Helper()
 
-	store, err := NewSQLiteStore(":memory:", nil)
+	// ✅ 修复：禁用内存模式，避免Redis强制检查
+	oldValue := os.Getenv("CCLOAD_USE_MEMORY_DB")
+	os.Setenv("CCLOAD_USE_MEMORY_DB", "false")
+
+	// 使用临时文件数据库
+	tmpDB := t.(*testing.T).TempDir() + "/test-batch.db"
+	store, err := NewSQLiteStore(tmpDB, nil)
 	if err != nil {
+		os.Setenv("CCLOAD_USE_MEMORY_DB", oldValue)
 		t.Fatalf("创建测试存储失败: %v", err)
 	}
 
@@ -57,6 +65,7 @@ func setupBatchTestStore(t testing.TB) (*SQLiteStore, func()) {
 		if err := store.Close(); err != nil {
 			t.Errorf("关闭存储失败: %v", err)
 		}
+		os.Setenv("CCLOAD_USE_MEMORY_DB", oldValue)
 	}
 
 	return store, cleanup

@@ -6,6 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ccLoad 是一个高性能的 Claude Code & Codex API 透明代理服务，使用 Go 1.25.0 构建，基于 Gin 框架。
 
+### 最新更新（2025-10-12）
+
+**P0 安全修复**：
+1. ✅ **环境变量安全增强**：添加密码强度检查和启动提示，防止生产环境使用弱密码
+2. ✅ **内存模式强制Redis**：内存数据库模式现在强制要求配置Redis同步，防止数据永久丢失
+3. ✅ **日志注入防护**：新增 `util.SanitizeLogMessage()` 自动消毒日志输出，防止日志注入攻击
+
+**代码质量优化（Phase 2.2）**：
+4. ✅ **消除Magic Numbers**：提取所有硬编码配置值到 `internal/config/defaults.go`，提高可维护性
+5. ✅ **集中化配置管理**：60+ 个配置常量统一管理，支持一键调整默认值
+
 ### 核心功能
 
 - **透明代理**：支持 Claude API（`/v1/messages`）和 Gemini API（`/v1beta/*`），智能识别认证方式
@@ -54,11 +65,15 @@ ccLoad 是一个高性能的 Claude Code & Codex API 透明代理服务，使用
 - `redis_sync.go` - Redis异步同步模块，单worker模式
 - `*_test.go` - 存储层单元测试（包括冷却一致性、Redis同步等）
 
+**配置模块** (`internal/config/`)：
+- `defaults.go` - 配置常量定义（HTTP、日志、Token、SQLite等，2025-10-12新增）
+
 **工具模块** (`internal/util/`)：
 - `classifier.go` - HTTP状态码错误分类器（Key级/渠道级/客户端）
 - `time_utils.go` - 时间处理工具，统一时间戳转换和冷却计算
 - `channel_types.go` - 渠道类型管理（anthropic/codex/gemini）
 - `api_keys_helper.go` - API Key解析和验证工具
+- `log_sanitizer.go` - 日志消毒工具（防止日志注入攻击，2025-10-12新增）
 - `*_test.go` - 工具函数单元测试
 
 **测试辅助** (`internal/testutil/`)：
@@ -80,10 +95,12 @@ ccLoad 是一个高性能的 Claude Code & Codex API 透明代理服务，使用
 - `ui.js` - 共享JavaScript工具函数
 
 **设计原则**：
-- **清晰分层**：应用层(app)、存储层(storage)、工具层(util)职责明确
+- **清晰分层**：应用层(app)、存储层(storage)、配置层(config)、工具层(util)职责明确
 - **包合并**：server和proxy合并为app包，避免循环依赖（遵循KISS原则）
 - **测试就近**：测试文件与源码在同一包内，便于维护
 - **根目录简洁**：仅保留main.go和必要配置文件，符合Go项目标准
+- **安全优先**：所有用户输入和外部数据自动消毒，防止注入攻击（2025-10-12新增）
+- **可配置性**：消除Magic Numbers，集中化配置管理（2025-10-12新增）
 
 ## 开发命令
 
@@ -522,13 +539,25 @@ graph TB
 ## 环境配置
 
 ### 环境变量
-- `CCLOAD_PASS`: 管理后台密码（默认: "admin"，生产环境必须设置）
+
+**核心配置**：
+- `CCLOAD_PASS`: 管理后台密码（默认: "admin"，⚠️ 生产环境必须设置强密码）
 - `CCLOAD_AUTH`: API访问令牌（可选，多个令牌用逗号分隔）
-- `CCLOAD_MAX_KEY_RETRIES`: 单个渠道内最大Key重试次数（默认: "3"，避免key过多时重试次数过多导致延迟）
-- `CCLOAD_FIRST_BYTE_TIMEOUT`: 流式请求首字节超时时间（默认: "120"秒，即2分钟）
-  - 设置流式请求等待首字节响应的最大时间（单位：秒）
+- `PORT`: HTTP服务端口（默认: "8080"）
+
+**性能调优**：
+- `CCLOAD_MAX_CONCURRENCY`: 最大并发请求数（默认: 1000）
+- `CCLOAD_MAX_KEY_RETRIES`: 单个渠道内最大Key重试次数（默认: 3）
+- `CCLOAD_FIRST_BYTE_TIMEOUT`: 流式请求首字节超时（默认: 120秒）
   - 超时后会自动切换到下一个可用渠道重试
   - 建议值：60-300秒，根据上游API响应速度调整
+- `CCLOAD_ENABLE_TRACE`: HTTP Trace开关（默认: false，启用会增加0.5-1ms延迟）
+
+**日志系统**：
+- `CCLOAD_LOG_BUFFER`: 日志缓冲区大小（默认: 1000条）
+- `CCLOAD_LOG_WORKERS`: 日志Worker协程数（默认: 3个）
+
+**数据库配置**：
 - `SQLITE_PATH`: SQLite数据库路径（默认: "data/ccload.db"）
 - `CCLOAD_USE_MEMORY_DB`: 主数据库内存模式开关（默认: "false"）
   - **开启**：`CCLOAD_USE_MEMORY_DB=true` - 渠道配置、冷却状态存储在内存中，性能提升50-100倍
@@ -545,6 +574,22 @@ graph TB
 - `REDIS_URL`: Redis连接URL（可选，用于渠道数据同步备份；内存模式强烈推荐配置）
 
 支持 `.env` 文件配置（优先于系统环境变量）
+
+**配置常量参考** (`internal/config/defaults.go`)：
+
+| 分类 | 常量名 | 默认值 | 说明 |
+|------|--------|--------|------|
+| HTTP服务器 | `DefaultMaxConcurrency` | 1000 | 最大并发请求数 |
+| HTTP客户端 | `HTTPMaxIdleConns` | 100 | 全局空闲连接池 |
+| HTTP客户端 | `HTTPMaxIdleConnsPerHost` | 5 | 单host空闲连接 |
+| HTTP客户端 | `HTTPDialTimeout` | 30秒 | DNS+TCP超时 |
+| 日志系统 | `DefaultLogBufferSize` | 1000 | 日志缓冲区大小 |
+| 日志系统 | `LogBatchSize` | 100 | 批量写入大小 |
+| Token认证 | `TokenExpiryHours` | 24小时 | Token有效期 |
+| SQLite连接池 | `SQLiteMaxOpenConnsFile` | 5 | 文件模式最大连接 |
+| SQLite连接池 | `SQLiteMaxOpenConnsMemory` | 10 | 内存模式最大连接 |
+
+完整配置常量列表请参考 `internal/config/defaults.go` 文件（60+ 个配置项）。
 
 **重试次数优化**：
 - 系统会自动取 `min(CCLOAD_MAX_KEY_RETRIES, 实际Key数量)` 作为重试上限
@@ -812,11 +857,13 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 - 空的重定向配置会被序列化为 `{}`，不影响功能
 
 **安全考虑**:
-- 生产环境必须设置强密码 `CCLOAD_PASS`
-- 建议设置 `CCLOAD_AUTH` 以保护 `/v1/messages` 端点
-- API Key不记录到日志中，仅在内存中使用
-- 生产环境需限制 `data/` 目录访问权限
-- 使用 HTTPS 部署以保护传输中的认证令牌
+- ✅ **强密码策略**：生产环境必须设置强密码 `CCLOAD_PASS`（启动时自动检查）
+- ✅ **API认证**：建议设置 `CCLOAD_AUTH` 以保护 `/v1/messages` 端点
+- ✅ **敏感数据保护**：API Key 自动脱敏（前4后4），不完整记录到日志
+- ✅ **日志注入防护**：所有用户输入和错误信息自动消毒，防止日志注入攻击
+- ✅ **内存模式安全**：内存数据库强制要求配置 `REDIS_URL`，防止数据永久丢失
+- 🔒 **文件权限**：生产环境需限制 `data/` 目录访问权限（chmod 700）
+- 🔒 **传输加密**：使用 HTTPS 部署以保护传输中的认证令牌
 
 ## Redis同步功能
 

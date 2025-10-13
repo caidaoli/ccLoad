@@ -456,15 +456,16 @@ func TestRaceConditionDetection(t *testing.T) {
 func setupAuthErrorTestStore(t *testing.T) (*SQLiteStore, func()) {
 	t.Helper()
 
-	// 设置内存数据库环境变量，强制使用命名内存数据库（确保所有连接共享同一实例）
+	// ✅ 修复：禁用内存模式，避免Redis强制检查
+	// 使用临时文件数据库确保测试稳定性
 	oldValue := os.Getenv("CCLOAD_USE_MEMORY_DB")
-	os.Setenv("CCLOAD_USE_MEMORY_DB", "true")
+	os.Setenv("CCLOAD_USE_MEMORY_DB", "false")
 
-	// 使用内存数据库加快测试速度
-	// ⚠️ 设置环境变量后，NewSQLiteStore会自动使用命名内存数据库
-	store, err := NewSQLiteStore(":memory:", nil)
+	// 使用t.TempDir()创建临时目录，测试结束自动清理
+	tmpDB := t.TempDir() + "/test-auth-error.db"
+	store, err := NewSQLiteStore(tmpDB, nil)
 	if err != nil {
-		os.Setenv("CCLOAD_USE_MEMORY_DB", oldValue) // 恢复环境变量
+		os.Setenv("CCLOAD_USE_MEMORY_DB", oldValue)
 		t.Fatalf("创建测试数据库失败: %v", err)
 	}
 

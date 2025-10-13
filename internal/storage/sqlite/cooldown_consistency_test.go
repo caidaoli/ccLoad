@@ -11,12 +11,14 @@ import (
 // TestCooldownConsistency_401Error 验证401错误时Key级别和渠道级别冷却时间一致性
 // 设计目标：确保相同错误码在不同级别产生相同的冷却时长
 func TestCooldownConsistency_401Error(t *testing.T) {
-	// 设置内存数据库环境
+	// ✅ 修复：禁用内存模式，避免Redis强制检查
 	oldValue := os.Getenv("CCLOAD_USE_MEMORY_DB")
-	os.Setenv("CCLOAD_USE_MEMORY_DB", "true")
+	os.Setenv("CCLOAD_USE_MEMORY_DB", "false")
 	defer os.Setenv("CCLOAD_USE_MEMORY_DB", oldValue)
 
-	store, err := NewSQLiteStore(":memory:", nil)
+	// 使用临时文件数据库
+	tmpDB := t.TempDir() + "/test-cooldown-consistency.db"
+	store, err := NewSQLiteStore(tmpDB, nil)
 	if err != nil {
 		t.Fatalf("创建测试数据库失败: %v", err)
 	}

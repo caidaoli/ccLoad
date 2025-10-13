@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 
@@ -146,15 +147,15 @@ func NewSQLiteStore(path string, redisSync RedisSync) (*SQLiteStore, error) {
 	// ✅ P2连接池优化（2025-10-06）：根据模式差异化配置
 	if useMemory {
 		// 内存模式：适度减少连接数（无限并发对内存数据库无益）
-		db.SetMaxOpenConns(10)
-		db.SetMaxIdleConns(5)
+		db.SetMaxOpenConns(config.SQLiteMaxOpenConnsMemory)
+		db.SetMaxIdleConns(config.SQLiteMaxIdleConnsMemory)
 		// 不设置ConnMaxLifetime，连接永不过期（保证数据库始终可用）
 	} else {
 		// WAL文件模式：严格限制写并发（WAL性能瓶颈）
-		db.SetMaxOpenConns(5)
-		db.SetMaxIdleConns(2)
-		// 缩短连接生命周期：5min → 1min（更快资源回收）
-		db.SetConnMaxLifetime(1 * time.Minute)
+		db.SetMaxOpenConns(config.SQLiteMaxOpenConnsFile)
+		db.SetMaxIdleConns(config.SQLiteMaxIdleConnsFile)
+		// 缩短连接生命周期（更快资源回收）
+		db.SetConnMaxLifetime(config.MinutesToDuration(config.SQLiteConnMaxLifetimeMinutes))
 	}
 
 	// 打开日志数据库（logs）- 始终使用文件模式
@@ -166,9 +167,9 @@ func NewSQLiteStore(path string, redisSync RedisSync) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("open log database: %w", err)
 	}
 	// ✅ P2日志库优化（2025-10-06）：与主库对齐，降低资源占用
-	logDB.SetMaxOpenConns(5) // 10 → 5（日志写入无需高并发）
-	logDB.SetMaxIdleConns(2)
-	logDB.SetConnMaxLifetime(1 * time.Minute) // 5min → 1min（更快资源回收）
+	logDB.SetMaxOpenConns(config.SQLiteMaxOpenConnsFile)
+	logDB.SetMaxIdleConns(config.SQLiteMaxIdleConnsFile)
+	logDB.SetConnMaxLifetime(config.MinutesToDuration(config.SQLiteConnMaxLifetimeMinutes))
 
 	s := &SQLiteStore{
 		db:        db,
@@ -182,6 +183,18 @@ func NewSQLiteStore(path string, redisSync RedisSync) (*SQLiteStore, error) {
 	// SQLite内存数据库的特性：当最后一个连接关闭时，数据库被删除
 	// 解决方案：持有一个永不关闭的"守护连接"，确保数据库始终存在
 	if useMemory {
+		// ✅ P0安全检查（2025-10-12）：内存模式强制要求Redis备份
+		// 设计原则：防止数据永久丢失，确保故障可恢复
+		if redisSync == nil || !redisSync.IsEnabled() {
+			_ = db.Close()
+			_ = logDB.Close()
+			log.Print("❌ 错误：内存模式必须配置Redis同步，否则服务重启后数据将永久丢失")
+			log.Print("   解决方案：")
+			log.Print("   1. 设置环境变量：REDIS_URL=redis://localhost:6379")
+			log.Print("   2. 或禁用内存模式：unset CCLOAD_USE_MEMORY_DB（使用文件模式）")
+			return nil, fmt.Errorf("内存模式必须配置Redis同步（REDIS_URL）")
+		}
+
 		keeperConn, err := db.Conn(context.Background())
 		if err != nil {
 			_ = db.Close()
@@ -197,7 +210,7 @@ func NewSQLiteStore(path string, redisSync RedisSync) (*SQLiteStore, error) {
 		log.Print("   - 连接池无生命周期限制，防止连接过期导致数据库销毁")
 		log.Print("   - 渠道配置、冷却状态等热数据存储在内存中")
 		log.Print("   - 日志数据仍然持久化到磁盘：", logDBPath)
-		log.Print("   ⚠️  警告：服务重启后主数据库数据将丢失，请配置Redis同步或重新导入CSV")
+		log.Print("   ✅ Redis同步已启用：数据自动备份，服务重启后可恢复")
 	}
 
 	// 迁移主数据库表结构
@@ -236,8 +249,8 @@ func (s *SQLiteStore) Close() error {
 		close(s.done)
 	}
 
-	// 等待worker处理完最后的同步任务（最多等待100ms）
-	time.Sleep(100 * time.Millisecond)
+	// 等待worker处理完最后的同步任务
+	time.Sleep(time.Duration(config.RedisSyncShutdownTimeoutMs) * time.Millisecond)
 
 	// ⚠️ 内存数据库守护连接：最后关闭（P0修复 2025-10-05）
 	// 确保守护连接在所有其他操作完成后才关闭

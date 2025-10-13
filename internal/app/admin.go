@@ -6,7 +6,6 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -116,7 +115,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	allChannelCooldowns, err := s.store.GetAllChannelCooldowns(c.Request.Context())
 	if err != nil {
 		// 渠道冷却查询失败不影响主流程，仅记录错误
-		log.Printf("⚠️  警告: 批量查询渠道冷却状态失败: %v", err)
+		util.SafePrintf("⚠️  警告: 批量查询渠道冷却状态失败: %v", err)
 		allChannelCooldowns = make(map[int64]time.Time)
 	}
 
@@ -124,7 +123,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	allKeyCooldowns, err := s.store.GetAllKeyCooldowns(c.Request.Context())
 	if err != nil {
 		// Key冷却查询失败不影响主流程，仅记录错误
-		log.Printf("⚠️  警告: 批量查询Key冷却状态失败: %v", err)
+		util.SafePrintf("⚠️  警告: 批量查询Key冷却状态失败: %v", err)
 		allKeyCooldowns = make(map[int64]map[int]time.Time)
 	}
 
@@ -142,7 +141,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		// Key级别冷却：查询数据库获取该渠道的API Keys
 		apiKeys, err := s.store.GetAPIKeys(c.Request.Context(), cfg.ID)
 		if err != nil {
-			log.Printf("⚠️  警告: 查询渠道 %d 的API Keys失败: %v", cfg.ID, err)
+			util.SafePrintf("⚠️  警告: 查询渠道 %d 的API Keys失败: %v", cfg.ID, err)
 			apiKeys = []*model.APIKey{} // 空数组，继续处理
 		}
 
@@ -211,7 +210,7 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 			UpdatedAt:   model.JSONTime{Time: now},
 		}
 		if err := s.store.CreateAPIKey(c.Request.Context(), apiKey); err != nil {
-			log.Printf("⚠️  警告: 创建API Key失败 (channel=%d, index=%d): %v", created.ID, i, err)
+			util.SafePrintf("⚠️  警告: 创建API Key失败 (channel=%d, index=%d): %v", created.ID, i, err)
 		}
 	}
 
@@ -243,7 +242,7 @@ func (s *Server) handleExportChannelsCSV(c *gin.Context) {
 		// 查询渠道的API Keys
 		apiKeys, err := s.store.GetAPIKeys(c.Request.Context(), cfg.ID)
 		if err != nil {
-			log.Printf("⚠️  警告: 查询渠道 %d 的API Keys失败: %v", cfg.ID, err)
+			util.SafePrintf("⚠️  警告: 查询渠道 %d 的API Keys失败: %v", cfg.ID, err)
 			apiKeys = []*model.APIKey{} // 空数组，继续处理
 		}
 
@@ -487,7 +486,7 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 					UpdatedAt:   model.JSONTime{Time: now},
 				}
 				if err := s.store.CreateAPIKey(c.Request.Context(), apiKeyRecord); err != nil {
-					log.Printf("⚠️  警告: 创建API Key失败 (channel=%d, index=%d): %v", replacedCfg.ID, i, err)
+					util.SafePrintf("⚠️  警告: 创建API Key失败 (channel=%d, index=%d): %v", replacedCfg.ID, i, err)
 				}
 			}
 		}
@@ -553,7 +552,7 @@ func (s *Server) handleGetChannel(c *gin.Context, id int64) {
 	// 查询该渠道的第一个API Key以获取策略
 	apiKeys, err := s.store.GetAPIKeys(c.Request.Context(), id)
 	if err != nil {
-		log.Printf("⚠️  警告: 查询渠道 %d 的API Keys失败: %v", id, err)
+		util.SafePrintf("⚠️  警告: 查询渠道 %d 的API Keys失败: %v", id, err)
 	}
 
 	// 构建响应（动态添加key_strategy字段）
@@ -649,7 +648,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	// 检测api_key是否变化（需要重建API Keys）
 	oldKeys, err := s.store.GetAPIKeys(c.Request.Context(), id)
 	if err != nil {
-		log.Printf("⚠️  警告: 查询旧API Keys失败: %v", err)
+		util.SafePrintf("⚠️  警告: 查询旧API Keys失败: %v", err)
 		oldKeys = []*model.APIKey{}
 	}
 
@@ -704,7 +703,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 				UpdatedAt:   model.JSONTime{Time: now},
 			}
 			if err := s.store.CreateAPIKey(c.Request.Context(), apiKey); err != nil {
-				log.Printf("⚠️  警告: 创建API Key失败 (channel=%d, index=%d): %v", id, i, err)
+				util.SafePrintf("⚠️  警告: 创建API Key失败 (channel=%d, index=%d): %v", id, i, err)
 			}
 		}
 	} else if strategyChanged {
@@ -714,7 +713,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 			oldKey.KeyStrategy = keyStrategy
 			oldKey.UpdatedAt = model.JSONTime{Time: now}
 			if err := s.store.UpdateAPIKey(c.Request.Context(), oldKey); err != nil {
-				log.Printf("⚠️  警告: 更新API Key策略失败 (channel=%d, index=%d): %v", id, oldKey.KeyIndex, err)
+				util.SafePrintf("⚠️  警告: 更新API Key策略失败 (channel=%d, index=%d): %v", id, oldKey.KeyIndex, err)
 			}
 		}
 	}
@@ -906,7 +905,7 @@ func (s *Server) handleChannelTest(c *gin.Context) {
 	// ✅ 修复：测试成功时清除该Key的冷却状态
 	if success, ok := testResult["success"].(bool); ok && success {
 		if err := s.store.ResetKeyCooldown(c.Request.Context(), id, keyIndex); err != nil {
-			log.Printf("⚠️  警告: 清除Key #%d冷却状态失败: %v", keyIndex, err)
+			util.SafePrintf("⚠️  警告: 清除Key #%d冷却状态失败: %v", keyIndex, err)
 		}
 
 		// ✨ 优化：同时清除渠道级冷却（因为至少有一个Key可用）
@@ -927,14 +926,14 @@ func (s *Server) testChannelAPI(cfg *model.Config, apiKey string, testReq *testu
 	if len(cfg.ModelRedirects) > 0 {
 		if redirectModel, ok := cfg.ModelRedirects[originalModel]; ok && redirectModel != "" {
 			actualModel = redirectModel
-			log.Printf("🔄 [测试-模型重定向] 渠道ID=%d, 原始模型=%s, 重定向模型=%s", cfg.ID, originalModel, actualModel)
+			util.SafePrintf("🔄 [测试-模型重定向] 渠道ID=%d, 原始模型=%s, 重定向模型=%s", cfg.ID, originalModel, actualModel)
 		}
 	}
 
 	// 如果模型发生重定向，更新测试请求中的模型名称
 	if actualModel != originalModel {
 		testReq.Model = actualModel
-		log.Printf("✅ [测试-请求体修改] 渠道ID=%d, 修改后模型=%s", cfg.ID, actualModel)
+		util.SafePrintf("✅ [测试-请求体修改] 渠道ID=%d, 修改后模型=%s", cfg.ID, actualModel)
 	}
 
 	// 选择并规范化渠道类型

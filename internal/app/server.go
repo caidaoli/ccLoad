@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -17,9 +16,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/storage/sqlite"
+	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
 )
@@ -63,6 +64,11 @@ func NewServer(store storage.Store) *Server {
 	password := os.Getenv("CCLOAD_PASS")
 	if password == "" {
 		password = "admin" // 默认密码，生产环境应该设置环境变量
+		util.SafePrint("⚠️  安全警告：使用默认密码 'admin'，生产环境必须设置环境变量 CCLOAD_PASS")
+	} else if password == "admin" {
+		util.SafePrint("⚠️  安全警告：密码设置为 'admin'，建议使用更强的密码")
+	} else {
+		util.SafePrint("✅ 管理员密码已从环境变量加载（长度: ", len(password), " 字符）")
 	}
 
 	// 解析 API 认证令牌
@@ -78,15 +84,15 @@ func NewServer(store storage.Store) *Server {
 	}
 
 	// 解析最大Key重试次数（避免key过多时重试次数过多）
-	maxKeyRetries := 3 // 默认值
+	maxKeyRetries := config.DefaultMaxKeyRetries
 	if retryEnv := os.Getenv("CCLOAD_MAX_KEY_RETRIES"); retryEnv != "" {
 		if val, err := strconv.Atoi(retryEnv); err == nil && val > 0 {
 			maxKeyRetries = val
 		}
 	}
 
-	// 解析首字节超时时间（流式请求首字节响应超时，默认2分钟）
-	firstByteTimeout := 2 * time.Minute // 默认2分钟
+	// 解析首字节超时时间（流式请求首字节响应超时）
+	firstByteTimeout := config.SecondsToDuration(config.DefaultFirstByteTimeout)
 	if timeoutEnv := os.Getenv("CCLOAD_FIRST_BYTE_TIMEOUT"); timeoutEnv != "" {
 		if val, err := strconv.Atoi(timeoutEnv); err == nil && val > 0 {
 			firstByteTimeout = time.Duration(val) * time.Second
@@ -100,7 +106,7 @@ func NewServer(store storage.Store) *Server {
 	}
 
 	// 解析最大并发数（性能优化：防止goroutine爆炸）
-	maxConcurrency := 1000 // 默认1000并发
+	maxConcurrency := config.DefaultMaxConcurrency
 	if concEnv := os.Getenv("CCLOAD_MAX_CONCURRENCY"); concEnv != "" {
 		if val, err := strconv.Atoi(concEnv); err == nil && val > 0 {
 			maxConcurrency = val
@@ -111,54 +117,54 @@ func NewServer(store storage.Store) *Server {
 	skipTLSVerify := false
 	if os.Getenv("CCLOAD_SKIP_TLS_VERIFY") == "true" {
 		skipTLSVerify = true
-		log.Print("⚠️  警告：TLS证书验证已禁用（CCLOAD_SKIP_TLS_VERIFY=true）")
-		log.Print("   仅用于开发/测试环境，生产环境严禁使用！")
-		log.Print("   当前配置存在中间人攻击风险，API Key可能泄漏")
+		util.SafePrint("⚠️  警告：TLS证书验证已禁用（CCLOAD_SKIP_TLS_VERIFY=true）")
+		util.SafePrint("   仅用于开发/测试环境，生产环境严禁使用！")
+		util.SafePrint("   当前配置存在中间人攻击风险，API Key可能泄漏")
 	}
 
 	// 优化 HTTP 客户端配置 - 重点优化连接建立阶段的超时控制
 	dialer := &net.Dialer{
-		Timeout:   30 * time.Second, // DNS解析+TCP连接建立超时
-		KeepAlive: 30 * time.Second, // TCP keepalive间隔
+		Timeout:   config.SecondsToDuration(config.HTTPDialTimeout),
+		KeepAlive: config.SecondsToDuration(config.HTTPKeepAliveInterval),
 	}
 
 	transport := &http.Transport{
 		// ✅ P2连接池优化（2025-10-06）：防御性配置，避免打爆上游API
-		MaxIdleConns:        100,              // 全局空闲连接池
-		MaxIdleConnsPerHost: 5,                // 单host空闲连接（从10→5，减少资源占用）
-		IdleConnTimeout:     30 * time.Second, // 空闲连接超时（从90s→30s，更快回收）
-		MaxConnsPerHost:     50,               // 单host最大连接数（新增，防止打爆上游）
+		MaxIdleConns:        config.HTTPMaxIdleConns,
+		MaxIdleConnsPerHost: config.HTTPMaxIdleConnsPerHost,
+		IdleConnTimeout:     config.SecondsToDuration(config.HTTPIdleConnTimeout),
+		MaxConnsPerHost:     config.HTTPMaxConnsPerHost,
 
 		// ✅ P2握手超时优化（2025-10-06）：仅限制握手阶段，不影响长任务
 		// ✅ P2修复（2025-10-12）：修正注释错误，明确各超时配置的作用范围
-		DialContext:           dialer.DialContext, // DNS+TCP握手超时30秒
-		TLSHandshakeTimeout:   30 * time.Second,   // TLS握手超时30秒
-		ResponseHeaderTimeout: 60 * time.Second,   // 响应头超时60秒（兜底配置，非流式请求使用）
-		// 注意：流式请求使用应用层 firstByteTimeout 控制（默认120秒），更精确且支持运行时配置
-		ExpectContinueTimeout: 1 * time.Second, // Expect: 100-continue超时
+		DialContext:           dialer.DialContext,
+		TLSHandshakeTimeout:   config.SecondsToDuration(config.HTTPTLSHandshakeTimeout),
+		ResponseHeaderTimeout: config.SecondsToDuration(config.HTTPResponseHeaderTimeout),
+		// 注意：流式请求使用应用层 firstByteTimeout 控制，更精确且支持运行时配置
+		ExpectContinueTimeout: config.SecondsToDuration(config.HTTPExpectContinueTimeout),
 
 		// 传输优化
 		DisableCompression: false,
 		DisableKeepAlives:  false,
-		ForceAttemptHTTP2:  false,     // 允许自动协议协商，避免HTTP/2超时
-		WriteBufferSize:    64 * 1024, // 64KB写缓冲区
-		ReadBufferSize:     64 * 1024, // 64KB读缓冲区
+		ForceAttemptHTTP2:  false, // 允许自动协议协商，避免HTTP/2超时
+		WriteBufferSize:    config.HTTPWriteBufferSize,
+		ReadBufferSize:     config.HTTPReadBufferSize,
 		// 启用TLS会话缓存，减少重复握手耗时
 		TLSClientConfig: &tls.Config{
-			ClientSessionCache: tls.NewLRUClientSessionCache(1024),
+			ClientSessionCache: tls.NewLRUClientSessionCache(config.TLSSessionCacheSize),
 			MinVersion:         tls.VersionTLS12, // 强制 TLS 1.2+
 			InsecureSkipVerify: skipTLSVerify,    // 默认false（启用证书验证）
 		},
 	}
 
 	// 可配置的日志缓冲与工作协程（修复：支持环境变量）
-	logBuf := 1000
+	logBuf := config.DefaultLogBufferSize
 	if v := os.Getenv("CCLOAD_LOG_BUFFER"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			logBuf = n
 		}
 	}
-	logWorkers := 3
+	logWorkers := config.DefaultLogWorkers
 	if v := os.Getenv("CCLOAD_LOG_WORKERS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			logWorkers = n
@@ -205,7 +211,7 @@ func NewServer(store storage.Store) *Server {
 
 // 生成安全Token（64字符十六进制）
 func (s *Server) generateToken() string {
-	b := make([]byte, 32)
+	b := make([]byte, config.TokenRandomBytes)
 	rand.Read(b)
 	return hex.EncodeToString(b)
 }
@@ -353,16 +359,16 @@ func (s *Server) handleLogin(c *gin.Context) {
 	// 密码正确，生成Token
 	token := s.generateToken()
 
-	// 存储Token到内存（24小时有效期）
+	// 存储Token到内存
 	s.tokensMux.Lock()
-	s.validTokens[token] = time.Now().Add(24 * time.Hour)
+	s.validTokens[token] = time.Now().Add(config.HoursToDuration(config.TokenExpiryHours))
 	s.tokensMux.Unlock()
 
 	// 返回Token给客户端（前端存储到localStorage）
 	c.JSON(http.StatusOK, gin.H{
 		"status":    "success",
 		"token":     token,
-		"expiresIn": 86400, // 24小时（秒）
+		"expiresIn": config.TokenExpiryHours * 3600, // 秒数
 	})
 }
 
@@ -448,7 +454,7 @@ func (s *Server) handleWebFiles(c *gin.Context) {
 
 // Token清理循环（定期清理过期Token）
 func (s *Server) tokenCleanupLoop() {
-	ticker := time.NewTicker(1 * time.Hour) // 每小时清理一次
+	ticker := time.NewTicker(config.HoursToDuration(config.TokenCleanupIntervalHours))
 	defer ticker.Stop()
 
 	for range ticker.C {
@@ -458,19 +464,19 @@ func (s *Server) tokenCleanupLoop() {
 
 // 异步日志工作协程
 func (s *Server) logWorker() {
-	batch := make([]*model.LogEntry, 0, 100)
-	timer := time.NewTimer(1 * time.Second)
+	batch := make([]*model.LogEntry, 0, config.LogBatchSize)
+	timer := time.NewTimer(config.SecondsToDuration(config.LogBatchTimeout))
 	defer timer.Stop()
 
 	for {
 		select {
 		case entry := <-s.logChan:
 			batch = append(batch, entry)
-			if len(batch) >= 100 {
+			if len(batch) >= config.LogBatchSize {
 				s.flushLogs(batch)
 				batch = batch[:0]
 			}
-			timer.Reset(1 * time.Second)
+			timer.Reset(config.SecondsToDuration(config.LogBatchTimeout))
 		case <-timer.C:
 			if len(batch) > 0 {
 				s.flushLogs(batch)
@@ -504,10 +510,10 @@ func (s *Server) addLogAsync(entry *model.LogEntry) {
 		// 队列满，丢弃日志并计数
 		dropCount := s.logDropCount.Add(1)
 
-		// 告警阈值：每丢弃1000条打印一次警告
-		if dropCount%1000 == 0 {
-			log.Printf("⚠️  严重警告: 日志丢弃计数达到 %d 条！请检查系统负载或增加日志队列容量", dropCount)
-			log.Print("   建议: 1) 增加CCLOAD_LOG_BUFFER环境变量 2) 增加日志Worker数量 3) 优化磁盘I/O性能")
+		// 告警阈值：定期打印警告
+		if dropCount%config.LogDropAlertThreshold == 0 {
+			util.SafePrintf("⚠️  严重警告: 日志丢弃计数达到 %d 条！请检查系统负载或增加日志队列容量", dropCount)
+			util.SafePrint("   建议: 1) 增加CCLOAD_LOG_BUFFER环境变量 2) 增加日志Worker数量 3) 优化磁盘I/O性能")
 		}
 	}
 }
@@ -568,8 +574,8 @@ func (s *Server) WarmHTTPConnections(ctx context.Context) {
 		return
 	}
 
-	// 预热前5个高优先级渠道（按优先级降序）
-	warmCount := min(len(configs), 5)
+	// 预热高优先级渠道（按优先级降序）
+	warmCount := min(len(configs), config.CacheWarmupChannelCount)
 
 	warmedCount := 0
 	for i := 0; i < warmCount; i++ {
@@ -601,7 +607,7 @@ func (s *Server) WarmHTTPConnections(ctx context.Context) {
 	}
 
 	if warmedCount > 0 {
-		log.Printf("✅ HTTP连接预热：为 %d 个高优先级渠道预建立连接", warmedCount)
+		util.SafePrintf("✅ HTTP连接预热：为 %d 个高优先级渠道预建立连接", warmedCount)
 	}
 }
 
