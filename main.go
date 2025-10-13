@@ -93,7 +93,7 @@ func main() {
 	// 注册路由
 	srv.SetupRoutes(r)
 
-    // session清理循环在NewServer中已启动，避免重复启动
+	// session清理循环在NewServer中已启动，避免重复启动
 
 	addr := ":8080"
 	if v := os.Getenv("PORT"); v != "" {

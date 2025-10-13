@@ -201,4 +201,3 @@ func TestConfig_GetChannelType(t *testing.T) {
 		})
 	}
 }
-

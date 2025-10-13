@@ -130,16 +130,16 @@ func TestCSVExport_CompleteWorkflow(t *testing.T) {
 		redirectsJSON, _ := json.Marshal(cfg.ModelRedirects)
 
 		record := []string{
-			string(rune(cfg.ID + '0')),           // id (简化为单字符)
-			cfg.Name,                              // name
-			cfg.URL,                               // url
-			string(rune(cfg.Priority + '0')),     // priority
-			string(modelsJSON),                    // models
-			string(redirectsJSON),                 // model_redirects
-			cfg.GetChannelType(),                  // channel_type
-			boolToString(cfg.Enabled),             // enabled
-			apiKeysStr,                            // api_keys
-			keyStrategyStr,                        // key_strategy
+			string(rune(cfg.ID + '0')),       // id (简化为单字符)
+			cfg.Name,                         // name
+			cfg.URL,                          // url
+			string(rune(cfg.Priority + '0')), // priority
+			string(modelsJSON),               // models
+			string(redirectsJSON),            // model_redirects
+			cfg.GetChannelType(),             // channel_type
+			boolToString(cfg.Enabled),        // enabled
+			apiKeysStr,                       // api_keys
+			keyStrategyStr,                   // key_strategy
 		}
 
 		if err := writer.Write(record); err != nil {

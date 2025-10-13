@@ -2,7 +2,7 @@ package app
 
 import (
 	"ccLoad/internal/model"
-    "ccLoad/internal/util"
+	"ccLoad/internal/util"
 
 	"bytes"
 	"compress/gzip"

@@ -206,9 +206,9 @@ func (m *MockStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.A
 		// 单Key渠道
 		return []*model.APIKey{
 			{
-				ChannelID:  channelID,
-				KeyIndex:   0,
-				APIKey:     "sk-single-key",
+				ChannelID:   channelID,
+				KeyIndex:    0,
+				APIKey:      "sk-single-key",
 				KeyStrategy: "sequential",
 			},
 		}, nil
@@ -473,6 +473,7 @@ func (m *MockStoreAllKeysCooled) ReplaceConfig(ctx context.Context, c *model.Con
 func (m *MockStoreAllKeysCooled) DeleteConfig(ctx context.Context, id int64) error {
 	return nil
 }
+
 // API Keys management
 func (m *MockStoreAllKeysCooled) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error) {
 	// 所有测试渠道都配置3个Key，根据keyCooldowns设置冷却状态

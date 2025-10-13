@@ -387,7 +387,7 @@ func TestAdminAPI_ExportImportRoundTrip(t *testing.T) {
 func setupTestServer(t *testing.T) (*Server, func()) {
 	// ✅ 修复：测试环境禁用内存数据库模式，确保每个测试使用独立的临时文件数据库
 	// 原问题：所有测试共享命名内存数据库（ccload_mem_db），导致测试间数据污染
-	os.Unsetenv("CCLOAD_USE_MEMORY_DB")  // 强制禁用内存模式
+	os.Unsetenv("CCLOAD_USE_MEMORY_DB") // 强制禁用内存模式
 
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
@@ -551,12 +551,12 @@ func TestAdminAPI_LargeCSVImport(t *testing.T) {
 			"Large-Test-" + string(rune('A'+i%26)) + string(rune('0'+i%10)) + "," +
 				"https://large" + string(rune('0'+i%10)) + ".example.com," +
 				"10," +
-				"model-1," +  // ✅ 修复：使用简单字符串而不是JSON数组
+				"model-1," + // ✅ 修复：使用简单字符串而不是JSON数组
 				"{}," +
 				"anthropic," +
 				"true," +
-				"sk-large-key-" + string(rune('0'+i%10)) + "," +  // ✅ 添加api_key
-				"sequential\n")  // ✅ 添加key_strategy
+				"sk-large-key-" + string(rune('0'+i%10)) + "," + // ✅ 添加api_key
+				"sequential\n") // ✅ 添加key_strategy
 	}
 
 	body := &bytes.Buffer{}

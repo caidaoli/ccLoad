@@ -295,5 +295,5 @@ func abs(d time.Duration) time.Duration {
 
 // 测试常量定义（与cooldown_auth_error_test.go保持一致）
 const (
-	OtherErrorInitialCooldown = 1 * time.Second  // 其他错误初始冷却时间
+	OtherErrorInitialCooldown = 1 * time.Second // 其他错误初始冷却时间
 )

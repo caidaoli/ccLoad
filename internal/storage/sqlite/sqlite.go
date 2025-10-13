@@ -17,8 +17,8 @@ import (
 )
 
 type SQLiteStore struct {
-	db        *sql.DB // 主数据库（channels, api_keys, key_rr）
-	logDB     *sql.DB // 日志数据库（logs）- 拆分以减少锁竞争和简化备份
+	db    *sql.DB // 主数据库（channels, api_keys, key_rr）
+	logDB *sql.DB // 日志数据库（logs）- 拆分以减少锁竞争和简化备份
 
 	// ⚠️ 内存数据库守护连接（2025-10-05 P0修复）
 	// 内存模式下，持有一个永不关闭的连接，确保数据库不被销毁

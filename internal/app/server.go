@@ -1,28 +1,27 @@
 package app
 
 import (
-    "context"
-    "crypto/rand"
-    "crypto/tls"
-    "encoding/hex"
-    "log"
-    "io"
-    "net"
-    "net/http"
-    "os"
-    "slices"
+	"context"
+	"crypto/rand"
+	"crypto/tls"
+	"encoding/hex"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
-    "time"
+	"time"
 
-    "ccLoad/internal/model"
-    "ccLoad/internal/storage"
-    "ccLoad/internal/storage/sqlite"
+	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
+	"ccLoad/internal/storage/sqlite"
 
-
-    "github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin"
 )
 
 type Server struct {
@@ -110,12 +109,12 @@ func NewServer(store storage.Store) *Server {
 
 	// TLS证书验证配置（安全优化：默认启用证书验证）
 	skipTLSVerify := false
-    if os.Getenv("CCLOAD_SKIP_TLS_VERIFY") == "true" {
-        skipTLSVerify = true
-        log.Print("⚠️  警告：TLS证书验证已禁用（CCLOAD_SKIP_TLS_VERIFY=true）")
-        log.Print("   仅用于开发/测试环境，生产环境严禁使用！")
-        log.Print("   当前配置存在中间人攻击风险，API Key可能泄漏")
-    }
+	if os.Getenv("CCLOAD_SKIP_TLS_VERIFY") == "true" {
+		skipTLSVerify = true
+		log.Print("⚠️  警告：TLS证书验证已禁用（CCLOAD_SKIP_TLS_VERIFY=true）")
+		log.Print("   仅用于开发/测试环境，生产环境严禁使用！")
+		log.Print("   当前配置存在中间人攻击风险，API Key可能泄漏")
+	}
 
 	// 优化 HTTP 客户端配置 - 重点优化连接建立阶段的超时控制
 	dialer := &net.Dialer{
@@ -178,8 +177,8 @@ func NewServer(store storage.Store) *Server {
 		password:    password,
 		validTokens: make(map[string]time.Time),
 		authTokens:  authTokens,
-		logChan:    make(chan *model.LogEntry, logBuf), // 可配置日志缓冲
-		logWorkers: logWorkers,                         // 可配置日志worker数量
+		logChan:     make(chan *model.LogEntry, logBuf), // 可配置日志缓冲
+		logWorkers:  logWorkers,                         // 可配置日志worker数量
 
 		// 并发控制：使用信号量限制最大并发请求数
 		concurrencySem: make(chan struct{}, maxConcurrency),
@@ -337,9 +336,9 @@ func (s *Server) requireAPIAuth() gin.HandlerFunc {
 
 // 登录处理程序 - Token认证版本（替代Cookie Session）
 func (s *Server) handleLogin(c *gin.Context) {
-    var req struct {
-        Password string `json:"password" binding:"required"`
-    }
+	var req struct {
+		Password string `json:"password" binding:"required"`
+	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
@@ -421,7 +420,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/channels/:id", s.handleChannelByID)
 		admin.PUT("/channels/:id", s.handleChannelByID)
 		admin.DELETE("/channels/:id", s.handleChannelByID)
-		admin.GET("/channels/:id/keys", s.handleChannelKeys)                        // ✅ 修复：获取渠道API Keys
+		admin.GET("/channels/:id/keys", s.handleChannelKeys) // ✅ 修复：获取渠道API Keys
 		admin.POST("/channels/:id/test", s.handleChannelTest)
 		admin.POST("/channels/:id/cooldown", s.handleSetChannelCooldown)            // 设置渠道级别冷却
 		admin.POST("/channels/:id/keys/:keyIndex/cooldown", s.handleSetKeyCooldown) // 设置Key级别冷却
@@ -483,16 +482,16 @@ func (s *Server) logWorker() {
 
 // 批量写入日志
 func (s *Server) flushLogs(logs []*model.LogEntry) {
-    ctx := context.Background()
-    // 优先使用SQLite批量写入，加速刷盘
-    if ss, ok := s.store.(*sqlite.SQLiteStore); ok {
-        _ = ss.BatchAddLogs(ctx, logs)
-        return
-    }
-    // 回退逐条写入
-    for _, e := range logs {
-        _ = s.store.AddLog(ctx, e)
-    }
+	ctx := context.Background()
+	// 优先使用SQLite批量写入，加速刷盘
+	if ss, ok := s.store.(*sqlite.SQLiteStore); ok {
+		_ = ss.BatchAddLogs(ctx, logs)
+		return
+	}
+	// 回退逐条写入
+	for _, e := range logs {
+		_ = s.store.AddLog(ctx, e)
+	}
 }
 
 // 异步添加日志
@@ -507,8 +506,8 @@ func (s *Server) addLogAsync(entry *model.LogEntry) {
 
 		// 告警阈值：每丢弃1000条打印一次警告
 		if dropCount%1000 == 0 {
-            log.Printf("⚠️  严重警告: 日志丢弃计数达到 %d 条！请检查系统负载或增加日志队列容量", dropCount)
-            log.Print("   建议: 1) 增加CCLOAD_LOG_BUFFER环境变量 2) 增加日志Worker数量 3) 优化磁盘I/O性能")
+			log.Printf("⚠️  严重警告: 日志丢弃计数达到 %d 条！请检查系统负载或增加日志队列容量", dropCount)
+			log.Print("   建议: 1) 增加CCLOAD_LOG_BUFFER环境变量 2) 增加日志Worker数量 3) 优化磁盘I/O性能")
 		}
 	}
 }
@@ -601,9 +600,9 @@ func (s *Server) WarmHTTPConnections(ctx context.Context) {
 		warmedCount++
 	}
 
-    if warmedCount > 0 {
-        log.Printf("✅ HTTP连接预热：为 %d 个高优先级渠道预建立连接", warmedCount)
-    }
+	if warmedCount > 0 {
+		log.Printf("✅ HTTP连接预热：为 %d 个高优先级渠道预建立连接", warmedCount)
+	}
 }
 
 // ✅ 修复：handleChannelKeys 路由处理器(2025-10新架构支持)
