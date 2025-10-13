@@ -36,8 +36,8 @@ const (
 // ✅ P0修复（2025-10-13）：简化错误分类缓存，使用定期清理策略
 // 移除复杂的原子计数器，改为基于时间的清理机制（KISS原则）
 var (
-	errClassCache      sync.Map      // key: error string, value: [2]int{statusCode, shouldRetry(0/1)}
-	lastCacheClearTime atomic.Int64  // 最后清理时间（Unix秒），使用atomic避免锁
+	errClassCache      sync.Map     // key: error string, value: [2]int{statusCode, shouldRetry(0/1)}
+	lastCacheClearTime atomic.Int64 // 最后清理时间（Unix秒），使用atomic避免锁
 )
 
 // isGeminiRequest 检测是否为Gemini API请求
@@ -730,7 +730,14 @@ func (s *Server) handleNetworkError(
 		}, false, false
 	}
 
-	return nil, true, false // 继续重试
+	// ✅ P0修复 (2025-01-XX): 修复首字节超时不切换渠道的问题
+	// 当 handleProxyError 返回 ActionRetryChannel 时，应该立即切换到下一个渠道
+	// 而不是继续尝试当前渠道的其他Key
+	if action == ActionRetryChannel {
+		return nil, false, true // 切换到下一个渠道
+	}
+
+	return nil, true, false // 继续重试下一个Key
 }
 
 // handleSuccessResponse 处理成功响应
