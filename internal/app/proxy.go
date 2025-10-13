@@ -93,23 +93,18 @@ func classifyError(err error) (statusCode int, shouldRetry bool) {
 	// 1. 流式请求首字节超时（CCLOAD_FIRST_BYTE_TIMEOUT）- 应该重试其他渠道
 	// 2. HTTP客户端等待响应头超时（Transport.ResponseHeaderTimeout）- 应该重试其他渠道
 	// 3. 客户端主动设置的超时 - 不应重试
-	// ✅ P1修复 (2025-10-12): 新增首字节超时专用检测，优先级最高
+	// ✅ P0修复 (2025-10-13): 默认将DeadlineExceeded视为上游超时（可重试）
+	// 设计原则：
+	// - 客户端主动取消通常是context.Canceled，而不是DeadlineExceeded
+	// - 保守策略：宁可多重试（提升可用性），也不要漏掉上游超时（导致可用性下降）
+	// - 兼容性：不依赖特定的错误消息格式，适配Go不同版本和HTTP客户端实现
 	if errors.Is(err, context.DeadlineExceeded) {
-		errStr := err.Error()
-
-		// 优先级1：检测首字节超时标记（由 forwardOnceAsync 包装）
-		if strings.Contains(errStr, "first byte timeout") {
-			return 504, true // ✅ Gateway Timeout，可重试其他渠道
-		}
-
-		// 优先级2：HTTP客户端等待响应头超时 - 应该重试其他渠道
-		// Go标准库错误格式："Client.Timeout exceeded while awaiting headers"
-		if strings.Contains(errStr, "awaiting headers") {
-			return 504, true // Gateway Timeout，可重试
-		}
-
-		// 优先级3：其他超时（客户端主动取消）- 不应重试
-		return StatusClientClosedRequest, false
+		// 所有DeadlineExceeded错误默认为上游超时，应该重试其他渠道
+		// 包括但不限于：
+		// - CCLOAD_FIRST_BYTE_TIMEOUT（流式请求首字节超时）
+		// - Transport.ResponseHeaderTimeout（HTTP响应头超时）
+		// - 上游服务器响应慢导致的超时
+		return 504, true // ✅ Gateway Timeout，触发渠道切换
 	}
 
 	// 快速路径2：检查系统级错误（使用类型断言替代字符串匹配）

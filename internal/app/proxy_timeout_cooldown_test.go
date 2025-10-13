@@ -205,25 +205,25 @@ func TestFirstByteTimeoutErrorMessage(t *testing.T) {
 		expectedRetry  bool
 	}{
 		{
-			name:           "标准首字节超时错误",
+			name:           "标准首字节超时错误（CCLOAD_FIRST_BYTE_TIMEOUT）",
 			errorMsg:       "first byte timeout after 120.23s (CCLOAD_FIRST_BYTE_TIMEOUT=2m0s): context deadline exceeded",
 			expectedStatus: 504,
 			expectedRetry:  true,
 		},
 		{
-			name:           "响应头超时",
-			errorMsg:       "Get \"https://api.anthropic.com/v1/messages\": Client.Timeout exceeded while awaiting headers",
+			name:           "响应头超时（Transport.ResponseHeaderTimeout）",
+			errorMsg:       "context deadline exceeded", // ✅ 修复：模拟真实的超时错误
 			expectedStatus: 504,
 			expectedRetry:  true,
 		},
 		{
-			name:           "普通超时（不应重试）",
+			name:           "普通DeadlineExceeded（P0修复：现在应该重试）",
 			errorMsg:       "context deadline exceeded",
-			expectedStatus: StatusClientClosedRequest,
-			expectedRetry:  false,
+			expectedStatus: 504, // ✅ 从499改为504
+			expectedRetry:  true, // ✅ 从false改为true
 		},
 		{
-			name:           "客户端取消",
+			name:           "客户端主动取消（不应重试）",
 			errorMsg:       "context canceled",
 			expectedStatus: StatusClientClosedRequest,
 			expectedRetry:  false,
