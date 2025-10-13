@@ -66,12 +66,13 @@ type Server struct {
 
 func NewServer(store storage.Store) *Server {
 	password := os.Getenv("CCLOAD_PASS")
-	if password == "" {
+	switch password {
+	case "":
 		password = "admin" // 默认密码，生产环境应该设置环境变量
 		util.SafePrint("⚠️  安全警告：使用默认密码 'admin'，生产环境必须设置环境变量 CCLOAD_PASS")
-	} else if password == "admin" {
+	case "admin":
 		util.SafePrint("⚠️  安全警告：密码设置为 'admin'，建议使用更强的密码")
-	} else {
+	default:
 		util.SafePrint("✅ 管理员密码已从环境变量加载（长度: ", len(password), " 字符）")
 	}
 
