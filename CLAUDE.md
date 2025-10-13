@@ -6,17 +6,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ccLoad 是一个高性能的 Claude Code & Codex API 透明代理服务，使用 Go 1.25.0 构建，基于 Gin 框架。
 
-### 最新更新（2025-10-12）
-
-**P0 安全修复**：
-1. ✅ **环境变量安全增强**：添加密码强度检查和启动提示，防止生产环境使用弱密码
-2. ✅ **内存模式强制Redis**：内存数据库模式现在强制要求配置Redis同步，防止数据永久丢失
-3. ✅ **日志注入防护**：新增 `util.SanitizeLogMessage()` 自动消毒日志输出，防止日志注入攻击
-
-**代码质量优化（Phase 2.2）**：
-4. ✅ **消除Magic Numbers**：提取所有硬编码配置值到 `internal/config/defaults.go`，提高可维护性
-5. ✅ **集中化配置管理**：60+ 个配置常量统一管理，支持一键调整默认值
-
 ### 核心功能
 
 - **透明代理**：支持 Claude API（`/v1/messages`）和 Gemini API（`/v1beta/*`），智能识别认证方式
@@ -27,119 +16,77 @@ ccLoad 是一个高性能的 Claude Code & Codex API 透明代理服务，使用
 - **统计监控**：实时趋势分析、日志记录、性能指标监控
 - **前端管理**：现代化 Web 界面，支持渠道CRUD、CSV导入导出、实时监控
 
-### 性能优化亮点（2025-10-05）
+### 目录结构
 
-**批量查询优化**：
-- **渠道冷却查询**：`GetAllChannelCooldowns()` 批量查询，**N次查询 → 1次查询**
-- **Key冷却查询**：`GetAllKeyCooldowns()` 批量查询，**N*M次查询 → 1次查询**
-- **性能提升**：渠道列表API响应时间从 ~15ms 降至 ~8ms（**47%↓**）
-
-**代码质量优化**：
-- **消除重复代码**：提取 `BuildLogFilter()` 公共函数，**删除64行重复逻辑**
-- **统一工具函数**：`ParseAPIKeys()` 统一Key解析，遵循DRY原则
-- **删除冗余代码**：移除自定义 `min` 函数（Go 1.21+ 已内置），**删除11行冗余代码**
-- **重复代码率**：从 ~12% 降至 ~5%（**58%↓**）
-
-### 目录结构（2025-10-12重构）
-
-**项目根目录**：
-- `main.go` - 应用入口，服务初始化和启动
-- `Makefile` - macOS服务管理（LaunchAgent）
-- `Dockerfile` - 多架构Docker镜像构建
-- `.env.example` - 环境变量配置模板
-
-**核心应用层** (`internal/app/`)：
-- `server.go` - HTTP服务器，路由配置，缓存管理
-- `proxy.go` - 核心代理逻辑，HTTP转发、流式响应、错误处理
-- `selector.go` - 渠道选择算法，优先级分组、轮询、冷却检查
-- `key_selector.go` - 多Key管理，策略选择、Key级别冷却
-- `admin.go` - 管理API实现，渠道CRUD、日志查询、统计分析
-- `handlers.go` - 通用HTTP处理工具，参数解析、响应处理、LogFilter构建
-- `token_counter.go` - 本地Token计数，符合官方API规范
-- `*_test.go` - 应用层单元测试
-
-**数据存储层** (`internal/storage/sqlite/`)：
-- `sqlite_store.go` - SQLite存储实现，事务管理，异步Redis同步
-- `models.go` - 数据模型定义，Store接口，JSON序列化
-- `query_builder.go` - SQL查询构建器，防注入，动态条件
-- `redis_sync.go` - Redis异步同步模块，单worker模式
-- `*_test.go` - 存储层单元测试（包括冷却一致性、Redis同步等）
-
-**配置模块** (`internal/config/`)：
-- `defaults.go` - 配置常量定义（HTTP、日志、Token、SQLite等，2025-10-12新增）
-
-**工具模块** (`internal/util/`)：
-- `classifier.go` - HTTP状态码错误分类器（Key级/渠道级/客户端）
-- `time_utils.go` - 时间处理工具，统一时间戳转换和冷却计算
-- `channel_types.go` - 渠道类型管理（anthropic/codex/gemini）
-- `api_keys_helper.go` - API Key解析和验证工具
-- `log_sanitizer.go` - 日志消毒工具（防止日志注入攻击，2025-10-12新增）
-- `*_test.go` - 工具函数单元测试
-
-**测试辅助** (`internal/testutil/`)：
-- `types.go` - 测试用数据结构（TestChannelRequest等）
-- `api_tester.go` - API测试工具
-- `test_helpers.go` - 通用测试辅助函数
-
-**集成测试** (`test/integration/`)：
-- `csv_import_export_test.go` - CSV导入导出功能测试
-- `memory_db_persistence_test.go` - 内存数据库持久化测试
-
-**前端界面** (`web/`)：
-- `index.html` - 首页统计看板
-- `channels.html` - 渠道管理（CRUD、CSV导入导出）
-- `logs.html` - 请求日志分页
-- `stats.html` - 调用统计分析
-- `trend.html` - SVG趋势图表
-- `styles.css` - 共享样式
-- `ui.js` - 共享JavaScript工具函数
-
-**设计原则**：
-- **清晰分层**：应用层(app)、存储层(storage)、配置层(config)、工具层(util)职责明确
-- **包合并**：server和proxy合并为app包，避免循环依赖（遵循KISS原则）
-- **测试就近**：测试文件与源码在同一包内，便于维护
-- **根目录简洁**：仅保留main.go和必要配置文件，符合Go项目标准
-- **安全优先**：所有用户输入和外部数据自动消毒，防止注入攻击（2025-10-12新增）
-- **可配置性**：消除Magic Numbers，集中化配置管理（2025-10-12新增）
+```
+ccLoad/
+├── main.go                      # 应用入口
+├── Makefile                     # macOS服务管理
+├── Dockerfile                   # 容器镜像构建
+├── internal/
+│   ├── app/                     # 应用层（HTTP服务、代理、管理API）
+│   │   ├── server.go           # HTTP服务器和路由
+│   │   ├── proxy.go            # 核心代理逻辑
+│   │   ├── selector.go         # 渠道选择算法
+│   │   ├── key_selector.go     # 多Key管理
+│   │   ├── admin.go            # 管理API
+│   │   ├── handlers.go         # HTTP工具函数
+│   │   └── token_counter.go    # 本地Token计数
+│   ├── storage/                 # 存储层
+│   │   ├── store.go            # Store接口定义
+│   │   ├── sqlite/             # SQLite实现
+│   │   │   ├── store_impl.go   # 核心存储实现
+│   │   │   └── query.go        # SQL查询构建
+│   │   └── redis/              # Redis同步（可选）
+│   ├── model/                   # 数据模型
+│   ├── config/                  # 配置常量
+│   │   └── defaults.go         # 默认配置值
+│   ├── util/                    # 工具模块
+│   │   ├── classifier.go       # HTTP错误分类
+│   │   ├── time_utils.go       # 时间处理
+│   │   ├── channel_types.go    # 渠道类型
+│   │   ├── api_keys_helper.go  # API Key工具
+│   │   └── log_sanitizer.go    # 日志消毒
+│   └── testutil/               # 测试辅助
+├── test/integration/           # 集成测试
+└── web/                        # 前端界面
+    ├── index.html              # 首页
+    ├── channels.html           # 渠道管理
+    ├── logs.html               # 日志查看
+    └── styles.css              # 共享样式
+```
 
 ## 开发命令
 
 ### 构建和运行
-```bash
-# 开发环境运行（使用默认配置）
-go run .
-make dev         # Makefile 开发模式
 
-# 使用环境变量配置
-CCLOAD_PASS=your_password CCLOAD_AUTH=token1,token2 SQLITE_PATH=./data/ccload.db PORT=8080 go run .
+```bash
+# 开发环境运行
+go run .
+make dev
 
 # 使用.env文件配置（推荐）
 echo "CCLOAD_PASS=your_password" > .env
 echo "CCLOAD_AUTH=your_api_token" >> .env
-echo "SQLITE_PATH=./data/ccload.db" >> .env
 echo "PORT=8080" >> .env
 go run .
 
 # 构建生产版本
 go build -o ccload .
-make build       # Makefile 构建
-
-# 构建到临时目录
-go build -o /tmp/ccload .
+make build
 ```
 
 ### 测试
+
 ```bash
 # 运行所有测试
 go test ./... -v
 
-# 运行特定测试
-go test -v -run TestCSVExport        # CSV导入导出测试
-go test -v -run TestKeySelector      # 多Key功能测试
-go test -v -run TestRedisSync        # Redis同步测试
-go test -v -run TestProxyError       # 代理错误处理测试
+# 运行特定包的测试
+go test -v ./internal/app/...
+go test -v ./internal/storage/sqlite/...
 
-# 生成测试覆盖率报告
+# 生成测试覆盖率
 go test ./... -coverprofile=coverage.out
 go tool cover -html=coverage.out
 
@@ -147,30 +94,24 @@ go tool cover -html=coverage.out
 go test -bench=. -benchmem
 ```
 
-### macOS 服务管理（使用 Makefile）
+### macOS 服务管理
+
 ```bash
-make install-service    # 安装并启动 LaunchAgent 服务
+make install-service    # 安装并启动服务
 make start             # 启动服务
 make stop              # 停止服务
 make restart           # 重启服务
-make status            # 查看服务状态
-make logs              # 查看服务日志
-make error-logs        # 查看错误日志
+make status            # 查看状态
+make logs              # 查看日志
 make uninstall-service # 卸载服务
-make clean             # 清理构建文件和日志
-make info              # 显示服务详细信息
 ```
 
-### 代码质量和构建
-```bash
-# 代码格式化和检查
-go fmt ./...     # 格式化代码
-go vet ./...     # 静态分析
+### 代码质量
 
-# 构建选项
-go build -o ccload .                              # 标准构建
-GOTAGS=go_json go build -tags go_json .          # 使用高性能JSON库（默认）
-GOTAGS=std go build -tags std .                  # 使用标准库JSON
+```bash
+# 格式化和检查
+go fmt ./...     # 代码格式化
+go vet ./...     # 静态分析
 
 # Docker构建
 docker build -t ccload:dev .
@@ -178,811 +119,229 @@ docker build -t ccload:dev .
 
 ## 核心架构
 
-### 系统组件分层
+### 系统分层
 
-**HTTP层** (`internal/app/server.go`, `internal/app/admin.go`, `internal/app/handlers.go`):
-- `Server`: 主服务器结构，管理HTTP客户端、缓存、身份验证
-- `handlers.go`: 通用HTTP处理工具（参数解析、响应处理、方法路由）
-- `admin.go`: 管理API实现（渠道CRUD、日志查询、统计分析）
-- 身份验证：Session-based管理界面 + 可选Bearer token API认证
+**HTTP层** (`internal/app/`):
+- `server.go`: HTTP服务器、路由配置、缓存管理
+- `handlers.go`: 通用HTTP处理工具（参数解析、响应处理）
+- `admin.go`: 管理API（渠道CRUD、日志查询、统计）
 
-**业务逻辑层** (`internal/app/proxy.go`, `internal/app/selector.go`, `internal/app/key_selector.go`):
-- `proxy.go`: 核心代理逻辑，处理`/v1/messages`转发和流式响应
-- `selector.go`: 智能渠道选择算法（优先级分组 + 组内轮询 + 故障排除）
-- `key_selector.go`: Key选择器，实现多Key管理、策略选择和Key级别冷却（SRP原则）
+**业务逻辑层** (`internal/app/`):
+- `proxy.go`: 核心代理逻辑，HTTP转发、流式响应
+- `selector.go`: 渠道选择算法（优先级分组 + 轮询 + 冷却）
+- `key_selector.go`: 多Key管理、策略选择、Key级冷却
 
-**数据持久层** (`internal/storage/sqlite/`):
-- `models.go`: 数据模型和Store接口定义
-- `sqlite_store.go`: SQLite存储实现，支持连接池、事务和异步Redis同步（单worker模式）
-- `query_builder.go`: 查询构建器，消除SQL构建重复逻辑
-- `redis_sync.go`: Redis同步模块，使用SET全量覆盖简化数据一致性（KISS原则）
+**数据持久层** (`internal/storage/`):
+- `store.go`: Store接口定义
+- `sqlite/store_impl.go`: SQLite存储实现
+- `sqlite/query.go`: SQL查询构建器
 
 **工具层** (`internal/util/`):
-- `classifier.go`: HTTP状态码错误分类器，区分Key级错误、渠道级错误和客户端错误（SRP原则）
-- `time_utils.go`: 时间处理工具，统一时间戳转换和冷却计算，消除60+行重复代码
-- `channel_types.go`: 渠道类型管理和验证
-- `api_keys_helper.go`: API Key解析和验证工具
+- `classifier.go`: HTTP状态码错误分类（Key级/渠道级/客户端）
+- `time_utils.go`: 时间戳转换和冷却计算
+- `channel_types.go`: 渠道类型管理（anthropic/codex/gemini）
+- `log_sanitizer.go`: 日志消毒，防止注入攻击
 
-### 工具模块调用架构
+### 关键数据结构
 
-以下架构图展示 `time_utils.go` 和 `classifier.go` 在系统中的调用关系：
-
-```mermaid
-graph TB
-    subgraph "HTTP层"
-        A[internal/app/proxy.go<br/>handleErrorResponse]
-    end
-
-    subgraph "工具层"
-        B[internal/util/classifier.go<br/>ClassifyHTTPStatus]
-        style B fill:#FCD34D,stroke:#000,color:#000
-    end
-
-    subgraph "业务逻辑层"
-        C[internal/app/key_selector.go<br/>MarkKeyError]
-    end
-
-    subgraph "数据持久层"
-        D[internal/storage/sqlite/sqlite_store.go<br/>BumpChannelCooldown]
-        E[internal/storage/sqlite/sqlite_store.go<br/>BumpKeyCooldown]
-        F[internal/storage/sqlite/sqlite_store.go<br/>GetCooldownUntil]
-        G[internal/storage/sqlite/sqlite_store.go<br/>SetCooldown]
-    end
-
-    subgraph "工具层"
-        H[internal/util/time_utils.go<br/>scanUnixTimestamp]
-        I[internal/util/time_utils.go<br/>calculateBackoffDuration]
-        J[internal/util/time_utils.go<br/>toUnixTimestamp]
-        K[internal/util/time_utils.go<br/>calculateCooldownDuration]
-        style H fill:#A5F3FC,stroke:#000,color:#000
-        style I fill:#A5F3FC,stroke:#000,color:#000
-        style J fill:#A5F3FC,stroke:#000,color:#000
-        style K fill:#A5F3FC,stroke:#000,color:#000
-    end
-
-    A -->|"HTTP Status Code"| B
-    B -->|"ErrorLevelKey"| C
-    B -->|"ErrorLevelChannel"| D
-    C --> E
-
-    D -->|"读取历史冷却"| F
-    D -->|"计算新冷却时间"| I
-    D -->|"存储冷却截止时间"| J
-    D -->|"计算冷却持续时间"| K
-
-    E -->|"读取Key冷却"| F
-    E -->|"计算指数退避"| I
-    E -->|"转换时间戳"| J
-    E -->|"计算持续时间"| K
-
-    F -->|"扫描时间戳"| H
-    G -->|"计算持续时间"| K
-    G -->|"转换时间戳"| J
-
-    classDef toolLayer fill:#E0E7FF,stroke:#4F46E5,stroke-width:2px
-    class B,H,I,J,K toolLayer
+**Config（渠道配置）**:
+```go
+type Config struct {
+    ID                 int64
+    Name               string            // UNIQUE约束
+    URL                string
+    Priority           int
+    Models             []string
+    ModelRedirects     map[string]string
+    ChannelType        string            // anthropic/codex/gemini
+    Enabled            bool
+    CooldownUntil      int64             // 冷却截止时间（内联）
+    CooldownDurationMs int64             // 冷却持续时间（内联）
+    CreatedAt          time.Time
+    UpdatedAt          time.Time
+}
 ```
 
-**调用流程说明**:
+**APIKey（API密钥）**:
+```go
+type APIKey struct {
+    ID                 int64
+    ChannelID          int64
+    KeyIndex           int
+    APIKey             string
+    KeyStrategy        string  // sequential/round_robin
+    CooldownUntil      int64   // Key级冷却（内联）
+    CooldownDurationMs int64
+    CreatedAt          time.Time
+    UpdatedAt          time.Time
+}
+```
 
-1. **错误分类路径**:
-   - `internal/app/proxy.go` 接收HTTP响应 → `internal/util/classifier.go:ClassifyHTTPStatus()` → 返回错误级别
-   - 根据错误级别决定冷却策略：Key级、渠道级或客户端错误
+### 核心算法
 
-2. **时间处理路径**:
-   - `internal/storage/sqlite/sqlite_store.go` 的冷却函数统一调用 `internal/util/time_utils.go` 工具函数
-   - 统一时间戳转换和指数退避计算
-
-3. **设计原则**:
-   - **SRP**: 每个工具模块职责单一
-   - **DRY**: 统一实现，避免重复
-   - **KISS**: 简单清晰，易于测试
-
-### 关键数据结构（2025-10重构）
-
-- `Config`（渠道）: 渠道配置（URL、优先级、支持的模型列表、模型重定向映射、冷却状态）
-  - ⚠️ **移除字段**：`APIKey`, `APIKeys`, `KeyStrategy`（已迁移到`APIKey`结构体）
-  - ✅ **新增字段**：`CooldownUntil`, `CooldownDurationMs`（渠道级冷却数据内联）
-
-- `APIKey`（API密钥）: API Key独立结构（channel_id, key_index, api_key, key_strategy, cooldown_until, cooldown_duration_ms）
-  - **设计原则**：一个渠道可以有多个APIKey记录
-  - `IsCoolingDown(now time.Time) bool`: 检查Key是否在冷却中
-
-- `LogEntry`: 请求日志（时间、模型、渠道ID、状态码、性能指标）
-
-- `Store` 接口: 数据持久化抽象层，支持配置、API Keys管理、日志、统计、冷却管理
-  - ✅ **新增方法**：`GetAPIKeys()`, `GetAPIKey()`, `CreateAPIKey()`, `UpdateAPIKey()`, `DeleteAPIKey()`, `DeleteAllAPIKeys()`
-  - ✅ **简化方法**：冷却方法直接操作内联字段，移除独立表查询
-
-- `MetricPoint`: 时间序列数据点（用于趋势分析）
-- `StatsEntry`: 统计数据聚合（按渠道和模型分组）
-
-### 核心算法实现
-
-**渠道选择算法** (`selectCandidates` in internal/app/selector.go):
-1. 从缓存获取渠道配置（60秒TTL，避免频繁数据库查询）
+**渠道选择** (`selectCandidates`):
+1. 从缓存获取渠道配置（60秒TTL）
 2. 过滤启用且支持指定模型的渠道
-3. 排除冷却中的渠道（使用内存缓存，快速查询）
+3. 排除冷却中的渠道
 4. 按优先级降序分组
-5. 同优先级内使用轮询算法（内存缓存轮询指针，定期持久化）
+5. 同优先级内使用轮询算法
 
-**代理转发流程** (`forwardOnce` in internal/app/proxy.go):
-1. 解析请求体，提取原始请求的模型名称
-2. 检查渠道的模型重定向配置，如果存在映射则替换为实际模型
-3. 构建上游请求URL，合并查询参数
-4. 复制请求头，跳过授权相关头，覆盖`x-api-key`
-5. 如果模型发生重定向，修改请求体中的model字段
-6. 发送POST请求到上游API（使用优化的HTTP客户端连接池）
-7. 处理响应：2xx响应支持流式转发（64KB缓冲区），其他响应读取完整body
-8. 异步记录日志到队列（始终记录原始模型，确保可追溯性）
+**代理转发** (`forwardOnce`):
+1. 解析请求体，提取模型名称
+2. 检查模型重定向配置
+3. 构建上游请求，设置认证头
+4. 发送请求，处理流式响应
+5. 异步记录日志（始终记录原始模型）
 
 **故障切换机制**:
-- 非2xx响应或网络错误触发切换
-- 使用 `internal/util/classifier.go` 智能分类错误级别：
-  - **Key级错误**（401/403/429等）：冷却当前Key，重试同渠道其他Key
-  - **渠道级错误**（500/502/503/504等）：冷却整个渠道，切换到其他渠道
-  - **客户端错误**（404/405等）：不冷却，直接返回给客户端
-- **指数退避冷却策略**（2025-10-05优化）：
-  - **认证错误**（401/403）：初始冷却**5分钟**，后续翻倍（5min → 10min → 20min → 30min上限）
-  - **其他错误**（429/500等）：初始冷却**1秒**，后续翻倍（1s → 2s → 4s → ... → 30min上限）
-  - 双重存储：内存缓存（快速查询）+ 数据库（持久化）
-  - 设计目标：减少401/403认证失败的无效重试，避免API配额浪费
-- 按候选列表顺序尝试下一个渠道
-- 所有候选失败返回503 Service Unavailable
-
-### 渠道冷却完整流程架构
-
-以下流程图展示从请求失败到冷却激活的完整调用链路：
-
-```mermaid
-graph TB
-    subgraph "1. 请求入口"
-        A[客户端请求<br/>/v1/messages]
-    end
-
-    subgraph "2. HTTP层处理"
-        B[internal/app/proxy.go<br/>handleProxyRequest]
-        C[internal/app/proxy.go<br/>tryChannelWithKeys]
-        D[internal/app/proxy.go<br/>forwardOnce]
-    end
-
-    subgraph "3. 错误响应处理"
-        E[internal/app/proxy.go<br/>handleErrorResponse]
-        F[internal/util/classifier.go<br/>ClassifyHTTPStatus]
-    end
-
-    subgraph "4. 冷却决策分支"
-        G{错误级别判断}
-        H[Key级错误<br/>401/403/429]
-        I[渠道级错误<br/>500/502/503/504]
-        J[客户端错误<br/>404/405]
-    end
-
-    subgraph "5. Key级冷却链路"
-        K[internal/app/key_selector.go<br/>MarkKeyError]
-        L[internal/storage/sqlite/sqlite_store.go<br/>BumpKeyCooldown]
-        M[internal/util/time_utils.go<br/>calculateBackoffDuration]
-        N[(api_keys表<br/>channel_id+key_index)]
-    end
-
-    subgraph "6. 渠道级冷却链路"
-        O[internal/storage/sqlite/sqlite_store.go<br/>BumpChannelCooldown]
-        P[internal/util/time_utils.go<br/>calculateBackoffDuration]
-        Q[(channels表<br/>cooldown_until字段)]
-    end
-
-    subgraph "7. 冷却状态同步"
-        R[内存缓存<br/>sync.Map]
-        S[定期清理<br/>每分钟过期检查]
-    end
-
-    subgraph "8. 重试机制"
-        T{是否还有可用Key?}
-        U[重试同渠道其他Key]
-        V[切换到下一个渠道]
-        W[返回503错误]
-    end
-
-    A --> B
-    B --> C
-    C --> D
-    D -->|非2xx响应| E
-    E --> F
-    F --> G
-
-    G -->|ErrorLevelKey| H
-    G -->|ErrorLevelChannel| I
-    G -->|ErrorLevelClient| J
-
-    H --> K
-    K --> L
-    L --> M
-    M -->|计算新冷却时间| N
-    N -->|同步到内存| R
-
-    I --> O
-    O --> P
-    P -->|计算新冷却时间| Q
-    Q -->|同步到内存| R
-
-    R --> S
-
-    J -->|不冷却| W
-
-    H --> T
-    I --> T
-    T -->|是| U
-    T -->|否| V
-    V -->|所有候选失败| W
-
-    U -->|继续尝试| C
-
-    style F fill:#FCD34D,stroke:#000,color:#000
-    style M fill:#A5F3FC,stroke:#000,color:#000
-    style P fill:#A5F3FC,stroke:#000,color:#000
-    style N fill:#BBF7D0,stroke:#000,color:#000
-    style Q fill:#BBF7D0,stroke:#000,color:#000
-    style R fill:#FBBF24,stroke:#000,color:#000
-```
-
-**流程关键节点说明**：
-
-1. **错误分类阶段**（节点E-G）：
-   - `handleErrorResponse` 接收HTTP错误响应
-   - `ClassifyHTTPStatus` 根据状态码智能分类错误级别
-   - 决策树分支：Key级 vs 渠道级 vs 客户端错误
-
-2. **Key级冷却路径**（节点H-N）：
-   - 触发条件：401/403/429等认证/限流错误
-   - 冷却范围：仅冷却当前Key，不影响同渠道其他Key
-   - 数据存储：`api_keys` 表内联字段（cooldown_until, cooldown_duration_ms）
-   - 指数退避：1s → 2s → 4s → 8s → ... → 最大30分钟
-
-3. **渠道级冷却路径**（节点I-Q）：
-   - 触发条件：500/502/503/504等服务端错误
-   - 冷却范围：冷却整个渠道，所有Key均不可用
-   - 数据存储：`channels` 表内联字段（cooldown_until, cooldown_duration_ms）
-   - 指数退避：同Key级策略
-
-4. **内存缓存同步**（节点R-S）：
-   - 使用 `sync.Map` 实现高性能并发读写
-   - 冷却状态写入数据库后立即同步到内存
-   - 后台协程每分钟清理过期冷却状态
-   - 双重存储保证重启后冷却状态持久化
-
-5. **重试决策逻辑**（节点T-W）：
-   - **Key级错误**：优先重试同渠道其他可用Key（最多 `CCLOAD_MAX_KEY_RETRIES` 次）
-   - **渠道级错误**：直接切换到下一个候选渠道
-   - **客户端错误**：不冷却，直接返回错误给客户端
-   - **所有候选失败**：返回 503 Service Unavailable
-
-**性能优化要点**：
-
-- **时间工具统一**：`calculateBackoffDuration` 统一指数退避计算
-- **错误分类缓存**：LRU缓存（容量1000）优化字符串操作
-- **内存优先查询**：冷却状态优先从 `sync.Map` 读取
-- **异步清理**：过期冷却状态定期批量清理，不阻塞主流程
-- **双重存储**：内存缓存（快速查询） + 数据库（持久化）
-
-## 性能优化架构
-
-**多级缓存系统**:
-- **渠道配置缓存**: 60秒TTL
-- **轮询指针缓存**: 内存存储，定期持久化
-- **冷却状态缓存**: sync.Map实现
-- **错误分类缓存**: LRU缓存（容量1000）
-
-**异步处理**:
-- **Redis同步**: 单worker协程，缓冲channel去重，响应<1ms
-- **日志系统**: 1000条缓冲队列，3个worker协程，批量写入
-- **会话清理**: 后台协程每小时清理过期session
-- **冷却清理**: 每分钟清理过期冷却状态
-
-**连接池优化**:
-- **SQLite连接池**: 25个连接，5分钟生命周期
-- **HTTP客户端**: 100最大连接，10秒连接超时，keepalive优化
-- **TLS优化**: LRU会话缓存，减少握手耗时
-
-**内存数据库模式** (internal/storage/sqlite/sqlite_store.go:buildMainDBDSN):
-- **启用条件**: 设置环境变量 `CCLOAD_USE_MEMORY_DB=true`
-- **性能提升**: 50-100倍查询性能（消除磁盘I/O）
-- **数据范围**: 仅主数据库（channels, cooldowns, rr等），日志库仍使用文件模式
-- **数据恢复**: 启动时自动从Redis恢复渠道配置（需配置`REDIS_URL`）
-- **适用场景**:
-  - 高并发API代理（QPS >1000）
-  - 配合Redis同步使用（故障恢复）
-  - 可接受重启后重新导入CSV配置
-- **使用示例**:
-  ```bash
-  # .env 文件配置
-  CCLOAD_USE_MEMORY_DB=true
-  REDIS_URL=redis://localhost:6379  # 强烈推荐配置，用于数据恢复
-  SQLITE_PATH=data/ccload.db        # 仅用于生成日志库路径
-
-  # 启动服务
-  go run .
-
-  # 输出提示信息
-  # ⚡ 性能优化：主数据库使用内存模式（CCLOAD_USE_MEMORY_DB=true）
-  #    - 渠道配置、冷却状态等热数据存储在内存中
-  #    - 日志数据仍然持久化到磁盘：data/ccload-log.db
-  #    ⚠️  警告：服务重启后主数据库数据将丢失，请配置Redis同步或重新导入CSV
-  ```
-- **技术细节**:
-  - DSN格式: `file::memory:?cache=shared` (共享缓存模式，确保多连接访问同一实例)
-  - 数据库迁移正常执行（内存中创建表结构）
-  - Redis同步机制自动备份渠道配置
-- **注意事项**:
-  - ⚠️ 服务重启后主数据库数据丢失（内存特性）
-  - ✅ 日志数据始终持久化，不受影响
-  - ✅ 配置Redis后自动从备份恢复
-  - ✅ 向后兼容：不设置环境变量则使用文件模式
-
-## 架构模式
-
-**HTTP处理器模式** (`internal/app/handlers.go`):
-- `PaginationParams`: 统一参数解析和验证
-- `APIResponse[T]`: 类型安全的泛型响应结构
-- `MethodRouter`: 声明式HTTP方法路由，替代switch-case
-- `RequestValidator`: 接口驱动的请求验证
-
-**查询构建器模式** (`internal/storage/sqlite/query_builder.go`):
-- `WhereBuilder`: 动态SQL条件构建，防止SQL注入
-- `QueryBuilder`: 组合式查询构建，支持链式调用
-- `ConfigScanner`: 统一数据库行扫描，消除重复逻辑
-
-**工具模块设计**:
-- `internal/util/time_utils.go`: 统一时间戳处理和指数退避计算
-- `internal/util/classifier.go`: HTTP状态码错误分类（Key级/渠道级/客户端）
-- `internal/util/api_keys_helper.go`: API Key解析和验证
+- **Key级错误**（401/403/429）：冷却当前Key，重试同渠道其他Key
+- **渠道级错误**（500/502/503/504）：冷却整个渠道，切换到其他渠道
+- **客户端错误**（404/405）：不冷却，直接返回
+- **指数退避**：认证错误初始5分钟，其他错误初始1秒，后续翻倍至30分钟上限
 
 ## 环境配置
 
-### 环境变量
+### 核心环境变量
 
-**核心配置**：
-- `CCLOAD_PASS`: 管理后台密码（默认: "admin"，⚠️ 生产环境必须设置强密码）
-- `CCLOAD_AUTH`: API访问令牌（可选，多个令牌用逗号分隔）
-- `PORT`: HTTP服务端口（默认: "8080"）
+| 变量名 | 默认值 | 说明 |
+|--------|--------|------|
+| `CCLOAD_PASS` | "admin" | 管理界面密码（⚠️ 生产环境必须修改） |
+| `CCLOAD_AUTH` | 无 | API访问令牌（多个用逗号分隔） |
+| `PORT` | "8080" | HTTP服务端口 |
+| `SQLITE_PATH` | "data/ccload.db" | 数据库文件路径 |
+| `REDIS_URL` | 无 | Redis连接URL（可选，用于数据同步） |
 
-**性能调优**：
-- `CCLOAD_MAX_CONCURRENCY`: 最大并发请求数（默认: 1000）
-- `CCLOAD_MAX_KEY_RETRIES`: 单个渠道内最大Key重试次数（默认: 3）
-- `CCLOAD_FIRST_BYTE_TIMEOUT`: 流式请求首字节超时（默认: 120秒）
-  - 超时后会自动切换到下一个可用渠道重试
-  - 建议值：60-300秒，根据上游API响应速度调整
-- `CCLOAD_ENABLE_TRACE`: HTTP Trace开关（默认: false，启用会增加0.5-1ms延迟）
+### 性能调优
 
-**日志系统**：
-- `CCLOAD_LOG_BUFFER`: 日志缓冲区大小（默认: 1000条）
-- `CCLOAD_LOG_WORKERS`: 日志Worker协程数（默认: 3个）
+| 变量名 | 默认值 | 说明 |
+|--------|--------|------|
+| `CCLOAD_MAX_CONCURRENCY` | 1000 | 最大并发请求数 |
+| `CCLOAD_MAX_KEY_RETRIES` | 3 | 单渠道最大Key重试次数 |
+| `CCLOAD_FIRST_BYTE_TIMEOUT` | 120 | 流式请求首字节超时（秒） |
+| `CCLOAD_USE_MEMORY_DB` | "false" | 启用内存数据库（需配合Redis） |
+| `SQLITE_JOURNAL_MODE` | "WAL" | SQLite日志模式（WAL/TRUNCATE） |
 
-**数据库配置**：
-- `SQLITE_PATH`: SQLite数据库路径（默认: "data/ccload.db"）
-- `CCLOAD_USE_MEMORY_DB`: 主数据库内存模式开关（默认: "false"）
-  - **开启**：`CCLOAD_USE_MEMORY_DB=true` - 渠道配置、冷却状态存储在内存中，性能提升50-100倍
-  - **关闭**：默认行为，数据持久化到磁盘
-  - **注意**：日志数据始终持久化到磁盘，不受此开关影响
-  - **适用场景**：高并发场景 + 配合Redis同步使用，或可接受重启后重新导入配置
-  - **数据恢复**：服务重启时自动从Redis恢复渠道配置（需配置`REDIS_URL`）
-- `SQLITE_JOURNAL_MODE`: SQLite Journal模式（默认: "WAL"）
-  - **可选值**：WAL | DELETE | TRUNCATE | PERSIST | MEMORY | OFF
-  - **WAL（默认）**：Write-Ahead Logging，高性能，适合本地文件系统
-  - **TRUNCATE**：传统回滚日志，适合Docker/K8s环境或网络存储（NFS等）
-  - **容器环境建议**：`SQLITE_JOURNAL_MODE=TRUNCATE`（避免WAL文件损坏风险）
-- `PORT`: HTTP服务端口（默认: "8080"）
-- `REDIS_URL`: Redis连接URL（可选，用于渠道数据同步备份；内存模式强烈推荐配置）
+### 配置常量
 
-支持 `.env` 文件配置（优先于系统环境变量）
+完整配置常量定义在 `internal/config/defaults.go`，包括：
+- HTTP服务器配置（连接池、超时等）
+- SQLite连接池配置
+- 日志系统配置
+- Token认证配置
 
-**配置常量参考** (`internal/config/defaults.go`)：
+## 数据库架构
 
-| 分类 | 常量名 | 默认值 | 说明 |
-|------|--------|--------|------|
-| HTTP服务器 | `DefaultMaxConcurrency` | 1000 | 最大并发请求数 |
-| HTTP客户端 | `HTTPMaxIdleConns` | 100 | 全局空闲连接池 |
-| HTTP客户端 | `HTTPMaxIdleConnsPerHost` | 5 | 单host空闲连接 |
-| HTTP客户端 | `HTTPDialTimeout` | 30秒 | DNS+TCP超时 |
-| 日志系统 | `DefaultLogBufferSize` | 1000 | 日志缓冲区大小 |
-| 日志系统 | `LogBatchSize` | 100 | 批量写入大小 |
-| Token认证 | `TokenExpiryHours` | 24小时 | Token有效期 |
-| SQLite连接池 | `SQLiteMaxOpenConnsFile` | 5 | 文件模式最大连接 |
-| SQLite连接池 | `SQLiteMaxOpenConnsMemory` | 10 | 内存模式最大连接 |
+### 核心表结构
 
-完整配置常量列表请参考 `internal/config/defaults.go` 文件（60+ 个配置项）。
+**channels 表**：
+```sql
+CREATE TABLE channels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,              -- UNIQUE约束
+    url TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 0,
+    models TEXT NOT NULL,                   -- JSON数组
+    model_redirects TEXT DEFAULT '{}',      -- JSON对象
+    channel_type TEXT DEFAULT 'anthropic',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    cooldown_until INTEGER DEFAULT 0,       -- 冷却数据内联
+    cooldown_duration_ms INTEGER DEFAULT 0,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL
+);
+```
 
-**重试次数优化**：
-- 系统会自动取 `min(CCLOAD_MAX_KEY_RETRIES, 实际Key数量)` 作为重试上限
-- 例如：配置了8个Key但`CCLOAD_MAX_KEY_RETRIES=3`，则最多重试3次
-- 单Key场景：无论配置多少，只尝试1次
-- 推荐配置：2-5次，平衡可用性与响应速度
+**api_keys 表**：
+```sql
+CREATE TABLE api_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id INTEGER NOT NULL,
+    key_index INTEGER NOT NULL,
+    api_key TEXT NOT NULL,
+    key_strategy TEXT DEFAULT 'sequential',
+    cooldown_until INTEGER DEFAULT 0,       -- Key级冷却内联
+    cooldown_duration_ms INTEGER DEFAULT 0,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL,
+    UNIQUE(channel_id, key_index),
+    FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
+);
+```
 
-### API身份验证系统
-- **管理界面**: 基于Session的认证，24小时有效期
-- **API端点**: 当设置`CCLOAD_AUTH`时，`/v1/messages`需要`Authorization: Bearer <token>`
-- **安全特性**: HttpOnly Cookie、SameSite保护、自动过期清理
+**key_rr 表**：
+```sql
+CREATE TABLE key_rr (
+    channel_id INTEGER PRIMARY KEY,
+    idx INTEGER NOT NULL
+);
+```
 
-## 数据库架构和迁移
-
-### 核心表结构（2025-10重构）
-
-**2025-10-10重构说明**：数据库架构进行了重大优化，将API Keys独立存储，冷却数据内联到父表。
-
-- **channels**: 渠道配置（id, name, url, priority, models, model_redirects, channel_type, cooldown_until, cooldown_duration_ms, enabled, timestamps）
-  - `name`字段具有UNIQUE约束（通过`idx_channels_unique_name`索引实现）
-  - `model_redirects`字段：JSON格式存储模型重定向映射（请求模型 → 实际转发模型）
-  - ⚠️ **移除字段**：`api_key`, `api_keys`, `key_strategy`（已迁移到`api_keys`表）
-  - ✅ **新增字段**：`cooldown_until`, `cooldown_duration_ms`（渠道级冷却数据内联存储）
-
-- **api_keys**: API Key独立存储（id, channel_id, key_index, api_key, key_strategy, cooldown_until, cooldown_duration_ms, timestamps）
-  - **设计原则**：一个渠道对应多行记录，每个Key一行
-  - `channel_id + key_index`：复合UNIQUE约束，确保Key索引唯一
-  - `key_strategy`：Key使用策略（`sequential` | `round_robin`）
-  - `cooldown_until`, `cooldown_duration_ms`：Key级冷却数据内联存储
-  - **外键约束**：`FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE`
-
-- **logs**: 请求日志（id, time, model, channel_id, status_code, message, performance_metrics）
-  - `model`字段：始终记录客户端请求的原始模型，非重定向后的模型
-
-- **key_rr**: Key轮询指针（channel_id, idx）
-  - 为每个渠道的多Key轮询策略维护轮询状态
-
-- **rr**: 渠道轮询指针（key="model|priority", idx）
-  - 为同优先级渠道组维护轮询状态
-
-- ⚠️ **废弃表**：`cooldowns`, `key_cooldowns`（冷却数据已内联到`channels`和`api_keys`表）
-
-### 向后兼容的数据库迁移（2025-10重构）
-
-项目实现了智能的数据库架构升级机制，支持从旧版本无缝迁移：
-
-**双路径初始化策略**：
-1. **全新安装** (`migrate()` 函数)：
-   - 直接创建新架构：channels（含冷却字段）、api_keys、key_rr、rr、logs表
-   - 跳过迁移逻辑，避免不必要的操作
-
-2. **旧版本升级** (`migrateToNewSchema()` 函数)：
-   - 检测旧表结构（存在`api_key`字段或独立`cooldowns`表）
-   - 自动迁移数据到新架构
-   - 保留旧表数据以防回滚需求
-
-**API Keys迁移流程** (`migrateAPIKeysField()` 函数)：
-1. **字段存在性检查**：使用`PRAGMA table_info(channels)`检查`api_key`列是否存在
-2. **跳过全新数据库**：若`api_key`列不存在，说明是全新安装，直接返回
-3. **数据迁移**（旧数据库）：
-   - 读取channels表的`api_key`字段（逗号分割的多Key）
-   - 解析为多个APIKey记录并写入`api_keys`表
-   - 设置`key_index`（0, 1, 2...）和`key_strategy`（默认sequential）
-4. **幂等操作**：已迁移的渠道不会重复迁移
-
-**冷却数据迁移流程** (`migrateCooldownsToInline()` 函数)：
-- 从独立的`cooldowns`表读取冷却状态
-- 迁移到channels表的`cooldown_until`和`cooldown_duration_ms`字段
-- 从独立的`key_cooldowns`表读取Key级冷却状态
-- 迁移到api_keys表的冷却字段
-
-**UNIQUE约束迁移** (`ensureChannelNameUnique()` 函数)：
-1. **清理旧索引**: `DROP INDEX IF EXISTS idx_channels_name`
-2. **幂等检查**: 检查`idx_channels_unique_name`是否已存在，存在则跳过
-3. **数据修复**: 查找重复name，自动重命名为`原name+id`格式（如`api-1`变成`api-1-12`）
-4. **创建约束**: `CREATE UNIQUE INDEX idx_channels_unique_name ON channels (name)`
-
-**迁移特性**:
-- **自动执行**: 服务启动时自动运行，无需手动干预
-- **数据完整性**: 所有数据（渠道配置、API Keys、冷却状态）完整迁移
-- **幂等操作**: 支持重复执行，不会产生副作用
-- **向后兼容**: 旧版本数据库自动升级，新版本直接使用新架构
-- **零停机**: 迁移过程快速（通常<1秒），对服务启动时间影响极小
-
-### 性能优化索引
-- `idx_logs_time`: 日志时间索引，优化时间范围查询
-- `idx_channels_unique_name`: 渠道名称UNIQUE索引，确保数据唯一性
-- `idx_logs_status`: 状态码索引，优化错误统计
-
-## API端点架构
+## API端点
 
 ### 公开端点（无需认证）
 ```
-GET  /public/summary              # 基础统计数据
-GET  /web/index.html              # 首页
-GET  /web/login.html              # 登录页面
+GET  /public/summary              # 基础统计
+POST /v1/messages/count_tokens    # 本地Token计数
 ```
 
-### API认证端点
+### 代理端点（条件认证）
 ```
-POST /v1/messages                 # Claude API 透明代理（条件认证）
-POST /v1/messages/count_tokens    # 本地Token计数（无需认证）
-GET  /v1beta/*                    # Gemini API 透明代理（条件认证）
+POST /v1/messages                 # Claude API代理
+GET  /v1beta/*                    # Gemini API代理
 ```
 
 ### 管理端点（需要登录）
 ```
 GET/POST    /admin/channels              # 渠道列表和创建
-GET/PUT/DEL /admin/channels/{id}         # 渠道详情、更新、删除
-POST        /admin/channels/{id}/test    # 渠道测试
-GET         /admin/channels/export       # 导出渠道配置为CSV
-POST        /admin/channels/import       # 从CSV导入渠道配置
-GET         /admin/errors                # 请求日志列表（支持分页和过滤）
-GET         /admin/stats                 # 调用统计数据
-GET         /admin/metrics               # 趋势数据（支持hours和bucket_min参数）
+GET/PUT/DEL /admin/channels/{id}         # 渠道操作
+GET         /admin/channels/export       # 导出CSV
+POST        /admin/channels/import       # 导入CSV
+GET         /admin/errors                # 请求日志
+GET         /admin/stats                 # 统计数据
 ```
-
-## 模型重定向功能
-
-### 功能概述
-
-模型重定向允许将客户端请求的模型自动映射到实际转发的模型，无需客户端修改代码。
-
-**使用场景**:
-- **模型升级迁移**: 将旧模型请求自动重定向到新模型（如 opus → sonnet-3.5）
-- **成本优化**: 将高成本模型请求重定向到性价比更高的模型
-- **A/B测试**: 灵活切换不同模型进行对比测试
-- **渠道兼容**: 某些渠道不支持特定模型时，自动映射到支持的模型
-
-### 配置方式
-
-**Web界面配置**:
-1. 访问 `/web/channels.html`
-2. 创建或编辑渠道时，在"模型重定向"字段填入JSON格式映射
-3. 格式示例：`{"claude-3-opus-20240229":"claude-3-5-sonnet-20241022"}`
-
-**API配置**:
-```bash
-curl -X POST http://localhost:8080/admin/channels \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Claude-Redirect",
-    "api_key": "sk-ant-xxx",
-    "url": "https://api.anthropic.com",
-    "priority": 10,
-    "models": ["claude-3-opus-20240229", "claude-3-5-sonnet-20241022"],
-    "model_redirects": {
-      "claude-3-opus-20240229": "claude-3-5-sonnet-20241022"
-    },
-    "enabled": true
-  }'
-```
-
-### 工作原理
-
-1. **请求解析**: 代理接收客户端请求，解析出原始模型名称
-2. **重定向检查**: 查询渠道的 `model_redirects` 映射
-3. **模型替换**: 如果存在映射，修改请求体中的 `model` 字段为目标模型
-4. **上游转发**: 使用替换后的模型向上游API发送请求
-5. **日志记录**: 始终记录原始模型名称（而非重定向后的模型），确保可追溯性
-
-**重要特性**:
-- **透明操作**: 客户端无感知，返回响应不包含重定向信息
-- **可追溯性**: 日志中记录原始请求模型，便于统计和调试
-- **向后兼容**: 不配置重定向时功能完全不影响现有行为
-- **灵活配置**: 每个渠道可独立配置不同的重定向规则
-
-### 数据格式
-
-**JSON格式要求**:
-```json
-{
-  "请求模型1": "实际转发模型1",
-  "请求模型2": "实际转发模型2"
-}
-```
-
-**数据库存储**:
-- 字段：`model_redirects TEXT DEFAULT '{}'`
-- 序列化：使用 `sonic.Marshal` 高性能JSON库
-- 反序列化：`parseModelRedirectsJSON` 函数自动处理空值和格式验证
-
-
-## 渠道数据管理
-
-### CSV导入导出功能
-
-项目支持批量管理渠道配置，通过CSV格式进行导入导出：
-
-**导出功能** (`/admin/channels/export`):
-- 导出所有渠道配置为CSV文件
-- 包含完整渠道信息：名称、API Key、URL、优先级、支持模型、启用状态
-- 文件名格式：`channels-YYYYMMDD-HHMMSS.csv`
-- 支持UTF-8编码，Excel兼容
-
-**导入功能** (`/admin/channels/import`):
-- 支持从CSV文件批量导入渠道配置
-- 智能列名映射（支持中英文列名）
-- 数据验证和错误提示
-- 支持增量导入和覆盖更新
-
-**CSV格式示例**:
-```csv
-name,api_key,url,priority,models,enabled
-Claude-API-1,sk-ant-xxx,https://api.anthropic.com,10,"[\"claude-3-sonnet-20240229\"]",true
-Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"]",true
-```
-
-**列名映射支持**:
-- `name/名称` → 渠道名称
-- `api_key/密钥/API密钥` → API密钥
-- `url/地址/URL` → API地址
-- `priority/优先级` → 优先级（数字）
-- `models/模型/支持模型` → 支持的模型列表（JSON数组字符串）
-- `model_redirects/模型重定向` → 模型重定向映射（JSON对象字符串）
-- `enabled/启用/状态` → 启用状态（true/false）
-
-**使用方式**:
-- **Web界面**: 访问`/web/channels.html`，使用"导出CSV"和"导入CSV"按钮
-- **API调用**:
-  ```bash
-  # 导出
-  curl -H "Cookie: session=xxx" http://localhost:8080/admin/channels/export > channels.csv
-
-  # 导入
-  curl -X POST -H "Cookie: session=xxx" \
-    -F "file=@channels.csv" \
-    http://localhost:8080/admin/channels/import
-  ```
-
-## 前端架构
-
-纯HTML/CSS/JavaScript实现，无框架依赖的单页应用：
-
-### 页面文件
-- `web/index.html`: 首页，显示24小时请求统计
-- `web/login.html`: 登录页面
-- `web/channels.html`: 渠道管理（CRUD操作）
-- `web/logs.html`: 请求日志（支持分页）
-- `web/stats.html`: 调用统计（按渠道/模型分组）
-- `web/trend.html`: 趋势图表（SVG绘制24小时曲线）
-- `web/styles.css`: 共享样式文件
-- `web/ui.js`: 共享JavaScript工具函数
-
-### 技术特点
-- 响应式设计，支持移动端
-- 实时数据更新和图表渲染
-- 模态框交互和表单验证
-- 深色模式兼容的配色方案
-
-## 重要注意事项
-
-**透明转发原则**:
-- 智能识别API类型，自动设置正确的认证头：
-  - **Claude API** (`/v1/messages` 等)：设置 `x-api-key` 和 `Authorization: Bearer`
-  - **Gemini API** (`/v1beta/*`)：仅设置 `x-goog-api-key`
-- 客户端需自行设置 `anthropic-version`（Claude）或其他API特定头
-- 2xx 响应支持流式转发，使用 64KB 缓冲区
-- 模型重定向在请求体层面操作，对客户端完全透明
-
-**模型重定向注意事项**:
-- 日志中始终记录客户端请求的原始模型，而非重定向后的模型
-- 确保目标模型在渠道的 `models` 列表中，否则可能导致上游错误
-- 重定向配置为JSON格式，必须是有效的对象（非数组或其他类型）
-- 空的重定向配置会被序列化为 `{}`，不影响功能
-
-**安全考虑**:
-- ✅ **强密码策略**：生产环境必须设置强密码 `CCLOAD_PASS`（启动时自动检查）
-- ✅ **API认证**：建议设置 `CCLOAD_AUTH` 以保护 `/v1/messages` 端点
-- ✅ **敏感数据保护**：API Key 自动脱敏（前4后4），不完整记录到日志
-- ✅ **日志注入防护**：所有用户输入和错误信息自动消毒，防止日志注入攻击
-- ✅ **内存模式安全**：内存数据库强制要求配置 `REDIS_URL`，防止数据永久丢失
-- 🔒 **文件权限**：生产环境需限制 `data/` 目录访问权限（chmod 700）
-- 🔒 **传输加密**：使用 HTTPS 部署以保护传输中的认证令牌
-
-## Redis同步功能
-
-### 功能概述
-ccLoad支持可选的Redis同步功能，用于渠道配置的备份和恢复：
-
-**核心特性**:
-- **可选启用**: 设置`REDIS_URL`环境变量启用，未设置则使用纯SQLite模式
-- **异步同步**: 渠道增删改操作触发异步同步到Redis（非阻塞，响应时间<1ms）
-- **启动恢复**: 数据库文件不存在时自动从Redis恢复渠道配置
-- **故障隔离**: Redis操作失败不影响核心功能
-- **自动去重**: 短时间内多次修改自动合并为一次同步
-
-### Redis数据结构
-- **Key格式**: `ccload:channels` (String类型，存储完整JSON数组)
-- **数据格式**: 所有渠道配置序列化为单个JSON数组
-- **存储方式**: 使用SET操作全量覆盖，原子性保证数据一致性
-
-### 异步同步架构
-
-**设计原则**:
-```
-增删改操作 → triggerAsyncSync() → channel信号 → 后台worker → Redis SET
-     ↓                                                            ↓
-立即返回(<1ms)                                          异步执行(1-5ms)
-```
-
-**核心组件**:
-- **单Worker模式**: 一个后台goroutine处理所有同步请求（避免并发冲突）
-- **缓冲Channel**: 容量为1，自动去重短时间内的多次同步请求
-- **非阻塞触发**: 使用select+default，channel满时自动跳过（合并请求）
-- **优雅关闭**: 服务关闭时等待最后的同步任务完成（最多100ms）
-
-**性能提升**:
-- 增删改API响应时间：从5-10ms → **0.6ms**（提升8-16倍）
-- 并发创建10个渠道：从50-100ms → **6ms**
-- Redis失败不阻塞主流程，仅打印警告日志
-
-### 使用场景
-1. **多实例部署**: 不同实例间共享渠道配置
-2. **数据备份**: Redis作为渠道配置的实时备份
-3. **快速恢复**: 新环境快速从Redis恢复配置
-4. **配置同步**: 开发、测试、生产环境配置同步
-
-### 配置示例
-```bash
-# 启用Redis同步
-export REDIS_URL="redis://localhost:6379"
-# 或使用密码认证
-export REDIS_URL="redis://user:password@localhost:6379/0"
-# 或使用TLS
-export REDIS_URL="rediss://user:password@redis.example.com:6380/0"
-
-# 测试Redis功能
-go run . test-redis
-```
-
-### 启动行为
-- **数据库不存在 + Redis启用**: 从Redis恢复渠道配置到SQLite
-- **数据库存在 + Redis启用**: 同步SQLite中的渠道配置到Redis
-- **Redis未配置**: 使用纯SQLite模式，无同步功能
 
 ## 技术栈
 
 - **语言**: Go 1.25.0
 - **框架**: Gin v1.10.1
-- **数据库**: SQLite3 v1.14.32（嵌入式）
+- **数据库**: SQLite3 v1.38.2
 - **缓存**: Ristretto v2.3.0（内存缓存）
-- **Redis客户端**: go-redis v9.7.0（可选同步功能）
-- **JSON**: Sonic v1.14.1（高性能JSON库）
+- **Redis**: go-redis v9.7.0（可选同步）
+- **JSON**: Sonic v1.14.1（高性能）
 - **环境配置**: godotenv v1.5.1
-- **前端**: 原生HTML/CSS/JavaScript（无框架依赖）
+- **前端**: 原生HTML/CSS/JavaScript
 
 ## 代码规范
 
 ### Go 语言现代化要求
 
-**类型声明现代化**:
-- ✅ **使用 `any` 替代 `interface{}`**: 遵循 Go 1.18+ 社区最佳实践
-- ✅ **泛型优先**: 在合适场景使用 Go 1.18+ 泛型语法
-- ✅ **类型推导**: 充分利用现代Go的类型推导能力
-
-**代码质量标准**:
-- **KISS原则**: 优先选择更简洁、可读性更强的现代语法
-- **一致性要求**: 全项目统一使用现代Go语法规范
-- **类型声明**: 使用 `any` 替代 `interface{}`，充分利用Go 1.18+特性
-
-**工具链要求**:
-- `go fmt ./...` - 强制代码格式化
-- `go vet ./...` - 静态分析检查
+- ✅ 使用 `any` 替代 `interface{}`（Go 1.18+）
+- ✅ 充分利用泛型和类型推导
+- ✅ 遵循KISS原则，优先简洁可读的代码
+- ✅ 强制执行 `go fmt` 和 `go vet`
 
 ## 常见开发任务
 
 ### 快速调试
-```bash
-# 端口被占用时查找进程
-lsof -i :8080 && kill -9 <PID>
 
-# 检查环境变量配置
-env | grep CCLOAD
+```bash
+# 检查端口占用
+lsof -i :8080 && kill -9 <PID>
 
 # 测试API可用性
 curl -s http://localhost:8080/public/summary | jq
 
-# 测试Token计数接口
+# 测试Token计数
 curl -X POST http://localhost:8080/v1/messages/count_tokens \
   -H "Content-Type: application/json" \
   -d '{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"test"}]}'
 
-# 查看数据库内容
+# 查看数据库
 sqlite3 data/ccload.db "SELECT id, name, priority, enabled FROM channels;"
-sqlite3 data/ccload.db "SELECT * FROM cooldowns;"
-
-# 检查日志文件（macOS服务）
-tail -f logs/ccload.log
-tail -f logs/ccload.error.log
 ```
 
 ### 性能分析
+
 ```bash
 # CPU性能分析
 go test -cpuprofile=cpu.prof -bench=.
@@ -991,39 +350,18 @@ go tool pprof cpu.prof
 # 内存分析
 go test -memprofile=mem.prof -bench=.
 go tool pprof mem.prof
-
-# 压力测试（需要安装hey）
-hey -n 1000 -c 10 http://localhost:8080/public/summary
 ```
-
-### 监控端点
-- 首页统计：`http://localhost:8080/web/index.html`
-- 渠道管理：`http://localhost:8080/web/channels.html`
-- 趋势图：`http://localhost:8080/web/trend.html`
-- 请求日志：`http://localhost:8080/web/logs.html`
-- 统计数据：`GET /admin/stats`
 
 ### 常见问题排查
 
 **渠道选择失败**：
 ```bash
 # 检查渠道配置
-curl -b session_cookie http://localhost:8080/admin/channels | jq '.data[] | {id, name, models, enabled}'
+curl http://localhost:8080/admin/channels | jq '.data[] | {id, name, models, enabled}'
 
-# 检查冷却状态
-sqlite3 data/ccload.db "SELECT channel_id, until, duration_ms FROM cooldowns WHERE until > strftime('%s', 'now');"
-
-# 清除所有冷却状态
-sqlite3 data/ccload.db "DELETE FROM cooldowns; DELETE FROM key_cooldowns;"
-```
-
-**Key重试次数过多**：
-```bash
-# 检查当前重试限制
-env | grep CCLOAD_MAX_KEY_RETRIES
-
-# 临时调整重试次数
-CCLOAD_MAX_KEY_RETRIES=2 go run .
+# 清除冷却状态（已内联到channels/api_keys表）
+sqlite3 data/ccload.db "UPDATE channels SET cooldown_until=0;"
+sqlite3 data/ccload.db "UPDATE api_keys SET cooldown_until=0;"
 ```
 
 **Redis同步问题**：
@@ -1033,45 +371,22 @@ go run . test-redis
 
 # 检查Redis数据
 redis-cli -u $REDIS_URL GET ccload:channels
-
-# 强制重新同步
-sqlite3 data/ccload.db ".dump channels" | redis-cli -u $REDIS_URL --pipe
 ```
 
-## 多Key支持功能
+## 多Key支持
 
 ### 功能概述
 
-从v1.0开始，ccLoad支持为单个渠道配置多个API Key，实现更细粒度的故障切换和负载均衡。
-
-**核心特性**：
-- **多Key配置**：在单个渠道中使用逗号分割配置多个API Key
-- **Key级别冷却**：每个Key独立冷却，不影响同渠道其他Key的可用性
-- **灵活策略**：支持顺序访问（sequential）和轮询访问（round_robin）两种模式
-- **重试次数限制**：通过`CCLOAD_MAX_KEY_RETRIES`环境变量控制单个渠道内最大重试次数（默认3次），避免key过多时延迟过高
-- **向后兼容**：单Key场景完全兼容旧版本，无需修改配置
-
-### 使用场景
-
-1. **提高可用性**：单个Key被限流时自动切换到备用Key
-2. **负载均衡**：使用轮询策略均匀分配请求到多个Key
-3. **成本优化**：合理利用多个Key的额度限制
-4. **灵活扩展**：无需创建多个渠道即可实现Key级别管理
+单个渠道可配置多个API Key，支持：
+- **多Key配置**：逗号分割多个Key
+- **Key级冷却**：每个Key独立冷却
+- **灵活策略**：顺序访问（sequential）或轮询（round_robin）
+- **重试限制**：`CCLOAD_MAX_KEY_RETRIES`控制重试次数（默认3次）
 
 ### 配置方式
 
-**Web界面配置**：
-1. 访问 `/web/channels.html` 渠道管理页面
-2. 在"API Key"字段输入多个Key，用英文逗号分隔：
-   ```
-   sk-ant-key1,sk-ant-key2,sk-ant-key3
-   ```
-3. 选择"Key使用策略"：
-   - **顺序访问**（默认）：按顺序尝试，失败时切换到下一个
-   - **轮询访问**：请求均匀分配到所有可用Key
-
-**API配置示例**：
 ```bash
+# API配置示例
 curl -X POST http://localhost:8080/admin/channels \
   -H "Content-Type: application/json" \
   -d '{
@@ -1085,554 +400,70 @@ curl -X POST http://localhost:8080/admin/channels \
   }'
 ```
 
-### 工作原理
+### 数据库架构
 
-**顺序访问策略（sequential）**：
-1. 从第一个Key开始尝试
-2. 如果Key失败或冷却中，自动切换到下一个可用Key
-3. 最多尝试 `min(CCLOAD_MAX_KEY_RETRIES, 实际Key数量)` 次
-4. 所有重试都失败时返回错误
+- **多Key存储**：一个渠道对应多行 `api_keys` 记录
+- **冷却数据内联**：`cooldown_until` 和 `cooldown_duration_ms` 直接存储在 `api_keys` 表
+- **废弃表**：`key_cooldowns` 表已废弃
 
-**轮询访问策略（round_robin）**：
-1. 使用轮询指针均匀分配请求
-2. 自动跳过冷却中的Key
-3. 最多尝试 `min(CCLOAD_MAX_KEY_RETRIES, 实际Key数量)` 次
-4. 轮询状态持久化，服务重启后保持
-
-**重试次数限制机制**：
-- **默认值**：3次（可通过环境变量`CCLOAD_MAX_KEY_RETRIES`配置）
-- **计算规则**：实际重试次数 = `min(配置值, 渠道Key数量)`
-- **示例1**：8个Key + 默认配置(3) = 最多重试3次
-- **示例2**：2个Key + 配置为5 = 最多重试2次（受Key数量限制）
-- **优势**：避免渠道配置过多Key时，单个请求重试次数过多导致延迟累积
-
-**Key级别冷却机制**：
-- **触发条件**：Key返回错误或非2xx响应
-- **冷却时长**：指数退避（1s → 2s → 4s → ... → 最大30分钟）
-- **独立冷却**：每个Key的冷却状态互不影响
-- **自动恢复**：Key成功响应后立即重置冷却状态
-
-### 数据库架构（2025-10重构）
-
-**2025-10-10重大重构**：API Keys和冷却数据迁移到新架构
-
-**新增表结构**：
-
-```sql
--- API Keys独立存储表
-CREATE TABLE api_keys (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  channel_id INTEGER NOT NULL,
-  key_index INTEGER NOT NULL,
-  api_key TEXT NOT NULL,
-  key_strategy TEXT DEFAULT 'sequential',
-  cooldown_until INTEGER DEFAULT 0,        -- Key级冷却数据内联
-  cooldown_duration_ms INTEGER DEFAULT 0,  -- 冷却持续时间
-  created_at BIGINT NOT NULL,
-  updated_at BIGINT NOT NULL,
-  UNIQUE(channel_id, key_index),
-  FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
-);
-
--- Key轮询指针表（保持不变）
-CREATE TABLE key_rr (
-  channel_id INTEGER PRIMARY KEY,
-  idx INTEGER NOT NULL
-);
-```
-
-**channels表架构变更**：
-- ⚠️ **移除字段**：`api_key`, `api_keys`, `key_strategy`（已迁移到`api_keys`表）
-- ✅ **新增字段**：`cooldown_until`, `cooldown_duration_ms`（渠道级冷却数据内联）
-
-**废弃的独立冷却表**：
-- ❌ `key_cooldowns` 表已废弃（冷却数据内联到`api_keys`表）
-- ❌ `cooldowns` 表已废弃（冷却数据内联到`channels`表）
-
-### 向后兼容性
-
-**单Key场景**：
-- 继续使用`api_key`字段，无需修改
-- 自动识别为单Key模式，不触发多Key逻辑
-
-**数据迁移**：
-- 数据库自动添加新字段（默认值兼容）
-- `api_key`字段支持逗号分割，自动解析为多Key
-- 前端界面兼容两种配置方式
-
-### 监控和调试
-
-**查看Key冷却状态**：
-```bash
-# 查询特定渠道的Key冷却信息
-sqlite3 data/ccload.db \
-  "SELECT channel_id, key_index, until, duration_ms FROM key_cooldowns WHERE channel_id = 1;"
-```
-
-**日志跟踪**：
-- 日志中记录使用的Key索引（脱敏处理）
-- 错误日志包含"channel keys unavailable"标识
-- 成功日志不暴露具体Key内容
-
-### 测试验证
-
-项目包含完整的测试套件：
-
-```bash
-# 运行多Key功能测试
-go test -v -run "TestKeySelector"
-
-# 覆盖测试场景：
-# - 单Key兼容性
-# - 顺序访问策略
-# - 轮询访问策略
-# - 全Key冷却场景
-# - 指数退避验证
-```
-
-### 最佳实践
-
-1. **Key数量**：建议配置2-3个Key，平衡可用性与管理复杂度
-2. **重试次数配置**：
-   - 默认值（3次）适合大多数场景，平衡可用性与响应速度
-   - 高可用要求：设置为5-10次（需确保Key质量，避免无效重试）
-   - 低延迟要求：设置为1-2次，快速失败切换到其他渠道
-   - 通过`.env`文件配置：`CCLOAD_MAX_KEY_RETRIES=5`
-3. **策略选择**：
-   - 备用场景：使用顺序策略，主Key失败时切换备用
-   - 负载均衡：使用轮询策略，平均分配请求负载
-4. **监控**：定期检查日志中的"keys unavailable"错误，及时补充Key
-5. **安全**：使用环境变量或配置文件管理Key，不要硬编码
 ## API兼容性支持
 
-### 支持的API类型
+### Claude API
+- **路径**：`/v1/messages`
+- **认证头**：`x-api-key` + `Authorization: Bearer`
 
-ccLoad现已支持多种AI API的透明代理，通过智能路径检测自动适配不同API的认证方式：
+### Gemini API
+- **路径**：包含 `/v1beta/` 的路径
+- **认证头**：仅 `x-goog-api-key`
 
-#### Claude API（Anthropic）
-- **路径特征**：`/v1/messages`、`/v1/complete` 等非 `/v1beta/` 路径
-- **认证头设置**：
-  ```
-  x-api-key: <API_KEY>
-  Authorization: Bearer <API_KEY>
-  ```
-- **客户端要求**：需自行设置 `anthropic-version` 头（如 `2023-06-01`）
-- **示例请求**：
-  ```bash
-  curl -X POST http://localhost:8080/v1/messages \
-    -H "Content-Type: application/json" \
-    -d '{"model":"claude-3-5-sonnet-20241022","messages":[...],"max_tokens":1024}'
-  ```
+### 渠道类型
 
-#### Gemini API（Google）
-- **路径特征**：包含 `/v1beta/` 的路径
-- **认证头设置**：
-  ```
-  x-goog-api-key: <API_KEY>
-  ```
-  注意：**不**发送 `x-api-key` 和 `Authorization` 头
-- **典型路径格式**：
-  ```
-  /v1beta/models/{model}:streamGenerateContent?alt=sse
-  /v1beta/models/{model}:generateContent
-  ```
-- **示例请求**：
-  ```bash
-  curl -X POST "http://localhost:8080/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse" \
-    -H "Content-Type: application/json" \
-    -d '{"contents":[{"parts":[{"text":"Hello"}]}]}'
-  ```
+支持三种渠道类型（`channel_type`）：
+- `anthropic` - Claude API（默认）
+- `codex` - OpenAI兼容API
+- `gemini` - Google Gemini API
 
-### 路径检测逻辑
+特定请求（如 `GET /v1beta/models`）按渠道类型路由。
 
-**实现位置**：`internal/app/proxy.go:isGeminiRequest(path string) bool`
+## 本地Token计数
 
-**检测规则**：
-- 使用 `strings.Contains(path, "/v1beta/")` 检测路径
-- 大小写敏感（`/v1beta/` 不匹配 `/V1BETA/`）
-- 适用于所有包含该子串的路径（如 `/api/v1beta/test` 也被识别为Gemini）
-
-**性能特点**：
-- 单次检测耗时 ~2-3ns（基准测试验证）
-- 零额外内存分配
-- 对代理性能影响可忽略
-
-
-
-### 扩展新API
-
-如需支持新的API类型（如OpenAI、Azure等），按以下步骤扩展：
-
-1. **添加检测函数**（internal/app/proxy.go）：
-   ```go
-   func isOpenAIRequest(path string) bool {
-       return strings.HasPrefix(path, "/v1/chat/completions")
-   }
-   ```
-
-2. **修改头设置逻辑**（internal/app/proxy.go:166-174）：
-   ```go
-   if isGeminiRequest(requestPath) {
-       req.Header.Set("x-goog-api-key", apiKey)
-   } else if isOpenAIRequest(requestPath) {
-       req.Header.Set("Authorization", "Bearer "+apiKey)
-   } else {
-       // Claude默认逻辑
-       req.Header.Set("x-api-key", apiKey)
-       req.Header.Set("Authorization", "Bearer "+apiKey)
-   }
-   ```
-
-
-### 设计原则
-
-**KISS（Keep It Simple）**：
-- 使用简单字符串匹配，无需正则表达式
-- 路径检测函数单一职责，易于测试和维护
-
-**性能优先**：
-- 避免反射和复杂逻辑
-- 快速路径检测不影响代理性能
-
-**向后兼容**：
-- Claude API作为默认行为，确保现有用户无感知
-- 新API通过显式路径特征识别，不影响其他请求
-
-## 渠道类型管理
-
-### 功能概述
-
-渠道类型（channel_type）功能允许为每个渠道指定API提供商类型，实现更精准的路由控制和认证方式管理。
-
-**核心特性**：
-- **类型分类**：支持三种渠道类型 - `anthropic`（Claude）、`codex`、`gemini`（Google）
-- **智能路由**：特定请求（如 GET `/v1beta/models`）按渠道类型路由，无需模型匹配
-- **向后兼容**：默认类型为 `anthropic`，现有渠道无需修改即可正常工作
-- **完整支持**：渠道创建、更新、CSV导入导出、Redis同步均支持渠道类型
-
-### 使用场景
-
-1. **元数据请求路由**：GET `/v1beta/models` 等不包含model参数的请求自动路由到gemini渠道
-2. **API提供商管理**：清晰区分不同API提供商的渠道，便于统计和监控
-3. **批量配置**：通过CSV导入时指定渠道类型，快速配置多个不同类型的渠道
-4. **可视化管理**：Web界面通过颜色徽章直观显示渠道类型
-
-### 配置方式
-
-#### Web界面配置
-
-1. 访问 `/web/channels.html` 渠道管理页面
-2. 创建或编辑渠道时，从"渠道类型"下拉菜单选择：
-   - **Claude Code** - 默认选项，适用于Claude API
-   - **OpenAI** - 适用于OpenAI兼容API（内部值为codex）
-   - **Google Gemini** - 适用于Google Gemini API
-3. 保存后渠道类型将显示为彩色徽章
-
-#### API配置示例
+符合 Anthropic 官方 API 规范的本地Token估算：
 
 ```bash
-# 创建Gemini类型渠道
-curl -X POST http://localhost:8080/admin/channels \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Gemini-Pro",
-    "api_key": "AIza...",
-    "channel_type": "gemini",
-    "url": "https://generativelanguage.googleapis.com",
-    "priority": 10,
-    "models": ["gemini-pro", "gemini-flash"],
-    "enabled": true
-  }'
-
-# 创建Codex类型渠道
-curl -X POST http://localhost:8080/admin/channels \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Codex-GPT4",
-    "api_key": "sk-...",
-    "channel_type": "codex",
-    "url": "https://api.openai.com",
-    "priority": 5,
-    "models": ["gpt-4", "gpt-3.5-turbo"],
-    "enabled": true
-  }'
-```
-
-#### CSV批量配置
-
-CSV文件格式（第8列为channel_type）：
-```csv
-name,api_key,url,priority,models,model_redirects,channel_type,enabled
-Claude-Main,sk-ant-xxx,https://api.anthropic.com,10,"claude-3-5-sonnet",{},anthropic,true
-Gemini-Flash,AIza-xxx,https://generativelanguage.googleapis.com,8,"gemini-flash",{},gemini,true
-Codex-GPT4,sk-xxx,https://api.openai.com,5,"gpt-4,gpt-3.5-turbo",{},codex,true
-```
-
-导入命令：
-```bash
-curl -X POST http://localhost:8080/admin/channels/import \
-  -H "Cookie: session=xxx" \
-  -F "file=@channels.csv"
-```
-
-### 工作原理
-
-#### 智能路由策略
-
-系统根据请求类型采用不同的路由策略（`internal/app/proxy.go:117-128`）：
-
-```go
-// 特殊处理：GET /v1beta/models 等Gemini API元数据请求
-if requestMethod == http.MethodGet && isGeminiRequest(requestPath) {
-    // 按渠道类型筛选Gemini渠道（不依赖模型匹配）
-    cands, err = s.selectCandidatesByChannelType(ctx, "gemini")
-} else {
-    // 正常流程：按模型匹配渠道（支持所有类型）
-    cands, err = s.selectCandidates(ctx, originalModel)
-}
-```
-
-**路由逻辑**：
-- **类型路由**：用于元数据请求（如列出模型列表），按 `channel_type` 筛选可用渠道
-- **模型路由**：用于推理请求，按 `models` 字段匹配，不限制渠道类型
-
-#### 渠道类型验证
-
-**验证函数**（`internal/util/channel_types.go:IsValidChannelType`）：
-```go
-func IsValidChannelType(value string) bool {
-    for _, ct := range ChannelTypes {
-        if ct.Value == value {
-            return true
-        }
-    }
-    return false
-}
-```
-
-**支持的类型**：`anthropic`、`codex`、`gemini`
-
-**验证时机**：
-- 渠道创建/更新时
-- CSV导入时（非法值会被跳过并记录错误）
-- 空值自动使用默认值 `anthropic`
-
-### 数据结构
-
-#### Config模型扩展
-
-```go
-type Config struct {
-    ID             int64             `json:"id"`
-    Name           string            `json:"name"`
-    APIKey         string            `json:"api_key"`
-    ChannelType    string            `json:"channel_type"`     // 新增字段
-    URL            string            `json:"url"`
-    Priority       int               `json:"priority"`
-    Models         []string          `json:"models"`
-    Enabled        bool              `json:"enabled"`
-    // ... 其他字段
-}
-
-// GetChannelType 返回渠道类型（默认anthropic）
-func (c *Config) GetChannelType() string {
-    if c.ChannelType == "" {
-        return "anthropic" // 默认值
-    }
-    return c.ChannelType
-}
-```
-
-#### 数据库表结构
-
-```sql
-ALTER TABLE channels ADD COLUMN channel_type TEXT DEFAULT 'anthropic';
+POST /v1/messages/count_tokens
 ```
 
 **特点**：
-- 使用 `DEFAULT 'anthropic'` 确保向后兼容
-- 现有数据自动填充默认值
-- 新渠道可显式指定类型
+- 本地计算，响应 <5ms
+- 准确度 93%+
+- 支持系统提示词、工具定义
+- 无需认证
 
-### 向后兼容性
+**实现位置**：`internal/app/token_counter.go`
 
-**数据层面**：
-- 数据库迁移自动添加 `channel_type` 列，默认值 `anthropic`
-- 现有渠道无需手动更新即可正常工作
+## Redis同步功能
 
-**代码层面**：
-- `GetChannelType()` 方法处理空值，返回默认值
-- CSV导入时空白列自动填充 `anthropic`
-
-**行为层面**：
-- 模型匹配路由不受渠道类型限制
-- 仅特定路径（如 `/v1beta/models`）使用类型路由
-
-### 与API兼容性的关系
-
-渠道类型与API兼容性功能协同工作：
-
-**认证头设置**（由API兼容性功能处理）：
-- `isGeminiRequest(path)` 检测路径 → 设置 `x-goog-api-key`
-- 非Gemini路径 → 设置 `x-api-key` 和 `Authorization`
-
-**渠道选择**（由渠道类型功能处理）：
-- GET `/v1beta/*` → 按 `channel_type="gemini"` 筛选
-- POST `/v1/messages` → 按 `models` 匹配（不限类型）
-
-**设计优势**：
-- **职责分离**：路径检测处理认证，渠道类型处理路由
-- **灵活组合**：可以创建支持Gemini模型的anthropic渠道（用于自定义网关）
-- **扩展性强**：新增API类型只需添加类型验证，无需修改路由逻辑
-
-### 监控和调试
-
-#### 查看渠道类型分布
-
-```bash
-# 获取所有渠道及其类型
-curl -b session_cookie http://localhost:8080/admin/channels | \
-  jq '.data[] | {name, channel_type, enabled}'
-```
-
-#### 查看日志中的渠道使用
-
-```bash
-# 查看最近请求使用的渠道
-curl -b session_cookie "http://localhost:8080/admin/errors?limit=10" | \
-  jq '.data[] | {time, model, channel_id, status_code}'
-```
-
-#### 数据库查询
-
-```bash
-# 统计各类型渠道数量
-sqlite3 data/ccload.db "
-  SELECT channel_type, COUNT(*) as count,
-         SUM(CASE WHEN enabled=1 THEN 1 ELSE 0 END) as enabled_count
-  FROM channels
-  GROUP BY channel_type;
-"
-```
-
-### 最佳实践
-
-1. **明确类型**：为所有渠道显式设置 `channel_type`，避免依赖默认值
-2. **类型一致**：同一API提供商的渠道使用相同类型，便于管理
-3. **CSV模板**：使用导出的CSV作为模板，确保格式正确
-4. **定期检查**：通过Web界面查看渠道类型徽章，确保配置正确
-5. **测试验证**：创建新类型渠道后，使用对应API端点测试路由是否正确
-
-## 本地Token计数功能
-
-### 功能概述
-
-ccLoad 实现了符合 Anthropic 官方 API 规范的本地 Token 计数接口，无需调用上游 API 即可快速估算请求的 token 消耗。
+可选的Redis同步功能，用于渠道配置备份：
 
 **核心特性**：
-- **本地计算**：完全本地估算，响应时间 <5ms，不消耗 API 配额
-- **官方兼容**：符合 Anthropic `/v1/messages/count_tokens` API 规范
-- **高精度**：优化算法匹配官方 API，平均准确度 93%+
-- **大规模支持**：支持大量工具场景（1000+ 工具定义），内存占用优化
-- **零依赖**：无需额外 tokenizer 库，简单高效（KISS 原则）
+- 异步同步（响应<1ms）
+- 启动时自动恢复
+- 故障隔离（Redis失败不影响核心功能）
 
-### 使用方式
-
-**API 端点**：`POST /v1/messages/count_tokens`
-
-**请求示例**：
+**配置**：
 ```bash
-curl -X POST http://localhost:8080/v1/messages/count_tokens \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-3-5-sonnet-20241022",
-    "messages": [
-      {
-        "role": "user",
-        "content": "Hello, how are you?"
-      }
-    ],
-    "system": "You are a helpful assistant.",
-    "tools": [
-      {
-        "name": "get_weather",
-        "description": "Get current weather for a location",
-        "input_schema": {
-          "type": "object",
-          "properties": {
-            "location": {"type": "string"}
-          }
-        }
-      }
-    ]
-  }'
+export REDIS_URL="redis://localhost:6379"
 ```
 
-**响应示例**：
-```json
-{
-  "input_tokens": 125
-}
-```
+**数据结构**：
+- Key: `ccload:channels`
+- 格式: JSON数组（全量覆盖）
 
-### 工作原理
+## 安全考虑
 
-**实现位置**：`internal/app/token_counter.go:handleCountTokens()`
-
-**估算算法**（`internal/app/token_counter.go:estimateTokens()`）：
-1. **系统提示词**：4.5 字符/token（优化系数）
-2. **消息内容**：
-   - 文本消息：4.2 字符/token
-   - 复杂内容块（JSON）：3.8 字符/token
-   - 添加角色开销：每条消息 +4 tokens
-3. **工具定义**：
-   - 基础开销：50 tokens/工具（JSON 结构）
-   - 名称和描述：4.0 字符/token
-   - Schema 定义：JSON 序列化后按 4.0 字符/token 计算
-
-**性能优化**：
-- **大规模工具场景**：当工具数量 >100 时，使用批量序列化避免重复分配
-- **内存复用**：复杂内容块统一序列化，减少 GC 压力
-- **零依赖**：无需引入 tiktoken 等重型库，二进制体积小
-
-### 准确度验证
-
-项目包含完整的基准测试套件（`internal/app/token_counter_test.go`）：
-
-```bash
-# 运行Token计数准确度测试
-go test -v -run TestCountTokens
-
-# 测试覆盖场景：
-# - 简单文本消息（准确度 >95%）
-# - 系统提示词（准确度 >90%）
-# - 工具定义（准确度 >93%）
-# - 大规模工具场景（1000+ 工具，准确度 >90%）
-```
-
-**准确度指标**（与 Anthropic 官方 API 对比）：
-- 纯文本消息：95-98%
-- 包含系统提示词：90-95%
-- 包含工具定义（<100 工具）：93-97%
-- 大规模工具（>100 工具）：90-95%
-
-### 适用场景
-
-1. **成本预估**：发送请求前估算 token 消耗，避免超额
-2. **客户端优化**：在客户端实现 token 计数，减少 API 调用
-3. **批量处理**：批量估算多个请求的 token 消耗
-4. **开发调试**：快速验证请求格式和 token 分布
-
-### 设计原则
-
-- **KISS**：简单高效的估算算法，避免引入复杂的 tokenizer 库
-- **向后兼容**：支持所有 Claude 模型和消息格式
-- **性能优先**：本地计算，响应时间 <5ms，不依赖网络
-- **实用主义**：准确度 90%+ 已满足大多数场景，无需 100% 精确
-
-### 注意事项
-
-- **估算结果**：本地计数为估算值，实际消耗以 Anthropic 官方 API 返回为准
-- **模型无关**：当前算法对所有 Claude 模型使用相同系数（未来可能按模型优化）
-- **工具数量**：大量工具（>1000）时估算偏差可能增大 5-10%
-- **无需认证**：本接口无需 `CCLOAD_AUTH` 认证，可公开访问（可通过反向代理限制）
+- ✅ **强密码策略**：生产环境必须设置强 `CCLOAD_PASS`
+- ✅ **API认证**：建议设置 `CCLOAD_AUTH` 保护API端点
+- ✅ **数据脱敏**：API Key自动脱敏（前4后4）
+- ✅ **日志消毒**：自动防止日志注入攻击
+- ✅ **内存模式安全**：强制要求配置Redis防止数据丢失
+- 🔒 **HTTPS部署**：建议使用反向代理配置SSL

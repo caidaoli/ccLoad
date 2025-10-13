@@ -115,7 +115,7 @@ docker run -d --name ccload \
 
 # 或使用 docker-compose
 curl -o docker-compose.yml https://raw.githubusercontent.com/caidaoli/ccLoad/master/docker-compose.yml
-curl -o .env https://raw.githubusercontent.com/caidaoli/ccLoad/master/.env.docker.example
+curl -o .env https://raw.githubusercontent.com/caidaoli/ccLoad/master/.env.example
 # 编辑 .env 文件设置密码
 docker-compose up -d
 ```
@@ -489,9 +489,8 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 |------|------|------|----------|
 | **Go** | 1.25.0+ | 运行时环境 | 原生并发支持，内置 min 函数 |
 | **Gin** | v1.10.1 | Web框架 | 高性能HTTP路由 |
-| **SQLite3** | v1.14.32 | 嵌入式数据库 | 零配置，单文件存储 |
+| **SQLite3** | v1.38.2 | 嵌入式数据库 | 零配置，单文件存储 |
 | **Sonic** | v1.14.1 | JSON库 | 比标准库快2-3倍 |
-| **Ristretto** | v2.3.0 | 内存缓存 | TinyLFU算法，高命中率 |
 | **go-redis** | v9.7.0 | Redis客户端 | 可选渠道数据同步 |
 | **godotenv** | v1.5.1 | 环境配置 | 简化配置管理 |
 
@@ -501,7 +500,7 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 - 渠道配置缓存（60秒TTL）
 - 轮询指针缓存（内存）
 - 冷却状态缓存（sync.Map）
-- 错误分类缓存（LRU 1000容量）
+- 错误分类缓存（1000容量）
 
 **异步处理架构**:
 - Redis同步（单worker协程，非阻塞触发，响应<1ms）
@@ -509,9 +508,9 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 - 会话/冷却清理（后台协程，定期维护）
 
 **连接池优化**:
-- SQLite: 25个连接，5分钟生命周期
-- HTTP客户端: 100最大连接，10秒超时，keepalive优化
-- TLS: LRU会话缓存，减少握手耗时
+- SQLite: 内存模式10个连接/文件模式5个连接，1分钟生命周期
+- HTTP客户端: 100最大连接，30秒超时，keepalive优化
+- TLS: 会话缓存（1024容量），减少握手耗时
 
 ## 🔧 配置说明
 
@@ -522,8 +521,13 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 | `CCLOAD_PASS` | "admin" | 管理界面密码 |
 | `CCLOAD_AUTH` | 无 | API 访问令牌（多个用逗号分隔） |
 | `CCLOAD_MAX_KEY_RETRIES` | "3" | 单个渠道内最大Key重试次数 |
+| `CCLOAD_FIRST_BYTE_TIMEOUT` | "120" | 流式请求首字节超时时间（秒） |
+| `CCLOAD_USE_MEMORY_DB` | "false" | 启用内存数据库模式（需配合Redis使用） |
+| `CCLOAD_SKIP_TLS_VERIFY` | "false" | 跳过TLS证书验证（仅开发环境） |
+| `CCLOAD_ENABLE_TRACE` | "0" | 启用HTTP详细追踪（调试用） |
 | `PORT` | "8080" | 服务端口 |
 | `SQLITE_PATH` | "data/ccload.db" | 数据库文件路径 |
+| `SQLITE_JOURNAL_MODE` | "WAL" | SQLite Journal模式（WAL/TRUNCATE/DELETE等） |
 | `REDIS_URL` | 无 | Redis连接URL（可选，用于渠道数据异步备份） |
 | `GOTAGS` | "go_json" | 构建标签（go_json/std） |
 
