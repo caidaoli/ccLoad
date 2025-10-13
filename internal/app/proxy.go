@@ -33,12 +33,11 @@ const (
 	StatusConnectionReset     = 502 // Connection Reset - 不可重试
 )
 
-// 错误分类缓存（性能优化：减少字符串操作开销60%）
-// 使用LRU缓存防止内存无限增长
+// ✅ P0修复（2025-10-13）：简化错误分类缓存，使用定期清理策略
+// 移除复杂的原子计数器，改为基于时间的清理机制（KISS原则）
 var (
-	errClassCache   sync.Map // key: error string, value: [2]int{statusCode, shouldRetry(0/1)}
-	errCacheSize    atomic.Int64
-	errCacheMaxSize = int64(config.ErrorCacheMaxSize)
+	errClassCache      sync.Map      // key: error string, value: [2]int{statusCode, shouldRetry(0/1)}
+	lastCacheClearTime atomic.Int64  // 最后清理时间（Unix秒），使用atomic避免锁
 )
 
 // isGeminiRequest 检测是否为Gemini API请求
@@ -134,9 +133,6 @@ func classifyError(err error) (statusCode int, shouldRetry bool) {
 
 	errLower := strings.ToLower(errStr)
 
-	// ❌ 删除死代码 (P1修复 2025-10-12): 首字节超时检测已迁移到快速路径
-	// 理由：首字节超时错误由 forwardOnceAsync 包装后在快速路径优先检测，此分支永远不会被执行
-
 	// Connection reset by peer - 不应重试
 	if strings.Contains(errLower, "connection reset by peer") ||
 		strings.Contains(errLower, "broken pipe") {
@@ -163,36 +159,40 @@ func classifyError(err error) (statusCode int, shouldRetry bool) {
 	}
 	cacheVal := [2]int{code, retryInt}
 
-	// ✅ P0修复：原子化缓存操作（先Store后检查大小）
-	// 设计原则：避免"计数器递增但未Store"的竞争条件
+	// ✅ P0修复（2025-10-13）：简化缓存逻辑，使用定期清理策略
+	// Store到缓存（无锁写入）
 	errClassCache.Store(errStr, cacheVal)
-	newSize := errCacheSize.Add(1)
 
-	// LRU驱逐策略：超过限制时清空一半缓存（简单但有效）
-	// 使用CAS确保只有一个goroutine执行清理，避免重复清理
-	if newSize > errCacheMaxSize {
-		// 尝试获取清理权限：将计数器重置为目标大小的一半
-		targetSize := errCacheMaxSize / 2
-		if errCacheSize.CompareAndSwap(newSize, targetSize) {
-			// 清理策略：删除一半缓存项（近似LRU）
-			// ⚠️ 注意：sync.Map没有LRU元数据，只能全清或随机清
-			// 这里采用全清策略，简单可靠（KISS原则）
-			deletedCount := int64(0)
-			errClassCache.Range(func(key, value any) bool {
-				errClassCache.Delete(key)
-				deletedCount++
-				// 删除到目标数量后停止（保留最近添加的）
-				return deletedCount < (errCacheMaxSize - targetSize)
-			})
-			util.SafePrintf("⚠️  Error缓存LRU清理: 删除 %d 项，当前大小 %d", deletedCount, targetSize)
-		} else {
-			// CAS失败说明其他goroutine正在清理，当前线程无需操作
-			// 但需要调整计数器（因为我们的Store已经成功）
-			errCacheSize.Add(-1) // 回退计数器，避免累积误差
+	// 定期清理策略：每5分钟清空一次缓存
+	// 设计原则（KISS）：避免复杂的LRU逻辑，使用简单的时间戳判断
+	now := time.Now().Unix()
+	lastClear := lastCacheClearTime.Load()
+
+	// 距离上次清理超过5分钟（300秒）
+	if now-lastClear > 300 {
+		// 使用CAS确保只有一个goroutine执行清理
+		if lastCacheClearTime.CompareAndSwap(lastClear, now) {
+			// 异步清理缓存（不阻塞主流程）
+			go clearErrorCache()
 		}
 	}
 
 	return code, retry
+}
+
+// clearErrorCache 清空错误缓存（异步执行）
+// ✅ P0修复（2025-10-13）：新增独立清理函数，遵循SRP原则
+func clearErrorCache() {
+	count := 0
+	errClassCache.Range(func(key, value any) bool {
+		errClassCache.Delete(key)
+		count++
+		return true
+	})
+
+	if count > 0 {
+		util.SafePrintf("🗑️  错误缓存定期清理: 删除 %d 项", count)
+	}
 }
 
 type fwResult struct {

@@ -58,6 +58,10 @@ type Server struct {
 	channelCooldownGauge atomic.Int64 // 当前活跃的渠道级冷却数量
 	keyCooldownGauge     atomic.Int64 // 当前活跃的Key级冷却数量
 	logDropCount         atomic.Int64 // 日志丢弃计数器（P1修复 2025-10-05）
+
+	// ✅ P0修复（2025-10-13）：优雅关闭机制
+	shutdownCh chan struct{}  // 关闭信号channel
+	wg         sync.WaitGroup // 等待所有后台goroutine结束
 }
 
 func NewServer(store storage.Store) *Server {
@@ -189,19 +193,26 @@ func NewServer(store storage.Store) *Server {
 		// 并发控制：使用信号量限制最大并发请求数
 		concurrencySem: make(chan struct{}, maxConcurrency),
 		maxConcurrency: maxConcurrency,
+
+		// ✅ P0修复（2025-10-13）：初始化优雅关闭机制
+		shutdownCh: make(chan struct{}),
 	}
 
 	// 初始化Key选择器（传递Key冷却监控指标）
 	s.keySelector = NewKeySelector(store, &s.keyCooldownGauge)
 
-	// 启动日志工作协程
+	// ✅ P0修复（2025-10-13）：启动日志工作协程（支持优雅关闭）
 	for i := 0; i < s.logWorkers; i++ {
+		s.wg.Add(1)
 		go s.logWorker()
 	}
 
-	// 启动后台清理协程
-	go s.tokenCleanupLoop()   // Token认证：定期清理过期Token
-	go s.cleanupOldLogsLoop() // 定期清理3天前的日志（性能优化：避免每次插入时清理）
+	// ✅ P0修复（2025-10-13）：启动后台清理协程（支持优雅关闭）
+	s.wg.Add(1)
+	go s.tokenCleanupLoop() // Token认证：定期清理过期Token
+
+	s.wg.Add(1)
+	go s.cleanupOldLogsLoop() // 定期清理3天前的日志
 
 	return s
 
@@ -453,17 +464,30 @@ func (s *Server) handleWebFiles(c *gin.Context) {
 }
 
 // Token清理循环（定期清理过期Token）
+// ✅ P0修复（2025-10-13）：支持优雅关闭
 func (s *Server) tokenCleanupLoop() {
+	defer s.wg.Done()
+
 	ticker := time.NewTicker(config.HoursToDuration(config.TokenCleanupIntervalHours))
 	defer ticker.Stop()
 
-	for range ticker.C {
-		s.cleanExpiredTokens()
+	for {
+		select {
+		case <-ticker.C:
+			s.cleanExpiredTokens()
+		case <-s.shutdownCh:
+			// 收到关闭信号，执行最后一次清理后退出
+			s.cleanExpiredTokens()
+			return
+		}
 	}
 }
 
 // 异步日志工作协程
+// ✅ P0修复（2025-10-13）：支持优雅关闭
 func (s *Server) logWorker() {
+	defer s.wg.Done()
+
 	batch := make([]*model.LogEntry, 0, config.LogBatchSize)
 	timer := time.NewTimer(config.SecondsToDuration(config.LogBatchTimeout))
 	defer timer.Stop()
@@ -477,11 +501,19 @@ func (s *Server) logWorker() {
 				batch = batch[:0]
 			}
 			timer.Reset(config.SecondsToDuration(config.LogBatchTimeout))
+
 		case <-timer.C:
 			if len(batch) > 0 {
 				s.flushLogs(batch)
 				batch = batch[:0]
 			}
+
+		case <-s.shutdownCh:
+			// 收到关闭信号，刷新剩余日志后退出
+			if len(batch) > 0 {
+				s.flushLogs(batch)
+			}
+			return
 		}
 	}
 }
@@ -520,16 +552,26 @@ func (s *Server) addLogAsync(entry *model.LogEntry) {
 
 // cleanupOldLogsLoop 定期清理旧日志（性能优化：避免每次插入时清理）
 // 每小时检查一次，删除3天前的日志
+// ✅ P0修复（2025-10-13）：支持优雅关闭
 func (s *Server) cleanupOldLogsLoop() {
+	defer s.wg.Done()
+
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		ctx := context.Background()
-		cutoff := time.Now().AddDate(0, 0, -3) // 3天前
+	for {
+		select {
+		case <-ticker.C:
+			ctx := context.Background()
+			cutoff := time.Now().AddDate(0, 0, -3) // 3天前
 
-		// 通过Store接口清理旧日志，忽略错误（非关键操作）
-		_ = s.store.CleanupLogsBefore(ctx, cutoff)
+			// 通过Store接口清理旧日志，忽略错误（非关键操作）
+			_ = s.store.CleanupLogsBefore(ctx, cutoff)
+
+		case <-s.shutdownCh:
+			// 收到关闭信号，直接退出（不执行最后一次清理）
+			return
+		}
 	}
 }
 
@@ -620,4 +662,32 @@ func (s *Server) handleChannelKeys(c *gin.Context) {
 		return
 	}
 	s.handleGetChannelKeys(c, id)
+}
+
+// ✅ P0修复（2025-10-13）：优雅关闭Server
+// Shutdown 优雅关闭Server，等待所有后台goroutine完成
+// 参数ctx用于控制最大等待时间，超时后强制退出
+// 返回值：nil表示成功，context.DeadlineExceeded表示超时
+func (s *Server) Shutdown(ctx context.Context) error {
+	util.SafePrint("🛑 正在关闭Server，等待后台任务完成...")
+
+	// 关闭shutdownCh，通知所有goroutine退出
+	close(s.shutdownCh)
+
+	// 使用channel等待所有goroutine完成
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+
+	// 等待完成或超时
+	select {
+	case <-done:
+		util.SafePrint("✅ Server优雅关闭完成")
+		return nil
+	case <-ctx.Done():
+		util.SafePrint("⚠️  Server关闭超时，部分后台任务可能未完成")
+		return ctx.Err()
+	}
 }

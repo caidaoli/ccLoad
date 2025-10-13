@@ -93,6 +93,7 @@ const (
 )
 
 // SQLite连接池配置常量
+// ✅ P1修复（2025-10-13）：优化连接池配置，提升高并发性能
 const (
 	// SQLiteMaxOpenConnsMemory 内存模式最大连接数
 	SQLiteMaxOpenConnsMemory = 10
@@ -101,13 +102,18 @@ const (
 	SQLiteMaxIdleConnsMemory = 5
 
 	// SQLiteMaxOpenConnsFile 文件模式最大连接数（WAL写并发瓶颈）
+	// 保持5：1写 + 4读 = 充分利用WAL模式并发能力
 	SQLiteMaxOpenConnsFile = 5
 
 	// SQLiteMaxIdleConnsFile 文件模式最大空闲连接数
-	SQLiteMaxIdleConnsFile = 2
+	// ✅ 从2提升到5：避免高并发时频繁创建/销毁连接
+	// 设计原则：空闲连接数 = 最大连接数，减少连接重建开销
+	SQLiteMaxIdleConnsFile = 5
 
 	// SQLiteConnMaxLifetimeMinutes 连接最大生命周期（分钟）
-	SQLiteConnMaxLifetimeMinutes = 1
+	// ✅ 从1分钟提升到5分钟：降低连接过期频率
+	// 权衡：更长的生命周期 vs 更低的连接重建开销
+	SQLiteConnMaxLifetimeMinutes = 5
 
 	// SQLiteBusyTimeoutMs SQLite busy_timeout参数（毫秒）
 	SQLiteBusyTimeoutMs = 5000

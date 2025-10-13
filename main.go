@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"ccLoad/internal/app"
@@ -102,8 +105,44 @@ func main() {
 		}
 		addr = v
 	}
-	log.Printf("listening on %s", addr)
-	if err := r.Run(addr); err != nil {
-		log.Fatal(err)
+
+	// ✅ P0修复（2025-10-13）：使用http.Server支持优雅关闭
+	httpServer := &http.Server{
+		Addr:    addr,
+		Handler: r,
 	}
+
+	// 启动HTTP服务器（在goroutine中）
+	go func() {
+		log.Printf("listening on %s", addr)
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("HTTP服务器启动失败: %v", err)
+		}
+	}()
+
+	// ✅ P0修复（2025-10-13）：监听系统信号，实现优雅关闭
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	log.Println("收到关闭信号，正在优雅关闭服务器...")
+
+	// 设置5秒超时用于HTTP服务器关闭
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// 关闭HTTP服务器
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		log.Printf("HTTP服务器关闭错误: %v", err)
+	}
+
+	// 关闭Server后台任务（设置10秒超时）
+	taskShutdownCtx, taskCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer taskCancel()
+
+	if err := srv.Shutdown(taskShutdownCtx); err != nil {
+		log.Printf("Server后台任务关闭错误: %v", err)
+	}
+
+	log.Println("✅ 服务器已优雅关闭")
 }
