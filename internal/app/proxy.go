@@ -583,13 +583,20 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *model.Config, keyInd
 
 	// 网络错误处理
 	if err != nil {
-		_, shouldRetry := classifyError(err)
+		classifiedStatus, shouldRetry := classifyError(err)
 		if !shouldRetry {
 			return ActionReturnClient, false
 		}
-		// 可重试的网络错误：默认为Key级错误
-		errLevel = util.ErrorLevelKey
-		statusCode = 0 // 网络错误无状态码
+
+		// ✅ 修复：区分网络错误类型
+		// 504 Gateway Timeout → 渠道级错误（上游整体超时）
+		// 其他可重试错误（502等）→ Key级错误
+		if classifiedStatus == 504 {
+			errLevel = util.ErrorLevelChannel
+		} else {
+			errLevel = util.ErrorLevelKey
+		}
+		statusCode = classifiedStatus
 	} else {
 		// HTTP错误处理：使用智能分类器（结合响应体内容）
 		statusCode = res.Status
