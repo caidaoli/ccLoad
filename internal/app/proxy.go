@@ -8,13 +8,11 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"net/http/httptrace"
 	neturl "net/url"
 	"strconv"
 	"strings"
@@ -246,6 +244,35 @@ func filterAndWriteResponseHeaders(w http.ResponseWriter, hdr http.Header) {
 	}
 }
 
+// buildProxyRequest 构建上游代理请求（统一处理URL、Header、认证）
+// ✅ P1-1 重构 (2025-01-XX): 从 forwardOnceAsync 提取，遵循SRP原则
+func (s *Server) buildProxyRequest(
+	reqCtx *requestContext,
+	cfg *model.Config,
+	apiKey string,
+	method string,
+	body []byte,
+	hdr http.Header,
+	rawQuery, requestPath string,
+) (*http.Request, error) {
+	// 1. 构建完整 URL
+	upstreamURL := buildUpstreamURL(cfg, requestPath, rawQuery)
+
+	// 2. 创建带上下文的请求
+	req, err := buildUpstreamRequest(reqCtx.ctx, method, upstreamURL, body)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. 复制请求头
+	copyRequestHeaders(req, hdr)
+
+	// 4. 注入认证头
+	injectAPIKeyHeaders(req, apiKey, requestPath)
+
+	return req, nil
+}
+
 // 辅助函数：流式复制（支持flusher与ctx取消）
 func streamCopy(ctx context.Context, src io.Reader, dst http.ResponseWriter) error {
 	// 简化实现：直接循环读取与写入，避免为每次读取创建goroutine导致泄漏
@@ -276,158 +303,157 @@ func streamCopy(ctx context.Context, src io.Reader, dst http.ResponseWriter) err
 	}
 }
 
-// forwardOnceAsync: 异步流式转发，透明转发客户端原始请求
-// 参数新增 apiKey 用于直接传递已选中的API Key（从KeySelector获取）
-// 参数新增 method 用于支持任意HTTP方法（GET、POST、PUT、DELETE等）
-func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey string, method string, body []byte, hdr http.Header, rawQuery, requestPath string, w http.ResponseWriter) (*fwResult, float64, error) {
-	startTime := time.Now()
+// handleRequestError 处理网络请求错误
+// ✅ P1-1 重构 (2025-01-XX): 从 forwardOnceAsync 提取，遵循SRP原则
+func (s *Server) handleRequestError(
+	reqCtx *requestContext,
+	cfg *model.Config,
+	err error,
+	trace *traceCollector,
+) (*fwResult, float64, error) {
+	duration := reqCtx.Duration()
 
-	// ✅ P0修复 (2025-10-12): 为流式请求添加首字节超时控制
-	// 设计原则：
-	// 1. 仅对流式请求启用首字节超时（非流式请求依赖 Transport.ResponseHeaderTimeout）
-	// 2. 使用 defer cancel() 在函数退出时清理上下文，避免资源泄漏
-	// 3. 超时错误明确标识为 "first byte timeout"，确保错误分类器正确识别并触发渠道切换
-	// 4. ⚠️ 关键：不要在流式传输期间取消上下文，等函数完全结束后再清理
-	var reqCtx context.Context
-	var cancel context.CancelFunc
-	isStreaming := isStreamingRequest(requestPath, body)
-
-	if isStreaming && s.firstByteTimeout > 0 {
-		// 流式请求：创建带首字节超时的子上下文
-		reqCtx, cancel = context.WithTimeout(ctx, s.firstByteTimeout)
-		// ✅ 关键：使用 defer 延迟到函数返回时才取消
-		// 这样可以：
-		// 1. 避免 context 泄漏（满足 Go 最佳实践）
-		// 2. 不在流式传输期间取消上下文（避免 499 错误）
-		// 3. 仅在函数完全结束后清理资源
-		defer cancel()
-	} else {
-		// 非流式请求：使用原始上下文
-		reqCtx = ctx
+	// 包装首字节超时错误
+	if errors.Is(err, context.DeadlineExceeded) && reqCtx.isStreaming {
+		err = fmt.Errorf("first byte timeout after %.2fs (CCLOAD_FIRST_BYTE_TIMEOUT=%v): %w",
+			duration, reqCtx.firstByteTimeout, err)
+		util.SafePrintf("⏱️  [首字节超时] 渠道ID=%d, 超时时长=%.2fs",
+			cfg.ID, duration)
 	}
 
-	// 性能优化：条件启用HTTP trace（默认关闭，节省0.5-1ms/请求）
-	var (
-		dnsStart, connStart, tlsStart time.Time
-		tDNS, tConn, tTLS, tWrote     float64
-	)
-	if s.enableTrace {
-		// 仅在环境变量CCLOAD_ENABLE_TRACE=1时启用详细追踪
-		trace := &httptrace.ClientTrace{
-			DNSStart: func(info httptrace.DNSStartInfo) { dnsStart = time.Now() },
-			DNSDone: func(info httptrace.DNSDoneInfo) {
-				if !dnsStart.IsZero() {
-					tDNS = time.Since(dnsStart).Seconds()
-				}
-			},
-			ConnectStart: func(network, addr string) { connStart = time.Now() },
-			ConnectDone: func(network, addr string, err error) {
-				if !connStart.IsZero() {
-					tConn = time.Since(connStart).Seconds()
-				}
-			},
-			TLSHandshakeStart: func() { tlsStart = time.Now() },
-			TLSHandshakeDone: func(cs tls.ConnectionState, err error) {
-				if !tlsStart.IsZero() {
-					tTLS = time.Since(tlsStart).Seconds()
-				}
-			},
-			WroteRequest: func(info httptrace.WroteRequestInfo) { tWrote = time.Since(startTime).Seconds() },
-		}
-		reqCtx = httptrace.WithClientTrace(reqCtx, trace)
+	statusCode, _ := classifyError(err)
+
+	var traceData *traceBreakdown
+	if trace != nil {
+		traceData = trace.toBreakdown(duration)
 	}
 
-	// 透明代理：构建完整URL与请求（使用带超时的上下文）
-	upstreamURL := buildUpstreamURL(cfg, requestPath, rawQuery)
-	req, err := buildUpstreamRequest(reqCtx, method, upstreamURL, body)
-	if err != nil {
-		return nil, 0, err
-	}
-	// 复制原始请求头并注入认证头
-	copyRequestHeaders(req, hdr)
-	injectAPIKeyHeaders(req, apiKey, requestPath)
+	return &fwResult{
+		Status:        statusCode,
+		Body:          []byte(err.Error()),
+		FirstByteTime: duration,
+		Trace:         traceData,
+	}, duration, err
+}
 
-	// 异步发送请求，一旦收到响应头立即开始转发
-	resp, err := s.client.Do(req)
-	if err != nil {
-		duration := time.Since(startTime).Seconds()
-
-		// ✅ P0修复：包装首字节超时错误，添加明确标识
-		// 确保 classifyError 能够正确识别并触发渠道切换
-		if errors.Is(err, context.DeadlineExceeded) && isStreaming {
-			// 流式请求的首字节超时：包装错误消息
-			err = fmt.Errorf("first byte timeout after %.2fs (CCLOAD_FIRST_BYTE_TIMEOUT=%v): %w",
-				duration, s.firstByteTimeout, err)
-			util.SafePrintf("⏱️  [首字节超时] 渠道ID=%d, 超时时长=%.2fs, 配置=%v",
-				cfg.ID, duration, s.firstByteTimeout)
-		}
-
-		statusCode, _ := classifyError(err)
-		return &fwResult{
-			Status:        statusCode,
-			Header:        nil,
-			Body:          []byte(err.Error()),
-			Resp:          nil,
-			FirstByteTime: duration,
-			Trace: &traceBreakdown{
-				DNS:       tDNS,
-				Connect:   tConn,
-				TLS:       tTLS,
-				WroteReq:  tWrote,
-				FirstByte: duration,
-			},
-		}, duration, err
+// handleErrorResponse 处理错误响应（读取完整响应体）
+// ✅ P1-1 重构 (2025-01-XX): 从 forwardOnceAsync 提取，遵循SRP原则
+func (s *Server) handleErrorResponse(
+	reqCtx *requestContext,
+	resp *http.Response,
+	firstByteTime float64,
+	hdrClone http.Header,
+	trace *traceCollector,
+) (*fwResult, float64, error) {
+	rb, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		s.addLogAsync(&model.LogEntry{
+			Time:    model.JSONTime{Time: time.Now()},
+			Message: fmt.Sprintf("error reading upstream body: %v", readErr),
+		})
 	}
 
-	// 记录首字节响应时间（接收到响应头的时间）
-	firstByteTime := time.Since(startTime).Seconds()
-
-	// 克隆响应头
-	hdrClone := resp.Header.Clone()
-
-	// 如果是错误状态，读取错误体后返回
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		rb, readErr := io.ReadAll(resp.Body)
-		if readErr != nil {
-			// 记录读取错误，但仍返回可用部分
-			s.addLogAsync(&model.LogEntry{Time: model.JSONTime{Time: time.Now()}, Message: fmt.Sprintf("error reading upstream body: %v", readErr)})
-		}
-		_ = resp.Body.Close()
-		duration := time.Since(startTime).Seconds()
-		return &fwResult{Status: resp.StatusCode, Header: hdrClone, Body: rb, Resp: nil, FirstByteTime: firstByteTime, Trace: &traceBreakdown{DNS: tDNS, Connect: tConn, TLS: tTLS, WroteReq: tWrote, FirstByte: firstByteTime}}, duration, nil
+	duration := reqCtx.Duration()
+	var traceData *traceBreakdown
+	if trace != nil {
+		traceData = trace.toBreakdown(firstByteTime)
 	}
 
-	// 成功响应：立即写入响应头，开始异步流式转发
-	filterAndWriteResponseHeaders(w, resp.Header)
-	w.WriteHeader(resp.StatusCode)
-
-	// 启动异步流式传输（管道式）
-	var streamErr error
-
-	defer resp.Body.Close()
-
-	// 流式复制（使用可配置的首字节超时）
-	streamErr = streamCopy(ctx, resp.Body, w)
-	// 已统一到上面的循环，支持ctx取消，无需else分支
-
-	// 计算总传输时间（从startTime开始）
-	totalDuration := time.Since(startTime).Seconds()
-
-	// 返回结果，包含流传输信息
 	return &fwResult{
 		Status:        resp.StatusCode,
 		Header:        hdrClone,
-		Body:          nil, // 流式传输不保存body
-		Resp:          nil, // 已经处理完毕
+		Body:          rb,
 		FirstByteTime: firstByteTime,
-		Trace: &traceBreakdown{
-			DNS:       tDNS,
-			Connect:   tConn,
-			TLS:       tTLS,
-			WroteReq:  tWrote,
-			FirstByte: firstByteTime,
-		},
-	}, totalDuration, streamErr
+		Trace:         traceData,
+	}, duration, nil
+}
+
+// handleSuccessResponse 处理成功响应（流式传输）
+// ✅ P1-1 重构 (2025-01-XX): 从 forwardOnceAsync 提取，遵循SRP原则
+func (s *Server) handleSuccessResponse(
+	reqCtx *requestContext,
+	resp *http.Response,
+	firstByteTime float64,
+	hdrClone http.Header,
+	w http.ResponseWriter,
+	trace *traceCollector,
+) (*fwResult, float64, error) {
+	// 写入响应头
+	filterAndWriteResponseHeaders(w, resp.Header)
+	w.WriteHeader(resp.StatusCode)
+
+	// 流式复制（使用原始上下文，不受首字节超时限制）
+	// 注意：这里使用 reqCtx.ctx 的父上下文，避免首字节超时影响流式传输
+	streamErr := streamCopy(reqCtx.ctx, resp.Body, w)
+
+	duration := reqCtx.Duration()
+	var traceData *traceBreakdown
+	if trace != nil {
+		traceData = trace.toBreakdown(firstByteTime)
+	}
+
+	return &fwResult{
+		Status:        resp.StatusCode,
+		Header:        hdrClone,
+		FirstByteTime: firstByteTime,
+		Trace:         traceData,
+	}, duration, streamErr
+}
+
+// handleResponse 处理 HTTP 响应（错误或成功）
+// ✅ P1-1 重构 (2025-01-XX): 从 forwardOnceAsync 提取，遵循SRP原则
+func (s *Server) handleResponse(
+	reqCtx *requestContext,
+	resp *http.Response,
+	firstByteTime float64,
+	w http.ResponseWriter,
+	trace *traceCollector,
+) (*fwResult, float64, error) {
+	hdrClone := resp.Header.Clone()
+
+	// 错误状态：读取完整响应体
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return s.handleErrorResponse(reqCtx, resp, firstByteTime, hdrClone, trace)
+	}
+
+	// 成功状态：流式转发
+	return s.handleSuccessResponse(reqCtx, resp, firstByteTime, hdrClone, w, trace)
+}
+
+// forwardOnceAsync: 异步流式转发，透明转发客户端原始请求
+// ✅ P1-1 重构 (2025-01-XX): 简化主流程，职责单一，易于测试
+// 参数新增 apiKey 用于直接传递已选中的API Key（从KeySelector获取）
+// 参数新增 method 用于支持任意HTTP方法（GET、POST、PUT、DELETE等）
+func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey string, method string, body []byte, hdr http.Header, rawQuery, requestPath string, w http.ResponseWriter) (*fwResult, float64, error) {
+	// 1. 创建请求上下文（处理超时）
+	reqCtx := s.newRequestContext(ctx, requestPath, body)
+	defer reqCtx.Close()
+
+	// 2. 附加 HTTP 追踪（如果启用）
+	var trace *traceCollector
+	if s.enableTrace {
+		trace = &traceCollector{}
+		reqCtx.ctx = trace.attachTrace(reqCtx.ctx, reqCtx.startTime)
+	}
+
+	// 3. 构建上游请求
+	req, err := s.buildProxyRequest(reqCtx, cfg, apiKey, method, body, hdr, rawQuery, requestPath)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 4. 发送请求
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return s.handleRequestError(reqCtx, cfg, err, trace)
+	}
+	defer resp.Body.Close()
+
+	// 5. 记录首字节时间
+	firstByteTime := reqCtx.Duration()
+
+	// 6. 处理响应
+	return s.handleResponse(reqCtx, resp, firstByteTime, w, trace)
 }
 
 // extractModelFromPath 从URL路径中提取模型名称
@@ -649,11 +675,11 @@ func (s *Server) forwardAttempt(
 
 	// 处理成功响应
 	if res.Status >= 200 && res.Status < 300 {
-		return s.handleSuccessResponse(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration)
+		return s.handleProxySuccess(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration)
 	}
 
 	// 处理错误响应
-	return s.handleErrorResponse(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration)
+	return s.handleProxyErrorResponse(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration)
 }
 
 // handleNetworkError 处理网络错误
@@ -693,8 +719,9 @@ func (s *Server) handleNetworkError(
 	return nil, true, false // 继续重试下一个Key
 }
 
-// handleSuccessResponse 处理成功响应
-func (s *Server) handleSuccessResponse(
+// handleProxySuccess 处理代理成功响应（业务逻辑层）
+// 注意：与 handleSuccessResponse（HTTP层）不同
+func (s *Server) handleProxySuccess(
 	ctx context.Context,
 	cfg *model.Config,
 	keyIndex int,
@@ -723,8 +750,9 @@ func (s *Server) handleSuccessResponse(
 	}, false, false
 }
 
-// handleErrorResponse 处理错误响应
-func (s *Server) handleErrorResponse(
+// handleProxyError 处理代理错误响应（业务逻辑层）
+// 注意：与 handleErrorResponse（HTTP层）不同
+func (s *Server) handleProxyErrorResponse(
 	ctx context.Context,
 	cfg *model.Config,
 	keyIndex int,

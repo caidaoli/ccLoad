@@ -64,7 +64,12 @@ func (wb *WhereBuilder) AddCondition(condition string, args ...any) *WhereBuilde
 }
 
 // AddTimeRange 添加时间范围条件
+// ✅ P1 修复 (2025-01-XX): 添加字段名白名单验证
 func (wb *WhereBuilder) AddTimeRange(timeField string, since any) *WhereBuilder {
+	// P1 安全修复：验证字段名
+	if err := ValidateFieldName(timeField); err != nil {
+		panic(fmt.Sprintf("SQL注入防护: %v", err))
+	}
 	return wb.AddCondition(fmt.Sprintf("%s >= ?", timeField), since)
 }
 
@@ -229,7 +234,14 @@ func (qb *QueryBuilder) ApplyFilter(filter *model.LogFilter) *QueryBuilder {
 }
 
 // WhereIn 添加 IN 条件，自动生成占位符，防止SQL注入
+// ✅ P1 修复 (2025-01-XX): 添加字段名白名单验证，防止SQL注入
 func (qb *QueryBuilder) WhereIn(column string, values []any) *QueryBuilder {
+	// P1 安全修复：验证字段名是否在白名单中
+	if err := ValidateFieldName(column); err != nil {
+		// 触发 panic 确保开发期间立即发现问题
+		panic(fmt.Sprintf("SQL注入防护: %v", err))
+	}
+
 	if len(values) == 0 {
 		// 无值时添加恒为假的条件，确保不返回记录
 		qb.wb.AddCondition("1=0")
