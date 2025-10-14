@@ -16,6 +16,11 @@ import (
 // 这是对 P0 bug 的回归测试：内存数据库在连接池生命周期到期后被销毁
 // 修复方案：守护连接（Keeper Connection）机制
 func TestNamedMemoryDatabasePersistence(t *testing.T) {
+	// ✅ P1-1 修复：内存模式测试需要 Redis，如果未配置则跳过
+	if os.Getenv("REDIS_URL") == "" {
+		t.Skip("⚠️  跳过内存数据库测试：需要配置 REDIS_URL 环境变量")
+	}
+
 	// 设置内存模式
 	os.Setenv("CCLOAD_USE_MEMORY_DB", "true")
 	defer os.Unsetenv("CCLOAD_USE_MEMORY_DB")
@@ -100,6 +105,11 @@ func TestNamedMemoryDatabasePersistence(t *testing.T) {
 
 // TestMemoryDatabaseNoConnLifetime 验证内存模式下连接池无生命周期限制
 func TestMemoryDatabaseNoConnLifetime(t *testing.T) {
+	// ✅ P1-1 修复：内存模式测试需要 Redis，如果未配置则跳过
+	if os.Getenv("REDIS_URL") == "" {
+		t.Skip("⚠️  跳过内存数据库测试：需要配置 REDIS_URL 环境变量")
+	}
+
 	// 设置内存模式
 	os.Setenv("CCLOAD_USE_MEMORY_DB", "true")
 	defer os.Unsetenv("CCLOAD_USE_MEMORY_DB")

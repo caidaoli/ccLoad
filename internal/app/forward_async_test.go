@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -166,8 +167,17 @@ func TestHandleRequestError(t *testing.T) {
 				t.Errorf("error = %v, should contain %s", err, tt.wantContains)
 			}
 
-			if result.Status == 0 {
-				t.Error("status code should not be 0")
+			// ✅ P0-1 & P2-3 修复：ErrCodeNetworkRetryable = -1 是合法的内部标识符
+			// 对于某些网络错误（如DNS错误），无法映射到标准HTTP状态码
+			// 使用负值避免与HTTP状态码混淆
+			if result.Status == ErrCodeNetworkRetryable {
+				// 检查是否为网络操作错误
+				var netOpErr *net.OpError
+				if !errors.As(tt.err, &netOpErr) {
+					t.Errorf("expected network error, got status=%d", result.Status)
+				}
+			} else if result.Status <= 0 {
+				t.Errorf("unexpected negative status code: %d", result.Status)
 			}
 
 			if duration < 0 {

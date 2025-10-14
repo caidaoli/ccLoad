@@ -10,6 +10,11 @@ import (
 
 // TestMemoryDBMode 测试内存数据库模式
 func TestMemoryDBMode(t *testing.T) {
+	// ✅ P1-1 修复：内存模式测试需要 Redis，如果未配置则跳过
+	if os.Getenv("REDIS_URL") == "" {
+		t.Skip("⚠️  跳过内存数据库测试：需要配置 REDIS_URL 环境变量")
+	}
+
 	// 保存原环境变量
 	oldValue := os.Getenv("CCLOAD_USE_MEMORY_DB")
 	defer func() {
@@ -174,6 +179,11 @@ func TestFileDBMode(t *testing.T) {
 
 // TestLogDBAlwaysUsesFile 测试日志库始终使用文件模式
 func TestLogDBAlwaysUsesFile(t *testing.T) {
+	// ✅ P1-1 修复：内存模式测试需要 Redis，如果未配置则跳过
+	if os.Getenv("REDIS_URL") == "" {
+		t.Skip("⚠️  跳过内存数据库测试：需要配置 REDIS_URL 环境变量")
+	}
+
 	// 启用内存模式
 	os.Setenv("CCLOAD_USE_MEMORY_DB", "true")
 	defer os.Unsetenv("CCLOAD_USE_MEMORY_DB")

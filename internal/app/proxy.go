@@ -24,9 +24,14 @@ import (
 
 // 错误类型常量定义
 const (
+	// HTTP状态码扩展（用于日志记录和监控）
 	StatusClientClosedRequest = 499 // 客户端取消请求 (Nginx扩展状态码)
-	StatusNetworkError        = 0   // 可重试的网络错误
 	StatusConnectionReset     = 502 // Connection Reset - 不可重试
+	
+	// ✅ P2-3 修复：内部错误标识符使用负值，避免与HTTP状态码混淆
+	// 这些标识符仅用于内部错误分类，不会直接返回给客户端
+	ErrCodeNetworkRetryable = -1 // 可重试的网络错误（DNS错误、连接超时等）
+	ErrCodeUnknown          = -2 // 未知错误类型
 
 	// ✅ P0修复（2025-10-13）：提取常量消除魔法数字
 	StreamBufferSize = 32 * 1024 // 流式传输缓冲区大小（32KB）
@@ -142,8 +147,9 @@ func classifyErrorByString(errStr string) (int, bool) {
 		return 502, true
 	}
 
+	// ✅ P2-3 修复：使用负值错误码，避免与HTTP状态码混淆
 	// 其他网络错误 - 可以重试
-	return StatusNetworkError, true
+	return ErrCodeNetworkRetryable, true
 }
 
 type fwResult struct {

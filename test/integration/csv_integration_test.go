@@ -2,8 +2,6 @@ package integration_test
 
 import (
 	"ccLoad/internal/model"
-	"ccLoad/internal/storage/sqlite"
-	"context"
 	"encoding/csv"
 	"encoding/json"
 	"os"
@@ -16,21 +14,11 @@ import (
 
 // TestCSVExport_CompleteWorkflow 测试完整的CSV导出工作流
 func TestCSVExport_CompleteWorkflow(t *testing.T) {
-	// 创建测试环境
+	// ✅ P1-1 修复：使用统一的测试环境设置，避免 Redis 依赖
+	store, ctx, cleanup := setupTestStoreWithContext(t)
+	defer cleanup()
+
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
-
-	// 使用内存数据库
-	os.Setenv("CCLOAD_USE_MEMORY_DB", "true")
-	defer os.Unsetenv("CCLOAD_USE_MEMORY_DB")
-
-	store, err := sqlite.NewSQLiteStore(dbPath, nil)
-	if err != nil {
-		t.Fatalf("创建数据库失败: %v", err)
-	}
-	defer store.Close()
-
-	ctx := context.Background()
 
 	// 步骤1：创建测试数据
 	testConfigs := []*model.Config{
@@ -287,19 +275,9 @@ No-URL-Channel,10,"[""model-1""]",anthropic,true
 
 // TestCSVExportImport_SpecialCharacters 测试特殊字符处理
 func TestCSVExportImport_SpecialCharacters(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
-
-	os.Setenv("CCLOAD_USE_MEMORY_DB", "true")
-	defer os.Unsetenv("CCLOAD_USE_MEMORY_DB")
-
-	store, err := sqlite.NewSQLiteStore(dbPath, nil)
-	if err != nil {
-		t.Fatalf("创建数据库失败: %v", err)
-	}
-	defer store.Close()
-
-	ctx := context.Background()
+	// ✅ P1-1 修复：使用统一的测试环境设置，避免 Redis 依赖
+	store, ctx, cleanup := setupTestStoreWithContext(t)
+	defer cleanup()
 
 	// 包含特殊字符的测试数据
 	specialConfig := &model.Config{
@@ -341,19 +319,9 @@ func TestCSVExportImport_LargeData(t *testing.T) {
 		t.Skip("跳过性能测试（使用 -short 标志）")
 	}
 
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
-
-	os.Setenv("CCLOAD_USE_MEMORY_DB", "true")
-	defer os.Unsetenv("CCLOAD_USE_MEMORY_DB")
-
-	store, err := sqlite.NewSQLiteStore(dbPath, nil)
-	if err != nil {
-		t.Fatalf("创建数据库失败: %v", err)
-	}
-	defer store.Close()
-
-	ctx := context.Background()
+	// ✅ P1-1 修复：使用统一的测试环境设置，避免 Redis 依赖
+	store, ctx, cleanup := setupTestStoreWithContext(t)
+	defer cleanup()
 
 	// 创建100个渠道
 	totalChannels := 100

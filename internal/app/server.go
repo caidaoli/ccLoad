@@ -685,6 +685,15 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// 等待完成或超时
 	select {
 	case <-done:
+		// ✅ P0-2 修复：关闭数据库连接，防止 goroutine 泄漏
+		// SQLiteStore 创建了 2 个 database/sql.connectionOpener goroutine
+		// 必须显式调用 Close() 才能清理这些 goroutine
+		if closer, ok := s.store.(interface{ Close() error }); ok {
+			if err := closer.Close(); err != nil {
+				util.SafePrintf("❌ 关闭数据库连接失败: %v", err)
+			}
+		}
+		
 		util.SafePrint("✅ Server优雅关闭完成")
 		return nil
 	case <-ctx.Done():
