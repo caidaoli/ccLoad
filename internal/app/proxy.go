@@ -27,7 +27,8 @@ const (
 	// HTTP状态码扩展（用于日志记录和监控）
 	StatusClientClosedRequest = 499 // 客户端取消请求 (Nginx扩展状态码)
 	StatusConnectionReset     = 502 // Connection Reset - 不可重试
-	
+	StatusFirstByteTimeout    = 598 // 首字节超时 (自定义状态码，用于触发固定5分钟冷却)
+
 	// ✅ P2-3 修复：内部错误标识符使用负值，避免与HTTP状态码混淆
 	// 这些标识符仅用于内部错误分类，不会直接返回给客户端
 	ErrCodeNetworkRetryable = -1 // 可重试的网络错误（DNS错误、连接超时等）
@@ -319,15 +320,20 @@ func (s *Server) handleRequestError(
 ) (*fwResult, float64, error) {
 	duration := reqCtx.Duration()
 
-	// 包装首字节超时错误
+	// 检测首字节超时：使用特殊状态码标识（触发固定5分钟冷却）
+	var statusCode int
 	if errors.Is(err, context.DeadlineExceeded) && reqCtx.isStreaming {
+		// 包装错误信息
 		err = fmt.Errorf("first byte timeout after %.2fs (CCLOAD_FIRST_BYTE_TIMEOUT=%v): %w",
 			duration, reqCtx.firstByteTimeout, err)
-		util.SafePrintf("⏱️  [首字节超时] 渠道ID=%d, 超时时长=%.2fs",
+		// 使用特殊状态码标识首字节超时
+		statusCode = StatusFirstByteTimeout
+		util.SafePrintf("⏱️  [首字节超时] 渠道ID=%d, 超时时长=%.2fs, 将冷却5分钟",
 			cfg.ID, duration)
+	} else {
+		// 其他错误：使用标准分类器
+		statusCode, _ = classifyError(err)
 	}
-
-	statusCode, _ := classifyError(err)
 
 	var traceData *traceBreakdown
 	if trace != nil {
@@ -388,22 +394,95 @@ func (s *Server) handleSuccessResponse(
 	filterAndWriteResponseHeaders(w, resp.Header)
 	w.WriteHeader(resp.StatusCode)
 
+	// 🔍 诊断：记录首字节数据实际到达时间和传输统计
+	actualFirstByteTime := firstByteTime
+	var readStats *streamReadStats
+	if reqCtx.isStreaming {
+		readStats = &streamReadStats{}
+		// 创建包装Reader，记录读取统计信息
+		bodyWrapper := &firstByteDetector{
+			ReadCloser: resp.Body,
+			stats:      readStats,
+			onFirstRead: func() {
+				actualFirstByteTime = reqCtx.Duration()
+			},
+		}
+		resp.Body = bodyWrapper
+	}
+
 	// 流式复制（使用原始上下文，不受首字节超时限制）
 	// 注意：这里使用 reqCtx.ctx 的父上下文，避免首字节超时影响流式传输
 	streamErr := streamCopy(reqCtx.ctx, resp.Body, w)
 
 	duration := reqCtx.Duration()
+
+	// 🔍 输出流式传输诊断信息
+	// if reqCtx.isStreaming && readStats != nil {
+	// headerTime := firstByteTime
+	// timeDiff := actualFirstByteTime - headerTime
+	// streamingTime := duration - actualFirstByteTime
+
+	// 判断传输模式
+	// var mode string
+	// if readStats.readCount == 1 {
+	// 	mode = "⚠️ 单次读取完成（非流式）"
+	// } else if timeDiff < 0.001 {
+	// 	if streamingTime > 0.1 {
+	// 		mode = fmt.Sprintf("📦 批量流式传输（首批数据已缓冲，后续%d次读取耗时%.2fs）",
+	// 			readStats.readCount-1, streamingTime)
+	// 	} else {
+	// 		mode = "⚠️ 完全缓冲响应（所有数据已在缓冲区）"
+	// 	}
+	// } else {
+	// 	mode = "✅ 标准流式传输"
+	// }
+
+	// util.SafePrintf("🔍 [流式诊断] 响应头=%.3fs, 首字节=%.3fs(+%.1fms), 总耗时=%.3fs(+%.2fs), 读取%d次/%dB - %s",
+	// 	headerTime, actualFirstByteTime, timeDiff*1000,
+	// 	duration, streamingTime, readStats.readCount, readStats.totalBytes, mode)
+	// }
+
 	var traceData *traceBreakdown
 	if trace != nil {
-		traceData = trace.toBreakdown(firstByteTime)
+		traceData = trace.toBreakdown(actualFirstByteTime)
 	}
 
 	return &fwResult{
 		Status:        resp.StatusCode,
 		Header:        hdrClone,
-		FirstByteTime: firstByteTime,
+		FirstByteTime: actualFirstByteTime, // 使用实际的首字节时间
 		Trace:         traceData,
 	}, duration, streamErr
+}
+
+// streamReadStats 流式传输统计信息
+type streamReadStats struct {
+	readCount  int
+	totalBytes int64
+}
+
+// firstByteDetector 检测首字节读取时间和传输统计的Reader包装器
+type firstByteDetector struct {
+	io.ReadCloser
+	stats       *streamReadStats
+	onFirstRead func()
+}
+
+func (r *firstByteDetector) Read(p []byte) (n int, err error) {
+	n, err = r.ReadCloser.Read(p)
+	if n > 0 {
+		// 记录统计信息
+		if r.stats != nil {
+			r.stats.readCount++
+			r.stats.totalBytes += int64(n)
+		}
+		// 触发首次读取回调
+		if r.onFirstRead != nil {
+			r.onFirstRead()
+			r.onFirstRead = nil // 只触发一次
+		}
+	}
+	return
 }
 
 // handleResponse 处理 HTTP 响应（错误或成功）
@@ -574,9 +653,10 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *model.Config, keyInd
 		}
 
 		// ✅ 修复：区分网络错误类型
+		// StatusFirstByteTimeout (598) → 渠道级错误（首字节超时，固定5分钟冷却）
 		// 504 Gateway Timeout → 渠道级错误（上游整体超时）
 		// 其他可重试错误（502等）→ Key级错误
-		if classifiedStatus == 504 {
+		if classifiedStatus == StatusFirstByteTimeout || classifiedStatus == 504 {
 			errLevel = util.ErrorLevelChannel
 		} else {
 			errLevel = util.ErrorLevelKey
