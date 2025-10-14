@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -37,6 +38,9 @@ type Server struct {
 
 	// API 认证
 	authTokens map[string]bool // 静态认证令牌（CCLOAD_AUTH配置）
+
+	// ✅ P2安全加固：登录速率限制
+	loginRateLimiter *util.LoginRateLimiter // 防暴力破解
 
 	// 重试配置
 	maxKeyRetries int // 单个渠道内最大Key重试次数（默认3次）
@@ -83,6 +87,23 @@ func NewServer(store storage.Store) *Server {
 				authTokens[token] = true
 			}
 		}
+	}
+
+	// ✅ P0安全修复：生产环境强制检查 CCLOAD_AUTH
+	// 设计原则：Fail-Fast，避免生产环境配置错误导致安全风险
+	ginMode := os.Getenv("GIN_MODE")
+	if ginMode != "debug" && ginMode != "test" && len(authTokens) == 0 {
+		util.SafePrint("❌ 严重错误：生产环境必须设置 CCLOAD_AUTH 环境变量以保护 API 端点")
+		util.SafePrint("   当前模式: " + ginMode)
+		util.SafePrint("   请设置格式：CCLOAD_AUTH=token1,token2,token3")
+		util.SafePrint("   建议生成方法：openssl rand -hex 32")
+		os.Exit(1)
+	}
+
+	if len(authTokens) == 0 {
+		util.SafePrint("⚠️  警告：未设置 CCLOAD_AUTH，所有 /v1/* API 请求将被拒绝（401）")
+	} else {
+		util.SafePrint("✅ API 认证已启用（" + strconv.Itoa(len(authTokens)) + " 个令牌配置）")
 	}
 
 	// 解析最大Key重试次数（避免key过多时重试次数过多）
@@ -200,11 +221,12 @@ func NewServer(store storage.Store) *Server {
 			Transport: transport,
 			Timeout:   0, // 不设置全局超时，避免中断长时间任务
 		},
-		password:    password,
-		validTokens: make(map[string]time.Time),
-		authTokens:  authTokens,
-		logChan:     make(chan *model.LogEntry, logBuf), // 可配置日志缓冲
-		logWorkers:  logWorkers,                         // 可配置日志worker数量
+		password:         password,
+		validTokens:      make(map[string]time.Time),
+		authTokens:       authTokens,
+		loginRateLimiter: util.NewLoginRateLimiter(), // ✅ P2安全加固：登录速率限制
+		logChan:          make(chan *model.LogEntry, logBuf), // 可配置日志缓冲
+		logWorkers:       logWorkers,                         // 可配置日志worker数量
 
 		// 并发控制：使用信号量限制最大并发请求数
 		concurrencySem: make(chan struct{}, maxConcurrency),
@@ -368,7 +390,21 @@ func (s *Server) requireAPIAuth() gin.HandlerFunc {
 }
 
 // 登录处理程序 - Token认证版本（替代Cookie Session）
+// ✅ P2安全加固：集成登录速率限制，防暴力破解
 func (s *Server) handleLogin(c *gin.Context) {
+	clientIP := c.ClientIP()
+
+	// ✅ P2安全加固：检查速率限制
+	if !s.loginRateLimiter.AllowAttempt(clientIP) {
+		lockoutTime := s.loginRateLimiter.GetLockoutTime(clientIP)
+		c.JSON(http.StatusTooManyRequests, gin.H{
+			"error": "Too many failed login attempts",
+			"message": fmt.Sprintf("Account locked for %d seconds. Please try again later.", lockoutTime),
+			"lockout_seconds": lockoutTime,
+		})
+		return
+	}
+
 	var req struct {
 		Password string `json:"password" binding:"required"`
 	}
@@ -378,18 +414,31 @@ func (s *Server) handleLogin(c *gin.Context) {
 		return
 	}
 
+	// 验证密码
 	if req.Password != s.password {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid password"})
+		// ✅ P2安全加固：记录失败尝试（速率限制器已在AllowAttempt中增加计数）
+		attemptCount := s.loginRateLimiter.GetAttemptCount(clientIP)
+		util.SafePrintf("⚠️  登录失败: IP=%s, 尝试次数=%d/5", clientIP, attemptCount)
+
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "Invalid password",
+			"remaining_attempts": 5 - attemptCount,
+		})
 		return
 	}
 
-	// 密码正确，生成Token
+	// ✅ P2安全加固：密码正确，重置速率限制
+	s.loginRateLimiter.RecordSuccess(clientIP)
+
+	// 生成Token
 	token := s.generateToken()
 
 	// 存储Token到内存
 	s.tokensMux.Lock()
 	s.validTokens[token] = time.Now().Add(config.HoursToDuration(config.TokenExpiryHours))
 	s.tokensMux.Unlock()
+
+	util.SafePrintf("✅ 登录成功: IP=%s", clientIP)
 
 	// 返回Token给客户端（前端存储到localStorage）
 	c.JSON(http.StatusOK, gin.H{
