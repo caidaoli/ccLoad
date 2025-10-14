@@ -72,7 +72,7 @@ func CalculateBackoffDuration(prevMs int64, until time.Time, now time.Time, stat
 			prev = until.Sub(now)
 		} else {
 			// 首次错误：根据状态码确定初始冷却时间（直接返回，不翻倍）
-			if statusCode != nil && (*statusCode == 401 || *statusCode == 403) {
+        if statusCode != nil && (*statusCode == 401 || *statusCode == 402 || *statusCode == 403) {
 				// 认证错误：使用常量定义的初始冷却时间
 				return AuthErrorInitialCooldown
 			} else {

@@ -37,6 +37,8 @@ func ClassifyHTTPStatus(statusCode int) ErrorLevel {
 	// Key级错误：API Key相关问题（4xx客户端错误）
 	case 400: // Bad Request - 通常是API Key格式错误或无效
 		return ErrorLevelKey
+	case 402: // Payment Required / 配额或余额不足等，需要轮换Key
+		return ErrorLevelKey
 	case 401: // Unauthorized - 需要进一步分析（默认Key级）
 		return ErrorLevelKey
 	case 403: // Forbidden - 需要进一步分析（默认Key级）
