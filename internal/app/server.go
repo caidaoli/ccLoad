@@ -133,6 +133,18 @@ func NewServer(store storage.Store) *Server {
 		KeepAlive: config.SecondsToDuration(config.HTTPKeepAliveInterval),
 	}
 
+	// ✅ P0修复（2025-10-14）：动态计算ResponseHeaderTimeout，避免与应用层超时冲突
+	// 设计原则：传输层超时应该大于应用层超时，作为兜底保护
+	// 计算公式：max(firstByteTimeout + 30秒缓冲, 120秒最小值)
+	// 理由：
+	// 1. 应用层firstByteTimeout控制流式请求首字节超时（精确控制）
+	// 2. 传输层ResponseHeaderTimeout提供兜底保护（防止应用层超时失效）
+	// 3. +30秒缓冲确保应用层超时先触发，避免传输层提前中断
+	transportTimeout := firstByteTimeout + 30*time.Second
+	if transportTimeout < 120*time.Second {
+		transportTimeout = 120 * time.Second // 最小120秒，保持向后兼容
+	}
+
 	transport := &http.Transport{
 		// ✅ P2连接池优化（2025-10-06）：防御性配置，避免打爆上游API
 		MaxIdleConns:        config.HTTPMaxIdleConns,
@@ -140,12 +152,12 @@ func NewServer(store storage.Store) *Server {
 		IdleConnTimeout:     config.SecondsToDuration(config.HTTPIdleConnTimeout),
 		MaxConnsPerHost:     config.HTTPMaxConnsPerHost,
 
-		// ✅ P2握手超时优化（2025-10-06）：仅限制握手阶段，不影响长任务
-		// ✅ P2修复（2025-10-12）：修正注释错误，明确各超时配置的作用范围
+		// ✅ P0修复（2025-10-14）：动态计算ResponseHeaderTimeout
+		// ⚠️ 重要：此超时必须大于应用层firstByteTimeout，否则会提前中断流式请求
+		// 当前配置：应用层120s + 传输层30s缓冲 = 150s总超时
 		DialContext:           dialer.DialContext,
 		TLSHandshakeTimeout:   config.SecondsToDuration(config.HTTPTLSHandshakeTimeout),
-		ResponseHeaderTimeout: config.SecondsToDuration(config.HTTPResponseHeaderTimeout),
-		// 注意：流式请求使用应用层 firstByteTimeout 控制，更精确且支持运行时配置
+		ResponseHeaderTimeout: transportTimeout, // 动态计算：firstByteTimeout + 30s缓冲
 		ExpectContinueTimeout: config.SecondsToDuration(config.HTTPExpectContinueTimeout),
 
 		// 传输优化
@@ -161,6 +173,12 @@ func NewServer(store storage.Store) *Server {
 			InsecureSkipVerify: skipTLSVerify,    // 默认false（启用证书验证）
 		},
 	}
+
+	// ✅ P0修复（2025-10-14）：打印超时配置，便于诊断
+	util.SafePrintf("⏱️  超时配置:")
+	util.SafePrintf("   - 应用层首字节超时: %v", firstByteTimeout)
+	util.SafePrintf("   - 传输层响应头超时: %v", transportTimeout)
+	util.SafePrintf("   - 超时策略: 应用层精确控制 + 传输层兜底保护(+30s缓冲)")
 
 	// 可配置的日志缓冲与工作协程（修复：支持环境变量）
 	logBuf := config.DefaultLogBufferSize
