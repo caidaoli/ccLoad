@@ -216,7 +216,7 @@ Hugging Face Spaces 提供免费的容器托管服务，支持 Docker 应用，�
    | 变量名 | 值 | 必填 | 说明 |
    |--------|-----|------|------|
    | `CCLOAD_PASS` | `your_admin_password` | ✅ **必填** | 管理界面密码 |
-   | `CCLOAD_AUTH` | `token1,token2` | ⚪ 可选 | API 访问令牌（多个用逗号分隔） |
+  | `CCLOAD_AUTH` | `token1,token2` | ✅ 必填 | API 访问令牌（多个用逗号分隔；访问 /v1/* API 必须设置，否则返回 401） |
    | `REDIS_URL` | `rediss://user:pass@host:port` | ⚪ 可选 | Redis 连接地址，用于渠道数据备份和恢复 |
 
    **Redis URL 格式说明**:
@@ -266,7 +266,7 @@ Hugging Face Spaces 提供免费的容器托管服务，支持 Docker 应用，�
 - ⚠️ **资源限制**: 免费版提供 2 CPU + 16GB RAM
 - ⚠️ **休眠策略**: 48 小时无访问会进入休眠，首次访问需等待唤醒（约 20-30 秒）
 - ⚠️ **固定端口**: 必须使用 7860 端口
-- ⚠️ **公网访问**: Space 默认公开，建议使用 `CCLOAD_AUTH` 保护 API 端点
+- ⚠️ **公网访问**: Space 默认公开，必须设置 `CCLOAD_AUTH` 才能访问 /v1/* API（否则 401）
 
 #### 数据持久化
 
@@ -334,7 +334,7 @@ EXPOSE 7860
 ```bash
 # 设置环境变量
 export CCLOAD_PASS=your_admin_password
-export CCLOAD_AUTH=token1,token2,token3  # 可选，API 访问令牌
+export CCLOAD_AUTH=token1,token2,token3  # API 访问令牌（访问 /v1/* 必须设置）
 export PORT=8080
 export SQLITE_PATH=./data/ccload.db
 
@@ -356,26 +356,9 @@ echo "SQLITE_PATH=./data/ccload.db" >> .env
 
 ### API 代理
 
-**Claude API 代理**：
+**Claude API 代理（需授权）**：
 
 ```bash
-# 无需认证（未设置 CCLOAD_AUTH）
-curl -X POST http://localhost:8080/v1/messages \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: your-claude-api-key" \
-  -H "anthropic-version: 2023-06-01" \
-  -d '{
-    "model": "claude-3-sonnet-20240229",
-    "max_tokens": 1024,
-    "messages": [
-      {
-        "role": "user",
-        "content": "Hello, Claude!"
-      }
-    ]
-  }'
-
-# 需要认证（设置了 CCLOAD_AUTH）
 curl -X POST http://localhost:8080/v1/messages \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-token" \
@@ -419,7 +402,7 @@ curl -X POST http://localhost:8080/v1/messages/count_tokens \
 - ✅ 本地计算，响应 <5ms，不消耗 API 配额
 - ✅ 准确度 93%+（与官方 API 对比）
 - ✅ 支持系统提示词、工具定义、大规模工具场景
-- ✅ 无需认证，公开访问
+- ✅ 需授权令牌访问（未提供 CCLOAD_AUTH 时返回 401）
 
 ### 渠道管理
 
@@ -518,8 +501,8 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
-| `CCLOAD_PASS` | "admin" | 管理界面密码 |
-| `CCLOAD_AUTH` | 无 | API 访问令牌（多个用逗号分隔） |
+| `CCLOAD_PASS` | 无 | 管理界面密码（必填，未设置将退出） |
+| `CCLOAD_AUTH` | 无 | API 访问令牌（多个用逗号分隔；访问 /v1/* API 必须设置，否则返回 401） |
 | `CCLOAD_MAX_KEY_RETRIES` | "3" | 单个渠道内最大Key重试次数 |
 | `CCLOAD_FIRST_BYTE_TIMEOUT` | "120" | 流式请求首字节超时时间（秒） |
 | `CCLOAD_USE_MEMORY_DB` | "false" | 启用内存数据库模式（需配合Redis使用） |
@@ -528,6 +511,12 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 | `PORT` | "8080" | 服务端口 |
 | `SQLITE_PATH` | "data/ccload.db" | 数据库文件路径 |
 | `SQLITE_JOURNAL_MODE` | "WAL" | SQLite Journal模式（WAL/TRUNCATE/DELETE等） |
+
+#### 行为摘要
+
+- 未设置 `CCLOAD_PASS`：程序启动失败并退出（安全默认）。
+- 未设置 `CCLOAD_AUTH`：所有 `/v1/*` 与 `/v1beta/*` API 返回 `401 Unauthorized`。
+- 公开端点：仅 `GET /public/summary` 无需认证，其他端点均需授权令牌。
 | `REDIS_URL` | 无 | Redis连接URL（可选，用于渠道数据异步备份） |
 | `GOTAGS` | "go_json" | 构建标签（go_json/std） |
 
@@ -597,7 +586,7 @@ ccLoad 使用基于 Token 的认证机制，提供简洁高效的安全访问控
 # 1. 登录获取Token
 curl -X POST http://localhost:8080/login \
   -H "Content-Type: application/json" \
-  -d '{"password":"admin"}' | jq
+  -d '{"password":"your_admin_password"}' | jq
 
 # 响应示例：
 # {

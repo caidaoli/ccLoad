@@ -66,15 +66,12 @@ type Server struct {
 
 func NewServer(store storage.Store) *Server {
 	password := os.Getenv("CCLOAD_PASS")
-	switch password {
-	case "":
-		password = "admin" // 默认密码，生产环境应该设置环境变量
-		util.SafePrint("⚠️  安全警告：使用默认密码 'admin'，生产环境必须设置环境变量 CCLOAD_PASS")
-	case "admin":
-		util.SafePrint("⚠️  安全警告：密码设置为 'admin'，建议使用更强的密码")
-	default:
-		util.SafePrint("✅ 管理员密码已从环境变量加载（长度: ", len(password), " 字符）")
+	if password == "" {
+		util.SafePrint("❌ 未设置 CCLOAD_PASS，出于安全原因程序将退出。请设置强管理员密码后重试。")
+		os.Exit(1)
 	}
+
+	util.SafePrint("✅ 管理员密码已从环境变量加载（长度: ", len(password), " 字符）")
 
 	// 解析 API 认证令牌
 	authTokens := make(map[string]bool)
@@ -331,16 +328,16 @@ func (s *Server) requireTokenAuth() gin.HandlerFunc {
 // API 认证中间件 - Gin版本
 func (s *Server) requireAPIAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 如果没有配置认证令牌，则跳过验证
+		// 未配置认证令牌时，默认全部返回 401（不允许公开访问）
 		if len(s.authTokens) == 0 {
-			c.Next()
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or missing authorization"})
+			c.Abort()
 			return
 		}
 
-		// 检查 Authorization 头
+		// 检查 Authorization 头（Bearer token）
 		authHeader := c.GetHeader("Authorization")
 		if authHeader != "" {
-			// 解析 Bearer token
 			const prefix = "Bearer "
 			if strings.HasPrefix(authHeader, prefix) {
 				token := strings.TrimPrefix(authHeader, prefix)
@@ -539,7 +536,10 @@ func (s *Server) logWorker() {
 
 // 批量写入日志
 func (s *Server) flushLogs(logs []*model.LogEntry) {
-	ctx := context.Background()
+	// 为日志持久化增加超时控制，避免阻塞关闭或积压
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
 	// 优先使用SQLite批量写入，加速刷盘
 	if ss, ok := s.store.(*sqlite.SQLiteStore); ok {
 		_ = ss.BatchAddLogs(ctx, logs)
@@ -575,14 +575,14 @@ func (s *Server) addLogAsync(entry *model.LogEntry) {
 func (s *Server) cleanupOldLogsLoop() {
 	defer s.wg.Done()
 
-	ticker := time.NewTicker(1 * time.Hour)
+	ticker := time.NewTicker(config.HoursToDuration(config.LogCleanupIntervalHours))
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
 			ctx := context.Background()
-			cutoff := time.Now().AddDate(0, 0, -3) // 3天前
+			cutoff := time.Now().AddDate(0, 0, -config.LogRetentionDays)
 
 			// 通过Store接口清理旧日志，忽略错误（非关键操作）
 			_ = s.store.CleanupLogsBefore(ctx, cutoff)
@@ -711,7 +711,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 				util.SafePrintf("❌ 关闭数据库连接失败: %v", err)
 			}
 		}
-		
+
 		util.SafePrint("✅ Server优雅关闭完成")
 		return nil
 	case <-ctx.Done():

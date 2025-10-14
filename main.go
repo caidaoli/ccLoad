@@ -74,15 +74,12 @@ func main() {
 
 	srv := app.NewServer(store)
 
-	// ========== 性能优化：启动时预热（阶段1优化）==========
-
-	// HTTP连接预热（消除首次请求TLS握手10-50ms）
-	srv.WarmHTTPConnections(ctx)
-
-	// 等待连接预热完成（最多100ms）
-	time.Sleep(100 * time.Millisecond)
-
-	log.Printf("✅ 性能优化启动完成")
+    // ========== 性能优化：启动时预热（可选）==========
+    if v := os.Getenv("CCLOAD_ENABLE_WARMUP"); v == "1" || strings.EqualFold(v, "true") {
+        // HTTP连接预热（消除首次请求TLS握手10-50ms）
+        srv.WarmHTTPConnections(ctx)
+        log.Printf("✅ 启动预热已完成")
+    }
 
 	// ========== 性能优化结束 ==========
 

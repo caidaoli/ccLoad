@@ -48,3 +48,5 @@ Thumbs.db
 com.ccload.service.plist
 .dataX
 .serena
+.gocache
+.gomodcache

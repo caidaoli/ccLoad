@@ -14,9 +14,9 @@ services:
       - PORT=8080
       - SQLITE_PATH=/app/data/ccload.db
       - GIN_MODE=release
-      # 请根据需要设置以下环境变量
-      # - CCLOAD_PASS=your_admin_password
-      # - CCLOAD_AUTH=your_api_tokens
+      # 必填：未设置将无法启动或访问 API
+      - CCLOAD_PASS=your_admin_password
+      - CCLOAD_AUTH=your_api_tokens   # 访问 /v1/* 与 /v1beta/* 必须设置，否则返回 401
     volumes:
       - ccload_data:/app/data
     healthcheck:

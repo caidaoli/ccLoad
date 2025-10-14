@@ -205,8 +205,8 @@ type APIKey struct {
 
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
-| `CCLOAD_PASS` | "admin" | 管理界面密码（⚠️ 生产环境必须修改） |
-| `CCLOAD_AUTH` | 无 | API访问令牌（多个用逗号分隔） |
+| `CCLOAD_PASS` | 无 | 管理界面密码（必填，未设置将退出） |
+| `CCLOAD_AUTH` | 无 | API访问令牌（多个用逗号分隔；访问 /v1/* API 必须设置，否则返回 401） |
 | `PORT` | "8080" | HTTP服务端口 |
 | `SQLITE_PATH` | "data/ccload.db" | 数据库文件路径 |
 | `REDIS_URL` | 无 | Redis连接URL（可选，用于数据同步） |
@@ -278,16 +278,16 @@ CREATE TABLE key_rr (
 
 ## API端点
 
-### 公开端点（无需认证）
+### 公开端点
 ```
-GET  /public/summary              # 基础统计
-POST /v1/messages/count_tokens    # 本地Token计数
+GET  /public/summary              # 基础统计（无需认证）
 ```
 
-### 代理端点（条件认证）
+### API 端点（需授权）
 ```
-POST /v1/messages                 # Claude API代理
-GET  /v1beta/*                    # Gemini API代理
+POST /v1/messages                 # Claude API代理（需 CCLOAD_AUTH）
+POST /v1/messages/count_tokens    # 本地Token计数（需 CCLOAD_AUTH）
+GET  /v1beta/*                    # Gemini API代理（需 CCLOAD_AUTH）
 ```
 
 ### 管理端点（需要登录）
@@ -437,7 +437,7 @@ POST /v1/messages/count_tokens
 - 本地计算，响应 <5ms
 - 准确度 93%+
 - 支持系统提示词、工具定义
-- 无需认证
+- 需授权令牌访问（与 /v1/* 一致）
 
 **实现位置**：`internal/app/token_counter.go`
 
@@ -462,7 +462,7 @@ export REDIS_URL="redis://localhost:6379"
 ## 安全考虑
 
 - ✅ **强密码策略**：生产环境必须设置强 `CCLOAD_PASS`
-- ✅ **API认证**：建议设置 `CCLOAD_AUTH` 保护API端点
+- ✅ **API认证**：必须设置 `CCLOAD_AUTH` 才能访问 /v1/* 与 /v1beta/* API
 - ✅ **数据脱敏**：API Key自动脱敏（前4后4）
 - ✅ **日志消毒**：自动防止日志注入攻击
 - ✅ **内存模式安全**：强制要求配置Redis防止数据丢失
