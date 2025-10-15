@@ -72,13 +72,16 @@ func CalculateBackoffDuration(prevMs int64, until time.Time, now time.Time, stat
 			prev = until.Sub(now)
 		} else {
 			// 首次错误：根据状态码确定初始冷却时间（直接返回，不翻倍）
-        if statusCode != nil && (*statusCode == 401 || *statusCode == 402 || *statusCode == 403) {
-				// 认证错误：使用常量定义的初始冷却时间
+			// 渠道级严重错误（500/502/503/504）：5分钟冷却，避免级联故障
+			if statusCode != nil && (*statusCode == 500 || *statusCode == 502 || *statusCode == 503 || *statusCode == 504) {
 				return AuthErrorInitialCooldown
-			} else {
-				// 其他错误：使用常量定义的初始冷却时间
-				return OtherErrorInitialCooldown
 			}
+			// 认证错误（401/402/403）：5分钟冷却，减少无效重试
+			if statusCode != nil && (*statusCode == 401 || *statusCode == 402 || *statusCode == 403) {
+				return AuthErrorInitialCooldown
+			}
+			// 其他错误（429等）：1秒冷却，允许快速恢复
+			return OtherErrorInitialCooldown
 		}
 	}
 
