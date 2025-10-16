@@ -10,6 +10,7 @@ import (
 // - 基于IP地址限制：防止单个IP暴力破解
 // - 指数退避：失败次数越多，锁定时间越长
 // - 自动清理：1小时后重置计数器
+// ✅ P0修复（2025-10-16）：支持优雅关闭
 type LoginRateLimiter struct {
 	attempts map[string]*attemptRecord // IP -> 尝试记录
 	mu       sync.RWMutex
@@ -18,6 +19,9 @@ type LoginRateLimiter struct {
 	maxAttempts      int           // 最大尝试次数（默认5次）
 	lockoutDuration  time.Duration // 锁定时长（默认15分钟）
 	resetInterval    time.Duration // 计数重置间隔（默认1小时）
+
+	// 优雅关闭机制
+	stopCh chan struct{} // 关闭信号
 }
 
 // attemptRecord 尝试记录
@@ -34,9 +38,11 @@ func NewLoginRateLimiter() *LoginRateLimiter {
 		maxAttempts:     5,                // 最大5次尝试
 		lockoutDuration: 15 * time.Minute, // 锁定15分钟
 		resetInterval:   1 * time.Hour,    // 1小时后重置
+		stopCh:          make(chan struct{}), // ✅ P0修复：初始化关闭信号
 	}
 
 	// 启动后台清理协程（每小时清理过期记录）
+	// ✅ P0修复：支持优雅关闭
 	go limiter.cleanupLoop()
 
 	return limiter
@@ -136,12 +142,20 @@ func (rl *LoginRateLimiter) GetAttemptCount(ip string) int {
 }
 
 // cleanupLoop 定期清理过期记录（后台协程）
+// ✅ P0修复（2025-10-16）：支持优雅关闭
 func (rl *LoginRateLimiter) cleanupLoop() {
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		rl.cleanup()
+	for {
+		select {
+		case <-ticker.C:
+			rl.cleanup()
+		case <-rl.stopCh:
+			// 收到关闭信号，执行最后一次清理后退出
+			rl.cleanup()
+			return
+		}
 	}
 }
 
@@ -169,6 +183,12 @@ func (rl *LoginRateLimiter) cleanup() {
 	if len(toDelete) > 0 {
 		SafePrintf("🧹 登录速率限制器：清理 %d 条过期记录", len(toDelete))
 	}
+}
+
+// ✅ P0修复（2025-10-16）：优雅关闭LoginRateLimiter
+// Stop 停止cleanupLoop后台协程
+func (rl *LoginRateLimiter) Stop() {
+	close(rl.stopCh)
 }
 
 // Stats 获取速率限制器统计信息

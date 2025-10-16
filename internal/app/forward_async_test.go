@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,22 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage/sqlite"
 )
+
+// TestMain 在所有测试运行前设置环境变量
+func TestMain(m *testing.M) {
+	// 为测试设置必需的环境变量
+	os.Setenv("CCLOAD_PASS", "test_password_123")
+	os.Setenv("CCLOAD_AUTH", "test_token_456")
+
+	// 运行测试
+	code := m.Run()
+
+	// 清理
+	os.Unsetenv("CCLOAD_PASS")
+	os.Unsetenv("CCLOAD_AUTH")
+
+	os.Exit(code)
+}
 
 // TestRequestContextCreation 测试请求上下文创建
 func TestRequestContextCreation(t *testing.T) {
@@ -133,7 +150,7 @@ func TestHandleRequestError(t *testing.T) {
 			name:         "超时错误-流式请求",
 			err:          context.DeadlineExceeded,
 			isStreaming:  true,
-			wantContains: "first byte timeout",
+			wantContains: "upstream timeout",
 		},
 		{
 			name:         "超时错误-非流式请求",
@@ -152,12 +169,11 @@ func TestHandleRequestError(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			reqCtx := &requestContext{
-				startTime:        time.Now(),
-				isStreaming:      tt.isStreaming,
-				firstByteTimeout: 2 * time.Second,
+				startTime:   time.Now(),
+				isStreaming: tt.isStreaming,
 			}
 
-			result, duration, err := srv.handleRequestError(reqCtx, cfg, tt.err, nil)
+			result, duration, err := srv.handleRequestError(reqCtx, cfg, tt.err)
 
 			if err == nil {
 				t.Error("expected error, got nil")

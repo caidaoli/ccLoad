@@ -173,7 +173,6 @@ type APIKey struct {
 **性能调优**(详见`internal/config/defaults.go`):
 - `CCLOAD_MAX_CONCURRENCY`: 最大并发请求数(默认1000)
 - `CCLOAD_MAX_KEY_RETRIES`: 单渠道最大Key重试次数(默认3)
-- `CCLOAD_FIRST_BYTE_TIMEOUT`: 流式请求首字节超时(默认120秒)
 
 ## 代码规范
 

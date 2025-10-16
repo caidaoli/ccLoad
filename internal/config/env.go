@@ -25,8 +25,6 @@ type EnvConfig struct {
 	// 性能配置
 	MaxConcurrency    int
 	MaxKeyRetries     int
-	FirstByteTimeout  int
-	EnableTrace       bool
 	EnableWarmup      bool
 	SkipTLSVerify     bool
 
@@ -73,8 +71,6 @@ func LoadFromEnv() (*EnvConfig, error) {
 	// 性能配置
 	cfg.MaxConcurrency = getIntEnv("CCLOAD_MAX_CONCURRENCY", DefaultMaxConcurrency)
 	cfg.MaxKeyRetries = getIntEnv("CCLOAD_MAX_KEY_RETRIES", DefaultMaxKeyRetries)
-	cfg.FirstByteTimeout = getIntEnv("CCLOAD_FIRST_BYTE_TIMEOUT", DefaultFirstByteTimeout)
-	cfg.EnableTrace = getBoolEnv("CCLOAD_ENABLE_TRACE", false)
 	cfg.EnableWarmup = getBoolEnv("CCLOAD_ENABLE_WARMUP", false)
 	cfg.SkipTLSVerify = getBoolEnv("CCLOAD_SKIP_TLS_VERIFY", false)
 
@@ -103,11 +99,6 @@ func (c *EnvConfig) Validate() error {
 	// 并发数验证
 	if c.MaxConcurrency < 1 || c.MaxConcurrency > 10000 {
 		return fmt.Errorf("MaxConcurrency 超出合理范围 [1, 10000]: %d", c.MaxConcurrency)
-	}
-
-	// 超时时间验证
-	if c.FirstByteTimeout < 10 || c.FirstByteTimeout > 600 {
-		return fmt.Errorf("FirstByteTimeout 超出合理范围 [10s, 600s]: %d", c.FirstByteTimeout)
 	}
 
 	return nil

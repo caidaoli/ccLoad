@@ -8,33 +8,25 @@ import (
 // requestContext 封装单次请求的上下文和超时控制
 // ✅ P1-1 重构 (2025-01-XX): 从 forwardOnceAsync 提取，遵循SRP原则
 type requestContext struct {
-	ctx              context.Context
-	cancel           context.CancelFunc
-	startTime        time.Time
-	isStreaming      bool
-	firstByteTimeout time.Duration
+	ctx         context.Context
+	cancel      context.CancelFunc
+	startTime   time.Time
+	isStreaming bool
 }
 
 // newRequestContext 创建请求上下文（处理超时控制）
+// ✅ 简化设计：移除应用层超时，使用客户端超时（透明代理原则）
 // 设计原则：
-// - 流式请求启用首字节超时（避免长时间等待）
-// - 非流式请求依赖 Transport.ResponseHeaderTimeout
+// - 透明代理不应干预客户端的超时设置
+// - 仅依赖底层网络超时（DialContext、TLSHandshakeTimeout）
 // - 使用 defer cancel() 确保资源正确释放
 func (s *Server) newRequestContext(parentCtx context.Context, requestPath string, body []byte) *requestContext {
 	isStreaming := isStreamingRequest(requestPath, body)
 	reqCtx := &requestContext{
-		startTime:        time.Now(),
-		isStreaming:      isStreaming,
-		firstByteTimeout: s.firstByteTimeout,
-	}
-
-	// 流式请求：设置首字节超时
-	if isStreaming && s.firstByteTimeout > 0 {
-		reqCtx.ctx, reqCtx.cancel = context.WithTimeout(parentCtx, s.firstByteTimeout)
-	} else {
-		// 非流式请求：使用原始上下文
-		reqCtx.ctx = parentCtx
-		reqCtx.cancel = func() {} // 空函数，统一接口
+		startTime:   time.Now(),
+		isStreaming: isStreaming,
+		ctx:         parentCtx,
+		cancel:      func() {}, // 空函数，统一接口
 	}
 
 	return reqCtx

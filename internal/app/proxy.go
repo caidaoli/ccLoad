@@ -93,10 +93,9 @@ func classifyError(err error) (statusCode int, shouldRetry bool) {
 		return StatusClientClosedRequest, false
 	}
 
-	// ⚠️ Context deadline exceeded 需要区分三种情况：
-	// 1. 流式请求首字节超时（CCLOAD_FIRST_BYTE_TIMEOUT）- 应该重试其他渠道
-	// 2. HTTP客户端等待响应头超时（Transport.ResponseHeaderTimeout）- 应该重试其他渠道
-	// 3. 客户端主动设置的超时 - 不应重试
+	// ⚠️ Context deadline exceeded 需要区分两种情况：
+	// 1. 客户端超时（来自客户端设置的超时）- 不应重试
+	// 2. 上游服务器响应慢导致的超时 - 应该重试其他渠道
 	// ✅ P0修复 (2025-10-13): 默认将DeadlineExceeded视为上游超时（可重试）
 	// 设计原则：
 	// - 客户端主动取消通常是context.Canceled，而不是DeadlineExceeded
@@ -105,8 +104,7 @@ func classifyError(err error) (statusCode int, shouldRetry bool) {
 	if errors.Is(err, context.DeadlineExceeded) {
 		// 所有DeadlineExceeded错误默认为上游超时，应该重试其他渠道
 		// 包括但不限于：
-		// - CCLOAD_FIRST_BYTE_TIMEOUT（流式请求首字节超时）
-		// - Transport.ResponseHeaderTimeout（HTTP响应头超时）
+		// - 客户端设置的超时（如果客户端主动超时，应使用 context.Canceled）
 		// - 上游服务器响应慢导致的超时
 		return 504, true // ✅ Gateway Timeout，触发渠道切换
 	}
@@ -159,15 +157,6 @@ type fwResult struct {
 	Body          []byte         // filled for non-2xx or when needed
 	Resp          *http.Response // non-nil only when Status is 2xx to support streaming
 	FirstByteTime float64        // 首字节响应时间（秒）
-	Trace         *traceBreakdown
-}
-
-type traceBreakdown struct {
-	DNS       float64
-	Connect   float64
-	TLS       float64
-	WroteReq  float64
-	FirstByte float64
 }
 
 // 移除EndpointStrategy - 实现真正的透明代理
@@ -316,35 +305,28 @@ func (s *Server) handleRequestError(
 	reqCtx *requestContext,
 	cfg *model.Config,
 	err error,
-	trace *traceCollector,
 ) (*fwResult, float64, error) {
 	duration := reqCtx.Duration()
 
-	// 检测首字节超时：使用特殊状态码标识（触发固定5分钟冷却）
+	// 检测超时错误：使用特殊状态码标识（触发固定冷却策略）
 	var statusCode int
 	if errors.Is(err, context.DeadlineExceeded) && reqCtx.isStreaming {
 		// 包装错误信息
-		err = fmt.Errorf("first byte timeout after %.2fs (CCLOAD_FIRST_BYTE_TIMEOUT=%v): %w",
-			duration, reqCtx.firstByteTimeout, err)
-		// 使用特殊状态码标识首字节超时
+		err = fmt.Errorf("upstream timeout after %.2fs (streaming request): %w",
+			duration, err)
+		// 使用特殊状态码标识超时错误
 		statusCode = StatusFirstByteTimeout
-		util.SafePrintf("⏱️  [首字节超时] 渠道ID=%d, 超时时长=%.2fs, 将冷却5分钟",
+		util.SafePrintf("⏱️  [上游超时] 渠道ID=%d, 超时时长=%.2fs, 将触发冷却",
 			cfg.ID, duration)
 	} else {
 		// 其他错误：使用标准分类器
 		statusCode, _ = classifyError(err)
 	}
 
-	var traceData *traceBreakdown
-	if trace != nil {
-		traceData = trace.toBreakdown(duration)
-	}
-
 	return &fwResult{
 		Status:        statusCode,
 		Body:          []byte(err.Error()),
 		FirstByteTime: duration,
-		Trace:         traceData,
 	}, duration, err
 }
 
@@ -355,7 +337,6 @@ func (s *Server) handleErrorResponse(
 	resp *http.Response,
 	firstByteTime float64,
 	hdrClone http.Header,
-	trace *traceCollector,
 ) (*fwResult, float64, error) {
 	rb, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
@@ -366,17 +347,12 @@ func (s *Server) handleErrorResponse(
 	}
 
 	duration := reqCtx.Duration()
-	var traceData *traceBreakdown
-	if trace != nil {
-		traceData = trace.toBreakdown(firstByteTime)
-	}
 
 	return &fwResult{
 		Status:        resp.StatusCode,
 		Header:        hdrClone,
 		Body:          rb,
 		FirstByteTime: firstByteTime,
-		Trace:         traceData,
 	}, duration, nil
 }
 
@@ -388,7 +364,6 @@ func (s *Server) handleSuccessResponse(
 	firstByteTime float64,
 	hdrClone http.Header,
 	w http.ResponseWriter,
-	trace *traceCollector,
 ) (*fwResult, float64, error) {
 	// 写入响应头
 	filterAndWriteResponseHeaders(w, resp.Header)
@@ -442,16 +417,10 @@ func (s *Server) handleSuccessResponse(
 	// 	duration, streamingTime, readStats.readCount, readStats.totalBytes, mode)
 	// }
 
-	var traceData *traceBreakdown
-	if trace != nil {
-		traceData = trace.toBreakdown(actualFirstByteTime)
-	}
-
 	return &fwResult{
 		Status:        resp.StatusCode,
 		Header:        hdrClone,
 		FirstByteTime: actualFirstByteTime, // 使用实际的首字节时间
-		Trace:         traceData,
 	}, duration, streamErr
 }
 
@@ -492,17 +461,16 @@ func (s *Server) handleResponse(
 	resp *http.Response,
 	firstByteTime float64,
 	w http.ResponseWriter,
-	trace *traceCollector,
 ) (*fwResult, float64, error) {
 	hdrClone := resp.Header.Clone()
 
 	// 错误状态：读取完整响应体
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return s.handleErrorResponse(reqCtx, resp, firstByteTime, hdrClone, trace)
+		return s.handleErrorResponse(reqCtx, resp, firstByteTime, hdrClone)
 	}
 
 	// 成功状态：流式转发
-	return s.handleSuccessResponse(reqCtx, resp, firstByteTime, hdrClone, w, trace)
+	return s.handleSuccessResponse(reqCtx, resp, firstByteTime, hdrClone, w)
 }
 
 // forwardOnceAsync: 异步流式转发，透明转发客户端原始请求
@@ -514,31 +482,24 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 	reqCtx := s.newRequestContext(ctx, requestPath, body)
 	defer reqCtx.Close()
 
-	// 2. 附加 HTTP 追踪（如果启用）
-	var trace *traceCollector
-	if s.enableTrace {
-		trace = &traceCollector{}
-		reqCtx.ctx = trace.attachTrace(reqCtx.ctx, reqCtx.startTime)
-	}
-
-	// 3. 构建上游请求
+	// 2. 构建上游请求
 	req, err := s.buildProxyRequest(reqCtx, cfg, apiKey, method, body, hdr, rawQuery, requestPath)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	// 4. 发送请求
+	// 3. 发送请求
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return s.handleRequestError(reqCtx, cfg, err, trace)
+		return s.handleRequestError(reqCtx, cfg, err)
 	}
 	defer resp.Body.Close()
 
-	// 5. 记录首字节时间
+	// 4. 记录首字节时间
 	firstByteTime := reqCtx.Duration()
 
-	// 6. 处理响应
-	return s.handleResponse(reqCtx, resp, firstByteTime, w, trace)
+	// 5. 处理响应
+	return s.handleResponse(reqCtx, resp, firstByteTime, w)
 }
 
 // extractModelFromPath 从URL路径中提取模型名称

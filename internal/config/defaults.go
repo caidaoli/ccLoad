@@ -12,9 +12,6 @@ const (
 
 	// DefaultMaxKeyRetries 单个渠道内最大Key重试次数
 	DefaultMaxKeyRetries = 3
-
-	// DefaultFirstByteTimeout 流式请求首字节超时时间（秒）
-	DefaultFirstByteTimeout = 120 // 2分钟
 )
 
 // HTTP客户端配置常量
@@ -27,12 +24,6 @@ const (
 
 	// HTTPTLSHandshakeTimeout TLS握手超时（秒）
 	HTTPTLSHandshakeTimeout = 30
-
-	// HTTPResponseHeaderTimeout 响应头超时（秒）
-	HTTPResponseHeaderTimeout = 60
-
-	// HTTPExpectContinueTimeout Expect: 100-continue超时（秒）
-	HTTPExpectContinueTimeout = 1
 
 	// HTTPMaxIdleConns 全局空闲连接池大小
 	HTTPMaxIdleConns = 100
@@ -114,18 +105,12 @@ const (
 	// ✅ 从1分钟提升到5分钟：降低连接过期频率
 	// 权衡：更长的生命周期 vs 更低的连接重建开销
 	SQLiteConnMaxLifetimeMinutes = 5
-
-	// SQLiteBusyTimeoutMs SQLite busy_timeout参数（毫秒）
-	SQLiteBusyTimeoutMs = 5000
 )
 
 // 性能优化配置常量
 const (
 	// CacheWarmupChannelCount 启动时预热的高优先级渠道数量
 	CacheWarmupChannelCount = 5
-
-	// ErrorCacheMaxSize 错误分类缓存最大大小
-	ErrorCacheMaxSize = 1000
 
 	// LogCleanupIntervalHours 日志清理间隔（小时）
 	LogCleanupIntervalHours = 1
@@ -134,23 +119,8 @@ const (
 	LogRetentionDays = 3
 )
 
-// 冷却策略配置常量
-const (
-	// CooldownInitialDurationSeconds 初始冷却时长（秒）
-	CooldownInitialDurationSeconds = 1
-
-	// CooldownAuthErrorInitialMinutes 认证错误初始冷却时长（分钟）
-	CooldownAuthErrorInitialMinutes = 5
-
-	// CooldownMaxDurationMinutes 最大冷却时长（分钟）
-	CooldownMaxDurationMinutes = 30
-)
-
 // Redis同步配置常量
 const (
-	// RedisSyncChannelBuffer Redis同步channel缓冲区大小
-	RedisSyncChannelBuffer = 1
-
 	// RedisSyncShutdownTimeoutMs 优雅关闭等待时间（毫秒）
 	RedisSyncShutdownTimeoutMs = 100
 )

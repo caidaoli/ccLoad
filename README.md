@@ -504,10 +504,8 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 | `CCLOAD_PASS` | 无 | 管理界面密码（必填，未设置将退出） |
 | `CCLOAD_AUTH` | 无 | API 访问令牌（多个用逗号分隔；访问 /v1/* API 必须设置，否则返回 401） |
 | `CCLOAD_MAX_KEY_RETRIES` | "3" | 单个渠道内最大Key重试次数 |
-| `CCLOAD_FIRST_BYTE_TIMEOUT` | "120" | 流式请求首字节超时时间（秒） |
 | `CCLOAD_USE_MEMORY_DB` | "false" | 启用内存数据库模式（需配合Redis使用） |
 | `CCLOAD_SKIP_TLS_VERIFY` | "false" | 跳过TLS证书验证（仅开发环境） |
-| `CCLOAD_ENABLE_TRACE` | "0" | 启用HTTP详细追踪（调试用） |
 | `PORT` | "8080" | 服务端口 |
 | `SQLITE_PATH` | "data/ccload.db" | 数据库文件路径 |
 | `SQLITE_JOURNAL_MODE` | "WAL" | SQLite Journal模式（WAL/TRUNCATE/DELETE等） |

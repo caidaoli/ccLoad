@@ -45,12 +45,6 @@ type Server struct {
 	// 重试配置
 	maxKeyRetries int // 单个渠道内最大Key重试次数（默认3次）
 
-	// 超时配置
-	firstByteTimeout time.Duration // 流式请求首字节超时时间（默认2分钟）
-
-	// 性能优化开关
-	enableTrace bool // HTTP Trace开关（性能优化：默认关闭，节省0.5-1ms/请求）
-
 	// 并发控制
 	concurrencySem chan struct{} // 信号量：限制最大并发请求数（防止goroutine爆炸）
 	maxConcurrency int           // 最大并发数（默认1000）
@@ -80,8 +74,8 @@ func NewServer(store storage.Store) *Server {
 	// 解析 API 认证令牌
 	authTokens := make(map[string]bool)
 	if authEnv := os.Getenv("CCLOAD_AUTH"); authEnv != "" {
-		tokens := strings.Split(authEnv, ",")
-		for _, token := range tokens {
+		tokens := strings.SplitSeq(authEnv, ",")
+		for token := range tokens {
 			token = strings.TrimSpace(token)
 			if token != "" {
 				authTokens[token] = true
@@ -114,20 +108,6 @@ func NewServer(store storage.Store) *Server {
 		}
 	}
 
-	// 解析首字节超时时间（流式请求首字节响应超时）
-	firstByteTimeout := config.SecondsToDuration(config.DefaultFirstByteTimeout)
-	if timeoutEnv := os.Getenv("CCLOAD_FIRST_BYTE_TIMEOUT"); timeoutEnv != "" {
-		if val, err := strconv.Atoi(timeoutEnv); err == nil && val > 0 {
-			firstByteTimeout = time.Duration(val) * time.Second
-		}
-	}
-
-	// 解析HTTP Trace开关（性能优化：默认关闭，节省0.5-1ms/请求）
-	enableTrace := false
-	if traceEnv := os.Getenv("CCLOAD_ENABLE_TRACE"); traceEnv == "1" || traceEnv == "true" {
-		enableTrace = true
-	}
-
 	// 解析最大并发数（性能优化：防止goroutine爆炸）
 	maxConcurrency := config.DefaultMaxConcurrency
 	if concEnv := os.Getenv("CCLOAD_MAX_CONCURRENCY"); concEnv != "" {
@@ -151,18 +131,6 @@ func NewServer(store storage.Store) *Server {
 		KeepAlive: config.SecondsToDuration(config.HTTPKeepAliveInterval),
 	}
 
-	// ✅ P0修复（2025-10-14）：动态计算ResponseHeaderTimeout，避免与应用层超时冲突
-	// 设计原则：传输层超时应该大于应用层超时，作为兜底保护
-	// 计算公式：max(firstByteTimeout + 30秒缓冲, 120秒最小值)
-	// 理由：
-	// 1. 应用层firstByteTimeout控制流式请求首字节超时（精确控制）
-	// 2. 传输层ResponseHeaderTimeout提供兜底保护（防止应用层超时失效）
-	// 3. +30秒缓冲确保应用层超时先触发，避免传输层提前中断
-	transportTimeout := firstByteTimeout + 30*time.Second
-	if transportTimeout < 120*time.Second {
-		transportTimeout = 120 * time.Second // 最小120秒，保持向后兼容
-	}
-
 	transport := &http.Transport{
 		// ✅ P2连接池优化（2025-10-06）：防御性配置，避免打爆上游API
 		MaxIdleConns:        config.HTTPMaxIdleConns,
@@ -170,13 +138,9 @@ func NewServer(store storage.Store) *Server {
 		IdleConnTimeout:     config.SecondsToDuration(config.HTTPIdleConnTimeout),
 		MaxConnsPerHost:     config.HTTPMaxConnsPerHost,
 
-		// ✅ P0修复（2025-10-14）：动态计算ResponseHeaderTimeout
-		// ⚠️ 重要：此超时必须大于应用层firstByteTimeout，否则会提前中断流式请求
-		// 当前配置：应用层120s + 传输层30s缓冲 = 150s总超时
-		DialContext:           dialer.DialContext,
-		TLSHandshakeTimeout:   config.SecondsToDuration(config.HTTPTLSHandshakeTimeout),
-		ResponseHeaderTimeout: transportTimeout, // 动态计算：firstByteTimeout + 30s缓冲
-		ExpectContinueTimeout: config.SecondsToDuration(config.HTTPExpectContinueTimeout),
+		// 连接建立超时（保留必要的底层网络超时）
+		DialContext:         dialer.DialContext,
+		TLSHandshakeTimeout: config.SecondsToDuration(config.HTTPTLSHandshakeTimeout),
 
 		// 传输优化
 		DisableCompression: false,
@@ -191,12 +155,6 @@ func NewServer(store storage.Store) *Server {
 			InsecureSkipVerify: skipTLSVerify,    // 默认false（启用证书验证）
 		},
 	}
-
-	// ✅ P0修复（2025-10-14）：打印超时配置，便于诊断
-	util.SafePrintf("⏱️  超时配置:")
-	util.SafePrintf("   - 应用层首字节超时: %v", firstByteTimeout)
-	util.SafePrintf("   - 传输层响应头超时: %v", transportTimeout)
-	util.SafePrintf("   - 超时策略: 应用层精确控制 + 传输层兜底保护(+30s缓冲)")
 
 	// 可配置的日志缓冲与工作协程（修复：支持环境变量）
 	logBuf := config.DefaultLogBufferSize
@@ -213,10 +171,8 @@ func NewServer(store storage.Store) *Server {
 	}
 
 	s := &Server{
-		store:            store,
-		maxKeyRetries:    maxKeyRetries,    // 单个渠道最大Key重试次数
-		firstByteTimeout: firstByteTimeout, // 流式请求首字节超时
-		enableTrace:      enableTrace,      // HTTP Trace开关
+		store:         store,
+		maxKeyRetries: maxKeyRetries, // 单个渠道最大Key重试次数
 		client: &http.Client{
 			Transport: transport,
 			Timeout:   0, // 不设置全局超时，避免中断长时间任务
@@ -224,7 +180,7 @@ func NewServer(store storage.Store) *Server {
 		password:         password,
 		validTokens:      make(map[string]time.Time),
 		authTokens:       authTokens,
-		loginRateLimiter: util.NewLoginRateLimiter(), // ✅ P2安全加固：登录速率限制
+		loginRateLimiter: util.NewLoginRateLimiter(),         // ✅ P2安全加固：登录速率限制
 		logChan:          make(chan *model.LogEntry, logBuf), // 可配置日志缓冲
 		logWorkers:       logWorkers,                         // 可配置日志worker数量
 
@@ -277,12 +233,11 @@ func (s *Server) isValidToken(token string) bool {
 
 	// 检查是否过期
 	if time.Now().After(expiry) {
-		// 异步清理过期Token（避免阻塞）
-		go func() {
-			s.tokensMux.Lock()
-			delete(s.validTokens, token)
-			s.tokensMux.Unlock()
-		}()
+		// ✅ P0修复（2025-10-16）：同步删除过期Token（避免goroutine泄漏）
+		// 原因：map删除操作非常快（O(1)），无需异步，异步反而导致goroutine泄漏
+		s.tokensMux.Lock()
+		delete(s.validTokens, token)
+		s.tokensMux.Unlock()
 		return false
 	}
 
@@ -398,8 +353,8 @@ func (s *Server) handleLogin(c *gin.Context) {
 	if !s.loginRateLimiter.AllowAttempt(clientIP) {
 		lockoutTime := s.loginRateLimiter.GetLockoutTime(clientIP)
 		c.JSON(http.StatusTooManyRequests, gin.H{
-			"error": "Too many failed login attempts",
-			"message": fmt.Sprintf("Account locked for %d seconds. Please try again later.", lockoutTime),
+			"error":           "Too many failed login attempts",
+			"message":         fmt.Sprintf("Account locked for %d seconds. Please try again later.", lockoutTime),
 			"lockout_seconds": lockoutTime,
 		})
 		return
@@ -421,7 +376,7 @@ func (s *Server) handleLogin(c *gin.Context) {
 		util.SafePrintf("⚠️  登录失败: IP=%s, 尝试次数=%d/5", clientIP, attemptCount)
 
 		c.JSON(http.StatusUnauthorized, gin.H{
-			"error": "Invalid password",
+			"error":              "Invalid password",
 			"remaining_attempts": 5 - attemptCount,
 		})
 		return
@@ -453,8 +408,8 @@ func (s *Server) handleLogout(c *gin.Context) {
 	// 从Authorization头提取Token
 	authHeader := c.GetHeader("Authorization")
 	const prefix = "Bearer "
-	if strings.HasPrefix(authHeader, prefix) {
-		token := strings.TrimPrefix(authHeader, prefix)
+	if after, ok := strings.CutPrefix(authHeader, prefix); ok {
+		token := after
 
 		// 删除服务器端Token
 		s.tokensMux.Lock()
@@ -677,6 +632,7 @@ func (s *Server) getGeminiModels(ctx context.Context) ([]string, error) {
 
 // WarmHTTPConnections HTTP连接预热（性能优化：为高优先级渠道预建立连接）
 // 作用：消除首次请求的TLS握手延迟10-50ms，提升用户体验
+// ✅ P0修复（2025-10-16）：等待所有预热goroutine完成，避免goroutine泄漏
 func (s *Server) WarmHTTPConnections(ctx context.Context) {
 	// 直接从数据库查询所有启用的渠道（已按优先级排序）
 	configs, err := s.store.GetEnabledChannelsByModel(ctx, "*")
@@ -687,14 +643,17 @@ func (s *Server) WarmHTTPConnections(ctx context.Context) {
 	// 预热高优先级渠道（按优先级降序）
 	warmCount := min(len(configs), config.CacheWarmupChannelCount)
 
+	// ✅ 使用WaitGroup等待所有预热goroutine完成
+	var wg sync.WaitGroup
 	warmedCount := 0
+
 	for i := 0; i < warmCount; i++ {
 		cfg := configs[i]
 		if cfg.URL == "" {
 			continue
 		}
 
-		// 发送轻量HEAD请求预建立连接（非阻塞，超时1秒）
+		// 发送轻量HEAD请求预建立连接（超时1秒）
 		reqCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
 		req, err := http.NewRequestWithContext(reqCtx, "HEAD", cfg.URL, nil)
 		if err != nil {
@@ -702,8 +661,10 @@ func (s *Server) WarmHTTPConnections(ctx context.Context) {
 			continue
 		}
 
-		// 异步预热（不阻塞启动）
+		// 异步预热（使用WaitGroup跟踪）
+		wg.Add(1)
 		go func(r *http.Request, c func()) {
+			defer wg.Done()
 			defer c()
 			resp, err := s.client.Do(r)
 			if err == nil && resp != nil && resp.Body != nil {
@@ -715,6 +676,9 @@ func (s *Server) WarmHTTPConnections(ctx context.Context) {
 
 		warmedCount++
 	}
+
+	// 等待所有预热完成
+	wg.Wait()
 
 	if warmedCount > 0 {
 		util.SafePrintf("✅ HTTP连接预热：为 %d 个高优先级渠道预建立连接", warmedCount)
@@ -741,6 +705,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 	// 关闭shutdownCh，通知所有goroutine退出
 	close(s.shutdownCh)
+
+	// ✅ P0修复（2025-10-16）：停止LoginRateLimiter的cleanupLoop
+	s.loginRateLimiter.Stop()
 
 	// 使用channel等待所有goroutine完成
 	done := make(chan struct{})

@@ -129,17 +129,17 @@ func TestCalculateBackoffDuration_OtherErrors(t *testing.T) {
 	}
 }
 
-func TestCalculateBackoffDuration_FirstByteTimeout(t *testing.T) {
+func TestCalculateBackoffDuration_TimeoutError(t *testing.T) {
 	now := time.Now()
 	statusCode598 := 598
 
 	duration := CalculateBackoffDuration(0, time.Time{}, now, &statusCode598)
 
-	if duration != FirstByteTimeoutCooldown {
-		t.Errorf("❌ 首字节超时(598)应固定冷却%v，实际%v",
-			FirstByteTimeoutCooldown, duration)
+	if duration != TimeoutErrorCooldown {
+		t.Errorf("❌ 超时错误(598)应固定冷却%v，实际%v",
+			TimeoutErrorCooldown, duration)
 	} else {
-		t.Logf("✅ 首字节超时(598)正确固定冷却%v", duration)
+		t.Logf("✅ 超时错误(598)正确固定冷却%v", duration)
 	}
 }
 
