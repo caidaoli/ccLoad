@@ -1,15 +1,16 @@
 package app
 
 import (
-	"bytes"
-	"context"
-	"encoding/csv"
-	"fmt"
-	"io"
-	"net/http"
-	"strconv"
-	"strings"
-	"time"
+    "bufio"
+    "bytes"
+    "context"
+    "encoding/csv"
+    "fmt"
+    "io"
+    "net/http"
+    "strconv"
+    "strings"
+    "time"
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage/sqlite"
@@ -987,49 +988,163 @@ func (s *Server) testChannelAPI(cfg *model.Config, apiKey string, testReq *testu
 	}
 	defer resp.Body.Close()
 
-	// 读取响应
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return map[string]any{"success": false, "error": "读取响应失败: " + err.Error(), "duration_ms": duration.Milliseconds(), "status_code": resp.StatusCode}
-	}
+    // 判断是否为SSE响应，以及是否请求了流式
+    contentType := resp.Header.Get("Content-Type")
+    isEventStream := strings.Contains(strings.ToLower(contentType), "text/event-stream")
 
-	// 通用结果
-	result := map[string]any{
-		"success":     resp.StatusCode >= 200 && resp.StatusCode < 300,
-		"status_code": resp.StatusCode,
-		"duration_ms": duration.Milliseconds(),
-	}
+    // 通用结果初始化
+    result := map[string]any{
+        "success":     resp.StatusCode >= 200 && resp.StatusCode < 300,
+        "status_code": resp.StatusCode,
+        "duration_ms": duration.Milliseconds(),
+    }
 
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		// 成功：委托给 tester 解析
-		parsed := tester.Parse(resp.StatusCode, respBody)
-		for k, v := range parsed {
-			result[k] = v
-		}
-		result["message"] = "API测试成功"
-	} else {
-		// 错误：统一解析
-		var errorMsg string
-		var apiError map[string]any
-		if err := sonic.Unmarshal(respBody, &apiError); err == nil {
-			if errInfo, ok := apiError["error"].(map[string]any); ok {
-				if msg, ok := errInfo["message"].(string); ok {
-					errorMsg = msg
-				} else if typeStr, ok := errInfo["type"].(string); ok {
-					errorMsg = typeStr
-				}
-			}
-			result["api_error"] = apiError
-		} else {
-			result["raw_response"] = string(respBody)
-		}
-		if errorMsg == "" {
-			errorMsg = "API返回错误状态: " + resp.Status
-		}
-		result["error"] = errorMsg
-	}
+    // 附带响应头与类型，便于排查（不含请求头以避免泄露）
+    if len(resp.Header) > 0 {
+        hdr := make(map[string]string, len(resp.Header))
+        for k, vs := range resp.Header {
+            if len(vs) == 1 {
+                hdr[k] = vs[0]
+            } else if len(vs) > 1 {
+                hdr[k] = strings.Join(vs, "; ")
+            }
+        }
+        result["response_headers"] = hdr
+    }
+    if contentType != "" {
+        result["content_type"] = contentType
+    }
 
-	return result
+    if isEventStream {
+        // 流式解析（SSE）。无论状态码是否2xx，都尽量读取并回显上游返回内容。
+        var rawBuilder strings.Builder
+        var textBuilder strings.Builder
+        var lastErrMsg string
+
+        scanner := bufio.NewScanner(resp.Body)
+        // 提高扫描缓冲，避免长行截断
+        buf := make([]byte, 0, 1024*1024)
+        scanner.Buffer(buf, 16*1024*1024)
+
+        for scanner.Scan() {
+            line := scanner.Text()
+            rawBuilder.WriteString(line)
+            rawBuilder.WriteString("\n")
+
+            // SSE 行通常以 "data:" 开头
+            if !strings.HasPrefix(line, "data:") {
+                continue
+            }
+            data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+            if data == "" || data == "[DONE]" {
+                continue
+            }
+
+            var obj map[string]any
+            if err := sonic.Unmarshal([]byte(data), &obj); err != nil {
+                // 非JSON数据，忽略
+                continue
+            }
+
+            // OpenAI: choices[0].delta.content
+            if choices, ok := obj["choices"].([]any); ok && len(choices) > 0 {
+                if choice, ok := choices[0].(map[string]any); ok {
+                    if delta, ok := choice["delta"].(map[string]any); ok {
+                        if content, ok := delta["content"].(string); ok && content != "" {
+                            textBuilder.WriteString(content)
+                            continue
+                        }
+                    }
+                }
+            }
+
+            // Anthropic: type == content_block_delta 且 delta.text 为增量
+            if typ, ok := obj["type"].(string); ok {
+                if typ == "content_block_delta" {
+                    if delta, ok := obj["delta"].(map[string]any); ok {
+                        if tx, ok := delta["text"].(string); ok && tx != "" {
+                            textBuilder.WriteString(tx)
+                            continue
+                        }
+                    }
+                }
+            }
+
+            // 错误事件通用: data 中包含 error 字段或 message
+            if errObj, ok := obj["error"].(map[string]any); ok {
+                if msg, ok := errObj["message"].(string); ok && msg != "" {
+                    lastErrMsg = msg
+                } else if typeStr, ok := errObj["type"].(string); ok && typeStr != "" {
+                    lastErrMsg = typeStr
+                }
+                // 记录完整错误对象
+                result["api_error"] = obj
+                continue
+            }
+            if msg, ok := obj["message"].(string); ok && msg != "" {
+                lastErrMsg = msg
+                result["api_error"] = obj
+                continue
+            }
+        }
+
+        if err := scanner.Err(); err != nil {
+            result["error"] = "读取流式响应失败: " + err.Error()
+            result["raw_response"] = rawBuilder.String()
+            return result
+        }
+
+        if textBuilder.Len() > 0 {
+            result["response_text"] = textBuilder.String()
+        }
+        result["raw_response"] = rawBuilder.String()
+        if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+            result["message"] = "API测试成功（流式）"
+        } else {
+            if lastErrMsg == "" {
+                lastErrMsg = "API返回错误状态: " + resp.Status
+            }
+            result["error"] = lastErrMsg
+        }
+        return result
+    }
+
+    // 非流式或非SSE响应：按原逻辑读取完整响应（即便前端请求了流式，但上游未返回SSE，也按普通响应处理，确保能展示完整错误体）
+    respBody, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return map[string]any{"success": false, "error": "读取响应失败: " + err.Error(), "duration_ms": duration.Milliseconds(), "status_code": resp.StatusCode}
+    }
+
+    if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+        // 成功：委托给 tester 解析
+        parsed := tester.Parse(resp.StatusCode, respBody)
+        for k, v := range parsed {
+            result[k] = v
+        }
+        result["message"] = "API测试成功"
+    } else {
+        // 错误：统一解析
+        var errorMsg string
+        var apiError map[string]any
+        if err := sonic.Unmarshal(respBody, &apiError); err == nil {
+            if errInfo, ok := apiError["error"].(map[string]any); ok {
+                if msg, ok := errInfo["message"].(string); ok {
+                    errorMsg = msg
+                } else if typeStr, ok := errInfo["type"].(string); ok {
+                    errorMsg = typeStr
+                }
+            }
+            result["api_error"] = apiError
+        } else {
+            result["raw_response"] = string(respBody)
+        }
+        if errorMsg == "" {
+            errorMsg = "API返回错误状态: " + resp.Status
+        }
+        result["error"] = errorMsg
+    }
+
+    return result
 }
 
 func buildCSVColumnIndex(header []string) map[string]int {

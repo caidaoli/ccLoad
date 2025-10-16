@@ -361,6 +361,14 @@
       </div>
 
       <div class="form-group">
+        <label class="form-label" style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+          <input type="checkbox" id="testStreamEnabled" checked style="width: 18px; height: 18px; cursor: pointer; accent-color: var(--primary-500);">
+          <span>启用流式请求（Stream）</span>
+        </label>
+        <div id="streamHint" class="models-hint">部分渠道在流式模式下表现更佳，建议开启</div>
+      </div>
+
+      <div class="form-group">
         <div style="display: flex; gap: 24px; align-items: flex-start;">
           <div style="flex: 1;">
             <label class="form-label" for="testCooldownMinutes">
@@ -1337,6 +1345,8 @@
       const channelType = channel.channel_type || 'anthropic';
       await window.ChannelTypeManager.renderChannelTypeSelect('testChannelType', channelType);
 
+      // 按用户选择是否启用流式请求（不对特定渠道强制）
+
       document.getElementById('testModal').classList.add('show');
     }
 
@@ -1373,9 +1383,12 @@
       const contentInput = document.getElementById('testContentInput');
       const channelTypeSelect = document.getElementById('testChannelType');
       const keySelect = document.getElementById('testKeySelect');
+      const streamCheckbox = document.getElementById('testStreamEnabled');
       const selectedModel = modelSelect.value;
       const testContent = contentInput.value.trim() || 'test'; // 默认为"test"
       const channelType = channelTypeSelect.value;
+      // 由用户选择是否启用流式
+      const streamEnabled = streamCheckbox.checked;
 
       if (!selectedModel) {
         if (window.showError) showError('请选择一个模型');
@@ -1388,11 +1401,11 @@
       document.getElementById('runTestBtn').disabled = true;
 
       try {
-        // 使用新的参数结构，支持渠道类型、自定义内容和 key_index
+        // 使用新的参数结构，支持渠道类型、自定义内容、流式选项和 key_index
         const testRequest = {
           model: selectedModel,
           max_tokens: 512,
-          stream: false,
+          stream: streamEnabled,
           content: testContent,
           channel_type: channelType
         };
@@ -1419,7 +1432,7 @@
         // 如果测试失败，自动冷却对应的Key
         if (!testResult.success) {
           const cooldownMinutes = parseInt(document.getElementById('testCooldownMinutes').value) || 5;
-          const keyIndex = testRequest.key_index !== undefined ? testRequest.key_index : null;
+          const keyIndex = (typeof testRequest !== 'undefined' && testRequest && testRequest.key_index !== undefined) ? testRequest.key_index : null;
           await setCooldownForKey(testingChannelId, keyIndex, cooldownMinutes);
         }
         
@@ -1429,7 +1442,7 @@
         
         // 测试失败也自动冷却
         const cooldownMinutes = parseInt(document.getElementById('testCooldownMinutes').value) || 5;
-        const keyIndex = testRequest.key_index !== undefined ? testRequest.key_index : null;
+        const keyIndex = (typeof testRequest !== 'undefined' && testRequest && testRequest.key_index !== undefined) ? testRequest.key_index : null;
         await setCooldownForKey(testingChannelId, keyIndex, cooldownMinutes);
         
         displayTestResult({
@@ -1500,12 +1513,15 @@
       const modelSelect = document.getElementById('testModelSelect');
       const contentInput = document.getElementById('testContentInput');
       const channelTypeSelect = document.getElementById('testChannelType');
+      const streamCheckbox = document.getElementById('testStreamEnabled');
       const cooldownInput = document.getElementById('testCooldownMinutes');
       const concurrencyInput = document.getElementById('testConcurrency');
       
       const selectedModel = modelSelect.value;
       const testContent = contentInput.value.trim() || 'test';
       const channelType = channelTypeSelect.value;
+      // 由用户选择是否启用流式
+      const streamEnabled = streamCheckbox.checked;
       const cooldownMinutes = parseInt(cooldownInput.value) || 5;
       const concurrency = Math.max(1, Math.min(50, parseInt(concurrencyInput.value) || 10)); // 限制1-50
 
@@ -1546,7 +1562,7 @@
           const testRequest = {
             model: selectedModel,
             max_tokens: 512,
-            stream: false,
+            stream: streamEnabled,
             content: testContent,
             channel_type: channelType,
             key_index: keyIndex
@@ -1749,16 +1765,27 @@
             <div class="response-section">
               <h4>完整错误响应</h4>
               <button class="toggle-btn" onclick="toggleResponse('${errorId}')">显示/隐藏 JSON</button>
-              <div id="${errorId}" class="response-content" style="display: none;">${escapeHtml(JSON.stringify(result.api_error, null, 2))}</div>
+              <div id="${errorId}" class="response-content" style="display: block;">${escapeHtml(JSON.stringify(result.api_error, null, 2))}</div>
             </div>
           `;
-        } else if (result.raw_response) {
+        }
+        if (typeof result.raw_response !== 'undefined') {
           const rawId = 'raw-error-' + Date.now();
           details += `
             <div class="response-section">
               <h4>原始错误响应</h4>
               <button class="toggle-btn" onclick="toggleResponse('${rawId}')">显示/隐藏</button>
-              <div id="${rawId}" class="response-content" style="display: none;">${escapeHtml(result.raw_response)}</div>
+              <div id="${rawId}" class="response-content" style="display: block;">${escapeHtml(result.raw_response || '(无响应体)')}</div>
+            </div>
+          `;
+        }
+        if (result.response_headers) {
+          const headersId = 'resp-headers-' + Date.now();
+          details += `
+            <div class="response-section">
+              <h4>响应头</h4>
+              <button class="toggle-btn" onclick="toggleResponse('${headersId}')">显示/隐藏</button>
+              <div id="${headersId}" class="response-content" style="display: block;">${escapeHtml(JSON.stringify(result.response_headers, null, 2))}</div>
             </div>
           `;
         }

@@ -76,12 +76,15 @@ func (t *CodexTester) Build(cfg *model.Config, apiKey string, req *TestChannelRe
 	baseURL := strings.TrimRight(cfg.URL, "/")
 	fullURL := baseURL + "/v1/responses"
 
-	h := make(http.Header)
-	h.Set("Content-Type", "application/json")
-	h.Set("Authorization", "Bearer "+apiKey)
-	h.Set("User-Agent", "codex_cli_rs/0.41.0 (Mac OS 26.0.0; arm64) iTerm.app/3.6.1")
-	h.Set("Openai-Beta", "responses=experimental")
-	h.Set("Originator", "codex_cli_rs")
+    h := make(http.Header)
+    h.Set("Content-Type", "application/json")
+    h.Set("Authorization", "Bearer "+apiKey)
+    h.Set("User-Agent", "codex_cli_rs/0.41.0 (Mac OS 26.0.0; arm64) iTerm.app/3.6.1")
+    h.Set("Openai-Beta", "responses=experimental")
+    h.Set("Originator", "codex_cli_rs")
+    if req.Stream {
+        h.Set("Accept", "text/event-stream")
+    }
 
 	return fullURL, h, body, nil
 }
@@ -174,9 +177,12 @@ func (t *OpenAITester) Build(cfg *model.Config, apiKey string, req *TestChannelR
 	baseURL := strings.TrimRight(cfg.URL, "/")
 	fullURL := baseURL + "/v1/chat/completions"
 
-	h := make(http.Header)
-	h.Set("Content-Type", "application/json")
-	h.Set("Authorization", "Bearer "+apiKey)
+    h := make(http.Header)
+    h.Set("Content-Type", "application/json")
+    h.Set("Authorization", "Bearer "+apiKey)
+    if req.Stream {
+        h.Set("Accept", "text/event-stream")
+    }
 
 	return fullURL, h, body, nil
 }
@@ -238,9 +244,9 @@ func (t *GeminiTester) Build(cfg *model.Config, apiKey string, req *TestChannelR
 	// Gemini API 路径格式: /v1beta/models/{model}:generateContent
 	fullURL := baseURL + "/v1beta/models/" + req.Model + ":generateContent"
 
-	h := make(http.Header)
-	h.Set("Content-Type", "application/json")
-	h.Set("x-goog-api-key", apiKey)
+    h := make(http.Header)
+    h.Set("Content-Type", "application/json")
+    h.Set("x-goog-api-key", apiKey)
 
 	return fullURL, h, body, nil
 }
@@ -348,12 +354,15 @@ func (t *AnthropicTester) Build(cfg *model.Config, apiKey string, req *TestChann
 	baseURL := strings.TrimRight(cfg.URL, "/")
 	fullURL := baseURL + "/v1/messages?beta=true"
 
-	h := make(http.Header)
-	h.Set("Content-Type", "application/json")
-	h.Set("Authorization", "Bearer "+apiKey)
-	h.Set("User-Agent", "claude-cli/1.0.110 (external, cli)")
-	h.Set("x-app", "cli")
-	h.Set("anthropic-version", "2023-06-01")
+    h := make(http.Header)
+    h.Set("Content-Type", "application/json")
+    h.Set("Authorization", "Bearer "+apiKey)
+    h.Set("User-Agent", "claude-cli/1.0.110 (external, cli)")
+    h.Set("x-app", "cli")
+    h.Set("anthropic-version", "2023-06-01")
+    if req.Stream {
+        h.Set("Accept", "text/event-stream")
+    }
 
 	return fullURL, h, body, nil
 }
