@@ -237,8 +237,8 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 			expected   time.Duration
 		}{
 			{"429限流错误", 429, OtherErrorInitialCooldown},
-			{"500服务器错误", 500, OtherErrorInitialCooldown},
-			{"502网关错误", 502, OtherErrorInitialCooldown},
+			{"500服务器错误", 500, ServerErrorInitialCooldown},
+			{"502网关错误", 502, ServerErrorInitialCooldown},
 		}
 
 		for _, tc := range testCases {
@@ -295,7 +295,8 @@ func abs(d time.Duration) time.Duration {
 	return d
 }
 
-// 测试常量定义（与cooldown_auth_error_test.go保持一致）
+// 测试常量定义（与util/time.go保持一致）
 const (
-	OtherErrorInitialCooldown = 1 * time.Second // 其他错误初始冷却时间
+	ServerErrorInitialCooldown = 2 * time.Minute // 服务器错误初始冷却时间
+	OtherErrorInitialCooldown  = 1 * time.Second  // 其他错误初始冷却时间
 )

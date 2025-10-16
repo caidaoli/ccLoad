@@ -14,7 +14,11 @@ const (
 	// 设计目标：上游服务完全无响应或严重超时时，直接冷却5分钟避免级联故障
 	FirstByteTimeoutCooldown = 5 * time.Minute
 
-	// OtherErrorInitialCooldown 其他错误（429/500等）的初始冷却时间
+	// ServerErrorInitialCooldown 服务器错误（500/502/503/504）的初始冷却时间
+	// 设计目标：快速故障转移，减少对故障渠道的依赖时间
+	ServerErrorInitialCooldown = 2 * time.Minute
+
+	// OtherErrorInitialCooldown 其他错误（429等）的初始冷却时间
 	OtherErrorInitialCooldown = 1 * time.Second
 
 	// MaxCooldownDuration 最大冷却时长（指数退避上限）
@@ -45,8 +49,9 @@ func scanUnixTimestamp(scanner scannable) (time.Time, bool) {
 
 // calculateBackoffDuration 计算指数退避冷却时间
 // 统一冷却策略:
-//   - 认证错误(401/403): 起始5分钟，后续翻倍，上限30分钟
-//   - 其他错误: 起始1秒，后续翻倍，上限30分钟
+//   - 认证错误(401/402/403): 起始5分钟，后续翻倍，上限30分钟
+//   - 服务器错误(500/502/503/504): 起始2分钟，后续翻倍，上限30分钟
+//   - 其他错误(429等): 起始1秒，后续翻倍，上限30分钟
 //
 // 参数:
 //   - prevMs: 上次冷却持续时间（毫秒）
@@ -72,9 +77,9 @@ func CalculateBackoffDuration(prevMs int64, until time.Time, now time.Time, stat
 			prev = until.Sub(now)
 		} else {
 			// 首次错误：根据状态码确定初始冷却时间（直接返回，不翻倍）
-			// 渠道级严重错误（500/502/503/504）：5分钟冷却，避免级联故障
+			// 服务器错误（500/502/503/504）：2分钟冷却，快速故障转移
 			if statusCode != nil && (*statusCode == 500 || *statusCode == 502 || *statusCode == 503 || *statusCode == 504) {
-				return AuthErrorInitialCooldown
+				return ServerErrorInitialCooldown
 			}
 			// 认证错误（401/402/403）：5分钟冷却，减少无效重试
 			if statusCode != nil && (*statusCode == 401 || *statusCode == 402 || *statusCode == 403) {

@@ -103,7 +103,7 @@ func TestFirstByteTimeoutCooldown(t *testing.T) {
 		t.Logf("✅ 渠道已冷却，冷却时长=%v (期望固定5分钟)", duration)
 	})
 
-	t.Run("5xx错误首次冷却5分钟", func(t *testing.T) {
+	t.Run("5xx错误首次冷却2分钟", func(t *testing.T) {
 		testCases := []struct {
 			statusCode  int
 			description string
@@ -120,7 +120,7 @@ func TestFirstByteTimeoutCooldown(t *testing.T) {
 			time.Sleep(100 * time.Millisecond)
 
 			beforeError := time.Now()
-			
+
 			// 触发5xx错误
 			fwRes := &fwResult{
 				Status:        tc.statusCode,
@@ -149,11 +149,11 @@ func TestFirstByteTimeoutCooldown(t *testing.T) {
 
 			actualDuration := cooldownUntil.Sub(beforeError)
 
-			// 验证冷却时长应该是5分钟
-			expectedMin := 4*time.Minute + 50*time.Second
-			expectedMax := 5*time.Minute + 10*time.Second
+			// 验证冷却时长应该是2分钟
+			expectedMin := 1*time.Minute + 50*time.Second
+			expectedMax := 2*time.Minute + 10*time.Second
 			if actualDuration < expectedMin || actualDuration > expectedMax {
-				t.Errorf("❌ %d错误首次冷却时长错误: 期望5分钟，实际%v", tc.statusCode, actualDuration)
+				t.Errorf("❌ %d错误首次冷却时长错误: 期望2分钟，实际%v", tc.statusCode, actualDuration)
 			} else {
 				t.Logf("✅ %d(%s)首次正确冷却%v", tc.statusCode, tc.description, actualDuration)
 			}

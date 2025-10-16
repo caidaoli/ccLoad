@@ -19,22 +19,22 @@ func TestCalculateBackoffDuration_504Error(t *testing.T) {
 		description    string
 	}{
 		{
-			name:           "首次504错误应冷却5分钟",
+			name:           "首次504错误应冷却2分钟",
 			prevMs:         0,
 			until:          time.Time{},
 			statusCode:     &statusCode504,
-			expectedMin:    5 * time.Minute,
-			expectedMax:    5 * time.Minute,
-			description:    "504 Gateway Timeout should trigger 5-minute cooldown on first occurrence",
+			expectedMin:    2 * time.Minute,
+			expectedMax:    2 * time.Minute,
+			description:    "504 Gateway Timeout should trigger 2-minute cooldown on first occurrence",
 		},
 		{
 			name:           "连续504错误应指数退避",
-			prevMs:         int64(5 * time.Minute / time.Millisecond),
-			until:          now.Add(5 * time.Minute),
+			prevMs:         int64(2 * time.Minute / time.Millisecond),
+			until:          now.Add(2 * time.Minute),
 			statusCode:     &statusCode504,
-			expectedMin:    10 * time.Minute,
-			expectedMax:    10 * time.Minute,
-			description:    "Subsequent 504 errors should double the cooldown (5min -> 10min)",
+			expectedMin:    4 * time.Minute,
+			expectedMax:    4 * time.Minute,
+			description:    "Subsequent 504 errors should double the cooldown (2min -> 4min)",
 		},
 	}
 
@@ -59,10 +59,10 @@ func TestCalculateBackoffDuration_ChannelErrors(t *testing.T) {
 		statusCode int
 		expected   time.Duration
 	}{
-		{500, 5 * time.Minute}, // Internal Server Error
-		{502, 5 * time.Minute}, // Bad Gateway
-		{503, 5 * time.Minute}, // Service Unavailable
-		{504, 5 * time.Minute}, // Gateway Timeout
+		{500, 2 * time.Minute}, // Internal Server Error
+		{502, 2 * time.Minute}, // Bad Gateway
+		{503, 2 * time.Minute}, // Service Unavailable
+		{504, 2 * time.Minute}, // Gateway Timeout
 	}
 
 	for _, tt := range tests {
