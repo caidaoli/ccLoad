@@ -257,19 +257,15 @@ func (s *SQLiteStore) DeleteConfig(ctx context.Context, id int64) error {
 	}
 
 	// 删除渠道配置（FOREIGN KEY CASCADE 自动级联删除 api_keys 和 key_rr）
-	// 新架构：冷却数据内联在 channels 和 api_keys 表中，无需单独删除
-	tx, err := s.db.BeginTx(ctx, nil)
+	// ✅ P3优化：使用事务高阶函数，消除重复代码（DRY原则）
+	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM channels WHERE id = ?`, id); err != nil {
+			return fmt.Errorf("delete channel: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	if _, err := tx.ExecContext(ctx, `DELETE FROM channels WHERE id = ?`, id); err != nil {
-		return fmt.Errorf("delete channel: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
+		return err
 	}
 
 	// 异步全量同步所有渠道到Redis（非阻塞，立即返回）
@@ -784,86 +780,83 @@ func (s *SQLiteStore) LoadChannelsFromRedis(ctx context.Context) error {
 		return nil
 	}
 
-	// 使用事务确保数据一致性 (ACID原则)
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
+	// ✅ P3优化：使用事务高阶函数，确保数据一致性（ACID原则 + DRY原则）
 	nowUnix := time.Now().Unix()
 	successCount := 0
 	totalKeysRestored := 0
 
-	for _, cwk := range channelsWithKeys {
-		config := cwk.Config
+	err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		for _, cwk := range channelsWithKeys {
+			config := cwk.Config
 
-		// 标准化数据：确保默认值正确填充
-		modelsStr, _ := util.SerializeModels(config.Models)
-		modelRedirectsStr, _ := util.SerializeModelRedirects(config.ModelRedirects)
-		channelType := config.GetChannelType() // 强制使用默认值anthropic
+			// 标准化数据：确保默认值正确填充
+			modelsStr, _ := util.SerializeModels(config.Models)
+			modelRedirectsStr, _ := util.SerializeModelRedirects(config.ModelRedirects)
+			channelType := config.GetChannelType() // 强制使用默认值anthropic
 
-		// 1. 恢复渠道基本配置到channels表
-		result, err := tx.ExecContext(ctx, `
-			INSERT OR REPLACE INTO channels(
-				name, url, priority, models, model_redirects, channel_type,
-				enabled, cooldown_until, cooldown_duration_ms, created_at, updated_at
-			)
-			VALUES(?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
-		`, config.Name, config.URL, config.Priority,
-			modelsStr, modelRedirectsStr, channelType,
-			boolToInt(config.Enabled), nowUnix, nowUnix)
+			// 1. 恢复渠道基本配置到channels表
+			result, err := tx.ExecContext(ctx, `
+				INSERT OR REPLACE INTO channels(
+					name, url, priority, models, model_redirects, channel_type,
+					enabled, cooldown_until, cooldown_duration_ms, created_at, updated_at
+				)
+				VALUES(?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+			`, config.Name, config.URL, config.Priority,
+				modelsStr, modelRedirectsStr, channelType,
+				boolToInt(config.Enabled), nowUnix, nowUnix)
 
-		if err != nil {
-			log.Printf("Warning: failed to restore channel %s: %v", config.Name, err)
-			continue
-		}
-
-		// 获取渠道ID（对于新插入或更新的记录）
-		var channelID int64
-		if config.ID > 0 {
-			channelID = config.ID
-		} else {
-			channelID, _ = result.LastInsertId()
-		}
-
-		// 查询实际的渠道ID（因为INSERT OR REPLACE可能使用name匹配）
-		err = tx.QueryRowContext(ctx, `SELECT id FROM channels WHERE name = ?`, config.Name).Scan(&channelID)
-		if err != nil {
-			log.Printf("Warning: failed to get channel ID for %s: %v", config.Name, err)
-			continue
-		}
-
-		// 2. 恢复API Keys到api_keys表
-		if len(cwk.APIKeys) > 0 {
-			// 先删除该渠道的所有旧Keys（避免冲突）
-			_, err := tx.ExecContext(ctx, `DELETE FROM api_keys WHERE channel_id = ?`, channelID)
 			if err != nil {
-				log.Printf("Warning: failed to clear old API keys for channel %d: %v", channelID, err)
+				log.Printf("Warning: failed to restore channel %s: %v", config.Name, err)
+				continue
 			}
 
-			// 插入所有API Keys
-			for _, key := range cwk.APIKeys {
-				_, err := tx.ExecContext(ctx, `
-					INSERT INTO api_keys (channel_id, key_index, api_key, key_strategy,
-					                      cooldown_until, cooldown_duration_ms, created_at, updated_at)
-					VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-				`, channelID, key.KeyIndex, key.APIKey, key.KeyStrategy,
-					key.CooldownUntil, key.CooldownDurationMs, nowUnix, nowUnix)
+			// 获取渠道ID（对于新插入或更新的记录）
+			var channelID int64
+			if config.ID > 0 {
+				channelID = config.ID
+			} else {
+				channelID, _ = result.LastInsertId()
+			}
 
+			// 查询实际的渠道ID（因为INSERT OR REPLACE可能使用name匹配）
+			err = tx.QueryRowContext(ctx, `SELECT id FROM channels WHERE name = ?`, config.Name).Scan(&channelID)
+			if err != nil {
+				log.Printf("Warning: failed to get channel ID for %s: %v", config.Name, err)
+				continue
+			}
+
+			// 2. 恢复API Keys到api_keys表
+			if len(cwk.APIKeys) > 0 {
+				// 先删除该渠道的所有旧Keys（避免冲突）
+				_, err := tx.ExecContext(ctx, `DELETE FROM api_keys WHERE channel_id = ?`, channelID)
 				if err != nil {
-					log.Printf("Warning: failed to restore API key %d for channel %d: %v", key.KeyIndex, channelID, err)
-					continue
+					log.Printf("Warning: failed to clear old API keys for channel %d: %v", channelID, err)
 				}
-				totalKeysRestored++
+
+				// 插入所有API Keys
+				for _, key := range cwk.APIKeys {
+					_, err := tx.ExecContext(ctx, `
+						INSERT INTO api_keys (channel_id, key_index, api_key, key_strategy,
+						                      cooldown_until, cooldown_duration_ms, created_at, updated_at)
+						VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+					`, channelID, key.KeyIndex, key.APIKey, key.KeyStrategy,
+						key.CooldownUntil, key.CooldownDurationMs, nowUnix, nowUnix)
+
+					if err != nil {
+						log.Printf("Warning: failed to restore API key %d for channel %d: %v", key.KeyIndex, channelID, err)
+						continue
+					}
+					totalKeysRestored++
+				}
 			}
+
+			successCount++
 		}
+		return nil
+	})
 
-		successCount++
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
+	if err != nil {
+		return err
 	}
 
 	log.Printf("Successfully restored %d/%d channels and %d API Keys from Redis",
@@ -1437,4 +1430,182 @@ func (s *SQLiteStore) DeleteAllAPIKeys(ctx context.Context, channelID int64) err
 	}
 
 	return nil
+}
+
+// ==================== 批量导入优化 (P3性能优化) ====================
+
+// ImportChannelBatch 批量导入渠道配置（原子性+性能优化）
+// ✅ P3优化：单事务+预编译语句，提升CSV导入性能
+// ✅ ACID原则：确保批量导入的原子性（要么全部成功，要么全部回滚）
+//
+// 参数:
+//   - channels: 渠道配置和API Keys的批量数据
+//
+// 返回:
+//   - created: 新创建的渠道数量
+//   - updated: 更新的渠道数量
+//   - error: 导入失败时的错误信息
+func (s *SQLiteStore) ImportChannelBatch(ctx context.Context, channels []*model.ChannelWithKeys) (created, updated int, err error) {
+	if len(channels) == 0 {
+		return 0, 0, nil
+	}
+
+	// 预加载现有渠道名称集合（用于区分创建/更新）
+	existingConfigs, err := s.ListConfigs(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("query existing channels: %w", err)
+	}
+	existingNames := make(map[string]struct{}, len(existingConfigs))
+	for _, ec := range existingConfigs {
+		existingNames[ec.Name] = struct{}{}
+	}
+
+	// 使用事务确保原子性
+	err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		nowUnix := time.Now().Unix()
+
+		// 预编译渠道插入语句（复用，减少解析开销）
+		channelStmt, err := tx.PrepareContext(ctx, `
+			INSERT INTO channels(name, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(name) DO UPDATE SET
+				url = excluded.url,
+				priority = excluded.priority,
+				models = excluded.models,
+				model_redirects = excluded.model_redirects,
+				channel_type = excluded.channel_type,
+				enabled = excluded.enabled,
+				updated_at = excluded.updated_at
+		`)
+		if err != nil {
+			return fmt.Errorf("prepare channel statement: %w", err)
+		}
+		defer channelStmt.Close()
+
+		// 预编译API Key插入语句
+		keyStmt, err := tx.PrepareContext(ctx, `
+			INSERT INTO api_keys (channel_id, key_index, api_key, key_strategy,
+			                      cooldown_until, cooldown_duration_ms, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`)
+		if err != nil {
+			return fmt.Errorf("prepare api key statement: %w", err)
+		}
+		defer keyStmt.Close()
+
+		// 批量导入渠道
+		for _, cwk := range channels {
+			config := cwk.Config
+
+			// 标准化数据
+			modelsStr, _ := util.SerializeModels(config.Models)
+			modelRedirectsStr, _ := util.SerializeModelRedirects(config.ModelRedirects)
+			channelType := config.GetChannelType()
+
+			// 检查是否为更新操作
+			_, isUpdate := existingNames[config.Name]
+
+			// 插入或更新渠道配置
+			_, err := channelStmt.ExecContext(ctx,
+				config.Name, config.URL, config.Priority,
+				modelsStr, modelRedirectsStr, channelType,
+				boolToInt(config.Enabled), nowUnix, nowUnix)
+			if err != nil {
+				return fmt.Errorf("import channel %s: %w", config.Name, err)
+			}
+
+			// 获取渠道ID
+			var channelID int64
+			err = tx.QueryRowContext(ctx, `SELECT id FROM channels WHERE name = ?`, config.Name).Scan(&channelID)
+			if err != nil {
+				return fmt.Errorf("get channel id for %s: %w", config.Name, err)
+			}
+
+			// 删除旧的API Keys（如果是更新）
+			if isUpdate {
+				_, err := tx.ExecContext(ctx, `DELETE FROM api_keys WHERE channel_id = ?`, channelID)
+				if err != nil {
+					return fmt.Errorf("delete old api keys for channel %d: %w", channelID, err)
+				}
+			}
+
+			// 批量插入API Keys（使用预编译语句）
+			for _, key := range cwk.APIKeys {
+				_, err := keyStmt.ExecContext(ctx,
+					channelID, key.KeyIndex, key.APIKey, key.KeyStrategy,
+					key.CooldownUntil, key.CooldownDurationMs, nowUnix, nowUnix)
+				if err != nil {
+					return fmt.Errorf("insert api key %d for channel %d: %w", key.KeyIndex, channelID, err)
+				}
+			}
+
+			// 统计
+			if isUpdate {
+				updated++
+			} else {
+				created++
+				existingNames[config.Name] = struct{}{} // 加入集合，避免后续重复计算
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return 0, 0, err
+	}
+
+	// 异步同步到Redis（非阻塞）
+	s.triggerAsyncSync()
+
+	return created, updated, nil
+}
+
+// GetAllAPIKeys 批量查询所有API Keys（P3性能优化）
+// ✅ 消除N+1问题：一次查询获取所有渠道的Keys，避免逐个查询
+// 返回: map[channelID][]*APIKey
+func (s *SQLiteStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey, error) {
+	query := `
+		SELECT id, channel_id, key_index, api_key, key_strategy,
+		       cooldown_until, cooldown_duration_ms, created_at, updated_at
+		FROM api_keys
+		ORDER BY channel_id ASC, key_index ASC
+	`
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("query all api keys: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[int64][]*model.APIKey)
+	for rows.Next() {
+		key := &model.APIKey{}
+		var createdAt, updatedAt int64
+
+		err := rows.Scan(
+			&key.ID,
+			&key.ChannelID,
+			&key.KeyIndex,
+			&key.APIKey,
+			&key.KeyStrategy,
+			&key.CooldownUntil,
+			&key.CooldownDurationMs,
+			&createdAt,
+			&updatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scan api key: %w", err)
+		}
+
+		key.CreatedAt = model.JSONTime{Time: time.Unix(createdAt, 0)}
+		key.UpdatedAt = model.JSONTime{Time: time.Unix(updatedAt, 0)}
+
+		result[key.ChannelID] = append(result[key.ChannelID], key)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate api keys: %w", err)
+	}
+
+	return result, nil
 }

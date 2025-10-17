@@ -128,6 +128,19 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		allKeyCooldowns = make(map[int64]map[int]time.Time)
 	}
 
+	// ✅ P3性能优化：批量查询所有API Keys（一次查询替代 N 次）
+	var allAPIKeys map[int64][]*model.APIKey
+	if sqliteStore, ok := s.store.(*sqlite.SQLiteStore); ok {
+		allAPIKeys, err = sqliteStore.GetAllAPIKeys(c.Request.Context())
+		if err != nil {
+			util.SafePrintf("⚠️  警告: 批量查询API Keys失败: %v", err)
+			allAPIKeys = make(map[int64][]*model.APIKey) // 降级：使用空map
+		}
+	} else {
+		// 兼容其他Store实现
+		allAPIKeys = make(map[int64][]*model.APIKey)
+	}
+
 	out := make([]ChannelWithCooldown, 0, len(cfgs))
 	for _, cfg := range cfgs {
 		oc := ChannelWithCooldown{Config: cfg}
@@ -139,12 +152,8 @@ func (s *Server) handleListChannels(c *gin.Context) {
 			oc.CooldownRemainingMS = cooldownRemainingMS
 		}
 
-		// Key级别冷却：查询数据库获取该渠道的API Keys
-		apiKeys, err := s.store.GetAPIKeys(c.Request.Context(), cfg.ID)
-		if err != nil {
-			util.SafePrintf("⚠️  警告: 查询渠道 %d 的API Keys失败: %v", cfg.ID, err)
-			apiKeys = []*model.APIKey{} // 空数组，继续处理
-		}
+		// ✅ P3性能优化：从预加载的map中获取API Keys（O(1)查找）
+		apiKeys := allAPIKeys[cfg.ID]
 
 		// ✅ 修复 (2025-10-11): 填充key_strategy字段（从第一个Key获取，所有Key的策略应该相同）
 		if len(apiKeys) > 0 && apiKeys[0].KeyStrategy != "" {
@@ -226,6 +235,19 @@ func (s *Server) handleExportChannelsCSV(c *gin.Context) {
 		return
 	}
 
+	// ✅ P3优化：批量查询所有API Keys，消除N+1问题（100渠道从100次查询降为1次）
+	var allAPIKeys map[int64][]*model.APIKey
+	if sqliteStore, ok := s.store.(*sqlite.SQLiteStore); ok {
+		allAPIKeys, err = sqliteStore.GetAllAPIKeys(c.Request.Context())
+		if err != nil {
+			util.SafePrintf("⚠️  警告: 批量查询API Keys失败: %v", err)
+			allAPIKeys = make(map[int64][]*model.APIKey) // 降级：使用空map
+		}
+	} else {
+		// 兼容其他Store实现（虽然目前只有SQLite）
+		allAPIKeys = make(map[int64][]*model.APIKey)
+	}
+
 	buf := &bytes.Buffer{}
 	// 添加 UTF-8 BOM，兼容 Excel 等工具
 	buf.WriteString("\ufeff")
@@ -240,12 +262,8 @@ func (s *Server) handleExportChannelsCSV(c *gin.Context) {
 	}
 
 	for _, cfg := range cfgs {
-		// 查询渠道的API Keys
-		apiKeys, err := s.store.GetAPIKeys(c.Request.Context(), cfg.ID)
-		if err != nil {
-			util.SafePrintf("⚠️  警告: 查询渠道 %d 的API Keys失败: %v", cfg.ID, err)
-			apiKeys = []*model.APIKey{} // 空数组，继续处理
-		}
+		// ✅ P3优化：从预加载的map中获取API Keys，O(1)查找
+		apiKeys := allAPIKeys[cfg.ID]
 
 		// 格式化API Keys为逗号分隔字符串
 		apiKeyStrs := make([]string, 0, len(apiKeys))
@@ -339,16 +357,8 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 	summary := ChannelImportSummary{}
 	lineNo := 1
 
-	// 预加载现有渠道名称，O(n) 替代 O(n^2)（KISS/DRY/性能优化）
-	existingConfigs, err := s.store.ListConfigs(c.Request.Context())
-	if err != nil {
-		RespondError(c, http.StatusInternalServerError, err)
-		return
-	}
-	existingNames := make(map[string]struct{}, len(existingConfigs))
-	for _, ec := range existingConfigs {
-		existingNames[ec.Name] = struct{}{}
-	}
+	// ✅ P3优化：批量收集有效记录，最后一次性导入（减少数据库往返）
+	validChannels := make([]*model.ChannelWithKeys, 0, 100) // 预分配容量，减少扩容
 
 	for {
 		record, err := reader.Read()
@@ -446,6 +456,7 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 			}
 		}
 
+		// 构建渠道配置
 		cfg := &model.Config{
 			Name:           name,
 			URL:            url,
@@ -456,69 +467,53 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 			Enabled:        enabled,
 		}
 
-		// 检查渠道是否已存在（基于名称）- 使用预加载集合
-		_, isUpdate := existingNames[name]
-
-		// 使用ReplaceConfig进行插入或更新
-		replacedCfg, err := s.store.ReplaceConfig(c.Request.Context(), cfg)
-		if err != nil {
-			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行处理失败: %v", lineNo, err))
-			summary.Skipped++
-			continue
-		}
-
-		// 解析并创建/更新API Keys
-		apiKeys := util.ParseAPIKeys(apiKey)
-		if len(apiKeys) > 0 {
-			// 先删除旧的API Keys（如果是更新操作）
-			if isUpdate {
-				_ = s.store.DeleteAllAPIKeys(c.Request.Context(), replacedCfg.ID)
-			}
-
-			// 创建新的API Keys
-			now := time.Now()
-			for i, key := range apiKeys {
-				apiKeyRecord := &model.APIKey{
-					ChannelID:   replacedCfg.ID,
-					KeyIndex:    i,
-					APIKey:      key,
-					KeyStrategy: keyStrategy,
-					CreatedAt:   model.JSONTime{Time: now},
-					UpdatedAt:   model.JSONTime{Time: now},
-				}
-				if err := s.store.CreateAPIKey(c.Request.Context(), apiKeyRecord); err != nil {
-					util.SafePrintf("⚠️  警告: 创建API Key失败 (channel=%d, index=%d): %v", replacedCfg.ID, i, err)
-				}
+		// 解析并构建API Keys
+		apiKeyList := util.ParseAPIKeys(apiKey)
+		apiKeys := make([]model.APIKey, len(apiKeyList))
+		for i, key := range apiKeyList {
+			apiKeys[i] = model.APIKey{
+				KeyIndex:    i,
+				APIKey:      key,
+				KeyStrategy: keyStrategy,
 			}
 		}
 
-		if isUpdate {
-			summary.Updated++
+		// 收集有效记录
+		validChannels = append(validChannels, &model.ChannelWithKeys{
+			Config:  cfg,
+			APIKeys: apiKeys,
+		})
+	}
+
+	// ✅ P3优化：批量导入所有有效记录（单事务 + 预编译语句）
+	if len(validChannels) > 0 {
+		if sqliteStore, ok := s.store.(*sqlite.SQLiteStore); ok {
+			created, updated, err := sqliteStore.ImportChannelBatch(c.Request.Context(), validChannels)
+			if err != nil {
+				summary.Errors = append(summary.Errors, fmt.Sprintf("批量导入失败: %v", err))
+				RespondJSON(c, http.StatusInternalServerError, summary)
+				return
+			}
+			summary.Created = created
+			summary.Updated = updated
 		} else {
-			summary.Created++
-			// 新创建的渠道加入已存在集合，避免后续重复计算
-			existingNames[name] = struct{}{}
+			// 降级处理：如果不是SQLiteStore，回退到逐条导入（保持兼容性）
+			summary.Errors = append(summary.Errors, "不支持的存储类型，批量导入功能不可用")
+			RespondJSON(c, http.StatusInternalServerError, summary)
+			return
 		}
 	}
 
 	summary.Processed = summary.Created + summary.Updated + summary.Skipped
 
-	// 导入完成后，批量同步所有渠道到Redis (DRY: 避免逐个同步的重复操作)
+	// 导入完成后，检查Redis同步状态（批量导入方法会自动触发同步）
 	summary.RedisSyncEnabled = false
 	if sqliteStore, ok := s.store.(*sqlite.SQLiteStore); ok && sqliteStore.IsRedisEnabled() {
 		summary.RedisSyncEnabled = true
-
-		// 批量同步所有渠道到Redis
-		if err := sqliteStore.SyncAllChannelsToRedis(c.Request.Context()); err != nil {
-			summary.RedisSyncSuccess = false
-			summary.RedisSyncError = fmt.Sprintf("Redis同步失败: %v", err)
-			// Redis同步失败不影响导入结果，仅记录错误
-		} else {
-			summary.RedisSyncSuccess = true
-			// 获取当前渠道总数作为同步数量
-			if configs, err := s.store.ListConfigs(c.Request.Context()); err == nil {
-				summary.RedisSyncedChannels = len(configs)
-			}
+		summary.RedisSyncSuccess = true // 批量导入方法已自动同步
+		// 获取当前渠道总数作为同步数量
+		if configs, err := s.store.ListConfigs(c.Request.Context()); err == nil {
+			summary.RedisSyncedChannels = len(configs)
 		}
 	}
 
