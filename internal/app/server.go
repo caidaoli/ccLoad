@@ -592,11 +592,13 @@ func (s *Server) cleanupOldLogsLoop() {
 	for {
 		select {
 		case <-ticker.C:
-			ctx := context.Background()
+			// ✅ P0-3修复：使用带超时的context，避免日志清理阻塞关闭流程
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			cutoff := time.Now().AddDate(0, 0, -config.LogRetentionDays)
 
 			// 通过Store接口清理旧日志，忽略错误（非关键操作）
 			_ = s.store.CleanupLogsBefore(ctx, cutoff)
+			cancel() // 立即释放资源
 
 		case <-s.shutdownCh:
 			// 收到关闭信号，直接退出（不执行最后一次清理）

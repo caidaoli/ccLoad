@@ -918,7 +918,9 @@ func (s *SQLiteStore) SyncAllChannelsToRedis(ctx context.Context) error {
 // redisSyncWorker 异步Redis同步worker（后台goroutine）
 // 修复：增加重试机制，避免瞬时网络故障导致数据丢失（P0修复 2025-10-05）
 func (s *SQLiteStore) redisSyncWorker() {
-	ctx := context.Background()
+	// ✅ P0-3修复：使用可取消的context，支持优雅关闭
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	// 指数退避重试配置
 	retryBackoff := []time.Duration{
@@ -939,11 +941,15 @@ func (s *SQLiteStore) redisSyncWorker() {
 			}
 
 		case <-s.done:
-			// 优雅关闭：处理完最后一个任务（如果有）
+			// 优雅关闭：先取消context，然后处理最后一个任务（如果有）
+			cancel()
 			select {
 			case <-s.syncCh:
 				// 关闭时不重试，快速同步一次即可
-				_ = s.doSyncAllChannels(ctx)
+				// 创建新的超时context，避免使用已取消的context
+				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_ = s.doSyncAllChannels(shutdownCtx)
+				shutdownCancel()
 			default:
 			}
 			return
