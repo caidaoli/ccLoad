@@ -1,6 +1,7 @@
 package app
 
 import (
+	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 
 	"context"
@@ -13,12 +14,13 @@ import (
 
 // TestHandleProxyError_SingleKeyUpgrade 测试单Key渠道的错误升级逻辑
 func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
-	// 创建测试服务器
+	// 创建测试服务器（✅ P2重构：添加cooldownManager）
 	store := &MockStore{}
 	keySelector := NewKeySelector(store, nil) // 测试环境不需要监控指标
 	server := &Server{
-		store:       store,
-		keySelector: keySelector,
+		store:           store,
+		keySelector:     keySelector,
+		cooldownManager: cooldown.NewManager(store), // ✅ P2重构：初始化cooldownManager
 	}
 
 	ctx := context.Background()
@@ -29,7 +31,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 		statusCode     int
 		responseBody   []byte
 		networkError   error
-		expectedAction ErrorAction
+		expectedAction cooldown.Action // ✅ P2重构：使用 cooldown.Action
 		expectedLevel  string
 		reason         string
 	}{
@@ -41,7 +43,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 			},
 			statusCode:     401,
 			responseBody:   []byte(`{"error":"unauthorized"}`),
-			expectedAction: ActionRetryChannel,
+			expectedAction: cooldown.ActionRetryChannel,
 			expectedLevel:  "Channel",
 			reason:         "单Key渠道的401应该升级为渠道级错误",
 		},
@@ -52,7 +54,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 			},
 			statusCode:     403,
 			responseBody:   []byte(`{"error":"quota_exceeded"}`),
-			expectedAction: ActionRetryChannel,
+			expectedAction: cooldown.ActionRetryChannel,
 			expectedLevel:  "Channel",
 			reason:         "单Key渠道的403额度用尽应该升级为渠道级错误",
 		},
@@ -65,7 +67,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 			},
 			statusCode:     401,
 			responseBody:   []byte(`{"error":"unauthorized"}`),
-			expectedAction: ActionRetryKey,
+			expectedAction: cooldown.ActionRetryKey,
 			expectedLevel:  "Key",
 			reason:         "多Key渠道的401应该保持Key级错误，尝试其他Key",
 		},
@@ -76,7 +78,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 			},
 			statusCode:     403,
 			responseBody:   []byte(`{"error":"quota_exceeded","message":"Daily cost limit reached"}}`),
-			expectedAction: ActionRetryKey,
+			expectedAction: cooldown.ActionRetryKey,
 			expectedLevel:  "Key",
 			reason:         "多Key渠道的403额度用尽应该保持Key级错误（可能只是单个Key额度用尽）",
 		},
@@ -89,7 +91,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 			},
 			statusCode:     500,
 			responseBody:   []byte(`{"error":"internal server error"}`),
-			expectedAction: ActionRetryChannel,
+			expectedAction: cooldown.ActionRetryChannel,
 			expectedLevel:  "Channel",
 			reason:         "500错误本身就是渠道级错误",
 		},
@@ -100,7 +102,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 			},
 			statusCode:     500,
 			responseBody:   []byte(`{"error":"internal server error"}`),
-			expectedAction: ActionRetryChannel,
+			expectedAction: cooldown.ActionRetryChannel,
 			expectedLevel:  "Channel",
 			reason:         "500错误本身就是渠道级错误（即使多Key）",
 		},
@@ -113,7 +115,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 			},
 			statusCode:     404,
 			responseBody:   []byte(`{"error":"not found"}`),
-			expectedAction: ActionReturnClient,
+			expectedAction: cooldown.ActionReturnClient,
 			expectedLevel:  "Client",
 			reason:         "404错误应该直接返回客户端",
 		},
@@ -125,7 +127,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 				ID: 8,
 			},
 			networkError:   &net.OpError{Op: "dial", Err: errors.New("connection refused")},
-			expectedAction: ActionRetryChannel,
+			expectedAction: cooldown.ActionRetryChannel,
 			expectedLevel:  "Channel",
 			reason:         "单Key渠道的网络错误应该升级为渠道级错误（修复后）",
 		},
@@ -135,7 +137,7 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 				ID: 9,
 			},
 			networkError:   &net.OpError{Op: "dial", Err: errors.New("connection refused")},
-			expectedAction: ActionRetryKey,
+			expectedAction: cooldown.ActionRetryKey,
 			expectedLevel:  "Key",
 			reason:         "多Key渠道的网络错误应该保持Key级错误，尝试其他Key",
 		},

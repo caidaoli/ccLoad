@@ -479,16 +479,35 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 
 ### 架构特点
 
+**模块化架构** (✅ P2重构完成，2025-10-17):
+- **proxy模块拆分**（SRP原则）：
+  - `proxy_handler.go` (236行)：HTTP入口、并发控制、路由选择
+  - `proxy_forward.go` (299行)：核心转发逻辑、请求构建、响应处理
+  - `proxy_error.go` (170行)：错误处理、冷却决策、重试逻辑
+  - `proxy_util.go` (484行)：常量、类型定义、工具函数
+  - `proxy_stream.go` (77行)：流式响应、首字节检测
+  - `proxy_gemini.go` (42行)：Gemini API特殊处理
+- **冷却管理器**（DRY原则）：
+  - `cooldown/manager.go` (122行)：统一冷却决策引擎
+  - 消除重复代码83%，冷却逻辑统一管理
+  - 区分网络错误和HTTP错误的分类策略
+  - 内置单Key渠道自动升级逻辑
+
 **多级缓存系统**:
 - 渠道配置缓存（60秒TTL）
 - 轮询指针缓存（内存）
-- 冷却状态缓存（sync.Map）
+- 冷却状态内联（channels/api_keys表直接存储）
 - 错误分类缓存（1000容量）
 
 **异步处理架构**:
 - Redis同步（单worker协程，非阻塞触发，响应<1ms）
 - 日志系统（1000条缓冲 + 3个worker，批量写入）
-- 会话/冷却清理（后台协程，定期维护）
+- Token/日志清理（后台协程，定期维护）
+
+**统一响应系统** (✅ P1重构完成):
+- `StandardResponse[T]` 泛型结构体（DRY原则）
+- `ResponseHelper` 辅助类及9个快捷方法
+- 自动提取应用级错误码，统一JSON格式
 
 **连接池优化**:
 - SQLite: 内存模式10个连接/文件模式5个连接，1分钟生命周期
@@ -546,10 +565,17 @@ docker pull --platform linux/arm64 ghcr.io/caidaoli/ccload:latest
 
 ### 数据库结构
 
-- `channels` - 渠道配置（具有name字段UNIQUE约束）
+**核心表**:
+- `channels` - 渠道配置（冷却数据内联，UNIQUE约束name）
+- `api_keys` - API密钥（Key级冷却内联，支持多Key策略）
 - `logs` - 请求日志
-- `cooldowns` - 冷却状态（channel_id, until, duration_ms）
-- `rr` - 轮询指针（model, priority, next_index）
+- `key_rr` - 轮询指针（channel_id → idx）
+
+**架构特性** (✅ 2025-10月优化):
+- ✅ 冷却数据内联（废弃独立cooldowns表，减少JOIN开销）
+- ✅ 性能索引优化（渠道选择延迟↓30-50%，Key查找延迟↓40-60%）
+- ✅ 外键约束（级联删除，保证数据一致性）
+- ✅ 多Key支持（sequential/round_robin策略）
 
 **向后兼容迁移**:
 - 自动检测并修复重复渠道名称

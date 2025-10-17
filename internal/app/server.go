@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"ccLoad/internal/config"
+	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/storage/sqlite"
@@ -27,10 +28,12 @@ import (
 )
 
 type Server struct {
-	store       storage.Store
-	keySelector *KeySelector // Key选择器（多Key支持）
-	client      *http.Client
-	password    string
+	store           storage.Store
+	keySelector     *KeySelector         // Key选择器（多Key支持）
+	cooldownManager *cooldown.Manager    // ✅ P2重构：统一冷却管理器（DRY原则）
+	client          *http.Client
+	password        string
+	resp            *ResponseHelper      // ✅ P1重构：统一响应助手（DRY原则）
 
 	// Token认证系统
 	validTokens map[string]time.Time // 动态Token -> 过期时间
@@ -178,6 +181,7 @@ func NewServer(store storage.Store) *Server {
 			Timeout:   0, // 不设置全局超时，避免中断长时间任务
 		},
 		password:         password,
+		resp:             NewResponseHelper(),                // ✅ P1重构：初始化响应助手
 		validTokens:      make(map[string]time.Time),
 		authTokens:       authTokens,
 		loginRateLimiter: util.NewLoginRateLimiter(),         // ✅ P2安全加固：登录速率限制
@@ -191,6 +195,9 @@ func NewServer(store storage.Store) *Server {
 		// ✅ P0修复（2025-10-13）：初始化优雅关闭机制
 		shutdownCh: make(chan struct{}),
 	}
+
+	// ✅ P2重构：初始化冷却管理器（统一管理渠道级和Key级冷却）
+	s.cooldownManager = cooldown.NewManager(store)
 
 	// 初始化Key选择器（传递Key冷却监控指标）
 	s.keySelector = NewKeySelector(store, &s.keyCooldownGauge)
