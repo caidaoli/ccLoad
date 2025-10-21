@@ -141,10 +141,10 @@ func TestHandleRequestError(t *testing.T) {
 	cfg := &model.Config{ID: 1}
 
 	tests := []struct {
-		name           string
-		err            error
-		isStreaming    bool
-		wantContains   string
+		name         string
+		err          error
+		isStreaming  bool
+		wantContains string
 	}{
 		{
 			name:         "超时错误-流式请求",

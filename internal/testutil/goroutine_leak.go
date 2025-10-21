@@ -9,7 +9,8 @@ import (
 
 // CheckGorutineLeak 检查测试执行期间是否有goroutine泄漏
 // 使用方式：
-//   defer testutil.CheckGorutineLeak(t)()
+//
+//	defer testutil.CheckGorutineLeak(t)()
 //
 // 原理：比较测试前后的goroutine数量和堆栈
 func CheckGorutineLeak(t *testing.T) func() {

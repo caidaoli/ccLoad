@@ -41,14 +41,14 @@ func (s *Server) CheckHealth() *HealthStatus {
 	metrics := s.GetMetrics()
 
 	status := &HealthStatus{
-		Healthy: true,
-		Metrics: metrics,
+		Healthy:  true,
+		Metrics:  metrics,
 		Warnings: make([]string, 0),
 	}
 
 	// 检查1：Goroutine数量异常
 	if metrics.NumGoroutines > 1000 {
-		status.Warnings = append(status.Warnings, 
+		status.Warnings = append(status.Warnings,
 			fmt.Sprintf("⚠️ Goroutine数量异常: %d (正常<1000)", metrics.NumGoroutines))
 		if metrics.NumGoroutines > 5000 {
 			status.Healthy = false
@@ -83,7 +83,7 @@ func (s *Server) CheckHealth() *HealthStatus {
 
 // HealthStatus 健康状态
 type HealthStatus struct {
-	Healthy  bool      `json:"healthy"`
-	Metrics  *Metrics  `json:"metrics"`
-	Warnings []string  `json:"warnings,omitempty"`
+	Healthy  bool     `json:"healthy"`
+	Metrics  *Metrics `json:"metrics"`
+	Warnings []string `json:"warnings,omitempty"`
 }

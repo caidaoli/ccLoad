@@ -11,26 +11,26 @@ import (
 // 遵循 SOLID 原则：单一职责 + 配置验证
 type EnvConfig struct {
 	// 服务配置
-	Port              string
-	GinMode           string
-	Password          string
-	AuthTokens        []string
+	Port       string
+	GinMode    string
+	Password   string
+	AuthTokens []string
 
 	// 数据库配置
-	SQLitePath        string
-	RedisURL          string
-	UseMemoryDB       bool
-	JournalMode       string
+	SQLitePath  string
+	RedisURL    string
+	UseMemoryDB bool
+	JournalMode string
 
 	// 性能配置
-	MaxConcurrency    int
-	MaxKeyRetries     int
-	EnableWarmup      bool
-	SkipTLSVerify     bool
+	MaxConcurrency int
+	MaxKeyRetries  int
+	EnableWarmup   bool
+	SkipTLSVerify  bool
 
 	// 日志配置
-	LogBufferSize     int
-	LogWorkers        int
+	LogBufferSize int
+	LogWorkers    int
 }
 
 // LoadFromEnv 从环境变量加载配置并验证

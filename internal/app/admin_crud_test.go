@@ -82,7 +82,7 @@ func TestHandleListChannels(t *testing.T) {
 	}
 
 	var resp struct {
-		Success bool             `json:"success"`
+		Success bool            `json:"success"`
 		Data    []*model.Config `json:"data"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
@@ -569,7 +569,7 @@ func TestHandleGetChannelKeys(t *testing.T) {
 	}
 
 	var resp struct {
-		Success bool             `json:"success"`
+		Success bool            `json:"success"`
 		Data    []*model.APIKey `json:"data"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {

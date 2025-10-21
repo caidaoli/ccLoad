@@ -9,15 +9,15 @@ type ErrorCode string
 
 const (
 	// Key选择相关错误
-	ErrCodeNoKeys        ErrorCode = "NO_KEYS"         // 渠道未配置API Key
-	ErrCodeAllCooldown   ErrorCode = "ALL_COOLDOWN"    // 所有Key都在冷却中
-	ErrCodeKeyExhausted  ErrorCode = "KEY_EXHAUSTED"   // Key重试次数耗尽
+	ErrCodeNoKeys       ErrorCode = "NO_KEYS"       // 渠道未配置API Key
+	ErrCodeAllCooldown  ErrorCode = "ALL_COOLDOWN"  // 所有Key都在冷却中
+	ErrCodeKeyExhausted ErrorCode = "KEY_EXHAUSTED" // Key重试次数耗尽
 
 	// 数据库操作错误
-	ErrCodeDBQuery       ErrorCode = "DB_QUERY"        // 数据库查询失败
-	ErrCodeDBInsert      ErrorCode = "DB_INSERT"       // 数据库插入失败
-	ErrCodeDBUpdate      ErrorCode = "DB_UPDATE"       // 数据库更新失败
-	ErrCodeDBDelete      ErrorCode = "DB_DELETE"       // 数据库删除失败
+	ErrCodeDBQuery  ErrorCode = "DB_QUERY"  // 数据库查询失败
+	ErrCodeDBInsert ErrorCode = "DB_INSERT" // 数据库插入失败
+	ErrCodeDBUpdate ErrorCode = "DB_UPDATE" // 数据库更新失败
+	ErrCodeDBDelete ErrorCode = "DB_DELETE" // 数据库删除失败
 
 	// 渠道相关错误
 	ErrCodeChannelNotFound    ErrorCode = "CHANNEL_NOT_FOUND"    // 渠道不存在
@@ -26,26 +26,26 @@ const (
 	ErrCodeNoAvailableChannel ErrorCode = "NO_AVAILABLE_CHANNEL" // 无可用渠道
 
 	// HTTP请求错误
-	ErrCodeHTTPRequest   ErrorCode = "HTTP_REQUEST"    // HTTP请求失败
-	ErrCodeHTTPTimeout   ErrorCode = "HTTP_TIMEOUT"    // HTTP请求超时
-	ErrCodeHTTPStream    ErrorCode = "HTTP_STREAM"     // 流式响应错误
+	ErrCodeHTTPRequest ErrorCode = "HTTP_REQUEST" // HTTP请求失败
+	ErrCodeHTTPTimeout ErrorCode = "HTTP_TIMEOUT" // HTTP请求超时
+	ErrCodeHTTPStream  ErrorCode = "HTTP_STREAM"  // 流式响应错误
 
 	// 认证相关错误
-	ErrCodeUnauthorized  ErrorCode = "UNAUTHORIZED"    // 未授权
-	ErrCodeInvalidToken  ErrorCode = "INVALID_TOKEN"   // Token无效
-	ErrCodeTokenExpired  ErrorCode = "TOKEN_EXPIRED"   // Token过期
+	ErrCodeUnauthorized ErrorCode = "UNAUTHORIZED"  // 未授权
+	ErrCodeInvalidToken ErrorCode = "INVALID_TOKEN" // Token无效
+	ErrCodeTokenExpired ErrorCode = "TOKEN_EXPIRED" // Token过期
 
 	// 配置相关错误
-	ErrCodeInvalidConfig ErrorCode = "INVALID_CONFIG"  // 配置无效
-	ErrCodeMissingConfig ErrorCode = "MISSING_CONFIG"  // 配置缺失
+	ErrCodeInvalidConfig ErrorCode = "INVALID_CONFIG" // 配置无效
+	ErrCodeMissingConfig ErrorCode = "MISSING_CONFIG" // 配置缺失
 )
 
 // AppError 应用级错误结构（支持错误链和上下文信息）
 type AppError struct {
-	Code     ErrorCode         // 错误代码（机器可识别）
-	Message  string            // 错误消息（人类可读）
-	Err      error             // 底层错误（支持错误链）
-	Context  map[string]any    // 错误上下文（便于调试和监控）
+	Code    ErrorCode      // 错误代码（机器可识别）
+	Message string         // 错误消息（人类可读）
+	Err     error          // 底层错误（支持错误链）
+	Context map[string]any // 错误上下文（便于调试和监控）
 }
 
 // Error 实现 error 接口

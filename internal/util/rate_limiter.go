@@ -16,9 +16,9 @@ type LoginRateLimiter struct {
 	mu       sync.RWMutex
 
 	// 配置参数
-	maxAttempts      int           // 最大尝试次数（默认5次）
-	lockoutDuration  time.Duration // 锁定时长（默认15分钟）
-	resetInterval    time.Duration // 计数重置间隔（默认1小时）
+	maxAttempts     int           // 最大尝试次数（默认5次）
+	lockoutDuration time.Duration // 锁定时长（默认15分钟）
+	resetInterval   time.Duration // 计数重置间隔（默认1小时）
 
 	// 优雅关闭机制
 	stopCh chan struct{} // 关闭信号
@@ -35,9 +35,9 @@ type attemptRecord struct {
 func NewLoginRateLimiter() *LoginRateLimiter {
 	limiter := &LoginRateLimiter{
 		attempts:        make(map[string]*attemptRecord),
-		maxAttempts:     5,                // 最大5次尝试
-		lockoutDuration: 15 * time.Minute, // 锁定15分钟
-		resetInterval:   1 * time.Hour,    // 1小时后重置
+		maxAttempts:     5,                   // 最大5次尝试
+		lockoutDuration: 15 * time.Minute,    // 锁定15分钟
+		resetInterval:   1 * time.Hour,       // 1小时后重置
 		stopCh:          make(chan struct{}), // ✅ P0修复：初始化关闭信号
 	}
 
@@ -206,9 +206,9 @@ func (rl *LoginRateLimiter) Stats() map[string]any {
 	}
 
 	return map[string]any{
-		"total_records": totalRecords,
-		"locked_ips":    lockedCount,
-		"max_attempts":  rl.maxAttempts,
+		"total_records":            totalRecords,
+		"locked_ips":               lockedCount,
+		"max_attempts":             rl.maxAttempts,
 		"lockout_duration_minutes": rl.lockoutDuration.Minutes(),
 	}
 }

@@ -12,8 +12,8 @@ type Action int
 
 const (
 	ActionRetryKey     Action = iota // 重试当前渠道的其他Key
-	ActionRetryChannel                // 切换到下一个渠道
-	ActionReturnClient                // 直接返回给客户端
+	ActionRetryChannel               // 切换到下一个渠道
+	ActionReturnClient               // 直接返回给客户端
 )
 
 // Manager 冷却管理器

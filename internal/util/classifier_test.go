@@ -195,20 +195,20 @@ func TestClassifyHTTPStatusWithBody(t *testing.T) {
 }
 
 func TestClassifyHTTPStatus(t *testing.T) {
-    tests := []struct {
-        statusCode int
-        expected   ErrorLevel
-        reason     string
-    }{
-        {200, ErrorLevelNone, "2xx成功"},
-        {201, ErrorLevelNone, "2xx成功"},
-        {400, ErrorLevelKey, "Key级错误"},
-        {402, ErrorLevelKey, "402 应视为Key级（额度/余额/配额）"},
-        {401, ErrorLevelKey, "Key级错误（默认）"},
-        {403, ErrorLevelKey, "Key级错误"},
-        {404, ErrorLevelClient, "客户端错误"},
-        {429, ErrorLevelKey, "Key级限流"},
-        {500, ErrorLevelChannel, "渠道级错误"},
+	tests := []struct {
+		statusCode int
+		expected   ErrorLevel
+		reason     string
+	}{
+		{200, ErrorLevelNone, "2xx成功"},
+		{201, ErrorLevelNone, "2xx成功"},
+		{400, ErrorLevelKey, "Key级错误"},
+		{402, ErrorLevelKey, "402 应视为Key级（额度/余额/配额）"},
+		{401, ErrorLevelKey, "Key级错误（默认）"},
+		{403, ErrorLevelKey, "Key级错误"},
+		{404, ErrorLevelClient, "客户端错误"},
+		{429, ErrorLevelKey, "Key级限流"},
+		{500, ErrorLevelChannel, "渠道级错误"},
 		{502, ErrorLevelChannel, "渠道级错误"},
 		{503, ErrorLevelChannel, "渠道级错误"},
 		{504, ErrorLevelChannel, "渠道级错误"},

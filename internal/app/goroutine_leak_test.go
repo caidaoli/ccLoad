@@ -19,7 +19,7 @@ func TestServerShutdown_NoGoroutineLeak(t *testing.T) {
 
 	// 模拟一些操作
 	ctx := context.Background()
-	
+
 	// 添加一些日志
 	for i := 0; i < 10; i++ {
 		srv.addLogAsync(&model.LogEntry{
@@ -52,7 +52,7 @@ func TestLogWorker_NoLeak(t *testing.T) {
 	defer testutil.CheckGorutineLeak(t)()
 
 	store, _ := sqlite.NewSQLiteStore(":memory:", nil)
-	
+
 	// 创建server（启动logWorker）
 	srv := NewServer(store)
 
@@ -174,10 +174,10 @@ func TestConcurrencyControl_NoLeak(t *testing.T) {
 
 			// 获取槽位
 			srv.concurrencySem <- struct{}{}
-			
+
 			// 模拟处理
 			time.Sleep(10 * time.Millisecond)
-			
+
 			// 释放槽位
 			<-srv.concurrencySem
 		}()

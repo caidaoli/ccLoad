@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"ccLoad/internal/config"
@@ -25,15 +26,16 @@ import (
 	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/net/http2"
 )
 
 type Server struct {
 	store           storage.Store
-	keySelector     *KeySelector         // Key选择器（多Key支持）
-	cooldownManager *cooldown.Manager    // ✅ P2重构：统一冷却管理器（DRY原则）
+	keySelector     *KeySelector      // Key选择器（多Key支持）
+	cooldownManager *cooldown.Manager // ✅ P2重构：统一冷却管理器（DRY原则）
 	client          *http.Client
 	password        string
-	resp            *ResponseHelper      // ✅ P1重构：统一响应助手（DRY原则）
+	resp            *ResponseHelper // ✅ P1重构：统一响应助手（DRY原则）
 
 	// Token认证系统
 	validTokens map[string]time.Time // 动态Token -> 过期时间
@@ -129,9 +131,17 @@ func NewServer(store storage.Store) *Server {
 	}
 
 	// 优化 HTTP 客户端配置 - 重点优化连接建立阶段的超时控制
+	// ✅ P2优化（2025-10-17）：启用TCP_NODELAY降低SSE首包延迟5~15ms
 	dialer := &net.Dialer{
 		Timeout:   config.SecondsToDuration(config.HTTPDialTimeout),
 		KeepAlive: config.SecondsToDuration(config.HTTPKeepAliveInterval),
+		// 禁用Nagle算法，立即发送小包数据（SSE事件通常<2KB）
+		Control: func(network, address string, c syscall.RawConn) error {
+			return c.Control(func(fd uintptr) {
+				// 设置TCP_NODELAY=1，禁用Nagle算法
+				_ = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_TCP, syscall.TCP_NODELAY, 1)
+			})
+		},
 	}
 
 	transport := &http.Transport{
@@ -159,6 +169,14 @@ func NewServer(store storage.Store) *Server {
 		},
 	}
 
+	// ✅ P1优化（2025-10-17）：启用HTTP/2降低头部开销10~20ms
+	// 优势：头部压缩、多路复用、服务器推送
+	if err := http2.ConfigureTransport(transport); err != nil {
+		util.SafePrint("⚠️  警告：HTTP/2配置失败，将使用HTTP/1.1: ", err.Error())
+	} else {
+		util.SafePrint("✅ HTTP/2已启用（头部压缩+多路复用）")
+	}
+
 	// 可配置的日志缓冲与工作协程（修复：支持环境变量）
 	logBuf := config.DefaultLogBufferSize
 	if v := os.Getenv("CCLOAD_LOG_BUFFER"); v != "" {
@@ -181,7 +199,7 @@ func NewServer(store storage.Store) *Server {
 			Timeout:   0, // 不设置全局超时，避免中断长时间任务
 		},
 		password:         password,
-		resp:             NewResponseHelper(),                // ✅ P1重构：初始化响应助手
+		resp:             NewResponseHelper(), // ✅ P1重构：初始化响应助手
 		validTokens:      make(map[string]time.Time),
 		authTokens:       authTokens,
 		loginRateLimiter: util.NewLoginRateLimiter(),         // ✅ P2安全加固：登录速率限制

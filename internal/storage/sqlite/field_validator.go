@@ -23,15 +23,15 @@ var allowedFields = map[string]bool{
 	"updated_at":           true,
 
 	// logs 表
-	"time":             true,
-	"model":            true,
-	"channel_id":       true,
-	"status_code":      true,
-	"message":          true,
-	"duration":         true,
-	"is_streaming":     true,
-	"first_byte_time":  true,
-	"api_key_used":     true,
+	"time":            true,
+	"model":           true,
+	"channel_id":      true,
+	"status_code":     true,
+	"message":         true,
+	"duration":        true,
+	"is_streaming":    true,
+	"first_byte_time": true,
+	"api_key_used":    true,
 
 	// api_keys 表
 	"key_index":    true,
@@ -89,7 +89,7 @@ func SanitizeOrderBy(orderBy string) (string, error) {
 
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
-		
+
 		// 分割字段名和排序方向
 		tokens := strings.Fields(part)
 		if len(tokens) == 0 || len(tokens) > 2 {

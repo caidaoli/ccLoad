@@ -19,21 +19,21 @@ import (
 )
 
 type SQLiteStore struct {
-    db    *sql.DB // 主数据库（channels, api_keys, key_rr）
-    logDB *sql.DB // 日志数据库（logs）- 拆分以减少锁竞争和简化备份
+	db    *sql.DB // 主数据库（channels, api_keys, key_rr）
+	logDB *sql.DB // 日志数据库（logs）- 拆分以减少锁竞争和简化备份
 
 	// ⚠️ 内存数据库守护连接（2025-10-05 P0修复）
 	// 内存模式下，持有一个永不关闭的连接，确保数据库不被销毁
 	keeperConn *sql.Conn // 守护连接（仅内存模式使用）
 
 	// 异步Redis同步机制（性能优化: 避免同步等待）
-    syncCh chan struct{} // 同步触发信号（无缓冲，去重合并多个请求）
-    done   chan struct{} // 优雅关闭信号
+	syncCh chan struct{} // 同步触发信号（无缓冲，去重合并多个请求）
+	done   chan struct{} // 优雅关闭信号
 
-    redisSync RedisSync // Redis同步接口（依赖注入，支持测试和扩展）
+	redisSync RedisSync // Redis同步接口（依赖注入，支持测试和扩展）
 
-    // 优雅关闭：等待后台worker
-    wg sync.WaitGroup
+	// 优雅关闭：等待后台worker
+	wg sync.WaitGroup
 }
 
 // RedisSync Redis同步接口抽象（依赖倒置原则）
@@ -231,14 +231,14 @@ func NewSQLiteStore(path string, redisSync RedisSync) (*SQLiteStore, error) {
 		return nil, err
 	}
 
-    // 启动异步Redis同步worker（仅当Redis启用时）
-    if redisSync != nil && redisSync.IsEnabled() {
-        s.wg.Add(1)
-        go func() {
-            defer s.wg.Done()
-            s.redisSyncWorker()
-        }()
-    }
+	// 启动异步Redis同步worker（仅当Redis启用时）
+	if redisSync != nil && redisSync.IsEnabled() {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			s.redisSyncWorker()
+		}()
+	}
 
 	return s, nil
 }
@@ -252,22 +252,22 @@ func (s *SQLiteStore) IsRedisEnabled() bool {
 }
 
 func (s *SQLiteStore) Close() error {
-    // 优雅关闭：通知worker退出
-    if s.done != nil {
-        close(s.done)
-    }
+	// 优雅关闭：通知worker退出
+	if s.done != nil {
+		close(s.done)
+	}
 
-    // 等待worker退出（带超时），避免无谓等待
-    waitCh := make(chan struct{})
-    go func() {
-        s.wg.Wait()
-        close(waitCh)
-    }()
-    select {
-    case <-waitCh:
-    case <-time.After(time.Duration(config.RedisSyncShutdownTimeoutMs) * time.Millisecond):
-        log.Printf("⚠️  Redis同步worker关闭超时（%dms）", config.RedisSyncShutdownTimeoutMs)
-    }
+	// 等待worker退出（带超时），避免无谓等待
+	waitCh := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(waitCh)
+	}()
+	select {
+	case <-waitCh:
+	case <-time.After(time.Duration(config.RedisSyncShutdownTimeoutMs) * time.Millisecond):
+		log.Printf("⚠️  Redis同步worker关闭超时（%dms）", config.RedisSyncShutdownTimeoutMs)
+	}
 
 	// ⚠️ 内存数据库守护连接：最后关闭（P0修复 2025-10-05）
 	// 确保守护连接在所有其他操作完成后才关闭

@@ -10,31 +10,31 @@ func TestCalculateBackoffDuration_504Error(t *testing.T) {
 	statusCode504 := 504
 
 	tests := []struct {
-		name           string
-		prevMs         int64
-		until          time.Time
-		statusCode     *int
-		expectedMin    time.Duration
-		expectedMax    time.Duration
-		description    string
+		name        string
+		prevMs      int64
+		until       time.Time
+		statusCode  *int
+		expectedMin time.Duration
+		expectedMax time.Duration
+		description string
 	}{
 		{
-			name:           "首次504错误应冷却1秒",
-			prevMs:         0,
-			until:          time.Time{},
-			statusCode:     &statusCode504,
-			expectedMin:    1 * time.Second,
-			expectedMax:    1 * time.Second,
-			description:    "504 Gateway Timeout should trigger 1-second cooldown on first occurrence (exponential backoff: 1s -> 2s -> 4s ...)",
+			name:        "首次504错误应冷却1秒",
+			prevMs:      0,
+			until:       time.Time{},
+			statusCode:  &statusCode504,
+			expectedMin: 1 * time.Second,
+			expectedMax: 1 * time.Second,
+			description: "504 Gateway Timeout should trigger 1-second cooldown on first occurrence (exponential backoff: 1s -> 2s -> 4s ...)",
 		},
 		{
-			name:           "连续504错误应指数退避",
-			prevMs:         int64(1 * time.Second / time.Millisecond),
-			until:          now.Add(1 * time.Second),
-			statusCode:     &statusCode504,
-			expectedMin:    2 * time.Second,
-			expectedMax:    2 * time.Second,
-			description:    "Subsequent 504 errors should double the cooldown (1s -> 2s)",
+			name:        "连续504错误应指数退避",
+			prevMs:      int64(1 * time.Second / time.Millisecond),
+			until:       now.Add(1 * time.Second),
+			statusCode:  &statusCode504,
+			expectedMin: 2 * time.Second,
+			expectedMax: 2 * time.Second,
+			description: "Subsequent 504 errors should double the cooldown (1s -> 2s)",
 		},
 	}
 
