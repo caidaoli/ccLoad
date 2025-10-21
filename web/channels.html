@@ -286,10 +286,36 @@
           <textarea id="channelModels" class="form-input" placeholder="claude-3-5-sonnet-20241022,claude-3-opus-20240229" required rows="2"></textarea>
         </div>
         <div class="form-group">
-          <label class="form-label" for="channelModelRedirects">
-            模型重定向（可选） <span class="models-hint" style="margin-left: 8px; margin-top: 0;">JSON格式，将请求模型映射到实际转发模型。例如：{"请求模型":"实际模型"}</span>
-          </label>
-          <textarea id="channelModelRedirects" class="form-input" placeholder='{"claude-3-opus-20240229":"claude-3-5-sonnet-20241022"}' rows="8"></textarea>
+          <!-- 模型重定向标签行：包含标签和操作按钮 -->
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <label class="form-label" style="margin: 0;">
+              模型重定向（可选） <span class="models-hint" style="margin-left: 8px; margin-top: 0;">将请求模型映射到实际转发模型，共 <span id="redirectCount">0</span> 条规则</span>
+            </label>
+            <div style="display: flex; gap: 6px;">
+              <button type="button" class="btn btn-primary btn-sm" onclick="addRedirectRow()" style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px;">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M8 3.5V12.5M3.5 8H12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span>添加</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- 重定向表格容器 -->
+          <div style="max-height: 300px; overflow-y: auto; border: 1px solid var(--neutral-200); border-radius: 8px; background: white;">
+            <table style="width: 100%; border-collapse: collapse;">
+              <thead style="position: sticky; top: 0; z-index: 1; background: var(--neutral-100);">
+                <tr style="border-bottom: 2px solid var(--neutral-300);">
+                  <th style="padding: 8px 12px; text-align: left; font-weight: 600; font-size: 13px; width: 45%;">请求模型</th>
+                  <th style="padding: 8px 12px; text-align: left; font-weight: 600; font-size: 13px; width: 45%;">实际模型</th>
+                  <th style="padding: 8px 12px; text-align: center; font-weight: 600; font-size: 13px; width: 10%;">操作</th>
+                </tr>
+              </thead>
+              <tbody id="redirectTableBody">
+                <!-- 重定向行动态渲染 -->
+              </tbody>
+            </table>
+          </div>
         </div>
         <div class="form-group">
           <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
@@ -482,6 +508,7 @@
     let deletingChannelId = null;
     let testingChannelId = null;
     let currentChannelKeyCooldowns = []; // 当前编辑渠道的Key冷却信息
+    let redirectTableData = []; // 模型重定向表格数据: [{from: '', to: ''}]
     
     // Filter state
     let filters = {
@@ -805,7 +832,10 @@
       // 设置默认选中的单选框
       document.querySelector('input[name="channelType"][value="anthropic"]').checked = true;
       document.querySelector('input[name="keyStrategy"][value="sequential"]').checked = true;
-      document.getElementById('channelModelRedirects').value = ''; // 清空模型重定向字段
+
+      // 初始化模型重定向表格（添加模式默认为空）
+      redirectTableData = [];
+      renderRedirectTable();
 
       // 初始化内联Key表格（添加模式默认一个空Key）
       inlineKeyTableData = [''];
@@ -867,11 +897,10 @@
       document.getElementById('channelModels').value = channel.models.join(',');
       document.getElementById('channelEnabled').checked = channel.enabled;
 
-      // 设置模型重定向字段
+      // 设置模型重定向表格
       const modelRedirects = channel.model_redirects || {};
-      document.getElementById('channelModelRedirects').value = Object.keys(modelRedirects).length > 0
-        ? JSON.stringify(modelRedirects, null, 2)
-        : '';
+      redirectTableData = jsonToRedirectTable(modelRedirects);
+      renderRedirectTable();
 
       document.getElementById('channelModal').classList.add('show');
     }
@@ -894,21 +923,8 @@
       // 更新隐藏input（确保最新数据）
       document.getElementById('channelApiKey').value = validKeys.join(',');
 
-      // 解析模型重定向JSON
-      let modelRedirects = {};
-      const modelRedirectsText = document.getElementById('channelModelRedirects').value.trim();
-      if (modelRedirectsText) {
-        try {
-          modelRedirects = JSON.parse(modelRedirectsText);
-          if (typeof modelRedirects !== 'object' || Array.isArray(modelRedirects)) {
-            alert('模型重定向必须是JSON对象格式，例如: {"key":"value"}');
-            return;
-          }
-        } catch (e) {
-          alert('模型重定向JSON格式错误: ' + e.message);
-          return;
-        }
-      }
+      // 从表格获取模型重定向数据
+      const modelRedirects = redirectTableToJSON();
 
       // 获取选中的单选框的值
       const channelType = document.querySelector('input[name="channelType"]:checked')?.value || 'anthropic';
@@ -1054,11 +1070,10 @@
       document.getElementById('channelModels').value = channel.models.join(',');
       document.getElementById('channelEnabled').checked = true; // 复制的渠道默认启用
 
-      // 复制模型重定向字段
+      // 复制模型重定向表格
       const modelRedirects = channel.model_redirects || {};
-      document.getElementById('channelModelRedirects').value = Object.keys(modelRedirects).length > 0
-        ? JSON.stringify(modelRedirects, null, 2)
-        : '';
+      redirectTableData = jsonToRedirectTable(modelRedirects);
+      renderRedirectTable();
 
       document.getElementById('channelModal').classList.add('show');
     }
@@ -2426,6 +2441,106 @@
         }
       });
     }
+
+    // ===================== 模型重定向表格管理 =====================
+
+    // 添加重定向行
+    function addRedirectRow() {
+      redirectTableData.push({ from: '', to: '' });
+      renderRedirectTable();
+      
+      // 聚焦到最后一行的请求模型输入框
+      setTimeout(() => {
+        const tbody = document.getElementById('redirectTableBody');
+        const lastRow = tbody.lastElementChild;
+        if (lastRow) {
+          const firstInput = lastRow.querySelector('input');
+          if (firstInput) firstInput.focus();
+        }
+      }, 50);
+    }
+
+    // 删除重定向行
+    function deleteRedirectRow(index) {
+      redirectTableData.splice(index, 1);
+      renderRedirectTable();
+    }
+
+    // 更新重定向行数据
+    function updateRedirectRow(index, field, value) {
+      if (redirectTableData[index]) {
+        redirectTableData[index][field] = value.trim();
+      }
+    }
+
+    // 渲染重定向表格
+    function renderRedirectTable() {
+      const tbody = document.getElementById('redirectTableBody');
+      const countSpan = document.getElementById('redirectCount');
+      
+      // 更新计数
+      const validCount = redirectTableData.filter(r => r.from && r.to).length;
+      countSpan.textContent = validCount;
+      
+      if (redirectTableData.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="3" style="padding: 20px; text-align: center; color: var(--neutral-500);">暂无重定向规则，点击"添加"按钮创建</td></tr>';
+        return;
+      }
+      
+      tbody.innerHTML = redirectTableData.map((redirect, index) => `
+        <tr style="border-bottom: 1px solid var(--neutral-200);">
+          <td style="padding: 8px 12px;">
+            <input
+              type="text"
+              value="${escapeHtml(redirect.from || '')}"
+              placeholder="claude-3-opus-20240229"
+              onchange="updateRedirectRow(${index}, 'from', this.value)"
+              style="width: 100%; padding: 6px 10px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace;"
+            >
+          </td>
+          <td style="padding: 8px 12px;">
+            <input
+              type="text"
+              value="${escapeHtml(redirect.to || '')}"
+              placeholder="claude-3-5-sonnet-20241022"
+              onchange="updateRedirectRow(${index}, 'to', this.value)"
+              style="width: 100%; padding: 6px 10px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace;"
+            >
+          </td>
+          <td style="padding: 8px 12px; text-align: center;">
+            <button
+              type="button"
+              onclick="deleteRedirectRow(${index})"
+              style="padding: 4px 8px; border-radius: 6px; border: 1px solid var(--error-300); background: white; color: var(--error-600); cursor: pointer; font-size: 12px; transition: all 0.2s;"
+              onmouseover="this.style.background='var(--error-50)'; this.style.borderColor='var(--error-500)';"
+              onmouseout="this.style.background='white'; this.style.borderColor='var(--error-300)';"
+              title="删除此规则"
+            >
+              删除
+            </button>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    // 将重定向表格数据转换为JSON对象
+    function redirectTableToJSON() {
+      const result = {};
+      redirectTableData.forEach(redirect => {
+        if (redirect.from && redirect.to) {
+          result[redirect.from] = redirect.to;
+        }
+      });
+      return result;
+    }
+
+    // 将JSON对象转换为重定向表格数据
+    function jsonToRedirectTable(json) {
+      if (!json || typeof json !== 'object') return [];
+      return Object.entries(json).map(([from, to]) => ({ from, to }));
+    }
+
+    // ===================== 结束：模型重定向表格管理 =====================
 
     function escapeHtml(text) {
       const div = document.createElement('div');
