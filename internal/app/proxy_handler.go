@@ -3,6 +3,7 @@ package app
 import (
     "ccLoad/internal/config"
     "ccLoad/internal/model"
+    "ccLoad/internal/util"
     "context"
     "errors"
     "fmt"
@@ -105,9 +106,9 @@ func (s *Server) selectRouteCandidates(ctx context.Context, c *gin.Context, orig
 	requestMethod := c.Request.Method
 
 	// 智能路由选择：根据请求类型选择不同的路由策略
-	if requestMethod == http.MethodGet && isGeminiRequest(requestPath) {
+	if requestMethod == http.MethodGet && detectChannelTypeFromPath(requestPath) == util.ChannelTypeGemini {
 		// 按渠道类型筛选Gemini渠道
-		return s.selectCandidatesByChannelType(ctx, "gemini")
+		return s.selectCandidatesByChannelType(ctx, util.ChannelTypeGemini)
 	}
 
 	channelType := detectChannelTypeFromPath(requestPath)

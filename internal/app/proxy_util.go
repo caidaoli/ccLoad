@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"ccLoad/internal/config"
 	"ccLoad/internal/model"
+	"ccLoad/internal/util"
 	"compress/gzip"
 	"context"
 	"errors"
@@ -83,49 +84,11 @@ type proxyResult struct {
 // 请求检测工具函数
 // ============================================================================
 
-// isGeminiRequest 检测是否为Gemini API请求
-// Gemini请求路径特征：包含 /v1beta/ 前缀
-// 示例：/v1beta/models/gemini-2.5-flash:streamGenerateContent
-func isGeminiRequest(path string) bool {
-	return strings.Contains(path, "/v1beta/")
-}
-
-// isOpenAIRequest 检测是否为OpenAI API请求
-// OpenAI请求路径特征：/v1/chat/completions, /v1/completions, /v1/embeddings 等
-// 示例：/v1/chat/completions
-func isOpenAIRequest(path string) bool {
-	return strings.HasPrefix(path, "/v1/chat/completions") ||
-		strings.HasPrefix(path, "/v1/completions") ||
-		strings.HasPrefix(path, "/v1/embeddings")
-}
-
-// isAnthropicRequest 检测是否为Claude/Anthropic API请求
-// 典型路径：/v1/messages、/v1/messages/count_tokens
-func isAnthropicRequest(path string) bool {
-	return strings.HasPrefix(path, "/v1/messages")
-}
-
-// isCodexRequest 检测是否为Codex兼容API请求
-// 典型路径：/v1/responses
-func isCodexRequest(path string) bool {
-	return strings.HasPrefix(path, "/v1/responses")
-}
-
 // detectChannelTypeFromPath 根据请求路径推断渠道类型
+// 使用 util.DetectChannelTypeFromPath 统一检测，遵循DRY原则
 // 返回空字符串表示未识别出特定渠道类型，沿用默认逻辑
 func detectChannelTypeFromPath(path string) string {
-	switch {
-	case isGeminiRequest(path):
-		return "gemini"
-	case isOpenAIRequest(path):
-		return "openai"
-	case isAnthropicRequest(path):
-		return "anthropic"
-	case isCodexRequest(path):
-		return "codex"
-	default:
-		return ""
-	}
+	return util.DetectChannelTypeFromPath(path)
 }
 
 // isStreamingRequest 检测是否为流式请求
@@ -269,18 +232,22 @@ func copyRequestHeaders(dst *http.Request, src http.Header) {
 // injectAPIKeyHeaders 按路径类型注入API Key头（Gemini vs Claude）
 // 参数简化：直接接受API Key字符串，由调用方从KeySelector获取
 func injectAPIKeyHeaders(req *http.Request, apiKey string, requestPath string) {
-	// 根据API类型设置不同的认证头
-	if isGeminiRequest(requestPath) {
+	// 根据API类型设置不同的认证头（使用统一的渠道类型检测）
+	channelType := detectChannelTypeFromPath(requestPath)
+
+	switch channelType {
+	case util.ChannelTypeGemini:
 		// Gemini API: 仅使用 x-goog-api-key
 		req.Header.Set("x-goog-api-key", apiKey)
-	} else if isOpenAIRequest(requestPath) {
+	case util.ChannelTypeOpenAI:
 		// OpenAI API: 仅使用 Authorization Bearer
 		req.Header.Set("Authorization", "Bearer "+apiKey)
-	} else {
-		// Claude/Anthropic API: 同时设置两个头
+	default:
+		// Claude/Anthropic/Codex API: 同时设置两个头
 		req.Header.Set("x-api-key", apiKey)
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
+
 	if req.Header.Get("Accept") == "" {
 		req.Header.Set("Accept", "application/json")
 	}

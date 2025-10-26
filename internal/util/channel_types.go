@@ -1,33 +1,45 @@
 package util
 
+import "strings"
+
 // ChannelTypeConfig 渠道类型配置（元数据定义）
 type ChannelTypeConfig struct {
-	Value       string `json:"value"`        // 内部值（数据库存储）
-	DisplayName string `json:"display_name"` // 显示名称（前端展示）
-	Description string `json:"description"`  // 描述信息
+	Value        string   `json:"value"`         // 内部值（数据库存储）
+	DisplayName  string   `json:"display_name"`  // 显示名称（前端展示）
+	Description  string   `json:"description"`   // 描述信息
+	PathPatterns []string `json:"path_patterns"` // 路径匹配模式列表
+	MatchType    string   `json:"match_type"`    // 匹配类型: "prefix"(前缀) 或 "contains"(包含)
 }
 
 // ChannelTypes 全局渠道类型配置（单一数据源 - Single Source of Truth）
 var ChannelTypes = []ChannelTypeConfig{
 	{
-		Value:       "anthropic",
-		DisplayName: "Claude Code",
-		Description: "Claude Code兼容API",
+		Value:        "anthropic",
+		DisplayName:  "Claude Code",
+		Description:  "Claude Code兼容API",
+		PathPatterns: []string{"/v1/messages"},
+		MatchType:    "prefix",
 	},
 	{
-		Value:       "codex",
-		DisplayName: "Codex",
-		Description: "Codex兼容API",
+		Value:        "codex",
+		DisplayName:  "Codex",
+		Description:  "Codex兼容API",
+		PathPatterns: []string{"/v1/responses"},
+		MatchType:    "prefix",
 	},
 	{
-		Value:       "openai",
-		DisplayName: "OpenAI",
-		Description: "OpenAI API (GPT系列)",
+		Value:        "openai",
+		DisplayName:  "OpenAI",
+		Description:  "OpenAI API (GPT系列)",
+		PathPatterns: []string{"/v1/chat/completions", "/v1/completions", "/v1/embeddings"},
+		MatchType:    "prefix",
 	},
 	{
-		Value:       "gemini",
-		DisplayName: "Google Gemini",
-		Description: "Google Gemini API",
+		Value:        "gemini",
+		DisplayName:  "Google Gemini",
+		Description:  "Google Gemini API",
+		PathPatterns: []string{"/v1beta/"},
+		MatchType:    "contains",
 	},
 }
 
@@ -65,7 +77,7 @@ func GetDefaultChannelType() string {
 // - 空值 → "anthropic" (默认值)
 func NormalizeChannelType(value string) string {
 	// 去除首尾空格
-	value = trimSpace(value)
+	value = strings.TrimSpace(value)
 
 	// 空值返回默认值
 	if value == "" {
@@ -73,37 +85,41 @@ func NormalizeChannelType(value string) string {
 	}
 
 	// 转小写
-	return toLowerCase(value)
+	return strings.ToLower(value)
 }
 
-// trimSpace 去除字符串首尾空格（手动实现，避免引入strings包）
-func trimSpace(s string) string {
-	start := 0
-	end := len(s)
+// 渠道类型常量（导出供其他包使用，遵循DRY原则）
+const (
+	ChannelTypeAnthropic = "anthropic"
+	ChannelTypeCodex     = "codex"
+	ChannelTypeOpenAI    = "openai"
+	ChannelTypeGemini    = "gemini"
+)
 
-	// 找到第一个非空格字符
-	for start < end && (s[start] == ' ' || s[start] == '\t' || s[start] == '\n' || s[start] == '\r') {
-		start++
-	}
-
-	// 找到最后一个非空格字符
-	for end > start && (s[end-1] == ' ' || s[end-1] == '\t' || s[end-1] == '\n' || s[end-1] == '\r') {
-		end--
-	}
-
-	return s[start:end]
-}
-
-// toLowerCase 将字符串转为小写（手动实现，避免引入strings包）
-func toLowerCase(s string) string {
-	result := make([]byte, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 'A' && c <= 'Z' {
-			result[i] = c + ('a' - 'A')
-		} else {
-			result[i] = c
+// DetectChannelTypeFromPath 根据请求路径自动检测渠道类型
+// 使用 ChannelTypes 配置进行统一检测，遵循DRY原则
+func DetectChannelTypeFromPath(path string) string {
+	for _, ct := range ChannelTypes {
+		if matchPath(path, ct.PathPatterns, ct.MatchType) {
+			return ct.Value
 		}
 	}
-	return string(result)
+	return "" // 未匹配到任何类型
+}
+
+// matchPath 辅助函数：根据匹配类型检查路径是否匹配模式列表
+func matchPath(path string, patterns []string, matchType string) bool {
+	for _, pattern := range patterns {
+		switch matchType {
+		case "prefix":
+			if strings.HasPrefix(path, pattern) {
+				return true
+			}
+		case "contains":
+			if strings.Contains(path, pattern) {
+				return true
+			}
+		}
+	}
+	return false
 }
