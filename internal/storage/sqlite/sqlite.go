@@ -96,6 +96,48 @@ func generateLogDBPath(mainDBPath string) string {
 // ✅ P0修复（2025-10-06）：环境变量控制Journal模式
 // - SQLITE_JOURNAL_MODE: WAL(默认) | DELETE | TRUNCATE | PERSIST | MEMORY | OFF
 // - Docker/K8s环境建议使用TRUNCATE避免WAL文件损坏风险
+// validateJournalMode 验证SQLITE_JOURNAL_MODE环境变量的合法性（白名单）
+// ✅ P1 安全修复 (2025-10-26): 防止环境变量注入攻击
+// 设计原则 (Fail-Fast): 启动时立即验证，避免运行时安全风险
+//
+// 攻击场景示例:
+//   export SQLITE_JOURNAL_MODE="DELETE;DROP TABLE channels;--"
+//   可能导致 SQL 注入（取决于驱动解析方式）
+//
+// 防御策略:
+//   - 白名单验证所有允许的 Journal 模式
+//   - 非法值立即 Fatal 退出（不允许运行）
+//   - 空值使用安全的默认值 "WAL"
+func validateJournalMode(mode string) string {
+	if mode == "" {
+		return "WAL" // 默认安全值
+	}
+
+	// SQLite 官方支持的 Journal 模式白名单
+	// 参考: https://www.sqlite.org/pragma.html#pragma_journal_mode
+	validModes := map[string]bool{
+		"DELETE":   true, // 默认模式，删除 WAL 文件
+		"TRUNCATE": true, // 截断 WAL 文件（比 DELETE 快）
+		"PERSIST":  true, // 保留 WAL 文件，仅清零
+		"MEMORY":   true, // 内存中的日志（不持久化）
+		"WAL":      true, // Write-Ahead Logging（推荐）
+		"OFF":      true, // 禁用回滚日志（危险，仅用于只读数据库）
+	}
+
+	modeUpper := strings.ToUpper(mode)
+	if !validModes[modeUpper] {
+		log.Fatalf("❌ 安全错误: SQLITE_JOURNAL_MODE 环境变量值非法: %q\n"+
+			"   允许的值: DELETE, TRUNCATE, PERSIST, MEMORY, WAL, OFF\n"+
+			"   当前值: %q\n"+
+			"   修复方法:\n"+
+			"     - 设置合法值: export SQLITE_JOURNAL_MODE=WAL\n"+
+			"     - 或者移除该环境变量，使用默认值 WAL",
+			mode, mode)
+	}
+
+	return modeUpper
+}
+
 func buildMainDBDSN(path string) string {
 	useMemory := os.Getenv("CCLOAD_USE_MEMORY_DB") == "true"
 
@@ -107,12 +149,9 @@ func buildMainDBDSN(path string) string {
 		return "file:ccload_mem_db?mode=memory&cache=shared&_pragma=busy_timeout(5000)&_foreign_keys=on&_loc=Local"
 	}
 
-	// ✅ P0安全修复：支持环境变量配置Journal模式
-	// 设计原则：生产环境（特别是容器/网络存储）需要灵活控制
-	journalMode := os.Getenv("SQLITE_JOURNAL_MODE")
-	if journalMode == "" {
-		journalMode = "WAL" // 默认本地环境使用WAL（高性能）
-	}
+	// ✅ P1 安全修复 (2025-10-26): 白名单验证环境变量，防止注入攻击
+	// 设计原则：生产环境（特别是容器/网络存储）需要灵活控制，但必须安全
+	journalMode := validateJournalMode(os.Getenv("SQLITE_JOURNAL_MODE"))
 
 	return fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_foreign_keys=on&_pragma=journal_mode=%s&_loc=Local", path, journalMode)
 }
@@ -121,16 +160,24 @@ func buildMainDBDSN(path string) string {
 // 日志库不使用内存模式，确保数据持久性
 // ✅ P0修复（2025-10-06）：与主数据库保持一致的Journal模式控制
 func buildLogDBDSN(path string) string {
-	// 使用与主数据库相同的Journal模式配置
-	journalMode := os.Getenv("SQLITE_JOURNAL_MODE")
-	if journalMode == "" {
-		journalMode = "WAL" // 默认WAL
-	}
+	// ✅ P1 安全修复 (2025-10-26): 白名单验证环境变量，防止注入攻击
+	// 使用与主数据库相同的 Journal 模式配置和验证逻辑
+	journalMode := validateJournalMode(os.Getenv("SQLITE_JOURNAL_MODE"))
 
 	return fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode=%s&_loc=Local", path, journalMode)
 }
 
 func NewSQLiteStore(path string, redisSync RedisSync) (*SQLiteStore, error) {
+	return newSQLiteStoreWithOptions(path, redisSync, false)
+}
+
+// NewSQLiteStoreForTest 创建测试专用的SQLite存储实例（禁用连接生命周期）
+func NewSQLiteStoreForTest(path string, redisSync RedisSync) (*SQLiteStore, error) {
+	return newSQLiteStoreWithOptions(path, redisSync, true)
+}
+
+// newSQLiteStoreWithOptions 创建SQLite存储实例（带选项）
+func newSQLiteStoreWithOptions(path string, redisSync RedisSync, forTest bool) (*SQLiteStore, error) {
 	// 检查是否启用内存模式
 	useMemory := os.Getenv("CCLOAD_USE_MEMORY_DB") == "true"
 
@@ -158,8 +205,13 @@ func NewSQLiteStore(path string, redisSync RedisSync) (*SQLiteStore, error) {
 		// WAL文件模式：严格限制写并发（WAL性能瓶颈）
 		db.SetMaxOpenConns(config.SQLiteMaxOpenConnsFile)
 		db.SetMaxIdleConns(config.SQLiteMaxIdleConnsFile)
-		// 缩短连接生命周期（更快资源回收）
-		db.SetConnMaxLifetime(config.MinutesToDuration(config.SQLiteConnMaxLifetimeMinutes))
+		// 测试模式下禁用连接生命周期以避免goroutine泄漏
+		if forTest {
+			// 测试模式：不设置ConnMaxLifetime，连接永不过期
+		} else {
+			// 文件模式：缩短连接生命周期（更快资源回收）
+			db.SetConnMaxLifetime(config.MinutesToDuration(config.SQLiteConnMaxLifetimeMinutes))
+		}
 	}
 
 	// 打开日志数据库（logs）- 始终使用文件模式
@@ -173,7 +225,13 @@ func NewSQLiteStore(path string, redisSync RedisSync) (*SQLiteStore, error) {
 	// ✅ P2日志库优化（2025-10-06）：与主库对齐，降低资源占用
 	logDB.SetMaxOpenConns(config.SQLiteMaxOpenConnsFile)
 	logDB.SetMaxIdleConns(config.SQLiteMaxIdleConnsFile)
-	logDB.SetConnMaxLifetime(config.MinutesToDuration(config.SQLiteConnMaxLifetimeMinutes))
+	// 内存模式或测试模式下禁用连接生命周期以避免goroutine泄漏
+	if useMemory || forTest {
+		// 内存模式或测试模式：不设置ConnMaxLifetime，连接永不过期
+	} else {
+		// 文件模式：缩短连接生命周期（更快资源回收）
+		logDB.SetConnMaxLifetime(config.MinutesToDuration(config.SQLiteConnMaxLifetimeMinutes))
+	}
 
 	s := &SQLiteStore{
 		db:        db,
