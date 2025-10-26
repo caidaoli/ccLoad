@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -125,7 +126,7 @@ func TestCSVExport_CompleteWorkflow(t *testing.T) {
 			string(modelsJSON),               // models
 			string(redirectsJSON),            // model_redirects
 			cfg.GetChannelType(),             // channel_type
-			boolToString(cfg.Enabled),        // enabled
+			strconv.FormatBool(cfg.Enabled),  // enabled
 			apiKeysStr,                       // api_keys
 			keyStrategyStr,                   // key_strategy
 		}
@@ -375,13 +376,4 @@ func TestCSVExportImport_LargeData(t *testing.T) {
 	t.Logf("   创建渠道数: %d", totalChannels)
 	t.Logf("   总渠道数: %d", len(configs))
 	t.Logf("   API Keys: %d (每个渠道2个)", totalChannels*2)
-}
-
-// ==================== 辅助函数 ====================
-
-func boolToString(b bool) string {
-	if b {
-		return "true"
-	}
-	return "false"
 }
