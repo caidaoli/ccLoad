@@ -34,18 +34,7 @@ func TestConcurrentKeySelection(t *testing.T) {
 		t.Fatalf("Failed to get config: %v", err)
 	}
 
-	// 初始化轮询指针为随机位置，避免所有并发请求从同一点开始
-	initialIdx := 0 // 可以设为随机值，但为了测试确定性，设为0
-	err = store.UpdateChannelRRIndex(ctx, channelID, initialIdx)
-	if err != nil {
-		t.Fatalf("Failed to initialize RR index: %v", err)
-	}
-
-	// 重新获取配置以获取初始RRKeyIndex
-	cfg, err = store.GetConfig(ctx, channelID)
-	if err != nil {
-		t.Fatalf("Failed to get config after RR init: %v", err)
-	}
+	// ✅ Linus风格：轮询指针内存化后无需初始化
 
 	// 初始化KeySelector
 	var keyCooldownGauge atomic.Int64

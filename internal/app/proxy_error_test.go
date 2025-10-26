@@ -280,9 +280,6 @@ func (m *MockStore) ResetKeyCooldown(ctx context.Context, channelID int64, keyIn
 	return nil
 }
 
-func (m *MockStore) UpdateChannelRRIndex(ctx context.Context, channelID int64, nextIdx int) error {
-	return nil
-}
 
 func (m *MockStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 	return nil
@@ -314,9 +311,6 @@ func (m *MockStore) GetEnabledChannelsByType(ctx context.Context, channelType st
 	return nil, nil
 }
 
-func (m *MockStore) GetAndSetChannelRRIndex(ctx context.Context, channelID int64, keyCount int) (int, error) {
-	return 0, nil
-}
 
 // ==================== P2 边界测试：多Key渠道所有Key冷却场景 ====================
 
@@ -452,9 +446,6 @@ func (m *MockStoreAllKeysCooled) GetKeyCooldownUntil(ctx context.Context, config
 	return time.Time{}, false
 }
 
-func (m *MockStoreAllKeysCooled) UpdateChannelRRIndex(ctx context.Context, channelID int64, nextIdx int) error {
-	return nil
-}
 
 // 实现其他Store接口（使用默认MockStore的实现）
 func (m *MockStoreAllKeysCooled) GetConfig(ctx context.Context, id int64) (*model.Config, error) {
@@ -564,9 +555,6 @@ func (m *MockStoreAllKeysCooled) GetEnabledChannelsByType(ctx context.Context, c
 	return nil, nil
 }
 
-func (m *MockStoreAllKeysCooled) GetAndSetChannelRRIndex(ctx context.Context, channelID int64, keyCount int) (int, error) {
-	return 0, nil
-}
 
 // contains 检查字符串是否包含子串（辅助函数）
 func contains(s, substr string) bool {

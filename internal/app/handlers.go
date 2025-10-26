@@ -104,52 +104,6 @@ func ParseInt64Param(c *gin.Context, paramName string) (int64, error) {
 	return strconv.ParseInt(param, 10, 64)
 }
 
-// MethodRouter HTTP方法路由器，简化方法分发逻辑
-type MethodRouter struct {
-	handlers map[string]gin.HandlerFunc
-}
-
-// NewMethodRouter 创建新的方法路由器
-func NewMethodRouter() *MethodRouter {
-	return &MethodRouter{
-		handlers: make(map[string]gin.HandlerFunc),
-	}
-}
-
-// GET 注册GET处理器
-func (mr *MethodRouter) GET(handler gin.HandlerFunc) *MethodRouter {
-	mr.handlers["GET"] = handler
-	return mr
-}
-
-// POST 注册POST处理器
-func (mr *MethodRouter) POST(handler gin.HandlerFunc) *MethodRouter {
-	mr.handlers["POST"] = handler
-	return mr
-}
-
-// PUT 注册PUT处理器
-func (mr *MethodRouter) PUT(handler gin.HandlerFunc) *MethodRouter {
-	mr.handlers["PUT"] = handler
-	return mr
-}
-
-// DELETE 注册DELETE处理器
-func (mr *MethodRouter) DELETE(handler gin.HandlerFunc) *MethodRouter {
-	mr.handlers["DELETE"] = handler
-	return mr
-}
-
-// Handle 执行路由分发
-func (mr *MethodRouter) Handle(c *gin.Context) {
-	method := c.Request.Method
-	if handler, exists := mr.handlers[method]; exists {
-		handler(c)
-	} else {
-		RespondErrorMsg(c, 405, "method not allowed")
-	}
-}
-
 // RequestValidator 请求验证器接口
 type RequestValidator interface {
 	Validate() error

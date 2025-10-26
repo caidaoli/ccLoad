@@ -21,9 +21,6 @@ type Config struct {
 	CooldownUntil      int64 `json:"cooldown_until"`       // Unix秒时间戳，0表示无冷却
 	CooldownDurationMs int64 `json:"cooldown_duration_ms"` // 冷却持续时间（毫秒）
 
-	// Key轮询指针（从key_rr表迁移）
-	RRKeyIndex int `json:"rr_key_index"` // 当前轮询的Key索引（0-based）
-
 	CreatedAt JSONTime `json:"created_at"` // 使用JSONTime确保序列化格式一致（RFC3339）
 	UpdatedAt JSONTime `json:"updated_at"` // 使用JSONTime确保序列化格式一致（RFC3339）
 

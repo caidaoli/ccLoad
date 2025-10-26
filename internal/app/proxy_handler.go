@@ -214,7 +214,6 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 			// 使用503状态码表示服务不可用（所有Key冷却）
 			_, _ = s.store.BumpChannelCooldown(ctx, cfg.ID, time.Now(), 503)
 			// 精确计数（P1）：记录渠道进入冷却
-			s.noteChannelCooldown(cfg.ID, true)
 			continue // 尝试下一个渠道
 		}
 

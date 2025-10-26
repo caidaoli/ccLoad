@@ -34,7 +34,6 @@ func setupAdminTestServer(t *testing.T) (*Server, *sqlite.SQLiteStore, func()) {
 	gin.SetMode(gin.TestMode)
 	server := &Server{
 		store: store,
-		resp:  NewResponseHelper(),
 	}
 
 	cleanup := func() {

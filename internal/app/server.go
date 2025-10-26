@@ -35,7 +35,6 @@ type Server struct {
 	cooldownManager *cooldown.Manager // ✅ P2重构：统一冷却管理器（DRY原则）
 	client          *http.Client
 	password        string
-	resp            *ResponseHelper // ✅ P1重构：统一响应助手（DRY原则）
 
 	// Token认证系统
 	validTokens map[string]time.Time // 动态Token -> 过期时间
@@ -54,22 +53,13 @@ type Server struct {
 	concurrencySem chan struct{} // 信号量：限制最大并发请求数（防止goroutine爆炸）
 	maxConcurrency int           // 最大并发数（默认1000）
 
-	logChan    chan *model.LogEntry // 异步日志通道
-	logWorkers int                  // 日志工作协程数
-
-	// 监控指标（P2优化：实时统计冷却状态）
-	channelCooldownGauge atomic.Int64 // 当前活跃的渠道级冷却数量（精确计数，基于集合）
-	keyCooldownGauge     atomic.Int64 // 当前活跃的Key级冷却数量（精确计数，基于集合）
-	logDropCount         atomic.Int64 // 日志丢弃计数器（P1修复 2025-10-05）
+	logChan      chan *model.LogEntry // 异步日志通道
+	logWorkers   int                  // 日志工作协程数
+	logDropCount atomic.Int64         // 日志丢弃计数器（P1修复 2025-10-05）
 
 	// ✅ P0修复（2025-10-13）：优雅关闭机制
 	shutdownCh chan struct{}  // 关闭信号channel
 	wg         sync.WaitGroup // 等待所有后台goroutine结束
-
-	// 冷却精准计数（P1）：使用集合去重，指标仅在状态切换时增减
-	coolMux             sync.Mutex
-	activeChannelCooled map[int64]bool  // channelID -> cooled
-	activeKeyCooled     map[string]bool // "channelID:keyIndex" -> cooled
 }
 
 func NewServer(store storage.Store) *Server {
@@ -204,7 +194,6 @@ func NewServer(store storage.Store) *Server {
 			Timeout:   0, // 不设置全局超时，避免中断长时间任务
 		},
 		password:         password,
-		resp:             NewResponseHelper(), // ✅ P1重构：初始化响应助手
 		validTokens:      make(map[string]time.Time),
 		authTokens:       authTokens,
 		loginRateLimiter: util.NewLoginRateLimiter(),         // ✅ P2安全加固：登录速率限制
@@ -217,16 +206,13 @@ func NewServer(store storage.Store) *Server {
 
 		// ✅ P0修复（2025-10-13）：初始化优雅关闭机制
 		shutdownCh: make(chan struct{}),
-
-		activeChannelCooled: make(map[int64]bool),
-		activeKeyCooled:     make(map[string]bool),
 	}
 
 	// ✅ P2重构：初始化冷却管理器（统一管理渠道级和Key级冷却）
 	s.cooldownManager = cooldown.NewManager(store)
 
-	// 初始化Key选择器（传递Key冷却监控指标）
-	s.keySelector = NewKeySelector(store, &s.keyCooldownGauge)
+	// 初始化Key选择器
+	s.keySelector = NewKeySelector(store, nil)
 
 	// ✅ P0修复（2025-10-13）：启动日志工作协程（支持优雅关闭）
 	for i := 0; i < s.logWorkers; i++ {
@@ -241,20 +227,6 @@ func NewServer(store storage.Store) *Server {
 	s.wg.Add(1)
 	go s.cleanupOldLogsLoop() // 定期清理3天前的日志
 
-	// 初始化冷却精准计数（P1）：从数据库加载当前冷却状态（纳入wg，支持优雅关闭）
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-		defer cancel()
-		select {
-		case <-s.shutdownCh:
-			return
-		default:
-		}
-		s.initCooldownState(ctx)
-	}()
-
 	return s
 
 }
@@ -268,63 +240,7 @@ func (s *Server) generateToken() string {
 	return hex.EncodeToString(b)
 }
 
-// gaugeDecClampZero 将指标安全递减，最小不小于0，避免出现负数
-// 简化实现：若当前值小于需要递减的幅度，则直接置0
-func (s *Server) gaugeDecClampZero(g *atomic.Int64, n int64) {
-	if n <= 0 {
-		return
-	}
-	for {
-		v := g.Load()
-		if v == 0 {
-			return
-		}
-		dec := n
-		if v < dec {
-			dec = v
-		}
-		if g.CompareAndSwap(v, v-dec) {
-			return
-		}
-	}
-}
-
-// ================== 冷却精准计数（P1） ==================
-// noteChannelCooldown 切换渠道冷却状态并精确更新计数
-func (s *Server) noteChannelCooldown(channelID int64, cooled bool) {
-	s.coolMux.Lock()
-	defer s.coolMux.Unlock()
-	if s.activeChannelCooled == nil {
-		s.activeChannelCooled = make(map[int64]bool)
-	}
-	prev := s.activeChannelCooled[channelID]
-	if cooled && !prev {
-		s.activeChannelCooled[channelID] = true
-		s.channelCooldownGauge.Add(1)
-	} else if !cooled && prev {
-		delete(s.activeChannelCooled, channelID)
-		s.gaugeDecClampZero(&s.channelCooldownGauge, 1)
-	}
-}
-
-// noteKeyCooldown 切换Key冷却状态并精确更新计数
-func (s *Server) noteKeyCooldown(channelID int64, keyIndex int, cooled bool) {
-	key := fmt.Sprintf("%d:%d", channelID, keyIndex)
-	s.coolMux.Lock()
-	defer s.coolMux.Unlock()
-	if s.activeKeyCooled == nil {
-		s.activeKeyCooled = make(map[string]bool)
-	}
-	prev := s.activeKeyCooled[key]
-	if cooled && !prev {
-		s.activeKeyCooled[key] = true
-		s.keyCooldownGauge.Add(1)
-	} else if !cooled && prev {
-		delete(s.activeKeyCooled, key)
-		s.gaugeDecClampZero(&s.keyCooldownGauge, 1)
-	}
-}
-
+// ================== Token认证 ==================
 // 验证Token有效性（检查过期时间）
 func (s *Server) isValidToken(token string) bool {
 	s.tokensMux.RLock()
@@ -719,48 +635,6 @@ func (s *Server) cleanupOldLogsLoop() {
 			return
 		}
 	}
-}
-
-// initCooldownState 启动时加载现有冷却状态，初始化去重集合与计数
-func (s *Server) initCooldownState(ctx context.Context) {
-	now := time.Now()
-
-	chans, err := s.store.GetAllChannelCooldowns(ctx)
-	if err != nil {
-		return
-	}
-	keys, err := s.store.GetAllKeyCooldowns(ctx)
-	if err != nil {
-		return
-	}
-
-	// 构建集合与计数
-	s.coolMux.Lock()
-	s.activeChannelCooled = make(map[int64]bool)
-	s.activeKeyCooled = make(map[string]bool)
-
-	var chCount int64
-	for id, until := range chans {
-		if until.After(now) {
-			s.activeChannelCooled[id] = true
-			chCount++
-		}
-	}
-
-	var keyCount int64
-	for cid, m := range keys {
-		for idx, until := range m {
-			if until.After(now) {
-				k := fmt.Sprintf("%d:%d", cid, idx)
-				s.activeKeyCooled[k] = true
-				keyCount++
-			}
-		}
-	}
-	s.coolMux.Unlock()
-
-	s.channelCooldownGauge.Store(chCount)
-	s.keyCooldownGauge.Store(keyCount)
 }
 
 // getGeminiModels 获取所有 gemini 渠道的去重模型列表

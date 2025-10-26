@@ -91,13 +91,17 @@ type ChannelImportSummary struct {
 	RedisSyncedChannels int    `json:"redis_synced_channels,omitempty"` // 成功同步到Redis的渠道数量
 }
 
-// Admin: /admin/channels (GET, POST) - 重构版本
+// Admin: /admin/channels (GET, POST)
+// ✅ Linus风格：删除MethodRouter抽象，直接用switch
 func (s *Server) handleChannels(c *gin.Context) {
-	router := NewMethodRouter().
-		GET(s.handleListChannels).
-		POST(s.handleCreateChannel)
-
-	router.Handle(c)
+	switch c.Request.Method {
+	case "GET":
+		s.handleListChannels(c)
+	case "POST":
+		s.handleCreateChannel(c)
+	default:
+		RespondErrorMsg(c, 405, "method not allowed")
+	}
 }
 
 // 获取渠道列表
@@ -528,12 +532,17 @@ func (s *Server) handleChannelByID(c *gin.Context) {
 		return
 	}
 
-	router := NewMethodRouter().
-		GET(func(c *gin.Context) { s.handleGetChannel(c, id) }).
-		PUT(func(c *gin.Context) { s.handleUpdateChannel(c, id) }).
-		DELETE(func(c *gin.Context) { s.handleDeleteChannel(c, id) })
-
-	router.Handle(c)
+	// ✅ Linus风格：直接switch，删除不必要的抽象
+	switch c.Request.Method {
+	case "GET":
+		s.handleGetChannel(c, id)
+	case "PUT":
+		s.handleUpdateChannel(c, id)
+	case "DELETE":
+		s.handleDeleteChannel(c, id)
+	default:
+		RespondErrorMsg(c, 405, "method not allowed")
+	}
 }
 
 // 获取单个渠道（包含key_strategy信息）
@@ -820,13 +829,21 @@ func (s *Server) handlePublicSummary(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, response)
 }
 
-// handleCooldownStats 获取当前冷却状态监控指标（P2优化）
+// handleCooldownStats 获取当前冷却状态监控指标
 // GET /admin/cooldown/stats
-// 返回：当前活跃的渠道级和Key级冷却数量
+// ✅ Linus风格：按需查询，简单直接
 func (s *Server) handleCooldownStats(c *gin.Context) {
+	channelCooldowns, _ := s.store.GetAllChannelCooldowns(c.Request.Context())
+	keyCooldowns, _ := s.store.GetAllKeyCooldowns(c.Request.Context())
+
+	var keyCount int
+	for _, m := range keyCooldowns {
+		keyCount += len(m)
+	}
+
 	response := gin.H{
-		"channel_cooldowns": s.channelCooldownGauge.Load(),
-		"key_cooldowns":     s.keyCooldownGauge.Load(),
+		"channel_cooldowns": len(channelCooldowns),
+		"key_cooldowns":     keyCount,
 	}
 	RespondJSON(c, http.StatusOK, response)
 }
@@ -909,8 +926,6 @@ func (s *Server) handleChannelTest(c *gin.Context) {
 		_ = s.store.ResetChannelCooldown(c.Request.Context(), id)
 
 		// 精确计数（P1）：记录状态恢复
-		s.noteKeyCooldown(id, keyIndex, false)
-		s.noteChannelCooldown(id, false)
 	}
 
 	RespondJSON(c, http.StatusOK, testResult)
@@ -1266,7 +1281,6 @@ func (s *Server) handleSetChannelCooldown(c *gin.Context) {
 	}
 
 	// 精确计数（P1）：手动设置渠道冷却
-	s.noteChannelCooldown(id, true)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -1304,7 +1318,6 @@ func (s *Server) handleSetKeyCooldown(c *gin.Context) {
 	}
 
 	// 精确计数（P1）：手动设置Key冷却
-	s.noteKeyCooldown(id, keyIndex, true)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

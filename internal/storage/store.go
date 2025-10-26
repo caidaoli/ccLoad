@@ -44,10 +44,6 @@ type Store interface {
 	ResetKeyCooldown(ctx context.Context, channelID int64, keyIndex int) error
 	SetKeyCooldown(ctx context.Context, channelID int64, keyIndex int, until time.Time) error
 
-	// Channel round-robin index - 渠道轮询索引管理
-	UpdateChannelRRIndex(ctx context.Context, channelID int64, nextIdx int) error
-	GetAndSetChannelRRIndex(ctx context.Context, channelID int64, keyCount int) (int, error)
-
 	// Logs - 日志管理
 	AddLog(ctx context.Context, e *model.LogEntry) error
 	ListLogs(ctx context.Context, since time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error)

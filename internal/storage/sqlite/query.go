@@ -129,10 +129,11 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	var enabledInt int
 	var createdAtRaw, updatedAtRaw any // 使用any接受任意类型（兼容字符串、整数或RFC3339）
 
-	// 扫描channels表字段（新增cooldown_until/cooldown_duration_ms/rr_key_index）
+	// ✅ Linus风格：删除rr_key_index字段（已改用内存计数器）
+	var rrKeyIndex int // 临时变量，读取后丢弃
 	if err := scanner.Scan(&c.ID, &c.Name, &c.URL, &c.Priority,
 		&modelsStr, &modelRedirectsStr, &c.ChannelType, &enabledInt,
-		&c.CooldownUntil, &c.CooldownDurationMs, &c.RRKeyIndex,
+		&c.CooldownUntil, &c.CooldownDurationMs, &rrKeyIndex,
 		&createdAtRaw, &updatedAtRaw); err != nil {
 		return nil, err
 	}

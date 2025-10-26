@@ -6,9 +6,13 @@ import (
 	"ccLoad/internal/storage"
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 )
+
+// ✅ 轮询指针内存化：使用 sync.Map 存储每个渠道的轮询计数器
+var rrCounters sync.Map // channelID(int64) -> *atomic.Uint32
 
 // KeySelector 负责从渠道的多个API Key中选择可用的Key
 // 重构：移除内存缓存，直接查询数据库
@@ -89,25 +93,19 @@ func (ks *KeySelector) selectSequential(apiKeys []*model.APIKey, excludeKeys map
 	return -1, "", fmt.Errorf("all API keys are in cooldown or already tried")
 }
 
-// selectRoundRobin 轮询选择：使用内联轮询指针，跳过冷却中的Key和已尝试的Key
+// selectRoundRobin 轮询选择：使用内存atomic计数器，跳过冷却中的Key和已尝试的Key
+// ✅ Linus风格优化：删除数据库持久化，重启后丢失也无所谓（轮询位置本就是临时状态）
 func (ks *KeySelector) selectRoundRobin(ctx context.Context, cfg *model.Config, apiKeys []*model.APIKey, excludeKeys map[int]bool) (int, string, error) {
 	keyCount := len(apiKeys)
 	now := time.Now()
 
-	// 使用渠道内联的轮询指针
-	currentIdx, err := ks.store.GetAndSetChannelRRIndex(ctx, cfg.ID, keyCount)
-	if err != nil {
-		// 如果原子操作失败，回退到原有逻辑
-		startIdx := cfg.RRKeyIndex
-		if startIdx < 0 || startIdx >= keyCount {
-			startIdx = 0 // 防御性编程：确保索引在有效范围内
-		}
-		currentIdx = startIdx
-	}
+	// ✅ Linus风格：使用内存atomic计数器，删除数据库持久化
+	counter, _ := rrCounters.LoadOrStore(cfg.ID, new(atomic.Uint32))
+	startIdx := int(counter.(*atomic.Uint32).Add(1) % uint32(keyCount))
 
 	// 从startIdx开始轮���，最多尝试keyCount次
 	for i := 0; i < keyCount; i++ {
-		idx := (currentIdx + i) % keyCount
+		idx := (startIdx + i) % keyCount
 
 		// 在apiKeys中查找对应key_index的Key
 		var selectedKey *model.APIKey

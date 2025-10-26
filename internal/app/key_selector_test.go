@@ -209,11 +209,13 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 	}
 
 	t.Run("连续调用应轮询返回不同Key", func(t *testing.T) {
-		var selectedKeys []int
+		// ✅ Linus风格：轮询指针内存化后，起始位置不确定（每次测试可能不同）
+		// 验证策略：确保5次调用真正轮询（没有连续重复，且访问了所有Key）
 
-		// 连续选择5次，每次重新获取最新配置以获得更新的轮询索引
+		var selectedKeys []int
+		keysSeen := make(map[int]bool)
+
 		for i := 0; i < 5; i++ {
-			// 重新获取配置以获得最新的轮询索引
 			updatedCfg, err := store.GetConfig(ctx, cfg.ID)
 			if err != nil {
 				t.Fatalf("获取渠道配置失败: %v", err)
@@ -224,13 +226,18 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 				t.Fatalf("第%d次SelectAvailableKey失败: %v", i+1, err)
 			}
 			selectedKeys = append(selectedKeys, keyIndex)
+			keysSeen[keyIndex] = true
 		}
 
-		// 验证轮询模式：0, 1, 2, 0, 1
-		expectedPattern := []int{0, 1, 2, 0, 1}
-		for i, expected := range expectedPattern {
-			if selectedKeys[i] != expected {
-				t.Errorf("第%d次选择错误: 期望keyIndex=%d，实际%d", i+1, expected, selectedKeys[i])
+		// 验证1：5次调用应访问所有3个Key
+		if len(keysSeen) != 3 {
+			t.Errorf("轮询失败: 只访问了%d个Key，期望3个。序列: %v", len(keysSeen), selectedKeys)
+		}
+
+		// 验证2：没有连续两次选择同一个Key（真正轮询）
+		for i := 1; i < len(selectedKeys); i++ {
+			if selectedKeys[i] == selectedKeys[i-1] {
+				t.Errorf("轮询失败: 连续选择了相同Key=%d", selectedKeys[i])
 			}
 		}
 
@@ -238,8 +245,7 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 	})
 
 	t.Run("排除当前Key后跳到下一个", func(t *testing.T) {
-		// 重置轮询索引
-		_ = store.UpdateChannelRRIndex(ctx, cfg.ID, 0)
+		// ✅ 内存化后无需重置索引
 
 		// 第一次排除Key0
 		excludeKeys := map[int]bool{0: true}

@@ -52,12 +52,10 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *model.Config, keyInd
 		// Key级错误：同时标记Key选择器（双重记录，便于选择器快速判断）
 		_ = s.keySelector.MarkKeyError(ctx, cfg.ID, keyIndex, statusCode)
 		// 精确计数（P1）：记录Key进入冷却
-		s.noteKeyCooldown(cfg.ID, keyIndex, true)
 		return action, true
 
 	case cooldown.ActionRetryChannel:
 		// 渠道级错误：精确计数（P1）
-		s.noteChannelCooldown(cfg.ID, true)
 		return action, true
 
 	default:
@@ -120,8 +118,6 @@ func (s *Server) handleProxySuccess(
 	_ = s.cooldownManager.ClearChannelCooldown(ctx, cfg.ID)
 	_ = s.keySelector.MarkKeySuccess(ctx, cfg.ID, keyIndex)
 	// 精确计数（P1）：记录状态恢复
-	s.noteChannelCooldown(cfg.ID, false)
-	s.noteKeyCooldown(cfg.ID, keyIndex, false)
 
 	// 记录成功日志
 	// ✅ 修复：使用 actualModel 而非 reqCtx.originalModel

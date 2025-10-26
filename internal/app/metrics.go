@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 )
@@ -24,13 +25,24 @@ type Metrics struct {
 }
 
 // GetMetrics 获取当前系统指标（用于监控和诊断）
+// ✅ Linus风格：按需查询，删除冗余计数器
 func (s *Server) GetMetrics() *Metrics {
+	// 按需查询冷却状态（简单直接）
+	ctx := context.Background()
+	channelCooldowns, _ := s.store.GetAllChannelCooldowns(ctx)
+	keyCooldowns, _ := s.store.GetAllKeyCooldowns(ctx)
+
+	var keyCount int64
+	for _, m := range keyCooldowns {
+		keyCount += int64(len(m))
+	}
+
 	return &Metrics{
 		NumGoroutines:    int64(runtime.NumGoroutine()),
 		LogChannelSize:   int64(len(s.logChan)),
 		LogDropCount:     s.logDropCount.Load(),
-		ChannelCooldowns: s.channelCooldownGauge.Load(),
-		KeyCooldowns:     s.keyCooldownGauge.Load(),
+		ChannelCooldowns: int64(len(channelCooldowns)),
+		KeyCooldowns:     keyCount,
 		ActiveRequests:   int64(len(s.concurrencySem)),
 		MaxConcurrency:   int64(s.maxConcurrency),
 	}
