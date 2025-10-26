@@ -10,11 +10,29 @@ import (
 	"ccLoad/internal/testutil"
 )
 
+// createTestStoreForGoroutineTest 创建Goroutine测试专用的SQLiteStore
+// 使用测试专用构造函数，自动禁用连接生命周期以避免goroutine泄漏
+func createTestStoreForGoroutineTest(t *testing.T) *sqlite.SQLiteStore {
+	t.Helper()
+
+	// 使用临时文件数据库 + 测试专用构造函数
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/test.db"
+
+	store, err := sqlite.NewSQLiteStoreForTest(dbPath, nil)
+	if err != nil {
+		t.Fatalf("创建测试数据库失败: %v", err)
+	}
+
+	return store
+}
+
 // TestServerShutdown_NoGoroutineLeak 验证Server优雅关闭不泄漏goroutine
 func TestServerShutdown_NoGoroutineLeak(t *testing.T) {
 	defer testutil.CheckGorutineLeak(t)()
 
-	store, _ := sqlite.NewSQLiteStore(":memory:", nil)
+	// 创建测试专用数据库，禁用连接生命周期以避免goroutine泄漏
+	store := createTestStoreForGoroutineTest(t)
 	srv := NewServer(store)
 
 	// 模拟一些操作
@@ -51,7 +69,8 @@ func TestServerShutdown_NoGoroutineLeak(t *testing.T) {
 func TestLogWorker_NoLeak(t *testing.T) {
 	defer testutil.CheckGorutineLeak(t)()
 
-	store, _ := sqlite.NewSQLiteStore(":memory:", nil)
+	// 创建测试专用数据库，禁用连接生命周期以避免goroutine泄漏
+	store := createTestStoreForGoroutineTest(t)
 
 	// 创建server（启动logWorker）
 	srv := NewServer(store)

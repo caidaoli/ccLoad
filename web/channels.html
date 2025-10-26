@@ -209,12 +209,6 @@
                 </svg>
                 <span>导入</span>
               </button>
-              <button type="button" class="btn btn-primary btn-sm" onclick="addInlineKey()" style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px;">
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M8 3.5V12.5M3.5 8H12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-                <span>添加</span>
-              </button>
               <button type="button" id="toggleInlineKeyBtn" onclick="toggleInlineKeyVisibility()" style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--neutral-300); background: white; color: var(--neutral-500); cursor: pointer; padding: 0; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;" title="显示/隐藏API Key" onmouseover="this.style.background='var(--neutral-50)'; this.style.borderColor='var(--neutral-400)';" onmouseout="this.style.background='white'; this.style.borderColor='var(--neutral-300)';">
                 <svg id="inlineEyeIcon" width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
                   <path d="M1.5 8C1.5 8 3.5 3.5 8 3.5C12.5 3.5 14.5 8 14.5 8C14.5 8 12.5 12.5 8 12.5C3.5 12.5 1.5 8 1.5 8Z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -2114,39 +2108,7 @@
       renderInlineKeyTable();
     }
 
-    // 添加新Key（虚拟滚动优化：保持滚动位置）
-    function addInlineKey() {
-      inlineKeyTableData.push('');
-      
-      // 如果启用了虚拟滚动，先保存滚动位置
-      const tableContainer = document.querySelector('#inlineKeyTableBody').closest('div[style*="max-height"]');
-      const scrollTop = tableContainer ? tableContainer.scrollTop : 0;
-      
-      renderInlineKeyTable();
-
-      // 恢复滚动位置并聚焦到新添加的输入框
-      setTimeout(() => {
-        if (tableContainer) {
-          tableContainer.scrollTop = scrollTop;
-        }
-        
-        const inputs = document.querySelectorAll('.inline-key-input');
-        if (inputs.length > 0) {
-          const lastInput = inputs[inputs.length - 1];
-          if (lastInput) {
-            lastInput.focus();
-            // 如果新Key在虚拟滚动范围外，滚动到底部
-            if (virtualScrollState.enabled && inlineKeyTableData.length - 1 >= virtualScrollState.visibleEnd) {
-              const container = tableContainer;
-              if (container) {
-                container.scrollTop = container.scrollHeight;
-              }
-            }
-          }
-        }
-      }, 50);
-    }
-
+  
     // 更新Key值（虚拟滚动优化：只更新数据，不重新渲染）
     function updateInlineKey(index, value) {
       inlineKeyTableData[index] = value.trim();

@@ -95,14 +95,19 @@ func (ks *KeySelector) selectRoundRobin(ctx context.Context, cfg *model.Config, 
 	now := time.Now()
 
 	// 使用渠道内联的轮询指针
-	startIdx := cfg.RRKeyIndex
-	if startIdx < 0 || startIdx >= keyCount {
-		startIdx = 0 // 防御性编程：确保索引在有效范围内
+	currentIdx, err := ks.store.GetAndSetChannelRRIndex(ctx, cfg.ID, keyCount)
+	if err != nil {
+		// 如果原子操作失败，回退到原有逻辑
+		startIdx := cfg.RRKeyIndex
+		if startIdx < 0 || startIdx >= keyCount {
+			startIdx = 0 // 防御性编程：确保索引在有效范围内
+		}
+		currentIdx = startIdx
 	}
 
 	// 从startIdx开始轮���，最多尝试keyCount次
 	for i := 0; i < keyCount; i++ {
-		idx := (startIdx + i) % keyCount
+		idx := (currentIdx + i) % keyCount
 
 		// 在apiKeys中查找对应key_index的Key
 		var selectedKey *model.APIKey
@@ -127,22 +132,7 @@ func (ks *KeySelector) selectRoundRobin(ctx context.Context, cfg *model.Config, 
 			continue // Key冷却中，跳过
 		}
 
-		// 更新轮询指针到下一个位置（异步更新，不阻塞当前请求）
-		nextIdx := (idx + 1) % keyCount
-		// 对于生产环境异步更新，对于测试环境同步更新确保测试准确性
-		if ctx.Value("testing") != nil {
-			// 测试环境：同步更新确保测试准确性
-			_ = ks.store.UpdateChannelRRIndex(ctx, cfg.ID, nextIdx)
-		} else {
-			// 生产环境：异步更新，不阻塞当前请求
-			go func() {
-				// 使用新的context避免请求取消影响更新
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				_ = ks.store.UpdateChannelRRIndex(ctx, cfg.ID, nextIdx)
-			}()
-		}
-
+		
 		return idx, selectedKey.APIKey, nil
 	}
 
@@ -151,18 +141,13 @@ func (ks *KeySelector) selectRoundRobin(ctx context.Context, cfg *model.Config, 
 
 // MarkKeyError 标记Key错误，触发指数退避冷却
 func (ks *KeySelector) MarkKeyError(ctx context.Context, channelID int64, keyIndex int, statusCode int) error {
-	now := time.Now()
-	_, err := ks.store.BumpKeyCooldown(ctx, channelID, keyIndex, now, statusCode)
-	if err != nil {
-		return err
-	}
+    now := time.Now()
+    _, err := ks.store.BumpKeyCooldown(ctx, channelID, keyIndex, now, statusCode)
+    if err != nil {
+        return err
+    }
 
-	// 更新监控指标（P2优化）
-	if ks.cooldownGauge != nil {
-		ks.cooldownGauge.Add(1)
-	}
-
-	return nil
+    return nil
 }
 
 // MarkKeySuccess 标记Key成功，重置冷却状态

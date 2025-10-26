@@ -314,6 +314,10 @@ func (m *MockStore) GetEnabledChannelsByType(ctx context.Context, channelType st
 	return nil, nil
 }
 
+func (m *MockStore) GetAndSetChannelRRIndex(ctx context.Context, channelID int64, keyCount int) (int, error) {
+	return 0, nil
+}
+
 // ==================== P2 边界测试：多Key渠道所有Key冷却场景 ====================
 
 // TestAllKeysCooledDown_UpgradeToChannelCooldown 测试多Key渠道所有Key冷却后升级为渠道级冷却
@@ -558,6 +562,10 @@ func (m *MockStoreAllKeysCooled) GetEnabledChannelsByModel(ctx context.Context, 
 }
 func (m *MockStoreAllKeysCooled) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*model.Config, error) {
 	return nil, nil
+}
+
+func (m *MockStoreAllKeysCooled) GetAndSetChannelRRIndex(ctx context.Context, channelID int64, keyCount int) (int, error) {
+	return 0, nil
 }
 
 // contains 检查字符串是否包含子串（辅助函数）

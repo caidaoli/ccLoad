@@ -99,6 +99,35 @@ func isOpenAIRequest(path string) bool {
 		strings.HasPrefix(path, "/v1/embeddings")
 }
 
+// isAnthropicRequest 检测是否为Claude/Anthropic API请求
+// 典型路径：/v1/messages、/v1/messages/count_tokens
+func isAnthropicRequest(path string) bool {
+	return strings.HasPrefix(path, "/v1/messages")
+}
+
+// isCodexRequest 检测是否为Codex兼容API请求
+// 典型路径：/v1/responses
+func isCodexRequest(path string) bool {
+	return strings.HasPrefix(path, "/v1/responses")
+}
+
+// detectChannelTypeFromPath 根据请求路径推断渠道类型
+// 返回空字符串表示未识别出特定渠道类型，沿用默认逻辑
+func detectChannelTypeFromPath(path string) string {
+	switch {
+	case isGeminiRequest(path):
+		return "gemini"
+	case isOpenAIRequest(path):
+		return "openai"
+	case isAnthropicRequest(path):
+		return "anthropic"
+	case isCodexRequest(path):
+		return "codex"
+	default:
+		return ""
+	}
+}
+
 // isStreamingRequest 检测是否为流式请求
 // 支持多种API的流式标识方式：
 // - Gemini: 路径包含 :streamGenerateContent

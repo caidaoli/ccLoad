@@ -906,7 +906,11 @@ func (s *Server) handleChannelTest(c *gin.Context) {
 
 		// ✨ 优化：同时清除渠道级冷却（因为至少有一个Key可用）
 		// 设计理念：测试成功证明渠道恢复正常，应立即解除渠道级冷却，避免选择器过滤该渠道
-		_ = s.store.ResetChannelCooldown(c.Request.Context(), id)
+        _ = s.store.ResetChannelCooldown(c.Request.Context(), id)
+
+        // 精确计数（P1）：记录状态恢复
+        s.noteKeyCooldown(id, keyIndex, false)
+        s.noteChannelCooldown(id, false)
 	}
 
 	RespondJSON(c, http.StatusOK, testResult)
@@ -1261,6 +1265,9 @@ func (s *Server) handleSetChannelCooldown(c *gin.Context) {
 		return
 	}
 
+    // 精确计数（P1）：手动设置渠道冷却
+    s.noteChannelCooldown(id, true)
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": fmt.Sprintf("渠道已冷却 %d 毫秒", req.DurationMs),
@@ -1295,6 +1302,9 @@ func (s *Server) handleSetKeyCooldown(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
 	}
+
+    // 精确计数（P1）：手动设置Key冷却
+    s.noteKeyCooldown(id, keyIndex, true)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

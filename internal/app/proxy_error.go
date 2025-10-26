@@ -39,23 +39,25 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *model.Config, keyInd
 
 	// ✅ P2重构：使用 cooldownManager 统一处理冷却决策
 	// 好处：消除重复逻辑，单一职责，便于测试和维护
-	action, cooldownErr := s.cooldownManager.HandleError(ctx, cfg.ID, keyIndex, statusCode, errorBody, isNetworkError)
-	if cooldownErr != nil {
-		// 冷却操作失败（如数据库错误），保守策略：直接返回客户端
-		return cooldown.ActionReturnClient, false
-	}
+    action, cooldownErr := s.cooldownManager.HandleError(ctx, cfg.ID, keyIndex, statusCode, errorBody, isNetworkError)
+    if cooldownErr != nil {
+        // 冷却操作失败（如数据库错误），保守策略：直接返回客户端
+        return cooldown.ActionReturnClient, false
+    }
 
-	// 根据冷却管理器的决策执行相应动作
-	switch action {
-	case cooldown.ActionRetryKey:
-		// Key级错误：同时标记Key选择器（双重记录，便于选择器快速判断）
-		_ = s.keySelector.MarkKeyError(ctx, cfg.ID, keyIndex, statusCode)
-		return action, true
+    // 根据冷却管理器的决策执行相应动作
+    switch action {
+    case cooldown.ActionRetryKey:
+        // Key级错误：同时标记Key选择器（双重记录，便于选择器快速判断）
+        _ = s.keySelector.MarkKeyError(ctx, cfg.ID, keyIndex, statusCode)
+        // 精确计数（P1）：记录Key进入冷却
+        s.noteKeyCooldown(cfg.ID, keyIndex, true)
+        return action, true
 
-	case cooldown.ActionRetryChannel:
-		// 渠道级错误：更新监控指标
-		s.channelCooldownGauge.Add(1)
-		return action, true
+    case cooldown.ActionRetryChannel:
+        // 渠道级错误：精确计数（P1）
+        s.noteChannelCooldown(cfg.ID, true)
+        return action, true
 
 	default:
 		// 客户端错误或未知错误：直接返回
@@ -105,17 +107,20 @@ func (s *Server) handleNetworkError(
 // ✅ P2重构: 使用 cooldownManager 统一管理冷却状态清除
 // 注意：与 handleSuccessResponse（HTTP层）不同
 func (s *Server) handleProxySuccess(
-	ctx context.Context,
-	cfg *model.Config,
-	keyIndex int,
-	actualModel string, // ✅ 重定向后的实际模型名称
-	selectedKey string,
-	res *fwResult,
-	duration float64,
+    ctx context.Context,
+    cfg *model.Config,
+    keyIndex int,
+    actualModel string, // ✅ 重定向后的实际模型名称
+    selectedKey string,
+    res *fwResult,
+    duration float64,
 ) (*proxyResult, bool, bool) {
-	// ✅ P2重构：使用 cooldownManager 清除冷却状态
-	_ = s.cooldownManager.ClearChannelCooldown(ctx, cfg.ID)
-	_ = s.keySelector.MarkKeySuccess(ctx, cfg.ID, keyIndex)
+    // ✅ P2重构：使用 cooldownManager 清除冷却状态
+    _ = s.cooldownManager.ClearChannelCooldown(ctx, cfg.ID)
+    _ = s.keySelector.MarkKeySuccess(ctx, cfg.ID, keyIndex)
+    // 精确计数（P1）：记录状态恢复
+    s.noteChannelCooldown(cfg.ID, false)
+    s.noteKeyCooldown(cfg.ID, keyIndex, false)
 
 	// 记录成功日志
 	// ✅ 修复：使用 actualModel 而非 reqCtx.originalModel

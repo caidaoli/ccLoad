@@ -46,6 +46,7 @@ type Store interface {
 
 	// Channel round-robin index - 渠道轮询索引管理
 	UpdateChannelRRIndex(ctx context.Context, channelID int64, nextIdx int) error
+	GetAndSetChannelRRIndex(ctx context.Context, channelID int64, keyCount int) (int, error)
 
 	// Logs - 日志管理
 	AddLog(ctx context.Context, e *model.LogEntry) error

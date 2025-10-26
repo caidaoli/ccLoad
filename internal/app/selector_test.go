@@ -233,6 +233,60 @@ func TestSelectRouteCandidates_PriorityGrouping(t *testing.T) {
 	t.Logf("✅ 相同优先级渠道分组正确，返回%d个渠道", len(candidates))
 }
 
+// TestSelectCandidates_FilterByChannelType 测试按渠道类型过滤
+func TestSelectCandidates_FilterByChannelType(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	server := &Server{store: store}
+	ctx := context.Background()
+
+	channels := []*model.Config{
+		{Name: "anthropic-channel", URL: "https://anthropic.example.com", Priority: 50, Models: []string{"gpt-4"}, ChannelType: "anthropic", Enabled: true},
+		{Name: "codex-channel", URL: "https://openai.example.com", Priority: 100, Models: []string{"gpt-4"}, ChannelType: "codex", Enabled: true},
+	}
+
+	for _, cfg := range channels {
+		if _, err := store.CreateConfig(ctx, cfg); err != nil {
+			t.Fatalf("创建测试渠道失败: %v", err)
+		}
+	}
+
+	allCandidates, err := server.selectCandidates(ctx, "gpt-4")
+	if err != nil {
+		t.Fatalf("selectCandidates失败: %v", err)
+	}
+	if len(allCandidates) != 2 {
+		t.Fatalf("预期返回2个候选渠道，实际%d个", len(allCandidates))
+	}
+
+	filtered, err := server.selectCandidatesByModelAndType(ctx, "gpt-4", "codex")
+	if err != nil {
+		t.Fatalf("selectCandidatesByModelAndType失败: %v", err)
+	}
+	if len(filtered) != 1 || filtered[0].Name != "codex-channel" {
+		t.Fatalf("渠道类型过滤失败，返回结果: %+v", filtered)
+	}
+
+	// 保证类型过滤支持大小写输入
+	filteredUpper, err := server.selectCandidatesByModelAndType(ctx, "gpt-4", "CODEX")
+	if err != nil {
+		t.Fatalf("selectCandidatesByModelAndType(大写)失败: %v", err)
+	}
+	if len(filteredUpper) != 1 || filteredUpper[0].Name != "codex-channel" {
+		t.Fatalf("渠道类型大小写规范化失败，返回结果: %+v", filteredUpper)
+	}
+
+	// 未匹配到指定类型时应返回空切片
+	filteredNone, err := server.selectCandidatesByModelAndType(ctx, "gpt-4", "gemini")
+	if err != nil {
+		t.Fatalf("selectCandidatesByModelAndType(无匹配)失败: %v", err)
+	}
+	if len(filteredNone) != 0 {
+		t.Fatalf("预期无匹配渠道，实际返回%d个", len(filteredNone))
+	}
+}
+
 // TestSelectCandidatesByChannelType_GeminiFilter 测试按渠道类型选择（Gemini）
 func TestSelectCandidatesByChannelType_GeminiFilter(t *testing.T) {
 	store, cleanup := setupTestStore(t)

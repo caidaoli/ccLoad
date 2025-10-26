@@ -8,6 +8,23 @@ import (
 	"time"
 )
 
+// MockRedisSync 用于基准测试的Mock Redis同步器
+type MockRedisSync struct {
+	Enabled bool
+}
+
+func (m *MockRedisSync) IsEnabled() bool {
+	return m.Enabled
+}
+
+func (m *MockRedisSync) LoadChannelsWithKeysFromRedis(ctx context.Context) ([]*model.ChannelWithKeys, error) {
+	return nil, nil
+}
+
+func (m *MockRedisSync) SyncAllChannelsWithKeys(ctx context.Context, channels []*model.ChannelWithKeys) error {
+	return nil
+}
+
 // TestMemoryDBMode 测试内存数据库模式
 func TestMemoryDBMode(t *testing.T) {
 	// ✅ P1-1 修复：内存模式测试需要 Redis，如果未配置则跳过
@@ -259,11 +276,15 @@ func TestLogDBAlwaysUsesFile(t *testing.T) {
 // 原因：这些测试访问私有函数，应作为白盒测试放在包内部
 
 // BenchmarkMemoryDBQuery 内存数据库查询性能基准测试
+// 注意：由于内存模式需要Redis配置，这里改用文件模式+测试专用构造函数
 func BenchmarkMemoryDBQuery(b *testing.B) {
-	os.Setenv("CCLOAD_USE_MEMORY_DB", "true")
-	defer os.Unsetenv("CCLOAD_USE_MEMORY_DB")
-
-	store, _ := NewSQLiteStore("/tmp/benchmark-memory.db", nil)
+	// 使用基准测试的临时目录，确保每次都是干净的环境
+	dbPath := b.TempDir() + "/benchmark.db"
+	mockRedis := &MockRedisSync{Enabled: false}
+	store, err := NewSQLiteStoreForTest(dbPath, mockRedis)
+	if err != nil {
+		b.Fatalf("创建SQLiteStore失败: %v", err)
+	}
 	defer store.Close()
 
 	ctx := context.Background()
@@ -276,7 +297,10 @@ func BenchmarkMemoryDBQuery(b *testing.B) {
 		Models:   []string{"model-1"},
 		Enabled:  true,
 	}
-	created, _ := store.CreateConfig(ctx, config)
+	created, err := store.CreateConfig(ctx, config)
+	if err != nil {
+		b.Fatalf("创建测试配置失败: %v", err)
+	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -289,9 +313,8 @@ func BenchmarkFileDBQuery(b *testing.B) {
 	os.Setenv("CCLOAD_USE_MEMORY_DB", "false")
 	defer os.Unsetenv("CCLOAD_USE_MEMORY_DB")
 
-	dbPath := "/tmp/benchmark-file.db"
-	defer os.Remove(dbPath)
-	defer os.Remove("/tmp/benchmark-file-log.db")
+	// 使用基准测试的临时目录，确保每次都是干净的环境
+	dbPath := b.TempDir() + "/benchmark-file.db"
 
 	store, _ := NewSQLiteStore(dbPath, nil)
 	defer store.Close()
@@ -306,7 +329,10 @@ func BenchmarkFileDBQuery(b *testing.B) {
 		Models:   []string{"model-1"},
 		Enabled:  true,
 	}
-	created, _ := store.CreateConfig(ctx, config)
+	created, err := store.CreateConfig(ctx, config)
+	if err != nil {
+		b.Fatalf("创建测试配置失败: %v", err)
+	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

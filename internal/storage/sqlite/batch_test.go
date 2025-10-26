@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -54,7 +55,15 @@ func setupBatchTestStore(t testing.TB) (*SQLiteStore, func()) {
 	os.Setenv("CCLOAD_USE_MEMORY_DB", "false")
 
 	// 使用临时文件数据库
-	tmpDB := t.(*testing.T).TempDir() + "/test-batch.db"
+	var tmpDB string
+	if tt, ok := t.(*testing.T); ok {
+		tmpDB = tt.TempDir() + "/test-batch.db"
+	} else if tb, ok := t.(*testing.B); ok {
+		tmpDB = tb.TempDir() + "/test-batch.db"
+	} else {
+		// 回退到系统临时目录
+		tmpDB = filepath.Join(os.TempDir(), "test-batch-"+time.Now().Format("20060102-150405")+".db")
+	}
 	store, err := NewSQLiteStore(tmpDB, nil)
 	if err != nil {
 		os.Setenv("CCLOAD_USE_MEMORY_DB", oldValue)

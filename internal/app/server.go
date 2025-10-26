@@ -30,7 +30,7 @@ import (
 )
 
 type Server struct {
-	store           storage.Store
+    store           storage.Store
 	keySelector     *KeySelector      // Key选择器（多Key支持）
 	cooldownManager *cooldown.Manager // ✅ P2重构：统一冷却管理器（DRY原则）
 	client          *http.Client
@@ -58,13 +58,18 @@ type Server struct {
 	logWorkers int                  // 日志工作协程数
 
 	// 监控指标（P2优化：实时统计冷却状态）
-	channelCooldownGauge atomic.Int64 // 当前活跃的渠道级冷却数量
-	keyCooldownGauge     atomic.Int64 // 当前活跃的Key级冷却数量
-	logDropCount         atomic.Int64 // 日志丢弃计数器（P1修复 2025-10-05）
+    channelCooldownGauge atomic.Int64 // 当前活跃的渠道级冷却数量（精确计数，基于集合）
+    keyCooldownGauge     atomic.Int64 // 当前活跃的Key级冷却数量（精确计数，基于集合）
+    logDropCount         atomic.Int64 // 日志丢弃计数器（P1修复 2025-10-05）
 
 	// ✅ P0修复（2025-10-13）：优雅关闭机制
-	shutdownCh chan struct{}  // 关闭信号channel
-	wg         sync.WaitGroup // 等待所有后台goroutine结束
+    shutdownCh chan struct{}  // 关闭信号channel
+    wg         sync.WaitGroup // 等待所有后台goroutine结束
+
+    // 冷却精准计数（P1）：使用集合去重，指标仅在状态切换时增减
+    coolMux              sync.Mutex
+    activeChannelCooled  map[int64]bool       // channelID -> cooled
+    activeKeyCooled      map[string]bool      // "channelID:keyIndex" -> cooled
 }
 
 func NewServer(store storage.Store) *Server {
@@ -191,8 +196,8 @@ func NewServer(store storage.Store) *Server {
 		}
 	}
 
-	s := &Server{
-		store:         store,
+    s := &Server{
+        store:         store,
 		maxKeyRetries: maxKeyRetries, // 单个渠道最大Key重试次数
 		client: &http.Client{
 			Transport: transport,
@@ -211,8 +216,11 @@ func NewServer(store storage.Store) *Server {
 		maxConcurrency: maxConcurrency,
 
 		// ✅ P0修复（2025-10-13）：初始化优雅关闭机制
-		shutdownCh: make(chan struct{}),
-	}
+        shutdownCh: make(chan struct{}),
+
+        activeChannelCooled: make(map[int64]bool),
+        activeKeyCooled:     make(map[string]bool),
+    }
 
 	// ✅ P2重构：初始化冷却管理器（统一管理渠道级和Key级冷却）
 	s.cooldownManager = cooldown.NewManager(store)
@@ -221,19 +229,33 @@ func NewServer(store storage.Store) *Server {
 	s.keySelector = NewKeySelector(store, &s.keyCooldownGauge)
 
 	// ✅ P0修复（2025-10-13）：启动日志工作协程（支持优雅关闭）
-	for i := 0; i < s.logWorkers; i++ {
-		s.wg.Add(1)
-		go s.logWorker()
-	}
+    for i := 0; i < s.logWorkers; i++ {
+        s.wg.Add(1)
+        go s.logWorker()
+    }
 
 	// ✅ P0修复（2025-10-13）：启动后台清理协程（支持优雅关闭）
 	s.wg.Add(1)
 	go s.tokenCleanupLoop() // Token认证：定期清理过期Token
 
 	s.wg.Add(1)
-	go s.cleanupOldLogsLoop() // 定期清理3天前的日志
+    go s.cleanupOldLogsLoop() // 定期清理3天前的日志
 
-	return s
+    // 初始化冷却精准计数（P1）：从数据库加载当前冷却状态（纳入wg，支持优雅关闭）
+    s.wg.Add(1)
+    go func() {
+        defer s.wg.Done()
+        ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+        defer cancel()
+        select {
+        case <-s.shutdownCh:
+            return
+        default:
+        }
+        s.initCooldownState(ctx)
+    }()
+
+    return s
 
 }
 
@@ -244,6 +266,63 @@ func (s *Server) generateToken() string {
 	b := make([]byte, config.TokenRandomBytes)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// gaugeDecClampZero 将指标安全递减，最小不小于0，避免出现负数
+// 简化实现：若当前值小于需要递减的幅度，则直接置0
+func (s *Server) gaugeDecClampZero(g *atomic.Int64, n int64) {
+    if n <= 0 {
+        return
+    }
+    for {
+        v := g.Load()
+        if v == 0 {
+            return
+        }
+        dec := n
+        if v < dec {
+            dec = v
+        }
+        if g.CompareAndSwap(v, v-dec) {
+            return
+        }
+    }
+}
+
+// ================== 冷却精准计数（P1） ==================
+// noteChannelCooldown 切换渠道冷却状态并精确更新计数
+func (s *Server) noteChannelCooldown(channelID int64, cooled bool) {
+    s.coolMux.Lock()
+    defer s.coolMux.Unlock()
+    if s.activeChannelCooled == nil {
+        s.activeChannelCooled = make(map[int64]bool)
+    }
+    prev := s.activeChannelCooled[channelID]
+    if cooled && !prev {
+        s.activeChannelCooled[channelID] = true
+        s.channelCooldownGauge.Add(1)
+    } else if !cooled && prev {
+        delete(s.activeChannelCooled, channelID)
+        s.gaugeDecClampZero(&s.channelCooldownGauge, 1)
+    }
+}
+
+// noteKeyCooldown 切换Key冷却状态并精确更新计数
+func (s *Server) noteKeyCooldown(channelID int64, keyIndex int, cooled bool) {
+    key := fmt.Sprintf("%d:%d", channelID, keyIndex)
+    s.coolMux.Lock()
+    defer s.coolMux.Unlock()
+    if s.activeKeyCooled == nil {
+        s.activeKeyCooled = make(map[string]bool)
+    }
+    prev := s.activeKeyCooled[key]
+    if cooled && !prev {
+        s.activeKeyCooled[key] = true
+        s.keyCooldownGauge.Add(1)
+    } else if !cooled && prev {
+        delete(s.activeKeyCooled, key)
+        s.gaugeDecClampZero(&s.keyCooldownGauge, 1)
+    }
 }
 
 // 验证Token有效性（检查过期时间）
@@ -492,21 +571,18 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/cooldown/stats", s.handleCooldownStats) // P2优化：冷却状态监控
 	}
 
-	// 静态文件服务
-	r.GET("/web/*filepath", s.handleWebFiles)
+    // 静态文件服务（安全）：使用框架自带的静态文件路由，自动做路径清理，防止目录遍历
+    // 等价于 http.FileServer，避免手工拼接路径导致的 /web/../ 泄露
+    r.Static("/web", "./web")
 
-	// 默认首页重定向
-	r.GET("/", func(c *gin.Context) {
-		c.Redirect(http.StatusFound, "/web/index.html")
-	})
+    // 默认首页重定向
+    r.GET("/", func(c *gin.Context) {
+        c.Redirect(http.StatusFound, "/web/index.html")
+    })
 }
 
-// 处理web静态文件 - Gin版本
-// 注意：认证已迁移到Token机制，由前端fetchWithAuth()和后端API中间件处理
-func (s *Server) handleWebFiles(c *gin.Context) {
-	filepath := c.Param("filepath")
-	c.File("web" + filepath)
-}
+// 说明：已改为使用 r.Static("/web", "./web") 提供静态文件服务，
+// 该实现会自动进行路径清理和越界防护，避免目录遍历风险。
 
 // Token清理循环（定期清理过期Token）
 // ✅ P0修复（2025-10-13）：支持优雅关闭
@@ -531,43 +607,63 @@ func (s *Server) tokenCleanupLoop() {
 // 异步日志工作协程
 // ✅ P0修复（2025-10-13）：支持优雅关闭
 func (s *Server) logWorker() {
-	defer s.wg.Done()
+    defer s.wg.Done()
 
-	batch := make([]*model.LogEntry, 0, config.LogBatchSize)
-	timer := time.NewTimer(config.SecondsToDuration(config.LogBatchTimeout))
-	defer timer.Stop()
+    batch := make([]*model.LogEntry, 0, config.LogBatchSize)
+    timer := time.NewTimer(config.SecondsToDuration(config.LogBatchTimeout))
+    defer timer.Stop()
 
-	for {
-		select {
-		case entry := <-s.logChan:
-			batch = append(batch, entry)
-			if len(batch) >= config.LogBatchSize {
-				s.flushLogs(batch)
-				batch = batch[:0]
-			}
-			timer.Reset(config.SecondsToDuration(config.LogBatchTimeout))
+    for {
+        select {
+        case entry := <-s.logChan:
+            batch = append(batch, entry)
+            if len(batch) >= config.LogBatchSize {
+                s.flushLogs(batch)
+                batch = batch[:0]
+            }
+            timer.Reset(config.SecondsToDuration(config.LogBatchTimeout))
 
-		case <-timer.C:
-			if len(batch) > 0 {
-				s.flushLogs(batch)
-				batch = batch[:0]
-			}
+        case <-timer.C:
+            if len(batch) > 0 {
+                s.flushLogs(batch)
+                batch = batch[:0]
+            }
 
-		case <-s.shutdownCh:
-			// 收到关闭信号，刷新剩余日志后退出
-			if len(batch) > 0 {
-				s.flushLogs(batch)
-			}
-			return
-		}
-	}
+        case <-s.shutdownCh:
+            // 收到关闭信号，尽快刷新剩余日志并有限期地清空队列后退出
+            deadline := time.Now().Add(200 * time.Millisecond)
+            // 先尽量从队列中取出更多日志，避免遗漏
+            for {
+                select {
+                case e := <-s.logChan:
+                    batch = append(batch, e)
+                    if len(batch) >= config.LogBatchSize {
+                        s.flushLogs(batch)
+                        batch = batch[:0]
+                    }
+                default:
+                    // 无更多日志或时间到
+                    if time.Now().After(deadline) {
+                        goto FLUSH_AND_EXIT
+                    }
+                    time.Sleep(5 * time.Millisecond)
+                }
+            }
+        FLUSH_AND_EXIT:
+            if len(batch) > 0 {
+                s.flushLogs(batch)
+                batch = batch[:0]
+            }
+            return
+        }
+    }
 }
 
 // 批量写入日志
 func (s *Server) flushLogs(logs []*model.LogEntry) {
-	// 为日志持久化增加超时控制，避免阻塞关闭或积压
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
+    // 为日志持久化增加超时控制，避免阻塞关闭或积压
+    ctx, cancel := context.WithTimeout(context.Background(), time.Duration(config.LogFlushTimeoutMs)*time.Millisecond)
+    defer cancel()
 
 	// 优先使用SQLite批量写入，加速刷盘
 	if ss, ok := s.store.(*sqlite.SQLiteStore); ok {
@@ -623,6 +719,48 @@ func (s *Server) cleanupOldLogsLoop() {
 			return
 		}
 	}
+}
+
+// initCooldownState 启动时加载现有冷却状态，初始化去重集合与计数
+func (s *Server) initCooldownState(ctx context.Context) {
+    now := time.Now()
+
+    chans, err := s.store.GetAllChannelCooldowns(ctx)
+    if err != nil {
+        return
+    }
+    keys, err := s.store.GetAllKeyCooldowns(ctx)
+    if err != nil {
+        return
+    }
+
+    // 构建集合与计数
+    s.coolMux.Lock()
+    s.activeChannelCooled = make(map[int64]bool)
+    s.activeKeyCooled = make(map[string]bool)
+
+    var chCount int64
+    for id, until := range chans {
+        if until.After(now) {
+            s.activeChannelCooled[id] = true
+            chCount++
+        }
+    }
+
+    var keyCount int64
+    for cid, m := range keys {
+        for idx, until := range m {
+            if until.After(now) {
+                k := fmt.Sprintf("%d:%d", cid, idx)
+                s.activeKeyCooled[k] = true
+                keyCount++
+            }
+        }
+    }
+    s.coolMux.Unlock()
+
+    s.channelCooldownGauge.Store(chCount)
+    s.keyCooldownGauge.Store(keyCount)
 }
 
 // getGeminiModels 获取所有 gemini 渠道的去重模型列表
