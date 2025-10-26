@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // migrate 创建数据库表结构
@@ -31,6 +32,16 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		return fmt.Errorf("create channels table: %w", err)
 	}
 
+	// 兼容性迁移：为现有数据库添加 rr_key_index 列
+	if _, err := s.db.ExecContext(ctx, `
+		ALTER TABLE channels ADD COLUMN rr_key_index INTEGER DEFAULT 0;
+	`); err != nil {
+		// 忽略列已存在的错误（SQLite error code 1: "duplicate column name"）
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("add rr_key_index column: %w", err)
+		}
+	}
+
 	// 创建 api_keys 表
 	if _, err := s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS api_keys (
@@ -48,6 +59,27 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		);
 	`); err != nil {
 		return fmt.Errorf("create api_keys table: %w", err)
+	}
+
+	// 迁移数据：如果 key_rr 表存在，将轮询指针数据迁移到 channels 表
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE channels 
+		SET rr_key_index = (
+			SELECT COALESCE(idx, 0) 
+			FROM key_rr 
+			WHERE key_rr.channel_id = channels.id
+		)
+		WHERE EXISTS (SELECT 1 FROM key_rr WHERE key_rr.channel_id = channels.id);
+	`); err != nil {
+		// 忽略 key_rr 表不存在的错误
+		if !strings.Contains(err.Error(), "no such table") {
+			return fmt.Errorf("migrate rr_index data: %w", err)
+		}
+	}
+
+	// 删除旧的 key_rr 表（如果存在）
+	if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS key_rr;`); err != nil {
+		return fmt.Errorf("drop legacy key_rr table: %w", err)
 	}
 
 	// 创建性能索引
