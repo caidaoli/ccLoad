@@ -16,8 +16,8 @@ const (
 	TimeoutErrorCooldown = 5 * time.Minute
 
 	// ServerErrorInitialCooldown 服务器错误（500/502/503/504）的初始冷却时间
-	// 设计目标：指数退避策略，起始1秒（1s → 2s → 4s → ... → 2min上限）
-	ServerErrorInitialCooldown = 1 * time.Second
+	// 设计目标：指数退避策略，起始2分钟（2min → 4min → 8min → 16min → 30min上限）
+	ServerErrorInitialCooldown = 2 * time.Minute
 
 	// OtherErrorInitialCooldown 其他错误（429等）的初始冷却时间
 	OtherErrorInitialCooldown = 1 * time.Second
@@ -78,8 +78,8 @@ func CalculateBackoffDuration(prevMs int64, until time.Time, now time.Time, stat
 			prev = until.Sub(now)
 		} else {
 			// 首次错误：根据状态码确定初始冷却时间（直接返回，不翻倍）
-			// 服务器错误（500/502/503/504）：1秒冷却，指数退避（1s → 2s → 4s → ...）
-			if statusCode != nil && (*statusCode == 500 || *statusCode == 502 || *statusCode == 503 || *statusCode == 504) {
+			// 服务器错误（500/502/503/504/521/524）：2分钟冷却，指数退避（1s → 2s → 4s → ...）
+			if statusCode != nil && (*statusCode == 500 || *statusCode == 502 || *statusCode == 503 || *statusCode == 504 || *statusCode == 521 || *statusCode == 524) {
 				return ServerErrorInitialCooldown
 			}
 			// 认证错误（401/402/403）：5分钟冷却，减少无效重试

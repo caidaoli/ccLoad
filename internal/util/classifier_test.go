@@ -212,6 +212,8 @@ func TestClassifyHTTPStatus(t *testing.T) {
 		{502, ErrorLevelChannel, "渠道级错误"},
 		{503, ErrorLevelChannel, "渠道级错误"},
 		{504, ErrorLevelChannel, "渠道级错误"},
+		{521, ErrorLevelChannel, "521 Web Server Is Down - 渠道级错误"},
+		{524, ErrorLevelChannel, "524 A Timeout Occurred - 渠道级错误"},
 	}
 
 	for _, tt := range tests {

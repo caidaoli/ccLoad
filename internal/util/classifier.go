@@ -1,6 +1,11 @@
 package util
 
-import "strings"
+import (
+	"context"
+	"errors"
+	"net"
+	"strings"
+)
 
 // HTTP状态码错误分类器
 // 设计原则：区分Key级错误和渠道级错误，避免误判导致多Key功能失效
@@ -37,7 +42,7 @@ func ClassifyHTTPStatus(statusCode int) ErrorLevel {
 	// Key级错误：API Key相关问题（4xx客户端错误）
 	case 400: // Bad Request - 通常是API Key格式错误或无效
 		return ErrorLevelKey
-	case 402: // Payment Required / 配额或余额不足等，需要轮换Key
+	case 402: // Payment Required / 配额或余额不足等，需要切换Key
 		return ErrorLevelKey
 	case 401: // Unauthorized - 需要进一步分析（默认Key级）
 		return ErrorLevelKey
@@ -54,6 +59,10 @@ func ClassifyHTTPStatus(statusCode int) ErrorLevel {
 	case 503: // Service Unavailable
 		return ErrorLevelChannel
 	case 504: // Gateway Timeout
+		return ErrorLevelChannel
+	case 521: // Web Server Is Down (Cloudflare) - 源服务器关闭
+		return ErrorLevelChannel
+	case 524: // A Timeout Occurred (Cloudflare) - 连接超时
 		return ErrorLevelChannel
 
 	// 其他4xx错误：默认为客户端错误（不冷却）
@@ -120,4 +129,85 @@ func ClassifyHTTPStatusWithBody(statusCode int, responseBody []byte) ErrorLevel 
 	// 包括：认证失败、权限不足、额度用尽、余额不足等
 	// 让handleProxyError根据渠道Key数量决定是否升级为渠道级
 	return ErrorLevelKey
+}
+
+// ClassifyError 统一错误分类器（网络错误+HTTP错误）
+// ✅ P0重构：将proxy_util.go中的classifyError和classifyErrorByString整合到此处
+//
+// 参数:
+//   - err: 错误对象（可能是context错误、网络错误、或其他错误）
+//
+// 返回:
+//   - statusCode: HTTP状态码（或内部错误码）
+//   - errorLevel: 错误级别（Key级/渠道级/客户端级）
+//   - shouldRetry: 是否应该重试
+//
+// 设计原则（DRY+SRP）:
+//   - 统一入口处理所有错误分类
+//   - 消除proxy_util.go中的重复逻辑
+//   - 分层设计：快速路径（context错误）→ 网络错误 → 字符串匹配
+func ClassifyError(err error) (statusCode int, errorLevel ErrorLevel, shouldRetry bool) {
+	if err == nil {
+		return 200, ErrorLevelNone, false
+	}
+
+	// ✅ 快速路径1：优先检查最常见的错误类型（避免字符串操作）
+	// Context canceled - 客户端主动取消，不应重试（最常见）
+	if errors.Is(err, context.Canceled) {
+		return 499, ErrorLevelClient, false // StatusClientClosedRequest
+	}
+
+	// ⚠️ Context deadline exceeded 需要区分两种情况：
+	// 1. 客户端超时（来自客户端设置的超时）- 不应重试
+	// 2. 上游服务器响应慢导致的超时 - 应该重试其他渠道
+	// ✅ P0修复 (2025-10-13): 默认将DeadlineExceeded视为上游超时（可重试）
+	// 设计原则：
+	// - 客户端主动取消通常是context.Canceled，而不是DeadlineExceeded
+	// - 保守策略：宁可多重试（提升可用性），也不要漏掉上游超时（导致可用性下降）
+	// - 兼容性：不依赖特定的错误消息格式，适配Go不同版本和HTTP客户端实现
+	if errors.Is(err, context.DeadlineExceeded) {
+		// 所有DeadlineExceeded错误默认为上游超时，应该重试其他渠道
+		return 504, ErrorLevelChannel, true // ✅ Gateway Timeout，触发渠道切换
+	}
+
+	// ✅ 快速路径2：检查系统级错误（使用类型断言替代字符串匹配）
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if netErr.Timeout() {
+			return 504, ErrorLevelChannel, true // Gateway Timeout，可重试
+		}
+	}
+
+	// ✅ 慢速路径：字符串匹配（<1%的错误会到达这里）
+	return classifyErrorByString(err.Error())
+}
+
+// classifyErrorByString 通过字符串匹配分类网络错误
+// ✅ P0重构：从proxy_util.go迁移，作为ClassifyError的私有辅助函数
+func classifyErrorByString(errStr string) (int, ErrorLevel, bool) {
+	errLower := strings.ToLower(errStr)
+
+	// Connection reset by peer - 不应重试
+	if strings.Contains(errLower, "connection reset by peer") ||
+		strings.Contains(errLower, "broken pipe") {
+		return 499, ErrorLevelClient, false // StatusConnectionReset
+	}
+
+	// Connection refused - 应该重试其他渠道
+	if strings.Contains(errLower, "connection refused") {
+		return 502, ErrorLevelChannel, true
+	}
+
+	// 其他常见的网络连接错误也应该重试
+	if strings.Contains(errLower, "no such host") ||
+		strings.Contains(errLower, "host unreachable") ||
+		strings.Contains(errLower, "network unreachable") ||
+		strings.Contains(errLower, "connection timeout") ||
+		strings.Contains(errLower, "no route to host") {
+		return 502, ErrorLevelChannel, true
+	}
+
+	// ✅ P2-3 修复：使用负值错误码，避免与HTTP状态码混淆
+	// 其他网络错误 - 可以重试
+	return -1, ErrorLevelChannel, true // ErrCodeNetworkRetryable
 }
