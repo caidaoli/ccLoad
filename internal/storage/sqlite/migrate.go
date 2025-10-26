@@ -6,12 +6,11 @@ import (
 )
 
 // migrate 创建数据库表结构
-// 新架构设计：
-// - channels 表：渠道配置 + 内联冷却字段（cooldown_until, cooldown_duration_ms）
+// 架构设计：
+// - channels 表：渠道配置 + 内联冷却字段 + 轮询指针
 // - api_keys 表：API Keys 独立存储 + 内联冷却字段
-// - key_rr 表：Key级别轮询指针
 func (s *SQLiteStore) migrate(ctx context.Context) error {
-	// 创建 channels 表（name字段UNIQUE约束，冷却数据内联）
+	// 创建 channels 表
 	if _, err := s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS channels (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -24,6 +23,7 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 			enabled INTEGER NOT NULL DEFAULT 1,
 			cooldown_until INTEGER DEFAULT 0,
 			cooldown_duration_ms INTEGER DEFAULT 0,
+			rr_key_index INTEGER DEFAULT 0,
 			created_at BIGINT NOT NULL,
 			updated_at BIGINT NOT NULL
 		);
@@ -31,7 +31,7 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		return fmt.Errorf("create channels table: %w", err)
 	}
 
-	// 创建 api_keys 表（API Keys 独立存储，冷却数据内联）
+	// 创建 api_keys 表
 	if _, err := s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS api_keys (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,25 +50,7 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		return fmt.Errorf("create api_keys table: %w", err)
 	}
 
-	// 创建 key_rr 表（Key级别轮询指针）
-	if _, err := s.db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS key_rr (
-			channel_id INTEGER PRIMARY KEY,
-			idx INTEGER NOT NULL,
-			FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
-		);
-	`); err != nil {
-		return fmt.Errorf("create key_rr table: %w", err)
-	}
-
-	// 清理废弃表（rr表已不再使用）
-	_, _ = s.db.ExecContext(ctx, `DROP TABLE IF EXISTS rr`)
-
-	// ✅ P1性能优化：添加索引提升查询性能
-	// 设计原则：为高频查询字段添加索引，避免全表扫描
-	// 预期性能提升：
-	//   - 渠道选择查询：30-50% 延迟降低
-	//   - API Key 查找：40-60% 延迟降低
+	// 创建性能索引
 	if _, err := s.db.ExecContext(ctx, `
 		-- 渠道表索引
 		CREATE INDEX IF NOT EXISTS idx_channels_enabled ON channels(enabled);
@@ -80,20 +62,16 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_api_keys_channel_id ON api_keys(channel_id);
 		CREATE INDEX IF NOT EXISTS idx_api_keys_cooldown ON api_keys(cooldown_until);
 		CREATE INDEX IF NOT EXISTS idx_api_keys_channel_cooldown ON api_keys(channel_id, cooldown_until);
-
-		-- Key轮询表索引
-		CREATE INDEX IF NOT EXISTS idx_key_rr_channel ON key_rr(channel_id);
 	`); err != nil {
-		return fmt.Errorf("failed to create performance indexes: %w", err)
+		return fmt.Errorf("create performance indexes: %w", err)
 	}
 
 	return nil
 }
 
-// migrateLogDB 创建日志数据库表结构（独立数据库，从零开始，无需兼容）
+// migrateLogDB 创建日志数据库表结构
 func (s *SQLiteStore) migrateLogDB(ctx context.Context) error {
-	// 创建 logs 表（BIGINT Unix毫秒时间戳，所有字段一次性创建）
-	// 注意：无 FOREIGN KEY 约束，因为 channels 表在主数据库中
+	// 创建 logs 表
 	if _, err := s.logDB.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -111,7 +89,7 @@ func (s *SQLiteStore) migrateLogDB(ctx context.Context) error {
 		return fmt.Errorf("create logs table: %w", err)
 	}
 
-	// 创建索引（一次性创建，无需兼容检查）
+	// 创建日志索引
 	indexes := []string{
 		"CREATE INDEX IF NOT EXISTS idx_logs_time ON logs(time)",
 		"CREATE INDEX IF NOT EXISTS idx_logs_status ON logs(status_code)",
@@ -122,7 +100,7 @@ func (s *SQLiteStore) migrateLogDB(ctx context.Context) error {
 
 	for _, indexSQL := range indexes {
 		if _, err := s.logDB.ExecContext(ctx, indexSQL); err != nil {
-			return fmt.Errorf("create index: %w", err)
+			return fmt.Errorf("create log index: %w", err)
 		}
 	}
 

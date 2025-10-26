@@ -16,10 +16,10 @@ import (
 // ---- Store interface impl ----
 
 func (s *SQLiteStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
-	// 新架构：不再查询 api_key, api_keys, key_strategy 字段
+	// 新架构：包含内联的轮询索引字段
 	query := `
 		SELECT id, name, url, priority, models, model_redirects, channel_type, enabled,
-		       cooldown_until, cooldown_duration_ms, created_at, updated_at
+		       cooldown_until, cooldown_duration_ms, rr_key_index, created_at, updated_at
 		FROM channels
 		ORDER BY priority DESC, id ASC
 	`
@@ -35,10 +35,10 @@ func (s *SQLiteStore) ListConfigs(ctx context.Context) ([]*model.Config, error) 
 }
 
 func (s *SQLiteStore) GetConfig(ctx context.Context, id int64) (*model.Config, error) {
-	// 新架构：不再查询 api_key, api_keys, key_strategy 字段
+	// 新架构：包含内联的轮询索引字段
 	query := `
 		SELECT id, name, url, priority, models, model_redirects, channel_type, enabled,
-		       cooldown_until, cooldown_duration_ms, created_at, updated_at
+		       cooldown_until, cooldown_duration_ms, rr_key_index, created_at, updated_at
 		FROM channels
 		WHERE id = ?
 	`
@@ -68,7 +68,7 @@ func (s *SQLiteStore) GetEnabledChannelsByModel(ctx context.Context, model strin
 		query = `
             SELECT c.id, c.name, c.url, c.priority,
                    c.models, c.model_redirects, c.channel_type, c.enabled,
-                   c.cooldown_until, c.cooldown_duration_ms, c.created_at, c.updated_at
+                   c.cooldown_until, c.cooldown_duration_ms, c.rr_key_index, c.created_at, c.updated_at
             FROM channels c
             WHERE c.enabled = 1
               AND (c.cooldown_until = 0 OR c.cooldown_until <= ?)
@@ -80,7 +80,7 @@ func (s *SQLiteStore) GetEnabledChannelsByModel(ctx context.Context, model strin
 		query = `
             SELECT c.id, c.name, c.url, c.priority,
                    c.models, c.model_redirects, c.channel_type, c.enabled,
-                   c.cooldown_until, c.cooldown_duration_ms, c.created_at, c.updated_at
+                   c.cooldown_until, c.cooldown_duration_ms, c.rr_key_index, c.created_at, c.updated_at
             FROM channels c
             WHERE c.enabled = 1
               AND EXISTS (
@@ -110,7 +110,7 @@ func (s *SQLiteStore) GetEnabledChannelsByType(ctx context.Context, channelType 
 	query := `
 		SELECT c.id, c.name, c.url, c.priority,
 		       c.models, c.model_redirects, c.channel_type, c.enabled,
-		       c.cooldown_until, c.cooldown_duration_ms, c.created_at, c.updated_at
+		       c.cooldown_until, c.cooldown_duration_ms, c.rr_key_index, c.created_at, c.updated_at
 		FROM channels c
 		WHERE c.enabled = 1
 		  AND c.channel_type = ?
@@ -1238,32 +1238,11 @@ func (s *SQLiteStore) ClearAllKeyCooldowns(ctx context.Context, configID int64) 
 
 // ==================== Key级别轮询机制 ====================
 
-// NextKeyRR 获取下一个轮询Key索引（带自动增量）
-func (s *SQLiteStore) NextKeyRR(ctx context.Context, configID int64, keyCount int) int {
-	if keyCount <= 0 {
-		return 0
-	}
-
-	var idx int
-	err := s.db.QueryRowContext(ctx, `
-		SELECT idx FROM key_rr WHERE channel_id = ?
-	`, configID).Scan(&idx)
-
-	if err != nil {
-		// 没有记录，从0开始
-		return 0
-	}
-
-	// 确保索引在有效范围内
-	return idx % keyCount
-}
-
-// SetKeyRR 设置渠道的Key轮询指针
-func (s *SQLiteStore) SetKeyRR(ctx context.Context, configID int64, idx int) error {
+// UpdateChannelRRIndex 更新渠道的轮询索引（异步优化）
+func (s *SQLiteStore) UpdateChannelRRIndex(ctx context.Context, channelID int64, nextIdx int) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO key_rr(channel_id, idx) VALUES(?, ?)
-		ON CONFLICT(channel_id) DO UPDATE SET idx = excluded.idx
-	`, configID, idx)
+		UPDATE channels SET rr_key_index = ?, updated_at = ? WHERE id = ?
+	`, nextIdx, time.Now().UnixMilli(), channelID)
 	return err
 }
 

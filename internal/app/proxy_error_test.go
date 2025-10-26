@@ -280,11 +280,7 @@ func (m *MockStore) ResetKeyCooldown(ctx context.Context, channelID int64, keyIn
 	return nil
 }
 
-func (m *MockStore) NextKeyRR(ctx context.Context, configID int64, keyCount int) int {
-	return 0
-}
-
-func (m *MockStore) SetKeyRR(ctx context.Context, configID int64, idx int) error {
+func (m *MockStore) UpdateChannelRRIndex(ctx context.Context, channelID int64, nextIdx int) error {
 	return nil
 }
 
@@ -452,8 +448,8 @@ func (m *MockStoreAllKeysCooled) GetKeyCooldownUntil(ctx context.Context, config
 	return time.Time{}, false
 }
 
-func (m *MockStoreAllKeysCooled) NextKeyRR(ctx context.Context, configID int64, keyCount int) int {
-	return m.rrIndex
+func (m *MockStoreAllKeysCooled) UpdateChannelRRIndex(ctx context.Context, channelID int64, nextIdx int) error {
+	return nil
 }
 
 // 实现其他Store接口（使用默认MockStore的实现）
@@ -536,9 +532,6 @@ func (m *MockStoreAllKeysCooled) SetKeyCooldown(ctx context.Context, channelID i
 	return nil
 }
 func (m *MockStoreAllKeysCooled) ResetKeyCooldown(ctx context.Context, channelID int64, keyIndex int) error {
-	return nil
-}
-func (m *MockStoreAllKeysCooled) SetKeyRR(ctx context.Context, configID int64, idx int) error {
 	return nil
 }
 func (m *MockStoreAllKeysCooled) AddLog(ctx context.Context, e *model.LogEntry) error {

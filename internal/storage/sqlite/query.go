@@ -129,10 +129,10 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	var enabledInt int
 	var createdAtRaw, updatedAtRaw any // 使用any接受任意类型（兼容字符串、整数或RFC3339）
 
-	// 扫描channels表字段（不再包含api_key/api_keys/key_strategy，新增cooldown_until/cooldown_duration_ms）
+	// 扫描channels表字段（新增cooldown_until/cooldown_duration_ms/rr_key_index）
 	if err := scanner.Scan(&c.ID, &c.Name, &c.URL, &c.Priority,
 		&modelsStr, &modelRedirectsStr, &c.ChannelType, &enabledInt,
-		&c.CooldownUntil, &c.CooldownDurationMs,
+		&c.CooldownUntil, &c.CooldownDurationMs, &c.RRKeyIndex,
 		&createdAtRaw, &updatedAtRaw); err != nil {
 		return nil, err
 	}

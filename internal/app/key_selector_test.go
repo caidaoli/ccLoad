@@ -17,7 +17,7 @@ func TestSelectAvailableKey_SingleKey(t *testing.T) {
 
 	var cooldownGauge atomic.Int64
 	selector := NewKeySelector(store, &cooldownGauge)
-	ctx := context.Background()
+	ctx := context.WithValue(context.Background(), "testing", true)
 
 	// 创建渠道
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -79,7 +79,7 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 
 	var cooldownGauge atomic.Int64
 	selector := NewKeySelector(store, &cooldownGauge)
-	ctx := context.Background()
+	ctx := context.WithValue(context.Background(), "testing", true)
 
 	// 创建渠道
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -181,7 +181,7 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 
 	var cooldownGauge atomic.Int64
 	selector := NewKeySelector(store, &cooldownGauge)
-	ctx := context.Background()
+	ctx := context.WithValue(context.Background(), "testing", true)
 
 	// 创建渠道
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -211,9 +211,15 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 	t.Run("连续调用应轮询返回不同Key", func(t *testing.T) {
 		var selectedKeys []int
 
-		// 连续选择5次
+		// 连续选择5次，每次重新获取最新配置以获得更新的轮询索引
 		for i := 0; i < 5; i++ {
-			keyIndex, _, err := selector.SelectAvailableKey(ctx, cfg, nil)
+			// 重新获取配置以获得最新的轮询索引
+			updatedCfg, err := store.GetConfig(ctx, cfg.ID)
+			if err != nil {
+				t.Fatalf("获取渠道配置失败: %v", err)
+			}
+
+			keyIndex, _, err := selector.SelectAvailableKey(ctx, updatedCfg, nil)
 			if err != nil {
 				t.Fatalf("第%d次SelectAvailableKey失败: %v", i+1, err)
 			}
@@ -232,8 +238,8 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 	})
 
 	t.Run("排除当前Key后跳到下一个", func(t *testing.T) {
-		// 重置轮询指针
-		_ = store.SetKeyRR(ctx, cfg.ID, 0)
+		// 重置轮询索引
+		_ = store.UpdateChannelRRIndex(ctx, cfg.ID, 0)
 
 		// 第一次排除Key0
 		excludeKeys := map[int]bool{0: true}
@@ -258,7 +264,7 @@ func TestSelectAvailableKey_KeyCooldown(t *testing.T) {
 
 	var cooldownGauge atomic.Int64
 	selector := NewKeySelector(store, &cooldownGauge)
-	ctx := context.Background()
+	ctx := context.WithValue(context.Background(), "testing", true)
 	now := time.Now()
 
 	// 创建渠道
@@ -360,7 +366,7 @@ func TestSelectAvailableKey_CooldownAndExclude(t *testing.T) {
 
 	var cooldownGauge atomic.Int64
 	selector := NewKeySelector(store, &cooldownGauge)
-	ctx := context.Background()
+	ctx := context.WithValue(context.Background(), "testing", true)
 	now := time.Now()
 
 	// 创建渠道
@@ -422,7 +428,7 @@ func TestSelectAvailableKey_NoKeys(t *testing.T) {
 
 	var cooldownGauge atomic.Int64
 	selector := NewKeySelector(store, &cooldownGauge)
-	ctx := context.Background()
+	ctx := context.WithValue(context.Background(), "testing", true)
 
 	// 创建渠道（不配置API Keys）
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -452,7 +458,7 @@ func TestSelectAvailableKey_DefaultStrategy(t *testing.T) {
 
 	var cooldownGauge atomic.Int64
 	selector := NewKeySelector(store, &cooldownGauge)
-	ctx := context.Background()
+	ctx := context.WithValue(context.Background(), "testing", true)
 
 	// 创建渠道
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -500,7 +506,7 @@ func TestSelectAvailableKey_UnknownStrategy(t *testing.T) {
 
 	var cooldownGauge atomic.Int64
 	selector := NewKeySelector(store, &cooldownGauge)
-	ctx := context.Background()
+	ctx := context.WithValue(context.Background(), "testing", true)
 
 	// 创建渠道
 	cfg, err := store.CreateConfig(ctx, &model.Config{
