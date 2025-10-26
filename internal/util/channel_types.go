@@ -14,32 +14,32 @@ type ChannelTypeConfig struct {
 // ChannelTypes 全局渠道类型配置（单一数据源 - Single Source of Truth）
 var ChannelTypes = []ChannelTypeConfig{
 	{
-		Value:        "anthropic",
+		Value:        ChannelTypeAnthropic,
 		DisplayName:  "Claude Code",
 		Description:  "Claude Code兼容API",
 		PathPatterns: []string{"/v1/messages"},
-		MatchType:    "prefix",
+		MatchType:    MatchTypePrefix,
 	},
 	{
-		Value:        "codex",
+		Value:        ChannelTypeCodex,
 		DisplayName:  "Codex",
 		Description:  "Codex兼容API",
 		PathPatterns: []string{"/v1/responses"},
-		MatchType:    "prefix",
+		MatchType:    MatchTypePrefix,
 	},
 	{
-		Value:        "openai",
+		Value:        ChannelTypeOpenAI,
 		DisplayName:  "OpenAI",
 		Description:  "OpenAI API (GPT系列)",
 		PathPatterns: []string{"/v1/chat/completions", "/v1/completions", "/v1/embeddings"},
-		MatchType:    "prefix",
+		MatchType:    MatchTypePrefix,
 	},
 	{
-		Value:        "gemini",
+		Value:        ChannelTypeGemini,
 		DisplayName:  "Google Gemini",
 		Description:  "Google Gemini API",
 		PathPatterns: []string{"/v1beta/"},
-		MatchType:    "contains",
+		MatchType:    MatchTypeContains,
 	},
 }
 
@@ -96,6 +96,12 @@ const (
 	ChannelTypeGemini    = "gemini"
 )
 
+// 匹配类型常量（路径匹配方式）
+const (
+	MatchTypePrefix   = "prefix"   // 前缀匹配（strings.HasPrefix）
+	MatchTypeContains = "contains" // 包含匹配（strings.Contains）
+)
+
 // DetectChannelTypeFromPath 根据请求路径自动检测渠道类型
 // 使用 ChannelTypes 配置进行统一检测，遵循DRY原则
 func DetectChannelTypeFromPath(path string) string {
@@ -111,11 +117,11 @@ func DetectChannelTypeFromPath(path string) string {
 func matchPath(path string, patterns []string, matchType string) bool {
 	for _, pattern := range patterns {
 		switch matchType {
-		case "prefix":
+		case MatchTypePrefix:
 			if strings.HasPrefix(path, pattern) {
 				return true
 			}
-		case "contains":
+		case MatchTypeContains:
 			if strings.Contains(path, pattern) {
 				return true
 			}
