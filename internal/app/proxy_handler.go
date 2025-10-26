@@ -1,18 +1,18 @@
 package app
 
 import (
-    "ccLoad/internal/config"
-    "ccLoad/internal/model"
-    "ccLoad/internal/util"
-    "context"
-    "errors"
-    "fmt"
-    "io"
-    "net/http"
-    "os"
-    "strconv"
-    "strings"
-    "time"
+	"ccLoad/internal/config"
+	"ccLoad/internal/model"
+	"ccLoad/internal/util"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
@@ -48,26 +48,26 @@ func (s *Server) acquireConcurrencySlot(c *gin.Context) (release func(), ok bool
 // ✅ P2重构: 从proxy.go提取，遵循SRP原则
 // 返回：(originalModel, body, isStreaming, error)
 func parseIncomingRequest(c *gin.Context) (string, []byte, bool, error) {
-    requestPath := c.Request.URL.Path
-    requestMethod := c.Request.Method
+	requestPath := c.Request.URL.Path
+	requestMethod := c.Request.Method
 
-    // 读取请求体（带上限，防止大包打爆内存）
-    // 默认 2MB，可通过 CCLOAD_MAX_BODY_BYTES 调整
-    maxBody := int64(config.DefaultMaxBodyBytes)
-    if v := os.Getenv("CCLOAD_MAX_BODY_BYTES"); v != "" {
-        if n, err := strconv.Atoi(v); err == nil && n > 0 {
-            maxBody = int64(n)
-        }
-    }
-    limited := io.LimitReader(c.Request.Body, maxBody+1)
-    all, err := io.ReadAll(limited)
-    if err != nil {
-        return "", nil, false, fmt.Errorf("failed to read body: %w", err)
-    }
-    _ = c.Request.Body.Close()
-    if int64(len(all)) > maxBody {
-        return "", nil, false, errBodyTooLarge
-    }
+	// 读取请求体（带上限，防止大包打爆内存）
+	// 默认 2MB，可通过 CCLOAD_MAX_BODY_BYTES 调整
+	maxBody := int64(config.DefaultMaxBodyBytes)
+	if v := os.Getenv("CCLOAD_MAX_BODY_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxBody = int64(n)
+		}
+	}
+	limited := io.LimitReader(c.Request.Body, maxBody+1)
+	all, err := io.ReadAll(limited)
+	if err != nil {
+		return "", nil, false, fmt.Errorf("failed to read body: %w", err)
+	}
+	_ = c.Request.Body.Close()
+	if int64(len(all)) > maxBody {
+		return "", nil, false, errBodyTooLarge
+	}
 
 	var reqModel struct {
 		Model string `json:"model"`
@@ -83,16 +83,16 @@ func parseIncomingRequest(c *gin.Context) (string, []byte, bool, error) {
 		originalModel = extractModelFromPath(requestPath)
 	}
 
-    // 对于GET请求，如果无法提取模型名称，使用通配符
-    if originalModel == "" {
-        if requestMethod == http.MethodGet {
-            originalModel = "*"
-        } else {
-            return "", nil, false, fmt.Errorf("invalid JSON or missing model")
-        }
-    }
+	// 对于GET请求，如果无法提取模型名称，使用通配符
+	if originalModel == "" {
+		if requestMethod == http.MethodGet {
+			originalModel = "*"
+		} else {
+			return "", nil, false, fmt.Errorf("invalid JSON or missing model")
+		}
+	}
 
-    return originalModel, all, isStreaming, nil
+	return originalModel, all, isStreaming, nil
 }
 
 // ============================================================================
@@ -148,15 +148,15 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 	}
 
 	// 解析请求
-    originalModel, all, isStreaming, err := parseIncomingRequest(c)
-    if err != nil {
-        if errors.Is(err, errBodyTooLarge) {
-            c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": err.Error()})
-            return
-        }
-        c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-        return
-    }
+	originalModel, all, isStreaming, err := parseIncomingRequest(c)
+	if err != nil {
+		if errors.Is(err, errBodyTooLarge) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	// 设置超时上下文
 	timeout := parseTimeout(c.Request.URL.Query(), c.Request.Header)
@@ -210,13 +210,13 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 
 		// 处理"所有Key都在冷却中"的特殊错误
 		if err != nil && strings.Contains(err.Error(), "channel keys unavailable") {
-            // 触发渠道级别冷却，防止后续请求重复尝试该渠道
-            // 使用503状态码表示服务不可用（所有Key冷却）
-            _, _ = s.store.BumpChannelCooldown(ctx, cfg.ID, time.Now(), 503)
-            // 精确计数（P1）：记录渠道进入冷却
-            s.noteChannelCooldown(cfg.ID, true)
-            continue // 尝试下一个渠道
-        }
+			// 触发渠道级别冷却，防止后续请求重复尝试该渠道
+			// 使用503状态码表示服务不可用（所有Key冷却）
+			_, _ = s.store.BumpChannelCooldown(ctx, cfg.ID, time.Now(), 503)
+			// 精确计数（P1）：记录渠道进入冷却
+			s.noteChannelCooldown(cfg.ID, true)
+			continue // 尝试下一个渠道
+		}
 
 		// 成功或需要直接返回客户端的情况
 		if result != nil {

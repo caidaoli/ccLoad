@@ -36,10 +36,10 @@ func TestAuthErrorInitialCooldown(t *testing.T) {
 			expectedMaxDur: 1 * time.Second,
 		},
 		{
-			name:           "500服务器错误-初始冷却1秒",
+			name:           "500服务器错误-初始冷却2分钟",
 			statusCode:     500,
-			expectedMinDur: 1 * time.Second,
-			expectedMaxDur: 1 * time.Second,
+			expectedMinDur: 2 * time.Minute,
+			expectedMaxDur: 2 * time.Minute,
 		},
 	}
 
@@ -226,28 +226,28 @@ func TestMixedErrorCodesCooldown(t *testing.T) {
 		t.Fatalf("创建测试渠道失败: %v", err)
 	}
 
-	// 场景：先遇到500错误（1秒起），然后遇到401错误（应该还是5分钟）
+	// 场景：先遇到500错误（2分钟起），然后遇到401错误（应该还是5分钟）
 	duration1, err := store.BumpChannelCooldown(ctx, created.ID, now, 500)
 	if err != nil {
 		t.Fatalf("首次500错误失败: %v", err)
 	}
 
-	if duration1 != 1*time.Second {
-		t.Errorf("500错误初始冷却时间错误: 期望1s，实际%v", duration1)
+	if duration1 != 2*time.Minute {
+		t.Errorf("500错误初始冷却时间错误: 期望2分钟，实际%v", duration1)
 	}
 
 	// 模拟时间推移后遇到401错误
-	now2 := now.Add(2 * time.Second)
+	now2 := now.Add(3 * time.Minute)
 	duration2, err := store.BumpChannelCooldown(ctx, created.ID, now2, 401)
 	if err != nil {
 		t.Fatalf("后续401错误失败: %v", err)
 	}
 
-	// 因为之前有1秒的冷却记录，新的401错误应该基于历史记录进行指数退避
-	// 预期: 1s * 2 = 2s（但401首次应该是5分钟）
+	// 因为之前有2分钟的冷却记录，新的401错误应该基于历史记录进行指数退避
+	// 预期: 2min * 2 = 4min（但401首次应该是5分钟）
 	// 实际逻辑：有历史记录则基于历史翻倍，无历史则按状态码初始化
-	// 这里因为有历史duration_ms，所以是翻倍逻辑：1s * 2 = 2s
-	expectedDuration := 2 * time.Second
+	// 这里因为有历史duration_ms，所以是翻倍逻辑：2min * 2 = 4min
+	expectedDuration := 4 * time.Minute
 	tolerance := 100 * time.Millisecond
 
 	if duration2 < expectedDuration-tolerance || duration2 > expectedDuration+tolerance {
@@ -255,7 +255,7 @@ func TestMixedErrorCodesCooldown(t *testing.T) {
 			expectedDuration, duration2)
 	}
 
-	t.Logf("✅ 500错误(1s) → 401错误(%v) - 使用指数退避而非重置", duration2)
+	t.Logf("✅ 500错误(2min) → 401错误(%v) - 使用指数退避而非重置", duration2)
 }
 
 // TestConcurrentCooldownUpdates 验证并发场景下冷却机制的数据一致性

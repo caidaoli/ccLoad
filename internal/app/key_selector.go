@@ -132,7 +132,6 @@ func (ks *KeySelector) selectRoundRobin(ctx context.Context, cfg *model.Config, 
 			continue // Key冷却中，跳过
 		}
 
-		
 		return idx, selectedKey.APIKey, nil
 	}
 
@@ -141,13 +140,13 @@ func (ks *KeySelector) selectRoundRobin(ctx context.Context, cfg *model.Config, 
 
 // MarkKeyError 标记Key错误，触发指数退避冷却
 func (ks *KeySelector) MarkKeyError(ctx context.Context, channelID int64, keyIndex int, statusCode int) error {
-    now := time.Now()
-    _, err := ks.store.BumpKeyCooldown(ctx, channelID, keyIndex, now, statusCode)
-    if err != nil {
-        return err
-    }
+	now := time.Now()
+	_, err := ks.store.BumpKeyCooldown(ctx, channelID, keyIndex, now, statusCode)
+	if err != nil {
+		return err
+	}
 
-    return nil
+	return nil
 }
 
 // MarkKeySuccess 标记Key成功，重置冷却状态

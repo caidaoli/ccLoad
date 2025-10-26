@@ -7,10 +7,8 @@ import (
 	"ccLoad/internal/util"
 	"compress/gzip"
 	"context"
-	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	neturl "net/url"
 	"strconv"
@@ -107,79 +105,6 @@ func isStreamingRequest(path string, body []byte) bool {
 	}
 	_ = sonic.Unmarshal(body, &reqModel)
 	return reqModel.Stream
-}
-
-// ============================================================================
-// 错误分类工具函数
-// ============================================================================
-
-// classifyError 分类错误类型，返回状态码和是否应该重试
-// ✅ P0修复（2025-10-13）：移除缓存机制，简化逻辑（KISS原则）
-// 性能优化：快速路径 + 类型断言，99%的错误在快速路径返回
-func classifyError(err error) (statusCode int, shouldRetry bool) {
-	if err == nil {
-		return 200, false
-	}
-
-	// 快速路径1：优先检查最常见的错误类型（避免字符串操作）
-	// Context canceled - 客户端主动取消，不应重试（最常见）
-	if errors.Is(err, context.Canceled) {
-		return StatusClientClosedRequest, false
-	}
-
-	// ⚠️ Context deadline exceeded 需要区分两种情况：
-	// 1. 客户端超时（来自客户端设置的超时）- 不应重试
-	// 2. 上游服务器响应慢导致的超时 - 应该重试其他渠道
-	// ✅ P0修复 (2025-10-13): 默认将DeadlineExceeded视为上游超时（可重试）
-	// 设计原则：
-	// - 客户端主动取消通常是context.Canceled，而不是DeadlineExceeded
-	// - 保守策略：宁可多重试（提升可用性），也不要漏掉上游超时（导致可用性下降）
-	// - 兼容性：不依赖特定的错误消息格式，适配Go不同版本和HTTP客户端实现
-	if errors.Is(err, context.DeadlineExceeded) {
-		// 所有DeadlineExceeded错误默认为上游超时，应该重试其他渠道
-		return 504, true // ✅ Gateway Timeout，触发渠道切换
-	}
-
-	// 快速路径2：检查系统级错误（使用类型断言替代字符串匹配）
-	var netErr net.Error
-	if errors.As(err, &netErr) {
-		if netErr.Timeout() {
-			return 504, false // Gateway Timeout
-		}
-	}
-
-	// 慢速路径：字符串匹配（<1%的错误会到达这里）
-	return classifyErrorByString(err.Error())
-}
-
-// classifyErrorByString 通过字符串匹配分类网络错误
-// ✅ P0修复（2025-10-13）：提取独立函数，遵循SRP原则
-func classifyErrorByString(errStr string) (int, bool) {
-	errLower := strings.ToLower(errStr)
-
-	// Connection reset by peer - 不应重试
-	if strings.Contains(errLower, "connection reset by peer") ||
-		strings.Contains(errLower, "broken pipe") {
-		return StatusConnectionReset, false
-	}
-
-	// Connection refused - 应该重试其他渠道
-	if strings.Contains(errLower, "connection refused") {
-		return 502, true
-	}
-
-	// 其他常见的网络连接错误也应该重试
-	if strings.Contains(errLower, "no such host") ||
-		strings.Contains(errLower, "host unreachable") ||
-		strings.Contains(errLower, "network unreachable") ||
-		strings.Contains(errLower, "connection timeout") ||
-		strings.Contains(errLower, "no route to host") {
-		return 502, true
-	}
-
-	// ✅ P2-3 修复：使用负值错误码，避免与HTTP状态码混淆
-	// 其他网络错误 - 可以重试
-	return ErrCodeNetworkRetryable, true
 }
 
 // ============================================================================
@@ -417,13 +342,13 @@ func decompressGzip(data []byte) ([]byte, error) {
 // parseTimeout 从query参数或header中解析超时时间
 func parseTimeout(q map[string][]string, h http.Header) time.Duration {
 	// 优先 query: timeout_ms / timeout_s
-	if v := first(q, "timeout_ms"); v != "" {
-		if ms, err := strconv.Atoi(v); err == nil && ms > 0 {
+	if vs, ok := q["timeout_ms"]; ok && len(vs) > 0 && vs[0] != "" {
+		if ms, err := strconv.Atoi(vs[0]); err == nil && ms > 0 {
 			return time.Duration(ms) * time.Millisecond
 		}
 	}
-	if v := first(q, "timeout_s"); v != "" {
-		if sec, err := strconv.Atoi(v); err == nil && sec > 0 {
+	if vs, ok := q["timeout_s"]; ok && len(vs) > 0 && vs[0] != "" {
+		if sec, err := strconv.Atoi(vs[0]); err == nil && sec > 0 {
 			return time.Duration(sec) * time.Second
 		}
 	}
@@ -441,28 +366,22 @@ func parseTimeout(q map[string][]string, h http.Header) time.Duration {
 	return 0
 }
 
-// first 获取query参数的第一个值
-func first(q map[string][]string, k string) string {
-	if vs, ok := q[k]; ok && len(vs) > 0 {
-		return vs[0]
-	}
-	return ""
-}
-
 // ============================================================================
 // Gemini相关工具函数
 // ============================================================================
 
 // formatModelDisplayName 将模型ID转换为友好的显示名称
 func formatModelDisplayName(modelID string) string {
-	// 简单的格式化：移除日期后缀，首字母大写
-	// 例如：gemini-2.5-flash → Gemini 2.5 Flash
+	// 简单的格式化:移除日期后缀,首字母大写
+	// 例如:gemini-2.5-flash → Gemini 2.5 Flash
 	parts := strings.Split(modelID, "-")
 	var words []string
 	for _, part := range parts {
-		// 跳过日期格式（8位数字）
-		if len(part) == 8 && isNumeric(part) {
-			continue
+		// 跳过日期格式(8位纯数字)
+		if len(part) == 8 {
+			if _, err := strconv.Atoi(part); err == nil {
+				continue
+			}
 		}
 		// 首字母大写
 		if len(part) > 0 {
@@ -470,14 +389,4 @@ func formatModelDisplayName(modelID string) string {
 		}
 	}
 	return strings.Join(words, " ")
-}
-
-// isNumeric 检查字符串是否全是数字
-func isNumeric(s string) bool {
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return true
 }

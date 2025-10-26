@@ -69,8 +69,8 @@ func (s *Server) handleRequestError(
 		util.SafePrintf("⏱️  [上游超时] 渠道ID=%d, 超时时长=%.2fs, 将触发冷却",
 			cfg.ID, duration)
 	} else {
-		// 其他错误：使用标准分类器
-		statusCode, _ = classifyError(err)
+		// 其他错误：使用统一分类器
+		statusCode, _, _ = util.ClassifyError(err)
 	}
 
 	return &fwResult{
