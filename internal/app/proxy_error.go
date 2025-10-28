@@ -147,8 +147,15 @@ func (s *Server) handleProxyErrorResponse(
 ) (*proxyResult, bool, bool) {
 	// ✅ 修复：使用 actualModel 而非 reqCtx.originalModel
 	isStreaming := res.FirstByteTime > 0 // 根据首字节时间判断是否为流式请求
+
+	// ✅ 日志改进 (2025-10-28): 明确标识上游返回的499错误
+	errMsg := ""
+	if res.Status == 499 {
+		errMsg = "upstream returned 499 (not client cancel)"
+	}
+
 	s.addLogAsync(buildLogEntry(actualModel, &cfg.ID, res.Status,
-		duration, isStreaming, selectedKey, res, ""))
+		duration, isStreaming, selectedKey, res, errMsg))
 
 	action, _ := s.handleProxyError(ctx, cfg, keyIndex, res, nil)
 	if action == cooldown.ActionReturnClient {

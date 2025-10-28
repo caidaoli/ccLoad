@@ -156,8 +156,10 @@ type APIKey struct {
   - **来源1**: 下游客户端主动取消请求（`context.Canceled`）→ 分类为**客户端错误**，**不重试**任何渠道
   - **来源2**: 上游API返回HTTP 499响应（罕见）→ 分类为**渠道级错误**，**重试**其他可用渠道
   - **日志区分**:
-    - `"client closed request (context canceled)"` - 客户端取消
-    - `"upstream status 499 (client closed request)"` - 上游返回
+    - `"context canceled"` - 下游客户端取消（每次Key尝试记录）
+    - `"client closed request (context canceled)"` - 下游客户端取消（最终失败记录）
+    - `"upstream returned 499 (not client cancel)"` - 上游API返回（每次渠道尝试记录）
+    - `"upstream status 499 (client closed request)"` - 上游API返回（最终失败记录）
 - **指数退避策略**:
   - 渠道级严重错误(500/502/503/504/520/521/524): 初始2分钟,后续翻倍至30分钟上限
   - 认证错误(401/402/403): 初始5分钟,后续翻倍至30分钟上限
