@@ -128,6 +128,7 @@ func (s *SQLiteStore) migrateLogDB(ctx context.Context) error {
 		"CREATE INDEX IF NOT EXISTS idx_logs_time_model ON logs(time, model)",
 		"CREATE INDEX IF NOT EXISTS idx_logs_time_channel ON logs(time, channel_id)",
 		"CREATE INDEX IF NOT EXISTS idx_logs_time_status ON logs(time, status_code)",
+		"CREATE INDEX IF NOT EXISTS idx_logs_streaming_firstbyte ON logs(is_streaming, first_byte_time) WHERE is_streaming = 1 AND first_byte_time > 0",
 	}
 
 	for _, indexSQL := range indexes {

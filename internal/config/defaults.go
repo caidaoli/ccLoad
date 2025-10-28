@@ -11,10 +11,10 @@ const (
 	DefaultMaxConcurrency = 1000
 
 	// DefaultMaxKeyRetries 单个渠道内最大Key重试次数
-    DefaultMaxKeyRetries = 3
+	DefaultMaxKeyRetries = 3
 
-    // DefaultMaxBodyBytes 默认最大请求体字节数（用于代理入口的解析）
-    DefaultMaxBodyBytes = 2 * 1024 * 1024 // 2MB
+	// DefaultMaxBodyBytes 默认最大请求体字节数（用于代理入口的解析）
+	DefaultMaxBodyBytes = 2 * 1024 * 1024 // 2MB
 )
 
 // HTTP客户端配置常量
@@ -64,12 +64,12 @@ const (
 	// LogBatchSize 批量写入日志的大小（条数）
 	LogBatchSize = 100
 
-    // LogBatchTimeout 批量写入超时时间（秒）
-    LogBatchTimeout = 1
+	// LogBatchTimeout 批量写入超时时间（秒）
+	LogBatchTimeout = 1
 
-    // LogFlushTimeoutMs 单次日志刷盘的超时时间（毫秒）
-    // 关停期间需要尽快完成，避免测试和生产关停卡顿
-    LogFlushTimeoutMs = 300
+	// LogFlushTimeoutMs 单次日志刷盘的超时时间（毫秒）
+	// 关停期间需要尽快完成，避免测试和生产关停卡顿
+	LogFlushTimeoutMs = 300
 
 	// LogDropAlertThreshold 日志丢弃告警阈值（条数）
 	LogDropAlertThreshold = 1000

@@ -720,7 +720,11 @@ func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *mod
 			COALESCE(model, '') AS model,
 			SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success,
 			SUM(CASE WHEN status_code < 200 OR status_code >= 300 THEN 1 ELSE 0 END) AS error,
-			COUNT(*) AS total
+			COUNT(*) AS total,
+			ROUND(
+				AVG(CASE WHEN is_streaming = 1 AND first_byte_time > 0 THEN first_byte_time ELSE NULL END),
+				3
+			) as avg_first_byte_time
 		FROM logs`
 
 	// time字段现在是BIGINT毫秒时间戳
@@ -744,10 +748,15 @@ func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *mod
 
 	for rows.Next() {
 		var entry model.StatsEntry
+		var avgFirstByteTime sql.NullFloat64
 		err := rows.Scan(&entry.ChannelID, &entry.Model,
-			&entry.Success, &entry.Error, &entry.Total)
+			&entry.Success, &entry.Error, &entry.Total, &avgFirstByteTime)
 		if err != nil {
 			return nil, err
+		}
+
+		if avgFirstByteTime.Valid {
+			entry.AvgFirstByteTimeSeconds = &avgFirstByteTime.Float64
 		}
 
 		if entry.ChannelID != nil {

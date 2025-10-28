@@ -135,6 +135,10 @@
                       成功率
                       <span class="sort-indicator" id="sort-success_rate"></span>
                     </th>
+                    <th class="sortable" data-column="avg_first_byte_time" onclick="sortTable('avg_first_byte_time')">
+                      平均首字时间
+                      <span class="sort-indicator" id="sort-avg_first_byte_time"></span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody id="stats_tbody"></tbody>
@@ -150,6 +154,9 @@
 
 
   <script>
+    // 常量定义
+    const STATS_TABLE_COLUMNS = 7; // 统计表列数
+    
     let statsData = null;
     let sortState = {
       column: null,
@@ -192,7 +199,7 @@
       const tbody = document.getElementById('stats_tbody');
       tbody.innerHTML = `
         <tr>
-          <td colspan="6" class="loading-state">
+          <td colspan="${STATS_TABLE_COLUMNS}" class="loading-state">
             <div class="loading-spinner" style="margin: 0 auto var(--space-2)"></div>
             正在加载统计数据...
           </td>
@@ -209,7 +216,7 @@
       const tbody = document.getElementById('stats_tbody');
       tbody.innerHTML = `
         <tr>
-          <td colspan="6" class="empty-state">
+          <td colspan="${STATS_TABLE_COLUMNS}" class="empty-state">
             <svg class="w-12 h-12 mx-auto mb-4" style="color: var(--error-400);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.864-.833-2.634 0L4.18 16.5c-.77.833.192 2.5 1.732 2.5z"/>
             </svg>
@@ -334,6 +341,10 @@
             valueA = a.total > 0 ? (a.success / a.total) : 0;
             valueB = b.total > 0 ? (b.success / b.total) : 0;
             break;
+          case 'avg_first_byte_time':
+            valueA = a.avg_first_byte_time_seconds || 0;
+            valueB = b.avg_first_byte_time_seconds || 0;
+            break;
           default:
             return 0;
         }
@@ -355,7 +366,7 @@
       if (!statsData || !statsData.stats || statsData.stats.length === 0) {
         tbody.innerHTML = `
           <tr>
-            <td colspan="6" class="empty-state">
+            <td colspan="${STATS_TABLE_COLUMNS}" class="empty-state">
               <svg class="w-12 h-12 mx-auto mb-4" style="color: var(--neutral-400);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
               </svg>
@@ -379,10 +390,16 @@
         if (successRate >= 95) successRateClass += ' high';
         else if (successRate < 80) successRateClass += ' low';
         
-        const modelDisplay = entry.model ? 
-          `<span class="model-tag">${escapeHtml(entry.model)}</span>` : 
+        const modelDisplay = entry.model ?
+          `<span class="model-tag">${escapeHtml(entry.model)}</span>` :
           '<span style="color: var(--neutral-500);">未知模型</span>';
-        
+
+        // 格式化平均首字响应时间（保留2位小数，显示"秒"）
+        const avgFirstByteTime = entry.avg_first_byte_time_seconds || 0;
+        const avgFirstByteTimeText = avgFirstByteTime > 0 ?
+          `${avgFirstByteTime.toFixed(2)}秒` :
+          '<span style="color: var(--neutral-400);">--</span>';
+
         tr.innerHTML = `
           <td>
             <a href="/web/channels.html?id=${entry.channel_id}" class="config-name channel-link" title="跳转到渠道管理">
@@ -399,6 +416,9 @@
             <div class="progress-bar">
               <div class="progress-fill" style="width: ${successRate}%"></div>
             </div>
+          </td>
+          <td style="text-align: center;">
+            ${avgFirstByteTimeText}
           </td>
         `;
         tbody.appendChild(tr);

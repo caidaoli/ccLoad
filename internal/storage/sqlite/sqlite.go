@@ -101,8 +101,9 @@ func generateLogDBPath(mainDBPath string) string {
 // 设计原则 (Fail-Fast): 启动时立即验证，避免运行时安全风险
 //
 // 攻击场景示例:
-//   export SQLITE_JOURNAL_MODE="DELETE;DROP TABLE channels;--"
-//   可能导致 SQL 注入（取决于驱动解析方式）
+//
+//	export SQLITE_JOURNAL_MODE="DELETE;DROP TABLE channels;--"
+//	可能导致 SQL 注入（取决于驱动解析方式）
 //
 // 防御策略:
 //   - 白名单验证所有允许的 Journal 模式

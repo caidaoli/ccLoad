@@ -365,4 +365,3 @@ func (s *Server) handleDeleteChannel(c *gin.Context, id int64) {
 	// 数据库级联删除会自动清理冷却数据（无需手动清理缓存）
 	c.Status(http.StatusNoContent)
 }
-

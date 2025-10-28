@@ -288,7 +288,6 @@ func (m *MockStore) ResetKeyCooldown(ctx context.Context, channelID int64, keyIn
 	return nil
 }
 
-
 func (m *MockStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 	return nil
 }
@@ -318,7 +317,6 @@ func (m *MockStore) GetEnabledChannelsByModel(ctx context.Context, model string)
 func (m *MockStore) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*model.Config, error) {
 	return nil, nil
 }
-
 
 // ==================== P2 边界测试：多Key渠道所有Key冷却场景 ====================
 
@@ -472,7 +470,6 @@ func (m *MockStoreAllKeysCooled) GetKeyCooldownUntil(ctx context.Context, config
 	return time.Time{}, false
 }
 
-
 // 实现其他Store接口（使用默认MockStore的实现）
 func (m *MockStoreAllKeysCooled) GetConfig(ctx context.Context, id int64) (*model.Config, error) {
 	return nil, nil
@@ -580,7 +577,6 @@ func (m *MockStoreAllKeysCooled) GetEnabledChannelsByModel(ctx context.Context, 
 func (m *MockStoreAllKeysCooled) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*model.Config, error) {
 	return nil, nil
 }
-
 
 // contains 检查字符串是否包含子串（辅助函数）
 func contains(s, substr string) bool {
