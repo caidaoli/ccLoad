@@ -78,8 +78,8 @@ func CalculateBackoffDuration(prevMs int64, until time.Time, now time.Time, stat
 			prev = until.Sub(now)
 		} else {
 			// 首次错误：根据状态码确定初始冷却时间（直接返回，不翻倍）
-			// 服务器错误（500/502/503/504/521/524）：2分钟冷却，指数退避（1s → 2s → 4s → ...）
-			if statusCode != nil && (*statusCode == 500 || *statusCode == 502 || *statusCode == 503 || *statusCode == 504 || *statusCode == 521 || *statusCode == 524) {
+			// 服务器错误（500/502/503/504/520/521/524）：2分钟冷却，指数退避（1s → 2s → 4s → ...）
+			if statusCode != nil && (*statusCode == 500 || *statusCode == 502 || *statusCode == 503 || *statusCode == 504 || *statusCode == 520 || *statusCode == 521 || *statusCode == 524) {
 				return ServerErrorInitialCooldown
 			}
 			// 认证错误（401/402/403）：5分钟冷却，减少无效重试

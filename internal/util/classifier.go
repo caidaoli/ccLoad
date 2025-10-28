@@ -68,6 +68,8 @@ func ClassifyHTTPStatus(statusCode int) ErrorLevel {
 		return ErrorLevelChannel
 	case 504: // Gateway Timeout
 		return ErrorLevelChannel
+	case 520: // Web Server Returned an Unknown Error (Cloudflare) - 源服务器返回未知错误
+		return ErrorLevelChannel
 	case 521: // Web Server Is Down (Cloudflare) - 源服务器关闭
 		return ErrorLevelChannel
 	case 524: // A Timeout Occurred (Cloudflare) - 连接超时
