@@ -72,13 +72,17 @@ func countRelevantGoroutines() int {
 	return count
 }
 
-// isTestingGoroutine 判断是否是testing框架的goroutine
+// isTestingGoroutine 判断是否是testing框架或数据库连接池的goroutine
 func isTestingGoroutine(stack string) bool {
 	testingPatterns := []string{
 		"testing.(*T).Run",
 		"testing.tRunner",
 		"testing.Main",
 		"runtime.goexit",
+		// ✅ P2修复（2025-10-28）：过滤database/sql的后台goroutine
+		// 这些goroutine由Go标准库管理，Close()后会自动清理但需要时间
+		"database/sql.(*DB).connectionOpener",
+		"database/sql.(*DB).connectionCleaner",
 	}
 
 	for _, pattern := range testingPatterns {

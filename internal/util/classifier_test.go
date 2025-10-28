@@ -1,6 +1,9 @@
 package util
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestClassifyHTTPStatusWithBody(t *testing.T) {
 	tests := []struct {
@@ -208,6 +211,8 @@ func TestClassifyHTTPStatus(t *testing.T) {
 		{403, ErrorLevelKey, "Key级错误"},
 		{404, ErrorLevelClient, "客户端错误"},
 		{429, ErrorLevelKey, "Key级限流"},
+		// ✅ P3修复（2025-10-28）：499 HTTP响应应触发渠道级重试
+		{499, ErrorLevelChannel, "499来自HTTP响应时，说明上游API返回，应重试其他渠道"},
 		{500, ErrorLevelChannel, "渠道级错误"},
 		{502, ErrorLevelChannel, "渠道级错误"},
 		{503, ErrorLevelChannel, "渠道级错误"},
@@ -222,6 +227,53 @@ func TestClassifyHTTPStatus(t *testing.T) {
 			if result != tt.expected {
 				t.Errorf("状态码 %d: 期望 %v, 实际 %v (%s)", tt.statusCode, tt.expected, result, tt.reason)
 			}
+		})
+	}
+}
+
+// ✅ P3修复（2025-10-28）：测试context.Canceled与HTTP 499的区分
+func TestClassifyError_ContextCanceled(t *testing.T) {
+	tests := []struct {
+		name           string
+		err            error
+		expectedStatus int
+		expectedLevel  ErrorLevel
+		expectedRetry  bool
+		reason         string
+	}{
+		{
+			name:           "context_canceled_from_client",
+			err:            context.Canceled,
+			expectedStatus: 499,
+			expectedLevel:  ErrorLevelClient,
+			expectedRetry:  false,
+			reason:         "下游客户端取消请求（context.Canceled）应返回499+ErrorLevelClient，不重试",
+		},
+		{
+			name:           "context_deadline_exceeded",
+			err:            context.DeadlineExceeded,
+			expectedStatus: 504,
+			expectedLevel:  ErrorLevelChannel,
+			expectedRetry:  true,
+			reason:         "上游超时（context.DeadlineExceeded）应返回504+ErrorLevelChannel，可重试其他渠道",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			statusCode, errorLevel, shouldRetry := ClassifyError(tt.err)
+
+			if statusCode != tt.expectedStatus {
+				t.Errorf("❌ 状态码错误: 期望 %d, 实际 %d (%s)", tt.expectedStatus, statusCode, tt.reason)
+			}
+			if errorLevel != tt.expectedLevel {
+				t.Errorf("❌ 错误级别错误: 期望 %v, 实际 %v (%s)", tt.expectedLevel, errorLevel, tt.reason)
+			}
+			if shouldRetry != tt.expectedRetry {
+				t.Errorf("❌ 重试标志错误: 期望 %v, 实际 %v (%s)", tt.expectedRetry, shouldRetry, tt.reason)
+			}
+
+			t.Logf("✅ %s - 状态码:%d, 错误级别:%v, 重试:%v", tt.reason, statusCode, errorLevel, shouldRetry)
 		})
 	}
 }

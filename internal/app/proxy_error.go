@@ -49,9 +49,7 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *model.Config, keyInd
 	// 根据冷却管理器的决策执行相应动作
 	switch action {
 	case cooldown.ActionRetryKey:
-		// Key级错误：同时标记Key选择器（双重记录，便于选择器快速判断）
-		_ = s.keySelector.MarkKeyError(ctx, cfg.ID, keyIndex, statusCode)
-		// 精确计数（P1）：记录Key进入冷却
+		// Key级错误：冷却已由 cooldownManager 处理，无需额外操作
 		return action, true
 
 	case cooldown.ActionRetryChannel:
@@ -116,7 +114,7 @@ func (s *Server) handleProxySuccess(
 ) (*proxyResult, bool, bool) {
 	// ✅ P2重构：使用 cooldownManager 清除冷却状态
 	_ = s.cooldownManager.ClearChannelCooldown(ctx, cfg.ID)
-	_ = s.keySelector.MarkKeySuccess(ctx, cfg.ID, keyIndex)
+	_ = s.cooldownManager.ClearKeyCooldown(ctx, cfg.ID, keyIndex)
 	// 精确计数（P1）：记录状态恢复
 
 	// 记录成功日志

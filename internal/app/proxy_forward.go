@@ -273,8 +273,8 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 
 	// Key重试循环
 	for i := 0; i < maxKeyRetries; i++ {
-		// 选择可用的API Key
-		keyIndex, selectedKey, err := s.keySelector.SelectAvailableKey(ctx, cfg, triedKeys)
+		// 选择可用的API Key（✅ P0重构：直接传入apiKeys，避免重复查询）
+		keyIndex, selectedKey, err := s.keySelector.SelectAvailableKey(cfg.ID, apiKeys, triedKeys)
 		if err != nil {
 			// 所有Key都在冷却中，返回特殊错误标识
 			return nil, fmt.Errorf("channel keys unavailable: %w", err)

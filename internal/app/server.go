@@ -58,8 +58,9 @@ type Server struct {
 	logDropCount atomic.Int64         // 日志丢弃计数器（P1修复 2025-10-05）
 
 	// ✅ P0修复（2025-10-13）：优雅关闭机制
-	shutdownCh chan struct{}  // 关闭信号channel
-	wg         sync.WaitGroup // 等待所有后台goroutine结束
+	shutdownCh     chan struct{}  // 关闭信号channel
+	isShuttingDown atomic.Bool    // ✅ P2修复（2025-10-28）：shutdown标志，防止向已关闭channel写入
+	wg             sync.WaitGroup // 等待所有后台goroutine结束
 }
 
 func NewServer(store storage.Store) *Server {
@@ -211,8 +212,8 @@ func NewServer(store storage.Store) *Server {
 	// ✅ P2重构：初始化冷却管理器（统一管理渠道级和Key级冷却）
 	s.cooldownManager = cooldown.NewManager(store)
 
-	// 初始化Key选择器
-	s.keySelector = NewKeySelector(store, nil)
+	// ✅ P0重构：初始化Key选择器（移除store依赖，避免重复查询）
+	s.keySelector = NewKeySelector(nil)
 
 	// ✅ P0修复（2025-10-13）：启动日志工作协程（支持优雅关闭）
 	for i := 0; i < s.logWorkers; i++ {
@@ -522,6 +523,7 @@ func (s *Server) tokenCleanupLoop() {
 
 // 异步日志工作协程
 // ✅ P0修复（2025-10-13）：支持优雅关闭
+// ✅ P2优化（2025-10-28）：简化shutdown逻辑，利用channel关闭特性
 func (s *Server) logWorker() {
 	defer s.wg.Done()
 
@@ -531,7 +533,16 @@ func (s *Server) logWorker() {
 
 	for {
 		select {
-		case entry := <-s.logChan:
+		case entry, ok := <-s.logChan:
+			// ✅ P2修复：channel关闭时，ok=false，立即flush并退出
+			if !ok {
+				// logChan已关闭，flush剩余日志并退出
+				if len(batch) > 0 {
+					s.flushLogs(batch)
+				}
+				return
+			}
+
 			batch = append(batch, entry)
 			if len(batch) >= config.LogBatchSize {
 				s.flushLogs(batch)
@@ -540,37 +551,25 @@ func (s *Server) logWorker() {
 			timer.Reset(config.SecondsToDuration(config.LogBatchTimeout))
 
 		case <-timer.C:
-			if len(batch) > 0 {
-				s.flushLogs(batch)
-				batch = batch[:0]
-			}
-
-		case <-s.shutdownCh:
-			// 收到关闭信号，尽快刷新剩余日志并有限期地清空队列后退出
-			deadline := time.Now().Add(200 * time.Millisecond)
-			// 先尽量从队列中取出更多日志，避免遗漏
-			for {
-				select {
-				case e := <-s.logChan:
-					batch = append(batch, e)
-					if len(batch) >= config.LogBatchSize {
+			// ✅ P2修复：timer触发时也检查channel是否关闭
+			select {
+			case entry, ok := <-s.logChan:
+				if !ok {
+					// Channel已关闭
+					if len(batch) > 0 {
 						s.flushLogs(batch)
-						batch = batch[:0]
 					}
-				default:
-					// 无更多日志或时间到
-					if time.Now().After(deadline) {
-						goto FLUSH_AND_EXIT
-					}
-					time.Sleep(5 * time.Millisecond)
+					return
+				}
+				// 收到新日志，追加到batch
+				batch = append(batch, entry)
+			default:
+				// Channel未关闭且无新日志，正常flush
+				if len(batch) > 0 {
+					s.flushLogs(batch)
+					batch = batch[:0]
 				}
 			}
-		FLUSH_AND_EXIT:
-			if len(batch) > 0 {
-				s.flushLogs(batch)
-				batch = batch[:0]
-			}
-			return
 		}
 	}
 }
@@ -595,6 +594,11 @@ func (s *Server) flushLogs(logs []*model.LogEntry) {
 // 异步添加日志
 // P1修复 (2025-10-05): 添加丢弃计数和告警机制
 func (s *Server) addLogAsync(entry *model.LogEntry) {
+	// ✅ P2修复（2025-10-28）：shutdown时不再写入日志
+	if s.isShuttingDown.Load() {
+		return
+	}
+
 	select {
 	case s.logChan <- entry:
 		// 成功放入队列
@@ -742,8 +746,15 @@ func (s *Server) handleChannelKeys(c *gin.Context) {
 func (s *Server) Shutdown(ctx context.Context) error {
 	util.SafePrint("🛑 正在关闭Server，等待后台任务完成...")
 
+	// ✅ P2修复（2025-10-28）：设置shutdown标志，防止新的日志写入
+	s.isShuttingDown.Store(true)
+
 	// 关闭shutdownCh，通知所有goroutine退出
 	close(s.shutdownCh)
+
+	// ✅ P2修复（2025-10-28）：关闭logChan，让logWorker更快退出
+	// 由于isShuttingDown已设置，addLogAsync不会再往logChan写入，可以安全关闭
+	close(s.logChan)
 
 	// ✅ P0修复（2025-10-16）：停止LoginRateLimiter的cleanupLoop
 	s.loginRateLimiter.Stop()

@@ -16,12 +16,16 @@ import (
 // ---- Store interface impl ----
 
 func (s *SQLiteStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
-	// 新架构：包含内联的轮询索引字段
+	// ✅ P1优化：添加 key_count 字段，避免 N+1 查询
 	query := `
-		SELECT id, name, url, priority, models, model_redirects, channel_type, enabled,
-		       cooldown_until, cooldown_duration_ms, rr_key_index, created_at, updated_at
-		FROM channels
-		ORDER BY priority DESC, id ASC
+		SELECT c.id, c.name, c.url, c.priority, c.models, c.model_redirects, c.channel_type, c.enabled,
+		       c.cooldown_until, c.cooldown_duration_ms,
+		       COALESCE(COUNT(k.id), 0) as key_count,
+		       c.rr_key_index, c.created_at, c.updated_at
+		FROM channels c
+		LEFT JOIN api_keys k ON c.id = k.channel_id
+		GROUP BY c.id
+		ORDER BY c.priority DESC, c.id ASC
 	`
 	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
@@ -36,11 +40,16 @@ func (s *SQLiteStore) ListConfigs(ctx context.Context) ([]*model.Config, error) 
 
 func (s *SQLiteStore) GetConfig(ctx context.Context, id int64) (*model.Config, error) {
 	// 新架构：包含内联的轮询索引字段
+	// 🔧 P1优化：LEFT JOIN计算Key数量，避免冷却判断时的N+1查询
 	query := `
-		SELECT id, name, url, priority, models, model_redirects, channel_type, enabled,
-		       cooldown_until, cooldown_duration_ms, rr_key_index, created_at, updated_at
-		FROM channels
-		WHERE id = ?
+		SELECT c.id, c.name, c.url, c.priority, c.models, c.model_redirects, c.channel_type, c.enabled,
+		       c.cooldown_until, c.cooldown_duration_ms,
+		       COALESCE(COUNT(k.id), 0) as key_count,
+		       c.rr_key_index, c.created_at, c.updated_at
+		FROM channels c
+		LEFT JOIN api_keys k ON c.id = k.channel_id
+		WHERE c.id = ?
+		GROUP BY c.id
 	`
 	row := s.db.QueryRowContext(ctx, query, id)
 
@@ -65,29 +74,39 @@ func (s *SQLiteStore) GetEnabledChannelsByModel(ctx context.Context, model strin
 
 	if model == "*" {
 		// 通配符：返回所有启用的渠道（新架构：从 channels 表读取内联冷却字段）
+		// 🔧 P1优化：LEFT JOIN计算Key数量，避免冷却判断时的N+1查询
 		query = `
             SELECT c.id, c.name, c.url, c.priority,
                    c.models, c.model_redirects, c.channel_type, c.enabled,
-                   c.cooldown_until, c.cooldown_duration_ms, c.rr_key_index, c.created_at, c.updated_at
+                   c.cooldown_until, c.cooldown_duration_ms,
+                   COALESCE(COUNT(k.id), 0) as key_count,
+                   c.rr_key_index, c.created_at, c.updated_at
             FROM channels c
+            LEFT JOIN api_keys k ON c.id = k.channel_id
             WHERE c.enabled = 1
               AND (c.cooldown_until = 0 OR c.cooldown_until <= ?)
+            GROUP BY c.id
             ORDER BY c.priority DESC, c.id ASC
         `
 		args = []any{nowUnix}
 	} else {
 		// 精确匹配：使用 JSON1 解析 models 数组并精确匹配元素
+		// 🔧 P1优化：LEFT JOIN计算Key数量，避免冷却判断时的N+1查询
 		query = `
             SELECT c.id, c.name, c.url, c.priority,
                    c.models, c.model_redirects, c.channel_type, c.enabled,
-                   c.cooldown_until, c.cooldown_duration_ms, c.rr_key_index, c.created_at, c.updated_at
+                   c.cooldown_until, c.cooldown_duration_ms,
+                   COALESCE(COUNT(k.id), 0) as key_count,
+                   c.rr_key_index, c.created_at, c.updated_at
             FROM channels c
+            LEFT JOIN api_keys k ON c.id = k.channel_id
             WHERE c.enabled = 1
               AND EXISTS (
                   SELECT 1 FROM json_each(c.models) je
                   WHERE je.value = ?
               )
               AND (c.cooldown_until = 0 OR c.cooldown_until <= ?)
+            GROUP BY c.id
             ORDER BY c.priority DESC, c.id ASC
         `
 		args = []any{model, nowUnix}
@@ -105,16 +124,22 @@ func (s *SQLiteStore) GetEnabledChannelsByModel(ctx context.Context, model strin
 
 // GetEnabledChannelsByType 查询指定类型的启用渠道（按优先级排序）
 // 新架构：从 channels 表读取内联冷却字段，不再 JOIN cooldowns 表
+// GetEnabledChannelsByType 查询指定类型的启用渠道（按优先级排序）
+// ✅ P1优化：添加key_count字段，避免N+1查询
 func (s *SQLiteStore) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*model.Config, error) {
 	nowUnix := time.Now().Unix()
 	query := `
 		SELECT c.id, c.name, c.url, c.priority,
 		       c.models, c.model_redirects, c.channel_type, c.enabled,
-		       c.cooldown_until, c.cooldown_duration_ms, c.rr_key_index, c.created_at, c.updated_at
+		       c.cooldown_until, c.cooldown_duration_ms,
+		       COALESCE(COUNT(k.id), 0) as key_count,
+		       c.rr_key_index, c.created_at, c.updated_at
 		FROM channels c
+		LEFT JOIN api_keys k ON c.id = k.channel_id
 		WHERE c.enabled = 1
 		  AND c.channel_type = ?
 		  AND (c.cooldown_until = 0 OR c.cooldown_until <= ?)
+		GROUP BY c.id
 		ORDER BY c.priority DESC, c.id ASC
 	`
 

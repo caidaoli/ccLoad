@@ -24,19 +24,21 @@ type Config struct {
 	CreatedAt JSONTime `json:"created_at"` // 使用JSONTime确保序列化格式一致（RFC3339）
 	UpdatedAt JSONTime `json:"updated_at"` // 使用JSONTime确保序列化格式一致（RFC3339）
 
+	// 🔧 P1性能优化：缓存Key数量，避免冷却判断时的N+1查询
+	KeyCount int `json:"key_count"` // API Key数量（查询时JOIN计算）
+
 	// 性能优化：模型查找索引（内存缓存，不序列化）
 	modelsSet map[string]struct{} `json:"-"`
 }
 
-// GetChannelType 返回渠道类型（默认anthropic）
+// GetChannelType 默认返回"anthropic"（Claude API）
 func (c *Config) GetChannelType() string {
 	if c.ChannelType == "" {
-		return "anthropic" // 默认Claude API
+		return "anthropic"
 	}
 	return c.ChannelType
 }
 
-// IsCoolingDown 检查渠道是否在冷却中
 func (c *Config) IsCoolingDown(now time.Time) bool {
 	return c.CooldownUntil > now.Unix()
 }
@@ -71,31 +73,29 @@ func NormalizeChannelType(t string) string {
 	return lower
 }
 
-// APIKey 表示单个API Key及其配置
 type APIKey struct {
 	ID        int64  `json:"id"`
 	ChannelID int64  `json:"channel_id"`
-	KeyIndex  int    `json:"key_index"` // Key在渠道中的索引（0,1,2...）
-	APIKey    string `json:"api_key"`   // 实际的API Key
+	KeyIndex  int    `json:"key_index"`
+	APIKey    string `json:"api_key"`
 
-	KeyStrategy string `json:"key_strategy"` // Key使用策略: "sequential" | "round_robin"
+	KeyStrategy string `json:"key_strategy"` // "sequential" | "round_robin"
 
 	// Key级冷却（从key_cooldowns表迁移）
-	CooldownUntil      int64 `json:"cooldown_until"`       // Unix秒时间戳，0表示无冷却
-	CooldownDurationMs int64 `json:"cooldown_duration_ms"` // 冷却持续时间（毫秒）
+	CooldownUntil      int64 `json:"cooldown_until"`
+	CooldownDurationMs int64 `json:"cooldown_duration_ms"`
 
 	CreatedAt JSONTime `json:"created_at"`
 	UpdatedAt JSONTime `json:"updated_at"`
 }
 
-// IsCoolingDown 检查Key是否在冷却中
 func (k *APIKey) IsCoolingDown(now time.Time) bool {
 	return k.CooldownUntil > now.Unix()
 }
 
-// ChannelWithKeys 用于Redis完整同步（包含渠道配置和所有API Keys）
+// ChannelWithKeys 用于Redis完整同步
 // 设计目标：解决Redis恢复后渠道缺少API Keys的问题
 type ChannelWithKeys struct {
-	Config  *Config  `json:"config"`   // 渠道基本配置
-	APIKeys []APIKey `json:"api_keys"` // 关联的所有API Keys（不使用指针避免额外分配）
+	Config  *Config  `json:"config"`
+	APIKeys []APIKey `json:"api_keys"` // 不使用指针避免额外分配
 }

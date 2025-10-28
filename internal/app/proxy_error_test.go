@@ -16,7 +16,7 @@ import (
 func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 	// 创建测试服务器（✅ P2重构：添加cooldownManager）
 	store := &MockStore{}
-	keySelector := NewKeySelector(store, nil) // 测试环境不需要监控指标
+	keySelector := NewKeySelector(nil) // ✅ P0重构：移除store参数
 	server := &Server{
 		store:           store,
 		keySelector:     keySelector,
@@ -175,7 +175,15 @@ func TestHandleProxyError_SingleKeyUpgrade(t *testing.T) {
 type MockStore struct{}
 
 func (m *MockStore) GetConfig(ctx context.Context, id int64) (*model.Config, error) {
-	return nil, nil
+	// 🔧 P1优化修复：返回带KeyCount的Config对象
+	apiKeys, err := m.GetAPIKeys(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &model.Config{
+		ID:       id,
+		KeyCount: len(apiKeys),
+	}, nil
 }
 
 func (m *MockStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
@@ -329,7 +337,7 @@ func TestAllKeysCooledDown_UpgradeToChannelCooldown(t *testing.T) {
 		},
 	}
 
-	keySelector := NewKeySelector(store, nil) // 测试环境不需要监控指标
+	keySelector := NewKeySelector(nil) // ✅ P0重构：移除store参数
 	ctx := context.Background()
 
 	// 配置3个Key的渠道（注：新架构中API Keys在api_keys表）
@@ -338,9 +346,15 @@ func TestAllKeysCooledDown_UpgradeToChannelCooldown(t *testing.T) {
 		Name: "test-channel",
 	}
 
+	// ✅ P0重构：预先查询apiKeys（MockStore返回包含冷却状态的Keys）
+	apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("查询API Keys失败: %v", err)
+	}
+
 	// 尝试选择可用Key（应该失败，因为所有Key都冷却）
 	triedKeys := make(map[int]bool)
-	keyIndex, selectedKey, err := keySelector.SelectAvailableKey(ctx, cfg, triedKeys)
+	keyIndex, selectedKey, err := keySelector.SelectAvailableKey(cfg.ID, apiKeys, triedKeys)
 
 	// 验证：应该返回错误
 	if err == nil {
@@ -375,15 +389,21 @@ func TestAllKeysCooledDown_RoundRobinStrategy(t *testing.T) {
 		rrIndex: 1, // 从Key 1 开始轮询
 	}
 
-	keySelector := NewKeySelector(store, nil) // 测试环境不需要监控指标
+	keySelector := NewKeySelector(nil) // ✅ P0重构：移除store参数
 	ctx := context.Background()
 
 	cfg := &model.Config{
 		ID: 2,
 	}
 
+	// ✅ P0重构：预先查询apiKeys
+	apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("查询API Keys失败: %v", err)
+	}
+
 	triedKeys := make(map[int]bool)
-	_, _, err := keySelector.SelectAvailableKey(ctx, cfg, triedKeys)
+	_, _, err = keySelector.SelectAvailableKey(cfg.ID, apiKeys, triedKeys)
 
 	if err == nil {
 		t.Fatal("❌ 预期返回错误（所有Key冷却），但成功选择了Key")
@@ -406,15 +426,21 @@ func TestPartialKeysCooled_ShouldSelectAvailable(t *testing.T) {
 		},
 	}
 
-	keySelector := NewKeySelector(store, nil) // 测试环境不需要监控指标
+	keySelector := NewKeySelector(nil) // ✅ P0重构：移除store参数
 	ctx := context.Background()
 
 	cfg := &model.Config{
 		ID: 3,
 	}
 
+	// ✅ P0重构：预先查询apiKeys
+	apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("查询API Keys失败: %v", err)
+	}
+
 	triedKeys := make(map[int]bool)
-	keyIndex, selectedKey, err := keySelector.SelectAvailableKey(ctx, cfg, triedKeys)
+	keyIndex, selectedKey, err := keySelector.SelectAvailableKey(cfg.ID, apiKeys, triedKeys)
 
 	if err != nil {
 		t.Fatalf("❌ 预期成功选择可用Key，但返回错误: %v", err)

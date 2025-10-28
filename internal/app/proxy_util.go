@@ -25,6 +25,10 @@ import (
 // 错误类型常量定义
 const (
 	// HTTP状态码扩展（用于日志记录和监控）
+	// ✅ P3修复（2025-10-28）：499状态码有两种来源，分别处理
+	// 1. 下游客户端取消（context.Canceled）→ ErrorLevelClient，不重试
+	// 2. 上游API返回HTTP 499响应 → ErrorLevelChannel，重试其他渠道
+	// 分类逻辑详见 internal/util/classifier.go
 	StatusClientClosedRequest = 499 // 客户端取消请求 (Nginx扩展状态码)
 	StatusConnectionReset     = 502 // Connection Reset - 不可重试
 	StatusFirstByteTimeout    = 598 // 首字节超时 (自定义状态码，用于触发固定5分钟冷却)

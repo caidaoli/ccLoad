@@ -37,7 +37,15 @@ func ClassifyHTTPStatus(statusCode int) ErrorLevel {
 	// 特殊状态码处理
 	switch statusCode {
 	case 499: // Client Closed Request
-		return ErrorLevelClient
+		// ✅ P3修复（2025-10-28）：499错误需要区分来源
+		// 注意：此函数处理的是HTTP响应中的499状态码
+		// 当499来自HTTP响应时，说明是上游API返回的状态码（不是下游客户端取消）
+		// 可能原因：API服务器过载、限流、或内部错误
+		// 应该切换到其他渠道重试
+		//
+		// context.Canceled（下游客户端取消）在ClassifyError中单独处理（line 156-158）
+		// 那里返回的是499 + ErrorLevelClient（正确，不应重试）
+		return ErrorLevelChannel
 
 	// Key级错误：API Key相关问题（4xx客户端错误）
 	case 400: // Bad Request - 通常是API Key格式错误或无效

@@ -25,16 +25,13 @@ var errBodyTooLarge = errors.New("request body too large")
 // 并发控制
 // ============================================================================
 
-// acquireConcurrencySlot 获取并发槽位
-// ✅ P2重构: 从proxy.go提取，遵循SRP原则
-// 返回 true 表示成功获取，false 表示客户端取消
+// acquireConcurrencySlot 获取并发槽位，返回release函数和状态
+// ok=false 表示客户端已取消请求
 func (s *Server) acquireConcurrencySlot(c *gin.Context) (release func(), ok bool) {
 	select {
 	case s.concurrencySem <- struct{}{}:
-		// 成功获取槽位
 		return func() { <-s.concurrencySem }, true
 	case <-c.Request.Context().Done():
-		// 客户端已取消请求
 		c.JSON(StatusClientClosedRequest, gin.H{"error": "request cancelled while waiting for slot"})
 		return nil, false
 	}
@@ -44,9 +41,7 @@ func (s *Server) acquireConcurrencySlot(c *gin.Context) (release func(), ok bool
 // 请求解析
 // ============================================================================
 
-// parseIncomingRequest 解析传入的代理请求
-// ✅ P2重构: 从proxy.go提取，遵循SRP原则
-// 返回：(originalModel, body, isStreaming, error)
+// parseIncomingRequest 返回 (originalModel, body, isStreaming, error)
 func parseIncomingRequest(c *gin.Context) (string, []byte, bool, error) {
 	requestPath := c.Request.URL.Path
 	requestMethod := c.Request.Method
@@ -133,7 +128,6 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 	}
 	defer release()
 
-	// 特殊处理：拦截模型列表请求
 	requestPath := c.Request.URL.Path
 	requestMethod := c.Request.Method
 	if requestMethod == http.MethodGet && (requestPath == "/v1beta/models" || requestPath == "/v1/models") {
@@ -141,13 +135,11 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 		return
 	}
 
-	// 拦截并本地实现token计数接口
 	if requestPath == "/v1/messages/count_tokens" && requestMethod == http.MethodPost {
 		s.handleCountTokens(c)
 		return
 	}
 
-	// 解析请求
 	originalModel, all, isStreaming, err := parseIncomingRequest(c)
 	if err != nil {
 		if errors.Is(err, errBodyTooLarge) {
@@ -158,7 +150,6 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 		return
 	}
 
-	// 设置超时上下文
 	timeout := parseTimeout(c.Request.URL.Query(), c.Request.Header)
 	ctx := c.Request.Context()
 	var cancel context.CancelFunc
@@ -167,7 +158,6 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 		defer cancel()
 	}
 
-	// 选择路由候选
 	cands, err := s.selectRouteCandidates(ctx, c, originalModel)
 	if err != nil {
 		if errors.Is(err, errUnknownChannelType) {
@@ -178,7 +168,6 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 		return
 	}
 
-	// 检查是否有可用候选
 	if len(cands) == 0 {
 		s.addLogAsync(&model.LogEntry{
 			Time:        model.JSONTime{Time: time.Now()},
@@ -191,7 +180,6 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 		return
 	}
 
-	// 构建请求上下文（遵循DIP原则：依赖抽象而非实现细节）
 	reqCtx := &proxyRequestContext{
 		originalModel: originalModel,
 		requestMethod: requestMethod,
@@ -202,37 +190,28 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 		isStreaming:   isStreaming,
 	}
 
-	// 渠道级重试循环：按优先级遍历候选渠道
+	// 按优先级遍历候选渠道，尝试转发
 	var lastResult *proxyResult
 	for _, cfg := range cands {
-		// 尝试当前渠道（包含Key级重试）
 		result, err := s.tryChannelWithKeys(ctx, cfg, reqCtx, c.Writer)
 
-		// 处理"所有Key都在冷却中"的特殊错误
+		// 所有Key冷却：触发渠道级冷却(503)，防止后续请求重复尝试
 		if err != nil && strings.Contains(err.Error(), "channel keys unavailable") {
-			// 触发渠道级别冷却，防止后续请求重复尝试该渠道
-			// 使用503状态码表示服务不可用（所有Key冷却）
 			_, _ = s.store.BumpChannelCooldown(ctx, cfg.ID, time.Now(), 503)
-			// 精确计数（P1）：记录渠道进入冷却
-			continue // 尝试下一个渠道
+			continue
 		}
 
-		// 成功或需要直接返回客户端的情况
 		if result != nil {
 			if result.succeeded {
-				return // 成功完成，forwardOnceAsync已写入响应
+				return
 			}
 
-			// 保存最后的错误响应
 			lastResult = result
 
-			// 如果是客户端级错误，直接返回
 			if result.status < 500 {
 				break
 			}
 		}
-
-		// 继续尝试下一个渠道
 	}
 
 	// 所有渠道都失败，透传最后一次4xx状态，否则503
@@ -241,10 +220,21 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 		finalStatus = lastResult.status
 	}
 
-	// 记录最终返回状态
+	// ✅ P3改进（2025-10-28）：区分499错误的具体来源，避免用户混淆
 	msg := "exhausted backends"
 	if finalStatus < 500 {
-		msg = fmt.Sprintf("upstream status %d", finalStatus)
+		if finalStatus == 499 {
+			// 499错误有两种来源：
+			// 1. context.Canceled（客户端主动取消）→ lastResult.message包含"cancel"
+			// 2. 上游API返回HTTP 499（罕见）→ lastResult.message不包含"cancel"
+			if lastResult != nil && lastResult.message != "" && strings.Contains(strings.ToLower(lastResult.message), "cancel") {
+				msg = "client closed request (context canceled)"
+			} else {
+				msg = "upstream status 499 (client closed request)"
+			}
+		} else {
+			msg = fmt.Sprintf("upstream status %d", finalStatus)
+		}
 	}
 	s.addLogAsync(&model.LogEntry{
 		Time:        model.JSONTime{Time: time.Now()},
@@ -254,9 +244,7 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 		IsStreaming: isStreaming,
 	})
 
-	// 返回最后一个渠道的错误响应（如果有），并使用最终状态码
 	if lastResult != nil && lastResult.status != 0 {
-		// 统一使用过滤写头逻辑，避免错误体编码不一致（DRY）
 		filterAndWriteResponseHeaders(c.Writer, lastResult.header)
 		c.Data(finalStatus, "application/json", lastResult.body)
 		return

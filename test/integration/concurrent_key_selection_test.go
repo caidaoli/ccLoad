@@ -38,7 +38,13 @@ func TestConcurrentKeySelection(t *testing.T) {
 
 	// 初始化KeySelector
 	var keyCooldownGauge atomic.Int64
-	selector := app.NewKeySelector(store, &keyCooldownGauge)
+	selector := app.NewKeySelector(&keyCooldownGauge) // ✅ P0重构：移除store参数
+
+	// ✅ P0重构：预先查询apiKeys，避免并发重复查询
+	apiKeys, err := store.GetAPIKeys(ctx, channelID)
+	if err != nil {
+		t.Fatalf("Failed to get API keys: %v", err)
+	}
 
 	// 并发测试参数
 	concurrency := 1000
@@ -53,7 +59,7 @@ func TestConcurrentKeySelection(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 
-			keyIndex, apiKey, err := selector.SelectAvailableKey(ctx, cfg, nil)
+			keyIndex, apiKey, err := selector.SelectAvailableKey(cfg.ID, apiKeys, nil)
 			if err != nil {
 				errors <- fmt.Errorf("goroutine %d: %w", idx, err)
 				return
@@ -140,7 +146,7 @@ func TestConcurrentKeyCooldown(t *testing.T) {
 	}
 
 	var keyCooldownGauge atomic.Int64
-	selector := app.NewKeySelector(store, &keyCooldownGauge)
+	selector := app.NewKeySelector(&keyCooldownGauge) // ✅ P0重构：移除store参数
 
 	var wg sync.WaitGroup
 	errors := make(chan error, 100)
@@ -151,18 +157,24 @@ func TestConcurrentKeyCooldown(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			_, _, err := selector.SelectAvailableKey(ctx, cfg, nil)
+			// 每次查询最新的apiKeys以获取最新冷却状态
+			currentKeys, err := store.GetAPIKeys(ctx, channelID)
+			if err != nil {
+				errors <- fmt.Errorf("select %d get keys: %w", idx, err)
+				return
+			}
+			_, _, err = selector.SelectAvailableKey(cfg.ID, currentKeys, nil)
 			if err != nil {
 				errors <- fmt.Errorf("select %d: %w", idx, err)
 			}
 		}(i)
 
-		// 冷却Key
+		// 冷却Key（✅ P0重构：直接调用store，不再使用已删除的MarkKeyError）
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
 			keyIndex := idx % 5 // 轮流冷却5个Key
-			err := selector.MarkKeyError(ctx, channelID, keyIndex, 429)
+			_, err := store.BumpKeyCooldown(ctx, channelID, keyIndex, time.Now(), 429)
 			if err != nil {
 				errors <- fmt.Errorf("cooldown %d: %w", idx, err)
 			}

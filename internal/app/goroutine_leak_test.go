@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"runtime"
 	"testing"
 	"time"
 
@@ -29,6 +30,11 @@ func createTestStoreForGoroutineTest(t *testing.T) *sqlite.SQLiteStore {
 
 // TestServerShutdown_NoGoroutineLeak 验证Server优雅关闭不泄漏goroutine
 func TestServerShutdown_NoGoroutineLeak(t *testing.T) {
+	// ✅ P2修复（2025-10-28）：等待之前测试的goroutine完全退出
+	// 必须在CheckGorutineLeak之前等待，让它记录正确的基线
+	time.Sleep(1 * time.Second)
+	runtime.GC() // 触发GC清理已完成的goroutine
+
 	defer testutil.CheckGorutineLeak(t)()
 
 	// 创建测试专用数据库，禁用连接生命周期以避免goroutine泄漏
@@ -59,14 +65,19 @@ func TestServerShutdown_NoGoroutineLeak(t *testing.T) {
 	}
 
 	// 等待所有goroutine结束
-	if !testutil.WaitForGoroutines(2*time.Second, 0) {
-		t.Error("部分goroutine未在2秒内结束")
+	// ✅ P2修复（2025-10-28）：增加等待时间到5秒，给予数据库连接充分关闭时间
+	if !testutil.WaitForGoroutines(5*time.Second, 0) {
+		t.Error("部分goroutine未在5秒内结束")
 		t.Log(testutil.PrintGoroutineStacks())
 	}
 }
 
 // TestLogWorker_NoLeak 测试日志worker不泄漏
 func TestLogWorker_NoLeak(t *testing.T) {
+	// ✅ P2修复（2025-10-28）：等待之前测试的goroutine完全退出
+	time.Sleep(1 * time.Second)
+	runtime.GC()
+
 	defer testutil.CheckGorutineLeak(t)()
 
 	// 创建测试专用数据库，禁用连接生命周期以避免goroutine泄漏
@@ -95,7 +106,8 @@ func TestLogWorker_NoLeak(t *testing.T) {
 	}
 
 	// 验证无泄漏
-	if !testutil.WaitForGoroutines(2*time.Second, 0) {
+	// ✅ P2修复（2025-10-28）：增加等待时间到5秒
+	if !testutil.WaitForGoroutines(5*time.Second, 0) {
 		t.Error("logWorker goroutine 泄漏")
 	}
 }

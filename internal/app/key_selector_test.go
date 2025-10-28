@@ -16,7 +16,7 @@ func TestSelectAvailableKey_SingleKey(t *testing.T) {
 	defer cleanup()
 
 	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(store, &cooldownGauge)
+	selector := NewKeySelector(&cooldownGauge) // ✅ P0重构：移除store参数
 	ctx := context.WithValue(context.Background(), "testing", true)
 
 	// 创建渠道
@@ -42,8 +42,14 @@ func TestSelectAvailableKey_SingleKey(t *testing.T) {
 		t.Fatalf("创建API Key失败: %v", err)
 	}
 
+	// ✅ P0重构：预先查询apiKeys
+	apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("查询API Keys失败: %v", err)
+	}
+
 	t.Run("首次选择", func(t *testing.T) {
-		keyIndex, apiKey, err := selector.SelectAvailableKey(ctx, cfg, nil)
+		keyIndex, apiKey, err := selector.SelectAvailableKey(cfg.ID, apiKeys, nil)
 
 		if err != nil {
 			t.Fatalf("SelectAvailableKey失败: %v", err)
@@ -62,7 +68,7 @@ func TestSelectAvailableKey_SingleKey(t *testing.T) {
 
 	t.Run("排除唯一Key后无可用Key", func(t *testing.T) {
 		excludeKeys := map[int]bool{0: true}
-		_, _, err := selector.SelectAvailableKey(ctx, cfg, excludeKeys)
+		_, _, err := selector.SelectAvailableKey(cfg.ID, apiKeys, excludeKeys)
 
 		if err == nil {
 			t.Error("期望返回错误（唯一Key已被排除），但成功返回")
@@ -78,7 +84,7 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 	defer cleanup()
 
 	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(store, &cooldownGauge)
+	selector := NewKeySelector(&cooldownGauge) // ✅ P0重构：移除store参数
 	ctx := context.WithValue(context.Background(), "testing", true)
 
 	// 创建渠道
@@ -106,8 +112,14 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 		}
 	}
 
+	// ✅ P0重构：预先查询apiKeys
+	apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("查询API Keys失败: %v", err)
+	}
+
 	t.Run("首次选择返回第一个Key", func(t *testing.T) {
-		keyIndex, apiKey, err := selector.SelectAvailableKey(ctx, cfg, nil)
+		keyIndex, apiKey, err := selector.SelectAvailableKey(cfg.ID, apiKeys, nil)
 
 		if err != nil {
 			t.Fatalf("SelectAvailableKey失败: %v", err)
@@ -126,7 +138,7 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 
 	t.Run("排除第一个Key后返回第二个", func(t *testing.T) {
 		excludeKeys := map[int]bool{0: true}
-		keyIndex, apiKey, err := selector.SelectAvailableKey(ctx, cfg, excludeKeys)
+		keyIndex, apiKey, err := selector.SelectAvailableKey(cfg.ID, apiKeys, excludeKeys)
 
 		if err != nil {
 			t.Fatalf("SelectAvailableKey失败: %v", err)
@@ -145,7 +157,7 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 
 	t.Run("排除前两个Key后返回第三个", func(t *testing.T) {
 		excludeKeys := map[int]bool{0: true, 1: true}
-		keyIndex, apiKey, err := selector.SelectAvailableKey(ctx, cfg, excludeKeys)
+		keyIndex, apiKey, err := selector.SelectAvailableKey(cfg.ID, apiKeys, excludeKeys)
 
 		if err != nil {
 			t.Fatalf("SelectAvailableKey失败: %v", err)
@@ -164,7 +176,7 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 
 	t.Run("所有Key被排除后返回错误", func(t *testing.T) {
 		excludeKeys := map[int]bool{0: true, 1: true, 2: true}
-		_, _, err := selector.SelectAvailableKey(ctx, cfg, excludeKeys)
+		_, _, err := selector.SelectAvailableKey(cfg.ID, apiKeys, excludeKeys)
 
 		if err == nil {
 			t.Error("期望返回错误（所有Key已被排除），但成功返回")
@@ -180,7 +192,7 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 	defer cleanup()
 
 	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(store, &cooldownGauge)
+	selector := NewKeySelector(&cooldownGauge) // ✅ P0重构：移除store参数
 	ctx := context.WithValue(context.Background(), "testing", true)
 
 	// 创建渠道
@@ -208,6 +220,12 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 		}
 	}
 
+	// ✅ P0重构：预先查询apiKeys
+	apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("查询API Keys失败: %v", err)
+	}
+
 	t.Run("连续调用应轮询返回不同Key", func(t *testing.T) {
 		// ✅ Linus风格：轮询指针内存化后，起始位置不确定（每次测试可能不同）
 		// 验证策略：确保5次调用真正轮询（没有连续重复，且访问了所有Key）
@@ -216,12 +234,7 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 		keysSeen := make(map[int]bool)
 
 		for i := 0; i < 5; i++ {
-			updatedCfg, err := store.GetConfig(ctx, cfg.ID)
-			if err != nil {
-				t.Fatalf("获取渠道配置失败: %v", err)
-			}
-
-			keyIndex, _, err := selector.SelectAvailableKey(ctx, updatedCfg, nil)
+			keyIndex, _, err := selector.SelectAvailableKey(cfg.ID, apiKeys, nil)
 			if err != nil {
 				t.Fatalf("第%d次SelectAvailableKey失败: %v", i+1, err)
 			}
@@ -249,7 +262,7 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 
 		// 第一次排除Key0
 		excludeKeys := map[int]bool{0: true}
-		keyIndex, _, err := selector.SelectAvailableKey(ctx, cfg, excludeKeys)
+		keyIndex, _, err := selector.SelectAvailableKey(cfg.ID, apiKeys, excludeKeys)
 
 		if err != nil {
 			t.Fatalf("SelectAvailableKey失败: %v", err)
@@ -269,7 +282,7 @@ func TestSelectAvailableKey_KeyCooldown(t *testing.T) {
 	defer cleanup()
 
 	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(store, &cooldownGauge)
+	selector := NewKeySelector(&cooldownGauge) // ✅ P0重构：移除store参数
 	ctx := context.WithValue(context.Background(), "testing", true)
 	now := time.Now()
 
@@ -304,8 +317,14 @@ func TestSelectAvailableKey_KeyCooldown(t *testing.T) {
 		t.Fatalf("冷却Key0失败: %v", err)
 	}
 
+	// ✅ P0重构：预先查询apiKeys（在冷却Key0之后，包含冷却状态）
+	apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("查询API Keys失败: %v", err)
+	}
+
 	t.Run("冷却的Key被跳过", func(t *testing.T) {
-		keyIndex, apiKey, err := selector.SelectAvailableKey(ctx, cfg, nil)
+		keyIndex, apiKey, err := selector.SelectAvailableKey(cfg.ID, apiKeys, nil)
 
 		if err != nil {
 			t.Fatalf("SelectAvailableKey失败: %v", err)
@@ -330,7 +349,13 @@ func TestSelectAvailableKey_KeyCooldown(t *testing.T) {
 			t.Fatalf("冷却Key1失败: %v", err)
 		}
 
-		keyIndex, apiKey, err := selector.SelectAvailableKey(ctx, cfg, nil)
+		// 重新查询apiKeys以获取最新冷却状态
+		apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("查询API Keys失败: %v", err)
+		}
+
+		keyIndex, apiKey, err := selector.SelectAvailableKey(cfg.ID, apiKeys, nil)
 
 		if err != nil {
 			t.Fatalf("SelectAvailableKey失败: %v", err)
@@ -355,7 +380,13 @@ func TestSelectAvailableKey_KeyCooldown(t *testing.T) {
 			t.Fatalf("冷却Key2失败: %v", err)
 		}
 
-		_, _, err = selector.SelectAvailableKey(ctx, cfg, nil)
+		// 重新查询apiKeys以获取最新冷却状态
+		apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("查询API Keys失败: %v", err)
+		}
+
+		_, _, err = selector.SelectAvailableKey(cfg.ID, apiKeys, nil)
 
 		if err == nil {
 			t.Error("期望返回错误（所有Key都在冷却），但成功返回")
@@ -371,7 +402,7 @@ func TestSelectAvailableKey_CooldownAndExclude(t *testing.T) {
 	defer cleanup()
 
 	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(store, &cooldownGauge)
+	selector := NewKeySelector(&cooldownGauge) // ✅ P0重构：移除store参数
 	ctx := context.WithValue(context.Background(), "testing", true)
 	now := time.Now()
 
@@ -406,10 +437,16 @@ func TestSelectAvailableKey_CooldownAndExclude(t *testing.T) {
 		t.Fatalf("冷却Key1失败: %v", err)
 	}
 
+	// ✅ P0重构：预先查询apiKeys（在冷却Key1之后，包含冷却状态）
+	apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("查询API Keys失败: %v", err)
+	}
+
 	// 排除Key0和Key2
 	excludeKeys := map[int]bool{0: true, 2: true}
 
-	keyIndex, apiKey, err := selector.SelectAvailableKey(ctx, cfg, excludeKeys)
+	keyIndex, apiKey, err := selector.SelectAvailableKey(cfg.ID, apiKeys, excludeKeys)
 
 	if err != nil {
 		t.Fatalf("SelectAvailableKey失败: %v", err)
@@ -433,7 +470,7 @@ func TestSelectAvailableKey_NoKeys(t *testing.T) {
 	defer cleanup()
 
 	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(store, &cooldownGauge)
+	selector := NewKeySelector(&cooldownGauge) // ✅ P0重构：移除store参数
 	ctx := context.WithValue(context.Background(), "testing", true)
 
 	// 创建渠道（不配置API Keys）
@@ -448,7 +485,13 @@ func TestSelectAvailableKey_NoKeys(t *testing.T) {
 		t.Fatalf("创建渠道失败: %v", err)
 	}
 
-	_, _, err = selector.SelectAvailableKey(ctx, cfg, nil)
+	// ✅ P0重构：预先查询apiKeys（应该为空）
+	apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("查询API Keys失败: %v", err)
+	}
+
+	_, _, err = selector.SelectAvailableKey(cfg.ID, apiKeys, nil)
 
 	if err == nil {
 		t.Error("期望返回错误（渠道未配置API Keys），但成功返回")
@@ -463,7 +506,7 @@ func TestSelectAvailableKey_DefaultStrategy(t *testing.T) {
 	defer cleanup()
 
 	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(store, &cooldownGauge)
+	selector := NewKeySelector(&cooldownGauge) // ✅ P0重构：移除store参数
 	ctx := context.WithValue(context.Background(), "testing", true)
 
 	// 创建渠道
@@ -491,8 +534,14 @@ func TestSelectAvailableKey_DefaultStrategy(t *testing.T) {
 		}
 	}
 
+	// ✅ P0重构：预先查询apiKeys
+	apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("查询API Keys失败: %v", err)
+	}
+
 	// 首次选择应返回Key0（默认sequential策略）
-	keyIndex, _, err := selector.SelectAvailableKey(ctx, cfg, nil)
+	keyIndex, _, err := selector.SelectAvailableKey(cfg.ID, apiKeys, nil)
 
 	if err != nil {
 		t.Fatalf("SelectAvailableKey失败: %v", err)
@@ -511,7 +560,7 @@ func TestSelectAvailableKey_UnknownStrategy(t *testing.T) {
 	defer cleanup()
 
 	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(store, &cooldownGauge)
+	selector := NewKeySelector(&cooldownGauge) // ✅ P0重构：移除store参数
 	ctx := context.WithValue(context.Background(), "testing", true)
 
 	// 创建渠道
@@ -539,8 +588,14 @@ func TestSelectAvailableKey_UnknownStrategy(t *testing.T) {
 		}
 	}
 
+	// ✅ P0重构：预先查询apiKeys
+	apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("查询API Keys失败: %v", err)
+	}
+
 	// 首次选择应返回Key0（回退到sequential策略）
-	keyIndex, _, err := selector.SelectAvailableKey(ctx, cfg, nil)
+	keyIndex, _, err := selector.SelectAvailableKey(cfg.ID, apiKeys, nil)
 
 	if err != nil {
 		t.Fatalf("SelectAvailableKey失败: %v", err)
