@@ -196,6 +196,8 @@ type APIKey struct {
 **性能调优**(详见`internal/config/defaults.go`):
 - `CCLOAD_MAX_CONCURRENCY`: 最大并发请求数(默认1000)
 - `CCLOAD_MAX_KEY_RETRIES`: 单渠道最大Key重试次数(默认3)
+- `CCLOAD_LOG_WORKERS`: 日志Worker数量(默认1,**不建议修改**以保证日志顺序)
+- `CCLOAD_LOG_BUFFER`: 日志缓冲区大小(默认1000)
 
 ## 代码规范
 

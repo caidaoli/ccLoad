@@ -56,7 +56,10 @@ const (
 	DefaultLogBufferSize = 1000
 
 	// DefaultLogWorkers 默认日志Worker协程数
-	DefaultLogWorkers = 3
+	// ✅ P2修复(2025-10-28): 改为1以保证日志写入顺序(FIFO)
+	// 多worker会导致竞争消费logChan,打乱日志顺序
+	// 性能影响: 单worker仍支持批量写入,性能足够(1000条/秒+)
+	DefaultLogWorkers = 1
 
 	// LogBatchSize 批量写入日志的大小（条数）
 	LogBatchSize = 100
