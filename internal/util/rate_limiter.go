@@ -89,11 +89,6 @@ func (rl *LoginRateLimiter) AllowAttempt(ip string) bool {
 	return true
 }
 
-// RecordFailure 记录失败尝试（用于登录失败后）
-func (rl *LoginRateLimiter) RecordFailure(ip string) {
-	// AllowAttempt 已经增加了计数，这里不需要额外操作
-	// 保留此函数用于未来扩展（如：动态调整锁定时长）
-}
 
 // RecordSuccess 记录成功登录（重置计数）
 func (rl *LoginRateLimiter) RecordSuccess(ip string) {
@@ -191,24 +186,3 @@ func (rl *LoginRateLimiter) Stop() {
 	close(rl.stopCh)
 }
 
-// Stats 获取速率限制器统计信息
-func (rl *LoginRateLimiter) Stats() map[string]any {
-	rl.mu.RLock()
-	defer rl.mu.RUnlock()
-
-	totalRecords := len(rl.attempts)
-	lockedCount := 0
-
-	for _, record := range rl.attempts {
-		if time.Now().Before(record.lockUntil) {
-			lockedCount++
-		}
-	}
-
-	return map[string]any{
-		"total_records":            totalRecords,
-		"locked_ips":               lockedCount,
-		"max_attempts":             rl.maxAttempts,
-		"lockout_duration_minutes": rl.lockoutDuration.Minutes(),
-	}
-}

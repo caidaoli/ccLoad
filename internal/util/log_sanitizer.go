@@ -57,14 +57,6 @@ func SanitizeError(err error) string {
 	return SanitizeLogMessage(err.Error())
 }
 
-// MaskSensitiveData 掩码敏感数据（API Key、密码等）
-// 格式：保留前4位和后4位，中间用...替代
-func MaskSensitiveData(data string) string {
-	if len(data) <= 8 {
-		return "****" // 短数据完全掩码
-	}
-	return data[:4] + "..." + data[len(data)-4:]
-}
 
 // SafePrintf 安全的日志打印函数（自动消毒所有参数）
 // 用于替代标准库的 log.Printf，防止日志注入攻击

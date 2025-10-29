@@ -29,24 +29,7 @@ const (
 	MinCooldownDuration = 1 * time.Second
 )
 
-// scanUnixTimestamp 统一的Unix时间戳扫描器
-// 消除代码中8+处重复的时间戳转换逻辑
-// 使用场景: GetCooldownUntil, GetKeyCooldownUntil, BumpCooldownOnError等
-type scannable interface {
-	Scan(dest ...any) error
-}
 
-// scanUnixTimestamp 从数据库扫描Unix时间戳并转换为time.Time
-func scanUnixTimestamp(scanner scannable) (time.Time, bool) {
-	var unixTime int64
-	if err := scanner.Scan(&unixTime); err != nil {
-		return time.Time{}, false
-	}
-	if unixTime == 0 {
-		return time.Time{}, false
-	}
-	return time.Unix(unixTime, 0), true
-}
 
 // calculateBackoffDuration 计算指数退避冷却时间
 // 统一冷却策略:
@@ -107,12 +90,6 @@ func CalculateBackoffDuration(prevMs int64, until time.Time, now time.Time, stat
 
 // toUnixTimestamp 安全转换time.Time到Unix时间戳
 // 处理零值时间
-func toUnixTimestamp(t time.Time) int64 {
-	if t.IsZero() {
-		return 0
-	}
-	return t.Unix()
-}
 
 // calculateCooldownDuration 计算冷却持续时间（毫秒）
 // 用于存储到数据库的duration_ms字段

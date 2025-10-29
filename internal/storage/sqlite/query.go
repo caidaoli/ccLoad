@@ -63,15 +63,6 @@ func (wb *WhereBuilder) AddCondition(condition string, args ...any) *WhereBuilde
 	return wb
 }
 
-// AddTimeRange 添加时间范围条件
-// ✅ P1 修复 (2025-01-XX): 添加字段名白名单验证
-func (wb *WhereBuilder) AddTimeRange(timeField string, since any) *WhereBuilder {
-	// P1 安全修复：验证字段名
-	if err := ValidateFieldName(timeField); err != nil {
-		panic(fmt.Sprintf("SQL注入防护: %v", err))
-	}
-	return wb.AddCondition(fmt.Sprintf("%s >= ?", timeField), since)
-}
 
 // ApplyLogFilter 应用日志过滤器，消除重复的过滤逻辑
 // 重构：移除表别名，直接使用列名（修复SQL错误）

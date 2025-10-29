@@ -92,38 +92,6 @@ func TestSanitizeError(t *testing.T) {
 	}
 }
 
-func TestMaskSensitiveData(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{
-			name:     "API Key",
-			input:    "sk-ant-api03-1234567890abcdef",
-			expected: "sk-a...cdef",
-		},
-		{
-			name:     "短密码",
-			input:    "admin",
-			expected: "****",
-		},
-		{
-			name:     "正常密码",
-			input:    "MySecretPassword123",
-			expected: "MySe...d123",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := MaskSensitiveData(tt.input)
-			if result != tt.expected {
-				t.Errorf("MaskSensitiveData() = %v, want %v", result, tt.expected)
-			}
-		})
-	}
-}
 
 func BenchmarkSanitizeLogMessage(b *testing.B) {
 	msg := "Error: connection failed\nRetrying...\r\nAttempt 1"

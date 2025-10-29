@@ -238,47 +238,6 @@ func TestGetLockoutTime_NonExistentIP(t *testing.T) {
 	t.Logf("✅ 不存在的IP锁定时间正确返回0")
 }
 
-// TestStats 测试统计信息
-func TestStats(t *testing.T) {
-	limiter := NewLoginRateLimiter()
-	defer limiter.Stop()
-
-	// 初始状态
-	stats := limiter.Stats()
-	if stats["total_records"] != 0 {
-		t.Errorf("初始记录数应为0，实际%v", stats["total_records"])
-	}
-	if stats["locked_ips"] != 0 {
-		t.Errorf("初始锁定IP数应为0，实际%v", stats["locked_ips"])
-	}
-
-	// 创建一些记录
-	limiter.AllowAttempt("192.168.1.10")
-	limiter.AllowAttempt("192.168.1.11")
-
-	// 触发一个锁定
-	for i := 1; i <= 6; i++ {
-		limiter.AllowAttempt("192.168.1.12")
-	}
-
-	// 检查统计信息
-	stats = limiter.Stats()
-	if stats["total_records"] != 3 {
-		t.Errorf("应有3条记录，实际%v", stats["total_records"])
-	}
-	if stats["locked_ips"] != 1 {
-		t.Errorf("应有1个锁定IP，实际%v", stats["locked_ips"])
-	}
-	if stats["max_attempts"] != 5 {
-		t.Errorf("最大尝试次数应为5，实际%v", stats["max_attempts"])
-	}
-	if stats["lockout_duration_minutes"] != 15.0 {
-		t.Errorf("锁定时长应为15分钟，实际%v", stats["lockout_duration_minutes"])
-	}
-
-	t.Logf("✅ 统计信息正确: total_records=%v, locked_ips=%v, max_attempts=%v, lockout_duration_minutes=%v",
-		stats["total_records"], stats["locked_ips"], stats["max_attempts"], stats["lockout_duration_minutes"])
-}
 
 // TestConcurrentAccess 测试并发访问
 func TestConcurrentAccess(t *testing.T) {
@@ -308,28 +267,6 @@ func TestConcurrentAccess(t *testing.T) {
 	// 验证数据一致性（不应该崩溃）
 	count := limiter.GetAttemptCount("192.168.1.20")
 	t.Logf("✅ 并发访问测试通过：无数据竞争，最终计数=%d", count)
-}
-
-// TestRecordFailure 测试记录失败（当前为空实现）
-func TestRecordFailure(t *testing.T) {
-	limiter := NewLoginRateLimiter()
-	defer limiter.Stop()
-
-	ip := "192.168.1.30"
-
-	// AllowAttempt 已经增加计数
-	limiter.AllowAttempt(ip)
-	countBefore := limiter.GetAttemptCount(ip)
-
-	// RecordFailure 当前不改变状态
-	limiter.RecordFailure(ip)
-	countAfter := limiter.GetAttemptCount(ip)
-
-	if countBefore != countAfter {
-		t.Errorf("RecordFailure不应改变计数，before=%d, after=%d", countBefore, countAfter)
-	}
-
-	t.Logf("✅ RecordFailure正确（当前为空实现）")
 }
 
 // TestCleanup 测试清理过期记录

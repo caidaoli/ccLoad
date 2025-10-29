@@ -66,15 +66,6 @@ func RespondJSON[T any](c *gin.Context, code int, data T) {
 	})
 }
 
-// RespondJSONWithCount 发送带计数的JSON响应
-func RespondJSONWithCount[T any](c *gin.Context, code int, data T, count int) {
-	c.JSON(code, APIResponse[T]{
-		Success: code >= 200 && code < 300,
-		Data:    data,
-		Count:   count,
-	})
-}
-
 // RespondError 发送错误响应
 func RespondError(c *gin.Context, code int, err error) {
 	var errMsg string

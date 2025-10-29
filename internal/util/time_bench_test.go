@@ -66,17 +66,6 @@ func BenchmarkCalculateBackoffDuration_MaxLimit(b *testing.B) {
 	}
 }
 
-// BenchmarkScanUnixTimestamp 基准测试：Unix时间戳扫描
-func BenchmarkScanUnixTimestamp(b *testing.B) {
-	// Mock scanner
-	scanner := &mockScanner{unixTime: time.Now().Unix()}
-
-	b.ResetTimer()
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		_, _ = scanUnixTimestamp(scanner)
-	}
-}
 
 // mockScanner 用于基准测试的Mock扫描器
 type mockScanner struct {
@@ -92,16 +81,6 @@ func (m *mockScanner) Scan(dest ...any) error {
 	return nil
 }
 
-// BenchmarkToUnixTimestamp 基准测试：time.Time转Unix时间戳
-func BenchmarkToUnixTimestamp(b *testing.B) {
-	now := time.Now()
-
-	b.ResetTimer()
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		_ = toUnixTimestamp(now)
-	}
-}
 
 // BenchmarkCalculateCooldownDuration 基准测试：计算冷却持续时间
 func BenchmarkCalculateCooldownDuration(b *testing.B) {

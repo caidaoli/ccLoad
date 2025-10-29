@@ -93,28 +93,3 @@ func isTestingGoroutine(stack string) bool {
 
 	return false
 }
-
-// WaitForGoroutines 等待特定数量的goroutine完成
-// maxWait: 最大等待时间
-// targetCount: 目标goroutine数量（通常是测试开始前的数量）
-// 返回：是否在超时前达到目标
-func WaitForGoroutines(maxWait time.Duration, targetCount int) bool {
-	deadline := time.Now().Add(maxWait)
-
-	for time.Now().Before(deadline) {
-		current := countRelevantGoroutines()
-		if current <= targetCount {
-			return true
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	return false
-}
-
-// PrintGoroutineStacks 打印所有goroutine的堆栈（调试用）
-func PrintGoroutineStacks() string {
-	buf := make([]byte, 1<<20) // 1MB
-	stackLen := runtime.Stack(buf, true)
-	return string(buf[:stackLen])
-}

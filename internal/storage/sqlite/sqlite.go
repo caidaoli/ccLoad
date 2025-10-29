@@ -172,10 +172,6 @@ func NewSQLiteStore(path string, redisSync RedisSync) (*SQLiteStore, error) {
 	return newSQLiteStoreWithOptions(path, redisSync, false)
 }
 
-// NewSQLiteStoreForTest 创建测试专用的SQLite存储实例（禁用连接生命周期）
-func NewSQLiteStoreForTest(path string, redisSync RedisSync) (*SQLiteStore, error) {
-	return newSQLiteStoreWithOptions(path, redisSync, true)
-}
 
 // newSQLiteStoreWithOptions 创建SQLite存储实例（带选项）
 func newSQLiteStoreWithOptions(path string, redisSync RedisSync, forTest bool) (*SQLiteStore, error) {

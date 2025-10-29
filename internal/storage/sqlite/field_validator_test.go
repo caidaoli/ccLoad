@@ -63,91 +63,7 @@ func TestValidateFieldName(t *testing.T) {
 	}
 }
 
-func TestSanitizeOrderBy(t *testing.T) {
-	tests := []struct {
-		name      string
-		orderBy   string
-		want      string
-		wantError bool
-	}{
-		{
-			name:      "合法-单字段升序",
-			orderBy:   "id ASC",
-			want:      "id ASC",
-			wantError: false,
-		},
-		{
-			name:      "合法-单字段降序",
-			orderBy:   "created_at DESC",
-			want:      "created_at DESC",
-			wantError: false,
-		},
-		{
-			name:      "合法-多字段",
-			orderBy:   "priority DESC, id ASC",
-			want:      "priority DESC, id ASC",
-			wantError: false,
-		},
-		{
-			name:      "合法-无排序方向",
-			orderBy:   "name",
-			want:      "name",
-			wantError: false,
-		},
-		{
-			name:      "非法-无效字段",
-			orderBy:   "malicious_field DESC",
-			wantError: true,
-		},
-		{
-			name:      "非法-SQL注入",
-			orderBy:   "id; DROP TABLE logs--",
-			wantError: true,
-		},
-		{
-			name:      "非法-无效排序方向",
-			orderBy:   "id RANDOM",
-			wantError: true,
-		},
-		{
-			name:      "空字符串",
-			orderBy:   "",
-			want:      "",
-			wantError: false,
-		},
-	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := SanitizeOrderBy(tt.orderBy)
-			if (err != nil) != tt.wantError {
-				t.Errorf("SanitizeOrderBy(%q) error = %v, wantError %v",
-					tt.orderBy, err, tt.wantError)
-			}
-
-			if !tt.wantError && got != tt.want {
-				t.Errorf("SanitizeOrderBy(%q) = %q, want %q",
-					tt.orderBy, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestValidateMultipleFields(t *testing.T) {
-	t.Run("全部合法", func(t *testing.T) {
-		err := ValidateMultipleFields("id", "name", "created_at")
-		if err != nil {
-			t.Errorf("ValidateMultipleFields 应该通过，got error: %v", err)
-		}
-	})
-
-	t.Run("包含非法字段", func(t *testing.T) {
-		err := ValidateMultipleFields("id", "malicious", "name")
-		if err == nil {
-			t.Error("ValidateMultipleFields 应该返回错误")
-		}
-	})
-}
 
 // TestQueryBuilderFieldValidation 测试 QueryBuilder 的字段验证
 func TestQueryBuilderFieldValidation(t *testing.T) {
@@ -185,38 +101,5 @@ func TestQueryBuilderFieldValidation(t *testing.T) {
 
 		qb := NewQueryBuilder("SELECT * FROM logs")
 		qb.WhereIn("malicious_field", []any{1, 2, 3})
-	})
-
-	t.Run("AddTimeRange-合法字段", func(t *testing.T) {
-		defer func() {
-			if r := recover(); r != nil {
-				t.Errorf("AddTimeRange 不应该 panic，got: %v", r)
-			}
-		}()
-
-		wb := NewWhereBuilder()
-		wb.AddTimeRange("time", 1234567890)
-
-		whereClause, args := wb.Build()
-		expectedClause := "time >= ?"
-		if whereClause != expectedClause {
-			t.Errorf("whereClause = %q, want %q", whereClause, expectedClause)
-		}
-
-		if len(args) != 1 {
-			t.Errorf("args length = %d, want 1", len(args))
-		}
-	})
-
-	t.Run("AddTimeRange-非法字段应panic", func(t *testing.T) {
-		defer func() {
-			r := recover()
-			if r == nil {
-				t.Error("AddTimeRange 应该 panic")
-			}
-		}()
-
-		wb := NewWhereBuilder()
-		wb.AddTimeRange("malicious; DROP TABLE", 1234567890)
 	})
 }

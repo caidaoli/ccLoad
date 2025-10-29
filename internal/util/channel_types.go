@@ -43,16 +43,6 @@ var ChannelTypes = []ChannelTypeConfig{
 	},
 }
 
-// GetChannelTypeDisplayName 根据内部值获取显示名称
-func GetChannelTypeDisplayName(value string) string {
-	for _, ct := range ChannelTypes {
-		if ct.Value == value {
-			return ct.DisplayName
-		}
-	}
-	return value // 回退到原始值
-}
-
 // IsValidChannelType 验证渠道类型是否有效（替代models.go中的硬编码）
 func IsValidChannelType(value string) bool {
 	for _, ct := range ChannelTypes {
@@ -61,14 +51,6 @@ func IsValidChannelType(value string) bool {
 		}
 	}
 	return false
-}
-
-// GetDefaultChannelType 获取默认渠道类型
-func GetDefaultChannelType() string {
-	if len(ChannelTypes) > 0 {
-		return ChannelTypes[0].Value
-	}
-	return "anthropic" // 最终回退
 }
 
 // NormalizeChannelType 规范化渠道类型（兼容性处理）
