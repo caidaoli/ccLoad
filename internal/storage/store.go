@@ -48,6 +48,8 @@ type Store interface {
 	AddLog(ctx context.Context, e *model.LogEntry) error
 	ListLogs(ctx context.Context, since time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error)
 
+	CountLogs(ctx context.Context, since time.Time, filter *model.LogFilter) (int, error)
+
 	// Metrics - 指标管理
 	Aggregate(ctx context.Context, since time.Time, bucket time.Duration) ([]model.MetricPoint, error)
 

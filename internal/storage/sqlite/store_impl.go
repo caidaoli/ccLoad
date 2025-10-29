@@ -595,6 +595,39 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 	return out, nil
 }
 
+// CountLogs 返回符合条件的日志总数（用于分页）
+func (s *SQLiteStore) CountLogs(ctx context.Context, since time.Time, filter *model.LogFilter) (int, error) {
+	baseQuery := `SELECT COUNT(*) FROM logs`
+	sinceMs := since.UnixMilli()
+
+	qb := NewQueryBuilder(baseQuery).
+		Where("time >= ?", sinceMs)
+
+	// 支持按渠道名称过滤（与ListLogs保持一致）
+	if filter != nil && (filter.ChannelName != "" || filter.ChannelNameLike != "") {
+		ids, err := s.fetchChannelIDsByNameFilter(ctx, filter.ChannelName, filter.ChannelNameLike)
+		if err != nil {
+			return 0, err
+		}
+		if len(ids) == 0 {
+			return 0, nil
+		}
+		vals := make([]any, 0, len(ids))
+		for _, id := range ids {
+			vals = append(vals, id)
+		}
+		qb.WhereIn("channel_id", vals)
+	}
+
+	// 其余过滤条件（model等）
+	qb.ApplyFilter(filter)
+
+	query, args := qb.Build()
+	var count int
+	err := s.logDB.QueryRowContext(ctx, query, args...).Scan(&count)
+	return count, err
+}
+
 func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket time.Duration) ([]model.MetricPoint, error) {
 	// 性能优化：使用SQL GROUP BY进行数据库层聚合，避免内存聚合
 	// 原方案：加载所有日志到内存聚合（10万条日志需2-5秒，占用100-200MB内存）

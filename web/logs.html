@@ -110,8 +110,20 @@
                   </svg>
                   上一页
                 </button>
-                <span class="pagination-info" style="margin: 0 var(--space-4);">
+                <span class="pagination-info" style="margin: 0 var(--space-4); display: flex; align-items: center; gap: var(--space-2);">
                   第 <span id="logs_current_page2">1</span> 页，共 <span id="logs_total_pages2">1</span> 页
+                  <span style="margin-left: var(--space-2);">|</span>
+                  跳转到
+                  <input
+                    type="number"
+                    id="logs_jump_page"
+                    min="1"
+                    max="1"
+                    placeholder="页码"
+                    style="width: 100px; padding: 4px 8px; border: 1px solid var(--neutral-300); border-radius: 4px; text-align: center;"
+                    onkeydown="if(event.key==='Enter') jumpToPage()"
+                  />
+                  页
                 </span>
                 <button id="logs_next2" class="btn btn-secondary btn-sm" onclick="nextLogsPage()">
                   下一页
@@ -155,19 +167,26 @@
         
         const res = await fetchWithAuth('/admin/errors?' + params.toString());
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        
+
         const response = await res.json();
-        const data = response.success ? (response.data || []) : (response || []);
-        
-        // 计算总页数
-        if (data.length === logsPageSize) {
-          totalLogsPages = Math.max(currentLogsPage + 1, totalLogsPages);
-        } else if (data.length < logsPageSize && currentLogsPage === 1) {
-          totalLogsPages = 1;
-        } else if (data.length < logsPageSize) {
-          totalLogsPages = currentLogsPage;
+        const result = response.success ? response.data : response;
+        const data = result.data || result || [];
+
+        // 精确计算总页数（基于后端返回的total字段）
+        if (result.total !== undefined) {
+          totalLogs = result.total;
+          totalLogsPages = Math.ceil(totalLogs / logsPageSize) || 1;
+        } else {
+          // 降级方案：后端未返回total时使用旧逻辑
+          if (data.length === logsPageSize) {
+            totalLogsPages = Math.max(currentLogsPage + 1, totalLogsPages);
+          } else if (data.length < logsPageSize && currentLogsPage === 1) {
+            totalLogsPages = 1;
+          } else if (data.length < logsPageSize) {
+            totalLogsPages = currentLogsPage;
+          }
         }
-        
+
         updatePagination();
         renderLogs(data);
         updateStats(data);
@@ -284,9 +303,16 @@
       const totalPages2El = document.getElementById('logs_total_pages2');
       const prev2El = document.getElementById('logs_prev2');
       const next2El = document.getElementById('logs_next2');
+      const jumpPageInput = document.getElementById('logs_jump_page');
 
       if (currentPage2El) currentPage2El.textContent = currentLogsPage;
       if (totalPages2El) totalPages2El.textContent = totalLogsPages;
+
+      // 更新跳转输入框的max属性
+      if (jumpPageInput) {
+        jumpPageInput.max = totalLogsPages;
+        jumpPageInput.placeholder = `1-${totalLogsPages}`;
+      }
 
       // 更新按钮状态（只更新底部分页）
       const prevDisabled = currentLogsPage <= 1;
@@ -317,6 +343,33 @@
         currentLogsPage++;
         load();
       }
+    }
+
+    function jumpToPage() {
+      const jumpPageInput = document.getElementById('logs_jump_page');
+      if (!jumpPageInput) return;
+
+      const targetPage = parseInt(jumpPageInput.value);
+
+      // 输入验证
+      if (isNaN(targetPage) || targetPage < 1 || targetPage > totalLogsPages) {
+        jumpPageInput.value = ''; // 清空无效输入
+        if (window.showError) {
+          try {
+            window.showError(`请输入有效的页码 (1-${totalLogsPages})`);
+          } catch(_) {}
+        }
+        return;
+      }
+
+      // 跳转到目标页
+      if (targetPage !== currentLogsPage) {
+        currentLogsPage = targetPage;
+        load();
+      }
+
+      // 清空输入框
+      jumpPageInput.value = '';
     }
 
     function changePageSize() {

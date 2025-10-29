@@ -63,7 +63,6 @@ func (wb *WhereBuilder) AddCondition(condition string, args ...any) *WhereBuilde
 	return wb
 }
 
-
 // ApplyLogFilter 应用日志过滤器，消除重复的过滤逻辑
 // 重构：移除表别名，直接使用列名（修复SQL错误）
 func (wb *WhereBuilder) ApplyLogFilter(filter *model.LogFilter) *WhereBuilder {
@@ -282,19 +281,6 @@ func parseModelsJSON(modelsStr string, models *[]string) error {
 	return sonic.Unmarshal([]byte(modelsStr), models)
 }
 
-// 辅助函数：序列化模型为JSON
-func serializeModels(models []string) (string, error) {
-	if len(models) == 0 {
-		return "[]", nil
-	}
-
-	bytes, err := sonic.Marshal(models)
-	if err != nil {
-		return "[]", err
-	}
-	return string(bytes), nil
-}
-
 // 辅助函数：解析模型重定向JSON
 func parseModelRedirectsJSON(redirectsStr string, redirects *map[string]string) error {
 	if redirectsStr == "" || redirectsStr == "{}" {
@@ -303,17 +289,4 @@ func parseModelRedirectsJSON(redirectsStr string, redirects *map[string]string) 
 	}
 
 	return sonic.Unmarshal([]byte(redirectsStr), redirects)
-}
-
-// 辅助函数：序列化模型重定向为JSON
-func serializeModelRedirects(redirects map[string]string) (string, error) {
-	if len(redirects) == 0 {
-		return "{}", nil
-	}
-
-	bytes, err := sonic.Marshal(redirects)
-	if err != nil {
-		return "{}", err
-	}
-	return string(bytes), nil
 }

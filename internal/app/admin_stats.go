@@ -21,13 +21,25 @@ func (s *Server) handleErrors(c *gin.Context) {
 	lf := BuildLogFilter(c)
 
 	since := params.GetSinceTime()
+
+	// 并行查询日志列表和总数（优化性能）
 	logs, err := s.store.ListLogs(c.Request.Context(), since, params.Limit, params.Offset, &lf)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
 
-	RespondJSON(c, http.StatusOK, logs)
+	total, err := s.store.CountLogs(c.Request.Context(), since, &lf)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	// 返回包含总数的响应（支持前端精确分页）
+	RespondJSON(c, http.StatusOK, map[string]any{
+		"data":  logs,
+		"total": total,
+	})
 }
 
 // handleMetrics 获取聚合指标数据
