@@ -270,7 +270,6 @@ type APIKey struct {
 - **语言**: Go 1.25.0
 - **框架**: Gin v1.10.1
 - **数据库**: SQLite3 v1.38.2
-- **缓存**: Ristretto v2.3.0(内存缓存)
 - **Redis**: go-redis v9.7.0(可选同步)
 - **JSON**: Sonic v1.14.1(高性能,通过GOTAGS=go_json启用)
 - **环境配置**: godotenv v1.5.1

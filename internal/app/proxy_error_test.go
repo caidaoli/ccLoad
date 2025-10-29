@@ -340,8 +340,7 @@ func TestAllKeysCooledDown_UpgradeToChannelCooldown(t *testing.T) {
 
 	// 配置3个Key的渠道（注：新架构中API Keys在api_keys表）
 	cfg := &model.Config{
-		ID:   1,
-		Name: "test-channel",
+		ID: 1,
 	}
 
 	// ✅ P0重构：预先查询apiKeys（MockStore返回包含冷却状态的Keys）

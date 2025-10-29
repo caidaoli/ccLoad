@@ -278,3 +278,232 @@ func TestClassifyError_ContextCanceled(t *testing.T) {
 		})
 	}
 }
+
+// ✅ P1改进（2025-10-29）：测试429错误的智能分类
+func TestClassifyRateLimitError(t *testing.T) {
+	tests := []struct {
+		name         string
+		headers      map[string][]string
+		responseBody []byte
+		expected     ErrorLevel
+		reason       string
+	}{
+		// Retry-After头测试
+		{
+			name: "retry_after_120_seconds",
+			headers: map[string][]string{
+				"Retry-After": {"120"},
+			},
+			responseBody: []byte(`{"error":"rate limit exceeded"}`),
+			expected:     ErrorLevelChannel,
+			reason:       "Retry-After > 60秒表示账户级或IP级限流，应冷却渠道",
+		},
+		{
+			name: "retry_after_30_seconds",
+			headers: map[string][]string{
+				"Retry-After": {"30"},
+			},
+			responseBody: []byte(`{"error":"rate limit exceeded"}`),
+			expected:     ErrorLevelKey,
+			reason:       "Retry-After ≤ 60秒表示Key级限流，应冷却Key",
+		},
+		{
+			name: "retry_after_60_seconds_boundary",
+			headers: map[string][]string{
+				"Retry-After": {"60"},
+			},
+			responseBody: []byte(`{"error":"rate limit exceeded"}`),
+			expected:     ErrorLevelKey,
+			reason:       "Retry-After = 60秒边界值，保守策略为Key级",
+		},
+		{
+			name: "retry_after_http_date",
+			headers: map[string][]string{
+				"Retry-After": {"Wed, 29 Oct 2025 12:00:00 GMT"},
+			},
+			responseBody: []byte(`{"error":"rate limit exceeded"}`),
+			expected:     ErrorLevelChannel,
+			reason:       "HTTP日期格式通常表示长时间限流，应冷却渠道",
+		},
+		{
+			name: "retry_after_invalid_format",
+			headers: map[string][]string{
+				"Retry-After": {"invalid"},
+			},
+			responseBody: []byte(`{"error":"rate limit exceeded"}`),
+			expected:     ErrorLevelKey,
+			reason:       "无效的Retry-After格式应默认为Key级",
+		},
+
+		// X-RateLimit-Scope头测试
+		{
+			name: "scope_global",
+			headers: map[string][]string{
+				"X-Ratelimit-Scope": {"global"},
+			},
+			responseBody: []byte(`{"error":"rate limit exceeded"}`),
+			expected:     ErrorLevelChannel,
+			reason:       "global scope表示全局限流，应冷却渠道",
+		},
+		{
+			name: "scope_ip",
+			headers: map[string][]string{
+				"X-Ratelimit-Scope": {"ip"},
+			},
+			responseBody: []byte(`{"error":"rate limit exceeded"}`),
+			expected:     ErrorLevelChannel,
+			reason:       "IP scope表示IP级限流，应冷却渠道",
+		},
+		{
+			name: "scope_account",
+			headers: map[string][]string{
+				"X-Ratelimit-Scope": {"account"},
+			},
+			responseBody: []byte(`{"error":"rate limit exceeded"}`),
+			expected:     ErrorLevelChannel,
+			reason:       "account scope表示账户级限流，应冷却渠道",
+		},
+		{
+			name: "scope_user",
+			headers: map[string][]string{
+				"X-Ratelimit-Scope": {"user"},
+			},
+			responseBody: []byte(`{"error":"rate limit exceeded"}`),
+			expected:     ErrorLevelKey,
+			reason:       "user scope（非global/ip/account）应默认为Key级",
+		},
+		{
+			name: "scope_case_insensitive",
+			headers: map[string][]string{
+				"X-Ratelimit-Scope": {"GLOBAL"},
+			},
+			responseBody: []byte(`{"error":"rate limit exceeded"}`),
+			expected:     ErrorLevelChannel,
+			reason:       "scope匹配应不区分大小写",
+		},
+
+		// 响应体错误描述测试
+		{
+			name:    "body_ip_rate_limit",
+			headers: map[string][]string{},
+			responseBody: []byte(`{
+				"error": {
+					"message": "IP rate limit exceeded",
+					"type": "rate_limit_error"
+				}
+			}`),
+			expected: ErrorLevelChannel,
+			reason:   "响应体包含'ip rate limit'应冷却渠道",
+		},
+		{
+			name:    "body_account_rate_limit",
+			headers: map[string][]string{},
+			responseBody: []byte(`{
+				"error": {
+					"message": "Account rate limit exceeded for organization"
+				}
+			}`),
+			expected: ErrorLevelChannel,
+			reason:   "响应体包含'account rate limit'应冷却渠道",
+		},
+		{
+			name:    "body_global_rate_limit",
+			headers: map[string][]string{},
+			responseBody: []byte(`{
+				"error": "Global rate limit has been exceeded"
+			}`),
+			expected: ErrorLevelChannel,
+			reason:   "响应体包含'global rate limit'应冷却渠道",
+		},
+		{
+			name:    "body_organization_limit",
+			headers: map[string][]string{},
+			responseBody: []byte(`{
+				"error": "Organization limit reached"
+			}`),
+			expected: ErrorLevelChannel,
+			reason:   "响应体包含'organization limit'应冷却渠道",
+		},
+		{
+			name:    "body_case_insensitive",
+			headers: map[string][]string{},
+			responseBody: []byte(`{
+				"error": "IP Rate Limit Exceeded"
+			}`),
+			expected: ErrorLevelChannel,
+			reason:   "响应体匹配应不区分大小写",
+		},
+
+		// 默认Key级限流测试
+		{
+			name:    "default_key_level_no_special_indicators",
+			headers: map[string][]string{},
+			responseBody: []byte(`{
+				"error": "Too many requests"
+			}`),
+			expected: ErrorLevelKey,
+			reason:   "无特殊指示器时应默认为Key级",
+		},
+		{
+			name:         "nil_headers",
+			headers:      nil,
+			responseBody: []byte(`{"error":"rate limit"}`),
+			expected:     ErrorLevelKey,
+			reason:       "nil headers应默认为Key级",
+		},
+		{
+			name:         "empty_headers",
+			headers:      map[string][]string{},
+			responseBody: []byte(`{"error":"rate limit"}`),
+			expected:     ErrorLevelKey,
+			reason:       "空headers应默认为Key级",
+		},
+		{
+			name:         "empty_response_body",
+			headers:      map[string][]string{},
+			responseBody: []byte{},
+			expected:     ErrorLevelKey,
+			reason:       "空响应体应默认为Key级",
+		},
+		{
+			name:         "nil_response_body",
+			headers:      map[string][]string{},
+			responseBody: nil,
+			expected:     ErrorLevelKey,
+			reason:       "nil响应体应默认为Key级",
+		},
+
+		// 组合场景测试
+		{
+			name: "combined_retry_after_and_scope",
+			headers: map[string][]string{
+				"Retry-After":       {"30"},  // Key级指示器
+				"X-Ratelimit-Scope": {"ip"},  // 渠道级指示器
+			},
+			responseBody: []byte(`{"error":"rate limit"}`),
+			expected:     ErrorLevelChannel,
+			reason:       "Retry-After检查优先于Scope，但>60秒判断优先",
+		},
+		{
+			name: "combined_scope_and_body",
+			headers: map[string][]string{
+				"X-Ratelimit-Scope": {"user"},  // Key级指示器
+			},
+			responseBody: []byte(`{"error":"IP rate limit exceeded"}`),  // 渠道级指示器
+			expected:     ErrorLevelChannel,
+			reason:       "响应体中的渠道级指示器应被识别",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ClassifyRateLimitError(tt.headers, tt.responseBody)
+			if result != tt.expected {
+				t.Errorf("❌ %s\n  期望: %v\n  实际: %v\n  原因: %s",
+					tt.name, tt.expected, result, tt.reason)
+			} else {
+				t.Logf("✅ %s - %s", tt.name, tt.reason)
+			}
+		})
+	}
+}

@@ -228,6 +228,9 @@ func NewServer(store storage.Store) *Server {
 	s.wg.Add(1)
 	go s.cleanupOldLogsLoop() // 定期清理3天前的日志
 
+	s.wg.Add(1)
+	go s.cleanupKeySelectorCountersLoop() // ✅ P0修复(2025-10-29): 定期清理KeySelector计数器，防止内存泄漏
+
 	return s
 
 }
@@ -511,12 +514,13 @@ func (s *Server) tokenCleanupLoop() {
 
 	for {
 		select {
+		case <-s.shutdownCh:
+			// ✅ P0修复(2025-10-29): 优先检查shutdown信号,快速响应关闭
+			// 移除shutdown时的额外清理,避免潜在的死锁或延迟
+			// Token清理不是关键路径,可以在下次启动时清理过期Token
+			return
 		case <-ticker.C:
 			s.cleanExpiredTokens()
-		case <-s.shutdownCh:
-			// 收到关闭信号，执行最后一次清理后退出
-			s.cleanExpiredTokens()
-			return
 		}
 	}
 }
@@ -528,18 +532,20 @@ func (s *Server) logWorker() {
 	defer s.wg.Done()
 
 	batch := make([]*model.LogEntry, 0, config.LogBatchSize)
-	timer := time.NewTimer(config.SecondsToDuration(config.LogBatchTimeout))
-	defer timer.Stop()
+	ticker := time.NewTicker(config.SecondsToDuration(config.LogBatchTimeout))
+	defer ticker.Stop()
 
 	for {
 		select {
+		case <-s.shutdownCh:
+			// ✅ P2改进(2025-10-29): 优先检查shutdown信号，快速响应关闭
+			s.flushIfNeeded(batch)
+			return
+
 		case entry, ok := <-s.logChan:
-			// ✅ P2修复：channel关闭时，ok=false，立即flush并退出
 			if !ok {
 				// logChan已关闭，flush剩余日志并退出
-				if len(batch) > 0 {
-					s.flushLogs(batch)
-				}
+				s.flushIfNeeded(batch)
 				return
 			}
 
@@ -547,29 +553,17 @@ func (s *Server) logWorker() {
 			if len(batch) >= config.LogBatchSize {
 				s.flushLogs(batch)
 				batch = batch[:0]
+				ticker.Reset(config.SecondsToDuration(config.LogBatchTimeout))
 			}
-			timer.Reset(config.SecondsToDuration(config.LogBatchTimeout))
 
-		case <-timer.C:
-			// ✅ P2修复：timer触发时也检查channel是否关闭
-			select {
-			case entry, ok := <-s.logChan:
-				if !ok {
-					// Channel已关闭
-					if len(batch) > 0 {
-						s.flushLogs(batch)
-					}
-					return
-				}
-				// 收到新日志，追加到batch
-				batch = append(batch, entry)
-			default:
-				// Channel未关闭且无新日志，正常flush
-				if len(batch) > 0 {
-					s.flushLogs(batch)
-					batch = batch[:0]
-				}
-			}
+		case <-ticker.C:
+			// ✅ P2改进(2025-10-29): 移除嵌套select，简化定时flush逻辑
+			// 设计原则：
+			// - ticker触发时直接flush当前batch
+			// - 如果logChan关闭，下次循环会在entry <- logChan中捕获
+			// - shutdown信号在select中优先级最高，保证快速响应
+			s.flushIfNeeded(batch)
+			batch = batch[:0]
 		}
 	}
 }
@@ -588,6 +582,14 @@ func (s *Server) flushLogs(logs []*model.LogEntry) {
 	// 回退逐条写入
 	for _, e := range logs {
 		_ = s.store.AddLog(ctx, e)
+	}
+}
+
+// flushIfNeeded 辅助函数：当batch非空时执行flush
+// ✅ P2改进(2025-10-29): 提取重复逻辑，遵循DRY原则
+func (s *Server) flushIfNeeded(batch []*model.LogEntry) {
+	if len(batch) > 0 {
+		s.flushLogs(batch)
 	}
 }
 
@@ -633,6 +635,31 @@ func (s *Server) cleanupOldLogsLoop() {
 			// 通过Store接口清理旧日志，忽略错误（非关键操作）
 			_ = s.store.CleanupLogsBefore(ctx, cutoff)
 			cancel() // 立即释放资源
+
+		case <-s.shutdownCh:
+			// 收到关闭信号，直接退出（不执行最后一次清理）
+			return
+		}
+	}
+}
+
+// cleanupKeySelectorCountersLoop 定期清理KeySelector的过期计数器
+// ✅ P0修复(2025-10-29): 防止rrCounters map内存泄漏
+// 每小时清理一次，删除1小时未使用的计数器
+func (s *Server) cleanupKeySelectorCountersLoop() {
+	defer s.wg.Done()
+
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			// 清理1小时未访问的计数器
+			removed := s.keySelector.CleanupStaleCounters(3600)
+			if removed > 0 {
+				util.SafePrintf("🧹 KeySelector清理: 移除 %d 个过期计数器", removed)
+			}
 
 		case <-s.shutdownCh:
 			// 收到关闭信号，直接退出（不执行最后一次清理）

@@ -197,7 +197,11 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 
 		// 所有Key冷却：触发渠道级冷却(503)，防止后续请求重复尝试
 		if err != nil && strings.Contains(err.Error(), "channel keys unavailable") {
-			_, _ = s.store.BumpChannelCooldown(ctx, cfg.ID, time.Now(), 503)
+			// ✅ P0修复(2025-10-29): 记录冷却失败但不中断请求
+			// 设计原则: 这是防御性冷却，失败不应影响错误传播
+			if _, bumpErr := s.store.BumpChannelCooldown(ctx, cfg.ID, time.Now(), 503); bumpErr != nil {
+				util.SafePrintf("⚠️  WARNING: Failed to bump channel cooldown (channel=%d, status=503): %v", cfg.ID, bumpErr)
+			}
 			continue
 		}
 

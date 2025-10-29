@@ -10,6 +10,11 @@ import (
 	"time"
 )
 
+// contextKey 自定义类型用于 context key，避免 SA1029 警告
+type contextKey string
+
+const testingContextKey contextKey = "testing"
+
 // TestSelectAvailableKey_SingleKey 测试单Key场景
 func TestSelectAvailableKey_SingleKey(t *testing.T) {
 	store, cleanup := setupTestKeyStore(t)
@@ -17,7 +22,7 @@ func TestSelectAvailableKey_SingleKey(t *testing.T) {
 
 	var cooldownGauge atomic.Int64
 	selector := NewKeySelector(&cooldownGauge) // ✅ P0重构：移除store参数
-	ctx := context.WithValue(context.Background(), "testing", true)
+	ctx := context.WithValue(context.Background(), testingContextKey, true)
 
 	// 创建渠道
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -85,7 +90,7 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 
 	var cooldownGauge atomic.Int64
 	selector := NewKeySelector(&cooldownGauge) // ✅ P0重构：移除store参数
-	ctx := context.WithValue(context.Background(), "testing", true)
+	ctx := context.WithValue(context.Background(), testingContextKey, true)
 
 	// 创建渠道
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -193,7 +198,7 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 
 	var cooldownGauge atomic.Int64
 	selector := NewKeySelector(&cooldownGauge) // ✅ P0重构：移除store参数
-	ctx := context.WithValue(context.Background(), "testing", true)
+	ctx := context.WithValue(context.Background(), testingContextKey, true)
 
 	// 创建渠道
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -283,7 +288,7 @@ func TestSelectAvailableKey_KeyCooldown(t *testing.T) {
 
 	var cooldownGauge atomic.Int64
 	selector := NewKeySelector(&cooldownGauge) // ✅ P0重构：移除store参数
-	ctx := context.WithValue(context.Background(), "testing", true)
+	ctx := context.WithValue(context.Background(), testingContextKey, true)
 	now := time.Now()
 
 	// 创建渠道
@@ -403,7 +408,7 @@ func TestSelectAvailableKey_CooldownAndExclude(t *testing.T) {
 
 	var cooldownGauge atomic.Int64
 	selector := NewKeySelector(&cooldownGauge) // ✅ P0重构：移除store参数
-	ctx := context.WithValue(context.Background(), "testing", true)
+	ctx := context.WithValue(context.Background(), testingContextKey, true)
 	now := time.Now()
 
 	// 创建渠道
@@ -471,7 +476,7 @@ func TestSelectAvailableKey_NoKeys(t *testing.T) {
 
 	var cooldownGauge atomic.Int64
 	selector := NewKeySelector(&cooldownGauge) // ✅ P0重构：移除store参数
-	ctx := context.WithValue(context.Background(), "testing", true)
+	ctx := context.WithValue(context.Background(), testingContextKey, true)
 
 	// 创建渠道（不配置API Keys）
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -507,7 +512,7 @@ func TestSelectAvailableKey_DefaultStrategy(t *testing.T) {
 
 	var cooldownGauge atomic.Int64
 	selector := NewKeySelector(&cooldownGauge) // ✅ P0重构：移除store参数
-	ctx := context.WithValue(context.Background(), "testing", true)
+	ctx := context.WithValue(context.Background(), testingContextKey, true)
 
 	// 创建渠道
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -561,7 +566,7 @@ func TestSelectAvailableKey_UnknownStrategy(t *testing.T) {
 
 	var cooldownGauge atomic.Int64
 	selector := NewKeySelector(&cooldownGauge) // ✅ P0重构：移除store参数
-	ctx := context.WithValue(context.Background(), "testing", true)
+	ctx := context.WithValue(context.Background(), testingContextKey, true)
 
 	// 创建渠道
 	cfg, err := store.CreateConfig(ctx, &model.Config{

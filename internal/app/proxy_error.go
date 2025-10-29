@@ -20,6 +20,7 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *model.Config, keyInd
 	var statusCode int
 	var errorBody []byte
 	var isNetworkError bool
+	var headers map[string][]string // ✅ P1改进: 提取响应头用于429错误分析
 
 	// 确定状态码、错误体和错误类型
 	if err != nil {
@@ -31,20 +32,20 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *model.Config, keyInd
 		statusCode = classifiedStatus
 		errorBody = []byte(err.Error())
 		isNetworkError = true // ✅ 标记为网络错误
+		headers = nil         // 网络错误无响应头
 	} else {
 		// HTTP错误
 		statusCode = res.Status
 		errorBody = res.Body
 		isNetworkError = false // ✅ 标记为HTTP错误
+		headers = res.Header   // ✅ P1改进: 提取响应头用于429分析
 	}
 
 	// ✅ P2重构：使用 cooldownManager 统一处理冷却决策
 	// 好处：消除重复逻辑，单一职责，便于测试和维护
-	action, cooldownErr := s.cooldownManager.HandleError(ctx, cfg.ID, keyIndex, statusCode, errorBody, isNetworkError)
-	if cooldownErr != nil {
-		// 冷却操作失败（如数据库错误），保守策略：直接返回客户端
-		return cooldown.ActionReturnClient, false
-	}
+	// ✅ P0修复(2025-10-29): manager.HandleError 现在不返回错误（日志记录方式）
+	// 因此这里不再需要检查 cooldownErr，直接使用 action 即可
+	action, _ := s.cooldownManager.HandleError(ctx, cfg.ID, keyIndex, statusCode, errorBody, isNetworkError, headers)
 
 	// 根据冷却管理器的决策执行相应动作
 	switch action {
@@ -113,8 +114,14 @@ func (s *Server) handleProxySuccess(
 	duration float64,
 ) (*proxyResult, bool, bool) {
 	// ✅ P2重构：使用 cooldownManager 清除冷却状态
-	_ = s.cooldownManager.ClearChannelCooldown(ctx, cfg.ID)
-	_ = s.cooldownManager.ClearKeyCooldown(ctx, cfg.ID, keyIndex)
+	// ✅ P0修复(2025-10-29): 记录清除失败但不中断成功响应
+	// 设计原则: 清除失败不应影响用户请求成功，但需要记录用于监控
+	if err := s.cooldownManager.ClearChannelCooldown(ctx, cfg.ID); err != nil {
+		// util.SafePrintf("⚠️  WARNING: Failed to clear channel cooldown (channel=%d): %v", cfg.ID, err)
+	}
+	if err := s.cooldownManager.ClearKeyCooldown(ctx, cfg.ID, keyIndex); err != nil {
+		// util.SafePrintf("⚠️  WARNING: Failed to clear key cooldown (channel=%d, key=%d): %v", cfg.ID, keyIndex, err)
+	}
 	// 精确计数（P1）：记录状态恢复
 
 	// 记录成功日志

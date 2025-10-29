@@ -186,8 +186,8 @@ func (s *Server) handleResponse(
 // 参数新增 method 用于支持任意HTTP方法（GET、POST、PUT、DELETE等）
 func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey string, method string, body []byte, hdr http.Header, rawQuery, requestPath string, w http.ResponseWriter) (*fwResult, float64, error) {
 	// 1. 创建请求上下文（处理超时）
+	// ✅ P0修复(2025-10-29): 移除defer reqCtx.Close()调用（Close方法已删除）
 	reqCtx := s.newRequestContext(ctx, requestPath, body)
-	defer reqCtx.Close()
 
 	// 2. 构建上游请求
 	req, err := s.buildProxyRequest(reqCtx, cfg, apiKey, method, body, hdr, rawQuery, requestPath)

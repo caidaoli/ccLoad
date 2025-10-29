@@ -303,38 +303,47 @@ func (s *SQLiteStore) DeleteConfig(ctx context.Context, id int64) error {
 
 // BumpChannelCooldown 渠道级冷却：指数退避策略（认证错误5分钟起，其他1秒起，最大30分钟）
 func (s *SQLiteStore) BumpChannelCooldown(ctx context.Context, channelID int64, now time.Time, statusCode int) (time.Duration, error) {
-	// 1. 读取当前冷却状态
-	var cooldownUntil, cooldownDurationMs int64
-	err := s.db.QueryRowContext(ctx, `
-		SELECT cooldown_until, cooldown_duration_ms
-		FROM channels
-		WHERE id = ?
-	`, channelID).Scan(&cooldownUntil, &cooldownDurationMs)
-
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return 0, errors.New("channel not found")
+	// ✅ P0修复(2025-10-29): 使用事务保护Read-Modify-Write操作,防止并发竞态
+	// 问题场景同BumpKeyCooldown,多个并发请求可能导致指数退避计算错误
+	
+	var nextDuration time.Duration
+	
+	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		// 1. 读取当前冷却状态(事务内,隐式锁定行)
+		var cooldownUntil, cooldownDurationMs int64
+		err := tx.QueryRowContext(ctx, `
+			SELECT cooldown_until, cooldown_duration_ms
+			FROM channels
+			WHERE id = ?
+		`, channelID).Scan(&cooldownUntil, &cooldownDurationMs)
+		
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return errors.New("channel not found")
+			}
+			return fmt.Errorf("query channel cooldown: %w", err)
 		}
-		return 0, fmt.Errorf("query channel cooldown: %w", err)
-	}
-
-	// 2. 计算新的冷却时间（指数退避）
-	until := time.Unix(cooldownUntil, 0)
-	nextDuration := util.CalculateBackoffDuration(cooldownDurationMs, until, now, &statusCode)
-	newUntil := now.Add(nextDuration)
-
-	// 3. 更新 channels 表
-	_, err = s.db.ExecContext(ctx, `
-		UPDATE channels
-		SET cooldown_until = ?, cooldown_duration_ms = ?, updated_at = ?
-		WHERE id = ?
-	`, newUntil.Unix(), int64(nextDuration/time.Millisecond), now.Unix(), channelID)
-
-	if err != nil {
-		return 0, fmt.Errorf("update channel cooldown: %w", err)
-	}
-
-	return nextDuration, nil
+		
+		// 2. 计算新的冷却时间(指数退避)
+		until := time.Unix(cooldownUntil, 0)
+		nextDuration = util.CalculateBackoffDuration(cooldownDurationMs, until, now, &statusCode)
+		newUntil := now.Add(nextDuration)
+		
+		// 3. 更新 channels 表(事务内)
+		_, err = tx.ExecContext(ctx, `
+			UPDATE channels
+			SET cooldown_until = ?, cooldown_duration_ms = ?, updated_at = ?
+			WHERE id = ?
+		`, newUntil.Unix(), int64(nextDuration/time.Millisecond), now.Unix(), channelID)
+		
+		if err != nil {
+			return fmt.Errorf("update channel cooldown: %w", err)
+		}
+		
+		return nil
+	})
+	
+	return nextDuration, err
 }
 
 // ResetChannelCooldown 重置渠道冷却状态
@@ -1200,38 +1209,53 @@ func (s *SQLiteStore) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int
 
 // BumpKeyCooldown Key级别冷却：指数退避策略（认证错误5分钟起，其他1秒起，最大30分钟）
 func (s *SQLiteStore) BumpKeyCooldown(ctx context.Context, configID int64, keyIndex int, now time.Time, statusCode int) (time.Duration, error) {
-	// 1. 读取当前冷却状态
-	var cooldownUntil, cooldownDurationMs int64
-	err := s.db.QueryRowContext(ctx, `
-		SELECT cooldown_until, cooldown_duration_ms
-		FROM api_keys
-		WHERE channel_id = ? AND key_index = ?
-	`, configID, keyIndex).Scan(&cooldownUntil, &cooldownDurationMs)
-
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return 0, errors.New("api key not found")
+	// ✅ P0修复(2025-10-29): 使用事务保护Read-Modify-Write操作,防止并发竞态
+	// 问题场景:
+	//   请求A: 读取duration=1000 → 计算新值=2000
+	//   请求B: 读取duration=1000 → 计算新值=2000 (应该是4000!)
+	//   请求A: 写入2000
+	//   请求B: 写入2000 (覆盖A的更新,指数退避失效!)
+	// 
+	// 修复后: 整个操作在事务中原子执行,避免Lost Update问题
+	
+	var nextDuration time.Duration
+	
+	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		// 1. 读取当前冷却状态(事务内,隐式锁定行)
+		var cooldownUntil, cooldownDurationMs int64
+		err := tx.QueryRowContext(ctx, `
+			SELECT cooldown_until, cooldown_duration_ms
+			FROM api_keys
+			WHERE channel_id = ? AND key_index = ?
+		`, configID, keyIndex).Scan(&cooldownUntil, &cooldownDurationMs)
+		
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return errors.New("api key not found")
+			}
+			return fmt.Errorf("query key cooldown: %w", err)
 		}
-		return 0, fmt.Errorf("query key cooldown: %w", err)
-	}
-
-	// 2. 计算新的冷却时间（指数退避）
-	until := time.Unix(cooldownUntil, 0)
-	nextDuration := util.CalculateBackoffDuration(cooldownDurationMs, until, now, &statusCode)
-	newUntil := now.Add(nextDuration)
-
-	// 3. 更新 api_keys 表
-	_, err = s.db.ExecContext(ctx, `
-		UPDATE api_keys
-		SET cooldown_until = ?, cooldown_duration_ms = ?, updated_at = ?
-		WHERE channel_id = ? AND key_index = ?
-	`, newUntil.Unix(), int64(nextDuration/time.Millisecond), now.Unix(), configID, keyIndex)
-
-	if err != nil {
-		return 0, fmt.Errorf("update key cooldown: %w", err)
-	}
-
-	return nextDuration, nil
+		
+		// 2. 计算新的冷却时间(指数退避)
+		until := time.Unix(cooldownUntil, 0)
+		nextDuration = util.CalculateBackoffDuration(cooldownDurationMs, until, now, &statusCode)
+		newUntil := now.Add(nextDuration)
+		
+		// 3. 更新 api_keys 表(事务内)
+		_, err = tx.ExecContext(ctx, `
+			UPDATE api_keys
+			SET cooldown_until = ?, cooldown_duration_ms = ?, updated_at = ?
+			WHERE channel_id = ? AND key_index = ?
+		`, newUntil.Unix(), int64(nextDuration/time.Millisecond), now.Unix(), configID, keyIndex)
+		
+		if err != nil {
+			return fmt.Errorf("update key cooldown: %w", err)
+		}
+		
+		return nil
+	})
+	
+	return nextDuration, err
 }
 
 // SetKeyCooldown 设置指定Key的冷却截止时间（操作 api_keys 表）

@@ -14,6 +14,11 @@ import (
 	"ccLoad/internal/storage/sqlite"
 )
 
+// contextKey 自定义类型用于 context key，避免 SA1029 警告
+type contextKey string
+
+const testingContextKey contextKey = "testing"
+
 // TestConcurrentKeySelection 测试高并发Key选择时的数据竞争和正确性
 // 场景：1000个并发请求同时选择Key
 // 验证：无数据竞争、Key分布合理、无意外错误
@@ -23,7 +28,7 @@ func TestConcurrentKeySelection(t *testing.T) {
 	defer cleanup()
 
 	// 设置testing context以启用同步更新模式，确保测试的准确性
-	ctx := context.WithValue(context.Background(), "testing", true)
+	ctx := context.WithValue(context.Background(), testingContextKey, true)
 
 	// 创建测试渠道（10个Key）
 	channelID := createTestChannelWithKeys(t, store, 10, "round_robin")

@@ -65,8 +65,8 @@ func TestRequestContextCreation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
+			// ✅ P0修复(2025-10-29): 移除defer reqCtx.Close()（Close方法已删除）
 			reqCtx := srv.newRequestContext(ctx, tt.requestPath, tt.body)
-			defer reqCtx.Close()
 
 			if reqCtx.isStreaming != tt.wantStreaming {
 				t.Errorf("isStreaming = %v, want %v", reqCtx.isStreaming, tt.wantStreaming)
@@ -77,10 +77,7 @@ func TestRequestContextCreation(t *testing.T) {
 				t.Error("reqCtx.ctx should not be nil")
 			}
 
-			// 验证 cancel 函数存在（即使是空函数）
-			if reqCtx.cancel == nil {
-				t.Error("reqCtx.cancel should not be nil")
-			}
+			// ✅ P0修复(2025-10-29): 移除cancel字段验证（cancel已删除）
 		})
 	}
 }
