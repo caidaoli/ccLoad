@@ -20,16 +20,14 @@ const (
 	ServerErrorInitialCooldown = 2 * time.Minute
 
 	// OtherErrorInitialCooldown 其他错误（429等）的初始冷却时间
-	OtherErrorInitialCooldown = 1 * time.Second
+	OtherErrorInitialCooldown = 10 * time.Second
 
 	// MaxCooldownDuration 最大冷却时长（指数退避上限）
 	MaxCooldownDuration = 30 * time.Minute
 
 	// MinCooldownDuration 最小冷却时长（指数退避下限）
-	MinCooldownDuration = 1 * time.Second
+	MinCooldownDuration = 10 * time.Second
 )
-
-
 
 // calculateBackoffDuration 计算指数退避冷却时间
 // 统一冷却策略:
@@ -74,16 +72,9 @@ func CalculateBackoffDuration(prevMs int64, until time.Time, now time.Time, stat
 		}
 	}
 
-	// 后续错误：指数退避翻倍
-	next := prev * 2
+	// 后续错误：指数退避翻倍	// 边界限制（使用常量）
 
-	// 边界限制（使用常量）
-	if next < MinCooldownDuration {
-		next = MinCooldownDuration
-	}
-	if next > MaxCooldownDuration {
-		next = MaxCooldownDuration
-	}
+	next := min(max(prev*2, MinCooldownDuration), MaxCooldownDuration)
 
 	return next
 }

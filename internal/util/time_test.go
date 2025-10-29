@@ -115,7 +115,7 @@ func TestCalculateBackoffDuration_OtherErrors(t *testing.T) {
 		statusCode int
 		expected   time.Duration
 	}{
-		{429, 1 * time.Second}, // Too Many Requests
+		{429, 10 * time.Second}, // Too Many Requests
 	}
 
 	for _, tt := range tests {
@@ -150,19 +150,16 @@ func TestCalculateBackoffDuration_ExponentialBackoff(t *testing.T) {
 	now := time.Now()
 	statusCode := 429
 
-	// 测试指数退避序列：1s -> 2s -> 4s -> 8s -> 16s -> 30min(上限)
+	// 测试指数退避序列：10s -> 20s -> 40s -> 80s -> 160s -> 30min(上限)
 	expectedSequence := []time.Duration{
-		1 * time.Second,
-		2 * time.Second,
-		4 * time.Second,
-		8 * time.Second,
-		16 * time.Second,
-		32 * time.Second,
-		64 * time.Second,
-		128 * time.Second,
-		256 * time.Second,
-		512 * time.Second,
-		1024 * time.Second,
+		10 * time.Second,
+		20 * time.Second,
+		40 * time.Second,
+		80 * time.Second,
+		160 * time.Second,
+		320 * time.Second,
+		640 * time.Second,
+		1280 * time.Second,
 		MaxCooldownDuration, // 应达到上限
 	}
 

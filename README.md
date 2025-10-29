@@ -101,23 +101,41 @@ graph TB
 
 ### 方式一：Docker 部署（推荐）
 
+**使用预构建镜像（推荐）**：
 ```bash
-# 拉取预构建镜像
-docker pull ghcr.io/caidaoli/ccload:latest
+# 方式 1: 使用 docker-compose（最简单）
+curl -o docker-compose.yml https://raw.githubusercontent.com/caidaoli/ccLoad/master/docker-compose.yml
+curl -o .env https://raw.githubusercontent.com/caidaoli/ccLoad/master/.env.example
+# 编辑 .env 文件设置密码
+docker-compose up -d
 
-# 运行容器
+# 方式 2: 直接运行镜像
+docker pull ghcr.io/caidaoli/ccload:latest
 docker run -d --name ccload \
   -p 8080:8080 \
   -e CCLOAD_PASS=your_secure_password \
   -e CCLOAD_AUTH=your_api_token \
   -v ccload_data:/app/data \
   ghcr.io/caidaoli/ccload:latest
+```
 
-# 或使用 docker-compose
-curl -o docker-compose.yml https://raw.githubusercontent.com/caidaoli/ccLoad/master/docker-compose.yml
-curl -o .env https://raw.githubusercontent.com/caidaoli/ccLoad/master/.env.example
-# 编辑 .env 文件设置密码
-docker-compose up -d
+**从源码构建**：
+```bash
+# 克隆项目
+git clone https://github.com/caidaoli/ccLoad.git
+cd ccLoad
+
+# 使用 docker-compose 构建并运行
+docker-compose -f docker-compose.build.yml up -d
+
+# 或手动构建
+docker build -t ccload:local .
+docker run -d --name ccload \
+  -p 8080:8080 \
+  -e CCLOAD_PASS=your_secure_password \
+  -e CCLOAD_AUTH=your_api_token \
+  -v ccload_data:/app/data \
+  ccload:local
 ```
 
 ### 方式二：源码编译
@@ -479,7 +497,7 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 
 ### 架构特点
 
-**模块化架构** (✅ P2重构完成，2025-10-17):
+**模块化架构** (✅ P2重构完成，2025-10-29):
 - **proxy模块拆分**（SRP原则）：
   - `proxy_handler.go` (236行)：HTTP入口、并发控制、路由选择
   - `proxy_forward.go` (299行)：核心转发逻辑、请求构建、响应处理
@@ -487,6 +505,12 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
   - `proxy_util.go` (484行)：常量、类型定义、工具函数
   - `proxy_stream.go` (77行)：流式响应、首字节检测
   - `proxy_gemini.go` (42行)：Gemini API特殊处理
+- **admin模块拆分**（SRP原则）：
+  - `admin_channels.go`：渠道CRUD操作
+  - `admin_stats.go`：统计分析API
+  - `admin_cooldown.go`：冷却管理API
+  - `admin_csv.go`：CSV导入导出
+  - `admin_types.go`：管理API类型定义
 - **冷却管理器**（DRY原则）：
   - `cooldown/manager.go` (122行)：统一冷却决策引擎
   - 消除重复代码83%，冷却逻辑统一管理

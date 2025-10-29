@@ -65,7 +65,11 @@ go fmt ./... && go vet ./...          # 格式化+静态分析
 - `server.go`: HTTP服务器、路由、认证、优雅关闭
 - `response.go`: 统一JSON响应系统(泛型`StandardResponse[T]`)
 - `handlers.go`: 通用HTTP工具(参数解析、响应处理)
-- `admin.go`: 管理API(渠道CRUD、日志、统计)
+- `admin_channels.go`: 渠道CRUD操作
+- `admin_stats.go`: 统计分析API
+- `admin_cooldown.go`: 冷却管理API
+- `admin_csv.go`: CSV导入导出
+- `admin_types.go`: 管理API类型定义
 - `request_context.go`: 请求上下文封装
 
 **业务逻辑层** (`internal/app/`):
@@ -89,17 +93,11 @@ go fmt ./... && go vet ./...          # 格式化+静态分析
 
 **配置层** (`internal/config/`):
 - `defaults.go`: 默认配置常量(HTTP、SQLite、日志)
-- `env.go`: 环境变量加载、验证(Fail-Fast策略)
-
-**错误处理层** (`internal/errors/`):
-- `errors.go`: 错误代码、错误链、上下文
 
 **工具层** (`internal/util/`):
 - `classifier.go`: HTTP错误分类(Key级/渠道级/客户端)
 - `time.go`: 时间戳转换和冷却计算
 - `channel_types.go`: 渠道类型管理(anthropic/codex/gemini)
-- `log_sanitizer.go`: 日志消毒(防注入)
-- `rate_limiter.go`: 登录速率限制(5次失败锁定15分钟)
 
 ### 关键数据结构
 
@@ -164,7 +162,7 @@ type APIKey struct {
   - 渠道级严重错误(500/502/503/504/520/521/524): 初始2分钟,后续翻倍至30分钟上限
   - 认证错误(401/402/403): 初始5分钟,后续翻倍至30分钟上限
   - 首字节超时(598): 固定5分钟冷却(特殊处理)
-  - 其他错误(429等): 初始1秒,后续翻倍至30分钟上限
+  - 其他错误(429等): 初始10秒,后续翻倍至30分钟上限
 
 ### 数据库架构
 
@@ -186,7 +184,7 @@ type APIKey struct {
 
 ## 环境配置
 
-**核心环境变量**(详见`internal/config/env.go`):
+**核心环境变量**(详见`internal/config/defaults.go`):
 - `CCLOAD_PASS`: 管理界面密码(必填,未设置将退出)
 - `CCLOAD_AUTH`: API访问令牌(逗号分隔;访问/v1/*必须设置,否则401)
 - `PORT`: HTTP服务端口(默认8080)
@@ -217,15 +215,11 @@ type APIKey struct {
 - 统一响应格式: `{success, data, error, code}`
 
 ### 错误处理规范
-- 使用`internal/errors`包的应用级错误系统
-- 错误代码机器可识别(如`ErrCodeNoKeys`、`ErrCodeAllCooldown`)
+- 使用标准Go错误处理(`error`接口和`errors`包)
 - 支持错误链(Go 1.13+ `errors.Unwrap`)
-- 携带上下文信息(`WithContext`方法)
 - Fail-Fast策略:配置错误立即退出,避免生产风险
 
 ### 安全规范
-- 登录速率限制:`internal/util/rate_limiter.go`(5次失败锁定15分钟)
-- 日志消毒:`internal/util/log_sanitizer.go`(防注入攻击)
 - API Key脱敏:仅显示前4后4字符
 
 ## 多Key支持

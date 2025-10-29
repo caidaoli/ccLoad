@@ -2,7 +2,10 @@ version: '3.8'
 
 services:
   ccload:
-    image: ghcr.io/caidaoli/ccload:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ccload:local
     container_name: ccload
     restart: unless-stopped
     ports:
