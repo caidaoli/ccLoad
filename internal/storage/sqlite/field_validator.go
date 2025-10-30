@@ -65,5 +65,3 @@ func ValidateFieldName(field string) error {
 
 	return nil
 }
-
-

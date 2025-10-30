@@ -89,7 +89,6 @@ func (rl *LoginRateLimiter) AllowAttempt(ip string) bool {
 	return true
 }
 
-
 // RecordSuccess 记录成功登录（重置计数）
 func (rl *LoginRateLimiter) RecordSuccess(ip string) {
 	rl.mu.Lock()
@@ -185,4 +184,3 @@ func (rl *LoginRateLimiter) cleanup() {
 func (rl *LoginRateLimiter) Stop() {
 	close(rl.stopCh)
 }
-

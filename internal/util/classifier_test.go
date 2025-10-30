@@ -477,8 +477,8 @@ func TestClassifyRateLimitError(t *testing.T) {
 		{
 			name: "combined_retry_after_and_scope",
 			headers: map[string][]string{
-				"Retry-After":       {"30"},  // Key级指示器
-				"X-Ratelimit-Scope": {"ip"},  // 渠道级指示器
+				"Retry-After":       {"30"}, // Key级指示器
+				"X-Ratelimit-Scope": {"ip"}, // 渠道级指示器
 			},
 			responseBody: []byte(`{"error":"rate limit"}`),
 			expected:     ErrorLevelChannel,
@@ -487,9 +487,9 @@ func TestClassifyRateLimitError(t *testing.T) {
 		{
 			name: "combined_scope_and_body",
 			headers: map[string][]string{
-				"X-Ratelimit-Scope": {"user"},  // Key级指示器
+				"X-Ratelimit-Scope": {"user"}, // Key级指示器
 			},
-			responseBody: []byte(`{"error":"IP rate limit exceeded"}`),  // 渠道级指示器
+			responseBody: []byte(`{"error":"IP rate limit exceeded"}`), // 渠道级指示器
 			expected:     ErrorLevelChannel,
 			reason:       "响应体中的渠道级指示器应被识别",
 		},

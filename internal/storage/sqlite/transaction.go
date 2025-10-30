@@ -41,30 +41,30 @@ func (s *SQLiteStore) WithLogTransaction(ctx context.Context, fn func(*sql.Tx) e
 // ✅ 安全性：panic恢复 + defer回滚双重保障
 func withTransaction(db *sql.DB, ctx context.Context, fn func(*sql.Tx) error) error {
 	// ✅ P0修复(2025-10-29): 增加死锁重试机制
-	// 问题: SQLite在高并发事务下可能返回"database is deadlocked"错误  
+	// 问题: SQLite在高并发事务下可能返回"database is deadlocked"错误
 	// 解决: 自动重试带指数退避,最多重试5次
-	
+
 	const maxRetries = 5
 	const baseDelay = 10 * time.Millisecond
-	
+
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		err := executeSingleTransaction(db, ctx, fn)
-		
+
 		// 成功或非BUSY错误,立即返回
 		if err == nil || !isSQLiteBusyError(err) {
 			return err
 		}
-		
+
 		// BUSY错误且还有重试机会,执行退避后重试
 		if attempt < maxRetries-1 {
 			sleepWithBackoff(attempt, baseDelay)
 			continue
 		}
-		
+
 		// 所有重试都失败
 		return fmt.Errorf("transaction failed after %d retries: %w", maxRetries, err)
 	}
-	
+
 	return fmt.Errorf("unexpected: retry loop exited without result")
 }
 
@@ -75,7 +75,7 @@ func executeSingleTransaction(db *sql.DB, ctx context.Context, fn func(*sql.Tx) 
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
-	
+
 	// 2. 延迟回滚(幂等操作,提交后回滚无效)
 	// 设计原则:防御性编程,即使panic也能回滚
 	defer func() {
@@ -88,17 +88,17 @@ func executeSingleTransaction(db *sql.DB, ctx context.Context, fn func(*sql.Tx) 
 			_ = tx.Rollback()
 		}
 	}()
-	
+
 	// 3. 执行用户函数
 	if err = fn(tx); err != nil {
 		return err // defer会自动回滚
 	}
-	
+
 	// 4. 提交事务
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("commit transaction: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -108,9 +108,9 @@ func isSQLiteBusyError(err error) bool {
 	if err == nil {
 		return false
 	}
-	
+
 	errMsg := strings.ToLower(err.Error())
-	
+
 	// SQLite BUSY/LOCKED错误的特征字符串
 	busyPatterns := []string{
 		"database is locked",
@@ -119,13 +119,13 @@ func isSQLiteBusyError(err error) bool {
 		"sqlite_busy",
 		"sqlite_locked",
 	}
-	
+
 	for _, pattern := range busyPatterns {
 		if strings.Contains(errMsg, pattern) {
 			return true
 		}
 	}
-	
+
 	return false
 }
 
@@ -134,11 +134,11 @@ func isSQLiteBusyError(err error) bool {
 func sleepWithBackoff(attempt int, baseDelay time.Duration) {
 	// 计算延迟:10ms, 20ms, 40ms, 80ms, 160ms
 	delay := baseDelay * time.Duration(1<<uint(attempt))
-	
+
 	// 添加随机抖动(±25%),避免多个goroutine同时重试
 	// 使用纳秒时间戳的后两位作为随机因子(0-99)
 	randomFactor := float64(time.Now().UnixNano()%100) / 100.0 // 0.00 到 0.99
 	jitter := time.Duration(float64(delay) * (0.5 + 0.5*randomFactor))
-	
+
 	time.Sleep(jitter)
 }

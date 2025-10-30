@@ -297,6 +297,6 @@ func abs(d time.Duration) time.Duration {
 
 // 测试常量定义（与util/time.go保持一致）
 const (
-	ServerErrorInitialCooldown = 2 * time.Minute // 服务器错误初始冷却时间（与util/time.go一致）
-	OtherErrorInitialCooldown  = 1 * time.Second // 其他错误初始冷却时间
+	ServerErrorInitialCooldown = 2 * time.Minute  // 服务器错误初始冷却时间（与util/time.go一致）
+	OtherErrorInitialCooldown  = 10 * time.Second // 其他错误初始冷却时间（与util/time.go一致）
 )

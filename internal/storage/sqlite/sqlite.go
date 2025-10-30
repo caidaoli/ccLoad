@@ -172,7 +172,6 @@ func NewSQLiteStore(path string, redisSync RedisSync) (*SQLiteStore, error) {
 	return newSQLiteStoreWithOptions(path, redisSync, false)
 }
 
-
 // newSQLiteStoreWithOptions 创建SQLite存储实例（带选项）
 func newSQLiteStoreWithOptions(path string, redisSync RedisSync, forTest bool) (*SQLiteStore, error) {
 	// 检查是否启用内存模式

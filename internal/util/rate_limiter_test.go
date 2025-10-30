@@ -238,7 +238,6 @@ func TestGetLockoutTime_NonExistentIP(t *testing.T) {
 	t.Logf("✅ 不存在的IP锁定时间正确返回0")
 }
 
-
 // TestConcurrentAccess 测试并发访问
 func TestConcurrentAccess(t *testing.T) {
 	limiter := NewLoginRateLimiter()

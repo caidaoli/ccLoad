@@ -305,9 +305,9 @@ func (s *SQLiteStore) DeleteConfig(ctx context.Context, id int64) error {
 func (s *SQLiteStore) BumpChannelCooldown(ctx context.Context, channelID int64, now time.Time, statusCode int) (time.Duration, error) {
 	// ✅ P0修复(2025-10-29): 使用事务保护Read-Modify-Write操作,防止并发竞态
 	// 问题场景同BumpKeyCooldown,多个并发请求可能导致指数退避计算错误
-	
+
 	var nextDuration time.Duration
-	
+
 	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
 		// 1. 读取当前冷却状态(事务内,隐式锁定行)
 		var cooldownUntil, cooldownDurationMs int64
@@ -316,33 +316,33 @@ func (s *SQLiteStore) BumpChannelCooldown(ctx context.Context, channelID int64, 
 			FROM channels
 			WHERE id = ?
 		`, channelID).Scan(&cooldownUntil, &cooldownDurationMs)
-		
+
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return errors.New("channel not found")
 			}
 			return fmt.Errorf("query channel cooldown: %w", err)
 		}
-		
+
 		// 2. 计算新的冷却时间(指数退避)
 		until := time.Unix(cooldownUntil, 0)
 		nextDuration = util.CalculateBackoffDuration(cooldownDurationMs, until, now, &statusCode)
 		newUntil := now.Add(nextDuration)
-		
+
 		// 3. 更新 channels 表(事务内)
 		_, err = tx.ExecContext(ctx, `
 			UPDATE channels
 			SET cooldown_until = ?, cooldown_duration_ms = ?, updated_at = ?
 			WHERE id = ?
 		`, newUntil.Unix(), int64(nextDuration/time.Millisecond), now.Unix(), channelID)
-		
+
 		if err != nil {
 			return fmt.Errorf("update channel cooldown: %w", err)
 		}
-		
+
 		return nil
 	})
-	
+
 	return nextDuration, err
 }
 
@@ -755,7 +755,7 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 // GetStats 实现统计功能，按渠道和模型统计成功/失败次数（从 logDB）
 // 性能优化：批量查询渠道名称消除N+1问题（100渠道场景提升50-100倍）
 func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *model.LogFilter) ([]model.StatsEntry, error) {
-	// 使用查询构建器构建统计查询（从 logDB）
+	// 使用查询构建器构建统计查询(从 logDB)
 	baseQuery := `
 		SELECT
 			channel_id,
@@ -774,6 +774,7 @@ func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *mod
 
 	qb := NewQueryBuilder(baseQuery).
 		Where("time >= ?", sinceMs).
+		Where("channel_id > 0"). // 🎯 核心修改:排除channel_id=0的无效记录
 		ApplyFilter(filter)
 
 	suffix := "GROUP BY channel_id, model ORDER BY channel_id ASC, model ASC"
@@ -807,11 +808,11 @@ func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *mod
 		stats = append(stats, entry)
 	}
 
-	// 批量查询渠道名称（P0性能优化：N+1 → 1次查询）
+	// 批量查询渠道名称(P0性能优化:N+1 → 1次查询)
 	if len(channelIDsToFetch) > 0 {
 		channelNames, err := s.fetchChannelNamesBatch(ctx, channelIDsToFetch)
 		if err != nil {
-			// 降级处理：查询失败不影响统计返回，仅记录错误
+			// 降级处理:查询失败不影响统计返回,仅记录错误
 			log.Printf("⚠️  批量查询渠道名称失败: %v", err)
 			channelNames = make(map[int64]string)
 		}
@@ -822,16 +823,10 @@ func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *mod
 				if name, ok := channelNames[int64(*stats[i].ChannelID)]; ok {
 					stats[i].ChannelName = name
 				} else {
-					stats[i].ChannelName = "系统"
+					// 如果查询不到渠道名称,使用"未知渠道"标识
+					stats[i].ChannelName = "未知渠道"
 				}
-			} else {
-				stats[i].ChannelName = "系统"
 			}
-		}
-	} else {
-		// 没有渠道ID，全部标记为系统
-		for i := range stats {
-			stats[i].ChannelName = "系统"
 		}
 	}
 
@@ -1248,11 +1243,11 @@ func (s *SQLiteStore) BumpKeyCooldown(ctx context.Context, configID int64, keyIn
 	//   请求B: 读取duration=1000 → 计算新值=2000 (应该是4000!)
 	//   请求A: 写入2000
 	//   请求B: 写入2000 (覆盖A的更新,指数退避失效!)
-	// 
+	//
 	// 修复后: 整个操作在事务中原子执行,避免Lost Update问题
-	
+
 	var nextDuration time.Duration
-	
+
 	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
 		// 1. 读取当前冷却状态(事务内,隐式锁定行)
 		var cooldownUntil, cooldownDurationMs int64
@@ -1261,33 +1256,33 @@ func (s *SQLiteStore) BumpKeyCooldown(ctx context.Context, configID int64, keyIn
 			FROM api_keys
 			WHERE channel_id = ? AND key_index = ?
 		`, configID, keyIndex).Scan(&cooldownUntil, &cooldownDurationMs)
-		
+
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return errors.New("api key not found")
 			}
 			return fmt.Errorf("query key cooldown: %w", err)
 		}
-		
+
 		// 2. 计算新的冷却时间(指数退避)
 		until := time.Unix(cooldownUntil, 0)
 		nextDuration = util.CalculateBackoffDuration(cooldownDurationMs, until, now, &statusCode)
 		newUntil := now.Add(nextDuration)
-		
+
 		// 3. 更新 api_keys 表(事务内)
 		_, err = tx.ExecContext(ctx, `
 			UPDATE api_keys
 			SET cooldown_until = ?, cooldown_duration_ms = ?, updated_at = ?
 			WHERE channel_id = ? AND key_index = ?
 		`, newUntil.Unix(), int64(nextDuration/time.Millisecond), now.Unix(), configID, keyIndex)
-		
+
 		if err != nil {
 			return fmt.Errorf("update key cooldown: %w", err)
 		}
-		
+
 		return nil
 	})
-	
+
 	return nextDuration, err
 }
 

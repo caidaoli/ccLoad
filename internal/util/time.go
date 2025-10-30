@@ -32,8 +32,8 @@ const (
 // calculateBackoffDuration 计算指数退避冷却时间
 // 统一冷却策略:
 //   - 认证错误(401/402/403): 起始5分钟，后续翻倍，上限30分钟
-//   - 服务器错误(500/502/503/504): 起始1秒，后续翻倍，上限30分钟
-//   - 其他错误(429等): 起始1秒，后续翻倍，上限30分钟
+//   - 服务器错误(500/502/503/504): 起始2分钟，后续翻倍，上限30分钟
+//   - 其他错误(429等): 起始10秒，后续翻倍，上限30分钟
 //
 // 参数:
 //   - prevMs: 上次冷却持续时间（毫秒）
@@ -67,7 +67,7 @@ func CalculateBackoffDuration(prevMs int64, until time.Time, now time.Time, stat
 			if statusCode != nil && (*statusCode == 401 || *statusCode == 402 || *statusCode == 403) {
 				return AuthErrorInitialCooldown
 			}
-			// 其他错误（429等）：1秒冷却，允许快速恢复
+			// 其他错误（429等）：10秒冷却，允许快速恢复
 			return OtherErrorInitialCooldown
 		}
 	}

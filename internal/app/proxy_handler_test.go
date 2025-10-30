@@ -44,12 +44,12 @@ func TestParseIncomingRequest_ValidJSON(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	tests := []struct {
-		name           string
-		body           string
-		path           string
-		expectModel    string
-		expectStream   bool
-		expectError    bool
+		name         string
+		body         string
+		path         string
+		expectModel  string
+		expectStream bool
+		expectError  bool
 	}{
 		{
 			name:         "有效JSON-claude模型",
@@ -182,4 +182,3 @@ func TestAcquireConcurrencySlot(t *testing.T) {
 
 	t.Log("✅ 并发控制测试通过：2个槽位正确管理")
 }
-

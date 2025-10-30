@@ -92,7 +92,6 @@ func TestSanitizeError(t *testing.T) {
 	}
 }
 
-
 func BenchmarkSanitizeLogMessage(b *testing.B) {
 	msg := "Error: connection failed\nRetrying...\r\nAttempt 1"
 	b.ResetTimer()

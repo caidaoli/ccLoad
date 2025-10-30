@@ -110,19 +110,19 @@ func ClassifyHTTPStatusWithBody(statusCode int, responseBody []byte) ErrorLevel 
 		// 为了向后兼容,这里默认返回Key级,由调用方使用ClassifyRateLimitError
 		return ErrorLevelKey
 	}
-	
+
 	// 仅分析401和403错误,其他状态码使用标准分类器
 	if statusCode != 401 && statusCode != 403 {
 		return ClassifyHTTPStatus(statusCode)
 	}
-	
+
 	// 401/403错误:分析响应体内容
 	if len(responseBody) == 0 {
 		return ErrorLevelKey // 无响应体,默认Key级错误
 	}
-	
+
 	bodyLower := strings.ToLower(string(responseBody))
-	
+
 	// 渠道级错误特征:**仅限账户级不可逆错误**
 	// 设计原则:保守策略,只有明确是渠道级错误时才返回ErrorLevelChannel
 	channelErrorPatterns := []string{
@@ -131,19 +131,19 @@ func ClassifyHTTPStatusWithBody(statusCode int, responseBody []byte) ErrorLevel 
 		"account disabled",  // 账户禁用
 		"account banned",    // 账户封禁
 		"service disabled",  // 服务禁用
-		
+
 		// 注意:以下错误已移除(改为Key级,让系统先尝试其他Key):
 		// - "额度已用尽", "quota_exceeded" → 可能只是单个Key额度用尽
 		// - "余额不足", "balance" → 可能只是单个Key余额不足
 		// - "limit reached" → 可能只是单个Key限额到达
 	}
-	
+
 	for _, pattern := range channelErrorPatterns {
 		if strings.Contains(bodyLower, pattern) {
 			return ErrorLevelChannel // 明确的渠道级错误
 		}
 	}
-	
+
 	// 默认:Key级错误
 	// 包括:认证失败、权限不足、额度用尽、余额不足等
 	// 让handleProxyError根据渠道Key数量决定是否升级为渠道级
@@ -169,7 +169,7 @@ func ClassifyRateLimitError(headers map[string][]string, responseBody []byte) Er
 	// 1. 解析Retry-After头
 	if retryAfterValues, ok := headers["Retry-After"]; ok && len(retryAfterValues) > 0 {
 		retryAfter := retryAfterValues[0]
-		
+
 		// Retry-After可能是秒数或HTTP日期
 		// 尝试解析为秒数
 		if seconds, err := strconv.Atoi(retryAfter); err == nil {
@@ -184,7 +184,7 @@ func ClassifyRateLimitError(headers map[string][]string, responseBody []byte) Er
 			return ErrorLevelChannel
 		}
 	}
-	
+
 	// 2. 检查X-RateLimit-Scope头(某些API使用)
 	if scopeValues, ok := headers["X-Ratelimit-Scope"]; ok && len(scopeValues) > 0 {
 		scope := strings.ToLower(scopeValues[0])
@@ -193,26 +193,26 @@ func ClassifyRateLimitError(headers map[string][]string, responseBody []byte) Er
 			return ErrorLevelChannel
 		}
 	}
-	
+
 	// 3. 分析响应体中的错误描述
 	if len(responseBody) > 0 {
 		bodyLower := strings.ToLower(string(responseBody))
-		
+
 		// 渠道级限流特征
 		channelPatterns := []string{
-			"ip rate limit",        // IP级别限流
-			"account rate limit",   // 账户级别限流
-			"global rate limit",    // 全局限流
-			"organization limit",   // 组织级别限流
+			"ip rate limit",      // IP级别限流
+			"account rate limit", // 账户级别限流
+			"global rate limit",  // 全局限流
+			"organization limit", // 组织级别限流
 		}
-		
+
 		for _, pattern := range channelPatterns {
 			if strings.Contains(bodyLower, pattern) {
 				return ErrorLevelChannel
 			}
 		}
 	}
-	
+
 	// 4. 默认: Key级别限流(保守策略)
 	// 让系统先尝试其他Key,如果所有Key都限流了,会自动升级为渠道级
 	return ErrorLevelKey

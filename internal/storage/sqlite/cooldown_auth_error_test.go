@@ -30,10 +30,10 @@ func TestAuthErrorInitialCooldown(t *testing.T) {
 			expectedMaxDur: 5 * time.Minute,
 		},
 		{
-			name:           "429限流错误-初始冷却1秒",
+			name:           "429限流错误-初始冷却10秒",
 			statusCode:     429,
-			expectedMinDur: 1 * time.Second,
-			expectedMaxDur: 1 * time.Second,
+			expectedMinDur: 10 * time.Second,
+			expectedMaxDur: 10 * time.Second,
 		},
 		{
 			name:           "500服务器错误-初始冷却2分钟",

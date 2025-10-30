@@ -63,8 +63,6 @@ func TestValidateFieldName(t *testing.T) {
 	}
 }
 
-
-
 // TestQueryBuilderFieldValidation 测试 QueryBuilder 的字段验证
 func TestQueryBuilderFieldValidation(t *testing.T) {
 	t.Run("WhereIn-合法字段", func(t *testing.T) {

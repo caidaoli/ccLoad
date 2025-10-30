@@ -108,14 +108,14 @@ func (s *SQLiteStore) migrateLogDB(ctx context.Context) error {
 		CREATE TABLE IF NOT EXISTS logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			time BIGINT NOT NULL,
-			model TEXT,
-			channel_id INTEGER,
+			model TEXT DEFAULT '',
+			channel_id INTEGER DEFAULT 0,
 			status_code INTEGER NOT NULL,
-			message TEXT,
-			duration REAL,
+			message TEXT DEFAULT '',
+			duration REAL DEFAULT 0.0,
 			is_streaming INTEGER NOT NULL DEFAULT 0,
-			first_byte_time REAL,
-			api_key_used TEXT
+			first_byte_time REAL DEFAULT 0.0,
+			api_key_used TEXT DEFAULT ''
 		);
 	`); err != nil {
 		return fmt.Errorf("create logs table: %w", err)
@@ -131,8 +131,8 @@ func (s *SQLiteStore) migrateLogDB(ctx context.Context) error {
 		"CREATE INDEX IF NOT EXISTS idx_logs_streaming_firstbyte ON logs(is_streaming, first_byte_time) WHERE is_streaming = 1 AND first_byte_time > 0",
 	}
 
-	for _, indexSQL := range indexes {
-		if _, err := s.logDB.ExecContext(ctx, indexSQL); err != nil {
+	for _, idx := range indexes {
+		if _, err := s.logDB.ExecContext(ctx, idx); err != nil {
 			return fmt.Errorf("create log index: %w", err)
 		}
 	}

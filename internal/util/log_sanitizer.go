@@ -57,7 +57,6 @@ func SanitizeError(err error) string {
 	return SanitizeLogMessage(err.Error())
 }
 
-
 // SafePrintf 安全的日志打印函数（自动消毒所有参数）
 // 用于替代标准库的 log.Printf，防止日志注入攻击
 func SafePrintf(format string, args ...any) {

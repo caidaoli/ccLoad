@@ -51,7 +51,7 @@ func (m *Manager) HandleError(
 	headers map[string][]string, // ✅ P1改进(2025-10-29): 新增headers参数用于429错误分析
 ) (Action, error) {
 	var errLevel util.ErrorLevel
-	
+
 	// 1. 区分网络错误和HTTP错误的分类策略
 	if isNetworkError {
 		// ✅ 网络错误特殊处理:区分超时类错误和其他网络错误
@@ -66,7 +66,7 @@ func (m *Manager) HandleError(
 		}
 	} else {
 		// HTTP错误:使用智能分类器(结合响应体内容和headers)
-		
+
 		// ✅ P1改进(2025-10-29): 429错误特殊处理
 		if statusCode == 429 && headers != nil {
 			// 使用增强的Rate Limit分类器
@@ -76,7 +76,7 @@ func (m *Manager) HandleError(
 			errLevel = util.ClassifyHTTPStatusWithBody(statusCode, errorBody)
 		}
 	}
-	
+
 	// 2. 🎯 动态调整:单Key渠道的Key级错误应该直接冷却渠道
 	// 设计原则:如果没有其他Key可以重试,Key级错误等同于渠道级错误
 	// 🔧 P1优化:使用缓存的KeyCount,避免N+1查询(性能提升~60%)
@@ -87,13 +87,13 @@ func (m *Manager) HandleError(
 			errLevel = util.ErrorLevelChannel
 		}
 	}
-	
+
 	// 3. 根据错误级别执行冷却
 	switch errLevel {
 	case util.ErrorLevelClient:
 		// 客户端错误:不冷却,直接返回
 		return ActionReturnClient, nil
-		
+
 	case util.ErrorLevelKey:
 		// Key级错误:冷却当前Key,继续尝试其他Key
 		if keyIndex >= 0 {
@@ -117,7 +117,7 @@ func (m *Manager) HandleError(
 			util.SafePrintf("⚠️  WARNING: Failed to update channel cooldown (channel=%d): %v", channelID, err)
 		}
 		return ActionRetryChannel, nil
-		
+
 	default:
 		// 未知错误级别:保守策略,直接返回
 		return ActionReturnClient, nil

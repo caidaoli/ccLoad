@@ -36,4 +36,3 @@ func (s *Server) newRequestContext(parentCtx context.Context, requestPath string
 func (rc *requestContext) Duration() float64 {
 	return time.Since(rc.startTime).Seconds()
 }
-
