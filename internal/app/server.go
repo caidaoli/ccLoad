@@ -30,11 +30,12 @@ import (
 )
 
 type Server struct {
-	store           storage.Store
-	keySelector     *KeySelector      // Key选择器（多Key支持）
-	cooldownManager *cooldown.Manager // ✅ P2重构：统一冷却管理器（DRY原则）
-	client          *http.Client
-	password        string
+	store            storage.Store
+	keySelector      *KeySelector      // Key选择器（多Key支持）
+	cooldownManager  *cooldown.Manager // 统一冷却管理器（DRY原则）
+	client           *http.Client
+	firstByteTimeout time.Duration
+	password         string
 
 	// Token认证系统
 	validTokens map[string]time.Time // 动态Token -> 过期时间
@@ -43,7 +44,7 @@ type Server struct {
 	// API 认证
 	authTokens map[string]bool // 静态认证令牌（CCLOAD_AUTH配置）
 
-	// ✅ P2安全加固：登录速率限制
+	// 登录速率限制
 	loginRateLimiter *util.LoginRateLimiter // 防暴力破解
 
 	// 重试配置
@@ -55,11 +56,11 @@ type Server struct {
 
 	logChan      chan *model.LogEntry // 异步日志通道
 	logWorkers   int                  // 日志工作协程数
-	logDropCount atomic.Int64         // 日志丢弃计数器（P1修复 2025-10-05）
+	logDropCount atomic.Int64         // 日志丢弃计数器
 
-	// ✅ P0修复（2025-10-13）：优雅关闭机制
+	// 优雅关闭机制
 	shutdownCh     chan struct{}  // 关闭信号channel
-	isShuttingDown atomic.Bool    // ✅ P2修复（2025-10-28）：shutdown标志，防止向已关闭channel写入
+	isShuttingDown atomic.Bool    // shutdown标志，防止向已关闭channel写入
 	wg             sync.WaitGroup // 等待所有后台goroutine结束
 }
 
@@ -84,7 +85,7 @@ func NewServer(store storage.Store) *Server {
 		}
 	}
 
-	// ✅ P0安全修复：生产环境强制检查 CCLOAD_AUTH
+	// 生产环境强制检查 CCLOAD_AUTH
 	// 设计原则：Fail-Fast，避免生产环境配置错误导致安全风险
 	ginMode := os.Getenv("GIN_MODE")
 	if ginMode != "debug" && ginMode != "test" && len(authTokens) == 0 {
@@ -117,6 +118,17 @@ func NewServer(store storage.Store) *Server {
 		}
 	}
 
+	// 解析上游首字节超时阈值（可选，单位：秒）
+	var firstByteTimeout time.Duration
+	if v := os.Getenv("CCLOAD_UPSTREAM_FIRST_BYTE_TIMEOUT"); v != "" {
+		if sec, err := strconv.Atoi(v); err == nil && sec > 0 {
+			firstByteTimeout = time.Duration(sec) * time.Second
+			util.SafePrintf("⏱️  上游首字节超时阈值已启用：%v", firstByteTimeout)
+		} else {
+			util.SafePrintf("⚠️  无法解析 CCLOAD_UPSTREAM_FIRST_BYTE_TIMEOUT=%q，已忽略", v)
+		}
+	}
+
 	// TLS证书验证配置（安全优化：默认启用证书验证）
 	skipTLSVerify := false
 	if os.Getenv("CCLOAD_SKIP_TLS_VERIFY") == "true" {
@@ -127,7 +139,7 @@ func NewServer(store storage.Store) *Server {
 	}
 
 	// 优化 HTTP 客户端配置 - 重点优化连接建立阶段的超时控制
-	// ✅ P2优化（2025-10-17）：启用TCP_NODELAY降低SSE首包延迟5~15ms
+	// 启用TCP_NODELAY降低SSE首包延迟5~15ms
 	dialer := &net.Dialer{
 		Timeout:   config.SecondsToDuration(config.HTTPDialTimeout),
 		KeepAlive: config.SecondsToDuration(config.HTTPKeepAliveInterval),
@@ -141,7 +153,7 @@ func NewServer(store storage.Store) *Server {
 	}
 
 	transport := &http.Transport{
-		// ✅ P2连接池优化（2025-10-06）：防御性配置，避免打爆上游API
+		// 防御性配置，避免打爆上游API
 		MaxIdleConns:        config.HTTPMaxIdleConns,
 		MaxIdleConnsPerHost: config.HTTPMaxIdleConnsPerHost,
 		IdleConnTimeout:     config.SecondsToDuration(config.HTTPIdleConnTimeout),
@@ -165,10 +177,14 @@ func NewServer(store storage.Store) *Server {
 		},
 	}
 
-	// ✅ P1优化（2025-10-17）：启用HTTP/2降低头部开销10~20ms
+	if firstByteTimeout > 0 {
+		transport.ResponseHeaderTimeout = firstByteTimeout
+	}
+
+	// 启用HTTP/2降低头部开销10~20ms
 	// 优势：头部压缩、多路复用、服务器推送
 	if err := http2.ConfigureTransport(transport); err != nil {
-		util.SafePrint("⚠️  警告：HTTP/2配置失败，将使用HTTP/1.1: ", err.Error())
+		util.SafePrint("⚠️  警告：HTTP/2配置失败，将使用HTTP/1.1: " + err.Error())
 	} else {
 		util.SafePrint("✅ HTTP/2已启用（头部压缩+多路复用）")
 	}
@@ -194,10 +210,11 @@ func NewServer(store storage.Store) *Server {
 			Transport: transport,
 			Timeout:   0, // 不设置全局超时，避免中断长时间任务
 		},
+		firstByteTimeout: firstByteTimeout,
 		password:         password,
 		validTokens:      make(map[string]time.Time),
 		authTokens:       authTokens,
-		loginRateLimiter: util.NewLoginRateLimiter(),         // ✅ P2安全加固：登录速率限制
+		loginRateLimiter: util.NewLoginRateLimiter(),         // 登录速率限制
 		logChan:          make(chan *model.LogEntry, logBuf), // 可配置日志缓冲
 		logWorkers:       logWorkers,                         // 可配置日志worker数量
 
@@ -205,23 +222,23 @@ func NewServer(store storage.Store) *Server {
 		concurrencySem: make(chan struct{}, maxConcurrency),
 		maxConcurrency: maxConcurrency,
 
-		// ✅ P0修复（2025-10-13）：初始化优雅关闭机制
+		// 初始化优雅关闭机制
 		shutdownCh: make(chan struct{}),
 	}
 
-	// ✅ P2重构：初始化冷却管理器（统一管理渠道级和Key级冷却）
+	// 初始化冷却管理器（统一管理渠道级和Key级冷却）
 	s.cooldownManager = cooldown.NewManager(store)
 
-	// ✅ P0重构：初始化Key选择器（移除store依赖，避免重复查询）
+	// 初始化Key选择器（移除store依赖，避免重复查询）
 	s.keySelector = NewKeySelector(nil)
 
-	// ✅ P0修复（2025-10-13）：启动日志工作协程（支持优雅关闭）
+	// 启动日志工作协程（支持优雅关闭）
 	for i := 0; i < s.logWorkers; i++ {
 		s.wg.Add(1)
 		go s.logWorker()
 	}
 
-	// ✅ P0修复（2025-10-13）：启动后台清理协程（支持优雅关闭）
+	// 启动后台清理协程（支持优雅关闭）
 	s.wg.Add(1)
 	go s.tokenCleanupLoop() // Token认证：定期清理过期Token
 
@@ -229,7 +246,7 @@ func NewServer(store storage.Store) *Server {
 	go s.cleanupOldLogsLoop() // 定期清理3天前的日志
 
 	s.wg.Add(1)
-	go s.cleanupKeySelectorCountersLoop() // ✅ P0修复(2025-10-29): 定期清理KeySelector计数器，防止内存泄漏
+	go s.cleanupKeySelectorCountersLoop() // 定期清理KeySelector计数器，防止内存泄漏
 
 	return s
 
@@ -257,7 +274,7 @@ func (s *Server) isValidToken(token string) bool {
 
 	// 检查是否过期
 	if time.Now().After(expiry) {
-		// ✅ P0修复（2025-10-16）：同步删除过期Token（避免goroutine泄漏）
+		// 同步删除过期Token（避免goroutine泄漏）
 		// 原因：map删除操作非常快（O(1)），无需异步，异步反而导致goroutine泄漏
 		s.tokensMux.Lock()
 		delete(s.validTokens, token)
@@ -369,11 +386,11 @@ func (s *Server) requireAPIAuth() gin.HandlerFunc {
 }
 
 // 登录处理程序 - Token认证版本（替代Cookie Session）
-// ✅ P2安全加固：集成登录速率限制，防暴力破解
+// 集成登录速率限制，防暴力破解
 func (s *Server) handleLogin(c *gin.Context) {
 	clientIP := c.ClientIP()
 
-	// ✅ P2安全加固：检查速率限制
+	// 检查速率限制
 	if !s.loginRateLimiter.AllowAttempt(clientIP) {
 		lockoutTime := s.loginRateLimiter.GetLockoutTime(clientIP)
 		c.JSON(http.StatusTooManyRequests, gin.H{
@@ -395,7 +412,7 @@ func (s *Server) handleLogin(c *gin.Context) {
 
 	// 验证密码
 	if req.Password != s.password {
-		// ✅ P2安全加固：记录失败尝试（速率限制器已在AllowAttempt中增加计数）
+		// 记录失败尝试（速率限制器已在AllowAttempt中增加计数）
 		attemptCount := s.loginRateLimiter.GetAttemptCount(clientIP)
 		util.SafePrintf("⚠️  登录失败: IP=%s, 尝试次数=%d/5", clientIP, attemptCount)
 
@@ -406,7 +423,7 @@ func (s *Server) handleLogin(c *gin.Context) {
 		return
 	}
 
-	// ✅ P2安全加固：密码正确，重置速率限制
+	// 密码正确，重置速率限制
 	s.loginRateLimiter.RecordSuccess(clientIP)
 
 	// 生成Token
@@ -488,7 +505,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/errors", s.handleErrors)
 		admin.GET("/metrics", s.handleMetrics)
 		admin.GET("/stats", s.handleStats)
-		admin.GET("/cooldown/stats", s.handleCooldownStats) // P2优化：冷却状态监控
+		admin.GET("/cooldown/stats", s.handleCooldownStats) // 冷却状态监控
 	}
 
 	// 静态文件服务（安全）：使用框架自带的静态文件路由，自动做路径清理，防止目录遍历
@@ -505,7 +522,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 // 该实现会自动进行路径清理和越界防护，避免目录遍历风险。
 
 // Token清理循环（定期清理过期Token）
-// ✅ P0修复（2025-10-13）：支持优雅关闭
+// 支持优雅关闭
 func (s *Server) tokenCleanupLoop() {
 	defer s.wg.Done()
 
@@ -515,7 +532,7 @@ func (s *Server) tokenCleanupLoop() {
 	for {
 		select {
 		case <-s.shutdownCh:
-			// ✅ P0修复(2025-10-29): 优先检查shutdown信号,快速响应关闭
+			// 优先检查shutdown信号,快速响应关闭
 			// 移除shutdown时的额外清理,避免潜在的死锁或延迟
 			// Token清理不是关键路径,可以在下次启动时清理过期Token
 			return
@@ -526,8 +543,8 @@ func (s *Server) tokenCleanupLoop() {
 }
 
 // 异步日志工作协程
-// ✅ P0修复（2025-10-13）：支持优雅关闭
-// ✅ P2优化（2025-10-28）：简化shutdown逻辑，利用channel关闭特性
+// 支持优雅关闭
+// 简化shutdown逻辑，利用channel关闭特性
 func (s *Server) logWorker() {
 	defer s.wg.Done()
 
@@ -538,7 +555,7 @@ func (s *Server) logWorker() {
 	for {
 		select {
 		case <-s.shutdownCh:
-			// ✅ P2改进(2025-10-29): 优先检查shutdown信号，快速响应关闭
+			// 优先检查shutdown信号，快速响应关闭
 			s.flushIfNeeded(batch)
 			return
 
@@ -557,7 +574,7 @@ func (s *Server) logWorker() {
 			}
 
 		case <-ticker.C:
-			// ✅ P2改进(2025-10-29): 移除嵌套select，简化定时flush逻辑
+			// 移除嵌套select，简化定时flush逻辑
 			// 设计原则：
 			// - ticker触发时直接flush当前batch
 			// - 如果logChan关闭，下次循环会在entry <- logChan中捕获
@@ -586,7 +603,7 @@ func (s *Server) flushLogs(logs []*model.LogEntry) {
 }
 
 // flushIfNeeded 辅助函数：当batch非空时执行flush
-// ✅ P2改进(2025-10-29): 提取重复逻辑，遵循DRY原则
+// 提取重复逻辑，遵循DRY原则
 func (s *Server) flushIfNeeded(batch []*model.LogEntry) {
 	if len(batch) > 0 {
 		s.flushLogs(batch)
@@ -594,9 +611,9 @@ func (s *Server) flushIfNeeded(batch []*model.LogEntry) {
 }
 
 // 异步添加日志
-// P1修复 (2025-10-05): 添加丢弃计数和告警机制
+// 添加丢弃计数和告警机制
 func (s *Server) addLogAsync(entry *model.LogEntry) {
-	// ✅ P2修复（2025-10-28）：shutdown时不再写入日志
+	// shutdown时不再写入日志
 	if s.isShuttingDown.Load() {
 		return
 	}
@@ -618,7 +635,7 @@ func (s *Server) addLogAsync(entry *model.LogEntry) {
 
 // cleanupOldLogsLoop 定期清理旧日志（性能优化：避免每次插入时清理）
 // 每小时检查一次，删除3天前的日志
-// ✅ P0修复（2025-10-13）：支持优雅关闭
+// 支持优雅关闭
 func (s *Server) cleanupOldLogsLoop() {
 	defer s.wg.Done()
 
@@ -628,7 +645,7 @@ func (s *Server) cleanupOldLogsLoop() {
 	for {
 		select {
 		case <-ticker.C:
-			// ✅ P0-3修复：使用带超时的context，避免日志清理阻塞关闭流程
+			// 使用带超时的context，避免日志清理阻塞关闭流程
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			cutoff := time.Now().AddDate(0, 0, -config.LogRetentionDays)
 
@@ -644,7 +661,7 @@ func (s *Server) cleanupOldLogsLoop() {
 }
 
 // cleanupKeySelectorCountersLoop 定期清理KeySelector的过期计数器
-// ✅ P0修复(2025-10-29): 防止rrCounters map内存泄漏
+// 防止rrCounters map内存泄漏
 // 每小时清理一次，删除1小时未使用的计数器
 func (s *Server) cleanupKeySelectorCountersLoop() {
 	defer s.wg.Done()
@@ -702,7 +719,7 @@ func (s *Server) getGeminiModels(ctx context.Context) ([]string, error) {
 
 // WarmHTTPConnections HTTP连接预热（性能优化：为高优先级渠道预建立连接）
 // 作用：消除首次请求的TLS握手延迟10-50ms，提升用户体验
-// ✅ P0修复（2025-10-16）：等待所有预热goroutine完成，避免goroutine泄漏
+// 等待所有预热goroutine完成，避免goroutine泄漏
 func (s *Server) WarmHTTPConnections(ctx context.Context) {
 	// 直接从数据库查询所有启用的渠道（已按优先级排序）
 	configs, err := s.store.GetEnabledChannelsByModel(ctx, "*")
@@ -766,24 +783,24 @@ func (s *Server) handleChannelKeys(c *gin.Context) {
 	s.handleGetChannelKeys(c, id)
 }
 
-// ✅ P0修复（2025-10-13）：优雅关闭Server
+// 优雅关闭Server
 // Shutdown 优雅关闭Server，等待所有后台goroutine完成
 // 参数ctx用于控制最大等待时间，超时后强制退出
 // 返回值：nil表示成功，context.DeadlineExceeded表示超时
 func (s *Server) Shutdown(ctx context.Context) error {
 	util.SafePrint("🛑 正在关闭Server，等待后台任务完成...")
 
-	// ✅ P2修复（2025-10-28）：设置shutdown标志，防止新的日志写入
+	// 设置shutdown标志，防止新的日志写入
 	s.isShuttingDown.Store(true)
 
 	// 关闭shutdownCh，通知所有goroutine退出
 	close(s.shutdownCh)
 
-	// ✅ P2修复（2025-10-28）：关闭logChan，让logWorker更快退出
+	// 关闭logChan，让logWorker更快退出
 	// 由于isShuttingDown已设置，addLogAsync不会再往logChan写入，可以安全关闭
 	close(s.logChan)
 
-	// ✅ P0修复（2025-10-16）：停止LoginRateLimiter的cleanupLoop
+	// 停止LoginRateLimiter的cleanupLoop
 	s.loginRateLimiter.Stop()
 
 	// 使用channel等待所有goroutine完成
@@ -796,7 +813,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// 等待完成或超时
 	select {
 	case <-done:
-		// ✅ P0-2 修复：关闭数据库连接，防止 goroutine 泄漏
+		// 关闭数据库连接，防止 goroutine 泄漏
 		// SQLiteStore 创建了 2 个 database/sql.connectionOpener goroutine
 		// 必须显式调用 Close() 才能清理这些 goroutine
 		if closer, ok := s.store.(interface{ Close() error }); ok {

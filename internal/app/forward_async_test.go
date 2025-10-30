@@ -65,7 +65,7 @@ func TestRequestContextCreation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			// ✅ P0修复(2025-10-29): 移除defer reqCtx.Close()（Close方法已删除）
+			// 移除defer reqCtx.Close()（Close方法已删除）
 			reqCtx := srv.newRequestContext(ctx, tt.requestPath, tt.body)
 
 			if reqCtx.isStreaming != tt.wantStreaming {
@@ -77,7 +77,7 @@ func TestRequestContextCreation(t *testing.T) {
 				t.Error("reqCtx.ctx should not be nil")
 			}
 
-			// ✅ P0修复(2025-10-29): 移除cancel字段验证（cancel已删除）
+			// 移除cancel字段验证（cancel已删除）
 		})
 	}
 }
@@ -180,7 +180,7 @@ func TestHandleRequestError(t *testing.T) {
 				t.Errorf("error = %v, should contain %s", err, tt.wantContains)
 			}
 
-			// ✅ P0-1 & P2-3 修复：ErrCodeNetworkRetryable = -1 是合法的内部标识符
+			// ErrCodeNetworkRetryable = -1 是合法的内部标识符
 			// 对于某些网络错误（如DNS错误），无法映射到标准HTTP状态码
 			// 使用负值避免与HTTP状态码混淆
 			if result.Status == ErrCodeNetworkRetryable {

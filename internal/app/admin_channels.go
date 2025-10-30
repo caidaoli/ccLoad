@@ -15,7 +15,7 @@ import (
 )
 
 // ==================== 渠道CRUD管理 ====================
-// ✅ P1重构 (2025-10-28): 从admin.go拆分渠道CRUD,遵循SRP原则
+// 从admin.go拆分渠道CRUD,遵循SRP原则
 
 func (s *Server) handleChannels(c *gin.Context) {
 	switch c.Request.Method {
@@ -29,7 +29,7 @@ func (s *Server) handleChannels(c *gin.Context) {
 }
 
 // 获取渠道列表
-// P1修复 (2025-10-05): 使用批量查询优化N+1问题
+// 使用批量查询优化N+1问题
 func (s *Server) handleListChannels(c *gin.Context) {
 	cfgs, err := s.store.ListConfigs(c.Request.Context())
 	if err != nil {
@@ -40,7 +40,6 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	// 附带冷却状态
 	now := time.Now()
 
-	// P0性能优化：批量查询所有渠道冷却状态（一次查询替代 N 次）
 	allChannelCooldowns, err := s.store.GetAllChannelCooldowns(c.Request.Context())
 	if err != nil {
 		// 渠道冷却查询失败不影响主流程，仅记录错误
@@ -56,7 +55,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		allKeyCooldowns = make(map[int64]map[int]time.Time)
 	}
 
-	// ✅ P3性能优化：批量查询所有API Keys（一次查询替代 N 次）
+	// 批量查询所有API Keys（一次查询替代 N 次）
 	var allAPIKeys map[int64][]*model.APIKey
 	if sqliteStore, ok := s.store.(*sqlite.SQLiteStore); ok {
 		allAPIKeys, err = sqliteStore.GetAllAPIKeys(c.Request.Context())
@@ -80,7 +79,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 			oc.CooldownRemainingMS = cooldownRemainingMS
 		}
 
-		// ✅ P3性能优化：从预加载的map中获取API Keys（O(1)查找）
+		// 从预加载的map中获取API Keys（O(1)查找）
 		apiKeys := allAPIKeys[cfg.ID]
 
 		// ✅ 修复 (2025-10-11): 填充key_strategy字段（从第一个Key获取，所有Key的策略应该相同）

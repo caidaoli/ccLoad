@@ -13,6 +13,12 @@ import (
 // 设计原则：区分Key级错误和渠道级错误，避免误判导致多Key功能失效
 
 // ErrorLevel 错误级别枚举
+// ErrUpstreamFirstByteTimeout 是上游首字节超时的统一错误标识，避免依赖具体报错文案
+var ErrUpstreamFirstByteTimeout = errors.New("upstream first byte timeout")
+
+// StatusFirstByteTimeout 是上游首字节超时时返回的自定义状态码（配合冷却策略使用）
+const StatusFirstByteTimeout = 598
+
 type ErrorLevel int
 
 const (
@@ -39,7 +45,7 @@ func ClassifyHTTPStatus(statusCode int) ErrorLevel {
 	// 特殊状态码处理
 	switch statusCode {
 	case 499: // Client Closed Request
-		// ✅ P3修复（2025-10-28）：499错误需要区分来源
+		// 499错误需要区分来源
 		// 注意：此函数处理的是HTTP响应中的499状态码
 		// 当499来自HTTP响应时，说明是上游API返回的状态码（不是下游客户端取消）
 		// 可能原因：API服务器过载、限流、或内部错误
@@ -104,7 +110,7 @@ func ClassifyHTTPStatus(statusCode int) ErrorLevel {
 // - 只有明确的"账户级不可逆错误"才分类为Channel级（如账户暂停、服务禁用）
 // - "额度用尽"可能是单个Key的问题，应该先尝试其他Key
 func ClassifyHTTPStatusWithBody(statusCode int, responseBody []byte) ErrorLevel {
-	// ✅ P1改进(2025-10-29): 增加429错误的特殊处理
+	// 增加429错误的特殊处理
 	if statusCode == 429 {
 		// 429错误需要分析headers,但此函数没有headers参数
 		// 为了向后兼容,这里默认返回Key级,由调用方使用ClassifyRateLimitError
@@ -151,7 +157,7 @@ func ClassifyHTTPStatusWithBody(statusCode int, responseBody []byte) ErrorLevel 
 }
 
 // ClassifyRateLimitError 分析429 Rate Limit错误的具体类型
-// ✅ P1改进(2025-10-29): 增强429错误处理,区分Key级和渠道级限流
+// 增强429错误处理,区分Key级和渠道级限流
 //
 // 判断逻辑:
 //  1. 检查Retry-After头: 如果>60秒,可能是IP/账户级限流 → 渠道级
@@ -219,7 +225,7 @@ func ClassifyRateLimitError(headers map[string][]string, responseBody []byte) Er
 }
 
 // ClassifyError 统一错误分类器（网络错误+HTTP错误）
-// ✅ P0重构：将proxy_util.go中的classifyError和classifyErrorByString整合到此处
+// 将proxy_util.go中的classifyError和classifyErrorByString整合到此处
 //
 // 参数:
 //   - err: 错误对象（可能是context错误、网络错误、或其他错误）
@@ -238,26 +244,22 @@ func ClassifyError(err error) (statusCode int, errorLevel ErrorLevel, shouldRetr
 		return 200, ErrorLevelNone, false
 	}
 
-	// ✅ 快速路径1：优先检查最常见的错误类型（避免字符串操作）
-	// Context canceled - 客户端主动取消，不应重试（最常见）
+	// 快速路径1：专门识别上游首字节超时，优先切换渠道
+	if errors.Is(err, ErrUpstreamFirstByteTimeout) {
+		return StatusFirstByteTimeout, ErrorLevelChannel, true
+	}
+
+	// 快速路径2：处理客户端主动取消
 	if errors.Is(err, context.Canceled) {
 		return 499, ErrorLevelClient, false // StatusClientClosedRequest
 	}
 
-	// ⚠️ Context deadline exceeded 需要区分两种情况：
-	// 1. 客户端超时（来自客户端设置的超时）- 不应重试
-	// 2. 上游服务器响应慢导致的超时 - 应该重试其他渠道
-	// ✅ P0修复 (2025-10-13): 默认将DeadlineExceeded视为上游超时（可重试）
-	// 设计原则：
-	// - 客户端主动取消通常是context.Canceled，而不是DeadlineExceeded
-	// - 保守策略：宁可多重试（提升可用性），也不要漏掉上游超时（导致可用性下降）
-	// - 兼容性：不依赖特定的错误消息格式，适配Go不同版本和HTTP客户端实现
+	// 快速路径3：统一处理其它 DeadlineExceeded，默认视为上游超时
 	if errors.Is(err, context.DeadlineExceeded) {
-		// 所有DeadlineExceeded错误默认为上游超时，应该重试其他渠道
-		return 504, ErrorLevelChannel, true // ✅ Gateway Timeout，触发渠道切换
+		return 504, ErrorLevelChannel, true // Gateway Timeout，触发渠道切换
 	}
 
-	// ✅ 快速路径2：检查系统级错误（使用类型断言替代字符串匹配）
+	// 快速路径4：检测net.Error的超时场景
 	var netErr net.Error
 	if errors.As(err, &netErr) {
 		if netErr.Timeout() {
@@ -265,12 +267,12 @@ func ClassifyError(err error) (statusCode int, errorLevel ErrorLevel, shouldRetr
 		}
 	}
 
-	// ✅ 慢速路径：字符串匹配（<1%的错误会到达这里）
+	// 慢速路径：回退到字符串匹配
 	return classifyErrorByString(err.Error())
 }
 
 // classifyErrorByString 通过字符串匹配分类网络错误
-// ✅ P0重构：从proxy_util.go迁移，作为ClassifyError的私有辅助函数
+// 从proxy_util.go迁移，作为ClassifyError的私有辅助函数
 func classifyErrorByString(errStr string) (int, ErrorLevel, bool) {
 	errLower := strings.ToLower(errStr)
 
@@ -294,7 +296,7 @@ func classifyErrorByString(errStr string) (int, ErrorLevel, bool) {
 		return 502, ErrorLevelChannel, true
 	}
 
-	// ✅ P2-3 修复：使用负值错误码，避免与HTTP状态码混淆
+	// 使用负值错误码，避免与HTTP状态码混淆
 	// 其他网络错误 - 可以重试
 	return -1, ErrorLevelChannel, true // ErrCodeNetworkRetryable
 }

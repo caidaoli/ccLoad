@@ -56,7 +56,7 @@ const (
 	DefaultLogBufferSize = 1000
 
 	// DefaultLogWorkers 默认日志Worker协程数
-	// ✅ P2修复(2025-10-28): 改为1以保证日志写入顺序(FIFO)
+	// 改为1以保证日志写入顺序(FIFO)
 	// 多worker会导致竞争消费logChan,打乱日志顺序
 	// 性能影响: 单worker仍支持批量写入,性能足够(1000条/秒+)
 	DefaultLogWorkers = 1
@@ -94,7 +94,7 @@ const (
 )
 
 // SQLite连接池配置常量
-// ✅ P1修复（2025-10-13）：优化连接池配置，提升高并发性能
+// 优化连接池配置，提升高并发性能
 const (
 	// SQLiteMaxOpenConnsMemory 内存模式最大连接数
 	SQLiteMaxOpenConnsMemory = 10

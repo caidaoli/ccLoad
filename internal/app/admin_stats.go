@@ -12,7 +12,7 @@ import (
 )
 
 // ==================== 统计和监控 ====================
-// ✅ P1重构 (2025-10-28): 从admin.go拆分统计监控,遵循SRP原则
+// 从admin.go拆分统计监控,遵循SRP原则
 
 // handleErrors 获取错误日志列表
 // GET /admin/errors?hours=24&limit=100&offset=0

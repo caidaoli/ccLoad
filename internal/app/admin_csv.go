@@ -19,7 +19,7 @@ import (
 )
 
 // ==================== CSV导入导出 ====================
-// ✅ P1重构 (2025-10-28): 从admin.go拆分CSV功能,遵循SRP原则
+// 从admin.go拆分CSV功能,遵循SRP原则
 
 // handleExportChannelsCSV 导出渠道为CSV
 // GET /admin/channels/export
@@ -30,7 +30,7 @@ func (s *Server) handleExportChannelsCSV(c *gin.Context) {
 		return
 	}
 
-	// ✅ P3优化:批量查询所有API Keys,消除N+1问题(100渠道从100次查询降为1次)
+	// 批量查询所有API Keys,消除N+1问题(100渠道从100次查询降为1次)
 	var allAPIKeys map[int64][]*model.APIKey
 	if sqliteStore, ok := s.store.(*sqlite.SQLiteStore); ok {
 		allAPIKeys, err = sqliteStore.GetAllAPIKeys(c.Request.Context())
@@ -57,7 +57,7 @@ func (s *Server) handleExportChannelsCSV(c *gin.Context) {
 	}
 
 	for _, cfg := range cfgs {
-		// ✅ P3优化:从预加载的map中获取API Keys,O(1)查找
+		// 从预加载的map中获取API Keys,O(1)查找
 		apiKeys := allAPIKeys[cfg.ID]
 
 		// 格式化API Keys为逗号分隔字符串
@@ -153,7 +153,7 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 	summary := ChannelImportSummary{}
 	lineNo := 1
 
-	// ✅ P3优化:批量收集有效记录,最后一次性导入(减少数据库往返)
+	// 批量收集有效记录,最后一次性导入(减少数据库往返)
 	validChannels := make([]*model.ChannelWithKeys, 0, 100) // 预分配容量,减少扩容
 
 	for {
@@ -281,7 +281,7 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 		})
 	}
 
-	// ✅ P3优化:批量导入所有有效记录(单事务 + 预编译语句)
+	// 批量导入所有有效记录(单事务 + 预编译语句)
 	if len(validChannels) > 0 {
 		if sqliteStore, ok := s.store.(*sqlite.SQLiteStore); ok {
 			created, updated, err := sqliteStore.ImportChannelBatch(c.Request.Context(), validChannels)

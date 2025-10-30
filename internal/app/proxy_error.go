@@ -12,7 +12,7 @@ import (
 // ============================================================================
 
 // handleProxyError 统一错误处理与冷却决策（遵循OCP原则）
-// ✅ P2重构: 使用 cooldownManager 统一处理冷却逻辑（DRY原则）
+// 使用 cooldownManager 统一处理冷却逻辑（DRY原则）
 // 返回：(处理动作, 是否需要保存响应信息)
 func (s *Server) handleProxyError(ctx context.Context, cfg *model.Config, keyIndex int,
 	res *fwResult, err error) (cooldown.Action, bool) {
@@ -20,7 +20,7 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *model.Config, keyInd
 	var statusCode int
 	var errorBody []byte
 	var isNetworkError bool
-	var headers map[string][]string // ✅ P1改进: 提取响应头用于429错误分析
+	var headers map[string][]string // 提取响应头用于429错误分析
 
 	// 确定状态码、错误体和错误类型
 	if err != nil {
@@ -38,12 +38,12 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *model.Config, keyInd
 		statusCode = res.Status
 		errorBody = res.Body
 		isNetworkError = false // ✅ 标记为HTTP错误
-		headers = res.Header   // ✅ P1改进: 提取响应头用于429分析
+		headers = res.Header   // 提取响应头用于429分析
 	}
 
-	// ✅ P2重构：使用 cooldownManager 统一处理冷却决策
+	// 使用 cooldownManager 统一处理冷却决策
 	// 好处：消除重复逻辑，单一职责，便于测试和维护
-	// ✅ P0修复(2025-10-29): manager.HandleError 现在不返回错误（日志记录方式）
+	// manager.HandleError 现在不返回错误（日志记录方式）
 	// 因此这里不再需要检查 cooldownErr，直接使用 action 即可
 	action, _ := s.cooldownManager.HandleError(ctx, cfg.ID, keyIndex, statusCode, errorBody, isNetworkError, headers)
 
@@ -54,7 +54,7 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *model.Config, keyInd
 		return action, true
 
 	case cooldown.ActionRetryChannel:
-		// 渠道级错误：精确计数（P1）
+		// 渠道级错误：精确计数
 		return action, true
 
 	default:
@@ -64,7 +64,7 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *model.Config, keyInd
 }
 
 // handleNetworkError 处理网络错误
-// ✅ P2重构: 从proxy.go提取，遵循SRP原则
+// 从proxy.go提取，遵循SRP原则
 func (s *Server) handleNetworkError(
 	ctx context.Context,
 	cfg *model.Config,
@@ -91,7 +91,7 @@ func (s *Server) handleNetworkError(
 		}, false, false
 	}
 
-	// ✅ P0修复 (2025-01-XX): 修复首字节超时不切换渠道的问题
+	// 修复首字节超时不切换渠道的问题
 	// 当 handleProxyError 返回 ActionRetryChannel 时，应该立即切换到下一个渠道
 	// 而不是继续尝试当前渠道的其他Key
 	if action == cooldown.ActionRetryChannel {
@@ -102,7 +102,7 @@ func (s *Server) handleNetworkError(
 }
 
 // handleProxySuccess 处理代理成功响应（业务逻辑层）
-// ✅ P2重构: 使用 cooldownManager 统一管理冷却状态清除
+// 使用 cooldownManager 统一管理冷却状态清除
 // 注意：与 handleSuccessResponse（HTTP层）不同
 func (s *Server) handleProxySuccess(
 	ctx context.Context,
@@ -113,8 +113,8 @@ func (s *Server) handleProxySuccess(
 	res *fwResult,
 	duration float64,
 ) (*proxyResult, bool, bool) {
-	// ✅ P2重构：使用 cooldownManager 清除冷却状态
-	// ✅ P0修复(2025-10-29): 记录清除失败但不中断成功响应
+	// 使用 cooldownManager 清除冷却状态
+	// 记录清除失败但不中断成功响应
 	// 设计原则: 清除失败不应影响用户请求成功，但需要记录用于监控
 	if err := s.cooldownManager.ClearChannelCooldown(ctx, cfg.ID); err != nil {
 		// util.SafePrintf("⚠️  WARNING: Failed to clear channel cooldown (channel=%d): %v", cfg.ID, err)
@@ -122,7 +122,7 @@ func (s *Server) handleProxySuccess(
 	if err := s.cooldownManager.ClearKeyCooldown(ctx, cfg.ID, keyIndex); err != nil {
 		// util.SafePrintf("⚠️  WARNING: Failed to clear key cooldown (channel=%d, key=%d): %v", cfg.ID, keyIndex, err)
 	}
-	// 精确计数（P1）：记录状态恢复
+	// 精确计数：记录状态恢复
 
 	// 记录成功日志
 	// ✅ 修复：使用 actualModel 而非 reqCtx.originalModel
@@ -141,7 +141,7 @@ func (s *Server) handleProxySuccess(
 }
 
 // handleProxyErrorResponse 处理代理错误响应（业务逻辑层）
-// ✅ P2重构: 从proxy.go提取，遵循SRP原则
+// 从proxy.go提取，遵循SRP原则
 // 注意：与 handleErrorResponse（HTTP层）不同
 func (s *Server) handleProxyErrorResponse(
 	ctx context.Context,

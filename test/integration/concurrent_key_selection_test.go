@@ -43,9 +43,9 @@ func TestConcurrentKeySelection(t *testing.T) {
 
 	// 初始化KeySelector
 	var keyCooldownGauge atomic.Int64
-	selector := app.NewKeySelector(&keyCooldownGauge) // ✅ P0重构：移除store参数
+	selector := app.NewKeySelector(&keyCooldownGauge) // 移除store参数
 
-	// ✅ P0重构：预先查询apiKeys，避免并发重复查询
+	// 预先查询apiKeys，避免并发重复查询
 	apiKeys, err := store.GetAPIKeys(ctx, channelID)
 	if err != nil {
 		t.Fatalf("Failed to get API keys: %v", err)
@@ -151,7 +151,7 @@ func TestConcurrentKeyCooldown(t *testing.T) {
 	}
 
 	var keyCooldownGauge atomic.Int64
-	selector := app.NewKeySelector(&keyCooldownGauge) // ✅ P0重构：移除store参数
+	selector := app.NewKeySelector(&keyCooldownGauge) // 移除store参数
 
 	var wg sync.WaitGroup
 	errors := make(chan error, 100)
@@ -174,7 +174,7 @@ func TestConcurrentKeyCooldown(t *testing.T) {
 			}
 		}(i)
 
-		// 冷却Key（✅ P0重构：直接调用store，不再使用已删除的MarkKeyError）
+		// 冷却Key（直接调用store，不再使用已删除的MarkKeyError）
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()

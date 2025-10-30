@@ -211,7 +211,7 @@ func TestClassifyHTTPStatus(t *testing.T) {
 		{403, ErrorLevelKey, "Key级错误"},
 		{404, ErrorLevelClient, "客户端错误"},
 		{429, ErrorLevelKey, "Key级限流"},
-		// ✅ P3修复（2025-10-28）：499 HTTP响应应触发渠道级重试
+		// 499 HTTP响应应触发渠道级重试
 		{499, ErrorLevelChannel, "499来自HTTP响应时，说明上游API返回，应重试其他渠道"},
 		{500, ErrorLevelChannel, "渠道级错误"},
 		{502, ErrorLevelChannel, "渠道级错误"},
@@ -232,7 +232,7 @@ func TestClassifyHTTPStatus(t *testing.T) {
 	}
 }
 
-// ✅ P3修复（2025-10-28）：测试context.Canceled与HTTP 499的区分
+// 测试context.Canceled与HTTP 499的区分
 func TestClassifyError_ContextCanceled(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -279,7 +279,7 @@ func TestClassifyError_ContextCanceled(t *testing.T) {
 	}
 }
 
-// ✅ P1改进（2025-10-29）：测试429错误的智能分类
+// 测试429错误的智能分类
 func TestClassifyRateLimitError(t *testing.T) {
 	tests := []struct {
 		name         string

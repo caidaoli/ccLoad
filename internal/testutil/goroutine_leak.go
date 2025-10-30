@@ -79,7 +79,7 @@ func isTestingGoroutine(stack string) bool {
 		"testing.tRunner",
 		"testing.Main",
 		"runtime.goexit",
-		// ✅ P2修复（2025-10-28）：过滤database/sql的后台goroutine
+		// 过滤database/sql的后台goroutine
 		// 这些goroutine由Go标准库管理，Close()后会自动清理但需要时间
 		"database/sql.(*DB).connectionOpener",
 		"database/sql.(*DB).connectionCleaner",

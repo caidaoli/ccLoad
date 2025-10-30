@@ -10,7 +10,7 @@ import (
 // - 基于IP地址限制：防止单个IP暴力破解
 // - 指数退避：失败次数越多，锁定时间越长
 // - 自动清理：1小时后重置计数器
-// ✅ P0修复（2025-10-16）：支持优雅关闭
+// 支持优雅关闭
 type LoginRateLimiter struct {
 	attempts map[string]*attemptRecord // IP -> 尝试记录
 	mu       sync.RWMutex
@@ -38,11 +38,11 @@ func NewLoginRateLimiter() *LoginRateLimiter {
 		maxAttempts:     5,                   // 最大5次尝试
 		lockoutDuration: 15 * time.Minute,    // 锁定15分钟
 		resetInterval:   1 * time.Hour,       // 1小时后重置
-		stopCh:          make(chan struct{}), // ✅ P0修复：初始化关闭信号
+		stopCh:          make(chan struct{}), // 初始化关闭信号
 	}
 
 	// 启动后台清理协程（每小时清理过期记录）
-	// ✅ P0修复：支持优雅关闭
+	// 支持优雅关闭
 	go limiter.cleanupLoop()
 
 	return limiter
@@ -136,7 +136,7 @@ func (rl *LoginRateLimiter) GetAttemptCount(ip string) int {
 }
 
 // cleanupLoop 定期清理过期记录（后台协程）
-// ✅ P0修复（2025-10-16）：支持优雅关闭
+// 支持优雅关闭
 func (rl *LoginRateLimiter) cleanupLoop() {
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
@@ -179,7 +179,7 @@ func (rl *LoginRateLimiter) cleanup() {
 	}
 }
 
-// ✅ P0修复（2025-10-16）：优雅关闭LoginRateLimiter
+// 优雅关闭LoginRateLimiter
 // Stop 停止cleanupLoop后台协程
 func (rl *LoginRateLimiter) Stop() {
 	close(rl.stopCh)

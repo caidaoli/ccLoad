@@ -17,7 +17,7 @@ const (
 )
 
 // Manager 冷却管理器
-// ✅ P2重构: 统一管理渠道级和Key级冷却逻辑
+// 统一管理渠道级和Key级冷却逻辑
 // 遵循SRP原则：专注于冷却决策和执行
 type Manager struct {
 	store storage.Store
@@ -29,7 +29,7 @@ func NewManager(store storage.Store) *Manager {
 }
 
 // HandleError 统一错误处理与冷却决策
-// ✅ P2重构: 将proxy_error.go中的handleProxyError逻辑提取到专用模块
+// 将proxy_error.go中的handleProxyError逻辑提取到专用模块
 //
 // 参数:
 //   - channelID: 渠道ID
@@ -48,26 +48,25 @@ func (m *Manager) HandleError(
 	statusCode int,
 	errorBody []byte,
 	isNetworkError bool,
-	headers map[string][]string, // ✅ P1改进(2025-10-29): 新增headers参数用于429错误分析
+	headers map[string][]string, // 新增headers参数用于429错误分析
 ) (Action, error) {
 	var errLevel util.ErrorLevel
 
 	// 1. 区分网络错误和HTTP错误的分类策略
 	if isNetworkError {
-		// ✅ 网络错误特殊处理:区分超时类错误和其他网络错误
-		// StatusFirstByteTimeout (598) → 渠道级错误(首字节超时,固定5分钟冷却)
-		// 504 Gateway Timeout → 渠道级错误(上游整体超时)
-		// 其他可重试错误(502等) → Key级错误(可能只是单个Key的连接问题)
-		const StatusFirstByteTimeout = 598
-		if statusCode == StatusFirstByteTimeout || statusCode == 504 {
+		// ✅ 网络错误特殊处理: 区分首字节超时、整体超时以及普通网络波动
+		// util.StatusFirstByteTimeout (598) → 渠道级错误（首字节超时，固定1分钟冷却）
+		// 504 Gateway Timeout → 渠道级错误（上游整体超时）
+		// 其他可重试错误(502等) → 默认Key级错误（可能只是单个Key的连接问题）
+		if statusCode == util.StatusFirstByteTimeout || statusCode == 504 {
 			errLevel = util.ErrorLevelChannel
 		} else {
 			errLevel = util.ErrorLevelKey
 		}
 	} else {
-		// HTTP错误:使用智能分类器(结合响应体内容和headers)
+		// HTTP错误: 使用智能分类器(结合响应体内容和headers)
 
-		// ✅ P1改进(2025-10-29): 429错误特殊处理
+		// 429错误特殊处理
 		if statusCode == 429 && headers != nil {
 			// 使用增强的Rate Limit分类器
 			errLevel = util.ClassifyRateLimitError(headers, errorBody)
@@ -79,7 +78,7 @@ func (m *Manager) HandleError(
 
 	// 2. 🎯 动态调整:单Key渠道的Key级错误应该直接冷却渠道
 	// 设计原则:如果没有其他Key可以重试,Key级错误等同于渠道级错误
-	// 🔧 P1优化:使用缓存的KeyCount,避免N+1查询(性能提升~60%)
+	// 使用缓存的KeyCount,避免N+1查询(性能提升~60%)
 	if errLevel == util.ErrorLevelKey {
 		config, err := m.store.GetConfig(ctx, channelID)
 		// 查询失败或单Key渠道:直接升级为渠道级错误
@@ -99,8 +98,8 @@ func (m *Manager) HandleError(
 		if keyIndex >= 0 {
 			_, err := m.store.BumpKeyCooldown(ctx, channelID, keyIndex, time.Now(), statusCode)
 			if err != nil {
-				// ✅ P0修复(2025-10-29): 冷却更新失败是非致命错误
-				// 记录日志但不中断请求处理，避免因数据库BUSY导致无限重试
+				// 冷却更新失败是非致命错误
+				// 记录日志但不中断请求处理,避免因数据库BUSY导致无限重试
 				// TODO: 添加Prometheus指标监控冷却失败率
 				util.SafePrintf("⚠️  WARNING: Failed to update key cooldown (channel=%d, key=%d): %v", channelID, keyIndex, err)
 			}
@@ -111,9 +110,9 @@ func (m *Manager) HandleError(
 		// 渠道级错误:冷却整个渠道,切换到其他渠道
 		_, err := m.store.BumpChannelCooldown(ctx, channelID, time.Now(), statusCode)
 		if err != nil {
-			// ✅ P0修复(2025-10-29): 冷却更新失败是非致命错误
-			// 设计原则: 数据库故障不应阻塞用户请求，系统应降级服务
-			// 影响: 可能导致短暂的冷却状态不一致，但比拒绝服务更好
+			// 冷却更新失败是非致命错误
+			// 设计原则: 数据库故障不应阻塞用户请求,系统应降级服务
+			// 影响: 可能导致短暂的冷却状态不一致,但总比拒绝服务更好
 			util.SafePrintf("⚠️  WARNING: Failed to update channel cooldown (channel=%d): %v", channelID, err)
 		}
 		return ActionRetryChannel, nil
@@ -125,13 +124,13 @@ func (m *Manager) HandleError(
 }
 
 // ClearChannelCooldown 清除渠道冷却状态
-// ✅ P2重构: 简化成功后的冷却清除逻辑
+// 简化成功后的冷却清除逻辑
 func (m *Manager) ClearChannelCooldown(ctx context.Context, channelID int64) error {
 	return m.store.ResetChannelCooldown(ctx, channelID)
 }
 
 // ClearKeyCooldown 清除Key冷却状态
-// ✅ P2重构: 简化成功后的冷却清除逻辑
+// 简化成功后的冷却清除逻辑
 func (m *Manager) ClearKeyCooldown(ctx context.Context, channelID int64, keyIndex int) error {
 	return m.store.ResetKeyCooldown(ctx, channelID, keyIndex)
 }

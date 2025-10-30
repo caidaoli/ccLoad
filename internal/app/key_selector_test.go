@@ -21,7 +21,7 @@ func TestSelectAvailableKey_SingleKey(t *testing.T) {
 	defer cleanup()
 
 	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(&cooldownGauge) // ✅ P0重构：移除store参数
+	selector := NewKeySelector(&cooldownGauge) // 移除store参数
 	ctx := context.WithValue(context.Background(), testingContextKey, true)
 
 	// 创建渠道
@@ -47,7 +47,7 @@ func TestSelectAvailableKey_SingleKey(t *testing.T) {
 		t.Fatalf("创建API Key失败: %v", err)
 	}
 
-	// ✅ P0重构：预先查询apiKeys
+	// 预先查询apiKeys
 	apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
 	if err != nil {
 		t.Fatalf("查询API Keys失败: %v", err)
@@ -89,7 +89,7 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 	defer cleanup()
 
 	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(&cooldownGauge) // ✅ P0重构：移除store参数
+	selector := NewKeySelector(&cooldownGauge) // 移除store参数
 	ctx := context.WithValue(context.Background(), testingContextKey, true)
 
 	// 创建渠道
@@ -117,7 +117,7 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 		}
 	}
 
-	// ✅ P0重构：预先查询apiKeys
+	// 预先查询apiKeys
 	apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
 	if err != nil {
 		t.Fatalf("查询API Keys失败: %v", err)
@@ -197,7 +197,7 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 	defer cleanup()
 
 	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(&cooldownGauge) // ✅ P0重构：移除store参数
+	selector := NewKeySelector(&cooldownGauge) // 移除store参数
 	ctx := context.WithValue(context.Background(), testingContextKey, true)
 
 	// 创建渠道
@@ -225,7 +225,7 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 		}
 	}
 
-	// ✅ P0重构：预先查询apiKeys
+	// 预先查询apiKeys
 	apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
 	if err != nil {
 		t.Fatalf("查询API Keys失败: %v", err)
@@ -287,7 +287,7 @@ func TestSelectAvailableKey_KeyCooldown(t *testing.T) {
 	defer cleanup()
 
 	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(&cooldownGauge) // ✅ P0重构：移除store参数
+	selector := NewKeySelector(&cooldownGauge) // 移除store参数
 	ctx := context.WithValue(context.Background(), testingContextKey, true)
 	now := time.Now()
 
@@ -322,7 +322,7 @@ func TestSelectAvailableKey_KeyCooldown(t *testing.T) {
 		t.Fatalf("冷却Key0失败: %v", err)
 	}
 
-	// ✅ P0重构：预先查询apiKeys（在冷却Key0之后，包含冷却状态）
+	// 预先查询apiKeys（在冷却Key0之后，包含冷却状态）
 	apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
 	if err != nil {
 		t.Fatalf("查询API Keys失败: %v", err)
@@ -407,7 +407,7 @@ func TestSelectAvailableKey_CooldownAndExclude(t *testing.T) {
 	defer cleanup()
 
 	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(&cooldownGauge) // ✅ P0重构：移除store参数
+	selector := NewKeySelector(&cooldownGauge) // 移除store参数
 	ctx := context.WithValue(context.Background(), testingContextKey, true)
 	now := time.Now()
 
@@ -442,7 +442,7 @@ func TestSelectAvailableKey_CooldownAndExclude(t *testing.T) {
 		t.Fatalf("冷却Key1失败: %v", err)
 	}
 
-	// ✅ P0重构：预先查询apiKeys（在冷却Key1之后，包含冷却状态）
+	// 预先查询apiKeys（在冷却Key1之后，包含冷却状态）
 	apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
 	if err != nil {
 		t.Fatalf("查询API Keys失败: %v", err)
@@ -475,7 +475,7 @@ func TestSelectAvailableKey_NoKeys(t *testing.T) {
 	defer cleanup()
 
 	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(&cooldownGauge) // ✅ P0重构：移除store参数
+	selector := NewKeySelector(&cooldownGauge) // 移除store参数
 	ctx := context.WithValue(context.Background(), testingContextKey, true)
 
 	// 创建渠道（不配置API Keys）
@@ -490,7 +490,7 @@ func TestSelectAvailableKey_NoKeys(t *testing.T) {
 		t.Fatalf("创建渠道失败: %v", err)
 	}
 
-	// ✅ P0重构：预先查询apiKeys（应该为空）
+	// 预先查询apiKeys（应该为空）
 	apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
 	if err != nil {
 		t.Fatalf("查询API Keys失败: %v", err)
@@ -511,7 +511,7 @@ func TestSelectAvailableKey_DefaultStrategy(t *testing.T) {
 	defer cleanup()
 
 	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(&cooldownGauge) // ✅ P0重构：移除store参数
+	selector := NewKeySelector(&cooldownGauge) // 移除store参数
 	ctx := context.WithValue(context.Background(), testingContextKey, true)
 
 	// 创建渠道
@@ -539,7 +539,7 @@ func TestSelectAvailableKey_DefaultStrategy(t *testing.T) {
 		}
 	}
 
-	// ✅ P0重构：预先查询apiKeys
+	// 预先查询apiKeys
 	apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
 	if err != nil {
 		t.Fatalf("查询API Keys失败: %v", err)
@@ -565,7 +565,7 @@ func TestSelectAvailableKey_UnknownStrategy(t *testing.T) {
 	defer cleanup()
 
 	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(&cooldownGauge) // ✅ P0重构：移除store参数
+	selector := NewKeySelector(&cooldownGauge) // 移除store参数
 	ctx := context.WithValue(context.Background(), testingContextKey, true)
 
 	// 创建渠道
@@ -593,7 +593,7 @@ func TestSelectAvailableKey_UnknownStrategy(t *testing.T) {
 		}
 	}
 
-	// ✅ P0重构：预先查询apiKeys
+	// 预先查询apiKeys
 	apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
 	if err != nil {
 		t.Fatalf("查询API Keys失败: %v", err)

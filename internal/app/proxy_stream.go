@@ -46,7 +46,7 @@ func (r *firstByteDetector) Read(p []byte) (n int, err error) {
 // ============================================================================
 
 // streamCopy 流式复制（支持flusher与ctx取消）
-// ✅ P2重构: 从proxy.go提取，遵循SRP原则
+// 从proxy.go提取，遵循SRP原则
 // 简化实现：直接循环读取与写入，避免为每次读取创建goroutine导致泄漏
 // 首字节超时依赖于上游握手/响应头阶段的超时控制（Transport 配置），此处不再重复实现
 func streamCopy(ctx context.Context, src io.Reader, dst http.ResponseWriter) error {

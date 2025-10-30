@@ -17,7 +17,7 @@ import (
 // ============================================================================
 
 // buildProxyRequest 构建上游代理请求（统一处理URL、Header、认证）
-// ✅ P2重构: 从proxy.go提取，遵循SRP原则
+// 从proxy.go提取，遵循SRP原则
 func (s *Server) buildProxyRequest(
 	reqCtx *requestContext,
 	cfg *model.Config,
@@ -50,24 +50,31 @@ func (s *Server) buildProxyRequest(
 // ============================================================================
 
 // handleRequestError 处理网络请求错误
-// ✅ P2重构: 从proxy.go提取，遵循SRP原则
+// 从proxy.go提取，遵循SRP原则
 func (s *Server) handleRequestError(
 	reqCtx *requestContext,
 	cfg *model.Config,
 	err error,
 ) (*fwResult, float64, error) {
+	reqCtx.stopFirstByteTimer()
 	duration := reqCtx.Duration()
 
-	// 检测超时错误：使用特殊状态码标识（触发固定冷却策略）
+	// 检测首字节超时错误：使用统一的内部状态码+冷却策略
 	var statusCode int
-	if errors.Is(err, context.DeadlineExceeded) && reqCtx.isStreaming {
-		// 包装错误信息
+	if reqCtx.firstByteTimeoutTriggered() {
+		statusCode = util.StatusFirstByteTimeout
+		timeoutMsg := fmt.Sprintf("upstream first byte timeout after %.2fs", duration)
+		if s.firstByteTimeout > 0 {
+			timeoutMsg = fmt.Sprintf("%s (threshold=%v)", timeoutMsg, s.firstByteTimeout)
+		}
+		err = fmt.Errorf("%s: %w", timeoutMsg, util.ErrUpstreamFirstByteTimeout)
+		util.SafePrintf("⏱️  [上游首字节超时] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, s.firstByteTimeout, duration)
+	} else if errors.Is(err, context.DeadlineExceeded) && reqCtx.isStreaming {
+		// 流式请求读取首字节超时：保留历史逻辑
 		err = fmt.Errorf("upstream timeout after %.2fs (streaming request): %w",
 			duration, err)
-		// 使用特殊状态码标识超时错误
-		statusCode = StatusFirstByteTimeout
-		util.SafePrintf("⏱️  [上游超时] 渠道ID=%d, 超时时长=%.2fs, 将触发冷却",
-			cfg.ID, duration)
+		statusCode = util.StatusFirstByteTimeout
+		util.SafePrintf("⏱️  [上游超时] 渠道ID=%d, 超时时长=%.2fs, 将触发冷却", cfg.ID, duration)
 	} else {
 		// 其他错误：使用统一分类器
 		statusCode, _, _ = util.ClassifyError(err)
@@ -81,7 +88,7 @@ func (s *Server) handleRequestError(
 }
 
 // handleErrorResponse 处理错误响应（读取完整响应体）
-// ✅ P2重构: 从proxy.go提取，遵循SRP原则
+// 从proxy.go提取，遵循SRP原则
 func (s *Server) handleErrorResponse(
 	reqCtx *requestContext,
 	resp *http.Response,
@@ -107,7 +114,7 @@ func (s *Server) handleErrorResponse(
 }
 
 // handleSuccessResponse 处理成功响应（流式传输）
-// ✅ P2重构: 从proxy.go提取，遵循SRP原则
+// 从proxy.go提取，遵循SRP原则
 func (s *Server) handleSuccessResponse(
 	reqCtx *requestContext,
 	resp *http.Response,
@@ -158,7 +165,7 @@ func (s *Server) handleSuccessResponse(
 }
 
 // handleResponse 处理 HTTP 响应（错误或成功）
-// ✅ P2重构: 从proxy.go提取，遵循SRP原则
+// 从proxy.go提取，遵循SRP原则
 func (s *Server) handleResponse(
 	reqCtx *requestContext,
 	resp *http.Response,
@@ -181,12 +188,12 @@ func (s *Server) handleResponse(
 // ============================================================================
 
 // forwardOnceAsync 异步流式转发，透明转发客户端原始请求
-// ✅ P2重构: 从proxy.go提取，遵循SRP原则
+// 从proxy.go提取，遵循SRP原则
 // 参数新增 apiKey 用于直接传递已选中的API Key（从KeySelector获取）
 // 参数新增 method 用于支持任意HTTP方法（GET、POST、PUT、DELETE等）
 func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey string, method string, body []byte, hdr http.Header, rawQuery, requestPath string, w http.ResponseWriter) (*fwResult, float64, error) {
 	// 1. 创建请求上下文（处理超时）
-	// ✅ P0修复(2025-10-29): 移除defer reqCtx.Close()调用（Close方法已删除）
+	// 移除defer reqCtx.Close()调用（Close方法已删除）
 	reqCtx := s.newRequestContext(ctx, requestPath, body)
 
 	// 2. 构建上游请求
@@ -202,7 +209,8 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 	}
 	defer resp.Body.Close()
 
-	// 4. 记录首字节时间
+	// 4. 首字节到达，停止计时器
+	reqCtx.stopFirstByteTimer()
 	firstByteTime := reqCtx.Duration()
 
 	// 5. 处理响应
@@ -214,7 +222,7 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 // ============================================================================
 
 // forwardAttempt 单次转发尝试（包含错误处理和日志记录）
-// ✅ P2重构: 从proxy.go提取，遵循SRP原则
+// 从proxy.go提取，遵循SRP原则
 // 返回：(proxyResult, shouldContinueRetry, shouldBreakToNextChannel)
 func (s *Server) forwardAttempt(
 	ctx context.Context,
@@ -249,7 +257,7 @@ func (s *Server) forwardAttempt(
 // ============================================================================
 
 // tryChannelWithKeys 在单个渠道内尝试多个Key（Key级重试）
-// ✅ P2重构: 从proxy.go提取，遵循SRP原则
+// 从proxy.go提取，遵循SRP原则
 func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqCtx *proxyRequestContext, w http.ResponseWriter) (*proxyResult, error) {
 	// 查询渠道的API Keys（从数据库）
 	apiKeys, err := s.store.GetAPIKeys(ctx, cfg.ID)
@@ -273,7 +281,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 
 	// Key重试循环
 	for i := 0; i < maxKeyRetries; i++ {
-		// 选择可用的API Key（✅ P0重构：直接传入apiKeys，避免重复查询）
+		// 选择可用的API Key（直接传入apiKeys，避免重复查询）
 		keyIndex, selectedKey, err := s.keySelector.SelectAvailableKey(cfg.ID, apiKeys, triedKeys)
 		if err != nil {
 			// 所有Key都在冷却中，返回特殊错误标识

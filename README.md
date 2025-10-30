@@ -497,7 +497,7 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 
 ### 架构特点
 
-**模块化架构** (✅ P2重构完成，2025-10-29):
+**模块化架构** :
 - **proxy模块拆分**（SRP原则）：
   - `proxy_handler.go` (236行)：HTTP入口、并发控制、路由选择
   - `proxy_forward.go` (299行)：核心转发逻辑、请求构建、响应处理
@@ -528,7 +528,7 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 - 日志系统（1000条缓冲 + 3个worker，批量写入）
 - Token/日志清理（后台协程，定期维护）
 
-**统一响应系统** (✅ P1重构完成):
+**统一响应系统** :
 - `StandardResponse[T]` 泛型结构体（DRY原则）
 - `ResponseHelper` 辅助类及9个快捷方法
 - 自动提取应用级错误码，统一JSON格式

@@ -95,7 +95,7 @@ func parseIncomingRequest(c *gin.Context) (string, []byte, bool, error) {
 // ============================================================================
 
 // selectRouteCandidates 根据请求选择路由候选
-// ✅ P2重构: 从proxy.go提取，遵循SRP原则
+// 从proxy.go提取，遵循SRP原则
 func (s *Server) selectRouteCandidates(ctx context.Context, c *gin.Context, originalModel string) ([]*model.Config, error) {
 	requestPath := c.Request.URL.Path
 	requestMethod := c.Request.Method
@@ -119,7 +119,7 @@ func (s *Server) selectRouteCandidates(ctx context.Context, c *gin.Context, orig
 // ============================================================================
 
 // handleProxyRequest 通用透明代理处理器
-// ✅ P2重构: 从proxy.go提取，遵循SRP原则
+// 从proxy.go提取，遵循SRP原则
 func (s *Server) handleProxyRequest(c *gin.Context) {
 	// 并发控制
 	release, ok := s.acquireConcurrencySlot(c)
@@ -197,7 +197,7 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 
 		// 所有Key冷却：触发渠道级冷却(503)，防止后续请求重复尝试
 		if err != nil && strings.Contains(err.Error(), "channel keys unavailable") {
-			// ✅ P0修复(2025-10-29): 记录冷却失败但不中断请求
+			// 记录冷却失败但不中断请求
 			// 设计原则: 这是防御性冷却，失败不应影响错误传播
 			if _, bumpErr := s.store.BumpChannelCooldown(ctx, cfg.ID, time.Now(), 503); bumpErr != nil {
 				util.SafePrintf("⚠️  WARNING: Failed to bump channel cooldown (channel=%d, status=503): %v", cfg.ID, bumpErr)
@@ -224,7 +224,7 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 		finalStatus = lastResult.status
 	}
 
-	// ✅ P3改进（2025-10-28）：区分499错误的具体来源，避免用户混淆
+	// 区分499错误的具体来源，避免用户混淆
 	msg := "exhausted backends"
 	if finalStatus < 500 {
 		if finalStatus == 499 {

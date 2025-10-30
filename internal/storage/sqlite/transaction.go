@@ -40,7 +40,7 @@ func (s *SQLiteStore) WithLogTransaction(ctx context.Context, fn func(*sql.Tx) e
 // ✅ KISS原则：简单的事务模板，自动处理提交/回滚
 // ✅ 安全性：panic恢复 + defer回滚双重保障
 func withTransaction(db *sql.DB, ctx context.Context, fn func(*sql.Tx) error) error {
-	// ✅ P0修复(2025-10-29): 增加死锁重试机制
+	// 增加死锁重试机制
 	// 问题: SQLite在高并发事务下可能返回"database is deadlocked"错误
 	// 解决: 自动重试带指数退避,最多重试5次
 

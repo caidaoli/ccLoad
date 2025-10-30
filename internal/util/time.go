@@ -13,7 +13,7 @@ const (
 	// TimeoutErrorCooldown 超时错误的固定冷却时间
 	// 设计目标：上游服务响应超时或完全无响应时，直接冷却避免资源浪费和级联故障
 	// 适用场景：网络超时、上游服务无响应等（状态码598）
-	TimeoutErrorCooldown = 5 * time.Minute
+	TimeoutErrorCooldown = time.Minute
 
 	// ServerErrorInitialCooldown 服务器错误（500/502/503/504）的初始冷却时间
 	// 设计目标：指数退避策略，起始2分钟（2min → 4min → 8min → 16min → 30min上限）
@@ -44,7 +44,7 @@ const (
 // 返回: 新的冷却持续时间
 // CalculateBackoffDuration 计算指数退避冷却时间
 func CalculateBackoffDuration(prevMs int64, until time.Time, now time.Time, statusCode *int) time.Duration {
-	// 特殊处理：超时错误（状态码598）直接冷却5分钟，不使用指数退避
+	// 特殊处理：超时错误（状态码598）直接冷却1分钟，不使用指数退避
 	// 设计原则：上游服务响应超时或完全无响应时，应立即停止请求避免资源浪费和级联故障
 	if statusCode != nil && *statusCode == 598 {
 		return TimeoutErrorCooldown

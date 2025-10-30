@@ -24,7 +24,7 @@ type Config struct {
 	CreatedAt JSONTime `json:"created_at"` // 使用JSONTime确保序列化格式一致（RFC3339）
 	UpdatedAt JSONTime `json:"updated_at"` // 使用JSONTime确保序列化格式一致（RFC3339）
 
-	// 🔧 P1性能优化：缓存Key数量，避免冷却判断时的N+1查询
+	// 缓存Key数量，避免冷却判断时的N+1查询
 	KeyCount int `json:"key_count"` // API Key数量（查询时JOIN计算）
 
 	// 性能优化：模型查找索引（内存缓存，不序列化）

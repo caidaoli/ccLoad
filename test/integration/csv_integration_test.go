@@ -15,7 +15,7 @@ import (
 
 // TestCSVExport_CompleteWorkflow 测试完整的CSV导出工作流
 func TestCSVExport_CompleteWorkflow(t *testing.T) {
-	// ✅ P1-1 修复：使用统一的测试环境设置，避免 Redis 依赖
+	// 使用统一的测试环境设置，避免 Redis 依赖
 	store, ctx, cleanup := setupTestStoreWithContext(t)
 	defer cleanup()
 
@@ -276,7 +276,7 @@ No-URL-Channel,10,"[""model-1""]",anthropic,true
 
 // TestCSVExportImport_SpecialCharacters 测试特殊字符处理
 func TestCSVExportImport_SpecialCharacters(t *testing.T) {
-	// ✅ P1-1 修复：使用统一的测试环境设置，避免 Redis 依赖
+	// 使用统一的测试环境设置，避免 Redis 依赖
 	store, ctx, cleanup := setupTestStoreWithContext(t)
 	defer cleanup()
 
@@ -320,7 +320,7 @@ func TestCSVExportImport_LargeData(t *testing.T) {
 		t.Skip("跳过性能测试（使用 -short 标志）")
 	}
 
-	// ✅ P1-1 修复：使用统一的测试环境设置，避免 Redis 依赖
+	// 使用统一的测试环境设置，避免 Redis 依赖
 	store, ctx, cleanup := setupTestStoreWithContext(t)
 	defer cleanup()
 

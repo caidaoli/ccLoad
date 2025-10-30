@@ -9,7 +9,7 @@ import (
 )
 
 // setupTestStore 创建测试用的 SQLite Store
-// ✅ P1-1 修复：强制使用文件模式，避免 Redis 依赖
+// 强制使用文件模式，避免 Redis 依赖
 // 集成测试应该能够在没有外部依赖（Redis）的情况下运行
 func setupTestStore(t *testing.T) (*sqlite.SQLiteStore, func()) {
 	t.Helper()

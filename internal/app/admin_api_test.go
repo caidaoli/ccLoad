@@ -399,7 +399,7 @@ func setupTestServer(t *testing.T) (*Server, func()) {
 
 	server := &Server{
 		store:       store,
-		keySelector: NewKeySelector(nil), // ✅ P0重构：移除store参数
+		keySelector: NewKeySelector(nil), // 移除store参数
 	}
 
 	cleanup := func() {

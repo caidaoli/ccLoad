@@ -344,7 +344,7 @@ func TestHandleError_EdgeCases(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("不存在的渠道", func(t *testing.T) {
-		// ✅ P0修复(2025-10-29): 冷却失败不应返回错误，而是记录警告
+		// 冷却失败不应返回错误，而是记录警告
 		// 设计原则: 数据库错误不应阻塞用户请求，系统应降级服务
 		action, err := manager.HandleError(ctx, 99999, 0, 500, nil, false, nil)
 		if err != nil {
@@ -393,7 +393,7 @@ func TestHandleError_EdgeCases(t *testing.T) {
 }
 
 // TestHandleError_RateLimitClassification 测试429错误的智能分类
-// ✅ P1改进: 验证基于headers和响应体的429错误分类
+// 验证基于headers和响应体的429错误分类
 func TestHandleError_RateLimitClassification(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()

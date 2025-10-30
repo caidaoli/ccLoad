@@ -103,7 +103,7 @@ func main() {
 		addr = v
 	}
 
-	// ✅ P0修复（2025-10-13）：使用http.Server支持优雅关闭
+	// 使用http.Server支持优雅关闭
 	httpServer := &http.Server{
 		Addr:    addr,
 		Handler: r,
@@ -117,7 +117,7 @@ func main() {
 		}
 	}()
 
-	// ✅ P0修复（2025-10-13）：监听系统信号，实现优雅关闭
+	// 监听系统信号，实现优雅关闭
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit

@@ -19,7 +19,7 @@ import (
 )
 
 // ==================== 渠道测试功能 ====================
-// ✅ P1重构 (2025-10-28): 从admin.go拆分渠道测试,遵循SRP原则
+// 从admin.go拆分渠道测试,遵循SRP原则
 
 func (s *Server) handleChannelTest(c *gin.Context) {
 	// 解析渠道ID
@@ -95,7 +95,7 @@ func (s *Server) handleChannelTest(c *gin.Context) {
 		// 设计理念：测试成功证明渠道恢复正常，应立即解除渠道级冷却，避免选择器过滤该渠道
 		_ = s.store.ResetChannelCooldown(c.Request.Context(), id)
 
-		// 精确计数（P1）：记录状态恢复
+		// 精确计数：记录状态恢复
 	}
 
 	RespondJSON(c, http.StatusOK, testResult)

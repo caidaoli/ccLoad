@@ -16,7 +16,7 @@ import (
 // ---- Store interface impl ----
 
 func (s *SQLiteStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
-	// ✅ P1优化：添加 key_count 字段，避免 N+1 查询
+	// 添加 key_count 字段，避免 N+1 查询
 	query := `
 		SELECT c.id, c.name, c.url, c.priority, c.models, c.model_redirects, c.channel_type, c.enabled,
 		       c.cooldown_until, c.cooldown_duration_ms,
@@ -40,7 +40,7 @@ func (s *SQLiteStore) ListConfigs(ctx context.Context) ([]*model.Config, error) 
 
 func (s *SQLiteStore) GetConfig(ctx context.Context, id int64) (*model.Config, error) {
 	// 新架构：包含内联的轮询索引字段
-	// 🔧 P1优化：LEFT JOIN计算Key数量，避免冷却判断时的N+1查询
+	// LEFT JOIN计算Key数量，避免冷却判断时的N+1查询
 	query := `
 		SELECT c.id, c.name, c.url, c.priority, c.models, c.model_redirects, c.channel_type, c.enabled,
 		       c.cooldown_until, c.cooldown_duration_ms,
@@ -74,7 +74,7 @@ func (s *SQLiteStore) GetEnabledChannelsByModel(ctx context.Context, model strin
 
 	if model == "*" {
 		// 通配符：返回所有启用的渠道（新架构：从 channels 表读取内联冷却字段）
-		// 🔧 P1优化：LEFT JOIN计算Key数量，避免冷却判断时的N+1查询
+		// LEFT JOIN计算Key数量，避免冷却判断时的N+1查询
 		query = `
             SELECT c.id, c.name, c.url, c.priority,
                    c.models, c.model_redirects, c.channel_type, c.enabled,
@@ -91,7 +91,7 @@ func (s *SQLiteStore) GetEnabledChannelsByModel(ctx context.Context, model strin
 		args = []any{nowUnix}
 	} else {
 		// 精确匹配：使用 JSON1 解析 models 数组并精确匹配元素
-		// 🔧 P1优化：LEFT JOIN计算Key数量，避免冷却判断时的N+1查询
+		// LEFT JOIN计算Key数量，避免冷却判断时的N+1查询
 		query = `
             SELECT c.id, c.name, c.url, c.priority,
                    c.models, c.model_redirects, c.channel_type, c.enabled,
@@ -125,7 +125,7 @@ func (s *SQLiteStore) GetEnabledChannelsByModel(ctx context.Context, model strin
 // GetEnabledChannelsByType 查询指定类型的启用渠道（按优先级排序）
 // 新架构：从 channels 表读取内联冷却字段，不再 JOIN cooldowns 表
 // GetEnabledChannelsByType 查询指定类型的启用渠道（按优先级排序）
-// ✅ P1优化：添加key_count字段，避免N+1查询
+// 添加key_count字段，避免N+1查询
 func (s *SQLiteStore) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*model.Config, error) {
 	nowUnix := time.Now().Unix()
 	query := `
@@ -282,7 +282,7 @@ func (s *SQLiteStore) DeleteConfig(ctx context.Context, id int64) error {
 	}
 
 	// 删除渠道配置（FOREIGN KEY CASCADE 自动级联删除 api_keys 和 key_rr）
-	// ✅ P3优化：使用事务高阶函数，消除重复代码（DRY原则）
+	// 使用事务高阶函数，消除重复代码（DRY原则）
 	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM channels WHERE id = ?`, id); err != nil {
 			return fmt.Errorf("delete channel: %w", err)
@@ -303,7 +303,7 @@ func (s *SQLiteStore) DeleteConfig(ctx context.Context, id int64) error {
 
 // BumpChannelCooldown 渠道级冷却：指数退避策略（认证错误5分钟起，其他1秒起，最大30分钟）
 func (s *SQLiteStore) BumpChannelCooldown(ctx context.Context, channelID int64, now time.Time, statusCode int) (time.Duration, error) {
-	// ✅ P0修复(2025-10-29): 使用事务保护Read-Modify-Write操作,防止并发竞态
+	// 使用事务保护Read-Modify-Write操作,防止并发竞态
 	// 问题场景同BumpKeyCooldown,多个并发请求可能导致指数退避计算错误
 
 	var nextDuration time.Duration
@@ -420,7 +420,7 @@ func (s *SQLiteStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 	// Unix时间戳：直接存储毫秒级Unix时间戳
 	timeMs := cleanTime.UnixMilli()
 
-	// ✅ P0安全修复：API Key在写入时强制脱敏（2025-10-06）
+	// API Key在写入时强制脱敏（2025-10-06）
 	// 设计原则：数据库中不应存储完整API Key，避免备份和日志导出时泄露
 	maskedKey := e.APIKeyUsed
 	if maskedKey != "" {
@@ -573,7 +573,7 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 		out = append(out, &e)
 	}
 
-	// 批量查询渠道名称（P0性能优化：N+1 → 1次查询）
+	// 批量查询渠道名称
 	if len(channelIDsToFetch) > 0 {
 		channelNames, err := s.fetchChannelNamesBatch(ctx, channelIDsToFetch)
 		if err != nil {
@@ -698,7 +698,7 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 		}
 	}
 
-	// 批量查询渠道名称（P0性能优化：N+1 → 1次查询）
+	// 批量查询渠道名称
 	channelNames := make(map[int64]string)
 	if len(channelIDsToFetch) > 0 {
 		var err error
@@ -808,7 +808,6 @@ func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *mod
 		stats = append(stats, entry)
 	}
 
-	// 批量查询渠道名称(P0性能优化:N+1 → 1次查询)
 	if len(channelIDsToFetch) > 0 {
 		channelNames, err := s.fetchChannelNamesBatch(ctx, channelIDsToFetch)
 		if err != nil {
@@ -851,7 +850,7 @@ func (s *SQLiteStore) LoadChannelsFromRedis(ctx context.Context) error {
 		return nil
 	}
 
-	// ✅ P3优化：使用事务高阶函数，确保数据一致性（ACID原则 + DRY原则）
+	// 使用事务高阶函数，确保数据一致性（ACID原则 + DRY原则）
 	nowUnix := time.Now().Unix()
 	successCount := 0
 	totalKeysRestored := 0
@@ -987,9 +986,9 @@ func (s *SQLiteStore) SyncAllChannelsToRedis(ctx context.Context) error {
 }
 
 // redisSyncWorker 异步Redis同步worker（后台goroutine）
-// 修复：增加重试机制，避免瞬时网络故障导致数据丢失（P0修复 2025-10-05）
+// 修复：增加重试机制，避免瞬时网络故障导致数据丢失
 func (s *SQLiteStore) redisSyncWorker() {
-	// ✅ P0-3修复：使用可取消的context，支持优雅关闭
+	// 使用可取消的context，支持优雅关闭
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1028,7 +1027,7 @@ func (s *SQLiteStore) redisSyncWorker() {
 	}
 }
 
-// doSyncAllChannelsWithRetry 带重试机制的同步操作（P0修复新增）
+// doSyncAllChannelsWithRetry 带重试机制的同步操作
 func (s *SQLiteStore) doSyncAllChannelsWithRetry(ctx context.Context, retryBackoff []time.Duration) error {
 	var lastErr error
 
@@ -1102,7 +1101,7 @@ func normalizeChannelsWithKeys(channelsWithKeys []*model.ChannelWithKeys) {
 	}
 }
 
-// fetchChannelNamesBatch 批量查询渠道名称（P0性能优化 2025-10-05）
+// fetchChannelNamesBatch 批量查询渠道名称
 // 性能提升：N+1查询 → 1次全表查询 + 内存过滤（100渠道场景提升50-100倍）
 // 设计原则（KISS）：渠道总数<1000，全表扫描比IN子查询更简单、更快
 // 输入：渠道ID集合 map[int64]bool
@@ -1237,7 +1236,7 @@ func (s *SQLiteStore) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int
 
 // BumpKeyCooldown Key级别冷却：指数退避策略（认证错误5分钟起，其他1秒起，最大30分钟）
 func (s *SQLiteStore) BumpKeyCooldown(ctx context.Context, configID int64, keyIndex int, now time.Time, statusCode int) (time.Duration, error) {
-	// ✅ P0修复(2025-10-29): 使用事务保护Read-Modify-Write操作,防止并发竞态
+	// 使用事务保护Read-Modify-Write操作,防止并发竞态
 	// 问题场景:
 	//   请求A: 读取duration=1000 → 计算新值=2000
 	//   请求B: 读取duration=1000 → 计算新值=2000 (应该是4000!)
@@ -1497,7 +1496,7 @@ func (s *SQLiteStore) DeleteAllAPIKeys(ctx context.Context, channelID int64) err
 // ==================== 批量导入优化 (P3性能优化) ====================
 
 // ImportChannelBatch 批量导入渠道配置（原子性+性能优化）
-// ✅ P3优化：单事务+预编译语句，提升CSV导入性能
+// 单事务+预编译语句，提升CSV导入性能
 // ✅ ACID原则：确保批量导入的原子性（要么全部成功，要么全部回滚）
 //
 // 参数:
@@ -1623,7 +1622,7 @@ func (s *SQLiteStore) ImportChannelBatch(ctx context.Context, channels []*model.
 	return created, updated, nil
 }
 
-// GetAllAPIKeys 批量查询所有API Keys（P3性能优化）
+// GetAllAPIKeys 批量查询所有API Keys
 // ✅ 消除N+1问题：一次查询获取所有渠道的Keys，避免逐个查询
 // 返回: map[channelID][]*APIKey
 func (s *SQLiteStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey, error) {

@@ -22,7 +22,7 @@ type SQLiteStore struct {
 	db    *sql.DB // 主数据库（channels, api_keys, key_rr）
 	logDB *sql.DB // 日志数据库（logs）- 拆分以减少锁竞争和简化备份
 
-	// ⚠️ 内存数据库守护连接（2025-10-05 P0修复）
+	// ⚠️ 内存数据库守护连接（2025-10-05）
 	// 内存模式下，持有一个永不关闭的连接，确保数据库不被销毁
 	keeperConn *sql.Conn // 守护连接（仅内存模式使用）
 
@@ -93,11 +93,11 @@ func generateLogDBPath(mainDBPath string) string {
 // - 即使所有连接关闭，只要进程存活，数据库就保留在内存中
 // - 解决了连接池生命周期导致的"no such table"错误
 //
-// ✅ P0修复（2025-10-06）：环境变量控制Journal模式
+// 环境变量控制Journal模式
 // - SQLITE_JOURNAL_MODE: WAL(默认) | DELETE | TRUNCATE | PERSIST | MEMORY | OFF
 // - Docker/K8s环境建议使用TRUNCATE避免WAL文件损坏风险
 // validateJournalMode 验证SQLITE_JOURNAL_MODE环境变量的合法性（白名单）
-// ✅ P1 安全修复 (2025-10-26): 防止环境变量注入攻击
+// 防止环境变量注入攻击
 // 设计原则 (Fail-Fast): 启动时立即验证，避免运行时安全风险
 //
 // 攻击场景示例:
@@ -150,7 +150,7 @@ func buildMainDBDSN(path string) string {
 		return "file:ccload_mem_db?mode=memory&cache=shared&_pragma=busy_timeout(5000)&_foreign_keys=on&_loc=Local"
 	}
 
-	// ✅ P1 安全修复 (2025-10-26): 白名单验证环境变量，防止注入攻击
+	// 白名单验证环境变量，防止注入攻击
 	// 设计原则：生产环境（特别是容器/网络存储）需要灵活控制，但必须安全
 	journalMode := validateJournalMode(os.Getenv("SQLITE_JOURNAL_MODE"))
 
@@ -159,9 +159,9 @@ func buildMainDBDSN(path string) string {
 
 // buildLogDBDSN 构建日志数据库DSN（始终使用文件模式）
 // 日志库不使用内存模式，确保数据持久性
-// ✅ P0修复（2025-10-06）：与主数据库保持一致的Journal模式控制
+// 与主数据库保持一致的Journal模式控制
 func buildLogDBDSN(path string) string {
-	// ✅ P1 安全修复 (2025-10-26): 白名单验证环境变量，防止注入攻击
+	// 白名单验证环境变量，防止注入攻击
 	// 使用与主数据库相同的 Journal 模式配置和验证逻辑
 	journalMode := validateJournalMode(os.Getenv("SQLITE_JOURNAL_MODE"))
 
@@ -191,7 +191,7 @@ func newSQLiteStoreWithOptions(path string, redisSync RedisSync, forTest bool) (
 	if err != nil {
 		return nil, err
 	}
-	// ✅ P2连接池优化（2025-10-06）：根据模式差异化配置
+	// 根据模式差异化配置
 	if useMemory {
 		// 内存模式：适度减少连接数（无限并发对内存数据库无益）
 		db.SetMaxOpenConns(config.SQLiteMaxOpenConnsMemory)
@@ -218,7 +218,7 @@ func newSQLiteStoreWithOptions(path string, redisSync RedisSync, forTest bool) (
 		_ = db.Close()
 		return nil, fmt.Errorf("open log database: %w", err)
 	}
-	// ✅ P2日志库优化（2025-10-06）：与主库对齐，降低资源占用
+	// 与主库对齐，降低资源占用
 	logDB.SetMaxOpenConns(config.SQLiteMaxOpenConnsFile)
 	logDB.SetMaxIdleConns(config.SQLiteMaxIdleConnsFile)
 	// 内存模式或测试模式下禁用连接生命周期以避免goroutine泄漏
@@ -237,11 +237,11 @@ func newSQLiteStoreWithOptions(path string, redisSync RedisSync, forTest bool) (
 		done:      make(chan struct{}),
 	}
 
-	// ⚠️ 内存数据库守护连接（P0修复 2025-10-05）
+	// ⚠️ 内存数据库守护连接
 	// SQLite内存数据库的特性：当最后一个连接关闭时，数据库被删除
 	// 解决方案：持有一个永不关闭的"守护连接"，确保数据库始终存在
 	if useMemory {
-		// ✅ P0安全检查（2025-10-12）：内存模式强制要求Redis备份
+		// 内存模式强制要求Redis备份
 		// 设计原则：防止数据永久丢失，确保故障可恢复
 		if redisSync == nil || !redisSync.IsEnabled() {
 			_ = db.Close()
@@ -323,7 +323,7 @@ func (s *SQLiteStore) Close() error {
 		log.Printf("⚠️  Redis同步worker关闭超时（%dms）", config.RedisSyncShutdownTimeoutMs)
 	}
 
-	// ⚠️ 内存数据库守护连接：最后关闭（P0修复 2025-10-05）
+	// ⚠️ 内存数据库守护连接：最后关闭
 	// 确保守护连接在所有其他操作完成后才关闭
 	// 这样可以保证内存数据库在整个服务生命周期内始终存在
 	if s.keeperConn != nil {

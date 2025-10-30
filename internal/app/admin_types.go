@@ -9,7 +9,7 @@ import (
 )
 
 // ==================== 共享数据结构 ====================
-// ✅ P1重构 (2025-10-28): 从admin.go提取共享类型,遵循SRP原则
+// 从admin.go提取共享类型,遵循SRP原则
 
 // ChannelRequest 渠道创建/更新请求结构
 type ChannelRequest struct {

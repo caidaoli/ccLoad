@@ -3,11 +3,13 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
+	"ccLoad/internal/util"
 )
 
 // Test_HandleProxyError_Basic 基础错误处理测试(不依赖数据库)
@@ -128,6 +130,23 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 	t.Run("network error switches channel", func(t *testing.T) {
 		result, retryKey, retryChannel := srv.handleNetworkError(
 			ctx, cfg, 0, "test-model", "test-key", 0.1, errors.New("connection refused"),
+		)
+
+		if result != nil {
+			t.Error("期望 result=nil (切换渠道)")
+		}
+		if retryKey {
+			t.Error("期望 retryKey=false")
+		}
+		if !retryChannel {
+			t.Error("期望 retryChannel=true")
+		}
+	})
+
+	t.Run("first byte timeout switches channel", func(t *testing.T) {
+		err := fmt.Errorf("wrap: %w", util.ErrUpstreamFirstByteTimeout)
+		result, retryKey, retryChannel := srv.handleNetworkError(
+			ctx, cfg, 0, "test-model", "test-key", 0.1, err,
 		)
 
 		if result != nil {

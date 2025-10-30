@@ -11,7 +11,7 @@ import (
 // ============================================================================
 
 // handleListGeminiModels 处理 GET /v1beta/models 请求，返回本地 Gemini 模型列表
-// ✅ P2重构: 从proxy.go提取，遵循SRP原则
+// 从proxy.go提取，遵循SRP原则
 func (s *Server) handleListGeminiModels(c *gin.Context) {
 	ctx := c.Request.Context()
 

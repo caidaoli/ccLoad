@@ -10,7 +10,7 @@ import (
 )
 
 // ==================== 冷却管理 ====================
-// ✅ P1重构 (2025-10-28): 从admin.go拆分冷却管理,遵循SRP原则
+// 从admin.go拆分冷却管理,遵循SRP原则
 
 // handleSetChannelCooldown 设置渠道级别冷却
 func (s *Server) handleSetChannelCooldown(c *gin.Context) {
@@ -34,7 +34,7 @@ func (s *Server) handleSetChannelCooldown(c *gin.Context) {
 		return
 	}
 
-	// 精确计数(P1): 手动设置渠道冷却
+	// 精确计数(手动设置渠道冷却
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -71,7 +71,7 @@ func (s *Server) handleSetKeyCooldown(c *gin.Context) {
 		return
 	}
 
-	// 精确计数(P1): 手动设置Key冷却
+	// 精确计数(手动设置Key冷却
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

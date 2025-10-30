@@ -26,7 +26,7 @@ func NewWhereBuilder() *WhereBuilder {
 }
 
 // AddCondition 添加条件
-// P0修复 (2025-10-05): 强制参数化查询，防止SQL注入
+// 强制参数化查询，防止SQL注入
 func (wb *WhereBuilder) AddCondition(condition string, args ...any) *WhereBuilder {
 	if condition == "" {
 		return wb
@@ -64,7 +64,6 @@ func (wb *WhereBuilder) AddCondition(condition string, args ...any) *WhereBuilde
 }
 
 // ApplyLogFilter 应用日志过滤器，消除重复的过滤逻辑
-// 重构：移除表别名，直接使用列名（修复SQL错误）
 func (wb *WhereBuilder) ApplyLogFilter(filter *model.LogFilter) *WhereBuilder {
 	if filter == nil {
 		return wb
@@ -121,7 +120,7 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 
 	// ✅ Linus风格：删除rr_key_index字段（已改用内存计数器）
 	var rrKeyIndex int // 临时变量，读取后丢弃
-	// 🔧 P1优化：扫描key_count字段（从JOIN查询获取）
+	// 扫描key_count字段（从JOIN查询获取）
 	if err := scanner.Scan(&c.ID, &c.Name, &c.URL, &c.Priority,
 		&modelsStr, &modelRedirectsStr, &c.ChannelType, &enabledInt,
 		&c.CooldownUntil, &c.CooldownDurationMs, &c.KeyCount,
@@ -226,9 +225,9 @@ func (qb *QueryBuilder) ApplyFilter(filter *model.LogFilter) *QueryBuilder {
 }
 
 // WhereIn 添加 IN 条件，自动生成占位符，防止SQL注入
-// ✅ P1 修复 (2025-01-XX): 添加字段名白名单验证，防止SQL注入
+// 添加字段名白名单验证，防止SQL注入
 func (qb *QueryBuilder) WhereIn(column string, values []any) *QueryBuilder {
-	// P1 安全修复：验证字段名是否在白名单中
+	// 验证字段名是否在白名单中
 	if err := ValidateFieldName(column); err != nil {
 		// 触发 panic 确保开发期间立即发现问题
 		panic(fmt.Sprintf("SQL注入防护: %v", err))

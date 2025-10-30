@@ -36,7 +36,7 @@ func TestHandleProxyRequest_UnknownPathReturns404(t *testing.T) {
 }
 
 // ============================================================================
-// ✅ P2改进（2025-10-29）：增加proxy_handler测试覆盖率
+// 增加proxy_handler测试覆盖率
 // ============================================================================
 
 // TestParseIncomingRequest_ValidJSON 测试有效JSON解析
