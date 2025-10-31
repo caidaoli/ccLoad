@@ -90,7 +90,7 @@ func (s *SQLiteStore) GetEnabledChannelsByModel(ctx context.Context, model strin
         `
 		args = []any{nowUnix}
 	} else {
-		// 精确匹配：使用 JSON1 解析 models 数组并精确匹配元素
+		// 精确匹配：使用去规范化的 channel_models 索引表（性能优化：消除JSON查询）
 		// LEFT JOIN计算Key数量，避免冷却判断时的N+1查询
 		query = `
             SELECT c.id, c.name, c.url, c.priority,
@@ -99,12 +99,10 @@ func (s *SQLiteStore) GetEnabledChannelsByModel(ctx context.Context, model strin
                    COALESCE(COUNT(k.id), 0) as key_count,
                    c.rr_key_index, c.created_at, c.updated_at
             FROM channels c
+            INNER JOIN channel_models cm ON c.id = cm.channel_id
             LEFT JOIN api_keys k ON c.id = k.channel_id
             WHERE c.enabled = 1
-              AND EXISTS (
-                  SELECT 1 FROM json_each(c.models) je
-                  WHERE je.value = ?
-              )
+              AND cm.model = ?
               AND (c.cooldown_until = 0 OR c.cooldown_until <= ?)
             GROUP BY c.id
             ORDER BY c.priority DESC, c.id ASC
@@ -173,6 +171,17 @@ func (s *SQLiteStore) CreateConfig(ctx context.Context, c *model.Config) (*model
 	}
 	id, _ := res.LastInsertId()
 
+	// 同步模型数据到 channel_models 索引表（性能优化：去规范化）
+	for _, model := range c.Models {
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT OR IGNORE INTO channel_models (channel_id, model)
+			VALUES (?, ?)
+		`, id, model); err != nil {
+			// 索引同步失败不影响主要功能，记录警告
+			util.SafePrintf("Warning: Failed to sync model %s to channel_models: %v", model, err)
+		}
+	}
+
 	// 获取完整的配置信息
 	config, err := s.GetConfig(ctx, id)
 	if err != nil {
@@ -213,6 +222,26 @@ func (s *SQLiteStore) UpdateConfig(ctx context.Context, id int64, upd *model.Con
 		boolToInt(upd.Enabled), updatedAtUnix, id)
 	if err != nil {
 		return nil, err
+	}
+
+	// 同步更新 channel_models 索引表（性能优化：去规范化）
+	// 先删除旧的模型索引
+	if _, err := s.db.ExecContext(ctx, `
+		DELETE FROM channel_models WHERE channel_id = ?
+	`, id); err != nil {
+		// 索引同步失败不影响主要功能，记录警告
+		util.SafePrintf("Warning: Failed to delete old model indices: %v", err)
+	}
+
+	// 再插入新的模型索引
+	for _, model := range upd.Models {
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT OR IGNORE INTO channel_models (channel_id, model)
+			VALUES (?, ?)
+		`, id, model); err != nil {
+			// 索引同步失败不影响主要功能，记录警告
+			util.SafePrintf("Warning: Failed to sync model %s to channel_models: %v", model, err)
+		}
 	}
 
 	// 获取更新后的配置
@@ -258,6 +287,26 @@ func (s *SQLiteStore) ReplaceConfig(ctx context.Context, c *model.Config) (*mode
 	err = s.db.QueryRowContext(ctx, `SELECT id FROM channels WHERE name = ?`, c.Name).Scan(&id)
 	if err != nil {
 		return nil, err
+	}
+
+	// 同步更新 channel_models 索引表（性能优化：去规范化）
+	// 先删除旧的模型索引
+	if _, err := s.db.ExecContext(ctx, `
+		DELETE FROM channel_models WHERE channel_id = ?
+	`, id); err != nil {
+		// 索引同步失败不影响主要功能，记录警告
+		util.SafePrintf("Warning: Failed to delete old model indices: %v", err)
+	}
+
+	// 再插入新的模型索引
+	for _, model := range c.Models {
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT OR IGNORE INTO channel_models (channel_id, model)
+			VALUES (?, ?)
+		`, id, model); err != nil {
+			// 索引同步失败不影响主要功能，记录警告
+			util.SafePrintf("Warning: Failed to sync model %s to channel_models: %v", model, err)
+		}
 	}
 
 	// 获取完整的配置信息

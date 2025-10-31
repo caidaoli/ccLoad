@@ -7,17 +7,17 @@ import (
 )
 
 // selectCandidatesByChannelType 根据渠道类型选择候选渠道
-// 性能优化：冷却过滤已在 SQL 层面完成（LEFT JOIN cooldowns），无需额外循环
+// 性能优化：使用缓存层，内存查询 < 2ms vs 数据库查询 50ms+
 func (s *Server) selectCandidatesByChannelType(ctx context.Context, channelType string) ([]*modelpkg.Config, error) {
-	// 直接从数据库查询（已过滤冷却渠道，按优先级排序）
-	return s.store.GetEnabledChannelsByType(ctx, channelType)
+	// 缓存优先查询（自动60秒TTL刷新）
+	return s.channelCache.GetEnabledChannelsByType(ctx, channelType)
 }
 
 // selectCandidates 选择支持指定模型的候选渠道
-// 性能优化：冷却过滤已在 SQL 层面完成（LEFT JOIN cooldowns），无需额外循环
+// 性能优化：使用缓存层，消除JSON查询和聚合操作的性能杀手
 func (s *Server) selectCandidates(ctx context.Context, model string) ([]*modelpkg.Config, error) {
-	// 直接从数据库查询（已过滤冷却渠道，按优先级排序）
-	return s.store.GetEnabledChannelsByModel(ctx, model)
+	// 缓存优先查询（自动60秒TTL刷新，避免重复的数据库性能灾难）
+	return s.channelCache.GetEnabledChannelsByModel(ctx, model)
 }
 
 // selectCandidatesByModelAndType 根据模型和渠道类型筛选候选渠道

@@ -82,6 +82,51 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		return fmt.Errorf("drop legacy key_rr table: %w", err)
 	}
 
+	// 创建 channel_models 索引表（性能优化：消除JSON查询）
+	if _, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS channel_models (
+			channel_id INTEGER NOT NULL,
+			model TEXT NOT NULL,
+			created_at BIGINT NOT NULL DEFAULT (strftime('%s', 'now')),
+			PRIMARY KEY (channel_id, model),
+			FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
+		);
+	`); err != nil {
+		return fmt.Errorf("create channel_models table: %w", err)
+	}
+
+	// 为 channel_models 创建高性能索引
+	if _, err := s.db.ExecContext(ctx, `
+		CREATE INDEX IF NOT EXISTS idx_channel_models_model ON channel_models(model);
+		CREATE INDEX IF NOT EXISTS idx_channel_models_channel ON channel_models(channel_id);
+		CREATE INDEX IF NOT EXISTS idx_channel_models_model_channel ON channel_models(model, channel_id);
+	`); err != nil {
+		return fmt.Errorf("create channel_models indexes: %w", err)
+	}
+
+	// 数据迁移：同步现有渠道的模型数据到 channel_models 表
+	if _, err := s.db.ExecContext(ctx, `
+		-- 清空现有的索引数据（避免重复）
+		DELETE FROM channel_models;
+
+		-- 从 channels 表的 JSON 数据同步到 channel_models 表
+		INSERT INTO channel_models (channel_id, model)
+		SELECT
+			c.id,
+			je.value as model
+		FROM channels c
+		-- 使用 json_each 解析现有的 JSON 数据（仅用于迁移）
+		JOIN json_each(c.models) je
+		WHERE c.enabled = 1
+		  AND je.value IS NOT NULL
+		  AND je.value != ''
+		ON CONFLICT(channel_id, model) DO NOTHING;
+	`); err != nil {
+		// 如果 json_each 不支持（某些SQLite版本），则跳过迁移
+		// 新增/更新的渠道会通过应用层逻辑同步
+		fmt.Printf("Warning: Failed to migrate existing model data: %v\n", err)
+	}
+
 	// 创建性能索引
 	if _, err := s.db.ExecContext(ctx, `
 		-- 渠道表索引

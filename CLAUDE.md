@@ -52,7 +52,6 @@ go fmt ./... && go vet ./...          # 格式化+静态分析
 **Token 效率原则**:
 - ❌ 禁止: 不加思考使用`Read`读取整个文件
 - ✅ 推荐: `get_symbols_overview` → `find_symbol(include_body=true)` → 精确编辑
-- ✅ 推荐: 使用`depth`参数控制读取深度(如`depth=1`获取类的方法列表)
 
 **何时使用标准工具**:
 仅用于非代码文件(`.md`、`.json`、`.yaml`)或配置文件编辑。

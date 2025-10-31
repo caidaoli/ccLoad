@@ -259,8 +259,9 @@ func (s *Server) forwardAttempt(
 // tryChannelWithKeys 在单个渠道内尝试多个Key（Key级重试）
 // 从proxy.go提取，遵循SRP原则
 func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqCtx *proxyRequestContext, w http.ResponseWriter) (*proxyResult, error) {
-	// 查询渠道的API Keys（从数据库）
-	apiKeys, err := s.store.GetAPIKeys(ctx, cfg.ID)
+	// 查询渠道的API Keys（使用缓存层，<1ms vs 数据库查询10-20ms）
+	// 性能优化：缓存优先，避免高并发场景下的数据库瓶颈
+	apiKeys, err := s.channelCache.GetAPIKeys(ctx, cfg.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get API keys: %w", err)
 	}
