@@ -823,8 +823,29 @@ func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *mod
 
 	qb := NewQueryBuilder(baseQuery).
 		Where("time >= ?", sinceMs).
-		Where("channel_id > 0"). // 🎯 核心修改:排除channel_id=0的无效记录
-		ApplyFilter(filter)
+		Where("channel_id > 0") // 🎯 核心修改:排除channel_id=0的无效记录
+
+	// 🎯 修复: 支持渠道名称过滤（与ListLogs相同的逻辑）
+	// 使用fetchChannelIDsByNameFilter先查询渠道ID，再按channel_id过滤
+	// 这样避免跨库JOIN，保持代码简洁
+	if filter != nil && (filter.ChannelName != "" || filter.ChannelNameLike != "") {
+		ids, err := s.fetchChannelIDsByNameFilter(ctx, filter.ChannelName, filter.ChannelNameLike)
+		if err != nil {
+			return nil, err
+		}
+		if len(ids) == 0 {
+			return []model.StatsEntry{}, nil
+		}
+		// 转换为[]any以用于占位符
+		vals := make([]any, 0, len(ids))
+		for _, id := range ids {
+			vals = append(vals, id)
+		}
+		qb.WhereIn("channel_id", vals)
+	} else {
+		// 没有渠道名称过滤时，使用ApplyFilter处理其他过滤器
+		qb.ApplyFilter(filter)
+	}
 
 	suffix := "GROUP BY channel_id, model ORDER BY channel_id ASC, model ASC"
 	query, args := qb.BuildWithSuffix(suffix)

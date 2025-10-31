@@ -134,6 +134,7 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_channels_priority ON channels(priority DESC);
 		CREATE INDEX IF NOT EXISTS idx_channels_type_enabled ON channels(channel_type, enabled);
 		CREATE INDEX IF NOT EXISTS idx_channels_cooldown ON channels(cooldown_until);
+		CREATE INDEX IF NOT EXISTS idx_channels_name ON channels(name);
 
 		-- API Keys 表索引
 		CREATE INDEX IF NOT EXISTS idx_api_keys_channel_id ON api_keys(channel_id);

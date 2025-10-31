@@ -181,9 +181,14 @@
 
         const res = await fetchWithAuth('/admin/stats?' + params.toString());
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        
+
         const response = await res.json();
-        statsData = response.success ? (response.data || []) : (response || []);
+        // 后端返回格式: {"success":true,"data":{"stats":[...]}}
+        statsData = response.data || {stats: []};
+
+        // 🎯 新增: 初始化时应用默认排序(渠道名称→模型名称)
+        applyDefaultSorting();
+
         updateSummaryCards();
         renderStatsTable();
         updateStatsCount();
@@ -299,23 +304,25 @@
     }
 
     function applySorting() {
+      // 如果没有排序状态,从原始数据恢复默认排序(渠道名称→模型名称)
       if (!sortState.column || !sortState.order) {
-        // 无排序状态，恢复原始顺序
-        statsData.stats = [...statsData.originalStats || statsData.stats];
+        if (statsData && statsData.originalStats) {
+          statsData.stats = [...statsData.originalStats];
+        }
         return;
       }
-      
+
       // 保存原始数据（如果还没有保存）
       if (!statsData.originalStats) {
         statsData.originalStats = [...statsData.stats];
       }
-      
+
       const column = sortState.column;
       const isAsc = sortState.order === 'asc';
-      
+
       statsData.stats.sort((a, b) => {
         let valueA, valueB;
-        
+
         switch (column) {
           case 'channel_name':
             valueA = (a.channel_name || '').toLowerCase();
@@ -348,14 +355,14 @@
           default:
             return 0;
         }
-        
+
         let result;
         if (typeof valueA === 'string') {
           result = valueA.localeCompare(valueB, 'zh-CN');
         } else {
           result = valueA - valueB;
         }
-        
+
         return isAsc ? result : -result;
       });
     }
@@ -473,6 +480,35 @@
       if (statsCountEl && statsData && statsData.stats) {
         statsCountEl.textContent = statsData.stats.length;
       }
+    }
+
+    // 应用默认排序:按渠道名称升序,相同渠道按模型名称升序
+    function applyDefaultSorting() {
+      if (!statsData || !statsData.stats || statsData.stats.length === 0) return;
+
+      // 保存原始数据副本(仅首次)
+      if (!statsData.originalStats) {
+        statsData.originalStats = [...statsData.stats];
+      }
+
+      // 按渠道名称升序,相同渠道按模型名称升序
+      statsData.stats.sort((a, b) => {
+        const channelA = (a.channel_name || '').toLowerCase();
+        const channelB = (b.channel_name || '').toLowerCase();
+
+        // 首先按渠道名称排序
+        const channelCompare = channelA.localeCompare(channelB, 'zh-CN');
+        if (channelCompare !== 0) return channelCompare;
+
+        // 渠道名称相同时,按模型名称排序
+        const modelA = (a.model || '').toLowerCase();
+        const modelB = (b.model || '').toLowerCase();
+        return modelA.localeCompare(modelB, 'zh-CN');
+      });
+
+      // 重置排序状态(保持无排序指示器显示)
+      sortState.column = null;
+      sortState.order = null;
     }
 
     function formatNumber(num) {
