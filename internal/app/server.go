@@ -245,9 +245,6 @@ func NewServer(store storage.Store) *Server {
 	s.wg.Add(1)
 	go s.cleanupOldLogsLoop() // 定期清理3天前的日志
 
-	s.wg.Add(1)
-	go s.cleanupKeySelectorCountersLoop() // 定期清理KeySelector计数器，防止内存泄漏
-
 	return s
 
 }
@@ -652,31 +649,6 @@ func (s *Server) cleanupOldLogsLoop() {
 			// 通过Store接口清理旧日志，忽略错误（非关键操作）
 			_ = s.store.CleanupLogsBefore(ctx, cutoff)
 			cancel() // 立即释放资源
-
-		case <-s.shutdownCh:
-			// 收到关闭信号，直接退出（不执行最后一次清理）
-			return
-		}
-	}
-}
-
-// cleanupKeySelectorCountersLoop 定期清理KeySelector的过期计数器
-// 防止rrCounters map内存泄漏
-// 每小时清理一次，删除1小时未使用的计数器
-func (s *Server) cleanupKeySelectorCountersLoop() {
-	defer s.wg.Done()
-
-	ticker := time.NewTicker(1 * time.Hour)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			// 清理1小时未访问的计数器
-			removed := s.keySelector.CleanupStaleCounters(3600)
-			if removed > 0 {
-				util.SafePrintf("🧹 KeySelector清理: 移除 %d 个过期计数器", removed)
-			}
 
 		case <-s.shutdownCh:
 			// 收到关闭信号，直接退出（不执行最后一次清理）

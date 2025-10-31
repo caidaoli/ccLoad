@@ -19,11 +19,9 @@ type KeySelector struct {
 	rrMutex    sync.RWMutex
 }
 
-// rrCounter 轮询计数器（带最后访问时间）
-// 新增结构，支持TTL清理
+// rrCounter 轮询计数器（简化版）
 type rrCounter struct {
-	counter    atomic.Uint32
-	lastAccess atomic.Int64 // Unix时间戳（秒）
+	counter atomic.Uint32
 }
 
 // NewKeySelector 创建Key选择器
@@ -88,7 +86,6 @@ func (ks *KeySelector) selectSequential(apiKeys []*model.APIKey, excludeKeys map
 }
 
 // selectRoundRobin 使用双重检查锁定确保并发安全
-// 添加lastAccess更新，支持TTL清理
 func (ks *KeySelector) selectRoundRobin(channelID int64, apiKeys []*model.APIKey, excludeKeys map[int]bool) (int, string, error) {
 	keyCount := len(apiKeys)
 	now := time.Now()
@@ -103,14 +100,11 @@ func (ks *KeySelector) selectRoundRobin(channelID int64, apiKeys []*model.APIKey
 		// 再次检查，避免多个goroutine同时创建
 		if counter, ok = ks.rrCounters[channelID]; !ok {
 			counter = &rrCounter{}
-			counter.lastAccess.Store(now.Unix())
 			ks.rrCounters[channelID] = counter
 		}
 		ks.rrMutex.Unlock()
 	}
 
-	// 更新最后访问时间
-	counter.lastAccess.Store(now.Unix())
 	startIdx := int(counter.counter.Add(1) % uint32(keyCount))
 
 	// 从startIdx开始轮询，最多尝试keyCount次
@@ -149,28 +143,3 @@ func (ks *KeySelector) selectRoundRobin(channelID int64, apiKeys []*model.APIKey
 // KeySelector 专注于Key选择逻辑，冷却管理已移至 cooldownManager
 // 移除的方法: MarkKeyError, MarkKeySuccess, GetKeyCooldownInfo
 // 原因: 违反SRP原则，冷却管理应由专门的 cooldownManager 负责
-
-// CleanupStaleCounters 清理长时间未使用的轮询计数器
-// 新增清理方法，防止rrCounters内存泄漏
-// TTL: 1小时未访问的计数器将被移除
-func (ks *KeySelector) CleanupStaleCounters(ttlSeconds int64) int {
-	if ttlSeconds <= 0 {
-		ttlSeconds = 3600 // 默认1小时
-	}
-
-	now := time.Now().Unix()
-	threshold := now - ttlSeconds
-
-	ks.rrMutex.Lock()
-	defer ks.rrMutex.Unlock()
-
-	removed := 0
-	for channelID, counter := range ks.rrCounters {
-		if counter.lastAccess.Load() < threshold {
-			delete(ks.rrCounters, channelID)
-			removed++
-		}
-	}
-
-	return removed
-}
