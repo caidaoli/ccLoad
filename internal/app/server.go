@@ -2,10 +2,6 @@ package app
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/tls"
-	"encoding/hex"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -23,6 +19,8 @@ import (
 	"ccLoad/internal/service"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
+
+	"crypto/tls"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/net/http2"
@@ -45,15 +43,8 @@ type Server struct {
 	client           *http.Client
 	firstByteTimeout time.Duration
 
-	// ============================================================================
-	// ⚠️ DEPRECATED: 以下字段已迁移到 AuthService（阶段 3）
-	// 请使用 s.authService 访问认证相关功能
-	// ============================================================================
-	password         string                 // DEPRECATED: 已迁移到 authService.password
-	validTokens      map[string]time.Time   // DEPRECATED: 已迁移到 authService.validTokens
-	tokensMux        sync.RWMutex           // DEPRECATED: 已迁移到 authService.tokensMux
-	authTokens       map[string]bool        // DEPRECATED: 已迁移到 authService.authTokens
-	loginRateLimiter *util.LoginRateLimiter // 仍需保留：用于传递给 authService
+	// 登录速率限制器（用于传递给AuthService）
+	loginRateLimiter *util.LoginRateLimiter
 
 	// 重试配置
 	maxKeyRetries int // 单个渠道内最大Key重试次数（默认3次）
@@ -215,10 +206,7 @@ func NewServer(store storage.Store) *Server {
 			Timeout:   0, // 不设置全局超时，避免中断长时间任务
 		},
 		firstByteTimeout: firstByteTimeout,
-		password:         password,
-		validTokens:      make(map[string]time.Time),
-		authTokens:       authTokens,
-		loginRateLimiter: util.NewLoginRateLimiter(), // 登录速率限制
+		loginRateLimiter: util.NewLoginRateLimiter(), // 用于传递给AuthService
 
 		// 并发控制：使用信号量限制最大并发请求数
 		concurrencySem: make(chan struct{}, maxConcurrency),
@@ -357,208 +345,6 @@ func (s *Server) invalidateCooldownCache() {
 	if cache := s.getChannelCache(); cache != nil {
 		cache.InvalidateCooldownCache()
 	}
-}
-
-// ================== Token认证系统 ==================
-
-// generateToken 生成安全Token（64字符十六进制）
-//
-// DEPRECATED: 此方法已迁移到 AuthService（阶段 3）
-// 内部方法，不对外暴露。新代码请勿使用。
-func (s *Server) generateToken() string {
-	b := make([]byte, config.TokenRandomBytes)
-	rand.Read(b)
-	return hex.EncodeToString(b)
-}
-
-// ================== Token认证 ==================
-
-// isValidToken 验证Token有效性（检查过期时间）
-//
-// DEPRECATED: 此方法已迁移到 AuthService（阶段 3）
-// 内部方法，不对外暴露。新代码请勿使用。
-func (s *Server) isValidToken(token string) bool {
-	s.tokensMux.RLock()
-	expiry, exists := s.validTokens[token]
-	s.tokensMux.RUnlock()
-
-	if !exists {
-		return false
-	}
-
-	// 检查是否过期
-	if time.Now().After(expiry) {
-		// 同步删除过期Token（避免goroutine泄漏）
-		// 原因：map删除操作非常快（O(1)），无需异步，异步反而导致goroutine泄漏
-		s.tokensMux.Lock()
-		delete(s.validTokens, token)
-		s.tokensMux.Unlock()
-		return false
-	}
-
-	return true
-}
-
-// ================== End Token认证 ==================
-
-// RequireTokenAuth 统一Token认证中间件（管理界面 + API统一使用）
-//
-// DEPRECATED: 此方法已迁移到 AuthService.RequireTokenAuth()（阶段 3）
-// 请使用 s.authService.RequireTokenAuth() 替代
-func (s *Server) RequireTokenAuth() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		// 优先从 Authorization 头获取Token
-		authHeader := c.GetHeader("Authorization")
-		if authHeader != "" {
-			const prefix = "Bearer "
-			if strings.HasPrefix(authHeader, prefix) {
-				token := strings.TrimPrefix(authHeader, prefix)
-
-				// 检查动态Token（登录生成的24小时Token）
-				if s.isValidToken(token) {
-					c.Next()
-					return
-				}
-
-				// 检查静态Token（CCLOAD_AUTH配置的永久Token）
-				if len(s.authTokens) > 0 && s.authTokens[token] {
-					c.Next()
-					return
-				}
-			}
-		}
-
-		// 未授权
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "未授权访问，请先登录"})
-		c.Abort()
-	}
-}
-
-// RequireAPIAuth API 认证中间件 - Gin版本
-//
-// DEPRECATED: 此方法已迁移到 AuthService.RequireAPIAuth()（阶段 3）
-// 请使用 s.authService.RequireAPIAuth() 替代
-func (s *Server) RequireAPIAuth() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		// 未配置认证令牌时，默认全部返回 401（不允许公开访问）
-		if len(s.authTokens) == 0 {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or missing authorization"})
-			c.Abort()
-			return
-		}
-
-		// 检查 Authorization 头（Bearer token）
-		authHeader := c.GetHeader("Authorization")
-		if authHeader != "" {
-			const prefix = "Bearer "
-			if strings.HasPrefix(authHeader, prefix) {
-				token := strings.TrimPrefix(authHeader, prefix)
-				if s.authTokens[token] {
-					c.Next()
-					return
-				}
-			}
-		}
-
-		// 检查 X-API-Key 头
-		apiKey := c.GetHeader("X-API-Key")
-		if apiKey != "" && s.authTokens[apiKey] {
-			c.Next()
-			return
-		}
-
-		// 检查 x-goog-api-key 头（Google API格式）
-		googApiKey := c.GetHeader("x-goog-api-key")
-		if googApiKey != "" && s.authTokens[googApiKey] {
-			c.Next()
-			return
-		}
-
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or missing authorization"})
-		c.Abort()
-	}
-}
-
-// HandleLogin 登录处理程序 - Token认证版本（替代Cookie Session）
-// 集成登录速率限制，防暴力破解
-//
-// DEPRECATED: 此方法已迁移到 AuthService.HandleLogin()（阶段 3）
-// 请使用 s.authService.HandleLogin(c) 替代
-func (s *Server) HandleLogin(c *gin.Context) {
-	clientIP := c.ClientIP()
-
-	// 检查速率限制
-	if !s.loginRateLimiter.AllowAttempt(clientIP) {
-		lockoutTime := s.loginRateLimiter.GetLockoutTime(clientIP)
-		c.JSON(http.StatusTooManyRequests, gin.H{
-			"error":           "Too many failed login attempts",
-			"message":         fmt.Sprintf("Account locked for %d seconds. Please try again later.", lockoutTime),
-			"lockout_seconds": lockoutTime,
-		})
-		return
-	}
-
-	var req struct {
-		Password string `json:"password" binding:"required"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
-		return
-	}
-
-	// 验证密码
-	if req.Password != s.password {
-		// 记录失败尝试（速率限制器已在AllowAttempt中增加计数）
-		attemptCount := s.loginRateLimiter.GetAttemptCount(clientIP)
-		util.SafePrintf("⚠️  登录失败: IP=%s, 尝试次数=%d/5", clientIP, attemptCount)
-
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"error":              "Invalid password",
-			"remaining_attempts": 5 - attemptCount,
-		})
-		return
-	}
-
-	// 密码正确，重置速率限制
-	s.loginRateLimiter.RecordSuccess(clientIP)
-
-	// 生成Token
-	token := s.generateToken()
-
-	// 存储Token到内存
-	s.tokensMux.Lock()
-	s.validTokens[token] = time.Now().Add(config.HoursToDuration(config.TokenExpiryHours))
-	s.tokensMux.Unlock()
-
-	util.SafePrintf("✅ 登录成功: IP=%s", clientIP)
-
-	// 返回Token给客户端（前端存储到localStorage）
-	c.JSON(http.StatusOK, gin.H{
-		"status":    "success",
-		"token":     token,
-		"expiresIn": config.TokenExpiryHours * 3600, // 秒数
-	})
-}
-
-// HandleLogout 登出处理程序 - Token认证版本
-//
-// DEPRECATED: 此方法已迁移到 AuthService.HandleLogout()（阶段 3）
-// 请使用 s.authService.HandleLogout(c) 替代
-func (s *Server) HandleLogout(c *gin.Context) {
-	// 从Authorization头提取Token
-	authHeader := c.GetHeader("Authorization")
-	const prefix = "Bearer "
-	if after, ok := strings.CutPrefix(authHeader, prefix); ok {
-		token := after
-
-		// 删除服务器端Token
-		s.tokensMux.Lock()
-		delete(s.validTokens, token)
-		s.tokensMux.Unlock()
-	}
-
-	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "已登出"})
 }
 
 // SetupRoutes - 新的路由设置函数，适配Gin
