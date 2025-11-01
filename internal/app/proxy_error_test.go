@@ -59,7 +59,7 @@ func Test_HandleProxyError_Basic(t *testing.T) {
 			defer cleanup()
 
 			// 添加必要的组件
-			srv.cooldownManager = cooldown.NewManager(srv.store)
+			srv.cooldownManager = cooldown.NewManager(srv.store, nil)
 
 			ctx := context.Background()
 			cfg := &model.Config{
@@ -100,7 +100,7 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 	srv, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	srv.cooldownManager = cooldown.NewManager(srv.store)
+	srv.cooldownManager = cooldown.NewManager(srv.store, nil)
 
 	ctx := context.Background()
 	cfg := &model.Config{
@@ -166,7 +166,7 @@ func Test_HandleProxySuccess_Basic(t *testing.T) {
 	srv, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	srv.cooldownManager = cooldown.NewManager(srv.store)
+	srv.cooldownManager = cooldown.NewManager(srv.store, nil)
 
 	ctx := context.Background()
 	cfg := &model.Config{
@@ -210,7 +210,7 @@ func Test_HandleProxyError_499(t *testing.T) {
 	srv, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	srv.cooldownManager = cooldown.NewManager(srv.store)
+	srv.cooldownManager = cooldown.NewManager(srv.store, nil)
 
 	ctx := context.Background()
 	cfg := &model.Config{

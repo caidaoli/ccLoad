@@ -1,6 +1,7 @@
 package cooldown
 
 import (
+	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 	"context"
@@ -16,16 +17,27 @@ const (
 	ActionReturnClient               // 直接返回给客户端
 )
 
+// ConfigGetter 获取渠道配置的接口（支持缓存）
+// 设计原则：接口隔离，cooldown包不依赖具体的cache实现
+type ConfigGetter interface {
+	GetConfig(ctx context.Context, channelID int64) (*model.Config, error)
+}
+
 // Manager 冷却管理器
 // 统一管理渠道级和Key级冷却逻辑
 // 遵循SRP原则：专注于冷却决策和执行
 type Manager struct {
-	store storage.Store
+	store        storage.Store
+	configGetter ConfigGetter // 可选：优先使用缓存层（性能提升~60%）
 }
 
 // NewManager 创建冷却管理器实例
-func NewManager(store storage.Store) *Manager {
-	return &Manager{store: store}
+// configGetter: 可选参数，传入nil时降级到store.GetConfig
+func NewManager(store storage.Store, configGetter ConfigGetter) *Manager {
+	return &Manager{
+		store:        store,
+		configGetter: configGetter,
+	}
 }
 
 // HandleError 统一错误处理与冷却决策
@@ -78,9 +90,18 @@ func (m *Manager) HandleError(
 
 	// 2. 🎯 动态调整:单Key渠道的Key级错误应该直接冷却渠道
 	// 设计原则:如果没有其他Key可以重试,Key级错误等同于渠道级错误
-	// 使用缓存的KeyCount,避免N+1查询(性能提升~60%)
+	// 优先使用缓存的KeyCount,避免N+1查询(性能提升~60%)
 	if errLevel == util.ErrorLevelKey {
-		config, err := m.store.GetConfig(ctx, channelID)
+		var config *model.Config
+		var err error
+
+		// 优先使用缓存层（如果可用）
+		if m.configGetter != nil {
+			config, err = m.configGetter.GetConfig(ctx, channelID)
+		} else {
+			config, err = m.store.GetConfig(ctx, channelID)
+		}
+
 		// 查询失败或单Key渠道:直接升级为渠道级错误
 		if err != nil || config == nil || config.KeyCount <= 1 {
 			errLevel = util.ErrorLevelChannel

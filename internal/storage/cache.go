@@ -143,6 +143,28 @@ func (c *ChannelCache) GetEnabledChannelsByType(ctx context.Context, channelType
 	return result, nil
 }
 
+// GetConfig 从缓存中获取指定ID的渠道配置
+// 性能：O(n)遍历allChannels，但n通常很小(<100)
+func (c *ChannelCache) GetConfig(ctx context.Context, channelID int64) (*modelpkg.Config, error) {
+	if err := c.refreshIfNeeded(ctx); err != nil {
+		// 缓存刷新失败，降级到数据库
+		return c.store.GetConfig(ctx, channelID)
+	}
+
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	// 遍历allChannels查找目标渠道
+	for _, cfg := range c.allChannels {
+		if cfg.ID == channelID {
+			return cfg, nil
+		}
+	}
+
+	// 未找到，可能是新创建的渠道，查询数据库
+	return c.store.GetConfig(ctx, channelID)
+}
+
 // refreshIfNeeded 智能缓存刷新
 func (c *ChannelCache) refreshIfNeeded(ctx context.Context) error {
 	c.mutex.RLock()

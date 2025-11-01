@@ -14,7 +14,7 @@ func TestNewManager(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	manager := NewManager(store)
+	manager := NewManager(store, nil)
 	if manager == nil {
 		t.Fatal("NewManager should not return nil")
 	}
@@ -27,7 +27,7 @@ func TestNewManager(t *testing.T) {
 func TestHandleError_ClientError(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store)
+	manager := NewManager(store, nil)
 	ctx := context.Background()
 
 	// 创建测试渠道
@@ -68,7 +68,7 @@ func TestHandleError_ClientError(t *testing.T) {
 func TestHandleError_KeyLevelError(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store)
+	manager := NewManager(store, nil)
 	ctx := context.Background()
 
 	// 创建多Key渠道（3个Key）
@@ -124,7 +124,7 @@ func TestHandleError_KeyLevelError(t *testing.T) {
 func TestHandleError_ChannelLevelError(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store)
+	manager := NewManager(store, nil)
 	ctx := context.Background()
 
 	cfg := createTestChannel(t, store, "test-channel-error")
@@ -168,7 +168,7 @@ func TestHandleError_ChannelLevelError(t *testing.T) {
 func TestHandleError_SingleKeyUpgrade(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store)
+	manager := NewManager(store, nil)
 	ctx := context.Background()
 
 	// 创建单Key渠道
@@ -203,7 +203,7 @@ func TestHandleError_SingleKeyUpgrade(t *testing.T) {
 func TestHandleError_NetworkError(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store)
+	manager := NewManager(store, nil)
 	ctx := context.Background()
 
 	cfg := createTestChannel(t, store, "test-network-error")
@@ -266,7 +266,7 @@ func TestHandleError_NetworkError(t *testing.T) {
 func TestClearChannelCooldown(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store)
+	manager := NewManager(store, nil)
 	ctx := context.Background()
 
 	cfg := createTestChannel(t, store, "test-clear-channel")
@@ -297,7 +297,7 @@ func TestClearChannelCooldown(t *testing.T) {
 func TestClearKeyCooldown(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store)
+	manager := NewManager(store, nil)
 	ctx := context.Background()
 
 	cfg := createTestChannel(t, store, "test-clear-key")
@@ -340,7 +340,7 @@ func TestClearKeyCooldown(t *testing.T) {
 func TestHandleError_EdgeCases(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store)
+	manager := NewManager(store, nil)
 	ctx := context.Background()
 
 	t.Run("不存在的渠道", func(t *testing.T) {
@@ -397,7 +397,7 @@ func TestHandleError_EdgeCases(t *testing.T) {
 func TestHandleError_RateLimitClassification(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store)
+	manager := NewManager(store, nil)
 	ctx := context.Background()
 
 	// 创建多Key渠道

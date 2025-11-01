@@ -220,7 +220,8 @@ func NewServer(store storage.Store) *Server {
 	s.channelCache = storage.NewChannelCache(store, 60*time.Second)
 
 	// 初始化冷却管理器（统一管理渠道级和Key级冷却）
-	s.cooldownManager = cooldown.NewManager(store)
+	// 传入Server作为configGetter，利用缓存层查询渠道配置
+	s.cooldownManager = cooldown.NewManager(store, s)
 
 	// 初始化Key选择器（移除store依赖，避免重复查询）
 	s.keySelector = NewKeySelector(nil)
@@ -264,6 +265,15 @@ func (s *Server) getChannelCache() *storage.ChannelCache {
 		return nil
 	}
 	return s.channelCache
+}
+
+// GetConfig 获取渠道配置（实现cooldown.ConfigGetter接口）
+// 优先使用缓存层（60秒TTL），降级到数据库查询
+func (s *Server) GetConfig(ctx context.Context, channelID int64) (*model.Config, error) {
+	if cache := s.getChannelCache(); cache != nil {
+		return cache.GetConfig(ctx, channelID)
+	}
+	return s.store.GetConfig(ctx, channelID)
 }
 
 func (s *Server) GetEnabledChannelsByModel(ctx context.Context, model string) ([]*model.Config, error) {
