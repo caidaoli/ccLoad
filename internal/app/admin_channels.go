@@ -42,7 +42,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 
 	// 使用缓存层查询（<1ms vs 数据库查询5-10ms）
 	// 性能优化：批量获取冷却状态，减少管理API的数据库查询
-	allChannelCooldowns, err := s.channelCache.GetAllChannelCooldowns(c.Request.Context())
+	allChannelCooldowns, err := s.getAllChannelCooldowns(c.Request.Context())
 	if err != nil {
 		// 渠道冷却查询失败不影响主流程，仅记录错误
 		util.SafePrintf("⚠️  警告: 批量查询渠道冷却状态失败: %v", err)
@@ -52,7 +52,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	// 性能优化：批量查询所有Key冷却状态（一次查询替代 N*M 次）
 	// 使用缓存层查询（<1ms vs 数据库查询5-10ms）
 	// 性能优化：批量获取Key冷却状态，减少管理API的数据库查询
-	allKeyCooldowns, err := s.channelCache.GetAllKeyCooldowns(c.Request.Context())
+	allKeyCooldowns, err := s.getAllKeyCooldowns(c.Request.Context())
 	if err != nil {
 		// Key冷却查询失败不影响主流程，仅记录错误
 		util.SafePrintf("⚠️  警告: 批量查询Key冷却状态失败: %v", err)
@@ -155,6 +155,11 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 		}
 	}
 
+	// 新增、删除或更新渠道后，失效缓存保持一致性
+	s.invalidateChannelListCache()
+	s.invalidateAPIKeysCache(created.ID)
+	s.invalidateCooldownCache()
+
 	RespondJSON(c, http.StatusCreated, created)
 }
 
@@ -189,7 +194,7 @@ func (s *Server) handleGetChannel(c *gin.Context, id int64) {
 	// ✅ 修复 (2025-10-11): 附带key_strategy信息
 	// 使用缓存层查询（<1ms vs 数据库查询10-20ms）
 	// 性能优化：管理API查询也使用缓存，减少延迟
-	apiKeys, err := s.channelCache.GetAPIKeys(c.Request.Context(), id)
+	apiKeys, err := s.getAPIKeys(c.Request.Context(), id)
 	if err != nil {
 		util.SafePrintf("⚠️  警告: 查询渠道 %d 的API Keys失败: %v", id, err)
 	}
@@ -229,7 +234,7 @@ func (s *Server) handleGetChannel(c *gin.Context, id int64) {
 // 使用缓存层查询（<1ms vs 数据库查询10-20ms）
 // GET /admin/channels/{id}/keys
 func (s *Server) handleGetChannelKeys(c *gin.Context, id int64) {
-	apiKeys, err := s.channelCache.GetAPIKeys(c.Request.Context(), id)
+	apiKeys, err := s.getAPIKeys(c.Request.Context(), id)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -287,7 +292,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 
 	// 检测api_key是否变化（需要重建API Keys）
 	// 使用缓存层查询（<1ms vs 数据库查询10-20ms）
-	oldKeys, err := s.channelCache.GetAPIKeys(c.Request.Context(), id)
+	oldKeys, err := s.getAPIKeys(c.Request.Context(), id)
 	if err != nil {
 		util.SafePrintf("⚠️  警告: 查询旧API Keys失败: %v", err)
 		oldKeys = []*model.APIKey{}
@@ -359,6 +364,11 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		}
 	}
 
+	// 渠道更新后刷新缓存，避免返回陈旧数据
+	s.invalidateChannelListCache()
+	s.invalidateAPIKeysCache(id)
+	s.invalidateCooldownCache()
+
 	RespondJSON(c, http.StatusOK, upd)
 }
 
@@ -368,6 +378,10 @@ func (s *Server) handleDeleteChannel(c *gin.Context, id int64) {
 		RespondError(c, http.StatusNotFound, err)
 		return
 	}
+	// 删除渠道后刷新缓存
+	s.invalidateChannelListCache()
+	s.invalidateAPIKeysCache(id)
+	s.invalidateCooldownCache()
 	// 数据库级联删除会自动清理冷却数据（无需手动清理缓存）
 	c.Status(http.StatusNoContent)
 }

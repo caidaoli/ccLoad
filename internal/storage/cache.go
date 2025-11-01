@@ -4,6 +4,7 @@ import (
 	modelpkg "ccLoad/internal/model"
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -13,7 +14,7 @@ type ChannelCache struct {
 	store           Store
 	channelsByModel map[string][]*modelpkg.Config // model → channels
 	channelsByType  map[string][]*modelpkg.Config // type → channels
-	allChannels     []*modelpkg.Config             // 所有渠道
+	allChannels     []*modelpkg.Config            // 所有渠道
 	lastUpdate      time.Time
 	mutex           sync.RWMutex
 	ttl             time.Duration
@@ -21,13 +22,43 @@ type ChannelCache struct {
 	// 扩展缓存支持更多关键查询
 	apiKeysByChannelID map[int64][]*modelpkg.APIKey // channelID → API keys
 	cooldownCache      struct {
-		channels map[int64]time.Time // channelID → cooldown until
-		keys     map[int64]map[int]time.Time // channelID→keyIndex→cooldown until
+		channels   map[int64]time.Time         // channelID → cooldown until
+		keys       map[int64]map[int]time.Time // channelID→keyIndex→cooldown until
 		lastUpdate time.Time
-		ttl      time.Duration
+		ttl        time.Duration
 	}
 	geminiModels []string // 缓存的Gemini模型列表
 	modelsMutex  sync.RWMutex
+
+	// Metrics counters
+	channelCounters        cacheCounters
+	channelTypeCounters    cacheCounters
+	apiKeyCounters         cacheCounters
+	channelCooldownCounter cacheCounters
+	keyCooldownCounter     cacheCounters
+	geminiCounters         cacheCounters
+}
+
+type cacheCounters struct {
+	hits          atomic.Uint64
+	misses        atomic.Uint64
+	invalidations atomic.Uint64
+}
+
+func (c *cacheCounters) addHit() {
+	c.hits.Add(1)
+}
+
+func (c *cacheCounters) addMiss() {
+	c.misses.Add(1)
+}
+
+func (c *cacheCounters) addInvalidation() {
+	c.invalidations.Add(1)
+}
+
+func (c *cacheCounters) snapshot() (hits, misses, invalidations uint64) {
+	return c.hits.Load(), c.misses.Load(), c.invalidations.Load()
 }
 
 // NewChannelCache 创建渠道缓存实例
@@ -43,10 +74,10 @@ func NewChannelCache(store Store, ttl time.Duration) *ChannelCache {
 		apiKeysByChannelID: make(map[int64][]*modelpkg.APIKey),
 		geminiModels:       make([]string, 0),
 		cooldownCache: struct {
-			channels map[int64]time.Time
-			keys     map[int64]map[int]time.Time
+			channels   map[int64]time.Time
+			keys       map[int64]map[int]time.Time
 			lastUpdate time.Time
-			ttl      time.Duration
+			ttl        time.Duration
 		}{
 			channels: make(map[int64]time.Time),
 			keys:     make(map[int64]map[int]time.Time),
@@ -59,12 +90,15 @@ func NewChannelCache(store Store, ttl time.Duration) *ChannelCache {
 // 性能：内存查询 < 2ms vs 数据库查询 50ms+
 func (c *ChannelCache) GetEnabledChannelsByModel(ctx context.Context, model string) ([]*modelpkg.Config, error) {
 	if err := c.refreshIfNeeded(ctx); err != nil {
+		c.channelCounters.addMiss()
 		// 缓存失败时降级到数据库查询
 		return c.store.GetEnabledChannelsByModel(ctx, model)
 	}
 
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
+
+	c.channelCounters.addHit()
 
 	if model == "*" {
 		// 返回所有渠道的副本
@@ -87,12 +121,15 @@ func (c *ChannelCache) GetEnabledChannelsByModel(ctx context.Context, model stri
 // GetEnabledChannelsByType 缓存优先的类型查询
 func (c *ChannelCache) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*modelpkg.Config, error) {
 	if err := c.refreshIfNeeded(ctx); err != nil {
+		c.channelTypeCounters.addMiss()
 		// 缓存失败时降级到数据库查询
 		return c.store.GetEnabledChannelsByType(ctx, channelType)
 	}
 
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
+
+	c.channelTypeCounters.addHit()
 
 	normalizedType := modelpkg.NormalizeChannelType(channelType)
 	channels, exists := c.channelsByType[normalizedType]
@@ -131,60 +168,15 @@ func (c *ChannelCache) refreshIfNeeded(ctx context.Context) error {
 func (c *ChannelCache) refreshCache(ctx context.Context) error {
 	start := time.Now()
 
-	// 并发加载不同类型的数据
-	var wg sync.WaitGroup
-	var allChannels []*modelpkg.Config
-	byModel := make(map[string][]*modelpkg.Config)
-	byType := make(map[string][]*modelpkg.Config)
-
-	var errAll, errModel error
-	var mu sync.Mutex
-
-	wg.Add(2)
-
-	// 加载所有渠道
-	go func() {
-		defer wg.Done()
-		allChannels, errAll = c.store.GetEnabledChannelsByModel(ctx, "*")
-	}()
-
-	// 加载按模型分组的渠道
-	go func() {
-		defer wg.Done()
-		// 获取所有不同的模型
-		models, err := c.getUniqueModels(ctx)
-		if err != nil {
-			errModel = err
-			return
-		}
-
-		// 并发加载每个模型的渠道
-		var modelWg sync.WaitGroup
-		for _, model := range models {
-			modelWg.Add(1)
-			go func(m string) {
-				defer modelWg.Done()
-				channels, err := c.store.GetEnabledChannelsByModel(ctx, m)
-				if err == nil {
-					mu.Lock()
-					byModel[m] = channels
-					mu.Unlock()
-				}
-			}(model)
-		}
-		modelWg.Wait()
-	}()
-
-	wg.Wait()
-
-	if errAll != nil {
-		return errAll
-	}
-	if errModel != nil {
-		return errModel
+	allChannels, err := c.store.GetEnabledChannelsByModel(ctx, "*")
+	if err != nil {
+		return err
 	}
 
 	// 构建按类型分组的索引
+	byModel := make(map[string][]*modelpkg.Config)
+	byType := make(map[string][]*modelpkg.Config)
+
 	for _, channel := range allChannels {
 		channelType := channel.GetChannelType()
 		byType[channelType] = append(byType[channelType], channel)
@@ -219,49 +211,60 @@ func (c *ChannelCache) refreshCache(ctx context.Context) error {
 	return nil
 }
 
-// getUniqueModels 获取所有唯一的模型列表
-func (c *ChannelCache) getUniqueModels(ctx context.Context) ([]string, error) {
-	// 从数据库获取所有启用的模型
-	allChannels, err := c.store.GetEnabledChannelsByModel(ctx, "*")
-	if err != nil {
-		return nil, err
-	}
-
-	modelSet := make(map[string]struct{})
-	for _, channel := range allChannels {
-		for _, model := range channel.Models {
-			modelSet[model] = struct{}{}
-		}
-	}
-
-	models := make([]string, 0, len(modelSet))
-	for model := range modelSet {
-		models = append(models, model)
-	}
-
-	return models, nil
-}
-
 // InvalidateCache 手动失效缓存
 func (c *ChannelCache) InvalidateCache() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
 	c.lastUpdate = time.Time{} // 重置为0时间，强制刷新
+	c.channelCounters.addInvalidation()
+	c.channelTypeCounters.addInvalidation()
+	c.geminiCounters.addInvalidation()
 }
 
 // GetCacheStats 获取缓存统计信息
 func (c *ChannelCache) GetCacheStats() map[string]interface{} {
 	c.mutex.RLock()
-	defer c.mutex.RUnlock()
+	lastUpdate := c.lastUpdate
+	ageSeconds := time.Since(c.lastUpdate).Seconds()
+	totalChannels := len(c.allChannels)
+	totalModels := len(c.channelsByModel)
+	totalTypes := len(c.channelsByType)
+	ttlSeconds := c.ttl.Seconds()
+	c.mutex.RUnlock()
+
+	channelHits, channelMisses, channelInvalidations := c.channelCounters.snapshot()
+	channelTypeHits, channelTypeMisses, channelTypeInvalidations := c.channelTypeCounters.snapshot()
+	apiHits, apiMisses, apiInvalidations := c.apiKeyCounters.snapshot()
+	chanCooldownHits, chanCooldownMisses, chanCooldownInvalidations := c.channelCooldownCounter.snapshot()
+	keyCooldownHits, keyCooldownMisses, keyCooldownInvalidations := c.keyCooldownCounter.snapshot()
+	geminiHits, geminiMisses, geminiInvalidations := c.geminiCounters.snapshot()
 
 	return map[string]interface{}{
-		"last_update":         c.lastUpdate,
-		"age_seconds":        time.Since(c.lastUpdate).Seconds(),
-		"total_channels":     len(c.allChannels),
-		"total_models":       len(c.channelsByModel),
-		"total_types":        len(c.channelsByType),
-		"ttl_seconds":        c.ttl.Seconds(),
+		"last_update":                    lastUpdate,
+		"age_seconds":                    ageSeconds,
+		"total_channels":                 totalChannels,
+		"total_models":                   totalModels,
+		"total_types":                    totalTypes,
+		"ttl_seconds":                    ttlSeconds,
+		"channels_hits":                  channelHits,
+		"channels_misses":                channelMisses,
+		"channels_invalidations":         channelInvalidations,
+		"channel_type_hits":              channelTypeHits,
+		"channel_type_misses":            channelTypeMisses,
+		"channel_type_invalidations":     channelTypeInvalidations,
+		"api_keys_hits":                  apiHits,
+		"api_keys_misses":                apiMisses,
+		"api_keys_invalidations":         apiInvalidations,
+		"channel_cooldown_hits":          chanCooldownHits,
+		"channel_cooldown_misses":        chanCooldownMisses,
+		"channel_cooldown_invalidations": chanCooldownInvalidations,
+		"key_cooldown_hits":              keyCooldownHits,
+		"key_cooldown_misses":            keyCooldownMisses,
+		"key_cooldown_invalidations":     keyCooldownInvalidations,
+		"gemini_hits":                    geminiHits,
+		"gemini_misses":                  geminiMisses,
+		"gemini_invalidations":           geminiInvalidations,
 	}
 }
 
@@ -272,6 +275,7 @@ func (c *ChannelCache) GetAPIKeys(ctx context.Context, channelID int64) ([]*mode
 	c.mutex.RLock()
 	if keys, exists := c.apiKeysByChannelID[channelID]; exists {
 		c.mutex.RUnlock()
+		c.apiKeyCounters.addHit()
 		// 返回副本
 		result := make([]*modelpkg.APIKey, len(keys))
 		copy(result, keys)
@@ -281,6 +285,7 @@ func (c *ChannelCache) GetAPIKeys(ctx context.Context, channelID int64) ([]*mode
 
 	// 缓存未命中，从数据库加载
 	keys, err := c.store.GetAPIKeys(ctx, channelID)
+	c.apiKeyCounters.addMiss()
 	if err == nil {
 		// 存储到缓存
 		c.mutex.Lock()
@@ -302,12 +307,14 @@ func (c *ChannelCache) GetAllChannelCooldowns(ctx context.Context) (map[int64]ti
 			result[k] = v
 		}
 		c.mutex.RUnlock()
+		c.channelCooldownCounter.addHit()
 		return result, nil
 	}
 	c.mutex.RUnlock()
 
 	// 缓存过期，从数据库加载
 	cooldowns, err := c.store.GetAllChannelCooldowns(ctx)
+	c.channelCooldownCounter.addMiss()
 	if err == nil {
 		c.mutex.Lock()
 		c.cooldownCache.channels = cooldowns
@@ -333,12 +340,14 @@ func (c *ChannelCache) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[in
 			result[k] = keyMap
 		}
 		c.mutex.RUnlock()
+		c.keyCooldownCounter.addHit()
 		return result, nil
 	}
 	c.mutex.RUnlock()
 
 	// 缓存过期，从数据库加载
 	cooldowns, err := c.store.GetAllKeyCooldowns(ctx)
+	c.keyCooldownCounter.addMiss()
 	if err == nil {
 		c.mutex.Lock()
 		c.cooldownCache.keys = cooldowns
@@ -356,12 +365,14 @@ func (c *ChannelCache) GetGeminiModels(ctx context.Context) ([]string, error) {
 		models := make([]string, len(c.geminiModels))
 		copy(models, c.geminiModels)
 		c.modelsMutex.RUnlock()
+		c.geminiCounters.addHit()
 		return models, nil
 	}
 	c.modelsMutex.RUnlock()
 
 	// 缓存未命中或过期，从数据库查询
 	channels, err := c.store.GetEnabledChannelsByType(ctx, "gemini")
+	c.geminiCounters.addMiss()
 	if err != nil {
 		return nil, err
 	}
@@ -392,6 +403,15 @@ func (c *ChannelCache) InvalidateAPIKeysCache(channelID int64) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	delete(c.apiKeysByChannelID, channelID)
+	c.apiKeyCounters.addInvalidation()
+}
+
+// InvalidateAllAPIKeysCache 清空所有API Key缓存（批量操作后使用）
+func (c *ChannelCache) InvalidateAllAPIKeysCache() {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.apiKeysByChannelID = make(map[int64][]*modelpkg.APIKey)
+	c.apiKeyCounters.addInvalidation()
 }
 
 // InvalidateCooldownCache 手动失效冷却缓存
@@ -399,4 +419,6 @@ func (c *ChannelCache) InvalidateCooldownCache() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	c.cooldownCache.lastUpdate = time.Time{}
+	c.channelCooldownCounter.addInvalidation()
+	c.keyCooldownCounter.addInvalidation()
 }

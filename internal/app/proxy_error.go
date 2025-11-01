@@ -50,11 +50,16 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *model.Config, keyInd
 	// 根据冷却管理器的决策执行相应动作
 	switch action {
 	case cooldown.ActionRetryKey:
-		// Key级错误：冷却已由 cooldownManager 处理，无需额外操作
+		// Key级错误：立即刷新相关缓存
+		s.invalidateAPIKeysCache(cfg.ID)
+		s.invalidateCooldownCache()
 		return action, true
 
 	case cooldown.ActionRetryChannel:
-		// 渠道级错误：精确计数
+		// 渠道级错误：刷新渠道与冷却缓存，确保下次选择避开问题渠道
+		s.invalidateChannelListCache()
+		s.invalidateAPIKeysCache(cfg.ID)
+		s.invalidateCooldownCache()
 		return action, true
 
 	default:
@@ -122,6 +127,12 @@ func (s *Server) handleProxySuccess(
 	if err := s.cooldownManager.ClearKeyCooldown(ctx, cfg.ID, keyIndex); err != nil {
 		// util.SafePrintf("⚠️  WARNING: Failed to clear key cooldown (channel=%d, key=%d): %v", cfg.ID, keyIndex, err)
 	}
+
+	// 冷却状态已恢复，刷新相关缓存避免下次命中过期数据
+	s.invalidateChannelListCache()
+	s.invalidateAPIKeysCache(cfg.ID)
+	s.invalidateCooldownCache()
+
 	// 精确计数：记录状态恢复
 
 	// 记录成功日志

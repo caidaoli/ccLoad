@@ -44,8 +44,8 @@ func withTransaction(db *sql.DB, ctx context.Context, fn func(*sql.Tx) error) er
 	// 问题: SQLite在高并发事务下可能返回"database is deadlocked"错误
 	// 解决: 自动重试带指数退避,最多重试5次
 
-	const maxRetries = 5
-	const baseDelay = 10 * time.Millisecond
+	const maxRetries = 12
+	const baseDelay = 25 * time.Millisecond
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		err := executeSingleTransaction(db, ctx, fn)

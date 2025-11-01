@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
 	"ccLoad/internal/storage/sqlite"
 	"context"
 	"encoding/csv"
@@ -137,6 +138,85 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 }
 
 // TestAdminAPI_ImportChannelsCSV 测试CSV导入功能
+func TestHandleCacheStats(t *testing.T) {
+	server, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	cfg := &model.Config{
+		Name:     "Cache-Stats-Channel",
+		URL:      "https://cache.example.com",
+		Priority: 1,
+		Models:   []string{"cache-model"},
+		Enabled:  true,
+	}
+	created, err := server.store.CreateConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+
+	now := time.Now()
+	key := &model.APIKey{
+		ChannelID:   created.ID,
+		KeyIndex:    0,
+		APIKey:      "sk-cache-test",
+		KeyStrategy: "sequential",
+		CreatedAt:   model.JSONTime{Time: now},
+		UpdatedAt:   model.JSONTime{Time: now},
+	}
+	if err := server.store.CreateAPIKey(ctx, key); err != nil {
+		t.Fatalf("创建API Key失败: %v", err)
+	}
+
+	// 制造一次未命中+命中
+	if _, err := server.channelCache.GetAPIKeys(ctx, created.ID); err != nil {
+		t.Fatalf("第一次查询API Key失败: %v", err)
+	}
+	if _, err := server.channelCache.GetAPIKeys(ctx, created.ID); err != nil {
+		t.Fatalf("第二次查询API Key失败: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/admin/cache/stats", nil)
+
+	server.handleCacheStats(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望状态码200, 实际%d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Success bool           `json:"success"`
+		Data    map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("解析缓存统计响应失败: %v", err)
+	}
+
+	if !resp.Success {
+		t.Fatalf("期望success=true, 实际false: %s", w.Body.String())
+	}
+
+	cacheEnabled, ok := resp.Data["cache_enabled"].(bool)
+	if !ok || !cacheEnabled {
+		t.Fatalf("期望cache_enabled为true, 实际: %v", resp.Data["cache_enabled"])
+	}
+
+	stats, ok := resp.Data["stats"].(map[string]any)
+	if !ok {
+		t.Fatalf("期望stats为map, 实际: %T", resp.Data["stats"])
+	}
+
+	if _, exists := stats["api_keys_hits"]; !exists {
+		t.Fatalf("缓存指标缺少api_keys_hits: %v", stats)
+	}
+	if _, exists := stats["api_keys_misses"]; !exists {
+		t.Fatalf("缓存指标缺少api_keys_misses: %v", stats)
+	}
+}
+
 func TestAdminAPI_ImportChannelsCSV(t *testing.T) {
 	// 创建测试环境
 	server, cleanup := setupTestServer(t)
@@ -401,6 +481,8 @@ func setupTestServer(t *testing.T) (*Server, func()) {
 		store:       store,
 		keySelector: NewKeySelector(nil), // 移除store参数
 	}
+
+	server.channelCache = storage.NewChannelCache(store, time.Minute)
 
 	cleanup := func() {
 		if err := store.Close(); err != nil {

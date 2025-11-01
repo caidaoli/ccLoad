@@ -127,10 +127,9 @@ func (s *Server) handlePublicSummary(c *gin.Context) {
 // GET /admin/cooldown/stats
 // ✅ Linus风格:按需查询,简单直接
 func (s *Server) handleCooldownStats(c *gin.Context) {
-	// 使用缓存层查询（<1ms vs 数据库查询5-10ms）
-	// 性能优化：缓存冷却状态，减少统计查询的数据库负载
-	channelCooldowns, _ := s.channelCache.GetAllChannelCooldowns(c.Request.Context())
-	keyCooldowns, _ := s.channelCache.GetAllKeyCooldowns(c.Request.Context())
+	// 使用缓存层查询（<1ms vs 数据库查询5-10ms），若缓存不可用自动退化
+	channelCooldowns, _ := s.getAllChannelCooldowns(c.Request.Context())
+	keyCooldowns, _ := s.getAllKeyCooldowns(c.Request.Context())
 
 	var keyCount int
 	for _, m := range keyCooldowns {
@@ -142,6 +141,25 @@ func (s *Server) handleCooldownStats(c *gin.Context) {
 		"key_cooldowns":     keyCount,
 	}
 	RespondJSON(c, http.StatusOK, response)
+}
+
+// handleCacheStats 暴露缓存命中率等指标，方便监控采集
+// GET /admin/cache/stats
+func (s *Server) handleCacheStats(c *gin.Context) {
+	cache := s.getChannelCache()
+	if cache == nil {
+		RespondJSON(c, http.StatusOK, gin.H{
+			"cache_enabled": false,
+			"stats":         gin.H{},
+		})
+		return
+	}
+
+	stats := cache.GetCacheStats()
+	RespondJSON(c, http.StatusOK, gin.H{
+		"cache_enabled": true,
+		"stats":         stats,
+	})
 }
 
 // handleGetChannelTypes 获取渠道类型配置(公开端点,前端动态加载)

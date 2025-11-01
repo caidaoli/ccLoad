@@ -302,6 +302,12 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 
 	summary.Processed = summary.Created + summary.Updated + summary.Skipped
 
+	if len(validChannels) > 0 {
+		s.invalidateChannelListCache()
+		s.invalidateAllAPIKeysCache()
+		s.invalidateCooldownCache()
+	}
+
 	// 导入完成后,检查Redis同步状态(批量导入方法会自动触发同步)
 	summary.RedisSyncEnabled = false
 	if sqliteStore, ok := s.store.(*sqlite.SQLiteStore); ok && sqliteStore.IsRedisEnabled() {

@@ -31,12 +31,14 @@ import (
 type Server struct {
 	store            storage.Store
 	channelCache     *storage.ChannelCache // 高性能渠道缓存层
-	keySelector      *KeySelector      // Key选择器（多Key支持）
-	cooldownManager  *cooldown.Manager // 统一冷却管理器（DRY原则）
+	keySelector      *KeySelector          // Key选择器（多Key支持）
+	cooldownManager  *cooldown.Manager     // 统一冷却管理器（DRY原则）
 	client           *http.Client
 	firstByteTimeout time.Duration
 	password         string
 
+	// 注意：下面这些缓存指针在部分测试场景下可能为nil
+	// 所有调用处必须考虑降级逻辑，避免空指针
 	// Token认证系统
 	validTokens map[string]time.Time // 动态Token -> 过期时间
 	tokensMux   sync.RWMutex
@@ -250,6 +252,84 @@ func NewServer(store storage.Store) *Server {
 
 	return s
 
+}
+
+// ================== 缓存辅助函数 ==================
+
+func (s *Server) getChannelCache() *storage.ChannelCache {
+	if s == nil {
+		return nil
+	}
+	return s.channelCache
+}
+
+func (s *Server) getEnabledChannelsByModel(ctx context.Context, model string) ([]*model.Config, error) {
+	if cache := s.getChannelCache(); cache != nil {
+		if channels, err := cache.GetEnabledChannelsByModel(ctx, model); err == nil {
+			return channels, nil
+		}
+	}
+	return s.store.GetEnabledChannelsByModel(ctx, model)
+}
+
+func (s *Server) getEnabledChannelsByType(ctx context.Context, channelType string) ([]*model.Config, error) {
+	if cache := s.getChannelCache(); cache != nil {
+		if channels, err := cache.GetEnabledChannelsByType(ctx, channelType); err == nil {
+			return channels, nil
+		}
+	}
+	return s.store.GetEnabledChannelsByType(ctx, channelType)
+}
+
+func (s *Server) getAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error) {
+	if cache := s.getChannelCache(); cache != nil {
+		if keys, err := cache.GetAPIKeys(ctx, channelID); err == nil {
+			return keys, nil
+		}
+	}
+	return s.store.GetAPIKeys(ctx, channelID)
+}
+
+func (s *Server) getAllChannelCooldowns(ctx context.Context) (map[int64]time.Time, error) {
+	if cache := s.getChannelCache(); cache != nil {
+		if cooldowns, err := cache.GetAllChannelCooldowns(ctx); err == nil {
+			return cooldowns, nil
+		}
+	}
+	return s.store.GetAllChannelCooldowns(ctx)
+}
+
+func (s *Server) getAllKeyCooldowns(ctx context.Context) (map[int64]map[int]time.Time, error) {
+	if cache := s.getChannelCache(); cache != nil {
+		if cooldowns, err := cache.GetAllKeyCooldowns(ctx); err == nil {
+			return cooldowns, nil
+		}
+	}
+	return s.store.GetAllKeyCooldowns(ctx)
+}
+
+func (s *Server) invalidateChannelListCache() {
+	if cache := s.getChannelCache(); cache != nil {
+		cache.InvalidateCache()
+	}
+}
+
+func (s *Server) invalidateAPIKeysCache(channelID int64) {
+	if cache := s.getChannelCache(); cache != nil {
+		cache.InvalidateAPIKeysCache(channelID)
+	}
+}
+
+func (s *Server) invalidateAllAPIKeysCache() {
+	if cache := s.getChannelCache(); cache != nil {
+		cache.InvalidateAllAPIKeysCache()
+	}
+}
+
+func (s *Server) invalidateCooldownCache() {
+	if cache := s.getChannelCache(); cache != nil {
+		cache.InvalidateCooldownCache()
+	}
 }
 
 // ================== Token认证系统 ==================
@@ -506,6 +586,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/metrics", s.handleMetrics)
 		admin.GET("/stats", s.handleStats)
 		admin.GET("/cooldown/stats", s.handleCooldownStats) // 冷却状态监控
+		admin.GET("/cache/stats", s.handleCacheStats)
 	}
 
 	// 静态文件服务（安全）：使用框架自带的静态文件路由，自动做路径清理，防止目录遍历
@@ -662,14 +743,27 @@ func (s *Server) cleanupOldLogsLoop() {
 
 // getGeminiModels 获取所有 gemini 渠道的去重模型列表
 func (s *Server) getGeminiModels(ctx context.Context) ([]string, error) {
-	// 使用缓存层查询（<2ms vs 数据库查询20-50ms）
-	// 性能优化：缓存已经处理了去重和排序
-	models, err := s.channelCache.GetGeminiModels(ctx)
+	if cache := s.getChannelCache(); cache != nil {
+		if models, err := cache.GetGeminiModels(ctx); err == nil {
+			return models, nil
+		}
+	}
+
+	// 缓存不可用时退化：按渠道类型查询并去重模型
+	channels, err := s.store.GetEnabledChannelsByType(ctx, util.ChannelTypeGemini)
 	if err != nil {
 		return nil, err
 	}
-
-	// 缓存层已经处理了去重和排序，直接返回
+	modelSet := make(map[string]struct{})
+	for _, cfg := range channels {
+		for _, modelName := range cfg.Models {
+			modelSet[modelName] = struct{}{}
+		}
+	}
+	models := make([]string, 0, len(modelSet))
+	for name := range modelSet {
+		models = append(models, name)
+	}
 	return models, nil
 }
 
@@ -678,7 +772,7 @@ func (s *Server) getGeminiModels(ctx context.Context) ([]string, error) {
 // 等待所有预热goroutine完成，避免goroutine泄漏
 func (s *Server) WarmHTTPConnections(ctx context.Context) {
 	// 使用缓存层查询所有启用的渠道（已按优先级排序，避免数据库性能杀手）
-	configs, err := s.channelCache.GetEnabledChannelsByModel(ctx, "*")
+	configs, err := s.getEnabledChannelsByModel(ctx, "*")
 	if err != nil || len(configs) == 0 {
 		return
 	}
