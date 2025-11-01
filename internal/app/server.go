@@ -184,20 +184,6 @@ func NewServer(store storage.Store) *Server {
 		util.SafePrint("✅ HTTP/2已启用（头部压缩+多路复用）")
 	}
 
-	// 可配置的日志缓冲与工作协程（修复：支持环境变量）
-	logBuf := config.DefaultLogBufferSize
-	if v := os.Getenv("CCLOAD_LOG_BUFFER"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			logBuf = n
-		}
-	}
-	logWorkers := config.DefaultLogWorkers
-	if v := os.Getenv("CCLOAD_LOG_WORKERS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			logWorkers = n
-		}
-	}
-
 	s := &Server{
 		store:         store,
 		maxKeyRetries: maxKeyRetries, // 单个渠道最大Key重试次数
@@ -233,8 +219,8 @@ func NewServer(store storage.Store) *Server {
 	// 1. LogService（负责日志管理）
 	s.logService = service.NewLogService(
 		store,
-		logBuf,
-		logWorkers,
+		config.DefaultLogBufferSize,
+		config.DefaultLogWorkers,
 		s.shutdownCh,
 		&s.isShuttingDown,
 		&s.wg,

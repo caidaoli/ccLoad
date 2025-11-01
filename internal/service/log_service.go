@@ -162,7 +162,7 @@ func (s *LogService) AddLogAsync(entry *model.LogEntry) {
 		// 告警阈值：定期打印警告
 		if dropCount%config.LogDropAlertThreshold == 0 {
 			util.SafePrintf("⚠️  严重警告: 日志丢弃计数达到 %d 条！请检查系统负载或增加日志队列容量", dropCount)
-			util.SafePrint("   建议: 1) 增加CCLOAD_LOG_BUFFER环境变量 2) 增加日志Worker数量 3) 优化磁盘I/O性能")
+			util.SafePrint("   建议: 1) 增加config.DefaultLogBufferSize 2) 增加日志Worker数量 3) 优化磁盘I/O性能")
 		}
 	}
 }

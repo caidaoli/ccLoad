@@ -536,12 +536,13 @@ func TestHandleError_RateLimitClassification(t *testing.T) {
 			}
 
 			// 验证冷却状态
-			if tc.expectedAction == ActionRetryChannel {
+			switch tc.expectedAction {
+			case ActionRetryChannel:
 				channelCfg, _ := store.GetConfig(ctx, cfg.ID)
 				if channelCfg.CooldownUntil == 0 || time.Unix(channelCfg.CooldownUntil, 0).Before(time.Now()) {
 					t.Errorf("Channel should be cooled down for %s", tc.name)
 				}
-			} else if tc.expectedAction == ActionRetryKey {
+			case ActionRetryKey:
 				cooldownUntil, exists := store.GetKeyCooldownUntil(ctx, cfg.ID, 0)
 				if !exists || cooldownUntil.Before(time.Now()) {
 					t.Errorf("Key should be cooled down for %s", tc.name)
