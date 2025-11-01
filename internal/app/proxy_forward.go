@@ -97,7 +97,7 @@ func (s *Server) handleErrorResponse(
 ) (*fwResult, float64, error) {
 	rb, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
-		s.addLogAsync(&model.LogEntry{
+		s.AddLogAsync(&model.LogEntry{
 			Time:    model.JSONTime{Time: time.Now()},
 			Message: fmt.Sprintf("error reading upstream body: %v", readErr),
 		})

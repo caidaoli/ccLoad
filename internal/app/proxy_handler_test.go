@@ -24,7 +24,7 @@ func TestHandleProxyRequest_UnknownPathReturns404(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = req
 
-	srv.handleProxyRequest(c)
+	srv.HandleProxyRequest(c)
 
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("预期状态码404，实际%d", w.Code)

@@ -2,6 +2,7 @@ package app
 
 import (
 	modelpkg "ccLoad/internal/model"
+	"ccLoad/internal/util"
 
 	"context"
 )
@@ -10,14 +11,14 @@ import (
 // 性能优化：使用缓存层，内存查询 < 2ms vs 数据库查询 50ms+
 func (s *Server) selectCandidatesByChannelType(ctx context.Context, channelType string) ([]*modelpkg.Config, error) {
 	// 缓存可用时走缓存，否则退化到存储层
-	return s.getEnabledChannelsByType(ctx, channelType)
+	return s.GetEnabledChannelsByType(ctx, channelType)
 }
 
 // selectCandidates 选择支持指定模型的候选渠道
 // 性能优化：使用缓存层，消除JSON查询和聚合操作的性能杀手
 func (s *Server) selectCandidates(ctx context.Context, model string) ([]*modelpkg.Config, error) {
 	// 缓存优先查询（自动60秒TTL刷新，避免重复的数据库性能灾难）
-	return s.getEnabledChannelsByModel(ctx, model)
+	return s.GetEnabledChannelsByModel(ctx, model)
 }
 
 // selectCandidatesByModelAndType 根据模型和渠道类型筛选候选渠道
@@ -32,7 +33,7 @@ func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model strin
 		return configs, nil
 	}
 
-	normalizedType := modelpkg.NormalizeChannelType(channelType)
+	normalizedType := util.NormalizeChannelType(channelType)
 	filtered := make([]*modelpkg.Config, 0, len(configs))
 	for _, cfg := range configs {
 		if cfg.GetChannelType() == normalizedType {

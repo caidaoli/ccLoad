@@ -2,6 +2,7 @@ package storage
 
 import (
 	modelpkg "ccLoad/internal/model"
+	"ccLoad/internal/util"
 	"context"
 	"sync"
 	"sync/atomic"
@@ -131,7 +132,7 @@ func (c *ChannelCache) GetEnabledChannelsByType(ctx context.Context, channelType
 
 	c.channelTypeCounters.addHit()
 
-	normalizedType := modelpkg.NormalizeChannelType(channelType)
+	normalizedType := util.NormalizeChannelType(channelType)
 	channels, exists := c.channelsByType[normalizedType]
 	if !exists {
 		return []*modelpkg.Config{}, nil

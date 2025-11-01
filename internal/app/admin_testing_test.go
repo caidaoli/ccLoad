@@ -97,7 +97,7 @@ func TestHandleChannelTest(t *testing.T) {
 			c.Params = gin.Params{{Key: "id", Value: tt.channelID}}
 
 			// 调用处理函数
-			srv.handleChannelTest(c)
+			srv.HandleChannelTest(c)
 
 			// 验证响应状态码
 			if w.Code != tt.expectedStatus {
@@ -175,7 +175,7 @@ func TestHandleChannelTest_ModelNotSupported(t *testing.T) {
 	c.Request = req
 	c.Params = gin.Params{{Key: "id", Value: "1"}}
 
-	srv.handleChannelTest(c)
+	srv.HandleChannelTest(c)
 
 	// 验证响应
 	if w.Code != http.StatusOK {
@@ -254,7 +254,7 @@ func TestHandleChannelTest_WithValidData(t *testing.T) {
 	c.Request = req
 	c.Params = gin.Params{{Key: "id", Value: "1"}}
 
-	srv.handleChannelTest(c)
+	srv.HandleChannelTest(c)
 
 	// 验证响应
 	if w.Code != http.StatusOK {
@@ -373,7 +373,7 @@ func TestHandleChannelTest_KeyIndexSelection(t *testing.T) {
 			c.Request = req
 			c.Params = gin.Params{{Key: "id", Value: "1"}}
 
-			srv.handleChannelTest(c)
+			srv.HandleChannelTest(c)
 
 			var response map[string]any
 			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {

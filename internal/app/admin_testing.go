@@ -21,7 +21,7 @@ import (
 // ==================== 渠道测试功能 ====================
 // 从admin.go拆分渠道测试,遵循SRP原则
 
-func (s *Server) handleChannelTest(c *gin.Context) {
+func (s *Server) HandleChannelTest(c *gin.Context) {
 	// 解析渠道ID
 	id, err := ParseInt64Param(c, "id")
 	if err != nil {

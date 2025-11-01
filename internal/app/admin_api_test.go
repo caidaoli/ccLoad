@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"ccLoad/internal/model"
+	"ccLoad/internal/service"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/storage/sqlite"
 	"context"
@@ -15,6 +16,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -79,7 +82,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodGet, "/admin/channels/export", nil)
 
 	// 调用handler
-	server.handleExportChannelsCSV(c)
+	server.HandleExportChannelsCSV(c)
 
 	// 验证响应
 	if w.Code != http.StatusOK {
@@ -181,7 +184,7 @@ func TestHandleCacheStats(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodGet, "/admin/cache/stats", nil)
 
-	server.handleCacheStats(c)
+	server.HandleCacheStats(c)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("期望状态码200, 实际%d: %s", w.Code, w.Body.String())
@@ -250,7 +253,7 @@ Import-Test-2,https://import2.example.com,5,"test-model-2,test-model-3","{""old"
 	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
 
 	// 调用handler
-	server.handleImportChannelsCSV(c)
+	server.HandleImportChannelsCSV(c)
 
 	// 验证响应
 	if w.Code != http.StatusOK {
@@ -378,7 +381,7 @@ func TestAdminAPI_ExportImportRoundTrip(t *testing.T) {
 	exportW := httptest.NewRecorder()
 	exportC, _ := gin.CreateTestContext(exportW)
 	exportC.Request = httptest.NewRequest(http.MethodGet, "/admin/channels/export", nil)
-	server.handleExportChannelsCSV(exportC)
+	server.HandleExportChannelsCSV(exportC)
 
 	if exportW.Code != http.StatusOK {
 		t.Fatalf("导出失败，状态码: %d", exportW.Code)
@@ -404,7 +407,7 @@ func TestAdminAPI_ExportImportRoundTrip(t *testing.T) {
 	// ✅ 修复：使用bytes.NewReader创建新的读取器
 	importC.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
 	importC.Request.Header.Set("Content-Type", writer.FormDataContentType())
-	server.handleImportChannelsCSV(importC)
+	server.HandleImportChannelsCSV(importC)
 
 	if importW.Code != http.StatusOK {
 		t.Fatalf("导入失败，状态码: %d, 响应: %s", importW.Code, importW.Body.String())
@@ -477,14 +480,39 @@ func setupTestServer(t *testing.T) (*Server, func()) {
 		t.Fatalf("创建测试数据库失败: %v", err)
 	}
 
+	// ✅ 修复: 初始化测试所需的基础设施
+	shutdownCh := make(chan struct{})
+	isShuttingDown := &atomic.Bool{}
+	wg := &sync.WaitGroup{}
+
 	server := &Server{
 		store:       store,
 		keySelector: NewKeySelector(nil), // 移除store参数
+		shutdownCh:  shutdownCh,
+		// ⚠️ 注意: isShuttingDown和wg不能在此处初始化(包含noCopy字段,会触发go vet错误)
 	}
+
+	// ✅ 修复: 初始化 LogService（修复日志丢失问题）
+	server.logService = service.NewLogService(
+		store,
+		1000, // logBufferSize
+		1,    // logWorkers
+		shutdownCh,
+		isShuttingDown,
+		wg,
+	)
+	server.logService.StartWorkers()
 
 	server.channelCache = storage.NewChannelCache(store, time.Minute)
 
 	cleanup := func() {
+		// 关闭 LogService
+		ctx := context.Background()
+		server.logService.Shutdown(ctx)
+
+		// 等待所有goroutine完成
+		wg.Wait()
+
 		if err := store.Close(); err != nil {
 			t.Logf("关闭数据库失败: %v", err)
 		}
@@ -516,7 +544,7 @@ Test-Invalid,https://invalid.com
 	// ✅ 修复：使用bytes.NewReader创建新的读取器
 	c.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
 	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
-	server.handleImportChannelsCSV(c)
+	server.HandleImportChannelsCSV(c)
 
 	// 应该返回错误或部分成功
 	var resp map[string]any
@@ -565,7 +593,7 @@ Duplicate-Test,https://duplicate.com,5,model-2,{},gemini,false,sk-duplicate-key,
 	// ✅ 修复：使用bytes.NewReader创建新的读取器
 	c.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
 	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
-	server.handleImportChannelsCSV(c)
+	server.HandleImportChannelsCSV(c)
 
 	var resp map[string]any
 	json.Unmarshal(w.Body.Bytes(), &resp)
@@ -594,7 +622,7 @@ func TestAdminAPI_ExportCSV_EmptyDatabase(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodGet, "/admin/channels/export", nil)
-	server.handleExportChannelsCSV(c)
+	server.HandleExportChannelsCSV(c)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("期望状态码 200, 实际 %d", w.Code)
@@ -655,7 +683,7 @@ func TestAdminAPI_LargeCSVImport(t *testing.T) {
 	// ✅ 修复：使用bytes.NewReader创建新的读取器
 	c.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
 	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
-	server.handleImportChannelsCSV(c)
+	server.HandleImportChannelsCSV(c)
 
 	duration := time.Since(startTime)
 

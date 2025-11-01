@@ -103,7 +103,7 @@ func TestHandleSetChannelCooldown(t *testing.T) {
 			c.Params = gin.Params{{Key: "id", Value: tt.channelID}}
 
 			// 调用处理函数
-			srv.handleSetChannelCooldown(c)
+			srv.HandleSetChannelCooldown(c)
 
 			// 验证响应状态码
 			if w.Code != tt.expectedStatus {
@@ -253,7 +253,7 @@ func TestHandleSetKeyCooldown(t *testing.T) {
 			}
 
 			// 调用处理函数
-			srv.handleSetKeyCooldown(c)
+			srv.HandleSetKeyCooldown(c)
 
 			// 验证响应状态码
 			if w.Code != tt.expectedStatus {
@@ -314,7 +314,7 @@ func TestSetChannelCooldown_Integration(t *testing.T) {
 	c.Request = req
 	c.Params = gin.Params{{Key: "id", Value: "1"}}
 
-	srv.handleSetChannelCooldown(c)
+	srv.HandleSetChannelCooldown(c)
 
 	// 验证响应
 	if w.Code != http.StatusOK {
@@ -391,7 +391,7 @@ func TestSetKeyCooldown_Integration(t *testing.T) {
 		{Key: "keyIndex", Value: "0"},
 	}
 
-	srv.handleSetKeyCooldown(c)
+	srv.HandleSetKeyCooldown(c)
 
 	// 验证响应
 	if w.Code != http.StatusOK {

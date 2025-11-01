@@ -1,8 +1,6 @@
 package model
 
 import (
-	"slices"
-	"strings"
 	"time"
 )
 
@@ -26,9 +24,6 @@ type Config struct {
 
 	// 缓存Key数量，避免冷却判断时的N+1查询
 	KeyCount int `json:"key_count"` // API Key数量（查询时JOIN计算）
-
-	// 性能优化：模型查找索引（内存缓存，不序列化）
-	modelsSet map[string]struct{} `json:"-"`
 }
 
 // GetChannelType 默认返回"anthropic"（Claude API）
@@ -41,36 +36,6 @@ func (c *Config) GetChannelType() string {
 
 func (c *Config) IsCoolingDown(now time.Time) bool {
 	return c.CooldownUntil > now.Unix()
-}
-
-// BuildModelsSet 构建模型查找索引（性能优化：O(1)查找）
-// 应在配置加载或更新后调用
-func (c *Config) BuildModelsSet() {
-	c.modelsSet = make(map[string]struct{}, len(c.Models))
-	for _, model := range c.Models {
-		c.modelsSet[model] = struct{}{}
-	}
-}
-
-// HasModel 检查渠道是否支持指定模型（O(1)复杂度）
-// 性能优化：使用map查找替代线性扫描，节省60-80%查找时间
-func (c *Config) HasModel(model string) bool {
-	if c.modelsSet == nil {
-		// 降级到线性查找（向后兼容未初始化索引的场景）
-		return slices.Contains(c.Models, model)
-	}
-	_, exists := c.modelsSet[model]
-	return exists
-}
-
-// NormalizeChannelType 规范化渠道类型命名
-// 空值返回默认类型 anthropic，其他值原样返回（保持灵活性，支持未来扩展）
-func NormalizeChannelType(t string) string {
-	lower := strings.ToLower(strings.TrimSpace(t))
-	if lower == "" {
-		return "anthropic"
-	}
-	return lower
 }
 
 type APIKey struct {

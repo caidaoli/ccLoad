@@ -17,7 +17,7 @@ import (
 // ==================== 渠道CRUD管理 ====================
 // 从admin.go拆分渠道CRUD,遵循SRP原则
 
-func (s *Server) handleChannels(c *gin.Context) {
+func (s *Server) HandleChannels(c *gin.Context) {
 	switch c.Request.Method {
 	case "GET":
 		s.handleListChannels(c)
@@ -156,14 +156,14 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 	}
 
 	// 新增、删除或更新渠道后，失效缓存保持一致性
-	s.invalidateChannelListCache()
-	s.invalidateAPIKeysCache(created.ID)
+	s.InvalidateChannelListCache()
+	s.InvalidateAPIKeysCache(created.ID)
 	s.invalidateCooldownCache()
 
 	RespondJSON(c, http.StatusCreated, created)
 }
 
-func (s *Server) handleChannelByID(c *gin.Context) {
+func (s *Server) HandleChannelByID(c *gin.Context) {
 	id, err := ParseInt64Param(c, "id")
 	if err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel id")
@@ -365,8 +365,8 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	}
 
 	// 渠道更新后刷新缓存，避免返回陈旧数据
-	s.invalidateChannelListCache()
-	s.invalidateAPIKeysCache(id)
+	s.InvalidateChannelListCache()
+	s.InvalidateAPIKeysCache(id)
 	s.invalidateCooldownCache()
 
 	RespondJSON(c, http.StatusOK, upd)
@@ -379,8 +379,8 @@ func (s *Server) handleDeleteChannel(c *gin.Context, id int64) {
 		return
 	}
 	// 删除渠道后刷新缓存
-	s.invalidateChannelListCache()
-	s.invalidateAPIKeysCache(id)
+	s.InvalidateChannelListCache()
+	s.InvalidateAPIKeysCache(id)
 	s.invalidateCooldownCache()
 	// 数据库级联删除会自动清理冷却数据（无需手动清理缓存）
 	c.Status(http.StatusNoContent)

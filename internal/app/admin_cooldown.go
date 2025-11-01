@@ -13,7 +13,7 @@ import (
 // 从admin.go拆分冷却管理,遵循SRP原则
 
 // handleSetChannelCooldown 设置渠道级别冷却
-func (s *Server) handleSetChannelCooldown(c *gin.Context) {
+func (s *Server) HandleSetChannelCooldown(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
@@ -43,7 +43,7 @@ func (s *Server) handleSetChannelCooldown(c *gin.Context) {
 }
 
 // handleSetKeyCooldown 设置Key级别冷却
-func (s *Server) handleSetKeyCooldown(c *gin.Context) {
+func (s *Server) HandleSetKeyCooldown(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {

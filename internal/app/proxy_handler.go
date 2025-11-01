@@ -120,7 +120,7 @@ func (s *Server) selectRouteCandidates(ctx context.Context, c *gin.Context, orig
 
 // handleProxyRequest 通用透明代理处理器
 // 从proxy.go提取，遵循SRP原则
-func (s *Server) handleProxyRequest(c *gin.Context) {
+func (s *Server) HandleProxyRequest(c *gin.Context) {
 	// 并发控制
 	release, ok := s.acquireConcurrencySlot(c)
 	if !ok {
@@ -169,7 +169,7 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 	}
 
 	if len(cands) == 0 {
-		s.addLogAsync(&model.LogEntry{
+		s.AddLogAsync(&model.LogEntry{
 			Time:        model.JSONTime{Time: time.Now()},
 			Model:       originalModel,
 			StatusCode:  503,
@@ -240,7 +240,7 @@ func (s *Server) handleProxyRequest(c *gin.Context) {
 			msg = fmt.Sprintf("upstream status %d", finalStatus)
 		}
 	}
-	s.addLogAsync(&model.LogEntry{
+	s.AddLogAsync(&model.LogEntry{
 		Time:        model.JSONTime{Time: time.Now()},
 		Model:       originalModel,
 		StatusCode:  finalStatus,

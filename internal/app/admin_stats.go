@@ -16,7 +16,7 @@ import (
 
 // handleErrors 获取错误日志列表
 // GET /admin/errors?hours=24&limit=100&offset=0
-func (s *Server) handleErrors(c *gin.Context) {
+func (s *Server) HandleErrors(c *gin.Context) {
 	params := ParsePaginationParams(c)
 	lf := BuildLogFilter(c)
 
@@ -44,7 +44,7 @@ func (s *Server) handleErrors(c *gin.Context) {
 
 // handleMetrics 获取聚合指标数据
 // GET /admin/metrics?hours=24&bucket_min=5
-func (s *Server) handleMetrics(c *gin.Context) {
+func (s *Server) HandleMetrics(c *gin.Context) {
 	params := ParsePaginationParams(c)
 	bucketMin, _ := strconv.Atoi(c.DefaultQuery("bucket_min", "5"))
 	if bucketMin <= 0 {
@@ -73,7 +73,7 @@ func (s *Server) handleMetrics(c *gin.Context) {
 
 // handleStats 获取渠道和模型统计
 // GET /admin/stats?hours=24&channel_name_like=xxx&model_like=xxx
-func (s *Server) handleStats(c *gin.Context) {
+func (s *Server) HandleStats(c *gin.Context) {
 	params := ParsePaginationParams(c)
 	lf := BuildLogFilter(c)
 
@@ -89,7 +89,7 @@ func (s *Server) handleStats(c *gin.Context) {
 
 // handlePublicSummary 获取基础统计摘要(公开端点,无需认证)
 // GET /public/summary?hours=24
-func (s *Server) handlePublicSummary(c *gin.Context) {
+func (s *Server) HandlePublicSummary(c *gin.Context) {
 	params := ParsePaginationParams(c)
 	since := params.GetSinceTime()
 	stats, err := s.store.GetStats(c.Request.Context(), since, nil) // 不使用过滤条件
@@ -126,7 +126,7 @@ func (s *Server) handlePublicSummary(c *gin.Context) {
 // handleCooldownStats 获取当前冷却状态监控指标
 // GET /admin/cooldown/stats
 // ✅ Linus风格:按需查询,简单直接
-func (s *Server) handleCooldownStats(c *gin.Context) {
+func (s *Server) HandleCooldownStats(c *gin.Context) {
 	// 使用缓存层查询（<1ms vs 数据库查询5-10ms），若缓存不可用自动退化
 	channelCooldowns, _ := s.getAllChannelCooldowns(c.Request.Context())
 	keyCooldowns, _ := s.getAllKeyCooldowns(c.Request.Context())
@@ -145,7 +145,7 @@ func (s *Server) handleCooldownStats(c *gin.Context) {
 
 // handleCacheStats 暴露缓存命中率等指标，方便监控采集
 // GET /admin/cache/stats
-func (s *Server) handleCacheStats(c *gin.Context) {
+func (s *Server) HandleCacheStats(c *gin.Context) {
 	cache := s.getChannelCache()
 	if cache == nil {
 		RespondJSON(c, http.StatusOK, gin.H{
@@ -164,7 +164,7 @@ func (s *Server) handleCacheStats(c *gin.Context) {
 
 // handleGetChannelTypes 获取渠道类型配置(公开端点,前端动态加载)
 // GET /public/channel-types
-func (s *Server) handleGetChannelTypes(c *gin.Context) {
+func (s *Server) HandleGetChannelTypes(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"data": util.ChannelTypes,
 	})

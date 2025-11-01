@@ -23,7 +23,7 @@ import (
 
 // handleExportChannelsCSV 导出渠道为CSV
 // GET /admin/channels/export
-func (s *Server) handleExportChannelsCSV(c *gin.Context) {
+func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 	cfgs, err := s.store.ListConfigs(c.Request.Context())
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
@@ -114,7 +114,7 @@ func (s *Server) handleExportChannelsCSV(c *gin.Context) {
 
 // handleImportChannelsCSV 导入渠道CSV
 // POST /admin/channels/import
-func (s *Server) handleImportChannelsCSV(c *gin.Context) {
+func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "缺少上传文件")
@@ -303,8 +303,8 @@ func (s *Server) handleImportChannelsCSV(c *gin.Context) {
 	summary.Processed = summary.Created + summary.Updated + summary.Skipped
 
 	if len(validChannels) > 0 {
-		s.invalidateChannelListCache()
-		s.invalidateAllAPIKeysCache()
+		s.InvalidateChannelListCache()
+		s.InvalidateAllAPIKeysCache()
 		s.invalidateCooldownCache()
 	}
 

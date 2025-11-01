@@ -51,14 +51,14 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *model.Config, keyInd
 	switch action {
 	case cooldown.ActionRetryKey:
 		// Key级错误：立即刷新相关缓存
-		s.invalidateAPIKeysCache(cfg.ID)
+		s.InvalidateAPIKeysCache(cfg.ID)
 		s.invalidateCooldownCache()
 		return action, true
 
 	case cooldown.ActionRetryChannel:
 		// 渠道级错误：刷新渠道与冷却缓存，确保下次选择避开问题渠道
-		s.invalidateChannelListCache()
-		s.invalidateAPIKeysCache(cfg.ID)
+		s.InvalidateChannelListCache()
+		s.InvalidateAPIKeysCache(cfg.ID)
 		s.invalidateCooldownCache()
 		return action, true
 
@@ -81,7 +81,7 @@ func (s *Server) handleNetworkError(
 ) (*proxyResult, bool, bool) {
 	statusCode, _, _ := util.ClassifyError(err)
 	// ✅ 修复：使用 actualModel 而非 reqCtx.originalModel
-	s.addLogAsync(buildLogEntry(actualModel, &cfg.ID, statusCode,
+	s.AddLogAsync(buildLogEntry(actualModel, &cfg.ID, statusCode,
 		duration, false, selectedKey, nil, err.Error()))
 
 	action, _ := s.handleProxyError(ctx, cfg, keyIndex, nil, err)
@@ -122,15 +122,15 @@ func (s *Server) handleProxySuccess(
 	// 记录清除失败但不中断成功响应
 	// 设计原则: 清除失败不应影响用户请求成功，但需要记录用于监控
 	if err := s.cooldownManager.ClearChannelCooldown(ctx, cfg.ID); err != nil {
-		// util.SafePrintf("⚠️  WARNING: Failed to clear channel cooldown (channel=%d): %v", cfg.ID, err)
+		_ = err // 忽略清除失败，不影响成功响应
 	}
 	if err := s.cooldownManager.ClearKeyCooldown(ctx, cfg.ID, keyIndex); err != nil {
-		// util.SafePrintf("⚠️  WARNING: Failed to clear key cooldown (channel=%d, key=%d): %v", cfg.ID, keyIndex, err)
+		_ = err // 忽略清除失败，不影响成功响应
 	}
 
 	// 冷却状态已恢复，刷新相关缓存避免下次命中过期数据
-	s.invalidateChannelListCache()
-	s.invalidateAPIKeysCache(cfg.ID)
+	s.InvalidateChannelListCache()
+	s.InvalidateAPIKeysCache(cfg.ID)
 	s.invalidateCooldownCache()
 
 	// 精确计数：记录状态恢复
@@ -138,7 +138,7 @@ func (s *Server) handleProxySuccess(
 	// 记录成功日志
 	// ✅ 修复：使用 actualModel 而非 reqCtx.originalModel
 	isStreaming := res.FirstByteTime > 0 // 根据首字节时间判断是否为流式请求
-	s.addLogAsync(buildLogEntry(actualModel, &cfg.ID, res.Status,
+	s.AddLogAsync(buildLogEntry(actualModel, &cfg.ID, res.Status,
 		duration, isStreaming, selectedKey, res, ""))
 
 	return &proxyResult{
@@ -172,7 +172,7 @@ func (s *Server) handleProxyErrorResponse(
 		errMsg = "upstream returned 499 (not client cancel)"
 	}
 
-	s.addLogAsync(buildLogEntry(actualModel, &cfg.ID, res.Status,
+	s.AddLogAsync(buildLogEntry(actualModel, &cfg.ID, res.Status,
 		duration, isStreaming, selectedKey, res, errMsg))
 
 	action, _ := s.handleProxyError(ctx, cfg, keyIndex, res, nil)

@@ -20,8 +20,8 @@ import (
 	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
+	"ccLoad/internal/service"
 	"ccLoad/internal/storage"
-	"ccLoad/internal/storage/sqlite"
 	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
@@ -29,25 +29,35 @@ import (
 )
 
 type Server struct {
+	// ============================================================================
+	// 阶段 1：新的服务层（门面模式）
+	// TODO: 阶段 2+ 逐步将 Server 中的方法迁移到这些服务中
+	// ============================================================================
+	proxyService *service.ProxyService // 代理服务
+	authService  *service.AuthService  // 认证授权服务
+	logService   *service.LogService   // 日志管理服务
+	adminService *service.AdminService // 管理 API 服务
+
+	// ============================================================================
+	// 阶段 1：保留的原有字段（暂时仍然需要）
+	// TODO: 阶段 6 逐步移除这些字段，由服务内部管理
+	// ============================================================================
 	store            storage.Store
 	channelCache     *storage.ChannelCache // 高性能渠道缓存层
 	keySelector      *KeySelector          // Key选择器（多Key支持）
 	cooldownManager  *cooldown.Manager     // 统一冷却管理器（DRY原则）
 	client           *http.Client
 	firstByteTimeout time.Duration
-	password         string
 
-	// 注意：下面这些缓存指针在部分测试场景下可能为nil
-	// 所有调用处必须考虑降级逻辑，避免空指针
-	// Token认证系统
-	validTokens map[string]time.Time // 动态Token -> 过期时间
-	tokensMux   sync.RWMutex
-
-	// API 认证
-	authTokens map[string]bool // 静态认证令牌（CCLOAD_AUTH配置）
-
-	// 登录速率限制
-	loginRateLimiter *util.LoginRateLimiter // 防暴力破解
+	// ============================================================================
+	// ⚠️ DEPRECATED: 以下字段已迁移到 AuthService（阶段 3）
+	// 请使用 s.authService 访问认证相关功能
+	// ============================================================================
+	password         string                 // DEPRECATED: 已迁移到 authService.password
+	validTokens      map[string]time.Time   // DEPRECATED: 已迁移到 authService.validTokens
+	tokensMux        sync.RWMutex           // DEPRECATED: 已迁移到 authService.tokensMux
+	authTokens       map[string]bool        // DEPRECATED: 已迁移到 authService.authTokens
+	loginRateLimiter *util.LoginRateLimiter // 仍需保留：用于传递给 authService
 
 	// 重试配置
 	maxKeyRetries int // 单个渠道内最大Key重试次数（默认3次）
@@ -55,10 +65,6 @@ type Server struct {
 	// 并发控制
 	concurrencySem chan struct{} // 信号量：限制最大并发请求数（防止goroutine爆炸）
 	maxConcurrency int           // 最大并发数（默认1000）
-
-	logChan      chan *model.LogEntry // 异步日志通道
-	logWorkers   int                  // 日志工作协程数
-	logDropCount atomic.Int64         // 日志丢弃计数器
 
 	// 优雅关闭机制
 	shutdownCh     chan struct{}  // 关闭信号channel
@@ -216,9 +222,7 @@ func NewServer(store storage.Store) *Server {
 		password:         password,
 		validTokens:      make(map[string]time.Time),
 		authTokens:       authTokens,
-		loginRateLimiter: util.NewLoginRateLimiter(),         // 登录速率限制
-		logChan:          make(chan *model.LogEntry, logBuf), // 可配置日志缓冲
-		logWorkers:       logWorkers,                         // 可配置日志worker数量
+		loginRateLimiter: util.NewLoginRateLimiter(), // 登录速率限制
 
 		// 并发控制：使用信号量限制最大并发请求数
 		concurrencySem: make(chan struct{}, maxConcurrency),
@@ -237,18 +241,59 @@ func NewServer(store storage.Store) *Server {
 	// 初始化Key选择器（移除store依赖，避免重复查询）
 	s.keySelector = NewKeySelector(nil)
 
-	// 启动日志工作协程（支持优雅关闭）
-	for i := 0; i < s.logWorkers; i++ {
-		s.wg.Add(1)
-		go s.logWorker()
-	}
+	// ============================================================================
+	// 阶段 4：创建服务层（依赖注入模式）
+	// 按依赖顺序创建服务：LogService → ProxyService → AuthService → AdminService
+	// ============================================================================
 
-	// 启动后台清理协程（支持优雅关闭）
+	// 1. LogService（最先创建，负责日志管理）
+	s.logService = service.NewLogService(
+		store,
+		logBuf,
+		logWorkers,
+		s.shutdownCh,
+		&s.isShuttingDown,
+		&s.wg,
+	)
+	// 启动日志 Workers 和清理协程
+	s.logService.StartWorkers()
+	s.logService.StartCleanupLoop()
+
+	// 启动后台清理协程（Token 认证）
 	s.wg.Add(1)
 	go s.tokenCleanupLoop() // Token认证：定期清理过期Token
 
-	s.wg.Add(1)
-	go s.cleanupOldLogsLoop() // 定期清理3天前的日志
+	// 2. ProxyService（依赖 LogService、KeySelector）
+	proxyConfig := service.ProxyConfig{
+		MaxKeyRetries:    maxKeyRetries,
+		FirstByteTimeout: firstByteTimeout,
+		MaxConcurrency:   maxConcurrency,
+	}
+	s.proxyService = service.NewProxyService(
+		store,
+		s.channelCache,
+		s.cooldownManager,
+		s.client,
+		s.logService,
+		s.keySelector, // 阶段 7：传递 KeySelector（实现接口）
+		proxyConfig,
+		s, // 临时 delegate（阶段 8 移除）
+	)
+
+	// 3. AuthService（依赖 password、authTokens、loginRateLimiter）
+	s.authService = service.NewAuthService(
+		password,
+		authTokens,
+		s.loginRateLimiter,
+	)
+
+	// 4. AdminService（依赖 store、channelCache、client）
+	s.adminService = service.NewAdminService(
+		store,
+		s.channelCache,
+		s.client,
+		s, // 临时 delegate（未来可选择性迁移）
+	)
 
 	return s
 
@@ -263,7 +308,7 @@ func (s *Server) getChannelCache() *storage.ChannelCache {
 	return s.channelCache
 }
 
-func (s *Server) getEnabledChannelsByModel(ctx context.Context, model string) ([]*model.Config, error) {
+func (s *Server) GetEnabledChannelsByModel(ctx context.Context, model string) ([]*model.Config, error) {
 	if cache := s.getChannelCache(); cache != nil {
 		if channels, err := cache.GetEnabledChannelsByModel(ctx, model); err == nil {
 			return channels, nil
@@ -272,7 +317,7 @@ func (s *Server) getEnabledChannelsByModel(ctx context.Context, model string) ([
 	return s.store.GetEnabledChannelsByModel(ctx, model)
 }
 
-func (s *Server) getEnabledChannelsByType(ctx context.Context, channelType string) ([]*model.Config, error) {
+func (s *Server) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*model.Config, error) {
 	if cache := s.getChannelCache(); cache != nil {
 		if channels, err := cache.GetEnabledChannelsByType(ctx, channelType); err == nil {
 			return channels, nil
@@ -308,19 +353,31 @@ func (s *Server) getAllKeyCooldowns(ctx context.Context) (map[int64]map[int]time
 	return s.store.GetAllKeyCooldowns(ctx)
 }
 
-func (s *Server) invalidateChannelListCache() {
+// InvalidateChannelListCache 使渠道列表缓存失效
+//
+// DEPRECATED: 此方法已迁移到 ProxyService.InvalidateCache()（阶段 2）
+// 请使用 s.proxyService.InvalidateCache() 替代
+func (s *Server) InvalidateChannelListCache() {
 	if cache := s.getChannelCache(); cache != nil {
 		cache.InvalidateCache()
 	}
 }
 
-func (s *Server) invalidateAPIKeysCache(channelID int64) {
+// InvalidateAPIKeysCache 使指定渠道的 API Keys 缓存失效
+//
+// DEPRECATED: 此方法已迁移到 ProxyService.InvalidateAPIKeysCache()（阶段 2）
+// 请使用 s.proxyService.InvalidateAPIKeysCache(channelID) 替代
+func (s *Server) InvalidateAPIKeysCache(channelID int64) {
 	if cache := s.getChannelCache(); cache != nil {
 		cache.InvalidateAPIKeysCache(channelID)
 	}
 }
 
-func (s *Server) invalidateAllAPIKeysCache() {
+// InvalidateAllAPIKeysCache 使所有 API Keys 缓存失效
+//
+// DEPRECATED: 此方法已迁移到 ProxyService.InvalidateAllAPIKeysCache()（阶段 2）
+// 请使用 s.proxyService.InvalidateAllAPIKeysCache() 替代
+func (s *Server) InvalidateAllAPIKeysCache() {
 	if cache := s.getChannelCache(); cache != nil {
 		cache.InvalidateAllAPIKeysCache()
 	}
@@ -334,7 +391,10 @@ func (s *Server) invalidateCooldownCache() {
 
 // ================== Token认证系统 ==================
 
-// 生成安全Token（64字符十六进制）
+// generateToken 生成安全Token（64字符十六进制）
+//
+// DEPRECATED: 此方法已迁移到 AuthService（阶段 3）
+// 内部方法，不对外暴露。新代码请勿使用。
 func (s *Server) generateToken() string {
 	b := make([]byte, config.TokenRandomBytes)
 	rand.Read(b)
@@ -342,7 +402,11 @@ func (s *Server) generateToken() string {
 }
 
 // ================== Token认证 ==================
-// 验证Token有效性（检查过期时间）
+
+// isValidToken 验证Token有效性（检查过期时间）
+//
+// DEPRECATED: 此方法已迁移到 AuthService（阶段 3）
+// 内部方法，不对外暴露。新代码请勿使用。
 func (s *Server) isValidToken(token string) bool {
 	s.tokensMux.RLock()
 	expiry, exists := s.validTokens[token]
@@ -365,36 +429,13 @@ func (s *Server) isValidToken(token string) bool {
 	return true
 }
 
-// 清理过期Token（定期任务）
-func (s *Server) cleanExpiredTokens() {
-	now := time.Now()
-
-	// 使用快照模式避免长时间持锁
-	s.tokensMux.RLock()
-	toDelete := make([]string, 0, len(s.validTokens)/10)
-	for token, expiry := range s.validTokens {
-		if now.After(expiry) {
-			toDelete = append(toDelete, token)
-		}
-	}
-	s.tokensMux.RUnlock()
-
-	// 批量删除过期Token
-	if len(toDelete) > 0 {
-		s.tokensMux.Lock()
-		for _, token := range toDelete {
-			if expiry, exists := s.validTokens[token]; exists && now.After(expiry) {
-				delete(s.validTokens, token)
-			}
-		}
-		s.tokensMux.Unlock()
-	}
-}
-
 // ================== End Token认证 ==================
 
-// 统一Token认证中间件（管理界面 + API统一使用）
-func (s *Server) requireTokenAuth() gin.HandlerFunc {
+// RequireTokenAuth 统一Token认证中间件（管理界面 + API统一使用）
+//
+// DEPRECATED: 此方法已迁移到 AuthService.RequireTokenAuth()（阶段 3）
+// 请使用 s.authService.RequireTokenAuth() 替代
+func (s *Server) RequireTokenAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 优先从 Authorization 头获取Token
 		authHeader := c.GetHeader("Authorization")
@@ -423,8 +464,11 @@ func (s *Server) requireTokenAuth() gin.HandlerFunc {
 	}
 }
 
-// API 认证中间件 - Gin版本
-func (s *Server) requireAPIAuth() gin.HandlerFunc {
+// RequireAPIAuth API 认证中间件 - Gin版本
+//
+// DEPRECATED: 此方法已迁移到 AuthService.RequireAPIAuth()（阶段 3）
+// 请使用 s.authService.RequireAPIAuth() 替代
+func (s *Server) RequireAPIAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 未配置认证令牌时，默认全部返回 401（不允许公开访问）
 		if len(s.authTokens) == 0 {
@@ -465,9 +509,12 @@ func (s *Server) requireAPIAuth() gin.HandlerFunc {
 	}
 }
 
-// 登录处理程序 - Token认证版本（替代Cookie Session）
+// HandleLogin 登录处理程序 - Token认证版本（替代Cookie Session）
 // 集成登录速率限制，防暴力破解
-func (s *Server) handleLogin(c *gin.Context) {
+//
+// DEPRECATED: 此方法已迁移到 AuthService.HandleLogin()（阶段 3）
+// 请使用 s.authService.HandleLogin(c) 替代
+func (s *Server) HandleLogin(c *gin.Context) {
 	clientIP := c.ClientIP()
 
 	// 检查速率限制
@@ -524,8 +571,11 @@ func (s *Server) handleLogin(c *gin.Context) {
 	})
 }
 
-// 登出处理程序 - Token认证版本
-func (s *Server) handleLogout(c *gin.Context) {
+// HandleLogout 登出处理程序 - Token认证版本
+//
+// DEPRECATED: 此方法已迁移到 AuthService.HandleLogout()（阶段 3）
+// 请使用 s.authService.HandleLogout(c) 替代
+func (s *Server) HandleLogout(c *gin.Context) {
 	// 从Authorization头提取Token
 	authHeader := c.GetHeader("Authorization")
 	const prefix = "Bearer "
@@ -543,50 +593,58 @@ func (s *Server) handleLogout(c *gin.Context) {
 
 // SetupRoutes - 新的路由设置函数，适配Gin
 func (s *Server) SetupRoutes(r *gin.Engine) {
+	// ============================================================================
+	// 阶段 1：使用服务层处理路由（门面模式）
+	// 服务暂时委托回 Server 的现有方法，逐步迁移
+	// ============================================================================
+
 	// 公开访问的API（代理服务）- 需要 API 认证
 	// 透明代理：统一处理所有 /v1/* 端点，支持所有HTTP方法
 	apiV1 := r.Group("/v1")
-	apiV1.Use(s.requireAPIAuth())
+	apiV1.Use(s.authService.RequireAPIAuth()) // ✅ 使用 AuthService
 	{
-		apiV1.Any("/*path", s.handleProxyRequest)
+		apiV1.Any("/*path", s.proxyService.HandleProxyRequest) // ✅ 使用 ProxyService
 	}
 	apiV1Beta := r.Group("/v1beta")
-	apiV1Beta.Use(s.requireAPIAuth())
+	apiV1Beta.Use(s.authService.RequireAPIAuth()) // ✅ 使用 AuthService
 	{
-		apiV1Beta.Any("/*path", s.handleProxyRequest)
+		apiV1Beta.Any("/*path", s.proxyService.HandleProxyRequest) // ✅ 使用 ProxyService
 	}
 
 	// 公开访问的API（基础统计）
 	public := r.Group("/public")
 	{
-		public.GET("/summary", s.handlePublicSummary)
-		public.GET("/channel-types", s.handleGetChannelTypes)
+		public.GET("/summary", s.adminService.HandlePublicSummary)         // ✅ 使用 AdminService
+		public.GET("/channel-types", s.adminService.HandleGetChannelTypes) // ✅ 使用 AdminService
 	}
 
 	// 登录相关（公开访问）
-	r.POST("/login", s.handleLogin)
-	r.POST("/logout", s.handleLogout) // 改为POST（前端需携带Token）
+	r.POST("/login", s.authService.HandleLogin)   // ✅ 使用 AuthService
+	r.POST("/logout", s.authService.HandleLogout) // ✅ 使用 AuthService（改为POST，前端需携带Token）
 
 	// 需要身份验证的admin APIs（使用Token认证）
 	admin := r.Group("/admin")
-	admin.Use(s.requireTokenAuth())
+	admin.Use(s.authService.RequireTokenAuth()) // ✅ 使用 AuthService
 	{
-		admin.GET("/channels", s.handleChannels)
-		admin.POST("/channels", s.handleChannels)
-		admin.GET("/channels/export", s.handleExportChannelsCSV)
-		admin.POST("/channels/import", s.handleImportChannelsCSV)
-		admin.GET("/channels/:id", s.handleChannelByID)
-		admin.PUT("/channels/:id", s.handleChannelByID)
-		admin.DELETE("/channels/:id", s.handleChannelByID)
-		admin.GET("/channels/:id/keys", s.handleChannelKeys) // ✅ 修复：获取渠道API Keys
-		admin.POST("/channels/:id/test", s.handleChannelTest)
-		admin.POST("/channels/:id/cooldown", s.handleSetChannelCooldown)            // 设置渠道级别冷却
-		admin.POST("/channels/:id/keys/:keyIndex/cooldown", s.handleSetKeyCooldown) // 设置Key级别冷却
-		admin.GET("/errors", s.handleErrors)
-		admin.GET("/metrics", s.handleMetrics)
-		admin.GET("/stats", s.handleStats)
-		admin.GET("/cooldown/stats", s.handleCooldownStats) // 冷却状态监控
-		admin.GET("/cache/stats", s.handleCacheStats)
+		// 渠道管理
+		admin.GET("/channels", s.adminService.HandleChannels)
+		admin.POST("/channels", s.adminService.HandleChannels)
+		admin.GET("/channels/export", s.adminService.HandleExportChannelsCSV)
+		admin.POST("/channels/import", s.adminService.HandleImportChannelsCSV)
+		admin.GET("/channels/:id", s.adminService.HandleChannelByID)
+		admin.PUT("/channels/:id", s.adminService.HandleChannelByID)
+		admin.DELETE("/channels/:id", s.adminService.HandleChannelByID)
+		admin.GET("/channels/:id/keys", s.adminService.HandleChannelKeys)
+		admin.POST("/channels/:id/test", s.adminService.HandleChannelTest)
+		admin.POST("/channels/:id/cooldown", s.adminService.HandleSetChannelCooldown)
+		admin.POST("/channels/:id/keys/:keyIndex/cooldown", s.adminService.HandleSetKeyCooldown)
+
+		// 统计分析
+		admin.GET("/errors", s.adminService.HandleErrors)
+		admin.GET("/metrics", s.adminService.HandleMetrics)
+		admin.GET("/stats", s.adminService.HandleStats)
+		admin.GET("/cooldown/stats", s.adminService.HandleCooldownStats)
+		admin.GET("/cache/stats", s.adminService.HandleCacheStats)
 	}
 
 	// 静态文件服务（安全）：使用框架自带的静态文件路由，自动做路径清理，防止目录遍历
@@ -618,127 +676,19 @@ func (s *Server) tokenCleanupLoop() {
 			// Token清理不是关键路径,可以在下次启动时清理过期Token
 			return
 		case <-ticker.C:
-			s.cleanExpiredTokens()
+			s.authService.CleanExpiredTokens()
 		}
 	}
 }
 
-// 异步日志工作协程
-// 支持优雅关闭
-// 简化shutdown逻辑，利用channel关闭特性
-func (s *Server) logWorker() {
-	defer s.wg.Done()
-
-	batch := make([]*model.LogEntry, 0, config.LogBatchSize)
-	ticker := time.NewTicker(config.SecondsToDuration(config.LogBatchTimeout))
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-s.shutdownCh:
-			// 优先检查shutdown信号，快速响应关闭
-			s.flushIfNeeded(batch)
-			return
-
-		case entry, ok := <-s.logChan:
-			if !ok {
-				// logChan已关闭，flush剩余日志并退出
-				s.flushIfNeeded(batch)
-				return
-			}
-
-			batch = append(batch, entry)
-			if len(batch) >= config.LogBatchSize {
-				s.flushLogs(batch)
-				batch = batch[:0]
-				ticker.Reset(config.SecondsToDuration(config.LogBatchTimeout))
-			}
-
-		case <-ticker.C:
-			// 移除嵌套select，简化定时flush逻辑
-			// 设计原则：
-			// - ticker触发时直接flush当前batch
-			// - 如果logChan关闭，下次循环会在entry <- logChan中捕获
-			// - shutdown信号在select中优先级最高，保证快速响应
-			s.flushIfNeeded(batch)
-			batch = batch[:0]
-		}
-	}
-}
-
-// 批量写入日志
-func (s *Server) flushLogs(logs []*model.LogEntry) {
-	// 为日志持久化增加超时控制，避免阻塞关闭或积压
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(config.LogFlushTimeoutMs)*time.Millisecond)
-	defer cancel()
-
-	// 优先使用SQLite批量写入，加速刷盘
-	if ss, ok := s.store.(*sqlite.SQLiteStore); ok {
-		_ = ss.BatchAddLogs(ctx, logs)
-		return
-	}
-	// 回退逐条写入
-	for _, e := range logs {
-		_ = s.store.AddLog(ctx, e)
-	}
-}
-
-// flushIfNeeded 辅助函数：当batch非空时执行flush
-// 提取重复逻辑，遵循DRY原则
-func (s *Server) flushIfNeeded(batch []*model.LogEntry) {
-	if len(batch) > 0 {
-		s.flushLogs(batch)
-	}
-}
-
-// 异步添加日志
+// AddLogAsync 异步添加日志
 // 添加丢弃计数和告警机制
-func (s *Server) addLogAsync(entry *model.LogEntry) {
-	// shutdown时不再写入日志
-	if s.isShuttingDown.Load() {
-		return
-	}
-
-	select {
-	case s.logChan <- entry:
-		// 成功放入队列
-	default:
-		// 队列满，丢弃日志并计数
-		dropCount := s.logDropCount.Add(1)
-
-		// 告警阈值：定期打印警告
-		if dropCount%config.LogDropAlertThreshold == 0 {
-			util.SafePrintf("⚠️  严重警告: 日志丢弃计数达到 %d 条！请检查系统负载或增加日志队列容量", dropCount)
-			util.SafePrint("   建议: 1) 增加CCLOAD_LOG_BUFFER环境变量 2) 增加日志Worker数量 3) 优化磁盘I/O性能")
-		}
-	}
-}
-
-// cleanupOldLogsLoop 定期清理旧日志（性能优化：避免每次插入时清理）
-// 每小时检查一次，删除3天前的日志
-// 支持优雅关闭
-func (s *Server) cleanupOldLogsLoop() {
-	defer s.wg.Done()
-
-	ticker := time.NewTicker(config.HoursToDuration(config.LogCleanupIntervalHours))
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			// 使用带超时的context，避免日志清理阻塞关闭流程
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			cutoff := time.Now().AddDate(0, 0, -config.LogRetentionDays)
-
-			// 通过Store接口清理旧日志，忽略错误（非关键操作）
-			_ = s.store.CleanupLogsBefore(ctx, cutoff)
-			cancel() // 立即释放资源
-
-		case <-s.shutdownCh:
-			// 收到关闭信号，直接退出（不执行最后一次清理）
-			return
-		}
-	}
+//
+// DEPRECATED: 此方法已迁移到 LogService.AddLogAsync()（阶段 4）
+// 请使用 s.logService.AddLogAsync(entry) 替代
+func (s *Server) AddLogAsync(entry *model.LogEntry) {
+	// 委托给 LogService 处理日志写入
+	s.logService.AddLogAsync(entry)
 }
 
 // getGeminiModels 获取所有 gemini 渠道的去重模型列表
@@ -772,7 +722,7 @@ func (s *Server) getGeminiModels(ctx context.Context) ([]string, error) {
 // 等待所有预热goroutine完成，避免goroutine泄漏
 func (s *Server) WarmHTTPConnections(ctx context.Context) {
 	// 使用缓存层查询所有启用的渠道（已按优先级排序，避免数据库性能杀手）
-	configs, err := s.getEnabledChannelsByModel(ctx, "*")
+	configs, err := s.GetEnabledChannelsByModel(ctx, "*")
 	if err != nil || len(configs) == 0 {
 		return
 	}
@@ -824,7 +774,7 @@ func (s *Server) WarmHTTPConnections(ctx context.Context) {
 
 // ✅ 修复：handleChannelKeys 路由处理器(2025-10新架构支持)
 // GET /admin/channels/:id/keys - 获取渠道的所有API Keys
-func (s *Server) handleChannelKeys(c *gin.Context) {
+func (s *Server) HandleChannelKeys(c *gin.Context) {
 	id, err := ParseInt64Param(c, "id")
 	if err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel id")
@@ -846,9 +796,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// 关闭shutdownCh，通知所有goroutine退出
 	close(s.shutdownCh)
 
-	// 关闭logChan，让logWorker更快退出
-	// 由于isShuttingDown已设置，addLogAsync不会再往logChan写入，可以安全关闭
-	close(s.logChan)
+	// ✅ 修复: 关闭 LogService 的 logChan，让 logWorker 更快退出
+	// 由于 isShuttingDown 已设置，AddLogAsync 不会再写入日志，可以安全关闭
+	s.logService.Shutdown(ctx)
 
 	// 停止LoginRateLimiter的cleanupLoop
 	s.loginRateLimiter.Stop()
