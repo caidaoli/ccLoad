@@ -224,7 +224,7 @@ func (c *ChannelCache) InvalidateCache() {
 }
 
 // GetCacheStats 获取缓存统计信息
-func (c *ChannelCache) GetCacheStats() map[string]interface{} {
+func (c *ChannelCache) GetCacheStats() map[string]any {
 	c.mutex.RLock()
 	lastUpdate := c.lastUpdate
 	ageSeconds := time.Since(c.lastUpdate).Seconds()
@@ -241,7 +241,7 @@ func (c *ChannelCache) GetCacheStats() map[string]interface{} {
 	keyCooldownHits, keyCooldownMisses, keyCooldownInvalidations := c.keyCooldownCounter.snapshot()
 	geminiHits, geminiMisses, geminiInvalidations := c.geminiCounters.snapshot()
 
-	return map[string]interface{}{
+	return map[string]any{
 		"last_update":                    lastUpdate,
 		"age_seconds":                    ageSeconds,
 		"total_channels":                 totalChannels,

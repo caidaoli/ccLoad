@@ -100,7 +100,6 @@ func (m *Manager) HandleError(
 			if err != nil {
 				// 冷却更新失败是非致命错误
 				// 记录日志但不中断请求处理,避免因数据库BUSY导致无限重试
-				// TODO: 添加Prometheus指标监控冷却失败率
 				util.SafePrintf("⚠️  WARNING: Failed to update key cooldown (channel=%d, key=%d): %v", channelID, keyIndex, err)
 			}
 		}

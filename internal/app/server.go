@@ -30,17 +30,13 @@ import (
 
 type Server struct {
 	// ============================================================================
-	// 阶段 1：新的服务层（门面模式）
-	// TODO: 阶段 2+ 逐步将 Server 中的方法迁移到这些服务中
+	// 服务层（仅保留有价值的服务）
 	// ============================================================================
-	proxyService *service.ProxyService // 代理服务
-	authService  *service.AuthService  // 认证授权服务
-	logService   *service.LogService   // 日志管理服务
-	adminService *service.AdminService // 管理 API 服务
+	authService *service.AuthService // 认证授权服务
+	logService  *service.LogService  // 日志管理服务
 
 	// ============================================================================
-	// 阶段 1：保留的原有字段（暂时仍然需要）
-	// TODO: 阶段 6 逐步移除这些字段，由服务内部管理
+	// 核心字段
 	// ============================================================================
 	store            storage.Store
 	channelCache     *storage.ChannelCache // 高性能渠道缓存层
@@ -242,11 +238,10 @@ func NewServer(store storage.Store) *Server {
 	s.keySelector = NewKeySelector(nil)
 
 	// ============================================================================
-	// 阶段 4：创建服务层（依赖注入模式）
-	// 按依赖顺序创建服务：LogService → ProxyService → AuthService → AdminService
+	// 创建服务层（仅保留有价值的服务）
 	// ============================================================================
 
-	// 1. LogService（最先创建，负责日志管理）
+	// 1. LogService（负责日志管理）
 	s.logService = service.NewLogService(
 		store,
 		logBuf,
@@ -259,41 +254,16 @@ func NewServer(store storage.Store) *Server {
 	s.logService.StartWorkers()
 	s.logService.StartCleanupLoop()
 
-	// 启动后台清理协程（Token 认证）
-	s.wg.Add(1)
-	go s.tokenCleanupLoop() // Token认证：定期清理过期Token
-
-	// 2. ProxyService（依赖 LogService、KeySelector）
-	proxyConfig := service.ProxyConfig{
-		MaxKeyRetries:    maxKeyRetries,
-		FirstByteTimeout: firstByteTimeout,
-		MaxConcurrency:   maxConcurrency,
-	}
-	s.proxyService = service.NewProxyService(
-		store,
-		s.channelCache,
-		s.cooldownManager,
-		s.client,
-		s.logService,
-		s.keySelector, // 阶段 7：传递 KeySelector（实现接口）
-		proxyConfig,
-		s, // 临时 delegate（阶段 8 移除）
-	)
-
-	// 3. AuthService（依赖 password、authTokens、loginRateLimiter）
+	// 2. AuthService（负责认证授权）
 	s.authService = service.NewAuthService(
 		password,
 		authTokens,
 		s.loginRateLimiter,
 	)
 
-	// 4. AdminService（依赖 store、channelCache、client）
-	s.adminService = service.NewAdminService(
-		store,
-		s.channelCache,
-		s.client,
-		s, // 临时 delegate（未来可选择性迁移）
-	)
+	// 启动后台清理协程（Token 认证）
+	s.wg.Add(1)
+	go s.tokenCleanupLoop() // 定期清理过期Token
 
 	return s
 
@@ -593,58 +563,53 @@ func (s *Server) HandleLogout(c *gin.Context) {
 
 // SetupRoutes - 新的路由设置函数，适配Gin
 func (s *Server) SetupRoutes(r *gin.Engine) {
-	// ============================================================================
-	// 阶段 1：使用服务层处理路由（门面模式）
-	// 服务暂时委托回 Server 的现有方法，逐步迁移
-	// ============================================================================
-
 	// 公开访问的API（代理服务）- 需要 API 认证
 	// 透明代理：统一处理所有 /v1/* 端点，支持所有HTTP方法
 	apiV1 := r.Group("/v1")
-	apiV1.Use(s.authService.RequireAPIAuth()) // ✅ 使用 AuthService
+	apiV1.Use(s.authService.RequireAPIAuth())
 	{
-		apiV1.Any("/*path", s.proxyService.HandleProxyRequest) // ✅ 使用 ProxyService
+		apiV1.Any("/*path", s.HandleProxyRequest)
 	}
 	apiV1Beta := r.Group("/v1beta")
-	apiV1Beta.Use(s.authService.RequireAPIAuth()) // ✅ 使用 AuthService
+	apiV1Beta.Use(s.authService.RequireAPIAuth())
 	{
-		apiV1Beta.Any("/*path", s.proxyService.HandleProxyRequest) // ✅ 使用 ProxyService
+		apiV1Beta.Any("/*path", s.HandleProxyRequest)
 	}
 
 	// 公开访问的API（基础统计）
 	public := r.Group("/public")
 	{
-		public.GET("/summary", s.adminService.HandlePublicSummary)         // ✅ 使用 AdminService
-		public.GET("/channel-types", s.adminService.HandleGetChannelTypes) // ✅ 使用 AdminService
+		public.GET("/summary", s.HandlePublicSummary)
+		public.GET("/channel-types", s.HandleGetChannelTypes)
 	}
 
 	// 登录相关（公开访问）
-	r.POST("/login", s.authService.HandleLogin)   // ✅ 使用 AuthService
-	r.POST("/logout", s.authService.HandleLogout) // ✅ 使用 AuthService（改为POST，前端需携带Token）
+	r.POST("/login", s.authService.HandleLogin)
+	r.POST("/logout", s.authService.HandleLogout)
 
 	// 需要身份验证的admin APIs（使用Token认证）
 	admin := r.Group("/admin")
-	admin.Use(s.authService.RequireTokenAuth()) // ✅ 使用 AuthService
+	admin.Use(s.authService.RequireTokenAuth())
 	{
 		// 渠道管理
-		admin.GET("/channels", s.adminService.HandleChannels)
-		admin.POST("/channels", s.adminService.HandleChannels)
-		admin.GET("/channels/export", s.adminService.HandleExportChannelsCSV)
-		admin.POST("/channels/import", s.adminService.HandleImportChannelsCSV)
-		admin.GET("/channels/:id", s.adminService.HandleChannelByID)
-		admin.PUT("/channels/:id", s.adminService.HandleChannelByID)
-		admin.DELETE("/channels/:id", s.adminService.HandleChannelByID)
-		admin.GET("/channels/:id/keys", s.adminService.HandleChannelKeys)
-		admin.POST("/channels/:id/test", s.adminService.HandleChannelTest)
-		admin.POST("/channels/:id/cooldown", s.adminService.HandleSetChannelCooldown)
-		admin.POST("/channels/:id/keys/:keyIndex/cooldown", s.adminService.HandleSetKeyCooldown)
+		admin.GET("/channels", s.HandleChannels)
+		admin.POST("/channels", s.HandleChannels)
+		admin.GET("/channels/export", s.HandleExportChannelsCSV)
+		admin.POST("/channels/import", s.HandleImportChannelsCSV)
+		admin.GET("/channels/:id", s.HandleChannelByID)
+		admin.PUT("/channels/:id", s.HandleChannelByID)
+		admin.DELETE("/channels/:id", s.HandleChannelByID)
+		admin.GET("/channels/:id/keys", s.HandleChannelKeys)
+		admin.POST("/channels/:id/test", s.HandleChannelTest)
+		admin.POST("/channels/:id/cooldown", s.HandleSetChannelCooldown)
+		admin.POST("/channels/:id/keys/:keyIndex/cooldown", s.HandleSetKeyCooldown)
 
 		// 统计分析
-		admin.GET("/errors", s.adminService.HandleErrors)
-		admin.GET("/metrics", s.adminService.HandleMetrics)
-		admin.GET("/stats", s.adminService.HandleStats)
-		admin.GET("/cooldown/stats", s.adminService.HandleCooldownStats)
-		admin.GET("/cache/stats", s.adminService.HandleCacheStats)
+		admin.GET("/errors", s.HandleErrors)
+		admin.GET("/metrics", s.HandleMetrics)
+		admin.GET("/stats", s.HandleStats)
+		admin.GET("/cooldown/stats", s.HandleCooldownStats)
+		admin.GET("/cache/stats", s.HandleCacheStats)
 	}
 
 	// 静态文件服务（安全）：使用框架自带的静态文件路由，自动做路径清理，防止目录遍历
