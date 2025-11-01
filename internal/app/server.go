@@ -312,9 +312,7 @@ func (s *Server) getAllKeyCooldowns(ctx context.Context) (map[int64]map[int]time
 }
 
 // InvalidateChannelListCache 使渠道列表缓存失效
-//
-// DEPRECATED: 此方法已迁移到 ProxyService.InvalidateCache()（阶段 2）
-// 请使用 s.proxyService.InvalidateCache() 替代
+// 在渠道CRUD操作后调用，确保缓存一致性
 func (s *Server) InvalidateChannelListCache() {
 	if cache := s.getChannelCache(); cache != nil {
 		cache.InvalidateCache()
@@ -322,9 +320,7 @@ func (s *Server) InvalidateChannelListCache() {
 }
 
 // InvalidateAPIKeysCache 使指定渠道的 API Keys 缓存失效
-//
-// DEPRECATED: 此方法已迁移到 ProxyService.InvalidateAPIKeysCache()（阶段 2）
-// 请使用 s.proxyService.InvalidateAPIKeysCache(channelID) 替代
+// 在渠道Key更新后调用，确保缓存一致性
 func (s *Server) InvalidateAPIKeysCache(channelID int64) {
 	if cache := s.getChannelCache(); cache != nil {
 		cache.InvalidateAPIKeysCache(channelID)
@@ -332,9 +328,7 @@ func (s *Server) InvalidateAPIKeysCache(channelID int64) {
 }
 
 // InvalidateAllAPIKeysCache 使所有 API Keys 缓存失效
-//
-// DEPRECATED: 此方法已迁移到 ProxyService.InvalidateAllAPIKeysCache()（阶段 2）
-// 请使用 s.proxyService.InvalidateAllAPIKeysCache() 替代
+// 在批量导入操作后调用，确保缓存一致性
 func (s *Server) InvalidateAllAPIKeysCache() {
 	if cache := s.getChannelCache(); cache != nil {
 		cache.InvalidateAllAPIKeysCache()
@@ -432,11 +426,8 @@ func (s *Server) tokenCleanupLoop() {
 	}
 }
 
-// AddLogAsync 异步添加日志
-// 添加丢弃计数和告警机制
-//
-// DEPRECATED: 此方法已迁移到 LogService.AddLogAsync()（阶段 4）
-// 请使用 s.logService.AddLogAsync(entry) 替代
+// AddLogAsync 异步添加日志（委托给LogService处理）
+// 在代理请求完成后调用，记录请求日志
 func (s *Server) AddLogAsync(entry *model.LogEntry) {
 	// 委托给 LogService 处理日志写入
 	s.logService.AddLogAsync(entry)
