@@ -17,20 +17,20 @@ func (s *Server) HandleSetChannelCooldown(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid channel ID"})
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel ID")
 		return
 	}
 
 	var req CooldownRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
+		RespondError(c, http.StatusBadRequest, err)
 		return
 	}
 
 	until := time.Now().Add(time.Duration(req.DurationMs) * time.Millisecond)
 	err = s.store.SetChannelCooldown(c.Request.Context(), id, until)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
 
@@ -47,27 +47,27 @@ func (s *Server) HandleSetKeyCooldown(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid channel ID"})
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel ID")
 		return
 	}
 
 	keyIndexStr := c.Param("keyIndex")
 	keyIndex, err := strconv.Atoi(keyIndexStr)
 	if err != nil || keyIndex < 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid key index"})
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid key index")
 		return
 	}
 
 	var req CooldownRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
+		RespondError(c, http.StatusBadRequest, err)
 		return
 	}
 
 	until := time.Now().Add(time.Duration(req.DurationMs) * time.Millisecond)
 	err = s.store.SetKeyCooldown(c.Request.Context(), id, keyIndex, until)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
 
