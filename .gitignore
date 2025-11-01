@@ -45,7 +45,7 @@ Thumbs.db
 
 # Playwright MCP
 .playwright-mcp
-.claude/settings.local.json
+.claude
 com.ccload.service.plist
 .dataX
 .serena

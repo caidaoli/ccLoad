@@ -97,7 +97,7 @@ internal/
 │
 ├── storage/             # 数据持久层
 │   ├── store.go         # Store接口定义(抽象)
-│   ├── cache.go         # 内存缓存(Ristretto封装)
+│   ├── cache.go         # 内存缓存(自定义实现)
 │   ├── sqlite/          # SQLite实现
 │   │   ├── store_impl.go    # Store接口实现
 │   │   ├── migrate.go       # 数据库迁移、索引优化
@@ -369,7 +369,6 @@ mcp__serena__find_referencing_symbols  # 查找符号引用
 - **语言**: Go 1.25.0
 - **框架**: Gin v1.10.1
 - **数据库**: SQLite3 v1.38.2 (纯Go实现)
-- **缓存**: Ristretto v2.3.0 (TinyLFU算法)
 - **Redis**: go-redis v9.7.0 (可选同步)
 - **JSON**: Sonic v1.14.1 (通过`-tags go_json`启用)
 - **配置**: godotenv v1.5.1
