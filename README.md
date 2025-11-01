@@ -1,4 +1,4 @@
-# ccLoad - Claude Code & Codex API 代理服务
+# ccLoad - Claude Code & Codex & Gemini API 代理服务
 
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8.svg)](https://golang.org)
 [![Gin](https://img.shields.io/badge/Gin-v1.10+-blue.svg)](https://github.com/gin-gonic/gin)
@@ -7,7 +7,7 @@
 [![GitHub Actions](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-2088FF.svg)](https://github.com/features/actions)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-一个高性能的 Claude Code & Codex API 透明代理服务，使用 Go 1.25.0 和 Gin 框架构建。支持多渠道负载均衡、故障切换和实时监控。
+一个高性能的 Claude Code & Codex & Gemini API 透明代理服务，使用 Go 1.25.0 和 Gin 框架构建。支持多渠道负载均衡、故障切换和实时监控。
 
 ## 🎯 痛点解决
 
