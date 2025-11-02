@@ -73,6 +73,7 @@ internal/
 │   │
 │   ├── admin_*.go       # 管理API(按功能拆分SRP)
 │   │   ├── admin_channels.go  # 渠道CRUD
+│   │   ├── admin_models.go    # 模型列表获取(新增2025-11)
 │   │   ├── admin_stats.go     # 统计分析
 │   │   ├── admin_cooldown.go  # 冷却管理
 │   │   ├── admin_csv.go       # CSV导入导出
@@ -118,6 +119,7 @@ internal/
 │   ├── classifier.go    # HTTP错误分类器(Key级/渠道级/客户端)
 │   ├── time.go          # 时间转换、冷却计算
 │   ├── channel_types.go # 渠道类型管理(anthropic/codex/gemini)
+│   ├── models_fetcher.go # 模型列表获取适配器(新增2025-11)
 │   ├── apikeys.go       # API Key解析、验证
 │   ├── serialize.go     # JSON序列化(Sonic/标准库切换)
 │   ├── log_sanitizer.go # 日志脱敏(API Key、敏感信息)
@@ -192,6 +194,37 @@ type APIKey struct {
 - 外键约束(级联删除,保证一致性)
 
 ## 开发实践指南
+
+### 模型列表获取功能(新增2025-11)
+
+**功能说明**: 支持从渠道API自动获取可用模型列表,简化模型配置流程
+
+**API endpoint**: `GET /admin/channels/:id/models/fetch`
+
+**支持的渠道类型**:
+- **Anthropic**: 调用`/v1/models`接口,实时获取(使用x-api-key + anthropic-version请求头)
+- **OpenAI**: 调用`/v1/models`接口,实时获取
+- **Codex**: 调用`/v1/models`接口,实时获取(复用OpenAI实现)
+- **Gemini**: 调用`/v1beta/models`接口,实时获取
+
+**前端使用** (`/web/channels.html:276-298`):
+```javascript
+// 获取模型列表按钮
+await fetchModelsFromAPI()  // 自动合并现有模型
+
+// 清除所有模型按钮
+clearAllModels()
+```
+
+**设计模式**:
+- **适配器模式**: 统一不同渠道的Models API接口
+- **策略模式**: 根据渠道类型选择获取策略
+- **工厂模式**: `NewModelsFetcher(channelType)`动态创建
+
+**相关文件**:
+- `internal/util/models_fetcher.go` - 核心适配器实现
+- `internal/app/admin_models.go` - Admin API Handler
+- `web/channels.html:2524-2597` - 前端JavaScript
 
 ### 添加新的Admin API端点
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -112,7 +113,7 @@ func main() {
 	// 启动HTTP服务器（在goroutine中）
 	go func() {
 		log.Printf("listening on %s", addr)
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("HTTP服务器启动失败: %v", err)
 		}
 	}()

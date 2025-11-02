@@ -78,6 +78,9 @@
                 <button id="importCsvBtn" type="button" class="btn btn-secondary" style="padding: 8px 16px; font-size: 14px;" title="从CSV导入渠道">
                   导入 CSV
                 </button>
+                <button onclick="showAddModal()" type="button" class="btn btn-primary" style="padding: 8px 16px; font-size: 14px;" title="添加新渠道">
+                  + 添加渠道
+                </button>
                 <input type="file" id="importCsvInput" accept=".csv" style="display: none;" />
               </div>
             </div>
@@ -143,9 +146,6 @@
       </div>
     </main>
   </div>
-
-  <!-- 添加渠道按钮 -->
-  <button class="add-channel-btn" onclick="showAddModal()" title="添加渠道">+</button>
 
   <!-- 添加/编辑渠道模态框 -->
   <div id="channelModal" class="modal">
@@ -274,9 +274,26 @@
           </div>
         </div>
         <div class="form-group">
-          <label class="form-label" for="channelModels">
-            支持的模型 * <span class="models-hint" style="margin-left: 8px; margin-top: 0;">多个模型用英文逗号分隔</span>
-          </label>
+          <!-- 标签行：包含标签和操作按钮 -->
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <label class="form-label" style="margin: 0;">
+              支持的模型 * <span class="models-hint" style="margin-left: 8px; margin-top: 0;">多个模型用英文逗号分隔</span>
+            </label>
+            <div style="display: flex; gap: 6px;">
+              <button type="button" class="btn btn-secondary btn-sm" onclick="fetchModelsFromAPI()" style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px;" title="从渠道API获取可用模型列表">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M13.65 2.35C12.2 0.9 10.21 0 8 0 3.58 0 0 3.58 0 8s3.58 8 8 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L9 7h7V0l-2.35 2.35z" fill="currentColor"/>
+                </svg>
+                <span>获取模型列表</span>
+              </button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="clearAllModels()" style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px;" title="清除所有模型">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M5.5 2.5V1.5C5.5 1.22386 5.72386 1 6 1H10C10.2761 1 10.5 1.22386 10.5 1.5V2.5M2 3.5H14M3 3.5V13.5C3 14.0523 3.44772 14.5 4 14.5H12C12.5523 14.5 13 14.0523 13 13.5V3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span>清除所有</span>
+              </button>
+            </div>
+          </div>
           <textarea id="channelModels" class="form-input" placeholder="claude-3-5-sonnet-20241022,claude-3-opus-20240229" required rows="2"></textarea>
         </div>
         <div class="form-group">
@@ -286,7 +303,7 @@
               模型重定向（可选） <span class="models-hint" style="margin-left: 8px; margin-top: 0;">将请求模型映射到实际转发模型，共 <span id="redirectCount">0</span> 条规则</span>
             </label>
             <div style="display: flex; gap: 6px;">
-              <button type="button" class="btn btn-primary btn-sm" onclick="addRedirectRow()" style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px;">
+              <button type="button" class="btn btn-secondary btn-sm" onclick="addRedirectRow()" style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px;" title="添加模型重定向规则">
                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
                   <path d="M8 3.5V12.5M3.5 8H12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                 </svg>
@@ -2503,6 +2520,81 @@
     }
 
     // ===================== 结束：模型重定向表格管理 =====================
+
+    // ===================== 模型获取与清除功能 =====================
+
+    // 从API获取模型列表（根据渠道类型调用标准接口）
+    async function fetchModelsFromAPI() {
+      if (!editingChannelId) {
+        alert('请先保存渠道后再获取模型列表');
+        return;
+      }
+
+      // 显示加载状态
+      const modelsTextarea = document.getElementById('channelModels');
+      const originalValue = modelsTextarea.value;
+      const originalPlaceholder = modelsTextarea.placeholder;
+
+      modelsTextarea.disabled = true;
+      modelsTextarea.placeholder = '正在获取模型列表...';
+
+      try {
+        const res = await fetchWithAuth(`/admin/channels/${editingChannelId}/models/fetch`);
+
+        if (!res.ok) {
+          const errorData = await res.json().catch(() => ({}));
+          throw new Error(errorData.error || `HTTP ${res.status}`);
+        }
+
+        const response = await res.json();
+        const data = response.data || response;
+
+        if (!data.models || data.models.length === 0) {
+          throw new Error('未获取到任何模型');
+        }
+
+        // 合并现有模型和新获取的模型（去重）
+        const existingModels = originalValue.split(',').map(m => m.trim()).filter(m => m);
+        const allModels = [...new Set([...existingModels, ...data.models])];
+
+        // 更新textarea
+        modelsTextarea.value = allModels.join(',');
+
+        // 显示成功提示
+        const source = data.source === 'api' ? '从API获取' : '预定义列表';
+        if (window.showSuccess) {
+          showSuccess(`成功获取 ${data.models.length} 个模型 (${source})`);
+        } else {
+          alert(`成功获取 ${data.models.length} 个模型 (${source})`);
+        }
+
+      } catch (error) {
+        console.error('获取模型列表失败', error);
+
+        // 恢复原值
+        modelsTextarea.value = originalValue;
+
+        if (window.showError) {
+          showError('获取模型列表失败: ' + error.message);
+        } else {
+          alert('获取模型列表失败: ' + error.message);
+        }
+      } finally {
+        modelsTextarea.disabled = false;
+        modelsTextarea.placeholder = originalPlaceholder;
+      }
+    }
+
+    // 清除所有模型
+    function clearAllModels() {
+      if (confirm('确定要清除所有模型吗？此操作不可恢复！')) {
+        const modelsTextarea = document.getElementById('channelModels');
+        modelsTextarea.value = '';
+        modelsTextarea.focus();
+      }
+    }
+
+    // ===================== 结束：模型获取与清除功能 =====================
 
     function escapeHtml(text) {
       const div = document.createElement('div');

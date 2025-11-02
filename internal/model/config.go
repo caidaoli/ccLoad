@@ -8,7 +8,7 @@ import (
 type Config struct {
 	ID             int64             `json:"id"`
 	Name           string            `json:"name"`
-	ChannelType    string            `json:"channel_type"` // 渠道类型: "anthropic" | "codex" | "gemini"，默认anthropic
+	ChannelType    string            `json:"channel_type"` // 渠道类型: "anthropic" | "codex" | "openai" | "gemini"，默认anthropic
 	URL            string            `json:"url"`
 	Priority       int               `json:"priority"`
 	Models         []string          `json:"models"`
