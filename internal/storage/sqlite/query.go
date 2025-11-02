@@ -74,7 +74,6 @@ func (wb *WhereBuilder) ApplyLogFilter(filter *model.LogFilter) *WhereBuilder {
 	}
 	// 注意：ChannelName和ChannelNameLike需要JOIN channels表才能使用
 	// 当前ListLogs查询不包含JOIN，因此这些过滤器会被忽略
-	// 如需支持，需要修改sqlite_store.go的ListLogs查询添加LEFT JOIN
 	if filter.Model != "" {
 		wb.AddCondition("model = ?", filter.Model)
 	}

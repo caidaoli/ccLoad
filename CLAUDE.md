@@ -298,17 +298,6 @@ func TestMyFeature(t *testing.T) {
 }
 ```
 
-**协程泄漏检测**:
-```go
-import "ccload/internal/testutil"
-
-func TestAsyncOperation(t *testing.T) {
-    defer testutil.DetectGoRoutineLeaks(t)()
-
-    // 测试异步操作...
-}
-```
-
 **集成测试** (`test/integration/`):
 ```bash
 # 需要启动真实服务

@@ -16,8 +16,6 @@ import (
 )
 
 // AuthService 认证和授权服务
-// 阶段 3：直接管理认证状态，不再委托给 Server
-//
 // 职责：处理所有认证和授权相关的业务逻辑
 // - Token 认证（动态令牌）
 // - API 认证（静态令牌）
@@ -39,7 +37,6 @@ type AuthService struct {
 }
 
 // NewAuthService 创建认证服务实例
-// 阶段 3：接受具体依赖，不再使用委托模式
 func NewAuthService(
 	password string,
 	authTokens map[string]bool,
@@ -115,11 +112,10 @@ func (s *AuthService) CleanExpiredTokens() {
 }
 
 // ============================================================================
-// 认证中间件（阶段 3：已迁移 ✅）
+// 认证中间件
 // ============================================================================
 
 // RequireTokenAuth Token 认证中间件（管理界面使用）
-// 阶段 3：✅ 已迁移 - 直接验证 Token
 func (s *AuthService) RequireTokenAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 优先从 Authorization 头获取Token
@@ -150,7 +146,6 @@ func (s *AuthService) RequireTokenAuth() gin.HandlerFunc {
 }
 
 // RequireAPIAuth API 认证中间件（代理 API 使用）
-// 阶段 3：✅ 已迁移 - 直接验证 API Token
 func (s *AuthService) RequireAPIAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 未配置认证令牌时，默认全部返回 401（不允许公开访问）
@@ -193,11 +188,10 @@ func (s *AuthService) RequireAPIAuth() gin.HandlerFunc {
 }
 
 // ============================================================================
-// 登录/登出处理（阶段 3：已迁移 ✅）
+// 登录/登出处理
 // ============================================================================
 
 // HandleLogin 处理登录请求
-// 阶段 3：✅ 已迁移 - 直接处理登录逻辑
 // 集成登录速率限制，防暴力破解
 func (s *AuthService) HandleLogin(c *gin.Context) {
 	clientIP := c.ClientIP()
@@ -257,7 +251,6 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 }
 
 // HandleLogout 处理登出请求
-// 阶段 3：✅ 已迁移 - 直接处理登出逻辑
 func (s *AuthService) HandleLogout(c *gin.Context) {
 	// 从Authorization头提取Token
 	authHeader := c.GetHeader("Authorization")

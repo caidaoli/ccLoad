@@ -4,6 +4,7 @@ import (
 	modelpkg "ccLoad/internal/model"
 	"ccLoad/internal/util"
 	"context"
+	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -326,9 +327,7 @@ func (c *ChannelCache) GetAllChannelCooldowns(ctx context.Context) (map[int64]ti
 	if time.Since(c.cooldownCache.lastUpdate) <= c.cooldownCache.ttl {
 		// 有效缓存，返回副本
 		result := make(map[int64]time.Time, len(c.cooldownCache.channels))
-		for k, v := range c.cooldownCache.channels {
-			result[k] = v
-		}
+		maps.Copy(result, c.cooldownCache.channels)
 		c.mutex.RUnlock()
 		c.channelCooldownCounter.addHit()
 		return result, nil
@@ -357,9 +356,7 @@ func (c *ChannelCache) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[in
 		result := make(map[int64]map[int]time.Time)
 		for k, v := range c.cooldownCache.keys {
 			keyMap := make(map[int]time.Time)
-			for kk, vv := range v {
-				keyMap[kk] = vv
-			}
+			maps.Copy(keyMap, v)
 			result[k] = keyMap
 		}
 		c.mutex.RUnlock()

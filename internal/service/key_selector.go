@@ -3,7 +3,6 @@ package service
 import "ccLoad/internal/model"
 
 // KeySelector 接口定义了Key选择策略
-// 阶段 7：提取接口以解决循环依赖（app ↔ service）
 //
 // 设计原因：
 // - ProxyService需要使用KeySelector来选择可用的API Key

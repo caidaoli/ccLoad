@@ -108,7 +108,7 @@ func (ks *KeySelector) selectRoundRobin(channelID int64, apiKeys []*model.APIKey
 	startIdx := int(counter.counter.Add(1) % uint32(keyCount))
 
 	// 从startIdx开始轮询，最多尝试keyCount次
-	for i := 0; i < keyCount; i++ {
+	for i := range keyCount {
 		idx := (startIdx + i) % keyCount
 
 		// 在apiKeys中查找对应key_index的Key

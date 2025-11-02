@@ -14,7 +14,6 @@ import (
 )
 
 // LogService 日志管理服务
-// 阶段 4：直接管理日志系统，不再委托给 Server
 //
 // 职责：处理所有日志相关的业务逻辑
 // - 异步日志记录（批量写入）
@@ -38,7 +37,6 @@ type LogService struct {
 }
 
 // NewLogService 创建日志服务实例
-// 阶段 4：接受具体依赖，不再使用委托模式
 func NewLogService(
 	store storage.Store,
 	logBufferSize int,
@@ -58,11 +56,10 @@ func NewLogService(
 }
 
 // ============================================================================
-// Worker 管理（阶段 4：已迁移 ✅）
+// Worker 管理
 // ============================================================================
 
 // StartWorkers 启动日志 Worker
-// 阶段 4：✅ 已迁移 - 供 Server 在初始化时调用
 func (s *LogService) StartWorkers() {
 	for i := 0; i < s.logWorkers; i++ {
 		s.wg.Add(1)
@@ -71,7 +68,6 @@ func (s *LogService) StartWorkers() {
 }
 
 // logWorker 日志 Worker（后台协程）
-// 阶段 4：✅ 已迁移 - 批量处理日志
 // 简化shutdown逻辑，利用channel关闭特性
 func (s *LogService) logWorker() {
 	defer s.wg.Done()
@@ -114,7 +110,6 @@ func (s *LogService) logWorker() {
 }
 
 // flushLogs 批量写入日志
-// 阶段 4：✅ 已迁移 - 内部方法
 func (s *LogService) flushLogs(logs []*model.LogEntry) {
 	// 为日志持久化增加超时控制，避免阻塞关闭或积压
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(config.LogFlushTimeoutMs)*time.Millisecond)
@@ -132,7 +127,6 @@ func (s *LogService) flushLogs(logs []*model.LogEntry) {
 }
 
 // flushIfNeeded 辅助函数：当batch非空时执行flush
-// 阶段 4：✅ 已迁移 - 提取重复逻辑，遵循DRY原则
 func (s *LogService) flushIfNeeded(batch []*model.LogEntry) {
 	if len(batch) > 0 {
 		s.flushLogs(batch)
@@ -140,11 +134,10 @@ func (s *LogService) flushIfNeeded(batch []*model.LogEntry) {
 }
 
 // ============================================================================
-// 日志记录方法（阶段 4：已迁移 ✅）
+// 日志记录方法
 // ============================================================================
 
 // AddLogAsync 异步添加日志
-// 阶段 4：✅ 已迁移 - 直接操作日志队列
 // 添加丢弃计数和告警机制
 func (s *LogService) AddLogAsync(entry *model.LogEntry) {
 	// shutdown时不再写入日志
@@ -168,11 +161,10 @@ func (s *LogService) AddLogAsync(entry *model.LogEntry) {
 }
 
 // ============================================================================
-// 日志清理（阶段 4：已迁移 ✅）
+// 日志清理
 // ============================================================================
 
 // StartCleanupLoop 启动日志清理后台协程
-// 阶段 4：✅ 已迁移 - 定期清理旧日志（性能优化：避免每次插入时清理）
 // 每小时检查一次，删除3天前的日志
 // 支持优雅关闭
 func (s *LogService) StartCleanupLoop() {
@@ -206,11 +198,10 @@ func (s *LogService) cleanupOldLogsLoop() {
 }
 
 // ============================================================================
-// 优雅关闭（阶段 4：已迁移 ✅）
+// 优雅关闭
 // ============================================================================
 
 // Shutdown 优雅关闭日志服务
-// 阶段 4：✅ 已迁移 - 关闭日志通道
 // 注意：不需要等待 Workers，因为 Server 会通过 wg.Wait() 等待
 func (s *LogService) Shutdown(ctx context.Context) error {
 	// 关闭日志通道，通知所有 Worker 退出

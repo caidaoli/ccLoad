@@ -472,7 +472,7 @@ func (s *Server) WarmHTTPConnections(ctx context.Context) {
 	var wg sync.WaitGroup
 	warmedCount := 0
 
-	for i := 0; i < warmCount; i++ {
+	for i := range warmCount {
 		cfg := configs[i]
 		if cfg.URL == "" {
 			continue

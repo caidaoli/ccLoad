@@ -234,7 +234,7 @@ Hugging Face Spaces 提供免费的容器托管服务，支持 Docker 应用，�
    | 变量名 | 值 | 必填 | 说明 |
    |--------|-----|------|------|
    | `CCLOAD_PASS` | `your_admin_password` | ✅ **必填** | 管理界面密码 |
-  | `CCLOAD_AUTH` | `token1,token2` | ✅ 必填 | API 访问令牌（多个用逗号分隔；访问 /v1/* API 必须设置，否则返回 401） |
+   | `CCLOAD_AUTH` | `token1,token2` | ✅ **必填** | API 访问令牌（多个用逗号分隔；访问 /v1/* API 必须设置，否则返回 401） |
    | `REDIS_URL` | `rediss://user:pass@host:port` | ⚪ 可选 | Redis 连接地址，用于渠道数据备份和恢复 |
 
    **Redis URL 格式说明**:
@@ -544,22 +544,27 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
-| `CCLOAD_PASS` | 无 | 管理界面密码（必填，未设置将退出） |
-| `CCLOAD_AUTH` | 无 | API 访问令牌（多个用逗号分隔；访问 /v1/* API 必须设置，否则返回 401） |
-| `CCLOAD_MAX_KEY_RETRIES` | "3" | 单个渠道内最大Key重试次数 |
-| `CCLOAD_USE_MEMORY_DB` | "false" | 启用内存数据库模式（需配合Redis使用） |
-| `CCLOAD_SKIP_TLS_VERIFY` | "false" | 跳过TLS证书验证（仅开发环境） |
-| `PORT` | "8080" | 服务端口 |
-| `SQLITE_PATH` | "data/ccload.db" | 数据库文件路径 |
-| `SQLITE_JOURNAL_MODE` | "WAL" | SQLite Journal模式（WAL/TRUNCATE/DELETE等） |
+| `CCLOAD_PASS` | 无 | 管理界面密码（**必填**，未设置将退出） |
+| `CCLOAD_AUTH` | 无 | API 访问令牌（多个用逗号分隔；访问 /v1/* API **必须设置**，否则返回 401） |
+| `PORT` | `8080` | 服务端口 |
+| `GIN_MODE` | `debug` | 运行模式（`debug`/`release`） |
+| `SQLITE_PATH` | `data/ccload.db` | 数据库文件路径 |
+| `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal模式（WAL/TRUNCATE/DELETE等，容器环境建议TRUNCATE） |
+| `CCLOAD_USE_MEMORY_DB` | `false` | 启用内存数据库模式（需配合Redis使用） |
+| `CCLOAD_MAX_KEY_RETRIES` | `3` | 单个渠道内最大Key重试次数 |
+| `CCLOAD_MAX_CONCURRENCY` | `1000` | 最大并发请求数（限制同时处理的代理请求数量） |
+| `CCLOAD_MAX_BODY_BYTES` | `2097152` | 请求体最大字节数（2MB，防止大包打爆内存） |
+| `CCLOAD_UPSTREAM_FIRST_BYTE_TIMEOUT` | 不设置 | 上游首字节超时（单位：秒，检测上游慢响应/无响应） |
+| `CCLOAD_ENABLE_WARMUP` | `false` | 启用启动预热（消除首次请求的TLS握手延迟10-50ms） |
+| `CCLOAD_SKIP_TLS_VERIFY` | `false` | 跳过TLS证书验证（**仅开发环境**，生产环境严禁使用） |
+| `REDIS_URL` | 无 | Redis连接URL（可选，用于渠道数据异步备份） |
+| `GOTAGS` | `go_json` | 构建标签（`go_json`/`std`，go_json使用高性能JSON库） |
 
 #### 行为摘要
 
 - 未设置 `CCLOAD_PASS`：程序启动失败并退出（安全默认）。
 - 未设置 `CCLOAD_AUTH`：所有 `/v1/*` 与 `/v1beta/*` API 返回 `401 Unauthorized`。
 - 公开端点：仅 `GET /public/summary` 无需认证，其他端点均需授权令牌。
-| `REDIS_URL` | 无 | Redis连接URL（可选，用于渠道数据异步备份） |
-| `GOTAGS` | "go_json" | 构建标签（go_json/std） |
 
 ### Docker 镜像
 
