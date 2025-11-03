@@ -812,7 +812,7 @@ func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *mod
 			SUM(CASE WHEN status_code < 200 OR status_code >= 300 THEN 1 ELSE 0 END) AS error,
 			COUNT(*) AS total,
 			ROUND(
-				AVG(CASE WHEN is_streaming = 1 AND first_byte_time > 0 THEN first_byte_time ELSE NULL END),
+				AVG(CASE WHEN is_streaming = 1 AND first_byte_time > 0 AND status_code >= 200 AND status_code < 300 THEN first_byte_time ELSE NULL END),
 				3
 			) as avg_first_byte_time
 		FROM logs`
