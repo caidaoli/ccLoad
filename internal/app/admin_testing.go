@@ -96,6 +96,9 @@ func (s *Server) HandleChannelTest(c *gin.Context) {
 		// ✨ 优化：同时清除渠道级冷却（因为至少有一个Key可用）
 		// 设计理念：测试成功证明渠道恢复正常，应立即解除渠道级冷却，避免选择器过滤该渠道
 		_ = s.store.ResetChannelCooldown(c.Request.Context(), id)
+
+		// ✅ 修复：使API Keys缓存失效，确保前端能立即看到冷却状态更新
+		s.InvalidateAPIKeysCache(id)
 	} else {
 		// 🔥 修复：测试失败时应用冷却策略
 		// 提取状态码和错误体
@@ -129,6 +132,10 @@ func (s *Server) HandleChannelTest(c *gin.Context) {
 		if err != nil {
 			util.SafePrintf("⚠️  警告: 应用冷却策略失败 (channel=%d, key=%d, status=%d): %v", id, keyIndex, statusCode, err)
 		}
+
+		// ✅ 修复：使API Keys缓存失效，确保前端能立即看到冷却状态更新
+		// 无论是Key级冷却还是渠道级冷却，都需要使API Keys缓存失效
+		s.InvalidateAPIKeysCache(id)
 
 		// 记录冷却决策结果到测试响应中
 		var actionStr string

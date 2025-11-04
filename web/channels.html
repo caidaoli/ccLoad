@@ -59,6 +59,29 @@
       color: var(--primary-700);
       font-weight: 500;
     }
+
+    /* Toast动画 */
+    @keyframes slideIn {
+      from {
+        transform: translateX(400px);
+        opacity: 0;
+      }
+      to {
+        transform: translateX(0);
+        opacity: 1;
+      }
+    }
+
+    @keyframes slideOut {
+      from {
+        transform: translateX(0);
+        opacity: 1;
+      }
+      to {
+        transform: translateX(400px);
+        opacity: 0;
+      }
+    }
   </style>
 </head>
 <body>
@@ -864,9 +887,6 @@
 
       editingChannelId = id;
 
-      // 保存Key冷却信息
-      currentChannelKeyCooldowns = channel.key_cooldowns || [];
-
       document.getElementById('modalTitle').textContent = '编辑渠道';
       document.getElementById('channelName').value = channel.name;
       document.getElementById('channelUrl').value = channel.url;
@@ -878,15 +898,39 @@
         if (res.ok) {
           const data = await res.json();
           apiKeys = (data.success ? data.data : data) || [];
+          console.log('🔍 [DEBUG] API响应:', data);
+          console.log('🔍 [DEBUG] 提取的apiKeys:', apiKeys);
         }
       } catch (e) {
         console.error('获取API Keys失败', e);
       }
 
-      // ✅ 修复：从 APIKey 对象数组提取实际的 key 字符串
+      // ✅ 修复(2025-11): 从 APIKey 对象提取冷却信息
+      // APIKey对象包含: api_key, cooldown_until(Unix秒), cooldown_duration_ms
+      const now = Date.now();
+      console.log('🔍 [DEBUG] 当前时间戳(ms):', now, '| Unix秒:', Math.floor(now / 1000));
+      currentChannelKeyCooldowns = apiKeys.map((apiKey, index) => {
+        const cooldownUntilMs = (apiKey.cooldown_until || 0) * 1000; // Unix秒→毫秒
+        const remainingMs = Math.max(0, cooldownUntilMs - now);
+        console.log(`🔍 [DEBUG] Key #${index + 1}:`, {
+          api_key_preview: (apiKey.api_key || '').substring(0, 10) + '...',
+          cooldown_until: apiKey.cooldown_until,
+          cooldown_until_ms: cooldownUntilMs,
+          remaining_ms: remainingMs,
+          is_cooling: remainingMs > 0
+        });
+        return {
+          key_index: index,
+          cooldown_remaining_ms: remainingMs
+        };
+      });
+      console.log('🔍 [DEBUG] 生成的冷却数组:', currentChannelKeyCooldowns);
+
+      // 提取 API Key 字符串用于表格显示
       inlineKeyTableData = apiKeys.map(k => k.api_key || k);
       if (inlineKeyTableData.length === 0) {
         inlineKeyTableData = [''];
+        currentChannelKeyCooldowns = [];
       }
 
       // 编辑时默认显示Key以便核对
@@ -1478,6 +1522,9 @@
       } finally {
         document.getElementById('testProgress').classList.remove('show');
         document.getElementById('runTestBtn').disabled = false;
+
+        // 刷新渠道列表（更新冷却状态）
+        await loadChannels();
       }
     }
 
@@ -1963,18 +2010,32 @@
           ${cooldownHtml}
         </td>
         <td style="padding: 6px 10px; text-align: center;">
-          <button
-            type="button"
-            onclick="deleteInlineKey(${index})"
-            title="删除此Key"
-            style="width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--neutral-200); background: white; color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;"
-            onmouseover="this.style.background='#fef2f2'; this.style.borderColor='#fca5a5'; this.style.color='#dc2626'"
-            onmouseout="this.style.background='white'; this.style.borderColor='var(--neutral-200)'; this.style.color='var(--neutral-500)'"
-          >
-            <svg width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M5.5 2.5V1.5C5.5 1.22386 5.72386 1 6 1H8C8.27614 1 8.5 1.22386 8.5 1.5V2.5M2 3.5H12M3 3.5V11.5C3 12.0523 3.44772 12.5 4 12.5H10C10.5523 12.5 11 12.0523 11 11.5V3.5M5.5 6.5V9.5M8.5 6.5V9.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-          </button>
+          <div style="display: flex; gap: 6px; justify-content: center;">
+            <button
+              type="button"
+              onclick="testSingleKey(${index})"
+              title="测试此Key"
+              style="width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--neutral-200); background: white; color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;"
+              onmouseover="this.style.background='#eff6ff'; this.style.borderColor='#93c5fd'; this.style.color='#3b82f6'"
+              onmouseout="this.style.background='white'; this.style.borderColor='var(--neutral-200)'; this.style.color='var(--neutral-500)'"
+            >
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M4 2L12 8L4 14V2Z" fill="currentColor"/>
+              </svg>
+            </button>
+            <button
+              type="button"
+              onclick="deleteInlineKey(${index})"
+              title="删除此Key"
+              style="width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--neutral-200); background: white; color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;"
+              onmouseover="this.style.background='#fef2f2'; this.style.borderColor='#fca5a5'; this.style.color='#dc2626'"
+              onmouseout="this.style.background='white'; this.style.borderColor='var(--neutral-200)'; this.style.color='var(--neutral-500)'"
+            >
+              <svg width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M5.5 2.5V1.5C5.5 1.22386 5.72386 1 6 1H8C8.27614 1 8.5 1.22386 8.5 1.5V2.5M2 3.5H12M3 3.5V11.5C3 12.0523 3.44772 12.5 4 12.5H10C10.5523 12.5 11 12.0523 11 11.5V3.5M5.5 6.5V9.5M8.5 6.5V9.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+          </div>
         </td>
       `;
 
@@ -2077,7 +2138,12 @@
 
       // 统一使用虚拟滚动（支持少量和大量Keys）
       virtualScrollState.enabled = true;
-      virtualScrollState.scrollTop = 0;
+      // ✅ 修复：不要重置scrollTop，保持当前滚动位置
+      // 只在第一次启用虚拟滚动或筛选变化时重置
+      if (!virtualScrollState.filteredIndices || 
+          virtualScrollState.filteredIndices.length !== visibleIndices.length) {
+        virtualScrollState.scrollTop = 0;
+      }
       virtualScrollState.filteredIndices = visibleIndices; // 保存筛选后的索引
 
       const { visibleStart, visibleEnd } = calculateVisibleRange(visibleIndices.length);
@@ -2140,6 +2206,228 @@
     }
 
     // 删除Key（虚拟滚动优化：保持滚动位置）
+    // 测试单个Key
+    async function testSingleKey(keyIndex) {
+      if (!editingChannelId) {
+        alert('无法获取渠道ID');
+        return;
+      }
+
+      // 获取模型列表
+      const modelsInput = document.getElementById('channelModels');
+      if (!modelsInput || !modelsInput.value.trim()) {
+        alert('请先配置支持的模型列表');
+        return;
+      }
+
+      const models = modelsInput.value.split(',').map(m => m.trim()).filter(m => m);
+      if (models.length === 0) {
+        alert('模型列表为空，请先配置支持的模型');
+        return;
+      }
+
+      const firstModel = models[0];
+      const apiKey = inlineKeyTableData[keyIndex];
+
+      if (!apiKey || !apiKey.trim()) {
+        alert('API Key为空，无法测试');
+        return;
+      }
+
+      // 获取渠道类型
+      const channelTypeRadios = document.querySelectorAll('input[name="channelType"]');
+      let channelType = 'anthropic';
+      for (const radio of channelTypeRadios) {
+        if (radio.checked) {
+          channelType = radio.value.toLowerCase();
+          break;
+        }
+      }
+
+      // 显示测试中状态
+      const testButton = event.target.closest('button');
+      const originalHTML = testButton.innerHTML;
+      testButton.disabled = true;
+      testButton.innerHTML = '<span style="font-size: 10px;">⏳</span>';
+
+      try {
+        const res = await fetchWithAuth(`/admin/channels/${editingChannelId}/test`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: firstModel,
+            max_tokens: 512,
+            stream: true,
+            content: 'test',
+            channel_type: channelType,
+            key_index: keyIndex
+          })
+        });
+
+        if (!res.ok) {
+          throw new Error('HTTP ' + res.status);
+        }
+
+        const result = await res.json();
+        const testResult = result.data || result;
+
+        // 刷新冷却状态
+        await refreshKeyCooldownStatus();
+
+        // 显示测试结果
+        if (testResult.success) {
+          showToast(`✅ Key #${keyIndex + 1} 测试成功`, 'success');
+        } else {
+          const errorMsg = testResult.error || '测试失败';
+          showToast(`❌ Key #${keyIndex + 1} 测试失败: ${errorMsg}`, 'error');
+        }
+      } catch (e) {
+        console.error('测试失败', e);
+        showToast(`❌ Key #${keyIndex + 1} 测试请求失败: ${e.message}`, 'error');
+      } finally {
+        testButton.disabled = false;
+        testButton.innerHTML = originalHTML;
+      }
+    }
+
+    // 刷新Key冷却状态
+    async function refreshKeyCooldownStatus() {
+      if (!editingChannelId) return;
+
+      try {
+        const res = await fetchWithAuth(`/admin/channels/${editingChannelId}/keys`);
+        if (res.ok) {
+          const data = await res.json();
+          const apiKeys = (data.success ? data.data : data) || [];
+
+          // ✅ 修复：同步更新Key数据
+          inlineKeyTableData = apiKeys.map(k => k.api_key || k);
+          if (inlineKeyTableData.length === 0) {
+            inlineKeyTableData = [''];
+          }
+
+          // 更新冷却状态
+          const now = Date.now();
+          currentChannelKeyCooldowns = apiKeys.map((apiKey, index) => {
+            const cooldownUntilMs = (apiKey.cooldown_until || 0) * 1000;
+            const remainingMs = Math.max(0, cooldownUntilMs - now);
+            return {
+              key_index: index,
+              cooldown_remaining_ms: remainingMs
+            };
+          });
+
+          // ✅ 修复：保存虚拟滚动位置
+          const tableContainer = document.querySelector('#inlineKeyTableBody').closest('div[style*="max-height"]');
+          const savedScrollTop = tableContainer ? tableContainer.scrollTop : 0;
+
+          // 重新渲染表格以显示最新的冷却状态
+          renderInlineKeyTable();
+
+          // ✅ 修复：恢复虚拟滚动位置
+          if (tableContainer && virtualScrollState.enabled) {
+            // 使用setTimeout确保DOM更新完成后再恢复滚动位置
+            setTimeout(() => {
+              tableContainer.scrollTop = savedScrollTop;
+              virtualScrollState.scrollTop = savedScrollTop;
+              // 触发一次滚动事件以更新虚拟滚动的可见范围
+              handleVirtualScroll({ target: tableContainer });
+            }, 0);
+          }
+        }
+      } catch (e) {
+        console.error('刷新冷却状态失败', e);
+      }
+    }
+
+    // 显示Toast提示
+    function showToast(message, type = 'info') {
+      // 创建toast元素
+      const toast = document.createElement('div');
+      toast.textContent = message;
+
+      // ✅ 修复：检测是否在编辑对话框中
+      const channelModal = document.getElementById('channelModal');
+      const isInChannelModal = channelModal && channelModal.classList.contains('show');
+
+      if (isInChannelModal) {
+        // 在对话框底部显示toast
+        toast.style.cssText = `
+          position: absolute;
+          bottom: 20px;
+          left: 50%;
+          transform: translateX(-50%);
+          padding: 12px 20px;
+          border-radius: 8px;
+          font-size: 14px;
+          font-weight: 500;
+          z-index: 10000;
+          animation: slideIn 0.3s ease-out;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+          max-width: 400px;
+          word-wrap: break-word;
+        `;
+      } else {
+        // 页面固定位置显示toast
+        toast.style.cssText = `
+          position: fixed;
+          top: 80px;
+          right: 20px;
+          padding: 12px 20px;
+          border-radius: 8px;
+          font-size: 14px;
+          font-weight: 500;
+          z-index: 10000;
+          animation: slideIn 0.3s ease-out;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+          max-width: 400px;
+          word-wrap: break-word;
+        `;
+      }
+
+      if (type === 'success') {
+        toast.style.background = 'linear-gradient(135deg, #10b981 0%, #059669 100%)';
+        toast.style.color = 'white';
+      } else if (type === 'error') {
+        toast.style.background = 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)';
+        toast.style.color = 'white';
+      } else {
+        toast.style.background = 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)';
+        toast.style.color = 'white';
+      }
+
+      if (isInChannelModal) {
+        const modalContent = channelModal.querySelector('.modal-content');
+        // 确保modal-content支持absolute定位
+        if (modalContent.style.position !== 'relative') {
+          modalContent.style.position = 'relative';
+        }
+        modalContent.appendChild(toast);
+
+        // 3秒后自动移除
+        setTimeout(() => {
+          toast.style.animation = 'slideOut 0.3s ease-in';
+          setTimeout(() => {
+            if (toast.parentNode === modalContent) {
+              modalContent.removeChild(toast);
+            }
+          }, 300);
+        }, 3000);
+      } else {
+        document.body.appendChild(toast);
+
+        // 3秒后自动移除
+        setTimeout(() => {
+          toast.style.animation = 'slideOut 0.3s ease-in';
+          setTimeout(() => {
+            if (toast.parentNode === document.body) {
+              document.body.removeChild(toast);
+            }
+          }, 300);
+        }, 3000);
+      }
+    }
+
     function deleteInlineKey(index) {
       if (inlineKeyTableData.length === 1) {
         alert('至少需要保留一个API Key');
