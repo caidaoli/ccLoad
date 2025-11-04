@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/testutil"
 	"ccLoad/internal/util"
@@ -85,8 +86,9 @@ func (s *Server) HandleChannelTest(c *gin.Context) {
 	testResult["tested_key_index"] = keyIndex
 	testResult["total_keys"] = len(apiKeys)
 
-	// ✅ 修复：测试成功时清除该Key的冷却状态
+	// ✅ 修复：根据测试结果应用冷却逻辑
 	if success, ok := testResult["success"].(bool); ok && success {
+		// 测试成功：清除该Key的冷却状态
 		if err := s.store.ResetKeyCooldown(c.Request.Context(), id, keyIndex); err != nil {
 			util.SafePrintf("⚠️  警告: 清除Key #%d冷却状态失败: %v", keyIndex, err)
 		}
@@ -94,8 +96,53 @@ func (s *Server) HandleChannelTest(c *gin.Context) {
 		// ✨ 优化：同时清除渠道级冷却（因为至少有一个Key可用）
 		// 设计理念：测试成功证明渠道恢复正常，应立即解除渠道级冷却，避免选择器过滤该渠道
 		_ = s.store.ResetChannelCooldown(c.Request.Context(), id)
+	} else {
+		// 🔥 修复：测试失败时应用冷却策略
+		// 提取状态码和错误体
+		statusCode, _ := testResult["status_code"].(int)
+		var errorBody []byte
+		if apiError, ok := testResult["api_error"].(map[string]any); ok {
+			errorBody, _ = sonic.Marshal(apiError)
+		} else if rawResp, ok := testResult["raw_response"].(string); ok {
+			errorBody = []byte(rawResp)
+		}
 
-		// 精确计数：记录状态恢复
+		// 提取响应头（用于429错误的精确分类）
+		var headers map[string][]string
+		if respHeaders, ok := testResult["response_headers"].(map[string]string); ok && statusCode == 429 {
+			headers = make(map[string][]string, len(respHeaders))
+			for k, v := range respHeaders {
+				headers[k] = []string{v}
+			}
+		}
+
+		// 调用统一冷却管理器处理错误
+		action, err := s.cooldownManager.HandleError(
+			c.Request.Context(),
+			id,
+			keyIndex,
+			statusCode,
+			errorBody,
+			false,   // 测试API不是网络错误（已经收到HTTP响应）
+			headers, // 传递响应头以支持429错误的精确分类
+		)
+		if err != nil {
+			util.SafePrintf("⚠️  警告: 应用冷却策略失败 (channel=%d, key=%d, status=%d): %v", id, keyIndex, statusCode, err)
+		}
+
+		// 记录冷却决策结果到测试响应中
+		var actionStr string
+		switch action {
+		case cooldown.ActionRetryKey:
+			actionStr = "key_cooldown_applied"
+		case cooldown.ActionRetryChannel:
+			actionStr = "channel_cooldown_applied"
+		case cooldown.ActionReturnClient:
+			actionStr = "client_error_no_cooldown"
+		default:
+			actionStr = "unknown_action"
+		}
+		testResult["cooldown_action"] = actionStr
 	}
 
 	RespondJSON(c, http.StatusOK, testResult)

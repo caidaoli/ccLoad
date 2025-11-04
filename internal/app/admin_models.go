@@ -23,17 +23,17 @@ type FetchModelsRequest struct {
 
 // FetchModelsResponse 获取模型列表响应
 type FetchModelsResponse struct {
-	Models      []string            `json:"models"`       // 模型列表
-	ChannelType string              `json:"channel_type"` // 渠道类型
-	Source      string              `json:"source"`       // 数据来源: "api"(从API获取) 或 "predefined"(预定义)
-	Debug       *FetchModelsDebug   `json:"debug,omitempty"` // 调试信息（仅开发环境）
+	Models      []string          `json:"models"`          // 模型列表
+	ChannelType string            `json:"channel_type"`    // 渠道类型
+	Source      string            `json:"source"`          // 数据来源: "api"(从API获取) 或 "predefined"(预定义)
+	Debug       *FetchModelsDebug `json:"debug,omitempty"` // 调试信息（仅开发环境）
 }
 
 // FetchModelsDebug 调试信息结构
 type FetchModelsDebug struct {
-	NormalizedType string `json:"normalized_type"`  // 规范化后的渠道类型
-	FetcherType    string `json:"fetcher_type"`     // 使用的Fetcher类型
-	ChannelURL     string `json:"channel_url"`      // 渠道URL（脱敏）
+	NormalizedType string `json:"normalized_type"` // 规范化后的渠道类型
+	FetcherType    string `json:"fetcher_type"`    // 使用的Fetcher类型
+	ChannelURL     string `json:"channel_url"`     // 渠道URL（脱敏）
 }
 
 // HandleFetchModels 获取指定渠道的可用模型列表
@@ -89,12 +89,12 @@ func (s *Server) HandleFetchModels(c *gin.Context) {
 	// 6. 返回响应（增强调试信息）
 	response := FetchModelsResponse{
 		Models:      models,
-		ChannelType: channel.ChannelType,  // 原始值
+		ChannelType: channel.ChannelType, // 原始值
 		Source:      source,
 		Debug: &FetchModelsDebug{
-			NormalizedType:  normalizedType,
-			FetcherType:     fmt.Sprintf("%T", fetcher),
-			ChannelURL:      channel.URL,
+			NormalizedType: normalizedType,
+			FetcherType:    fmt.Sprintf("%T", fetcher),
+			ChannelURL:     channel.URL,
 		},
 	}
 	RespondJSON(c, http.StatusOK, response)
