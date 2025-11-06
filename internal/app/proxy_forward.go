@@ -272,6 +272,32 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		return nil, fmt.Errorf("no API keys configured for channel %d", cfg.ID)
 	}
 
+	// 🔍 渠道验证器检查(88code套餐验证等)
+	// 在选择Key之前先验证渠道是否满足业务规则
+	// 验证失败时冷却渠道30分钟,避免后续请求继续尝试
+	if s.validatorManager != nil {
+		// 使用第一个API Key进行验证(假设同一渠道的所有Key共享套餐)
+		firstKey := ""
+		if len(apiKeys) > 0 {
+			firstKey = apiKeys[0].APIKey
+		}
+
+		available, reason := s.validatorManager.ValidateChannel(ctx, cfg, firstKey)
+		if !available {
+			// 验证失败:冷却渠道30分钟
+			util.SafePrintf("❌ 渠道 %s (ID=%d) 验证失败: %s,冷却30分钟", cfg.Name, cfg.ID, reason)
+
+			// 应用固定的30分钟冷却(429状态码表示限流)
+			cooldownUntil := time.Now().Add(30 * time.Minute)
+			if err := s.store.SetChannelCooldown(ctx, cfg.ID, cooldownUntil); err != nil {
+				util.SafePrintf("⚠️  WARNING: Failed to apply cooldown for channel %d: %v", cfg.ID, err)
+			}
+
+			// 返回特殊错误,触发渠道切换
+			return nil, fmt.Errorf("channel validation failed: %s", reason)
+		}
+	}
+
 	maxKeyRetries := min(s.maxKeyRetries, actualKeyCount)
 
 	triedKeys := make(map[int]bool) // 本次请求内已尝试过的Key

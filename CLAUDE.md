@@ -58,6 +58,24 @@ export SQLITE_PATH=./data/ccload.db       # 数据库路径
 export REDIS_URL=rediss://...             # Redis备份(可选)
 export CCLOAD_MAX_CONCURRENCY=1000        # 最大并发数
 export CCLOAD_MAX_KEY_RETRIES=3           # Key重试次数
+export CCLOAD_88CODE_FREE_ONLY=true       # 88code免费套餐限制(见下方说明)
+```
+
+#### 88code免费套餐限制 (2025-11新增)
+
+启用`CCLOAD_88CODE_FREE_ONLY=true`后,系统会验证名称以"88code"开头的渠道套餐类型:
+
+- **验证逻辑**: 调用`https://www.88code.org/api/usage`检查`subscriptionName`字段
+- **触发条件**: 仅对名称匹配`88code*`(不区分大小写)的渠道执行验证
+- **非FREE套餐**: 自动冷却渠道30分钟,避免额外消耗
+- **性能优化**: 60秒缓存TTL,减少API调用
+- **防御策略**: API调用失败时默认允许通过,避免外部故障影响服务
+- **扩展性**: 基于validator接口设计,未来可添加其他验证规则(Token额度、地域限制等)
+
+**实现文件**:
+- `internal/validator/validator.go` - 验证器接口和管理器
+- `internal/validator/subscription.go` - 88code套餐验证器
+- `internal/app/proxy_forward.go:275-299` - 验证调用点
 ```
 
 ## 代码架构
@@ -109,6 +127,10 @@ internal/
 │
 ├── cooldown/            # 冷却管理层(独立模块)
 │   └── manager.go       # 统一冷却决策引擎(DRY原则)
+│
+├── validator/           # 渠道验证器层(新增2025-11)
+│   ├── validator.go     # 验证器接口和管理器(策略模式)
+│   └── subscription.go  # 88code套餐验证器(60秒缓存TTL)
 │
 ├── service/             # 服务层
 │   ├── auth_service.go  # 认证服务(Token生成/验证)

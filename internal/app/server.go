@@ -19,6 +19,7 @@ import (
 	"ccLoad/internal/service"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
+	"ccLoad/internal/validator"
 
 	"crypto/tls"
 
@@ -40,6 +41,7 @@ type Server struct {
 	channelCache     *storage.ChannelCache // 高性能渠道缓存层
 	keySelector      *KeySelector          // Key选择器（多Key支持）
 	cooldownManager  *cooldown.Manager     // 统一冷却管理器（DRY原则）
+	validatorManager *validator.Manager    // 渠道验证器管理器（SRP+OCP原则）
 	client           *http.Client
 	firstByteTimeout time.Duration
 
@@ -208,6 +210,15 @@ func NewServer(store storage.Store) *Server {
 	// 初始化冷却管理器（统一管理渠道级和Key级冷却）
 	// 传入Server作为configGetter，利用缓存层查询渠道配置
 	s.cooldownManager = cooldown.NewManager(store, s)
+
+	// 初始化渠道验证器管理器（支持88code套餐验证等扩展规则）
+	s.validatorManager = validator.NewManager()
+
+	// 注册88code套餐验证器（如果启用）
+	if os.Getenv("CCLOAD_88CODE_FREE_ONLY") == "true" {
+		util.SafePrint("✅ 88code免费套餐验证已启用（非FREE套餐将被冷却30分钟）")
+		s.validatorManager.AddValidator(validator.NewSubscriptionValidator(true))
+	}
 
 	// 初始化Key选择器（移除store依赖，避免重复查询）
 	s.keySelector = NewKeySelector(nil)
