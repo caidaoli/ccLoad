@@ -1501,6 +1501,9 @@ func (s *SQLiteStore) CreateAPIKey(ctx context.Context, key *model.APIKey) error
 		return fmt.Errorf("insert api key: %w", err)
 	}
 
+	// 触发异步Redis同步(确保新增操作同步到Redis)
+	s.triggerAsyncSync()
+
 	return nil
 }
 
@@ -1530,6 +1533,9 @@ func (s *SQLiteStore) UpdateAPIKey(ctx context.Context, key *model.APIKey) error
 	if err != nil {
 		return fmt.Errorf("update api key: %w", err)
 	}
+
+	// 触发异步Redis同步(确保更新操作同步到Redis)
+	s.triggerAsyncSync()
 
 	return nil
 }
