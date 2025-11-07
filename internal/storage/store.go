@@ -56,6 +56,17 @@ type Store interface {
 	// Stats - 统计功能
 	GetStats(ctx context.Context, since time.Time, filter *model.LogFilter) ([]model.StatsEntry, error)
 
+	// Auth Tokens - API访问令牌管理
+	// 令牌用于代理API (/v1/*) 的认证授权
+	CreateAuthToken(ctx context.Context, token *model.AuthToken) error
+	GetAuthToken(ctx context.Context, id int64) (*model.AuthToken, error)
+	GetAuthTokenByValue(ctx context.Context, tokenHash string) (*model.AuthToken, error)
+	ListAuthTokens(ctx context.Context) ([]*model.AuthToken, error)
+	ListActiveAuthTokens(ctx context.Context) ([]*model.AuthToken, error)
+	UpdateAuthToken(ctx context.Context, token *model.AuthToken) error
+	DeleteAuthToken(ctx context.Context, id int64) error
+	UpdateTokenLastUsed(ctx context.Context, tokenHash string, now time.Time) error
+
 	// Maintenance - 维护功能
 	CleanupLogsBefore(ctx context.Context, cutoff time.Time) error
 }

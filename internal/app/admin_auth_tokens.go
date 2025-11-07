@@ -1,0 +1,186 @@
+package app
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"net/http"
+	"strconv"
+	"time"
+
+	"ccLoad/internal/model"
+	"ccLoad/internal/util"
+
+	"github.com/gin-gonic/gin"
+)
+
+// ============================================================================
+// API访问令牌管理 (Admin API)
+// ============================================================================
+
+// HandleListAuthTokens 列出所有API访问令牌
+// GET /admin/auth-tokens
+func (s *Server) HandleListAuthTokens(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	tokens, err := s.store.ListAuthTokens(ctx)
+	if err != nil {
+		util.SafePrint("❌ 列出令牌失败: " + err.Error())
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	// 脱敏处理（仅显示前4后4字符）
+	for _, t := range tokens {
+		t.Token = model.MaskToken(t.Token)
+	}
+
+	RespondJSON(c, http.StatusOK, tokens)
+}
+
+// HandleCreateAuthToken 创建新的API访问令牌
+// POST /admin/auth-tokens
+func (s *Server) HandleCreateAuthToken(c *gin.Context) {
+	var req struct {
+		Description string `json:"description" binding:"required"`
+		ExpiresAt   *int64 `json:"expires_at"` // Unix毫秒时间戳，nil表示永不过期
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// 生成安全令牌(64字符十六进制)
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		util.SafePrint("❌ 生成令牌失败: " + err.Error())
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	tokenPlain := hex.EncodeToString(tokenBytes)
+
+	// 计算SHA256哈希用于存储
+	tokenHash := model.HashToken(tokenPlain)
+
+	authToken := &model.AuthToken{
+		Token:       tokenHash,
+		Description: req.Description,
+		ExpiresAt:   req.ExpiresAt,
+		IsActive:    true,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := s.store.CreateAuthToken(ctx, authToken); err != nil {
+		util.SafePrint("❌ 创建令牌失败: " + err.Error())
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	// 触发热更新（立即生效）
+	if err := s.authService.ReloadAuthTokens(); err != nil {
+		util.SafePrint("⚠️  热更新失败: " + err.Error())
+	}
+
+	util.SafePrintf("✅ 创建API令牌: ID=%d, 描述=%s", authToken.ID, authToken.Description)
+
+	// 返回明文令牌（仅此一次机会）
+	RespondJSON(c, http.StatusOK, gin.H{
+		"id":          authToken.ID,
+		"token":       tokenPlain, // 明文令牌，仅创建时返回
+		"description": authToken.Description,
+		"created_at":  authToken.CreatedAt,
+		"expires_at":  authToken.ExpiresAt,
+		"is_active":   authToken.IsActive,
+	})
+}
+
+// HandleUpdateAuthToken 更新令牌信息
+// PUT /admin/auth-tokens/:id
+func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid token id")
+		return
+	}
+
+	var req struct {
+		Description *string `json:"description"`
+		IsActive    *bool   `json:"is_active"`
+		ExpiresAt   *int64  `json:"expires_at"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// 获取现有令牌
+	token, err := s.store.GetAuthToken(ctx, id)
+	if err != nil {
+		RespondErrorMsg(c, http.StatusNotFound, "token not found")
+		return
+	}
+
+	// 更新字段
+	if req.Description != nil {
+		token.Description = *req.Description
+	}
+	if req.IsActive != nil {
+		token.IsActive = *req.IsActive
+	}
+	if req.ExpiresAt != nil {
+		token.ExpiresAt = req.ExpiresAt
+	}
+
+	if err := s.store.UpdateAuthToken(ctx, token); err != nil {
+		util.SafePrint("❌ 更新令牌失败: " + err.Error())
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	// 触发热更新
+	if err := s.authService.ReloadAuthTokens(); err != nil {
+		util.SafePrint("⚠️  热更新失败: " + err.Error())
+	}
+
+	util.SafePrintf("✅ 更新API令牌: ID=%d", id)
+
+	// 返回脱敏后的令牌信息
+	token.Token = model.MaskToken(token.Token)
+	RespondJSON(c, http.StatusOK, token)
+}
+
+// HandleDeleteAuthToken 删除令牌
+// DELETE /admin/auth-tokens/:id
+func (s *Server) HandleDeleteAuthToken(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid token id")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := s.store.DeleteAuthToken(ctx, id); err != nil {
+		util.SafePrint("❌ 删除令牌失败: " + err.Error())
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	// 触发热更新
+	if err := s.authService.ReloadAuthTokens(); err != nil {
+		util.SafePrint("⚠️  热更新失败: " + err.Error())
+	}
+
+	util.SafePrintf("✅ 删除API令牌: ID=%d", id)
+
+	RespondJSON(c, http.StatusOK, gin.H{"id": id})
+}

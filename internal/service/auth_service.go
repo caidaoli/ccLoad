@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"ccLoad/internal/config"
+	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
@@ -30,7 +33,11 @@ type AuthService struct {
 	tokensMux   sync.RWMutex         // 并发保护
 
 	// API 认证（代理 API 使用的静态 Token）
-	authTokens map[string]bool // 静态认证令牌集合
+	authTokens    map[string]bool // 静态认证令牌集合
+	authTokensMux sync.RWMutex    // 并发保护（支持热更新）
+
+	// 数据库依赖（用于热更新令牌）
+	store storage.Store
 
 	// 速率限制（防暴力破解）
 	loginRateLimiter *util.LoginRateLimiter
@@ -41,12 +48,14 @@ func NewAuthService(
 	password string,
 	authTokens map[string]bool,
 	loginRateLimiter *util.LoginRateLimiter,
+	store storage.Store,
 ) *AuthService {
 	return &AuthService{
 		password:         password,
 		validTokens:      make(map[string]time.Time),
 		authTokens:       authTokens,
 		loginRateLimiter: loginRateLimiter,
+		store:            store,
 	}
 }
 
@@ -149,35 +158,68 @@ func (s *AuthService) RequireTokenAuth() gin.HandlerFunc {
 func (s *AuthService) RequireAPIAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 未配置认证令牌时，默认全部返回 401（不允许公开访问）
-		if len(s.authTokens) == 0 {
+		s.authTokensMux.RLock()
+		tokenCount := len(s.authTokens)
+		s.authTokensMux.RUnlock()
+
+		if tokenCount == 0 {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or missing authorization"})
 			c.Abort()
 			return
 		}
+
+		var token string
+		var tokenFound bool
 
 		// 检查 Authorization 头（Bearer token）
 		authHeader := c.GetHeader("Authorization")
 		if authHeader != "" {
 			const prefix = "Bearer "
 			if strings.HasPrefix(authHeader, prefix) {
-				token := strings.TrimPrefix(authHeader, prefix)
-				if s.authTokens[token] {
-					c.Next()
-					return
-				}
+				token = strings.TrimPrefix(authHeader, prefix)
+				tokenFound = true
 			}
 		}
 
 		// 检查 X-API-Key 头
-		apiKey := c.GetHeader("X-API-Key")
-		if apiKey != "" && s.authTokens[apiKey] {
-			c.Next()
-			return
+		if !tokenFound {
+			apiKey := c.GetHeader("X-API-Key")
+			if apiKey != "" {
+				token = apiKey
+				tokenFound = true
+			}
 		}
 
 		// 检查 x-goog-api-key 头（Google API格式）
-		googApiKey := c.GetHeader("x-goog-api-key")
-		if googApiKey != "" && s.authTokens[googApiKey] {
+		if !tokenFound {
+			googApiKey := c.GetHeader("x-goog-api-key")
+			if googApiKey != "" {
+				token = googApiKey
+				tokenFound = true
+			}
+		}
+
+		if !tokenFound {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or missing authorization"})
+			c.Abort()
+			return
+		}
+
+		// 计算令牌哈希并验证
+		tokenHash := model.HashToken(token)
+
+		s.authTokensMux.RLock()
+		isValid := s.authTokens[tokenHash]
+		s.authTokensMux.RUnlock()
+
+		if isValid {
+			// 异步更新last_used_at（不阻塞请求）
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				_ = s.store.UpdateTokenLastUsed(ctx, tokenHash, time.Now())
+			}()
+
 			c.Next()
 			return
 		}
@@ -265,4 +307,34 @@ func (s *AuthService) HandleLogout(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "已登出"})
+}
+
+// ============================================================================
+// API令牌热更新
+// ============================================================================
+
+// ReloadAuthTokens 从数据库重新加载API访问令牌
+// 用于CRUD操作后立即生效，无需重启服务
+func (s *AuthService) ReloadAuthTokens() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tokens, err := s.store.ListActiveAuthTokens(ctx)
+	if err != nil {
+		return fmt.Errorf("reload auth tokens: %w", err)
+	}
+
+	// 构建新的令牌映射
+	newTokens := make(map[string]bool, len(tokens))
+	for _, t := range tokens {
+		newTokens[t.Token] = true
+	}
+
+	// 原子替换（避免读写竞争）
+	s.authTokensMux.Lock()
+	s.authTokens = newTokens
+	s.authTokensMux.Unlock()
+
+	util.SafePrintf("🔄 API令牌已热更新（%d个有效令牌）", len(newTokens))
+	return nil
 }

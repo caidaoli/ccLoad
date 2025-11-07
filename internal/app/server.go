@@ -245,6 +245,7 @@ func NewServer(store storage.Store) *Server {
 		password,
 		authTokens,
 		s.loginRateLimiter,
+		store, // 传入store用于热更新令牌
 	)
 
 	// 启动后台清理协程（Token 认证）
@@ -398,6 +399,12 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/stats", s.HandleStats)
 		admin.GET("/cooldown/stats", s.HandleCooldownStats)
 		admin.GET("/cache/stats", s.HandleCacheStats)
+
+		// API访问令牌管理
+		admin.GET("/auth-tokens", s.HandleListAuthTokens)
+		admin.POST("/auth-tokens", s.HandleCreateAuthToken)
+		admin.PUT("/auth-tokens/:id", s.HandleUpdateAuthToken)
+		admin.DELETE("/auth-tokens/:id", s.HandleDeleteAuthToken)
 	}
 
 	// 静态文件服务（安全）：使用框架自带的静态文件路由，自动做路径清理，防止目录遍历

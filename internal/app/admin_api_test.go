@@ -503,6 +503,16 @@ func setupTestServer(t *testing.T) (*Server, func()) {
 	)
 	server.logService.StartWorkers()
 
+	// ✅ 初始化 AuthService（Token管理需要）
+	authTokens := make(map[string]bool)
+	authTokens["test-token"] = true
+	server.authService = service.NewAuthService(
+		"test-password",
+		authTokens,
+		nil, // loginRateLimiter
+		store,
+	)
+
 	server.channelCache = storage.NewChannelCache(store, time.Minute)
 
 	cleanup := func() {

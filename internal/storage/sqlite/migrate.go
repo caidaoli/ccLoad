@@ -127,6 +127,22 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		fmt.Printf("Warning: Failed to migrate existing model data: %v\n", err)
 	}
 
+	// 创建 auth_tokens 表 (API访问令牌管理)
+	if _, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS auth_tokens (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			token TEXT NOT NULL UNIQUE,
+			description TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			expires_at INTEGER,
+			last_used_at INTEGER,
+			is_active INTEGER NOT NULL DEFAULT 1,
+			CHECK (is_active IN (0, 1))
+		);
+	`); err != nil {
+		return fmt.Errorf("create auth_tokens table: %w", err)
+	}
+
 	// 创建性能索引
 	if _, err := s.db.ExecContext(ctx, `
 		-- 渠道表索引
@@ -140,6 +156,11 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_api_keys_channel_id ON api_keys(channel_id);
 		CREATE INDEX IF NOT EXISTS idx_api_keys_cooldown ON api_keys(cooldown_until);
 		CREATE INDEX IF NOT EXISTS idx_api_keys_channel_cooldown ON api_keys(channel_id, cooldown_until);
+
+		-- Auth Tokens 表索引
+		CREATE INDEX IF NOT EXISTS idx_auth_tokens_active ON auth_tokens(is_active);
+		CREATE INDEX IF NOT EXISTS idx_auth_tokens_expires ON auth_tokens(expires_at);
+		CREATE INDEX IF NOT EXISTS idx_auth_tokens_token ON auth_tokens(token);
 	`); err != nil {
 		return fmt.Errorf("create performance indexes: %w", err)
 	}
