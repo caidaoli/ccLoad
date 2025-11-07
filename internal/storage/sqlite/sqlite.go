@@ -41,6 +41,9 @@ type RedisSync interface {
 	IsEnabled() bool
 	LoadChannelsWithKeysFromRedis(ctx context.Context) ([]*model.ChannelWithKeys, error)
 	SyncAllChannelsWithKeys(ctx context.Context, channels []*model.ChannelWithKeys) error
+	// Auth Tokens同步 (新增 2025-11)
+	SyncAllAuthTokens(ctx context.Context, tokens []*model.AuthToken) error
+	LoadAuthTokensFromRedis(ctx context.Context) ([]*model.AuthToken, error)
 }
 
 // maskAPIKey 将API Key掩码为 "abcd...klmn" 格式（前4位 + ... + 后4位）

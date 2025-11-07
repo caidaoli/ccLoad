@@ -914,17 +914,16 @@ func (s *SQLiteStore) LoadChannelsFromRedis(ctx context.Context) error {
 		return fmt.Errorf("load from redis: %w", err)
 	}
 
-	if len(channelsWithKeys) == 0 {
-		log.Print("No channels found in Redis")
-		return nil
-	}
+	// ============================================================================
+	// 恢复channels和API Keys (仅当有数据时执行)
+	// ============================================================================
+	if len(channelsWithKeys) > 0 {
+		// 使用事务高阶函数，确保数据一致性（ACID原则 + DRY原则）
+		nowUnix := time.Now().Unix()
+		successCount := 0
+		totalKeysRestored := 0
 
-	// 使用事务高阶函数，确保数据一致性（ACID原则 + DRY原则）
-	nowUnix := time.Now().Unix()
-	successCount := 0
-	totalKeysRestored := 0
-
-	err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
 		for _, cwk := range channelsWithKeys {
 			config := cwk.Config
 
@@ -991,15 +990,31 @@ func (s *SQLiteStore) LoadChannelsFromRedis(ctx context.Context) error {
 
 			successCount++
 		}
-		return nil
-	})
+			return nil
+		})
 
-	if err != nil {
-		return err
+		if err != nil {
+			return err
+		}
+
+		log.Printf("Successfully restored %d/%d channels and %d API Keys from Redis",
+			successCount, len(channelsWithKeys), totalKeysRestored)
+	} else {
+		log.Print("No channels found in Redis")
 	}
 
-	log.Printf("Successfully restored %d/%d channels and %d API Keys from Redis",
-		successCount, len(channelsWithKeys), totalKeysRestored)
+	// ============================================================================
+	// 恢复auth_tokens表 (新增 2025-11)
+	// 注意: 即使没有channels，也要尝试恢复auth_tokens
+	// ============================================================================
+	tokensRestored, err := s.loadAuthTokensFromRedis(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to restore auth tokens from Redis: %w", err)
+	}
+	if tokensRestored > 0 {
+		log.Printf("Successfully restored %d auth tokens from Redis", tokensRestored)
+	}
+
 	return nil
 }
 
@@ -1144,9 +1159,93 @@ func (s *SQLiteStore) triggerAsyncSync() {
 
 // doSyncAllChannels 实际执行同步操作（worker内部调用）
 // ✅ 修复（2025-10-10）：切换到完整同步API，确保API Keys同步
+// ✅ 扩展（2025-11）：同时同步auth_tokens表
 func (s *SQLiteStore) doSyncAllChannels(ctx context.Context) error {
-	// 直接调用SyncAllChannelsToRedis，避免重复逻辑
-	return s.SyncAllChannelsToRedis(ctx)
+	// 1. 同步channels和API Keys
+	if err := s.SyncAllChannelsToRedis(ctx); err != nil {
+		return fmt.Errorf("sync channels: %w", err)
+	}
+
+	// 2. 同步auth_tokens (新增 2025-11)
+	if err := s.syncAuthTokensToRedis(ctx); err != nil {
+		return fmt.Errorf("sync auth tokens: %w", err)
+	}
+
+	return nil
+}
+
+// syncAuthTokensToRedis 同步所有AuthToken到Redis (内部方法)
+// ✅ 新增（2025-11）：完整同步认证令牌表
+func (s *SQLiteStore) syncAuthTokensToRedis(ctx context.Context) error {
+	if !s.redisSync.IsEnabled() {
+		return nil
+	}
+
+	// 读取所有令牌（包括过期和禁用的，确保完整备份）
+	tokens, err := s.ListAuthTokens(ctx)
+	if err != nil {
+		return fmt.Errorf("list auth tokens: %w", err)
+	}
+
+	log.Printf("Syncing %d auth tokens to Redis...", len(tokens))
+
+	// 同步到Redis
+	if err := s.redisSync.SyncAllAuthTokens(ctx, tokens); err != nil {
+		return err
+	}
+
+	if len(tokens) > 0 {
+		log.Printf("✅ Successfully synced %d auth tokens to Redis", len(tokens))
+	}
+
+	return nil
+}
+
+// loadAuthTokensFromRedis 从Redis恢复所有AuthToken到SQLite (内部方法)
+// ✅ 新增（2025-11）：支持auth_tokens表的灾难恢复
+// 返回: 成功恢复的令牌数量
+func (s *SQLiteStore) loadAuthTokensFromRedis(ctx context.Context) (int, error) {
+	if !s.redisSync.IsEnabled() {
+		return 0, nil
+	}
+
+	// 从Redis加载所有令牌
+	tokens, err := s.redisSync.LoadAuthTokensFromRedis(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	if len(tokens) == 0 {
+		log.Print("No auth tokens found in Redis to restore")
+		return 0, nil
+	}
+
+	// 使用INSERT OR REPLACE批量恢复
+	restoredCount := 0
+	for _, token := range tokens {
+		var expiresAt, lastUsedAt any
+		if token.ExpiresAt != nil {
+			expiresAt = *token.ExpiresAt
+		}
+		if token.LastUsedAt != nil {
+			lastUsedAt = *token.LastUsedAt
+		}
+
+		_, err := s.db.ExecContext(ctx, `
+			INSERT OR REPLACE INTO auth_tokens
+			(id, token, description, created_at, expires_at, last_used_at, is_active)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, token.ID, token.Token, token.Description, token.CreatedAt.UnixMilli(),
+			expiresAt, lastUsedAt, token.IsActive)
+
+		if err != nil {
+			log.Printf("Warning: failed to restore auth token %d: %v", token.ID, err)
+			continue
+		}
+		restoredCount++
+	}
+
+	return restoredCount, nil
 }
 
 // normalizeChannelsWithKeys 规范化ChannelWithKeys对象的默认值（2025-10-10新增）

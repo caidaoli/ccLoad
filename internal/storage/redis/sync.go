@@ -148,3 +148,61 @@ func (rs *RedisSync) HealthCheck(ctx context.Context) error {
 
 	return rs.client.Ping(ctxWithTimeout).Err()
 }
+
+// ============================================================================
+// Auth Tokens Sync - 认证令牌同步 (新增 2025-11)
+// ============================================================================
+
+const authTokensKey = "ccload:auth_tokens"
+
+// SyncAllAuthTokens 全量同步所有AuthToken到Redis
+// 设计: 使用独立的Redis Key存储,与channels分离
+func (rs *RedisSync) SyncAllAuthTokens(ctx context.Context, tokens []*model.AuthToken) error {
+	if !rs.enabled {
+		return nil
+	}
+
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, rs.timeout*2)
+	defer cancel()
+
+	// 序列化为JSON数组
+	data, err := sonic.Marshal(tokens)
+	if err != nil {
+		return fmt.Errorf("marshal auth tokens: %w", err)
+	}
+
+	// 原子写入Redis (覆盖整个key)
+	return rs.client.Set(ctxWithTimeout, authTokensKey, data, 0).Err()
+}
+
+// LoadAuthTokensFromRedis 从Redis加载所有AuthToken
+// 返回: 空数组表示Redis中无数据,error表示读取失败
+func (rs *RedisSync) LoadAuthTokensFromRedis(ctx context.Context) ([]*model.AuthToken, error) {
+	if !rs.enabled {
+		return nil, nil
+	}
+
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, rs.timeout*2)
+	defer cancel()
+
+	// 读取JSON数据
+	data, err := rs.client.Get(ctxWithTimeout, authTokensKey).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return []*model.AuthToken{}, nil // Key不存在,返回空数组
+		}
+		return nil, fmt.Errorf("redis get auth tokens: %w", err)
+	}
+
+	// 解析JSON
+	var tokens []*model.AuthToken
+	if err := sonic.Unmarshal([]byte(data), &tokens); err != nil {
+		return nil, fmt.Errorf("unmarshal auth tokens: %w", err)
+	}
+
+	if tokens == nil {
+		return []*model.AuthToken{}, nil
+	}
+
+	return tokens, nil
+}
