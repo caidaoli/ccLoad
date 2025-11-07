@@ -86,13 +86,15 @@ func (m *Manager) AddValidator(v ChannelValidator) {
 // ValidateChannel 验证渠道是否可用
 //
 // 参数:
-//   ctx - 上下文
-//   cfg - 渠道配置
-//   apiKey - API Key
+//
+//	ctx - 上下文
+//	cfg - 渠道配置
+//	apiKey - API Key
 //
 // 返回:
-//   available - 渠道是否可用
-//   reason - 不可用时的原因(如果所有验证器都通过,返回空字符串)
+//
+//	available - 渠道是否可用
+//	reason - 不可用时的原因(如果所有验证器都通过,返回空字符串)
 //
 // 验证策略:
 // - 遍历所有验证器,执行ShouldValidate判断

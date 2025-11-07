@@ -114,7 +114,6 @@ docker pull ghcr.io/caidaoli/ccload:latest
 docker run -d --name ccload \
   -p 8080:8080 \
   -e CCLOAD_PASS=your_secure_password \
-  -e CCLOAD_AUTH=your_api_token \
   -v ccload_data:/app/data \
   ghcr.io/caidaoli/ccload:latest
 ```
@@ -133,7 +132,6 @@ docker build -t ccload:local .
 docker run -d --name ccload \
   -p 8080:8080 \
   -e CCLOAD_PASS=your_secure_password \
-  -e CCLOAD_AUTH=your_api_token \
   -v ccload_data:/app/data \
   ccload:local
 ```
@@ -234,8 +232,9 @@ Hugging Face Spaces 提供免费的容器托管服务，支持 Docker 应用，�
    | 变量名 | 值 | 必填 | 说明 |
    |--------|-----|------|------|
    | `CCLOAD_PASS` | `your_admin_password` | ✅ **必填** | 管理界面密码 |
-   | `CCLOAD_AUTH` | `token1,token2` | ✅ **必填** | API 访问令牌（多个用逗号分隔；访问 /v1/* API 必须设置，否则返回 401） |
    | `REDIS_URL` | `rediss://user:pass@host:port` | ⚪ 可选 | Redis 连接地址，用于渠道数据备份和恢复 |
+
+   **注意**: API 访问令牌现在通过 Web 管理界面 `/web/tokens.html` 进行配置，不再通过环境变量设置。
 
    **Redis URL 格式说明**:
    ```
@@ -284,7 +283,7 @@ Hugging Face Spaces 提供免费的容器托管服务，支持 Docker 应用，�
 - ⚠️ **资源限制**: 免费版提供 2 CPU + 16GB RAM
 - ⚠️ **休眠策略**: 48 小时无访问会进入休眠，首次访问需等待唤醒（约 20-30 秒）
 - ⚠️ **固定端口**: 必须使用 7860 端口
-- ⚠️ **公网访问**: Space 默认公开，必须设置 `CCLOAD_AUTH` 才能访问 /v1/* API（否则 401）
+- ⚠️ **公网访问**: Space 默认公开，必须通过 Web 管理界面配置 API 访问令牌才能访问 /v1/* API（否则 401）
 
 #### 数据持久化
 
@@ -352,13 +351,11 @@ EXPOSE 7860
 ```bash
 # 设置环境变量
 export CCLOAD_PASS=your_admin_password
-export CCLOAD_AUTH=token1,token2,token3  # API 访问令牌（访问 /v1/* 必须设置）
 export PORT=8080
 export SQLITE_PATH=./data/ccload.db
 
 # 或使用 .env 文件
 echo "CCLOAD_PASS=your_admin_password" > .env
-echo "CCLOAD_AUTH=your_api_token" >> .env
 echo "PORT=8080" >> .env
 echo "SQLITE_PATH=./data/ccload.db" >> .env
 
@@ -369,12 +366,15 @@ echo "SQLITE_PATH=./data/ccload.db" >> .env
 服务启动后访问：
 - 管理界面：`http://localhost:8080/web/`
 - API 代理：`POST http://localhost:8080/v1/messages`
+- **API 令牌管理**：`http://localhost:8080/web/tokens.html` - 通过 Web 界面配置 API 访问令牌
 
 ## 📖 使用说明
 
 ### API 代理
 
 **Claude API 代理（需授权）**：
+
+首先，在 Web 管理界面 `http://localhost:8080/web/tokens.html` 配置 API 访问令牌，然后使用该令牌访问 API：
 
 ```bash
 curl -X POST http://localhost:8080/v1/messages \
@@ -420,7 +420,7 @@ curl -X POST http://localhost:8080/v1/messages/count_tokens \
 - ✅ 本地计算，响应 <5ms，不消耗 API 配额
 - ✅ 准确度 93%+（与官方 API 对比）
 - ✅ 支持系统提示词、工具定义、大规模工具场景
-- ✅ 需授权令牌访问（未提供 CCLOAD_AUTH 时返回 401）
+- ✅ 需授权令牌访问（在 Web 管理界面 `/web/tokens.html` 配置令牌）
 
 ### 渠道管理
 
@@ -545,7 +545,6 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
 | `CCLOAD_PASS` | 无 | 管理界面密码（**必填**，未设置将退出） |
-| `CCLOAD_AUTH` | 无 | API 访问令牌（多个用逗号分隔；访问 /v1/* API **必须设置**，否则返回 401） |
 | `PORT` | `8080` | 服务端口 |
 | `GIN_MODE` | `debug` | 运行模式（`debug`/`release`） |
 | `SQLITE_PATH` | `data/ccload.db` | 数据库文件路径 |
@@ -560,10 +559,19 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 | `REDIS_URL` | 无 | Redis连接URL（可选，用于渠道数据异步备份） |
 | `GOTAGS` | `go_json` | 构建标签（`go_json`/`std`，go_json使用高性能JSON库） |
 
+#### API 访问令牌配置
+
+**重要**: API 访问令牌现在通过 Web 管理界面进行配置，不再使用环境变量。
+
+- 访问 `http://localhost:8080/web/tokens.html` 进行令牌管理
+- 支持添加、删除、查看令牌
+- 所有令牌存储在数据库中，支持持久化
+- 未配置任何令牌时，所有 `/v1/*` 与 `/v1beta/*` API 返回 `401 Unauthorized`
+
 #### 行为摘要
 
 - 未设置 `CCLOAD_PASS`：程序启动失败并退出（安全默认）。
-- 未设置 `CCLOAD_AUTH`：所有 `/v1/*` 与 `/v1beta/*` API 返回 `401 Unauthorized`。
+- 未配置 API 访问令牌：所有 `/v1/*` 与 `/v1beta/*` API 返回 `401 Unauthorized`。通过 Web 界面 `/web/tokens.html` 配置令牌。
 - 公开端点：仅 `GET /public/summary` 无需认证，其他端点均需授权令牌。
 
 ### Docker 镜像
@@ -614,7 +622,7 @@ docker pull --platform linux/arm64 ghcr.io/caidaoli/ccload:latest
 ## 🛡️ 安全考虑
 
 - 生产环境必须设置强密码 `CCLOAD_PASS`
-- 建议设置 `CCLOAD_AUTH` 以保护 API 端点访问
+- 通过 Web 管理界面 `/web/tokens.html` 配置 API 访问令牌以保护 API 端点访问
 - API Key 仅在内存使用，不记录日志
 - Token 存储在客户端 localStorage，24小时有效期
 - 建议使用 HTTPS 反向代理

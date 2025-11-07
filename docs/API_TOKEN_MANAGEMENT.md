@@ -260,22 +260,21 @@ http://localhost:8080/login
 1. 检查数据库连接是否正常
 2. 重启服务：`make dev` 或 `./ccload`
 
-## 迁移指南
+## 首次配置指南
 
-### 从环境变量迁移
+### 初始化 API 访问令牌
 
-如果当前使用`CCLOAD_AUTH=token1,token2`：
+服务启动后，API 访问需要配置令牌：
 
-1. **保留环境变量**（向后兼容）
-2. **迁移到数据库**：
-   ```bash
-   # 为每个现有Token创建数据库记录
-   curl -X POST http://localhost:8080/admin/auth-tokens \
-     -H "Content-Type: application/json" \
-     -d '{"description": "迁移：token1"}'
-   ```
-3. **验证新Token**：确认可以正常访问API
-4. **清理环境变量**：从`.env`中移除`CCLOAD_AUTH`
+1. **登录管理后台**：使用 `CCLOAD_PASS` 密码登录
+2. **创建首个令牌**：
+   - 访问 `http://localhost:8080/web/tokens.html`
+   - 点击"创建令牌"
+   - 填写描述（如："生产环境主令牌"）
+   - 选择过期时间或设置为永不过期
+   - 保存并复制生成的令牌（仅显示一次）
+3. **验证令牌**：使用新令牌测试 API 访问
+4. **批量创建**：根据需要创建多个令牌用于不同场景
 
 ## 更新日志
 

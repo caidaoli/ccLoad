@@ -19,14 +19,12 @@ import (
 func TestMain(m *testing.M) {
 	// 为测试设置必需的环境变量
 	os.Setenv("CCLOAD_PASS", "test_password_123")
-	os.Setenv("CCLOAD_AUTH", "test_token_456")
 
 	// 运行测试
 	code := m.Run()
 
 	// 清理
 	os.Unsetenv("CCLOAD_PASS")
-	os.Unsetenv("CCLOAD_AUTH")
 
 	os.Exit(code)
 }

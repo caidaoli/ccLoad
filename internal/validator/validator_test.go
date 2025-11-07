@@ -207,14 +207,22 @@ func TestManager_ValidateChannel_ShouldValidateFilter(t *testing.T) {
 // TestManager_ValidateChannel_MultipleValidators 测试多个验证器的组合
 func TestManager_ValidateChannel_MultipleValidators(t *testing.T) {
 	tests := []struct {
-		name      string
-		results   []struct{ available bool; reason string; err error }
+		name    string
+		results []struct {
+			available bool
+			reason    string
+			err       error
+		}
 		expected  bool
 		expReason string
 	}{
 		{
 			name: "所有通过",
-			results: []struct{ available bool; reason string; err error }{
+			results: []struct {
+				available bool
+				reason    string
+				err       error
+			}{
 				{true, "", nil},
 				{true, "", nil},
 				{true, "", nil},
@@ -224,7 +232,11 @@ func TestManager_ValidateChannel_MultipleValidators(t *testing.T) {
 		},
 		{
 			name: "第一个失败",
-			results: []struct{ available bool; reason string; err error }{
+			results: []struct {
+				available bool
+				reason    string
+				err       error
+			}{
 				{false, "first failed", nil},
 				{true, "", nil}, // 不应该执行
 			},
@@ -233,7 +245,11 @@ func TestManager_ValidateChannel_MultipleValidators(t *testing.T) {
 		},
 		{
 			name: "第一个错误,第二个失败",
-			results: []struct{ available bool; reason string; err error }{
+			results: []struct {
+				available bool
+				reason    string
+				err       error
+			}{
 				{false, "", errors.New("network error")}, // 错误,继续
 				{false, "second failed", nil},            // 失败,中断
 			},
@@ -242,12 +258,16 @@ func TestManager_ValidateChannel_MultipleValidators(t *testing.T) {
 		},
 		{
 			name: "所有错误",
-			results: []struct{ available bool; reason string; err error }{
+			results: []struct {
+				available bool
+				reason    string
+				err       error
+			}{
 				{false, "", errors.New("error1")},
 				{false, "", errors.New("error2")},
 				{false, "", errors.New("error3")},
 			},
-			expected:  true,  // 所有错误时防御性策略允许通过
+			expected:  true, // 所有错误时防御性策略允许通过
 			expReason: "",
 		},
 	}

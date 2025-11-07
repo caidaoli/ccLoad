@@ -11,9 +11,9 @@ services:
       - PORT=8080
       - SQLITE_PATH=/app/data/ccload.db
       - GIN_MODE=release
-      # 必填：未设置将无法启动或访问 API
+      # 必填：未设置将无法启动
       - CCLOAD_PASS=your_admin_password
-      - CCLOAD_AUTH=your_api_tokens   # 访问 /v1/* 与 /v1beta/* 必须设置，否则返回 401
+      # API访问令牌通过Web界面管理: http://localhost:8080/web/tokens.html
     volumes:
       - ccload_data:/app/data
     healthcheck:

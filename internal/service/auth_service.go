@@ -20,8 +20,8 @@ import (
 
 // AuthService 认证和授权服务
 // 职责：处理所有认证和授权相关的业务逻辑
-// - Token 认证（动态令牌）
-// - API 认证（静态令牌）
+// - Token 认证（管理界面动态令牌）
+// - API 认证（数据库驱动的访问令牌）
 // - 登录/登出处理
 // - 速率限制（防暴力破解）
 //
@@ -32,8 +32,8 @@ type AuthService struct {
 	validTokens map[string]time.Time // Token → 过期时间
 	tokensMux   sync.RWMutex         // 并发保护
 
-	// API 认证（代理 API 使用的静态 Token）
-	authTokens    map[string]bool // 静态认证令牌集合
+	// API 认证（代理 API 使用的数据库令牌）
+	authTokens    map[string]bool // 数据库令牌集合（SHA256哈希）
 	authTokensMux sync.RWMutex    // 并发保护（支持热更新）
 
 	// 数据库依赖（用于热更新令牌）
@@ -44,19 +44,26 @@ type AuthService struct {
 }
 
 // NewAuthService 创建认证服务实例
+// 初始化时自动从数据库加载API访问令牌
 func NewAuthService(
 	password string,
-	authTokens map[string]bool,
 	loginRateLimiter *util.LoginRateLimiter,
 	store storage.Store,
 ) *AuthService {
-	return &AuthService{
+	s := &AuthService{
 		password:         password,
 		validTokens:      make(map[string]time.Time),
-		authTokens:       authTokens,
+		authTokens:       make(map[string]bool),
 		loginRateLimiter: loginRateLimiter,
 		store:            store,
 	}
+
+	// 从数据库加载API访问令牌
+	if err := s.ReloadAuthTokens(); err != nil {
+		util.SafePrintf("⚠️  初始化时加载API令牌失败: %v", err)
+	}
+
+	return s
 }
 
 // ============================================================================
@@ -127,7 +134,7 @@ func (s *AuthService) CleanExpiredTokens() {
 // RequireTokenAuth Token 认证中间件（管理界面使用）
 func (s *AuthService) RequireTokenAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 优先从 Authorization 头获取Token
+		// 从 Authorization 头获取Token
 		authHeader := c.GetHeader("Authorization")
 		if authHeader != "" {
 			const prefix = "Bearer "
@@ -136,12 +143,6 @@ func (s *AuthService) RequireTokenAuth() gin.HandlerFunc {
 
 				// 检查动态Token（登录生成的24小时Token）
 				if s.isValidToken(token) {
-					c.Next()
-					return
-				}
-
-				// 检查静态Token（CCLOAD_AUTH配置的永久Token）
-				if len(s.authTokens) > 0 && s.authTokens[token] {
 					c.Next()
 					return
 				}

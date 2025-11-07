@@ -48,8 +48,9 @@ go fmt ./... && go vet ./...
 必需环境变量(否则程序退出):
 ```bash
 export CCLOAD_PASS=your_admin_password    # 管理界面密码(必填)
-export CCLOAD_AUTH=token1,token2          # API访问令牌(访问/v1/*必填)
 ```
+
+**API访问令牌管理**: API Token 现已通过 Web 管理界面管理，访问 `/web/tokens.html` 进行添加、删除和查看。不再支持通过环境变量配置。
 
 可选配置:
 ```bash

@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -69,35 +68,7 @@ func NewServer(store storage.Store) *Server {
 	}
 
 	util.SafePrint("✅ 管理员密码已从环境变量加载（长度: ", len(password), " 字符）")
-
-	// 解析 API 认证令牌
-	authTokens := make(map[string]bool)
-	if authEnv := os.Getenv("CCLOAD_AUTH"); authEnv != "" {
-		tokens := strings.SplitSeq(authEnv, ",")
-		for token := range tokens {
-			token = strings.TrimSpace(token)
-			if token != "" {
-				authTokens[token] = true
-			}
-		}
-	}
-
-	// 生产环境强制检查 CCLOAD_AUTH
-	// 设计原则：Fail-Fast，避免生产环境配置错误导致安全风险
-	ginMode := os.Getenv("GIN_MODE")
-	if ginMode != "debug" && ginMode != "test" && len(authTokens) == 0 {
-		util.SafePrint("❌ 严重错误：生产环境必须设置 CCLOAD_AUTH 环境变量以保护 API 端点")
-		util.SafePrint("   当前模式: " + ginMode)
-		util.SafePrint("   请设置格式：CCLOAD_AUTH=token1,token2,token3")
-		util.SafePrint("   建议生成方法：openssl rand -hex 32")
-		os.Exit(1)
-	}
-
-	if len(authTokens) == 0 {
-		util.SafePrint("⚠️  警告：未设置 CCLOAD_AUTH，所有 /v1/* API 请求将被拒绝（401）")
-	} else {
-		util.SafePrint("✅ API 认证已启用（" + strconv.Itoa(len(authTokens)) + " 个令牌配置）")
-	}
+	util.SafePrint("ℹ️  API访问令牌将从数据库动态加载（支持Web界面管理）")
 
 	// 解析最大Key重试次数（避免key过多时重试次数过多）
 	maxKeyRetries := config.DefaultMaxKeyRetries
@@ -241,9 +212,9 @@ func NewServer(store storage.Store) *Server {
 	s.logService.StartCleanupLoop()
 
 	// 2. AuthService（负责认证授权）
+	// 初始化时自动从数据库加载API访问令牌
 	s.authService = service.NewAuthService(
 		password,
-		authTokens,
 		s.loginRateLimiter,
 		store, // 传入store用于热更新令牌
 	)
