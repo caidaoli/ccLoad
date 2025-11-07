@@ -184,8 +184,13 @@ func Test_HandleProxySuccess_Basic(t *testing.T) {
 		FirstByteTime: 0.05,
 	}
 
+	// 创建测试用的请求上下文（新增参数，2025-11）
+	reqCtx := &proxyRequestContext{
+		tokenHash: "", // 测试环境无需Token统计
+	}
+
 	result, retryKey, retryChannel := srv.handleProxySuccess(
-		ctx, cfg, 0, "test-model", "test-key", res, 0.1,
+		ctx, cfg, 0, "test-model", "test-key", res, 0.1, reqCtx,
 	)
 
 	if result == nil {

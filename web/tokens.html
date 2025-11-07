@@ -70,6 +70,36 @@
       background: var(--error-100);
       color: var(--error-700);
     }
+    .stats-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      background: var(--neutral-100);
+      color: var(--neutral-700);
+    }
+    .success-rate-high {
+      background: var(--success-100);
+      color: var(--success-700);
+    }
+    .success-rate-medium {
+      background: var(--warning-100);
+      color: var(--warning-700);
+    }
+    .success-rate-low {
+      background: var(--error-100);
+      color: var(--error-700);
+    }
+    .metric-value {
+      font-weight: 600;
+      color: var(--neutral-900);
+    }
+    .metric-label {
+      font-size: 11px;
+      color: var(--neutral-600);
+      margin-top: 2px;
+    }
     .modal {
       display: none;
       position: fixed;
@@ -335,6 +365,10 @@
               <th>描述</th>
               <th>令牌</th>
               <th>状态</th>
+              <th style="text-align: center;">调用次数</th>
+              <th style="text-align: center;">成功率</th>
+              <th style="text-align: center;">流式首字平均响应</th>
+              <th style="text-align: center;">非流式平均响应</th>
               <th>创建时间</th>
               <th>最后使用</th>
               <th>过期时间</th>
@@ -358,6 +392,26 @@
       const expiresAt = token.expires_at ? new Date(token.expires_at).toLocaleString('zh-CN') : '永不过期';
       const isSelected = selectedTokenIds.has(token.id);
 
+      // 计算统计信息
+      const successCount = token.success_count || 0;
+      const failureCount = token.failure_count || 0;
+      const totalCount = successCount + failureCount;
+      const successRate = totalCount > 0 ? ((successCount / totalCount) * 100).toFixed(1) : 0;
+
+      // 成功率样式
+      let successRateClass = 'stats-badge';
+      if (totalCount > 0) {
+        if (successRate >= 95) successRateClass += ' success-rate-high';
+        else if (successRate >= 80) successRateClass += ' success-rate-medium';
+        else successRateClass += ' success-rate-low';
+      }
+
+      // 平均响应时间
+      const streamAvgTTFB = token.stream_avg_ttfb || 0;
+      const nonStreamAvgRT = token.non_stream_avg_rt || 0;
+      const streamCount = token.stream_count || 0;
+      const nonStreamCount = token.non_stream_count || 0;
+
       return `
         <tr>
           <td>
@@ -371,6 +425,39 @@
           <td style="font-weight: 500;">${escapeHtml(token.description)}</td>
           <td><span class="token-display">${escapeHtml(token.token)}</span></td>
           <td><span class="status-badge status-${status.class}">${status.text}</span></td>
+          <td style="text-align: center;">
+            ${totalCount > 0 ? `
+              <div style="display: inline-flex; gap: 8px;">
+                <span class="stats-badge" style="background: var(--success-100); color: var(--success-700);" title="成功调用">
+                  ✓ ${successCount.toLocaleString()}
+                </span>
+                <span class="stats-badge" style="background: var(--error-100); color: var(--error-700);" title="失败调用">
+                  ✗ ${failureCount.toLocaleString()}
+                </span>
+              </div>
+            ` : '<span style="color: var(--neutral-500); font-size: 13px;">-</span>'}
+          </td>
+          <td style="text-align: center;">
+            ${totalCount > 0
+              ? `<span class="${successRateClass}">${successRate}%</span>`
+              : '<span style="color: var(--neutral-500); font-size: 13px;">-</span>'}
+          </td>
+          <td style="text-align: center;">
+            ${streamCount > 0
+              ? `<div>
+                  <div class="metric-value">${(streamAvgTTFB * 1000).toFixed(0)}ms</div>
+                  <div class="metric-label">${streamCount.toLocaleString()}次调用</div>
+                 </div>`
+              : '<span style="color: var(--neutral-500); font-size: 13px;">-</span>'}
+          </td>
+          <td style="text-align: center;">
+            ${nonStreamCount > 0
+              ? `<div>
+                  <div class="metric-value">${(nonStreamAvgRT * 1000).toFixed(0)}ms</div>
+                  <div class="metric-label">${nonStreamCount.toLocaleString()}次调用</div>
+                 </div>`
+              : '<span style="color: var(--neutral-500); font-size: 13px;">-</span>'}
+          </td>
           <td style="color: var(--neutral-600);">${createdAt}</td>
           <td style="color: var(--neutral-600);">${lastUsed}</td>
           <td style="color: var(--neutral-600);">${expiresAt}</td>

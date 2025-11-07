@@ -5,6 +5,7 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 	"context"
+	"time"
 )
 
 // ============================================================================
@@ -117,6 +118,7 @@ func (s *Server) handleProxySuccess(
 	selectedKey string,
 	res *fwResult,
 	duration float64,
+	reqCtx *proxyRequestContext, // ✅ 新增参数（2025-11）
 ) (*proxyResult, bool, bool) {
 	// 使用 cooldownManager 清除冷却状态
 	// 记录清除失败但不中断成功响应
@@ -141,6 +143,15 @@ func (s *Server) handleProxySuccess(
 	s.AddLogAsync(buildLogEntry(actualModel, &cfg.ID, res.Status,
 		duration, isStreaming, selectedKey, res, ""))
 
+	// ✅ 新增：异步更新Token统计（2025-11）
+	if reqCtx.tokenHash != "" {
+		go func() {
+			updateCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_ = s.store.UpdateTokenStats(updateCtx, reqCtx.tokenHash, true, duration, isStreaming, res.FirstByteTime)
+		}()
+	}
+
 	return &proxyResult{
 		status:    res.Status,
 		header:    res.Header,
@@ -162,6 +173,7 @@ func (s *Server) handleProxyErrorResponse(
 	selectedKey string,
 	res *fwResult,
 	duration float64,
+	reqCtx *proxyRequestContext, // ✅ 新增参数（2025-11）
 ) (*proxyResult, bool, bool) {
 	// ✅ 修复：使用 actualModel 而非 reqCtx.originalModel
 	isStreaming := res.FirstByteTime > 0 // 根据首字节时间判断是否为流式请求
@@ -174,6 +186,15 @@ func (s *Server) handleProxyErrorResponse(
 
 	s.AddLogAsync(buildLogEntry(actualModel, &cfg.ID, res.Status,
 		duration, isStreaming, selectedKey, res, errMsg))
+
+	// ✅ 新增：异步更新Token统计（2025-11）
+	if reqCtx.tokenHash != "" {
+		go func() {
+			updateCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_ = s.store.UpdateTokenStats(updateCtx, reqCtx.tokenHash, false, duration, isStreaming, res.FirstByteTime)
+		}()
+	}
 
 	action, _ := s.handleProxyError(ctx, cfg, keyIndex, res, nil)
 	if action == cooldown.ActionReturnClient {

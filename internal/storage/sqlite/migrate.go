@@ -143,6 +143,30 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		return fmt.Errorf("create auth_tokens table: %w", err)
 	}
 
+	// 兼容性迁移：为现有数据库添加统计字段（2025-11新增）
+	statsColumns := []struct {
+		name       string
+		definition string
+	}{
+		{"success_count", "INTEGER DEFAULT 0"},
+		{"failure_count", "INTEGER DEFAULT 0"},
+		{"stream_avg_ttfb", "REAL DEFAULT 0.0"},
+		{"non_stream_avg_rt", "REAL DEFAULT 0.0"},
+		{"stream_count", "INTEGER DEFAULT 0"},
+		{"non_stream_count", "INTEGER DEFAULT 0"},
+	}
+
+	for _, col := range statsColumns {
+		if _, err := s.db.ExecContext(ctx,
+			fmt.Sprintf("ALTER TABLE auth_tokens ADD COLUMN %s %s;", col.name, col.definition),
+		); err != nil {
+			// 忽略列已存在的错误（SQLite error: "duplicate column name"）
+			if !strings.Contains(err.Error(), "duplicate column name") {
+				return fmt.Errorf("add column %s: %w", col.name, err)
+			}
+		}
+	}
+
 	// 创建性能索引
 	if _, err := s.db.ExecContext(ctx, `
 		-- 渠道表索引

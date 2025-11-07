@@ -245,11 +245,11 @@ func (s *Server) forwardAttempt(
 
 	// 处理成功响应
 	if res.Status >= 200 && res.Status < 300 {
-		return s.handleProxySuccess(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration)
+		return s.handleProxySuccess(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
 	}
 
 	// 处理错误响应
-	return s.handleProxyErrorResponse(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration)
+	return s.handleProxyErrorResponse(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
 }
 
 // ============================================================================

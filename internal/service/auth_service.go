@@ -214,6 +214,9 @@ func (s *AuthService) RequireAPIAuth() gin.HandlerFunc {
 		s.authTokensMux.RUnlock()
 
 		if isValid {
+			// 将tokenHash存储到context，供后续统计使用（2025-11新增）
+			c.Set("token_hash", tokenHash)
+
 			// 异步更新last_used_at（不阻塞请求）
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

@@ -296,6 +296,15 @@ func (m *mockRedisSync) SyncAllChannelsWithKeys(ctx context.Context, channels []
 	return nil // 测试环境不执行实际同步
 }
 
+// Auth Tokens 同步方法 (新增 2025-11)
+func (m *mockRedisSync) SyncAllAuthTokens(ctx context.Context, tokens []*model.AuthToken) error {
+	return nil // 测试环境不执行实际同步
+}
+
+func (m *mockRedisSync) LoadAuthTokensFromRedis(ctx context.Context) ([]*model.AuthToken, error) {
+	return nil, nil // 测试环境无需从Redis加载
+}
+
 // 辅助函数：创建带多个Key的测试渠道
 func createTestChannelWithKeys(t *testing.T, store *sqlite.SQLiteStore, keyCount int, strategy string) int64 {
 	ctx := context.Background()

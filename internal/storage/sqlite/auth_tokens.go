@@ -29,8 +29,11 @@ func (s *SQLiteStore) CreateAuthToken(ctx context.Context, token *model.AuthToke
 	}
 
 	result, err := s.db.ExecContext(ctx, `
-		INSERT INTO auth_tokens (token, description, created_at, expires_at, last_used_at, is_active)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO auth_tokens (
+			token, description, created_at, expires_at, last_used_at, is_active,
+			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count
+		)
+		VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0)
 	`, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, token.IsActive)
 
 	if err != nil {
@@ -57,7 +60,9 @@ func (s *SQLiteStore) GetAuthToken(ctx context.Context, id int64) (*model.AuthTo
 	var expiresAt, lastUsedAt sql.NullInt64
 
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, token, description, created_at, expires_at, last_used_at, is_active
+		SELECT
+			id, token, description, created_at, expires_at, last_used_at, is_active,
+			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count
 		FROM auth_tokens
 		WHERE id = ?
 	`, id).Scan(
@@ -68,6 +73,12 @@ func (s *SQLiteStore) GetAuthToken(ctx context.Context, id int64) (*model.AuthTo
 		&expiresAt,
 		&lastUsedAt,
 		&token.IsActive,
+		&token.SuccessCount,
+		&token.FailureCount,
+		&token.StreamAvgTTFB,
+		&token.NonStreamAvgRT,
+		&token.StreamCount,
+		&token.NonStreamCount,
 	)
 
 	if err == sql.ErrNoRows {
@@ -97,7 +108,9 @@ func (s *SQLiteStore) GetAuthTokenByValue(ctx context.Context, tokenHash string)
 	var expiresAt, lastUsedAt sql.NullInt64
 
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, token, description, created_at, expires_at, last_used_at, is_active
+		SELECT
+			id, token, description, created_at, expires_at, last_used_at, is_active,
+			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count
 		FROM auth_tokens
 		WHERE token = ?
 	`, tokenHash).Scan(
@@ -108,6 +121,12 @@ func (s *SQLiteStore) GetAuthTokenByValue(ctx context.Context, tokenHash string)
 		&expiresAt,
 		&lastUsedAt,
 		&token.IsActive,
+		&token.SuccessCount,
+		&token.FailureCount,
+		&token.StreamAvgTTFB,
+		&token.NonStreamAvgRT,
+		&token.StreamCount,
+		&token.NonStreamCount,
 	)
 
 	if err == sql.ErrNoRows {
@@ -132,7 +151,9 @@ func (s *SQLiteStore) GetAuthTokenByValue(ctx context.Context, tokenHash string)
 // ListAuthTokens 列出所有令牌
 func (s *SQLiteStore) ListAuthTokens(ctx context.Context) ([]*model.AuthToken, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, token, description, created_at, expires_at, last_used_at, is_active
+		SELECT
+			id, token, description, created_at, expires_at, last_used_at, is_active,
+			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count
 		FROM auth_tokens
 		ORDER BY created_at DESC
 	`)
@@ -155,6 +176,12 @@ func (s *SQLiteStore) ListAuthTokens(ctx context.Context) ([]*model.AuthToken, e
 			&expiresAt,
 			&lastUsedAt,
 			&token.IsActive,
+			&token.SuccessCount,
+			&token.FailureCount,
+			&token.StreamAvgTTFB,
+			&token.NonStreamAvgRT,
+			&token.StreamCount,
+			&token.NonStreamCount,
 		); err != nil {
 			return nil, fmt.Errorf("scan auth token: %w", err)
 		}
@@ -183,7 +210,9 @@ func (s *SQLiteStore) ListActiveAuthTokens(ctx context.Context) ([]*model.AuthTo
 	now := time.Now().UnixMilli()
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, token, description, created_at, expires_at, last_used_at, is_active
+		SELECT
+			id, token, description, created_at, expires_at, last_used_at, is_active,
+			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count
 		FROM auth_tokens
 		WHERE is_active = 1
 		  AND (expires_at IS NULL OR expires_at > ?)
@@ -208,6 +237,12 @@ func (s *SQLiteStore) ListActiveAuthTokens(ctx context.Context) ([]*model.AuthTo
 			&expiresAt,
 			&lastUsedAt,
 			&token.IsActive,
+			&token.SuccessCount,
+			&token.FailureCount,
+			&token.StreamAvgTTFB,
+			&token.NonStreamAvgRT,
+			&token.StreamCount,
+			&token.NonStreamCount,
 		); err != nil {
 			return nil, fmt.Errorf("scan active auth token: %w", err)
 		}
@@ -306,6 +341,116 @@ func (s *SQLiteStore) UpdateTokenLastUsed(ctx context.Context, tokenHash string,
 
 	if err != nil {
 		return fmt.Errorf("update token last used: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateTokenStats 增量更新Token统计信息
+// 使用事务保证原子性，采用增量计算公式避免扫描历史数据
+// 参数:
+//   - tokenHash: Token的SHA256哈希值
+//   - isSuccess: 本次请求是否成功(2xx状态码)
+//   - duration: 总响应时间(秒)
+//   - isStreaming: 是否为流式请求
+//   - firstByteTime: 流式请求的首字节时间(秒)，非流式时为0
+func (s *SQLiteStore) UpdateTokenStats(
+	ctx context.Context,
+	tokenHash string,
+	isSuccess bool,
+	duration float64,
+	isStreaming bool,
+	firstByteTime float64,
+) error {
+	// 使用事务保证原子性（读-计算-写）
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback() // 失败时自动回滚
+
+	// 1. 查询当前统计数据
+	var stats struct {
+		SuccessCount    int64
+		FailureCount    int64
+		StreamAvgTTFB   float64
+		NonStreamAvgRT  float64
+		StreamCount     int64
+		NonStreamCount  int64
+	}
+
+	err = tx.QueryRowContext(ctx, `
+		SELECT
+			success_count, failure_count,
+			stream_avg_ttfb, non_stream_avg_rt,
+			stream_count, non_stream_count
+		FROM auth_tokens
+		WHERE token = ?
+	`, tokenHash).Scan(
+		&stats.SuccessCount,
+		&stats.FailureCount,
+		&stats.StreamAvgTTFB,
+		&stats.NonStreamAvgRT,
+		&stats.StreamCount,
+		&stats.NonStreamCount,
+	)
+
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("token not found: %s", tokenHash)
+	}
+	if err != nil {
+		return fmt.Errorf("query current stats: %w", err)
+	}
+
+	// 2. 增量更新计数器
+	if isSuccess {
+		stats.SuccessCount++
+	} else {
+		stats.FailureCount++
+	}
+
+	// 3. 增量更新平均值（使用累加公式避免扫描历史数据）
+	// 公式: new_avg = (old_avg * old_count + new_value) / (old_count + 1)
+	if isStreaming && firstByteTime > 0 {
+		// 流式请求：更新平均首字节时间
+		stats.StreamAvgTTFB = ((stats.StreamAvgTTFB * float64(stats.StreamCount)) + firstByteTime) / float64(stats.StreamCount+1)
+		stats.StreamCount++
+	} else if !isStreaming {
+		// 非流式请求：更新平均响应时间
+		stats.NonStreamAvgRT = ((stats.NonStreamAvgRT * float64(stats.NonStreamCount)) + duration) / float64(stats.NonStreamCount+1)
+		stats.NonStreamCount++
+	}
+
+	// 4. 写回数据库
+	_, err = tx.ExecContext(ctx, `
+		UPDATE auth_tokens
+		SET
+			success_count = ?,
+			failure_count = ?,
+			stream_avg_ttfb = ?,
+			non_stream_avg_rt = ?,
+			stream_count = ?,
+			non_stream_count = ?,
+			last_used_at = ?
+		WHERE token = ?
+	`,
+		stats.SuccessCount,
+		stats.FailureCount,
+		stats.StreamAvgTTFB,
+		stats.NonStreamAvgRT,
+		stats.StreamCount,
+		stats.NonStreamCount,
+		time.Now().UnixMilli(),
+		tokenHash,
+	)
+
+	if err != nil {
+		return fmt.Errorf("update stats: %w", err)
+	}
+
+	// 5. 提交事务
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
 	}
 
 	return nil

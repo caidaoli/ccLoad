@@ -66,6 +66,7 @@ type proxyRequestContext struct {
 	body          []byte
 	header        http.Header
 	isStreaming   bool
+	tokenHash     string // Token哈希值（用于统计，2025-11新增）
 }
 
 // proxyResult 代理请求结果
