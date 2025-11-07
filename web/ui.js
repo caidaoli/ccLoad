@@ -51,6 +51,7 @@
   const NAVS = [
     { key: 'index', label: '概览', href: '/web/index.html', icon: iconHome },
     { key: 'channels', label: '渠道管理', href: '/web/channels.html', icon: iconSettings },
+    { key: 'tokens', label: 'API令牌', href: '/web/tokens.html', icon: iconKey },
     { key: 'stats', label: '调用统计', href: '/web/stats.html', icon: iconBars },
     { key: 'trend', label: '请求趋势', href: '/web/trend.html', icon: iconTrend },
     { key: 'logs', label: '日志', href: '/web/logs.html', icon: iconAlert },
@@ -86,6 +87,9 @@
   }
   function iconAlert() {
     return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.864-.833-2.634 0L4.18 16.5c-.77.833.192 2.5 1.732 2.5z"/>`);
+  }
+  function iconKey() {
+    return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/>`);
   }
   function svg(inner) {
     const el = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
