@@ -1545,6 +1545,9 @@ func (s *SQLiteStore) DeleteAPIKey(ctx context.Context, channelID int64, keyInde
 		return fmt.Errorf("delete api key: %w", err)
 	}
 
+	// 触发异步Redis同步(确保删除操作同步到Redis)
+	s.triggerAsyncSync()
+
 	return nil
 }
 

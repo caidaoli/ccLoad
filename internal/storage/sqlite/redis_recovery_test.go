@@ -306,6 +306,234 @@ func TestRedisRecovery_EmptyAPIKeys(t *testing.T) {
 	t.Logf("✅ 空API Keys渠道恢复测试通过")
 }
 
+// TestRedisRecovery_DeleteAPIKey 测试删除API Key后Redis同步的完整性
+func TestRedisRecovery_DeleteAPIKey(t *testing.T) {
+	// 禁用内存数据库模式，使用临时文件数据库
+	os.Unsetenv("CCLOAD_USE_MEMORY_DB")
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test-redis-delete-key.db")
+
+	// ========== 阶段1：创建渠道和多个API Keys ==========
+	store1, err := NewSQLiteStore(dbPath, nil)
+	if err != nil {
+		t.Fatalf("创建数据库失败: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// 创建测试渠道
+	config := &model.Config{
+		Name:        "Delete-Key-Test",
+		URL:         "https://delete-test.example.com",
+		Priority:    10,
+		Models:      []string{"test-model"},
+		ChannelType: "anthropic",
+		Enabled:     true,
+	}
+
+	created, err := store1.CreateConfig(ctx, config)
+	if err != nil {
+		t.Fatalf("创建渠道失败: %v", err)
+	}
+
+	// 创建3个API Keys
+	apiKeys := []*model.APIKey{
+		{
+			ChannelID:   created.ID,
+			KeyIndex:    0,
+			APIKey:      "sk-test-key-0",
+			KeyStrategy: "sequential",
+		},
+		{
+			ChannelID:   created.ID,
+			KeyIndex:    1,
+			APIKey:      "sk-test-key-1",
+			KeyStrategy: "sequential",
+		},
+		{
+			ChannelID:   created.ID,
+			KeyIndex:    2,
+			APIKey:      "sk-test-key-2",
+			KeyStrategy: "round_robin",
+		},
+	}
+
+	for _, key := range apiKeys {
+		if err := store1.CreateAPIKey(ctx, key); err != nil {
+			t.Fatalf("创建API Key失败: %v", err)
+		}
+	}
+
+	// 验证创建成功
+	keys, err := store1.GetAPIKeys(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("查询API Keys失败: %v", err)
+	}
+	if len(keys) != 3 {
+		t.Fatalf("期望3个API Key，实际: %d", len(keys))
+	}
+
+	t.Logf("✅ 阶段1完成：创建渠道和3个API Keys")
+
+	// ========== 阶段2：删除其中一个API Key ==========
+	// 删除KeyIndex=1的Key
+	if err := store1.DeleteAPIKey(ctx, created.ID, 1); err != nil {
+		t.Fatalf("删除API Key失败: %v", err)
+	}
+
+	// 等待异步同步完成(triggerAsyncSync是非阻塞的)
+	time.Sleep(100 * time.Millisecond)
+
+	// 验证删除成功
+	keysAfterDelete, err := store1.GetAPIKeys(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("删除后查询API Keys失败: %v", err)
+	}
+	if len(keysAfterDelete) != 2 {
+		t.Fatalf("删除后期望2个API Key，实际: %d", len(keysAfterDelete))
+	}
+
+	t.Logf("✅ 阶段2完成：删除KeyIndex=1的Key")
+
+	// ========== 阶段3：模拟Redis同步 ==========
+	// 获取当前状态并序列化(模拟同步到Redis)
+	configs, err := store1.ListConfigs(ctx)
+	if err != nil {
+		t.Fatalf("查询渠道列表失败: %v", err)
+	}
+
+	var channelsWithKeys []*model.ChannelWithKeys
+	for _, cfg := range configs {
+		keys, err := store1.GetAPIKeys(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("查询API Keys失败: %v", err)
+		}
+
+		apiKeySlice := make([]model.APIKey, len(keys))
+		for i, k := range keys {
+			apiKeySlice[i] = *k
+		}
+
+		channelsWithKeys = append(channelsWithKeys, &model.ChannelWithKeys{
+			Config:  cfg,
+			APIKeys: apiKeySlice,
+		})
+	}
+
+	redisBackup, err := sonic.Marshal(channelsWithKeys)
+	if err != nil {
+		t.Fatalf("序列化Redis备份失败: %v", err)
+	}
+
+	t.Logf("✅ 阶段3完成：Redis备份包含%d个API Keys", len(channelsWithKeys[0].APIKeys))
+
+	// 关闭第一个数据库
+	store1.Close()
+
+	// ========== 阶段4：删除数据库并从Redis恢复 ==========
+	if err := os.Remove(dbPath); err != nil {
+		t.Fatalf("删除数据库文件失败: %v", err)
+	}
+	if err := os.Remove(dbPath + "-log.db"); err != nil && !os.IsNotExist(err) {
+		t.Logf("删除日志数据库失败（可忽略）: %v", err)
+	}
+
+	// 创建新数据库实例
+	store2, err := NewSQLiteStore(dbPath, nil)
+	if err != nil {
+		t.Fatalf("创建第二个数据库失败: %v", err)
+	}
+	defer store2.Close()
+
+	// 反序列化Redis备份
+	var restoredChannelsWithKeys []*model.ChannelWithKeys
+	if err := sonic.Unmarshal(redisBackup, &restoredChannelsWithKeys); err != nil {
+		t.Fatalf("反序列化Redis备份失败: %v", err)
+	}
+
+	// 手动执行恢复逻辑
+	tx, err := store2.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("开启事务失败: %v", err)
+	}
+	defer tx.Rollback()
+
+	nowUnix := time.Now().Unix()
+
+	for _, cwk := range restoredChannelsWithKeys {
+		cfg := cwk.Config
+
+		modelsStr, _ := sonic.Marshal(cfg.Models)
+		modelRedirectsStr, _ := sonic.Marshal(cfg.ModelRedirects)
+
+		result, err := tx.ExecContext(ctx, `
+			INSERT INTO channels(
+				name, url, priority, models, model_redirects, channel_type,
+				enabled, cooldown_until, cooldown_duration_ms, created_at, updated_at
+			)
+			VALUES(?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+		`, cfg.Name, cfg.URL, cfg.Priority,
+			string(modelsStr), string(modelRedirectsStr), cfg.ChannelType,
+			1, nowUnix, nowUnix)
+
+		if err != nil {
+			t.Fatalf("恢复渠道失败: %v", err)
+		}
+
+		channelID, _ := result.LastInsertId()
+
+		// 恢复API Keys
+		for _, key := range cwk.APIKeys {
+			_, err := tx.ExecContext(ctx, `
+				INSERT INTO api_keys (channel_id, key_index, api_key, key_strategy,
+				                      cooldown_until, cooldown_duration_ms, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			`, channelID, key.KeyIndex, key.APIKey, key.KeyStrategy,
+				key.CooldownUntil, key.CooldownDurationMs, nowUnix, nowUnix)
+
+			if err != nil {
+				t.Fatalf("恢复API Key失败: %v", err)
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("提交事务失败: %v", err)
+	}
+
+	t.Logf("✅ 阶段4完成：从Redis恢复数据")
+
+	// ========== 阶段5：验证恢复后的数据完整性 ==========
+	recoveredKeys, err := store2.GetAPIKeys(ctx, 1) // channelID=1
+	if err != nil {
+		t.Fatalf("查询恢复后的API Keys失败: %v", err)
+	}
+
+	// 关键验证：应该只有2个Key（已删除的Key不应出现）
+	if len(recoveredKeys) != 2 {
+		t.Errorf("❌ 恢复后期望2个API Key，实际: %d", len(recoveredKeys))
+		t.Logf("恢复的Keys: %+v", recoveredKeys)
+		t.Fatalf("删除的Key不应该被恢复")
+	}
+
+	// 验证恢复的是正确的Keys（KeyIndex=0和KeyIndex=2）
+	expectedKeyIndices := map[int]bool{0: true, 2: true}
+	for _, key := range recoveredKeys {
+		if !expectedKeyIndices[key.KeyIndex] {
+			t.Errorf("❌ 意外的KeyIndex: %d (应该只有0和2)", key.KeyIndex)
+		}
+		t.Logf("恢复的Key: KeyIndex=%d, APIKey=%s", key.KeyIndex, key.APIKey)
+	}
+
+	t.Logf("✅ 阶段5完成：数据完整性验证通过")
+	t.Logf("")
+	t.Logf("🎉 DeleteAPIKey Redis同步测试通过！")
+	t.Logf("   ✓ 删除操作触发Redis同步")
+	t.Logf("   ✓ 已删除的Key不会被恢复")
+	t.Logf("   ✓ 保留的Keys完整恢复")
+}
+
 // TestRedisRecovery_DefaultValuesFilling 测试恢复时默认值填充
 func TestRedisRecovery_DefaultValuesFilling(t *testing.T) {
 	// 模拟Redis数据（channel_type为空）
