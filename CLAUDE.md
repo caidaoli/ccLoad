@@ -59,12 +59,12 @@ export SQLITE_PATH=./data/ccload.db       # 数据库路径
 export REDIS_URL=rediss://...             # Redis备份(可选)
 export CCLOAD_MAX_CONCURRENCY=1000        # 最大并发数
 export CCLOAD_MAX_KEY_RETRIES=3           # Key重试次数
-export CCLOAD_88CODE_FREE_ONLY=true       # 88code免费套餐限制(见下方说明)
+export CCLOAD_88CODE_FREE_ONLY=true       # 88code免费套餐限制(支持: true/1/yes/on)
 ```
 
 #### 88code免费套餐限制 (2025-11新增)
 
-启用`CCLOAD_88CODE_FREE_ONLY=true`后,系统会验证名称以"88code"开头的渠道套餐类型:
+启用`CCLOAD_88CODE_FREE_ONLY=true`（或`1`/`yes`/`on`）后,系统会验证名称以"88code"开头的渠道套餐类型:
 
 - **验证逻辑**: 调用`https://www.88code.org/api/usage`检查`subscriptionName`字段
 - **触发条件**: 仅对名称匹配`88code*`(不区分大小写)的渠道执行验证

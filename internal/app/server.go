@@ -186,7 +186,8 @@ func NewServer(store storage.Store) *Server {
 	s.validatorManager = validator.NewManager()
 
 	// 注册88code套餐验证器（如果启用）
-	if os.Getenv("CCLOAD_88CODE_FREE_ONLY") == "true" {
+	// 支持多种布尔值表示: true/1/yes/on (不区分大小写)
+	if enabled, _ := strconv.ParseBool(os.Getenv("CCLOAD_88CODE_FREE_ONLY")); enabled {
 		util.SafePrint("✅ 88code免费套餐验证已启用（非FREE套餐将被冷却30分钟）")
 		s.validatorManager.AddValidator(validator.NewSubscriptionValidator(true))
 	}
