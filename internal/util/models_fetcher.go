@@ -206,3 +206,48 @@ func (f *CodexModelsFetcher) FetchModels(ctx context.Context, baseURL string, ap
 	openAIFetcher := &OpenAIModelsFetcher{}
 	return openAIFetcher.FetchModels(ctx, baseURL, apiKey)
 }
+
+// ============================================================
+// 预设模型列表（用于官方无Models API的渠道）
+// ============================================================
+
+var predefinedModelSets = map[string][]string{
+	ChannelTypeAnthropic: {
+		"claude-3-5-sonnet-20241022",
+		"claude-3-5-sonnet-latest",
+		"claude-3-5-haiku-20241022",
+		"claude-3-5-haiku-latest",
+		"claude-3-opus-20240229",
+		"claude-3-opus-latest",
+		"claude-3-sonnet-20240229",
+		"claude-3-sonnet-latest",
+		"claude-3-haiku-20240307",
+		"claude-3-haiku-latest",
+		"claude-2.1",
+		"claude-2.0",
+		"claude-instant-1.2",
+	},
+	ChannelTypeCodex: {
+		"gpt-4.1",
+		"gpt-4.1-mini",
+		"gpt-4.1-preview",
+		"gpt-4o",
+		"gpt-4o-mini",
+		"gpt-4o-mini-2024-07-18",
+		"gpt-4-turbo",
+		"gpt-4",
+		"gpt-3.5-turbo",
+	},
+}
+
+// PredefinedModels 返回给定渠道类型的预设模型列表
+func PredefinedModels(channelType string) []string {
+	ct := NormalizeChannelType(channelType)
+	models, ok := predefinedModelSets[ct]
+	if !ok {
+		return nil
+	}
+	result := make([]string, len(models))
+	copy(result, models)
+	return result
+}
