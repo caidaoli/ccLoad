@@ -664,7 +664,8 @@
         channelId,
         channelName,
         apiKey,
-        originalModel: model
+        originalModel: model,
+        channelType: null // 将在异步加载渠道配置后填充
       };
 
       // 填充模态框基本信息
@@ -685,6 +686,9 @@
 
         const response = await res.json();
         const channel = response.success ? response.data : response;
+
+        // ✅ 保存渠道类型,用于后续测试请求
+        testingKeyData.channelType = channel.channel_type || 'anthropic';
 
         // 填充模型下拉列表
         const modelSelect = document.getElementById('testKeyModel');
@@ -767,7 +771,8 @@
           model: selectedModel,
           max_tokens: 512,
           stream: streamEnabled,
-          content: testContent
+          content: testContent,
+          channel_type: testingKeyData.channelType || 'anthropic' // ✅ 添加渠道类型
         };
 
         const res = await fetchWithAuth(`/admin/channels/${testingKeyData.channelId}/test`, {
