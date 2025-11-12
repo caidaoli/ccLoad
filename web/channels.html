@@ -873,9 +873,9 @@
 
       // 初始化内联Key表格（添加模式默认一个空Key）
       inlineKeyTableData = [''];
-      inlineKeyVisible = false;
-      document.getElementById('inlineEyeIcon').style.display = 'block';
-      document.getElementById('inlineEyeOffIcon').style.display = 'none';
+      inlineKeyVisible = true; // 新增时默认显示明文,方便核对
+      document.getElementById('inlineEyeIcon').style.display = 'none';
+      document.getElementById('inlineEyeOffIcon').style.display = 'block';
       renderInlineKeyTable();
 
       document.getElementById('channelModal').classList.add('show');
