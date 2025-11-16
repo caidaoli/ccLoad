@@ -5,13 +5,18 @@ import (
 	"ccLoad/internal/util"
 
 	"context"
+	"math/rand/v2"
 )
 
 // selectCandidatesByChannelType 根据渠道类型选择候选渠道
 // 性能优化：使用缓存层，内存查询 < 2ms vs 数据库查询 50ms+
 func (s *Server) selectCandidatesByChannelType(ctx context.Context, channelType string) ([]*modelpkg.Config, error) {
 	// 缓存可用时走缓存，否则退化到存储层
-	return s.GetEnabledChannelsByType(ctx, channelType)
+	channels, err := s.GetEnabledChannelsByType(ctx, channelType)
+	if err != nil {
+		return nil, err
+	}
+	return shuffleSamePriorityChannels(channels), nil
 }
 
 // selectCandidates 选择支持指定模型的候选渠道
@@ -30,7 +35,7 @@ func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model strin
 	}
 
 	if channelType == "" {
-		return configs, nil
+		return shuffleSamePriorityChannels(configs), nil
 	}
 
 	normalizedType := util.NormalizeChannelType(channelType)
@@ -41,5 +46,63 @@ func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model strin
 		}
 	}
 
-	return filtered, nil
+	return shuffleSamePriorityChannels(filtered), nil
+}
+
+// shuffleSamePriorityChannels 随机打乱相同优先级的渠道，实现负载均衡
+// 设计原则：
+// - KISS: 简单的随机化比复杂的状态管理更可靠
+// - 无状态: 避免并发竞争和持久化开销
+// - 保持优先级: 只在相同优先级组内打乱，不影响优先级排序
+func shuffleSamePriorityChannels(channels []*modelpkg.Config) []*modelpkg.Config {
+	if len(channels) <= 1 {
+		return channels
+	}
+
+	// 按优先级分组
+	type priorityGroup struct {
+		priority int
+		start    int
+		end      int
+	}
+
+	var groups []priorityGroup
+	currentPriority := channels[0].Priority
+	groupStart := 0
+
+	for i := 1; i < len(channels); i++ {
+		if channels[i].Priority != currentPriority {
+			// 发现新的优先级组
+			groups = append(groups, priorityGroup{
+				priority: currentPriority,
+				start:    groupStart,
+				end:      i,
+			})
+			currentPriority = channels[i].Priority
+			groupStart = i
+		}
+	}
+	// 添加最后一组
+	groups = append(groups, priorityGroup{
+		priority: currentPriority,
+		start:    groupStart,
+		end:      len(channels),
+	})
+
+	// 对每个优先级组内的渠道进行随机打乱
+	result := make([]*modelpkg.Config, len(channels))
+	copy(result, channels)
+
+	for _, group := range groups {
+		groupSize := group.end - group.start
+		if groupSize > 1 {
+			// Fisher-Yates洗牌算法
+			for i := group.start; i < group.end-1; i++ {
+				j := i + rand.IntN(groupSize-(i-group.start))
+				result[i], result[j] = result[j], result[i]
+			}
+		}
+	}
+
+	return result
 }

@@ -471,6 +471,65 @@ func TestSelectRouteCandidates_MixedPriorities(t *testing.T) {
 	}())
 }
 
+// TestShuffleSamePriorityChannels 测试相同优先级渠道的随机化
+func TestShuffleSamePriorityChannels(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	server := &Server{store: store}
+	ctx := context.Background()
+
+	// 创建两个相同优先级的渠道（模拟渠道22和23）
+	channels := []*model.Config{
+		{Name: "channel-22", URL: "https://api22.com", Priority: 20, Models: []string{"qwen-3-32b"}, ChannelType: "codex", Enabled: true},
+		{Name: "channel-23", URL: "https://api23.com", Priority: 20, Models: []string{"qwen-3-32b"}, ChannelType: "codex", Enabled: true},
+	}
+
+	for _, cfg := range channels {
+		_, err := store.CreateConfig(ctx, cfg)
+		if err != nil {
+			t.Fatalf("创建测试渠道失败: %v", err)
+		}
+	}
+
+	// 多次查询，统计渠道22和23出现在第一位的次数
+	iterations := 100
+	firstPositionCount := make(map[string]int)
+
+	for i := 0; i < iterations; i++ {
+		candidates, err := server.selectCandidatesByModelAndType(ctx, "qwen-3-32b", "codex")
+		if err != nil {
+			t.Fatalf("selectCandidatesByModelAndType失败: %v", err)
+		}
+
+		if len(candidates) != 2 {
+			t.Fatalf("期望2个渠道，实际%d个", len(candidates))
+		}
+
+		// 统计第一个渠道
+		firstPositionCount[candidates[0].Name]++
+	}
+
+	t.Logf("📊 随机化统计（%d次查询）:", iterations)
+	t.Logf("  - channel-22 首位出现: %d次 (%.1f%%)",
+		firstPositionCount["channel-22"],
+		float64(firstPositionCount["channel-22"])/float64(iterations)*100)
+	t.Logf("  - channel-23 首位出现: %d次 (%.1f%%)",
+		firstPositionCount["channel-23"],
+		float64(firstPositionCount["channel-23"])/float64(iterations)*100)
+
+	// 验证两个渠道都有机会出现在第一位（允许一定的随机偏差）
+	// 理论上应该各50%，但允许30%-70%的范围
+	if firstPositionCount["channel-22"] < 30 || firstPositionCount["channel-22"] > 70 {
+		t.Errorf("随机化分布异常: channel-22出现%d次，期望30-70次", firstPositionCount["channel-22"])
+	}
+	if firstPositionCount["channel-23"] < 30 || firstPositionCount["channel-23"] > 70 {
+		t.Errorf("随机化分布异常: channel-23出现%d次，期望30-70次", firstPositionCount["channel-23"])
+	}
+
+	t.Logf("✅ 相同优先级渠道随机化正常，负载均衡有效")
+}
+
 // ========== 辅助函数 ==========
 
 func setupTestStore(t *testing.T) (*sqlite.SQLiteStore, func()) {
