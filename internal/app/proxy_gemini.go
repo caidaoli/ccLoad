@@ -16,7 +16,7 @@ func (s *Server) handleListGeminiModels(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	// 获取所有 gemini 渠道的去重模型列表
-	models, err := s.getGeminiModels(ctx)
+	models, err := s.getModelsByChannelType(ctx, "gemini")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load models"})
 		return
@@ -38,5 +38,40 @@ func (s *Server) handleListGeminiModels(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"models": modelList,
+	})
+}
+
+// handleListOpenAIModels 处理 GET /v1/models 请求，返回本地 OpenAI 模型列表
+func (s *Server) handleListOpenAIModels(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	// 获取所有 openai 渠道的去重模型列表
+	models, err := s.getModelsByChannelType(ctx, "openai")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load models"})
+		return
+	}
+
+	// 构造 OpenAI API 响应格式
+	type ModelInfo struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Created int64  `json:"created"`
+		OwnedBy string `json:"owned_by"`
+	}
+
+	modelList := make([]ModelInfo, 0, len(models))
+	for _, model := range models {
+		modelList = append(modelList, ModelInfo{
+			ID:      model,
+			Object:  "model",
+			Created: 0,
+			OwnedBy: "system",
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"object": "list",
+		"data":   modelList,
 	})
 }

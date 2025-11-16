@@ -130,7 +130,11 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 
 	requestPath := c.Request.URL.Path
 	requestMethod := c.Request.Method
-	if requestMethod == http.MethodGet && (requestPath == "/v1beta/models" || requestPath == "/v1/models") {
+	if requestMethod == http.MethodGet && requestPath == "/v1/models" {
+		s.handleListOpenAIModels(c)
+		return
+	}
+	if requestMethod == http.MethodGet && requestPath == "/v1beta/models" {
 		s.handleListGeminiModels(c)
 		return
 	}

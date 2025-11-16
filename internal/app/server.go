@@ -421,16 +421,10 @@ func (s *Server) AddLogAsync(entry *model.LogEntry) {
 	s.logService.AddLogAsync(entry)
 }
 
-// getGeminiModels 获取所有 gemini 渠道的去重模型列表
-func (s *Server) getGeminiModels(ctx context.Context) ([]string, error) {
-	if cache := s.getChannelCache(); cache != nil {
-		if models, err := cache.GetGeminiModels(ctx); err == nil {
-			return models, nil
-		}
-	}
-
-	// 缓存不可用时退化：按渠道类型查询并去重模型
-	channels, err := s.store.GetEnabledChannelsByType(ctx, util.ChannelTypeGemini)
+// getModelsByChannelType 获取指定渠道类型的去重模型列表
+func (s *Server) getModelsByChannelType(ctx context.Context, channelType string) ([]string, error) {
+	// 直接查询数据库（KISS原则，避免过度设计）
+	channels, err := s.store.GetEnabledChannelsByType(ctx, channelType)
 	if err != nil {
 		return nil, err
 	}
