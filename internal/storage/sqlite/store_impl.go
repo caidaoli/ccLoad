@@ -924,72 +924,72 @@ func (s *SQLiteStore) LoadChannelsFromRedis(ctx context.Context) error {
 		totalKeysRestored := 0
 
 		err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
-		for _, cwk := range channelsWithKeys {
-			config := cwk.Config
+			for _, cwk := range channelsWithKeys {
+				config := cwk.Config
 
-			// 标准化数据：确保默认值正确填充
-			modelsStr, _ := util.SerializeModels(config.Models)
-			modelRedirectsStr, _ := util.SerializeModelRedirects(config.ModelRedirects)
-			channelType := config.GetChannelType() // 强制使用默认值anthropic
+				// 标准化数据：确保默认值正确填充
+				modelsStr, _ := util.SerializeModels(config.Models)
+				modelRedirectsStr, _ := util.SerializeModelRedirects(config.ModelRedirects)
+				channelType := config.GetChannelType() // 强制使用默认值anthropic
 
-			// 1. 恢复渠道基本配置到channels表
-			result, err := tx.ExecContext(ctx, `
+				// 1. 恢复渠道基本配置到channels表
+				result, err := tx.ExecContext(ctx, `
 				INSERT OR REPLACE INTO channels(
 					name, url, priority, models, model_redirects, channel_type,
 					enabled, cooldown_until, cooldown_duration_ms, created_at, updated_at
 				)
 				VALUES(?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
 			`, config.Name, config.URL, config.Priority,
-				modelsStr, modelRedirectsStr, channelType,
-				boolToInt(config.Enabled), nowUnix, nowUnix)
+					modelsStr, modelRedirectsStr, channelType,
+					boolToInt(config.Enabled), nowUnix, nowUnix)
 
-			if err != nil {
-				log.Printf("Warning: failed to restore channel %s: %v", config.Name, err)
-				continue
-			}
-
-			// 获取渠道ID（对于新插入或更新的记录）
-			var channelID int64
-			if config.ID > 0 {
-				channelID = config.ID
-			} else {
-				channelID, _ = result.LastInsertId()
-			}
-
-			// 查询实际的渠道ID（因为INSERT OR REPLACE可能使用name匹配）
-			err = tx.QueryRowContext(ctx, `SELECT id FROM channels WHERE name = ?`, config.Name).Scan(&channelID)
-			if err != nil {
-				log.Printf("Warning: failed to get channel ID for %s: %v", config.Name, err)
-				continue
-			}
-
-			// 2. 恢复API Keys到api_keys表
-			if len(cwk.APIKeys) > 0 {
-				// 先删除该渠道的所有旧Keys（避免冲突）
-				_, err := tx.ExecContext(ctx, `DELETE FROM api_keys WHERE channel_id = ?`, channelID)
 				if err != nil {
-					log.Printf("Warning: failed to clear old API keys for channel %d: %v", channelID, err)
+					log.Printf("Warning: failed to restore channel %s: %v", config.Name, err)
+					continue
 				}
 
-				// 插入所有API Keys
-				for _, key := range cwk.APIKeys {
-					_, err := tx.ExecContext(ctx, `
+				// 获取渠道ID（对于新插入或更新的记录）
+				var channelID int64
+				if config.ID > 0 {
+					channelID = config.ID
+				} else {
+					channelID, _ = result.LastInsertId()
+				}
+
+				// 查询实际的渠道ID（因为INSERT OR REPLACE可能使用name匹配）
+				err = tx.QueryRowContext(ctx, `SELECT id FROM channels WHERE name = ?`, config.Name).Scan(&channelID)
+				if err != nil {
+					log.Printf("Warning: failed to get channel ID for %s: %v", config.Name, err)
+					continue
+				}
+
+				// 2. 恢复API Keys到api_keys表
+				if len(cwk.APIKeys) > 0 {
+					// 先删除该渠道的所有旧Keys（避免冲突）
+					_, err := tx.ExecContext(ctx, `DELETE FROM api_keys WHERE channel_id = ?`, channelID)
+					if err != nil {
+						log.Printf("Warning: failed to clear old API keys for channel %d: %v", channelID, err)
+					}
+
+					// 插入所有API Keys
+					for _, key := range cwk.APIKeys {
+						_, err := tx.ExecContext(ctx, `
 						INSERT INTO api_keys (channel_id, key_index, api_key, key_strategy,
 						                      cooldown_until, cooldown_duration_ms, created_at, updated_at)
 						VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 					`, channelID, key.KeyIndex, key.APIKey, key.KeyStrategy,
-						key.CooldownUntil, key.CooldownDurationMs, nowUnix, nowUnix)
+							key.CooldownUntil, key.CooldownDurationMs, nowUnix, nowUnix)
 
-					if err != nil {
-						log.Printf("Warning: failed to restore API key %d for channel %d: %v", key.KeyIndex, channelID, err)
-						continue
+						if err != nil {
+							log.Printf("Warning: failed to restore API key %d for channel %d: %v", key.KeyIndex, channelID, err)
+							continue
+						}
+						totalKeysRestored++
 					}
-					totalKeysRestored++
 				}
-			}
 
-			successCount++
-		}
+				successCount++
+			}
 			return nil
 		})
 

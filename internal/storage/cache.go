@@ -144,25 +144,21 @@ func (c *ChannelCache) GetEnabledChannelsByType(ctx context.Context, channelType
 	return result, nil
 }
 
-// GetConfig 从缓存中获取指定ID的渠道配置
-// 性能：O(n)遍历allChannels，但n通常很小(<100)
+// GetConfig 获取指定ID的渠道配置
+// 直接查询数据库,保证数据永远是最新的(KISS原则)
 func (c *ChannelCache) GetConfig(ctx context.Context, channelID int64) (*modelpkg.Config, error) {
-	if err := c.refreshIfNeeded(ctx); err != nil {
-		// 缓存刷新失败，降级到数据库
-		return c.store.GetConfig(ctx, channelID)
-	}
+	// 🔧 修复 (2025-11-16): 直接查询数据库,删除复杂的缓存逻辑
+	//
+	// 原问题: 缓存失效后仍可能返回旧数据,且缓存只包含enabled=true的渠道
+	//
+	// Linus风格: "Talk is cheap. Show me the code."
+	// - 缓存是过早优化,增加复杂度却收益甚微(1-2ms vs 0.1ms)
+	// - 单个渠道查询有主键索引,性能已经足够好
+	// - 直接查数据库保证数据永远是最新的,简单可靠
+	//
+	// 保留的缓存: GetEnabledChannelsByModel/Type (批量查询,真正的热路径)
+	// 删除的缓存: GetConfig的allChannels遍历(过度设计)
 
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-
-	// 遍历allChannels查找目标渠道
-	for _, cfg := range c.allChannels {
-		if cfg.ID == channelID {
-			return cfg, nil
-		}
-	}
-
-	// 未找到，可能是新创建的渠道，查询数据库
 	return c.store.GetConfig(ctx, channelID)
 }
 

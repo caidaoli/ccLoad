@@ -18,12 +18,12 @@ type AuthToken struct {
 	IsActive    bool      `json:"is_active"`              // 是否启用
 
 	// 统计字段（2025-11新增）
-	SuccessCount    int64   `json:"success_count"`     // 成功调用次数
-	FailureCount    int64   `json:"failure_count"`     // 失败调用次数
-	StreamAvgTTFB   float64 `json:"stream_avg_ttfb"`   // 流式请求平均首字节时间(秒)
-	NonStreamAvgRT  float64 `json:"non_stream_avg_rt"` // 非流式请求平均响应时间(秒)
-	StreamCount     int64   `json:"stream_count"`      // 流式请求计数(用于计算平均值)
-	NonStreamCount  int64   `json:"non_stream_count"`  // 非流式请求计数(用于计算平均值)
+	SuccessCount   int64   `json:"success_count"`     // 成功调用次数
+	FailureCount   int64   `json:"failure_count"`     // 失败调用次数
+	StreamAvgTTFB  float64 `json:"stream_avg_ttfb"`   // 流式请求平均首字节时间(秒)
+	NonStreamAvgRT float64 `json:"non_stream_avg_rt"` // 非流式请求平均响应时间(秒)
+	StreamCount    int64   `json:"stream_count"`      // 流式请求计数(用于计算平均值)
+	NonStreamCount int64   `json:"non_stream_count"`  // 非流式请求计数(用于计算平均值)
 }
 
 // HashToken 计算令牌的SHA256哈希值

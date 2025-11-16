@@ -371,12 +371,12 @@ func (s *SQLiteStore) UpdateTokenStats(
 
 	// 1. 查询当前统计数据
 	var stats struct {
-		SuccessCount    int64
-		FailureCount    int64
-		StreamAvgTTFB   float64
-		NonStreamAvgRT  float64
-		StreamCount     int64
-		NonStreamCount  int64
+		SuccessCount   int64
+		FailureCount   int64
+		StreamAvgTTFB  float64
+		NonStreamAvgRT float64
+		StreamCount    int64
+		NonStreamCount int64
 	}
 
 	err = tx.QueryRowContext(ctx, `
