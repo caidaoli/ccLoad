@@ -6,18 +6,22 @@ import (
 )
 
 // ============================================================================
-// Claude API 成本计算器
+// AI API 成本计算器（Claude + OpenAI）
 // ============================================================================
 
-// ModelPricing Claude模型定价（单位：美元/百万tokens）
+// ModelPricing AI模型定价（单位：美元/百万tokens）
 type ModelPricing struct {
 	InputPrice  float64 // 基础输入token价格（$/1M tokens）
 	OutputPrice float64 // 输出token价格（$/1M tokens）
 }
 
-// claudePricing Claude API完整定价表（2025年11月）
-// 数据来源：https://docs.claude.com/en/docs/about-claude/pricing
-var claudePricing = map[string]ModelPricing{
+// modelPricing 统一定价表（Claude + OpenAI）
+// 数据来源：
+// - Claude: https://docs.claude.com/en/docs/about-claude/pricing
+// - OpenAI: https://openai.com/api/pricing/ (2025年1月数据)
+var modelPricing = map[string]ModelPricing{
+	// ========== Claude 模型 ==========
+	// Claude 4.x 系列（当前最新）
 	// Claude 4.x 系列（当前最新）
 	"claude-sonnet-4-5-20250929": {InputPrice: 3.00, OutputPrice: 15.00},
 	"claude-sonnet-4-5":          {InputPrice: 3.00, OutputPrice: 15.00}, // 别名
@@ -53,29 +57,101 @@ var claudePricing = map[string]ModelPricing{
 	"claude-3-opus":   {InputPrice: 15.00, OutputPrice: 75.00},
 	"claude-3-sonnet": {InputPrice: 3.00, OutputPrice: 15.00},
 	"claude-3-haiku":  {InputPrice: 0.25, OutputPrice: 1.25},
+
+	// ========== OpenAI 模型（Standard层级定价 - 2025年官方）==========
+	// 数据来源: https://platform.openai.com/docs/pricing
+
+	// GPT-5 系列
+	"gpt-5.1":              {InputPrice: 1.25, OutputPrice: 10.00},  // 缓存: $0.125/1M
+	"gpt-5":                {InputPrice: 1.25, OutputPrice: 10.00},  // 缓存: $0.125/1M
+	"gpt-5-mini":           {InputPrice: 0.25, OutputPrice: 2.00},   // 缓存: $0.025/1M
+	"gpt-5-nano":           {InputPrice: 0.05, OutputPrice: 0.40},   // 缓存: $0.005/1M
+	"gpt-5.1-chat-latest":  {InputPrice: 1.25, OutputPrice: 10.00},
+	"gpt-5-chat-latest":    {InputPrice: 1.25, OutputPrice: 10.00},
+	"gpt-5.1-codex":        {InputPrice: 1.25, OutputPrice: 10.00},  // 缓存: $0.125/1M
+	"gpt-5-codex":          {InputPrice: 1.25, OutputPrice: 10.00},
+	"gpt-5.1-codex-mini":   {InputPrice: 0.25, OutputPrice: 2.00},
+	"gpt-5-pro":            {InputPrice: 15.00, OutputPrice: 120.00}, // 无缓存
+	"gpt-5-search-api":     {InputPrice: 1.25, OutputPrice: 10.00},
+
+	// GPT-4.1 系列（新）
+	"gpt-4.1":      {InputPrice: 2.00, OutputPrice: 8.00},  // 缓存: $0.50/1M
+	"gpt-4.1-mini": {InputPrice: 0.40, OutputPrice: 1.60},  // 缓存: $0.10/1M
+	"gpt-4.1-nano": {InputPrice: 0.10, OutputPrice: 0.40},  // 缓存: $0.025/1M
+
+	// GPT-4o 系列
+	"gpt-4o":            {InputPrice: 2.50, OutputPrice: 10.00}, // 缓存: $1.25/1M
+	"gpt-4o-2024-05-13": {InputPrice: 5.00, OutputPrice: 15.00}, // 无缓存
+	"gpt-4o-mini":       {InputPrice: 0.15, OutputPrice: 0.60},  // 缓存: $0.075/1M
+	"chatgpt-4o-latest": {InputPrice: 5.00, OutputPrice: 15.00},
+
+	// GPT-4 Turbo 系列（Legacy）
+	"gpt-4-turbo":              {InputPrice: 10.00, OutputPrice: 30.00},
+	"gpt-4-turbo-2024-04-09":   {InputPrice: 10.00, OutputPrice: 30.00},
+	"gpt-4-0125-preview":       {InputPrice: 10.00, OutputPrice: 30.00},
+	"gpt-4-1106-preview":       {InputPrice: 10.00, OutputPrice: 30.00},
+	"gpt-4-1106-vision-preview": {InputPrice: 10.00, OutputPrice: 30.00},
+
+	// GPT-4 标准系列（Legacy）
+	"gpt-4":          {InputPrice: 30.00, OutputPrice: 60.00},
+	"gpt-4-0613":     {InputPrice: 30.00, OutputPrice: 60.00},
+	"gpt-4-0314":     {InputPrice: 30.00, OutputPrice: 60.00},
+	"gpt-4-32k":      {InputPrice: 60.00, OutputPrice: 120.00},
+	"gpt-4-32k-0613": {InputPrice: 60.00, OutputPrice: 120.00},
+
+	// GPT-3.5 系列（Legacy）
+	"gpt-3.5-turbo":          {InputPrice: 0.50, OutputPrice: 1.50},
+	"gpt-3.5-turbo-0125":     {InputPrice: 0.50, OutputPrice: 1.50},
+	"gpt-3.5-turbo-1106":     {InputPrice: 1.00, OutputPrice: 2.00},
+	"gpt-3.5-turbo-0613":     {InputPrice: 1.50, OutputPrice: 2.00},
+	"gpt-3.5-0301":           {InputPrice: 1.50, OutputPrice: 2.00},
+	"gpt-3.5-turbo-instruct": {InputPrice: 1.50, OutputPrice: 2.00},
+	"gpt-3.5-turbo-16k-0613": {InputPrice: 3.00, OutputPrice: 4.00},
+
+	// o系列（推理模型）
+	"o1":                    {InputPrice: 15.00, OutputPrice: 60.00}, // 缓存: $7.50/1M
+	"o1-pro":                {InputPrice: 150.00, OutputPrice: 600.00}, // 无缓存
+	"o1-mini":               {InputPrice: 1.10, OutputPrice: 4.40},   // 缓存: $0.55/1M
+	"o3":                    {InputPrice: 2.00, OutputPrice: 8.00},   // 缓存: $0.50/1M
+	"o3-pro":                {InputPrice: 20.00, OutputPrice: 80.00}, // 无缓存
+	"o3-mini":               {InputPrice: 1.10, OutputPrice: 4.40},   // 缓存: $0.55/1M
+	"o3-deep-research":      {InputPrice: 10.00, OutputPrice: 40.00}, // 缓存: $2.50/1M
+	"o4-mini":               {InputPrice: 1.10, OutputPrice: 4.40},   // 缓存: $0.275/1M
+	"o4-mini-deep-research": {InputPrice: 2.00, OutputPrice: 8.00},   // 缓存: $0.50/1M
+
+	// 其他专用模型
+	"computer-use-preview":        {InputPrice: 3.00, OutputPrice: 12.00},
+	"codex-mini-latest":           {InputPrice: 1.50, OutputPrice: 6.00},
+	"gpt-4o-mini-search-preview":  {InputPrice: 0.15, OutputPrice: 0.60},
+	"gpt-4o-search-preview":       {InputPrice: 2.50, OutputPrice: 10.00},
+	"davinci-002":                 {InputPrice: 2.00, OutputPrice: 2.00},
+	"babbage-002":                 {InputPrice: 0.40, OutputPrice: 0.40},
 }
 
 const (
 	// cacheReadMultiplier 缓存读取价格倍数（相对于基础input价格）
 	// Cache Read = Input Price × 0.1 (90%节省)
+	// 适用于Claude和OpenAI模型
+	// 例如：GPT-5 input=$1.25/1M → cached=$0.125/1M
 	cacheReadMultiplier = 0.1
 
 	// cacheWriteMultiplier 缓存写入价格倍数（相对于基础input价格）
 	// Cache Write = Input Price × 1.25 (25%溢价)
+	// 仅适用于Claude模型（OpenAI不支持cache_creation）
 	cacheWriteMultiplier = 1.25
 )
 
 // CalculateCost 计算单次请求的成本（美元）
 // 参数：
-//   - model: 模型名称（如"claude-sonnet-4-5-20250929"）
+//   - model: 模型名称（如"claude-sonnet-4-5-20250929"或"gpt-5.1-codex"）
 //   - inputTokens: 输入token数量
 //   - outputTokens: 输出token数量
-//   - cacheReadTokens: 缓存读取token数量
-//   - cacheCreationTokens: 缓存创建token数量
+//   - cacheReadTokens: 缓存读取token数量（Claude: cache_read_input_tokens, OpenAI: cached_tokens）
+//   - cacheCreationTokens: 缓存创建token数量（Claude: cache_creation_input_tokens）
 //
 // 返回：总成本（美元），如果模型未知则返回0.0
 func CalculateCost(model string, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
-	pricing, ok := claudePricing[model]
+	pricing, ok := modelPricing[model]
 	if !ok {
 		// 尝试模糊匹配（例如：claude-3-opus-xxx → claude-3-opus）
 		pricing, ok = fuzzyMatchModel(model)
@@ -115,11 +191,13 @@ func CalculateCost(model string, inputTokens, outputTokens, cacheReadTokens, cac
 
 // fuzzyMatchModel 模糊匹配模型名称
 // 例如：claude-3-opus-20240229-extended → claude-3-opus
+//      gpt-4o-2024-12-01 → gpt-4o
 func fuzzyMatchModel(model string) (ModelPricing, bool) {
 	lowerModel := strings.ToLower(model)
 
-	// 尝试通用前缀匹配
+	// 尝试通用前缀匹配（按优先级排序：更具体的前缀优先）
 	prefixes := []string{
+		// Claude 模型
 		"claude-sonnet-4-5",
 		"claude-haiku-4-5",
 		"claude-opus-4-1",
@@ -131,15 +209,57 @@ func fuzzyMatchModel(model string) (ModelPricing, bool) {
 		"claude-3-opus",
 		"claude-3-sonnet",
 		"claude-3-haiku",
+
+		// OpenAI 模型（按优先级排序：更具体的前缀优先）
+		"gpt-5.1-codex-mini",
+		"gpt-5.1-codex",
+		"gpt-5.1-chat-latest",
+		"gpt-5.1",
+		"gpt-5-codex",
+		"gpt-5-chat-latest",
+		"gpt-5-search-api",
+		"gpt-5-pro",
+		"gpt-5-nano",
+		"gpt-5-mini",
+		"gpt-5",
+		"gpt-4.1-nano",
+		"gpt-4.1-mini",
+		"gpt-4.1",
+		"chatgpt-4o-latest",
+		"gpt-4o-mini-search-preview",
+		"gpt-4o-search-preview",
+		"gpt-4o-mini",
+		"gpt-4o",
+		"gpt-4-turbo-vision",
+		"gpt-4-turbo-preview",
+		"gpt-4-turbo",
+		"gpt-4-32k",
+		"gpt-4",
+		"gpt-3.5-turbo-instruct",
+		"gpt-3.5-turbo-16k",
+		"gpt-3.5-turbo",
+		"o4-mini-deep-research",
+		"o4-mini",
+		"o3-deep-research",
+		"o3-pro",
+		"o3-mini",
+		"o3",
+		"o1-pro",
+		"o1-mini",
+		"o1",
+		"computer-use-preview",
+		"codex-mini-latest",
+		"davinci-002",
+		"babbage-002",
 	}
 
 	for _, prefix := range prefixes {
 		if strings.HasPrefix(lowerModel, prefix) {
-			if pricing, ok := claudePricing[prefix]; ok {
+			if pricing, ok := modelPricing[prefix]; ok {
 				return pricing, true
 			}
-			// 尝试添加后缀（如-20240229）
-			for key, pricing := range claudePricing {
+			// 尝试查找带日期后缀的版本（如gpt-4o-2024-11-20）
+			for key, pricing := range modelPricing {
 				if strings.HasPrefix(key, prefix) {
 					return pricing, true
 				}

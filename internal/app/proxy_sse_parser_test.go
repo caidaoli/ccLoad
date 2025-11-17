@@ -237,3 +237,61 @@ data: {"usage":{"input_tokens":999}}
 		t.Errorf("非目标事件的usage应被忽略，实际: input=%d", input)
 	}
 }
+
+func TestSSEUsageParser_ParseOpenAIResponseCompleted(t *testing.T) {
+	// 模拟OpenAI Responses API (Codex)的response.completed事件
+	sseData := `event: response.completed
+data: {"type":"response.completed","sequence_number":28,"response":{"id":"resp_0d0d42598bd5c52c01691a963247dc81969f6ece7ebc78d882","object":"response","created_at":1763350066,"status":"completed","usage":{"input_tokens":10309,"input_tokens_details":{"cached_tokens":6016},"output_tokens":17,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":10326}}}
+
+`
+
+	parser := newSSEUsageParser()
+	if err := parser.Feed([]byte(sseData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+
+	// 验证usage数据
+	input, output, cacheRead, cacheCreation := parser.GetUsage()
+
+	if input != 10309 {
+		t.Errorf("InputTokens = %d, 期望 10309", input)
+	}
+	if output != 17 {
+		t.Errorf("OutputTokens = %d, 期望 17", output)
+	}
+	if cacheRead != 6016 {
+		t.Errorf("CacheReadInputTokens (cached_tokens) = %d, 期望 6016", cacheRead)
+	}
+	if cacheCreation != 0 {
+		t.Errorf("CacheCreationInputTokens = %d, 期望 0 (OpenAI不支持)", cacheCreation)
+	}
+}
+
+func TestSSEUsageParser_ParseMixedEvents(t *testing.T) {
+	// 测试混合Claude和OpenAI事件（虽然实际不会发生，但确保解析器健壮性）
+	sseData := `event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":100,"output_tokens":10}}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"usage":{"input_tokens":200,"output_tokens":20,"input_tokens_details":{"cached_tokens":50}}}}
+
+`
+
+	parser := newSSEUsageParser()
+	if err := parser.Feed([]byte(sseData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+
+	// 应该使用最后一个事件的数据（response.completed）
+	input, output, cacheRead, _ := parser.GetUsage()
+
+	if input != 200 {
+		t.Errorf("InputTokens = %d, 期望 200 (最后一个事件)", input)
+	}
+	if output != 20 {
+		t.Errorf("OutputTokens = %d, 期望 20 (最后一个事件)", output)
+	}
+	if cacheRead != 50 {
+		t.Errorf("CacheReadInputTokens = %d, 期望 50 (最后一个事件)", cacheRead)
+	}
+}

@@ -108,7 +108,7 @@ func TestCalculateCost_ModelAlias(t *testing.T) {
 
 func TestCalculateCost_UnknownModel(t *testing.T) {
 	// 未知模型应返回0
-	cost := CalculateCost("gpt-4", 1000, 1000, 0, 0)
+	cost := CalculateCost("unknown-model-xyz", 1000, 1000, 0, 0)
 	if cost != 0.0 {
 		t.Errorf("未知模型应返回0，实际 = %.6f", cost)
 	}
@@ -123,7 +123,10 @@ func TestCalculateCost_FuzzyMatch(t *testing.T) {
 		{"claude-3-opus-extended", true},
 		{"claude-3-sonnet-custom", true},
 		{"claude-sonnet-4-5-custom", true},
-		{"gpt-4-turbo", false},
+		{"gpt-4-turbo", true},           // 现在支持OpenAI模型
+		{"gpt-4o-2024-12-01", true},     // 模糊匹配到gpt-4o
+		{"gpt-5.1-codex-custom", true},  // 模糊匹配到gpt-5.1-codex
+		{"unknown-model", false},
 	}
 
 	for _, tc := range testCases {
@@ -140,6 +143,50 @@ func TestCalculateCost_ZeroTokens(t *testing.T) {
 	cost := CalculateCost("claude-sonnet-4-5", 0, 0, 0, 0)
 	if cost != 0.0 {
 		t.Errorf("全0 tokens成本应为0，实际 = %.6f", cost)
+	}
+}
+
+func TestCalculateCost_OpenAIModels(t *testing.T) {
+	// 测试OpenAI模型费用计算
+	testCases := []struct {
+		model        string
+		inputTokens  int
+		outputTokens int
+		cacheRead    int
+		expectedCost float64
+	}{
+		// GPT-5 系列（Standard层级 - 官方定价）
+		{"gpt-5.1-codex", 10309, 17, 6016, 0.013808}, // $1.25/1M input, $10/1M output
+		{"gpt-5", 1000, 1000, 0, 0.01125},            // $1.25/1M input, $10/1M output
+		{"gpt-5-mini", 10000, 5000, 0, 0.0125},       // $0.25/1M input, $2/1M output
+		{"gpt-5-nano", 100000, 50000, 0, 0.025},      // $0.05/1M input, $0.4/1M output
+		{"gpt-5-pro", 1000, 1000, 0, 0.135},          // $15/1M input, $120/1M output
+
+		// GPT-4.1 系列（新）
+		{"gpt-4.1", 1000, 1000, 0, 0.01},       // $2.00/1M input, $8/1M output
+		{"gpt-4.1-mini", 10000, 5000, 0, 0.012}, // $0.40/1M input, $1.60/1M output
+		{"gpt-4.1-nano", 100000, 50000, 0, 0.03}, // $0.10/1M input, $0.40/1M output
+
+		// GPT-4o 系列
+		{"gpt-4o", 1000, 1000, 0, 0.0125},       // $2.50/1M input, $10/1M output
+		{"gpt-4o-mini", 10000, 5000, 0, 0.0045}, // $0.15/1M input, $0.60/1M output
+
+		// o系列（推理模型）
+		{"o1", 1000, 1000, 0, 0.075},      // $15/1M input, $60/1M output
+		{"o1-mini", 10000, 5000, 0, 0.033}, // $1.10/1M input, $4.40/1M output
+		{"o3", 1000, 1000, 0, 0.01},       // $2.00/1M input, $8/1M output
+		{"o3-mini", 10000, 5000, 0, 0.033}, // $1.10/1M input, $4.40/1M output
+
+		// Legacy模型
+		{"gpt-4-turbo", 1000, 1000, 0, 0.04},         // $10/1M input, $30/1M output
+		{"gpt-3.5-turbo", 10000, 5000, 0, 0.0125},    // $0.50/1M input, $1.50/1M output
+	}
+
+	for _, tc := range testCases {
+		cost := CalculateCost(tc.model, tc.inputTokens, tc.outputTokens, tc.cacheRead, 0)
+		if !floatEquals(cost, tc.expectedCost, 0.000001) {
+			t.Errorf("%s: 成本 = %.6f, 期望 %.6f", tc.model, cost, tc.expectedCost)
+		}
 	}
 }
 

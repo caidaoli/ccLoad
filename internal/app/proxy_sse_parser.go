@@ -105,7 +105,9 @@ func (p *sseUsageParser) parseBuffer() error {
 // parseEvent 解析单个SSE事件
 func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	// 只关注包含usage信息的事件
-	if eventType != "message_start" && eventType != "message_delta" {
+	// Claude: message_start, message_delta
+	// OpenAI Responses API (Codex): response.completed
+	if eventType != "message_start" && eventType != "message_delta" && eventType != "response.completed" {
 		return nil
 	}
 
@@ -118,16 +120,23 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	// 提取usage字段
 	var usage map[string]any
 	if eventType == "message_start" {
-		// message_start: {type, message: {usage: {...}}}
+		// Claude message_start: {type, message: {usage: {...}}}
 		if msg, ok := event["message"].(map[string]any); ok {
 			if u, ok := msg["usage"].(map[string]any); ok {
 				usage = u
 			}
 		}
 	} else if eventType == "message_delta" {
-		// message_delta: {type, delta, usage: {...}}
+		// Claude message_delta: {type, delta, usage: {...}}
 		if u, ok := event["usage"].(map[string]any); ok {
 			usage = u
+		}
+	} else if eventType == "response.completed" {
+		// OpenAI Responses API (Codex): {type, response: {usage: {...}}}
+		if resp, ok := event["response"].(map[string]any); ok {
+			if u, ok := resp["usage"].(map[string]any); ok {
+				usage = u
+			}
 		}
 	}
 
@@ -135,18 +144,27 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		return nil
 	}
 
-	// 累积token统计（message_delta可能多次更新）
+	// 累积token统计
 	if val, ok := usage["input_tokens"].(float64); ok {
 		p.InputTokens = int(val)
 	}
 	if val, ok := usage["output_tokens"].(float64); ok {
 		p.OutputTokens = int(val)
 	}
+
+	// Claude格式：cache_read_input_tokens
 	if val, ok := usage["cache_read_input_tokens"].(float64); ok {
 		p.CacheReadInputTokens = int(val)
 	}
 	if val, ok := usage["cache_creation_input_tokens"].(float64); ok {
 		p.CacheCreationInputTokens = int(val)
+	}
+
+	// OpenAI Responses API格式：input_tokens_details.cached_tokens
+	if details, ok := usage["input_tokens_details"].(map[string]any); ok {
+		if val, ok := details["cached_tokens"].(float64); ok {
+			p.CacheReadInputTokens = int(val)
+		}
 	}
 
 	return nil
