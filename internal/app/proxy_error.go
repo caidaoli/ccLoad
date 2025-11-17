@@ -139,7 +139,7 @@ func (s *Server) handleProxySuccess(
 
 	// 记录成功日志
 	// ✅ 修复：使用 actualModel 而非 reqCtx.originalModel
-	isStreaming := res.FirstByteTime > 0 // 根据首字节时间判断是否为流式请求
+	isStreaming := reqCtx.isStreaming
 	s.AddLogAsync(buildLogEntry(actualModel, &cfg.ID, res.Status,
 		duration, isStreaming, selectedKey, res, ""))
 
@@ -176,7 +176,7 @@ func (s *Server) handleProxyErrorResponse(
 	reqCtx *proxyRequestContext, // ✅ 新增参数（2025-11）
 ) (*proxyResult, bool, bool) {
 	// ✅ 修复：使用 actualModel 而非 reqCtx.originalModel
-	isStreaming := res.FirstByteTime > 0 // 根据首字节时间判断是否为流式请求
+	isStreaming := reqCtx.isStreaming
 
 	// ✅ 日志改进 (2025-10-28): 明确标识上游返回的499错误
 	errMsg := ""
