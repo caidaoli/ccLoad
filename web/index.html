@@ -91,13 +91,20 @@
 
             <!-- Codex -->
             <div class="glass-card" id="type-codex-card">
-              <h4 class="text-lg font-semibold mb-3" style="color: var(--success-600);">
-                <svg class="inline-block w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                  <circle cx="10" cy="10" r="8"/>
-                </svg>
-                Codex
-              </h4>
-              <div class="grid grid-cols-4 gap-2">
+              <div class="flex items-center justify-between mb-3">
+                <h4 class="text-lg font-semibold" style="color: var(--success-600);">
+                  <svg class="inline-block w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                    <circle cx="10" cy="10" r="8"/>
+                  </svg>
+                  Codex
+                </h4>
+                <div class="text-right">
+                  <span class="text-xs mb-1" style="color: var(--neutral-500);">成本</span>
+                  <span class="text-lg font-bold" style="color: var(--warning-600);" id="type-codex-cost">$0.00</span>
+                </div>
+              </div>
+              <!-- 第一行：总请求、成功、失败、成功率 -->
+              <div class="grid grid-cols-4 gap-2 mb-2">
                 <div class="text-center">
                   <div class="text-2xl font-bold metric-total" id="type-codex-requests">0</div>
                   <div class="text-xs" style="color: var(--neutral-600);">总请求</div>
@@ -113,6 +120,25 @@
                 <div class="text-center">
                   <div class="text-2xl font-bold metric-rate" id="type-codex-rate">0.0%</div>
                   <div class="text-xs" style="color: var(--neutral-600);">成功率</div>
+                </div>
+              </div>
+              <!-- 第二行：输入、输出、缓存读取、缓存创建 -->
+              <div class="grid grid-cols-4 gap-2 pt-2 border-t border-neutral-200">
+                <div class="text-center">
+                  <div class="text-lg font-semibold" style="color: var(--neutral-700);" id="type-codex-input">0</div>
+                  <div class="text-xs" style="color: var(--neutral-600);">输入</div>
+                </div>
+                <div class="text-center">
+                  <div class="text-lg font-semibold" style="color: var(--neutral-700);" id="type-codex-output">0</div>
+                  <div class="text-xs" style="color: var(--neutral-600);">输出</div>
+                </div>
+                <div class="text-center">
+                  <div class="text-lg font-semibold" style="color: var(--success-600);" id="type-codex-cache-read">0</div>
+                  <div class="text-xs" style="color: var(--neutral-600);">缓存读</div>
+                </div>
+                <div class="text-center">
+                  <div class="text-lg font-semibold" style="color: var(--primary-600);" id="type-codex-cache-create">0</div>
+                  <div class="text-xs" style="color: var(--neutral-600);">缓存创</div>
                 </div>
               </div>
             </div>
@@ -326,19 +352,19 @@
       document.getElementById(`type-${type}-error`).textContent = formatNumber(errorRequests);
       document.getElementById(`type-${type}-rate`).textContent = successRate + '%';
 
-      // Claude类型的额外统计（Token和成本）
-      if (type === 'anthropic') {
+      // Claude和Codex类型的额外统计（Token和成本）
+      if (type === 'anthropic' || type === 'codex') {
         const inputTokens = data ? (data.total_input_tokens || 0) : 0;
         const outputTokens = data ? (data.total_output_tokens || 0) : 0;
         const cacheReadTokens = data ? (data.total_cache_read_tokens || 0) : 0;
         const cacheCreateTokens = data ? (data.total_cache_creation_tokens || 0) : 0;
         const totalCost = data ? (data.total_cost || 0) : 0;
 
-        document.getElementById('type-anthropic-input').textContent = formatNumber(inputTokens);
-        document.getElementById('type-anthropic-output').textContent = formatNumber(outputTokens);
-        document.getElementById('type-anthropic-cache-read').textContent = formatNumber(cacheReadTokens);
-        document.getElementById('type-anthropic-cache-create').textContent = formatNumber(cacheCreateTokens);
-        document.getElementById('type-anthropic-cost').textContent = formatCost(totalCost);
+        document.getElementById(`type-${type}-input`).textContent = formatNumber(inputTokens);
+        document.getElementById(`type-${type}-output`).textContent = formatNumber(outputTokens);
+        document.getElementById(`type-${type}-cache-read`).textContent = formatNumber(cacheReadTokens);
+        document.getElementById(`type-${type}-cache-create`).textContent = formatNumber(cacheCreateTokens);
+        document.getElementById(`type-${type}-cost`).textContent = formatCost(totalCost);
       }
     }
 

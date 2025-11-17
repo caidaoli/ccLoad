@@ -90,7 +90,7 @@ func (s *Server) HandleStats(c *gin.Context) {
 
 // handlePublicSummary 获取基础统计摘要(公开端点,无需认证)
 // GET /public/summary?hours=24
-// 按渠道类型分组统计，Claude类型包含Token和成本信息
+// 按渠道类型分组统计，Claude和Codex类型包含Token和成本信息
 func (s *Server) HandlePublicSummary(c *gin.Context) {
 	params := ParsePaginationParams(c)
 	since := params.GetSinceTime()
@@ -139,8 +139,8 @@ func (s *Server) HandlePublicSummary(c *gin.Context) {
 		ts.SuccessRequests += stat.Success
 		ts.ErrorRequests += stat.Error
 
-		// Claude类型额外统计Token和成本
-		if channelType == "anthropic" {
+		// Claude和Codex类型额外统计Token和成本
+		if channelType == "anthropic" || channelType == "codex" {
 			if stat.TotalInputTokens != nil {
 				ts.TotalInputTokens += *stat.TotalInputTokens
 			}
@@ -176,11 +176,11 @@ type TypeSummary struct {
 	TotalRequests           int     `json:"total_requests"`
 	SuccessRequests         int     `json:"success_requests"`
 	ErrorRequests           int     `json:"error_requests"`
-	TotalInputTokens        int64   `json:"total_input_tokens,omitempty"`        // Claude专用
-	TotalOutputTokens       int64   `json:"total_output_tokens,omitempty"`       // Claude专用
-	TotalCacheReadTokens    int64   `json:"total_cache_read_tokens,omitempty"`   // Claude专用
-	TotalCacheCreationTokens int64  `json:"total_cache_creation_tokens,omitempty"` // Claude专用
-	TotalCost               float64 `json:"total_cost,omitempty"`                // Claude专用
+	TotalInputTokens        int64   `json:"total_input_tokens,omitempty"`        // Claude/Codex专用
+	TotalOutputTokens       int64   `json:"total_output_tokens,omitempty"`       // Claude/Codex专用
+	TotalCacheReadTokens    int64   `json:"total_cache_read_tokens,omitempty"`   // Claude/Codex专用
+	TotalCacheCreationTokens int64  `json:"total_cache_creation_tokens,omitempty"` // Claude/Codex专用
+	TotalCost               float64 `json:"total_cost,omitempty"`                // Claude/Codex专用
 }
 
 // fetchChannelTypesMap 查询所有渠道的类型映射
