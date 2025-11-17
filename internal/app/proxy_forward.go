@@ -1,6 +1,8 @@
 package app
 
 import (
+	"bufio"
+	"bytes"
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 	"context"
@@ -10,6 +12,11 @@ import (
 	"net/http"
 	"strings"
 	"time"
+)
+
+const (
+	// SSEProbeSize 用于探测 text/plain 内容是否包含 SSE 事件的前缀长度（2KB 足够覆盖小事件）
+	SSEProbeSize = 2 * 1024
 )
 
 // ============================================================================
@@ -146,15 +153,30 @@ func (s *Server) handleSuccessResponse(
 	// text/event-stream → 4KB缓冲区（降低首Token延迟60~80%）
 	// 其他类型 → 32KB缓冲区（保持大文件传输性能）
 	var streamErr error
-	var usageParser *sseUsageParser
+	var usageParser usageParser
+	bodyReader := resp.Body
 	contentType := resp.Header.Get("Content-Type")
+
 	if strings.Contains(contentType, "text/event-stream") {
 		// SSE流式响应：使用解析器提取usage数据
 		usageParser = newSSEUsageParser()
-		streamErr = streamCopySSE(reqCtx.ctx, resp.Body, w, usageParser.Feed)
+		streamErr = streamCopySSE(reqCtx.ctx, bodyReader, w, usageParser.Feed)
+	} else if strings.Contains(contentType, "text/plain") && reqCtx.isStreaming {
+		// 非标准SSE场景：上游以text/plain发送SSE事件，探测前缀决定是否走SSE
+		reader := bufio.NewReader(bodyReader)
+		probe, _ := reader.Peek(SSEProbeSize)
+
+		if looksLikeSSE(probe) {
+			usageParser = newSSEUsageParser()
+			streamErr = streamCopySSE(reqCtx.ctx, io.NopCloser(reader), w, usageParser.Feed)
+		} else {
+			usageParser = newJSONUsageParser()
+			streamErr = streamCopy(reqCtx.ctx, io.NopCloser(reader), w, usageParser.Feed)
+		}
 	} else {
-		// 非SSE响应：使用大缓冲区优化吞吐量
-		streamErr = streamCopy(reqCtx.ctx, resp.Body, w)
+		// 非SSE响应：边转发边缓存，统一提取usage
+		usageParser = newJSONUsageParser()
+		streamErr = streamCopy(reqCtx.ctx, bodyReader, w, usageParser.Feed)
 	}
 
 	duration := reqCtx.Duration()
@@ -171,6 +193,12 @@ func (s *Server) handleSuccessResponse(
 	}
 
 	return result, duration, streamErr
+}
+
+// looksLikeSSE 粗略判断文本内容是否包含 SSE 事件结构
+func looksLikeSSE(data []byte) bool {
+	// 同时包含 event: 与 data: 行的简单特征，可匹配大多数 SSE 片段
+	return bytes.Contains(data, []byte("event:")) && bytes.Contains(data, []byte("data:"))
 }
 
 // handleResponse 处理 HTTP 响应（错误或成功）
@@ -316,7 +344,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	actualModel, bodyToSend := prepareRequestBody(cfg, reqCtx)
 
 	// Key重试循环
-	for i := 0; i < maxKeyRetries; i++ {
+	for range maxKeyRetries {
 		// 选择可用的API Key（直接传入apiKeys，避免重复查询）
 		keyIndex, selectedKey, err := s.keySelector.SelectAvailableKey(cfg.ID, apiKeys, triedKeys)
 		if err != nil {

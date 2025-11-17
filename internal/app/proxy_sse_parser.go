@@ -15,12 +15,15 @@ import (
 // sseUsageParser SSE流式响应的usage数据解析器
 // 设计原则（SRP）：仅负责从SSE事件流中提取token统计信息，不负责I/O
 // 采用增量解析避免重复扫描（O(n²) → O(n)）
-type sseUsageParser struct {
-	// 累积的usage数据（从message_start和message_delta事件中提取）
+type usageAccumulator struct {
 	InputTokens              int
 	OutputTokens             int
 	CacheReadInputTokens     int
 	CacheCreationInputTokens int
+}
+
+type sseUsageParser struct {
+	usageAccumulator
 
 	// 内部状态（增量解析）
 	buffer     bytes.Buffer // 未完成的数据缓冲区
@@ -29,14 +32,33 @@ type sseUsageParser struct {
 	dataLines  []string     // 当前事件的data行（跨Feed保存）
 }
 
+type jsonUsageParser struct {
+	usageAccumulator
+	buffer    bytes.Buffer
+	truncated bool
+}
+
+type usageParser interface {
+	Feed([]byte) error
+	GetUsage() (inputTokens, outputTokens, cacheRead, cacheCreation int)
+}
+
 const (
 	// maxSSEEventSize SSE事件最大尺寸（防止内存耗尽攻击）
 	maxSSEEventSize = 1 << 20 // 1MB
+
+	// maxUsageBodySize 用于普通JSON响应 usage 提取时的最大缓存（防止内存过大）
+	maxUsageBodySize = 1 << 20 // 1MB
 )
 
 // newSSEUsageParser 创建SSE usage解析器
 func newSSEUsageParser() *sseUsageParser {
 	return &sseUsageParser{}
+}
+
+// newJSONUsageParser 创建JSON响应的usage解析器
+func newJSONUsageParser() *jsonUsageParser {
+	return &jsonUsageParser{}
 }
 
 // Feed 喂入数据进行解析（供streamCopySSE调用）
@@ -75,10 +97,10 @@ func (p *sseUsageParser) parseBuffer() error {
 		// data: {...}
 		// (空行表示事件结束)
 
-		if strings.HasPrefix(line, "event:") {
-			p.eventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-		} else if strings.HasPrefix(line, "data:") {
-			dataLine := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if after, ok := strings.CutPrefix(line, "event:"); ok {
+			p.eventType = strings.TrimSpace(after)
+		} else if after0, ok0 := strings.CutPrefix(line, "data:"); ok0 {
+			dataLine := strings.TrimSpace(after0)
 			p.dataLines = append(p.dataLines, dataLine)
 		} else if line == "" && len(p.dataLines) > 0 {
 			// 事件结束，解析数据
@@ -117,55 +139,13 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		return fmt.Errorf("json unmarshal failed: %w", err)
 	}
 
-	// 提取usage字段
-	var usage map[string]any
-	if eventType == "message_start" {
-		// Claude message_start: {type, message: {usage: {...}}}
-		if msg, ok := event["message"].(map[string]any); ok {
-			if u, ok := msg["usage"].(map[string]any); ok {
-				usage = u
-			}
-		}
-	} else if eventType == "message_delta" {
-		// Claude message_delta: {type, delta, usage: {...}}
-		if u, ok := event["usage"].(map[string]any); ok {
-			usage = u
-		}
-	} else if eventType == "response.completed" {
-		// OpenAI Responses API (Codex): {type, response: {usage: {...}}}
-		if resp, ok := event["response"].(map[string]any); ok {
-			if u, ok := resp["usage"].(map[string]any); ok {
-				usage = u
-			}
-		}
-	}
+	usage := extractUsage(event)
 
 	if usage == nil {
 		return nil
 	}
 
-	// 累积token统计
-	if val, ok := usage["input_tokens"].(float64); ok {
-		p.InputTokens = int(val)
-	}
-	if val, ok := usage["output_tokens"].(float64); ok {
-		p.OutputTokens = int(val)
-	}
-
-	// Claude格式：cache_read_input_tokens
-	if val, ok := usage["cache_read_input_tokens"].(float64); ok {
-		p.CacheReadInputTokens = int(val)
-	}
-	if val, ok := usage["cache_creation_input_tokens"].(float64); ok {
-		p.CacheCreationInputTokens = int(val)
-	}
-
-	// OpenAI Responses API格式：input_tokens_details.cached_tokens
-	if details, ok := usage["input_tokens_details"].(map[string]any); ok {
-		if val, ok := details["cached_tokens"].(float64); ok {
-			p.CacheReadInputTokens = int(val)
-		}
-	}
+	p.applyUsage(usage)
 
 	return nil
 }
@@ -173,4 +153,88 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 // GetUsage 获取累积的usage统计
 func (p *sseUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cacheCreation int) {
 	return p.InputTokens, p.OutputTokens, p.CacheReadInputTokens, p.CacheCreationInputTokens
+}
+
+func (p *jsonUsageParser) Feed(data []byte) error {
+	if p.truncated {
+		return nil
+	}
+	if p.buffer.Len()+len(data) > maxUsageBodySize {
+		p.truncated = true
+		log.Printf("WARN: usage body exceeds max size (%d bytes), skip usage extraction", maxUsageBodySize)
+		return nil
+	}
+	_, err := p.buffer.Write(data)
+	return err
+}
+
+func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cacheCreation int) {
+	if p.truncated || p.buffer.Len() == 0 {
+		return 0, 0, 0, 0
+	}
+
+	data := p.buffer.Bytes()
+
+	// 兼容 text/plain SSE 回退：上游偶尔用 text/plain 发送 SSE 事件
+	if bytes.Contains(data, []byte("event:")) {
+		sseParser := &sseUsageParser{}
+		if err := sseParser.Feed(data); err != nil {
+			log.Printf("WARN: usage sse-like parse failed: %v", err)
+		} else {
+			return sseParser.GetUsage()
+		}
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		log.Printf("WARN: usage json parse failed: %v", err)
+		return 0, 0, 0, 0
+	}
+
+	p.applyUsage(extractUsage(payload))
+	return p.InputTokens, p.OutputTokens, p.CacheReadInputTokens, p.CacheCreationInputTokens
+}
+
+func (u *usageAccumulator) applyUsage(usage map[string]any) {
+	if usage == nil {
+		return
+	}
+
+	if val, ok := usage["input_tokens"].(float64); ok {
+		u.InputTokens = int(val)
+	}
+	if val, ok := usage["output_tokens"].(float64); ok {
+		u.OutputTokens = int(val)
+	}
+
+	if val, ok := usage["cache_read_input_tokens"].(float64); ok {
+		u.CacheReadInputTokens = int(val)
+	}
+	if val, ok := usage["cache_creation_input_tokens"].(float64); ok {
+		u.CacheCreationInputTokens = int(val)
+	}
+
+	if details, ok := usage["input_tokens_details"].(map[string]any); ok {
+		if val, ok := details["cached_tokens"].(float64); ok {
+			u.CacheReadInputTokens = int(val)
+		}
+	}
+}
+
+func extractUsage(payload map[string]any) map[string]any {
+	if usage, ok := payload["usage"].(map[string]any); ok {
+		return usage
+	}
+	if msg, ok := payload["message"].(map[string]any); ok {
+		if usage, ok := msg["usage"].(map[string]any); ok {
+			return usage
+		}
+	}
+	if resp, ok := payload["response"].(map[string]any); ok {
+		if usage, ok := resp["usage"].(map[string]any); ok {
+			return usage
+		}
+	}
+
+	return nil
 }
