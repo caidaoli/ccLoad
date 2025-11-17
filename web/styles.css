@@ -194,15 +194,6 @@ body {
   }
 }
 
-@keyframes shimmer {
-  0% {
-    background-position: -200% 0;
-  }
-  100% {
-    background-position: 200% 0;
-  }
-}
-
 @keyframes float {
   0%, 100% {
     transform: translateY(0px);
@@ -289,18 +280,13 @@ body {
 .topnav-link.active { background: rgba(17,24,39,0.10); color: var(--topbar-fg); border: 1px solid rgba(17,24,39,0.12); }
 .topbar-right { display: flex; align-items: center; gap: var(--space-3); }
 
-/* 顶部背景动效容器 */
+/* 顶部背景（静态渐变，无动画） */
 .bg-anim {
   position: fixed; inset: 0; z-index: 0; pointer-events: none;
   background:
     radial-gradient(550px 300px at 20% 10%, rgba(59,130,246,0.14), transparent 60%),
     radial-gradient(650px 320px at 80% 5%, rgba(236,72,153,0.12), transparent 60%),
     radial-gradient(420px 260px at 70% 60%, rgba(16,185,129,0.10), transparent 60%);
-  animation: bgFloat 16s ease-in-out infinite alternate;
-}
-@keyframes bgFloat {
-  from { transform: translateY(0px); filter: saturate(1); }
-  to { transform: translateY(-8px); filter: saturate(1.05); }
 }
 
 /* ===== 卡片组件 ===== */
@@ -361,8 +347,6 @@ body {
   right: 0;
   height: 3px;
   background: linear-gradient(90deg, #6366f1, #8b5cf6, #ec4899);
-  background-size: 200% 100%;
-  animation: shimmer 3s ease-in-out infinite;
 }
 
 .hero-icon {
@@ -992,8 +976,17 @@ body {
 .loading-skeleton {
   background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
   background-size: 200% 100%;
-  animation: shimmer 1.5s infinite;
+  animation: shimmerBg 1.5s infinite;
   border-radius: var(--radius-base);
+}
+
+@keyframes shimmerBg {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
 }
 
 .loading-spinner {
@@ -1993,8 +1986,6 @@ body {
   right: 0;
   height: 2px;
   background: linear-gradient(90deg, var(--primary-400), var(--primary-600), var(--primary-400));
-  background-size: 200% 100%;
-  animation: shimmer 2s ease-in-out infinite;
 }
 
 .login-brand {

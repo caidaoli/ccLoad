@@ -8,6 +8,11 @@
   <link rel="preconnect" href="https://fonts.loli.net">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.loli.net/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    .stats-table th {
+      text-align: center;
+    }
+  </style>
 </head>
 <body>
   <div class="app-container">
@@ -108,7 +113,7 @@
             
             <!-- 统计表格 -->
             <div class="table-container">
-              <table class="modern-table">
+              <table class="modern-table stats-table">
                 <thead>
                   <tr>
                     <th class="sortable" data-column="channel_name" onclick="sortTable('channel_name')">

@@ -445,7 +445,7 @@
           <td style="text-align: center;">
             ${streamCount > 0
               ? `<div>
-                  <div class="metric-value">${(streamAvgTTFB * 1000).toFixed(0)}ms</div>
+                  <div class="metric-value">${streamAvgTTFB.toFixed(2)}s</div>
                   <div class="metric-label">${streamCount.toLocaleString()}次调用</div>
                  </div>`
               : '<span style="color: var(--neutral-500); font-size: 13px;">-</span>'}
@@ -453,7 +453,7 @@
           <td style="text-align: center;">
             ${nonStreamCount > 0
               ? `<div>
-                  <div class="metric-value">${(nonStreamAvgRT * 1000).toFixed(0)}ms</div>
+                  <div class="metric-value">${nonStreamAvgRT.toFixed(2)}s</div>
                   <div class="metric-label">${nonStreamCount.toLocaleString()}次调用</div>
                  </div>`
               : '<span style="color: var(--neutral-500); font-size: 13px;">-</span>'}
