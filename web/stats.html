@@ -139,6 +139,26 @@
                       平均首字时间
                       <span class="sort-indicator" id="sort-avg_first_byte_time"></span>
                     </th>
+                    <th class="sortable" data-column="total_input_tokens" onclick="sortTable('total_input_tokens')">
+                      输入Token
+                      <span class="sort-indicator" id="sort-total_input_tokens"></span>
+                    </th>
+                    <th class="sortable" data-column="total_output_tokens" onclick="sortTable('total_output_tokens')">
+                      输出Token
+                      <span class="sort-indicator" id="sort-total_output_tokens"></span>
+                    </th>
+                    <th class="sortable" data-column="total_cache_read" onclick="sortTable('total_cache_read')" style="color: var(--success-600);">
+                      缓存读取
+                      <span class="sort-indicator" id="sort-total_cache_read"></span>
+                    </th>
+                    <th class="sortable" data-column="total_cache_creation" onclick="sortTable('total_cache_creation')" style="color: var(--primary-600);">
+                      缓存创建
+                      <span class="sort-indicator" id="sort-total_cache_creation"></span>
+                    </th>
+                    <th class="sortable" data-column="total_cost" onclick="sortTable('total_cost')" style="color: var(--warning-600);">
+                      成本($)
+                      <span class="sort-indicator" id="sort-total_cost"></span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody id="stats_tbody"></tbody>
@@ -155,7 +175,7 @@
 
   <script>
     // 常量定义
-    const STATS_TABLE_COLUMNS = 7; // 统计表列数
+    const STATS_TABLE_COLUMNS = 12; // 统计表列数（增加了5列：输入Token、输出Token、缓存读取、缓存创建、成本）
     
     let statsData = null;
     let sortState = {
@@ -352,6 +372,26 @@
             valueA = a.avg_first_byte_time_seconds || 0;
             valueB = b.avg_first_byte_time_seconds || 0;
             break;
+          case 'total_input_tokens':
+            valueA = a.total_input_tokens || 0;
+            valueB = b.total_input_tokens || 0;
+            break;
+          case 'total_output_tokens':
+            valueA = a.total_output_tokens || 0;
+            valueB = b.total_output_tokens || 0;
+            break;
+          case 'total_cache_read':
+            valueA = a.total_cache_read_input_tokens || 0;
+            valueB = b.total_cache_read_input_tokens || 0;
+            break;
+          case 'total_cache_creation':
+            valueA = a.total_cache_creation_input_tokens || 0;
+            valueB = b.total_cache_creation_input_tokens || 0;
+            break;
+          case 'total_cost':
+            valueA = a.total_cost || 0;
+            valueB = b.total_cost || 0;
+            break;
           default:
             return 0;
         }
@@ -407,6 +447,19 @@
           `${avgFirstByteTime.toFixed(2)}秒` :
           '<span style="color: var(--neutral-400);">--</span>';
 
+        // 格式化Token数据
+        const inputTokensText = entry.total_input_tokens ? formatNumber(entry.total_input_tokens) : '<span style="color: var(--neutral-400);">--</span>';
+        const outputTokensText = entry.total_output_tokens ? formatNumber(entry.total_output_tokens) : '<span style="color: var(--neutral-400);">--</span>';
+        const cacheReadTokensText = entry.total_cache_read_input_tokens ?
+          `<span style="color: var(--success-600);">${formatNumber(entry.total_cache_read_input_tokens)}</span>` :
+          '<span style="color: var(--neutral-400);">--</span>';
+        const cacheCreationTokensText = entry.total_cache_creation_input_tokens ?
+          `<span style="color: var(--primary-600);">${formatNumber(entry.total_cache_creation_input_tokens)}</span>` :
+          '<span style="color: var(--neutral-400);">--</span>';
+        const costText = entry.total_cost ?
+          `<span style="color: var(--warning-600); font-weight: 500;">${formatCost(entry.total_cost)}</span>` :
+          '<span style="color: var(--neutral-400);">--</span>';
+
         tr.innerHTML = `
           <td>
             <a href="/web/channels.html?id=${entry.channel_id}" class="config-name channel-link" title="跳转到渠道管理">
@@ -427,6 +480,11 @@
           <td style="text-align: center;">
             ${avgFirstByteTimeText}
           </td>
+          <td style="text-align: right;">${inputTokensText}</td>
+          <td style="text-align: right;">${outputTokensText}</td>
+          <td style="text-align: right;">${cacheReadTokensText}</td>
+          <td style="text-align: right;">${cacheCreationTokensText}</td>
+          <td style="text-align: right;">${costText}</td>
         `;
         tbody.appendChild(tr);
       }
@@ -515,6 +573,22 @@
       if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
       if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
       return num.toString();
+    }
+
+    // 格式化成本（美元）- 复用logs.html的逻辑
+    function formatCost(cost) {
+      if (cost === 0) return '$0.00';
+      if (cost < 0.001) {
+        // 小额成本：使用更多小数位
+        if (cost < 0.000001) {
+          return '$' + cost.toExponential(2); // 科学计数法
+        }
+        return '$' + cost.toFixed(6).replace(/\.?0+$/, ''); // 最多6位小数，去除尾随0
+      }
+      if (cost >= 1.0) {
+        return '$' + cost.toFixed(2); // 大于$1显示2位小数
+      }
+      return '$' + cost.toFixed(4).replace(/\.?0+$/, ''); // 否则显示4位小数，去除尾随0
     }
 
     function escapeHtml(str) {

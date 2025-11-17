@@ -847,7 +847,12 @@ func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *mod
 			ROUND(
 				AVG(CASE WHEN is_streaming = 1 AND first_byte_time > 0 AND status_code >= 200 AND status_code < 300 THEN first_byte_time ELSE NULL END),
 				3
-			) as avg_first_byte_time
+			) as avg_first_byte_time,
+			SUM(COALESCE(input_tokens, 0)) as total_input_tokens,
+			SUM(COALESCE(output_tokens, 0)) as total_output_tokens,
+			SUM(COALESCE(cache_read_input_tokens, 0)) as total_cache_read_input_tokens,
+			SUM(COALESCE(cache_creation_input_tokens, 0)) as total_cache_creation_input_tokens,
+			SUM(COALESCE(cost, 0.0)) as total_cost
 		FROM logs`
 
 	// time字段现在是BIGINT毫秒时间戳
@@ -894,14 +899,35 @@ func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *mod
 	for rows.Next() {
 		var entry model.StatsEntry
 		var avgFirstByteTime sql.NullFloat64
+		var totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheCreationTokens sql.NullInt64
+		var totalCost sql.NullFloat64
+
 		err := rows.Scan(&entry.ChannelID, &entry.Model,
-			&entry.Success, &entry.Error, &entry.Total, &avgFirstByteTime)
+			&entry.Success, &entry.Error, &entry.Total, &avgFirstByteTime,
+			&totalInputTokens, &totalOutputTokens, &totalCacheReadTokens, &totalCacheCreationTokens, &totalCost)
 		if err != nil {
 			return nil, err
 		}
 
 		if avgFirstByteTime.Valid {
 			entry.AvgFirstByteTimeSeconds = &avgFirstByteTime.Float64
+		}
+
+		// 填充token统计字段（仅当有值时）
+		if totalInputTokens.Valid && totalInputTokens.Int64 > 0 {
+			entry.TotalInputTokens = &totalInputTokens.Int64
+		}
+		if totalOutputTokens.Valid && totalOutputTokens.Int64 > 0 {
+			entry.TotalOutputTokens = &totalOutputTokens.Int64
+		}
+		if totalCacheReadTokens.Valid && totalCacheReadTokens.Int64 > 0 {
+			entry.TotalCacheReadInputTokens = &totalCacheReadTokens.Int64
+		}
+		if totalCacheCreationTokens.Valid && totalCacheCreationTokens.Int64 > 0 {
+			entry.TotalCacheCreationInputTokens = &totalCacheCreationTokens.Int64
+		}
+		if totalCost.Valid && totalCost.Float64 > 0 {
+			entry.TotalCost = &totalCost.Float64
 		}
 
 		if entry.ChannelID != nil {

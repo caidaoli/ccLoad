@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -89,6 +90,7 @@ func (s *Server) HandleStats(c *gin.Context) {
 
 // handlePublicSummary 获取基础统计摘要(公开端点,无需认证)
 // GET /public/summary?hours=24
+// 按渠道类型分组统计，Claude类型包含Token和成本信息
 func (s *Server) HandlePublicSummary(c *gin.Context) {
 	params := ParsePaginationParams(c)
 	since := params.GetSinceTime()
@@ -98,29 +100,101 @@ func (s *Server) HandlePublicSummary(c *gin.Context) {
 		return
 	}
 
-	// 计算总体统计
+	// 查询所有渠道的类型映射(channel_id -> channel_type)
+	channelTypes, err := s.fetchChannelTypesMap(c.Request.Context())
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	// 按渠道类型分组统计
+	typeStats := make(map[string]*TypeSummary)
 	totalSuccess := 0
 	totalError := 0
-	totalChannels := make(map[string]bool)
-	totalModels := make(map[string]bool)
 
 	for _, stat := range stats {
 		totalSuccess += stat.Success
 		totalError += stat.Error
-		totalChannels[stat.ChannelName] = true
-		totalModels[stat.Model] = true
+
+		// 获取渠道类型(默认anthropic)
+		channelType := "anthropic"
+		if stat.ChannelID != nil {
+			if ct, ok := channelTypes[int64(*stat.ChannelID)]; ok {
+				channelType = ct
+			}
+		}
+
+		// 初始化类型统计
+		if _, exists := typeStats[channelType]; !exists {
+			typeStats[channelType] = &TypeSummary{
+				ChannelType:    channelType,
+				TotalRequests:  0,
+				SuccessRequests: 0,
+				ErrorRequests:  0,
+			}
+		}
+
+		ts := typeStats[channelType]
+		ts.TotalRequests += stat.Success + stat.Error
+		ts.SuccessRequests += stat.Success
+		ts.ErrorRequests += stat.Error
+
+		// Claude类型额外统计Token和成本
+		if channelType == "anthropic" {
+			if stat.TotalInputTokens != nil {
+				ts.TotalInputTokens += *stat.TotalInputTokens
+			}
+			if stat.TotalOutputTokens != nil {
+				ts.TotalOutputTokens += *stat.TotalOutputTokens
+			}
+			if stat.TotalCacheReadInputTokens != nil {
+				ts.TotalCacheReadTokens += *stat.TotalCacheReadInputTokens
+			}
+			if stat.TotalCacheCreationInputTokens != nil {
+				ts.TotalCacheCreationTokens += *stat.TotalCacheCreationInputTokens
+			}
+			if stat.TotalCost != nil {
+				ts.TotalCost += *stat.TotalCost
+			}
+		}
 	}
 
 	response := gin.H{
 		"total_requests":   totalSuccess + totalError,
 		"success_requests": totalSuccess,
 		"error_requests":   totalError,
-		"active_channels":  len(totalChannels),
-		"active_models":    len(totalModels),
 		"hours":            params.Hours,
+		"by_type":          typeStats, // 按渠道类型分组的统计
 	}
 
 	RespondJSON(c, http.StatusOK, response)
+}
+
+// TypeSummary 按渠道类型的统计摘要
+type TypeSummary struct {
+	ChannelType             string  `json:"channel_type"`
+	TotalRequests           int     `json:"total_requests"`
+	SuccessRequests         int     `json:"success_requests"`
+	ErrorRequests           int     `json:"error_requests"`
+	TotalInputTokens        int64   `json:"total_input_tokens,omitempty"`        // Claude专用
+	TotalOutputTokens       int64   `json:"total_output_tokens,omitempty"`       // Claude专用
+	TotalCacheReadTokens    int64   `json:"total_cache_read_tokens,omitempty"`   // Claude专用
+	TotalCacheCreationTokens int64  `json:"total_cache_creation_tokens,omitempty"` // Claude专用
+	TotalCost               float64 `json:"total_cost,omitempty"`                // Claude专用
+}
+
+// fetchChannelTypesMap 查询所有渠道的类型映射
+func (s *Server) fetchChannelTypesMap(ctx context.Context) (map[int64]string, error) {
+	configs, err := s.store.ListConfigs(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	channelTypes := make(map[int64]string, len(configs))
+	for _, cfg := range configs {
+		channelTypes[cfg.ID] = cfg.ChannelType
+	}
+	return channelTypes, nil
 }
 
 // handleCooldownStats 获取当前冷却状态监控指标

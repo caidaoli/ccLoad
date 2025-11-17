@@ -29,8 +29,153 @@
           </div>
         </header>
 
-        <!-- 实时状态栏 -->
+
+        <!-- 按渠道类型统计 -->
         <section class="mb-8">
+      
+         
+          <div class="grid grid-cols-2 animate-slide-up" style="animation-delay: 0.2s; gap: var(--space-4);">
+            <!-- Claude Code -->
+            <div class="glass-card" id="type-anthropic-card">
+              <div class="flex items-center justify-between mb-3">
+                <h4 class="text-lg font-semibold" style="color: var(--primary-600);">
+                  <svg class="inline-block w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                    <circle cx="10" cy="10" r="8"/>
+                  </svg>
+                  Claude Code
+                </h4>
+                <div class="text-right">
+                  <span class="text-xs mb-1" style="color: var(--neutral-500);">成本</span>
+                  <span class="text-lg font-bold" style="color: var(--warning-600);" id="type-anthropic-cost">$0.00</span>
+                </div>
+              </div>
+              <!-- 第一行：总请求、成功、失败、成功率 -->
+              <div class="grid grid-cols-4 gap-2 mb-2">
+                <div class="text-center">
+                  <div class="text-2xl font-bold metric-total" id="type-anthropic-requests">0</div>
+                  <div class="text-xs" style="color: var(--neutral-600);">总请求</div>
+                </div>
+                <div class="text-center">
+                  <div class="text-2xl font-bold metric-success" id="type-anthropic-success">0</div>
+                  <div class="text-xs" style="color: var(--neutral-600);">成功</div>
+                </div>
+                <div class="text-center">
+                  <div class="text-2xl font-bold metric-error" id="type-anthropic-error">0</div>
+                  <div class="text-xs" style="color: var(--neutral-600);">失败</div>
+                </div>
+                <div class="text-center">
+                  <div class="text-2xl font-bold metric-rate" id="type-anthropic-rate">0.0%</div>
+                  <div class="text-xs" style="color: var(--neutral-600);">成功率</div>
+                </div>
+              </div>
+              <!-- 第二行：输入、输出、缓存读取、缓存创建 -->
+              <div class="grid grid-cols-4 gap-2 pt-2 border-t border-neutral-200">
+                <div class="text-center">
+                  <div class="text-lg font-semibold" style="color: var(--neutral-700);" id="type-anthropic-input">0</div>
+                  <div class="text-xs" style="color: var(--neutral-600);">输入</div>
+                </div>
+                <div class="text-center">
+                  <div class="text-lg font-semibold" style="color: var(--neutral-700);" id="type-anthropic-output">0</div>
+                  <div class="text-xs" style="color: var(--neutral-600);">输出</div>
+                </div>
+                <div class="text-center">
+                  <div class="text-lg font-semibold" style="color: var(--success-600);" id="type-anthropic-cache-read">0</div>
+                  <div class="text-xs" style="color: var(--neutral-600);">缓存读</div>
+                </div>
+                <div class="text-center">
+                  <div class="text-lg font-semibold" style="color: var(--primary-600);" id="type-anthropic-cache-create">0</div>
+                  <div class="text-xs" style="color: var(--neutral-600);">缓存创</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Codex -->
+            <div class="glass-card" id="type-codex-card">
+              <h4 class="text-lg font-semibold mb-3" style="color: var(--success-600);">
+                <svg class="inline-block w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                  <circle cx="10" cy="10" r="8"/>
+                </svg>
+                Codex
+              </h4>
+              <div class="grid grid-cols-4 gap-2">
+                <div class="text-center">
+                  <div class="text-2xl font-bold metric-total" id="type-codex-requests">0</div>
+                  <div class="text-xs" style="color: var(--neutral-600);">总请求</div>
+                </div>
+                <div class="text-center">
+                  <div class="text-2xl font-bold metric-success" id="type-codex-success">0</div>
+                  <div class="text-xs" style="color: var(--neutral-600);">成功</div>
+                </div>
+                <div class="text-center">
+                  <div class="text-2xl font-bold metric-error" id="type-codex-error">0</div>
+                  <div class="text-xs" style="color: var(--neutral-600);">失败</div>
+                </div>
+                <div class="text-center">
+                  <div class="text-2xl font-bold metric-rate" id="type-codex-rate">0.0%</div>
+                  <div class="text-xs" style="color: var(--neutral-600);">成功率</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- OpenAI -->
+            <div class="glass-card" id="type-openai-card">
+              <h4 class="text-lg font-semibold mb-3" style="color: var(--warning-600);">
+                <svg class="inline-block w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                  <circle cx="10" cy="10" r="8"/>
+                </svg>
+                OpenAI
+              </h4>
+              <div class="grid grid-cols-4 gap-2">
+                <div class="text-center">
+                  <div class="text-2xl font-bold metric-total" id="type-openai-requests">0</div>
+                  <div class="text-xs" style="color: var(--neutral-600);">总请求</div>
+                </div>
+                <div class="text-center">
+                  <div class="text-2xl font-bold metric-success" id="type-openai-success">0</div>
+                  <div class="text-xs" style="color: var(--neutral-600);">成功</div>
+                </div>
+                <div class="text-center">
+                  <div class="text-2xl font-bold metric-error" id="type-openai-error">0</div>
+                  <div class="text-xs" style="color: var(--neutral-600);">失败</div>
+                </div>
+                <div class="text-center">
+                  <div class="text-2xl font-bold metric-rate" id="type-openai-rate">0.0%</div>
+                  <div class="text-xs" style="color: var(--neutral-600);">成功率</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Gemini -->
+            <div class="glass-card" id="type-gemini-card">
+              <h4 class="text-lg font-semibold mb-3" style="color: var(--error-600);">
+                <svg class="inline-block w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                  <circle cx="10" cy="10" r="8"/>
+                </svg>
+                Google Gemini
+              </h4>
+              <div class="grid grid-cols-4 gap-2">
+                <div class="text-center">
+                  <div class="text-2xl font-bold metric-total" id="type-gemini-requests">0</div>
+                  <div class="text-xs" style="color: var(--neutral-600);">总请求</div>
+                </div>
+                <div class="text-center">
+                  <div class="text-2xl font-bold metric-success" id="type-gemini-success">0</div>
+                  <div class="text-xs" style="color: var(--neutral-600);">成功</div>
+                </div>
+                <div class="text-center">
+                  <div class="text-2xl font-bold metric-error" id="type-gemini-error">0</div>
+                  <div class="text-xs" style="color: var(--neutral-600);">失败</div>
+                </div>
+                <div class="text-center">
+                  <div class="text-2xl font-bold metric-rate" id="type-gemini-rate">0.0%</div>
+                  <div class="text-xs" style="color: var(--neutral-600);">成功率</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+        <!-- 实时状态栏 - 总览 -->
+        <section class="mb-4">
           <div class="grid grid-cols-4 animate-slide-up" style="animation-delay: 0.1s;">
             <div class="metric-card">
               <div class="metric-number metric-total" id="total-requests">--</div>
@@ -141,15 +286,75 @@
 
     // 更新统计显示
     function updateStatsDisplay() {
-      const successRate = statsData.total_requests > 0 
+      const successRate = statsData.total_requests > 0
         ? ((statsData.success_requests / statsData.total_requests) * 100).toFixed(1)
         : '0.0';
 
-      // 更新数字显示
+      // 更新总体数字显示
       document.getElementById('total-requests').textContent = formatNumber(statsData.total_requests || 0);
       document.getElementById('success-requests').textContent = formatNumber(statsData.success_requests || 0);
       document.getElementById('error-requests').textContent = formatNumber(statsData.error_requests || 0);
       document.getElementById('success-rate').textContent = successRate + '%';
+
+      // 更新按渠道类型统计
+      if (statsData.by_type) {
+        updateTypeStats('anthropic', statsData.by_type.anthropic);
+        updateTypeStats('codex', statsData.by_type.codex);
+        updateTypeStats('openai', statsData.by_type.openai);
+        updateTypeStats('gemini', statsData.by_type.gemini);
+      }
+    }
+
+    // 更新单个渠道类型的统计
+    function updateTypeStats(type, data) {
+      // 始终显示所有卡片，保持界面完整性
+      const card = document.getElementById(`type-${type}-card`);
+      if (card) card.style.display = 'block';
+
+      // 如果没有数据，显示默认值
+      const totalRequests = data ? (data.total_requests || 0) : 0;
+      const successRequests = data ? (data.success_requests || 0) : 0;
+      const errorRequests = data ? (data.error_requests || 0) : 0;
+
+      const successRate = totalRequests > 0
+        ? ((successRequests / totalRequests) * 100).toFixed(1)
+        : '0.0';
+
+      // 更新基础统计（总请求、成功、失败、成功率）
+      document.getElementById(`type-${type}-requests`).textContent = formatNumber(totalRequests);
+      document.getElementById(`type-${type}-success`).textContent = formatNumber(successRequests);
+      document.getElementById(`type-${type}-error`).textContent = formatNumber(errorRequests);
+      document.getElementById(`type-${type}-rate`).textContent = successRate + '%';
+
+      // Claude类型的额外统计（Token和成本）
+      if (type === 'anthropic') {
+        const inputTokens = data ? (data.total_input_tokens || 0) : 0;
+        const outputTokens = data ? (data.total_output_tokens || 0) : 0;
+        const cacheReadTokens = data ? (data.total_cache_read_tokens || 0) : 0;
+        const cacheCreateTokens = data ? (data.total_cache_creation_tokens || 0) : 0;
+        const totalCost = data ? (data.total_cost || 0) : 0;
+
+        document.getElementById('type-anthropic-input').textContent = formatNumber(inputTokens);
+        document.getElementById('type-anthropic-output').textContent = formatNumber(outputTokens);
+        document.getElementById('type-anthropic-cache-read').textContent = formatNumber(cacheReadTokens);
+        document.getElementById('type-anthropic-cache-create').textContent = formatNumber(cacheCreateTokens);
+        document.getElementById('type-anthropic-cost').textContent = formatCost(totalCost);
+      }
+    }
+
+    // 格式化成本（复用stats.html的逻辑）
+    function formatCost(cost) {
+      if (cost === 0) return '$0.00';
+      if (cost < 0.001) {
+        if (cost < 0.000001) {
+          return '$' + cost.toExponential(2);
+        }
+        return '$' + cost.toFixed(6).replace(/\.?0+$/, '');
+      }
+      if (cost >= 1.0) {
+        return '$' + cost.toFixed(2);
+      }
+      return '$' + cost.toFixed(4).replace(/\.?0+$/, '');
     }
 
     // 格式化数字显示
