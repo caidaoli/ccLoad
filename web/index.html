@@ -16,208 +16,251 @@
     <main class="main-content">
       <div class="content-area">
         <!-- 页面标题 -->
-        <header class="mb-2">
-        </header>
-        <header class="mb-4">
-          <div class="glass-card animate-slide-up" style="padding: var(--space-6);">
-            <h1 class="page-title mb-2">
-              Claude Code & Codex API 代理服务
-            </h1>
-            <p class="page-subtitle">
-              智能路由 · 故障切换 · 统计分析
-            </p>
+        <header class="mb-6">
+          <div class="hero-header animate-slide-up">
+            <div class="hero-icon">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+              </svg>
+            </div>
+            <div>
+              <h1 class="hero-title">
+                Claude Code & Codex API 代理服务
+              </h1>
+              <p class="hero-subtitle">
+                智能路由 · 故障切换 · 统计分析
+              </p>
+            </div>
           </div>
         </header>
 
 
         <!-- 按渠道类型统计 -->
-        <section class="mb-8">
-      
-         
-          <div class="grid grid-cols-2 animate-slide-up" style="animation-delay: 0.2s; gap: var(--space-4);">
+        <section class="mb-6">
+          <div class="grid grid-cols-2 animate-slide-up" style="animation-delay: 0.1s; gap: var(--space-3);">
             <!-- Claude Code -->
-            <div class="glass-card" id="type-anthropic-card">
-              <div class="flex items-center justify-between mb-3">
-                <h4 class="text-lg font-semibold" style="color: var(--primary-600);">
-                  <svg class="inline-block w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                    <circle cx="10" cy="10" r="8"/>
-                  </svg>
-                  Claude Code
-                </h4>
-                <div class="text-right">
-                  <span class="text-xs mb-1" style="color: var(--neutral-500);">成本</span>
-                  <span class="text-lg font-bold" style="color: var(--warning-600);" id="type-anthropic-cost">$0.00</span>
+            <div class="channel-card" id="type-anthropic-card">
+              <div class="channel-card-header">
+                <div class="channel-card-title">
+                  <div class="channel-icon" style="background: linear-gradient(135deg, #CC9B7A, #D4A574);">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M12 2L2 22h20L12 2zm0 4.5L18.5 20h-13L12 6.5z"/>
+                    </svg>
+                  </div>
+                  <span>Claude Code</span>
+                </div>
+                <div class="channel-cost">
+                  <span class="cost-label">成本</span>
+                  <span class="cost-value" id="type-anthropic-cost">$0.00</span>
                 </div>
               </div>
-              <!-- 第一行：总请求、成功、失败、成功率 -->
-              <div class="grid grid-cols-4 gap-2 mb-2">
-                <div class="text-center">
-                  <div class="text-2xl font-bold metric-total" id="type-anthropic-requests">0</div>
-                  <div class="text-xs" style="color: var(--neutral-600);">总请求</div>
+              <!-- 主要指标 -->
+              <div class="channel-metrics">
+                <div class="metric-item">
+                  <div class="metric-value metric-total" id="type-anthropic-requests">0</div>
+                  <div class="metric-label">总请求</div>
                 </div>
-                <div class="text-center">
-                  <div class="text-2xl font-bold metric-success" id="type-anthropic-success">0</div>
-                  <div class="text-xs" style="color: var(--neutral-600);">成功</div>
+                <div class="metric-item">
+                  <div class="metric-value metric-success" id="type-anthropic-success">0</div>
+                  <div class="metric-label">成功</div>
                 </div>
-                <div class="text-center">
-                  <div class="text-2xl font-bold metric-error" id="type-anthropic-error">0</div>
-                  <div class="text-xs" style="color: var(--neutral-600);">失败</div>
+                <div class="metric-item">
+                  <div class="metric-value metric-error" id="type-anthropic-error">0</div>
+                  <div class="metric-label">失败</div>
                 </div>
-                <div class="text-center">
-                  <div class="text-2xl font-bold metric-rate" id="type-anthropic-rate">0.0%</div>
-                  <div class="text-xs" style="color: var(--neutral-600);">成功率</div>
+                <div class="metric-item">
+                  <div class="metric-value metric-rate" id="type-anthropic-rate">0.0%</div>
+                  <div class="metric-label">成功率</div>
                 </div>
               </div>
-              <!-- 第二行：输入、输出、缓存读取、缓存创建 -->
-              <div class="grid grid-cols-4 gap-2 pt-2 border-t border-neutral-200">
-                <div class="text-center">
-                  <div class="text-lg font-semibold" style="color: var(--neutral-700);" id="type-anthropic-input">0</div>
-                  <div class="text-xs" style="color: var(--neutral-600);">输入</div>
+              <!-- Token统计 -->
+              <div class="token-stats">
+                <div class="token-item">
+                  <span class="token-label">输入</span>
+                  <span class="token-value" id="type-anthropic-input">0</span>
                 </div>
-                <div class="text-center">
-                  <div class="text-lg font-semibold" style="color: var(--neutral-700);" id="type-anthropic-output">0</div>
-                  <div class="text-xs" style="color: var(--neutral-600);">输出</div>
+                <div class="token-item">
+                  <span class="token-label">输出</span>
+                  <span class="token-value" id="type-anthropic-output">0</span>
                 </div>
-                <div class="text-center">
-                  <div class="text-lg font-semibold" style="color: var(--success-600);" id="type-anthropic-cache-read">0</div>
-                  <div class="text-xs" style="color: var(--neutral-600);">缓存读</div>
+                <div class="token-item">
+                  <span class="token-label">缓存读</span>
+                  <span class="token-value token-cache" id="type-anthropic-cache-read">0</span>
                 </div>
-                <div class="text-center">
-                  <div class="text-lg font-semibold" style="color: var(--primary-600);" id="type-anthropic-cache-create">0</div>
-                  <div class="text-xs" style="color: var(--neutral-600);">缓存创</div>
+                <div class="token-item">
+                  <span class="token-label">缓存创</span>
+                  <span class="token-value token-cache" id="type-anthropic-cache-create">0</span>
                 </div>
               </div>
             </div>
 
             <!-- Codex -->
-            <div class="glass-card" id="type-codex-card">
-              <div class="flex items-center justify-between mb-3">
-                <h4 class="text-lg font-semibold" style="color: var(--success-600);">
-                  <svg class="inline-block w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                    <circle cx="10" cy="10" r="8"/>
-                  </svg>
-                  Codex
-                </h4>
-                <div class="text-right">
-                  <span class="text-xs mb-1" style="color: var(--neutral-500);">成本</span>
-                  <span class="text-lg font-bold" style="color: var(--warning-600);" id="type-codex-cost">$0.00</span>
+            <div class="channel-card" id="type-codex-card">
+              <div class="channel-card-header">
+                <div class="channel-card-title">
+                  <div class="channel-icon" style="background: linear-gradient(135deg, #10a37f, #0d8a6a);">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/>
+                    </svg>
+                  </div>
+                  <span>Codex</span>
+                </div>
+                <div class="channel-cost">
+                  <span class="cost-label">成本</span>
+                  <span class="cost-value" id="type-codex-cost">$0.00</span>
                 </div>
               </div>
-              <!-- 第一行：总请求、成功、失败、成功率 -->
-              <div class="grid grid-cols-4 gap-2 mb-2">
-                <div class="text-center">
-                  <div class="text-2xl font-bold metric-total" id="type-codex-requests">0</div>
-                  <div class="text-xs" style="color: var(--neutral-600);">总请求</div>
+              <!-- 主要指标 -->
+              <div class="channel-metrics">
+                <div class="metric-item">
+                  <div class="metric-value metric-total" id="type-codex-requests">0</div>
+                  <div class="metric-label">总请求</div>
                 </div>
-                <div class="text-center">
-                  <div class="text-2xl font-bold metric-success" id="type-codex-success">0</div>
-                  <div class="text-xs" style="color: var(--neutral-600);">成功</div>
+                <div class="metric-item">
+                  <div class="metric-value metric-success" id="type-codex-success">0</div>
+                  <div class="metric-label">成功</div>
                 </div>
-                <div class="text-center">
-                  <div class="text-2xl font-bold metric-error" id="type-codex-error">0</div>
-                  <div class="text-xs" style="color: var(--neutral-600);">失败</div>
+                <div class="metric-item">
+                  <div class="metric-value metric-error" id="type-codex-error">0</div>
+                  <div class="metric-label">失败</div>
                 </div>
-                <div class="text-center">
-                  <div class="text-2xl font-bold metric-rate" id="type-codex-rate">0.0%</div>
-                  <div class="text-xs" style="color: var(--neutral-600);">成功率</div>
+                <div class="metric-item">
+                  <div class="metric-value metric-rate" id="type-codex-rate">0.0%</div>
+                  <div class="metric-label">成功率</div>
                 </div>
               </div>
-              <!-- 第二行：输入、输出、缓存读取、缓存创建 -->
-              <div class="grid grid-cols-4 gap-2 pt-2 border-t border-neutral-200">
-                <div class="text-center">
-                  <div class="text-lg font-semibold" style="color: var(--neutral-700);" id="type-codex-input">0</div>
-                  <div class="text-xs" style="color: var(--neutral-600);">输入</div>
+              <!-- Token统计 -->
+              <div class="token-stats">
+                <div class="token-item">
+                  <span class="token-label">输入</span>
+                  <span class="token-value" id="type-codex-input">0</span>
                 </div>
-                <div class="text-center">
-                  <div class="text-lg font-semibold" style="color: var(--neutral-700);" id="type-codex-output">0</div>
-                  <div class="text-xs" style="color: var(--neutral-600);">输出</div>
+                <div class="token-item">
+                  <span class="token-label">输出</span>
+                  <span class="token-value" id="type-codex-output">0</span>
                 </div>
-                <div class="text-center">
-                  <div class="text-lg font-semibold" style="color: var(--success-600);" id="type-codex-cache-read">0</div>
-                  <div class="text-xs" style="color: var(--neutral-600);">缓存读</div>
+                <div class="token-item">
+                  <span class="token-label">缓存读</span>
+                  <span class="token-value token-cache" id="type-codex-cache-read">0</span>
                 </div>
-                <div class="text-center">
-                  <div class="text-lg font-semibold" style="color: var(--primary-600);" id="type-codex-cache-create">0</div>
-                  <div class="text-xs" style="color: var(--neutral-600);">缓存创</div>
+                <div class="token-item">
+                  <span class="token-label">缓存创</span>
+                  <span class="token-value token-cache" id="type-codex-cache-create">0</span>
                 </div>
               </div>
             </div>
 
             <!-- OpenAI -->
-            <div class="glass-card" id="type-openai-card">
-              <h4 class="text-lg font-semibold mb-3" style="color: var(--warning-600);">
-                <svg class="inline-block w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                  <circle cx="10" cy="10" r="8"/>
-                </svg>
-                OpenAI
-              </h4>
-              <div class="grid grid-cols-4 gap-2">
-                <div class="text-center">
-                  <div class="text-2xl font-bold metric-total" id="type-openai-requests">0</div>
-                  <div class="text-xs" style="color: var(--neutral-600);">总请求</div>
+            <div class="channel-card" id="type-openai-card">
+              <div class="channel-card-header">
+                <div class="channel-card-title">
+                  <div class="channel-icon" style="background: linear-gradient(135deg, #10a37f, #0d8a6a);">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/>
+                    </svg>
+                  </div>
+                  <span>OpenAI</span>
                 </div>
-                <div class="text-center">
-                  <div class="text-2xl font-bold metric-success" id="type-openai-success">0</div>
-                  <div class="text-xs" style="color: var(--neutral-600);">成功</div>
+              </div>
+              <div class="channel-metrics">
+                <div class="metric-item">
+                  <div class="metric-value metric-total" id="type-openai-requests">0</div>
+                  <div class="metric-label">总请求</div>
                 </div>
-                <div class="text-center">
-                  <div class="text-2xl font-bold metric-error" id="type-openai-error">0</div>
-                  <div class="text-xs" style="color: var(--neutral-600);">失败</div>
+                <div class="metric-item">
+                  <div class="metric-value metric-success" id="type-openai-success">0</div>
+                  <div class="metric-label">成功</div>
                 </div>
-                <div class="text-center">
-                  <div class="text-2xl font-bold metric-rate" id="type-openai-rate">0.0%</div>
-                  <div class="text-xs" style="color: var(--neutral-600);">成功率</div>
+                <div class="metric-item">
+                  <div class="metric-value metric-error" id="type-openai-error">0</div>
+                  <div class="metric-label">失败</div>
+                </div>
+                <div class="metric-item">
+                  <div class="metric-value metric-rate" id="type-openai-rate">0.0%</div>
+                  <div class="metric-label">成功率</div>
                 </div>
               </div>
             </div>
 
             <!-- Gemini -->
-            <div class="glass-card" id="type-gemini-card">
-              <h4 class="text-lg font-semibold mb-3" style="color: var(--error-600);">
-                <svg class="inline-block w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                  <circle cx="10" cy="10" r="8"/>
-                </svg>
-                Google Gemini
-              </h4>
-              <div class="grid grid-cols-4 gap-2">
-                <div class="text-center">
-                  <div class="text-2xl font-bold metric-total" id="type-gemini-requests">0</div>
-                  <div class="text-xs" style="color: var(--neutral-600);">总请求</div>
+            <div class="channel-card" id="type-gemini-card">
+              <div class="channel-card-header">
+                <div class="channel-card-title">
+                  <div class="channel-icon" style="background: linear-gradient(135deg, #4285f4, #1a73e8);">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M12 2L2 7v10l10 5 10-5V7L12 2zm0 2.18L19.82 8 12 11.82 4.18 8 12 4.18zM4 9.48l7 3.5v7.84l-7-3.5V9.48zm16 0v7.84l-7 3.5v-7.84l7-3.5z"/>
+                    </svg>
+                  </div>
+                  <span>Google Gemini</span>
                 </div>
-                <div class="text-center">
-                  <div class="text-2xl font-bold metric-success" id="type-gemini-success">0</div>
-                  <div class="text-xs" style="color: var(--neutral-600);">成功</div>
+              </div>
+              <div class="channel-metrics">
+                <div class="metric-item">
+                  <div class="metric-value metric-total" id="type-gemini-requests">0</div>
+                  <div class="metric-label">总请求</div>
                 </div>
-                <div class="text-center">
-                  <div class="text-2xl font-bold metric-error" id="type-gemini-error">0</div>
-                  <div class="text-xs" style="color: var(--neutral-600);">失败</div>
+                <div class="metric-item">
+                  <div class="metric-value metric-success" id="type-gemini-success">0</div>
+                  <div class="metric-label">成功</div>
                 </div>
-                <div class="text-center">
-                  <div class="text-2xl font-bold metric-rate" id="type-gemini-rate">0.0%</div>
-                  <div class="text-xs" style="color: var(--neutral-600);">成功率</div>
+                <div class="metric-item">
+                  <div class="metric-value metric-error" id="type-gemini-error">0</div>
+                  <div class="metric-label">失败</div>
+                </div>
+                <div class="metric-item">
+                  <div class="metric-value metric-rate" id="type-gemini-rate">0.0%</div>
+                  <div class="metric-label">成功率</div>
                 </div>
               </div>
             </div>
           </div>
         </section>
         <!-- 实时状态栏 - 总览 -->
-        <section class="mb-4">
-          <div class="grid grid-cols-4 animate-slide-up" style="animation-delay: 0.1s;">
-            <div class="metric-card">
-              <div class="metric-number metric-total" id="total-requests">--</div>
-              <div class="metric-label">总请求数</div>
+        <section class="mb-6">
+          <div class="grid grid-cols-4 animate-slide-up" style="animation-delay: 0.2s; gap: var(--space-3);">
+            <div class="summary-card summary-card-primary">
+              <div class="summary-icon">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 2v20M2 12h20"/>
+                </svg>
+              </div>
+              <div class="summary-content">
+                <div class="summary-value metric-total" id="total-requests">--</div>
+                <div class="summary-label">总请求数</div>
+              </div>
             </div>
-            <div class="metric-card">
-              <div class="metric-number metric-success" id="success-requests">--</div>
-              <div class="metric-label">成功请求</div>
+            <div class="summary-card summary-card-success">
+              <div class="summary-icon">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M20 6L9 17l-5-5"/>
+                </svg>
+              </div>
+              <div class="summary-content">
+                <div class="summary-value metric-success" id="success-requests">--</div>
+                <div class="summary-label">成功请求</div>
+              </div>
             </div>
-            <div class="metric-card">
-              <div class="metric-number metric-error" id="error-requests">--</div>
-              <div class="metric-label">失败请求</div>
+            <div class="summary-card summary-card-error">
+              <div class="summary-icon">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M18 6L6 18M6 6l12 12"/>
+                </svg>
+              </div>
+              <div class="summary-content">
+                <div class="summary-value metric-error" id="error-requests">--</div>
+                <div class="summary-label">失败请求</div>
+              </div>
             </div>
-            <div class="metric-card">
-              <div class="metric-number metric-rate" id="success-rate">--.-%</div>
-              <div class="metric-label">成功率</div>
+            <div class="summary-card summary-card-rate">
+              <div class="summary-icon">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M3 12h18M3 6h18M3 18h18"/>
+                </svg>
+              </div>
+              <div class="summary-content">
+                <div class="summary-value metric-rate" id="success-rate">--.-%</div>
+                <div class="summary-label">成功率</div>
+              </div>
             </div>
           </div>
         </section>
