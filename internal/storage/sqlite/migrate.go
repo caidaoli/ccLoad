@@ -228,7 +228,7 @@ func (s *SQLiteStore) migrateLogDB(ctx context.Context) error {
 		}
 	}
 
-	// 兼容性迁移：为现有数据库添加 token 统计字段（2025-11新增）
+	// 兼容性迁移：为现有数据库添加 token 统计字段和成本字段（2025-11新增）
 	tokenColumns := []struct {
 		name       string
 		definition string
@@ -237,6 +237,7 @@ func (s *SQLiteStore) migrateLogDB(ctx context.Context) error {
 		{"output_tokens", "INTEGER DEFAULT NULL"},
 		{"cache_read_input_tokens", "INTEGER DEFAULT NULL"},
 		{"cache_creation_input_tokens", "INTEGER DEFAULT NULL"},
+		{"cost", "REAL DEFAULT NULL"}, // 请求成本（美元，使用REAL存储浮点数）
 	}
 
 	for _, col := range tokenColumns {

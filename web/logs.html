@@ -192,6 +192,7 @@
                     <th>输出Token</th>
                     <th>缓存读取</th>
                     <th>缓存创建</th>
+                    <th>成本</th>
                     <th>信息</th>
                   </tr>
                 </thead>
@@ -476,6 +477,11 @@
           `<span style="color: var(--primary-600);">${entry.cache_creation_input_tokens.toLocaleString()}</span>` :
           '<span style="color: var(--neutral-500);">-</span>';
 
+        // 成本显示（2025-11新增）
+        const costDisplay = entry.cost !== undefined && entry.cost !== null ?
+          `<span style="color: var(--warning-600); font-weight: 500;">${formatCost(entry.cost)}</span>` :
+          '<span style="color: var(--neutral-500);">-</span>';
+
         tr.innerHTML = `
           <td style="white-space: nowrap;">${formatTime(entry.time)}</td>
           <td>${modelDisplay}</td>
@@ -489,6 +495,7 @@
           <td style="text-align: right; white-space: nowrap;">${outputTokensDisplay}</td>
           <td style="text-align: right; white-space: nowrap;">${cacheReadDisplay}</td>
           <td style="text-align: right; white-space: nowrap;">${cacheCreationDisplay}</td>
+          <td style="text-align: right; white-space: nowrap;">${costDisplay}</td>
           <td style="max-width: 300px; word-break: break-word;">${escapeHtml(entry.message || '')}</td>
         `;
         tbody.appendChild(tr);
@@ -651,7 +658,23 @@
         return '-';
       }
     }
-    
+
+    // 格式化成本（美元）
+    function formatCost(cost) {
+      if (cost === 0) return '$0.00';
+      if (cost < 0.001) {
+        // 小额成本：使用更多小数位
+        if (cost < 0.000001) {
+          return '$' + cost.toExponential(2); // 科学计数法
+        }
+        return '$' + cost.toFixed(6).replace(/\.?0+$/, ''); // 最多6位小数，去除尾随0
+      }
+      if (cost >= 1.0) {
+        return '$' + cost.toFixed(2); // 大于$1显示2位小数
+      }
+      return '$' + cost.toFixed(4).replace(/\.?0+$/, ''); // 否则显示4位小数，去除尾随0
+    }
+
     function escapeHtml(str) {
       if (!str) return '';
       return str.replace(/[&<>"']/g, c => ({

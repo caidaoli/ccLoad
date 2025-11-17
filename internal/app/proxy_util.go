@@ -313,6 +313,20 @@ func buildLogEntry(originalModel string, channelID *int64, statusCode int,
 		if res.CacheCreationInputTokens > 0 {
 			entry.CacheCreationInputTokens = &res.CacheCreationInputTokens
 		}
+
+		// 成本计算（2025-11新增，基于token统计）
+		if res.InputTokens > 0 || res.OutputTokens > 0 || res.CacheReadInputTokens > 0 || res.CacheCreationInputTokens > 0 {
+			cost := util.CalculateCost(
+				originalModel,
+				res.InputTokens,
+				res.OutputTokens,
+				res.CacheReadInputTokens,
+				res.CacheCreationInputTokens,
+			)
+			if cost > 0 {
+				entry.Cost = &cost
+			}
+		}
 	} else {
 		entry.Message = "unknown"
 	}

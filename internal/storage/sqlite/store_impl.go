@@ -478,12 +478,12 @@ func (s *SQLiteStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 	// 直接写入日志数据库（简化预编译语句缓存）
 	query := `
 		INSERT INTO logs(time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used,
-			input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cost)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	_, err := s.logDB.ExecContext(ctx, query, timeMs, e.Model, e.ChannelID, e.StatusCode, e.Message, e.Duration, e.IsStreaming, e.FirstByteTime, maskedKey,
-		e.InputTokens, e.OutputTokens, e.CacheReadInputTokens, e.CacheCreationInputTokens)
+		e.InputTokens, e.OutputTokens, e.CacheReadInputTokens, e.CacheCreationInputTokens, e.Cost)
 	return err
 }
 
@@ -502,8 +502,8 @@ func (s *SQLiteStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) 
 
 	stmt, err := tx.PrepareContext(ctx, `
         INSERT INTO logs(time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used,
-			input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cost)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
 	if err != nil {
 		return err
@@ -537,6 +537,7 @@ func (s *SQLiteStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) 
 			e.OutputTokens,
 			e.CacheReadInputTokens,
 			e.CacheCreationInputTokens,
+			e.Cost,
 		); err != nil {
 			return err
 		}
@@ -550,7 +551,7 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 	// 性能优化：批量查询渠道名称消除N+1问题（100渠道场景提升50-100倍）
 	baseQuery := `
 		SELECT id, time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used,
-			input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens
+			input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cost
 		FROM logs`
 
 	// time字段现在是BIGINT毫秒时间戳，需要转换为Unix毫秒进行比较
@@ -601,10 +602,11 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 		var timeMs int64 // Unix毫秒时间戳
 		var apiKeyUsed sql.NullString
 		var inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens sql.NullInt64
+		var cost sql.NullFloat64
 
 		if err := rows.Scan(&e.ID, &timeMs, &e.Model, &cfgID,
 			&e.StatusCode, &e.Message, &duration, &isStreamingInt, &firstByteTime, &apiKeyUsed,
-			&inputTokens, &outputTokens, &cacheReadTokens, &cacheCreationTokens); err != nil {
+			&inputTokens, &outputTokens, &cacheReadTokens, &cacheCreationTokens, &cost); err != nil {
 			return nil, err
 		}
 
@@ -644,6 +646,10 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 		if cacheCreationTokens.Valid {
 			val := int(cacheCreationTokens.Int64)
 			e.CacheCreationInputTokens = &val
+		}
+		// 成本（2025-11新增）
+		if cost.Valid {
+			e.Cost = &cost.Float64
 		}
 		out = append(out, &e)
 	}
