@@ -228,5 +228,27 @@ func (s *SQLiteStore) migrateLogDB(ctx context.Context) error {
 		}
 	}
 
+	// 兼容性迁移：为现有数据库添加 token 统计字段（2025-11新增）
+	tokenColumns := []struct {
+		name       string
+		definition string
+	}{
+		{"input_tokens", "INTEGER DEFAULT NULL"},
+		{"output_tokens", "INTEGER DEFAULT NULL"},
+		{"cache_read_input_tokens", "INTEGER DEFAULT NULL"},
+		{"cache_creation_input_tokens", "INTEGER DEFAULT NULL"},
+	}
+
+	for _, col := range tokenColumns {
+		if _, err := s.logDB.ExecContext(ctx,
+			fmt.Sprintf("ALTER TABLE logs ADD COLUMN %s %s;", col.name, col.definition),
+		); err != nil {
+			// 忽略列已存在的错误（SQLite error: "duplicate column name"）
+			if !strings.Contains(err.Error(), "duplicate column name") {
+				return fmt.Errorf("add column %s: %w", col.name, err)
+			}
+		}
+	}
+
 	return nil
 }

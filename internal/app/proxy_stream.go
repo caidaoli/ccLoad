@@ -78,8 +78,9 @@ func streamCopy(ctx context.Context, src io.Reader, dst http.ResponseWriter) err
 
 // streamCopySSE SSE专用流式复制（使用小缓冲区优化延迟）
 // ✅ SSE优化（2025-10-17）：4KB缓冲区降低首Token延迟60~80%
+// ✅ 支持数据钩子（2025-11）：允许SSE usage解析器增量处理数据流
 // 设计原则：SSE事件通常200B-2KB，小缓冲区避免事件积压
-func streamCopySSE(ctx context.Context, src io.Reader, dst http.ResponseWriter) error {
+func streamCopySSE(ctx context.Context, src io.Reader, dst http.ResponseWriter, onData func([]byte) error) error {
 	buf := make([]byte, SSEBufferSize) // 4KB SSE专用缓冲区
 	for {
 		select {
@@ -95,6 +96,14 @@ func streamCopySSE(ctx context.Context, src io.Reader, dst http.ResponseWriter) 
 			}
 			if flusher, ok := dst.(http.Flusher); ok {
 				flusher.Flush()
+			}
+			// 触发数据钩子（例如：SSE usage解析）
+			if onData != nil {
+				if hookErr := onData(buf[:n]); hookErr != nil {
+					// 钩子错误不中断流传输（容错设计）
+					// 实际场景：解析失败不应影响用户接收响应
+					// 错误已在钩子内部记录日志
+				}
 			}
 		}
 		if err != nil {

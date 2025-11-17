@@ -46,6 +46,12 @@ type LogEntry struct {
 	IsStreaming   bool     `json:"is_streaming"`              // 是否为流式请求
 	FirstByteTime *float64 `json:"first_byte_time,omitempty"` // 首字节响应时间（秒）
 	APIKeyUsed    string   `json:"api_key_used,omitempty"`    // 使用的API Key（查询时自动脱敏为 abcd...klmn 格式）
+
+	// Token统计（2025-11新增，支持Claude API usage字段）
+	InputTokens              *int `json:"input_tokens,omitempty"`
+	OutputTokens             *int `json:"output_tokens,omitempty"`
+	CacheReadInputTokens     *int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens *int `json:"cache_creation_input_tokens,omitempty"`
 }
 
 // LogFilter 日志查询过滤条件

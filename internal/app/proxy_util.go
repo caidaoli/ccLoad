@@ -55,6 +55,12 @@ type fwResult struct {
 	Body          []byte         // filled for non-2xx or when needed
 	Resp          *http.Response // non-nil only when Status is 2xx to support streaming
 	FirstByteTime float64        // 首字节响应时间（秒）
+
+	// Token统计（2025-11新增，从SSE响应中提取）
+	InputTokens              int
+	OutputTokens             int
+	CacheReadInputTokens     int
+	CacheCreationInputTokens int
 }
 
 // proxyRequestContext 代理请求上下文（封装请求信息，遵循DIP原则）
@@ -292,6 +298,20 @@ func buildLogEntry(originalModel string, channelID *int64, statusCode int,
 		// 流式请求记录首字节响应时间
 		if isStreaming && res.FirstByteTime > 0 {
 			entry.FirstByteTime = &res.FirstByteTime
+		}
+
+		// Token统计（2025-11新增，从SSE响应中提取）
+		if res.InputTokens > 0 {
+			entry.InputTokens = &res.InputTokens
+		}
+		if res.OutputTokens > 0 {
+			entry.OutputTokens = &res.OutputTokens
+		}
+		if res.CacheReadInputTokens > 0 {
+			entry.CacheReadInputTokens = &res.CacheReadInputTokens
+		}
+		if res.CacheCreationInputTokens > 0 {
+			entry.CacheCreationInputTokens = &res.CacheCreationInputTokens
 		}
 	} else {
 		entry.Message = "unknown"

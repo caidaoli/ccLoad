@@ -477,11 +477,13 @@ func (s *SQLiteStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 
 	// 直接写入日志数据库（简化预编译语句缓存）
 	query := `
-		INSERT INTO logs(time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO logs(time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used,
+			input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
-	_, err := s.logDB.ExecContext(ctx, query, timeMs, e.Model, e.ChannelID, e.StatusCode, e.Message, e.Duration, e.IsStreaming, e.FirstByteTime, maskedKey)
+	_, err := s.logDB.ExecContext(ctx, query, timeMs, e.Model, e.ChannelID, e.StatusCode, e.Message, e.Duration, e.IsStreaming, e.FirstByteTime, maskedKey,
+		e.InputTokens, e.OutputTokens, e.CacheReadInputTokens, e.CacheCreationInputTokens)
 	return err
 }
 
@@ -499,8 +501,9 @@ func (s *SQLiteStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) 
 	defer func() { _ = tx.Rollback() }()
 
 	stmt, err := tx.PrepareContext(ctx, `
-        INSERT INTO logs(time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO logs(time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used,
+			input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
 	if err != nil {
 		return err
@@ -530,6 +533,10 @@ func (s *SQLiteStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) 
 			e.IsStreaming,
 			e.FirstByteTime,
 			maskedKey,
+			e.InputTokens,
+			e.OutputTokens,
+			e.CacheReadInputTokens,
+			e.CacheCreationInputTokens,
 		); err != nil {
 			return err
 		}
@@ -542,7 +549,8 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 	// 使用查询构建器构建复杂查询（从 logDB 查询）
 	// 性能优化：批量查询渠道名称消除N+1问题（100渠道场景提升50-100倍）
 	baseQuery := `
-		SELECT id, time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used
+		SELECT id, time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used,
+			input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens
 		FROM logs`
 
 	// time字段现在是BIGINT毫秒时间戳，需要转换为Unix毫秒进行比较
@@ -592,9 +600,11 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 		var firstByteTime sql.NullFloat64
 		var timeMs int64 // Unix毫秒时间戳
 		var apiKeyUsed sql.NullString
+		var inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens sql.NullInt64
 
 		if err := rows.Scan(&e.ID, &timeMs, &e.Model, &cfgID,
-			&e.StatusCode, &e.Message, &duration, &isStreamingInt, &firstByteTime, &apiKeyUsed); err != nil {
+			&e.StatusCode, &e.Message, &duration, &isStreamingInt, &firstByteTime, &apiKeyUsed,
+			&inputTokens, &outputTokens, &cacheReadTokens, &cacheCreationTokens); err != nil {
 			return nil, err
 		}
 
@@ -617,6 +627,23 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 		if apiKeyUsed.Valid && apiKeyUsed.String != "" {
 			// 向后兼容：历史数据可能包含明文Key，maskAPIKey是幂等的
 			e.APIKeyUsed = maskAPIKey(apiKeyUsed.String)
+		}
+		// Token统计（2025-11新增）
+		if inputTokens.Valid {
+			val := int(inputTokens.Int64)
+			e.InputTokens = &val
+		}
+		if outputTokens.Valid {
+			val := int(outputTokens.Int64)
+			e.OutputTokens = &val
+		}
+		if cacheReadTokens.Valid {
+			val := int(cacheReadTokens.Int64)
+			e.CacheReadInputTokens = &val
+		}
+		if cacheCreationTokens.Valid {
+			val := int(cacheCreationTokens.Int64)
+			e.CacheCreationInputTokens = &val
 		}
 		out = append(out, &e)
 	}

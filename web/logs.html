@@ -188,6 +188,10 @@
                     <th>类型</th>
                     <th>耗时(秒)</th>
                     <th>首字节(秒)</th>
+                    <th>输入Token</th>
+                    <th>输出Token</th>
+                    <th>缓存读取</th>
+                    <th>缓存创建</th>
                     <th>信息</th>
                   </tr>
                 </thead>
@@ -348,11 +352,18 @@
       }
     }
 
+    // ✅ 动态计算列数（避免硬编码维护成本）
+    function getTableColspan() {
+      const headerCells = document.querySelectorAll('thead th');
+      return headerCells.length || 13; // fallback到13列（向后兼容）
+    }
+
     function showLoading() {
       const tbody = document.getElementById('tbody');
+      const colspan = getTableColspan();
       tbody.innerHTML = `
         <tr>
-          <td colspan="9" class="loading-state">
+          <td colspan="${colspan}" class="loading-state">
             <div class="loading-spinner" style="margin: 0 auto var(--space-2)"></div>
             正在加载日志...
           </td>
@@ -362,9 +373,10 @@
 
     function showError() {
       const tbody = document.getElementById('tbody');
+      const colspan = getTableColspan();
       tbody.innerHTML = `
         <tr>
-          <td colspan="9" class="empty-state">
+          <td colspan="${colspan}" class="empty-state">
             <svg class="w-12 h-12 mx-auto mb-4" style="color: var(--error-400);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.864-.833-2.634 0L4.18 16.5c-.77.833.192 2.5 1.732 2.5z"/>
             </svg>
@@ -377,11 +389,12 @@
 
     function renderLogs(data) {
       const tbody = document.getElementById('tbody');
+      const colspan = getTableColspan();
 
       if (data.length === 0) {
         tbody.innerHTML = `
           <tr>
-            <td colspan="9" class="empty-state">
+            <td colspan="${colspan}" class="empty-state">
               <svg class="w-12 h-12 mx-auto mb-4" style="color: var(--neutral-400);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
               </svg>
@@ -449,6 +462,20 @@
           apiKeyDisplay = '<span style="color: var(--neutral-500);">-</span>';
         }
 
+        // Token统计显示（2025-11新增）
+        const inputTokensDisplay = entry.input_tokens !== undefined && entry.input_tokens !== null ?
+          `<span style="color: var(--neutral-700);">${entry.input_tokens.toLocaleString()}</span>` :
+          '<span style="color: var(--neutral-500);">-</span>';
+        const outputTokensDisplay = entry.output_tokens !== undefined && entry.output_tokens !== null ?
+          `<span style="color: var(--neutral-700);">${entry.output_tokens.toLocaleString()}</span>` :
+          '<span style="color: var(--neutral-500);">-</span>';
+        const cacheReadDisplay = entry.cache_read_input_tokens !== undefined && entry.cache_read_input_tokens !== null ?
+          `<span style="color: var(--success-600);">${entry.cache_read_input_tokens.toLocaleString()}</span>` :
+          '<span style="color: var(--neutral-500);">-</span>';
+        const cacheCreationDisplay = entry.cache_creation_input_tokens !== undefined && entry.cache_creation_input_tokens !== null ?
+          `<span style="color: var(--primary-600);">${entry.cache_creation_input_tokens.toLocaleString()}</span>` :
+          '<span style="color: var(--neutral-500);">-</span>';
+
         tr.innerHTML = `
           <td style="white-space: nowrap;">${formatTime(entry.time)}</td>
           <td>${modelDisplay}</td>
@@ -458,6 +485,10 @@
           <td style="text-align: center;">${typeDisplay}</td>
           <td style="text-align: right; white-space: nowrap;">${durationDisplay}</td>
           <td style="text-align: right; white-space: nowrap;">${firstByteDisplay}</td>
+          <td style="text-align: right; white-space: nowrap;">${inputTokensDisplay}</td>
+          <td style="text-align: right; white-space: nowrap;">${outputTokensDisplay}</td>
+          <td style="text-align: right; white-space: nowrap;">${cacheReadDisplay}</td>
+          <td style="text-align: right; white-space: nowrap;">${cacheCreationDisplay}</td>
           <td style="max-width: 300px; word-break: break-word;">${escapeHtml(entry.message || '')}</td>
         `;
         tbody.appendChild(tr);

@@ -146,10 +146,12 @@ func (s *Server) handleSuccessResponse(
 	// text/event-stream → 4KB缓冲区（降低首Token延迟60~80%）
 	// 其他类型 → 32KB缓冲区（保持大文件传输性能）
 	var streamErr error
+	var usageParser *sseUsageParser
 	contentType := resp.Header.Get("Content-Type")
 	if strings.Contains(contentType, "text/event-stream") {
-		// SSE流式响应：使用小缓冲区优化实时性
-		streamErr = streamCopySSE(reqCtx.ctx, resp.Body, w)
+		// SSE流式响应：使用解析器提取usage数据
+		usageParser = newSSEUsageParser()
+		streamErr = streamCopySSE(reqCtx.ctx, resp.Body, w, usageParser.Feed)
 	} else {
 		// 非SSE响应：使用大缓冲区优化吞吐量
 		streamErr = streamCopy(reqCtx.ctx, resp.Body, w)
@@ -157,11 +159,18 @@ func (s *Server) handleSuccessResponse(
 
 	duration := reqCtx.Duration()
 
-	return &fwResult{
+	result := &fwResult{
 		Status:        resp.StatusCode,
 		Header:        hdrClone,
 		FirstByteTime: actualFirstByteTime, // 使用实际的首字节时间
-	}, duration, streamErr
+	}
+
+	// 提取SSE usage数据（如果有）
+	if usageParser != nil {
+		result.InputTokens, result.OutputTokens, result.CacheReadInputTokens, result.CacheCreationInputTokens = usageParser.GetUsage()
+	}
+
+	return result, duration, streamErr
 }
 
 // handleResponse 处理 HTTP 响应（错误或成功）
