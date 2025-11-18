@@ -152,8 +152,8 @@ func (s *SQLiteStore) GetEnabledChannelsByType(ctx context.Context, channelType 
 
 func (s *SQLiteStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Config, error) {
 	nowUnix := time.Now().Unix() // Unix秒时间戳
-	modelsStr, _ := util.SerializeModels(c.Models)
-	modelRedirectsStr, _ := util.SerializeModelRedirects(c.ModelRedirects)
+	modelsStr, _ := util.SerializeJSON(c.Models, "[]")
+	modelRedirectsStr, _ := util.SerializeJSON(c.ModelRedirects, "{}")
 
 	// 使用GetChannelType确保默认值
 	channelType := c.GetChannelType()
@@ -205,8 +205,8 @@ func (s *SQLiteStore) UpdateConfig(ctx context.Context, id int64, upd *model.Con
 
 	name := strings.TrimSpace(upd.Name)
 	url := strings.TrimSpace(upd.URL)
-	modelsStr, _ := util.SerializeModels(upd.Models)
-	modelRedirectsStr, _ := util.SerializeModelRedirects(upd.ModelRedirects)
+	modelsStr, _ := util.SerializeJSON(upd.Models, "[]")
+	modelRedirectsStr, _ := util.SerializeJSON(upd.ModelRedirects, "{}")
 
 	// 使用GetChannelType确保默认值
 	channelType := upd.GetChannelType()
@@ -257,8 +257,8 @@ func (s *SQLiteStore) UpdateConfig(ctx context.Context, id int64, upd *model.Con
 
 func (s *SQLiteStore) ReplaceConfig(ctx context.Context, c *model.Config) (*model.Config, error) {
 	nowUnix := time.Now().Unix() // Unix秒时间戳
-	modelsStr, _ := util.SerializeModels(c.Models)
-	modelRedirectsStr, _ := util.SerializeModelRedirects(c.ModelRedirects)
+	modelsStr, _ := util.SerializeJSON(c.Models, "[]")
+	modelRedirectsStr, _ := util.SerializeJSON(c.ModelRedirects, "{}")
 
 	// 使用GetChannelType确保默认值
 	channelType := c.GetChannelType()
@@ -987,8 +987,8 @@ func (s *SQLiteStore) LoadChannelsFromRedis(ctx context.Context) error {
 				config := cwk.Config
 
 				// 标准化数据：确保默认值正确填充
-				modelsStr, _ := util.SerializeModels(config.Models)
-				modelRedirectsStr, _ := util.SerializeModelRedirects(config.ModelRedirects)
+				modelsStr, _ := util.SerializeJSON(config.Models, "[]")
+				modelRedirectsStr, _ := util.SerializeJSON(config.ModelRedirects, "{}")
 				channelType := config.GetChannelType() // 强制使用默认值anthropic
 
 				// 1. 恢复渠道基本配置到channels表
@@ -1795,8 +1795,8 @@ func (s *SQLiteStore) ImportChannelBatch(ctx context.Context, channels []*model.
 			config := cwk.Config
 
 			// 标准化数据
-			modelsStr, _ := util.SerializeModels(config.Models)
-			modelRedirectsStr, _ := util.SerializeModelRedirects(config.ModelRedirects)
+			modelsStr, _ := util.SerializeJSON(config.Models, "[]")
+			modelRedirectsStr, _ := util.SerializeJSON(config.ModelRedirects, "{}")
 			channelType := config.GetChannelType()
 
 			// 检查是否为更新操作

@@ -17,7 +17,6 @@ import (
 	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
-	"ccLoad/internal/service"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 	"ccLoad/internal/validator"
@@ -30,8 +29,8 @@ type Server struct {
 	// ============================================================================
 	// 服务层（仅保留有价值的服务）
 	// ============================================================================
-	authService *service.AuthService // 认证授权服务
-	logService  *service.LogService  // 日志管理服务
+	authService *AuthService // 认证授权服务
+	logService  *LogService  // 日志管理服务
 
 	// ============================================================================
 	// 核心字段
@@ -198,7 +197,7 @@ func NewServer(store storage.Store) *Server {
 	// ============================================================================
 
 	// 1. LogService（负责日志管理）
-	s.logService = service.NewLogService(
+	s.logService = NewLogService(
 		store,
 		config.DefaultLogBufferSize,
 		config.DefaultLogWorkers,
@@ -212,7 +211,7 @@ func NewServer(store storage.Store) *Server {
 
 	// 2. AuthService（负责认证授权）
 	// 初始化时自动从数据库加载API访问令牌
-	s.authService = service.NewAuthService(
+	s.authService = NewAuthService(
 		password,
 		s.loginRateLimiter,
 		store, // 传入store用于热更新令牌

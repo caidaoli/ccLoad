@@ -3,7 +3,6 @@ package app
 import (
 	"bytes"
 	"ccLoad/internal/model"
-	"ccLoad/internal/service"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/storage/sqlite"
 	"context"
@@ -493,7 +492,7 @@ func setupTestServer(t *testing.T) (*Server, func()) {
 	}
 
 	// ✅ 修复: 初始化 LogService（修复日志丢失问题）
-	server.logService = service.NewLogService(
+	server.logService = NewLogService(
 		store,
 		1000, // logBufferSize
 		1,    // logWorkers
@@ -504,7 +503,7 @@ func setupTestServer(t *testing.T) (*Server, func()) {
 	server.logService.StartWorkers()
 
 	// ✅ 初始化 AuthService（Token管理需要）
-	server.authService = service.NewAuthService(
+	server.authService = NewAuthService(
 		"test-password",
 		nil, // loginRateLimiter
 		store,
