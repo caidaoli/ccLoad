@@ -4,9 +4,6 @@ import "time"
 
 // HTTP服务器配置常量
 const (
-	// DefaultPort HTTP服务默认端口
-	DefaultPort = "8080"
-
 	// DefaultMaxConcurrency 默认最大并发请求数
 	DefaultMaxConcurrency = 1000
 
@@ -19,14 +16,14 @@ const (
 
 // HTTP客户端配置常量
 const (
-	// HTTPDialTimeout DNS解析+TCP连接建立超时（秒）
-	HTTPDialTimeout = 30
+	// HTTPDialTimeout DNS解析+TCP连接建立超时
+	HTTPDialTimeout = 30 * time.Second
 
-	// HTTPKeepAliveInterval TCP keepalive间隔（秒）
-	HTTPKeepAliveInterval = 30
+	// HTTPKeepAliveInterval TCP keepalive间隔
+	HTTPKeepAliveInterval = 30 * time.Second
 
-	// HTTPTLSHandshakeTimeout TLS握手超时（秒）
-	HTTPTLSHandshakeTimeout = 30
+	// HTTPTLSHandshakeTimeout TLS握手超时
+	HTTPTLSHandshakeTimeout = 30 * time.Second
 
 	// HTTPMaxIdleConns 全局空闲连接池大小
 	HTTPMaxIdleConns = 100
@@ -34,17 +31,11 @@ const (
 	// HTTPMaxIdleConnsPerHost 单host空闲连接数
 	HTTPMaxIdleConnsPerHost = 5
 
-	// HTTPIdleConnTimeout 空闲连接超时（秒）
-	HTTPIdleConnTimeout = 30
+	// HTTPIdleConnTimeout 空闲连接超时
+	HTTPIdleConnTimeout = 30 * time.Second
 
 	// HTTPMaxConnsPerHost 单host最大连接数
 	HTTPMaxConnsPerHost = 50
-
-	// HTTPWriteBufferSize HTTP写缓冲区大小（字节）
-	HTTPWriteBufferSize = 64 * 1024 // 64KB
-
-	// HTTPReadBufferSize HTTP读缓冲区大小（字节）
-	HTTPReadBufferSize = 64 * 1024 // 64KB
 
 	// TLSSessionCacheSize TLS会话缓存大小
 	TLSSessionCacheSize = 1024
@@ -64,8 +55,8 @@ const (
 	// LogBatchSize 批量写入日志的大小（条数）
 	LogBatchSize = 100
 
-	// LogBatchTimeout 批量写入超时时间（秒）
-	LogBatchTimeout = 1
+	// LogBatchTimeout 批量写入超时时间
+	LogBatchTimeout = 1 * time.Second
 
 	// LogFlushTimeoutMs 单次日志刷盘的超时时间（毫秒）
 	// 关停期间需要尽快完成，避免测试和生产关停卡顿
@@ -86,11 +77,11 @@ const (
 	// TokenRandomBytes Token随机字节数（生成64字符十六进制）
 	TokenRandomBytes = 32
 
-	// TokenExpiryHours Token有效期（小时）
-	TokenExpiryHours = 24
+	// TokenExpiry Token有效期
+	TokenExpiry = 24 * time.Hour
 
-	// TokenCleanupIntervalHours Token清理间隔（小时）
-	TokenCleanupIntervalHours = 1
+	// TokenCleanupInterval Token清理间隔
+	TokenCleanupInterval = 1 * time.Hour
 )
 
 // SQLite连接池配置常量
@@ -111,10 +102,10 @@ const (
 	// 设计原则：空闲连接数 = 最大连接数，减少连接重建开销
 	SQLiteMaxIdleConnsFile = 5
 
-	// SQLiteConnMaxLifetimeMinutes 连接最大生命周期（分钟）
+	// SQLiteConnMaxLifetime 连接最大生命周期
 	// ✅ 从1分钟提升到5分钟：降低连接过期频率
 	// 权衡：更长的生命周期 vs 更低的连接重建开销
-	SQLiteConnMaxLifetimeMinutes = 5
+	SQLiteConnMaxLifetime = 5 * time.Minute
 )
 
 // 性能优化配置常量
@@ -122,8 +113,8 @@ const (
 	// CacheWarmupChannelCount 启动时预热的高优先级渠道数量
 	CacheWarmupChannelCount = 5
 
-	// LogCleanupIntervalHours 日志清理间隔（小时）
-	LogCleanupIntervalHours = 1
+	// LogCleanupInterval 日志清理间隔
+	LogCleanupInterval = 1 * time.Hour
 
 	// LogRetentionDays 日志保留天数
 	LogRetentionDays = 3
@@ -134,18 +125,3 @@ const (
 	// RedisSyncShutdownTimeoutMs 优雅关闭等待时间（毫秒）
 	RedisSyncShutdownTimeoutMs = 100
 )
-
-// 工具函数：转换秒到time.Duration
-func SecondsToDuration(seconds int) time.Duration {
-	return time.Duration(seconds) * time.Second
-}
-
-// 工具函数：转换分钟到time.Duration
-func MinutesToDuration(minutes int) time.Duration {
-	return time.Duration(minutes) * time.Minute
-}
-
-// 工具函数：转换小时到time.Duration
-func HoursToDuration(hours int) time.Duration {
-	return time.Duration(hours) * time.Hour
-}

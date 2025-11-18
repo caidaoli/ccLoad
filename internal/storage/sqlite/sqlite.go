@@ -209,7 +209,7 @@ func newSQLiteStoreWithOptions(path string, redisSync RedisSync, forTest bool) (
 			// 测试模式：不设置ConnMaxLifetime，连接永不过期
 		} else {
 			// 文件模式：缩短连接生命周期（更快资源回收）
-			db.SetConnMaxLifetime(config.MinutesToDuration(config.SQLiteConnMaxLifetimeMinutes))
+			db.SetConnMaxLifetime(config.SQLiteConnMaxLifetime)
 		}
 	}
 
@@ -229,7 +229,7 @@ func newSQLiteStoreWithOptions(path string, redisSync RedisSync, forTest bool) (
 		// 内存模式或测试模式：不设置ConnMaxLifetime，连接永不过期
 	} else {
 		// 文件模式：缩短连接生命周期（更快资源回收）
-		logDB.SetConnMaxLifetime(config.MinutesToDuration(config.SQLiteConnMaxLifetimeMinutes))
+		logDB.SetConnMaxLifetime(config.SQLiteConnMaxLifetime)
 	}
 
 	s := &SQLiteStore{

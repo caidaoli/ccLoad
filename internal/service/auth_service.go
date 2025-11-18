@@ -283,7 +283,7 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 
 	// 存储Token到内存
 	s.tokensMux.Lock()
-	s.validTokens[token] = time.Now().Add(config.HoursToDuration(config.TokenExpiryHours))
+	s.validTokens[token] = time.Now().Add(config.TokenExpiry)
 	s.tokensMux.Unlock()
 
 	util.SafePrintf("✅ 登录成功: IP=%s", clientIP)
@@ -292,7 +292,7 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status":    "success",
 		"token":     token,
-		"expiresIn": config.TokenExpiryHours * 3600, // 秒数
+		"expiresIn": int(config.TokenExpiry.Seconds()), // 秒数
 	})
 }
 

@@ -109,8 +109,8 @@ func NewServer(store storage.Store) *Server {
 	// 优化 HTTP 客户端配置 - 重点优化连接建立阶段的超时控制
 	// 启用TCP_NODELAY降低SSE首包延迟5~15ms
 	dialer := &net.Dialer{
-		Timeout:   config.SecondsToDuration(config.HTTPDialTimeout),
-		KeepAlive: config.SecondsToDuration(config.HTTPKeepAliveInterval),
+		Timeout:   config.HTTPDialTimeout,
+		KeepAlive: config.HTTPKeepAliveInterval,
 		// 禁用Nagle算法，立即发送小包数据（SSE事件通常<2KB）
 		Control: func(network, address string, c syscall.RawConn) error {
 			return c.Control(func(fd uintptr) {
@@ -124,19 +124,17 @@ func NewServer(store storage.Store) *Server {
 		// 防御性配置，避免打爆上游API
 		MaxIdleConns:        config.HTTPMaxIdleConns,
 		MaxIdleConnsPerHost: config.HTTPMaxIdleConnsPerHost,
-		IdleConnTimeout:     config.SecondsToDuration(config.HTTPIdleConnTimeout),
+		IdleConnTimeout:     config.HTTPIdleConnTimeout,
 		MaxConnsPerHost:     config.HTTPMaxConnsPerHost,
 
 		// 连接建立超时（保留必要的底层网络超时）
 		DialContext:         dialer.DialContext,
-		TLSHandshakeTimeout: config.SecondsToDuration(config.HTTPTLSHandshakeTimeout),
+		TLSHandshakeTimeout: config.HTTPTLSHandshakeTimeout,
 
 		// 传输优化
 		DisableCompression: false,
 		DisableKeepAlives:  false,
 		ForceAttemptHTTP2:  false, // 允许自动协议协商，避免HTTP/2超时
-		WriteBufferSize:    config.HTTPWriteBufferSize,
-		ReadBufferSize:     config.HTTPReadBufferSize,
 		// 启用TLS会话缓存，减少重复握手耗时
 		TLSClientConfig: &tls.Config{
 			ClientSessionCache: tls.NewLRUClientSessionCache(config.TLSSessionCacheSize),
@@ -398,7 +396,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 func (s *Server) tokenCleanupLoop() {
 	defer s.wg.Done()
 
-	ticker := time.NewTicker(config.HoursToDuration(config.TokenCleanupIntervalHours))
+	ticker := time.NewTicker(config.TokenCleanupInterval)
 	defer ticker.Stop()
 
 	for {

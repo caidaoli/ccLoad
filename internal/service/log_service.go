@@ -73,7 +73,7 @@ func (s *LogService) logWorker() {
 	defer s.wg.Done()
 
 	batch := make([]*model.LogEntry, 0, config.LogBatchSize)
-	ticker := time.NewTicker(config.SecondsToDuration(config.LogBatchTimeout))
+	ticker := time.NewTicker(config.LogBatchTimeout)
 	defer ticker.Stop()
 
 	for {
@@ -94,7 +94,7 @@ func (s *LogService) logWorker() {
 			if len(batch) >= config.LogBatchSize {
 				s.flushLogs(batch)
 				batch = batch[:0]
-				ticker.Reset(config.SecondsToDuration(config.LogBatchTimeout))
+				ticker.Reset(config.LogBatchTimeout)
 			}
 
 		case <-ticker.C:
@@ -176,7 +176,7 @@ func (s *LogService) StartCleanupLoop() {
 func (s *LogService) cleanupOldLogsLoop() {
 	defer s.wg.Done()
 
-	ticker := time.NewTicker(config.HoursToDuration(config.LogCleanupIntervalHours))
+	ticker := time.NewTicker(config.LogCleanupInterval)
 	defer ticker.Stop()
 
 	for {
