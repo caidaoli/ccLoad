@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -35,7 +36,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 	if sqliteStore, ok := s.store.(*sqlite.SQLiteStore); ok {
 		allAPIKeys, err = sqliteStore.GetAllAPIKeys(c.Request.Context())
 		if err != nil {
-			util.SafePrintf("⚠️  警告: 批量查询API Keys失败: %v", err)
+			log.Printf("⚠️  警告: 批量查询API Keys失败: %v", err)
 			allAPIKeys = make(map[int64][]*model.APIKey) // 降级:使用空map
 		}
 	} else {

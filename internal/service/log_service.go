@@ -10,7 +10,6 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/storage/sqlite"
-	"ccLoad/internal/util"
 )
 
 // LogService 日志管理服务
@@ -138,7 +137,6 @@ func (s *LogService) flushIfNeeded(batch []*model.LogEntry) {
 // ============================================================================
 
 // AddLogAsync 异步添加日志
-// 添加丢弃计数和告警机制
 func (s *LogService) AddLogAsync(entry *model.LogEntry) {
 	// shutdown时不再写入日志
 	if s.isShuttingDown.Load() {
@@ -149,14 +147,8 @@ func (s *LogService) AddLogAsync(entry *model.LogEntry) {
 	case s.logChan <- entry:
 		// 成功放入队列
 	default:
-		// 队列满，丢弃日志并计数
-		dropCount := s.logDropCount.Add(1)
-
-		// 告警阈值：定期打印警告
-		if dropCount%config.LogDropAlertThreshold == 0 {
-			util.SafePrintf("⚠️  严重警告: 日志丢弃计数达到 %d 条！请检查系统负载或增加日志队列容量", dropCount)
-			util.SafePrint("   建议: 1) 增加config.DefaultLogBufferSize 2) 增加日志Worker数量 3) 优化磁盘I/O性能")
-		}
+		// 队列满，丢弃日志（计数用于监控）
+		s.logDropCount.Add(1)
 	}
 }
 

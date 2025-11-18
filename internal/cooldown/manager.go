@@ -5,6 +5,7 @@ import (
 	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 	"context"
+	"log"
 	"time"
 )
 
@@ -121,7 +122,7 @@ func (m *Manager) HandleError(
 			if err != nil {
 				// 冷却更新失败是非致命错误
 				// 记录日志但不中断请求处理,避免因数据库BUSY导致无限重试
-				util.SafePrintf("⚠️  WARNING: Failed to update key cooldown (channel=%d, key=%d): %v", channelID, keyIndex, err)
+				log.Printf("⚠️  WARNING: Failed to update key cooldown (channel=%d, key=%d): %v", channelID, keyIndex, err)
 			}
 		}
 		return ActionRetryKey, nil
@@ -133,7 +134,7 @@ func (m *Manager) HandleError(
 			// 冷却更新失败是非致命错误
 			// 设计原则: 数据库故障不应阻塞用户请求,系统应降级服务
 			// 影响: 可能导致短暂的冷却状态不一致,但总比拒绝服务更好
-			util.SafePrintf("⚠️  WARNING: Failed to update channel cooldown (channel=%d): %v", channelID, err)
+			log.Printf("⚠️  WARNING: Failed to update channel cooldown (channel=%d): %v", channelID, err)
 		}
 		return ActionRetryChannel, nil
 

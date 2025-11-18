@@ -2,7 +2,6 @@ package app
 
 import (
 	"bytes"
-	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 	"compress/gzip"
@@ -334,11 +333,12 @@ func buildLogEntry(originalModel string, channelID *int64, statusCode int,
 	return entry
 }
 
-// truncateErr 截断错误信息到指定长度
+// truncateErr 截断错误信息到512字符（防止日志过长）
 func truncateErr(s string) string {
+	const maxLen = 512
 	s = strings.TrimSpace(s)
-	if len(s) > config.LogErrorTruncateLength {
-		return s[:config.LogErrorTruncateLength]
+	if len(s) > maxLen {
+		return s[:maxLen]
 	}
 	return s
 }

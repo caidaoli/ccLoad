@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -45,7 +46,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	allChannelCooldowns, err := s.getAllChannelCooldowns(c.Request.Context())
 	if err != nil {
 		// 渠道冷却查询失败不影响主流程，仅记录错误
-		util.SafePrintf("⚠️  警告: 批量查询渠道冷却状态失败: %v", err)
+		log.Printf("⚠️  警告: 批量查询渠道冷却状态失败: %v", err)
 		allChannelCooldowns = make(map[int64]time.Time)
 	}
 
@@ -55,7 +56,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	allKeyCooldowns, err := s.getAllKeyCooldowns(c.Request.Context())
 	if err != nil {
 		// Key冷却查询失败不影响主流程，仅记录错误
-		util.SafePrintf("⚠️  警告: 批量查询Key冷却状态失败: %v", err)
+		log.Printf("⚠️  警告: 批量查询Key冷却状态失败: %v", err)
 		allKeyCooldowns = make(map[int64]map[int]time.Time)
 	}
 
@@ -64,7 +65,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	if sqliteStore, ok := s.store.(*sqlite.SQLiteStore); ok {
 		allAPIKeys, err = sqliteStore.GetAllAPIKeys(c.Request.Context())
 		if err != nil {
-			util.SafePrintf("⚠️  警告: 批量查询API Keys失败: %v", err)
+			log.Printf("⚠️  警告: 批量查询API Keys失败: %v", err)
 			allAPIKeys = make(map[int64][]*model.APIKey) // 降级：使用空map
 		}
 	} else {
@@ -151,7 +152,7 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 			UpdatedAt:   model.JSONTime{Time: now},
 		}
 		if err := s.store.CreateAPIKey(c.Request.Context(), apiKey); err != nil {
-			util.SafePrintf("⚠️  警告: 创建API Key失败 (channel=%d, index=%d): %v", created.ID, i, err)
+			log.Printf("⚠️  警告: 创建API Key失败 (channel=%d, index=%d): %v", created.ID, i, err)
 		}
 	}
 
@@ -196,7 +197,7 @@ func (s *Server) handleGetChannel(c *gin.Context, id int64) {
 	// 性能优化：管理API查询也使用缓存，减少延迟
 	apiKeys, err := s.getAPIKeys(c.Request.Context(), id)
 	if err != nil {
-		util.SafePrintf("⚠️  警告: 查询渠道 %d 的API Keys失败: %v", id, err)
+		log.Printf("⚠️  警告: 查询渠道 %d 的API Keys失败: %v", id, err)
 	}
 
 	// 构建响应（动态添加key_strategy字段）
@@ -294,7 +295,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	// 使用缓存层查询（<1ms vs 数据库查询10-20ms）
 	oldKeys, err := s.getAPIKeys(c.Request.Context(), id)
 	if err != nil {
-		util.SafePrintf("⚠️  警告: 查询旧API Keys失败: %v", err)
+		log.Printf("⚠️  警告: 查询旧API Keys失败: %v", err)
 		oldKeys = []*model.APIKey{}
 	}
 
@@ -349,7 +350,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 				UpdatedAt:   model.JSONTime{Time: now},
 			}
 			if err := s.store.CreateAPIKey(c.Request.Context(), apiKey); err != nil {
-				util.SafePrintf("⚠️  警告: 创建API Key失败 (channel=%d, index=%d): %v", id, i, err)
+				log.Printf("⚠️  警告: 创建API Key失败 (channel=%d, index=%d): %v", id, i, err)
 			}
 		}
 	} else if strategyChanged {
@@ -359,7 +360,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 			oldKey.KeyStrategy = keyStrategy
 			oldKey.UpdatedAt = model.JSONTime{Time: now}
 			if err := s.store.UpdateAPIKey(c.Request.Context(), oldKey); err != nil {
-				util.SafePrintf("⚠️  警告: 更新API Key策略失败 (channel=%d, index=%d): %v", id, oldKey.KeyIndex, err)
+				log.Printf("⚠️  警告: 更新API Key策略失败 (channel=%d, index=%d): %v", id, oldKey.KeyIndex, err)
 			}
 		}
 	}

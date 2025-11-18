@@ -1,6 +1,7 @@
 package util
 
 import (
+	"log"
 	"sync"
 	"time"
 )
@@ -175,7 +176,7 @@ func (rl *LoginRateLimiter) cleanup() {
 	}
 
 	if len(toDelete) > 0 {
-		SafePrintf("🧹 登录速率限制器：清理 %d 条过期记录", len(toDelete))
+		log.Printf("🧹 登录速率限制器：清理 %d 条过期记录", len(toDelete))
 	}
 }
 

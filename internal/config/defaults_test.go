@@ -24,9 +24,6 @@ func TestDefaultConstants(t *testing.T) {
 		{"DefaultLogBufferSize", DefaultLogBufferSize, 100, 100000},
 		{"DefaultLogWorkers", DefaultLogWorkers, 1, 10},
 		{"LogBatchSize", LogBatchSize, 1, 1000},
-		{"LogDropAlertThreshold", LogDropAlertThreshold, 1, 10000},
-		{"LogMaxMessageLength", LogMaxMessageLength, 100, 100000},
-		{"LogErrorTruncateLength", LogErrorTruncateLength, 50, 10000},
 
 		// Token配置
 		{"TokenRandomBytes", TokenRandomBytes, 16, 64},

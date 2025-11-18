@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -75,13 +76,13 @@ func (s *Server) handleRequestError(
 			timeoutMsg = fmt.Sprintf("%s (threshold=%v)", timeoutMsg, s.firstByteTimeout)
 		}
 		err = fmt.Errorf("%s: %w", timeoutMsg, util.ErrUpstreamFirstByteTimeout)
-		util.SafePrintf("⏱️  [上游首字节超时] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, s.firstByteTimeout, duration)
+		log.Printf("⏱️  [上游首字节超时] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, s.firstByteTimeout, duration)
 	} else if errors.Is(err, context.DeadlineExceeded) && reqCtx.isStreaming {
 		// 流式请求读取首字节超时：保留历史逻辑
 		err = fmt.Errorf("upstream timeout after %.2fs (streaming request): %w",
 			duration, err)
 		statusCode = util.StatusFirstByteTimeout
-		util.SafePrintf("⏱️  [上游超时] 渠道ID=%d, 超时时长=%.2fs, 将触发冷却", cfg.ID, duration)
+		log.Printf("⏱️  [上游超时] 渠道ID=%d, 超时时长=%.2fs, 将触发冷却", cfg.ID, duration)
 	} else {
 		// 其他错误：使用统一分类器
 		statusCode, _, _ = util.ClassifyError(err)
@@ -322,12 +323,12 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		available, reason := s.validatorManager.ValidateChannel(ctx, cfg, firstKey)
 		if !available {
 			// 验证失败:冷却渠道30分钟
-			util.SafePrintf("❌ 渠道 %s (ID=%d) 验证失败: %s,冷却30分钟", cfg.Name, cfg.ID, reason)
+			log.Printf("❌ 渠道 %s (ID=%d) 验证失败: %s,冷却30分钟", cfg.Name, cfg.ID, reason)
 
 			// 应用固定的30分钟冷却(429状态码表示限流)
 			cooldownUntil := time.Now().Add(30 * time.Minute)
 			if err := s.store.SetChannelCooldown(ctx, cfg.ID, cooldownUntil); err != nil {
-				util.SafePrintf("⚠️  WARNING: Failed to apply cooldown for channel %d: %v", cfg.ID, err)
+				log.Printf("⚠️  WARNING: Failed to apply cooldown for channel %d: %v", cfg.ID, err)
 			}
 
 			// 返回特殊错误,触发渠道切换

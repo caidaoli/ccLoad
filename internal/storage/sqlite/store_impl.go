@@ -177,7 +177,7 @@ func (s *SQLiteStore) CreateConfig(ctx context.Context, c *model.Config) (*model
 			VALUES (?, ?)
 		`, id, model); err != nil {
 			// 索引同步失败不影响主要功能，记录警告
-			util.SafePrintf("Warning: Failed to sync model %s to channel_models: %v", model, err)
+			log.Printf("Warning: Failed to sync model %s to channel_models: %v", model, err)
 		}
 	}
 
@@ -229,7 +229,7 @@ func (s *SQLiteStore) UpdateConfig(ctx context.Context, id int64, upd *model.Con
 		DELETE FROM channel_models WHERE channel_id = ?
 	`, id); err != nil {
 		// 索引同步失败不影响主要功能，记录警告
-		util.SafePrintf("Warning: Failed to delete old model indices: %v", err)
+		log.Printf("Warning: Failed to delete old model indices: %v", err)
 	}
 
 	// 再插入新的模型索引
@@ -239,7 +239,7 @@ func (s *SQLiteStore) UpdateConfig(ctx context.Context, id int64, upd *model.Con
 			VALUES (?, ?)
 		`, id, model); err != nil {
 			// 索引同步失败不影响主要功能，记录警告
-			util.SafePrintf("Warning: Failed to sync model %s to channel_models: %v", model, err)
+			log.Printf("Warning: Failed to sync model %s to channel_models: %v", model, err)
 		}
 	}
 
@@ -294,7 +294,7 @@ func (s *SQLiteStore) ReplaceConfig(ctx context.Context, c *model.Config) (*mode
 		DELETE FROM channel_models WHERE channel_id = ?
 	`, id); err != nil {
 		// 索引同步失败不影响主要功能，记录警告
-		util.SafePrintf("Warning: Failed to delete old model indices: %v", err)
+		log.Printf("Warning: Failed to delete old model indices: %v", err)
 	}
 
 	// 再插入新的模型索引
@@ -304,7 +304,7 @@ func (s *SQLiteStore) ReplaceConfig(ctx context.Context, c *model.Config) (*mode
 			VALUES (?, ?)
 		`, id, model); err != nil {
 			// 索引同步失败不影响主要功能，记录警告
-			util.SafePrintf("Warning: Failed to sync model %s to channel_models: %v", model, err)
+			log.Printf("Warning: Failed to sync model %s to channel_models: %v", model, err)
 		}
 	}
 

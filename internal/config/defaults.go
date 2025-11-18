@@ -61,15 +61,6 @@ const (
 	// LogFlushTimeoutMs 单次日志刷盘的超时时间（毫秒）
 	// 关停期间需要尽快完成，避免测试和生产关停卡顿
 	LogFlushTimeoutMs = 300
-
-	// LogDropAlertThreshold 日志丢弃告警阈值（条数）
-	LogDropAlertThreshold = 1000
-
-	// LogMaxMessageLength 单条日志最大长度（字符）
-	LogMaxMessageLength = 2000
-
-	// LogErrorTruncateLength 错误信息截断长度（字符）
-	LogErrorTruncateLength = 512
 )
 
 // Token认证配置常量

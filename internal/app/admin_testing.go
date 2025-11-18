@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -90,7 +91,7 @@ func (s *Server) HandleChannelTest(c *gin.Context) {
 	if success, ok := testResult["success"].(bool); ok && success {
 		// 测试成功：清除该Key的冷却状态
 		if err := s.store.ResetKeyCooldown(c.Request.Context(), id, keyIndex); err != nil {
-			util.SafePrintf("⚠️  警告: 清除Key #%d冷却状态失败: %v", keyIndex, err)
+			log.Printf("⚠️  警告: 清除Key #%d冷却状态失败: %v", keyIndex, err)
 		}
 
 		// ✨ 优化：同时清除渠道级冷却（因为至少有一个Key可用）
@@ -130,7 +131,7 @@ func (s *Server) HandleChannelTest(c *gin.Context) {
 			headers, // 传递响应头以支持429错误的精确分类
 		)
 		if err != nil {
-			util.SafePrintf("⚠️  警告: 应用冷却策略失败 (channel=%d, key=%d, status=%d): %v", id, keyIndex, statusCode, err)
+			log.Printf("⚠️  警告: 应用冷却策略失败 (channel=%d, key=%d, status=%d): %v", id, keyIndex, statusCode, err)
 		}
 
 		// ✅ 修复：使API Keys缓存失效，确保前端能立即看到冷却状态更新
@@ -165,14 +166,14 @@ func (s *Server) testChannelAPI(cfg *model.Config, apiKey string, testReq *testu
 	if len(cfg.ModelRedirects) > 0 {
 		if redirectModel, ok := cfg.ModelRedirects[originalModel]; ok && redirectModel != "" {
 			actualModel = redirectModel
-			util.SafePrintf("🔄 [测试-模型重定向] 渠道ID=%d, 原始模型=%s, 重定向模型=%s", cfg.ID, originalModel, actualModel)
+			log.Printf("🔄 [测试-模型重定向] 渠道ID=%d, 原始模型=%s, 重定向模型=%s", cfg.ID, originalModel, actualModel)
 		}
 	}
 
 	// 如果模型发生重定向，更新测试请求中的模型名称
 	if actualModel != originalModel {
 		testReq.Model = actualModel
-		util.SafePrintf("✅ [测试-请求体修改] 渠道ID=%d, 修改后模型=%s", cfg.ID, actualModel)
+		log.Printf("✅ [测试-请求体修改] 渠道ID=%d, 修改后模型=%s", cfg.ID, actualModel)
 	}
 
 	// 选择并规范化渠道类型

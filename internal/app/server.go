@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -19,8 +21,6 @@ import (
 	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 	"ccLoad/internal/validator"
-
-	"crypto/tls"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/net/http2"
@@ -63,12 +63,12 @@ type Server struct {
 func NewServer(store storage.Store) *Server {
 	password := os.Getenv("CCLOAD_PASS")
 	if password == "" {
-		util.SafePrint("❌ 未设置 CCLOAD_PASS，出于安全原因程序将退出。请设置强管理员密码后重试。")
+		log.Print("❌ 未设置 CCLOAD_PASS，出于安全原因程序将退出。请设置强管理员密码后重试。")
 		os.Exit(1)
 	}
 
-	util.SafePrint("✅ 管理员密码已从环境变量加载（长度: ", len(password), " 字符）")
-	util.SafePrint("ℹ️  API访问令牌将从数据库动态加载（支持Web界面管理）")
+	log.Print("✅ 管理员密码已从环境变量加载（长度: ", len(password), " 字符）")
+	log.Print("ℹ️  API访问令牌将从数据库动态加载（支持Web界面管理）")
 
 	// 解析最大Key重试次数（避免key过多时重试次数过多）
 	maxKeyRetries := config.DefaultMaxKeyRetries
@@ -91,9 +91,9 @@ func NewServer(store storage.Store) *Server {
 	if v := os.Getenv("CCLOAD_UPSTREAM_FIRST_BYTE_TIMEOUT"); v != "" {
 		if sec, err := strconv.Atoi(v); err == nil && sec > 0 {
 			firstByteTimeout = time.Duration(sec) * time.Second
-			util.SafePrintf("⏱️  上游首字节超时阈值已启用：%v", firstByteTimeout)
+			log.Printf("⏱️  上游首字节超时阈值已启用：%v", firstByteTimeout)
 		} else {
-			util.SafePrintf("⚠️  无法解析 CCLOAD_UPSTREAM_FIRST_BYTE_TIMEOUT=%q，已忽略", v)
+			log.Printf("⚠️  无法解析 CCLOAD_UPSTREAM_FIRST_BYTE_TIMEOUT=%q，已忽略", v)
 		}
 	}
 
@@ -101,9 +101,9 @@ func NewServer(store storage.Store) *Server {
 	skipTLSVerify := false
 	if os.Getenv("CCLOAD_SKIP_TLS_VERIFY") == "true" {
 		skipTLSVerify = true
-		util.SafePrint("⚠️  警告：TLS证书验证已禁用（CCLOAD_SKIP_TLS_VERIFY=true）")
-		util.SafePrint("   仅用于开发/测试环境，生产环境严禁使用！")
-		util.SafePrint("   当前配置存在中间人攻击风险，API Key可能泄漏")
+		log.Print("⚠️  警告：TLS证书验证已禁用（CCLOAD_SKIP_TLS_VERIFY=true）")
+		log.Print("   仅用于开发/测试环境，生产环境严禁使用！")
+		log.Print("   当前配置存在中间人攻击风险，API Key可能泄漏")
 	}
 
 	// 优化 HTTP 客户端配置 - 重点优化连接建立阶段的超时控制
@@ -150,9 +150,9 @@ func NewServer(store storage.Store) *Server {
 	// 启用HTTP/2降低头部开销10~20ms
 	// 优势：头部压缩、多路复用、服务器推送
 	if err := http2.ConfigureTransport(transport); err != nil {
-		util.SafePrint("⚠️  警告：HTTP/2配置失败，将使用HTTP/1.1: " + err.Error())
+		log.Print("⚠️  警告：HTTP/2配置失败，将使用HTTP/1.1: " + err.Error())
 	} else {
-		util.SafePrint("✅ HTTP/2已启用（头部压缩+多路复用）")
+		log.Print("✅ HTTP/2已启用（头部压缩+多路复用）")
 	}
 
 	s := &Server{
@@ -186,7 +186,7 @@ func NewServer(store storage.Store) *Server {
 	// 注册88code套餐验证器（如果启用）
 	// 支持多种布尔值表示: true/1/yes/on (不区分大小写)
 	if enabled, _ := strconv.ParseBool(os.Getenv("CCLOAD_88CODE_FREE_ONLY")); enabled {
-		util.SafePrint("✅ 88code免费套餐验证已启用（非FREE套餐将被冷却30分钟）")
+		log.Print("✅ 88code免费套餐验证已启用（非FREE套餐将被冷却30分钟）")
 		s.validatorManager.AddValidator(validator.NewSubscriptionValidator(true))
 	}
 
@@ -490,7 +490,7 @@ func (s *Server) WarmHTTPConnections(ctx context.Context) {
 	wg.Wait()
 
 	if warmedCount > 0 {
-		util.SafePrintf("✅ HTTP连接预热：为 %d 个高优先级渠道预建立连接", warmedCount)
+		log.Printf("✅ HTTP连接预热：为 %d 个高优先级渠道预建立连接", warmedCount)
 	}
 }
 
@@ -510,7 +510,7 @@ func (s *Server) HandleChannelKeys(c *gin.Context) {
 // 参数ctx用于控制最大等待时间，超时后强制退出
 // 返回值：nil表示成功，context.DeadlineExceeded表示超时
 func (s *Server) Shutdown(ctx context.Context) error {
-	util.SafePrint("🛑 正在关闭Server，等待后台任务完成...")
+	log.Print("🛑 正在关闭Server，等待后台任务完成...")
 
 	// 设置shutdown标志，防止新的日志写入
 	s.isShuttingDown.Store(true)
@@ -540,14 +540,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		// 必须显式调用 Close() 才能清理这些 goroutine
 		if closer, ok := s.store.(interface{ Close() error }); ok {
 			if err := closer.Close(); err != nil {
-				util.SafePrintf("❌ 关闭数据库连接失败: %v", err)
+				log.Printf("❌ 关闭数据库连接失败: %v", err)
 			}
 		}
 
-		util.SafePrint("✅ Server优雅关闭完成")
+		log.Print("✅ Server优雅关闭完成")
 		return nil
 	case <-ctx.Done():
-		util.SafePrint("⚠️  Server关闭超时，部分后台任务可能未完成")
+		log.Print("⚠️  Server关闭超时，部分后台任务可能未完成")
 		return ctx.Err()
 	}
 }

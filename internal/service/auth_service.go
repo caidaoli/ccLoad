@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -60,7 +61,7 @@ func NewAuthService(
 
 	// 从数据库加载API访问令牌
 	if err := s.ReloadAuthTokens(); err != nil {
-		util.SafePrintf("⚠️  初始化时加载API令牌失败: %v", err)
+		log.Printf("⚠️  初始化时加载API令牌失败: %v", err)
 	}
 
 	return s
@@ -266,7 +267,7 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 	if req.Password != s.password {
 		// 记录失败尝试（速率限制器已在AllowAttempt中增加计数）
 		attemptCount := s.loginRateLimiter.GetAttemptCount(clientIP)
-		util.SafePrintf("⚠️  登录失败: IP=%s, 尝试次数=%d/5", clientIP, attemptCount)
+		log.Printf("⚠️  登录失败: IP=%s, 尝试次数=%d/5", clientIP, attemptCount)
 
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"error":              "Invalid password",
@@ -286,7 +287,7 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 	s.validTokens[token] = time.Now().Add(config.TokenExpiry)
 	s.tokensMux.Unlock()
 
-	util.SafePrintf("✅ 登录成功: IP=%s", clientIP)
+	log.Printf("✅ 登录成功: IP=%s", clientIP)
 
 	// 返回Token给客户端（前端存储到localStorage）
 	c.JSON(http.StatusOK, gin.H{
@@ -339,6 +340,6 @@ func (s *AuthService) ReloadAuthTokens() error {
 	s.authTokens = newTokens
 	s.authTokensMux.Unlock()
 
-	util.SafePrintf("🔄 API令牌已热更新（%d个有效令牌）", len(newTokens))
+	log.Printf("🔄 API令牌已热更新（%d个有效令牌）", len(newTokens))
 	return nil
 }

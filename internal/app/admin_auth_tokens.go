@@ -4,12 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
 
 	"ccLoad/internal/model"
-	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
 )
@@ -26,7 +26,7 @@ func (s *Server) HandleListAuthTokens(c *gin.Context) {
 
 	tokens, err := s.store.ListAuthTokens(ctx)
 	if err != nil {
-		util.SafePrint("❌ 列出令牌失败: " + err.Error())
+		log.Print("❌ 列出令牌失败: " + err.Error())
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
@@ -55,7 +55,7 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 	// 生成安全令牌(64字符十六进制)
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
-		util.SafePrint("❌ 生成令牌失败: " + err.Error())
+		log.Print("❌ 生成令牌失败: " + err.Error())
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
@@ -75,17 +75,17 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 	defer cancel()
 
 	if err := s.store.CreateAuthToken(ctx, authToken); err != nil {
-		util.SafePrint("❌ 创建令牌失败: " + err.Error())
+		log.Print("❌ 创建令牌失败: " + err.Error())
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
 
 	// 触发热更新（立即生效）
 	if err := s.authService.ReloadAuthTokens(); err != nil {
-		util.SafePrint("⚠️  热更新失败: " + err.Error())
+		log.Print("⚠️  热更新失败: " + err.Error())
 	}
 
-	util.SafePrintf("✅ 创建API令牌: ID=%d, 描述=%s", authToken.ID, authToken.Description)
+	log.Printf("✅ 创建API令牌: ID=%d, 描述=%s", authToken.ID, authToken.Description)
 
 	// 返回明文令牌（仅此一次机会）
 	RespondJSON(c, http.StatusOK, gin.H{
@@ -140,17 +140,17 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 	}
 
 	if err := s.store.UpdateAuthToken(ctx, token); err != nil {
-		util.SafePrint("❌ 更新令牌失败: " + err.Error())
+		log.Print("❌ 更新令牌失败: " + err.Error())
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
 
 	// 触发热更新
 	if err := s.authService.ReloadAuthTokens(); err != nil {
-		util.SafePrint("⚠️  热更新失败: " + err.Error())
+		log.Print("⚠️  热更新失败: " + err.Error())
 	}
 
-	util.SafePrintf("✅ 更新API令牌: ID=%d", id)
+	log.Printf("✅ 更新API令牌: ID=%d", id)
 
 	// 返回脱敏后的令牌信息
 	token.Token = model.MaskToken(token.Token)
@@ -170,17 +170,17 @@ func (s *Server) HandleDeleteAuthToken(c *gin.Context) {
 	defer cancel()
 
 	if err := s.store.DeleteAuthToken(ctx, id); err != nil {
-		util.SafePrint("❌ 删除令牌失败: " + err.Error())
+		log.Print("❌ 删除令牌失败: " + err.Error())
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
 
 	// 触发热更新
 	if err := s.authService.ReloadAuthTokens(); err != nil {
-		util.SafePrint("⚠️  热更新失败: " + err.Error())
+		log.Print("⚠️  热更新失败: " + err.Error())
 	}
 
-	util.SafePrintf("✅ 删除API令牌: ID=%d", id)
+	log.Printf("✅ 删除API令牌: ID=%d", id)
 
 	RespondJSON(c, http.StatusOK, gin.H{"id": id})
 }

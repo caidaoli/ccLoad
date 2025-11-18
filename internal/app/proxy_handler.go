@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -209,7 +210,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			// 记录冷却失败但不中断请求
 			// 设计原则: 这是防御性冷却，失败不应影响错误传播
 			if _, bumpErr := s.store.BumpChannelCooldown(ctx, cfg.ID, time.Now(), 503); bumpErr != nil {
-				util.SafePrintf("⚠️  WARNING: Failed to bump channel cooldown (channel=%d, status=503): %v", cfg.ID, bumpErr)
+				log.Printf("⚠️  WARNING: Failed to bump channel cooldown (channel=%d, status=503): %v", cfg.ID, bumpErr)
 			}
 			continue
 		}
