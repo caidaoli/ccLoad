@@ -4,16 +4,22 @@ import "time"
 
 // MetricPoint 指标数据点（用于趋势图）
 type MetricPoint struct {
-	Ts       time.Time                `json:"ts"`
-	Success  int                      `json:"success"`
-	Error    int                      `json:"error"`
-	Channels map[string]ChannelMetric `json:"channels,omitempty"`
+	Ts                      time.Time                `json:"ts"`
+	Success                 int                      `json:"success"`
+	Error                   int                      `json:"error"`
+	AvgFirstByteTimeSeconds *float64                 `json:"avg_first_byte_time_seconds,omitempty"` // 平均首字响应时间(秒)
+	AvgDurationSeconds      *float64                 `json:"avg_duration_seconds,omitempty"`        // 平均总耗时(秒)
+	TotalCost               *float64                 `json:"total_cost,omitempty"`                  // 总费用（美元）
+	Channels                map[string]ChannelMetric `json:"channels,omitempty"`
 }
 
 // ChannelMetric 单个渠道的指标
 type ChannelMetric struct {
-	Success int `json:"success"`
-	Error   int `json:"error"`
+	Success                 int      `json:"success"`
+	Error                   int      `json:"error"`
+	AvgFirstByteTimeSeconds *float64 `json:"avg_first_byte_time_seconds,omitempty"` // 平均首字响应时间(秒)
+	AvgDurationSeconds      *float64 `json:"avg_duration_seconds,omitempty"`        // 平均总耗时(秒)
+	TotalCost               *float64 `json:"total_cost,omitempty"`                  // 总费用（美元）
 }
 
 // StatsEntry 统计数据条目

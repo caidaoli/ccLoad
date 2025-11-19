@@ -24,20 +24,20 @@
         <section class="mb-4">
           <div class="grid grid-cols-4 animate-slide-up" style="animation-delay: 0.1s;">
             <div class="metric-card">
-              <div class="metric-number" id="total-requests" style="color: var(--primary-500);">--</div>
-              <div class="metric-label">总请求</div>
+              <div class="metric-number" id="metric-1" style="color: var(--primary-500);">--</div>
+              <div class="metric-label" id="metric-1-label">总请求</div>
             </div>
             <div class="metric-card">
-              <div class="metric-number" id="peak-success" style="color: var(--success-500);">--</div>
-              <div class="metric-label">峰值成功</div>
+              <div class="metric-number" id="metric-2" style="color: var(--success-500);">--</div>
+              <div class="metric-label" id="metric-2-label">峰值成功</div>
             </div>
             <div class="metric-card">
-              <div class="metric-number" id="peak-error" style="color: var(--error-500);">--</div>
-              <div class="metric-label">峰值错误</div>
+              <div class="metric-number" id="metric-3" style="color: var(--error-500);">--</div>
+              <div class="metric-label" id="metric-3-label">峰值错误</div>
             </div>
             <div class="metric-card">
-              <div class="metric-number" id="avg-success-rate">--.-%</div>
-              <div class="metric-label">平均成功率</div>
+              <div class="metric-number" id="metric-4">--.-%</div>
+              <div class="metric-label" id="metric-4-label">平均成功率</div>
             </div>
           </div>
         </section>
@@ -58,6 +58,14 @@
               
               <!-- 控件与图例 -->
               <div class="flex items-center" style="gap:12px; flex-wrap: wrap;">
+                <!-- 趋势类型切换 -->
+                <div class="toggle-group" id="trend-type-group">
+                  <div class="toggle-btn" data-type="count">调用次数</div>
+                  <div class="toggle-btn active" data-type="first_byte">首字响应</div>
+                  <div class="toggle-btn" data-type="duration">总耗时</div>
+                  <div class="toggle-btn" data-type="cost">费用消耗</div>
+                </div>
+                <!-- 时间范围切换 -->
                 <div class="toggle-group" id="range-group">
                   <div class="toggle-btn active" data-range="1">1小时</div>
                   <div class="toggle-btn" data-range="6">6小时</div>
@@ -129,9 +137,10 @@
 
 
   <script>
-    // 全局变量 
+    // 全局变量
     window.trendData = null;
     window.currentHours = 1;
+    window.currentTrendType = 'first_byte'; // 默认显示首字响应时间趋势 (count/first_byte/cost)
     window.chartInstance = null;
     window.channels = [];
     window.visibleChannels = new Set(); // 可见渠道集合
@@ -285,9 +294,9 @@
       document.getElementById('chart-loading').style.display = 'flex';
       document.getElementById('chart-error').style.display = 'none';
       document.getElementById('chart').style.display = 'none';
-      
+
       // 重置摘要卡片
-      ['total-requests', 'peak-success', 'peak-error', 'avg-success-rate'].forEach(id => {
+      ['metric-1', 'metric-2', 'metric-3', 'metric-4'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.textContent = '--';
       });
@@ -302,27 +311,118 @@
     function updateSummaryCards() {
       if (!window.trendData || !window.trendData.length) return;
 
-      let totalRequests = 0;
-      let totalSuccess = 0;
-      let peakSuccess = 0;
-      let peakError = 0;
+      const trendType = window.currentTrendType;
 
-      window.trendData.forEach(point => {
-        const success = point.success || 0;
-        const error = point.error || 0;
-        totalRequests += success + error;
-        totalSuccess += success;
-        peakSuccess = Math.max(peakSuccess, success);
-        peakError = Math.max(peakError, error);
-      });
+      if (trendType === 'count') {
+        // 调用次数趋势
+        let totalRequests = 0;
+        let totalSuccess = 0;
+        let peakSuccess = 0;
+        let peakError = 0;
 
-      const avgSuccessRate = totalRequests > 0 ? ((totalSuccess / totalRequests) * 100) : 0;
+        window.trendData.forEach(point => {
+          const success = point.success || 0;
+          const error = point.error || 0;
+          totalRequests += success + error;
+          totalSuccess += success;
+          peakSuccess = Math.max(peakSuccess, success);
+          peakError = Math.max(peakError, error);
+        });
 
-      // 更新摘要卡片
-      document.getElementById('total-requests').textContent = formatNumber(totalRequests);
-      document.getElementById('peak-success').textContent = formatNumber(peakSuccess);
-      document.getElementById('peak-error').textContent = formatNumber(peakError);
-      document.getElementById('avg-success-rate').textContent = avgSuccessRate.toFixed(1) + '%';
+        const avgSuccessRate = totalRequests > 0 ? ((totalSuccess / totalRequests) * 100) : 0;
+
+        document.getElementById('metric-1-label').textContent = '总请求';
+        document.getElementById('metric-2-label').textContent = '峰值成功';
+        document.getElementById('metric-3-label').textContent = '峰值错误';
+        document.getElementById('metric-4-label').textContent = '平均成功率';
+
+        document.getElementById('metric-1').textContent = formatNumber(totalRequests);
+        document.getElementById('metric-2').textContent = formatNumber(peakSuccess);
+        document.getElementById('metric-3').textContent = formatNumber(peakError);
+        document.getElementById('metric-4').textContent = avgSuccessRate.toFixed(1) + '%';
+      } else if (trendType === 'first_byte') {
+        // 首字响应时间趋势
+        let validPoints = 0;
+        let totalAvgFBT = 0;
+        let minFBT = Infinity;
+        let maxFBT = -Infinity;
+
+        window.trendData.forEach(point => {
+          const fbt = point.avg_first_byte_time_seconds;
+          if (fbt != null && fbt > 0) {
+            validPoints++;
+            totalAvgFBT += fbt;
+            minFBT = Math.min(minFBT, fbt);
+            maxFBT = Math.max(maxFBT, fbt);
+          }
+        });
+
+        const avgFBT = validPoints > 0 ? (totalAvgFBT / validPoints) : 0;
+
+        document.getElementById('metric-1-label').textContent = '平均响应时间';
+        document.getElementById('metric-2-label').textContent = '最快响应';
+        document.getElementById('metric-3-label').textContent = '最慢响应';
+        document.getElementById('metric-4-label').textContent = '有效数据点';
+
+        document.getElementById('metric-1').textContent = validPoints > 0 ? (avgFBT * 1000).toFixed(0) + 'ms' : '--';
+        document.getElementById('metric-2').textContent = validPoints > 0 ? (minFBT * 1000).toFixed(0) + 'ms' : '--';
+        document.getElementById('metric-3').textContent = validPoints > 0 ? (maxFBT * 1000).toFixed(0) + 'ms' : '--';
+        document.getElementById('metric-4').textContent = validPoints || '--';
+      } else if (trendType === 'duration') {
+        // 总耗时趋势
+        let validPoints = 0;
+        let totalAvgDur = 0;
+        let minDur = Infinity;
+        let maxDur = -Infinity;
+
+        window.trendData.forEach(point => {
+          const dur = point.avg_duration_seconds;
+          if (dur != null && dur > 0) {
+            validPoints++;
+            totalAvgDur += dur;
+            minDur = Math.min(minDur, dur);
+            maxDur = Math.max(maxDur, dur);
+          }
+        });
+
+        const avgDur = validPoints > 0 ? (totalAvgDur / validPoints) : 0;
+
+        document.getElementById('metric-1-label').textContent = '平均总耗时';
+        document.getElementById('metric-2-label').textContent = '最快耗时';
+        document.getElementById('metric-3-label').textContent = '最慢耗时';
+        document.getElementById('metric-4-label').textContent = '有效数据点';
+
+        document.getElementById('metric-1').textContent = validPoints > 0 ? (avgDur * 1000).toFixed(0) + 'ms' : '--';
+        document.getElementById('metric-2').textContent = validPoints > 0 ? (minDur * 1000).toFixed(0) + 'ms' : '--';
+        document.getElementById('metric-3').textContent = validPoints > 0 ? (maxDur * 1000).toFixed(0) + 'ms' : '--';
+        document.getElementById('metric-4').textContent = validPoints || '--';
+      } else if (trendType === 'cost') {
+        // 费用消耗趋势
+        let totalCost = 0;
+        let validPoints = 0;
+        let maxCost = -Infinity;
+
+        window.trendData.forEach(point => {
+          const cost = point.total_cost;
+          if (cost != null && cost > 0) {
+            validPoints++;
+            totalCost += cost;
+            maxCost = Math.max(maxCost, cost);
+          }
+        });
+
+        const avgCost = validPoints > 0 ? (totalCost / validPoints) : 0;
+
+        document.getElementById('metric-1-label').textContent = '总费用';
+        document.getElementById('metric-2-label').textContent = '平均费用/点';
+        document.getElementById('metric-3-label').textContent = '峰值费用';
+        document.getElementById('metric-4-label').textContent = '有效数据点';
+
+        document.getElementById('metric-1').textContent = '$' + totalCost.toFixed(4);
+        document.getElementById('metric-2').textContent = validPoints > 0 ? '$' + avgCost.toFixed(6) : '--';
+        document.getElementById('metric-3').textContent = validPoints > 0 ? '$' + maxCost.toFixed(6) : '--';
+        document.getElementById('metric-4').textContent = validPoints || '--';
+      }
     }
 
     function renderChart() {
@@ -356,77 +456,141 @@
 
       // 为每个可见渠道生成颜色
       const channelColors = generateChannelColors(window.visibleChannels);
-      
+
       // 准备series数据
       const series = [];
+      const trendType = window.currentTrendType;
+
+      // 根据趋势类型准备不同的总体数据
+      if (trendType === 'count') {
+        // 调用次数趋势：添加总体成功/失败线
+        series.push({
+          name: '总成功请求',
+          type: 'line',
+          smooth: true,
+          symbol: 'circle',
+          symbolSize: 4,
+          sampling: 'lttb',
+          itemStyle: {
+            color: '#10b981'
+          },
+          lineStyle: {
+            width: 2,
+            color: '#10b981'
+          },
+          data: window.trendData.map(point => point.success || 0)
+        });
+
+        series.push({
+          name: '总失败请求',
+          type: 'line',
+          smooth: true,
+          symbol: 'circle',
+          symbolSize: 4,
+          sampling: 'lttb',
+          itemStyle: {
+            color: '#ef4444'
+          },
+          lineStyle: {
+            width: 2,
+            color: '#ef4444'
+          },
+          data: window.trendData.map(point => point.error || 0)
+        });
+      } else if (trendType === 'first_byte') {
+        // 首字响应时间趋势：添加总体平均首字响应时间线
+        series.push({
+          name: '平均首字响应时间',
+          type: 'line',
+          smooth: true,
+          symbol: 'circle',
+          symbolSize: 4,
+          sampling: 'lttb',
+          itemStyle: {
+            color: '#0ea5e9'
+          },
+          lineStyle: {
+            width: 2,
+            color: '#0ea5e9'
+          },
+          data: window.trendData.map(point => {
+            const fbt = point.avg_first_byte_time_seconds;
+            return (fbt != null && fbt > 0) ? (fbt * 1000) : null; // 转换为毫秒
+          })
+        });
+      } else if (trendType === 'duration') {
+        // 总耗时趋势：添加总体平均总耗时线
+        series.push({
+          name: '平均总耗时',
+          type: 'line',
+          smooth: true,
+          symbol: 'circle',
+          symbolSize: 4,
+          sampling: 'lttb',
+          itemStyle: {
+            color: '#a855f7'
+          },
+          lineStyle: {
+            width: 2,
+            color: '#a855f7'
+          },
+          data: window.trendData.map(point => {
+            const dur = point.avg_duration_seconds;
+            return (dur != null && dur > 0) ? (dur * 1000) : null; // 转换为毫秒
+          })
+        });
+      } else if (trendType === 'cost') {
+        // 费用消耗趋势：添加总体费用线
+        series.push({
+          name: '总费用',
+          type: 'line',
+          smooth: true,
+          symbol: 'circle',
+          symbolSize: 4,
+          sampling: 'lttb',
+          itemStyle: {
+            color: '#f97316'
+          },
+          lineStyle: {
+            width: 2,
+            color: '#f97316'
+          },
+          data: window.trendData.map(point => {
+            const cost = point.total_cost;
+            return (cost != null && cost > 0) ? cost : null;
+          })
+        });
+      }
       
-      // 添加总体成功/失败线
-      series.push({
-        name: '总成功请求',
-        type: 'line',
-        smooth: true,
-        symbol: 'circle',
-        symbolSize: 4,
-        sampling: 'lttb',
-        itemStyle: {
-          color: '#10b981'
-        },
-        lineStyle: {
-          width: 2,
-          color: '#10b981'
-        },
-        data: window.trendData.map(point => point.success || 0)
-      });
-      
-      series.push({
-        name: '总失败请求',
-        type: 'line',
-        smooth: true,
-        symbol: 'circle',
-        symbolSize: 4,
-        sampling: 'lttb',
-        itemStyle: {
-          color: '#ef4444'
-        },
-        lineStyle: {
-          width: 2,
-          color: '#ef4444'
-        },
-        data: window.trendData.map(point => point.error || 0)
-      });
-      
-      // 为每个可见渠道添加成功/失败线 - 添加数据验证
+      // 为每个可见渠道添加对应趋势线
       console.log('开始渲染渠道数据，可见渠道:', Array.from(window.visibleChannels));
-      
+
       Array.from(window.visibleChannels).forEach(channelName => {
         const color = channelColors[channelName];
-        
-        // 计算渠道数据总和用于验证
-        let successTotal = 0;
-        let errorTotal = 0;
-        const successData = window.trendData.map(point => {
-          const channels = point.channels || {};
-          const channelData = channels[channelName] || { success: 0, error: 0 };
-          const success = channelData.success || 0;
-          successTotal += success;
-          return success;
-        });
-        
-        const errorData = window.trendData.map(point => {
-          const channels = point.channels || {};
-          const channelData = channels[channelName] || { success: 0, error: 0 };
-          const error = channelData.error || 0;
-          errorTotal += error;
-          return error;
-        });
-        
-        console.log(`渠道 ${channelName} 数据统计: 成功总数=${successTotal}, 错误总数=${errorTotal}`);
-        
-        // 只有当渠道有数据时才添加到图表
-        if (successTotal > 0 || errorTotal > 0) {
-          console.log(`添加有数据的渠道到图表: ${channelName}`);
-          
-          // 成功线 - 只有成功数据大于0才添加
+
+        if (trendType === 'count') {
+          // 调用次数趋势：渠道成功/失败线
+          let successTotal = 0;
+          let errorTotal = 0;
+          const successData = window.trendData.map(point => {
+            const channels = point.channels || {};
+            const channelData = channels[channelName] || { success: 0, error: 0 };
+            const success = channelData.success || 0;
+            successTotal += success;
+            return success;
+          });
+
+          const errorData = window.trendData.map(point => {
+            const channels = point.channels || {};
+            const channelData = channels[channelName] || { success: 0, error: 0 };
+            const error = channelData.error || 0;
+            errorTotal += error;
+            return error;
+          });
+
+          console.log(`渠道 ${channelName} 数据统计: 成功总数=${successTotal}, 错误总数=${errorTotal}`);
+
+          // 成功线
           if (successTotal > 0) {
             series.push({
               name: `${channelName}(成功)`,
@@ -434,19 +598,13 @@
               smooth: true,
               symbol: 'none',
               sampling: 'lttb',
-              itemStyle: {
-                color: color
-              },
-              lineStyle: {
-                width: 1.5,
-                color: color,
-                type: 'solid'
-              },
+              itemStyle: { color: color },
+              lineStyle: { width: 1.5, color: color, type: 'solid' },
               data: successData
             });
           }
-          
-          // 失败线 - 只有失败数据大于0才添加
+
+          // 失败线
           if (errorTotal > 0) {
             series.push({
               name: `${channelName}(失败)`,
@@ -454,19 +612,89 @@
               smooth: true,
               symbol: 'none',
               sampling: 'lttb',
-              itemStyle: {
-                color: color
-              },
-              lineStyle: {
-                width: 1.5,
-                color: color,
-                type: 'dashed'
-              },
+              itemStyle: { color: color },
+              lineStyle: { width: 1.5, color: color, type: 'dashed' },
               data: errorData
             });
           }
-        } else {
-          console.log(`跳过无数据的渠道: ${channelName}`);
+        } else if (trendType === 'first_byte') {
+          // 首字响应时间趋势：渠道平均首字响应时间线
+          let hasData = false;
+          const fbtData = window.trendData.map(point => {
+            const channels = point.channels || {};
+            const channelData = channels[channelName] || {};
+            const fbt = channelData.avg_first_byte_time_seconds;
+            if (fbt != null && fbt > 0) {
+              hasData = true;
+              return fbt * 1000; // 转换为毫秒
+            }
+            return null;
+          });
+
+          if (hasData) {
+            series.push({
+              name: channelName,
+              type: 'line',
+              smooth: true,
+              symbol: 'none',
+              sampling: 'lttb',
+              itemStyle: { color: color },
+              lineStyle: { width: 1.5, color: color },
+              data: fbtData
+            });
+          }
+        } else if (trendType === 'duration') {
+          // 总耗时趋势：渠道平均总耗时线
+          let hasData = false;
+          const durData = window.trendData.map(point => {
+            const channels = point.channels || {};
+            const channelData = channels[channelName] || {};
+            const dur = channelData.avg_duration_seconds;
+            if (dur != null && dur > 0) {
+              hasData = true;
+              return dur * 1000; // 转换为毫秒
+            }
+            return null;
+          });
+
+          if (hasData) {
+            series.push({
+              name: channelName,
+              type: 'line',
+              smooth: true,
+              symbol: 'none',
+              sampling: 'lttb',
+              itemStyle: { color: color },
+              lineStyle: { width: 1.5, color: color },
+              data: durData
+            });
+          }
+        } else if (trendType === 'cost') {
+          // 费用消耗趋势：渠道费用线
+          let hasData = false;
+          const costData = window.trendData.map(point => {
+            const channels = point.channels || {};
+            const channelData = channels[channelName] || {};
+            const cost = channelData.total_cost;
+            if (cost != null && cost > 0) {
+              hasData = true;
+              return cost;
+            }
+            return null;
+          });
+
+          if (hasData) {
+            series.push({
+              name: channelName,
+              type: 'line',
+              smooth: true,
+              symbol: 'none',
+              sampling: 'lttb',
+              itemStyle: { color: color },
+              lineStyle: { width: 1.5, color: color },
+              data: costData
+            });
+          }
         }
       });
 
@@ -568,9 +796,20 @@
             color: '#6b7280',
             fontSize: 11,
             formatter: function(value) {
-              if (value >= 1000000) return (value / 1000000) + 'M';
-              if (value >= 1000) return (value / 1000) + 'K';
-              return value;
+              if (trendType === 'first_byte' || trendType === 'duration') {
+                // 首字响应时间/总耗时：毫秒格式
+                return value.toFixed(0) + 'ms';
+              } else if (trendType === 'cost') {
+                // 费用消耗：美元格式
+                if (value >= 1) return '$' + value.toFixed(2);
+                if (value >= 0.01) return '$' + value.toFixed(4);
+                return '$' + value.toFixed(6);
+              } else {
+                // 调用次数：K/M格式
+                if (value >= 1000000) return (value / 1000000) + 'M';
+                if (value >= 1000) return (value / 1000) + 'K';
+                return value;
+              }
             }
           },
           splitLine: {
@@ -652,21 +891,34 @@
       return hasData;
     }
     
-    // 生成渠道颜色
+    // 生成渠道颜色（避免与总体趋势线颜色冲突）
+    // 总体趋势线保留颜色: #10b981(绿), #ef4444(红), #0ea5e9(天蓝), #a855f7(紫), #f97316(橙)
     function generateChannelColors(channels) {
       const colors = [
-        '#3b82f6', '#8b5cf6', '#f59e0b', '#10b981', '#ef4444',
-        '#06b6d4', '#84cc16', '#f97316', '#ec4899', '#6366f1',
-        '#14b8a6', '#eab308', '#f43f5e', '#8b5cf6', '#22c55e'
+        '#3b82f6', // 蓝色
+        '#06b6d4', // 青色
+        '#14b8a6', // 绿松色
+        '#84cc16', // 黄绿色
+        '#eab308', // 黄色
+        '#fb923c', // 浅橙色
+        '#ec4899', // 粉色
+        '#6366f1', // 靛蓝色
+        '#8b5cf6', // 淡紫色
+        '#22c55e', // 亮绿色
+        '#f43f5e', // 玫红色
+        '#0891b2', // 深青色
+        '#65a30d', // 橄榄绿
+        '#ca8a04', // 金黄色
+        '#dc2626'  // 深红色
       ];
-      
+
       const channelColors = {};
       let colorIndex = 0;
       Array.from(channels).forEach(channelName => {
         channelColors[channelName] = colors[colorIndex % colors.length];
         colorIndex++;
       });
-      
+
       return channelColors;
     }
     
@@ -851,6 +1103,21 @@
     });
 
     function bindToggles() {
+      // 趋势类型切换
+      const trendTypeGroup = document.getElementById('trend-type-group');
+      trendTypeGroup.addEventListener('click', (e) => {
+        const t = e.target.closest('.toggle-btn');
+        if (!t) return;
+        trendTypeGroup.querySelectorAll('.toggle-btn').forEach(btn => btn.classList.remove('active'));
+        t.classList.add('active');
+        const trendType = t.getAttribute('data-type') || 'first_byte';
+        window.currentTrendType = trendType;
+        persistState();
+        updateSummaryCards();
+        renderChart();
+      });
+
+      // 时间范围切换
       const rangeGroup = document.getElementById('range-group');
       rangeGroup.addEventListener('click', (e) => {
         const t = e.target.closest('.toggle-btn');
@@ -869,25 +1136,44 @@
     function persistState() {
       try {
         localStorage.setItem('trend.rangeHours', String(window.currentHours));
+        localStorage.setItem('trend.trendType', window.currentTrendType);
       } catch (_) {}
     }
 
     function restoreState() {
       try {
+        // 恢复时间范围
         const h = parseInt(localStorage.getItem('trend.rangeHours') || '1', 10);
         if ([1, 6, 24, 168].includes(h)) window.currentHours = h;
         const label = document.getElementById('data-timerange');
         if (label) label.textContent = window.currentHours === 168 ? '7天数据展示' : `${window.currentHours}小时数据展示`;
+
+        // 恢复趋势类型
+        const savedType = localStorage.getItem('trend.trendType') || 'first_byte';
+        if (['count', 'first_byte', 'duration', 'cost'].includes(savedType)) {
+          window.currentTrendType = savedType;
+        }
       } catch (_) {}
     }
 
     function applyRangeUI() {
+      // 应用时间范围UI
       const rangeGroup = document.getElementById('range-group');
-      if (!rangeGroup) return;
-      rangeGroup.querySelectorAll('.toggle-btn').forEach(btn => {
-        const h = parseInt(btn.getAttribute('data-range') || '24', 10);
-        btn.classList.toggle('active', h === window.currentHours);
-      });
+      if (rangeGroup) {
+        rangeGroup.querySelectorAll('.toggle-btn').forEach(btn => {
+          const h = parseInt(btn.getAttribute('data-range') || '24', 10);
+          btn.classList.toggle('active', h === window.currentHours);
+        });
+      }
+
+      // 应用趋势类型UI
+      const trendTypeGroup = document.getElementById('trend-type-group');
+      if (trendTypeGroup) {
+        trendTypeGroup.querySelectorAll('.toggle-btn').forEach(btn => {
+          const type = btn.getAttribute('data-type') || 'first_byte';
+          btn.classList.toggle('active', type === window.currentTrendType);
+        });
+      }
     }
 
     // 注销功能（已由 ui.js 的 onLogout 统一处理）

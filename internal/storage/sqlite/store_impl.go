@@ -726,7 +726,16 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 			((time / 1000) / ?) * ? AS bucket_ts,
 			channel_id,
 			SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success,
-			SUM(CASE WHEN status_code < 200 OR status_code >= 300 THEN 1 ELSE 0 END) AS error
+			SUM(CASE WHEN status_code < 200 OR status_code >= 300 THEN 1 ELSE 0 END) AS error,
+			ROUND(
+				AVG(CASE WHEN is_streaming = 1 AND first_byte_time > 0 AND status_code >= 200 AND status_code < 300 THEN first_byte_time ELSE NULL END),
+				3
+			) as avg_first_byte_time,
+			ROUND(
+				AVG(CASE WHEN duration > 0 AND status_code >= 200 AND status_code < 300 THEN duration ELSE NULL END),
+				3
+			) as avg_duration,
+			SUM(COALESCE(cost, 0.0)) as total_cost
 		FROM logs
 		WHERE (time / 1000) >= ?
 		GROUP BY bucket_ts, channel_id
@@ -742,13 +751,24 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 	// 解析聚合结果，按时间桶重组
 	mapp := make(map[int64]*model.MetricPoint)
 	channelIDsToFetch := make(map[int64]bool)
+	// 用于计算总体平均值的辅助结构
+	type aggregationHelper struct {
+		totalFirstByteTime float64 // 总首字响应时间
+		firstByteCount     int     // 有首字响应时间的请求数
+		totalDuration      float64 // 总耗时
+		durationCount      int     // 有总耗时的请求数
+	}
+	helperMap := make(map[int64]*aggregationHelper)
 
 	for rows.Next() {
 		var bucketTs int64
 		var channelID sql.NullInt64
 		var success, errorCount int
+		var avgFirstByteTime sql.NullFloat64
+		var avgDuration sql.NullFloat64
+		var totalCost float64
 
-		if err := rows.Scan(&bucketTs, &channelID, &success, &errorCount); err != nil {
+		if err := rows.Scan(&bucketTs, &channelID, &success, &errorCount, &avgFirstByteTime, &avgDuration, &totalCost); err != nil {
 			return nil, err
 		}
 
@@ -762,9 +782,34 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 			mapp[bucketTs] = mp
 		}
 
+		// 获取或创建辅助结构
+		helper, ok := helperMap[bucketTs]
+		if !ok {
+			helper = &aggregationHelper{}
+			helperMap[bucketTs] = helper
+		}
+
 		// 更新总体统计
 		mp.Success += success
 		mp.Error += errorCount
+
+		// 累加总费用
+		if mp.TotalCost == nil {
+			mp.TotalCost = new(float64)
+		}
+		*mp.TotalCost += totalCost
+
+		// 累加首字响应时间数据（用于后续计算平均值）
+		if avgFirstByteTime.Valid {
+			helper.totalFirstByteTime += avgFirstByteTime.Float64 * float64(success)
+			helper.firstByteCount += success
+		}
+
+		// 累加总耗时数据（用于后续计算平均值）
+		if avgDuration.Valid {
+			helper.totalDuration += avgDuration.Float64 * float64(success)
+			helper.durationCount += success
+		}
 
 		// 暂时使用 channel_id 作为 key，稍后替换为 name
 		channelKey := "未知渠道"
@@ -773,9 +818,29 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 			channelIDsToFetch[channelID.Int64] = true
 		}
 
+		// 准备渠道指标的指针
+		var avgFBT *float64
+		if avgFirstByteTime.Valid {
+			avgFBT = new(float64)
+			*avgFBT = avgFirstByteTime.Float64
+		}
+		var avgDur *float64
+		if avgDuration.Valid {
+			avgDur = new(float64)
+			*avgDur = avgDuration.Float64
+		}
+		var chCost *float64
+		if totalCost > 0 {
+			chCost = new(float64)
+			*chCost = totalCost
+		}
+
 		mp.Channels[channelKey] = model.ChannelMetric{
-			Success: success,
-			Error:   errorCount,
+			Success:                 success,
+			Error:                   errorCount,
+			AvgFirstByteTimeSeconds: avgFBT,
+			AvgDurationSeconds:      avgDur,
+			TotalCost:               chCost,
 		}
 	}
 
@@ -791,8 +856,8 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 		}
 	}
 
-	// 替换 channel_id 为 channel_name
-	for _, mp := range mapp {
+	// 替换 channel_id 为 channel_name 并计算总体平均首字响应时间
+	for bucketTs, mp := range mapp {
 		newChannels := make(map[string]model.ChannelMetric)
 		for key, metric := range mp.Channels {
 			if key == "未知渠道" {
@@ -809,6 +874,20 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 			}
 		}
 		mp.Channels = newChannels
+
+		// 计算总体平均首字响应时间
+		if helper, ok := helperMap[bucketTs]; ok && helper.firstByteCount > 0 {
+			avgFBT := helper.totalFirstByteTime / float64(helper.firstByteCount)
+			mp.AvgFirstByteTimeSeconds = new(float64)
+			*mp.AvgFirstByteTimeSeconds = avgFBT
+		}
+
+		// 计算总体平均总耗时
+		if helper, ok := helperMap[bucketTs]; ok && helper.durationCount > 0 {
+			avgDur := helper.totalDuration / float64(helper.durationCount)
+			mp.AvgDurationSeconds = new(float64)
+			*mp.AvgDurationSeconds = avgDur
+		}
 	}
 
 	// 生成完整的时间序列（填充空桶）
