@@ -10,6 +10,8 @@ type MetricPoint struct {
 	AvgFirstByteTimeSeconds *float64                 `json:"avg_first_byte_time_seconds,omitempty"` // 平均首字响应时间(秒)
 	AvgDurationSeconds      *float64                 `json:"avg_duration_seconds,omitempty"`        // 平均总耗时(秒)
 	TotalCost               *float64                 `json:"total_cost,omitempty"`                  // 总费用（美元）
+	FirstByteSampleCount    int                      `json:"first_byte_count,omitempty"`            // 首字响应样本数（流式成功且有首字时间）
+	DurationSampleCount     int                      `json:"duration_count,omitempty"`              // 总耗时样本数（成功且有耗时）
 	Channels                map[string]ChannelMetric `json:"channels,omitempty"`
 }
 
@@ -33,9 +35,9 @@ type StatsEntry struct {
 	AvgFirstByteTimeSeconds *float64 `json:"avg_first_byte_time_seconds,omitempty"` // 流式请求平均首字响应时间(秒)
 
 	// Token统计（2025-11新增）
-	TotalInputTokens              *int64   `json:"total_input_tokens,omitempty"`               // 总输入Token
-	TotalOutputTokens             *int64   `json:"total_output_tokens,omitempty"`              // 总输出Token
-	TotalCacheReadInputTokens     *int64   `json:"total_cache_read_input_tokens,omitempty"`    // 总缓存读取Token
+	TotalInputTokens              *int64   `json:"total_input_tokens,omitempty"`                // 总输入Token
+	TotalOutputTokens             *int64   `json:"total_output_tokens,omitempty"`               // 总输出Token
+	TotalCacheReadInputTokens     *int64   `json:"total_cache_read_input_tokens,omitempty"`     // 总缓存读取Token
 	TotalCacheCreationInputTokens *int64   `json:"total_cache_creation_input_tokens,omitempty"` // 总缓存创建Token
-	TotalCost                     *float64 `json:"total_cost,omitempty"`                       // 总成本（美元）
+	TotalCost                     *float64 `json:"total_cost,omitempty"`                        // 总成本（美元）
 }

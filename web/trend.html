@@ -342,60 +342,62 @@
         document.getElementById('metric-4').textContent = avgSuccessRate.toFixed(1) + '%';
       } else if (trendType === 'first_byte') {
         // 首字响应时间趋势
-        let validPoints = 0;
-        let totalAvgFBT = 0;
+        let totalWeightedFBT = 0;
+        let totalFBTSamples = 0;
         let minFBT = Infinity;
         let maxFBT = -Infinity;
 
         window.trendData.forEach(point => {
-          const fbt = point.avg_first_byte_time_seconds;
-          if (fbt != null && fbt > 0) {
-            validPoints++;
-            totalAvgFBT += fbt;
+          const fbt = Number(point.avg_first_byte_time_seconds);
+          const count = Number(point.first_byte_count || 0);
+          if (Number.isFinite(fbt) && fbt > 0 && Number.isFinite(count) && count > 0) {
+            totalWeightedFBT += fbt * count;
+            totalFBTSamples += count;
             minFBT = Math.min(minFBT, fbt);
             maxFBT = Math.max(maxFBT, fbt);
           }
         });
 
-        const avgFBT = validPoints > 0 ? (totalAvgFBT / validPoints) : 0;
+        const avgFBT = totalFBTSamples > 0 ? (totalWeightedFBT / totalFBTSamples) : 0;
 
         document.getElementById('metric-1-label').textContent = '平均响应时间';
         document.getElementById('metric-2-label').textContent = '最快响应';
         document.getElementById('metric-3-label').textContent = '最慢响应';
         document.getElementById('metric-4-label').textContent = '有效数据点';
 
-        document.getElementById('metric-1').textContent = validPoints > 0 ? (avgFBT * 1000).toFixed(0) + 'ms' : '--';
-        document.getElementById('metric-2').textContent = validPoints > 0 ? (minFBT * 1000).toFixed(0) + 'ms' : '--';
-        document.getElementById('metric-3').textContent = validPoints > 0 ? (maxFBT * 1000).toFixed(0) + 'ms' : '--';
-        document.getElementById('metric-4').textContent = validPoints || '--';
+        document.getElementById('metric-1').textContent = totalFBTSamples > 0 ? (avgFBT * 1000).toFixed(0) + 'ms' : '--';
+        document.getElementById('metric-2').textContent = totalFBTSamples > 0 ? (minFBT * 1000).toFixed(0) + 'ms' : '--';
+        document.getElementById('metric-3').textContent = totalFBTSamples > 0 ? (maxFBT * 1000).toFixed(0) + 'ms' : '--';
+        document.getElementById('metric-4').textContent = totalFBTSamples || '--';
       } else if (trendType === 'duration') {
         // 总耗时趋势
-        let validPoints = 0;
-        let totalAvgDur = 0;
+        let totalWeightedDur = 0;
+        let totalDurSamples = 0;
         let minDur = Infinity;
         let maxDur = -Infinity;
 
         window.trendData.forEach(point => {
-          const dur = point.avg_duration_seconds;
-          if (dur != null && dur > 0) {
-            validPoints++;
-            totalAvgDur += dur;
+          const dur = Number(point.avg_duration_seconds);
+          const count = Number(point.duration_count || 0);
+          if (Number.isFinite(dur) && dur > 0 && Number.isFinite(count) && count > 0) {
+            totalWeightedDur += dur * count;
+            totalDurSamples += count;
             minDur = Math.min(minDur, dur);
             maxDur = Math.max(maxDur, dur);
           }
         });
 
-        const avgDur = validPoints > 0 ? (totalAvgDur / validPoints) : 0;
+        const avgDur = totalDurSamples > 0 ? (totalWeightedDur / totalDurSamples) : 0;
 
         document.getElementById('metric-1-label').textContent = '平均总耗时';
         document.getElementById('metric-2-label').textContent = '最快耗时';
         document.getElementById('metric-3-label').textContent = '最慢耗时';
         document.getElementById('metric-4-label').textContent = '有效数据点';
 
-        document.getElementById('metric-1').textContent = validPoints > 0 ? (avgDur * 1000).toFixed(0) + 'ms' : '--';
-        document.getElementById('metric-2').textContent = validPoints > 0 ? (minDur * 1000).toFixed(0) + 'ms' : '--';
-        document.getElementById('metric-3').textContent = validPoints > 0 ? (maxDur * 1000).toFixed(0) + 'ms' : '--';
-        document.getElementById('metric-4').textContent = validPoints || '--';
+        document.getElementById('metric-1').textContent = totalDurSamples > 0 ? (avgDur * 1000).toFixed(0) + 'ms' : '--';
+        document.getElementById('metric-2').textContent = totalDurSamples > 0 ? (minDur * 1000).toFixed(0) + 'ms' : '--';
+        document.getElementById('metric-3').textContent = totalDurSamples > 0 ? (maxDur * 1000).toFixed(0) + 'ms' : '--';
+        document.getElementById('metric-4').textContent = totalDurSamples || '--';
       } else if (trendType === 'cost') {
         // 费用消耗趋势
         let totalCost = 0;

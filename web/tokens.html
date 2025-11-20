@@ -454,9 +454,10 @@
 
       // 响应时间颜色等级
       const getResponseClass = (time) => {
-        if (time === 0) return '';
-        if (time < 3) return 'response-fast';
-        if (time < 6) return 'response-medium';
+        const num = Number(time);
+        if (!Number.isFinite(num) || num <= 0) return '';
+        if (num < 3) return 'response-fast';
+        if (num < 6) return 'response-medium';
         return 'response-slow';
       };
 

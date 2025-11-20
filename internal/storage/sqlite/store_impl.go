@@ -735,6 +735,8 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 				AVG(CASE WHEN duration > 0 AND status_code >= 200 AND status_code < 300 THEN duration ELSE NULL END),
 				3
 			) as avg_duration,
+			SUM(CASE WHEN is_streaming = 1 AND first_byte_time > 0 AND status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) as stream_success_first_byte_count,
+			SUM(CASE WHEN duration > 0 AND status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) as duration_success_count,
 			SUM(COALESCE(cost, 0.0)) as total_cost
 		FROM logs
 		WHERE (time / 1000) >= ?
@@ -766,9 +768,11 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 		var success, errorCount int
 		var avgFirstByteTime sql.NullFloat64
 		var avgDuration sql.NullFloat64
+		var streamSuccessFirstByteCount int
+		var durationSuccessCount int
 		var totalCost float64
 
-		if err := rows.Scan(&bucketTs, &channelID, &success, &errorCount, &avgFirstByteTime, &avgDuration, &totalCost); err != nil {
+		if err := rows.Scan(&bucketTs, &channelID, &success, &errorCount, &avgFirstByteTime, &avgDuration, &streamSuccessFirstByteCount, &durationSuccessCount, &totalCost); err != nil {
 			return nil, err
 		}
 
@@ -801,14 +805,14 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 
 		// 累加首字响应时间数据（用于后续计算平均值）
 		if avgFirstByteTime.Valid {
-			helper.totalFirstByteTime += avgFirstByteTime.Float64 * float64(success)
-			helper.firstByteCount += success
+			helper.totalFirstByteTime += avgFirstByteTime.Float64 * float64(streamSuccessFirstByteCount)
+			helper.firstByteCount += streamSuccessFirstByteCount
 		}
 
 		// 累加总耗时数据（用于后续计算平均值）
 		if avgDuration.Valid {
-			helper.totalDuration += avgDuration.Float64 * float64(success)
-			helper.durationCount += success
+			helper.totalDuration += avgDuration.Float64 * float64(durationSuccessCount)
+			helper.durationCount += durationSuccessCount
 		}
 
 		// 暂时使用 channel_id 作为 key，稍后替换为 name
@@ -880,6 +884,7 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 			avgFBT := helper.totalFirstByteTime / float64(helper.firstByteCount)
 			mp.AvgFirstByteTimeSeconds = new(float64)
 			*mp.AvgFirstByteTimeSeconds = avgFBT
+			mp.FirstByteSampleCount = helper.firstByteCount
 		}
 
 		// 计算总体平均总耗时
@@ -887,6 +892,7 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 			avgDur := helper.totalDuration / float64(helper.durationCount)
 			mp.AvgDurationSeconds = new(float64)
 			*mp.AvgDurationSeconds = avgDur
+			mp.DurationSampleCount = helper.durationCount
 		}
 	}
 

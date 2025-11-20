@@ -573,8 +573,8 @@
 
 
   <script>
-    // 使用超长时间窗口近似全量统计（100年）
-    const CHANNEL_STATS_LOOKBACK_HOURS = 24 * 365 * 100;
+    // 渠道统计时间窗口（默认30天，避免全量查询拖垮DB）
+    const CHANNEL_STATS_LOOKBACK_HOURS = 24 * 30;
     let channels = [];
     let channelStatsById = {};
     let editingChannelId = null;
@@ -798,7 +798,7 @@
 
     async function loadChannelStats(hours = CHANNEL_STATS_LOOKBACK_HOURS) {
       try {
-        const params = new URLSearchParams({ hours: String(hours), limit: '1000', offset: '0' });
+        const params = new URLSearchParams({ hours: String(hours), limit: '500', offset: '0' });
         const res = await fetchWithAuth(`/admin/stats?${params.toString()}`);
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const response = await res.json();
