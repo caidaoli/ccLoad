@@ -1,6 +1,10 @@
 package config
 
-import "time"
+import (
+	"os"
+	"strconv"
+	"time"
+)
 
 // HTTP服务器配置常量
 const (
@@ -106,9 +110,6 @@ const (
 
 	// LogCleanupInterval 日志清理间隔
 	LogCleanupInterval = 1 * time.Hour
-
-	// LogRetentionDays 日志保留天数
-	LogRetentionDays = 3
 )
 
 // Redis同步配置常量
@@ -116,3 +117,17 @@ const (
 	// RedisSyncShutdownTimeoutMs 优雅关闭等待时间（毫秒）
 	RedisSyncShutdownTimeoutMs = 100
 )
+
+// GetLogRetentionDays 获取日志保留天数
+// 从环境变量 CCLOAD_LOG_RETENTION_DAYS 读取，默认7天
+func GetLogRetentionDays() int {
+	const defaultRetentionDays = 7
+
+	if envVal := os.Getenv("CCLOAD_LOG_RETENTION_DAYS"); envVal != "" {
+		if days, err := strconv.Atoi(envVal); err == nil && days >= 1 && days <= 365 {
+			return days
+		}
+	}
+
+	return defaultRetentionDays
+}

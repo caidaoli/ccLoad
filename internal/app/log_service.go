@@ -176,7 +176,7 @@ func (s *LogService) cleanupOldLogsLoop() {
 		case <-ticker.C:
 			// 使用带超时的context，避免日志清理阻塞关闭流程
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			cutoff := time.Now().AddDate(0, 0, -config.LogRetentionDays)
+			cutoff := time.Now().AddDate(0, 0, -config.GetLogRetentionDays())
 
 			// 通过Store接口清理旧日志，忽略错误（非关键操作）
 			_ = s.store.CleanupLogsBefore(ctx, cutoff)
