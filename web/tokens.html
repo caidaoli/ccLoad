@@ -100,6 +100,19 @@
       color: var(--neutral-600);
       margin-top: 2px;
     }
+    /* 响应时间颜色 */
+    .response-fast {
+      color: var(--success-700);
+      font-weight: 600;
+    }
+    .response-medium {
+      color: var(--warning-700);
+      font-weight: 600;
+    }
+    .response-slow {
+      color: var(--error-700);
+      font-weight: 600;
+    }
     .modal {
       display: none;
       position: fixed;
@@ -412,6 +425,41 @@
       const streamCount = token.stream_count || 0;
       const nonStreamCount = token.non_stream_count || 0;
 
+      // 调用次数样式（根据调用量）
+      let countFontWeight = '500';
+      let successBgOpacity = '100';
+      let errorBgOpacity = '100';
+      let successColorOpacity = '700';
+      let errorColorOpacity = '700';
+
+      if (totalCount >= 100) {
+        countFontWeight = '700';
+        successBgOpacity = '200';
+        errorBgOpacity = '200';
+        successColorOpacity = '800';
+        errorColorOpacity = '800';
+      } else if (totalCount >= 10) {
+        countFontWeight = '600';
+        successBgOpacity = '100';
+        errorBgOpacity = '100';
+        successColorOpacity = '700';
+        errorColorOpacity = '700';
+      } else {
+        countFontWeight = '500';
+        successBgOpacity = '50';
+        errorBgOpacity = '50';
+        successColorOpacity = '600';
+        errorColorOpacity = '600';
+      }
+
+      // 响应时间颜色等级
+      const getResponseClass = (time) => {
+        if (time === 0) return '';
+        if (time < 3) return 'response-fast';
+        if (time < 6) return 'response-medium';
+        return 'response-slow';
+      };
+
       return `
         <tr>
           <td>
@@ -428,10 +476,10 @@
           <td style="text-align: center;">
             ${totalCount > 0 ? `
               <div style="display: inline-flex; gap: 8px;">
-                <span class="stats-badge" style="background: var(--success-100); color: var(--success-700);" title="成功调用">
+                <span class="stats-badge" style="background: var(--success-${successBgOpacity}); color: var(--success-${successColorOpacity}); font-weight: ${countFontWeight};" title="成功调用">
                   ✓ ${successCount.toLocaleString()}
                 </span>
-                <span class="stats-badge" style="background: var(--error-100); color: var(--error-700);" title="失败调用">
+                <span class="stats-badge" style="background: var(--error-${errorBgOpacity}); color: var(--error-${errorColorOpacity}); font-weight: ${countFontWeight};" title="失败调用">
                   ✗ ${failureCount.toLocaleString()}
                 </span>
               </div>
@@ -444,18 +492,12 @@
           </td>
           <td style="text-align: center;">
             ${streamCount > 0
-              ? `<div>
-                  <div class="metric-value">${streamAvgTTFB.toFixed(2)}s</div>
-                  <div class="metric-label">${streamCount.toLocaleString()}次调用</div>
-                 </div>`
+              ? `<span class="metric-value ${getResponseClass(streamAvgTTFB)}">${streamAvgTTFB.toFixed(2)}s</span>`
               : '<span style="color: var(--neutral-500); font-size: 13px;">-</span>'}
           </td>
           <td style="text-align: center;">
             ${nonStreamCount > 0
-              ? `<div>
-                  <div class="metric-value">${nonStreamAvgRT.toFixed(2)}s</div>
-                  <div class="metric-label">${nonStreamCount.toLocaleString()}次调用</div>
-                 </div>`
+              ? `<span class="metric-value ${getResponseClass(nonStreamAvgRT)}">${nonStreamAvgRT.toFixed(2)}s</span>`
               : '<span style="color: var(--neutral-500); font-size: 13px;">-</span>'}
           </td>
           <td style="color: var(--neutral-600);">${createdAt}</td>
