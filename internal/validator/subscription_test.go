@@ -80,8 +80,10 @@ func TestSubscriptionValidator_Validate_FreeSubscription(t *testing.T) {
 
 		// 返回FREE套餐
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
-			"subscriptionName": "FREE",
+		json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{
+				"subscriptionName": "FREE",
+			},
 		})
 	}))
 	defer server.Close()
@@ -117,8 +119,10 @@ func TestSubscriptionValidator_Validate_ProSubscription(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
-			"subscriptionName": "PRO",
+		json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{
+				"subscriptionName": "PRO",
+			},
 		})
 	}))
 	defer server.Close()
@@ -160,8 +164,10 @@ func TestSubscriptionValidator_Validate_CaseInsensitive(t *testing.T) {
 				}
 
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(map[string]string{
-					"subscriptionName": sub,
+				json.NewEncoder(w).Encode(map[string]any{
+					"data": map[string]any{
+						"subscriptionName": sub,
+					},
 				})
 			}))
 			defer server.Close()
@@ -261,8 +267,10 @@ func TestSubscriptionValidator_Cache(t *testing.T) {
 
 		callCount++
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
-			"subscriptionName": "FREE",
+		json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{
+				"subscriptionName": "FREE",
+			},
 		})
 	}))
 	defer server.Close()
@@ -317,8 +325,10 @@ func TestSubscriptionValidator_CacheExpiry(t *testing.T) {
 
 		callCount++
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
-			"subscriptionName": "FREE",
+		json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{
+				"subscriptionName": "FREE",
+			},
 		})
 	}))
 	defer server.Close()
@@ -353,8 +363,10 @@ func TestSubscriptionValidator_Timeout(t *testing.T) {
 		}
 
 		time.Sleep(2 * time.Second) // 模拟慢响应
-		json.NewEncoder(w).Encode(map[string]string{
-			"subscriptionName": "FREE",
+		json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{
+				"subscriptionName": "FREE",
+			},
 		})
 	}))
 	defer server.Close()

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -45,8 +46,9 @@ type cacheEntry struct {
 
 // usage88CodeResponse 88code API响应结构
 type usage88CodeResponse struct {
-	SubscriptionName string `json:"subscriptionName"`
-	// 其他字段按需添加
+	Data struct {
+		SubscriptionName string `json:"subscriptionName"`
+	} `json:"data"`
 }
 
 // NewSubscriptionValidator 创建88code套餐验证器
@@ -180,13 +182,25 @@ func (v *SubscriptionValidator) fetch88CodeSubscription(ctx context.Context, api
 		return "", fmt.Errorf("unexpected status code %d: %s", resp.StatusCode, string(body))
 	}
 
+	// 读取响应体用于调试和解析
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024)) // 限制读取10KB
+	if err != nil {
+		return "", fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// 输出原始响应用于调试
+	log.Printf("🔍 88code API响应: %s", string(body))
+
 	// 解析响应
 	var usageResp usage88CodeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&usageResp); err != nil {
+	if err := json.Unmarshal(body, &usageResp); err != nil {
 		return "", fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	return usageResp.SubscriptionName, nil
+	// 输出解析结果用于调试
+	log.Printf("🔍 解析后的SubscriptionName: %q", usageResp.Data.SubscriptionName)
+
+	return usageResp.Data.SubscriptionName, nil
 }
 
 // ClearCache 清空缓存(用于测试和手动刷新)
