@@ -82,6 +82,42 @@
         opacity: 0;
       }
     }
+
+    /* 渠道统计徽章 */
+    .channel-stat-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 8px;
+      border-radius: 8px;
+      background: var(--neutral-100);
+      border: 1px solid var(--neutral-200);
+      font-size: 12px;
+      color: var(--neutral-700);
+      line-height: 1.3;
+    }
+
+    .channel-stat-badge strong {
+      color: var(--neutral-900);
+    }
+
+    .channel-meta-line {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .channel-stats-inline {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-left: auto;
+      justify-content: flex-end;
+      margin-right: 32px;
+    }
   </style>
 </head>
 <body>
@@ -537,7 +573,10 @@
 
 
   <script>
+    // 使用超长时间窗口近似全量统计（100年）
+    const CHANNEL_STATS_LOOKBACK_HOURS = 24 * 365 * 100;
     let channels = [];
+    let channelStatsById = {};
     let editingChannelId = null;
     let deletingChannelId = null;
     let testingChannelId = null;
@@ -757,6 +796,91 @@
       }
     }
 
+    async function loadChannelStats(hours = CHANNEL_STATS_LOOKBACK_HOURS) {
+      try {
+        const params = new URLSearchParams({ hours: String(hours), limit: '1000', offset: '0' });
+        const res = await fetchWithAuth(`/admin/stats?${params.toString()}`);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const response = await res.json();
+        const statsArray = extractStatsEntries(response);
+        channelStatsById = aggregateChannelStats(statsArray);
+        filterChannels(); // 重新渲染以显示最新统计
+      } catch (err) {
+        console.error('加载渠道统计数据失败', err);
+      }
+    }
+
+    function extractStatsEntries(response) {
+      if (!response) return [];
+      if (Array.isArray(response)) return response;
+      if (Array.isArray(response.data?.stats)) return response.data.stats;
+      if (Array.isArray(response.stats)) return response.stats;
+      if (Array.isArray(response.data)) return response.data;
+      return [];
+    }
+
+    function aggregateChannelStats(statsEntries = []) {
+      const result = {};
+
+      for (const entry of statsEntries) {
+        const channelId = Number(entry.channel_id || entry.channelID);
+        if (!Number.isFinite(channelId) || channelId <= 0) continue;
+
+        if (!result[channelId]) {
+          result[channelId] = {
+            success: 0,
+            error: 0,
+            total: 0,
+            totalInputTokens: 0,
+            totalOutputTokens: 0,
+            totalCacheReadInputTokens: 0,
+            totalCacheCreationInputTokens: 0,
+            totalCost: 0,
+            _firstByteWeightedSum: 0,
+            _firstByteWeight: 0
+          };
+        }
+
+        const stats = result[channelId];
+        const success = toSafeNumber(entry.success);
+        const error = toSafeNumber(entry.error);
+        const total = toSafeNumber(entry.total);
+
+        stats.success += success;
+        stats.error += error;
+        stats.total += total;
+
+        const avgFirstByte = Number(entry.avg_first_byte_time_seconds);
+        const weight = success || total || 0;
+        if (Number.isFinite(avgFirstByte) && avgFirstByte > 0 && weight > 0) {
+          stats._firstByteWeightedSum += avgFirstByte * weight;
+          stats._firstByteWeight += weight;
+        }
+
+        stats.totalInputTokens += toSafeNumber(entry.total_input_tokens);
+        stats.totalOutputTokens += toSafeNumber(entry.total_output_tokens);
+        stats.totalCacheReadInputTokens += toSafeNumber(entry.total_cache_read_input_tokens);
+        stats.totalCacheCreationInputTokens += toSafeNumber(entry.total_cache_creation_input_tokens);
+        stats.totalCost += toSafeNumber(entry.total_cost);
+      }
+
+      for (const id of Object.keys(result)) {
+        const stats = result[id];
+        if (stats._firstByteWeight > 0) {
+          stats.avgFirstByteTimeSeconds = stats._firstByteWeightedSum / stats._firstByteWeight;
+        }
+        delete stats._firstByteWeightedSum;
+        delete stats._firstByteWeight;
+      }
+
+      return result;
+    }
+
+    function toSafeNumber(value) {
+      const num = Number(value);
+      return Number.isFinite(num) ? num : 0;
+    }
+
     function renderChannels(channelsToRender = channels) {
       const el = document.getElementById('channels-container');
       if (!channelsToRender || channelsToRender.length === 0) {
@@ -802,8 +926,33 @@
           }
         };
         // 防御性编程：如果类型未定义，使用默认值（KISS原则）
-        const channelTypeInfo = channelTypeLabels[c.channel_type || 'anthropic'] || channelTypeLabels['anthropic'];
+        const channelTypeRaw = (c.channel_type || '').toLowerCase();
+        const channelTypeInfo = channelTypeLabels[channelTypeRaw || 'anthropic'] || channelTypeLabels['anthropic'];
         const channelTypeBadge = `<span style="background: ${channelTypeInfo.bgColor}; color: ${channelTypeInfo.color}; padding: 3px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; margin-left: 8px; border: 1.5px solid ${channelTypeInfo.borderColor}; letter-spacing: 0.025em; text-transform: uppercase;">${channelTypeInfo.text}</span>`;
+
+        const stats = channelStatsById[c.id] || null;
+        const successCount = stats ? stats.success : null;
+        const errorCount = stats ? stats.error : null;
+        const totalCount = stats ? stats.total : null;
+        const successRateText = formatSuccessRate(successCount, totalCount);
+        const avgFirstByteText = formatAvgFirstByte(stats ? stats.avgFirstByteTimeSeconds : null);
+        const inputTokensText = formatMetricNumber(stats ? stats.totalInputTokens : null);
+        const outputTokensText = formatMetricNumber(stats ? stats.totalOutputTokens : null);
+        const cacheReadText = formatMetricNumber(stats ? stats.totalCacheReadInputTokens : null);
+        const cacheCreationText = formatMetricNumber(stats ? stats.totalCacheCreationInputTokens : null);
+        const costDisplay = formatCostValue(stats ? stats.totalCost : null);
+        const showStatsInline = channelTypeRaw === 'anthropic' || channelTypeRaw === 'codex';
+        const statsInline = showStatsInline
+          ? renderChannelStatsInline(stats, {
+              successRateText,
+              avgFirstByteText,
+              inputTokensText,
+              outputTokensText,
+              cacheReadText,
+              cacheCreationText,
+              costDisplay
+            })
+          : '';
 
         return `
           <div class="${cardClasses.join(' ')}" id="channel-${c.id}">
@@ -811,7 +960,10 @@
               <div style="flex: 1;">
                 <div class="section-title">${escapeHtml(c.name)} ${channelTypeBadge} <span style="color: var(--neutral-500); font-size: 0.875rem; font-weight: 400;">(ID: ${c.id})</span> <span style="color: var(--neutral-600); font-size: 1rem; font-weight: 400;">模型: ${Array.isArray(c.models) ? c.models.join(', ') : ''}</span></div>
                 <div class="text-sm" style="color: var(--neutral-600); margin-top: 4px;">
-                  <div>URL: ${escapeHtml(c.url)} | 优先级: ${c.priority} | ${c.enabled ? '已启用' : '已禁用'}${inlineCooldownBadge(c)}</div>
+                  <div class="channel-meta-line">
+                    <span>URL: ${escapeHtml(c.url)} | 优先级: ${c.priority} | ${c.enabled ? '已启用' : '已禁用'}${inlineCooldownBadge(c)}</span>
+                    ${statsInline ? `<span class="channel-stats-inline">${statsInline}</span>` : ''}
+                  </div>
                 </div>
               </div>
               <div class="channel-actions">
@@ -1158,6 +1310,95 @@
       return proposedName;
     }
 
+    function formatMetricNumber(value) {
+      if (value === null || value === undefined) return '--';
+      const num = Number(value);
+      if (!Number.isFinite(num)) return '--';
+      return formatCompactNumber(num);
+    }
+
+    function formatCompactNumber(num) {
+      const abs = Math.abs(num);
+      if (abs >= 1_000_000) return (num / 1_000_000).toFixed(1).replace(/\\.0$/, '') + 'M';
+      if (abs >= 1_000) return (num / 1_000).toFixed(1).replace(/\\.0$/, '') + 'K';
+      return num.toString();
+    }
+
+    function formatSuccessRate(success, total) {
+      if (success === null || success === undefined || total === null || total === undefined) return '--';
+      const succ = Number(success);
+      const ttl = Number(total);
+      if (!Number.isFinite(succ) || !Number.isFinite(ttl) || ttl <= 0) return '--';
+      return ((succ / ttl) * 100).toFixed(1) + '%';
+    }
+
+    function formatAvgFirstByte(value) {
+      if (value === null || value === undefined) return '--';
+      const num = Number(value);
+      if (!Number.isFinite(num) || num <= 0) return '--';
+      return num.toFixed(2) + '秒';
+    }
+
+    function formatCostValue(cost) {
+      if (cost === null || cost === undefined) return '--';
+      const num = Number(cost);
+      if (!Number.isFinite(num)) return '--';
+      if (num === 0) return '$0.00';
+      if (num < 0) return '--';
+      return formatCost(num);
+    }
+
+    function renderChannelStatsInline(stats, cache) {
+      if (!stats) {
+        return `<span class="channel-stat-badge" style="margin-left: 6px; color: var(--neutral-500);">统计: --</span>`;
+      }
+
+      const successRateText = cache?.successRateText || formatSuccessRate(stats.success, stats.total);
+      const avgFirstByteText = cache?.avgFirstByteText || formatAvgFirstByte(stats.avgFirstByteTimeSeconds);
+      const inputTokensText = cache?.inputTokensText || formatMetricNumber(stats.totalInputTokens);
+      const outputTokensText = cache?.outputTokensText || formatMetricNumber(stats.totalOutputTokens);
+      const cacheReadText = cache?.cacheReadText || formatMetricNumber(stats.totalCacheReadInputTokens);
+      const cacheCreationText = cache?.cacheCreationText || formatMetricNumber(stats.totalCacheCreationInputTokens);
+      const costDisplay = cache?.costDisplay || formatCostValue(stats.totalCost);
+
+      const successRateColor = (() => {
+        const rateNum = Number(successRateText.replace('%', ''));
+        if (!Number.isFinite(rateNum)) return 'var(--neutral-600)';
+        if (rateNum >= 95) return 'var(--success-600)';
+        if (rateNum < 80) return 'var(--error-500)';
+        return 'var(--warning-600)';
+      })();
+
+      const callText = `${formatMetricNumber(stats.success)}/${formatMetricNumber(stats.error)}`;
+      const parts = [
+        `<span class="channel-stat-badge" style="color: var(--neutral-800);"><strong>调用</strong> ${callText}</span>`,
+        `<span class="channel-stat-badge" style="color: ${successRateColor};"><strong>率</strong> ${successRateText}</span>`,
+        `<span class="channel-stat-badge" style="color: var(--primary-700);"><strong>首字</strong> ${avgFirstByteText}</span>`,
+        `<span class="channel-stat-badge" style="color: var(--neutral-800);"><strong>In</strong> ${inputTokensText}</span>`,
+        `<span class="channel-stat-badge" style="color: var(--neutral-800);"><strong>Out</strong> ${outputTokensText}</span>`,
+        `<span class="channel-stat-badge" style="color: var(--success-600); background: var(--success-50); border-color: var(--success-100);"><strong>缓存读</strong> ${cacheReadText}</span>`,
+        `<span class="channel-stat-badge" style="color: var(--primary-700); background: var(--primary-50); border-color: var(--primary-100);"><strong>缓存建</strong> ${cacheCreationText}</span>`,
+        `<span class="channel-stat-badge" style="color: var(--warning-700); background: var(--warning-50); border-color: var(--warning-100);"><strong>成本</strong> ${costDisplay}</span>`
+      ];
+
+      return parts.join(' ');
+    }
+
+    // 成本格式化（美元）
+    function formatCost(cost) {
+      if (cost === 0) return '$0.00';
+      if (cost < 0.001) {
+        if (cost < 0.000001) {
+          return '$' + cost.toExponential(2);
+        }
+        return '$' + cost.toFixed(6).replace(/\.?0+$/, '');
+      }
+      if (cost >= 1.0) {
+        return '$' + cost.toFixed(2);
+      }
+      return '$' + cost.toFixed(4).replace(/\.?0+$/, '');
+    }
+
     function escapeHtml(s) {
       return (s || '').replace(/[&<>"']/g, c => ({
         "&": "&amp;",
@@ -1315,7 +1556,9 @@
       await window.ChannelTypeManager.renderChannelTypeRadios('channelTypeRadios');
       await window.ChannelTypeManager.renderChannelTypeFilter('channelTypeFilter');
 
-      loadChannels().then(() => highlightFromHash());
+      await loadChannels();
+      await loadChannelStats();
+      highlightFromHash();
       window.addEventListener('hashchange', highlightFromHash);
     });
 
