@@ -204,11 +204,19 @@ func (u *usageAccumulator) applyUsage(usage map[string]any) {
 		return
 	}
 
-	// Claude/OpenAI格式: input_tokens, output_tokens
+	// Claude/OpenAI Responses API格式: input_tokens, output_tokens
 	if val, ok := usage["input_tokens"].(float64); ok {
 		u.InputTokens = int(val)
 	}
 	if val, ok := usage["output_tokens"].(float64); ok {
+		u.OutputTokens = int(val)
+	}
+
+	// OpenAI Chat Completions API格式: prompt_tokens, completion_tokens
+	if val, ok := usage["prompt_tokens"].(float64); ok {
+		u.InputTokens = int(val)
+	}
+	if val, ok := usage["completion_tokens"].(float64); ok {
 		u.OutputTokens = int(val)
 	}
 
@@ -228,8 +236,15 @@ func (u *usageAccumulator) applyUsage(usage map[string]any) {
 		u.CacheCreationInputTokens = int(val)
 	}
 
-	// OpenAI缓存字段
+	// OpenAI Responses API缓存字段: input_tokens_details.cached_tokens
 	if details, ok := usage["input_tokens_details"].(map[string]any); ok {
+		if val, ok := details["cached_tokens"].(float64); ok {
+			u.CacheReadInputTokens = int(val)
+		}
+	}
+
+	// OpenAI Chat Completions API缓存字段: prompt_tokens_details.cached_tokens
+	if details, ok := usage["prompt_tokens_details"].(map[string]any); ok {
 		if val, ok := details["cached_tokens"].(float64); ok {
 			u.CacheReadInputTokens = int(val)
 		}

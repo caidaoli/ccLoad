@@ -166,9 +166,15 @@ var modelPricing = map[string]ModelPricing{
 const (
 	// cacheReadMultiplier 缓存读取价格倍数（相对于基础input价格）
 	// Cache Read = Input Price × 0.1 (90%节省)
-	// 适用于Claude和OpenAI模型
-	// 例如：GPT-5 input=$1.25/1M → cached=$0.125/1M
-	cacheReadMultiplier = 0.1
+	// 适用于Claude和Gemini模型
+	// 例如：Claude Sonnet input=$3.00/1M → cached=$0.30/1M
+	cacheReadMultiplierClaude = 0.1
+
+	// cacheReadMultiplierOpenAI OpenAI缓存读取价格倍数
+	// Cache Read = Input Price × 0.5 (50%节省)
+	// 适用于OpenAI模型
+	// 例如：GPT-4o input=$2.50/1M → cached=$1.25/1M
+	cacheReadMultiplierOpenAI = 0.5
 
 	// cacheWriteMultiplier 缓存写入价格倍数（相对于基础input价格）
 	// Cache Write = Input Price × 1.25 (25%溢价)
@@ -219,9 +225,24 @@ func CalculateCost(model string, inputTokens, outputTokens, cacheReadTokens, cac
 		// outputPricePerM 保持 pricing.OutputPrice
 	}
 
+	// 检测是否为OpenAI模型（处理缓存语义差异）
+	isOpenAI := isOpenAIModel(model)
+
+	// 计算实际计费的输入token数量
+	billableInputTokens := inputTokens
+	if isOpenAI && cacheReadTokens > 0 {
+		// OpenAI语义：prompt_tokens包含cached_tokens，需要减去避免双计
+		// 例如：prompt_tokens=1000, cached_tokens=800
+		//      → 实际非缓存部分 = 1000 - 800 = 200
+		billableInputTokens = inputTokens - cacheReadTokens
+		if billableInputTokens < 0 {
+			billableInputTokens = 0 // 防御性处理
+		}
+	}
+
 	// 1. 基础输入token成本
-	if inputTokens > 0 {
-		cost += float64(inputTokens) * inputPricePerM / 1_000_000
+	if billableInputTokens > 0 {
+		cost += float64(billableInputTokens) * inputPricePerM / 1_000_000
 	}
 
 	// 2. 输出token成本
@@ -229,19 +250,38 @@ func CalculateCost(model string, inputTokens, outputTokens, cacheReadTokens, cac
 		cost += float64(outputTokens) * outputPricePerM / 1_000_000
 	}
 
-	// 3. 缓存读取成本（10%基础价格）
+	// 3. 缓存读取成本
 	if cacheReadTokens > 0 {
-		cacheReadPrice := inputPricePerM * cacheReadMultiplier
+		cacheMultiplier := cacheReadMultiplierClaude // Claude/Gemini: 10%折扣
+		if isOpenAI {
+			cacheMultiplier = cacheReadMultiplierOpenAI // OpenAI: 50%折扣
+		}
+		cacheReadPrice := inputPricePerM * cacheMultiplier
 		cost += float64(cacheReadTokens) * cacheReadPrice / 1_000_000
 	}
 
-	// 4. 缓存创建成本（125%基础价格）
+	// 4. 缓存创建成本（125%基础价格，仅Claude支持）
 	if cacheCreationTokens > 0 {
 		cacheWritePrice := inputPricePerM * cacheWriteMultiplier
 		cost += float64(cacheCreationTokens) * cacheWritePrice / 1_000_000
 	}
 
 	return cost
+}
+
+// isOpenAIModel 判断是否为OpenAI模型
+// OpenAI模型包括：gpt-*, o*, chatgpt-*, davinci-*, babbage-*, computer-use-preview, codex-*
+func isOpenAIModel(model string) bool {
+	lowerModel := strings.ToLower(model)
+	return strings.HasPrefix(lowerModel, "gpt-") ||
+		strings.HasPrefix(lowerModel, "o1") ||
+		strings.HasPrefix(lowerModel, "o3") ||
+		strings.HasPrefix(lowerModel, "o4") ||
+		strings.HasPrefix(lowerModel, "chatgpt-") ||
+		strings.HasPrefix(lowerModel, "davinci-") ||
+		strings.HasPrefix(lowerModel, "babbage-") ||
+		strings.HasPrefix(lowerModel, "codex-") ||
+		lowerModel == "computer-use-preview"
 }
 
 // fuzzyMatchModel 模糊匹配模型名称

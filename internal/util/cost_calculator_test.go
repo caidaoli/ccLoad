@@ -156,7 +156,8 @@ func TestCalculateCost_OpenAIModels(t *testing.T) {
 		expectedCost float64
 	}{
 		// GPT-5 系列（Standard层级 - 官方定价）
-		{"gpt-5.1-codex", 10309, 17, 6016, 0.013808}, // $1.25/1M input, $10/1M output
+		// OpenAI缓存修正：非缓存×全价 + 缓存×50%
+		{"gpt-5.1-codex", 10309, 17, 6016, 0.009296}, // (10309-6016)×1.25/1M + 17×10/1M + 6016×(1.25×0.5)/1M
 		{"gpt-5", 1000, 1000, 0, 0.01125},            // $1.25/1M input, $10/1M output
 		{"gpt-5-mini", 10000, 5000, 0, 0.0125},       // $0.25/1M input, $2/1M output
 		{"gpt-5-nano", 100000, 50000, 0, 0.025},      // $0.05/1M input, $0.4/1M output

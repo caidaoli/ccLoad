@@ -342,3 +342,91 @@ func TestSSEUsageParser_GeminiMultipleChunks(t *testing.T) {
 		t.Errorf("OutputTokens = %d, 期望 120 (最终值)", output)
 	}
 }
+
+func TestSSEUsageParser_OpenAIChatCompletionsFormat(t *testing.T) {
+	// 测试OpenAI Chat Completions API格式（使用prompt_tokens/completion_tokens）
+	// 注意：Chat Completions通常返回普通JSON而非SSE，但这里测试解析器的兼容性
+	sseData := `data: {"id":"chatcmpl-123","object":"chat.completion","created":1677652288,"model":"gpt-4o","usage":{"prompt_tokens":150,"completion_tokens":80,"total_tokens":230}}
+
+`
+
+	parser := newSSEUsageParser()
+	if err := parser.Feed([]byte(sseData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+
+	input, output, _, _ := parser.GetUsage()
+
+	if input != 150 {
+		t.Errorf("InputTokens = %d, 期望 150 (OpenAI prompt_tokens)", input)
+	}
+	if output != 80 {
+		t.Errorf("OutputTokens = %d, 期望 80 (OpenAI completion_tokens)", output)
+	}
+}
+
+func TestSSEUsageParser_OpenAIChatCompletionsWithCache(t *testing.T) {
+	// 测试OpenAI Chat Completions API带缓存的格式（prompt_tokens_details.cached_tokens）
+	sseData := `data: {"id":"chatcmpl-456","object":"chat.completion","created":1677652288,"model":"gpt-4o","usage":{"prompt_tokens":300,"completion_tokens":120,"total_tokens":420,"prompt_tokens_details":{"cached_tokens":200,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":0,"audio_tokens":0}}}
+
+`
+
+	parser := newSSEUsageParser()
+	if err := parser.Feed([]byte(sseData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+
+	input, output, cacheRead, _ := parser.GetUsage()
+
+	if input != 300 {
+		t.Errorf("InputTokens = %d, 期望 300 (OpenAI prompt_tokens)", input)
+	}
+	if output != 120 {
+		t.Errorf("OutputTokens = %d, 期望 120 (OpenAI completion_tokens)", output)
+	}
+	if cacheRead != 200 {
+		t.Errorf("CacheReadInputTokens = %d, 期望 200 (OpenAI cached_tokens)", cacheRead)
+	}
+}
+
+func TestJSONUsageParser_OpenAIChatCompletionsFormat(t *testing.T) {
+	// 测试普通JSON格式的OpenAI Chat Completions响应
+	jsonData := `{"id":"chatcmpl-789","object":"chat.completion","created":1677652288,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"测试响应"},"finish_reason":"stop"}],"usage":{"prompt_tokens":25,"completion_tokens":10,"total_tokens":35}}`
+
+	parser := newJSONUsageParser()
+	if err := parser.Feed([]byte(jsonData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+
+	input, output, _, _ := parser.GetUsage()
+
+	if input != 25 {
+		t.Errorf("InputTokens = %d, 期望 25 (OpenAI prompt_tokens)", input)
+	}
+	if output != 10 {
+		t.Errorf("OutputTokens = %d, 期望 10 (OpenAI completion_tokens)", output)
+	}
+}
+
+func TestJSONUsageParser_OpenAIChatCompletionsWithCacheFormat(t *testing.T) {
+	// 测试带缓存的OpenAI Chat Completions JSON响应
+	jsonData := `{"id":"chatcmpl-abc","object":"chat.completion","created":1677652288,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"测试响应"},"finish_reason":"stop"}],"usage":{"prompt_tokens":500,"completion_tokens":200,"total_tokens":700,"prompt_tokens_details":{"cached_tokens":350,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":0,"audio_tokens":0}}}`
+
+	parser := newJSONUsageParser()
+	if err := parser.Feed([]byte(jsonData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+
+	input, output, cacheRead, _ := parser.GetUsage()
+
+	if input != 500 {
+		t.Errorf("InputTokens = %d, 期望 500 (OpenAI prompt_tokens)", input)
+	}
+	if output != 200 {
+		t.Errorf("OutputTokens = %d, 期望 200 (OpenAI completion_tokens)", output)
+	}
+	if cacheRead != 350 {
+		t.Errorf("CacheReadInputTokens = %d, 期望 350 (OpenAI cached_tokens)", cacheRead)
+	}
+}
+
