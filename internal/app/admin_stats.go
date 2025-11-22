@@ -139,22 +139,24 @@ func (s *Server) HandlePublicSummary(c *gin.Context) {
 		ts.SuccessRequests += stat.Success
 		ts.ErrorRequests += stat.Error
 
-		// Claude和Codex类型额外统计Token和成本
+		// 所有渠道类型都统计Token和成本
+		if stat.TotalInputTokens != nil {
+			ts.TotalInputTokens += *stat.TotalInputTokens
+		}
+		if stat.TotalOutputTokens != nil {
+			ts.TotalOutputTokens += *stat.TotalOutputTokens
+		}
+		if stat.TotalCost != nil {
+			ts.TotalCost += *stat.TotalCost
+		}
+
+		// Claude和Codex类型额外统计缓存（其他类型不支持prompt caching）
 		if channelType == "anthropic" || channelType == "codex" {
-			if stat.TotalInputTokens != nil {
-				ts.TotalInputTokens += *stat.TotalInputTokens
-			}
-			if stat.TotalOutputTokens != nil {
-				ts.TotalOutputTokens += *stat.TotalOutputTokens
-			}
 			if stat.TotalCacheReadInputTokens != nil {
 				ts.TotalCacheReadTokens += *stat.TotalCacheReadInputTokens
 			}
 			if stat.TotalCacheCreationInputTokens != nil {
 				ts.TotalCacheCreationTokens += *stat.TotalCacheCreationInputTokens
-			}
-			if stat.TotalCost != nil {
-				ts.TotalCost += *stat.TotalCost
 			}
 		}
 	}
@@ -176,11 +178,11 @@ type TypeSummary struct {
 	TotalRequests           int     `json:"total_requests"`
 	SuccessRequests         int     `json:"success_requests"`
 	ErrorRequests           int     `json:"error_requests"`
-	TotalInputTokens        int64   `json:"total_input_tokens,omitempty"`        // Claude/Codex专用
-	TotalOutputTokens       int64   `json:"total_output_tokens,omitempty"`       // Claude/Codex专用
-	TotalCacheReadTokens    int64   `json:"total_cache_read_tokens,omitempty"`   // Claude/Codex专用
-	TotalCacheCreationTokens int64  `json:"total_cache_creation_tokens,omitempty"` // Claude/Codex专用
-	TotalCost               float64 `json:"total_cost,omitempty"`                // Claude/Codex专用
+	TotalInputTokens        int64   `json:"total_input_tokens,omitempty"`        // 所有类型
+	TotalOutputTokens       int64   `json:"total_output_tokens,omitempty"`       // 所有类型
+	TotalCacheReadTokens    int64   `json:"total_cache_read_tokens,omitempty"`   // Claude/Codex专用（prompt caching）
+	TotalCacheCreationTokens int64  `json:"total_cache_creation_tokens,omitempty"` // Claude/Codex专用（prompt caching）
+	TotalCost               float64 `json:"total_cost,omitempty"`                // 所有类型
 }
 
 // fetchChannelTypesMap 查询所有渠道的类型映射

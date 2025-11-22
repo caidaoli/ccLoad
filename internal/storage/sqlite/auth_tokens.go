@@ -31,9 +31,10 @@ func (s *SQLiteStore) CreateAuthToken(ctx context.Context, token *model.AuthToke
 	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO auth_tokens (
 			token, description, created_at, expires_at, last_used_at, is_active,
-			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count
+			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
+			prompt_tokens_total, completion_tokens_total, total_cost_usd
 		)
-		VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0)
+		VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0)
 	`, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, token.IsActive)
 
 	if err != nil {
@@ -62,7 +63,8 @@ func (s *SQLiteStore) GetAuthToken(ctx context.Context, id int64) (*model.AuthTo
 	err := s.db.QueryRowContext(ctx, `
 		SELECT
 			id, token, description, created_at, expires_at, last_used_at, is_active,
-			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count
+			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
+			prompt_tokens_total, completion_tokens_total, total_cost_usd
 		FROM auth_tokens
 		WHERE id = ?
 	`, id).Scan(
@@ -79,6 +81,9 @@ func (s *SQLiteStore) GetAuthToken(ctx context.Context, id int64) (*model.AuthTo
 		&token.NonStreamAvgRT,
 		&token.StreamCount,
 		&token.NonStreamCount,
+		&token.PromptTokensTotal,
+		&token.CompletionTokensTotal,
+		&token.TotalCostUSD,
 	)
 
 	if err == sql.ErrNoRows {
@@ -110,7 +115,8 @@ func (s *SQLiteStore) GetAuthTokenByValue(ctx context.Context, tokenHash string)
 	err := s.db.QueryRowContext(ctx, `
 		SELECT
 			id, token, description, created_at, expires_at, last_used_at, is_active,
-			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count
+			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
+			prompt_tokens_total, completion_tokens_total, total_cost_usd
 		FROM auth_tokens
 		WHERE token = ?
 	`, tokenHash).Scan(
@@ -127,6 +133,9 @@ func (s *SQLiteStore) GetAuthTokenByValue(ctx context.Context, tokenHash string)
 		&token.NonStreamAvgRT,
 		&token.StreamCount,
 		&token.NonStreamCount,
+		&token.PromptTokensTotal,
+		&token.CompletionTokensTotal,
+		&token.TotalCostUSD,
 	)
 
 	if err == sql.ErrNoRows {
@@ -153,7 +162,8 @@ func (s *SQLiteStore) ListAuthTokens(ctx context.Context) ([]*model.AuthToken, e
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			id, token, description, created_at, expires_at, last_used_at, is_active,
-			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count
+			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
+			prompt_tokens_total, completion_tokens_total, total_cost_usd
 		FROM auth_tokens
 		ORDER BY created_at DESC
 	`)
@@ -182,6 +192,9 @@ func (s *SQLiteStore) ListAuthTokens(ctx context.Context) ([]*model.AuthToken, e
 			&token.NonStreamAvgRT,
 			&token.StreamCount,
 			&token.NonStreamCount,
+			&token.PromptTokensTotal,
+			&token.CompletionTokensTotal,
+			&token.TotalCostUSD,
 		); err != nil {
 			return nil, fmt.Errorf("scan auth token: %w", err)
 		}
@@ -212,7 +225,8 @@ func (s *SQLiteStore) ListActiveAuthTokens(ctx context.Context) ([]*model.AuthTo
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			id, token, description, created_at, expires_at, last_used_at, is_active,
-			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count
+			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
+			prompt_tokens_total, completion_tokens_total, total_cost_usd
 		FROM auth_tokens
 		WHERE is_active = 1
 		  AND (expires_at IS NULL OR expires_at > ?)
@@ -243,6 +257,9 @@ func (s *SQLiteStore) ListActiveAuthTokens(ctx context.Context) ([]*model.AuthTo
 			&token.NonStreamAvgRT,
 			&token.StreamCount,
 			&token.NonStreamCount,
+			&token.PromptTokensTotal,
+			&token.CompletionTokensTotal,
+			&token.TotalCostUSD,
 		); err != nil {
 			return nil, fmt.Errorf("scan active auth token: %w", err)
 		}
@@ -354,6 +371,9 @@ func (s *SQLiteStore) UpdateTokenLastUsed(ctx context.Context, tokenHash string,
 //   - duration: 总响应时间(秒)
 //   - isStreaming: 是否为流式请求
 //   - firstByteTime: 流式请求的首字节时间(秒)，非流式时为0
+//   - promptTokens: 输入token数量
+//   - completionTokens: 输出token数量
+//   - costUSD: 本次请求费用(美元)
 func (s *SQLiteStore) UpdateTokenStats(
 	ctx context.Context,
 	tokenHash string,
@@ -361,6 +381,9 @@ func (s *SQLiteStore) UpdateTokenStats(
 	duration float64,
 	isStreaming bool,
 	firstByteTime float64,
+	promptTokens int64,
+	completionTokens int64,
+	costUSD float64,
 ) error {
 	// 使用事务保证原子性（读-计算-写）
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -371,19 +394,23 @@ func (s *SQLiteStore) UpdateTokenStats(
 
 	// 1. 查询当前统计数据
 	var stats struct {
-		SuccessCount   int64
-		FailureCount   int64
-		StreamAvgTTFB  float64
-		NonStreamAvgRT float64
-		StreamCount    int64
-		NonStreamCount int64
+		SuccessCount          int64
+		FailureCount          int64
+		StreamAvgTTFB         float64
+		NonStreamAvgRT        float64
+		StreamCount           int64
+		NonStreamCount        int64
+		PromptTokensTotal     int64
+		CompletionTokensTotal int64
+		TotalCostUSD          float64
 	}
 
 	err = tx.QueryRowContext(ctx, `
 		SELECT
 			success_count, failure_count,
 			stream_avg_ttfb, non_stream_avg_rt,
-			stream_count, non_stream_count
+			stream_count, non_stream_count,
+			prompt_tokens_total, completion_tokens_total, total_cost_usd
 		FROM auth_tokens
 		WHERE token = ?
 	`, tokenHash).Scan(
@@ -393,6 +420,9 @@ func (s *SQLiteStore) UpdateTokenStats(
 		&stats.NonStreamAvgRT,
 		&stats.StreamCount,
 		&stats.NonStreamCount,
+		&stats.PromptTokensTotal,
+		&stats.CompletionTokensTotal,
+		&stats.TotalCostUSD,
 	)
 
 	if err == sql.ErrNoRows {
@@ -405,6 +435,10 @@ func (s *SQLiteStore) UpdateTokenStats(
 	// 2. 增量更新计数器
 	if isSuccess {
 		stats.SuccessCount++
+		// 只有成功请求才累加token和费用
+		stats.PromptTokensTotal += promptTokens
+		stats.CompletionTokensTotal += completionTokens
+		stats.TotalCostUSD += costUSD
 	} else {
 		stats.FailureCount++
 	}
@@ -431,6 +465,9 @@ func (s *SQLiteStore) UpdateTokenStats(
 			non_stream_avg_rt = ?,
 			stream_count = ?,
 			non_stream_count = ?,
+			prompt_tokens_total = ?,
+			completion_tokens_total = ?,
+			total_cost_usd = ?,
 			last_used_at = ?
 		WHERE token = ?
 	`,
@@ -440,6 +477,9 @@ func (s *SQLiteStore) UpdateTokenStats(
 		stats.NonStreamAvgRT,
 		stats.StreamCount,
 		stats.NonStreamCount,
+		stats.PromptTokensTotal,
+		stats.CompletionTokensTotal,
+		stats.TotalCostUSD,
 		time.Now().UnixMilli(),
 		tokenHash,
 	)

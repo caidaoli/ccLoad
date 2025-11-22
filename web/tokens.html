@@ -113,6 +113,37 @@
       color: var(--error-700);
       font-weight: 600;
     }
+    .summary-card {
+      background: linear-gradient(135deg, var(--primary-50) 0%, var(--secondary-50) 100%);
+      border-radius: 12px;
+      padding: 20px 24px;
+      margin-bottom: 24px;
+      border: 1px solid var(--primary-100);
+    }
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 20px;
+    }
+    .summary-item {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .summary-label {
+      font-size: 12px;
+      color: var(--neutral-600);
+      font-weight: 500;
+    }
+    .summary-value {
+      font-size: 24px;
+      font-weight: 700;
+      color: var(--neutral-900);
+    }
+    .summary-sub {
+      font-size: 11px;
+      color: var(--neutral-500);
+    }
     .modal {
       display: none;
       position: fixed;
@@ -179,6 +210,32 @@
             </div>
           </div>
         </header>
+
+        <!-- 统计汇总卡片 -->
+        <div id="summary-card" class="summary-card" style="display: none;">
+          <div class="summary-grid">
+            <div class="summary-item">
+              <div class="summary-label">📊 总调用次数</div>
+              <div class="summary-value" id="total-requests">0</div>
+              <div class="summary-sub">成功 <span id="total-success">0</span> · 失败 <span id="total-failure">0</span></div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">💬 Token总用量</div>
+              <div class="summary-value" id="total-tokens">0</div>
+              <div class="summary-sub">输入 <span id="total-input-tokens">0</span> · 输出 <span id="total-output-tokens">0</span></div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">💰 总费用</div>
+              <div class="summary-value" style="color: var(--success-700);" id="total-cost-usd">$0.00</div>
+              <div class="summary-sub">≈ <span id="total-cost-cny">0.00</span> CNY</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">✅ 平均成功率</div>
+              <div class="summary-value" id="avg-success-rate">0%</div>
+              <div class="summary-sub">基于所有令牌统计</div>
+            </div>
+          </div>
+        </div>
 
         <section>
           <!-- 令牌表格 -->
@@ -350,14 +407,20 @@
     function renderTokens() {
       const container = document.getElementById('tokens-container');
       const emptyState = document.getElementById('empty-state');
+      const summaryCard = document.getElementById('summary-card');
 
       if (allTokens.length === 0) {
         container.innerHTML = '';
         emptyState.style.display = 'block';
+        summaryCard.style.display = 'none';
         return;
       }
 
       emptyState.style.display = 'none';
+      summaryCard.style.display = 'block';
+
+      // 计算汇总统计
+      updateSummaryStats();
 
       // 根据选中状态决定操作列显示内容
       const hasSelection = selectedTokenIds.size > 0;
@@ -380,6 +443,8 @@
               <th>状态</th>
               <th style="text-align: center;">调用次数</th>
               <th style="text-align: center;">成功率</th>
+              <th style="text-align: center;">Token用量</th>
+              <th style="text-align: center;">总费用</th>
               <th style="text-align: center;">流式首字平均响应</th>
               <th style="text-align: center;">非流式平均响应</th>
               <th>创建时间</th>
@@ -396,6 +461,49 @@
 
       container.innerHTML = tableHTML;
       updateSelectAllCheckbox();
+    }
+
+    function updateSummaryStats() {
+      // 计算汇总数据
+      let totalSuccess = 0;
+      let totalFailure = 0;
+      let totalPromptTokens = 0;
+      let totalCompletionTokens = 0;
+      let totalCostUSD = 0;
+
+      allTokens.forEach(token => {
+        totalSuccess += token.success_count || 0;
+        totalFailure += token.failure_count || 0;
+        totalPromptTokens += token.prompt_tokens_total || 0;
+        totalCompletionTokens += token.completion_tokens_total || 0;
+        totalCostUSD += token.total_cost_usd || 0;
+      });
+
+      const totalRequests = totalSuccess + totalFailure;
+      const totalTokens = totalPromptTokens + totalCompletionTokens;
+      const avgSuccessRate = totalRequests > 0 ? ((totalSuccess / totalRequests) * 100).toFixed(1) : 0;
+      const totalCostCNY = (totalCostUSD * 7.3).toFixed(2);
+
+      // 更新DOM
+      document.getElementById('total-requests').textContent = totalRequests.toLocaleString();
+      document.getElementById('total-success').textContent = totalSuccess.toLocaleString();
+      document.getElementById('total-failure').textContent = totalFailure.toLocaleString();
+      document.getElementById('total-tokens').textContent = totalTokens.toLocaleString();
+      document.getElementById('total-input-tokens').textContent = totalPromptTokens.toLocaleString();
+      document.getElementById('total-output-tokens').textContent = totalCompletionTokens.toLocaleString();
+      document.getElementById('total-cost-usd').textContent = `$${totalCostUSD.toFixed(4)}`;
+      document.getElementById('total-cost-cny').textContent = totalCostCNY;
+      document.getElementById('avg-success-rate').textContent = `${avgSuccessRate}%`;
+
+      // 成功率样式
+      const successRateElem = document.getElementById('avg-success-rate');
+      if (avgSuccessRate >= 95) {
+        successRateElem.style.color = 'var(--success-700)';
+      } else if (avgSuccessRate >= 80) {
+        successRateElem.style.color = 'var(--warning-700)';
+      } else {
+        successRateElem.style.color = 'var(--error-700)';
+      }
     }
 
     function createTokenRow(token) {
@@ -490,6 +598,35 @@
             ${totalCount > 0
               ? `<span class="${successRateClass}">${successRate}%</span>`
               : '<span style="color: var(--neutral-500); font-size: 13px;">-</span>'}
+          </td>
+          <td style="text-align: center;">
+            ${(token.prompt_tokens_total > 0 || token.completion_tokens_total > 0) ? `
+              <div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">
+                <div style="display: inline-flex; gap: 6px; font-size: 12px;">
+                  <span class="stats-badge" style="background: var(--primary-50); color: var(--primary-700);" title="输入Tokens">
+                    📥 ${(token.prompt_tokens_total || 0).toLocaleString()}
+                  </span>
+                  <span class="stats-badge" style="background: var(--secondary-50); color: var(--secondary-700);" title="输出Tokens">
+                    📤 ${(token.completion_tokens_total || 0).toLocaleString()}
+                  </span>
+                </div>
+                <div style="color: var(--neutral-600); font-size: 11px;">
+                  合计: ${((token.prompt_tokens_total || 0) + (token.completion_tokens_total || 0)).toLocaleString()}
+                </div>
+              </div>
+            ` : '<span style="color: var(--neutral-500); font-size: 13px;">-</span>'}
+          </td>
+          <td style="text-align: center;">
+            ${(token.total_cost_usd > 0) ? `
+              <div style="display: flex; flex-direction: column; align-items: center; gap: 2px;">
+                <span class="metric-value" style="color: var(--success-700); font-size: 15px; font-weight: 700;">
+                  $${token.total_cost_usd.toFixed(4)}
+                </span>
+                <span style="color: var(--neutral-600); font-size: 11px;">
+                  ${(token.total_cost_usd * 7.3).toFixed(2)} CNY
+                </span>
+              </div>
+            ` : '<span style="color: var(--neutral-500); font-size: 13px;">$0.00</span>'}
           </td>
           <td style="text-align: center;">
             ${streamCount > 0

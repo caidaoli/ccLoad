@@ -154,6 +154,9 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		{"non_stream_avg_rt", "REAL DEFAULT 0.0"},
 		{"stream_count", "INTEGER DEFAULT 0"},
 		{"non_stream_count", "INTEGER DEFAULT 0"},
+		{"prompt_tokens_total", "INTEGER DEFAULT 0"},
+		{"completion_tokens_total", "INTEGER DEFAULT 0"},
+		{"total_cost_usd", "REAL DEFAULT 0.0"},
 	}
 
 	for _, col := range statsColumns {

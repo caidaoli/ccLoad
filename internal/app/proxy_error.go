@@ -148,7 +148,19 @@ func (s *Server) handleProxySuccess(
 		go func() {
 			updateCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			_ = s.store.UpdateTokenStats(updateCtx, reqCtx.tokenHash, true, duration, isStreaming, res.FirstByteTime)
+
+			// 计算token费用
+			promptTokens := int64(res.InputTokens)
+			completionTokens := int64(res.OutputTokens)
+			costUSD := util.CalculateCost(
+				actualModel,
+				res.InputTokens,
+				res.OutputTokens,
+				res.CacheReadInputTokens,
+				res.CacheCreationInputTokens,
+			)
+
+			_ = s.store.UpdateTokenStats(updateCtx, reqCtx.tokenHash, true, duration, isStreaming, res.FirstByteTime, promptTokens, completionTokens, costUSD)
 		}()
 	}
 
@@ -192,7 +204,9 @@ func (s *Server) handleProxyErrorResponse(
 		go func() {
 			updateCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			_ = s.store.UpdateTokenStats(updateCtx, reqCtx.tokenHash, false, duration, isStreaming, res.FirstByteTime)
+
+			// 失败请求不计费，token数量传0
+			_ = s.store.UpdateTokenStats(updateCtx, reqCtx.tokenHash, false, duration, isStreaming, res.FirstByteTime, 0, 0, 0.0)
 		}()
 	}
 

@@ -295,3 +295,50 @@ data: {"type":"response.completed","response":{"usage":{"input_tokens":200,"outp
 		t.Errorf("CacheReadInputTokens = %d, 期望 50 (最后一个事件)", cacheRead)
 	}
 }
+
+func TestSSEUsageParser_GeminiFormat(t *testing.T) {
+	// 测试Gemini SSE格式（无event类型，只有data行，使用usageMetadata字段）
+	sseData := `data: {"candidates": [{"content": {"parts": [{"text": "测试文本"}],"role": "model"}}],"usageMetadata": {"promptTokenCount": 772,"candidatesTokenCount": 430,"totalTokenCount": 2332},"modelVersion": "gemini-2.5-pro"}
+
+`
+
+	parser := newSSEUsageParser()
+	if err := parser.Feed([]byte(sseData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+
+	input, output, _, _ := parser.GetUsage()
+
+	if input != 772 {
+		t.Errorf("InputTokens = %d, 期望 772 (Gemini promptTokenCount)", input)
+	}
+	if output != 430 {
+		t.Errorf("OutputTokens = %d, 期望 430 (Gemini candidatesTokenCount)", output)
+	}
+}
+
+func TestSSEUsageParser_GeminiMultipleChunks(t *testing.T) {
+	// 测试Gemini多个SSE消息（usageMetadata在每个chunk中递增）
+	chunks := []string{
+		`data: {"candidates": [{"content": {"parts": [{"text": "第一部分"}]}}],"usageMetadata": {"promptTokenCount": 100,"candidatesTokenCount": 10}}` + "\n\n",
+		`data: {"candidates": [{"content": {"parts": [{"text": "第二部分"}]}}],"usageMetadata": {"promptTokenCount": 100,"candidatesTokenCount": 50}}` + "\n\n",
+		`data: {"candidates": [{"content": {"parts": [{"text": "完成"}]}}],"usageMetadata": {"promptTokenCount": 100,"candidatesTokenCount": 120},"modelVersion": "gemini-2.5-pro"}` + "\n\n",
+	}
+
+	parser := newSSEUsageParser()
+	for _, chunk := range chunks {
+		if err := parser.Feed([]byte(chunk)); err != nil {
+			t.Fatalf("Feed失败: %v", err)
+		}
+	}
+
+	input, output, _, _ := parser.GetUsage()
+
+	// 应该使用最后一个消息的值
+	if input != 100 {
+		t.Errorf("InputTokens = %d, 期望 100", input)
+	}
+	if output != 120 {
+		t.Errorf("OutputTokens = %d, 期望 120 (最终值)", output)
+	}
+}

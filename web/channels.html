@@ -941,8 +941,9 @@
         const cacheReadText = formatMetricNumber(stats ? stats.totalCacheReadInputTokens : null);
         const cacheCreationText = formatMetricNumber(stats ? stats.totalCacheCreationInputTokens : null);
         const costDisplay = formatCostValue(stats ? stats.totalCost : null);
-        const showStatsInline = channelTypeRaw === 'anthropic' || channelTypeRaw === 'codex';
-        const statsInline = showStatsInline
+        // 所有渠道类型都显示统计信息（包括 Gemini 和 OpenAI）
+        const showStatsInline = true;
+        const statsInline = showStatsInline && stats
           ? renderChannelStatsInline(stats, {
               successRateText,
               avgFirstByteText,
@@ -951,7 +952,7 @@
               cacheReadText,
               cacheCreationText,
               costDisplay
-            })
+            }, channelTypeRaw)
           : '';
 
         return `
@@ -1348,7 +1349,7 @@
       return formatCost(num);
     }
 
-    function renderChannelStatsInline(stats, cache) {
+    function renderChannelStatsInline(stats, cache, channelType) {
       if (!stats) {
         return `<span class="channel-stat-badge" style="margin-left: 6px; color: var(--neutral-500);">统计: --</span>`;
       }
@@ -1370,16 +1371,29 @@
       })();
 
       const callText = `${formatMetricNumber(stats.success)}/${formatMetricNumber(stats.error)}`;
+
+      // 基础统计（所有渠道）
       const parts = [
         `<span class="channel-stat-badge" style="color: var(--neutral-800);"><strong>调用</strong> ${callText}</span>`,
         `<span class="channel-stat-badge" style="color: ${successRateColor};"><strong>率</strong> ${successRateText}</span>`,
         `<span class="channel-stat-badge" style="color: var(--primary-700);"><strong>首字</strong> ${avgFirstByteText}</span>`,
         `<span class="channel-stat-badge" style="color: var(--neutral-800);"><strong>In</strong> ${inputTokensText}</span>`,
-        `<span class="channel-stat-badge" style="color: var(--neutral-800);"><strong>Out</strong> ${outputTokensText}</span>`,
-        `<span class="channel-stat-badge" style="color: var(--success-600); background: var(--success-50); border-color: var(--success-100);"><strong>缓存读</strong> ${cacheReadText}</span>`,
-        `<span class="channel-stat-badge" style="color: var(--primary-700); background: var(--primary-50); border-color: var(--primary-100);"><strong>缓存建</strong> ${cacheCreationText}</span>`,
-        `<span class="channel-stat-badge" style="color: var(--warning-700); background: var(--warning-50); border-color: var(--warning-100);"><strong>成本</strong> ${costDisplay}</span>`
+        `<span class="channel-stat-badge" style="color: var(--neutral-800);"><strong>Out</strong> ${outputTokensText}</span>`
       ];
+
+      // 缓存统计（仅 Claude/Codex 支持）
+      const supportsCaching = channelType === 'anthropic' || channelType === 'codex';
+      if (supportsCaching) {
+        parts.push(
+          `<span class="channel-stat-badge" style="color: var(--success-600); background: var(--success-50); border-color: var(--success-100);"><strong>缓存读</strong> ${cacheReadText}</span>`,
+          `<span class="channel-stat-badge" style="color: var(--primary-700); background: var(--primary-50); border-color: var(--primary-100);"><strong>缓存建</strong> ${cacheCreationText}</span>`
+        );
+      }
+
+      // 成本统计（所有渠道）
+      parts.push(
+        `<span class="channel-stat-badge" style="color: var(--warning-700); background: var(--warning-50); border-color: var(--warning-100);"><strong>成本</strong> ${costDisplay}</span>`
+      );
 
       return parts.join(' ');
     }

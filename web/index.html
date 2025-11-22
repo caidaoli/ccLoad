@@ -161,7 +161,12 @@
                   </div>
                   <span>OpenAI</span>
                 </div>
+                <div class="channel-cost">
+                  <span class="cost-label">成本</span>
+                  <span class="cost-value" id="type-openai-cost">$0.00</span>
+                </div>
               </div>
+              <!-- 主要指标 -->
               <div class="channel-metrics">
                 <div class="metric-item">
                   <div class="metric-value metric-total" id="type-openai-requests">0</div>
@@ -180,6 +185,17 @@
                   <div class="metric-label">成功率</div>
                 </div>
               </div>
+              <!-- Token统计 -->
+              <div class="token-stats">
+                <div class="token-item">
+                  <span class="token-label">输入</span>
+                  <span class="token-value" id="type-openai-input">0</span>
+                </div>
+                <div class="token-item">
+                  <span class="token-label">输出</span>
+                  <span class="token-value" id="type-openai-output">0</span>
+                </div>
+              </div>
             </div>
 
             <!-- Gemini -->
@@ -193,7 +209,12 @@
                   </div>
                   <span>Google Gemini</span>
                 </div>
+                <div class="channel-cost">
+                  <span class="cost-label">成本</span>
+                  <span class="cost-value" id="type-gemini-cost">$0.00</span>
+                </div>
               </div>
+              <!-- 主要指标 -->
               <div class="channel-metrics">
                 <div class="metric-item">
                   <div class="metric-value metric-total" id="type-gemini-requests">0</div>
@@ -210,6 +231,17 @@
                 <div class="metric-item">
                   <div class="metric-value metric-rate" id="type-gemini-rate">0.0%</div>
                   <div class="metric-label">成功率</div>
+                </div>
+              </div>
+              <!-- Token统计 -->
+              <div class="token-stats">
+                <div class="token-item">
+                  <span class="token-label">输入</span>
+                  <span class="token-value" id="type-gemini-input">0</span>
+                </div>
+                <div class="token-item">
+                  <span class="token-label">输出</span>
+                  <span class="token-value" id="type-gemini-output">0</span>
                 </div>
               </div>
             </div>
@@ -395,19 +427,21 @@
       document.getElementById(`type-${type}-error`).textContent = formatNumber(errorRequests);
       document.getElementById(`type-${type}-rate`).textContent = successRate + '%';
 
-      // Claude和Codex类型的额外统计（Token和成本）
+      // 所有渠道类型的Token和成本统计
+      const inputTokens = data ? (data.total_input_tokens || 0) : 0;
+      const outputTokens = data ? (data.total_output_tokens || 0) : 0;
+      const totalCost = data ? (data.total_cost || 0) : 0;
+
+      document.getElementById(`type-${type}-input`).textContent = formatNumber(inputTokens);
+      document.getElementById(`type-${type}-output`).textContent = formatNumber(outputTokens);
+      document.getElementById(`type-${type}-cost`).textContent = formatCost(totalCost);
+
+      // Claude和Codex类型的缓存统计
       if (type === 'anthropic' || type === 'codex') {
-        const inputTokens = data ? (data.total_input_tokens || 0) : 0;
-        const outputTokens = data ? (data.total_output_tokens || 0) : 0;
         const cacheReadTokens = data ? (data.total_cache_read_tokens || 0) : 0;
         const cacheCreateTokens = data ? (data.total_cache_creation_tokens || 0) : 0;
-        const totalCost = data ? (data.total_cost || 0) : 0;
-
-        document.getElementById(`type-${type}-input`).textContent = formatNumber(inputTokens);
-        document.getElementById(`type-${type}-output`).textContent = formatNumber(outputTokens);
         document.getElementById(`type-${type}-cache-read`).textContent = formatNumber(cacheReadTokens);
         document.getElementById(`type-${type}-cache-create`).textContent = formatNumber(cacheCreateTokens);
-        document.getElementById(`type-${type}-cost`).textContent = formatCost(totalCost);
       }
     }
 

@@ -11,8 +11,13 @@ import (
 
 // ModelPricing AI模型定价（单位：美元/百万tokens）
 type ModelPricing struct {
-	InputPrice  float64 // 基础输入token价格（$/1M tokens）
-	OutputPrice float64 // 输出token价格（$/1M tokens）
+	InputPrice  float64 // 基础输入token价格（$/1M tokens, ≤200k context for Gemini）
+	OutputPrice float64 // 输出token价格（$/1M tokens, ≤200k context for Gemini）
+
+	// 长上下文定价（Gemini >200k tokens）
+	// 如果为0，表示无分段定价，使用InputPrice/OutputPrice
+	InputPriceHigh  float64 // 高上下文输入价格（$/1M tokens, >200k context）
+	OutputPriceHigh float64 // 高上下文输出价格（$/1M tokens, >200k context）
 }
 
 // modelPricing 统一定价表（Claude + OpenAI）
@@ -120,12 +125,42 @@ var modelPricing = map[string]ModelPricing{
 	"o4-mini-deep-research": {InputPrice: 2.00, OutputPrice: 8.00},   // 缓存: $0.50/1M
 
 	// 其他专用模型
-	"computer-use-preview":        {InputPrice: 3.00, OutputPrice: 12.00},
-	"codex-mini-latest":           {InputPrice: 1.50, OutputPrice: 6.00},
-	"gpt-4o-mini-search-preview":  {InputPrice: 0.15, OutputPrice: 0.60},
-	"gpt-4o-search-preview":       {InputPrice: 2.50, OutputPrice: 10.00},
-	"davinci-002":                 {InputPrice: 2.00, OutputPrice: 2.00},
-	"babbage-002":                 {InputPrice: 0.40, OutputPrice: 0.40},
+	"computer-use-preview":       {InputPrice: 3.00, OutputPrice: 12.00},
+	"codex-mini-latest":          {InputPrice: 1.50, OutputPrice: 6.00},
+	"gpt-4o-mini-search-preview": {InputPrice: 0.15, OutputPrice: 0.60},
+	"gpt-4o-search-preview":      {InputPrice: 2.50, OutputPrice: 10.00},
+	"davinci-002":                {InputPrice: 2.00, OutputPrice: 2.00},
+	"babbage-002":                {InputPrice: 0.40, OutputPrice: 0.40},
+
+	// ========== Gemini 模型（2025年官方定价）==========
+	// 数据来源: https://ai.google.dev/gemini-api/docs/pricing
+	// 注意：部分模型有分段定价（≤200k vs >200k tokens）
+
+	// Gemini 3.0 系列（分段定价）
+	"gemini-3-pro": {
+		InputPrice:      2.00,
+		OutputPrice:     12.00,
+		InputPriceHigh:  4.00,  // >200k context
+		OutputPriceHigh: 18.00, // >200k context
+	},
+
+	// Gemini 2.5 系列
+	"gemini-2.5-pro": {
+		InputPrice:      1.25,
+		OutputPrice:     10.00,
+		InputPriceHigh:  2.50,  // >200k context
+		OutputPriceHigh: 15.00, // >200k context
+	},
+	"gemini-2.5-flash":      {InputPrice: 0.30, OutputPrice: 2.50},  // 无分段
+	"gemini-2.5-flash-lite": {InputPrice: 0.10, OutputPrice: 0.40},  // 无分段
+
+	// Gemini 2.0 系列（无分段）
+	"gemini-2.0-flash":      {InputPrice: 0.10, OutputPrice: 0.40},
+	"gemini-2.0-flash-lite": {InputPrice: 0.075, OutputPrice: 0.30},
+
+	// Gemini 1.5 系列（向后兼容，无分段）
+	"gemini-1.5-pro":   {InputPrice: 1.25, OutputPrice: 5.00},
+	"gemini-1.5-flash": {InputPrice: 0.20, OutputPrice: 0.60},
 }
 
 const (
@@ -139,6 +174,11 @@ const (
 	// Cache Write = Input Price × 1.25 (25%溢价)
 	// 仅适用于Claude模型（OpenAI不支持cache_creation）
 	cacheWriteMultiplier = 1.25
+
+	// geminiLongContextThreshold Gemini长上下文阈值（tokens）
+	// 超过此阈值的请求将使用InputPriceHigh/OutputPriceHigh定价
+	// 参考：https://ai.google.dev/gemini-api/docs/pricing
+	geminiLongContextThreshold = 200_000
 )
 
 // CalculateCost 计算单次请求的成本（美元）
@@ -164,25 +204,40 @@ func CalculateCost(model string, inputTokens, outputTokens, cacheReadTokens, cac
 	// 注意：价格是per 1M tokens，需要除以1,000,000
 	cost := 0.0
 
+	// Gemini长上下文分段定价逻辑
+	// 如果模型支持分段定价（InputPriceHigh > 0）且输入侧token数 > 200k，使用高价格
+	// 注意：阈值仅针对输入侧（prompt + cache），输出不计入
+	totalInputTokens := inputTokens + cacheReadTokens + cacheCreationTokens
+	useHighPricing := pricing.InputPriceHigh > 0 && totalInputTokens > geminiLongContextThreshold
+
+	// 选择适用的价格
+	inputPricePerM := pricing.InputPrice
+	outputPricePerM := pricing.OutputPrice
+	if useHighPricing {
+		inputPricePerM = pricing.InputPriceHigh
+		// 输出价格保持不变，因为Gemini长上下文定价仅影响输入侧
+		// outputPricePerM 保持 pricing.OutputPrice
+	}
+
 	// 1. 基础输入token成本
 	if inputTokens > 0 {
-		cost += float64(inputTokens) * pricing.InputPrice / 1_000_000
+		cost += float64(inputTokens) * inputPricePerM / 1_000_000
 	}
 
 	// 2. 输出token成本
 	if outputTokens > 0 {
-		cost += float64(outputTokens) * pricing.OutputPrice / 1_000_000
+		cost += float64(outputTokens) * outputPricePerM / 1_000_000
 	}
 
 	// 3. 缓存读取成本（10%基础价格）
 	if cacheReadTokens > 0 {
-		cacheReadPrice := pricing.InputPrice * cacheReadMultiplier
+		cacheReadPrice := inputPricePerM * cacheReadMultiplier
 		cost += float64(cacheReadTokens) * cacheReadPrice / 1_000_000
 	}
 
 	// 4. 缓存创建成本（125%基础价格）
 	if cacheCreationTokens > 0 {
-		cacheWritePrice := pricing.InputPrice * cacheWriteMultiplier
+		cacheWritePrice := inputPricePerM * cacheWriteMultiplier
 		cost += float64(cacheCreationTokens) * cacheWritePrice / 1_000_000
 	}
 
@@ -209,6 +264,16 @@ func fuzzyMatchModel(model string) (ModelPricing, bool) {
 		"claude-3-opus",
 		"claude-3-sonnet",
 		"claude-3-haiku",
+
+		// Gemini 模型（按优先级排序：更具体的前缀优先）
+		"gemini-3-pro",
+		"gemini-2.5-flash-lite",
+		"gemini-2.5-flash",
+		"gemini-2.5-pro",
+		"gemini-2.0-flash-lite",
+		"gemini-2.0-flash",
+		"gemini-1.5-pro",
+		"gemini-1.5-flash",
 
 		// OpenAI 模型（按优先级排序：更具体的前缀优先）
 		"gpt-5.1-codex-mini",

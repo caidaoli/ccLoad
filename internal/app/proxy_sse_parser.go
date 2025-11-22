@@ -126,11 +126,15 @@ func (p *sseUsageParser) parseBuffer() error {
 
 // parseEvent 解析单个SSE事件
 func (p *sseUsageParser) parseEvent(eventType, data string) error {
-	// 只关注包含usage信息的事件
-	// Claude: message_start, message_delta
-	// OpenAI Responses API (Codex): response.completed
-	if eventType != "message_start" && eventType != "message_delta" && eventType != "response.completed" {
-		return nil
+	// 事件类型过滤：
+	// - Claude: message_start, message_delta
+	// - OpenAI Responses API (Codex): response.completed
+	// - Gemini: 无event类型（eventType为空字符串）
+	if eventType != "" {
+		// 有明确事件类型时，只处理已知类型
+		if eventType != "message_start" && eventType != "message_delta" && eventType != "response.completed" {
+			return nil
+		}
 	}
 
 	// 解析JSON数据
@@ -200,6 +204,7 @@ func (u *usageAccumulator) applyUsage(usage map[string]any) {
 		return
 	}
 
+	// Claude/OpenAI格式: input_tokens, output_tokens
 	if val, ok := usage["input_tokens"].(float64); ok {
 		u.InputTokens = int(val)
 	}
@@ -207,6 +212,15 @@ func (u *usageAccumulator) applyUsage(usage map[string]any) {
 		u.OutputTokens = int(val)
 	}
 
+	// Gemini格式: promptTokenCount, candidatesTokenCount
+	if val, ok := usage["promptTokenCount"].(float64); ok {
+		u.InputTokens = int(val)
+	}
+	if val, ok := usage["candidatesTokenCount"].(float64); ok {
+		u.OutputTokens = int(val)
+	}
+
+	// Claude缓存字段
 	if val, ok := usage["cache_read_input_tokens"].(float64); ok {
 		u.CacheReadInputTokens = int(val)
 	}
@@ -214,6 +228,7 @@ func (u *usageAccumulator) applyUsage(usage map[string]any) {
 		u.CacheCreationInputTokens = int(val)
 	}
 
+	// OpenAI缓存字段
 	if details, ok := usage["input_tokens_details"].(map[string]any); ok {
 		if val, ok := details["cached_tokens"].(float64); ok {
 			u.CacheReadInputTokens = int(val)
@@ -222,18 +237,25 @@ func (u *usageAccumulator) applyUsage(usage map[string]any) {
 }
 
 func extractUsage(payload map[string]any) map[string]any {
+	// Claude/OpenAI格式: {"usage": {...}}
 	if usage, ok := payload["usage"].(map[string]any); ok {
 		return usage
 	}
+	// Claude消息格式: {"message": {"usage": {...}}}
 	if msg, ok := payload["message"].(map[string]any); ok {
 		if usage, ok := msg["usage"].(map[string]any); ok {
 			return usage
 		}
 	}
+	// OpenAI部分格式: {"response": {"usage": {...}}}
 	if resp, ok := payload["response"].(map[string]any); ok {
 		if usage, ok := resp["usage"].(map[string]any); ok {
 			return usage
 		}
+	}
+	// Gemini格式: {"usageMetadata": {...}}
+	if usageMetadata, ok := payload["usageMetadata"].(map[string]any); ok {
+		return usageMetadata
 	}
 
 	return nil
