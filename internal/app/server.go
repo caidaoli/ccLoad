@@ -205,9 +205,13 @@ func NewServer(store storage.Store) *Server {
 		&s.isShuttingDown,
 		&s.wg,
 	)
-	// 启动日志 Workers 和清理协程
+	// 启动日志 Workers
 	s.logService.StartWorkers()
-	s.logService.StartCleanupLoop()
+
+	// 仅当保留天数>0时启动清理协程(-1表示永久保留,不清理)
+	if config.GetLogRetentionDays() > 0 {
+		s.logService.StartCleanupLoop()
+	}
 
 	// 2. AuthService（负责认证授权）
 	// 初始化时自动从数据库加载API访问令牌

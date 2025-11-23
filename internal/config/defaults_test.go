@@ -166,6 +166,7 @@ func TestGetLogRetentionDays(t *testing.T) {
 		{"有效值-最小", "1", 1},
 		{"有效值-中间", "30", 30},
 		{"有效值-最大", "365", 365},
+		{"禁用清理", "-1", -1}, // 特殊值:-1表示永久保留,不清理
 		{"无效值-小于1", "0", 7},
 		{"无效值-大于365", "366", 7},
 		{"无效值-负数", "-5", 7},
@@ -180,9 +181,9 @@ func TestGetLogRetentionDays(t *testing.T) {
 				t.Errorf("GetLogRetentionDays() = %d, want %d (env=%q)",
 					got, tt.want, tt.envValue)
 			}
-			// 验证返回值在合理范围内
-			if got < 1 || got > 365 {
-				t.Errorf("GetLogRetentionDays() = %d 超出合理范围 [1, 365]", got)
+			// 验证返回值在合理范围内(允许-1表示禁用清理)
+			if got != -1 && (got < 1 || got > 365) {
+				t.Errorf("GetLogRetentionDays() = %d 超出合理范围 [-1, 1-365]", got)
 			}
 		})
 	}

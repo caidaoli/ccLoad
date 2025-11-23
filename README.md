@@ -571,7 +571,7 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 | `CCLOAD_MAX_CONCURRENCY` | `1000` | 最大并发请求数（限制同时处理的代理请求数量） |
 | `CCLOAD_MAX_BODY_BYTES` | `2097152` | 请求体最大字节数（2MB，防止大包打爆内存） |
 | `CCLOAD_UPSTREAM_FIRST_BYTE_TIMEOUT` | 不设置 | 上游首字节超时（单位：秒，检测上游慢响应/无响应） |
-| `CCLOAD_LOG_RETENTION_DAYS` | `7` | 日志保留天数（1-365天，超出范围使用默认值） |
+| `CCLOAD_LOG_RETENTION_DAYS` | `7` | 日志保留天数（1-365天,-1表示永久保留不清理） |
 | `CCLOAD_ENABLE_WARMUP` | `false` | 启用启动预热（消除首次请求的TLS握手延迟10-50ms） |
 | `CCLOAD_SKIP_TLS_VERIFY` | `false` | 跳过TLS证书验证（**仅开发环境**，生产环境严禁使用） |
 | `REDIS_URL` | 无 | Redis连接URL（可选，用于渠道数据异步备份） |

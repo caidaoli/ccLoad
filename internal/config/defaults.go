@@ -120,12 +120,23 @@ const (
 
 // GetLogRetentionDays 获取日志保留天数
 // 从环境变量 CCLOAD_LOG_RETENTION_DAYS 读取，默认7天
+// 支持特殊值:
+//
+//	-1: 禁用日志清理(永久保留)
+//	1-365: 正常保留天数
 func GetLogRetentionDays() int {
 	const defaultRetentionDays = 7
 
 	if envVal := os.Getenv("CCLOAD_LOG_RETENTION_DAYS"); envVal != "" {
-		if days, err := strconv.Atoi(envVal); err == nil && days >= 1 && days <= 365 {
-			return days
+		if days, err := strconv.Atoi(envVal); err == nil {
+			// -1 表示禁用日志清理(永久保留)
+			if days == -1 {
+				return -1
+			}
+			// 正常范围验证
+			if days >= 1 && days <= 365 {
+				return days
+			}
 		}
 	}
 
