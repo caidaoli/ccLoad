@@ -41,22 +41,22 @@ var basePricing = map[string]ModelPricing{
 	"claude-3-haiku":    {InputPrice: 0.25, OutputPrice: 1.25},
 
 	// ========== OpenAI GPT系列 ==========
-	"gpt-5":           {InputPrice: 1.25, OutputPrice: 10.00},
-	"gpt-5-mini":      {InputPrice: 0.25, OutputPrice: 2.00},
-	"gpt-5-nano":      {InputPrice: 0.05, OutputPrice: 0.40},
-	"gpt-5-pro":       {InputPrice: 15.00, OutputPrice: 120.00},
-	"gpt-4.1":         {InputPrice: 2.00, OutputPrice: 8.00},
-	"gpt-4.1-mini":    {InputPrice: 0.40, OutputPrice: 1.60},
-	"gpt-4.1-nano":    {InputPrice: 0.10, OutputPrice: 0.40},
-	"gpt-4o":          {InputPrice: 2.50, OutputPrice: 10.00},
-	"gpt-4o-legacy":   {InputPrice: 5.00, OutputPrice: 15.00}, // 2024-05-13等旧版
-	"gpt-4o-mini":     {InputPrice: 0.15, OutputPrice: 0.60},
-	"gpt-4-turbo":     {InputPrice: 10.00, OutputPrice: 30.00},
-	"gpt-4":           {InputPrice: 30.00, OutputPrice: 60.00},
-	"gpt-4-32k":       {InputPrice: 60.00, OutputPrice: 120.00},
-	"gpt-3.5-turbo":   {InputPrice: 0.50, OutputPrice: 1.50},
-	"gpt-3.5-legacy":  {InputPrice: 1.50, OutputPrice: 2.00}, // 旧版本
-	"gpt-3.5-16k":     {InputPrice: 3.00, OutputPrice: 4.00},
+	"gpt-5":          {InputPrice: 1.25, OutputPrice: 10.00},
+	"gpt-5-mini":     {InputPrice: 0.25, OutputPrice: 2.00},
+	"gpt-5-nano":     {InputPrice: 0.05, OutputPrice: 0.40},
+	"gpt-5-pro":      {InputPrice: 15.00, OutputPrice: 120.00},
+	"gpt-4.1":        {InputPrice: 2.00, OutputPrice: 8.00},
+	"gpt-4.1-mini":   {InputPrice: 0.40, OutputPrice: 1.60},
+	"gpt-4.1-nano":   {InputPrice: 0.10, OutputPrice: 0.40},
+	"gpt-4o":         {InputPrice: 2.50, OutputPrice: 10.00},
+	"gpt-4o-legacy":  {InputPrice: 5.00, OutputPrice: 15.00}, // 2024-05-13等旧版
+	"gpt-4o-mini":    {InputPrice: 0.15, OutputPrice: 0.60},
+	"gpt-4-turbo":    {InputPrice: 10.00, OutputPrice: 30.00},
+	"gpt-4":          {InputPrice: 30.00, OutputPrice: 60.00},
+	"gpt-4-32k":      {InputPrice: 60.00, OutputPrice: 120.00},
+	"gpt-3.5-turbo":  {InputPrice: 0.50, OutputPrice: 1.50},
+	"gpt-3.5-legacy": {InputPrice: 1.50, OutputPrice: 2.00}, // 旧版本
+	"gpt-3.5-16k":    {InputPrice: 3.00, OutputPrice: 4.00},
 
 	// ========== OpenAI o系列 ==========
 	"o1":               {InputPrice: 15.00, OutputPrice: 60.00},
@@ -182,10 +182,15 @@ const (
 // CalculateCost 计算单次请求的成本（美元）
 // 参数：
 //   - model: 模型名称（如"claude-sonnet-4-5-20250929"或"gpt-5.1-codex"）
-//   - inputTokens: 输入token数量
+//   - inputTokens: 输入token数量（已归一化为可计费token）
 //   - outputTokens: 输出token数量
 //   - cacheReadTokens: 缓存读取token数量（Claude: cache_read_input_tokens, OpenAI: cached_tokens）
 //   - cacheCreationTokens: 缓存创建token数量（Claude: cache_creation_input_tokens）
+//
+// 重要: inputTokens应为"可计费输入token"，由解析层（proxy_sse_parser.go）负责归一化：
+//   - OpenAI: 解析层已自动扣除cached_tokens（prompt_tokens - cached_tokens）
+//   - Claude/Gemini: 解析层直接返回input_tokens（本身就是非缓存部分）
+// 设计原则: 平台语义差异在解析层处理，计费层无需关心（SRP原则）
 //
 // 返回：总成本（美元），如果模型未知则返回0.0
 func CalculateCost(model string, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
@@ -212,8 +217,6 @@ func CalculateCost(model string, inputTokens, outputTokens, cacheReadTokens, cac
 	// Gemini长上下文分段定价逻辑
 	// 官方文档: https://ai.google.dev/pricing (updated: 2025-01)
 	// 阈值判断:仅针对输入侧非缓存token(不包括输出,不包括缓存)
-	// 重要:Gemini目前不支持Prompt Caching,cacheReadTokens/cacheCreationTokens应为0
-	// 如果未来支持缓存,需重新评估阈值计算逻辑
 	useHighPricing := pricing.InputPriceHigh > 0 && inputTokens > geminiLongContextThreshold
 
 	// 选择适用的价格
@@ -224,32 +227,9 @@ func CalculateCost(model string, inputTokens, outputTokens, cacheReadTokens, cac
 		outputPricePerM = pricing.OutputPriceHigh // Gemini长上下文定价同时影响输入和输出
 	}
 
-	// 检测是否为OpenAI模型(处理缓存语义差异)
-	isOpenAI := isOpenAIModel(model)
-
-	// 计算实际计费的输入token数量
-	// 重要:不同平台的input_tokens语义不同!
-	// - Claude/Gemini: input_tokens仅为非缓存部分,cache_read_input_tokens单独计费
-	// - OpenAI: prompt_tokens包含缓存,cached_tokens需要从中扣除避免双计
-	// 官方文档:
-	//   - Claude: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
-	//   - OpenAI: https://platform.openai.com/docs/guides/prompt-caching
-	billableInputTokens := inputTokens
-	if isOpenAI && cacheReadTokens > 0 {
-		// OpenAI语义:prompt_tokens包含cached_tokens,需要减去避免双计
-		// 例如:prompt_tokens=1000, cached_tokens=800
-		//      → 实际非缓存部分 = 1000 - 800 = 200
-		billableInputTokens = inputTokens - cacheReadTokens
-		if billableInputTokens < 0 {
-			billableInputTokens = 0 // 防御性处理(理论上不应出现)
-			log.Printf("WARN: OpenAI model %s has cacheReadTokens(%d) > inputTokens(%d), clamped to 0",
-				model, cacheReadTokens, inputTokens)
-		}
-	}
-
-	// 1. 基础输入token成本
-	if billableInputTokens > 0 {
-		cost += float64(billableInputTokens) * inputPricePerM / 1_000_000
+	// 1. 基础输入token成本（inputTokens已由解析层归一化，无需再处理平台差异）
+	if inputTokens > 0 {
+		cost += float64(inputTokens) * inputPricePerM / 1_000_000
 	}
 
 	// 2. 输出token成本
@@ -257,10 +237,10 @@ func CalculateCost(model string, inputTokens, outputTokens, cacheReadTokens, cac
 		cost += float64(outputTokens) * outputPricePerM / 1_000_000
 	}
 
-	// 3. 缓存读取成本
+	// 3. 缓存读取成本（折扣率因平台而异）
 	if cacheReadTokens > 0 {
 		cacheMultiplier := cacheReadMultiplierClaude // Claude/Gemini: 10%折扣
-		if isOpenAI {
+		if isOpenAIModel(model) {
 			cacheMultiplier = cacheReadMultiplierOpenAI // OpenAI: 50%折扣
 		}
 		cacheReadPrice := inputPricePerM * cacheMultiplier
@@ -341,7 +321,8 @@ func fuzzyMatchModel(model string) (ModelPricing, bool) {
 
 // FormatCost 格式化成本为美元字符串
 // 例如：0.00123 → "$0.00123"
-//      0.000005 → "$0.000005"
+//
+//	0.000005 → "$0.000005"
 func FormatCost(cost float64) string {
 	if cost == 0 {
 		return "$0.00"

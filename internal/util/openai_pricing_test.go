@@ -162,7 +162,7 @@ func TestOpenAIPricingCalculation(t *testing.T) {
 		},
 		{
 			model:           "gpt-4o",
-			inputTokens:     1_000_000,
+			inputTokens:     0, // ✅ 归一化后: 原始1M - 缓存1M = 0
 			outputTokens:    1_000_000,
 			cacheReadTokens: 1_000_000,
 			expectedCost:    10.00 + 1.25, // 输出$10 + 缓存$1.25（输入全部来自缓存）
@@ -205,10 +205,10 @@ func TestOpenAIPricingCalculation(t *testing.T) {
 		},
 		{
 			model:           "gpt-4o",
-			inputTokens:     500_000,
+			inputTokens:     0, // ✅ 归一化后: 原始500k - 缓存800k = 0 (clamped)
 			outputTokens:    100_000,
-			cacheReadTokens: 800_000, // 缓存大于输入（边界情况）
-			expectedCost:    1.00 + 1.00, // 输出$1 + 缓存$1（缓存token按实际输入上限计算）
+			cacheReadTokens: 800_000,     // 缓存大于原始输入（边界情况）
+			expectedCost:    1.00 + 1.00, // 输出$1 + 缓存$1（缓存token按实际值计算）
 			description:     "GPT-4o缓存超过输入token（防御性处理）",
 		},
 	}

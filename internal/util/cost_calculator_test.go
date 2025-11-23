@@ -76,8 +76,8 @@ func TestCalculateCost_LegacyModel(t *testing.T) {
 		model    string
 		expected float64
 	}{
-		{"claude-3-opus-20240229", 0.165}, // 1000×$15/1M + 2000×$75/1M = 0.015 + 0.15
-		{"claude-3-sonnet-20240229", 0.033}, // 1000×$3/1M + 2000×$15/1M = 0.003 + 0.03
+		{"claude-3-opus-20240229", 0.165},    // 1000×$15/1M + 2000×$75/1M = 0.015 + 0.15
+		{"claude-3-sonnet-20240229", 0.033},  // 1000×$3/1M + 2000×$15/1M = 0.003 + 0.03
 		{"claude-3-haiku-20240307", 0.00275}, // 1000×$0.25/1M + 2000×$1.25/1M = 0.00025 + 0.0025
 	}
 
@@ -124,9 +124,9 @@ func TestCalculateCost_FuzzyMatch(t *testing.T) {
 		{"claude-3-opus-extended", true},
 		{"claude-3-sonnet-custom", true},
 		{"claude-sonnet-4-5-custom", true},
-		{"gpt-4-turbo", true},           // 现在支持OpenAI模型
-		{"gpt-4o-2024-12-01", true},     // 模糊匹配到gpt-4o
-		{"gpt-5.1-codex-custom", true},  // 模糊匹配到gpt-5.1-codex
+		{"gpt-4-turbo", true},          // 现在支持OpenAI模型
+		{"gpt-4o-2024-12-01", true},    // 模糊匹配到gpt-4o
+		{"gpt-5.1-codex-custom", true}, // 模糊匹配到gpt-5.1-codex
 		{"unknown-model", false},
 	}
 
@@ -149,24 +149,25 @@ func TestCalculateCost_ZeroTokens(t *testing.T) {
 
 func TestCalculateCost_OpenAIModels(t *testing.T) {
 	// 测试OpenAI模型费用计算
+	// ✅ 重构后：inputTokens应为归一化后的可计费token（已由解析层扣除缓存）
 	testCases := []struct {
 		model        string
-		inputTokens  int
+		inputTokens  int // 归一化后的可计费输入token
 		outputTokens int
 		cacheRead    int
 		expectedCost float64
 	}{
 		// GPT-5 系列（Standard层级 - 官方定价）
-		// OpenAI缓存修正：非缓存×全价 + 缓存×50%
-		{"gpt-5.1-codex", 10309, 17, 6016, 0.009296}, // (10309-6016)×1.25/1M + 17×10/1M + 6016×(1.25×0.5)/1M
-		{"gpt-5", 1000, 1000, 0, 0.01125},            // $1.25/1M input, $10/1M output
-		{"gpt-5-mini", 10000, 5000, 0, 0.0125},       // $0.25/1M input, $2/1M output
-		{"gpt-5-nano", 100000, 50000, 0, 0.025},      // $0.05/1M input, $0.4/1M output
-		{"gpt-5-pro", 1000, 1000, 0, 0.135},          // $15/1M input, $120/1M output
+		// inputTokens已归一化: 原始10309-缓存6016=4293
+		{"gpt-5.1-codex", 4293, 17, 6016, 0.009296}, // 4293×1.25/1M + 17×10/1M + 6016×(1.25×0.5)/1M
+		{"gpt-5", 1000, 1000, 0, 0.01125},           // $1.25/1M input, $10/1M output
+		{"gpt-5-mini", 10000, 5000, 0, 0.0125},      // $0.25/1M input, $2/1M output
+		{"gpt-5-nano", 100000, 50000, 0, 0.025},     // $0.05/1M input, $0.4/1M output
+		{"gpt-5-pro", 1000, 1000, 0, 0.135},         // $15/1M input, $120/1M output
 
 		// GPT-4.1 系列（新）
-		{"gpt-4.1", 1000, 1000, 0, 0.01},       // $2.00/1M input, $8/1M output
-		{"gpt-4.1-mini", 10000, 5000, 0, 0.012}, // $0.40/1M input, $1.60/1M output
+		{"gpt-4.1", 1000, 1000, 0, 0.01},         // $2.00/1M input, $8/1M output
+		{"gpt-4.1-mini", 10000, 5000, 0, 0.012},  // $0.40/1M input, $1.60/1M output
 		{"gpt-4.1-nano", 100000, 50000, 0, 0.03}, // $0.10/1M input, $0.40/1M output
 
 		// GPT-4o 系列
@@ -174,14 +175,14 @@ func TestCalculateCost_OpenAIModels(t *testing.T) {
 		{"gpt-4o-mini", 10000, 5000, 0, 0.0045}, // $0.15/1M input, $0.60/1M output
 
 		// o系列（推理模型）
-		{"o1", 1000, 1000, 0, 0.075},      // $15/1M input, $60/1M output
+		{"o1", 1000, 1000, 0, 0.075},       // $15/1M input, $60/1M output
 		{"o1-mini", 10000, 5000, 0, 0.033}, // $1.10/1M input, $4.40/1M output
-		{"o3", 1000, 1000, 0, 0.01},       // $2.00/1M input, $8/1M output
+		{"o3", 1000, 1000, 0, 0.01},        // $2.00/1M input, $8/1M output
 		{"o3-mini", 10000, 5000, 0, 0.033}, // $1.10/1M input, $4.40/1M output
 
 		// Legacy模型
-		{"gpt-4-turbo", 1000, 1000, 0, 0.04},         // $10/1M input, $30/1M output
-		{"gpt-3.5-turbo", 10000, 5000, 0, 0.0125},    // $0.50/1M input, $1.50/1M output
+		{"gpt-4-turbo", 1000, 1000, 0, 0.04},      // $10/1M input, $30/1M output
+		{"gpt-3.5-turbo", 10000, 5000, 0, 0.0125}, // $0.50/1M input, $1.50/1M output
 	}
 
 	for _, tc := range testCases {
@@ -215,11 +216,11 @@ func TestFormatCost(t *testing.T) {
 		expected string
 	}{
 		{0.0, "$0.00"},
-		{0.007441, "$0.0074"}, // 去除尾随0
-		{0.00035, "$0.0004"},  // 4位小数
-		{0.165, "$0.17"},      // 2位小数（四舍五入）
-		{1.234567, "$1.23"},   // 大于$1显示2位
-		{0.000001, "$0.000001"}, // 极小值6位小数
+		{0.007441, "$0.0074"},    // 去除尾随0
+		{0.00035, "$0.0004"},     // 4位小数
+		{0.165, "$0.17"},         // 2位小数（四舍五入）
+		{1.234567, "$1.23"},      // 大于$1显示2位
+		{0.000001, "$0.000001"},  // 极小值6位小数
 		{0.0000001, "$1.00e-07"}, // 科学计数法
 	}
 

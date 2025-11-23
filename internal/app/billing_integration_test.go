@@ -13,7 +13,7 @@ import (
 // TestBillingPipeline_OpenAI_ChatCompletions 验证OpenAI Chat Completions API完整计费链路
 func TestBillingPipeline_OpenAI_ChatCompletions(t *testing.T) {
 	// 场景：GPT-4o带缓存的流式响应
-	// OpenAI语义：prompt_tokens包含cached_tokens，需扣除避免双计
+	// OpenAI语义：prompt_tokens包含cached_tokens，解析层已自动归一化
 	// 注意：cached_tokens嵌套在prompt_tokens_details下
 	mockSSE := `data: {"usage":{"prompt_tokens":1000,"prompt_tokens_details":{"cached_tokens":800},"completion_tokens":50}}` + "\n\n"
 
@@ -25,8 +25,9 @@ func TestBillingPipeline_OpenAI_ChatCompletions(t *testing.T) {
 	inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens := parser.GetUsage()
 
 	// 2. 验证Token提取正确性
-	if inputTokens != 1000 {
-		t.Errorf("❌ OpenAI prompt_tokens提取错误: 期望1000, 实际%d", inputTokens)
+	// ✅ 重要: GetUsage()返回的inputTokens已归一化为可计费token (1000-800=200)
+	if inputTokens != 200 {
+		t.Errorf("❌ OpenAI归一化后inputTokens错误: 期望200(1000-800), 实际%d", inputTokens)
 	}
 	if cacheReadTokens != 800 {
 		t.Errorf("❌ OpenAI cached_tokens提取错误: 期望800, 实际%d", cacheReadTokens)
@@ -35,12 +36,12 @@ func TestBillingPipeline_OpenAI_ChatCompletions(t *testing.T) {
 		t.Errorf("❌ OpenAI completion_tokens提取错误: 期望50, 实际%d", outputTokens)
 	}
 
-	// 3. 计算费用 (CalculateCost内部会处理OpenAI缓存语义)
+	// 3. 计算费用 (inputTokens已归一化，CalculateCost直接使用)
 	cost := util.CalculateCost("gpt-4o", inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
 
 	// 4. 验证计费公式正确性
 	// GPT-4o定价: $2.50/1M input, $10/1M output, 缓存50%折扣
-	// 公式: (1000-800)×$2.50/1M + 50×$10/1M + 800×($2.50×0.5)/1M
+	// 公式: 200×$2.50/1M + 50×$10/1M + 800×($2.50×0.5)/1M
 	//     = 200×0.0000025 + 50×0.00001 + 800×0.00000125
 	//     = 0.0005 + 0.0005 + 0.001
 	//     = 0.002
@@ -50,7 +51,8 @@ func TestBillingPipeline_OpenAI_ChatCompletions(t *testing.T) {
 	}
 
 	t.Logf("✅ OpenAI Chat Completions计费链路验证通过")
-	t.Logf("   输入token: %d (非缓存=%d, 缓存=%d)", inputTokens, inputTokens-cacheReadTokens, cacheReadTokens)
+	t.Logf("   原始prompt_tokens: 1000, 归一化后inputTokens: %d (已扣除缓存)", inputTokens)
+	t.Logf("   缓存读取: %d tokens", cacheReadTokens)
 	t.Logf("   输出token: %d", outputTokens)
 	t.Logf("   费用: $%.6f", cost)
 }
@@ -178,9 +180,27 @@ func TestBillingPipeline_NegativeTokens(t *testing.T) {
 func TestBillingPipeline_OpenAI_CacheExceedsInput(t *testing.T) {
 	// 场景：cached_tokens > prompt_tokens (理论上不应发生，但需防御)
 	// 例如: prompt_tokens=500, cached_tokens=800
-	cost := util.CalculateCost("gpt-4o", 500, 100, 800, 0)
+	// ✅ 重构后：边界检查在解析层(GetUsage)执行，而非计费层
+	mockSSE := `data: {"usage":{"prompt_tokens":500,"prompt_tokens_details":{"cached_tokens":800},"completion_tokens":100}}` + "\n\n"
 
-	// 预期：billableInputTokens被clamp到0，只计算输出和缓存
+	parser := newSSEUsageParser("openai")
+	if err := parser.Feed([]byte(mockSSE)); err != nil {
+		t.Fatalf("SSE解析失败: %v", err)
+	}
+	inputTokens, outputTokens, cacheReadTokens, _ := parser.GetUsage()
+
+	// 验证解析层边界检查：inputTokens被clamp到0
+	if inputTokens != 0 {
+		t.Errorf("❌ 解析层边界检查失败: 期望inputTokens=0(clamped), 实际%d", inputTokens)
+	}
+	if cacheReadTokens != 800 {
+		t.Errorf("❌ cacheReadTokens应保持800, 实际%d", cacheReadTokens)
+	}
+
+	// 计费验证
+	cost := util.CalculateCost("gpt-4o", inputTokens, outputTokens, cacheReadTokens, 0)
+
+	// 预期：inputTokens=0(clamped)，只计算输出和缓存
 	// 公式: 0×$2.5/1M + 100×$10/1M + 800×($2.5×0.5)/1M
 	//     = 0 + 0.001 + 0.001
 	//     = 0.002
@@ -189,7 +209,7 @@ func TestBillingPipeline_OpenAI_CacheExceedsInput(t *testing.T) {
 		t.Errorf("❌ OpenAI缓存超限计费错误: 期望%.6f, 实际%.6f", expected, cost)
 	}
 
-	t.Logf("✅ OpenAI缓存超限边界情况处理正确: $%.6f", cost)
+	t.Logf("✅ OpenAI缓存超限边界情况(解析层检查)通过: $%.6f", cost)
 }
 
 // TestBillingPipeline_ZeroCostWarning 验证费用0值告警机制

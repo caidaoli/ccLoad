@@ -100,10 +100,10 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
 func TestSSEUsageParser_ChunkedReading(t *testing.T) {
 	// 真实场景：SSE流分多次到达，可能在任意位置切割
 	chunks := []string{
-		"event: mess",                                   // 第1块：事件名被切割
-		"age_start\ndata: {\"message\":{\"usa",          // 第2块：JSON被切割
-		"ge\":{\"input_tokens\":100,\"output_tok",       // 第3块：JSON继续
-		"ens\":50}}}\n\n",                               // 第4块：事件结束
+		"event: mess",                                // 第1块：事件名被切割
+		"age_start\ndata: {\"message\":{\"usa",       // 第2块：JSON被切割
+		"ge\":{\"input_tokens\":100,\"output_tok",    // 第3块：JSON继续
+		"ens\":50}}}\n\n",                            // 第4块：事件结束
 		"event: ping\ndata: {\"type\":\"ping\"}\n\n", // 第5块：完整事件
 	}
 
@@ -126,11 +126,11 @@ func TestSSEUsageParser_ChunkedReading(t *testing.T) {
 func TestSSEUsageParser_JSONBoundaryCut(t *testing.T) {
 	// 极端场景：JSON在引号、冒号、花括号等位置被切割
 	chunks := []string{
-		"event: message_start\ndata: {\"",       // 在引号后切割
-		"message",                               // 键名
-		"\":{\"usage\"",                         // 在引号和冒号处切割
-		":{\"input_tokens\":",                   // 冒号后切割
-		"999}}}\n\n",                            // 数字和结束
+		"event: message_start\ndata: {\"", // 在引号后切割
+		"message",                         // 键名
+		"\":{\"usage\"",                   // 在引号和冒号处切割
+		":{\"input_tokens\":",             // 冒号后切割
+		"999}}}\n\n",                      // 数字和结束
 	}
 
 	parser := newSSEUsageParser("anthropic") // 测试使用默认平台
@@ -247,6 +247,7 @@ data: {"usage":{"input_tokens":999}}
 func TestSSEUsageParser_ParseCodexResponseCompleted(t *testing.T) {
 	// 模拟OpenAI Responses API (Codex)的response.completed事件
 	// Codex使用input_tokens + input_tokens_details.cached_tokens格式
+	// ✅ 重构后：GetUsage()返回归一化的billable input (10309-6016=4293)
 	sseData := `event: response.completed
 data: {"type":"response.completed","sequence_number":28,"response":{"id":"resp_0d0d42598bd5c52c01691a963247dc81969f6ece7ebc78d882","object":"response","created_at":1763350066,"status":"completed","usage":{"input_tokens":10309,"input_tokens_details":{"cached_tokens":6016},"output_tokens":17,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":10326}}}
 
@@ -257,11 +258,12 @@ data: {"type":"response.completed","sequence_number":28,"response":{"id":"resp_0
 		t.Fatalf("Feed失败: %v", err)
 	}
 
-	// 验证usage数据
+	// 验证usage数据（归一化后的billable input）
 	input, output, cacheRead, cacheCreation := parser.GetUsage()
 
-	if input != 10309 {
-		t.Errorf("InputTokens = %d, 期望 10309", input)
+	// 归一化: 10309 - 6016 = 4293 (可计费输入token)
+	if input != 4293 {
+		t.Errorf("InputTokens = %d, 期望 4293 (10309-6016归一化)", input)
 	}
 	if output != 17 {
 		t.Errorf("OutputTokens = %d, 期望 17", output)
@@ -277,6 +279,7 @@ data: {"type":"response.completed","sequence_number":28,"response":{"id":"resp_0
 func TestSSEUsageParser_OpenAIChatCompletionsSSE(t *testing.T) {
 	// 测试OpenAI Chat Completions API的SSE流式响应
 	// OpenAI Chat使用prompt_tokens + completion_tokens格式
+	// ✅ 重构后：GetUsage()返回归一化的billable input (200-100=100)
 	sseData := `data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":""},"logprobs":null,"finish_reason":null}],"usage":null}
 
 data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"测试"},"logprobs":null,"finish_reason":null}],"usage":null}
@@ -293,10 +296,11 @@ data: [DONE]
 	}
 
 	// OpenAI Chat Completions在最后一个chunk返回usage
+	// 归一化: 200 - 100 = 100 (可计费输入token)
 	input, output, cacheRead, _ := parser.GetUsage()
 
-	if input != 200 {
-		t.Errorf("InputTokens = %d, 期望 200", input)
+	if input != 100 {
+		t.Errorf("InputTokens = %d, 期望 100 (200-100归一化)", input)
 	}
 	if output != 50 {
 		t.Errorf("OutputTokens = %d, 期望 50", output)
@@ -377,6 +381,7 @@ func TestSSEUsageParser_OpenAIChatCompletionsFormat(t *testing.T) {
 
 func TestSSEUsageParser_OpenAIChatCompletionsWithCache(t *testing.T) {
 	// 测试OpenAI Chat Completions API带缓存的格式（prompt_tokens_details.cached_tokens）
+	// ✅ 重构后：GetUsage()返回归一化的billable input (300-200=100)
 	sseData := `data: {"id":"chatcmpl-456","object":"chat.completion","created":1677652288,"model":"gpt-4o","usage":{"prompt_tokens":300,"completion_tokens":120,"total_tokens":420,"prompt_tokens_details":{"cached_tokens":200,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":0,"audio_tokens":0}}}
 
 `
@@ -388,8 +393,9 @@ func TestSSEUsageParser_OpenAIChatCompletionsWithCache(t *testing.T) {
 
 	input, output, cacheRead, _ := parser.GetUsage()
 
-	if input != 300 {
-		t.Errorf("InputTokens = %d, 期望 300 (OpenAI prompt_tokens)", input)
+	// 归一化: 300 - 200 = 100 (可计费输入token)
+	if input != 100 {
+		t.Errorf("InputTokens = %d, 期望 100 (300-200归一化)", input)
 	}
 	if output != 120 {
 		t.Errorf("OutputTokens = %d, 期望 120 (OpenAI completion_tokens)", output)
@@ -420,6 +426,7 @@ func TestJSONUsageParser_OpenAIChatCompletionsFormat(t *testing.T) {
 
 func TestJSONUsageParser_OpenAIChatCompletionsWithCacheFormat(t *testing.T) {
 	// 测试带缓存的OpenAI Chat Completions JSON响应
+	// ✅ 重构后：GetUsage()返回归一化的billable input (500-350=150)
 	jsonData := `{"id":"chatcmpl-abc","object":"chat.completion","created":1677652288,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"测试响应"},"finish_reason":"stop"}],"usage":{"prompt_tokens":500,"completion_tokens":200,"total_tokens":700,"prompt_tokens_details":{"cached_tokens":350,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":0,"audio_tokens":0}}}`
 
 	parser := newJSONUsageParser("openai") // OpenAI平台测试
@@ -429,8 +436,9 @@ func TestJSONUsageParser_OpenAIChatCompletionsWithCacheFormat(t *testing.T) {
 
 	input, output, cacheRead, _ := parser.GetUsage()
 
-	if input != 500 {
-		t.Errorf("InputTokens = %d, 期望 500 (OpenAI prompt_tokens)", input)
+	// 归一化: 500 - 350 = 150 (可计费输入token)
+	if input != 150 {
+		t.Errorf("InputTokens = %d, 期望 150 (500-350归一化)", input)
 	}
 	if output != 200 {
 		t.Errorf("OutputTokens = %d, 期望 200 (OpenAI completion_tokens)", output)
@@ -439,4 +447,3 @@ func TestJSONUsageParser_OpenAIChatCompletionsWithCacheFormat(t *testing.T) {
 		t.Errorf("CacheReadInputTokens = %d, 期望 350 (OpenAI cached_tokens)", cacheRead)
 	}
 }
-
