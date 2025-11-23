@@ -2,34 +2,21 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## 项目概述
-
-AI API 透明代理服务(Claude/Codex/Gemini): 智能路由、故障切换、多Key负载均衡
-
 ## 快速命令
 
 ```bash
 # 构建(必须使用 -tags go_json)
-make build          # 或: go build -tags go_json -o ccload .
-make dev            # 开发模式运行
+go build -tags go_json -o ccload .
+go run -tags go_json .
 
-# 测试
-go test ./internal/... -v              # 单元测试
-go test ./test/integration/... -v     # 集成测试
+# 测试(必须带 -tags go_json,否则JSON库不匹配导致失败)
+go test -tags go_json ./internal/... -v
+go test -tags go_json ./internal/app -run TestName -v  # 单个测试
+go test -tags go_json -race ./internal/...             # 竞态检测
 
-# macOS服务管理
-make install-service  # 安装系统服务
-make status          # 查看状态
-make logs            # 查看日志
+# 环境变量
+export CCLOAD_PASS=test123  # 必填,否则程序启动失败
 ```
-
-## 必需配置
-
-```bash
-export CCLOAD_PASS=your_admin_password  # 必填,否则程序退出
-```
-
-**重要**: API访问令牌通过Web界面(`/web/tokens.html`)配置,不再使用环境变量
 
 ## 核心架构
 
@@ -48,34 +35,40 @@ internal/
     └── models_fetcher.go # 模型列表适配器
 ```
 
-### 关键算法
-
-**故障切换策略**:
+**故障切换策略**(核心业务逻辑):
 - Key级错误(401/403/429) → 重试同渠道其他Key
 - 渠道级错误(5xx/520/524) → 切换到其他渠道
 - 客户端错误(404/405) → 不重试,直接返回
 - 指数退避: 2min → 4min → 8min → 30min(上限)
 
-**核心入口**:
-- `cooldown.DecideChannelAction()` - 冷却决策
-- `cooldown.ApplyCooldownForError()` - 执行冷却
+**关键入口函数**:
+- `cooldown.Manager.HandleError()` - 执行上述策略的决策引擎
+- `util.ClassifyHTTPStatus()` - 错误分类(区分Key/Channel/Client级)
+- `app.KeySelector.SelectAvailableKey()` - 多Key负载均衡(sequential/round_robin)
 
-## 开发模式
+## 开发指南
 
-**优先使用 Serena MCP 工具**:
-- 代码浏览使用符号化工具(`mcp__serena__*`)而非直接读取整个文件
-- 避免不必要的全文件读取,使用 `get_symbols_overview` 和 `find_symbol`
-- 编辑代码使用符号化编辑(`replace_symbol_body`)而非正则替换
+**使用Serena MCP工具**(必须遵守):
+- 代码浏览用符号化工具(`mcp__serena__get_symbols_overview`, `mcp__serena__find_symbol`)
+- **禁止**直接读取整个文件,先用`get_symbols_overview`了解结构
+- 编辑代码用`mcp__serena__replace_symbol_body`,不用正则替换
 
 **添加Admin API**:
-1. `internal/app/admin_types.go` - 定义类型
-2. `internal/app/admin_<feature>.go` - 实现Handler
-3. `internal/app/server.go:setupRoutes` - 注册路由
-4. 使用 `s.handlers.Success/BadRequest/...` 统一响应
+1. `internal/app/admin_types.go` - 定义请求/响应类型
+2. `internal/app/admin_<feature>.go` - 实现Handler函数
+3. `internal/app/server.go:SetupRoutes()` - 注册路由
+4. 使用 `s.handlers.Success/BadRequest/ServerError/NotFound` 统一响应
+
+**数据库操作**:
+- Schema更新: `internal/storage/sqlite/migrate.go`启动时自动执行
+- 事务封装: `storage.ExecInTransaction(func(tx) error { ... })`保证原子性
+- 缓存失效: 修改渠道后调用`s.InvalidateChannelListCache()`
 
 ## 代码规范
 
-- 使用 `any` 替代 `interface{}`
-- 遵循 KISS/DRY/SOLID 原则
-- Fail-Fast: 配置错误立即退出
-- API Key脱敏: `util/log_sanitizer.go`
+- **必须**使用 `any` 替代 `interface{}`
+- **必须**在测试中添加 `-tags go_json`,否则JSON序列化不一致
+- **禁止**过度工程(Factory工厂、"万一需要"的功能)
+- **Fail-Fast**: 配置错误直接`log.Fatal()`退出,不要容错
+- **API Key脱敏**: 日志自动清洗,无需手动处理(`util/log_sanitizer.go`)
+
