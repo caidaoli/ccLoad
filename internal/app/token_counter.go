@@ -238,10 +238,7 @@ func estimateToolName(name string) int {
 	}
 	camelCasePenalty := camelCaseCount / 2 // 每2个大写字母约1个额外token
 
-	totalTokens := baseTokens + underscorePenalty + camelCasePenalty
-	if totalTokens < 2 {
-		totalTokens = 2 // 最少2个token
-	}
+	totalTokens := max(baseTokens+underscorePenalty+camelCasePenalty, 2) // 最少2个token
 
 	return totalTokens
 }
@@ -265,13 +262,10 @@ func estimateTextTokens(text string) int {
 	}
 
 	// 检测中文字符比例（优化：只采样前500字符）
-	sampleSize := runeCount
-	if sampleSize > 500 {
-		sampleSize = 500
-	}
+	sampleSize := min(runeCount, 500)
 
 	chineseChars := 0
-	for i := 0; i < sampleSize; i++ {
+	for i := range sampleSize {
 		r := runes[i]
 		// 中文字符范围（CJK统一汉字）
 		if r >= 0x4E00 && r <= 0x9FFF {
@@ -363,7 +357,11 @@ func isValidClaudeModel(model string) bool {
 	// 支持的模型前缀
 	validPrefixes := []string{
 		"claude-",          // 所有Claude模型
-		"gpt-",             // OpenAI兼容模式（codex渠道）
+		"gpt-",             // OpenAI GPT系列
+		"chatgpt-",         // OpenAI ChatGPT系列（如chatgpt-4o-latest）
+		"o1",               // OpenAI o1系列（o1, o1-mini, o1-pro等）
+		"o3",               // OpenAI o3系列
+		"o4",               // OpenAI o4系列
 		"gemini-",          // Gemini兼容模式
 		"text-",            // 传统completion模型
 		"anthropic.claude", // Bedrock格式

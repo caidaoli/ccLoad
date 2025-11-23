@@ -146,12 +146,12 @@ func TestOpenAIResponsesAPITokenParsing(t *testing.T) {
 // TestOpenAIPricingCalculation 测试OpenAI模型的费用计算
 func TestOpenAIPricingCalculation(t *testing.T) {
 	tests := []struct {
-		model               string
-		inputTokens         int
-		outputTokens        int
-		cacheReadTokens     int
-		expectedCost        float64
-		description         string
+		model           string
+		inputTokens     int
+		outputTokens    int
+		cacheReadTokens int
+		expectedCost    float64
+		description     string
 	}{
 		{
 			model:        "gpt-4o",
@@ -165,7 +165,7 @@ func TestOpenAIPricingCalculation(t *testing.T) {
 			inputTokens:     1_000_000,
 			outputTokens:    1_000_000,
 			cacheReadTokens: 1_000_000,
-			expectedCost:    (1_000_000-1_000_000)*2.50/1_000_000 + 1_000_000*10.00/1_000_000 + 1_000_000*(2.50*0.5)/1_000_000, // 非缓存0 + 输出$10 + 缓存$1.25
+			expectedCost:    10.00 + 1.25, // 输出$10 + 缓存$1.25（输入全部来自缓存）
 			description:     "GPT-4o带缓存读取",
 		},
 		{
@@ -208,7 +208,7 @@ func TestOpenAIPricingCalculation(t *testing.T) {
 			inputTokens:     500_000,
 			outputTokens:    100_000,
 			cacheReadTokens: 800_000, // 缓存大于输入（边界情况）
-			expectedCost:    0 + 100_000*10.00/1_000_000 + 800_000*(2.50*0.5)/1_000_000, // 非缓存0 + 输出$1 + 缓存$1
+			expectedCost:    1.00 + 1.00, // 输出$1 + 缓存$1（缓存token按实际输入上限计算）
 			description:     "GPT-4o缓存超过输入token（防御性处理）",
 		},
 	}

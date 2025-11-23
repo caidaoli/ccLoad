@@ -112,10 +112,10 @@ func TestCalculateCost_GeminiLongContext(t *testing.T) {
 		{
 			name:            "gemini-3-pro长上下文（>200k）",
 			model:           "gemini-3-pro",
-			inputTokens:     150_000, // 150k tokens
-			outputTokens:    51_000,  // 51k tokens (总计201k，超过阈值)
-			expectedCostUSD: 4.00*0.15 + 18.00*0.051, // 使用高价格
-			description:     "总计201k tokens，应使用长上下文定价 $4.00/$18.00",
+			inputTokens:     150_000, // 150k tokens (输入侧未超阈值)
+			outputTokens:    51_000,  // 51k tokens
+			expectedCostUSD: 2.00*0.15 + 12.00*0.051, // 使用标准价格（输入150k < 200k）
+			description:     "输入150k tokens，使用标准定价 $2.00/$12.00",
 		},
 		{
 			name:            "gemini-2.5-pro标准上下文",
@@ -128,10 +128,10 @@ func TestCalculateCost_GeminiLongContext(t *testing.T) {
 		{
 			name:            "gemini-2.5-pro长上下文",
 			model:           "gemini-2.5-pro",
-			inputTokens:     150_000,
-			outputTokens:    100_000, // 总计250k
-			expectedCostUSD: 2.50*0.15 + 15.00*0.1, // 使用高价格
-			description:     "总计250k tokens，应使用长上下文定价 $2.50/$15.00",
+			inputTokens:     150_000, // 输入侧未超阈值
+			outputTokens:    100_000,
+			expectedCostUSD: 1.25*0.15 + 10.00*0.1, // 使用标准价格（输入150k < 200k）
+			description:     "输入150k tokens，使用标准定pricing $1.25/$10.00",
 		},
 		{
 			name:            "gemini-2.5-flash无分段定价（大量tokens）",

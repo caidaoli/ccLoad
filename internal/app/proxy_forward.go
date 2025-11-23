@@ -123,12 +123,14 @@ func (s *Server) handleErrorResponse(
 
 // handleSuccessResponse 处理成功响应（流式传输）
 // 从proxy.go提取，遵循SRP原则
+// channelType: 渠道类型,用于精确识别usage格式
 func (s *Server) handleSuccessResponse(
 	reqCtx *requestContext,
 	resp *http.Response,
 	firstByteTime float64,
 	hdrClone http.Header,
 	w http.ResponseWriter,
+	channelType string,
 ) (*fwResult, float64, error) {
 	// 写入响应头
 	filterAndWriteResponseHeaders(w, resp.Header)
@@ -160,7 +162,7 @@ func (s *Server) handleSuccessResponse(
 
 	if strings.Contains(contentType, "text/event-stream") {
 		// SSE流式响应：使用解析器提取usage数据
-		usageParser = newSSEUsageParser()
+		usageParser = newSSEUsageParser(channelType)
 		streamErr = streamCopySSE(reqCtx.ctx, bodyReader, w, usageParser.Feed)
 	} else if strings.Contains(contentType, "text/plain") && reqCtx.isStreaming {
 		// 非标准SSE场景：上游以text/plain发送SSE事件，探测前缀决定是否走SSE
@@ -168,15 +170,15 @@ func (s *Server) handleSuccessResponse(
 		probe, _ := reader.Peek(SSEProbeSize)
 
 		if looksLikeSSE(probe) {
-			usageParser = newSSEUsageParser()
+			usageParser = newSSEUsageParser(channelType)
 			streamErr = streamCopySSE(reqCtx.ctx, io.NopCloser(reader), w, usageParser.Feed)
 		} else {
-			usageParser = newJSONUsageParser()
+			usageParser = newJSONUsageParser(channelType)
 			streamErr = streamCopy(reqCtx.ctx, io.NopCloser(reader), w, usageParser.Feed)
 		}
 	} else {
 		// 非SSE响应：边转发边缓存，统一提取usage
-		usageParser = newJSONUsageParser()
+		usageParser = newJSONUsageParser(channelType)
 		streamErr = streamCopy(reqCtx.ctx, bodyReader, w, usageParser.Feed)
 	}
 
@@ -204,11 +206,13 @@ func looksLikeSSE(data []byte) bool {
 
 // handleResponse 处理 HTTP 响应（错误或成功）
 // 从proxy.go提取，遵循SRP原则
+// channelType: 渠道类型,用于精确识别usage格式
 func (s *Server) handleResponse(
 	reqCtx *requestContext,
 	resp *http.Response,
 	firstByteTime float64,
 	w http.ResponseWriter,
+	channelType string,
 ) (*fwResult, float64, error) {
 	hdrClone := resp.Header.Clone()
 
@@ -218,7 +222,7 @@ func (s *Server) handleResponse(
 	}
 
 	// 成功状态：流式转发
-	return s.handleSuccessResponse(reqCtx, resp, firstByteTime, hdrClone, w)
+	return s.handleSuccessResponse(reqCtx, resp, firstByteTime, hdrClone, w, channelType)
 }
 
 // ============================================================================
@@ -251,8 +255,8 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 	reqCtx.stopFirstByteTimer()
 	firstByteTime := reqCtx.Duration()
 
-	// 5. 处理响应
-	return s.handleResponse(reqCtx, resp, firstByteTime, w)
+	// 5. 处理响应(传递channelType用于精确识别usage格式)
+	return s.handleResponse(reqCtx, resp, firstByteTime, w, cfg.ChannelType)
 }
 
 // ============================================================================

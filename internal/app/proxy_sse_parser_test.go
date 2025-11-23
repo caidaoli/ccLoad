@@ -15,7 +15,7 @@ data: {"type":"content_block_start","index":0}
 
 `
 
-	parser := newSSEUsageParser()
+	parser := newSSEUsageParser("anthropic") // 测试使用默认平台
 	if err := parser.Feed([]byte(sseData)); err != nil {
 		t.Fatalf("Feed失败: %v", err)
 	}
@@ -47,7 +47,7 @@ data: {"type":"message_stop"}
 
 `
 
-	parser := newSSEUsageParser()
+	parser := newSSEUsageParser("anthropic") // 测试使用默认平台
 	if err := parser.Feed([]byte(sseData)); err != nil {
 		t.Fatalf("Feed失败: %v", err)
 	}
@@ -79,7 +79,7 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
 
 `
 
-	parser := newSSEUsageParser()
+	parser := newSSEUsageParser("anthropic") // 测试使用默认平台
 	if err := parser.Feed([]byte(sseData)); err != nil {
 		t.Fatalf("Feed失败: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestSSEUsageParser_ChunkedReading(t *testing.T) {
 		"event: ping\ndata: {\"type\":\"ping\"}\n\n", // 第5块：完整事件
 	}
 
-	parser := newSSEUsageParser()
+	parser := newSSEUsageParser("anthropic") // 测试使用默认平台
 	for i, chunk := range chunks {
 		if err := parser.Feed([]byte(chunk)); err != nil {
 			t.Fatalf("Feed第%d块失败: %v", i+1, err)
@@ -133,7 +133,7 @@ func TestSSEUsageParser_JSONBoundaryCut(t *testing.T) {
 		"999}}}\n\n",                            // 数字和结束
 	}
 
-	parser := newSSEUsageParser()
+	parser := newSSEUsageParser("anthropic") // 测试使用默认平台
 	for _, chunk := range chunks {
 		if err := parser.Feed([]byte(chunk)); err != nil {
 			t.Fatalf("Feed失败: %v (chunk: %s)", err, chunk)
@@ -154,7 +154,7 @@ func TestSSEUsageParser_MultipleEvents(t *testing.T) {
 		"event: message_delta\ndata: {\"usage\":{\"output_tokens\":30}}\n\n", // 最终值
 	}
 
-	parser := newSSEUsageParser()
+	parser := newSSEUsageParser("anthropic") // 测试使用默认平台
 	for _, event := range events {
 		if err := parser.Feed([]byte(event)); err != nil {
 			t.Fatalf("Feed失败: %v", err)
@@ -181,7 +181,7 @@ data: {"message":{"usage":{"input_tokens":INVALID}}}
 
 `
 
-	parser := newSSEUsageParser()
+	parser := newSSEUsageParser("anthropic") // 测试使用默认平台
 	// 不应panic
 	if err := parser.Feed([]byte(malformed)); err != nil {
 		t.Fatalf("Feed失败: %v", err)
@@ -195,23 +195,29 @@ data: {"message":{"usage":{"input_tokens":INVALID}}}
 }
 
 func TestSSEUsageParser_OversizedEvent(t *testing.T) {
-	// 超大事件应触发保护机制
-	parser := newSSEUsageParser()
+	// 超大事件应触发保护机制但不中断流传输
+	parser := newSSEUsageParser("anthropic") // 测试使用默认平台
 
 	// 构造1MB+的数据
 	hugeData := "event: test\ndata: " + strings.Repeat("A", maxSSEEventSize+1) + "\n\n"
 
 	err := parser.Feed([]byte(hugeData))
-	if err == nil {
-		t.Error("期望返回错误（事件超过大小限制），实际成功")
+	if err != nil {
+		t.Errorf("不应返回错误以保证流传输继续，实际返回: %v", err)
 	}
-	if !strings.Contains(err.Error(), "exceeds max size") {
-		t.Errorf("错误信息不符合预期: %v", err)
+	if !parser.oversized {
+		t.Error("应设置oversized标志以停止后续usage解析")
+	}
+
+	// 验证后续Feed不再处理
+	err2 := parser.Feed([]byte("event: test\n\n"))
+	if err2 != nil {
+		t.Errorf("oversized后的Feed应返回nil: %v", err2)
 	}
 }
 
 func TestSSEUsageParser_EmptyInput(t *testing.T) {
-	parser := newSSEUsageParser()
+	parser := newSSEUsageParser("anthropic") // 测试使用默认平台
 	if err := parser.Feed([]byte("")); err != nil {
 		t.Fatalf("空输入不应失败: %v", err)
 	}
@@ -227,7 +233,7 @@ data: {"usage":{"input_tokens":999}}
 
 `
 
-	parser := newSSEUsageParser()
+	parser := newSSEUsageParser("anthropic") // 测试使用默认平台
 	if err := parser.Feed([]byte(sseData)); err != nil {
 		t.Fatalf("Feed失败: %v", err)
 	}
@@ -238,14 +244,15 @@ data: {"usage":{"input_tokens":999}}
 	}
 }
 
-func TestSSEUsageParser_ParseOpenAIResponseCompleted(t *testing.T) {
+func TestSSEUsageParser_ParseCodexResponseCompleted(t *testing.T) {
 	// 模拟OpenAI Responses API (Codex)的response.completed事件
+	// Codex使用input_tokens + input_tokens_details.cached_tokens格式
 	sseData := `event: response.completed
 data: {"type":"response.completed","sequence_number":28,"response":{"id":"resp_0d0d42598bd5c52c01691a963247dc81969f6ece7ebc78d882","object":"response","created_at":1763350066,"status":"completed","usage":{"input_tokens":10309,"input_tokens_details":{"cached_tokens":6016},"output_tokens":17,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":10326}}}
 
 `
 
-	parser := newSSEUsageParser()
+	parser := newSSEUsageParser("codex") // Codex渠道测试
 	if err := parser.Feed([]byte(sseData)); err != nil {
 		t.Fatalf("Feed失败: %v", err)
 	}
@@ -267,32 +274,35 @@ data: {"type":"response.completed","sequence_number":28,"response":{"id":"resp_0
 	}
 }
 
-func TestSSEUsageParser_ParseMixedEvents(t *testing.T) {
-	// 测试混合Claude和OpenAI事件（虽然实际不会发生，但确保解析器健壮性）
-	sseData := `event: message_start
-data: {"type":"message_start","message":{"usage":{"input_tokens":100,"output_tokens":10}}}
+func TestSSEUsageParser_OpenAIChatCompletionsSSE(t *testing.T) {
+	// 测试OpenAI Chat Completions API的SSE流式响应
+	// OpenAI Chat使用prompt_tokens + completion_tokens格式
+	sseData := `data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":""},"logprobs":null,"finish_reason":null}],"usage":null}
 
-event: response.completed
-data: {"type":"response.completed","response":{"usage":{"input_tokens":200,"output_tokens":20,"input_tokens_details":{"cached_tokens":50}}}}
+data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"测试"},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4o","choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":200,"completion_tokens":50,"total_tokens":250,"prompt_tokens_details":{"cached_tokens":100}}}
+
+data: [DONE]
 
 `
 
-	parser := newSSEUsageParser()
+	parser := newSSEUsageParser("openai") // OpenAI渠道测试
 	if err := parser.Feed([]byte(sseData)); err != nil {
 		t.Fatalf("Feed失败: %v", err)
 	}
 
-	// 应该使用最后一个事件的数据（response.completed）
+	// OpenAI Chat Completions在最后一个chunk返回usage
 	input, output, cacheRead, _ := parser.GetUsage()
 
 	if input != 200 {
-		t.Errorf("InputTokens = %d, 期望 200 (最后一个事件)", input)
+		t.Errorf("InputTokens = %d, 期望 200", input)
 	}
-	if output != 20 {
-		t.Errorf("OutputTokens = %d, 期望 20 (最后一个事件)", output)
+	if output != 50 {
+		t.Errorf("OutputTokens = %d, 期望 50", output)
 	}
-	if cacheRead != 50 {
-		t.Errorf("CacheReadInputTokens = %d, 期望 50 (最后一个事件)", cacheRead)
+	if cacheRead != 100 {
+		t.Errorf("CacheReadInputTokens = %d, 期望 100", cacheRead)
 	}
 }
 
@@ -302,7 +312,7 @@ func TestSSEUsageParser_GeminiFormat(t *testing.T) {
 
 `
 
-	parser := newSSEUsageParser()
+	parser := newSSEUsageParser("gemini") // Gemini平台测试
 	if err := parser.Feed([]byte(sseData)); err != nil {
 		t.Fatalf("Feed失败: %v", err)
 	}
@@ -325,7 +335,7 @@ func TestSSEUsageParser_GeminiMultipleChunks(t *testing.T) {
 		`data: {"candidates": [{"content": {"parts": [{"text": "完成"}]}}],"usageMetadata": {"promptTokenCount": 100,"candidatesTokenCount": 120},"modelVersion": "gemini-2.5-pro"}` + "\n\n",
 	}
 
-	parser := newSSEUsageParser()
+	parser := newSSEUsageParser("gemini") // Gemini平台测试
 	for _, chunk := range chunks {
 		if err := parser.Feed([]byte(chunk)); err != nil {
 			t.Fatalf("Feed失败: %v", err)
@@ -350,7 +360,7 @@ func TestSSEUsageParser_OpenAIChatCompletionsFormat(t *testing.T) {
 
 `
 
-	parser := newSSEUsageParser()
+	parser := newSSEUsageParser("openai") // OpenAI平台测试
 	if err := parser.Feed([]byte(sseData)); err != nil {
 		t.Fatalf("Feed失败: %v", err)
 	}
@@ -371,7 +381,7 @@ func TestSSEUsageParser_OpenAIChatCompletionsWithCache(t *testing.T) {
 
 `
 
-	parser := newSSEUsageParser()
+	parser := newSSEUsageParser("openai") // OpenAI平台测试
 	if err := parser.Feed([]byte(sseData)); err != nil {
 		t.Fatalf("Feed失败: %v", err)
 	}
@@ -393,7 +403,7 @@ func TestJSONUsageParser_OpenAIChatCompletionsFormat(t *testing.T) {
 	// 测试普通JSON格式的OpenAI Chat Completions响应
 	jsonData := `{"id":"chatcmpl-789","object":"chat.completion","created":1677652288,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"测试响应"},"finish_reason":"stop"}],"usage":{"prompt_tokens":25,"completion_tokens":10,"total_tokens":35}}`
 
-	parser := newJSONUsageParser()
+	parser := newJSONUsageParser("openai") // OpenAI平台测试
 	if err := parser.Feed([]byte(jsonData)); err != nil {
 		t.Fatalf("Feed失败: %v", err)
 	}
@@ -412,7 +422,7 @@ func TestJSONUsageParser_OpenAIChatCompletionsWithCacheFormat(t *testing.T) {
 	// 测试带缓存的OpenAI Chat Completions JSON响应
 	jsonData := `{"id":"chatcmpl-abc","object":"chat.completion","created":1677652288,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"测试响应"},"finish_reason":"stop"}],"usage":{"prompt_tokens":500,"completion_tokens":200,"total_tokens":700,"prompt_tokens_details":{"cached_tokens":350,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":0,"audio_tokens":0}}}`
 
-	parser := newJSONUsageParser()
+	parser := newJSONUsageParser("openai") // OpenAI平台测试
 	if err := parser.Feed([]byte(jsonData)); err != nil {
 		t.Fatalf("Feed失败: %v", err)
 	}

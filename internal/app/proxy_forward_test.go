@@ -27,7 +27,7 @@ func TestHandleSuccessResponse_ExtractsUsageFromJSON(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s := &Server{}
 
-	res, _, err := s.handleSuccessResponse(reqCtx, resp, 0, resp.Header.Clone(), rec)
+	res, _, err := s.handleSuccessResponse(reqCtx, resp, 0, resp.Header.Clone(), rec, "anthropic")
 	if err != nil {
 		t.Fatalf("handleSuccessResponse returned error: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestHandleSuccessResponse_ExtractsUsageFromTextPlainSSE(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s := &Server{}
 
-	res, _, err := s.handleSuccessResponse(reqCtx, resp, 0, resp.Header.Clone(), rec)
+	res, _, err := s.handleSuccessResponse(reqCtx, resp, 0, resp.Header.Clone(), rec, "anthropic")
 	if err != nil {
 		t.Fatalf("handleSuccessResponse returned error: %v", err)
 	}

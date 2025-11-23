@@ -10,7 +10,8 @@ import (
 
 func TestCalculateCost_Sonnet45(t *testing.T) {
 	// 场景：Claude Sonnet 4.5正常请求
-	// Input: 12 tokens, Output: 73 tokens
+	// 重要：Claude API的input_tokens不包含缓存，直接就是非缓存部分
+	// Input: 12 tokens (非缓存), Output: 73 tokens
 	// Cache Read: 17558 tokens, Cache Creation: 278 tokens
 	cost := CalculateCost("claude-sonnet-4-5-20250929", 12, 73, 17558, 278)
 
@@ -269,4 +270,25 @@ func floatEquals(a, b, epsilon float64) bool {
 		diff = -diff
 	}
 	return diff < epsilon
+}
+
+func TestCalculateCost_Gpt4oLegacyFuzzy(t *testing.T) {
+	// 验证gpt-4o-legacy带日期后缀能正确匹配到legacy价格
+	cost := CalculateCost("gpt-4o-legacy-2024-05-13", 1000, 1000, 0, 0)
+
+	// gpt-4o-legacy: input=$5/1M, output=$15/1M
+	// 1000×$5/1M + 1000×$15/1M = $0.02
+	expected := 0.02
+
+	if !floatEquals(cost, expected, 0.000001) {
+		t.Errorf("gpt-4o-legacy-2024-05-13应匹配legacy价格: 实际$%.6f, 期望$%.6f", cost, expected)
+	} else {
+		t.Logf("✅ gpt-4o-legacy带后缀正确匹配: $%.6f", cost)
+	}
+
+	// 验证不会误匹配到gpt-4o
+	gpt4oCost := CalculateCost("gpt-4o", 1000, 1000, 0, 0)
+	if floatEquals(cost, gpt4oCost, 0.000001) {
+		t.Errorf("gpt-4o-legacy和gpt-4o价格应不同！legacy=$%.6f, gpt-4o=$%.6f", cost, gpt4oCost)
+	}
 }

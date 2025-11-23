@@ -2,6 +2,7 @@ package util
 
 import (
 	"fmt"
+	"log"
 	"strings"
 )
 
@@ -20,147 +21,138 @@ type ModelPricing struct {
 	OutputPriceHigh float64 // 高上下文输出价格（$/1M tokens, >200k context）
 }
 
-// modelPricing 统一定价表（Claude + OpenAI）
+// basePricing 基础定价表（无重复，每个模型只定义一次）
 // 数据来源：
 // - Claude: https://docs.claude.com/en/docs/about-claude/pricing
-// - OpenAI: https://openai.com/api/pricing/ (2025年1月数据)
-var modelPricing = map[string]ModelPricing{
+// - OpenAI: https://openai.com/api/pricing/
+// - Gemini: https://ai.google.dev/gemini-api/docs/pricing
+var basePricing = map[string]ModelPricing{
 	// ========== Claude 模型 ==========
-	// Claude 4.x 系列（当前最新）
-	// Claude 4.x 系列（当前最新）
-	"claude-sonnet-4-5-20250929": {InputPrice: 3.00, OutputPrice: 15.00},
-	"claude-sonnet-4-5":          {InputPrice: 3.00, OutputPrice: 15.00}, // 别名
-	"claude-haiku-4-5-20251001":  {InputPrice: 1.00, OutputPrice: 5.00},
-	"claude-haiku-4-5":           {InputPrice: 1.00, OutputPrice: 5.00}, // 别名
-	"claude-opus-4-1-20250805":   {InputPrice: 15.00, OutputPrice: 75.00},
-	"claude-opus-4-1":            {InputPrice: 15.00, OutputPrice: 75.00}, // 别名
+	"claude-sonnet-4-5": {InputPrice: 3.00, OutputPrice: 15.00},
+	"claude-haiku-4-5":  {InputPrice: 1.00, OutputPrice: 5.00},
+	"claude-opus-4-1":   {InputPrice: 15.00, OutputPrice: 75.00},
+	"claude-sonnet-4-0": {InputPrice: 3.00, OutputPrice: 15.00},
+	"claude-opus-4-0":   {InputPrice: 15.00, OutputPrice: 75.00},
+	"claude-3-7-sonnet": {InputPrice: 3.00, OutputPrice: 15.00},
+	"claude-3-5-sonnet": {InputPrice: 3.00, OutputPrice: 15.00},
+	"claude-3-5-haiku":  {InputPrice: 0.80, OutputPrice: 4.00},
+	"claude-3-opus":     {InputPrice: 15.00, OutputPrice: 75.00},
+	"claude-3-sonnet":   {InputPrice: 3.00, OutputPrice: 15.00},
+	"claude-3-haiku":    {InputPrice: 0.25, OutputPrice: 1.25},
 
-	// Claude 4.0 系列（遗留）
-	"claude-sonnet-4-20250514":  {InputPrice: 3.00, OutputPrice: 15.00},
-	"claude-sonnet-4-0":         {InputPrice: 3.00, OutputPrice: 15.00}, // 别名
-	"claude-opus-4-20250514":    {InputPrice: 15.00, OutputPrice: 75.00},
-	"claude-opus-4-0":           {InputPrice: 15.00, OutputPrice: 75.00}, // 别名
-	"claude-3-7-sonnet-20250219": {InputPrice: 3.00, OutputPrice: 15.00},
-	"claude-3-7-sonnet-latest":   {InputPrice: 3.00, OutputPrice: 15.00}, // 别名
+	// ========== OpenAI GPT系列 ==========
+	"gpt-5":           {InputPrice: 1.25, OutputPrice: 10.00},
+	"gpt-5-mini":      {InputPrice: 0.25, OutputPrice: 2.00},
+	"gpt-5-nano":      {InputPrice: 0.05, OutputPrice: 0.40},
+	"gpt-5-pro":       {InputPrice: 15.00, OutputPrice: 120.00},
+	"gpt-4.1":         {InputPrice: 2.00, OutputPrice: 8.00},
+	"gpt-4.1-mini":    {InputPrice: 0.40, OutputPrice: 1.60},
+	"gpt-4.1-nano":    {InputPrice: 0.10, OutputPrice: 0.40},
+	"gpt-4o":          {InputPrice: 2.50, OutputPrice: 10.00},
+	"gpt-4o-legacy":   {InputPrice: 5.00, OutputPrice: 15.00}, // 2024-05-13等旧版
+	"gpt-4o-mini":     {InputPrice: 0.15, OutputPrice: 0.60},
+	"gpt-4-turbo":     {InputPrice: 10.00, OutputPrice: 30.00},
+	"gpt-4":           {InputPrice: 30.00, OutputPrice: 60.00},
+	"gpt-4-32k":       {InputPrice: 60.00, OutputPrice: 120.00},
+	"gpt-3.5-turbo":   {InputPrice: 0.50, OutputPrice: 1.50},
+	"gpt-3.5-legacy":  {InputPrice: 1.50, OutputPrice: 2.00}, // 旧版本
+	"gpt-3.5-16k":     {InputPrice: 3.00, OutputPrice: 4.00},
 
-	// Claude 3.5 系列（遗留）
-	"claude-3-5-sonnet-20241022": {InputPrice: 3.00, OutputPrice: 15.00},
-	"claude-3-5-sonnet-20240620": {InputPrice: 3.00, OutputPrice: 15.00},
-	"claude-3-5-sonnet-latest":   {InputPrice: 3.00, OutputPrice: 15.00}, // 别名
-	"claude-3-5-haiku-20241022":  {InputPrice: 0.80, OutputPrice: 4.00},
-	"claude-3-5-haiku-latest":    {InputPrice: 0.80, OutputPrice: 4.00}, // 别名
+	// ========== OpenAI o系列 ==========
+	"o1":               {InputPrice: 15.00, OutputPrice: 60.00},
+	"o1-pro":           {InputPrice: 150.00, OutputPrice: 600.00},
+	"o1-mini":          {InputPrice: 1.10, OutputPrice: 4.40},
+	"o3":               {InputPrice: 2.00, OutputPrice: 8.00},
+	"o3-pro":           {InputPrice: 20.00, OutputPrice: 80.00},
+	"o3-mini":          {InputPrice: 1.10, OutputPrice: 4.40},
+	"o3-deep-research": {InputPrice: 10.00, OutputPrice: 40.00},
+	"o4-mini":          {InputPrice: 1.10, OutputPrice: 4.40},
 
-	// Claude 3.0 系列（遗留）
-	"claude-3-opus-20240229":  {InputPrice: 15.00, OutputPrice: 75.00},
-	"claude-3-opus-latest":    {InputPrice: 15.00, OutputPrice: 75.00}, // 别名
-	"claude-3-sonnet-20240229": {InputPrice: 3.00, OutputPrice: 15.00},
-	"claude-3-sonnet-latest":   {InputPrice: 3.00, OutputPrice: 15.00}, // 别名
-	"claude-3-haiku-20240307":  {InputPrice: 0.25, OutputPrice: 1.25},
-	"claude-3-haiku-latest":    {InputPrice: 0.25, OutputPrice: 1.25}, // 别名
+	// ========== OpenAI 其他 ==========
+	"computer-use-preview": {InputPrice: 3.00, OutputPrice: 12.00},
+	"codex-mini-latest":    {InputPrice: 1.50, OutputPrice: 6.00},
+	"davinci-002":          {InputPrice: 2.00, OutputPrice: 2.00},
+	"babbage-002":          {InputPrice: 0.40, OutputPrice: 0.40},
 
-	// 通配符匹配（向后兼容）
-	"claude-3-opus":   {InputPrice: 15.00, OutputPrice: 75.00},
-	"claude-3-sonnet": {InputPrice: 3.00, OutputPrice: 15.00},
-	"claude-3-haiku":  {InputPrice: 0.25, OutputPrice: 1.25},
-
-	// ========== OpenAI 模型（Standard层级定价 - 2025年官方）==========
-	// 数据来源: https://platform.openai.com/docs/pricing
-
-	// GPT-5 系列
-	"gpt-5.1":              {InputPrice: 1.25, OutputPrice: 10.00},  // 缓存: $0.125/1M
-	"gpt-5":                {InputPrice: 1.25, OutputPrice: 10.00},  // 缓存: $0.125/1M
-	"gpt-5-mini":           {InputPrice: 0.25, OutputPrice: 2.00},   // 缓存: $0.025/1M
-	"gpt-5-nano":           {InputPrice: 0.05, OutputPrice: 0.40},   // 缓存: $0.005/1M
-	"gpt-5.1-chat-latest":  {InputPrice: 1.25, OutputPrice: 10.00},
-	"gpt-5-chat-latest":    {InputPrice: 1.25, OutputPrice: 10.00},
-	"gpt-5.1-codex":        {InputPrice: 1.25, OutputPrice: 10.00},  // 缓存: $0.125/1M
-	"gpt-5-codex":          {InputPrice: 1.25, OutputPrice: 10.00},
-	"gpt-5.1-codex-mini":   {InputPrice: 0.25, OutputPrice: 2.00},
-	"gpt-5-pro":            {InputPrice: 15.00, OutputPrice: 120.00}, // 无缓存
-	"gpt-5-search-api":     {InputPrice: 1.25, OutputPrice: 10.00},
-
-	// GPT-4.1 系列（新）
-	"gpt-4.1":      {InputPrice: 2.00, OutputPrice: 8.00},  // 缓存: $0.50/1M
-	"gpt-4.1-mini": {InputPrice: 0.40, OutputPrice: 1.60},  // 缓存: $0.10/1M
-	"gpt-4.1-nano": {InputPrice: 0.10, OutputPrice: 0.40},  // 缓存: $0.025/1M
-
-	// GPT-4o 系列
-	"gpt-4o":            {InputPrice: 2.50, OutputPrice: 10.00}, // 缓存: $1.25/1M
-	"gpt-4o-2024-05-13": {InputPrice: 5.00, OutputPrice: 15.00}, // 无缓存
-	"gpt-4o-mini":       {InputPrice: 0.15, OutputPrice: 0.60},  // 缓存: $0.075/1M
-	"chatgpt-4o-latest": {InputPrice: 5.00, OutputPrice: 15.00},
-
-	// GPT-4 Turbo 系列（Legacy）
-	"gpt-4-turbo":              {InputPrice: 10.00, OutputPrice: 30.00},
-	"gpt-4-turbo-2024-04-09":   {InputPrice: 10.00, OutputPrice: 30.00},
-	"gpt-4-0125-preview":       {InputPrice: 10.00, OutputPrice: 30.00},
-	"gpt-4-1106-preview":       {InputPrice: 10.00, OutputPrice: 30.00},
-	"gpt-4-1106-vision-preview": {InputPrice: 10.00, OutputPrice: 30.00},
-
-	// GPT-4 标准系列（Legacy）
-	"gpt-4":          {InputPrice: 30.00, OutputPrice: 60.00},
-	"gpt-4-0613":     {InputPrice: 30.00, OutputPrice: 60.00},
-	"gpt-4-0314":     {InputPrice: 30.00, OutputPrice: 60.00},
-	"gpt-4-32k":      {InputPrice: 60.00, OutputPrice: 120.00},
-	"gpt-4-32k-0613": {InputPrice: 60.00, OutputPrice: 120.00},
-
-	// GPT-3.5 系列（Legacy）
-	"gpt-3.5-turbo":          {InputPrice: 0.50, OutputPrice: 1.50},
-	"gpt-3.5-turbo-0125":     {InputPrice: 0.50, OutputPrice: 1.50},
-	"gpt-3.5-turbo-1106":     {InputPrice: 1.00, OutputPrice: 2.00},
-	"gpt-3.5-turbo-0613":     {InputPrice: 1.50, OutputPrice: 2.00},
-	"gpt-3.5-0301":           {InputPrice: 1.50, OutputPrice: 2.00},
-	"gpt-3.5-turbo-instruct": {InputPrice: 1.50, OutputPrice: 2.00},
-	"gpt-3.5-turbo-16k-0613": {InputPrice: 3.00, OutputPrice: 4.00},
-
-	// o系列（推理模型）
-	"o1":                    {InputPrice: 15.00, OutputPrice: 60.00}, // 缓存: $7.50/1M
-	"o1-pro":                {InputPrice: 150.00, OutputPrice: 600.00}, // 无缓存
-	"o1-mini":               {InputPrice: 1.10, OutputPrice: 4.40},   // 缓存: $0.55/1M
-	"o3":                    {InputPrice: 2.00, OutputPrice: 8.00},   // 缓存: $0.50/1M
-	"o3-pro":                {InputPrice: 20.00, OutputPrice: 80.00}, // 无缓存
-	"o3-mini":               {InputPrice: 1.10, OutputPrice: 4.40},   // 缓存: $0.55/1M
-	"o3-deep-research":      {InputPrice: 10.00, OutputPrice: 40.00}, // 缓存: $2.50/1M
-	"o4-mini":               {InputPrice: 1.10, OutputPrice: 4.40},   // 缓存: $0.275/1M
-	"o4-mini-deep-research": {InputPrice: 2.00, OutputPrice: 8.00},   // 缓存: $0.50/1M
-
-	// 其他专用模型
-	"computer-use-preview":       {InputPrice: 3.00, OutputPrice: 12.00},
-	"codex-mini-latest":          {InputPrice: 1.50, OutputPrice: 6.00},
-	"gpt-4o-mini-search-preview": {InputPrice: 0.15, OutputPrice: 0.60},
-	"gpt-4o-search-preview":      {InputPrice: 2.50, OutputPrice: 10.00},
-	"davinci-002":                {InputPrice: 2.00, OutputPrice: 2.00},
-	"babbage-002":                {InputPrice: 0.40, OutputPrice: 0.40},
-
-	// ========== Gemini 模型（2025年官方定价）==========
-	// 数据来源: https://ai.google.dev/gemini-api/docs/pricing
-	// 注意：部分模型有分段定价（≤200k vs >200k tokens）
-
-	// Gemini 3.0 系列（分段定价）
+	// ========== Gemini 模型 ==========
 	"gemini-3-pro": {
-		InputPrice:      2.00,
-		OutputPrice:     12.00,
-		InputPriceHigh:  4.00,  // >200k context
-		OutputPriceHigh: 18.00, // >200k context
+		InputPrice: 2.00, OutputPrice: 12.00,
+		InputPriceHigh: 4.00, OutputPriceHigh: 18.00,
 	},
-
-	// Gemini 2.5 系列
 	"gemini-2.5-pro": {
-		InputPrice:      1.25,
-		OutputPrice:     10.00,
-		InputPriceHigh:  2.50,  // >200k context
-		OutputPriceHigh: 15.00, // >200k context
+		InputPrice: 1.25, OutputPrice: 10.00,
+		InputPriceHigh: 2.50, OutputPriceHigh: 15.00,
 	},
-	"gemini-2.5-flash":      {InputPrice: 0.30, OutputPrice: 2.50},  // 无分段
-	"gemini-2.5-flash-lite": {InputPrice: 0.10, OutputPrice: 0.40},  // 无分段
-
-	// Gemini 2.0 系列（无分段）
+	"gemini-2.5-flash":      {InputPrice: 0.30, OutputPrice: 2.50},
+	"gemini-2.5-flash-lite": {InputPrice: 0.10, OutputPrice: 0.40},
 	"gemini-2.0-flash":      {InputPrice: 0.10, OutputPrice: 0.40},
 	"gemini-2.0-flash-lite": {InputPrice: 0.075, OutputPrice: 0.30},
+	"gemini-1.5-pro":        {InputPrice: 1.25, OutputPrice: 5.00},
+	"gemini-1.5-flash":      {InputPrice: 0.20, OutputPrice: 0.60},
+}
 
-	// Gemini 1.5 系列（向后兼容，无分段）
-	"gemini-1.5-pro":   {InputPrice: 1.25, OutputPrice: 5.00},
-	"gemini-1.5-flash": {InputPrice: 0.20, OutputPrice: 0.60},
+// modelAliases 模型别名映射（多对一）
+// key: 别名, value: basePricing中的基础模型名
+var modelAliases = map[string]string{
+	// Claude别名
+	"claude-sonnet-4-5-20250929": "claude-sonnet-4-5",
+	"claude-haiku-4-5-20251001":  "claude-haiku-4-5",
+	"claude-opus-4-1-20250805":   "claude-opus-4-1",
+	"claude-sonnet-4-20250514":   "claude-sonnet-4-0",
+	"claude-opus-4-20250514":     "claude-opus-4-0",
+	"claude-3-7-sonnet-20250219": "claude-3-7-sonnet",
+	"claude-3-7-sonnet-latest":   "claude-3-7-sonnet",
+	"claude-3-5-sonnet-20241022": "claude-3-5-sonnet",
+	"claude-3-5-sonnet-20240620": "claude-3-5-sonnet",
+	"claude-3-5-sonnet-latest":   "claude-3-5-sonnet",
+	"claude-3-5-haiku-20241022":  "claude-3-5-haiku",
+	"claude-3-5-haiku-latest":    "claude-3-5-haiku",
+	"claude-3-opus-20240229":     "claude-3-opus",
+	"claude-3-opus-latest":       "claude-3-opus",
+	"claude-3-sonnet-20240229":   "claude-3-sonnet",
+	"claude-3-sonnet-latest":     "claude-3-sonnet",
+	"claude-3-haiku-20240307":    "claude-3-haiku",
+	"claude-3-haiku-latest":      "claude-3-haiku",
+
+	// OpenAI GPT别名
+	"gpt-5.1":                    "gpt-5",
+	"gpt-5.1-chat-latest":        "gpt-5",
+	"gpt-5-chat-latest":          "gpt-5",
+	"gpt-5.1-codex":              "gpt-5",
+	"gpt-5-codex":                "gpt-5",
+	"gpt-5.1-codex-mini":         "gpt-5-mini",
+	"gpt-5-search-api":           "gpt-5",
+	"gpt-4o-2024-05-13":          "gpt-4o-legacy",
+	"chatgpt-4o-latest":          "gpt-4o-legacy",
+	"gpt-4o-mini-search-preview": "gpt-4o-mini",
+	"gpt-4o-search-preview":      "gpt-4o",
+	"gpt-4-turbo-2024-04-09":     "gpt-4-turbo",
+	"gpt-4-0125-preview":         "gpt-4-turbo",
+	"gpt-4-1106-preview":         "gpt-4-turbo",
+	"gpt-4-1106-vision-preview":  "gpt-4-turbo",
+	"gpt-4-0613":                 "gpt-4",
+	"gpt-4-0314":                 "gpt-4",
+	"gpt-4-32k-0613":             "gpt-4-32k",
+	"gpt-3.5-turbo-0125":         "gpt-3.5-turbo",
+	"gpt-3.5-turbo-1106":         "gpt-3.5-legacy",
+	"gpt-3.5-turbo-0613":         "gpt-3.5-legacy",
+	"gpt-3.5-0301":               "gpt-3.5-legacy",
+	"gpt-3.5-turbo-instruct":     "gpt-3.5-legacy",
+	"gpt-3.5-turbo-16k-0613":     "gpt-3.5-16k",
+
+	// o系列别名
+	"o4-mini-deep-research": "o3-deep-research", // 相同定价
+}
+
+// getPricing 获取模型定价（先查别名再查基础表）
+func getPricing(model string) (ModelPricing, bool) {
+	// 先查别名
+	if base, ok := modelAliases[model]; ok {
+		model = base
+	}
+	// 再查基础表
+	p, ok := basePricing[model]
+	return p, ok
 }
 
 const (
@@ -197,46 +189,61 @@ const (
 //
 // 返回：总成本（美元），如果模型未知则返回0.0
 func CalculateCost(model string, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
-	pricing, ok := modelPricing[model]
+	// 防御性检查:拒绝负数token
+	if inputTokens < 0 || outputTokens < 0 || cacheReadTokens < 0 || cacheCreationTokens < 0 {
+		log.Printf("ERROR: negative tokens detected (model=%s): input=%d output=%d cache_read=%d cache_create=%d",
+			model, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
+		return 0.0
+	}
+
+	pricing, ok := getPricing(model)
 	if !ok {
-		// 尝试模糊匹配（例如：claude-3-opus-xxx → claude-3-opus）
+		// 尝试模糊匹配(例如:claude-3-opus-xxx → claude-3-opus)
 		pricing, ok = fuzzyMatchModel(model)
 		if !ok {
 			return 0.0 // 未知模型
 		}
 	}
 
-	// 成本计算公式（单位：美元）
-	// 注意：价格是per 1M tokens，需要除以1,000,000
+	// 成本计算公式(单位:美元)
+	// 注意:价格是per 1M tokens,需要除以1,000,000
 	cost := 0.0
 
 	// Gemini长上下文分段定价逻辑
-	// 如果模型支持分段定价（InputPriceHigh > 0）且输入侧token数 > 200k，使用高价格
-	// 注意：阈值仅针对输入侧（prompt + cache），输出不计入
-	totalInputTokens := inputTokens + cacheReadTokens + cacheCreationTokens
-	useHighPricing := pricing.InputPriceHigh > 0 && totalInputTokens > geminiLongContextThreshold
+	// 官方文档: https://ai.google.dev/pricing (updated: 2025-01)
+	// 阈值判断:仅针对输入侧非缓存token(不包括输出,不包括缓存)
+	// 重要:Gemini目前不支持Prompt Caching,cacheReadTokens/cacheCreationTokens应为0
+	// 如果未来支持缓存,需重新评估阈值计算逻辑
+	useHighPricing := pricing.InputPriceHigh > 0 && inputTokens > geminiLongContextThreshold
 
 	// 选择适用的价格
 	inputPricePerM := pricing.InputPrice
 	outputPricePerM := pricing.OutputPrice
 	if useHighPricing {
 		inputPricePerM = pricing.InputPriceHigh
-		// 输出价格保持不变，因为Gemini长上下文定价仅影响输入侧
-		// outputPricePerM 保持 pricing.OutputPrice
+		outputPricePerM = pricing.OutputPriceHigh // Gemini长上下文定价同时影响输入和输出
 	}
 
-	// 检测是否为OpenAI模型（处理缓存语义差异）
+	// 检测是否为OpenAI模型(处理缓存语义差异)
 	isOpenAI := isOpenAIModel(model)
 
 	// 计算实际计费的输入token数量
+	// 重要:不同平台的input_tokens语义不同!
+	// - Claude/Gemini: input_tokens仅为非缓存部分,cache_read_input_tokens单独计费
+	// - OpenAI: prompt_tokens包含缓存,cached_tokens需要从中扣除避免双计
+	// 官方文档:
+	//   - Claude: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
+	//   - OpenAI: https://platform.openai.com/docs/guides/prompt-caching
 	billableInputTokens := inputTokens
 	if isOpenAI && cacheReadTokens > 0 {
-		// OpenAI语义：prompt_tokens包含cached_tokens，需要减去避免双计
-		// 例如：prompt_tokens=1000, cached_tokens=800
+		// OpenAI语义:prompt_tokens包含cached_tokens,需要减去避免双计
+		// 例如:prompt_tokens=1000, cached_tokens=800
 		//      → 实际非缓存部分 = 1000 - 800 = 200
 		billableInputTokens = inputTokens - cacheReadTokens
 		if billableInputTokens < 0 {
-			billableInputTokens = 0 // 防御性处理
+			billableInputTokens = 0 // 防御性处理(理论上不应出现)
+			log.Printf("WARN: OpenAI model %s has cacheReadTokens(%d) > inputTokens(%d), clamped to 0",
+				model, cacheReadTokens, inputTokens)
 		}
 	}
 
@@ -260,7 +267,7 @@ func CalculateCost(model string, inputTokens, outputTokens, cacheReadTokens, cac
 		cost += float64(cacheReadTokens) * cacheReadPrice / 1_000_000
 	}
 
-	// 4. 缓存创建成本（125%基础价格，仅Claude支持）
+	// 4. 缓存创建成本(125%基础价格,仅Claude支持)
 	if cacheCreationTokens > 0 {
 		cacheWritePrice := inputPricePerM * cacheWriteMultiplier
 		cost += float64(cacheCreationTokens) * cacheWritePrice / 1_000_000
@@ -286,88 +293,45 @@ func isOpenAIModel(model string) bool {
 
 // fuzzyMatchModel 模糊匹配模型名称
 // 例如：claude-3-opus-20240229-extended → claude-3-opus
-//      gpt-4o-2024-12-01 → gpt-4o
+//
+//	gpt-4o-2024-12-01 → gpt-4o
 func fuzzyMatchModel(model string) (ModelPricing, bool) {
 	lowerModel := strings.ToLower(model)
 
-	// 尝试通用前缀匹配（按优先级排序：更具体的前缀优先）
+	// 硬编码前缀列表（按优先级和长度排序，更具体的前缀优先）
+	// 优点：比动态排序快，可预测，并发安全
 	prefixes := []string{
-		// Claude 模型
-		"claude-sonnet-4-5",
-		"claude-haiku-4-5",
-		"claude-opus-4-1",
-		"claude-sonnet-4-0",
-		"claude-opus-4-0",
-		"claude-3-7-sonnet",
-		"claude-3-5-sonnet",
-		"claude-3-5-haiku",
-		"claude-3-opus",
-		"claude-3-sonnet",
-		"claude-3-haiku",
+		// Claude模型（按版本降序）
+		"claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-1",
+		"claude-sonnet-4-0", "claude-opus-4-0", "claude-3-7-sonnet",
+		"claude-3-5-sonnet", "claude-3-5-haiku",
+		"claude-3-opus", "claude-3-sonnet", "claude-3-haiku",
 
-		// Gemini 模型（按优先级排序：更具体的前缀优先）
-		"gemini-3-pro",
-		"gemini-2.5-flash-lite",
-		"gemini-2.5-flash",
-		"gemini-2.5-pro",
-		"gemini-2.0-flash-lite",
-		"gemini-2.0-flash",
-		"gemini-1.5-pro",
-		"gemini-1.5-flash",
+		// Gemini模型（按版本降序，更长的前缀优先）
+		"gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.5-pro",
+		"gemini-2.0-flash-lite", "gemini-2.0-flash",
+		"gemini-3-pro", "gemini-1.5-pro", "gemini-1.5-flash",
 
-		// OpenAI 模型（按优先级排序：更具体的前缀优先）
-		"gpt-5.1-codex-mini",
-		"gpt-5.1-codex",
-		"gpt-5.1-chat-latest",
-		"gpt-5.1",
-		"gpt-5-codex",
-		"gpt-5-chat-latest",
-		"gpt-5-search-api",
-		"gpt-5-pro",
-		"gpt-5-nano",
-		"gpt-5-mini",
-		"gpt-5",
-		"gpt-4.1-nano",
-		"gpt-4.1-mini",
-		"gpt-4.1",
-		"chatgpt-4o-latest",
-		"gpt-4o-mini-search-preview",
-		"gpt-4o-search-preview",
-		"gpt-4o-mini",
-		"gpt-4o",
-		"gpt-4-turbo-vision",
-		"gpt-4-turbo-preview",
-		"gpt-4-turbo",
-		"gpt-4-32k",
-		"gpt-4",
-		"gpt-3.5-turbo-instruct",
-		"gpt-3.5-turbo-16k",
-		"gpt-3.5-turbo",
-		"o4-mini-deep-research",
-		"o4-mini",
-		"o3-deep-research",
-		"o3-pro",
-		"o3-mini",
-		"o3",
-		"o1-pro",
-		"o1-mini",
-		"o1",
-		"computer-use-preview",
-		"codex-mini-latest",
-		"davinci-002",
-		"babbage-002",
+		// OpenAI GPT系列（更长的前缀优先，避免gpt-4o-legacy被gpt-4o截断）
+		"gpt-5-pro", "gpt-5-nano", "gpt-5-mini", "gpt-5",
+		"gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1",
+		"gpt-4o-legacy", "gpt-4o-mini", "gpt-4o", // legacy必须在gpt-4o之前
+		"gpt-4-turbo", "gpt-4-32k", "gpt-4",
+		"gpt-3.5-legacy", "gpt-3.5-16k", "gpt-3.5-turbo",
+
+		// OpenAI o系列
+		"o3-deep-research", "o3-pro", "o3-mini", "o3",
+		"o1-pro", "o1-mini", "o1", "o4-mini",
+
+		// OpenAI其他专用模型
+		"computer-use-preview", "codex-mini-latest",
+		"davinci-002", "babbage-002",
 	}
 
 	for _, prefix := range prefixes {
 		if strings.HasPrefix(lowerModel, prefix) {
-			if pricing, ok := modelPricing[prefix]; ok {
+			if pricing, ok := basePricing[prefix]; ok {
 				return pricing, true
-			}
-			// 尝试查找带日期后缀的版本（如gpt-4o-2024-11-20）
-			for key, pricing := range modelPricing {
-				if strings.HasPrefix(key, prefix) {
-					return pricing, true
-				}
 			}
 		}
 	}

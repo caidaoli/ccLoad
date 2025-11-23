@@ -5,6 +5,7 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 	"context"
+	"log"
 	"time"
 )
 
@@ -160,7 +161,15 @@ func (s *Server) handleProxySuccess(
 				res.CacheCreationInputTokens,
 			)
 
-			_ = s.store.UpdateTokenStats(updateCtx, reqCtx.tokenHash, true, duration, isStreaming, res.FirstByteTime, promptTokens, completionTokens, costUSD)
+			// ✅ 财务安全检查：费用为0但有token消耗时告警（可能是定价缺失）
+			if costUSD == 0.0 && (res.InputTokens > 0 || res.OutputTokens > 0) {
+				log.Printf("WARN: billing cost=0 for model=%s with tokens (in=%d, out=%d, cache_r=%d, cache_c=%d), pricing missing?",
+					actualModel, res.InputTokens, res.OutputTokens, res.CacheReadInputTokens, res.CacheCreationInputTokens)
+			}
+
+			if err := s.store.UpdateTokenStats(updateCtx, reqCtx.tokenHash, true, duration, isStreaming, res.FirstByteTime, promptTokens, completionTokens, costUSD); err != nil {
+				log.Printf("ERROR: failed to update token stats for hash=%s: %v", reqCtx.tokenHash, err)
+			}
 		}()
 	}
 
