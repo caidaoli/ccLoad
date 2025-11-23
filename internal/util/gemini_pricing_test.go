@@ -4,42 +4,42 @@ import "testing"
 
 func TestCalculateCost_Gemini(t *testing.T) {
 	tests := []struct {
-		name             string
-		model            string
-		inputTokens      int
-		outputTokens     int
-		expectedCostUSD  float64
-		description      string
+		name            string
+		model           string
+		inputTokens     int
+		outputTokens    int
+		expectedCostUSD float64
+		description     string
 	}{
 		{
 			name:            "gemini-2.5-flash基础用量",
 			model:           "gemini-2.5-flash",
-			inputTokens:     1_000_000, // 1M tokens
-			outputTokens:    1_000_000, // 1M tokens
+			inputTokens:     1_000_000,   // 1M tokens
+			outputTokens:    1_000_000,   // 1M tokens
 			expectedCostUSD: 0.30 + 2.50, // $0.30/M input + $2.50/M output
 			description:     "验证gemini-2.5-flash定价：1M input + 1M output = $2.80",
 		},
 		{
 			name:            "gemini-2.5-pro高级模型（会触发长上下文）",
 			model:           "gemini-2.5-pro",
-			inputTokens:     500_000, // 0.5M tokens
-			outputTokens:    100_000, // 0.1M tokens (总计600k > 200k)
+			inputTokens:     500_000,              // 0.5M tokens
+			outputTokens:    100_000,              // 0.1M tokens (总计600k > 200k)
 			expectedCostUSD: 2.50*0.5 + 15.00*0.1, // 触发长上下文定价
 			description:     "验证gemini-2.5-pro：0.5M input + 0.1M output (总计600k) = $2.75（长上下文）",
 		},
 		{
 			name:            "gemini-3-pro最新模型（会触发长上下文）",
 			model:           "gemini-3-pro",
-			inputTokens:     250_000, // 0.25M tokens
-			outputTokens:    50_000,  // 0.05M tokens (总计300k > 200k)
+			inputTokens:     250_000,                // 0.25M tokens
+			outputTokens:    50_000,                 // 0.05M tokens (总计300k > 200k)
 			expectedCostUSD: 4.00*0.25 + 18.00*0.05, // 触发长上下文定价
 			description:     "验证gemini-3-pro：0.25M input + 0.05M output (总计300k) = $1.90（长上下文）",
 		},
 		{
 			name:            "gemini-2.0-flash经济型",
 			model:           "gemini-2.0-flash",
-			inputTokens:     2_000_000, // 2M tokens
-			outputTokens:    500_000,   // 0.5M tokens
+			inputTokens:     2_000_000,           // 2M tokens
+			outputTokens:    500_000,             // 0.5M tokens
 			expectedCostUSD: 0.10*2.0 + 0.40*0.5, // $0.10/M * 2 + $0.40/M * 0.5
 			description:     "验证gemini-2.0-flash定价：2M input + 0.5M output = $0.40",
 		},
@@ -104,16 +104,16 @@ func TestCalculateCost_GeminiLongContext(t *testing.T) {
 		{
 			name:            "gemini-3-pro标准上下文（≤200k）",
 			model:           "gemini-3-pro",
-			inputTokens:     150_000, // 150k tokens
-			outputTokens:    50_000,  // 50k tokens (总计200k)
+			inputTokens:     150_000,                // 150k tokens
+			outputTokens:    50_000,                 // 50k tokens (总计200k)
 			expectedCostUSD: 2.00*0.15 + 12.00*0.05, // 使用标准价格
 			description:     "总计200k tokens，应使用标准定价 $2.00/$12.00",
 		},
 		{
 			name:            "gemini-3-pro长上下文（>200k）",
 			model:           "gemini-3-pro",
-			inputTokens:     150_000, // 150k tokens (输入侧未超阈值)
-			outputTokens:    51_000,  // 51k tokens
+			inputTokens:     150_000,                 // 150k tokens (输入侧未超阈值)
+			outputTokens:    51_000,                  // 51k tokens
 			expectedCostUSD: 2.00*0.15 + 12.00*0.051, // 使用标准价格（输入150k < 200k）
 			description:     "输入150k tokens，使用标准定价 $2.00/$12.00",
 		},
@@ -136,16 +136,16 @@ func TestCalculateCost_GeminiLongContext(t *testing.T) {
 		{
 			name:            "gemini-2.5-flash无分段定价（大量tokens）",
 			model:           "gemini-2.5-flash",
-			inputTokens:     500_000, // 500k tokens
-			outputTokens:    500_000, // 500k tokens (总计1M)
+			inputTokens:     500_000,             // 500k tokens
+			outputTokens:    500_000,             // 500k tokens (总计1M)
 			expectedCostUSD: 0.30*0.5 + 2.50*0.5, // 始终使用相同价格
 			description:     "Flash模型无分段定价，即使>200k也用标准价格",
 		},
 		{
 			name:            "gemini-3-pro超大上下文",
 			model:           "gemini-3-pro",
-			inputTokens:     1_000_000, // 1M tokens
-			outputTokens:    500_000,   // 500k tokens (总计1.5M)
+			inputTokens:     1_000_000,            // 1M tokens
+			outputTokens:    500_000,              // 500k tokens (总计1.5M)
 			expectedCostUSD: 4.00*1.0 + 18.00*0.5, // 使用高价格
 			description:     "总计1.5M tokens，远超200k阈值，使用长上下文定价",
 		},

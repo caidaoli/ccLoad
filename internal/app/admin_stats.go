@@ -127,10 +127,10 @@ func (s *Server) HandlePublicSummary(c *gin.Context) {
 		// 初始化类型统计
 		if _, exists := typeStats[channelType]; !exists {
 			typeStats[channelType] = &TypeSummary{
-				ChannelType:    channelType,
-				TotalRequests:  0,
+				ChannelType:     channelType,
+				TotalRequests:   0,
 				SuccessRequests: 0,
-				ErrorRequests:  0,
+				ErrorRequests:   0,
 			}
 		}
 
@@ -174,15 +174,15 @@ func (s *Server) HandlePublicSummary(c *gin.Context) {
 
 // TypeSummary 按渠道类型的统计摘要
 type TypeSummary struct {
-	ChannelType             string  `json:"channel_type"`
-	TotalRequests           int     `json:"total_requests"`
-	SuccessRequests         int     `json:"success_requests"`
-	ErrorRequests           int     `json:"error_requests"`
-	TotalInputTokens        int64   `json:"total_input_tokens,omitempty"`        // 所有类型
-	TotalOutputTokens       int64   `json:"total_output_tokens,omitempty"`       // 所有类型
-	TotalCacheReadTokens    int64   `json:"total_cache_read_tokens,omitempty"`   // Claude/Codex专用（prompt caching）
-	TotalCacheCreationTokens int64  `json:"total_cache_creation_tokens,omitempty"` // Claude/Codex专用（prompt caching）
-	TotalCost               float64 `json:"total_cost,omitempty"`                // 所有类型
+	ChannelType              string  `json:"channel_type"`
+	TotalRequests            int     `json:"total_requests"`
+	SuccessRequests          int     `json:"success_requests"`
+	ErrorRequests            int     `json:"error_requests"`
+	TotalInputTokens         int64   `json:"total_input_tokens,omitempty"`          // 所有类型
+	TotalOutputTokens        int64   `json:"total_output_tokens,omitempty"`         // 所有类型
+	TotalCacheReadTokens     int64   `json:"total_cache_read_tokens,omitempty"`     // Claude/Codex专用（prompt caching）
+	TotalCacheCreationTokens int64   `json:"total_cache_creation_tokens,omitempty"` // Claude/Codex专用（prompt caching）
+	TotalCost                float64 `json:"total_cost,omitempty"`                  // 所有类型
 }
 
 // fetchChannelTypesMap 查询所有渠道的类型映射
