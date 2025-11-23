@@ -1,4 +1,4 @@
-# ccLoad - Claude Code & Codex & Gemini API 代理服务
+# ccLoad - Claude Code & Codex & Gemini & OpenAI 兼容 API 代理服务
 
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8.svg)](https://golang.org)
 [![Gin](https://img.shields.io/badge/Gin-v1.10+-blue.svg)](https://github.com/gin-gonic/gin)
@@ -7,7 +7,7 @@
 [![GitHub Actions](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-2088FF.svg)](https://github.com/features/actions)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-一个高性能的 Claude Code & Codex & Gemini API 透明代理服务，使用 Go 1.25.0 和 Gin 框架构建。支持多渠道负载均衡、故障切换和实时监控。
+一个高性能的 Claude Code & Codex & Gemini & OpenAI 兼容 API 透明代理服务，使用 Go 1.25.0 和 Gin 框架构建。支持多渠道负载均衡、故障切换和实时监控。
 
 ## 🎯 痛点解决
 
@@ -32,7 +32,7 @@ ccLoad 通过以下特性解决这些痛点：
 - 🔀 **智能路由** - 基于优先级和轮询的渠道选择算法，支持多Key负载均衡
 - 🛡️ **故障切换** - 自动失败检测和指数退避冷却机制（1s → 2s → 4s → ... → 30min）
 - 📊 **实时监控** - 内置趋势分析、日志记录和统计面板
-- 🎯 **透明代理** - 支持Claude和Gemini API，智能识别认证方式
+- 🎯 **透明代理** - 支持Claude、Gemini和OpenAI兼容API，智能识别认证方式
 - 📦 **单文件部署** - 无外部依赖，包含嵌入式 SQLite
 - 🔒 **安全认证** - 基于 Token 的管理界面和API访问控制
 - 🏷️ **构建标签** - 支持 GOTAGS，默认启用高性能 JSON 库
@@ -394,6 +394,23 @@ curl -X POST http://localhost:8080/v1/messages \
   }'
 ```
 
+**OpenAI 兼容 API 代理（Chat Completions）**：
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-api-token" \
+  -d '{
+    "model": "gpt-4o",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Hello!"
+      }
+    ]
+  }'
+```
+
 ### 本地 Token 计数
 
 快速估算请求的 Token 消耗（无需调用上游 API）：
@@ -525,7 +542,7 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 
 **异步处理架构**:
 - Redis同步（单worker协程，非阻塞触发，响应<1ms）
-- 日志系统（1000条缓冲 + 3个worker，批量写入）
+- 日志系统（1000条缓冲 + 单worker，保证FIFO顺序）
 - Token/日志清理（后台协程，定期维护）
 
 **统一响应系统** :
@@ -534,7 +551,7 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 - 自动提取应用级错误码，统一JSON格式
 
 **连接池优化**:
-- SQLite: 内存模式10个连接/文件模式5个连接，1分钟生命周期
+- SQLite: 内存模式10个连接/文件模式5个连接，5分钟生命周期
 - HTTP客户端: 100最大连接，30秒超时，keepalive优化
 - TLS: 会话缓存（1024容量），减少握手耗时
 
@@ -554,6 +571,7 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 | `CCLOAD_MAX_CONCURRENCY` | `1000` | 最大并发请求数（限制同时处理的代理请求数量） |
 | `CCLOAD_MAX_BODY_BYTES` | `2097152` | 请求体最大字节数（2MB，防止大包打爆内存） |
 | `CCLOAD_UPSTREAM_FIRST_BYTE_TIMEOUT` | 不设置 | 上游首字节超时（单位：秒，检测上游慢响应/无响应） |
+| `CCLOAD_LOG_RETENTION_DAYS` | `7` | 日志保留天数（1-365天，超出范围使用默认值） |
 | `CCLOAD_ENABLE_WARMUP` | `false` | 启用启动预热（消除首次请求的TLS握手延迟10-50ms） |
 | `CCLOAD_SKIP_TLS_VERIFY` | `false` | 跳过TLS证书验证（**仅开发环境**，生产环境严禁使用） |
 | `REDIS_URL` | 无 | Redis连接URL（可选，用于渠道数据异步备份） |
