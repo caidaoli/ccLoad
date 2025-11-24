@@ -282,6 +282,13 @@ func classifyErrorByString(errStr string) (int, ErrorLevel, bool) {
 		return 499, ErrorLevelClient, false // StatusConnectionReset
 	}
 
+	// ✅ 空响应检测：上游返回200但Content-Length=0
+	// 常见于CDN/代理错误、认证失败等异常场景，应触发渠道级重试
+	if strings.Contains(errLower, "empty response") &&
+		strings.Contains(errLower, "content-length: 0") {
+		return 502, ErrorLevelChannel, true // 归类为Bad Gateway(上游异常)
+	}
+
 	// Connection refused - 应该重试其他渠道
 	if strings.Contains(errLower, "connection refused") {
 		return 502, ErrorLevelChannel, true

@@ -221,6 +221,20 @@ func (s *Server) handleResponse(
 		return s.handleErrorResponse(reqCtx, resp, firstByteTime, hdrClone)
 	}
 
+	// ✅ 空响应检测：200状态码但Content-Length=0视为上游故障
+	// 常见于CDN/代理错误、认证失败等异常场景，应触发渠道级重试
+	if contentLen := resp.Header.Get("Content-Length"); contentLen == "0" {
+		duration := reqCtx.Duration()
+		err := fmt.Errorf("upstream returned empty response (200 OK with Content-Length: 0)")
+
+		return &fwResult{
+			Status:        resp.StatusCode, // 保留原始200状态码
+			Header:        hdrClone,
+			Body:          []byte(err.Error()),
+			FirstByteTime: firstByteTime,
+		}, duration, err
+	}
+
 	// 成功状态：流式转发
 	return s.handleSuccessResponse(reqCtx, resp, firstByteTime, hdrClone, w, channelType)
 }
@@ -280,12 +294,13 @@ func (s *Server) forwardAttempt(
 	res, duration, err := s.forwardOnceAsync(ctx, cfg, selectedKey, reqCtx.requestMethod,
 		bodyToSend, reqCtx.header, reqCtx.rawQuery, reqCtx.requestPath, w)
 
-	// 处理网络错误
+	// 处理网络错误或异常响应（如空响应）
+	// ✅ 修复：handleResponse可能返回err即使StatusCode=200（例如Content-Length=0）
 	if err != nil {
 		return s.handleNetworkError(ctx, cfg, keyIndex, actualModel, selectedKey, duration, err)
 	}
 
-	// 处理成功响应
+	// 处理成功响应（仅当err==nil且状态码2xx时）
 	if res.Status >= 200 && res.Status < 300 {
 		return s.handleProxySuccess(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
 	}

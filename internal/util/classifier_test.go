@@ -2,6 +2,7 @@ package util
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -257,6 +258,53 @@ func TestClassifyError_ContextCanceled(t *testing.T) {
 			expectedLevel:  ErrorLevelChannel,
 			expectedRetry:  true,
 			reason:         "上游超时（context.DeadlineExceeded）应返回504+ErrorLevelChannel，可重试其他渠道",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			statusCode, errorLevel, shouldRetry := ClassifyError(tt.err)
+
+			if statusCode != tt.expectedStatus {
+				t.Errorf("❌ 状态码错误: 期望 %d, 实际 %d (%s)", tt.expectedStatus, statusCode, tt.reason)
+			}
+			if errorLevel != tt.expectedLevel {
+				t.Errorf("❌ 错误级别错误: 期望 %v, 实际 %v (%s)", tt.expectedLevel, errorLevel, tt.reason)
+			}
+			if shouldRetry != tt.expectedRetry {
+				t.Errorf("❌ 重试标志错误: 期望 %v, 实际 %v (%s)", tt.expectedRetry, shouldRetry, tt.reason)
+			}
+
+			t.Logf("✅ %s - 状态码:%d, 错误级别:%v, 重试:%v", tt.reason, statusCode, errorLevel, shouldRetry)
+		})
+	}
+}
+
+// 测试空响应错误分类
+func TestClassifyError_EmptyResponse(t *testing.T) {
+	tests := []struct {
+		name           string
+		err            error
+		expectedStatus int
+		expectedLevel  ErrorLevel
+		expectedRetry  bool
+		reason         string
+	}{
+		{
+			name:           "empty_response_200_with_content_length_0",
+			err:            errors.New("upstream returned empty response (200 OK with Content-Length: 0)"),
+			expectedStatus: 502,
+			expectedLevel:  ErrorLevelChannel,
+			expectedRetry:  true,
+			reason:         "200状态码但Content-Length=0应视为上游故障，触发渠道级重试",
+		},
+		{
+			name:           "empty_response_uppercase",
+			err:            errors.New("Upstream Returned Empty Response (200 OK with Content-Length: 0)"),
+			expectedStatus: 502,
+			expectedLevel:  ErrorLevelChannel,
+			expectedRetry:  true,
+			reason:         "大小写不敏感匹配",
 		},
 	}
 
