@@ -30,13 +30,14 @@ var basePricing = map[string]ModelPricing{
 	// ========== Claude 模型 ==========
 	"claude-sonnet-4-5": {InputPrice: 3.00, OutputPrice: 15.00},
 	"claude-haiku-4-5":  {InputPrice: 1.00, OutputPrice: 5.00},
-	"claude-opus-4-1":   {InputPrice: 15.00, OutputPrice: 75.00},
+	"claude-opus-4-1":   {InputPrice: 5.00, OutputPrice: 25.00},
 	"claude-sonnet-4-0": {InputPrice: 3.00, OutputPrice: 15.00},
-	"claude-opus-4-0":   {InputPrice: 15.00, OutputPrice: 75.00},
+	"claude-opus-4-0":   {InputPrice: 5.00, OutputPrice: 25.00},
+	"claude-opus-4-5":   {InputPrice: 5.00, OutputPrice: 25.00},
 	"claude-3-7-sonnet": {InputPrice: 3.00, OutputPrice: 15.00},
 	"claude-3-5-sonnet": {InputPrice: 3.00, OutputPrice: 15.00},
 	"claude-3-5-haiku":  {InputPrice: 0.80, OutputPrice: 4.00},
-	"claude-3-opus":     {InputPrice: 15.00, OutputPrice: 75.00},
+	"claude-3-opus":     {InputPrice: 5.00, OutputPrice: 25.00},
 	"claude-3-sonnet":   {InputPrice: 3.00, OutputPrice: 15.00},
 	"claude-3-haiku":    {InputPrice: 0.25, OutputPrice: 1.25},
 
@@ -190,6 +191,7 @@ const (
 // 重要: inputTokens应为"可计费输入token"，由解析层（proxy_sse_parser.go）负责归一化：
 //   - OpenAI: 解析层已自动扣除cached_tokens（prompt_tokens - cached_tokens）
 //   - Claude/Gemini: 解析层直接返回input_tokens（本身就是非缓存部分）
+//
 // 设计原则: 平台语义差异在解析层处理，计费层无需关心（SRP原则）
 //
 // 返回：总成本（美元），如果模型未知则返回0.0
