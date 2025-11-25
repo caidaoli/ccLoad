@@ -2576,3 +2576,8 @@ body {
 
 .cursor-pointer { cursor: pointer; }
 .cursor-not-allowed { cursor: not-allowed; }
+
+/* stats.html page-specific styles */
+    .stats-table th {
+      text-align: center;
+    }

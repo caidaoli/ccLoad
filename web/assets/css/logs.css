@@ -1,0 +1,134 @@
+    /* API Key 测试按钮样式 */
+    .test-key-btn {
+      padding: 4px 8px;
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      font-size: 16px;
+      border-radius: 4px;
+      transition: all 0.2s ease;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .test-key-btn:hover {
+      background: var(--primary-100);
+      transform: scale(1.1);
+    }
+
+    .test-key-btn:active {
+      transform: scale(0.95);
+    }
+
+    /* 测试模态框样式 */
+    .test-modal-content {
+      max-width: 700px;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+
+    .test-progress {
+      display: none;
+      text-align: center;
+      padding: var(--space-4);
+      background: var(--neutral-50);
+      border-radius: 8px;
+      margin: var(--space-4) 0;
+    }
+
+    .test-progress.show {
+      display: block;
+    }
+
+    .test-progress p {
+      margin-top: var(--space-2);
+      color: var(--neutral-600);
+    }
+
+    .test-result {
+      display: none;
+      padding: var(--space-4);
+      border-radius: 8px;
+      margin: var(--space-4) 0;
+    }
+
+    .test-result.show {
+      display: block;
+    }
+
+    .test-result.success {
+      background: var(--success-50);
+      border: 1px solid var(--success-200);
+    }
+
+    .test-result.error {
+      background: var(--error-50);
+      border: 1px solid var(--error-200);
+    }
+
+    .test-details {
+      margin-top: var(--space-3);
+      font-size: 0.9em;
+      color: var(--neutral-700);
+    }
+
+    .test-details h4 {
+      margin: var(--space-3) 0 var(--space-2);
+      font-size: 0.95em;
+      font-weight: 600;
+    }
+
+    /* 加载动画 */
+    .loading-spinner {
+      display: inline-block;
+      width: 24px;
+      height: 24px;
+      border: 3px solid var(--neutral-200);
+      border-top-color: var(--primary-500);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* 输入/输出列统一宽度，方便对齐 */
+    .token-metric-value {
+      display: inline-block;
+      min-width: 6ch;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      font-feature-settings: "tnum";
+    }
+
+    .token-metric-value.token-empty {
+      color: var(--neutral-500);
+    }
+
+    .stream-flag {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 1px 6px;
+      border-radius: 10px;
+      font-size: 0.75em;
+      min-width: 24px;
+      text-align: center;
+      color: var(--primary-700);
+      background-color: var(--primary-100);
+    }
+
+    .stream-flag.placeholder {
+      visibility: hidden;
+    }
+
+    .logs-table th,
+    .logs-table td {
+      padding: var(--space-2) var(--space-3);
+    }
+
+    .logs-table th {
+      text-align: center;
+    }

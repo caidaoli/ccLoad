@@ -1,0 +1,109 @@
+    /* 响应式布局样式 */
+    @media (max-width: 640px) {
+      /* 移动端：垂直布局 */
+      .form-row-flex {
+        flex-direction: column !important;
+      }
+      .form-row-flex > div {
+        width: 100% !important;
+      }
+    }
+
+    /* 优化表单行布局 */
+    .form-row-flex {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+    }
+
+    /* 单选框样式美化 */
+    input[type="radio"] {
+      width: 16px;
+      height: 16px;
+      margin: 0;
+      cursor: pointer;
+      accent-color: var(--primary-500);
+    }
+
+    input[type="radio"]:hover {
+      transform: scale(1.1);
+    }
+
+    /* 单选框标签样式 */
+    #channelTypeRadios label,
+    #keyStrategyRadios label {
+      transition: all 0.2s ease;
+      padding: 4px 8px;
+      border-radius: 6px;
+    }
+
+    #channelTypeRadios label:hover,
+    #keyStrategyRadios label:hover {
+      background-color: var(--neutral-100);
+    }
+
+    #channelTypeRadios label:has(input:checked),
+    #keyStrategyRadios label:has(input:checked) {
+      background-color: var(--primary-100);
+      color: var(--primary-700);
+      font-weight: 500;
+    }
+
+    /* Toast动画 */
+    @keyframes slideIn {
+      from {
+        transform: translateX(400px);
+        opacity: 0;
+      }
+      to {
+        transform: translateX(0);
+        opacity: 1;
+      }
+    }
+
+    @keyframes slideOut {
+      from {
+        transform: translateX(0);
+        opacity: 1;
+      }
+      to {
+        transform: translateX(400px);
+        opacity: 0;
+      }
+    }
+
+    /* 渠道统计徽章 */
+    .channel-stat-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 8px;
+      border-radius: 8px;
+      background: var(--neutral-100);
+      border: 1px solid var(--neutral-200);
+      font-size: 12px;
+      color: var(--neutral-700);
+      line-height: 1.3;
+    }
+
+    .channel-stat-badge strong {
+      color: var(--neutral-900);
+    }
+
+    .channel-meta-line {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .channel-stats-inline {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-left: auto;
+      justify-content: flex-end;
+      margin-right: 32px;
+    }
