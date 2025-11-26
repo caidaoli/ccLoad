@@ -366,6 +366,14 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		}
 	}
 
+	// 清除渠道的冷却状态（编辑保存后重置冷却）
+	// 设计原则: 清除失败不应影响渠道更新成功，但需要记录用于监控
+	if s.cooldownManager != nil {
+		if err := s.cooldownManager.ClearChannelCooldown(c.Request.Context(), id); err != nil {
+			log.Printf("⚠️  警告: 清除渠道冷却状态失败 (channel=%d): %v", id, err)
+		}
+	}
+
 	// 渠道更新后刷新缓存，避免返回陈旧数据
 	s.InvalidateChannelListCache()
 	s.InvalidateAPIKeysCache(id)
