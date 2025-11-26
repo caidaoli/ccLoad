@@ -53,6 +53,12 @@ internal/
 - **禁止**直接读取整个文件,先用`get_symbols_overview`了解结构
 - 编辑代码用`mcp__serena__replace_symbol_body`,不用正则替换
 
+**使用Playwright MCP工具**(必须遵守):
+- 截图**必须**使用 JPEG 格式: `type: "jpeg"`(默认 quality=80,体积比 PNG 小 5-10 倍)
+- 需要极致压缩时用 `browser_run_code`: `await page.screenshot({ type: 'jpeg', quality: 50, path: '...' })`
+- 交互操作前优先用 `browser_snapshot`(文本格式,零体积),视觉验证才截图
+- **避免** `fullPage: true`,优先截取特定元素或可见区域
+
 **添加Admin API**:
 1. `internal/app/admin_types.go` - 定义请求/响应类型
 2. `internal/app/admin_<feature>.go` - 实现Handler函数
