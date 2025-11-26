@@ -28,6 +28,7 @@ type Store interface {
 	CreateAPIKey(ctx context.Context, key *model.APIKey) error
 	UpdateAPIKey(ctx context.Context, key *model.APIKey) error
 	DeleteAPIKey(ctx context.Context, channelID int64, keyIndex int) error
+	CompactKeyIndices(ctx context.Context, channelID int64, removedIndex int) error
 	DeleteAllAPIKeys(ctx context.Context, channelID int64) error // 删除渠道的所有Key
 
 	// Cooldown (channel-level) - 渠道级冷却管理

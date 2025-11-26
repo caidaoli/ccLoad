@@ -964,10 +964,10 @@ func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *mod
 			vals = append(vals, id)
 		}
 		qb.WhereIn("channel_id", vals)
-	} else {
-		// 没有渠道名称过滤时，使用ApplyFilter处理其他过滤器
-		qb.ApplyFilter(filter)
 	}
+
+	// 应用其余过滤器（模型/状态码等）
+	qb.ApplyFilter(filter)
 
 	suffix := "GROUP BY channel_id, model ORDER BY channel_id ASC, model ASC"
 	query, args := qb.BuildWithSuffix(suffix)
@@ -1797,6 +1797,23 @@ func (s *SQLiteStore) DeleteAPIKey(ctx context.Context, channelID int64, keyInde
 	// 触发异步Redis同步(确保删除操作同步到Redis)
 	s.triggerAsyncSync()
 
+	return nil
+}
+
+// CompactKeyIndices 将指定渠道中 key_index > removedIndex 的记录整体前移，保持索引连续
+// 设计原因：KeySelector 使用 key_index 作为逻辑下标；存在间隙会导致轮询和索引匹配异常
+func (s *SQLiteStore) CompactKeyIndices(ctx context.Context, channelID int64, removedIndex int) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE api_keys
+		SET key_index = key_index - 1
+		WHERE channel_id = ? AND key_index > ?
+	`, channelID, removedIndex)
+	if err != nil {
+		return fmt.Errorf("compact key indices: %w", err)
+	}
+
+	// 触发异步Redis同步，确保索引更新同步到缓存
+	s.triggerAsyncSync()
 	return nil
 }
 

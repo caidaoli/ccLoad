@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -385,4 +386,71 @@ func (s *Server) handleDeleteChannel(c *gin.Context, id int64) {
 	s.invalidateCooldownCache()
 	// 数据库级联删除会自动清理冷却数据（无需手动清理缓存）
 	c.Status(http.StatusNoContent)
+}
+
+// 删除渠道下的单个Key，并保持key_index连续
+func (s *Server) HandleDeleteAPIKey(c *gin.Context) {
+	// 解析渠道ID
+	channelID, err := ParseInt64Param(c, "id")
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+
+	// 解析Key索引
+	keyIndexStr := c.Param("keyIndex")
+	keyIndex, err := strconv.Atoi(keyIndexStr)
+	if err != nil || keyIndex < 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid key index")
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	// 获取当前Keys，确认目标存在并计算剩余数量
+	apiKeys, err := s.store.GetAPIKeys(ctx, channelID)
+	if err != nil {
+		RespondError(c, http.StatusNotFound, err)
+		return
+	}
+	if len(apiKeys) == 0 {
+		RespondErrorMsg(c, http.StatusNotFound, "channel has no keys")
+		return
+	}
+
+	found := false
+	for _, k := range apiKeys {
+		if k.KeyIndex == keyIndex {
+			found = true
+			break
+		}
+	}
+	if !found {
+		RespondErrorMsg(c, http.StatusNotFound, "key not found")
+		return
+	}
+
+	// 删除目标Key
+	if err := s.store.DeleteAPIKey(ctx, channelID, keyIndex); err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	// 紧凑索引，确保key_index连续
+	if err := s.store.CompactKeyIndices(ctx, channelID, keyIndex); err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	remaining := len(apiKeys) - 1
+
+	// 失效缓存
+	s.InvalidateAPIKeysCache(channelID)
+	s.invalidateCooldownCache()
+
+	RespondJSON(c, http.StatusOK, gin.H{
+		"success":         true,
+		"remaining_keys":  remaining,
+		"channel_deleted": false,
+	})
 }

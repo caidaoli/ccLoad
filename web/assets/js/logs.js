@@ -19,6 +19,7 @@
         if (u.get('channel_name_like')) params.set('channel_name_like', u.get('channel_name_like'));
         if (u.get('model')) params.set('model', u.get('model'));
         if (u.get('model_like')) params.set('model_like', u.get('model_like'));
+        if (u.get('status_code')) params.set('status_code', u.get('status_code'));
         
         const res = await fetchWithAuth('/admin/errors?' + params.toString());
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -162,6 +163,13 @@
                 title="测试此 API Key">
                 ⚡
               </button>
+              <button
+                class="test-key-btn"
+                style="color: var(--error-600);"
+                onclick="deleteKeyFromLog(${entry.channel_id}, '${escapeHtml(entry.channel_name || '').replace(/'/g, "\\'")}', '${escapeHtml(entry.api_key_used)}')"
+                title="删除此 API Key">
+                🗑
+              </button>
             </div>
           `;
         } else if (entry.api_key_used) {
@@ -299,6 +307,7 @@
       const id = document.getElementById('f_id').value.trim();
       const name = document.getElementById('f_name').value.trim();
       const model = document.getElementById('f_model').value.trim();
+      const status = document.getElementById('f_status') ? document.getElementById('f_status').value.trim() : '';
       const q = new URLSearchParams(location.search);
 
       if (hours) q.set('hours', hours); else q.delete('hours');
@@ -307,6 +316,8 @@
       else { q.delete('channel_name_like'); }
       if (model) { q.set('model_like', model); q.delete('model'); }
       else { q.delete('model_like'); q.delete('model'); }
+      if (status) { q.set('status_code', status); }
+      else { q.delete('status_code'); }
 
       location.search = '?' + q.toString();
     }
@@ -317,17 +328,20 @@
       const name = u.get('channel_name_like') || u.get('channel_name') || '';
       const hours = u.get('hours') || '24';
       const model = u.get('model_like') || u.get('model') || '';
+      const status = u.get('status_code') || '';
 
       document.getElementById('f_hours').value = hours;
       document.getElementById('f_id').value = id;
       document.getElementById('f_name').value = name;
       document.getElementById('f_model').value = model;
+      const statusEl = document.getElementById('f_status');
+      if (statusEl) statusEl.value = status;
 
       // 事件监听
       document.getElementById('btn_filter').addEventListener('click', applyFilter);
 
       // 回车键筛选
-      ['f_hours', 'f_id', 'f_name', 'f_model'].forEach(id => {
+      ['f_hours', 'f_id', 'f_name', 'f_model', 'f_status'].forEach(id => {
         const el = document.getElementById(id);
         if (el) {
           el.addEventListener('keydown', e => {
@@ -390,6 +404,44 @@
       }[c]));
     }
 
+    function parseApiKeysFromChannel(channel) {
+      if (!channel) return [];
+      // 优先支持新结构：api_keys 为对象数组
+      if (Array.isArray(channel.api_keys)) {
+        return channel.api_keys
+          .map(k => (k && (k.api_key || k.key)) || '')
+          .map(k => k.trim())
+          .filter(k => k);
+      }
+      // 向后兼容：api_key 为逗号分隔的字符串
+      if (typeof channel.api_key === 'string') {
+        return channel.api_key
+          .split(',')
+          .map(k => k.trim())
+          .filter(k => k);
+      }
+      return [];
+    }
+
+    function maskKeyForCompare(key) {
+      if (!key) return '';
+      if (key.length <= 8) return key;
+      return `${key.slice(0, 4)}...${key.slice(-4)}`;
+    }
+
+    function findKeyIndexByMaskedKey(keys, maskedKey) {
+      if (!maskedKey || !keys || !keys.length) return null;
+      const target = maskedKey.trim();
+      for (let i = 0; i < keys.length; i++) {
+        if (maskKeyForCompare(keys[i]) === target) return i;
+      }
+      return null;
+    }
+
+    function updateTestKeyIndexInfo(text) {
+      const el = document.getElementById('testKeyIndexInfo');
+      if (el) el.textContent = text || '';
+    }
 
     // 注销功能（已由 ui.js 的 onLogout 统一处理）
 
@@ -421,9 +473,10 @@
       testingKeyData = {
         channelId,
         channelName,
-        apiKey,
+        maskedApiKey: apiKey,
         originalModel: model,
-        channelType: null // 将在异步加载渠道配置后填充
+        channelType: null, // 将在异步加载渠道配置后填充
+        keyIndex: null
       };
 
       // 填充模态框基本信息
@@ -433,6 +486,7 @@
 
       // 重置状态
       resetTestKeyModal();
+      updateTestKeyIndexInfo('');
 
       // 显示模态框
       document.getElementById('testKeyModal').classList.add('show');
@@ -447,6 +501,18 @@
 
         // ✅ 保存渠道类型,用于后续测试请求
         testingKeyData.channelType = channel.channel_type || 'anthropic';
+        const apiKeys = parseApiKeysFromChannel(channel);
+        const matchedIndex = findKeyIndexByMaskedKey(apiKeys, apiKey);
+        testingKeyData.keyIndex = matchedIndex;
+        if (apiKeys.length > 0) {
+          updateTestKeyIndexInfo(
+            matchedIndex !== null
+              ? `匹配到 Key #${matchedIndex + 1}，按日志所用Key测试`
+              : '未匹配到日志中的 Key，将按默认顺序测试'
+          );
+        } else {
+          updateTestKeyIndexInfo('未获取到渠道 Key，将按默认顺序测试');
+        }
 
         // 填充模型下拉列表
         const modelSelect = document.getElementById('testKeyModel');
@@ -484,6 +550,7 @@
         option.textContent = model;
         modelSelect.appendChild(option);
         modelSelect.value = model;
+        updateTestKeyIndexInfo('渠道配置加载失败，将按默认顺序测试');
       }
     }
 
@@ -498,6 +565,7 @@
       document.getElementById('runKeyTestBtn').disabled = false;
       document.getElementById('testKeyContent').value = 'test';
       document.getElementById('testKeyStream').checked = true;
+      updateTestKeyIndexInfo('');
       // 重置模型选择框
       const modelSelect = document.getElementById('testKeyModel');
       modelSelect.innerHTML = '<option value="">加载中...</option>';
@@ -532,6 +600,9 @@
           content: testContent,
           channel_type: testingKeyData.channelType || 'anthropic' // ✅ 添加渠道类型
         };
+        if (testingKeyData && testingKeyData.keyIndex !== null && testingKeyData.keyIndex !== undefined) {
+          testRequest.key_index = testingKeyData.keyIndex;
+        }
 
         const res = await fetchWithAuth(`/admin/channels/${testingKeyData.channelId}/test`, {
           method: 'POST',
@@ -638,5 +709,51 @@
       const el = document.getElementById(id);
       if (el) {
         el.style.display = el.style.display === 'none' ? 'block' : 'none';
+      }
+    }
+
+    // ========== 删除 Key（从日志列表入口） ==========
+    async function deleteKeyFromLog(channelId, channelName, maskedApiKey) {
+      if (!channelId || !maskedApiKey) return;
+
+      const confirmDel = confirm(`确定删除渠道“${channelName || ('#' + channelId)}”中的此Key (${maskedApiKey}) 吗？`);
+      if (!confirmDel) return;
+
+      try {
+        // 获取渠道详情，匹配掩码对应的 key_index
+        const res = await fetchWithAuth(`/admin/channels/${channelId}`);
+        if (!res.ok) throw new Error('加载渠道失败: HTTP ' + res.status);
+        const respJson = await res.json();
+        const channel = respJson.success ? respJson.data : respJson;
+
+        const apiKeys = parseApiKeysFromChannel(channel);
+        const keyIndex = findKeyIndexByMaskedKey(apiKeys, maskedApiKey);
+        if (keyIndex === null) {
+          alert('未能匹配到该Key，请检查渠道配置。');
+          return;
+        }
+
+        // 删除Key
+        const delRes = await fetchWithAuth(`/admin/channels/${channelId}/keys/${keyIndex}`, { method: 'DELETE' });
+        if (!delRes.ok) throw new Error('删除失败: HTTP ' + delRes.status);
+        const delResult = await delRes.json();
+
+        alert(`已删除 Key #${keyIndex + 1} (${maskedApiKey})`);
+
+        // 如果没有剩余Key，询问是否删除渠道
+        if (delResult.remaining_keys === 0) {
+          const delChannel = confirm('该渠道已无可用Key，是否删除整个渠道？');
+          if (delChannel) {
+            const chRes = await fetchWithAuth(`/admin/channels/${channelId}`, { method: 'DELETE' });
+            if (!chRes.ok) throw new Error('删除渠道失败: HTTP ' + chRes.status);
+            alert('渠道已删除');
+          }
+        }
+
+        // 刷新日志列表
+        load();
+      } catch (e) {
+        console.error('删除Key失败', e);
+        alert(e.message || '删除Key失败');
       }
     }

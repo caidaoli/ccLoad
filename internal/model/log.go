@@ -62,4 +62,5 @@ type LogFilter struct {
 	ChannelNameLike string
 	Model           string
 	ModelLike       string
+	StatusCode      *int
 }

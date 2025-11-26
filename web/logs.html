@@ -60,6 +60,12 @@
                   <input type="text" id="f_model" class="filter-input" placeholder="包含文本...">
                 </div>
 
+                <!-- 状态码筛选 -->
+                <div class="filter-group">
+                  <label for="f_status" class="filter-label">状态码</label>
+                  <input type="number" id="f_status" class="filter-input" placeholder="如 200 / 403" style="max-width: 110px;">
+                </div>
+
                 <!-- 统计信息 -->
                 <div class="filter-info">
                   显示 <span id="displayedCount">0</span> / <span id="totalCount">0</span> 条
@@ -156,6 +162,7 @@
       <div class="form-group">
         <label class="form-label">API Key</label>
         <code id="testKeyDisplay" style="display: block; padding: 8px; background: var(--neutral-100); border-radius: 4px; color: var(--neutral-700);"></code>
+        <small id="testKeyIndexInfo" style="color: var(--neutral-600); font-size: 0.85em; display: block; margin-top: 6px;"></small>
       </div>
 
       <div class="form-group">

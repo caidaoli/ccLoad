@@ -132,6 +132,15 @@ func (s *Server) HandleChannelTest(c *gin.Context) {
 		)
 		if err != nil {
 			log.Printf("⚠️  警告: 应用冷却策略失败 (channel=%d, key=%d, status=%d): %v", id, keyIndex, statusCode, err)
+			// 失败时降级尝试渠道级冷却，避免误报“已冷却”但实际未生效
+			if action == cooldown.ActionRetryKey {
+				if _, chErr := s.store.BumpChannelCooldown(c.Request.Context(), id, time.Now(), statusCode); chErr != nil {
+					log.Printf("⚠️  警告: 渠道级降级冷却失败 (channel=%d): %v", id, chErr)
+				} else {
+					action = cooldown.ActionRetryChannel
+				}
+			}
+			testResult["cooldown_error"] = err.Error()
 		}
 
 		// ✅ 修复：使API Keys缓存失效，确保前端能立即看到冷却状态更新

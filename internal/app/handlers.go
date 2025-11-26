@@ -145,5 +145,12 @@ func BuildLogFilter(c *gin.Context) model.LogFilter {
 		lf.ModelLike = ml
 	}
 
+	// 状态码精确匹配
+	if scStr := strings.TrimSpace(c.Query("status_code")); scStr != "" {
+		if code, err := strconv.Atoi(scStr); err == nil && code > 0 {
+			lf.StatusCode = &code
+		}
+	}
+
 	return lf
 }

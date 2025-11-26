@@ -80,6 +80,9 @@ func (wb *WhereBuilder) ApplyLogFilter(filter *model.LogFilter) *WhereBuilder {
 	if filter.ModelLike != "" {
 		wb.AddCondition("model LIKE ?", "%"+filter.ModelLike+"%")
 	}
+	if filter.StatusCode != nil {
+		wb.AddCondition("status_code = ?", *filter.StatusCode)
+	}
 	return wb
 }
 
