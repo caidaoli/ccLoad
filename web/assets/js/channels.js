@@ -1117,8 +1117,6 @@
       document.getElementById('testContentInput').value = 'test';
       // 重置渠道类型为默认值
       document.getElementById('testChannelType').value = 'anthropic';
-      // 重置冷却时间为默认值
-      document.getElementById('testCooldownMinutes').value = '5';
       // 重置并发数为默认值
       document.getElementById('testConcurrency').value = '10';
     }
@@ -1238,15 +1236,13 @@
       const contentInput = document.getElementById('testContentInput');
       const channelTypeSelect = document.getElementById('testChannelType');
       const streamCheckbox = document.getElementById('testStreamEnabled');
-      const cooldownInput = document.getElementById('testCooldownMinutes');
       const concurrencyInput = document.getElementById('testConcurrency');
-      
+
       const selectedModel = modelSelect.value;
       const testContent = contentInput.value.trim() || 'test';
       const channelType = channelTypeSelect.value;
       // 由用户选择是否启用流式
       const streamEnabled = streamCheckbox.checked;
-      const cooldownMinutes = parseInt(cooldownInput.value) || 5;
       const concurrency = Math.max(1, Math.min(50, parseInt(concurrencyInput.value) || 10)); // 限制1-50
 
       if (!selectedModel) {
