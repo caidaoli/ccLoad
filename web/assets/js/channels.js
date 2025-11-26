@@ -1180,23 +1180,18 @@
         const result = await res.json();
         // 检查是否有嵌套的data字段（标准API响应格式）
         const testResult = result.data || result;
-        
-        // 如果测试失败，自动冷却对应的Key
-        if (!testResult.success) {
-          const cooldownMinutes = parseInt(document.getElementById('testCooldownMinutes').value) || 5;
-          const keyIndex = (typeof testRequest !== 'undefined' && testRequest && testRequest.key_index !== undefined) ? testRequest.key_index : null;
-          await setCooldownForKey(testingChannelId, keyIndex, cooldownMinutes);
-        }
-        
+
+        // ✅ 修复：删除冗余的前端冷却逻辑
+        // 服务器端已通过HandleError()应用指数退避策略(2min→4min→8min→30min)
+        // 前端不应覆盖服务器端的决策
+
         displayTestResult(testResult);
       } catch (e) {
         console.error('测试失败', e);
-        
-        // 测试失败也自动冷却
-        const cooldownMinutes = parseInt(document.getElementById('testCooldownMinutes').value) || 5;
-        const keyIndex = (typeof testRequest !== 'undefined' && testRequest && testRequest.key_index !== undefined) ? testRequest.key_index : null;
-        await setCooldownForKey(testingChannelId, keyIndex, cooldownMinutes);
-        
+
+        // ✅ 修复：删除冗余的前端冷却逻辑
+        // 网络异常由服务器端统一处理，前端只负责显示错误
+
         displayTestResult({
           success: false,
           error: '测试请求失败: ' + e.message
@@ -1210,34 +1205,8 @@
       }
     }
 
-    // 为指定Key设置冷却时间
-    async function setCooldownForKey(channelId, keyIndex, minutes) {
-      try {
-        const durationMs = minutes * 60 * 1000;
-        
-        // 如果指定了keyIndex，则冷却特定Key；否则冷却整个渠道
-        const endpoint = keyIndex !== null 
-          ? `/admin/channels/${channelId}/keys/${keyIndex}/cooldown`
-          : `/admin/channels/${channelId}/cooldown`;
-        
-        const res = await fetchWithAuth(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ duration_ms: durationMs })
-        });
-        
-        if (res.ok) {
-          const msg = keyIndex !== null 
-            ? `Key #${keyIndex + 1} 已冷却 ${minutes} 分钟`
-            : `渠道已冷却 ${minutes} 分钟`;
-          console.log(msg);
-        } else {
-          console.warn('设置冷却失败:', await res.text());
-        }
-      } catch (e) {
-        console.error('设置冷却时出错:', e);
-      }
-    }
+    // ✅ 修复：删除未使用的 setCooldownForKey 函数
+    // 冷却策略已完全由服务器端 HandleError() 统一管理
 
     // 批量测试所有Key（并发版本）
     async function runBatchTest() {
@@ -1337,16 +1306,14 @@
           } else {
             failedCount++;
             failedKeys.push({ index: keyIndex, key: maskKey(keys[keyIndex]), error: testResult.error });
-            
-            // 失败时自动冷却
-            await setCooldownForKey(testingChannelId, keyIndex, cooldownMinutes);
+
+            // ✅ 修复：删除冗余的前端冷却逻辑，服务器端已统一处理
           }
         } catch (e) {
           failedCount++;
           failedKeys.push({ index: keyIndex, key: maskKey(keys[keyIndex]), error: e.message });
-          
-          // 异常时也冷却
-          await setCooldownForKey(testingChannelId, keyIndex, cooldownMinutes);
+
+          // ✅ 修复：删除冗余的前端冷却逻辑，服务器端已统一处理
         } finally {
           completedCount++;
           updateProgress();

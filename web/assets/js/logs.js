@@ -153,16 +153,27 @@
         // 格式化API Key显示（已在后端掩码处理）
         let apiKeyDisplay = '';
         if (entry.api_key_used && entry.channel_id && entry.model) {
-          // 有完整信息，显示API Key和测试按钮
-          apiKeyDisplay = `
-            <div style="display: flex; align-items: center; gap: 6px; justify-content: center;">
-              <code style="font-size: 0.9em; color: var(--neutral-600);">${escapeHtml(entry.api_key_used)}</code>
+          // ✅ 修复：按钮显示条件优化
+          // - 测试按钮：仅状态码非200时显示（故障Key才需要测试）
+          // - 删除按钮：仅状态码403时显示（鉴权失败说明Key失效）
+          const statusCode = entry.status_code || 0;
+          const showTestBtn = statusCode !== 200;
+          const showDeleteBtn = statusCode === 403;
+
+          // 构建按钮组（按需显示）
+          let buttons = '';
+          if (showTestBtn) {
+            buttons += `
               <button
                 class="test-key-btn"
                 onclick="testKey(${entry.channel_id}, '${escapeHtml(entry.channel_name || '').replace(/'/g, "\\'")}', '${escapeHtml(entry.api_key_used)}', '${escapeHtml(entry.model)}')"
                 title="测试此 API Key">
                 ⚡
               </button>
+            `;
+          }
+          if (showDeleteBtn) {
+            buttons += `
               <button
                 class="test-key-btn"
                 style="color: var(--error-600);"
@@ -170,6 +181,14 @@
                 title="删除此 API Key">
                 🗑
               </button>
+            `;
+          }
+
+          // 有完整信息，显示API Key和按钮（按需）
+          apiKeyDisplay = `
+            <div style="display: flex; align-items: center; gap: 6px; justify-content: center;">
+              <code style="font-size: 0.9em; color: var(--neutral-600);">${escapeHtml(entry.api_key_used)}</code>
+              ${buttons}
             </div>
           `;
         } else if (entry.api_key_used) {

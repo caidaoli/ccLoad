@@ -357,22 +357,11 @@
       </div>
 
       <div class="form-group">
-        <div style="display: flex; gap: 24px; align-items: flex-start;">
-          <div style="flex: 1;">
-            <label class="form-label" for="testCooldownMinutes">
-              失败冷却时间（分钟）
-              <span class="models-hint" style="margin-left: 8px;">测试失败时自动冷却对应Key的时间</span>
-            </label>
-            <input type="number" id="testCooldownMinutes" class="form-input" value="5" min="1" max="60" style="width: 150px;">
-          </div>
-          <div style="flex: 1;">
-            <label class="form-label" for="testConcurrency">
-              批量测试并发数
-              <span class="models-hint" style="margin-left: 8px;">同时测试的Key数量（建议5-20）</span>
-            </label>
-            <input type="number" id="testConcurrency" class="form-input" value="10" min="1" max="50" style="width: 150px;">
-          </div>
-        </div>
+        <label class="form-label" for="testConcurrency">
+          批量测试并发数
+          <span class="models-hint" style="margin-left: 8px;">同时测试的Key数量（建议5-20）。冷却策略由服务器端自动应用（指数退避：2min→4min→8min→30min）</span>
+        </label>
+        <input type="number" id="testConcurrency" class="form-input" value="10" min="1" max="50" style="width: 150px;">
       </div>
       
       <!-- 测试进度 -->
