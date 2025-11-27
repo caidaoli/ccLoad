@@ -64,7 +64,6 @@
               <th style="text-align: center;">总费用</th>
               <th style="text-align: center;">流式首字平均响应</th>
               <th style="text-align: center;">非流式平均响应</th>
-              <th>创建时间</th>
               <th>最后使用</th>
               <th>过期时间</th>
               <th style="width: 200px;">${operationHeader}</th>
@@ -154,7 +153,10 @@
               style="width: 18px; height: 18px; cursor: pointer;">
           </td>
           <td style="font-weight: 500;">${escapeHtml(token.description)}</td>
-          <td><span class="token-display">${escapeHtml(token.token)}</span></td>
+          <td>
+            <div><span class="token-display">${escapeHtml(token.token)}</span></div>
+            <div style="font-size: 12px; color: var(--neutral-500); margin-top: 4px;">${createdAt}创建</div>
+          </td>
           <td><span class="status-badge status-${status.class}">${status.text}</span></td>
           <td style="text-align: center;">
             ${totalCount > 0 ? `
@@ -208,7 +210,6 @@
               ? `<span class="metric-value ${getResponseClass(nonStreamAvgRT)}">${nonStreamAvgRT.toFixed(2)}s</span>`
               : '<span style="color: var(--neutral-500); font-size: 13px;">-</span>'}
           </td>
-          <td style="color: var(--neutral-600);">${createdAt}</td>
           <td style="color: var(--neutral-600);">${lastUsed}</td>
           <td style="color: var(--neutral-600);">${expiresAt}</td>
           <td>

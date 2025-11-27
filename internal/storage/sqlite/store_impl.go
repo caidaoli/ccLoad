@@ -920,7 +920,7 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 
 // GetStats 实现统计功能，按渠道和模型统计成功/失败次数（从 logDB）
 // 性能优化：批量查询渠道名称消除N+1问题（100渠道场景提升50-100倍）
-func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *model.LogFilter) ([]model.StatsEntry, error) {
+func (s *SQLiteStore) GetStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.StatsEntry, error) {
 	// 使用查询构建器构建统计查询(从 logDB)
 	baseQuery := `
 		SELECT
@@ -941,10 +941,12 @@ func (s *SQLiteStore) GetStats(ctx context.Context, since time.Time, filter *mod
 		FROM logs`
 
 	// time字段现在是BIGINT毫秒时间戳
-	sinceMs := since.UnixMilli()
+	startMs := startTime.UnixMilli()
+	endMs := endTime.UnixMilli()
 
 	qb := NewQueryBuilder(baseQuery).
-		Where("time >= ?", sinceMs).
+		Where("time >= ?", startMs).
+		Where("time <= ?", endMs).
 		Where("channel_id > 0") // 🎯 核心修改:排除channel_id=0的无效记录
 
 	// 🎯 修复: 支持渠道名称过滤（与ListLogs相同的逻辑）

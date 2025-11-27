@@ -680,15 +680,61 @@ body {
   background: rgba(255, 255, 255, 0.18);
   transform: scale(1.02);
 }
-.toggle-btn.active { 
+.toggle-btn.active {
   background: rgba(255, 255, 255, 0.95);
-  color: #4f46e5; 
+  color: #4f46e5;
   font-weight: 650;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15), 0 1px 3px rgba(0, 0, 0, 0.1);
   transform: scale(1.02);
   text-shadow: none;
 }
 
+/* 时间范围选择器 */
+.time-range-container {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+}
+
+.time-range-selector {
+  display: inline-flex;
+  gap: 0;
+  background: #ffffff;
+  padding: 4px;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.time-range-btn {
+  padding: 6px 16px;
+  border-radius: 6px;
+  color: #666666;
+  font-weight: 400;
+  font-size: 14px;
+  line-height: 1.5;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.15s ease;
+  border: none;
+  background: transparent;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  white-space: nowrap;
+}
+
+.time-range-btn:hover {
+  color: #333333;
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.time-range-btn.active {
+  background: transparent;
+  color: #4f46e5;
+  font-weight: 500;
+}
 
 .btn::before {
   content: '';

@@ -73,13 +73,13 @@ func (s *Server) HandleMetrics(c *gin.Context) {
 }
 
 // handleStats 获取渠道和模型统计
-// GET /admin/stats?hours=24&channel_name_like=xxx&model_like=xxx
+// GET /admin/stats?range=today&channel_name_like=xxx&model_like=xxx
 func (s *Server) HandleStats(c *gin.Context) {
 	params := ParsePaginationParams(c)
 	lf := BuildLogFilter(c)
 
-	since := params.GetSinceTime()
-	stats, err := s.store.GetStats(c.Request.Context(), since, &lf)
+	startTime, endTime := params.GetTimeRange()
+	stats, err := s.store.GetStats(c.Request.Context(), startTime, endTime, &lf)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -89,12 +89,12 @@ func (s *Server) HandleStats(c *gin.Context) {
 }
 
 // handlePublicSummary 获取基础统计摘要(公开端点,无需认证)
-// GET /public/summary?hours=24
+// GET /public/summary?range=today
 // 按渠道类型分组统计，Claude和Codex类型包含Token和成本信息
 func (s *Server) HandlePublicSummary(c *gin.Context) {
 	params := ParsePaginationParams(c)
-	since := params.GetSinceTime()
-	stats, err := s.store.GetStats(c.Request.Context(), since, nil) // 不使用过滤条件
+	startTime, endTime := params.GetTimeRange()
+	stats, err := s.store.GetStats(c.Request.Context(), startTime, endTime, nil) // 不使用过滤条件
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return

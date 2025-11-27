@@ -55,7 +55,7 @@ type Store interface {
 	Aggregate(ctx context.Context, since time.Time, bucket time.Duration) ([]model.MetricPoint, error)
 
 	// Stats - 统计功能
-	GetStats(ctx context.Context, since time.Time, filter *model.LogFilter) ([]model.StatsEntry, error)
+	GetStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.StatsEntry, error)
 
 	// Auth Tokens - API访问令牌管理
 	// 令牌用于代理API (/v1/*) 的认证授权

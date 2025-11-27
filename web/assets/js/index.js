@@ -7,6 +7,9 @@
       active_models: 0
     };
 
+    // 当前选中的时间范围
+    let currentTimeRange = 'today';
+
     // 加载统计数据
     async function loadStats() {
       try {
@@ -15,13 +18,13 @@
           el.classList.add('animate-pulse');
         });
 
-        const response = await fetch('/public/summary?hours=24');
+        const response = await fetch(`/public/summary?range=${currentTimeRange}`);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        
+
         const responseData = await response.json();
         statsData = responseData.success ? (responseData.data || responseData) : responseData;
         updateStatsDisplay();
-        
+
       } catch (error) {
         console.error('Failed to load stats:', error);
         showError('无法加载统计数据');
@@ -175,9 +178,29 @@
       }
     });
 
+    // 时间范围选择器事件处理
+    function initTimeRangeSelector() {
+      const buttons = document.querySelectorAll('.time-range-btn');
+      buttons.forEach(btn => {
+        btn.addEventListener('click', function() {
+          // 更新按钮激活状态
+          buttons.forEach(b => b.classList.remove('active'));
+          this.classList.add('active');
+
+          // 更新当前时间范围并重新加载数据
+          currentTimeRange = this.dataset.range;
+          loadStats();
+        });
+      });
+    }
+
     // 页面初始化
     document.addEventListener('DOMContentLoaded', function() {
       if (window.initTopbar) initTopbar('index');
+
+      // 初始化时间范围选择器
+      initTimeRangeSelector();
+
       // 加载统计数据
       loadStats();
 
