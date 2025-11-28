@@ -40,6 +40,10 @@ var basePricing = map[string]ModelPricing{
 	"claude-3-opus":     {InputPrice: 5.00, OutputPrice: 25.00},
 	"claude-3-sonnet":   {InputPrice: 3.00, OutputPrice: 15.00},
 	"claude-3-haiku":    {InputPrice: 0.25, OutputPrice: 1.25},
+	// 通用兜底（未来新版本）
+	"claude-opus":   {InputPrice: 5.00, OutputPrice: 25.00},
+	"claude-sonnet": {InputPrice: 3.00, OutputPrice: 15.00},
+	"claude-haiku":  {InputPrice: 1.00, OutputPrice: 5.00},
 
 	// ========== OpenAI GPT系列 ==========
 	"gpt-5":          {InputPrice: 1.25, OutputPrice: 10.00},
@@ -283,11 +287,12 @@ func fuzzyMatchModel(model string) (ModelPricing, bool) {
 	// 硬编码前缀列表（按优先级和长度排序，更具体的前缀优先）
 	// 优点：比动态排序快，可预测，并发安全
 	prefixes := []string{
-		// Claude模型（按版本降序）
-		"claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-1",
+		// Claude模型（按版本降序，具体版本优先，通用兜底在最后）
+		"claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-5", "claude-opus-4-1",
 		"claude-sonnet-4-0", "claude-opus-4-0", "claude-3-7-sonnet",
 		"claude-3-5-sonnet", "claude-3-5-haiku",
 		"claude-3-opus", "claude-3-sonnet", "claude-3-haiku",
+		"claude-opus", "claude-sonnet", "claude-haiku", // 通用兜底
 
 		// Gemini模型（按版本降序，更长的前缀优先）
 		"gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.5-pro",

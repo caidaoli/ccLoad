@@ -105,7 +105,7 @@
     const bar = h('header', { class: 'topbar' });
     const left = h('div', { class: 'topbar-left' }, [
       h('div', { class: 'brand' }, [
-        h('div', { class: 'brand-icon' }, 'C'),
+        h('img', { class: 'brand-icon', src: '/web/favicon.svg', alt: 'Logo' }),
         h('div', { class: 'brand-text' }, 'Claude Code & Codex Proxy')
       ])
     ]);

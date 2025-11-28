@@ -261,10 +261,7 @@ body {
 .topbar-left { display: flex; align-items: center; gap: var(--space-4); }
 .brand { display: flex; align-items: center; gap: var(--space-3); }
 .brand-icon {
-  width: 36px; height: 36px; border-radius: var(--radius-full);
-  display: inline-flex; align-items: center; justify-content: center;
-  background: linear-gradient(135deg, #60a5fa, #a78bfa);
-  color: white; font-weight: var(--font-bold);
+  width: 36px; height: 36px; border-radius: var(--radius-lg);
   box-shadow: 0 4px 16px rgba(99,102,241,0.35);
 }
 .brand-text { color: var(--topbar-fg); font-weight: var(--font-semibold); letter-spacing: .2px; }
@@ -859,14 +856,7 @@ body {
 .logo-icon {
   width: 36px;
   height: 36px;
-  background: linear-gradient(135deg, var(--primary-500), var(--primary-600));
   border-radius: var(--radius-lg);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: white;
-  font-size: var(--text-xl);
-  font-weight: var(--font-bold);
 }
 
 .logo-text {
@@ -2046,14 +2036,7 @@ body {
 .logo-icon {
   width: 64px;
   height: 64px;
-  background: linear-gradient(135deg, var(--primary-500), var(--primary-600));
   border-radius: var(--radius-xl);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: white;
-  font-size: var(--text-2xl);
-  font-weight: var(--font-bold);
   box-shadow: 0 8px 32px rgba(59, 130, 246, 0.3);
 }
 
