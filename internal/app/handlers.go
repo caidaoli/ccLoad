@@ -11,17 +11,13 @@ import (
 
 // PaginationParams 通用分页参数结构
 type PaginationParams struct {
-	Hours  int    `form:"hours" binding:"omitempty,min=1"`    // 用于日志查询API
-	Range  string `form:"range" binding:"omitempty"`          // 用于统计API
+	Range  string `form:"range" binding:"omitempty"` // 时间范围: today/yesterday/this_week等
 	Limit  int    `form:"limit" binding:"omitempty,min=1,max=1000"`
 	Offset int    `form:"offset" binding:"omitempty,min=0"`
 }
 
 // SetDefaults 设置默认值
 func (p *PaginationParams) SetDefaults() {
-	if p.Hours <= 0 {
-		p.Hours = 24
-	}
 	if p.Range == "" {
 		p.Range = "today"
 	}
@@ -30,10 +26,6 @@ func (p *PaginationParams) SetDefaults() {
 	}
 }
 
-// GetSinceTime 根据Hours参数计算开始时间（用于日志查询API）
-func (p *PaginationParams) GetSinceTime() time.Time {
-	return time.Now().Add(-time.Duration(p.Hours) * time.Hour)
-}
 
 // GetTimeRange 根据Range参数计算时间范围(开始时间和结束时间)（用于统计API）
 // 支持的范围: today(本日), yesterday(昨日), day_before_yesterday(前日),
@@ -127,12 +119,6 @@ func endOfMonth(t time.Time) time.Time {
 func ParsePaginationParams(c *gin.Context) *PaginationParams {
 	var params PaginationParams
 
-	// 解析hours参数（用于日志查询API）
-	if hours, err := strconv.Atoi(c.DefaultQuery("hours", "24")); err == nil && hours > 0 {
-		params.Hours = hours
-	}
-
-	// 解析range参数（用于统计API）
 	params.Range = strings.TrimSpace(c.Query("range"))
 
 	if limit, err := strconv.Atoi(c.DefaultQuery("limit", "200")); err == nil && limit > 0 {

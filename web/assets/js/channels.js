@@ -1,5 +1,5 @@
-    // 渠道统计时间窗口（默认30天，避免全量查询拖垮DB）
-    const CHANNEL_STATS_LOOKBACK_HOURS = 24 * 30;
+    // 渠道统计时间范围（默认本月）
+    const CHANNEL_STATS_RANGE = 'this_month';
     let channels = [];
     let channelStatsById = {};
     let editingChannelId = null;
@@ -221,9 +221,9 @@
       }
     }
 
-    async function loadChannelStats(hours = CHANNEL_STATS_LOOKBACK_HOURS) {
+    async function loadChannelStats(range = CHANNEL_STATS_RANGE) {
       try {
-        const params = new URLSearchParams({ hours: String(hours), limit: '500', offset: '0' });
+        const params = new URLSearchParams({ range, limit: '500', offset: '0' });
         const res = await fetchWithAuth(`/admin/stats?${params.toString()}`);
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const response = await res.json();

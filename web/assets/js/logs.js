@@ -330,7 +330,6 @@
       const q = new URLSearchParams(location.search);
 
       if (range) q.set('range', range); else q.delete('range');
-      q.delete('hours'); // 清理旧参数
       if (id) q.set('channel_id', id); else q.delete('channel_id');
       if (name) { q.set('channel_name_like', name); q.delete('channel_name'); }
       else { q.delete('channel_name_like'); }

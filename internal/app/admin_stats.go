@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"time"
 
-	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
@@ -18,19 +17,10 @@ import (
 
 // handleErrors 获取错误日志列表
 // GET /admin/errors?range=today&limit=100&offset=0
-// GET /admin/errors?hours=24&limit=100&offset=0 (兼容旧参数)
 func (s *Server) HandleErrors(c *gin.Context) {
 	params := ParsePaginationParams(c)
 	lf := BuildLogFilter(c)
-
-	// 优先使用range参数（精确日期范围），否则使用hours参数（最近N小时）
-	var since, until time.Time
-	if params.Range != "" {
-		since, until = params.GetTimeRange()
-	} else {
-		since = params.GetSinceTime()
-		until = time.Now()
-	}
+	since, until := params.GetTimeRange()
 
 	// 并行查询日志列表和总数（优化性能）
 	logs, err := s.store.ListLogsRange(c.Request.Context(), since, until, params.Limit, params.Offset, &lf)
@@ -54,7 +44,6 @@ func (s *Server) HandleErrors(c *gin.Context) {
 
 // handleMetrics 获取聚合指标数据
 // GET /admin/metrics?range=today&bucket_min=5
-// GET /admin/metrics?hours=24&bucket_min=5 (兼容旧参数)
 func (s *Server) HandleMetrics(c *gin.Context) {
 	params := ParsePaginationParams(c)
 	bucketMin, _ := strconv.Atoi(c.DefaultQuery("bucket_min", "5"))
@@ -62,19 +51,8 @@ func (s *Server) HandleMetrics(c *gin.Context) {
 		bucketMin = 5
 	}
 
-	// 优先使用range参数（精确日期范围），否则使用hours参数（最近N小时）
-	var pts []model.MetricPoint
-	var since, until time.Time
-	var err error
-
-	if params.Range != "" {
-		since, until = params.GetTimeRange()
-		pts, err = s.store.AggregateRange(c.Request.Context(), since, until, time.Duration(bucketMin)*time.Minute)
-	} else {
-		since = params.GetSinceTime()
-		until = time.Now()
-		pts, err = s.store.Aggregate(c.Request.Context(), since, time.Duration(bucketMin)*time.Minute)
-	}
+	since, until := params.GetTimeRange()
+	pts, err := s.store.AggregateRange(c.Request.Context(), since, until, time.Duration(bucketMin)*time.Minute)
 
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
@@ -187,7 +165,7 @@ func (s *Server) HandlePublicSummary(c *gin.Context) {
 		"total_requests":   totalSuccess + totalError,
 		"success_requests": totalSuccess,
 		"error_requests":   totalError,
-		"hours":            params.Hours,
+		"range":            params.Range,
 		"by_type":          typeStats, // 按渠道类型分组的统计
 	}
 
