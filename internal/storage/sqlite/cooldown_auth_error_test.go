@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"ccLoad/internal/model"
+	"ccLoad/internal/util"
 	"context"
 	"os"
 	"sync"
@@ -297,8 +298,8 @@ func TestConcurrentCooldownUpdates(t *testing.T) {
 
 	// 应该在合理范围内（考虑并发执行耗时，允许1秒误差）
 	duration := time.Until(until)
-	minDuration := AuthErrorInitialCooldown - 1*time.Second
-	maxDuration := MaxCooldownDuration + 1*time.Second
+	minDuration := util.AuthErrorInitialCooldown - 1*time.Second
+	maxDuration := util.MaxCooldownDuration + 1*time.Second
 
 	if duration < minDuration || duration > maxDuration {
 		t.Errorf("并发场景冷却时间异常: %v (期望范围: %v - %v)",
@@ -389,8 +390,8 @@ func TestConcurrentKeyCooldownUpdates(t *testing.T) {
 		}
 
 		duration := time.Until(until)
-		minDuration := AuthErrorInitialCooldown - 1*time.Second
-		maxDuration := MaxCooldownDuration + 1*time.Second
+		minDuration := util.AuthErrorInitialCooldown - 1*time.Second
+		maxDuration := util.MaxCooldownDuration + 1*time.Second
 
 		if duration < minDuration || duration > maxDuration {
 			t.Errorf("Key %d 并发场景冷却时间异常: %v (期望范围: %v - %v)",
@@ -488,11 +489,6 @@ func setupAuthErrorTestStore(t *testing.T) (*SQLiteStore, func()) {
 	return store, cleanup
 }
 
-// 测试常量定义
-const (
-	AuthErrorInitialCooldown = 5 * time.Minute  // 认证错误初始冷却时间
-	MaxCooldownDuration      = 30 * time.Minute // 最大冷却时间
-)
 
 // getChannelCooldownUntil 获取渠道冷却截止时间（测试辅助函数）
 func getChannelCooldownUntil(ctx context.Context, store *SQLiteStore, channelID int64) (time.Time, bool) {

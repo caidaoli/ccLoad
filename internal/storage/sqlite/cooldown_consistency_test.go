@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"ccLoad/internal/model"
+	"ccLoad/internal/util"
 	"context"
 	"os"
 	"testing"
@@ -81,8 +82,8 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 				channelDuration, keyDuration)
 		}
 
-		// 验证都是5分钟（AuthErrorInitialCooldown）
-		expectedDuration := AuthErrorInitialCooldown
+		// 验证都是5分钟（util.AuthErrorInitialCooldown）
+		expectedDuration := util.AuthErrorInitialCooldown
 		tolerance := 10 * time.Millisecond
 
 		if abs(channelDuration-expectedDuration) > tolerance {
@@ -220,9 +221,9 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 				channelDuration, keyDuration)
 		}
 
-		if channelDuration != AuthErrorInitialCooldown {
+		if channelDuration != util.AuthErrorInitialCooldown {
 			t.Errorf("403错误初始冷却时间错误: 期望%v，实际%v",
-				AuthErrorInitialCooldown, channelDuration)
+				util.AuthErrorInitialCooldown, channelDuration)
 		}
 
 		t.Logf("✅ 403错误冷却时间一致: 渠道级=%v, Key级=%v",
@@ -236,9 +237,9 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 			statusCode int
 			expected   time.Duration
 		}{
-			{"429限流错误", 429, OtherErrorInitialCooldown},
-			{"500服务器错误", 500, ServerErrorInitialCooldown},
-			{"502网关错误", 502, ServerErrorInitialCooldown},
+			{"429限流错误", 429, util.OtherErrorInitialCooldown},
+			{"500服务器错误", 500, util.ServerErrorInitialCooldown},
+			{"502网关错误", 502, util.ServerErrorInitialCooldown},
 		}
 
 		for _, tc := range testCases {
@@ -295,8 +296,3 @@ func abs(d time.Duration) time.Duration {
 	return d
 }
 
-// 测试常量定义（与util/time.go保持一致）
-const (
-	ServerErrorInitialCooldown = 2 * time.Minute  // 服务器错误初始冷却时间（与util/time.go一致）
-	OtherErrorInitialCooldown  = 10 * time.Second // 其他错误初始冷却时间（与util/time.go一致）
-)

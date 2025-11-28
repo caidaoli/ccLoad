@@ -79,11 +79,6 @@ func CalculateBackoffDuration(prevMs int64, until time.Time, now time.Time, stat
 	return next
 }
 
-// toUnixTimestamp 安全转换time.Time到Unix时间戳
-// 处理零值时间
-
-// calculateCooldownDuration 计算冷却持续时间（毫秒）
-// 用于存储到数据库的duration_ms字段
 // CalculateCooldownDuration 计算冷却持续时间（毫秒）
 func CalculateCooldownDuration(until time.Time, now time.Time) int64 {
 	if until.IsZero() || !until.After(now) {
