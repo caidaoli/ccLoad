@@ -48,11 +48,14 @@ type Store interface {
 	// Logs - 日志管理
 	AddLog(ctx context.Context, e *model.LogEntry) error
 	ListLogs(ctx context.Context, since time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error)
+	ListLogsRange(ctx context.Context, since, until time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error)
 
 	CountLogs(ctx context.Context, since time.Time, filter *model.LogFilter) (int, error)
+	CountLogsRange(ctx context.Context, since, until time.Time, filter *model.LogFilter) (int, error)
 
 	// Metrics - 指标管理
 	Aggregate(ctx context.Context, since time.Time, bucket time.Duration) ([]model.MetricPoint, error)
+	AggregateRange(ctx context.Context, since, until time.Time, bucket time.Duration) ([]model.MetricPoint, error)
 
 	// Stats - 统计功能
 	GetStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.StatsEntry, error)

@@ -67,12 +67,12 @@
                   <div class="toggle-btn" data-type="duration">总耗时</div>
                   <div class="toggle-btn" data-type="cost">费用消耗</div>
                 </div>
-                <!-- 时间范围切换 -->
-                <div class="toggle-group" id="range-group">
-                  <div class="toggle-btn active" data-range="1">1小时</div>
-                  <div class="toggle-btn" data-range="6">6小时</div>
-                  <div class="toggle-btn" data-range="24">24小时</div>
-                  <div class="toggle-btn" data-range="168">7天</div>
+                <!-- 时间范围选择 -->
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <label for="range-select" style="color: var(--neutral-700); font-size: 14px; white-space: nowrap;">时间范围:</label>
+                  <select id="range-select" class="filter-select" style="min-width: 100px; padding: 6px 10px; font-size: 14px;">
+                    <!-- 动态生成选项 by date-range-selector.js -->
+                  </select>
                 </div>
                 <!-- 渠道筛选器 -->
                 <div class="channel-filter-container">
@@ -138,6 +138,7 @@
   </div>
 
 
+  <script src="/web/assets/js/date-range-selector.js"></script>
   <script src="/web/assets/js/trend.js"></script>
   <script src="/web/assets/js/ui.js"></script>
 </body>

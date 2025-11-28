@@ -27,17 +27,11 @@
           <div class="glass-card animate-slide-up" style="animation-delay: 0.1s;">
             <div class="filter-bar">
               <div class="filter-controls">
-                <!-- 最近小时筛选 -->
+                <!-- 时间范围筛选 -->
                 <div class="filter-group">
-                  <label for="f_hours" class="filter-label">最近小时</label>
+                  <label for="f_hours" class="filter-label">时间范围</label>
                   <select id="f_hours" class="filter-select" style="min-width: 100px;">
-                    <option value="1">1小时</option>
-                    <option value="3">3小时</option>
-                    <option value="6">6小时</option>
-                    <option value="12">12小时</option>
-                    <option value="24" selected>24小时</option>
-                    <option value="48">48小时</option>
-                    <option value="72">72小时</option>
+                    <!-- 动态生成选项 by date-range-selector.js -->
                   </select>
                 </div>
 
@@ -172,9 +166,10 @@
     </main>
   </div>
 
-  
 
 
+
+  <script src="/web/assets/js/date-range-selector.js"></script>
   <script src="/web/assets/js/stats.js"></script>
   <script src="/web/assets/js/ui.js"></script>
 </body>

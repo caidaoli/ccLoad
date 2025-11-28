@@ -10,12 +10,12 @@
     async function loadStats() {
       try {
         showLoading();
-        
+
         const u = new URLSearchParams(location.search);
         const params = new URLSearchParams({
-          hours: (u.get('hours')||'24')
+          range: (u.get('range')||'today')
         });
-        
+
         // 复用筛选条件
         if (u.get('channel_id')) params.set('channel_id', u.get('channel_id'));
         if (u.get('channel_name')) params.set('channel_name', u.get('channel_name'));
@@ -315,13 +315,14 @@
     }
 
     function applyFilter() {
-      const hours = document.getElementById('f_hours').value.trim();
+      const range = document.getElementById('f_hours').value.trim();
       const id = document.getElementById('f_id').value.trim();
       const name = document.getElementById('f_name').value.trim();
       const model = document.getElementById('f_model').value.trim();
 
       const q = new URLSearchParams(location.search);
-      if (hours) q.set('hours', hours); else q.delete('hours');
+      if (range) q.set('range', range); else q.delete('range');
+      q.delete('hours'); // 清理旧参数
       if (id) q.set('channel_id', id); else q.delete('channel_id');
       if (name) { q.set('channel_name_like', name); q.delete('channel_name'); }
       else { q.delete('channel_name_like'); }
@@ -334,10 +335,16 @@
       const u = new URLSearchParams(location.search);
       const id = u.get('channel_id') || '';
       const name = u.get('channel_name_like') || u.get('channel_name') || '';
-      const hours = u.get('hours') || '24';
+      const range = u.get('range') || 'today';
       const model = u.get('model_like') || u.get('model') || '';
 
-      document.getElementById('f_hours').value = hours;
+      // 初始化时间范围选择器 (默认"本日")
+      if (window.initDateRangeSelector) {
+        initDateRangeSelector('f_hours', 'today', null);
+        // 设置URL中的值
+        document.getElementById('f_hours').value = range;
+      }
+
       document.getElementById('f_id').value = id;
       document.getElementById('f_name').value = name;
       document.getElementById('f_model').value = model;

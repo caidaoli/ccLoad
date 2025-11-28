@@ -1,6 +1,6 @@
     // 全局变量
     window.trendData = null;
-    window.currentHours = 1;
+    window.currentRange = 'today'; // 默认"本日"
     window.currentTrendType = 'first_byte'; // 默认显示首字响应时间趋势 (count/first_byte/cost)
     window.chartInstance = null;
     window.channels = [];
@@ -9,11 +9,13 @@
     async function loadData() {
       try {
         showLoading();
-        const bucketMin = computeBucketMin(window.currentHours);
-        
+        const hours = window.getRangeHours ? getRangeHours(window.currentRange) : 24;
+        const bucketMin = computeBucketMin(hours);
+
         // 并行加载趋势数据和渠道列表
+        // metrics API使用range参数获取精确时间范围
         const [metricsRes, channelsRes] = await Promise.all([
-          fetchWithAuth(`/admin/metrics?hours=${window.currentHours}&bucket_min=${bucketMin}`),
+          fetchWithAuth(`/admin/metrics?range=${window.currentRange}&bucket_min=${bucketMin}`),
           fetchWithAuth('/admin/channels')
         ]);
         
@@ -980,36 +982,42 @@
         renderChart();
       });
 
-      // 时间范围切换
-      const rangeGroup = document.getElementById('range-group');
-      rangeGroup.addEventListener('click', (e) => {
-        const t = e.target.closest('.toggle-btn');
-        if (!t) return;
-        rangeGroup.querySelectorAll('.toggle-btn').forEach(btn => btn.classList.remove('active'));
-        t.classList.add('active');
-        const hours = parseInt(t.getAttribute('data-range') || '24', 10);
-        window.currentHours = hours;
-        const label = document.getElementById('data-timerange');
-        if (label) label.textContent = hours === 168 ? '7天数据展示' : `${hours}小时数据展示`;
-        persistState();
-        loadData();
-      });
+      // 时间范围选择 - 使用select元素
+      const rangeSelect = document.getElementById('range-select');
+      if (rangeSelect) {
+        rangeSelect.addEventListener('change', (e) => {
+          const range = e.target.value;
+          window.currentRange = range;
+          const label = document.getElementById('data-timerange');
+          if (label) {
+            const rangeLabel = window.getRangeLabel ? getRangeLabel(range) : range;
+            label.textContent = `${rangeLabel}数据展示`;
+          }
+          persistState();
+          loadData();
+        });
+      }
     }
 
     function persistState() {
       try {
-        localStorage.setItem('trend.rangeHours', String(window.currentHours));
+        localStorage.setItem('trend.range', window.currentRange);
         localStorage.setItem('trend.trendType', window.currentTrendType);
       } catch (_) {}
     }
 
     function restoreState() {
       try {
-        // 恢复时间范围
-        const h = parseInt(localStorage.getItem('trend.rangeHours') || '1', 10);
-        if ([1, 6, 24, 168].includes(h)) window.currentHours = h;
+        // 恢复时间范围 (默认"本日")
+        const savedRange = localStorage.getItem('trend.range') || 'today';
+        const validRanges = ['today', 'yesterday', 'day_before_yesterday', 'this_week', 'last_week', 'this_month', 'last_month'];
+        window.currentRange = validRanges.includes(savedRange) ? savedRange : 'today';
+
         const label = document.getElementById('data-timerange');
-        if (label) label.textContent = window.currentHours === 168 ? '7天数据展示' : `${window.currentHours}小时数据展示`;
+        if (label) {
+          const rangeLabel = window.getRangeLabel ? getRangeLabel(window.currentRange) : window.currentRange;
+          label.textContent = `${rangeLabel}数据展示`;
+        }
 
         // 恢复趋势类型
         const savedType = localStorage.getItem('trend.trendType') || 'first_byte';
@@ -1020,13 +1028,11 @@
     }
 
     function applyRangeUI() {
-      // 应用时间范围UI
-      const rangeGroup = document.getElementById('range-group');
-      if (rangeGroup) {
-        rangeGroup.querySelectorAll('.toggle-btn').forEach(btn => {
-          const h = parseInt(btn.getAttribute('data-range') || '24', 10);
-          btn.classList.toggle('active', h === window.currentHours);
-        });
+      // 初始化时间范围选择器 (默认"本日")
+      if (window.initDateRangeSelector) {
+        initDateRangeSelector('range-select', 'today', null);
+        // 设置已保存的值
+        document.getElementById('range-select').value = window.currentRange;
       }
 
       // 应用趋势类型UI

@@ -709,6 +709,160 @@ func (s *SQLiteStore) CountLogs(ctx context.Context, since time.Time, filter *mo
 	return count, err
 }
 
+// ListLogsRange 查询指定时间范围内的日志（支持精确日期范围如"昨日"）
+func (s *SQLiteStore) ListLogsRange(ctx context.Context, since, until time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error) {
+	baseQuery := `
+		SELECT id, time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used,
+			input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cost
+		FROM logs`
+
+	sinceMs := since.UnixMilli()
+	untilMs := until.UnixMilli()
+
+	qb := NewQueryBuilder(baseQuery).
+		Where("time >= ?", sinceMs).
+		Where("time <= ?", untilMs)
+
+	// 支持按渠道名称过滤
+	if filter != nil && (filter.ChannelName != "" || filter.ChannelNameLike != "") {
+		ids, err := s.fetchChannelIDsByNameFilter(ctx, filter.ChannelName, filter.ChannelNameLike)
+		if err != nil {
+			return nil, err
+		}
+		if len(ids) == 0 {
+			return []*model.LogEntry{}, nil
+		}
+		vals := make([]any, 0, len(ids))
+		for _, id := range ids {
+			vals = append(vals, id)
+		}
+		qb.WhereIn("channel_id", vals)
+	}
+
+	qb.ApplyFilter(filter)
+
+	suffix := "ORDER BY time DESC LIMIT ? OFFSET ?"
+	query, args := qb.BuildWithSuffix(suffix)
+	args = append(args, limit, offset)
+
+	rows, err := s.logDB.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []*model.LogEntry{}
+	channelIDsToFetch := make(map[int64]bool)
+
+	for rows.Next() {
+		var e model.LogEntry
+		var cfgID sql.NullInt64
+		var duration sql.NullFloat64
+		var isStreamingInt int
+		var firstByteTime sql.NullFloat64
+		var timeMs int64
+		var apiKeyUsed sql.NullString
+		var inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens sql.NullInt64
+		var cost sql.NullFloat64
+
+		if err := rows.Scan(&e.ID, &timeMs, &e.Model, &cfgID,
+			&e.StatusCode, &e.Message, &duration, &isStreamingInt, &firstByteTime, &apiKeyUsed,
+			&inputTokens, &outputTokens, &cacheReadTokens, &cacheCreationTokens, &cost); err != nil {
+			return nil, err
+		}
+
+		e.Time = model.JSONTime{Time: time.UnixMilli(timeMs)}
+
+		if cfgID.Valid {
+			id := cfgID.Int64
+			e.ChannelID = &id
+			channelIDsToFetch[id] = true
+		}
+		if duration.Valid {
+			e.Duration = duration.Float64
+		}
+		e.IsStreaming = isStreamingInt != 0
+		if firstByteTime.Valid {
+			fbt := firstByteTime.Float64
+			e.FirstByteTime = &fbt
+		}
+		if apiKeyUsed.Valid && apiKeyUsed.String != "" {
+			e.APIKeyUsed = maskAPIKey(apiKeyUsed.String)
+		}
+		if inputTokens.Valid {
+			val := int(inputTokens.Int64)
+			e.InputTokens = &val
+		}
+		if outputTokens.Valid {
+			val := int(outputTokens.Int64)
+			e.OutputTokens = &val
+		}
+		if cacheReadTokens.Valid {
+			val := int(cacheReadTokens.Int64)
+			e.CacheReadInputTokens = &val
+		}
+		if cacheCreationTokens.Valid {
+			val := int(cacheCreationTokens.Int64)
+			e.CacheCreationInputTokens = &val
+		}
+		if cost.Valid {
+			e.Cost = &cost.Float64
+		}
+		out = append(out, &e)
+	}
+
+	// 批量查询渠道名称
+	if len(channelIDsToFetch) > 0 {
+		channelNames, err := s.fetchChannelNamesBatch(ctx, channelIDsToFetch)
+		if err != nil {
+			log.Printf("⚠️  批量查询渠道名称失败: %v", err)
+			channelNames = make(map[int64]string)
+		}
+		for _, e := range out {
+			if e.ChannelID != nil {
+				if name, ok := channelNames[*e.ChannelID]; ok {
+					e.ChannelName = name
+				}
+			}
+		}
+	}
+
+	return out, nil
+}
+
+// CountLogsRange 返回指定时间范围内符合条件的日志总数
+func (s *SQLiteStore) CountLogsRange(ctx context.Context, since, until time.Time, filter *model.LogFilter) (int, error) {
+	baseQuery := `SELECT COUNT(*) FROM logs`
+	sinceMs := since.UnixMilli()
+	untilMs := until.UnixMilli()
+
+	qb := NewQueryBuilder(baseQuery).
+		Where("time >= ?", sinceMs).
+		Where("time <= ?", untilMs)
+
+	if filter != nil && (filter.ChannelName != "" || filter.ChannelNameLike != "") {
+		ids, err := s.fetchChannelIDsByNameFilter(ctx, filter.ChannelName, filter.ChannelNameLike)
+		if err != nil {
+			return 0, err
+		}
+		if len(ids) == 0 {
+			return 0, nil
+		}
+		vals := make([]any, 0, len(ids))
+		for _, id := range ids {
+			vals = append(vals, id)
+		}
+		qb.WhereIn("channel_id", vals)
+	}
+
+	qb.ApplyFilter(filter)
+
+	query, args := qb.Build()
+	var count int
+	err := s.logDB.QueryRowContext(ctx, query, args...).Scan(&count)
+	return count, err
+}
+
 func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket time.Duration) ([]model.MetricPoint, error) {
 	// 性能优化：使用SQL GROUP BY进行数据库层聚合，避免内存聚合
 	// 原方案：加载所有日志到内存聚合（10万条日志需2-5秒，占用100-200MB内存）
@@ -915,6 +1069,190 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 	}
 
 	// 已按时间升序（GROUP BY bucket_ts ASC）
+	return out, nil
+}
+
+// AggregateRange 聚合指定时间范围内的指标数据（支持精确日期范围如"昨日"）
+func (s *SQLiteStore) AggregateRange(ctx context.Context, since, until time.Time, bucket time.Duration) ([]model.MetricPoint, error) {
+	bucketSeconds := int64(bucket.Seconds())
+	sinceUnix := since.Unix()
+	untilUnix := until.Unix()
+
+	query := `
+		SELECT
+			((time / 1000) / ?) * ? AS bucket_ts,
+			channel_id,
+			SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success,
+			SUM(CASE WHEN status_code < 200 OR status_code >= 300 THEN 1 ELSE 0 END) AS error,
+			ROUND(
+				AVG(CASE WHEN is_streaming = 1 AND first_byte_time > 0 AND status_code >= 200 AND status_code < 300 THEN first_byte_time ELSE NULL END),
+				3
+			) as avg_first_byte_time,
+			ROUND(
+				AVG(CASE WHEN duration > 0 AND status_code >= 200 AND status_code < 300 THEN duration ELSE NULL END),
+				3
+			) as avg_duration,
+			SUM(CASE WHEN is_streaming = 1 AND first_byte_time > 0 AND status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) as stream_success_first_byte_count,
+			SUM(CASE WHEN duration > 0 AND status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) as duration_success_count,
+			SUM(COALESCE(cost, 0.0)) as total_cost
+		FROM logs
+		WHERE (time / 1000) >= ? AND (time / 1000) <= ?
+		GROUP BY bucket_ts, channel_id
+		ORDER BY bucket_ts ASC
+	`
+
+	rows, err := s.logDB.QueryContext(ctx, query, bucketSeconds, bucketSeconds, sinceUnix, untilUnix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	mapp := make(map[int64]*model.MetricPoint)
+	channelIDsToFetch := make(map[int64]bool)
+	type aggregationHelper struct {
+		totalFirstByteTime float64
+		firstByteCount     int
+		totalDuration      float64
+		durationCount      int
+	}
+	helperMap := make(map[int64]*aggregationHelper)
+
+	for rows.Next() {
+		var bucketTs int64
+		var channelID sql.NullInt64
+		var success, errorCount int
+		var avgFirstByteTime sql.NullFloat64
+		var avgDuration sql.NullFloat64
+		var streamSuccessFirstByteCount int
+		var durationSuccessCount int
+		var totalCost float64
+
+		if err := rows.Scan(&bucketTs, &channelID, &success, &errorCount, &avgFirstByteTime, &avgDuration, &streamSuccessFirstByteCount, &durationSuccessCount, &totalCost); err != nil {
+			return nil, err
+		}
+
+		mp, ok := mapp[bucketTs]
+		if !ok {
+			mp = &model.MetricPoint{
+				Ts:       time.Unix(bucketTs, 0),
+				Channels: make(map[string]model.ChannelMetric),
+			}
+			mapp[bucketTs] = mp
+		}
+
+		helper, ok := helperMap[bucketTs]
+		if !ok {
+			helper = &aggregationHelper{}
+			helperMap[bucketTs] = helper
+		}
+
+		mp.Success += success
+		mp.Error += errorCount
+
+		if mp.TotalCost == nil {
+			mp.TotalCost = new(float64)
+		}
+		*mp.TotalCost += totalCost
+
+		if avgFirstByteTime.Valid {
+			helper.totalFirstByteTime += avgFirstByteTime.Float64 * float64(streamSuccessFirstByteCount)
+			helper.firstByteCount += streamSuccessFirstByteCount
+		}
+
+		if avgDuration.Valid {
+			helper.totalDuration += avgDuration.Float64 * float64(durationSuccessCount)
+			helper.durationCount += durationSuccessCount
+		}
+
+		channelKey := "未知渠道"
+		if channelID.Valid {
+			channelKey = fmt.Sprintf("ch_%d", channelID.Int64)
+			channelIDsToFetch[channelID.Int64] = true
+		}
+
+		var avgFBT *float64
+		if avgFirstByteTime.Valid {
+			avgFBT = new(float64)
+			*avgFBT = avgFirstByteTime.Float64
+		}
+		var avgDur *float64
+		if avgDuration.Valid {
+			avgDur = new(float64)
+			*avgDur = avgDuration.Float64
+		}
+		var chCost *float64
+		if totalCost > 0 {
+			chCost = new(float64)
+			*chCost = totalCost
+		}
+
+		mp.Channels[channelKey] = model.ChannelMetric{
+			Success:                 success,
+			Error:                   errorCount,
+			AvgFirstByteTimeSeconds: avgFBT,
+			AvgDurationSeconds:      avgDur,
+			TotalCost:               chCost,
+		}
+	}
+
+	channelNames := make(map[int64]string)
+	if len(channelIDsToFetch) > 0 {
+		var err error
+		channelNames, err = s.fetchChannelNamesBatch(ctx, channelIDsToFetch)
+		if err != nil {
+			log.Printf("⚠️  批量查询渠道名称失败: %v", err)
+			channelNames = make(map[int64]string)
+		}
+	}
+
+	for bucketTs, mp := range mapp {
+		newChannels := make(map[string]model.ChannelMetric)
+		for key, metric := range mp.Channels {
+			if key == "未知渠道" {
+				newChannels[key] = metric
+			} else {
+				var channelID int64
+				fmt.Sscanf(key, "ch_%d", &channelID)
+				if name, ok := channelNames[channelID]; ok {
+					newChannels[name] = metric
+				} else {
+					newChannels["未知渠道"] = metric
+				}
+			}
+		}
+		mp.Channels = newChannels
+
+		if helper, ok := helperMap[bucketTs]; ok && helper.firstByteCount > 0 {
+			avgFBT := helper.totalFirstByteTime / float64(helper.firstByteCount)
+			mp.AvgFirstByteTimeSeconds = new(float64)
+			*mp.AvgFirstByteTimeSeconds = avgFBT
+			mp.FirstByteSampleCount = helper.firstByteCount
+		}
+
+		if helper, ok := helperMap[bucketTs]; ok && helper.durationCount > 0 {
+			avgDur := helper.totalDuration / float64(helper.durationCount)
+			mp.AvgDurationSeconds = new(float64)
+			*mp.AvgDurationSeconds = avgDur
+			mp.DurationSampleCount = helper.durationCount
+		}
+	}
+
+	out := []model.MetricPoint{}
+	endTime := until.Truncate(bucket).Add(bucket)
+	startTime := since.Truncate(bucket)
+
+	for t := startTime; t.Before(endTime); t = t.Add(bucket) {
+		ts := t.Unix()
+		if mp, ok := mapp[ts]; ok {
+			out = append(out, *mp)
+		} else {
+			out = append(out, model.MetricPoint{
+				Ts:       t,
+				Channels: make(map[string]model.ChannelMetric),
+			})
+		}
+	}
+
 	return out, nil
 }
 
