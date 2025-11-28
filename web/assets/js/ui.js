@@ -101,6 +101,12 @@
     return el;
   }
 
+  function isLoggedIn() {
+    const token = localStorage.getItem('ccload_token');
+    const expiry = localStorage.getItem('ccload_token_expiry');
+    return token && (!expiry || Date.now() <= parseInt(expiry));
+  }
+
   function buildTopbar(active) {
     const bar = h('header', { class: 'topbar' });
     const left = h('div', { class: 'topbar-left' }, [
@@ -115,8 +121,12 @@
         href: n.href
       }, [n.icon(), h('span', {}, n.label)]) )
     ]);
+    const loggedIn = isLoggedIn();
     const right = h('div', { class: 'topbar-right' }, [
-      h('button', { class: 'btn btn-secondary btn-sm', onclick: onLogout }, '注销')
+      h('button', {
+        class: 'btn btn-secondary btn-sm',
+        onclick: loggedIn ? onLogout : () => location.href = '/web/login.html'
+      }, loggedIn ? '注销' : '登录')
     ]);
     bar.appendChild(left); bar.appendChild(nav); bar.appendChild(right);
     return bar;
