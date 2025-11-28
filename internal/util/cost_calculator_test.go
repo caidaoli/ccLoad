@@ -46,10 +46,10 @@ func TestCalculateCost_Opus41(t *testing.T) {
 	cost := CalculateCost("claude-opus-4-1-20250805", 1000, 2000, 0, 0)
 
 	// 预期计算：
-	// Input: 1000 × $15.00 / 1M = $0.015
-	// Output: 2000 × $75.00 / 1M = $0.150
-	// Total: $0.165
-	expected := 0.165
+	// Input: 1000 × $5.00 / 1M = $0.005
+	// Output: 2000 × $25.00 / 1M = $0.050
+	// Total: $0.055
+	expected := 0.055
 	if !floatEquals(cost, expected, 0.000001) {
 		t.Errorf("Opus 4.1成本 = %.6f, 期望 %.6f", cost, expected)
 	}
@@ -76,8 +76,8 @@ func TestCalculateCost_LegacyModel(t *testing.T) {
 		model    string
 		expected float64
 	}{
-		{"claude-3-opus-20240229", 0.165},    // 1000×$15/1M + 2000×$75/1M = 0.015 + 0.15
-		{"claude-3-sonnet-20240229", 0.033},  // 1000×$3/1M + 2000×$15/1M = 0.003 + 0.03
+		{"claude-3-opus-20240229", 0.055},   // 1000×$5/1M + 2000×$25/1M = 0.005 + 0.05
+		{"claude-3-sonnet-20240229", 0.033}, // 1000×$3/1M + 2000×$15/1M = 0.003 + 0.03
 		{"claude-3-haiku-20240307", 0.00275}, // 1000×$0.25/1M + 2000×$1.25/1M = 0.00025 + 0.0025
 	}
 
@@ -208,27 +208,6 @@ func TestCalculateCost_CacheSavings(t *testing.T) {
 
 	t.Logf("普通输入成本: $%.6f", normalCost)
 	t.Logf("缓存读取成本: $%.6f (节省 %.0f%%)", cacheCost, (1-actualRatio)*100)
-}
-
-func TestFormatCost(t *testing.T) {
-	testCases := []struct {
-		cost     float64
-		expected string
-	}{
-		{0.0, "$0.00"},
-		{0.007441, "$0.0074"},    // 去除尾随0
-		{0.00035, "$0.0004"},     // 4位小数
-		{0.165, "$0.17"},         // 2位小数（四舍五入）
-		{1.234567, "$1.23"},      // 大于$1显示2位
-		{0.000001, "$0.000001"},  // 极小值6位小数
-		{0.0000001, "$1.00e-07"}, // 科学计数法
-	}
-
-	for _, tc := range testCases {
-		result := FormatCost(tc.cost)
-		// 注意：这里的测试比较宽松，因为格式化逻辑可能有细微差异
-		t.Logf("FormatCost(%.9f) = %s (期望约 %s)", tc.cost, result, tc.expected)
-	}
 }
 
 func TestCacheWriteCost(t *testing.T) {

@@ -1,7 +1,6 @@
 package util
 
 import (
-	"fmt"
 	"log"
 	"strings"
 )
@@ -324,104 +323,4 @@ func fuzzyMatchModel(model string) (ModelPricing, bool) {
 	}
 
 	return ModelPricing{}, false
-}
-
-// FormatCost 格式化成本为美元字符串
-// 例如：0.00123 → "$0.00123"
-//
-//	0.000005 → "$0.000005"
-func FormatCost(cost float64) string {
-	if cost == 0 {
-		return "$0.00"
-	}
-	if cost < 0.001 {
-		return "$" + formatSmallCost(cost)
-	}
-	return "$" + formatLargeCost(cost)
-}
-
-// formatSmallCost 格式化小额成本（<$0.001）
-// 使用科学计数法或保留足够精度
-func formatSmallCost(cost float64) string {
-	// 小于$0.000001使用科学计数法
-	if cost < 0.000001 {
-		return formatScientific(cost)
-	}
-	// 否则保留6位小数
-	return formatFixed(cost, 6)
-}
-
-// formatLargeCost 格式化正常成本（>=$0.001）
-// 保留4位小数（足够显示$0.0001级别）
-func formatLargeCost(cost float64) string {
-	if cost >= 1.0 {
-		return formatFixed(cost, 2) // 大于$1显示2位小数
-	}
-	return formatFixed(cost, 4) // 否则显示4位小数
-}
-
-// formatFixed 格式化为固定小数位（去除尾随0）
-func formatFixed(val float64, precision int) string {
-	format := "%." + string(rune(precision+'0')) + "f"
-	result := ""
-	// 简单格式化（Go标准库会自动去除尾随0）
-	switch precision {
-	case 2:
-		result = trimTrailingZeros(val, "%.2f")
-	case 4:
-		result = trimTrailingZeros(val, "%.4f")
-	case 6:
-		result = trimTrailingZeros(val, "%.6f")
-	default:
-		result = trimTrailingZeros(val, format)
-	}
-	return result
-}
-
-// formatScientific 科学计数法格式化
-func formatScientific(val float64) string {
-	return trimTrailingZeros(val, "%.2e")
-}
-
-// trimTrailingZeros 去除尾随零
-func trimTrailingZeros(val float64, format string) string {
-	s := ""
-	switch format {
-	case "%.2f":
-		s = formatFloat(val, 2)
-	case "%.4f":
-		s = formatFloat(val, 4)
-	case "%.6f":
-		s = formatFloat(val, 6)
-	case "%.2e":
-		s = formatFloatScientific(val)
-	}
-	// 去除尾随的0和.
-	for len(s) > 0 && s[len(s)-1] == '0' {
-		s = s[:len(s)-1]
-	}
-	if len(s) > 0 && s[len(s)-1] == '.' {
-		s = s[:len(s)-1]
-	}
-	return s
-}
-
-// formatFloat 格式化浮点数（简化版）
-func formatFloat(val float64, prec int) string {
-	// 简单实现：使用字符串格式化
-	var s string
-	switch prec {
-	case 2:
-		s = fmt.Sprintf("%.2f", val)
-	case 4:
-		s = fmt.Sprintf("%.4f", val)
-	case 6:
-		s = fmt.Sprintf("%.6f", val)
-	}
-	return s
-}
-
-// formatFloatScientific 科学计数法格式化（简化版）
-func formatFloatScientific(val float64) string {
-	return fmt.Sprintf("%.2e", val)
 }
