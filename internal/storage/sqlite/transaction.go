@@ -9,8 +9,18 @@ import (
 )
 
 // ============================================================================
-// 事务高阶函数
+// 事务接口与高阶函数
 // ============================================================================
+
+// TxHandler 事务处理器接口（抽象*sql.Tx，支持测试和扩展）
+type TxHandler interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	PrepareContext(ctx context.Context, query string) (*sql.Stmt, error)
+}
+
+// 确保 *sql.Tx 实现了 TxHandler 接口
+var _ TxHandler = (*sql.Tx)(nil)
 
 // WithTransaction 在主数据库事务中执行函数（用于channels、api_keys、key_rr操作）
 // ✅ DRY原则：统一事务管理逻辑，消除重复代码
