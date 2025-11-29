@@ -73,6 +73,22 @@
         return true;
       });
 
+      // 排序：优先级（降序）→ 渠道类型（字母序）→ 渠道名称（字母序）
+      filtered.sort((a, b) => {
+        // 1. 优先级降序（高优先级在前）
+        if (b.priority !== a.priority) {
+          return b.priority - a.priority;
+        }
+        // 2. 渠道类型字母序
+        const typeA = (a.channel_type || 'anthropic').toLowerCase();
+        const typeB = (b.channel_type || 'anthropic').toLowerCase();
+        if (typeA !== typeB) {
+          return typeA.localeCompare(typeB);
+        }
+        // 3. 渠道名称字母序
+        return a.name.localeCompare(b.name);
+      });
+
       renderChannels(filtered);
       updateFilterInfo(filtered.length, channels.length);
     }
