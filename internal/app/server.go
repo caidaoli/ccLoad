@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"crypto/tls"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -27,10 +26,11 @@ import (
 
 type Server struct {
 	// ============================================================================
-	// 服务层（仅保留有价值的服务）
+	// 服务层
 	// ============================================================================
-	authService *AuthService // 认证授权服务
-	logService  *LogService  // 日志管理服务
+	authService   *AuthService   // 认证授权服务
+	logService    *LogService    // 日志管理服务
+	configService *ConfigService // 配置管理服务
 
 	// ============================================================================
 	// 核心字段
@@ -40,14 +40,14 @@ type Server struct {
 	keySelector      *KeySelector          // Key选择器（多Key支持）
 	cooldownManager  *cooldown.Manager     // 统一冷却管理器（DRY原则）
 	validatorManager *validator.Manager    // 渠道验证器管理器（SRP+OCP原则）
-	client           *http.Client
-	firstByteTimeout time.Duration
+	client           *http.Client          // HTTP客户端
+
+	// 运行时配置（启动时从数据库加载，修改后重启生效）
+	maxKeyRetries    int           // 单个渠道内最大Key重试次数
+	firstByteTimeout time.Duration // 上游首字节超时
 
 	// 登录速率限制器（用于传递给AuthService）
 	loginRateLimiter *util.LoginRateLimiter
-
-	// 重试配置
-	maxKeyRetries int // 单个渠道内最大Key重试次数（默认3次）
 
 	// 并发控制
 	concurrencySem chan struct{} // 信号量：限制最大并发请求数（防止goroutine爆炸）
@@ -60,24 +60,30 @@ type Server struct {
 }
 
 func NewServer(store storage.Store) *Server {
+	// 初始化ConfigService（优先从数据库加载配置,环境变量作Fallback）
+	configService := NewConfigService(store)
+	if err := configService.LoadDefaults(context.Background()); err != nil {
+		log.Fatalf("❌ ConfigService初始化失败: %v", err)
+	}
+	log.Print("✅ ConfigService已加载系统配置（支持Web界面管理）")
+
+	// 管理员密码：仅从环境变量读取（安全考虑：密码不应存储在数据库中）
 	password := os.Getenv("CCLOAD_PASS")
 	if password == "" {
 		log.Print("❌ 未设置 CCLOAD_PASS，出于安全原因程序将退出。请设置强管理员密码后重试。")
 		os.Exit(1)
 	}
 
-	log.Print("✅ 管理员密码已从环境变量加载（长度: ", len(password), " 字符）")
+	log.Printf("✅ 管理员密码已从环境变量加载（长度: %d 字符）", len(password))
 	log.Print("ℹ️  API访问令牌将从数据库动态加载（支持Web界面管理）")
 
-	// 解析最大Key重试次数（避免key过多时重试次数过多）
-	maxKeyRetries := config.DefaultMaxKeyRetries
-	if retryEnv := os.Getenv("CCLOAD_MAX_KEY_RETRIES"); retryEnv != "" {
-		if val, err := strconv.Atoi(retryEnv); err == nil && val > 0 {
-			maxKeyRetries = val
-		}
-	}
+	// 从ConfigService读取运行时配置（启动时加载一次，修改后重启生效）
+	maxKeyRetries := configService.GetInt("max_key_retries", config.DefaultMaxKeyRetries)
+	firstByteTimeout := configService.GetDuration("upstream_first_byte_timeout", 0)
+	logRetentionDays := configService.GetInt("log_retention_days", 7)
+	enable88codeFreeOnly := configService.GetBool("88code_free_only", false)
 
-	// 解析最大并发数（性能优化：防止goroutine爆炸）
+	// 最大并发数保留环境变量读取（启动参数，不支持Web管理）
 	maxConcurrency := config.DefaultMaxConcurrency
 	if concEnv := os.Getenv("CCLOAD_MAX_CONCURRENCY"); concEnv != "" {
 		if val, err := strconv.Atoi(concEnv); err == nil && val > 0 {
@@ -85,84 +91,36 @@ func NewServer(store storage.Store) *Server {
 		}
 	}
 
-	// 解析上游首字节超时阈值（可选，单位：秒）
-	var firstByteTimeout time.Duration
-	if v := os.Getenv("CCLOAD_UPSTREAM_FIRST_BYTE_TIMEOUT"); v != "" {
-		if sec, err := strconv.Atoi(v); err == nil && sec > 0 {
-			firstByteTimeout = time.Duration(sec) * time.Second
-			log.Printf("⏱️  上游首字节超时阈值已启用：%v", firstByteTimeout)
-		} else {
-			log.Printf("⚠️  无法解析 CCLOAD_UPSTREAM_FIRST_BYTE_TIMEOUT=%q，已忽略", v)
-		}
-	}
-
-	// TLS证书验证配置（安全优化：默认启用证书验证）
-	skipTLSVerify := false
-	if os.Getenv("CCLOAD_SKIP_TLS_VERIFY") == "true" {
-		skipTLSVerify = true
-		log.Print("⚠️  警告：TLS证书验证已禁用（CCLOAD_SKIP_TLS_VERIFY=true）")
+	// TLS证书验证配置（从ConfigService读取）
+	skipTLSVerify := configService.GetBool("skip_tls_verify", false)
+	if skipTLSVerify {
+		log.Print("⚠️  警告：TLS证书验证已禁用（skip_tls_verify=true）")
 		log.Print("   仅用于开发/测试环境，生产环境严禁使用！")
 		log.Print("   当前配置存在中间人攻击风险，API Key可能泄漏")
 	}
 
-	// 优化 HTTP 客户端配置 - 重点优化连接建立阶段的超时控制
-	// 启用TCP_NODELAY降低SSE首包延迟5~15ms
-	dialer := &net.Dialer{
-		Timeout:   config.HTTPDialTimeout,
-		KeepAlive: config.HTTPKeepAliveInterval,
-		// 禁用Nagle算法，立即发送小包数据（SSE事件通常<2KB）
-		Control: func(network, address string, c syscall.RawConn) error {
-			return c.Control(func(fd uintptr) {
-				// 设置TCP_NODELAY=1，禁用Nagle算法
-				_ = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_TCP, syscall.TCP_NODELAY, 1)
-			})
-		},
-	}
-
-	transport := &http.Transport{
-		// 防御性配置，避免打爆上游API
-		MaxIdleConns:        config.HTTPMaxIdleConns,
-		MaxIdleConnsPerHost: config.HTTPMaxIdleConnsPerHost,
-		IdleConnTimeout:     config.HTTPIdleConnTimeout,
-		MaxConnsPerHost:     config.HTTPMaxConnsPerHost,
-
-		// 连接建立超时（保留必要的底层网络超时）
-		DialContext:         dialer.DialContext,
-		TLSHandshakeTimeout: config.HTTPTLSHandshakeTimeout,
-
-		// 传输优化
-		DisableCompression: false,
-		DisableKeepAlives:  false,
-		ForceAttemptHTTP2:  false, // 允许自动协议协商，避免HTTP/2超时
-		// 启用TLS会话缓存，减少重复握手耗时
-		TLSClientConfig: &tls.Config{
-			ClientSessionCache: tls.NewLRUClientSessionCache(config.TLSSessionCacheSize),
-			MinVersion:         tls.VersionTLS12, // 强制 TLS 1.2+
-			InsecureSkipVerify: skipTLSVerify,    // 默认false（启用证书验证）
-		},
-	}
-
-	if firstByteTimeout > 0 {
-		transport.ResponseHeaderTimeout = firstByteTimeout
-	}
-
-	// 启用HTTP/2降低头部开销10~20ms
-	// 优势：头部压缩、多路复用、服务器推送
-	if err := http2.ConfigureTransport(transport); err != nil {
-		log.Print("⚠️  警告：HTTP/2配置失败，将使用HTTP/1.1: " + err.Error())
-	} else {
+	// 构建HTTP Transport（使用统一函数，消除DRY违反）
+	transport, http2Enabled := buildHTTPTransport(skipTLSVerify, firstByteTimeout)
+	if http2Enabled {
 		log.Print("✅ HTTP/2已启用（头部压缩+多路复用）")
+	} else {
+		log.Print("⚠️  HTTP/2未启用，使用HTTP/1.1")
 	}
 
 	s := &Server{
-		store:         store,
-		maxKeyRetries: maxKeyRetries, // 单个渠道最大Key重试次数
+		store:            store,
+		configService:    configService,
+		loginRateLimiter: util.NewLoginRateLimiter(),
+
+		// 运行时配置（启动时加载，修改后重启生效）
+		maxKeyRetries:    maxKeyRetries,
+		firstByteTimeout: firstByteTimeout,
+
+		// HTTP客户端
 		client: &http.Client{
 			Transport: transport,
 			Timeout:   0, // 不设置全局超时，避免中断长时间任务
 		},
-		firstByteTimeout: firstByteTimeout,
-		loginRateLimiter: util.NewLoginRateLimiter(), // 用于传递给AuthService
 
 		// 并发控制：使用信号量限制最大并发请求数
 		concurrencySem: make(chan struct{}, maxConcurrency),
@@ -182,11 +140,10 @@ func NewServer(store storage.Store) *Server {
 	// 初始化渠道验证器管理器（支持88code套餐验证等扩展规则）
 	s.validatorManager = validator.NewManager()
 
-	// 注册88code套餐验证器（如果启用）
-	// 支持多种布尔值表示: true/1/yes/on (不区分大小写)
-	if enabled, _ := strconv.ParseBool(os.Getenv("CCLOAD_88CODE_FREE_ONLY")); enabled {
-		log.Print("✅ 88code免费套餐验证已启用（非FREE套餐将被冷却30分钟）")
-		s.validatorManager.AddValidator(validator.NewSubscriptionValidator(true))
+	// 注册88code套餐验证器（启动时读取配置，修改后重启生效）
+	s.validatorManager.AddValidator(validator.NewSubscriptionValidator(enable88codeFreeOnly))
+	if enable88codeFreeOnly {
+		log.Print("[INFO] 88code subscription validator enabled (non-FREE plans will be cooled down)")
 	}
 
 	// 初始化Key选择器（移除store依赖，避免重复查询）
@@ -201,6 +158,7 @@ func NewServer(store storage.Store) *Server {
 		store,
 		config.DefaultLogBufferSize,
 		config.DefaultLogWorkers,
+		logRetentionDays, // 启动时读取，修改后重启生效
 		s.shutdownCh,
 		&s.isShuttingDown,
 		&s.wg,
@@ -208,8 +166,8 @@ func NewServer(store storage.Store) *Server {
 	// 启动日志 Workers
 	s.logService.StartWorkers()
 
-	// 仅当保留天数>0时启动清理协程(-1表示永久保留,不清理)
-	if config.GetLogRetentionDays() > 0 {
+	// 仅当保留天数>0时启动清理协程（-1表示永久保留，不清理）
+	if logRetentionDays > 0 {
 		s.logService.StartCleanupLoop()
 	}
 
@@ -236,6 +194,57 @@ func (s *Server) getChannelCache() *storage.ChannelCache {
 		return nil
 	}
 	return s.channelCache
+}
+
+// GetConfigService 获取配置服务(供main.go使用)
+func (s *Server) GetConfigService() *ConfigService {
+	return s.configService
+}
+
+// buildHTTPTransport 构建HTTP Transport（DRY：统一配置逻辑）
+// 参数:
+//   - skipTLSVerify: 是否跳过TLS证书验证
+//   - firstByteTimeout: 上游首字节超时（0表示禁用）
+func buildHTTPTransport(skipTLSVerify bool, firstByteTimeout time.Duration) (*http.Transport, bool) {
+	dialer := &net.Dialer{
+		Timeout:   config.HTTPDialTimeout,
+		KeepAlive: config.HTTPKeepAliveInterval,
+		Control: func(network, address string, c syscall.RawConn) error {
+			return c.Control(func(fd uintptr) {
+				_ = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_TCP, syscall.TCP_NODELAY, 1)
+			})
+		},
+	}
+
+	transport := &http.Transport{
+		MaxIdleConns:        config.HTTPMaxIdleConns,
+		MaxIdleConnsPerHost: config.HTTPMaxIdleConnsPerHost,
+		IdleConnTimeout:     config.HTTPIdleConnTimeout,
+		MaxConnsPerHost:     config.HTTPMaxConnsPerHost,
+		DialContext:         dialer.DialContext,
+		TLSHandshakeTimeout: config.HTTPTLSHandshakeTimeout,
+		DisableCompression:  false,
+		DisableKeepAlives:   false,
+		ForceAttemptHTTP2:   false,
+		TLSClientConfig: &tls.Config{
+			ClientSessionCache: tls.NewLRUClientSessionCache(config.TLSSessionCacheSize),
+			MinVersion:         tls.VersionTLS12,
+			InsecureSkipVerify: skipTLSVerify,
+		},
+	}
+
+	if firstByteTimeout > 0 {
+		transport.ResponseHeaderTimeout = firstByteTimeout
+	}
+
+	// 启用HTTP/2
+	http2Enabled := true
+	if err := http2.ConfigureTransport(transport); err != nil {
+		log.Printf("⚠️  警告：HTTP/2配置失败: %v", err)
+		http2Enabled = false
+	}
+
+	return transport, http2Enabled
 }
 
 // GetConfig 获取渠道配置（实现cooldown.ConfigGetter接口）
@@ -380,6 +389,13 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/auth-tokens", s.HandleCreateAuthToken)
 		admin.PUT("/auth-tokens/:id", s.HandleUpdateAuthToken)
 		admin.DELETE("/auth-tokens/:id", s.HandleDeleteAuthToken)
+
+		// 系统配置管理
+		admin.GET("/settings", s.AdminListSettings)
+		admin.GET("/settings/:key", s.AdminGetSetting)
+		admin.PUT("/settings/:key", s.AdminUpdateSetting)
+		admin.POST("/settings/:key/reset", s.AdminResetSetting)
+		admin.POST("/settings/batch", s.AdminBatchUpdateSettings)
 	}
 
 	// 静态文件服务（安全）：使用框架自带的静态文件路由，自动做路径清理，防止目录遍历
@@ -441,61 +457,6 @@ func (s *Server) getModelsByChannelType(ctx context.Context, channelType string)
 		models = append(models, name)
 	}
 	return models, nil
-}
-
-// WarmHTTPConnections HTTP连接预热（性能优化：为高优先级渠道预建立连接）
-// 作用：消除首次请求的TLS握手延迟10-50ms，提升用户体验
-// 等待所有预热goroutine完成，避免goroutine泄漏
-func (s *Server) WarmHTTPConnections(ctx context.Context) {
-	// 使用缓存层查询所有启用的渠道（已按优先级排序，避免数据库性能杀手）
-	configs, err := s.GetEnabledChannelsByModel(ctx, "*")
-	if err != nil || len(configs) == 0 {
-		return
-	}
-
-	// 预热高优先级渠道（按优先级降序）
-	warmCount := min(len(configs), config.CacheWarmupChannelCount)
-
-	// ✅ 使用WaitGroup等待所有预热goroutine完成
-	var wg sync.WaitGroup
-	warmedCount := 0
-
-	for i := range warmCount {
-		cfg := configs[i]
-		if cfg.URL == "" {
-			continue
-		}
-
-		// 发送轻量HEAD请求预建立连接（超时1秒）
-		reqCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
-		req, err := http.NewRequestWithContext(reqCtx, "HEAD", cfg.URL, nil)
-		if err != nil {
-			cancel()
-			continue
-		}
-
-		// 异步预热（使用WaitGroup跟踪）
-		wg.Add(1)
-		go func(r *http.Request, c func()) {
-			defer wg.Done()
-			defer c()
-			resp, err := s.client.Do(r)
-			if err == nil && resp != nil && resp.Body != nil {
-				// 正确关闭响应体，防止连接泄漏
-				io.Copy(io.Discard, resp.Body)
-				resp.Body.Close()
-			}
-		}(req, cancel)
-
-		warmedCount++
-	}
-
-	// 等待所有预热完成
-	wg.Wait()
-
-	if warmedCount > 0 {
-		log.Printf("✅ HTTP连接预热：为 %d 个高优先级渠道预建立连接", warmedCount)
-	}
 }
 
 // ✅ 修复：handleChannelKeys 路由处理器(2025-10新架构支持)

@@ -206,3 +206,50 @@ func (rs *RedisSync) LoadAuthTokensFromRedis(ctx context.Context) ([]*model.Auth
 
 	return tokens, nil
 }
+
+// ============================================================================
+// 通用KV操作（用于ConfigService等场景）
+// ============================================================================
+
+// Get 获取指定key的值
+func (rs *RedisSync) Get(ctx context.Context, key string) (string, bool, error) {
+	if !rs.enabled {
+		return "", false, nil // Redis禁用时降级，返回 found=false
+	}
+
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, rs.timeout)
+	defer cancel()
+
+	val, err := rs.client.Get(ctxWithTimeout, key).Result()
+	if err == redis.Nil {
+		return "", false, nil // Key不存在
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return val, true, nil
+}
+
+// Set 设置指定key的值(支持TTL,0表示永久)
+func (rs *RedisSync) Set(ctx context.Context, key, value string, ttl time.Duration) error {
+	if !rs.enabled {
+		return nil // Redis禁用时静默跳过
+	}
+
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, rs.timeout)
+	defer cancel()
+
+	return rs.client.Set(ctxWithTimeout, key, value, ttl).Err()
+}
+
+// Del 删除指定key
+func (rs *RedisSync) Del(ctx context.Context, key string) error {
+	if !rs.enabled {
+		return nil // Redis禁用时静默跳过
+	}
+
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, rs.timeout)
+	defer cancel()
+
+	return rs.client.Del(ctxWithTimeout, key).Err()
+}

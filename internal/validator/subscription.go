@@ -29,7 +29,7 @@ import (
 type SubscriptionValidator struct {
 	httpClient *http.Client
 	apiURL     string
-	enabled    bool
+	enabled    bool // 启动时确定，修改后重启生效
 
 	// 缓存: channelID → cacheEntry
 	cache      sync.Map
@@ -52,18 +52,11 @@ type usage88CodeResponse struct {
 }
 
 // NewSubscriptionValidator 创建88code套餐验证器
-//
-// 参数:
-//
-//	enabled - 是否启用验证(从环境变量CCLOAD_88CODE_FREE_ONLY读取)
-//
-// 返回:
-//
-//	验证器实例
+// enabled: 是否启用验证（启动时确定，修改后重启生效）
 func NewSubscriptionValidator(enabled bool) *SubscriptionValidator {
 	return &SubscriptionValidator{
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second, // 5秒超时
+			Timeout: 30 * time.Second,
 			Transport: &http.Transport{
 				MaxIdleConns:        10,
 				MaxIdleConnsPerHost: 5,
@@ -72,23 +65,20 @@ func NewSubscriptionValidator(enabled bool) *SubscriptionValidator {
 		},
 		apiURL:     "https://www.88code.org/api/usage",
 		enabled:    enabled,
-		cacheTTL:   60 * time.Second, // 60秒缓存
-		apiTimeout: 30 * time.Second, // API调用超时
+		cacheTTL:   60 * time.Second,
+		apiTimeout: 30 * time.Second,
 	}
 }
 
 // ShouldValidate 判断是否需要验证此渠道
 //
 // 验证条件:
-// - 验证器已启用(CCLOAD_88CODE_FREE_ONLY=true)
+// - 验证器已启用（启动时确定，修改后重启生效）
 // - 渠道名称以"88code"开头(不区分大小写)
 func (v *SubscriptionValidator) ShouldValidate(cfg *model.Config) bool {
 	if !v.enabled {
 		return false
 	}
-
-	// 不区分大小写的前缀匹配
-	// 例如: "88code-test", "88Code-prod", "88CODE_backup"都会被验证
 	return strings.HasPrefix(strings.ToLower(cfg.Name), "88code")
 }
 

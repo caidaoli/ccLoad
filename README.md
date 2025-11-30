@@ -563,19 +563,25 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 |--------|--------|------|
 | `CCLOAD_PASS` | 无 | 管理界面密码（**必填**，未设置将退出） |
 | `PORT` | `8080` | 服务端口 |
-| `GIN_MODE` | `debug` | 运行模式（`debug`/`release`） |
+| `GIN_MODE` | `release` | 运行模式（`debug`/`release`） |
 | `SQLITE_PATH` | `data/ccload.db` | 数据库文件路径 |
 | `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal模式（WAL/TRUNCATE/DELETE等，容器环境建议TRUNCATE） |
 | `CCLOAD_USE_MEMORY_DB` | `false` | 启用内存数据库模式（需配合Redis使用） |
-| `CCLOAD_MAX_KEY_RETRIES` | `3` | 单个渠道内最大Key重试次数 |
 | `CCLOAD_MAX_CONCURRENCY` | `1000` | 最大并发请求数（限制同时处理的代理请求数量） |
 | `CCLOAD_MAX_BODY_BYTES` | `2097152` | 请求体最大字节数（2MB，防止大包打爆内存） |
-| `CCLOAD_UPSTREAM_FIRST_BYTE_TIMEOUT` | 不设置 | 上游首字节超时（单位：秒，检测上游慢响应/无响应） |
-| `CCLOAD_LOG_RETENTION_DAYS` | `7` | 日志保留天数（1-365天,-1表示永久保留不清理） |
-| `CCLOAD_ENABLE_WARMUP` | `false` | 启用启动预热（消除首次请求的TLS握手延迟10-50ms） |
-| `CCLOAD_SKIP_TLS_VERIFY` | `false` | 跳过TLS证书验证（**仅开发环境**，生产环境严禁使用） |
 | `REDIS_URL` | 无 | Redis连接URL（可选，用于渠道数据异步备份） |
-| `GOTAGS` | `go_json` | 构建标签（`go_json`/`std`，go_json使用高性能JSON库） |
+
+### Web 管理配置（支持热重载）
+
+以下配置项已迁移到数据库，通过 Web 界面 `/web/settings.html` 管理，修改后立即生效无需重启：
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `log_retention_days` | `7` | 日志保留天数（-1永久保留，1-365天） |
+| `max_key_retries` | `3` | 单个渠道内最大Key重试次数 |
+| `upstream_first_byte_timeout` | `0` | 上游首字节超时（秒，0=禁用） |
+| `88code_free_only` | `false` | 仅允许使用88code免费订阅 |
+| `skip_tls_verify` | `false` | 跳过TLS证书验证（⚠️仅开发环境） |
 
 #### API 访问令牌配置
 

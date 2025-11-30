@@ -192,6 +192,45 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		return fmt.Errorf("create performance indexes: %w", err)
 	}
 
+	// 创建系统配置表(2025-11新增)
+	if _, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS system_settings (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL,
+			value_type TEXT NOT NULL CHECK(value_type IN ('int', 'bool', 'string', 'duration')),
+			description TEXT NOT NULL,
+			default_value TEXT NOT NULL,
+			updated_at BIGINT NOT NULL
+		);
+	`); err != nil {
+		return fmt.Errorf("create system_settings table: %w", err)
+	}
+
+	// 初始化默认配置(幂等插入:已存在则跳过)
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO system_settings (key, value, value_type, description, default_value, updated_at) VALUES
+		('log_retention_days', '7', 'int', '日志保留天数(-1永久保留,1-365天)', '7', strftime('%s', 'now')),
+		('max_key_retries', '3', 'int', '单渠道最大Key重试次数', '3', strftime('%s', 'now')),
+		('upstream_first_byte_timeout', '0', 'duration', '上游首字节超时(秒,0=禁用)', '0', strftime('%s', 'now')),
+		('88code_free_only', 'false', 'bool', '仅允许使用88code免费订阅', 'false', strftime('%s', 'now')),
+		('skip_tls_verify', 'false', 'bool', '跳过TLS证书验证(⚠️仅开发环境,生产严禁)', 'false', strftime('%s', 'now'))
+		ON CONFLICT(key) DO NOTHING;
+	`); err != nil {
+		return fmt.Errorf("initialize default settings: %w", err)
+	}
+
+	// 创建管理员会话表(2025-11新增,支持重启后保持登录)
+	if _, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS admin_sessions (
+			token TEXT PRIMARY KEY,
+			expires_at BIGINT NOT NULL,
+			created_at BIGINT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires ON admin_sessions(expires_at);
+	`); err != nil {
+		return fmt.Errorf("create admin_sessions table: %w", err)
+	}
+
 	return nil
 }
 

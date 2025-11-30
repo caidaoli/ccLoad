@@ -29,6 +29,9 @@ type LogService struct {
 	logWorkers   int
 	logDropCount atomic.Uint64
 
+	// 日志保留天数（启动时确定，修改后重启生效）
+	retentionDays int
+
 	// 优雅关闭
 	shutdownCh     chan struct{}
 	isShuttingDown *atomic.Bool
@@ -40,6 +43,7 @@ func NewLogService(
 	store storage.Store,
 	logBufferSize int,
 	logWorkers int,
+	retentionDays int, // 启动时确定，修改后重启生效
 	shutdownCh chan struct{},
 	isShuttingDown *atomic.Bool,
 	wg *sync.WaitGroup,
@@ -48,6 +52,7 @@ func NewLogService(
 		store:          store,
 		logChan:        make(chan *model.LogEntry, logBufferSize),
 		logWorkers:     logWorkers,
+		retentionDays:  retentionDays,
 		shutdownCh:     shutdownCh,
 		isShuttingDown: isShuttingDown,
 		wg:             wg,
@@ -176,7 +181,7 @@ func (s *LogService) cleanupOldLogsLoop() {
 		case <-ticker.C:
 			// 使用带超时的context，避免日志清理阻塞关闭流程
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			cutoff := time.Now().AddDate(0, 0, -config.GetLogRetentionDays())
+			cutoff := time.Now().AddDate(0, 0, -s.retentionDays)
 
 			// 通过Store接口清理旧日志，忽略错误（非关键操作）
 			_ = s.store.CleanupLogsBefore(ctx, cutoff)

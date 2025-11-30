@@ -72,11 +72,12 @@ func (s *Server) handleRequestError(
 	if reqCtx.firstByteTimeoutTriggered() {
 		statusCode = util.StatusFirstByteTimeout
 		timeoutMsg := fmt.Sprintf("upstream first byte timeout after %.2fs", duration)
-		if s.firstByteTimeout > 0 {
-			timeoutMsg = fmt.Sprintf("%s (threshold=%v)", timeoutMsg, s.firstByteTimeout)
+		timeout := s.firstByteTimeout
+		if timeout > 0 {
+			timeoutMsg = fmt.Sprintf("%s (threshold=%v)", timeoutMsg, timeout)
 		}
 		err = fmt.Errorf("%s: %w", timeoutMsg, util.ErrUpstreamFirstByteTimeout)
-		log.Printf("⏱️  [上游首字节超时] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, s.firstByteTimeout, duration)
+		log.Printf("⏱️  [上游首字节超时] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, timeout, duration)
 	} else if errors.Is(err, context.DeadlineExceeded) && reqCtx.isStreaming {
 		// 流式请求读取首字节超时：保留历史逻辑
 		err = fmt.Errorf("upstream timeout after %.2fs (streaming request): %w",

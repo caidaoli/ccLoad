@@ -45,7 +45,7 @@ type AuthService struct {
 }
 
 // NewAuthService 创建认证服务实例
-// 初始化时自动从数据库加载API访问令牌
+// 初始化时自动从数据库加载API访问令牌和管理员会话
 func NewAuthService(
 	password string,
 	loginRateLimiter *util.LoginRateLimiter,
@@ -64,7 +64,34 @@ func NewAuthService(
 		log.Printf("⚠️  初始化时加载API令牌失败: %v", err)
 	}
 
+	// 从数据库加载管理员会话（支持重启后保持登录）
+	if err := s.loadSessionsFromDB(); err != nil {
+		log.Printf("⚠️  初始化时加载管理员会话失败: %v", err)
+	}
+
 	return s
+}
+
+// loadSessionsFromDB 从数据库加载管理员会话
+func (s *AuthService) loadSessionsFromDB() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sessions, err := s.store.LoadAllSessions(ctx)
+	if err != nil {
+		return err
+	}
+
+	s.tokensMux.Lock()
+	for token, expiry := range sessions {
+		s.validTokens[token] = expiry
+	}
+	s.tokensMux.Unlock()
+
+	if len(sessions) > 0 {
+		log.Printf("✅ 已恢复 %d 个管理员会话（重启后保持登录）", len(sessions))
+	}
+	return nil
 }
 
 // ============================================================================
@@ -116,7 +143,7 @@ func (s *AuthService) CleanExpiredTokens() {
 	}
 	s.tokensMux.RUnlock()
 
-	// 批量删除过期Token
+	// 批量删除内存中的过期Token
 	if len(toDelete) > 0 {
 		s.tokensMux.Lock()
 		for _, token := range toDelete {
@@ -125,6 +152,13 @@ func (s *AuthService) CleanExpiredTokens() {
 			}
 		}
 		s.tokensMux.Unlock()
+	}
+
+	// 同时清理数据库中的过期会话
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.store.CleanExpiredSessions(ctx); err != nil {
+		log.Printf("⚠️  清理数据库过期会话失败: %v", err)
 	}
 }
 
@@ -281,11 +315,21 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 
 	// 生成Token
 	token := s.generateToken()
+	expiry := time.Now().Add(config.TokenExpiry)
 
-	// 存储Token到内存
+	// 存储Token到内存和数据库
 	s.tokensMux.Lock()
-	s.validTokens[token] = time.Now().Add(config.TokenExpiry)
+	s.validTokens[token] = expiry
 	s.tokensMux.Unlock()
+
+	// 异步写入数据库（持久化，支持重启后保持登录）
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := s.store.CreateAdminSession(ctx, token, expiry); err != nil {
+			log.Printf("⚠️  保存管理员会话到数据库失败: %v", err)
+		}
+	}()
 
 	log.Printf("✅ 登录成功: IP=%s", clientIP)
 
@@ -305,10 +349,17 @@ func (s *AuthService) HandleLogout(c *gin.Context) {
 	if after, ok := strings.CutPrefix(authHeader, prefix); ok {
 		token := after
 
-		// 删除服务器端Token
+		// 删除内存中的Token
 		s.tokensMux.Lock()
 		delete(s.validTokens, token)
 		s.tokensMux.Unlock()
+
+		// 异步删除数据库中的会话
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_ = s.store.DeleteAdminSession(ctx, token)
+		}()
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "已登出"})

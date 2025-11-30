@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" type="image/x-icon" href="/web/favicon.ico">
+  <link rel="apple-touch-icon" href="/web/apple-touch-icon.png">
+  <link rel="manifest" href="/web/manifest.json">
+  <meta name="theme-color" content="#3b82f6">
+  <title>系统设置 - Claude Code & Codex Proxy</title>
+  <link rel="stylesheet" href="/web/assets/css/styles.css">
+  <link href="/web/assets/css/inter.css" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    <main class="main-content">
+      <div class="content-area">
+        <header class="mb-6">
+          <div class="hero-header animate-slide-up">
+            <div class="hero-icon">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+              </svg>
+            </div>
+            <div>
+              <h1 class="hero-title">系统设置</h1>
+              <p class="hero-subtitle">配置运行时参数 · 实时生效</p>
+            </div>
+          </div>
+        </header>
+
+        <section class="glass-card mb-6 animate-slide-up">
+          <div class="table-container">
+            <table class="modern-table">
+              <thead>
+                <tr>
+                  <th style="width: 45%;">配置项</th>
+                  <th style="width: 20%;">默认值</th>
+                  <th style="width: 25%; text-align: right;">当前值</th>
+                  <th style="width: 10%;">操作</th>
+                </tr>
+              </thead>
+              <tbody id="settings-tbody">
+                <!-- 动态填充 -->
+              </tbody>
+            </table>
+          </div>
+          <div style="display: flex; justify-content: flex-end; padding: 16px 0 0 0;">
+            <button id="save-all-btn" onclick="saveAllSettings()" class="btn btn-primary" style="min-width: 120px;">
+              保存所有更改
+            </button>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+  <script src="/web/assets/js/ui.js"></script>
+  <script src="/web/assets/js/settings.js"></script>
+</body>
+</html>

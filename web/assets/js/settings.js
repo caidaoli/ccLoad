@@ -1,0 +1,163 @@
+// 系统设置页面
+initTopbar('settings');
+
+let originalSettings = {}; // 保存原始值用于比较
+
+async function loadSettings() {
+  try {
+    const resp = await fetchWithAuth('/admin/settings');
+    const data = await resp.json();
+
+    if (!data.success || !data.data?.settings) {
+      console.error('加载配置失败:', data);
+      showError('加载配置失败: ' + (data.error || '未知错误'));
+      return;
+    }
+
+    renderSettings(data.data.settings);
+  } catch (err) {
+    console.error('加载配置异常:', err);
+    showError('加载配置异常: ' + err.message);
+  }
+}
+
+function renderSettings(settings) {
+  const tbody = document.getElementById('settings-tbody');
+  originalSettings = {};
+
+  tbody.innerHTML = settings.map(s => {
+    originalSettings[s.key] = s.value;
+    return `
+      <tr>
+        <td>${escapeHtml(s.description)}</td>
+        <td><code style="font-size: 12px;">${escapeHtml(s.default_value)}</code></td>
+        <td style="text-align: right;">${renderInput(s)}</td>
+        <td>
+          <button onclick="resetSetting('${s.key}')" class="btn-icon" title="重置为默认值">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+              <path d="M3 3v5h5"/>
+            </svg>
+          </button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+// XSS 防护：转义 HTML 特殊字符
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function renderInput(setting) {
+  const safeKey = escapeHtml(setting.key);
+  switch (setting.value_type) {
+    case 'bool':
+      const checked = setting.value === 'true' || setting.value === '1';
+      return `<input type="checkbox" id="${safeKey}" ${checked ? 'checked' : ''}
+        style="width: 18px; height: 18px; cursor: pointer;" onchange="markChanged(this)">`;
+    case 'int':
+    case 'duration':
+      return `<input type="number" id="${safeKey}" value="${escapeHtml(setting.value)}"
+        style="padding: 6px 10px; border: 1px solid var(--color-border); border-radius: 6px;
+        background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px;
+        width: 100px; text-align: right;" onchange="markChanged(this)">`;
+    default:
+      return `<input type="text" id="${safeKey}" value="${escapeHtml(setting.value)}"
+        style="padding: 6px 10px; border: 1px solid var(--color-border); border-radius: 6px;
+        background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px;
+        width: 150px;" onchange="markChanged(this)">`;
+  }
+}
+
+function markChanged(input) {
+  const key = input.id;
+  const row = input.closest('tr');
+
+  const currentValue = input.type === 'checkbox' ? (input.checked ? 'true' : 'false') : input.value;
+  if (currentValue !== originalSettings[key]) {
+    row.style.background = 'rgba(59, 130, 246, 0.08)';
+  } else {
+    row.style.background = '';
+  }
+}
+
+async function saveAllSettings() {
+  // 收集所有变更
+  const updates = {};
+  const needsRestartKeys = [];
+
+  for (const key of Object.keys(originalSettings)) {
+    const input = document.getElementById(key);
+    if (!input) continue;
+
+    const currentValue = input.type === 'checkbox' ? (input.checked ? 'true' : 'false') : input.value;
+    if (currentValue !== originalSettings[key]) {
+      updates[key] = currentValue;
+      // 检查是否需要重启（从 DOM 中读取 description）
+      const row = input.closest('tr');
+      if (row?.querySelector('td')?.textContent?.includes('[需重启]')) {
+        needsRestartKeys.push(key);
+      }
+    }
+  }
+
+  if (Object.keys(updates).length === 0) {
+    showInfo('没有需要保存的更改');
+    return;
+  }
+
+  // 使用批量更新接口（单次请求，事务保护）
+  try {
+    const resp = await fetchWithAuth('/admin/settings/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates)
+    });
+
+    const data = await resp.json();
+    if (data.success) {
+      let msg = `已保存 ${Object.keys(updates).length} 项配置`;
+      if (needsRestartKeys.length > 0) {
+        msg += `\n\n以下配置需要重启服务才能生效:\n${needsRestartKeys.join(', ')}`;
+      }
+      showSuccess(msg);
+    } else {
+      showError('保存失败: ' + (data.error || '未知错误'));
+    }
+  } catch (err) {
+    console.error('保存异常:', err);
+    showError('保存异常: ' + err.message);
+  }
+
+  loadSettings();
+}
+
+async function resetSetting(key) {
+  if (!confirm(`确定要重置 "${key}" 为默认值吗?`)) return;
+
+  try {
+    const resp = await fetchWithAuth(`/admin/settings/${key}/reset`, { method: 'POST' });
+    const data = await resp.json();
+    if (data.success) {
+      showSuccess(`配置 ${key} 已重置为默认值`);
+      loadSettings();
+    } else {
+      showError('重置失败: ' + (data.error || '未知错误'));
+    }
+  } catch (err) {
+    console.error('重置异常:', err);
+    showError('重置异常: ' + err.message);
+  }
+}
+
+// showSuccess/showError 已在 ui.js 中定义（toast 通知），无需重复定义
+function showInfo(msg) {
+  window.showNotification(msg, 'info');
+}
+
+// 页面加载时执行
+loadSettings();

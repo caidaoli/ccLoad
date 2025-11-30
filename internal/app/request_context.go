@@ -30,7 +30,8 @@ func (s *Server) newRequestContext(parentCtx context.Context, requestPath string
 	ctx := parentCtx
 	var cancel context.CancelFunc
 
-	if s.firstByteTimeout > 0 {
+	timeout := s.firstByteTimeout
+	if timeout > 0 {
 		ctx, cancel = context.WithCancel(parentCtx)
 	}
 
@@ -41,8 +42,8 @@ func (s *Server) newRequestContext(parentCtx context.Context, requestPath string
 		isStreaming: isStreaming,
 	}
 
-	if s.firstByteTimeout > 0 {
-		reqCtx.firstByteTimer = time.AfterFunc(s.firstByteTimeout, func() {
+	if timeout > 0 {
+		reqCtx.firstByteTimer = time.AfterFunc(timeout, func() {
 			reqCtx.firstByteTimedOut.Store(true)
 			if reqCtx.cancel != nil {
 				reqCtx.cancel()

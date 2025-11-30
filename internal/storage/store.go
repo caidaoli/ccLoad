@@ -2,9 +2,15 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"ccLoad/internal/model"
+)
+
+// Sentinel errors for storage operations
+var (
+	ErrSettingNotFound = errors.New("setting not found")
 )
 
 // Store 数据持久化接口
@@ -74,4 +80,17 @@ type Store interface {
 
 	// Maintenance - 维护功能
 	CleanupLogsBefore(ctx context.Context, cutoff time.Time) error
+
+	// System Settings - 系统配置管理
+	GetSetting(ctx context.Context, key string) (*model.SystemSetting, error)
+	ListAllSettings(ctx context.Context) ([]*model.SystemSetting, error)
+	UpdateSetting(ctx context.Context, key, value string) error
+	BatchUpdateSettings(ctx context.Context, updates map[string]string) error
+
+	// Admin Sessions - 管理员会话管理（持久化，支持重启后保持登录）
+	CreateAdminSession(ctx context.Context, token string, expiresAt time.Time) error
+	GetAdminSession(ctx context.Context, token string) (expiresAt time.Time, exists bool, err error)
+	DeleteAdminSession(ctx context.Context, token string) error
+	CleanExpiredSessions(ctx context.Context) error
+	LoadAllSessions(ctx context.Context) (map[string]time.Time, error)
 }

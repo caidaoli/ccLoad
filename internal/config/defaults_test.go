@@ -1,7 +1,6 @@
 package config
 
 import (
-	"os"
 	"testing"
 	"time"
 )
@@ -34,9 +33,6 @@ func TestDefaultConstants(t *testing.T) {
 		{"SQLiteMaxIdleConnsMemory", SQLiteMaxIdleConnsMemory, 1, 100},
 		{"SQLiteMaxOpenConnsFile", SQLiteMaxOpenConnsFile, 1, 100},
 		{"SQLiteMaxIdleConnsFile", SQLiteMaxIdleConnsFile, 1, 100},
-
-		// 缓存配置
-		{"CacheWarmupChannelCount", CacheWarmupChannelCount, 1, 1000},
 
 		// 日志超时配置
 		{"LogFlushTimeoutMs", LogFlushTimeoutMs, 100, 60000}, // 毫秒
@@ -97,12 +93,13 @@ func TestConfigRelationships(t *testing.T) {
 			DefaultLogBufferSize, LogBatchSize)
 	}
 
-	// 日志清理: CleanupInterval < Retention
+	// 日志清理: CleanupInterval < 最小保留天数(1天)
+	// log_retention_days 最小值为1天(24h), 清理间隔必须小于它
 	cleanupHours := int(LogCleanupInterval.Hours())
-	retentionHours := GetLogRetentionDays() * 24
-	if cleanupHours >= retentionHours {
-		t.Errorf("日志清理: CleanupInterval(%dh) >= Retention(%dh)",
-			cleanupHours, retentionHours)
+	minRetentionHours := 24 // 最小保留1天
+	if cleanupHours >= minRetentionHours {
+		t.Errorf("日志清理: CleanupInterval(%dh) >= MinRetention(%dh)",
+			cleanupHours, minRetentionHours)
 	}
 }
 
@@ -148,43 +145,5 @@ func TestLogConfigValues(t *testing.T) {
 	if LogBatchSize > DefaultLogBufferSize {
 		t.Errorf("LogBatchSize(%d) > DefaultLogBufferSize(%d)",
 			LogBatchSize, DefaultLogBufferSize)
-	}
-}
-
-// TestGetLogRetentionDays 测试日志保留天数配置
-func TestGetLogRetentionDays(t *testing.T) {
-	// 保存原始环境变量
-	oldValue := os.Getenv("CCLOAD_LOG_RETENTION_DAYS")
-	defer os.Setenv("CCLOAD_LOG_RETENTION_DAYS", oldValue)
-
-	tests := []struct {
-		name     string
-		envValue string
-		want     int
-	}{
-		{"默认值", "", 7},
-		{"有效值-最小", "1", 1},
-		{"有效值-中间", "30", 30},
-		{"有效值-最大", "365", 365},
-		{"禁用清理", "-1", -1}, // 特殊值:-1表示永久保留,不清理
-		{"无效值-小于1", "0", 7},
-		{"无效值-大于365", "366", 7},
-		{"无效值-负数", "-5", 7},
-		{"无效值-非数字", "abc", 7},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			os.Setenv("CCLOAD_LOG_RETENTION_DAYS", tt.envValue)
-			got := GetLogRetentionDays()
-			if got != tt.want {
-				t.Errorf("GetLogRetentionDays() = %d, want %d (env=%q)",
-					got, tt.want, tt.envValue)
-			}
-			// 验证返回值在合理范围内(允许-1表示禁用清理)
-			if got != -1 && (got < 1 || got > 365) {
-				t.Errorf("GetLogRetentionDays() = %d 超出合理范围 [-1, 1-365]", got)
-			}
-		})
 	}
 }

@@ -85,3 +85,8 @@ type ChannelImportSummary struct {
 type CooldownRequest struct {
 	DurationMs int64 `json:"duration_ms" binding:"required,min=1000"` // 最少1秒
 }
+
+// SettingUpdateRequest 系统配置更新请求
+type SettingUpdateRequest struct {
+	Value string `json:"value" binding:"required"`
+}
