@@ -160,11 +160,18 @@ func getPricing(model string) (ModelPricing, bool) {
 }
 
 const (
-	// cacheReadMultiplier 缓存读取价格倍数（相对于基础input价格）
+	// cacheReadMultiplierClaude Claude Sonnet/Haiku 缓存读取价格倍数
 	// Cache Read = Input Price × 0.1 (90%节省)
-	// 适用于Claude和Gemini模型
+	// 适用于Claude Sonnet/Haiku和Gemini模型
 	// 例如：Claude Sonnet input=$3.00/1M → cached=$0.30/1M
 	cacheReadMultiplierClaude = 0.1
+
+	// cacheReadMultiplierOpus Claude Opus 缓存读取价格倍数
+	// Cache Read = Input Price × 1.0 (无折扣)
+	// 适用于Claude Opus系列模型（Opus 4.5, 4.1, 4.0, 3）
+	// 例如：Claude Opus input=$5.00/1M → cached=$5.00/1M
+	// 参考：https://docs.claude.com/en/docs/about-claude/pricing
+	cacheReadMultiplierOpus = 1.0
 
 	// cacheReadMultiplierOpenAI OpenAI缓存读取价格倍数
 	// Cache Read = Input Price × 0.5 (50%节省)
@@ -242,11 +249,13 @@ func CalculateCost(model string, inputTokens, outputTokens, cacheReadTokens, cac
 		cost += float64(outputTokens) * outputPricePerM / 1_000_000
 	}
 
-	// 3. 缓存读取成本（折扣率因平台而异）
+	// 3. 缓存读取成本（折扣率因平台/模型系列而异）
 	if cacheReadTokens > 0 {
-		cacheMultiplier := cacheReadMultiplierClaude // Claude/Gemini: 10%折扣
+		cacheMultiplier := cacheReadMultiplierClaude // Claude Sonnet/Haiku/Gemini: 10%折扣
 		if isOpenAIModel(model) {
 			cacheMultiplier = cacheReadMultiplierOpenAI // OpenAI: 50%折扣
+		} else if isOpusModel(model) {
+			cacheMultiplier = cacheReadMultiplierOpus // Opus: 无折扣(100%)
 		}
 		cacheReadPrice := inputPricePerM * cacheMultiplier
 		cost += float64(cacheReadTokens) * cacheReadPrice / 1_000_000
@@ -274,6 +283,14 @@ func isOpenAIModel(model string) bool {
 		strings.HasPrefix(lowerModel, "babbage-") ||
 		strings.HasPrefix(lowerModel, "codex-") ||
 		lowerModel == "computer-use-preview"
+}
+
+// isOpusModel 判断是否为Claude Opus系列模型
+// Opus模型缓存定价与Sonnet/Haiku不同：无折扣(100%基础输入价格)
+// 参考：https://docs.claude.com/en/docs/about-claude/pricing
+func isOpusModel(model string) bool {
+	lowerModel := strings.ToLower(model)
+	return strings.Contains(lowerModel, "opus")
 }
 
 // fuzzyMatchModel 模糊匹配模型名称

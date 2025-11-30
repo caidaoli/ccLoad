@@ -226,6 +226,62 @@ func TestCacheWriteCost(t *testing.T) {
 	t.Logf("缓存写入成本: $%.6f (溢价 %.0f%%)", cacheWriteCost, (actualRatio-1)*100)
 }
 
+
+// TestCalculateCost_OpusCacheRead 验证Opus模型缓存读取定价（无折扣）
+// 参考：https://docs.claude.com/en/docs/about-claude/pricing
+// Opus缓存读取价格 = 基础输入价格 × 1.0（无折扣）
+// 而Sonnet/Haiku缓存读取价格 = 基础输入价格 × 0.1（90%折扣）
+func TestCalculateCost_OpusCacheRead(t *testing.T) {
+	// 场景：Claude Opus 4.5 使用 Prompt Caching
+	// 数据来源：用户实际请求
+	// 提示 tokens: 8
+	// 缓存读取 tokens: 53660
+	// 缓存创建 tokens: 816
+	// 补全 tokens: 269
+	cost := CalculateCost("claude-opus-4-5-20251101", 8, 269, 53660, 816)
+
+	// 预期计算（Opus缓存倍率=1.0）：
+	// Input: 8 × $5.00 / 1M = $0.00004
+	// Cache Read: 53660 × ($5.00 × 1.0) / 1M = $0.2683
+	// Cache Creation: 816 × ($5.00 × 1.25) / 1M = $0.0051
+	// Output: 269 × $25.00 / 1M = $0.006725
+	// Total: $0.280165
+	expected := 0.280165
+	if !floatEquals(cost, expected, 0.000001) {
+		t.Errorf("Opus 4.5带缓存成本 = %.6f, 期望 %.6f", cost, expected)
+	}
+
+	t.Logf("✅ Opus缓存定价验证通过: $%.6f", cost)
+}
+
+// TestCalculateCost_OpusVsSonnetCacheRatio 验证Opus和Sonnet的缓存倍率差异
+func TestCalculateCost_OpusVsSonnetCacheRatio(t *testing.T) {
+	cacheTokens := 10000
+
+	// Opus: 缓存读取 = 输入价格 × 1.0（无折扣）
+	opusCacheCost := CalculateCost("claude-opus-4-5", 0, 0, cacheTokens, 0)
+	opusInputCost := CalculateCost("claude-opus-4-5", cacheTokens, 0, 0, 0)
+	opusRatio := opusCacheCost / opusInputCost
+
+	// Sonnet: 缓存读取 = 输入价格 × 0.1（90%折扣）
+	sonnetCacheCost := CalculateCost("claude-sonnet-4-5", 0, 0, cacheTokens, 0)
+	sonnetInputCost := CalculateCost("claude-sonnet-4-5", cacheTokens, 0, 0, 0)
+	sonnetRatio := sonnetCacheCost / sonnetInputCost
+
+	// 验证Opus缓存倍率为1.0
+	if !floatEquals(opusRatio, 1.0, 0.01) {
+		t.Errorf("Opus缓存读取倍率 = %.2f, 期望 1.0", opusRatio)
+	}
+
+	// 验证Sonnet缓存倍率为0.1
+	if !floatEquals(sonnetRatio, 0.1, 0.01) {
+		t.Errorf("Sonnet缓存读取倍率 = %.2f, 期望 0.1", sonnetRatio)
+	}
+
+	t.Logf("✅ Opus缓存倍率: %.2f (无折扣)", opusRatio)
+	t.Logf("✅ Sonnet缓存倍率: %.2f (90%%折扣)", sonnetRatio)
+}
+
 func TestRealWorldScenario(t *testing.T) {
 	// 真实场景：带缓存的长对话
 	// - 首次请求：创建缓存（系统prompt 2000 tokens）+ 输入100 + 输出200
