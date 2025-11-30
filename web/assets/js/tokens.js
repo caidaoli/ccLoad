@@ -1,6 +1,5 @@
     const API_BASE = '/admin';
     let allTokens = [];
-    let selectedTokenIds = new Set();
 
     document.addEventListener('DOMContentLoaded', () => {
       loadTokens();
@@ -39,22 +38,10 @@
 
       emptyState.style.display = 'none';
 
-      // 根据选中状态决定操作列显示内容
-      const hasSelection = selectedTokenIds.size > 0;
-      const operationHeader = hasSelection
-        ? `<div style="display: flex; align-items: center; gap: 8px;">
-             <span style="color: var(--primary-700); font-weight: 600; font-size: 12px;">已选择 ${selectedTokenIds.size} 项</span>
-             <button onclick="batchDeleteTokens()" class="btn btn-danger" style="padding: 4px 12px; font-size: 12px;">批量删除</button>
-           </div>`
-        : '操作';
-
       const tableHTML = `
         <table>
           <thead>
             <tr>
-              <th style="width: 40px;">
-                <input type="checkbox" id="select-all" onchange="toggleSelectAll(this.checked)" style="width: 18px; height: 18px; cursor: pointer;">
-              </th>
               <th>描述</th>
               <th>令牌</th>
               <th>状态</th>
@@ -66,7 +53,7 @@
               <th style="text-align: center;">非流式平均响应</th>
               <th>最后使用</th>
               <th>过期时间</th>
-              <th style="width: 200px;">${operationHeader}</th>
+              <th style="width: 200px;">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -76,7 +63,6 @@
       `;
 
       container.innerHTML = tableHTML;
-      updateSelectAllCheckbox();
     }
 
     function createTokenRow(token) {
@@ -84,7 +70,6 @@
       const createdAt = new Date(token.created_at).toLocaleString('zh-CN');
       const lastUsed = token.last_used_at ? new Date(token.last_used_at).toLocaleString('zh-CN') : '从未使用';
       const expiresAt = token.expires_at ? new Date(token.expires_at).toLocaleString('zh-CN') : '永不过期';
-      const isSelected = selectedTokenIds.has(token.id);
 
       // 计算统计信息
       const successCount = token.success_count || 0;
@@ -144,14 +129,6 @@
 
       return `
         <tr>
-          <td>
-            <input type="checkbox"
-              class="token-checkbox"
-              data-token-id="${token.id}"
-              onchange="toggleTokenSelection(${token.id}, this.checked)"
-              ${isSelected ? 'checked' : ''}
-              style="width: 18px; height: 18px; cursor: pointer;">
-          </td>
           <td style="font-weight: 500;">${escapeHtml(token.description)}</td>
           <td>
             <div><span class="token-display">${escapeHtml(token.token)}</span></div>
@@ -359,81 +336,11 @@
           method: 'DELETE'
         });
         if (!response.ok) throw new Error('删除失败');
-        selectedTokenIds.delete(id);
         loadTokens();
         showToast('删除成功', 'success');
       } catch (error) {
         console.error('删除失败:', error);
         showToast('删除失败: ' + error.message, 'error');
-      }
-    }
-
-    // 批量操作相关函数
-    function toggleTokenSelection(tokenId, checked) {
-      if (checked) {
-        selectedTokenIds.add(tokenId);
-      } else {
-        selectedTokenIds.delete(tokenId);
-      }
-      renderTokens(); // 重新渲染以更新表头
-    }
-
-    function toggleSelectAll(checked) {
-      if (checked) {
-        allTokens.forEach(token => selectedTokenIds.add(token.id));
-      } else {
-        selectedTokenIds.clear();
-      }
-      renderTokens();
-    }
-
-    function updateSelectAllCheckbox() {
-      const selectAllCheckbox = document.getElementById('select-all');
-      if (selectAllCheckbox) {
-        selectAllCheckbox.checked = allTokens.length > 0 && selectedTokenIds.size === allTokens.length;
-        selectAllCheckbox.indeterminate = selectedTokenIds.size > 0 && selectedTokenIds.size < allTokens.length;
-      }
-    }
-
-
-
-    async function batchDeleteTokens() {
-      if (selectedTokenIds.size === 0) {
-        showToast('请先选择要删除的令牌', 'error');
-        return;
-      }
-
-      if (!confirm(`确定要删除选中的 ${selectedTokenIds.size} 个令牌吗?删除后无法恢复。`)) {
-        return;
-      }
-
-      const idsToDelete = Array.from(selectedTokenIds);
-      let successCount = 0;
-      let failCount = 0;
-
-      for (const id of idsToDelete) {
-        try {
-          const response = await fetchWithAuth(`${API_BASE}/auth-tokens/${id}`, {
-            method: 'DELETE'
-          });
-          if (response.ok) {
-            successCount++;
-            selectedTokenIds.delete(id);
-          } else {
-            failCount++;
-          }
-        } catch (error) {
-          console.error(`删除令牌 ${id} 失败:`, error);
-          failCount++;
-        }
-      }
-
-      loadTokens();
-
-      if (failCount === 0) {
-        showToast(`成功删除 ${successCount} 个令牌`, 'success');
-      } else {
-        showToast(`删除完成: 成功 ${successCount} 个, 失败 ${failCount} 个`, 'error');
       }
     }
 
