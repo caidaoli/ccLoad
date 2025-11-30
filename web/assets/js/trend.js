@@ -336,6 +336,7 @@
           symbol: 'circle',
           symbolSize: 4,
           sampling: 'lttb',
+          connectNulls: true,
           itemStyle: {
             color: '#10b981'
           },
@@ -353,6 +354,7 @@
           symbol: 'circle',
           symbolSize: 4,
           sampling: 'lttb',
+          connectNulls: true,
           itemStyle: {
             color: '#ef4444'
           },
@@ -371,6 +373,7 @@
           symbol: 'circle',
           symbolSize: 4,
           sampling: 'lttb',
+          connectNulls: true,
           itemStyle: {
             color: '#0ea5e9'
           },
@@ -392,6 +395,7 @@
           symbol: 'circle',
           symbolSize: 4,
           sampling: 'lttb',
+          connectNulls: true,
           itemStyle: {
             color: '#a855f7'
           },
@@ -413,6 +417,7 @@
           symbol: 'circle',
           symbolSize: 4,
           sampling: 'lttb',
+          connectNulls: true,
           itemStyle: {
             color: '#f97316'
           },
@@ -463,6 +468,7 @@
               smooth: true,
               symbol: 'none',
               sampling: 'lttb',
+              connectNulls: true,
               itemStyle: { color: color },
               lineStyle: { width: 1.5, color: color, type: 'solid' },
               data: successData
@@ -477,6 +483,7 @@
               smooth: true,
               symbol: 'none',
               sampling: 'lttb',
+              connectNulls: true,
               itemStyle: { color: color },
               lineStyle: { width: 1.5, color: color, type: 'dashed' },
               data: errorData
@@ -503,6 +510,7 @@
               smooth: true,
               symbol: 'none',
               sampling: 'lttb',
+              connectNulls: true,
               itemStyle: { color: color },
               lineStyle: { width: 1.5, color: color },
               data: fbtData
@@ -529,6 +537,7 @@
               smooth: true,
               symbol: 'none',
               sampling: 'lttb',
+              connectNulls: true,
               itemStyle: { color: color },
               lineStyle: { width: 1.5, color: color },
               data: durData
@@ -555,6 +564,7 @@
               smooth: true,
               symbol: 'none',
               sampling: 'lttb',
+              connectNulls: true,
               itemStyle: { color: color },
               lineStyle: { width: 1.5, color: color },
               data: costData

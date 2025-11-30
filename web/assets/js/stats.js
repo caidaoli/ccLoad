@@ -33,7 +33,6 @@
         // 🎯 新增: 初始化时应用默认排序(渠道名称→模型名称)
         applyDefaultSorting();
 
-        updateSummaryCards();
         renderStatsTable();
         updateStatsCount();
 
@@ -54,11 +53,6 @@
           </td>
         </tr>
       `;
-      
-      // 重置摘要卡片
-      ['total-channels', 'total-models', 'total-success', 'total-error'].forEach(id => {
-        document.getElementById(id).textContent = '--';
-      });
     }
 
     function showError() {
@@ -74,28 +68,6 @@
           </td>
         </tr>
       `;
-    }
-
-    function updateSummaryCards() {
-      if (!statsData || !statsData.stats) return;
-
-      const configs = new Set();
-      const models = new Set();
-      let totalSuccess = 0;
-      let totalError = 0;
-
-      statsData.stats.forEach(entry => {
-        configs.add(entry.channel_name);
-        models.add(entry.model || '未知模型');
-        totalSuccess += entry.success || 0;
-        totalError += entry.error || 0;
-      });
-
-      // 更新摘要卡片
-      document.getElementById('total-channels').textContent = configs.size;
-      document.getElementById('total-models').textContent = models.size;
-      document.getElementById('total-success').textContent = formatNumber(totalSuccess);
-      document.getElementById('total-error').textContent = formatNumber(totalError);
     }
 
     // 表格排序功能
@@ -250,17 +222,28 @@
       }
 
       tbody.innerHTML = '';
+
+      // 初始化合计变量
+      let totalSuccess = 0;
+      let totalError = 0;
+      let totalRequests = 0;
+      let totalInputTokens = 0;
+      let totalOutputTokens = 0;
+      let totalCacheRead = 0;
+      let totalCacheCreation = 0;
+      let totalCost = 0;
+
       for (const entry of statsData.stats) {
         const tr = document.createElement('tr');
-        
+
         const successRate = entry.total > 0 ? ((entry.success / entry.total) * 100) : 0;
         const successRateText = successRate.toFixed(1) + '%';
-        
+
         // 根据成功率设置颜色类
         let successRateClass = 'success-rate';
         if (successRate >= 95) successRateClass += ' high';
         else if (successRate < 80) successRateClass += ' low';
-        
+
         const modelDisplay = entry.model ?
           `<span class="model-tag">${escapeHtml(entry.model)}</span>` :
           '<span style="color: var(--neutral-500);">未知模型</span>';
@@ -311,7 +294,40 @@
           <td style="text-align: right;">${costText}</td>
         `;
         tbody.appendChild(tr);
+
+        // 累加合计数据
+        totalSuccess += entry.success || 0;
+        totalError += entry.error || 0;
+        totalRequests += entry.total || 0;
+        totalInputTokens += entry.total_input_tokens || 0;
+        totalOutputTokens += entry.total_output_tokens || 0;
+        totalCacheRead += entry.total_cache_read_input_tokens || 0;
+        totalCacheCreation += entry.total_cache_creation_input_tokens || 0;
+        totalCost += entry.total_cost || 0;
       }
+
+      // 追加合计行
+      const totalRow = document.createElement('tr');
+      totalRow.style.backgroundColor = 'var(--primary-50)';
+      totalRow.style.fontWeight = 'bold';
+      totalRow.style.borderTop = '2px solid var(--primary-200)';
+
+      const totalSuccessRate = totalRequests > 0 ? ((totalSuccess / totalRequests) * 100).toFixed(1) + '%' : '0.0%';
+
+      totalRow.innerHTML = `
+        <td colspan="2" style="text-align: center; font-size: 15px; color: var(--primary-700);">合计</td>
+        <td><span class="success-count">${formatNumber(totalSuccess)}</span></td>
+        <td><span class="error-count">${formatNumber(totalError)}</span></td>
+        <td><strong>${formatNumber(totalRequests)}</strong></td>
+        <td style="text-align: center; font-size: 14px;">${totalSuccessRate}</td>
+        <td style="text-align: center; color: var(--neutral-400);">--</td>
+        <td style="text-align: right;">${formatNumber(totalInputTokens)}</td>
+        <td style="text-align: right;">${formatNumber(totalOutputTokens)}</td>
+        <td style="text-align: right;"><span style="color: var(--success-600);">${formatNumber(totalCacheRead)}</span></td>
+        <td style="text-align: right;"><span style="color: var(--primary-600);">${formatNumber(totalCacheCreation)}</span></td>
+        <td style="text-align: right;"><span style="color: var(--warning-600); font-weight: 600;">${formatCost(totalCost)}</span></td>
+      `;
+      tbody.appendChild(totalRow);
     }
 
     function applyFilter() {
