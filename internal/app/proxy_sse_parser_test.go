@@ -447,3 +447,72 @@ func TestJSONUsageParser_OpenAIChatCompletionsWithCacheFormat(t *testing.T) {
 		t.Errorf("CacheReadInputTokens = %d, 期望 350 (OpenAI cached_tokens)", cacheRead)
 	}
 }
+
+func TestSSEUsageParser_GeminiThoughtsTokenCount(t *testing.T) {
+	// 测试Gemini思考token（thoughtsTokenCount）应计入输出token
+	sseData := `data: {"candidates": [{"content": {"parts": [{"text": "回答"}]}}],"usageMetadata": {"promptTokenCount": 100,"candidatesTokenCount": 50,"totalTokenCount": 250,"thoughtsTokenCount": 100}}
+
+`
+
+	parser := newSSEUsageParser("gemini")
+	if err := parser.Feed([]byte(sseData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+
+	input, output, _, _ := parser.GetUsage()
+
+	if input != 100 {
+		t.Errorf("InputTokens = %d, 期望 100 (Gemini promptTokenCount)", input)
+	}
+	// 输出token = candidatesTokenCount(50) + thoughtsTokenCount(100) = 150
+	if output != 150 {
+		t.Errorf("OutputTokens = %d, 期望 150 (candidatesTokenCount + thoughtsTokenCount)", output)
+	}
+}
+
+func TestSSEUsageParser_GeminiCandidatesZeroFallback(t *testing.T) {
+	// 测试当candidatesTokenCount为0时，从totalTokenCount推算输出token
+	// 某些Gemini模型的流式响应中candidatesTokenCount始终为0
+	sseData := `data: {"candidates": [{"content": {"parts": []}}],"usageMetadata": {"promptTokenCount": 100,"candidatesTokenCount": 0,"totalTokenCount": 250,"thoughtsTokenCount": 0}}
+
+`
+
+	parser := newSSEUsageParser("gemini")
+	if err := parser.Feed([]byte(sseData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+
+	input, output, _, _ := parser.GetUsage()
+
+	if input != 100 {
+		t.Errorf("InputTokens = %d, 期望 100 (Gemini promptTokenCount)", input)
+	}
+	// 输出token = totalTokenCount(250) - promptTokenCount(100) = 150
+	if output != 150 {
+		t.Errorf("OutputTokens = %d, 期望 150 (totalTokenCount - promptTokenCount)", output)
+	}
+}
+
+func TestSSEUsageParser_GeminiThoughtsWithZeroCandidates(t *testing.T) {
+	// 测试当candidatesTokenCount为0但thoughtsTokenCount有值时
+	// 应该使用thoughtsTokenCount，不触发fallback
+	sseData := `data: {"candidates": [{"content": {"parts": []}}],"usageMetadata": {"promptTokenCount": 100,"candidatesTokenCount": 0,"totalTokenCount": 300,"thoughtsTokenCount": 150}}
+
+`
+
+	parser := newSSEUsageParser("gemini")
+	if err := parser.Feed([]byte(sseData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+
+	input, output, _, _ := parser.GetUsage()
+
+	if input != 100 {
+		t.Errorf("InputTokens = %d, 期望 100 (Gemini promptTokenCount)", input)
+	}
+	// 输出token = candidatesTokenCount(0) + thoughtsTokenCount(150) = 150
+	// 不应该触发fallback（因为outputTokens > 0）
+	if output != 150 {
+		t.Errorf("OutputTokens = %d, 期望 150 (thoughtsTokenCount)", output)
+	}
+}

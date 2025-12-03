@@ -334,9 +334,31 @@ func (u *usageAccumulator) applyGeminiUsage(usage map[string]any) {
 	if val, ok := usage["promptTokenCount"].(float64); ok {
 		u.InputTokens = int(val)
 	}
+
+	// 输出token = candidatesTokenCount + thoughtsTokenCount
+	// Gemini 2.5 Pro等模型的思考token需要计入输出
+	var outputTokens int
 	if val, ok := usage["candidatesTokenCount"].(float64); ok {
-		u.OutputTokens = int(val)
+		outputTokens = int(val)
 	}
+	if val, ok := usage["thoughtsTokenCount"].(float64); ok {
+		outputTokens += int(val)
+	}
+
+	// 备选方案：当candidatesTokenCount为0时，尝试从totalTokenCount推算
+	// 某些Gemini模型的流式响应中candidatesTokenCount始终为0
+	if outputTokens == 0 {
+		if total, ok := usage["totalTokenCount"].(float64); ok {
+			if prompt, ok := usage["promptTokenCount"].(float64); ok {
+				calculated := int(total) - int(prompt)
+				if calculated > 0 {
+					outputTokens = calculated
+				}
+			}
+		}
+	}
+
+	u.OutputTokens = outputTokens
 	// Gemini目前不支持缓存字段
 }
 
