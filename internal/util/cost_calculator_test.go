@@ -46,10 +46,10 @@ func TestCalculateCost_Opus41(t *testing.T) {
 	cost := CalculateCost("claude-opus-4-1-20250805", 1000, 2000, 0, 0)
 
 	// 预期计算：
-	// Input: 1000 × $5.00 / 1M = $0.005
-	// Output: 2000 × $25.00 / 1M = $0.050
-	// Total: $0.055
-	expected := 0.055
+	// Input: 1000 × $15.00 / 1M = $0.015
+	// Output: 2000 × $75.00 / 1M = $0.150
+	// Total: $0.165
+	expected := 0.165
 	if !floatEquals(cost, expected, 0.000001) {
 		t.Errorf("Opus 4.1成本 = %.6f, 期望 %.6f", cost, expected)
 	}
@@ -76,8 +76,8 @@ func TestCalculateCost_LegacyModel(t *testing.T) {
 		model    string
 		expected float64
 	}{
-		{"claude-3-opus-20240229", 0.055},   // 1000×$5/1M + 2000×$25/1M = 0.005 + 0.05
-		{"claude-3-sonnet-20240229", 0.033}, // 1000×$3/1M + 2000×$15/1M = 0.003 + 0.03
+		{"claude-3-opus-20240229", 0.165},    // 1000×$15/1M + 2000×$75/1M = 0.015 + 0.15
+		{"claude-3-sonnet-20240229", 0.033},  // 1000×$3/1M + 2000×$15/1M = 0.003 + 0.03
 		{"claude-3-haiku-20240307", 0.00275}, // 1000×$0.25/1M + 2000×$1.25/1M = 0.00025 + 0.0025
 	}
 
@@ -226,10 +226,9 @@ func TestCacheWriteCost(t *testing.T) {
 	t.Logf("缓存写入成本: $%.6f (溢价 %.0f%%)", cacheWriteCost, (actualRatio-1)*100)
 }
 
-
-// TestCalculateCost_OpusCacheRead 验证Opus模型缓存读取定价（无折扣）
+// TestCalculateCost_OpusCacheRead 验证Opus模型缓存读取定价（10%价）
 // 参考：https://docs.claude.com/en/docs/about-claude/pricing
-// Opus缓存读取价格 = 基础输入价格 × 1.0（无折扣）
+// Opus缓存读取价格 = 基础输入价格 × 0.1（90%折扣）
 // 而Sonnet/Haiku缓存读取价格 = 基础输入价格 × 0.1（90%折扣）
 func TestCalculateCost_OpusCacheRead(t *testing.T) {
 	// 场景：Claude Opus 4.5 使用 Prompt Caching
@@ -240,13 +239,13 @@ func TestCalculateCost_OpusCacheRead(t *testing.T) {
 	// 补全 tokens: 269
 	cost := CalculateCost("claude-opus-4-5-20251101", 8, 269, 53660, 816)
 
-	// 预期计算（Opus缓存倍率=1.0）：
+	// 预期计算（Opus缓存倍率=0.1）：
 	// Input: 8 × $5.00 / 1M = $0.00004
-	// Cache Read: 53660 × ($5.00 × 1.0) / 1M = $0.2683
+	// Cache Read: 53660 × ($5.00 × 0.1) / 1M = $0.02683
 	// Cache Creation: 816 × ($5.00 × 1.25) / 1M = $0.0051
 	// Output: 269 × $25.00 / 1M = $0.006725
-	// Total: $0.280165
-	expected := 0.280165
+	// Total: $0.038695
+	expected := 0.038695
 	if !floatEquals(cost, expected, 0.000001) {
 		t.Errorf("Opus 4.5带缓存成本 = %.6f, 期望 %.6f", cost, expected)
 	}
@@ -258,7 +257,7 @@ func TestCalculateCost_OpusCacheRead(t *testing.T) {
 func TestCalculateCost_OpusVsSonnetCacheRatio(t *testing.T) {
 	cacheTokens := 10000
 
-	// Opus: 缓存读取 = 输入价格 × 1.0（无折扣）
+	// Opus: 缓存读取 = 输入价格 × 0.1（90%折扣）
 	opusCacheCost := CalculateCost("claude-opus-4-5", 0, 0, cacheTokens, 0)
 	opusInputCost := CalculateCost("claude-opus-4-5", cacheTokens, 0, 0, 0)
 	opusRatio := opusCacheCost / opusInputCost
@@ -268,9 +267,9 @@ func TestCalculateCost_OpusVsSonnetCacheRatio(t *testing.T) {
 	sonnetInputCost := CalculateCost("claude-sonnet-4-5", cacheTokens, 0, 0, 0)
 	sonnetRatio := sonnetCacheCost / sonnetInputCost
 
-	// 验证Opus缓存倍率为1.0
-	if !floatEquals(opusRatio, 1.0, 0.01) {
-		t.Errorf("Opus缓存读取倍率 = %.2f, 期望 1.0", opusRatio)
+	// 验证Opus缓存倍率为0.1
+	if !floatEquals(opusRatio, 0.1, 0.01) {
+		t.Errorf("Opus缓存读取倍率 = %.2f, 期望 0.1", opusRatio)
 	}
 
 	// 验证Sonnet缓存倍率为0.1
@@ -278,7 +277,7 @@ func TestCalculateCost_OpusVsSonnetCacheRatio(t *testing.T) {
 		t.Errorf("Sonnet缓存读取倍率 = %.2f, 期望 0.1", sonnetRatio)
 	}
 
-	t.Logf("✅ Opus缓存倍率: %.2f (无折扣)", opusRatio)
+	t.Logf("✅ Opus缓存倍率: %.2f (90%%折扣)", opusRatio)
 	t.Logf("✅ Sonnet缓存倍率: %.2f (90%%折扣)", sonnetRatio)
 }
 

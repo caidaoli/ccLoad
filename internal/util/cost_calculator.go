@@ -29,14 +29,14 @@ var basePricing = map[string]ModelPricing{
 	// ========== Claude 模型 ==========
 	"claude-sonnet-4-5": {InputPrice: 3.00, OutputPrice: 15.00},
 	"claude-haiku-4-5":  {InputPrice: 1.00, OutputPrice: 5.00},
-	"claude-opus-4-1":   {InputPrice: 5.00, OutputPrice: 25.00},
+	"claude-opus-4-1":   {InputPrice: 15.00, OutputPrice: 75.00},
 	"claude-sonnet-4-0": {InputPrice: 3.00, OutputPrice: 15.00},
-	"claude-opus-4-0":   {InputPrice: 5.00, OutputPrice: 25.00},
+	"claude-opus-4-0":   {InputPrice: 15.00, OutputPrice: 75.00},
 	"claude-opus-4-5":   {InputPrice: 5.00, OutputPrice: 25.00},
 	"claude-3-7-sonnet": {InputPrice: 3.00, OutputPrice: 15.00},
 	"claude-3-5-sonnet": {InputPrice: 3.00, OutputPrice: 15.00},
 	"claude-3-5-haiku":  {InputPrice: 0.80, OutputPrice: 4.00},
-	"claude-3-opus":     {InputPrice: 5.00, OutputPrice: 25.00},
+	"claude-3-opus":     {InputPrice: 15.00, OutputPrice: 75.00},
 	"claude-3-sonnet":   {InputPrice: 3.00, OutputPrice: 15.00},
 	"claude-3-haiku":    {InputPrice: 0.25, OutputPrice: 1.25},
 	// 通用兜底（未来新版本）
@@ -171,7 +171,7 @@ const (
 	// 适用于Claude Opus系列模型（Opus 4.5, 4.1, 4.0, 3）
 	// 例如：Claude Opus input=$5.00/1M → cached=$5.00/1M
 	// 参考：https://docs.claude.com/en/docs/about-claude/pricing
-	cacheReadMultiplierOpus = 1.0
+	cacheReadMultiplierOpus = 0.1
 
 	// cacheReadMultiplierOpenAI OpenAI缓存读取价格倍数
 	// Cache Read = Input Price × 0.5 (50%节省)
@@ -251,11 +251,11 @@ func CalculateCost(model string, inputTokens, outputTokens, cacheReadTokens, cac
 
 	// 3. 缓存读取成本（折扣率因平台/模型系列而异）
 	if cacheReadTokens > 0 {
-		cacheMultiplier := cacheReadMultiplierClaude // Claude Sonnet/Haiku/Gemini: 10%折扣
+		cacheMultiplier := cacheReadMultiplierClaude // Claude全系/Gemini: 10%折扣
 		if isOpenAIModel(model) {
 			cacheMultiplier = cacheReadMultiplierOpenAI // OpenAI: 50%折扣
 		} else if isOpusModel(model) {
-			cacheMultiplier = cacheReadMultiplierOpus // Opus: 无折扣(100%)
+			cacheMultiplier = cacheReadMultiplierOpus // Opus: 10%折扣
 		}
 		cacheReadPrice := inputPricePerM * cacheMultiplier
 		cost += float64(cacheReadTokens) * cacheReadPrice / 1_000_000
