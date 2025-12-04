@@ -46,8 +46,8 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     -o ccload . && \
     xx-verify ccload
 
-# 运行阶段
-FROM alpine:latest
+# 运行阶段 - 必须指定目标平台，避免QEMU模拟导致apk失败
+FROM --platform=$TARGETPLATFORM alpine:latest
 
 # 安装运行时依赖
 RUN apk --no-cache add ca-certificates tzdata
