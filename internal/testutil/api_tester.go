@@ -312,9 +312,6 @@ func (t *AnthropicTester) Build(cfg *model.Config, apiKey string, req *TestChann
 		maxTokens = 4096
 	}
 	testContent := req.Content
-	if strings.TrimSpace(testContent) == "" {
-		testContent = "test"
-	}
 
 	msg := map[string]any{
 		"system": []map[string]any{
@@ -357,9 +354,21 @@ func (t *AnthropicTester) Build(cfg *model.Config, apiKey string, req *TestChann
 	h := make(http.Header)
 	h.Set("Content-Type", "application/json")
 	h.Set("Authorization", "Bearer "+apiKey)
-	h.Set("User-Agent", "claude-cli/1.0.110 (external, cli)")
+	// Claude Code CLI headers
+	h.Set("User-Agent", "claude-cli/2.0.58 (external, cli)")
 	h.Set("x-app", "cli")
 	h.Set("anthropic-version", "2023-06-01")
+	h.Set("anthropic-beta", "claude-code-20250219,interleaved-thinking-2025-05-14")
+	h.Set("anthropic-dangerous-direct-browser-access", "true")
+	// x-stainless-* headers
+	h.Set("x-stainless-arch", "arm64")
+	h.Set("x-stainless-lang", "js")
+	h.Set("x-stainless-os", "MacOS")
+	h.Set("x-stainless-package-version", "0.70.0")
+	h.Set("x-stainless-retry-count", "0")
+	h.Set("x-stainless-runtime", "node")
+	h.Set("x-stainless-runtime-version", "v24.3.0")
+	h.Set("x-stainless-timeout", "600")
 	if req.Stream {
 		h.Set("Accept", "text/event-stream")
 	}

@@ -169,6 +169,11 @@ func (s *Server) HandleChannelTest(c *gin.Context) {
 
 // 测试渠道API连通性
 func (s *Server) testChannelAPI(cfg *model.Config, apiKey string, testReq *testutil.TestChannelRequest) map[string]any {
+	// 设置默认测试内容（从配置读取）
+	if strings.TrimSpace(testReq.Content) == "" {
+		testReq.Content = s.configService.GetString("channel_test_content", "sonnet 4.0的发布日期是什么")
+	}
+
 	// ✅ 修复：应用模型重定向逻辑（与正常代理流程保持一致）
 	originalModel := testReq.Model
 	actualModel := originalModel

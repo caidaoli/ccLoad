@@ -213,7 +213,8 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		('max_key_retries', '3', 'int', '单渠道最大Key重试次数', '3', strftime('%s', 'now')),
 		('upstream_first_byte_timeout', '0', 'duration', '上游首字节超时(秒,0=禁用)', '0', strftime('%s', 'now')),
 		('88code_free_only', 'false', 'bool', '仅允许使用88code免费订阅', 'false', strftime('%s', 'now')),
-		('skip_tls_verify', 'false', 'bool', '跳过TLS证书验证(⚠️仅开发环境,生产严禁)', 'false', strftime('%s', 'now'))
+		('skip_tls_verify', 'false', 'bool', '跳过TLS证书验证(⚠️仅开发环境,生产严禁)', 'false', strftime('%s', 'now')),
+		('channel_test_content', 'sonnet 4.0的发布日期是什么', 'string', '渠道测试默认内容', 'sonnet 4.0的发布日期是什么', strftime('%s', 'now'))
 		ON CONFLICT(key) DO NOTHING;
 	`); err != nil {
 		return fmt.Errorf("initialize default settings: %w", err)

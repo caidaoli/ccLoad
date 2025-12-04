@@ -2,6 +2,20 @@
     let logsPageSize = 20;
     let totalLogsPages = 1;
     let totalLogs = 0;
+    let defaultTestContent = 'sonnet 4.0的发布日期是什么'; // 默认测试内容（从设置加载）
+
+    // 加载默认测试内容（从系统设置）
+    async function loadDefaultTestContent() {
+      try {
+        const resp = await fetchWithAuth('/admin/settings/channel_test_content');
+        const data = await resp.json();
+        if (data.success && data.data?.value) {
+          defaultTestContent = data.data.value;
+        }
+      } catch (e) {
+        console.warn('加载默认测试内容失败，使用内置默认值', e);
+      }
+    }
 
     async function load() {
       try {
@@ -474,9 +488,10 @@
     function handleResize() {}
 
     // 页面初始化
-    document.addEventListener('DOMContentLoaded', function() {
+    document.addEventListener('DOMContentLoaded', async function() {
       if (window.initTopbar) initTopbar('logs');
       initFilters();
+      await loadDefaultTestContent();
       load();
 
       // 响应式处理
@@ -588,7 +603,7 @@
       document.getElementById('testKeyProgress').classList.remove('show');
       document.getElementById('testKeyResult').classList.remove('show', 'success', 'error');
       document.getElementById('runKeyTestBtn').disabled = false;
-      document.getElementById('testKeyContent').value = 'test';
+      document.getElementById('testKeyContent').value = defaultTestContent;
       document.getElementById('testKeyStream').checked = true;
       updateTestKeyIndexInfo('');
       // 重置模型选择框
@@ -603,7 +618,7 @@
       const contentInput = document.getElementById('testKeyContent');
       const streamCheckbox = document.getElementById('testKeyStream');
       const selectedModel = modelSelect.value;
-      const testContent = contentInput.value.trim() || 'test';
+      const testContent = contentInput.value.trim() || defaultTestContent;
       const streamEnabled = streamCheckbox.checked;
 
       if (!selectedModel) {

@@ -69,7 +69,7 @@ function renderInput(setting) {
       return `<input type="text" id="${safeKey}" value="${escapeHtml(setting.value)}"
         style="padding: 6px 10px; border: 1px solid var(--color-border); border-radius: 6px;
         background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px;
-        width: 150px;" onchange="markChanged(this)">`;
+        width: 280px;" onchange="markChanged(this)">`;
   }
 }
 

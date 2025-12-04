@@ -7,6 +7,7 @@
     let testingChannelId = null;
     let currentChannelKeyCooldowns = []; // 当前编辑渠道的Key冷却信息
     let redirectTableData = []; // 模型重定向表格数据: [{from: '', to: ''}]
+    let defaultTestContent = 'sonnet 4.0的发布日期是什么'; // 默认测试内容（从设置加载）
     
     // Filter state
     let filters = {
@@ -1001,6 +1002,19 @@
       }
     }
 
+    // 加载默认测试内容（从系统设置）
+    async function loadDefaultTestContent() {
+      try {
+        const resp = await fetchWithAuth('/admin/settings/channel_test_content');
+        const data = await resp.json();
+        if (data.success && data.data?.value) {
+          defaultTestContent = data.data.value;
+        }
+      } catch (e) {
+        console.warn('加载默认测试内容失败，使用内置默认值', e);
+      }
+    }
+
     document.addEventListener('DOMContentLoaded', async () => {
       if (window.initTopbar) initTopbar('channels');
       setupFilterListeners();
@@ -1010,6 +1024,9 @@
       // 初始化渠道类型（动态加载配置）
       await window.ChannelTypeManager.renderChannelTypeRadios('channelTypeRadios');
       await window.ChannelTypeManager.renderChannelTypeFilter('channelTypeFilter');
+
+      // 加载默认测试内容
+      await loadDefaultTestContent();
 
       await loadChannels();
       await loadChannelStats();
@@ -1129,8 +1146,8 @@
       document.getElementById('testResult').classList.remove('show', 'success', 'error');
       document.getElementById('runTestBtn').disabled = false;
       document.getElementById('batchTestBtn').disabled = false;
-      // 重置内容输入框为默认值
-      document.getElementById('testContentInput').value = 'test';
+      // 重置内容输入框为默认值（从设置加载）
+      document.getElementById('testContentInput').value = defaultTestContent;
       // 重置渠道类型为默认值
       document.getElementById('testChannelType').value = 'anthropic';
       // 重置并发数为默认值
@@ -1151,7 +1168,7 @@
       const keySelect = document.getElementById('testKeySelect');
       const streamCheckbox = document.getElementById('testStreamEnabled');
       const selectedModel = modelSelect.value;
-      const testContent = contentInput.value.trim() || 'test'; // 默认为"test"
+      const testContent = contentInput.value.trim() || defaultTestContent;
       const channelType = channelTypeSelect.value;
       // 由用户选择是否启用流式
       const streamEnabled = streamCheckbox.checked;
@@ -1255,7 +1272,7 @@
       const concurrencyInput = document.getElementById('testConcurrency');
 
       const selectedModel = modelSelect.value;
-      const testContent = contentInput.value.trim() || 'test';
+      const testContent = contentInput.value.trim() || defaultTestContent;
       const channelType = channelTypeSelect.value;
       // 由用户选择是否启用流式
       const streamEnabled = streamCheckbox.checked;
