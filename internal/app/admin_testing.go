@@ -215,7 +215,7 @@ func (s *Server) testChannelAPI(cfg *model.Config, apiKey string, testReq *testu
 	}
 
 	// 创建HTTP请求
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "POST", fullURL, bytes.NewReader(body))
