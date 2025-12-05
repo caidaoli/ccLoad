@@ -12,11 +12,11 @@
     const token = localStorage.getItem('ccload_token');
     const expiry = localStorage.getItem('ccload_token_expiry');
 
-    // 检查Token过期
+    // 检查Token过期（静默跳转，不显示错误提示）
     if (!token || (expiry && Date.now() > parseInt(expiry))) {
       localStorage.removeItem('ccload_token');
       localStorage.removeItem('ccload_token_expiry');
-      window.location.href = '/web/login.html?error=' + encodeURIComponent('会话已过期，请重新登录');
+      window.location.href = '/web/login.html';
       throw new Error('Token expired');
     }
 
@@ -28,11 +28,11 @@
 
     const response = await fetch(url, { ...options, headers });
 
-    // 处理401未授权
+    // 处理401未授权（静默跳转，不显示错误提示）
     if (response.status === 401) {
       localStorage.removeItem('ccload_token');
       localStorage.removeItem('ccload_token_expiry');
-      window.location.href = '/web/login.html?error=' + encodeURIComponent('认证失败，请重新登录');
+      window.location.href = '/web/login.html';
       throw new Error('Unauthorized');
     }
 
@@ -139,17 +139,25 @@
   async function onLogout() {
     if (!confirm('确定要注销吗？')) return;
 
-    try {
-      // 调用后端登出接口（携带Token）
-      await window.fetchWithAuth('/logout', { method: 'POST' });
-    } catch (error) {
-      console.error('Logout error:', error);
-    } finally {
-      // 清理本地Token
-      localStorage.removeItem('ccload_token');
-      localStorage.removeItem('ccload_token_expiry');
-      location.href = '/web/login.html';
+    // 先清理本地Token，避免后续请求触发token检查
+    const token = localStorage.getItem('ccload_token');
+    localStorage.removeItem('ccload_token');
+    localStorage.removeItem('ccload_token_expiry');
+
+    // 如果有token，尝试调用后端登出接口（使用普通fetch，不触发token检查）
+    if (token) {
+      try {
+        await fetch('/logout', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+      } catch (error) {
+        console.error('Logout error:', error);
+      }
     }
+
+    // 跳转到登录页
+    location.href = '/web/login.html';
   }
 
   let bgAnimElement = null;
