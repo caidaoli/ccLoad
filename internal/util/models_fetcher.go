@@ -52,7 +52,11 @@ func doHTTPRequest(req *http.Request) ([]byte, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API返回错误 (HTTP %d): %s", resp.StatusCode, string(body))
+		// ✅ 修复：区分4xx和5xx错误，便于上层返回正确的HTTP状态码
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			return nil, fmt.Errorf("上游配置错误 (HTTP %d): %s", resp.StatusCode, string(body))
+		}
+		return nil, fmt.Errorf("上游服务器错误 (HTTP %d): %s", resp.StatusCode, string(body))
 	}
 
 	return body, nil

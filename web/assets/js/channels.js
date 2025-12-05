@@ -2491,48 +2491,42 @@
 
     // 从API获取模型列表（根据渠道类型调用标准接口）
     async function fetchModelsFromAPI() {
-      const isExistingChannel = Boolean(editingChannelId);
-      let endpoint = '';
-      let fetchOptions;
+      // ✅ 修复：编辑模式下也使用POST接口，传递表单中的实时配置（渠道类型、URL、API Key）
+      // 原因：用户修改渠道类型后，数据库中还是旧类型（未保存），导致获取的模型列表不正确
+      const channelUrl = document.getElementById('channelUrl').value.trim();
+      const channelType = document.querySelector('input[name="channelType"]:checked')?.value || 'anthropic';
+      const firstValidKey = inlineKeyTableData
+        .map(key => (key || '').trim())
+        .filter(Boolean)[0];
 
-      if (isExistingChannel) {
-        endpoint = `/admin/channels/${editingChannelId}/models/fetch`;
-      } else {
-        const channelUrl = document.getElementById('channelUrl').value.trim();
-        const channelType = document.querySelector('input[name="channelType"]:checked')?.value || 'anthropic';
-        const firstValidKey = inlineKeyTableData
-          .map(key => (key || '').trim())
-          .filter(Boolean)[0];
-
-        if (!channelUrl) {
-          if (window.showError) {
-            showError('请先填写API URL');
-          } else {
-            alert('请先填写API URL');
-          }
-          return;
+      if (!channelUrl) {
+        if (window.showError) {
+          showError('请先填写API URL');
+        } else {
+          alert('请先填写API URL');
         }
-
-        if (!firstValidKey) {
-          if (window.showError) {
-            showError('请至少添加一个API Key');
-          } else {
-            alert('请至少添加一个API Key');
-          }
-          return;
-        }
-
-        endpoint = '/admin/channels/models/fetch';
-        fetchOptions = {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            channel_type: channelType,
-            url: channelUrl,
-            api_key: firstValidKey
-          })
-        };
+        return;
       }
+
+      if (!firstValidKey) {
+        if (window.showError) {
+          showError('请至少添加一个API Key');
+        } else {
+          alert('请至少添加一个API Key');
+        }
+        return;
+      }
+
+      const endpoint = '/admin/channels/models/fetch';
+      const fetchOptions = {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          channel_type: channelType,
+          url: channelUrl,
+          api_key: firstValidKey
+        })
+      };
 
       // 显示加载状态
       const modelsTextarea = document.getElementById('channelModels');
@@ -2543,9 +2537,7 @@
       modelsTextarea.placeholder = '正在获取模型列表...';
 
       try {
-        const res = fetchOptions
-          ? await fetchWithAuth(endpoint, fetchOptions)
-          : await fetchWithAuth(endpoint);
+        const res = await fetchWithAuth(endpoint, fetchOptions);
 
         if (!res.ok) {
           const errorData = await res.json().catch(() => ({}));
@@ -2553,6 +2545,12 @@
         }
 
         const response = await res.json();
+
+        // ✅ 修复：检查响应体的success字段（后端统一返回200）
+        if (response.success === false) {
+          throw new Error(response.error || '获取模型列表失败');
+        }
+
         const data = response.data || response;
 
         if (!data.models || data.models.length === 0) {
