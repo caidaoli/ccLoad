@@ -1250,7 +1250,7 @@ body {
   border: 1px solid var(--glass-border);
   border-radius: 12px;
   padding: var(--space-4);
-  margin-bottom: var(--space-6);
+  margin-bottom: var(--space-2);
 }
 
 .filter-controls {
@@ -2468,6 +2468,9 @@ body {
 .display-flex { display: flex; }
 .align-items-center { align-items: center; }
 .align-items-end { align-items: end; }
+.gap-3 { gap: 3px; }
+.gap-4 { gap: 4px; }
+.gap-6 { gap: 6px; }
 .gap-8 { gap: 8px; }
 .gap-12 { gap: 12px; }
 

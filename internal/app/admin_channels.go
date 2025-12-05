@@ -39,6 +39,22 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		return
 	}
 
+	// 支持按渠道类型过滤（性能优化：减少后续批量查询的数据量）
+	channelType := c.Query("type")
+	if channelType != "" && channelType != "all" {
+		filtered := make([]*model.Config, 0, len(cfgs))
+		for _, cfg := range cfgs {
+			ct := cfg.ChannelType
+			if ct == "" {
+				ct = "anthropic"
+			}
+			if ct == channelType {
+				filtered = append(filtered, cfg)
+			}
+		}
+		cfgs = filtered
+	}
+
 	// 附带冷却状态
 	now := time.Now()
 

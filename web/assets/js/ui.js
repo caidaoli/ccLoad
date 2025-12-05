@@ -363,12 +363,50 @@
       `).join('');
   }
 
+  /**
+   * 渲染渠道类型Tab页（包含"全部"选项）
+   * @param {string} containerId - 容器元素ID
+   * @param {Function} onTabChange - tab切换回调函数
+   */
+  async function renderChannelTypeTabs(containerId, onTabChange) {
+    const container = document.getElementById(containerId);
+    if (!container) {
+      console.error('容器元素不存在:', containerId);
+      return;
+    }
+
+    const types = await getChannelTypes();
+
+    // 添加"全部"选项到末尾
+    const allTab = { value: 'all', display_name: '全部' };
+    const allTypes = [...types, allTab];
+
+    container.innerHTML = allTypes.map((type, index) => `
+      <button class="channel-tab ${index === 0 ? 'active' : ''}"
+              data-type="${type.value}"
+              title="${type.description || '显示所有渠道类型'}">
+        ${type.display_name}
+      </button>
+    `).join('');
+
+    // 绑定点击事件
+    container.querySelectorAll('.channel-tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        const type = tab.dataset.type;
+        container.querySelectorAll('.channel-tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        if (onTabChange) onTabChange(type);
+      });
+    });
+  }
+
   // 导出到全局作用域
   window.ChannelTypeManager = {
     getChannelTypes,
     renderChannelTypeRadios,
     renderChannelTypeSelect,
     renderChannelTypeFilter,
+    renderChannelTypeTabs,
     getChannelTypeDisplayName
   };
 })();

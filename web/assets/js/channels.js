@@ -1,5 +1,3 @@
-    // 渠道统计时间范围（默认本月）
-    const CHANNEL_STATS_RANGE = 'this_month';
     let channels = [];
     let channelStatsById = {};
     let editingChannelId = null;
@@ -8,6 +6,8 @@
     let currentChannelKeyCooldowns = []; // 当前编辑渠道的Key冷却信息
     let redirectTableData = []; // 模型重定向表格数据: [{from: '', to: ''}]
     let defaultTestContent = 'sonnet 4.0的发布日期是什么'; // 默认测试内容（从设置加载）
+    let channelStatsRange = 'today'; // 渠道统计时间范围（从设置加载）
+    let channelsCache = {}; // 按类型缓存渠道数据: {type: channels[]}
     
     // Filter state
     let filters = {
@@ -163,11 +163,7 @@
       }, 300);
       idFilter.addEventListener('input', debouncedIdFilter);
 
-      // Channel type filter
-      document.getElementById('channelTypeFilter').addEventListener('change', (e) => {
-        filters.channelType = e.target.value;
-        filterChannels();
-      });
+      // Channel type filter - 已由tab页处理，无需额外监听器
 
       // Status filter
       document.getElementById('statusFilter').addEventListener('change', (e) => {
@@ -223,13 +219,33 @@
       }
     }
 
-    async function loadChannels() {
+    // 清除渠道缓存（在增删改操作后调用）
+    function clearChannelsCache() {
+      channelsCache = {};
+    }
+
+    async function loadChannels(type = 'all') {
       try {
-        const res = await fetchWithAuth('/admin/channels');
+        // 使用缓存避免重复请求
+        if (channelsCache[type]) {
+          channels = channelsCache[type];
+          updateModelOptions();
+          filterChannels();
+          return;
+        }
+
+        // 构建URL，带上type参数
+        const url = type === 'all' ? '/admin/channels' : `/admin/channels?type=${encodeURIComponent(type)}`;
+        const res = await fetchWithAuth(url);
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const response = await res.json();
         // 处理新的API响应格式：{ success: true, data: [...] }
-        channels = response.success ? (response.data || []) : (response || []);
+        const data = response.success ? (response.data || []) : (response || []);
+
+        // 缓存结果
+        channelsCache[type] = data;
+        channels = data;
+
         updateModelOptions();
         filterChannels(); // Use filterChannels instead of direct render
       } catch (e) {
@@ -238,7 +254,19 @@
       }
     }
 
-    async function loadChannelStats(range = CHANNEL_STATS_RANGE) {
+    async function loadChannelStatsRange() {
+      try {
+        const resp = await fetchWithAuth('/admin/settings/channel_stats_range');
+        const data = await resp.json();
+        if (data.success && data.data?.value) {
+          channelStatsRange = data.data.value;
+        }
+      } catch (e) {
+        console.error('加载统计范围设置失败', e);
+      }
+    }
+
+    async function loadChannelStats(range = channelStatsRange) {
       try {
         const params = new URLSearchParams({ range, limit: '500', offset: '0' });
         const res = await fetchWithAuth(`/admin/stats?${params.toString()}`);
@@ -401,7 +429,7 @@
           <div class="${cardClasses.join(' ')}" id="channel-${c.id}">
             <div class="flex justify-between items-center">
               <div style="flex: 1;">
-                <div class="section-title">${escapeHtml(c.name)} ${channelTypeBadge} <span style="color: var(--neutral-500); font-size: 0.875rem; font-weight: 400;">(ID: ${c.id})</span> <span style="color: var(--neutral-600); font-size: 1rem; font-weight: 400;">模型: ${Array.isArray(c.models) ? c.models.join(', ') : ''}</span></div>
+                <div class="section-title">${escapeHtml(c.name)} ${channelTypeBadge} <span style="color: var(--neutral-500); font-size: 0.875rem; font-weight: 400;">(ID: ${c.id})</span> <span style="color: var(--neutral-600); font-size: 1rem; font-weight: 400; display: inline-block; max-width: 1300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom;" title="${Array.isArray(c.models) ? c.models.join(', ') : ''}">模型: ${Array.isArray(c.models) ? c.models.join(', ') : ''}</span></div>
                 <div class="text-sm" style="color: var(--neutral-600); margin-top: 4px;">
                   <div class="channel-meta-line">
                     <span>URL: ${escapeHtml(c.url)} | 优先级: ${c.priority} | ${c.enabled ? '已启用' : '已禁用'}${inlineCooldownBadge(c)}</span>
@@ -621,7 +649,8 @@
         }
 
         closeModal();
-        await loadChannels();
+        clearChannelsCache();
+        await loadChannels(filters.channelType);
         if (window.showSuccess) showSuccess(editingChannelId ? '渠道已更新' : '渠道已添加');
       } catch (e) {
         console.error('保存渠道失败', e);
@@ -654,7 +683,8 @@
         }
 
         closeDeleteModal();
-        await loadChannels();
+        clearChannelsCache();
+        await loadChannels(filters.channelType);
         if (window.showSuccess) showSuccess('渠道已删除');
       } catch (e) {
         console.error('删除渠道失败', e);
@@ -670,7 +700,8 @@
           body: JSON.stringify({ enabled })
         });
         if (!res.ok) throw new Error('HTTP ' + res.status);
-        await loadChannels();
+        clearChannelsCache();
+        await loadChannels(filters.channelType);
         if (window.showSuccess) showSuccess(enabled ? '渠道已启用' : '渠道已禁用');
       } catch (e) {
         console.error('切换失败', e);
@@ -791,6 +822,16 @@
       return formatCost(num);
     }
 
+    function getStatsRangeLabel(range) {
+      const labels = {
+        'today': '本日',
+        'this_week': '本周',
+        'this_month': '本月',
+        'all': '全部'
+      };
+      return labels[range] || '本日';
+    }
+
     function renderChannelStatsInline(stats, cache, channelType) {
       if (!stats) {
         return `<span class="channel-stat-badge" style="margin-left: 6px; color: var(--neutral-500);">统计: --</span>`;
@@ -813,10 +854,11 @@
       })();
 
       const callText = `${formatMetricNumber(stats.success)}/${formatMetricNumber(stats.error)}`;
+      const rangeLabel = getStatsRangeLabel(channelStatsRange);
 
       // 基础统计（所有渠道）
       const parts = [
-        `<span class="channel-stat-badge" style="color: var(--neutral-800);"><strong>调用</strong> ${callText}</span>`,
+        `<span class="channel-stat-badge" style="color: var(--neutral-800);"><strong>${rangeLabel}调用</strong> ${callText}</span>`,
         `<span class="channel-stat-badge" style="color: ${successRateColor};"><strong>率</strong> ${successRateText}</span>`,
         `<span class="channel-stat-badge" style="color: var(--primary-700);"><strong>首字</strong> ${avgFirstByteText}</span>`,
         `<span class="channel-stat-badge" style="color: var(--neutral-800);"><strong>In</strong> ${inputTokensText}</span>`,
@@ -992,7 +1034,8 @@
           showSuccess('导入完成');
         }
 
-        await loadChannels();
+        clearChannelsCache();
+        await loadChannels(filters.channelType);
       } catch (err) {
         console.error('导入CSV失败', err);
         if (window.showError) showError(err.message || '导入失败');
@@ -1023,12 +1066,22 @@
 
       // 初始化渠道类型（动态加载配置）
       await window.ChannelTypeManager.renderChannelTypeRadios('channelTypeRadios');
-      await window.ChannelTypeManager.renderChannelTypeFilter('channelTypeFilter');
 
-      // 加载默认测试内容
+      // 获取第一个渠道类型作为默认值
+      const types = await window.ChannelTypeManager.getChannelTypes();
+      const defaultType = types.length > 0 ? types[0].value : 'all';
+      filters.channelType = defaultType;
+
+      await window.ChannelTypeManager.renderChannelTypeTabs('channelTypeTabs', (type) => {
+        filters.channelType = type;
+        loadChannels(type);
+      });
+
+      // 加载默认测试内容和统计范围
       await loadDefaultTestContent();
+      await loadChannelStatsRange();
 
-      await loadChannels();
+      await loadChannels(defaultType);
       await loadChannelStats();
       highlightFromHash();
       window.addEventListener('hashchange', highlightFromHash);
@@ -1232,7 +1285,8 @@
         document.getElementById('runTestBtn').disabled = false;
 
         // 刷新渠道列表（更新冷却状态）
-        await loadChannels();
+        clearChannelsCache();
+        await loadChannels(filters.channelType);
       }
     }
 
@@ -1376,7 +1430,8 @@
       document.getElementById('batchTestBtn').disabled = false;
       
       // 刷新渠道列表（更新冷却状态）
-      await loadChannels();
+      clearChannelsCache();
+      await loadChannels(filters.channelType);
     }
 
     // 显示批量测试结果
