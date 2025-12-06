@@ -566,7 +566,6 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 | `GIN_MODE` | `release` | 运行模式（`debug`/`release`） |
 | `SQLITE_PATH` | `data/ccload.db` | 数据库文件路径 |
 | `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal模式（WAL/TRUNCATE/DELETE等，容器环境建议TRUNCATE） |
-| `CCLOAD_USE_MEMORY_DB` | `false` | 启用内存数据库模式（需配合Redis使用） |
 | `CCLOAD_MAX_CONCURRENCY` | `1000` | 最大并发请求数（限制同时处理的代理请求数量） |
 | `CCLOAD_MAX_BODY_BYTES` | `2097152` | 请求体最大字节数（2MB，防止大包打爆内存） |
 | `REDIS_URL` | 无 | Redis连接URL（可选，用于渠道数据异步备份） |

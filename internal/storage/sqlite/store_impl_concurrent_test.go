@@ -4,7 +4,6 @@ import (
 	"ccLoad/internal/model"
 	"context"
 	"fmt"
-	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -522,15 +521,9 @@ func TestConcurrentMixedOperations(t *testing.T) {
 func setupConcurrentTestStore(t *testing.T) (*SQLiteStore, func()) {
 	t.Helper()
 
-	// 禁用内存模式，避免Redis强制检查
-	oldValue := os.Getenv("CCLOAD_USE_MEMORY_DB")
-	os.Setenv("CCLOAD_USE_MEMORY_DB", "false")
-
-	// 使用临时文件数据库
 	tmpDB := t.TempDir() + "/concurrent-test.db"
 	store, err := NewSQLiteStore(tmpDB, nil)
 	if err != nil {
-		os.Setenv("CCLOAD_USE_MEMORY_DB", oldValue)
 		t.Fatalf("创建测试数据库失败: %v", err)
 	}
 
@@ -538,7 +531,6 @@ func setupConcurrentTestStore(t *testing.T) (*SQLiteStore, func()) {
 		if err := store.Close(); err != nil {
 			t.Logf("关闭测试数据库失败: %v", err)
 		}
-		os.Setenv("CCLOAD_USE_MEMORY_DB", oldValue)
 	}
 
 	return store, cleanup

@@ -13,9 +13,6 @@ import (
 
 // TestRedisRecovery_CompleteFlow 测试完整的Redis备份和恢复流程
 func TestRedisRecovery_CompleteFlow(t *testing.T) {
-	// 禁用内存数据库模式，使用临时文件数据库
-	os.Unsetenv("CCLOAD_USE_MEMORY_DB")
-
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test-redis-recovery.db")
 
@@ -308,9 +305,6 @@ func TestRedisRecovery_EmptyAPIKeys(t *testing.T) {
 
 // TestRedisRecovery_DeleteAPIKey 测试删除API Key后Redis同步的完整性
 func TestRedisRecovery_DeleteAPIKey(t *testing.T) {
-	// 禁用内存数据库模式，使用临时文件数据库
-	os.Unsetenv("CCLOAD_USE_MEMORY_DB")
-
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test-redis-delete-key.db")
 

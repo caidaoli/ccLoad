@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strconv"
 	"testing"
 
@@ -19,18 +18,12 @@ import (
 func setupAdminTestServer(t *testing.T) (*Server, *sqlite.SQLiteStore, func()) {
 	t.Helper()
 
-	// 禁用内存模式
-	oldValue := os.Getenv("CCLOAD_USE_MEMORY_DB")
-	os.Setenv("CCLOAD_USE_MEMORY_DB", "false")
-
-	// 创建临时数据库
 	tmpDB := t.TempDir() + "/admin_crud_test.db"
 	store, err := sqlite.NewSQLiteStore(tmpDB, nil)
 	if err != nil {
 		t.Fatalf("创建测试数据库失败: %v", err)
 	}
 
-	// 创建测试服务器（最小化配置）
 	gin.SetMode(gin.TestMode)
 	server := &Server{
 		store: store,
@@ -38,7 +31,6 @@ func setupAdminTestServer(t *testing.T) (*Server, *sqlite.SQLiteStore, func()) {
 
 	cleanup := func() {
 		store.Close()
-		os.Setenv("CCLOAD_USE_MEMORY_DB", oldValue)
 	}
 
 	return server, store, cleanup

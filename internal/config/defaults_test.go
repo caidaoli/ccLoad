@@ -29,8 +29,6 @@ func TestDefaultConstants(t *testing.T) {
 		{"TokenRandomBytes", TokenRandomBytes, 16, 64},
 
 		// SQLite配置
-		{"SQLiteMaxOpenConnsMemory", SQLiteMaxOpenConnsMemory, 1, 100},
-		{"SQLiteMaxIdleConnsMemory", SQLiteMaxIdleConnsMemory, 1, 100},
 		{"SQLiteMaxOpenConnsFile", SQLiteMaxOpenConnsFile, 1, 100},
 		{"SQLiteMaxIdleConnsFile", SQLiteMaxIdleConnsFile, 1, 100},
 
@@ -72,10 +70,6 @@ func TestBufferSizeConstants(t *testing.T) {
 // TestConfigRelationships 测试配置项之间的关系
 func TestConfigRelationships(t *testing.T) {
 	// SQLite连接池配置: MaxOpenConns >= MaxIdleConns
-	if SQLiteMaxOpenConnsMemory < SQLiteMaxIdleConnsMemory {
-		t.Errorf("内存模式: MaxOpenConns(%d) < MaxIdleConns(%d)",
-			SQLiteMaxOpenConnsMemory, SQLiteMaxIdleConnsMemory)
-	}
 	if SQLiteMaxOpenConnsFile < SQLiteMaxIdleConnsFile {
 		t.Errorf("文件模式: MaxOpenConns(%d) < MaxIdleConns(%d)",
 			SQLiteMaxOpenConnsFile, SQLiteMaxIdleConnsFile)

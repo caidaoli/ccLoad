@@ -46,27 +46,20 @@ func BenchmarkFetchChannelNamesBatch(b *testing.B) {
 	}
 }
 
-// setupBatchTestStore 创建测试用SQLite存储（内存模式）
+// setupBatchTestStore 创建测试用SQLite存储
 func setupBatchTestStore(t testing.TB) (*SQLiteStore, func()) {
 	t.Helper()
 
-	// ✅ 修复：禁用内存模式，避免Redis强制检查
-	oldValue := os.Getenv("CCLOAD_USE_MEMORY_DB")
-	os.Setenv("CCLOAD_USE_MEMORY_DB", "false")
-
-	// 使用临时文件数据库
 	var tmpDB string
 	if tt, ok := t.(*testing.T); ok {
 		tmpDB = tt.TempDir() + "/test-batch.db"
 	} else if tb, ok := t.(*testing.B); ok {
 		tmpDB = tb.TempDir() + "/test-batch.db"
 	} else {
-		// 回退到系统临时目录
 		tmpDB = filepath.Join(os.TempDir(), "test-batch-"+time.Now().Format("20060102-150405")+".db")
 	}
 	store, err := NewSQLiteStore(tmpDB, nil)
 	if err != nil {
-		os.Setenv("CCLOAD_USE_MEMORY_DB", oldValue)
 		t.Fatalf("创建测试存储失败: %v", err)
 	}
 
@@ -74,7 +67,6 @@ func setupBatchTestStore(t testing.TB) (*SQLiteStore, func()) {
 		if err := store.Close(); err != nil {
 			t.Errorf("关闭存储失败: %v", err)
 		}
-		os.Setenv("CCLOAD_USE_MEMORY_DB", oldValue)
 	}
 
 	return store, cleanup

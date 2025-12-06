@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -262,13 +263,9 @@ func TestConcurrentChannelOperations(t *testing.T) {
 
 // 辅助函数：创建测试Store
 func setupTestStore(t *testing.T) (*sqlite.SQLiteStore, func()) {
-	// 设置内存模式环境变量（测试使用内存数据库以提高速度）
-	t.Setenv("CCLOAD_USE_MEMORY_DB", "true")
-
-	// 使用内存数据库（无需Redis，因为测试数据不需要持久化）
-	// ⚠️ 注意：生产环境的内存模式强制要求Redis，但测试环境豁免
-	// 解决方案：跳过Redis检查（通过传nil）
-	store, err := sqlite.NewSQLiteStore(":memory:", &mockRedisSync{})
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	store, err := sqlite.NewSQLiteStore(dbPath, &mockRedisSync{})
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}

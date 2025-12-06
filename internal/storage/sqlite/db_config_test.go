@@ -1,7 +1,6 @@
 package sqlite
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
@@ -45,33 +44,12 @@ func TestGenerateLogDBPath(t *testing.T) {
 	}
 }
 
-// TestBuildMainDBDSN_MemoryMode 验证内存模式DSN不包含WAL
-func TestBuildMainDBDSN_MemoryMode(t *testing.T) {
-	// 设置内存模式
-	os.Setenv("CCLOAD_USE_MEMORY_DB", "true")
-	defer os.Unsetenv("CCLOAD_USE_MEMORY_DB")
-
+// TestBuildMainDBDSN_FileMode 验证文件模式DSN包含WAL
+func TestBuildMainDBDSN_FileMode(t *testing.T) {
 	dsn := buildMainDBDSN("/tmp/test.db")
 
-	// 验证DSN不包含journal_mode=WAL
-	if strings.Contains(dsn, "journal_mode=WAL") {
-		t.Error("Memory mode DSN should not contain journal_mode=WAL")
-	}
-
-	// 验证DSN包含命名内存数据库标识
-	if !strings.Contains(dsn, "file:ccload_mem_db") {
-		t.Errorf("Memory mode DSN should contain 'file:ccload_mem_db', got: %s", dsn)
-	}
-
-	// 验证DSN包含cache=shared
-	if !strings.Contains(dsn, "cache=shared") {
-		t.Errorf("Memory mode DSN should contain 'cache=shared', got: %s", dsn)
-	}
-
-	// 验证文件模式仍然使用WAL
-	os.Setenv("CCLOAD_USE_MEMORY_DB", "false")
-	fileDSN := buildMainDBDSN("/tmp/test.db")
-	if !strings.Contains(fileDSN, "journal_mode=WAL") {
+	// 验证DSN包含journal_mode=WAL
+	if !strings.Contains(dsn, "journal_mode=WAL") {
 		t.Error("File mode DSN should contain journal_mode=WAL for performance")
 	}
 }

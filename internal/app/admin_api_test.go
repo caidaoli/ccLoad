@@ -12,7 +12,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -467,10 +466,6 @@ func TestAdminAPI_ExportImportRoundTrip(t *testing.T) {
 
 // setupTestServer 创建测试服务器环境
 func setupTestServer(t *testing.T) (*Server, func()) {
-	// ✅ 修复：测试环境禁用内存数据库模式，确保每个测试使用独立的临时文件数据库
-	// 原问题：所有测试共享命名内存数据库（ccload_mem_db），导致测试间数据污染
-	os.Unsetenv("CCLOAD_USE_MEMORY_DB") // 强制禁用内存模式
-
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 

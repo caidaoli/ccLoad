@@ -4,7 +4,6 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage/sqlite"
 	"context"
-	"os"
 	"testing"
 	"time"
 )
@@ -535,10 +534,6 @@ func TestShuffleSamePriorityChannels(t *testing.T) {
 func setupTestStore(t *testing.T) (*sqlite.SQLiteStore, func()) {
 	t.Helper()
 
-	// 禁用内存模式，避免Redis强制检查
-	oldValue := os.Getenv("CCLOAD_USE_MEMORY_DB")
-	os.Setenv("CCLOAD_USE_MEMORY_DB", "false")
-
 	tmpDB := t.TempDir() + "/selector_test.db"
 	store, err := sqlite.NewSQLiteStore(tmpDB, nil)
 	if err != nil {
@@ -547,7 +542,6 @@ func setupTestStore(t *testing.T) (*sqlite.SQLiteStore, func()) {
 
 	cleanup := func() {
 		store.Close()
-		os.Setenv("CCLOAD_USE_MEMORY_DB", oldValue)
 	}
 
 	return store, cleanup

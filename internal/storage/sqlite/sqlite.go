@@ -22,10 +22,6 @@ type SQLiteStore struct {
 	db    *sql.DB // 主数据库（channels, api_keys, key_rr）
 	logDB *sql.DB // 日志数据库（logs）- 拆分以减少锁竞争和简化备份
 
-	// ⚠️ 内存数据库守护连接（2025-10-05）
-	// 内存模式下，持有一个永不关闭的连接，确保数据库不被销毁
-	keeperConn *sql.Conn // 守护连接（仅内存模式使用）
-
 	// 异步Redis同步机制（性能优化: 避免同步等待）
 	syncCh chan struct{} // 同步触发信号（无缓冲，去重合并多个请求）
 	done   chan struct{} // 优雅关闭信号
@@ -86,15 +82,7 @@ func generateLogDBPath(mainDBPath string) string {
 	return result
 }
 
-// buildMainDBDSN 构建主数据库DSN（支持内存模式）
-// 内存模式：CCLOAD_USE_MEMORY_DB=true -> file:ccload_mem_db?mode=memory&cache=shared
-// 文件模式：默认 -> file:/path/to/db?_pragma=...
-//
-// ⚠️ 重要修复（2025-10-05）：
-// - 使用命名内存数据库（ccload_mem_db）而非匿名内存数据库（::memory:）
-// - 命名数据库的生命周期绑定到进程，而非最后一个连接
-// - 即使所有连接关闭，只要进程存活，数据库就保留在内存中
-// - 解决了连接池生命周期导致的"no such table"错误
+// buildMainDBDSN 构建主数据库DSN
 //
 // 环境变量控制Journal模式
 // - SQLITE_JOURNAL_MODE: WAL(默认) | DELETE | TRUNCATE | PERSIST | MEMORY | OFF
@@ -143,16 +131,6 @@ func validateJournalMode(mode string) string {
 }
 
 func buildMainDBDSN(path string) string {
-	useMemory := os.Getenv("CCLOAD_USE_MEMORY_DB") == "true"
-
-	if useMemory {
-		// 内存模式：使用命名内存数据库（关键修复）
-		// mode=memory: 显式声明为内存模式
-		// cache=shared: 多连接共享同一数据库实例
-		// ⚡ 性能：移除WAL（内存模式不需要WAL）
-		return "file:ccload_mem_db?mode=memory&cache=shared&_pragma=busy_timeout(5000)&_foreign_keys=on&_loc=Local"
-	}
-
 	// 白名单验证环境变量，防止注入攻击
 	// 设计原则：生产环境（特别是容器/网络存储）需要灵活控制，但必须安全
 	journalMode := validateJournalMode(os.Getenv("SQLITE_JOURNAL_MODE"))
@@ -177,43 +155,26 @@ func NewSQLiteStore(path string, redisSync RedisSync) (*SQLiteStore, error) {
 
 // newSQLiteStoreWithOptions 创建SQLite存储实例（带选项）
 func newSQLiteStoreWithOptions(path string, redisSync RedisSync, forTest bool) (*SQLiteStore, error) {
-	// 检查是否启用内存模式
-	useMemory := os.Getenv("CCLOAD_USE_MEMORY_DB") == "true"
-
-	if !useMemory {
-		// 文件模式：创建数据目录（内存模式无需创建目录）
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			return nil, err
-		}
+	// 创建数据目录
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
 	}
 
 	// 打开主数据库（channels, api_keys, key_rr）
-	// 使用抽象的DSN构建函数，支持内存/文件模式切换
 	dsn := buildMainDBDSN(path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
-	// 根据模式差异化配置
-	if useMemory {
-		// 内存模式：适度减少连接数（无限并发对内存数据库无益）
-		db.SetMaxOpenConns(config.SQLiteMaxOpenConnsMemory)
-		db.SetMaxIdleConns(config.SQLiteMaxIdleConnsMemory)
-		// 不设置ConnMaxLifetime，连接永不过期（保证数据库始终可用）
-	} else {
-		// WAL文件模式：严格限制写并发（WAL性能瓶颈）
-		db.SetMaxOpenConns(config.SQLiteMaxOpenConnsFile)
-		db.SetMaxIdleConns(config.SQLiteMaxIdleConnsFile)
-		// 测试模式下禁用连接生命周期以避免goroutine泄漏
-		if forTest {
-			// 测试模式：不设置ConnMaxLifetime，连接永不过期
-		} else {
-			// 文件模式：缩短连接生命周期（更快资源回收）
-			db.SetConnMaxLifetime(config.SQLiteConnMaxLifetime)
-		}
+	// WAL文件模式：严格限制写并发（WAL性能瓶颈）
+	db.SetMaxOpenConns(config.SQLiteMaxOpenConnsFile)
+	db.SetMaxIdleConns(config.SQLiteMaxIdleConnsFile)
+	// 测试模式下禁用连接生命周期以避免goroutine泄漏
+	if !forTest {
+		db.SetConnMaxLifetime(config.SQLiteConnMaxLifetime)
 	}
 
-	// 打开日志数据库（logs）- 始终使用文件模式
+	// 打开日志数据库（logs）
 	logDBPath := generateLogDBPath(path)
 	logDSN := buildLogDBDSN(logDBPath)
 	logDB, err := sql.Open("sqlite", logDSN)
@@ -221,14 +182,9 @@ func newSQLiteStoreWithOptions(path string, redisSync RedisSync, forTest bool) (
 		_ = db.Close()
 		return nil, fmt.Errorf("open log database: %w", err)
 	}
-	// 与主库对齐，降低资源占用
 	logDB.SetMaxOpenConns(config.SQLiteMaxOpenConnsFile)
 	logDB.SetMaxIdleConns(config.SQLiteMaxIdleConnsFile)
-	// 内存模式或测试模式下禁用连接生命周期以避免goroutine泄漏
-	if useMemory || forTest {
-		// 内存模式或测试模式：不设置ConnMaxLifetime，连接永不过期
-	} else {
-		// 文件模式：缩短连接生命周期（更快资源回收）
+	if !forTest {
 		logDB.SetConnMaxLifetime(config.SQLiteConnMaxLifetime)
 	}
 
@@ -238,40 +194,6 @@ func newSQLiteStoreWithOptions(path string, redisSync RedisSync, forTest bool) (
 		redisSync: redisSync,
 		syncCh:    make(chan struct{}, 1), // 缓冲区=1，允许一个待处理任务
 		done:      make(chan struct{}),
-	}
-
-	// ⚠️ 内存数据库守护连接
-	// SQLite内存数据库的特性：当最后一个连接关闭时，数据库被删除
-	// 解决方案：持有一个永不关闭的"守护连接"，确保数据库始终存在
-	if useMemory {
-		// 内存模式强制要求Redis备份
-		// 设计原则：防止数据永久丢失，确保故障可恢复
-		if redisSync == nil || !redisSync.IsEnabled() {
-			_ = db.Close()
-			_ = logDB.Close()
-			log.Print("❌ 错误：内存模式必须配置Redis同步，否则服务重启后数据将永久丢失")
-			log.Print("   解决方案：")
-			log.Print("   1. 设置环境变量：REDIS_URL=redis://localhost:6379")
-			log.Print("   2. 或禁用内存模式：unset CCLOAD_USE_MEMORY_DB（使用文件模式）")
-			return nil, fmt.Errorf("内存模式必须配置Redis同步（REDIS_URL）")
-		}
-
-		keeperConn, err := db.Conn(context.Background())
-		if err != nil {
-			_ = db.Close()
-			_ = logDB.Close()
-			return nil, fmt.Errorf("创建内存数据库守护连接失败: %w", err)
-		}
-		s.keeperConn = keeperConn
-
-		// 内存模式提示信息
-		log.Print("⚡ 性能优化：主数据库使用内存模式（CCLOAD_USE_MEMORY_DB=true）")
-		log.Print("   - 使用命名内存数据库（ccload_mem_db）+ 守护连接机制")
-		log.Print("   - 守护连接确保数据库生命周期绑定到服务进程")
-		log.Print("   - 连接池无生命周期限制，防止连接过期导致数据库销毁")
-		log.Print("   - 渠道配置、冷却状态等热数据存储在内存中")
-		log.Print("   - 日志数据仍然持久化到磁盘：", logDBPath)
-		log.Print("   ✅ Redis同步已启用：数据自动备份，服务重启后可恢复")
 	}
 
 	// 迁移主数据库表结构
@@ -324,16 +246,6 @@ func (s *SQLiteStore) Close() error {
 	case <-waitCh:
 	case <-time.After(time.Duration(config.RedisSyncShutdownTimeoutMs) * time.Millisecond):
 		log.Printf("⚠️  Redis同步worker关闭超时（%dms）", config.RedisSyncShutdownTimeoutMs)
-	}
-
-	// ⚠️ 内存数据库守护连接：最后关闭
-	// 确保守护连接在所有其他操作完成后才关闭
-	// 这样可以保证内存数据库在整个服务生命周期内始终存在
-	if s.keeperConn != nil {
-		if err := s.keeperConn.Close(); err != nil {
-			// 记录错误但不影响后续关闭操作
-			log.Printf("⚠️  关闭守护连接失败: %v", err)
-		}
 	}
 
 	// 关闭数据库连接池

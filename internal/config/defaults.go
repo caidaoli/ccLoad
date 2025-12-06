@@ -76,14 +76,7 @@ const (
 )
 
 // SQLite连接池配置常量
-// 优化连接池配置，提升高并发性能
 const (
-	// SQLiteMaxOpenConnsMemory 内存模式最大连接数
-	SQLiteMaxOpenConnsMemory = 10
-
-	// SQLiteMaxIdleConnsMemory 内存模式最大空闲连接数
-	SQLiteMaxIdleConnsMemory = 5
-
 	// SQLiteMaxOpenConnsFile 文件模式最大连接数（WAL写并发瓶颈）
 	// 保持5：1写 + 4读 = 充分利用WAL模式并发能力
 	SQLiteMaxOpenConnsFile = 5
