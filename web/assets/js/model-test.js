@@ -188,7 +188,7 @@ async function runModelTests() {
         let respText = data.response_text;
         if (!respText && data.api_response?.choices?.[0]?.message) {
           const msg = data.api_response.choices[0].message;
-          respText = msg.content || msg.reasoning || msg.text;
+          respText = msg.content || msg.reasoning_content || msg.reasoning || msg.text;
         }
         row.querySelector('.response').textContent = respText || '成功';
         row.querySelector('.response').title = respText || '成功';
