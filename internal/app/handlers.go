@@ -234,5 +234,10 @@ func BuildLogFilter(c *gin.Context) model.LogFilter {
 		}
 	}
 
+	// 渠道类型过滤（anthropic/openai/gemini/codex）
+	if ct := strings.TrimSpace(c.Query("channel_type")); ct != "" {
+		lf.ChannelType = ct
+	}
+
 	return lf
 }

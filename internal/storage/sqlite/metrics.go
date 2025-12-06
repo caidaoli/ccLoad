@@ -434,23 +434,13 @@ func (s *SQLiteStore) GetStats(ctx context.Context, startTime, endTime time.Time
 		Where("time <= ?", endMs).
 		Where("channel_id > 0") // 🎯 核心修改:排除channel_id=0的无效记录
 
-	// 🎯 修复: 支持渠道名称过滤（与ListLogs相同的逻辑）
-	// 使用fetchChannelIDsByNameFilter先查询渠道ID，再按channel_id过滤
-	// 这样避免跨库JOIN，保持代码简洁
-	if filter != nil && (filter.ChannelName != "" || filter.ChannelNameLike != "") {
-		ids, err := s.fetchChannelIDsByNameFilter(ctx, filter.ChannelName, filter.ChannelNameLike)
-		if err != nil {
-			return nil, err
-		}
-		if len(ids) == 0 {
-			return []model.StatsEntry{}, nil
-		}
-		// 转换为[]any以用于占位符
-		vals := make([]any, 0, len(ids))
-		for _, id := range ids {
-			vals = append(vals, id)
-		}
-		qb.WhereIn("channel_id", vals)
+	// 应用渠道类型或名称过滤
+	_, isEmpty, err := s.applyChannelFilter(ctx, qb, filter)
+	if err != nil {
+		return nil, err
+	}
+	if isEmpty {
+		return []model.StatsEntry{}, nil
 	}
 
 	// 应用其余过滤器（模型/状态码等）

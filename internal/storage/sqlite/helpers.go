@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"ccLoad/internal/model"
 	"context"
 	"fmt"
 )
@@ -76,4 +77,76 @@ func (s *SQLiteStore) fetchChannelIDsByNameFilter(ctx context.Context, exact str
 		return nil, err
 	}
 	return ids, nil
+}
+
+// fetchChannelIDsByType 根据渠道类型获取渠道ID集合
+// 目的：避免跨库JOIN，先解析为ID再过滤logs
+func (s *SQLiteStore) fetchChannelIDsByType(ctx context.Context, channelType string) ([]int64, error) {
+	if channelType == "" {
+		return nil, nil
+	}
+
+	query := "SELECT id FROM channels WHERE channel_type = ?"
+	rows, err := s.db.QueryContext(ctx, query, channelType)
+	if err != nil {
+		return nil, fmt.Errorf("query channel ids by type: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan channel id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+// applyChannelFilter 应用渠道类型或名称过滤（优先级：ChannelType > ChannelName/Like）
+// 返回值：是否应用了过滤、是否为空结果、错误
+func (s *SQLiteStore) applyChannelFilter(ctx context.Context, qb *QueryBuilder, filter *model.LogFilter) (bool, bool, error) {
+	if filter == nil {
+		return false, false, nil
+	}
+
+	// 优先按渠道类型过滤
+	if filter.ChannelType != "" {
+		ids, err := s.fetchChannelIDsByType(ctx, filter.ChannelType)
+		if err != nil {
+			return false, false, err
+		}
+		if len(ids) == 0 {
+			return true, true, nil // 应用了过滤，结果为空
+		}
+		vals := make([]any, 0, len(ids))
+		for _, id := range ids {
+			vals = append(vals, id)
+		}
+		qb.WhereIn("channel_id", vals)
+		return true, false, nil
+	}
+
+	// 其次按渠道名称过滤
+	if filter.ChannelName != "" || filter.ChannelNameLike != "" {
+		ids, err := s.fetchChannelIDsByNameFilter(ctx, filter.ChannelName, filter.ChannelNameLike)
+		if err != nil {
+			return false, false, err
+		}
+		if len(ids) == 0 {
+			return true, true, nil // 应用了过滤，结果为空
+		}
+		vals := make([]any, 0, len(ids))
+		for _, id := range ids {
+			vals = append(vals, id)
+		}
+		qb.WhereIn("channel_id", vals)
+		return true, false, nil
+	}
+
+	return false, false, nil
 }

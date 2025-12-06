@@ -1,7 +1,8 @@
     // 常量定义
     const STATS_TABLE_COLUMNS = 12; // 统计表列数（增加了5列：输入Token、输出Token、缓存读取、缓存创建、成本）
-    
+
     let statsData = null;
+    let currentChannelType = 'all'; // 当前选中的渠道类型
     let sortState = {
       column: null,
       order: null // null, 'asc', 'desc'
@@ -22,6 +23,11 @@
         if (u.get('channel_name_like')) params.set('channel_name_like', u.get('channel_name_like'));
         if (u.get('model')) params.set('model', u.get('model'));
         if (u.get('model_like')) params.set('model_like', u.get('model_like'));
+
+        // 添加渠道类型筛选
+        if (currentChannelType && currentChannelType !== 'all') {
+          params.set('channel_type', currentChannelType);
+        }
 
         const res = await fetchWithAuth('/admin/stats?' + params.toString());
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -455,11 +461,22 @@
     function handleResize() {}
 
     // 页面初始化
-    document.addEventListener('DOMContentLoaded', function() {
+    document.addEventListener('DOMContentLoaded', async function() {
       if (window.initTopbar) initTopbar('stats');
+
+      // 初始化渠道类型 tabs
+      const types = await window.ChannelTypeManager.getChannelTypes();
+      const defaultType = types.length > 0 ? types[0].value : 'all';
+      currentChannelType = defaultType;
+
+      await window.ChannelTypeManager.renderChannelTypeTabs('channelTypeTabs', (type) => {
+        currentChannelType = type;
+        loadStats();
+      });
+
       initFilters();
       loadStats();
-      
+
       // 响应式处理
       handleResize();
       window.addEventListener('resize', handleResize);

@@ -2,6 +2,7 @@
     let logsPageSize = 20;
     let totalLogsPages = 1;
     let totalLogs = 0;
+    let currentChannelType = 'all'; // 当前选中的渠道类型
     let defaultTestContent = 'sonnet 4.0的发布日期是什么'; // 默认测试内容（从设置加载）
 
     // 加载默认测试内容（从系统设置）
@@ -34,6 +35,11 @@
         if (u.get('model')) params.set('model', u.get('model'));
         if (u.get('model_like')) params.set('model_like', u.get('model_like'));
         if (u.get('status_code')) params.set('status_code', u.get('status_code'));
+
+        // 添加渠道类型筛选
+        if (currentChannelType && currentChannelType !== 'all') {
+          params.set('channel_type', currentChannelType);
+        }
         
         const res = await fetchWithAuth('/admin/errors?' + params.toString());
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -490,6 +496,19 @@
     // 页面初始化
     document.addEventListener('DOMContentLoaded', async function() {
       if (window.initTopbar) initTopbar('logs');
+
+      // 初始化渠道类型 tabs
+      const types = await window.ChannelTypeManager.getChannelTypes();
+      const defaultType = types.length > 0 ? types[0].value : 'all';
+      currentChannelType = defaultType;
+
+      await window.ChannelTypeManager.renderChannelTypeTabs('channelTypeTabs', (type) => {
+        currentChannelType = type;
+        // 切换渠道类型时重置到第一页并重新加载
+        currentLogsPage = 1;
+        load();
+      });
+
       initFilters();
       await loadDefaultTestContent();
       load();
