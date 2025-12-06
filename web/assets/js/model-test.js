@@ -28,7 +28,7 @@ async function loadChannels() {
     const resp = await fetchWithAuth('/admin/channels');
     const data = await resp.json();
     if (data.success && data.data) {
-      channelsList = data.data.filter(ch => ch.enabled)
+      channelsList = data.data
         .sort((a, b) => a.channel_type.localeCompare(b.channel_type) || b.priority - a.priority);
       const select = document.getElementById('testChannelSelect');
       select.innerHTML = '<option value="">选择...</option>';
