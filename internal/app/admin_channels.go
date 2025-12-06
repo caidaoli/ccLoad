@@ -478,3 +478,94 @@ func (s *Server) HandleDeleteAPIKey(c *gin.Context) {
 		"channel_deleted": false,
 	})
 }
+
+// HandleAddModels 添加模型到渠道（去重）
+// POST /admin/channels/:id/models
+func (s *Server) HandleAddModels(c *gin.Context) {
+	channelID, err := ParseInt64Param(c, "id")
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+
+	var req struct {
+		Models []string `json:"models" binding:"required,min=1"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid request")
+		return
+	}
+
+	ctx := c.Request.Context()
+	cfg, err := s.store.GetConfig(ctx, channelID)
+	if err != nil {
+		RespondError(c, http.StatusNotFound, err)
+		return
+	}
+
+	// 去重合并
+	existing := make(map[string]bool)
+	for _, m := range cfg.Models {
+		existing[m] = true
+	}
+	for _, m := range req.Models {
+		if !existing[m] {
+			cfg.Models = append(cfg.Models, m)
+			existing[m] = true
+		}
+	}
+
+	if _, err := s.store.UpdateConfig(ctx, channelID, cfg); err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	s.InvalidateChannelListCache()
+	RespondJSON(c, http.StatusOK, gin.H{"success": true, "total": len(cfg.Models)})
+}
+
+// HandleDeleteModels 删除渠道中的指定模型
+// DELETE /admin/channels/:id/models
+func (s *Server) HandleDeleteModels(c *gin.Context) {
+	channelID, err := ParseInt64Param(c, "id")
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+
+	var req struct {
+		Models []string `json:"models" binding:"required,min=1"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid request")
+		return
+	}
+
+	ctx := c.Request.Context()
+	cfg, err := s.store.GetConfig(ctx, channelID)
+	if err != nil {
+		RespondError(c, http.StatusNotFound, err)
+		return
+	}
+
+	// 过滤掉要删除的模型
+	toDelete := make(map[string]bool)
+	for _, m := range req.Models {
+		toDelete[m] = true
+	}
+	remaining := make([]string, 0, len(cfg.Models))
+	for _, m := range cfg.Models {
+		if !toDelete[m] {
+			remaining = append(remaining, m)
+		}
+	}
+
+	cfg.Models = remaining
+	if _, err := s.store.UpdateConfig(ctx, channelID, cfg); err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	s.InvalidateChannelListCache()
+	RespondJSON(c, http.StatusOK, gin.H{"success": true, "remaining": len(remaining)})
+}

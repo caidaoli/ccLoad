@@ -71,8 +71,12 @@ func (s *Server) HandleFetchModels(c *gin.Context) {
 	}
 	apiKey := keys[0].APIKey
 
-	// 4. 根据渠道配置执行模型抓取
-	response, err := fetchModelsForConfig(c.Request.Context(), channel.ChannelType, channel.URL, apiKey)
+	// 4. 根据渠道配置执行模型抓取（支持query参数覆盖渠道类型）
+	channelType := c.Query("channel_type")
+	if channelType == "" {
+		channelType = channel.ChannelType
+	}
+	response, err := fetchModelsForConfig(c.Request.Context(), channelType, channel.URL, apiKey)
 	if err != nil {
 		// ✅ 修复：统一返回200（与HandleFetchModelsPreview保持一致）
 		c.JSON(http.StatusOK, gin.H{

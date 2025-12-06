@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" type="image/x-icon" href="/web/favicon.ico">
+  <link rel="apple-touch-icon" href="/web/apple-touch-icon.png">
+  <link rel="manifest" href="/web/manifest.json">
+  <meta name="theme-color" content="#3b82f6">
+  <title>模型测试 - Claude Code & Codex Proxy</title>
+  <link rel="stylesheet" href="/web/assets/css/styles.css">
+  <link href="/web/assets/css/inter.css" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    <main class="main-content">
+      <div class="content-area">
+        <header class="mb-6">
+          <div class="hero-header animate-slide-up">
+            <div class="hero-icon">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+            </div>
+            <div>
+              <h1 class="hero-title">模型测试</h1>
+              <p class="hero-subtitle">批量测试渠道模型可用性</p>
+            </div>
+          </div>
+        </header>
+
+        <section class="glass-card mb-6 animate-slide-up">
+          <!-- 控制栏 -->
+          <div style="display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; align-items: center;">
+            <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
+              <span style="color: var(--color-text-secondary);">渠道</span>
+              <select id="testChannelSelect" onchange="onChannelChange()" style="width: 150px; padding: 6px 4px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px;">
+                <option value="">选择...</option>
+              </select>
+            </label>
+            <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
+              <span style="color: var(--color-text-secondary);">类型</span>
+              <select id="testChannelType" style="padding: 6px 8px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px;">
+              </select>
+            </label>
+            <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; flex: 1; min-width: 200px;">
+              <span style="color: var(--color-text-secondary);">内容</span>
+              <input type="text" id="modelTestContent" value="" placeholder="加载中..." style="flex: 1; padding: 6px 10px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px;">
+            </label>
+          </div>
+
+          <!-- 操作按钮 -->
+          <div style="display: flex; gap: 8px; margin-bottom: 16px; justify-content: flex-end; align-items: center;">
+            <span id="testProgress" style="margin-right: auto; font-size: 13px; color: var(--color-text-secondary);"></span>
+            <button onclick="selectAllModels()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;">全选</button>
+            <button onclick="deselectAllModels()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;">取消全选</button>
+            <button onclick="fetchAndAddModels()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;">获取模型</button>
+            <button onclick="deleteSelectedModels()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px; color: var(--error-500);">删除模型</button>
+            <label style="display: flex; align-items: center; gap: 4px; font-size: 13px; cursor: pointer;">
+              <input type="checkbox" id="streamEnabled" style="width: 16px; height: 16px;">
+              <span>流式</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 4px; font-size: 13px;">
+              <span>并发</span>
+              <input type="number" id="concurrency" value="5" min="1" max="20" style="width: 50px; padding: 4px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px; text-align: center;">
+            </label>
+            <button id="runTestBtn" onclick="runModelTests()" class="btn btn-primary" style="font-size: 13px; padding: 8px 16px;">开始测试</button>
+          </div>
+
+          <!-- 模型测试表格 -->
+          <div class="table-container" style="max-height: calc(100vh - 350px); overflow-y: auto;">
+            <table class="modern-table" style="font-size: 13px; table-layout: fixed; width: 100%;">
+              <thead style="position: sticky; top: 0; background: var(--glass-bg); z-index: 1;">
+                <tr>
+                  <th style="width: 30px;"><input type="checkbox" id="selectAllCheckbox" onchange="toggleAllModels(this.checked)"></th>
+                  <th style="width: 200px;">模型</th>
+                  <th style="width: 70px;">耗时</th>
+                  <th style="width: 65px;">输入</th>
+                  <th style="width: 65px;">输出</th>
+                  <th style="width: 65px;">缓读</th>
+                  <th style="width: 65px;">缓建</th>
+                  <th>响应内容</th>
+                </tr>
+              </thead>
+              <tbody id="model-test-tbody">
+                <tr><td colspan="8" style="text-align: center; color: var(--color-text-secondary); padding: 40px;">请先选择渠道</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+  <script src="/web/assets/js/ui.js"></script>
+  <script src="/web/assets/js/model-test.js"></script>
+</body>
+</html>
