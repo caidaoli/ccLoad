@@ -31,7 +31,7 @@ type SubscriptionValidator struct {
 	apiURL     string
 	enabled    bool // 启动时确定，修改后重启生效
 
-	// 缓存: channelID → cacheEntry
+	// 缓存: "channelID:apiKey" → cacheEntry (key级缓存，避免多key互相覆盖)
 	cache      sync.Map
 	cacheTTL   time.Duration
 	apiTimeout time.Duration
@@ -96,15 +96,18 @@ func (v *SubscriptionValidator) ShouldValidate(cfg *model.Config) bool {
 //	reason - 不可用时的原因描述
 //	err - API调用错误(网络故障、超时等)
 func (v *SubscriptionValidator) Validate(ctx context.Context, cfg *model.Config, apiKey string) (bool, string, error) {
+	// 生成缓存key: channelID:apiKey (key级缓存)
+	cacheKey := fmt.Sprintf("%d:%s", cfg.ID, apiKey)
+
 	// 1. 检查缓存
-	if entry, ok := v.cache.Load(cfg.ID); ok {
+	if entry, ok := v.cache.Load(cacheKey); ok {
 		cached := entry.(cacheEntry)
 		if time.Now().Before(cached.expiry) {
 			// 缓存命中
 			return cached.available, cached.reason, nil
 		}
 		// 缓存过期,删除旧条目
-		v.cache.Delete(cfg.ID)
+		v.cache.Delete(cacheKey)
 	}
 
 	// 2. 调用88code API
@@ -124,7 +127,7 @@ func (v *SubscriptionValidator) Validate(ctx context.Context, cfg *model.Config,
 	}
 
 	// 4. 更新缓存
-	v.cache.Store(cfg.ID, cacheEntry{
+	v.cache.Store(cacheKey, cacheEntry{
 		available: isFree,
 		reason:    reason,
 		expiry:    time.Now().Add(v.cacheTTL),

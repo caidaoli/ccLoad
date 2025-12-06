@@ -30,7 +30,6 @@ function renderSettings(settings) {
     return `
       <tr>
         <td>${escapeHtml(s.description)}</td>
-        <td><code style="font-size: 12px;">${escapeHtml(s.default_value)}</code></td>
         <td style="text-align: right;">${renderInput(s)}</td>
         <td>
           <button onclick="resetSetting('${s.key}')" class="btn-icon" title="重置为默认值">

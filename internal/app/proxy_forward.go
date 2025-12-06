@@ -291,6 +291,17 @@ func (s *Server) forwardAttempt(
 	bodyToSend []byte,
 	w http.ResponseWriter,
 ) (*proxyResult, bool, bool) {
+	// 🔍 Key级验证器检查(88code套餐验证等)
+	// 每个Key单独验证，避免误杀免费key或误放付费key
+	if s.validatorManager != nil {
+		available, reason := s.validatorManager.ValidateChannel(ctx, cfg, selectedKey)
+		if !available {
+			// Key验证失败: 跳过此key，尝试下一个
+			log.Printf("🔍 渠道 %s (ID=%d) Key#%d 验证失败: %s, 跳过", cfg.Name, cfg.ID, keyIndex, reason)
+			return nil, true, false // shouldContinue=true, shouldBreak=false
+		}
+	}
+
 	// 转发请求（传递实际的API Key字符串）
 	res, duration, err := s.forwardOnceAsync(ctx, cfg, selectedKey, reqCtx.requestMethod,
 		bodyToSend, reqCtx.header, reqCtx.rawQuery, reqCtx.requestPath, w)
@@ -328,32 +339,6 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	actualKeyCount := len(apiKeys)
 	if actualKeyCount == 0 {
 		return nil, fmt.Errorf("no API keys configured for channel %d", cfg.ID)
-	}
-
-	// 🔍 渠道验证器检查(88code套餐验证等)
-	// 在选择Key之前先验证渠道是否满足业务规则
-	// 验证失败时冷却渠道30分钟,避免后续请求继续尝试
-	if s.validatorManager != nil {
-		// 使用第一个API Key进行验证(假设同一渠道的所有Key共享套餐)
-		firstKey := ""
-		if len(apiKeys) > 0 {
-			firstKey = apiKeys[0].APIKey
-		}
-
-		available, reason := s.validatorManager.ValidateChannel(ctx, cfg, firstKey)
-		if !available {
-			// 验证失败:冷却渠道30分钟
-			log.Printf("❌ 渠道 %s (ID=%d) 验证失败: %s,冷却30分钟", cfg.Name, cfg.ID, reason)
-
-			// 应用固定的30分钟冷却(429状态码表示限流)
-			cooldownUntil := time.Now().Add(30 * time.Minute)
-			if err := s.store.SetChannelCooldown(ctx, cfg.ID, cooldownUntil); err != nil {
-				log.Printf("⚠️  WARNING: Failed to apply cooldown for channel %d: %v", cfg.ID, err)
-			}
-
-			// 返回特殊错误,触发渠道切换
-			return nil, fmt.Errorf("channel validation failed: %s", reason)
-		}
 	}
 
 	maxKeyRetries := min(s.maxKeyRetries, actualKeyCount)

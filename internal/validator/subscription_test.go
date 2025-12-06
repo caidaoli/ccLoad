@@ -400,3 +400,81 @@ func containsMiddle(s, substr string) bool {
 	}
 	return false
 }
+
+// TestSubscriptionValidator_MultipleKeys_IndependentCache 测试多key独立缓存
+// 验证同一渠道的不同key有独立的缓存条目，互不干扰
+func TestSubscriptionValidator_MultipleKeys_IndependentCache(t *testing.T) {
+	// Mock服务器：根据API Key返回不同的订阅类型
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("Expected POST method, got %s", r.Method)
+		}
+
+		authHeader := r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+
+		// 模拟不同key对应不同套餐
+		switch authHeader {
+		case "Bearer free-key-1":
+			json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{"subscriptionName": "FREE"},
+			})
+		case "Bearer pro-key-2":
+			json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{"subscriptionName": "PRO"},
+			})
+		case "Bearer free-key-3":
+			json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{"subscriptionName": "FREE"},
+			})
+		default:
+			t.Errorf("Unexpected Authorization header: %s", authHeader)
+		}
+	}))
+	defer server.Close()
+
+	v := NewSubscriptionValidator(true)
+	v.apiURL = server.URL
+	v.SetCacheTTL(10 * time.Second)
+
+	cfg := &model.Config{ID: 1, Name: "88code-multi-key"}
+
+	// 验证 key1 (免费)
+	avail1, reason1, err1 := v.Validate(context.Background(), cfg, "free-key-1")
+	if err1 != nil {
+		t.Fatalf("Validate(free-key-1) error = %v", err1)
+	}
+	if !avail1 {
+		t.Errorf("free-key-1 should be available (FREE), got unavailable: %s", reason1)
+	}
+
+	// 验证 key2 (付费) - 不应该受key1缓存影响
+	avail2, reason2, err2 := v.Validate(context.Background(), cfg, "pro-key-2")
+	if err2 != nil {
+		t.Fatalf("Validate(pro-key-2) error = %v", err2)
+	}
+	if avail2 {
+		t.Errorf("pro-key-2 should be unavailable (PRO), got available")
+	}
+	if !contains(reason2, "PRO") {
+		t.Errorf("pro-key-2 reason = %q, expected to contain 'PRO'", reason2)
+	}
+
+	// 验证 key3 (免费) - 不应该受key2缓存影响
+	avail3, reason3, err3 := v.Validate(context.Background(), cfg, "free-key-3")
+	if err3 != nil {
+		t.Fatalf("Validate(free-key-3) error = %v", err3)
+	}
+	if !avail3 {
+		t.Errorf("free-key-3 should be available (FREE), got unavailable: %s", reason3)
+	}
+
+	// 再次验证key1，确认缓存仍然有效（免费）
+	avail1Again, _, err1Again := v.Validate(context.Background(), cfg, "free-key-1")
+	if err1Again != nil {
+		t.Fatalf("Validate(free-key-1) second call error = %v", err1Again)
+	}
+	if !avail1Again {
+		t.Errorf("free-key-1 should still be available (cached)")
+	}
+}
