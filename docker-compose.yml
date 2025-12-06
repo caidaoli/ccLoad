@@ -14,6 +14,7 @@ services:
       - GIN_MODE=release
       # 必填：未设置将无法启动
       - CCLOAD_PASS=your_admin_password
+      - TZ=Asia/Shanghai
       # API访问令牌通过Web界面管理: http://localhost:8080/web/tokens.html
     volumes:
       - ./data:/app/data
