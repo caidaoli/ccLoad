@@ -385,6 +385,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/stats", s.HandleStats)
 		admin.GET("/cooldown/stats", s.HandleCooldownStats)
 		admin.GET("/cache/stats", s.HandleCacheStats)
+		admin.GET("/models", s.HandleGetModels)
 
 		// API访问令牌管理
 		admin.GET("/auth-tokens", s.HandleListAuthTokens)

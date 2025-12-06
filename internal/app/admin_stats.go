@@ -43,7 +43,7 @@ func (s *Server) HandleErrors(c *gin.Context) {
 }
 
 // handleMetrics 获取聚合指标数据
-// GET /admin/metrics?range=today&bucket_min=5
+// GET /admin/metrics?range=today&bucket_min=5&channel_type=anthropic&model=claude-3-5-sonnet-20241022
 func (s *Server) HandleMetrics(c *gin.Context) {
 	params := ParsePaginationParams(c)
 	bucketMin, _ := strconv.Atoi(c.DefaultQuery("bucket_min", "5"))
@@ -51,8 +51,12 @@ func (s *Server) HandleMetrics(c *gin.Context) {
 		bucketMin = 5
 	}
 
+	// 支持按渠道类型和模型过滤
+	channelType := c.Query("channel_type")
+	modelFilter := c.Query("model")
+
 	since, until := params.GetTimeRange()
-	pts, err := s.store.AggregateRange(c.Request.Context(), since, until, time.Duration(bucketMin)*time.Minute)
+	pts, err := s.store.AggregateRangeWithFilter(c.Request.Context(), since, until, time.Duration(bucketMin)*time.Minute, channelType, modelFilter)
 
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
@@ -243,5 +247,26 @@ func (s *Server) HandleCacheStats(c *gin.Context) {
 func (s *Server) HandleGetChannelTypes(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"data": util.ChannelTypes,
+	})
+}
+
+// HandleGetModels 获取数据库中存在的所有模型列表（去重）
+// GET /admin/models
+func (s *Server) HandleGetModels(c *gin.Context) {
+	// 获取时间范围（默认最近30天）
+	rangeParam := c.DefaultQuery("range", "this_month")
+	params := ParsePaginationParams(c)
+	params.Range = rangeParam
+	since, until := params.GetTimeRange()
+
+	// 查询模型列表
+	models, err := s.store.GetDistinctModels(c.Request.Context(), since, until)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"data": models,
 	})
 }
