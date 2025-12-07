@@ -199,7 +199,7 @@ func (s *Server) handleSuccessResponse(
 		result.InputTokens, result.OutputTokens, result.CacheReadInputTokens, result.CacheCreationInputTokens = usageParser.GetUsage()
 	}
 
-	// 🔍 流中断/不完整诊断：记录到日志表便于Web查询
+	// 🔍 流中断/不完整诊断：生成诊断消息，由调用方合并到日志记录
 	// 触发条件：(1) 流传输错误  (2) 流式请求但没有usage数据（疑似不完整响应）
 	if reqCtx.isStreaming {
 		bytesRead := int64(0)
@@ -210,43 +210,24 @@ func (s *Server) handleSuccessResponse(
 		}
 
 		hasUsage := result.InputTokens > 0 || result.OutputTokens > 0
-		shouldLog := false
-		var diagMsg string
 
 		if streamErr != nil && !errors.Is(streamErr, context.Canceled) {
 			// 情况1：流传输异常中断（排除499客户端主动断开）
-			// 仅对anthropic/codex渠道显示usage信息
 			if channelType == util.ChannelTypeAnthropic || channelType == util.ChannelTypeCodex {
-				diagMsg = fmt.Sprintf("⚠️ 流传输中断: 错误=%v | 已读取=%d字节(分%d次) | usage数据=%v",
+				result.StreamDiagMsg = fmt.Sprintf("⚠️ 流传输中断: 错误=%v | 已读取=%d字节(分%d次) | usage数据=%v",
 					streamErr, bytesRead, readCount, hasUsage)
 			} else {
-				diagMsg = fmt.Sprintf("⚠️ 流传输中断: 错误=%v | 已读取=%d字节(分%d次)",
+				result.StreamDiagMsg = fmt.Sprintf("⚠️ 流传输中断: 错误=%v | 已读取=%d字节(分%d次)",
 					streamErr, bytesRead, readCount)
 			}
-			shouldLog = true
+			// 记录到标准输出（实时监控）
+			log.Print(result.StreamDiagMsg)
 		} else if !hasUsage && bytesRead > 0 && (channelType == util.ChannelTypeAnthropic || channelType == util.ChannelTypeCodex) {
 			// 情况2：流正常结束但没有usage数据（疑似上游未发送完整响应）
-			// 仅对anthropic(claude code)和codex渠道检查，其他渠道可能不返回usage
-			diagMsg = fmt.Sprintf("⚠️ 流响应不完整: 正常EOF但无usage | 已读取=%d字节(分%d次)",
+			result.StreamDiagMsg = fmt.Sprintf("⚠️ 流响应不完整: 正常EOF但无usage | 已读取=%d字节(分%d次)",
 				bytesRead, readCount)
-			shouldLog = true
-		}
-
-		if shouldLog {
 			// 记录到标准输出（实时监控）
-			log.Print(diagMsg)
-
-			// 记录到数据库日志表（Web可查询）- 使用渠道信息
-			s.AddLogAsync(&model.LogEntry{
-				Time:          model.JSONTime{Time: time.Now()},
-				ChannelID:     channelID,       // ✅ 关联到实际渠道
-				APIKeyUsed:    apiKeyUsed,      // ✅ 记录使用的Key
-				StatusCode:    resp.StatusCode, // 200，但可能不完整
-				Message:       diagMsg,
-				Duration:      duration,
-				IsStreaming:   true,
-				FirstByteTime: &actualFirstByteTime,
-			})
+			log.Print(result.StreamDiagMsg)
 		}
 	}
 

@@ -60,6 +60,9 @@ type fwResult struct {
 	OutputTokens             int
 	CacheReadInputTokens     int
 	CacheCreationInputTokens int
+
+	// 流传输诊断信息（2025-12新增）
+	StreamDiagMsg string // 流中断/不完整时的诊断消息，合并到成功日志的Message字段
 }
 
 // proxyRequestContext 代理请求上下文（封装请求信息，遵循DIP原则）
@@ -285,7 +288,12 @@ func buildLogEntry(originalModel string, channelID *int64, statusCode int,
 		entry.Message = truncateErr(errMsg)
 	} else if res != nil {
 		if statusCode >= 200 && statusCode < 300 {
-			entry.Message = "ok"
+			// ✅ 2025-12: 流传输诊断信息优先于 "ok"
+			if res.StreamDiagMsg != "" {
+				entry.Message = res.StreamDiagMsg
+			} else {
+				entry.Message = "ok"
+			}
 		} else {
 			msg := fmt.Sprintf("upstream status %d", statusCode)
 			if len(res.Body) > 0 {

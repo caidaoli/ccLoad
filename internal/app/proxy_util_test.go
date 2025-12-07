@@ -2,6 +2,56 @@ package app
 
 import "testing"
 
+func TestBuildLogEntry_StreamDiagMsg(t *testing.T) {
+	channelID := int64(1)
+
+	t.Run("正常成功响应", func(t *testing.T) {
+		res := &fwResult{
+			Status:       200,
+			InputTokens:  10,
+			OutputTokens: 20,
+		}
+		entry := buildLogEntry("claude-3", &channelID, 200, 1.5, true, "sk-test", res, "")
+		if entry.Message != "ok" {
+			t.Errorf("expected Message='ok', got %q", entry.Message)
+		}
+	})
+
+	t.Run("流传输中断诊断", func(t *testing.T) {
+		res := &fwResult{
+			Status:        200,
+			StreamDiagMsg: "⚠️ 流传输中断: 错误=unexpected EOF | 已读取=1024字节(分5次)",
+		}
+		entry := buildLogEntry("claude-3", &channelID, 200, 1.5, true, "sk-test", res, "")
+		if entry.Message != res.StreamDiagMsg {
+			t.Errorf("expected Message=%q, got %q", res.StreamDiagMsg, entry.Message)
+		}
+	})
+
+	t.Run("流响应不完整诊断", func(t *testing.T) {
+		res := &fwResult{
+			Status:        200,
+			StreamDiagMsg: "⚠️ 流响应不完整: 正常EOF但无usage | 已读取=512字节(分3次)",
+		}
+		entry := buildLogEntry("claude-3", &channelID, 200, 1.5, true, "sk-test", res, "")
+		if entry.Message != res.StreamDiagMsg {
+			t.Errorf("expected Message=%q, got %q", res.StreamDiagMsg, entry.Message)
+		}
+	})
+
+	t.Run("errMsg优先于StreamDiagMsg", func(t *testing.T) {
+		res := &fwResult{
+			Status:        200,
+			StreamDiagMsg: "⚠️ 流传输中断",
+		}
+		errMsg := "network error"
+		entry := buildLogEntry("claude-3", &channelID, 200, 1.5, true, "sk-test", res, errMsg)
+		if entry.Message != errMsg {
+			t.Errorf("expected Message=%q, got %q", errMsg, entry.Message)
+		}
+	})
+}
+
 func TestDetectChannelTypeFromPath(t *testing.T) {
 	tests := []struct {
 		name     string
