@@ -68,35 +68,48 @@ func main() {
 	if redisSync.IsEnabled() {
 		log.Printf("Redis同步已启用")
 	} else {
-		log.Printf("Redis同步未配置，使用纯SQLite模式")
+		log.Printf("Redis同步未配置")
 	}
 
-	// 优先使用 SQLite 存储
+	// 准备数据库路径（SQLite使用）
 	dbPath := os.Getenv("SQLITE_PATH")
 	if dbPath == "" {
 		dbPath = filepath.Join("data", "ccload.db")
 	}
 
-	// 检查数据库文件是否存在 (启动恢复机制的关键判断)
-	dbExists := sqlite.CheckDatabaseExists(dbPath)
-
-	s, err := sqlite.NewSQLiteStore(dbPath, redisSync)
+	// 使用工厂函数创建存储实例
+	ctx := context.Background()
+	store, dbType, err := storage.NewStore(dbPath, redisSync)
 	if err != nil {
-		log.Fatalf("sqlite 初始化失败: %v", err)
+		log.Fatalf("存储初始化失败: %v", err)
 	}
 
-	// 启动时数据恢复逻辑 (KISS原则: 简单的恢复策略)
-	ctx := context.Background()
-	if !dbExists && redisSync.IsEnabled() {
-		log.Printf("数据库文件不存在，尝试从Redis恢复渠道数据...")
-		if err := s.LoadChannelsFromRedis(ctx); err != nil {
-			log.Printf("从Redis恢复失败: %v", err)
+	// 如果是 SQLite，需要单独创建（工厂函数返回 nil）
+	if dbType == storage.DBTypeSQLite {
+		s, err := sqlite.NewSQLiteStore(dbPath, redisSync)
+		if err != nil {
+			log.Fatalf("SQLite 初始化失败: %v", err)
+		}
+		log.Printf("使用 SQLite 存储: %s", dbPath)
+		store = s
+	} else {
+		log.Printf("使用 MySQL 存储")
+	}
+
+	// 统一的Redis恢复逻辑（SQLite和MySQL共用）
+	if redisSync.IsEnabled() {
+		isEmpty, err := store.CheckChannelsEmpty(ctx)
+		if err != nil {
+			log.Printf("检查数据库状态失败: %v", err)
+		} else if isEmpty {
+			log.Printf("数据库为空，尝试从Redis恢复数据...")
+			if err := store.LoadChannelsFromRedis(ctx); err != nil {
+				log.Printf("从Redis恢复失败: %v", err)
+			}
 		}
 	}
-	log.Printf("using sqlite store: %s", dbPath)
-	var store storage.Store = s
 
-	// 渠道仅从 SQLite 管理与读取；不再从本地文件初始化。
+	// 渠道仅从数据库管理与读取；不再从本地文件初始化。
 
 	srv := app.NewServer(store)
 

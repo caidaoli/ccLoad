@@ -1,5 +1,10 @@
 package model
 
+import "errors"
+
+// ErrSettingNotFound 系统设置未找到错误
+var ErrSettingNotFound = errors.New("setting not found")
+
 // SystemSetting 系统配置项
 type SystemSetting struct {
 	Key          string `json:"key"`           // 配置键(如log_retention_days)

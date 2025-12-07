@@ -2,16 +2,13 @@ package storage
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"ccLoad/internal/model"
 )
 
-// Sentinel errors for storage operations
-var (
-	ErrSettingNotFound = errors.New("setting not found")
-)
+// ErrSettingNotFound 系统设置未找到错误（重导出自 model 包以保持兼容性）
+var ErrSettingNotFound = model.ErrSettingNotFound
 
 // Store 数据持久化接口
 // 设计原则：依赖倒置原则（DIP），业务逻辑依赖接口而非具体实现
@@ -95,4 +92,9 @@ type Store interface {
 	DeleteAdminSession(ctx context.Context, token string) error
 	CleanExpiredSessions(ctx context.Context) error
 	LoadAllSessions(ctx context.Context) (map[string]time.Time, error)
+
+	// Redis Restore - Redis数据恢复
+	// 用于从Redis恢复渠道配置、API Keys和auth tokens
+	LoadChannelsFromRedis(ctx context.Context) error
+	CheckChannelsEmpty(ctx context.Context) (bool, error)
 }

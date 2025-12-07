@@ -378,3 +378,13 @@ func normalizeChannelsWithKeys(channelsWithKeys []*model.ChannelWithKeys) {
 		}
 	}
 }
+
+// CheckChannelsEmpty 检查channels表是否为空
+func (s *SQLiteStore) CheckChannelsEmpty(ctx context.Context) (bool, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM channels`).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("check channels count: %w", err)
+	}
+	return count == 0, nil
+}
