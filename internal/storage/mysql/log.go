@@ -255,19 +255,11 @@ func (s *MySQLStore) ListLogsRange(ctx context.Context, since, until time.Time, 
 		Where("time >= ?", sinceMs).
 		Where("time <= ?", untilMs)
 
-	if filter != nil && (filter.ChannelName != "" || filter.ChannelNameLike != "") {
-		ids, err := s.fetchChannelIDsByNameFilter(ctx, filter.ChannelName, filter.ChannelNameLike)
-		if err != nil {
-			return nil, err
-		}
-		if len(ids) == 0 {
-			return []*model.LogEntry{}, nil
-		}
-		vals := make([]any, 0, len(ids))
-		for _, id := range ids {
-			vals = append(vals, id)
-		}
-		qb.WhereIn("channel_id", vals)
+	// 应用渠道过滤（支持ChannelType、ChannelName、ChannelNameLike）
+	if _, isEmpty, err := s.applyChannelFilter(ctx, qb, filter); err != nil {
+		return nil, err
+	} else if isEmpty {
+		return []*model.LogEntry{}, nil
 	}
 
 	qb.ApplyFilter(filter)
@@ -369,19 +361,11 @@ func (s *MySQLStore) CountLogsRange(ctx context.Context, since, until time.Time,
 		Where("time >= ?", sinceMs).
 		Where("time <= ?", untilMs)
 
-	if filter != nil && (filter.ChannelName != "" || filter.ChannelNameLike != "") {
-		ids, err := s.fetchChannelIDsByNameFilter(ctx, filter.ChannelName, filter.ChannelNameLike)
-		if err != nil {
-			return 0, err
-		}
-		if len(ids) == 0 {
-			return 0, nil
-		}
-		vals := make([]any, 0, len(ids))
-		for _, id := range ids {
-			vals = append(vals, id)
-		}
-		qb.WhereIn("channel_id", vals)
+	// 应用渠道过滤（支持ChannelType、ChannelName、ChannelNameLike）
+	if _, isEmpty, err := s.applyChannelFilter(ctx, qb, filter); err != nil {
+		return 0, err
+	} else if isEmpty {
+		return 0, nil
 	}
 
 	qb.ApplyFilter(filter)
