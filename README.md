@@ -7,7 +7,7 @@
 [![GitHub Actions](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-2088FF.svg)](https://github.com/features/actions)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-一个高性能的 Claude Code & Codex & Gemini & OpenAI 兼容 API 透明代理服务，使用 Go 1.25.0 和 Gin 框架构建。支持多渠道负载均衡、故障切换和实时监控。
+一个高性能的 Claude Code & Codex & Gemini & OpenAI 兼容 API 透明代理服务，使用 Go 1.25.0 和 Gin 框架构建。支持多渠道负载均衡、故障切换和实时监控。支持 SQLite 和 MySQL 双存储引擎，灵活适配不同部署场景。
 
 ## 🎯 痛点解决
 
@@ -61,7 +61,11 @@ graph TB
         end
         
         subgraph "存储层"
-            J[(SQLite数据库)]
+            J[(存储工厂)]
+            J1[(SQLite)]
+            J2[(MySQL)]
+            J --> J1
+            J --> J2
         end
         
         subgraph "监控层"
@@ -348,6 +352,7 @@ EXPOSE 7860
 
 ### 基本配置
 
+**SQLite 模式（默认）**:
 ```bash
 # 设置环境变量
 export CCLOAD_PASS=your_admin_password
@@ -361,6 +366,74 @@ echo "SQLITE_PATH=./data/ccload.db" >> .env
 
 # 启动服务
 ./ccload
+```
+
+**MySQL 模式**:
+```bash
+# 1. 创建 MySQL 数据库
+mysql -u root -p -e "CREATE DATABASE ccload CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+
+# 2. 设置环境变量
+export CCLOAD_PASS=your_admin_password
+export CCLOAD_MYSQL="user:password@tcp(localhost:3306)/ccload?charset=utf8mb4"
+export PORT=8080
+
+# 或使用 .env 文件
+echo "CCLOAD_PASS=your_admin_password" > .env
+echo "CCLOAD_MYSQL=user:password@tcp(localhost:3306)/ccload?charset=utf8mb4" >> .env
+echo "PORT=8080" >> .env
+
+# 3. 启动服务（自动创建表结构）
+./ccload
+```
+
+**Docker + MySQL**:
+```bash
+# 方式 1: docker-compose（推荐）
+cat > docker-compose.mysql.yml << 'EOF'
+version: '3.8'
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: ccload
+      MYSQL_USER: ccload
+      MYSQL_PASSWORD: ccloadpass
+    volumes:
+      - mysql_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ccload:
+    image: ghcr.io/caidaoli/ccload:latest
+    environment:
+      CCLOAD_PASS: your_admin_password
+      CCLOAD_MYSQL: "ccload:ccloadpass@tcp(mysql:3306)/ccload?charset=utf8mb4"
+      PORT: 8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+volumes:
+  mysql_data:
+EOF
+
+docker-compose -f docker-compose.mysql.yml up -d
+
+# 方式 2: 直接运行（需要已有 MySQL 服务）
+docker run -d --name ccload \
+  -p 8080:8080 \
+  -e CCLOAD_PASS=your_admin_password \
+  -e CCLOAD_MYSQL="user:pass@tcp(mysql_host:3306)/ccload?charset=utf8mb4" \
+  ghcr.io/caidaoli/ccload:latest
 ```
 
 服务启动后访问：
@@ -507,7 +580,8 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 |------|------|------|----------|
 | **Go** | 1.25.0+ | 运行时环境 | 原生并发支持，内置 min 函数 |
 | **Gin** | v1.10.1 | Web框架 | 高性能HTTP路由 |
-| **SQLite3** | v1.38.2 | 嵌入式数据库 | 零配置，单文件存储 |
+| **SQLite3** | v1.38.2 | 嵌入式数据库 | 零配置，单文件存储（默认） |
+| **MySQL** | v1.8.1 | 关系型数据库 | 可选，适合高并发生产环境 |
 | **Sonic** | v1.14.1 | JSON库 | 比标准库快2-3倍 |
 | **go-redis** | v9.7.0 | Redis客户端 | 可选渠道数据同步 |
 | **godotenv** | v1.5.1 | 环境配置 | 简化配置管理 |
@@ -562,13 +636,14 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
 | `CCLOAD_PASS` | 无 | 管理界面密码（**必填**，未设置将退出） |
+| `CCLOAD_MYSQL` | 无 | MySQL DSN（可选，格式: `user:pass@tcp(host:port)/db?charset=utf8mb4`）<br/>**设置后使用 MySQL，否则使用 SQLite** |
 | `PORT` | `8080` | 服务端口 |
 | `GIN_MODE` | `release` | 运行模式（`debug`/`release`） |
-| `SQLITE_PATH` | `data/ccload.db` | 数据库文件路径 |
-| `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal模式（WAL/TRUNCATE/DELETE等，容器环境建议TRUNCATE） |
+| `SQLITE_PATH` | `data/ccload.db` | SQLite 数据库文件路径（仅 SQLite 模式） |
+| `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal 模式（WAL/TRUNCATE/DELETE 等，容器环境建议 TRUNCATE） |
 | `CCLOAD_MAX_CONCURRENCY` | `1000` | 最大并发请求数（限制同时处理的代理请求数量） |
 | `CCLOAD_MAX_BODY_BYTES` | `2097152` | 请求体最大字节数（2MB，防止大包打爆内存） |
-| `REDIS_URL` | 无 | Redis连接URL（可选，用于渠道数据异步备份） |
+| `REDIS_URL` | 无 | Redis 连接 URL（可选，用于渠道数据异步备份） |
 
 ### Web 管理配置（支持热重载）
 
@@ -625,22 +700,47 @@ docker pull --platform linux/arm64 ghcr.io/caidaoli/ccload:latest
 
 ### 数据库结构
 
-**核心表**:
-- `channels` - 渠道配置（冷却数据内联，UNIQUE约束name）
-- `api_keys` - API密钥（Key级冷却内联，支持多Key策略）
-- `logs` - 请求日志
+**存储架构（工厂模式）**:
+```
+storage/
+├── store.go         # Store 接口（统一契约）
+├── factory.go       # NewStore() 自动选择数据库
+├── sqlite/          # SQLite 实现
+│   ├── sqlite.go
+│   ├── migrate.go   # 自动表迁移
+│   └── store_impl.go
+└── mysql/           # MySQL 实现
+    ├── mysql.go
+    ├── migrate.go   # 自动表迁移
+    └── store_impl.go
+```
+
+**数据库选择逻辑**:
+- 设置 `CCLOAD_MYSQL` 环境变量 → 使用 MySQL
+- 未设置 → 使用 SQLite（默认）
+
+**核心表结构**（SQLite 和 MySQL 共用）:
+- `channels` - 渠道配置（冷却数据内联，UNIQUE 约束 name）
+- `api_keys` - API 密钥（Key 级冷却内联，支持多 Key 策略）
+- `logs` - 请求日志（已合并到主数据库）
 - `key_rr` - 轮询指针（channel_id → idx）
+- `auth_tokens` - 认证令牌
+- `admin_sessions` - 管理会话
+- `system_settings` - 系统配置（支持热重载）
 
 **架构特性** (✅ 2025-10月优化):
-- ✅ 冷却数据内联（废弃独立cooldowns表，减少JOIN开销）
-- ✅ 性能索引优化（渠道选择延迟↓30-50%，Key查找延迟↓40-60%）
+- ✅ 工厂模式统一接口（OCP 原则，易扩展新存储）
+- ✅ 冷却数据内联（废弃独立 cooldowns 表，减少 JOIN 开销）
+- ✅ 性能索引优化（渠道选择延迟↓30-50%，Key 查找延迟↓40-60%）
 - ✅ 外键约束（级联删除，保证数据一致性）
-- ✅ 多Key支持（sequential/round_robin策略）
+- ✅ 多 Key 支持（sequential/round_robin 策略）
+- ✅ 自动迁移（启动时自动创建/更新表结构）
 
 **向后兼容迁移**:
 - 自动检测并修复重复渠道名称
-- 智能添加UNIQUE约束，确保数据完整性
+- 智能添加 UNIQUE 约束，确保数据完整性
 - 启动时自动执行，无需手动干预
+- 日志数据库已合并到主数据库（单一数据源）
 
 ## 🛡️ 安全考虑
 
