@@ -20,7 +20,9 @@ const (
 	HTTPDialTimeout = 30 * time.Second
 
 	// HTTPKeepAliveInterval TCP keepalive间隔
-	HTTPKeepAliveInterval = 30 * time.Second
+	// 15秒：快速检测僵死连接（上游进程崩溃、网络中断）
+	// 配合Linux默认重试(9次×3s)，总检测时间42秒
+	HTTPKeepAliveInterval = 15 * time.Second
 
 	// HTTPTLSHandshakeTimeout TLS握手超时
 	HTTPTLSHandshakeTimeout = 30 * time.Second
@@ -32,7 +34,9 @@ const (
 	HTTPMaxIdleConnsPerHost = 5
 
 	// HTTPIdleConnTimeout 空闲连接超时
-	HTTPIdleConnTimeout = 30 * time.Second
+	// 90秒：允许长时间复用连接，减少TLS握手开销
+	// 必须 > KeepAlive检测时间(42s)，否则KeepAlive失效
+	HTTPIdleConnTimeout = 90 * time.Second
 
 	// HTTPMaxConnsPerHost 单host最大连接数
 	HTTPMaxConnsPerHost = 50

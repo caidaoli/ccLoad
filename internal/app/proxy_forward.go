@@ -153,19 +153,6 @@ func (s *Server) handleSuccessResponse(
 		resp.Body = bodyWrapper
 	}
 
-	// 🛡️ 流读取空闲超时保护（防止上游僵死连接）
-	// 如果指定时间内没有数据到达，主动断开连接并触发故障切换
-	bodyReader := resp.Body
-	if reqCtx.isStreaming && s.streamIdleTimeout > 0 {
-		bodyReader = &idleTimeoutReader{
-			ReadCloser: resp.Body,
-			timeout:    s.streamIdleTimeout,
-			onIdleTimeout: func() {
-				log.Printf("⚠️  [流读取超时] %v内未收到数据，主动断开上游连接", s.streamIdleTimeout)
-			},
-		}
-	}
-
 	// ✅ SSE优化（2025-10-17）：根据Content-Type选择合适的缓冲区大小
 	// text/event-stream → 4KB缓冲区（降低首Token延迟60~80%）
 	// 其他类型 → 32KB缓冲区（保持大文件传输性能）
@@ -176,10 +163,10 @@ func (s *Server) handleSuccessResponse(
 	if strings.Contains(contentType, "text/event-stream") {
 		// SSE流式响应：使用解析器提取usage数据
 		usageParser = newSSEUsageParser(channelType)
-		streamErr = streamCopySSE(reqCtx.ctx, bodyReader, w, usageParser.Feed)
+		streamErr = streamCopySSE(reqCtx.ctx, resp.Body, w, usageParser.Feed)
 	} else if strings.Contains(contentType, "text/plain") && reqCtx.isStreaming {
 		// 非标准SSE场景：上游以text/plain发送SSE事件，探测前缀决定是否走SSE
-		reader := bufio.NewReader(bodyReader)
+		reader := bufio.NewReader(resp.Body)
 		probe, _ := reader.Peek(SSEProbeSize)
 
 		if looksLikeSSE(probe) {
@@ -192,7 +179,7 @@ func (s *Server) handleSuccessResponse(
 	} else {
 		// 非SSE响应：边转发边缓存，统一提取usage
 		usageParser = newJSONUsageParser(channelType)
-		streamErr = streamCopy(reqCtx.ctx, bodyReader, w, usageParser.Feed)
+		streamErr = streamCopy(reqCtx.ctx, resp.Body, w, usageParser.Feed)
 	}
 
 	duration := reqCtx.Duration()
