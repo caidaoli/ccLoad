@@ -139,29 +139,25 @@ func (p *sseUsageParser) parseBuffer() error {
 
 // parseEvent 解析单个SSE事件
 func (p *sseUsageParser) parseEvent(eventType, data string) error {
-	// 事件类型过滤：
-	// - Claude: message_start, message_delta, message_stop
-	// - OpenAI Responses API (Codex): response.completed, response.done, response.output_*
-	// - Gemini: 无event类型（eventType为空字符串）
-	if eventType != "" {
-		// 有明确事件类型时，只处理已知类型
-		// 扩展支持更多可能携带usage的事件类型
-		allowedEvents := []string{
-			"message_start",              // Claude
-			"message_delta",              // Claude
-			"message_stop",               // Claude终止事件
-			"content_block_stop",         // Claude内容块终止
-			"response.completed",         // OpenAI Responses API
-			"response.done",              // OpenAI结束事件
-			"response.output_text.delta", // OpenAI输出事件
-			"response.output_text.done",  // OpenAI输出完成
-		}
+	// ✅ 事件类型过滤优化（2025-12-07）
+	// 问题：anyrouter等聚合服务使用非标准事件类型（如"."），导致usage丢失
+	// 方案：改为黑名单模式 - 只过滤已知无用事件，其他都尝试解析
 
-		isAllowed := slices.Contains(allowedEvents, eventType)
+	// ⚠️ 特殊处理：error事件（记录日志但不解析usage）
+	if eventType == "error" {
+		log.Printf("⚠️  [SSE错误事件] 上游返回error事件: %s", data)
+		return nil // 不解析usage，避免误判
+	}
 
-		if !isAllowed {
-			return nil // 忽略未知事件类型
-		}
+	// 已知无用事件（不包含usage）
+	ignoredEvents := []string{
+		"ping",                // 心跳事件
+		"content_block_start", // Claude内容块开始（无usage）
+		"content_block_delta", // Claude增量内容（无usage）
+	}
+
+	if eventType != "" && slices.Contains(ignoredEvents, eventType) {
+		return nil // 跳过已知无用事件
 	}
 
 	// 解析JSON数据

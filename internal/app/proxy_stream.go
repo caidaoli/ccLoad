@@ -2,8 +2,12 @@ package app
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // ============================================================================
@@ -39,6 +43,63 @@ func (r *firstByteDetector) Read(p []byte) (n int, err error) {
 		}
 	}
 	return
+}
+
+// idleTimeoutReader 流读取空闲超时包装器
+// 如果长时间没有数据到达，主动关闭连接
+type idleTimeoutReader struct {
+	io.ReadCloser
+	timeout       time.Duration
+	timer         *time.Timer
+	timerMu       sync.Mutex
+	timedOut      atomic.Bool    // 标记是否已超时
+	onIdleTimeout func()          // 超时回调（用于记录日志）
+}
+
+// ErrStreamIdleTimeout 流读取空闲超时错误
+var ErrStreamIdleTimeout = errors.New("stream idle timeout: no data received within configured duration")
+
+// Read 实现io.Reader接口，每次读取后重置超时定时器
+func (r *idleTimeoutReader) Read(p []byte) (n int, err error) {
+	r.resetTimer()
+	n, err = r.ReadCloser.Read(p)
+	if n > 0 {
+		r.resetTimer() // 读取成功，重置定时器
+	}
+	// 如果已超时，返回明确的超时错误而不是EOF
+	if r.timedOut.Load() && err == io.EOF {
+		err = ErrStreamIdleTimeout
+	}
+	return
+}
+
+// resetTimer 重置空闲定时器
+func (r *idleTimeoutReader) resetTimer() {
+	r.timerMu.Lock()
+	defer r.timerMu.Unlock()
+
+	if r.timer != nil {
+		r.timer.Stop()
+	}
+
+	r.timer = time.AfterFunc(r.timeout, func() {
+		r.timedOut.Store(true) // 标记为超时
+		if r.onIdleTimeout != nil {
+			r.onIdleTimeout()
+		}
+		r.ReadCloser.Close() // 超时后关闭底层连接，触发Read返回错误
+	})
+}
+
+// Close 关闭Reader并停止定时器
+func (r *idleTimeoutReader) Close() error {
+	r.timerMu.Lock()
+	if r.timer != nil {
+		r.timer.Stop()
+		r.timer = nil
+	}
+	r.timerMu.Unlock()
+	return r.ReadCloser.Close()
 }
 
 // ============================================================================

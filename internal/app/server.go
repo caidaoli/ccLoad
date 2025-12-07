@@ -43,8 +43,9 @@ type Server struct {
 	client           *http.Client          // HTTP客户端
 
 	// 运行时配置（启动时从数据库加载，修改后重启生效）
-	maxKeyRetries    int           // 单个渠道内最大Key重试次数
-	firstByteTimeout time.Duration // 上游首字节超时
+	maxKeyRetries     int           // 单个渠道内最大Key重试次数
+	firstByteTimeout  time.Duration // 上游首字节超时
+	streamIdleTimeout time.Duration // 流读取空闲超时（防止上游僵死）
 
 	// 登录速率限制器（用于传递给AuthService）
 	loginRateLimiter *util.LoginRateLimiter
@@ -80,6 +81,7 @@ func NewServer(store storage.Store) *Server {
 	// 从ConfigService读取运行时配置（启动时加载一次，修改后重启生效）
 	maxKeyRetries := configService.GetInt("max_key_retries", config.DefaultMaxKeyRetries)
 	firstByteTimeout := configService.GetDuration("upstream_first_byte_timeout", 0)
+	streamIdleTimeout := configService.GetDuration("stream_idle_timeout", 90*time.Second) // 默认90秒
 	logRetentionDays := configService.GetInt("log_retention_days", 7)
 	enable88codeFreeOnly := configService.GetBool("88code_free_only", false)
 
@@ -113,8 +115,9 @@ func NewServer(store storage.Store) *Server {
 		loginRateLimiter: util.NewLoginRateLimiter(),
 
 		// 运行时配置（启动时加载，修改后重启生效）
-		maxKeyRetries:    maxKeyRetries,
-		firstByteTimeout: firstByteTimeout,
+		maxKeyRetries:     maxKeyRetries,
+		firstByteTimeout:  firstByteTimeout,
+		streamIdleTimeout: streamIdleTimeout,
 
 		// HTTP客户端
 		client: &http.Client{

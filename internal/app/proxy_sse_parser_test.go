@@ -227,20 +227,22 @@ func TestSSEUsageParser_EmptyInput(t *testing.T) {
 }
 
 func TestSSEUsageParser_InvalidEventType(t *testing.T) {
-	// 非message_start/message_delta事件中的usage字段应被忽略
+	// ✅ 黑名单模式（2025-12-07）：未知事件类型也会尝试提取usage
+	// 原因：anyrouter等聚合服务使用非标准事件类型（如"."），需要兼容
 	sseData := `event: unknown_event
 data: {"usage":{"input_tokens":999}}
 
 `
 
-	parser := newSSEUsageParser("anthropic") // 测试使用默认平台
+	parser := newSSEUsageParser("anthropic")
 	if err := parser.Feed([]byte(sseData)); err != nil {
 		t.Fatalf("Feed失败: %v", err)
 	}
 
 	input, _, _, _ := parser.GetUsage()
-	if input != 0 {
-		t.Errorf("非目标事件的usage应被忽略，实际: input=%d", input)
+	// 新预期：未知事件类型也会被解析
+	if input != 999 {
+		t.Errorf("黑名单模式下应提取usage，实际: input=%d, 期望: 999", input)
 	}
 }
 

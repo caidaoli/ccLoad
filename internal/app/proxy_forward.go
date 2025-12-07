@@ -153,12 +153,24 @@ func (s *Server) handleSuccessResponse(
 		resp.Body = bodyWrapper
 	}
 
+	// 🛡️ 流读取空闲超时保护（防止上游僵死连接）
+	// 如果指定时间内没有数据到达，主动断开连接并触发故障切换
+	bodyReader := resp.Body
+	if reqCtx.isStreaming && s.streamIdleTimeout > 0 {
+		bodyReader = &idleTimeoutReader{
+			ReadCloser: resp.Body,
+			timeout:    s.streamIdleTimeout,
+			onIdleTimeout: func() {
+				log.Printf("⚠️  [流读取超时] %v内未收到数据，主动断开上游连接", s.streamIdleTimeout)
+			},
+		}
+	}
+
 	// ✅ SSE优化（2025-10-17）：根据Content-Type选择合适的缓冲区大小
 	// text/event-stream → 4KB缓冲区（降低首Token延迟60~80%）
 	// 其他类型 → 32KB缓冲区（保持大文件传输性能）
 	var streamErr error
 	var usageParser usageParser
-	bodyReader := resp.Body
 	contentType := resp.Header.Get("Content-Type")
 
 	if strings.Contains(contentType, "text/event-stream") {
@@ -194,6 +206,48 @@ func (s *Server) handleSuccessResponse(
 	// 提取SSE usage数据（如果有）
 	if usageParser != nil {
 		result.InputTokens, result.OutputTokens, result.CacheReadInputTokens, result.CacheCreationInputTokens = usageParser.GetUsage()
+	}
+
+	// 🔍 流中断/不完整诊断：记录到日志表便于Web查询
+	// 触发条件：(1) 流传输错误  (2) 流式请求但没有usage数据（疑似不完整响应）
+	if reqCtx.isStreaming {
+		bytesRead := int64(0)
+		readCount := 0
+		if readStats != nil {
+			bytesRead = readStats.totalBytes
+			readCount = readStats.readCount
+		}
+
+		hasUsage := result.InputTokens > 0 || result.OutputTokens > 0
+		shouldLog := false
+		var diagMsg string
+
+		if streamErr != nil {
+			// 情况1：流传输异常中断
+			diagMsg = fmt.Sprintf("⚠️ 流传输中断: 错误=%v | 已读取=%d字节(分%d次) | usage数据=%v",
+				streamErr, bytesRead, readCount, hasUsage)
+			shouldLog = true
+		} else if !hasUsage && bytesRead > 0 {
+			// 情况2：流正常结束但没有usage数据（疑似上游未发送完整响应）
+			diagMsg = fmt.Sprintf("⚠️ 流响应不完整: 正常EOF但无usage | 已读取=%d字节(分%d次)",
+				bytesRead, readCount)
+			shouldLog = true
+		}
+
+		if shouldLog {
+			// 记录到标准输出（实时监控）
+			log.Print(diagMsg)
+
+			// 记录到数据库日志表（Web可查询）
+			s.AddLogAsync(&model.LogEntry{
+				Time:          model.JSONTime{Time: time.Now()},
+				StatusCode:    resp.StatusCode, // 200，但可能不完整
+				Message:       diagMsg,
+				Duration:      duration,
+				IsStreaming:   true,
+				FirstByteTime: &actualFirstByteTime,
+			})
+		}
 	}
 
 	return result, duration, streamErr
