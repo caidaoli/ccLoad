@@ -125,6 +125,8 @@ func (s *Server) handleErrorResponse(
 // handleSuccessResponse 处理成功响应（流式传输）
 // 从proxy.go提取，遵循SRP原则
 // channelType: 渠道类型,用于精确识别usage格式
+// channelID: 渠道ID,用于流异常日志记录
+// apiKeyUsed: 使用的API Key,用于流异常日志记录
 func (s *Server) handleSuccessResponse(
 	reqCtx *requestContext,
 	resp *http.Response,
@@ -132,6 +134,8 @@ func (s *Server) handleSuccessResponse(
 	hdrClone http.Header,
 	w http.ResponseWriter,
 	channelType string,
+	channelID *int64,
+	apiKeyUsed string,
 ) (*fwResult, float64, error) {
 	// 写入响应头
 	filterAndWriteResponseHeaders(w, resp.Header)
@@ -209,13 +213,20 @@ func (s *Server) handleSuccessResponse(
 		shouldLog := false
 		var diagMsg string
 
-		if streamErr != nil {
-			// 情况1：流传输异常中断
-			diagMsg = fmt.Sprintf("⚠️ 流传输中断: 错误=%v | 已读取=%d字节(分%d次) | usage数据=%v",
-				streamErr, bytesRead, readCount, hasUsage)
+		if streamErr != nil && !errors.Is(streamErr, context.Canceled) {
+			// 情况1：流传输异常中断（排除499客户端主动断开）
+			// 仅对anthropic/codex渠道显示usage信息
+			if channelType == util.ChannelTypeAnthropic || channelType == util.ChannelTypeCodex {
+				diagMsg = fmt.Sprintf("⚠️ 流传输中断: 错误=%v | 已读取=%d字节(分%d次) | usage数据=%v",
+					streamErr, bytesRead, readCount, hasUsage)
+			} else {
+				diagMsg = fmt.Sprintf("⚠️ 流传输中断: 错误=%v | 已读取=%d字节(分%d次)",
+					streamErr, bytesRead, readCount)
+			}
 			shouldLog = true
-		} else if !hasUsage && bytesRead > 0 {
+		} else if !hasUsage && bytesRead > 0 && (channelType == util.ChannelTypeAnthropic || channelType == util.ChannelTypeCodex) {
 			// 情况2：流正常结束但没有usage数据（疑似上游未发送完整响应）
+			// 仅对anthropic(claude code)和codex渠道检查，其他渠道可能不返回usage
 			diagMsg = fmt.Sprintf("⚠️ 流响应不完整: 正常EOF但无usage | 已读取=%d字节(分%d次)",
 				bytesRead, readCount)
 			shouldLog = true
@@ -225,9 +236,11 @@ func (s *Server) handleSuccessResponse(
 			// 记录到标准输出（实时监控）
 			log.Print(diagMsg)
 
-			// 记录到数据库日志表（Web可查询）
+			// 记录到数据库日志表（Web可查询）- 使用渠道信息
 			s.AddLogAsync(&model.LogEntry{
 				Time:          model.JSONTime{Time: time.Now()},
+				ChannelID:     channelID,       // ✅ 关联到实际渠道
+				APIKeyUsed:    apiKeyUsed,      // ✅ 记录使用的Key
 				StatusCode:    resp.StatusCode, // 200，但可能不完整
 				Message:       diagMsg,
 				Duration:      duration,
@@ -249,12 +262,16 @@ func looksLikeSSE(data []byte) bool {
 // handleResponse 处理 HTTP 响应（错误或成功）
 // 从proxy.go提取，遵循SRP原则
 // channelType: 渠道类型,用于精确识别usage格式
+// cfg: 渠道配置,用于提取渠道ID
+// apiKey: 使用的API Key,用于日志记录
 func (s *Server) handleResponse(
 	reqCtx *requestContext,
 	resp *http.Response,
 	firstByteTime float64,
 	w http.ResponseWriter,
 	channelType string,
+	cfg *model.Config,
+	apiKey string,
 ) (*fwResult, float64, error) {
 	hdrClone := resp.Header.Clone()
 
@@ -277,8 +294,9 @@ func (s *Server) handleResponse(
 		}, duration, err
 	}
 
-	// 成功状态：流式转发
-	return s.handleSuccessResponse(reqCtx, resp, firstByteTime, hdrClone, w, channelType)
+	// 成功状态：流式转发（传递渠道信息用于日志记录）
+	channelID := &cfg.ID
+	return s.handleSuccessResponse(reqCtx, resp, firstByteTime, hdrClone, w, channelType, channelID, apiKey)
 }
 
 // ============================================================================
@@ -311,8 +329,8 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 	reqCtx.stopFirstByteTimer()
 	firstByteTime := reqCtx.Duration()
 
-	// 5. 处理响应(传递channelType用于精确识别usage格式)
-	return s.handleResponse(reqCtx, resp, firstByteTime, w, cfg.ChannelType)
+	// 5. 处理响应(传递channelType用于精确识别usage格式,传递渠道信息用于日志记录)
+	return s.handleResponse(reqCtx, resp, firstByteTime, w, cfg.ChannelType, cfg, apiKey)
 }
 
 // ============================================================================
