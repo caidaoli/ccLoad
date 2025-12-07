@@ -371,8 +371,9 @@
    * 渲染渠道类型Tab页（包含"全部"选项）
    * @param {string} containerId - 容器元素ID
    * @param {Function} onTabChange - tab切换回调函数
+   * @param {string} initialType - 初始选中的类型（可选，默认选中第一个）
    */
-  async function renderChannelTypeTabs(containerId, onTabChange) {
+  async function renderChannelTypeTabs(containerId, onTabChange, initialType = null) {
     const container = document.getElementById(containerId);
     if (!container) {
       console.error('容器元素不存在:', containerId);
@@ -385,8 +386,11 @@
     const allTab = { value: 'all', display_name: '全部' };
     const allTypes = [...types, allTab];
 
-    container.innerHTML = allTypes.map((type, index) => `
-      <button class="channel-tab ${index === 0 ? 'active' : ''}"
+    // 确定初始选中的类型
+    const activeType = initialType || (types.length > 0 ? types[0].value : 'all');
+
+    container.innerHTML = allTypes.map((type) => `
+      <button class="channel-tab ${type.value === activeType ? 'active' : ''}"
               data-type="${type.value}"
               title="${type.description || '显示所有渠道类型'}">
         ${type.display_name}

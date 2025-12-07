@@ -275,7 +275,7 @@
 
         tr.innerHTML = `
           <td>
-            <a href="/web/channels.html?id=${entry.channel_id}" class="config-name channel-link" title="跳转到渠道管理">
+            <a href="/web/channels.html?id=${entry.channel_id}#channel-${entry.channel_id}" class="config-name channel-link" title="跳转到渠道管理">
               ${escapeHtml(entry.channel_name)}
             </a>
             ${entry.channel_id ? `<span class="channel-id">(ID: ${entry.channel_id})</span>` : ''}

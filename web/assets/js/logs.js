@@ -136,8 +136,8 @@
           (entry.channel_id ? `渠道 #${entry.channel_id}` : 
            (entry.message === 'exhausted backends' ? '系统（所有渠道失败）' : 
             entry.message === 'no available upstream (all cooled or none)' ? '系统（无可用渠道）' : '系统'));
-        const configDisplay = entry.channel_id ? 
-          `<a class="channel-link" href="/web/channels.html#channel-${entry.channel_id}">${escapeHtml(entry.channel_name||'')} <small>(#${entry.channel_id})</small></a>` : 
+        const configDisplay = entry.channel_id ?
+          `<a class="channel-link" href="/web/channels.html?id=${entry.channel_id}#channel-${entry.channel_id}">${escapeHtml(entry.channel_name||'')} <small>(#${entry.channel_id})</small></a>` :
           `<span style="color: var(--neutral-500);">${escapeHtml(configInfo)}</span>`;
         
         const statusClass = (entry.status_code >= 200 && entry.status_code < 300) ? 
