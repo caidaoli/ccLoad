@@ -39,7 +39,7 @@ type RedisSync interface {
 }
 
 // NewMySQLStore 创建MySQL存储实例
-// dsn格式: user:password@tcp(host:port)/dbname?charset=utf8mb4&parseTime=true
+// dsn格式: user:password@tcp(host:port)/dbname?charset=utf8mb4
 func NewMySQLStore(dsn string, redisSync RedisSync) (*MySQLStore, error) {
 	// 确保DSN包含必要参数
 	if dsn == "" {
