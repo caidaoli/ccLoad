@@ -28,11 +28,15 @@ type Store interface {
 	// API Keys management - API Key管理
 	GetAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error)
 	GetAPIKey(ctx context.Context, channelID int64, keyIndex int) (*model.APIKey, error)
+	GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey, error) // 批量查询所有渠道的API Keys
 	CreateAPIKey(ctx context.Context, key *model.APIKey) error
 	UpdateAPIKey(ctx context.Context, key *model.APIKey) error
 	DeleteAPIKey(ctx context.Context, channelID int64, keyIndex int) error
 	CompactKeyIndices(ctx context.Context, channelID int64, removedIndex int) error
 	DeleteAllAPIKeys(ctx context.Context, channelID int64) error // 删除渠道的所有Key
+
+	// Batch Import - 批量导入（CSV导入优化）
+	ImportChannelBatch(ctx context.Context, channels []*model.ChannelWithKeys) (created, updated int, err error)
 
 	// Cooldown (channel-level) - 渠道级冷却管理
 	// 简化接口：冷却数据直接在channels表中
@@ -50,6 +54,7 @@ type Store interface {
 
 	// Logs - 日志管理
 	AddLog(ctx context.Context, e *model.LogEntry) error
+	BatchAddLogs(ctx context.Context, logs []*model.LogEntry) error // 批量写入日志（性能优化）
 	ListLogs(ctx context.Context, since time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error)
 	ListLogsRange(ctx context.Context, since, until time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error)
 
@@ -97,4 +102,7 @@ type Store interface {
 	// 用于从Redis恢复渠道配置、API Keys和auth tokens
 	LoadChannelsFromRedis(ctx context.Context) error
 	CheckChannelsEmpty(ctx context.Context) (bool, error)
+
+	// Redis Status - Redis状态查询
+	IsRedisEnabled() bool
 }

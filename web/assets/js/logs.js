@@ -153,22 +153,34 @@
           `<span style="color: var(--neutral-700);">${entry.duration.toFixed(3)}</span>` : 
           '<span style="color: var(--neutral-500);">-</span>';
           
-        // 格式化首字节时间显示（仅流式请求）
-        const hasFirstByte = entry.is_streaming && entry.first_byte_time !== undefined && entry.first_byte_time !== null;
-        const firstByteDisplay = hasFirstByte ?
-          `<span style="color: var(--success-600);">${entry.first_byte_time.toFixed(3)}</span>` :
-          '<span style="color: var(--neutral-500);">-</span>';
+        // 格式化耗时显示：流式显示"首字/总耗时"，非流式只显示总耗时
         const streamFlag = entry.is_streaming ?
           '<span class="stream-flag">流</span>' :
           '<span class="stream-flag placeholder">流</span>';
-        const responseTimingDisplay = `
-          <span style="display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px; white-space: nowrap;">
-            ${firstByteDisplay}
-            <span style="color: var(--neutral-400);">/</span>
-            ${durationDisplay}
-          </span>
-          ${streamFlag}
-        `;
+        let responseTimingDisplay;
+        if (entry.is_streaming) {
+          // 流式请求：显示 首字/总耗时
+          const hasFirstByte = entry.first_byte_time !== undefined && entry.first_byte_time !== null;
+          const firstByteDisplay = hasFirstByte ?
+            `<span style="color: var(--success-600);">${entry.first_byte_time.toFixed(3)}</span>` :
+            '<span style="color: var(--neutral-500);">-</span>';
+          responseTimingDisplay = `
+            <span style="display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px; white-space: nowrap;">
+              ${firstByteDisplay}
+              <span style="color: var(--neutral-400);">/</span>
+              ${durationDisplay}
+            </span>
+            ${streamFlag}
+          `;
+        } else {
+          // 非流式请求：只显示总耗时
+          responseTimingDisplay = `
+            <span style="display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px; white-space: nowrap;">
+              ${durationDisplay}
+            </span>
+            ${streamFlag}
+          `;
+        }
 
         // 格式化API Key显示（已在后端掩码处理）
         let apiKeyDisplay = '';

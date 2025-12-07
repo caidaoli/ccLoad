@@ -22,9 +22,10 @@ func (s *MySQLStore) Aggregate(ctx context.Context, since time.Time, bucket time
 	// SQL聚合查询：使用Unix时间戳除法实现时间桶分组
 	// 性能优化：time字段为BIGINT毫秒时间戳，查询速度提升10-100倍
 	// bucket_ts = (unix_timestamp_seconds / bucket_seconds) * bucket_seconds
+	// 注意：MySQL除法返回DECIMAL，必须用FLOOR转为整数
 	query := `
 		SELECT
-			((time / 1000) / ?) * ? AS bucket_ts,
+			FLOOR((time / 1000) / ?) * ? AS bucket_ts,
 			channel_id,
 			SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success,
 			SUM(CASE WHEN status_code < 200 OR status_code >= 300 THEN 1 ELSE 0 END) AS error,
@@ -225,9 +226,10 @@ func (s *MySQLStore) AggregateRange(ctx context.Context, since, until time.Time,
 	sinceUnix := since.Unix()
 	untilUnix := until.Unix()
 
+	// 注意：MySQL除法返回DECIMAL，必须用FLOOR转为整数
 	query := `
 		SELECT
-			((time / 1000) / ?) * ? AS bucket_ts,
+			FLOOR((time / 1000) / ?) * ? AS bucket_ts,
 			channel_id,
 			SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success,
 			SUM(CASE WHEN status_code < 200 OR status_code >= 300 THEN 1 ELSE 0 END) AS error,

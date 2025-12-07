@@ -28,10 +28,9 @@ type RedisSync interface {
 
 // NewStore 根据环境变量创建存储实例
 // CCLOAD_MYSQL 设置时使用MySQL，否则使用SQLite
-func NewStore(sqlitePath string, redisSync RedisSync) (Store, DBType, error) {
+func NewStore(redisSync RedisSync) (Store, DBType, error) {
 	mysqlDSN := os.Getenv("CCLOAD_MYSQL")
 	if mysqlDSN != "" {
-		// 动态导入 MySQL 实现
 		mysqlStore, err := createMySQLStore(mysqlDSN, redisSync)
 		if err != nil {
 			return nil, DBTypeMySQL, fmt.Errorf("MySQL 初始化失败: %w", err)
@@ -39,7 +38,7 @@ func NewStore(sqlitePath string, redisSync RedisSync) (Store, DBType, error) {
 		return mysqlStore, DBTypeMySQL, nil
 	}
 
-	// 默认使用 SQLite - 由调用方直接创建，这里只返回类型标识
+	// SQLite 模式：由调用方创建，这里只返回类型标识
 	return nil, DBTypeSQLite, nil
 }
 

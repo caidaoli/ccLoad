@@ -9,7 +9,6 @@ import (
 	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
-	"ccLoad/internal/storage/sqlite"
 )
 
 // LogService 日志管理服务
@@ -119,15 +118,8 @@ func (s *LogService) flushLogs(logs []*model.LogEntry) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(config.LogFlushTimeoutMs)*time.Millisecond)
 	defer cancel()
 
-	// 优先使用SQLite批量写入，加速刷盘
-	if ss, ok := s.store.(*sqlite.SQLiteStore); ok {
-		_ = ss.BatchAddLogs(ctx, logs)
-		return
-	}
-	// 回退逐条写入
-	for _, e := range logs {
-		_ = s.store.AddLog(ctx, e)
-	}
+	// 使用批量写入接口（SQLite/MySQL均支持）
+	_ = s.store.BatchAddLogs(ctx, logs)
 }
 
 // flushIfNeeded 辅助函数：当batch非空时执行flush

@@ -33,9 +33,10 @@ func (s *MySQLStore) AggregateRangeWithFilter(ctx context.Context, since, until 
 	}
 
 	// 构建查询：不再JOIN channels表，使用IN子句过滤
+	// 注意：MySQL除法返回DECIMAL，必须用FLOOR转为整数
 	query := `
 		SELECT
-			((logs.time / 1000) / ?) * ? AS bucket_ts,
+			FLOOR((logs.time / 1000) / ?) * ? AS bucket_ts,
 			logs.channel_id,
 			SUM(CASE WHEN logs.status_code >= 200 AND logs.status_code < 300 THEN 1 ELSE 0 END) AS success,
 			SUM(CASE WHEN logs.status_code < 200 OR logs.status_code >= 300 THEN 1 ELSE 0 END) AS error,

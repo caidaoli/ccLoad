@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
-	"ccLoad/internal/storage/sqlite"
 	"ccLoad/internal/util"
 
 	"github.com/bytedance/sonic"
@@ -32,16 +31,10 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 	}
 
 	// 批量查询所有API Keys,消除N+1问题(100渠道从100次查询降为1次)
-	var allAPIKeys map[int64][]*model.APIKey
-	if sqliteStore, ok := s.store.(*sqlite.SQLiteStore); ok {
-		allAPIKeys, err = sqliteStore.GetAllAPIKeys(c.Request.Context())
-		if err != nil {
-			log.Printf("⚠️  警告: 批量查询API Keys失败: %v", err)
-			allAPIKeys = make(map[int64][]*model.APIKey) // 降级:使用空map
-		}
-	} else {
-		// 兼容其他Store实现(虽然目前只有SQLite)
-		allAPIKeys = make(map[int64][]*model.APIKey)
+	allAPIKeys, err := s.store.GetAllAPIKeys(c.Request.Context())
+	if err != nil {
+		log.Printf("⚠️  警告: 批量查询API Keys失败: %v", err)
+		allAPIKeys = make(map[int64][]*model.APIKey) // 降级:使用空map
 	}
 
 	buf := &bytes.Buffer{}
@@ -284,21 +277,14 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 
 	// 批量导入所有有效记录(单事务 + 预编译语句)
 	if len(validChannels) > 0 {
-		if sqliteStore, ok := s.store.(*sqlite.SQLiteStore); ok {
-			created, updated, err := sqliteStore.ImportChannelBatch(c.Request.Context(), validChannels)
-			if err != nil {
-				summary.Errors = append(summary.Errors, fmt.Sprintf("批量导入失败: %v", err))
-				RespondJSON(c, http.StatusInternalServerError, summary)
-				return
-			}
-			summary.Created = created
-			summary.Updated = updated
-		} else {
-			// 降级处理:如果不是SQLiteStore,回退到逐条导入(保持兼容性)
-			summary.Errors = append(summary.Errors, "不支持的存储类型,批量导入功能不可用")
+		created, updated, err := s.store.ImportChannelBatch(c.Request.Context(), validChannels)
+		if err != nil {
+			summary.Errors = append(summary.Errors, fmt.Sprintf("批量导入失败: %v", err))
 			RespondJSON(c, http.StatusInternalServerError, summary)
 			return
 		}
+		summary.Created = created
+		summary.Updated = updated
 	}
 
 	summary.Processed = summary.Created + summary.Updated + summary.Skipped
@@ -310,9 +296,8 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 	}
 
 	// 导入完成后,检查Redis同步状态(批量导入方法会自动触发同步)
-	summary.RedisSyncEnabled = false
-	if sqliteStore, ok := s.store.(*sqlite.SQLiteStore); ok && sqliteStore.IsRedisEnabled() {
-		summary.RedisSyncEnabled = true
+	summary.RedisSyncEnabled = s.store.IsRedisEnabled()
+	if summary.RedisSyncEnabled {
 		summary.RedisSyncSuccess = true // 批量导入方法已自动同步
 		// 获取当前渠道总数作为同步数量
 		if configs, err := s.store.ListConfigs(c.Request.Context()); err == nil {

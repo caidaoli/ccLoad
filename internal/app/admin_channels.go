@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
-	"ccLoad/internal/storage/sqlite"
 	"ccLoad/internal/util"
 
 	"github.com/bytedance/sonic"
@@ -78,16 +77,10 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	}
 
 	// 批量查询所有API Keys（一次查询替代 N 次）
-	var allAPIKeys map[int64][]*model.APIKey
-	if sqliteStore, ok := s.store.(*sqlite.SQLiteStore); ok {
-		allAPIKeys, err = sqliteStore.GetAllAPIKeys(c.Request.Context())
-		if err != nil {
-			log.Printf("⚠️  警告: 批量查询API Keys失败: %v", err)
-			allAPIKeys = make(map[int64][]*model.APIKey) // 降级：使用空map
-		}
-	} else {
-		// 兼容其他Store实现
-		allAPIKeys = make(map[int64][]*model.APIKey)
+	allAPIKeys, err := s.store.GetAllAPIKeys(c.Request.Context())
+	if err != nil {
+		log.Printf("⚠️  警告: 批量查询API Keys失败: %v", err)
+		allAPIKeys = make(map[int64][]*model.APIKey) // 降级：使用空map
 	}
 
 	out := make([]ChannelWithCooldown, 0, len(cfgs))

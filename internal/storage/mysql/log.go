@@ -40,6 +40,64 @@ func (s *MySQLStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 	return err
 }
 
+// BatchAddLogs 批量写入日志（单事务+预编译语句，提升刷盘性能）
+func (s *MySQLStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) error {
+	if len(logs) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO logs(time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used,
+			input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cost)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, e := range logs {
+		t := e.Time.Time
+		if t.IsZero() {
+			t = time.Now()
+		}
+		cleanTime := t.Round(0)
+		timeMs := cleanTime.UnixMilli()
+
+		maskedKey := e.APIKeyUsed
+		if maskedKey != "" {
+			maskedKey = maskAPIKey(maskedKey)
+		}
+
+		if _, err := stmt.ExecContext(ctx,
+			timeMs,
+			e.Model,
+			e.ChannelID,
+			e.StatusCode,
+			e.Message,
+			e.Duration,
+			e.IsStreaming,
+			e.FirstByteTime,
+			maskedKey,
+			e.InputTokens,
+			e.OutputTokens,
+			e.CacheReadInputTokens,
+			e.CacheCreationInputTokens,
+			e.Cost,
+		); err != nil {
+			log.Printf("⚠️  批量写入日志失败: %v", err)
+		}
+	}
+
+	return tx.Commit()
+}
+
 func (s *MySQLStore) ListLogs(ctx context.Context, since time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error) {
 	baseQuery := `
 		SELECT id, time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used,
