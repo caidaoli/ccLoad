@@ -230,10 +230,10 @@
           apiKeyDisplay = '<span style="color: var(--neutral-500);">-</span>';
         }
 
-        // Token统计显示（2025-11新增）
+        // Token统计显示（0值显示为空，减少视觉干扰）
         const tokenValue = (value, color) => {
-          if (value === undefined || value === null) {
-            return '<span class="token-metric-value token-empty">-</span>';
+          if (value === undefined || value === null || value === 0) {
+            return '';
           }
           return `<span class="token-metric-value" style="color: ${color};">${value.toLocaleString()}</span>`;
         };
@@ -242,10 +242,10 @@
         const cacheReadDisplay = tokenValue(entry.cache_read_input_tokens, 'var(--success-600)');
         const cacheCreationDisplay = tokenValue(entry.cache_creation_input_tokens, 'var(--primary-600)');
 
-        // 成本显示（2025-11新增）
-        const costDisplay = entry.cost !== undefined && entry.cost !== null ?
+        // 成本显示（0值显示为空）
+        const costDisplay = entry.cost ?
           `<span style="color: var(--warning-600); font-weight: 500;">${formatCost(entry.cost)}</span>` :
-          '<span style="color: var(--neutral-500);">-</span>';
+          '';
 
         tr.innerHTML = `
           <td style="white-space: nowrap;">${formatTime(entry.time)}</td>
