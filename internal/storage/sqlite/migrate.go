@@ -19,12 +19,12 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 			url TEXT NOT NULL,
 			priority INTEGER NOT NULL DEFAULT 0,
 			models TEXT NOT NULL,
-			model_redirects TEXT DEFAULT '{}',
-			channel_type TEXT DEFAULT 'anthropic',
+			model_redirects TEXT NOT NULL DEFAULT '{}',
+			channel_type TEXT NOT NULL DEFAULT 'anthropic',
 			enabled INTEGER NOT NULL DEFAULT 1,
-			cooldown_until INTEGER DEFAULT 0,
-			cooldown_duration_ms INTEGER DEFAULT 0,
-			rr_key_index INTEGER DEFAULT 0,
+			cooldown_until INTEGER NOT NULL DEFAULT 0,
+			cooldown_duration_ms INTEGER NOT NULL DEFAULT 0,
+			rr_key_index INTEGER NOT NULL DEFAULT 0,
 			created_at BIGINT NOT NULL,
 			updated_at BIGINT NOT NULL
 		);
@@ -49,9 +49,9 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 			channel_id INTEGER NOT NULL,
 			key_index INTEGER NOT NULL,
 			api_key TEXT NOT NULL,
-			key_strategy TEXT DEFAULT 'sequential',
-			cooldown_until INTEGER DEFAULT 0,
-			cooldown_duration_ms INTEGER DEFAULT 0,
+			key_strategy TEXT NOT NULL DEFAULT 'sequential',
+			cooldown_until INTEGER NOT NULL DEFAULT 0,
+			cooldown_duration_ms INTEGER NOT NULL DEFAULT 0,
 			created_at BIGINT NOT NULL,
 			updated_at BIGINT NOT NULL,
 			UNIQUE(channel_id, key_index),
@@ -95,10 +95,10 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		return fmt.Errorf("create channel_models table: %w", err)
 	}
 
-	// 为 channel_models 创建高性能索引
+	// 为 channel_models 创建索引
+	// 注：复合主键(channel_id, model)已覆盖channel_id前缀查询，无需单独索引
 	if _, err := s.db.ExecContext(ctx, `
 		CREATE INDEX IF NOT EXISTS idx_channel_models_model ON channel_models(model);
-		CREATE INDEX IF NOT EXISTS idx_channel_models_channel ON channel_models(channel_id);
 		CREATE INDEX IF NOT EXISTS idx_channel_models_model_channel ON channel_models(model, channel_id);
 	`); err != nil {
 		return fmt.Errorf("create channel_models indexes: %w", err)
@@ -134,8 +134,8 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 			token TEXT NOT NULL UNIQUE,
 			description TEXT NOT NULL,
 			created_at INTEGER NOT NULL,
-			expires_at INTEGER,
-			last_used_at INTEGER,
+			expires_at INTEGER NOT NULL DEFAULT 0,
+			last_used_at INTEGER NOT NULL DEFAULT 0,
 			is_active INTEGER NOT NULL DEFAULT 1,
 			CHECK (is_active IN (0, 1))
 		);
@@ -173,21 +173,21 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	// 创建性能索引
 	if _, err := s.db.ExecContext(ctx, `
 		-- 渠道表索引
+		-- 注：name字段UNIQUE约束已自动创建索引，无需重复
 		CREATE INDEX IF NOT EXISTS idx_channels_enabled ON channels(enabled);
 		CREATE INDEX IF NOT EXISTS idx_channels_priority ON channels(priority DESC);
 		CREATE INDEX IF NOT EXISTS idx_channels_type_enabled ON channels(channel_type, enabled);
 		CREATE INDEX IF NOT EXISTS idx_channels_cooldown ON channels(cooldown_until);
-		CREATE INDEX IF NOT EXISTS idx_channels_name ON channels(name);
 
 		-- API Keys 表索引
-		CREATE INDEX IF NOT EXISTS idx_api_keys_channel_id ON api_keys(channel_id);
+		-- 注：idx_api_keys_channel_cooldown前缀已覆盖channel_id查询
 		CREATE INDEX IF NOT EXISTS idx_api_keys_cooldown ON api_keys(cooldown_until);
 		CREATE INDEX IF NOT EXISTS idx_api_keys_channel_cooldown ON api_keys(channel_id, cooldown_until);
 
 		-- Auth Tokens 表索引
+		-- 注：token字段UNIQUE约束已自动创建索引，无需重复
 		CREATE INDEX IF NOT EXISTS idx_auth_tokens_active ON auth_tokens(is_active);
 		CREATE INDEX IF NOT EXISTS idx_auth_tokens_expires ON auth_tokens(expires_at);
-		CREATE INDEX IF NOT EXISTS idx_auth_tokens_token ON auth_tokens(token);
 	`); err != nil {
 		return fmt.Errorf("create performance indexes: %w", err)
 	}
@@ -238,23 +238,22 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		CREATE TABLE IF NOT EXISTS logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			time BIGINT NOT NULL,
-			model TEXT DEFAULT '',
-			channel_id INTEGER DEFAULT 0,
+			model TEXT NOT NULL DEFAULT '',
+			channel_id INTEGER NOT NULL DEFAULT 0,
 			status_code INTEGER NOT NULL,
-			message TEXT DEFAULT '',
-			duration REAL DEFAULT 0.0,
+			message TEXT NOT NULL DEFAULT '',
+			duration REAL NOT NULL DEFAULT 0.0,
 			is_streaming INTEGER NOT NULL DEFAULT 0,
-			first_byte_time REAL DEFAULT 0.0,
-			api_key_used TEXT DEFAULT ''
+			first_byte_time REAL NOT NULL DEFAULT 0.0,
+			api_key_used TEXT NOT NULL DEFAULT ''
 		);
 	`); err != nil {
 		return fmt.Errorf("create logs table: %w", err)
 	}
 
 	// 创建日志索引
+	// 注：idx_logs_time被复合索引前缀覆盖，idx_logs_status单独使用场景极少
 	logIndexes := []string{
-		"CREATE INDEX IF NOT EXISTS idx_logs_time ON logs(time)",
-		"CREATE INDEX IF NOT EXISTS idx_logs_status ON logs(status_code)",
 		"CREATE INDEX IF NOT EXISTS idx_logs_time_model ON logs(time, model)",
 		"CREATE INDEX IF NOT EXISTS idx_logs_time_channel ON logs(time, channel_id)",
 		"CREATE INDEX IF NOT EXISTS idx_logs_time_status ON logs(time, status_code)",
@@ -272,11 +271,11 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		name       string
 		definition string
 	}{
-		{"input_tokens", "INTEGER DEFAULT NULL"},
-		{"output_tokens", "INTEGER DEFAULT NULL"},
-		{"cache_read_input_tokens", "INTEGER DEFAULT NULL"},
-		{"cache_creation_input_tokens", "INTEGER DEFAULT NULL"},
-		{"cost", "REAL DEFAULT NULL"},
+		{"input_tokens", "INTEGER NOT NULL DEFAULT 0"},
+		{"output_tokens", "INTEGER NOT NULL DEFAULT 0"},
+		{"cache_read_input_tokens", "INTEGER NOT NULL DEFAULT 0"},
+		{"cache_creation_input_tokens", "INTEGER NOT NULL DEFAULT 0"},
+		{"cost", "REAL NOT NULL DEFAULT 0.0"},
 	}
 
 	for _, col := range logTokenColumns {
