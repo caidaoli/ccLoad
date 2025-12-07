@@ -52,3 +52,4 @@ com.ccload.service.plist
 .gocache
 .gomodcache
 AGENTS.md
+dist

@@ -211,7 +211,7 @@ func buildHTTPTransport(skipTLSVerify bool, firstByteTimeout time.Duration) (*ht
 		KeepAlive: config.HTTPKeepAliveInterval,
 		Control: func(network, address string, c syscall.RawConn) error {
 			return c.Control(func(fd uintptr) {
-				_ = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_TCP, syscall.TCP_NODELAY, 1)
+				_ = setTCPNoDelay(fd)
 			})
 		},
 	}
