@@ -34,7 +34,7 @@ func (s *SQLiteStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
-	_, err := s.logDB.ExecContext(ctx, query, timeMs, e.Model, e.ChannelID, e.StatusCode, e.Message, e.Duration, e.IsStreaming, e.FirstByteTime, maskedKey,
+	_, err := s.db.ExecContext(ctx, query, timeMs, e.Model, e.ChannelID, e.StatusCode, e.Message, e.Duration, e.IsStreaming, e.FirstByteTime, maskedKey,
 		e.InputTokens, e.OutputTokens, e.CacheReadInputTokens, e.CacheCreationInputTokens, e.Cost)
 	return err
 }
@@ -46,7 +46,7 @@ func (s *SQLiteStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) 
 		return nil
 	}
 
-	tx, err := s.logDB.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -99,7 +99,7 @@ func (s *SQLiteStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) 
 }
 
 func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error) {
-	// 使用查询构建器构建复杂查询（从 logDB 查询）
+	// 使用查询构建器构建复杂查询
 	// 性能优化：批量查询渠道名称消除N+1问题（100渠道场景提升50-100倍）
 	baseQuery := `
 		SELECT id, time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used,
@@ -136,7 +136,7 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 	query, args := qb.BuildWithSuffix(suffix)
 	args = append(args, limit, offset)
 
-	rows, err := s.logDB.QueryContext(ctx, query, args...)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -257,7 +257,7 @@ func (s *SQLiteStore) CountLogs(ctx context.Context, since time.Time, filter *mo
 
 	query, args := qb.Build()
 	var count int
-	err := s.logDB.QueryRowContext(ctx, query, args...).Scan(&count)
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&count)
 	return count, err
 }
 
@@ -297,7 +297,7 @@ func (s *SQLiteStore) ListLogsRange(ctx context.Context, since, until time.Time,
 	query, args := qb.BuildWithSuffix(suffix)
 	args = append(args, limit, offset)
 
-	rows, err := s.logDB.QueryContext(ctx, query, args...)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -411,6 +411,6 @@ func (s *SQLiteStore) CountLogsRange(ctx context.Context, since, until time.Time
 
 	query, args := qb.Build()
 	var count int
-	err := s.logDB.QueryRowContext(ctx, query, args...).Scan(&count)
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&count)
 	return count, err
 }

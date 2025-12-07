@@ -42,7 +42,6 @@ func (s *SQLiteStore) fetchChannelNamesBatch(ctx context.Context, channelIDs map
 }
 
 // fetchChannelIDsByNameFilter 根据精确/模糊名称获取渠道ID集合
-// 目的：避免跨库JOIN（logs在logDB，channels在主db），先解析为ID再过滤logs
 func (s *SQLiteStore) fetchChannelIDsByNameFilter(ctx context.Context, exact string, like string) ([]int64, error) {
 	// 构建查询
 	var (

@@ -111,9 +111,6 @@ func TestRedisRecovery_CompleteFlow(t *testing.T) {
 	if err := os.Remove(dbPath); err != nil {
 		t.Fatalf("删除数据库文件失败: %v", err)
 	}
-	if err := os.Remove(dbPath + "-log.db"); err != nil && !os.IsNotExist(err) {
-		t.Logf("删除日志数据库失败（可忽略）: %v", err)
-	}
 
 	t.Logf("✅ 阶段2完成：数据库文件已删除（模拟数据丢失）")
 
@@ -428,9 +425,6 @@ func TestRedisRecovery_DeleteAPIKey(t *testing.T) {
 	// ========== 阶段4：删除数据库并从Redis恢复 ==========
 	if err := os.Remove(dbPath); err != nil {
 		t.Fatalf("删除数据库文件失败: %v", err)
-	}
-	if err := os.Remove(dbPath + "-log.db"); err != nil && !os.IsNotExist(err) {
-		t.Logf("删除日志数据库失败（可忽略）: %v", err)
 	}
 
 	// 创建新数据库实例

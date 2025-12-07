@@ -19,7 +19,7 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 	bucketSeconds := int64(bucket.Seconds())
 	sinceUnix := since.Unix()
 
-	// SQL聚合查询：使用Unix时间戳除法实现时间桶分组（从 logDB）
+	// SQL聚合查询：使用Unix时间戳除法实现时间桶分组
 	// 性能优化：time字段为BIGINT毫秒时间戳，查询速度提升10-100倍
 	// bucket_ts = (unix_timestamp_seconds / bucket_seconds) * bucket_seconds
 	query := `
@@ -45,7 +45,7 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 		ORDER BY bucket_ts ASC
 	`
 
-	rows, err := s.logDB.QueryContext(ctx, query, bucketSeconds, bucketSeconds, sinceUnix)
+	rows, err := s.db.QueryContext(ctx, query, bucketSeconds, bucketSeconds, sinceUnix)
 	if err != nil {
 		return nil, err
 	}
@@ -248,7 +248,7 @@ func (s *SQLiteStore) AggregateRange(ctx context.Context, since, until time.Time
 		ORDER BY bucket_ts ASC
 	`
 
-	rows, err := s.logDB.QueryContext(ctx, query, bucketSeconds, bucketSeconds, sinceUnix, untilUnix)
+	rows, err := s.db.QueryContext(ctx, query, bucketSeconds, bucketSeconds, sinceUnix, untilUnix)
 	if err != nil {
 		return nil, err
 	}
@@ -403,10 +403,10 @@ func (s *SQLiteStore) AggregateRange(ctx context.Context, since, until time.Time
 	return out, nil
 }
 
-// GetStats 实现统计功能，按渠道和模型统计成功/失败次数（从 logDB）
+// GetStats 实现统计功能，按渠道和模型统计成功/失败次数
 // 性能优化：批量查询渠道名称消除N+1问题（100渠道场景提升50-100倍）
 func (s *SQLiteStore) GetStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.StatsEntry, error) {
-	// 使用查询构建器构建统计查询(从 logDB)
+	// 使用查询构建器构建统计查询
 	baseQuery := `
 		SELECT
 			channel_id,
@@ -449,7 +449,7 @@ func (s *SQLiteStore) GetStats(ctx context.Context, startTime, endTime time.Time
 	suffix := "GROUP BY channel_id, model ORDER BY channel_id ASC, model ASC"
 	query, args := qb.BuildWithSuffix(suffix)
 
-	rows, err := s.logDB.QueryContext(ctx, query, args...)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

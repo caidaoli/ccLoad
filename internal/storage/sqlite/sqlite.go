@@ -19,8 +19,7 @@ import (
 )
 
 type SQLiteStore struct {
-	db    *sql.DB // 主数据库（channels, api_keys, key_rr）
-	logDB *sql.DB // 日志数据库（logs）- 拆分以减少锁竞争和简化备份
+	db *sql.DB // 主数据库（channels, api_keys, logs等所有数据）
 
 	// 异步Redis同步机制（性能优化: 避免同步等待）
 	syncCh chan struct{} // 同步触发信号（无缓冲，去重合并多个请求）
@@ -48,38 +47,6 @@ func maskAPIKey(key string) string {
 		return key // 短key直接返回
 	}
 	return key[:4] + "..." + key[len(key)-4:]
-}
-
-// generateLogDBPath 从主数据库路径生成日志数据库路径
-// 例如: ./data/ccload.db -> ./data/ccload-log.db
-// 已有-log后缀不重复添加: ./data/ccload-log.db -> ./data/ccload-log.db
-// 特殊处理: :memory: -> :memory:（内存模式）
-func generateLogDBPath(mainDBPath string) string {
-	// 检测特殊的内存数据库标识（保持原样）
-	if mainDBPath == ":memory:" {
-		return ":memory:"
-	}
-
-	// 保留原始路径的相对路径前缀（./）
-	dir := filepath.Dir(mainDBPath)
-	base := filepath.Base(mainDBPath)
-	ext := filepath.Ext(base)
-	name := strings.TrimSuffix(base, ext)
-
-	// 如果已经有-log后缀，不重复添加
-	if strings.HasSuffix(name, "-log") {
-		return mainDBPath
-	}
-
-	// 构建新路径，保留./前缀
-	result := filepath.Join(dir, name+"-log"+ext)
-
-	// filepath.Join会清理./前缀，需要手动恢复
-	if strings.HasPrefix(mainDBPath, "./") && !strings.HasPrefix(result, "./") {
-		result = "./" + result
-	}
-
-	return result
 }
 
 // buildMainDBDSN 构建主数据库DSN
@@ -138,17 +105,6 @@ func buildMainDBDSN(path string) string {
 	return fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_foreign_keys=on&_pragma=journal_mode=%s&_loc=Local", path, journalMode)
 }
 
-// buildLogDBDSN 构建日志数据库DSN（始终使用文件模式）
-// 日志库不使用内存模式，确保数据持久性
-// 与主数据库保持一致的Journal模式控制
-func buildLogDBDSN(path string) string {
-	// 白名单验证环境变量，防止注入攻击
-	// 使用与主数据库相同的 Journal 模式配置和验证逻辑
-	journalMode := validateJournalMode(os.Getenv("SQLITE_JOURNAL_MODE"))
-
-	return fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode=%s&_loc=Local", path, journalMode)
-}
-
 func NewSQLiteStore(path string, redisSync RedisSync) (*SQLiteStore, error) {
 	return newSQLiteStoreWithOptions(path, redisSync, false)
 }
@@ -160,7 +116,7 @@ func newSQLiteStoreWithOptions(path string, redisSync RedisSync, forTest bool) (
 		return nil, err
 	}
 
-	// 打开主数据库（channels, api_keys, key_rr）
+	// 打开主数据库（channels, api_keys, logs等所有数据）
 	dsn := buildMainDBDSN(path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -174,39 +130,16 @@ func newSQLiteStoreWithOptions(path string, redisSync RedisSync, forTest bool) (
 		db.SetConnMaxLifetime(config.SQLiteConnMaxLifetime)
 	}
 
-	// 打开日志数据库（logs）
-	logDBPath := generateLogDBPath(path)
-	logDSN := buildLogDBDSN(logDBPath)
-	logDB, err := sql.Open("sqlite", logDSN)
-	if err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("open log database: %w", err)
-	}
-	logDB.SetMaxOpenConns(config.SQLiteMaxOpenConnsFile)
-	logDB.SetMaxIdleConns(config.SQLiteMaxIdleConnsFile)
-	if !forTest {
-		logDB.SetConnMaxLifetime(config.SQLiteConnMaxLifetime)
-	}
-
 	s := &SQLiteStore{
 		db:        db,
-		logDB:     logDB,
 		redisSync: redisSync,
 		syncCh:    make(chan struct{}, 1), // 缓冲区=1，允许一个待处理任务
 		done:      make(chan struct{}),
 	}
 
-	// 迁移主数据库表结构
+	// 迁移数据库表结构（包含logs表）
 	if err := s.migrate(context.Background()); err != nil {
 		_ = db.Close()
-		_ = logDB.Close()
-		return nil, err
-	}
-
-	// 迁移日志数据库表结构
-	if err := s.migrateLogDB(context.Background()); err != nil {
-		_ = db.Close()
-		_ = logDB.Close()
 		return nil, err
 	}
 
@@ -249,19 +182,13 @@ func (s *SQLiteStore) Close() error {
 	}
 
 	// 关闭数据库连接池
-	if err := s.db.Close(); err != nil {
-		return err
-	}
-
-	// 关闭日志数据库
-	return s.logDB.Close()
+	return s.db.Close()
 }
 
 // CleanupLogsBefore 清理截止时间之前的日志（DIP：通过接口暴露维护操作）
 func (s *SQLiteStore) CleanupLogsBefore(ctx context.Context, cutoff time.Time) error {
-	// time字段现在是BIGINT毫秒时间戳（使用 logDB）
 	cutoffMs := cutoff.UnixMilli()
-	_, err := s.logDB.ExecContext(ctx, `DELETE FROM logs WHERE time < ?`, cutoffMs)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM logs WHERE time < ?`, cutoffMs)
 	return err
 }
 

@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"ccLoad/internal/storage/sqlite"
+	"context"
 	"path/filepath"
 	"testing"
 )

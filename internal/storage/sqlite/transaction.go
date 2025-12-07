@@ -40,10 +40,10 @@ func (s *SQLiteStore) WithTransaction(ctx context.Context, fn func(*sql.Tx) erro
 	return withTransaction(s.db, ctx, fn)
 }
 
-// WithLogTransaction 在日志数据库事务中执行函数（用于logs操作）
-// ✅ 拆分日志库：减少主数据库锁竞争，提升并发性能
+// WithLogTransaction 在数据库事务中执行函数（用于logs操作）
+// 历史兼容：原用于独立日志库，现日志表已合并到主库
 func (s *SQLiteStore) WithLogTransaction(ctx context.Context, fn func(*sql.Tx) error) error {
-	return withTransaction(s.logDB, ctx, fn)
+	return withTransaction(s.db, ctx, fn)
 }
 
 // withTransaction 核心事务执行逻辑（私有函数，遵循DRY原则）

@@ -233,13 +233,8 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		return fmt.Errorf("create admin_sessions table: %w", err)
 	}
 
-	return nil
-}
-
-// migrateLogDB 创建日志数据库表结构
-func (s *SQLiteStore) migrateLogDB(ctx context.Context) error {
-	// 创建 logs 表
-	if _, err := s.logDB.ExecContext(ctx, `
+	// 创建 logs 表（原独立日志库，现合并到主库）
+	if _, err := s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			time BIGINT NOT NULL,
@@ -257,7 +252,7 @@ func (s *SQLiteStore) migrateLogDB(ctx context.Context) error {
 	}
 
 	// 创建日志索引
-	indexes := []string{
+	logIndexes := []string{
 		"CREATE INDEX IF NOT EXISTS idx_logs_time ON logs(time)",
 		"CREATE INDEX IF NOT EXISTS idx_logs_status ON logs(status_code)",
 		"CREATE INDEX IF NOT EXISTS idx_logs_time_model ON logs(time, model)",
@@ -266,14 +261,14 @@ func (s *SQLiteStore) migrateLogDB(ctx context.Context) error {
 		"CREATE INDEX IF NOT EXISTS idx_logs_streaming_firstbyte ON logs(is_streaming, first_byte_time) WHERE is_streaming = 1 AND first_byte_time > 0",
 	}
 
-	for _, idx := range indexes {
-		if _, err := s.logDB.ExecContext(ctx, idx); err != nil {
+	for _, idx := range logIndexes {
+		if _, err := s.db.ExecContext(ctx, idx); err != nil {
 			return fmt.Errorf("create log index: %w", err)
 		}
 	}
 
-	// 兼容性迁移：为现有数据库添加 token 统计字段和成本字段（2025-11新增）
-	tokenColumns := []struct {
+	// 兼容性迁移：为logs表添加 token 统计字段和成本字段（2025-11新增）
+	logTokenColumns := []struct {
 		name       string
 		definition string
 	}{
@@ -281,14 +276,13 @@ func (s *SQLiteStore) migrateLogDB(ctx context.Context) error {
 		{"output_tokens", "INTEGER DEFAULT NULL"},
 		{"cache_read_input_tokens", "INTEGER DEFAULT NULL"},
 		{"cache_creation_input_tokens", "INTEGER DEFAULT NULL"},
-		{"cost", "REAL DEFAULT NULL"}, // 请求成本（美元，使用REAL存储浮点数）
+		{"cost", "REAL DEFAULT NULL"},
 	}
 
-	for _, col := range tokenColumns {
-		if _, err := s.logDB.ExecContext(ctx,
+	for _, col := range logTokenColumns {
+		if _, err := s.db.ExecContext(ctx,
 			fmt.Sprintf("ALTER TABLE logs ADD COLUMN %s %s;", col.name, col.definition),
 		); err != nil {
-			// 忽略列已存在的错误（SQLite error: "duplicate column name"）
 			if !strings.Contains(err.Error(), "duplicate column name") {
 				return fmt.Errorf("add column %s: %w", col.name, err)
 			}

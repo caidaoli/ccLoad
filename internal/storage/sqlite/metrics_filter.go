@@ -77,7 +77,7 @@ func (s *SQLiteStore) AggregateRangeWithFilter(ctx context.Context, since, until
 		ORDER BY bucket_ts ASC
 	`
 
-	rows, err := s.logDB.QueryContext(ctx, query, args...)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +256,7 @@ func (s *SQLiteStore) GetDistinctModels(ctx context.Context, since, until time.T
 		ORDER BY model
 	`
 	
-	rows, err := s.logDB.QueryContext(ctx, query, since.Unix(), until.Unix())
+	rows, err := s.db.QueryContext(ctx, query, since.Unix(), until.Unix())
 	if err != nil {
 		return nil, err
 	}
