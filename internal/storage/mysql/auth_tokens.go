@@ -12,10 +12,13 @@ import (
 func (s *MySQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) error {
 	token.CreatedAt = time.Now()
 
-	var expiresAt, lastUsedAt any
+	// 处理可空字段：MySQL NOT NULL 需要传入 0 而不是 nil
+	var expiresAt int64 = 0
 	if token.ExpiresAt != nil {
 		expiresAt = *token.ExpiresAt
 	}
+
+	var lastUsedAt int64 = 0
 	if token.LastUsedAt != nil {
 		lastUsedAt = *token.LastUsedAt
 	}
@@ -126,12 +129,13 @@ func (s *MySQLStore) ListAuthTokens(ctx context.Context) ([]*model.AuthToken, er
 func (s *MySQLStore) ListActiveAuthTokens(ctx context.Context) ([]*model.AuthToken, error) {
 	now := time.Now().UnixMilli()
 
+	// expires_at = 0 表示永不过期，与 NULL 同等处理
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, token, description, created_at, expires_at, last_used_at, is_active,
 			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
 			prompt_tokens_total, completion_tokens_total, total_cost_usd
 		FROM auth_tokens
-		WHERE is_active = 1 AND (expires_at IS NULL OR expires_at > ?)
+		WHERE is_active = 1 AND (expires_at IS NULL OR expires_at = 0 OR expires_at > ?)
 		ORDER BY created_at DESC
 	`, now)
 	if err != nil {

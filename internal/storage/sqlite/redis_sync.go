@@ -330,7 +330,7 @@ func (s *SQLiteStore) loadAuthTokensFromRedis(ctx context.Context) (int, error) 
 		return 0, nil
 	}
 
-	// 使用INSERT OR REPLACE批量恢复
+	// 使用INSERT OR REPLACE批量恢复（包含所有字段）
 	restoredCount := 0
 	for _, token := range tokens {
 		var expiresAt, lastUsedAt any
@@ -343,10 +343,14 @@ func (s *SQLiteStore) loadAuthTokensFromRedis(ctx context.Context) (int, error) 
 
 		_, err := s.db.ExecContext(ctx, `
 			INSERT OR REPLACE INTO auth_tokens
-			(id, token, description, created_at, expires_at, last_used_at, is_active)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
+			(id, token, description, created_at, expires_at, last_used_at, is_active,
+			 success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt,
+			 stream_count, non_stream_count, prompt_tokens_total, completion_tokens_total, total_cost_usd)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, token.ID, token.Token, token.Description, token.CreatedAt.UnixMilli(),
-			expiresAt, lastUsedAt, token.IsActive)
+			expiresAt, lastUsedAt, token.IsActive,
+			token.SuccessCount, token.FailureCount, token.StreamAvgTTFB, token.NonStreamAvgRT,
+			token.StreamCount, token.NonStreamCount, token.PromptTokensTotal, token.CompletionTokensTotal, token.TotalCostUSD)
 
 		if err != nil {
 			log.Printf("Warning: failed to restore auth token %d: %v", token.ID, err)
