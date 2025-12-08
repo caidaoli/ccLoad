@@ -35,7 +35,7 @@ func (s *MySQLStore) migrate(ctx context.Context) error {
 			id INT PRIMARY KEY AUTO_INCREMENT,
 			channel_id INT NOT NULL,
 			key_index INT NOT NULL,
-			api_key VARCHAR(64) NOT NULL,
+			api_key VARCHAR(100) NOT NULL,
 			key_strategy VARCHAR(32) NOT NULL DEFAULT 'sequential',
 			cooldown_until BIGINT NOT NULL DEFAULT 0,
 			cooldown_duration_ms BIGINT NOT NULL DEFAULT 0,
@@ -68,7 +68,7 @@ func (s *MySQLStore) migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS auth_tokens (
 			id INT PRIMARY KEY AUTO_INCREMENT,
-			token VARCHAR(64) NOT NULL UNIQUE,
+			token VARCHAR(100) NOT NULL UNIQUE,
 			description VARCHAR(512) NOT NULL,
 			created_at BIGINT NOT NULL,
 			expires_at BIGINT NOT NULL DEFAULT 0,
