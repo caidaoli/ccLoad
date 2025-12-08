@@ -168,7 +168,7 @@ func TestListLogs_BatchQuery(t *testing.T) {
 		entry := &model.LogEntry{
 			Time:       model.JSONTime{Time: time.Now()},
 			Model:      "test-model",
-			ChannelID:  &channelID,
+			ChannelID:  channelID,
 			StatusCode: 200,
 			Message:    fmt.Sprintf("Test log %d", i),
 			Duration:   0.5,
@@ -186,11 +186,11 @@ func TestListLogs_BatchQuery(t *testing.T) {
 
 	// 验证所有日志都包含渠道名称
 	for _, log := range logs {
-		if log.ChannelID == nil {
+		if log.ChannelID == 0 {
 			continue // 跳过系统日志
 		}
 		if log.ChannelName == "" {
-			t.Errorf("日志 ID %d 缺少渠道名称（渠道ID: %d）", log.ID, *log.ChannelID)
+			t.Errorf("日志 ID %d 缺少渠道名称（渠道ID: %d）", log.ID, log.ChannelID)
 		}
 		// 验证名称格式
 		expectedPrefix := "LogChannel-"

@@ -83,7 +83,7 @@ func (s *Server) handleNetworkError(
 ) (*proxyResult, bool, bool) {
 	statusCode, _, _ := util.ClassifyError(err)
 	// ✅ 修复：使用 actualModel 而非 reqCtx.originalModel
-	s.AddLogAsync(buildLogEntry(actualModel, &cfg.ID, statusCode,
+	s.AddLogAsync(buildLogEntry(actualModel, cfg.ID, statusCode,
 		duration, false, selectedKey, nil, err.Error()))
 
 	action, _ := s.handleProxyError(ctx, cfg, keyIndex, nil, err)
@@ -141,7 +141,7 @@ func (s *Server) handleProxySuccess(
 	// 记录成功日志
 	// ✅ 修复：使用 actualModel 而非 reqCtx.originalModel
 	isStreaming := reqCtx.isStreaming
-	s.AddLogAsync(buildLogEntry(actualModel, &cfg.ID, res.Status,
+	s.AddLogAsync(buildLogEntry(actualModel, cfg.ID, res.Status,
 		duration, isStreaming, selectedKey, res, ""))
 
 	// ✅ 新增：异步更新Token统计（2025-11）
@@ -205,7 +205,7 @@ func (s *Server) handleProxyErrorResponse(
 		errMsg = "upstream returned 499 (not client cancel)"
 	}
 
-	s.AddLogAsync(buildLogEntry(actualModel, &cfg.ID, res.Status,
+	s.AddLogAsync(buildLogEntry(actualModel, cfg.ID, res.Status,
 		duration, isStreaming, selectedKey, res, errMsg))
 
 	// ✅ 新增：异步更新Token统计（2025-11）

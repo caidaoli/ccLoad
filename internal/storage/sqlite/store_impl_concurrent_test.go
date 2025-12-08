@@ -166,7 +166,7 @@ func TestConcurrentLogAdd(t *testing.T) {
 			for j := 0; j < logsPerGoroutine; j++ {
 				channelID := int64(idx + 1)
 				entry := &model.LogEntry{
-					ChannelID:  &channelID,
+					ChannelID:  channelID,
 					StatusCode: 200,
 					Model:      "gpt-4",
 					Time:       model.JSONTime{Time: time.Now()},
@@ -226,7 +226,7 @@ func TestConcurrentBatchLogAdd(t *testing.T) {
 			channelID := int64(idx + 1)
 			for j := 0; j < batchSize; j++ {
 				batch[j] = &model.LogEntry{
-					ChannelID:  &channelID,
+					ChannelID:  channelID,
 					StatusCode: 200,
 					Model:      "gpt-4",
 					Time:       model.JSONTime{Time: time.Now()},
@@ -490,7 +490,7 @@ func TestConcurrentMixedOperations(t *testing.T) {
 				return
 			default:
 				entry := &model.LogEntry{
-					ChannelID:  &channelID,
+					ChannelID:  channelID,
 					StatusCode: 200,
 					Model:      "gpt-4",
 					Time:       model.JSONTime{Time: time.Now()},

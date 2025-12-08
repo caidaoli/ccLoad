@@ -38,21 +38,21 @@ type LogEntry struct {
 	ID            int64    `json:"id"`
 	Time          JSONTime `json:"time"`
 	Model         string   `json:"model"`
-	ChannelID     *int64   `json:"channel_id,omitempty"`
+	ChannelID     int64    `json:"channel_id"`
 	ChannelName   string   `json:"channel_name,omitempty"`
 	StatusCode    int      `json:"status_code"`
 	Message       string   `json:"message"`
-	Duration      float64  `json:"duration"`                  // 总耗时（秒）
-	IsStreaming   bool     `json:"is_streaming"`              // 是否为流式请求
-	FirstByteTime *float64 `json:"first_byte_time,omitempty"` // 首字节响应时间（秒）
-	APIKeyUsed    string   `json:"api_key_used,omitempty"`    // 使用的API Key（查询时自动脱敏为 abcd...klmn 格式）
+	Duration      float64  `json:"duration"`         // 总耗时（秒）
+	IsStreaming   bool     `json:"is_streaming"`     // 是否为流式请求
+	FirstByteTime float64  `json:"first_byte_time"`  // 首字节响应时间（秒）
+	APIKeyUsed    string   `json:"api_key_used"`     // 使用的API Key（查询时自动脱敏为 abcd...klmn 格式）
 
 	// Token统计（2025-11新增，支持Claude API usage字段）
-	InputTokens              *int     `json:"input_tokens,omitempty"`
-	OutputTokens             *int     `json:"output_tokens,omitempty"`
-	CacheReadInputTokens     *int     `json:"cache_read_input_tokens,omitempty"`
-	CacheCreationInputTokens *int     `json:"cache_creation_input_tokens,omitempty"`
-	Cost                     *float64 `json:"cost,omitempty"` // 请求成本（美元）
+	InputTokens              int     `json:"input_tokens"`
+	OutputTokens             int     `json:"output_tokens"`
+	CacheReadInputTokens     int     `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int     `json:"cache_creation_input_tokens"`
+	Cost                     float64 `json:"cost"` // 请求成本（美元）
 }
 
 // LogFilter 日志查询过滤条件

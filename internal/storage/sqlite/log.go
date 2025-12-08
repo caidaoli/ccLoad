@@ -147,7 +147,6 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 
 	for rows.Next() {
 		var e model.LogEntry
-		var cfgID sql.NullInt64
 		var duration sql.NullFloat64
 		var isStreamingInt int
 		var firstByteTime sql.NullFloat64
@@ -156,7 +155,7 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 		var inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens sql.NullInt64
 		var cost sql.NullFloat64
 
-		if err := rows.Scan(&e.ID, &timeMs, &e.Model, &cfgID,
+		if err := rows.Scan(&e.ID, &timeMs, &e.Model, &e.ChannelID,
 			&e.StatusCode, &e.Message, &duration, &isStreamingInt, &firstByteTime, &apiKeyUsed,
 			&inputTokens, &outputTokens, &cacheReadTokens, &cacheCreationTokens, &cost); err != nil {
 			return nil, err
@@ -165,18 +164,15 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 		// 转换Unix毫秒时间戳为time.Time
 		e.Time = model.JSONTime{Time: time.UnixMilli(timeMs)}
 
-		if cfgID.Valid {
-			id := cfgID.Int64
-			e.ChannelID = &id
-			channelIDsToFetch[id] = true
+		if e.ChannelID != 0 {
+			channelIDsToFetch[e.ChannelID] = true
 		}
 		if duration.Valid {
 			e.Duration = duration.Float64
 		}
 		e.IsStreaming = isStreamingInt != 0
 		if firstByteTime.Valid {
-			fbt := firstByteTime.Float64
-			e.FirstByteTime = &fbt
+			e.FirstByteTime = firstByteTime.Float64
 		}
 		if apiKeyUsed.Valid && apiKeyUsed.String != "" {
 			// 向后兼容：历史数据可能包含明文Key，maskAPIKey是幂等的
@@ -184,24 +180,20 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 		}
 		// Token统计（2025-11新增）
 		if inputTokens.Valid {
-			val := int(inputTokens.Int64)
-			e.InputTokens = &val
+			e.InputTokens = int(inputTokens.Int64)
 		}
 		if outputTokens.Valid {
-			val := int(outputTokens.Int64)
-			e.OutputTokens = &val
+			e.OutputTokens = int(outputTokens.Int64)
 		}
 		if cacheReadTokens.Valid {
-			val := int(cacheReadTokens.Int64)
-			e.CacheReadInputTokens = &val
+			e.CacheReadInputTokens = int(cacheReadTokens.Int64)
 		}
 		if cacheCreationTokens.Valid {
-			val := int(cacheCreationTokens.Int64)
-			e.CacheCreationInputTokens = &val
+			e.CacheCreationInputTokens = int(cacheCreationTokens.Int64)
 		}
 		// 成本（2025-11新增）
 		if cost.Valid {
-			e.Cost = &cost.Float64
+			e.Cost = cost.Float64
 		}
 		out = append(out, &e)
 	}
@@ -217,8 +209,8 @@ func (s *SQLiteStore) ListLogs(ctx context.Context, since time.Time, limit, offs
 
 		// 填充渠道名称
 		for _, e := range out {
-			if e.ChannelID != nil {
-				if name, ok := channelNames[*e.ChannelID]; ok {
+			if e.ChannelID != 0 {
+				if name, ok := channelNames[e.ChannelID]; ok {
 					e.ChannelName = name
 				}
 			}
@@ -299,7 +291,6 @@ func (s *SQLiteStore) ListLogsRange(ctx context.Context, since, until time.Time,
 
 	for rows.Next() {
 		var e model.LogEntry
-		var cfgID sql.NullInt64
 		var duration sql.NullFloat64
 		var isStreamingInt int
 		var firstByteTime sql.NullFloat64
@@ -308,7 +299,7 @@ func (s *SQLiteStore) ListLogsRange(ctx context.Context, since, until time.Time,
 		var inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens sql.NullInt64
 		var cost sql.NullFloat64
 
-		if err := rows.Scan(&e.ID, &timeMs, &e.Model, &cfgID,
+		if err := rows.Scan(&e.ID, &timeMs, &e.Model, &e.ChannelID,
 			&e.StatusCode, &e.Message, &duration, &isStreamingInt, &firstByteTime, &apiKeyUsed,
 			&inputTokens, &outputTokens, &cacheReadTokens, &cacheCreationTokens, &cost); err != nil {
 			return nil, err
@@ -316,40 +307,33 @@ func (s *SQLiteStore) ListLogsRange(ctx context.Context, since, until time.Time,
 
 		e.Time = model.JSONTime{Time: time.UnixMilli(timeMs)}
 
-		if cfgID.Valid {
-			id := cfgID.Int64
-			e.ChannelID = &id
-			channelIDsToFetch[id] = true
+		if e.ChannelID != 0 {
+			channelIDsToFetch[e.ChannelID] = true
 		}
 		if duration.Valid {
 			e.Duration = duration.Float64
 		}
 		e.IsStreaming = isStreamingInt != 0
 		if firstByteTime.Valid {
-			fbt := firstByteTime.Float64
-			e.FirstByteTime = &fbt
+			e.FirstByteTime = firstByteTime.Float64
 		}
 		if apiKeyUsed.Valid && apiKeyUsed.String != "" {
 			e.APIKeyUsed = maskAPIKey(apiKeyUsed.String)
 		}
 		if inputTokens.Valid {
-			val := int(inputTokens.Int64)
-			e.InputTokens = &val
+			e.InputTokens = int(inputTokens.Int64)
 		}
 		if outputTokens.Valid {
-			val := int(outputTokens.Int64)
-			e.OutputTokens = &val
+			e.OutputTokens = int(outputTokens.Int64)
 		}
 		if cacheReadTokens.Valid {
-			val := int(cacheReadTokens.Int64)
-			e.CacheReadInputTokens = &val
+			e.CacheReadInputTokens = int(cacheReadTokens.Int64)
 		}
 		if cacheCreationTokens.Valid {
-			val := int(cacheCreationTokens.Int64)
-			e.CacheCreationInputTokens = &val
+			e.CacheCreationInputTokens = int(cacheCreationTokens.Int64)
 		}
 		if cost.Valid {
-			e.Cost = &cost.Float64
+			e.Cost = cost.Float64
 		}
 		out = append(out, &e)
 	}
@@ -362,8 +346,8 @@ func (s *SQLiteStore) ListLogsRange(ctx context.Context, since, until time.Time,
 			channelNames = make(map[int64]string)
 		}
 		for _, e := range out {
-			if e.ChannelID != nil {
-				if name, ok := channelNames[*e.ChannelID]; ok {
+			if e.ChannelID != 0 {
+				if name, ok := channelNames[e.ChannelID]; ok {
 					e.ChannelName = name
 				}
 			}

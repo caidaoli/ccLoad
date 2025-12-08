@@ -270,7 +270,7 @@ func prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestContext) (actualM
 // ============================================================================
 
 // buildLogEntry 构建日志条目（消除重复代码，遵循DRY原则）
-func buildLogEntry(originalModel string, channelID *int64, statusCode int,
+func buildLogEntry(originalModel string, channelID int64, statusCode int,
 	duration float64, isStreaming bool, apiKeyUsed string,
 	res *fwResult, errMsg string) *model.LogEntry {
 
@@ -304,35 +304,24 @@ func buildLogEntry(originalModel string, channelID *int64, statusCode int,
 
 		// 流式请求记录首字节响应时间
 		if isStreaming && res.FirstByteTime > 0 {
-			entry.FirstByteTime = &res.FirstByteTime
+			entry.FirstByteTime = res.FirstByteTime
 		}
 
 		// Token统计（2025-11新增，从SSE响应中提取）
-		if res.InputTokens > 0 {
-			entry.InputTokens = &res.InputTokens
-		}
-		if res.OutputTokens > 0 {
-			entry.OutputTokens = &res.OutputTokens
-		}
-		if res.CacheReadInputTokens > 0 {
-			entry.CacheReadInputTokens = &res.CacheReadInputTokens
-		}
-		if res.CacheCreationInputTokens > 0 {
-			entry.CacheCreationInputTokens = &res.CacheCreationInputTokens
-		}
+		entry.InputTokens = res.InputTokens
+		entry.OutputTokens = res.OutputTokens
+		entry.CacheReadInputTokens = res.CacheReadInputTokens
+		entry.CacheCreationInputTokens = res.CacheCreationInputTokens
 
 		// 成本计算（2025-11新增，基于token统计）
 		if res.InputTokens > 0 || res.OutputTokens > 0 || res.CacheReadInputTokens > 0 || res.CacheCreationInputTokens > 0 {
-			cost := util.CalculateCost(
+			entry.Cost = util.CalculateCost(
 				originalModel,
 				res.InputTokens,
 				res.OutputTokens,
 				res.CacheReadInputTokens,
 				res.CacheCreationInputTokens,
 			)
-			if cost > 0 {
-				entry.Cost = &cost
-			}
 		}
 	} else {
 		entry.Message = "unknown"
