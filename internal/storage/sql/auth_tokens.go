@@ -1,4 +1,4 @@
-package sqlite
+package sql
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 
 // CreateAuthToken 创建新的API访问令牌
 // 注意: token字段存储的是SHA256哈希值，而非明文
-func (s *SQLiteStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) error {
+func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) error {
 	token.CreatedAt = time.Now()
 
 	// 处理可空字段：SQLite NOT NULL DEFAULT 0 需要传入 0 而不是 nil
@@ -36,7 +36,7 @@ func (s *SQLiteStore) CreateAuthToken(ctx context.Context, token *model.AuthToke
 			prompt_tokens_total, completion_tokens_total, total_cost_usd
 		)
 		VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0)
-	`, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, token.IsActive)
+	`, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, boolToInt(token.IsActive))
 
 	if err != nil {
 		return fmt.Errorf("create auth token: %w", err)
@@ -56,10 +56,11 @@ func (s *SQLiteStore) CreateAuthToken(ctx context.Context, token *model.AuthToke
 }
 
 // GetAuthToken 根据ID获取令牌
-func (s *SQLiteStore) GetAuthToken(ctx context.Context, id int64) (*model.AuthToken, error) {
+func (s *SQLStore) GetAuthToken(ctx context.Context, id int64) (*model.AuthToken, error) {
 	token := &model.AuthToken{}
 	var createdAtMs int64
 	var expiresAt, lastUsedAt sql.NullInt64
+	var isActive int
 
 	err := s.db.QueryRowContext(ctx, `
 		SELECT
@@ -75,7 +76,7 @@ func (s *SQLiteStore) GetAuthToken(ctx context.Context, id int64) (*model.AuthTo
 		&createdAtMs,
 		&expiresAt,
 		&lastUsedAt,
-		&token.IsActive,
+		&isActive,
 		&token.SuccessCount,
 		&token.FailureCount,
 		&token.StreamAvgTTFB,
@@ -96,6 +97,7 @@ func (s *SQLiteStore) GetAuthToken(ctx context.Context, id int64) (*model.AuthTo
 
 	// 转换时间戳
 	token.CreatedAt = time.UnixMilli(createdAtMs)
+	token.IsActive = intToBool(isActive)
 	if expiresAt.Valid {
 		token.ExpiresAt = &expiresAt.Int64
 	}
@@ -108,10 +110,11 @@ func (s *SQLiteStore) GetAuthToken(ctx context.Context, id int64) (*model.AuthTo
 
 // GetAuthTokenByValue 根据令牌哈希值获取令牌信息
 // 用于认证时快速查找令牌
-func (s *SQLiteStore) GetAuthTokenByValue(ctx context.Context, tokenHash string) (*model.AuthToken, error) {
+func (s *SQLStore) GetAuthTokenByValue(ctx context.Context, tokenHash string) (*model.AuthToken, error) {
 	token := &model.AuthToken{}
 	var createdAtMs int64
 	var expiresAt, lastUsedAt sql.NullInt64
+	var isActive int
 
 	err := s.db.QueryRowContext(ctx, `
 		SELECT
@@ -127,7 +130,7 @@ func (s *SQLiteStore) GetAuthTokenByValue(ctx context.Context, tokenHash string)
 		&createdAtMs,
 		&expiresAt,
 		&lastUsedAt,
-		&token.IsActive,
+		&isActive,
 		&token.SuccessCount,
 		&token.FailureCount,
 		&token.StreamAvgTTFB,
@@ -148,6 +151,7 @@ func (s *SQLiteStore) GetAuthTokenByValue(ctx context.Context, tokenHash string)
 
 	// 转换时间戳
 	token.CreatedAt = time.UnixMilli(createdAtMs)
+	token.IsActive = intToBool(isActive)
 	if expiresAt.Valid {
 		token.ExpiresAt = &expiresAt.Int64
 	}
@@ -159,7 +163,7 @@ func (s *SQLiteStore) GetAuthTokenByValue(ctx context.Context, tokenHash string)
 }
 
 // ListAuthTokens 列出所有令牌
-func (s *SQLiteStore) ListAuthTokens(ctx context.Context) ([]*model.AuthToken, error) {
+func (s *SQLStore) ListAuthTokens(ctx context.Context) ([]*model.AuthToken, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			id, token, description, created_at, expires_at, last_used_at, is_active,
@@ -178,6 +182,7 @@ func (s *SQLiteStore) ListAuthTokens(ctx context.Context) ([]*model.AuthToken, e
 		token := &model.AuthToken{}
 		var createdAtMs int64
 		var expiresAt, lastUsedAt sql.NullInt64
+		var isActive int
 
 		if err := rows.Scan(
 			&token.ID,
@@ -186,7 +191,7 @@ func (s *SQLiteStore) ListAuthTokens(ctx context.Context) ([]*model.AuthToken, e
 			&createdAtMs,
 			&expiresAt,
 			&lastUsedAt,
-			&token.IsActive,
+			&isActive,
 			&token.SuccessCount,
 			&token.FailureCount,
 			&token.StreamAvgTTFB,
@@ -201,6 +206,7 @@ func (s *SQLiteStore) ListAuthTokens(ctx context.Context) ([]*model.AuthToken, e
 		}
 
 		token.CreatedAt = time.UnixMilli(createdAtMs)
+		token.IsActive = intToBool(isActive)
 		if expiresAt.Valid {
 			token.ExpiresAt = &expiresAt.Int64
 		}
@@ -220,7 +226,7 @@ func (s *SQLiteStore) ListAuthTokens(ctx context.Context) ([]*model.AuthToken, e
 
 // ListActiveAuthTokens 列出所有有效的令牌
 // 用于热更新AuthService的令牌缓存
-func (s *SQLiteStore) ListActiveAuthTokens(ctx context.Context) ([]*model.AuthToken, error) {
+func (s *SQLStore) ListActiveAuthTokens(ctx context.Context) ([]*model.AuthToken, error) {
 	now := time.Now().UnixMilli()
 
 	// expires_at = 0 表示永不过期，与 NULL 同等处理
@@ -244,6 +250,7 @@ func (s *SQLiteStore) ListActiveAuthTokens(ctx context.Context) ([]*model.AuthTo
 		token := &model.AuthToken{}
 		var createdAtMs int64
 		var expiresAt, lastUsedAt sql.NullInt64
+		var isActive int
 
 		if err := rows.Scan(
 			&token.ID,
@@ -252,7 +259,7 @@ func (s *SQLiteStore) ListActiveAuthTokens(ctx context.Context) ([]*model.AuthTo
 			&createdAtMs,
 			&expiresAt,
 			&lastUsedAt,
-			&token.IsActive,
+			&isActive,
 			&token.SuccessCount,
 			&token.FailureCount,
 			&token.StreamAvgTTFB,
@@ -267,6 +274,7 @@ func (s *SQLiteStore) ListActiveAuthTokens(ctx context.Context) ([]*model.AuthTo
 		}
 
 		token.CreatedAt = time.UnixMilli(createdAtMs)
+		token.IsActive = intToBool(isActive)
 		if expiresAt.Valid {
 			token.ExpiresAt = &expiresAt.Int64
 		}
@@ -285,7 +293,7 @@ func (s *SQLiteStore) ListActiveAuthTokens(ctx context.Context) ([]*model.AuthTo
 }
 
 // UpdateAuthToken 更新令牌信息
-func (s *SQLiteStore) UpdateAuthToken(ctx context.Context, token *model.AuthToken) error {
+func (s *SQLStore) UpdateAuthToken(ctx context.Context, token *model.AuthToken) error {
 	var expiresAt any
 	if token.ExpiresAt != nil {
 		expiresAt = *token.ExpiresAt
@@ -303,7 +311,7 @@ func (s *SQLiteStore) UpdateAuthToken(ctx context.Context, token *model.AuthToke
 		    last_used_at = ?,
 		    is_active = ?
 		WHERE id = ?
-	`, token.Description, expiresAt, lastUsedAt, token.IsActive, token.ID)
+	`, token.Description, expiresAt, lastUsedAt, boolToInt(token.IsActive), token.ID)
 
 	if err != nil {
 		return fmt.Errorf("update auth token: %w", err)
@@ -325,7 +333,7 @@ func (s *SQLiteStore) UpdateAuthToken(ctx context.Context, token *model.AuthToke
 }
 
 // DeleteAuthToken 删除令牌
-func (s *SQLiteStore) DeleteAuthToken(ctx context.Context, id int64) error {
+func (s *SQLStore) DeleteAuthToken(ctx context.Context, id int64) error {
 	result, err := s.db.ExecContext(ctx, `
 		DELETE FROM auth_tokens WHERE id = ?
 	`, id)
@@ -351,7 +359,7 @@ func (s *SQLiteStore) DeleteAuthToken(ctx context.Context, id int64) error {
 
 // UpdateTokenLastUsed 更新令牌最后使用时间
 // 异步调用，性能优化
-func (s *SQLiteStore) UpdateTokenLastUsed(ctx context.Context, tokenHash string, now time.Time) error {
+func (s *SQLStore) UpdateTokenLastUsed(ctx context.Context, tokenHash string, now time.Time) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE auth_tokens
 		SET last_used_at = ?
@@ -376,7 +384,7 @@ func (s *SQLiteStore) UpdateTokenLastUsed(ctx context.Context, tokenHash string,
 //   - promptTokens: 输入token数量
 //   - completionTokens: 输出token数量
 //   - costUSD: 本次请求费用(美元)
-func (s *SQLiteStore) UpdateTokenStats(
+func (s *SQLStore) UpdateTokenStats(
 	ctx context.Context,
 	tokenHash string,
 	isSuccess bool,

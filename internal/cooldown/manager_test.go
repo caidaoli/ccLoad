@@ -1,11 +1,12 @@
 package cooldown
 
 import (
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage/sqlite"
 	"context"
 	"testing"
 	"time"
+
+	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
 )
 
 // TestNewManager 测试管理器创建
@@ -105,7 +106,7 @@ func TestHandleError_KeyLevelError(t *testing.T) {
 			}
 
 			// 验证Key被冷却
-			cooldownUntil, exists := store.GetKeyCooldownUntil(ctx, cfg.ID, keyIndex)
+			cooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, keyIndex)
 			if !exists || cooldownUntil.Before(time.Now()) {
 				t.Errorf("Key should be cooled down for status %d", tc.statusCode)
 			}
@@ -317,7 +318,7 @@ func TestClearKeyCooldown(t *testing.T) {
 	_, _ = manager.HandleError(ctx, cfg.ID, 0, 401, []byte(`{"error":{"type":"authentication_error"}}`), false, nil)
 
 	// 验证已冷却
-	cooldownUntil, exists := store.GetKeyCooldownUntil(ctx, cfg.ID, 0)
+	cooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0)
 	if !exists || cooldownUntil.Before(time.Now()) {
 		t.Fatal("Key should be cooled down")
 	}
@@ -329,7 +330,7 @@ func TestClearKeyCooldown(t *testing.T) {
 	}
 
 	// 验证已清除
-	_, exists = store.GetKeyCooldownUntil(ctx, cfg.ID, 0)
+	_, exists = getKeyCooldownUntil(ctx, store, cfg.ID, 0)
 	if exists {
 		t.Error("Key cooldown should be cleared")
 	}
@@ -542,7 +543,7 @@ func TestHandleError_RateLimitClassification(t *testing.T) {
 					t.Errorf("Channel should be cooled down for %s", tc.name)
 				}
 			case ActionRetryKey:
-				cooldownUntil, exists := store.GetKeyCooldownUntil(ctx, cfg.ID, 0)
+				cooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0)
 				if !exists || cooldownUntil.Before(time.Now()) {
 					t.Errorf("Key should be cooled down for %s", tc.name)
 				}
@@ -555,11 +556,25 @@ func TestHandleError_RateLimitClassification(t *testing.T) {
 
 // ========== 辅助函数 ==========
 
-func setupTestStore(t *testing.T) (*sqlite.SQLiteStore, func()) {
+// getKeyCooldownUntil 获取指定Key的冷却时间（测试辅助函数）
+func getKeyCooldownUntil(ctx context.Context, store storage.Store, channelID int64, keyIndex int) (time.Time, bool) {
+	cooldowns, err := store.GetAllKeyCooldowns(ctx)
+	if err != nil {
+		return time.Time{}, false
+	}
+	channelCooldowns, ok := cooldowns[channelID]
+	if !ok {
+		return time.Time{}, false
+	}
+	until, ok := channelCooldowns[keyIndex]
+	return until, ok
+}
+
+func setupTestStore(t *testing.T) (storage.Store, func()) {
 	t.Helper()
 
 	tmpDB := t.TempDir() + "/cooldown_test.db"
-	store, err := sqlite.NewSQLiteStore(tmpDB, nil)
+	store, err := storage.CreateSQLiteStore(tmpDB, nil)
 	if err != nil {
 		t.Fatalf("Failed to create test store: %v", err)
 	}
@@ -571,7 +586,7 @@ func setupTestStore(t *testing.T) (*sqlite.SQLiteStore, func()) {
 	return store, cleanup
 }
 
-func createTestChannel(t *testing.T, store *sqlite.SQLiteStore, name string) *model.Config {
+func createTestChannel(t *testing.T, store storage.Store, name string) *model.Config {
 	t.Helper()
 
 	cfg := &model.Config{

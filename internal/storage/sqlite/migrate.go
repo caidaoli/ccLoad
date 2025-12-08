@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 )
@@ -195,8 +196,8 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	// 创建系统配置表(2025-11新增)
 	if _, err := s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS system_settings (
-			key TEXT PRIMARY KEY,
-			value TEXT NOT NULL,
+			`+"`key`"+` TEXT PRIMARY KEY,
+			`+"`value`"+` TEXT NOT NULL,
 			value_type TEXT NOT NULL CHECK(value_type IN ('int', 'bool', 'string', 'duration')),
 			description TEXT NOT NULL,
 			default_value TEXT NOT NULL,
@@ -208,7 +209,7 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 
 	// 初始化默认配置(幂等插入:已存在则跳过)
 	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO system_settings (key, value, value_type, description, default_value, updated_at) VALUES
+		INSERT INTO system_settings (`+"`key`"+`, `+"`value`"+`, value_type, description, default_value, updated_at) VALUES
 		('log_retention_days', '7', 'int', '日志保留天数(-1永久保留,1-365天)', '7', strftime('%s', 'now')),
 		('max_key_retries', '3', 'int', '单渠道最大Key重试次数', '3', strftime('%s', 'now')),
 		('upstream_first_byte_timeout', '0', 'duration', '上游首字节超时(秒,0=禁用)', '0', strftime('%s', 'now')),
@@ -289,4 +290,12 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// Migrate 执行SQLite数据库迁移（独立函数，供factory调用）
+func Migrate(ctx context.Context, db any) error {
+	// 临时包装为store结构以复用现有逻辑
+	type dbWrapper struct{ db any }
+	s := &SQLiteStore{db: db.(*sql.DB)}
+	return s.migrate(ctx)
 }

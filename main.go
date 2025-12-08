@@ -16,7 +16,6 @@ import (
 	"ccLoad/internal/app"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/storage/redis"
-	"ccLoad/internal/storage/sqlite"
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
@@ -85,7 +84,7 @@ func main() {
 		if dbPath == "" {
 			dbPath = filepath.Join("data", "ccload.db")
 		}
-		s, err := sqlite.NewSQLiteStore(dbPath, redisSync)
+		s, err := storage.CreateSQLiteStore(dbPath, redisSync)
 		if err != nil {
 			log.Fatalf("SQLite 初始化失败: %v", err)
 		}

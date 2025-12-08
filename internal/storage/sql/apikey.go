@@ -1,4 +1,4 @@
-package sqlite
+package sql
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 // ✅ Linus风格：删除轮询指针数据库代码，已改用内存atomic计数器
 
 // GetAPIKeys 获取指定渠道的所有 API Key（按 key_index 升序）
-func (s *SQLiteStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error) {
+func (s *SQLStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error) {
 	query := `
 		SELECT id, channel_id, key_index, api_key, key_strategy,
 		       cooldown_until, cooldown_duration_ms, created_at, updated_at
@@ -49,8 +49,8 @@ func (s *SQLiteStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model
 			return nil, fmt.Errorf("scan api key: %w", err)
 		}
 
-		key.CreatedAt = model.JSONTime{Time: time.Unix(createdAt, 0)}
-		key.UpdatedAt = model.JSONTime{Time: time.Unix(updatedAt, 0)}
+		key.CreatedAt = model.JSONTime{Time: unixToTime(createdAt)}
+		key.UpdatedAt = model.JSONTime{Time: unixToTime(updatedAt)}
 		keys = append(keys, key)
 	}
 
@@ -62,7 +62,7 @@ func (s *SQLiteStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model
 }
 
 // GetAPIKey 获取指定渠道的特定 API Key
-func (s *SQLiteStore) GetAPIKey(ctx context.Context, channelID int64, keyIndex int) (*model.APIKey, error) {
+func (s *SQLStore) GetAPIKey(ctx context.Context, channelID int64, keyIndex int) (*model.APIKey, error) {
 	query := `
 		SELECT id, channel_id, key_index, api_key, key_strategy,
 		       cooldown_until, cooldown_duration_ms, created_at, updated_at
@@ -92,19 +92,19 @@ func (s *SQLiteStore) GetAPIKey(ctx context.Context, channelID int64, keyIndex i
 		return nil, fmt.Errorf("query api key: %w", err)
 	}
 
-	key.CreatedAt = model.JSONTime{Time: time.Unix(createdAt, 0)}
-	key.UpdatedAt = model.JSONTime{Time: time.Unix(updatedAt, 0)}
+	key.CreatedAt = model.JSONTime{Time: unixToTime(createdAt)}
+	key.UpdatedAt = model.JSONTime{Time: unixToTime(updatedAt)}
 
 	return key, nil
 }
 
 // CreateAPIKey 创建新的 API Key
-func (s *SQLiteStore) CreateAPIKey(ctx context.Context, key *model.APIKey) error {
+func (s *SQLStore) CreateAPIKey(ctx context.Context, key *model.APIKey) error {
 	if key == nil {
 		return errors.New("api key cannot be nil")
 	}
 
-	nowUnix := time.Now().Unix()
+	nowUnix := timeToUnix(time.Now())
 
 	// 确保默认值
 	if key.KeyStrategy == "" {
@@ -129,12 +129,12 @@ func (s *SQLiteStore) CreateAPIKey(ctx context.Context, key *model.APIKey) error
 }
 
 // UpdateAPIKey 更新 API Key 信息
-func (s *SQLiteStore) UpdateAPIKey(ctx context.Context, key *model.APIKey) error {
+func (s *SQLStore) UpdateAPIKey(ctx context.Context, key *model.APIKey) error {
 	if key == nil {
 		return errors.New("api key cannot be nil")
 	}
 
-	updatedAtUnix := time.Now().Unix()
+	updatedAtUnix := timeToUnix(time.Now())
 
 	// 确保默认值
 	if key.KeyStrategy == "" {
@@ -162,7 +162,7 @@ func (s *SQLiteStore) UpdateAPIKey(ctx context.Context, key *model.APIKey) error
 }
 
 // DeleteAPIKey 删除指定的 API Key
-func (s *SQLiteStore) DeleteAPIKey(ctx context.Context, channelID int64, keyIndex int) error {
+func (s *SQLStore) DeleteAPIKey(ctx context.Context, channelID int64, keyIndex int) error {
 	_, err := s.db.ExecContext(ctx, `
 		DELETE FROM api_keys
 		WHERE channel_id = ? AND key_index = ?
@@ -180,7 +180,7 @@ func (s *SQLiteStore) DeleteAPIKey(ctx context.Context, channelID int64, keyInde
 
 // CompactKeyIndices 将指定渠道中 key_index > removedIndex 的记录整体前移，保持索引连续
 // 设计原因：KeySelector 使用 key_index 作为逻辑下标；存在间隙会导致轮询和索引匹配异常
-func (s *SQLiteStore) CompactKeyIndices(ctx context.Context, channelID int64, removedIndex int) error {
+func (s *SQLStore) CompactKeyIndices(ctx context.Context, channelID int64, removedIndex int) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE api_keys
 		SET key_index = key_index - 1
@@ -196,7 +196,7 @@ func (s *SQLiteStore) CompactKeyIndices(ctx context.Context, channelID int64, re
 }
 
 // DeleteAllAPIKeys 删除渠道的所有 API Key（用于渠道删除时级联清理）
-func (s *SQLiteStore) DeleteAllAPIKeys(ctx context.Context, channelID int64) error {
+func (s *SQLStore) DeleteAllAPIKeys(ctx context.Context, channelID int64) error {
 	_, err := s.db.ExecContext(ctx, `
 		DELETE FROM api_keys
 		WHERE channel_id = ?
@@ -222,7 +222,7 @@ func (s *SQLiteStore) DeleteAllAPIKeys(ctx context.Context, channelID int64) err
 //   - created: 新创建的渠道数量
 //   - updated: 更新的渠道数量
 //   - error: 导入失败时的错误信息
-func (s *SQLiteStore) ImportChannelBatch(ctx context.Context, channels []*model.ChannelWithKeys) (created, updated int, err error) {
+func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.ChannelWithKeys) (created, updated int, err error) {
 	if len(channels) == 0 {
 		return 0, 0, nil
 	}
@@ -239,7 +239,7 @@ func (s *SQLiteStore) ImportChannelBatch(ctx context.Context, channels []*model.
 
 	// 使用事务确保原子性
 	err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
-		nowUnix := time.Now().Unix()
+		nowUnix := timeToUnix(time.Now())
 
 		// 预编译渠道插入语句（复用，减少解析开销）
 		channelStmt, err := tx.PrepareContext(ctx, `
@@ -341,7 +341,7 @@ func (s *SQLiteStore) ImportChannelBatch(ctx context.Context, channels []*model.
 // GetAllAPIKeys 批量查询所有API Keys
 // ✅ 消除N+1问题：一次查询获取所有渠道的Keys，避免逐个查询
 // 返回: map[channelID][]*APIKey
-func (s *SQLiteStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey, error) {
+func (s *SQLStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey, error) {
 	query := `
 		SELECT id, channel_id, key_index, api_key, key_strategy,
 		       cooldown_until, cooldown_duration_ms, created_at, updated_at
@@ -374,8 +374,8 @@ func (s *SQLiteStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.API
 			return nil, fmt.Errorf("scan api key: %w", err)
 		}
 
-		key.CreatedAt = model.JSONTime{Time: time.Unix(createdAt, 0)}
-		key.UpdatedAt = model.JSONTime{Time: time.Unix(updatedAt, 0)}
+		key.CreatedAt = model.JSONTime{Time: unixToTime(createdAt)}
+		key.UpdatedAt = model.JSONTime{Time: unixToTime(updatedAt)}
 
 		result[key.ChannelID] = append(result[key.ChannelID], key)
 	}

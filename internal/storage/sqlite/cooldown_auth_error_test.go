@@ -1,6 +1,7 @@
-package sqlite
+package sqlite_test
 
 import (
+	"ccLoad/internal/storage"
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 	"context"
@@ -454,11 +455,11 @@ func TestRaceConditionDetection(t *testing.T) {
 }
 
 // setupAuthErrorTestStore 创建临时测试数据库（专用于认证错误测试）
-func setupAuthErrorTestStore(t *testing.T) (*SQLiteStore, func()) {
+func setupAuthErrorTestStore(t *testing.T) (storage.Store, func()) {
 	t.Helper()
 
 	tmpDB := t.TempDir() + "/test-auth-error.db"
-	store, err := NewSQLiteStore(tmpDB, nil)
+	store, err := storage.CreateSQLiteStore(tmpDB, nil)
 	if err != nil {
 		t.Fatalf("创建测试数据库失败: %v", err)
 	}
@@ -474,7 +475,7 @@ func setupAuthErrorTestStore(t *testing.T) (*SQLiteStore, func()) {
 
 
 // getChannelCooldownUntil 获取渠道冷却截止时间（测试辅助函数）
-func getChannelCooldownUntil(ctx context.Context, store *SQLiteStore, channelID int64) (time.Time, bool) {
+func getChannelCooldownUntil(ctx context.Context, store storage.Store, channelID int64) (time.Time, bool) {
 	cfg, err := store.GetConfig(ctx, channelID)
 	if err != nil || cfg == nil {
 		return time.Time{}, false
@@ -488,7 +489,7 @@ func getChannelCooldownUntil(ctx context.Context, store *SQLiteStore, channelID 
 }
 
 // getKeyCooldownUntil 获取Key冷却截止时间（测试辅助函数）
-func getKeyCooldownUntil(ctx context.Context, store *SQLiteStore, channelID int64, keyIndex int) (time.Time, bool) {
+func getKeyCooldownUntil(ctx context.Context, store storage.Store, channelID int64, keyIndex int) (time.Time, bool) {
 	key, err := store.GetAPIKey(ctx, channelID, keyIndex)
 	if err != nil || key == nil {
 		return time.Time{}, false

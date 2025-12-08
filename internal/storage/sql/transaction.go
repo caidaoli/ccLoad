@@ -1,4 +1,4 @@
-package sqlite
+package sql
 
 import (
 	"context"
@@ -36,13 +36,13 @@ var _ TxHandler = (*sql.Tx)(nil)
 //	    _, err = tx.ExecContext(ctx, "INSERT INTO api_keys ...")
 //	    return err // 成功则自动提交
 //	})
-func (s *SQLiteStore) WithTransaction(ctx context.Context, fn func(*sql.Tx) error) error {
+func (s *SQLStore) WithTransaction(ctx context.Context, fn func(*sql.Tx) error) error {
 	return withTransaction(s.db, ctx, fn)
 }
 
 // WithLogTransaction 在数据库事务中执行函数（用于logs操作）
 // 历史兼容：原用于独立日志库，现日志表已合并到主库
-func (s *SQLiteStore) WithLogTransaction(ctx context.Context, fn func(*sql.Tx) error) error {
+func (s *SQLStore) WithLogTransaction(ctx context.Context, fn func(*sql.Tx) error) error {
 	return withTransaction(s.db, ctx, fn)
 }
 

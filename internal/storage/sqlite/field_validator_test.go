@@ -1,6 +1,7 @@
-package sqlite
+package sqlite_test
 
 import (
+	"ccLoad/internal/storage/sql"
 	"strings"
 	"testing"
 )
@@ -50,9 +51,9 @@ func TestValidateFieldName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateFieldName(tt.field)
+			err := sql.ValidateFieldName(tt.field)
 			if (err != nil) != tt.wantError {
-				t.Errorf("ValidateFieldName(%q) error = %v, wantError %v",
+				t.Errorf("sql.ValidateFieldName(%q) error = %v, wantError %v",
 					tt.field, err, tt.wantError)
 			}
 
@@ -72,7 +73,7 @@ func TestQueryBuilderFieldValidation(t *testing.T) {
 			}
 		}()
 
-		qb := NewQueryBuilder("SELECT * FROM logs")
+		qb := sql.NewQueryBuilder("SELECT * FROM logs")
 		qb.WhereIn("channel_id", []any{1, 2, 3})
 
 		query, args := qb.Build()
@@ -97,7 +98,7 @@ func TestQueryBuilderFieldValidation(t *testing.T) {
 			}
 		}()
 
-		qb := NewQueryBuilder("SELECT * FROM logs")
+		qb := sql.NewQueryBuilder("SELECT * FROM logs")
 		qb.WhereIn("malicious_field", []any{1, 2, 3})
 	})
 }

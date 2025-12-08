@@ -105,4 +105,7 @@ type Store interface {
 
 	// Redis Status - Redis状态查询
 	IsRedisEnabled() bool
+
+	// Close - 关闭数据库连接并释放资源
+	Close() error
 }

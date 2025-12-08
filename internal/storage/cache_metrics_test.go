@@ -8,7 +8,6 @@ import (
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
-	"ccLoad/internal/storage/sqlite"
 )
 
 func TestChannelCacheMetrics(t *testing.T) {
@@ -16,7 +15,7 @@ func TestChannelCacheMetrics(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	dbPath := filepath.Join(tmpDir, "metrics.db")
-	store, err := sqlite.NewSQLiteStore(dbPath, nil)
+	store, err := storage.CreateSQLiteStore(dbPath, nil)
 	if err != nil {
 		t.Fatalf("failed to create sqlite store: %v", err)
 	}

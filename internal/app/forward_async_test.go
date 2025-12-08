@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
-	"ccLoad/internal/storage/sqlite"
+	"ccLoad/internal/storage"
 )
 
 // TestMain 在所有测试运行前设置环境变量
@@ -31,7 +31,7 @@ func TestMain(m *testing.M) {
 
 // TestRequestContextCreation 测试请求上下文创建
 func TestRequestContextCreation(t *testing.T) {
-	store, _ := sqlite.NewSQLiteStore(":memory:", nil)
+	store, _ := storage.CreateSQLiteStore(":memory:", nil)
 	srv := NewServer(store)
 
 	tests := []struct {
@@ -82,7 +82,7 @@ func TestRequestContextCreation(t *testing.T) {
 
 // TestBuildProxyRequest 测试请求构建
 func TestBuildProxyRequest(t *testing.T) {
-	store, _ := sqlite.NewSQLiteStore(":memory:", nil)
+	store, _ := storage.CreateSQLiteStore(":memory:", nil)
 	srv := NewServer(store)
 
 	cfg := &model.Config{
@@ -130,7 +130,7 @@ func TestBuildProxyRequest(t *testing.T) {
 
 // TestHandleRequestError 测试错误处理
 func TestHandleRequestError(t *testing.T) {
-	store, _ := sqlite.NewSQLiteStore(":memory:", nil)
+	store, _ := storage.CreateSQLiteStore(":memory:", nil)
 	srv := NewServer(store)
 
 	cfg := &model.Config{ID: 1}
@@ -217,7 +217,7 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 	defer upstream.Close()
 
 	// 创建代理服务器
-	store, _ := sqlite.NewSQLiteStore(":memory:", nil)
+	store, _ := storage.CreateSQLiteStore(":memory:", nil)
 	srv := NewServer(store)
 
 	cfg := &model.Config{

@@ -2,9 +2,6 @@ package app
 
 import (
 	"bytes"
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
-	"ccLoad/internal/storage/sqlite"
 	"context"
 	"encoding/csv"
 	"encoding/json"
@@ -18,6 +15,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
 
 	"github.com/gin-gonic/gin"
 )
@@ -469,7 +469,7 @@ func setupTestServer(t *testing.T) (*Server, func()) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
-	store, err := sqlite.NewSQLiteStore(dbPath, nil)
+	store, err := storage.CreateSQLiteStore(dbPath, nil)
 	if err != nil {
 		t.Fatalf("创建测试数据库失败: %v", err)
 	}

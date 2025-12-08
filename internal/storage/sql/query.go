@@ -1,4 +1,4 @@
-package sqlite
+package sql
 
 import (
 	"fmt"
@@ -132,10 +132,10 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 
 	c.Enabled = enabledInt != 0
 
-	// 转换时间戳为JSONTime（支持Unix时间戳和RFC3339格式）
+	// 转换时间戳（支持不同数据库）
 	now := time.Now()
-	c.CreatedAt = model.JSONTime{Time: parseTimestampOrNow(createdAtRaw, now)}
-	c.UpdatedAt = model.JSONTime{Time: parseTimestampOrNow(updatedAtRaw, now)}
+	c.CreatedAt = model.JSONTime{Time: cs.parseTimestampOrNow(createdAtRaw, now)}
+	c.UpdatedAt = model.JSONTime{Time: cs.parseTimestampOrNow(updatedAtRaw, now)}
 
 	if err := parseModelsJSON(modelsStr, &c.Models); err != nil {
 		c.Models = nil // 解析失败时使用空切片
@@ -166,20 +166,20 @@ func (cs *ConfigScanner) ScanConfigs(rows interface {
 
 // parseTimestampOrNow 解析时间戳或使用当前时间（支持Unix时间戳和RFC3339格式）
 // 优先级：int64 > int > string(数字) > string(RFC3339) > fallback
-func parseTimestampOrNow(val any, fallback time.Time) time.Time {
+func (cs *ConfigScanner) parseTimestampOrNow(val any, fallback time.Time) time.Time {
 	switch v := val.(type) {
 	case int64:
 		if v > 0 {
-			return time.Unix(v, 0)
+			return unixToTime(v)
 		}
 	case int:
 		if v > 0 {
-			return time.Unix(int64(v), 0)
+			return unixToTime(int64(v))
 		}
 	case string:
 		// 1. 尝试解析字符串为Unix时间戳
 		if ts, err := strconv.ParseInt(v, 10, 64); err == nil && ts > 0 {
-			return time.Unix(ts, 0)
+			return unixToTime(ts)
 		}
 		// 2. 尝试解析RFC3339格式（Redis恢复场景）
 		if t, err := time.Parse(time.RFC3339, v); err == nil {

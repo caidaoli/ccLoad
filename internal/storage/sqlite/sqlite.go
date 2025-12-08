@@ -1,211 +1,24 @@
 package sqlite
 
 import (
-	"context"
 	"database/sql"
-	"fmt"
-	"log"
-	"os"
-	"path/filepath"
-	"strings"
-	"sync"
-	"time"
 
-	"ccLoad/internal/config"
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
-
-	_ "modernc.org/sqlite"
+	sqlstore "ccLoad/internal/storage/sql"
 )
 
+// SQLiteStore 最小化结构（仅用于迁移）
+// ⚠️ 技术债: 这是为了兼容现有测试的临时wrapper
+// TODO: 将 sqlite/*_test.go 迁移到 sql/*_test.go，然后删除此文件
 type SQLiteStore struct {
-	db *sql.DB // 主数据库（channels, api_keys, logs等所有数据）
-
-	// 异步Redis同步机制（性能优化: 避免同步等待）
-	syncCh chan struct{} // 同步触发信号（无缓冲，去重合并多个请求）
-	done   chan struct{} // 优雅关闭信号
-
-	redisSync RedisSync // Redis同步接口（依赖注入，支持测试和扩展）
-
-	// 优雅关闭：等待后台worker
-	wg sync.WaitGroup
+	*sqlstore.SQLStore // 嵌入sql.SQLStore
+	db                 *sql.DB
 }
 
-// RedisSync Redis同步接口抽象（依赖倒置原则）
-type RedisSync interface {
-	IsEnabled() bool
-	LoadChannelsWithKeysFromRedis(ctx context.Context) ([]*model.ChannelWithKeys, error)
-	SyncAllChannelsWithKeys(ctx context.Context, channels []*model.ChannelWithKeys) error
-	// Auth Tokens同步 (新增 2025-11)
-	SyncAllAuthTokens(ctx context.Context, tokens []*model.AuthToken) error
-	LoadAuthTokensFromRedis(ctx context.Context) ([]*model.AuthToken, error)
+// NewSQLiteStore 临时兼容函数
+// ⚠️ 技术债: 仅用于测试兼容，应该使用 storage.CreateSQLiteStore()
+func NewSQLiteStore(db *sql.DB, redisSync sqlstore.RedisSync) *SQLiteStore {
+	return &SQLiteStore{
+		SQLStore: sqlstore.NewSQLStore(db, redisSync),
+		db:       db,
+	}
 }
-
-// maskAPIKey 将API Key掩码为 "abcd...klmn" 格式（前4位 + ... + 后4位）
-func maskAPIKey(key string) string {
-	if len(key) <= 8 {
-		return key // 短key直接返回
-	}
-	return key[:4] + "..." + key[len(key)-4:]
-}
-
-// buildMainDBDSN 构建主数据库DSN
-//
-// 环境变量控制Journal模式
-// - SQLITE_JOURNAL_MODE: WAL(默认) | DELETE | TRUNCATE | PERSIST | MEMORY | OFF
-// - Docker/K8s环境建议使用TRUNCATE避免WAL文件损坏风险
-// validateJournalMode 验证SQLITE_JOURNAL_MODE环境变量的合法性（白名单）
-// 防止环境变量注入攻击
-// 设计原则 (Fail-Fast): 启动时立即验证，避免运行时安全风险
-//
-// 攻击场景示例:
-//
-//	export SQLITE_JOURNAL_MODE="DELETE;DROP TABLE channels;--"
-//	可能导致 SQL 注入（取决于驱动解析方式）
-//
-// 防御策略:
-//   - 白名单验证所有允许的 Journal 模式
-//   - 非法值立即 Fatal 退出（不允许运行）
-//   - 空值使用安全的默认值 "WAL"
-func validateJournalMode(mode string) string {
-	if mode == "" {
-		return "WAL" // 默认安全值
-	}
-
-	// SQLite 官方支持的 Journal 模式白名单
-	// 参考: https://www.sqlite.org/pragma.html#pragma_journal_mode
-	validModes := map[string]bool{
-		"DELETE":   true, // 默认模式，删除 WAL 文件
-		"TRUNCATE": true, // 截断 WAL 文件（比 DELETE 快）
-		"PERSIST":  true, // 保留 WAL 文件，仅清零
-		"MEMORY":   true, // 内存中的日志（不持久化）
-		"WAL":      true, // Write-Ahead Logging（推荐）
-		"OFF":      true, // 禁用回滚日志（危险，仅用于只读数据库）
-	}
-
-	modeUpper := strings.ToUpper(mode)
-	if !validModes[modeUpper] {
-		log.Fatalf("❌ 安全错误: SQLITE_JOURNAL_MODE 环境变量值非法: %q\n"+
-			"   允许的值: DELETE, TRUNCATE, PERSIST, MEMORY, WAL, OFF\n"+
-			"   当前值: %q\n"+
-			"   修复方法:\n"+
-			"     - 设置合法值: export SQLITE_JOURNAL_MODE=WAL\n"+
-			"     - 或者移除该环境变量，使用默认值 WAL",
-			mode, mode)
-	}
-
-	return modeUpper
-}
-
-func buildMainDBDSN(path string) string {
-	// 白名单验证环境变量，防止注入攻击
-	// 设计原则：生产环境（特别是容器/网络存储）需要灵活控制，但必须安全
-	journalMode := validateJournalMode(os.Getenv("SQLITE_JOURNAL_MODE"))
-
-	return fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_foreign_keys=on&_pragma=journal_mode=%s&_loc=Local", path, journalMode)
-}
-
-func NewSQLiteStore(path string, redisSync RedisSync) (*SQLiteStore, error) {
-	return newSQLiteStoreWithOptions(path, redisSync, false)
-}
-
-// newSQLiteStoreWithOptions 创建SQLite存储实例（带选项）
-func newSQLiteStoreWithOptions(path string, redisSync RedisSync, forTest bool) (*SQLiteStore, error) {
-	// 创建数据目录
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, err
-	}
-
-	// 打开主数据库（channels, api_keys, logs等所有数据）
-	dsn := buildMainDBDSN(path)
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return nil, err
-	}
-	// WAL文件模式：严格限制写并发（WAL性能瓶颈）
-	db.SetMaxOpenConns(config.SQLiteMaxOpenConnsFile)
-	db.SetMaxIdleConns(config.SQLiteMaxIdleConnsFile)
-	// 测试模式下禁用连接生命周期以避免goroutine泄漏
-	if !forTest {
-		db.SetConnMaxLifetime(config.SQLiteConnMaxLifetime)
-	}
-
-	s := &SQLiteStore{
-		db:        db,
-		redisSync: redisSync,
-		syncCh:    make(chan struct{}, 1), // 缓冲区=1，允许一个待处理任务
-		done:      make(chan struct{}),
-	}
-
-	// 迁移数据库表结构（包含logs表）
-	if err := s.migrate(context.Background()); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-
-	// 启动异步Redis同步worker（仅当Redis启用时）
-	if redisSync != nil && redisSync.IsEnabled() {
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
-			s.redisSyncWorker()
-		}()
-	}
-
-	return s, nil
-}
-
-// 确保SQLiteStore实现了storage.Store接口
-var _ storage.Store = (*SQLiteStore)(nil)
-
-// IsRedisEnabled 检查Redis同步是否启用（公共方法）
-func (s *SQLiteStore) IsRedisEnabled() bool {
-	return s.redisSync != nil && s.redisSync.IsEnabled()
-}
-
-func (s *SQLiteStore) Close() error {
-	// 优雅关闭：通知worker退出
-	if s.done != nil {
-		close(s.done)
-	}
-
-	// 等待worker退出（带超时），避免无谓等待
-	waitCh := make(chan struct{})
-	go func() {
-		s.wg.Wait()
-		close(waitCh)
-	}()
-	select {
-	case <-waitCh:
-	case <-time.After(time.Duration(config.RedisSyncShutdownTimeoutMs) * time.Millisecond):
-		log.Printf("⚠️  Redis同步worker关闭超时（%dms）", config.RedisSyncShutdownTimeoutMs)
-	}
-
-	// 关闭数据库连接池
-	return s.db.Close()
-}
-
-// CleanupLogsBefore 清理截止时间之前的日志（DIP：通过接口暴露维护操作）
-func (s *SQLiteStore) CleanupLogsBefore(ctx context.Context, cutoff time.Time) error {
-	cutoffMs := cutoff.UnixMilli()
-	_, err := s.db.ExecContext(ctx, `DELETE FROM logs WHERE time < ?`, cutoffMs)
-	return err
-}
-
-// CheckDatabaseExists 检查SQLite数据库文件是否存在
-func CheckDatabaseExists(dbPath string) bool {
-	if _, err := os.Stat(dbPath); err != nil {
-		return false
-	}
-	return true
-}
-
-// 辅助函数
-func boolToInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
-}
-
-// serializeModels 序列化模型列表为JSON字符串

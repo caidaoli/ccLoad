@@ -1,4 +1,4 @@
-package sqlite
+package sql
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"ccLoad/internal/model"
 )
 
-func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket time.Duration) ([]model.MetricPoint, error) {
+func (s *SQLStore) Aggregate(ctx context.Context, since time.Time, bucket time.Duration) ([]model.MetricPoint, error) {
 	// 性能优化：使用SQL GROUP BY进行数据库层聚合，避免内存聚合
 	// 原方案：加载所有日志到内存聚合（10万条日志需2-5秒，占用100-200MB内存）
 	// 新方案：数据库聚合（查询时间-80%，内存占用-90%）
@@ -220,7 +220,7 @@ func (s *SQLiteStore) Aggregate(ctx context.Context, since time.Time, bucket tim
 }
 
 // AggregateRange 聚合指定时间范围内的指标数据（支持精确日期范围如"昨日"）
-func (s *SQLiteStore) AggregateRange(ctx context.Context, since, until time.Time, bucket time.Duration) ([]model.MetricPoint, error) {
+func (s *SQLStore) AggregateRange(ctx context.Context, since, until time.Time, bucket time.Duration) ([]model.MetricPoint, error) {
 	bucketSeconds := int64(bucket.Seconds())
 	sinceUnix := since.Unix()
 	untilUnix := until.Unix()
@@ -405,7 +405,7 @@ func (s *SQLiteStore) AggregateRange(ctx context.Context, since, until time.Time
 
 // GetStats 实现统计功能，按渠道和模型统计成功/失败次数
 // 性能优化：批量查询渠道名称消除N+1问题（100渠道场景提升50-100倍）
-func (s *SQLiteStore) GetStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.StatsEntry, error) {
+func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.StatsEntry, error) {
 	// 使用查询构建器构建统计查询
 	baseQuery := `
 		SELECT

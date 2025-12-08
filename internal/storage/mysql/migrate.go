@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 )
@@ -192,4 +193,11 @@ func (s *MySQLStore) createIndexIgnoreError(ctx context.Context, sql string) {
 			fmt.Printf("Warning: create index failed: %v\n", err)
 		}
 	}
+}
+
+// Migrate 执行MySQL数据库迁移（独立函数，供factory调用）
+func Migrate(ctx context.Context, db any) error {
+	// 临时包装为store结构以复用现有逻辑
+	s := &MySQLStore{db: db.(*sql.DB)}
+	return s.migrate(ctx)
 }

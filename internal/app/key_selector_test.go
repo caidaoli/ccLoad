@@ -1,12 +1,13 @@
 package app
 
 import (
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage/sqlite"
 	"context"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
 )
 
 // contextKey 自定义类型用于 context key，避免 SA1029 警告
@@ -614,11 +615,11 @@ func TestSelectAvailableKey_UnknownStrategy(t *testing.T) {
 
 // ========== 辅助函数 ==========
 
-func setupTestKeyStore(t *testing.T) (*sqlite.SQLiteStore, func()) {
+func setupTestKeyStore(t *testing.T) (storage.Store, func()) {
 	t.Helper()
 
 	tmpDB := t.TempDir() + "/key_selector_test.db"
-	store, err := sqlite.NewSQLiteStore(tmpDB, nil)
+	store, err := storage.CreateSQLiteStore(tmpDB, nil)
 	if err != nil {
 		t.Fatalf("创建测试数据库失败: %v", err)
 	}

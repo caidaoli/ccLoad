@@ -1,6 +1,7 @@
-package sqlite
+package sqlite_test
 
 import (
+	"ccLoad/internal/storage"
 	"ccLoad/internal/model"
 	"context"
 	"fmt"
@@ -518,11 +519,11 @@ func TestConcurrentMixedOperations(t *testing.T) {
 
 // ========== 辅助函数 ==========
 
-func setupConcurrentTestStore(t *testing.T) (*SQLiteStore, func()) {
+func setupConcurrentTestStore(t *testing.T) (storage.Store, func()) {
 	t.Helper()
 
 	tmpDB := t.TempDir() + "/concurrent-test.db"
-	store, err := NewSQLiteStore(tmpDB, nil)
+	store, err := storage.CreateSQLiteStore(tmpDB, nil)
 	if err != nil {
 		t.Fatalf("创建测试数据库失败: %v", err)
 	}

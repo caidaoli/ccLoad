@@ -1,4 +1,4 @@
-package sqlite
+package sql
 
 import (
 	"context"
@@ -11,9 +11,9 @@ import (
 	"ccLoad/internal/util"
 )
 
-// LoadChannelsFromRedis 从Redis恢复渠道数据到SQLite (启动时数据库恢复机制)
+// LoadChannelsFromRedis 从Redis恢复渠道数据到SQL (启动时数据库恢复机制)
 // ✅ 修复（2025-10-10）：完整恢复渠道和API Keys，解决Redis恢复后缺少Keys的问题
-func (s *SQLiteStore) LoadChannelsFromRedis(ctx context.Context) error {
+func (s *SQLStore) LoadChannelsFromRedis(ctx context.Context) error {
 	if !s.redisSync.IsEnabled() {
 		return nil
 	}
@@ -29,7 +29,7 @@ func (s *SQLiteStore) LoadChannelsFromRedis(ctx context.Context) error {
 	// ============================================================================
 	if len(channelsWithKeys) > 0 {
 		// 使用事务高阶函数，确保数据一致性（ACID原则 + DRY原则）
-		nowUnix := time.Now().Unix()
+		nowUnix := timeToUnix(time.Now())
 		successCount := 0
 		totalKeysRestored := 0
 
@@ -130,7 +130,7 @@ func (s *SQLiteStore) LoadChannelsFromRedis(ctx context.Context) error {
 
 // SyncAllChannelsToRedis 将所有渠道同步到Redis (批量同步，初始化时使用)
 // ✅ 修复（2025-10-10）：完整同步渠道配置和API Keys，解决Redis恢复后缺少Keys的问题
-func (s *SQLiteStore) SyncAllChannelsToRedis(ctx context.Context) error {
+func (s *SQLStore) SyncAllChannelsToRedis(ctx context.Context) error {
 	if !s.redisSync.IsEnabled() {
 		return nil
 	}
@@ -181,7 +181,7 @@ func (s *SQLiteStore) SyncAllChannelsToRedis(ctx context.Context) error {
 
 // redisSyncWorker 异步Redis同步worker（后台goroutine）
 // 修复：增加重试机制，避免瞬时网络故障导致数据丢失
-func (s *SQLiteStore) redisSyncWorker() {
+func (s *SQLStore) redisSyncWorker() {
 	// 使用可取消的context，支持优雅关闭
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -222,7 +222,7 @@ func (s *SQLiteStore) redisSyncWorker() {
 }
 
 // doSyncAllChannelsWithRetry 带重试机制的同步操作
-func (s *SQLiteStore) doSyncAllChannelsWithRetry(ctx context.Context, retryBackoff []time.Duration) error {
+func (s *SQLStore) doSyncAllChannelsWithRetry(ctx context.Context, retryBackoff []time.Duration) error {
 	var lastErr error
 
 	// 首次尝试
@@ -253,7 +253,7 @@ func (s *SQLiteStore) doSyncAllChannelsWithRetry(ctx context.Context, retryBacko
 }
 
 // triggerAsyncSync 触发异步Redis同步（非阻塞）
-func (s *SQLiteStore) triggerAsyncSync() {
+func (s *SQLStore) triggerAsyncSync() {
 	if s.redisSync == nil || !s.redisSync.IsEnabled() {
 		return
 	}
@@ -270,7 +270,7 @@ func (s *SQLiteStore) triggerAsyncSync() {
 // doSyncAllChannels 实际执行同步操作（worker内部调用）
 // ✅ 修复（2025-10-10）：切换到完整同步API，确保API Keys同步
 // ✅ 扩展（2025-11）：同时同步auth_tokens表
-func (s *SQLiteStore) doSyncAllChannels(ctx context.Context) error {
+func (s *SQLStore) doSyncAllChannels(ctx context.Context) error {
 	// 1. 同步channels和API Keys
 	if err := s.SyncAllChannelsToRedis(ctx); err != nil {
 		return fmt.Errorf("sync channels: %w", err)
@@ -286,7 +286,7 @@ func (s *SQLiteStore) doSyncAllChannels(ctx context.Context) error {
 
 // syncAuthTokensToRedis 同步所有AuthToken到Redis (内部方法)
 // ✅ 新增（2025-11）：完整同步认证令牌表
-func (s *SQLiteStore) syncAuthTokensToRedis(ctx context.Context) error {
+func (s *SQLStore) syncAuthTokensToRedis(ctx context.Context) error {
 	if !s.redisSync.IsEnabled() {
 		return nil
 	}
@@ -311,10 +311,10 @@ func (s *SQLiteStore) syncAuthTokensToRedis(ctx context.Context) error {
 	return nil
 }
 
-// loadAuthTokensFromRedis 从Redis恢复所有AuthToken到SQLite (内部方法)
+// loadAuthTokensFromRedis 从Redis恢复所有AuthToken到SQL (内部方法)
 // ✅ 新增（2025-11）：支持auth_tokens表的灾难恢复
 // 返回: 成功恢复的令牌数量
-func (s *SQLiteStore) loadAuthTokensFromRedis(ctx context.Context) (int, error) {
+func (s *SQLStore) loadAuthTokensFromRedis(ctx context.Context) (int, error) {
 	if !s.redisSync.IsEnabled() {
 		return 0, nil
 	}
@@ -384,7 +384,7 @@ func normalizeChannelsWithKeys(channelsWithKeys []*model.ChannelWithKeys) {
 }
 
 // CheckChannelsEmpty 检查channels表是否为空
-func (s *SQLiteStore) CheckChannelsEmpty(ctx context.Context) (bool, error) {
+func (s *SQLStore) CheckChannelsEmpty(ctx context.Context) (bool, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM channels`).Scan(&count)
 	if err != nil {

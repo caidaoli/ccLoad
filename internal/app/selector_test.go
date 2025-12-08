@@ -1,11 +1,12 @@
 package app
 
 import (
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage/sqlite"
 	"context"
 	"testing"
 	"time"
+
+	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
 )
 
 // TestSelectRouteCandidates_NormalRequest 测试普通请求的路由选择
@@ -531,11 +532,11 @@ func TestShuffleSamePriorityChannels(t *testing.T) {
 
 // ========== 辅助函数 ==========
 
-func setupTestStore(t *testing.T) (*sqlite.SQLiteStore, func()) {
+func setupTestStore(t *testing.T) (storage.Store, func()) {
 	t.Helper()
 
 	tmpDB := t.TempDir() + "/selector_test.db"
-	store, err := sqlite.NewSQLiteStore(tmpDB, nil)
+	store, err := storage.CreateSQLiteStore(tmpDB, nil)
 	if err != nil {
 		t.Fatalf("创建测试数据库失败: %v", err)
 	}

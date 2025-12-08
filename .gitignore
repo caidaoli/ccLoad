@@ -53,3 +53,4 @@ com.ccload.service.plist
 .gomodcache
 AGENTS.md
 dist
+*.bak

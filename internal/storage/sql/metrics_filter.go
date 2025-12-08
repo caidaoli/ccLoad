@@ -1,4 +1,4 @@
-package mysql
+package sql
 
 import (
 	"ccLoad/internal/model"
@@ -13,7 +13,7 @@ import (
 // AggregateRangeWithFilter 聚合指定时间范围、渠道类型和模型的指标数据
 // channelType 为空字符串时返回所有渠道类型的数据
 // modelFilter 为空字符串时返回所有模型的数据
-func (s *MySQLStore) AggregateRangeWithFilter(ctx context.Context, since, until time.Time, bucket time.Duration, channelType string, modelFilter string) ([]model.MetricPoint, error) {
+func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until time.Time, bucket time.Duration, channelType string, modelFilter string) ([]model.MetricPoint, error) {
 	bucketSeconds := int64(bucket.Seconds())
 	sinceUnix := since.Unix()
 	untilUnix := until.Unix()
@@ -33,10 +33,9 @@ func (s *MySQLStore) AggregateRangeWithFilter(ctx context.Context, since, until 
 	}
 
 	// 构建查询：不再JOIN channels表，使用IN子句过滤
-	// 注意：MySQL除法返回DECIMAL，必须用FLOOR转为整数
 	query := `
 		SELECT
-			FLOOR((logs.time / 1000) / ?) * ? AS bucket_ts,
+			((logs.time / 1000) / ?) * ? AS bucket_ts,
 			logs.channel_id,
 			SUM(CASE WHEN logs.status_code >= 200 AND logs.status_code < 300 THEN 1 ELSE 0 END) AS success,
 			SUM(CASE WHEN logs.status_code < 200 OR logs.status_code >= 300 THEN 1 ELSE 0 END) AS error,
@@ -249,14 +248,14 @@ func buildEmptyMetricPoints(since, until time.Time, bucket time.Duration) []mode
 }
 
 // GetDistinctModels 获取指定时间范围内的去重模型列表
-func (s *MySQLStore) GetDistinctModels(ctx context.Context, since, until time.Time) ([]string, error) {
+func (s *SQLStore) GetDistinctModels(ctx context.Context, since, until time.Time) ([]string, error) {
 	query := `
 		SELECT DISTINCT model
 		FROM logs
 		WHERE (time / 1000) >= ? AND (time / 1000) <= ? AND model != ''
 		ORDER BY model
 	`
-	
+
 	rows, err := s.db.QueryContext(ctx, query, since.Unix(), until.Unix())
 	if err != nil {
 		return nil, err

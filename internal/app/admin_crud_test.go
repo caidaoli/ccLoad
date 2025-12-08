@@ -2,8 +2,6 @@ package app
 
 import (
 	"bytes"
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage/sqlite"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -11,15 +9,18 @@ import (
 	"strconv"
 	"testing"
 
+	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
+
 	"github.com/gin-gonic/gin"
 )
 
 // setupAdminTestServer 创建测试服务器
-func setupAdminTestServer(t *testing.T) (*Server, *sqlite.SQLiteStore, func()) {
+func setupAdminTestServer(t *testing.T) (*Server, storage.Store, func()) {
 	t.Helper()
 
 	tmpDB := t.TempDir() + "/admin_crud_test.db"
-	store, err := sqlite.NewSQLiteStore(tmpDB, nil)
+	store, err := storage.CreateSQLiteStore(tmpDB, nil)
 	if err != nil {
 		t.Fatalf("创建测试数据库失败: %v", err)
 	}
