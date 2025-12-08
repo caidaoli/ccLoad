@@ -170,6 +170,30 @@ func TestSSEUsageParser_MultipleEvents(t *testing.T) {
 	}
 }
 
+func TestSSEUsageParser_MessageDeltaWithZeroInputTokens(t *testing.T) {
+	// 测试某些中间代理（如anyrouter）在message_delta中添加input_tokens:0的场景
+	// 期望：input_tokens应保留message_start中的值，不被0覆盖
+	events := []string{
+		"event: message_start\ndata: {\"message\":{\"usage\":{\"input_tokens\":2011,\"output_tokens\":1}}}\n\n",
+		"event: message_delta\ndata: {\"usage\":{\"input_tokens\":0,\"output_tokens\":144}}\n\n",
+	}
+
+	parser := newSSEUsageParser("anthropic")
+	for _, event := range events {
+		if err := parser.Feed([]byte(event)); err != nil {
+			t.Fatalf("Feed失败: %v", err)
+		}
+	}
+
+	input, output, _, _ := parser.GetUsage()
+	if input != 2011 {
+		t.Errorf("InputTokens = %d, 期望 2011（不应被message_delta中的0覆盖）", input)
+	}
+	if output != 144 {
+		t.Errorf("OutputTokens = %d, 期望 144", output)
+	}
+}
+
 // ============================================================================
 // 防御性测试：恶意输入
 // ============================================================================

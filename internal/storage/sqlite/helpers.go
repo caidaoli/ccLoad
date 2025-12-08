@@ -113,8 +113,12 @@ func (s *SQLiteStore) applyChannelFilter(ctx context.Context, qb *QueryBuilder, 
 		return false, false, nil
 	}
 
-	// 优先按渠道类型过滤
-	if filter.ChannelType != "" {
+	var candidateIDs []int64
+	hasTypeFilter := filter.ChannelType != ""
+	hasNameFilter := filter.ChannelName != "" || filter.ChannelNameLike != ""
+
+	// 按渠道类型过滤
+	if hasTypeFilter {
 		ids, err := s.fetchChannelIDsByType(ctx, filter.ChannelType)
 		if err != nil {
 			return false, false, err
@@ -122,16 +126,11 @@ func (s *SQLiteStore) applyChannelFilter(ctx context.Context, qb *QueryBuilder, 
 		if len(ids) == 0 {
 			return true, true, nil // 应用了过滤，结果为空
 		}
-		vals := make([]any, 0, len(ids))
-		for _, id := range ids {
-			vals = append(vals, id)
-		}
-		qb.WhereIn("channel_id", vals)
-		return true, false, nil
+		candidateIDs = ids
 	}
 
-	// 其次按渠道名称过滤
-	if filter.ChannelName != "" || filter.ChannelNameLike != "" {
+	// 按渠道名称过滤
+	if hasNameFilter {
 		ids, err := s.fetchChannelIDsByNameFilter(ctx, filter.ChannelName, filter.ChannelNameLike)
 		if err != nil {
 			return false, false, err
@@ -139,8 +138,22 @@ func (s *SQLiteStore) applyChannelFilter(ctx context.Context, qb *QueryBuilder, 
 		if len(ids) == 0 {
 			return true, true, nil // 应用了过滤，结果为空
 		}
-		vals := make([]any, 0, len(ids))
-		for _, id := range ids {
+
+		if hasTypeFilter {
+			// 取交集：同时满足类型和名称条件
+			candidateIDs = intersectIDs(candidateIDs, ids)
+			if len(candidateIDs) == 0 {
+				return true, true, nil
+			}
+		} else {
+			candidateIDs = ids
+		}
+	}
+
+	// 应用过滤条件
+	if len(candidateIDs) > 0 {
+		vals := make([]any, 0, len(candidateIDs))
+		for _, id := range candidateIDs {
 			vals = append(vals, id)
 		}
 		qb.WhereIn("channel_id", vals)
@@ -148,4 +161,20 @@ func (s *SQLiteStore) applyChannelFilter(ctx context.Context, qb *QueryBuilder, 
 	}
 
 	return false, false, nil
+}
+
+
+// intersectIDs 计算两个ID切片的交集
+func intersectIDs(a, b []int64) []int64 {
+	set := make(map[int64]bool, len(a))
+	for _, id := range a {
+		set[id] = true
+	}
+	var result []int64
+	for _, id := range b {
+		if set[id] {
+			result = append(result, id)
+		}
+	}
+	return result
 }

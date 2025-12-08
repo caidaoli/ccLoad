@@ -375,10 +375,14 @@ func (u *usageAccumulator) applyOpenAIChatUsage(usage map[string]any) {
 }
 
 // applyAnthropicOrResponsesUsage 处理Anthropic或OpenAI Responses API格式
+// 重要：Anthropic SSE流中，message_start包含input_tokens，message_delta包含cumulative output_tokens
+// 某些中间代理（如anyrouter）会在message_delta中添加input_tokens:0，需要防御性处理
 func (u *usageAccumulator) applyAnthropicOrResponsesUsage(usage map[string]any) {
-	if val, ok := usage["input_tokens"].(float64); ok {
+	// input_tokens: 只有 > 0 时才覆盖（防止message_delta中的0覆盖message_start的正确值）
+	if val, ok := usage["input_tokens"].(float64); ok && int(val) > 0 {
 		u.InputTokens = int(val)
 	}
+	// output_tokens: 直接覆盖（cumulative语义，后续值包含之前的累计）
 	if val, ok := usage["output_tokens"].(float64); ok {
 		u.OutputTokens = int(val)
 	}
