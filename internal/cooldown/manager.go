@@ -89,10 +89,19 @@ func (m *Manager) HandleError(
 		}
 	}
 
-	// 2. 🎯 动态调整:单Key渠道的Key级错误应该直接冷却渠道
+	// 2. 🎯 提前检查1308错误（在升级逻辑之前）
+	// 1308错误包含精确的重置时间，无论Key级还是Channel级都应该使用
+	var reset1308Time time.Time
+	var has1308Time bool
+	if statusCode == 429 {
+		reset1308Time, has1308Time = util.ParseResetTimeFrom1308Error(errorBody)
+	}
+
+	// 3. 🎯 动态调整:单Key渠道的Key级错误应该直接冷却渠道
 	// 设计原则:如果没有其他Key可以重试,Key级错误等同于渠道级错误
 	// 优先使用缓存的KeyCount,避免N+1查询(性能提升~60%)
-	if errLevel == util.ErrorLevelKey {
+	// ⚠️ 例外：1308错误保持Key级（因为它有精确时间，后续会特殊处理）
+	if errLevel == util.ErrorLevelKey && !has1308Time {
 		var config *model.Config
 		var err error
 
@@ -109,7 +118,7 @@ func (m *Manager) HandleError(
 		}
 	}
 
-	// 3. 根据错误级别执行冷却
+	// 4. 根据错误级别执行冷却
 	switch errLevel {
 	case util.ErrorLevelClient:
 		// 客户端错误:不冷却,直接返回
@@ -118,6 +127,21 @@ func (m *Manager) HandleError(
 	case util.ErrorLevelKey:
 		// Key级错误:冷却当前Key,继续尝试其他Key
 		if keyIndex >= 0 {
+			// ✅ 特殊处理: 1308错误自动禁用到指定时间
+			if has1308Time {
+				// 直接设置冷却时间到指定时刻
+				if err := m.store.SetKeyCooldown(ctx, channelID, keyIndex, reset1308Time); err != nil {
+					log.Printf("⚠️  WARNING: Failed to set key cooldown to reset time (channel=%d, key=%d, until=%v): %v",
+						channelID, keyIndex, reset1308Time, err)
+				} else {
+					duration := time.Until(reset1308Time)
+					log.Printf("🔒 Key冷却(1308): 渠道=%d Key=%d 禁用至 %s (%.1f分钟)",
+						channelID, keyIndex, reset1308Time.Format("2006-01-02 15:04:05"), duration.Minutes())
+				}
+				return ActionRetryKey, nil
+			}
+
+			// 默认逻辑: 使用指数退避策略
 			_, err := m.store.BumpKeyCooldown(ctx, channelID, keyIndex, time.Now(), statusCode)
 			if err != nil {
 				// 冷却更新失败是非致命错误
@@ -129,6 +153,20 @@ func (m *Manager) HandleError(
 
 	case util.ErrorLevelChannel:
 		// 渠道级错误:冷却整个渠道,切换到其他渠道
+		// ✅ 特殊处理: 如果有1308精确时间，直接设置（单Key渠道的1308错误会走到这里）
+		if has1308Time {
+			if err := m.store.SetChannelCooldown(ctx, channelID, reset1308Time); err != nil {
+				log.Printf("⚠️  WARNING: Failed to set channel cooldown to reset time (channel=%d, until=%v): %v",
+					channelID, reset1308Time, err)
+			} else {
+				duration := time.Until(reset1308Time)
+				log.Printf("🔒 Channel冷却(1308): 渠道=%d 禁用至 %s (%.1f分钟)",
+					channelID, reset1308Time.Format("2006-01-02 15:04:05"), duration.Minutes())
+			}
+			return ActionRetryChannel, nil
+		}
+
+		// 默认逻辑: 使用指数退避策略
 		_, err := m.store.BumpChannelCooldown(ctx, channelID, time.Now(), statusCode)
 		if err != nil {
 			// 冷却更新失败是非致命错误
