@@ -49,6 +49,20 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			return fmt.Errorf("create %s table: %w", tb.Name(), err)
 		}
 
+		// 增量迁移：确保auth_token_id字段存在（2025-12新增）
+		if tb.Name() == "logs" && dialect == DialectMySQL {
+			if err := ensureLogsAuthTokenID(ctx, db); err != nil {
+				return fmt.Errorf("migrate logs.auth_token_id: %w", err)
+			}
+		}
+
+		// 增量迁移：确保auth_tokens表有缓存token字段（2025-12新增）
+		if tb.Name() == "auth_tokens" && dialect == DialectMySQL {
+			if err := ensureAuthTokensCacheFields(ctx, db); err != nil {
+				return fmt.Errorf("migrate auth_tokens cache fields: %w", err)
+			}
+		}
+
 		// 创建索引
 		for _, idx := range buildIndexes(tb, dialect) {
 			if err := createIndex(ctx, db, idx, dialect); err != nil {
@@ -60,6 +74,68 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	// 初始化默认配置
 	if err := initDefaultSettings(ctx, db, dialect); err != nil {
 		return err
+	}
+
+	return nil
+}
+
+// ensureLogsAuthTokenID 确保logs表有auth_token_id字段(MySQL增量迁移,2025-12新增)
+func ensureLogsAuthTokenID(ctx context.Context, db *sql.DB) error {
+	// 检查字段是否存在
+	var count int
+	err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='logs' AND COLUMN_NAME='auth_token_id'",
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check column existence: %w", err)
+	}
+
+	// 字段已存在,跳过
+	if count > 0 {
+		return nil
+	}
+
+	// 添加auth_token_id字段
+	_, err = db.ExecContext(ctx,
+		"ALTER TABLE logs ADD COLUMN auth_token_id BIGINT NOT NULL DEFAULT 0 COMMENT '客户端使用的API令牌ID(新增2025-12)'",
+	)
+	if err != nil {
+		return fmt.Errorf("add auth_token_id column: %w", err)
+	}
+
+	return nil
+}
+
+// ensureAuthTokensCacheFields 确保auth_tokens表有缓存token字段(MySQL增量迁移,2025-12新增)
+func ensureAuthTokensCacheFields(ctx context.Context, db *sql.DB) error {
+	// 检查cache_read_tokens_total字段是否存在
+	var count int
+	err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='auth_tokens' AND COLUMN_NAME='cache_read_tokens_total'",
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check cache_read_tokens_total existence: %w", err)
+	}
+
+	// 字段已存在,跳过
+	if count > 0 {
+		return nil
+	}
+
+	// 添加cache_read_tokens_total字段
+	_, err = db.ExecContext(ctx,
+		"ALTER TABLE auth_tokens ADD COLUMN cache_read_tokens_total BIGINT NOT NULL DEFAULT 0 COMMENT '累计缓存读Token数'",
+	)
+	if err != nil {
+		return fmt.Errorf("add cache_read_tokens_total column: %w", err)
+	}
+
+	// 添加cache_creation_tokens_total字段
+	_, err = db.ExecContext(ctx,
+		"ALTER TABLE auth_tokens ADD COLUMN cache_creation_tokens_total BIGINT NOT NULL DEFAULT 0 COMMENT '累计缓存写Token数'",
+	)
+	if err != nil {
+		return fmt.Errorf("add cache_creation_tokens_total column: %w", err)
 	}
 
 	return nil

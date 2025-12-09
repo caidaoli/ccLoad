@@ -18,8 +18,8 @@ import (
 // API访问令牌管理 (Admin API)
 // ============================================================================
 
-// HandleListAuthTokens 列出所有API访问令牌
-// GET /admin/auth-tokens
+// HandleListAuthTokens 列出所有API访问令牌（支持时间范围统计，2025-12扩展）
+// GET /admin/auth-tokens?range=today
 func (s *Server) HandleListAuthTokens(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -34,6 +34,51 @@ func (s *Server) HandleListAuthTokens(c *gin.Context) {
 	// 脱敏处理（仅显示前4后4字符）
 	for _, t := range tokens {
 		t.Token = model.MaskToken(t.Token)
+	}
+
+	// 如果请求中包含range参数，则叠加时间范围统计（用于tokens.html页面）
+	timeRange := c.Query("range")
+	if timeRange != "" {
+		params := ParsePaginationParams(c)
+		startTime, endTime := params.GetTimeRange()
+
+		// 从logs表聚合时间范围内的统计
+		rangeStats, err := s.store.GetAuthTokenStatsInRange(ctx, startTime, endTime)
+		if err != nil {
+			log.Printf("⚠️  查询时间范围统计失败: %v", err)
+			// 降级处理：统计查询失败不影响token列表返回，仅记录警告
+		} else {
+			// 将时间范围统计叠加到每个token的响应中
+			for _, t := range tokens {
+				if stat, ok := rangeStats[t.ID]; ok {
+					// 用时间范围统计覆盖累计统计字段（前端透明）
+					t.SuccessCount = stat.SuccessCount
+					t.FailureCount = stat.FailureCount
+					t.PromptTokensTotal = stat.PromptTokens
+					t.CompletionTokensTotal = stat.CompletionTokens
+					t.CacheReadTokensTotal = stat.CacheReadTokens
+					t.CacheCreationTokensTotal = stat.CacheCreationTokens
+					t.TotalCostUSD = stat.TotalCost
+					t.StreamAvgTTFB = stat.StreamAvgTTFB
+					t.NonStreamAvgRT = stat.NonStreamAvgRT
+					t.StreamCount = stat.StreamCount
+					t.NonStreamCount = stat.NonStreamCount
+				} else {
+					// 该token在此时间范围内无数据，清零统计字段
+					t.SuccessCount = 0
+					t.FailureCount = 0
+					t.PromptTokensTotal = 0
+					t.CompletionTokensTotal = 0
+					t.CacheReadTokensTotal = 0
+					t.CacheCreationTokensTotal = 0
+					t.TotalCostUSD = 0
+					t.StreamAvgTTFB = 0
+					t.NonStreamAvgRT = 0
+					t.StreamCount = 0
+					t.NonStreamCount = 0
+				}
+			}
+		}
 	}
 
 	RespondJSON(c, http.StatusOK, tokens)

@@ -66,7 +66,7 @@ func (s *SQLStore) GetAuthToken(ctx context.Context, id int64) (*model.AuthToken
 		SELECT
 			id, token, description, created_at, expires_at, last_used_at, is_active,
 			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
-			prompt_tokens_total, completion_tokens_total, total_cost_usd
+			prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd
 		FROM auth_tokens
 		WHERE id = ?
 	`, id).Scan(
@@ -85,6 +85,8 @@ func (s *SQLStore) GetAuthToken(ctx context.Context, id int64) (*model.AuthToken
 		&token.NonStreamCount,
 		&token.PromptTokensTotal,
 		&token.CompletionTokensTotal,
+		&token.CacheReadTokensTotal,
+		&token.CacheCreationTokensTotal,
 		&token.TotalCostUSD,
 	)
 
@@ -97,13 +99,13 @@ func (s *SQLStore) GetAuthToken(ctx context.Context, id int64) (*model.AuthToken
 
 	// 转换时间戳
 	token.CreatedAt = time.UnixMilli(createdAtMs)
-	token.IsActive = intToBool(isActive)
 	if expiresAt.Valid {
 		token.ExpiresAt = &expiresAt.Int64
 	}
 	if lastUsedAt.Valid {
 		token.LastUsedAt = &lastUsedAt.Int64
 	}
+	token.IsActive = isActive != 0
 
 	return token, nil
 }
@@ -120,7 +122,7 @@ func (s *SQLStore) GetAuthTokenByValue(ctx context.Context, tokenHash string) (*
 		SELECT
 			id, token, description, created_at, expires_at, last_used_at, is_active,
 			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
-			prompt_tokens_total, completion_tokens_total, total_cost_usd
+			prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd
 		FROM auth_tokens
 		WHERE token = ?
 	`, tokenHash).Scan(
@@ -139,6 +141,8 @@ func (s *SQLStore) GetAuthTokenByValue(ctx context.Context, tokenHash string) (*
 		&token.NonStreamCount,
 		&token.PromptTokensTotal,
 		&token.CompletionTokensTotal,
+		&token.CacheReadTokensTotal,
+		&token.CacheCreationTokensTotal,
 		&token.TotalCostUSD,
 	)
 
@@ -151,13 +155,13 @@ func (s *SQLStore) GetAuthTokenByValue(ctx context.Context, tokenHash string) (*
 
 	// 转换时间戳
 	token.CreatedAt = time.UnixMilli(createdAtMs)
-	token.IsActive = intToBool(isActive)
 	if expiresAt.Valid {
 		token.ExpiresAt = &expiresAt.Int64
 	}
 	if lastUsedAt.Valid {
 		token.LastUsedAt = &lastUsedAt.Int64
 	}
+	token.IsActive = isActive != 0
 
 	return token, nil
 }
@@ -168,7 +172,7 @@ func (s *SQLStore) ListAuthTokens(ctx context.Context) ([]*model.AuthToken, erro
 		SELECT
 			id, token, description, created_at, expires_at, last_used_at, is_active,
 			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
-			prompt_tokens_total, completion_tokens_total, total_cost_usd
+			prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd
 		FROM auth_tokens
 		ORDER BY created_at DESC
 	`)
@@ -200,28 +204,32 @@ func (s *SQLStore) ListAuthTokens(ctx context.Context) ([]*model.AuthToken, erro
 			&token.NonStreamCount,
 			&token.PromptTokensTotal,
 			&token.CompletionTokensTotal,
+			&token.CacheReadTokensTotal,
+			&token.CacheCreationTokensTotal,
 			&token.TotalCostUSD,
 		); err != nil {
 			return nil, fmt.Errorf("scan auth token: %w", err)
 		}
 
+		// 转换时间戳
 		token.CreatedAt = time.UnixMilli(createdAtMs)
-		token.IsActive = intToBool(isActive)
 		if expiresAt.Valid {
 			token.ExpiresAt = &expiresAt.Int64
 		}
 		if lastUsedAt.Valid {
 			token.LastUsedAt = &lastUsedAt.Int64
 		}
+		token.IsActive = isActive != 0
+
+		// 脱敏令牌显示(保留前8位)
+		if len(token.Token) > 8 {
+			token.Token = token.Token[:8] + "..." + token.Token[len(token.Token)-4:]
+		}
 
 		tokens = append(tokens, token)
 	}
 
-	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate auth tokens: %w", err)
-	}
-
-	return tokens, nil
+	return tokens, rows.Err()
 }
 
 // ListActiveAuthTokens 列出所有有效的令牌
@@ -229,15 +237,13 @@ func (s *SQLStore) ListAuthTokens(ctx context.Context) ([]*model.AuthToken, erro
 func (s *SQLStore) ListActiveAuthTokens(ctx context.Context) ([]*model.AuthToken, error) {
 	now := time.Now().UnixMilli()
 
-	// expires_at = 0 表示永不过期，与 NULL 同等处理
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			id, token, description, created_at, expires_at, last_used_at, is_active,
 			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
-			prompt_tokens_total, completion_tokens_total, total_cost_usd
+			prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd
 		FROM auth_tokens
-		WHERE is_active = 1
-		  AND (expires_at IS NULL OR expires_at = 0 OR expires_at > ?)
+		WHERE is_active = 1 AND (expires_at = 0 OR expires_at > ?)
 		ORDER BY created_at DESC
 	`, now)
 	if err != nil {
@@ -268,28 +274,27 @@ func (s *SQLStore) ListActiveAuthTokens(ctx context.Context) ([]*model.AuthToken
 			&token.NonStreamCount,
 			&token.PromptTokensTotal,
 			&token.CompletionTokensTotal,
+			&token.CacheReadTokensTotal,
+			&token.CacheCreationTokensTotal,
 			&token.TotalCostUSD,
 		); err != nil {
-			return nil, fmt.Errorf("scan active auth token: %w", err)
+			return nil, fmt.Errorf("scan auth token: %w", err)
 		}
 
+		// 转换时间戳
 		token.CreatedAt = time.UnixMilli(createdAtMs)
-		token.IsActive = intToBool(isActive)
 		if expiresAt.Valid {
 			token.ExpiresAt = &expiresAt.Int64
 		}
 		if lastUsedAt.Valid {
 			token.LastUsedAt = &lastUsedAt.Int64
 		}
+		token.IsActive = isActive != 0
 
 		tokens = append(tokens, token)
 	}
 
-	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate active auth tokens: %w", err)
-	}
-
-	return tokens, nil
+	return tokens, rows.Err()
 }
 
 // UpdateAuthToken 更新令牌信息
@@ -393,6 +398,8 @@ func (s *SQLStore) UpdateTokenStats(
 	firstByteTime float64,
 	promptTokens int64,
 	completionTokens int64,
+	cacheReadTokens int64,
+	cacheCreationTokens int64,
 	costUSD float64,
 ) error {
 	// 使用事务保证原子性（读-计算-写）
@@ -404,15 +411,17 @@ func (s *SQLStore) UpdateTokenStats(
 
 	// 1. 查询当前统计数据
 	var stats struct {
-		SuccessCount          int64
-		FailureCount          int64
-		StreamAvgTTFB         float64
-		NonStreamAvgRT        float64
-		StreamCount           int64
-		NonStreamCount        int64
-		PromptTokensTotal     int64
-		CompletionTokensTotal int64
-		TotalCostUSD          float64
+		SuccessCount             int64
+		FailureCount             int64
+		StreamAvgTTFB            float64
+		NonStreamAvgRT           float64
+		StreamCount              int64
+		NonStreamCount           int64
+		PromptTokensTotal        int64
+		CompletionTokensTotal    int64
+		CacheReadTokensTotal     int64
+		CacheCreationTokensTotal int64
+		TotalCostUSD             float64
 	}
 
 	err = tx.QueryRowContext(ctx, `
@@ -420,7 +429,9 @@ func (s *SQLStore) UpdateTokenStats(
 			success_count, failure_count,
 			stream_avg_ttfb, non_stream_avg_rt,
 			stream_count, non_stream_count,
-			prompt_tokens_total, completion_tokens_total, total_cost_usd
+			prompt_tokens_total, completion_tokens_total,
+			cache_read_tokens_total, cache_creation_tokens_total,
+			total_cost_usd
 		FROM auth_tokens
 		WHERE token = ?
 	`, tokenHash).Scan(
@@ -432,6 +443,8 @@ func (s *SQLStore) UpdateTokenStats(
 		&stats.NonStreamCount,
 		&stats.PromptTokensTotal,
 		&stats.CompletionTokensTotal,
+		&stats.CacheReadTokensTotal,
+		&stats.CacheCreationTokensTotal,
 		&stats.TotalCostUSD,
 	)
 
@@ -448,6 +461,8 @@ func (s *SQLStore) UpdateTokenStats(
 		// 只有成功请求才累加token和费用
 		stats.PromptTokensTotal += promptTokens
 		stats.CompletionTokensTotal += completionTokens
+		stats.CacheReadTokensTotal += cacheReadTokens
+		stats.CacheCreationTokensTotal += cacheCreationTokens
 		stats.TotalCostUSD += costUSD
 	} else {
 		stats.FailureCount++
@@ -477,6 +492,8 @@ func (s *SQLStore) UpdateTokenStats(
 			non_stream_count = ?,
 			prompt_tokens_total = ?,
 			completion_tokens_total = ?,
+			cache_read_tokens_total = ?,
+			cache_creation_tokens_total = ?,
 			total_cost_usd = ?,
 			last_used_at = ?
 		WHERE token = ?
@@ -489,6 +506,8 @@ func (s *SQLStore) UpdateTokenStats(
 		stats.NonStreamCount,
 		stats.PromptTokensTotal,
 		stats.CompletionTokensTotal,
+		stats.CacheReadTokensTotal,
+		stats.CacheCreationTokensTotal,
 		stats.TotalCostUSD,
 		time.Now().UnixMilli(),
 		tokenHash,

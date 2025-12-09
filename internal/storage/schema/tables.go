@@ -69,6 +69,8 @@ func DefineAuthTokensTable() *TableBuilder {
 		Column("non_stream_count INT NOT NULL DEFAULT 0").
 		Column("prompt_tokens_total BIGINT NOT NULL DEFAULT 0").
 		Column("completion_tokens_total BIGINT NOT NULL DEFAULT 0").
+		Column("cache_read_tokens_total BIGINT NOT NULL DEFAULT 0").
+		Column("cache_creation_tokens_total BIGINT NOT NULL DEFAULT 0").
 		Column("total_cost_usd DOUBLE NOT NULL DEFAULT 0.0").
 		Index("idx_auth_tokens_active", "is_active").
 		Index("idx_auth_tokens_expires", "expires_at")
@@ -107,6 +109,7 @@ func DefineLogsTable() *TableBuilder {
 		Column("is_streaming TINYINT NOT NULL DEFAULT 0").
 		Column("first_byte_time DOUBLE NOT NULL DEFAULT 0.0").
 		Column("api_key_used VARCHAR(191) NOT NULL DEFAULT ''").
+		Column("auth_token_id BIGINT NOT NULL DEFAULT 0"). // 客户端使用的API令牌ID（新增2025-12）
 		Column("input_tokens INT NOT NULL DEFAULT 0").
 		Column("output_tokens INT NOT NULL DEFAULT 0").
 		Column("cache_read_input_tokens INT NOT NULL DEFAULT 0").
@@ -115,5 +118,6 @@ func DefineLogsTable() *TableBuilder {
 		Index("idx_logs_time_model", "time, model").
 		Index("idx_logs_time_channel", "time, channel_id").
 		Index("idx_logs_time_status", "time, status_code").
-		Index("idx_logs_time_channel_model", "time, channel_id, model")
+		Index("idx_logs_time_channel_model", "time, channel_id, model").
+		Index("idx_logs_time_auth_token", "time, auth_token_id") // 按时间+令牌查询
 }
