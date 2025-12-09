@@ -1,8 +1,16 @@
     const API_BASE = '/admin';
     let allTokens = [];
 
+    // 当前选中的时间范围(默认为本日)
+    let currentTimeRange = 'today';
+
     document.addEventListener('DOMContentLoaded', () => {
+      // 初始化时间范围选择器
+      initTimeRangeSelector();
+
+      // 加载令牌列表(默认显示本日统计)
       loadTokens();
+
       document.getElementById('tokenExpiry').addEventListener('change', (e) => {
         document.getElementById('customExpiryContainer').style.display =
           e.target.value === 'custom' ? 'block' : 'none';
@@ -13,9 +21,31 @@
       });
     });
 
+    // 时间范围选择器事件处理
+    function initTimeRangeSelector() {
+      const buttons = document.querySelectorAll('.time-range-btn');
+      buttons.forEach(btn => {
+        btn.addEventListener('click', function() {
+          // 更新按钮激活状态
+          buttons.forEach(b => b.classList.remove('active'));
+          this.classList.add('active');
+
+          // 更新当前时间范围并重新加载数据
+          currentTimeRange = this.dataset.range;
+          loadTokens();
+        });
+      });
+    }
+
     async function loadTokens() {
       try {
-        const response = await fetchWithAuth(`${API_BASE}/auth-tokens`);
+        // 根据currentTimeRange决定是否添加range参数
+        let url = `${API_BASE}/auth-tokens`;
+        if (currentTimeRange !== 'all') {
+          url += `?range=${currentTimeRange}`;
+        }
+
+        const response = await fetchWithAuth(url);
         if (!response.ok) throw new Error('加载令牌失败');
         const data = await response.json();
         allTokens = data.data || [];
@@ -49,10 +79,9 @@
               <th style="text-align: center;">成功率</th>
               <th style="text-align: center;">Token用量</th>
               <th style="text-align: center;">总费用</th>
-              <th style="text-align: center;">流式首字平均响应</th>
-              <th style="text-align: center;">非流式平均响应</th>
+              <th style="text-align: center;">流首字</th>
+              <th style="text-align: center;">非流式</th>
               <th>最后使用</th>
-              <th>过期时间</th>
               <th style="width: 200px;">操作</th>
             </tr>
           </thead>
@@ -63,6 +92,13 @@
       `;
 
       container.innerHTML = tableHTML;
+    }
+
+    // 格式化 Token 数量为 M 单位
+    function formatTokenCount(count) {
+      if (!count || count === 0) return '0M';
+      const millions = count / 1000000;
+      return millions.toFixed(2) + 'M';
     }
 
     function createTokenRow(token) {
@@ -91,33 +127,6 @@
       const streamCount = token.stream_count || 0;
       const nonStreamCount = token.non_stream_count || 0;
 
-      // 调用次数样式（根据调用量）
-      let countFontWeight = '500';
-      let successBgOpacity = '100';
-      let errorBgOpacity = '100';
-      let successColorOpacity = '700';
-      let errorColorOpacity = '700';
-
-      if (totalCount >= 100) {
-        countFontWeight = '700';
-        successBgOpacity = '200';
-        errorBgOpacity = '200';
-        successColorOpacity = '800';
-        errorColorOpacity = '800';
-      } else if (totalCount >= 10) {
-        countFontWeight = '600';
-        successBgOpacity = '100';
-        errorBgOpacity = '100';
-        successColorOpacity = '700';
-        errorColorOpacity = '700';
-      } else {
-        countFontWeight = '500';
-        successBgOpacity = '50';
-        errorBgOpacity = '50';
-        successColorOpacity = '600';
-        errorColorOpacity = '600';
-      }
-
       // 响应时间颜色等级
       const getResponseClass = (time) => {
         const num = Number(time);
@@ -132,18 +141,20 @@
           <td style="font-weight: 500;">${escapeHtml(token.description)}</td>
           <td>
             <div><span class="token-display">${escapeHtml(token.token)}</span></div>
-            <div style="font-size: 12px; color: var(--neutral-500); margin-top: 4px;">${createdAt}创建</div>
+            <div style="font-size: 12px; color: var(--neutral-500); margin-top: 4px;">${createdAt}创建 · ${expiresAt}</div>
           </td>
           <td><span class="status-badge status-${status.class}">${status.text}</span></td>
           <td style="text-align: center;">
             ${totalCount > 0 ? `
-              <div style="display: inline-flex; gap: 8px;">
-                <span class="stats-badge" style="background: var(--success-${successBgOpacity}); color: var(--success-${successColorOpacity}); font-weight: ${countFontWeight};" title="成功调用">
+              <div style="display: flex; flex-direction: column; gap: 4px; align-items: center;">
+                <span class="stats-badge" style="background: var(--success-100); color: var(--success-700); font-weight: 600;" title="成功调用">
                   ✓ ${successCount.toLocaleString()}
                 </span>
-                <span class="stats-badge" style="background: var(--error-${errorBgOpacity}); color: var(--error-${errorColorOpacity}); font-weight: ${countFontWeight};" title="失败调用">
-                  ✗ ${failureCount.toLocaleString()}
-                </span>
+                ${failureCount > 0 ? `
+                  <span class="stats-badge" style="background: var(--error-100); color: var(--error-700); font-weight: 600;" title="失败调用">
+                    ✗ ${failureCount.toLocaleString()}
+                  </span>
+                ` : ''}
               </div>
             ` : '<span style="color: var(--neutral-500); font-size: 13px;">-</span>'}
           </td>
@@ -153,17 +164,30 @@
               : '<span style="color: var(--neutral-500); font-size: 13px;">-</span>'}
           </td>
           <td style="text-align: center;">
-            ${(token.prompt_tokens_total > 0 || token.completion_tokens_total > 0) ? `
+            ${(token.prompt_tokens_total > 0 || token.completion_tokens_total > 0 || token.cache_read_tokens_total > 0 || token.cache_creation_tokens_total > 0) ? `
               <div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">
-                <div style="display: inline-flex; gap: 6px; font-size: 12px;">
+                <div style="display: inline-flex; gap: 4px; font-size: 12px;">
                   <span class="stats-badge" style="background: var(--primary-50); color: var(--primary-700);" title="输入Tokens">
-                    ${(token.prompt_tokens_total || 0).toLocaleString()}
+                    入 ${formatTokenCount(token.prompt_tokens_total || 0)}
                   </span>
                   <span class="stats-badge" style="background: var(--secondary-50); color: var(--secondary-700);" title="输出Tokens">
-                    ${(token.completion_tokens_total || 0).toLocaleString()}
+                    出 ${formatTokenCount(token.completion_tokens_total || 0)}
                   </span>
                 </div>
-             
+                ${(token.cache_read_tokens_total > 0 || token.cache_creation_tokens_total > 0) ? `
+                  <div style="display: inline-flex; gap: 4px; font-size: 12px;">
+                    ${token.cache_read_tokens_total > 0 ? `
+                      <span class="stats-badge" style="background: var(--success-50); color: var(--success-700);" title="缓存读Tokens">
+                        缓存读 ${formatTokenCount(token.cache_read_tokens_total || 0)}
+                      </span>
+                    ` : ''}
+                    ${token.cache_creation_tokens_total > 0 ? `
+                      <span class="stats-badge" style="background: var(--warning-50); color: var(--warning-700);" title="缓存建Tokens">
+                        缓存建 ${formatTokenCount(token.cache_creation_tokens_total || 0)}
+                      </span>
+                    ` : ''}
+                  </div>
+                ` : ''}
               </div>
             ` : '<span style="color: var(--neutral-500); font-size: 13px;">-</span>'}
           </td>
@@ -173,7 +197,7 @@
                 <span class="metric-value" style="color: var(--success-700); font-size: 15px; font-weight: 700;">
                   $${token.total_cost_usd.toFixed(4)}
                 </span>
-              
+
               </div>
             ` : '<span style="color: var(--neutral-500); font-size: 13px;">$0.00</span>'}
           </td>
@@ -188,7 +212,6 @@
               : '<span style="color: var(--neutral-500); font-size: 13px;">-</span>'}
           </td>
           <td style="color: var(--neutral-600);">${lastUsed}</td>
-          <td style="color: var(--neutral-600);">${expiresAt}</td>
           <td>
             <button onclick="editToken(${token.id})" class="btn btn-secondary" style="padding: 4px 12px; font-size: 13px; margin-right: 4px;">编辑</button>
             <button onclick="deleteToken(${token.id})" class="btn btn-danger" style="padding: 4px 12px; font-size: 13px;">删除</button>
