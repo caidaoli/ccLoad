@@ -1,21 +1,21 @@
 package integration_test
 
 import (
-	"ccLoad/internal/storage/sqlite"
+	"ccLoad/internal/storage"
 	"context"
 	"path/filepath"
 	"testing"
 )
 
 // setupTestStore 创建测试用的 SQLite Store
-func setupTestStore(t *testing.T) (*sqlite.SQLiteStore, func()) {
+func setupTestStore(t *testing.T) (storage.Store, func()) {
 	t.Helper()
 
 	// 创建临时目录和数据库文件
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
-	store, err := sqlite.NewSQLiteStore(dbPath, nil)
+	store, err := storage.CreateSQLiteStore(dbPath, nil)
 	if err != nil {
 		t.Fatalf("创建测试数据库失败: %v", err)
 	}
@@ -31,7 +31,7 @@ func setupTestStore(t *testing.T) (*sqlite.SQLiteStore, func()) {
 }
 
 // setupTestStoreWithContext 创建测试用的 Store 和 Context
-func setupTestStoreWithContext(t *testing.T) (*sqlite.SQLiteStore, context.Context, func()) {
+func setupTestStoreWithContext(t *testing.T) (storage.Store, context.Context, func()) {
 	t.Helper()
 
 	store, cleanup := setupTestStore(t)
@@ -39,3 +39,4 @@ func setupTestStoreWithContext(t *testing.T) (*sqlite.SQLiteStore, context.Conte
 
 	return store, ctx, cleanup
 }
+

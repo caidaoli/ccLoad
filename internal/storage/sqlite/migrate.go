@@ -4,298 +4,119 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
+
+	"ccLoad/internal/storage/schema"
 )
 
-// migrate 创建数据库表结构
-// 架构设计：
-// - channels 表：渠道配置 + 内联冷却字段 + 轮询指针
-// - api_keys 表：API Keys 独立存储 + 内联冷却字段
-func (s *SQLiteStore) migrate(ctx context.Context) error {
+// Migrate 执行SQLite数据库迁移
+func Migrate(ctx context.Context, db any) error {
+	return migrateImpl(ctx, db.(*sql.DB))
+}
+
+func migrateImpl(ctx context.Context, db *sql.DB) error {
 	// 创建 channels 表
-	if _, err := s.db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS channels (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT NOT NULL UNIQUE,
-			url TEXT NOT NULL,
-			priority INTEGER NOT NULL DEFAULT 0,
-			models TEXT NOT NULL,
-			model_redirects TEXT NOT NULL DEFAULT '{}',
-			channel_type TEXT NOT NULL DEFAULT 'anthropic',
-			enabled INTEGER NOT NULL DEFAULT 1,
-			cooldown_until INTEGER NOT NULL DEFAULT 0,
-			cooldown_duration_ms INTEGER NOT NULL DEFAULT 0,
-			rr_key_index INTEGER NOT NULL DEFAULT 0,
-			created_at BIGINT NOT NULL,
-			updated_at BIGINT NOT NULL
-		);
-	`); err != nil {
+	if _, err := db.ExecContext(ctx,
+		schema.DefineChannelsTable().BuildSQLite(),
+	); err != nil {
 		return fmt.Errorf("create channels table: %w", err)
 	}
 
-	// 兼容性迁移：为现有数据库添加 rr_key_index 列
-	if _, err := s.db.ExecContext(ctx, `
-		ALTER TABLE channels ADD COLUMN rr_key_index INTEGER DEFAULT 0;
-	`); err != nil {
-		// 忽略列已存在的错误（SQLite error code 1: "duplicate column name"）
-		if !strings.Contains(err.Error(), "duplicate column name") {
-			return fmt.Errorf("add rr_key_index column: %w", err)
-		}
-	}
-
 	// 创建 api_keys 表
-	if _, err := s.db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS api_keys (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			channel_id INTEGER NOT NULL,
-			key_index INTEGER NOT NULL,
-			api_key TEXT NOT NULL,
-			key_strategy TEXT NOT NULL DEFAULT 'sequential',
-			cooldown_until INTEGER NOT NULL DEFAULT 0,
-			cooldown_duration_ms INTEGER NOT NULL DEFAULT 0,
-			created_at BIGINT NOT NULL,
-			updated_at BIGINT NOT NULL,
-			UNIQUE(channel_id, key_index),
-			FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
-		);
-	`); err != nil {
+	if _, err := db.ExecContext(ctx,
+		schema.DefineAPIKeysTable().BuildSQLite(),
+	); err != nil {
 		return fmt.Errorf("create api_keys table: %w", err)
 	}
 
-	// 迁移数据：如果 key_rr 表存在，将轮询指针数据迁移到 channels 表
-	if _, err := s.db.ExecContext(ctx, `
-		UPDATE channels 
-		SET rr_key_index = (
-			SELECT COALESCE(idx, 0) 
-			FROM key_rr 
-			WHERE key_rr.channel_id = channels.id
-		)
-		WHERE EXISTS (SELECT 1 FROM key_rr WHERE key_rr.channel_id = channels.id);
-	`); err != nil {
-		// 忽略 key_rr 表不存在的错误
-		if !strings.Contains(err.Error(), "no such table") {
-			return fmt.Errorf("migrate rr_index data: %w", err)
-		}
-	}
-
-	// 删除旧的 key_rr 表（如果存在）
-	if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS key_rr;`); err != nil {
-		return fmt.Errorf("drop legacy key_rr table: %w", err)
-	}
-
-	// 创建 channel_models 索引表（性能优化：消除JSON查询）
-	if _, err := s.db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS channel_models (
-			channel_id INTEGER NOT NULL,
-			model TEXT NOT NULL,
-			created_at BIGINT NOT NULL DEFAULT (strftime('%s', 'now')),
-			PRIMARY KEY (channel_id, model),
-			FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
-		);
-	`); err != nil {
+	// 创建 channel_models 索引表
+	if _, err := db.ExecContext(ctx,
+		schema.DefineChannelModelsTable().BuildSQLite(),
+	); err != nil {
 		return fmt.Errorf("create channel_models table: %w", err)
 	}
 
-	// 为 channel_models 创建索引
-	// 注：复合主键(channel_id, model)已覆盖channel_id前缀查询，无需单独索引
-	if _, err := s.db.ExecContext(ctx, `
-		CREATE INDEX IF NOT EXISTS idx_channel_models_model ON channel_models(model);
-		CREATE INDEX IF NOT EXISTS idx_channel_models_model_channel ON channel_models(model, channel_id);
-	`); err != nil {
-		return fmt.Errorf("create channel_models indexes: %w", err)
+	// 创建 channel_models 索引
+	for _, idx := range schema.DefineChannelModelsTable().GetIndexesSQLite() {
+		if _, err := db.ExecContext(ctx, idx); err != nil {
+			return fmt.Errorf("create channel_models index: %w", err)
+		}
 	}
 
-	// 数据迁移：同步现有渠道的模型数据到 channel_models 表
-	if _, err := s.db.ExecContext(ctx, `
-		-- 清空现有的索引数据（避免重复）
-		DELETE FROM channel_models;
-
-		-- 从 channels 表的 JSON 数据同步到 channel_models 表
-		INSERT INTO channel_models (channel_id, model)
-		SELECT
-			c.id,
-			je.value as model
-		FROM channels c
-		-- 使用 json_each 解析现有的 JSON 数据（仅用于迁移）
-		JOIN json_each(c.models) je
-		WHERE c.enabled = 1
-		  AND je.value IS NOT NULL
-		  AND je.value != ''
-		ON CONFLICT(channel_id, model) DO NOTHING;
-	`); err != nil {
-		// 如果 json_each 不支持（某些SQLite版本），则跳过迁移
-		// 新增/更新的渠道会通过应用层逻辑同步
-		fmt.Printf("Warning: Failed to migrate existing model data: %v\n", err)
-	}
-
-	// 创建 auth_tokens 表 (API访问令牌管理)
-	if _, err := s.db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS auth_tokens (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			token TEXT NOT NULL UNIQUE,
-			description TEXT NOT NULL,
-			created_at INTEGER NOT NULL,
-			expires_at INTEGER NOT NULL DEFAULT 0,
-			last_used_at INTEGER NOT NULL DEFAULT 0,
-			is_active INTEGER NOT NULL DEFAULT 1,
-			CHECK (is_active IN (0, 1))
-		);
-	`); err != nil {
+	// 创建 auth_tokens 表
+	if _, err := db.ExecContext(ctx,
+		schema.DefineAuthTokensTable().BuildSQLite(),
+	); err != nil {
 		return fmt.Errorf("create auth_tokens table: %w", err)
 	}
 
-	// 兼容性迁移：为现有数据库添加统计字段（2025-11新增）
-	statsColumns := []struct {
-		name       string
-		definition string
-	}{
-		{"success_count", "INTEGER DEFAULT 0"},
-		{"failure_count", "INTEGER DEFAULT 0"},
-		{"stream_avg_ttfb", "REAL DEFAULT 0.0"},
-		{"non_stream_avg_rt", "REAL DEFAULT 0.0"},
-		{"stream_count", "INTEGER DEFAULT 0"},
-		{"non_stream_count", "INTEGER DEFAULT 0"},
-		{"prompt_tokens_total", "INTEGER DEFAULT 0"},
-		{"completion_tokens_total", "INTEGER DEFAULT 0"},
-		{"total_cost_usd", "REAL DEFAULT 0.0"},
-	}
+	// 创建所有表的索引
+	allIndexes := []string{}
+	allIndexes = append(allIndexes, schema.DefineChannelsTable().GetIndexesSQLite()...)
+	allIndexes = append(allIndexes, schema.DefineAPIKeysTable().GetIndexesSQLite()...)
+	allIndexes = append(allIndexes, schema.DefineAuthTokensTable().GetIndexesSQLite()...)
 
-	for _, col := range statsColumns {
-		if _, err := s.db.ExecContext(ctx,
-			fmt.Sprintf("ALTER TABLE auth_tokens ADD COLUMN %s %s;", col.name, col.definition),
-		); err != nil {
-			// 忽略列已存在的错误（SQLite error: "duplicate column name"）
-			if !strings.Contains(err.Error(), "duplicate column name") {
-				return fmt.Errorf("add column %s: %w", col.name, err)
-			}
+	for _, idx := range allIndexes {
+		if _, err := db.ExecContext(ctx, idx); err != nil {
+			return fmt.Errorf("create index: %w", err)
 		}
 	}
 
-	// 创建性能索引
-	if _, err := s.db.ExecContext(ctx, `
-		-- 渠道表索引
-		-- 注：name字段UNIQUE约束已自动创建索引，无需重复
-		CREATE INDEX IF NOT EXISTS idx_channels_enabled ON channels(enabled);
-		CREATE INDEX IF NOT EXISTS idx_channels_priority ON channels(priority DESC);
-		CREATE INDEX IF NOT EXISTS idx_channels_type_enabled ON channels(channel_type, enabled);
-		CREATE INDEX IF NOT EXISTS idx_channels_cooldown ON channels(cooldown_until);
-
-		-- API Keys 表索引
-		-- 注：idx_api_keys_channel_cooldown前缀已覆盖channel_id查询
-		CREATE INDEX IF NOT EXISTS idx_api_keys_cooldown ON api_keys(cooldown_until);
-		CREATE INDEX IF NOT EXISTS idx_api_keys_channel_cooldown ON api_keys(channel_id, cooldown_until);
-
-		-- Auth Tokens 表索引
-		-- 注：token字段UNIQUE约束已自动创建索引，无需重复
-		CREATE INDEX IF NOT EXISTS idx_auth_tokens_active ON auth_tokens(is_active);
-		CREATE INDEX IF NOT EXISTS idx_auth_tokens_expires ON auth_tokens(expires_at);
-	`); err != nil {
-		return fmt.Errorf("create performance indexes: %w", err)
-	}
-
-	// 创建系统配置表(2025-11新增)
-	if _, err := s.db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS system_settings (
-			`+"`key`"+` TEXT PRIMARY KEY,
-			`+"`value`"+` TEXT NOT NULL,
-			value_type TEXT NOT NULL CHECK(value_type IN ('int', 'bool', 'string', 'duration')),
-			description TEXT NOT NULL,
-			default_value TEXT NOT NULL,
-			updated_at BIGINT NOT NULL
-		);
-	`); err != nil {
+	// 创建系统配置表
+	if _, err := db.ExecContext(ctx,
+		schema.DefineSystemSettingsTable().BuildSQLite(),
+	); err != nil {
 		return fmt.Errorf("create system_settings table: %w", err)
 	}
 
-	// 初始化默认配置(幂等插入:已存在则跳过)
-	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO system_settings (`+"`key`"+`, `+"`value`"+`, value_type, description, default_value, updated_at) VALUES
-		('log_retention_days', '7', 'int', '日志保留天数(-1永久保留,1-365天)', '7', strftime('%s', 'now')),
-		('max_key_retries', '3', 'int', '单渠道最大Key重试次数', '3', strftime('%s', 'now')),
-		('upstream_first_byte_timeout', '0', 'duration', '上游首字节超时(秒,0=禁用)', '0', strftime('%s', 'now')),
-		('88code_free_only', 'false', 'bool', '仅允许使用88code免费订阅(在free套餐生效时可用)', 'false', strftime('%s', 'now')),
-		('skip_tls_verify', 'false', 'bool', '跳过TLS证书验证(⚠️仅开发环境,生产严禁)', 'false', strftime('%s', 'now')),
-		('channel_test_content', 'sonnet 4.0的发布日期是什么', 'string', '渠道测试默认内容', 'sonnet 4.0的发布日期是什么', strftime('%s', 'now')),
-		('channel_stats_range', 'today', 'string', '渠道管理费用统计范围(today/this_week/this_month/all)', 'today', strftime('%s', 'now'))
-		ON CONFLICT(key) DO NOTHING;
-	`); err != nil {
-		return fmt.Errorf("initialize default settings: %w", err)
+	// 初始化默认配置
+	defaultSettings := []struct {
+		key, value, valueType, desc, defaultVal string
+	}{
+		{"log_retention_days", "7", "int", "日志保留天数(-1永久保留,1-365天)", "7"},
+		{"max_key_retries", "3", "int", "单渠道最大Key重试次数", "3"},
+		{"upstream_first_byte_timeout", "0", "duration", "上游首字节超时(秒,0=禁用)", "0"},
+		{"88code_free_only", "false", "bool", "仅允许使用88code免费订阅", "false"},
+		{"skip_tls_verify", "false", "bool", "跳过TLS证书验证", "false"},
+		{"channel_test_content", "sonnet 4.0的发布日期是什么", "string", "渠道测试默认内容", "sonnet 4.0的发布日期是什么"},
+		{"channel_stats_range", "today", "string", "渠道管理费用统计范围", "today"},
 	}
 
-	// 创建管理员会话表(2025-11新增,支持重启后保持登录)
-	if _, err := s.db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS admin_sessions (
-			token TEXT PRIMARY KEY,
-			expires_at BIGINT NOT NULL,
-			created_at BIGINT NOT NULL
-		);
-		CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires ON admin_sessions(expires_at);
-	`); err != nil {
-		return fmt.Errorf("create admin_sessions table: %w", err)
-	}
-
-	// 创建 logs 表（原独立日志库，现合并到主库）
-	if _, err := s.db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS logs (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			time BIGINT NOT NULL,
-			model TEXT NOT NULL DEFAULT '',
-			channel_id INTEGER NOT NULL DEFAULT 0,
-			status_code INTEGER NOT NULL,
-			message TEXT NOT NULL DEFAULT '',
-			duration REAL NOT NULL DEFAULT 0.0,
-			is_streaming INTEGER NOT NULL DEFAULT 0,
-			first_byte_time REAL NOT NULL DEFAULT 0.0,
-			api_key_used TEXT NOT NULL DEFAULT ''
-		);
-	`); err != nil {
-		return fmt.Errorf("create logs table: %w", err)
-	}
-
-	// 创建日志索引
-	// 注：idx_logs_time被复合索引前缀覆盖，idx_logs_status单独使用场景极少
-	logIndexes := []string{
-		"CREATE INDEX IF NOT EXISTS idx_logs_time_model ON logs(time, model)",
-		"CREATE INDEX IF NOT EXISTS idx_logs_time_channel ON logs(time, channel_id)",
-		"CREATE INDEX IF NOT EXISTS idx_logs_time_status ON logs(time, status_code)",
-		"CREATE INDEX IF NOT EXISTS idx_logs_streaming_firstbyte ON logs(is_streaming, first_byte_time) WHERE is_streaming = 1 AND first_byte_time > 0",
-	}
-
-	for _, idx := range logIndexes {
-		if _, err := s.db.ExecContext(ctx, idx); err != nil {
-			return fmt.Errorf("create log index: %w", err)
+	for _, setting := range defaultSettings {
+		if _, err := db.ExecContext(ctx, `
+			INSERT OR IGNORE INTO system_settings (key, value, value_type, description, default_value, updated_at)
+			VALUES (?, ?, ?, ?, ?, unixepoch())
+		`, setting.key, setting.value, setting.valueType, setting.desc, setting.defaultVal); err != nil {
+			return fmt.Errorf("insert default setting %s: %w", setting.key, err)
 		}
 	}
 
-	// 兼容性迁移：为logs表添加 token 统计字段和成本字段（2025-11新增）
-	logTokenColumns := []struct {
-		name       string
-		definition string
-	}{
-		{"input_tokens", "INTEGER NOT NULL DEFAULT 0"},
-		{"output_tokens", "INTEGER NOT NULL DEFAULT 0"},
-		{"cache_read_input_tokens", "INTEGER NOT NULL DEFAULT 0"},
-		{"cache_creation_input_tokens", "INTEGER NOT NULL DEFAULT 0"},
-		{"cost", "REAL NOT NULL DEFAULT 0.0"},
+	// 创建管理员会话表
+	if _, err := db.ExecContext(ctx,
+		schema.DefineAdminSessionsTable().BuildSQLite(),
+	); err != nil {
+		return fmt.Errorf("create admin_sessions table: %w", err)
 	}
 
-	for _, col := range logTokenColumns {
-		if _, err := s.db.ExecContext(ctx,
-			fmt.Sprintf("ALTER TABLE logs ADD COLUMN %s %s;", col.name, col.definition),
-		); err != nil {
-			if !strings.Contains(err.Error(), "duplicate column name") {
-				return fmt.Errorf("add column %s: %w", col.name, err)
-			}
+	// 创建会话表索引
+	for _, idx := range schema.DefineAdminSessionsTable().GetIndexesSQLite() {
+		if _, err := db.ExecContext(ctx, idx); err != nil {
+			return fmt.Errorf("create admin_sessions index: %w", err)
+		}
+	}
+
+	// 创建 logs 表
+	if _, err := db.ExecContext(ctx,
+		schema.DefineLogsTable().BuildSQLite(),
+	); err != nil {
+		return fmt.Errorf("create logs table: %w", err)
+	}
+
+	// 创建日志表索引
+	for _, idx := range schema.DefineLogsTable().GetIndexesSQLite() {
+		if _, err := db.ExecContext(ctx, idx); err != nil {
+			return fmt.Errorf("create logs index: %w", err)
 		}
 	}
 
 	return nil
-}
-
-// Migrate 执行SQLite数据库迁移（独立函数，供factory调用）
-func Migrate(ctx context.Context, db any) error {
-	// 临时包装为store结构以复用现有逻辑
-	type dbWrapper struct{ db any }
-	s := &SQLiteStore{db: db.(*sql.DB)}
-	return s.migrate(ctx)
 }

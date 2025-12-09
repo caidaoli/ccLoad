@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -70,28 +69,11 @@ func main() {
 		log.Printf("Redis同步未配置")
 	}
 
-	// 使用工厂函数创建存储实例
+	// 使用工厂函数创建存储实例（自动识别MySQL/SQLite）
 	ctx := context.Background()
-	store, dbType, err := storage.NewStore(redisSync)
+	store, err := storage.NewStore(redisSync)
 	if err != nil {
 		log.Fatalf("存储初始化失败: %v", err)
-	}
-
-	// 如果是 SQLite，需要单独创建（工厂函数返回 nil）
-	if dbType == storage.DBTypeSQLite {
-		// 仅在 SQLite 模式下准备数据库路径
-		dbPath := os.Getenv("SQLITE_PATH")
-		if dbPath == "" {
-			dbPath = filepath.Join("data", "ccload.db")
-		}
-		s, err := storage.CreateSQLiteStore(dbPath, redisSync)
-		if err != nil {
-			log.Fatalf("SQLite 初始化失败: %v", err)
-		}
-		log.Printf("使用 SQLite 存储: %s", dbPath)
-		store = s
-	} else {
-		log.Printf("使用 MySQL 存储")
 	}
 
 	// 统一的Redis恢复逻辑（SQLite和MySQL共用）

@@ -12,7 +12,7 @@ import (
 
 	"ccLoad/internal/app"
 	"ccLoad/internal/model"
-	"ccLoad/internal/storage/sqlite"
+	"ccLoad/internal/storage"
 )
 
 // contextKey 自定义类型用于 context key，避免 SA1029 警告
@@ -262,10 +262,10 @@ func TestConcurrentChannelOperations(t *testing.T) {
 }
 
 // 辅助函数：创建测试Store
-func setupTestStore(t *testing.T) (*sqlite.SQLiteStore, func()) {
+func setupTestStore(t *testing.T) (storage.Store, func()) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
-	store, err := sqlite.NewSQLiteStore(dbPath, &mockRedisSync{})
+	store, err := storage.CreateSQLiteStore(dbPath, &mockRedisSync{})
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
@@ -303,7 +303,7 @@ func (m *mockRedisSync) LoadAuthTokensFromRedis(ctx context.Context) ([]*model.A
 }
 
 // 辅助函数：创建带多个Key的测试渠道
-func createTestChannelWithKeys(t *testing.T, store *sqlite.SQLiteStore, keyCount int, strategy string) int64 {
+func createTestChannelWithKeys(t *testing.T, store storage.Store, keyCount int, strategy string) int64 {
 	ctx := context.Background()
 
 	// 1. 创建渠道配置（不包含APIKeys）

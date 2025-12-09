@@ -16,39 +16,37 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// DBType 数据库类型
-type DBType string
-
-const (
-	DBTypeSQLite DBType = "sqlite"
-	DBTypeMySQL  DBType = "mysql"
-)
-
 // RedisSync Redis同步接口（与sql.RedisSync保持一致）
 type RedisSync = sqlstore.RedisSync
 
-// NewStore 根据环境变量创建存储实例
-// CCLOAD_MYSQL 设置时使用MySQL，否则使用SQLite
-func NewStore(redisSync RedisSync) (Store, DBType, error) {
+// NewStore 根据环境变量创建存储实例（工厂模式）
+// 环境变量 CCLOAD_MYSQL：设置时使用MySQL，否则使用SQLite
+// 环境变量 SQLITE_PATH：SQLite数据库路径（默认: data/ccload.db）
+//
+// 生产代码应使用此函数，测试代码可使用 CreateSQLiteStore() 直接创建
+func NewStore(redisSync RedisSync) (Store, error) {
 	mysqlDSN := os.Getenv("CCLOAD_MYSQL")
 	if mysqlDSN != "" {
 		store, err := createMySQLStore(mysqlDSN, redisSync)
 		if err != nil {
-			return nil, DBTypeMySQL, fmt.Errorf("MySQL 初始化失败: %w", err)
+			return nil, fmt.Errorf("MySQL 初始化失败: %w", err)
 		}
-		return store, DBTypeMySQL, nil
+		log.Printf("使用 MySQL 存储")
+		return store, nil
 	}
 
-	// SQLite 模式：由调用方创建，这里只返回类型标识
-	return nil, DBTypeSQLite, nil
-}
-
-// GetDBType 获取当前配置的数据库类型
-func GetDBType() DBType {
-	if os.Getenv("CCLOAD_MYSQL") != "" {
-		return DBTypeMySQL
+	// SQLite模式：自动获取路径
+	dbPath := os.Getenv("SQLITE_PATH")
+	if dbPath == "" {
+		dbPath = filepath.Join("data", "ccload.db")
 	}
-	return DBTypeSQLite
+
+	store, err := CreateSQLiteStore(dbPath, redisSync)
+	if err != nil {
+		return nil, fmt.Errorf("SQLite 初始化失败: %w", err)
+	}
+	log.Printf("使用 SQLite 存储: %s", dbPath)
+	return store, nil
 }
 
 // createMySQLStore 创建 MySQL 存储实例（使用统一的 SQLStore）
@@ -86,7 +84,9 @@ func createMySQLStore(dsn string, redisSync RedisSync) (Store, error) {
 	return store, nil
 }
 
-// CreateSQLiteStore 创建 SQLite 存储实例（使用统一的 SQLStore）
+// CreateSQLiteStore 直接创建 SQLite 存储实例（测试辅助函数）
+// 生产代码应使用 NewStore() 工厂函数
+// 测试代码可用此函数创建独立的测试数据库
 func CreateSQLiteStore(path string, redisSync RedisSync) (Store, error) {
 	// 创建数据目录
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
