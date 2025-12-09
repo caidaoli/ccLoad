@@ -5,7 +5,9 @@ import (
 	"ccLoad/internal/util"
 
 	"context"
+	"log"
 	"math/rand/v2"
+	"time"
 )
 
 // selectCandidatesByChannelType 根据渠道类型选择候选渠道
@@ -16,7 +18,7 @@ func (s *Server) selectCandidatesByChannelType(ctx context.Context, channelType 
 	if err != nil {
 		return nil, err
 	}
-	return shuffleSamePriorityChannels(channels), nil
+	return s.filterCooldownChannels(ctx, shuffleSamePriorityChannels(channels))
 }
 
 // selectCandidates 选择支持指定模型的候选渠道
@@ -35,7 +37,7 @@ func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model strin
 	}
 
 	if channelType == "" {
-		return shuffleSamePriorityChannels(configs), nil
+		return s.filterCooldownChannels(ctx, shuffleSamePriorityChannels(configs))
 	}
 
 	normalizedType := util.NormalizeChannelType(channelType)
@@ -46,7 +48,68 @@ func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model strin
 		}
 	}
 
-	return shuffleSamePriorityChannels(filtered), nil
+	return s.filterCooldownChannels(ctx, shuffleSamePriorityChannels(filtered))
+}
+
+// filterCooldownChannels 过滤掉冷却中的渠道
+// ✅ 修复 (2025-12-09): 在渠道选择阶段就过滤冷却渠道，避免无效尝试
+// 过滤规则:
+//   1. 渠道级冷却 → 直接过滤
+//   2. 所有Key都在冷却 → 过滤
+//   3. 至少有一个Key可用 → 保留
+func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpkg.Config) ([]*modelpkg.Config, error) {
+	if len(channels) == 0 {
+		return channels, nil
+	}
+
+	now := time.Now()
+
+	// 批量查询冷却状态（使用缓存层，性能优化）
+	channelCooldowns, err := s.getAllChannelCooldowns(ctx)
+	if err != nil {
+		// 降级处理：查询失败时不过滤，避免阻塞请求
+		log.Printf("⚠️  WARNING: Failed to get channel cooldowns (degraded mode): %v", err)
+		return channels, nil
+	}
+
+	keyCooldowns, err := s.getAllKeyCooldowns(ctx)
+	if err != nil {
+		// 降级处理：查询失败时不过滤
+		log.Printf("⚠️  WARNING: Failed to get key cooldowns (degraded mode): %v", err)
+		return channels, nil
+	}
+
+	// 过滤冷却中的渠道
+	filtered := make([]*modelpkg.Config, 0, len(channels))
+	for _, cfg := range channels {
+		// 1. 检查渠道级冷却
+		if cooldownUntil, exists := channelCooldowns[cfg.ID]; exists {
+			if cooldownUntil.After(now) {
+				continue // 渠道冷却中，跳过
+			}
+		}
+
+		// 2. 检查是否所有Key都在冷却
+		keyMap, hasKeys := keyCooldowns[cfg.ID]
+		if hasKeys {
+			// 检查是否至少有一个Key可用
+			hasAvailableKey := false
+			for _, cooldownUntil := range keyMap {
+				if cooldownUntil.Before(now) || cooldownUntil.Equal(now) {
+					hasAvailableKey = true
+					break
+				}
+			}
+			if !hasAvailableKey {
+				continue // 所有Key都冷却中，跳过
+			}
+		}
+
+		// 渠道可用
+		filtered = append(filtered, cfg)
+	}
+
+	return filtered, nil
 }
 
 // shuffleSamePriorityChannels 随机打乱相同优先级的渠道，实现负载均衡

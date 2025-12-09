@@ -50,7 +50,7 @@ internal/
 
 ### Task 子代理使用策略
 
-**必须使用子代理:**
+**必须使用子代理**(必须遵守):
 - 代码探索/架构分析 → `Explore` (medium/very thorough)
 - 独立复杂任务(如安全审计、性能分析) → `general-purpose`
 - 需大量代码上下文但只要结论 → 避免污染主对话
@@ -64,17 +64,11 @@ internal/
 **并行调用原则:**
 需同时分析 API 层和数据层 → 一条消息发起两个 Task，而非串行
 
-### Serena MCP 工具策略
+**使用Serena MCP工具**(必须遵守):
+- 代码浏览用符号化工具(`mcp__serena__get_symbols_overview`, `mcp__serena__find_symbol`)
+- **禁止**直接读取整个文件,先用`get_symbols_overview`了解结构
+- 编辑代码用`mcp__serena__replace_symbol_body`,不用正则替换
 
-**强制使用符号化工具:**
-- 代码浏览 → `mcp__serena__get_symbols_overview`(先看结构)
-- 精确定位 → `mcp__serena__find_symbol`(查找具体符号)
-- 代码编辑 → `mcp__serena__replace_symbol_body`(替换函数体/类定义)
-
-**严格禁止:**
-- ❌ 直接 `Read` 整个文件(除非明确需要完整上下文)
-- ❌ 用 `Edit` 工具做正则替换(易出错)
-- ✅ 先 `get_symbols_overview` 了解文件结构，再针对性操作
 
 
 ### Playwright MCP 工具策略
