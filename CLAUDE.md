@@ -48,46 +48,52 @@ internal/
 
 ## 开发指南
 
-**Task子代理**(适用场景):
-- **Explore/Plan**: 开放性问题、需遍历多目录的代码探索
-- **general-purpose**: 独立的复杂子任务(如"审查这个PR的安全性")
-- **上下文隔离**: 需读取大量代码但只需结论时(子代理返回摘要,不污染主对话)
-- **并行调用**: 多个**无依赖**的任务,单条消息发起多个 Task 调用
+### Task 子代理使用策略
 
-**不要用子代理**:
-- 已知符号名/文件路径 → 直接用 Serena 工具
-- 单文件操作 → 直接处理
-- 有依赖关系的任务链 → 必须串行,子代理无法传递中间状态
-- 简单搜索 → 直接调用 Grep/Glob
+**必须使用子代理:**
+- 代码探索/架构分析 → `Explore` (medium/very thorough)
+- 独立复杂任务(如安全审计、性能分析) → `general-purpose`
+- 需大量代码上下文但只要结论 → 避免污染主对话
+- 多个无依赖任务 → **单条消息并行调用多个 Task**
 
-**判断标准**:
-1. 任务复杂度是否足以抵消启动开销(~2-3秒)?
-2. 是否需要上下文隔离(避免大量代码撑爆主对话)?
-3. 多任务是否真正独立(无数据依赖)?
+**禁止使用子代理:**
+- 简单文件读取(直接用 Read/Glob/Grep)
+- 有依赖的任务链(子代理无法传递中间状态)
+- 已有子代理运行时(检查 resume 参数复用)
 
-**显式触发**:
-- "审查/review/分析安全性" → general-purpose 子代理
-- "探索/了解/分析架构/怎么工作" → Explore 子代理
-- "改/加/修/删/重构/实现" → 直接操作,不启动子代理
+**并行调用原则:**
+需同时分析 API 层和数据层 → 一条消息发起两个 Task，而非串行
 
-**使用Serena MCP工具**(必须遵守):
-- 代码浏览用符号化工具(`mcp__serena__get_symbols_overview`, `mcp__serena__find_symbol`)
-- **禁止**直接读取整个文件,先用`get_symbols_overview`了解结构
-- 编辑代码用`mcp__serena__replace_symbol_body`,不用正则替换
+### Serena MCP 工具策略
 
-**使用Playwright MCP工具**(必须遵守):
-- 截图**必须**使用 JPEG 格式: `type: "jpeg"`(默认 quality=80,体积比 PNG 小 5-10 倍)
+**强制使用符号化工具:**
+- 代码浏览 → `mcp__serena__get_symbols_overview`(先看结构)
+- 精确定位 → `mcp__serena__find_symbol`(查找具体符号)
+- 代码编辑 → `mcp__serena__replace_symbol_body`(替换函数体/类定义)
+
+**严格禁止:**
+- ❌ 直接 `Read` 整个文件(除非明确需要完整上下文)
+- ❌ 用 `Edit` 工具做正则替换(易出错)
+- ✅ 先 `get_symbols_overview` 了解文件结构，再针对性操作
+
+
+### Playwright MCP 工具策略
+
+- 截图**必须**使用 JPEG 格式: `type: "jpeg"`(默认 quality=80，体积比 PNG 小 5-10 倍)
 - 需要极致压缩时用 `browser_run_code`: `await page.screenshot({ type: 'jpeg', quality: 50, path: '...' })`
-- 交互操作前优先用 `browser_snapshot`(文本格式,零体积),视觉验证才截图
-- **避免** `fullPage: true`,优先截取特定元素或可见区域
+- 交互操作前优先用 `browser_snapshot`(文本格式，零体积)，视觉验证才截图
+- **避免** `fullPage: true`，优先截取特定元素或可见区域
 
-**添加Admin API**:
+
+### 添加 Admin API 流程
 1. `internal/app/admin_types.go` - 定义请求/响应类型
 2. `internal/app/admin_<feature>.go` - 实现Handler函数
 3. `internal/app/server.go:SetupRoutes()` - 注册路由
 4. 使用 `s.handlers.Success/BadRequest/ServerError/NotFound` 统一响应
 
-**数据库操作**:
+
+### 数据库操作规范
+
 - Schema更新: `internal/storage/sqlite/migrate.go`启动时自动执行
 - 事务封装: `storage.ExecInTransaction(func(tx) error { ... })`保证原子性
 - 缓存失效: 修改渠道后调用`s.InvalidateChannelListCache()`
