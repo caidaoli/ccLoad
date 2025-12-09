@@ -29,9 +29,9 @@ ccLoad 通过以下特性解决这些痛点：
 - 🚀 **高性能架构** - 基于 Gin 框架，支持 1000+ 并发连接，异步Redis同步响应<1ms
 - 🧮 **本地Token计数** - 符合官方API规范的本地Token估算，响应<5ms，准确度93%+，支持大规模工具场景
 - 🎯 **智能错误分类** - 区分Key级错误、渠道级错误和客户端错误，精准故障切换
-- 🔀 **智能路由** - 基于优先级和轮询的渠道选择算法，支持多Key负载均衡
-- 🛡️ **故障切换** - 自动失败检测和指数退避冷却机制（1s → 2s → 4s → ... → 30min）
-- 📊 **实时监控** - 内置趋势分析、日志记录和统计面板
+- 🔀 **智能路由** - 基于优先级和轮询的渠道选择算法，**预过滤冷却渠道**提升性能，支持多Key负载均衡
+- 🛡️ **故障切换** - 自动失败检测和指数退避冷却机制（1s → 2s → 4s → ... → 30min），修复SSE流1308错误冷却逻辑
+- 📊 **实时监控** - 内置趋势分析、日志记录和统计面板，**Token用量统计**支持时间范围选择和按令牌分类
 - 🎯 **透明代理** - 支持Claude、Gemini和OpenAI兼容API，智能识别认证方式
 - 📦 **单文件部署** - 无外部依赖，包含嵌入式 SQLite
 - 🔒 **安全认证** - 基于 Token 的管理界面和API访问控制
@@ -62,10 +62,14 @@ graph TB
         
         subgraph "存储层"
             J[(存储工厂)]
+            J3[Schema定义层]
+            J4[统一SQL层]
             J1[(SQLite)]
             J2[(MySQL)]
-            J --> J1
-            J --> J2
+            J --> J3
+            J3 --> J4
+            J4 --> J1
+            J4 --> J2
         end
         
         subgraph "监控层"
@@ -571,6 +575,11 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 - 实时错误日志
 - 渠道调用统计
 - 性能指标监控
+- **Token 用量统计**：
+  - 支持自定义时间范围选择器
+  - 用量单位显示为 M（百万 tokens）
+  - 支持按 API 令牌 ID 分类统计
+  - 支持缓存优化的统计查询
 
 ## 🔧 技术栈
 
@@ -596,17 +605,27 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
   - `proxy_util.go` (484行)：常量、类型定义、工具函数
   - `proxy_stream.go` (77行)：流式响应、首字节检测
   - `proxy_gemini.go` (42行)：Gemini API特殊处理
+  - `proxy_sse_parser.go`：SSE解析器（防御性处理，修复1308错误冷却逻辑）
 - **admin模块拆分**（SRP原则）：
   - `admin_channels.go`：渠道CRUD操作
   - `admin_stats.go`：统计分析API
   - `admin_cooldown.go`：冷却管理API
   - `admin_csv.go`：CSV导入导出
   - `admin_types.go`：管理API类型定义
+  - `admin_auth_tokens.go`：API访问令牌CRUD（支持Token统计）
+  - `admin_settings.go`：系统设置管理
+  - `admin_models.go`：模型列表管理
+  - `admin_testing.go`：渠道测试功能
 - **冷却管理器**（DRY原则）：
   - `cooldown/manager.go` (122行)：统一冷却决策引擎
   - 消除重复代码83%，冷却逻辑统一管理
   - 区分网络错误和HTTP错误的分类策略
   - 内置单Key渠道自动升级逻辑
+- **存储层重构**（2025-12优化，消除467行重复代码）：
+  - `storage/schema/`：统一Schema定义（支持SQLite/MySQL差异）
+  - `storage/sql/`：通用SQL实现层（SQLite/MySQL共享）
+  - `storage/factory.go`：工厂模式自动选择数据库
+  - 复合索引优化，统计查询性能提升
 
 **多级缓存系统**:
 - 渠道配置缓存（60秒TTL）
@@ -705,14 +724,25 @@ docker pull --platform linux/arm64 ghcr.io/caidaoli/ccload:latest
 storage/
 ├── store.go         # Store 接口（统一契约）
 ├── factory.go       # NewStore() 自动选择数据库
-├── sqlite/          # SQLite 实现
-│   ├── sqlite.go
-│   ├── migrate.go   # 自动表迁移
-│   └── store_impl.go
-└── mysql/           # MySQL 实现
-    ├── mysql.go
-    ├── migrate.go   # 自动表迁移
-    └── store_impl.go
+├── schema/          # 统一 Schema 定义层（2025-12 新增）
+│   ├── tables.go    # 表结构定义（DefineXxxTable 函数）
+│   └── builder.go   # Schema 构建器（支持 SQLite/MySQL 差异）
+├── sql/             # 通用 SQL 实现层（2025-12 重构，消除 467 行重复代码）
+│   ├── store_impl.go      # SQLStore 核心实现
+│   ├── config.go          # 渠道配置 CRUD
+│   ├── apikey.go          # API 密钥 CRUD
+│   ├── cooldown.go        # 冷却管理
+│   ├── log.go             # 日志存储
+│   ├── metrics.go         # 指标统计
+│   ├── metrics_filter.go  # 过滤条件交集支持
+│   ├── auth_tokens.go     # API 访问令牌
+│   ├── admin_sessions.go  # 管理会话
+│   ├── system_settings.go # 系统设置
+│   ├── redis_sync.go      # Redis 同步
+│   └── helpers.go         # 辅助函数
+├── sqlite/          # SQLite 特定（仅测试文件）
+└── redis/           # Redis 同步
+    └── sync.go      # Redis 备份恢复
 ```
 
 **数据库选择逻辑**:
@@ -728,13 +758,17 @@ storage/
 - `admin_sessions` - 管理会话
 - `system_settings` - 系统配置（支持热重载）
 
-**架构特性** (✅ 2025-10月优化):
+**架构特性** (✅ 2025-12月优化):
+- ✅ **统一SQL层**（重构）：SQLite/MySQL共享`storage/sql/`实现，消除467行重复代码
+- ✅ **统一Schema定义**（新增）：`storage/schema/`定义表结构，支持数据库差异
 - ✅ 工厂模式统一接口（OCP 原则，易扩展新存储）
 - ✅ 冷却数据内联（废弃独立 cooldowns 表，减少 JOIN 开销）
 - ✅ 性能索引优化（渠道选择延迟↓30-50%，Key 查找延迟↓40-60%）
+- ✅ 复合索引优化（统计查询性能提升）
 - ✅ 外键约束（级联删除，保证数据一致性）
 - ✅ 多 Key 支持（sequential/round_robin 策略）
 - ✅ 自动迁移（启动时自动创建/更新表结构）
+- ✅ Token统计增强（支持时间范围选择、按令牌ID分类、缓存优化）
 
 **向后兼容迁移**:
 - 自动检测并修复重复渠道名称

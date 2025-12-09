@@ -57,9 +57,7 @@ internal/
 - 多个无依赖任务 → **单条消息并行调用多个 Task**
 
 **禁止使用子代理:**
-- 简单文件读取(直接用 Read/Glob/Grep)
 - 有依赖的任务链(子代理无法传递中间状态)
-- 已有子代理运行时(检查 resume 参数复用)
 
 **并行调用原则:**
 需同时分析 API 层和数据层 → 一条消息发起两个 Task，而非串行
@@ -88,9 +86,9 @@ internal/
 
 ### 数据库操作规范
 
-- Schema更新: `internal/storage/sqlite/migrate.go`启动时自动执行
-- 事务封装: `storage.ExecInTransaction(func(tx) error { ... })`保证原子性
-- 缓存失效: 修改渠道后调用`s.InvalidateChannelListCache()`
+- Schema更新: `internal/storage/migrate.go` 启动时自动执行
+- 事务封装: `s.store.WithTransaction(ctx, func(tx) error { ... })`
+- 缓存失效: `InvalidateChannelListCache()` / `InvalidateAPIKeysCache()` / `invalidateCooldownCache()`
 
 ## 代码规范
 
