@@ -80,7 +80,9 @@ type Store interface {
 	UpdateAuthToken(ctx context.Context, token *model.AuthToken) error
 	DeleteAuthToken(ctx context.Context, id int64) error
 	UpdateTokenLastUsed(ctx context.Context, tokenHash string, now time.Time) error
-	UpdateTokenStats(ctx context.Context, tokenHash string, isSuccess bool, duration float64, isStreaming bool, firstByteTime float64, promptTokens int64, completionTokens int64, costUSD float64) error
+	UpdateTokenStats(ctx context.Context, tokenHash string, isSuccess bool, duration float64, isStreaming bool, firstByteTime float64, promptTokens int64, completionTokens int64, cacheReadTokens int64, cacheCreationTokens int64, costUSD float64) error
+	// GetAuthTokenStatsInRange 查询指定时间范围内每个token的统计数据（从logs表聚合，2025-12新增）
+	GetAuthTokenStatsInRange(ctx context.Context, startTime, endTime time.Time) (map[int64]*model.AuthTokenRangeStats, error)
 
 	// Maintenance - 维护功能
 	CleanupLogsBefore(ctx context.Context, cutoff time.Time) error

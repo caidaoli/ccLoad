@@ -18,7 +18,7 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 	sinceUnix := since.Unix()
 	untilUnix := until.Unix()
 
-	// 🎯 修复跨数据库JOIN：先从主库查询符合类型的渠道ID列表
+	// 🎯 修复跨数据库JOIN:先从主库查询符合类型的渠道ID列表
 	var channelIDs []int64
 	if channelType != "" {
 		var err error
@@ -26,16 +26,17 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 		if err != nil {
 			return nil, fmt.Errorf("fetch channel ids by type: %w", err)
 		}
-		// 如果没有符合条件的渠道，直接返回空结果
+		// 如果没有符合条件的渠道,直接返回空结果
 		if len(channelIDs) == 0 {
 			return buildEmptyMetricPoints(since, until, bucket), nil
 		}
 	}
 
-	// 构建查询：不再JOIN channels表，使用IN子句过滤
+	// 构建查询:不再JOIN channels表,使用IN子句过滤
+	// 修复:使用FLOOR确保bucket_ts是整数,避免浮点数导致map查找失败
 	query := `
 		SELECT
-			((logs.time / 1000) / ?) * ? AS bucket_ts,
+			FLOOR((logs.time / 1000) / ?) * ? AS bucket_ts,
 			logs.channel_id,
 			SUM(CASE WHEN logs.status_code >= 200 AND logs.status_code < 300 THEN 1 ELSE 0 END) AS success,
 			SUM(CASE WHEN logs.status_code < 200 OR logs.status_code >= 300 THEN 1 ELSE 0 END) AS error,
@@ -56,7 +57,7 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 
 	args := []any{bucketSeconds, bucketSeconds, sinceUnix, untilUnix}
 
-	// 添加 channel_type 过滤（使用IN子句）
+	// 添加 channel_type 过滤(使用IN子句)
 	if len(channelIDs) > 0 {
 		placeholders := make([]string, len(channelIDs))
 		for i := range channelIDs {
@@ -94,7 +95,7 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 	helperMap := make(map[int64]*aggregationHelper)
 
 	for rows.Next() {
-		var bucketTsFloat float64
+		var bucketTsInt int64
 		var channelID sql.NullInt64
 		var success, errorCount int
 		var avgFirstByteTime sql.NullFloat64
@@ -103,24 +104,23 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 		var durationSuccessCount int
 		var totalCost float64
 
-		if err := rows.Scan(&bucketTsFloat, &channelID, &success, &errorCount, &avgFirstByteTime, &avgDuration, &streamSuccessFirstByteCount, &durationSuccessCount, &totalCost); err != nil {
+		if err := rows.Scan(&bucketTsInt, &channelID, &success, &errorCount, &avgFirstByteTime, &avgDuration, &streamSuccessFirstByteCount, &durationSuccessCount, &totalCost); err != nil {
 			return nil, err
 		}
-		bucketTs := int64(bucketTsFloat)
 
-		mp, ok := mapp[bucketTs]
+		mp, ok := mapp[bucketTsInt]
 		if !ok {
 			mp = &model.MetricPoint{
-				Ts:       time.Unix(bucketTs, 0),
+				Ts:       time.Unix(bucketTsInt, 0),
 				Channels: make(map[string]model.ChannelMetric),
 			}
-			mapp[bucketTs] = mp
+			mapp[bucketTsInt] = mp
 		}
 
-		helper, ok := helperMap[bucketTs]
+		helper, ok := helperMap[bucketTsInt]
 		if !ok {
 			helper = &aggregationHelper{}
-			helperMap[bucketTs] = helper
+			helperMap[bucketTsInt] = helper
 		}
 
 		mp.Success += success

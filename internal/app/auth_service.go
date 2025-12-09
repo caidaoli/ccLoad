@@ -34,8 +34,9 @@ type AuthService struct {
 	tokensMux   sync.RWMutex         // 并发保护
 
 	// API 认证（代理 API 使用的数据库令牌）
-	authTokens    map[string]bool // 数据库令牌集合（SHA256哈希）
-	authTokensMux sync.RWMutex    // 并发保护（支持热更新）
+	authTokens    map[string]bool  // 数据库令牌集合（SHA256哈希）
+	authTokenIDs  map[string]int64 // Token哈希 → Token ID 映射（用于日志记录，2025-12新增）
+	authTokensMux sync.RWMutex     // 并发保护（支持热更新）
 
 	// 数据库依赖（用于热更新令牌）
 	store storage.Store
@@ -55,6 +56,7 @@ func NewAuthService(
 		password:         password,
 		validTokens:      make(map[string]time.Time),
 		authTokens:       make(map[string]bool),
+		authTokenIDs:     make(map[string]int64),
 		loginRateLimiter: loginRateLimiter,
 		store:            store,
 	}
@@ -249,8 +251,11 @@ func (s *AuthService) RequireAPIAuth() gin.HandlerFunc {
 		s.authTokensMux.RUnlock()
 
 		if isValid {
-			// 将tokenHash存储到context，供后续统计使用（2025-11新增）
+			// 将tokenHash和tokenID存储到context，供后续统计使用（2025-11新增tokenHash, 2025-12新增tokenID）
 			c.Set("token_hash", tokenHash)
+			if tokenID, ok := s.authTokenIDs[tokenHash]; ok {
+				c.Set("token_id", tokenID)
+			}
 
 			// 异步更新last_used_at（不阻塞请求）
 			go func() {
@@ -380,15 +385,18 @@ func (s *AuthService) ReloadAuthTokens() error {
 		return fmt.Errorf("reload auth tokens: %w", err)
 	}
 
-	// 构建新的令牌映射
+	// 构建新的令牌映射（2025-12扩展：同时构建tokenID映射）
 	newTokens := make(map[string]bool, len(tokens))
+	newTokenIDs := make(map[string]int64, len(tokens))
 	for _, t := range tokens {
 		newTokens[t.Token] = true
+		newTokenIDs[t.Token] = t.ID
 	}
 
 	// 原子替换（避免读写竞争）
 	s.authTokensMux.Lock()
 	s.authTokens = newTokens
+	s.authTokenIDs = newTokenIDs
 	s.authTokensMux.Unlock()
 
 	log.Printf("🔄 API令牌已热更新（%d个有效令牌）", len(newTokens))

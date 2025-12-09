@@ -78,13 +78,14 @@ func (s *Server) handleNetworkError(
 	keyIndex int,
 	actualModel string, // ✅ 重定向后的实际模型名称
 	selectedKey string,
+	authTokenID int64, // ✅ API令牌ID（用于日志记录，2025-12新增）
 	duration float64,
 	err error,
 ) (*proxyResult, bool, bool) {
 	statusCode, _, _ := util.ClassifyError(err)
 	// ✅ 修复：使用 actualModel 而非 reqCtx.originalModel
 	s.AddLogAsync(buildLogEntry(actualModel, cfg.ID, statusCode,
-		duration, false, selectedKey, nil, err.Error()))
+		duration, false, selectedKey, authTokenID, nil, err.Error()))
 
 	action, _ := s.handleProxyError(ctx, cfg, keyIndex, nil, err)
 	if action == cooldown.ActionReturnClient {
@@ -142,7 +143,7 @@ func (s *Server) handleProxySuccess(
 	// ✅ 修复：使用 actualModel 而非 reqCtx.originalModel
 	isStreaming := reqCtx.isStreaming
 	s.AddLogAsync(buildLogEntry(actualModel, cfg.ID, res.Status,
-		duration, isStreaming, selectedKey, res, ""))
+		duration, isStreaming, selectedKey, reqCtx.tokenID, res, ""))
 
 	// ✅ 新增：异步更新Token统计（2025-11）
 	if reqCtx.tokenHash != "" {
@@ -153,6 +154,8 @@ func (s *Server) handleProxySuccess(
 			// 计算token费用
 			promptTokens := int64(res.InputTokens)
 			completionTokens := int64(res.OutputTokens)
+			cacheReadTokens := int64(res.CacheReadInputTokens)
+			cacheCreationTokens := int64(res.CacheCreationInputTokens)
 			costUSD := util.CalculateCost(
 				actualModel,
 				res.InputTokens,
@@ -167,7 +170,7 @@ func (s *Server) handleProxySuccess(
 					actualModel, res.InputTokens, res.OutputTokens, res.CacheReadInputTokens, res.CacheCreationInputTokens)
 			}
 
-			if err := s.store.UpdateTokenStats(updateCtx, reqCtx.tokenHash, true, duration, isStreaming, res.FirstByteTime, promptTokens, completionTokens, costUSD); err != nil {
+			if err := s.store.UpdateTokenStats(updateCtx, reqCtx.tokenHash, true, duration, isStreaming, res.FirstByteTime, promptTokens, completionTokens, cacheReadTokens, cacheCreationTokens, costUSD); err != nil {
 				log.Printf("ERROR: failed to update token stats for hash=%s: %v", reqCtx.tokenHash, err)
 			}
 		}()
@@ -206,7 +209,7 @@ func (s *Server) handleProxyErrorResponse(
 	}
 
 	s.AddLogAsync(buildLogEntry(actualModel, cfg.ID, res.Status,
-		duration, isStreaming, selectedKey, res, errMsg))
+		duration, isStreaming, selectedKey, reqCtx.tokenID, res, errMsg))
 
 	// ✅ 新增：异步更新Token统计（2025-11）
 	if reqCtx.tokenHash != "" {
@@ -215,7 +218,7 @@ func (s *Server) handleProxyErrorResponse(
 			defer cancel()
 
 			// 失败请求不计费，token数量传0
-			_ = s.store.UpdateTokenStats(updateCtx, reqCtx.tokenHash, false, duration, isStreaming, res.FirstByteTime, 0, 0, 0.0)
+			_ = s.store.UpdateTokenStats(updateCtx, reqCtx.tokenHash, false, duration, isStreaming, res.FirstByteTime, 0, 0, 0, 0, 0.0)
 		}()
 	}
 

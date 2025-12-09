@@ -113,7 +113,7 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 
 	t.Run("context canceled returns client error", func(t *testing.T) {
 		result, retryKey, retryChannel := srv.handleNetworkError(
-			ctx, cfg, 0, "test-model", "test-key", 0.1, context.Canceled,
+			ctx, cfg, 0, "test-model", "test-key", 0, 0.1, context.Canceled,
 		)
 
 		if result == nil {
@@ -129,7 +129,7 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 
 	t.Run("network error switches channel", func(t *testing.T) {
 		result, retryKey, retryChannel := srv.handleNetworkError(
-			ctx, cfg, 0, "test-model", "test-key", 0.1, errors.New("connection refused"),
+			ctx, cfg, 0, "test-model", "test-key", 0, 0.1, errors.New("connection refused"),
 		)
 
 		if result != nil {
@@ -146,7 +146,7 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 	t.Run("first byte timeout switches channel", func(t *testing.T) {
 		err := fmt.Errorf("wrap: %w", util.ErrUpstreamFirstByteTimeout)
 		result, retryKey, retryChannel := srv.handleNetworkError(
-			ctx, cfg, 0, "test-model", "test-key", 0.1, err,
+			ctx, cfg, 0, "test-model", "test-key", 0, 0.1, err,
 		)
 
 		if result != nil {

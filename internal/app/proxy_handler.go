@@ -185,9 +185,11 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		return
 	}
 
-	// 从context提取tokenHash（用于统计，2025-11新增）
+	// 从context提取tokenHash和tokenID（用于统计和日志，2025-11新增tokenHash, 2025-12新增tokenID）
 	tokenHash, _ := c.Get("token_hash")
 	tokenHashStr, _ := tokenHash.(string)
+	tokenID, _ := c.Get("token_id")
+	tokenIDInt64, _ := tokenID.(int64)
 
 	reqCtx := &proxyRequestContext{
 		originalModel: originalModel,
@@ -198,6 +200,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		header:        c.Request.Header,
 		isStreaming:   isStreaming,
 		tokenHash:     tokenHashStr,
+		tokenID:       tokenIDInt64,
 	}
 
 	// 按优先级遍历候选渠道，尝试转发
