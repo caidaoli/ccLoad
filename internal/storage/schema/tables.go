@@ -114,5 +114,6 @@ func DefineLogsTable() *TableBuilder {
 		Column("cost DOUBLE NOT NULL DEFAULT 0.0").
 		Index("idx_logs_time_model", "time, model").
 		Index("idx_logs_time_channel", "time, channel_id").
-		Index("idx_logs_time_status", "time, status_code")
+		Index("idx_logs_time_status", "time, status_code").
+		Index("idx_logs_time_channel_model", "time, channel_id, model")
 }
