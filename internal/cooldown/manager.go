@@ -91,9 +91,12 @@ func (m *Manager) HandleError(
 
 	// 2. 🎯 提前检查1308错误（在升级逻辑之前）
 	// 1308错误包含精确的重置时间，无论Key级还是Channel级都应该使用
+	// ✅ 修复（2025-12-09）：不限制状态码，因为1308可能以不同方式返回：
+	//    - HTTP 429 + 错误体包含1308（传统方式）
+	//    - HTTP 200 + SSE error事件包含1308（流式响应方式）
 	var reset1308Time time.Time
 	var has1308Time bool
-	if statusCode == 429 {
+	if len(errorBody) > 0 {
 		reset1308Time, has1308Time = util.ParseResetTimeFrom1308Error(errorBody)
 	}
 

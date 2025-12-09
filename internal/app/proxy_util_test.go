@@ -11,7 +11,7 @@ func TestBuildLogEntry_StreamDiagMsg(t *testing.T) {
 			InputTokens:  10,
 			OutputTokens: 20,
 		}
-		entry := buildLogEntry("claude-3", channelID, 200, 1.5, true, "sk-test", res, "")
+		entry := buildLogEntry("claude-3", channelID, 200, 1.5, true, "sk-test", 0, res, "")
 		if entry.Message != "ok" {
 			t.Errorf("expected Message='ok', got %q", entry.Message)
 		}
@@ -22,7 +22,7 @@ func TestBuildLogEntry_StreamDiagMsg(t *testing.T) {
 			Status:        200,
 			StreamDiagMsg: "⚠️ 流传输中断: 错误=unexpected EOF | 已读取=1024字节(分5次)",
 		}
-		entry := buildLogEntry("claude-3", channelID, 200, 1.5, true, "sk-test", res, "")
+		entry := buildLogEntry("claude-3", channelID, 200, 1.5, true, "sk-test", 0, res, "")
 		if entry.Message != res.StreamDiagMsg {
 			t.Errorf("expected Message=%q, got %q", res.StreamDiagMsg, entry.Message)
 		}
@@ -33,7 +33,7 @@ func TestBuildLogEntry_StreamDiagMsg(t *testing.T) {
 			Status:        200,
 			StreamDiagMsg: "⚠️ 流响应不完整: 正常EOF但无usage | 已读取=512字节(分3次)",
 		}
-		entry := buildLogEntry("claude-3", channelID, 200, 1.5, true, "sk-test", res, "")
+		entry := buildLogEntry("claude-3", channelID, 200, 1.5, true, "sk-test", 0, res, "")
 		if entry.Message != res.StreamDiagMsg {
 			t.Errorf("expected Message=%q, got %q", res.StreamDiagMsg, entry.Message)
 		}
@@ -45,7 +45,7 @@ func TestBuildLogEntry_StreamDiagMsg(t *testing.T) {
 			StreamDiagMsg: "⚠️ 流传输中断",
 		}
 		errMsg := "network error"
-		entry := buildLogEntry("claude-3", channelID, 200, 1.5, true, "sk-test", res, errMsg)
+		entry := buildLogEntry("claude-3", channelID, 200, 1.5, true, "sk-test", 0, res, errMsg)
 		if entry.Message != errMsg {
 			t.Errorf("expected Message=%q, got %q", errMsg, entry.Message)
 		}

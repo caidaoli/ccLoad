@@ -197,6 +197,11 @@ func (s *Server) handleSuccessResponse(
 	// 提取SSE usage数据（如果有）
 	if usageParser != nil {
 		result.InputTokens, result.OutputTokens, result.CacheReadInputTokens, result.CacheCreationInputTokens = usageParser.GetUsage()
+		// ✅ 检查SSE流中是否有error事件（如1308错误）
+		// 虽然HTTP状态码是200，但error事件表示实际上发生了错误，需要触发冷却逻辑
+		if errorEvent := usageParser.GetLastError(); errorEvent != nil {
+			result.SSEErrorEvent = errorEvent
+		}
 	}
 
 	// 🔍 流中断/不完整诊断：生成诊断消息，由调用方合并到日志记录
@@ -354,6 +359,17 @@ func (s *Server) forwardAttempt(
 
 	// 处理成功响应（仅当err==nil且状态码2xx时）
 	if res.Status >= 200 && res.Status < 300 {
+		// ✅ 检查SSE流中是否有error事件（如1308错误）
+		// 虽然HTTP状态码是200，但error事件表示实际上发生了错误，需要触发冷却逻辑
+		if res.SSEErrorEvent != nil {
+			// 将SSE error事件当作HTTP错误处理
+			// 注意：不改变HTTP状态码，因为上游确实返回的是200
+			// 但我们需要将错误体传递给冷却管理器来触发冷却
+			log.Printf("⚠️  [SSE错误处理] HTTP状态码200但检测到SSE error事件，触发冷却逻辑")
+			// 将error事件存入Body字段，用于冷却管理器解析
+			res.Body = res.SSEErrorEvent
+			return s.handleProxyErrorResponse(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
+		}
 		return s.handleProxySuccess(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
 	}
 

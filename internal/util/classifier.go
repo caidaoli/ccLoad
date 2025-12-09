@@ -2,6 +2,7 @@ package util
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"strconv"
@@ -110,6 +111,12 @@ func ClassifyHTTPStatus(statusCode int) ErrorLevel {
 // - 只有明确的"账户级不可逆错误"才分类为Channel级（如账户暂停、服务禁用）
 // - "额度用尽"可能是单个Key的问题，应该先尝试其他Key
 func ClassifyHTTPStatusWithBody(statusCode int, responseBody []byte) ErrorLevel {
+	// ✅ 特殊处理：检测1308错误（可能以SSE error事件形式出现，HTTP状态码是200）
+	// 1308错误表示达到使用上限，应该触发Key级冷却
+	if _, has1308 := ParseResetTimeFrom1308Error(responseBody); has1308 {
+		return ErrorLevelKey // 1308错误视为Key级错误，触发冷却
+	}
+
 	// 增加429错误的特殊处理
 	if statusCode == 429 {
 		// 429错误需要分析headers,但此函数没有headers参数
@@ -222,6 +229,59 @@ func ClassifyRateLimitError(headers map[string][]string, responseBody []byte) Er
 	// 4. 默认: Key级别限流(保守策略)
 	// 让系统先尝试其他Key,如果所有Key都限流了,会自动升级为渠道级
 	return ErrorLevelKey
+}
+
+// ParseResetTimeFrom1308Error 从1308错误响应中提取重置时间
+// 错误格式: {"type":"error","error":{"type":"1308","message":"已达到 5 小时的使用上限。您的限额将在 2025-12-09 18:08:11 重置。"},"request_id":"..."}
+//
+// 参数:
+//   - responseBody: JSON格式的错误响应体
+//
+// 返回:
+//   - time.Time: 解析出的重置时间（如果成功）
+//   - bool: 是否成功解析（true表示是1308错误且成功提取时间）
+func ParseResetTimeFrom1308Error(responseBody []byte) (time.Time, bool) {
+	// 1. 使用sonic解析JSON（项目使用go_json tag指定了sonic）
+	var errResp struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	// 使用string类型避免sonic的未导出字段问题
+	if err := json.Unmarshal(responseBody, &errResp); err != nil {
+		return time.Time{}, false
+	}
+
+	// 2. 检查是否为1308错误
+	if errResp.Error.Type != "1308" {
+		return time.Time{}, false
+	}
+
+	// 3. 从message中提取时间字符串
+	// 格式: "您的限额将在 2025-12-09 18:08:11 重置"
+	msg := errResp.Error.Message
+	
+	// 查找"将在"和"重置"之间的内容
+	startIdx := strings.Index(msg, "将在 ")
+	endIdx := strings.Index(msg, " 重置")
+	
+	if startIdx == -1 || endIdx == -1 || startIdx >= endIdx {
+		return time.Time{}, false
+	}
+	
+	// 提取时间字符串（跳过"将在 "，包含到" 重置"之前）
+	timeStr := strings.TrimSpace(msg[startIdx+len("将在 "):endIdx])
+	
+	// 4. 解析时间字符串（格式: 2025-12-09 18:08:11）
+	resetTime, err := time.ParseInLocation("2006-01-02 15:04:05", timeStr, time.Local)
+	if err != nil {
+		return time.Time{}, false
+	}
+	
+	return resetTime, true
 }
 
 // ClassifyError 统一错误分类器（网络错误+HTTP错误）

@@ -63,6 +63,11 @@ type fwResult struct {
 
 	// 流传输诊断信息（2025-12新增）
 	StreamDiagMsg string // 流中断/不完整时的诊断消息，合并到成功日志的Message字段
+
+	// ✅ SSE错误事件（2025-12新增）
+	// 用于捕获SSE流中的error事件（如1308错误），在流结束后触发冷却逻辑
+	// 虽然HTTP状态码是200，但error事件表示实际上发生了错误
+	SSEErrorEvent []byte // SSE流中检测到的最后一个error事件的完整JSON
 }
 
 // proxyRequestContext 代理请求上下文（封装请求信息，遵循DIP原则）
