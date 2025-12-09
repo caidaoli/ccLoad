@@ -94,7 +94,7 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 	helperMap := make(map[int64]*aggregationHelper)
 
 	for rows.Next() {
-		var bucketTs int64
+		var bucketTsFloat float64
 		var channelID sql.NullInt64
 		var success, errorCount int
 		var avgFirstByteTime sql.NullFloat64
@@ -103,9 +103,10 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 		var durationSuccessCount int
 		var totalCost float64
 
-		if err := rows.Scan(&bucketTs, &channelID, &success, &errorCount, &avgFirstByteTime, &avgDuration, &streamSuccessFirstByteCount, &durationSuccessCount, &totalCost); err != nil {
+		if err := rows.Scan(&bucketTsFloat, &channelID, &success, &errorCount, &avgFirstByteTime, &avgDuration, &streamSuccessFirstByteCount, &durationSuccessCount, &totalCost); err != nil {
 			return nil, err
 		}
+		bucketTs := int64(bucketTsFloat)
 
 		mp, ok := mapp[bucketTs]
 		if !ok {

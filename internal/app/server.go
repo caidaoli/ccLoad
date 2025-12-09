@@ -502,21 +502,21 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}()
 
 	// 等待完成或超时
+	var err error
 	select {
 	case <-done:
-		// 关闭数据库连接，防止 goroutine 泄漏
-		// SQLiteStore 创建了 2 个 database/sql.connectionOpener goroutine
-		// 必须显式调用 Close() 才能清理这些 goroutine
-		if closer, ok := s.store.(interface{ Close() error }); ok {
-			if err := closer.Close(); err != nil {
-				log.Printf("❌ 关闭数据库连接失败: %v", err)
-			}
-		}
-
 		log.Print("✅ Server优雅关闭完成")
-		return nil
 	case <-ctx.Done():
 		log.Print("⚠️  Server关闭超时，部分后台任务可能未完成")
-		return ctx.Err()
+		err = ctx.Err()
 	}
+
+	// 无论成功还是超时，都要关闭数据库连接
+	if closer, ok := s.store.(interface{ Close() error }); ok {
+		if closeErr := closer.Close(); closeErr != nil {
+			log.Printf("❌ 关闭数据库连接失败: %v", closeErr)
+		}
+	}
+
+	return err
 }

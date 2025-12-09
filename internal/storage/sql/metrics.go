@@ -64,7 +64,7 @@ func (s *SQLStore) Aggregate(ctx context.Context, since time.Time, bucket time.D
 	helperMap := make(map[int64]*aggregationHelper)
 
 	for rows.Next() {
-		var bucketTs int64
+		var bucketTsFloat float64
 		var channelID sql.NullInt64
 		var success, errorCount int
 		var avgFirstByteTime sql.NullFloat64
@@ -73,9 +73,10 @@ func (s *SQLStore) Aggregate(ctx context.Context, since time.Time, bucket time.D
 		var durationSuccessCount int
 		var totalCost float64
 
-		if err := rows.Scan(&bucketTs, &channelID, &success, &errorCount, &avgFirstByteTime, &avgDuration, &streamSuccessFirstByteCount, &durationSuccessCount, &totalCost); err != nil {
+		if err := rows.Scan(&bucketTsFloat, &channelID, &success, &errorCount, &avgFirstByteTime, &avgDuration, &streamSuccessFirstByteCount, &durationSuccessCount, &totalCost); err != nil {
 			return nil, err
 		}
+		bucketTs := int64(bucketTsFloat)
 
 		// 获取或创建时间桶
 		mp, ok := mapp[bucketTs]
@@ -265,7 +266,7 @@ func (s *SQLStore) AggregateRange(ctx context.Context, since, until time.Time, b
 	helperMap := make(map[int64]*aggregationHelper)
 
 	for rows.Next() {
-		var bucketTs int64
+		var bucketTsFloat float64
 		var channelID sql.NullInt64
 		var success, errorCount int
 		var avgFirstByteTime sql.NullFloat64
@@ -274,9 +275,10 @@ func (s *SQLStore) AggregateRange(ctx context.Context, since, until time.Time, b
 		var durationSuccessCount int
 		var totalCost float64
 
-		if err := rows.Scan(&bucketTs, &channelID, &success, &errorCount, &avgFirstByteTime, &avgDuration, &streamSuccessFirstByteCount, &durationSuccessCount, &totalCost); err != nil {
+		if err := rows.Scan(&bucketTsFloat, &channelID, &success, &errorCount, &avgFirstByteTime, &avgDuration, &streamSuccessFirstByteCount, &durationSuccessCount, &totalCost); err != nil {
 			return nil, err
 		}
+		bucketTs := int64(bucketTsFloat)
 
 		mp, ok := mapp[bucketTs]
 		if !ok {

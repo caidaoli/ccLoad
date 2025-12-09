@@ -135,6 +135,10 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
+	// ✅ 停止信号监听,释放signal.Notify创建的后台goroutine
+	signal.Stop(quit)
+	close(quit)
+
 	log.Println("收到关闭信号，正在优雅关闭服务器...")
 
 	// 设置5秒超时用于HTTP服务器关闭
@@ -143,7 +147,9 @@ func main() {
 
 	// 关闭HTTP服务器
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		log.Printf("HTTP服务器关闭错误: %v", err)
+		log.Printf("HTTP服务器关闭超时: %v，强制关闭连接", err)
+		// 超时后强制关闭，防止streaming连接阻塞退出
+		_ = httpServer.Close()
 	}
 
 	// 关闭Server后台任务（设置10秒超时）

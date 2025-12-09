@@ -216,6 +216,7 @@ func (s *SQLStore) redisSyncWorker() {
 				shutdownCancel()
 			default:
 			}
+			s.wg.Done()
 			return
 		}
 	}
