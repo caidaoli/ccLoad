@@ -41,15 +41,22 @@ func (ks *KeySelector) SelectAvailableKey(channelID int64, apiKeys []*model.APIK
 		return -1, "", fmt.Errorf("no API keys configured for channel %d", channelID)
 	}
 
-	// 单Key场景：直接返回，不使用Key级别冷却（YAGNI原则）
+	// 单Key场景:检查排除和冷却状态
 	if len(apiKeys) == 1 {
 		if excludeKeys != nil && excludeKeys[0] {
 			return -1, "", fmt.Errorf("single key already tried in this request")
 		}
+		// ✅ 修复(2025-12-09): 检查冷却状态,防止单Key渠道冷却后仍被请求
+		// 原逻辑"不使用Key级别冷却(YAGNI原则)"是错误的,会导致冷却Key持续触发上游错误
+		if apiKeys[0].IsCoolingDown(time.Now()) {
+			return -1, "", fmt.Errorf("single key (index=%d) is in cooldown until %s",
+				apiKeys[0].KeyIndex,
+				time.Unix(apiKeys[0].CooldownUntil, 0).Format("2006-01-02 15:04:05"))
+		}
 		return apiKeys[0].KeyIndex, apiKeys[0].APIKey, nil
 	}
 
-	// 多Key场景：根据策略选择
+	// 多Key场景:根据策略选择
 	strategy := apiKeys[0].KeyStrategy
 	if strategy == "" {
 		strategy = "sequential"

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -80,6 +81,67 @@ func TestSelectAvailableKey_SingleKey(t *testing.T) {
 		}
 
 		t.Logf("✅ 单Key被排除后正确返回错误: %v", err)
+	})
+}
+
+// TestSelectAvailableKey_SingleKeyCooldown 测试单Key冷却场景（修复Bug验证）
+func TestSelectAvailableKey_SingleKeyCooldown(t *testing.T) {
+	store, cleanup := setupTestKeyStore(t)
+	defer cleanup()
+
+	var cooldownGauge atomic.Int64
+	selector := NewKeySelector(&cooldownGauge)
+	ctx := context.WithValue(context.Background(), testingContextKey, true)
+	now := time.Now()
+
+	// 创建渠道
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:     "single-key-cooldown-channel",
+		URL:      "https://api.com",
+		Priority: 100,
+		Models:   []string{"test-model"},
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("创建渠道失败: %v", err)
+	}
+
+	// 创建单个API Key
+	err = store.CreateAPIKey(ctx, &model.APIKey{
+		ChannelID:   cfg.ID,
+		KeyIndex:    0,
+		APIKey:      "sk-single-cooldown-key",
+		KeyStrategy: "sequential",
+	})
+	if err != nil {
+		t.Fatalf("创建API Key失败: %v", err)
+	}
+
+	// 冷却这个唯一的Key
+	_, err = store.BumpKeyCooldown(ctx, cfg.ID, 0, now, 401)
+	if err != nil {
+		t.Fatalf("冷却Key失败: %v", err)
+	}
+
+	// 预先查询apiKeys（在冷却之后，包含冷却状态）
+	apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("查询API Keys失败: %v", err)
+	}
+
+	t.Run("单Key冷却后应返回错误", func(t *testing.T) {
+		_, _, err := selector.SelectAvailableKey(cfg.ID, apiKeys, nil)
+
+		if err == nil {
+			t.Error("期望返回错误（单Key在冷却中），但成功返回")
+		}
+
+		// 验证错误消息包含冷却信息
+		if !strings.Contains(err.Error(), "cooldown") {
+			t.Errorf("错误消息应包含'cooldown'，实际: %v", err)
+		}
+
+		t.Logf("✅ 单Key冷却后正确返回错误: %v", err)
 	})
 }
 

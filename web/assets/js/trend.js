@@ -4,10 +4,12 @@
     window.currentTrendType = 'first_byte'; // 默认显示首字响应时间趋势 (count/first_byte/cost)
     window.currentChannelType = 'all'; // 当前选中的渠道类型
     window.currentModel = ''; // 当前选中的模型（空字符串表示全部模型）
+    window.currentAuthToken = ''; // 当前选中的令牌（空字符串表示全部令牌）
     window.chartInstance = null;
     window.channels = [];
     window.visibleChannels = new Set(); // 可见渠道集合
     window.availableModels = []; // 可用模型列表
+    window.authTokens = []; // 令牌列表
 
     // 加载可用模型列表
     async function loadModels() {
@@ -42,6 +44,39 @@
       }
     }
 
+    // 加载令牌列表
+    async function loadAuthTokens() {
+      try {
+        const res = await fetchWithAuth('/admin/auth-tokens');
+        if (!res.ok) {
+          console.error('加载令牌列表失败');
+          return;
+        }
+        const response = await res.json();
+        window.authTokens = response.success ? (response.data || []) : (response || []);
+
+        // 填充令牌选择器
+        const tokenSelect = document.getElementById('f_auth_token');
+        if (tokenSelect && window.authTokens.length > 0) {
+          // 保留"全部令牌"选项
+          tokenSelect.innerHTML = '<option value="">全部令牌</option>';
+          window.authTokens.forEach(token => {
+            const option = document.createElement('option');
+            option.value = token.id;
+            option.textContent = token.description || `令牌 #${token.id}`;
+            tokenSelect.appendChild(option);
+          });
+
+          // 恢复之前选择的令牌
+          if (window.currentAuthToken) {
+            tokenSelect.value = window.currentAuthToken;
+          }
+        }
+      } catch (error) {
+        console.error('加载令牌列表失败:', error);
+      }
+    }
+
     async function loadData() {
       try {
         showLoading();
@@ -54,6 +89,11 @@
         const modelSelect = document.getElementById('f_model');
         if (modelSelect) {
           window.currentModel = modelSelect.value || '';
+        }
+
+        const tokenSelect = document.getElementById('f_auth_token');
+        if (tokenSelect) {
+          window.currentAuthToken = tokenSelect.value || '';
         }
 
         const hours = window.getRangeHours ? getRangeHours(currentRange) : 24;
@@ -74,8 +114,11 @@
         // 添加模型筛选参数
         const modelParam = window.currentModel ? `&model=${encodeURIComponent(window.currentModel)}` : '';
 
+        // 添加令牌筛选参数
+        const tokenParam = window.currentAuthToken ? `&auth_token_id=${encodeURIComponent(window.currentAuthToken)}` : '';
+
         const [metricsRes, channelsRes] = await Promise.all([
-          fetchWithAuth(metricsUrl + channelTypeParam + modelParam),
+          fetchWithAuth(metricsUrl + channelTypeParam + modelParam + tokenParam),
           fetchWithAuth(channelsUrl + (channelTypeParamForList ? '?' + channelTypeParamForList.slice(1) : ''))
         ]);
         
@@ -852,6 +895,9 @@
       // 加载模型列表
       await loadModels();
 
+      // 加载令牌列表
+      await loadAuthTokens();
+
       loadData();
 
       // 修复：全局注册resize监听器（仅一次，避免内存泄漏）
@@ -905,6 +951,16 @@
         });
       }
 
+      // 令牌选择器
+      const tokenSelect = document.getElementById('f_auth_token');
+      if (tokenSelect) {
+        tokenSelect.addEventListener('change', (e) => {
+          window.currentAuthToken = e.target.value || '';
+          persistState();
+          loadData();
+        });
+      }
+
       // 刷新按钮
       const btnFilter = document.getElementById('btn_filter');
       if (btnFilter) {
@@ -919,6 +975,7 @@
         localStorage.setItem('trend.range', window.currentRange);
         localStorage.setItem('trend.trendType', window.currentTrendType);
         localStorage.setItem('trend.model', window.currentModel);
+        localStorage.setItem('trend.authToken', window.currentAuthToken);
       } catch (_) {}
     }
 
@@ -943,6 +1000,9 @@
 
         // 恢复模型选择
         window.currentModel = localStorage.getItem('trend.model') || '';
+
+        // 恢复令牌选择
+        window.currentAuthToken = localStorage.getItem('trend.authToken') || '';
       } catch (_) {}
     }
 

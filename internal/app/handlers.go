@@ -239,5 +239,12 @@ func BuildLogFilter(c *gin.Context) model.LogFilter {
 		lf.ChannelType = ct
 	}
 
+	// API令牌ID过滤
+	if tidStr := strings.TrimSpace(c.Query("auth_token_id")); tidStr != "" {
+		if id, err := strconv.ParseInt(tidStr, 10, 64); err == nil && id > 0 {
+			lf.AuthTokenID = &id
+		}
+	}
+
 	return lf
 }

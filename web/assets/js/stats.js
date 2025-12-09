@@ -3,6 +3,7 @@
 
     let statsData = null;
     let currentChannelType = 'all'; // 当前选中的渠道类型
+    let authTokens = []; // 令牌列表
     let sortState = {
       column: null,
       order: null // null, 'asc', 'desc'
@@ -23,6 +24,7 @@
         if (u.get('channel_name_like')) params.set('channel_name_like', u.get('channel_name_like'));
         if (u.get('model')) params.set('model', u.get('model'));
         if (u.get('model_like')) params.set('model_like', u.get('model_like'));
+        if (u.get('auth_token_id')) params.set('auth_token_id', u.get('auth_token_id'));
 
         // 添加渠道类型筛选
         if (currentChannelType && currentChannelType !== 'all') {
@@ -341,6 +343,7 @@
       const id = document.getElementById('f_id').value.trim();
       const name = document.getElementById('f_name').value.trim();
       const model = document.getElementById('f_model').value.trim();
+      const authToken = document.getElementById('f_auth_token').value.trim();
 
       const q = new URLSearchParams(location.search);
       if (range) q.set('range', range); else q.delete('range');
@@ -349,6 +352,7 @@
       else { q.delete('channel_name_like'); }
       if (model) { q.set('model_like', model); q.delete('model'); }
       else { q.delete('model_like'); q.delete('model'); }
+      if (authToken) q.set('auth_token_id', authToken); else q.delete('auth_token_id');
       location.search = '?' + q.toString();
     }
 
@@ -358,6 +362,7 @@
       const name = u.get('channel_name_like') || u.get('channel_name') || '';
       const range = u.get('range') || 'today';
       const model = u.get('model_like') || u.get('model') || '';
+      const authToken = u.get('auth_token_id') || '';
 
       // 初始化时间范围选择器 (默认"本日")
       if (window.initDateRangeSelector) {
@@ -370,11 +375,16 @@
       document.getElementById('f_name').value = name;
       document.getElementById('f_model').value = model;
 
+      // 加载令牌列表
+      loadAuthTokens().then(() => {
+        document.getElementById('f_auth_token').value = authToken;
+      });
+
       // 事件监听
       document.getElementById('btn_filter').addEventListener('click', applyFilter);
 
       // 回车键筛选
-      ['f_hours', 'f_id', 'f_name', 'f_model'].forEach(id => {
+      ['f_hours', 'f_id', 'f_name', 'f_model', 'f_auth_token'].forEach(id => {
         const el = document.getElementById(id);
         if (el) {
           el.addEventListener('keydown', e => {
@@ -419,6 +429,34 @@
       // 重置排序状态(保持无排序指示器显示)
       sortState.column = null;
       sortState.order = null;
+    }
+
+    // 加载令牌列表
+    async function loadAuthTokens() {
+      try {
+        const res = await fetchWithAuth('/admin/auth-tokens');
+        if (!res.ok) {
+          console.error('加载令牌列表失败');
+          return;
+        }
+        const response = await res.json();
+        authTokens = response.success ? (response.data || []) : (response || []);
+
+        // 填充令牌选择器
+        const tokenSelect = document.getElementById('f_auth_token');
+        if (tokenSelect && authTokens.length > 0) {
+          // 保留"全部令牌"选项
+          tokenSelect.innerHTML = '<option value="">全部令牌</option>';
+          authTokens.forEach(token => {
+            const option = document.createElement('option');
+            option.value = token.id;
+            option.textContent = token.description || `令牌 #${token.id}`;
+            tokenSelect.appendChild(option);
+          });
+        }
+      } catch (error) {
+        console.error('加载令牌列表失败:', error);
+      }
     }
 
     function formatNumber(num) {

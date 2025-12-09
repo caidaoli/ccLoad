@@ -64,7 +64,7 @@ type Store interface {
 	// Metrics - 指标管理
 	Aggregate(ctx context.Context, since time.Time, bucket time.Duration) ([]model.MetricPoint, error)
 	AggregateRange(ctx context.Context, since, until time.Time, bucket time.Duration) ([]model.MetricPoint, error)
-	AggregateRangeWithFilter(ctx context.Context, since, until time.Time, bucket time.Duration, channelType string, modelFilter string) ([]model.MetricPoint, error)
+	AggregateRangeWithFilter(ctx context.Context, since, until time.Time, bucket time.Duration, channelType string, modelFilter string, authTokenID int64) ([]model.MetricPoint, error)
 	GetDistinctModels(ctx context.Context, since, until time.Time) ([]string, error)
 
 	// Stats - 统计功能

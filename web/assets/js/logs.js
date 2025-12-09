@@ -3,6 +3,7 @@
     let totalLogsPages = 1;
     let totalLogs = 0;
     let currentChannelType = 'all'; // 当前选中的渠道类型
+    let authTokens = []; // 令牌列表
     let defaultTestContent = 'sonnet 4.0的发布日期是什么'; // 默认测试内容（从设置加载）
 
     // 加载默认测试内容（从系统设置）
@@ -35,6 +36,7 @@
         if (u.get('model')) params.set('model', u.get('model'));
         if (u.get('model_like')) params.set('model_like', u.get('model_like'));
         if (u.get('status_code')) params.set('status_code', u.get('status_code'));
+        if (u.get('auth_token_id')) params.set('auth_token_id', u.get('auth_token_id'));
 
         // 添加渠道类型筛选
         if (currentChannelType && currentChannelType !== 'all') {
@@ -359,6 +361,7 @@
       const name = document.getElementById('f_name').value.trim();
       const model = document.getElementById('f_model').value.trim();
       const status = document.getElementById('f_status') ? document.getElementById('f_status').value.trim() : '';
+      const authToken = document.getElementById('f_auth_token').value.trim();
       const q = new URLSearchParams(location.search);
 
       if (range) q.set('range', range); else q.delete('range');
@@ -369,6 +372,7 @@
       else { q.delete('model_like'); q.delete('model'); }
       if (status) { q.set('status_code', status); }
       else { q.delete('status_code'); }
+      if (authToken) q.set('auth_token_id', authToken); else q.delete('auth_token_id');
 
       location.search = '?' + q.toString();
     }
@@ -380,6 +384,7 @@
       const range = u.get('range') || 'today';
       const model = u.get('model_like') || u.get('model') || '';
       const status = u.get('status_code') || '';
+      const authToken = u.get('auth_token_id') || '';
 
       // 初始化时间范围选择器 (默认"本日")
       if (window.initDateRangeSelector) {
@@ -394,11 +399,16 @@
       const statusEl = document.getElementById('f_status');
       if (statusEl) statusEl.value = status;
 
+      // 加载令牌列表
+      loadAuthTokens().then(() => {
+        document.getElementById('f_auth_token').value = authToken;
+      });
+
       // 事件监听
       document.getElementById('btn_filter').addEventListener('click', applyFilter);
 
       // 回车键筛选
-      ['f_hours', 'f_id', 'f_name', 'f_model', 'f_status'].forEach(id => {
+      ['f_hours', 'f_id', 'f_name', 'f_model', 'f_status', 'f_auth_token'].forEach(id => {
         const el = document.getElementById(id);
         if (el) {
           el.addEventListener('keydown', e => {
@@ -448,6 +458,34 @@
         return '$' + cost.toFixed(2); // 大于$1显示2位小数
       }
       return '$' + cost.toFixed(4).replace(/\.?0+$/, ''); // 否则显示4位小数，去除尾随0
+    }
+
+    // 加载令牌列表
+    async function loadAuthTokens() {
+      try {
+        const res = await fetchWithAuth('/admin/auth-tokens');
+        if (!res.ok) {
+          console.error('加载令牌列表失败');
+          return;
+        }
+        const response = await res.json();
+        authTokens = response.success ? (response.data || []) : (response || []);
+
+        // 填充令牌选择器
+        const tokenSelect = document.getElementById('f_auth_token');
+        if (tokenSelect && authTokens.length > 0) {
+          // 保留"全部令牌"选项
+          tokenSelect.innerHTML = '<option value="">全部令牌</option>';
+          authTokens.forEach(token => {
+            const option = document.createElement('option');
+            option.value = token.id;
+            option.textContent = token.description || `令牌 #${token.id}`;
+            tokenSelect.appendChild(option);
+          });
+        }
+      } catch (error) {
+        console.error('加载令牌列表失败:', error);
+      }
     }
 
     function escapeHtml(str) {

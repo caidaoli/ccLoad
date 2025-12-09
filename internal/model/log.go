@@ -65,4 +65,5 @@ type LogFilter struct {
 	ModelLike       string
 	StatusCode      *int
 	ChannelType     string // 渠道类型过滤（anthropic/openai/gemini/codex）
+	AuthTokenID     *int64 // API令牌ID过滤
 }

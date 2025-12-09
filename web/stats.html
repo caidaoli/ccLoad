@@ -57,6 +57,15 @@
               <input type="text" id="f_model" class="filter-input" placeholder="包含文本...">
             </div>
 
+            <!-- 令牌筛选 -->
+            <div class="filter-group">
+              <label for="f_auth_token" class="filter-label">令牌</label>
+              <select id="f_auth_token" class="filter-select" style="min-width: 150px;">
+                <option value="">全部令牌</option>
+                <!-- 动态加载令牌列表 -->
+              </select>
+            </div>
+
             <!-- 统计信息 -->
             <div class="filter-info">
               共 <span id="statsCount">0</span> 条记录

@@ -51,12 +51,13 @@ func (s *Server) HandleMetrics(c *gin.Context) {
 		bucketMin = 5
 	}
 
-	// 支持按渠道类型和模型过滤
+	// 支持按渠道类型、模型和 API Token 过滤
 	channelType := c.Query("channel_type")
 	modelFilter := c.Query("model")
+	authTokenID, _ := strconv.ParseInt(c.Query("auth_token_id"), 10, 64)
 
 	since, until := params.GetTimeRange()
-	pts, err := s.store.AggregateRangeWithFilter(c.Request.Context(), since, until, time.Duration(bucketMin)*time.Minute, channelType, modelFilter)
+	pts, err := s.store.AggregateRangeWithFilter(c.Request.Context(), since, until, time.Duration(bucketMin)*time.Minute, channelType, modelFilter, authTokenID)
 
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)

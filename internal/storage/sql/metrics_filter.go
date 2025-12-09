@@ -13,7 +13,7 @@ import (
 // AggregateRangeWithFilter 聚合指定时间范围、渠道类型和模型的指标数据
 // channelType 为空字符串时返回所有渠道类型的数据
 // modelFilter 为空字符串时返回所有模型的数据
-func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until time.Time, bucket time.Duration, channelType string, modelFilter string) ([]model.MetricPoint, error) {
+func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until time.Time, bucket time.Duration, channelType string, modelFilter string, authTokenID int64) ([]model.MetricPoint, error) {
 	bucketSeconds := int64(bucket.Seconds())
 	sinceUnix := since.Unix()
 	untilUnix := until.Unix()
@@ -71,6 +71,12 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 	if modelFilter != "" {
 		query += " AND logs.model = ?"
 		args = append(args, modelFilter)
+	}
+
+	// 添加 auth_token_id 过滤
+	if authTokenID > 0 {
+		query += " AND logs.auth_token_id = ?"
+		args = append(args, authTokenID)
 	}
 
 	query += `

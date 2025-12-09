@@ -64,6 +64,15 @@
               <input type="number" id="f_status" class="filter-input" placeholder="如 200 / 403" style="max-width: 110px;">
             </div>
 
+            <!-- 令牌筛选 -->
+            <div class="filter-group">
+              <label for="f_auth_token" class="filter-label">令牌</label>
+              <select id="f_auth_token" class="filter-select" style="min-width: 150px;">
+                <option value="">全部令牌</option>
+                <!-- 动态加载令牌列表 -->
+              </select>
+            </div>
+
             <!-- 统计信息 -->
             <div class="filter-info">
               显示 <span id="displayedCount">0</span> / <span id="totalCount">0</span> 条
