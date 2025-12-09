@@ -23,6 +23,11 @@ func NewTable(name string) *TableBuilder {
 	return &TableBuilder{name: name}
 }
 
+// Name 返回表名
+func (b *TableBuilder) Name() string {
+	return b.name
+}
+
 // Column 添加列定义（使用MySQL语法作为基准）
 func (b *TableBuilder) Column(def string) *TableBuilder {
 	b.columns = append(b.columns, def)
