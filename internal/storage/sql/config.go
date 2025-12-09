@@ -173,7 +173,7 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 	// 同步模型数据到 channel_models 索引表（性能优化：去规范化）
 	for _, model := range c.Models {
 		if _, err := s.db.ExecContext(ctx, `
-			INSERT OR IGNORE INTO channel_models (channel_id, model)
+			INSERT IGNORE INTO channel_models (channel_id, model)
 			VALUES (?, ?)
 		`, id, model); err != nil {
 			// 索引同步失败不影响主要功能，记录警告
@@ -235,7 +235,7 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 	// 再插入新的模型索引
 	for _, model := range upd.Models {
 		if _, err := s.db.ExecContext(ctx, `
-			INSERT OR IGNORE INTO channel_models (channel_id, model)
+			INSERT IGNORE INTO channel_models (channel_id, model)
 			VALUES (?, ?)
 		`, id, model); err != nil {
 			// 索引同步失败不影响主要功能，记录警告
@@ -267,14 +267,14 @@ func (s *SQLStore) ReplaceConfig(ctx context.Context, c *model.Config) (*model.C
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO channels(name, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(NAME) DO UPDATE SET
-			url = excluded.url,
-			priority = excluded.priority,
-			models = excluded.models,
-			model_redirects = excluded.model_redirects,
-			channel_type = excluded.channel_type,
-			enabled = excluded.enabled,
-			updated_at = excluded.updated_at
+		ON DUPLICATE KEY UPDATE
+			url = VALUES(url),
+			priority = VALUES(priority),
+			models = VALUES(models),
+			model_redirects = VALUES(model_redirects),
+			channel_type = VALUES(channel_type),
+			enabled = VALUES(enabled),
+			updated_at = VALUES(updated_at)
 	`, c.Name, c.URL, c.Priority, modelsStr, modelRedirectsStr, channelType,
 		boolToInt(c.Enabled), nowUnix, nowUnix)
 	if err != nil {
@@ -300,7 +300,7 @@ func (s *SQLStore) ReplaceConfig(ctx context.Context, c *model.Config) (*model.C
 	// 再插入新的模型索引
 	for _, model := range c.Models {
 		if _, err := s.db.ExecContext(ctx, `
-			INSERT OR IGNORE INTO channel_models (channel_id, model)
+			INSERT IGNORE INTO channel_models (channel_id, model)
 			VALUES (?, ?)
 		`, id, model); err != nil {
 			// 索引同步失败不影响主要功能，记录警告

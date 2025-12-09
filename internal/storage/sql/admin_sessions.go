@@ -9,7 +9,7 @@ import (
 func (s *SQLStore) CreateAdminSession(ctx context.Context, token string, expiresAt time.Time) error {
 	now := timeToUnix(time.Now())
 	_, err := s.db.ExecContext(ctx, `
-		INSERT OR REPLACE INTO admin_sessions (token, expires_at, created_at)
+		REPLACE INTO admin_sessions (token, expires_at, created_at)
 		VALUES (?, ?, ?)
 	`, token, timeToUnix(expiresAt), now)
 	return err

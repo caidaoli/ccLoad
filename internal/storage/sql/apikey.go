@@ -245,14 +245,14 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 		channelStmt, err := tx.PrepareContext(ctx, `
 			INSERT INTO channels(name, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at)
 			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(name) DO UPDATE SET
-				url = excluded.url,
-				priority = excluded.priority,
-				models = excluded.models,
-				model_redirects = excluded.model_redirects,
-				channel_type = excluded.channel_type,
-				enabled = excluded.enabled,
-				updated_at = excluded.updated_at
+			ON DUPLICATE KEY UPDATE
+				url = VALUES(url),
+				priority = VALUES(priority),
+				models = VALUES(models),
+				model_redirects = VALUES(model_redirects),
+				channel_type = VALUES(channel_type),
+				enabled = VALUES(enabled),
+				updated_at = VALUES(updated_at)
 		`)
 		if err != nil {
 			return fmt.Errorf("prepare channel statement: %w", err)

@@ -44,7 +44,7 @@ func (s *SQLStore) LoadChannelsFromRedis(ctx context.Context) error {
 
 				// 1. 恢复渠道基本配置到channels表
 				result, err := tx.ExecContext(ctx, `
-				INSERT OR REPLACE INTO channels(
+				REPLACE INTO channels(
 					name, url, priority, models, model_redirects, channel_type,
 					enabled, cooldown_until, cooldown_duration_ms, created_at, updated_at
 				)
@@ -66,7 +66,7 @@ func (s *SQLStore) LoadChannelsFromRedis(ctx context.Context) error {
 					channelID, _ = result.LastInsertId()
 				}
 
-				// 查询实际的渠道ID（因为INSERT OR REPLACE可能使用name匹配）
+				// 查询实际的渠道ID（因为REPLACE INTO可能使用name匹配）
 				err = tx.QueryRowContext(ctx, `SELECT id FROM channels WHERE name = ?`, config.Name).Scan(&channelID)
 				if err != nil {
 					log.Printf("Warning: failed to get channel ID for %s: %v", config.Name, err)
@@ -331,7 +331,7 @@ func (s *SQLStore) loadAuthTokensFromRedis(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 
-	// 使用INSERT OR REPLACE批量恢复（包含所有字段）
+	// 使用REPLACE INTO批量恢复（包含所有字段）
 	restoredCount := 0
 	for _, token := range tokens {
 		var expiresAt, lastUsedAt any
@@ -343,7 +343,7 @@ func (s *SQLStore) loadAuthTokensFromRedis(ctx context.Context) (int, error) {
 		}
 
 		_, err := s.db.ExecContext(ctx, `
-			INSERT OR REPLACE INTO auth_tokens
+			REPLACE INTO auth_tokens
 			(id, token, description, created_at, expires_at, last_used_at, is_active,
 			 success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt,
 			 stream_count, non_stream_count, prompt_tokens_total, completion_tokens_total, total_cost_usd)
