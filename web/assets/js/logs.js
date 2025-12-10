@@ -362,6 +362,7 @@
       const model = document.getElementById('f_model').value.trim();
       const status = document.getElementById('f_status') ? document.getElementById('f_status').value.trim() : '';
       const authToken = document.getElementById('f_auth_token').value.trim();
+      const channelType = document.getElementById('f_channel_type').value.trim();
       const q = new URLSearchParams(location.search);
 
       if (range) q.set('range', range); else q.delete('range');
@@ -373,6 +374,7 @@
       if (status) { q.set('status_code', status); }
       else { q.delete('status_code'); }
       if (authToken) q.set('auth_token_id', authToken); else q.delete('auth_token_id');
+      if (channelType) q.set('channel_type', channelType); else q.set('channel_type', 'all');
 
       location.search = '?' + q.toString();
     }
@@ -385,6 +387,7 @@
       const model = u.get('model_like') || u.get('model') || '';
       const status = u.get('status_code') || '';
       const authToken = u.get('auth_token_id') || '';
+      const channelType = u.get('channel_type') || 'all';
 
       // 初始化时间范围选择器 (默认"本日")
       if (window.initDateRangeSelector) {
@@ -399,6 +402,11 @@
       const statusEl = document.getElementById('f_status');
       if (statusEl) statusEl.value = status;
 
+      // 设置渠道类型
+      currentChannelType = channelType;
+      const channelTypeEl = document.getElementById('f_channel_type');
+      if (channelTypeEl) channelTypeEl.value = channelType;
+
       // 加载令牌列表
       loadAuthTokens().then(() => {
         document.getElementById('f_auth_token').value = authToken;
@@ -408,7 +416,7 @@
       document.getElementById('btn_filter').addEventListener('click', applyFilter);
 
       // 回车键筛选
-      ['f_hours', 'f_id', 'f_name', 'f_model', 'f_status', 'f_auth_token'].forEach(id => {
+      ['f_hours', 'f_id', 'f_name', 'f_model', 'f_status', 'f_auth_token', 'f_channel_type'].forEach(id => {
         const el = document.getElementById(id);
         if (el) {
           el.addEventListener('keydown', e => {
@@ -547,12 +555,12 @@
     document.addEventListener('DOMContentLoaded', async function() {
       if (window.initTopbar) initTopbar('logs');
 
-      // 初始化渠道类型筛选器（默认选择 claude code）
-      const types = await window.ChannelTypeManager.getChannelTypes();
-      const defaultType = 'anthropic'; // 默认选择 anthropic (显示为 Claude Code)
-      currentChannelType = defaultType;
+      // 从 URL 读取渠道类型（默认为 all）
+      const u = new URLSearchParams(location.search);
+      const urlChannelType = u.get('channel_type') || 'all';
+      currentChannelType = urlChannelType;
 
-      await initChannelTypeFilter(defaultType);
+      await initChannelTypeFilter(urlChannelType);
 
       initFilters();
       await loadDefaultTestContent();
@@ -578,7 +586,15 @@
       const types = await window.ChannelTypeManager.getChannelTypes();
 
       // 添加"全部"选项
-      select.innerHTML = '<option value="all">全部</option>';
+      const allOption = document.createElement('option');
+      allOption.value = 'all';
+      allOption.textContent = '全部';
+      if (!initialType || initialType === 'all') {
+        allOption.selected = true;
+      }
+      select.innerHTML = '';
+      select.appendChild(allOption);
+
       types.forEach(type => {
         const option = document.createElement('option');
         option.value = type.value;
