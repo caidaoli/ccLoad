@@ -21,9 +21,10 @@ type RedisSync interface {
 }
 
 // SQLStore 通用SQL存储实现
-// 支持 SQLite 和 MySQL（时间/布尔值存储格式完全一致，无需方言抽象）
+// 支持 SQLite 和 MySQL（时间/布尔值存储格式完全一致，SQL语法按驱动分支）
 type SQLStore struct {
-	db *sql.DB
+	db         *sql.DB
+	driverName string // "sqlite" 或 "mysql"
 
 	// 异步Redis同步机制（性能优化: 避免同步等待）
 	syncCh chan struct{} // 同步触发信号（无缓冲，去重合并多个请求）
@@ -37,13 +38,15 @@ type SQLStore struct {
 
 // NewSQLStore 创建通用SQL存储实例
 // db: 数据库连接（由调用方初始化）
+// driverName: "sqlite" 或 "mysql"
 // redisSync: Redis同步器（可选，测试时可传nil）
-func NewSQLStore(db *sql.DB, redisSync RedisSync) *SQLStore {
+func NewSQLStore(db *sql.DB, driverName string, redisSync RedisSync) *SQLStore {
 	s := &SQLStore{
-		db:        db,
-		syncCh:    make(chan struct{}, 1),
-		done:      make(chan struct{}),
-		redisSync: redisSync,
+		db:         db,
+		driverName: driverName,
+		syncCh:     make(chan struct{}, 1),
+		done:       make(chan struct{}),
+		redisSync:  redisSync,
 	}
 
 	// 启动Redis同步worker（仅在redisSync启用时）
@@ -58,6 +61,11 @@ func NewSQLStore(db *sql.DB, redisSync RedisSync) *SQLStore {
 // IsRedisEnabled 检查Redis是否启用
 func (s *SQLStore) IsRedisEnabled() bool {
 	return s.redisSync != nil && s.redisSync.IsEnabled()
+}
+
+// IsSQLite 检查是否为SQLite驱动
+func (s *SQLStore) IsSQLite() bool {
+	return s.driverName == "sqlite"
 }
 
 // Close 关闭存储（优雅关闭）

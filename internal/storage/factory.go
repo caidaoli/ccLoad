@@ -72,8 +72,8 @@ func createMySQLStore(dsn string, redisSync RedisSync) (Store, error) {
 		return nil, fmt.Errorf("MySQL连接测试失败: %w", err)
 	}
 
-	// 创建统一的 SQLStore（不需要方言抽象）
-	store := sqlstore.NewSQLStore(db, redisSync)
+	// 创建统一的 SQLStore
+	store := sqlstore.NewSQLStore(db, "mysql", redisSync)
 
 	// 执行MySQL迁移
 	if err := migrateMySQL(context.Background(), db); err != nil {
@@ -105,8 +105,8 @@ func CreateSQLiteStore(path string, redisSync RedisSync) (Store, error) {
 	db.SetMaxIdleConns(config.SQLiteMaxIdleConnsFile)
 	db.SetConnMaxLifetime(config.SQLiteConnMaxLifetime)
 
-	// 创建统一的 SQLStore（不需要方言抽象）
-	store := sqlstore.NewSQLStore(db, redisSync)
+	// 创建统一的 SQLStore
+	store := sqlstore.NewSQLStore(db, "sqlite", redisSync)
 
 	// 执行SQLite迁移
 	if err := migrateSQLite(context.Background(), db); err != nil {

@@ -516,6 +516,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// 停止LoginRateLimiter的cleanupLoop
 	s.loginRateLimiter.Stop()
 
+	// 关闭AuthService的后台worker
+	s.authService.Close()
+
 	// 使用channel等待所有goroutine完成
 	done := make(chan struct{})
 	go func() {

@@ -242,18 +242,33 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 		nowUnix := timeToUnix(time.Now())
 
 		// 预编译渠道插入语句（复用，减少解析开销）
-		channelStmt, err := tx.PrepareContext(ctx, `
-			INSERT INTO channels(name, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at)
-			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON DUPLICATE KEY UPDATE
-				url = VALUES(url),
-				priority = VALUES(priority),
-				models = VALUES(models),
-				model_redirects = VALUES(model_redirects),
-				channel_type = VALUES(channel_type),
-				enabled = VALUES(enabled),
-				updated_at = VALUES(updated_at)
-		`)
+		var channelUpsertSQL string
+		if s.IsSQLite() {
+			channelUpsertSQL = `
+				INSERT INTO channels(name, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at)
+				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(name) DO UPDATE SET
+					url = excluded.url,
+					priority = excluded.priority,
+					models = excluded.models,
+					model_redirects = excluded.model_redirects,
+					channel_type = excluded.channel_type,
+					enabled = excluded.enabled,
+					updated_at = excluded.updated_at`
+		} else {
+			channelUpsertSQL = `
+				INSERT INTO channels(name, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at)
+				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON DUPLICATE KEY UPDATE
+					url = VALUES(url),
+					priority = VALUES(priority),
+					models = VALUES(models),
+					model_redirects = VALUES(model_redirects),
+					channel_type = VALUES(channel_type),
+					enabled = VALUES(enabled),
+					updated_at = VALUES(updated_at)`
+		}
+		channelStmt, err := tx.PrepareContext(ctx, channelUpsertSQL)
 		if err != nil {
 			return fmt.Errorf("prepare channel statement: %w", err)
 		}
@@ -298,11 +313,26 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 				return fmt.Errorf("get channel id for %s: %w", config.Name, err)
 			}
 
-			// 删除旧的API Keys（如果是更新）
+			// 删除旧的API Keys和模型索引（如果是更新）
 			if isUpdate {
-				_, err := tx.ExecContext(ctx, `DELETE FROM api_keys WHERE channel_id = ?`, channelID)
-				if err != nil {
+				if _, err := tx.ExecContext(ctx, `DELETE FROM api_keys WHERE channel_id = ?`, channelID); err != nil {
 					return fmt.Errorf("delete old api keys for channel %d: %w", channelID, err)
+				}
+				if _, err := tx.ExecContext(ctx, `DELETE FROM channel_models WHERE channel_id = ?`, channelID); err != nil {
+					return fmt.Errorf("delete old model indices for channel %d: %w", channelID, err)
+				}
+			}
+
+			// 同步模型索引到 channel_models 表
+			var modelInsertSQL string
+			if s.IsSQLite() {
+				modelInsertSQL = `INSERT OR IGNORE INTO channel_models (channel_id, model) VALUES (?, ?)`
+			} else {
+				modelInsertSQL = `INSERT IGNORE INTO channel_models (channel_id, model) VALUES (?, ?)`
+			}
+			for _, model := range config.Models {
+				if _, err := tx.ExecContext(ctx, modelInsertSQL, channelID, model); err != nil {
+					return fmt.Errorf("insert model index %s for channel %d: %w", model, channelID, err)
 				}
 			}
 

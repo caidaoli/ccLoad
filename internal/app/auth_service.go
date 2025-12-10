@@ -43,6 +43,11 @@ type AuthService struct {
 
 	// 速率限制（防暴力破解）
 	loginRateLimiter *util.LoginRateLimiter
+
+	// 异步更新 last_used_at（受控 worker，避免 goroutine 泄漏）
+	lastUsedCh chan string    // tokenHash 更新队列
+	done       chan struct{}  // 关闭信号
+	wg         sync.WaitGroup // 优雅关闭
 }
 
 // NewAuthService 创建认证服务实例
@@ -59,7 +64,13 @@ func NewAuthService(
 		authTokenIDs:     make(map[string]int64),
 		loginRateLimiter: loginRateLimiter,
 		store:            store,
+		lastUsedCh:       make(chan string, 256), // 带缓冲，避免阻塞请求
+		done:             make(chan struct{}),
 	}
+
+	// 启动 last_used_at 更新 worker
+	s.wg.Add(1)
+	go s.lastUsedWorker()
 
 	// 从数据库加载API访问令牌
 	if err := s.ReloadAuthTokens(); err != nil {
@@ -94,6 +105,27 @@ func (s *AuthService) loadSessionsFromDB() error {
 		log.Printf("✅ 已恢复 %d 个管理员会话（重启后保持登录）", len(sessions))
 	}
 	return nil
+}
+
+// lastUsedWorker 处理 last_used_at 更新的后台 worker
+func (s *AuthService) lastUsedWorker() {
+	defer s.wg.Done()
+	for {
+		select {
+		case <-s.done:
+			return
+		case tokenHash := <-s.lastUsedCh:
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			_ = s.store.UpdateTokenLastUsed(ctx, tokenHash, time.Now())
+			cancel()
+		}
+	}
+}
+
+// Close 优雅关闭 AuthService
+func (s *AuthService) Close() {
+	close(s.done)
+	s.wg.Wait()
 }
 
 // ============================================================================
@@ -257,12 +289,12 @@ func (s *AuthService) RequireAPIAuth() gin.HandlerFunc {
 				c.Set("token_id", tokenID)
 			}
 
-			// 异步更新last_used_at（不阻塞请求）
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-				defer cancel()
-				_ = s.store.UpdateTokenLastUsed(ctx, tokenHash, time.Now())
-			}()
+			// 异步更新last_used_at（发送到受控worker，不阻塞请求）
+			select {
+			case s.lastUsedCh <- tokenHash:
+			default:
+				// channel满时丢弃，避免阻塞（last_used_at非关键数据）
+			}
 
 			c.Next()
 			return
