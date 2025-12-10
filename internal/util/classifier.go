@@ -20,6 +20,16 @@ var ErrUpstreamFirstByteTimeout = errors.New("upstream first byte timeout")
 // StatusFirstByteTimeout 是上游首字节超时时返回的自定义状态码（配合冷却策略使用）
 const StatusFirstByteTimeout = 598
 
+// Rate Limit 相关常量
+const (
+	// RetryAfterThresholdSeconds Retry-After超过此值视为渠道级限流
+	RetryAfterThresholdSeconds = 60
+	// RateLimitScope 常量
+	RateLimitScopeGlobal  = "global"
+	RateLimitScopeIP      = "ip"
+	RateLimitScopeAccount = "account"
+)
+
 type ErrorLevel int
 
 const (
@@ -186,9 +196,9 @@ func ClassifyRateLimitError(headers map[string][]string, responseBody []byte) Er
 		// Retry-After可能是秒数或HTTP日期
 		// 尝试解析为秒数
 		if seconds, err := strconv.Atoi(retryAfter); err == nil {
-			// ✅ 如果Retry-After > 60秒,可能是账户级或IP级限流
+			// ✅ 如果Retry-After > 阈值,可能是账户级或IP级限流
 			// 这种长时间限流通常影响整个渠道
-			if seconds > 60 {
+			if seconds > RetryAfterThresholdSeconds {
 				return ErrorLevelChannel
 			}
 		}
@@ -202,7 +212,7 @@ func ClassifyRateLimitError(headers map[string][]string, responseBody []byte) Er
 	if scopeValues, ok := headers["X-Ratelimit-Scope"]; ok && len(scopeValues) > 0 {
 		scope := strings.ToLower(scopeValues[0])
 		// global/ip级别的限流影响整个渠道
-		if scope == "global" || scope == "ip" || scope == "account" {
+		if scope == RateLimitScopeGlobal || scope == RateLimitScopeIP || scope == RateLimitScopeAccount {
 			return ErrorLevelChannel
 		}
 	}

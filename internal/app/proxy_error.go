@@ -53,15 +53,12 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *model.Config, keyInd
 	switch action {
 	case cooldown.ActionRetryKey:
 		// Key级错误：立即刷新相关缓存
-		s.InvalidateAPIKeysCache(cfg.ID)
-		s.invalidateCooldownCache()
+		s.invalidateChannelRelatedCache(cfg.ID)
 		return action, true
 
 	case cooldown.ActionRetryChannel:
 		// 渠道级错误：刷新渠道与冷却缓存，确保下次选择避开问题渠道
-		s.InvalidateChannelListCache()
-		s.InvalidateAPIKeysCache(cfg.ID)
-		s.invalidateCooldownCache()
+		s.invalidateChannelRelatedCache(cfg.ID)
 		return action, true
 
 	default:
@@ -133,9 +130,7 @@ func (s *Server) handleProxySuccess(
 	}
 
 	// 冷却状态已恢复，刷新相关缓存避免下次命中过期数据
-	s.InvalidateChannelListCache()
-	s.InvalidateAPIKeysCache(cfg.ID)
-	s.invalidateCooldownCache()
+	s.invalidateChannelRelatedCache(cfg.ID)
 
 	// 精确计数：记录状态恢复
 

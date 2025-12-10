@@ -119,8 +119,27 @@ func (s *Server) selectRouteCandidates(ctx context.Context, c *gin.Context, orig
 // 主请求处理器
 // ============================================================================
 
-// handleProxyRequest 通用透明代理处理器
-// 从proxy.go提取，遵循SRP原则
+// handleSpecialRoutes 处理特殊路由（模型列表、token计数等）
+// 返回 true 表示已处理，调用方应直接返回
+func (s *Server) handleSpecialRoutes(c *gin.Context) bool {
+	path := c.Request.URL.Path
+	method := c.Request.Method
+
+	switch {
+	case method == http.MethodGet && path == "/v1/models":
+		s.handleListOpenAIModels(c)
+		return true
+	case method == http.MethodGet && path == "/v1beta/models":
+		s.handleListGeminiModels(c)
+		return true
+	case method == http.MethodPost && path == "/v1/messages/count_tokens":
+		s.handleCountTokens(c)
+		return true
+	}
+	return false
+}
+
+// HandleProxyRequest 通用透明代理处理器
 func (s *Server) HandleProxyRequest(c *gin.Context) {
 	// 并发控制
 	release, ok := s.acquireConcurrencySlot(c)
@@ -129,21 +148,13 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	}
 	defer release()
 
-	requestPath := c.Request.URL.Path
-	requestMethod := c.Request.Method
-	if requestMethod == http.MethodGet && requestPath == "/v1/models" {
-		s.handleListOpenAIModels(c)
-		return
-	}
-	if requestMethod == http.MethodGet && requestPath == "/v1beta/models" {
-		s.handleListGeminiModels(c)
+	// 特殊路由优先处理
+	if s.handleSpecialRoutes(c) {
 		return
 	}
 
-	if requestPath == "/v1/messages/count_tokens" && requestMethod == http.MethodPost {
-		s.handleCountTokens(c)
-		return
-	}
+	requestPath := c.Request.URL.Path
+	requestMethod := c.Request.Method
 
 	originalModel, all, isStreaming, err := parseIncomingRequest(c)
 	if err != nil {

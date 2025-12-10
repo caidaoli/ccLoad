@@ -167,9 +167,7 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 	}
 
 	// 新增、删除或更新渠道后，失效缓存保持一致性
-	s.InvalidateChannelListCache()
-	s.InvalidateAPIKeysCache(created.ID)
-	s.invalidateCooldownCache()
+	s.invalidateChannelRelatedCache(created.ID)
 
 	RespondJSON(c, http.StatusCreated, created)
 }
@@ -384,9 +382,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	}
 
 	// 渠道更新后刷新缓存，避免返回陈旧数据
-	s.InvalidateChannelListCache()
-	s.InvalidateAPIKeysCache(id)
-	s.invalidateCooldownCache()
+	s.invalidateChannelRelatedCache(id)
 
 	RespondJSON(c, http.StatusOK, upd)
 }
@@ -398,9 +394,7 @@ func (s *Server) handleDeleteChannel(c *gin.Context, id int64) {
 		return
 	}
 	// 删除渠道后刷新缓存
-	s.InvalidateChannelListCache()
-	s.InvalidateAPIKeysCache(id)
-	s.invalidateCooldownCache()
+	s.invalidateChannelRelatedCache(id)
 	// 数据库级联删除会自动清理冷却数据（无需手动清理缓存）
 	c.Status(http.StatusNoContent)
 }

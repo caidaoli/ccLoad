@@ -335,6 +335,14 @@ func (s *Server) invalidateCooldownCache() {
 	}
 }
 
+// invalidateChannelRelatedCache 统一失效渠道相关的所有缓存（DRY原则）
+// 在渠道CRUD、冷却状态变更后调用
+func (s *Server) invalidateChannelRelatedCache(channelID int64) {
+	s.InvalidateChannelListCache()
+	s.InvalidateAPIKeysCache(channelID)
+	s.invalidateCooldownCache()
+}
+
 // bumpChannelCooldownAndInvalidateCache 统一封装：冷却操作后立即刷新缓存（DRY原则）
 // 解决问题：强制渠道冷却未刷新缓存，导致60s内对其他请求不可见
 func (s *Server) bumpChannelCooldownAndInvalidateCache(ctx context.Context, channelID int64, statusCode int) error {
@@ -342,9 +350,7 @@ func (s *Server) bumpChannelCooldownAndInvalidateCache(ctx context.Context, chan
 		return err
 	}
 	// 立即刷新三层缓存，确保后续请求能看到冷却状态（Fail-Fast）
-	s.InvalidateChannelListCache()
-	s.InvalidateAPIKeysCache(channelID)
-	s.invalidateCooldownCache()
+	s.invalidateChannelRelatedCache(channelID)
 	return nil
 }
 
