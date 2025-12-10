@@ -17,6 +17,7 @@ import (
 	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // AuthService 认证和授权服务
@@ -29,9 +30,9 @@ import (
 // 遵循 SRP 原则：仅负责认证授权，不涉及代理、日志、管理 API
 type AuthService struct {
 	// Token 认证（管理界面使用的动态 Token）
-	password    string               // 管理员密码
-	validTokens map[string]time.Time // Token → 过期时间
-	tokensMux   sync.RWMutex         // 并发保护
+	passwordHash []byte               // 管理员密码bcrypt哈希
+	validTokens  map[string]time.Time // Token → 过期时间
+	tokensMux    sync.RWMutex         // 并发保护
 
 	// API 认证（代理 API 使用的数据库令牌）
 	authTokens    map[string]bool  // 数据库令牌集合（SHA256哈希）
@@ -57,8 +58,14 @@ func NewAuthService(
 	loginRateLimiter *util.LoginRateLimiter,
 	store storage.Store,
 ) *AuthService {
+	// 密码bcrypt哈希（安全存储）
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		log.Fatalf("FATAL: failed to hash password: %v", err)
+	}
+
 	s := &AuthService{
-		password:         password,
+		passwordHash:     passwordHash,
 		validTokens:      make(map[string]time.Time),
 		authTokens:       make(map[string]bool),
 		authTokenIDs:     make(map[string]int64),
@@ -133,10 +140,12 @@ func (s *AuthService) Close() {
 // ============================================================================
 
 // generateToken 生成安全Token（64字符十六进制）
-func (s *AuthService) generateToken() string {
+func (s *AuthService) generateToken() (string, error) {
 	b := make([]byte, config.TokenRandomBytes)
-	rand.Read(b)
-	return hex.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("crypto/rand failed: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // isValidToken 验证Token有效性（检查过期时间）
@@ -334,8 +343,8 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 		return
 	}
 
-	// 验证密码
-	if req.Password != s.password {
+	// 验证密码（bcrypt安全比较）
+	if err := bcrypt.CompareHashAndPassword(s.passwordHash, []byte(req.Password)); err != nil {
 		// 记录失败尝试（速率限制器已在AllowAttempt中增加计数）
 		attemptCount := s.loginRateLimiter.GetAttemptCount(clientIP)
 		log.Printf("⚠️  登录失败: IP=%s, 尝试次数=%d/5", clientIP, attemptCount)
@@ -351,7 +360,12 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 	s.loginRateLimiter.RecordSuccess(clientIP)
 
 	// 生成Token
-	token := s.generateToken()
+	token, err := s.generateToken()
+	if err != nil {
+		log.Printf("ERROR: token generation failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
 	expiry := time.Now().Add(config.TokenExpiry)
 
 	// 存储Token到内存和数据库
