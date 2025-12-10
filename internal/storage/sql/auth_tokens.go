@@ -3,6 +3,7 @@ package sql
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -90,7 +91,7 @@ func (s *SQLStore) GetAuthToken(ctx context.Context, id int64) (*model.AuthToken
 		&token.TotalCostUSD,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("auth token not found")
 	}
 	if err != nil {
@@ -146,7 +147,7 @@ func (s *SQLStore) GetAuthTokenByValue(ctx context.Context, tokenHash string) (*
 		&token.TotalCostUSD,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("auth token not found")
 	}
 	if err != nil {
@@ -448,7 +449,7 @@ func (s *SQLStore) UpdateTokenStats(
 		&stats.TotalCostUSD,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("token not found: %s", tokenHash)
 	}
 	if err != nil {

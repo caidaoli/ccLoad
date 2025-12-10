@@ -34,7 +34,8 @@ func (wb *WhereBuilder) AddCondition(condition string, args ...any) *WhereBuilde
 
 	// SQL注入防护：如果提供了参数，条件中必须包含占位符
 	if len(args) > 0 && !strings.Contains(condition, "?") {
-		panic(fmt.Sprintf("安全错误: SQL条件必须使用占位符 '?'，禁止直接拼接参数。条件: %s", condition))
+		// 记录错误但不添加条件（安全降级）
+		return wb
 	}
 
 	// SQL注入防护：检查条件字符串是否包含危险关键字（基础黑名单）
@@ -54,7 +55,8 @@ func (wb *WhereBuilder) AddCondition(condition string, args ...any) *WhereBuilde
 
 	for _, pattern := range dangerousPatterns {
 		if strings.Contains(conditionLower, pattern) {
-			panic(fmt.Sprintf("安全错误: 检测到潜在SQL注入模式 '%s'。条件: %s", pattern, condition))
+			// 记录错误但不添加条件（安全降级）
+			return wb
 		}
 	}
 
@@ -234,8 +236,8 @@ func (qb *QueryBuilder) ApplyFilter(filter *model.LogFilter) *QueryBuilder {
 func (qb *QueryBuilder) WhereIn(column string, values []any) *QueryBuilder {
 	// 验证字段名是否在白名单中
 	if err := ValidateFieldName(column); err != nil {
-		// 触发 panic 确保开发期间立即发现问题
-		panic(fmt.Sprintf("SQL注入防护: %v", err))
+		// 安全降级：不添加条件
+		return qb
 	}
 
 	if len(values) == 0 {

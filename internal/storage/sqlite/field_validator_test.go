@@ -87,18 +87,18 @@ func TestQueryBuilderFieldValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("WhereIn-非法字段应panic", func(t *testing.T) {
-		defer func() {
-			r := recover()
-			if r == nil {
-				t.Error("WhereIn 应该 panic")
-			}
-			if !strings.Contains(r.(string), "SQL注入防护") {
-				t.Errorf("panic 消息应包含 'SQL注入防护', got: %v", r)
-			}
-		}()
-
+	t.Run("WhereIn-非法字段应安全降级", func(t *testing.T) {
 		qb := sql.NewQueryBuilder("SELECT * FROM logs")
 		qb.WhereIn("malicious_field", []any{1, 2, 3})
+
+		query, args := qb.Build()
+		// 安全降级：非法字段不添加条件
+		expectedQuery := "SELECT * FROM logs"
+		if query != expectedQuery {
+			t.Errorf("query = %q, want %q", query, expectedQuery)
+		}
+		if len(args) != 0 {
+			t.Errorf("args length = %d, want 0", len(args))
+		}
 	})
 }
