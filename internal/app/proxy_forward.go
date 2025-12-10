@@ -314,10 +314,17 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 
 	// 3. 发送请求
 	resp, err := s.client.Do(req)
+
+	// ✅ 修复：无论成功或失败，都必须关闭 resp.Body（如果存在）
+	// Go http.Client.Do() 在 context 取消时可能返回 err!=nil 但 resp!=nil
+	// 不关闭会导致上游连接泄漏，上游继续发送完整响应
+	if resp != nil {
+		defer resp.Body.Close()
+	}
+
 	if err != nil {
 		return s.handleRequestError(reqCtx, cfg, err)
 	}
-	defer resp.Body.Close()
 
 	// 4. 首字节到达，停止计时器
 	reqCtx.stopFirstByteTimer()
