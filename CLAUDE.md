@@ -2,6 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 环境要求
+
+- **Go 版本**: 1.25+ (必须)
+  - 使用 Go 1.21+ 特性: `context.AfterFunc` (零 goroutine 泄漏)
+  - 构建标签: `-tags go_json` (sonic JSON 库)
+
 ## 快速命令
 
 ```bash
@@ -108,4 +114,42 @@ internal/
 - **禁止**过度工程(Factory工厂、"万一需要"的功能)
 - **Fail-Fast**: 配置错误直接`log.Fatal()`退出,不要容错
 - **API Key脱敏**: 日志自动清洗,无需手动处理(`util/log_sanitizer.go`)
+
+### Context 管理规范 (Go 1.21+)
+
+**强制要求**:
+- 所有 `context.WithCancel/WithTimeout` 必须 `defer cancel()`
+- 监听 context 取消时使用 `context.AfterFunc` (零泄漏)
+- 禁止手动 `go func() { <-ctx.Done() }` (容易泄漏)
+
+**正确示例**:
+```go
+// ✅ 统一清理模式
+ctx, cancel := context.WithCancel(parent)
+defer cancel()  // 无条件 defer
+
+// ✅ 监听取消（Go 1.21+）
+stop := context.AfterFunc(ctx, cleanup)
+defer stop()  // 取消注册
+```
+
+**错误示例**:
+```go
+// ❌ 条件性 cancel（违反惯用法）
+var cancel context.CancelFunc
+if needTimeout {
+    ctx, cancel = context.WithCancel(parent)
+}
+if cancel != nil {  // ❌ 不应该需要检查
+    defer cancel()
+}
+
+// ❌ 手动 goroutine（泄漏风险）
+go func() {
+    <-ctx.Done()
+    cleanup()
+}()  // 忘记 defer cancel() → 永久阻塞
+```
+
+**参考实现**: `internal/app/request_context.go`
 

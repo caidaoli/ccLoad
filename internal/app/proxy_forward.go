@@ -307,8 +307,8 @@ func (s *Server) handleResponse(
 // 参数新增 method 用于支持任意HTTP方法（GET、POST、PUT、DELETE等）
 func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey string, method string, body []byte, hdr http.Header, rawQuery, requestPath string, w http.ResponseWriter) (*fwResult, float64, error) {
 	// 1. 创建请求上下文（处理超时）
-	// 移除defer reqCtx.Close()调用（Close方法已删除）
 	reqCtx := s.newRequestContext(ctx, requestPath, body)
+	defer reqCtx.cleanup() // ✅ 统一清理：定时器 + context（总是安全）
 
 	// 2. 构建上游请求
 	req, err := s.buildProxyRequest(reqCtx, cfg, apiKey, method, body, hdr, rawQuery, requestPath)
@@ -319,14 +319,14 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 	// 3. 发送请求
 	resp, err := s.client.Do(req)
 
-	// ✅ 修复（2025-12）：客户端取消时主动关闭response body，立即中断上游传输
-	// 问题：streamCopy中的Read阻塞时，无法立即响应context取消，上游继续生成完整响应
-	// 解决：监听context取消并主动Close() → 中断Read → 触发连接/stream关闭
-	//   - HTTP/1.1: 关闭TCP连接 → 上游收到RST，立即停止发送
-	//   - HTTP/2: 发送RST_STREAM帧 → 取消当前stream（不影响同连接的其他请求）
-	// 效果：避免AI流式生成场景下，用户点"停止"后上游仍生成数千tokens的浪费
+	// ✅ 修复（2025-12）：客户端取消时主动关闭 response body，立即中断上游传输
+	// 问题：streamCopy 中的 Read 阻塞时，无法立即响应 context 取消，上游继续生成完整响应
+	// 解决：使用 Go 1.21+ context.AfterFunc 替代手动 goroutine（零泄漏风险）
+	//   - HTTP/1.1: 关闭 TCP 连接 → 上游收到 RST，立即停止发送
+	//   - HTTP/2: 发送 RST_STREAM 帧 → 取消当前 stream（不影响同连接的其他请求）
+	// 效果：避免 AI 流式生成场景下，用户点"停止"后上游仍生成数千 tokens 的浪费
 	if resp != nil {
-		// 使用sync.Once确保body只关闭一次（协调defer和cancel goroutine）
+		// 使用 sync.Once 确保 body 只关闭一次（协调 defer 和 AfterFunc）
 		var bodyCloseOnce sync.Once
 		closeBodySafely := func() {
 			bodyCloseOnce.Do(func() {
@@ -334,13 +334,11 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 			})
 		}
 
-		// 监听客户端context取消（499场景），主动中断Read
-		go func() {
-			<-ctx.Done()
-			closeBodySafely()
-		}()
+		// ✅ 使用 context.AfterFunc 监听客户端取消（Go 1.21+，标准库保证无泄漏）
+		stop := context.AfterFunc(ctx, closeBodySafely)
+		defer stop() // 取消注册（请求正常结束时避免内存泄漏）
 
-		// 正常返回时关闭（与goroutine互斥，Once保证只执行一次）
+		// 正常返回时关闭（与 AfterFunc 互斥，Once 保证只执行一次）
 		defer closeBodySafely()
 	}
 
