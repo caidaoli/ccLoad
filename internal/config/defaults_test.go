@@ -115,7 +115,6 @@ func TestHTTPTimeoutValues(t *testing.T) {
 		"HTTPDialTimeout":         HTTPDialTimeout,
 		"HTTPKeepAliveInterval":   HTTPKeepAliveInterval,
 		"HTTPTLSHandshakeTimeout": HTTPTLSHandshakeTimeout,
-		"HTTPIdleConnTimeout":     HTTPIdleConnTimeout,
 	}
 
 	for name, value := range timeouts {

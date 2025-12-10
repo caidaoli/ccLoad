@@ -145,8 +145,8 @@ func (s *Server) handleSuccessResponse(
 	hdrClone http.Header,
 	w http.ResponseWriter,
 	channelType string,
-	channelID *int64,
-	apiKeyUsed string,
+	_ *int64,
+	_ string,
 ) (*fwResult, float64, error) {
 	// 写入响应头
 	filterAndWriteResponseHeaders(w, resp.Header)

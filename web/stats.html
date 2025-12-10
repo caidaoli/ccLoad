@@ -23,14 +23,17 @@
         <header class="mb-2">
         </header>
 
-        <!-- Channel Type Tabs -->
-        <div class="channel-tabs" id="channelTypeTabs">
-          <!-- 动态加载渠道类型tabs -->
-        </div>
-
         <!-- Filter Bar -->
         <div class="filter-bar">
           <div class="filter-controls">
+            <!-- 渠道类型筛选 -->
+            <div class="filter-group">
+              <label for="f_channel_type" class="filter-label">渠道类型</label>
+              <select id="f_channel_type" class="filter-select" style="min-width: 120px;">
+                <!-- 动态加载渠道类型选项 -->
+              </select>
+            </div>
+
             <!-- 时间范围筛选 -->
             <div class="filter-group">
               <label for="f_hours" class="filter-label">时间范围</label>

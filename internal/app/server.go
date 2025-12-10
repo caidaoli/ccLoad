@@ -223,7 +223,7 @@ func buildHTTPTransport(skipTLSVerify bool, firstByteTimeout time.Duration) (*ht
 		Proxy:               http.ProxyFromEnvironment, // 支持 HTTPS_PROXY/HTTP_PROXY/NO_PROXY
 		MaxIdleConns:        config.HTTPMaxIdleConns,
 		MaxIdleConnsPerHost: config.HTTPMaxIdleConnsPerHost,
-		IdleConnTimeout:     config.HTTPIdleConnTimeout,
+		IdleConnTimeout:     0,
 		MaxConnsPerHost:     config.HTTPMaxConnsPerHost,
 		DialContext:         dialer.DialContext,
 		TLSHandshakeTimeout: config.HTTPTLSHandshakeTimeout,
@@ -237,9 +237,9 @@ func buildHTTPTransport(skipTLSVerify bool, firstByteTimeout time.Duration) (*ht
 		},
 	}
 
-	if firstByteTimeout > 0 {
-		transport.ResponseHeaderTimeout = firstByteTimeout
-	}
+	// if firstByteTimeout > 0 {
+	// 	transport.ResponseHeaderTimeout = firstByteTimeout
+	// }
 
 	// 启用HTTP/2
 	http2Enabled := true
@@ -395,7 +395,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/channels/:id/keys", s.HandleChannelKeys)
 		admin.POST("/channels/models/fetch", s.HandleFetchModelsPreview) // 临时渠道配置获取模型列表
 		admin.GET("/channels/:id/models/fetch", s.HandleFetchModels)     // 获取渠道可用模型列表(新增)
-		admin.POST("/channels/:id/models", s.HandleAddModels)             // 添加渠道模型
+		admin.POST("/channels/:id/models", s.HandleAddModels)            // 添加渠道模型
 		admin.DELETE("/channels/:id/models", s.HandleDeleteModels)       // 删除渠道模型
 		admin.POST("/channels/:id/test", s.HandleChannelTest)
 		admin.POST("/channels/:id/cooldown", s.HandleSetChannelCooldown)

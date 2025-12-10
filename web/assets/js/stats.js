@@ -502,15 +502,12 @@
     document.addEventListener('DOMContentLoaded', async function() {
       if (window.initTopbar) initTopbar('stats');
 
-      // 初始化渠道类型 tabs
+      // 初始化渠道类型筛选器（默认选择 claude code）
       const types = await window.ChannelTypeManager.getChannelTypes();
-      const defaultType = types.length > 0 ? types[0].value : 'all';
+      const defaultType = 'anthropic'; // 默认选择 anthropic (显示为 Claude Code)
       currentChannelType = defaultType;
 
-      await window.ChannelTypeManager.renderChannelTypeTabs('channelTypeTabs', (type) => {
-        currentChannelType = type;
-        loadStats();
-      });
+      await initChannelTypeFilter(defaultType);
 
       initFilters();
       loadStats();
@@ -519,3 +516,29 @@
       handleResize();
       window.addEventListener('resize', handleResize);
     });
+
+    // 初始化渠道类型筛选器
+    async function initChannelTypeFilter(initialType) {
+      const select = document.getElementById('f_channel_type');
+      if (!select) return;
+
+      const types = await window.ChannelTypeManager.getChannelTypes();
+
+      // 添加"全部"选项
+      select.innerHTML = '<option value="all">全部</option>';
+      types.forEach(type => {
+        const option = document.createElement('option');
+        option.value = type.value;
+        option.textContent = type.display_name;
+        if (type.value === initialType) {
+          option.selected = true;
+        }
+        select.appendChild(option);
+      });
+
+      // 绑定change事件
+      select.addEventListener('change', (e) => {
+        currentChannelType = e.target.value;
+        loadStats();
+      });
+    }

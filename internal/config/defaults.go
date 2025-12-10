@@ -33,11 +33,6 @@ const (
 	// HTTPMaxIdleConnsPerHost 单host空闲连接数
 	HTTPMaxIdleConnsPerHost = 5
 
-	// HTTPIdleConnTimeout 空闲连接超时
-	// 90秒：允许长时间复用连接，减少TLS握手开销
-	// 必须 > KeepAlive检测时间(42s)，否则KeepAlive失效
-	HTTPIdleConnTimeout = 90 * time.Second
-
 	// HTTPMaxConnsPerHost 单host最大连接数
 	HTTPMaxConnsPerHost = 50
 
@@ -107,4 +102,3 @@ const (
 	// RedisSyncShutdownTimeoutMs 优雅关闭等待时间（毫秒）
 	RedisSyncShutdownTimeoutMs = 100
 )
-

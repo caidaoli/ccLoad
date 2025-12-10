@@ -41,19 +41,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   await window.ChannelTypeManager.renderChannelTypeRadios('channelTypeRadios');
 
   const types = await window.ChannelTypeManager.getChannelTypes();
-  const defaultType = types.length > 0 ? types[0].value : 'all';
+  const defaultType = 'anthropic'; // 默认选择 anthropic (显示为 Claude Code)
 
   // 检查URL参数是否指定了目标渠道ID，如果是则获取其类型
   const targetChannelType = await getTargetChannelType();
   const initialType = targetChannelType || defaultType;
   filters.channelType = initialType;
 
-  await window.ChannelTypeManager.renderChannelTypeTabs('channelTypeTabs', (type) => {
-    filters.channelType = type;
-    filters.model = 'all';
-    document.getElementById('modelFilter').value = 'all';
-    loadChannels(type);
-  }, initialType); // 传递初始选中的类型
+  // 初始化渠道类型筛选器（替换原Tab逻辑）
+  await initChannelTypeFilter(initialType);
 
   await loadDefaultTestContent();
   await loadChannelStatsRange();
@@ -63,6 +59,35 @@ document.addEventListener('DOMContentLoaded', async () => {
   highlightFromHash();
   window.addEventListener('hashchange', highlightFromHash);
 });
+
+// 初始化渠道类型筛选器
+async function initChannelTypeFilter(initialType) {
+  const select = document.getElementById('channelTypeFilter');
+  if (!select) return;
+
+  const types = await window.ChannelTypeManager.getChannelTypes();
+
+  // 添加"全部"选项
+  select.innerHTML = '<option value="all">全部</option>';
+  types.forEach(type => {
+    const option = document.createElement('option');
+    option.value = type.value;
+    option.textContent = type.display_name;
+    if (type.value === initialType) {
+      option.selected = true;
+    }
+    select.appendChild(option);
+  });
+
+  // 绑定change事件
+  select.addEventListener('change', (e) => {
+    const type = e.target.value;
+    filters.channelType = type;
+    filters.model = 'all';
+    document.getElementById('modelFilter').value = 'all';
+    loadChannels(type);
+  });
+}
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
