@@ -19,20 +19,25 @@ type requestContext struct {
 }
 
 // newRequestContext 创建请求上下文（处理超时控制）
-// ✅ 简化设计：默认透传客户端上下文，可选启用首字节超时保护
 // 设计原则：
-// - 透明代理不应干预客户端的超时设置
-// - 可选的首字节超时只在配置时启用
-// - 使用 parentCtx 传递客户端的取消信号
+// - 流式请求：使用 firstByteTimeout（首字节超时），之后不限制
+// - 非流式请求：使用 nonStreamTimeout（整体超时），超时主动关闭上游连接
 func (s *Server) newRequestContext(parentCtx context.Context, requestPath string, body []byte) *requestContext {
 	isStreaming := isStreamingRequest(requestPath, body)
 
 	ctx := parentCtx
 	var cancel context.CancelFunc
 
-	timeout := s.firstByteTimeout
-	if timeout > 0 {
-		ctx, cancel = context.WithCancel(parentCtx)
+	if isStreaming {
+		// 流式请求：首字节超时（定时器实现，首字节到达后停止）
+		if s.firstByteTimeout > 0 {
+			ctx, cancel = context.WithCancel(parentCtx)
+		}
+	} else {
+		// 非流式请求：整体超时（context.WithTimeout，超时自动关闭连接）
+		if s.nonStreamTimeout > 0 {
+			ctx, cancel = context.WithTimeout(parentCtx, s.nonStreamTimeout)
+		}
 	}
 
 	reqCtx := &requestContext{
@@ -42,8 +47,9 @@ func (s *Server) newRequestContext(parentCtx context.Context, requestPath string
 		isStreaming: isStreaming,
 	}
 
-	if timeout > 0 {
-		reqCtx.firstByteTimer = time.AfterFunc(timeout, func() {
+	// 流式请求的首字节超时定时器
+	if isStreaming && s.firstByteTimeout > 0 {
+		reqCtx.firstByteTimer = time.AfterFunc(s.firstByteTimeout, func() {
 			reqCtx.firstByteTimedOut.Store(true)
 			if reqCtx.cancel != nil {
 				reqCtx.cancel()

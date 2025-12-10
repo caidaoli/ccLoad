@@ -44,7 +44,8 @@ type Server struct {
 
 	// 运行时配置（启动时从数据库加载，修改后重启生效）
 	maxKeyRetries    int           // 单个渠道内最大Key重试次数
-	firstByteTimeout time.Duration // 上游首字节超时
+	firstByteTimeout time.Duration // 上游首字节超时（流式请求）
+	nonStreamTimeout time.Duration // 非流式请求超时
 
 	// 登录速率限制器（用于传递给AuthService）
 	loginRateLimiter *util.LoginRateLimiter
@@ -80,6 +81,7 @@ func NewServer(store storage.Store) *Server {
 	// 从ConfigService读取运行时配置（启动时加载一次，修改后重启生效）
 	maxKeyRetries := configService.GetInt("max_key_retries", config.DefaultMaxKeyRetries)
 	firstByteTimeout := configService.GetDuration("upstream_first_byte_timeout", 0)
+	nonStreamTimeout := configService.GetDuration("non_stream_timeout", 120*time.Second)
 	logRetentionDays := configService.GetInt("log_retention_days", 7)
 	enable88codeFreeOnly := configService.GetBool("88code_free_only", false)
 
@@ -115,6 +117,7 @@ func NewServer(store storage.Store) *Server {
 		// 运行时配置（启动时加载，修改后重启生效）
 		maxKeyRetries:    maxKeyRetries,
 		firstByteTimeout: firstByteTimeout,
+		nonStreamTimeout: nonStreamTimeout,
 
 		// HTTP客户端
 		client: &http.Client{
@@ -330,6 +333,19 @@ func (s *Server) invalidateCooldownCache() {
 	if cache := s.getChannelCache(); cache != nil {
 		cache.InvalidateCooldownCache()
 	}
+}
+
+// bumpChannelCooldownAndInvalidateCache 统一封装：冷却操作后立即刷新缓存（DRY原则）
+// 解决问题：强制渠道冷却未刷新缓存，导致60s内对其他请求不可见
+func (s *Server) bumpChannelCooldownAndInvalidateCache(ctx context.Context, channelID int64, statusCode int) error {
+	if _, err := s.store.BumpChannelCooldown(ctx, channelID, time.Now(), statusCode); err != nil {
+		return err
+	}
+	// 立即刷新三层缓存，确保后续请求能看到冷却状态（Fail-Fast）
+	s.InvalidateChannelListCache()
+	s.InvalidateAPIKeysCache(channelID)
+	s.invalidateCooldownCache()
+	return nil
 }
 
 // SetupRoutes - 新的路由设置函数，适配Gin

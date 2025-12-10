@@ -120,6 +120,13 @@ func main() {
 	httpServer := &http.Server{
 		Addr:    addr,
 		Handler: r,
+
+		// ✅ 深度防御：传输层超时保护（抵御slowloris等慢速攻击）
+		// 即使绕过应用层并发控制，也会在HTTP层被杀死
+		ReadHeaderTimeout: 5 * time.Second,   // 防止慢速发送header（slowloris攻击）
+		ReadTimeout:       120 * time.Second, // 防止慢速发送body（兼容长请求）
+		WriteTimeout:      120 * time.Second, // 防止慢速读取响应（兼容流式输出）
+		IdleTimeout:       60 * time.Second,  // 防止keep-alive连接占用fd
 	}
 
 	// 启动HTTP服务器（在goroutine中）

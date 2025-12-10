@@ -210,9 +210,8 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 
 		// 所有Key冷却：触发渠道级冷却(503)，防止后续请求重复尝试
 		if err != nil && strings.Contains(err.Error(), "channel keys unavailable") {
-			// 记录冷却失败但不中断请求
-			// 设计原则: 这是防御性冷却，失败不应影响错误传播
-			if _, bumpErr := s.store.BumpChannelCooldown(ctx, cfg.ID, time.Now(), 503); bumpErr != nil {
+			// ✅ 修复：使用统一方法，立即刷新缓存，确保后续请求能看到冷却状态（DRY原则）
+			if bumpErr := s.bumpChannelCooldownAndInvalidateCache(ctx, cfg.ID, 503); bumpErr != nil {
 				log.Printf("⚠️  WARNING: Failed to bump channel cooldown (channel=%d, status=503): %v", cfg.ID, bumpErr)
 			}
 			continue

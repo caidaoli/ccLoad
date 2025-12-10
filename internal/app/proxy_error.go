@@ -147,7 +147,17 @@ func (s *Server) handleProxySuccess(
 
 	// ✅ 新增：异步更新Token统计（2025-11）
 	if reqCtx.tokenHash != "" {
+		s.wg.Add(1) // ✅ 纳入WaitGroup，确保优雅关闭时等待统计完成
 		go func() {
+			defer s.wg.Done() // ✅ 完成时通知
+
+			// ✅ 检查是否正在关闭（避免写入已关闭的DB）
+			select {
+			case <-s.shutdownCh:
+				return // 服务器正在关闭，放弃本次统计
+			default:
+			}
+
 			updateCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 
@@ -213,7 +223,17 @@ func (s *Server) handleProxyErrorResponse(
 
 	// ✅ 新增：异步更新Token统计（2025-11）
 	if reqCtx.tokenHash != "" {
+		s.wg.Add(1) // ✅ 纳入WaitGroup，确保优雅关闭时等待统计完成
 		go func() {
+			defer s.wg.Done() // ✅ 完成时通知
+
+			// ✅ 检查是否正在关闭（避免写入已关闭的DB）
+			select {
+			case <-s.shutdownCh:
+				return // 服务器正在关闭，放弃本次统计
+			default:
+			}
+
 			updateCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 

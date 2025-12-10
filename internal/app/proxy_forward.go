@@ -67,9 +67,10 @@ func (s *Server) handleRequestError(
 	reqCtx.stopFirstByteTimer()
 	duration := reqCtx.Duration()
 
-	// 检测首字节超时错误：使用统一的内部状态码+冷却策略
+	// 检测超时错误：使用统一的内部状态码+冷却策略
 	var statusCode int
 	if reqCtx.firstByteTimeoutTriggered() {
+		// 流式请求首字节超时（定时器触发）
 		statusCode = util.StatusFirstByteTimeout
 		timeoutMsg := fmt.Sprintf("upstream first byte timeout after %.2fs", duration)
 		timeout := s.firstByteTimeout
@@ -78,12 +79,19 @@ func (s *Server) handleRequestError(
 		}
 		err = fmt.Errorf("%s: %w", timeoutMsg, util.ErrUpstreamFirstByteTimeout)
 		log.Printf("⏱️  [上游首字节超时] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, timeout, duration)
-	} else if errors.Is(err, context.DeadlineExceeded) && reqCtx.isStreaming {
-		// 流式请求读取首字节超时：保留历史逻辑
-		err = fmt.Errorf("upstream timeout after %.2fs (streaming request): %w",
-			duration, err)
-		statusCode = util.StatusFirstByteTimeout
-		log.Printf("⏱️  [上游超时] 渠道ID=%d, 超时时长=%.2fs, 将触发冷却", cfg.ID, duration)
+	} else if errors.Is(err, context.DeadlineExceeded) {
+		if reqCtx.isStreaming {
+			// 流式请求超时
+			err = fmt.Errorf("upstream timeout after %.2fs (streaming): %w", duration, err)
+			statusCode = util.StatusFirstByteTimeout
+			log.Printf("⏱️  [流式请求超时] 渠道ID=%d, 耗时=%.2fs", cfg.ID, duration)
+		} else {
+			// 非流式请求超时（context.WithTimeout触发）
+			err = fmt.Errorf("upstream timeout after %.2fs (non-stream, threshold=%v): %w",
+				duration, s.nonStreamTimeout, err)
+			statusCode = 504 // Gateway Timeout
+			log.Printf("⏱️  [非流式请求超时] 渠道ID=%d, 阈值=%v, 耗时=%.2fs", cfg.ID, s.nonStreamTimeout, duration)
+		}
 	} else {
 		// 其他错误：使用统一分类器
 		statusCode, _, _ = util.ClassifyError(err)
