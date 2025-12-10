@@ -21,7 +21,6 @@ import (
 	"ccLoad/internal/validator"
 
 	"github.com/gin-gonic/gin"
-	"golang.org/x/net/http2"
 )
 
 type Server struct {
@@ -102,12 +101,8 @@ func NewServer(store storage.Store) *Server {
 	}
 
 	// 构建HTTP Transport（使用统一函数，消除DRY违反）
-	transport, http2Enabled := buildHTTPTransport(skipTLSVerify, firstByteTimeout)
-	if http2Enabled {
-		log.Print("✅ HTTP/2已启用（头部压缩+多路复用）")
-	} else {
-		log.Print("⚠️  HTTP/2未启用，使用HTTP/1.1")
-	}
+	transport := buildHTTPTransport(skipTLSVerify)
+	log.Print("✅ HTTP/2已启用（头部压缩+多路复用，HTTPS自动协商）")
 
 	s := &Server{
 		store:            store,
@@ -207,8 +202,7 @@ func (s *Server) GetConfigService() *ConfigService {
 // buildHTTPTransport 构建HTTP Transport（DRY：统一配置逻辑）
 // 参数:
 //   - skipTLSVerify: 是否跳过TLS证书验证
-//   - firstByteTimeout: 上游首字节超时（0表示禁用）
-func buildHTTPTransport(skipTLSVerify bool, firstByteTimeout time.Duration) (*http.Transport, bool) {
+func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
 	dialer := &net.Dialer{
 		Timeout:   config.HTTPDialTimeout,
 		KeepAlive: config.HTTPKeepAliveInterval,
@@ -229,7 +223,7 @@ func buildHTTPTransport(skipTLSVerify bool, firstByteTimeout time.Duration) (*ht
 		TLSHandshakeTimeout: config.HTTPTLSHandshakeTimeout,
 		DisableCompression:  false,
 		DisableKeepAlives:   false,
-		ForceAttemptHTTP2:   false,
+		ForceAttemptHTTP2:   true, // 启用标准库 HTTP/2（HTTPS 自动协商）
 		TLSClientConfig: &tls.Config{
 			ClientSessionCache: tls.NewLRUClientSessionCache(config.TLSSessionCacheSize),
 			MinVersion:         tls.VersionTLS12,
@@ -237,18 +231,7 @@ func buildHTTPTransport(skipTLSVerify bool, firstByteTimeout time.Duration) (*ht
 		},
 	}
 
-	// if firstByteTimeout > 0 {
-	// 	transport.ResponseHeaderTimeout = firstByteTimeout
-	// }
-
-	// 启用HTTP/2
-	http2Enabled := true
-	if err := http2.ConfigureTransport(transport); err != nil {
-		log.Printf("⚠️  警告：HTTP/2配置失败: %v", err)
-		http2Enabled = false
-	}
-
-	return transport, http2Enabled
+	return transport // HTTP/2 已通过 ForceAttemptHTTP2 启用
 }
 
 // GetConfig 获取渠道配置（实现cooldown.ConfigGetter接口）
