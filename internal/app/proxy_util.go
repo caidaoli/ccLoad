@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
-	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -360,30 +359,34 @@ func safeBodyToString(data []byte) string {
 	if len(data) == 0 {
 		return ""
 	}
-
-	// 检查gzip魔数 (0x1f, 0x8b)
-	if len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b {
-		// 尝试解压gzip
-		if decompressed, err := decompressGzip(data); err == nil {
-			return string(decompressed)
-		}
-		// 解压失败，返回友好提示
-		return "[compressed error response]"
+	// Go Transport 已自动解压 gzip（DisableCompression=false 且无 Accept-Encoding 时）
+	// 只需检测二进制/压缩数据（上游强制返回 br/deflate 等非 gzip 编码时）
+	if !isLikelyText(data) {
+		return "[binary/compressed response]"
 	}
-
-	// 非压缩数据，直接转换
 	return string(data)
 }
 
-// decompressGzip 解压gzip数据
-func decompressGzip(data []byte) ([]byte, error) {
-	reader, err := gzip.NewReader(bytes.NewReader(data))
-	if err != nil {
-		return nil, err
-	}
-	defer reader.Close()
 
-	return io.ReadAll(reader)
+// isLikelyText 检测数据是否像文本（用于区分压缩/二进制数据）
+func isLikelyText(data []byte) bool {
+	if len(data) == 0 {
+		return true
+	}
+	// 采样前512字节
+	sample := data
+	if len(sample) > 512 {
+		sample = sample[:512]
+	}
+	nonPrintable := 0
+	for _, b := range sample {
+		// 允许: 可打印ASCII + 常见控制字符(tab/newline/cr) + UTF-8高字节
+		if b < 0x20 && b != '\t' && b != '\n' && b != '\r' {
+			nonPrintable++
+		}
+	}
+	// 超过10%不可打印字符视为二进制/压缩
+	return nonPrintable*10 < len(sample)
 }
 
 // ============================================================================
