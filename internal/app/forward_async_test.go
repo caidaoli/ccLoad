@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -285,4 +286,121 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 			t.Error("response should contain 'unauthorized'")
 		}
 	})
+}
+
+// TestClientCancelClosesUpstream 测试客户端取消时上游连接立即关闭（方案1验证）
+// 验证：客户端499取消 → resp.Body.Close() → 上游Read被中断
+func TestClientCancelClosesUpstream(t *testing.T) {
+	// 通道：用于同步上游服务器的状态
+	upstreamStarted := make(chan struct{})
+	upstreamClosed := make(chan struct{})
+
+	// 创建模拟上游服务器：缓慢发送流式数据
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("ResponseWriter不支持Flush")
+			return
+		}
+
+		// 发送第一块数据，通知测试客户端已开始接收
+		w.Write([]byte("data: chunk1\n\n"))
+		flusher.Flush()
+		close(upstreamStarted)
+
+		// 尝试继续发送数据（模拟长时间流式响应）
+		// 如果连接被关闭，Write会失败
+		for i := 2; i <= 100; i++ {
+			time.Sleep(50 * time.Millisecond)
+			data := []byte(fmt.Sprintf("data: chunk%d\n\n", i))
+			_, err := w.Write(data)
+			if err != nil {
+				// 连接已关闭！这是我们期望的结果
+				close(upstreamClosed)
+				return
+			}
+			flusher.Flush()
+		}
+
+		// 如果循环结束，说明连接没有被关闭（测试失败）
+		t.Error("上游服务器完成了所有发送，连接未被关闭")
+	}))
+	defer upstream.Close()
+
+	// 创建代理服务器
+	store, _ := storage.CreateSQLiteStore(":memory:", nil)
+	srv := NewServer(store)
+
+	cfg := &model.Config{
+		ID:   1,
+		Name: "test",
+		URL:  upstream.URL,
+	}
+
+	// 创建可取消的context
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// 启动代理请求（goroutine中执行，因为会阻塞到取消）
+	resultChan := make(chan struct {
+		result   *fwResult
+		duration float64
+		err      error
+	}, 1)
+
+	go func() {
+		recorder := httptest.NewRecorder()
+		result, duration, err := srv.forwardOnceAsync(
+			ctx,
+			cfg,
+			"sk-test",
+			http.MethodPost,
+			[]byte(`{"stream":true}`),
+			http.Header{},
+			"",
+			"/v1/messages",
+			recorder,
+		)
+		resultChan <- struct {
+			result   *fwResult
+			duration float64
+			err      error
+		}{result, duration, err}
+	}()
+
+	// 等待上游开始发送数据
+	select {
+	case <-upstreamStarted:
+		// 上游已开始发送
+	case <-time.After(2 * time.Second):
+		t.Fatal("超时：上游未开始发送数据")
+	}
+
+	// 模拟客户端取消（499场景）
+	cancel()
+
+	// 验证上游连接在短时间内被关闭
+	select {
+	case <-upstreamClosed:
+		// ✅ 成功！上游检测到连接关闭
+		t.Log("✅ 客户端取消后，上游连接立即关闭（预期行为）")
+	case <-time.After(500 * time.Millisecond):
+		t.Error("❌ 客户端取消后500ms，上游仍在发送数据（连接未关闭）")
+	}
+
+	// 验证forwardOnceAsync返回context.Canceled错误
+	select {
+	case res := <-resultChan:
+		if res.err == nil {
+			t.Error("期望返回错误（context.Canceled）")
+		}
+		if !errors.Is(res.err, context.Canceled) && res.result != nil && res.result.Status != 499 {
+			t.Errorf("期望context.Canceled或499，实际: err=%v, status=%d", res.err, res.result.Status)
+		}
+		t.Logf("forwardOnceAsync返回: err=%v, status=%d", res.err, res.result.Status)
+	case <-time.After(2 * time.Second):
+		t.Error("超时：forwardOnceAsync未返回")
+	}
 }

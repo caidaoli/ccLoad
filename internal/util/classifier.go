@@ -20,6 +20,11 @@ var ErrUpstreamFirstByteTimeout = errors.New("upstream first byte timeout")
 // StatusFirstByteTimeout 是上游首字节超时时返回的自定义状态码（配合冷却策略使用）
 const StatusFirstByteTimeout = 598
 
+// StatusStreamIncomplete 是流式响应不完整时返回的自定义状态码（2025-12新增）
+// 触发条件：流正常结束但没有usage数据，或流传输中断
+// 策略：渠道级冷却，因为这通常是上游服务问题
+const StatusStreamIncomplete = 599
+
 // Rate Limit 相关常量
 const (
 	// RetryAfterThresholdSeconds Retry-After超过此值视为渠道级限流
@@ -92,6 +97,12 @@ func ClassifyHTTPStatus(statusCode int) ErrorLevel {
 	case 521: // Web Server Is Down (Cloudflare) - 源服务器关闭
 		return ErrorLevelChannel
 	case 524: // A Timeout Occurred (Cloudflare) - 连接超时
+		return ErrorLevelChannel
+
+	// 自定义内部状态码（5xx范围，用于特殊场景标识）
+	case StatusFirstByteTimeout: // 598 上游首字节超时
+		return ErrorLevelChannel
+	case StatusStreamIncomplete: // 599 流式响应不完整
 		return ErrorLevelChannel
 
 	// 其他4xx错误：默认为客户端错误（不冷却）

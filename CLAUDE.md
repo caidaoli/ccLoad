@@ -50,22 +50,33 @@ internal/
 
 ### Task 子代理使用策略
 
-**必须使用子代理**(必须遵守):
-- 代码探索/架构分析 → `Explore` (medium/very thorough)
-- 独立复杂任务(如安全审计、性能分析) → `general-purpose`
-- 需大量代码上下文但只要结论 → 避免污染主对话
-- 多个无依赖任务 → **单条消息并行调用多个 Task**
+**优先使用子代理的场景**:
+- 开放式代码探索(如"错误处理在哪里?") → `Explore` (medium/very thorough)
+- 需要多步探索+分析的复杂任务 → `general-purpose` (安全审计、性能分析)
+- 多个独立任务需并行执行 → **单条消息并行调用多个 Task**
 
-**禁止使用子代理:**
-- 有依赖的任务链(子代理无法传递中间状态)
+**不应使用子代理的场景**:
+- 已知具体文件路径 → 直接用 `Read` 工具
+- 搜索特定类/函数定义 → 直接用 `mcp__serena__find_symbol`
+- 按文件名查找 → 直接用 `Glob` 工具(如 `**/*selector*.go`)
+- 在 2-3 个已知文件内搜索 → 直接用 `Read` + `Grep`
+- 有依赖的任务链 → 子代理无法传递中间状态，必须串行执行
 
-**并行调用原则:**
-需同时分析 API 层和数据层 → 一条消息发起两个 Task，而非串行
+**并行调用原则**:
+- 需同时分析 API 层和数据层 → 一条消息发起两个 `Task`，而非串行
+- 并行条件：任务间无依赖、都需要大量上下文探索
 
-**使用Serena MCP工具**(必须遵守):
-- 代码浏览用符号化工具(`mcp__serena__get_symbols_overview`, `mcp__serena__find_symbol`)
-- **禁止**直接读取整个文件,先用`get_symbols_overview`了解结构
-- 编辑代码用`mcp__serena__replace_symbol_body`,不用正则替换
+### Serena MCP 工具使用规范
+
+**代码浏览**:
+- 优先用符号化工具: `mcp__serena__get_symbols_overview` → `mcp__serena__find_symbol`
+- **禁止**直接读取整文件，先用 `get_symbols_overview` 了解结构
+- 查找引用关系: `mcp__serena__find_referencing_symbols`
+
+**代码编辑**:
+- 替换整个符号: `mcp__serena__replace_symbol_body`(类/函数/方法)
+- 插入新代码: `mcp__serena__insert_after_symbol` / `insert_before_symbol`
+- **禁止**用正则替换编辑代码(用 `Edit` 工具处理符号外的小改动)
 
 
 

@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -318,11 +319,29 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 	// 3. 发送请求
 	resp, err := s.client.Do(req)
 
-	// ✅ 修复：无论成功或失败，都必须关闭 resp.Body（如果存在）
-	// Go http.Client.Do() 在 context 取消时可能返回 err!=nil 但 resp!=nil
-	// 不关闭会导致上游连接泄漏，上游继续发送完整响应
+	// ✅ 修复（2025-12）：客户端取消时主动关闭response body，立即中断上游传输
+	// 问题：streamCopy中的Read阻塞时，无法立即响应context取消，上游继续生成完整响应
+	// 解决：监听context取消并主动Close() → 中断Read → 触发连接/stream关闭
+	//   - HTTP/1.1: 关闭TCP连接 → 上游收到RST，立即停止发送
+	//   - HTTP/2: 发送RST_STREAM帧 → 取消当前stream（不影响同连接的其他请求）
+	// 效果：避免AI流式生成场景下，用户点"停止"后上游仍生成数千tokens的浪费
 	if resp != nil {
-		defer resp.Body.Close()
+		// 使用sync.Once确保body只关闭一次（协调defer和cancel goroutine）
+		var bodyCloseOnce sync.Once
+		closeBodySafely := func() {
+			bodyCloseOnce.Do(func() {
+				resp.Body.Close()
+			})
+		}
+
+		// 监听客户端context取消（499场景），主动中断Read
+		go func() {
+			<-ctx.Done()
+			closeBodySafely()
+		}()
+
+		// 正常返回时关闭（与goroutine互斥，Once保证只执行一次）
+		defer closeBodySafely()
 	}
 
 	if err != nil {
@@ -388,6 +407,21 @@ func (s *Server) forwardAttempt(
 			res.Body = res.SSEErrorEvent
 			return s.handleProxyErrorResponse(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
 		}
+
+		// ✅ 检查流响应是否不完整（2025-12新增）
+		// 虽然HTTP状态码是200且流传输结束，但检测到流响应不完整或流传输中断，需要触发冷却逻辑
+		// 触发条件：(1) 流传输错误  (2) 流式请求但没有usage数据（疑似不完整响应）
+		if res.StreamDiagMsg != "" {
+			log.Printf("⚠️  [流响应不完整] HTTP状态码200但检测到流响应不完整，触发冷却逻辑: %s", res.StreamDiagMsg)
+			// 使用内部状态码 StatusStreamIncomplete 标识流响应不完整
+			// 这将触发渠道级冷却，因为这通常是上游服务问题（网络不稳定、负载过高等）
+			res.Body = []byte(res.StreamDiagMsg)
+			originalStatus := res.Status
+			res.Status = util.StatusStreamIncomplete // 599 - 流响应不完整
+			defer func() { res.Status = originalStatus }() // 恢复原始状态码（日志已记录）
+			return s.handleProxyErrorResponse(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
+		}
+
 		return s.handleProxySuccess(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
 	}
 
