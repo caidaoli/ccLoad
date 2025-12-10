@@ -167,17 +167,11 @@ const (
 	cacheReadMultiplierClaude = 0.1
 
 	// cacheReadMultiplierOpus Claude Opus 缓存读取价格倍数
-	// Cache Read = Input Price × 1.0 (无折扣)
+	// Cache Read = Input Price × 0.1 (90%折扣)
 	// 适用于Claude Opus系列模型（Opus 4.5, 4.1, 4.0, 3）
-	// 例如：Claude Opus input=$5.00/1M → cached=$5.00/1M
+	// 例如：Claude Opus 4.5 input=$5.00/1M → cached=$0.50/1M
 	// 参考：https://docs.claude.com/en/docs/about-claude/pricing
 	cacheReadMultiplierOpus = 0.1
-
-	// cacheReadMultiplierOpenAI OpenAI缓存读取价格倍数
-	// Cache Read = Input Price × 0.5 (50%节省)
-	// 适用于OpenAI模型
-	// 例如：GPT-4o input=$2.50/1M → cached=$1.25/1M
-	cacheReadMultiplierOpenAI = 0.5
 
 	// cacheWriteMultiplier 缓存写入价格倍数（相对于基础input价格）
 	// Cache Write = Input Price × 1.25 (25%溢价)
@@ -249,11 +243,12 @@ func CalculateCost(model string, inputTokens, outputTokens, cacheReadTokens, cac
 		cost += float64(outputTokens) * outputPricePerM / 1_000_000
 	}
 
-	// 3. 缓存读取成本（折扣率因平台/模型系列而异）
+	// 3. 缓存读取成本（OpenAI按模型系列有不同折扣率）
 	if cacheReadTokens > 0 {
 		cacheMultiplier := cacheReadMultiplierClaude // Claude全系/Gemini: 10%折扣
 		if isOpenAIModel(model) {
-			cacheMultiplier = cacheReadMultiplierOpenAI // OpenAI: 50%折扣
+			// OpenAI缓存折扣率按模型系列区分（2025-12官方定价）
+			cacheMultiplier = getOpenAICacheMultiplier(model)
 		} else if isOpusModel(model) {
 			cacheMultiplier = cacheReadMultiplierOpus // Opus: 10%折扣
 		}
@@ -291,6 +286,46 @@ func isOpenAIModel(model string) bool {
 func isOpusModel(model string) bool {
 	lowerModel := strings.ToLower(model)
 	return strings.Contains(lowerModel, "opus")
+}
+
+// getOpenAICacheMultiplier 获取OpenAI模型的缓存价格倍数
+// OpenAI缓存定价策略（2025-12官方）：
+//   - GPT-5系列: 90%折扣（缓存=$0.125/1M, input=$1.25/1M → 0.1倍）
+//   - GPT-4.1/o3/o4系列: 75%折扣（缓存=$0.50/1M, input=$2.00/1M → 0.25倍）
+//   - GPT-4o/o1系列: 50%折扣（缓存=$1.25/1M, input=$2.50/1M → 0.5倍）
+// 参考: https://openai.com/api/pricing/
+func getOpenAICacheMultiplier(model string) float64 {
+	lowerModel := strings.ToLower(model)
+
+	// GPT-5系列: 90%折扣 (0.1倍)
+	if strings.HasPrefix(lowerModel, "gpt-5") {
+		return 0.1
+	}
+
+	// GPT-4.1系列: 75%折扣 (0.25倍)
+	if strings.HasPrefix(lowerModel, "gpt-4.1") {
+		return 0.25
+	}
+
+	// o3/o4系列（除o3-mini外）: 75%折扣 (0.25倍)
+	if strings.HasPrefix(lowerModel, "o3") && !strings.Contains(lowerModel, "mini") {
+		return 0.25
+	}
+	if strings.HasPrefix(lowerModel, "o4") {
+		return 0.25
+	}
+
+	// codex-mini-latest: 75%折扣 (0.25倍)
+	if strings.HasPrefix(lowerModel, "codex-mini") {
+		return 0.25
+	}
+
+	// GPT-4o系列/o1系列/o3-mini/o1-mini: 50%折扣 (0.5倍)
+	// 这是默认值，涵盖:
+	//   - gpt-4o, gpt-4o-mini
+	//   - o1, o1-mini, o1-pro
+	//   - o3-mini
+	return 0.5
 }
 
 // fuzzyMatchModel 模糊匹配模型名称

@@ -165,8 +165,8 @@ func TestOpenAIPricingCalculation(t *testing.T) {
 			inputTokens:     0, // ✅ 归一化后: 原始1M - 缓存1M = 0
 			outputTokens:    1_000_000,
 			cacheReadTokens: 1_000_000,
-			expectedCost:    10.00 + 1.25, // 输出$10 + 缓存$1.25（输入全部来自缓存）
-			description:     "GPT-4o带缓存读取",
+			expectedCost:    10.00 + 1.25, // 输出$10 + 缓存$1.25（GPT-4o缓存50%折扣）
+			description:     "GPT-4o带缓存读取(50%折扣)",
 		},
 		{
 			model:        "gpt-4o-mini",
@@ -207,9 +207,44 @@ func TestOpenAIPricingCalculation(t *testing.T) {
 			model:           "gpt-4o",
 			inputTokens:     0, // ✅ 归一化后: 原始500k - 缓存800k = 0 (clamped)
 			outputTokens:    100_000,
-			cacheReadTokens: 800_000,     // 缓存大于原始输入（边界情况）
-			expectedCost:    1.00 + 1.00, // 输出$1 + 缓存$1（缓存token按实际值计算）
+			cacheReadTokens: 800_000, // 缓存大于原始输入（边界情况）
+			expectedCost:    1.00 + 1.00, // 输出$1 + 缓存$1（GPT-4o缓存50%折扣）
 			description:     "GPT-4o缓存超过输入token（防御性处理）",
+		},
+		// 新增: GPT-5系列缓存测试 (90%折扣)
+		{
+			model:           "gpt-5",
+			inputTokens:     0,
+			outputTokens:    1_000_000,
+			cacheReadTokens: 1_000_000,
+			expectedCost:    10.00 + 0.125, // 输出$10 + 缓存$0.125（GPT-5缓存90%折扣）
+			description:     "GPT-5带缓存读取(90%折扣)",
+		},
+		{
+			model:           "gpt-5.1-codex-max",
+			inputTokens:     997,
+			outputTokens:    619,
+			cacheReadTokens: 51200,
+			expectedCost:    0.01383625, // 用户报告的真实场景
+			description:     "GPT-5.1-Codex-Max真实场景(90%折扣)",
+		},
+		// 新增: GPT-4.1系列缓存测试 (75%折扣)
+		{
+			model:           "gpt-4.1",
+			inputTokens:     0,
+			outputTokens:    1_000_000,
+			cacheReadTokens: 1_000_000,
+			expectedCost:    8.00 + 0.50, // 输出$8 + 缓存$0.50（GPT-4.1缓存75%折扣）
+			description:     "GPT-4.1带缓存读取(75%折扣)",
+		},
+		// 新增: o3系列缓存测试 (75%折扣)
+		{
+			model:           "o3",
+			inputTokens:     0,
+			outputTokens:    1_000_000,
+			cacheReadTokens: 1_000_000,
+			expectedCost:    8.00 + 0.50, // 输出$8 + 缓存$0.50（o3缓存75%折扣）
+			description:     "o3带缓存读取(75%折扣)",
 		},
 	}
 
