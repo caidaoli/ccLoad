@@ -198,13 +198,21 @@ func injectAPIKeyHeaders(req *http.Request, apiKey string, requestPath string) {
 }
 
 // filterAndWriteResponseHeaders 过滤并写回响应头（DRY）
+// Go Transport 仅自动解压 gzip（当 DisableCompression=false 且请求无 Accept-Encoding 时）
+// 对于 br/deflate 等其他编码，必须保留 Content-Encoding 让客户端自行解压
 func filterAndWriteResponseHeaders(w http.ResponseWriter, hdr http.Header) {
+	contentEncoding := hdr.Get("Content-Encoding")
+	// 仅当 Transport 已自动解压 gzip 时才移除编码头（此时 hdr 中已无 Content-Encoding）
+	// 若存在非 gzip 编码，必须透传让客户端处理
+	skipContentEncoding := contentEncoding == "" || strings.EqualFold(contentEncoding, "gzip")
+
 	for k, vs := range hdr {
-		// 过滤不应向客户端透传的头
 		if strings.EqualFold(k, "Connection") ||
 			strings.EqualFold(k, "Content-Length") ||
-			strings.EqualFold(k, "Transfer-Encoding") ||
-			strings.EqualFold(k, "Content-Encoding") { // 避免上游压缩头与实际解压后的body不一致
+			strings.EqualFold(k, "Transfer-Encoding") {
+			continue
+		}
+		if strings.EqualFold(k, "Content-Encoding") && skipContentEncoding {
 			continue
 		}
 		for _, v := range vs {
