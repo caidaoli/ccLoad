@@ -20,8 +20,8 @@ go test -tags go_json ./internal/... -v
 go test -tags go_json ./internal/app -run TestName -v  # 单个测试
 go test -tags go_json -race ./internal/...             # 竞态检测
 
-# 环境变量
-export CCLOAD_PASS=test123  # 必填,否则程序启动失败
+# 环境变量(优先使用.env文件)
+export CCLOAD_PASS=test123  # 或在项目根目录创建.env文件
 ```
 
 ## 核心架构
@@ -109,47 +109,16 @@ internal/
 
 ## 代码规范
 
+- **优先**使用最新版本Go语言特性(项目要求 Go 1.25+)
 - **必须**使用 `any` 替代 `interface{}`
 - **必须**在测试中添加 `-tags go_json`,否则JSON序列化不一致
 - **禁止**过度工程(Factory工厂、"万一需要"的功能)
 - **Fail-Fast**: 配置错误直接`log.Fatal()`退出,不要容错
 - **API Key脱敏**: 日志自动清洗,无需手动处理(`util/log_sanitizer.go`)
 
-### Context 管理规范 (Go 1.21+)
+### Context 管理规范 
 
-**强制要求**:
-- 所有 `context.WithCancel/WithTimeout` 必须 `defer cancel()`
-- 监听 context 取消时使用 `context.AfterFunc` (零泄漏)
-- 禁止手动 `go func() { <-ctx.Done() }` (容易泄漏)
-
-**正确示例**:
-```go
-// ✅ 统一清理模式
-ctx, cancel := context.WithCancel(parent)
-defer cancel()  // 无条件 defer
-
-// ✅ 监听取消（Go 1.21+）
-stop := context.AfterFunc(ctx, cleanup)
-defer stop()  // 取消注册
-```
-
-**错误示例**:
-```go
-// ❌ 条件性 cancel（违反惯用法）
-var cancel context.CancelFunc
-if needTimeout {
-    ctx, cancel = context.WithCancel(parent)
-}
-if cancel != nil {  // ❌ 不应该需要检查
-    defer cancel()
-}
-
-// ❌ 手动 goroutine（泄漏风险）
-go func() {
-    <-ctx.Done()
-    cleanup()
-}()  // 忘记 defer cancel() → 永久阻塞
-```
-
-**参考实现**: `internal/app/request_context.go`
+- 所有 `context.WithCancel/WithTimeout` 必须无条件 `defer cancel()`
+- 监听取消用 `context.AfterFunc`，禁止手动 `go func() { <-ctx.Done() }`
+- 参考: `internal/app/request_context.go`
 
