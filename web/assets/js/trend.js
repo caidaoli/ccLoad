@@ -875,12 +875,11 @@
     document.addEventListener('DOMContentLoaded', async function() {
       if (window.initTopbar) initTopbar('trend');
 
-      // 初始化渠道类型筛选器（默认选择 claude code）
-      const types = await window.ChannelTypeManager.getChannelTypes();
-      const defaultType = 'anthropic'; // 默认选择 anthropic (显示为 Claude Code)
-      window.currentChannelType = defaultType;
+      // 优先从 localStorage 恢复渠道类型，默认 all
+      const savedChannelType = localStorage.getItem('trend.channelType');
+      window.currentChannelType = savedChannelType || 'all';
 
-      await initChannelTypeFilter(defaultType);
+      await initChannelTypeFilter(window.currentChannelType);
 
       restoreState();
       restoreChannelState();
@@ -928,6 +927,7 @@
       // 绑定change事件
       select.addEventListener('change', (e) => {
         window.currentChannelType = e.target.value;
+        try { localStorage.setItem('trend.channelType', e.target.value); } catch (_) {}
         // 切换渠道类型时重新加载数据并清除渠道选择状态
         window.visibleChannels.clear();
         loadData();

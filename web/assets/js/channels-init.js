@@ -32,6 +32,27 @@ async function getTargetChannelType() {
   }
 }
 
+// localStorage key for channels page filters
+const CHANNELS_FILTER_KEY = 'channels.filters';
+
+function saveChannelsFilters() {
+  try {
+    localStorage.setItem(CHANNELS_FILTER_KEY, JSON.stringify({
+      channelType: filters.channelType,
+      status: filters.status,
+      model: filters.model
+    }));
+  } catch (_) {}
+}
+
+function loadChannelsFilters() {
+  try {
+    const saved = localStorage.getItem(CHANNELS_FILTER_KEY);
+    if (saved) return JSON.parse(saved);
+  } catch (_) {}
+  return null;
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   if (window.initTopbar) initTopbar('channels');
   setupFilterListeners();
@@ -40,13 +61,18 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   await window.ChannelTypeManager.renderChannelTypeRadios('channelTypeRadios');
 
-  const types = await window.ChannelTypeManager.getChannelTypes();
-  const defaultType = 'anthropic'; // 默认选择 anthropic (显示为 Claude Code)
-
-  // 检查URL参数是否指定了目标渠道ID，如果是则获取其类型
+  // 优先从 localStorage 恢复，其次检查 URL 参数，最后默认 all
+  const savedFilters = loadChannelsFilters();
   const targetChannelType = await getTargetChannelType();
-  const initialType = targetChannelType || defaultType;
+  const initialType = targetChannelType || (savedFilters?.channelType) || 'all';
+
   filters.channelType = initialType;
+  if (savedFilters) {
+    filters.status = savedFilters.status || 'all';
+    filters.model = savedFilters.model || 'all';
+    document.getElementById('statusFilter').value = filters.status;
+    document.getElementById('modelFilter').value = filters.model;
+  }
 
   // 初始化渠道类型筛选器（替换原Tab逻辑）
   await initChannelTypeFilter(initialType);
@@ -85,6 +111,7 @@ async function initChannelTypeFilter(initialType) {
     filters.channelType = type;
     filters.model = 'all';
     document.getElementById('modelFilter').value = 'all';
+    saveChannelsFilters();
     loadChannels(type);
   });
 }

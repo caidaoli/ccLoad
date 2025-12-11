@@ -498,16 +498,32 @@
     // 顶栏布局下，无需侧栏响应逻辑
     function handleResize() {}
 
+    // localStorage key for stats page filters
+    const STATS_FILTER_KEY = 'stats.filters';
+
+    function saveStatsFilters() {
+      try {
+        localStorage.setItem(STATS_FILTER_KEY, JSON.stringify({ channelType: currentChannelType }));
+      } catch (_) {}
+    }
+
+    function loadStatsFilters() {
+      try {
+        const saved = localStorage.getItem(STATS_FILTER_KEY);
+        if (saved) return JSON.parse(saved);
+      } catch (_) {}
+      return null;
+    }
+
     // 页面初始化
     document.addEventListener('DOMContentLoaded', async function() {
       if (window.initTopbar) initTopbar('stats');
 
-      // 初始化渠道类型筛选器（默认选择 claude code）
-      const types = await window.ChannelTypeManager.getChannelTypes();
-      const defaultType = 'anthropic'; // 默认选择 anthropic (显示为 Claude Code)
-      currentChannelType = defaultType;
+      // 优先从 localStorage 恢复，默认 all
+      const savedFilters = loadStatsFilters();
+      currentChannelType = savedFilters?.channelType || 'all';
 
-      await initChannelTypeFilter(defaultType);
+      await initChannelTypeFilter(currentChannelType);
 
       initFilters();
       loadStats();
@@ -539,6 +555,7 @@
       // 绑定change事件
       select.addEventListener('change', (e) => {
         currentChannelType = e.target.value;
+        saveStatsFilters();
         loadStats();
       });
     }

@@ -551,16 +551,34 @@
     // 顶栏布局下，无需侧栏响应逻辑
     function handleResize() {}
 
+    // localStorage key for logs page filters
+    const LOGS_FILTER_KEY = 'logs.filters';
+
+    function saveLogsFilters() {
+      try {
+        localStorage.setItem(LOGS_FILTER_KEY, JSON.stringify({ channelType: currentChannelType }));
+      } catch (_) {}
+    }
+
+    function loadLogsFilters() {
+      try {
+        const saved = localStorage.getItem(LOGS_FILTER_KEY);
+        if (saved) return JSON.parse(saved);
+      } catch (_) {}
+      return null;
+    }
+
     // 页面初始化
     document.addEventListener('DOMContentLoaded', async function() {
       if (window.initTopbar) initTopbar('logs');
 
-      // 从 URL 读取渠道类型（默认为 all）
+      // 优先从 URL 读取，其次从 localStorage 恢复，默认 all
       const u = new URLSearchParams(location.search);
-      const urlChannelType = u.get('channel_type') || 'all';
-      currentChannelType = urlChannelType;
+      const urlChannelType = u.get('channel_type');
+      const savedFilters = loadLogsFilters();
+      currentChannelType = urlChannelType || savedFilters?.channelType || 'all';
 
-      await initChannelTypeFilter(urlChannelType);
+      await initChannelTypeFilter(currentChannelType);
 
       initFilters();
       await loadDefaultTestContent();
@@ -608,6 +626,7 @@
       // 绑定change事件
       select.addEventListener('change', (e) => {
         currentChannelType = e.target.value;
+        saveLogsFilters();
         // 切换渠道类型时重置到第一页并重新加载
         currentLogsPage = 1;
         load();

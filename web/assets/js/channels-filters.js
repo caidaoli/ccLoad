@@ -114,11 +114,13 @@ function setupFilterListeners() {
 
   document.getElementById('statusFilter').addEventListener('change', (e) => {
     filters.status = e.target.value;
+    if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
     filterChannels();
   });
-  
+
   document.getElementById('modelFilter').addEventListener('change', (e) => {
     filters.model = e.target.value;
+    if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
     filterChannels();
   });
   
