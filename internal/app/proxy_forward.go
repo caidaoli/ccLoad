@@ -165,6 +165,22 @@ func streamAndParseResponse(ctx context.Context, body io.ReadCloser, w http.Resp
 	return parser, err
 }
 
+// isClientDisconnectError 判断是否为客户端断开导致的错误
+// 包括：context取消、HTTP/2流关闭、连接重置等
+func isClientDisconnectError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	// HTTP/2 流关闭相关错误（客户端断开时 resp.Body.Close() 触发）
+	errStr := err.Error()
+	return strings.Contains(errStr, "http2: response body closed") ||
+		strings.Contains(errStr, "stream error: stream ID") ||
+		strings.Contains(errStr, "client disconnected")
+}
+
 // buildStreamDiagnostics 生成流诊断消息
 // 触发条件：(1) 流传输错误  (2) 流式请求但没有usage数据（疑似不完整响应）
 func buildStreamDiagnostics(streamErr error, readStats *streamReadStats, hasUsage bool, channelType string) string {
@@ -176,8 +192,8 @@ func buildStreamDiagnostics(streamErr error, readStats *streamReadStats, hasUsag
 	readCount := readStats.readCount
 	needsUsageCheck := channelType == util.ChannelTypeAnthropic || channelType == util.ChannelTypeCodex
 
-	// 情况1：流传输异常中断（排除499客户端主动断开）
-	if streamErr != nil && !errors.Is(streamErr, context.Canceled) {
+	// 情况1：流传输异常中断（排除客户端主动断开：499/HTTP2流关闭）
+	if streamErr != nil && !isClientDisconnectError(streamErr) {
 		if needsUsageCheck {
 			return fmt.Sprintf("⚠️ 流传输中断: 错误=%v | 已读取=%d字节(分%d次) | usage数据=%v",
 				streamErr, bytesRead, readCount, hasUsage)
