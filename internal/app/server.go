@@ -217,7 +217,7 @@ func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
 		Proxy:               http.ProxyFromEnvironment, // 支持 HTTPS_PROXY/HTTP_PROXY/NO_PROXY
 		MaxIdleConns:        config.HTTPMaxIdleConns,
 		MaxIdleConnsPerHost: config.HTTPMaxIdleConnsPerHost,
-		IdleConnTimeout:     0,
+		IdleConnTimeout:     90 * time.Second, // 空闲连接90秒后关闭，避免僵尸连接
 		MaxConnsPerHost:     config.HTTPMaxConnsPerHost,
 		DialContext:         dialer.DialContext,
 		TLSHandshakeTimeout: config.HTTPTLSHandshakeTimeout,
