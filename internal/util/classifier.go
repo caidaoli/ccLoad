@@ -17,13 +17,23 @@ import (
 // ErrUpstreamFirstByteTimeout 是上游首字节超时的统一错误标识，避免依赖具体报错文案
 var ErrUpstreamFirstByteTimeout = errors.New("upstream first byte timeout")
 
-// StatusFirstByteTimeout 是上游首字节超时时返回的自定义状态码（配合冷却策略使用）
-const StatusFirstByteTimeout = 598
+// HTTP 状态码常量（统一定义，避免魔法数字）
+const (
+	// StatusClientClosedRequest 客户端取消请求（Nginx扩展状态码）
+	// 来源：(1) context.Canceled → 不重试  (2) 上游返回499 → 重试其他渠道
+	StatusClientClosedRequest = 499
 
-// StatusStreamIncomplete 是流式响应不完整时返回的自定义状态码（2025-12新增）
-// 触发条件：流正常结束但没有usage数据，或流传输中断
-// 策略：渠道级冷却，因为这通常是上游服务问题
-const StatusStreamIncomplete = 599
+	// StatusFirstByteTimeout 上游首字节超时（自定义状态码，触发渠道级冷却）
+	StatusFirstByteTimeout = 598
+
+	// StatusStreamIncomplete 流式响应不完整（自定义状态码）
+	// 触发条件：流正常结束但没有usage数据，或流传输中断
+	StatusStreamIncomplete = 599
+
+	// ErrCodeNetworkRetryable 可重试的网络错误（内部标识符，非HTTP状态码）
+	// 使用负值避免与HTTP状态码混淆
+	ErrCodeNetworkRetryable = -1
+)
 
 // Rate Limit 相关常量
 const (

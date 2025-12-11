@@ -15,6 +15,7 @@ import (
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
+	"ccLoad/internal/util"
 )
 
 // TestMain 在所有测试运行前设置环境变量
@@ -183,7 +184,7 @@ func TestHandleRequestError(t *testing.T) {
 			// ErrCodeNetworkRetryable = -1 是合法的内部标识符
 			// 对于某些网络错误（如DNS错误），无法映射到标准HTTP状态码
 			// 使用负值避免与HTTP状态码混淆
-			if result.Status == ErrCodeNetworkRetryable {
+			if result.Status == util.ErrCodeNetworkRetryable {
 				// 检查是否为网络操作错误
 				var netOpErr *net.OpError
 				if !errors.As(tt.err, &netOpErr) {

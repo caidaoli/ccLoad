@@ -134,11 +134,68 @@ func (s *Server) handleErrorResponse(
 	}, duration, nil
 }
 
+// streamAndParseResponse 根据Content-Type选择合适的流式传输策略并解析usage
+// 返回: (usageParser, streamErr)
+func streamAndParseResponse(ctx context.Context, body io.ReadCloser, w http.ResponseWriter, contentType string, channelType string, isStreaming bool) (usageParser, error) {
+	// SSE流式响应
+	if strings.Contains(contentType, "text/event-stream") {
+		parser := newSSEUsageParser(channelType)
+		err := streamCopySSE(ctx, body, w, parser.Feed)
+		return parser, err
+	}
+
+	// 非标准SSE场景：上游以text/plain发送SSE事件
+	if strings.Contains(contentType, "text/plain") && isStreaming {
+		reader := bufio.NewReader(body)
+		probe, _ := reader.Peek(SSEProbeSize)
+
+		if looksLikeSSE(probe) {
+			parser := newSSEUsageParser(channelType)
+			err := streamCopySSE(ctx, io.NopCloser(reader), w, parser.Feed)
+			return parser, err
+		}
+		parser := newJSONUsageParser(channelType)
+		err := streamCopy(ctx, io.NopCloser(reader), w, parser.Feed)
+		return parser, err
+	}
+
+	// 非SSE响应：边转发边缓存
+	parser := newJSONUsageParser(channelType)
+	err := streamCopy(ctx, body, w, parser.Feed)
+	return parser, err
+}
+
+// buildStreamDiagnostics 生成流诊断消息
+// 触发条件：(1) 流传输错误  (2) 流式请求但没有usage数据（疑似不完整响应）
+func buildStreamDiagnostics(streamErr error, readStats *streamReadStats, hasUsage bool, channelType string) string {
+	if readStats == nil {
+		return ""
+	}
+
+	bytesRead := readStats.totalBytes
+	readCount := readStats.readCount
+	needsUsageCheck := channelType == util.ChannelTypeAnthropic || channelType == util.ChannelTypeCodex
+
+	// 情况1：流传输异常中断（排除499客户端主动断开）
+	if streamErr != nil && !errors.Is(streamErr, context.Canceled) {
+		if needsUsageCheck {
+			return fmt.Sprintf("⚠️ 流传输中断: 错误=%v | 已读取=%d字节(分%d次) | usage数据=%v",
+				streamErr, bytesRead, readCount, hasUsage)
+		}
+		return fmt.Sprintf("⚠️ 流传输中断: 错误=%v | 已读取=%d字节(分%d次)",
+			streamErr, bytesRead, readCount)
+	}
+
+	// 情况2：流正常结束但没有usage数据（疑似上游未发送完整响应）
+	if !hasUsage && bytesRead > 0 && needsUsageCheck {
+		return fmt.Sprintf("⚠️ 流响应不完整: 正常EOF但无usage | 已读取=%d字节(分%d次)",
+			bytesRead, readCount)
+	}
+
+	return ""
+}
+
 // handleSuccessResponse 处理成功响应（流式传输）
-// 从proxy.go提取，遵循SRP原则
-// channelType: 渠道类型,用于精确识别usage格式
-// channelID: 渠道ID,用于流异常日志记录
-// apiKeyUsed: 使用的API Key,用于流异常日志记录
 func (s *Server) handleSuccessResponse(
 	reqCtx *requestContext,
 	resp *http.Response,
@@ -153,102 +210,49 @@ func (s *Server) handleSuccessResponse(
 	filterAndWriteResponseHeaders(w, resp.Header)
 	w.WriteHeader(resp.StatusCode)
 
-	// 🔍 诊断：记录首字节数据实际到达时间和传输统计
+	// 设置流式读取统计
 	actualFirstByteTime := firstByteTime
 	var readStats *streamReadStats
 	if reqCtx.isStreaming {
 		readStats = &streamReadStats{}
-		// 创建包装Reader，记录读取统计信息
-		bodyWrapper := &firstByteDetector{
+		resp.Body = &firstByteDetector{
 			ReadCloser: resp.Body,
 			stats:      readStats,
 			onFirstRead: func() {
 				actualFirstByteTime = reqCtx.Duration()
 			},
 		}
-		resp.Body = bodyWrapper
 	}
 
-	// ✅ SSE优化（2025-10-17）：根据Content-Type选择合适的缓冲区大小
-	// text/event-stream → 4KB缓冲区（降低首Token延迟60~80%）
-	// 其他类型 → 32KB缓冲区（保持大文件传输性能）
-	var streamErr error
-	var usageParser usageParser
+	// 流式传输并解析usage
 	contentType := resp.Header.Get("Content-Type")
+	usageParser, streamErr := streamAndParseResponse(reqCtx.ctx, resp.Body, w, contentType, channelType, reqCtx.isStreaming)
 
-	if strings.Contains(contentType, "text/event-stream") {
-		// SSE流式响应：使用解析器提取usage数据
-		usageParser = newSSEUsageParser(channelType)
-		streamErr = streamCopySSE(reqCtx.ctx, resp.Body, w, usageParser.Feed)
-	} else if strings.Contains(contentType, "text/plain") && reqCtx.isStreaming {
-		// 非标准SSE场景：上游以text/plain发送SSE事件，探测前缀决定是否走SSE
-		reader := bufio.NewReader(resp.Body)
-		probe, _ := reader.Peek(SSEProbeSize)
-
-		if looksLikeSSE(probe) {
-			usageParser = newSSEUsageParser(channelType)
-			streamErr = streamCopySSE(reqCtx.ctx, io.NopCloser(reader), w, usageParser.Feed)
-		} else {
-			usageParser = newJSONUsageParser(channelType)
-			streamErr = streamCopy(reqCtx.ctx, io.NopCloser(reader), w, usageParser.Feed)
-		}
-	} else {
-		// 非SSE响应：边转发边缓存，统一提取usage
-		usageParser = newJSONUsageParser(channelType)
-		streamErr = streamCopy(reqCtx.ctx, resp.Body, w, usageParser.Feed)
-	}
-
-	duration := reqCtx.Duration()
-
+	// 构建结果
 	result := &fwResult{
 		Status:        resp.StatusCode,
 		Header:        hdrClone,
-		FirstByteTime: actualFirstByteTime, // 使用实际的首字节时间
+		FirstByteTime: actualFirstByteTime,
 	}
 
-	// 提取SSE usage数据（如果有）
+	// 提取usage数据和错误事件
 	if usageParser != nil {
 		result.InputTokens, result.OutputTokens, result.CacheReadInputTokens, result.CacheCreationInputTokens = usageParser.GetUsage()
-		// ✅ 检查SSE流中是否有error事件（如1308错误）
-		// 虽然HTTP状态码是200，但error事件表示实际上发生了错误，需要触发冷却逻辑
 		if errorEvent := usageParser.GetLastError(); errorEvent != nil {
 			result.SSEErrorEvent = errorEvent
 		}
 	}
 
-	// 🔍 流中断/不完整诊断：生成诊断消息，由调用方合并到日志记录
-	// 触发条件：(1) 流传输错误  (2) 流式请求但没有usage数据（疑似不完整响应）
+	// 生成流诊断消息
 	if reqCtx.isStreaming {
-		bytesRead := int64(0)
-		readCount := 0
-		if readStats != nil {
-			bytesRead = readStats.totalBytes
-			readCount = readStats.readCount
-		}
-
 		hasUsage := result.InputTokens > 0 || result.OutputTokens > 0
-
-		if streamErr != nil && !errors.Is(streamErr, context.Canceled) {
-			// 情况1：流传输异常中断（排除499客户端主动断开）
-			if channelType == util.ChannelTypeAnthropic || channelType == util.ChannelTypeCodex {
-				result.StreamDiagMsg = fmt.Sprintf("⚠️ 流传输中断: 错误=%v | 已读取=%d字节(分%d次) | usage数据=%v",
-					streamErr, bytesRead, readCount, hasUsage)
-			} else {
-				result.StreamDiagMsg = fmt.Sprintf("⚠️ 流传输中断: 错误=%v | 已读取=%d字节(分%d次)",
-					streamErr, bytesRead, readCount)
-			}
-			// 记录到标准输出（实时监控）
-			log.Print(result.StreamDiagMsg)
-		} else if !hasUsage && bytesRead > 0 && (channelType == util.ChannelTypeAnthropic || channelType == util.ChannelTypeCodex) {
-			// 情况2：流正常结束但没有usage数据（疑似上游未发送完整响应）
-			result.StreamDiagMsg = fmt.Sprintf("⚠️ 流响应不完整: 正常EOF但无usage | 已读取=%d字节(分%d次)",
-				bytesRead, readCount)
-			// 记录到标准输出（实时监控）
-			log.Print(result.StreamDiagMsg)
+		if diagMsg := buildStreamDiagnostics(streamErr, readStats, hasUsage, channelType); diagMsg != "" {
+			result.StreamDiagMsg = diagMsg
+			log.Print(diagMsg)
 		}
 	}
 
-	return result, duration, streamErr
+	return result, reqCtx.Duration(), streamErr
 }
 
 // looksLikeSSE 粗略判断文本内容是否包含 SSE 事件结构

@@ -20,26 +20,15 @@ import (
 // 常量定义
 // ============================================================================
 
-// 错误类型常量定义
+// 常量定义（HTTP状态码统一引用 util 包）
 const (
-	// HTTP状态码扩展（用于日志记录和监控）
-	// 499状态码有两种来源，分别处理
-	// 1. 下游客户端取消（context.Canceled）→ ErrorLevelClient，不重试
-	// 2. 上游API返回HTTP 499响应 → ErrorLevelChannel，重试其他渠道
-	// 分类逻辑详见 internal/util/classifier.go
-	StatusClientClosedRequest = 499                         // 客户端取消请求 (Nginx扩展状态码)
-	StatusConnectionReset     = 502                         // Connection Reset - 不可重试
-	StatusFirstByteTimeout    = util.StatusFirstByteTimeout // 首字节超时（自定义状态码，用于触发1分钟冷却）
+	// HTTP状态码（引用 util 包统一定义）
+	StatusClientClosedRequest = util.StatusClientClosedRequest // 499 客户端取消请求
+	StatusFirstByteTimeout    = util.StatusFirstByteTimeout    // 598 首字节超时
 
-	// 内部错误标识符使用负值，避免与HTTP状态码混淆
-	// 这些标识符仅用于内部错误分类，不会直接返回给客户端
-	ErrCodeNetworkRetryable = -1 // 可重试的网络错误（DNS错误、连接超时等）
-
-	// 提取常量消除魔法数字
-	StreamBufferSize = 32 * 1024 // 流式传输缓冲区大小（32KB，用于大文件传输）
-
-	// ✅ SSE优化（2025-10-17）：SSE专用小缓冲区，降低首Token延迟
-	SSEBufferSize = 4 * 1024 // SSE流式传输缓冲区（4KB，优化实时响应）
+	// 缓冲区大小
+	StreamBufferSize = 32 * 1024 // 流式传输缓冲区（32KB，大文件传输）
+	SSEBufferSize    = 4 * 1024  // SSE流式传输缓冲区（4KB，优化实时响应）
 )
 
 // ============================================================================

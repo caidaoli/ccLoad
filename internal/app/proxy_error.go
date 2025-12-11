@@ -106,62 +106,44 @@ func (s *Server) handleNetworkError(
 	return nil, true, false // 继续重试下一个Key
 }
 
-// handleProxySuccess 处理代理成功响应（业务逻辑层）
-// 使用 cooldownManager 统一管理冷却状态清除
-// 注意：与 handleSuccessResponse（HTTP层）不同
-func (s *Server) handleProxySuccess(
-	ctx context.Context,
-	cfg *model.Config,
-	keyIndex int,
-	actualModel string, // ✅ 重定向后的实际模型名称
-	selectedKey string,
-	res *fwResult,
-	duration float64,
-	reqCtx *proxyRequestContext, // ✅ 新增参数（2025-11）
-) (*proxyResult, bool, bool) {
-	// 使用 cooldownManager 清除冷却状态
-	// 记录清除失败但不中断成功响应
-	// 设计原则: 清除失败不应影响用户请求成功，但需要记录用于监控
-	if err := s.cooldownManager.ClearChannelCooldown(ctx, cfg.ID); err != nil {
-		_ = err // 忽略清除失败，不影响成功响应
-	}
-	if err := s.cooldownManager.ClearKeyCooldown(ctx, cfg.ID, keyIndex); err != nil {
-		_ = err // 忽略清除失败，不影响成功响应
+// updateTokenStatsAsync 异步更新Token统计（DRY原则：消除重复代码）
+// 参数:
+//   - tokenHash: Token哈希值
+//   - isSuccess: 请求是否成功
+//   - duration: 请求耗时
+//   - isStreaming: 是否流式请求
+//   - res: 转发结果（成功时用于提取token数量，失败时传nil）
+//   - actualModel: 实际模型名称（用于计费）
+func (s *Server) updateTokenStatsAsync(tokenHash string, isSuccess bool, duration float64, isStreaming bool, res *fwResult, actualModel string) {
+	if tokenHash == "" {
+		return
 	}
 
-	// 冷却状态已恢复，刷新相关缓存避免下次命中过期数据
-	s.invalidateChannelRelatedCache(cfg.ID)
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
 
-	// 精确计数：记录状态恢复
+		// 检查是否正在关闭（避免写入已关闭的DB）
+		select {
+		case <-s.shutdownCh:
+			return
+		default:
+		}
 
-	// 记录成功日志
-	// ✅ 修复：使用 actualModel 而非 reqCtx.originalModel
-	isStreaming := reqCtx.isStreaming
-	s.AddLogAsync(buildLogEntry(actualModel, cfg.ID, res.Status,
-		duration, isStreaming, selectedKey, reqCtx.tokenID, res, ""))
+		updateCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
 
-	// ✅ 新增：异步更新Token统计（2025-11）
-	if reqCtx.tokenHash != "" {
-		s.wg.Add(1) // ✅ 纳入WaitGroup，确保优雅关闭时等待统计完成
-		go func() {
-			defer s.wg.Done() // ✅ 完成时通知
+		var promptTokens, completionTokens, cacheReadTokens, cacheCreationTokens int64
+		var costUSD float64
+		var firstByteTime float64
 
-			// ✅ 检查是否正在关闭（避免写入已关闭的DB）
-			select {
-			case <-s.shutdownCh:
-				return // 服务器正在关闭，放弃本次统计
-			default:
-			}
-
-			updateCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-
-			// 计算token费用
-			promptTokens := int64(res.InputTokens)
-			completionTokens := int64(res.OutputTokens)
-			cacheReadTokens := int64(res.CacheReadInputTokens)
-			cacheCreationTokens := int64(res.CacheCreationInputTokens)
-			costUSD := util.CalculateCost(
+		if isSuccess && res != nil {
+			promptTokens = int64(res.InputTokens)
+			completionTokens = int64(res.OutputTokens)
+			cacheReadTokens = int64(res.CacheReadInputTokens)
+			cacheCreationTokens = int64(res.CacheCreationInputTokens)
+			firstByteTime = res.FirstByteTime
+			costUSD = util.CalculateCost(
 				actualModel,
 				res.InputTokens,
 				res.OutputTokens,
@@ -169,17 +151,48 @@ func (s *Server) handleProxySuccess(
 				res.CacheCreationInputTokens,
 			)
 
-			// ✅ 财务安全检查：费用为0但有token消耗时告警（可能是定价缺失）
+			// 财务安全检查：费用为0但有token消耗时告警（可能是定价缺失）
 			if costUSD == 0.0 && (res.InputTokens > 0 || res.OutputTokens > 0) {
 				log.Printf("WARN: billing cost=0 for model=%s with tokens (in=%d, out=%d, cache_r=%d, cache_c=%d), pricing missing?",
 					actualModel, res.InputTokens, res.OutputTokens, res.CacheReadInputTokens, res.CacheCreationInputTokens)
 			}
+		} else if res != nil {
+			firstByteTime = res.FirstByteTime
+		}
 
-			if err := s.store.UpdateTokenStats(updateCtx, reqCtx.tokenHash, true, duration, isStreaming, res.FirstByteTime, promptTokens, completionTokens, cacheReadTokens, cacheCreationTokens, costUSD); err != nil {
-				log.Printf("ERROR: failed to update token stats for hash=%s: %v", reqCtx.tokenHash, err)
-			}
-		}()
-	}
+		if err := s.store.UpdateTokenStats(updateCtx, tokenHash, isSuccess, duration, isStreaming, firstByteTime, promptTokens, completionTokens, cacheReadTokens, cacheCreationTokens, costUSD); err != nil {
+			log.Printf("ERROR: failed to update token stats for hash=%s: %v", tokenHash, err)
+		}
+	}()
+}
+
+// handleProxySuccess 处理代理成功响应（业务逻辑层）
+// 使用 cooldownManager 统一管理冷却状态清除
+// 注意：与 handleSuccessResponse（HTTP层）不同
+func (s *Server) handleProxySuccess(
+	ctx context.Context,
+	cfg *model.Config,
+	keyIndex int,
+	actualModel string,
+	selectedKey string,
+	res *fwResult,
+	duration float64,
+	reqCtx *proxyRequestContext,
+) (*proxyResult, bool, bool) {
+	// 使用 cooldownManager 清除冷却状态
+	// 设计原则: 清除失败不应影响用户请求成功
+	_ = s.cooldownManager.ClearChannelCooldown(ctx, cfg.ID)
+	_ = s.cooldownManager.ClearKeyCooldown(ctx, cfg.ID, keyIndex)
+
+	// 冷却状态已恢复，刷新相关缓存避免下次命中过期数据
+	s.invalidateChannelRelatedCache(cfg.ID)
+
+	// 记录成功日志
+	s.AddLogAsync(buildLogEntry(actualModel, cfg.ID, res.Status,
+		duration, reqCtx.isStreaming, selectedKey, reqCtx.tokenID, res, ""))
+
+	// 异步更新Token统计
+	s.updateTokenStatsAsync(reqCtx.tokenHash, true, duration, reqCtx.isStreaming, res, actualModel)
 
 	return &proxyResult{
 		status:    res.Status,
@@ -198,44 +211,23 @@ func (s *Server) handleProxyErrorResponse(
 	ctx context.Context,
 	cfg *model.Config,
 	keyIndex int,
-	actualModel string, // ✅ 重定向后的实际模型名称
+	actualModel string,
 	selectedKey string,
 	res *fwResult,
 	duration float64,
-	reqCtx *proxyRequestContext, // ✅ 新增参数（2025-11）
+	reqCtx *proxyRequestContext,
 ) (*proxyResult, bool, bool) {
-	// ✅ 修复：使用 actualModel 而非 reqCtx.originalModel
-	isStreaming := reqCtx.isStreaming
-
-	// ✅ 日志改进 (2025-10-28): 明确标识上游返回的499错误
+	// 日志改进: 明确标识上游返回的499错误
 	errMsg := ""
 	if res.Status == 499 {
 		errMsg = "upstream returned 499 (not client cancel)"
 	}
 
 	s.AddLogAsync(buildLogEntry(actualModel, cfg.ID, res.Status,
-		duration, isStreaming, selectedKey, reqCtx.tokenID, res, errMsg))
+		duration, reqCtx.isStreaming, selectedKey, reqCtx.tokenID, res, errMsg))
 
-	// ✅ 新增：异步更新Token统计（2025-11）
-	if reqCtx.tokenHash != "" {
-		s.wg.Add(1) // ✅ 纳入WaitGroup，确保优雅关闭时等待统计完成
-		go func() {
-			defer s.wg.Done() // ✅ 完成时通知
-
-			// ✅ 检查是否正在关闭（避免写入已关闭的DB）
-			select {
-			case <-s.shutdownCh:
-				return // 服务器正在关闭，放弃本次统计
-			default:
-			}
-
-			updateCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-
-			// 失败请求不计费，token数量传0
-			_ = s.store.UpdateTokenStats(updateCtx, reqCtx.tokenHash, false, duration, isStreaming, res.FirstByteTime, 0, 0, 0, 0, 0.0)
-		}()
-	}
+	// 异步更新Token统计（失败请求不计费）
+	s.updateTokenStatsAsync(reqCtx.tokenHash, false, duration, reqCtx.isStreaming, res, actualModel)
 
 	action, _ := s.handleProxyError(ctx, cfg, keyIndex, res, nil)
 	if action == cooldown.ActionReturnClient {

@@ -113,57 +113,28 @@ func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpk
 }
 
 // shuffleSamePriorityChannels 随机打乱相同优先级的渠道，实现负载均衡
-// 设计原则：
-// - KISS: 简单的随机化比复杂的状态管理更可靠
-// - 无状态: 避免并发竞争和持久化开销
-// - 保持优先级: 只在相同优先级组内打乱，不影响优先级排序
+// 设计原则：KISS、无状态、保持优先级排序
 func shuffleSamePriorityChannels(channels []*modelpkg.Config) []*modelpkg.Config {
-	if len(channels) <= 1 {
+	n := len(channels)
+	if n <= 1 {
 		return channels
 	}
 
-	// 按优先级分组
-	type priorityGroup struct {
-		priority int
-		start    int
-		end      int
-	}
-
-	var groups []priorityGroup
-	currentPriority := channels[0].Priority
-	groupStart := 0
-
-	for i := 1; i < len(channels); i++ {
-		if channels[i].Priority != currentPriority {
-			// 发现新的优先级组
-			groups = append(groups, priorityGroup{
-				priority: currentPriority,
-				start:    groupStart,
-				end:      i,
-			})
-			currentPriority = channels[i].Priority
-			groupStart = i
-		}
-	}
-	// 添加最后一组
-	groups = append(groups, priorityGroup{
-		priority: currentPriority,
-		start:    groupStart,
-		end:      len(channels),
-	})
-
-	// 对每个优先级组内的渠道进行随机打乱
-	result := make([]*modelpkg.Config, len(channels))
+	result := make([]*modelpkg.Config, n)
 	copy(result, channels)
 
-	for _, group := range groups {
-		groupSize := group.end - group.start
-		if groupSize > 1 {
-			// Fisher-Yates洗牌算法
-			for i := group.start; i < group.end-1; i++ {
-				j := i + rand.IntN(groupSize-(i-group.start))
-				result[i], result[j] = result[j], result[i]
+	// 单次遍历：识别优先级边界并就地打乱
+	groupStart := 0
+	for i := 1; i <= n; i++ {
+		// 检测优先级边界（包括末尾）
+		if i == n || result[i].Priority != result[groupStart].Priority {
+			// 打乱 [groupStart, i) 区间
+			if i-groupStart > 1 {
+				rand.Shuffle(i-groupStart, func(a, b int) {
+					result[groupStart+a], result[groupStart+b] = result[groupStart+b], result[groupStart+a]
+				})
 			}
+			groupStart = i
 		}
 	}
 

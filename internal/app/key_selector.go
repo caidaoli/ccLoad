@@ -93,53 +93,60 @@ func (ks *KeySelector) selectSequential(apiKeys []*model.APIKey, excludeKeys map
 	return -1, "", fmt.Errorf("all API keys are in cooldown or already tried")
 }
 
-// selectRoundRobin 使用双重检查锁定确保并发安全
-func (ks *KeySelector) selectRoundRobin(channelID int64, apiKeys []*model.APIKey, excludeKeys map[int]bool) (int, string, error) {
-	keyCount := len(apiKeys)
-	now := time.Now()
-
-	// 🔧 双重检查锁定：确保每个channelID只创建一次counter
+// getOrCreateCounter 获取或创建渠道的轮询计数器（双重检查锁定）
+func (ks *KeySelector) getOrCreateCounter(channelID int64) *rrCounter {
 	ks.rrMutex.RLock()
 	counter, ok := ks.rrCounters[channelID]
 	ks.rrMutex.RUnlock()
 
-	if !ok {
-		ks.rrMutex.Lock()
-		// 再次检查，避免多个goroutine同时创建
-		if counter, ok = ks.rrCounters[channelID]; !ok {
-			counter = &rrCounter{}
-			ks.rrCounters[channelID] = counter
-		}
-		ks.rrMutex.Unlock()
+	if ok {
+		return counter
 	}
 
+	ks.rrMutex.Lock()
+	defer ks.rrMutex.Unlock()
+
+	// 再次检查，避免多个goroutine同时创建
+	if counter, ok = ks.rrCounters[channelID]; !ok {
+		counter = &rrCounter{}
+		ks.rrCounters[channelID] = counter
+	}
+	return counter
+}
+
+// findKeyByIndex 在apiKeys中查找指定索引的Key
+func findKeyByIndex(apiKeys []*model.APIKey, idx int) *model.APIKey {
+	for _, apiKey := range apiKeys {
+		if apiKey.KeyIndex == idx {
+			return apiKey
+		}
+	}
+	return nil
+}
+
+// selectRoundRobin 轮询选择可用Key
+func (ks *KeySelector) selectRoundRobin(channelID int64, apiKeys []*model.APIKey, excludeKeys map[int]bool) (int, string, error) {
+	keyCount := len(apiKeys)
+	now := time.Now()
+
+	counter := ks.getOrCreateCounter(channelID)
 	startIdx := int(counter.counter.Add(1) % uint32(keyCount))
 
 	// 从startIdx开始轮询，最多尝试keyCount次
 	for i := range keyCount {
 		idx := (startIdx + i) % keyCount
 
-		// 在apiKeys中查找对应key_index的Key
-		var selectedKey *model.APIKey
-		for _, apiKey := range apiKeys {
-			if apiKey.KeyIndex == idx {
-				selectedKey = apiKey
-				break
-			}
-		}
-
+		selectedKey := findKeyByIndex(apiKeys, idx)
 		if selectedKey == nil {
-			continue // Key不存在，跳过（理论上不应该发生）
+			continue
 		}
 
-		// 跳过本次请求已尝试过的Key
 		if excludeKeys != nil && excludeKeys[idx] {
 			continue
 		}
 
-		// 检查Key内联的冷却状态（优化：优先使用内存数据）
 		if selectedKey.IsCoolingDown(now) {
-			continue // Key冷却中，跳过
+			continue
 		}
 
 		return idx, selectedKey.APIKey, nil
