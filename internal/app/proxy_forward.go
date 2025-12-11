@@ -183,7 +183,7 @@ func isClientDisconnectError(err error) bool {
 
 // buildStreamDiagnostics 生成流诊断消息
 // 触发条件：(1) 流传输错误  (2) 流式请求但没有usage数据（疑似不完整响应）
-func buildStreamDiagnostics(streamErr error, readStats *streamReadStats, hasUsage bool, channelType string, contentType string, parser usageParser) string {
+func buildStreamDiagnostics(streamErr error, readStats *streamReadStats, hasUsage bool, channelType string, contentType string) string {
 	if readStats == nil {
 		return ""
 	}
@@ -192,34 +192,22 @@ func buildStreamDiagnostics(streamErr error, readStats *streamReadStats, hasUsag
 	readCount := readStats.readCount
 	needsUsageCheck := channelType == util.ChannelTypeAnthropic || channelType == util.ChannelTypeCodex
 
-	// 获取接收到的数据（用于诊断）
-	var receivedSnippet string
-	if parser != nil {
-		data := parser.GetReceivedData()
-		maxLen := 500 // 最多显示500字节
-		if len(data) > maxLen {
-			receivedSnippet = string(data[:maxLen]) + "..."
-		} else {
-			receivedSnippet = string(data)
-		}
-	}
-
 	// 情况1:流传输异常中断(排除客户端主动断开:499/HTTP2流关闭)
 	if streamErr != nil && !isClientDisconnectError(streamErr) {
 		if needsUsageCheck {
-			return fmt.Sprintf("⚠️ 流传输中断: 错误=%v | 已读取=%d字节(分%d次) | usage数据=%v | 渠道=%s | Content-Type=%s | 接收内容=%q",
-				streamErr, bytesRead, readCount, hasUsage, channelType, contentType, receivedSnippet)
+			return fmt.Sprintf("⚠️ 流传输中断: 错误=%v | 已读取=%d字节(分%d次) | usage数据=%v | 渠道=%s | Content-Type=%s",
+				streamErr, bytesRead, readCount, hasUsage, channelType, contentType)
 		}
-		return fmt.Sprintf("⚠️ 流传输中断: 错误=%v | 已读取=%d字节(分%d次) | 渠道=%s | Content-Type=%s | 接收内容=%q",
-			streamErr, bytesRead, readCount, channelType, contentType, receivedSnippet)
+		return fmt.Sprintf("⚠️ 流传输中断: 错误=%v | 已读取=%d字节(分%d次) | 渠道=%s | Content-Type=%s",
+			streamErr, bytesRead, readCount, channelType, contentType)
 	}
 
 	// 情况2:流正常结束但没有usage数据(疑似上游未发送完整响应)
 	if !hasUsage && bytesRead > 0 && needsUsageCheck {
 		// 🔍 诊断增强:添加渠道+Content-Type,帮助定位问题源
 		// 如果Content-Type不是text/event-stream,可能是上游错误响应
-		return fmt.Sprintf("⚠️ 流响应不完整: 正常EOF但无usage | 已读取=%d字节(分%d次) | 渠道=%s | Content-Type=%s | 接收内容=%q",
-			bytesRead, readCount, channelType, contentType, receivedSnippet)
+		return fmt.Sprintf("⚠️ 流响应不完整: 正常EOF但无usage | 已读取=%d字节(分%d次) | 渠道=%s | Content-Type=%s",
+			bytesRead, readCount, channelType, contentType)
 	}
 
 	return ""
@@ -256,7 +244,9 @@ func (s *Server) handleSuccessResponse(
 
 	// 流式传输并解析usage
 	contentType := resp.Header.Get("Content-Type")
-	usageParser, streamErr := streamAndParseResponse(reqCtx.ctx, resp.Body, w, contentType, channelType, reqCtx.isStreaming)
+	usageParser, streamErr := streamAndParseResponse(
+		reqCtx.ctx, resp.Body, w, contentType, channelType, reqCtx.isStreaming,
+	)
 
 	// 构建结果
 	result := &fwResult{
@@ -276,8 +266,9 @@ func (s *Server) handleSuccessResponse(
 	// 生成流诊断消息
 	if reqCtx.isStreaming {
 		hasUsage := result.InputTokens > 0 || result.OutputTokens > 0
-		// 🔍 诊断增强: 传递contentType+parser帮助定位问题(区分SSE/JSON/其他,记录接收内容)
-		if diagMsg := buildStreamDiagnostics(streamErr, readStats, hasUsage, channelType, contentType, usageParser); diagMsg != "" {
+
+		// 🔍 诊断增强: 传递contentType帮助定位问题(区分SSE/JSON/其他)
+		if diagMsg := buildStreamDiagnostics(streamErr, readStats, hasUsage, channelType, contentType); diagMsg != "" {
 			result.StreamDiagMsg = diagMsg
 			log.Print(diagMsg)
 		}
@@ -450,7 +441,7 @@ func (s *Server) forwardAttempt(
 			// 这将触发渠道级冷却，因为这通常是上游服务问题（网络不稳定、负载过高等）
 			res.Body = []byte(res.StreamDiagMsg)
 			originalStatus := res.Status
-			res.Status = util.StatusStreamIncomplete // 599 - 流响应不完整
+			res.Status = util.StatusStreamIncomplete       // 599 - 流响应不完整
 			defer func() { res.Status = originalStatus }() // 恢复原始状态码（日志已记录）
 			return s.handleProxyErrorResponse(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
 		}

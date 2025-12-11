@@ -356,7 +356,6 @@ func safeBodyToString(data []byte) string {
 	return string(data)
 }
 
-
 // isLikelyText 检测数据是否像文本（用于区分压缩/二进制数据）
 func isLikelyText(data []byte) bool {
 	if len(data) == 0 {
