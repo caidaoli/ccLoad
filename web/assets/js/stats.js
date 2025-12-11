@@ -345,6 +345,9 @@
       const model = document.getElementById('f_model').value.trim();
       const authToken = document.getElementById('f_auth_token').value.trim();
 
+      // 保存筛选条件到 localStorage
+      saveStatsFilters();
+
       const q = new URLSearchParams(location.search);
       if (range) q.set('range', range); else q.delete('range');
       if (id) q.set('channel_id', id); else q.delete('channel_id');
@@ -358,11 +361,15 @@
 
     function initFilters() {
       const u = new URLSearchParams(location.search);
-      const id = u.get('channel_id') || '';
-      const name = u.get('channel_name_like') || u.get('channel_name') || '';
-      const range = u.get('range') || 'today';
-      const model = u.get('model_like') || u.get('model') || '';
-      const authToken = u.get('auth_token_id') || '';
+      const saved = loadStatsFilters();
+      // URL 参数优先，否则从 localStorage 恢复
+      const hasUrlParams = u.toString().length > 0;
+
+      const id = u.get('channel_id') || (!hasUrlParams && saved?.channelId) || '';
+      const name = u.get('channel_name_like') || u.get('channel_name') || (!hasUrlParams && saved?.channelName) || '';
+      const range = u.get('range') || (!hasUrlParams && saved?.range) || 'today';
+      const model = u.get('model_like') || u.get('model') || (!hasUrlParams && saved?.model) || '';
+      const authToken = u.get('auth_token_id') || (!hasUrlParams && saved?.authToken) || '';
 
       // 初始化时间范围选择器 (默认"本日")
       if (window.initDateRangeSelector) {
@@ -503,7 +510,15 @@
 
     function saveStatsFilters() {
       try {
-        localStorage.setItem(STATS_FILTER_KEY, JSON.stringify({ channelType: currentChannelType }));
+        const filters = {
+          channelType: currentChannelType,
+          range: document.getElementById('f_hours')?.value || 'today',
+          channelId: document.getElementById('f_id')?.value || '',
+          channelName: document.getElementById('f_name')?.value || '',
+          model: document.getElementById('f_model')?.value || '',
+          authToken: document.getElementById('f_auth_token')?.value || ''
+        };
+        localStorage.setItem(STATS_FILTER_KEY, JSON.stringify(filters));
       } catch (_) {}
     }
 
@@ -519,13 +534,33 @@
     document.addEventListener('DOMContentLoaded', async function() {
       if (window.initTopbar) initTopbar('stats');
 
-      // 优先从 localStorage 恢复，默认 all
+      // 优先从 URL 读取，其次从 localStorage 恢复，默认 all
+      const u = new URLSearchParams(location.search);
+      const hasUrlParams = u.toString().length > 0;
       const savedFilters = loadStatsFilters();
-      currentChannelType = savedFilters?.channelType || 'all';
+      currentChannelType = u.get('channel_type') || (!hasUrlParams && savedFilters?.channelType) || 'all';
 
       await initChannelTypeFilter(currentChannelType);
 
       initFilters();
+
+      // ✅ 修复：如果没有 URL 参数但有保存的筛选条件，先同步 URL 再加载数据
+      if (!hasUrlParams && savedFilters) {
+        const q = new URLSearchParams();
+        if (savedFilters.range) q.set('range', savedFilters.range);
+        if (savedFilters.channelId) q.set('channel_id', savedFilters.channelId);
+        if (savedFilters.channelName) q.set('channel_name_like', savedFilters.channelName);
+        if (savedFilters.model) q.set('model_like', savedFilters.model);
+        if (savedFilters.authToken) q.set('auth_token_id', savedFilters.authToken);
+        if (savedFilters.channelType && savedFilters.channelType !== 'all') {
+          q.set('channel_type', savedFilters.channelType);
+        }
+        // 使用 replaceState 更新 URL，不触发页面刷新
+        if (q.toString()) {
+          history.replaceState(null, '', '?' + q.toString());
+        }
+      }
+
       loadStats();
 
       // 响应式处理

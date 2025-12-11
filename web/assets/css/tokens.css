@@ -39,6 +39,22 @@
       font-size: 13px;
       display: inline-block;
     }
+    /* Token状态颜色 */
+    .token-display-active {
+      background: var(--success-50);
+      color: var(--success-800);
+      border: 1px solid var(--success-300);
+    }
+    .token-display-inactive {
+      background: var(--neutral-100);
+      color: var(--neutral-600);
+      border: 1px solid var(--neutral-300);
+    }
+    .token-display-expired {
+      background: var(--error-50);
+      color: var(--error-800);
+      border: 1px solid var(--error-300);
+    }
     .status-badge {
       display: inline-block;
       padding: 4px 12px;

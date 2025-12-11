@@ -74,13 +74,12 @@
             <tr>
               <th>描述</th>
               <th>令牌</th>
-              <th>状态</th>
               <th style="text-align: center;">调用次数</th>
               <th style="text-align: center;">成功率</th>
               <th style="text-align: center;">Token用量</th>
               <th style="text-align: center;">总费用</th>
-              <th style="text-align: center;">流首字</th>
-              <th style="text-align: center;">非流式</th>
+              <th style="text-align: center;">流首字平均</th>
+              <th style="text-align: center;">非流平均</th>
               <th>最后使用</th>
               <th style="width: 200px;">操作</th>
             </tr>
@@ -140,19 +139,18 @@
         <tr>
           <td style="font-weight: 500;">${escapeHtml(token.description)}</td>
           <td>
-            <div><span class="token-display">${escapeHtml(token.token)}</span></div>
+            <div><span class="token-display token-display-${status.class}">${escapeHtml(token.token)}</span></div>
             <div style="font-size: 12px; color: var(--neutral-500); margin-top: 4px;">${createdAt}创建 · ${expiresAt}</div>
           </td>
-          <td><span class="status-badge status-${status.class}">${status.text}</span></td>
           <td style="text-align: center;">
             ${totalCount > 0 ? `
               <div style="display: flex; flex-direction: column; gap: 4px; align-items: center;">
-                <span class="stats-badge" style="background: var(--success-100); color: var(--success-700); font-weight: 600;" title="成功调用">
-                  ✓ ${successCount.toLocaleString()}
+                <span class="stats-badge" style="background: var(--success-50); color: var(--success-700); font-weight: 600; border: 1px solid var(--success-200);" title="成功调用">
+                  <span style="color: var(--success-600); font-size: 14px; font-weight: 700;">✓</span> ${successCount.toLocaleString()}
                 </span>
                 ${failureCount > 0 ? `
-                  <span class="stats-badge" style="background: var(--error-100); color: var(--error-700); font-weight: 600;" title="失败调用">
-                    ✗ ${failureCount.toLocaleString()}
+                  <span class="stats-badge" style="background: var(--error-50); color: var(--error-700); font-weight: 600; border: 1px solid var(--error-200);" title="失败调用">
+                    <span style="color: var(--error-600); font-size: 14px; font-weight: 700;">✗</span> ${failureCount.toLocaleString()}
                   </span>
                 ` : ''}
               </div>
@@ -168,10 +166,10 @@
               <div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">
                 <div style="display: inline-flex; gap: 4px; font-size: 12px;">
                   <span class="stats-badge" style="background: var(--primary-50); color: var(--primary-700);" title="输入Tokens">
-                    入 ${formatTokenCount(token.prompt_tokens_total || 0)}
+                    输入 ${formatTokenCount(token.prompt_tokens_total || 0)}
                   </span>
                   <span class="stats-badge" style="background: var(--secondary-50); color: var(--secondary-700);" title="输出Tokens">
-                    出 ${formatTokenCount(token.completion_tokens_total || 0)}
+                    输出 ${formatTokenCount(token.completion_tokens_total || 0)}
                   </span>
                 </div>
                 ${(token.cache_read_tokens_total > 0 || token.cache_creation_tokens_total > 0) ? `
@@ -199,7 +197,7 @@
                 </span>
 
               </div>
-            ` : '<span style="color: var(--neutral-500); font-size: 13px;">$0.00</span>'}
+            ` : '<span style="color: var(--neutral-500); font-size: 13px;">-</span>'}
           </td>
           <td style="text-align: center;">
             ${streamCount > 0

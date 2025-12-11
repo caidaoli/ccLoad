@@ -1,5 +1,5 @@
     let currentLogsPage = 1;
-    let logsPageSize = 20;
+    let logsPageSize = 15;
     let totalLogsPages = 1;
     let totalLogs = 0;
     let currentChannelType = 'all'; // 当前选中的渠道类型
@@ -599,6 +599,25 @@
 
       initFilters();
       await loadDefaultTestContent();
+
+      // ✅ 修复：如果没有 URL 参数但有保存的筛选条件，先同步 URL 再加载数据
+      if (!hasUrlParams && savedFilters) {
+        const q = new URLSearchParams();
+        if (savedFilters.range) q.set('range', savedFilters.range);
+        if (savedFilters.channelId) q.set('channel_id', savedFilters.channelId);
+        if (savedFilters.channelName) q.set('channel_name_like', savedFilters.channelName);
+        if (savedFilters.model) q.set('model_like', savedFilters.model);
+        if (savedFilters.status) q.set('status_code', savedFilters.status);
+        if (savedFilters.authToken) q.set('auth_token_id', savedFilters.authToken);
+        if (savedFilters.channelType && savedFilters.channelType !== 'all') {
+          q.set('channel_type', savedFilters.channelType);
+        }
+        // 使用 replaceState 更新 URL，不触发页面刷新
+        if (q.toString()) {
+          history.replaceState(null, '', '?' + q.toString());
+        }
+      }
+
       load();
 
       // 响应式处理

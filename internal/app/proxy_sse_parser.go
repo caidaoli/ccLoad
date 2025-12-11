@@ -49,6 +49,7 @@ type usageParser interface {
 	Feed([]byte) error
 	GetUsage() (inputTokens, outputTokens, cacheRead, cacheCreation int)
 	GetLastError() []byte // ✅ 新增：返回SSE流中检测到的最后一个error事件（用于1308等错误的延迟处理）
+	GetReceivedData() []byte // ✅ 新增：返回接收到的原始数据（用于诊断流不完整问题）
 }
 
 const (
@@ -74,16 +75,23 @@ func newJSONUsageParser(channelType string) *jsonUsageParser {
 // Feed 喂入数据进行解析（供streamCopySSE调用）
 // 采用增量解析，避免重复扫描已处理数据
 func (p *sseUsageParser) Feed(data []byte) error {
-	// 如果已标记为超限，不再解析usage但继续传输流
+	// 如果已标记为超限,不再解析usage但继续传输流
 	if p.oversized {
 		return nil
 	}
 
-	// 防御性检查：限制缓冲区大小
+	// 防御性检查:限制缓冲区大小
 	if p.bufferSize+len(data) > maxSSEEventSize {
 		log.Printf("WARN: SSE usage buffer exceeds max size (%d bytes), stopping usage extraction for this request", maxSSEEventSize)
 		p.oversized = true
-		return nil // 不返回错误，让流传输继续
+		return nil // 不返回错误,让流传输继续
+	}
+
+	// 🔍 诊断补丁: 记录异常小的首块数据(用于定位21字节问题)
+	// 正常SSE事件至少40-50字节,如果首块<64字节可能是上游异常
+	if p.bufferSize == 0 && len(data) <= 64 {
+		log.Printf("🔍 [SSE异常首块] 渠道=%s 大小=%d 内容=%q", 
+			p.channelType, len(data), data)
 	}
 
 	p.buffer.Write(data)
@@ -209,6 +217,10 @@ func (p *sseUsageParser) GetLastError() []byte {
 	return p.lastError
 }
 
+func (p *sseUsageParser) GetReceivedData() []byte {
+	return p.buffer.Bytes()
+}
+
 func (p *jsonUsageParser) Feed(data []byte) error {
 	if p.truncated {
 		return nil
@@ -264,6 +276,10 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 // ✅ GetLastError 返回nil（jsonUsageParser不处理SSE error事件）
 func (p *jsonUsageParser) GetLastError() []byte {
 	return nil // JSON解析器不处理SSE error事件
+}
+
+func (p *jsonUsageParser) GetReceivedData() []byte {
+	return p.buffer.Bytes()
 }
 
 func (u *usageAccumulator) applyUsage(usage map[string]any, channelType string) {
