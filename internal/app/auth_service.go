@@ -30,8 +30,9 @@ import (
 // 遵循 SRP 原则：仅负责认证授权，不涉及代理、日志、管理 API
 type AuthService struct {
 	// Token 认证（管理界面使用的动态 Token）
+	// ✅ 安全修复：存储SHA256哈希而非明文(2025-12)
 	passwordHash []byte               // 管理员密码bcrypt哈希
-	validTokens  map[string]time.Time // Token → 过期时间
+	validTokens  map[string]time.Time // TokenHash → 过期时间
 	tokensMux    sync.RWMutex         // 并发保护
 
 	// API 认证（代理 API 使用的数据库令牌）
@@ -93,6 +94,7 @@ func NewAuthService(
 }
 
 // loadSessionsFromDB 从数据库加载管理员会话
+// ✅ 安全修复：加载tokenHash→expiry映射(2025-12)
 func (s *AuthService) loadSessionsFromDB() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -103,8 +105,8 @@ func (s *AuthService) loadSessionsFromDB() error {
 	}
 
 	s.tokensMux.Lock()
-	for token, expiry := range sessions {
-		s.validTokens[token] = expiry
+	for tokenHash, expiry := range sessions {
+		s.validTokens[tokenHash] = expiry
 	}
 	s.tokensMux.Unlock()
 
@@ -149,9 +151,12 @@ func (s *AuthService) generateToken() (string, error) {
 }
 
 // isValidToken 验证Token有效性（检查过期时间）
+// ✅ 安全修复：通过tokenHash查询(2025-12)
 func (s *AuthService) isValidToken(token string) bool {
+	tokenHash := model.HashToken(token)
+
 	s.tokensMux.RLock()
-	expiry, exists := s.validTokens[token]
+	expiry, exists := s.validTokens[tokenHash]
 	s.tokensMux.RUnlock()
 
 	if !exists {
@@ -163,7 +168,7 @@ func (s *AuthService) isValidToken(token string) bool {
 		// 同步删除过期Token（避免goroutine泄漏）
 		// 原因：map删除操作非常快（O(1)），无需异步，异步反而导致goroutine泄漏
 		s.tokensMux.Lock()
-		delete(s.validTokens, token)
+		delete(s.validTokens, tokenHash)
 		s.tokensMux.Unlock()
 		return false
 	}
@@ -179,9 +184,9 @@ func (s *AuthService) CleanExpiredTokens() {
 	// 使用快照模式避免长时间持锁
 	s.tokensMux.RLock()
 	toDelete := make([]string, 0, len(s.validTokens)/10)
-	for token, expiry := range s.validTokens {
+	for tokenHash, expiry := range s.validTokens {
 		if now.After(expiry) {
-			toDelete = append(toDelete, token)
+			toDelete = append(toDelete, tokenHash)
 		}
 	}
 	s.tokensMux.RUnlock()
@@ -189,9 +194,9 @@ func (s *AuthService) CleanExpiredTokens() {
 	// 批量删除内存中的过期Token
 	if len(toDelete) > 0 {
 		s.tokensMux.Lock()
-		for _, token := range toDelete {
-			if expiry, exists := s.validTokens[token]; exists && now.After(expiry) {
-				delete(s.validTokens, token)
+		for _, tokenHash := range toDelete {
+			if expiry, exists := s.validTokens[tokenHash]; exists && now.After(expiry) {
+				delete(s.validTokens, tokenHash)
 			}
 		}
 		s.tokensMux.Unlock()
@@ -368,26 +373,31 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 	}
 	expiry := time.Now().Add(config.TokenExpiry)
 
-	// 存储Token到内存和数据库
+	// ✅ 安全修复：存储tokenHash而非明文(2025-12)
+	tokenHash := model.HashToken(token)
+
+	// 存储TokenHash到内存
 	s.tokensMux.Lock()
-	s.validTokens[token] = expiry
+	s.validTokens[tokenHash] = expiry
 	s.tokensMux.Unlock()
 
-	// 异步写入数据库（持久化，支持重启后保持登录）
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		if err := s.store.CreateAdminSession(ctx, token, expiry); err != nil {
-			log.Printf("⚠️  保存管理员会话到数据库失败: %v", err)
-		}
-	}()
+	// ✅ 修复：同步写入数据库（SQLite本地写入极快，微秒级，无需异步）
+	// 原因：异步goroutine未受控，关机时可能写入已关闭的连接
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	if err := s.store.CreateAdminSession(ctx, token, expiry); err != nil {
+		cancel()
+		log.Printf("⚠️  保存管理员会话到数据库失败: %v", err)
+		// 注意：内存中的token仍然有效，下次重启会丢失此会话
+	} else {
+		cancel()
+	}
 
 	log.Printf("✅ 登录成功: IP=%s", clientIP)
 
-	// 返回Token给客户端（前端存储到localStorage）
+	// 返回明文Token给客户端（前端存储到localStorage）
 	c.JSON(http.StatusOK, gin.H{
 		"status":    "success",
-		"token":     token,
+		"token":     token, // 明文token返回给客户端
 		"expiresIn": int(config.TokenExpiry.Seconds()), // 秒数
 	})
 }
@@ -400,17 +410,23 @@ func (s *AuthService) HandleLogout(c *gin.Context) {
 	if after, ok := strings.CutPrefix(authHeader, prefix); ok {
 		token := after
 
-		// 删除内存中的Token
+		// ✅ 安全修复：计算tokenHash删除(2025-12)
+		tokenHash := model.HashToken(token)
+
+		// 删除内存中的TokenHash
 		s.tokensMux.Lock()
-		delete(s.validTokens, token)
+		delete(s.validTokens, tokenHash)
 		s.tokensMux.Unlock()
 
-		// 异步删除数据库中的会话
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			_ = s.store.DeleteAdminSession(ctx, token)
-		}()
+		// ✅ 修复：同步删除数据库中的会话（SQLite本地删除极快，微秒级，无需异步）
+		// 原因：异步goroutine未受控，关机时可能写入已关闭的连接
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		if err := s.store.DeleteAdminSession(ctx, token); err != nil {
+			cancel()
+			log.Printf("⚠️  删除数据库会话失败: %v", err)
+		} else {
+			cancel()
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "已登出"})
