@@ -352,6 +352,9 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		apiV1Beta.Any("/*path", s.HandleProxyRequest)
 	}
 
+	// 健康检查（公开访问，无需认证，K8s liveness/readiness probe）
+	r.GET("/health", s.HandleHealth)
+
 	// 公开访问的API（基础统计）
 	public := r.Group("/public")
 	{

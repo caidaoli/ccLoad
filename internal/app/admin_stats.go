@@ -271,3 +271,19 @@ func (s *Server) HandleGetModels(c *gin.Context) {
 		"data": models,
 	})
 }
+
+// HandleHealth 健康检查端点(公开访问,无需认证)
+// GET /health
+// 仅检查数据库连接是否活跃（<5ms，适用于K8s liveness/readiness probe）
+func (s *Server) HandleHealth(c *gin.Context) {
+	// 设置100ms超时，避免慢查询阻塞healthcheck
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 100*time.Millisecond)
+	defer cancel()
+
+	if err := s.store.Ping(ctx); err != nil {
+		RespondError(c, http.StatusServiceUnavailable, err)
+		return
+	}
+
+	RespondJSON(c, http.StatusOK, gin.H{"status": "ok"})
+}

@@ -69,6 +69,11 @@ func (s *SQLStore) IsSQLite() bool {
 }
 
 // Close 关闭存储（优雅关闭）
+// Ping 检查数据库连接是否活跃（用于健康检查，<1ms）
+func (s *SQLStore) Ping(ctx context.Context) error {
+	return s.db.PingContext(ctx)
+}
+
 func (s *SQLStore) Close() error {
 	// 1. 通知后台worker退出
 	close(s.done)

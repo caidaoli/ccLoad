@@ -689,7 +689,7 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 
 - 未设置 `CCLOAD_PASS`：程序启动失败并退出（安全默认）。
 - 未配置 API 访问令牌：所有 `/v1/*` 与 `/v1beta/*` API 返回 `401 Unauthorized`。通过 Web 界面 `/web/tokens.html` 配置令牌。
-- 公开端点：仅 `GET /public/summary` 无需认证，其他端点均需授权令牌。
+- 公开端点：`GET /health`（健康检查）和 `GET /public/summary`（统计摘要）无需认证，其他端点均需授权令牌。
 
 ### Docker 镜像
 
@@ -858,7 +858,9 @@ docker inspect ccload --format='{{.State.Health.Status}}'
 
 **配置验证**:
 ```bash
-# 测试服务是否正常响应
+# 测试服务健康状态（轻量级健康检查，<5ms）
+curl -s http://localhost:8080/health
+# 或查看统计摘要（返回业务数据，50-200ms）
 curl -s http://localhost:8080/public/summary
 # 检查环境变量配置
 env | grep CCLOAD

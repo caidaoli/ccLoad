@@ -130,5 +130,9 @@ type Store interface {
 	IsRedisEnabled() bool
 
 	// Close - 关闭数据库连接并释放资源
+
+	// Ping - 检查数据库连接是否活跃（用于健康检查）
+	Ping(ctx context.Context) error
+
 	Close() error
 }

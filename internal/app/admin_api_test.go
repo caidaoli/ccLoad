@@ -722,3 +722,45 @@ func TestAdminAPI_LargeCSVImport(t *testing.T) {
 		t.Errorf("导入性能不符合预期，耗时: %v (期望 <5s)", duration)
 	}
 }
+
+// TestHealthEndpoint 测试健康检查端点
+func TestHealthEndpoint(t *testing.T) {
+	server, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	r := gin.New()
+	server.SetupRoutes(r)
+
+	// 测试健康检查端点
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/health", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望状态码 200，实际: %d, 响应: %s", w.Code, w.Body.String())
+	}
+
+	// ✅ 响应被包装在 {"success":true,"data":{...}} 结构中
+	var wrapper map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &wrapper); err != nil {
+		t.Fatalf("解析响应失败: %v, 响应: %s", err, w.Body.String())
+	}
+
+	// 检查 success 字段
+	if success, ok := wrapper["success"].(bool); !ok || !success {
+		t.Fatalf("期望 success=true，实际: %v", wrapper["success"])
+	}
+
+	// 提取 data 字段
+	data, ok := wrapper["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("data 字段类型错误: %T", wrapper["data"])
+	}
+
+	// 检查 status 字段
+	if status, ok := data["status"].(string); !ok || status != "ok" {
+		t.Fatalf("期望 status='ok'，实际: %v", data["status"])
+	}
+
+	t.Logf("✅ 健康检查测试通过")
+}
