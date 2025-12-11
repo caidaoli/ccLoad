@@ -322,6 +322,56 @@
             return (dur != null && dur > 0) ? (dur * 1000) : null; // 转换为毫秒
           })
         });
+      } else if (trendType === 'tokens') {
+        // Token用量趋势：添加输入、输出、缓存读、缓存建四条线
+        series.push({
+          name: '输入Token',
+          type: 'line',
+          smooth: true,
+          symbol: 'circle',
+          symbolSize: 4,
+          sampling: 'lttb',
+          connectNulls: true,
+          itemStyle: { color: '#3b82f6' },
+          lineStyle: { width: 2, color: '#3b82f6' },
+          data: window.trendData.map(point => point.input_tokens > 0 ? point.input_tokens : null)
+        });
+        series.push({
+          name: '输出Token',
+          type: 'line',
+          smooth: true,
+          symbol: 'circle',
+          symbolSize: 4,
+          sampling: 'lttb',
+          connectNulls: true,
+          itemStyle: { color: '#10b981' },
+          lineStyle: { width: 2, color: '#10b981' },
+          data: window.trendData.map(point => point.output_tokens > 0 ? point.output_tokens : null)
+        });
+        series.push({
+          name: '缓存读取',
+          type: 'line',
+          smooth: true,
+          symbol: 'circle',
+          symbolSize: 4,
+          sampling: 'lttb',
+          connectNulls: true,
+          itemStyle: { color: '#f97316' },
+          lineStyle: { width: 2, color: '#f97316' },
+          data: window.trendData.map(point => point.cache_read_tokens > 0 ? point.cache_read_tokens : null)
+        });
+        series.push({
+          name: '缓存创建',
+          type: 'line',
+          smooth: true,
+          symbol: 'circle',
+          symbolSize: 4,
+          sampling: 'lttb',
+          connectNulls: true,
+          itemStyle: { color: '#a855f7' },
+          lineStyle: { width: 2, color: '#a855f7' },
+          data: window.trendData.map(point => point.cache_creation_tokens > 0 ? point.cache_creation_tokens : null)
+        });
       } else if (trendType === 'cost') {
         // 费用消耗趋势：添加总体费用线
         series.push({
@@ -457,6 +507,33 @@
               data: durData
             });
           }
+        } else if (trendType === 'tokens') {
+          // Token用量趋势：渠道Token线（输入+输出合计）
+          let hasData = false;
+          const tokenData = window.trendData.map(point => {
+            const channels = point.channels || {};
+            const channelData = channels[channelName] || {};
+            const total = (channelData.input_tokens || 0) + (channelData.output_tokens || 0);
+            if (total > 0) {
+              hasData = true;
+              return total;
+            }
+            return null;
+          });
+
+          if (hasData) {
+            series.push({
+              name: channelName,
+              type: 'line',
+              smooth: true,
+              symbol: 'none',
+              sampling: 'lttb',
+              connectNulls: true,
+              itemStyle: { color: color },
+              lineStyle: { width: 1.5, color: color },
+              data: tokenData
+            });
+          }
         } else if (trendType === 'cost') {
           // 费用消耗趋势：渠道费用线
           let hasData = false;
@@ -514,10 +591,44 @@
             let html = `<div style="font-weight: 600; margin-bottom: 8px;">${params[0].axisValue}</div>`;
             params.forEach(param => {
               const color = param.color;
+              const value = param.value;
+              let formattedValue;
+
+              // 根据当前趋势类型格式化数值
+              if (value == null) {
+                formattedValue = 'N/A';
+              } else if (window.currentTrendType === 'first_byte' || window.currentTrendType === 'duration') {
+                // 首字响应时间/总耗时：已转换为毫秒
+                formattedValue = value.toFixed(0) + 'ms';
+              } else if (window.currentTrendType === 'cost') {
+                // 费用消耗：美元格式
+                if (value >= 1) {
+                  formattedValue = '$' + value.toFixed(2);
+                } else if (value >= 0.01) {
+                  formattedValue = '$' + value.toFixed(4);
+                } else if (value > 0) {
+                  formattedValue = '$' + value.toFixed(6);
+                } else {
+                  formattedValue = '$0.00';
+                }
+              } else if (window.currentTrendType === 'tokens') {
+                // Token用量：K/M格式
+                if (value >= 1000000) {
+                  formattedValue = (value / 1000000).toFixed(1) + 'M';
+                } else if (value >= 1000) {
+                  formattedValue = (value / 1000).toFixed(1) + 'K';
+                } else {
+                  formattedValue = value.toString();
+                }
+              } else {
+                // 调用次数：整数
+                formattedValue = Math.round(value).toString();
+              }
+
               html += `
                 <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
                   <span style="display: inline-block; width: 10px; height: 10px; background: ${color}; border-radius: 50%;"></span>
-                  <span>${param.seriesName}: ${param.value}</span>
+                  <span>${param.seriesName}: ${formattedValue}</span>
                 </div>
               `;
             });
@@ -593,6 +704,11 @@
                 if (value >= 1) return '$' + value.toFixed(2);
                 if (value >= 0.01) return '$' + value.toFixed(4);
                 return '$' + value.toFixed(6);
+              } else if (trendType === 'tokens') {
+                // Token用量：K/M格式
+                if (value >= 1000000) return (value / 1000000).toFixed(1) + 'M';
+                if (value >= 1000) return (value / 1000).toFixed(1) + 'K';
+                return value;
               } else {
                 // 调用次数：K/M格式
                 if (value >= 1000000) return (value / 1000000) + 'M';
@@ -1017,7 +1133,7 @@
 
         // 恢复趋势类型
         const savedType = localStorage.getItem('trend.trendType') || 'first_byte';
-        if (['count', 'first_byte', 'duration', 'cost'].includes(savedType)) {
+        if (['count', 'first_byte', 'duration', 'tokens', 'cost'].includes(savedType)) {
           window.currentTrendType = savedType;
         }
 

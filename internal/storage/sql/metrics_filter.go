@@ -50,7 +50,11 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 			) as avg_duration,
 			SUM(CASE WHEN logs.is_streaming = 1 AND logs.first_byte_time > 0 AND logs.status_code >= 200 AND logs.status_code < 300 THEN 1 ELSE 0 END) as stream_success_first_byte_count,
 			SUM(CASE WHEN logs.duration > 0 AND logs.status_code >= 200 AND logs.status_code < 300 THEN 1 ELSE 0 END) as duration_success_count,
-			SUM(COALESCE(logs.cost, 0.0)) as total_cost
+			SUM(COALESCE(logs.cost, 0.0)) as total_cost,
+			SUM(COALESCE(logs.input_tokens, 0)) as input_tokens,
+			SUM(COALESCE(logs.output_tokens, 0)) as output_tokens,
+			SUM(COALESCE(logs.cache_read_input_tokens, 0)) as cache_read_tokens,
+			SUM(COALESCE(logs.cache_creation_input_tokens, 0)) as cache_creation_tokens
 		FROM logs
 		WHERE (logs.time / 1000) >= ? AND (logs.time / 1000) <= ?
 	`
@@ -109,8 +113,9 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 		var streamSuccessFirstByteCount int
 		var durationSuccessCount int
 		var totalCost float64
+		var inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int64
 
-		if err := rows.Scan(&bucketTsInt, &channelID, &success, &errorCount, &avgFirstByteTime, &avgDuration, &streamSuccessFirstByteCount, &durationSuccessCount, &totalCost); err != nil {
+		if err := rows.Scan(&bucketTsInt, &channelID, &success, &errorCount, &avgFirstByteTime, &avgDuration, &streamSuccessFirstByteCount, &durationSuccessCount, &totalCost, &inputTokens, &outputTokens, &cacheReadTokens, &cacheCreationTokens); err != nil {
 			return nil, err
 		}
 
@@ -136,6 +141,12 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 			mp.TotalCost = new(float64)
 		}
 		*mp.TotalCost += totalCost
+
+		// 累加 token 数据
+		mp.InputTokens += inputTokens
+		mp.OutputTokens += outputTokens
+		mp.CacheReadTokens += cacheReadTokens
+		mp.CacheCreationTokens += cacheCreationTokens
 
 		if avgFirstByteTime.Valid {
 			helper.totalFirstByteTime += avgFirstByteTime.Float64 * float64(streamSuccessFirstByteCount)
@@ -175,6 +186,10 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 			AvgFirstByteTimeSeconds: avgFBT,
 			AvgDurationSeconds:      avgDur,
 			TotalCost:               chCost,
+			InputTokens:             inputTokens,
+			OutputTokens:            outputTokens,
+			CacheReadTokens:         cacheReadTokens,
+			CacheCreationTokens:     cacheCreationTokens,
 		}
 	}
 
