@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -146,5 +147,78 @@ func TestHandleSuccessResponse_StreamDiagMsg_NonAnthropicNoUsage(t *testing.T) {
 	// 非anthropic渠道无usage不应该设置诊断消息
 	if res.StreamDiagMsg != "" {
 		t.Errorf("expected empty StreamDiagMsg for non-anthropic channel, got: %s", res.StreamDiagMsg)
+	}
+}
+
+// TestBuildStreamDiagnostics_HasUsageNoError 验证有usage时即使有streamErr也不触发诊断
+func TestBuildStreamDiagnostics_HasUsageNoError(t *testing.T) {
+	tests := []struct {
+		name        string
+		streamErr   error
+		hasUsage    bool
+		channelType string
+		wantDiag    bool
+		reason      string
+	}{
+		{
+			name:        "http2_closed_with_usage",
+			streamErr:   errors.New("http2: response body closed"),
+			hasUsage:    true,
+			channelType: "anthropic",
+			wantDiag:    false,
+			reason:      "有usage说明流已完整，http2关闭是正常结束",
+		},
+		{
+			name:        "http2_closed_without_usage",
+			streamErr:   errors.New("http2: response body closed"),
+			hasUsage:    false,
+			channelType: "anthropic",
+			wantDiag:    true,
+			reason:      "无usage时http2关闭是异常中断",
+		},
+		{
+			name:        "unexpected_eof_with_usage",
+			streamErr:   errors.New("unexpected EOF"),
+			hasUsage:    true,
+			channelType: "anthropic",
+			wantDiag:    false,
+			reason:      "有usage说明数据完整，EOF可能是正常关闭",
+		},
+		{
+			name:        "stream_error_with_usage",
+			streamErr:   errors.New("stream error: stream ID 7; INTERNAL_ERROR"),
+			hasUsage:    true,
+			channelType: "codex",
+			wantDiag:    false,
+			reason:      "codex渠道有usage也不应触发诊断",
+		},
+		{
+			name:        "no_error_no_usage",
+			streamErr:   nil,
+			hasUsage:    false,
+			channelType: "anthropic",
+			wantDiag:    true,
+			reason:      "anthropic无usage应触发'流响应不完整'诊断",
+		},
+		{
+			name:        "no_error_no_usage_openai",
+			streamErr:   nil,
+			hasUsage:    false,
+			channelType: "openai",
+			wantDiag:    false,
+			reason:      "openai不检查usage，无诊断",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			readStats := &streamReadStats{totalBytes: 1024, readCount: 4}
+			diag := buildStreamDiagnostics(tt.streamErr, readStats, tt.hasUsage, tt.channelType, "text/event-stream")
+
+			hasDiag := diag != ""
+			if hasDiag != tt.wantDiag {
+				t.Errorf("%s: got diag=%q, wantDiag=%v", tt.reason, diag, tt.wantDiag)
+			}
+		})
 	}
 }

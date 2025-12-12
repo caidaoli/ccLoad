@@ -194,7 +194,13 @@ func buildStreamDiagnostics(streamErr error, readStats *streamReadStats, hasUsag
 	needsUsageCheck := channelType == util.ChannelTypeAnthropic || channelType == util.ChannelTypeCodex
 
 	// 情况1:流传输异常中断(排除客户端主动断开:499/HTTP2流关闭)
+	// 关键修复：如果已收到usage数据，说明流已完整传输，不视为错误
+	// Anthropic的usage在流末尾，收到usage意味着所有数据已接收完毕
 	if streamErr != nil && !isClientDisconnectError(streamErr) {
+		// 已收到usage数据 = 流完整，http2关闭只是正常结束信号
+		if hasUsage {
+			return "" // 不触发冷却，数据已完整
+		}
 		if needsUsageCheck {
 			return fmt.Sprintf("[WARN] 流传输中断: 错误=%v | 已读取=%d字节(分%d次) | usage数据=%v | 渠道=%s | Content-Type=%s",
 				streamErr, bytesRead, readCount, hasUsage, channelType, contentType)
@@ -205,8 +211,6 @@ func buildStreamDiagnostics(streamErr error, readStats *streamReadStats, hasUsag
 
 	// 情况2:流正常结束但没有usage数据(疑似上游未发送完整响应)
 	if !hasUsage && bytesRead > 0 && needsUsageCheck {
-		// [VALIDATE] 诊断增强:添加渠道+Content-Type,帮助定位问题源
-		// 如果Content-Type不是text/event-stream,可能是上游错误响应
 		return fmt.Sprintf("[WARN] 流响应不完整: 正常EOF但无usage | 已读取=%d字节(分%d次) | 渠道=%s | Content-Type=%s",
 			bytesRead, readCount, channelType, contentType)
 	}
