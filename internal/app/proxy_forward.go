@@ -183,36 +183,25 @@ func isClientDisconnectError(err error) bool {
 }
 
 // buildStreamDiagnostics 生成流诊断消息
-// 触发条件：(1) 流传输错误  (2) 流式请求但没有usage数据（疑似不完整响应）
-func buildStreamDiagnostics(streamErr error, readStats *streamReadStats, hasUsage bool, channelType string, contentType string) string {
+// 触发条件：流传输错误且未检测到流结束标志（[DONE]/message_stop）
+// streamComplete: 是否检测到流结束标志（比 hasUsage 更可靠，因为不是所有请求都有 usage）
+func buildStreamDiagnostics(streamErr error, readStats *streamReadStats, streamComplete bool, channelType string, contentType string) string {
 	if readStats == nil {
 		return ""
 	}
 
 	bytesRead := readStats.totalBytes
 	readCount := readStats.readCount
-	needsUsageCheck := channelType == util.ChannelTypeAnthropic || channelType == util.ChannelTypeCodex
 
-	// 情况1:流传输异常中断(排除客户端主动断开:499/HTTP2流关闭)
-	// 关键修复：如果已收到usage数据，说明流已完整传输，不视为错误
-	// Anthropic的usage在流末尾，收到usage意味着所有数据已接收完毕
+	// 流传输异常中断(排除客户端主动断开)
+	// 关键：如果检测到流结束标志（[DONE]/message_stop），说明流已完整传输
 	if streamErr != nil && !isClientDisconnectError(streamErr) {
-		// 已收到usage数据 = 流完整，http2关闭只是正常结束信号
-		if hasUsage {
+		// 已检测到流结束标志 = 流完整，http2关闭只是正常结束信号
+		if streamComplete {
 			return "" // 不触发冷却，数据已完整
 		}
-		if needsUsageCheck {
-			return fmt.Sprintf("[WARN] 流传输中断: 错误=%v | 已读取=%d字节(分%d次) | usage数据=%v | 渠道=%s | Content-Type=%s",
-				streamErr, bytesRead, readCount, hasUsage, channelType, contentType)
-		}
-		return fmt.Sprintf("[WARN] 流传输中断: 错误=%v | 已读取=%d字节(分%d次) | 渠道=%s | Content-Type=%s",
-			streamErr, bytesRead, readCount, channelType, contentType)
-	}
-
-	// 情况2:流正常结束但没有usage数据(疑似上游未发送完整响应)
-	if !hasUsage && bytesRead > 0 && needsUsageCheck {
-		return fmt.Sprintf("[WARN] 流响应不完整: 正常EOF但无usage | 已读取=%d字节(分%d次) | 渠道=%s | Content-Type=%s",
-			bytesRead, readCount, channelType, contentType)
+		return fmt.Sprintf("[WARN] 流传输中断: 错误=%v | 已读取=%d字节(分%d次) | 流结束标志=%v | 渠道=%s | Content-Type=%s",
+			streamErr, bytesRead, readCount, streamComplete, channelType, contentType)
 	}
 
 	return ""
@@ -233,18 +222,17 @@ func (s *Server) handleSuccessResponse(
 	filterAndWriteResponseHeaders(w, resp.Header)
 	w.WriteHeader(resp.StatusCode)
 
-	// 设置流式读取统计
+	// 设置读取统计（流式和非流式都需要，用于判断数据是否传输）
 	actualFirstByteTime := firstByteTime
-	var readStats *streamReadStats
-	if reqCtx.isStreaming {
-		readStats = &streamReadStats{}
-		resp.Body = &firstByteDetector{
-			ReadCloser: resp.Body,
-			stats:      readStats,
-			onFirstRead: func() {
+	readStats := &streamReadStats{}
+	resp.Body = &firstByteDetector{
+		ReadCloser: resp.Body,
+		stats:      readStats,
+		onFirstRead: func() {
+			if reqCtx.isStreaming {
 				actualFirstByteTime = reqCtx.Duration()
-			},
-		}
+			}
+		},
 	}
 
 	// 流式传输并解析usage
@@ -261,25 +249,48 @@ func (s *Server) handleSuccessResponse(
 	}
 
 	// 提取usage数据和错误事件
+	var streamComplete bool
 	if usageParser != nil {
 		result.InputTokens, result.OutputTokens, result.CacheReadInputTokens, result.CacheCreationInputTokens = usageParser.GetUsage()
 		if errorEvent := usageParser.GetLastError(); errorEvent != nil {
 			result.SSEErrorEvent = errorEvent
 		}
+		streamComplete = usageParser.IsStreamComplete()
 	}
 
-	// 生成流诊断消息
+	// 生成流诊断消息（仅流请求）
 	if reqCtx.isStreaming {
-		hasUsage := result.InputTokens > 0 || result.OutputTokens > 0
-
 		// [VALIDATE] 诊断增强: 传递contentType帮助定位问题(区分SSE/JSON/其他)
-		if diagMsg := buildStreamDiagnostics(streamErr, readStats, hasUsage, channelType, contentType); diagMsg != "" {
+		// 使用 streamComplete 而非 hasUsage，因为不是所有请求都有 usage 信息
+		if diagMsg := buildStreamDiagnostics(streamErr, readStats, streamComplete, channelType, contentType); diagMsg != "" {
 			result.StreamDiagMsg = diagMsg
 			log.Print(diagMsg)
+		} else if streamComplete && streamErr != nil && !isClientDisconnectError(streamErr) {
+			// [FIX] 流式请求：检测到流结束标志（[DONE]/message_stop）说明数据完整
+			// http2流关闭只是正常结束信号，清除streamErr避免被误判为网络错误
+			streamErr = nil
+		}
+	} else {
+		// [FIX] 非流式请求：如果有数据被传输，且错误是 HTTP/2 流关闭相关的，视为成功
+		// 原因：streamCopy 已将数据写入 ResponseWriter，客户端已收到完整响应
+		// http2 流关闭只是 "确认结束" 阶段的错误，不影响已传输的数据
+		if readStats.totalBytes > 0 && streamErr != nil && isHTTP2StreamCloseError(streamErr) {
+			streamErr = nil
 		}
 	}
 
 	return result, reqCtx.Duration(), streamErr
+}
+
+// isHTTP2StreamCloseError 判断是否是 HTTP/2 流关闭相关的错误
+// 这类错误发生在数据传输完成后，不影响已传输的数据完整性
+func isHTTP2StreamCloseError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "http2: response body closed") ||
+		strings.Contains(errStr, "stream error:")
 }
 
 // looksLikeSSE 粗略判断文本内容是否包含 SSE 事件结构

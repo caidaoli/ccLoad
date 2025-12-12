@@ -81,9 +81,11 @@ func TestHandleSuccessResponse_ExtractsUsageFromTextPlainSSE(t *testing.T) {
 	}
 }
 
-// TestHandleSuccessResponse_StreamDiagMsg_NoUsage 测试流式请求无usage时设置诊断消息
-func TestHandleSuccessResponse_StreamDiagMsg_NoUsage(t *testing.T) {
-	// 模拟流式响应但没有usage数据（anthropic渠道应该有usage）
+// TestHandleSuccessResponse_StreamDiagMsg_NormalEOF 测试正常EOF时不触发诊断
+// 新逻辑：只有当 streamErr != nil 且未检测到流结束标志时才触发诊断
+// 正常EOF（streamErr == nil）不触发诊断，即使没有流结束标志
+func TestHandleSuccessResponse_StreamDiagMsg_NormalEOF(t *testing.T) {
+	// 模拟流式响应，无流结束标志但正常EOF
 	body := "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"hello\"}}\n\n"
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -108,12 +110,9 @@ func TestHandleSuccessResponse_StreamDiagMsg_NoUsage(t *testing.T) {
 		t.Fatalf("handleSuccessResponse returned error: %v", err)
 	}
 
-	// anthropic渠道流式请求无usage应该设置诊断消息
-	if res.StreamDiagMsg == "" {
-		t.Error("expected StreamDiagMsg to be set for anthropic streaming without usage")
-	}
-	if !strings.Contains(res.StreamDiagMsg, "流响应不完整") {
-		t.Errorf("StreamDiagMsg should contain '流响应不完整', got: %s", res.StreamDiagMsg)
+	// 正常EOF不应触发诊断（新逻辑：只有 streamErr != nil 才触发）
+	if res.StreamDiagMsg != "" {
+		t.Errorf("expected empty StreamDiagMsg for normal EOF, got: %s", res.StreamDiagMsg)
 	}
 }
 
@@ -150,70 +149,70 @@ func TestHandleSuccessResponse_StreamDiagMsg_NonAnthropicNoUsage(t *testing.T) {
 	}
 }
 
-// TestBuildStreamDiagnostics_HasUsageNoError 验证有usage时即使有streamErr也不触发诊断
-func TestBuildStreamDiagnostics_HasUsageNoError(t *testing.T) {
+// TestBuildStreamDiagnostics_StreamComplete 验证检测到流结束标志时即使有streamErr也不触发诊断
+func TestBuildStreamDiagnostics_StreamComplete(t *testing.T) {
 	tests := []struct {
-		name        string
-		streamErr   error
-		hasUsage    bool
-		channelType string
-		wantDiag    bool
-		reason      string
+		name           string
+		streamErr      error
+		streamComplete bool
+		channelType    string
+		wantDiag       bool
+		reason         string
 	}{
 		{
-			name:        "http2_closed_with_usage",
-			streamErr:   errors.New("http2: response body closed"),
-			hasUsage:    true,
-			channelType: "anthropic",
-			wantDiag:    false,
-			reason:      "有usage说明流已完整，http2关闭是正常结束",
+			name:           "http2_closed_with_stream_complete",
+			streamErr:      errors.New("http2: response body closed"),
+			streamComplete: true,
+			channelType:    "anthropic",
+			wantDiag:       false,
+			reason:         "检测到流结束标志，http2关闭是正常结束",
 		},
 		{
-			name:        "http2_closed_without_usage",
-			streamErr:   errors.New("http2: response body closed"),
-			hasUsage:    false,
-			channelType: "anthropic",
-			wantDiag:    true,
-			reason:      "无usage时http2关闭是异常中断",
+			name:           "http2_closed_without_stream_complete",
+			streamErr:      errors.New("http2: response body closed"),
+			streamComplete: false,
+			channelType:    "anthropic",
+			wantDiag:       true,
+			reason:         "无流结束标志时http2关闭是异常中断",
 		},
 		{
-			name:        "unexpected_eof_with_usage",
-			streamErr:   errors.New("unexpected EOF"),
-			hasUsage:    true,
-			channelType: "anthropic",
-			wantDiag:    false,
-			reason:      "有usage说明数据完整，EOF可能是正常关闭",
+			name:           "unexpected_eof_with_stream_complete",
+			streamErr:      errors.New("unexpected EOF"),
+			streamComplete: true,
+			channelType:    "anthropic",
+			wantDiag:       false,
+			reason:         "检测到流结束标志，EOF可能是正常关闭",
 		},
 		{
-			name:        "stream_error_with_usage",
-			streamErr:   errors.New("stream error: stream ID 7; INTERNAL_ERROR"),
-			hasUsage:    true,
-			channelType: "codex",
-			wantDiag:    false,
-			reason:      "codex渠道有usage也不应触发诊断",
+			name:           "stream_error_with_stream_complete",
+			streamErr:      errors.New("stream error: stream ID 7; INTERNAL_ERROR"),
+			streamComplete: true,
+			channelType:    "codex",
+			wantDiag:       false,
+			reason:         "codex渠道检测到流结束标志也不应触发诊断",
 		},
 		{
-			name:        "no_error_no_usage",
-			streamErr:   nil,
-			hasUsage:    false,
-			channelType: "anthropic",
-			wantDiag:    true,
-			reason:      "anthropic无usage应触发'流响应不完整'诊断",
+			name:           "no_error_no_stream_complete",
+			streamErr:      nil,
+			streamComplete: false,
+			channelType:    "anthropic",
+			wantDiag:       false,
+			reason:         "无错误时不触发诊断（正常EOF情况）",
 		},
 		{
-			name:        "no_error_no_usage_openai",
-			streamErr:   nil,
-			hasUsage:    false,
-			channelType: "openai",
-			wantDiag:    false,
-			reason:      "openai不检查usage，无诊断",
+			name:           "no_error_with_stream_complete",
+			streamErr:      nil,
+			streamComplete: true,
+			channelType:    "openai",
+			wantDiag:       false,
+			reason:         "无错误且有流结束标志，无诊断",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			readStats := &streamReadStats{totalBytes: 1024, readCount: 4}
-			diag := buildStreamDiagnostics(tt.streamErr, readStats, tt.hasUsage, tt.channelType, "text/event-stream")
+			diag := buildStreamDiagnostics(tt.streamErr, readStats, tt.streamComplete, tt.channelType, "text/event-stream")
 
 			hasDiag := diag != ""
 			if hasDiag != tt.wantDiag {

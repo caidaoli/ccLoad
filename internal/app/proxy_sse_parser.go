@@ -36,6 +36,11 @@ type sseUsageParser struct {
 
 	// [INFO] 新增：存储SSE流中检测到的error事件（用于1308等错误的延迟处理）
 	lastError []byte // 最后一个error事件的完整JSON（data字段内容）
+
+	// [INFO] 新增：流结束标志（用于判断流是否正常完成）
+	// OpenAI: data: [DONE]
+	// Anthropic: event: message_stop
+	streamComplete bool
 }
 
 type jsonUsageParser struct {
@@ -48,7 +53,8 @@ type jsonUsageParser struct {
 type usageParser interface {
 	Feed([]byte) error
 	GetUsage() (inputTokens, outputTokens, cacheRead, cacheCreation int)
-	GetLastError() []byte // [INFO] 新增：返回SSE流中检测到的最后一个error事件（用于1308等错误的延迟处理）
+	GetLastError() []byte    // [INFO] 返回SSE流中检测到的最后一个error事件（用于1308等错误的延迟处理）
+	IsStreamComplete() bool  // [INFO] 返回是否检测到流结束标志（[DONE]/message_stop）
 }
 
 const (
@@ -118,8 +124,16 @@ func (p *sseUsageParser) parseBuffer() error {
 
 		if after, ok := strings.CutPrefix(line, "event:"); ok {
 			p.eventType = strings.TrimSpace(after)
+			// [INFO] Anthropic 流结束标志: event: message_stop
+			if p.eventType == "message_stop" {
+				p.streamComplete = true
+			}
 		} else if after0, ok0 := strings.CutPrefix(line, "data:"); ok0 {
 			dataLine := strings.TrimSpace(after0)
+			// [INFO] OpenAI 流结束标志: data: [DONE]
+			if dataLine == "[DONE]" {
+				p.streamComplete = true
+			}
 			p.dataLines = append(p.dataLines, dataLine)
 		} else if line == "" && len(p.dataLines) > 0 {
 			// 事件结束，解析数据
@@ -211,6 +225,11 @@ func (p *sseUsageParser) GetLastError() []byte {
 	return p.lastError
 }
 
+// [INFO] IsStreamComplete 返回是否检测到流结束标志
+func (p *sseUsageParser) IsStreamComplete() bool {
+	return p.streamComplete
+}
+
 func (p *jsonUsageParser) Feed(data []byte) error {
 	if p.truncated {
 		return nil
@@ -266,6 +285,11 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 // [INFO] GetLastError 返回nil（jsonUsageParser不处理SSE error事件）
 func (p *jsonUsageParser) GetLastError() []byte {
 	return nil // JSON解析器不处理SSE error事件
+}
+
+// [INFO] IsStreamComplete 返回false（非流式请求无结束标志概念）
+func (p *jsonUsageParser) IsStreamComplete() bool {
+	return false // JSON解析器不处理流结束标志
 }
 
 func (u *usageAccumulator) applyUsage(usage map[string]any, channelType string) {
