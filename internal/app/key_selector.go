@@ -44,17 +44,19 @@ func (ks *KeySelector) SelectAvailableKey(channelID int64, apiKeys []*model.APIK
 
 	// 单Key场景:检查排除和冷却状态
 	if len(apiKeys) == 1 {
-		if excludeKeys != nil && excludeKeys[0] {
-			return -1, "", fmt.Errorf("single key already tried in this request")
+		keyIndex := apiKeys[0].KeyIndex
+		// [FIX] 使用真实 KeyIndex 检查排除集合，而非硬编码0
+		if excludeKeys != nil && excludeKeys[keyIndex] {
+			return -1, "", fmt.Errorf("single key (index=%d) already tried in this request", keyIndex)
 		}
 		// [INFO] 修复(2025-12-09): 检查冷却状态,防止单Key渠道冷却后仍被请求
 		// 原逻辑"不使用Key级别冷却(YAGNI原则)"是错误的,会导致冷却Key持续触发上游错误
 		if apiKeys[0].IsCoolingDown(time.Now()) {
 			return -1, "", fmt.Errorf("single key (index=%d) is in cooldown until %s",
-				apiKeys[0].KeyIndex,
+				keyIndex,
 				time.Unix(apiKeys[0].CooldownUntil, 0).Format("2006-01-02 15:04:05"))
 		}
-		return apiKeys[0].KeyIndex, apiKeys[0].APIKey, nil
+		return keyIndex, apiKeys[0].APIKey, nil
 	}
 
 	// 多Key场景:根据策略选择
@@ -114,17 +116,8 @@ func (ks *KeySelector) getOrCreateCounter(channelID int64) *rrCounter {
 	return counter
 }
 
-// findKeyByIndex 在apiKeys中查找指定索引的Key
-func findKeyByIndex(apiKeys []*model.APIKey, idx int) *model.APIKey {
-	for _, apiKey := range apiKeys {
-		if apiKey.KeyIndex == idx {
-			return apiKey
-		}
-	}
-	return nil
-}
-
 // selectRoundRobin 轮询选择可用Key
+// [FIX] 按 slice 索引轮询，返回真实 KeyIndex，不再假设 KeyIndex 连续
 func (ks *KeySelector) selectRoundRobin(channelID int64, apiKeys []*model.APIKey, excludeKeys map[int]bool) (int, string, error) {
 	keyCount := len(apiKeys)
 	now := time.Now()
@@ -134,14 +127,16 @@ func (ks *KeySelector) selectRoundRobin(channelID int64, apiKeys []*model.APIKey
 
 	// 从startIdx开始轮询，最多尝试keyCount次
 	for i := range keyCount {
-		idx := (startIdx + i) % keyCount
-
-		selectedKey := findKeyByIndex(apiKeys, idx)
+		sliceIdx := (startIdx + i) % keyCount
+		selectedKey := apiKeys[sliceIdx]
 		if selectedKey == nil {
 			continue
 		}
 
-		if excludeKeys != nil && excludeKeys[idx] {
+		keyIndex := selectedKey.KeyIndex // 真实 KeyIndex，可能不连续
+
+		// 检查排除集合（使用真实 KeyIndex）
+		if excludeKeys != nil && excludeKeys[keyIndex] {
 			continue
 		}
 
@@ -149,7 +144,8 @@ func (ks *KeySelector) selectRoundRobin(channelID int64, apiKeys []*model.APIKey
 			continue
 		}
 
-		return idx, selectedKey.APIKey, nil
+		// 返回真实 KeyIndex，而非 slice 索引
+		return keyIndex, selectedKey.APIKey, nil
 	}
 
 	return -1, "", fmt.Errorf("all API keys are in cooldown or already tried")

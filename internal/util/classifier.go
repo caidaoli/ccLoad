@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +17,10 @@ import (
 // ErrorLevel 错误级别枚举
 // ErrUpstreamFirstByteTimeout 是上游首字节超时的统一错误标识，避免依赖具体报错文案
 var ErrUpstreamFirstByteTimeout = errors.New("upstream first byte timeout")
+
+// resetTime1308Regex 匹配1308错误 message 中的重置时间（不依赖具体语言文案）
+// 格式示例: 2025-12-09 18:08:11
+var resetTime1308Regex = regexp.MustCompile(`\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}`)
 
 // HTTP 状态码常量（统一定义，避免魔法数字）
 const (
@@ -255,6 +260,9 @@ func ClassifyRateLimitError(headers map[string][]string, responseBody []byte) Er
 // ParseResetTimeFrom1308Error 从1308错误响应中提取重置时间
 // 错误格式: {"type":"error","error":{"type":"1308","message":"已达到 5 小时的使用上限。您的限额将在 2025-12-09 18:08:11 重置。"},"request_id":"..."}
 //
+// [FIX] 使用正则匹配时间格式，不再依赖中文文案（如"将在"/"重置"）
+// 这样即使上游修改错误消息措辞或切换语言，只要包含 YYYY-MM-DD HH:MM:SS 格式的时间就能正确解析
+//
 // 参数:
 //   - responseBody: JSON格式的错误响应体
 //
@@ -262,7 +270,7 @@ func ClassifyRateLimitError(headers map[string][]string, responseBody []byte) Er
 //   - time.Time: 解析出的重置时间（如果成功）
 //   - bool: 是否成功解析（true表示是1308错误且成功提取时间）
 func ParseResetTimeFrom1308Error(responseBody []byte) (time.Time, bool) {
-	// 1. 使用sonic解析JSON（项目使用go_json tag指定了sonic）
+	// 1. 解析JSON结构
 	var errResp struct {
 		Type  string `json:"type"`
 		Error struct {
@@ -271,7 +279,6 @@ func ParseResetTimeFrom1308Error(responseBody []byte) (time.Time, bool) {
 		} `json:"error"`
 	}
 
-	// 使用string类型避免sonic的未导出字段问题
 	if err := json.Unmarshal(responseBody, &errResp); err != nil {
 		return time.Time{}, false
 	}
@@ -281,27 +288,19 @@ func ParseResetTimeFrom1308Error(responseBody []byte) (time.Time, bool) {
 		return time.Time{}, false
 	}
 
-	// 3. 从message中提取时间字符串
-	// 格式: "您的限额将在 2025-12-09 18:08:11 重置"
-	msg := errResp.Error.Message
-	
-	// 查找"将在"和"重置"之间的内容
-	startIdx := strings.Index(msg, "将在 ")
-	endIdx := strings.Index(msg, " 重置")
-	
-	if startIdx == -1 || endIdx == -1 || startIdx >= endIdx {
+	// 3. 使用正则从message中提取时间字符串（不依赖具体语言文案）
+	// 匹配格式: YYYY-MM-DD HH:MM:SS
+	timeStr := resetTime1308Regex.FindString(errResp.Error.Message)
+	if timeStr == "" {
 		return time.Time{}, false
 	}
-	
-	// 提取时间字符串（跳过"将在 "，包含到" 重置"之前）
-	timeStr := strings.TrimSpace(msg[startIdx+len("将在 "):endIdx])
-	
-	// 4. 解析时间字符串（格式: 2025-12-09 18:08:11）
+
+	// 4. 解析时间字符串
 	resetTime, err := time.ParseInLocation("2006-01-02 15:04:05", timeStr, time.Local)
 	if err != nil {
 		return time.Time{}, false
 	}
-	
+
 	return resetTime, true
 }
 

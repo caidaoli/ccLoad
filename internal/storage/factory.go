@@ -101,8 +101,12 @@ func CreateSQLiteStore(path string, redisSync RedisSync) (Store, error) {
 	}
 
 	// 连接池配置
-	db.SetMaxOpenConns(config.SQLiteMaxOpenConnsFile)
-	db.SetMaxIdleConns(config.SQLiteMaxIdleConnsFile)
+	// SQLite 单进程多连接高并发写会触发 BUSY/DEADLOCK，导致冷却等事务更新不可靠。
+	// 强制单连接，由 database/sql 串行化所有事务（单写者模式）。
+	// 读性能：热读已被缓存层吸收（Channel/APIKey/Cooldown），影响有限。
+	// 扩展路径：真有性能问题应切换 MySQL，而非在 SQLite 上堆锁。
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	db.SetConnMaxLifetime(config.SQLiteConnMaxLifetime)
 
 	// 创建统一的 SQLStore
