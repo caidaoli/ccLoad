@@ -362,7 +362,7 @@ func TestSubscriptionValidator_Timeout(t *testing.T) {
 			t.Errorf("Expected POST method, got %s", r.Method)
 		}
 
-		time.Sleep(2 * time.Second) // 模拟慢响应
+		time.Sleep(600 * time.Millisecond) // 只需比超时时间稍长即可
 		json.NewEncoder(w).Encode(map[string]any{
 			"data": map[string]any{
 				"subscriptionName": "FREE",

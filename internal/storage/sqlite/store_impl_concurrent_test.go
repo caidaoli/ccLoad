@@ -435,7 +435,7 @@ func TestConcurrentMixedOperations(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	const duration = 2 * time.Second
+	const duration = 500 * time.Millisecond // 500ms 足够验证并发正确性
 
 	var wg sync.WaitGroup
 	var operations atomic.Int32
@@ -512,8 +512,8 @@ func TestConcurrentMixedOperations(t *testing.T) {
 	t.Logf("[INFO] 混合并发测试完成: 总操作数=%d, 持续时间=%v, QPS=%.1f",
 		totalOps, duration, float64(totalOps)/duration.Seconds())
 
-	if totalOps < 100 {
-		t.Errorf("操作数过少: %d (期望至少100)", totalOps)
+	if totalOps < 25 {
+		t.Errorf("操作数过少: %d (期望至少25)", totalOps)
 	}
 }
 

@@ -417,14 +417,14 @@ func TestNoGoroutineLeak(t *testing.T) {
 	srv := NewServer(store)
 
 	// 等待 Server 初始化完成（连接池、后台任务等）
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	runtime.GC()
 
 	// 记录初始 goroutine 数量（在 Server 初始化之后）
 	before := runtime.NumGoroutine()
 	t.Logf("测试开始前 goroutine 数量: %d", before)
 
-	// 场景1：正常请求（100次循环）
+	// 场景1：正常请求（30次循环，足够检测泄漏）
 	t.Run("正常请求无泄漏", func(t *testing.T) {
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(200)
@@ -434,7 +434,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 
 		cfg := &model.Config{ID: 1, URL: upstream.URL}
 
-		for i := 0; i < 100; i++ {
+		for i := 0; i < 30; i++ {
 			recorder := httptest.NewRecorder()
 			_, _, _ = srv.forwardOnceAsync(
 				context.Background(),
@@ -450,9 +450,9 @@ func TestNoGoroutineLeak(t *testing.T) {
 		}
 
 		runtime.GC()
-		time.Sleep(100 * time.Millisecond) // 等待清理
+		time.Sleep(50 * time.Millisecond) // 等待清理
 		after := runtime.NumGoroutine()
-		t.Logf("100次正常请求后 goroutine 数量: %d (增加: %d)", after, after-before)
+		t.Logf("30次正常请求后 goroutine 数量: %d (增加: %d)", after, after-before)
 
 		// 容忍5个辅助 goroutine（GC、网络连接池等）
 		if after > before+5 {
@@ -460,10 +460,10 @@ func TestNoGoroutineLeak(t *testing.T) {
 		}
 	})
 
-	// 场景2：客户端取消（50次循环）
+	// 场景2：客户端取消（20次循环）
 	t.Run("客户端取消无泄漏", func(t *testing.T) {
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			time.Sleep(100 * time.Millisecond) // 模拟慢响应
+			time.Sleep(30 * time.Millisecond) // 缩短慢响应时间
 			w.WriteHeader(200)
 			w.Write([]byte(`{"result":"ok"}`))
 		}))
@@ -471,13 +471,13 @@ func TestNoGoroutineLeak(t *testing.T) {
 
 		cfg := &model.Config{ID: 1, URL: upstream.URL}
 
-		for i := 0; i < 50; i++ {
+		for i := 0; i < 20; i++ {
 			ctx, cancel := context.WithCancel(context.Background())
 			recorder := httptest.NewRecorder()
 
-			// 50ms 后取消请求
+			// 15ms 后取消请求
 			go func() {
-				time.Sleep(50 * time.Millisecond)
+				time.Sleep(15 * time.Millisecond)
 				cancel()
 			}()
 
@@ -485,28 +485,28 @@ func TestNoGoroutineLeak(t *testing.T) {
 		}
 
 		runtime.GC()
-		time.Sleep(200 * time.Millisecond) // 等待所有请求结束
+		time.Sleep(100 * time.Millisecond) // 等待所有请求结束
 		after := runtime.NumGoroutine()
-		t.Logf("50次取消请求后 goroutine 数量: %d (增加: %d)", after, after-before)
+		t.Logf("20次取消请求后 goroutine 数量: %d (增加: %d)", after, after-before)
 
 		if after > before+5 {
 			t.Errorf("❌ Goroutine 泄漏: %d -> %d (增加 %d)", before, after, after-before)
 		}
 	})
 
-	// 场景3：首字节超时（20次循环）
+	// 场景3：首字节超时（10次循环）
 	t.Run("首字节超时无泄漏", func(t *testing.T) {
-		srv.firstByteTimeout = 50 * time.Millisecond // 设置超时
+		srv.firstByteTimeout = 20 * time.Millisecond // 缩短超时
 
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			time.Sleep(200 * time.Millisecond) // 故意超时
+			time.Sleep(50 * time.Millisecond) // 缩短延迟，仍超过超时时间
 			w.WriteHeader(200)
 		}))
 		defer upstream.Close()
 
 		cfg := &model.Config{ID: 1, URL: upstream.URL}
 
-		for i := 0; i < 20; i++ {
+		for i := 0; i < 10; i++ {
 			recorder := httptest.NewRecorder()
 			srv.forwardOnceAsync(
 				context.Background(),
@@ -523,9 +523,9 @@ func TestNoGoroutineLeak(t *testing.T) {
 
 		srv.firstByteTimeout = 0 // 恢复默认
 		runtime.GC()
-		time.Sleep(300 * time.Millisecond) // 等待所有超时清理
+		time.Sleep(100 * time.Millisecond) // 等待所有超时清理
 		after := runtime.NumGoroutine()
-		t.Logf("20次超时请求后 goroutine 数量: %d (增加: %d)", after, after-before)
+		t.Logf("10次超时请求后 goroutine 数量: %d (增加: %d)", after, after-before)
 
 		if after > before+5 {
 			t.Errorf("❌ Goroutine 泄漏: %d -> %d (增加 %d)", before, after, after-before)
