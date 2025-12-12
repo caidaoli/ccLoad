@@ -51,7 +51,7 @@ func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) 
 	token.ID = id
 
 	// 触发异步Redis同步 (新增 2025-11)
-	s.triggerAsyncSync()
+	s.triggerAsyncSync(syncAuthTokens)
 
 	return nil
 }
@@ -222,11 +222,6 @@ func (s *SQLStore) ListAuthTokens(ctx context.Context) ([]*model.AuthToken, erro
 		}
 		token.IsActive = isActive != 0
 
-		// 脱敏令牌显示(保留前8位)
-		if len(token.Token) > 8 {
-			token.Token = token.Token[:8] + "..." + token.Token[len(token.Token)-4:]
-		}
-
 		tokens = append(tokens, token)
 	}
 
@@ -333,7 +328,7 @@ func (s *SQLStore) UpdateAuthToken(ctx context.Context, token *model.AuthToken) 
 	}
 
 	// 触发异步Redis同步 (新增 2025-11)
-	s.triggerAsyncSync()
+	s.triggerAsyncSync(syncAuthTokens)
 
 	return nil
 }
@@ -358,7 +353,7 @@ func (s *SQLStore) DeleteAuthToken(ctx context.Context, id int64) error {
 	}
 
 	// 触发异步Redis同步 (新增 2025-11)
-	s.triggerAsyncSync()
+	s.triggerAsyncSync(syncAuthTokens)
 
 	return nil
 }

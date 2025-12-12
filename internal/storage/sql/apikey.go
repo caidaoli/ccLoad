@@ -123,7 +123,7 @@ func (s *SQLStore) CreateAPIKey(ctx context.Context, key *model.APIKey) error {
 	}
 
 	// 触发异步Redis同步(确保新增操作同步到Redis)
-	s.triggerAsyncSync()
+	s.triggerAsyncSync(syncChannels)
 
 	return nil
 }
@@ -156,7 +156,7 @@ func (s *SQLStore) UpdateAPIKey(ctx context.Context, key *model.APIKey) error {
 	}
 
 	// 触发异步Redis同步(确保更新操作同步到Redis)
-	s.triggerAsyncSync()
+	s.triggerAsyncSync(syncChannels)
 
 	return nil
 }
@@ -173,7 +173,7 @@ func (s *SQLStore) DeleteAPIKey(ctx context.Context, channelID int64, keyIndex i
 	}
 
 	// 触发异步Redis同步(确保删除操作同步到Redis)
-	s.triggerAsyncSync()
+	s.triggerAsyncSync(syncChannels)
 
 	return nil
 }
@@ -191,7 +191,7 @@ func (s *SQLStore) CompactKeyIndices(ctx context.Context, channelID int64, remov
 	}
 
 	// 触发异步Redis同步，确保索引更新同步到缓存
-	s.triggerAsyncSync()
+	s.triggerAsyncSync(syncChannels)
 	return nil
 }
 
@@ -363,7 +363,7 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 	}
 
 	// 异步同步到Redis（非阻塞）
-	s.triggerAsyncSync()
+	s.triggerAsyncSync(syncChannels)
 
 	return created, updated, nil
 }

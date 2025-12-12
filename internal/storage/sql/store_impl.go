@@ -4,9 +4,21 @@ import (
 	"context"
 	"database/sql"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ccLoad/internal/model"
+)
+
+// syncType 定义同步类型（位标记，支持组合）
+// 包内私有：仅在 sql 包内使用，无需导出 (YAGNI)
+type syncType uint32
+
+const (
+	syncChannels   syncType = 1 << iota // 同步渠道配置和 API Keys
+	syncAuthTokens                      // 同步认证令牌
+
+	syncAll = syncChannels | syncAuthTokens // 全量同步
 )
 
 // RedisSync Redis同步接口
@@ -27,8 +39,9 @@ type SQLStore struct {
 	driverName string // "sqlite" 或 "mysql"
 
 	// 异步Redis同步机制（性能优化: 避免同步等待）
-	syncCh chan struct{} // 同步触发信号（无缓冲，去重合并多个请求）
-	done   chan struct{} // 优雅关闭信号
+	syncCh           chan struct{}   // 同步触发信号（缓冲1，去重合并多个请求）
+	pendingSyncTypes atomic.Uint32   // 待同步类型（位标记，支持合并）
+	done             chan struct{}   // 优雅关闭信号
 
 	redisSync RedisSync // Redis同步接口（依赖注入，支持测试和扩展）
 
@@ -41,21 +54,25 @@ type SQLStore struct {
 // driverName: "sqlite" 或 "mysql"
 // redisSync: Redis同步器（可选，测试时可传nil）
 func NewSQLStore(db *sql.DB, driverName string, redisSync RedisSync) *SQLStore {
-	s := &SQLStore{
+	return &SQLStore{
 		db:         db,
 		driverName: driverName,
 		syncCh:     make(chan struct{}, 1),
 		done:       make(chan struct{}),
 		redisSync:  redisSync,
 	}
+}
 
-	// 启动Redis同步worker（仅在redisSync启用时）
-	if redisSync != nil && redisSync.IsEnabled() {
-		s.wg.Add(1)
-		go s.redisSyncWorker()
+// StartRedisSync 显式启动 Redis 同步 worker
+// 必须在迁移完成且恢复逻辑执行后调用，避免空数据覆盖 Redis 备份
+func (s *SQLStore) StartRedisSync() {
+	if s.redisSync == nil || !s.redisSync.IsEnabled() {
+		return
 	}
-
-	return s
+	s.wg.Add(1)
+	go s.redisSyncWorker()
+	// 启动时触发全量同步，确保所有存量数据备份到 Redis
+	s.triggerAsyncSync(syncAll)
 }
 
 // IsRedisEnabled 检查Redis是否启用

@@ -89,6 +89,10 @@ func main() {
 		}
 	}
 
+	// 启动 Redis 同步 worker（迁移+恢复完成后）
+	// 必须在恢复逻辑之后调用，避免空数据覆盖 Redis 备份
+	store.StartRedisSync()
+
 	// 渠道仅从数据库管理与读取；不再从本地文件初始化。
 
 	srv := app.NewServer(store)

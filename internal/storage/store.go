@@ -129,6 +129,9 @@ type Store interface {
 	// Redis Status - Redis状态查询
 	IsRedisEnabled() bool
 
+	// StartRedisSync - 启动Redis同步worker（迁移+恢复完成后调用）
+	StartRedisSync()
+
 	// Close - 关闭数据库连接并释放资源
 
 	// Ping - 检查数据库连接是否活跃（用于健康检查）

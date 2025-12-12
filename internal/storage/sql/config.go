@@ -189,8 +189,8 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 		return nil, err
 	}
 
-	// 异步全量同步所有渠道到Redis（非阻塞，立即返回）
-	s.triggerAsyncSync()
+	// 异步同步渠道配置到Redis（非阻塞，立即返回）
+	s.triggerAsyncSync(syncChannels)
 
 	return config, nil
 }
@@ -254,8 +254,8 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 		return nil, err
 	}
 
-	// 异步全量同步所有渠道到Redis（非阻塞，立即返回）
-	s.triggerAsyncSync()
+	// 异步同步渠道配置到Redis（非阻塞，立即返回）
+	s.triggerAsyncSync(syncChannels)
 
 	return config, nil
 }
@@ -336,7 +336,7 @@ func (s *SQLStore) ReplaceConfig(ctx context.Context, c *model.Config) (*model.C
 		return nil, err
 	}
 
-	// 注意: ReplaceConfig通常在批量导入时使用，最后会统一调用SyncAllChannelsToRedis
+	// 注意: ReplaceConfig通常在批量导入时使用，最后会统一触发Redis同步
 	// 这里不做单独同步，避免CSV导入时的N次Redis操作
 
 	return config, nil
@@ -363,8 +363,8 @@ func (s *SQLStore) DeleteConfig(ctx context.Context, id int64) error {
 		return err
 	}
 
-	// 异步全量同步所有渠道到Redis（非阻塞，立即返回）
-	s.triggerAsyncSync()
+	// 异步同步渠道配置到Redis（非阻塞，立即返回）
+	s.triggerAsyncSync(syncChannels)
 
 	return nil
 }

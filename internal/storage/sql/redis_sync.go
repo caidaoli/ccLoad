@@ -128,9 +128,9 @@ func (s *SQLStore) LoadChannelsFromRedis(ctx context.Context) error {
 	return nil
 }
 
-// SyncAllChannelsToRedis 将所有渠道同步到Redis (批量同步，初始化时使用)
+// syncAllChannelsToRedis 将所有渠道同步到Redis (批量同步，初始化时使用)
 // [INFO] 修复（2025-10-10）：完整同步渠道配置和API Keys，解决Redis恢复后缺少Keys的问题
-func (s *SQLStore) SyncAllChannelsToRedis(ctx context.Context) error {
+func (s *SQLStore) syncAllChannelsToRedis(ctx context.Context) error {
 	if !s.redisSync.IsEnabled() {
 		return nil
 	}
@@ -180,7 +180,7 @@ func (s *SQLStore) SyncAllChannelsToRedis(ctx context.Context) error {
 }
 
 // redisSyncWorker 异步Redis同步worker（后台goroutine）
-// 修复：增加重试机制，避免瞬时网络故障导致数据丢失
+// 支持细粒度同步：根据 pendingSyncTypes 选择性执行同步操作
 func (s *SQLStore) redisSyncWorker() {
 	// 使用可取消的context，支持优雅关闭
 	ctx, cancel := context.WithCancel(context.Background())
@@ -196,25 +196,30 @@ func (s *SQLStore) redisSyncWorker() {
 	for {
 		select {
 		case <-s.syncCh:
+			// 原子读取并清零待同步类型
+			pending := syncType(s.pendingSyncTypes.Swap(0))
+			if pending == 0 {
+				continue // 无待同步任务
+			}
+
 			// 执行同步操作，支持重试
-			syncErr := s.doSyncAllChannelsWithRetry(ctx, retryBackoff)
+			syncErr := s.doSyncWithRetry(ctx, pending, retryBackoff)
 			if syncErr != nil {
 				// 所有重试都失败，记录致命错误
-				log.Printf("❌ 严重错误: Redis同步失败（已重试%d次）: %v", len(retryBackoff), syncErr)
-				log.Print("   警告: 服务重启后可能丢失渠道配置，请检查Redis连接或手动备份数据库")
+				log.Printf("[ERROR] Redis同步失败（已重试%d次）: %v", len(retryBackoff), syncErr)
+				log.Print("[WARN]  服务重启后可能丢失渠道配置，请检查Redis连接或手动备份数据库")
 			}
 
 		case <-s.done:
-			// 优雅关闭：先取消context，然后处理最后一个任务（如果有）
+			// 优雅关闭：先取消context，阻止重试
 			cancel()
-			select {
-			case <-s.syncCh:
-				// 关闭时不重试，快速同步一次即可
-				// 创建新的超时context，避免使用已取消的context
+			// 直接检查 pending 位（不依赖 channel 是否有信号）
+			// syncCh 只是唤醒机制，pending 才是任务存在性判据
+			if pending := syncType(s.pendingSyncTypes.Swap(0)); pending != 0 {
+				// 有未完成的同步任务，执行最终全量同步
 				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				_ = s.doSyncAllChannels(shutdownCtx)
+				_ = s.doSyncByType(shutdownCtx, syncAll) // 关闭时全量同步
 				shutdownCancel()
-			default:
 			}
 			s.wg.Done()
 			return
@@ -222,31 +227,42 @@ func (s *SQLStore) redisSyncWorker() {
 	}
 }
 
-// doSyncAllChannelsWithRetry 带重试机制的同步操作
-func (s *SQLStore) doSyncAllChannelsWithRetry(ctx context.Context, retryBackoff []time.Duration) error {
+// doSyncWithRetry 带重试机制的同步操作
+// syncType: 位标记，指定需要同步的数据类型
+func (s *SQLStore) doSyncWithRetry(ctx context.Context, syncType syncType, retryBackoff []time.Duration) error {
+	const syncTimeout = 30 * time.Second // 单次同步操作超时
 	var lastErr error
 
-	// 首次尝试
-	if err := s.doSyncAllChannels(ctx); err == nil {
+	// 首次尝试（带超时）
+	syncCtx, cancel := context.WithTimeout(ctx, syncTimeout)
+	err := s.doSyncByType(syncCtx, syncType)
+	cancel()
+	if err == nil {
 		return nil // 成功
-	} else {
-		lastErr = err
-		log.Printf("[WARN]  Redis同步失败（将自动重试）: %v", err)
 	}
+	lastErr = err
+	log.Printf("[WARN]  Redis同步失败（将自动重试）: %v", err)
 
 	// 重试逻辑
 	for attempt := 0; attempt < len(retryBackoff); attempt++ {
-		// 等待退避时间
-		time.Sleep(retryBackoff[attempt])
+		// 可取消的退避等待（支持优雅关闭）
+		select {
+		case <-time.After(retryBackoff[attempt]):
+			// 正常等待完成
+		case <-ctx.Done():
+			return ctx.Err() // 关闭时立即退出，不阻塞
+		}
 
-		// 重试同步
-		if err := s.doSyncAllChannels(ctx); err == nil {
+		// 重试同步（带超时）
+		syncCtx, cancel := context.WithTimeout(ctx, syncTimeout)
+		err := s.doSyncByType(syncCtx, syncType)
+		cancel()
+		if err == nil {
 			log.Printf("[INFO] Redis同步恢复成功（第%d次重试）", attempt+1)
 			return nil // 成功
-		} else {
-			lastErr = err
-			log.Printf("[WARN]  Redis同步重试失败（第%d次）: %v", attempt+1, err)
 		}
+		lastErr = err
+		log.Printf("[WARN]  Redis同步重试失败（第%d次）: %v", attempt+1, err)
 	}
 
 	// 所有重试都失败
@@ -254,10 +270,17 @@ func (s *SQLStore) doSyncAllChannelsWithRetry(ctx context.Context, retryBackoff 
 }
 
 // triggerAsyncSync 触发异步Redis同步（非阻塞）
-func (s *SQLStore) triggerAsyncSync() {
+// syncType: 指定需要同步的数据类型（位标记，可组合）
+func (s *SQLStore) triggerAsyncSync(syncType syncType) {
+	if syncType == 0 {
+		return // 短路：无需同步
+	}
 	if s.redisSync == nil || !s.redisSync.IsEnabled() {
 		return
 	}
+
+	// 原子合并同步类型（支持多个请求的类型合并）
+	s.pendingSyncTypes.Or(uint32(syncType))
 
 	// 非阻塞发送（如果channel已满则跳过，避免阻塞主流程）
 	select {
@@ -268,18 +291,21 @@ func (s *SQLStore) triggerAsyncSync() {
 	}
 }
 
-// doSyncAllChannels 实际执行同步操作（worker内部调用）
-// [INFO] 修复（2025-10-10）：切换到完整同步API，确保API Keys同步
-// [INFO] 扩展（2025-11）：同时同步auth_tokens表
-func (s *SQLStore) doSyncAllChannels(ctx context.Context) error {
-	// 1. 同步channels和API Keys
-	if err := s.SyncAllChannelsToRedis(ctx); err != nil {
-		return fmt.Errorf("sync channels: %w", err)
+// doSyncByType 根据类型执行同步操作（worker内部调用）
+// syncType: 位标记，指定需要同步的数据类型
+func (s *SQLStore) doSyncByType(ctx context.Context, syncType syncType) error {
+	// 1. 同步 channels 和 API Keys
+	if syncType&syncChannels != 0 {
+		if err := s.syncAllChannelsToRedis(ctx); err != nil {
+			return fmt.Errorf("sync channels: %w", err)
+		}
 	}
 
-	// 2. 同步auth_tokens (新增 2025-11)
-	if err := s.syncAuthTokensToRedis(ctx); err != nil {
-		return fmt.Errorf("sync auth tokens: %w", err)
+	// 2. 同步 auth_tokens
+	if syncType&syncAuthTokens != 0 {
+		if err := s.syncAuthTokensToRedis(ctx); err != nil {
+			return fmt.Errorf("sync auth tokens: %w", err)
+		}
 	}
 
 	return nil
@@ -287,6 +313,7 @@ func (s *SQLStore) doSyncAllChannels(ctx context.Context) error {
 
 // syncAuthTokensToRedis 同步所有AuthToken到Redis (内部方法)
 // [INFO] 新增（2025-11）：完整同步认证令牌表
+// 策略：空数据时不覆盖 Redis（与 channels 保持一致，保护备份）
 func (s *SQLStore) syncAuthTokensToRedis(ctx context.Context) error {
 	if !s.redisSync.IsEnabled() {
 		return nil
@@ -298,17 +325,18 @@ func (s *SQLStore) syncAuthTokensToRedis(ctx context.Context) error {
 		return fmt.Errorf("list auth tokens: %w", err)
 	}
 
-	log.Printf("Syncing %d auth tokens to Redis...", len(tokens))
+	// 空数据不覆盖 Redis，保留已有备份（与 syncAllChannelsToRedis 策略一致）
+	if len(tokens) == 0 {
+		log.Print("No auth tokens to sync to Redis")
+		return nil
+	}
 
 	// 同步到Redis
 	if err := s.redisSync.SyncAllAuthTokens(ctx, tokens); err != nil {
 		return err
 	}
 
-	if len(tokens) > 0 {
-		log.Printf("[INFO] Successfully synced %d auth tokens to Redis", len(tokens))
-	}
-
+	log.Printf("[INFO] Successfully synced %d auth tokens to Redis", len(tokens))
 	return nil
 }
 
@@ -346,12 +374,14 @@ func (s *SQLStore) loadAuthTokensFromRedis(ctx context.Context) (int, error) {
 			REPLACE INTO auth_tokens
 			(id, token, description, created_at, expires_at, last_used_at, is_active,
 			 success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt,
-			 stream_count, non_stream_count, prompt_tokens_total, completion_tokens_total, total_cost_usd)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 stream_count, non_stream_count, prompt_tokens_total, completion_tokens_total,
+			 cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, token.ID, token.Token, token.Description, token.CreatedAt.UnixMilli(),
 			expiresAt, lastUsedAt, token.IsActive,
 			token.SuccessCount, token.FailureCount, token.StreamAvgTTFB, token.NonStreamAvgRT,
-			token.StreamCount, token.NonStreamCount, token.PromptTokensTotal, token.CompletionTokensTotal, token.TotalCostUSD)
+			token.StreamCount, token.NonStreamCount, token.PromptTokensTotal, token.CompletionTokensTotal,
+			token.CacheReadTokensTotal, token.CacheCreationTokensTotal, token.TotalCostUSD)
 
 		if err != nil {
 			log.Printf("Warning: failed to restore auth token %d: %v", token.ID, err)
