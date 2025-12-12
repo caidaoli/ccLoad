@@ -77,6 +77,12 @@ func streamCopy(ctx context.Context, src io.Reader, dst http.ResponseWriter, onD
 			if err == io.EOF {
 				return nil
 			}
+			// [FIX] 检查 context 是否在 Read 期间被取消
+			// 场景：客户端取消请求 → HTTP/2 流关闭 → Read 返回 "http2: response body closed"
+			// 此时应返回 context.Canceled，让上层正确识别为客户端断开（499）而非上游错误（502）
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return err
 		}
 	}
@@ -115,6 +121,12 @@ func streamCopySSE(ctx context.Context, src io.Reader, dst http.ResponseWriter, 
 		if err != nil {
 			if err == io.EOF {
 				return nil
+			}
+			// [FIX] 检查 context 是否在 Read 期间被取消
+			// 场景：客户端取消请求 → HTTP/2 流关闭 → Read 返回 "http2: response body closed"
+			// 此时应返回 context.Canceled，让上层正确识别为客户端断开（499）而非上游错误（502）
+			if ctx.Err() != nil {
+				return ctx.Err()
 			}
 			return err
 		}
