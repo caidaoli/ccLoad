@@ -20,7 +20,7 @@ func TestBuildLogEntry_StreamDiagMsg(t *testing.T) {
 	t.Run("流传输中断诊断", func(t *testing.T) {
 		res := &fwResult{
 			Status:        200,
-			StreamDiagMsg: "⚠️ 流传输中断: 错误=unexpected EOF | 已读取=1024字节(分5次)",
+			StreamDiagMsg: "[WARN] 流传输中断: 错误=unexpected EOF | 已读取=1024字节(分5次)",
 		}
 		entry := buildLogEntry("claude-3", channelID, 200, 1.5, true, "sk-test", 0, res, "")
 		if entry.Message != res.StreamDiagMsg {
@@ -31,7 +31,7 @@ func TestBuildLogEntry_StreamDiagMsg(t *testing.T) {
 	t.Run("流响应不完整诊断", func(t *testing.T) {
 		res := &fwResult{
 			Status:        200,
-			StreamDiagMsg: "⚠️ 流响应不完整: 正常EOF但无usage | 已读取=512字节(分3次)",
+			StreamDiagMsg: "[WARN] 流响应不完整: 正常EOF但无usage | 已读取=512字节(分3次)",
 		}
 		entry := buildLogEntry("claude-3", channelID, 200, 1.5, true, "sk-test", 0, res, "")
 		if entry.Message != res.StreamDiagMsg {
@@ -42,7 +42,7 @@ func TestBuildLogEntry_StreamDiagMsg(t *testing.T) {
 	t.Run("errMsg优先于StreamDiagMsg", func(t *testing.T) {
 		res := &fwResult{
 			Status:        200,
-			StreamDiagMsg: "⚠️ 流传输中断",
+			StreamDiagMsg: "[WARN] 流传输中断",
 		}
 		errMsg := "network error"
 		entry := buildLogEntry("claude-3", channelID, 200, 1.5, true, "sk-test", 0, res, errMsg)

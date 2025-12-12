@@ -63,7 +63,7 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			}
 		}
 
-		// ✅ 安全修复：清除旧的明文session（2025-12）
+		// [INFO] 安全修复：清除旧的明文session（2025-12）
 		// admin_sessions现在存储SHA256哈希而非明文，旧数据无法转换，必须清除
 		if tb.Name() == "admin_sessions" {
 			if _, err := db.ExecContext(ctx, "DELETE FROM admin_sessions"); err != nil {

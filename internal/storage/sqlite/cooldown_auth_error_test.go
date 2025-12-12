@@ -91,7 +91,7 @@ func TestAuthErrorInitialCooldown(t *testing.T) {
 					tt.expectedMinDur, actualDuration)
 			}
 
-			t.Logf("✅ 状态码%d: 初始冷却时间=%v（期望%v）",
+			t.Logf("[INFO] 状态码%d: 初始冷却时间=%v（期望%v）",
 				tt.statusCode, duration, tt.expectedMinDur)
 		})
 	}
@@ -139,7 +139,7 @@ func TestAuthErrorExponentialBackoff(t *testing.T) {
 				i+1, expected, duration)
 		}
 
-		t.Logf("✅ 第%d次401错误: 冷却时间=%v（期望%v）",
+		t.Logf("[INFO] 第%d次401错误: 冷却时间=%v（期望%v）",
 			i+1, duration, expected)
 
 		// 更新now模拟时间推移（否则会被当作同一次错误）
@@ -172,7 +172,7 @@ func TestKeyLevelAuthErrorCooldown(t *testing.T) {
 			ChannelID:   created.ID,
 			KeyIndex:    i,
 			APIKey:      key,
-			KeyStrategy: "sequential",
+			KeyStrategy: model.KeyStrategySequential,
 		})
 		if err != nil {
 			t.Fatalf("创建API Key %d失败: %v", i, err)
@@ -205,7 +205,7 @@ func TestKeyLevelAuthErrorCooldown(t *testing.T) {
 			expectedDuration, actualDuration)
 	}
 
-	t.Logf("✅ Key级401错误: 初始冷却时间=%v（期望%v）",
+	t.Logf("[INFO] Key级401错误: 初始冷却时间=%v（期望%v）",
 		duration, expectedDuration)
 }
 
@@ -257,7 +257,7 @@ func TestMixedErrorCodesCooldown(t *testing.T) {
 			expectedDuration, duration2)
 	}
 
-	t.Logf("✅ 500错误(2min) → 401错误(%v) - 使用指数退避而非重置", duration2)
+	t.Logf("[INFO] 500错误(2min) → 401错误(%v) - 使用指数退避而非重置", duration2)
 }
 
 // TestConcurrentCooldownUpdates 验证并发场景下冷却机制的数据一致性
@@ -309,7 +309,7 @@ func TestConcurrentCooldownUpdates(t *testing.T) {
 			duration, minDuration, maxDuration)
 	}
 
-	t.Logf("✅ 并发测试通过: %d个并发更新，最终冷却时间=%v", concurrency, duration)
+	t.Logf("[INFO] 并发测试通过: %d个并发更新，最终冷却时间=%v", concurrency, duration)
 }
 
 // TestConcurrentKeyCooldownUpdates 验证Key级别并发冷却的数据一致性
@@ -340,7 +340,7 @@ func TestConcurrentKeyCooldownUpdates(t *testing.T) {
 			ChannelID:   created.ID,
 			KeyIndex:    i,
 			APIKey:      key,
-			KeyStrategy: "sequential",
+			KeyStrategy: model.KeyStrategySequential,
 		})
 		if err != nil {
 			t.Fatalf("创建API Key %d失败: %v", i, err)
@@ -370,7 +370,7 @@ func TestConcurrentKeyCooldownUpdates(t *testing.T) {
 	}
 	wg.Wait()
 
-	t.Logf("✅ 并发更新完成: 成功次数=%d/9", successCount)
+	t.Logf("[INFO] 并发更新完成: 成功次数=%d/9", successCount)
 
 	// 验证每个Key的冷却状态
 	for keyIndex := 0; keyIndex < 3; keyIndex++ {
@@ -419,7 +419,7 @@ func TestRaceConditionDetection(t *testing.T) {
 			ChannelID:   created.ID,
 			KeyIndex:    i,
 			APIKey:      key,
-			KeyStrategy: "sequential",
+			KeyStrategy: model.KeyStrategySequential,
 		})
 		if err != nil {
 			t.Fatalf("创建API Key %d失败: %v", i, err)
@@ -451,7 +451,7 @@ func TestRaceConditionDetection(t *testing.T) {
 	}
 
 	wg.Wait()
-	t.Log("✅ 竞态检测测试通过（使用 go test -race 运行以检测竞态条件）")
+	t.Log("[INFO] 竞态检测测试通过（使用 go test -race 运行以检测竞态条件）")
 }
 
 // setupAuthErrorTestStore 创建临时测试数据库（专用于认证错误测试）

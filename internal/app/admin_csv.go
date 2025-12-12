@@ -33,7 +33,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 	// 批量查询所有API Keys,消除N+1问题(100渠道从100次查询降为1次)
 	allAPIKeys, err := s.store.GetAllAPIKeys(c.Request.Context())
 	if err != nil {
-		log.Printf("⚠️  警告: 批量查询API Keys失败: %v", err)
+		log.Printf("[WARN] 批量查询API Keys失败: %v", err)
 		allAPIKeys = make(map[int64][]*model.APIKey) // 降级:使用空map
 	}
 
@@ -62,7 +62,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 		apiKeyStr := strings.Join(apiKeyStrs, ",")
 
 		// 获取Key策略(从第一个Key)
-		keyStrategy := "sequential" // 默认值
+		keyStrategy := model.KeyStrategySequential // 默认值
 		if len(apiKeys) > 0 && apiKeys[0].KeyStrategy != "" {
 			keyStrategy = apiKeys[0].KeyStrategy
 		}
@@ -200,8 +200,8 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 
 		// 验证Key使用策略(可选字段,默认sequential)
 		if keyStrategy == "" {
-			keyStrategy = "sequential" // 默认值
-		} else if keyStrategy != "sequential" && keyStrategy != "round_robin" {
+			keyStrategy = model.KeyStrategySequential // 默认值
+		} else if !model.IsValidKeyStrategy(keyStrategy) {
 			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行Key使用策略无效: %s(仅支持sequential/round_robin)", lineNo, keyStrategy))
 			summary.Skipped++
 			continue

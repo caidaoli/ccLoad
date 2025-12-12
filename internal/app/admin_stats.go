@@ -206,7 +206,7 @@ func (s *Server) fetchChannelTypesMap(ctx context.Context) (map[int64]string, er
 
 // handleCooldownStats 获取当前冷却状态监控指标
 // GET /admin/cooldown/stats
-// ✅ Linus风格:按需查询,简单直接
+// [INFO] Linus风格:按需查询,简单直接
 func (s *Server) HandleCooldownStats(c *gin.Context) {
 	// 使用缓存层查询（<1ms vs 数据库查询5-10ms），若缓存不可用自动退化
 	channelCooldowns, _ := s.getAllChannelCooldowns(c.Request.Context())

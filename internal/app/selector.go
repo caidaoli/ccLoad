@@ -52,7 +52,7 @@ func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model strin
 }
 
 // filterCooldownChannels 过滤掉冷却中的渠道
-// ✅ 修复 (2025-12-09): 在渠道选择阶段就过滤冷却渠道，避免无效尝试
+// [INFO] 修复 (2025-12-09): 在渠道选择阶段就过滤冷却渠道，避免无效尝试
 // 过滤规则:
 //   1. 渠道级冷却 → 直接过滤
 //   2. 所有Key都在冷却 → 过滤
@@ -68,14 +68,14 @@ func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpk
 	channelCooldowns, err := s.getAllChannelCooldowns(ctx)
 	if err != nil {
 		// 降级处理：查询失败时不过滤，避免阻塞请求
-		log.Printf("⚠️  WARNING: Failed to get channel cooldowns (degraded mode): %v", err)
+		log.Printf("[WARN] Failed to get channel cooldowns (degraded mode): %v", err)
 		return channels, nil
 	}
 
 	keyCooldowns, err := s.getAllKeyCooldowns(ctx)
 	if err != nil {
 		// 降级处理：查询失败时不过滤
-		log.Printf("⚠️  WARNING: Failed to get key cooldowns (degraded mode): %v", err)
+		log.Printf("[WARN] Failed to get key cooldowns (degraded mode): %v", err)
 		return channels, nil
 	}
 

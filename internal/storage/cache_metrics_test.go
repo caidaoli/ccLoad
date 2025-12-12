@@ -40,7 +40,7 @@ func TestChannelCacheMetrics(t *testing.T) {
 		ChannelID:   created.ID,
 		KeyIndex:    0,
 		APIKey:      "sk-test",
-		KeyStrategy: "sequential",
+		KeyStrategy: model.KeyStrategySequential,
 		CreatedAt:   model.JSONTime{Time: now},
 		UpdatedAt:   model.JSONTime{Time: now},
 	}

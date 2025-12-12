@@ -62,7 +62,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	allChannelCooldowns, err := s.getAllChannelCooldowns(c.Request.Context())
 	if err != nil {
 		// 渠道冷却查询失败不影响主流程，仅记录错误
-		log.Printf("⚠️  警告: 批量查询渠道冷却状态失败: %v", err)
+		log.Printf("[WARN] 批量查询渠道冷却状态失败: %v", err)
 		allChannelCooldowns = make(map[int64]time.Time)
 	}
 
@@ -72,14 +72,14 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	allKeyCooldowns, err := s.getAllKeyCooldowns(c.Request.Context())
 	if err != nil {
 		// Key冷却查询失败不影响主流程，仅记录错误
-		log.Printf("⚠️  警告: 批量查询Key冷却状态失败: %v", err)
+		log.Printf("[WARN] 批量查询Key冷却状态失败: %v", err)
 		allKeyCooldowns = make(map[int64]map[int]time.Time)
 	}
 
 	// 批量查询所有API Keys（一次查询替代 N 次）
 	allAPIKeys, err := s.store.GetAllAPIKeys(c.Request.Context())
 	if err != nil {
-		log.Printf("⚠️  警告: 批量查询API Keys失败: %v", err)
+		log.Printf("[WARN] 批量查询API Keys失败: %v", err)
 		allAPIKeys = make(map[int64][]*model.APIKey) // 降级：使用空map
 	}
 
@@ -97,11 +97,11 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		// 从预加载的map中获取API Keys（O(1)查找）
 		apiKeys := allAPIKeys[cfg.ID]
 
-		// ✅ 修复 (2025-10-11): 填充key_strategy字段（从第一个Key获取，所有Key的策略应该相同）
+		// [INFO] 修复 (2025-10-11): 填充key_strategy字段（从第一个Key获取，所有Key的策略应该相同）
 		if len(apiKeys) > 0 && apiKeys[0].KeyStrategy != "" {
 			oc.KeyStrategy = apiKeys[0].KeyStrategy
 		} else {
-			oc.KeyStrategy = "sequential" // 默认值
+			oc.KeyStrategy = model.KeyStrategySequential // 默认值
 		}
 
 		keyCooldowns := make([]KeyCooldownInfo, 0, len(apiKeys))
@@ -148,7 +148,7 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 	apiKeys := util.ParseAPIKeys(req.APIKey)
 	keyStrategy := strings.TrimSpace(req.KeyStrategy)
 	if keyStrategy == "" {
-		keyStrategy = "sequential" // 默认策略
+		keyStrategy = model.KeyStrategySequential // 默认策略
 	}
 
 	now := time.Now()
@@ -162,7 +162,7 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 			UpdatedAt:   model.JSONTime{Time: now},
 		}
 		if err := s.store.CreateAPIKey(c.Request.Context(), apiKey); err != nil {
-			log.Printf("⚠️  警告: 创建API Key失败 (channel=%d, index=%d): %v", created.ID, i, err)
+			log.Printf("[WARN] 创建API Key失败 (channel=%d, index=%d): %v", created.ID, i, err)
 		}
 	}
 
@@ -179,7 +179,7 @@ func (s *Server) HandleChannelByID(c *gin.Context) {
 		return
 	}
 
-	// ✅ Linus风格：直接switch，删除不必要的抽象
+	// [INFO] Linus风格：直接switch，删除不必要的抽象
 	switch c.Request.Method {
 	case "GET":
 		s.handleGetChannel(c, id)
@@ -200,12 +200,12 @@ func (s *Server) handleGetChannel(c *gin.Context, id int64) {
 		return
 	}
 
-	// ✅ 修复 (2025-10-11): 附带key_strategy信息
+	// [INFO] 修复 (2025-10-11): 附带key_strategy信息
 	// 使用缓存层查询（<1ms vs 数据库查询10-20ms）
 	// 性能优化：管理API查询也使用缓存，减少延迟
 	apiKeys, err := s.getAPIKeys(c.Request.Context(), id)
 	if err != nil {
-		log.Printf("⚠️  警告: 查询渠道 %d 的API Keys失败: %v", id, err)
+		log.Printf("[WARN] 查询渠道 %d 的API Keys失败: %v", id, err)
 	}
 
 	// 构建响应（动态添加key_strategy字段）
@@ -232,14 +232,14 @@ func (s *Server) handleGetChannel(c *gin.Context, id int64) {
 		}
 		response["api_key"] = strings.Join(apiKeyStrs, ",")
 	} else {
-		response["key_strategy"] = "sequential" // 默认值
+		response["key_strategy"] = model.KeyStrategySequential // 默认值
 		response["api_key"] = ""
 	}
 
 	RespondJSON(c, http.StatusOK, response)
 }
 
-// ✅ 修复:获取渠道的所有 API Keys(2025-10 新架构支持)
+// [INFO] 修复:获取渠道的所有 API Keys(2025-10 新架构支持)
 // 使用缓存层查询（<1ms vs 数据库查询10-20ms）
 // GET /admin/channels/{id}/keys
 func (s *Server) handleGetChannelKeys(c *gin.Context, id int64) {
@@ -303,14 +303,14 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	// 使用缓存层查询（<1ms vs 数据库查询10-20ms）
 	oldKeys, err := s.getAPIKeys(c.Request.Context(), id)
 	if err != nil {
-		log.Printf("⚠️  警告: 查询旧API Keys失败: %v", err)
+		log.Printf("[WARN] 查询旧API Keys失败: %v", err)
 		oldKeys = []*model.APIKey{}
 	}
 
 	newKeys := util.ParseAPIKeys(req.APIKey)
 	keyStrategy := strings.TrimSpace(req.KeyStrategy)
 	if keyStrategy == "" {
-		keyStrategy = "sequential"
+		keyStrategy = model.KeyStrategySequential
 	}
 
 	// 比较Key数量和内容是否变化
@@ -324,13 +324,13 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		}
 	}
 
-	// ✅ 修复 (2025-10-11): 检测策略变化
+	// [INFO] 修复 (2025-10-11): 检测策略变化
 	strategyChanged := false
 	if !keyChanged && len(oldKeys) > 0 && len(newKeys) > 0 {
 		// Key内容未变化时，检查策略是否变化
 		oldStrategy := oldKeys[0].KeyStrategy
 		if oldStrategy == "" {
-			oldStrategy = "sequential"
+			oldStrategy = model.KeyStrategySequential
 		}
 		strategyChanged = oldStrategy != keyStrategy
 	}
@@ -358,7 +358,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 				UpdatedAt:   model.JSONTime{Time: now},
 			}
 			if err := s.store.CreateAPIKey(c.Request.Context(), apiKey); err != nil {
-				log.Printf("⚠️  警告: 创建API Key失败 (channel=%d, index=%d): %v", id, i, err)
+				log.Printf("[WARN] 创建API Key失败 (channel=%d, index=%d): %v", id, i, err)
 			}
 		}
 	} else if strategyChanged {
@@ -368,7 +368,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 			oldKey.KeyStrategy = keyStrategy
 			oldKey.UpdatedAt = model.JSONTime{Time: now}
 			if err := s.store.UpdateAPIKey(c.Request.Context(), oldKey); err != nil {
-				log.Printf("⚠️  警告: 更新API Key策略失败 (channel=%d, index=%d): %v", id, oldKey.KeyIndex, err)
+				log.Printf("[WARN] 更新API Key策略失败 (channel=%d, index=%d): %v", id, oldKey.KeyIndex, err)
 			}
 		}
 	}
@@ -377,7 +377,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	// 设计原则: 清除失败不应影响渠道更新成功，但需要记录用于监控
 	if s.cooldownManager != nil {
 		if err := s.cooldownManager.ClearChannelCooldown(c.Request.Context(), id); err != nil {
-			log.Printf("⚠️  警告: 清除渠道冷却状态失败 (channel=%d): %v", id, err)
+			log.Printf("[WARN] 清除渠道冷却状态失败 (channel=%d): %v", id, err)
 		}
 	}
 

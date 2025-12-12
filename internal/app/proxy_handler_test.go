@@ -180,5 +180,5 @@ func TestAcquireConcurrencySlot(t *testing.T) {
 	release2()
 	release3()
 
-	t.Log("✅ 并发控制测试通过：2个槽位正确管理")
+	t.Log("[INFO] 并发控制测试通过：2个槽位正确管理")
 }

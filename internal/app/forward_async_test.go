@@ -386,8 +386,8 @@ func TestClientCancelClosesUpstream(t *testing.T) {
 	// 验证上游连接在短时间内被关闭
 	select {
 	case <-upstreamClosed:
-		// ✅ 成功！上游检测到连接关闭
-		t.Log("✅ 客户端取消后，上游连接立即关闭（预期行为）")
+		// [INFO] 成功！上游检测到连接关闭
+		t.Log("[INFO] 客户端取消后，上游连接立即关闭（预期行为）")
 	case <-time.After(500 * time.Millisecond):
 		t.Error("❌ 客户端取消后500ms，上游仍在发送数据（连接未关闭）")
 	}

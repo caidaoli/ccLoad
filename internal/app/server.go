@@ -65,7 +65,7 @@ func NewServer(store storage.Store) *Server {
 	if err := configService.LoadDefaults(context.Background()); err != nil {
 		log.Fatalf("❌ ConfigService初始化失败: %v", err)
 	}
-	log.Print("✅ ConfigService已加载系统配置（支持Web界面管理）")
+	log.Print("[INFO] ConfigService已加载系统配置（支持Web界面管理）")
 
 	// 管理员密码：仅从环境变量读取（安全考虑：密码不应存储在数据库中）
 	password := os.Getenv("CCLOAD_PASS")
@@ -74,8 +74,8 @@ func NewServer(store storage.Store) *Server {
 		os.Exit(1)
 	}
 
-	log.Printf("✅ 管理员密码已从环境变量加载（长度: %d 字符）", len(password))
-	log.Print("ℹ️  API访问令牌将从数据库动态加载（支持Web界面管理）")
+	log.Printf("[INFO] 管理员密码已从环境变量加载（长度: %d 字符）", len(password))
+	log.Print("[INFO] API访问令牌将从数据库动态加载（支持Web界面管理）")
 
 	// 从ConfigService读取运行时配置（启动时加载一次，修改后重启生效）
 	maxKeyRetries := configService.GetInt("max_key_retries", config.DefaultMaxKeyRetries)
@@ -95,14 +95,14 @@ func NewServer(store storage.Store) *Server {
 	// TLS证书验证配置（从ConfigService读取）
 	skipTLSVerify := configService.GetBool("skip_tls_verify", false)
 	if skipTLSVerify {
-		log.Print("⚠️  警告：TLS证书验证已禁用（skip_tls_verify=true）")
+		log.Print("[WARN]  警告：TLS证书验证已禁用（skip_tls_verify=true）")
 		log.Print("   仅用于开发/测试环境，生产环境严禁使用！")
 		log.Print("   当前配置存在中间人攻击风险，API Key可能泄漏")
 	}
 
 	// 构建HTTP Transport（使用统一函数，消除DRY违反）
 	transport := buildHTTPTransport(skipTLSVerify)
-	log.Print("✅ HTTP/2已启用（头部压缩+多路复用，HTTPS自动协商）")
+	log.Print("[INFO] HTTP/2已启用（头部压缩+多路复用，HTTPS自动协商）")
 
 	s := &Server{
 		store:            store,
@@ -326,17 +326,6 @@ func (s *Server) invalidateChannelRelatedCache(channelID int64) {
 	s.invalidateCooldownCache()
 }
 
-// bumpChannelCooldownAndInvalidateCache 统一封装：冷却操作后立即刷新缓存（DRY原则）
-// 解决问题：强制渠道冷却未刷新缓存，导致60s内对其他请求不可见
-func (s *Server) bumpChannelCooldownAndInvalidateCache(ctx context.Context, channelID int64, statusCode int) error {
-	if _, err := s.store.BumpChannelCooldown(ctx, channelID, time.Now(), statusCode); err != nil {
-		return err
-	}
-	// 立即刷新三层缓存，确保后续请求能看到冷却状态（Fail-Fast）
-	s.invalidateChannelRelatedCache(channelID)
-	return nil
-}
-
 // SetupRoutes - 新的路由设置函数，适配Gin
 func (s *Server) SetupRoutes(r *gin.Engine) {
 	// 公开访问的API（代理服务）- 需要 API 认证
@@ -471,7 +460,7 @@ func (s *Server) getModelsByChannelType(ctx context.Context, channelType string)
 	return models, nil
 }
 
-// ✅ 修复：handleChannelKeys 路由处理器(2025-10新架构支持)
+// [INFO] 修复：handleChannelKeys 路由处理器(2025-10新架构支持)
 // GET /admin/channels/:id/keys - 获取渠道的所有API Keys
 func (s *Server) HandleChannelKeys(c *gin.Context) {
 	id, err := ParseInt64Param(c, "id")
@@ -495,7 +484,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// 关闭shutdownCh，通知所有goroutine退出
 	close(s.shutdownCh)
 
-	// ✅ 修复: 关闭 LogService 的 logChan，让 logWorker 更快退出
+	// [INFO] 修复: 关闭 LogService 的 logChan，让 logWorker 更快退出
 	// 由于 isShuttingDown 已设置，AddLogAsync 不会再写入日志，可以安全关闭
 	s.logService.Shutdown(ctx)
 
@@ -516,9 +505,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	var err error
 	select {
 	case <-done:
-		log.Print("✅ Server优雅关闭完成")
+		log.Print("[INFO] Server优雅关闭完成")
 	case <-ctx.Done():
-		log.Print("⚠️  Server关闭超时，部分后台任务可能未完成")
+		log.Print("[WARN]  Server关闭超时，部分后台任务可能未完成")
 		err = ctx.Err()
 	}
 

@@ -80,7 +80,7 @@ func TestHandleError_1308Error(t *testing.T) {
 				timeDiff)
 		}
 
-		t.Logf("✅ Key已正确禁用至: %s", actualTime.Format("2006-01-02 15:04:05"))
+		t.Logf("[INFO] Key已正确禁用至: %s", actualTime.Format("2006-01-02 15:04:05"))
 	})
 
 	t.Run("普通429错误-使用指数退避", func(t *testing.T) {
@@ -144,7 +144,7 @@ func TestHandleError_1308Error(t *testing.T) {
 			t.Errorf("Unexpected cooldown duration: %v", duration)
 		}
 
-		t.Logf("✅ 使用指数退避策略，冷却时间: %.1f分钟", duration.Minutes())
+		t.Logf("[INFO] 使用指数退避策略，冷却时间: %.1f分钟", duration.Minutes())
 	})
 
 	t.Run("1308错误-无效时间格式回退到指数退避", func(t *testing.T) {
@@ -198,7 +198,7 @@ func TestHandleError_1308Error(t *testing.T) {
 			t.Errorf("Unexpected cooldown duration: %v", duration)
 		}
 
-		t.Logf("✅ 回退到指数退避策略，冷却时间: %.1f分钟", duration.Minutes())
+		t.Logf("[INFO] 回退到指数退避策略，冷却时间: %.1f分钟", duration.Minutes())
 	})
 
 	t.Run("单Key渠道的1308错误-应该冷却Channel并使用精确时间", func(t *testing.T) {
@@ -257,6 +257,6 @@ func TestHandleError_1308Error(t *testing.T) {
 				timeDiff)
 		}
 
-		t.Logf("✅ 单Key渠道1308错误已正确处理，禁用至: %s", actualTime.Format("2006-01-02 15:04:05"))
+		t.Logf("[INFO] 单Key渠道1308错误已正确处理，禁用至: %s", actualTime.Format("2006-01-02 15:04:05"))
 	})
 }

@@ -61,7 +61,7 @@ type KeyCooldownInfo struct {
 // ChannelWithCooldown 带冷却状态的渠道响应结构
 type ChannelWithCooldown struct {
 	*model.Config
-	KeyStrategy         string            `json:"key_strategy,omitempty"` // ✅ 修复 (2025-10-11): 添加key_strategy字段
+	KeyStrategy         string            `json:"key_strategy,omitempty"` // [INFO] 修复 (2025-10-11): 添加key_strategy字段
 	CooldownUntil       *time.Time        `json:"cooldown_until,omitempty"`
 	CooldownRemainingMS int64             `json:"cooldown_remaining_ms,omitempty"`
 	KeyCooldowns        []KeyCooldownInfo `json:"key_cooldowns,omitempty"`

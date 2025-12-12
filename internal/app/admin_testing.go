@@ -87,18 +87,18 @@ func (s *Server) HandleChannelTest(c *gin.Context) {
 	testResult["tested_key_index"] = keyIndex
 	testResult["total_keys"] = len(apiKeys)
 
-	// ✅ 修复：根据测试结果应用冷却逻辑
+	// [INFO] 修复：根据测试结果应用冷却逻辑
 	if success, ok := testResult["success"].(bool); ok && success {
 		// 测试成功：清除该Key的冷却状态
 		if err := s.store.ResetKeyCooldown(c.Request.Context(), id, keyIndex); err != nil {
-			log.Printf("⚠️  警告: 清除Key #%d冷却状态失败: %v", keyIndex, err)
+			log.Printf("[WARN] 清除Key #%d冷却状态失败: %v", keyIndex, err)
 		}
 
 		// ✨ 优化：同时清除渠道级冷却（因为至少有一个Key可用）
 		// 设计理念：测试成功证明渠道恢复正常，应立即解除渠道级冷却，避免选择器过滤该渠道
 		_ = s.store.ResetChannelCooldown(c.Request.Context(), id)
 
-		// ✅ 修复：使API Keys缓存和冷却状态缓存失效，确保前端能立即看到状态更新
+		// [INFO] 修复：使API Keys缓存和冷却状态缓存失效，确保前端能立即看到状态更新
 		s.InvalidateAPIKeysCache(id)
 		s.invalidateCooldownCache()
 	} else {
@@ -132,11 +132,11 @@ func (s *Server) HandleChannelTest(c *gin.Context) {
 			headers, // 传递响应头以支持429错误的精确分类
 		)
 		if err != nil {
-			log.Printf("⚠️  警告: 应用冷却策略失败 (channel=%d, key=%d, status=%d): %v", id, keyIndex, statusCode, err)
+			log.Printf("[WARN] 应用冷却策略失败 (channel=%d, key=%d, status=%d): %v", id, keyIndex, statusCode, err)
 			// 失败时降级尝试渠道级冷却，避免误报“已冷却”但实际未生效
 			if action == cooldown.ActionRetryKey {
 				if _, chErr := s.store.BumpChannelCooldown(c.Request.Context(), id, time.Now(), statusCode); chErr != nil {
-					log.Printf("⚠️  警告: 渠道级降级冷却失败 (channel=%d): %v", id, chErr)
+					log.Printf("[WARN] 渠道级降级冷却失败 (channel=%d): %v", id, chErr)
 				} else {
 					action = cooldown.ActionRetryChannel
 				}
@@ -144,7 +144,7 @@ func (s *Server) HandleChannelTest(c *gin.Context) {
 			testResult["cooldown_error"] = err.Error()
 		}
 
-		// ✅ 修复：使API Keys缓存和冷却状态缓存失效，确保前端能立即看到冷却状态更新
+		// [INFO] 修复：使API Keys缓存和冷却状态缓存失效，确保前端能立即看到冷却状态更新
 		// 无论是Key级冷却还是渠道级冷却，都需要使缓存失效
 		s.InvalidateAPIKeysCache(id)
 		s.invalidateCooldownCache()
@@ -174,7 +174,7 @@ func (s *Server) testChannelAPI(cfg *model.Config, apiKey string, testReq *testu
 		testReq.Content = s.configService.GetString("channel_test_content", "sonnet 4.0的发布日期是什么")
 	}
 
-	// ✅ 修复：应用模型重定向逻辑（与正常代理流程保持一致）
+	// [INFO] 修复：应用模型重定向逻辑（与正常代理流程保持一致）
 	originalModel := testReq.Model
 	actualModel := originalModel
 
@@ -182,14 +182,14 @@ func (s *Server) testChannelAPI(cfg *model.Config, apiKey string, testReq *testu
 	if len(cfg.ModelRedirects) > 0 {
 		if redirectModel, ok := cfg.ModelRedirects[originalModel]; ok && redirectModel != "" {
 			actualModel = redirectModel
-			log.Printf("🔄 [测试-模型重定向] 渠道ID=%d, 原始模型=%s, 重定向模型=%s", cfg.ID, originalModel, actualModel)
+			log.Printf("[RELOAD] [测试-模型重定向] 渠道ID=%d, 原始模型=%s, 重定向模型=%s", cfg.ID, originalModel, actualModel)
 		}
 	}
 
 	// 如果模型发生重定向，更新测试请求中的模型名称
 	if actualModel != originalModel {
 		testReq.Model = actualModel
-		log.Printf("✅ [测试-请求体修改] 渠道ID=%d, 修改后模型=%s", cfg.ID, actualModel)
+		log.Printf("[INFO] [测试-请求体修改] 渠道ID=%d, 修改后模型=%s", cfg.ID, actualModel)
 	}
 
 	// 选择并规范化渠道类型

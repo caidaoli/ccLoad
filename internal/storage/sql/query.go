@@ -125,7 +125,7 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	var enabledInt int
 	var createdAtRaw, updatedAtRaw any // 使用any接受任意类型（兼容字符串、整数或RFC3339）
 
-	// ✅ Linus风格：删除rr_key_index字段（已改用内存计数器）
+	// [INFO] Linus风格：删除rr_key_index字段（已改用内存计数器）
 	var rrKeyIndex int // 临时变量，读取后丢弃
 	// 扫描key_count字段（从JOIN查询获取）
 	if err := scanner.Scan(&c.ID, &c.Name, &c.URL, &c.Priority,

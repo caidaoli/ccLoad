@@ -33,13 +33,13 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *model.Config, keyInd
 		}
 		statusCode = classifiedStatus
 		errorBody = []byte(err.Error())
-		isNetworkError = true // ✅ 标记为网络错误
+		isNetworkError = true // [INFO] 标记为网络错误
 		headers = nil         // 网络错误无响应头
 	} else {
 		// HTTP错误
 		statusCode = res.Status
 		errorBody = res.Body
-		isNetworkError = false // ✅ 标记为HTTP错误
+		isNetworkError = false // [INFO] 标记为HTTP错误
 		headers = res.Header   // 提取响应头用于429分析
 	}
 
@@ -73,14 +73,14 @@ func (s *Server) handleNetworkError(
 	ctx context.Context,
 	cfg *model.Config,
 	keyIndex int,
-	actualModel string, // ✅ 重定向后的实际模型名称
+	actualModel string, // [INFO] 重定向后的实际模型名称
 	selectedKey string,
-	authTokenID int64, // ✅ API令牌ID（用于日志记录，2025-12新增）
+	authTokenID int64, // [INFO] API令牌ID（用于日志记录，2025-12新增）
 	duration float64,
 	err error,
 ) (*proxyResult, bool, bool) {
 	statusCode, _, _ := util.ClassifyError(err)
-	// ✅ 修复：使用 actualModel 而非 reqCtx.originalModel
+	// [INFO] 修复：使用 actualModel 而非 reqCtx.originalModel
 	s.AddLogAsync(buildLogEntry(actualModel, cfg.ID, statusCode,
 		duration, false, selectedKey, authTokenID, nil, err.Error()))
 

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -221,12 +220,11 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		result, err := s.tryChannelWithKeys(ctx, cfg, reqCtx, c.Writer)
 
 		// 所有Key冷却：触发渠道级冷却(503)，防止后续请求重复尝试
-		// ✅ 修复：使用errors.Is代替魔法字符串匹配，避免错误信息变化导致故障切换失灵
+		// 使用 cooldownManager.HandleError 统一处理（DRY原则）
 		if err != nil && errors.Is(err, ErrAllKeysUnavailable) {
-			// ✅ 修复：使用统一方法，立即刷新缓存，确保后续请求能看到冷却状态（DRY原则）
-			if bumpErr := s.bumpChannelCooldownAndInvalidateCache(ctx, cfg.ID, 503); bumpErr != nil {
-				log.Printf("⚠️  WARNING: Failed to bump channel cooldown (channel=%d, status=503): %v", cfg.ID, bumpErr)
-			}
+			// 使用统一的冷却决策引擎，传入503状态码表示服务不可用
+			_, _ = s.cooldownManager.HandleError(ctx, cfg.ID, -1, 503, nil, false, nil)
+			s.invalidateChannelRelatedCache(cfg.ID)
 			continue
 		}
 

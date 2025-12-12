@@ -204,7 +204,7 @@ func (s *SQLStore) ListLogs(ctx context.Context, since time.Time, limit, offset 
 		channelNames, err := s.fetchChannelNamesBatch(ctx, channelIDsToFetch)
 		if err != nil {
 			// 降级处理：查询失败不影响日志返回，仅记录错误
-			log.Printf("⚠️  批量查询渠道名称失败: %v", err)
+			log.Printf("[WARN]  批量查询渠道名称失败: %v", err)
 			channelNames = make(map[int64]string)
 		}
 
@@ -343,7 +343,7 @@ func (s *SQLStore) ListLogsRange(ctx context.Context, since, until time.Time, li
 	if len(channelIDsToFetch) > 0 {
 		channelNames, err := s.fetchChannelNamesBatch(ctx, channelIDsToFetch)
 		if err != nil {
-			log.Printf("⚠️  批量查询渠道名称失败: %v", err)
+			log.Printf("[WARN]  批量查询渠道名称失败: %v", err)
 			channelNames = make(map[int64]string)
 		}
 		for _, e := range out {

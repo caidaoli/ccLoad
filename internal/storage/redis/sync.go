@@ -70,7 +70,7 @@ func (rs *RedisSync) IsEnabled() bool {
 }
 
 // LoadChannelsWithKeysFromRedis 从Redis加载所有渠道（含API Keys）
-// ✅ 修复（2025-10-10）：完整恢复渠道和API Keys，解决Redis恢复后缺少Keys的问题
+// [INFO] 修复（2025-10-10）：完整恢复渠道和API Keys，解决Redis恢复后缺少Keys的问题
 func (rs *RedisSync) LoadChannelsWithKeysFromRedis(ctx context.Context) ([]*model.ChannelWithKeys, error) {
 	if !rs.enabled {
 		return nil, nil
@@ -102,7 +102,7 @@ func (rs *RedisSync) LoadChannelsWithKeysFromRedis(ctx context.Context) ([]*mode
 }
 
 // SyncAllChannelsWithKeys 全量同步所有渠道（含API Keys）到Redis
-// ✅ 修复（2025-10-10）：完整同步渠道和API Keys，解决Redis恢复后缺少Keys的问题
+// [INFO] 修复（2025-10-10）：完整同步渠道和API Keys，解决Redis恢复后缺少Keys的问题
 func (rs *RedisSync) SyncAllChannelsWithKeys(ctx context.Context, channelsWithKeys []*model.ChannelWithKeys) error {
 	if !rs.enabled {
 		return nil
@@ -122,7 +122,7 @@ func (rs *RedisSync) SyncAllChannelsWithKeys(ctx context.Context, channelsWithKe
 }
 
 // GetChannelCount 获取Redis中的渠道数量 (用于健康检查和监控)
-// ✅ 修复（2025-10-10）：切换到新API，支持ChannelWithKeys
+// [INFO] 修复（2025-10-10）：切换到新API，支持ChannelWithKeys
 func (rs *RedisSync) GetChannelCount(ctx context.Context) (int64, error) {
 	if !rs.enabled {
 		return 0, nil

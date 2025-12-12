@@ -12,7 +12,7 @@ import (
 )
 
 // ==================== API Keys CRUD 实现 ====================
-// ✅ Linus风格：删除轮询指针数据库代码，已改用内存atomic计数器
+// [INFO] Linus风格：删除轮询指针数据库代码，已改用内存atomic计数器
 
 // GetAPIKeys 获取指定渠道的所有 API Key（按 key_index 升序）
 func (s *SQLStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error) {
@@ -108,7 +108,7 @@ func (s *SQLStore) CreateAPIKey(ctx context.Context, key *model.APIKey) error {
 
 	// 确保默认值
 	if key.KeyStrategy == "" {
-		key.KeyStrategy = "sequential"
+		key.KeyStrategy = model.KeyStrategySequential
 	}
 
 	_, err := s.db.ExecContext(ctx, `
@@ -138,7 +138,7 @@ func (s *SQLStore) UpdateAPIKey(ctx context.Context, key *model.APIKey) error {
 
 	// 确保默认值
 	if key.KeyStrategy == "" {
-		key.KeyStrategy = "sequential"
+		key.KeyStrategy = model.KeyStrategySequential
 	}
 
 	_, err := s.db.ExecContext(ctx, `
@@ -213,7 +213,7 @@ func (s *SQLStore) DeleteAllAPIKeys(ctx context.Context, channelID int64) error 
 
 // ImportChannelBatch 批量导入渠道配置（原子性+性能优化）
 // 单事务+预编译语句，提升CSV导入性能
-// ✅ ACID原则：确保批量导入的原子性（要么全部成功，要么全部回滚）
+// [INFO] ACID原则：确保批量导入的原子性（要么全部成功，要么全部回滚）
 //
 // 参数:
 //   - channels: 渠道配置和API Keys的批量数据
@@ -369,7 +369,7 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 }
 
 // GetAllAPIKeys 批量查询所有API Keys
-// ✅ 消除N+1问题：一次查询获取所有渠道的Keys，避免逐个查询
+// [INFO] 消除N+1问题：一次查询获取所有渠道的Keys，避免逐个查询
 // 返回: map[channelID][]*APIKey
 func (s *SQLStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey, error) {
 	query := `

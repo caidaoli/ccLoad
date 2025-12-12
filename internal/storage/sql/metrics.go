@@ -157,7 +157,7 @@ func (s *SQLStore) Aggregate(ctx context.Context, since time.Time, bucket time.D
 		channelNames, err = s.fetchChannelNamesBatch(ctx, channelIDsToFetch)
 		if err != nil {
 			// 降级处理：查询失败不影响聚合返回，仅记录错误
-			log.Printf("⚠️  批量查询渠道名称失败: %v", err)
+			log.Printf("[WARN]  批量查询渠道名称失败: %v", err)
 			channelNames = make(map[int64]string)
 		}
 	}
@@ -349,7 +349,7 @@ func (s *SQLStore) AggregateRange(ctx context.Context, since, until time.Time, b
 		var err error
 		channelNames, err = s.fetchChannelNamesBatch(ctx, channelIDsToFetch)
 		if err != nil {
-			log.Printf("⚠️  批量查询渠道名称失败: %v", err)
+			log.Printf("[WARN]  批量查询渠道名称失败: %v", err)
 			channelNames = make(map[int64]string)
 		}
 	}
@@ -434,7 +434,7 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 	qb := NewQueryBuilder(baseQuery).
 		Where("time >= ?", startMs).
 		Where("time <= ?", endMs).
-		Where("channel_id > 0") // 🎯 核心修改:排除channel_id=0的无效记录
+		Where("channel_id > 0") // [TARGET] 核心修改:排除channel_id=0的无效记录
 
 	// 应用渠道类型或名称过滤
 	_, isEmpty, err := s.applyChannelFilter(ctx, qb, filter)
@@ -504,7 +504,7 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 		channelNames, err := s.fetchChannelNamesBatch(ctx, channelIDsToFetch)
 		if err != nil {
 			// 降级处理:查询失败不影响统计返回,仅记录错误
-			log.Printf("⚠️  批量查询渠道名称失败: %v", err)
+			log.Printf("[WARN]  批量查询渠道名称失败: %v", err)
 			channelNames = make(map[int64]string)
 		}
 

@@ -86,7 +86,7 @@ func TestCalculateCost_Gemini(t *testing.T) {
 					abs(got-tt.expectedCostUSD),
 				)
 			} else {
-				t.Logf("✅ %s: $%.4f", tt.description, got)
+				t.Logf("[INFO] %s: $%.4f", tt.description, got)
 			}
 		})
 	}
@@ -168,7 +168,7 @@ func TestCalculateCost_GeminiLongContext(t *testing.T) {
 					abs(got-tt.expectedCostUSD),
 				)
 			} else {
-				t.Logf("✅ %s: $%.4f", tt.description, got)
+				t.Logf("[INFO] %s: $%.4f", tt.description, got)
 			}
 		})
 	}
@@ -242,7 +242,7 @@ func TestCalculateCost_GeminiFuzzyMatch(t *testing.T) {
 					abs(got-tt.expectedCostUSD),
 				)
 			} else {
-				t.Logf("✅ %s: $%.4f", tt.description, got)
+				t.Logf("[INFO] %s: $%.4f", tt.description, got)
 			}
 		})
 	}
@@ -256,7 +256,7 @@ func TestCalculateCost_GeminiUnknownModel(t *testing.T) {
 	if cost != 0.0 {
 		t.Errorf("未知Gemini模型应返回0费用，实际返回: $%.4f", cost)
 	} else {
-		t.Logf("✅ 未知模型正确返回0费用")
+		t.Logf("[INFO] 未知模型正确返回0费用")
 	}
 }
 

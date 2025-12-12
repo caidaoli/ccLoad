@@ -25,7 +25,7 @@ func TestBillingPipeline_OpenAI_ChatCompletions(t *testing.T) {
 	inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens := parser.GetUsage()
 
 	// 2. 验证Token提取正确性
-	// ✅ 重要: GetUsage()返回的inputTokens已归一化为可计费token (1000-800=200)
+	// [INFO] 重要: GetUsage()返回的inputTokens已归一化为可计费token (1000-800=200)
 	if inputTokens != 200 {
 		t.Errorf("❌ OpenAI归一化后inputTokens错误: 期望200(1000-800), 实际%d", inputTokens)
 	}
@@ -50,7 +50,7 @@ func TestBillingPipeline_OpenAI_ChatCompletions(t *testing.T) {
 		t.Errorf("❌ OpenAI计费错误: 期望%.6f, 实际%.6f", expected, cost)
 	}
 
-	t.Logf("✅ OpenAI Chat Completions计费链路验证通过")
+	t.Logf("[INFO] OpenAI Chat Completions计费链路验证通过")
 	t.Logf("   原始prompt_tokens: 1000, 归一化后inputTokens: %d (已扣除缓存)", inputTokens)
 	t.Logf("   缓存读取: %d tokens", cacheReadTokens)
 	t.Logf("   输出token: %d", outputTokens)
@@ -100,7 +100,7 @@ data: {"type":"message_stop","usage":{"input_tokens":12,"output_tokens":73,"cach
 		t.Errorf("❌ Claude计费错误: 期望%.6f, 实际%.6f", expected, cost)
 	}
 
-	t.Logf("✅ Claude Prompt Caching计费链路验证通过")
+	t.Logf("[INFO] Claude Prompt Caching计费链路验证通过")
 	t.Logf("   非缓存输入: %d tokens", inputTokens)
 	t.Logf("   缓存读取: %d tokens (节省90%%)", cacheReadTokens)
 	t.Logf("   缓存创建: %d tokens (额外25%%)", cacheCreationTokens)
@@ -144,7 +144,7 @@ func TestBillingPipeline_Gemini_LongContext(t *testing.T) {
 					tc.name, tc.expectCost, tolerance, cost)
 			}
 
-			t.Logf("✅ %s: %d tokens → $%.6f (%s)",
+			t.Logf("[INFO] %s: %d tokens → $%.6f (%s)",
 				tc.name, tc.inputTokens, cost, tc.description)
 		})
 	}
@@ -160,7 +160,7 @@ func TestBillingPipeline_UnknownModel(t *testing.T) {
 		t.Errorf("❌ 未知模型应返回0成本，实际%.6f", cost)
 	}
 
-	t.Logf("✅ 未知模型兜底行为正确: $%.6f", cost)
+	t.Logf("[INFO] 未知模型兜底行为正确: $%.6f", cost)
 }
 
 // TestBillingPipeline_NegativeTokens 验证防御性编程
@@ -173,14 +173,14 @@ func TestBillingPipeline_NegativeTokens(t *testing.T) {
 		t.Errorf("❌ 负数token应返回0成本，实际%.6f", cost)
 	}
 
-	t.Logf("✅ 负数token防御性检查通过: $%.6f", cost)
+	t.Logf("[INFO] 负数token防御性检查通过: $%.6f", cost)
 }
 
 // TestBillingPipeline_OpenAI_CacheExceedsInput 验证OpenAI边界情况
 func TestBillingPipeline_OpenAI_CacheExceedsInput(t *testing.T) {
 	// 场景：cached_tokens > prompt_tokens (理论上不应发生，但需防御)
 	// 例如: prompt_tokens=500, cached_tokens=800
-	// ✅ 重构后：边界检查在解析层(GetUsage)执行，而非计费层
+	// [INFO] 重构后：边界检查在解析层(GetUsage)执行，而非计费层
 	mockSSE := `data: {"usage":{"prompt_tokens":500,"prompt_tokens_details":{"cached_tokens":800},"completion_tokens":100}}` + "\n\n"
 
 	parser := newSSEUsageParser("openai")
@@ -209,7 +209,7 @@ func TestBillingPipeline_OpenAI_CacheExceedsInput(t *testing.T) {
 		t.Errorf("❌ OpenAI缓存超限计费错误: 期望%.6f, 实际%.6f", expected, cost)
 	}
 
-	t.Logf("✅ OpenAI缓存超限边界情况(解析层检查)通过: $%.6f", cost)
+	t.Logf("[INFO] OpenAI缓存超限边界情况(解析层检查)通过: $%.6f", cost)
 }
 
 // TestBillingPipeline_ZeroCostWarning 验证费用0值告警机制
@@ -230,9 +230,9 @@ func TestBillingPipeline_ZeroCostWarning(t *testing.T) {
 
 	// 验证：这种情况应该触发告警（通过日志检查）
 	// 在实际生产环境中，此告警应触发监控系统
-	t.Logf("⚠️  财务风险检测: model=%s tokens=%d+%d cost=$%.6f (应触发WARN日志)",
+	t.Logf("[WARN]  财务风险检测: model=%s tokens=%d+%d cost=$%.6f (应触发WARN日志)",
 		model, inputTokens, outputTokens, cost)
-	t.Logf("✅ 零成本告警机制测试通过 - 生产环境应配置监控告警")
+	t.Logf("[INFO] 零成本告警机制测试通过 - 生产环境应配置监控告警")
 }
 
 // floatEquals 浮点数相等性比较（避免精度问题）

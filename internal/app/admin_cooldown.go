@@ -71,7 +71,7 @@ func (s *Server) HandleSetKeyCooldown(c *gin.Context) {
 		return
 	}
 
-	// ✅ 修复：使API Keys缓存失效，确保前端能立即看到冷却状态
+	// [INFO] 修复：使API Keys缓存失效，确保前端能立即看到冷却状态
 	s.InvalidateAPIKeysCache(id)
 
 	c.JSON(http.StatusOK, gin.H{

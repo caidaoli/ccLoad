@@ -149,7 +149,7 @@ func TestCalculateCost_ZeroTokens(t *testing.T) {
 
 func TestCalculateCost_OpenAIModels(t *testing.T) {
 	// 测试OpenAI模型费用计算
-	// ✅ 重构后：inputTokens应为归一化后的可计费token（已由解析层扣除缓存）
+	// [INFO] 重构后：inputTokens应为归一化后的可计费token（已由解析层扣除缓存）
 	testCases := []struct {
 		model        string
 		inputTokens  int // 归一化后的可计费输入token
@@ -251,7 +251,7 @@ func TestCalculateCost_OpusCacheRead(t *testing.T) {
 		t.Errorf("Opus 4.5带缓存成本 = %.6f, 期望 %.6f", cost, expected)
 	}
 
-	t.Logf("✅ Opus缓存定价验证通过: $%.6f", cost)
+	t.Logf("[INFO] Opus缓存定价验证通过: $%.6f", cost)
 }
 
 // TestCalculateCost_OpusVsSonnetCacheRatio 验证Opus和Sonnet的缓存倍率差异
@@ -278,8 +278,8 @@ func TestCalculateCost_OpusVsSonnetCacheRatio(t *testing.T) {
 		t.Errorf("Sonnet缓存读取倍率 = %.2f, 期望 0.1", sonnetRatio)
 	}
 
-	t.Logf("✅ Opus缓存倍率: %.2f (90%%折扣)", opusRatio)
-	t.Logf("✅ Sonnet缓存倍率: %.2f (90%%折扣)", sonnetRatio)
+	t.Logf("[INFO] Opus缓存倍率: %.2f (90%%折扣)", opusRatio)
+	t.Logf("[INFO] Sonnet缓存倍率: %.2f (90%%折扣)", sonnetRatio)
 }
 
 func TestRealWorldScenario(t *testing.T) {
@@ -319,7 +319,7 @@ func TestCalculateCost_Gpt4oLegacyFuzzy(t *testing.T) {
 	if !floatEquals(cost, expected, 0.000001) {
 		t.Errorf("gpt-4o-legacy-2024-05-13应匹配legacy价格: 实际$%.6f, 期望$%.6f", cost, expected)
 	} else {
-		t.Logf("✅ gpt-4o-legacy带后缀正确匹配: $%.6f", cost)
+		t.Logf("[INFO] gpt-4o-legacy带后缀正确匹配: $%.6f", cost)
 	}
 
 	// 验证不会误匹配到gpt-4o

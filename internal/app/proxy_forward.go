@@ -79,19 +79,19 @@ func (s *Server) handleRequestError(
 			timeoutMsg = fmt.Sprintf("%s (threshold=%v)", timeoutMsg, timeout)
 		}
 		err = fmt.Errorf("%s: %w", timeoutMsg, util.ErrUpstreamFirstByteTimeout)
-		log.Printf("⏱️  [上游首字节超时] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, timeout, duration)
+		log.Printf("[TIMEOUT] [上游首字节超时] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, timeout, duration)
 	} else if errors.Is(err, context.DeadlineExceeded) {
 		if reqCtx.isStreaming {
 			// 流式请求超时
 			err = fmt.Errorf("upstream timeout after %.2fs (streaming): %w", duration, err)
 			statusCode = util.StatusFirstByteTimeout
-			log.Printf("⏱️  [流式请求超时] 渠道ID=%d, 耗时=%.2fs", cfg.ID, duration)
+			log.Printf("[TIMEOUT] [流式请求超时] 渠道ID=%d, 耗时=%.2fs", cfg.ID, duration)
 		} else {
 			// 非流式请求超时（context.WithTimeout触发）
 			err = fmt.Errorf("upstream timeout after %.2fs (non-stream, threshold=%v): %w",
 				duration, s.nonStreamTimeout, err)
 			statusCode = 504 // Gateway Timeout
-			log.Printf("⏱️  [非流式请求超时] 渠道ID=%d, 阈值=%v, 耗时=%.2fs", cfg.ID, s.nonStreamTimeout, duration)
+			log.Printf("[TIMEOUT] [非流式请求超时] 渠道ID=%d, 阈值=%v, 耗时=%.2fs", cfg.ID, s.nonStreamTimeout, duration)
 		}
 	} else {
 		// 其他错误：使用统一分类器
@@ -195,18 +195,18 @@ func buildStreamDiagnostics(streamErr error, readStats *streamReadStats, hasUsag
 	// 情况1:流传输异常中断(排除客户端主动断开:499/HTTP2流关闭)
 	if streamErr != nil && !isClientDisconnectError(streamErr) {
 		if needsUsageCheck {
-			return fmt.Sprintf("⚠️ 流传输中断: 错误=%v | 已读取=%d字节(分%d次) | usage数据=%v | 渠道=%s | Content-Type=%s",
+			return fmt.Sprintf("[WARN] 流传输中断: 错误=%v | 已读取=%d字节(分%d次) | usage数据=%v | 渠道=%s | Content-Type=%s",
 				streamErr, bytesRead, readCount, hasUsage, channelType, contentType)
 		}
-		return fmt.Sprintf("⚠️ 流传输中断: 错误=%v | 已读取=%d字节(分%d次) | 渠道=%s | Content-Type=%s",
+		return fmt.Sprintf("[WARN] 流传输中断: 错误=%v | 已读取=%d字节(分%d次) | 渠道=%s | Content-Type=%s",
 			streamErr, bytesRead, readCount, channelType, contentType)
 	}
 
 	// 情况2:流正常结束但没有usage数据(疑似上游未发送完整响应)
 	if !hasUsage && bytesRead > 0 && needsUsageCheck {
-		// 🔍 诊断增强:添加渠道+Content-Type,帮助定位问题源
+		// [VALIDATE] 诊断增强:添加渠道+Content-Type,帮助定位问题源
 		// 如果Content-Type不是text/event-stream,可能是上游错误响应
-		return fmt.Sprintf("⚠️ 流响应不完整: 正常EOF但无usage | 已读取=%d字节(分%d次) | 渠道=%s | Content-Type=%s",
+		return fmt.Sprintf("[WARN] 流响应不完整: 正常EOF但无usage | 已读取=%d字节(分%d次) | 渠道=%s | Content-Type=%s",
 			bytesRead, readCount, channelType, contentType)
 	}
 
@@ -267,7 +267,7 @@ func (s *Server) handleSuccessResponse(
 	if reqCtx.isStreaming {
 		hasUsage := result.InputTokens > 0 || result.OutputTokens > 0
 
-		// 🔍 诊断增强: 传递contentType帮助定位问题(区分SSE/JSON/其他)
+		// [VALIDATE] 诊断增强: 传递contentType帮助定位问题(区分SSE/JSON/其他)
 		if diagMsg := buildStreamDiagnostics(streamErr, readStats, hasUsage, channelType, contentType); diagMsg != "" {
 			result.StreamDiagMsg = diagMsg
 			log.Print(diagMsg)
@@ -304,7 +304,7 @@ func (s *Server) handleResponse(
 		return s.handleErrorResponse(reqCtx, resp, firstByteTime, hdrClone)
 	}
 
-	// ✅ 空响应检测：200状态码但Content-Length=0视为上游故障
+	// [INFO] 空响应检测：200状态码但Content-Length=0视为上游故障
 	// 常见于CDN/代理错误、认证失败等异常场景，应触发渠道级重试
 	if contentLen := resp.Header.Get("Content-Length"); contentLen == "0" {
 		duration := reqCtx.Duration()
@@ -334,7 +334,7 @@ func (s *Server) handleResponse(
 func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey string, method string, body []byte, hdr http.Header, rawQuery, requestPath string, w http.ResponseWriter) (*fwResult, float64, error) {
 	// 1. 创建请求上下文（处理超时）
 	reqCtx := s.newRequestContext(ctx, requestPath, body)
-	defer reqCtx.cleanup() // ✅ 统一清理：定时器 + context（总是安全）
+	defer reqCtx.cleanup() // [INFO] 统一清理：定时器 + context（总是安全）
 
 	// 2. 构建上游请求
 	req, err := s.buildProxyRequest(reqCtx, cfg, apiKey, method, body, hdr, rawQuery, requestPath)
@@ -345,7 +345,7 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 	// 3. 发送请求
 	resp, err := s.client.Do(req)
 
-	// ✅ 修复（2025-12）：客户端取消时主动关闭 response body，立即中断上游传输
+	// [INFO] 修复（2025-12）：客户端取消时主动关闭 response body，立即中断上游传输
 	// 问题：streamCopy 中的 Read 阻塞时，无法立即响应 context 取消，上游继续生成完整响应
 	// 解决：使用 Go 1.21+ context.AfterFunc 替代手动 goroutine（零泄漏风险）
 	//   - HTTP/1.1: 关闭 TCP 连接 → 上游收到 RST，立即停止发送
@@ -360,7 +360,7 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 			})
 		}
 
-		// ✅ 使用 context.AfterFunc 监听客户端取消（Go 1.21+，标准库保证无泄漏）
+		// [INFO] 使用 context.AfterFunc 监听客户端取消（Go 1.21+，标准库保证无泄漏）
 		stop := context.AfterFunc(ctx, closeBodySafely)
 		defer stop() // 取消注册（请求正常结束时避免内存泄漏）
 
@@ -393,17 +393,17 @@ func (s *Server) forwardAttempt(
 	keyIndex int,
 	selectedKey string,
 	reqCtx *proxyRequestContext,
-	actualModel string, // ✅ 重定向后的实际模型名称
+	actualModel string, // [INFO] 重定向后的实际模型名称
 	bodyToSend []byte,
 	w http.ResponseWriter,
 ) (*proxyResult, bool, bool) {
-	// 🔍 Key级验证器检查(88code套餐验证等)
+	// [VALIDATE] Key级验证器检查(88code套餐验证等)
 	// 每个Key单独验证，避免误杀免费key或误放付费key
 	if s.validatorManager != nil {
 		available, reason := s.validatorManager.ValidateChannel(ctx, cfg, selectedKey)
 		if !available {
 			// Key验证失败: 跳过此key，尝试下一个
-			log.Printf("🔍 渠道 %s (ID=%d) Key#%d 验证失败: %s, 跳过", cfg.Name, cfg.ID, keyIndex, reason)
+			log.Printf("[VALIDATE] 渠道 %s (ID=%d) Key#%d 验证失败: %s, 跳过", cfg.Name, cfg.ID, keyIndex, reason)
 			return nil, true, false // shouldContinue=true, shouldBreak=false
 		}
 	}
@@ -413,30 +413,30 @@ func (s *Server) forwardAttempt(
 		bodyToSend, reqCtx.header, reqCtx.rawQuery, reqCtx.requestPath, w)
 
 	// 处理网络错误或异常响应（如空响应）
-	// ✅ 修复：handleResponse可能返回err即使StatusCode=200（例如Content-Length=0）
+	// [INFO] 修复：handleResponse可能返回err即使StatusCode=200（例如Content-Length=0）
 	if err != nil {
 		return s.handleNetworkError(ctx, cfg, keyIndex, actualModel, selectedKey, reqCtx.tokenID, duration, err)
 	}
 
 	// 处理成功响应（仅当err==nil且状态码2xx时）
 	if res.Status >= 200 && res.Status < 300 {
-		// ✅ 检查SSE流中是否有error事件（如1308错误）
+		// [INFO] 检查SSE流中是否有error事件（如1308错误）
 		// 虽然HTTP状态码是200，但error事件表示实际上发生了错误，需要触发冷却逻辑
 		if res.SSEErrorEvent != nil {
 			// 将SSE error事件当作HTTP错误处理
 			// 注意：不改变HTTP状态码，因为上游确实返回的是200
 			// 但我们需要将错误体传递给冷却管理器来触发冷却
-			log.Printf("⚠️  [SSE错误处理] HTTP状态码200但检测到SSE error事件，触发冷却逻辑")
+			log.Printf("[WARN]  [SSE错误处理] HTTP状态码200但检测到SSE error事件，触发冷却逻辑")
 			// 将error事件存入Body字段，用于冷却管理器解析
 			res.Body = res.SSEErrorEvent
 			return s.handleProxyErrorResponse(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
 		}
 
-		// ✅ 检查流响应是否不完整（2025-12新增）
+		// [INFO] 检查流响应是否不完整（2025-12新增）
 		// 虽然HTTP状态码是200且流传输结束，但检测到流响应不完整或流传输中断，需要触发冷却逻辑
 		// 触发条件：(1) 流传输错误  (2) 流式请求但没有usage数据（疑似不完整响应）
 		if res.StreamDiagMsg != "" {
-			log.Printf("⚠️  [流响应不完整] HTTP状态码200但检测到流响应不完整，触发冷却逻辑: %s", res.StreamDiagMsg)
+			log.Printf("[WARN]  [流响应不完整] HTTP状态码200但检测到流响应不完整，触发冷却逻辑: %s", res.StreamDiagMsg)
 			// 使用内部状态码 StatusStreamIncomplete 标识流响应不完整
 			// 这将触发渠道级冷却，因为这通常是上游服务问题（网络不稳定、负载过高等）
 			res.Body = []byte(res.StreamDiagMsg)
@@ -478,7 +478,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	triedKeys := make(map[int]bool) // 本次请求内已尝试过的Key
 
 	// 准备请求体（处理模型重定向）
-	// ✅ 修复：保存重定向后的模型名称，用于日志记录和调试
+	// [INFO] 修复：保存重定向后的模型名称，用于日志记录和调试
 	actualModel, bodyToSend := prepareRequestBody(cfg, reqCtx)
 
 	// Key重试循环
@@ -494,7 +494,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		triedKeys[keyIndex] = true
 
 		// 单次转发尝试（传递实际的API Key字符串）
-		// ✅ 修复：传递 actualModel 用于日志记录
+		// [INFO] 修复：传递 actualModel 用于日志记录
 		result, shouldContinue, shouldBreak := s.forwardAttempt(
 			ctx, cfg, keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, w)
 

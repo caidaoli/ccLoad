@@ -18,7 +18,7 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 	sinceUnix := since.Unix()
 	untilUnix := until.Unix()
 
-	// 🎯 修复跨数据库JOIN:先从主库查询符合类型的渠道ID列表
+	// [TARGET] 修复跨数据库JOIN:先从主库查询符合类型的渠道ID列表
 	var channelIDs []int64
 	if channelType != "" {
 		var err error
@@ -198,7 +198,7 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 		var err error
 		channelNames, err = s.fetchChannelNamesBatch(ctx, channelIDsToFetch)
 		if err != nil {
-			log.Printf("⚠️  批量查询渠道名称失败: %v", err)
+			log.Printf("[WARN]  批量查询渠道名称失败: %v", err)
 			channelNames = make(map[int64]string)
 		}
 	}

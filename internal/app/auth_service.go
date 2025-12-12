@@ -30,7 +30,7 @@ import (
 // 遵循 SRP 原则：仅负责认证授权，不涉及代理、日志、管理 API
 type AuthService struct {
 	// Token 认证（管理界面使用的动态 Token）
-	// ✅ 安全修复：存储SHA256哈希而非明文(2025-12)
+	// [INFO] 安全修复：存储SHA256哈希而非明文(2025-12)
 	passwordHash []byte               // 管理员密码bcrypt哈希
 	validTokens  map[string]time.Time // TokenHash → 过期时间
 	tokensMux    sync.RWMutex         // 并发保护
@@ -82,19 +82,19 @@ func NewAuthService(
 
 	// 从数据库加载API访问令牌
 	if err := s.ReloadAuthTokens(); err != nil {
-		log.Printf("⚠️  初始化时加载API令牌失败: %v", err)
+		log.Printf("[WARN]  初始化时加载API令牌失败: %v", err)
 	}
 
 	// 从数据库加载管理员会话（支持重启后保持登录）
 	if err := s.loadSessionsFromDB(); err != nil {
-		log.Printf("⚠️  初始化时加载管理员会话失败: %v", err)
+		log.Printf("[WARN]  初始化时加载管理员会话失败: %v", err)
 	}
 
 	return s
 }
 
 // loadSessionsFromDB 从数据库加载管理员会话
-// ✅ 安全修复：加载tokenHash→expiry映射(2025-12)
+// [INFO] 安全修复：加载tokenHash→expiry映射(2025-12)
 func (s *AuthService) loadSessionsFromDB() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -111,7 +111,7 @@ func (s *AuthService) loadSessionsFromDB() error {
 	s.tokensMux.Unlock()
 
 	if len(sessions) > 0 {
-		log.Printf("✅ 已恢复 %d 个管理员会话（重启后保持登录）", len(sessions))
+		log.Printf("[INFO] 已恢复 %d 个管理员会话（重启后保持登录）", len(sessions))
 	}
 	return nil
 }
@@ -151,7 +151,7 @@ func (s *AuthService) generateToken() (string, error) {
 }
 
 // isValidToken 验证Token有效性（检查过期时间）
-// ✅ 安全修复：通过tokenHash查询(2025-12)
+// [INFO] 安全修复：通过tokenHash查询(2025-12)
 func (s *AuthService) isValidToken(token string) bool {
 	tokenHash := model.HashToken(token)
 
@@ -206,7 +206,7 @@ func (s *AuthService) CleanExpiredTokens() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := s.store.CleanExpiredSessions(ctx); err != nil {
-		log.Printf("⚠️  清理数据库过期会话失败: %v", err)
+		log.Printf("[WARN]  清理数据库过期会话失败: %v", err)
 	}
 }
 
@@ -352,7 +352,7 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 	if err := bcrypt.CompareHashAndPassword(s.passwordHash, []byte(req.Password)); err != nil {
 		// 记录失败尝试（速率限制器已在AllowAttempt中增加计数）
 		attemptCount := s.loginRateLimiter.GetAttemptCount(clientIP)
-		log.Printf("⚠️  登录失败: IP=%s, 尝试次数=%d/5", clientIP, attemptCount)
+		log.Printf("[WARN]  登录失败: IP=%s, 尝试次数=%d/5", clientIP, attemptCount)
 
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"error":              "Invalid password",
@@ -373,7 +373,7 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 	}
 	expiry := time.Now().Add(config.TokenExpiry)
 
-	// ✅ 安全修复：存储tokenHash而非明文(2025-12)
+	// [INFO] 安全修复：存储tokenHash而非明文(2025-12)
 	tokenHash := model.HashToken(token)
 
 	// 存储TokenHash到内存
@@ -381,18 +381,18 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 	s.validTokens[tokenHash] = expiry
 	s.tokensMux.Unlock()
 
-	// ✅ 修复：同步写入数据库（SQLite本地写入极快，微秒级，无需异步）
+	// [INFO] 修复：同步写入数据库（SQLite本地写入极快，微秒级，无需异步）
 	// 原因：异步goroutine未受控，关机时可能写入已关闭的连接
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	if err := s.store.CreateAdminSession(ctx, token, expiry); err != nil {
 		cancel()
-		log.Printf("⚠️  保存管理员会话到数据库失败: %v", err)
+		log.Printf("[WARN]  保存管理员会话到数据库失败: %v", err)
 		// 注意：内存中的token仍然有效，下次重启会丢失此会话
 	} else {
 		cancel()
 	}
 
-	log.Printf("✅ 登录成功: IP=%s", clientIP)
+	log.Printf("[INFO] 登录成功: IP=%s", clientIP)
 
 	// 返回明文Token给客户端（前端存储到localStorage）
 	c.JSON(http.StatusOK, gin.H{
@@ -410,7 +410,7 @@ func (s *AuthService) HandleLogout(c *gin.Context) {
 	if after, ok := strings.CutPrefix(authHeader, prefix); ok {
 		token := after
 
-		// ✅ 安全修复：计算tokenHash删除(2025-12)
+		// [INFO] 安全修复：计算tokenHash删除(2025-12)
 		tokenHash := model.HashToken(token)
 
 		// 删除内存中的TokenHash
@@ -418,12 +418,12 @@ func (s *AuthService) HandleLogout(c *gin.Context) {
 		delete(s.validTokens, tokenHash)
 		s.tokensMux.Unlock()
 
-		// ✅ 修复：同步删除数据库中的会话（SQLite本地删除极快，微秒级，无需异步）
+		// [INFO] 修复：同步删除数据库中的会话（SQLite本地删除极快，微秒级，无需异步）
 		// 原因：异步goroutine未受控，关机时可能写入已关闭的连接
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		if err := s.store.DeleteAdminSession(ctx, token); err != nil {
 			cancel()
-			log.Printf("⚠️  删除数据库会话失败: %v", err)
+			log.Printf("[WARN]  删除数据库会话失败: %v", err)
 		} else {
 			cancel()
 		}
@@ -461,6 +461,6 @@ func (s *AuthService) ReloadAuthTokens() error {
 	s.authTokenIDs = newTokenIDs
 	s.authTokensMux.Unlock()
 
-	log.Printf("🔄 API令牌已热更新（%d个有效令牌）", len(newTokens))
+	log.Printf("[RELOAD] API令牌已热更新（%d个有效令牌）", len(newTokens))
 	return nil
 }

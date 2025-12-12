@@ -62,76 +62,66 @@ const (
 // 遵循SRP原则：单一职责 - 仅负责状态码分类
 //
 // 注意：401/403错误需要结合响应体内容进一步判断（通过ClassifyHTTPStatusWithBody）
+
+// statusCodeClassification 状态码→错误级别映射表
+// 设计原则：表驱动替代巨型switch，提高可维护性
+var statusCodeClassification = map[int]ErrorLevel{
+	// 499: 上游返回的客户端关闭请求，应切换渠道重试
+	// 注意：context.Canceled 在 ClassifyError 中单独处理
+	499: ErrorLevelChannel,
+
+	// Key级错误：API Key相关问题
+	400: ErrorLevelKey, // Bad Request - API Key格式错误
+	401: ErrorLevelKey, // Unauthorized - 默认Key级，需结合响应体分析
+	402: ErrorLevelKey, // Payment Required - 配额或余额不足
+	403: ErrorLevelKey, // Forbidden - 默认Key级，需结合响应体分析
+	429: ErrorLevelKey, // Too Many Requests - Key限流
+
+	// 渠道级错误：服务器端问题
+	500: ErrorLevelChannel, // Internal Server Error
+	502: ErrorLevelChannel, // Bad Gateway
+	503: ErrorLevelChannel, // Service Unavailable
+	504: ErrorLevelChannel, // Gateway Timeout
+	520: ErrorLevelChannel, // Cloudflare: Unknown Error
+	521: ErrorLevelChannel, // Cloudflare: Web Server Is Down
+	524: ErrorLevelChannel, // Cloudflare: A Timeout Occurred
+
+	// 自定义内部状态码
+	StatusFirstByteTimeout: ErrorLevelChannel, // 598 上游首字节超时
+	StatusStreamIncomplete: ErrorLevelChannel, // 599 流式响应不完整
+
+	// 客户端错误：不冷却，直接返回
+	404: ErrorLevelClient, // Not Found
+	405: ErrorLevelClient, // Method Not Allowed
+	406: ErrorLevelClient, // Not Acceptable
+	408: ErrorLevelClient, // Request Timeout
+	410: ErrorLevelClient, // Gone
+	413: ErrorLevelClient, // Payload Too Large
+	414: ErrorLevelClient, // URI Too Long
+	415: ErrorLevelClient, // Unsupported Media Type
+	416: ErrorLevelClient, // Range Not Satisfiable
+	417: ErrorLevelClient, // Expectation Failed
+}
+
 func ClassifyHTTPStatus(statusCode int) ErrorLevel {
 	// 2xx 成功
 	if statusCode >= 200 && statusCode < 300 {
 		return ErrorLevelNone
 	}
 
-	// 特殊状态码处理
-	switch statusCode {
-	case 499: // Client Closed Request
-		// 499错误需要区分来源
-		// 注意：此函数处理的是HTTP响应中的499状态码
-		// 当499来自HTTP响应时，说明是上游API返回的状态码（不是下游客户端取消）
-		// 可能原因：API服务器过载、限流、或内部错误
-		// 应该切换到其他渠道重试
-		//
-		// context.Canceled（下游客户端取消）在ClassifyError中单独处理（line 156-158）
-		// 那里返回的是499 + ErrorLevelClient（正确，不应重试）
-		return ErrorLevelChannel
-
-	// Key级错误：API Key相关问题（4xx客户端错误）
-	case 400: // Bad Request - 通常是API Key格式错误或无效
-		return ErrorLevelKey
-	case 402: // Payment Required / 配额或余额不足等，需要切换Key
-		return ErrorLevelKey
-	case 401: // Unauthorized - 需要进一步分析（默认Key级）
-		return ErrorLevelKey
-	case 403: // Forbidden - 需要进一步分析（默认Key级）
-		return ErrorLevelKey
-	case 429: // Too Many Requests - Key限流（注意：也可能是IP限流，但优先假设Key级）
-		return ErrorLevelKey
-
-	// 渠道级错误：服务器端问题（5xx服务器错误）
-	case 500: // Internal Server Error
-		return ErrorLevelChannel
-	case 502: // Bad Gateway
-		return ErrorLevelChannel
-	case 503: // Service Unavailable
-		return ErrorLevelChannel
-	case 504: // Gateway Timeout
-		return ErrorLevelChannel
-	case 520: // Web Server Returned an Unknown Error (Cloudflare) - 源服务器返回未知错误
-		return ErrorLevelChannel
-	case 521: // Web Server Is Down (Cloudflare) - 源服务器关闭
-		return ErrorLevelChannel
-	case 524: // A Timeout Occurred (Cloudflare) - 连接超时
-		return ErrorLevelChannel
-
-	// 自定义内部状态码（5xx范围，用于特殊场景标识）
-	case StatusFirstByteTimeout: // 598 上游首字节超时
-		return ErrorLevelChannel
-	case StatusStreamIncomplete: // 599 流式响应不完整
-		return ErrorLevelChannel
-
-	// 其他4xx错误：默认为客户端错误（不冷却）
-	// 例如：404 Not Found（模型不存在）、405 Method Not Allowed等
-	case 404, 405, 406, 408, 410, 413, 414, 415, 416, 417:
-		return ErrorLevelClient
-
-	default:
-		// 未知状态码：保守策略
-		// 4xx范围 → 客户端错误（不冷却，避免误判）
-		// 5xx范围 → 渠道级错误（冷却渠道）
-		if statusCode >= 400 && statusCode < 500 {
-			return ErrorLevelClient
-		}
-		if statusCode >= 500 {
-			return ErrorLevelChannel
-		}
-		return ErrorLevelClient // 极端情况，默认不冷却
+	// 表驱动：状态码 → 错误级别映射
+	if level, ok := statusCodeClassification[statusCode]; ok {
+		return level
 	}
+
+	// 默认规则：4xx → Client, 5xx → Channel
+	if statusCode >= 400 && statusCode < 500 {
+		return ErrorLevelClient
+	}
+	if statusCode >= 500 {
+		return ErrorLevelChannel
+	}
+	return ErrorLevelClient
 }
 
 // classifyHTTPStatusWithBody 基于状态码和响应体智能分类错误级别
@@ -142,7 +132,7 @@ func ClassifyHTTPStatus(statusCode int) ErrorLevel {
 // - 只有明确的"账户级不可逆错误"才分类为Channel级（如账户暂停、服务禁用）
 // - "额度用尽"可能是单个Key的问题，应该先尝试其他Key
 func ClassifyHTTPStatusWithBody(statusCode int, responseBody []byte) ErrorLevel {
-	// ✅ 特殊处理：检测1308错误（可能以SSE error事件形式出现，HTTP状态码是200）
+	// [INFO] 特殊处理：检测1308错误（可能以SSE error事件形式出现，HTTP状态码是200）
 	// 1308错误表示达到使用上限，应该触发Key级冷却
 	if _, has1308 := ParseResetTimeFrom1308Error(responseBody); has1308 {
 		return ErrorLevelKey // 1308错误视为Key级错误，触发冷却
@@ -217,7 +207,7 @@ func ClassifyRateLimitError(headers map[string][]string, responseBody []byte) Er
 		// Retry-After可能是秒数或HTTP日期
 		// 尝试解析为秒数
 		if seconds, err := strconv.Atoi(retryAfter); err == nil {
-			// ✅ 如果Retry-After > 阈值,可能是账户级或IP级限流
+			// [INFO] 如果Retry-After > 阈值,可能是账户级或IP级限流
 			// 这种长时间限流通常影响整个渠道
 			if seconds > RetryAfterThresholdSeconds {
 				return ErrorLevelChannel
@@ -373,7 +363,7 @@ func classifyErrorByString(errStr string) (int, ErrorLevel, bool) {
 		return 499, ErrorLevelClient, false // StatusConnectionReset
 	}
 
-	// ✅ 空响应检测：上游返回200但Content-Length=0
+	// [INFO] 空响应检测：上游返回200但Content-Length=0
 	// 常见于CDN/代理错误、认证失败等异常场景，应触发渠道级重试
 	if strings.Contains(errLower, "empty response") &&
 		strings.Contains(errLower, "content-length: 0") {

@@ -42,7 +42,7 @@ func TestSelectAvailableKey_SingleKey(t *testing.T) {
 		ChannelID:   cfg.ID,
 		KeyIndex:    0,
 		APIKey:      "sk-single-key",
-		KeyStrategy: "sequential",
+		KeyStrategy: model.KeyStrategySequential,
 	})
 	if err != nil {
 		t.Fatalf("创建API Key失败: %v", err)
@@ -69,7 +69,7 @@ func TestSelectAvailableKey_SingleKey(t *testing.T) {
 			t.Errorf("期望apiKey=sk-single-key，实际%s", apiKey)
 		}
 
-		t.Logf("✅ 单Key场景选择正确: keyIndex=%d", keyIndex)
+		t.Logf("[INFO] 单Key场景选择正确: keyIndex=%d", keyIndex)
 	})
 
 	t.Run("排除唯一Key后无可用Key", func(t *testing.T) {
@@ -80,7 +80,7 @@ func TestSelectAvailableKey_SingleKey(t *testing.T) {
 			t.Error("期望返回错误（唯一Key已被排除），但成功返回")
 		}
 
-		t.Logf("✅ 单Key被排除后正确返回错误: %v", err)
+		t.Logf("[INFO] 单Key被排除后正确返回错误: %v", err)
 	})
 }
 
@@ -111,7 +111,7 @@ func TestSelectAvailableKey_SingleKeyCooldown(t *testing.T) {
 		ChannelID:   cfg.ID,
 		KeyIndex:    0,
 		APIKey:      "sk-single-cooldown-key",
-		KeyStrategy: "sequential",
+		KeyStrategy: model.KeyStrategySequential,
 	})
 	if err != nil {
 		t.Fatalf("创建API Key失败: %v", err)
@@ -141,7 +141,7 @@ func TestSelectAvailableKey_SingleKeyCooldown(t *testing.T) {
 			t.Errorf("错误消息应包含'cooldown'，实际: %v", err)
 		}
 
-		t.Logf("✅ 单Key冷却后正确返回错误: %v", err)
+		t.Logf("[INFO] 单Key冷却后正确返回错误: %v", err)
 	})
 }
 
@@ -172,7 +172,7 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 			ChannelID:   cfg.ID,
 			KeyIndex:    i,
 			APIKey:      "sk-seq-key-" + string(rune('0'+i)),
-			KeyStrategy: "sequential",
+			KeyStrategy: model.KeyStrategySequential,
 		})
 		if err != nil {
 			t.Fatalf("创建API Key %d失败: %v", i, err)
@@ -200,7 +200,7 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 			t.Errorf("期望apiKey=sk-seq-key-0，实际%s", apiKey)
 		}
 
-		t.Logf("✅ 顺序策略首次选择正确: keyIndex=%d", keyIndex)
+		t.Logf("[INFO] 顺序策略首次选择正确: keyIndex=%d", keyIndex)
 	})
 
 	t.Run("排除第一个Key后返回第二个", func(t *testing.T) {
@@ -219,7 +219,7 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 			t.Errorf("期望apiKey=sk-seq-key-1，实际%s", apiKey)
 		}
 
-		t.Logf("✅ 顺序策略排除后选择正确: keyIndex=%d", keyIndex)
+		t.Logf("[INFO] 顺序策略排除后选择正确: keyIndex=%d", keyIndex)
 	})
 
 	t.Run("排除前两个Key后返回第三个", func(t *testing.T) {
@@ -238,7 +238,7 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 			t.Errorf("期望apiKey=sk-seq-key-2，实际%s", apiKey)
 		}
 
-		t.Logf("✅ 顺序策略多次排除后选择正确: keyIndex=%d", keyIndex)
+		t.Logf("[INFO] 顺序策略多次排除后选择正确: keyIndex=%d", keyIndex)
 	})
 
 	t.Run("所有Key被排除后返回错误", func(t *testing.T) {
@@ -249,7 +249,7 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 			t.Error("期望返回错误（所有Key已被排除），但成功返回")
 		}
 
-		t.Logf("✅ 所有Key被排除后正确返回错误: %v", err)
+		t.Logf("[INFO] 所有Key被排除后正确返回错误: %v", err)
 	})
 }
 
@@ -280,7 +280,7 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 			ChannelID:   cfg.ID,
 			KeyIndex:    i,
 			APIKey:      "sk-rr-key-" + string(rune('0'+i)),
-			KeyStrategy: "round_robin",
+			KeyStrategy: model.KeyStrategyRoundRobin,
 		})
 		if err != nil {
 			t.Fatalf("创建API Key %d失败: %v", i, err)
@@ -294,7 +294,7 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 	}
 
 	t.Run("连续调用应轮询返回不同Key", func(t *testing.T) {
-		// ✅ Linus风格：轮询指针内存化后，起始位置不确定（每次测试可能不同）
+		// [INFO] Linus风格：轮询指针内存化后，起始位置不确定（每次测试可能不同）
 		// 验证策略：确保5次调用真正轮询（没有连续重复，且访问了所有Key）
 
 		var selectedKeys []int
@@ -321,11 +321,11 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 			}
 		}
 
-		t.Logf("✅ 轮询策略正确: %v", selectedKeys)
+		t.Logf("[INFO] 轮询策略正确: %v", selectedKeys)
 	})
 
 	t.Run("排除当前Key后跳到下一个", func(t *testing.T) {
-		// ✅ 内存化后无需重置索引
+		// [INFO] 内存化后无需重置索引
 
 		// 第一次排除Key0
 		excludeKeys := map[int]bool{0: true}
@@ -339,7 +339,7 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 			t.Errorf("排除Key0后应返回keyIndex=1，实际%d", keyIndex)
 		}
 
-		t.Logf("✅ 轮询策略排除后选择正确: keyIndex=%d", keyIndex)
+		t.Logf("[INFO] 轮询策略排除后选择正确: keyIndex=%d", keyIndex)
 	})
 }
 
@@ -371,7 +371,7 @@ func TestSelectAvailableKey_KeyCooldown(t *testing.T) {
 			ChannelID:   cfg.ID,
 			KeyIndex:    i,
 			APIKey:      "sk-cooldown-key-" + string(rune('0'+i)),
-			KeyStrategy: "sequential",
+			KeyStrategy: model.KeyStrategySequential,
 		})
 		if err != nil {
 			t.Fatalf("创建API Key %d失败: %v", i, err)
@@ -406,7 +406,7 @@ func TestSelectAvailableKey_KeyCooldown(t *testing.T) {
 			t.Errorf("期望apiKey=sk-cooldown-key-1，实际%s", apiKey)
 		}
 
-		t.Logf("✅ Key冷却过滤正确: 跳过Key0，选择Key1")
+		t.Logf("[INFO] Key冷却过滤正确: 跳过Key0，选择Key1")
 	})
 
 	t.Run("冷却多个Key", func(t *testing.T) {
@@ -437,7 +437,7 @@ func TestSelectAvailableKey_KeyCooldown(t *testing.T) {
 			t.Errorf("期望apiKey=sk-cooldown-key-2，实际%s", apiKey)
 		}
 
-		t.Logf("✅ 多Key冷却过滤正确: 跳过Key0和Key1，选择Key2")
+		t.Logf("[INFO] 多Key冷却过滤正确: 跳过Key0和Key1，选择Key2")
 	})
 
 	t.Run("所有Key冷却后返回错误", func(t *testing.T) {
@@ -459,7 +459,7 @@ func TestSelectAvailableKey_KeyCooldown(t *testing.T) {
 			t.Error("期望返回错误（所有Key都在冷却），但成功返回")
 		}
 
-		t.Logf("✅ 所有Key冷却后正确返回错误: %v", err)
+		t.Logf("[INFO] 所有Key冷却后正确返回错误: %v", err)
 	})
 }
 
@@ -491,7 +491,7 @@ func TestSelectAvailableKey_CooldownAndExclude(t *testing.T) {
 			ChannelID:   cfg.ID,
 			KeyIndex:    i,
 			APIKey:      "sk-combined-key-" + string(rune('0'+i)),
-			KeyStrategy: "sequential",
+			KeyStrategy: model.KeyStrategySequential,
 		})
 		if err != nil {
 			t.Fatalf("创建API Key %d失败: %v", i, err)
@@ -528,7 +528,7 @@ func TestSelectAvailableKey_CooldownAndExclude(t *testing.T) {
 		t.Errorf("期望apiKey=sk-combined-key-3，实际%s", apiKey)
 	}
 
-	t.Logf("✅ 冷却与排除组合过滤正确: 跳过Key0(排除)、Key1(冷却)、Key2(排除)，选择Key3")
+	t.Logf("[INFO] 冷却与排除组合过滤正确: 跳过Key0(排除)、Key1(冷却)、Key2(排除)，选择Key3")
 }
 
 // TestSelectAvailableKey_NoKeys 测试无Key配置场景
@@ -564,7 +564,7 @@ func TestSelectAvailableKey_NoKeys(t *testing.T) {
 		t.Error("期望返回错误（渠道未配置API Keys），但成功返回")
 	}
 
-	t.Logf("✅ 无Key配置场景正确返回错误: %v", err)
+	t.Logf("[INFO] 无Key配置场景正确返回错误: %v", err)
 }
 
 // TestSelectAvailableKey_DefaultStrategy 测试默认策略
@@ -618,7 +618,7 @@ func TestSelectAvailableKey_DefaultStrategy(t *testing.T) {
 		t.Errorf("默认策略首次应返回keyIndex=0，实际%d", keyIndex)
 	}
 
-	t.Logf("✅ 默认策略（sequential）正确生效")
+	t.Logf("[INFO] 默认策略（sequential）正确生效")
 }
 
 // TestSelectAvailableKey_UnknownStrategy 测试未知策略回退到默认
@@ -672,7 +672,7 @@ func TestSelectAvailableKey_UnknownStrategy(t *testing.T) {
 		t.Errorf("未知策略应回退到sequential，首次应返回keyIndex=0，实际%d", keyIndex)
 	}
 
-	t.Logf("✅ 未知策略正确回退到默认sequential")
+	t.Logf("[INFO] 未知策略正确回退到默认sequential")
 }
 
 // ========== 辅助函数 ==========

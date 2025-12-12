@@ -81,12 +81,12 @@ const (
 	SQLiteMaxOpenConnsFile = 5
 
 	// SQLiteMaxIdleConnsFile 文件模式最大空闲连接数
-	// ✅ 从2提升到5：避免高并发时频繁创建/销毁连接
+	// [INFO] 从2提升到5：避免高并发时频繁创建/销毁连接
 	// 设计原则：空闲连接数 = 最大连接数，减少连接重建开销
 	SQLiteMaxIdleConnsFile = 5
 
 	// SQLiteConnMaxLifetime 连接最大生命周期
-	// ✅ 从1分钟提升到5分钟：降低连接过期频率
+	// [INFO] 从1分钟提升到5分钟：降低连接过期频率
 	// 权衡：更长的生命周期 vs 更低的连接重建开销
 	SQLiteConnMaxLifetime = 5 * time.Minute
 )

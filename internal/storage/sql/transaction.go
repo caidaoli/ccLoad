@@ -23,8 +23,8 @@ type TxHandler interface {
 var _ TxHandler = (*sql.Tx)(nil)
 
 // WithTransaction 在主数据库事务中执行函数（用于channels、api_keys、key_rr操作）
-// ✅ DRY原则：统一事务管理逻辑，消除重复代码
-// ✅ 错误处理：自动回滚，优雅处理panic
+// [INFO] DRY原则：统一事务管理逻辑，消除重复代码
+// [INFO] 错误处理：自动回滚，优雅处理panic
 //
 // 使用示例:
 //
@@ -47,8 +47,8 @@ func (s *SQLStore) WithLogTransaction(ctx context.Context, fn func(*sql.Tx) erro
 }
 
 // withTransaction 核心事务执行逻辑（私有函数，遵循DRY原则）
-// ✅ KISS原则：简单的事务模板，自动处理提交/回滚
-// ✅ 安全性：panic恢复 + defer回滚双重保障
+// [INFO] KISS原则：简单的事务模板，自动处理提交/回滚
+// [INFO] 安全性：panic恢复 + defer回滚双重保障
 func withTransaction(db *sql.DB, ctx context.Context, fn func(*sql.Tx) error) error {
 	// 增加死锁重试机制
 	// 问题: SQLite在高并发事务下可能返回"database is deadlocked"错误

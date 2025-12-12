@@ -67,7 +67,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 			ChannelID:   created.ID,
 			KeyIndex:    0,
 			APIKey:      "sk-test-key-" + created.Name,
-			KeyStrategy: "sequential",
+			KeyStrategy: model.KeyStrategySequential,
 		}
 		if err := server.store.CreateAPIKey(ctx, apiKey); err != nil {
 			t.Fatalf("创建API Key失败: %v", err)
@@ -133,7 +133,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		t.Errorf("数据行字段不足，期望至少10个字段，实际: %d", len(records[1]))
 	}
 
-	t.Logf("✅ CSV导出成功，共 %d 行记录（含header）", len(records))
+	t.Logf("[INFO] CSV导出成功，共 %d 行记录（含header）", len(records))
 	t.Logf("   CSV Header: %v", header)
 	t.Logf("   第一行数据: %v", records[1])
 }
@@ -162,7 +162,7 @@ func TestHandleCacheStats(t *testing.T) {
 		ChannelID:   created.ID,
 		KeyIndex:    0,
 		APIKey:      "sk-cache-test",
-		KeyStrategy: "sequential",
+		KeyStrategy: model.KeyStrategySequential,
 		CreatedAt:   model.JSONTime{Time: now},
 		UpdatedAt:   model.JSONTime{Time: now},
 	}
@@ -246,7 +246,7 @@ Import-Test-2,https://import2.example.com,5,"test-model-2,test-model-3","{""old"
 	// 创建Gin测试上下文
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	// ✅ 修复：使用bytes.NewReader创建新的读取器，避免buffer读取位置问题
+	// [INFO] 修复：使用bytes.NewReader创建新的读取器，避免buffer读取位置问题
 	c.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
 	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
 
@@ -258,10 +258,10 @@ Import-Test-2,https://import2.example.com,5,"test-model-2,test-model-3","{""old"
 		t.Fatalf("期望状态码 200, 实际 %d, 响应: %s", w.Code, w.Body.String())
 	}
 
-	// ✅ 调试：输出原始响应内容
+	// [INFO] 调试：输出原始响应内容
 	t.Logf("📋 原始响应内容: %s", w.Body.String())
 
-	// ✅ 修复：响应被包装在 {"success":true,"data":{...}} 结构中
+	// [INFO] 修复：响应被包装在 {"success":true,"data":{...}} 结构中
 	var wrapper map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &wrapper); err != nil {
 		t.Fatalf("解析响应失败: %v, 响应内容: %s", err, w.Body.String())
@@ -325,7 +325,7 @@ Import-Test-2,https://import2.example.com,5,"test-model-2,test-model-3","{""old"
 		}
 	}
 
-	t.Logf("✅ CSV导入成功，导入 %d 条记录 (Created: %d, Updated: %d)", totalImported, summary.Created, summary.Updated)
+	t.Logf("[INFO] CSV导入成功，导入 %d 条记录 (Created: %d, Updated: %d)", totalImported, summary.Created, summary.Updated)
 	t.Logf("   导入的渠道: %v", importedConfigs)
 }
 
@@ -359,13 +359,13 @@ func TestAdminAPI_ExportImportRoundTrip(t *testing.T) {
 			ChannelID:   created.ID,
 			KeyIndex:    0,
 			APIKey:      "sk-roundtrip-key-1",
-			KeyStrategy: "sequential",
+			KeyStrategy: model.KeyStrategySequential,
 		},
 		{
 			ChannelID:   created.ID,
 			KeyIndex:    1,
 			APIKey:      "sk-roundtrip-key-2",
-			KeyStrategy: "sequential",
+			KeyStrategy: model.KeyStrategySequential,
 		},
 	}
 
@@ -386,7 +386,7 @@ func TestAdminAPI_ExportImportRoundTrip(t *testing.T) {
 	}
 
 	exportedCSV := exportW.Body.Bytes()
-	t.Logf("✅ 导出CSV成功，大小: %d bytes", len(exportedCSV))
+	t.Logf("[INFO] 导出CSV成功，大小: %d bytes", len(exportedCSV))
 
 	// 步骤3：删除原始数据
 	if err := server.store.DeleteConfig(ctx, created.ID); err != nil {
@@ -402,7 +402,7 @@ func TestAdminAPI_ExportImportRoundTrip(t *testing.T) {
 
 	importW := httptest.NewRecorder()
 	importC, _ := gin.CreateTestContext(importW)
-	// ✅ 修复：使用bytes.NewReader创建新的读取器
+	// [INFO] 修复：使用bytes.NewReader创建新的读取器
 	importC.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
 	importC.Request.Header.Set("Content-Type", writer.FormDataContentType())
 	server.HandleImportChannelsCSV(importC)
@@ -456,7 +456,7 @@ func TestAdminAPI_ExportImportRoundTrip(t *testing.T) {
 		t.Errorf("API Keys数量不匹配: 期望 %d, 实际 %d", len(apiKeys), len(restoredKeys))
 	}
 
-	t.Logf("✅ 导出-导入循环测试通过")
+	t.Logf("[INFO] 导出-导入循环测试通过")
 	t.Logf("   原始渠道ID: %d", created.ID)
 	t.Logf("   恢复渠道ID: %d", restoredConfig.ID)
 	t.Logf("   API Keys: %d → %d", len(apiKeys), len(restoredKeys))
@@ -474,7 +474,7 @@ func setupTestServer(t *testing.T) (*Server, func()) {
 		t.Fatalf("创建测试数据库失败: %v", err)
 	}
 
-	// ✅ 修复: 初始化测试所需的基础设施
+	// [INFO] 修复: 初始化测试所需的基础设施
 	shutdownCh := make(chan struct{})
 	isShuttingDown := &atomic.Bool{}
 	wg := &sync.WaitGroup{}
@@ -483,10 +483,10 @@ func setupTestServer(t *testing.T) (*Server, func()) {
 		store:       store,
 		keySelector: NewKeySelector(nil), // 移除store参数
 		shutdownCh:  shutdownCh,
-		// ⚠️ 注意: isShuttingDown和wg不能在此处初始化(包含noCopy字段,会触发go vet错误)
+		// [WARN] 注意: isShuttingDown和wg不能在此处初始化(包含noCopy字段,会触发go vet错误)
 	}
 
-	// ✅ 修复: 初始化 LogService（修复日志丢失问题）
+	// [INFO] 修复: 初始化 LogService（修复日志丢失问题）
 	server.logService = NewLogService(
 		store,
 		1000, // logBufferSize
@@ -498,7 +498,7 @@ func setupTestServer(t *testing.T) (*Server, func()) {
 	)
 	server.logService.StartWorkers()
 
-	// ✅ 初始化 AuthService（Token管理需要）
+	// [INFO] 初始化 AuthService（Token管理需要）
 	server.authService = NewAuthService(
 		"test-password",
 		nil, // loginRateLimiter
@@ -543,7 +543,7 @@ Test-Invalid,https://invalid.com
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	// ✅ 修复：使用bytes.NewReader创建新的读取器
+	// [INFO] 修复：使用bytes.NewReader创建新的读取器
 	c.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
 	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
 	server.HandleImportChannelsCSV(c)
@@ -554,7 +554,7 @@ Test-Invalid,https://invalid.com
 		t.Fatalf("解析响应失败: %v", err)
 	}
 
-	t.Logf("✅ 无效格式处理: status=%v, message=%v", resp["status"], resp["message"])
+	t.Logf("[INFO] 无效格式处理: status=%v, message=%v", resp["status"], resp["message"])
 }
 
 // TestAdminAPI_ImportCSV_DuplicateNames 测试重复渠道名称处理
@@ -579,7 +579,7 @@ func TestAdminAPI_ImportCSV_DuplicateNames(t *testing.T) {
 		t.Fatalf("创建现有渠道失败: %v", err)
 	}
 
-	// 尝试导入同名渠道 - ✅ 修复：添加必需的api_key和key_strategy列
+	// 尝试导入同名渠道 - [INFO] 修复：添加必需的api_key和key_strategy列
 	duplicateCSV := `name,url,priority,models,model_redirects,channel_type,enabled,api_key,key_strategy
 Duplicate-Test,https://duplicate.com,5,model-2,{},gemini,false,sk-duplicate-key,sequential
 `
@@ -592,7 +592,7 @@ Duplicate-Test,https://duplicate.com,5,model-2,{},gemini,false,sk-duplicate-key,
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	// ✅ 修复：使用bytes.NewReader创建新的读取器
+	// [INFO] 修复：使用bytes.NewReader创建新的读取器
 	c.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
 	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
 	server.HandleImportChannelsCSV(c)
@@ -600,7 +600,7 @@ Duplicate-Test,https://duplicate.com,5,model-2,{},gemini,false,sk-duplicate-key,
 	var resp map[string]any
 	json.Unmarshal(w.Body.Bytes(), &resp)
 
-	t.Logf("✅ 重复名称处理: status=%v, message=%v", resp["status"], resp["message"])
+	t.Logf("[INFO] 重复名称处理: status=%v, message=%v", resp["status"], resp["message"])
 
 	// 验证数据库中只有一个渠道
 	configs, _ := server.store.ListConfigs(ctx)
@@ -642,7 +642,7 @@ func TestAdminAPI_ExportCSV_EmptyDatabase(t *testing.T) {
 		t.Errorf("空数据库导出应该只有1行（header），实际: %d", len(records))
 	}
 
-	t.Logf("✅ 空数据库导出测试通过，CSV行数: %d", len(records))
+	t.Logf("[INFO] 空数据库导出测试通过，CSV行数: %d", len(records))
 }
 
 // TestAdminAPI_LargeCSVImport 测试大文件导入性能
@@ -654,7 +654,7 @@ func TestAdminAPI_LargeCSVImport(t *testing.T) {
 	server, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	// 生成大型CSV（100条记录）- ✅ 修复：添加必需的api_key和key_strategy列
+	// 生成大型CSV（100条记录）- [INFO] 修复：添加必需的api_key和key_strategy列
 	var csvBuilder strings.Builder
 	csvBuilder.WriteString("name,url,priority,models,model_redirects,channel_type,enabled,api_key,key_strategy\n")
 
@@ -663,12 +663,12 @@ func TestAdminAPI_LargeCSVImport(t *testing.T) {
 			"Large-Test-" + string(rune('A'+i%26)) + string(rune('0'+i%10)) + "," +
 				"https://large" + string(rune('0'+i%10)) + ".example.com," +
 				"10," +
-				"model-1," + // ✅ 修复：使用简单字符串而不是JSON数组
+				"model-1," + // [INFO] 修复：使用简单字符串而不是JSON数组
 				"{}," +
 				"anthropic," +
 				"true," +
-				"sk-large-key-" + string(rune('0'+i%10)) + "," + // ✅ 添加api_key
-				"sequential\n") // ✅ 添加key_strategy
+				"sk-large-key-" + string(rune('0'+i%10)) + "," + // [INFO] 添加api_key
+				"sequential\n") // [INFO] 添加key_strategy
 	}
 
 	body := &bytes.Buffer{}
@@ -682,7 +682,7 @@ func TestAdminAPI_LargeCSVImport(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	// ✅ 修复：使用bytes.NewReader创建新的读取器
+	// [INFO] 修复：使用bytes.NewReader创建新的读取器
 	c.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
 	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
 	server.HandleImportChannelsCSV(c)
@@ -693,7 +693,7 @@ func TestAdminAPI_LargeCSVImport(t *testing.T) {
 		t.Fatalf("大文件导入失败，状态码: %d, 响应: %s", w.Code, w.Body.String())
 	}
 
-	// ✅ 修复：响应被包装在 {"success":true,"data":{...}} 结构中
+	// [INFO] 修复：响应被包装在 {"success":true,"data":{...}} 结构中
 	var wrapper map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &wrapper); err != nil {
 		t.Fatalf("解析响应失败: %v, 响应: %s", err, w.Body.String())
@@ -712,7 +712,7 @@ func TestAdminAPI_LargeCSVImport(t *testing.T) {
 
 	imported := summary.Created + summary.Updated
 
-	t.Logf("✅ 大文件导入测试通过")
+	t.Logf("[INFO] 大文件导入测试通过")
 	t.Logf("   记录数: %d (Created: %d, Updated: %d, Skipped: %d)", imported, summary.Created, summary.Updated, summary.Skipped)
 	t.Logf("   耗时: %v", duration)
 	t.Logf("   平均速度: %.2f records/sec", float64(imported)/duration.Seconds())
@@ -740,7 +740,7 @@ func TestHealthEndpoint(t *testing.T) {
 		t.Fatalf("期望状态码 200，实际: %d, 响应: %s", w.Code, w.Body.String())
 	}
 
-	// ✅ 响应被包装在 {"success":true,"data":{...}} 结构中
+	// [INFO] 响应被包装在 {"success":true,"data":{...}} 结构中
 	var wrapper map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &wrapper); err != nil {
 		t.Fatalf("解析响应失败: %v, 响应: %s", err, w.Body.String())
@@ -762,5 +762,5 @@ func TestHealthEndpoint(t *testing.T) {
 		t.Fatalf("期望 status='ok'，实际: %v", data["status"])
 	}
 
-	t.Logf("✅ 健康检查测试通过")
+	t.Logf("[INFO] 健康检查测试通过")
 }

@@ -8,7 +8,7 @@ import (
 )
 
 // CreateAdminSession 创建管理员会话
-// ✅ 安全修复：存储token的SHA256哈希而非明文(2025-12)
+// [INFO] 安全修复：存储token的SHA256哈希而非明文(2025-12)
 func (s *SQLStore) CreateAdminSession(ctx context.Context, token string, expiresAt time.Time) error {
 	tokenHash := model.HashToken(token)
 	now := timeToUnix(time.Now())
@@ -20,7 +20,7 @@ func (s *SQLStore) CreateAdminSession(ctx context.Context, token string, expires
 }
 
 // GetAdminSession 获取管理员会话
-// ✅ 安全修复：通过token哈希查询(2025-12)
+// [INFO] 安全修复：通过token哈希查询(2025-12)
 func (s *SQLStore) GetAdminSession(ctx context.Context, token string) (expiresAt time.Time, exists bool, err error) {
 	tokenHash := model.HashToken(token)
 	var expiresUnix int64
@@ -39,7 +39,7 @@ func (s *SQLStore) GetAdminSession(ctx context.Context, token string) (expiresAt
 }
 
 // DeleteAdminSession 删除管理员会话
-// ✅ 安全修复：通过token哈希删除(2025-12)
+// [INFO] 安全修复：通过token哈希删除(2025-12)
 func (s *SQLStore) DeleteAdminSession(ctx context.Context, token string) error {
 	tokenHash := model.HashToken(token)
 	_, err := s.db.ExecContext(ctx, `DELETE FROM admin_sessions WHERE token = ?`, tokenHash)
@@ -54,7 +54,7 @@ func (s *SQLStore) CleanExpiredSessions(ctx context.Context) error {
 }
 
 // LoadAllSessions 加载所有未过期的会话（启动时调用）
-// ✅ 安全修复：返回tokenHash→expiry映射(2025-12)
+// [INFO] 安全修复：返回tokenHash→expiry映射(2025-12)
 func (s *SQLStore) LoadAllSessions(ctx context.Context) (map[string]time.Time, error) {
 	now := timeToUnix(time.Now())
 	rows, err := s.db.QueryContext(ctx, `

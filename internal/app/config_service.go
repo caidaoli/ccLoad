@@ -44,7 +44,7 @@ func (cs *ConfigService) LoadDefaults(ctx context.Context) error {
 	}
 	cs.loaded = true
 
-	log.Printf("✅ ConfigService loaded %d settings", len(settings))
+	log.Printf("[INFO] ConfigService loaded %d settings", len(settings))
 	return nil
 }
 

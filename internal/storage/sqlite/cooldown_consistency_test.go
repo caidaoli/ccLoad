@@ -51,7 +51,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 				ChannelID:   keyCreated.ID,
 				KeyIndex:    i,
 				APIKey:      key,
-				KeyStrategy: "sequential",
+				KeyStrategy: model.KeyStrategySequential,
 			})
 			if err != nil {
 				t.Fatalf("创建API Key %d失败: %v", i, err)
@@ -88,7 +88,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 			t.Errorf("Key级冷却时间错误: 期望%v，实际%v", expectedDuration, keyDuration)
 		}
 
-		t.Logf("✅ 401错误冷却时间一致: 渠道级=%v, Key级=%v (期望%v)",
+		t.Logf("[INFO] 401错误冷却时间一致: 渠道级=%v, Key级=%v (期望%v)",
 			channelDuration, keyDuration, expectedDuration)
 	})
 
@@ -121,7 +121,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 				ChannelID:   keyCreated.ID,
 				KeyIndex:    i,
 				APIKey:      key,
-				KeyStrategy: "sequential",
+				KeyStrategy: model.KeyStrategySequential,
 			})
 			if err != nil {
 				t.Fatalf("创建API Key %d失败: %v", i, err)
@@ -163,7 +163,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 					i+1, expected, channelDuration, keyDuration)
 			}
 
-			t.Logf("✅ 第%d次401错误: 渠道级=%v, Key级=%v (期望%v)",
+			t.Logf("[INFO] 第%d次401错误: 渠道级=%v, Key级=%v (期望%v)",
 				i+1, channelDuration, keyDuration, expected)
 
 			// 推进时间（确保不被当作同一次错误）
@@ -199,7 +199,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 				ChannelID:   keyCreated.ID,
 				KeyIndex:    i,
 				APIKey:      key,
-				KeyStrategy: "sequential",
+				KeyStrategy: model.KeyStrategySequential,
 			})
 			if err != nil {
 				t.Fatalf("创建API Key %d失败: %v", i, err)
@@ -220,7 +220,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 				util.AuthErrorInitialCooldown, channelDuration)
 		}
 
-		t.Logf("✅ 403错误冷却时间一致: 渠道级=%v, Key级=%v",
+		t.Logf("[INFO] 403错误冷却时间一致: 渠道级=%v, Key级=%v",
 			channelDuration, keyDuration)
 	})
 
@@ -258,7 +258,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 						ChannelID:   keyCreated.ID,
 						KeyIndex:    i,
 						APIKey:      key,
-						KeyStrategy: "sequential",
+						KeyStrategy: model.KeyStrategySequential,
 					})
 				}
 
@@ -275,7 +275,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 						tc.name, tc.expected, channelDuration)
 				}
 
-				t.Logf("✅ %s一致: 渠道级=%v, Key级=%v",
+				t.Logf("[INFO] %s一致: 渠道级=%v, Key级=%v",
 					tc.name, channelDuration, keyDuration)
 			})
 		}

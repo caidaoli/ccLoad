@@ -96,7 +96,7 @@ func TestHandleListChannels(t *testing.T) {
 		}
 	}
 
-	t.Logf("✅ 列表查询成功: 返回%d个渠道", len(resp.Data))
+	t.Logf("[INFO] 列表查询成功: 返回%d个渠道", len(resp.Data))
 }
 
 // TestHandleCreateChannel 测试创建渠道
@@ -131,7 +131,7 @@ func TestHandleCreateChannel(t *testing.T) {
 				URL:         "https://api.multi.com",
 				Priority:    90,
 				Models:      []string{"claude-3"},
-				KeyStrategy: "round_robin",
+				KeyStrategy: model.KeyStrategyRoundRobin,
 				Enabled:     true,
 			},
 			expectedStatus: http.StatusCreated,
@@ -216,7 +216,7 @@ func TestHandleCreateChannel(t *testing.T) {
 					}
 				}
 
-				t.Logf("✅ 创建成功: ID=%d, Name=%s", resp.Data.ID, resp.Data.Name)
+				t.Logf("[INFO] 创建成功: ID=%d, Name=%s", resp.Data.ID, resp.Data.Name)
 			}
 		})
 	}
@@ -301,7 +301,7 @@ func TestHandleGetChannel(t *testing.T) {
 					t.Errorf("期望ID=%d，实际%d", created.ID, resp.Data.ID)
 				}
 
-				t.Logf("✅ 获取成功: ID=%d, Name=%s", resp.Data.ID, resp.Data.Name)
+				t.Logf("[INFO] 获取成功: ID=%d, Name=%s", resp.Data.ID, resp.Data.Name)
 			}
 		})
 	}
@@ -332,7 +332,7 @@ func TestHandleUpdateChannel(t *testing.T) {
 		ChannelID:   created.ID,
 		KeyIndex:    0,
 		APIKey:      "sk-original-key",
-		KeyStrategy: "sequential",
+		KeyStrategy: model.KeyStrategySequential,
 	})
 	if err != nil {
 		t.Fatalf("创建API Key失败: %v", err)
@@ -427,7 +427,7 @@ func TestHandleUpdateChannel(t *testing.T) {
 					t.Errorf("期望优先级%d，实际%d", tt.payload.Priority, resp.Data.Priority)
 				}
 
-				t.Logf("✅ 更新成功: Name=%s, Priority=%d", resp.Data.Name, resp.Data.Priority)
+				t.Logf("[INFO] 更新成功: Name=%s, Priority=%d", resp.Data.Name, resp.Data.Priority)
 			}
 		})
 	}
@@ -503,9 +503,9 @@ func TestHandleDeleteChannel(t *testing.T) {
 					if err == nil {
 						t.Error("渠道应该已被删除")
 					}
-					t.Logf("✅ 删除成功: 渠道ID=%d已被删除", created.ID)
+					t.Logf("[INFO] 删除成功: 渠道ID=%d已被删除", created.ID)
 				} else {
-					t.Logf("✅ 删除操作成功(幂等): ID=%s", tt.channelID)
+					t.Logf("[INFO] 删除操作成功(幂等): ID=%s", tt.channelID)
 				}
 			}
 		})
@@ -538,7 +538,7 @@ func TestHandleGetChannelKeys(t *testing.T) {
 			ChannelID:   created.ID,
 			KeyIndex:    i,
 			APIKey:      "sk-test-key-" + string(rune('0'+i)),
-			KeyStrategy: "sequential",
+			KeyStrategy: model.KeyStrategySequential,
 		})
 		if err != nil {
 			t.Fatalf("创建API Key失败: %v", err)
@@ -583,7 +583,7 @@ func TestHandleGetChannelKeys(t *testing.T) {
 		}
 	}
 
-	t.Logf("✅ 获取渠道Keys成功: 返回%d个Keys", len(resp.Data))
+	t.Logf("[INFO] 获取渠道Keys成功: 返回%d个Keys", len(resp.Data))
 }
 
 // TestChannelRequestValidate 测试ChannelRequest验证
@@ -653,13 +653,13 @@ func TestChannelRequestValidate(t *testing.T) {
 				} else if err.Error() != tt.errorMsg {
 					t.Errorf("期望错误消息'%s'，实际'%s'", tt.errorMsg, err.Error())
 				} else {
-					t.Logf("✅ 验证错误正确: %s", err.Error())
+					t.Logf("[INFO] 验证错误正确: %s", err.Error())
 				}
 			} else {
 				if err != nil {
 					t.Errorf("期望成功，但返回错误: %v", err)
 				} else {
-					t.Logf("✅ 验证成功")
+					t.Logf("[INFO] 验证成功")
 				}
 			}
 		})

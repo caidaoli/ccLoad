@@ -192,7 +192,7 @@ func TestClassifyHTTPStatusWithBody(t *testing.T) {
 				t.Errorf("❌ %s\n  期望: %v\n  实际: %v\n  原因: %s\n  响应体: %s",
 					tt.name, tt.expected, result, tt.reason, string(tt.responseBody))
 			} else {
-				t.Logf("✅ %s - %s", tt.name, tt.reason)
+				t.Logf("[INFO] %s - %s", tt.name, tt.reason)
 			}
 		})
 	}
@@ -275,7 +275,7 @@ func TestClassifyError_ContextCanceled(t *testing.T) {
 				t.Errorf("❌ 重试标志错误: 期望 %v, 实际 %v (%s)", tt.expectedRetry, shouldRetry, tt.reason)
 			}
 
-			t.Logf("✅ %s - 状态码:%d, 错误级别:%v, 重试:%v", tt.reason, statusCode, errorLevel, shouldRetry)
+			t.Logf("[INFO] %s - 状态码:%d, 错误级别:%v, 重试:%v", tt.reason, statusCode, errorLevel, shouldRetry)
 		})
 	}
 }
@@ -322,7 +322,7 @@ func TestClassifyError_EmptyResponse(t *testing.T) {
 				t.Errorf("❌ 重试标志错误: 期望 %v, 实际 %v (%s)", tt.expectedRetry, shouldRetry, tt.reason)
 			}
 
-			t.Logf("✅ %s - 状态码:%d, 错误级别:%v, 重试:%v", tt.reason, statusCode, errorLevel, shouldRetry)
+			t.Logf("[INFO] %s - 状态码:%d, 错误级别:%v, 重试:%v", tt.reason, statusCode, errorLevel, shouldRetry)
 		})
 	}
 }
@@ -550,7 +550,7 @@ func TestClassifyRateLimitError(t *testing.T) {
 				t.Errorf("❌ %s\n  期望: %v\n  实际: %v\n  原因: %s",
 					tt.name, tt.expected, result, tt.reason)
 			} else {
-				t.Logf("✅ %s - %s", tt.name, tt.reason)
+				t.Logf("[INFO] %s - %s", tt.name, tt.reason)
 			}
 		})
 	}

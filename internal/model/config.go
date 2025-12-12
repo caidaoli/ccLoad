@@ -38,6 +38,22 @@ func (c *Config) IsCoolingDown(now time.Time) bool {
 	return c.CooldownUntil > now.Unix()
 }
 
+// KeyStrategy 常量定义
+const (
+	KeyStrategySequential = "sequential"  // 顺序选择：按索引顺序尝试Key
+	KeyStrategyRoundRobin = "round_robin" // 轮询选择：均匀分布请求到各个Key
+)
+
+// IsValidKeyStrategy 验证KeyStrategy是否有效
+func IsValidKeyStrategy(s string) bool {
+	return s == "" || s == KeyStrategySequential || s == KeyStrategyRoundRobin
+}
+
+// DefaultKeyStrategy 返回默认策略
+func DefaultKeyStrategy() string {
+	return KeyStrategySequential
+}
+
 type APIKey struct {
 	ID        int64  `json:"id"`
 	ChannelID int64  `json:"channel_id"`

@@ -45,7 +45,7 @@ func (s *Server) HandleListAuthTokens(c *gin.Context) {
 		// 从logs表聚合时间范围内的统计
 		rangeStats, err := s.store.GetAuthTokenStatsInRange(ctx, startTime, endTime)
 		if err != nil {
-			log.Printf("⚠️  查询时间范围统计失败: %v", err)
+			log.Printf("[WARN]  查询时间范围统计失败: %v", err)
 			// 降级处理：统计查询失败不影响token列表返回，仅记录警告
 		} else {
 			// 将时间范围统计叠加到每个token的响应中
@@ -127,10 +127,10 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 
 	// 触发热更新（立即生效）
 	if err := s.authService.ReloadAuthTokens(); err != nil {
-		log.Print("⚠️  热更新失败: " + err.Error())
+		log.Print("[WARN]  热更新失败: " + err.Error())
 	}
 
-	log.Printf("✅ 创建API令牌: ID=%d, 描述=%s", authToken.ID, authToken.Description)
+	log.Printf("[INFO] 创建API令牌: ID=%d, 描述=%s", authToken.ID, authToken.Description)
 
 	// 返回明文令牌（仅此一次机会）
 	RespondJSON(c, http.StatusOK, gin.H{
@@ -192,10 +192,10 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 
 	// 触发热更新
 	if err := s.authService.ReloadAuthTokens(); err != nil {
-		log.Print("⚠️  热更新失败: " + err.Error())
+		log.Print("[WARN]  热更新失败: " + err.Error())
 	}
 
-	log.Printf("✅ 更新API令牌: ID=%d", id)
+	log.Printf("[INFO] 更新API令牌: ID=%d", id)
 
 	// 返回脱敏后的令牌信息
 	token.Token = model.MaskToken(token.Token)
@@ -222,10 +222,10 @@ func (s *Server) HandleDeleteAuthToken(c *gin.Context) {
 
 	// 触发热更新
 	if err := s.authService.ReloadAuthTokens(); err != nil {
-		log.Print("⚠️  热更新失败: " + err.Error())
+		log.Print("[WARN]  热更新失败: " + err.Error())
 	}
 
-	log.Printf("✅ 删除API令牌: ID=%d", id)
+	log.Printf("[INFO] 删除API令牌: ID=%d", id)
 
 	RespondJSON(c, http.StatusOK, gin.H{"id": id})
 }

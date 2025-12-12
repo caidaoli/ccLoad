@@ -251,7 +251,7 @@ func TestSSEUsageParser_EmptyInput(t *testing.T) {
 }
 
 func TestSSEUsageParser_InvalidEventType(t *testing.T) {
-	// ✅ 黑名单模式（2025-12-07）：未知事件类型也会尝试提取usage
+	// [INFO] 黑名单模式（2025-12-07）：未知事件类型也会尝试提取usage
 	// 原因：anyrouter等聚合服务使用非标准事件类型（如"."），需要兼容
 	sseData := `event: unknown_event
 data: {"usage":{"input_tokens":999}}
@@ -273,7 +273,7 @@ data: {"usage":{"input_tokens":999}}
 func TestSSEUsageParser_ParseCodexResponseCompleted(t *testing.T) {
 	// 模拟OpenAI Responses API (Codex)的response.completed事件
 	// Codex使用input_tokens + input_tokens_details.cached_tokens格式
-	// ✅ 重构后：GetUsage()返回归一化的billable input (10309-6016=4293)
+	// [INFO] 重构后：GetUsage()返回归一化的billable input (10309-6016=4293)
 	sseData := `event: response.completed
 data: {"type":"response.completed","sequence_number":28,"response":{"id":"resp_0d0d42598bd5c52c01691a963247dc81969f6ece7ebc78d882","object":"response","created_at":1763350066,"status":"completed","usage":{"input_tokens":10309,"input_tokens_details":{"cached_tokens":6016},"output_tokens":17,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":10326}}}
 
@@ -305,7 +305,7 @@ data: {"type":"response.completed","sequence_number":28,"response":{"id":"resp_0
 func TestSSEUsageParser_OpenAIChatCompletionsSSE(t *testing.T) {
 	// 测试OpenAI Chat Completions API的SSE流式响应
 	// OpenAI Chat使用prompt_tokens + completion_tokens格式
-	// ✅ 重构后：GetUsage()返回归一化的billable input (200-100=100)
+	// [INFO] 重构后：GetUsage()返回归一化的billable input (200-100=100)
 	sseData := `data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":""},"logprobs":null,"finish_reason":null}],"usage":null}
 
 data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"测试"},"logprobs":null,"finish_reason":null}],"usage":null}
@@ -407,7 +407,7 @@ func TestSSEUsageParser_OpenAIChatCompletionsFormat(t *testing.T) {
 
 func TestSSEUsageParser_OpenAIChatCompletionsWithCache(t *testing.T) {
 	// 测试OpenAI Chat Completions API带缓存的格式（prompt_tokens_details.cached_tokens）
-	// ✅ 重构后：GetUsage()返回归一化的billable input (300-200=100)
+	// [INFO] 重构后：GetUsage()返回归一化的billable input (300-200=100)
 	sseData := `data: {"id":"chatcmpl-456","object":"chat.completion","created":1677652288,"model":"gpt-4o","usage":{"prompt_tokens":300,"completion_tokens":120,"total_tokens":420,"prompt_tokens_details":{"cached_tokens":200,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":0,"audio_tokens":0}}}
 
 `
@@ -452,7 +452,7 @@ func TestJSONUsageParser_OpenAIChatCompletionsFormat(t *testing.T) {
 
 func TestJSONUsageParser_OpenAIChatCompletionsWithCacheFormat(t *testing.T) {
 	// 测试带缓存的OpenAI Chat Completions JSON响应
-	// ✅ 重构后：GetUsage()返回归一化的billable input (500-350=150)
+	// [INFO] 重构后：GetUsage()返回归一化的billable input (500-350=150)
 	jsonData := `{"id":"chatcmpl-abc","object":"chat.completion","created":1677652288,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"测试响应"},"finish_reason":"stop"}],"usage":{"prompt_tokens":500,"completion_tokens":200,"total_tokens":700,"prompt_tokens_details":{"cached_tokens":350,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":0,"audio_tokens":0}}}`
 
 	parser := newJSONUsageParser("openai") // OpenAI平台测试

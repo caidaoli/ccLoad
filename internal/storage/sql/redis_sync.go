@@ -12,7 +12,7 @@ import (
 )
 
 // LoadChannelsFromRedis 从Redis恢复渠道数据到SQL (启动时数据库恢复机制)
-// ✅ 修复（2025-10-10）：完整恢复渠道和API Keys，解决Redis恢复后缺少Keys的问题
+// [INFO] 修复（2025-10-10）：完整恢复渠道和API Keys，解决Redis恢复后缺少Keys的问题
 func (s *SQLStore) LoadChannelsFromRedis(ctx context.Context) error {
 	if !s.redisSync.IsEnabled() {
 		return nil
@@ -129,7 +129,7 @@ func (s *SQLStore) LoadChannelsFromRedis(ctx context.Context) error {
 }
 
 // SyncAllChannelsToRedis 将所有渠道同步到Redis (批量同步，初始化时使用)
-// ✅ 修复（2025-10-10）：完整同步渠道配置和API Keys，解决Redis恢复后缺少Keys的问题
+// [INFO] 修复（2025-10-10）：完整同步渠道配置和API Keys，解决Redis恢复后缺少Keys的问题
 func (s *SQLStore) SyncAllChannelsToRedis(ctx context.Context) error {
 	if !s.redisSync.IsEnabled() {
 		return nil
@@ -231,7 +231,7 @@ func (s *SQLStore) doSyncAllChannelsWithRetry(ctx context.Context, retryBackoff 
 		return nil // 成功
 	} else {
 		lastErr = err
-		log.Printf("⚠️  Redis同步失败（将自动重试）: %v", err)
+		log.Printf("[WARN]  Redis同步失败（将自动重试）: %v", err)
 	}
 
 	// 重试逻辑
@@ -241,11 +241,11 @@ func (s *SQLStore) doSyncAllChannelsWithRetry(ctx context.Context, retryBackoff 
 
 		// 重试同步
 		if err := s.doSyncAllChannels(ctx); err == nil {
-			log.Printf("✅ Redis同步恢复成功（第%d次重试）", attempt+1)
+			log.Printf("[INFO] Redis同步恢复成功（第%d次重试）", attempt+1)
 			return nil // 成功
 		} else {
 			lastErr = err
-			log.Printf("⚠️  Redis同步重试失败（第%d次）: %v", attempt+1, err)
+			log.Printf("[WARN]  Redis同步重试失败（第%d次）: %v", attempt+1, err)
 		}
 	}
 
@@ -269,8 +269,8 @@ func (s *SQLStore) triggerAsyncSync() {
 }
 
 // doSyncAllChannels 实际执行同步操作（worker内部调用）
-// ✅ 修复（2025-10-10）：切换到完整同步API，确保API Keys同步
-// ✅ 扩展（2025-11）：同时同步auth_tokens表
+// [INFO] 修复（2025-10-10）：切换到完整同步API，确保API Keys同步
+// [INFO] 扩展（2025-11）：同时同步auth_tokens表
 func (s *SQLStore) doSyncAllChannels(ctx context.Context) error {
 	// 1. 同步channels和API Keys
 	if err := s.SyncAllChannelsToRedis(ctx); err != nil {
@@ -286,7 +286,7 @@ func (s *SQLStore) doSyncAllChannels(ctx context.Context) error {
 }
 
 // syncAuthTokensToRedis 同步所有AuthToken到Redis (内部方法)
-// ✅ 新增（2025-11）：完整同步认证令牌表
+// [INFO] 新增（2025-11）：完整同步认证令牌表
 func (s *SQLStore) syncAuthTokensToRedis(ctx context.Context) error {
 	if !s.redisSync.IsEnabled() {
 		return nil
@@ -306,14 +306,14 @@ func (s *SQLStore) syncAuthTokensToRedis(ctx context.Context) error {
 	}
 
 	if len(tokens) > 0 {
-		log.Printf("✅ Successfully synced %d auth tokens to Redis", len(tokens))
+		log.Printf("[INFO] Successfully synced %d auth tokens to Redis", len(tokens))
 	}
 
 	return nil
 }
 
 // loadAuthTokensFromRedis 从Redis恢复所有AuthToken到SQL (内部方法)
-// ✅ 新增（2025-11）：支持auth_tokens表的灾难恢复
+// [INFO] 新增（2025-11）：支持auth_tokens表的灾难恢复
 // 返回: 成功恢复的令牌数量
 func (s *SQLStore) loadAuthTokensFromRedis(ctx context.Context) (int, error) {
 	if !s.redisSync.IsEnabled() {
@@ -378,7 +378,7 @@ func normalizeChannelsWithKeys(channelsWithKeys []*model.ChannelWithKeys) {
 		// 规范化APIKeys部分：确保key_strategy默认值
 		for i := range cwk.APIKeys {
 			if cwk.APIKeys[i].KeyStrategy == "" {
-				cwk.APIKeys[i].KeyStrategy = "sequential"
+				cwk.APIKeys[i].KeyStrategy = model.KeyStrategySequential
 			}
 		}
 	}

@@ -47,7 +47,7 @@ func (ks *KeySelector) SelectAvailableKey(channelID int64, apiKeys []*model.APIK
 		if excludeKeys != nil && excludeKeys[0] {
 			return -1, "", fmt.Errorf("single key already tried in this request")
 		}
-		// ✅ 修复(2025-12-09): 检查冷却状态,防止单Key渠道冷却后仍被请求
+		// [INFO] 修复(2025-12-09): 检查冷却状态,防止单Key渠道冷却后仍被请求
 		// 原逻辑"不使用Key级别冷却(YAGNI原则)"是错误的,会导致冷却Key持续触发上游错误
 		if apiKeys[0].IsCoolingDown(time.Now()) {
 			return -1, "", fmt.Errorf("single key (index=%d) is in cooldown until %s",
@@ -60,13 +60,13 @@ func (ks *KeySelector) SelectAvailableKey(channelID int64, apiKeys []*model.APIK
 	// 多Key场景:根据策略选择
 	strategy := apiKeys[0].KeyStrategy
 	if strategy == "" {
-		strategy = "sequential"
+		strategy = model.KeyStrategySequential
 	}
 
 	switch strategy {
-	case "round_robin":
+	case model.KeyStrategyRoundRobin:
 		return ks.selectRoundRobin(channelID, apiKeys, excludeKeys)
-	case "sequential":
+	case model.KeyStrategySequential:
 		return ks.selectSequential(apiKeys, excludeKeys)
 	default:
 		return ks.selectSequential(apiKeys, excludeKeys)

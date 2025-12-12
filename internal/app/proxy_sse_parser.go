@@ -34,7 +34,7 @@ type sseUsageParser struct {
 	oversized   bool         // 标记是否超出大小限制（停止解析但不中断流传输）
 	channelType string       // 渠道类型(anthropic/openai/codex/gemini),用于精确平台判断
 
-	// ✅ 新增：存储SSE流中检测到的error事件（用于1308等错误的延迟处理）
+	// [INFO] 新增：存储SSE流中检测到的error事件（用于1308等错误的延迟处理）
 	lastError []byte // 最后一个error事件的完整JSON（data字段内容）
 }
 
@@ -48,7 +48,7 @@ type jsonUsageParser struct {
 type usageParser interface {
 	Feed([]byte) error
 	GetUsage() (inputTokens, outputTokens, cacheRead, cacheCreation int)
-	GetLastError() []byte // ✅ 新增：返回SSE流中检测到的最后一个error事件（用于1308等错误的延迟处理）
+	GetLastError() []byte // [INFO] 新增：返回SSE流中检测到的最后一个error事件（用于1308等错误的延迟处理）
 }
 
 const (
@@ -145,14 +145,14 @@ func (p *sseUsageParser) parseBuffer() error {
 
 // parseEvent 解析单个SSE事件
 func (p *sseUsageParser) parseEvent(eventType, data string) error {
-	// ✅ 事件类型过滤优化（2025-12-07）
+	// [INFO] 事件类型过滤优化（2025-12-07）
 	// 问题：anyrouter等聚合服务使用非标准事件类型（如"."），导致usage丢失
 	// 方案：改为黑名单模式 - 只过滤已知无用事件，其他都尝试解析
 
-	// ⚠️ 特殊处理：error事件（记录日志 + 存储错误体用于后续冷却处理）
+	// [WARN] 特殊处理：error事件（记录日志 + 存储错误体用于后续冷却处理）
 	if eventType == "error" {
-		log.Printf("⚠️  [SSE错误事件] 上游返回error事件: %s", data)
-		// ✅ 新增：存储错误事件的完整JSON（用于流结束后触发冷却逻辑）
+		log.Printf("[WARN]  [SSE错误事件] 上游返回error事件: %s", data)
+		// [INFO] 新增：存储错误事件的完整JSON（用于流结束后触发冷却逻辑）
 		p.lastError = []byte(data)
 		return nil // 不解析usage，避免误判
 	}
@@ -206,7 +206,7 @@ func (p *sseUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cache
 	return billableInput, p.OutputTokens, p.CacheReadInputTokens, p.CacheCreationInputTokens
 }
 
-// ✅ GetLastError 返回SSE流中检测到的最后一个error事件
+// [INFO] GetLastError 返回SSE流中检测到的最后一个error事件
 func (p *sseUsageParser) GetLastError() []byte {
 	return p.lastError
 }
@@ -263,7 +263,7 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 	return billableInput, p.OutputTokens, p.CacheReadInputTokens, p.CacheCreationInputTokens
 }
 
-// ✅ GetLastError 返回nil（jsonUsageParser不处理SSE error事件）
+// [INFO] GetLastError 返回nil（jsonUsageParser不处理SSE error事件）
 func (p *jsonUsageParser) GetLastError() []byte {
 	return nil // JSON解析器不处理SSE error事件
 }

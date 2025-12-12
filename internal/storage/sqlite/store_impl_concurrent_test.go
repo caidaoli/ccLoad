@@ -54,7 +54,7 @@ func TestConcurrentConfigCreate(t *testing.T) {
 	success := successCount.Load()
 	errors := errorCount.Load()
 
-	t.Logf("✅ 并发创建测试完成: 成功=%d, 失败=%d, 总数=%d", success, errors, numGoroutines)
+	t.Logf("[INFO] 并发创建测试完成: 成功=%d, 失败=%d, 总数=%d", success, errors, numGoroutines)
 
 	if success == 0 {
 		t.Fatal("所有并发创建都失败了")
@@ -135,7 +135,7 @@ func TestConcurrentConfigReadWrite(t *testing.T) {
 	reads := readCount.Load()
 	writes := writeCount.Load()
 
-	t.Logf("✅ 并发读写测试完成: 读取=%d次, 写入=%d次", reads, writes)
+	t.Logf("[INFO] 并发读写测试完成: 读取=%d次, 写入=%d次", reads, writes)
 
 	if reads < 100 {
 		t.Errorf("读取次数过少: %d (期望至少100次)", reads)
@@ -187,7 +187,7 @@ func TestConcurrentLogAdd(t *testing.T) {
 	success := successCount.Load()
 	expected := int32(numGoroutines * logsPerGoroutine)
 
-	t.Logf("✅ 并发日志添加测试完成: 成功=%d/%d, 耗时=%v", success, expected, elapsed)
+	t.Logf("[INFO] 并发日志添加测试完成: 成功=%d/%d, 耗时=%v", success, expected, elapsed)
 
 	if success < expected*9/10 {
 		t.Errorf("成功率过低: %d/%d (%.1f%%)", success, expected, float64(success)/float64(expected)*100)
@@ -249,7 +249,7 @@ func TestConcurrentBatchLogAdd(t *testing.T) {
 	success := successCount.Load()
 	expected := int32(numGoroutines * batchSize)
 
-	t.Logf("✅ 并发批量日志测试完成: 成功=%d/%d, 耗时=%v", success, expected, elapsed)
+	t.Logf("[INFO] 并发批量日志测试完成: 成功=%d/%d, 耗时=%v", success, expected, elapsed)
 
 	if success < expected*8/10 {
 		t.Errorf("成功率过低: %d/%d (%.1f%%)", success, expected, float64(success)/float64(expected)*100)
@@ -289,7 +289,7 @@ func TestConcurrentAPIKeyOperations(t *testing.T) {
 				ChannelID:   created.ID,
 				KeyIndex:    idx,
 				APIKey:      fmt.Sprintf("sk-test-key-%d", idx),
-				KeyStrategy: "sequential",
+				KeyStrategy: model.KeyStrategySequential,
 			}
 
 			err := store.CreateAPIKey(ctx, key)
@@ -321,7 +321,7 @@ func TestConcurrentAPIKeyOperations(t *testing.T) {
 	creates := createSuccess.Load()
 	reads := readSuccess.Load()
 
-	t.Logf("✅ 并发API Key测试完成: 创建成功=%d/%d, 读取成功=%d/%d",
+	t.Logf("[INFO] 并发API Key测试完成: 创建成功=%d/%d, 读取成功=%d/%d",
 		creates, numKeys, reads, numKeys)
 
 	if creates < int32(numKeys)*8/10 {
@@ -367,7 +367,7 @@ func TestConcurrentCooldownOperations(t *testing.T) {
 			ChannelID:   created.ID,
 			KeyIndex:    i,
 			APIKey:      fmt.Sprintf("sk-cooldown-key-%d", i),
-			KeyStrategy: "sequential",
+			KeyStrategy: model.KeyStrategySequential,
 		}
 		_ = store.CreateAPIKey(ctx, key)
 	}
@@ -417,7 +417,7 @@ func TestConcurrentCooldownOperations(t *testing.T) {
 	channelSucc := channelCooldowns.Load()
 	keySucc := keyCooldowns.Load()
 
-	t.Logf("✅ 并发冷却测试完成: 渠道冷却成功=%d/5, Key冷却成功=%d/6",
+	t.Logf("[INFO] 并发冷却测试完成: 渠道冷却成功=%d/5, Key冷却成功=%d/6",
 		channelSucc, keySucc)
 
 	// 至少有一些操作成功即可（验证并发安全性）
@@ -509,7 +509,7 @@ func TestConcurrentMixedOperations(t *testing.T) {
 	wg.Wait()
 
 	totalOps := operations.Load()
-	t.Logf("✅ 混合并发测试完成: 总操作数=%d, 持续时间=%v, QPS=%.1f",
+	t.Logf("[INFO] 混合并发测试完成: 总操作数=%d, 持续时间=%v, QPS=%.1f",
 		totalOps, duration, float64(totalOps)/duration.Seconds())
 
 	if totalOps < 100 {

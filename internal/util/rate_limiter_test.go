@@ -27,7 +27,7 @@ func TestNewLoginRateLimiter(t *testing.T) {
 		t.Errorf("默认重置间隔应为1小时，实际%v", limiter.resetInterval)
 	}
 
-	t.Logf("✅ 速率限制器创建正确，配置: maxAttempts=%d, lockoutDuration=%v, resetInterval=%v",
+	t.Logf("[INFO] 速率限制器创建正确，配置: maxAttempts=%d, lockoutDuration=%v, resetInterval=%v",
 		limiter.maxAttempts, limiter.lockoutDuration, limiter.resetInterval)
 }
 
@@ -48,7 +48,7 @@ func TestAllowAttempt_FirstAttempt(t *testing.T) {
 		t.Errorf("首次尝试后计数应为1，实际%d", count)
 	}
 
-	t.Logf("✅ 首次尝试正确：允许登录，尝试计数=1")
+	t.Logf("[INFO] 首次尝试正确：允许登录，尝试计数=1")
 }
 
 // TestAllowAttempt_MultipleAttempts 测试多次尝试（未超限）
@@ -71,7 +71,7 @@ func TestAllowAttempt_MultipleAttempts(t *testing.T) {
 		}
 	}
 
-	t.Logf("✅ 多次尝试正确：5次尝试都被允许")
+	t.Logf("[INFO] 多次尝试正确：5次尝试都被允许")
 }
 
 // TestAllowAttempt_Lockout 测试超限锁定
@@ -108,7 +108,7 @@ func TestAllowAttempt_Lockout(t *testing.T) {
 		t.Errorf("锁定时间应接近%d秒，实际%d秒", expectedLockout, lockoutTime)
 	}
 
-	t.Logf("✅ 超限锁定正确：第6次尝试被拒绝，锁定时间=%d秒", lockoutTime)
+	t.Logf("[INFO] 超限锁定正确：第6次尝试被拒绝，锁定时间=%d秒", lockoutTime)
 }
 
 // TestAllowAttempt_LockedPeriod 测试锁定期间的拒绝
@@ -137,7 +137,7 @@ func TestAllowAttempt_LockedPeriod(t *testing.T) {
 		t.Error("锁定期间应该有剩余锁定时间")
 	}
 
-	t.Logf("✅ 锁定期间拒绝正确：连续3次尝试都被拒绝，剩余锁定时间=%d秒", lockoutTime)
+	t.Logf("[INFO] 锁定期间拒绝正确：连续3次尝试都被拒绝，剩余锁定时间=%d秒", lockoutTime)
 }
 
 // TestRecordSuccess 测试成功登录后重置
@@ -173,7 +173,7 @@ func TestRecordSuccess(t *testing.T) {
 		t.Errorf("成功登录后锁定时间应为0，实际%d秒", lockoutTime)
 	}
 
-	t.Logf("✅ 成功登录重置正确：计数从3重置为0，锁定时间清除")
+	t.Logf("[INFO] 成功登录重置正确：计数从3重置为0，锁定时间清除")
 }
 
 // TestRecordSuccess_AfterLockout 测试锁定后成功登录重置
@@ -209,7 +209,7 @@ func TestRecordSuccess_AfterLockout(t *testing.T) {
 		t.Error("成功登录后应该允许新的尝试")
 	}
 
-	t.Logf("✅ 锁定后成功登录重置正确：锁定解除，可以重新尝试")
+	t.Logf("[INFO] 锁定后成功登录重置正确：锁定解除，可以重新尝试")
 }
 
 // TestGetAttemptCount_NonExistentIP 测试不存在的IP
@@ -222,7 +222,7 @@ func TestGetAttemptCount_NonExistentIP(t *testing.T) {
 		t.Errorf("不存在的IP计数应为0，实际%d", count)
 	}
 
-	t.Logf("✅ 不存在的IP计数正确返回0")
+	t.Logf("[INFO] 不存在的IP计数正确返回0")
 }
 
 // TestGetLockoutTime_NonExistentIP 测试不存在的IP的锁定时间
@@ -235,7 +235,7 @@ func TestGetLockoutTime_NonExistentIP(t *testing.T) {
 		t.Errorf("不存在的IP锁定时间应为0，实际%d秒", lockoutTime)
 	}
 
-	t.Logf("✅ 不存在的IP锁定时间正确返回0")
+	t.Logf("[INFO] 不存在的IP锁定时间正确返回0")
 }
 
 // TestConcurrentAccess 测试并发访问
@@ -265,7 +265,7 @@ func TestConcurrentAccess(t *testing.T) {
 
 	// 验证数据一致性（不应该崩溃）
 	count := limiter.GetAttemptCount("192.168.1.20")
-	t.Logf("✅ 并发访问测试通过：无数据竞争，最终计数=%d", count)
+	t.Logf("[INFO] 并发访问测试通过：无数据竞争，最终计数=%d", count)
 }
 
 // TestCleanup 测试清理过期记录
@@ -300,7 +300,7 @@ func TestCleanup(t *testing.T) {
 		t.Error("过期记录应该被清除")
 	}
 
-	t.Logf("✅ 清理过期记录正确")
+	t.Logf("[INFO] 清理过期记录正确")
 }
 
 // TestCleanupLoop_GracefulShutdown 测试优雅关闭
@@ -316,7 +316,7 @@ func TestCleanupLoop_GracefulShutdown(t *testing.T) {
 	// 等待一小段时间确保goroutine退出
 	time.Sleep(50 * time.Millisecond)
 
-	t.Logf("✅ 优雅关闭测试通过（无goroutine泄漏）")
+	t.Logf("[INFO] 优雅关闭测试通过（无goroutine泄漏）")
 }
 
 // TestResetInterval 测试重置间隔功能
@@ -353,7 +353,7 @@ func TestResetInterval(t *testing.T) {
 		t.Errorf("重置后首次尝试计数应为1，实际%d", count)
 	}
 
-	t.Logf("✅ 重置间隔功能正确：超时后计数从3重置为1")
+	t.Logf("[INFO] 重置间隔功能正确：超时后计数从3重置为1")
 }
 
 // TestLockoutExpiry 测试锁定过期后允许重试
@@ -392,7 +392,7 @@ func TestLockoutExpiry(t *testing.T) {
 
 	// 验证锁定时间（可能为0或接近lockoutDuration）
 	lockoutTime := limiter.GetLockoutTime(ip)
-	t.Logf("✅ 锁定过期功能测试：lockoutTime=%d秒（锁定过期后因计数仍超限会再次锁定）", lockoutTime)
+	t.Logf("[INFO] 锁定过期功能测试：lockoutTime=%d秒（锁定过期后因计数仍超限会再次锁定）", lockoutTime)
 }
 
 // TestMultipleIPs 测试多个IP独立限制
@@ -439,5 +439,5 @@ func TestMultipleIPs(t *testing.T) {
 		t.Error("IP2不应该被锁定")
 	}
 
-	t.Logf("✅ 多IP独立限制正确：IP1被锁定，IP2正常")
+	t.Logf("[INFO] 多IP独立限制正确：IP1被锁定，IP2正常")
 }

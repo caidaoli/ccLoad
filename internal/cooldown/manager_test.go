@@ -78,7 +78,7 @@ func TestHandleError_KeyLevelError(t *testing.T) {
 			ChannelID:   cfg.ID,
 			KeyIndex:    i,
 			APIKey:      "sk-key-" + string(rune('0'+i)),
-			KeyStrategy: "sequential",
+			KeyStrategy: model.KeyStrategySequential,
 		})
 	}
 
@@ -177,7 +177,7 @@ func TestHandleError_SingleKeyUpgrade(t *testing.T) {
 		ChannelID:   cfg.ID,
 		KeyIndex:    0,
 		APIKey:      "sk-only-key",
-		KeyStrategy: "sequential",
+		KeyStrategy: model.KeyStrategySequential,
 	})
 
 	// 401认证错误本应是Key级，但单Key渠道应升级为渠道级
@@ -187,7 +187,7 @@ func TestHandleError_SingleKeyUpgrade(t *testing.T) {
 		t.Fatalf("HandleError failed: %v", err)
 	}
 
-	// ✅ 关键断言：单Key渠道应升级为渠道级错误
+	// [INFO] 关键断言：单Key渠道应升级为渠道级错误
 	if action != ActionRetryChannel {
 		t.Errorf("Expected ActionRetryChannel for single-key channel, got %v", action)
 	}
@@ -240,7 +240,7 @@ func TestHandleError_NetworkError(t *testing.T) {
 			ChannelID:   cfg.ID,
 			KeyIndex:    i,
 			APIKey:      "sk-net-key-" + string(rune('0'+i)),
-			KeyStrategy: "sequential",
+			KeyStrategy: model.KeyStrategySequential,
 		})
 	}
 
@@ -305,13 +305,13 @@ func TestClearKeyCooldown(t *testing.T) {
 		ChannelID:   cfg.ID,
 		KeyIndex:    0,
 		APIKey:      "sk-test-clear",
-		KeyStrategy: "sequential",
+		KeyStrategy: model.KeyStrategySequential,
 	})
 	_ = store.CreateAPIKey(ctx, &model.APIKey{
 		ChannelID:   cfg.ID,
 		KeyIndex:    1,
 		APIKey:      "sk-test-clear-2",
-		KeyStrategy: "sequential",
+		KeyStrategy: model.KeyStrategySequential,
 	})
 
 	// 先触发Key冷却
@@ -407,7 +407,7 @@ func TestHandleError_RateLimitClassification(t *testing.T) {
 			ChannelID:   cfg.ID,
 			KeyIndex:    i,
 			APIKey:      "sk-ratelimit-" + string(rune('0'+i)),
-			KeyStrategy: "sequential",
+			KeyStrategy: model.KeyStrategySequential,
 		})
 	}
 
@@ -549,7 +549,7 @@ func TestHandleError_RateLimitClassification(t *testing.T) {
 				}
 			}
 
-			t.Logf("✅ %s: %s", tc.name, tc.description)
+			t.Logf("[INFO] %s: %s", tc.name, tc.description)
 		})
 	}
 }
