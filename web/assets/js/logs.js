@@ -852,7 +852,7 @@
         contentDiv.innerHTML = `
           <div style="display: flex; align-items: center; gap: 8px;">
             <span style="font-size: 18px;">✅</span>
-            <strong>${result.message || 'API测试成功'}</strong>
+            <strong>${escapeHtml(result.message || 'API测试成功')}</strong>
           </div>
         `;
 

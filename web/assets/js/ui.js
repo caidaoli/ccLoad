@@ -270,6 +270,21 @@
   let channelTypesCache = null;
 
   /**
+   * HTML转义（防XSS）
+   * @param {string} str - 需要转义的字符串
+   * @returns {string} 转义后的安全字符串
+   */
+  function escapeHtml(str) {
+    if (str == null) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  /**
    * 获取渠道类型配置（带缓存）
    */
   async function getChannelTypes() {
@@ -304,10 +319,10 @@
       <label style="margin-right: 15px; cursor: pointer; display: inline-flex; align-items: center;">
         <input type="radio"
                name="channelType"
-               value="${type.value}"
+               value="${escapeHtml(type.value)}"
                ${type.value === selectedValue ? 'checked' : ''}
                style="margin-right: 5px;">
-        <span title="${type.description}">${type.display_name}</span>
+        <span title="${escapeHtml(type.description)}">${escapeHtml(type.display_name)}</span>
       </label>
     `).join('');
   }
@@ -327,10 +342,10 @@
     const types = await getChannelTypes();
 
     select.innerHTML = types.map(type => `
-      <option value="${type.value}"
+      <option value="${escapeHtml(type.value)}"
               ${type.value === selectedValue ? 'selected' : ''}
-              title="${type.description}">
-        ${type.display_name}
+              title="${escapeHtml(type.description)}">
+        ${escapeHtml(type.display_name)}
       </option>
     `).join('');
   }
@@ -361,8 +376,8 @@
 
     select.innerHTML = '<option value="all">所有类型</option>' +
       types.map(type => `
-        <option value="${type.value}" title="${type.description}">
-          ${type.display_name}
+        <option value="${escapeHtml(type.value)}" title="${escapeHtml(type.description)}">
+          ${escapeHtml(type.display_name)}
         </option>
       `).join('');
   }
@@ -391,9 +406,9 @@
 
     container.innerHTML = allTypes.map((type) => `
       <button class="channel-tab ${type.value === activeType ? 'active' : ''}"
-              data-type="${type.value}"
-              title="${type.description || '显示所有渠道类型'}">
-        ${type.display_name}
+              data-type="${escapeHtml(type.value)}"
+              title="${escapeHtml(type.description || '显示所有渠道类型')}">
+        ${escapeHtml(type.display_name)}
       </button>
     `).join('');
 

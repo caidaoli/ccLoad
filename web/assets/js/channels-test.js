@@ -366,7 +366,8 @@ function displayTestResult(result) {
     testResultDiv.classList.add('error');
     renderHeader('❌', '测试失败');
 
-    let details = result.error || '未知错误';
+    // [FIX] 转义 result.error 防止 XSS
+    let details = escapeHtml(result.error || '未知错误');
     if (result.duration_ms) {
       details += `<br>响应时间: ${result.duration_ms}ms`;
     }

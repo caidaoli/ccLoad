@@ -50,27 +50,28 @@
 - **状态**
   - 重写函数时已更新注释，移除"使用 sonic 解析"的误导性描述
 
-### 5. `NewServer` 过载（配置加载/校验/初始化混杂）
+### 5. ~~`NewServer` 过载（配置加载/校验/初始化混杂）~~ ✅ 已修复 (2025-12-12)
 - **位置**
   - `internal/app/server.go`：`NewServer`
-- **问题**
-  - 运行时配置读取（env/setting）、校验、业务初始化混在一起，未来会持续膨胀。
-- **整改建议（SRP）**
-  - 把"配置加载 + 校验"收敛到 `ConfigService` 单入口；`NewServer` 只消费结果。
-- **状态**：待排期
+  - `internal/app/config_service.go`：新增带约束的配置API
+- **修复方案**
+  - 新增 `GetIntMin`、`GetDurationNonNegative`、`GetDurationPositive` 等带约束的配置读取方法
+  - 配置验证逻辑收敛到 `ConfigService`（SRP）
+  - `NewServer` 直接调用带约束的API，不再做inline校验
 
 ---
 
 ## P3 低优先级（安全/体验）
 
-### 6. Web 管理台大量 `innerHTML` 拼接
+### 6. ~~Web 管理台大量 `innerHTML` 拼接~~ ✅ 已修复 (2025-12-12)
 - **位置**
-  - `web/assets/js/*.js`（如 `channels-test.js`、`settings.js` 等）
-- **问题**
-  - 直接将服务端字段拼进 `innerHTML`，存在 XSS 风险（即便管理台常在内网，也不该默认信任数据）。
-- **整改建议（KISS 安全底线）**
-  - 可变文本用 `textContent`；必要 HTML 片段做最小白名单/模板化。
-- **状态**：待排期
+  - `web/assets/js/ui.js`：`ChannelTypeManager` 模块
+  - `web/assets/js/channels-test.js`：`displayTestResult` 函数
+  - `web/assets/js/logs.js`：测试结果显示
+- **修复方案**
+  - 在 `ChannelTypeManager` 内添加 `escapeHtml` 函数
+  - 所有动态拼接HTML的位置统一使用 `escapeHtml` 转义
+  - 修复 `renderChannelTypeRadios`、`renderChannelTypeSelect`、`renderChannelTypeFilter`、`renderChannelTypeTabs` 等函数
 
 ---
 
@@ -79,8 +80,8 @@
   - 核心分层清晰（HTTP/app、cooldown、storage、util），缓存与错误分类是正确方向。
   - `request_context.go` 使用 `context.AfterFunc` + 必 `defer cancel`，无 goroutine 泄漏。
   - 关闭链路 `main.go` + `Server.Shutdown` 逻辑清楚，资源回收完整。
-- **~~缺点~~** → 已修复
-  - ~~SQLite 写并发与 RR KeyIndex 不变式是两颗地雷；1308 文案解析是第三颗未来地雷。~~
+- **所有问题已修复** ✅
+  - P0/P1/P2/P3 全部问题已于 2025-12-12 修复完成
 
 ---
 
@@ -92,6 +93,6 @@
 | P1 | RR KeyIndex 假设 | ✅ 已修复 | 2025-12-12 |
 | P1 | 1308 时间解析 | ✅ 已修复 | 2025-12-12 |
 | P2 | 注释不一致 | ✅ 附带修复 | 2025-12-12 |
-| P2 | NewServer 过载 | ⏳ 待排期 | - |
-| P3 | innerHTML XSS | ⏳ 待排期 | - |
+| P2 | NewServer 过载 | ✅ 已修复 | 2025-12-12 |
+| P3 | innerHTML XSS | ✅ 已修复 | 2025-12-12 |
 

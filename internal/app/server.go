@@ -78,27 +78,10 @@ func NewServer(store storage.Store) *Server {
 	log.Print("[INFO] API访问令牌将从数据库动态加载（支持Web界面管理）")
 
 	// 从ConfigService读取运行时配置（启动时加载一次，修改后重启生效）
-	// 验证规则：
-	// - maxKeyRetries >= 1，否则使用默认值并警告
-	// - firstByteTimeout < 0 则设为 0（禁用）
-	// - nonStreamTimeout > 0，否则使用默认值并警告
-	maxKeyRetries := configService.GetInt("max_key_retries", config.DefaultMaxKeyRetries)
-	if maxKeyRetries < 1 {
-		log.Printf("[WARN] 无效的 max_key_retries=%d（必须 >= 1），已使用默认值 %d", maxKeyRetries, config.DefaultMaxKeyRetries)
-		maxKeyRetries = config.DefaultMaxKeyRetries
-	}
-
-	firstByteTimeout := configService.GetDuration("upstream_first_byte_timeout", 0)
-	if firstByteTimeout < 0 {
-		log.Printf("[WARN] 无效的 upstream_first_byte_timeout=%v（必须 >= 0），已设为 0（禁用）", firstByteTimeout)
-		firstByteTimeout = 0
-	}
-
-	nonStreamTimeout := configService.GetDuration("non_stream_timeout", 120*time.Second)
-	if nonStreamTimeout <= 0 {
-		log.Printf("[WARN] 无效的 non_stream_timeout=%v（必须 > 0），已使用默认值 120s", nonStreamTimeout)
-		nonStreamTimeout = 120 * time.Second
-	}
+	// 配置验证已移至 ConfigService 的带约束 API（SRP）
+	maxKeyRetries := configService.GetIntMin("max_key_retries", config.DefaultMaxKeyRetries, 1)
+	firstByteTimeout := configService.GetDurationNonNegative("upstream_first_byte_timeout", 0)
+	nonStreamTimeout := configService.GetDurationPositive("non_stream_timeout", 120*time.Second)
 
 	logRetentionDays := configService.GetInt("log_retention_days", 7)
 	enable88codeFreeOnly := configService.GetBool("88code_free_only", false)
