@@ -374,6 +374,14 @@ func classifyErrorByString(errStr string) (int, ErrorLevel, bool) {
 		return 502, ErrorLevelChannel, true
 	}
 
+	// HTTP/2 流级错误 - 上游服务器主动关闭流或内部错误
+	// 常见原因：上游负载过高、服务崩溃、网络中间件超时、CDN断开
+	// 应触发渠道级重试（切换到其他渠道）
+	if strings.Contains(errLower, "http2: response body closed") ||
+		strings.Contains(errLower, "stream error:") {
+		return 502, ErrorLevelChannel, true // Bad Gateway - 上游服务异常
+	}
+
 	// 其他常见的网络连接错误也应该重试
 	if strings.Contains(errLower, "no such host") ||
 		strings.Contains(errLower, "host unreachable") ||

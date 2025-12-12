@@ -164,20 +164,22 @@ func streamAndParseResponse(ctx context.Context, body io.ReadCloser, w http.Resp
 	return parser, err
 }
 
-// isClientDisconnectError 判断是否为客户端断开导致的错误
-// 包括：context取消、HTTP/2流关闭、连接重置等
+// isClientDisconnectError 判断是否为客户端主动断开导致的错误
+// 只识别明确的客户端取消信号，不包括上游服务器错误
+// 注意：http2: response body closed 和 stream error 是上游服务器问题，不是客户端断开！
 func isClientDisconnectError(err error) bool {
 	if err == nil {
 		return false
 	}
+	// context.Canceled 是明确的客户端取消信号（用户点"停止"）
 	if errors.Is(err, context.Canceled) {
 		return true
 	}
-	// HTTP/2 流关闭相关错误（客户端断开时 resp.Body.Close() 触发）
+	// "client disconnected" 是 gin/net/http 报告的客户端断开
+	// 注意：http2: response body closed 和 stream error 是上游服务器问题，
+	// 不应在此判断，否则会导致上游异常被忽略而不触发冷却逻辑
 	errStr := err.Error()
-	return strings.Contains(errStr, "http2: response body closed") ||
-		strings.Contains(errStr, "stream error: stream ID") ||
-		strings.Contains(errStr, "client disconnected")
+	return strings.Contains(errStr, "client disconnected")
 }
 
 // buildStreamDiagnostics 生成流诊断消息

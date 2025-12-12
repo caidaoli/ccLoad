@@ -3,6 +3,7 @@ package util
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -305,6 +306,70 @@ func TestClassifyError_EmptyResponse(t *testing.T) {
 			expectedLevel:  ErrorLevelChannel,
 			expectedRetry:  true,
 			reason:         "大小写不敏感匹配",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			statusCode, errorLevel, shouldRetry := ClassifyError(tt.err)
+
+			if statusCode != tt.expectedStatus {
+				t.Errorf("❌ 状态码错误: 期望 %d, 实际 %d (%s)", tt.expectedStatus, statusCode, tt.reason)
+			}
+			if errorLevel != tt.expectedLevel {
+				t.Errorf("❌ 错误级别错误: 期望 %v, 实际 %v (%s)", tt.expectedLevel, errorLevel, tt.reason)
+			}
+			if shouldRetry != tt.expectedRetry {
+				t.Errorf("❌ 重试标志错误: 期望 %v, 实际 %v (%s)", tt.expectedRetry, shouldRetry, tt.reason)
+			}
+
+			t.Logf("[INFO] %s - 状态码:%d, 错误级别:%v, 重试:%v", tt.reason, statusCode, errorLevel, shouldRetry)
+		})
+	}
+}
+
+
+// 测试HTTP/2流错误分类
+func TestClassifyError_HTTP2StreamErrors(t *testing.T) {
+	tests := []struct {
+		name           string
+		err            error
+		expectedStatus int
+		expectedLevel  ErrorLevel
+		expectedRetry  bool
+		reason         string
+	}{
+		{
+			name:           "http2_response_body_closed",
+			err:            fmt.Errorf("http2: response body closed"),
+			expectedStatus: 502, // Bad Gateway
+			expectedLevel:  ErrorLevelChannel,
+			expectedRetry:  true,
+			reason:         "上游服务器主动关闭HTTP/2流，应触发渠道级重试",
+		},
+		{
+			name:           "http2_stream_error_internal",
+			err:            fmt.Errorf("stream error: stream ID 7; INTERNAL_ERROR"),
+			expectedStatus: 502, // Bad Gateway
+			expectedLevel:  ErrorLevelChannel,
+			expectedRetry:  true,
+			reason:         "HTTP/2 RST_STREAM INTERNAL_ERROR，上游服务异常",
+		},
+		{
+			name:           "http2_stream_error_protocol",
+			err:            fmt.Errorf("stream error: stream ID 3; PROTOCOL_ERROR"),
+			expectedStatus: 502, // Bad Gateway
+			expectedLevel:  ErrorLevelChannel,
+			expectedRetry:  true,
+			reason:         "HTTP/2协议错误，应切换渠道重试",
+		},
+		{
+			name:           "http2_error_wrapped",
+			err:            fmt.Errorf("failed to read response: http2: response body closed"),
+			expectedStatus: 502, // Bad Gateway
+			expectedLevel:  ErrorLevelChannel,
+			expectedRetry:  true,
+			reason:         "包装后的HTTP/2错误也应正确识别",
 		},
 	}
 
