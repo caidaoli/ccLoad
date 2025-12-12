@@ -393,6 +393,10 @@ func (s *Server) handleDeleteChannel(c *gin.Context, id int64) {
 		RespondError(c, http.StatusNotFound, err)
 		return
 	}
+	// 删除渠道对应的轮询计数器，避免KeySelector内部状态泄漏
+	if s.keySelector != nil {
+		s.keySelector.RemoveChannelCounter(id)
+	}
 	// 删除渠道后刷新缓存
 	s.invalidateChannelRelatedCache(id)
 	// 数据库级联删除会自动清理冷却数据（无需手动清理缓存）

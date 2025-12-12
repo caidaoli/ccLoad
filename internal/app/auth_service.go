@@ -354,9 +354,9 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 		attemptCount := s.loginRateLimiter.GetAttemptCount(clientIP)
 		log.Printf("[WARN]  登录失败: IP=%s, 尝试次数=%d/5", clientIP, attemptCount)
 
+		// [SECURITY] 不返回剩余尝试次数，避免攻击者推断速率限制状态
 		c.JSON(http.StatusUnauthorized, gin.H{
-			"error":              "Invalid password",
-			"remaining_attempts": 5 - attemptCount,
+			"error": "Invalid password",
 		})
 		return
 	}

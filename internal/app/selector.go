@@ -90,18 +90,22 @@ func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpk
 		}
 
 		// 2. 检查是否所有Key都在冷却
-		keyMap, hasKeys := keyCooldowns[cfg.ID]
-		if hasKeys {
-			// 检查是否至少有一个Key可用
-			hasAvailableKey := false
-			for _, cooldownUntil := range keyMap {
-				if cooldownUntil.Before(now) || cooldownUntil.Equal(now) {
-					hasAvailableKey = true
-					break
+		// keyCooldowns 只包含"正在冷却"的Key；未出错/未冷却的Key不会出现在这里。
+		// 只有当我们确认该渠道的所有Key都处于冷却中时，才跳过整个渠道。
+		keyMap, hasCooldownKeys := keyCooldowns[cfg.ID]
+		if hasCooldownKeys && cfg.KeyCount > 0 {
+			// 若冷却记录数量小于Key总数，说明至少有一个Key未进入冷却映射，渠道仍可用。
+			if len(keyMap) >= cfg.KeyCount {
+				hasAvailableKey := false
+				for _, cooldownUntil := range keyMap {
+					if !cooldownUntil.After(now) {
+						hasAvailableKey = true
+						break
+					}
 				}
-			}
-			if !hasAvailableKey {
-				continue // 所有Key都冷却中，跳过
+				if !hasAvailableKey {
+					continue // 所有Key都冷却中，跳过
+				}
 			}
 		}
 

@@ -365,8 +365,15 @@ func (c *ChannelCache) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[in
 	cooldowns, err := c.store.GetAllKeyCooldowns(ctx)
 	c.keyCooldownCounter.addMiss()
 	if err == nil {
+		// 深拷贝存入缓存，防止外部修改影响缓存数据
+		cacheCopy := make(map[int64]map[int]time.Time, len(cooldowns))
+		for k, v := range cooldowns {
+			keyMap := make(map[int]time.Time, len(v))
+			maps.Copy(keyMap, v)
+			cacheCopy[k] = keyMap
+		}
 		c.mutex.Lock()
-		c.cooldownCache.keys = cooldowns
+		c.cooldownCache.keys = cacheCopy
 		c.cooldownCache.lastUpdate = time.Now()
 		c.mutex.Unlock()
 	}

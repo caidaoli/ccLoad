@@ -14,8 +14,7 @@ type KeySelector struct {
 	cooldownGauge *atomic.Int64 // 监控指标：当前活跃的Key级冷却数量
 
 	// 轮询计数器：channelID -> *rrCounter
-	// 注意：渠道删除后计数器不会自动清理，但泄漏量有限（≈渠道数量，每个24字节）
-	// 设计选择：YAGNI原则，除非有上万个渠道频繁增删，否则可忽略
+	// 渠道删除时需要清理对应计数器，避免rrCounters无界增长。
 	rrCounters map[int64]*rrCounter
 	rrMutex    sync.RWMutex
 }
@@ -114,6 +113,14 @@ func (ks *KeySelector) getOrCreateCounter(channelID int64) *rrCounter {
 		ks.rrCounters[channelID] = counter
 	}
 	return counter
+}
+
+// RemoveChannelCounter 删除指定渠道的轮询计数器。
+// 在渠道被删除时调用，避免rrCounters长期积累。
+func (ks *KeySelector) RemoveChannelCounter(channelID int64) {
+	ks.rrMutex.Lock()
+	delete(ks.rrCounters, channelID)
+	ks.rrMutex.Unlock()
 }
 
 // selectRoundRobin 轮询选择可用Key

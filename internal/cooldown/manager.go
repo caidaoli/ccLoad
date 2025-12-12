@@ -18,6 +18,10 @@ const (
 	ActionReturnClient               // 直接返回给客户端
 )
 
+// NoKeyIndex 表示错误与特定Key无关（网络错误、DNS解析失败等）
+// 用于 HandleError 的 keyIndex 参数
+const NoKeyIndex = -1
+
 // ConfigGetter 获取渠道配置的接口（支持缓存）
 // 设计原则：接口隔离，cooldown包不依赖具体的cache实现
 type ConfigGetter interface {
@@ -46,7 +50,7 @@ func NewManager(store storage.Store, configGetter ConfigGetter) *Manager {
 //
 // 参数:
 //   - channelID: 渠道ID
-//   - keyIndex: Key索引（-1表示网络错误，非Key级错误）
+//   - keyIndex: Key索引（NoKeyIndex 表示网络错误，非Key级错误）
 //   - statusCode: HTTP状态码（或内部错误码）
 //   - errorBody: 错误响应体（用于智能分类）
 //   - isNetworkError: 是否为网络错误（区分HTTP错误）
@@ -129,7 +133,7 @@ func (m *Manager) HandleError(
 
 	case util.ErrorLevelKey:
 		// Key级错误:冷却当前Key,继续尝试其他Key
-		if keyIndex >= 0 {
+		if keyIndex != NoKeyIndex {
 			// [INFO] 特殊处理: 1308错误自动禁用到指定时间
 			if has1308Time {
 				// 直接设置冷却时间到指定时刻

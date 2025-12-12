@@ -236,10 +236,13 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 
 	// 再插入新的模型索引
 	for _, model := range upd.Models {
-		if _, err := s.db.ExecContext(ctx, `
-			INSERT IGNORE INTO channel_models (channel_id, model)
-			VALUES (?, ?)
-		`, id, model); err != nil {
+		var insertSQL string
+		if s.IsSQLite() {
+			insertSQL = `INSERT OR IGNORE INTO channel_models (channel_id, model) VALUES (?, ?)`
+		} else {
+			insertSQL = `INSERT IGNORE INTO channel_models (channel_id, model) VALUES (?, ?)`
+		}
+		if _, err := s.db.ExecContext(ctx, insertSQL, id, model); err != nil {
 			// 索引同步失败不影响主要功能，记录警告
 			log.Printf("Warning: Failed to sync model %s to channel_models: %v", model, err)
 		}

@@ -3,6 +3,7 @@ package app
 import (
 	"bufio"
 	"bytes"
+	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 	"context"
@@ -107,16 +108,14 @@ func (s *Server) handleRequestError(
 
 // handleErrorResponse 处理错误响应（读取完整响应体）
 // 从proxy.go提取，遵循SRP原则
-// 限制错误体大小防止 OOM（与入站 2MB 限制对称）
-const maxErrorBodySize = 2 * 1024 * 1024 // 2MB
-
+// 限制错误体大小防止 OOM（与入站 DefaultMaxBodyBytes 限制对称）
 func (s *Server) handleErrorResponse(
 	reqCtx *requestContext,
 	resp *http.Response,
 	firstByteTime float64,
 	hdrClone http.Header,
 ) (*fwResult, float64, error) {
-	rb, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodySize))
+	rb, readErr := io.ReadAll(io.LimitReader(resp.Body, int64(config.DefaultMaxBodyBytes)))
 	if readErr != nil {
 		s.AddLogAsync(&model.LogEntry{
 			Time:    model.JSONTime{Time: time.Now()},

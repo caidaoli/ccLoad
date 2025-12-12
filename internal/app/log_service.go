@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -145,7 +146,11 @@ func (s *LogService) AddLogAsync(entry *model.LogEntry) {
 		// 成功放入队列
 	default:
 		// 队列满，丢弃日志（计数用于监控）
-		s.logDropCount.Add(1)
+		count := s.logDropCount.Add(1)
+		// 采样告警：每100次丢弃打印一次，避免日志洪水
+		if count%100 == 1 {
+			log.Printf("[WARN]  日志队列已满，日志被丢弃 (累计丢弃: %d)", count)
+		}
 	}
 }
 
