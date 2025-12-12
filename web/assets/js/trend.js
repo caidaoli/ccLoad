@@ -870,20 +870,24 @@
         const item = document.createElement('div');
         item.className = 'channel-filter-item';
         item.onclick = () => toggleChannel(channelName);
-        
+
         const isVisible = window.visibleChannels.has(channelName);
-        
+
         // 为"未知渠道"添加特殊标识
-        const displayName = channelName === '未知渠道' 
-          ? `${channelName} ⚠️` 
+        const displayName = channelName === '未知渠道'
+          ? `${channelName} ⚠️`
           : channelName;
-        
-        item.innerHTML = `
-          <div class="channel-checkbox ${isVisible ? 'checked' : ''}"></div>
-          <div class="channel-color-indicator" style="background-color: ${channelColors[channelName]}"></div>
-          <div class="channel-name">${displayName}</div>
-        `;
-        
+
+        const content = TemplateEngine.render('tpl-channel-filter-item', {
+          checkedClass: isVisible ? 'checked' : '',
+          color: channelColors[channelName],
+          displayName: displayName
+        });
+        if (content) {
+          item.innerHTML = '';
+          item.appendChild(content);
+        }
+
         filterList.appendChild(item);
       });
     }

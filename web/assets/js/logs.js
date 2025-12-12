@@ -85,30 +85,17 @@
     function showLoading() {
       const tbody = document.getElementById('tbody');
       const colspan = getTableColspan();
-      tbody.innerHTML = `
-        <tr>
-          <td colspan="${colspan}" class="loading-state">
-            <div class="loading-spinner" style="margin: 0 auto var(--space-2)"></div>
-            正在加载日志...
-          </td>
-        </tr>
-      `;
+      const loadingRow = TemplateEngine.render('tpl-log-loading', { colspan });
+      tbody.innerHTML = '';
+      if (loadingRow) tbody.appendChild(loadingRow);
     }
 
     function showError() {
       const tbody = document.getElementById('tbody');
       const colspan = getTableColspan();
-      tbody.innerHTML = `
-        <tr>
-          <td colspan="${colspan}" class="empty-state">
-            <svg class="w-12 h-12 mx-auto mb-4" style="color: var(--error-400);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.864-.833-2.634 0L4.18 16.5c-.77.833.192 2.5 1.732 2.5z"/>
-            </svg>
-            <div style="color: var(--error-400); font-weight: var(--font-medium); margin-bottom: var(--space-1);">加载失败</div>
-            <div>请检查网络连接或重试</div>
-          </td>
-        </tr>
-      `;
+      const errorRow = TemplateEngine.render('tpl-log-error', { colspan });
+      tbody.innerHTML = '';
+      if (errorRow) tbody.appendChild(errorRow);
     }
 
     function renderLogs(data) {
@@ -116,52 +103,48 @@
       const colspan = getTableColspan();
 
       if (data.length === 0) {
-        tbody.innerHTML = `
-          <tr>
-            <td colspan="${colspan}" class="empty-state">
-              <svg class="w-12 h-12 mx-auto mb-4" style="color: var(--neutral-400);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-              </svg>
-              <div style="font-weight: var(--font-medium); margin-bottom: var(--space-1); color: var(--neutral-700);">暂无日志数据</div>
-              <div>请调整筛选条件或检查时间范围</div>
-            </td>
-          </tr>
-        `;
+        const emptyRow = TemplateEngine.render('tpl-log-empty', { colspan });
+        tbody.innerHTML = '';
+        if (emptyRow) tbody.appendChild(emptyRow);
         return;
       }
 
       tbody.innerHTML = '';
+
       for (const entry of data) {
-        const tr = document.createElement('tr');
-        
-        const configInfo = entry.channel_name || 
-          (entry.channel_id ? `渠道 #${entry.channel_id}` : 
-           (entry.message === 'exhausted backends' ? '系统（所有渠道失败）' : 
+        // === 预处理数据：构建复杂HTML片段 ===
+
+        // 1. 渠道信息显示
+        const configInfo = entry.channel_name ||
+          (entry.channel_id ? `渠道 #${entry.channel_id}` :
+           (entry.message === 'exhausted backends' ? '系统（所有渠道失败）' :
             entry.message === 'no available upstream (all cooled or none)' ? '系统（无可用渠道）' : '系统'));
         const configDisplay = entry.channel_id ?
           `<a class="channel-link" href="/web/channels.html?id=${entry.channel_id}#channel-${entry.channel_id}">${escapeHtml(entry.channel_name||'')} <small>(#${entry.channel_id})</small></a>` :
           `<span style="color: var(--neutral-500);">${escapeHtml(configInfo)}</span>`;
-        
-        const statusClass = (entry.status_code >= 200 && entry.status_code < 300) ? 
+
+        // 2. 状态码样式
+        const statusClass = (entry.status_code >= 200 && entry.status_code < 300) ?
           'status-success' : 'status-error';
-          
-        const modelDisplay = entry.model ? 
-          `<span class="model-tag">${escapeHtml(entry.model)}</span>` : 
+        const statusCode = entry.status_code;
+
+        // 3. 模型显示
+        const modelDisplay = entry.model ?
+          `<span class="model-tag">${escapeHtml(entry.model)}</span>` :
           '<span style="color: var(--neutral-500);">-</span>';
-        
-        // 格式化耗时显示
+
+        // 4. 响应时间显示(流式/非流式)
         const hasDuration = entry.duration !== undefined && entry.duration !== null;
-        const durationDisplay = hasDuration ? 
-          `<span style="color: var(--neutral-700);">${entry.duration.toFixed(3)}</span>` : 
+        const durationDisplay = hasDuration ?
+          `<span style="color: var(--neutral-700);">${entry.duration.toFixed(3)}</span>` :
           '<span style="color: var(--neutral-500);">-</span>';
-          
-        // 格式化耗时显示：流式显示"首字/总耗时"，非流式只显示总耗时
+
         const streamFlag = entry.is_streaming ?
           '<span class="stream-flag">流</span>' :
           '<span class="stream-flag placeholder">流</span>';
+
         let responseTimingDisplay;
         if (entry.is_streaming) {
-          // 流式请求：显示 首字/总耗时
           const hasFirstByte = entry.first_byte_time !== undefined && entry.first_byte_time !== null;
           const firstByteDisplay = hasFirstByte ?
             `<span style="color: var(--success-600);">${entry.first_byte_time.toFixed(3)}</span>` :
@@ -175,7 +158,6 @@
             ${streamFlag}
           `;
         } else {
-          // 非流式请求：只显示总耗时
           responseTimingDisplay = `
             <span style="display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px; white-space: nowrap;">
               ${durationDisplay}
@@ -184,23 +166,23 @@
           `;
         }
 
-        // 格式化API Key显示（已在后端掩码处理）
+        // 5. API Key显示(含按钮组)
         let apiKeyDisplay = '';
         if (entry.api_key_used && entry.channel_id && entry.model) {
-          // ✅ 修复：按钮显示条件优化
-          // - 测试按钮：仅状态码非200时显示（故障Key才需要测试）
-          // - 删除按钮：仅状态码403时显示（鉴权失败说明Key失效）
           const statusCode = entry.status_code || 0;
           const showTestBtn = statusCode !== 200;
           const showDeleteBtn = statusCode === 403;
 
-          // 构建按钮组（按需显示）
           let buttons = '';
           if (showTestBtn) {
             buttons += `
               <button
                 class="test-key-btn"
-                onclick="testKey(${entry.channel_id}, '${escapeHtml(entry.channel_name || '').replace(/'/g, "\\'")}', '${escapeHtml(entry.api_key_used)}', '${escapeHtml(entry.model)}')"
+                data-action="test"
+                data-channel-id="${entry.channel_id}"
+                data-channel-name="${escapeHtml(entry.channel_name || '').replace(/"/g, '&quot;')}"
+                data-api-key="${escapeHtml(entry.api_key_used).replace(/"/g, '&quot;')}"
+                data-model="${escapeHtml(entry.model).replace(/"/g, '&quot;')}"
                 title="测试此 API Key">
                 ⚡
               </button>
@@ -211,14 +193,16 @@
               <button
                 class="test-key-btn"
                 style="color: var(--error-600);"
-                onclick="deleteKeyFromLog(${entry.channel_id}, '${escapeHtml(entry.channel_name || '').replace(/'/g, "\\'")}', '${escapeHtml(entry.api_key_used)}')"
+                data-action="delete"
+                data-channel-id="${entry.channel_id}"
+                data-channel-name="${escapeHtml(entry.channel_name || '').replace(/"/g, '&quot;')}"
+                data-api-key="${escapeHtml(entry.api_key_used).replace(/"/g, '&quot;')}"
                 title="删除此 API Key">
                 🗑
               </button>
             `;
           }
 
-          // 有完整信息，显示API Key和按钮（按需）
           apiKeyDisplay = `
             <div style="display: flex; align-items: center; gap: 6px; justify-content: center;">
               <code style="font-size: 0.9em; color: var(--neutral-600);">${escapeHtml(entry.api_key_used)}</code>
@@ -226,13 +210,12 @@
             </div>
           `;
         } else if (entry.api_key_used) {
-          // 只有API Key，无法测试
           apiKeyDisplay = `<code style="font-size: 0.9em; color: var(--neutral-600);">${escapeHtml(entry.api_key_used)}</code>`;
         } else {
           apiKeyDisplay = '<span style="color: var(--neutral-500);">-</span>';
         }
 
-        // Token统计显示（0值显示为空，减少视觉干扰）
+        // 6. Token统计显示(0值为空)
         const tokenValue = (value, color) => {
           if (value === undefined || value === null || value === 0) {
             return '';
@@ -244,26 +227,28 @@
         const cacheReadDisplay = tokenValue(entry.cache_read_input_tokens, 'var(--success-600)');
         const cacheCreationDisplay = tokenValue(entry.cache_creation_input_tokens, 'var(--primary-600)');
 
-        // 成本显示（0值显示为空）
+        // 7. 成本显示(0值为空)
         const costDisplay = entry.cost ?
           `<span style="color: var(--warning-600); font-weight: 500;">${formatCost(entry.cost)}</span>` :
           '';
 
-        tr.innerHTML = `
-          <td style="white-space: nowrap;">${formatTime(entry.time)}</td>
-          <td>${modelDisplay}</td>
-          <td class="config-info">${configDisplay}</td>
-          <td style="text-align: center; white-space: nowrap;">${apiKeyDisplay}</td>
-          <td><span class="${statusClass}">${entry.status_code}</span></td>
-          <td style="text-align: right; white-space: nowrap;">${responseTimingDisplay}</td>
-          <td style="text-align: right; white-space: nowrap;">${inputTokensDisplay}</td>
-          <td style="text-align: right; white-space: nowrap;">${outputTokensDisplay}</td>
-          <td style="text-align: right; white-space: nowrap;">${cacheReadDisplay}</td>
-          <td style="text-align: right; white-space: nowrap;">${cacheCreationDisplay}</td>
-          <td style="text-align: right; white-space: nowrap;">${costDisplay}</td>
-          <td style="max-width: 300px; word-break: break-word;">${escapeHtml(entry.message || '')}</td>
-        `;
-        tbody.appendChild(tr);
+        // === 渲染行 ===
+        const rowEl = TemplateEngine.render('tpl-log-row', {
+          time: formatTime(entry.time),
+          modelDisplay,
+          configDisplay,
+          apiKeyDisplay,
+          statusClass,
+          statusCode,
+          responseTimingDisplay,
+          inputTokensDisplay,
+          outputTokensDisplay,
+          cacheReadDisplay,
+          cacheCreationDisplay,
+          costDisplay,
+          message: entry.message || ''
+        });
+        if (rowEl) tbody.appendChild(rowEl);
       }
     }
 
@@ -630,6 +615,27 @@
           closeTestKeyModal();
         }
       });
+
+      // 事件委托：处理日志表格中的按钮点击
+      const tbody = document.getElementById('tbody');
+      if (tbody) {
+        tbody.addEventListener('click', (e) => {
+          const btn = e.target.closest('.test-key-btn[data-action]');
+          if (!btn) return;
+
+          const action = btn.dataset.action;
+          const channelId = parseInt(btn.dataset.channelId);
+          const channelName = btn.dataset.channelName || '';
+          const apiKey = btn.dataset.apiKey || '';
+          const model = btn.dataset.model || '';
+
+          if (action === 'test') {
+            testKey(channelId, channelName, apiKey, model);
+          } else if (action === 'delete') {
+            deleteKeyFromLog(channelId, channelName, apiKey);
+          }
+        });
+      }
     });
 
     // 初始化渠道类型筛选器

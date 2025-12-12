@@ -185,6 +185,36 @@
     </div>
   </div>
 
+  <!-- 模板引擎 -->
+  <script src="/web/assets/js/template-engine.js"></script>
+
+  <!-- 令牌行模板 -->
+  <template id="tpl-token-row">
+    <tr data-token-id="{{id}}">
+      <td style="font-weight: 500;">{{description}}</td>
+      <td>
+        <div><span class="token-display token-display-{{statusClass}}">{{token}}</span></div>
+        <div style="font-size: 12px; color: var(--neutral-500); margin-top: 4px;">{{createdAt}}创建 · {{expiresAt}}</div>
+      </td>
+      <td style="text-align: center;">{{{callsHtml}}}</td>
+      <td style="text-align: center;">{{{successRateHtml}}}</td>
+      <td style="text-align: center;">{{{tokensHtml}}}</td>
+      <td style="text-align: center;">{{{costHtml}}}</td>
+      <td style="text-align: center;">{{{streamAvgHtml}}}</td>
+      <td style="text-align: center;">{{{nonStreamAvgHtml}}}</td>
+      <td style="color: var(--neutral-600);">{{lastUsed}}</td>
+      <td>
+        <button class="btn btn-secondary btn-edit" style="padding: 4px 12px; font-size: 13px; margin-right: 4px;">编辑</button>
+        <button class="btn btn-danger btn-delete" style="padding: 4px 12px; font-size: 13px;">删除</button>
+      </td>
+    </tr>
+  </template>
+
+  <!-- 统计徽章组件(可复用) -->
+  <template id="tpl-stats-badge">
+    <span class="stats-badge" style="{{style}}" title="{{title}}">{{text}}</span>
+  </template>
+
   <script src="/web/assets/js/tokens.js"></script>
 </body>
 </html>

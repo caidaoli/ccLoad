@@ -53,29 +53,16 @@
 
     function showLoading() {
       const tbody = document.getElementById('stats_tbody');
-      tbody.innerHTML = `
-        <tr>
-          <td colspan="${STATS_TABLE_COLUMNS}" class="loading-state">
-            <div class="loading-spinner" style="margin: 0 auto var(--space-2)"></div>
-            正在加载统计数据...
-          </td>
-        </tr>
-      `;
+      tbody.innerHTML = '';
+      const row = TemplateEngine.render('tpl-stats-loading', { colspan: STATS_TABLE_COLUMNS });
+      if (row) tbody.appendChild(row);
     }
 
     function showError() {
       const tbody = document.getElementById('stats_tbody');
-      tbody.innerHTML = `
-        <tr>
-          <td colspan="${STATS_TABLE_COLUMNS}" class="empty-state">
-            <svg class="w-12 h-12 mx-auto mb-4" style="color: var(--error-400);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.864-.833-2.634 0L4.18 16.5c-.77.833.192 2.5 1.732 2.5z"/>
-            </svg>
-            <div style="color: var(--error-400); font-weight: var(--font-medium); margin-bottom: var(--space-1);">加载失败</div>
-            <div>请检查网络连接或重试</div>
-          </td>
-        </tr>
-      `;
+      tbody.innerHTML = '';
+      const row = TemplateEngine.render('tpl-stats-error', { colspan: STATS_TABLE_COLUMNS });
+      if (row) tbody.appendChild(row);
     }
 
     // 表格排序功能
@@ -213,19 +200,11 @@
 
     function renderStatsTable() {
       const tbody = document.getElementById('stats_tbody');
-      
+
       if (!statsData || !statsData.stats || statsData.stats.length === 0) {
-        tbody.innerHTML = `
-          <tr>
-            <td colspan="${STATS_TABLE_COLUMNS}" class="empty-state">
-              <svg class="w-12 h-12 mx-auto mb-4" style="color: var(--neutral-400);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
-              </svg>
-              <div style="font-weight: var(--font-medium); margin-bottom: var(--space-1); color: var(--neutral-700);">暂无统计数据</div>
-              <div>请调整筛选条件或检查时间范围</div>
-            </td>
-          </tr>
-        `;
+        tbody.innerHTML = '';
+        const emptyRow = TemplateEngine.render('tpl-stats-empty', { colspan: STATS_TABLE_COLUMNS });
+        if (emptyRow) tbody.appendChild(emptyRow);
         return;
       }
 
@@ -241,9 +220,9 @@
       let totalCacheCreation = 0;
       let totalCost = 0;
 
-      for (const entry of statsData.stats) {
-        const tr = document.createElement('tr');
+      const fragment = document.createDocumentFragment();
 
+      for (const entry of statsData.stats) {
         const successRate = entry.total > 0 ? ((entry.success / entry.total) * 100) : 0;
         const successRateText = successRate.toFixed(1) + '%';
 
@@ -256,7 +235,7 @@
           `<span class="model-tag">${escapeHtml(entry.model)}</span>` :
           '<span style="color: var(--neutral-500);">未知模型</span>';
 
-        // 格式化平均首字响应时间（保留2位小数，显示"秒"）
+        // 格式化平均首字响应时间
         const avgFirstByteTime = entry.avg_first_byte_time_seconds || 0;
         const avgFirstByteTimeText = avgFirstByteTime > 0 ?
           `${avgFirstByteTime.toFixed(2)}秒` :
@@ -275,33 +254,25 @@
           `<span style="color: var(--warning-600); font-weight: 500;">${formatCost(entry.total_cost)}</span>` :
           '<span style="color: var(--neutral-400);">--</span>';
 
-        tr.innerHTML = `
-          <td>
-            <a href="/web/channels.html?id=${entry.channel_id}#channel-${entry.channel_id}" class="config-name channel-link" title="跳转到渠道管理">
-              ${escapeHtml(entry.channel_name)}
-            </a>
-            ${entry.channel_id ? `<span class="channel-id">(ID: ${entry.channel_id})</span>` : ''}
-          </td>
-          <td>${modelDisplay}</td>
-          <td><span class="success-count">${formatNumber(entry.success || 0)}</span></td>
-          <td><span class="error-count">${formatNumber(entry.error || 0)}</span></td>
-          <td><strong>${formatNumber(entry.total || 0)}</strong></td>
-          <td>
-            <div class="${successRateClass}">${successRateText}</div>
-            <div class="progress-bar">
-              <div class="progress-fill" style="width: ${successRate}%"></div>
-            </div>
-          </td>
-          <td style="text-align: center;">
-            ${avgFirstByteTimeText}
-          </td>
-          <td style="text-align: right;">${inputTokensText}</td>
-          <td style="text-align: right;">${outputTokensText}</td>
-          <td style="text-align: right;">${cacheReadTokensText}</td>
-          <td style="text-align: right;">${cacheCreationTokensText}</td>
-          <td style="text-align: right;">${costText}</td>
-        `;
-        tbody.appendChild(tr);
+        const row = TemplateEngine.render('tpl-stats-row', {
+          channelId: entry.channel_id,
+          channelName: escapeHtml(entry.channel_name),
+          channelIdBadge: entry.channel_id ? `<span class="channel-id">(ID: ${entry.channel_id})</span>` : '',
+          modelDisplay: modelDisplay,
+          successCount: formatNumber(entry.success || 0),
+          errorCount: formatNumber(entry.error || 0),
+          totalCount: formatNumber(entry.total || 0),
+          successRateClass: successRateClass,
+          successRateText: successRateText,
+          successRate: successRate,
+          avgFirstByteTime: avgFirstByteTimeText,
+          inputTokens: inputTokensText,
+          outputTokens: outputTokensText,
+          cacheReadTokens: cacheReadTokensText,
+          cacheCreationTokens: cacheCreationTokensText,
+          costText: costText
+        });
+        if (row) fragment.appendChild(row);
 
         // 累加合计数据
         totalSuccess += entry.success || 0;
@@ -314,28 +285,22 @@
         totalCost += entry.total_cost || 0;
       }
 
+      tbody.appendChild(fragment);
+
       // 追加合计行
-      const totalRow = document.createElement('tr');
-      totalRow.style.backgroundColor = 'var(--primary-50)';
-      totalRow.style.fontWeight = 'bold';
-      totalRow.style.borderTop = '2px solid var(--primary-200)';
-
       const totalSuccessRate = totalRequests > 0 ? ((totalSuccess / totalRequests) * 100).toFixed(1) + '%' : '0.0%';
-
-      totalRow.innerHTML = `
-        <td colspan="2" style="text-align: center; font-size: 15px; color: var(--primary-700);">合计</td>
-        <td><span class="success-count">${formatNumber(totalSuccess)}</span></td>
-        <td><span class="error-count">${formatNumber(totalError)}</span></td>
-        <td><strong>${formatNumber(totalRequests)}</strong></td>
-        <td style="text-align: center; font-size: 14px;">${totalSuccessRate}</td>
-        <td style="text-align: center; color: var(--neutral-400);">--</td>
-        <td style="text-align: right;">${formatNumber(totalInputTokens)}</td>
-        <td style="text-align: right;">${formatNumber(totalOutputTokens)}</td>
-        <td style="text-align: right;"><span style="color: var(--success-600);">${formatNumber(totalCacheRead)}</span></td>
-        <td style="text-align: right;"><span style="color: var(--primary-600);">${formatNumber(totalCacheCreation)}</span></td>
-        <td style="text-align: right;"><span style="color: var(--warning-600); font-weight: 600;">${formatCost(totalCost)}</span></td>
-      `;
-      tbody.appendChild(totalRow);
+      const totalRow = TemplateEngine.render('tpl-stats-total', {
+        successCount: formatNumber(totalSuccess),
+        errorCount: formatNumber(totalError),
+        totalCount: formatNumber(totalRequests),
+        successRateText: totalSuccessRate,
+        inputTokens: formatNumber(totalInputTokens),
+        outputTokens: formatNumber(totalOutputTokens),
+        cacheReadTokens: formatNumber(totalCacheRead),
+        cacheCreationTokens: formatNumber(totalCacheCreation),
+        costText: formatCost(totalCost)
+      });
+      if (totalRow) tbody.appendChild(totalRow);
     }
 
     function applyFilter() {

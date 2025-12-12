@@ -52,98 +52,161 @@ function renderChannelStatsInline(stats, cache, channelType) {
   return parts.join(' ');
 }
 
+/**
+ * 获取渠道类型配置信息
+ * @param {string} channelType - 渠道类型
+ * @returns {Object} 类型配置
+ */
+function getChannelTypeConfig(channelType) {
+  const configs = {
+    'anthropic': {
+      text: 'Claude',
+      color: '#8b5cf6',
+      bgColor: '#f3e8ff',
+      borderColor: '#c4b5fd'
+    },
+    'codex': {
+      text: 'Codex',
+      color: '#059669',
+      bgColor: '#d1fae5',
+      borderColor: '#6ee7b7'
+    },
+    'openai': {
+      text: 'OpenAI',
+      color: '#10b981',
+      bgColor: '#d1fae5',
+      borderColor: '#6ee7b7'
+    },
+    'gemini': {
+      text: 'Gemini',
+      color: '#2563eb',
+      bgColor: '#dbeafe',
+      borderColor: '#93c5fd'
+    }
+  };
+  const type = (channelType || '').toLowerCase();
+  return configs[type] || configs['anthropic'];
+}
+
+/**
+ * 生成渠道类型徽章HTML
+ * @param {string} channelType - 渠道类型
+ * @returns {string} 徽章HTML
+ */
+function buildChannelTypeBadge(channelType) {
+  const config = getChannelTypeConfig(channelType);
+  return `<span style="background: ${config.bgColor}; color: ${config.color}; padding: 3px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; margin-left: 8px; border: 1.5px solid ${config.borderColor}; letter-spacing: 0.025em; text-transform: uppercase;">${config.text}</span>`;
+}
+
+/**
+ * 使用模板引擎创建渠道卡片元素
+ * @param {Object} channel - 渠道数据
+ * @returns {HTMLElement|null} 卡片元素
+ */
+function createChannelCard(channel) {
+  const isCooldown = channel.cooldown_remaining_ms > 0;
+  const cardClasses = ['glass-card'];
+  if (isCooldown) cardClasses.push('channel-card-cooldown');
+  if (!channel.enabled) cardClasses.push('channel-disabled');
+
+  const channelTypeRaw = (channel.channel_type || '').toLowerCase();
+  const stats = channelStatsById[channel.id] || null;
+
+  // 预计算统计数据
+  const statsCache = stats ? {
+    successRateText: formatSuccessRate(stats.success, stats.total),
+    avgFirstByteText: formatAvgFirstByte(stats.avgFirstByteTimeSeconds),
+    inputTokensText: formatMetricNumber(stats.totalInputTokens),
+    outputTokensText: formatMetricNumber(stats.totalOutputTokens),
+    cacheReadText: formatMetricNumber(stats.totalCacheReadInputTokens),
+    cacheCreationText: formatMetricNumber(stats.totalCacheCreationInputTokens),
+    costDisplay: formatCostValue(stats.totalCost)
+  } : null;
+
+  const statsHtml = stats && statsCache
+    ? `<span class="channel-stats-inline">${renderChannelStatsInline(stats, statsCache, channelTypeRaw)}</span>`
+    : '';
+
+  const modelsText = Array.isArray(channel.models) ? channel.models.join(', ') : '';
+
+  // 准备模板数据
+  const cardData = {
+    cardClasses: cardClasses.join(' '),
+    id: channel.id,
+    name: channel.name,
+    typeBadge: buildChannelTypeBadge(channelTypeRaw),
+    modelsText: modelsText,
+    url: channel.url,
+    priority: channel.priority,
+    statusText: channel.enabled ? '已启用' : '已禁用',
+    cooldownBadge: inlineCooldownBadge(channel),
+    statsHtml: statsHtml,
+    enabled: channel.enabled,
+    toggleText: channel.enabled ? '禁用' : '启用',
+    toggleTitle: channel.enabled ? '禁用渠道' : '启用渠道'
+  };
+
+  // 使用模板引擎渲染
+  const card = TemplateEngine.render('tpl-channel-card', cardData);
+  return card;
+}
+
+/**
+ * 初始化渠道卡片事件委托 (替代inline onclick)
+ */
+function initChannelEventDelegation() {
+  const container = document.getElementById('channels-container');
+  if (!container || container.dataset.delegated) return;
+
+  container.dataset.delegated = 'true';
+
+  // 事件委托：处理所有渠道操作按钮
+  container.addEventListener('click', (e) => {
+    const btn = e.target.closest('.channel-action-btn');
+    if (!btn) return;
+
+    const action = btn.dataset.action;
+    const channelId = parseInt(btn.dataset.channelId);
+    const channelName = btn.dataset.channelName;
+    const enabled = btn.dataset.enabled === 'true';
+
+    switch (action) {
+      case 'edit':
+        editChannel(channelId);
+        break;
+      case 'test':
+        testChannel(channelId, channelName);
+        break;
+      case 'toggle':
+        toggleChannel(channelId, !enabled);
+        break;
+      case 'copy':
+        copyChannel(channelId, channelName);
+        break;
+      case 'delete':
+        deleteChannel(channelId, channelName);
+        break;
+    }
+  });
+}
+
 function renderChannels(channelsToRender = channels) {
   const el = document.getElementById('channels-container');
   if (!channelsToRender || channelsToRender.length === 0) {
     el.innerHTML = '<div class="glass-card">暂无符合条件的渠道</div>';
     return;
   }
-  el.innerHTML = channelsToRender.map(c => {
-    const isCooldown = c.cooldown_remaining_ms > 0;
-    const cardClasses = ['glass-card'];
 
-    if (isCooldown) {
-      cardClasses.push('channel-card-cooldown');
-    }
-    if (!c.enabled) {
-      cardClasses.push('channel-disabled');
-    }
+  // 初始化事件委托（仅一次）
+  initChannelEventDelegation();
 
-    const channelTypeLabels = {
-      'anthropic': {
-        text: 'Claude',
-        color: '#8b5cf6',
-        bgColor: '#f3e8ff',
-        borderColor: '#c4b5fd'
-      },
-      'codex': {
-        text: 'Codex',
-        color: '#059669',
-        bgColor: '#d1fae5',
-        borderColor: '#6ee7b7'
-      },
-      'openai': {
-        text: 'OpenAI',
-        color: '#10b981',
-        bgColor: '#d1fae5',
-        borderColor: '#6ee7b7'
-      },
-      'gemini': {
-        text: 'Gemini',
-        color: '#2563eb',
-        bgColor: '#dbeafe',
-        borderColor: '#93c5fd'
-      }
-    };
-    const channelTypeRaw = (c.channel_type || '').toLowerCase();
-    const channelTypeInfo = channelTypeLabels[channelTypeRaw || 'anthropic'] || channelTypeLabels['anthropic'];
-    const channelTypeBadge = `<span style="background: ${channelTypeInfo.bgColor}; color: ${channelTypeInfo.color}; padding: 3px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; margin-left: 8px; border: 1.5px solid ${channelTypeInfo.borderColor}; letter-spacing: 0.025em; text-transform: uppercase;">${channelTypeInfo.text}</span>`;
+  // 使用DocumentFragment优化批量DOM操作
+  const fragment = document.createDocumentFragment();
+  channelsToRender.forEach(channel => {
+    const card = createChannelCard(channel);
+    if (card) fragment.appendChild(card);
+  });
 
-    const stats = channelStatsById[c.id] || null;
-    const successCount = stats ? stats.success : null;
-    const errorCount = stats ? stats.error : null;
-    const totalCount = stats ? stats.total : null;
-    const successRateText = formatSuccessRate(successCount, totalCount);
-    const avgFirstByteText = formatAvgFirstByte(stats ? stats.avgFirstByteTimeSeconds : null);
-    const inputTokensText = formatMetricNumber(stats ? stats.totalInputTokens : null);
-    const outputTokensText = formatMetricNumber(stats ? stats.totalOutputTokens : null);
-    const cacheReadText = formatMetricNumber(stats ? stats.totalCacheReadInputTokens : null);
-    const cacheCreationText = formatMetricNumber(stats ? stats.totalCacheCreationInputTokens : null);
-    const costDisplay = formatCostValue(stats ? stats.totalCost : null);
-    const showStatsInline = true;
-    const statsInline = showStatsInline && stats
-      ? renderChannelStatsInline(stats, {
-          successRateText,
-          avgFirstByteText,
-          inputTokensText,
-          outputTokensText,
-          cacheReadText,
-          cacheCreationText,
-          costDisplay
-        }, channelTypeRaw)
-      : '';
-
-    return `
-      <div class="${cardClasses.join(' ')}" id="channel-${c.id}">
-        <div class="flex justify-between items-center">
-          <div style="flex: 1;">
-            <div class="section-title">${escapeHtml(c.name)} ${channelTypeBadge} <span style="color: var(--neutral-500); font-size: 0.875rem; font-weight: 400;">(ID: ${c.id})</span> <span style="color: var(--neutral-600); font-size: 1rem; font-weight: 400; display: inline-block; max-width: 1100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom;" title="${Array.isArray(c.models) ? c.models.join(', ') : ''}">模型: ${Array.isArray(c.models) ? c.models.join(', ') : ''}</span></div>
-            <div class="text-sm" style="color: var(--neutral-600); margin-top: 4px;">
-              <div class="channel-meta-line">
-                <span>URL: ${escapeHtml(c.url)} | 优先级: ${c.priority} | ${c.enabled ? '已启用' : '已禁用'}${inlineCooldownBadge(c)}</span>
-                ${statsInline ? `<span class="channel-stats-inline">${statsInline}</span>` : ''}
-              </div>
-            </div>
-          </div>
-          <div class="channel-actions">
-            <button class="btn-icon" onclick="editChannel(${c.id})" title="编辑">编辑</button>
-            <button class="btn-icon" onclick="testChannel(${c.id}, '${escapeHtml(c.name)}')" title="测试API Key">测试</button>
-            <button class="btn-icon" onclick="toggleChannel(${c.id}, ${!c.enabled})">${c.enabled ? '禁用' : '启用'}</button>
-            <button class="btn-icon" onclick="copyChannel(${c.id}, '${escapeHtml(c.name)}')" title="复制渠道">复制</button>
-            <button class="btn-icon btn-danger" onclick="deleteChannel(${c.id}, '${escapeHtml(c.name)}')" title="删除">删除</button>
-          </div>
-        </div>
-      </div>
-    `;
-  }).join('');
+  el.innerHTML = '';
+  el.appendChild(fragment);
 }

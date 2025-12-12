@@ -452,6 +452,176 @@
   </div>
 
 
+  <!-- HTML模板定义 (分离HTML与JS) -->
+  <template id="tpl-key-row">
+    <tr style="border-bottom: 1px solid var(--neutral-200); height: 42px;">
+      <td style="padding: 6px 10px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <input
+            type="checkbox"
+            class="key-checkbox"
+            data-index="{{index}}"
+            style="width: 16px; height: 16px; cursor: pointer; accent-color: var(--primary-500);"
+          >
+          <span style="color: var(--neutral-600); font-weight: 500; font-size: 13px;">{{displayIndex}}</span>
+        </div>
+      </td>
+      <td style="padding: 6px 10px;">
+        <input
+          type="{{inputType}}"
+          value="{{key}}"
+          class="inline-key-input"
+          data-index="{{index}}"
+          style="width: 100%; padding: 5px 8px; border: 1px solid var(--neutral-300); border-radius: 6px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace; font-size: 13px; transition: all 0.2s;"
+        >
+      </td>
+      <td style="padding: 6px 10px;">{{{cooldownHtml}}}</td>
+      <td style="padding: 6px 10px; text-align: center;">{{{actionsHtml}}}</td>
+    </tr>
+  </template>
+
+  <template id="tpl-key-empty">
+    <tr>
+      <td colspan="4" style="padding: 30px; text-align: center; color: var(--neutral-500); font-size: 14px;">
+        {{message}}
+      </td>
+    </tr>
+  </template>
+
+  <template id="tpl-cooldown-badge">
+    <span style="color: #dc2626; font-size: 12px; font-weight: 500; background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%); padding: 2px 8px; border-radius: 4px; border: 1px solid #fca5a5; white-space: nowrap;">⚠️ 冷却中·{{text}}</span>
+  </template>
+
+  <template id="tpl-key-normal-status">
+    <span style="color: var(--success-600); font-size: 12px;">✓ 正常</span>
+  </template>
+
+  <template id="tpl-key-actions">
+    <div style="display: flex; gap: 6px; justify-content: center;">
+      <button
+        type="button"
+        class="key-action-btn"
+        data-action="test"
+        data-index="{{index}}"
+        title="测试此Key"
+        style="width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--neutral-200); background: white; color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;"
+      >
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 2L12 8L4 14V2Z" fill="currentColor"/>
+        </svg>
+      </button>
+      <button
+        type="button"
+        class="key-action-btn"
+        data-action="delete"
+        data-index="{{index}}"
+        title="删除此Key"
+        style="width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--neutral-200); background: white; color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;"
+      >
+        <svg width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M5.5 2.5V1.5C5.5 1.22386 5.72386 1 6 1H8C8.27614 1 8.5 1.22386 8.5 1.5V2.5M2 3.5H12M3 3.5V11.5C3 12.0523 3.44772 12.5 4 12.5H10C10.5523 12.5 11 12.0523 11 11.5V3.5M5.5 6.5V9.5M8.5 6.5V9.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>
+  </template>
+
+  <!-- 渠道卡片模板 -->
+  <template id="tpl-channel-card">
+    <div class="{{cardClasses}}" id="channel-{{id}}" data-channel-id="{{id}}">
+      <div class="flex justify-between items-center">
+        <div style="flex: 1;">
+          <div class="section-title">
+            {{name}} {{{typeBadge}}}
+            <span style="color: var(--neutral-500); font-size: 0.875rem; font-weight: 400;">(ID: {{id}})</span>
+            <span style="color: var(--neutral-600); font-size: 1rem; font-weight: 400; display: inline-block; max-width: 1100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom;" title="{{modelsText}}">模型: {{modelsText}}</span>
+          </div>
+          <div class="text-sm" style="color: var(--neutral-600); margin-top: 4px;">
+            <div class="channel-meta-line">
+              <span>URL: {{url}} | 优先级: {{priority}} | {{statusText}}{{{cooldownBadge}}}</span>
+              {{{statsHtml}}}
+            </div>
+          </div>
+        </div>
+        <div class="channel-actions">
+          <button class="btn-icon channel-action-btn" data-action="edit" data-channel-id="{{id}}" title="编辑">编辑</button>
+          <button class="btn-icon channel-action-btn" data-action="test" data-channel-id="{{id}}" data-channel-name="{{name}}" title="测试API Key">测试</button>
+          <button class="btn-icon channel-action-btn" data-action="toggle" data-channel-id="{{id}}" data-enabled="{{enabled}}" title="{{toggleTitle}}">{{toggleText}}</button>
+          <button class="btn-icon channel-action-btn" data-action="copy" data-channel-id="{{id}}" data-channel-name="{{name}}" title="复制渠道">复制</button>
+          <button class="btn-icon btn-danger channel-action-btn" data-action="delete" data-channel-id="{{id}}" data-channel-name="{{name}}" title="删除">删除</button>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <!-- 重定向规则行模板 -->
+  <template id="tpl-redirect-row">
+    <tr style="border-bottom: 1px solid var(--neutral-200);">
+      <td style="padding: 8px 12px;">
+        <input
+          type="text"
+          class="redirect-from-input"
+          data-index="{{index}}"
+          value="{{from}}"
+          placeholder="claude-3-opus-20240229"
+          style="width: 100%; padding: 6px 10px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace;"
+        >
+      </td>
+      <td style="padding: 8px 12px;">
+        <input
+          type="text"
+          class="redirect-to-input"
+          data-index="{{index}}"
+          value="{{to}}"
+          placeholder="claude-3-5-sonnet-20241022"
+          style="width: 100%; padding: 6px 10px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace;"
+        >
+      </td>
+      <td style="padding: 8px 12px; text-align: center;">
+        <button
+          type="button"
+          class="redirect-delete-btn"
+          data-index="{{index}}"
+          style="padding: 4px 8px; border-radius: 6px; border: 1px solid var(--error-300); background: white; color: var(--error-600); cursor: pointer; font-size: 12px; transition: all 0.2s;"
+          title="删除此规则"
+        >
+          删除
+        </button>
+      </td>
+    </tr>
+  </template>
+
+  <!-- 重定向规则空状态模板 -->
+  <template id="tpl-redirect-empty">
+    <tr>
+      <td colspan="3" style="padding: 20px; text-align: center; color: var(--neutral-500);">
+        {{message}}
+      </td>
+    </tr>
+  </template>
+
+  <!-- 测试结果头部模板 -->
+  <template id="tpl-test-result-header">
+    <div style="display: flex; align-items: center; gap: 8px;">
+      <span style="font-size: 18px;">{{icon}}</span>
+      <strong>{{message}}</strong>
+    </div>
+  </template>
+
+  <!-- 响应区块模板 -->
+  <template id="tpl-response-section">
+    <div class="response-section">
+      <h4>{{title}}</h4>
+      {{{toggleBtn}}}
+      <div id="{{contentId}}" class="response-content" style="display: {{display}};">{{content}}</div>
+    </div>
+  </template>
+
+  <!-- 批量测试失败详情模板 -->
+  <template id="tpl-batch-fail-item">
+    <li style="margin: 4px 0;"><strong>Key #{{keyNum}}</strong> ({{keyMask}}): {{error}}</li>
+  </template>
+
+  <script src="/web/assets/js/template-engine.js"></script>
   <script src="/web/assets/js/channels-state.js"></script>
   <script src="/web/assets/js/channels-render.js"></script>
   <script src="/web/assets/js/channels-filters.js"></script>

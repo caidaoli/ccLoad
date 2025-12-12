@@ -51,80 +51,65 @@ function renderVirtualRows(tbody, visibleStart, visibleEnd, filteredIndices) {
   }
 }
 
-function createKeyRow(index) {
-  const key = inlineKeyTableData[index];
-  const row = document.createElement('tr');
-  row.style.borderBottom = '1px solid var(--neutral-200)';
-  row.style.height = VIRTUAL_SCROLL_CONFIG.ROW_HEIGHT + 'px';
-
+/**
+ * 构建Key行的冷却状态HTML
+ * @param {number} index - Key索引
+ * @returns {string} 冷却状态HTML
+ */
+function buildCooldownHtml(index) {
   const keyCooldown = currentChannelKeyCooldowns.find(kc => kc.key_index === index);
-  let cooldownHtml = '<span style="color: var(--success-600); font-size: 12px;">✓ 正常</span>';
-  
   if (keyCooldown && keyCooldown.cooldown_remaining_ms > 0) {
     const cooldownText = humanizeMS(keyCooldown.cooldown_remaining_ms);
-    cooldownHtml = `<span style="color: #dc2626; font-size: 12px; font-weight: 500; background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%); padding: 2px 8px; border-radius: 4px; border: 1px solid #fca5a5; white-space: nowrap;">⚠️ 冷却中·${cooldownText}</span>`;
+    const tpl = document.getElementById('tpl-cooldown-badge');
+    return tpl ? tpl.innerHTML.replace('{{text}}', cooldownText) : `⚠️ 冷却中·${cooldownText}`;
   }
+  const normalTpl = document.getElementById('tpl-key-normal-status');
+  return normalTpl ? normalTpl.innerHTML : '<span style="color: var(--success-600); font-size: 12px;">✓ 正常</span>';
+}
 
+/**
+ * 构建Key行的操作按钮HTML
+ * @param {number} index - Key索引
+ * @returns {string} 操作按钮HTML
+ */
+function buildActionsHtml(index) {
+  const tpl = document.getElementById('tpl-key-actions');
+  if (tpl) {
+    return tpl.innerHTML.replace(/\{\{index\}\}/g, String(index));
+  }
+  // 降级：无模板时返回简单按钮
+  return `<button type="button" data-action="test" data-index="${index}">测试</button>
+          <button type="button" data-action="delete" data-index="${index}">删除</button>`;
+}
+
+/**
+ * 使用模板引擎创建Key行元素
+ * @param {number} index - Key在数据数组中的索引
+ * @returns {HTMLElement} 表格行元素
+ */
+function createKeyRow(index) {
+  const key = inlineKeyTableData[index];
   const isSelected = selectedKeyIndices.has(index);
 
-  row.innerHTML = `
-    <td style="padding: 6px 10px;">
-      <div style="display: flex; align-items: center; gap: 8px;">
-        <input
-          type="checkbox"
-          class="key-checkbox"
-          data-index="${index}"
-          ${isSelected ? 'checked' : ''}
-          onchange="toggleKeySelection(${index}, this.checked)"
-          style="width: 16px; height: 16px; cursor: pointer; accent-color: var(--primary-500);"
-        >
-        <span style="color: var(--neutral-600); font-weight: 500; font-size: 13px;">${index + 1}</span>
-      </div>
-    </td>
-    <td style="padding: 6px 10px;">
-      <input
-        type="${inlineKeyVisible ? 'text' : 'password'}"
-        value="${escapeHtml(key)}"
-        onchange="updateInlineKey(${index}, this.value)"
-        class="inline-key-input"
-        data-index="${index}"
-        style="width: 100%; padding: 5px 8px; border: 1px solid var(--neutral-300); border-radius: 6px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace; font-size: 13px; transition: all 0.2s;"
-        onfocus="this.style.borderColor='var(--primary-500)'; this.style.boxShadow='0 0 0 3px rgba(59,130,246,0.1)'"
-        onblur="this.style.borderColor='var(--neutral-300)'; this.style.boxShadow='none'"
-      >
-    </td>
-    <td style="padding: 6px 10px;">
-      ${cooldownHtml}
-    </td>
-    <td style="padding: 6px 10px; text-align: center;">
-      <div style="display: flex; gap: 6px; justify-content: center;">
-        <button
-          type="button"
-          onclick="testSingleKey(${index})"
-          title="测试此Key"
-          style="width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--neutral-200); background: white; color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;"
-          onmouseover="this.style.background='#eff6ff'; this.style.borderColor='#93c5fd'; this.style.color='#3b82f6'"
-          onmouseout="this.style.background='white'; this.style.borderColor='var(--neutral-200)'; this.style.color='var(--neutral-500)'"
-        >
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M4 2L12 8L4 14V2Z" fill="currentColor"/>
-          </svg>
-        </button>
-        <button
-          type="button"
-          onclick="deleteInlineKey(${index})"
-          title="删除此Key"
-          style="width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--neutral-200); background: white; color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;"
-          onmouseover="this.style.background='#fef2f2'; this.style.borderColor='#fca5a5'; this.style.color='#dc2626'"
-          onmouseout="this.style.background='white'; this.style.borderColor='var(--neutral-200)'; this.style.color='var(--neutral-500)'"
-        >
-          <svg width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M5.5 2.5V1.5C5.5 1.22386 5.72386 1 6 1H8C8.27614 1 8.5 1.22386 8.5 1.5V2.5M2 3.5H12M3 3.5V11.5C3 12.0523 3.44772 12.5 4 12.5H10C10.5523 12.5 11 12.0523 11 11.5V3.5M5.5 6.5V9.5M8.5 6.5V9.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </button>
-      </div>
-    </td>
-  `;
+  // 准备模板数据
+  const rowData = {
+    index: index,
+    displayIndex: index + 1,
+    key: key || '',
+    inputType: inlineKeyVisible ? 'text' : 'password',
+    cooldownHtml: buildCooldownHtml(index),
+    actionsHtml: buildActionsHtml(index)
+  };
+
+  // 使用模板引擎渲染
+  const row = TemplateEngine.render('tpl-key-row', rowData);
+  if (!row) return null;
+
+  // 设置选中状态
+  const checkbox = row.querySelector('.key-checkbox');
+  if (checkbox && isSelected) {
+    checkbox.checked = true;
+  }
 
   return row;
 }
@@ -170,6 +155,88 @@ function cleanupVirtualScroll() {
   }
 }
 
+/**
+ * 初始化Key表格事件委托 (替代inline onclick)
+ */
+function initKeyTableEventDelegation() {
+  const tbody = document.getElementById('inlineKeyTableBody');
+  if (!tbody || tbody.dataset.delegated) return;
+
+  tbody.dataset.delegated = 'true';
+
+  // 事件委托：处理所有按钮和输入事件
+  tbody.addEventListener('click', (e) => {
+    // 处理操作按钮点击
+    const actionBtn = e.target.closest('.key-action-btn');
+    if (actionBtn) {
+      const action = actionBtn.dataset.action;
+      const index = parseInt(actionBtn.dataset.index);
+      if (action === 'test') testSingleKey(index);
+      else if (action === 'delete') deleteInlineKey(index);
+      return;
+    }
+
+    // 处理复选框点击
+    const checkbox = e.target.closest('.key-checkbox');
+    if (checkbox) {
+      const index = parseInt(checkbox.dataset.index);
+      toggleKeySelection(index, checkbox.checked);
+    }
+  });
+
+  // 处理输入框变更
+  tbody.addEventListener('change', (e) => {
+    const input = e.target.closest('.inline-key-input');
+    if (input) {
+      const index = parseInt(input.dataset.index);
+      updateInlineKey(index, input.value);
+    }
+  });
+
+  // 处理输入框焦点样式
+  tbody.addEventListener('focusin', (e) => {
+    const input = e.target.closest('.inline-key-input');
+    if (input) {
+      input.style.borderColor = 'var(--primary-500)';
+      input.style.boxShadow = '0 0 0 3px rgba(59,130,246,0.1)';
+    }
+  });
+
+  tbody.addEventListener('focusout', (e) => {
+    const input = e.target.closest('.inline-key-input');
+    if (input) {
+      input.style.borderColor = 'var(--neutral-300)';
+      input.style.boxShadow = 'none';
+    }
+  });
+
+  // 处理按钮悬停样式
+  tbody.addEventListener('mouseover', (e) => {
+    const btn = e.target.closest('.key-action-btn');
+    if (btn) {
+      const action = btn.dataset.action;
+      if (action === 'test') {
+        btn.style.background = '#eff6ff';
+        btn.style.borderColor = '#93c5fd';
+        btn.style.color = '#3b82f6';
+      } else if (action === 'delete') {
+        btn.style.background = '#fef2f2';
+        btn.style.borderColor = '#fca5a5';
+        btn.style.color = '#dc2626';
+      }
+    }
+  });
+
+  tbody.addEventListener('mouseout', (e) => {
+    const btn = e.target.closest('.key-action-btn');
+    if (btn) {
+      btn.style.background = 'white';
+      btn.style.borderColor = 'var(--neutral-200)';
+      btn.style.color = 'var(--neutral-500)';
+    }
+  });
+}
+
 function renderInlineKeyTable() {
   const tbody = document.getElementById('inlineKeyTableBody');
   const keyCount = document.getElementById('inlineKeyCount');
@@ -181,14 +248,14 @@ function renderInlineKeyTable() {
   const hiddenInput = document.getElementById('channelApiKey');
   hiddenInput.value = inlineKeyTableData.join(',');
 
+  // 初始化事件委托
+  initKeyTableEventDelegation();
+
   if (inlineKeyTableData.length === 0) {
-    tbody.innerHTML = `
-      <tr>
-        <td colspan="4" style="padding: 30px; text-align: center; color: var(--neutral-500); font-size: 14px;">
-          暂无API Key，点击"添加"或"导入"按钮添加
-        </td>
-      </tr>
-    `;
+    const emptyRow = TemplateEngine.render('tpl-key-empty', {
+      message: '暂无API Key，点击"添加"或"导入"按钮添加'
+    });
+    if (emptyRow) tbody.appendChild(emptyRow);
     cleanupVirtualScroll();
     virtualScrollState.enabled = false;
     if (virtualScrollHint) virtualScrollHint.style.display = 'none';
@@ -198,13 +265,11 @@ function renderInlineKeyTable() {
   const visibleIndices = getVisibleKeyIndices();
 
   if (visibleIndices.length === 0) {
-    tbody.innerHTML = `
-      <tr>
-        <td colspan="4" style="padding: 30px; text-align: center; color: var(--neutral-500); font-size: 14px;">
-          ${currentKeyStatusFilter === 'normal' ? '当前无正常状态的Key' : '当前无冷却中的Key'}
-        </td>
-      </tr>
-    `;
+    const filterMessage = currentKeyStatusFilter === 'normal'
+      ? '当前无正常状态的Key'
+      : '当前无冷却中的Key';
+    const emptyRow = TemplateEngine.render('tpl-key-empty', { message: filterMessage });
+    if (emptyRow) tbody.appendChild(emptyRow);
     cleanupVirtualScroll();
     virtualScrollState.enabled = false;
     if (virtualScrollHint) virtualScrollHint.style.display = 'none';

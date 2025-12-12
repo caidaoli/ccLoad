@@ -278,46 +278,38 @@ function displayBatchTestResult(successCount, failedCount, totalCount, failedKey
 
   statusDiv.textContent = `完成！成功: ${successCount}, 失败: ${failedCount}`;
 
+  // 使用模板渲染头部
+  const renderHeader = (icon, message) => {
+    const header = TemplateEngine.render('tpl-test-result-header', { icon, message });
+    contentDiv.innerHTML = '';
+    if (header) contentDiv.appendChild(header);
+  };
+
+  // 构建失败详情列表
+  const buildFailDetails = () => {
+    const items = failedKeys.map(({ index, key, error }) => {
+      const item = TemplateEngine.render('tpl-batch-fail-item', {
+        keyNum: index + 1,
+        keyMask: key,
+        error: escapeHtml(error)
+      });
+      return item ? item.outerHTML : '';
+    }).join('');
+    return `<ul style="margin: 8px 0; padding-left: 20px;">${items}</ul>`;
+  };
+
   if (failedCount === 0) {
     testResultDiv.classList.add('success');
-    contentDiv.innerHTML = `
-      <div style="display: flex; align-items: center; gap: 8px;">
-        <span style="font-size: 18px;">✅</span>
-        <strong>批量测试完成：全部 ${totalCount} 个Key测试成功</strong>
-      </div>
-    `;
+    renderHeader('✅', `批量测试完成：全部 ${totalCount} 个Key测试成功`);
     detailsDiv.innerHTML = '';
   } else if (successCount === 0) {
     testResultDiv.classList.add('error');
-    contentDiv.innerHTML = `
-      <div style="display: flex; align-items: center; gap: 8px;">
-        <span style="font-size: 18px;">❌</span>
-        <strong>批量测试完成：全部 ${totalCount} 个Key测试失败</strong>
-      </div>
-    `;
-    
-    let details = '<h4 style="margin-top: 12px; color: var(--error-600);">失败详情：</h4><ul style="margin: 8px 0; padding-left: 20px;">';
-    failedKeys.forEach(({ index, key, error }) => {
-      details += `<li style="margin: 4px 0;"><strong>Key #${index + 1}</strong> (${key}): ${escapeHtml(error)}</li>`;
-    });
-    details += '</ul><p style="color: var(--error-600); margin-top: 8px;">失败的Key已自动冷却</p>';
-    detailsDiv.innerHTML = details;
+    renderHeader('❌', `批量测试完成：全部 ${totalCount} 个Key测试失败`);
+    detailsDiv.innerHTML = `<h4 style="margin-top: 12px; color: var(--error-600);">失败详情：</h4>${buildFailDetails()}<p style="color: var(--error-600); margin-top: 8px;">失败的Key已自动冷却</p>`;
   } else {
     testResultDiv.classList.add('success');
-    contentDiv.innerHTML = `
-      <div style="display: flex; align-items: center; gap: 8px;">
-        <span style="font-size: 18px;">⚠️</span>
-        <strong>批量测试完成：${successCount} 个成功，${failedCount} 个失败</strong>
-      </div>
-    `;
-    
-    let details = `<p style="color: var(--success-600);">✅ ${successCount} 个Key可用</p>`;
-    details += '<h4 style="margin-top: 12px; color: var(--error-600);">失败详情：</h4><ul style="margin: 8px 0; padding-left: 20px;">';
-    failedKeys.forEach(({ index, key, error }) => {
-      details += `<li style="margin: 4px 0;"><strong>Key #${index + 1}</strong> (${key}): ${escapeHtml(error)}</li>`;
-    });
-    details += '</ul><p style="color: var(--error-600); margin-top: 8px;">失败的Key已自动冷却</p>';
-    detailsDiv.innerHTML = details;
+    renderHeader('⚠️', `批量测试完成：${successCount} 个成功，${failedCount} 个失败`);
+    detailsDiv.innerHTML = `<p style="color: var(--success-600);">✅ ${successCount} 个Key可用</p><h4 style="margin-top: 12px; color: var(--error-600);">失败详情：</h4>${buildFailDetails()}<p style="color: var(--error-600); margin-top: 8px;">失败的Key已自动冷却</p>`;
   }
 }
 
@@ -329,59 +321,51 @@ function displayTestResult(result) {
   testResultDiv.classList.remove('success', 'error');
   testResultDiv.classList.add('show');
 
+  // 使用模板渲染头部
+  const renderHeader = (icon, message) => {
+    const header = TemplateEngine.render('tpl-test-result-header', { icon, message });
+    contentDiv.innerHTML = '';
+    if (header) contentDiv.appendChild(header);
+  };
+
+  // 渲染响应区块
+  const renderResponseSection = (title, content, display = 'none', hasToggle = true) => {
+    const contentId = `response-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const toggleBtn = hasToggle ? `<button class="toggle-btn" onclick="toggleResponse('${contentId}')">显示/隐藏</button>` : '';
+    const section = TemplateEngine.render('tpl-response-section', {
+      title,
+      toggleBtn,
+      contentId,
+      display,
+      content: escapeHtml(content)
+    });
+    return section ? section.outerHTML : '';
+  };
+
   if (result.success) {
     testResultDiv.classList.add('success');
-    contentDiv.innerHTML = `
-      <div style="display: flex; align-items: center; gap: 8px;">
-        <span style="font-size: 18px;">✅</span>
-        <strong>${result.message || 'API测试成功'}</strong>
-      </div>
-    `;
-    
+    renderHeader('✅', result.message || 'API测试成功');
+
     let details = `响应时间: ${result.duration_ms}ms`;
     if (result.status_code) {
       details += ` | 状态码: ${result.status_code}`;
     }
-    
+
     if (result.response_text) {
-      details += `
-        <div class="response-section">
-          <h4>API 响应内容</h4>
-          <div class="response-content">${escapeHtml(result.response_text)}</div>
-        </div>
-      `;
+      details += renderResponseSection('API 响应内容', result.response_text, 'block', false);
     }
-    
+
     if (result.api_response) {
-      const responseId = 'api-response-' + Date.now();
-      details += `
-        <div class="response-section">
-          <h4>完整 API 响应</h4>
-          <button class="toggle-btn" onclick="toggleResponse('${responseId}')">显示/隐藏 JSON</button>
-          <div id="${responseId}" class="response-content" style="display: none;">${escapeHtml(JSON.stringify(result.api_response, null, 2))}</div>
-        </div>
-      `;
+      details += renderResponseSection('完整 API 响应', JSON.stringify(result.api_response, null, 2));
     } else if (result.raw_response) {
-      const rawId = 'raw-response-' + Date.now();
-      details += `
-        <div class="response-section">
-          <h4>原始响应</h4>
-          <button class="toggle-btn" onclick="toggleResponse('${rawId}')">显示/隐藏</button>
-          <div id="${rawId}" class="response-content" style="display: none;">${escapeHtml(result.raw_response)}</div>
-        </div>
-      `;
+      details += renderResponseSection('原始响应', result.raw_response);
     }
-    
+
     detailsDiv.innerHTML = details;
   } else {
     testResultDiv.classList.add('error');
-    contentDiv.innerHTML = `
-      <div style="display: flex; align-items: center; gap: 8px;">
-        <span style="font-size: 18px;">❌</span>
-        <strong>测试失败</strong>
-      </div>
-    `;
-    
+    renderHeader('❌', '测试失败');
+
     let details = result.error || '未知错误';
     if (result.duration_ms) {
       details += `<br>响应时间: ${result.duration_ms}ms`;
@@ -389,38 +373,17 @@ function displayTestResult(result) {
     if (result.status_code) {
       details += ` | 状态码: ${result.status_code}`;
     }
-    
+
     if (result.api_error) {
-      const errorId = 'api-error-' + Date.now();
-      details += `
-        <div class="response-section">
-          <h4>完整错误响应</h4>
-          <button class="toggle-btn" onclick="toggleResponse('${errorId}')">显示/隐藏 JSON</button>
-          <div id="${errorId}" class="response-content" style="display: block;">${escapeHtml(JSON.stringify(result.api_error, null, 2))}</div>
-        </div>
-      `;
+      details += renderResponseSection('完整错误响应', JSON.stringify(result.api_error, null, 2), 'block');
     }
     if (typeof result.raw_response !== 'undefined') {
-      const rawId = 'raw-error-' + Date.now();
-      details += `
-        <div class="response-section">
-          <h4>原始错误响应</h4>
-          <button class="toggle-btn" onclick="toggleResponse('${rawId}')">显示/隐藏</button>
-          <div id="${rawId}" class="response-content" style="display: block;">${escapeHtml(result.raw_response || '(无响应体)')}</div>
-        </div>
-      `;
+      details += renderResponseSection('原始错误响应', result.raw_response || '(无响应体)', 'block');
     }
     if (result.response_headers) {
-      const headersId = 'resp-headers-' + Date.now();
-      details += `
-        <div class="response-section">
-          <h4>响应头</h4>
-          <button class="toggle-btn" onclick="toggleResponse('${headersId}')">显示/隐藏</button>
-          <div id="${headersId}" class="response-content" style="display: block;">${escapeHtml(JSON.stringify(result.response_headers, null, 2))}</div>
-        </div>
-      `;
+      details += renderResponseSection('响应头', JSON.stringify(result.response_headers, null, 2), 'block');
     }
-    
+
     detailsDiv.innerHTML = details;
   }
 }

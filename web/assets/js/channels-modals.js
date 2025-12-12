@@ -289,52 +289,159 @@ function updateRedirectRow(index, field, value) {
   }
 }
 
+/**
+ * 使用模板引擎创建重定向行元素
+ * @param {Object} redirect - 重定向数据
+ * @param {number} index - 索引
+ * @returns {HTMLElement|null} 表格行元素
+ */
+function createRedirectRow(redirect, index) {
+  const rowData = {
+    index: index,
+    from: redirect.from || '',
+    to: redirect.to || ''
+  };
+
+  const row = TemplateEngine.render('tpl-redirect-row', rowData);
+  if (!row) {
+    // 降级：模板不存在时使用原有方式
+    console.warn('[Channels] Template tpl-redirect-row not found, using legacy rendering');
+    return createRedirectRowLegacy(redirect, index);
+  }
+
+  return row;
+}
+
+/**
+ * 降级渲染：模板不存在时的备用方案
+ * @param {Object} redirect - 重定向数据
+ * @param {number} index - 索引
+ * @returns {HTMLElement} 表格行元素
+ */
+function createRedirectRowLegacy(redirect, index) {
+  const tr = document.createElement('tr');
+  tr.style.borderBottom = '1px solid var(--neutral-200)';
+  tr.innerHTML = `
+    <td style="padding: 8px 12px;">
+      <input
+        type="text"
+        class="redirect-from-input"
+        data-index="${index}"
+        value="${escapeHtml(redirect.from || '')}"
+        placeholder="claude-3-opus-20240229"
+        style="width: 100%; padding: 6px 10px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace;"
+      >
+    </td>
+    <td style="padding: 8px 12px;">
+      <input
+        type="text"
+        class="redirect-to-input"
+        data-index="${index}"
+        value="${escapeHtml(redirect.to || '')}"
+        placeholder="claude-3-5-sonnet-20241022"
+        style="width: 100%; padding: 6px 10px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace;"
+      >
+    </td>
+    <td style="padding: 8px 12px; text-align: center;">
+      <button
+        type="button"
+        class="redirect-delete-btn"
+        data-index="${index}"
+        style="padding: 4px 8px; border-radius: 6px; border: 1px solid var(--error-300); background: white; color: var(--error-600); cursor: pointer; font-size: 12px; transition: all 0.2s;"
+        title="删除此规则"
+      >
+        删除
+      </button>
+    </td>
+  `;
+  return tr;
+}
+
+/**
+ * 初始化重定向表格事件委托 (替代inline onchange/onclick)
+ */
+function initRedirectTableEventDelegation() {
+  const tbody = document.getElementById('redirectTableBody');
+  if (!tbody || tbody.dataset.delegated) return;
+
+  tbody.dataset.delegated = 'true';
+
+  // 处理输入框变更
+  tbody.addEventListener('change', (e) => {
+    const fromInput = e.target.closest('.redirect-from-input');
+    if (fromInput) {
+      const index = parseInt(fromInput.dataset.index);
+      updateRedirectRow(index, 'from', fromInput.value);
+      return;
+    }
+
+    const toInput = e.target.closest('.redirect-to-input');
+    if (toInput) {
+      const index = parseInt(toInput.dataset.index);
+      updateRedirectRow(index, 'to', toInput.value);
+    }
+  });
+
+  // 处理删除按钮点击
+  tbody.addEventListener('click', (e) => {
+    const deleteBtn = e.target.closest('.redirect-delete-btn');
+    if (deleteBtn) {
+      const index = parseInt(deleteBtn.dataset.index);
+      deleteRedirectRow(index);
+    }
+  });
+
+  // 处理删除按钮悬停样式
+  tbody.addEventListener('mouseover', (e) => {
+    const btn = e.target.closest('.redirect-delete-btn');
+    if (btn) {
+      btn.style.background = 'var(--error-50)';
+      btn.style.borderColor = 'var(--error-500)';
+    }
+  });
+
+  tbody.addEventListener('mouseout', (e) => {
+    const btn = e.target.closest('.redirect-delete-btn');
+    if (btn) {
+      btn.style.background = 'white';
+      btn.style.borderColor = 'var(--error-300)';
+    }
+  });
+}
+
 function renderRedirectTable() {
   const tbody = document.getElementById('redirectTableBody');
   const countSpan = document.getElementById('redirectCount');
-  
+
   const validCount = redirectTableData.filter(r => r.from && r.to).length;
   countSpan.textContent = validCount;
-  
+
+  // 初始化事件委托（仅一次）
+  initRedirectTableEventDelegation();
+
   if (redirectTableData.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="3" style="padding: 20px; text-align: center; color: var(--neutral-500);">暂无重定向规则，点击"添加"按钮创建</td></tr>';
+    const emptyRow = TemplateEngine.render('tpl-redirect-empty', {
+      message: '暂无重定向规则，点击"添加"按钮创建'
+    });
+    if (emptyRow) {
+      tbody.innerHTML = '';
+      tbody.appendChild(emptyRow);
+    } else {
+      // 降级：模板不存在时使用简单HTML
+      tbody.innerHTML = '<tr><td colspan="3" style="padding: 20px; text-align: center; color: var(--neutral-500);">暂无重定向规则，点击"添加"按钮创建</td></tr>';
+    }
     return;
   }
-  
-  tbody.innerHTML = redirectTableData.map((redirect, index) => `
-    <tr style="border-bottom: 1px solid var(--neutral-200);">
-      <td style="padding: 8px 12px;">
-        <input
-          type="text"
-          value="${escapeHtml(redirect.from || '')}"
-          placeholder="claude-3-opus-20240229"
-          onchange="updateRedirectRow(${index}, 'from', this.value)"
-          style="width: 100%; padding: 6px 10px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace;"
-        >
-      </td>
-      <td style="padding: 8px 12px;">
-        <input
-          type="text"
-          value="${escapeHtml(redirect.to || '')}"
-          placeholder="claude-3-5-sonnet-20241022"
-          onchange="updateRedirectRow(${index}, 'to', this.value)"
-          style="width: 100%; padding: 6px 10px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace;"
-        >
-      </td>
-      <td style="padding: 8px 12px; text-align: center;">
-        <button
-          type="button"
-          onclick="deleteRedirectRow(${index})"
-          style="padding: 4px 8px; border-radius: 6px; border: 1px solid var(--error-300); background: white; color: var(--error-600); cursor: pointer; font-size: 12px; transition: all 0.2s;"
-          onmouseover="this.style.background='var(--error-50)'; this.style.borderColor='var(--error-500)';"
-          onmouseout="this.style.background='white'; this.style.borderColor='var(--error-300)';"
-          title="删除此规则"
-        >
-          删除
-        </button>
-      </td>
-    </tr>
-  `).join('');
+
+  // 使用DocumentFragment优化批量DOM操作
+  const fragment = document.createDocumentFragment();
+  redirectTableData.forEach((redirect, index) => {
+    const row = createRedirectRow(redirect, index);
+    if (row) fragment.appendChild(row);
+  });
+
+  tbody.innerHTML = '';
+  tbody.appendChild(fragment);
 }
 
 function redirectTableToJSON() {

@@ -166,6 +166,14 @@
   </div>
 
 
+  <!-- 渠道筛选项模板 -->
+  <template id="tpl-channel-filter-item">
+    <div class="channel-checkbox {{checkedClass}}"></div>
+    <div class="channel-color-indicator" style="background-color: {{color}}"></div>
+    <div class="channel-name">{{displayName}}</div>
+  </template>
+
+  <script src="/web/assets/js/template-engine.js"></script>
   <script src="/web/assets/js/date-range-selector.js"></script>
   <script src="/web/assets/js/trend.js"></script>
   <script src="/web/assets/js/ui.js"></script>

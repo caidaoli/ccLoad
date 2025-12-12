@@ -215,6 +215,61 @@
   </div>
 
 
+  <!-- 日志表格行模板 -->
+  <template id="tpl-log-row">
+    <tr>
+      <td style="white-space: nowrap;">{{time}}</td>
+      <td>{{{modelDisplay}}}</td>
+      <td class="config-info">{{{configDisplay}}}</td>
+      <td style="text-align: center; white-space: nowrap;">{{{apiKeyDisplay}}}</td>
+      <td><span class="{{statusClass}}">{{statusCode}}</span></td>
+      <td style="text-align: right; white-space: nowrap;">{{{responseTimingDisplay}}}</td>
+      <td style="text-align: right; white-space: nowrap;">{{{inputTokensDisplay}}}</td>
+      <td style="text-align: right; white-space: nowrap;">{{{outputTokensDisplay}}}</td>
+      <td style="text-align: right; white-space: nowrap;">{{{cacheReadDisplay}}}</td>
+      <td style="text-align: right; white-space: nowrap;">{{{cacheCreationDisplay}}}</td>
+      <td style="text-align: right; white-space: nowrap;">{{{costDisplay}}}</td>
+      <td style="max-width: 300px; word-break: break-word;">{{message}}</td>
+    </tr>
+  </template>
+
+  <!-- 空状态模板 -->
+  <template id="tpl-log-empty">
+    <tr>
+      <td colspan="{{colspan}}" class="empty-state">
+        <svg class="w-12 h-12 mx-auto mb-4" style="color: var(--neutral-400);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+        </svg>
+        <div style="font-weight: var(--font-medium); margin-bottom: var(--space-1); color: var(--neutral-700);">暂无日志数据</div>
+        <div>请调整筛选条件或检查时间范围</div>
+      </td>
+    </tr>
+  </template>
+
+  <!-- 加载状态模板 -->
+  <template id="tpl-log-loading">
+    <tr>
+      <td colspan="{{colspan}}" class="loading-state">
+        <div class="loading-spinner" style="margin: 0 auto var(--space-2)"></div>
+        正在加载日志...
+      </td>
+    </tr>
+  </template>
+
+  <!-- 错误状态模板 -->
+  <template id="tpl-log-error">
+    <tr>
+      <td colspan="{{colspan}}" class="empty-state">
+        <svg class="w-12 h-12 mx-auto mb-4" style="color: var(--error-400);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.864-.833-2.634 0L4.18 16.5c-.77.833.192 2.5 1.732 2.5z"/>
+        </svg>
+        <div style="color: var(--error-400); font-weight: var(--font-medium); margin-bottom: var(--space-1);">加载失败</div>
+        <div>请检查网络连接或重试</div>
+      </td>
+    </tr>
+  </template>
+
+  <script src="/web/assets/js/template-engine.js"></script>
   <script src="/web/assets/js/date-range-selector.js"></script>
   <script src="/web/assets/js/logs.js"></script>
   <script src="/web/assets/js/ui.js"></script>

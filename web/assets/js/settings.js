@@ -24,24 +24,41 @@ async function loadSettings() {
 function renderSettings(settings) {
   const tbody = document.getElementById('settings-tbody');
   originalSettings = {};
+  tbody.innerHTML = '';
 
-  tbody.innerHTML = settings.map(s => {
+  // 初始化事件委托（仅一次）
+  initSettingsEventDelegation();
+
+  settings.forEach(s => {
     originalSettings[s.key] = s.value;
-    return `
-      <tr>
-        <td>${escapeHtml(s.description)}</td>
-        <td style="text-align: right;">${renderInput(s)}</td>
-        <td>
-          <button onclick="resetSetting('${s.key}')" class="btn-icon" title="重置为默认值">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
-              <path d="M3 3v5h5"/>
-            </svg>
-          </button>
-        </td>
-      </tr>
-    `;
-  }).join('');
+    const row = TemplateEngine.render('tpl-setting-row', {
+      key: s.key,
+      description: s.description,
+      inputHtml: renderInput(s)
+    });
+    if (row) tbody.appendChild(row);
+  });
+}
+
+// 初始化事件委托（替代 inline onclick）
+function initSettingsEventDelegation() {
+  const tbody = document.getElementById('settings-tbody');
+  if (!tbody || tbody.dataset.delegated) return;
+  tbody.dataset.delegated = 'true';
+
+  // 重置按钮点击
+  tbody.addEventListener('click', (e) => {
+    const resetBtn = e.target.closest('.setting-reset-btn');
+    if (resetBtn) {
+      resetSetting(resetBtn.dataset.key);
+    }
+  });
+
+  // 输入变更
+  tbody.addEventListener('change', (e) => {
+    const input = e.target.closest('input');
+    if (input) markChanged(input);
+  });
 }
 
 // XSS 防护：转义 HTML 特殊字符
@@ -53,22 +70,18 @@ function escapeHtml(text) {
 
 function renderInput(setting) {
   const safeKey = escapeHtml(setting.key);
+  const safeValue = escapeHtml(setting.value);
+  const baseStyle = 'padding: 6px 10px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px;';
+
   switch (setting.value_type) {
     case 'bool':
       const checked = setting.value === 'true' || setting.value === '1';
-      return `<input type="checkbox" id="${safeKey}" ${checked ? 'checked' : ''}
-        style="width: 18px; height: 18px; cursor: pointer;" onchange="markChanged(this)">`;
+      return `<input type="checkbox" id="${safeKey}" ${checked ? 'checked' : ''} style="width: 18px; height: 18px; cursor: pointer;">`;
     case 'int':
     case 'duration':
-      return `<input type="number" id="${safeKey}" value="${escapeHtml(setting.value)}"
-        style="padding: 6px 10px; border: 1px solid var(--color-border); border-radius: 6px;
-        background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px;
-        width: 100px; text-align: right;" onchange="markChanged(this)">`;
+      return `<input type="number" id="${safeKey}" value="${safeValue}" style="${baseStyle} width: 100px; text-align: right;">`;
     default:
-      return `<input type="text" id="${safeKey}" value="${escapeHtml(setting.value)}"
-        style="padding: 6px 10px; border: 1px solid var(--color-border); border-radius: 6px;
-        background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px;
-        width: 280px;" onchange="markChanged(this)">`;
+      return `<input type="text" id="${safeKey}" value="${safeValue}" style="${baseStyle} width: 280px;">`;
   }
 }
 

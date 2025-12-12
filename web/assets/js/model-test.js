@@ -49,25 +49,27 @@ async function loadChannels() {
 function renderModelList() {
   const tbody = document.getElementById('model-test-tbody');
   const models = selectedChannel?.models || [];
+
   if (models.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: var(--color-text-secondary); padding: 40px;">该渠道没有配置模型</td></tr>';
+    tbody.innerHTML = '';
+    const emptyRow = TemplateEngine.render('tpl-empty-row', { message: '该渠道没有配置模型' });
+    if (emptyRow) tbody.appendChild(emptyRow);
     return;
   }
-  tbody.innerHTML = models.map(model => {
+
+  const fragment = document.createDocumentFragment();
+  models.forEach(model => {
     const isNew = newModels.has(model);
-    const displayName = isNew ? `[新] ${model}` : model;
-    return `
-    <tr data-model="${escapeHtml(model)}">
-      <td><input type="checkbox" class="model-checkbox" checked></td>
-      <td title="${escapeHtml(model)}" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;${isNew ? ' color: var(--success-500);' : ''}">${escapeHtml(displayName)}</td>
-      <td class="duration">-</td>
-      <td class="input-tokens">-</td>
-      <td class="output-tokens">-</td>
-      <td class="cache-read">-</td>
-      <td class="cache-create">-</td>
-      <td class="response" title="">-</td>
-    </tr>`;
-  }).join('');
+    const row = TemplateEngine.render('tpl-model-row', {
+      model: model,
+      displayName: isNew ? `[新] ${model}` : model,
+      nameStyle: isNew ? ' color: var(--success-500);' : ''
+    });
+    if (row) fragment.appendChild(row);
+  });
+
+  tbody.innerHTML = '';
+  tbody.appendChild(fragment);
   document.getElementById('selectAllCheckbox').checked = true;
 }
 
@@ -78,7 +80,10 @@ async function onChannelChange() {
   selectedChannel = channelsList.find(c => c.id === channelId) || null;
 
   if (!selectedChannel) {
-    document.getElementById('model-test-tbody').innerHTML = '<tr><td colspan="8" style="text-align: center; color: var(--color-text-secondary); padding: 40px;">请先选择渠道</td></tr>';
+    const tbody = document.getElementById('model-test-tbody');
+    tbody.innerHTML = '';
+    const emptyRow = TemplateEngine.render('tpl-empty-row', { message: '请先选择渠道' });
+    if (emptyRow) tbody.appendChild(emptyRow);
     return;
   }
 
