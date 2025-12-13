@@ -72,7 +72,6 @@ func (s *LogService) StartWorkers() {
 }
 
 // logWorker 日志 Worker（后台协程）
-// 简化shutdown逻辑，利用channel关闭特性
 func (s *LogService) logWorker() {
 	defer s.wg.Done()
 
@@ -83,9 +82,24 @@ func (s *LogService) logWorker() {
 	for {
 		select {
 		case <-s.shutdownCh:
-			// 优先检查shutdown信号，快速响应关闭
-			s.flushIfNeeded(batch)
-			return
+			// shutdown时尽量flush掉已排队的日志，避免“退出即丢日志”
+			for {
+				select {
+				case entry, ok := <-s.logChan:
+					if !ok {
+						s.flushIfNeeded(batch)
+						return
+					}
+					batch = append(batch, entry)
+					if len(batch) >= config.LogBatchSize {
+						s.flushLogs(batch)
+						batch = batch[:0]
+					}
+				default:
+					s.flushIfNeeded(batch)
+					return
+				}
+			}
 
 		case entry, ok := <-s.logChan:
 			if !ok {
@@ -198,7 +212,7 @@ func (s *LogService) cleanupOldLogsLoop() {
 // Shutdown 优雅关闭日志服务
 // 注意：不需要等待 Workers，因为 Server 会通过 wg.Wait() 等待
 func (s *LogService) Shutdown(ctx context.Context) error {
-	// 关闭日志通道，通知所有 Worker 退出
-	close(s.logChan)
+	// 不关闭logChan：channel关闭与并发send存在天然竞态，panic只会把进程炸掉。
+	// Worker通过shutdownCh退出；shutdown时的日志flush由logWorker负责。
 	return nil
 }

@@ -25,39 +25,25 @@ func NewWhereBuilder() *WhereBuilder {
 	}
 }
 
-// AddCondition 添加条件
-// 强制参数化查询，防止SQL注入
+// AddCondition 添加SQL WHERE条件子句
+//
+// 【SQL注入防护约束】
+//   - condition参数必须是代码中的字符串字面量或常量，禁止拼接用户输入
+//   - 用户输入必须通过args参数传递，自动参数化为占位符(?)
+//   - 违反约束将导致SQL注入漏洞，必须通过代码审查/静态分析工具检测
+//
+// 正确示例:
+//   wb.AddCondition("channel_id = ?", userInputChannelID)  // ✅ 用户输入通过args传递
+//   wb.AddCondition("status IN (?, ?)", "active", "pending") // ✅ 多个占位符
+//
+// 错误示例:
+//   wb.AddCondition("channel_id = " + userInput)  // ❌ SQL注入风险！
+//   wb.AddCondition(fmt.Sprintf("name LIKE '%%%s%%'", userInput))  // ❌ SQL注入风险！
+//
+// 静态检查建议: 使用gosec/semgrep扫描所有调用点，确保condition参数不包含fmt.Sprintf/字符串拼接
 func (wb *WhereBuilder) AddCondition(condition string, args ...any) *WhereBuilder {
 	if condition == "" {
 		return wb
-	}
-
-	// SQL注入防护：如果提供了参数，条件中必须包含占位符
-	if len(args) > 0 && !strings.Contains(condition, "?") {
-		// 记录错误但不添加条件（安全降级）
-		return wb
-	}
-
-	// SQL注入防护：检查条件字符串是否包含危险关键字（基础黑名单）
-	conditionLower := strings.ToLower(condition)
-	dangerousPatterns := []string{
-		"; drop ",
-		"; delete ",
-		"; update ",
-		"; insert ",
-		"-- ",     // SQL注释
-		"/*",      // 多行注释开始
-		"*/",      // 多行注释结束
-		"union ",  // UNION注入
-		" or 1=1", // 经典注入
-		" or '1'='1",
-	}
-
-	for _, pattern := range dangerousPatterns {
-		if strings.Contains(conditionLower, pattern) {
-			// 记录错误但不添加条件（安全降级）
-			return wb
-		}
 	}
 
 	wb.conditions = append(wb.conditions, condition)

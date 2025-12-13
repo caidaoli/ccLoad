@@ -41,6 +41,10 @@ type Server struct {
 	validatorManager *validator.Manager    // 渠道验证器管理器（SRP+OCP原则）
 	client           *http.Client          // HTTP客户端
 
+	// 异步统计（有界队列，避免每请求起goroutine）
+	tokenStatsCh        chan tokenStatsUpdate
+	tokenStatsDropCount atomic.Int64
+
 	// 运行时配置（启动时从数据库加载，修改后重启生效）
 	maxKeyRetries    int           // 单个渠道内最大Key重试次数
 	firstByteTimeout time.Duration // 上游首字节超时（流式请求）
@@ -55,6 +59,7 @@ type Server struct {
 
 	// 优雅关闭机制
 	shutdownCh     chan struct{}  // 关闭信号channel
+	shutdownDone   chan struct{}  // Shutdown完成信号（幂等）
 	isShuttingDown atomic.Bool    // shutdown标志，防止向已关闭channel写入
 	wg             sync.WaitGroup // 等待所有后台goroutine结束
 }
@@ -127,7 +132,11 @@ func NewServer(store storage.Store) *Server {
 		maxConcurrency: maxConcurrency,
 
 		// 初始化优雅关闭机制
-		shutdownCh: make(chan struct{}),
+		shutdownCh:   make(chan struct{}),
+		shutdownDone: make(chan struct{}),
+
+		// Token统计队列（避免每请求起goroutine）
+		tokenStatsCh: make(chan tokenStatsUpdate, config.DefaultTokenStatsBufferSize),
 	}
 
 	// 初始化高性能缓存层（60秒TTL，避免数据库性能杀手查询）
@@ -147,7 +156,7 @@ func NewServer(store storage.Store) *Server {
 	}
 
 	// 初始化Key选择器（移除store依赖，避免重复查询）
-	s.keySelector = NewKeySelector(nil)
+	s.keySelector = NewKeySelector()
 
 	// ============================================================================
 	// 创建服务层（仅保留有价值的服务）
@@ -178,6 +187,10 @@ func NewServer(store storage.Store) *Server {
 		s.loginRateLimiter,
 		store, // 传入store用于热更新令牌
 	)
+
+	// 启动Token统计Worker（有界队列：性能可控，Shutdown可等待）
+	s.wg.Add(1)
+	go s.tokenStatsWorker()
 
 	// 启动后台清理协程（Token 认证）
 	s.wg.Add(1)
@@ -481,23 +494,30 @@ func (s *Server) HandleChannelKeys(c *gin.Context) {
 // 参数ctx用于控制最大等待时间，超时后强制退出
 // 返回值：nil表示成功，context.DeadlineExceeded表示超时
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.isShuttingDown.Swap(true) {
+		select {
+		case <-s.shutdownDone:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	defer close(s.shutdownDone)
+
 	log.Print("🛑 正在关闭Server，等待后台任务完成...")
 
-	// 设置shutdown标志，防止新的日志写入
-	s.isShuttingDown.Store(true)
-
-	// 关闭shutdownCh，通知所有goroutine退出
+	// 关闭shutdownCh，通知所有goroutine退出（幂等：由isShuttingDown守护）
 	close(s.shutdownCh)
 
-	// [INFO] 修复: 关闭 LogService 的 logChan，让 logWorker 更快退出
-	// 由于 isShuttingDown 已设置，AddLogAsync 不会再写入日志，可以安全关闭
-	s.logService.Shutdown(ctx)
-
 	// 停止LoginRateLimiter的cleanupLoop
-	s.loginRateLimiter.Stop()
+	if s.loginRateLimiter != nil {
+		s.loginRateLimiter.Stop()
+	}
 
 	// 关闭AuthService的后台worker
-	s.authService.Close()
+	if s.authService != nil {
+		s.authService.Close()
+	}
 
 	// 使用channel等待所有goroutine完成
 	done := make(chan struct{})

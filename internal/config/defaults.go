@@ -74,6 +74,13 @@ const (
 	TokenCleanupInterval = 1 * time.Hour
 )
 
+// Token统计配置常量
+const (
+	// DefaultTokenStatsBufferSize 默认Token统计更新队列大小（条数）
+	// 设计原则：有界队列，避免每请求起goroutine导致资源失控
+	DefaultTokenStatsBufferSize = 1000
+)
+
 // SQLite连接池配置常量
 const (
 	// SQLiteMaxOpenConnsFile 文件模式最大连接数（WAL写并发瓶颈）

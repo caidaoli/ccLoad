@@ -481,7 +481,7 @@ func setupTestServer(t *testing.T) (*Server, func()) {
 
 	server := &Server{
 		store:       store,
-		keySelector: NewKeySelector(nil), // 移除store参数
+		keySelector: NewKeySelector(), // 移除store参数
 		shutdownCh:  shutdownCh,
 		// [WARN] 注意: isShuttingDown和wg不能在此处初始化(包含noCopy字段,会触发go vet错误)
 	}
@@ -508,9 +508,9 @@ func setupTestServer(t *testing.T) (*Server, func()) {
 	server.channelCache = storage.NewChannelCache(store, time.Minute)
 
 	cleanup := func() {
-		// 关闭 LogService
-		ctx := context.Background()
-		server.logService.Shutdown(ctx)
+		// 关闭后台Workers
+		isShuttingDown.Store(true)
+		close(shutdownCh)
 
 		// 等待所有goroutine完成
 		wg.Wait()

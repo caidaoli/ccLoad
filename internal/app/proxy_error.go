@@ -106,6 +106,57 @@ func (s *Server) handleNetworkError(
 	return nil, true, false // 继续重试下一个Key
 }
 
+type tokenStatsUpdate struct {
+	tokenHash           string
+	isSuccess           bool
+	duration            float64
+	isStreaming         bool
+	firstByteTime       float64
+	promptTokens        int64
+	completionTokens    int64
+	cacheReadTokens     int64
+	cacheCreationTokens int64
+	costUSD             float64
+}
+
+func (s *Server) tokenStatsWorker() {
+	defer s.wg.Done()
+
+	if s.tokenStatsCh == nil {
+		return
+	}
+
+	for {
+		select {
+		case <-s.shutdownCh:
+			s.drainTokenStats()
+			return
+		case upd := <-s.tokenStatsCh:
+			s.applyTokenStatsUpdate(upd)
+		}
+	}
+}
+
+func (s *Server) drainTokenStats() {
+	for {
+		select {
+		case upd := <-s.tokenStatsCh:
+			s.applyTokenStatsUpdate(upd)
+		default:
+			return
+		}
+	}
+}
+
+func (s *Server) applyTokenStatsUpdate(upd tokenStatsUpdate) {
+	updateCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if err := s.store.UpdateTokenStats(updateCtx, upd.tokenHash, upd.isSuccess, upd.duration, upd.isStreaming, upd.firstByteTime, upd.promptTokens, upd.completionTokens, upd.cacheReadTokens, upd.cacheCreationTokens, upd.costUSD); err != nil {
+		log.Printf("ERROR: failed to update token stats for hash=%s: %v", upd.tokenHash, err)
+	}
+}
+
 // updateTokenStatsAsync 异步更新Token统计（DRY原则：消除重复代码）
 // 参数:
 //   - tokenHash: Token哈希值
@@ -115,55 +166,79 @@ func (s *Server) handleNetworkError(
 //   - res: 转发结果（成功时用于提取token数量，失败时传nil）
 //   - actualModel: 实际模型名称（用于计费）
 func (s *Server) updateTokenStatsAsync(tokenHash string, isSuccess bool, duration float64, isStreaming bool, res *fwResult, actualModel string) {
-	if tokenHash == "" {
+	if tokenHash == "" || s.isShuttingDown.Load() || s.tokenStatsCh == nil {
 		return
 	}
 
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
+	var promptTokens, completionTokens, cacheReadTokens, cacheCreationTokens int64
+	var costUSD float64
+	var firstByteTime float64
 
-		// 检查是否正在关闭（避免写入已关闭的DB）
+	if res != nil {
+		firstByteTime = res.FirstByteTime
+	}
+	if isSuccess && res != nil {
+		promptTokens = int64(res.InputTokens)
+		completionTokens = int64(res.OutputTokens)
+		cacheReadTokens = int64(res.CacheReadInputTokens)
+		cacheCreationTokens = int64(res.CacheCreationInputTokens)
+		costUSD = util.CalculateCost(
+			actualModel,
+			res.InputTokens,
+			res.OutputTokens,
+			res.CacheReadInputTokens,
+			res.CacheCreationInputTokens,
+		)
+
+		// 财务安全检查：费用为0但有token消耗时告警（可能是定价缺失）
+		if costUSD == 0.0 && (res.InputTokens > 0 || res.OutputTokens > 0) {
+			log.Printf("WARN: billing cost=0 for model=%s with tokens (in=%d, out=%d, cache_r=%d, cache_c=%d), pricing missing?",
+				actualModel, res.InputTokens, res.OutputTokens, res.CacheReadInputTokens, res.CacheCreationInputTokens)
+		}
+	}
+
+	upd := tokenStatsUpdate{
+		tokenHash:           tokenHash,
+		isSuccess:           isSuccess,
+		duration:            duration,
+		isStreaming:         isStreaming,
+		firstByteTime:       firstByteTime,
+		promptTokens:        promptTokens,
+		completionTokens:    completionTokens,
+		cacheReadTokens:     cacheReadTokens,
+		cacheCreationTokens: cacheCreationTokens,
+		costUSD:             costUSD,
+	}
+
+	// 优先级策略：成功请求（计费关键）必须记录，失败请求可丢弃
+	if isSuccess {
+		// 计费数据：带超时的阻塞发送（避免计费数据丢失）
+		timer := time.NewTimer(100 * time.Millisecond)
+		defer timer.Stop()
+
 		select {
-		case <-s.shutdownCh:
-			return
-		default:
-		}
-
-		updateCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-
-		var promptTokens, completionTokens, cacheReadTokens, cacheCreationTokens int64
-		var costUSD float64
-		var firstByteTime float64
-
-		if isSuccess && res != nil {
-			promptTokens = int64(res.InputTokens)
-			completionTokens = int64(res.OutputTokens)
-			cacheReadTokens = int64(res.CacheReadInputTokens)
-			cacheCreationTokens = int64(res.CacheCreationInputTokens)
-			firstByteTime = res.FirstByteTime
-			costUSD = util.CalculateCost(
-				actualModel,
-				res.InputTokens,
-				res.OutputTokens,
-				res.CacheReadInputTokens,
-				res.CacheCreationInputTokens,
-			)
-
-			// 财务安全检查：费用为0但有token消耗时告警（可能是定价缺失）
-			if costUSD == 0.0 && (res.InputTokens > 0 || res.OutputTokens > 0) {
-				log.Printf("WARN: billing cost=0 for model=%s with tokens (in=%d, out=%d, cache_r=%d, cache_c=%d), pricing missing?",
-					actualModel, res.InputTokens, res.OutputTokens, res.CacheReadInputTokens, res.CacheCreationInputTokens)
+		case s.tokenStatsCh <- upd:
+			// 成功发送
+		case <-timer.C:
+			// 超时后降级为非阻塞（避免卡住请求）
+			select {
+			case s.tokenStatsCh <- upd:
+			default:
+				count := s.tokenStatsDropCount.Add(1)
+				log.Printf("[ERROR] 计费统计队列持续饱和，成功请求统计被迫丢弃 (累计: %d)", count)
 			}
-		} else if res != nil {
-			firstByteTime = res.FirstByteTime
 		}
-
-		if err := s.store.UpdateTokenStats(updateCtx, tokenHash, isSuccess, duration, isStreaming, firstByteTime, promptTokens, completionTokens, cacheReadTokens, cacheCreationTokens, costUSD); err != nil {
-			log.Printf("ERROR: failed to update token stats for hash=%s: %v", tokenHash, err)
+	} else {
+		// 非计费数据：非阻塞发送，队列满时直接丢弃
+		select {
+		case s.tokenStatsCh <- upd:
+		default:
+			count := s.tokenStatsDropCount.Add(1)
+			if count%100 == 1 {
+				log.Printf("[WARN]  Token统计队列已满，失败请求统计被丢弃 (累计: %d)", count)
+			}
 		}
-	}()
+	}
 }
 
 // handleProxySuccess 处理代理成功响应（业务逻辑层）

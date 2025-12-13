@@ -11,8 +11,6 @@ import (
 // KeySelector 负责从渠道的多个API Key中选择可用的Key
 // 移除store依赖，避免重复查询数据库
 type KeySelector struct {
-	cooldownGauge *atomic.Int64 // 监控指标：当前活跃的Key级冷却数量
-
 	// 轮询计数器：channelID -> *rrCounter
 	// 渠道删除时需要清理对应计数器，避免rrCounters无界增长。
 	rrCounters map[int64]*rrCounter
@@ -25,10 +23,9 @@ type rrCounter struct {
 }
 
 // NewKeySelector 创建Key选择器
-func NewKeySelector(gauge *atomic.Int64) *KeySelector {
+func NewKeySelector() *KeySelector {
 	return &KeySelector{
-		cooldownGauge: gauge,
-		rrCounters:    make(map[int64]*rrCounter),
+		rrCounters: make(map[int64]*rrCounter),
 	}
 }
 

@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -43,8 +42,7 @@ func TestConcurrentKeySelection(t *testing.T) {
 	// ✅ Linus风格：轮询指针内存化后无需初始化
 
 	// 初始化KeySelector
-	var keyCooldownGauge atomic.Int64
-	selector := app.NewKeySelector(&keyCooldownGauge) // 移除store参数
+	selector := app.NewKeySelector() // 移除store参数
 
 	// 预先查询apiKeys，避免并发重复查询
 	apiKeys, err := store.GetAPIKeys(ctx, channelID)
@@ -151,8 +149,7 @@ func TestConcurrentKeyCooldown(t *testing.T) {
 		t.Fatalf("Failed to get config: %v", err)
 	}
 
-	var keyCooldownGauge atomic.Int64
-	selector := app.NewKeySelector(&keyCooldownGauge) // 移除store参数
+	selector := app.NewKeySelector() // 移除store参数
 
 	var wg sync.WaitGroup
 	errors := make(chan error, 100)

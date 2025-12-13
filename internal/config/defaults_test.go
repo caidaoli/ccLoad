@@ -27,6 +27,7 @@ func TestDefaultConstants(t *testing.T) {
 
 		// Token配置
 		{"TokenRandomBytes", TokenRandomBytes, 16, 64},
+		{"DefaultTokenStatsBufferSize", DefaultTokenStatsBufferSize, 100, 100000},
 
 		// SQLite配置
 		{"SQLiteMaxOpenConnsFile", SQLiteMaxOpenConnsFile, 1, 100},

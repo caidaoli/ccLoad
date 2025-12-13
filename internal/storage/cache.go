@@ -29,8 +29,6 @@ type ChannelCache struct {
 		lastUpdate time.Time
 		ttl        time.Duration
 	}
-	geminiModels []string // 缓存的Gemini模型列表
-	modelsMutex  sync.RWMutex
 
 	// Metrics counters
 	channelCounters        cacheCounters
@@ -38,7 +36,6 @@ type ChannelCache struct {
 	apiKeyCounters         cacheCounters
 	channelCooldownCounter cacheCounters
 	keyCooldownCounter     cacheCounters
-	geminiCounters         cacheCounters
 }
 
 type cacheCounters struct {
@@ -74,7 +71,6 @@ func NewChannelCache(store Store, ttl time.Duration) *ChannelCache {
 
 		// 初始化扩展缓存
 		apiKeysByChannelID: make(map[int64][]*modelpkg.APIKey),
-		geminiModels:       make([]string, 0),
 		cooldownCache: struct {
 			channels   map[int64]time.Time
 			keys       map[int64]map[int]time.Time
@@ -239,7 +235,6 @@ func (c *ChannelCache) InvalidateCache() {
 	c.lastUpdate = time.Time{} // 重置为0时间，强制刷新
 	c.channelCounters.addInvalidation()
 	c.channelTypeCounters.addInvalidation()
-	c.geminiCounters.addInvalidation()
 }
 
 // GetCacheStats 获取缓存统计信息
@@ -258,7 +253,6 @@ func (c *ChannelCache) GetCacheStats() map[string]any {
 	apiHits, apiMisses, apiInvalidations := c.apiKeyCounters.snapshot()
 	chanCooldownHits, chanCooldownMisses, chanCooldownInvalidations := c.channelCooldownCounter.snapshot()
 	keyCooldownHits, keyCooldownMisses, keyCooldownInvalidations := c.keyCooldownCounter.snapshot()
-	geminiHits, geminiMisses, geminiInvalidations := c.geminiCounters.snapshot()
 
 	return map[string]any{
 		"last_update":                    lastUpdate,
@@ -282,9 +276,6 @@ func (c *ChannelCache) GetCacheStats() map[string]any {
 		"key_cooldown_hits":              keyCooldownHits,
 		"key_cooldown_misses":            keyCooldownMisses,
 		"key_cooldown_invalidations":     keyCooldownInvalidations,
-		"gemini_hits":                    geminiHits,
-		"gemini_misses":                  geminiMisses,
-		"gemini_invalidations":           geminiInvalidations,
 	}
 }
 
@@ -296,9 +287,12 @@ func (c *ChannelCache) GetAPIKeys(ctx context.Context, channelID int64) ([]*mode
 	if keys, exists := c.apiKeysByChannelID[channelID]; exists {
 		c.mutex.RUnlock()
 		c.apiKeyCounters.addHit()
-		// 返回副本
+		// 深拷贝: 防止调用方修改污染缓存
 		result := make([]*modelpkg.APIKey, len(keys))
-		copy(result, keys)
+		for i, key := range keys {
+			keyCopy := *key // 拷贝对象本身
+			result[i] = &keyCopy
+		}
 		return result, nil
 	}
 	c.mutex.RUnlock()
@@ -306,13 +300,21 @@ func (c *ChannelCache) GetAPIKeys(ctx context.Context, channelID int64) ([]*mode
 	// 缓存未命中，从数据库加载
 	keys, err := c.store.GetAPIKeys(ctx, channelID)
 	c.apiKeyCounters.addMiss()
-	if err == nil {
-		// 存储到缓存
-		c.mutex.Lock()
-		c.apiKeysByChannelID[channelID] = keys
-		c.mutex.Unlock()
+	if err != nil {
+		return nil, err
 	}
-	return keys, err
+
+	// 存储到缓存（只存 slice 本身；对外总是返回深拷贝，避免污染缓存）
+	c.mutex.Lock()
+	c.apiKeysByChannelID[channelID] = keys
+	c.mutex.Unlock()
+
+	result := make([]*modelpkg.APIKey, len(keys))
+	for i, key := range keys {
+		keyCopy := *key // 拷贝对象本身
+		result[i] = &keyCopy
+	}
+	return result, nil
 }
 
 // GetAllChannelCooldowns 缓存优先的渠道冷却查询
@@ -333,13 +335,19 @@ func (c *ChannelCache) GetAllChannelCooldowns(ctx context.Context) (map[int64]ti
 	// 缓存过期，从数据库加载
 	cooldowns, err := c.store.GetAllChannelCooldowns(ctx)
 	c.channelCooldownCounter.addMiss()
-	if err == nil {
-		c.mutex.Lock()
-		c.cooldownCache.channels = cooldowns
-		c.cooldownCache.lastUpdate = time.Now()
-		c.mutex.Unlock()
+	if err != nil {
+		return nil, err
 	}
-	return cooldowns, err
+
+	// 存到缓存；对外总是返回副本，避免调用方修改污染缓存。
+	c.mutex.Lock()
+	c.cooldownCache.channels = cooldowns
+	c.cooldownCache.lastUpdate = time.Now()
+	c.mutex.Unlock()
+
+	result := make(map[int64]time.Time, len(cooldowns))
+	maps.Copy(result, cooldowns)
+	return result, nil
 }
 
 // GetAllKeyCooldowns 缓存优先的Key冷却查询
@@ -364,61 +372,23 @@ func (c *ChannelCache) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[in
 	// 缓存过期，从数据库加载
 	cooldowns, err := c.store.GetAllKeyCooldowns(ctx)
 	c.keyCooldownCounter.addMiss()
-	if err == nil {
-		// 深拷贝存入缓存，防止外部修改影响缓存数据
-		cacheCopy := make(map[int64]map[int]time.Time, len(cooldowns))
-		for k, v := range cooldowns {
-			keyMap := make(map[int]time.Time, len(v))
-			maps.Copy(keyMap, v)
-			cacheCopy[k] = keyMap
-		}
-		c.mutex.Lock()
-		c.cooldownCache.keys = cacheCopy
-		c.cooldownCache.lastUpdate = time.Now()
-		c.mutex.Unlock()
-	}
-	return cooldowns, err
-}
-
-// GetGeminiModels 缓存的Gemini模型列表查询
-// 性能：内存查询 <1ms vs 数据库查询 20-50ms
-func (c *ChannelCache) GetGeminiModels(ctx context.Context) ([]string, error) {
-	c.modelsMutex.RLock()
-	if len(c.geminiModels) > 0 && time.Since(c.lastUpdate) <= c.ttl {
-		models := make([]string, len(c.geminiModels))
-		copy(models, c.geminiModels)
-		c.modelsMutex.RUnlock()
-		c.geminiCounters.addHit()
-		return models, nil
-	}
-	c.modelsMutex.RUnlock()
-
-	// 缓存未命中或过期，从数据库查询
-	channels, err := c.store.GetEnabledChannelsByType(ctx, "gemini")
-	c.geminiCounters.addMiss()
 	if err != nil {
 		return nil, err
 	}
 
-	// 提取模型并去重
-	modelSet := make(map[string]bool)
-	for _, cfg := range channels {
-		for _, model := range cfg.Models {
-			modelSet[model] = true
-		}
+	// 存到缓存；对外总是返回深拷贝，避免调用方修改污染缓存。
+	c.mutex.Lock()
+	c.cooldownCache.keys = cooldowns
+	c.cooldownCache.lastUpdate = time.Now()
+	c.mutex.Unlock()
+
+	result := make(map[int64]map[int]time.Time, len(cooldowns))
+	for k, v := range cooldowns {
+		keyMap := make(map[int]time.Time, len(v))
+		maps.Copy(keyMap, v)
+		result[k] = keyMap
 	}
-
-	models := make([]string, 0, len(modelSet))
-	for model := range modelSet {
-		models = append(models, model)
-	}
-
-	// 更新缓存
-	c.modelsMutex.Lock()
-	c.geminiModels = models
-	c.modelsMutex.Unlock()
-
-	return models, nil
+	return result, nil
 }
 
 // InvalidateAPIKeysCache 手动失效API Keys缓存

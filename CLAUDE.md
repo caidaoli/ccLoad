@@ -98,13 +98,13 @@ internal/
 1. `internal/app/admin_types.go` - 定义请求/响应类型
 2. `internal/app/admin_<feature>.go` - 实现Handler函数
 3. `internal/app/server.go:SetupRoutes()` - 注册路由
-4. 使用 `s.handlers.Success/BadRequest/ServerError/NotFound` 统一响应
+4. 使用 `internal/app/handlers.go` 的 `RespondJSON/RespondError/RespondErrorMsg` 统一响应
 
 
 ### 数据库操作规范
 
 - Schema更新: `internal/storage/migrate.go` 启动时自动执行
-- 事务封装: `s.store.WithTransaction(ctx, func(tx) error { ... })`
+- 事务封装: `internal/storage/sql/transaction.go` 的 `(*SQLStore).WithTransaction(ctx, func(tx *sql.Tx) error { ... })`（sql层内部使用）
 - 缓存失效: `InvalidateChannelListCache()` / `InvalidateAPIKeysCache()` / `invalidateCooldownCache()`
 
 ## 代码规范
@@ -114,11 +114,10 @@ internal/
 - **必须**在测试中添加 `-tags go_json`,否则JSON序列化不一致
 - **禁止**过度工程(Factory工厂、"万一需要"的功能)
 - **Fail-Fast**: 配置错误直接`log.Fatal()`退出,不要容错
-- **API Key脱敏**: 日志自动清洗,无需手动处理(`util/log_sanitizer.go`)
+- **API Key脱敏**: 日志写入时自动脱敏,无需手动处理(`internal/storage/sql/log.go`, `internal/storage/sql/helpers.go`)
 
 ### Context 管理规范 
 
 - 所有 `context.WithCancel/WithTimeout` 必须无条件 `defer cancel()`
 - 监听取消用 `context.AfterFunc`，禁止手动 `go func() { <-ctx.Done() }`
 - 参考: `internal/app/request_context.go`
-

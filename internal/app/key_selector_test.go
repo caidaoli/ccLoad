@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,8 +20,7 @@ func TestSelectAvailableKey_SingleKey(t *testing.T) {
 	store, cleanup := setupTestKeyStore(t)
 	defer cleanup()
 
-	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(&cooldownGauge) // 移除store参数
+	selector := NewKeySelector() // 移除store参数
 	ctx := context.WithValue(context.Background(), testingContextKey, true)
 
 	// 创建渠道
@@ -89,8 +87,7 @@ func TestSelectAvailableKey_SingleKeyCooldown(t *testing.T) {
 	store, cleanup := setupTestKeyStore(t)
 	defer cleanup()
 
-	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(&cooldownGauge)
+	selector := NewKeySelector()
 	ctx := context.WithValue(context.Background(), testingContextKey, true)
 	now := time.Now()
 
@@ -150,8 +147,7 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 	store, cleanup := setupTestKeyStore(t)
 	defer cleanup()
 
-	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(&cooldownGauge) // 移除store参数
+	selector := NewKeySelector() // 移除store参数
 	ctx := context.WithValue(context.Background(), testingContextKey, true)
 
 	// 创建渠道
@@ -258,8 +254,7 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 	store, cleanup := setupTestKeyStore(t)
 	defer cleanup()
 
-	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(&cooldownGauge) // 移除store参数
+	selector := NewKeySelector() // 移除store参数
 	ctx := context.WithValue(context.Background(), testingContextKey, true)
 
 	// 创建渠道
@@ -343,15 +338,13 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 	})
 }
 
-
 // TestSelectAvailableKey_RoundRobin_NonContiguousKeyIndex 验证RR不依赖KeyIndex连续性
 // [REGRESSION] 这个测试防止回归到"假设KeyIndex=0..N-1连续"的错误实现
 func TestSelectAvailableKey_RoundRobin_NonContiguousKeyIndex(t *testing.T) {
 	store, cleanup := setupTestKeyStore(t)
 	defer cleanup()
 
-	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(&cooldownGauge)
+	selector := NewKeySelector()
 	ctx := context.WithValue(context.Background(), testingContextKey, true)
 
 	// 创建渠道
@@ -441,8 +434,7 @@ func TestSelectAvailableKey_RoundRobin_NonContiguousKeyIndex(t *testing.T) {
 // TestSelectAvailableKey_SingleKey_NonZeroKeyIndex 验证单Key场景下KeyIndex≠0时排除逻辑正确
 // [REGRESSION] 防止回归到"excludeKeys[0]"硬编码的错误实现
 func TestSelectAvailableKey_SingleKey_NonZeroKeyIndex(t *testing.T) {
-	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(&cooldownGauge)
+	selector := NewKeySelector()
 
 	// 模拟单Key但KeyIndex=5的场景（如删除其他Key后只剩一个）
 	apiKeys := []*model.APIKey{
@@ -501,8 +493,7 @@ func TestSelectAvailableKey_KeyCooldown(t *testing.T) {
 	store, cleanup := setupTestKeyStore(t)
 	defer cleanup()
 
-	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(&cooldownGauge) // 移除store参数
+	selector := NewKeySelector() // 移除store参数
 	ctx := context.WithValue(context.Background(), testingContextKey, true)
 	now := time.Now()
 
@@ -621,8 +612,7 @@ func TestSelectAvailableKey_CooldownAndExclude(t *testing.T) {
 	store, cleanup := setupTestKeyStore(t)
 	defer cleanup()
 
-	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(&cooldownGauge) // 移除store参数
+	selector := NewKeySelector() // 移除store参数
 	ctx := context.WithValue(context.Background(), testingContextKey, true)
 	now := time.Now()
 
@@ -689,8 +679,7 @@ func TestSelectAvailableKey_NoKeys(t *testing.T) {
 	store, cleanup := setupTestKeyStore(t)
 	defer cleanup()
 
-	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(&cooldownGauge) // 移除store参数
+	selector := NewKeySelector() // 移除store参数
 	ctx := context.WithValue(context.Background(), testingContextKey, true)
 
 	// 创建渠道（不配置API Keys）
@@ -725,8 +714,7 @@ func TestSelectAvailableKey_DefaultStrategy(t *testing.T) {
 	store, cleanup := setupTestKeyStore(t)
 	defer cleanup()
 
-	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(&cooldownGauge) // 移除store参数
+	selector := NewKeySelector() // 移除store参数
 	ctx := context.WithValue(context.Background(), testingContextKey, true)
 
 	// 创建渠道
@@ -779,8 +767,7 @@ func TestSelectAvailableKey_UnknownStrategy(t *testing.T) {
 	store, cleanup := setupTestKeyStore(t)
 	defer cleanup()
 
-	var cooldownGauge atomic.Int64
-	selector := NewKeySelector(&cooldownGauge) // 移除store参数
+	selector := NewKeySelector() // 移除store参数
 	ctx := context.WithValue(context.Background(), testingContextKey, true)
 
 	// 创建渠道
