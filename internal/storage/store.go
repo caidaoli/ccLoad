@@ -109,6 +109,9 @@ type SessionStore interface {
 
 // Store 数据持久化接口（组合所有子接口）
 // 设计原则：依赖倒置原则（DIP），业务逻辑依赖接口而非具体实现
+// [FIX] 2025-12：移除生命周期方法（StartRedisSync/LoadChannelsFromRedis/CheckChannelsEmpty）
+//
+//	这些方法属于启动初始化逻辑，已收敛到 NewStore() 工厂函数（ISP原则）
 type Store interface {
 	ChannelStore
 	APIKeyStore
@@ -122,20 +125,12 @@ type Store interface {
 	// Batch Import - 批量导入（CSV导入优化）
 	ImportChannelBatch(ctx context.Context, channels []*model.ChannelWithKeys) (created, updated int, err error)
 
-	// Redis Restore - Redis数据恢复
-	LoadChannelsFromRedis(ctx context.Context) error
-	CheckChannelsEmpty(ctx context.Context) (bool, error)
-
 	// Redis Status - Redis状态查询
 	IsRedisEnabled() bool
-
-	// StartRedisSync - 启动Redis同步worker（迁移+恢复完成后调用）
-	StartRedisSync()
-
-	// Close - 关闭数据库连接并释放资源
 
 	// Ping - 检查数据库连接是否活跃（用于健康检查）
 	Ping(ctx context.Context) error
 
+	// Close - 关闭数据库连接并释放资源
 	Close() error
 }

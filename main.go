@@ -70,28 +70,11 @@ func main() {
 	}
 
 	// 使用工厂函数创建存储实例（自动识别MySQL/SQLite）
-	ctx := context.Background()
+	// [FIX] 2025-12：初始化逻辑（迁移→恢复→启动同步）已收敛到 NewStore()
 	store, err := storage.NewStore(redisSync)
 	if err != nil {
 		log.Fatalf("存储初始化失败: %v", err)
 	}
-
-	// 统一的Redis恢复逻辑（SQLite和MySQL共用）
-	if redisSync.IsEnabled() {
-		isEmpty, err := store.CheckChannelsEmpty(ctx)
-		if err != nil {
-			log.Printf("检查数据库状态失败: %v", err)
-		} else if isEmpty {
-			log.Printf("数据库为空，尝试从Redis恢复数据...")
-			if err := store.LoadChannelsFromRedis(ctx); err != nil {
-				log.Printf("从Redis恢复失败: %v", err)
-			}
-		}
-	}
-
-	// 启动 Redis 同步 worker（迁移+恢复完成后）
-	// 必须在恢复逻辑之后调用，避免空数据覆盖 Redis 备份
-	store.StartRedisSync()
 
 	// 渠道仅从数据库管理与读取；不再从本地文件初始化。
 

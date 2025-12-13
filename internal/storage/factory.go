@@ -23,34 +23,58 @@ type RedisSync = sqlstore.RedisSync
 // 环境变量 CCLOAD_MYSQL：设置时使用MySQL，否则使用SQLite
 // 环境变量 SQLITE_PATH：SQLite数据库路径（默认: data/ccload.db）
 //
+// [FIX] 2025-12：收敛初始化逻辑（迁移→恢复→启动同步），遵循 ISP 原则
 // 生产代码应使用此函数，测试代码可使用 CreateSQLiteStore() 直接创建
 func NewStore(redisSync RedisSync) (Store, error) {
+	var store *sqlstore.SQLStore
+	var err error
+
 	mysqlDSN := os.Getenv("CCLOAD_MYSQL")
 	if mysqlDSN != "" {
-		store, err := createMySQLStore(mysqlDSN, redisSync)
+		store, err = createMySQLStore(mysqlDSN, redisSync)
 		if err != nil {
 			return nil, fmt.Errorf("MySQL 初始化失败: %w", err)
 		}
 		log.Printf("使用 MySQL 存储")
-		return store, nil
+	} else {
+		// SQLite模式：自动获取路径
+		dbPath := os.Getenv("SQLITE_PATH")
+		if dbPath == "" {
+			dbPath = filepath.Join("data", "ccload.db")
+		}
+
+		store, err = createSQLiteStore(dbPath, redisSync)
+		if err != nil {
+			return nil, fmt.Errorf("SQLite 初始化失败: %w", err)
+		}
+		log.Printf("使用 SQLite 存储: %s", dbPath)
 	}
 
-	// SQLite模式：自动获取路径
-	dbPath := os.Getenv("SQLITE_PATH")
-	if dbPath == "" {
-		dbPath = filepath.Join("data", "ccload.db")
+	// ============================================================================
+	// 统一的 Redis 恢复逻辑（迁移完成后执行）
+	// 顺序很重要：先恢复数据，再启动同步 worker，避免空数据覆盖 Redis 备份
+	// ============================================================================
+	ctx := context.Background()
+	if redisSync != nil && redisSync.IsEnabled() {
+		isEmpty, checkErr := store.CheckChannelsEmpty(ctx)
+		if checkErr != nil {
+			log.Printf("检查数据库状态失败: %v", checkErr)
+		} else if isEmpty {
+			log.Printf("数据库为空，尝试从Redis恢复数据...")
+			if restoreErr := store.LoadChannelsFromRedis(ctx); restoreErr != nil {
+				log.Printf("从Redis恢复失败: %v", restoreErr)
+			}
+		}
 	}
 
-	store, err := CreateSQLiteStore(dbPath, redisSync)
-	if err != nil {
-		return nil, fmt.Errorf("SQLite 初始化失败: %w", err)
-	}
-	log.Printf("使用 SQLite 存储: %s", dbPath)
+	// 启动 Redis 同步 worker（恢复完成后）
+	store.StartRedisSync()
+
 	return store, nil
 }
 
-// createMySQLStore 创建 MySQL 存储实例（使用统一的 SQLStore）
-func createMySQLStore(dsn string, redisSync RedisSync) (Store, error) {
+// createMySQLStore 创建 MySQL 存储实例（内部函数，返回具体类型以支持生命周期方法调用）
+func createMySQLStore(dsn string, redisSync RedisSync) (*sqlstore.SQLStore, error) {
 	// 确保DSN包含必要参数
 	if dsn == "" {
 		return nil, fmt.Errorf("MySQL DSN不能为空")
@@ -87,7 +111,13 @@ func createMySQLStore(dsn string, redisSync RedisSync) (Store, error) {
 // CreateSQLiteStore 直接创建 SQLite 存储实例（测试辅助函数）
 // 生产代码应使用 NewStore() 工厂函数
 // 测试代码可用此函数创建独立的测试数据库
+// 注意：此函数不会启动 Redis 同步 worker，测试需要时可手动调用 StartRedisSync()
 func CreateSQLiteStore(path string, redisSync RedisSync) (Store, error) {
+	return createSQLiteStore(path, redisSync)
+}
+
+// createSQLiteStore 内部函数，返回具体类型以支持生命周期方法调用
+func createSQLiteStore(path string, redisSync RedisSync) (*sqlstore.SQLStore, error) {
 	// 创建数据目录
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err

@@ -13,8 +13,9 @@ import (
 
 // LoadChannelsFromRedis 从Redis恢复渠道数据到SQL (启动时数据库恢复机制)
 // [INFO] 修复（2025-10-10）：完整恢复渠道和API Keys，解决Redis恢复后缺少Keys的问题
+// [FIX] 2025-12：添加 nil 防御，避免测试中使用 nil redisSync 时 panic
 func (s *SQLStore) LoadChannelsFromRedis(ctx context.Context) error {
-	if !s.redisSync.IsEnabled() {
+	if s.redisSync == nil || !s.redisSync.IsEnabled() {
 		return nil
 	}
 
@@ -130,6 +131,7 @@ func (s *SQLStore) LoadChannelsFromRedis(ctx context.Context) error {
 
 // syncAllChannelsToRedis 将所有渠道同步到Redis (批量同步，初始化时使用)
 // [INFO] 修复（2025-10-10）：完整同步渠道配置和API Keys，解决Redis恢复后缺少Keys的问题
+// [FIX] 2025-12：允许同步空集合，避免删除所有渠道后Redis保留旧数据导致恢复时复活
 func (s *SQLStore) syncAllChannelsToRedis(ctx context.Context) error {
 	if !s.redisSync.IsEnabled() {
 		return nil
@@ -141,9 +143,10 @@ func (s *SQLStore) syncAllChannelsToRedis(ctx context.Context) error {
 		return fmt.Errorf("list configs: %w", err)
 	}
 
+	// 空集合也需要同步（确保删除操作能正确同步到Redis）
 	if len(configs) == 0 {
-		log.Print("No channels to sync to Redis")
-		return nil
+		log.Print("Syncing empty channel list to Redis")
+		return s.redisSync.SyncAllChannelsWithKeys(ctx, []*model.ChannelWithKeys{})
 	}
 
 	// 2. 为每个渠道查询API Keys，构建完整数据结构
@@ -313,7 +316,7 @@ func (s *SQLStore) doSyncByType(ctx context.Context, syncType syncType) error {
 
 // syncAuthTokensToRedis 同步所有AuthToken到Redis (内部方法)
 // [INFO] 新增（2025-11）：完整同步认证令牌表
-// 策略：空数据时不覆盖 Redis（与 channels 保持一致，保护备份）
+// [FIX] 2025-12：允许同步空集合，避免删除最后一个token后Redis保留旧数据导致恢复时复活已吊销token
 func (s *SQLStore) syncAuthTokensToRedis(ctx context.Context) error {
 	if !s.redisSync.IsEnabled() {
 		return nil
@@ -325,13 +328,7 @@ func (s *SQLStore) syncAuthTokensToRedis(ctx context.Context) error {
 		return fmt.Errorf("list auth tokens: %w", err)
 	}
 
-	// 空数据不覆盖 Redis，保留已有备份（与 syncAllChannelsToRedis 策略一致）
-	if len(tokens) == 0 {
-		log.Print("No auth tokens to sync to Redis")
-		return nil
-	}
-
-	// 同步到Redis
+	// 同步到Redis（包括空集合，确保删除操作能正确同步）
 	if err := s.redisSync.SyncAllAuthTokens(ctx, tokens); err != nil {
 		return err
 	}

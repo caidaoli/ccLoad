@@ -47,6 +47,9 @@ type SQLStore struct {
 
 	// 优雅关闭：等待后台worker
 	wg sync.WaitGroup
+
+	// [FIX] 2025-12：保证 StartRedisSync 幂等性，防止多次调用启动多个 worker
+	startOnce sync.Once
 }
 
 // NewSQLStore 创建通用SQL存储实例
@@ -65,14 +68,17 @@ func NewSQLStore(db *sql.DB, driverName string, redisSync RedisSync) *SQLStore {
 
 // StartRedisSync 显式启动 Redis 同步 worker
 // 必须在迁移完成且恢复逻辑执行后调用，避免空数据覆盖 Redis 备份
+// [FIX] 2025-12：使用 sync.Once 保证幂等性，防止多次调用启动多个 worker
 func (s *SQLStore) StartRedisSync() {
 	if s.redisSync == nil || !s.redisSync.IsEnabled() {
 		return
 	}
-	s.wg.Add(1)
-	go s.redisSyncWorker()
-	// 启动时触发全量同步，确保所有存量数据备份到 Redis
-	s.triggerAsyncSync(syncAll)
+	s.startOnce.Do(func() {
+		s.wg.Add(1)
+		go s.redisSyncWorker()
+		// 启动时触发全量同步，确保所有存量数据备份到 Redis
+		s.triggerAsyncSync(syncAll)
+	})
 }
 
 // IsRedisEnabled 检查Redis是否启用

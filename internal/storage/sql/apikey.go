@@ -196,6 +196,7 @@ func (s *SQLStore) CompactKeyIndices(ctx context.Context, channelID int64, remov
 }
 
 // DeleteAllAPIKeys 删除渠道的所有 API Key（用于渠道删除时级联清理）
+// [FIX] 2025-12：添加 Redis 同步触发，避免删除后 Redis 保留旧 keys 导致恢复时复活
 func (s *SQLStore) DeleteAllAPIKeys(ctx context.Context, channelID int64) error {
 	_, err := s.db.ExecContext(ctx, `
 		DELETE FROM api_keys
@@ -205,6 +206,9 @@ func (s *SQLStore) DeleteAllAPIKeys(ctx context.Context, channelID int64) error 
 	if err != nil {
 		return fmt.Errorf("delete all api keys: %w", err)
 	}
+
+	// 触发异步Redis同步（确保删除操作同步到Redis）
+	s.triggerAsyncSync(syncChannels)
 
 	return nil
 }
