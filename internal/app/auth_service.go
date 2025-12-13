@@ -124,9 +124,11 @@ func (s *AuthService) lastUsedWorker() {
 		case <-s.done:
 			return
 		case tokenHash := <-s.lastUsedCh:
+			// [FIX] P0-4: 使用 defer cancel() 防止 context 泄漏
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+
 			_ = s.store.UpdateTokenLastUsed(ctx, tokenHash, time.Now())
-			cancel()
 		}
 	}
 }
@@ -383,13 +385,13 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 
 	// [INFO] 修复：同步写入数据库（SQLite本地写入极快，微秒级，无需异步）
 	// 原因：异步goroutine未受控，关机时可能写入已关闭的连接
+	// [FIX] P0-4: 使用 defer cancel() 防止 context 泄漏
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
 	if err := s.store.CreateAdminSession(ctx, token, expiry); err != nil {
-		cancel()
 		log.Printf("[WARN]  保存管理员会话到数据库失败: %v", err)
 		// 注意：内存中的token仍然有效，下次重启会丢失此会话
-	} else {
-		cancel()
 	}
 
 	log.Printf("[INFO] 登录成功: IP=%s", clientIP)
@@ -420,12 +422,12 @@ func (s *AuthService) HandleLogout(c *gin.Context) {
 
 		// [INFO] 修复：同步删除数据库中的会话（SQLite本地删除极快，微秒级，无需异步）
 		// 原因：异步goroutine未受控，关机时可能写入已关闭的连接
+		// [FIX] P0-4: 使用 defer cancel() 防止 context 泄漏
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
 		if err := s.store.DeleteAdminSession(ctx, token); err != nil {
-			cancel()
 			log.Printf("[WARN]  删除数据库会话失败: %v", err)
-		} else {
-			cancel()
 		}
 	}
 

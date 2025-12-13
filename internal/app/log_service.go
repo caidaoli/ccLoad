@@ -191,12 +191,14 @@ func (s *LogService) cleanupOldLogsLoop() {
 		select {
 		case <-ticker.C:
 			// 使用带超时的context，避免日志清理阻塞关闭流程
+			// [FIX] P0-4: 使用 defer cancel() 防止 context 泄漏
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
 			cutoff := time.Now().AddDate(0, 0, -s.retentionDays)
 
 			// 通过Store接口清理旧日志，忽略错误（非关键操作）
 			_ = s.store.CleanupLogsBefore(ctx, cutoff)
-			cancel() // 立即释放资源
 
 		case <-s.shutdownCh:
 			// 收到关闭信号，直接退出（不执行最后一次清理）

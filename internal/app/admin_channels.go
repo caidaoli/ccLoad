@@ -39,15 +39,18 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	}
 
 	// 支持按渠道类型过滤（性能优化：减少后续批量查询的数据量）
+	// [FIX] P2-7: 标准化类型比较，避免"同一概念多种写法"
 	channelType := c.Query("type")
 	if channelType != "" && channelType != "all" {
+		// 标准化查询参数（统一转小写）
+		normalizedQueryType := util.NormalizeChannelType(channelType)
+
 		filtered := make([]*model.Config, 0, len(cfgs))
 		for _, cfg := range cfgs {
-			ct := cfg.ChannelType
-			if ct == "" {
-				ct = "anthropic"
-			}
-			if ct == channelType {
+			// 标准化 Config 中的类型（统一转小写）
+			normalizedCfgType := util.NormalizeChannelType(cfg.ChannelType)
+
+			if normalizedCfgType == normalizedQueryType {
 				filtered = append(filtered, cfg)
 			}
 		}

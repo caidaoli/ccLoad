@@ -1,0 +1,319 @@
+package storage_test
+
+import (
+	"context"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
+)
+
+// TestCacheIsolation_GetEnabledChannelsByModel 验证 GetEnabledChannelsByModel 返回深拷贝
+// [FIX] P0-2: 防止调用方修改污染缓存
+func TestCacheIsolation_GetEnabledChannelsByModel(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "isolation.db")
+	store, err := storage.CreateSQLiteStore(dbPath, nil)
+	if err != nil {
+		t.Fatalf("创建 store 失败: %v", err)
+	}
+	defer store.Close()
+
+	// 创建测试渠道
+	cfg := &model.Config{
+		Name:           "test-channel",
+		URL:            "https://test.example.com",
+		Priority:       10,
+		Models:         []string{"model-1", "model-2"},
+		ModelRedirects: map[string]string{"alias-1": "model-1"},
+		Enabled:        true,
+	}
+	created, err := store.CreateConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("创建渠道失败: %v", err)
+	}
+
+	cache := storage.NewChannelCache(store, 1*time.Minute)
+
+	// 第一次查询，填充缓存
+	channels1, err := cache.GetEnabledChannelsByModel(ctx, "model-1")
+	if err != nil {
+		t.Fatalf("GetEnabledChannelsByModel 失败: %v", err)
+	}
+	if len(channels1) != 1 {
+		t.Fatalf("期望1个渠道，实际 %d 个", len(channels1))
+	}
+
+	// 验证深拷贝：修改返回的数据
+	originalModelsLen := len(channels1[0].Models)
+	originalRedirectsLen := len(channels1[0].ModelRedirects)
+
+	// 污染尝试1：修改 Models slice
+	channels1[0].Models = append(channels1[0].Models, "backdoor-model")
+	channels1[0].Models[0] = "POLLUTED"
+
+	// 污染尝试2：修改 ModelRedirects map
+	channels1[0].ModelRedirects["backdoor"] = "evil-model"
+	channels1[0].ModelRedirects["alias-1"] = "POLLUTED"
+
+	// 污染尝试3：修改其他字段
+	channels1[0].Name = "POLLUTED_NAME"
+	channels1[0].Priority = 9999
+
+	// 第二次查询，验证缓存未被污染
+	channels2, err := cache.GetEnabledChannelsByModel(ctx, "model-1")
+	if err != nil {
+		t.Fatalf("第二次 GetEnabledChannelsByModel 失败: %v", err)
+	}
+	if len(channels2) != 1 {
+		t.Fatalf("期望1个渠道，实际 %d 个", len(channels2))
+	}
+
+	ch2 := channels2[0]
+
+	// 验证：Models slice 未被污染
+	if len(ch2.Models) != originalModelsLen {
+		t.Errorf("Models slice 长度被污染: 期望 %d, 实际 %d", originalModelsLen, len(ch2.Models))
+	}
+	if ch2.Models[0] != "model-1" {
+		t.Errorf("Models[0] 被污染: 期望 'model-1', 实际 %q", ch2.Models[0])
+	}
+	for _, m := range ch2.Models {
+		if m == "backdoor-model" || m == "POLLUTED" {
+			t.Errorf("Models slice 包含污染数据: %q", m)
+		}
+	}
+
+	// 验证：ModelRedirects map 未被污染
+	if len(ch2.ModelRedirects) != originalRedirectsLen {
+		t.Errorf("ModelRedirects map 长度被污染: 期望 %d, 实际 %d", originalRedirectsLen, len(ch2.ModelRedirects))
+	}
+	if redirect, ok := ch2.ModelRedirects["alias-1"]; !ok || redirect != "model-1" {
+		t.Errorf("ModelRedirects['alias-1'] 被污染: 期望 'model-1', 实际 %q", redirect)
+	}
+	if _, polluted := ch2.ModelRedirects["backdoor"]; polluted {
+		t.Errorf("ModelRedirects 包含污染键: 'backdoor'")
+	}
+
+	// 验证：其他字段未被污染
+	if ch2.Name != "test-channel" {
+		t.Errorf("Name 被污染: 期望 'test-channel', 实际 %q", ch2.Name)
+	}
+	if ch2.Priority != 10 {
+		t.Errorf("Priority 被污染: 期望 10, 实际 %d", ch2.Priority)
+	}
+
+	// 验证：数据库中的数据未被污染
+	dbCfg, err := store.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetConfig 失败: %v", err)
+	}
+	if len(dbCfg.Models) != originalModelsLen {
+		t.Errorf("数据库中 Models 被污染: 期望 %d, 实际 %d", originalModelsLen, len(dbCfg.Models))
+	}
+	if dbCfg.Models[0] != "model-1" {
+		t.Errorf("数据库中 Models[0] 被污染: 期望 'model-1', 实际 %q", dbCfg.Models[0])
+	}
+
+	t.Logf("✅ 深拷贝隔离性测试通过：调用方修改未污染缓存或数据库")
+}
+
+// TestCacheIsolation_GetEnabledChannelsByType 验证 GetEnabledChannelsByType 返回深拷贝
+func TestCacheIsolation_GetEnabledChannelsByType(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "isolation_type.db")
+	store, err := storage.CreateSQLiteStore(dbPath, nil)
+	if err != nil {
+		t.Fatalf("创建 store 失败: %v", err)
+	}
+	defer store.Close()
+
+	// 创建测试渠道
+	cfg := &model.Config{
+		Name:           "test-anthropic",
+		ChannelType:    "anthropic",
+		URL:            "https://test.example.com",
+		Priority:       10,
+		Models:         []string{"claude-3-sonnet"},
+		ModelRedirects: map[string]string{"claude": "claude-3-sonnet"},
+		Enabled:        true,
+	}
+	_, err = store.CreateConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("创建渠道失败: %v", err)
+	}
+
+	cache := storage.NewChannelCache(store, 1*time.Minute)
+
+	// 第一次查询，填充缓存
+	channels1, err := cache.GetEnabledChannelsByType(ctx, "anthropic")
+	if err != nil {
+		t.Fatalf("GetEnabledChannelsByType 失败: %v", err)
+	}
+	if len(channels1) != 1 {
+		t.Fatalf("期望1个渠道，实际 %d 个", len(channels1))
+	}
+
+	// 污染尝试：修改返回的数据
+	channels1[0].Models = append(channels1[0].Models, "backdoor-model")
+	channels1[0].ModelRedirects["backdoor"] = "evil"
+
+	// 第二次查询，验证缓存未被污染
+	channels2, err := cache.GetEnabledChannelsByType(ctx, "anthropic")
+	if err != nil {
+		t.Fatalf("第二次 GetEnabledChannelsByType 失败: %v", err)
+	}
+	if len(channels2) != 1 {
+		t.Fatalf("期望1个渠道，实际 %d 个", len(channels2))
+	}
+
+	ch2 := channels2[0]
+
+	// 验证：未被污染
+	if len(ch2.Models) != 1 || ch2.Models[0] != "claude-3-sonnet" {
+		t.Errorf("Models 被污染: 期望 ['claude-3-sonnet'], 实际 %v", ch2.Models)
+	}
+	if len(ch2.ModelRedirects) != 1 {
+		t.Errorf("ModelRedirects 被污染: 期望长度 1, 实际 %d", len(ch2.ModelRedirects))
+	}
+	if _, polluted := ch2.ModelRedirects["backdoor"]; polluted {
+		t.Errorf("ModelRedirects 包含污染键: 'backdoor'")
+	}
+
+	t.Logf("✅ GetEnabledChannelsByType 深拷贝隔离性测试通过")
+}
+
+// TestCacheIsolation_MultipleQueries 验证多次查询的隔离性
+func TestCacheIsolation_MultipleQueries(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "isolation_multi.db")
+	store, err := storage.CreateSQLiteStore(dbPath, nil)
+	if err != nil {
+		t.Fatalf("创建 store 失败: %v", err)
+	}
+	defer store.Close()
+
+	// 创建测试渠道
+	cfg := &model.Config{
+		Name:           "multi-query-test",
+		URL:            "https://test.example.com",
+		Priority:       10,
+		Models:         []string{"model-1", "model-2"},
+		ModelRedirects: map[string]string{},
+		Enabled:        true,
+	}
+	_, err = store.CreateConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("创建渠道失败: %v", err)
+	}
+
+	cache := storage.NewChannelCache(store, 1*time.Minute)
+
+	// 并发查询和修改
+	for i := 0; i < 10; i++ {
+		channels, err := cache.GetEnabledChannelsByModel(ctx, "model-1")
+		if err != nil {
+			t.Fatalf("查询 %d 失败: %v", i, err)
+		}
+		if len(channels) != 1 {
+			t.Fatalf("查询 %d: 期望1个渠道，实际 %d 个", i, len(channels))
+		}
+
+		// 每次都尝试污染
+		channels[0].Models = append(channels[0].Models, "backdoor")
+		channels[0].ModelRedirects[string(rune('A'+i))] = "evil"
+	}
+
+	// 最终验证：缓存应该保持干净
+	channels, err := cache.GetEnabledChannelsByModel(ctx, "model-1")
+	if err != nil {
+		t.Fatalf("最终查询失败: %v", err)
+	}
+	if len(channels) != 1 {
+		t.Fatalf("期望1个渠道，实际 %d 个", len(channels))
+	}
+
+	ch := channels[0]
+	if len(ch.Models) != 2 {
+		t.Errorf("Models 长度被污染: 期望 2, 实际 %d", len(ch.Models))
+	}
+	if ch.Models[0] != "model-1" || ch.Models[1] != "model-2" {
+		t.Errorf("Models 内容被污染: %v", ch.Models)
+	}
+	if len(ch.ModelRedirects) != 0 {
+		t.Errorf("ModelRedirects 被污染: 期望空, 实际 %v", ch.ModelRedirects)
+	}
+
+	t.Logf("✅ 多次查询隔离性测试通过：10次污染尝试均被隔离")
+}
+
+// TestCacheIsolation_WildcardQuery 验证通配符查询的深拷贝
+func TestCacheIsolation_WildcardQuery(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "isolation_wildcard.db")
+	store, err := storage.CreateSQLiteStore(dbPath, nil)
+	if err != nil {
+		t.Fatalf("创建 store 失败: %v", err)
+	}
+	defer store.Close()
+
+	// 创建多个测试渠道
+	for i := 1; i <= 3; i++ {
+		cfg := &model.Config{
+			Name:           "wildcard-test-" + string(rune('A'+i-1)),
+			URL:            "https://test.example.com",
+			Priority:       i * 10,
+			Models:         []string{"model-common"},
+			ModelRedirects: map[string]string{},
+			Enabled:        true,
+		}
+		_, err := store.CreateConfig(ctx, cfg)
+		if err != nil {
+			t.Fatalf("创建渠道 %d 失败: %v", i, err)
+		}
+	}
+
+	cache := storage.NewChannelCache(store, 1*time.Minute)
+
+	// 通配符查询
+	channels1, err := cache.GetEnabledChannelsByModel(ctx, "*")
+	if err != nil {
+		t.Fatalf("通配符查询失败: %v", err)
+	}
+	if len(channels1) != 3 {
+		t.Fatalf("期望3个渠道，实际 %d 个", len(channels1))
+	}
+
+	// 污染所有返回的渠道
+	for i := range channels1 {
+		channels1[i].Models = append(channels1[i].Models, "POLLUTED")
+		channels1[i].Name = "POLLUTED"
+	}
+
+	// 第二次查询
+	channels2, err := cache.GetEnabledChannelsByModel(ctx, "*")
+	if err != nil {
+		t.Fatalf("第二次通配符查询失败: %v", err)
+	}
+	if len(channels2) != 3 {
+		t.Fatalf("期望3个渠道，实际 %d 个", len(channels2))
+	}
+
+	// 验证：所有渠道都未被污染
+	for i, ch := range channels2 {
+		if len(ch.Models) != 1 || ch.Models[0] != "model-common" {
+			t.Errorf("渠道 %d Models 被污染: %v", i, ch.Models)
+		}
+		if ch.Name == "POLLUTED" {
+			t.Errorf("渠道 %d Name 被污染", i)
+		}
+	}
+
+	t.Logf("✅ 通配符查询深拷贝隔离性测试通过")
+}

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/util"
 )
 
 // ==================== 共享数据结构 ====================
@@ -25,7 +26,9 @@ type ChannelRequest struct {
 }
 
 // Validate 实现RequestValidator接口
+// [FIX] P0-1: 添加白名单校验和标准化（Fail-Fast + 边界防御）
 func (cr *ChannelRequest) Validate() error {
+	// 必填字段校验（现有逻辑保留）
 	if strings.TrimSpace(cr.Name) == "" {
 		return fmt.Errorf("name cannot be empty")
 	}
@@ -35,6 +38,33 @@ func (cr *ChannelRequest) Validate() error {
 	if len(cr.Models) == 0 {
 		return fmt.Errorf("models cannot be empty")
 	}
+
+	// [FIX] channel_type 白名单校验 + 标准化
+	// 设计：空值允许（使用默认值anthropic），非空值必须合法
+	cr.ChannelType = strings.TrimSpace(cr.ChannelType)
+	if cr.ChannelType != "" {
+		// 先标准化（小写化）
+		normalized := util.NormalizeChannelType(cr.ChannelType)
+		// 再白名单校验
+		if !util.IsValidChannelType(normalized) {
+			return fmt.Errorf("invalid channel_type: %q (allowed: anthropic, openai, gemini, codex)", cr.ChannelType)
+		}
+		cr.ChannelType = normalized // 应用标准化结果
+	}
+
+	// [FIX] key_strategy 白名单校验 + 标准化
+	// 设计：空值允许（使用默认值sequential），非空值必须合法
+	cr.KeyStrategy = strings.TrimSpace(cr.KeyStrategy)
+	if cr.KeyStrategy != "" {
+		// 先标准化（小写化）
+		normalized := strings.ToLower(cr.KeyStrategy)
+		// 再白名单校验
+		if !model.IsValidKeyStrategy(normalized) {
+			return fmt.Errorf("invalid key_strategy: %q (allowed: sequential, round_robin)", cr.KeyStrategy)
+		}
+		cr.KeyStrategy = normalized // 应用标准化结果
+	}
+
 	return nil
 }
 

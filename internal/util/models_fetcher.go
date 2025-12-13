@@ -9,14 +9,14 @@ import (
 	"time"
 )
 
-// ModelsFetcher 模型列表获取器接口（Strategy Pattern - 策略模式）
+// ModelsFetcher 模型列表获取器接口
 // 不同渠道类型有不同的API实现
 type ModelsFetcher interface {
 	FetchModels(ctx context.Context, baseURL string, apiKey string) ([]string, error)
 }
 
-// ModelsFetcherFactory 工厂方法（Factory Pattern - 工厂模式）
-// 根据渠道类型创建对应的Fetcher
+// NewModelsFetcher 根据渠道类型创建对应的Fetcher
+// [FIX] P2-9: 删除口号式注释，代码已经够清晰
 func NewModelsFetcher(channelType string) ModelsFetcher {
 	switch NormalizeChannelType(channelType) {
 	case ChannelTypeAnthropic:
@@ -33,14 +33,24 @@ func NewModelsFetcher(channelType string) ModelsFetcher {
 }
 
 // ============================================================
-// 公共辅助函数 (DRY原则 - 避免重复HTTP请求逻辑)
+// 公共辅助函数 - 避免重复HTTP请求逻辑
 // ============================================================
+
+// 全局复用的 HTTP Client（连接池化，避免每次请求创建新客户端）
+// [FIX] P2-8: 使用全局 HTTP Client，复用连接池
+var defaultModelsFetcherClient = &http.Client{
+	Timeout: 30 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
 
 // doHTTPRequest 执行HTTP GET请求并返回响应体
 // 封装公共的HTTP请求、错误处理、超时控制逻辑
 func doHTTPRequest(req *http.Request) ([]byte, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := defaultModelsFetcherClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("请求失败: %w", err)
 	}

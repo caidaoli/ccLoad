@@ -11,7 +11,7 @@ import (
 )
 
 // ChannelCache 高性能渠道缓存层
-// 遵循KISS原则：内存查询比数据库查询快1000倍+
+// 内存查询比数据库查询快 1000 倍+
 type ChannelCache struct {
 	store           Store
 	channelsByModel map[string][]*modelpkg.Config // model → channels
@@ -84,8 +84,51 @@ func NewChannelCache(store Store, ttl time.Duration) *ChannelCache {
 	}
 }
 
+// deepCopyConfig 深拷贝 Config 对象（包括 slice/map）
+// [FIX] P0-2: 防止调用方修改污染缓存
+// 设计：拷贝所有可变字段（Models, ModelRedirects），其他字段为值类型或不可变类型
+func deepCopyConfig(src *modelpkg.Config) *modelpkg.Config {
+	if src == nil {
+		return nil
+	}
+
+	// 浅拷贝对象本身
+	dst := *src
+
+	// 深拷贝 Models slice
+	if src.Models != nil {
+		dst.Models = make([]string, len(src.Models))
+		copy(dst.Models, src.Models)
+	}
+
+	// 深拷贝 ModelRedirects map
+	if src.ModelRedirects != nil {
+		dst.ModelRedirects = make(map[string]string, len(src.ModelRedirects))
+		for k, v := range src.ModelRedirects {
+			dst.ModelRedirects[k] = v
+		}
+	}
+
+	return &dst
+}
+
+// deepCopyConfigs 批量深拷贝 Config 对象
+// [FIX] P0-2: 缓存边界隔离，避免共享指针污染
+func deepCopyConfigs(src []*modelpkg.Config) []*modelpkg.Config {
+	if src == nil {
+		return nil
+	}
+
+	result := make([]*modelpkg.Config, len(src))
+	for i, cfg := range src {
+		result[i] = deepCopyConfig(cfg)
+	}
+	return result
+}
+
 // GetEnabledChannelsByModel 缓存优先的模型查询
 // 性能：内存查询 < 2ms vs 数据库查询 50ms+
+// [FIX] P0-2: 返回深拷贝，防止调用方污染缓存
 func (c *ChannelCache) GetEnabledChannelsByModel(ctx context.Context, model string) ([]*modelpkg.Config, error) {
 	if err := c.refreshIfNeeded(ctx); err != nil {
 		c.channelCounters.addMiss()
@@ -99,24 +142,21 @@ func (c *ChannelCache) GetEnabledChannelsByModel(ctx context.Context, model stri
 	c.channelCounters.addHit()
 
 	if model == "*" {
-		// 返回所有渠道的副本
-		result := make([]*modelpkg.Config, len(c.allChannels))
-		copy(result, c.allChannels)
-		return result, nil
+		// 返回所有渠道的深拷贝（隔离可变字段：Models, ModelRedirects）
+		return deepCopyConfigs(c.allChannels), nil
 	}
 
-	// 返回指定模型的渠道副本
+	// 返回指定模型的渠道深拷贝
 	channels, exists := c.channelsByModel[model]
 	if !exists {
 		return []*modelpkg.Config{}, nil
 	}
 
-	result := make([]*modelpkg.Config, len(channels))
-	copy(result, channels)
-	return result, nil
+	return deepCopyConfigs(channels), nil
 }
 
 // GetEnabledChannelsByType 缓存优先的类型查询
+// [FIX] P0-2: 返回深拷贝，防止调用方污染缓存
 func (c *ChannelCache) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*modelpkg.Config, error) {
 	if err := c.refreshIfNeeded(ctx); err != nil {
 		c.channelTypeCounters.addMiss()
@@ -135,13 +175,12 @@ func (c *ChannelCache) GetEnabledChannelsByType(ctx context.Context, channelType
 		return []*modelpkg.Config{}, nil
 	}
 
-	result := make([]*modelpkg.Config, len(channels))
-	copy(result, channels)
-	return result, nil
+	// 返回深拷贝（隔离可变字段：Models, ModelRedirects）
+	return deepCopyConfigs(channels), nil
 }
 
 // GetConfig 获取指定ID的渠道配置
-// 直接查询数据库,保证数据永远是最新的(KISS原则)
+// 直接查询数据库，保证数据永远是最新的
 func (c *ChannelCache) GetConfig(ctx context.Context, channelID int64) (*modelpkg.Config, error) {
 	// 🔧 修复 (2025-11-16): 直接查询数据库,删除复杂的缓存逻辑
 	//

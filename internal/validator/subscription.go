@@ -21,7 +21,7 @@ import (
 //
 // 性能优化:
 // - 60秒TTL缓存,减少外部API调用
-// - 5秒超时控制,避免阻塞主流程
+// - 3秒超时控制,避免阻塞主流程 [FIX] P1-6: 收紧超时，防止外部API抖动变成尾延迟炸弹
 //
 // 容错策略:
 // - API调用失败时默认允许通过(防御性设计)
@@ -52,10 +52,11 @@ type usage88CodeResponse struct {
 
 // NewSubscriptionValidator 创建88code套餐验证器
 // enabled: 是否启用验证（启动时确定，修改后重启生效）
+// [FIX] P1-6: 收紧超时到 3 秒，防止外部API抖动阻塞请求
 func NewSubscriptionValidator(enabled bool) *SubscriptionValidator {
 	return &SubscriptionValidator{
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 3 * time.Second, // 收紧：防止外部API抖动
 			Transport: &http.Transport{
 				MaxIdleConns:        10,
 				MaxIdleConnsPerHost: 5,
@@ -65,7 +66,7 @@ func NewSubscriptionValidator(enabled bool) *SubscriptionValidator {
 		apiURL:     "https://www.88code.org/api/usage",
 		enabled:    enabled,
 		cacheTTL:   60 * time.Second,
-		apiTimeout: 30 * time.Second,
+		apiTimeout: 3 * time.Second, // 收紧：与 httpClient.Timeout 一致
 	}
 }
 

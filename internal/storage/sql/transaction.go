@@ -49,10 +49,21 @@ func (s *SQLStore) WithLogTransaction(ctx context.Context, fn func(*sql.Tx) erro
 // withTransaction 核心事务执行逻辑（私有函数，遵循DRY原则）
 // [INFO] KISS原则：简单的事务模板，自动处理提交/回滚
 // [INFO] 安全性：panic恢复 + defer回滚双重保障
+// [FIX] P1-5: 对齐注释和实现，说明实际重试次数
 func withTransaction(db *sql.DB, ctx context.Context, fn func(*sql.Tx) error) error {
 	// 增加死锁重试机制
 	// 问题: SQLite在高并发事务下可能返回"database is deadlocked"错误
-	// 解决: 自动重试带指数退避,最多重试5次
+	// 解决: 自动重试带指数退避，最多12次重试（attempt 0-11）
+	//
+	// 重试时间轴：
+	//   attempt 0:  25ms (初次失败后第一次重试)
+	//   attempt 1:  50ms
+	//   attempt 2: 100ms
+	//   attempt 3: 200ms
+	//   ...
+	//   attempt 11: 51.2s (最大单次等待)
+	//
+	// 注意：实际等待时间有 50%-99.5% 的随机抖动，避免惊群效应
 
 	const maxRetries = 12
 	const baseDelay = 25 * time.Millisecond
@@ -140,15 +151,23 @@ func isSQLiteBusyError(err error) bool {
 }
 
 // sleepWithBackoff 执行指数退避sleep
-// 公式: delay = baseDelay * 2^attempt + jitter
+// [FIX] P1-5: 修正注释，准确描述 jitter 范围
+//
+// 公式: delay = baseDelay * 2^attempt * jitter
+// jitter 范围: [0.5, 0.995] (即 50% 到 99.5%)
+//
+// 示例（baseDelay = 25ms）：
+//   attempt 0: 25ms * [0.5, 0.995] = 12.5ms ~ 24.9ms
+//   attempt 1: 50ms * [0.5, 0.995] = 25ms ~ 49.8ms
+//   attempt 2: 100ms * [0.5, 0.995] = 50ms ~ 99.5ms
 func sleepWithBackoff(attempt int, baseDelay time.Duration) {
-	// 计算延迟:10ms, 20ms, 40ms, 80ms, 160ms
+	// 计算基础延迟：指数增长
 	delay := baseDelay * time.Duration(1<<uint(attempt))
 
-	// 添加随机抖动(±25%),避免多个goroutine同时重试
-	// 使用纳秒时间戳的后两位作为随机因子(0-99)
+	// 添加随机抖动，避免多个 goroutine 同时重试（惊群效应）
+	// 使用纳秒时间戳的后两位作为随机因子 (0-99)
 	randomFactor := float64(time.Now().UnixNano()%100) / 100.0 // 0.00 到 0.99
-	jitter := time.Duration(float64(delay) * (0.5 + 0.5*randomFactor))
+	jitter := time.Duration(float64(delay) * (0.5 + 0.5*randomFactor)) // [50%, 99.5%]
 
 	time.Sleep(jitter)
 }

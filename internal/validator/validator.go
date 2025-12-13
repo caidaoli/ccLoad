@@ -12,6 +12,7 @@ package validator
 
 import (
 	"context"
+	"log"
 
 	"ccLoad/internal/model"
 )
@@ -123,8 +124,8 @@ func (m *Manager) ValidateChannel(ctx context.Context, cfg *model.Config, apiKey
 			// 2. 默认允许通过(避免单点故障影响整体服务)
 			// 这是一个权衡: 牺牲一定的验证准确性换取系统可用性
 			// 用户已确认选择"失败时允许通过"策略
-			// log.Printf会在后续实现中调用
-			// log.Printf("[WARN] Validator error for channel %s: %v (defaulting to available)", cfg.Name, err)
+			// [FIX] P1-6: 恢复日志，排障时需要知道验证器是否失败
+			log.Printf("[WARN] Validator error for channel %s: %v (defaulting to available)", cfg.Name, err)
 			continue // 降级:允许通过
 		}
 

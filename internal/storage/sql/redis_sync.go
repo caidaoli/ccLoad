@@ -184,7 +184,11 @@ func (s *SQLStore) syncAllChannelsToRedis(ctx context.Context) error {
 
 // redisSyncWorker 异步Redis同步worker（后台goroutine）
 // 支持细粒度同步：根据 pendingSyncTypes 选择性执行同步操作
+// [FIX] P0-3: 使用 defer wg.Done() 确保资源释放，即使 panic 也能保证
 func (s *SQLStore) redisSyncWorker() {
+	// 无条件释放 WaitGroup，避免 Close() 死锁
+	defer s.wg.Done()
+
 	// 使用可取消的context，支持优雅关闭
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -224,7 +228,7 @@ func (s *SQLStore) redisSyncWorker() {
 				_ = s.doSyncByType(shutdownCtx, syncAll) // 关闭时全量同步
 				shutdownCancel()
 			}
-			s.wg.Done()
+			// defer wg.Done() 会在 return 后自动执行，无需手动调用
 			return
 		}
 	}
@@ -417,6 +421,17 @@ func (s *SQLStore) CheckChannelsEmpty(ctx context.Context) (bool, error) {
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM channels`).Scan(&count)
 	if err != nil {
 		return false, fmt.Errorf("check channels count: %w", err)
+	}
+	return count == 0, nil
+}
+
+// CheckAuthTokensEmpty 检查auth_tokens表是否为空
+// [FIX] P1-4: 新增方法，支持独立检查 auth_tokens 恢复需求
+func (s *SQLStore) CheckAuthTokensEmpty(ctx context.Context) (bool, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM auth_tokens`).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("check auth_tokens count: %w", err)
 	}
 	return count == 0, nil
 }

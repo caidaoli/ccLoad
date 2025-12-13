@@ -53,14 +53,25 @@ func NewStore(redisSync RedisSync) (Store, error) {
 	// ============================================================================
 	// 统一的 Redis 恢复逻辑（迁移完成后执行）
 	// 顺序很重要：先恢复数据，再启动同步 worker，避免空数据覆盖 Redis 备份
+	// [FIX] P1-4: 分别检查 channels 和 auth_tokens，避免部分表丢失时恢复不完整
 	// ============================================================================
 	ctx := context.Background()
 	if redisSync != nil && redisSync.IsEnabled() {
-		isEmpty, checkErr := store.CheckChannelsEmpty(ctx)
+		// 检查 channels 表是否为空
+		channelsEmpty, checkErr := store.CheckChannelsEmpty(ctx)
 		if checkErr != nil {
-			log.Printf("检查数据库状态失败: %v", checkErr)
-		} else if isEmpty {
-			log.Printf("数据库为空，尝试从Redis恢复数据...")
+			log.Printf("检查 channels 表状态失败: %v", checkErr)
+		}
+
+		// 检查 auth_tokens 表是否为空
+		tokensEmpty, checkErr := store.CheckAuthTokensEmpty(ctx)
+		if checkErr != nil {
+			log.Printf("检查 auth_tokens 表状态失败: %v", checkErr)
+		}
+
+		// 任意一张表为空就触发恢复（防止部分表丢失）
+		if channelsEmpty || tokensEmpty {
+			log.Printf("数据库部分为空（channels=%v, tokens=%v），尝试从Redis恢复...", channelsEmpty, tokensEmpty)
 			if restoreErr := store.LoadChannelsFromRedis(ctx); restoreErr != nil {
 				log.Printf("从Redis恢复失败: %v", restoreErr)
 			}

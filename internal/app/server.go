@@ -37,8 +37,8 @@ type Server struct {
 	store            storage.Store
 	channelCache     *storage.ChannelCache // 高性能渠道缓存层
 	keySelector      *KeySelector          // Key选择器（多Key支持）
-	cooldownManager  *cooldown.Manager     // 统一冷却管理器（DRY原则）
-	validatorManager *validator.Manager    // 渠道验证器管理器（SRP+OCP原则）
+	cooldownManager  *cooldown.Manager     // 统一冷却管理器
+	validatorManager *validator.Manager    // 渠道验证器管理器
 	client           *http.Client          // HTTP客户端
 
 	// 异步统计（有界队列，避免每请求起goroutine）
@@ -336,7 +336,7 @@ func (s *Server) invalidateCooldownCache() {
 	}
 }
 
-// invalidateChannelRelatedCache 统一失效渠道相关的所有缓存（DRY原则）
+// invalidateChannelRelatedCache 统一失效渠道相关的所有缓存
 // 在渠道CRUD、冷却状态变更后调用
 func (s *Server) invalidateChannelRelatedCache(channelID int64) {
 	s.InvalidateChannelListCache()
