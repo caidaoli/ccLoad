@@ -123,27 +123,32 @@ function setupFilterListeners() {
     if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
     filterChannels();
   });
-  
-  document.getElementById('resetFiltersBtn').addEventListener('click', () => {
-    filters = {
-      search: '',
-      id: '',
-      channelType: 'all',
-      status: 'all',
-      model: 'all'
-    };
 
-    searchInput.value = '';
-    document.getElementById('idFilter').value = '';
-    const channelTypeFilter = document.getElementById('channelTypeFilter');
-    if (channelTypeFilter) {
-      channelTypeFilter.value = 'all';
-    }
-    document.getElementById('statusFilter').value = 'all';
-    document.getElementById('modelFilter').value = 'all';
+  // 筛选按钮：手动触发筛选
+  document.getElementById('btn_filter').addEventListener('click', () => {
+    // 收集当前输入框的值
+    filters.search = document.getElementById('searchInput').value;
+    filters.id = document.getElementById('idFilter').value;
 
+    // 保存筛选条件
+    if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
+
+    // 执行筛选
     filterChannels();
-    updateClearButton();
-    searchInput.focus();
+  });
+
+  // 回车键触发筛选
+  ['searchInput', 'idFilter'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener('keydown', e => {
+        if (e.key === 'Enter') {
+          filters.search = document.getElementById('searchInput').value;
+          filters.id = document.getElementById('idFilter').value;
+          if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
+          filterChannels();
+        }
+      });
+    }
   });
 }

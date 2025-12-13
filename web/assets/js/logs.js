@@ -6,6 +6,19 @@
     let authTokens = []; // 令牌列表
     let defaultTestContent = 'sonnet 4.0的发布日期是什么'; // 默认测试内容（从设置加载）
 
+    // 防抖函数
+    function debounce(func, wait) {
+      let timeout;
+      return function executedFunction(...args) {
+        const later = () => {
+          clearTimeout(timeout);
+          func(...args);
+        };
+        clearTimeout(timeout);
+        timeout = setTimeout(later, wait);
+      };
+    }
+
     // 加载默认测试内容（从系统设置）
     async function loadDefaultTestContent() {
       try {
@@ -407,6 +420,15 @@
 
       // 事件监听
       document.getElementById('btn_filter').addEventListener('click', applyFilter);
+
+      // 输入框自动筛选（防抖）
+      const debouncedFilter = debounce(applyFilter, 500);
+      ['f_id', 'f_name', 'f_model', 'f_status'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+          el.addEventListener('input', debouncedFilter);
+        }
+      });
 
       // 回车键筛选
       ['f_hours', 'f_id', 'f_name', 'f_model', 'f_status', 'f_auth_token', 'f_channel_type'].forEach(id => {

@@ -1,6 +1,19 @@
     // 常量定义
     const STATS_TABLE_COLUMNS = 11; // 统计表列数（删除了总次数列）
 
+    // 防抖函数
+    function debounce(func, wait) {
+      let timeout;
+      return function executedFunction(...args) {
+        const later = () => {
+          clearTimeout(timeout);
+          func(...args);
+        };
+        clearTimeout(timeout);
+        timeout = setTimeout(later, wait);
+      };
+    }
+
     let statsData = null;
     let currentChannelType = 'all'; // 当前选中的渠道类型
     let authTokens = []; // 令牌列表
@@ -360,6 +373,15 @@
 
       // 事件监听
       document.getElementById('btn_filter').addEventListener('click', applyFilter);
+
+      // 输入框自动筛选（防抖）
+      const debouncedFilter = debounce(applyFilter, 500);
+      ['f_id', 'f_name', 'f_model'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+          el.addEventListener('input', debouncedFilter);
+        }
+      });
 
       // 回车键筛选
       ['f_hours', 'f_id', 'f_name', 'f_model', 'f_auth_token'].forEach(id => {

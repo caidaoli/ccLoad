@@ -5,11 +5,26 @@
     window.currentChannelType = 'all'; // 当前选中的渠道类型
     window.currentModel = ''; // 当前选中的模型（空字符串表示全部模型）
     window.currentAuthToken = ''; // 当前选中的令牌（空字符串表示全部令牌）
+    window.currentChannelId = ''; // 当前选中的渠道ID
+    window.currentChannelName = ''; // 当前选中的渠道名称
     window.chartInstance = null;
     window.channels = [];
     window.visibleChannels = new Set(); // 可见渠道集合
     window.availableModels = []; // 可用模型列表
     window.authTokens = []; // 令牌列表
+
+    // 防抖函数
+    function debounce(func, wait) {
+      let timeout;
+      return function executedFunction(...args) {
+        const later = () => {
+          clearTimeout(timeout);
+          func(...args);
+        };
+        clearTimeout(timeout);
+        timeout = setTimeout(later, wait);
+      };
+    }
 
     // 加载可用模型列表
     async function loadModels() {
@@ -96,6 +111,16 @@
           window.currentAuthToken = tokenSelect.value || '';
         }
 
+        // 读取渠道ID和渠道名筛选
+        const idInput = document.getElementById('f_id');
+        if (idInput) {
+          window.currentChannelId = idInput.value.trim() || '';
+        }
+        const nameInput = document.getElementById('f_name');
+        if (nameInput) {
+          window.currentChannelName = nameInput.value.trim() || '';
+        }
+
         const hours = window.getRangeHours ? getRangeHours(currentRange) : 24;
         window.currentHours = hours; // 同步到全局变量，供 renderChart 使用
         const bucketMin = computeBucketMin(hours);
@@ -117,8 +142,12 @@
         // 添加令牌筛选参数
         const tokenParam = window.currentAuthToken ? `&auth_token_id=${encodeURIComponent(window.currentAuthToken)}` : '';
 
+        // 添加渠道ID和渠道名筛选参数
+        const channelIdParam = window.currentChannelId ? `&channel_id=${encodeURIComponent(window.currentChannelId)}` : '';
+        const channelNameParam = window.currentChannelName ? `&channel_name_like=${encodeURIComponent(window.currentChannelName)}` : '';
+
         const [metricsRes, channelsRes] = await Promise.all([
-          fetchWithAuth(metricsUrl + channelTypeParam + modelParam + tokenParam),
+          fetchWithAuth(metricsUrl + channelTypeParam + modelParam + tokenParam + channelIdParam + channelNameParam),
           fetchWithAuth(channelsUrl + (channelTypeParamForList ? '?' + channelTypeParamForList.slice(1) : ''))
         ]);
         
@@ -1109,13 +1138,32 @@
         });
       }
 
-      // 刷新按钮
+      // 筛选按钮
       const btnFilter = document.getElementById('btn_filter');
       if (btnFilter) {
         btnFilter.addEventListener('click', () => {
           loadData();
         });
       }
+
+      // 输入框自动筛选（防抖）
+      const debouncedFilter = debounce(loadData, 500);
+      ['f_id', 'f_name'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+          el.addEventListener('input', debouncedFilter);
+        }
+      });
+
+      // 回车键筛选
+      ['f_id', 'f_name'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+          el.addEventListener('keydown', e => {
+            if (e.key === 'Enter') loadData();
+          });
+        }
+      });
     }
 
     function persistState() {
