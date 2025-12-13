@@ -5,6 +5,7 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 	"context"
+	"errors"
 	"log"
 	"time"
 )
@@ -87,12 +88,13 @@ func (s *Server) handleNetworkError(
 	action, _ := s.handleProxyError(ctx, cfg, keyIndex, nil, err)
 	if action == cooldown.ActionReturnClient {
 		return &proxyResult{
-			status:    statusCode,
-			body:      []byte(err.Error()),
-			channelID: &cfg.ID,
-			message:   truncateErr(err.Error()),
-			duration:  duration,
-			succeeded: false,
+			status:           statusCode,
+			body:             []byte(err.Error()),
+			channelID:        &cfg.ID,
+			message:          truncateErr(err.Error()),
+			duration:         duration,
+			succeeded:        false,
+			isClientCanceled: errors.Is(err, context.Canceled),
 		}, false, false
 	}
 

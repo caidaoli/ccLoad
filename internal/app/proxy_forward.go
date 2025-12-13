@@ -456,9 +456,7 @@ func (s *Server) forwardAttempt(
 			// 使用内部状态码 StatusStreamIncomplete 标识流响应不完整
 			// 这将触发渠道级冷却，因为这通常是上游服务问题（网络不稳定、负载过高等）
 			res.Body = []byte(res.StreamDiagMsg)
-			originalStatus := res.Status
-			res.Status = util.StatusStreamIncomplete       // 599 - 流响应不完整
-			defer func() { res.Status = originalStatus }() // 恢复原始状态码（日志已记录）
+			res.Status = util.StatusStreamIncomplete // 599 - 流响应不完整
 			return s.handleProxyErrorResponse(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
 		}
 

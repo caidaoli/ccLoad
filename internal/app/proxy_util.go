@@ -73,13 +73,14 @@ type proxyRequestContext struct {
 
 // proxyResult 代理请求结果
 type proxyResult struct {
-	status    int
-	header    http.Header
-	body      []byte
-	channelID *int64
-	message   string
-	duration  float64
-	succeeded bool
+	status           int
+	header           http.Header
+	body             []byte
+	channelID        *int64
+	message          string
+	duration         float64
+	succeeded        bool
+	isClientCanceled bool // 客户端主动取消请求（context.Canceled）
 }
 
 // ErrorAction 已迁移到 cooldown.Action (internal/cooldown/manager.go)

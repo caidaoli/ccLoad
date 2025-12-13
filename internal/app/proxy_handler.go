@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -252,9 +251,9 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	if finalStatus < 500 {
 		if finalStatus == 499 {
 			// 499错误有两种来源：
-			// 1. context.Canceled（客户端主动取消）→ lastResult.message包含"cancel"
-			// 2. 上游API返回HTTP 499（罕见）→ lastResult.message不包含"cancel"
-			if lastResult != nil && lastResult.message != "" && strings.Contains(strings.ToLower(lastResult.message), "cancel") {
+			// 1. context.Canceled（客户端主动取消）→ isClientCanceled=true
+			// 2. 上游API返回HTTP 499（罕见）→ isClientCanceled=false
+			if lastResult != nil && lastResult.isClientCanceled {
 				msg = "client closed request (context canceled)"
 			} else {
 				msg = "upstream status 499 (client closed request)"
