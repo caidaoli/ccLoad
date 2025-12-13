@@ -171,20 +171,33 @@ func connectionHeaderTokens(h http.Header) map[string]struct{} {
 	return tokens
 }
 
+// shouldSkipHopByHopHeader 检查头是否为 hop-by-hop 头（RFC 7230）
+// 包括静态 hop-by-hop 头和 Connection 头中声明的动态字段
+func shouldSkipHopByHopHeader(headerName string, connTokens map[string]struct{}) bool {
+	lk := strings.ToLower(headerName)
+
+	// 检查静态 hop-by-hop 头
+	if _, ok := hopByHopHeaders[lk]; ok {
+		return true
+	}
+
+	// 检查 Connection 头中声明的动态 hop-by-hop 字段
+	if connTokens != nil {
+		if _, ok := connTokens[lk]; ok {
+			return true
+		}
+	}
+
+	return false
+}
+
 // copyRequestHeaders 复制请求头，跳过认证相关（DRY）
 func copyRequestHeaders(dst *http.Request, src http.Header) {
 	connTokens := connectionHeaderTokens(src)
 	for k, vs := range src {
-		lk := strings.ToLower(k)
-
 		// 剥离 hop-by-hop headers（以及 Connection 显式声明的 hop-by-hop 字段）
-		if _, ok := hopByHopHeaders[lk]; ok {
+		if shouldSkipHopByHopHeader(k, connTokens) {
 			continue
-		}
-		if connTokens != nil {
-			if _, ok := connTokens[lk]; ok {
-				continue
-			}
 		}
 
 		// 不透传认证头（由上游注入）
@@ -242,16 +255,9 @@ func filterAndWriteResponseHeaders(w http.ResponseWriter, hdr http.Header) {
 
 	connTokens := connectionHeaderTokens(hdr)
 	for k, vs := range hdr {
-		lk := strings.ToLower(k)
-
 		// hop-by-hop headers 一律不透传（以及 Connection 显式声明的 hop-by-hop 字段）
-		if _, ok := hopByHopHeaders[lk]; ok {
+		if shouldSkipHopByHopHeader(k, connTokens) {
 			continue
-		}
-		if connTokens != nil {
-			if _, ok := connTokens[lk]; ok {
-				continue
-			}
 		}
 
 		// message framing 相关头不应手工透传
