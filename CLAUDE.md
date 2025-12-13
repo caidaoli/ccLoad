@@ -34,7 +34,10 @@ internal/
 │   ├── proxy_*.go     # 代理模块(按职责SRP拆分)
 │   └── admin_*.go     # 管理API(按功能SRP拆分)
 ├── cooldown/          # 冷却决策引擎(manager.go统一入口)
-├── storage/sqlite/    # 数据持久层(冷却数据内联,migrate.go)
+├── storage/
+│   ├── sql/           # 数据持久层(SQLite/MySQL统一实现)
+│   ├── schema/        # 表结构定义
+│   └── migrate.go     # 启动时自动迁移
 ├── validator/         # 渠道验证器(subscription.go)
 └── util/
     ├── classifier.go  # HTTP错误分类器
