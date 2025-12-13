@@ -600,12 +600,12 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 
 **模块化架构** :
 - **proxy模块拆分**（SRP原则）：
-  - `proxy_handler.go` (236行)：HTTP入口、并发控制、路由选择
-  - `proxy_forward.go` (299行)：核心转发逻辑、请求构建、响应处理
-  - `proxy_error.go` (170行)：错误处理、冷却决策、重试逻辑
-  - `proxy_util.go` (484行)：常量、类型定义、工具函数
-  - `proxy_stream.go` (77行)：流式响应、首字节检测
-  - `proxy_gemini.go` (42行)：Gemini API特殊处理
+  - `proxy_handler.go`：HTTP入口、并发控制、路由选择
+  - `proxy_forward.go`：核心转发逻辑、请求构建、响应处理
+  - `proxy_error.go`：错误处理、冷却决策、重试逻辑
+  - `proxy_util.go`：常量、类型定义、工具函数
+  - `proxy_stream.go`：流式响应、首字节检测
+  - `proxy_gemini.go`：Gemini API特殊处理
   - `proxy_sse_parser.go`：SSE解析器（防御性处理，修复1308错误冷却逻辑）
 - **admin模块拆分**（SRP原则）：
   - `admin_channels.go`：渠道CRUD操作
@@ -618,8 +618,8 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
   - `admin_models.go`：模型列表管理
   - `admin_testing.go`：渠道测试功能
 - **冷却管理器**（DRY原则）：
-  - `cooldown/manager.go` (122行)：统一冷却决策引擎
-  - 消除重复代码83%，冷却逻辑统一管理
+  - `cooldown/manager.go`：统一冷却决策引擎
+  - 消除重复代码，冷却逻辑统一管理
   - 区分网络错误和HTTP错误的分类策略
   - 内置单Key渠道自动升级逻辑
 - **存储层重构**（2025-12优化，消除467行重复代码）：
