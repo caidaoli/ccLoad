@@ -124,11 +124,13 @@ func (s *AuthService) lastUsedWorker() {
 		case <-s.done:
 			return
 		case tokenHash := <-s.lastUsedCh:
-			// [FIX] P0-4: 使用 defer cancel() 防止 context 泄漏
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
+			// [FIX] P0-4: WithTimeout 的 cancel 必须在每次循环内执行，不能在循环里 defer 到 goroutine 退出。
+			func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
 
-			_ = s.store.UpdateTokenLastUsed(ctx, tokenHash, time.Now())
+				_ = s.store.UpdateTokenLastUsed(ctx, tokenHash, time.Now())
+			}()
 		}
 	}
 }
@@ -399,7 +401,7 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 	// 返回明文Token给客户端（前端存储到localStorage）
 	c.JSON(http.StatusOK, gin.H{
 		"status":    "success",
-		"token":     token, // 明文token返回给客户端
+		"token":     token,                             // 明文token返回给客户端
 		"expiresIn": int(config.TokenExpiry.Seconds()), // 秒数
 	})
 }

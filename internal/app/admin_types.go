@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	neturl "net/url"
 	"strings"
 	"time"
 
@@ -25,6 +26,38 @@ type ChannelRequest struct {
 	Enabled        bool              `json:"enabled"`
 }
 
+func validateChannelBaseURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("url cannot be empty")
+	}
+
+	u, err := neturl.Parse(raw)
+	if err != nil || u == nil || u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("invalid url: %q", raw)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("invalid url scheme: %q (allowed: http, https)", u.Scheme)
+	}
+	if u.User != nil {
+		return "", fmt.Errorf("url must not contain user info")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("url must not contain query or fragment")
+	}
+
+	// [FIX] 只禁止包含 /v1 的 path（防止误填 API endpoint 如 /v1/messages）
+	// 允许其他 path（如 /api, /openai 等用于反向代理或 API gateway）
+	if strings.Contains(u.Path, "/v1") {
+		return "", fmt.Errorf("url should not contain API endpoint path like /v1 (current path: %q)", u.Path)
+	}
+
+	// 强制返回标准化格式（scheme://host+path，移除 trailing slash）
+	// 例如: "https://example.com/api/" → "https://example.com/api"
+	normalizedPath := strings.TrimSuffix(u.Path, "/")
+	return u.Scheme + "://" + u.Host + normalizedPath, nil
+}
+
 // Validate 实现RequestValidator接口
 // [FIX] P0-1: 添加白名单校验和标准化（Fail-Fast + 边界防御）
 func (cr *ChannelRequest) Validate() error {
@@ -38,6 +71,17 @@ func (cr *ChannelRequest) Validate() error {
 	if len(cr.Models) == 0 {
 		return fmt.Errorf("models cannot be empty")
 	}
+
+	// URL 验证规则（Fail-Fast 边界防御）：
+	// - 必须包含 scheme+host（http/https）
+	// - 禁止 userinfo、query、fragment
+	// - 禁止包含 /v1 的 path（防止误填 endpoint 如 /v1/messages）
+	// - 允许其他 path（如 /api, /openai 等用于反向代理或 API gateway）
+	normalizedURL, err := validateChannelBaseURL(cr.URL)
+	if err != nil {
+		return err
+	}
+	cr.URL = normalizedURL
 
 	// [FIX] channel_type 白名单校验 + 标准化
 	// 设计：空值允许（使用默认值anthropic），非空值必须合法

@@ -140,11 +140,57 @@ func buildUpstreamRequest(ctx context.Context, method, upstreamURL string, body 
 	return http.NewRequestWithContext(ctx, method, u.String(), bodyReader)
 }
 
+// hop-by-hop headers 不应被代理透传（RFC 7230）
+// 注意：Connection 头中声明的字段也必须视为 hop-by-hop，一并剥离。
+var hopByHopHeaders = map[string]struct{}{
+	"connection":          {},
+	"proxy-connection":    {}, // 非标准但常见
+	"keep-alive":          {},
+	"proxy-authenticate":  {},
+	"proxy-authorization": {},
+	"te":                  {},
+	"trailer":             {},
+	"transfer-encoding":   {},
+	"upgrade":             {},
+}
+
+func connectionHeaderTokens(h http.Header) map[string]struct{} {
+	var tokens map[string]struct{}
+	for _, v := range h.Values("Connection") {
+		for _, t := range strings.Split(v, ",") {
+			t = strings.ToLower(strings.TrimSpace(t))
+			if t == "" {
+				continue
+			}
+			if tokens == nil {
+				tokens = make(map[string]struct{})
+			}
+			tokens[t] = struct{}{}
+		}
+	}
+	return tokens
+}
+
 // copyRequestHeaders 复制请求头，跳过认证相关（DRY）
 func copyRequestHeaders(dst *http.Request, src http.Header) {
+	connTokens := connectionHeaderTokens(src)
 	for k, vs := range src {
+		lk := strings.ToLower(k)
+
+		// 剥离 hop-by-hop headers（以及 Connection 显式声明的 hop-by-hop 字段）
+		if _, ok := hopByHopHeaders[lk]; ok {
+			continue
+		}
+		if connTokens != nil {
+			if _, ok := connTokens[lk]; ok {
+				continue
+			}
+		}
+
 		// 不透传认证头（由上游注入）
-		if strings.EqualFold(k, "Authorization") || strings.EqualFold(k, "X-Api-Key") {
+		if strings.EqualFold(k, "Authorization") ||
+			strings.EqualFold(k, "X-Api-Key") ||
+			strings.EqualFold(k, "x-goog-api-key") {
 			continue
 		}
 		// 不透传 Accept-Encoding，避免上游返回 br/gzip 压缩导致错误体乱码
@@ -194,10 +240,22 @@ func filterAndWriteResponseHeaders(w http.ResponseWriter, hdr http.Header) {
 	// 若存在非 gzip 编码，必须透传让客户端处理
 	skipContentEncoding := contentEncoding == "" || strings.EqualFold(contentEncoding, "gzip")
 
+	connTokens := connectionHeaderTokens(hdr)
 	for k, vs := range hdr {
-		if strings.EqualFold(k, "Connection") ||
-			strings.EqualFold(k, "Content-Length") ||
-			strings.EqualFold(k, "Transfer-Encoding") {
+		lk := strings.ToLower(k)
+
+		// hop-by-hop headers 一律不透传（以及 Connection 显式声明的 hop-by-hop 字段）
+		if _, ok := hopByHopHeaders[lk]; ok {
+			continue
+		}
+		if connTokens != nil {
+			if _, ok := connTokens[lk]; ok {
+				continue
+			}
+		}
+
+		// message framing 相关头不应手工透传
+		if strings.EqualFold(k, "Content-Length") {
 			continue
 		}
 		if strings.EqualFold(k, "Content-Encoding") && skipContentEncoding {

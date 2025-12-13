@@ -589,10 +589,11 @@ func TestHandleGetChannelKeys(t *testing.T) {
 // TestChannelRequestValidate 测试ChannelRequest验证
 func TestChannelRequestValidate(t *testing.T) {
 	tests := []struct {
-		name      string
-		req       ChannelRequest
-		wantError bool
-		errorMsg  string
+		name            string
+		req             ChannelRequest
+		wantError       bool
+		errorMsg        string
+		expectNormalize string // URL 标准化后的期望值
 	}{
 		{
 			name: "有效请求",
@@ -604,6 +605,162 @@ func TestChannelRequestValidate(t *testing.T) {
 				Models:   []string{"model-1"},
 			},
 			wantError: false,
+		},
+		{
+			name: "URL为空",
+			req: ChannelRequest{
+				Name:     "Test",
+				APIKey:   "sk-test",
+				URL:      "  ",
+				Priority: 100,
+				Models:   []string{"model-1"},
+			},
+			wantError: true,
+			errorMsg:  "url cannot be empty",
+		},
+		{
+			name: "URL缺少scheme",
+			req: ChannelRequest{
+				Name:     "Test",
+				APIKey:   "sk-test",
+				URL:      "api.com",
+				Priority: 100,
+				Models:   []string{"model-1"},
+			},
+			wantError: true,
+			errorMsg:  "invalid url: \"api.com\"",
+		},
+		{
+			name: "URL scheme非法",
+			req: ChannelRequest{
+				Name:     "Test",
+				APIKey:   "sk-test",
+				URL:      "ftp://api.com",
+				Priority: 100,
+				Models:   []string{"model-1"},
+			},
+			wantError: true,
+			errorMsg:  "invalid url scheme: \"ftp\" (allowed: http, https)",
+		},
+		{
+			name: "URL包含userinfo",
+			req: ChannelRequest{
+				Name:     "Test",
+				APIKey:   "sk-test",
+				URL:      "https://user:pass@api.com",
+				Priority: 100,
+				Models:   []string{"model-1"},
+			},
+			wantError: true,
+			errorMsg:  "url must not contain user info",
+		},
+		{
+			name: "URL包含query",
+			req: ChannelRequest{
+				Name:     "Test",
+				APIKey:   "sk-test",
+				URL:      "https://api.com?x=1",
+				Priority: 100,
+				Models:   []string{"model-1"},
+			},
+			wantError: true,
+			errorMsg:  "url must not contain query or fragment",
+		},
+		{
+			name: "URL包含fragment",
+			req: ChannelRequest{
+				Name:     "Test",
+				APIKey:   "sk-test",
+				URL:      "https://api.com#x",
+				Priority: 100,
+				Models:   []string{"model-1"},
+			},
+			wantError: true,
+			errorMsg:  "url must not contain query or fragment",
+		},
+		{
+			name: "URL包含/v1路径（禁止）",
+			req: ChannelRequest{
+				Name:     "Test",
+				APIKey:   "sk-test",
+				URL:      "https://api.com/v1",
+				Priority: 100,
+				Models:   []string{"model-1"},
+			},
+			wantError: true,
+			errorMsg:  "url should not contain API endpoint path like /v1 (current path: \"/v1\")",
+		},
+		{
+			name: "URL包含/v1/messages路径（禁止）",
+			req: ChannelRequest{
+				Name:     "Test",
+				APIKey:   "sk-test",
+				URL:      "https://api.com/v1/messages",
+				Priority: 100,
+				Models:   []string{"model-1"},
+			},
+			wantError: true,
+			errorMsg:  "url should not contain API endpoint path like /v1 (current path: \"/v1/messages\")",
+		},
+		{
+			name: "URL包含/api路径（允许）",
+			req: ChannelRequest{
+				Name:     "Test",
+				APIKey:   "sk-test",
+				URL:      "https://example.com/api",
+				Priority: 100,
+				Models:   []string{"model-1"},
+			},
+			wantError:       false,
+			expectNormalize: "https://example.com/api",
+		},
+		{
+			name: "URL包含/openai路径（允许）",
+			req: ChannelRequest{
+				Name:     "Test",
+				APIKey:   "sk-test",
+				URL:      "https://example.com/openai/",
+				Priority: 100,
+				Models:   []string{"model-1"},
+			},
+			wantError:       false,
+			expectNormalize: "https://example.com/openai",
+		},
+		{
+			name: "URL标准化：去掉trailing slash",
+			req: ChannelRequest{
+				Name:     "Test",
+				APIKey:   "sk-test",
+				URL:      "https://api.com/",
+				Priority: 100,
+				Models:   []string{"model-1"},
+			},
+			wantError:       false,
+			expectNormalize: "https://api.com",
+		},
+		{
+			name: "URL标准化：保留端口号",
+			req: ChannelRequest{
+				Name:     "Test",
+				APIKey:   "sk-test",
+				URL:      "https://api.com:8080/",
+				Priority: 100,
+				Models:   []string{"model-1"},
+			},
+			wantError:       false,
+			expectNormalize: "https://api.com:8080",
+		},
+		{
+			name: "URL标准化：HTTP协议也支持",
+			req: ChannelRequest{
+				Name:     "Test",
+				APIKey:   "sk-test",
+				URL:      "http://localhost:8080/",
+				Priority: 100,
+				Models:   []string{"model-1"},
+			},
+			wantError:       false,
+			expectNormalize: "http://localhost:8080",
 		},
 		{
 			name: "缺少name",
@@ -660,6 +817,10 @@ func TestChannelRequestValidate(t *testing.T) {
 					t.Errorf("期望成功，但返回错误: %v", err)
 				} else {
 					t.Logf("[INFO] 验证成功")
+					// 验证 URL 标准化
+					if tt.expectNormalize != "" && tt.req.URL != tt.expectNormalize {
+						t.Errorf("URL标准化失败：期望 %q，实际 %q", tt.expectNormalize, tt.req.URL)
+					}
 				}
 			}
 		})

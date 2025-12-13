@@ -190,6 +190,14 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			continue
 		}
 
+		normalizedURL, err := validateChannelBaseURL(url)
+		if err != nil {
+			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行URL无效: %v", lineNo, err))
+			summary.Skipped++
+			continue
+		}
+		url = normalizedURL
+
 		// 渠道类型规范化与校验(openai → codex,空值 → anthropic)
 		channelType = util.NormalizeChannelType(channelType)
 		if !util.IsValidChannelType(channelType) {
