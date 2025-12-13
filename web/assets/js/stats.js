@@ -1,5 +1,5 @@
     // 常量定义
-    const STATS_TABLE_COLUMNS = 12; // 统计表列数（增加了5列：输入Token、输出Token、缓存读取、缓存创建、成本）
+    const STATS_TABLE_COLUMNS = 11; // 统计表列数（删除了总次数列）
 
     let statsData = null;
     let currentChannelType = 'all'; // 当前选中的渠道类型
@@ -151,17 +151,14 @@
             valueA = a.error || 0;
             valueB = b.error || 0;
             break;
-          case 'total':
-            valueA = a.total || 0;
-            valueB = b.total || 0;
-            break;
           case 'success_rate':
             valueA = a.total > 0 ? (a.success / a.total) : 0;
             valueB = b.total > 0 ? (b.success / b.total) : 0;
             break;
           case 'avg_first_byte_time':
-            valueA = a.avg_first_byte_time_seconds || 0;
-            valueB = b.avg_first_byte_time_seconds || 0;
+            // 优先按平均耗时排序，其次按平均首字时间
+            valueA = a.avg_duration_seconds || a.avg_first_byte_time_seconds || 0;
+            valueB = b.avg_duration_seconds || b.avg_first_byte_time_seconds || 0;
             break;
           case 'total_input_tokens':
             valueA = a.total_input_tokens || 0;
@@ -224,35 +221,45 @@
 
       for (const entry of statsData.stats) {
         const successRate = entry.total > 0 ? ((entry.success / entry.total) * 100) : 0;
-        const successRateText = successRate.toFixed(1) + '%';
+        const successRateText = successRate > 0 ? successRate.toFixed(1) + '%' : '';
 
         // 根据成功率设置颜色类
         let successRateClass = 'success-rate';
         if (successRate >= 95) successRateClass += ' high';
-        else if (successRate < 80) successRateClass += ' low';
+        else if (successRate > 0 && successRate < 80) successRateClass += ' low';
 
         const modelDisplay = entry.model ?
           `<span class="model-tag">${escapeHtml(entry.model)}</span>` :
           '<span style="color: var(--neutral-500);">未知模型</span>';
 
-        // 格式化平均首字响应时间
+        // 格式化平均首字响应时间/平均耗时
         const avgFirstByteTime = entry.avg_first_byte_time_seconds || 0;
-        const avgFirstByteTimeText = avgFirstByteTime > 0 ?
-          `${avgFirstByteTime.toFixed(2)}秒` :
-          '<span style="color: var(--neutral-400);">--</span>';
+        const avgDuration = entry.avg_duration_seconds || 0;
+        let avgTimeText = '';
+
+        if (avgFirstByteTime > 0 && avgDuration > 0) {
+          // 流式请求：显示首字/耗时
+          const durationColor = getDurationColor(avgDuration);
+          avgTimeText = `<span style="color: ${durationColor};">${avgFirstByteTime.toFixed(2)}/${avgDuration.toFixed(2)}</span>`;
+        } else if (avgDuration > 0) {
+          // 非流式请求：只显示耗时
+          const durationColor = getDurationColor(avgDuration);
+          avgTimeText = `<span style="color: ${durationColor};">${avgDuration.toFixed(2)}</span>`;
+        } else if (avgFirstByteTime > 0) {
+          // 仅有首字时间（理论上不应出现）
+          const durationColor = getDurationColor(avgFirstByteTime);
+          avgTimeText = `<span style="color: ${durationColor};">${avgFirstByteTime.toFixed(2)}</span>`;
+        }
 
         // 格式化Token数据
-        const inputTokensText = entry.total_input_tokens ? formatNumber(entry.total_input_tokens) : '<span style="color: var(--neutral-400);">--</span>';
-        const outputTokensText = entry.total_output_tokens ? formatNumber(entry.total_output_tokens) : '<span style="color: var(--neutral-400);">--</span>';
+        const inputTokensText = entry.total_input_tokens ? formatNumber(entry.total_input_tokens) : '';
+        const outputTokensText = entry.total_output_tokens ? formatNumber(entry.total_output_tokens) : '';
         const cacheReadTokensText = entry.total_cache_read_input_tokens ?
-          `<span style="color: var(--success-600);">${formatNumber(entry.total_cache_read_input_tokens)}</span>` :
-          '<span style="color: var(--neutral-400);">--</span>';
+          `<span style="color: var(--success-600);">${formatNumber(entry.total_cache_read_input_tokens)}</span>` : '';
         const cacheCreationTokensText = entry.total_cache_creation_input_tokens ?
-          `<span style="color: var(--primary-600);">${formatNumber(entry.total_cache_creation_input_tokens)}</span>` :
-          '<span style="color: var(--neutral-400);">--</span>';
+          `<span style="color: var(--primary-600);">${formatNumber(entry.total_cache_creation_input_tokens)}</span>` : '';
         const costText = entry.total_cost ?
-          `<span style="color: var(--warning-600); font-weight: 500;">${formatCost(entry.total_cost)}</span>` :
-          '<span style="color: var(--neutral-400);">--</span>';
+          `<span style="color: var(--warning-600); font-weight: 500;">${formatCost(entry.total_cost)}</span>` : '';
 
         const row = TemplateEngine.render('tpl-stats-row', {
           channelId: entry.channel_id,
@@ -261,11 +268,10 @@
           modelDisplay: modelDisplay,
           successCount: formatNumber(entry.success || 0),
           errorCount: formatNumber(entry.error || 0),
-          totalCount: formatNumber(entry.total || 0),
           successRateClass: successRateClass,
           successRateText: successRateText,
           successRate: successRate,
-          avgFirstByteTime: avgFirstByteTimeText,
+          avgFirstByteTime: avgTimeText,
           inputTokens: inputTokensText,
           outputTokens: outputTokensText,
           cacheReadTokens: cacheReadTokensText,
@@ -288,11 +294,11 @@
       tbody.appendChild(fragment);
 
       // 追加合计行
-      const totalSuccessRate = totalRequests > 0 ? ((totalSuccess / totalRequests) * 100).toFixed(1) + '%' : '0.0%';
+      const totalSuccessRateVal = totalRequests > 0 ? (totalSuccess / totalRequests) * 100 : 0;
+      const totalSuccessRate = totalSuccessRateVal > 0 ? totalSuccessRateVal.toFixed(1) + '%' : '';
       const totalRow = TemplateEngine.render('tpl-stats-total', {
         successCount: formatNumber(totalSuccess),
         errorCount: formatNumber(totalError),
-        totalCount: formatNumber(totalRequests),
         successRateText: totalSuccessRate,
         inputTokens: formatNumber(totalInputTokens),
         outputTokens: formatNumber(totalOutputTokens),
@@ -435,6 +441,17 @@
       if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
       if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
       return num.toString();
+    }
+
+    // 根据耗时返回颜色
+    function getDurationColor(seconds) {
+      if (seconds <= 5) {
+        return 'var(--success-600)'; // 绿色：快速
+      } else if (seconds <= 30) {
+        return 'var(--warning-600)'; // 橙色：中等
+      } else {
+        return 'var(--error-600)'; // 红色：慢速
+      }
     }
 
     // 格式化成本（美元）- 复用logs.html的逻辑

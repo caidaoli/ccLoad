@@ -28,12 +28,15 @@
 
   /* 功能色彩 */
   --success-50: #ecfdf5;
+  --success-400: #34d399;
   --success-500: #10b981;
   --success-600: #059669;
   --warning-50: #fffbeb;
+  --warning-400: #fbbf24;
   --warning-500: #f59e0b;
   --warning-600: #d97706;
   --error-50: #fef2f2;
+  --error-400: #f87171;
   --error-500: #ef4444;
   --error-600: #dc2626;
   --info-50: #f0f9ff;

@@ -420,6 +420,10 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 				AVG(CASE WHEN is_streaming = 1 AND first_byte_time > 0 AND status_code >= 200 AND status_code < 300 THEN first_byte_time ELSE NULL END),
 				3
 			) as avg_first_byte_time,
+			ROUND(
+				AVG(CASE WHEN duration > 0 THEN duration ELSE NULL END),
+				3
+			) as avg_duration,
 			SUM(COALESCE(input_tokens, 0)) as total_input_tokens,
 			SUM(COALESCE(output_tokens, 0)) as total_output_tokens,
 			SUM(COALESCE(cache_read_input_tokens, 0)) as total_cache_read_input_tokens,
@@ -462,12 +466,12 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 
 	for rows.Next() {
 		var entry model.StatsEntry
-		var avgFirstByteTime sql.NullFloat64
+		var avgFirstByteTime, avgDuration sql.NullFloat64
 		var totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheCreationTokens sql.NullInt64
 		var totalCost sql.NullFloat64
 
 		err := rows.Scan(&entry.ChannelID, &entry.Model,
-			&entry.Success, &entry.Error, &entry.Total, &avgFirstByteTime,
+			&entry.Success, &entry.Error, &entry.Total, &avgFirstByteTime, &avgDuration,
 			&totalInputTokens, &totalOutputTokens, &totalCacheReadTokens, &totalCacheCreationTokens, &totalCost)
 		if err != nil {
 			return nil, err
@@ -475,6 +479,9 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 
 		if avgFirstByteTime.Valid {
 			entry.AvgFirstByteTimeSeconds = &avgFirstByteTime.Float64
+		}
+		if avgDuration.Valid {
+			entry.AvgDurationSeconds = &avgDuration.Float64
 		}
 
 		// 填充token统计字段（仅当有值时）

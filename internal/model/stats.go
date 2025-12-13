@@ -41,6 +41,7 @@ type StatsEntry struct {
 	Error                   int      `json:"error"`
 	Total                   int      `json:"total"`
 	AvgFirstByteTimeSeconds *float64 `json:"avg_first_byte_time_seconds,omitempty"` // 流式请求平均首字响应时间(秒)
+	AvgDurationSeconds      *float64 `json:"avg_duration_seconds,omitempty"`        // 平均总耗时(秒)
 
 	// Token统计（2025-11新增）
 	TotalInputTokens              *int64   `json:"total_input_tokens,omitempty"`                // 总输入Token
