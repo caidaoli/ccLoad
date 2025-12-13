@@ -521,12 +521,6 @@
       }, 3000);
     }
 
-    function escapeHtml(text) {
-      const div = document.createElement('div');
-      div.textContent = text;
-      return div.innerHTML;
-    }
-
     // 初始化顶部导航栏
     document.addEventListener('DOMContentLoaded', () => {
       initTopbar('tokens');

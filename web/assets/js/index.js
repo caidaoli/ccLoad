@@ -96,21 +96,6 @@
       }
     }
 
-    // 格式化成本（复用stats.html的逻辑）
-    function formatCost(cost) {
-      if (cost === 0) return '$0.00';
-      if (cost < 0.001) {
-        if (cost < 0.000001) {
-          return '$' + cost.toExponential(2);
-        }
-        return '$' + cost.toFixed(6).replace(/\.?0+$/, '');
-      }
-      if (cost >= 1.0) {
-        return '$' + cost.toFixed(2);
-      }
-      return '$' + cost.toFixed(4).replace(/\.?0+$/, '');
-    }
-
     // 格式化数字显示
     function formatNumber(num) {
       if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';

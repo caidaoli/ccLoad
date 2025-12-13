@@ -6,19 +6,6 @@
     let authTokens = []; // 令牌列表
     let defaultTestContent = 'sonnet 4.0的发布日期是什么'; // 默认测试内容（从设置加载）
 
-    // 防抖函数
-    function debounce(func, wait) {
-      let timeout;
-      return function executedFunction(...args) {
-        const later = () => {
-          clearTimeout(timeout);
-          func(...args);
-        };
-        clearTimeout(timeout);
-        timeout = setTimeout(later, wait);
-      };
-    }
-
     // 加载默认测试内容（从系统设置）
     async function loadDefaultTestContent() {
       try {
@@ -467,22 +454,6 @@
       }
     }
 
-    // 格式化成本（美元）
-    function formatCost(cost) {
-      if (cost === 0) return '$0.00';
-      if (cost < 0.001) {
-        // 小额成本：使用更多小数位
-        if (cost < 0.000001) {
-          return '$' + cost.toExponential(2); // 科学计数法
-        }
-        return '$' + cost.toFixed(6).replace(/\.?0+$/, ''); // 最多6位小数，去除尾随0
-      }
-      if (cost >= 1.0) {
-        return '$' + cost.toFixed(2); // 大于$1显示2位小数
-      }
-      return '$' + cost.toFixed(4).replace(/\.?0+$/, ''); // 否则显示4位小数，去除尾随0
-    }
-
     // 加载令牌列表
     async function loadAuthTokens() {
       try {
@@ -509,17 +480,6 @@
       } catch (error) {
         console.error('加载令牌列表失败:', error);
       }
-    }
-
-    function escapeHtml(str) {
-      if (!str) return '';
-      return str.replace(/[&<>"']/g, c => ({
-        '&': '&amp;',
-        '<': '&lt;',
-        '>': '&gt;',
-        '"': '&quot;',
-        "'": '&#39;'
-      }[c]));
     }
 
     function parseApiKeysFromChannel(channel) {

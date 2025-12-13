@@ -1,19 +1,6 @@
     // 常量定义
     const STATS_TABLE_COLUMNS = 11; // 统计表列数（删除了总次数列）
 
-    // 防抖函数
-    function debounce(func, wait) {
-      let timeout;
-      return function executedFunction(...args) {
-        const later = () => {
-          clearTimeout(timeout);
-          func(...args);
-        };
-        clearTimeout(timeout);
-        timeout = setTimeout(later, wait);
-      };
-    }
-
     let statsData = null;
     let currentChannelType = 'all'; // 当前选中的渠道类型
     let authTokens = []; // 令牌列表
@@ -475,34 +462,6 @@
         return 'var(--error-600)'; // 红色：慢速
       }
     }
-
-    // 格式化成本（美元）- 复用logs.html的逻辑
-    function formatCost(cost) {
-      if (cost === 0) return '$0.00';
-      if (cost < 0.001) {
-        // 小额成本：使用更多小数位
-        if (cost < 0.000001) {
-          return '$' + cost.toExponential(2); // 科学计数法
-        }
-        return '$' + cost.toFixed(6).replace(/\.?0+$/, ''); // 最多6位小数，去除尾随0
-      }
-      if (cost >= 1.0) {
-        return '$' + cost.toFixed(2); // 大于$1显示2位小数
-      }
-      return '$' + cost.toFixed(4).replace(/\.?0+$/, ''); // 否则显示4位小数，去除尾随0
-    }
-
-    function escapeHtml(str) {
-      if (!str) return '';
-      return str.replace(/[&<>"']/g, c => ({
-        '&': '&amp;',
-        '<': '&lt;',
-        '>': '&gt;',
-        '"': '&quot;',
-        "'": '&#39;'
-      }[c]));
-    }
-
 
     // 注销功能（已由 ui.js 的 onLogout 统一处理）
 

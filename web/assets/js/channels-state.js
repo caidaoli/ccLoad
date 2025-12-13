@@ -42,19 +42,6 @@ let virtualScrollState = {
   filteredIndices: [] // 存储筛选后的索引列表（支持状态筛选）
 };
 
-// Debounce function for search input
-function debounce(func, wait) {
-  let timeout;
-  return function executedFunction(...args) {
-    const later = () => {
-      clearTimeout(timeout);
-      func(...args);
-    };
-    clearTimeout(timeout);
-    timeout = setTimeout(later, wait);
-  };
-}
-
 // 清除渠道缓存（在增删改操作后调用）
 function clearChannelsCache() {
   channelsCache = {};
@@ -110,20 +97,6 @@ function formatCostValue(cost) {
   return formatCost(num);
 }
 
-function formatCost(cost) {
-  if (cost === 0) return '$0.00';
-  if (cost < 0.001) {
-    if (cost < 0.000001) {
-      return '$' + cost.toExponential(2);
-    }
-    return '$' + cost.toFixed(6).replace(/\.0+$/, '');
-  }
-  if (cost >= 1.0) {
-    return '$' + cost.toFixed(2);
-  }
-  return '$' + cost.toFixed(4).replace(/\.0+$/, '');
-}
-
 function getStatsRangeLabel(range) {
   const labels = {
     'today': '本日',
@@ -132,16 +105,6 @@ function getStatsRangeLabel(range) {
     'all': '全部'
   };
   return labels[range] || '本日';
-}
-
-function escapeHtml(s) {
-  return (s || '').replace(/[&<>\"']/g, c => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    "\"": "&quot;",
-    "'": "&#39;"
-  }[c]));
 }
 
 function formatTimestampForFilename() {

@@ -433,3 +433,65 @@
     getChannelTypeDisplayName
   };
 })();
+
+// ============================================================
+// 公共工具函数（DRY原则：消除重复代码）
+// ============================================================
+(function() {
+  /**
+   * 防抖函数
+   * @param {Function} func - 要防抖的函数
+   * @param {number} wait - 等待时间(ms)
+   * @returns {Function} 防抖后的函数
+   */
+  function debounce(func, wait) {
+    let timeout;
+    return function executedFunction(...args) {
+      const later = () => {
+        clearTimeout(timeout);
+        func(...args);
+      };
+      clearTimeout(timeout);
+      timeout = setTimeout(later, wait);
+    };
+  }
+
+  /**
+   * 格式化成本（美元）
+   * @param {number} cost - 成本值
+   * @returns {string} 格式化后的字符串
+   */
+  function formatCost(cost) {
+    if (cost === 0) return '$0.00';
+    if (cost < 0.001) {
+      if (cost < 0.000001) {
+        return '$' + cost.toExponential(2);
+      }
+      return '$' + cost.toFixed(6).replace(/\.0+$/, '');
+    }
+    if (cost >= 1.0) {
+      return '$' + cost.toFixed(2);
+    }
+    return '$' + cost.toFixed(4).replace(/\.0+$/, '');
+  }
+
+  /**
+   * HTML转义（防XSS）
+   * @param {string} str - 需要转义的字符串
+   * @returns {string} 转义后的安全字符串
+   */
+  function escapeHtml(str) {
+    if (str == null) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  // 导出到全局作用域
+  window.debounce = debounce;
+  window.formatCost = formatCost;
+  window.escapeHtml = escapeHtml;
+})();

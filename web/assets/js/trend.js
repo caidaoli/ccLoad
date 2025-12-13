@@ -13,19 +13,6 @@
     window.availableModels = []; // 可用模型列表
     window.authTokens = []; // 令牌列表
 
-    // 防抖函数
-    function debounce(func, wait) {
-      let timeout;
-      return function executedFunction(...args) {
-        const later = () => {
-          clearTimeout(timeout);
-          func(...args);
-        };
-        clearTimeout(timeout);
-        timeout = setTimeout(later, wait);
-      };
-    }
-
     // 加载可用模型列表
     async function loadModels() {
       try {

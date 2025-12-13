@@ -94,13 +94,6 @@ async function onChannelChange() {
   renderModelList();
 }
 
-// XSS防护
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
-
 function selectAllModels() {
   document.querySelectorAll('.model-checkbox').forEach(cb => cb.checked = true);
   document.getElementById('selectAllCheckbox').checked = true;

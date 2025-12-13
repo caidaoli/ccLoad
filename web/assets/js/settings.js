@@ -61,13 +61,6 @@ function initSettingsEventDelegation() {
   });
 }
 
-// XSS 防护：转义 HTML 特殊字符
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
-
 function renderInput(setting) {
   const safeKey = escapeHtml(setting.key);
   const safeValue = escapeHtml(setting.value);
