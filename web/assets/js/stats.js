@@ -506,9 +506,6 @@
 
     // 注销功能（已由 ui.js 的 onLogout 统一处理）
 
-    // 顶栏布局下，无需侧栏响应逻辑
-    function handleResize() {}
-
     // localStorage key for stats page filters
     const STATS_FILTER_KEY = 'stats.filters';
 
@@ -566,10 +563,6 @@
       }
 
       loadStats();
-
-      // 响应式处理
-      handleResize();
-      window.addEventListener('resize', handleResize);
     });
 
     // 初始化渠道类型筛选器

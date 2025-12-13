@@ -78,8 +78,6 @@ function resetTestModal() {
   document.getElementById('testConcurrency').value = '10';
 }
 
-function updateTestURL() {}
-
 async function runChannelTest() {
   if (!testingChannelId) return;
 

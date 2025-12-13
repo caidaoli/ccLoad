@@ -563,9 +563,6 @@
 
     // 注销功能（已由 ui.js 的 onLogout 统一处理）
 
-    // 顶栏布局下，无需侧栏响应逻辑
-    function handleResize() {}
-
     // localStorage key for logs page filters
     const LOGS_FILTER_KEY = 'logs.filters';
 
@@ -626,10 +623,6 @@
       }
 
       load();
-
-      // 响应式处理
-      handleResize();
-      window.addEventListener('resize', handleResize);
 
       // ESC键关闭测试模态框
       document.addEventListener('keydown', (e) => {

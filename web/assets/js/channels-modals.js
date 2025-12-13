@@ -313,51 +313,6 @@ function createRedirectRow(redirect, index) {
 }
 
 /**
- * 降级渲染：模板不存在时的备用方案
- * @param {Object} redirect - 重定向数据
- * @param {number} index - 索引
- * @returns {HTMLElement} 表格行元素
- */
-function createRedirectRowLegacy(redirect, index) {
-  const tr = document.createElement('tr');
-  tr.style.borderBottom = '1px solid var(--neutral-200)';
-  tr.innerHTML = `
-    <td style="padding: 8px 12px;">
-      <input
-        type="text"
-        class="redirect-from-input"
-        data-index="${index}"
-        value="${escapeHtml(redirect.from || '')}"
-        placeholder="claude-3-opus-20240229"
-        style="width: 100%; padding: 6px 10px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace;"
-      >
-    </td>
-    <td style="padding: 8px 12px;">
-      <input
-        type="text"
-        class="redirect-to-input"
-        data-index="${index}"
-        value="${escapeHtml(redirect.to || '')}"
-        placeholder="claude-3-5-sonnet-20241022"
-        style="width: 100%; padding: 6px 10px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace;"
-      >
-    </td>
-    <td style="padding: 8px 12px; text-align: center;">
-      <button
-        type="button"
-        class="redirect-delete-btn"
-        data-index="${index}"
-        style="padding: 4px 8px; border-radius: 6px; border: 1px solid var(--error-300); background: white; color: var(--error-600); cursor: pointer; font-size: 12px; transition: all 0.2s;"
-        title="删除此规则"
-      >
-        删除
-      </button>
-    </td>
-  `;
-  return tr;
-}
-
-/**
  * 初始化重定向表格事件委托 (替代inline onchange/onclick)
  */
 function initRedirectTableEventDelegation() {
