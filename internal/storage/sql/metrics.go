@@ -117,7 +117,6 @@ func (s *SQLStore) Aggregate(ctx context.Context, since time.Time, bucket time.D
 			helper.durationCount += durationSuccessCount
 		}
 
-		// 暂时使用 channel_id 作为 key，稍后替换为 name
 		channelKey := "未知渠道"
 		if channelID.Valid {
 			channelKey = fmt.Sprintf("ch_%d", channelID.Int64)

@@ -4,6 +4,7 @@ import (
 	modelpkg "ccLoad/internal/model"
 	"ccLoad/internal/util"
 	"context"
+	"log"
 	"maps"
 	"sync"
 	"sync/atomic"
@@ -255,17 +256,9 @@ func (c *ChannelCache) refreshCache(ctx context.Context) error {
 
 	// 性能日志
 	refreshDuration := time.Since(start)
-	totalChannels := len(allChannels)
-	totalModels := len(byModel)
-	totalTypes := len(byType)
-
-	// 这里应该使用结构化日志，暂时简化
 	if refreshDuration > 5*time.Second {
-		// 缓存刷新过慢的警告
-		_ = refreshDuration
-		_ = totalChannels
-		_ = totalModels
-		_ = totalTypes
+		log.Printf("[WARN]  缓存刷新过慢: %v, 渠道数: %d, 模型数: %d, 类型数: %d",
+			refreshDuration, len(allChannels), len(byModel), len(byType))
 	}
 
 	return nil

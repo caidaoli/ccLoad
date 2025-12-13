@@ -249,7 +249,7 @@ func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
 	return transport // HTTP/2 已通过 ForceAttemptHTTP2 启用
 }
 
-// TODO: 这些缓存fallback函数存在重复逻辑，考虑使用泛型重构（Go 1.18+）
+// NOTE: 这些缓存fallback函数存在重复逻辑，可使用泛型重构（Go 1.18+）
 // 当前设计选择：保持简单直接，避免过度抽象（YAGNI）
 
 // GetConfig 获取渠道配置（实现cooldown.ConfigGetter接口）
