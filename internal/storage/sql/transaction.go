@@ -50,6 +50,7 @@ func (s *SQLStore) WithLogTransaction(ctx context.Context, fn func(*sql.Tx) erro
 // [INFO] KISS原则：简单的事务模板，自动处理提交/回滚
 // [INFO] 安全性：panic恢复 + defer回滚双重保障
 // [FIX] P1-5: 对齐注释和实现，说明实际重试次数
+// [FIX] 后续优化: 支持 context.Deadline 限制总重试时间
 func withTransaction(db *sql.DB, ctx context.Context, fn func(*sql.Tx) error) error {
 	// 增加死锁重试机制
 	// 问题: SQLite在高并发事务下可能返回"database is deadlocked"错误
@@ -64,9 +65,13 @@ func withTransaction(db *sql.DB, ctx context.Context, fn func(*sql.Tx) error) er
 	//   attempt 11: 51.2s (最大单次等待)
 	//
 	// 注意：实际等待时间有 50%-99.5% 的随机抖动，避免惊群效应
+	// 注意：如果 context 有 deadline，会在到达 deadline 时提前退出
 
 	const maxRetries = 12
 	const baseDelay = 25 * time.Millisecond
+
+	// 检查 context 是否有 deadline（用于限制总重试时间）
+	deadline, hasDeadline := ctx.Deadline()
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		err := executeSingleTransaction(db, ctx, fn)
@@ -76,9 +81,26 @@ func withTransaction(db *sql.DB, ctx context.Context, fn func(*sql.Tx) error) er
 			return err
 		}
 
-		// BUSY错误且还有重试机会,执行退避后重试
+		// BUSY错误且还有重试机会
 		if attempt < maxRetries-1 {
-			sleepWithBackoff(attempt, baseDelay)
+			// 计算下次重试的等待时间
+			nextDelay := calculateBackoffDelay(attempt, baseDelay)
+
+			// 如果有 deadline，检查是否会超时
+			if hasDeadline {
+				// 预估下次重试后是否会超过 deadline
+				if time.Now().Add(nextDelay).After(deadline) {
+					return fmt.Errorf("transaction aborted: context deadline would be exceeded (attempted %d retries): %w", attempt+1, err)
+				}
+			}
+
+			// 检查 context 是否已取消
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("transaction cancelled after %d retries: %w", attempt+1, ctx.Err())
+			case <-time.After(nextDelay):
+				// 等待完成，继续重试
+			}
 			continue
 		}
 
@@ -150,8 +172,8 @@ func isSQLiteBusyError(err error) bool {
 	return false
 }
 
-// sleepWithBackoff 执行指数退避sleep
-// [FIX] P1-5: 修正注释，准确描述 jitter 范围
+// calculateBackoffDelay 计算指数退避延迟（带随机抖动）
+// [FIX] 后续优化: 提取计算逻辑，支持 deadline 检查前预估等待时间
 //
 // 公式: delay = baseDelay * 2^attempt * jitter
 // jitter 范围: [0.5, 0.995] (即 50% 到 99.5%)
@@ -160,7 +182,7 @@ func isSQLiteBusyError(err error) bool {
 //   attempt 0: 25ms * [0.5, 0.995] = 12.5ms ~ 24.9ms
 //   attempt 1: 50ms * [0.5, 0.995] = 25ms ~ 49.8ms
 //   attempt 2: 100ms * [0.5, 0.995] = 50ms ~ 99.5ms
-func sleepWithBackoff(attempt int, baseDelay time.Duration) {
+func calculateBackoffDelay(attempt int, baseDelay time.Duration) time.Duration {
 	// 计算基础延迟：指数增长
 	delay := baseDelay * time.Duration(1<<uint(attempt))
 
@@ -169,5 +191,5 @@ func sleepWithBackoff(attempt int, baseDelay time.Duration) {
 	randomFactor := float64(time.Now().UnixNano()%100) / 100.0 // 0.00 到 0.99
 	jitter := time.Duration(float64(delay) * (0.5 + 0.5*randomFactor)) // [50%, 99.5%]
 
-	time.Sleep(jitter)
+	return jitter
 }

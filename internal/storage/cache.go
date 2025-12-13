@@ -220,6 +220,11 @@ func (c *ChannelCache) refreshIfNeeded(ctx context.Context) error {
 }
 
 // refreshCache 刷新缓存数据
+// [INFO] 内部共享指针设计说明：
+//   - allChannels, byModel, byType 三个索引共享同一批 *Config 指针（节省内存）
+//   - 这是**安全的**：缓存内部实现，外部无法访问
+//   - 对外防御：GetEnabledChannelsByModel/Type 返回深拷贝，完全隔离
+//   - 刷新安全：整体替换缓存（原子更新），不修改单个对象
 func (c *ChannelCache) refreshCache(ctx context.Context) error {
 	start := time.Now()
 
@@ -228,21 +233,21 @@ func (c *ChannelCache) refreshCache(ctx context.Context) error {
 		return err
 	}
 
-	// 构建按类型分组的索引
+	// 构建按类型分组的索引（内部共享指针，对外深拷贝隔离）
 	byModel := make(map[string][]*modelpkg.Config)
 	byType := make(map[string][]*modelpkg.Config)
 
 	for _, channel := range allChannels {
 		channelType := channel.GetChannelType()
-		byType[channelType] = append(byType[channelType], channel)
+		byType[channelType] = append(byType[channelType], channel) // 内部共享
 
 		// 同时填充模型索引
 		for _, model := range channel.Models {
-			byModel[model] = append(byModel[model], channel)
+			byModel[model] = append(byModel[model], channel) // 内部共享
 		}
 	}
 
-	// 原子性更新缓存
+	// 原子性更新缓存（整体替换，不修改单个对象）
 	c.allChannels = allChannels
 	c.channelsByModel = byModel
 	c.channelsByType = byType
