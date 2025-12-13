@@ -24,7 +24,6 @@ import (
 const (
 	// HTTP状态码（引用 util 包统一定义）
 	StatusClientClosedRequest = util.StatusClientClosedRequest // 499 客户端取消请求
-	StatusFirstByteTimeout    = util.StatusFirstByteTimeout    // 598 首字节超时
 
 	// 缓冲区大小
 	StreamBufferSize = 32 * 1024 // 流式传输缓冲区（32KB，大文件传输）
@@ -89,13 +88,6 @@ type proxyResult struct {
 // ============================================================================
 // 请求检测工具函数
 // ============================================================================
-
-// detectChannelTypeFromPath 根据请求路径推断渠道类型
-// 使用 util.DetectChannelTypeFromPath 统一检测，遵循DRY原则
-// 返回空字符串表示未识别出特定渠道类型，沿用默认逻辑
-func detectChannelTypeFromPath(path string) string {
-	return util.DetectChannelTypeFromPath(path)
-}
 
 // isStreamingRequest 检测是否为流式请求
 // 支持多种API的流式标识方式：
@@ -225,7 +217,7 @@ func copyRequestHeaders(dst *http.Request, src http.Header) {
 // 参数简化：直接接受API Key字符串，由调用方从KeySelector获取
 func injectAPIKeyHeaders(req *http.Request, apiKey string, requestPath string) {
 	// 根据API类型设置不同的认证头（使用统一的渠道类型检测）
-	channelType := detectChannelTypeFromPath(requestPath)
+	channelType := util.DetectChannelTypeFromPath(requestPath)
 
 	switch channelType {
 	case util.ChannelTypeGemini:

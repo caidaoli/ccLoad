@@ -101,12 +101,12 @@ func (s *Server) selectRouteCandidates(ctx context.Context, c *gin.Context, orig
 	requestMethod := c.Request.Method
 
 	// 智能路由选择：根据请求类型选择不同的路由策略
-	if requestMethod == http.MethodGet && detectChannelTypeFromPath(requestPath) == util.ChannelTypeGemini {
+	if requestMethod == http.MethodGet && util.DetectChannelTypeFromPath(requestPath) == util.ChannelTypeGemini {
 		// 按渠道类型筛选Gemini渠道
 		return s.selectCandidatesByChannelType(ctx, util.ChannelTypeGemini)
 	}
 
-	channelType := detectChannelTypeFromPath(requestPath)
+	channelType := util.DetectChannelTypeFromPath(requestPath)
 	if channelType == "" {
 		return nil, errUnknownChannelType
 	}
