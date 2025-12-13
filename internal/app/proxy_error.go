@@ -166,7 +166,7 @@ func (s *Server) applyTokenStatsUpdate(upd tokenStatsUpdate) {
 //   - res: 转发结果（成功时用于提取token数量，失败时传nil）
 //   - actualModel: 实际模型名称（用于计费）
 func (s *Server) updateTokenStatsAsync(tokenHash string, isSuccess bool, duration float64, isStreaming bool, res *fwResult, actualModel string) {
-	if tokenHash == "" || s.isShuttingDown.Load() || s.tokenStatsCh == nil {
+	if tokenHash == "" || s.tokenStatsCh == nil {
 		return
 	}
 
@@ -208,6 +208,14 @@ func (s *Server) updateTokenStatsAsync(tokenHash string, isSuccess bool, duratio
 		cacheReadTokens:     cacheReadTokens,
 		cacheCreationTokens: cacheCreationTokens,
 		costUSD:             costUSD,
+	}
+
+	// ✅ shutdown期间仍需保证在途请求的计费/用量落库：
+	// - 这时 worker 可能正在退出/队列可能不再被消费
+	// - 直接同步写入可避免“优雅关闭=静默丢账单”的时序窗口
+	if s.isShuttingDown.Load() {
+		s.applyTokenStatsUpdate(upd)
+		return
 	}
 
 	// 优先级策略：成功请求（计费关键）必须记录，失败请求可丢弃
