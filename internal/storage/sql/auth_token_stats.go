@@ -67,3 +67,90 @@ func (s *SQLStore) GetAuthTokenStatsInRange(ctx context.Context, startTime, endT
 
 	return stats, rows.Err()
 }
+
+// FillAuthTokenRPMStats 计算每个token的RPM统计（峰值、平均、最近）
+// 直接修改传入的stats map中的RPM字段
+func (s *SQLStore) FillAuthTokenRPMStats(ctx context.Context, stats map[int64]*model.AuthTokenRangeStats, startTime, endTime time.Time, isToday bool) error {
+	if len(stats) == 0 {
+		return nil
+	}
+
+	sinceMs := startTime.UnixMilli()
+	untilMs := endTime.UnixMilli()
+
+	// 计算时间跨度（秒）
+	durationSeconds := endTime.Sub(startTime).Seconds()
+	if durationSeconds < 1 {
+		durationSeconds = 1
+	}
+
+	// 1. 计算平均RPM = 总请求数 × 60 / 时间范围秒数
+	for _, stat := range stats {
+		totalCount := stat.SuccessCount + stat.FailureCount
+		stat.AvgRPM = float64(totalCount) * 60 / durationSeconds
+	}
+
+	// 2. 计算峰值RPM（每分钟请求数的最大值）
+	peakQuery := `
+		SELECT auth_token_id, MAX(cnt) AS peak_rpm
+		FROM (
+			SELECT auth_token_id, COUNT(*) AS cnt
+			FROM logs
+			WHERE time >= ? AND time <= ? AND auth_token_id > 0
+			GROUP BY auth_token_id, FLOOR(time / 60000)
+		) t
+		GROUP BY auth_token_id
+	`
+	peakRows, err := s.db.QueryContext(ctx, peakQuery, sinceMs, untilMs)
+	if err != nil {
+		return err
+	}
+	defer peakRows.Close()
+
+	for peakRows.Next() {
+		var tokenID int64
+		var peakRPM float64
+		if err := peakRows.Scan(&tokenID, &peakRPM); err != nil {
+			return err
+		}
+		if stat, ok := stats[tokenID]; ok {
+			stat.PeakRPM = peakRPM
+		}
+	}
+
+	// 3. 计算最近一分钟RPM（仅本日有效）
+	if isToday {
+		now := time.Now()
+		recentStartMs := now.Add(-60 * time.Second).UnixMilli()
+		recentEndMs := now.UnixMilli()
+
+		recentQuery := `
+			SELECT auth_token_id, COUNT(*) AS cnt
+			FROM logs
+			WHERE time >= ? AND time <= ? AND auth_token_id > 0
+			GROUP BY auth_token_id
+		`
+		recentRows, err := s.db.QueryContext(ctx, recentQuery, recentStartMs, recentEndMs)
+		if err != nil {
+			return err
+		}
+		defer recentRows.Close()
+
+		for recentRows.Next() {
+			var tokenID int64
+			var recentRPM float64
+			if err := recentRows.Scan(&tokenID, &recentRPM); err != nil {
+				return err
+			}
+			if stat, ok := stats[tokenID]; ok {
+				stat.RecentRPM = recentRPM
+				// 峰值必须 >= 最近值
+				if stat.PeakRPM < recentRPM {
+					stat.PeakRPM = recentRPM
+				}
+			}
+		}
+	}
+
+	return nil
+}

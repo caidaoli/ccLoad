@@ -65,6 +65,11 @@ func (s *Server) HandleListAuthTokens(c *gin.Context) {
 			log.Printf("[WARN]  查询时间范围统计失败: %v", err)
 			// 降级处理：统计查询失败不影响token列表返回，仅记录警告
 		} else {
+			// 计算每个token的RPM统计（峰值、平均、最近）
+			if err := s.store.FillAuthTokenRPMStats(ctx, rangeStats, startTime, endTime, isToday); err != nil {
+				log.Printf("[WARN]  计算token RPM统计失败: %v", err)
+			}
+
 			// 将时间范围统计叠加到每个token的响应中
 			for _, t := range tokens {
 				if stat, ok := rangeStats[t.ID]; ok {
@@ -80,6 +85,10 @@ func (s *Server) HandleListAuthTokens(c *gin.Context) {
 					t.NonStreamAvgRT = stat.NonStreamAvgRT
 					t.StreamCount = stat.StreamCount
 					t.NonStreamCount = stat.NonStreamCount
+					// RPM统计
+					t.PeakRPM = stat.PeakRPM
+					t.AvgRPM = stat.AvgRPM
+					t.RecentRPM = stat.RecentRPM
 				} else {
 					// 该token在此时间范围内无数据，清零统计字段
 					t.SuccessCount = 0
@@ -93,6 +102,9 @@ func (s *Server) HandleListAuthTokens(c *gin.Context) {
 					t.NonStreamAvgRT = 0
 					t.StreamCount = 0
 					t.NonStreamCount = 0
+					t.PeakRPM = 0
+					t.AvgRPM = 0
+					t.RecentRPM = 0
 				}
 			}
 		}

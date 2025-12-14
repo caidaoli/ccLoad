@@ -121,8 +121,8 @@
             <th>描述</th>
             <th>令牌</th>
             <th style="text-align: center;">调用次数</th>
-            <th style="text-align: center;" title="每分钟请求数">RPM</th>
             <th style="text-align: center;">成功率</th>
+            <th style="text-align: center;" title="每分钟请求数(峰值/平均/最近)">RPM(峰/均/近)</th>
             <th style="text-align: center;">Token用量</th>
             <th style="text-align: center;">总费用</th>
             <th style="text-align: center;">流首字平均</th>
@@ -174,13 +174,10 @@
       const totalCount = successCount + failureCount;
       const successRate = totalCount > 0 ? ((successCount / totalCount) * 100).toFixed(1) : 0;
 
-      // 计算 RPM
-      const rpm = totalCount * 60 / durationSeconds;
-
       // 预构建各个HTML片段(保留条件逻辑在JS中)
       const callsHtml = buildCallsHtml(successCount, failureCount, totalCount);
-      const rpmHtml = buildRpmHtml(rpm);
       const successRateHtml = buildSuccessRateHtml(successRate, totalCount);
+      const rpmHtml = buildRpmHtml(token);
       const tokensHtml = buildTokensHtml(token);
       const costHtml = buildCostHtml(token.total_cost_usd);
       const streamAvgHtml = buildResponseTimeHtml(token.stream_avg_ttfb, token.stream_count);
@@ -229,13 +226,34 @@
     }
 
     /**
-     * 构建RPM HTML（带颜色）
+     * 构建RPM HTML（峰/均/近格式）
      */
-    function buildRpmHtml(rpm) {
-      if (rpm < 0.01) return '';
-      const color = getRpmColor(rpm);
-      const text = rpm >= 1000 ? (rpm / 1000).toFixed(1) + 'K' : rpm >= 1 ? rpm.toFixed(1) : rpm.toFixed(2);
-      return `<span style="color: ${color}; font-weight: 500;">${text}</span>`;
+    function buildRpmHtml(token) {
+      const peakRPM = token.peak_rpm || 0;
+      const avgRPM = token.avg_rpm || 0;
+      const recentRPM = token.recent_rpm || 0;
+
+      // 如果都是0，返回空
+      if (peakRPM < 0.01 && avgRPM < 0.01 && recentRPM < 0.01) {
+        return '<span style="color: var(--neutral-500); font-size: 13px;">-</span>';
+      }
+
+      // 格式化RPM值
+      const formatRpm = (rpm) => {
+        if (rpm < 0.01) return '-';
+        if (rpm >= 1000) return (rpm / 1000).toFixed(1) + 'K';
+        if (rpm >= 1) return rpm.toFixed(1);
+        return rpm.toFixed(2);
+      };
+
+      const peakText = formatRpm(peakRPM);
+      const avgText = formatRpm(avgRPM);
+      const recentText = isToday ? formatRpm(recentRPM) : '-';
+
+      // 颜色：峰值决定整体颜色
+      const color = getRpmColor(peakRPM);
+
+      return `<span style="color: ${color}; font-weight: 500;">${peakText}/${avgText}/${recentText}</span>`;
     }
 
     /**
@@ -365,14 +383,11 @@
       const failureCount = token.failure_count || 0;
       const totalCount = successCount + failureCount;
 
-      // 计算 RPM
-      const rpm = totalCount * 60 / durationSeconds;
-
       // 预构建HTML片段
       const callsHtml = buildCallsHtml(successCount, failureCount, totalCount);
-      const rpmHtml = buildRpmHtml(rpm);
       const successRate = totalCount > 0 ? ((successCount / totalCount) * 100).toFixed(1) : 0;
       const successRateHtml = buildSuccessRateHtml(successRate, totalCount);
+      const rpmHtml = buildRpmHtml(token);
       const tokensHtml = buildTokensHtml(token);
       const costHtml = buildCostHtml(token.total_cost_usd);
       const streamAvgHtml = buildResponseTimeHtml(token.stream_avg_ttfb, token.stream_count);
@@ -386,8 +401,8 @@
             <div style="font-size: 12px; color: var(--neutral-500); margin-top: 4px;">${createdAt}创建 · ${expiresAt}</div>
           </td>
           <td style="text-align: center;">${callsHtml}</td>
-          <td style="text-align: center;">${rpmHtml}</td>
           <td style="text-align: center;">${successRateHtml}</td>
+          <td style="text-align: center;">${rpmHtml}</td>
           <td style="text-align: center;">${tokensHtml}</td>
           <td style="text-align: center;">${costHtml}</td>
           <td style="text-align: center;">${streamAvgHtml}</td>

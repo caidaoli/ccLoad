@@ -26,11 +26,16 @@ type AuthToken struct {
 	NonStreamCount int64   `json:"non_stream_count"`  // 非流式请求计数(用于计算平均值)
 
 	// Token成本统计（2025-12新增）
-	PromptTokensTotal          int64   `json:"prompt_tokens_total"`           // 累计输入Token数
-	CompletionTokensTotal      int64   `json:"completion_tokens_total"`       // 累计输出Token数
-	CacheReadTokensTotal       int64   `json:"cache_read_tokens_total"`       // 累计缓存读Token数
-	CacheCreationTokensTotal   int64   `json:"cache_creation_tokens_total"`   // 累计缓存写Token数
-	TotalCostUSD               float64 `json:"total_cost_usd"`                // 累计成本(美元)
+	PromptTokensTotal        int64   `json:"prompt_tokens_total"`         // 累计输入Token数
+	CompletionTokensTotal    int64   `json:"completion_tokens_total"`     // 累计输出Token数
+	CacheReadTokensTotal     int64   `json:"cache_read_tokens_total"`     // 累计缓存读Token数
+	CacheCreationTokensTotal int64   `json:"cache_creation_tokens_total"` // 累计缓存写Token数
+	TotalCostUSD             float64 `json:"total_cost_usd"`              // 累计成本(美元)
+
+	// RPM统计（2025-12新增，用于tokens.html显示）
+	PeakRPM   float64 `json:"peak_rpm,omitempty"`   // 峰值RPM
+	AvgRPM    float64 `json:"avg_rpm,omitempty"`    // 平均RPM
+	RecentRPM float64 `json:"recent_rpm,omitempty"` // 最近一分钟RPM
 }
 
 // AuthTokenRangeStats 某个时间范围内的token统计（从logs表聚合，2025-12新增）
@@ -46,6 +51,10 @@ type AuthTokenRangeStats struct {
 	NonStreamAvgRT       float64 `json:"non_stream_avg_rt"`       // 非流式请求平均响应时间
 	StreamCount          int64   `json:"stream_count"`            // 流式请求计数
 	NonStreamCount       int64   `json:"non_stream_count"`        // 非流式请求计数
+	// RPM统计（2025-12新增）
+	PeakRPM   float64 `json:"peak_rpm"`   // 峰值RPM（每分钟最大请求数）
+	AvgRPM    float64 `json:"avg_rpm"`    // 平均RPM
+	RecentRPM float64 `json:"recent_rpm"` // 最近一分钟RPM（仅本日有效）
 }
 
 // HashToken 计算令牌的SHA256哈希值

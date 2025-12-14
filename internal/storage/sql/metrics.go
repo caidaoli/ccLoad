@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"ccLoad/internal/model"
@@ -547,42 +546,32 @@ func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time
 	startMs := startTime.UnixMilli()
 	endMs := endTime.UnixMilli()
 
-	// 获取需要过滤的渠道ID列表
-	var channelIDs []int64
-	if filter != nil && filter.ChannelType != "" {
-		ids, err := s.fetchChannelIDsByType(ctx, filter.ChannelType)
-		if err != nil {
-			return nil, fmt.Errorf("get channel IDs by type: %w", err)
-		}
-		if len(ids) == 0 {
-			// 没有匹配的渠道，返回空统计
-			return stats, nil
-		}
-		channelIDs = ids
-	}
-
-	// 构建渠道过滤条件
-	channelFilter := "channel_id > 0"
-	var channelArgs []any
-	if len(channelIDs) > 0 {
-		placeholders := make([]string, len(channelIDs))
-		for i, id := range channelIDs {
-			placeholders[i] = "?"
-			channelArgs = append(channelArgs, id)
-		}
-		channelFilter = "channel_id IN (" + strings.Join(placeholders, ",") + ")"
-	}
-
 	// 1. 计算峰值RPM（每分钟请求数的最大值）
-	peakQuery := fmt.Sprintf(`
+	// 使用 FLOOR 确保 MySQL 返回整数（MySQL 的 / 返回浮点数，会导致分组错误）
+	peakBaseQuery := `
 		SELECT COALESCE(MAX(cnt), 0) as peak_rpm FROM (
 			SELECT COUNT(*) as cnt
-			FROM logs
-			WHERE time >= ? AND time <= ? AND %s
-			GROUP BY time / 60000
-		) t`, channelFilter)
+			FROM logs`
 
-	peakArgs := append([]any{startMs, endMs}, channelArgs...)
+	peakQB := NewQueryBuilder(peakBaseQuery).
+		Where("time >= ?", startMs).
+		Where("time <= ?", endMs).
+		Where("channel_id > 0")
+
+	// 应用渠道类型或名称过滤
+	_, isEmpty, err := s.applyChannelFilter(ctx, peakQB, filter)
+	if err != nil {
+		return nil, fmt.Errorf("apply channel filter: %w", err)
+	}
+	if isEmpty {
+		return stats, nil
+	}
+
+	// 应用其余过滤器（模型/状态码等）
+	peakQB.ApplyFilter(filter)
+
+	peakQuery, peakArgs := peakQB.BuildWithSuffix("GROUP BY FLOOR(time / 60000)) t")
+
 	var peakRPM float64
 	if err := s.db.QueryRowContext(ctx, peakQuery, peakArgs...).Scan(&peakRPM); err != nil {
 		return nil, fmt.Errorf("query peak RPM: %w", err)
@@ -596,8 +585,25 @@ func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time
 		durationSeconds = 1
 	}
 
-	totalQuery := fmt.Sprintf(`SELECT COUNT(*) FROM logs WHERE time >= ? AND time <= ? AND %s`, channelFilter)
-	totalArgs := append([]any{startMs, endMs}, channelArgs...)
+	totalBaseQuery := `SELECT COUNT(*) FROM logs`
+	totalQB := NewQueryBuilder(totalBaseQuery).
+		Where("time >= ?", startMs).
+		Where("time <= ?", endMs).
+		Where("channel_id > 0")
+
+	// 应用渠道过滤
+	_, isEmpty, err = s.applyChannelFilter(ctx, totalQB, filter)
+	if err != nil {
+		return nil, fmt.Errorf("apply channel filter for total: %w", err)
+	}
+	if isEmpty {
+		return stats, nil
+	}
+
+	// 应用其余过滤器
+	totalQB.ApplyFilter(filter)
+
+	totalQuery, totalArgs := totalQB.Build()
 	var totalCount int64
 	if err := s.db.QueryRowContext(ctx, totalQuery, totalArgs...).Scan(&totalCount); err != nil {
 		return nil, fmt.Errorf("query total count: %w", err)
@@ -612,15 +618,36 @@ func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time
 		recentStartMs := now.Add(-60 * time.Second).UnixMilli()
 		recentEndMs := now.UnixMilli()
 
-		recentQuery := fmt.Sprintf(`SELECT COUNT(*) FROM logs WHERE time >= ? AND time <= ? AND %s`, channelFilter)
-		recentArgs := append([]any{recentStartMs, recentEndMs}, channelArgs...)
-		var recentCount int64
-		if err := s.db.QueryRowContext(ctx, recentQuery, recentArgs...).Scan(&recentCount); err != nil {
-			return nil, fmt.Errorf("query recent count: %w", err)
-		}
+		recentBaseQuery := `SELECT COUNT(*) FROM logs`
+		recentQB := NewQueryBuilder(recentBaseQuery).
+			Where("time >= ?", recentStartMs).
+			Where("time <= ?", recentEndMs).
+			Where("channel_id > 0")
 
-		stats.RecentRPM = float64(recentCount)
-		stats.RecentQPS = float64(recentCount) / 60
+		// 应用渠道过滤
+		_, isEmpty, err = s.applyChannelFilter(ctx, recentQB, filter)
+		if err != nil {
+			return nil, fmt.Errorf("apply channel filter for recent: %w", err)
+		}
+		if !isEmpty {
+			// 应用其余过滤器
+			recentQB.ApplyFilter(filter)
+
+			recentQuery, recentArgs := recentQB.Build()
+			var recentCount int64
+			if err := s.db.QueryRowContext(ctx, recentQuery, recentArgs...).Scan(&recentCount); err != nil {
+				return nil, fmt.Errorf("query recent count: %w", err)
+			}
+
+			stats.RecentRPM = float64(recentCount)
+			stats.RecentQPS = float64(recentCount) / 60
+
+			// 峰值必须 >= 最近值（滑动窗口可能比固定分钟桶更高）
+			if stats.RecentRPM > stats.PeakRPM {
+				stats.PeakRPM = stats.RecentRPM
+				stats.PeakQPS = stats.RecentQPS
+			}
+		}
 	}
 
 	return stats, nil
@@ -639,13 +666,14 @@ func (s *SQLStore) fillStatsRPM(ctx context.Context, stats []model.StatsEntry, s
 	}
 
 	// 查询每个channel_id+model的峰值RPM（每分钟请求数的最大值）
+	// 使用 FLOOR 确保 MySQL 返回整数（MySQL 的 / 返回浮点数，会导致分组错误）
 	peakQuery := `
 		SELECT channel_id, COALESCE(model, '') AS model, MAX(cnt) AS peak_rpm
 		FROM (
 			SELECT channel_id, model, COUNT(*) AS cnt
 			FROM logs
 			WHERE time >= ? AND time <= ? AND channel_id > 0
-			GROUP BY channel_id, model, time / 60000
+			GROUP BY channel_id, model, FLOOR(time / 60000)
 		) t
 		GROUP BY channel_id, model`
 
@@ -726,6 +754,10 @@ func (s *SQLStore) fillStatsRPM(ctx context.Context, stats []model.StatsEntry, s
 		if isToday {
 			if recentRPM, ok := recentRPMMap[key]; ok && recentRPM > 0 {
 				entry.RecentRPM = &recentRPM
+				// 峰值必须 >= 最近值（滑动窗口可能比固定分钟桶更高）
+				if entry.PeakRPM == nil || *entry.PeakRPM < recentRPM {
+					entry.PeakRPM = &recentRPM
+				}
 			}
 		}
 	}

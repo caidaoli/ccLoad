@@ -266,7 +266,7 @@
           symbol: 'circle',
           symbolSize: 4,
           sampling: 'lttb',
-          connectNulls: true,
+          connectNulls: false,
           itemStyle: {
             color: '#10b981'
           },
@@ -274,7 +274,10 @@
             width: 2,
             color: '#10b981'
           },
-          data: window.trendData.map(point => point.success || 0)
+          data: window.trendData.map(point => {
+            const val = point.success || 0;
+            return val > 0 ? val : null; // 0值不显示
+          })
         });
 
         series.push({
@@ -284,7 +287,7 @@
           symbol: 'circle',
           symbolSize: 4,
           sampling: 'lttb',
-          connectNulls: true,
+          connectNulls: false,
           itemStyle: {
             color: '#ef4444'
           },
@@ -292,7 +295,10 @@
             width: 2,
             color: '#ef4444'
           },
-          data: window.trendData.map(point => point.error || 0)
+          data: window.trendData.map(point => {
+            const val = point.error || 0;
+            return val > 0 ? val : null; // 0值不显示
+          })
         });
       } else if (trendType === 'first_byte') {
         // 首字响应时间趋势：添加总体平均首字响应时间线
@@ -303,7 +309,7 @@
           symbol: 'circle',
           symbolSize: 4,
           sampling: 'lttb',
-          connectNulls: true,
+          connectNulls: false,
           itemStyle: {
             color: '#0ea5e9'
           },
@@ -325,7 +331,7 @@
           symbol: 'circle',
           symbolSize: 4,
           sampling: 'lttb',
-          connectNulls: true,
+          connectNulls: false,
           itemStyle: {
             color: '#a855f7'
           },
@@ -347,7 +353,7 @@
           symbol: 'circle',
           symbolSize: 4,
           sampling: 'lttb',
-          connectNulls: true,
+          connectNulls: false,
           itemStyle: { color: '#3b82f6' },
           lineStyle: { width: 2, color: '#3b82f6' },
           data: window.trendData.map(point => point.input_tokens > 0 ? point.input_tokens : null)
@@ -359,7 +365,7 @@
           symbol: 'circle',
           symbolSize: 4,
           sampling: 'lttb',
-          connectNulls: true,
+          connectNulls: false,
           itemStyle: { color: '#10b981' },
           lineStyle: { width: 2, color: '#10b981' },
           data: window.trendData.map(point => point.output_tokens > 0 ? point.output_tokens : null)
@@ -371,7 +377,7 @@
           symbol: 'circle',
           symbolSize: 4,
           sampling: 'lttb',
-          connectNulls: true,
+          connectNulls: false,
           itemStyle: { color: '#f97316' },
           lineStyle: { width: 2, color: '#f97316' },
           data: window.trendData.map(point => point.cache_read_tokens > 0 ? point.cache_read_tokens : null)
@@ -383,7 +389,7 @@
           symbol: 'circle',
           symbolSize: 4,
           sampling: 'lttb',
-          connectNulls: true,
+          connectNulls: false,
           itemStyle: { color: '#a855f7' },
           lineStyle: { width: 2, color: '#a855f7' },
           data: window.trendData.map(point => point.cache_creation_tokens > 0 ? point.cache_creation_tokens : null)
@@ -397,7 +403,7 @@
           symbol: 'circle',
           symbolSize: 4,
           sampling: 'lttb',
-          connectNulls: true,
+          connectNulls: false,
           itemStyle: {
             color: '#f97316'
           },
@@ -420,7 +426,7 @@
           symbol: 'circle',
           symbolSize: 4,
           sampling: 'lttb',
-          connectNulls: true,
+          connectNulls: false,
           itemStyle: { color: '#3b82f6' },
           lineStyle: { width: 2, color: '#3b82f6' },
           data: window.trendData.map(point => {
@@ -466,7 +472,7 @@
               smooth: true,
               symbol: 'none',
               sampling: 'lttb',
-              connectNulls: true,
+              connectNulls: false,
               itemStyle: { color: color },
               lineStyle: { width: 1.5, color: color, type: 'solid' },
               data: successData
@@ -481,7 +487,7 @@
               smooth: true,
               symbol: 'none',
               sampling: 'lttb',
-              connectNulls: true,
+              connectNulls: false,
               itemStyle: { color: color },
               lineStyle: { width: 1.5, color: color, type: 'dashed' },
               data: errorData
@@ -508,7 +514,7 @@
               smooth: true,
               symbol: 'none',
               sampling: 'lttb',
-              connectNulls: true,
+              connectNulls: false,
               itemStyle: { color: color },
               lineStyle: { width: 1.5, color: color },
               data: fbtData
@@ -535,7 +541,7 @@
               smooth: true,
               symbol: 'none',
               sampling: 'lttb',
-              connectNulls: true,
+              connectNulls: false,
               itemStyle: { color: color },
               lineStyle: { width: 1.5, color: color },
               data: durData
@@ -562,7 +568,7 @@
               smooth: true,
               symbol: 'none',
               sampling: 'lttb',
-              connectNulls: true,
+              connectNulls: false,
               itemStyle: { color: color },
               lineStyle: { width: 1.5, color: color },
               data: tokenData
@@ -589,7 +595,7 @@
               smooth: true,
               symbol: 'none',
               sampling: 'lttb',
-              connectNulls: true,
+              connectNulls: false,
               itemStyle: { color: color },
               lineStyle: { width: 1.5, color: color },
               data: costData
@@ -617,7 +623,7 @@
               smooth: true,
               symbol: 'none',
               sampling: 'lttb',
-              connectNulls: true,
+              connectNulls: false,
               itemStyle: { color: color },
               lineStyle: { width: 1.5, color: color },
               data: rpmData
