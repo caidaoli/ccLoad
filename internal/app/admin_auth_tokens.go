@@ -38,9 +38,26 @@ func (s *Server) HandleListAuthTokens(c *gin.Context) {
 
 	// 如果请求中包含range参数，则叠加时间范围统计（用于tokens.html页面）
 	timeRange := c.Query("range")
+	var durationSeconds float64
 	if timeRange != "" {
 		params := ParsePaginationParams(c)
 		startTime, endTime := params.GetTimeRange()
+
+		// 计算时间跨度（秒），用于前端计算RPM和QPS
+		durationSeconds = endTime.Sub(startTime).Seconds()
+		if durationSeconds < 1 {
+			durationSeconds = 1 // 防止除零
+		}
+
+		// 判断是否为本日（本日才计算最近一分钟）
+		isToday := timeRange == "today" || timeRange == ""
+
+		// 获取全局RPM统计（峰值、平均、最近一分钟）
+		rpmStats, err := s.store.GetRPMStats(ctx, startTime, endTime, nil, isToday)
+		if err != nil {
+			log.Printf("[WARN]  查询RPM统计失败: %v", err)
+			// 降级处理
+		}
 
 		// 从logs表聚合时间范围内的统计
 		rangeStats, err := s.store.GetAuthTokenStatsInRange(ctx, startTime, endTime)
@@ -79,6 +96,15 @@ func (s *Server) HandleListAuthTokens(c *gin.Context) {
 				}
 			}
 		}
+
+		// 返回带时间跨度和RPM统计的响应
+		RespondJSON(c, http.StatusOK, gin.H{
+			"tokens":           tokens,
+			"duration_seconds": durationSeconds,
+			"rpm_stats":        rpmStats,
+			"is_today":         isToday,
+		})
+		return
 	}
 
 	RespondJSON(c, http.StatusOK, tokens)

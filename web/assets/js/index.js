@@ -4,7 +4,10 @@
       success_requests: 0,
       error_requests: 0,
       active_channels: 0,
-      active_models: 0
+      active_models: 0,
+      duration_seconds: 1,
+      rpm_stats: null,
+      is_today: true
     };
 
     // 当前选中的时间范围
@@ -42,11 +45,16 @@
         ? ((statsData.success_requests / statsData.total_requests) * 100).toFixed(1)
         : '0.0';
 
-      // 更新总体数字显示
-      document.getElementById('total-requests').textContent = formatNumber(statsData.total_requests || 0);
+      // 更新总体数字显示（成功/失败合并显示）
       document.getElementById('success-requests').textContent = formatNumber(statsData.success_requests || 0);
       document.getElementById('error-requests').textContent = formatNumber(statsData.error_requests || 0);
       document.getElementById('success-rate').textContent = successRate + '%';
+
+      // 更新 RPM 和 QPS（使用峰值/平均/最近格式）
+      const rpmStats = statsData.rpm_stats || null;
+      const isToday = statsData.is_today !== false;
+      updateGlobalRpmDisplay('total-rpm', rpmStats, isToday);
+      updateGlobalQpsDisplay('total-qps', rpmStats, isToday);
 
       // 更新按渠道类型统计
       if (statsData.by_type) {
@@ -55,6 +63,86 @@
         updateTypeStats('openai', statsData.by_type.openai);
         updateTypeStats('gemini', statsData.by_type.gemini);
       }
+    }
+
+    // 更新全局 RPM 显示（格式：数值 数值 数值）
+    function updateGlobalRpmDisplay(elementId, stats, showRecent) {
+      const el = document.getElementById(elementId);
+      if (!el) return;
+
+      if (!stats || (stats.peak_rpm < 0.01 && stats.avg_rpm < 0.01)) {
+        el.innerHTML = '--';
+        return;
+      }
+
+      const fmt = v => v >= 1000 ? (v / 1000).toFixed(1) + 'K' : v.toFixed(1);
+      const parts = [];
+
+      if (stats.peak_rpm >= 0.01) {
+        parts.push(`<span style="color:${getRpmColor(stats.peak_rpm)}">${fmt(stats.peak_rpm)}</span>`);
+      }
+      if (stats.avg_rpm >= 0.01) {
+        parts.push(`<span style="color:${getRpmColor(stats.avg_rpm)}">${fmt(stats.avg_rpm)}</span>`);
+      }
+      if (showRecent && stats.recent_rpm >= 0.01) {
+        parts.push(`<span style="color:${getRpmColor(stats.recent_rpm)}">${fmt(stats.recent_rpm)}</span>`);
+      }
+
+      el.innerHTML = parts.length > 0 ? parts.join(' ') : '--';
+    }
+
+    // 更新全局 QPS 显示（格式：数值 数值 数值）
+    function updateGlobalQpsDisplay(elementId, stats, showRecent) {
+      const el = document.getElementById(elementId);
+      if (!el) return;
+
+      if (!stats || (stats.peak_qps < 0.01 && stats.avg_qps < 0.01)) {
+        el.innerHTML = '--';
+        return;
+      }
+
+      const fmt = v => v >= 1000 ? (v / 1000).toFixed(1) + 'K' : v.toFixed(1);
+      const parts = [];
+
+      if (stats.peak_qps >= 0.01) {
+        parts.push(`<span style="color:${getQpsColor(stats.peak_qps)}">${fmt(stats.peak_qps)}</span>`);
+      }
+      if (stats.avg_qps >= 0.01) {
+        parts.push(`<span style="color:${getQpsColor(stats.avg_qps)}">${fmt(stats.avg_qps)}</span>`);
+      }
+      if (showRecent && stats.recent_qps >= 0.01) {
+        parts.push(`<span style="color:${getQpsColor(stats.recent_qps)}">${fmt(stats.recent_qps)}</span>`);
+      }
+
+      el.innerHTML = parts.length > 0 ? parts.join(' ') : '--';
+    }
+
+    // 格式化RPM数值
+    function formatRpmValue(rpm) {
+      if (rpm >= 1000) return (rpm / 1000).toFixed(1) + 'K';
+      if (rpm >= 1) return rpm.toFixed(1);
+      return rpm.toFixed(2);
+    }
+
+    // 格式化QPS数值
+    function formatQpsValue(qps) {
+      if (qps >= 1000) return (qps / 1000).toFixed(1) + 'K';
+      if (qps >= 1) return qps.toFixed(2);
+      return qps.toFixed(3);
+    }
+
+    // RPM 颜色
+    function getRpmColor(rpm) {
+      if (rpm < 10) return 'var(--success-600)';
+      if (rpm < 100) return 'var(--warning-600)';
+      return 'var(--error-600)';
+    }
+
+    // QPS 颜色
+    function getQpsColor(qps) {
+      if (qps < 1) return 'var(--success-600)';
+      if (qps < 10) return 'var(--warning-600)';
+      return 'var(--error-600)';
     }
 
     // 更新单个渠道类型的统计

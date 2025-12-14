@@ -265,49 +265,39 @@
         </section>
         <!-- 实时状态栏 - 总览 -->
         <section class="mb-6">
-          <div class="grid grid-cols-4 animate-slide-up" style="animation-delay: 0.2s; gap: var(--space-3);">
-            <div class="summary-card summary-card-primary">
-              <div class="summary-icon">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M12 2v20M2 12h20"/>
-                </svg>
-              </div>
-              <div class="summary-content">
-                <div class="summary-value metric-total" id="total-requests">--</div>
-                <div class="summary-label">总请求数</div>
-              </div>
-            </div>
-            <div class="summary-card summary-card-success">
+          <div class="animate-slide-up" style="animation-delay: 0.2s; display: flex; gap: var(--space-3); flex-wrap: nowrap;">
+            <div class="summary-card summary-card-success" style="flex: 1; min-width: 0;">
               <div class="summary-icon">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M20 6L9 17l-5-5"/>
                 </svg>
               </div>
               <div class="summary-content">
-                <div class="summary-value metric-success" id="success-requests">--</div>
-                <div class="summary-label">成功请求</div>
+                <div class="summary-value"><span class="metric-success" id="success-requests">--</span>/<span class="metric-error" id="error-requests">--</span> <span style="font-size:0.7em;color:var(--neutral-500)">(<span id="success-rate">--</span>)</span></div>
+                <div class="summary-label">成功/失败 (成功率)</div>
               </div>
             </div>
-            <div class="summary-card summary-card-error">
+            <div class="summary-card summary-card-info" style="flex: 1; min-width: 0;" title="每分钟请求数">
               <div class="summary-icon">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M18 6L6 18M6 6l12 12"/>
+                  <circle cx="12" cy="12" r="10"/>
+                  <path d="M12 6v6l4 2"/>
                 </svg>
               </div>
               <div class="summary-content">
-                <div class="summary-value metric-error" id="error-requests">--</div>
-                <div class="summary-label">失败请求</div>
+                <div class="summary-value" id="total-rpm">--</div>
+                <div class="summary-label">RPM(峰值 平均 最近)</div>
               </div>
             </div>
-            <div class="summary-card summary-card-rate">
+            <div class="summary-card summary-card-warning" style="flex: 1; min-width: 0;" title="每秒请求数">
               <div class="summary-icon">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M3 12h18M3 6h18M3 18h18"/>
+                  <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
                 </svg>
               </div>
               <div class="summary-content">
-                <div class="summary-value metric-rate" id="success-rate">--.-%</div>
-                <div class="summary-label">成功率</div>
+                <div class="summary-value" id="total-qps">--</div>
+                <div class="summary-label">QPS(峰值 平均 最近)</div>
               </div>
             </div>
           </div>

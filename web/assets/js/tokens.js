@@ -1,5 +1,8 @@
     const API_BASE = '/admin';
     let allTokens = [];
+    let durationSeconds = 0; // 时间跨度（秒），用于计算RPM和QPS
+    let rpmStats = null;     // 全局RPM统计（峰值、平均、最近一分钟）
+    let isToday = true;      // 是否为本日（本日才显示最近一分钟）
 
     // 当前选中的时间范围(默认为本日)
     let currentTimeRange = 'today';
@@ -79,7 +82,18 @@
         const response = await fetchWithAuth(url);
         if (!response.ok) throw new Error('加载令牌失败');
         const data = await response.json();
-        allTokens = data.data || [];
+        // 支持两种响应格式：带range时返回{tokens, duration_seconds, rpm_stats, is_today}，不带时返回tokens数组
+        if (data.data && data.data.tokens) {
+          allTokens = data.data.tokens;
+          durationSeconds = data.data.duration_seconds || 1;
+          rpmStats = data.data.rpm_stats || null;
+          isToday = data.data.is_today !== false;
+        } else {
+          allTokens = data.data || [];
+          durationSeconds = 1; // 无时间范围时默认1秒（避免除零）
+          rpmStats = null;
+          isToday = true;
+        }
         renderTokens();
       } catch (error) {
         console.error('加载令牌失败:', error);
@@ -107,6 +121,8 @@
             <th>描述</th>
             <th>令牌</th>
             <th style="text-align: center;">调用次数</th>
+            <th style="text-align: center;" title="每分钟请求数">RPM</th>
+            <th style="text-align: center;" title="每秒请求数">QPS</th>
             <th style="text-align: center;">成功率</th>
             <th style="text-align: center;">Token用量</th>
             <th style="text-align: center;">总费用</th>
@@ -159,8 +175,14 @@
       const totalCount = successCount + failureCount;
       const successRate = totalCount > 0 ? ((successCount / totalCount) * 100).toFixed(1) : 0;
 
+      // 计算 RPM 和 QPS
+      const rpm = totalCount * 60 / durationSeconds;
+      const qps = totalCount / durationSeconds;
+
       // 预构建各个HTML片段(保留条件逻辑在JS中)
       const callsHtml = buildCallsHtml(successCount, failureCount, totalCount);
+      const rpmHtml = buildRpmHtml(rpm);
+      const qpsHtml = buildQpsHtml(qps);
       const successRateHtml = buildSuccessRateHtml(successRate, totalCount);
       const tokensHtml = buildTokensHtml(token);
       const costHtml = buildCostHtml(token.total_cost_usd);
@@ -176,6 +198,8 @@
         createdAt: createdAt,
         expiresAt: expiresAt,
         callsHtml: callsHtml,
+        rpmHtml: rpmHtml,
+        qpsHtml: qpsHtml,
         successRateHtml: successRateHtml,
         tokensHtml: tokensHtml,
         costHtml: costHtml,
@@ -206,6 +230,44 @@
 
       html += '</div>';
       return html;
+    }
+
+    /**
+     * 构建RPM HTML（带颜色）
+     */
+    function buildRpmHtml(rpm) {
+      if (rpm < 0.01) return '';
+      const color = getRpmColor(rpm);
+      const text = rpm >= 1000 ? (rpm / 1000).toFixed(1) + 'K' : rpm >= 1 ? rpm.toFixed(1) : rpm.toFixed(2);
+      return `<span style="color: ${color}; font-weight: 500;">${text}</span>`;
+    }
+
+    /**
+     * 构建QPS HTML（带颜色）
+     */
+    function buildQpsHtml(qps) {
+      if (qps < 0.01) return '';
+      const color = getQpsColor(qps);
+      const text = qps >= 1000 ? (qps / 1000).toFixed(1) + 'K' : qps >= 1 ? qps.toFixed(2) : qps.toFixed(3);
+      return `<span style="color: ${color}; font-weight: 500;">${text}</span>`;
+    }
+
+    /**
+     * RPM 颜色：低流量绿色，中等橙色，高流量红色
+     */
+    function getRpmColor(rpm) {
+      if (rpm < 10) return 'var(--success-600)';
+      if (rpm < 100) return 'var(--warning-600)';
+      return 'var(--error-600)';
+    }
+
+    /**
+     * QPS 颜色：低流量绿色，中等橙色，高流量红色
+     */
+    function getQpsColor(qps) {
+      if (qps < 1) return 'var(--success-600)';
+      if (qps < 10) return 'var(--warning-600)';
+      return 'var(--error-600)';
     }
 
     /**
@@ -326,8 +388,14 @@
       const failureCount = token.failure_count || 0;
       const totalCount = successCount + failureCount;
 
+      // 计算 RPM 和 QPS
+      const rpm = totalCount * 60 / durationSeconds;
+      const qps = totalCount / durationSeconds;
+
       // 预构建HTML片段
       const callsHtml = buildCallsHtml(successCount, failureCount, totalCount);
+      const rpmHtml = buildRpmHtml(rpm);
+      const qpsHtml = buildQpsHtml(qps);
       const successRate = totalCount > 0 ? ((successCount / totalCount) * 100).toFixed(1) : 0;
       const successRateHtml = buildSuccessRateHtml(successRate, totalCount);
       const tokensHtml = buildTokensHtml(token);
@@ -343,6 +411,8 @@
             <div style="font-size: 12px; color: var(--neutral-500); margin-top: 4px;">${createdAt}创建 · ${expiresAt}</div>
           </td>
           <td style="text-align: center;">${callsHtml}</td>
+          <td style="text-align: center;">${rpmHtml}</td>
+          <td style="text-align: center;">${qpsHtml}</td>
           <td style="text-align: center;">${successRateHtml}</td>
           <td style="text-align: center;">${tokensHtml}</td>
           <td style="text-align: center;">${costHtml}</td>
