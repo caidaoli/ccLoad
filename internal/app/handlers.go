@@ -11,9 +11,9 @@ import (
 
 // PaginationParams 通用分页参数结构
 type PaginationParams struct {
-	Range  string `form:"range" binding:"omitempty"` // 时间范围: today/yesterday/this_week等
-	Limit  int    `form:"limit" binding:"omitempty,min=1,max=1000"`
-	Offset int    `form:"offset" binding:"omitempty,min=0"`
+	Range  string // 时间范围: today/yesterday/this_week等
+	Limit  int    // 上限 1000，见 ParsePaginationParams
+	Offset int
 }
 
 // SetDefaults 设置默认值
@@ -122,7 +122,7 @@ func ParsePaginationParams(c *gin.Context) *PaginationParams {
 	params.Range = strings.TrimSpace(c.Query("range"))
 
 	if limit, err := strconv.Atoi(c.DefaultQuery("limit", "200")); err == nil && limit > 0 {
-		params.Limit = limit
+		params.Limit = min(limit, 1000) // 防止超大 limit 拖垮查询
 	}
 	if offset, err := strconv.Atoi(c.DefaultQuery("offset", "0")); err == nil && offset >= 0 {
 		params.Offset = offset
