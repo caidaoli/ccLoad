@@ -50,11 +50,10 @@
       document.getElementById('error-requests').textContent = formatNumber(statsData.error_requests || 0);
       document.getElementById('success-rate').textContent = successRate + '%';
 
-      // 更新 RPM 和 QPS（使用峰值/平均/最近格式）
+      // 更新 RPM（使用峰值/平均/最近格式）
       const rpmStats = statsData.rpm_stats || null;
       const isToday = statsData.is_today !== false;
       updateGlobalRpmDisplay('total-rpm', rpmStats, isToday);
-      updateGlobalQpsDisplay('total-qps', rpmStats, isToday);
 
       // 更新按渠道类型统计
       if (statsData.by_type) {
@@ -91,32 +90,6 @@
       el.innerHTML = parts.length > 0 ? parts.join(' ') : '--';
     }
 
-    // 更新全局 QPS 显示（格式：数值 数值 数值）
-    function updateGlobalQpsDisplay(elementId, stats, showRecent) {
-      const el = document.getElementById(elementId);
-      if (!el) return;
-
-      if (!stats || (stats.peak_qps < 0.01 && stats.avg_qps < 0.01)) {
-        el.innerHTML = '--';
-        return;
-      }
-
-      const fmt = v => v >= 1000 ? (v / 1000).toFixed(1) + 'K' : v.toFixed(1);
-      const parts = [];
-
-      if (stats.peak_qps >= 0.01) {
-        parts.push(`<span style="color:${getQpsColor(stats.peak_qps)}">${fmt(stats.peak_qps)}</span>`);
-      }
-      if (stats.avg_qps >= 0.01) {
-        parts.push(`<span style="color:${getQpsColor(stats.avg_qps)}">${fmt(stats.avg_qps)}</span>`);
-      }
-      if (showRecent && stats.recent_qps >= 0.01) {
-        parts.push(`<span style="color:${getQpsColor(stats.recent_qps)}">${fmt(stats.recent_qps)}</span>`);
-      }
-
-      el.innerHTML = parts.length > 0 ? parts.join(' ') : '--';
-    }
-
     // 格式化RPM数值
     function formatRpmValue(rpm) {
       if (rpm >= 1000) return (rpm / 1000).toFixed(1) + 'K';
@@ -124,24 +97,10 @@
       return rpm.toFixed(2);
     }
 
-    // 格式化QPS数值
-    function formatQpsValue(qps) {
-      if (qps >= 1000) return (qps / 1000).toFixed(1) + 'K';
-      if (qps >= 1) return qps.toFixed(2);
-      return qps.toFixed(3);
-    }
-
     // RPM 颜色
     function getRpmColor(rpm) {
       if (rpm < 10) return 'var(--success-600)';
       if (rpm < 100) return 'var(--warning-600)';
-      return 'var(--error-600)';
-    }
-
-    // QPS 颜色
-    function getQpsColor(qps) {
-      if (qps < 1) return 'var(--success-600)';
-      if (qps < 10) return 'var(--warning-600)';
       return 'var(--error-600)';
     }
 

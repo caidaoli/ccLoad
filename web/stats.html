@@ -127,10 +127,6 @@
                       RPM(峰/均/近)
                       <span class="sort-indicator" id="sort-rpm"></span>
                     </th>
-                    <th class="sortable" data-column="qps" onclick="sortTable('qps')" title="每秒请求数(峰值/平均/最近)">
-                      QPS(峰/均/近)
-                      <span class="sort-indicator" id="sort-qps"></span>
-                    </th>
                     <th class="sortable" data-column="total_input_tokens" onclick="sortTable('total_input_tokens')">
                       输入Token
                       <span class="sort-indicator" id="sort-total_input_tokens"></span>
@@ -216,7 +212,6 @@
       </td>
       <td style="text-align: center;">{{{avgFirstByteTime}}}</td>
       <td style="text-align: right;">{{{rpm}}}</td>
-      <td style="text-align: right;">{{{qps}}}</td>
       <td style="text-align: right;">{{{inputTokens}}}</td>
       <td style="text-align: right;">{{{outputTokens}}}</td>
       <td style="text-align: right;">{{{cacheReadTokens}}}</td>
@@ -234,7 +229,6 @@
       <td style="text-align: center; font-size: 14px;">{{successRateText}}</td>
       <td style="text-align: center;"></td>
       <td style="text-align: right;">{{{rpm}}}</td>
-      <td style="text-align: right;">{{{qps}}}</td>
       <td style="text-align: right;">{{inputTokens}}</td>
       <td style="text-align: right;">{{outputTokens}}</td>
       <td style="text-align: right;"><span style="color: var(--success-600);">{{cacheReadTokens}}</span></td>

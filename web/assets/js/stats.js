@@ -1,10 +1,10 @@
     // 常量定义
-    const STATS_TABLE_COLUMNS = 13; // 统计表列数（新增RPM和QPS列）
+    const STATS_TABLE_COLUMNS = 12; // 统计表列数
 
     let statsData = null;
     let rpmStats = null; // 全局RPM统计（峰值、平均、最近一分钟）
     let isToday = true;  // 是否为本日（本日才显示最近一分钟）
-    let durationSeconds = 0; // 时间跨度（秒），用于计算RPM和QPS
+    let durationSeconds = 0; // 时间跨度（秒），用于计算RPM
     let currentChannelType = 'all'; // 当前选中的渠道类型
     let authTokens = []; // 令牌列表
     let sortState = {
@@ -49,7 +49,7 @@
 
         renderStatsTable();
         updateStatsCount();
-        updateRpmQpsHeaders(); // 更新表头标题
+        updateRpmHeader(); // 更新表头标题
 
       } catch (error) {
         console.error('加载统计数据失败:', error);
@@ -163,11 +163,6 @@
             valueA = a.peak_rpm || 0;
             valueB = b.peak_rpm || 0;
             break;
-          case 'qps':
-            // 使用后端计算的峰值QPS排序（峰值RPM / 60）
-            valueA = (a.peak_rpm || 0) / 60;
-            valueB = (b.peak_rpm || 0) / 60;
-            break;
           case 'success_rate':
             valueA = a.total > 0 ? (a.success / a.total) : 0;
             valueB = b.total > 0 ? (b.success / b.total) : 0;
@@ -242,7 +237,6 @@
 
         // 使用后端返回的 RPM 数据（峰值/平均/最近）
         const rpmHtml = formatEntryRpm(entry, isToday);
-        const qpsHtml = formatEntryQps(entry, isToday);
 
         // 根据成功率设置颜色类
         let successRateClass = 'success-rate';
@@ -290,7 +284,6 @@
           successCount: formatNumber(entry.success || 0),
           errorCount: formatNumber(entry.error || 0),
           rpm: rpmHtml,
-          qps: qpsHtml,
           successRateClass: successRateClass,
           successRateText: successRateText,
           successRate: successRate,
@@ -320,15 +313,13 @@
       const totalSuccessRateVal = totalRequests > 0 ? (totalSuccess / totalRequests) * 100 : 0;
       const totalSuccessRate = totalSuccessRateVal > 0 ? totalSuccessRateVal.toFixed(1) + '%' : '';
 
-      // 使用全局rpm_stats格式化RPM/QPS
+      // 使用全局rpm_stats格式化RPM
       const totalRpmHtml = formatGlobalRpm(rpmStats, isToday);
-      const totalQpsHtml = formatGlobalQps(rpmStats, isToday);
 
       const totalRow = TemplateEngine.render('tpl-stats-total', {
         successCount: formatNumber(totalSuccess),
         errorCount: formatNumber(totalError),
         rpm: totalRpmHtml,
-        qps: totalQpsHtml,
         successRateText: totalSuccessRate,
         inputTokens: formatNumber(totalInputTokens),
         outputTokens: formatNumber(totalOutputTokens),
@@ -428,16 +419,11 @@
       }
     }
 
-    // 根据是否本日更新RPM/QPS表头标题
-    function updateRpmQpsHeaders() {
+    // 根据是否本日更新RPM表头标题
+    function updateRpmHeader() {
       const rpmHeader = document.querySelector('[data-column="rpm"]');
-      const qpsHeader = document.querySelector('[data-column="qps"]');
-
       if (rpmHeader) {
         rpmHeader.childNodes[0].textContent = isToday ? 'RPM(峰/均/近)' : 'RPM(峰/均)';
-      }
-      if (qpsHeader) {
-        qpsHeader.childNodes[0].textContent = isToday ? 'QPS(峰/均/近)' : 'QPS(峰/均)';
       }
     }
 
@@ -512,14 +498,6 @@
       return `<span style="color: ${color}; font-weight: 500;">${text}</span>`;
     }
 
-    // 格式化 QPS（每秒请求数）带颜色
-    function formatQps(qps) {
-      if (qps < 0.01) return '';
-      const color = getQpsColor(qps);
-      const text = qps >= 1000 ? (qps / 1000).toFixed(1) + 'K' : qps >= 1 ? qps.toFixed(2) : qps.toFixed(3);
-      return `<span style="color: ${color}; font-weight: 500;">${text}</span>`;
-    }
-
     // 格式化全局RPM（峰值/平均/最近），固定格式，0显示为-
     function formatGlobalRpm(stats, showRecent) {
       if (!stats) return '-/-' + (showRecent ? '/-' : '');
@@ -539,31 +517,6 @@
       if (showRecent) {
         const recentText = formatVal(stats.recent_rpm);
         const recentColor = recentText !== '-' ? getRpmColor(stats.recent_rpm) : 'inherit';
-        result += `/<span style="color: ${recentColor};">${recentText}</span>`;
-      }
-
-      return result;
-    }
-
-    // 格式化全局QPS（峰值/平均/最近），固定格式，0显示为-
-    function formatGlobalQps(stats, showRecent) {
-      if (!stats) return '-/-' + (showRecent ? '/-' : '');
-
-      const formatVal = (v) => {
-        const text = (v || 0).toFixed(1);
-        return text === '0.0' ? '-' : text;
-      };
-      const peakText = formatVal(stats.peak_qps);
-      const avgText = formatVal(stats.avg_qps);
-
-      const peakColor = peakText !== '-' ? getQpsColor(stats.peak_qps) : 'inherit';
-      const avgColor = avgText !== '-' ? getQpsColor(stats.avg_qps) : 'inherit';
-
-      let result = `<span style="color: ${peakColor};">${peakText}</span>/<span style="color: ${avgColor};">${avgText}</span>`;
-
-      if (showRecent) {
-        const recentText = formatVal(stats.recent_qps);
-        const recentColor = recentText !== '-' ? getQpsColor(stats.recent_qps) : 'inherit';
         result += `/<span style="color: ${recentColor};">${recentText}</span>`;
       }
 
@@ -594,35 +547,6 @@
       return result;
     }
 
-    // 格式化每行的QPS（峰值/平均/最近），固定格式，0显示为-
-    function formatEntryQps(entry, showRecent) {
-      // QPS = RPM / 60
-      const peakQps = (entry.peak_rpm || 0) / 60;
-      const avgQps = (entry.avg_rpm || 0) / 60;
-      const recentQps = (entry.recent_rpm || 0) / 60;
-
-      const formatVal = (v) => {
-        const text = (v || 0).toFixed(1);
-        return text === '0.0' ? '-' : text;
-      };
-
-      const peakText = formatVal(peakQps);
-      const avgText = formatVal(avgQps);
-
-      const peakColor = peakText !== '-' ? getQpsColor(peakQps) : 'inherit';
-      const avgColor = avgText !== '-' ? getQpsColor(avgQps) : 'inherit';
-
-      let result = `<span style="color: ${peakColor};">${peakText}</span>/<span style="color: ${avgColor};">${avgText}</span>`;
-
-      if (showRecent) {
-        const recentText = formatVal(recentQps);
-        const recentColor = recentText !== '-' ? getQpsColor(recentQps) : 'inherit';
-        result += `/<span style="color: ${recentColor};">${recentText}</span>`;
-      }
-
-      return result;
-    }
-
     // 格式化RPM数值（不带颜色）
     function formatRpmValue(rpm) {
       if (rpm >= 1000) return (rpm / 1000).toFixed(1) + 'K';
@@ -630,24 +554,10 @@
       return rpm.toFixed(2);
     }
 
-    // 格式化QPS数值（不带颜色）
-    function formatQpsValue(qps) {
-      if (qps >= 1000) return (qps / 1000).toFixed(1) + 'K';
-      if (qps >= 1) return qps.toFixed(2);
-      return qps.toFixed(3);
-    }
-
     // RPM 颜色：低流量绿色，中等橙色，高流量红色
     function getRpmColor(rpm) {
       if (rpm < 10) return 'var(--success-600)';   // 绿色：低流量
       if (rpm < 100) return 'var(--warning-600)';  // 橙色：中等流量
-      return 'var(--error-600)';                   // 红色：高流量
-    }
-
-    // QPS 颜色：低流量绿色，中等橙色，高流量红色
-    function getQpsColor(qps) {
-      if (qps < 1) return 'var(--success-600)';    // 绿色：低流量
-      if (qps < 10) return 'var(--warning-600)';   // 橙色：中等流量
       return 'var(--error-600)';                   // 红色：高流量
     }
 

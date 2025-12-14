@@ -428,27 +428,8 @@
             return total > 0 ? total / bucketMin : null;
           })
         });
-      } else if (trendType === 'qps') {
-        // QPS趋势：每秒请求数 = (success + error) / (bucketMin * 60)
-        const bucketMin = window.currentHours ? computeBucketMin(window.currentHours) : 5;
-        const bucketSeconds = bucketMin * 60;
-        series.push({
-          name: 'QPS',
-          type: 'line',
-          smooth: true,
-          symbol: 'circle',
-          symbolSize: 4,
-          sampling: 'lttb',
-          connectNulls: true,
-          itemStyle: { color: '#10b981' },
-          lineStyle: { width: 2, color: '#10b981' },
-          data: window.trendData.map(point => {
-            const total = (point.success || 0) + (point.error || 0);
-            return total > 0 ? total / bucketSeconds : null;
-          })
-        });
       }
-      
+
       // 为每个可见渠道添加对应趋势线
       console.log('开始渲染渠道数据，可见渠道:', Array.from(window.visibleChannels));
 
@@ -642,35 +623,6 @@
               data: rpmData
             });
           }
-        } else if (trendType === 'qps') {
-          // QPS趋势：渠道每秒请求数
-          const bucketMin = window.currentHours ? computeBucketMin(window.currentHours) : 5;
-          const bucketSeconds = bucketMin * 60;
-          let hasData = false;
-          const qpsData = window.trendData.map(point => {
-            const channels = point.channels || {};
-            const channelData = channels[channelName] || {};
-            const total = (channelData.success || 0) + (channelData.error || 0);
-            if (total > 0) {
-              hasData = true;
-              return total / bucketSeconds;
-            }
-            return null;
-          });
-
-          if (hasData) {
-            series.push({
-              name: channelName,
-              type: 'line',
-              smooth: true,
-              symbol: 'none',
-              sampling: 'lttb',
-              connectNulls: true,
-              itemStyle: { color: color },
-              lineStyle: { width: 1.5, color: color },
-              data: qpsData
-            });
-          }
         }
       });
 
@@ -733,9 +685,6 @@
               } else if (window.currentTrendType === 'rpm') {
                 // RPM：保留1位小数
                 formattedValue = value.toFixed(1) + '/min';
-              } else if (window.currentTrendType === 'qps') {
-                // QPS：保留2位小数
-                formattedValue = value.toFixed(2) + '/s';
               } else {
                 // 调用次数：整数
                 formattedValue = Math.round(value).toString();
@@ -828,9 +777,6 @@
               } else if (trendType === 'rpm') {
                 // RPM：保留1位小数
                 return value.toFixed(1);
-              } else if (trendType === 'qps') {
-                // QPS：保留2位小数
-                return value.toFixed(2);
               } else {
                 // 调用次数：K/M格式
                 if (value >= 1000000) return (value / 1000000) + 'M';
@@ -1315,7 +1261,7 @@
 
         // 恢复趋势类型
         let savedType = urlParams.get('type') || (!hasUrlParams && localStorage.getItem('trend.trendType')) || 'first_byte';
-        if (['count', 'rpm', 'qps', 'first_byte', 'duration', 'tokens', 'cost'].includes(savedType)) {
+        if (['count', 'rpm', 'first_byte', 'duration', 'tokens', 'cost'].includes(savedType)) {
           window.currentTrendType = savedType;
         }
 
