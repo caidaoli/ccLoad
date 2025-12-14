@@ -44,11 +44,12 @@ func execSelf() {
 	}
 }
 
-// defaultTrustedProxies 默认可信代理（私有网段）
+// defaultTrustedProxies 默认可信代理（私有网段 + 共享地址空间）
 var defaultTrustedProxies = []string{
-	"10.0.0.0/8",     // Class A 私有
-	"172.16.0.0/12",  // Class B 私有
-	"192.168.0.0/16", // Class C 私有
+	"10.0.0.0/8",     // Class A 私有 (RFC 1918)
+	"172.16.0.0/12",  // Class B 私有 (RFC 1918)
+	"192.168.0.0/16", // Class C 私有 (RFC 1918)
+	"100.64.0.0/10",  // 共享地址空间 (RFC 6598, 运营商级NAT/CGNAT)
 	"127.0.0.0/8",    // Loopback
 	"::1/128",        // IPv6 Loopback
 }

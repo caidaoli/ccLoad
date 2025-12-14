@@ -96,6 +96,9 @@ func (s *Server) HandleStats(c *gin.Context) {
 // handlePublicSummary 获取基础统计摘要(公开端点,无需认证)
 // GET /public/summary?range=today
 // 按渠道类型分组统计，Claude和Codex类型包含Token和成本信息
+//
+// [SECURITY NOTE] 该端点故意设计为公开访问，用于首页仪表盘展示。
+// 如需隐藏运营数据，可在 server.go:SetupRoutes 中添加 RequireTokenAuth 中间件。
 func (s *Server) HandlePublicSummary(c *gin.Context) {
 	params := ParsePaginationParams(c)
 	startTime, endTime := params.GetTimeRange()

@@ -36,7 +36,8 @@ type AuthService struct {
 	tokensMux    sync.RWMutex         // 并发保护
 
 	// API 认证（代理 API 使用的数据库令牌）
-	authTokens    map[string]bool  // 数据库令牌集合（SHA256哈希）
+	// [FIX] 2025-12: 存储过期时间而非bool，支持懒惰过期校验
+	authTokens    map[string]int64 // Token哈希 → 过期时间(Unix毫秒，0=永不过期)
 	authTokenIDs  map[string]int64 // Token哈希 → Token ID 映射（用于日志记录，2025-12新增）
 	authTokensMux sync.RWMutex     // 并发保护（支持热更新）
 
@@ -68,7 +69,7 @@ func NewAuthService(
 	s := &AuthService{
 		passwordHash:     passwordHash,
 		validTokens:      make(map[string]time.Time),
-		authTokens:       make(map[string]bool),
+		authTokens:       make(map[string]int64),
 		authTokenIDs:     make(map[string]int64),
 		loginRateLimiter: loginRateLimiter,
 		store:            store,
@@ -243,6 +244,7 @@ func (s *AuthService) RequireTokenAuth() gin.HandlerFunc {
 }
 
 // RequireAPIAuth API 认证中间件（代理 API 使用）
+// [FIX] 2025-12: 添加过期时间校验，支持懒惰剔除过期令牌
 func (s *AuthService) RequireAPIAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 未配置认证令牌时，默认全部返回 401（不允许公开访问）
@@ -297,30 +299,43 @@ func (s *AuthService) RequireAPIAuth() gin.HandlerFunc {
 		tokenHash := model.HashToken(token)
 
 		s.authTokensMux.RLock()
-		isValid := s.authTokens[tokenHash]
+		expiresAt, exists := s.authTokens[tokenHash]
 		tokenID, hasTokenID := s.authTokenIDs[tokenHash]
 		s.authTokensMux.RUnlock()
 
-		if isValid {
-			// 将tokenHash和tokenID存储到context，供后续统计使用（2025-11新增tokenHash, 2025-12新增tokenID）
-			c.Set("token_hash", tokenHash)
-			if hasTokenID {
-				c.Set("token_id", tokenID)
-			}
-
-			// 异步更新last_used_at（发送到受控worker，不阻塞请求）
-			select {
-			case s.lastUsedCh <- tokenHash:
-			default:
-				// channel满时丢弃，避免阻塞（last_used_at非关键数据）
-			}
-
-			c.Next()
+		if !exists {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or missing authorization"})
+			c.Abort()
 			return
 		}
 
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or missing authorization"})
-		c.Abort()
+		// [FIX] 过期校验：expiresAt > 0 表示有过期时间，检查是否已过期
+		if expiresAt > 0 && time.Now().UnixMilli() > expiresAt {
+			// 懒惰剔除：过期时从内存中移除（避免下次还要检查）
+			s.authTokensMux.Lock()
+			delete(s.authTokens, tokenHash)
+			delete(s.authTokenIDs, tokenHash)
+			s.authTokensMux.Unlock()
+
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "token expired"})
+			c.Abort()
+			return
+		}
+
+		// 将tokenHash和tokenID存储到context，供后续统计使用（2025-11新增tokenHash, 2025-12新增tokenID）
+		c.Set("token_hash", tokenHash)
+		if hasTokenID {
+			c.Set("token_id", tokenID)
+		}
+
+		// 异步更新last_used_at（发送到受控worker，不阻塞请求）
+		select {
+		case s.lastUsedCh <- tokenHash:
+		default:
+			// channel满时丢弃，避免阻塞（last_used_at非关键数据）
+		}
+
+		c.Next()
 	}
 }
 
@@ -443,6 +458,7 @@ func (s *AuthService) HandleLogout(c *gin.Context) {
 
 // ReloadAuthTokens 从数据库重新加载API访问令牌
 // 用于CRUD操作后立即生效，无需重启服务
+// [FIX] 2025-12: 同时加载过期时间，支持懒惰过期校验
 func (s *AuthService) ReloadAuthTokens() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -452,11 +468,16 @@ func (s *AuthService) ReloadAuthTokens() error {
 		return fmt.Errorf("reload auth tokens: %w", err)
 	}
 
-	// 构建新的令牌映射（2025-12扩展：同时构建tokenID映射）
-	newTokens := make(map[string]bool, len(tokens))
+	// 构建新的令牌映射（存储过期时间而非bool）
+	newTokens := make(map[string]int64, len(tokens))
 	newTokenIDs := make(map[string]int64, len(tokens))
 	for _, t := range tokens {
-		newTokens[t.Token] = true
+		// ExpiresAt: nil → 0 (永不过期), *int64 → Unix毫秒
+		var expiresAt int64
+		if t.ExpiresAt != nil {
+			expiresAt = *t.ExpiresAt
+		}
+		newTokens[t.Token] = expiresAt
 		newTokenIDs[t.Token] = t.ID
 	}
 
