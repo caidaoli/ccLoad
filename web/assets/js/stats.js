@@ -342,9 +342,12 @@
       const model = u.get('model_like') || u.get('model') || (!hasUrlParams && saved?.model) || '';
       const authToken = u.get('auth_token_id') || (!hasUrlParams && saved?.authToken) || '';
 
-      // 初始化时间范围选择器 (默认"本日")
+      // 初始化时间范围选择器 (默认"本日")，切换后立即筛选
       if (window.initDateRangeSelector) {
-        initDateRangeSelector('f_hours', 'today', null);
+        initDateRangeSelector('f_hours', 'today', () => {
+          saveStatsFilters();
+          applyFilter();
+        });
         // 设置URL中的值
         document.getElementById('f_hours').value = range;
       }
@@ -356,6 +359,12 @@
       // 加载令牌列表
       loadAuthTokens().then(() => {
         document.getElementById('f_auth_token').value = authToken;
+      });
+
+      // 令牌选择器切换后立即筛选
+      document.getElementById('f_auth_token').addEventListener('change', () => {
+        saveStatsFilters();
+        applyFilter();
       });
 
       // 事件监听
