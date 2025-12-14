@@ -115,14 +115,6 @@
                       失败次数
                       <span class="sort-indicator" id="sort-error"></span>
                     </th>
-                    <th class="sortable" data-column="rpm" onclick="sortTable('rpm')" title="每分钟请求数(峰值/平均/最近)">
-                      RPM(峰/均/近)
-                      <span class="sort-indicator" id="sort-rpm"></span>
-                    </th>
-                    <th class="sortable" data-column="qps" onclick="sortTable('qps')" title="每秒请求数(峰值/平均/最近)">
-                      QPS(峰/均/近)
-                      <span class="sort-indicator" id="sort-qps"></span>
-                    </th>
                     <th class="sortable" data-column="success_rate" onclick="sortTable('success_rate')">
                       成功率
                       <span class="sort-indicator" id="sort-success_rate"></span>
@@ -130,6 +122,14 @@
                     <th class="sortable" data-column="avg_first_byte_time" onclick="sortTable('avg_first_byte_time')">
                       平均首字/耗时(秒)
                       <span class="sort-indicator" id="sort-avg_first_byte_time"></span>
+                    </th>
+                    <th class="sortable" data-column="rpm" onclick="sortTable('rpm')" title="每分钟请求数(峰值/平均/最近)">
+                      RPM(峰/均/近)
+                      <span class="sort-indicator" id="sort-rpm"></span>
+                    </th>
+                    <th class="sortable" data-column="qps" onclick="sortTable('qps')" title="每秒请求数(峰值/平均/最近)">
+                      QPS(峰/均/近)
+                      <span class="sort-indicator" id="sort-qps"></span>
                     </th>
                     <th class="sortable" data-column="total_input_tokens" onclick="sortTable('total_input_tokens')">
                       输入Token
@@ -208,8 +208,6 @@
       <td>{{{modelDisplay}}}</td>
       <td><span class="success-count">{{successCount}}</span></td>
       <td><span class="error-count">{{errorCount}}</span></td>
-      <td style="text-align: right;">{{{rpm}}}</td>
-      <td style="text-align: right;">{{{qps}}}</td>
       <td>
         <div class="{{successRateClass}}">{{successRateText}}</div>
         <div class="progress-bar">
@@ -217,6 +215,8 @@
         </div>
       </td>
       <td style="text-align: center;">{{{avgFirstByteTime}}}</td>
+      <td style="text-align: right;">{{{rpm}}}</td>
+      <td style="text-align: right;">{{{qps}}}</td>
       <td style="text-align: right;">{{{inputTokens}}}</td>
       <td style="text-align: right;">{{{outputTokens}}}</td>
       <td style="text-align: right;">{{{cacheReadTokens}}}</td>
@@ -231,10 +231,10 @@
       <td colspan="2" style="text-align: center; font-size: 15px; color: var(--primary-700);">合计</td>
       <td><span class="success-count">{{successCount}}</span></td>
       <td><span class="error-count">{{errorCount}}</span></td>
-      <td style="text-align: right;">{{{rpm}}}</td>
-      <td style="text-align: right;">{{{qps}}}</td>
       <td style="text-align: center; font-size: 14px;">{{successRateText}}</td>
       <td style="text-align: center;"></td>
+      <td style="text-align: right;">{{{rpm}}}</td>
+      <td style="text-align: right;">{{{qps}}}</td>
       <td style="text-align: right;">{{inputTokens}}</td>
       <td style="text-align: right;">{{outputTokens}}</td>
       <td style="text-align: right;"><span style="color: var(--success-600);">{{cacheReadTokens}}</span></td>
