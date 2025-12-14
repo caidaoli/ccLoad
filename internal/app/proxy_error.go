@@ -48,7 +48,13 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *model.Config, keyInd
 	// 好处：消除重复逻辑，单一职责，便于测试和维护
 	// manager.HandleError 现在不返回错误（日志记录方式）
 	// 因此这里不再需要检查 cooldownErr，直接使用 action 即可
-	action, _ := s.cooldownManager.HandleError(ctx, cfg.ID, keyIndex, statusCode, errorBody, isNetworkError, headers)
+	//
+	// [FIX] 2025-12: 使用 WithoutCancel 断开取消链，但保留 context 值（如 trace ID）
+	// 原因：当客户端取消或首字节超时时，请求 ctx 已经 Done，
+	// 会导致冷却写入被短路，同一个坏 Key/渠道被反复打爆
+	cooldownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+	action, _ := s.cooldownManager.HandleError(cooldownCtx, cfg.ID, keyIndex, statusCode, errorBody, isNetworkError, headers)
 
 	// 根据冷却管理器的决策执行相应动作
 	switch action {

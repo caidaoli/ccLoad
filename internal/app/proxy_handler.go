@@ -223,8 +223,10 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		// 所有Key冷却：触发渠道级冷却(503)，防止后续请求重复尝试
 		// 使用 cooldownManager.HandleError 统一处理（DRY原则）
 		if err != nil && errors.Is(err, ErrAllKeysUnavailable) {
-			// 使用统一的冷却决策引擎，传入503状态码表示服务不可用
-			_, _ = s.cooldownManager.HandleError(ctx, cfg.ID, -1, 503, nil, false, nil)
+			// [FIX] 2025-12: 使用独立 context，避免请求取消导致冷却写入失败
+			cooldownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			_, _ = s.cooldownManager.HandleError(cooldownCtx, cfg.ID, -1, 503, nil, false, nil)
+			cancel()
 			s.invalidateChannelRelatedCache(cfg.ID)
 			continue
 		}

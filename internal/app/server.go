@@ -344,6 +344,16 @@ func (s *Server) invalidateChannelRelatedCache(channelID int64) {
 	s.invalidateCooldownCache()
 }
 
+// GetWriteTimeout 返回建议的 HTTP WriteTimeout
+// 基于 nonStreamTimeout 动态计算，确保传输层超时 >= 业务层超时
+func (s *Server) GetWriteTimeout() time.Duration {
+	const minWriteTimeout = 120 * time.Second
+	if s.nonStreamTimeout > minWriteTimeout {
+		return s.nonStreamTimeout
+	}
+	return minWriteTimeout
+}
+
 // SetupRoutes - 新的路由设置函数，适配Gin
 func (s *Server) SetupRoutes(r *gin.Engine) {
 	// 公开访问的API（代理服务）- 需要 API 认证

@@ -122,12 +122,17 @@ func main() {
 	// 配置可信代理，防止 X-Forwarded-For 伪造绕过登录限速
 	// TRUSTED_PROXIES 环境变量：逗号分隔的 CIDR 列表，设为 "none" 则不信任任何代理
 	// 未配置时默认信任私有网段（适用于内网反向代理场景）
+	// [FIX] 2025-12: 检查 SetTrustedProxies 返回值，fail-fast 避免静默的信任链缺口
 	trustedProxies := getTrustedProxies()
 	if trustedProxies == nil {
-		r.SetTrustedProxies(nil)
+		if err := r.SetTrustedProxies(nil); err != nil {
+			log.Fatalf("[FATAL] 设置可信代理失败: %v", err)
+		}
 		log.Printf("[CONFIG] 可信代理: 无 (直接暴露)")
 	} else {
-		r.SetTrustedProxies(trustedProxies)
+		if err := r.SetTrustedProxies(trustedProxies); err != nil {
+			log.Fatalf("[FATAL] 设置可信代理失败: %v (配置: %v)", err, trustedProxies)
+		}
 		log.Printf("[CONFIG] 可信代理: %v", trustedProxies)
 	}
 
@@ -149,6 +154,8 @@ func main() {
 	}
 
 	// 使用http.Server支持优雅关闭
+	// WriteTimeout 动态计算：确保 >= nonStreamTimeout，避免传输层截断业务层超时
+	writeTimeout := srv.GetWriteTimeout()
 	httpServer := &http.Server{
 		Addr:    addr,
 		Handler: r,
@@ -157,9 +164,10 @@ func main() {
 		// 即使绕过应用层并发控制，也会在HTTP层被杀死
 		ReadHeaderTimeout: 5 * time.Second,   // 防止慢速发送header（slowloris攻击）
 		ReadTimeout:       120 * time.Second, // 防止慢速发送body（兼容长请求）
-		WriteTimeout:      120 * time.Second, // 防止慢速读取响应（兼容流式输出）
+		WriteTimeout:      writeTimeout,      // 动态值，>= nonStreamTimeout
 		IdleTimeout:       60 * time.Second,  // 防止keep-alive连接占用fd
 	}
+	log.Printf("[CONFIG] HTTP WriteTimeout: %v", writeTimeout)
 
 	// 启动HTTP服务器（在goroutine中）
 	go func() {
