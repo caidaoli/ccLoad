@@ -431,7 +431,7 @@ func (s *Server) forwardAttempt(
 	// 处理网络错误或异常响应（如空响应）
 	// [INFO] 修复：handleResponse可能返回err即使StatusCode=200（例如Content-Length=0）
 	if err != nil {
-		return s.handleNetworkError(ctx, cfg, keyIndex, actualModel, selectedKey, reqCtx.tokenID, duration, err)
+		return s.handleNetworkError(ctx, cfg, keyIndex, actualModel, selectedKey, reqCtx.tokenID, reqCtx.clientIP, duration, err)
 	}
 
 	// 处理成功响应（仅当err==nil且状态码2xx时）

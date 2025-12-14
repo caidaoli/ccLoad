@@ -44,6 +44,38 @@ func execSelf() {
 	}
 }
 
+// defaultTrustedProxies 默认可信代理（私有网段）
+var defaultTrustedProxies = []string{
+	"10.0.0.0/8",     // Class A 私有
+	"172.16.0.0/12",  // Class B 私有
+	"192.168.0.0/16", // Class C 私有
+	"127.0.0.0/8",    // Loopback
+	"::1/128",        // IPv6 Loopback
+}
+
+// getTrustedProxies 获取可信代理配置
+// 环境变量 TRUSTED_PROXIES: 逗号分隔的 CIDR，"none" 表示不信任任何代理
+// 未设置时返回私有网段默认值
+func getTrustedProxies() []string {
+	v := os.Getenv("TRUSTED_PROXIES")
+	if v == "" {
+		return defaultTrustedProxies
+	}
+	if v == "none" {
+		return nil
+	}
+	var proxies []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			proxies = append(proxies, p)
+		}
+	}
+	if len(proxies) == 0 {
+		return nil
+	}
+	return proxies
+}
+
 func main() {
 	// 优先读取.env文件
 	if err := godotenv.Load(); err != nil {
@@ -85,6 +117,18 @@ func main() {
 
 	// 创建Gin引擎
 	r := gin.New()
+
+	// 配置可信代理，防止 X-Forwarded-For 伪造绕过登录限速
+	// TRUSTED_PROXIES 环境变量：逗号分隔的 CIDR 列表，设为 "none" 则不信任任何代理
+	// 未配置时默认信任私有网段（适用于内网反向代理场景）
+	trustedProxies := getTrustedProxies()
+	if trustedProxies == nil {
+		r.SetTrustedProxies(nil)
+		log.Printf("[CONFIG] 可信代理: 无 (直接暴露)")
+	} else {
+		r.SetTrustedProxies(trustedProxies)
+		log.Printf("[CONFIG] 可信代理: %v", trustedProxies)
+	}
 
 	// 添加基础中间件
 	r.Use(gin.Logger())

@@ -190,6 +190,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			StatusCode:  503,
 			Message:     "no available upstream (all cooled or none)",
 			IsStreaming: isStreaming,
+			ClientIP:    c.ClientIP(),
 		})
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no available upstream (all cooled or none)"})
 		return
@@ -211,6 +212,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		isStreaming:   isStreaming,
 		tokenHash:     tokenHashStr,
 		tokenID:       tokenIDInt64,
+		clientIP:      c.ClientIP(),
 	}
 
 	// 按优先级遍历候选渠道，尝试转发
@@ -268,6 +270,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		StatusCode:  finalStatus,
 		Message:     msg,
 		IsStreaming: isStreaming,
+		ClientIP:    reqCtx.clientIP,
 	})
 
 	if lastResult != nil && lastResult.status != 0 {

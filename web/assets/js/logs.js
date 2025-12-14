@@ -23,20 +23,25 @@
       try {
         showLoading();
 
-        const u = new URLSearchParams(location.search);
+        // 从表单元素获取筛选条件（支持下拉框切换后立即生效）
+        const range = document.getElementById('f_hours')?.value || 'today';
+        const channelId = document.getElementById('f_id')?.value?.trim() || '';
+        const channelName = document.getElementById('f_name')?.value?.trim() || '';
+        const model = document.getElementById('f_model')?.value?.trim() || '';
+        const statusCode = document.getElementById('f_status')?.value?.trim() || '';
+        const authTokenId = document.getElementById('f_auth_token')?.value?.trim() || '';
+
         const params = new URLSearchParams({
-          range: (u.get('range')||'today'),
+          range,
           limit: logsPageSize.toString(),
           offset: ((currentLogsPage - 1) * logsPageSize).toString()
         });
 
-        if (u.get('channel_id')) params.set('channel_id', u.get('channel_id'));
-        if (u.get('channel_name')) params.set('channel_name', u.get('channel_name'));
-        if (u.get('channel_name_like')) params.set('channel_name_like', u.get('channel_name_like'));
-        if (u.get('model')) params.set('model', u.get('model'));
-        if (u.get('model_like')) params.set('model_like', u.get('model_like'));
-        if (u.get('status_code')) params.set('status_code', u.get('status_code'));
-        if (u.get('auth_token_id')) params.set('auth_token_id', u.get('auth_token_id'));
+        if (channelId) params.set('channel_id', channelId);
+        if (channelName) params.set('channel_name_like', channelName);
+        if (model) params.set('model_like', model);
+        if (statusCode) params.set('status_code', statusCode);
+        if (authTokenId) params.set('auth_token_id', authTokenId);
 
         // 添加渠道类型筛选
         if (currentChannelType && currentChannelType !== 'all') {
@@ -113,6 +118,11 @@
 
       for (const entry of data) {
         // === 预处理数据：构建复杂HTML片段 ===
+
+        // 0. 客户端IP显示
+        const clientIPDisplay = entry.client_ip ?
+          escapeHtml(entry.client_ip) :
+          '<span style="color: var(--neutral-400);">-</span>';
 
         // 1. 渠道信息显示
         const configInfo = entry.channel_name ||
@@ -235,6 +245,7 @@
         // === 渲染行 ===
         const rowEl = TemplateEngine.render('tpl-log-row', {
           time: formatTime(entry.time),
+          clientIPDisplay,
           modelDisplay,
           configDisplay,
           apiKeyDisplay,

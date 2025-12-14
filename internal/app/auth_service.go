@@ -298,12 +298,13 @@ func (s *AuthService) RequireAPIAuth() gin.HandlerFunc {
 
 		s.authTokensMux.RLock()
 		isValid := s.authTokens[tokenHash]
+		tokenID, hasTokenID := s.authTokenIDs[tokenHash]
 		s.authTokensMux.RUnlock()
 
 		if isValid {
 			// 将tokenHash和tokenID存储到context，供后续统计使用（2025-11新增tokenHash, 2025-12新增tokenID）
 			c.Set("token_hash", tokenHash)
-			if tokenID, ok := s.authTokenIDs[tokenHash]; ok {
+			if hasTokenID {
 				c.Set("token_id", tokenID)
 			}
 

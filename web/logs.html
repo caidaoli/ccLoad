@@ -100,6 +100,7 @@
                 <thead>
                   <tr>
                     <th>时间</th>
+                    <th>IP</th>
                     <th>模型</th>
                     <th>渠道</th>
                     <th>API Key</th>
@@ -219,6 +220,7 @@
   <template id="tpl-log-row">
     <tr>
       <td style="white-space: nowrap;">{{time}}</td>
+      <td style="white-space: nowrap; font-family: monospace; font-size: 0.85em; color: var(--neutral-600);">{{{clientIPDisplay}}}</td>
       <td>{{{modelDisplay}}}</td>
       <td class="config-info">{{{configDisplay}}}</td>
       <td style="text-align: center; white-space: nowrap;">{{{apiKeyDisplay}}}</td>

@@ -54,6 +54,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureLogsAuthTokenID(ctx, db); err != nil {
 				return fmt.Errorf("migrate logs.auth_token_id: %w", err)
 			}
+			if err := ensureLogsClientIP(ctx, db); err != nil {
+				return fmt.Errorf("migrate logs.client_ip: %w", err)
+			}
 		}
 
 		// 增量迁移：确保auth_tokens表有缓存token字段（2025-12新增）
@@ -101,6 +104,30 @@ func ensureLogsAuthTokenID(ctx context.Context, db *sql.DB) error {
 	)
 	if err != nil {
 		return fmt.Errorf("add auth_token_id column: %w", err)
+	}
+
+	return nil
+}
+
+// ensureLogsClientIP 确保logs表有client_ip字段(MySQL增量迁移,2025-12新增)
+func ensureLogsClientIP(ctx context.Context, db *sql.DB) error {
+	var count int
+	err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='logs' AND COLUMN_NAME='client_ip'",
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check column existence: %w", err)
+	}
+
+	if count > 0 {
+		return nil
+	}
+
+	_, err = db.ExecContext(ctx,
+		"ALTER TABLE logs ADD COLUMN client_ip VARCHAR(45) NOT NULL DEFAULT '' COMMENT '客户端IP地址(新增2025-12)'",
+	)
+	if err != nil {
+		return fmt.Errorf("add client_ip column: %w", err)
 	}
 
 	return nil
