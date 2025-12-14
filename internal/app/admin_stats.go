@@ -84,13 +84,35 @@ func (s *Server) HandleStats(c *gin.Context) {
 	lf := BuildLogFilter(c)
 
 	startTime, endTime := params.GetTimeRange()
-	stats, err := s.store.GetStats(c.Request.Context(), startTime, endTime, &lf)
+
+	// 判断是否为本日（本日才计算最近一分钟）
+	isToday := params.Range == "today" || params.Range == ""
+
+	stats, err := s.store.GetStats(c.Request.Context(), startTime, endTime, &lf, isToday)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
 
-	RespondJSON(c, http.StatusOK, gin.H{"stats": stats})
+	// 计算时间跨度（秒），用于前端计算RPM和QPS
+	durationSeconds := endTime.Sub(startTime).Seconds()
+	if durationSeconds < 1 {
+		durationSeconds = 1 // 防止除零
+	}
+
+	// 获取RPM统计（峰值、平均、最近一分钟）
+	rpmStats, err := s.store.GetRPMStats(c.Request.Context(), startTime, endTime, &lf, isToday)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	RespondJSON(c, http.StatusOK, gin.H{
+		"stats":            stats,
+		"duration_seconds": durationSeconds,
+		"rpm_stats":        rpmStats,
+		"is_today":         isToday,
+	})
 }
 
 // handlePublicSummary 获取基础统计摘要(公开端点,无需认证)
@@ -102,7 +124,24 @@ func (s *Server) HandleStats(c *gin.Context) {
 func (s *Server) HandlePublicSummary(c *gin.Context) {
 	params := ParsePaginationParams(c)
 	startTime, endTime := params.GetTimeRange()
-	stats, err := s.store.GetStats(c.Request.Context(), startTime, endTime, nil) // 不使用过滤条件
+
+	// 判断是否为本日（本日才计算最近一分钟）
+	isToday := params.Range == "today" || params.Range == ""
+
+	stats, err := s.store.GetStats(c.Request.Context(), startTime, endTime, nil, isToday) // 不使用过滤条件
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	// 计算时间跨度（秒），用于前端计算RPM和QPS
+	durationSeconds := endTime.Sub(startTime).Seconds()
+	if durationSeconds < 1 {
+		durationSeconds = 1 // 防止除零
+	}
+
+	// 获取RPM统计（峰值、平均、最近一分钟）
+	rpmStats, err := s.store.GetRPMStats(c.Request.Context(), startTime, endTime, nil, isToday)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -174,6 +213,9 @@ func (s *Server) HandlePublicSummary(c *gin.Context) {
 		"success_requests": totalSuccess,
 		"error_requests":   totalError,
 		"range":            params.Range,
+		"duration_seconds": durationSeconds,
+		"rpm_stats":        rpmStats,
+		"is_today":         isToday,
 		"by_type":          typeStats, // 按渠道类型分组的统计
 	}
 

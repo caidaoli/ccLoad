@@ -43,6 +43,11 @@ type StatsEntry struct {
 	AvgFirstByteTimeSeconds *float64 `json:"avg_first_byte_time_seconds,omitempty"` // 流式请求平均首字响应时间(秒)
 	AvgDurationSeconds      *float64 `json:"avg_duration_seconds,omitempty"`        // 平均总耗时(秒)
 
+	// RPM/QPS统计（基于分钟级数据）
+	PeakRPM   *float64 `json:"peak_rpm,omitempty"`   // 峰值RPM（该渠道+模型的最大每分钟请求数）
+	AvgRPM    *float64 `json:"avg_rpm,omitempty"`    // 平均RPM
+	RecentRPM *float64 `json:"recent_rpm,omitempty"` // 最近一分钟RPM（仅本日有效）
+
 	// Token统计（2025-11新增）
 	TotalInputTokens              *int64   `json:"total_input_tokens,omitempty"`                // 总输入Token
 	TotalOutputTokens             *int64   `json:"total_output_tokens,omitempty"`               // 总输出Token
@@ -50,3 +55,14 @@ type StatsEntry struct {
 	TotalCacheCreationInputTokens *int64   `json:"total_cache_creation_input_tokens,omitempty"` // 总缓存创建Token
 	TotalCost                     *float64 `json:"total_cost,omitempty"`                        // 总成本（美元）
 }
+
+// RPMStats 包含RPM/QPS相关的统计数据
+type RPMStats struct {
+	PeakRPM   float64 `json:"peak_rpm"`   // 峰值RPM（每分钟最大请求数）
+	PeakQPS   float64 `json:"peak_qps"`   // 峰值QPS（每秒最大请求数）
+	AvgRPM    float64 `json:"avg_rpm"`    // 平均RPM
+	AvgQPS    float64 `json:"avg_qps"`    // 平均QPS
+	RecentRPM float64 `json:"recent_rpm"` // 最近一分钟RPM（仅本日有效）
+	RecentQPS float64 `json:"recent_qps"` // 最近一分钟QPS（仅本日有效）
+}
+

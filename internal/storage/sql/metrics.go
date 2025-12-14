@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"ccLoad/internal/model"
@@ -406,7 +407,7 @@ func (s *SQLStore) AggregateRange(ctx context.Context, since, until time.Time, b
 
 // GetStats 实现统计功能，按渠道和模型统计成功/失败次数
 // 性能优化：批量查询渠道名称消除N+1问题（100渠道场景提升50-100倍）
-func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.StatsEntry, error) {
+func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) ([]model.StatsEntry, error) {
 	// 使用查询构建器构建统计查询
 	baseQuery := `
 		SELECT
@@ -527,5 +528,207 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 		}
 	}
 
+	// 计算每个channel_id+model的RPM统计
+	if len(stats) > 0 {
+		if err := s.fillStatsRPM(ctx, stats, startTime, endTime, filter, isToday); err != nil {
+			// 降级处理：RPM计算失败不影响主要统计数据
+			log.Printf("[WARN] 计算RPM统计失败: %v", err)
+		}
+	}
+
 	return stats, nil
+}
+
+// GetRPMStats 获取RPM/QPS统计数据（峰值、平均、最近一分钟）
+// isToday参数控制是否计算最近一分钟数据（仅本日有意义）
+func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) (*model.RPMStats, error) {
+	stats := &model.RPMStats{}
+
+	startMs := startTime.UnixMilli()
+	endMs := endTime.UnixMilli()
+
+	// 获取需要过滤的渠道ID列表
+	var channelIDs []int64
+	if filter != nil && filter.ChannelType != "" {
+		ids, err := s.fetchChannelIDsByType(ctx, filter.ChannelType)
+		if err != nil {
+			return nil, fmt.Errorf("get channel IDs by type: %w", err)
+		}
+		if len(ids) == 0 {
+			// 没有匹配的渠道，返回空统计
+			return stats, nil
+		}
+		channelIDs = ids
+	}
+
+	// 构建渠道过滤条件
+	channelFilter := "channel_id > 0"
+	var channelArgs []any
+	if len(channelIDs) > 0 {
+		placeholders := make([]string, len(channelIDs))
+		for i, id := range channelIDs {
+			placeholders[i] = "?"
+			channelArgs = append(channelArgs, id)
+		}
+		channelFilter = "channel_id IN (" + strings.Join(placeholders, ",") + ")"
+	}
+
+	// 1. 计算峰值RPM（每分钟请求数的最大值）
+	peakQuery := fmt.Sprintf(`
+		SELECT COALESCE(MAX(cnt), 0) as peak_rpm FROM (
+			SELECT COUNT(*) as cnt
+			FROM logs
+			WHERE time >= ? AND time <= ? AND %s
+			GROUP BY time / 60000
+		) t`, channelFilter)
+
+	peakArgs := append([]any{startMs, endMs}, channelArgs...)
+	var peakRPM float64
+	if err := s.db.QueryRowContext(ctx, peakQuery, peakArgs...).Scan(&peakRPM); err != nil {
+		return nil, fmt.Errorf("query peak RPM: %w", err)
+	}
+	stats.PeakRPM = peakRPM
+	stats.PeakQPS = peakRPM / 60
+
+	// 2. 计算平均RPM/QPS
+	durationSeconds := endTime.Sub(startTime).Seconds()
+	if durationSeconds < 1 {
+		durationSeconds = 1
+	}
+
+	totalQuery := fmt.Sprintf(`SELECT COUNT(*) FROM logs WHERE time >= ? AND time <= ? AND %s`, channelFilter)
+	totalArgs := append([]any{startMs, endMs}, channelArgs...)
+	var totalCount int64
+	if err := s.db.QueryRowContext(ctx, totalQuery, totalArgs...).Scan(&totalCount); err != nil {
+		return nil, fmt.Errorf("query total count: %w", err)
+	}
+
+	stats.AvgRPM = float64(totalCount) * 60 / durationSeconds
+	stats.AvgQPS = float64(totalCount) / durationSeconds
+
+	// 3. 计算最近一分钟（仅本日有意义）
+	if isToday {
+		now := time.Now()
+		recentStartMs := now.Add(-60 * time.Second).UnixMilli()
+		recentEndMs := now.UnixMilli()
+
+		recentQuery := fmt.Sprintf(`SELECT COUNT(*) FROM logs WHERE time >= ? AND time <= ? AND %s`, channelFilter)
+		recentArgs := append([]any{recentStartMs, recentEndMs}, channelArgs...)
+		var recentCount int64
+		if err := s.db.QueryRowContext(ctx, recentQuery, recentArgs...).Scan(&recentCount); err != nil {
+			return nil, fmt.Errorf("query recent count: %w", err)
+		}
+
+		stats.RecentRPM = float64(recentCount)
+		stats.RecentQPS = float64(recentCount) / 60
+	}
+
+	return stats, nil
+}
+
+// fillStatsRPM 计算每个channel_id+model组合的RPM统计数据
+// 使用分钟级分组计算峰值RPM，避免因时间跨度大导致的值过小问题
+func (s *SQLStore) fillStatsRPM(ctx context.Context, stats []model.StatsEntry, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) error {
+	startMs := startTime.UnixMilli()
+	endMs := endTime.UnixMilli()
+
+	// 计算时间跨度（秒）用于平均RPM
+	durationSeconds := endTime.Sub(startTime).Seconds()
+	if durationSeconds < 1 {
+		durationSeconds = 1
+	}
+
+	// 查询每个channel_id+model的峰值RPM（每分钟请求数的最大值）
+	peakQuery := `
+		SELECT channel_id, COALESCE(model, '') AS model, MAX(cnt) AS peak_rpm
+		FROM (
+			SELECT channel_id, model, COUNT(*) AS cnt
+			FROM logs
+			WHERE time >= ? AND time <= ? AND channel_id > 0
+			GROUP BY channel_id, model, time / 60000
+		) t
+		GROUP BY channel_id, model`
+
+	rows, err := s.db.QueryContext(ctx, peakQuery, startMs, endMs)
+	if err != nil {
+		return fmt.Errorf("query peak RPM: %w", err)
+	}
+	defer rows.Close()
+
+	// 构建 (channel_id, model) -> peak_rpm 映射
+	type statsKey struct {
+		channelID int
+		model     string
+	}
+	peakRPMMap := make(map[statsKey]float64)
+
+	for rows.Next() {
+		var channelID int
+		var model string
+		var peakRPM float64
+		if err := rows.Scan(&channelID, &model, &peakRPM); err != nil {
+			return fmt.Errorf("scan peak RPM: %w", err)
+		}
+		peakRPMMap[statsKey{channelID, model}] = peakRPM
+	}
+
+	// 如果是本日，查询每个channel_id+model的最近一分钟RPM
+	recentRPMMap := make(map[statsKey]float64)
+	if isToday {
+		now := time.Now()
+		recentStartMs := now.Add(-60 * time.Second).UnixMilli()
+		recentEndMs := now.UnixMilli()
+
+		recentQuery := `
+			SELECT channel_id, COALESCE(model, '') AS model, COUNT(*) AS cnt
+			FROM logs
+			WHERE time >= ? AND time <= ? AND channel_id > 0
+			GROUP BY channel_id, model`
+
+		recentRows, err := s.db.QueryContext(ctx, recentQuery, recentStartMs, recentEndMs)
+		if err != nil {
+			return fmt.Errorf("query recent RPM: %w", err)
+		}
+		defer recentRows.Close()
+
+		for recentRows.Next() {
+			var channelID int
+			var model string
+			var cnt float64
+			if err := recentRows.Scan(&channelID, &model, &cnt); err != nil {
+				return fmt.Errorf("scan recent RPM: %w", err)
+			}
+			recentRPMMap[statsKey{channelID, model}] = cnt
+		}
+	}
+
+	// 填充到stats中
+	for i := range stats {
+		entry := &stats[i]
+		if entry.ChannelID == nil {
+			continue
+		}
+
+		key := statsKey{*entry.ChannelID, entry.Model}
+
+		// 峰值RPM
+		if peakRPM, ok := peakRPMMap[key]; ok && peakRPM > 0 {
+			entry.PeakRPM = &peakRPM
+		}
+
+		// 平均RPM = total * 60 / durationSeconds
+		if entry.Total > 0 {
+			avgRPM := float64(entry.Total) * 60 / durationSeconds
+			entry.AvgRPM = &avgRPM
+		}
+
+		// 最近一分钟RPM（仅本日）
+		if isToday {
+			if recentRPM, ok := recentRPMMap[key]; ok && recentRPM > 0 {
+				entry.RecentRPM = &recentRPM
+			}
+		}
+	}
+
+	return nil
 }
