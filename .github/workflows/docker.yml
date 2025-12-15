@@ -62,7 +62,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
-            BUILDKIT_INLINE_CACHE=1
+            VERSION=${{ github.ref_name }}
           provenance: false
 
       - name: Generate artifact attestation

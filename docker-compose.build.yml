@@ -5,6 +5,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # 版本号：用于静态资源缓存控制
+        # - dev（默认）：开发环境，静态资源不缓存
+        # - v1.x.x：生产环境，静态资源长缓存
+        # 生产构建: VERSION=$(git describe --tags --always) docker-compose -f docker-compose.build.yml build
+        VERSION: ${VERSION:-dev}
     image: ccload:local
     container_name: ccload
     restart: unless-stopped

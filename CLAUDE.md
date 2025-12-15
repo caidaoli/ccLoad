@@ -3,14 +3,15 @@
 ## 构建与测试
 
 ```bash
-# 构建(必须 -tags go_json)
-go build -tags go_json -o ccload .
+# 构建(必须 -tags go_json，注入版本号用于静态资源缓存)
+VERSION=$(git describe --tags --always)
+go build -tags go_json -ldflags "-X ccLoad/internal/version.Version=$VERSION" -o ccload .
 
 # 测试(必须 -tags go_json)
 go test -tags go_json ./internal/... -v
 go test -tags go_json -race ./internal/...  # 竞态检测
 
-# 运行
+# 开发运行(版本号为dev)
 export CCLOAD_PASS=test123  # 必填
 go run -tags go_json .
 ```

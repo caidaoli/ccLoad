@@ -4,6 +4,9 @@
 # 构建阶段
 FROM golang:1.25.0-alpine AS builder
 
+# 版本号参数（优先使用 --build-arg VERSION=xxx，否则尝试从 git 获取）
+ARG VERSION
+
 # 安装构建依赖
 RUN apk add --no-cache git ca-certificates tzdata gcc musl-dev
 
@@ -23,13 +26,15 @@ RUN --mount=type=cache,target=/root/.cache/go-mod \
 # 复制源代码
 COPY . .
 
-# 编译二进制文件
+# 编译二进制文件（注入版本号用于静态资源缓存控制）
+# VERSION 为空时默认 "dev"（开发环境），生产部署应传入具体版本号
 ENV CGO_ENABLED=1
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/root/.cache/go-mod \
+    BUILD_VERSION=${VERSION:-dev} && \
     go build \
     -tags go_json \
-    -ldflags="-s -w" \
+    -ldflags="-s -w -X ccLoad/internal/version.Version=${BUILD_VERSION}" \
     -o ccload .
 
 # 运行阶段

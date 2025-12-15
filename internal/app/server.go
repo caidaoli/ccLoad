@@ -429,18 +429,16 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/settings/batch", s.AdminBatchUpdateSettings)
 	}
 
-	// 静态文件服务（安全）：使用框架自带的静态文件路由，自动做路径清理，防止目录遍历
-	// 等价于 http.FileServer，避免手工拼接路径导致的 /web/../ 泄露
-	r.Static("/web", "./web")
+	// 静态文件服务（带版本号和缓存控制）
+	// - HTML：不缓存，动态替换 __VERSION__ 占位符
+	// - CSS/JS：长缓存（1年），通过版本号查询参数刷新
+	setupStaticFiles(r)
 
 	// 默认首页重定向
 	r.GET("/", func(c *gin.Context) {
 		c.Redirect(http.StatusFound, "/web/index.html")
 	})
 }
-
-// 说明：已改为使用 r.Static("/web", "./web") 提供静态文件服务，
-// 该实现会自动进行路径清理和越界防护，避免目录遍历风险。
 
 // Token清理循环（定期清理过期Token）
 // 支持优雅关闭
