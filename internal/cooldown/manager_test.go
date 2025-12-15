@@ -39,7 +39,7 @@ func TestHandleError_ClientError(t *testing.T) {
 		errorBody  []byte
 	}{
 		{"404未找到", 404, []byte(`{"error":"not found"}`)},
-		{"405方法不允许", 405, []byte(`{"error":"method not allowed"}`)},
+		// 注意：405 已改为渠道级错误（上游endpoint配置问题），不再是客户端错误
 		// 注意：400 Bad Request 被分类为Key级错误（API Key格式错误），不是客户端错误
 	}
 
@@ -134,6 +134,7 @@ func TestHandleError_ChannelLevelError(t *testing.T) {
 		statusCode int
 		errorBody  []byte
 	}{
+		{"405方法不允许", 405, []byte(`{"error":"method not allowed"}`)}, // 上游endpoint配置错误
 		{"500内部错误", 500, []byte(`{"error":"internal server error"}`)},
 		{"502网关错误", 502, []byte(`{"error":"bad gateway"}`)},
 		{"503服务不可用", 503, []byte(`{"error":"service unavailable"}`)},
