@@ -95,9 +95,11 @@ var statusCodeClassification = map[int]ErrorLevel{
 	StatusFirstByteTimeout: ErrorLevelChannel, // 598 上游首字节超时
 	StatusStreamIncomplete: ErrorLevelChannel, // 599 流式响应不完整
 
+	// 渠道配置错误：在代理场景下，这些错误通常表示上游配置问题
+	405: ErrorLevelChannel, // Method Not Allowed - 上游endpoint配置错误或不支持该方法
+
 	// 客户端错误：不冷却，直接返回
 	404: ErrorLevelClient, // Not Found
-	405: ErrorLevelClient, // Method Not Allowed
 	406: ErrorLevelClient, // Not Acceptable
 	408: ErrorLevelClient, // Request Timeout
 	410: ErrorLevelClient, // Gone

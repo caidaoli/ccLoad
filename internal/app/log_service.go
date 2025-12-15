@@ -134,7 +134,10 @@ func (s *LogService) flushLogs(logs []*model.LogEntry) {
 	defer cancel()
 
 	// 使用批量写入接口（SQLite/MySQL均支持）
-	_ = s.store.BatchAddLogs(ctx, logs)
+	// [FIX] 数据库写入失败时记录错误，避免静默丢失日志
+	if err := s.store.BatchAddLogs(ctx, logs); err != nil {
+		log.Printf("[ERROR] 日志批量写入失败 (batch_size=%d): %v", len(logs), err)
+	}
 }
 
 // flushIfNeeded 辅助函数：当batch非空时执行flush
@@ -161,9 +164,10 @@ func (s *LogService) AddLogAsync(entry *model.LogEntry) {
 	default:
 		// 队列满，丢弃日志（计数用于监控）
 		count := s.logDropCount.Add(1)
-		// 采样告警：每100次丢弃打印一次，避免日志洪水
-		if count%100 == 1 {
-			log.Printf("[WARN]  日志队列已满，日志被丢弃 (累计丢弃: %d)", count)
+		// [FIX] 降低采样频率，每10次丢弃打印一次（原来是100次）
+		// 设计原则：及早暴露问题，避免用户在黑暗中调试
+		if count%10 == 1 {
+			log.Printf("[ERROR] 日志队列已满，日志被丢弃 (累计丢弃: %d) - 考虑增大LOG_BUFFER_SIZE或LOG_WORKERS", count)
 		}
 	}
 }
