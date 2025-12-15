@@ -49,19 +49,16 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			return fmt.Errorf("create %s table: %w", tb.Name(), err)
 		}
 
-		// 增量迁移：确保auth_token_id字段存在（2025-12新增）
-		if tb.Name() == "logs" && dialect == DialectMySQL {
-			if err := ensureLogsAuthTokenID(ctx, db); err != nil {
-				return fmt.Errorf("migrate logs.auth_token_id: %w", err)
-			}
-			if err := ensureLogsClientIP(ctx, db); err != nil {
-				return fmt.Errorf("migrate logs.client_ip: %w", err)
+		// 增量迁移：确保logs表新字段存在（2025-12新增）
+		if tb.Name() == "logs" {
+			if err := ensureLogsNewColumns(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate logs new columns: %w", err)
 			}
 		}
 
 		// 增量迁移：确保auth_tokens表有缓存token字段（2025-12新增）
-		if tb.Name() == "auth_tokens" && dialect == DialectMySQL {
-			if err := ensureAuthTokensCacheFields(ctx, db); err != nil {
+		if tb.Name() == "auth_tokens" {
+			if err := ensureAuthTokensCacheFields(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate auth_tokens cache fields: %w", err)
 			}
 		}
@@ -82,8 +79,58 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	return nil
 }
 
-// ensureLogsAuthTokenID 确保logs表有auth_token_id字段(MySQL增量迁移,2025-12新增)
-func ensureLogsAuthTokenID(ctx context.Context, db *sql.DB) error {
+// ensureLogsNewColumns 确保logs表有新增字段(2025-12新增,支持MySQL和SQLite)
+func ensureLogsNewColumns(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if dialect == DialectMySQL {
+		if err := ensureLogsAuthTokenIDMySQL(ctx, db); err != nil {
+			return err
+		}
+		return ensureLogsClientIPMySQL(ctx, db)
+	}
+	// SQLite: 使用PRAGMA table_info检查列
+	return ensureLogsColumnsSQLite(ctx, db)
+}
+
+// ensureLogsColumnsSQLite SQLite增量迁移logs表新字段
+func ensureLogsColumnsSQLite(ctx context.Context, db *sql.DB) error {
+	// 获取现有列
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info(logs)")
+	if err != nil {
+		return fmt.Errorf("get table info: %w", err)
+	}
+	defer rows.Close()
+
+	existingCols := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull, pk int
+		var dfltValue any
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
+			return fmt.Errorf("scan column info: %w", err)
+		}
+		existingCols[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate columns: %w", err)
+	}
+
+	// 添加缺失的列
+	if !existingCols["auth_token_id"] {
+		if _, err := db.ExecContext(ctx, "ALTER TABLE logs ADD COLUMN auth_token_id INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return fmt.Errorf("add auth_token_id: %w", err)
+		}
+	}
+	if !existingCols["client_ip"] {
+		if _, err := db.ExecContext(ctx, "ALTER TABLE logs ADD COLUMN client_ip TEXT NOT NULL DEFAULT ''"); err != nil {
+			return fmt.Errorf("add client_ip: %w", err)
+		}
+	}
+	return nil
+}
+
+// ensureLogsAuthTokenIDMySQL 确保logs表有auth_token_id字段(MySQL增量迁移,2025-12新增)
+func ensureLogsAuthTokenIDMySQL(ctx context.Context, db *sql.DB) error {
 	// 检查字段是否存在
 	var count int
 	err := db.QueryRowContext(ctx,
@@ -109,8 +156,8 @@ func ensureLogsAuthTokenID(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-// ensureLogsClientIP 确保logs表有client_ip字段(MySQL增量迁移,2025-12新增)
-func ensureLogsClientIP(ctx context.Context, db *sql.DB) error {
+// ensureLogsClientIPMySQL 确保logs表有client_ip字段(MySQL增量迁移,2025-12新增)
+func ensureLogsClientIPMySQL(ctx context.Context, db *sql.DB) error {
 	var count int
 	err := db.QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='logs' AND COLUMN_NAME='client_ip'",
@@ -133,8 +180,52 @@ func ensureLogsClientIP(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-// ensureAuthTokensCacheFields 确保auth_tokens表有缓存token字段(MySQL增量迁移,2025-12新增)
-func ensureAuthTokensCacheFields(ctx context.Context, db *sql.DB) error {
+// ensureAuthTokensCacheFields 确保auth_tokens表有缓存token字段(2025-12新增,支持MySQL和SQLite)
+func ensureAuthTokensCacheFields(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if dialect == DialectMySQL {
+		return ensureAuthTokensCacheFieldsMySQL(ctx, db)
+	}
+	return ensureAuthTokensCacheFieldsSQLite(ctx, db)
+}
+
+// ensureAuthTokensCacheFieldsSQLite SQLite增量迁移auth_tokens缓存字段
+func ensureAuthTokensCacheFieldsSQLite(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info(auth_tokens)")
+	if err != nil {
+		return fmt.Errorf("get table info: %w", err)
+	}
+	defer rows.Close()
+
+	existingCols := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull, pk int
+		var dfltValue any
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
+			return fmt.Errorf("scan column info: %w", err)
+		}
+		existingCols[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate columns: %w", err)
+	}
+
+	if !existingCols["cache_read_tokens_total"] {
+		if _, err := db.ExecContext(ctx, "ALTER TABLE auth_tokens ADD COLUMN cache_read_tokens_total INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return fmt.Errorf("add cache_read_tokens_total: %w", err)
+		}
+	}
+	if !existingCols["cache_creation_tokens_total"] {
+		if _, err := db.ExecContext(ctx, "ALTER TABLE auth_tokens ADD COLUMN cache_creation_tokens_total INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return fmt.Errorf("add cache_creation_tokens_total: %w", err)
+		}
+	}
+	return nil
+}
+
+// ensureAuthTokensCacheFieldsMySQL MySQL增量迁移auth_tokens缓存字段
+func ensureAuthTokensCacheFieldsMySQL(ctx context.Context, db *sql.DB) error {
 	// 检查cache_read_tokens_total字段是否存在
 	var count int
 	err := db.QueryRowContext(ctx,
