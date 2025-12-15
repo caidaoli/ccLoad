@@ -393,7 +393,23 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 	firstByteTime := reqCtx.Duration()
 
 	// 5. 处理响应(传递channelType用于精确识别usage格式,传递渠道信息用于日志记录)
-	return s.handleResponse(reqCtx, resp, firstByteTime, w, cfg.ChannelType, cfg, apiKey)
+	res, duration, err := s.handleResponse(reqCtx, resp, firstByteTime, w, cfg.ChannelType, cfg, apiKey)
+
+	// [FIX] 2025-12: 流式传输过程中首字节超时的错误修正
+	// 场景：响应头已收到(200 OK)，但在读取响应体时超时定时器触发
+	// 此时 streamCopy 返回 context.Canceled，但实际原因是首字节超时
+	// 需要将错误包装为 ErrUpstreamFirstByteTimeout，确保正确分类和日志记录
+	if err != nil && reqCtx.firstByteTimeoutTriggered() {
+		timeoutMsg := fmt.Sprintf("upstream first byte timeout after %.2fs", duration)
+		if s.firstByteTimeout > 0 {
+			timeoutMsg = fmt.Sprintf("%s (threshold=%v)", timeoutMsg, s.firstByteTimeout)
+		}
+		err = fmt.Errorf("%s: %w", timeoutMsg, util.ErrUpstreamFirstByteTimeout)
+		res.Status = util.StatusFirstByteTimeout
+		log.Printf("[TIMEOUT] [上游首字节超时-流传输中断] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, s.firstByteTimeout, duration)
+	}
+
+	return res, duration, err
 }
 
 // ============================================================================

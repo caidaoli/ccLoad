@@ -532,3 +532,68 @@ func TestNoGoroutineLeak(t *testing.T) {
 		}
 	})
 }
+
+// TestFirstByteTimeout_StreamingResponse 测试在首字节超时场景
+// 场景：请求发出后，响应头还未收到时超时定时器触发
+// 期望：返回 598 状态码和 ErrUpstreamFirstByteTimeout 错误
+func TestFirstByteTimeout_StreamingResponse(t *testing.T) {
+	store, _ := storage.CreateSQLiteStore(":memory:", nil)
+	defer store.Close()
+
+	srv := NewServer(store)
+	// 设置非常短的超时，确保在响应头到达前触发
+	srv.firstByteTimeout = 10 * time.Millisecond
+
+	// 上游服务器：延迟发送响应头，模拟慢响应导致首字节超时
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 等待足够长的时间，确保客户端超时
+		time.Sleep(500 * time.Millisecond)
+		// 然后才发送响应头
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("data: {\"content\":\"hello\"}\n\n"))
+	}))
+	defer upstream.Close()
+
+	cfg := &model.Config{
+		ID:   1,
+		URL:  upstream.URL,
+		Name: "test-timeout",
+	}
+
+	recorder := httptest.NewRecorder()
+	res, duration, err := srv.forwardOnceAsync(
+		context.Background(),
+		cfg,
+		"sk-test",
+		http.MethodPost,
+		[]byte(`{"stream":true}`),
+		http.Header{},
+		"",
+		"/v1/messages",
+		recorder,
+	)
+
+	// 验证返回结果
+	if err == nil {
+		t.Logf("res.Status=%d, duration=%.3fs", res.Status, duration)
+		t.Fatal("期望返回错误，但 err 为 nil")
+	}
+
+	// 验证错误是 ErrUpstreamFirstByteTimeout
+	if !errors.Is(err, util.ErrUpstreamFirstByteTimeout) {
+		t.Errorf("期望错误为 ErrUpstreamFirstByteTimeout，实际: %v", err)
+	}
+
+	// 验证错误消息包含 "first byte timeout"
+	if !strings.Contains(err.Error(), "first byte timeout") {
+		t.Errorf("期望错误消息包含 'first byte timeout'，实际: %s", err.Error())
+	}
+
+	// 验证状态码为 598
+	if res.Status != util.StatusFirstByteTimeout {
+		t.Errorf("期望状态码 %d，实际: %d", util.StatusFirstByteTimeout, res.Status)
+	}
+
+	t.Logf("✓ 首字节超时测试通过: 状态码=%d, 耗时=%.3fs, 错误=%v", res.Status, duration, err)
+}
