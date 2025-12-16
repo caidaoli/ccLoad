@@ -217,15 +217,8 @@ func (qb *QueryBuilder) ApplyFilter(filter *model.LogFilter) *QueryBuilder {
 	return qb
 }
 
-// WhereIn 添加 IN 条件，自动生成占位符，防止SQL注入
-// 添加字段名白名单验证，防止SQL注入
+// WhereIn 添加 IN 条件，自动生成占位符
 func (qb *QueryBuilder) WhereIn(column string, values []any) *QueryBuilder {
-	// 验证字段名是否在白名单中
-	if err := ValidateFieldName(column); err != nil {
-		// 安全降级：不添加条件
-		return qb
-	}
-
 	if len(values) == 0 {
 		// 无值时添加恒为假的条件，确保不返回记录
 		qb.wb.AddCondition("1=0")
