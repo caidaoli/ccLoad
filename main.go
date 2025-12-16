@@ -15,6 +15,7 @@ import (
 	"ccLoad/internal/app"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/storage/redis"
+	"ccLoad/internal/version"
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
@@ -78,6 +79,9 @@ func getTrustedProxies() []string {
 }
 
 func main() {
+	// 打印启动 Banner
+	version.PrintBanner()
+
 	// 优先读取.env文件
 	if err := godotenv.Load(); err != nil {
 		log.Printf("No .env file found: %v", err)

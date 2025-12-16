@@ -423,7 +423,7 @@
       }
     }
 
-    // 应用默认排序:按渠道名称升序,相同渠道按模型名称升序
+    // 应用默认排序:按渠道优先级降序,相同优先级按渠道名称升序,相同渠道按模型名称升序
     function applyDefaultSorting() {
       if (!statsData || !statsData.stats || statsData.stats.length === 0) return;
 
@@ -432,16 +432,20 @@
         statsData.originalStats = [...statsData.stats];
       }
 
-      // 按渠道名称升序,相同渠道按模型名称升序
+      // 按渠道优先级降序(高优先级在前),相同优先级按渠道名称升序,相同渠道按模型名称升序
       statsData.stats.sort((a, b) => {
+        // 首先按优先级降序(数值大的在前)
+        const priorityA = a.channel_priority ?? 0;
+        const priorityB = b.channel_priority ?? 0;
+        if (priorityA !== priorityB) return priorityB - priorityA;
+
+        // 优先级相同时,按渠道名称升序
         const channelA = (a.channel_name || '').toLowerCase();
         const channelB = (b.channel_name || '').toLowerCase();
-
-        // 首先按渠道名称排序
         const channelCompare = channelA.localeCompare(channelB, 'zh-CN');
         if (channelCompare !== 0) return channelCompare;
 
-        // 渠道名称相同时,按模型名称排序
+        // 渠道名称相同时,按模型名称升序
         const modelA = (a.model || '').toLowerCase();
         const modelB = (b.model || '').toLowerCase();
         return modelA.localeCompare(modelB, 'zh-CN');

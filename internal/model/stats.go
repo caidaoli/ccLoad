@@ -36,6 +36,7 @@ type ChannelMetric struct {
 type StatsEntry struct {
 	ChannelID               *int     `json:"channel_id,omitempty"`
 	ChannelName             string   `json:"channel_name"`
+	ChannelPriority         *int     `json:"channel_priority,omitempty"` // 渠道优先级（用于前端排序）
 	Model                   string   `json:"model"`
 	Success                 int      `json:"success"`
 	Error                   int      `json:"error"`

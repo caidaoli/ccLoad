@@ -215,20 +215,21 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 	}
 
 	if len(channelIDsToFetch) > 0 {
-		channelNames, err := s.fetchChannelNamesBatch(ctx, channelIDsToFetch)
+		channelInfos, err := s.fetchChannelInfoBatch(ctx, channelIDsToFetch)
 		if err != nil {
 			// 降级处理:查询失败不影响统计返回,仅记录错误
-			log.Printf("[WARN]  批量查询渠道名称失败: %v", err)
-			channelNames = make(map[int64]string)
+			log.Printf("[WARN]  批量查询渠道信息失败: %v", err)
+			channelInfos = make(map[int64]ChannelInfo)
 		}
 
-		// 填充渠道名称
+		// 填充渠道名称和优先级
 		for i := range stats {
 			if stats[i].ChannelID != nil {
-				if name, ok := channelNames[int64(*stats[i].ChannelID)]; ok {
-					stats[i].ChannelName = name
+				if info, ok := channelInfos[int64(*stats[i].ChannelID)]; ok {
+					stats[i].ChannelName = info.Name
+					stats[i].ChannelPriority = &info.Priority
 				} else {
-					// 如果查询不到渠道名称,使用"未知渠道"标识
+					// 如果查询不到渠道信息,使用默认值
 					stats[i].ChannelName = "未知渠道"
 				}
 			}
