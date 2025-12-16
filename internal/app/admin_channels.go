@@ -202,44 +202,8 @@ func (s *Server) handleGetChannel(c *gin.Context, id int64) {
 		RespondError(c, http.StatusNotFound, fmt.Errorf("channel not found"))
 		return
 	}
-
-	// [INFO] 修复 (2025-10-11): 附带key_strategy信息
-	// 使用缓存层查询（<1ms vs 数据库查询10-20ms）
-	// 性能优化：管理API查询也使用缓存，减少延迟
-	apiKeys, err := s.getAPIKeys(c.Request.Context(), id)
-	if err != nil {
-		log.Printf("[WARN] 查询渠道 %d 的API Keys失败: %v", id, err)
-	}
-
-	// 构建响应（动态添加key_strategy字段）
-	response := gin.H{
-		"id":              cfg.ID,
-		"name":            cfg.Name,
-		"channel_type":    cfg.ChannelType,
-		"url":             cfg.URL,
-		"priority":        cfg.Priority,
-		"models":          cfg.Models,
-		"model_redirects": cfg.ModelRedirects,
-		"enabled":         cfg.Enabled,
-		"created_at":      cfg.CreatedAt,
-		"updated_at":      cfg.UpdatedAt,
-	}
-
-	// 添加key_strategy（从第一个Key获取，所有Key的策略应该相同）
-	if len(apiKeys) > 0 {
-		response["key_strategy"] = apiKeys[0].KeyStrategy
-		// 同时返回API Keys（逗号分隔）
-		apiKeyStrs := make([]string, 0, len(apiKeys))
-		for _, key := range apiKeys {
-			apiKeyStrs = append(apiKeyStrs, key.APIKey)
-		}
-		response["api_key"] = strings.Join(apiKeyStrs, ",")
-	} else {
-		response["key_strategy"] = model.KeyStrategySequential // 默认值
-		response["api_key"] = ""
-	}
-
-	RespondJSON(c, http.StatusOK, response)
+	// 渠道详情仅返回配置本身；API Keys 通过 /admin/channels/:id/keys 单独获取（避免无意泄漏明文Key）。
+	RespondJSON(c, http.StatusOK, cfg)
 }
 
 // [INFO] 修复:获取渠道的所有 API Keys(2025-10 新架构支持)
@@ -403,7 +367,7 @@ func (s *Server) handleDeleteChannel(c *gin.Context, id int64) {
 	// 删除渠道后刷新缓存
 	s.invalidateChannelRelatedCache(id)
 	// 数据库级联删除会自动清理冷却数据（无需手动清理缓存）
-	c.Status(http.StatusNoContent)
+	RespondJSON(c, http.StatusOK, gin.H{"id": id})
 }
 
 // 删除渠道下的单个Key，并保持key_index连续
@@ -467,9 +431,7 @@ func (s *Server) HandleDeleteAPIKey(c *gin.Context) {
 	s.invalidateCooldownCache()
 
 	RespondJSON(c, http.StatusOK, gin.H{
-		"success":         true,
-		"remaining_keys":  remaining,
-		"channel_deleted": false,
+		"remaining_keys": remaining,
 	})
 }
 
@@ -515,7 +477,7 @@ func (s *Server) HandleAddModels(c *gin.Context) {
 	}
 
 	s.InvalidateChannelListCache()
-	RespondJSON(c, http.StatusOK, gin.H{"success": true, "total": len(cfg.Models)})
+	RespondJSON(c, http.StatusOK, gin.H{"total": len(cfg.Models)})
 }
 
 // HandleDeleteModels 删除渠道中的指定模型
@@ -561,5 +523,5 @@ func (s *Server) HandleDeleteModels(c *gin.Context) {
 	}
 
 	s.InvalidateChannelListCache()
-	RespondJSON(c, http.StatusOK, gin.H{"success": true, "remaining": len(remaining)})
+	RespondJSON(c, http.StatusOK, gin.H{"remaining": len(remaining)})
 }

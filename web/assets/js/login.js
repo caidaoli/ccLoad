@@ -1,3 +1,4 @@
+(function() {
     const form = document.getElementById('login-form');
     const errorMessage = document.getElementById('error-message');
     const errorText = document.getElementById('error-text');
@@ -40,7 +41,7 @@
       const password = passwordInput.value;
 
       try {
-        const response = await fetch('/login', {
+        const resp = await fetchAPI('/login', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -48,8 +49,8 @@
           body: JSON.stringify({ password }),
         });
 
-        if (response.ok) {
-          const data = await response.json();
+        if (resp.success) {
+          const data = resp.data || {};
 
           // 存储Token到localStorage
           localStorage.setItem('ccload_token', data.token);
@@ -64,8 +65,7 @@
             window.location.href = redirect;
           }, 500);
         } else {
-          const errorData = await response.json().catch(() => ({}));
-          showError(errorData.error || '密码错误，请重试');
+          showError(resp.error || '密码错误，请重试');
 
           // 添加输入框摇晃动画
           passwordInput.style.animation = 'none';
@@ -119,3 +119,4 @@
       `;
       document.head.appendChild(style);
     });
+})();

@@ -5,16 +5,9 @@ let originalSettings = {}; // 保存原始值用于比较
 
 async function loadSettings() {
   try {
-    const resp = await fetchWithAuth('/admin/settings');
-    const data = await resp.json();
-
-    if (!data.success || !data.data?.settings) {
-      console.error('加载配置失败:', data);
-      showError('加载配置失败: ' + (data.error || '未知错误'));
-      return;
-    }
-
-    renderSettings(data.data.settings);
+    const data = await fetchDataWithAuth('/admin/settings');
+    if (!Array.isArray(data)) throw new Error('响应不是数组');
+    renderSettings(data);
   } catch (err) {
     console.error('加载配置异常:', err);
     showError('加载配置异常: ' + err.message);
@@ -117,22 +110,16 @@ async function saveAllSettings() {
 
   // 使用批量更新接口（单次请求，事务保护）
   try {
-    const resp = await fetchWithAuth('/admin/settings/batch', {
+    await fetchDataWithAuth('/admin/settings/batch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updates)
     });
-
-    const data = await resp.json();
-    if (data.success) {
-      let msg = `已保存 ${Object.keys(updates).length} 项配置`;
-      if (needsRestartKeys.length > 0) {
-        msg += `\n\n以下配置需要重启服务才能生效:\n${needsRestartKeys.join(', ')}`;
-      }
-      showSuccess(msg);
-    } else {
-      showError('保存失败: ' + (data.error || '未知错误'));
+    let msg = `已保存 ${Object.keys(updates).length} 项配置`;
+    if (needsRestartKeys.length > 0) {
+      msg += `\n\n以下配置需要重启服务才能生效:\n${needsRestartKeys.join(', ')}`;
     }
+    showSuccess(msg);
   } catch (err) {
     console.error('保存异常:', err);
     showError('保存异常: ' + err.message);
@@ -145,14 +132,9 @@ async function resetSetting(key) {
   if (!confirm(`确定要重置 "${key}" 为默认值吗?`)) return;
 
   try {
-    const resp = await fetchWithAuth(`/admin/settings/${key}/reset`, { method: 'POST' });
-    const data = await resp.json();
-    if (data.success) {
-      showSuccess(`配置 ${key} 已重置为默认值`);
-      loadSettings();
-    } else {
-      showError('重置失败: ' + (data.error || '未知错误'));
-    }
+    await fetchDataWithAuth(`/admin/settings/${key}/reset`, { method: 'POST' });
+    showSuccess(`配置 ${key} 已重置为默认值`);
+    loadSettings();
   } catch (err) {
     console.error('重置异常:', err);
     showError('重置异常: ' + err.message);

@@ -238,7 +238,7 @@ func (s *AuthService) RequireTokenAuth() gin.HandlerFunc {
 		}
 
 		// 未授权
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "未授权访问，请先登录"})
+		RespondErrorMsg(c, http.StatusUnauthorized, "未授权访问，请先登录")
 		c.Abort()
 	}
 }
@@ -351,8 +351,7 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 	// 检查速率限制
 	if !s.loginRateLimiter.AllowAttempt(clientIP) {
 		lockoutTime := s.loginRateLimiter.GetLockoutTime(clientIP)
-		c.JSON(http.StatusTooManyRequests, gin.H{
-			"error":           "Too many failed login attempts",
+		RespondErrorWithData(c, http.StatusTooManyRequests, "Too many failed login attempts", gin.H{
 			"message":         fmt.Sprintf("Account locked for %d seconds. Please try again later.", lockoutTime),
 			"lockout_seconds": lockoutTime,
 		})
@@ -364,7 +363,7 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
+		RespondErrorMsg(c, http.StatusBadRequest, "Invalid request format")
 		return
 	}
 
@@ -375,9 +374,7 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 		log.Printf("[WARN]  登录失败: IP=%s, 尝试次数=%d/5", clientIP, attemptCount)
 
 		// [SECURITY] 不返回剩余尝试次数，避免攻击者推断速率限制状态
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"error": "Invalid password",
-		})
+		RespondErrorMsg(c, http.StatusUnauthorized, "Invalid password")
 		return
 	}
 
@@ -388,7 +385,7 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 	token, err := s.generateToken()
 	if err != nil {
 		log.Printf("ERROR: token generation failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		RespondErrorMsg(c, http.StatusInternalServerError, "internal error")
 		return
 	}
 	expiry := time.Now().Add(config.TokenExpiry)
@@ -415,8 +412,7 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 	log.Printf("[INFO] 登录成功: IP=%s", clientIP)
 
 	// 返回明文Token给客户端（前端存储到localStorage）
-	c.JSON(http.StatusOK, gin.H{
-		"status":    "success",
+	RespondJSON(c, http.StatusOK, gin.H{
 		"token":     token,                             // 明文token返回给客户端
 		"expiresIn": int(config.TokenExpiry.Seconds()), // 秒数
 	})
@@ -449,7 +445,7 @@ func (s *AuthService) HandleLogout(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "已登出"})
+	RespondJSON(c, http.StatusOK, gin.H{"message": "已登出"})
 }
 
 // ============================================================================

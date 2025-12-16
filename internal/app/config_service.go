@@ -80,24 +80,12 @@ func (cs *ConfigService) GetDuration(key string, defaultValue time.Duration) tim
 	return time.Duration(seconds) * time.Second
 }
 
-
 // GetIntMin 获取整数配置（带最小值约束）
 // 如果值小于 min，记录警告并返回 defaultValue
 func (cs *ConfigService) GetIntMin(key string, defaultValue, min int) int {
 	val := cs.GetInt(key, defaultValue)
 	if val < min {
 		log.Printf("[WARN] 无效的 %s=%d（必须 >= %d），已使用默认值 %d", key, val, min, defaultValue)
-		return defaultValue
-	}
-	return val
-}
-
-// GetDurationMin 获取时长配置（带最小值约束）
-// 如果值小于 min，记录警告并返回 defaultValue
-func (cs *ConfigService) GetDurationMin(key string, defaultValue, min time.Duration) time.Duration {
-	val := cs.GetDuration(key, defaultValue)
-	if val < min {
-		log.Printf("[WARN] 无效的 %s=%v（必须 >= %v），已使用默认值 %v", key, val, min, defaultValue)
 		return defaultValue
 	}
 	return val

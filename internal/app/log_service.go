@@ -212,15 +212,3 @@ func (s *LogService) cleanupOldLogsLoop() {
 		}
 	}
 }
-
-// ============================================================================
-// 优雅关闭
-// ============================================================================
-
-// Shutdown 优雅关闭日志服务
-// 注意：不需要等待 Workers，因为 Server 会通过 wg.Wait() 等待
-func (s *LogService) Shutdown(ctx context.Context) error {
-	// 不关闭logChan：channel关闭与并发send存在天然竞态，panic只会把进程炸掉。
-	// Worker通过shutdownCh退出；shutdown时的日志flush由logWorker负责。
-	return nil
-}

@@ -257,13 +257,20 @@ func (qb *QueryBuilder) BuildWithSuffix(suffix string) (string, []any) {
 
 // 辅助函数：解析模型JSON
 func parseModelsJSON(modelsStr string, models *[]string) error {
-	if modelsStr == "" {
+	trimmed := strings.TrimSpace(modelsStr)
+	if trimmed == "" || trimmed == "null" {
 		*models = []string{}
 		return nil
 	}
 
 	// 使用现有的sonic库进行解析
-	return sonic.Unmarshal([]byte(modelsStr), models)
+	if err := sonic.Unmarshal([]byte(trimmed), models); err != nil {
+		return err
+	}
+	if *models == nil {
+		*models = []string{}
+	}
+	return nil
 }
 
 // 辅助函数：解析模型重定向JSON

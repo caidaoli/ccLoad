@@ -1,7 +1,5 @@
     const API_BASE = '/admin';
     let allTokens = [];
-    let durationSeconds = 0; // 时间跨度（秒），用于计算RPM
-    let rpmStats = null;     // 全局RPM统计（峰值、平均、最近一分钟）
     let isToday = true;      // 是否为本日（本日才显示最近一分钟）
 
     // 当前选中的时间范围(默认为本日)
@@ -79,25 +77,13 @@
           url += `?range=${currentTimeRange}`;
         }
 
-        const response = await fetchWithAuth(url);
-        if (!response.ok) throw new Error('加载令牌失败');
-        const data = await response.json();
-        // 支持两种响应格式：带range时返回{tokens, duration_seconds, rpm_stats, is_today}，不带时返回tokens数组
-        if (data.data && data.data.tokens) {
-          allTokens = data.data.tokens;
-          durationSeconds = data.data.duration_seconds || 1;
-          rpmStats = data.data.rpm_stats || null;
-          isToday = data.data.is_today !== false;
-        } else {
-          allTokens = data.data || [];
-          durationSeconds = 1; // 无时间范围时默认1秒（避免除零）
-          rpmStats = null;
-          isToday = true;
-        }
+        const data = await fetchDataWithAuth(url);
+        allTokens = (data && data.tokens) || [];
+        isToday = !!(data && data.is_today);
         renderTokens();
       } catch (error) {
         console.error('加载令牌失败:', error);
-        showToast('加载令牌失败: ' + error.message, 'error');
+        window.showNotification('加载令牌失败: ' + error.message, 'error');
       }
     }
 
@@ -259,12 +245,6 @@
     /**
      * RPM 颜色：低流量绿色，中等橙色，高流量红色
      */
-    function getRpmColor(rpm) {
-      if (rpm < 10) return 'var(--success-600)';
-      if (rpm < 100) return 'var(--warning-600)';
-      return 'var(--error-600)';
-    }
-
     /**
      * 构建成功率HTML
      */
@@ -437,7 +417,7 @@
     async function createToken() {
       const description = document.getElementById('tokenDescription').value.trim();
       if (!description) {
-        showToast('请输入描述', 'error');
+        window.showNotification('请输入描述', 'error');
         return;
       }
       const expiryType = document.getElementById('tokenExpiry').value;
@@ -446,7 +426,7 @@
         if (expiryType === 'custom') {
           const customDate = document.getElementById('customExpiry').value;
           if (!customDate) {
-            showToast('请选择过期时间', 'error');
+            window.showNotification('请选择过期时间', 'error');
             return;
           }
           expiresAt = new Date(customDate).getTime();
@@ -457,24 +437,22 @@
       }
       const isActive = document.getElementById('tokenActive').checked;
       try {
-        const response = await fetchWithAuth(`${API_BASE}/auth-tokens`, {
+        const data = await fetchDataWithAuth(`${API_BASE}/auth-tokens`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({ description, expires_at: expiresAt, is_active: isActive })
         });
-        if (!response.ok) throw new Error('创建失败');
-        const data = await response.json();
 
         closeCreateModal();
-        document.getElementById('newTokenValue').value = data.data.token;
+        document.getElementById('newTokenValue').value = data.token;
         document.getElementById('tokenResultModal').style.display = 'block';
         loadTokens();
-        showToast('令牌创建成功', 'success');
+        window.showNotification('令牌创建成功', 'success');
       } catch (error) {
         console.error('创建令牌失败:', error);
-        showToast('创建失败: ' + error.message, 'error');
+        window.showNotification('创建失败: ' + error.message, 'error');
       }
     }
 
@@ -482,7 +460,7 @@
       const textarea = document.getElementById('newTokenValue');
       textarea.select();
       document.execCommand('copy');
-      showToast('已复制到剪贴板', 'success');
+      window.showNotification('已复制到剪贴板', 'success');
     }
 
     function closeTokenResultModal() {
@@ -521,7 +499,7 @@
         if (expiryType === 'custom') {
           const customDate = document.getElementById('editCustomExpiry').value;
           if (!customDate) {
-            showToast('请选择过期时间', 'error');
+            window.showNotification('请选择过期时间', 'error');
             return;
           }
           expiresAt = new Date(customDate).getTime();
@@ -531,53 +509,34 @@
         }
       }
       try {
-        const response = await fetchWithAuth(`${API_BASE}/auth-tokens/${id}`, {
+        await fetchDataWithAuth(`${API_BASE}/auth-tokens/${id}`, {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({ description, is_active: isActive, expires_at: expiresAt })
         });
-        if (!response.ok) throw new Error('更新失败');
         closeEditModal();
         loadTokens();
-        showToast('更新成功', 'success');
+        window.showNotification('更新成功', 'success');
       } catch (error) {
         console.error('更新失败:', error);
-        showToast('更新失败: ' + error.message, 'error');
+        window.showNotification('更新失败: ' + error.message, 'error');
       }
     }
 
     async function deleteToken(id) {
       if (!confirm('确定要删除此令牌吗?删除后无法恢复。')) return;
       try {
-        const response = await fetchWithAuth(`${API_BASE}/auth-tokens/${id}`, {
+        await fetchDataWithAuth(`${API_BASE}/auth-tokens/${id}`, {
           method: 'DELETE'
         });
-        if (!response.ok) throw new Error('删除失败');
         loadTokens();
-        showToast('删除成功', 'success');
+        window.showNotification('删除成功', 'success');
       } catch (error) {
         console.error('删除失败:', error);
-        showToast('删除失败: ' + error.message, 'error');
+        window.showNotification('删除失败: ' + error.message, 'error');
       }
-    }
-
-    function showToast(message, type = 'info') {
-      const toast = document.createElement('div');
-      toast.className = `toast toast-${type}`;
-      toast.textContent = message;
-      toast.style.cssText = `
-        position: fixed; top: 20px; right: 20px; padding: 12px 20px;
-        background: ${type === 'success' ? 'var(--success-500)' : type === 'error' ? 'var(--error-500)' : 'var(--primary-500)'};
-        color: white; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-        z-index: 10000; animation: slideIn 0.3s ease-out;
-      `;
-      document.body.appendChild(toast);
-      setTimeout(() => {
-        toast.style.animation = 'slideOut 0.3s ease-out';
-        setTimeout(() => toast.remove(), 300);
-      }, 3000);
     }
 
     // 初始化顶部导航栏

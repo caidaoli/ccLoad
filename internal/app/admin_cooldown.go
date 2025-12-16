@@ -14,8 +14,7 @@ import (
 
 // handleSetChannelCooldown 设置渠道级别冷却
 func (s *Server) HandleSetChannelCooldown(c *gin.Context) {
-	idStr := c.Param("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
+	id, err := ParseInt64Param(c, "id")
 	if err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel ID")
 		return
@@ -36,16 +35,12 @@ func (s *Server) HandleSetChannelCooldown(c *gin.Context) {
 
 	// 精确计数(手动设置渠道冷却
 
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": fmt.Sprintf("渠道已冷却 %d 毫秒", req.DurationMs),
-	})
+	RespondJSON(c, http.StatusOK, gin.H{"message": fmt.Sprintf("渠道已冷却 %d 毫秒", req.DurationMs)})
 }
 
 // handleSetKeyCooldown 设置Key级别冷却
 func (s *Server) HandleSetKeyCooldown(c *gin.Context) {
-	idStr := c.Param("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
+	id, err := ParseInt64Param(c, "id")
 	if err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel ID")
 		return
@@ -74,8 +69,5 @@ func (s *Server) HandleSetKeyCooldown(c *gin.Context) {
 	// [INFO] 修复：使API Keys缓存失效，确保前端能立即看到冷却状态
 	s.InvalidateAPIKeysCache(id)
 
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": fmt.Sprintf("Key #%d 已冷却 %d 毫秒", keyIndex+1, req.DurationMs),
-	})
+	RespondJSON(c, http.StatusOK, gin.H{"message": fmt.Sprintf("Key #%d 已冷却 %d 毫秒", keyIndex+1, req.DurationMs)})
 }

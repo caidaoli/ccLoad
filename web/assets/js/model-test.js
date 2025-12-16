@@ -8,14 +8,12 @@ let newModels = new Set(); // 新获取的模型
 // 加载默认测试内容
 async function loadDefaultTestContent() {
   try {
-    const resp = await fetchWithAuth('/admin/settings');
-    const data = await resp.json();
-    if (data.success && data.data?.settings) {
-      const setting = data.data.settings.find(s => s.key === 'channel_test_content');
-      if (setting) {
-        document.getElementById('modelTestContent').value = setting.value;
-        document.getElementById('modelTestContent').placeholder = '';
-      }
+    const settings = await fetchDataWithAuth('/admin/settings');
+    if (!Array.isArray(settings)) return;
+    const setting = settings.find(s => s.key === 'channel_test_content');
+    if (setting) {
+      document.getElementById('modelTestContent').value = setting.value;
+      document.getElementById('modelTestContent').placeholder = '';
     }
   } catch (e) {
     console.error('加载默认测试内容失败:', e);
@@ -25,20 +23,16 @@ async function loadDefaultTestContent() {
 // 加载渠道列表
 async function loadChannels() {
   try {
-    const resp = await fetchWithAuth('/admin/channels');
-    const data = await resp.json();
-    if (data.success && data.data) {
-      channelsList = data.data
-        .sort((a, b) => a.channel_type.localeCompare(b.channel_type) || b.priority - a.priority);
-      const select = document.getElementById('testChannelSelect');
-      select.innerHTML = '<option value="">选择...</option>';
-      channelsList.forEach(ch => {
-        const opt = document.createElement('option');
-        opt.value = ch.id;
-        opt.textContent = `[${ch.channel_type}] ${ch.name}`;
-        select.appendChild(opt);
-      });
-    }
+    const list = (await fetchDataWithAuth('/admin/channels')) || [];
+    channelsList = list.sort((a, b) => a.channel_type.localeCompare(b.channel_type) || b.priority - a.priority);
+    const select = document.getElementById('testChannelSelect');
+    select.innerHTML = '<option value="">选择...</option>';
+    channelsList.forEach(ch => {
+      const opt = document.createElement('option');
+      opt.value = ch.id;
+      opt.textContent = `[${ch.channel_type}] ${ch.name}`;
+      select.appendChild(opt);
+    });
   } catch (e) {
     console.error('加载渠道列表失败:', e);
     showError('加载渠道列表失败');
@@ -165,13 +159,11 @@ async function runModelTests() {
   const testModel = async ({ model, row }) => {
     row.querySelector('.response').textContent = '测试中...';
     try {
-      const resp = await fetchWithAuth(`/admin/channels/${selectedChannel.id}/test`, {
+      const data = await fetchDataWithAuth(`/admin/channels/${selectedChannel.id}/test`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model, max_tokens: 512, stream: streamEnabled, content, channel_type: channelType })
       });
-      const result = await resp.json();
-      const data = result.data || result;
 
       row.querySelector('.duration').textContent = data.duration_ms ? `${data.duration_ms}ms` : '-';
 
@@ -230,20 +222,20 @@ async function fetchAndAddModels() {
   const channelType = document.getElementById('testChannelType').value;
 
   try {
-    const resp = await fetchWithAuth(`/admin/channels/${selectedChannel.id}/models/fetch?channel_type=${channelType}`);
-    const data = await resp.json();
-    if (data.success && data.data?.models) {
+    const resp = await fetchAPIWithAuth(`/admin/channels/${selectedChannel.id}/models/fetch?channel_type=${channelType}`);
+    if (resp.success && resp.data && resp.data.models) {
       const existingSet = new Set(selectedChannel.models);
-      const fetched = data.data.models;
+      const fetched = resp.data.models;
       const newOnes = fetched.filter(m => !existingSet.has(m));
 
       if (newOnes.length > 0) {
         // 保存到后端
-        await fetchWithAuth(`/admin/channels/${selectedChannel.id}/models`, {
+        const saveResp = await fetchAPIWithAuth(`/admin/channels/${selectedChannel.id}/models`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ models: newOnes })
         });
+        if (!saveResp.success) throw new Error(saveResp.error || '保存模型失败');
         newOnes.forEach(m => newModels.add(m));
       }
 
@@ -251,10 +243,10 @@ async function fetchAndAddModels() {
       renderModelList();
       showSuccess(`获取到 ${fetched.length} 个模型，新增 ${newOnes.length} 个`);
     } else {
-      showError(data.error || '获取模型失败');
+      showError(resp.error || '获取模型失败');
     }
   } catch (e) {
-    showError('获取模型失败');
+    showError(e.message || '获取模型失败');
   }
 }
 
@@ -267,21 +259,20 @@ async function deleteSelectedModels() {
   if (!confirm(`是否删除选择的 ${selected.map(s => s.model).join(', ')}？`)) return;
 
   try {
-    const resp = await fetchWithAuth(`/admin/channels/${selectedChannel.id}/models`, {
+    const resp = await fetchAPIWithAuth(`/admin/channels/${selectedChannel.id}/models`, {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ models: selected.map(s => s.model) })
     });
-    const data = await resp.json();
-    if (data.success) {
+    if (resp.success) {
       selectedChannel.models = selectedChannel.models.filter(m => !selected.some(s => s.model === m));
       selected.forEach(({ row }) => row.remove());
       showSuccess('删除成功');
     } else {
-      showError(data.error || '删除失败');
+      showError(resp.error || '删除失败');
     }
   } catch (e) {
-    showError('删除失败');
+    showError(e.message || '删除失败');
   }
 }
 

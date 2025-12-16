@@ -301,6 +301,20 @@ func TestHandleGetChannel(t *testing.T) {
 					t.Errorf("期望ID=%d，实际%d", created.ID, resp.Data.ID)
 				}
 
+				// 治本：渠道详情不应包含明文Key或策略派生字段（Keys 只能通过 /keys 端点获取）
+				var raw map[string]any
+				if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+					t.Fatalf("解析原始响应失败: %v", err)
+				}
+				if data, ok := raw["data"].(map[string]any); ok {
+					if _, ok := data["api_key"]; ok {
+						t.Fatalf("渠道详情不应返回 api_key 字段")
+					}
+					if _, ok := data["key_strategy"]; ok {
+						t.Fatalf("渠道详情不应返回 key_strategy 字段")
+					}
+				}
+
 				t.Logf("[INFO] 获取成功: ID=%d, Name=%s", resp.Data.ID, resp.Data.Name)
 			}
 		})

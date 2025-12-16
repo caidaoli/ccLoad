@@ -36,10 +36,7 @@ func (s *Server) HandleErrors(c *gin.Context) {
 	}
 
 	// 返回包含总数的响应（支持前端精确分页）
-	RespondJSON(c, http.StatusOK, map[string]any{
-		"data":  logs,
-		"total": total,
-	})
+	RespondJSONWithCount(c, http.StatusOK, logs, total)
 }
 
 // handleMetrics 获取聚合指标数据
@@ -291,9 +288,7 @@ func (s *Server) HandleCacheStats(c *gin.Context) {
 // handleGetChannelTypes 获取渠道类型配置(公开端点,前端动态加载)
 // GET /public/channel-types
 func (s *Server) HandleGetChannelTypes(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
-		"data": util.ChannelTypes,
-	})
+	RespondJSON(c, http.StatusOK, util.ChannelTypes)
 }
 
 // HandleGetModels 获取数据库中存在的所有模型列表（去重）
@@ -312,9 +307,7 @@ func (s *Server) HandleGetModels(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"data": models,
-	})
+	RespondJSON(c, http.StatusOK, models)
 }
 
 // HandleHealth 健康检查端点(公开访问,无需认证)

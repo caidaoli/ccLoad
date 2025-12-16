@@ -139,5 +139,8 @@ func (s *SQLStore) GetDistinctModels(ctx context.Context, since, until time.Time
 		models = append(models, model)
 	}
 
+	if models == nil {
+		models = make([]string, 0)
+	}
 	return models, nil
 }

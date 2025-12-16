@@ -58,6 +58,9 @@ func (s *SQLStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.AP
 		return nil, fmt.Errorf("iterate api keys: %w", err)
 	}
 
+	if keys == nil {
+		keys = make([]*model.APIKey, 0)
+	}
 	return keys, nil
 }
 

@@ -9,10 +9,9 @@
     // 加载默认测试内容（从系统设置）
     async function loadDefaultTestContent() {
       try {
-        const resp = await fetchWithAuth('/admin/settings/channel_test_content');
-        const data = await resp.json();
-        if (data.success && data.data?.value) {
-          defaultTestContent = data.data.value;
+        const setting = await fetchDataWithAuth('/admin/settings/channel_test_content');
+        if (setting && setting.value) {
+          defaultTestContent = setting.value;
         }
       } catch (e) {
         console.warn('加载默认测试内容失败，使用内置默认值', e);
@@ -21,7 +20,7 @@
 
     async function load() {
       try {
-        showLoading();
+        renderLogsLoading();
 
         // 从表单元素获取筛选条件（支持下拉框切换后立即生效）
         const range = document.getElementById('f_hours')?.value || 'today';
@@ -48,19 +47,17 @@
           params.set('channel_type', currentChannelType);
         }
         
-        const res = await fetchWithAuth('/admin/logs?' + params.toString());
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const response = await fetchAPIWithAuth('/admin/logs?' + params.toString());
+        if (!response.success) throw new Error(response.error || '无法加载请求日志');
 
-        const response = await res.json();
-        const result = response.success ? response.data : response;
-        const data = result.data || result || [];
+        const data = response.data || [];
 
-        // 精确计算总页数（基于后端返回的total字段）
-        if (result.total !== undefined) {
-          totalLogs = result.total;
+        // 精确计算总页数（基于后端返回的count字段）
+        if (typeof response.count === 'number') {
+          totalLogs = response.count;
           totalLogsPages = Math.ceil(totalLogs / logsPageSize) || 1;
-        } else {
-          // 降级方案：后端未返回total时使用旧逻辑
+        } else if (Array.isArray(data)) {
+          // 降级方案：后端未返回count时使用旧逻辑
           if (data.length === logsPageSize) {
             totalLogsPages = Math.max(currentLogsPage + 1, totalLogsPages);
           } else if (data.length < logsPageSize && currentLogsPage === 1) {
@@ -77,7 +74,7 @@
       } catch (error) {
         console.error('加载日志失败:', error);
         try { if (window.showError) window.showError('无法加载请求日志'); } catch(_){}
-        showError();
+        renderLogsError();
       }
     }
 
@@ -87,7 +84,7 @@
       return headerCells.length || 13; // fallback到13列（向后兼容）
     }
 
-    function showLoading() {
+    function renderLogsLoading() {
       const tbody = document.getElementById('tbody');
       const colspan = getTableColspan();
       const loadingRow = TemplateEngine.render('tpl-log-loading', { colspan });
@@ -95,7 +92,7 @@
       if (loadingRow) tbody.appendChild(loadingRow);
     }
 
-    function showError() {
+    function renderLogsError() {
       const tbody = document.getElementById('tbody');
       const colspan = getTableColspan();
       const errorRow = TemplateEngine.render('tpl-log-error', { colspan });
@@ -479,13 +476,8 @@
     // 加载令牌列表
     async function loadAuthTokens() {
       try {
-        const res = await fetchWithAuth('/admin/auth-tokens');
-        if (!res.ok) {
-          console.error('加载令牌列表失败');
-          return;
-        }
-        const response = await res.json();
-        authTokens = response.success ? (response.data || []) : (response || []);
+        const data = await fetchDataWithAuth('/admin/auth-tokens');
+        authTokens = (data && data.tokens) || [];
 
         // 填充令牌选择器
         const tokenSelect = document.getElementById('f_auth_token');
@@ -504,36 +496,19 @@
       }
     }
 
-    function parseApiKeysFromChannel(channel) {
-      if (!channel) return [];
-      // 优先支持新结构：api_keys 为对象数组
-      if (Array.isArray(channel.api_keys)) {
-        return channel.api_keys
-          .map(k => (k && (k.api_key || k.key)) || '')
-          .map(k => k.trim())
-          .filter(k => k);
-      }
-      // 向后兼容：api_key 为逗号分隔的字符串
-      if (typeof channel.api_key === 'string') {
-        return channel.api_key
-          .split(',')
-          .map(k => k.trim())
-          .filter(k => k);
-      }
-      return [];
-    }
-
     function maskKeyForCompare(key) {
       if (!key) return '';
       if (key.length <= 8) return key;
       return `${key.slice(0, 4)}...${key.slice(-4)}`;
     }
 
-    function findKeyIndexByMaskedKey(keys, maskedKey) {
-      if (!maskedKey || !keys || !keys.length) return null;
+    function findKeyIndexByMaskedKey(apiKeys, maskedKey) {
+      if (!maskedKey || !apiKeys || !apiKeys.length) return null;
       const target = maskedKey.trim();
-      for (let i = 0; i < keys.length; i++) {
-        if (maskKeyForCompare(keys[i]) === target) return i;
+      for (const k of apiKeys) {
+        const rawKey = (k && (k.api_key || k.key)) || '';
+        if (maskKeyForCompare(rawKey) !== target) continue;
+        if (k && typeof k.key_index === 'number') return k.key_index;
       }
       return null;
     }
@@ -697,17 +672,16 @@
       // 显示模态框
       document.getElementById('testKeyModal').classList.add('show');
 
-      // 异步加载渠道配置以获取支持的模型列表
+      // 异步加载渠道配置以获取支持的模型列表 + Keys 用于 key_index 匹配
       try {
-        const res = await fetchWithAuth(`/admin/channels/${channelId}`);
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-
-        const response = await res.json();
-        const channel = response.success ? response.data : response;
+        const [channel, apiKeysRaw] = await Promise.all([
+          fetchDataWithAuth(`/admin/channels/${channelId}`),
+          fetchDataWithAuth(`/admin/channels/${channelId}/keys`)
+        ]);
+        const apiKeys = apiKeysRaw || [];
 
         // ✅ 保存渠道类型,用于后续测试请求
         testingKeyData.channelType = channel.channel_type || 'anthropic';
-        const apiKeys = parseApiKeysFromChannel(channel);
         const matchedIndex = findKeyIndexByMaskedKey(apiKeys, apiKey);
         testingKeyData.keyIndex = matchedIndex;
         if (apiKeys.length > 0) {
@@ -788,7 +762,7 @@
       const streamEnabled = streamCheckbox.checked;
 
       if (!selectedModel) {
-        if (window.showError) showError('请选择一个测试模型');
+        if (window.showError) window.showError('请选择一个测试模型');
         return;
       }
 
@@ -810,20 +784,13 @@
           testRequest.key_index = testingKeyData.keyIndex;
         }
 
-        const res = await fetchWithAuth(`/admin/channels/${testingKeyData.channelId}/test`, {
+        const testResult = await fetchDataWithAuth(`/admin/channels/${testingKeyData.channelId}/test`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(testRequest)
         });
 
-        if (!res.ok) {
-          throw new Error('HTTP ' + res.status);
-        }
-
-        const result = await res.json();
-        const testResult = result.data || result;
-
-        displayKeyTestResult(testResult);
+        displayKeyTestResult(testResult || { success: false, error: '空响应' });
       } catch (e) {
         console.error('测试失败', e);
         displayKeyTestResult({
@@ -911,13 +878,6 @@
       }
     }
 
-    function toggleResponse(id) {
-      const el = document.getElementById(id);
-      if (el) {
-        el.style.display = el.style.display === 'none' ? 'block' : 'none';
-      }
-    }
-
     // ========== 删除 Key（从日志列表入口） ==========
     async function deleteKeyFromLog(channelId, channelName, maskedApiKey) {
       if (!channelId || !maskedApiKey) return;
@@ -926,13 +886,8 @@
       if (!confirmDel) return;
 
       try {
-        // 获取渠道详情，匹配掩码对应的 key_index
-        const res = await fetchWithAuth(`/admin/channels/${channelId}`);
-        if (!res.ok) throw new Error('加载渠道失败: HTTP ' + res.status);
-        const respJson = await res.json();
-        const channel = respJson.success ? respJson.data : respJson;
-
-        const apiKeys = parseApiKeysFromChannel(channel);
+        // 通过 Keys 列表匹配掩码对应的 key_index（渠道详情不再返回明文Key）
+        const apiKeys = await fetchDataWithAuth(`/admin/channels/${channelId}/keys`);
         const keyIndex = findKeyIndexByMaskedKey(apiKeys, maskedApiKey);
         if (keyIndex === null) {
           alert('未能匹配到该Key，请检查渠道配置。');
@@ -940,18 +895,16 @@
         }
 
         // 删除Key
-        const delRes = await fetchWithAuth(`/admin/channels/${channelId}/keys/${keyIndex}`, { method: 'DELETE' });
-        if (!delRes.ok) throw new Error('删除失败: HTTP ' + delRes.status);
-        const delResult = await delRes.json();
+        const delResult = await fetchDataWithAuth(`/admin/channels/${channelId}/keys/${keyIndex}`, { method: 'DELETE' });
 
         alert(`已删除 Key #${keyIndex + 1} (${maskedApiKey})`);
 
         // 如果没有剩余Key，询问是否删除渠道
-        if (delResult.remaining_keys === 0) {
+        if (delResult && delResult.remaining_keys === 0) {
           const delChannel = confirm('该渠道已无可用Key，是否删除整个渠道？');
           if (delChannel) {
-            const chRes = await fetchWithAuth(`/admin/channels/${channelId}`, { method: 'DELETE' });
-            if (!chRes.ok) throw new Error('删除渠道失败: HTTP ' + chRes.status);
+            const chResp = await fetchAPIWithAuth(`/admin/channels/${channelId}`, { method: 'DELETE' });
+            if (!chResp.success) throw new Error(chResp.error || '删除渠道失败');
             alert('渠道已删除');
           }
         }

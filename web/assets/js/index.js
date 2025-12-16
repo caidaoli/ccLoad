@@ -21,11 +21,7 @@
           el.classList.add('animate-pulse');
         });
 
-        const response = await fetch(`/public/summary?range=${currentTimeRange}`);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-        const responseData = await response.json();
-        statsData = responseData.success ? (responseData.data || responseData) : responseData;
+        statsData = (await fetchData(`/public/summary?range=${currentTimeRange}`)) || statsData;
         updateStatsDisplay();
 
       } catch (error) {
@@ -90,20 +86,6 @@
       el.innerHTML = parts.length > 0 ? parts.join(' ') : '--';
     }
 
-    // 格式化RPM数值
-    function formatRpmValue(rpm) {
-      if (rpm >= 1000) return (rpm / 1000).toFixed(1) + 'K';
-      if (rpm >= 1) return rpm.toFixed(1);
-      return rpm.toFixed(2);
-    }
-
-    // RPM 颜色
-    function getRpmColor(rpm) {
-      if (rpm < 10) return 'var(--success-600)';
-      if (rpm < 100) return 'var(--warning-600)';
-      return 'var(--error-600)';
-    }
-
     // 更新单个渠道类型的统计
     function updateTypeStats(type, data) {
       // 始终显示所有卡片，保持界面完整性
@@ -141,13 +123,6 @@
         document.getElementById(`type-${type}-cache-read`).textContent = formatNumber(cacheReadTokens);
         document.getElementById(`type-${type}-cache-create`).textContent = formatNumber(cacheCreateTokens);
       }
-    }
-
-    // 格式化数字显示
-    function formatNumber(num) {
-      if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
-      if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
-      return num.toString();
     }
 
     // 数字滚动动画

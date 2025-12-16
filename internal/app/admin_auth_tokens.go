@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"log"
 	"net/http"
-	"strconv"
+	"strings"
 	"time"
 
 	"ccLoad/internal/model"
@@ -35,22 +35,37 @@ func (s *Server) HandleListAuthTokens(c *gin.Context) {
 	for _, t := range tokens {
 		t.Token = model.MaskToken(t.Token)
 	}
+	if tokens == nil {
+		tokens = make([]*model.AuthToken, 0)
+	}
+
+	type AuthTokenListResponse struct {
+		Tokens          []*model.AuthToken `json:"tokens"`
+		DurationSeconds float64            `json:"duration_seconds,omitempty"`
+		RPMStats        *model.RPMStats    `json:"rpm_stats,omitempty"`
+		IsToday         bool               `json:"is_today"`
+	}
+
+	resp := AuthTokenListResponse{
+		Tokens:  tokens,
+		IsToday: false,
+	}
 
 	// 如果请求中包含range参数，则叠加时间范围统计（用于tokens.html页面）
-	timeRange := c.Query("range")
-	var durationSeconds float64
-	if timeRange != "" {
+	timeRange := strings.TrimSpace(c.Query("range"))
+	if timeRange != "" && timeRange != "all" {
 		params := ParsePaginationParams(c)
 		startTime, endTime := params.GetTimeRange()
 
 		// 计算时间跨度（秒），用于前端计算RPM和QPS
-		durationSeconds = endTime.Sub(startTime).Seconds()
-		if durationSeconds < 1 {
-			durationSeconds = 1 // 防止除零
+		resp.DurationSeconds = endTime.Sub(startTime).Seconds()
+		if resp.DurationSeconds < 1 {
+			resp.DurationSeconds = 1 // 防止除零
 		}
 
 		// 判断是否为本日（本日才计算最近一分钟）
-		isToday := timeRange == "today" || timeRange == ""
+		isToday := timeRange == "today"
+		resp.IsToday = isToday
 
 		// 获取全局RPM统计（峰值、平均、最近一分钟）
 		rpmStats, err := s.store.GetRPMStats(ctx, startTime, endTime, nil, isToday)
@@ -58,6 +73,7 @@ func (s *Server) HandleListAuthTokens(c *gin.Context) {
 			log.Printf("[WARN]  查询RPM统计失败: %v", err)
 			// 降级处理
 		}
+		resp.RPMStats = rpmStats
 
 		// 从logs表聚合时间范围内的统计
 		rangeStats, err := s.store.GetAuthTokenStatsInRange(ctx, startTime, endTime)
@@ -109,17 +125,9 @@ func (s *Server) HandleListAuthTokens(c *gin.Context) {
 			}
 		}
 
-		// 返回带时间跨度和RPM统计的响应
-		RespondJSON(c, http.StatusOK, gin.H{
-			"tokens":           tokens,
-			"duration_seconds": durationSeconds,
-			"rpm_stats":        rpmStats,
-			"is_today":         isToday,
-		})
-		return
 	}
 
-	RespondJSON(c, http.StatusOK, tokens)
+	RespondJSON(c, http.StatusOK, resp)
 }
 
 // HandleCreateAuthToken 创建新的API访问令牌
@@ -128,6 +136,7 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 	var req struct {
 		Description string `json:"description" binding:"required"`
 		ExpiresAt   *int64 `json:"expires_at"` // Unix毫秒时间戳，nil表示永不过期
+		IsActive    *bool  `json:"is_active"`  // nil表示默认启用
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -147,11 +156,16 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 	// 计算SHA256哈希用于存储
 	tokenHash := model.HashToken(tokenPlain)
 
+	isActive := true
+	if req.IsActive != nil {
+		isActive = *req.IsActive
+	}
+
 	authToken := &model.AuthToken{
 		Token:       tokenHash,
 		Description: req.Description,
 		ExpiresAt:   req.ExpiresAt,
-		IsActive:    true,
+		IsActive:    isActive,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -184,7 +198,7 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 // HandleUpdateAuthToken 更新令牌信息
 // PUT /admin/auth-tokens/:id
 func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	id, err := ParseInt64Param(c, "id")
 	if err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid token id")
 		return
@@ -243,7 +257,7 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 // HandleDeleteAuthToken 删除令牌
 // DELETE /admin/auth-tokens/:id
 func (s *Server) HandleDeleteAuthToken(c *gin.Context) {
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	id, err := ParseInt64Param(c, "id")
 	if err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid token id")
 		return

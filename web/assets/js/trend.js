@@ -16,13 +16,7 @@
     // 加载可用模型列表
     async function loadModels() {
       try {
-        const res = await fetchWithAuth('/admin/models?range=this_month');
-        if (!res.ok) {
-          console.error('加载模型列表失败');
-          return;
-        }
-        const data = await res.json();
-        window.availableModels = data.data || [];
+        window.availableModels = (await fetchDataWithAuth('/admin/models?range=this_month')) || [];
 
         // 填充模型选择器
         const modelSelect = document.getElementById('f_model');
@@ -49,13 +43,8 @@
     // 加载令牌列表
     async function loadAuthTokens() {
       try {
-        const res = await fetchWithAuth('/admin/auth-tokens');
-        if (!res.ok) {
-          console.error('加载令牌列表失败');
-          return;
-        }
-        const response = await res.json();
-        window.authTokens = response.success ? (response.data || []) : (response || []);
+        const data = await fetchDataWithAuth('/admin/auth-tokens');
+        window.authTokens = (data && data.tokens) || [];
 
         // 填充令牌选择器
         const tokenSelect = document.getElementById('f_auth_token');
@@ -81,7 +70,7 @@
 
     async function loadData() {
       try {
-        showLoading();
+        renderTrendLoading();
 
         // 从 DOM 元素读取当前选择的时间范围和模型
         const rangeSelect = document.getElementById('f_hours');
@@ -133,19 +122,15 @@
         const channelIdParam = window.currentChannelId ? `&channel_id=${encodeURIComponent(window.currentChannelId)}` : '';
         const channelNameParam = window.currentChannelName ? `&channel_name_like=${encodeURIComponent(window.currentChannelName)}` : '';
 
-        const [metricsRes, channelsRes] = await Promise.all([
-          fetchWithAuth(metricsUrl + channelTypeParam + modelParam + tokenParam + channelIdParam + channelNameParam),
-          fetchWithAuth(channelsUrl + (channelTypeParamForList ? '?' + channelTypeParamForList.slice(1) : ''))
+        const [metrics, channels] = await Promise.all([
+          fetchAPIWithAuthRaw(metricsUrl + channelTypeParam + modelParam + tokenParam + channelIdParam + channelNameParam),
+          fetchDataWithAuth(channelsUrl + (channelTypeParamForList ? '?' + channelTypeParamForList.slice(1) : ''))
         ]);
-        
-        if (!metricsRes.ok) throw new Error(`HTTP ${metricsRes.status}`);
-        if (!channelsRes.ok) throw new Error(`获取渠道列表失败: ${channelsRes.status}`);
-        
-        const metricsResponse = await metricsRes.json();
-        const channelsResponse = await channelsRes.json();
-        
-        window.trendData = metricsResponse.success ? (metricsResponse.data || []) : (metricsResponse || []);
-        window.channels = channelsResponse.success ? (channelsResponse.data || []) : (channelsResponse || []);
+
+        if (!metrics.payload.success) throw new Error(metrics.payload.error || '获取趋势数据失败');
+
+        window.trendData = metrics.payload.data || [];
+        window.channels = channels || [];
         
         // 修复：智能初始化渠道显示状态（处理localStorage过时数据）
         // 默认不显示任何渠道，只显示总数
@@ -174,9 +159,9 @@
         }
         
         // 添加调试信息显示
-        const debugSince = metricsRes.headers.get('X-Debug-Since');
-        const debugPoints = metricsRes.headers.get('X-Debug-Points');
-        const debugTotal = metricsRes.headers.get('X-Debug-Total');
+        const debugSince = metrics.res.headers.get('X-Debug-Since');
+        const debugPoints = metrics.res.headers.get('X-Debug-Points');
+        const debugTotal = metrics.res.headers.get('X-Debug-Total');
 
         console.log('趋势数据调试信息:', {
           since: debugSince,
@@ -196,7 +181,7 @@
       } catch (error) {
         console.error('加载趋势数据失败:', error);
         try { if (window.showError) window.showError('无法加载趋势数据'); } catch(_){}
-        showError();
+        renderTrendError();
       }
     }
 
@@ -208,13 +193,13 @@
       return 60; // 1小时
     }
 
-    function showLoading() {
+    function renderTrendLoading() {
       document.getElementById('chart-loading').style.display = 'flex';
       document.getElementById('chart-error').style.display = 'none';
       document.getElementById('chart').style.display = 'none';
     }
 
-    function showError() {
+    function renderTrendError() {
       document.getElementById('chart-loading').style.display = 'none';
       document.getElementById('chart-error').style.display = 'flex';
       document.getElementById('chart').style.display = 'none';
@@ -222,7 +207,7 @@
 
     function renderChart() {
       if (!window.trendData || !window.trendData.length) {
-        showError();
+        renderTrendError();
         return;
       }
 
@@ -831,12 +816,6 @@
 
       // 设置配置并渲染
       window.chartInstance.setOption(option, true); // true 表示不合并，全量更新
-    }
-
-    function formatNumber(num) {
-      if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
-      if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
-      return num.toString();
     }
 
     function formatInterval(min) { 

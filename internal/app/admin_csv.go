@@ -288,7 +288,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 		created, updated, err := s.store.ImportChannelBatch(c.Request.Context(), validChannels)
 		if err != nil {
 			summary.Errors = append(summary.Errors, fmt.Sprintf("批量导入失败: %v", err))
-			RespondJSON(c, http.StatusInternalServerError, summary)
+			RespondErrorWithData(c, http.StatusInternalServerError, err.Error(), summary)
 			return
 		}
 		summary.Created = created

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -49,8 +48,7 @@ type FetchModelsDebug struct {
 // 设计模式: 适配器模式(Adapter Pattern) + 策略模式(Strategy Pattern)
 func (s *Server) HandleFetchModels(c *gin.Context) {
 	// 1. 解析路径参数
-	idStr := c.Param("id")
-	channelID, err := strconv.ParseInt(idStr, 10, 64)
+	channelID, err := ParseInt64Param(c, "id")
 	if err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "无效的渠道ID")
 		return
@@ -78,11 +76,8 @@ func (s *Server) HandleFetchModels(c *gin.Context) {
 	}
 	response, err := fetchModelsForConfig(c.Request.Context(), channelType, channel.URL, apiKey)
 	if err != nil {
-		// [INFO] 修复：统一返回200（与HandleFetchModelsPreview保持一致）
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"error":   err.Error(),
-		})
+		// [INFO] 修复：统一返回200，通过success字段区分成功/失败（上游错误是预期内的）
+		RespondErrorMsg(c, http.StatusOK, err.Error())
 		return
 	}
 
@@ -109,10 +104,7 @@ func (s *Server) HandleFetchModelsPreview(c *gin.Context) {
 	response, err := fetchModelsForConfig(c.Request.Context(), req.ChannelType, req.URL, req.APIKey)
 	if err != nil {
 		// [INFO] 修复：统一返回200，通过success字段区分成功/失败（上游错误是预期内的）
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"error":   err.Error(),
-		})
+		RespondErrorMsg(c, http.StatusOK, err.Error())
 		return
 	}
 	RespondJSON(c, http.StatusOK, response)

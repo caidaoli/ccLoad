@@ -365,7 +365,7 @@ async function testSingleKey(keyIndex) {
   testButton.innerHTML = '<span style="font-size: 10px;">⏳</span>';
 
   try {
-    const res = await fetchWithAuth(`/admin/channels/${editingChannelId}/test`, {
+    const testResult = await fetchDataWithAuth(`/admin/channels/${editingChannelId}/test`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -378,24 +378,17 @@ async function testSingleKey(keyIndex) {
       })
     });
 
-    if (!res.ok) {
-      throw new Error('HTTP ' + res.status);
-    }
-
-    const result = await res.json();
-    const testResult = result.data || result;
-
     await refreshKeyCooldownStatus();
 
     if (testResult.success) {
-      showToast(`✅ Key #${keyIndex + 1} 测试成功`, 'success');
+      window.showNotification(`✅ Key #${keyIndex + 1} 测试成功`, 'success');
     } else {
       const errorMsg = testResult.error || '测试失败';
-      showToast(`❌ Key #${keyIndex + 1} 测试失败: ${errorMsg}`, 'error');
+      window.showNotification(`❌ Key #${keyIndex + 1} 测试失败: ${errorMsg}`, 'error');
     }
   } catch (e) {
     console.error('测试失败', e);
-    showToast(`❌ Key #${keyIndex + 1} 测试请求失败: ${e.message}`, 'error');
+    window.showNotification(`❌ Key #${keyIndex + 1} 测试请求失败: ${e.message}`, 'error');
   } finally {
     testButton.disabled = false;
     testButton.innerHTML = originalHTML;
@@ -406,38 +399,34 @@ async function refreshKeyCooldownStatus() {
   if (!editingChannelId) return;
 
   try {
-    const res = await fetchWithAuth(`/admin/channels/${editingChannelId}/keys`);
-    if (res.ok) {
-      const data = await res.json();
-      const apiKeys = (data.success ? data.data : data) || [];
+    const apiKeys = (await fetchDataWithAuth(`/admin/channels/${editingChannelId}/keys`)) || [];
 
-      inlineKeyTableData = apiKeys.map(k => k.api_key || k);
-      if (inlineKeyTableData.length === 0) {
-        inlineKeyTableData = [''];
-      }
+    inlineKeyTableData = apiKeys.map(k => k.api_key || k);
+    if (inlineKeyTableData.length === 0) {
+      inlineKeyTableData = [''];
+    }
 
-      const now = Date.now();
-      currentChannelKeyCooldowns = apiKeys.map((apiKey, index) => {
-        const cooldownUntilMs = (apiKey.cooldown_until || 0) * 1000;
-        const remainingMs = Math.max(0, cooldownUntilMs - now);
-        return {
-          key_index: index,
-          cooldown_remaining_ms: remainingMs
-        };
-      });
+    const now = Date.now();
+    currentChannelKeyCooldowns = apiKeys.map((apiKey, index) => {
+      const cooldownUntilMs = (apiKey.cooldown_until || 0) * 1000;
+      const remainingMs = Math.max(0, cooldownUntilMs - now);
+      return {
+        key_index: index,
+        cooldown_remaining_ms: remainingMs
+      };
+    });
 
-      const tableContainer = document.querySelector('#inlineKeyTableBody').closest('div[style*="max-height"]');
-      const savedScrollTop = tableContainer ? tableContainer.scrollTop : 0;
+    const tableContainer = document.querySelector('#inlineKeyTableBody').closest('div[style*="max-height"]');
+    const savedScrollTop = tableContainer ? tableContainer.scrollTop : 0;
 
-      renderInlineKeyTable();
+    renderInlineKeyTable();
 
-      if (tableContainer && virtualScrollState.enabled) {
-        setTimeout(() => {
-          tableContainer.scrollTop = savedScrollTop;
-          virtualScrollState.scrollTop = savedScrollTop;
-          handleVirtualScroll({ target: tableContainer });
-        }, 0);
-      }
+    if (tableContainer && virtualScrollState.enabled) {
+      setTimeout(() => {
+        tableContainer.scrollTop = savedScrollTop;
+        virtualScrollState.scrollTop = savedScrollTop;
+        handleVirtualScroll({ target: tableContainer });
+      }, 0);
     }
   } catch (e) {
     console.error('刷新冷却状态失败', e);
@@ -648,7 +637,7 @@ function confirmInlineKeyImport() {
   closeKeyImportModal();
   renderInlineKeyTable();
 
-  showToast(`成功导入 ${addedCount} 个新Key${newKeys.length - addedCount > 0 ? `，${newKeys.length - addedCount} 个重复已忽略` : ''}`);
+  window.showNotification(`成功导入 ${addedCount} 个新Key${newKeys.length - addedCount > 0 ? `，${newKeys.length - addedCount} 个重复已忽略` : ''}`, 'success');
 }
 
 function openKeyImportModal() {

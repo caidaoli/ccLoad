@@ -44,6 +44,66 @@
 })();
 
 // ============================================================
+// API响应解析（统一后端返回格式：{success,data,error,count}）
+// ============================================================
+(function() {
+  async function parseAPIResponse(res) {
+    const text = await res.text();
+    if (!text) {
+      throw new Error(`空响应 (HTTP ${res.status})`);
+    }
+
+    let payload;
+    try {
+      payload = JSON.parse(text);
+    } catch (e) {
+      throw new Error(`响应不是JSON (HTTP ${res.status})`);
+    }
+
+    if (!payload || typeof payload !== 'object' || typeof payload.success !== 'boolean') {
+      throw new Error(`响应格式不符合APIResponse (HTTP ${res.status})`);
+    }
+
+    return payload;
+  }
+
+  async function fetchAPI(url, options = {}) {
+    const res = await fetch(url, options);
+    return parseAPIResponse(res);
+  }
+
+  async function fetchAPIWithAuth(url, options = {}) {
+    const res = await fetchWithAuth(url, options);
+    return parseAPIResponse(res);
+  }
+
+  // 需要同时读取响应头（如 X-Debug-*）的场景：返回 { res, payload }
+  async function fetchAPIWithAuthRaw(url, options = {}) {
+    const res = await fetchWithAuth(url, options);
+    const payload = await parseAPIResponse(res);
+    return { res, payload };
+  }
+
+  async function fetchData(url, options = {}) {
+    const resp = await fetchAPI(url, options);
+    if (!resp.success) throw new Error(resp.error || '请求失败');
+    return resp.data;
+  }
+
+  async function fetchDataWithAuth(url, options = {}) {
+    const resp = await fetchAPIWithAuth(url, options);
+    if (!resp.success) throw new Error(resp.error || '请求失败');
+    return resp.data;
+  }
+
+  window.fetchAPI = fetchAPI;
+  window.fetchAPIWithAuth = fetchAPIWithAuth;
+  window.fetchAPIWithAuthRaw = fetchAPIWithAuthRaw;
+  window.fetchData = fetchData;
+  window.fetchDataWithAuth = fetchDataWithAuth;
+})();
+
+// ============================================================
 // 共享UI：顶部导航与背景动画（KISS/DRY）
 // 使用方式：在页面底部引入本文件，并调用 initTopbar('index'|'configs'|'stats'|'trend'|'errors')
 // ============================================================
@@ -269,20 +329,8 @@
 (function() {
   let channelTypesCache = null;
 
-  /**
-   * HTML转义（防XSS）
-   * @param {string} str - 需要转义的字符串
-   * @returns {string} 转义后的安全字符串
-   */
-  function escapeHtml(str) {
-    if (str == null) return '';
-    return String(str)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-  }
+  // 复用公共工具（DRY）：真实实现由下方公共工具模块导出到 window.escapeHtml
+  const escapeHtml = (str) => window.escapeHtml(str);
 
   /**
    * 获取渠道类型配置（带缓存）
@@ -292,12 +340,8 @@
       return channelTypesCache;
     }
 
-    const res = await fetch('/public/channel-types');
-    if (!res.ok) {
-      throw new Error(`获取渠道类型配置失败: ${res.status}`);
-    }
-    const data = await res.json();
-    channelTypesCache = data.data || [];
+    const types = await fetchData('/public/channel-types');
+    channelTypesCache = types || [];
     return channelTypesCache;
   }
 
@@ -475,6 +519,24 @@
     return '$' + cost.toFixed(4).replace(/\.0+$/, '');
   }
 
+  // 格式化数字显示（通用：K/M缩写）
+  function formatNumber(num) {
+    const n = Number(num);
+    if (!Number.isFinite(n)) return '0';
+    if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+    if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+    return n.toString();
+  }
+
+  // RPM 颜色：低流量绿色，中等橙色，高流量红色
+  function getRpmColor(rpm) {
+    const n = Number(rpm);
+    if (!Number.isFinite(n)) return 'var(--neutral-600)';
+    if (n < 10) return 'var(--success-600)';
+    if (n < 100) return 'var(--warning-600)';
+    return 'var(--error-600)';
+  }
+
   /**
    * HTML转义（防XSS）
    * @param {string} str - 需要转义的字符串
@@ -490,8 +552,18 @@
       .replace(/'/g, '&#39;');
   }
 
+  // 简单显示/隐藏切换（用于日志/测试响应块等）
+  function toggleResponse(elementId) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    el.style.display = el.style.display === 'none' ? 'block' : 'none';
+  }
+
   // 导出到全局作用域
   window.debounce = debounce;
   window.formatCost = formatCost;
+  window.formatNumber = formatNumber;
+  window.getRpmColor = getRpmColor;
   window.escapeHtml = escapeHtml;
+  window.toggleResponse = toggleResponse;
 })();

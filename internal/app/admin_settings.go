@@ -1,6 +1,7 @@
 package app
 
 import (
+	"ccLoad/internal/model"
 	"fmt"
 	"log"
 	"net/http"
@@ -29,7 +30,10 @@ func (s *Server) AdminListSettings(c *gin.Context) {
 		return
 	}
 
-	RespondJSON(c, http.StatusOK, gin.H{"settings": settings})
+	if settings == nil {
+		settings = make([]*model.SystemSetting, 0)
+	}
+	RespondJSON(c, http.StatusOK, settings)
 }
 
 // AdminGetSetting 获取单个配置项
@@ -89,7 +93,6 @@ func (s *Server) AdminUpdateSetting(c *gin.Context) {
 
 	// 返回成功响应，告知需要重启
 	RespondJSON(c, http.StatusOK, gin.H{
-		"success": true,
 		"message": "配置已保存，程序将在2秒后重启",
 		"key":     key,
 		"value":   req.Value,
@@ -125,7 +128,6 @@ func (s *Server) AdminResetSetting(c *gin.Context) {
 	log.Printf("[INFO] Setting reset to default: %s = %s (restart required)", key, setting.DefaultValue)
 
 	RespondJSON(c, http.StatusOK, gin.H{
-		"success": true,
 		"message": "配置已重置为默认值，程序将在2秒后重启",
 		"key":     key,
 		"value":   setting.DefaultValue,
@@ -172,8 +174,7 @@ func (s *Server) AdminBatchUpdateSettings(c *gin.Context) {
 
 	log.Printf("[INFO] Batch updated %d settings (restart required)", len(req))
 
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
+	RespondJSON(c, http.StatusOK, gin.H{
 		"message": fmt.Sprintf("已保存 %d 项配置，程序将在2秒后重启", len(req)),
 	})
 

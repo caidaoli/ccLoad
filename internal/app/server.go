@@ -209,11 +209,6 @@ func (s *Server) getChannelCache() *storage.ChannelCache {
 	return s.channelCache
 }
 
-// GetConfigService 获取配置服务(供main.go使用)
-func (s *Server) GetConfigService() *ConfigService {
-	return s.configService
-}
-
 // buildHTTPTransport 构建HTTP Transport（DRY：统一配置逻辑）
 // 参数:
 //   - skipTLSVerify: 是否跳过TLS证书验证

@@ -8,28 +8,24 @@ async function loadChannels(type = 'all') {
     }
 
     const url = type === 'all' ? '/admin/channels' : `/admin/channels?type=${encodeURIComponent(type)}`;
-    const res = await fetchWithAuth(url);
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const response = await res.json();
-    const data = response.success ? (response.data || []) : (response || []);
+    const data = await fetchDataWithAuth(url);
 
-    channelsCache[type] = data;
-    channels = data;
+    channelsCache[type] = data || [];
+    channels = channelsCache[type];
 
     updateModelOptions();
     filterChannels();
   } catch (e) {
     console.error('加载渠道失败', e);
-    if (window.showError) showError('加载渠道失败');
+    if (window.showError) window.showError('加载渠道失败');
   }
 }
 
 async function loadChannelStatsRange() {
   try {
-    const resp = await fetchWithAuth('/admin/settings/channel_stats_range');
-    const data = await resp.json();
-    if (data.success && data.data?.value) {
-      channelStatsRange = data.data.value;
+    const setting = await fetchDataWithAuth('/admin/settings/channel_stats_range');
+    if (setting && setting.value) {
+      channelStatsRange = setting.value;
     }
   } catch (e) {
     console.error('加载统计范围设置失败', e);
@@ -39,24 +35,12 @@ async function loadChannelStatsRange() {
 async function loadChannelStats(range = channelStatsRange) {
   try {
     const params = new URLSearchParams({ range, limit: '500', offset: '0' });
-    const res = await fetchWithAuth(`/admin/stats?${params.toString()}`);
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const response = await res.json();
-    const statsArray = extractStatsEntries(response);
-    channelStatsById = aggregateChannelStats(statsArray);
+    const data = await fetchDataWithAuth(`/admin/stats?${params.toString()}`);
+    channelStatsById = aggregateChannelStats((data && data.stats) || []);
     filterChannels();
   } catch (err) {
     console.error('加载渠道统计数据失败', err);
   }
-}
-
-function extractStatsEntries(response) {
-  if (!response) return [];
-  if (Array.isArray(response)) return response;
-  if (Array.isArray(response.data?.stats)) return response.data.stats;
-  if (Array.isArray(response.stats)) return response.stats;
-  if (Array.isArray(response.data)) return response.data;
-  return [];
 }
 
 function aggregateChannelStats(statsEntries = []) {
@@ -124,10 +108,9 @@ function toSafeNumber(value) {
 // 加载默认测试内容（从系统设置）
 async function loadDefaultTestContent() {
   try {
-    const resp = await fetchWithAuth('/admin/settings/channel_test_content');
-    const data = await resp.json();
-    if (data.success && data.data?.value) {
-      defaultTestContent = data.data.value;
+    const setting = await fetchDataWithAuth('/admin/settings/channel_test_content');
+    if (setting && setting.value) {
+      defaultTestContent = setting.value;
     }
   } catch (e) {
     console.warn('加载默认测试内容失败，使用内置默认值', e);

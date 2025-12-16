@@ -317,7 +317,7 @@ func TestCodexModelsFetcher(t *testing.T) {
 // 辅助函数
 // ============================================================
 
-func getTypeName(v interface{}) string {
+func getTypeName(v any) string {
 	return fmt.Sprintf("%T", v)
 }
 

@@ -32,11 +32,7 @@ async function editChannel(id) {
 
   let apiKeys = [];
   try {
-    const res = await fetchWithAuth(`/admin/channels/${id}/keys`);
-    if (res.ok) {
-      const data = await res.json();
-      apiKeys = (data.success ? data.data : data) || [];
-    }
+    apiKeys = (await fetchDataWithAuth(`/admin/channels/${id}/keys`)) || [];
   } catch (e) {
     console.error('获取API Keys失败', e);
   }
@@ -114,38 +110,32 @@ async function saveChannel(event) {
   };
 
   if (!formData.name || !formData.url || !formData.api_key || formData.models.length === 0) {
-    if (window.showError) showError('请填写所有必填字段');
+    if (window.showError) window.showError('请填写所有必填字段');
     return;
   }
 
   try {
-    let res;
-    if (editingChannelId) {
-      res = await fetchWithAuth(`/admin/channels/${editingChannelId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData)
-      });
-    } else {
-      res = await fetchWithAuth('/admin/channels', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData)
-      });
-    }
+    const resp = editingChannelId
+      ? await fetchAPIWithAuth(`/admin/channels/${editingChannelId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(formData)
+        })
+      : await fetchAPIWithAuth('/admin/channels', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(formData)
+        });
 
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(text || 'HTTP ' + res.status);
-    }
+    if (!resp.success) throw new Error(resp.error || '保存失败');
 
     closeModal();
     clearChannelsCache();
     await loadChannels(filters.channelType);
-    if (window.showSuccess) showSuccess(editingChannelId ? '渠道已更新' : '渠道已添加');
+    if (window.showSuccess) window.showSuccess(editingChannelId ? '渠道已更新' : '渠道已添加');
   } catch (e) {
     console.error('保存渠道失败', e);
-    if (window.showError) showError('保存失败: ' + e.message);
+    if (window.showError) window.showError('保存失败: ' + e.message);
   }
 }
 
@@ -164,43 +154,40 @@ async function confirmDelete() {
   if (!deletingChannelId) return;
 
   try {
-    const res = await fetchWithAuth(`/admin/channels/${deletingChannelId}`, {
+    const resp = await fetchAPIWithAuth(`/admin/channels/${deletingChannelId}`, {
       method: 'DELETE'
     });
 
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(text || 'HTTP ' + res.status);
-    }
+    if (!resp.success) throw new Error(resp.error || '删除失败');
 
     closeDeleteModal();
     clearChannelsCache();
     await loadChannels(filters.channelType);
-    if (window.showSuccess) showSuccess('渠道已删除');
+    if (window.showSuccess) window.showSuccess('渠道已删除');
   } catch (e) {
     console.error('删除渠道失败', e);
-    if (window.showError) showError('删除失败: ' + e.message);
+    if (window.showError) window.showError('删除失败: ' + e.message);
   }
 }
 
 async function toggleChannel(id, enabled) {
   try {
-    const res = await fetchWithAuth(`/admin/channels/${id}`, {
+    const resp = await fetchAPIWithAuth(`/admin/channels/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled })
     });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
+    if (!resp.success) throw new Error(resp.error || '操作失败');
     clearChannelsCache();
     await loadChannels(filters.channelType);
-    if (window.showSuccess) showSuccess(enabled ? '渠道已启用' : '渠道已禁用');
+    if (window.showSuccess) window.showSuccess(enabled ? '渠道已启用' : '渠道已禁用');
   } catch (e) {
     console.error('切换失败', e);
-    if (window.showError) showError('操作失败');
+    if (window.showError) window.showError('操作失败');
   }
 }
 
-function copyChannel(id, name) {
+async function copyChannel(id, name) {
   const channel = channels.find(c => c.id === id);
   if (!channel) return;
 
@@ -212,7 +199,14 @@ function copyChannel(id, name) {
   document.getElementById('channelName').value = copiedName;
   document.getElementById('channelUrl').value = channel.url;
 
-  inlineKeyTableData = parseKeys(channel.api_key);
+  let apiKeys = [];
+  try {
+    apiKeys = (await fetchDataWithAuth(`/admin/channels/${id}/keys`)) || [];
+  } catch (e) {
+    console.error('获取API Keys失败', e);
+  }
+
+  inlineKeyTableData = apiKeys.map(k => k.api_key || k);
   if (inlineKeyTableData.length === 0) {
     inlineKeyTableData = [''];
   }
@@ -423,7 +417,7 @@ async function fetchModelsFromAPI() {
 
   if (!channelUrl) {
     if (window.showError) {
-      showError('请先填写API URL');
+      window.showError('请先填写API URL');
     } else {
       alert('请先填写API URL');
     }
@@ -432,7 +426,7 @@ async function fetchModelsFromAPI() {
 
   if (!firstValidKey) {
     if (window.showError) {
-      showError('请至少添加一个API Key');
+      window.showError('请至少添加一个API Key');
     } else {
       alert('请至少添加一个API Key');
     }
@@ -458,20 +452,9 @@ async function fetchModelsFromAPI() {
   modelsTextarea.placeholder = '正在获取模型列表...';
 
   try {
-    const res = await fetchWithAuth(endpoint, fetchOptions);
-
-    if (!res.ok) {
-      const errorData = await res.json().catch(() => ({}));
-      throw new Error(errorData.error || `HTTP ${res.status}`);
-    }
-
-    const response = await res.json();
-
-    if (response.success === false) {
-      throw new Error(response.error || '获取模型列表失败');
-    }
-
-    const data = response.data || response;
+    const response = await fetchAPIWithAuth(endpoint, fetchOptions);
+    if (!response.success) throw new Error(response.error || '获取模型列表失败');
+    const data = response.data || {};
 
     if (!data.models || data.models.length === 0) {
       throw new Error('未获取到任何模型');
@@ -484,7 +467,7 @@ async function fetchModelsFromAPI() {
 
     const source = data.source === 'api' ? '从API获取' : '预定义列表';
     if (window.showSuccess) {
-      showSuccess(`成功获取 ${data.models.length} 个模型 (${source})`);
+      window.showSuccess(`成功获取 ${data.models.length} 个模型 (${source})`);
     } else {
       alert(`成功获取 ${data.models.length} 个模型 (${source})`);
     }
@@ -495,7 +478,7 @@ async function fetchModelsFromAPI() {
     modelsTextarea.value = originalValue;
 
     if (window.showError) {
-      showError('获取模型列表失败: ' + error.message);
+      window.showError('获取模型列表失败: ' + error.message);
     } else {
       alert('获取模型列表失败: ' + error.message);
     }

@@ -168,7 +168,7 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 	}
 	defer rows.Close()
 
-	var stats []model.StatsEntry
+	stats := make([]model.StatsEntry, 0)
 	channelIDsToFetch := make(map[int64]bool)
 
 	for rows.Next() {

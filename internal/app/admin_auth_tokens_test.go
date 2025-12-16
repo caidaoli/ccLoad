@@ -87,3 +87,47 @@ func TestAdminAPI_CreateAuthToken_Basic(t *testing.T) {
 		t.Error("Hash mismatch")
 	}
 }
+
+func TestAdminAPI_ListAuthTokens_ResponseShape(t *testing.T) {
+	server, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/admin/auth-tokens", nil)
+
+	server.HandleListAuthTokens(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	if resp["success"] != true {
+		t.Fatalf("Expected success=true, got %v", resp["success"])
+	}
+
+	data, ok := resp["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("Expected data object, got %T", resp["data"])
+	}
+
+	if _, ok := data["is_today"]; !ok {
+		t.Fatalf("Expected data.is_today to exist")
+	}
+
+	tokens, ok := data["tokens"]
+	if !ok {
+		t.Fatalf("Expected data.tokens to exist")
+	}
+	if tokens == nil {
+		t.Fatalf("Expected data.tokens to be [], got null")
+	}
+	if _, ok := tokens.([]any); !ok {
+		t.Fatalf("Expected data.tokens to be array, got %T", tokens)
+	}
+}

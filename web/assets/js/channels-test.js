@@ -16,11 +16,7 @@ async function testChannel(id, name) {
 
   let apiKeys = [];
   try {
-    const res = await fetchWithAuth(`/admin/channels/${id}/keys`);
-    if (res.ok) {
-      const data = await res.json();
-      apiKeys = (data.success ? data.data : data) || [];
-    }
+    apiKeys = (await fetchDataWithAuth(`/admin/channels/${id}/keys`)) || [];
   } catch (e) {
     console.error('获取API Keys失败', e);
   }
@@ -92,7 +88,7 @@ async function runChannelTest() {
   const streamEnabled = streamCheckbox.checked;
 
   if (!selectedModel) {
-    if (window.showError) showError('请选择一个模型');
+    if (window.showError) window.showError('请选择一个模型');
     return;
   }
 
@@ -113,19 +109,12 @@ async function runChannelTest() {
       testRequest.key_index = parseInt(keySelect.value) || 0;
     }
 
-    const res = await fetchWithAuth(`/admin/channels/${testingChannelId}/test`, {
+    const testResult = await fetchDataWithAuth(`/admin/channels/${testingChannelId}/test`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(testRequest)
     });
-
-    if (!res.ok) {
-      throw new Error('HTTP ' + res.status);
-    }
-
-    const result = await res.json();
-    const testResult = result.data || result;
-    displayTestResult(testResult);
+    displayTestResult(testResult || { success: false, error: '空响应' });
   } catch (e) {
     console.error('测试失败', e);
 
@@ -150,18 +139,14 @@ async function runBatchTest() {
 
   let apiKeys = [];
   try {
-    const res = await fetchWithAuth(`/admin/channels/${testingChannelId}/keys`);
-    if (res.ok) {
-      const data = await res.json();
-      apiKeys = (data.success ? data.data : data) || [];
-    }
+    apiKeys = (await fetchDataWithAuth(`/admin/channels/${testingChannelId}/keys`)) || [];
   } catch (e) {
     console.error('获取API Keys失败', e);
   }
 
   const keys = apiKeys.map(k => k.api_key || k);
   if (keys.length === 0) {
-    if (window.showError) showError('没有可用的API Key');
+    if (window.showError) window.showError('没有可用的API Key');
     return;
   }
 
@@ -178,7 +163,7 @@ async function runBatchTest() {
   const concurrency = Math.max(1, Math.min(50, parseInt(concurrencyInput.value) || 10));
 
   if (!selectedModel) {
-    if (window.showError) showError('请选择一个模型');
+    if (window.showError) window.showError('请选择一个模型');
     return;
   }
 
@@ -216,14 +201,11 @@ async function runBatchTest() {
         key_index: keyIndex
       };
 
-      const res = await fetchWithAuth(`/admin/channels/${testingChannelId}/test`, {
+      const testResult = await fetchDataWithAuth(`/admin/channels/${testingChannelId}/test`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(testRequest)
       });
-
-      const result = await res.json();
-      const testResult = result.data || result;
 
       if (testResult.success) {
         successCount++;

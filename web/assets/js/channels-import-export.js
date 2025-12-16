@@ -43,10 +43,10 @@ async function exportChannelsCSV(buttonEl) {
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
 
-    if (window.showSuccess) showSuccess('导出成功');
+    if (window.showSuccess) window.showSuccess('导出成功');
   } catch (err) {
     console.error('导出CSV失败', err);
-    if (window.showError) showError(err.message || '导出失败');
+    if (window.showError) window.showError(err.message || '导出失败');
   } finally {
     if (buttonEl) buttonEl.disabled = false;
   }
@@ -65,27 +65,15 @@ async function handleImportCSV(event, importBtn) {
   if (importBtn) importBtn.disabled = true;
 
   try {
-    const res = await fetchWithAuth('/admin/channels/import', {
+    const resp = await fetchAPIWithAuth('/admin/channels/import', {
       method: 'POST',
       body: formData
     });
 
-    const responseText = await res.text();
-    let payload = null;
-    if (responseText) {
-      try {
-        payload = JSON.parse(responseText);
-      } catch (e) {
-        payload = null;
-      }
+    const summary = resp.data;
+    if (!resp.success) {
+      throw new Error(resp.error || '导入失败');
     }
-
-    if (!res.ok) {
-      const message = (payload && payload.error) || responseText || `导入失败 (HTTP ${res.status})`;
-      throw new Error(message);
-    }
-
-    const summary = payload && payload.data ? payload.data : payload;
     if (summary) {
       let msg = `导入完成：新增 ${summary.created || 0}，更新 ${summary.updated || 0}，跳过 ${summary.skipped || 0}`;
 
@@ -97,26 +85,26 @@ async function handleImportCSV(event, importBtn) {
         }
       }
 
-      if (window.showSuccess) showSuccess(msg);
+      if (window.showSuccess) window.showSuccess(msg);
 
       if (summary.errors && summary.errors.length) {
         const preview = summary.errors.slice(0, 3).join('；');
         const extra = summary.errors.length > 3 ? ` 等${summary.errors.length}条记录` : '';
-        if (window.showError) showError(`部分记录导入失败：${preview}${extra}`);
+        if (window.showError) window.showError(`部分记录导入失败：${preview}${extra}`);
       }
 
       if (summary.redis_sync_enabled && !summary.redis_sync_success && summary.redis_sync_error) {
-        if (window.showError) showError(`Redis同步失败：${summary.redis_sync_error}`);
+        if (window.showError) window.showError(`Redis同步失败：${summary.redis_sync_error}`);
       }
     } else if (window.showSuccess) {
-      showSuccess('导入完成');
+      window.showSuccess('导入完成');
     }
 
     clearChannelsCache();
     await loadChannels(filters.channelType);
   } catch (err) {
     console.error('导入CSV失败', err);
-    if (window.showError) showError(err.message || '导入失败');
+    if (window.showError) window.showError(err.message || '导入失败');
   } finally {
     if (importBtn) importBtn.disabled = false;
     input.value = '';

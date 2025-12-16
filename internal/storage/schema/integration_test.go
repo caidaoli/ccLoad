@@ -177,15 +177,15 @@ func TestAllTablesMySQLIntegration(t *testing.T) {
 func verifyTableExists(t *testing.T, db *sql.DB, tableName, dbType string) {
 	var exists bool
 	var query string
-	var args []interface{}
+	var args []any
 
 	switch dbType {
 	case "SQLite":
 		query = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?"
-		args = []interface{}{tableName}
+		args = []any{tableName}
 	case "MySQL":
 		query = "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=?"
-		args = []interface{}{tableName}
+		args = []any{tableName}
 	}
 
 	err := db.QueryRow(query, args...).Scan(&exists)
@@ -221,7 +221,7 @@ func verifyTableStructure(t *testing.T, db *sql.DB, tableName string, builder *T
 		switch dbType {
 		case "SQLite":
 			var cid int
-			var dfltValue interface{}
+			var dfltValue any
 			err := rows.Scan(&cid, &colName, &colType, &nullable, &dfltValue, &extra)
 			if err != nil {
 				t.Errorf("Failed to scan column info: %v", err)
@@ -255,7 +255,7 @@ func verifyIndexesCreated(t *testing.T, db *sql.DB, tableName string, indexes []
 		t.Logf("Verifying index: %s", idx.SQL)
 
 		var query string
-		var result interface{}
+		var result any
 
 		switch dbType {
 		case "SQLite":
