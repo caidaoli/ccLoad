@@ -1171,7 +1171,16 @@
       }
 
       // 输入框自动筛选（防抖）
-      const debouncedFilter = debounce(loadData, 500);
+      const debouncedFilter = debounce(() => {
+        // 读取输入框值到全局变量
+        const idInput = document.getElementById('f_id');
+        if (idInput) window.currentChannelId = idInput.value.trim() || '';
+        const nameInput = document.getElementById('f_name');
+        if (nameInput) window.currentChannelName = nameInput.value.trim() || '';
+
+        persistState();
+        loadData();
+      }, 500);
       ['f_id', 'f_name'].forEach(id => {
         const el = document.getElementById(id);
         if (el) {
@@ -1184,7 +1193,16 @@
         const el = document.getElementById(id);
         if (el) {
           el.addEventListener('keydown', e => {
-            if (e.key === 'Enter') loadData();
+            if (e.key === 'Enter') {
+              // 读取输入框值到全局变量
+              const idInput = document.getElementById('f_id');
+              if (idInput) window.currentChannelId = idInput.value.trim() || '';
+              const nameInput = document.getElementById('f_name');
+              if (nameInput) window.currentChannelName = nameInput.value.trim() || '';
+
+              persistState();
+              loadData();
+            }
           });
         }
       });
@@ -1196,6 +1214,8 @@
         localStorage.setItem('trend.trendType', window.currentTrendType);
         localStorage.setItem('trend.model', window.currentModel);
         localStorage.setItem('trend.authToken', window.currentAuthToken);
+        localStorage.setItem('trend.channelId', window.currentChannelId || '');
+        localStorage.setItem('trend.channelName', window.currentChannelName || '');
 
         // ✅ 新增：同步到 URL 参数（不刷新页面）
         updateURLParams();
@@ -1255,6 +1275,20 @@
 
         // 恢复令牌选择
         window.currentAuthToken = urlParams.get('token') || (!hasUrlParams && localStorage.getItem('trend.authToken')) || '';
+
+        // 恢复渠道ID和渠道名
+        window.currentChannelId = urlParams.get('channel_id') || (!hasUrlParams && localStorage.getItem('trend.channelId')) || '';
+        window.currentChannelName = urlParams.get('channel_name_like') || (!hasUrlParams && localStorage.getItem('trend.channelName')) || '';
+
+        // 同步到输入框
+        const idInput = document.getElementById('f_id');
+        if (idInput && window.currentChannelId) {
+          idInput.value = window.currentChannelId;
+        }
+        const nameInput = document.getElementById('f_name');
+        if (nameInput && window.currentChannelName) {
+          nameInput.value = window.currentChannelName;
+        }
       } catch (_) {}
     }
 

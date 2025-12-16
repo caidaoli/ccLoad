@@ -87,6 +87,7 @@ function setupFilterListeners() {
 
   const debouncedFilter = debounce(() => {
     filters.search = searchInput.value;
+    if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
     filterChannels();
     updateClearButton();
   }, 300);
@@ -96,6 +97,7 @@ function setupFilterListeners() {
   clearSearchBtn.addEventListener('click', () => {
     searchInput.value = '';
     filters.search = '';
+    if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
     filterChannels();
     updateClearButton();
     searchInput.focus();
@@ -108,6 +110,7 @@ function setupFilterListeners() {
   const idFilter = document.getElementById('idFilter');
   const debouncedIdFilter = debounce(() => {
     filters.id = idFilter.value;
+    if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
     filterChannels();
   }, 300);
   idFilter.addEventListener('input', debouncedIdFilter);

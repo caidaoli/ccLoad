@@ -37,7 +37,9 @@ function saveChannelsFilters() {
     localStorage.setItem(CHANNELS_FILTER_KEY, JSON.stringify({
       channelType: filters.channelType,
       status: filters.status,
-      model: filters.model
+      model: filters.model,
+      search: filters.search,
+      id: filters.id
     }));
   } catch (_) {}
 }
@@ -67,8 +69,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (savedFilters) {
     filters.status = savedFilters.status || 'all';
     filters.model = savedFilters.model || 'all';
+    filters.search = savedFilters.search || '';
+    filters.id = savedFilters.id || '';
     document.getElementById('statusFilter').value = filters.status;
     document.getElementById('modelFilter').value = filters.model;
+    document.getElementById('searchInput').value = filters.search;
+    document.getElementById('idFilter').value = filters.id;
   }
 
   // 初始化渠道类型筛选器（替换原Tab逻辑）
