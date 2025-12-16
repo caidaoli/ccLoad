@@ -11,6 +11,18 @@ LOG_DIR = logs
 PROJECT_DIR = $(shell pwd)
 GOTAGS ?= go_json
 
+# 版本信息
+VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo "dev")
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILD_TIME ?= $(shell date '+%Y-%m-%d %H:%M:%S %z')
+BUILT_BY ?= $(shell whoami)
+VERSION_PKG = ccLoad/internal/version
+LDFLAGS = -s -w \
+	-X $(VERSION_PKG).Version=$(VERSION) \
+	-X $(VERSION_PKG).Commit=$(COMMIT) \
+	-X '$(VERSION_PKG).BuildTime=$(BUILD_TIME)' \
+	-X $(VERSION_PKG).BuiltBy=$(BUILT_BY)
+
 .PHONY: help build generate-plist inject-env-vars install-service uninstall-service start stop restart status logs clean
 
 # 默认目标
@@ -31,8 +43,8 @@ help:
 
 # 构建二进制文件
 build:
-	@echo "构建 $(BINARY_NAME)..."
-	@go build -tags "$(GOTAGS)" -o $(BINARY_NAME) .
+	@echo "构建 $(BINARY_NAME) ($(VERSION))..."
+	@go build -tags "$(GOTAGS)" -ldflags="$(LDFLAGS)" -o $(BINARY_NAME) .
 	@echo "构建完成: $(BINARY_NAME)"
 
 # 创建必要的目录

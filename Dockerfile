@@ -26,15 +26,21 @@ RUN --mount=type=cache,target=/root/.cache/go-mod \
 # 复制源代码
 COPY . .
 
-# 编译二进制文件（注入版本号用于静态资源缓存控制）
-# VERSION 为空时默认 "dev"（开发环境），生产部署应传入具体版本号
+# 编译二进制文件（注入版本信息用于静态资源缓存控制）
+# VERSION 为空时从 git tag 获取，都没有则默认 "dev"
 ENV CGO_ENABLED=1
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/root/.cache/go-mod \
-    BUILD_VERSION=${VERSION:-dev} && \
+    BUILD_VERSION=${VERSION:-$(git describe --tags --always 2>/dev/null || echo "dev")} && \
+    BUILD_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown") && \
+    BUILD_TIME=$(date '+%Y-%m-%d %H:%M:%S %z') && \
     go build \
     -tags go_json \
-    -ldflags="-s -w -X ccLoad/internal/version.Version=${BUILD_VERSION}" \
+    -ldflags="-s -w \
+      -X ccLoad/internal/version.Version=${BUILD_VERSION} \
+      -X ccLoad/internal/version.Commit=${BUILD_COMMIT} \
+      -X 'ccLoad/internal/version.BuildTime=${BUILD_TIME}' \
+      -X ccLoad/internal/version.BuiltBy=docker" \
     -o ccload .
 
 # 运行阶段
