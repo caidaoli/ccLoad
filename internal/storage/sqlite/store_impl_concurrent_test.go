@@ -1,7 +1,6 @@
 package sqlite_test
 
 import (
-	"ccLoad/internal/storage"
 	"ccLoad/internal/model"
 	"context"
 	"fmt"
@@ -17,7 +16,7 @@ import (
 
 // TestConcurrentConfigCreate 测试并发创建渠道配置
 func TestConcurrentConfigCreate(t *testing.T) {
-	store, cleanup := setupConcurrentTestStore(t)
+	store, cleanup := setupSQLiteTestStore(t, "concurrent-test.db")
 	defer cleanup()
 
 	ctx := context.Background()
@@ -73,7 +72,7 @@ func TestConcurrentConfigCreate(t *testing.T) {
 
 // TestConcurrentConfigReadWrite 测试并发读写渠道配置
 func TestConcurrentConfigReadWrite(t *testing.T) {
-	store, cleanup := setupConcurrentTestStore(t)
+	store, cleanup := setupSQLiteTestStore(t, "concurrent-test.db")
 	defer cleanup()
 
 	ctx := context.Background()
@@ -147,7 +146,7 @@ func TestConcurrentConfigReadWrite(t *testing.T) {
 
 // TestConcurrentLogAdd 测试并发添加日志
 func TestConcurrentLogAdd(t *testing.T) {
-	store, cleanup := setupConcurrentTestStore(t)
+	store, cleanup := setupSQLiteTestStore(t, "concurrent-test.db")
 	defer cleanup()
 
 	ctx := context.Background()
@@ -206,7 +205,7 @@ func TestConcurrentLogAdd(t *testing.T) {
 
 // TestConcurrentBatchLogAdd 测试并发批量添加日志
 func TestConcurrentBatchLogAdd(t *testing.T) {
-	store, cleanup := setupConcurrentTestStore(t)
+	store, cleanup := setupSQLiteTestStore(t, "concurrent-test.db")
 	defer cleanup()
 
 	ctx := context.Background()
@@ -258,7 +257,7 @@ func TestConcurrentBatchLogAdd(t *testing.T) {
 
 // TestConcurrentAPIKeyOperations 测试并发API Key操作
 func TestConcurrentAPIKeyOperations(t *testing.T) {
-	store, cleanup := setupConcurrentTestStore(t)
+	store, cleanup := setupSQLiteTestStore(t, "concurrent-test.db")
 	defer cleanup()
 
 	ctx := context.Background()
@@ -345,7 +344,7 @@ func TestConcurrentCooldownOperations(t *testing.T) {
 		t.Skip("跳过并发测试（使用 -short 标志）")
 	}
 
-	store, cleanup := setupConcurrentTestStore(t)
+	store, cleanup := setupSQLiteTestStore(t, "concurrent-test.db")
 	defer cleanup()
 
 	ctx := context.Background()
@@ -431,7 +430,7 @@ func TestConcurrentCooldownOperations(t *testing.T) {
 
 // TestConcurrentMixedOperations 测试混合并发操作
 func TestConcurrentMixedOperations(t *testing.T) {
-	store, cleanup := setupConcurrentTestStore(t)
+	store, cleanup := setupSQLiteTestStore(t, "concurrent-test.db")
 	defer cleanup()
 
 	ctx := context.Background()
@@ -519,20 +518,4 @@ func TestConcurrentMixedOperations(t *testing.T) {
 
 // ========== 辅助函数 ==========
 
-func setupConcurrentTestStore(t *testing.T) (storage.Store, func()) {
-	t.Helper()
-
-	tmpDB := t.TempDir() + "/concurrent-test.db"
-	store, err := storage.CreateSQLiteStore(tmpDB, nil)
-	if err != nil {
-		t.Fatalf("创建测试数据库失败: %v", err)
-	}
-
-	cleanup := func() {
-		if err := store.Close(); err != nil {
-			t.Logf("关闭测试数据库失败: %v", err)
-		}
-	}
-
-	return store, cleanup
-}
+// setupSQLiteTestStore 见 test_store_helpers_test.go

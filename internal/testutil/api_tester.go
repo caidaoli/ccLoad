@@ -41,6 +41,27 @@ func getSliceItem[T any](slice []any, index int) (T, bool) {
 	return typed, ok
 }
 
+func parseAPIResponse(respBody []byte, extractText func(map[string]any) (string, bool), usageKey string) map[string]any {
+	out := map[string]any{}
+	var apiResp map[string]any
+	if err := sonic.Unmarshal(respBody, &apiResp); err == nil {
+		if extractText != nil {
+			if text, ok := extractText(apiResp); ok {
+				out["response_text"] = text
+			}
+		}
+		if usageKey != "" {
+			if usage, ok := getTypedValue[map[string]any](apiResp, usageKey); ok {
+				out["usage"] = usage
+			}
+		}
+		out["api_response"] = apiResp
+		return out
+	}
+	out["raw_response"] = string(respBody)
+	return out
+}
+
 // CodexTester 兼容 Codex 风格（渠道类型: codex）
 type CodexTester struct{}
 
@@ -126,24 +147,7 @@ func extractCodexResponseText(apiResp map[string]any) (string, bool) {
 }
 
 func (t *CodexTester) Parse(statusCode int, respBody []byte) map[string]any {
-	out := map[string]any{}
-	var apiResp map[string]any
-	if err := sonic.Unmarshal(respBody, &apiResp); err == nil {
-		// 提取文本（使用辅助函数）
-		if text, ok := extractCodexResponseText(apiResp); ok {
-			out["response_text"] = text
-		}
-
-		// 提取usage（使用泛型工具）
-		if usage, ok := getTypedValue[map[string]any](apiResp, "usage"); ok {
-			out["usage"] = usage
-		}
-
-		out["api_response"] = apiResp
-		return out
-	}
-	out["raw_response"] = string(respBody)
-	return out
+	return parseAPIResponse(respBody, extractCodexResponseText, "usage")
 }
 
 // OpenAITester 标准OpenAI API格式（渠道类型: openai）
@@ -283,24 +287,7 @@ func extractGeminiResponseText(apiResp map[string]any) (string, bool) {
 }
 
 func (t *GeminiTester) Parse(statusCode int, respBody []byte) map[string]any {
-	out := map[string]any{}
-	var apiResp map[string]any
-	if err := sonic.Unmarshal(respBody, &apiResp); err == nil {
-		// 提取文本响应（使用辅助函数）
-		if text, ok := extractGeminiResponseText(apiResp); ok {
-			out["response_text"] = text
-		}
-
-		// 提取usage信息（使用泛型工具）
-		if usageMetadata, ok := getTypedValue[map[string]any](apiResp, "usageMetadata"); ok {
-			out["usage"] = usageMetadata
-		}
-
-		out["api_response"] = apiResp
-		return out
-	}
-	out["raw_response"] = string(respBody)
-	return out
+	return parseAPIResponse(respBody, extractGeminiResponseText, "usageMetadata")
 }
 
 // AnthropicTester 实现 Anthropic 测试协议

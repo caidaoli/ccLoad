@@ -70,7 +70,7 @@ const (
 // classifyHTTPStatus 分类HTTP状态码，返回错误级别
 // 遵循SRP原则：单一职责 - 仅负责状态码分类
 //
-// 注意：401/403错误需要结合响应体内容进一步判断（通过ClassifyHTTPStatusWithBody）
+// 注意：401/403/429 需要结合响应体/headers进一步判断（通过ClassifyHTTPResponse）
 
 // statusCodeClassification 状态码→错误级别映射表
 // 设计原则：表驱动替代巨型switch，提高可维护性
@@ -136,24 +136,25 @@ func ClassifyHTTPStatus(statusCode int) ErrorLevel {
 	return ErrorLevelClient
 }
 
-// classifyHTTPStatusWithBody 基于状态码和响应体智能分类错误级别
-// 针对401/403错误进行语义分析，区分Key级错误和渠道级错误
+// ClassifyHTTPResponse 基于状态码 + headers + 响应体智能分类错误级别
+// 401/403 做语义分析；429 做限流范围分析；其余走表驱动状态码分类。
 //
-// 设计原则（遵循用户的ultrathink）：
-// - 401/403错误**默认为Key级**，让handleProxyError根据渠道Key数量决定是否升级
-// - 只有明确的"账户级不可逆错误"才分类为Channel级（如账户暂停、服务禁用）
-// - "额度用尽"可能是单个Key的问题，应该先尝试其他Key
-func ClassifyHTTPStatusWithBody(statusCode int, responseBody []byte) ErrorLevel {
+// 设计原则：
+//   - 401/403 默认 Key 级（保守），只在明确账户级不可逆错误时升级为 Channel 级
+//   - 429 默认 Key 级，只有明确长时间/全局限流特征才升级为 Channel 级
+//   - 1308 错误优先：无论 HTTP 状态码，检测到就按 Key 级处理（用于精确冷却时间）
+func ClassifyHTTPResponse(statusCode int, headers map[string][]string, responseBody []byte) ErrorLevel {
 	// [INFO] 特殊处理：检测1308错误（可能以SSE error事件形式出现，HTTP状态码是200）
 	// 1308错误表示达到使用上限，应该触发Key级冷却
 	if _, has1308 := ParseResetTimeFrom1308Error(responseBody); has1308 {
 		return ErrorLevelKey // 1308错误视为Key级错误，触发冷却
 	}
 
-	// 增加429错误的特殊处理
+	// 429错误：需要结合 headers 判断限流范围
 	if statusCode == 429 {
-		// 429错误需要分析headers,但此函数没有headers参数
-		// 为了向后兼容,这里默认返回Key级,由调用方使用ClassifyRateLimitError
+		if headers != nil {
+			return classifyRateLimitError(headers, responseBody)
+		}
 		return ErrorLevelKey
 	}
 
@@ -196,7 +197,7 @@ func ClassifyHTTPStatusWithBody(statusCode int, responseBody []byte) ErrorLevel 
 	return ErrorLevelKey
 }
 
-// ClassifyRateLimitError 分析429 Rate Limit错误的具体类型
+// classifyRateLimitError 分析429 Rate Limit错误的具体类型
 // 增强429错误处理,区分Key级和渠道级限流
 //
 // 判断逻辑:
@@ -208,10 +209,7 @@ func ClassifyHTTPStatusWithBody(statusCode int, responseBody []byte) ErrorLevel 
 // 参数:
 //   - headers: HTTP响应头
 //   - responseBody: 响应体内容
-//
-// 返回:
-//   - ErrorLevel: Key级或渠道级
-func ClassifyRateLimitError(headers map[string][]string, responseBody []byte) ErrorLevel {
+func classifyRateLimitError(headers map[string][]string, responseBody []byte) ErrorLevel {
 	// 1. 解析Retry-After头
 	if retryAfterValues, ok := headers["Retry-After"]; ok && len(retryAfterValues) > 0 {
 		retryAfter := retryAfterValues[0]

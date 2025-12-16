@@ -33,12 +33,14 @@ func NewWhereBuilder() *WhereBuilder {
 //   - 违反约束将导致SQL注入漏洞，必须通过代码审查/静态分析工具检测
 //
 // 正确示例:
-//   wb.AddCondition("channel_id = ?", userInputChannelID)  // ✅ 用户输入通过args传递
-//   wb.AddCondition("status IN (?, ?)", "active", "pending") // ✅ 多个占位符
+//
+//	wb.AddCondition("channel_id = ?", userInputChannelID)  // ✅ 用户输入通过args传递
+//	wb.AddCondition("status IN (?, ?)", "active", "pending") // ✅ 多个占位符
 //
 // 错误示例:
-//   wb.AddCondition("channel_id = " + userInput)  // ❌ SQL注入风险！
-//   wb.AddCondition(fmt.Sprintf("name LIKE '%%%s%%'", userInput))  // ❌ SQL注入风险！
+//
+//	wb.AddCondition("channel_id = " + userInput)  // ❌ SQL注入风险！
+//	wb.AddCondition(fmt.Sprintf("name LIKE '%%%s%%'", userInput))  // ❌ SQL注入风险！
 //
 // 静态检查建议: 使用gosec/semgrep扫描所有调用点，确保condition参数不包含fmt.Sprintf/字符串拼接
 func (wb *WhereBuilder) AddCondition(condition string, args ...any) *WhereBuilder {
@@ -60,8 +62,8 @@ func (wb *WhereBuilder) ApplyLogFilter(filter *model.LogFilter) *WhereBuilder {
 	if filter.ChannelID != nil {
 		wb.AddCondition("channel_id = ?", *filter.ChannelID)
 	}
-	// 注意：ChannelName和ChannelNameLike需要JOIN channels表才能使用
-	// 当前ListLogs查询不包含JOIN，因此这些过滤器会被忽略
+	// 注意：ChannelType/ChannelName/ChannelNameLike 不在此处处理。
+	// logs 表只有 channel_id；这类过滤应由 SQLStore.applyChannelFilter 先解析出候选 channel_id 集合再 WhereIn。
 	if filter.Model != "" {
 		wb.AddCondition("model = ?", filter.Model)
 	}
@@ -111,13 +113,11 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	var enabledInt int
 	var createdAtRaw, updatedAtRaw any // 使用any接受任意类型（兼容字符串、整数或RFC3339）
 
-	// [INFO] Linus风格：删除rr_key_index字段（已改用内存计数器）
-	var rrKeyIndex int // 临时变量，读取后丢弃
 	// 扫描key_count字段（从JOIN查询获取）
 	if err := scanner.Scan(&c.ID, &c.Name, &c.URL, &c.Priority,
 		&modelsStr, &modelRedirectsStr, &c.ChannelType, &enabledInt,
 		&c.CooldownUntil, &c.CooldownDurationMs, &c.KeyCount,
-		&rrKeyIndex, &createdAtRaw, &updatedAtRaw); err != nil {
+		&createdAtRaw, &updatedAtRaw); err != nil {
 		return nil, err
 	}
 

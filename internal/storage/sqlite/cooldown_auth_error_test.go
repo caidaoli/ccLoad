@@ -1,8 +1,8 @@
 package sqlite_test
 
 import (
-	"ccLoad/internal/storage"
 	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 	"context"
 	"sync"
@@ -48,7 +48,7 @@ func TestAuthErrorInitialCooldown(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// 创建临时测试数据库
-			store, cleanup := setupAuthErrorTestStore(t)
+			store, cleanup := setupSQLiteTestStore(t, "test-auth-error.db")
 			defer cleanup()
 
 			ctx := context.Background()
@@ -99,7 +99,7 @@ func TestAuthErrorInitialCooldown(t *testing.T) {
 
 // TestAuthErrorExponentialBackoff 验证401/403错误的指数退避机制
 func TestAuthErrorExponentialBackoff(t *testing.T) {
-	store, cleanup := setupAuthErrorTestStore(t)
+	store, cleanup := setupSQLiteTestStore(t, "test-auth-error.db")
 	defer cleanup()
 
 	ctx := context.Background()
@@ -149,7 +149,7 @@ func TestAuthErrorExponentialBackoff(t *testing.T) {
 
 // TestKeyLevelAuthErrorCooldown 验证Key级别的401/403错误冷却
 func TestKeyLevelAuthErrorCooldown(t *testing.T) {
-	store, cleanup := setupAuthErrorTestStore(t)
+	store, cleanup := setupSQLiteTestStore(t, "test-auth-error.db")
 	defer cleanup()
 
 	ctx := context.Background()
@@ -211,7 +211,7 @@ func TestKeyLevelAuthErrorCooldown(t *testing.T) {
 
 // TestMixedErrorCodesCooldown 验证不同错误码混合场景的冷却行为
 func TestMixedErrorCodesCooldown(t *testing.T) {
-	store, cleanup := setupAuthErrorTestStore(t)
+	store, cleanup := setupSQLiteTestStore(t, "test-auth-error.db")
 	defer cleanup()
 
 	ctx := context.Background()
@@ -266,7 +266,7 @@ func TestConcurrentCooldownUpdates(t *testing.T) {
 		t.Skip("跳过并发测试（使用 -short 标志）")
 	}
 
-	store, cleanup := setupAuthErrorTestStore(t)
+	store, cleanup := setupSQLiteTestStore(t, "test-auth-error.db")
 	defer cleanup()
 
 	ctx := context.Background()
@@ -318,7 +318,7 @@ func TestConcurrentKeyCooldownUpdates(t *testing.T) {
 		t.Skip("跳过并发测试（使用 -short 标志）")
 	}
 
-	store, cleanup := setupAuthErrorTestStore(t)
+	store, cleanup := setupSQLiteTestStore(t, "test-auth-error.db")
 	defer cleanup()
 
 	ctx := context.Background()
@@ -398,7 +398,7 @@ func TestRaceConditionDetection(t *testing.T) {
 		t.Skip("跳过竞态检测测试（使用 -short 标志）")
 	}
 
-	store, cleanup := setupAuthErrorTestStore(t)
+	store, cleanup := setupSQLiteTestStore(t, "test-auth-error.db")
 	defer cleanup()
 
 	ctx := context.Background()
@@ -455,25 +455,7 @@ func TestRaceConditionDetection(t *testing.T) {
 }
 
 // setupAuthErrorTestStore 创建临时测试数据库（专用于认证错误测试）
-func setupAuthErrorTestStore(t *testing.T) (storage.Store, func()) {
-	t.Helper()
-
-	tmpDB := t.TempDir() + "/test-auth-error.db"
-	store, err := storage.CreateSQLiteStore(tmpDB, nil)
-	if err != nil {
-		t.Fatalf("创建测试数据库失败: %v", err)
-	}
-
-	cleanup := func() {
-		if err := store.Close(); err != nil {
-			t.Logf("关闭测试数据库失败: %v", err)
-		}
-	}
-
-	return store, cleanup
-}
-
-
+// setupSQLiteTestStore 见 test_store_helpers_test.go
 // getChannelCooldownUntil 获取渠道冷却截止时间（测试辅助函数）
 func getChannelCooldownUntil(ctx context.Context, store storage.Store, channelID int64) (time.Time, bool) {
 	cfg, err := store.GetConfig(ctx, channelID)

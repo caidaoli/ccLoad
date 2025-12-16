@@ -14,12 +14,12 @@ import (
 
 // TestSuiteIntegration 测试套件：验证所有表的DDL在真实数据库中的执行
 type TestSuiteIntegration struct {
-	dbSQLite    *sql.DB
-	dbMySQL     *sql.DB
-	mysqlDSN    string
-	skipMySQL   bool
-	tablesDefs  []func() *TableBuilder
-	tableNames  []string
+	dbSQLite   *sql.DB
+	dbMySQL    *sql.DB
+	mysqlDSN   string
+	skipMySQL  bool
+	tablesDefs []func() *TableBuilder
+	tableNames []string
 }
 
 // setupIntegrationTest 设置集成测试环境
@@ -213,32 +213,6 @@ func verifyTableStructure(t *testing.T, db *sql.DB, tableName string, builder *T
 	}
 	defer rows.Close()
 
-	// 获取原始列定义（用于对比）
-	var expectedColumns []string
-	var colDef string
-
-	if dbType == "SQLite" {
-		// SQLite使用转换后的定义
-		colDef = builder.BuildSQLite()
-	} else {
-		// MySQL使用原始定义
-		colDef = builder.BuildMySQL()
-	}
-
-	// 提取列定义（去掉CREATE TABLE部分）
-	start := strings.Index(colDef, "(") + 1
-	end := strings.LastIndex(colDef, ")")
-	if start > 0 && end > start {
-		content := colDef[start:end]
-		lines := strings.Split(content, ",")
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if line != "" && !strings.HasPrefix(line, "PRIMARY KEY") && !strings.HasPrefix(line, "UNIQUE") {
-				expectedColumns = append(expectedColumns, line)
-			}
-		}
-	}
-
 	// 验证实际存在的列
 	var actualColumns []string
 	for rows.Next() {
@@ -380,9 +354,9 @@ func testTableRelationships(t *testing.T, db *sql.DB) {
 // TestTypeConversionCorrectness 测试类型转换的正确性
 func TestTypeConversionCorrectness(t *testing.T) {
 	testCases := []struct {
-		mysqlCol      string
+		mysqlCol       string
 		expectedSQLite string
-		description   string
+		description    string
 	}{
 		{"INT PRIMARY KEY AUTO_INCREMENT", "INTEGER PRIMARY KEY AUTOINCREMENT", "Auto increment primary key"},
 		{"INT NOT NULL", "INTEGER NOT NULL", "Integer column"},

@@ -12,16 +12,6 @@ import (
 // 事务接口与高阶函数
 // ============================================================================
 
-// TxHandler 事务处理器接口（抽象*sql.Tx，支持测试和扩展）
-type TxHandler interface {
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-	PrepareContext(ctx context.Context, query string) (*sql.Stmt, error)
-}
-
-// 确保 *sql.Tx 实现了 TxHandler 接口
-var _ TxHandler = (*sql.Tx)(nil)
-
 // WithTransaction 在主数据库事务中执行函数（用于channels、api_keys、key_rr操作）
 // [INFO] DRY原则：统一事务管理逻辑，消除重复代码
 // [INFO] 错误处理：自动回滚，优雅处理panic
@@ -37,12 +27,6 @@ var _ TxHandler = (*sql.Tx)(nil)
 //	    return err // 成功则自动提交
 //	})
 func (s *SQLStore) WithTransaction(ctx context.Context, fn func(*sql.Tx) error) error {
-	return withTransaction(s.db, ctx, fn)
-}
-
-// WithLogTransaction 在数据库事务中执行函数（用于logs操作）
-// 历史兼容：原用于独立日志库，现日志表已合并到主库
-func (s *SQLStore) WithLogTransaction(ctx context.Context, fn func(*sql.Tx) error) error {
 	return withTransaction(s.db, ctx, fn)
 }
 
@@ -179,16 +163,17 @@ func isSQLiteBusyError(err error) bool {
 // jitter 范围: [0.5, 0.995] (即 50% 到 99.5%)
 //
 // 示例（baseDelay = 25ms）：
-//   attempt 0: 25ms * [0.5, 0.995] = 12.5ms ~ 24.9ms
-//   attempt 1: 50ms * [0.5, 0.995] = 25ms ~ 49.8ms
-//   attempt 2: 100ms * [0.5, 0.995] = 50ms ~ 99.5ms
+//
+//	attempt 0: 25ms * [0.5, 0.995] = 12.5ms ~ 24.9ms
+//	attempt 1: 50ms * [0.5, 0.995] = 25ms ~ 49.8ms
+//	attempt 2: 100ms * [0.5, 0.995] = 50ms ~ 99.5ms
 func calculateBackoffDelay(attempt int, baseDelay time.Duration) time.Duration {
 	// 计算基础延迟：指数增长
 	delay := baseDelay * time.Duration(1<<uint(attempt))
 
 	// 添加随机抖动，避免多个 goroutine 同时重试（惊群效应）
 	// 使用纳秒时间戳的后两位作为随机因子 (0-99)
-	randomFactor := float64(time.Now().UnixNano()%100) / 100.0 // 0.00 到 0.99
+	randomFactor := float64(time.Now().UnixNano()%100) / 100.0         // 0.00 到 0.99
 	jitter := time.Duration(float64(delay) * (0.5 + 0.5*randomFactor)) // [50%, 99.5%]
 
 	return jitter

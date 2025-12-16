@@ -7,7 +7,24 @@ import (
 	"testing"
 )
 
-func TestClassifyHTTPStatusWithBody(t *testing.T) {
+func assertClassifyError(t *testing.T, err error, wantStatus int, wantLevel ErrorLevel, wantRetry bool, reason string) {
+	t.Helper()
+
+	statusCode, errorLevel, shouldRetry := ClassifyError(err)
+	if statusCode != wantStatus {
+		t.Errorf("❌ 状态码错误: 期望 %d, 实际 %d (%s)", wantStatus, statusCode, reason)
+	}
+	if errorLevel != wantLevel {
+		t.Errorf("❌ 错误级别错误: 期望 %v, 实际 %v (%s)", wantLevel, errorLevel, reason)
+	}
+	if shouldRetry != wantRetry {
+		t.Errorf("❌ 重试标志错误: 期望 %v, 实际 %v (%s)", wantRetry, shouldRetry, reason)
+	}
+
+	t.Logf("[INFO] %s - 状态码:%d, 错误级别:%v, 重试:%v", reason, statusCode, errorLevel, shouldRetry)
+}
+
+func TestClassifyHTTPResponse(t *testing.T) {
 	tests := []struct {
 		name         string
 		statusCode   int
@@ -188,7 +205,7 @@ func TestClassifyHTTPStatusWithBody(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ClassifyHTTPStatusWithBody(tt.statusCode, tt.responseBody)
+			result := ClassifyHTTPResponse(tt.statusCode, nil, tt.responseBody)
 			if result != tt.expected {
 				t.Errorf("❌ %s\n  期望: %v\n  实际: %v\n  原因: %s\n  响应体: %s",
 					tt.name, tt.expected, result, tt.reason, string(tt.responseBody))
@@ -264,19 +281,7 @@ func TestClassifyError_ContextCanceled(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			statusCode, errorLevel, shouldRetry := ClassifyError(tt.err)
-
-			if statusCode != tt.expectedStatus {
-				t.Errorf("❌ 状态码错误: 期望 %d, 实际 %d (%s)", tt.expectedStatus, statusCode, tt.reason)
-			}
-			if errorLevel != tt.expectedLevel {
-				t.Errorf("❌ 错误级别错误: 期望 %v, 实际 %v (%s)", tt.expectedLevel, errorLevel, tt.reason)
-			}
-			if shouldRetry != tt.expectedRetry {
-				t.Errorf("❌ 重试标志错误: 期望 %v, 实际 %v (%s)", tt.expectedRetry, shouldRetry, tt.reason)
-			}
-
-			t.Logf("[INFO] %s - 状态码:%d, 错误级别:%v, 重试:%v", tt.reason, statusCode, errorLevel, shouldRetry)
+			assertClassifyError(t, tt.err, tt.expectedStatus, tt.expectedLevel, tt.expectedRetry, tt.reason)
 		})
 	}
 }
@@ -311,23 +316,10 @@ func TestClassifyError_EmptyResponse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			statusCode, errorLevel, shouldRetry := ClassifyError(tt.err)
-
-			if statusCode != tt.expectedStatus {
-				t.Errorf("❌ 状态码错误: 期望 %d, 实际 %d (%s)", tt.expectedStatus, statusCode, tt.reason)
-			}
-			if errorLevel != tt.expectedLevel {
-				t.Errorf("❌ 错误级别错误: 期望 %v, 实际 %v (%s)", tt.expectedLevel, errorLevel, tt.reason)
-			}
-			if shouldRetry != tt.expectedRetry {
-				t.Errorf("❌ 重试标志错误: 期望 %v, 实际 %v (%s)", tt.expectedRetry, shouldRetry, tt.reason)
-			}
-
-			t.Logf("[INFO] %s - 状态码:%d, 错误级别:%v, 重试:%v", tt.reason, statusCode, errorLevel, shouldRetry)
+			assertClassifyError(t, tt.err, tt.expectedStatus, tt.expectedLevel, tt.expectedRetry, tt.reason)
 		})
 	}
 }
-
 
 // 测试HTTP/2流错误分类
 func TestClassifyError_HTTP2StreamErrors(t *testing.T) {
@@ -375,19 +367,7 @@ func TestClassifyError_HTTP2StreamErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			statusCode, errorLevel, shouldRetry := ClassifyError(tt.err)
-
-			if statusCode != tt.expectedStatus {
-				t.Errorf("❌ 状态码错误: 期望 %d, 实际 %d (%s)", tt.expectedStatus, statusCode, tt.reason)
-			}
-			if errorLevel != tt.expectedLevel {
-				t.Errorf("❌ 错误级别错误: 期望 %v, 实际 %v (%s)", tt.expectedLevel, errorLevel, tt.reason)
-			}
-			if shouldRetry != tt.expectedRetry {
-				t.Errorf("❌ 重试标志错误: 期望 %v, 实际 %v (%s)", tt.expectedRetry, shouldRetry, tt.reason)
-			}
-
-			t.Logf("[INFO] %s - 状态码:%d, 错误级别:%v, 重试:%v", tt.reason, statusCode, errorLevel, shouldRetry)
+			assertClassifyError(t, tt.err, tt.expectedStatus, tt.expectedLevel, tt.expectedRetry, tt.reason)
 		})
 	}
 }
@@ -610,7 +590,7 @@ func TestClassifyRateLimitError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ClassifyRateLimitError(tt.headers, tt.responseBody)
+			result := ClassifyHTTPResponse(429, tt.headers, tt.responseBody)
 			if result != tt.expected {
 				t.Errorf("❌ %s\n  期望: %v\n  实际: %v\n  原因: %s",
 					tt.name, tt.expected, result, tt.reason)

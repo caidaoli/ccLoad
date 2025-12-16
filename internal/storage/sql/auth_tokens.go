@@ -10,6 +10,51 @@ import (
 	"ccLoad/internal/model"
 )
 
+func scanAuthToken(scanner interface {
+	Scan(...any) error
+}) (*model.AuthToken, error) {
+	token := &model.AuthToken{}
+	var createdAtMs int64
+	var expiresAt, lastUsedAt sql.NullInt64
+	var isActive int
+
+	if err := scanner.Scan(
+		&token.ID,
+		&token.Token,
+		&token.Description,
+		&createdAtMs,
+		&expiresAt,
+		&lastUsedAt,
+		&isActive,
+		&token.SuccessCount,
+		&token.FailureCount,
+		&token.StreamAvgTTFB,
+		&token.NonStreamAvgRT,
+		&token.StreamCount,
+		&token.NonStreamCount,
+		&token.PromptTokensTotal,
+		&token.CompletionTokensTotal,
+		&token.CacheReadTokensTotal,
+		&token.CacheCreationTokensTotal,
+		&token.TotalCostUSD,
+	); err != nil {
+		return nil, err
+	}
+
+	token.CreatedAt = time.UnixMilli(createdAtMs)
+	if expiresAt.Valid {
+		v := expiresAt.Int64
+		token.ExpiresAt = &v
+	}
+	if lastUsedAt.Valid {
+		v := lastUsedAt.Int64
+		token.LastUsedAt = &v
+	}
+	token.IsActive = isActive != 0
+
+	return token, nil
+}
+
 // ============================================================================
 // Auth Tokens Management - API访问令牌管理
 // ============================================================================
@@ -58,38 +103,14 @@ func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) 
 
 // GetAuthToken 根据ID获取令牌
 func (s *SQLStore) GetAuthToken(ctx context.Context, id int64) (*model.AuthToken, error) {
-	token := &model.AuthToken{}
-	var createdAtMs int64
-	var expiresAt, lastUsedAt sql.NullInt64
-	var isActive int
-
-	err := s.db.QueryRowContext(ctx, `
-		SELECT
-			id, token, description, created_at, expires_at, last_used_at, is_active,
-			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
-			prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd
-		FROM auth_tokens
-		WHERE id = ?
-	`, id).Scan(
-		&token.ID,
-		&token.Token,
-		&token.Description,
-		&createdAtMs,
-		&expiresAt,
-		&lastUsedAt,
-		&isActive,
-		&token.SuccessCount,
-		&token.FailureCount,
-		&token.StreamAvgTTFB,
-		&token.NonStreamAvgRT,
-		&token.StreamCount,
-		&token.NonStreamCount,
-		&token.PromptTokensTotal,
-		&token.CompletionTokensTotal,
-		&token.CacheReadTokensTotal,
-		&token.CacheCreationTokensTotal,
-		&token.TotalCostUSD,
-	)
+	token, err := scanAuthToken(s.db.QueryRowContext(ctx, `
+			SELECT
+				id, token, description, created_at, expires_at, last_used_at, is_active,
+				success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
+				prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd
+			FROM auth_tokens
+			WHERE id = ?
+	`, id))
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("auth token not found")
@@ -98,54 +119,20 @@ func (s *SQLStore) GetAuthToken(ctx context.Context, id int64) (*model.AuthToken
 		return nil, fmt.Errorf("get auth token: %w", err)
 	}
 
-	// 转换时间戳
-	token.CreatedAt = time.UnixMilli(createdAtMs)
-	if expiresAt.Valid {
-		token.ExpiresAt = &expiresAt.Int64
-	}
-	if lastUsedAt.Valid {
-		token.LastUsedAt = &lastUsedAt.Int64
-	}
-	token.IsActive = isActive != 0
-
 	return token, nil
 }
 
 // GetAuthTokenByValue 根据令牌哈希值获取令牌信息
 // 用于认证时快速查找令牌
 func (s *SQLStore) GetAuthTokenByValue(ctx context.Context, tokenHash string) (*model.AuthToken, error) {
-	token := &model.AuthToken{}
-	var createdAtMs int64
-	var expiresAt, lastUsedAt sql.NullInt64
-	var isActive int
-
-	err := s.db.QueryRowContext(ctx, `
-		SELECT
-			id, token, description, created_at, expires_at, last_used_at, is_active,
-			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
-			prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd
-		FROM auth_tokens
-		WHERE token = ?
-	`, tokenHash).Scan(
-		&token.ID,
-		&token.Token,
-		&token.Description,
-		&createdAtMs,
-		&expiresAt,
-		&lastUsedAt,
-		&isActive,
-		&token.SuccessCount,
-		&token.FailureCount,
-		&token.StreamAvgTTFB,
-		&token.NonStreamAvgRT,
-		&token.StreamCount,
-		&token.NonStreamCount,
-		&token.PromptTokensTotal,
-		&token.CompletionTokensTotal,
-		&token.CacheReadTokensTotal,
-		&token.CacheCreationTokensTotal,
-		&token.TotalCostUSD,
-	)
+	token, err := scanAuthToken(s.db.QueryRowContext(ctx, `
+			SELECT
+				id, token, description, created_at, expires_at, last_used_at, is_active,
+				success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
+				prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd
+			FROM auth_tokens
+			WHERE token = ?
+	`, tokenHash))
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("auth token not found")
@@ -153,16 +140,6 @@ func (s *SQLStore) GetAuthTokenByValue(ctx context.Context, tokenHash string) (*
 	if err != nil {
 		return nil, fmt.Errorf("get auth token by value: %w", err)
 	}
-
-	// 转换时间戳
-	token.CreatedAt = time.UnixMilli(createdAtMs)
-	if expiresAt.Valid {
-		token.ExpiresAt = &expiresAt.Int64
-	}
-	if lastUsedAt.Valid {
-		token.LastUsedAt = &lastUsedAt.Int64
-	}
-	token.IsActive = isActive != 0
 
 	return token, nil
 }
@@ -184,43 +161,10 @@ func (s *SQLStore) ListAuthTokens(ctx context.Context) ([]*model.AuthToken, erro
 
 	var tokens []*model.AuthToken
 	for rows.Next() {
-		token := &model.AuthToken{}
-		var createdAtMs int64
-		var expiresAt, lastUsedAt sql.NullInt64
-		var isActive int
-
-		if err := rows.Scan(
-			&token.ID,
-			&token.Token,
-			&token.Description,
-			&createdAtMs,
-			&expiresAt,
-			&lastUsedAt,
-			&isActive,
-			&token.SuccessCount,
-			&token.FailureCount,
-			&token.StreamAvgTTFB,
-			&token.NonStreamAvgRT,
-			&token.StreamCount,
-			&token.NonStreamCount,
-			&token.PromptTokensTotal,
-			&token.CompletionTokensTotal,
-			&token.CacheReadTokensTotal,
-			&token.CacheCreationTokensTotal,
-			&token.TotalCostUSD,
-		); err != nil {
+		token, err := scanAuthToken(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan auth token: %w", err)
 		}
-
-		// 转换时间戳
-		token.CreatedAt = time.UnixMilli(createdAtMs)
-		if expiresAt.Valid {
-			token.ExpiresAt = &expiresAt.Int64
-		}
-		if lastUsedAt.Valid {
-			token.LastUsedAt = &lastUsedAt.Int64
-		}
-		token.IsActive = isActive != 0
 
 		tokens = append(tokens, token)
 	}
@@ -249,43 +193,10 @@ func (s *SQLStore) ListActiveAuthTokens(ctx context.Context) ([]*model.AuthToken
 
 	var tokens []*model.AuthToken
 	for rows.Next() {
-		token := &model.AuthToken{}
-		var createdAtMs int64
-		var expiresAt, lastUsedAt sql.NullInt64
-		var isActive int
-
-		if err := rows.Scan(
-			&token.ID,
-			&token.Token,
-			&token.Description,
-			&createdAtMs,
-			&expiresAt,
-			&lastUsedAt,
-			&isActive,
-			&token.SuccessCount,
-			&token.FailureCount,
-			&token.StreamAvgTTFB,
-			&token.NonStreamAvgRT,
-			&token.StreamCount,
-			&token.NonStreamCount,
-			&token.PromptTokensTotal,
-			&token.CompletionTokensTotal,
-			&token.CacheReadTokensTotal,
-			&token.CacheCreationTokensTotal,
-			&token.TotalCostUSD,
-		); err != nil {
+		token, err := scanAuthToken(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan auth token: %w", err)
 		}
-
-		// 转换时间戳
-		token.CreatedAt = time.UnixMilli(createdAtMs)
-		if expiresAt.Valid {
-			token.ExpiresAt = &expiresAt.Int64
-		}
-		if lastUsedAt.Valid {
-			token.LastUsedAt = &lastUsedAt.Int64
-		}
-		token.IsActive = isActive != 0
 
 		tokens = append(tokens, token)
 	}

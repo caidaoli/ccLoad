@@ -82,15 +82,7 @@ func (m *Manager) HandleError(
 		}
 	} else {
 		// HTTP错误: 使用智能分类器(结合响应体内容和headers)
-
-		// 429错误特殊处理
-		if statusCode == 429 && headers != nil {
-			// 使用增强的Rate Limit分类器
-			errLevel = util.ClassifyRateLimitError(headers, errorBody)
-		} else {
-			// 其他HTTP错误使用标准分类器
-			errLevel = util.ClassifyHTTPStatusWithBody(statusCode, errorBody)
-		}
+		errLevel = util.ClassifyHTTPResponse(statusCode, headers, errorBody)
 	}
 
 	// 2. [TARGET] 提前检查1308错误（在升级逻辑之前）

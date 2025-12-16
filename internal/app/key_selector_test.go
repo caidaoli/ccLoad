@@ -709,17 +709,17 @@ func TestSelectAvailableKey_NoKeys(t *testing.T) {
 	t.Logf("[INFO] 无Key配置场景正确返回错误: %v", err)
 }
 
-// TestSelectAvailableKey_DefaultStrategy 测试默认策略
-func TestSelectAvailableKey_DefaultStrategy(t *testing.T) {
+func assertSelectAvailableKeyFirstIndex(t *testing.T, channelName string, keyPrefix string, keyStrategy string, wantIndex int, reason string) {
+	t.Helper()
+
 	store, cleanup := setupTestKeyStore(t)
 	defer cleanup()
 
-	selector := NewKeySelector() // 移除store参数
+	selector := NewKeySelector()
 	ctx := context.WithValue(context.Background(), testingContextKey, true)
 
-	// 创建渠道
 	cfg, err := store.CreateConfig(ctx, &model.Config{
-		Name:     "default-strategy-channel",
+		Name:     channelName,
 		URL:      "https://api.com",
 		Priority: 100,
 		Models:   []string{"test-model"},
@@ -729,90 +729,58 @@ func TestSelectAvailableKey_DefaultStrategy(t *testing.T) {
 		t.Fatalf("创建渠道失败: %v", err)
 	}
 
-	// 创建2个API Keys（不指定策略）
 	for i := 0; i < 2; i++ {
 		err = store.CreateAPIKey(ctx, &model.APIKey{
 			ChannelID:   cfg.ID,
 			KeyIndex:    i,
-			APIKey:      "sk-default-key-" + string(rune('0'+i)),
-			KeyStrategy: "", // 空策略，应使用默认sequential
+			APIKey:      keyPrefix + string(rune('0'+i)),
+			KeyStrategy: keyStrategy,
 		})
 		if err != nil {
 			t.Fatalf("创建API Key %d失败: %v", i, err)
 		}
 	}
 
-	// 预先查询apiKeys
 	apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
 	if err != nil {
 		t.Fatalf("查询API Keys失败: %v", err)
 	}
 
-	// 首次选择应返回Key0（默认sequential策略）
 	keyIndex, _, err := selector.SelectAvailableKey(cfg.ID, apiKeys, nil)
-
 	if err != nil {
 		t.Fatalf("SelectAvailableKey失败: %v", err)
 	}
-
-	if keyIndex != 0 {
-		t.Errorf("默认策略首次应返回keyIndex=0，实际%d", keyIndex)
+	if keyIndex != wantIndex {
+		t.Errorf("期望返回keyIndex=%d，实际%d", wantIndex, keyIndex)
 	}
 
-	t.Logf("[INFO] 默认策略（sequential）正确生效")
+	if reason != "" {
+		t.Logf("[INFO] %s", reason)
+	}
+}
+
+// TestSelectAvailableKey_DefaultStrategy 测试默认策略
+func TestSelectAvailableKey_DefaultStrategy(t *testing.T) {
+	assertSelectAvailableKeyFirstIndex(
+		t,
+		"default-strategy-channel",
+		"sk-default-key-",
+		"",
+		0,
+		"默认策略（sequential）正确生效",
+	)
 }
 
 // TestSelectAvailableKey_UnknownStrategy 测试未知策略回退到默认
 func TestSelectAvailableKey_UnknownStrategy(t *testing.T) {
-	store, cleanup := setupTestKeyStore(t)
-	defer cleanup()
-
-	selector := NewKeySelector() // 移除store参数
-	ctx := context.WithValue(context.Background(), testingContextKey, true)
-
-	// 创建渠道
-	cfg, err := store.CreateConfig(ctx, &model.Config{
-		Name:     "unknown-strategy-channel",
-		URL:      "https://api.com",
-		Priority: 100,
-		Models:   []string{"test-model"},
-		Enabled:  true,
-	})
-	if err != nil {
-		t.Fatalf("创建渠道失败: %v", err)
-	}
-
-	// 创建2个API Keys（使用未知策略）
-	for i := 0; i < 2; i++ {
-		err = store.CreateAPIKey(ctx, &model.APIKey{
-			ChannelID:   cfg.ID,
-			KeyIndex:    i,
-			APIKey:      "sk-unknown-key-" + string(rune('0'+i)),
-			KeyStrategy: "unknown-strategy", // 未知策略，应回退到sequential
-		})
-		if err != nil {
-			t.Fatalf("创建API Key %d失败: %v", i, err)
-		}
-	}
-
-	// 预先查询apiKeys
-	apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
-	if err != nil {
-		t.Fatalf("查询API Keys失败: %v", err)
-	}
-
-	// 首次选择应返回Key0（回退到sequential策略）
-	keyIndex, _, err := selector.SelectAvailableKey(cfg.ID, apiKeys, nil)
-
-	if err != nil {
-		t.Fatalf("SelectAvailableKey失败: %v", err)
-	}
-
-	if keyIndex != 0 {
-		t.Errorf("未知策略应回退到sequential，首次应返回keyIndex=0，实际%d", keyIndex)
-	}
-
-	t.Logf("[INFO] 未知策略正确回退到默认sequential")
+	assertSelectAvailableKeyFirstIndex(
+		t,
+		"unknown-strategy-channel",
+		"sk-unknown-key-",
+		"unknown-strategy",
+		0,
+		"未知策略正确回退到默认sequential",
+	)
 }
 
 // ========== 辅助函数 ==========

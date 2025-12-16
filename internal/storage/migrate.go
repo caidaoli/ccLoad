@@ -17,6 +17,13 @@ const (
 	DialectMySQL
 )
 
+// sqliteMigratableTables 允许增量迁移的SQLite表名白名单
+// 安全设计：防止SQL注入，新增表时需在此处注册
+var sqliteMigratableTables = map[string]bool{
+	"logs":        true,
+	"auth_tokens": true,
+}
+
 // migrateSQLite 执行SQLite数据库迁移
 func migrateSQLite(ctx context.Context, db *sql.DB) error {
 	return migrate(ctx, db, DialectSQLite)
@@ -91,42 +98,35 @@ func ensureLogsNewColumns(ctx context.Context, db *sql.DB, dialect Dialect) erro
 	return ensureLogsColumnsSQLite(ctx, db)
 }
 
+type sqliteColumnDef struct {
+	name       string
+	definition string
+}
+
+func ensureSQLiteColumns(ctx context.Context, db *sql.DB, table string, cols []sqliteColumnDef) error {
+	existingCols, err := sqliteExistingColumns(ctx, db, table)
+	if err != nil {
+		return err
+	}
+
+	for _, col := range cols {
+		if existingCols[col.name] {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, col.name, col.definition)); err != nil {
+			return fmt.Errorf("add %s: %w", col.name, err)
+		}
+	}
+
+	return nil
+}
+
 // ensureLogsColumnsSQLite SQLite增量迁移logs表新字段
 func ensureLogsColumnsSQLite(ctx context.Context, db *sql.DB) error {
-	// 获取现有列
-	rows, err := db.QueryContext(ctx, "PRAGMA table_info(logs)")
-	if err != nil {
-		return fmt.Errorf("get table info: %w", err)
-	}
-	defer rows.Close()
-
-	existingCols := make(map[string]bool)
-	for rows.Next() {
-		var cid int
-		var name, colType string
-		var notNull, pk int
-		var dfltValue any
-		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
-			return fmt.Errorf("scan column info: %w", err)
-		}
-		existingCols[name] = true
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate columns: %w", err)
-	}
-
-	// 添加缺失的列
-	if !existingCols["auth_token_id"] {
-		if _, err := db.ExecContext(ctx, "ALTER TABLE logs ADD COLUMN auth_token_id INTEGER NOT NULL DEFAULT 0"); err != nil {
-			return fmt.Errorf("add auth_token_id: %w", err)
-		}
-	}
-	if !existingCols["client_ip"] {
-		if _, err := db.ExecContext(ctx, "ALTER TABLE logs ADD COLUMN client_ip TEXT NOT NULL DEFAULT ''"); err != nil {
-			return fmt.Errorf("add client_ip: %w", err)
-		}
-	}
-	return nil
+	return ensureSQLiteColumns(ctx, db, "logs", []sqliteColumnDef{
+		{name: "auth_token_id", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{name: "client_ip", definition: "TEXT NOT NULL DEFAULT ''"},
+	})
 }
 
 // ensureLogsAuthTokenIDMySQL 确保logs表有auth_token_id字段(MySQL增量迁移,2025-12新增)
@@ -190,38 +190,10 @@ func ensureAuthTokensCacheFields(ctx context.Context, db *sql.DB, dialect Dialec
 
 // ensureAuthTokensCacheFieldsSQLite SQLite增量迁移auth_tokens缓存字段
 func ensureAuthTokensCacheFieldsSQLite(ctx context.Context, db *sql.DB) error {
-	rows, err := db.QueryContext(ctx, "PRAGMA table_info(auth_tokens)")
-	if err != nil {
-		return fmt.Errorf("get table info: %w", err)
-	}
-	defer rows.Close()
-
-	existingCols := make(map[string]bool)
-	for rows.Next() {
-		var cid int
-		var name, colType string
-		var notNull, pk int
-		var dfltValue any
-		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
-			return fmt.Errorf("scan column info: %w", err)
-		}
-		existingCols[name] = true
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate columns: %w", err)
-	}
-
-	if !existingCols["cache_read_tokens_total"] {
-		if _, err := db.ExecContext(ctx, "ALTER TABLE auth_tokens ADD COLUMN cache_read_tokens_total INTEGER NOT NULL DEFAULT 0"); err != nil {
-			return fmt.Errorf("add cache_read_tokens_total: %w", err)
-		}
-	}
-	if !existingCols["cache_creation_tokens_total"] {
-		if _, err := db.ExecContext(ctx, "ALTER TABLE auth_tokens ADD COLUMN cache_creation_tokens_total INTEGER NOT NULL DEFAULT 0"); err != nil {
-			return fmt.Errorf("add cache_creation_tokens_total: %w", err)
-		}
-	}
-	return nil
+	return ensureSQLiteColumns(ctx, db, "auth_tokens", []sqliteColumnDef{
+		{name: "cache_read_tokens_total", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{name: "cache_creation_tokens_total", definition: "INTEGER NOT NULL DEFAULT 0"},
+	})
 }
 
 // ensureAuthTokensCacheFieldsMySQL MySQL增量迁移auth_tokens缓存字段
@@ -257,6 +229,35 @@ func ensureAuthTokensCacheFieldsMySQL(ctx context.Context, db *sql.DB) error {
 	}
 
 	return nil
+}
+
+func sqliteExistingColumns(ctx context.Context, db *sql.DB, table string) (map[string]bool, error) {
+	if !sqliteMigratableTables[table] {
+		return nil, fmt.Errorf("invalid table name: %s", table)
+	}
+
+	rows, err := db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return nil, fmt.Errorf("get table info: %w", err)
+	}
+	defer rows.Close()
+
+	existingCols := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull, pk int
+		var dfltValue any
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
+			return nil, fmt.Errorf("scan column info: %w", err)
+		}
+		existingCols[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate columns: %w", err)
+	}
+
+	return existingCols, nil
 }
 
 func buildDDL(tb *schema.TableBuilder, dialect Dialect) string {

@@ -9,6 +9,80 @@ import (
 	"ccLoad/internal/model"
 )
 
+func scanLogEntry(scanner interface {
+	Scan(...any) error
+}) (*model.LogEntry, error) {
+	var e model.LogEntry
+	var duration sql.NullFloat64
+	var isStreamingInt int
+	var firstByteTime sql.NullFloat64
+	var timeMs int64
+	var apiKeyUsed sql.NullString
+	var clientIP sql.NullString
+	var inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens sql.NullInt64
+	var cost sql.NullFloat64
+
+	if err := scanner.Scan(&e.ID, &timeMs, &e.Model, &e.ChannelID,
+		&e.StatusCode, &e.Message, &duration, &isStreamingInt, &firstByteTime, &apiKeyUsed, &e.AuthTokenID, &clientIP,
+		&inputTokens, &outputTokens, &cacheReadTokens, &cacheCreationTokens, &cost); err != nil {
+		return nil, err
+	}
+
+	e.Time = model.JSONTime{Time: time.UnixMilli(timeMs)}
+
+	if duration.Valid {
+		e.Duration = duration.Float64
+	}
+	e.IsStreaming = isStreamingInt != 0
+	if firstByteTime.Valid {
+		e.FirstByteTime = firstByteTime.Float64
+	}
+	if apiKeyUsed.Valid && apiKeyUsed.String != "" {
+		e.APIKeyUsed = maskAPIKey(apiKeyUsed.String)
+	}
+	if clientIP.Valid {
+		e.ClientIP = clientIP.String
+	}
+	if inputTokens.Valid {
+		e.InputTokens = int(inputTokens.Int64)
+	}
+	if outputTokens.Valid {
+		e.OutputTokens = int(outputTokens.Int64)
+	}
+	if cacheReadTokens.Valid {
+		e.CacheReadInputTokens = int(cacheReadTokens.Int64)
+	}
+	if cacheCreationTokens.Valid {
+		e.CacheCreationInputTokens = int(cacheCreationTokens.Int64)
+	}
+	if cost.Valid {
+		e.Cost = cost.Float64
+	}
+
+	return &e, nil
+}
+
+func (s *SQLStore) fillLogChannelNames(ctx context.Context, entries []*model.LogEntry, channelIDsToFetch map[int64]bool) {
+	if len(channelIDsToFetch) == 0 {
+		return
+	}
+
+	channelNames, err := s.fetchChannelNamesBatch(ctx, channelIDsToFetch)
+	if err != nil {
+		log.Printf("[WARN]  批量查询渠道名称失败: %v", err)
+		channelNames = make(map[int64]string)
+	}
+
+	for _, e := range entries {
+		if e.ChannelID == 0 {
+			continue
+		}
+		if name, ok := channelNames[e.ChannelID]; ok {
+			e.ChannelName = name
+		}
+	}
+}
+
 func (s *SQLStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 	if e.Time.Time.IsZero() {
 		e.Time = model.JSONTime{Time: time.Now()}
@@ -114,21 +188,11 @@ func (s *SQLStore) ListLogs(ctx context.Context, since time.Time, limit, offset 
 	qb := NewQueryBuilder(baseQuery).
 		Where("time >= ?", sinceMs)
 
-	// 支持按渠道名称过滤（无需跨库JOIN，先解析为渠道ID集合再按channel_id过滤）
-	if filter != nil && (filter.ChannelName != "" || filter.ChannelNameLike != "") {
-		ids, err := s.fetchChannelIDsByNameFilter(ctx, filter.ChannelName, filter.ChannelNameLike)
-		if err != nil {
-			return nil, err
-		}
-		if len(ids) == 0 {
-			return []*model.LogEntry{}, nil
-		}
-		// 转换为[]any以用于占位符
-		vals := make([]any, 0, len(ids))
-		for _, id := range ids {
-			vals = append(vals, id)
-		}
-		qb.WhereIn("channel_id", vals)
+	// 应用渠道过滤（支持ChannelType、ChannelName、ChannelNameLike）
+	if _, isEmpty, err := s.applyChannelFilter(ctx, qb, filter); err != nil {
+		return nil, err
+	} else if isEmpty {
+		return []*model.LogEntry{}, nil
 	}
 
 	// 其余过滤条件（model等）
@@ -148,80 +212,18 @@ func (s *SQLStore) ListLogs(ctx context.Context, since time.Time, limit, offset 
 	channelIDsToFetch := make(map[int64]bool)
 
 	for rows.Next() {
-		var e model.LogEntry
-		var duration sql.NullFloat64
-		var isStreamingInt int
-		var firstByteTime sql.NullFloat64
-		var timeMs int64 // Unix毫秒时间戳
-		var apiKeyUsed sql.NullString
-		var clientIP sql.NullString
-		var inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens sql.NullInt64
-		var cost sql.NullFloat64
-
-		if err := rows.Scan(&e.ID, &timeMs, &e.Model, &e.ChannelID,
-			&e.StatusCode, &e.Message, &duration, &isStreamingInt, &firstByteTime, &apiKeyUsed, &e.AuthTokenID, &clientIP,
-			&inputTokens, &outputTokens, &cacheReadTokens, &cacheCreationTokens, &cost); err != nil {
+		e, err := scanLogEntry(rows)
+		if err != nil {
 			return nil, err
 		}
-
-		// 转换Unix毫秒时间戳为time.Time
-		e.Time = model.JSONTime{Time: time.UnixMilli(timeMs)}
 
 		if e.ChannelID != 0 {
 			channelIDsToFetch[e.ChannelID] = true
 		}
-		if duration.Valid {
-			e.Duration = duration.Float64
-		}
-		e.IsStreaming = isStreamingInt != 0
-		if firstByteTime.Valid {
-			e.FirstByteTime = firstByteTime.Float64
-		}
-		if apiKeyUsed.Valid && apiKeyUsed.String != "" {
-			// 向后兼容：历史数据可能包含明文Key，maskAPIKey是幂等的
-			e.APIKeyUsed = maskAPIKey(apiKeyUsed.String)
-		}
-		if clientIP.Valid {
-			e.ClientIP = clientIP.String
-		}
-		// Token统计（2025-11新增）
-		if inputTokens.Valid {
-			e.InputTokens = int(inputTokens.Int64)
-		}
-		if outputTokens.Valid {
-			e.OutputTokens = int(outputTokens.Int64)
-		}
-		if cacheReadTokens.Valid {
-			e.CacheReadInputTokens = int(cacheReadTokens.Int64)
-		}
-		if cacheCreationTokens.Valid {
-			e.CacheCreationInputTokens = int(cacheCreationTokens.Int64)
-		}
-		// 成本（2025-11新增）
-		if cost.Valid {
-			e.Cost = cost.Float64
-		}
-		out = append(out, &e)
+		out = append(out, e)
 	}
 
-	// 批量查询渠道名称
-	if len(channelIDsToFetch) > 0 {
-		channelNames, err := s.fetchChannelNamesBatch(ctx, channelIDsToFetch)
-		if err != nil {
-			// 降级处理：查询失败不影响日志返回，仅记录错误
-			log.Printf("[WARN]  批量查询渠道名称失败: %v", err)
-			channelNames = make(map[int64]string)
-		}
-
-		// 填充渠道名称
-		for _, e := range out {
-			if e.ChannelID != 0 {
-				if name, ok := channelNames[e.ChannelID]; ok {
-					e.ChannelName = name
-				}
-			}
-		}
-	}
+	s.fillLogChannelNames(ctx, out, channelIDsToFetch)
 
 	return out, nil
 }
@@ -234,20 +236,11 @@ func (s *SQLStore) CountLogs(ctx context.Context, since time.Time, filter *model
 	qb := NewQueryBuilder(baseQuery).
 		Where("time >= ?", sinceMs)
 
-	// 支持按渠道名称过滤（与ListLogs保持一致）
-	if filter != nil && (filter.ChannelName != "" || filter.ChannelNameLike != "") {
-		ids, err := s.fetchChannelIDsByNameFilter(ctx, filter.ChannelName, filter.ChannelNameLike)
-		if err != nil {
-			return 0, err
-		}
-		if len(ids) == 0 {
-			return 0, nil
-		}
-		vals := make([]any, 0, len(ids))
-		for _, id := range ids {
-			vals = append(vals, id)
-		}
-		qb.WhereIn("channel_id", vals)
+	// 应用渠道过滤（与ListLogs保持一致）
+	if _, isEmpty, err := s.applyChannelFilter(ctx, qb, filter); err != nil {
+		return 0, err
+	} else if isEmpty {
+		return 0, nil
 	}
 
 	// 其余过滤条件（model等）
@@ -296,73 +289,18 @@ func (s *SQLStore) ListLogsRange(ctx context.Context, since, until time.Time, li
 	channelIDsToFetch := make(map[int64]bool)
 
 	for rows.Next() {
-		var e model.LogEntry
-		var duration sql.NullFloat64
-		var isStreamingInt int
-		var firstByteTime sql.NullFloat64
-		var timeMs int64
-		var apiKeyUsed sql.NullString
-		var clientIP sql.NullString
-		var inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens sql.NullInt64
-		var cost sql.NullFloat64
-
-		if err := rows.Scan(&e.ID, &timeMs, &e.Model, &e.ChannelID,
-			&e.StatusCode, &e.Message, &duration, &isStreamingInt, &firstByteTime, &apiKeyUsed, &e.AuthTokenID, &clientIP,
-			&inputTokens, &outputTokens, &cacheReadTokens, &cacheCreationTokens, &cost); err != nil {
+		e, err := scanLogEntry(rows)
+		if err != nil {
 			return nil, err
 		}
-
-		e.Time = model.JSONTime{Time: time.UnixMilli(timeMs)}
 
 		if e.ChannelID != 0 {
 			channelIDsToFetch[e.ChannelID] = true
 		}
-		if duration.Valid {
-			e.Duration = duration.Float64
-		}
-		e.IsStreaming = isStreamingInt != 0
-		if firstByteTime.Valid {
-			e.FirstByteTime = firstByteTime.Float64
-		}
-		if apiKeyUsed.Valid && apiKeyUsed.String != "" {
-			e.APIKeyUsed = maskAPIKey(apiKeyUsed.String)
-		}
-		if clientIP.Valid {
-			e.ClientIP = clientIP.String
-		}
-		if inputTokens.Valid {
-			e.InputTokens = int(inputTokens.Int64)
-		}
-		if outputTokens.Valid {
-			e.OutputTokens = int(outputTokens.Int64)
-		}
-		if cacheReadTokens.Valid {
-			e.CacheReadInputTokens = int(cacheReadTokens.Int64)
-		}
-		if cacheCreationTokens.Valid {
-			e.CacheCreationInputTokens = int(cacheCreationTokens.Int64)
-		}
-		if cost.Valid {
-			e.Cost = cost.Float64
-		}
-		out = append(out, &e)
+		out = append(out, e)
 	}
 
-	// 批量查询渠道名称
-	if len(channelIDsToFetch) > 0 {
-		channelNames, err := s.fetchChannelNamesBatch(ctx, channelIDsToFetch)
-		if err != nil {
-			log.Printf("[WARN]  批量查询渠道名称失败: %v", err)
-			channelNames = make(map[int64]string)
-		}
-		for _, e := range out {
-			if e.ChannelID != 0 {
-				if name, ok := channelNames[e.ChannelID]; ok {
-					e.ChannelName = name
-				}
-			}
-		}
-	}
+	s.fillLogChannelNames(ctx, out, channelIDsToFetch)
 
 	return out, nil
 }

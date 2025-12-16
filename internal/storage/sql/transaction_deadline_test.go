@@ -156,6 +156,9 @@ func TestWithTransaction_DeadlineRealWorld(t *testing.T) {
 			attemptCount++
 			return errors.New("database is deadlocked")
 		})
+		if err == nil {
+			t.Fatal("期望事务失败，但成功了")
+		}
 
 		elapsed := time.Since(start)
 

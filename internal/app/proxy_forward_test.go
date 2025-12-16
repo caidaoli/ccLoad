@@ -11,73 +11,70 @@ import (
 	"time"
 )
 
-func TestHandleSuccessResponse_ExtractsUsageFromJSON(t *testing.T) {
-	body := `{"usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":5,"cache_creation_input_tokens":7}}`
+func runHandleSuccessResponse(t *testing.T, body string, headers http.Header, isStreaming bool, channelType string) (*fwResult, string) {
+	t.Helper()
+
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
 		Body:       io.NopCloser(strings.NewReader(body)),
-		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Header:     headers,
 	}
 
 	reqCtx := &requestContext{
 		ctx:         context.Background(),
 		startTime:   time.Now(),
-		isStreaming: false,
+		isStreaming: isStreaming,
 	}
 
 	rec := httptest.NewRecorder()
 	s := &Server{}
 
-	// 测试用的渠道信息
 	testChannelID := int64(1)
 	testAPIKey := "sk-test-xxx"
 
-	res, _, err := s.handleSuccessResponse(reqCtx, resp, 0, resp.Header.Clone(), rec, "anthropic", &testChannelID, testAPIKey)
+	res, _, err := s.handleSuccessResponse(reqCtx, resp, 0, resp.Header.Clone(), rec, channelType, &testChannelID, testAPIKey)
 	if err != nil {
 		t.Fatalf("handleSuccessResponse returned error: %v", err)
 	}
+
+	return res, rec.Body.String()
+}
+
+func TestHandleSuccessResponse_ExtractsUsageFromJSON(t *testing.T) {
+	body := `{"usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":5,"cache_creation_input_tokens":7}}`
+	res, forwardedBody := runHandleSuccessResponse(
+		t,
+		body,
+		http.Header{"Content-Type": []string{"application/json"}},
+		false,
+		"anthropic",
+	)
 
 	if res.InputTokens != 10 || res.OutputTokens != 20 || res.CacheReadInputTokens != 5 || res.CacheCreationInputTokens != 7 {
 		t.Fatalf("unexpected usage extracted: %+v", res)
 	}
 
-	if rec.Body.String() != body {
-		t.Fatalf("unexpected response body forwarded: %q", rec.Body.String())
+	if forwardedBody != body {
+		t.Fatalf("unexpected response body forwarded: %q", forwardedBody)
 	}
 }
 
 func TestHandleSuccessResponse_ExtractsUsageFromTextPlainSSE(t *testing.T) {
 	body := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":4,\"cache_read_input_tokens\":1,\"cache_creation_input_tokens\":2}}}\n\n"
-	resp := &http.Response{
-		StatusCode: http.StatusOK,
-		Body:       io.NopCloser(strings.NewReader(body)),
-		Header:     http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}},
-	}
-
-	reqCtx := &requestContext{
-		ctx:         context.Background(),
-		startTime:   time.Now(),
-		isStreaming: true,
-	}
-
-	rec := httptest.NewRecorder()
-	s := &Server{}
-
-	// 测试用的渠道信息
-	testChannelID := int64(1)
-	testAPIKey := "sk-test-xxx"
-
-	res, _, err := s.handleSuccessResponse(reqCtx, resp, 0, resp.Header.Clone(), rec, "anthropic", &testChannelID, testAPIKey)
-	if err != nil {
-		t.Fatalf("handleSuccessResponse returned error: %v", err)
-	}
+	res, forwardedBody := runHandleSuccessResponse(
+		t,
+		body,
+		http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}},
+		true,
+		"anthropic",
+	)
 
 	if res.InputTokens != 3 || res.OutputTokens != 4 || res.CacheReadInputTokens != 1 || res.CacheCreationInputTokens != 2 {
 		t.Fatalf("unexpected usage extracted: %+v", res)
 	}
 
-	if rec.Body.String() != body {
-		t.Fatalf("unexpected response body forwarded: %q", rec.Body.String())
+	if forwardedBody != body {
+		t.Fatalf("unexpected response body forwarded: %q", forwardedBody)
 	}
 }
 
@@ -87,28 +84,13 @@ func TestHandleSuccessResponse_ExtractsUsageFromTextPlainSSE(t *testing.T) {
 func TestHandleSuccessResponse_StreamDiagMsg_NormalEOF(t *testing.T) {
 	// 模拟流式响应，无流结束标志但正常EOF
 	body := "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"hello\"}}\n\n"
-	resp := &http.Response{
-		StatusCode: http.StatusOK,
-		Body:       io.NopCloser(strings.NewReader(body)),
-		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-	}
-
-	reqCtx := &requestContext{
-		ctx:         context.Background(),
-		startTime:   time.Now(),
-		isStreaming: true,
-	}
-
-	rec := httptest.NewRecorder()
-	s := &Server{}
-
-	testChannelID := int64(1)
-	testAPIKey := "sk-test-xxx"
-
-	res, _, err := s.handleSuccessResponse(reqCtx, resp, 0, resp.Header.Clone(), rec, "anthropic", &testChannelID, testAPIKey)
-	if err != nil {
-		t.Fatalf("handleSuccessResponse returned error: %v", err)
-	}
+	res, _ := runHandleSuccessResponse(
+		t,
+		body,
+		http.Header{"Content-Type": []string{"text/event-stream"}},
+		true,
+		"anthropic",
+	)
 
 	// 正常EOF不应触发诊断（新逻辑：只有 streamErr != nil 才触发）
 	if res.StreamDiagMsg != "" {
@@ -120,28 +102,13 @@ func TestHandleSuccessResponse_StreamDiagMsg_NormalEOF(t *testing.T) {
 func TestHandleSuccessResponse_StreamDiagMsg_NonAnthropicNoUsage(t *testing.T) {
 	// 非anthropic渠道流式响应无usage是正常的
 	body := "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n"
-	resp := &http.Response{
-		StatusCode: http.StatusOK,
-		Body:       io.NopCloser(strings.NewReader(body)),
-		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-	}
-
-	reqCtx := &requestContext{
-		ctx:         context.Background(),
-		startTime:   time.Now(),
-		isStreaming: true,
-	}
-
-	rec := httptest.NewRecorder()
-	s := &Server{}
-
-	testChannelID := int64(1)
-	testAPIKey := "sk-test-xxx"
-
-	res, _, err := s.handleSuccessResponse(reqCtx, resp, 0, resp.Header.Clone(), rec, "openai", &testChannelID, testAPIKey)
-	if err != nil {
-		t.Fatalf("handleSuccessResponse returned error: %v", err)
-	}
+	res, _ := runHandleSuccessResponse(
+		t,
+		body,
+		http.Header{"Content-Type": []string{"text/event-stream"}},
+		true,
+		"openai",
+	)
 
 	// 非anthropic渠道无usage不应该设置诊断消息
 	if res.StreamDiagMsg != "" {
@@ -221,7 +188,6 @@ func TestBuildStreamDiagnostics_StreamComplete(t *testing.T) {
 		})
 	}
 }
-
 
 // errorReader 模拟返回特定错误的 Reader
 type errorReader struct {

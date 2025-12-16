@@ -2,8 +2,11 @@ package schema
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
+
+var varcharRegex = regexp.MustCompile(`VARCHAR\(\d+\)`)
 
 // TableBuilder 轻量级表构建器（方言无关）
 type TableBuilder struct {
@@ -70,7 +73,6 @@ func mysqlToSQLite(mysqlCol string) string {
 
 	// 特殊模式先处理（避免部分匹配）
 	col = strings.ReplaceAll(col, "INT PRIMARY KEY AUTO_INCREMENT", "INTEGER PRIMARY KEY AUTOINCREMENT")
-	col = strings.ReplaceAll(col, "BIGINT ", "BIGINT ")  // BIGINT保持不变
 	col = strings.ReplaceAll(col, "TINYINT", "INTEGER")
 
 	// 通用类型映射（使用词边界）
@@ -101,14 +103,7 @@ func replaceWord(s, old, new string) string {
 
 // replaceVarchar 将 VARCHAR(n) 替换为 TEXT
 func replaceVarchar(s string) string {
-	// 简单实现：替换所有VARCHAR(n)
-	for i := 0; i < 1000; i++ {
-		old := fmt.Sprintf("VARCHAR(%d)", i)
-		if strings.Contains(s, old) {
-			s = strings.ReplaceAll(s, old, "TEXT")
-		}
-	}
-	return s
+	return varcharRegex.ReplaceAllString(s, "TEXT")
 }
 
 // GetIndexesMySQL 获取MySQL索引创建语句

@@ -5,6 +5,28 @@ import (
 	"testing"
 )
 
+func feedAndAssertUsage(t *testing.T, parser usageParser, data string, wantInput, wantOutput, wantCacheRead, wantCacheCreation int) {
+	t.Helper()
+
+	if err := parser.Feed([]byte(data)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+
+	input, output, cacheRead, cacheCreation := parser.GetUsage()
+	if input != wantInput {
+		t.Errorf("InputTokens = %d, 期望 %d", input, wantInput)
+	}
+	if output != wantOutput {
+		t.Errorf("OutputTokens = %d, 期望 %d", output, wantOutput)
+	}
+	if cacheRead != wantCacheRead {
+		t.Errorf("CacheReadInputTokens = %d, 期望 %d", cacheRead, wantCacheRead)
+	}
+	if cacheCreation != wantCacheCreation {
+		t.Errorf("CacheCreationInputTokens = %d, 期望 %d", cacheCreation, wantCacheCreation)
+	}
+}
+
 func TestSSEUsageParser_ParseMessageStart(t *testing.T) {
 	// 模拟Claude API的message_start事件
 	sseData := `event: message_start
@@ -13,28 +35,9 @@ data: {"type":"message_start","message":{"id":"msg_01K9hwVdcx7dF7Cq17pZ8HLD","ty
 event: content_block_start
 data: {"type":"content_block_start","index":0}
 
-`
+	`
 
-	parser := newSSEUsageParser("anthropic") // 测试使用默认平台
-	if err := parser.Feed([]byte(sseData)); err != nil {
-		t.Fatalf("Feed失败: %v", err)
-	}
-
-	// 验证usage数据
-	input, output, cacheRead, cacheCreation := parser.GetUsage()
-
-	if input != 12 {
-		t.Errorf("InputTokens = %d, 期望 12", input)
-	}
-	if output != 1 {
-		t.Errorf("OutputTokens = %d, 期望 1", output)
-	}
-	if cacheRead != 17558 {
-		t.Errorf("CacheReadInputTokens = %d, 期望 17558", cacheRead)
-	}
-	if cacheCreation != 278 {
-		t.Errorf("CacheCreationInputTokens = %d, 期望 278", cacheCreation)
-	}
+	feedAndAssertUsage(t, newSSEUsageParser("anthropic"), sseData, 12, 1, 17558, 278)
 }
 
 func TestSSEUsageParser_ParseMessageDelta(t *testing.T) {
@@ -45,28 +48,9 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"cache
 event: message_stop
 data: {"type":"message_stop"}
 
-`
+	`
 
-	parser := newSSEUsageParser("anthropic") // 测试使用默认平台
-	if err := parser.Feed([]byte(sseData)); err != nil {
-		t.Fatalf("Feed失败: %v", err)
-	}
-
-	// 验证usage数据
-	input, output, cacheRead, cacheCreation := parser.GetUsage()
-
-	if input != 12 {
-		t.Errorf("InputTokens = %d, 期望 12", input)
-	}
-	if output != 73 {
-		t.Errorf("OutputTokens = %d, 期望 73", output)
-	}
-	if cacheRead != 17558 {
-		t.Errorf("CacheReadInputTokens = %d, 期望 17558", cacheRead)
-	}
-	if cacheCreation != 278 {
-		t.Errorf("CacheCreationInputTokens = %d, 期望 278", cacheCreation)
-	}
+	feedAndAssertUsage(t, newSSEUsageParser("anthropic"), sseData, 12, 73, 17558, 278)
 }
 
 func TestSSEUsageParser_NoUsageData(t *testing.T) {
@@ -277,29 +261,9 @@ func TestSSEUsageParser_ParseCodexResponseCompleted(t *testing.T) {
 	sseData := `event: response.completed
 data: {"type":"response.completed","sequence_number":28,"response":{"id":"resp_0d0d42598bd5c52c01691a963247dc81969f6ece7ebc78d882","object":"response","created_at":1763350066,"status":"completed","usage":{"input_tokens":10309,"input_tokens_details":{"cached_tokens":6016},"output_tokens":17,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":10326}}}
 
-`
+	`
 
-	parser := newSSEUsageParser("codex") // Codex渠道测试
-	if err := parser.Feed([]byte(sseData)); err != nil {
-		t.Fatalf("Feed失败: %v", err)
-	}
-
-	// 验证usage数据（归一化后的billable input）
-	input, output, cacheRead, cacheCreation := parser.GetUsage()
-
-	// 归一化: 10309 - 6016 = 4293 (可计费输入token)
-	if input != 4293 {
-		t.Errorf("InputTokens = %d, 期望 4293 (10309-6016归一化)", input)
-	}
-	if output != 17 {
-		t.Errorf("OutputTokens = %d, 期望 17", output)
-	}
-	if cacheRead != 6016 {
-		t.Errorf("CacheReadInputTokens (cached_tokens) = %d, 期望 6016", cacheRead)
-	}
-	if cacheCreation != 0 {
-		t.Errorf("CacheCreationInputTokens = %d, 期望 0 (OpenAI不支持)", cacheCreation)
-	}
+	feedAndAssertUsage(t, newSSEUsageParser("codex"), sseData, 4293, 17, 6016, 0)
 }
 
 func TestSSEUsageParser_OpenAIChatCompletionsSSE(t *testing.T) {
@@ -314,26 +278,9 @@ data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190
 
 data: [DONE]
 
-`
+	`
 
-	parser := newSSEUsageParser("openai") // OpenAI渠道测试
-	if err := parser.Feed([]byte(sseData)); err != nil {
-		t.Fatalf("Feed失败: %v", err)
-	}
-
-	// OpenAI Chat Completions在最后一个chunk返回usage
-	// 归一化: 200 - 100 = 100 (可计费输入token)
-	input, output, cacheRead, _ := parser.GetUsage()
-
-	if input != 100 {
-		t.Errorf("InputTokens = %d, 期望 100 (200-100归一化)", input)
-	}
-	if output != 50 {
-		t.Errorf("OutputTokens = %d, 期望 50", output)
-	}
-	if cacheRead != 100 {
-		t.Errorf("CacheReadInputTokens = %d, 期望 100", cacheRead)
-	}
+	feedAndAssertUsage(t, newSSEUsageParser("openai"), sseData, 100, 50, 100, 0)
 }
 
 func TestSSEUsageParser_GeminiFormat(t *testing.T) {
@@ -410,25 +357,9 @@ func TestSSEUsageParser_OpenAIChatCompletionsWithCache(t *testing.T) {
 	// [INFO] 重构后：GetUsage()返回归一化的billable input (300-200=100)
 	sseData := `data: {"id":"chatcmpl-456","object":"chat.completion","created":1677652288,"model":"gpt-4o","usage":{"prompt_tokens":300,"completion_tokens":120,"total_tokens":420,"prompt_tokens_details":{"cached_tokens":200,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":0,"audio_tokens":0}}}
 
-`
+	`
 
-	parser := newSSEUsageParser("openai") // OpenAI平台测试
-	if err := parser.Feed([]byte(sseData)); err != nil {
-		t.Fatalf("Feed失败: %v", err)
-	}
-
-	input, output, cacheRead, _ := parser.GetUsage()
-
-	// 归一化: 300 - 200 = 100 (可计费输入token)
-	if input != 100 {
-		t.Errorf("InputTokens = %d, 期望 100 (300-200归一化)", input)
-	}
-	if output != 120 {
-		t.Errorf("OutputTokens = %d, 期望 120 (OpenAI completion_tokens)", output)
-	}
-	if cacheRead != 200 {
-		t.Errorf("CacheReadInputTokens = %d, 期望 200 (OpenAI cached_tokens)", cacheRead)
-	}
+	feedAndAssertUsage(t, newSSEUsageParser("openai"), sseData, 100, 120, 200, 0)
 }
 
 func TestJSONUsageParser_OpenAIChatCompletionsFormat(t *testing.T) {
@@ -455,23 +386,7 @@ func TestJSONUsageParser_OpenAIChatCompletionsWithCacheFormat(t *testing.T) {
 	// [INFO] 重构后：GetUsage()返回归一化的billable input (500-350=150)
 	jsonData := `{"id":"chatcmpl-abc","object":"chat.completion","created":1677652288,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"测试响应"},"finish_reason":"stop"}],"usage":{"prompt_tokens":500,"completion_tokens":200,"total_tokens":700,"prompt_tokens_details":{"cached_tokens":350,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":0,"audio_tokens":0}}}`
 
-	parser := newJSONUsageParser("openai") // OpenAI平台测试
-	if err := parser.Feed([]byte(jsonData)); err != nil {
-		t.Fatalf("Feed失败: %v", err)
-	}
-
-	input, output, cacheRead, _ := parser.GetUsage()
-
-	// 归一化: 500 - 350 = 150 (可计费输入token)
-	if input != 150 {
-		t.Errorf("InputTokens = %d, 期望 150 (500-350归一化)", input)
-	}
-	if output != 200 {
-		t.Errorf("OutputTokens = %d, 期望 200 (OpenAI completion_tokens)", output)
-	}
-	if cacheRead != 350 {
-		t.Errorf("CacheReadInputTokens = %d, 期望 350 (OpenAI cached_tokens)", cacheRead)
-	}
+	feedAndAssertUsage(t, newJSONUsageParser("openai"), jsonData, 150, 200, 350, 0)
 }
 
 func TestSSEUsageParser_GeminiThoughtsTokenCount(t *testing.T) {

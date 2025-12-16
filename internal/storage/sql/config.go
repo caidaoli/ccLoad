@@ -19,14 +19,14 @@ func (s *SQLStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
 	// 添加 key_count 字段，避免 N+1 查询
 	// 使用 LEFT JOIN 支持查询有或无API Key的渠道
 	query := `
-		SELECT c.id, c.name, c.url, c.priority, c.models, c.model_redirects, c.channel_type, c.enabled,
-		       c.cooldown_until, c.cooldown_duration_ms,
-		       COUNT(k.id) as key_count,
-		       c.rr_key_index, c.created_at, c.updated_at
-		FROM channels c
-		LEFT JOIN api_keys k ON c.id = k.channel_id
-		GROUP BY c.id
-		ORDER BY c.priority DESC, c.id ASC
+			SELECT c.id, c.name, c.url, c.priority, c.models, c.model_redirects, c.channel_type, c.enabled,
+			       c.cooldown_until, c.cooldown_duration_ms,
+			       COUNT(k.id) as key_count,
+			       c.created_at, c.updated_at
+			FROM channels c
+			LEFT JOIN api_keys k ON c.id = k.channel_id
+			GROUP BY c.id
+			ORDER BY c.priority DESC, c.id ASC
 	`
 	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
@@ -43,14 +43,14 @@ func (s *SQLStore) GetConfig(ctx context.Context, id int64) (*model.Config, erro
 	// 新架构：包含内联的轮询索引字段
 	// 使用 LEFT JOIN 以支持创建渠道时（尚无API Key）仍能获取配置
 	query := `
-		SELECT c.id, c.name, c.url, c.priority, c.models, c.model_redirects, c.channel_type, c.enabled,
-		       c.cooldown_until, c.cooldown_duration_ms,
-		       COUNT(k.id) as key_count,
-		       c.rr_key_index, c.created_at, c.updated_at
-		FROM channels c
-		LEFT JOIN api_keys k ON c.id = k.channel_id
-		WHERE c.id = ?
-		GROUP BY c.id
+			SELECT c.id, c.name, c.url, c.priority, c.models, c.model_redirects, c.channel_type, c.enabled,
+			       c.cooldown_until, c.cooldown_duration_ms,
+			       COUNT(k.id) as key_count,
+			       c.created_at, c.updated_at
+			FROM channels c
+			LEFT JOIN api_keys k ON c.id = k.channel_id
+			WHERE c.id = ?
+			GROUP BY c.id
 	`
 	row := s.db.QueryRowContext(ctx, query, id)
 
@@ -76,15 +76,15 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, model string) 
 		// 通配符：返回所有启用的渠道（新架构：从 channels 表读取内联冷却字段）
 		// 使用 LEFT JOIN 支持查询有或无API Key的渠道
 		query = `
-            SELECT c.id, c.name, c.url, c.priority,
-                   c.models, c.model_redirects, c.channel_type, c.enabled,
-                   c.cooldown_until, c.cooldown_duration_ms,
-                   COUNT(k.id) as key_count,
-                   c.rr_key_index, c.created_at, c.updated_at
-            FROM channels c
-            LEFT JOIN api_keys k ON c.id = k.channel_id
-            WHERE c.enabled = 1
-              AND (c.cooldown_until = 0 OR c.cooldown_until <= ?)
+	            SELECT c.id, c.name, c.url, c.priority,
+	                   c.models, c.model_redirects, c.channel_type, c.enabled,
+	                   c.cooldown_until, c.cooldown_duration_ms,
+	                   COUNT(k.id) as key_count,
+	                   c.created_at, c.updated_at
+	            FROM channels c
+	            LEFT JOIN api_keys k ON c.id = k.channel_id
+	            WHERE c.enabled = 1
+	              AND (c.cooldown_until = 0 OR c.cooldown_until <= ?)
             GROUP BY c.id
             ORDER BY c.priority DESC, c.id ASC
         `
@@ -93,15 +93,15 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, model string) 
 		// 精确匹配：使用去规范化的 channel_models 索引表（性能优化：消除JSON查询）
 		// 使用 LEFT JOIN 支持查询有或无API Key的渠道
 		query = `
-            SELECT c.id, c.name, c.url, c.priority,
-                   c.models, c.model_redirects, c.channel_type, c.enabled,
-                   c.cooldown_until, c.cooldown_duration_ms,
-                   COUNT(k.id) as key_count,
-                   c.rr_key_index, c.created_at, c.updated_at
-            FROM channels c
-            INNER JOIN channel_models cm ON c.id = cm.channel_id
-            LEFT JOIN api_keys k ON c.id = k.channel_id
-            WHERE c.enabled = 1
+	            SELECT c.id, c.name, c.url, c.priority,
+	                   c.models, c.model_redirects, c.channel_type, c.enabled,
+	                   c.cooldown_until, c.cooldown_duration_ms,
+	                   COUNT(k.id) as key_count,
+	                   c.created_at, c.updated_at
+	            FROM channels c
+	            INNER JOIN channel_models cm ON c.id = cm.channel_id
+	            LEFT JOIN api_keys k ON c.id = k.channel_id
+	            WHERE c.enabled = 1
               AND cm.model = ?
               AND (c.cooldown_until = 0 OR c.cooldown_until <= ?)
             GROUP BY c.id
@@ -126,15 +126,15 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, model string) 
 func (s *SQLStore) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*model.Config, error) {
 	nowUnix := timeToUnix(time.Now())
 	query := `
-		SELECT c.id, c.name, c.url, c.priority,
-		       c.models, c.model_redirects, c.channel_type, c.enabled,
-		       c.cooldown_until, c.cooldown_duration_ms,
-		       COUNT(k.id) as key_count,
-		       c.rr_key_index, c.created_at, c.updated_at
-		FROM channels c
-		LEFT JOIN api_keys k ON c.id = k.channel_id
-		WHERE c.enabled = 1
-		  AND c.channel_type = ?
+			SELECT c.id, c.name, c.url, c.priority,
+			       c.models, c.model_redirects, c.channel_type, c.enabled,
+			       c.cooldown_until, c.cooldown_duration_ms,
+			       COUNT(k.id) as key_count,
+			       c.created_at, c.updated_at
+			FROM channels c
+			LEFT JOIN api_keys k ON c.id = k.channel_id
+			WHERE c.enabled = 1
+			  AND c.channel_type = ?
 		  AND (c.cooldown_until = 0 OR c.cooldown_until <= ?)
 		GROUP BY c.id
 		ORDER BY c.priority DESC, c.id ASC

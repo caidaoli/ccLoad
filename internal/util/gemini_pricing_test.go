@@ -2,15 +2,42 @@ package util
 
 import "testing"
 
+type geminiCostTestCase struct {
+	name            string
+	model           string
+	inputTokens     int
+	outputTokens    int
+	expectedCostUSD float64
+	description     string
+}
+
+func runGeminiCostTests(t *testing.T, tests []geminiCostTestCase) {
+	t.Helper()
+
+	const tolerance = 0.0001
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := CalculateCost(tt.model, tt.inputTokens, tt.outputTokens, 0, 0)
+			if abs(got-tt.expectedCostUSD) > tolerance {
+				t.Errorf("%s\n模型: %s\n输入: %d tokens, 输出: %d tokens (总计: %d)\n期望费用: $%.4f\n实际费用: $%.4f\n差异: $%.4f",
+					tt.description,
+					tt.model,
+					tt.inputTokens,
+					tt.outputTokens,
+					tt.inputTokens+tt.outputTokens,
+					tt.expectedCostUSD,
+					got,
+					abs(got-tt.expectedCostUSD),
+				)
+				return
+			}
+			t.Logf("[INFO] %s: $%.4f", tt.description, got)
+		})
+	}
+}
+
 func TestCalculateCost_Gemini(t *testing.T) {
-	tests := []struct {
-		name            string
-		model           string
-		inputTokens     int
-		outputTokens    int
-		expectedCostUSD float64
-		description     string
-	}{
+	tests := []geminiCostTestCase{
 		{
 			name:            "gemini-2.5-flash基础用量",
 			model:           "gemini-2.5-flash",
@@ -69,38 +96,11 @@ func TestCalculateCost_Gemini(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := CalculateCost(tt.model, tt.inputTokens, tt.outputTokens, 0, 0)
-
-			// 使用精度容差比较浮点数（允许0.0001美元的误差）
-			tolerance := 0.0001
-			if abs(got-tt.expectedCostUSD) > tolerance {
-				t.Errorf("%s\n模型: %s\n输入: %d tokens, 输出: %d tokens\n期望费用: $%.4f\n实际费用: $%.4f\n差异: $%.4f",
-					tt.description,
-					tt.model,
-					tt.inputTokens,
-					tt.outputTokens,
-					tt.expectedCostUSD,
-					got,
-					abs(got-tt.expectedCostUSD),
-				)
-			} else {
-				t.Logf("[INFO] %s: $%.4f", tt.description, got)
-			}
-		})
-	}
+	runGeminiCostTests(t, tests)
 }
 
 func TestCalculateCost_GeminiLongContext(t *testing.T) {
-	tests := []struct {
-		name            string
-		model           string
-		inputTokens     int
-		outputTokens    int
-		expectedCostUSD float64
-		description     string
-	}{
+	tests := []geminiCostTestCase{
 		{
 			name:            "gemini-3-pro标准上下文（≤200k）",
 			model:           "gemini-3-pro",
@@ -151,39 +151,12 @@ func TestCalculateCost_GeminiLongContext(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := CalculateCost(tt.model, tt.inputTokens, tt.outputTokens, 0, 0)
-
-			tolerance := 0.0001
-			if abs(got-tt.expectedCostUSD) > tolerance {
-				t.Errorf("%s\n模型: %s\n输入: %d tokens, 输出: %d tokens (总计: %d)\n期望费用: $%.4f\n实际费用: $%.4f\n差异: $%.4f",
-					tt.description,
-					tt.model,
-					tt.inputTokens,
-					tt.outputTokens,
-					tt.inputTokens+tt.outputTokens,
-					tt.expectedCostUSD,
-					got,
-					abs(got-tt.expectedCostUSD),
-				)
-			} else {
-				t.Logf("[INFO] %s: $%.4f", tt.description, got)
-			}
-		})
-	}
+	runGeminiCostTests(t, tests)
 }
 
 func TestCalculateCost_GeminiFuzzyMatch(t *testing.T) {
 	// 测试Gemini模型模糊匹配（带日期后缀的版本）
-	tests := []struct {
-		name            string
-		model           string
-		inputTokens     int
-		outputTokens    int
-		expectedCostUSD float64
-		description     string
-	}{
+	tests := []geminiCostTestCase{
 		{
 			name:            "gemini-2.5-flash带版本后缀",
 			model:           "gemini-2.5-flash-preview-05-20",
@@ -226,26 +199,7 @@ func TestCalculateCost_GeminiFuzzyMatch(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := CalculateCost(tt.model, tt.inputTokens, tt.outputTokens, 0, 0)
-
-			tolerance := 0.0001
-			if abs(got-tt.expectedCostUSD) > tolerance {
-				t.Errorf("%s\n模型: %s\n输入: %d tokens, 输出: %d tokens\n期望费用: $%.4f\n实际费用: $%.4f\n差异: $%.4f",
-					tt.description,
-					tt.model,
-					tt.inputTokens,
-					tt.outputTokens,
-					tt.expectedCostUSD,
-					got,
-					abs(got-tt.expectedCostUSD),
-				)
-			} else {
-				t.Logf("[INFO] %s: $%.4f", tt.description, got)
-			}
-		})
-	}
+	runGeminiCostTests(t, tests)
 }
 
 func TestCalculateCost_GeminiUnknownModel(t *testing.T) {

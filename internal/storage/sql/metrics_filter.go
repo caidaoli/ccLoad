@@ -3,9 +3,7 @@ package sql
 import (
 	"ccLoad/internal/model"
 	"context"
-	"database/sql"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 )
@@ -33,7 +31,7 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 	}
 
 	// 构建查询:不再JOIN channels表,使用IN子句过滤
-	// 修复:使用FLOOR确保bucket_ts是整数,避免浮点数导致map查找失败
+	// 使用FLOOR确保bucket_ts是整数,避免浮点数导致map查找失败
 	query := `
 		SELECT
 			FLOOR((logs.time / 1000) / ?) * ? AS bucket_ts,
@@ -94,164 +92,12 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 	}
 	defer rows.Close()
 
-	mapp := make(map[int64]*model.MetricPoint)
-	channelIDsToFetch := make(map[int64]bool)
-	type aggregationHelper struct {
-		totalFirstByteTime float64
-		firstByteCount     int
-		totalDuration      float64
-		durationCount      int
-	}
-	helperMap := make(map[int64]*aggregationHelper)
-
-	for rows.Next() {
-		var bucketTsInt int64
-		var channelID sql.NullInt64
-		var success, errorCount int
-		var avgFirstByteTime sql.NullFloat64
-		var avgDuration sql.NullFloat64
-		var streamSuccessFirstByteCount int
-		var durationSuccessCount int
-		var totalCost float64
-		var inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int64
-
-		if err := rows.Scan(&bucketTsInt, &channelID, &success, &errorCount, &avgFirstByteTime, &avgDuration, &streamSuccessFirstByteCount, &durationSuccessCount, &totalCost, &inputTokens, &outputTokens, &cacheReadTokens, &cacheCreationTokens); err != nil {
-			return nil, err
-		}
-
-		mp, ok := mapp[bucketTsInt]
-		if !ok {
-			mp = &model.MetricPoint{
-				Ts:       time.Unix(bucketTsInt, 0),
-				Channels: make(map[string]model.ChannelMetric),
-			}
-			mapp[bucketTsInt] = mp
-		}
-
-		helper, ok := helperMap[bucketTsInt]
-		if !ok {
-			helper = &aggregationHelper{}
-			helperMap[bucketTsInt] = helper
-		}
-
-		mp.Success += success
-		mp.Error += errorCount
-
-		if mp.TotalCost == nil {
-			mp.TotalCost = new(float64)
-		}
-		*mp.TotalCost += totalCost
-
-		// 累加 token 数据
-		mp.InputTokens += inputTokens
-		mp.OutputTokens += outputTokens
-		mp.CacheReadTokens += cacheReadTokens
-		mp.CacheCreationTokens += cacheCreationTokens
-
-		if avgFirstByteTime.Valid {
-			helper.totalFirstByteTime += avgFirstByteTime.Float64 * float64(streamSuccessFirstByteCount)
-			helper.firstByteCount += streamSuccessFirstByteCount
-		}
-
-		if avgDuration.Valid {
-			helper.totalDuration += avgDuration.Float64 * float64(durationSuccessCount)
-			helper.durationCount += durationSuccessCount
-		}
-
-		channelKey := "未知渠道"
-		if channelID.Valid {
-			channelKey = fmt.Sprintf("ch_%d", channelID.Int64)
-			channelIDsToFetch[channelID.Int64] = true
-		}
-
-		var avgFBT *float64
-		if avgFirstByteTime.Valid {
-			avgFBT = new(float64)
-			*avgFBT = avgFirstByteTime.Float64
-		}
-		var avgDur *float64
-		if avgDuration.Valid {
-			avgDur = new(float64)
-			*avgDur = avgDuration.Float64
-		}
-		var chCost *float64
-		if totalCost > 0 {
-			chCost = new(float64)
-			*chCost = totalCost
-		}
-
-		mp.Channels[channelKey] = model.ChannelMetric{
-			Success:                 success,
-			Error:                   errorCount,
-			AvgFirstByteTimeSeconds: avgFBT,
-			AvgDurationSeconds:      avgDur,
-			TotalCost:               chCost,
-			InputTokens:             inputTokens,
-			OutputTokens:            outputTokens,
-			CacheReadTokens:         cacheReadTokens,
-			CacheCreationTokens:     cacheCreationTokens,
-		}
+	mapp, helperMap, channelIDsToFetch, err := scanAggregatedMetricsRows(rows)
+	if err != nil {
+		return nil, err
 	}
 
-	channelNames := make(map[int64]string)
-	if len(channelIDsToFetch) > 0 {
-		var err error
-		channelNames, err = s.fetchChannelNamesBatch(ctx, channelIDsToFetch)
-		if err != nil {
-			log.Printf("[WARN]  批量查询渠道名称失败: %v", err)
-			channelNames = make(map[int64]string)
-		}
-	}
-
-	for bucketTs, mp := range mapp {
-		newChannels := make(map[string]model.ChannelMetric)
-		for key, metric := range mp.Channels {
-			if key == "未知渠道" {
-				newChannels[key] = metric
-			} else {
-				var channelID int64
-				fmt.Sscanf(key, "ch_%d", &channelID)
-				if name, ok := channelNames[channelID]; ok {
-					newChannels[name] = metric
-				} else {
-					newChannels["未知渠道"] = metric
-				}
-			}
-		}
-		mp.Channels = newChannels
-
-		if helper, ok := helperMap[bucketTs]; ok && helper.firstByteCount > 0 {
-			avgFBT := helper.totalFirstByteTime / float64(helper.firstByteCount)
-			mp.AvgFirstByteTimeSeconds = new(float64)
-			*mp.AvgFirstByteTimeSeconds = avgFBT
-			mp.FirstByteSampleCount = helper.firstByteCount
-		}
-
-		if helper, ok := helperMap[bucketTs]; ok && helper.durationCount > 0 {
-			avgDur := helper.totalDuration / float64(helper.durationCount)
-			mp.AvgDurationSeconds = new(float64)
-			*mp.AvgDurationSeconds = avgDur
-			mp.DurationSampleCount = helper.durationCount
-		}
-	}
-
-	out := []model.MetricPoint{}
-	endTime := until.Truncate(bucket).Add(bucket)
-	startTime := since.Truncate(bucket)
-
-	for t := startTime; t.Before(endTime); t = t.Add(bucket) {
-		ts := t.Unix()
-		if mp, ok := mapp[ts]; ok {
-			out = append(out, *mp)
-		} else {
-			out = append(out, model.MetricPoint{
-				Ts:       t,
-				Channels: make(map[string]model.ChannelMetric),
-			})
-		}
-	}
-
-	return out, nil
+	return s.finalizeMetricPoints(ctx, mapp, helperMap, channelIDsToFetch, since, until, bucket), nil
 }
 
 // buildEmptyMetricPoints 构建空的时间序列数据点（用于无数据场景）

@@ -164,7 +164,6 @@ func (s *SQLStore) applyChannelFilter(ctx context.Context, qb *QueryBuilder, fil
 	return false, false, nil
 }
 
-
 // intersectIDs 计算两个ID切片的交集
 func intersectIDs(a, b []int64) []int64 {
 	set := make(map[int64]bool, len(a))
@@ -206,10 +205,4 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
-}
-
-// intToBool 将整数转换为布尔值
-// 0=false, 非0=true
-func intToBool(i int) bool {
-	return i != 0
 }

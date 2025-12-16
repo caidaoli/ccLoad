@@ -49,11 +49,6 @@ func IsValidKeyStrategy(s string) bool {
 	return s == "" || s == KeyStrategySequential || s == KeyStrategyRoundRobin
 }
 
-// DefaultKeyStrategy 返回默认策略
-func DefaultKeyStrategy() string {
-	return KeyStrategySequential
-}
-
 type APIKey struct {
 	ID        int64  `json:"id"`
 	ChannelID int64  `json:"channel_id"`
