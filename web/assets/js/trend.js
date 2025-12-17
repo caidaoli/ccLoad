@@ -920,10 +920,6 @@
       
       // 渲染渠道列表
       Array.from(allChannelNames).sort().forEach(channelName => {
-        const item = document.createElement('div');
-        item.className = 'channel-filter-item';
-        item.onclick = () => toggleChannel(channelName);
-
         const isVisible = window.visibleChannels.has(channelName);
 
         // 为"未知渠道"添加特殊标识
@@ -931,17 +927,15 @@
           ? `${channelName} ⚠️`
           : channelName;
 
-        const content = TemplateEngine.render('tpl-channel-filter-item', {
+        const item = TemplateEngine.render('tpl-channel-filter-item', {
           checkedClass: isVisible ? 'checked' : '',
           color: channelColors[channelName],
           displayName: displayName
         });
-        if (content) {
-          item.innerHTML = '';
-          item.appendChild(content);
+        if (item) {
+          item.onclick = () => toggleChannel(channelName);
+          filterList.appendChild(item);
         }
-
-        filterList.appendChild(item);
       });
     }
     

@@ -8,29 +8,14 @@ import (
 	"time"
 )
 
-// AggregateRangeWithFilter 聚合指定时间范围、渠道类型和模型的指标数据
-// channelType 为空字符串时返回所有渠道类型的数据
-// modelFilter 为空字符串时返回所有模型的数据
-func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until time.Time, bucket time.Duration, channelType string, modelFilter string, authTokenID int64) ([]model.MetricPoint, error) {
+// AggregateRangeWithFilter 聚合指定时间范围的指标数据，支持多种筛选条件
+// filter 为 nil 时返回所有数据
+func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until time.Time, bucket time.Duration, filter *model.LogFilter) ([]model.MetricPoint, error) {
 	bucketSeconds := int64(bucket.Seconds())
 	sinceUnix := since.Unix()
 	untilUnix := until.Unix()
 
-	// [TARGET] 修复跨数据库JOIN:先从主库查询符合类型的渠道ID列表
-	var channelIDs []int64
-	if channelType != "" {
-		var err error
-		channelIDs, err = s.fetchChannelIDsByType(ctx, channelType)
-		if err != nil {
-			return nil, fmt.Errorf("fetch channel ids by type: %w", err)
-		}
-		// 如果没有符合条件的渠道,直接返回空结果
-		if len(channelIDs) == 0 {
-			return buildEmptyMetricPoints(since, until, bucket), nil
-		}
-	}
-
-	// 构建查询:不再JOIN channels表,使用IN子句过滤
+	// 构建查询:使用IN子句过滤渠道
 	// 使用FLOOR确保bucket_ts是整数,避免浮点数导致map查找失败
 	query := `
 		SELECT
@@ -59,26 +44,35 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 
 	args := []any{bucketSeconds, bucketSeconds, sinceUnix, untilUnix}
 
-	// 添加 channel_type 过滤(使用IN子句)
-	if len(channelIDs) > 0 {
-		placeholders := make([]string, len(channelIDs))
-		for i := range channelIDs {
-			placeholders[i] = "?"
-			args = append(args, channelIDs[i])
+	// 应用渠道筛选（channel_type、channel_id、channel_name、channel_name_like）
+	if filter != nil {
+		channelIDs, isEmpty, err := s.resolveChannelFilter(ctx, filter)
+		if err != nil {
+			return nil, fmt.Errorf("resolve channel filter: %w", err)
 		}
-		query += fmt.Sprintf(" AND logs.channel_id IN (%s)", strings.Join(placeholders, ","))
-	}
+		if isEmpty {
+			return buildEmptyMetricPoints(since, until, bucket), nil
+		}
+		if len(channelIDs) > 0 {
+			placeholders := make([]string, len(channelIDs))
+			for i := range channelIDs {
+				placeholders[i] = "?"
+				args = append(args, channelIDs[i])
+			}
+			query += fmt.Sprintf(" AND logs.channel_id IN (%s)", strings.Join(placeholders, ","))
+		}
 
-	// 添加模型过滤
-	if modelFilter != "" {
-		query += " AND logs.model = ?"
-		args = append(args, modelFilter)
-	}
+		// 添加模型过滤
+		if filter.Model != "" {
+			query += " AND logs.model = ?"
+			args = append(args, filter.Model)
+		}
 
-	// 添加 auth_token_id 过滤
-	if authTokenID > 0 {
-		query += " AND logs.auth_token_id = ?"
-		args = append(args, authTokenID)
+		// 添加 auth_token_id 过滤
+		if filter.AuthTokenID != nil && *filter.AuthTokenID > 0 {
+			query += " AND logs.auth_token_id = ?"
+			args = append(args, *filter.AuthTokenID)
+		}
 	}
 
 	query += `
@@ -98,6 +92,58 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 	}
 
 	return s.finalizeMetricPoints(ctx, mapp, helperMap, channelIDsToFetch, since, until, bucket), nil
+}
+
+// resolveChannelFilter 解析渠道筛选条件，返回符合条件的渠道ID列表
+// 返回值：channelIDs（空切片表示不限制）、isEmpty（true表示无匹配结果）、error
+func (s *SQLStore) resolveChannelFilter(ctx context.Context, filter *model.LogFilter) ([]int64, bool, error) {
+	if filter == nil {
+		return nil, false, nil
+	}
+
+	// 精确匹配渠道ID优先级最高
+	if filter.ChannelID != nil && *filter.ChannelID > 0 {
+		return []int64{*filter.ChannelID}, false, nil
+	}
+
+	var candidateIDs []int64
+	hasTypeFilter := filter.ChannelType != ""
+	hasNameFilter := filter.ChannelName != "" || filter.ChannelNameLike != ""
+
+	// 按渠道类型过滤
+	if hasTypeFilter {
+		ids, err := s.fetchChannelIDsByType(ctx, filter.ChannelType)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(ids) == 0 {
+			return nil, true, nil // 无匹配结果
+		}
+		candidateIDs = ids
+	}
+
+	// 按渠道名称过滤
+	if hasNameFilter {
+		ids, err := s.fetchChannelIDsByNameFilter(ctx, filter.ChannelName, filter.ChannelNameLike)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(ids) == 0 {
+			return nil, true, nil // 无匹配结果
+		}
+
+		if hasTypeFilter {
+			// 取交集
+			candidateIDs = intersectIDs(candidateIDs, ids)
+			if len(candidateIDs) == 0 {
+				return nil, true, nil
+			}
+		} else {
+			candidateIDs = ids
+		}
+	}
+
+	return candidateIDs, false, nil
 }
 
 // buildEmptyMetricPoints 构建空的时间序列数据点（用于无数据场景）

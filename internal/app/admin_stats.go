@@ -40,7 +40,7 @@ func (s *Server) HandleErrors(c *gin.Context) {
 }
 
 // handleMetrics 获取聚合指标数据
-// GET /admin/metrics?range=today&bucket_min=5&channel_type=anthropic&model=claude-3-5-sonnet-20241022
+// GET /admin/metrics?range=today&bucket_min=5&channel_type=anthropic&model=claude-3-5-sonnet-20241022&channel_id=1&channel_name_like=xxx
 func (s *Server) HandleMetrics(c *gin.Context) {
 	params := ParsePaginationParams(c)
 	bucketMin, _ := strconv.Atoi(c.DefaultQuery("bucket_min", "5"))
@@ -48,13 +48,11 @@ func (s *Server) HandleMetrics(c *gin.Context) {
 		bucketMin = 5
 	}
 
-	// 支持按渠道类型、模型和 API Token 过滤
-	channelType := c.Query("channel_type")
-	modelFilter := c.Query("model")
-	authTokenID, _ := strconv.ParseInt(c.Query("auth_token_id"), 10, 64)
+	// 使用统一的筛选参数构建器（支持 channel_type、channel_id、channel_name_like、model、auth_token_id）
+	lf := BuildLogFilter(c)
 
 	since, until := params.GetTimeRange()
-	pts, err := s.store.AggregateRangeWithFilter(c.Request.Context(), since, until, time.Duration(bucketMin)*time.Minute, channelType, modelFilter, authTokenID)
+	pts, err := s.store.AggregateRangeWithFilter(c.Request.Context(), since, until, time.Duration(bucketMin)*time.Minute, &lf)
 
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
