@@ -109,3 +109,13 @@ const (
 	// RedisSyncShutdownTimeoutMs 优雅关闭等待时间（毫秒）
 	RedisSyncShutdownTimeoutMs = 100
 )
+
+// 启动超时配置（Fail-Fast：启动阶段网络问题应快速失败，避免卡死）
+const (
+	// StartupDBPingTimeout 数据库连接测试超时
+	StartupDBPingTimeout = 10 * time.Second
+	// StartupMigrationTimeout 数据库迁移超时
+	StartupMigrationTimeout = 30 * time.Second
+	// StartupRedisRestoreTimeout Redis数据恢复超时
+	StartupRedisRestoreTimeout = 30 * time.Second
+)

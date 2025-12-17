@@ -214,6 +214,10 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 		stats = append(stats, entry)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
 	if len(channelIDsToFetch) > 0 {
 		channelInfos, err := s.fetchChannelInfoBatch(ctx, channelIDsToFetch)
 		if err != nil {
@@ -409,6 +413,10 @@ func (s *SQLStore) fillStatsRPM(ctx context.Context, stats []model.StatsEntry, s
 		peakRPMMap[statsKey{channelID, model}] = peakRPM
 	}
 
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate peak RPM rows: %w", err)
+	}
+
 	// 如果是本日，查询每个channel_id+model的最近一分钟RPM
 	recentRPMMap := make(map[statsKey]float64)
 	if isToday {
@@ -436,6 +444,10 @@ func (s *SQLStore) fillStatsRPM(ctx context.Context, stats []model.StatsEntry, s
 				return fmt.Errorf("scan recent RPM: %w", err)
 			}
 			recentRPMMap[statsKey{channelID, model}] = cnt
+		}
+
+		if err := recentRows.Err(); err != nil {
+			return fmt.Errorf("iterate recent RPM rows: %w", err)
 		}
 	}
 

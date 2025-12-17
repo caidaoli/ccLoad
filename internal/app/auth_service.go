@@ -51,6 +51,8 @@ type AuthService struct {
 	lastUsedCh chan string    // tokenHash 更新队列
 	done       chan struct{}  // 关闭信号
 	wg         sync.WaitGroup // 优雅关闭
+	// [FIX] 2025-12：保证 Close 幂等性，防止重复关闭 channel 导致 panic
+	closeOnce sync.Once
 }
 
 // NewAuthService 创建认证服务实例
@@ -136,10 +138,12 @@ func (s *AuthService) lastUsedWorker() {
 	}
 }
 
-// Close 优雅关闭 AuthService
+// Close 优雅关闭 AuthService（幂等，可安全多次调用）
 func (s *AuthService) Close() {
-	close(s.done)
-	s.wg.Wait()
+	s.closeOnce.Do(func() {
+		close(s.done)
+		s.wg.Wait()
+	})
 }
 
 // ============================================================================

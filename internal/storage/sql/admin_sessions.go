@@ -2,6 +2,8 @@ package sql
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"time"
 
 	"ccLoad/internal/model"
@@ -29,7 +31,7 @@ func (s *SQLStore) GetAdminSession(ctx context.Context, token string) (expiresAt
 	`, tokenHash).Scan(&expiresUnix)
 
 	if err != nil {
-		if err.Error() == "sql: no rows in result set" {
+		if errors.Is(err, sql.ErrNoRows) {
 			return time.Time{}, false, nil
 		}
 		return time.Time{}, false, err

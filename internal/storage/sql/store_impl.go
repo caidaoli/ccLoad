@@ -50,6 +50,8 @@ type SQLStore struct {
 
 	// [FIX] 2025-12：保证 StartRedisSync 幂等性，防止多次调用启动多个 worker
 	startOnce sync.Once
+	// [FIX] 2025-12：保证 Close 幂等性，防止重复关闭 channel 导致 panic
+	closeOnce sync.Once
 }
 
 // NewSQLStore 创建通用SQL存储实例
@@ -98,17 +100,20 @@ func (s *SQLStore) Ping(ctx context.Context) error {
 }
 
 func (s *SQLStore) Close() error {
-	// 1. 通知后台worker退出
-	close(s.done)
+	var err error
+	s.closeOnce.Do(func() {
+		// 1. 通知后台worker退出
+		close(s.done)
 
-	// 2. 等待worker完成
-	s.wg.Wait()
+		// 2. 等待worker完成
+		s.wg.Wait()
 
-	// 3. 关闭数据库连接
-	if s.db != nil {
-		return s.db.Close()
-	}
-	return nil
+		// 3. 关闭数据库连接
+		if s.db != nil {
+			err = s.db.Close()
+		}
+	})
+	return err
 }
 
 // CleanupLogsBefore 清理指定时间之前的日志

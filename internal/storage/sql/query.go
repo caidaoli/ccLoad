@@ -141,6 +141,7 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 func (cs *ConfigScanner) ScanConfigs(rows interface {
 	Next() bool
 	Scan(...any) error
+	Err() error
 }) ([]*model.Config, error) {
 	var configs []*model.Config
 
@@ -150,6 +151,10 @@ func (cs *ConfigScanner) ScanConfigs(rows interface {
 			return nil, err
 		}
 		configs = append(configs, config)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
 	return configs, nil

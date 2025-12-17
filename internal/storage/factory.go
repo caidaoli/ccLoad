@@ -54,17 +54,20 @@ func NewStore(redisSync RedisSync) (Store, error) {
 	// 统一的 Redis 恢复逻辑（迁移完成后执行）
 	// 顺序很重要：先恢复数据，再启动同步 worker，避免空数据覆盖 Redis 备份
 	// [FIX] P1-4: 分别检查 channels 和 auth_tokens，避免部分表丢失时恢复不完整
+	// [FIX] 2025-12: 添加硬超时，避免 Redis 网络问题卡死启动
 	// ============================================================================
-	ctx := context.Background()
 	if redisSync != nil && redisSync.IsEnabled() {
+		restoreCtx, restoreCancel := context.WithTimeout(context.Background(), config.StartupRedisRestoreTimeout)
+		defer restoreCancel()
+
 		// 检查 channels 表是否为空
-		channelsEmpty, checkErr := store.CheckChannelsEmpty(ctx)
+		channelsEmpty, checkErr := store.CheckChannelsEmpty(restoreCtx)
 		if checkErr != nil {
 			log.Printf("检查 channels 表状态失败: %v", checkErr)
 		}
 
 		// 检查 auth_tokens 表是否为空
-		tokensEmpty, checkErr := store.CheckAuthTokensEmpty(ctx)
+		tokensEmpty, checkErr := store.CheckAuthTokensEmpty(restoreCtx)
 		if checkErr != nil {
 			log.Printf("检查 auth_tokens 表状态失败: %v", checkErr)
 		}
@@ -72,8 +75,8 @@ func NewStore(redisSync RedisSync) (Store, error) {
 		// 任意一张表为空就触发恢复（防止部分表丢失）
 		if channelsEmpty || tokensEmpty {
 			log.Printf("数据库部分为空（channels=%v, tokens=%v），尝试从Redis恢复...", channelsEmpty, tokensEmpty)
-			if restoreErr := store.LoadChannelsFromRedis(ctx); restoreErr != nil {
-				log.Printf("从Redis恢复失败: %v", restoreErr)
+			if restoreErr := store.LoadChannelsFromRedis(restoreCtx); restoreErr != nil {
+				log.Printf("从Redis恢复失败（超时%v）: %v", config.StartupRedisRestoreTimeout, restoreErr)
 			}
 		}
 	}
@@ -101,19 +104,23 @@ func createMySQLStore(dsn string, redisSync RedisSync) (*sqlstore.SQLStore, erro
 	db.SetMaxIdleConns(config.SQLiteMaxIdleConnsFile * 2)
 	db.SetConnMaxLifetime(config.SQLiteConnMaxLifetime)
 
-	// 测试连接
-	if err := db.Ping(); err != nil {
+	// 测试连接（带超时，Fail-Fast）
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), config.StartupDBPingTimeout)
+	defer pingCancel()
+	if err := db.PingContext(pingCtx); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("MySQL连接测试失败: %w", err)
+		return nil, fmt.Errorf("MySQL连接测试失败（超时%v）: %w", config.StartupDBPingTimeout, err)
 	}
 
 	// 创建统一的 SQLStore
 	store := sqlstore.NewSQLStore(db, "mysql", redisSync)
 
-	// 执行MySQL迁移
-	if err := migrateMySQL(context.Background(), db); err != nil {
+	// 执行MySQL迁移（带超时）
+	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), config.StartupMigrationTimeout)
+	defer migrateCancel()
+	if err := migrateMySQL(migrateCtx, db); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("MySQL迁移失败: %w", err)
+		return nil, fmt.Errorf("MySQL迁移失败（超时%v）: %w", config.StartupMigrationTimeout, err)
 	}
 
 	return store, nil
@@ -153,10 +160,12 @@ func createSQLiteStore(path string, redisSync RedisSync) (*sqlstore.SQLStore, er
 	// 创建统一的 SQLStore
 	store := sqlstore.NewSQLStore(db, "sqlite", redisSync)
 
-	// 执行SQLite迁移
-	if err := migrateSQLite(context.Background(), db); err != nil {
+	// 执行SQLite迁移（带超时）
+	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), config.StartupMigrationTimeout)
+	defer migrateCancel()
+	if err := migrateSQLite(migrateCtx, db); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("SQLite迁移失败: %w", err)
+		return nil, fmt.Errorf("SQLite迁移失败（超时%v）: %w", config.StartupMigrationTimeout, err)
 	}
 
 	return store, nil

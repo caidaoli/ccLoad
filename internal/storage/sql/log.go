@@ -231,6 +231,10 @@ func (s *SQLStore) ListLogs(ctx context.Context, since time.Time, limit, offset 
 		out = append(out, e)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
 	s.fillLogChannelNames(ctx, out, channelIDsToFetch)
 
 	return out, nil
@@ -306,6 +310,10 @@ func (s *SQLStore) ListLogsRange(ctx context.Context, since, until time.Time, li
 			channelIDsToFetch[e.ChannelID] = true
 		}
 		out = append(out, e)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
 	s.fillLogChannelNames(ctx, out, channelIDsToFetch)

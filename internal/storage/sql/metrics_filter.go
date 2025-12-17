@@ -134,9 +134,13 @@ func (s *SQLStore) GetDistinctModels(ctx context.Context, since, until time.Time
 	for rows.Next() {
 		var model string
 		if err := rows.Scan(&model); err != nil {
-			continue
+			return nil, err
 		}
 		models = append(models, model)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
 	if models == nil {
