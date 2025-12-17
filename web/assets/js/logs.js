@@ -399,7 +399,9 @@
       if (authToken) q.set('auth_token_id', authToken); else q.delete('auth_token_id');
       if (channelType) q.set('channel_type', channelType); else q.set('channel_type', 'all');
 
-      location.search = '?' + q.toString();
+      // 使用 pushState 更新 URL，避免页面重新加载
+      history.pushState(null, '', '?' + q.toString());
+      load();
     }
 
     function initFilters() {

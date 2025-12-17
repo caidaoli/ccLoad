@@ -344,7 +344,10 @@
       if (model) { q.set('model_like', model); q.delete('model'); }
       else { q.delete('model_like'); q.delete('model'); }
       if (authToken) q.set('auth_token_id', authToken); else q.delete('auth_token_id');
-      location.search = '?' + q.toString();
+
+      // 使用 pushState 更新 URL，避免页面重新加载
+      history.pushState(null, '', '?' + q.toString());
+      loadStats();
     }
 
     function initFilters() {
@@ -676,7 +679,10 @@
       try {
         const savedView = localStorage.getItem('stats.view');
         if (savedView === 'chart' || savedView === 'table') {
-          switchView(savedView);
+          // 只在需要切换时才调用 switchView，避免不必要的重绘
+          if (savedView !== currentView) {
+            switchView(savedView);
+          }
         }
       } catch (_) {}
     }
