@@ -20,7 +20,9 @@ type usageAccumulator struct {
 	InputTokens              int
 	OutputTokens             int
 	CacheReadInputTokens     int
-	CacheCreationInputTokens int
+	CacheCreationInputTokens int // 5m+1h缓存总和（兼容字段）
+	Cache5mInputTokens       int // 5分钟缓存写入Token数（新增2025-12）
+	Cache1hInputTokens       int // 1小时缓存写入Token数（新增2025-12）
 }
 
 type sseUsageParser struct {
@@ -435,6 +437,18 @@ func (u *usageAccumulator) applyAnthropicOrResponsesUsage(usage map[string]any) 
 	}
 	if val, ok := usage["cache_creation_input_tokens"].(float64); ok {
 		u.CacheCreationInputTokens = int(val)
+	}
+
+	// Anthropic缓存细分字段 (新增2025-12)
+	if cacheCreation, ok := usage["cache_creation"].(map[string]any); ok {
+		if val, ok := cacheCreation["ephemeral_5m_input_tokens"].(float64); ok {
+			u.Cache5mInputTokens = int(val)
+		}
+		if val, ok := cacheCreation["ephemeral_1h_input_tokens"].(float64); ok {
+			u.Cache1hInputTokens = int(val)
+		}
+		// 更新兼容字段
+		u.CacheCreationInputTokens = u.Cache5mInputTokens + u.Cache1hInputTokens
 	}
 
 	// OpenAI Responses API缓存字段: input_tokens_details.cached_tokens

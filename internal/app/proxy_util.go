@@ -46,7 +46,9 @@ type fwResult struct {
 	InputTokens              int
 	OutputTokens             int
 	CacheReadInputTokens     int
-	CacheCreationInputTokens int
+	CacheCreationInputTokens int // 5m+1h缓存总和（兼容字段）
+	Cache5mInputTokens       int // 5分钟缓存写入Token数（新增2025-12）
+	Cache1hInputTokens       int // 1小时缓存写入Token数（新增2025-12）
 
 	// 流传输诊断信息（2025-12新增）
 	StreamDiagMsg string // 流中断/不完整时的诊断消息，合并到成功日志的Message字段
@@ -374,15 +376,19 @@ func buildLogEntry(originalModel string, channelID int64, statusCode int,
 		entry.OutputTokens = res.OutputTokens
 		entry.CacheReadInputTokens = res.CacheReadInputTokens
 		entry.CacheCreationInputTokens = res.CacheCreationInputTokens
+		entry.Cache5mInputTokens = res.Cache5mInputTokens
+		entry.Cache1hInputTokens = res.Cache1hInputTokens
 
 		// 成本计算（2025-11新增，基于token统计）
-		if res.InputTokens > 0 || res.OutputTokens > 0 || res.CacheReadInputTokens > 0 || res.CacheCreationInputTokens > 0 {
-			entry.Cost = util.CalculateCost(
+		// 2025-12更新：使用CalculateCostDetailed支持5m和1h缓存分别计费
+		if res.InputTokens > 0 || res.OutputTokens > 0 || res.CacheReadInputTokens > 0 || res.Cache5mInputTokens > 0 || res.Cache1hInputTokens > 0 {
+			entry.Cost = util.CalculateCostDetailed(
 				originalModel,
 				res.InputTokens,
 				res.OutputTokens,
 				res.CacheReadInputTokens,
-				res.CacheCreationInputTokens,
+				res.Cache5mInputTokens,
+				res.Cache1hInputTokens,
 			)
 		}
 	} else {

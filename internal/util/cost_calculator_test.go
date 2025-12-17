@@ -328,3 +328,101 @@ func TestCalculateCost_Gpt4oLegacyFuzzy(t *testing.T) {
 		t.Errorf("gpt-4o-legacy和gpt-4o价格应不同！legacy=$%.6f, gpt-4o=$%.6f", cost, gpt4oCost)
 	}
 }
+
+// TestCalculateCostDetailed_5mVs1hCache 验证5分钟和1小时缓存的定价差异
+// 参考: https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+// - 5m缓存写入: 基础价格 × 1.25
+// - 1h缓存写入: 基础价格 × 2.0
+// - 缓存读取: 基础价格 × 0.1（两种时长相同）
+func TestCalculateCostDetailed_5mVs1hCache(t *testing.T) {
+	model := "claude-sonnet-4-5"
+	// 基础价格: input=$3/MTok, output=$15/MTok
+
+	// 场景1: 仅5m缓存写入 1000 tokens
+	cost5m := CalculateCostDetailed(model, 0, 0, 0, 1000, 0)
+	// 预期: 1000 × ($3 × 1.25) / 1M = $0.003750
+	expected5m := 0.003750
+	if !floatEquals(cost5m, expected5m, 0.000001) {
+		t.Errorf("5m缓存写入成本错误: 实际$%.6f, 期望$%.6f", cost5m, expected5m)
+	}
+
+	// 场景2: 仅1h缓存写入 1000 tokens
+	cost1h := CalculateCostDetailed(model, 0, 0, 0, 0, 1000)
+	// 预期: 1000 × ($3 × 2.0) / 1M = $0.006000
+	expected1h := 0.006000
+	if !floatEquals(cost1h, expected1h, 0.000001) {
+		t.Errorf("1h缓存写入成本错误: 实际$%.6f, 期望$%.6f", cost1h, expected1h)
+	}
+
+	// 场景3: 混合使用 - 500 tokens 5m缓存 + 500 tokens 1h缓存
+	costMixed := CalculateCostDetailed(model, 0, 0, 0, 500, 500)
+	// 预期: 500 × ($3 × 1.25) / 1M + 500 × ($3 × 2.0) / 1M = $0.004875
+	expectedMixed := 0.004875
+	if !floatEquals(costMixed, expectedMixed, 0.000001) {
+		t.Errorf("混合缓存写入成本错误: 实际$%.6f, 期望$%.6f", costMixed, expectedMixed)
+	}
+
+	// 验证定价关系: 1h缓存应该是5m缓存的1.6倍 (2.0 / 1.25)
+	ratio := cost1h / cost5m
+	expectedRatio := 1.6
+	if !floatEquals(ratio, expectedRatio, 0.01) {
+		t.Errorf("1h/5m缓存价格比例错误: 实际%.2f, 期望%.2f", ratio, expectedRatio)
+	}
+
+	t.Logf("[INFO] 5m缓存: $%.6f (1.25x基础价)", cost5m)
+	t.Logf("[INFO] 1h缓存: $%.6f (2.0x基础价)", cost1h)
+	t.Logf("[INFO] 混合缓存: $%.6f", costMixed)
+	t.Logf("[INFO] 1h/5m价格比例: %.2fx", ratio)
+}
+
+// TestCalculateCostDetailed_CompleteScenario 完整场景测试
+// 验证包含所有token类型的复杂请求
+func TestCalculateCostDetailed_CompleteScenario(t *testing.T) {
+	model := "claude-sonnet-4-5"
+	// 场景: 普通输入100 + 输出200 + 缓存读1000 + 5m缓存写500 + 1h缓存写300
+
+	cost := CalculateCostDetailed(model, 100, 200, 1000, 500, 300)
+
+	// 预期计算:
+	// 1. 普通输入: 100 × $3 / 1M = $0.000300
+	// 2. 输出: 200 × $15 / 1M = $0.003000
+	// 3. 缓存读: 1000 × ($3 × 0.1) / 1M = $0.000300
+	// 4. 5m缓存写: 500 × ($3 × 1.25) / 1M = $0.001875
+	// 5. 1h缓存写: 300 × ($3 × 2.0) / 1M = $0.001800
+	// Total: $0.007275
+	expected := 0.007275
+
+	if !floatEquals(cost, expected, 0.000001) {
+		t.Errorf("完整场景成本错误: 实际$%.6f, 期望$%.6f", cost, expected)
+	}
+
+	t.Logf("[INFO] 完整场景测试通过")
+	t.Logf("  普通输入: 100 tokens → $0.000300")
+	t.Logf("  输出: 200 tokens → $0.003000")
+	t.Logf("  缓存读: 1000 tokens → $0.000300")
+	t.Logf("  5m缓存写: 500 tokens → $0.001875")
+	t.Logf("  1h缓存写: 300 tokens → $0.001800")
+	t.Logf("  总计: $%.6f", cost)
+}
+
+// TestCalculateCost_BackwardCompatibility 验证旧版本CalculateCost的兼容性
+// 确保旧代码调用CalculateCost(model, in, out, cacheRead, cacheCreation)时
+// cacheCreation被当作5m缓存处理
+func TestCalculateCost_BackwardCompatibility(t *testing.T) {
+	model := "claude-sonnet-4-5"
+	cacheTokens := 1000
+
+	// 旧版本调用: CalculateCost(model, 0, 0, 0, cacheCreation)
+	oldWay := CalculateCost(model, 0, 0, 0, cacheTokens)
+
+	// 新版本调用: CalculateCostDetailed(model, 0, 0, 0, cache5m, 0)
+	newWay := CalculateCostDetailed(model, 0, 0, 0, cacheTokens, 0)
+
+	// 应该完全相同
+	if !floatEquals(oldWay, newWay, 0.000001) {
+		t.Errorf("向后兼容性问题: CalculateCost=$%.6f, CalculateCostDetailed=$%.6f", oldWay, newWay)
+	}
+
+	t.Logf("[INFO] 向后兼容性测试通过: $%.6f", oldWay)
+}
+

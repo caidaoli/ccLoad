@@ -92,7 +92,10 @@ func ensureLogsNewColumns(ctx context.Context, db *sql.DB, dialect Dialect) erro
 		if err := ensureLogsAuthTokenIDMySQL(ctx, db); err != nil {
 			return err
 		}
-		return ensureLogsClientIPMySQL(ctx, db)
+		if err := ensureLogsClientIPMySQL(ctx, db); err != nil {
+			return err
+		}
+		return ensureLogsCacheFieldsMySQL(ctx, db)
 	}
 	// SQLite: 使用PRAGMA table_info检查列
 	return ensureLogsColumnsSQLite(ctx, db)
@@ -123,10 +126,25 @@ func ensureSQLiteColumns(ctx context.Context, db *sql.DB, table string, cols []s
 
 // ensureLogsColumnsSQLite SQLite增量迁移logs表新字段
 func ensureLogsColumnsSQLite(ctx context.Context, db *sql.DB) error {
-	return ensureSQLiteColumns(ctx, db, "logs", []sqliteColumnDef{
+	// 第一步：添加基础字段
+	if err := ensureSQLiteColumns(ctx, db, "logs", []sqliteColumnDef{
 		{name: "auth_token_id", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{name: "client_ip", definition: "TEXT NOT NULL DEFAULT ''"},
-	})
+		{name: "cache_5m_input_tokens", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{name: "cache_1h_input_tokens", definition: "INTEGER NOT NULL DEFAULT 0"},
+	}); err != nil {
+		return err
+	}
+
+	// 第二步：迁移历史数据，将cache_creation_input_tokens复制到cache_5m_input_tokens
+	_, err := db.ExecContext(ctx,
+		"UPDATE logs SET cache_5m_input_tokens = cache_creation_input_tokens WHERE cache_5m_input_tokens = 0 AND cache_creation_input_tokens > 0",
+	)
+	if err != nil {
+		return fmt.Errorf("migrate cache_5m data: %w", err)
+	}
+
+	return nil
 }
 
 // ensureLogsAuthTokenIDMySQL 确保logs表有auth_token_id字段(MySQL增量迁移,2025-12新增)
@@ -175,6 +193,49 @@ func ensureLogsClientIPMySQL(ctx context.Context, db *sql.DB) error {
 	)
 	if err != nil {
 		return fmt.Errorf("add client_ip column: %w", err)
+	}
+
+	return nil
+}
+
+// ensureLogsCacheFieldsMySQL 确保logs表有缓存细分字段(MySQL增量迁移,2025-12新增)
+func ensureLogsCacheFieldsMySQL(ctx context.Context, db *sql.DB) error {
+	// 检查cache_5m_input_tokens字段是否存在
+	var count int
+	err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='logs' AND COLUMN_NAME='cache_5m_input_tokens'",
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check cache_5m_input_tokens existence: %w", err)
+	}
+
+	// 字段已存在,跳过
+	if count > 0 {
+		return nil
+	}
+
+	// 添加cache_5m_input_tokens字段
+	_, err = db.ExecContext(ctx,
+		"ALTER TABLE logs ADD COLUMN cache_5m_input_tokens INT NOT NULL DEFAULT 0 COMMENT '5分钟缓存写入Token数(新增2025-12)'",
+	)
+	if err != nil {
+		return fmt.Errorf("add cache_5m_input_tokens column: %w", err)
+	}
+
+	// 添加cache_1h_input_tokens字段
+	_, err = db.ExecContext(ctx,
+		"ALTER TABLE logs ADD COLUMN cache_1h_input_tokens INT NOT NULL DEFAULT 0 COMMENT '1小时缓存写入Token数(新增2025-12)'",
+	)
+	if err != nil {
+		return fmt.Errorf("add cache_1h_input_tokens column: %w", err)
+	}
+
+	// 迁移历史数据，将cache_creation_input_tokens复制到cache_5m_input_tokens
+	_, err = db.ExecContext(ctx,
+		"UPDATE logs SET cache_5m_input_tokens = cache_creation_input_tokens WHERE cache_5m_input_tokens = 0 AND cache_creation_input_tokens > 0",
+	)
+	if err != nil {
+		return fmt.Errorf("migrate cache_5m data: %w", err)
 	}
 
 	return nil

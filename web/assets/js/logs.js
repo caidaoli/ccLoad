@@ -232,7 +232,33 @@
         const inputTokensDisplay = tokenValue(entry.input_tokens, 'var(--neutral-700)');
         const outputTokensDisplay = tokenValue(entry.output_tokens, 'var(--neutral-700)');
         const cacheReadDisplay = tokenValue(entry.cache_read_input_tokens, 'var(--success-600)');
-        const cacheCreationDisplay = tokenValue(entry.cache_creation_input_tokens, 'var(--primary-600)');
+
+        // 缓存建列：简洁角标展示，仅Claude/Codex渠道显示（新增2025-12）
+        let cacheCreationDisplay = '';
+        const total = entry.cache_creation_input_tokens || 0;
+        const cache5m = entry.cache_5m_input_tokens || 0;
+        const cache1h = entry.cache_1h_input_tokens || 0;
+
+        if (total > 0) {
+          // 判断是否为Claude/Codex模型（支持prompt caching细分）
+          const model = (entry.model || '').toLowerCase();
+          const isClaudeOrCodex = model.includes('claude') || model.includes('codex');
+
+          let badge = '';
+          // 仅Claude/Codex显示角标，其他渠道（OpenAI/Gemini）不显示
+          if (isClaudeOrCodex && (cache5m > 0 || cache1h > 0)) {
+            // 简洁显示：仅标注类型，不重复数值
+            if (cache5m > 0 && cache1h === 0) {
+              badge = ' <sup style="color: var(--primary-500); font-size: 0.75em; font-weight: 600;">5m</sup>';
+            } else if (cache1h > 0 && cache5m === 0) {
+              badge = ' <sup style="color: var(--warning-600); font-size: 0.75em; font-weight: 600;">1h</sup>';
+            } else if (cache5m > 0 && cache1h > 0) {
+              // 混合场景：显示两种类型
+              badge = ' <sup style="color: var(--primary-500); font-size: 0.75em; font-weight: 600;">5m</sup><sup style="color: var(--warning-600); font-size: 0.75em; font-weight: 600;">+1h</sup>';
+            }
+          }
+          cacheCreationDisplay = `<span class="token-metric-value" style="color: var(--primary-600);">${total.toLocaleString()}${badge}</span>`;
+        }
 
         // 7. 成本显示(0值为空)
         const costDisplay = entry.cost ?

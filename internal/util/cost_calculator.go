@@ -173,7 +173,19 @@ const (
 	// 参考：https://docs.claude.com/en/docs/about-claude/pricing
 	cacheReadMultiplierOpus = 0.1
 
-	// cacheWriteMultiplier 缓存写入价格倍数（相对于基础input价格）
+	// cacheWrite5mMultiplier 5分钟缓存写入价格倍数（相对于基础input价格）
+	// 5m Cache Write = Input Price × 1.25 (25%溢价)
+	// 仅适用于Claude模型（OpenAI不支持cache_creation）
+	// 参考：https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+	cacheWrite5mMultiplier = 1.25
+
+	// cacheWrite1hMultiplier 1小时缓存写入价格倍数（相对于基础input价格）
+	// 1h Cache Write = Input Price × 2.0 (100%溢价)
+	// 仅适用于Claude模型（OpenAI不支持cache_creation）
+	// 参考：https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+	cacheWrite1hMultiplier = 2.0
+
+	// cacheWriteMultiplier 缓存写入价格倍数（兼容旧版本，等同于5m缓存）
 	// Cache Write = Input Price × 1.25 (25%溢价)
 	// 仅适用于Claude模型（OpenAI不支持cache_creation）
 	cacheWriteMultiplier = 1.25
@@ -184,13 +196,13 @@ const (
 	geminiLongContextThreshold = 200_000
 )
 
-// CalculateCost 计算单次请求的成本（美元）
+// CalculateCost 计算单次请求的成本（美元）- 兼容版本
 // 参数：
 //   - model: 模型名称（如"claude-sonnet-4-5-20250929"或"gpt-5.1-codex"）
 //   - inputTokens: 输入token数量（已归一化为可计费token）
 //   - outputTokens: 输出token数量
 //   - cacheReadTokens: 缓存读取token数量（Claude: cache_read_input_tokens, OpenAI: cached_tokens）
-//   - cacheCreationTokens: 缓存创建token数量（Claude: cache_creation_input_tokens）
+//   - cacheCreationTokens: 缓存创建token数量（Claude: cache_creation_input_tokens，5m+1h总和）
 //
 // 重要: inputTokens应为"可计费输入token"，由解析层（proxy_sse_parser.go）负责归一化：
 //   - OpenAI: 解析层已自动扣除cached_tokens（prompt_tokens - cached_tokens）
@@ -200,10 +212,31 @@ const (
 //
 // 返回：总成本（美元），如果模型未知则返回0.0
 func CalculateCost(model string, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
+	// 兼容旧版本：将cacheCreationTokens作为5m缓存处理
+	return CalculateCostDetailed(model, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, 0)
+}
+
+// CalculateCostDetailed 计算单次请求的成本（美元）- 详细版本，支持5m和1h缓存分别计费
+// 参数：
+//   - model: 模型名称（如"claude-sonnet-4-5-20250929"或"gpt-5.1-codex"）
+//   - inputTokens: 输入token数量（已归一化为可计费token）
+//   - outputTokens: 输出token数量
+//   - cacheReadTokens: 缓存读取token数量（Claude: cache_read_input_tokens, OpenAI: cached_tokens）
+//   - cache5mTokens: 5分钟缓存创建token数量（Claude: ephemeral_5m_input_tokens）
+//   - cache1hTokens: 1小时缓存创建token数量（Claude: ephemeral_1h_input_tokens）
+//
+// 重要: inputTokens应为"可计费输入token"，由解析层（proxy_sse_parser.go）负责归一化：
+//   - OpenAI: 解析层已自动扣除cached_tokens（prompt_tokens - cached_tokens）
+//   - Claude/Gemini: 解析层直接返回input_tokens（本身就是非缓存部分）
+//
+// 设计原则: 平台语义差异在解析层处理，计费层无需关心（SRP原则）
+//
+// 返回：总成本（美元），如果模型未知则返回0.0
+func CalculateCostDetailed(model string, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int) float64 {
 	// 防御性检查:拒绝负数token
-	if inputTokens < 0 || outputTokens < 0 || cacheReadTokens < 0 || cacheCreationTokens < 0 {
-		log.Printf("ERROR: negative tokens detected (model=%s): input=%d output=%d cache_read=%d cache_create=%d",
-			model, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
+	if inputTokens < 0 || outputTokens < 0 || cacheReadTokens < 0 || cache5mTokens < 0 || cache1hTokens < 0 {
+		log.Printf("ERROR: negative tokens detected (model=%s): input=%d output=%d cache_read=%d cache_5m=%d cache_1h=%d",
+			model, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens)
 		return 0.0
 	}
 
@@ -256,10 +289,16 @@ func CalculateCost(model string, inputTokens, outputTokens, cacheReadTokens, cac
 		cost += float64(cacheReadTokens) * cacheReadPrice / 1_000_000
 	}
 
-	// 4. 缓存创建成本(125%基础价格,仅Claude支持)
-	if cacheCreationTokens > 0 {
-		cacheWritePrice := inputPricePerM * cacheWriteMultiplier
-		cost += float64(cacheCreationTokens) * cacheWritePrice / 1_000_000
+	// 4. 5分钟缓存创建成本(1.25x基础价格,仅Claude支持)
+	if cache5mTokens > 0 {
+		cache5mWritePrice := inputPricePerM * cacheWrite5mMultiplier
+		cost += float64(cache5mTokens) * cache5mWritePrice / 1_000_000
+	}
+
+	// 5. 1小时缓存创建成本(2.0x基础价格,仅Claude支持)
+	if cache1hTokens > 0 {
+		cache1hWritePrice := inputPricePerM * cacheWrite1hMultiplier
+		cost += float64(cache1hTokens) * cache1hWritePrice / 1_000_000
 	}
 
 	return cost
