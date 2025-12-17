@@ -457,3 +457,111 @@ func TestSSEUsageParser_GeminiThoughtsWithZeroCandidates(t *testing.T) {
 		t.Errorf("OutputTokens = %d, 期望 150 (thoughtsTokenCount)", output)
 	}
 }
+
+// TestJSONUsageParser_CacheCreationDetailed_5mOnly 验证非流式JSON响应解析5m缓存细分字段
+// 新增2025-12：支持 cache_creation.ephemeral_5m_input_tokens
+func TestJSONUsageParser_CacheCreationDetailed_5mOnly(t *testing.T) {
+	jsonData := `{
+		"usage": {
+			"input_tokens": 12,
+			"output_tokens": 73,
+			"cache_read_input_tokens": 17558,
+			"cache_creation_input_tokens": 278,
+			"cache_creation": {
+				"ephemeral_5m_input_tokens": 278,
+				"ephemeral_1h_input_tokens": 0
+			}
+		}
+	}`
+
+	parser := newJSONUsageParser("anthropic")
+	if err := parser.Feed([]byte(jsonData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+
+	// 验证 GetUsage() 返回的兼容字段
+	input, output, cacheRead, cacheCreation := parser.GetUsage()
+	if input != 12 || output != 73 || cacheRead != 17558 || cacheCreation != 278 {
+		t.Errorf("GetUsage() 返回错误: input=%d, output=%d, cacheRead=%d, cacheCreation=%d",
+			input, output, cacheRead, cacheCreation)
+	}
+
+	// 验证细分字段（通过类型断言访问）
+	if parser.Cache5mInputTokens != 278 {
+		t.Errorf("Cache5mInputTokens = %d, 期望 278", parser.Cache5mInputTokens)
+	}
+	if parser.Cache1hInputTokens != 0 {
+		t.Errorf("Cache1hInputTokens = %d, 期望 0", parser.Cache1hInputTokens)
+	}
+
+	t.Logf("[INFO] 非流式JSON响应5m缓存解析正确: cache_5m=%d, cache_1h=%d",
+		parser.Cache5mInputTokens, parser.Cache1hInputTokens)
+}
+
+// TestJSONUsageParser_CacheCreationDetailed_Mixed 验证非流式JSON响应解析5m+1h混合缓存
+func TestJSONUsageParser_CacheCreationDetailed_Mixed(t *testing.T) {
+	jsonData := `{
+		"usage": {
+			"input_tokens": 50,
+			"output_tokens": 200,
+			"cache_read_input_tokens": 5000,
+			"cache_creation_input_tokens": 500,
+			"cache_creation": {
+				"ephemeral_5m_input_tokens": 300,
+				"ephemeral_1h_input_tokens": 200
+			}
+		}
+	}`
+
+	parser := newJSONUsageParser("anthropic")
+	if err := parser.Feed([]byte(jsonData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+
+	// 验证 GetUsage() 返回的兼容字段（应该是5m+1h总和）
+	_, _, _, cacheCreation := parser.GetUsage()
+	if cacheCreation != 500 {
+		t.Errorf("CacheCreationInputTokens = %d, 期望 500 (300+200)", cacheCreation)
+	}
+
+	// 验证细分字段
+	if parser.Cache5mInputTokens != 300 {
+		t.Errorf("Cache5mInputTokens = %d, 期望 300", parser.Cache5mInputTokens)
+	}
+	if parser.Cache1hInputTokens != 200 {
+		t.Errorf("Cache1hInputTokens = %d, 期望 200", parser.Cache1hInputTokens)
+	}
+
+	t.Logf("[INFO] 非流式JSON响应混合缓存解析正确: total=%d (5m=%d + 1h=%d)",
+		cacheCreation, parser.Cache5mInputTokens, parser.Cache1hInputTokens)
+}
+
+// TestSSEUsageParser_CacheCreationDetailed_1hOnly 验证流式SSE响应解析1h缓存
+func TestSSEUsageParser_CacheCreationDetailed_1hOnly(t *testing.T) {
+	sseData := `event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":10,"cache_creation_input_tokens":500,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":500}}}}
+
+event: message_delta
+data: {"type":"message_delta","usage":{"output_tokens":100}}
+
+`
+
+	parser := newSSEUsageParser("anthropic")
+	if err := parser.Feed([]byte(sseData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+
+	// 验证细分字段
+	if parser.Cache5mInputTokens != 0 {
+		t.Errorf("Cache5mInputTokens = %d, 期望 0", parser.Cache5mInputTokens)
+	}
+	if parser.Cache1hInputTokens != 500 {
+		t.Errorf("Cache1hInputTokens = %d, 期望 500", parser.Cache1hInputTokens)
+	}
+	if parser.CacheCreationInputTokens != 500 {
+		t.Errorf("CacheCreationInputTokens = %d, 期望 500 (兼容字段)", parser.CacheCreationInputTokens)
+	}
+
+	t.Logf("[INFO] 流式SSE响应1h缓存解析正确: cache_5m=%d, cache_1h=%d",
+		parser.Cache5mInputTokens, parser.Cache1hInputTokens)
+}
