@@ -605,7 +605,10 @@
         }
       }
 
-      loadStats();
+      loadStats().then(() => {
+        // 数据加载完成后恢复视图状态
+        restoreViewState();
+      });
     });
 
     // 初始化渠道类型筛选器
@@ -634,3 +637,196 @@
         loadStats();
       });
     }
+
+    // ========== 图表视图功能 ==========
+    let currentView = 'table'; // 当前视图: 'table' | 'chart'
+    let chartInstances = {}; // ECharts 实例缓存
+
+    // 切换视图
+    function switchView(view) {
+      currentView = view;
+
+      // 持久化视图状态
+      try {
+        localStorage.setItem('stats.view', view);
+      } catch (_) {}
+
+      // 更新按钮状态
+      document.querySelectorAll('.view-toggle-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.view === view);
+      });
+
+      // 切换显示
+      const tableView = document.getElementById('stats-table-view');
+      const chartView = document.getElementById('stats-chart-view');
+
+      if (view === 'table') {
+        tableView.style.display = 'block';
+        chartView.style.display = 'none';
+      } else {
+        tableView.style.display = 'none';
+        chartView.style.display = 'block';
+        // 渲染图表
+        renderCharts();
+      }
+    }
+
+    // 恢复视图状态
+    function restoreViewState() {
+      try {
+        const savedView = localStorage.getItem('stats.view');
+        if (savedView === 'chart' || savedView === 'table') {
+          switchView(savedView);
+        }
+      } catch (_) {}
+    }
+
+    // 渲染所有饼图
+    function renderCharts() {
+      if (!statsData || !statsData.stats || statsData.stats.length === 0) {
+        return;
+      }
+
+      // 聚合数据（只统计成功调用）
+      const channelCallsMap = {}; // 渠道 -> 成功调用次数
+      const channelTokensMap = {}; // 渠道 -> Token用量
+      const modelCallsMap = {}; // 模型 -> 成功调用次数
+      const modelTokensMap = {}; // 模型 -> Token用量
+
+      for (const entry of statsData.stats) {
+        const channelName = entry.channel_name || '未知渠道';
+        const modelName = entry.model || '未知模型';
+        const successCount = entry.success || 0;
+        const totalTokens = (entry.total_input_tokens || 0) + (entry.total_output_tokens || 0) + (entry.total_cache_read_input_tokens || 0) + (entry.total_cache_creation_input_tokens || 0);
+
+        // 只统计成功调用
+        if (successCount > 0) {
+          // 渠道调用次数
+          channelCallsMap[channelName] = (channelCallsMap[channelName] || 0) + successCount;
+          // 渠道Token用量
+          channelTokensMap[channelName] = (channelTokensMap[channelName] || 0) + totalTokens;
+          // 模型调用次数
+          modelCallsMap[modelName] = (modelCallsMap[modelName] || 0) + successCount;
+          // 模型Token用量
+          modelTokensMap[modelName] = (modelTokensMap[modelName] || 0) + totalTokens;
+        }
+      }
+
+      // 渲染4个饼图
+      renderPieChart('chart-channel-calls', channelCallsMap, '次');
+      renderPieChart('chart-channel-tokens', channelTokensMap, '');
+      renderPieChart('chart-model-calls', modelCallsMap, '次');
+      renderPieChart('chart-model-tokens', modelTokensMap, '');
+    }
+
+    // 渲染单个饼图
+    function renderPieChart(containerId, dataMap, unit) {
+      const container = document.getElementById(containerId);
+      if (!container) return;
+
+      // 获取或创建 ECharts 实例
+      if (!chartInstances[containerId]) {
+        chartInstances[containerId] = echarts.init(container);
+      }
+      const chart = chartInstances[containerId];
+
+      // 转换数据格式并排序
+      const data = Object.entries(dataMap)
+        .map(([name, value]) => ({ name, value }))
+        .sort((a, b) => b.value - a.value);
+
+      // 如果没有数据，显示空状态
+      if (data.length === 0) {
+        chart.setOption({
+          title: {
+            text: '暂无数据',
+            left: 'center',
+            top: 'center',
+            textStyle: {
+              color: '#999',
+              fontSize: 14
+            }
+          }
+        });
+        return;
+      }
+
+      // 颜色方案
+      const colors = [
+        '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
+        '#06b6d4', '#ec4899', '#84cc16', '#f97316', '#6366f1',
+        '#14b8a6', '#a855f7', '#eab308', '#22c55e', '#0ea5e9'
+      ];
+
+      const option = {
+        tooltip: {
+          trigger: 'item',
+          backgroundColor: 'rgba(0, 0, 0, 0.85)',
+          borderColor: 'rgba(255, 255, 255, 0.1)',
+          textStyle: { color: '#fff', fontSize: 12 },
+          formatter: function(params) {
+            const value = params.value;
+            let formattedValue;
+            if (value >= 1000000) {
+              formattedValue = (value / 1000000).toFixed(2) + 'M';
+            } else if (value >= 1000) {
+              formattedValue = (value / 1000).toFixed(2) + 'K';
+            } else {
+              formattedValue = value.toLocaleString();
+            }
+            return `${params.name}<br/>${formattedValue}${unit} (${params.percent}%)`;
+          }
+        },
+        legend: {
+          type: 'scroll',
+          orient: 'vertical',
+          right: 10,
+          top: 20,
+          bottom: 20,
+          textStyle: { fontSize: 11, color: '#666' },
+          pageIconColor: '#666',
+          pageIconInactiveColor: '#ccc',
+          pageTextStyle: { color: '#666' }
+        },
+        color: colors,
+        series: [{
+          type: 'pie',
+          radius: ['40%', '70%'],
+          center: ['35%', '50%'],
+          avoidLabelOverlap: true,
+          itemStyle: {
+            borderRadius: 4,
+            borderColor: '#fff',
+            borderWidth: 2
+          },
+          label: {
+            show: false
+          },
+          emphasis: {
+            label: {
+              show: true,
+              fontSize: 12,
+              fontWeight: 'bold',
+              formatter: function(params) {
+                return params.percent.toFixed(1) + '%';
+              }
+            },
+            itemStyle: {
+              shadowBlur: 10,
+              shadowOffsetX: 0,
+              shadowColor: 'rgba(0, 0, 0, 0.3)'
+            }
+          },
+          data: data
+        }]
+      };
+
+      chart.setOption(option, true);
+    }
+
+    // 窗口大小变化时重新调整图表
+    window.addEventListener('resize', function() {
+      Object.values(chartInstances).forEach(chart => {
+        if (chart) chart.resize();
+      });
+    });

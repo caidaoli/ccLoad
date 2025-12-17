@@ -84,18 +84,47 @@
         <!-- 统计详情表格 -->
         <section class="mb-8">
           <div class="glass-card animate-slide-up" style="animation-delay: 0.3s;">
-            <h3 class="section-title mb-6">
-              <svg class="inline-block w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
-              </svg>
-              详细统计数据
-              <small style="color: var(--neutral-600); font-weight: var(--font-normal); margin-left: var(--space-2);">
-                按渠道优先级排序
-              </small>
+            <h3 class="section-title mb-6" style="display: flex; align-items: center; justify-content: space-between;">
+              <span style="display: flex; align-items: center;">
+                <svg class="inline-block w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                </svg>
+                详细统计数据
+                <small style="color: var(--neutral-600); font-weight: var(--font-normal); margin-left: var(--space-2);">
+                  按渠道优先级排序
+                </small>
+              </span>
+              <!-- 表格/图表切换按钮 -->
+              <div class="view-toggle-group" id="view-toggle-group">
+                <button type="button" class="view-toggle-btn active" data-view="table" onclick="switchView('table')">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                  </svg>
+                  表格
+                </button>
+                <button type="button" class="view-toggle-btn" data-view="chart" onclick="switchView('chart')">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z"/>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z"/>
+                  </svg>
+                  图表
+                </button>
+              </div>
             </h3>
             
             <!-- 统计表格 -->
-            <div class="table-container">
+            <script>
+              // 立即恢复视图状态，避免闪烁
+              (function() {
+                try {
+                  var savedView = localStorage.getItem('stats.view');
+                  if (savedView === 'chart') {
+                    document.write('<style>#stats-table-view{display:none}#stats-chart-view{display:block!important}.view-toggle-btn[data-view="table"]{background:transparent!important;color:var(--neutral-600)!important;box-shadow:none!important}.view-toggle-btn[data-view="chart"]{background:var(--white)!important;color:var(--primary-600)!important;box-shadow:0 1px 3px rgba(0,0,0,0.1)!important}</style>');
+                  }
+                } catch(_) {}
+              })();
+            </script>
+            <div class="table-container" id="stats-table-view">
               <table class="modern-table stats-table">
                 <thead>
                   <tr>
@@ -151,6 +180,32 @@
                 </thead>
                 <tbody id="stats_tbody"></tbody>
               </table>
+            </div>
+
+            <!-- 图表视图 -->
+            <div id="stats-chart-view" style="display: none;">
+              <div class="charts-grid">
+                <!-- 渠道调用次数饼图 -->
+                <div class="chart-card">
+                  <h4 class="chart-title">渠道调用次数</h4>
+                  <div id="chart-channel-calls" class="pie-chart-container"></div>
+                </div>
+                <!-- 渠道Token用量饼图 -->
+                <div class="chart-card">
+                  <h4 class="chart-title">渠道Token用量</h4>
+                  <div id="chart-channel-tokens" class="pie-chart-container"></div>
+                </div>
+                <!-- 模型调用次数饼图 -->
+                <div class="chart-card">
+                  <h4 class="chart-title">模型调用次数</h4>
+                  <div id="chart-model-calls" class="pie-chart-container"></div>
+                </div>
+                <!-- 模型Token用量饼图 -->
+                <div class="chart-card">
+                  <h4 class="chart-title">模型Token用量</h4>
+                  <div id="chart-model-tokens" class="pie-chart-container"></div>
+                </div>
+              </div>
             </div>
           </div>
         </section>
@@ -237,6 +292,7 @@
     </tr>
   </template>
 
+  <script src="/web/assets/js/echarts.min.js?v=__VERSION__"></script>
   <script src="/web/assets/js/template-engine.js?v=__VERSION__"></script>
   <script src="/web/assets/js/date-range-selector.js?v=__VERSION__"></script>
   <script src="/web/assets/js/ui.js?v=__VERSION__"></script>

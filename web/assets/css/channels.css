@@ -107,3 +107,79 @@
       justify-content: flex-end;
       margin-right: 32px;
     }
+
+    /* 表格/图表视图切换按钮 */
+    .view-toggle-group {
+      display: flex;
+      gap: 4px;
+      background: var(--neutral-100);
+      padding: 4px;
+      border-radius: 8px;
+    }
+
+    .view-toggle-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border: none;
+      background: transparent;
+      color: var(--neutral-600);
+      font-size: 13px;
+      font-weight: 500;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .view-toggle-btn:hover {
+      color: var(--neutral-800);
+      background: var(--neutral-200);
+    }
+
+    .view-toggle-btn.active {
+      background: var(--white);
+      color: var(--primary-600);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    }
+
+    .view-toggle-btn svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    /* 图表网格布局 */
+    .charts-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 24px;
+      padding: 8px 0;
+    }
+
+    @media (max-width: 768px) {
+      .charts-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* 图表卡片 */
+    .chart-card {
+      background: var(--white);
+      border: 1px solid var(--neutral-200);
+      border-radius: 12px;
+      padding: 16px;
+    }
+
+    .chart-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--neutral-700);
+      margin: 0 0 12px 0;
+      text-align: center;
+    }
+
+    /* 饼图容器 */
+    .pie-chart-container {
+      width: 100%;
+      height: 280px;
+    }
