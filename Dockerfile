@@ -54,8 +54,8 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     -o ccload . && \
     xx-verify ccload
 
-# 运行阶段
-FROM alpine:latest
+# 运行阶段 (使用固定版本避免 QEMU 模拟兼容性问题)
+FROM alpine:3.20
 
 # 安装运行时依赖
 RUN apk --no-cache add ca-certificates tzdata
@@ -80,7 +80,7 @@ RUN mkdir -p /app/data && \
 # 切换到非root用户
 USER ccload
 
-# ���露端口
+# 暴露端口
 EXPOSE 8080
 
 # 设置环境变量
