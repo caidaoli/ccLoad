@@ -68,19 +68,21 @@ function updateModelOptions() {
       channel.models.forEach(model => modelSet.add(model));
     }
   });
-  
+
   const modelFilter = document.getElementById('modelFilter');
-  const currentValue = modelFilter.value;
   modelFilter.innerHTML = '<option value="all">所有模型</option>';
-  
+
   Array.from(modelSet).sort().forEach(model => {
     const option = document.createElement('option');
     option.value = model;
     option.textContent = model;
     modelFilter.appendChild(option);
   });
-  
-  modelFilter.value = currentValue;
+
+  // 从 filters.model 恢复选中值（而非 DOM 当前值，因为初始化时选项可能还未加载）
+  if (filters.model && filters.model !== 'all') {
+    modelFilter.value = filters.model;
+  }
 }
 
 // Setup filter event listeners
