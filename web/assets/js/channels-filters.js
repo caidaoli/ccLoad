@@ -1,4 +1,6 @@
 // Filter channels based on current filters
+let filteredChannels = []; // 存储筛选后的渠道列表
+
 function filterChannels() {
   const filtered = channels.filter(channel => {
     if (filters.search && !channel.name.toLowerCase().includes(filters.search.toLowerCase())) {
@@ -47,6 +49,7 @@ function filterChannels() {
     return a.name.localeCompare(b.name);
   });
 
+  filteredChannels = filtered; // 保存筛选后的列表供其他模块使用
   renderChannels(filtered);
   updateFilterInfo(filtered.length, channels.length);
 }

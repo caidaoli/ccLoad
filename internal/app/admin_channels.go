@@ -525,3 +525,49 @@ func (s *Server) HandleDeleteModels(c *gin.Context) {
 	s.InvalidateChannelListCache()
 	RespondJSON(c, http.StatusOK, gin.H{"remaining": len(remaining)})
 }
+
+// 批量更新渠道优先级
+// POST /admin/channels/batch-priority
+// 性能优化：使用单条批量UPDATE语句替代N次独立查询（90次→1次）
+func (s *Server) HandleBatchUpdatePriority(c *gin.Context) {
+	var req struct {
+		Updates []struct {
+			ID       int64 `json:"id"`
+			Priority int   `json:"priority"`
+		} `json:"updates"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
+
+	if len(req.Updates) == 0 {
+		RespondError(c, http.StatusBadRequest, fmt.Errorf("updates cannot be empty"))
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	// 转换为storage层的类型
+	updates := make([]struct{ ID int64; Priority int }, len(req.Updates))
+	for i, u := range req.Updates {
+		updates[i] = struct{ ID int64; Priority int }{ID: u.ID, Priority: u.Priority}
+	}
+
+	// 调用storage层批量更新方法
+	rowsAffected, err := s.store.BatchUpdatePriority(ctx, updates)
+	if err != nil {
+		log.Printf("batch-priority: failed: %v", err)
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	// 清除缓存
+	s.InvalidateChannelListCache()
+
+	RespondJSON(c, http.StatusOK, gin.H{
+		"updated": rowsAffected,
+		"total":   len(req.Updates),
+	})
+}

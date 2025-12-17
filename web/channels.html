@@ -82,7 +82,8 @@
             <div class="filter-info" id="filterInfo"><span id="filteredCount">0</span> / <span id="totalCount">0</span> 个渠道
             </div>
 
-            <div style="flex: none;">
+            <div style="flex: none; display: flex; gap: 12px;">
+              <button id="btn_sort" type="button" class="btn btn-secondary" style="padding: 8px 16px; font-size: 14px;">排序</button>
               <button id="btn_filter" type="button" class="btn btn-primary" style="padding: 8px 16px; font-size: 14px;">筛选</button>
             </div>
           </div>
@@ -449,6 +450,35 @@
     </div>
   </div>
 
+  <!-- 渠道排序模态框 -->
+  <div id="sortModal" class="modal">
+    <div class="modal-content" style="max-width: 800px; max-height: 85vh; display: flex; flex-direction: column;">
+      <div class="modal-header">
+        <h2 class="modal-title">渠道排序</h2>
+        <button class="close-btn" onclick="closeSortModal()">&times;</button>
+      </div>
+      <div style="padding: 20px; flex: 1; display: flex; flex-direction: column; overflow: hidden;">
+        <!-- 排序列表容器 -->
+        <div id="sortListContainer" style="flex: 1; overflow-y: auto; border: 1px solid var(--neutral-200); border-radius: 8px; background: var(--neutral-50); padding: 12px;">
+          <!-- 动态渲染渠道列表 -->
+        </div>
+      </div>
+      <div class="form-actions" style="margin-top: 0; padding-top: 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px;">
+        <div style="display: flex; align-items: center; gap: 8px; color: var(--neutral-600); font-size: 12px;">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex-shrink: 0; color: var(--info-500);">
+            <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M8 5V8.5M8 11H8.005" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <span>拖动卡片调整顺序 · 保存后相邻优先级相差10</span>
+        </div>
+        <div style="display: flex; gap: 12px;">
+          <button type="button" class="btn btn-secondary" onclick="closeSortModal()">取消</button>
+          <button type="button" class="btn btn-primary" onclick="saveSortOrder()">保存排序</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
 
   <!-- HTML模板定义 (分离HTML与JS) -->
   <template id="tpl-key-row">
@@ -597,6 +627,25 @@
     </tr>
   </template>
 
+  <!-- 排序卡片模板 -->
+  <template id="tpl-sort-item">
+    <div class="sort-item" data-channel-id="{{id}}" draggable="true" style="background: white; border: 1px solid var(--neutral-300); border-radius: 8px; padding: 12px 16px; margin-bottom: 8px; cursor: move; transition: all 0.2s;">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+        <div style="display: flex; align-items: center; gap: 12px; flex: 1;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="color: var(--neutral-400); flex-shrink: 0;">
+            <path d="M2 4H14M2 8H14M2 12H14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <span style="font-weight: 600; color: var(--neutral-900);">{{name}}</span>
+          <span style="color: var(--neutral-500); font-size: 13px;">(ID: {{id}})</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="color: var(--neutral-600); font-size: 13px;">当前优先级: <strong>{{priority}}</strong></span>
+          {{{statusBadge}}}
+        </div>
+      </div>
+    </div>
+  </template>
+
   <!-- 测试结果头部模板 -->
   <template id="tpl-test-result-header">
     <div style="display: flex; align-items: center; gap: 8px;">
@@ -629,6 +678,7 @@
   <script src="/web/assets/js/channels-keys.js?v=__VERSION__"></script>
   <script src="/web/assets/js/channels-modals.js?v=__VERSION__"></script>
   <script src="/web/assets/js/channels-test.js?v=__VERSION__"></script>
+  <script src="/web/assets/js/channels-sort.js?v=__VERSION__"></script>
   <script src="/web/assets/js/channels-init.js?v=__VERSION__"></script>
 </body>
 </html>

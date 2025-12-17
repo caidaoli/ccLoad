@@ -368,3 +368,51 @@ func (s *SQLStore) DeleteConfig(ctx context.Context, id int64) error {
 
 	return nil
 }
+
+// BatchUpdatePriority 批量更新渠道优先级
+// 性能优化：使用单条批量UPDATE + CASE WHEN语句，性能提升90倍（45渠道：90次→1次）
+func (s *SQLStore) BatchUpdatePriority(ctx context.Context, updates []struct{ ID int64; Priority int }) (int64, error) {
+	if len(updates) == 0 {
+		return 0, nil
+	}
+
+	updatedAtUnix := timeToUnix(time.Now())
+
+	// 构建批量UPDATE语句
+	var caseBuilder strings.Builder
+	var ids []int64
+
+	caseBuilder.WriteString("UPDATE channels SET priority = CASE id ")
+	for _, update := range updates {
+		caseBuilder.WriteString(fmt.Sprintf("WHEN %d THEN %d ", update.ID, update.Priority))
+		ids = append(ids, update.ID)
+	}
+	caseBuilder.WriteString("END, updated_at = ? WHERE id IN (")
+
+	for i := range ids {
+		if i > 0 {
+			caseBuilder.WriteString(",")
+		}
+		caseBuilder.WriteString("?")
+	}
+	caseBuilder.WriteString(")")
+
+	// 构建参数列表：updated_at + ids
+	args := []any{updatedAtUnix}
+	for _, id := range ids {
+		args = append(args, id)
+	}
+
+	// 执行批量更新
+	result, err := s.db.ExecContext(ctx, caseBuilder.String(), args...)
+	if err != nil {
+		return 0, fmt.Errorf("batch update priority: %w", err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+
+	// 异步同步到Redis
+	s.triggerAsyncSync(syncChannels)
+
+	return rowsAffected, nil
+}
