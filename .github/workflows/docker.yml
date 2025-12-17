@@ -63,6 +63,7 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
           provenance: false
 
       - name: Generate artifact attestation

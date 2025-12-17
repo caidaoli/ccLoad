@@ -23,7 +23,7 @@ LDFLAGS = -s -w \
 	-X '$(VERSION_PKG).BuildTime=$(BUILD_TIME)' \
 	-X $(VERSION_PKG).BuiltBy=$(BUILT_BY)
 
-.PHONY: help build generate-plist inject-env-vars install-service uninstall-service start stop restart status logs clean
+.PHONY: help build docker-build generate-plist inject-env-vars install-service uninstall-service start stop restart status logs clean
 
 # 默认目标
 help:
@@ -31,6 +31,7 @@ help:
 	@echo ""
 	@echo "可用命令:"
 	@echo "  build             - 构建二进制文件"
+	@echo "  docker-build      - 构建 Docker 镜像（自动注入版本信息）"
 	@echo "  generate-plist    - 从模板生成 plist 文件（自动读取 .env 配置）"
 	@echo "  install-service   - 安装 LaunchAgent 服务"
 	@echo "  uninstall-service - 卸载 LaunchAgent 服务"
@@ -46,6 +47,19 @@ build:
 	@echo "构建 $(BINARY_NAME) ($(VERSION))..."
 	@go build -tags "$(GOTAGS)" -ldflags="$(LDFLAGS)" -o $(BINARY_NAME) .
 	@echo "构建完成: $(BINARY_NAME)"
+
+# 构建 Docker 镜像（自动注入版本信息）
+DOCKER_IMAGE ?= ccload
+DOCKER_TAG ?= $(VERSION)
+docker-build:
+	@echo "构建 Docker 镜像 $(DOCKER_IMAGE):$(DOCKER_TAG)..."
+	docker build \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		-t $(DOCKER_IMAGE):$(DOCKER_TAG) \
+		-t $(DOCKER_IMAGE):latest \
+		.
+	@echo "Docker 镜像构建完成: $(DOCKER_IMAGE):$(DOCKER_TAG)"
 
 # 创建必要的目录
 

@@ -4,8 +4,9 @@
 # 构建阶段
 FROM golang:1.25.0-alpine AS builder
 
-# 版本号参数（优先使用 --build-arg VERSION=xxx，否则尝试从 git 获取）
+# 版本号参数（优先使用 --build-arg，否则尝试从 git 获取）
 ARG VERSION
+ARG COMMIT
 
 # 安装构建依赖
 RUN apk add --no-cache git ca-certificates tzdata gcc musl-dev
@@ -32,7 +33,8 @@ ENV CGO_ENABLED=1
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/root/.cache/go-mod \
     BUILD_VERSION=${VERSION:-$(git describe --tags --always 2>/dev/null || echo "dev")} && \
-    BUILD_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown") && \
+    BUILD_COMMIT=${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")} && \
+    BUILD_COMMIT=$(echo $BUILD_COMMIT | cut -c1-7) && \
     BUILD_TIME=$(date '+%Y-%m-%d %H:%M:%S %z') && \
     go build \
     -tags go_json \
