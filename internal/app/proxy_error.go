@@ -76,6 +76,7 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *model.Config, keyInd
 
 // handleNetworkError 处理网络错误
 // 从proxy.go提取，遵循SRP原则
+// [FIX] 2025-12: 添加 res 和 reqCtx 参数，用于保留 499 场景下已消耗的 token 统计
 func (s *Server) handleNetworkError(
 	ctx context.Context,
 	cfg *model.Config,
@@ -86,11 +87,21 @@ func (s *Server) handleNetworkError(
 	clientIP string,   // [INFO] 客户端IP（用于日志记录，2025-12新增）
 	duration float64,
 	err error,
+	res *fwResult, // [FIX] 流式响应中途取消时，res 包含已解析的 token 统计
+	reqCtx *proxyRequestContext, // [FIX] 用于获取 tokenHash 和 isStreaming
 ) (*proxyResult, bool, bool) {
 	statusCode, _, _ := util.ClassifyError(err)
 	// [INFO] 修复：使用 actualModel 而非 reqCtx.originalModel
 	s.AddLogAsync(buildLogEntry(actualModel, cfg.ID, statusCode,
-		duration, false, selectedKey, authTokenID, clientIP, nil, err.Error()))
+		duration, false, selectedKey, authTokenID, clientIP, res, err.Error()))
+
+	// [FIX] 2025-12: 保留 499 场景下已消耗的 token 统计
+	// 场景：流式响应中途取消（用户点"停止"），上游已消耗 token 但之前被丢弃
+	// 修复：即使请求失败，也记录已解析的 token 统计（用于计费和统计）
+	if res != nil && reqCtx != nil && hasConsumedTokens(res) {
+		// isSuccess=false 表示请求失败，但仍记录已消耗的 token
+		s.updateTokenStatsAsync(reqCtx.tokenHash, false, duration, reqCtx.isStreaming, res, actualModel)
+	}
 
 	action, _ := s.handleProxyError(ctx, cfg, keyIndex, nil, err)
 	if action == cooldown.ActionReturnClient {
@@ -113,6 +124,16 @@ func (s *Server) handleNetworkError(
 	}
 
 	return nil, true, false // 继续重试下一个Key
+}
+
+// hasConsumedTokens 检查响应是否包含已消耗的 token 统计
+// 用于判断是否需要在错误场景下记录 token 统计
+func hasConsumedTokens(res *fwResult) bool {
+	if res == nil {
+		return false
+	}
+	return res.InputTokens > 0 || res.OutputTokens > 0 ||
+		res.CacheReadInputTokens > 0 || res.CacheCreationInputTokens > 0
 }
 
 type tokenStatsUpdate struct {

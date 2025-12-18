@@ -458,8 +458,9 @@ func (s *Server) forwardAttempt(
 
 	// 处理网络错误或异常响应（如空响应）
 	// [INFO] 修复：handleResponse可能返回err即使StatusCode=200（例如Content-Length=0）
+	// [FIX] 2025-12: 传递 res 和 reqCtx，用于保留 499 场景下已消耗的 token 统计
 	if err != nil {
-		return s.handleNetworkError(ctx, cfg, keyIndex, actualModel, selectedKey, reqCtx.tokenID, reqCtx.clientIP, duration, err)
+		return s.handleNetworkError(ctx, cfg, keyIndex, actualModel, selectedKey, reqCtx.tokenID, reqCtx.clientIP, duration, err, res, reqCtx)
 	}
 
 	// 处理成功响应（仅当err==nil且状态码2xx时）

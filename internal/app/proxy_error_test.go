@@ -113,7 +113,7 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 
 	t.Run("context canceled returns client error", func(t *testing.T) {
 		result, retryKey, retryChannel := srv.handleNetworkError(
-			ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, context.Canceled,
+			ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, context.Canceled, nil, nil,
 		)
 
 		if result == nil {
@@ -129,7 +129,7 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 
 	t.Run("network error switches channel", func(t *testing.T) {
 		result, retryKey, retryChannel := srv.handleNetworkError(
-			ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, errors.New("connection refused"),
+			ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, errors.New("connection refused"), nil, nil,
 		)
 
 		if result != nil {
@@ -146,7 +146,7 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 	t.Run("first byte timeout switches channel", func(t *testing.T) {
 		err := fmt.Errorf("wrap: %w", util.ErrUpstreamFirstByteTimeout)
 		result, retryKey, retryChannel := srv.handleNetworkError(
-			ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, err,
+			ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, err, nil, nil,
 		)
 
 		if result != nil {
@@ -252,4 +252,69 @@ func Test_HandleProxyError_499(t *testing.T) {
 			t.Error("期望 shouldRetry=false")
 		}
 	})
+}
+
+// Test_HandleNetworkError_499_PreservesTokenStats 测试 499 场景下 token 统计被保留
+// [FIX] 2025-12: 修复流式响应中途取消时 token 统计丢失的问题
+func Test_HandleNetworkError_499_PreservesTokenStats(t *testing.T) {
+	srv, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	srv.cooldownManager = cooldown.NewManager(srv.store, nil)
+
+	ctx := context.Background()
+	cfg := &model.Config{
+		ID:       1,
+		Name:     "test",
+		URL:      "http://test.example.com",
+		Priority: 1,
+		Enabled:  true,
+	}
+
+	// 模拟流式响应中途取消的场景：已解析到 token 统计
+	res := &fwResult{
+		Status:                   200,
+		InputTokens:              100,
+		OutputTokens:             50,
+		CacheReadInputTokens:     200,
+		CacheCreationInputTokens: 30,
+		FirstByteTime:            0.1,
+	}
+
+	// 创建带有 tokenHash 的请求上下文
+	tokenHash := "test-token-hash-499"
+	reqCtx := &proxyRequestContext{
+		tokenHash:   tokenHash,
+		isStreaming: true,
+	}
+
+	// 调用 handleNetworkError，传入 res 和 reqCtx
+	result, retryKey, retryChannel := srv.handleNetworkError(
+		ctx, cfg, 0, "claude-sonnet-4-5", "test-key", 0, "", 0.5, context.Canceled, res, reqCtx,
+	)
+
+	// 验证返回值正确
+	if result == nil {
+		t.Error("期望返回错误结果")
+	}
+	if result != nil && !result.isClientCanceled {
+		t.Error("期望 isClientCanceled=true")
+	}
+	if retryKey {
+		t.Error("期望 retryKey=false")
+	}
+	if retryChannel {
+		t.Error("期望 retryChannel=false")
+	}
+
+	// 验证 hasConsumedTokens 函数
+	if !hasConsumedTokens(res) {
+		t.Error("hasConsumedTokens 应返回 true")
+	}
+	if hasConsumedTokens(nil) {
+		t.Error("hasConsumedTokens(nil) 应返回 false")
+	}
+	if hasConsumedTokens(&fwResult{}) {
+		t.Error("hasConsumedTokens(空结果) 应返回 false")
+	}
 }
