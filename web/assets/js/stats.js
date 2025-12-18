@@ -47,6 +47,11 @@
         updateStatsCount();
         updateRpmHeader(); // 更新表头标题
 
+        // 如果当前是图表视图，同步更新图表
+        if (currentView === 'chart') {
+          renderCharts();
+        }
+
       } catch (error) {
         console.error('加载统计数据失败:', error);
         if (window.showError) try { window.showError('无法加载统计数据'); } catch(_){}
@@ -801,6 +806,9 @@
         '#14b8a6', '#a855f7', '#eab308', '#22c55e', '#0ea5e9'
       ];
 
+      // 计算总值用于百分比
+      const total = data.reduce((sum, item) => sum + item.value, 0);
+
       const option = {
         tooltip: {
           trigger: 'item',
@@ -829,7 +837,15 @@
           textStyle: { fontSize: 11, color: '#666' },
           pageIconColor: '#666',
           pageIconInactiveColor: '#ccc',
-          pageTextStyle: { color: '#666' }
+          pageTextStyle: { color: '#666' },
+          formatter: function(name) {
+            const item = data.find(d => d.name === name);
+            if (item && total > 0) {
+              const percent = ((item.value / total) * 100).toFixed(1);
+              return `${name} (${percent}%)`;
+            }
+            return name;
+          }
         },
         color: colors,
         series: [{
