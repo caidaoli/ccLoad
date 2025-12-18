@@ -1617,6 +1617,17 @@ body {
   border: 1px solid rgba(59, 130, 246, 0.3);
 }
 
+a.model-tag.model-link {
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+a.model-tag.model-link:hover {
+  background: rgba(59, 130, 246, 0.35);
+  border-color: rgba(59, 130, 246, 0.5);
+}
+
 .stream-tag {
   display: inline-block;
   background: rgba(34, 197, 94, 0.2);

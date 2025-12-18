@@ -240,7 +240,7 @@
         else if (successRate > 0 && successRate < 80) successRateClass += ' low';
 
         const modelDisplay = entry.model ?
-          `<span class="model-tag">${escapeHtml(entry.model)}</span>` :
+          `<a href="#" class="model-tag model-link" data-model="${escapeHtml(entry.model)}" data-channel-id="${entry.channel_id || ''}" title="查看该渠道此模型的日志">${escapeHtml(entry.model)}</a>` :
           '<span style="color: var(--neutral-500);">未知模型</span>';
 
         // 格式化平均首字响应时间/平均耗时
@@ -612,6 +612,43 @@
         // 数据加载完成后恢复视图状态
         restoreViewState();
       });
+
+      // 事件委托：处理统计表格中的渠道名称和模型名称点击
+      const statsTableBody = document.getElementById('stats_tbody');
+      if (statsTableBody) {
+        statsTableBody.addEventListener('click', (e) => {
+          // 获取当前时间范围参数
+          const currentRange = document.getElementById('f_hours')?.value || 'today';
+
+          // 处理渠道名称点击
+          const channelLink = e.target.closest('.channel-link[data-channel-id]');
+          if (channelLink) {
+            e.preventDefault();
+            const channelId = channelLink.dataset.channelId;
+            if (channelId) {
+              const logsUrl = `/web/logs.html?channel_id=${channelId}&range=${encodeURIComponent(currentRange)}`;
+              window.location.href = logsUrl;
+            }
+            return;
+          }
+
+          // 处理模型名称点击
+          const modelLink = e.target.closest('.model-link[data-model]');
+          if (modelLink) {
+            e.preventDefault();
+            const model = modelLink.dataset.model;
+            const channelId = modelLink.dataset.channelId;
+            if (model) {
+              const params = new URLSearchParams();
+              if (channelId) params.set('channel_id', channelId);
+              params.set('model_like', model);
+              params.set('range', currentRange);
+              window.location.href = `/web/logs.html?${params.toString()}`;
+            }
+            return;
+          }
+        });
+      }
     });
 
     // 初始化渠道类型筛选器

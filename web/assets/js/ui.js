@@ -3,6 +3,22 @@
 // ============================================================
 (function() {
   /**
+   * 生成带redirect参数的登录页URL
+   * @returns {string}
+   */
+  function getLoginUrl() {
+    const currentPath = window.location.pathname + window.location.search;
+    // 排除登录页本身
+    if (currentPath.includes('/web/login.html')) {
+      return '/web/login.html';
+    }
+    return '/web/login.html?redirect=' + encodeURIComponent(currentPath);
+  }
+
+  // 导出到全局作用域
+  window.getLoginUrl = getLoginUrl;
+
+  /**
    * 带Token认证的fetch封装
    * @param {string} url - 请求URL
    * @param {Object} options - fetch选项
@@ -16,7 +32,7 @@
     if (!token || (expiry && Date.now() > parseInt(expiry))) {
       localStorage.removeItem('ccload_token');
       localStorage.removeItem('ccload_token_expiry');
-      window.location.href = '/web/login.html';
+      window.location.href = getLoginUrl();
       throw new Error('Token expired');
     }
 
@@ -32,7 +48,7 @@
     if (response.status === 401) {
       localStorage.removeItem('ccload_token');
       localStorage.removeItem('ccload_token_expiry');
-      window.location.href = '/web/login.html';
+      window.location.href = getLoginUrl();
       throw new Error('Unauthorized');
     }
 
@@ -193,7 +209,7 @@
     const right = h('div', { class: 'topbar-right' }, [
       h('button', {
         class: 'btn btn-secondary btn-sm',
-        onclick: loggedIn ? onLogout : () => location.href = '/web/login.html'
+        onclick: loggedIn ? onLogout : () => location.href = window.getLoginUrl()
       }, loggedIn ? '注销' : '登录')
     ]);
     bar.appendChild(left); bar.appendChild(nav); bar.appendChild(right);
