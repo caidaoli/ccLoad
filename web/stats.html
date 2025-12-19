@@ -119,7 +119,7 @@
                 try {
                   var savedView = localStorage.getItem('stats.view');
                   if (savedView === 'chart') {
-                    document.write('<style>#stats-table-view{display:none}#stats-chart-view{display:block!important}.view-toggle-btn[data-view="table"]{background:transparent!important;color:var(--neutral-600)!important;box-shadow:none!important}.view-toggle-btn[data-view="chart"]{background:var(--white)!important;color:var(--primary-600)!important;box-shadow:0 1px 3px rgba(0,0,0,0.1)!important}</style>');
+                    document.write('<style id="stats-view-init-style">#stats-table-view{display:none}#stats-chart-view{display:block}.view-toggle-btn[data-view="table"]{background:transparent;color:var(--neutral-600);box-shadow:none}.view-toggle-btn[data-view="chart"]{background:var(--white);color:var(--primary-600);box-shadow:0 1px 3px rgba(0,0,0,0.1)}</style>');
                   }
                 } catch(_) {}
               })();

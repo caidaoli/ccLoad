@@ -691,6 +691,12 @@
     function switchView(view) {
       currentView = view;
 
+      // 移除初始化时注入的样式（避免与动态切换冲突）
+      const initStyle = document.getElementById('stats-view-init-style');
+      if (initStyle) {
+        initStyle.remove();
+      }
+
       // 持久化视图状态
       try {
         localStorage.setItem('stats.view', view);
