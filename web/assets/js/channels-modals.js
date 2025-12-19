@@ -495,3 +495,48 @@ function clearAllModels() {
     modelsTextarea.focus();
   }
 }
+
+// 常用模型配置
+const COMMON_MODELS = {
+  anthropic: [
+    'claude-sonnet-4-5-20250929',
+    'claude-haiku-4-5-20251001',
+    'claude-opus-4-5-20251101'
+  ],
+  codex: [
+    'gpt-5.1',
+    'gpt-5.1-codex',
+    'gpt-5.1-codex-max',
+    'gpt-5.2',
+    'gpt-5.2-codex'
+  ],
+  gemini: [
+    'gemini-2.5-flash',
+    'gemini-2.5-pro',
+    'gemini-2.5-flash-lite'
+  ]
+};
+
+function addCommonModels() {
+  const channelType = document.querySelector('input[name="channelType"]:checked')?.value || 'anthropic';
+  const commonModels = COMMON_MODELS[channelType];
+
+  if (!commonModels || commonModels.length === 0) {
+    if (window.showWarning) {
+      window.showWarning(`渠道类型 "${channelType}" 暂无预设常用模型`);
+    } else {
+      alert(`渠道类型 "${channelType}" 暂无预设常用模型`);
+    }
+    return;
+  }
+
+  const modelsTextarea = document.getElementById('channelModels');
+  const existingModels = modelsTextarea.value.split(',').map(m => m.trim()).filter(Boolean);
+  const allModels = [...new Set([...existingModels, ...commonModels])];
+
+  modelsTextarea.value = allModels.join(',');
+
+  if (window.showSuccess) {
+    window.showSuccess(`已添加 ${commonModels.length} 个常用模型`);
+  }
+}
