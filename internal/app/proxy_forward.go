@@ -474,7 +474,9 @@ func (s *Server) forwardAttempt(
 			res.Body = res.SSEErrorEvent
 			res.StreamDiagMsg = fmt.Sprintf("SSE error event: %s", safeBodyToString(res.SSEErrorEvent))
 			res.Status = util.StatusSSEError // 597 - SSE error事件
-			return s.handleProxyErrorResponse(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
+			// [FIX] 流式响应已开始（响应头已发送），重试不可能
+			// 只触发冷却+记录日志，不尝试重试（避免产生 499 混乱日志）
+			return s.handleStreamingErrorNoRetry(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
 		}
 
 		// [INFO] 检查流响应是否不完整（2025-12新增）
@@ -486,7 +488,8 @@ func (s *Server) forwardAttempt(
 			// 这将触发渠道级冷却，因为这通常是上游服务问题（网络不稳定、负载过高等）
 			res.Body = []byte(res.StreamDiagMsg)
 			res.Status = util.StatusStreamIncomplete // 599 - 流响应不完整
-			return s.handleProxyErrorResponse(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
+			// [FIX] 流式响应已开始（响应头已发送），重试不可能
+			return s.handleStreamingErrorNoRetry(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
 		}
 
 		return s.handleProxySuccess(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)

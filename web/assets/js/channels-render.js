@@ -1,3 +1,36 @@
+/**
+ * 生成有效优先级显示HTML
+ * @param {Object} channel - 渠道数据
+ * @returns {string} HTML字符串
+ */
+function buildEffectivePriorityHtml(channel) {
+  if (channel.effective_priority === undefined || channel.effective_priority === null) {
+    return '';
+  }
+
+  const effPriority = channel.effective_priority.toFixed(1);
+  const basePriority = channel.priority;
+  const diff = channel.effective_priority - basePriority;
+
+  // 成功率文本
+  const successRateText = channel.success_rate !== undefined
+    ? `成功率: ${(channel.success_rate * 100).toFixed(1)}%`
+    : '';
+
+  // 如果有效优先级与基础优先级相同，显示绿色勾号
+  if (Math.abs(diff) < 0.1) {
+    const title = successRateText ? `健康 | ${successRateText}` : '健康';
+    return ` <span style="color: #16a34a; font-size: 0.8rem;" title="${title}">(✓${effPriority})</span>`;
+  }
+
+  // 有效优先级降低时显示红色
+  const color = '#dc2626';
+  const arrow = '↓';
+  const title = successRateText ? `有效优先级: ${effPriority} | ${successRateText}` : `有效优先级: ${effPriority}`;
+
+  return ` <span style="color: ${color}; font-size: 0.8rem;" title="${title}">(${arrow}${effPriority})</span>`;
+}
+
 function inlineCooldownBadge(c) {
   const ms = c.cooldown_remaining_ms || 0;
   if (!ms || ms <= 0) return '';
@@ -138,6 +171,7 @@ function createChannelCard(channel) {
     modelsText: modelsText,
     url: channel.url,
     priority: channel.priority,
+    effectivePriorityHtml: buildEffectivePriorityHtml(channel),
     statusText: channel.enabled ? '已启用' : '已禁用',
     cooldownBadge: inlineCooldownBadge(channel),
     statsHtml: statsHtml,

@@ -362,6 +362,11 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"skip_tls_verify", "false", "bool", "跳过TLS证书验证", "false"},
 		{"channel_test_content", "sonnet 4.0的发布日期是什么", "string", "渠道测试默认内容", "sonnet 4.0的发布日期是什么"},
 		{"channel_stats_range", "today", "string", "渠道管理费用统计范围", "today"},
+		// 健康度排序配置
+		{"enable_health_score", "false", "bool", "启用基于健康度的渠道动态排序", "false"},
+		{"success_rate_penalty_weight", "100", "float", "成功率惩罚权重(乘以失败率)", "100"},
+		{"health_score_window_minutes", "30", "int", "成功率统计时间窗口(分钟)", "30"},
+		{"health_score_update_interval", "30", "int", "成功率缓存更新间隔(秒)", "30"},
 	}
 
 	var query string

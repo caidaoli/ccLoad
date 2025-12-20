@@ -485,3 +485,39 @@ func (s *SQLStore) fillStatsRPM(ctx context.Context, stats []model.StatsEntry, s
 
 	return nil
 }
+
+
+// GetChannelSuccessRates 获取指定时间窗口内各渠道的成功率
+// 返回 map[channelID]successRate，成功率范围 0-1
+func (s *SQLStore) GetChannelSuccessRates(ctx context.Context, since time.Time) (map[int64]float64, error) {
+	sinceMs := since.UnixMilli()
+
+	query := `
+		SELECT 
+			channel_id,
+			SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success,
+			COUNT(*) AS total
+		FROM logs
+		WHERE time >= ? AND channel_id > 0
+		GROUP BY channel_id`
+
+	rows, err := s.db.QueryContext(ctx, query, sinceMs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[int64]float64)
+	for rows.Next() {
+		var channelID int64
+		var success, total int64
+		if err := rows.Scan(&channelID, &success, &total); err != nil {
+			return nil, err
+		}
+		if total > 0 {
+			result[channelID] = float64(success) / float64(total)
+		}
+	}
+
+	return result, rows.Err()
+}

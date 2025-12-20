@@ -72,6 +72,7 @@ type MetricsStore interface {
 	GetDistinctModels(ctx context.Context, since, until time.Time) ([]string, error)
 	GetStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) ([]model.StatsEntry, error)
 	GetRPMStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) (*model.RPMStats, error)
+	GetChannelSuccessRates(ctx context.Context, since time.Time) (map[int64]float64, error)
 }
 
 // AuthTokenStore API访问令牌管理接口

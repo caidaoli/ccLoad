@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -86,6 +87,13 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		allAPIKeys = make(map[int64][]*model.APIKey) // 降级：使用空map
 	}
 
+	// 健康度模式：获取成功率数据
+	var successRates map[int64]float64
+	healthEnabled := s.healthCache != nil && s.healthCache.Config().Enabled
+	if healthEnabled {
+		successRates = s.healthCache.GetAllSuccessRates()
+	}
+
 	out := make([]ChannelWithCooldown, 0, len(cfgs))
 	for _, cfg := range cfgs {
 		oc := ChannelWithCooldown{Config: cfg}
@@ -95,6 +103,15 @@ func (s *Server) handleListChannels(c *gin.Context) {
 			oc.CooldownUntil = &until
 			cooldownRemainingMS := int64(until.Sub(now) / time.Millisecond)
 			oc.CooldownRemainingMS = cooldownRemainingMS
+		}
+
+		// 健康度模式：计算有效优先级和成功率
+		if healthEnabled {
+			effPriority := s.calculateEffectivePriority(cfg, allChannelCooldowns, allKeyCooldowns, successRates, now, s.healthCache.Config())
+			oc.EffectivePriority = &effPriority
+			if rate, exists := successRates[cfg.ID]; exists {
+				oc.SuccessRate = &rate
+			}
 		}
 
 		// 从预加载的map中获取API Keys（O(1)查找）
@@ -127,6 +144,20 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		oc.KeyCooldowns = keyCooldowns
 
 		out = append(out, oc)
+	}
+
+	// 健康度模式：按有效优先级降序排序（与请求路由一致）
+	if healthEnabled {
+		sort.Slice(out, func(i, j int) bool {
+			pi, pj := float64(0), float64(0)
+			if out[i].EffectivePriority != nil {
+				pi = *out[i].EffectivePriority
+			}
+			if out[j].EffectivePriority != nil {
+				pj = *out[j].EffectivePriority
+			}
+			return pi > pj
+		})
 	}
 
 	RespondJSON(c, http.StatusOK, out)

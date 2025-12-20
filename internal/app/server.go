@@ -39,6 +39,7 @@ type Server struct {
 	keySelector      *KeySelector          // Key选择器（多Key支持）
 	cooldownManager  *cooldown.Manager     // 统一冷却管理器
 	validatorManager *validator.Manager    // 渠道验证器管理器
+	healthCache      *HealthCache          // 渠道健康度缓存
 	client           *http.Client          // HTTP客户端
 
 	// 异步统计（有界队列，避免每请求起goroutine）
@@ -157,6 +158,19 @@ func NewServer(store storage.Store) *Server {
 
 	// 初始化Key选择器（移除store依赖，避免重复查询）
 	s.keySelector = NewKeySelector()
+
+	// 初始化健康度缓存（启动时读取配置，修改后重启生效）
+	healthConfig := model.HealthScoreConfig{
+		Enabled:                  configService.GetBool("enable_health_score", false),
+		SuccessRatePenaltyWeight: configService.GetFloat("success_rate_penalty_weight", 100),
+		WindowMinutes:            configService.GetInt("health_score_window_minutes", 30),
+		UpdateIntervalSeconds:    configService.GetInt("health_score_update_interval", 30),
+	}
+	s.healthCache = NewHealthCache(store, healthConfig, s.shutdownCh, &s.isShuttingDown, &s.wg)
+	if healthConfig.Enabled {
+		s.healthCache.Start()
+		log.Print("[INFO] 健康度排序已启用（基于冷却状态+成功率动态调整渠道优先级）")
+	}
 
 	// ============================================================================
 	// 创建服务层（仅保留有价值的服务）

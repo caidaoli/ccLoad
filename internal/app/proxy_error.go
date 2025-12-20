@@ -318,6 +318,38 @@ func (s *Server) handleProxySuccess(
 	}, false, false
 }
 
+// handleStreamingErrorNoRetry 处理流式响应中途检测到的错误（597/599）
+// 场景：HTTP 200 已发送，流传输中途检测到 SSE error 或流不完整
+// 关键：响应头已发送，重试在 HTTP 协议层面不可能，只触发冷却+记录日志
+func (s *Server) handleStreamingErrorNoRetry(
+	ctx context.Context,
+	cfg *model.Config,
+	keyIndex int,
+	actualModel string,
+	selectedKey string,
+	res *fwResult,
+	duration float64,
+	reqCtx *proxyRequestContext,
+) (*proxyResult, bool, bool) {
+	// 记录错误日志
+	s.AddLogAsync(buildLogEntry(actualModel, cfg.ID, res.Status,
+		duration, reqCtx.isStreaming, selectedKey, reqCtx.tokenID, reqCtx.clientIP, res, res.StreamDiagMsg))
+
+	// 触发冷却（保护后续请求）
+	// 使用独立 context，避免请求取消导致冷却写入失败
+	cooldownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+	_, _ = s.handleProxyError(cooldownCtx, cfg, keyIndex, res, nil)
+
+	// 返回"成功"：数据已发送给客户端，不触发重试
+	return &proxyResult{
+		status:    res.Status,
+		channelID: &cfg.ID,
+		duration:  duration,
+		succeeded: true, // 关键：标记为成功，避免触发重试逻辑
+	}, false, false
+}
+
 // handleProxyErrorResponse 处理代理错误响应（业务逻辑层）
 // 从proxy.go提取，遵循SRP原则
 // 注意：与 handleErrorResponse（HTTP层）不同

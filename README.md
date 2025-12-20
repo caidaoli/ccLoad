@@ -676,6 +676,33 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 | `upstream_first_byte_timeout` | `0` | 上游首字节超时（秒，0=禁用） |
 | `88code_free_only` | `false` | 仅允许使用88code免费订阅 |
 | `skip_tls_verify` | `false` | 跳过TLS证书验证（⚠️仅开发环境） |
+| `enable_health_score` | `false` | 启用基于健康度的渠道动态排序 |
+| `success_rate_penalty_weight` | `100` | 成功率惩罚权重（见下方说明） |
+| `health_score_window_minutes` | `30` | 成功率统计时间窗口（分钟） |
+| `health_score_update_interval` | `30` | 成功率缓存更新间隔（秒） |
+
+#### 健康度排序说明
+
+启用 `enable_health_score` 后，系统会根据渠道的历史成功率动态调整优先级：
+
+```
+有效优先级 = 基础优先级 - (失败率 × success_rate_penalty_weight)
+```
+
+**示例**（`success_rate_penalty_weight = 100`，渠道优先级间隔 10）：
+
+| 渠道 | 基础优先级 | 成功率 | 惩罚值 | 有效优先级 |
+|------|-----------|--------|--------|-----------|
+| A | 100 | 95% | 5 | **95** |
+| B | 100 | 80% | 20 | **80** |
+| C | 90 | 100% | 0 | **90** |
+
+排序结果：A (95) > C (90) > B (80)
+
+**权重调优建议**：
+- 默认值 100 适合渠道优先级间隔为 10 的场景
+- 权重 100 时：10% 失败率 = 降一档优先级
+- 若优先级间隔为 5，可调整为 50
 
 #### API 访问令牌配置
 

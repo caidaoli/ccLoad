@@ -7,6 +7,7 @@ import (
 	"context"
 	"log"
 	"math/rand/v2"
+	"sort"
 	"time"
 )
 
@@ -51,12 +52,9 @@ func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model strin
 	return s.filterCooldownChannels(ctx, shuffleSamePriorityChannels(filtered))
 }
 
-// filterCooldownChannels 过滤掉冷却中的渠道
-// [INFO] 修复 (2025-12-09): 在渠道选择阶段就过滤冷却渠道，避免无效尝试
-// 过滤规则:
-//   1. 渠道级冷却 → 直接过滤
-//   2. 所有Key都在冷却 → 过滤
-//   3. 至少有一个Key可用 → 保留
+// filterCooldownChannels 过滤或降权冷却中的渠道
+// 当启用健康度排序时：冷却渠道降权而非过滤，按有效优先级排序
+// 当禁用健康度排序时：保持原有行为，完全过滤冷却渠道
 func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpkg.Config) ([]*modelpkg.Config, error) {
 	if len(channels) == 0 {
 		return channels, nil
@@ -67,34 +65,44 @@ func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpk
 	// 批量查询冷却状态（使用缓存层，性能优化）
 	channelCooldowns, err := s.getAllChannelCooldowns(ctx)
 	if err != nil {
-		// 降级处理：查询失败时不过滤，避免阻塞请求
 		log.Printf("[WARN] Failed to get channel cooldowns (degraded mode): %v", err)
 		return channels, nil
 	}
 
 	keyCooldowns, err := s.getAllKeyCooldowns(ctx)
 	if err != nil {
-		// 降级处理：查询失败时不过滤
 		log.Printf("[WARN] Failed to get key cooldowns (degraded mode): %v", err)
 		return channels, nil
 	}
 
-	// 过滤冷却中的渠道
+	// 检查是否启用健康度排序
+	if s.healthCache != nil && s.healthCache.Config().Enabled {
+		return s.sortChannelsByHealth(channels, channelCooldowns, keyCooldowns, now), nil
+	}
+
+	// 原有逻辑：完全过滤冷却渠道
+	return s.filterCooldownChannelsLegacy(channels, channelCooldowns, keyCooldowns, now), nil
+}
+
+// filterCooldownChannelsLegacy 原有过滤逻辑（健康度排序禁用时使用）
+func (s *Server) filterCooldownChannelsLegacy(
+	channels []*modelpkg.Config,
+	channelCooldowns map[int64]time.Time,
+	keyCooldowns map[int64]map[int]time.Time,
+	now time.Time,
+) []*modelpkg.Config {
 	filtered := make([]*modelpkg.Config, 0, len(channels))
 	for _, cfg := range channels {
 		// 1. 检查渠道级冷却
 		if cooldownUntil, exists := channelCooldowns[cfg.ID]; exists {
 			if cooldownUntil.After(now) {
-				continue // 渠道冷却中，跳过
+				continue
 			}
 		}
 
 		// 2. 检查是否所有Key都在冷却
-		// keyCooldowns 只包含"正在冷却"的Key；未出错/未冷却的Key不会出现在这里。
-		// 只有当我们确认该渠道的所有Key都处于冷却中时，才跳过整个渠道。
 		keyMap, hasCooldownKeys := keyCooldowns[cfg.ID]
 		if hasCooldownKeys && cfg.KeyCount > 0 {
-			// 若冷却记录数量小于Key总数，说明至少有一个Key未进入冷却映射，渠道仍可用。
 			if len(keyMap) >= cfg.KeyCount {
 				hasAvailableKey := false
 				for _, cooldownUntil := range keyMap {
@@ -104,16 +112,87 @@ func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpk
 					}
 				}
 				if !hasAvailableKey {
-					continue // 所有Key都冷却中，跳过
+					continue
 				}
 			}
 		}
 
-		// 渠道可用
 		filtered = append(filtered, cfg)
 	}
+	return filtered
+}
 
-	return filtered, nil
+// channelWithScore 带有效优先级的渠道
+type channelWithScore struct {
+	config       *modelpkg.Config
+	effPriority  float64
+}
+
+// sortChannelsByHealth 按健康度排序渠道（冷却渠道降权而非过滤）
+func (s *Server) sortChannelsByHealth(
+	channels []*modelpkg.Config,
+	channelCooldowns map[int64]time.Time,
+	keyCooldowns map[int64]map[int]time.Time,
+	now time.Time,
+) []*modelpkg.Config {
+	cfg := s.healthCache.Config()
+	successRates := s.healthCache.GetAllSuccessRates()
+
+	scored := make([]channelWithScore, len(channels))
+	for i, ch := range channels {
+		scored[i] = channelWithScore{
+			config:      ch,
+			effPriority: s.calculateEffectivePriority(ch, channelCooldowns, keyCooldowns, successRates, now, cfg),
+		}
+	}
+
+	// 按有效优先级排序（越大越优先，与原有逻辑一致）
+	sort.SliceStable(scored, func(i, j int) bool {
+		return scored[i].effPriority > scored[j].effPriority
+	})
+
+	// 同有效优先级内随机打散（负载均衡）
+	result := make([]*modelpkg.Config, len(scored))
+	groupStart := 0
+	for i := 1; i <= len(scored); i++ {
+		// 检测优先级边界（使用整数部分比较，避免浮点精度问题）
+		if i == len(scored) || int(scored[i].effPriority) != int(scored[groupStart].effPriority) {
+			if i-groupStart > 1 {
+				rand.Shuffle(i-groupStart, func(a, b int) {
+					scored[groupStart+a], scored[groupStart+b] = scored[groupStart+b], scored[groupStart+a]
+				})
+			}
+			groupStart = i
+		}
+	}
+
+	for i, s := range scored {
+		result[i] = s.config
+	}
+	return result
+}
+
+// calculateEffectivePriority 计算渠道的有效优先级
+// 有效优先级 = 基础优先级 - 成功率惩罚（越大越优先）
+// [INFO] 2025-12: 冷却状态不计入健康度，因为冷却渠道在选择阶段已被过滤
+func (s *Server) calculateEffectivePriority(
+	ch *modelpkg.Config,
+	channelCooldowns map[int64]time.Time,
+	keyCooldowns map[int64]map[int]time.Time,
+	successRates map[int64]float64,
+	now time.Time,
+	cfg modelpkg.HealthScoreConfig,
+) float64 {
+	basePriority := float64(ch.Priority)
+
+	// 成功率惩罚（减少优先级）
+	successRatePenalty := 0.0
+	if rate, exists := successRates[ch.ID]; exists {
+		failureRate := 1.0 - rate
+		successRatePenalty = failureRate * cfg.SuccessRatePenaltyWeight
+	}
+
+	return basePriority - successRatePenalty
 }
 
 // shuffleSamePriorityChannels 随机打乱相同优先级的渠道，实现负载均衡

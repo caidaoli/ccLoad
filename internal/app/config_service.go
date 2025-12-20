@@ -74,6 +74,16 @@ func (cs *ConfigService) GetString(key string, defaultValue string) string {
 	return defaultValue
 }
 
+// GetFloat 获取浮点数配置
+func (cs *ConfigService) GetFloat(key string, defaultValue float64) float64 {
+	if setting, ok := cs.cache[key]; ok {
+		if floatVal, err := strconv.ParseFloat(setting.Value, 64); err == nil {
+			return floatVal
+		}
+	}
+	return defaultValue
+}
+
 // GetDuration 获取时长配置(秒转Duration)
 func (cs *ConfigService) GetDuration(key string, defaultValue time.Duration) time.Duration {
 	seconds := cs.GetInt(key, int(defaultValue.Seconds()))
