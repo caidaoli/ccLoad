@@ -266,14 +266,22 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			msg = fmt.Sprintf("upstream status %d", finalStatus)
 		}
 	}
-	s.AddLogAsync(&model.LogEntry{
-		Time:        model.JSONTime{Time: time.Now()},
-		Model:       originalModel,
-		StatusCode:  finalStatus,
-		Message:     msg,
-		IsStreaming: isStreaming,
-		ClientIP:    reqCtx.clientIP,
-	})
+
+	// [FIX] 2025-12: 过滤无实际请求的客户端取消日志
+	// 场景：请求在选择渠道/Key阶段就被取消，没有发送到上游
+	// 判断：isClientCanceled=true 且 duration=0 说明没有实际请求
+	// 这种情况不记录日志（噪音），有实际请求的取消会在 handleNetworkError 中记录
+	skipLog := lastResult != nil && lastResult.isClientCanceled && lastResult.duration == 0
+	if !skipLog {
+		s.AddLogAsync(&model.LogEntry{
+			Time:        model.JSONTime{Time: time.Now()},
+			Model:       originalModel,
+			StatusCode:  finalStatus,
+			Message:     msg,
+			IsStreaming: isStreaming,
+			ClientIP:    reqCtx.clientIP,
+		})
+	}
 
 	if lastResult != nil && lastResult.status != 0 {
 		filterAndWriteResponseHeaders(c.Writer, lastResult.header)

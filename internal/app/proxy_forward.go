@@ -339,7 +339,7 @@ func (s *Server) handleResponse(
 		err := fmt.Errorf("upstream returned empty response (200 OK with Content-Length: 0)")
 
 		return &fwResult{
-			Status:        resp.StatusCode, // 保留原始200状态码
+			Status:        resp.StatusCode,
 			Header:        hdrClone,
 			Body:          []byte(err.Error()),
 			FirstByteTime: firstByteTime,

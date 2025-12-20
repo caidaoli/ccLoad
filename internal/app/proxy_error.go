@@ -84,13 +84,14 @@ func (s *Server) handleNetworkError(
 	actualModel string, // [INFO] 重定向后的实际模型名称
 	selectedKey string,
 	authTokenID int64, // [INFO] API令牌ID（用于日志记录，2025-12新增）
-	clientIP string,   // [INFO] 客户端IP（用于日志记录，2025-12新增）
+	clientIP string, // [INFO] 客户端IP（用于日志记录，2025-12新增）
 	duration float64,
 	err error,
 	res *fwResult, // [FIX] 流式响应中途取消时，res 包含已解析的 token 统计
 	reqCtx *proxyRequestContext, // [FIX] 用于获取 tokenHash 和 isStreaming
 ) (*proxyResult, bool, bool) {
 	statusCode, _, _ := util.ClassifyError(err)
+
 	// [INFO] 修复：使用 actualModel 而非 reqCtx.originalModel
 	s.AddLogAsync(buildLogEntry(actualModel, cfg.ID, statusCode,
 		duration, false, selectedKey, authTokenID, clientIP, res, err.Error()))
