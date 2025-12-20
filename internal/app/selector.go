@@ -313,8 +313,8 @@ func (s *Server) sortChannelsByHealth(
 		}
 	}
 
-	for i, s := range scored {
-		result[i] = s.config
+	for i, item := range scored {
+		result[i] = item.config
 	}
 	return result
 }

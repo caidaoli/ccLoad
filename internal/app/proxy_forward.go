@@ -139,8 +139,8 @@ func streamAndParseResponse(ctx context.Context, body io.ReadCloser, w http.Resp
 	// SSE流式响应
 	if strings.Contains(contentType, "text/event-stream") {
 		parser := newSSEUsageParser(channelType)
-		err := streamCopySSE(ctx, body, w, parser.Feed)
-		return parser, err
+		streamErr := streamCopySSE(ctx, body, w, parser.Feed)
+		return parser, streamErr
 	}
 
 	// 非标准SSE场景：上游以text/plain发送SSE事件
@@ -150,18 +150,18 @@ func streamAndParseResponse(ctx context.Context, body io.ReadCloser, w http.Resp
 
 		if looksLikeSSE(probe) {
 			parser := newSSEUsageParser(channelType)
-			err := streamCopySSE(ctx, io.NopCloser(reader), w, parser.Feed)
-			return parser, err
+			sseErr := streamCopySSE(ctx, io.NopCloser(reader), w, parser.Feed)
+			return parser, sseErr
 		}
 		parser := newJSONUsageParser(channelType)
-		err := streamCopy(ctx, io.NopCloser(reader), w, parser.Feed)
-		return parser, err
+		copyErr := streamCopy(ctx, io.NopCloser(reader), w, parser.Feed)
+		return parser, copyErr
 	}
 
 	// 非SSE响应：边转发边缓存
 	parser := newJSONUsageParser(channelType)
-	err := streamCopy(ctx, body, w, parser.Feed)
-	return parser, err
+	copyErr := streamCopy(ctx, body, w, parser.Feed)
+	return parser, copyErr
 }
 
 // isClientDisconnectError 判断是否为客户端主动断开导致的错误
@@ -237,7 +237,7 @@ func (s *Server) handleSuccessResponse(
 
 	// 流式传输并解析usage
 	contentType := resp.Header.Get("Content-Type")
-	usageParser, streamErr := streamAndParseResponse(
+	parser, streamErr := streamAndParseResponse(
 		reqCtx.ctx, resp.Body, w, contentType, channelType, reqCtx.isStreaming,
 	)
 
@@ -250,12 +250,12 @@ func (s *Server) handleSuccessResponse(
 
 	// 提取usage数据和错误事件
 	var streamComplete bool
-	if usageParser != nil {
-		result.InputTokens, result.OutputTokens, result.CacheReadInputTokens, result.CacheCreationInputTokens = usageParser.GetUsage()
+	if parser != nil {
+		result.InputTokens, result.OutputTokens, result.CacheReadInputTokens, result.CacheCreationInputTokens = parser.GetUsage()
 
 		// 提取5m和1h缓存细分字段（通过类型断言访问底层实现）
 		// 设计原则：不修改接口避免破坏现有测试，通过类型断言优雅扩展
-		switch p := usageParser.(type) {
+		switch p := parser.(type) {
 		case *sseUsageParser:
 			result.Cache5mInputTokens = p.Cache5mInputTokens
 			result.Cache1hInputTokens = p.Cache1hInputTokens
@@ -264,10 +264,10 @@ func (s *Server) handleSuccessResponse(
 			result.Cache1hInputTokens = p.Cache1hInputTokens
 		}
 
-		if errorEvent := usageParser.GetLastError(); errorEvent != nil {
+		if errorEvent := parser.GetLastError(); errorEvent != nil {
 			result.SSEErrorEvent = errorEvent
 		}
-		streamComplete = usageParser.IsStreamComplete()
+		streamComplete = parser.IsStreamComplete()
 	}
 
 	// 生成流诊断消息（仅流请求）
@@ -405,7 +405,9 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 	firstByteTime := reqCtx.Duration()
 
 	// 5. 处理响应(传递channelType用于精确识别usage格式,传递渠道信息用于日志记录)
-	res, duration, err := s.handleResponse(reqCtx, resp, firstByteTime, w, cfg.ChannelType, cfg, apiKey)
+	var res *fwResult
+	var duration float64
+	res, duration, err = s.handleResponse(reqCtx, resp, firstByteTime, w, cfg.ChannelType, cfg, apiKey)
 
 	// [FIX] 2025-12: 流式传输过程中首字节超时的错误修正
 	// 场景：响应头已收到(200 OK)，但在读取响应体时超时定时器触发
@@ -530,10 +532,10 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	// Key重试循环
 	for range maxKeyRetries {
 		// 选择可用的API Key（直接传入apiKeys，避免重复查询）
-		keyIndex, selectedKey, err := s.keySelector.SelectAvailableKey(cfg.ID, apiKeys, triedKeys)
-		if err != nil {
+		keyIndex, selectedKey, selectErr := s.keySelector.SelectAvailableKey(cfg.ID, apiKeys, triedKeys)
+		if selectErr != nil {
 			// 所有Key都在冷却中，返回特殊错误标识（使用sentinel error而非魔法字符串）
-			return nil, fmt.Errorf("%w: %v", ErrAllKeysUnavailable, err)
+			return nil, fmt.Errorf("%w: %v", ErrAllKeysUnavailable, selectErr)
 		}
 
 		// 标记Key为已尝试
