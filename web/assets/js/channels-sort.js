@@ -265,13 +265,6 @@ async function saveSortOrder() {
   }
 }
 
-// HTML转义
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
-
 // 初始化排序按钮事件
 document.addEventListener('DOMContentLoaded', function() {
   const sortBtn = document.getElementById('btn_sort');

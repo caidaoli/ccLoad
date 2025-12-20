@@ -411,38 +411,6 @@
   }
 
   /**
-   * 获取渠道类型的显示名称
-   * @param {string} value - 渠道类型内部值
-   * @returns {Promise<string>} 显示名称
-   */
-  async function getChannelTypeDisplayName(value) {
-    const types = await getChannelTypes();
-    const type = types.find(t => t.value === value);
-    return type ? type.display_name : value;
-  }
-
-  /**
-   * 渲染渠道类型过滤器下拉框（包含"所有类型"选项）
-   * @param {string} selectId - select元素ID
-   */
-  async function renderChannelTypeFilter(selectId) {
-    const select = document.getElementById(selectId);
-    if (!select) {
-      console.error('select元素不存在:', selectId);
-      return;
-    }
-
-    const types = await getChannelTypes();
-
-    select.innerHTML = '<option value="all">所有类型</option>' +
-      types.map(type => `
-        <option value="${escapeHtml(type.value)}" title="${escapeHtml(type.description)}">
-          ${escapeHtml(type.display_name)}
-        </option>
-      `).join('');
-  }
-
-  /**
    * 渲染渠道类型Tab页（包含"全部"选项）
    * @param {string} containerId - 容器元素ID
    * @param {Function} onTabChange - tab切换回调函数
@@ -488,9 +456,7 @@
     getChannelTypes,
     renderChannelTypeRadios,
     renderChannelTypeSelect,
-    renderChannelTypeFilter,
-    renderChannelTypeTabs,
-    getChannelTypeDisplayName
+    renderChannelTypeTabs
   };
 })();
 

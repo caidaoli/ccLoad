@@ -60,28 +60,6 @@
   };
 
   /**
-   * 从URL参数获取时间范围
-   * @param {URLSearchParams} urlParams - URL参数对象
-   * @param {string} defaultRange - 默认范围key
-   * @returns {string} 范围key
-   */
-  window.getRangeFromUrlOrDefault = function(urlParams, defaultRange) {
-    const rangeParam = urlParams.get('range');
-    if (rangeParam && DATE_RANGES[rangeParam]) {
-      return rangeParam;
-    }
-    return DATE_RANGES[defaultRange] ? defaultRange : 'today';
-  };
-
-  /**
-   * 获取所有可用的时间范围配置
-   * @returns {Object} DATE_RANGES对象
-   */
-  window.getDateRanges = function() {
-    return DATE_RANGES;
-  };
-
-  /**
    * 获取范围的显示标签
    * @param {string} rangeKey - 范围key
    * @returns {string} 显示标签

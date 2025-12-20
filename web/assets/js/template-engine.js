@@ -99,57 +99,6 @@ const TemplateEngine = {
     }
     temp.innerHTML = html;
     return temp.firstElementChild;
-  },
-
-  /**
-   * 批量渲染列表
-   * @param {string} id - 模板ID
-   * @param {Array} items - 数据数组
-   * @returns {DocumentFragment} 包含所有渲染元素的片段
-   */
-  renderList(id, items) {
-    const fragment = document.createDocumentFragment();
-    if (!Array.isArray(items)) return fragment;
-
-    items.forEach(item => {
-      const el = this.render(id, item);
-      if (el) fragment.appendChild(el);
-    });
-    return fragment;
-  },
-
-  /**
-   * 渲染并替换容器内容
-   * @param {string} containerId - 容器元素ID
-   * @param {string} templateId - 模板ID
-   * @param {Array|Object} data - 数据(数组则批量渲染)
-   */
-  renderTo(containerId, templateId, data) {
-    const container = document.getElementById(containerId);
-    if (!container) {
-      console.error(`[TemplateEngine] Container not found: ${containerId}`);
-      return;
-    }
-
-    container.innerHTML = '';
-    if (Array.isArray(data)) {
-      container.appendChild(this.renderList(templateId, data));
-    } else {
-      const el = this.render(templateId, data);
-      if (el) container.appendChild(el);
-    }
-  },
-
-  /**
-   * 清除模板缓存 (通常在动态添加模板后调用)
-   * @param {string} [id] - 指定清除的模板ID，不传则清除所有
-   */
-  clearCache(id) {
-    if (id) {
-      this._cache.delete(id.startsWith('#') ? id.slice(1) : id);
-    } else {
-      this._cache.clear();
-    }
   }
 };
 
