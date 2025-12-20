@@ -37,9 +37,12 @@ function filterChannels() {
     return true;
   });
 
+  // 排序：优先使用 effective_priority（健康度模式），否则使用 priority
   filtered.sort((a, b) => {
-    if (b.priority !== a.priority) {
-      return b.priority - a.priority;
+    const prioA = a.effective_priority ?? a.priority;
+    const prioB = b.effective_priority ?? b.priority;
+    if (prioB !== prioA) {
+      return prioB - prioA;
     }
     const typeA = (a.channel_type || 'anthropic').toLowerCase();
     const typeB = (b.channel_type || 'anthropic').toLowerCase();
