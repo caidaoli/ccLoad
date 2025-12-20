@@ -150,6 +150,13 @@ func ClassifyHTTPResponse(statusCode int, headers map[string][]string, responseB
 		return ErrorLevelKey // 1308错误视为Key级错误，触发冷却
 	}
 
+	// [INFO] 597 SSE error事件：解析实际错误类型动态判断级别
+	// SSE error JSON格式: {"type":"error","error":{"type":"api_error","message":"上游API返回错误: 500"}}
+	// 根据error.type判断：api_error/overloaded_error → 渠道级，其他 → Key级
+	if statusCode == StatusSSEError {
+		return classifySSEError(responseBody)
+	}
+
 	// 429错误：需要结合 headers 判断限流范围
 	if statusCode == 429 {
 		if headers != nil {
@@ -260,6 +267,48 @@ func classifyRateLimitError(headers map[string][]string, responseBody []byte) Er
 	// 4. 默认: Key级别限流(保守策略)
 	// 让系统先尝试其他Key,如果所有Key都限流了,会自动升级为渠道级
 	return ErrorLevelKey
+}
+
+// classifySSEError 分析SSE error事件的具体类型
+// SSE error JSON格式: {"type":"error","error":{"type":"api_error","message":"上游API返回错误: 500"}}
+//
+// 判断逻辑:
+//   - api_error: 上游服务错误（通常是5xx）→ 渠道级
+//   - overloaded_error: 上游过载 → 渠道级
+//   - rate_limit_error: 限流错误 → Key级（可能只是单个Key限流）
+//   - authentication_error: 认证错误 → Key级
+//   - invalid_request_error: 请求错误 → Key级
+//   - 其他/解析失败: 默认Key级（保守策略）
+func classifySSEError(responseBody []byte) ErrorLevel {
+	if len(responseBody) == 0 {
+		return ErrorLevelKey
+	}
+
+	// 解析SSE error JSON
+	var errResp struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	if err := json.Unmarshal(responseBody, &errResp); err != nil {
+		return ErrorLevelKey // 解析失败，保守处理
+	}
+
+	// 根据error.type判断错误级别
+	switch errResp.Error.Type {
+	case "api_error", "overloaded_error":
+		// 上游服务错误或过载 → 渠道级冷却
+		return ErrorLevelChannel
+	case "rate_limit_error", "authentication_error", "invalid_request_error", "1308":
+		// 限流/认证/请求错误 → Key级冷却
+		return ErrorLevelKey
+	default:
+		// 未知错误类型，保守处理为Key级
+		return ErrorLevelKey
+	}
 }
 
 // ParseResetTimeFrom1308Error 从1308错误响应中提取重置时间

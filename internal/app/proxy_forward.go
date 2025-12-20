@@ -531,6 +531,16 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 
 	// Key重试循环
 	for range maxKeyRetries {
+		// 检查context是否已取消（客户端断开连接）
+		if ctx.Err() != nil {
+			return &proxyResult{
+				status:           499,
+				channelID:        &cfg.ID,
+				succeeded:        false,
+				isClientCanceled: true,
+			}, nil
+		}
+
 		// 选择可用的API Key（直接传入apiKeys，避免重复查询）
 		keyIndex, selectedKey, selectErr := s.keySelector.SelectAvailableKey(cfg.ID, apiKeys, triedKeys)
 		if selectErr != nil {

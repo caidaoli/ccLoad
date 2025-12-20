@@ -600,3 +600,87 @@ func TestClassifyRateLimitError(t *testing.T) {
 		})
 	}
 }
+
+// TestClassifySSEError 测试SSE error事件分类
+func TestClassifySSEError(t *testing.T) {
+	tests := []struct {
+		name         string
+		responseBody []byte
+		expected     ErrorLevel
+		reason       string
+	}{
+		{
+			name:         "api_error_500",
+			responseBody: []byte(`{"type":"error","error":{"type":"api_error","message":"上游API返回错误: 500"}}`),
+			expected:     ErrorLevelChannel,
+			reason:       "api_error表示上游服务错误，应触发渠道级冷却",
+		},
+		{
+			name:         "overloaded_error",
+			responseBody: []byte(`{"type":"error","error":{"type":"overloaded_error","message":"服务过载"}}`),
+			expected:     ErrorLevelChannel,
+			reason:       "overloaded_error表示上游过载，应触发渠道级冷却",
+		},
+		{
+			name:         "rate_limit_error",
+			responseBody: []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"请求过于频繁"}}`),
+			expected:     ErrorLevelKey,
+			reason:       "rate_limit_error可能只是单个Key限流，应触发Key级冷却",
+		},
+		{
+			name:         "authentication_error",
+			responseBody: []byte(`{"type":"error","error":{"type":"authentication_error","message":"认证失败"}}`),
+			expected:     ErrorLevelKey,
+			reason:       "authentication_error是Key级问题，应触发Key级冷却",
+		},
+		{
+			name:         "invalid_request_error",
+			responseBody: []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"请求无效"}}`),
+			expected:     ErrorLevelKey,
+			reason:       "invalid_request_error是Key级问题，应触发Key级冷却",
+		},
+		{
+			name:         "1308_error",
+			responseBody: []byte(`{"type":"error","error":{"type":"1308","message":"已达到使用上限"}}`),
+			expected:     ErrorLevelKey,
+			reason:       "1308错误是Key配额问题，应触发Key级冷却",
+		},
+		{
+			name:         "unknown_error_type",
+			responseBody: []byte(`{"type":"error","error":{"type":"unknown_type","message":"未知错误"}}`),
+			expected:     ErrorLevelKey,
+			reason:       "未知错误类型应保守处理为Key级",
+		},
+		{
+			name:         "empty_body",
+			responseBody: []byte{},
+			expected:     ErrorLevelKey,
+			reason:       "空响应体应保守处理为Key级",
+		},
+		{
+			name:         "invalid_json",
+			responseBody: []byte(`not valid json`),
+			expected:     ErrorLevelKey,
+			reason:       "无效JSON应保守处理为Key级",
+		},
+		{
+			name:         "nil_body",
+			responseBody: nil,
+			expected:     ErrorLevelKey,
+			reason:       "nil响应体应保守处理为Key级",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// 使用 ClassifyHTTPResponse 测试 597 状态码
+			result := ClassifyHTTPResponse(StatusSSEError, nil, tt.responseBody)
+			if result != tt.expected {
+				t.Errorf("❌ %s\n  期望: %v\n  实际: %v\n  原因: %s",
+					tt.name, tt.expected, result, tt.reason)
+			} else {
+				t.Logf("[INFO] %s - %s", tt.name, tt.reason)
+			}
+		})
+	}
+}
