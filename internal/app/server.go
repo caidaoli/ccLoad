@@ -160,16 +160,22 @@ func NewServer(store storage.Store) *Server {
 	s.keySelector = NewKeySelector()
 
 	// 初始化健康度缓存（启动时读取配置，修改后重启生效）
+	defaultHealthCfg := model.DefaultHealthScoreConfig()
+	successRatePenaltyWeight := configService.GetFloat("success_rate_penalty_weight", defaultHealthCfg.SuccessRatePenaltyWeight)
+	if successRatePenaltyWeight < 0 {
+		log.Printf("[WARN] 无效的 success_rate_penalty_weight=%.2f（必须 >= 0），已使用默认值 %.2f", successRatePenaltyWeight, defaultHealthCfg.SuccessRatePenaltyWeight)
+		successRatePenaltyWeight = defaultHealthCfg.SuccessRatePenaltyWeight
+	}
 	healthConfig := model.HealthScoreConfig{
-		Enabled:                  configService.GetBool("enable_health_score", false),
-		SuccessRatePenaltyWeight: configService.GetFloat("success_rate_penalty_weight", 100),
-		WindowMinutes:            configService.GetInt("health_score_window_minutes", 30),
-		UpdateIntervalSeconds:    configService.GetInt("health_score_update_interval", 30),
+		Enabled:                  configService.GetBool("enable_health_score", defaultHealthCfg.Enabled),
+		SuccessRatePenaltyWeight: successRatePenaltyWeight,
+		WindowMinutes:            configService.GetIntMin("health_score_window_minutes", 30, 1),
+		UpdateIntervalSeconds:    configService.GetIntMin("health_score_update_interval", 30, 1),
 	}
 	s.healthCache = NewHealthCache(store, healthConfig, s.shutdownCh, &s.isShuttingDown, &s.wg)
 	if healthConfig.Enabled {
 		s.healthCache.Start()
-		log.Print("[INFO] 健康度排序已启用（基于冷却状态+成功率动态调整渠道优先级）")
+		log.Print("[INFO] 健康度排序已启用（基于成功率动态调整渠道优先级；冷却仍按原规则过滤）")
 	}
 
 	// ============================================================================

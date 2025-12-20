@@ -16,8 +16,9 @@ type HealthCache struct {
 	store  storage.Store
 	config model.HealthScoreConfig
 
-	// 成功率缓存 map[channelID]successRate
-	successRates sync.Map
+	// 成功率缓存：使用原子指针实现无锁快照替换
+	// 读取时直接Load，更新时用新map整体替换，避免遍历删除的并发问题
+	successRates atomic.Pointer[map[int64]float64]
 
 	// 控制
 	stopCh chan struct{}
@@ -29,18 +30,26 @@ type HealthCache struct {
 
 // NewHealthCache 创建健康度缓存
 func NewHealthCache(store storage.Store, config model.HealthScoreConfig, shutdownCh chan struct{}, isShuttingDown *atomic.Bool, wg *sync.WaitGroup) *HealthCache {
-	return &HealthCache{
+	h := &HealthCache{
 		store:          store,
 		config:         config,
 		stopCh:         shutdownCh,
 		wg:             wg,
 		isShuttingDown: isShuttingDown,
 	}
+	// 初始化空map
+	emptyMap := make(map[int64]float64)
+	h.successRates.Store(&emptyMap)
+	return h
 }
 
 // Start 启动后台更新协程
 func (h *HealthCache) Start() {
 	if !h.config.Enabled {
+		return
+	}
+	if h.config.UpdateIntervalSeconds <= 0 || h.config.WindowMinutes <= 0 {
+		log.Printf("[WARN] 健康度缓存未启动：无效配置 update_interval=%d window_minutes=%d", h.config.UpdateIntervalSeconds, h.config.WindowMinutes)
 		return
 	}
 
@@ -84,27 +93,33 @@ func (h *HealthCache) update() {
 		return
 	}
 
-	// 更新缓存
-	for channelID, rate := range rates {
-		h.successRates.Store(channelID, rate)
-	}
+	// 原子替换：用新快照整体替换旧数据，避免遍历删除的并发问题
+	h.successRates.Store(&rates)
 }
 
 // GetSuccessRate 获取渠道成功率，不存在返回1.0（新渠道不惩罚）
 func (h *HealthCache) GetSuccessRate(channelID int64) float64 {
-	if v, ok := h.successRates.Load(channelID); ok {
-		return v.(float64)
+	rates := h.successRates.Load()
+	if rates == nil {
+		return 1.0
+	}
+	if v, ok := (*rates)[channelID]; ok {
+		return v
 	}
 	return 1.0 // 新渠道默认成功率100%
 }
 
-// GetAllSuccessRates 获取所有渠道成功率
+// GetAllSuccessRates 获取所有渠道成功率（返回快照副本）
 func (h *HealthCache) GetAllSuccessRates() map[int64]float64 {
-	result := make(map[int64]float64)
-	h.successRates.Range(func(key, value any) bool {
-		result[key.(int64)] = value.(float64)
-		return true
-	})
+	rates := h.successRates.Load()
+	if rates == nil {
+		return make(map[int64]float64)
+	}
+	// 返回副本，避免调用方修改影响缓存
+	result := make(map[int64]float64, len(*rates))
+	for k, v := range *rates {
+		result[k] = v
+	}
 	return result
 }
 

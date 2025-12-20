@@ -107,11 +107,15 @@ func (s *Server) handleListChannels(c *gin.Context) {
 
 		// 健康度模式：计算有效优先级和成功率
 		if healthEnabled {
-			effPriority := s.calculateEffectivePriority(cfg, allChannelCooldowns, allKeyCooldowns, successRates, now, s.healthCache.Config())
-			oc.EffectivePriority = &effPriority
-			if rate, exists := successRates[cfg.ID]; exists {
-				oc.SuccessRate = &rate
+			rate := 1.0
+			if successRates != nil {
+				if v, exists := successRates[cfg.ID]; exists {
+					rate = v
+					oc.SuccessRate = &v
+				}
 			}
+			effPriority := s.calculateEffectivePriority(cfg, rate, s.healthCache.Config())
+			oc.EffectivePriority = &effPriority
 		}
 
 		// 从预加载的map中获取API Keys（O(1)查找）

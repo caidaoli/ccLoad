@@ -139,6 +139,108 @@ func TestSelectRouteCandidates_CooledDownChannels(t *testing.T) {
 	t.Logf("[INFO] 冷却过滤正确: 3个渠道中2个被冷却，只返回1个可用渠道")
 }
 
+func TestSelectRouteCandidates_AllCooled_FallbackChoosesEarliestChannelCooldown(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	server := &Server{store: store}
+	ctx := context.Background()
+	now := time.Now()
+
+	channels := []*model.Config{
+		{Name: "cooldown-long", URL: "https://api1.com", Priority: 100, Models: []string{"test-model"}, Enabled: true},
+		{Name: "cooldown-short", URL: "https://api2.com", Priority: 90, Models: []string{"test-model"}, Enabled: true},
+	}
+
+	var ids []int64
+	for _, cfg := range channels {
+		created, err := store.CreateConfig(ctx, cfg)
+		if err != nil {
+			t.Fatalf("创建测试渠道失败: %v", err)
+		}
+		ids = append(ids, created.ID)
+	}
+
+	// 手动设置不同的冷却时间，制造“全冷却”场景
+	if err := store.SetChannelCooldown(ctx, ids[0], now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("设置渠道冷却失败: %v", err)
+	}
+	if err := store.SetChannelCooldown(ctx, ids[1], now.Add(30*time.Second)); err != nil {
+		t.Fatalf("设置渠道冷却失败: %v", err)
+	}
+
+	candidates, err := server.selectCandidates(ctx, "test-model")
+	if err != nil {
+		t.Fatalf("selectCandidates失败: %v", err)
+	}
+
+	if len(candidates) != 1 {
+		t.Fatalf("期望全冷却兜底返回1个候选渠道，实际%d个", len(candidates))
+	}
+	if candidates[0].Name != "cooldown-short" {
+		t.Fatalf("期望选择最早恢复的渠道 cooldown-short，实际返回%s", candidates[0].Name)
+	}
+}
+
+func TestSelectRouteCandidates_AllCooledByKeys_FallbackChoosesEarliestKeyCooldown(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	server := &Server{store: store}
+	ctx := context.Background()
+	now := time.Now()
+
+	channels := []*model.Config{
+		{Name: "keys-long", URL: "https://api1.com", Priority: 100, Models: []string{"test-model"}, Enabled: true},
+		{Name: "keys-short", URL: "https://api2.com", Priority: 90, Models: []string{"test-model"}, Enabled: true},
+	}
+
+	var ids []int64
+	for _, cfg := range channels {
+		created, err := store.CreateConfig(ctx, cfg)
+		if err != nil {
+			t.Fatalf("创建测试渠道失败: %v", err)
+		}
+		ids = append(ids, created.ID)
+
+		// 每个渠道创建2个Key，使 KeyCount 生效
+		for keyIndex := 0; keyIndex < 2; keyIndex++ {
+			if err := store.CreateAPIKey(ctx, &model.APIKey{
+				ChannelID:   created.ID,
+				KeyIndex:    keyIndex,
+				APIKey:      "sk-test",
+				KeyStrategy: model.KeyStrategySequential,
+				CreatedAt:   model.JSONTime{Time: now},
+				UpdatedAt:   model.JSONTime{Time: now},
+			}); err != nil {
+				t.Fatalf("创建API Key失败: %v", err)
+			}
+		}
+	}
+
+	// 让两个渠道都“全Key冷却”，但解禁时间不同
+	for keyIndex := 0; keyIndex < 2; keyIndex++ {
+		if err := store.SetKeyCooldown(ctx, ids[0], keyIndex, now.Add(2*time.Minute)); err != nil {
+			t.Fatalf("设置Key冷却失败: %v", err)
+		}
+		if err := store.SetKeyCooldown(ctx, ids[1], keyIndex, now.Add(20*time.Second)); err != nil {
+			t.Fatalf("设置Key冷却失败: %v", err)
+		}
+	}
+
+	candidates, err := server.selectCandidates(ctx, "test-model")
+	if err != nil {
+		t.Fatalf("selectCandidates失败: %v", err)
+	}
+
+	if len(candidates) != 1 {
+		t.Fatalf("期望全冷却(Key)兜底返回1个候选渠道，实际%d个", len(candidates))
+	}
+	if candidates[0].Name != "keys-short" {
+		t.Fatalf("期望选择最早恢复的渠道 keys-short，实际返回%s", candidates[0].Name)
+	}
+}
+
 // TestSelectRouteCandidates_DisabledChannels 测试禁用渠道过滤
 func TestSelectRouteCandidates_DisabledChannels(t *testing.T) {
 	store, cleanup := setupTestStore(t)
