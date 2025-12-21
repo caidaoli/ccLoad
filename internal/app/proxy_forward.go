@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/bytedance/sonic"
 )
 
 const (
@@ -327,6 +329,60 @@ func (s *Server) handleResponse(
 ) (*fwResult, float64, error) {
 	hdrClone := resp.Header.Clone()
 
+	// [INFO] 软错误检测：200状态码但响应体包含明确错误信息（如"当前模型负载过高"）
+	// 检测条件：Content-Type为text/plain或application/json
+	// 针对渠道17等上游返回200但实际内容为错误信息的情况
+	ct := resp.Header.Get("Content-Type")
+	if resp.StatusCode == 200 &&
+		shouldCheckSoftErrorForChannelType(channelType) &&
+		(strings.Contains(ct, "text/plain") || strings.Contains(ct, "application/json")) {
+		// 预读 512 字节进行检测
+		peekSize := 512
+		buf := make([]byte, peekSize)
+		// 使用 Read 读取一次（非阻塞等待填满），避免流式响应强制等待 512 字节导致首字延迟
+		// 之前的 io.ReadFull 会导致 stream 必须积累 2-3 秒数据才返回，这是不可接受的
+		n, err := resp.Body.Read(buf)
+		if err != nil && err != io.EOF {
+			// 读取错误，记录日志但不中断流程
+			log.Printf("[WARN] 软错误检测读取失败: %v", err)
+		}
+
+		validData := buf[:n]
+		if n > 0 && checkSoftError(validData, ct) {
+			// 检测到软错误！
+			log.Printf("[WARN] [软错误检测] 渠道ID=%d, 响应200但疑似错误响应: %s", cfg.ID, truncateErr(safeBodyToString(validData)))
+
+			// [FIX] 使用 StatusSSEError (597) 而非 503，让 ClassifyHTTPResponse 能正确分析 error.type
+			// 原因：简单改为503会导致所有软错误都被误判为渠道级故障（如429限流被当作渠道过载）
+			// 现在：利用现有的 classifySSEError 逻辑，根据 error.type 精确分类为 Key级/渠道级
+			resp.StatusCode = util.StatusSSEError // 597
+
+			// 恢复 Body 以便 handleErrorResponse 读取完整信息
+			// 使用匿名结构体组合 Reader 和 Closer
+			resp.Body = struct {
+				io.Reader
+				io.Closer
+			}{
+				Reader: io.MultiReader(bytes.NewReader(validData), resp.Body),
+				Closer: resp.Body,
+			}
+
+			// 转交给错误处理流程
+			return s.handleErrorResponse(reqCtx, resp, firstByteTime, hdrClone)
+		}
+
+		// 未检测到错误，必须恢复 Body 供后续流程使用
+		if n > 0 {
+			resp.Body = struct {
+				io.Reader
+				io.Closer
+			}{
+				Reader: io.MultiReader(bytes.NewReader(validData), resp.Body),
+				Closer: resp.Body,
+			}
+		}
+	}
+
 	// 错误状态：读取完整响应体
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return s.handleErrorResponse(reqCtx, resp, firstByteTime, hdrClone)
@@ -574,4 +630,71 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 
 	// Key重试循环结束，所有Key都失败
 	return nil, fmt.Errorf("all keys exhausted")
+}
+
+func shouldCheckSoftErrorForChannelType(channelType string) bool {
+	switch util.NormalizeChannelType(channelType) {
+	case util.ChannelTypeAnthropic, util.ChannelTypeCodex:
+		return true
+	default:
+		return false
+	}
+}
+
+// checkSoftError 检测“200 OK 但实际是错误”的软错误响应
+// 原则：宁可漏判也不要误判（避免把正常响应当错误导致重试/冷却）
+//
+// 规则：
+// - JSON：先解析，只看顶层结构（顶层 error 字段 或 顶层 type=="error"）
+// - text/plain：只接受“前缀匹配 + 短消息”，禁止 Contains 误判用户内容
+// - SSE：若看起来像 SSE（data:/event:），直接跳过
+func checkSoftError(data []byte, contentType string) bool {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return false
+	}
+
+	// 非 JSON 形态下，先排除 SSE（上游可能用 text/plain 返回 SSE）
+	if trimmed[0] != '{' {
+		if bytes.HasPrefix(trimmed, []byte("data:")) || bytes.HasPrefix(trimmed, []byte("event:")) ||
+			bytes.Contains(data, []byte("\ndata:")) || bytes.Contains(data, []byte("\nevent:")) {
+			return false
+		}
+	}
+
+	ctLower := strings.ToLower(contentType)
+	isJSONCT := strings.Contains(ctLower, "application/json")
+
+	// JSON：仅看顶层结构
+	if isJSONCT || trimmed[0] == '{' {
+		var obj map[string]any
+		if err := sonic.Unmarshal(trimmed, &obj); err == nil {
+			if v, ok := obj["error"]; ok && v != nil {
+				return true
+			}
+			if t, ok := obj["type"].(string); ok && strings.EqualFold(t, "error") {
+				return true
+			}
+			return false
+		}
+		// 形态像 JSON（以 '{' 开头）但解析失败：不猜，避免误判
+		if trimmed[0] == '{' {
+			return false
+		}
+		// Content-Type 标注为 JSON 但内容不是 JSON：允许继续走 text/plain 的“前缀+短消息”兜底
+	}
+
+	// text/plain：仅前缀 + 短消息
+	const maxPlainLen = 256
+	if len(trimmed) > maxPlainLen {
+		return false
+	}
+	if bytes.HasPrefix(trimmed, []byte("当前模型负载过高")) {
+		return true
+	}
+	if bytes.HasPrefix(trimmed, []byte("Current model load too high")) {
+		return true
+	}
+
+	return false
 }
