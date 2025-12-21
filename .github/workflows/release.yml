@@ -1,0 +1,164 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '手动指定版本标签(例如: v1.0.0)'
+        required: true
+
+jobs:
+  build:
+    name: Build Multi-Platform Binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    strategy:
+      matrix:
+        include:
+          # macOS
+          - goos: darwin
+            goarch: amd64
+            output: ccload-darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            output: ccload-darwin-arm64
+          # Linux
+          - goos: linux
+            goarch: amd64
+            output: ccload-linux-amd64
+          - goos: linux
+            goarch: arm64
+            output: ccload-linux-arm64
+          # Windows
+          - goos: windows
+            goarch: amd64
+            output: ccload-windows-amd64.exe
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 获取完整历史以便git describe工作
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Get version info
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.tag }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          COMMIT=$(git rev-parse --short HEAD)
+          BUILD_TIME=$(date '+%Y-%m-%d %H:%M:%S %z')
+          BUILT_BY="github-actions"
+
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "commit=${COMMIT}" >> $GITHUB_OUTPUT
+          echo "build_time=${BUILD_TIME}" >> $GITHUB_OUTPUT
+          echo "built_by=${BUILT_BY}" >> $GITHUB_OUTPUT
+
+      - name: Build ${{ matrix.output }}
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          go build -tags go_json \
+            -ldflags "\
+              -X ccLoad/internal/version.Version=${{ steps.version.outputs.version }} \
+              -X ccLoad/internal/version.Commit=${{ steps.version.outputs.commit }} \
+              -X 'ccLoad/internal/version.BuildTime=${{ steps.version.outputs.build_time }}' \
+              -X ccLoad/internal/version.BuiltBy=${{ steps.version.outputs.built_by }}" \
+            -o dist/${{ matrix.output }} .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output }}
+          path: dist/${{ matrix.output }}
+          retention-days: 1
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create checksums
+        working-directory: dist
+        run: |
+          sha256sum * > checksums.txt
+          cat checksums.txt
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          cat > release_notes.md <<'EOF'
+          ## 📦 下载
+
+          | 平台 | 架构 | 文件 |
+          |------|------|------|
+          | macOS | Intel | [ccload-darwin-amd64](https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/ccload-darwin-amd64) |
+          | macOS | Apple Silicon | [ccload-darwin-arm64](https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/ccload-darwin-arm64) |
+          | Linux | x86_64 | [ccload-linux-amd64](https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/ccload-linux-amd64) |
+          | Linux | ARM64 | [ccload-linux-arm64](https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/ccload-linux-arm64) |
+          | Windows | x86_64 | [ccload-windows-amd64.exe](https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/ccload-windows-amd64.exe) |
+
+          **校验和**: [checksums.txt](https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/checksums.txt)
+
+          ## 🔐 验证下载
+
+          ```bash
+          # macOS/Linux
+          sha256sum -c checksums.txt
+
+          # Windows (PowerShell)
+          Get-FileHash ccload-windows-amd64.exe -Algorithm SHA256
+          ```
+
+          ---
+          EOF
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Release ${{ steps.version.outputs.tag }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body_path: release_notes.md
+          files: |
+            dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
