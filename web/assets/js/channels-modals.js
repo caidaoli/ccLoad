@@ -77,8 +77,12 @@ async function editChannel(id) {
 }
 
 function closeModal() {
+  if (channelFormDirty && !confirm('有未保存的更改，确定要关闭吗？')) {
+    return;
+  }
   document.getElementById('channelModal').classList.remove('show');
   editingChannelId = null;
+  resetChannelFormDirty();
 }
 
 async function saveChannel(event) {
@@ -129,6 +133,7 @@ async function saveChannel(event) {
 
     if (!resp.success) throw new Error(resp.error || '保存失败');
 
+    resetChannelFormDirty(); // 保存成功，重置dirty状态（避免closeModal弹确认框）
     closeModal();
     clearChannelsCache();
     await loadChannels(filters.channelType);

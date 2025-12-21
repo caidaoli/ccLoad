@@ -762,6 +762,17 @@ body {
   box-shadow: 0 8px 25px rgba(59, 130, 246, 0.4);
 }
 
+.btn-warning {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  color: white;
+  box-shadow: var(--shadow-md);
+}
+
+.btn-warning:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(245, 158, 11, 0.4);
+}
+
 .btn-secondary {
   background: var(--glass-bg);
   backdrop-filter: blur(8px);

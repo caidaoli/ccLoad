@@ -24,6 +24,7 @@ let inlineKeyTableData = [];
 let inlineKeyVisible = false; // 密码可见性状态
 let selectedKeyIndices = new Set(); // 选中的Key索引集合
 let currentKeyStatusFilter = 'all'; // 当前状态筛选：all/normal/cooldown
+let channelFormDirty = false; // 表单是否有未保存的更改
 
 // 虚拟滚动实现：优化大量Key时的渲染性能
 const VIRTUAL_SCROLL_CONFIG = {
@@ -117,6 +118,28 @@ function formatTimestampForFilename() {
 function maskKey(key) {
   if (key.length <= 8) return '***';
   return key.slice(0, 4) + '***' + key.slice(-4);
+}
+
+// 标记表单有未保存的更改
+function markChannelFormDirty() {
+  channelFormDirty = true;
+  const saveBtn = document.getElementById('channelSaveBtn');
+  if (saveBtn && !saveBtn.classList.contains('btn-warning')) {
+    saveBtn.classList.remove('btn-primary');
+    saveBtn.classList.add('btn-warning');
+    saveBtn.textContent = '保存 *';
+  }
+}
+
+// 重置表单dirty状态
+function resetChannelFormDirty() {
+  channelFormDirty = false;
+  const saveBtn = document.getElementById('channelSaveBtn');
+  if (saveBtn) {
+    saveBtn.classList.remove('btn-warning');
+    saveBtn.classList.add('btn-primary');
+    saveBtn.textContent = '保存';
+  }
 }
 
 // 通知系统统一由 ui.js 提供（showNotification/showSuccess/showError）

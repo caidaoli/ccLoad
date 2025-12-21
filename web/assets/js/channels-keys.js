@@ -244,6 +244,8 @@ function initKeyTableEventDelegation() {
       selectedKeyIndices.clear();
       renderInlineKeyTable();
 
+      // 标记表单有未保存的更改
+      markChannelFormDirty();
 
       // Update hidden input
       const hiddenInput = document.getElementById('channelApiKey');
