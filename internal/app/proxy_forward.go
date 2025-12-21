@@ -537,7 +537,6 @@ func (s *Server) forwardAttempt(
 			// 使用内部状态码 StatusSSEError 标识，便于日志筛选和统计
 			log.Printf("[WARN]  [SSE错误处理] HTTP状态码200但检测到SSE error事件，触发冷却逻辑")
 			res.Body = res.SSEErrorEvent
-			res.StreamDiagMsg = fmt.Sprintf("SSE error event: %s", safeBodyToString(res.SSEErrorEvent))
 			// [FIX] 区分 1308 错误
 			// 如果是 1308 错误，使用 596 状态码，避免影响渠道成功率
 			if _, is1308 := util.ParseResetTimeFrom1308Error(res.SSEErrorEvent); is1308 {
