@@ -98,6 +98,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 获取完整历史以便分析提交记录
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
