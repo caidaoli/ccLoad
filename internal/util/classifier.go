@@ -28,8 +28,12 @@ const (
 	// 来源：(1) context.Canceled → 不重试  (2) 上游返回499 → 重试其他渠道
 	StatusClientClosedRequest = 499
 
+	// StatusQuotaExceeded 1308配额超限（自定义状态码）
+	// 即使HTTP状态码为200，但响应体为1308错误。需从成功率计算中排除
+	StatusQuotaExceeded = 596
+
 	// StatusSSEError SSE流中检测到error事件（自定义状态码）
-	// HTTP状态码200但流中包含错误，如1308配额超限
+	// HTTP状态码200但流中包含错误，如其他类型的API错误
 	StatusSSEError = 597
 
 	// StatusFirstByteTimeout 上游首字节超时（自定义状态码，触发渠道级冷却）
@@ -96,7 +100,8 @@ var statusCodeClassification = map[int]ErrorLevel{
 	524: ErrorLevelChannel, // Cloudflare: A Timeout Occurred
 
 	// 自定义内部状态码
-	StatusSSEError:         ErrorLevelKey,     // 597 SSE error事件（如1308配额错误）
+	StatusQuotaExceeded:    ErrorLevelKey,     // 596 1308配额超限
+	StatusSSEError:         ErrorLevelKey,     // 597 SSE error事件
 	StatusFirstByteTimeout: ErrorLevelChannel, // 598 上游首字节超时
 	StatusStreamIncomplete: ErrorLevelChannel, // 599 流式响应不完整
 

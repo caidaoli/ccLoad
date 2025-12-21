@@ -355,7 +355,14 @@ func (s *Server) handleResponse(
 			// [FIX] 使用 StatusSSEError (597) 而非 503，让 ClassifyHTTPResponse 能正确分析 error.type
 			// 原因：简单改为503会导致所有软错误都被误判为渠道级故障（如429限流被当作渠道过载）
 			// 现在：利用现有的 classifySSEError 逻辑，根据 error.type 精确分类为 Key级/渠道级
-			resp.StatusCode = util.StatusSSEError // 597
+			// [FIX] 区分 1308 错误与其他 SSE 错误
+			// 1308 错误 (StatusQuotaExceeded) 不计入成功率统计
+			if _, is1308 := util.ParseResetTimeFrom1308Error(validData); is1308 {
+				resp.StatusCode = util.StatusQuotaExceeded // 596
+			} else {
+				// 其他软错误使用 597
+				resp.StatusCode = util.StatusSSEError // 597
+			}
 
 			// 恢复 Body 以便 handleErrorResponse 读取完整信息
 			// 使用匿名结构体组合 Reader 和 Closer
@@ -531,7 +538,15 @@ func (s *Server) forwardAttempt(
 			log.Printf("[WARN]  [SSE错误处理] HTTP状态码200但检测到SSE error事件，触发冷却逻辑")
 			res.Body = res.SSEErrorEvent
 			res.StreamDiagMsg = fmt.Sprintf("SSE error event: %s", safeBodyToString(res.SSEErrorEvent))
-			res.Status = util.StatusSSEError // 597 - SSE error事件
+			// [FIX] 区分 1308 错误
+			// 如果是 1308 错误，使用 596 状态码，避免影响渠道成功率
+			if _, is1308 := util.ParseResetTimeFrom1308Error(res.SSEErrorEvent); is1308 {
+				res.Status = util.StatusQuotaExceeded // 596
+				res.StreamDiagMsg = fmt.Sprintf("Quota Exceeded (1308): %s", safeBodyToString(res.SSEErrorEvent))
+			} else {
+				res.Status = util.StatusSSEError // 597 - SSE error事件
+				res.StreamDiagMsg = fmt.Sprintf("SSE error event: %s", safeBodyToString(res.SSEErrorEvent))
+			}
 			// [FIX] 流式响应已开始（响应头已发送），重试不可能
 			// 只触发冷却+记录日志，不尝试重试（避免产生 499 混乱日志）
 			return s.handleStreamingErrorNoRetry(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
