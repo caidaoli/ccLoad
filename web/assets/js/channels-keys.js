@@ -126,7 +126,7 @@ function handleVirtualScroll(event) {
     const { visibleStart, visibleEnd } = calculateVisibleRange(virtualScrollState.filteredIndices.length);
 
     if (visibleStart !== virtualScrollState.visibleStart ||
-        visibleEnd !== virtualScrollState.visibleEnd) {
+      visibleEnd !== virtualScrollState.visibleEnd) {
       virtualScrollState.visibleStart = visibleStart;
       virtualScrollState.visibleEnd = visibleEnd;
 
@@ -163,6 +163,95 @@ function initKeyTableEventDelegation() {
   if (!tbody || tbody.dataset.delegated) return;
 
   tbody.dataset.delegated = 'true';
+  let dragSrcIndex = null;
+
+  // Drag and drop listeners
+  tbody.addEventListener('dragstart', (e) => {
+    // Prevent dragging when interacting with inputs or buttons
+    if (['INPUT', 'BUTTON', 'A'].includes(e.target.tagName)) return;
+
+    const row = e.target.closest('tr');
+    if (row && row.classList.contains('draggable-key-row')) {
+      dragSrcIndex = parseInt(row.dataset.index);
+      row.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', dragSrcIndex);
+
+      // Improve visual feedback
+      // e.dataTransfer.setDragImage(row, 0, 0); // Optional
+    }
+  });
+
+  tbody.addEventListener('dragend', (e) => {
+    const row = e.target.closest('tr');
+    if (row) row.classList.remove('dragging');
+    tbody.querySelectorAll('.draggable-key-row.drag-over').forEach(r => r.classList.remove('drag-over'));
+    dragSrcIndex = null;
+  });
+
+  tbody.addEventListener('dragover', (e) => {
+    e.preventDefault(); // Necessary to allow dropping
+    const row = e.target.closest('tr');
+
+    // Clear other drag-overs
+    tbody.querySelectorAll('.draggable-key-row.drag-over').forEach(r => {
+      if (r !== row) r.classList.remove('drag-over');
+    });
+
+    if (row && row.classList.contains('draggable-key-row')) {
+      const targetIndex = parseInt(row.dataset.index);
+      if (targetIndex !== dragSrcIndex) {
+        row.classList.add('drag-over');
+      }
+    }
+  });
+
+  tbody.addEventListener('drop', (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+
+    const targetRow = e.target.closest('tr');
+    if (!targetRow || !targetRow.classList.contains('draggable-key-row')) return;
+
+    const targetIndex = parseInt(targetRow.dataset.index);
+
+    if (dragSrcIndex !== null && dragSrcIndex !== targetIndex) {
+      // Perform Swap
+      const movedKey = inlineKeyTableData[dragSrcIndex];
+
+      inlineKeyTableData.splice(dragSrcIndex, 1);
+      inlineKeyTableData.splice(targetIndex, 0, movedKey);
+
+      // Update Cooldowns: Key Indices Shift
+      if (currentChannelKeyCooldowns && currentChannelKeyCooldowns.length > 0) {
+        currentChannelKeyCooldowns.forEach(kc => {
+          if (kc.key_index === dragSrcIndex) {
+            kc.key_index = targetIndex;
+          } else if (dragSrcIndex < targetIndex) {
+            // Moved down: Items between src and target shift UP (-1)
+            if (kc.key_index > dragSrcIndex && kc.key_index <= targetIndex) {
+              kc.key_index -= 1;
+            }
+          } else {
+            // Moved up: Items between target and src shift DOWN (+1)
+            if (kc.key_index >= targetIndex && kc.key_index < dragSrcIndex) {
+              kc.key_index += 1;
+            }
+          }
+        });
+      }
+
+      selectedKeyIndices.clear();
+      renderInlineKeyTable();
+
+
+      // Update hidden input
+      const hiddenInput = document.getElementById('channelApiKey');
+      if (hiddenInput) {
+        hiddenInput.value = inlineKeyTableData.join(',');
+      }
+    }
+  });
 
   // 事件委托：处理所有按钮和输入事件
   tbody.addEventListener('click', (e) => {
@@ -199,6 +288,8 @@ function initKeyTableEventDelegation() {
     if (input) {
       input.style.borderColor = 'var(--primary-500)';
       input.style.boxShadow = '0 0 0 3px rgba(59,130,246,0.1)';
+      // Ensure drag doesn't interfere with typing
+      input.closest('tr').setAttribute('draggable', 'false');
     }
   });
 
@@ -207,6 +298,7 @@ function initKeyTableEventDelegation() {
     if (input) {
       input.style.borderColor = 'var(--neutral-300)';
       input.style.boxShadow = 'none';
+      input.closest('tr').setAttribute('draggable', 'true');
     }
   });
 
@@ -277,8 +369,8 @@ function renderInlineKeyTable() {
   }
 
   virtualScrollState.enabled = true;
-  if (!virtualScrollState.filteredIndices || 
-      virtualScrollState.filteredIndices.length !== visibleIndices.length) {
+  if (!virtualScrollState.filteredIndices ||
+    virtualScrollState.filteredIndices.length !== visibleIndices.length) {
     virtualScrollState.scrollTop = 0;
   }
   virtualScrollState.filteredIndices = visibleIndices;
@@ -317,7 +409,7 @@ function toggleInlineKeyVisibility() {
 
 function updateInlineKey(index, value) {
   inlineKeyTableData[index] = value.trim();
-  
+
   const hiddenInput = document.getElementById('channelApiKey');
   if (hiddenInput) {
     hiddenInput.value = inlineKeyTableData.join(',');
@@ -513,11 +605,11 @@ function updateSelectAllCheckbox() {
 
   const visibleIndices = getVisibleKeyIndices();
   const allSelected = visibleIndices.length > 0 &&
-                     visibleIndices.every(index => selectedKeyIndices.has(index));
+    visibleIndices.every(index => selectedKeyIndices.has(index));
 
   checkbox.checked = allSelected;
   checkbox.indeterminate = !allSelected &&
-                           visibleIndices.some(index => selectedKeyIndices.has(index));
+    visibleIndices.some(index => selectedKeyIndices.has(index));
 }
 
 function batchDeleteSelectedKeys() {

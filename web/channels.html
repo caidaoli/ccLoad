@@ -488,7 +488,7 @@
 
   <!-- HTML模板定义 (分离HTML与JS) -->
   <template id="tpl-key-row">
-    <tr style="border-bottom: 1px solid var(--neutral-200); height: 42px;">
+    <tr draggable="true" class="draggable-key-row" data-index="{{index}}" style="border-bottom: 1px solid var(--neutral-200); height: 42px;">
       <td style="padding: 6px 10px;">
         <div style="display: flex; align-items: center; gap: 8px;">
           <input

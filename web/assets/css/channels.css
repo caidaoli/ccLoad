@@ -183,3 +183,16 @@
       width: 100%;
       height: 280px;
     }
+
+    /* Drag and Drop for Keys */
+    .draggable-key-row {
+      cursor: move;
+      transition: background-color 0.2s;
+    }
+    .draggable-key-row.dragging {
+      opacity: 0.5;
+      background-color: var(--neutral-100);
+    }
+    .draggable-key-row.drag-over {
+      border-top: 2px solid var(--primary-500) !important;
+    }
