@@ -259,4 +259,62 @@ func TestHandleError_1308Error(t *testing.T) {
 
 		t.Logf("[INFO] 单Key渠道1308错误已正确处理，禁用至: %s", actualTime.Format("2006-01-02 15:04:05"))
 	})
+
+	t.Run("code字段格式的1308错误-应该正确识别和冷却", func(t *testing.T) {
+		// 重置Key冷却状态
+		if err := store.ResetKeyCooldown(ctx, cfg.ID, 0); err != nil {
+			t.Fatalf("Failed to reset key cooldown: %v", err)
+		}
+
+		// 模拟使用code字段的1308错误（非Anthropic格式）
+		errorBody := []byte(`{"error":{"code":"1308","message":"已达到 5 小时的使用上限。您的限额将在 2025-12-21 15:00:05 重置。"},"request_id":"202512211335142b05cc4f9bbb4e6c"}`)
+
+		// 抑制日志输出
+		var buf bytes.Buffer
+		oldOutput := log.Writer()
+		log.SetOutput(&buf)
+		defer log.SetOutput(oldOutput)
+
+		// 处理错误
+		action, err := manager.HandleError(ctx, cfg.ID, 0, 597, errorBody, false, nil)
+		if err != nil {
+			t.Fatalf("HandleError failed: %v", err)
+		}
+
+		// 验证返回的Action
+		if action != ActionRetryKey {
+			t.Errorf("Expected ActionRetryKey, got %v", action)
+		}
+
+		// 查询API Key列表验证冷却状态
+		keys, err := store.GetAPIKeys(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("Failed to get API keys: %v", err)
+		}
+
+		if len(keys) == 0 {
+			t.Fatal("No API keys found")
+		}
+
+		// 验证Key 0的冷却时间
+		key0 := keys[0]
+		expectedTime, _ := time.ParseInLocation("2006-01-02 15:04:05", "2025-12-21 15:00:05", time.Local)
+
+		// 由于时间是Unix秒，可能有秒级误差
+		if key0.CooldownUntil == 0 {
+			t.Error("Key cooldown was not set")
+		}
+
+		actualTime := time.Unix(key0.CooldownUntil, 0)
+		timeDiff := actualTime.Sub(expectedTime).Abs()
+
+		if timeDiff > 2*time.Second {
+			t.Errorf("Cooldown time mismatch: got %v, want %v, diff=%v",
+				actualTime.Format("2006-01-02 15:04:05"),
+				expectedTime.Format("2006-01-02 15:04:05"),
+				timeDiff)
+		}
+
+		t.Logf("[INFO] code字段格式的1308错误已正确识别，Key禁用至: %s", actualTime.Format("2006-01-02 15:04:05"))
+	})
 }

@@ -38,6 +38,12 @@ func TestParseResetTimeFrom1308Error(t *testing.T) {
 			responseBody: `{"type":"error","error":{"type":"1308","message":"您的限额将在 2025/12/09 重置。"},"request_id":"xxx"}`,
 			expectSuccess: false,
 		},
+		{
+			name: "使用code字段的1308错误（非Anthropic格式）",
+			responseBody: `{"error":{"code":"1308","message":"已达到 5 小时的使用上限。您的限额将在 2025-12-21 15:00:05 重置。"},"request_id":"202512211335142b05cc4f9bbb4e6c"}`,
+			expectSuccess: true,
+			expectTime:    "2025-12-21 15:00:05",
+		},
 	}
 
 	for _, tt := range tests {

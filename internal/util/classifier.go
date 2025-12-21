@@ -285,10 +285,14 @@ func classifySSEError(responseBody []byte) ErrorLevel {
 	}
 
 	// 解析SSE error JSON
+	// [FIX] 支持两种格式：
+	//   1. Anthropic格式: {"type":"error", "error":{"type":"1308", ...}}
+	//   2. 其他渠道格式: {"error":{"code":"1308", ...}}
 	var errResp struct {
 		Type  string `json:"type"`
 		Error struct {
-			Type    string `json:"type"`
+			Type    string `json:"type"` // Anthropic使用
+			Code    string `json:"code"` // 其他渠道使用
 			Message string `json:"message"`
 		} `json:"error"`
 	}
@@ -297,8 +301,14 @@ func classifySSEError(responseBody []byte) ErrorLevel {
 		return ErrorLevelKey // 解析失败，保守处理
 	}
 
-	// 根据error.type判断错误级别
-	switch errResp.Error.Type {
+	// 优先使用type字段，如果为空则使用code字段
+	errorType := errResp.Error.Type
+	if errorType == "" {
+		errorType = errResp.Error.Code
+	}
+
+	// 根据error.type/code判断错误级别
+	switch errorType {
 	case "api_error", "overloaded_error":
 		// 上游服务错误或过载 → 渠道级冷却
 		return ErrorLevelChannel
@@ -325,10 +335,14 @@ func classifySSEError(responseBody []byte) ErrorLevel {
 //   - bool: 是否成功解析（true表示是1308错误且成功提取时间）
 func ParseResetTimeFrom1308Error(responseBody []byte) (time.Time, bool) {
 	// 1. 解析JSON结构
+	// [FIX] 支持两种格式：
+	//   1. Anthropic格式: {"type":"error", "error":{"type":"1308", ...}}
+	//   2. 其他渠道格式: {"error":{"code":"1308", ...}}
 	var errResp struct {
 		Type  string `json:"type"`
 		Error struct {
-			Type    string `json:"type"`
+			Type    string `json:"type"` // Anthropic使用
+			Code    string `json:"code"` // 其他渠道使用
 			Message string `json:"message"`
 		} `json:"error"`
 	}
@@ -337,8 +351,12 @@ func ParseResetTimeFrom1308Error(responseBody []byte) (time.Time, bool) {
 		return time.Time{}, false
 	}
 
-	// 2. 检查是否为1308错误
-	if errResp.Error.Type != "1308" {
+	// 2. 检查是否为1308错误（优先使用type，如果为空则使用code）
+	errorType := errResp.Error.Type
+	if errorType == "" {
+		errorType = errResp.Error.Code
+	}
+	if errorType != "1308" {
 		return time.Time{}, false
 	}
 

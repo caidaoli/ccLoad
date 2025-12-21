@@ -646,6 +646,12 @@ func TestClassifySSEError(t *testing.T) {
 			reason:       "1308错误是Key配额问题，应触发Key级冷却",
 		},
 		{
+			name:         "1308_error_with_code_field",
+			responseBody: []byte(`{"error":{"code":"1308","message":"已达到 5 小时的使用上限。您的限额将在 2025-12-21 15:00:05 重置。"},"request_id":"202512211335142b05cc4f9bbb4e6c"}`),
+			expected:     ErrorLevelKey,
+			reason:       "使用code字段的1308错误（非Anthropic格式）应触发Key级冷却",
+		},
+		{
 			name:         "unknown_error_type",
 			responseBody: []byte(`{"type":"error","error":{"type":"unknown_type","message":"未知错误"}}`),
 			expected:     ErrorLevelKey,

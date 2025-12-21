@@ -54,3 +54,4 @@ com.ccload.service.plist
 AGENTS.md
 dist
 *.bak
+.docs
