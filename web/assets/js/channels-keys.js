@@ -464,7 +464,6 @@ async function testSingleKey(keyIndex) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: firstModel,
-        max_tokens: 512,
         stream: true,
         content: 'test',
         channel_type: channelType,

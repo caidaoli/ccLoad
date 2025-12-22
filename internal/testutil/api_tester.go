@@ -168,8 +168,7 @@ func (t *OpenAITester) Build(cfg *model.Config, apiKey string, req *TestChannelR
 				"content": testContent,
 			},
 		},
-		"max_tokens": req.MaxTokens,
-		"stream":     req.Stream,
+		"stream": req.Stream,
 	}
 
 	body, err := sonic.Marshal(msg)
@@ -325,9 +324,8 @@ func (t *AnthropicTester) Build(cfg *model.Config, apiKey string, req *TestChann
 				"role": "user",
 			},
 		},
-		"model":      req.Model,
-		"max_tokens": maxTokens,
-		"metadata":   map[string]any{"user_id": "test"},
+		"model":    req.Model,
+		"metadata": map[string]any{"user_id": "test"},
 	}
 
 	body, err := sonic.Marshal(msg)

@@ -162,10 +162,10 @@ async function runModelTests() {
       const data = await fetchDataWithAuth(`/admin/channels/${selectedChannel.id}/test`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, max_tokens: 512, stream: streamEnabled, content, channel_type: channelType })
+        body: JSON.stringify({ model, stream: streamEnabled, content, channel_type: channelType })
       });
 
-      row.querySelector('.duration').textContent = data.duration_ms ? `${data.duration_ms}ms` : '-';
+      row.querySelector('.duration').textContent = data.duration_ms ? `${(data.duration_ms / 1000).toFixed(2)}s` : '-';
 
       if (data.success) {
         row.style.background = 'rgba(16, 185, 129, 0.1)';

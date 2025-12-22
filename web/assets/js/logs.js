@@ -803,7 +803,6 @@
         // 构建测试请求（使用用户选择的模型）
         const testRequest = {
           model: selectedModel,
-          max_tokens: 512,
           stream: streamEnabled,
           content: testContent,
           channel_type: testingKeyData.channelType || 'anthropic' // ✅ 添加渠道类型

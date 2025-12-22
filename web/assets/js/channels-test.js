@@ -99,7 +99,6 @@ async function runChannelTest() {
   try {
     const testRequest = {
       model: selectedModel,
-      max_tokens: 512,
       stream: streamEnabled,
       content: testContent,
       channel_type: channelType
@@ -194,7 +193,6 @@ async function runBatchTest() {
     try {
       const testRequest = {
         model: selectedModel,
-        max_tokens: 512,
         stream: streamEnabled,
         content: testContent,
         channel_type: channelType,
