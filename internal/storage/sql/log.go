@@ -19,10 +19,11 @@ func scanLogEntry(scanner interface {
 	var timeMs int64
 	var apiKeyUsed sql.NullString
 	var clientIP sql.NullString
+	var actualModel sql.NullString
 	var inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, cache5mTokens, cache1hTokens sql.NullInt64
 	var cost sql.NullFloat64
 
-	if err := scanner.Scan(&e.ID, &timeMs, &e.Model, &e.ChannelID,
+	if err := scanner.Scan(&e.ID, &timeMs, &e.Model, &actualModel, &e.ChannelID,
 		&e.StatusCode, &e.Message, &duration, &isStreamingInt, &firstByteTime, &apiKeyUsed, &e.AuthTokenID, &clientIP,
 		&inputTokens, &outputTokens, &cacheReadTokens, &cacheCreationTokens, &cache5mTokens, &cache1hTokens, &cost); err != nil {
 		return nil, err
@@ -30,6 +31,9 @@ func scanLogEntry(scanner interface {
 
 	e.Time = model.JSONTime{Time: time.UnixMilli(timeMs)}
 
+	if actualModel.Valid {
+		e.ActualModel = actualModel.String
+	}
 	if duration.Valid {
 		e.Duration = duration.Float64
 	}
@@ -109,12 +113,12 @@ func (s *SQLStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 
 	// 直接写入日志数据库（简化预编译语句缓存）
 	query := `
-		INSERT INTO logs(time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used, auth_token_id, client_ip,
+		INSERT INTO logs(time, model, actual_model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used, auth_token_id, client_ip,
 			input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
-	_, err := s.db.ExecContext(ctx, query, timeMs, e.Model, e.ChannelID, e.StatusCode, e.Message, e.Duration, e.IsStreaming, e.FirstByteTime, maskedKey, e.AuthTokenID, e.ClientIP,
+	_, err := s.db.ExecContext(ctx, query, timeMs, e.Model, e.ActualModel, e.ChannelID, e.StatusCode, e.Message, e.Duration, e.IsStreaming, e.FirstByteTime, maskedKey, e.AuthTokenID, e.ClientIP,
 		e.InputTokens, e.OutputTokens, e.CacheReadInputTokens, e.CacheCreationInputTokens, e.Cache5mInputTokens, e.Cache1hInputTokens, e.Cost)
 	return err
 }
@@ -133,9 +137,9 @@ func (s *SQLStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) err
 	defer func() { _ = tx.Rollback() }()
 
 	stmt, err := tx.PrepareContext(ctx, `
-        INSERT INTO logs(time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used, auth_token_id, client_ip,
+        INSERT INTO logs(time, model, actual_model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used, auth_token_id, client_ip,
 			input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
 	if err != nil {
 		return err
@@ -158,6 +162,7 @@ func (s *SQLStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) err
 		if _, err := stmt.ExecContext(ctx,
 			timeMs,
 			e.Model,
+			e.ActualModel,
 			e.ChannelID,
 			e.StatusCode,
 			e.Message,
@@ -186,7 +191,7 @@ func (s *SQLStore) ListLogs(ctx context.Context, since time.Time, limit, offset 
 	// 使用查询构建器构建复杂查询
 	// 性能优化：批量查询渠道名称消除N+1问题（100渠道场景提升50-100倍）
 	baseQuery := `
-		SELECT id, time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used, auth_token_id, client_ip,
+		SELECT id, time, model, actual_model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used, auth_token_id, client_ip,
 			input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost
 		FROM logs`
 
@@ -267,7 +272,7 @@ func (s *SQLStore) CountLogs(ctx context.Context, since time.Time, filter *model
 // ListLogsRange 查询指定时间范围内的日志（支持精确日期范围如"昨日"）
 func (s *SQLStore) ListLogsRange(ctx context.Context, since, until time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error) {
 	baseQuery := `
-		SELECT id, time, model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used, auth_token_id, client_ip,
+		SELECT id, time, model, actual_model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used, auth_token_id, client_ip,
 			input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost
 		FROM logs`
 

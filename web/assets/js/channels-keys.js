@@ -579,24 +579,27 @@ function toggleSelectAllKeys(checked) {
 
 function updateBatchDeleteButton() {
   const btn = document.getElementById('batchDeleteKeysBtn');
+  if (!btn) return;
+
   const count = selectedKeyIndices.size;
+  const textSpan = btn.querySelector('span');
 
   if (count > 0) {
     btn.disabled = false;
-    btn.textContent = `删除选中 (${count})`;
+    if (textSpan) textSpan.textContent = `删除选中 (${count})`;
     btn.style.cursor = 'pointer';
+    btn.style.opacity = '1';
     btn.style.background = 'linear-gradient(135deg, #fef2f2 0%, #fecaca 100%)';
     btn.style.borderColor = '#fca5a5';
     btn.style.color = '#dc2626';
-    btn.style.fontWeight = '600';
   } else {
     btn.disabled = true;
-    btn.textContent = '删除选中';
+    if (textSpan) textSpan.textContent = '删除选中';
     btn.style.cursor = 'not-allowed';
-    btn.style.background = 'white';
-    btn.style.borderColor = 'var(--neutral-300)';
-    btn.style.color = 'var(--neutral-500)';
-    btn.style.fontWeight = '500';
+    btn.style.opacity = '0.5';
+    btn.style.background = '';
+    btn.style.borderColor = '';
+    btn.style.color = '';
   }
 }
 

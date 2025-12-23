@@ -24,12 +24,15 @@ func TestCacheIsolation_GetEnabledChannelsByModel(t *testing.T) {
 
 	// 创建测试渠道
 	cfg := &model.Config{
-		Name:           "test-channel",
-		URL:            "https://test.example.com",
-		Priority:       10,
-		Models:         []string{"model-1", "model-2"},
-		ModelRedirects: map[string]string{"alias-1": "model-1"},
-		Enabled:        true,
+		Name:     "test-channel",
+		URL:      "https://test.example.com",
+		Priority: 10,
+		ModelEntries: []model.ModelEntry{
+			{Model: "model-1", RedirectModel: ""},
+			{Model: "model-2", RedirectModel: ""},
+			{Model: "alias-1", RedirectModel: "model-1"},
+		},
+		Enabled: true,
 	}
 	created, err := store.CreateConfig(ctx, cfg)
 	if err != nil {
@@ -48,18 +51,15 @@ func TestCacheIsolation_GetEnabledChannelsByModel(t *testing.T) {
 	}
 
 	// 验证深拷贝：修改返回的数据
-	originalModelsLen := len(channels1[0].Models)
-	originalRedirectsLen := len(channels1[0].ModelRedirects)
+	originalEntriesLen := len(channels1[0].ModelEntries)
 
-	// 污染尝试1：修改 Models slice
-	channels1[0].Models = append(channels1[0].Models, "backdoor-model")
-	channels1[0].Models[0] = "POLLUTED"
+	// 污染尝试1：修改 ModelEntries slice
+	channels1[0].ModelEntries = append(channels1[0].ModelEntries, model.ModelEntry{Model: "backdoor-model"})
+	if len(channels1[0].ModelEntries) > 0 {
+		channels1[0].ModelEntries[0].Model = "POLLUTED"
+	}
 
-	// 污染尝试2：修改 ModelRedirects map
-	channels1[0].ModelRedirects["backdoor"] = "evil-model"
-	channels1[0].ModelRedirects["alias-1"] = "POLLUTED"
-
-	// 污染尝试3：修改其他字段
+	// 污染尝试2：修改其他字段
 	channels1[0].Name = "POLLUTED_NAME"
 	channels1[0].Priority = 9999
 
@@ -74,28 +74,22 @@ func TestCacheIsolation_GetEnabledChannelsByModel(t *testing.T) {
 
 	ch2 := channels2[0]
 
-	// 验证：Models slice 未被污染
-	if len(ch2.Models) != originalModelsLen {
-		t.Errorf("Models slice 长度被污染: 期望 %d, 实际 %d", originalModelsLen, len(ch2.Models))
+	// 验证：ModelEntries slice 未被污染
+	if len(ch2.ModelEntries) != originalEntriesLen {
+		t.Errorf("ModelEntries slice 长度被污染: 期望 %d, 实际 %d", originalEntriesLen, len(ch2.ModelEntries))
 	}
-	if ch2.Models[0] != "model-1" {
-		t.Errorf("Models[0] 被污染: 期望 'model-1', 实际 %q", ch2.Models[0])
-	}
-	for _, m := range ch2.Models {
-		if m == "backdoor-model" || m == "POLLUTED" {
-			t.Errorf("Models slice 包含污染数据: %q", m)
+	// 验证是否包含原始模型（顺序无关）
+	foundModel1 := false
+	for _, e := range ch2.ModelEntries {
+		if e.Model == "model-1" {
+			foundModel1 = true
+		}
+		if e.Model == "backdoor-model" || e.Model == "POLLUTED" {
+			t.Errorf("ModelEntries slice 包含污染数据: %q", e.Model)
 		}
 	}
-
-	// 验证：ModelRedirects map 未被污染
-	if len(ch2.ModelRedirects) != originalRedirectsLen {
-		t.Errorf("ModelRedirects map 长度被污染: 期望 %d, 实际 %d", originalRedirectsLen, len(ch2.ModelRedirects))
-	}
-	if redirect, ok := ch2.ModelRedirects["alias-1"]; !ok || redirect != "model-1" {
-		t.Errorf("ModelRedirects['alias-1'] 被污染: 期望 'model-1', 实际 %q", redirect)
-	}
-	if _, polluted := ch2.ModelRedirects["backdoor"]; polluted {
-		t.Errorf("ModelRedirects 包含污染键: 'backdoor'")
+	if !foundModel1 {
+		t.Errorf("ModelEntries 不包含 'model-1'")
 	}
 
 	// 验证：其他字段未被污染
@@ -111,11 +105,19 @@ func TestCacheIsolation_GetEnabledChannelsByModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetConfig 失败: %v", err)
 	}
-	if len(dbCfg.Models) != originalModelsLen {
-		t.Errorf("数据库中 Models 被污染: 期望 %d, 实际 %d", originalModelsLen, len(dbCfg.Models))
+	if len(dbCfg.ModelEntries) != originalEntriesLen {
+		t.Errorf("数据库中 ModelEntries 被污染: 期望 %d, 实际 %d", originalEntriesLen, len(dbCfg.ModelEntries))
 	}
-	if dbCfg.Models[0] != "model-1" {
-		t.Errorf("数据库中 Models[0] 被污染: 期望 'model-1', 实际 %q", dbCfg.Models[0])
+	// 验证数据库中是否包含原始模型（顺序无关）
+	foundModel1InDB := false
+	for _, e := range dbCfg.ModelEntries {
+		if e.Model == "model-1" {
+			foundModel1InDB = true
+			break
+		}
+	}
+	if !foundModel1InDB {
+		t.Errorf("数据库中 ModelEntries 不包含 'model-1'")
 	}
 
 	t.Logf("✅ 深拷贝隔离性测试通过：调用方修改未污染缓存或数据库")
@@ -134,13 +136,15 @@ func TestCacheIsolation_GetEnabledChannelsByType(t *testing.T) {
 
 	// 创建测试渠道
 	cfg := &model.Config{
-		Name:           "test-anthropic",
-		ChannelType:    "anthropic",
-		URL:            "https://test.example.com",
-		Priority:       10,
-		Models:         []string{"claude-3-sonnet"},
-		ModelRedirects: map[string]string{"claude": "claude-3-sonnet"},
-		Enabled:        true,
+		Name:        "test-anthropic",
+		ChannelType: "anthropic",
+		URL:         "https://test.example.com",
+		Priority:    10,
+		ModelEntries: []model.ModelEntry{
+			{Model: "claude-3-sonnet", RedirectModel: ""},
+			{Model: "claude", RedirectModel: "claude-3-sonnet"},
+		},
+		Enabled: true,
 	}
 	_, err = store.CreateConfig(ctx, cfg)
 	if err != nil {
@@ -159,8 +163,7 @@ func TestCacheIsolation_GetEnabledChannelsByType(t *testing.T) {
 	}
 
 	// 污染尝试：修改返回的数据
-	channels1[0].Models = append(channels1[0].Models, "backdoor-model")
-	channels1[0].ModelRedirects["backdoor"] = "evil"
+	channels1[0].ModelEntries = append(channels1[0].ModelEntries, model.ModelEntry{Model: "backdoor-model"})
 
 	// 第二次查询，验证缓存未被污染
 	channels2, err := cache.GetEnabledChannelsByType(ctx, "anthropic")
@@ -173,15 +176,26 @@ func TestCacheIsolation_GetEnabledChannelsByType(t *testing.T) {
 
 	ch2 := channels2[0]
 
-	// 验证：未被污染
-	if len(ch2.Models) != 1 || ch2.Models[0] != "claude-3-sonnet" {
-		t.Errorf("Models 被污染: 期望 ['claude-3-sonnet'], 实际 %v", ch2.Models)
+	// 验证：未被污染（顺序无关）
+	if len(ch2.ModelEntries) != 2 {
+		t.Errorf("ModelEntries 长度被污染: 期望 2, 实际 %d", len(ch2.ModelEntries))
 	}
-	if len(ch2.ModelRedirects) != 1 {
-		t.Errorf("ModelRedirects 被污染: 期望长度 1, 实际 %d", len(ch2.ModelRedirects))
+	// 验证包含原始模型
+	foundClaude3Sonnet := false
+	foundClaude := false
+	for _, e := range ch2.ModelEntries {
+		if e.Model == "claude-3-sonnet" {
+			foundClaude3Sonnet = true
+		}
+		if e.Model == "claude" {
+			foundClaude = true
+		}
+		if e.Model == "backdoor-model" {
+			t.Errorf("ModelEntries 包含污染数据: 'backdoor-model'")
+		}
 	}
-	if _, polluted := ch2.ModelRedirects["backdoor"]; polluted {
-		t.Errorf("ModelRedirects 包含污染键: 'backdoor'")
+	if !foundClaude3Sonnet || !foundClaude {
+		t.Errorf("ModelEntries 缺少原始模型: foundClaude3Sonnet=%v, foundClaude=%v", foundClaude3Sonnet, foundClaude)
 	}
 
 	t.Logf("✅ GetEnabledChannelsByType 深拷贝隔离性测试通过")
@@ -200,12 +214,14 @@ func TestCacheIsolation_MultipleQueries(t *testing.T) {
 
 	// 创建测试渠道
 	cfg := &model.Config{
-		Name:           "multi-query-test",
-		URL:            "https://test.example.com",
-		Priority:       10,
-		Models:         []string{"model-1", "model-2"},
-		ModelRedirects: map[string]string{},
-		Enabled:        true,
+		Name:     "multi-query-test",
+		URL:      "https://test.example.com",
+		Priority: 10,
+		ModelEntries: []model.ModelEntry{
+			{Model: "model-1", RedirectModel: ""},
+			{Model: "model-2", RedirectModel: ""},
+		},
+		Enabled: true,
 	}
 	_, err = store.CreateConfig(ctx, cfg)
 	if err != nil {
@@ -225,8 +241,7 @@ func TestCacheIsolation_MultipleQueries(t *testing.T) {
 		}
 
 		// 每次都尝试污染
-		channels[0].Models = append(channels[0].Models, "backdoor")
-		channels[0].ModelRedirects[string(rune('A'+i))] = "evil"
+		channels[0].ModelEntries = append(channels[0].ModelEntries, model.ModelEntry{Model: "backdoor"})
 	}
 
 	// 最终验证：缓存应该保持干净
@@ -239,14 +254,11 @@ func TestCacheIsolation_MultipleQueries(t *testing.T) {
 	}
 
 	ch := channels[0]
-	if len(ch.Models) != 2 {
-		t.Errorf("Models 长度被污染: 期望 2, 实际 %d", len(ch.Models))
+	if len(ch.ModelEntries) != 2 {
+		t.Errorf("ModelEntries 长度被污染: 期望 2, 实际 %d", len(ch.ModelEntries))
 	}
-	if ch.Models[0] != "model-1" || ch.Models[1] != "model-2" {
-		t.Errorf("Models 内容被污染: %v", ch.Models)
-	}
-	if len(ch.ModelRedirects) != 0 {
-		t.Errorf("ModelRedirects 被污染: 期望空, 实际 %v", ch.ModelRedirects)
+	if ch.ModelEntries[0].Model != "model-1" || ch.ModelEntries[1].Model != "model-2" {
+		t.Errorf("ModelEntries 内容被污染: %v", ch.ModelEntries)
 	}
 
 	t.Logf("✅ 多次查询隔离性测试通过：10次污染尝试均被隔离")
@@ -266,12 +278,13 @@ func TestCacheIsolation_WildcardQuery(t *testing.T) {
 	// 创建多个测试渠道
 	for i := 1; i <= 3; i++ {
 		cfg := &model.Config{
-			Name:           "wildcard-test-" + string(rune('A'+i-1)),
-			URL:            "https://test.example.com",
-			Priority:       i * 10,
-			Models:         []string{"model-common"},
-			ModelRedirects: map[string]string{},
-			Enabled:        true,
+			Name:     "wildcard-test-" + string(rune('A'+i-1)),
+			URL:      "https://test.example.com",
+			Priority: i * 10,
+			ModelEntries: []model.ModelEntry{
+				{Model: "model-common", RedirectModel: ""},
+			},
+			Enabled: true,
 		}
 		_, err := store.CreateConfig(ctx, cfg)
 		if err != nil {
@@ -292,7 +305,7 @@ func TestCacheIsolation_WildcardQuery(t *testing.T) {
 
 	// 污染所有返回的渠道
 	for i := range channels1 {
-		channels1[i].Models = append(channels1[i].Models, "POLLUTED")
+		channels1[i].ModelEntries = append(channels1[i].ModelEntries, model.ModelEntry{Model: "POLLUTED"})
 		channels1[i].Name = "POLLUTED"
 	}
 
@@ -307,8 +320,8 @@ func TestCacheIsolation_WildcardQuery(t *testing.T) {
 
 	// 验证：所有渠道都未被污染
 	for i, ch := range channels2 {
-		if len(ch.Models) != 1 || ch.Models[0] != "model-common" {
-			t.Errorf("渠道 %d Models 被污染: %v", i, ch.Models)
+		if len(ch.ModelEntries) != 1 || ch.ModelEntries[0].Model != "model-common" {
+			t.Errorf("渠道 %d ModelEntries 被污染: %v", i, ch.ModelEntries)
 		}
 		if ch.Name == "POLLUTED" {
 			t.Errorf("渠道 %d Name 被污染", i)

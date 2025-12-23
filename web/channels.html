@@ -150,22 +150,38 @@
             <label class="form-label" style="margin: 0;">
               API Key * <span class="models-hint" style="margin-left: 8px; margin-top: 0;">共 <span id="inlineKeyCount">0</span> 个Key <span id="virtualScrollHint" style="display: none; color: var(--primary-600); font-weight: 600;">· 虚拟滚动已启用</span></span>
             </label>
-            <div style="display: flex; gap: 6px;">
-              <button type="button" class="btn btn-secondary btn-sm" onclick="openInlineKeyImport()" style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px;">
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M8 3.5V12M8 12L5 9M8 12L11 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                  <path d="M2 13.5H14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <div style="display: flex; align-items: center; gap: 12px;">
+              <div style="display: flex; gap: 6px;">
+                <button type="button" class="btn btn-secondary btn-sm" onclick="openInlineKeyImport()" style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px;">
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M8 3.5V12M8 12L5 9M8 12L11 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M2 13.5H14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                  </svg>
+                  <span>导入</span>
+                </button>
+                <button type="button" id="toggleInlineKeyBtn" onclick="toggleInlineKeyVisibility()" style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--neutral-300); background: white; color: var(--neutral-500); cursor: pointer; padding: 0; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;" title="显示/隐藏API Key" onmouseover="this.style.background='var(--neutral-50)'; this.style.borderColor='var(--neutral-400)';" onmouseout="this.style.background='white'; this.style.borderColor='var(--neutral-300)';">
+                  <svg id="inlineEyeIcon" width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M1.5 8C1.5 8 3.5 3.5 8 3.5C12.5 3.5 14.5 8 14.5 8C14.5 8 12.5 12.5 8 12.5C3.5 12.5 1.5 8 1.5 8Z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                  <svg id="inlineEyeOffIcon" width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                    <path d="M2 2L14 14M6.5 6.5C6.96785 6.03214 7.60786 5.75 8.3 5.75C9.73071 5.75 10.9 6.91929 10.9 8.35C10.9 9.04214 10.6179 9.68215 10.15 10.15M4.5 4.5C2.73 5.67 1.5 8 1.5 8C1.5 8 3.5 12.5 8 12.5C9.35 12.5 10.58 11.97 11.55 11.5M12.85 11.85C13.97 10.73 14.5 8 14.5 8C14.5 8 12.5 3.5 8 3.5C7.23 3.5 6.5 3.73 5.85 4.05" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </button>
+              </div>
+              <button
+                type="button"
+                id="batchDeleteKeysBtn"
+                onclick="batchDeleteSelectedKeys()"
+                disabled
+                title="批量删除选中的Keys"
+                class="btn btn-secondary btn-sm"
+                style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; opacity: 0.5; cursor: not-allowed;"
+              >
+                <svg width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M5.5 2.5V1.5C5.5 1.22386 5.72386 1 6 1H8C8.27614 1 8.5 1.22386 8.5 1.5V2.5M2 3.5H12M3 3.5V11.5C3 12.0523 3.44772 12.5 4 12.5H10C10.5523 12.5 11 12.0523 11 11.5V3.5M5.5 6.5V9.5M8.5 6.5V9.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
                 </svg>
-                <span>导入</span>
-              </button>
-              <button type="button" id="toggleInlineKeyBtn" onclick="toggleInlineKeyVisibility()" style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--neutral-300); background: white; color: var(--neutral-500); cursor: pointer; padding: 0; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;" title="显示/隐藏API Key" onmouseover="this.style.background='var(--neutral-50)'; this.style.borderColor='var(--neutral-400)';" onmouseout="this.style.background='white'; this.style.borderColor='var(--neutral-300)';">
-                <svg id="inlineEyeIcon" width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M1.5 8C1.5 8 3.5 3.5 8 3.5C12.5 3.5 14.5 8 14.5 8C14.5 8 12.5 12.5 8 12.5C3.5 12.5 1.5 8 1.5 8Z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-                  <circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-                <svg id="inlineEyeOffIcon" width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="display: none;">
-                  <path d="M2 2L14 14M6.5 6.5C6.96785 6.03214 7.60786 5.75 8.3 5.75C9.73071 5.75 10.9 6.91929 10.9 8.35C10.9 9.04214 10.6179 9.68215 10.15 10.15M4.5 4.5C2.73 5.67 1.5 8 1.5 8C1.5 8 3.5 12.5 8 12.5C9.35 12.5 10.58 11.97 11.55 11.5M12.85 11.85C13.97 10.73 14.5 8 14.5 8C14.5 8 12.5 3.5 8 3.5C7.23 3.5 6.5 3.73 5.85 4.05" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
+                <span>删除选中</span>
               </button>
             </div>
           </div>
@@ -174,11 +190,11 @@
           <input type="hidden" id="channelApiKey" required>
 
           <!-- Key表格容器（最多显示5行+滚动） -->
-          <div style="max-height: 250px; overflow-y: auto; border: 1px solid var(--neutral-200); border-radius: 8px; background: white;">
-            <table style="width: 100%; border-collapse: collapse;">
-              <thead style="position: sticky; top: 0; z-index: 1; background: var(--neutral-100);">
-                <tr style="border-bottom: 2px solid var(--neutral-300);">
-                  <th style="padding: 6px 10px; text-align: left; font-weight: 600; font-size: 13px; width: 70px;">
+          <div class="inline-table-container">
+            <table class="inline-table">
+              <thead>
+                <tr>
+                  <th style="width: 70px;">
                     <div style="display: flex; align-items: center; gap: 6px;">
                       <input
                         type="checkbox"
@@ -190,8 +206,8 @@
                       <span>#</span>
                     </div>
                   </th>
-                  <th style="padding: 6px 10px; text-align: left; font-weight: 600; font-size: 13px;">API Key</th>
-                  <th style="padding: 6px 10px; text-align: left; font-weight: 600; font-size: 13px; width: 200px;">
+                  <th>API Key</th>
+                  <th style="width: 200px;">
                     <select
                       id="keyStatusFilter"
                       onchange="filterKeysByStatus(this.value)"
@@ -202,18 +218,7 @@
                       <option value="cooldown">冷却中</option>
                     </select>
                   </th>
-                  <th style="padding: 6px 10px; text-align: center; font-weight: 600; font-size: 13px; width: 120px;">
-                    <button
-                      type="button"
-                      id="batchDeleteKeysBtn"
-                      onclick="batchDeleteSelectedKeys()"
-                      disabled
-                      title="批量删除选中的Keys"
-                      style="padding: 4px 12px; border-radius: 6px; border: 1px solid var(--neutral-300); background: white; color: var(--neutral-500); cursor: not-allowed; font-size: 12px; font-weight: 500; transition: all 0.2s;"
-                    >
-                      删除选中
-                    </button>
-                  </th>
+                  <th style="width: 80px;"></th>
                 </tr>
               </thead>
               <tbody id="inlineKeyTableBody">
@@ -223,58 +228,77 @@
           </div>
         </div>
         <div class="form-group">
-          <!-- 标签行：包含标签和操作按钮 -->
+          <!-- 模型配置标签行：包含标签、添加按钮组和删除按钮 -->
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
             <label class="form-label" style="margin: 0;">
-              支持的模型 * <span class="models-hint" style="margin-left: 8px; margin-top: 0;">多个模型用英文逗号分隔</span>
+              模型配置 * <span class="models-hint" style="margin-left: 8px; margin-top: 0;">共 <span id="redirectCount">0</span> 个模型</span>
             </label>
-            <div style="display: flex; gap: 6px;">
-              <button type="button" class="btn btn-secondary btn-sm" onclick="addCommonModels()" style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px;" title="添加当前渠道类型的常用模型">
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M8 1L10 5.5L15 6L11.5 9.5L12.5 14.5L8 12L3.5 14.5L4.5 9.5L1 6L6 5.5L8 1Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+            <div style="display: flex; align-items: center; gap: 12px;">
+              <div style="display: flex; gap: 6px;">
+                <button type="button" class="btn btn-secondary btn-sm" onclick="addCommonModels()" style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px;" title="添加当前渠道类型的常用模型">
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M8 1L10 5.5L15 6L11.5 9.5L12.5 14.5L8 12L3.5 14.5L4.5 9.5L1 6L6 5.5L8 1Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+                  </svg>
+                  <span>常用模型</span>
+                </button>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="fetchModelsFromAPI()" style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px;" title="从渠道API获取可用模型列表">
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M13.65 2.35C12.2 0.9 10.21 0 8 0 3.58 0 0 3.58 0 8s3.58 8 8 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L9 7h7V0l-2.35 2.35z" fill="currentColor"/>
+                  </svg>
+                  <span>获取模型</span>
+                </button>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="addRedirectRow()" style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px;" title="手动添加模型">
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M8 3.5V12.5M3.5 8H12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                  <span>添加模型</span>
+                </button>
+              </div>
+              <button
+                type="button"
+                id="batchDeleteModelsBtn"
+                onclick="batchDeleteSelectedModels()"
+                disabled
+                title="批量删除选中的模型"
+                class="btn btn-secondary btn-sm"
+                style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; opacity: 0.5; cursor: not-allowed;"
+              >
+                <svg width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M5.5 2.5V1.5C5.5 1.22386 5.72386 1 6 1H8C8.27614 1 8.5 1.22386 8.5 1.5V2.5M2 3.5H12M3 3.5V11.5C3 12.0523 3.44772 12.5 4 12.5H10C10.5523 12.5 11 12.0523 11 11.5V3.5M5.5 6.5V9.5M8.5 6.5V9.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
                 </svg>
-                <span>常用模型</span>
-              </button>
-              <button type="button" class="btn btn-secondary btn-sm" onclick="fetchModelsFromAPI()" style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px;" title="从渠道API获取可用模型列表">
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M13.65 2.35C12.2 0.9 10.21 0 8 0 3.58 0 0 3.58 0 8s3.58 8 8 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L9 7h7V0l-2.35 2.35z" fill="currentColor"/>
-                </svg>
-                <span>获取模型列表</span>
-              </button>
-              <button type="button" class="btn btn-secondary btn-sm" onclick="clearAllModels()" style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px;" title="清除所有模型">
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M5.5 2.5V1.5C5.5 1.22386 5.72386 1 6 1H10C10.2761 1 10.5 1.22386 10.5 1.5V2.5M2 3.5H14M3 3.5V13.5C3 14.0523 3.44772 14.5 4 14.5H12C12.5523 14.5 13 14.0523 13 13.5V3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-                <span>清除所有</span>
-              </button>
-            </div>
-          </div>
-          <textarea id="channelModels" class="form-input" placeholder="claude-3-5-sonnet-20241022,claude-3-opus-20240229" required rows="2"></textarea>
-        </div>
-        <div class="form-group">
-          <!-- 模型重定向标签行：包含标签和操作按钮 -->
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-            <label class="form-label" style="margin: 0;">
-              模型重定向（可选） <span class="models-hint" style="margin-left: 8px; margin-top: 0;">将请求模型映射到实际转发模型，共 <span id="redirectCount">0</span> 条规则</span>
-            </label>
-            <div style="display: flex; gap: 6px;">
-              <button type="button" class="btn btn-secondary btn-sm" onclick="addRedirectRow()" style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px;" title="添加模型重定向规则">
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M8 3.5V12.5M3.5 8H12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-                <span>添加</span>
+                <span>删除选中</span>
               </button>
             </div>
           </div>
 
-          <!-- 重定向表格容器 -->
-          <div style="max-height: 300px; overflow-y: auto; border: 1px solid var(--neutral-200); border-radius: 8px; background: white;">
-            <table style="width: 100%; border-collapse: collapse;">
-              <thead style="position: sticky; top: 0; z-index: 1; background: var(--neutral-100);">
-                <tr style="border-bottom: 2px solid var(--neutral-300);">
-                  <th style="padding: 8px 12px; text-align: left; font-weight: 600; font-size: 13px; width: 45%;">请求模型</th>
-                  <th style="padding: 8px 12px; text-align: left; font-weight: 600; font-size: 13px; width: 45%;">实际模型</th>
-                  <th style="padding: 8px 12px; text-align: center; font-weight: 600; font-size: 13px; width: 10%;">操作</th>
+          <!-- 模型表格容器 -->
+          <div class="inline-table-container tall">
+            <table class="inline-table">
+              <thead>
+                <tr>
+                  <th style="width: 70px;">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                      <input
+                        type="checkbox"
+                        id="selectAllModels"
+                        onchange="toggleSelectAllModels(this.checked)"
+                        style="width: 16px; height: 16px; cursor: pointer; accent-color: var(--primary-500);"
+                        title="全选/取消全选"
+                      >
+                      <span>#</span>
+                    </div>
+                  </th>
+                  <th style="width: 42%;">
+                    <input
+                      type="text"
+                      id="modelFilterInput"
+                      class="table-filter-input"
+                      placeholder="搜索模型名称..."
+                      oninput="filterModelsByKeyword(this.value)"
+                    >
+                  </th>
+                  <th style="width: 42%;">重定向目标（可选）</th>
+                  <th style="width: 60px;"></th>
                 </tr>
               </thead>
               <tbody id="redirectTableBody">
@@ -590,35 +614,49 @@
   <!-- 重定向规则行模板 -->
   <template id="tpl-redirect-row">
     <tr style="border-bottom: 1px solid var(--neutral-200);">
-      <td style="padding: 8px 12px;">
+      <td style="padding: 4px 10px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <input
+            type="checkbox"
+            class="model-checkbox"
+            data-index="{{index}}"
+            onchange="toggleModelSelection({{index}}, this.checked)"
+            style="width: 16px; height: 16px; cursor: pointer; accent-color: var(--primary-500);"
+          >
+          <span style="color: var(--neutral-600); font-weight: 500; font-size: 13px;">{{displayIndex}}</span>
+        </div>
+      </td>
+      <td style="padding: 4px 10px;">
         <input
           type="text"
           class="redirect-from-input"
           data-index="{{index}}"
           value="{{from}}"
           placeholder="claude-3-opus-20240229"
-          style="width: 100%; padding: 6px 10px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace;"
+          style="width: 100%; padding: 5px 8px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace;"
         >
       </td>
-      <td style="padding: 8px 12px;">
+      <td style="padding: 4px 10px;">
         <input
           type="text"
           class="redirect-to-input"
           data-index="{{index}}"
           value="{{to}}"
-          placeholder="claude-3-5-sonnet-20241022"
-          style="width: 100%; padding: 6px 10px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace;"
+          placeholder="{{toPlaceholder}}"
+          style="width: 100%; padding: 5px 8px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace;"
         >
       </td>
-      <td style="padding: 8px 12px; text-align: center;">
+      <td style="padding: 4px 10px; text-align: center;">
         <button
           type="button"
           class="redirect-delete-btn"
           data-index="{{index}}"
-          style="padding: 4px 8px; border-radius: 6px; border: 1px solid var(--error-300); background: white; color: var(--error-600); cursor: pointer; font-size: 12px; transition: all 0.2s;"
-          title="删除此规则"
+          style="width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--neutral-200); background: white; color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;"
+          title="删除此模型"
         >
-          删除
+          <svg width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M5.5 2.5V1.5C5.5 1.22386 5.72386 1 6 1H8C8.27614 1 8.5 1.22386 8.5 1.5V2.5M2 3.5H12M3 3.5V11.5C3 12.0523 3.44772 12.5 4 12.5H10C10.5523 12.5 11 12.0523 11 11.5V3.5M5.5 6.5V9.5M8.5 6.5V9.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
         </button>
       </td>
     </tr>
@@ -627,7 +665,7 @@
   <!-- 重定向规则空状态模板 -->
   <template id="tpl-redirect-empty">
     <tr>
-      <td colspan="3" style="padding: 20px; text-align: center; color: var(--neutral-500);">
+      <td colspan="4" style="padding: 20px; text-align: center; color: var(--neutral-500);">
         {{message}}
       </td>
     </tr>

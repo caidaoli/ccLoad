@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
-	"ccLoad/internal/util"
 )
 
 // LoadChannelsFromRedis 从Redis恢复渠道数据到SQL (启动时数据库恢复机制)
@@ -37,21 +36,16 @@ func (s *SQLStore) LoadChannelsFromRedis(ctx context.Context) error {
 		err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
 			for _, cwk := range channelsWithKeys {
 				config := cwk.Config
-
-				// 标准化数据：确保默认值正确填充
-				modelsStr, _ := util.SerializeJSON(config.Models, "[]")
-				modelRedirectsStr, _ := util.SerializeJSON(config.ModelRedirects, "{}")
 				channelType := config.GetChannelType() // 强制使用默认值anthropic
 
-				// 1. 恢复渠道基本配置到channels表
+				// 1. 恢复渠道基本配置到channels表（不含 models/model_redirects）
 				result, err := tx.ExecContext(ctx, `
 				REPLACE INTO channels(
-					name, url, priority, models, model_redirects, channel_type,
+					name, url, priority, channel_type,
 					enabled, cooldown_until, cooldown_duration_ms, created_at, updated_at
 				)
-				VALUES(?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
-			`, config.Name, config.URL, config.Priority,
-					modelsStr, modelRedirectsStr, channelType,
+				VALUES(?, ?, ?, ?, ?, 0, 0, ?, ?)
+			`, config.Name, config.URL, config.Priority, channelType,
 					boolToInt(config.Enabled), nowUnix, nowUnix)
 
 				if err != nil {
@@ -72,6 +66,21 @@ func (s *SQLStore) LoadChannelsFromRedis(ctx context.Context) error {
 				if err != nil {
 					log.Printf("Warning: failed to get channel ID for %s: %v", config.Name, err)
 					continue
+				}
+
+				// 1.5 恢复模型条目到channel_models表
+				if len(config.ModelEntries) > 0 {
+					// 先删除旧记录
+					_, _ = tx.ExecContext(ctx, `DELETE FROM channel_models WHERE channel_id = ?`, channelID)
+					// 插入所有模型条目
+					for _, entry := range config.ModelEntries {
+						_, err := tx.ExecContext(ctx, `
+							INSERT INTO channel_models (channel_id, model, redirect_model) VALUES (?, ?, ?)
+						`, channelID, entry.Model, entry.RedirectModel)
+						if err != nil {
+							log.Printf("Warning: failed to restore model %s for channel %d: %v", entry.Model, channelID, err)
+						}
+					}
 				}
 
 				// 2. 恢复API Keys到api_keys表
@@ -402,9 +411,7 @@ func normalizeChannelsWithKeys(channelsWithKeys []*model.ChannelWithKeys) {
 		if cwk.Config.ChannelType == "" {
 			cwk.Config.ChannelType = "anthropic"
 		}
-		if cwk.Config.ModelRedirects == nil {
-			cwk.Config.ModelRedirects = make(map[string]string)
-		}
+		// ModelEntries 不需要额外规范化，空切片即为默认值
 
 		// 规范化APIKeys部分：确保key_strategy默认值
 		for i := range cwk.APIKeys {

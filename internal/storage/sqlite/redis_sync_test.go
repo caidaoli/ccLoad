@@ -16,28 +16,29 @@ func TestRedisSync_Serialization(t *testing.T) {
 	// 创建测试Config对象（注：新架构中APIKey在api_keys表）
 	configs := []*model.Config{
 		{
-			ID:             1,
-			Name:           "test-anthropic",
-			ChannelType:    "anthropic",
-			URL:            "https://api.anthropic.com",
-			Priority:       10,
-			Models:         []string{"claude-3-sonnet"},
-			ModelRedirects: map[string]string{"old": "new"},
-			Enabled:        true,
-			CreatedAt:      model.JSONTime{Time: now},
-			UpdatedAt:      model.JSONTime{Time: now},
+			ID:          1,
+			Name:        "test-anthropic",
+			ChannelType: "anthropic",
+			URL:         "https://api.anthropic.com",
+			Priority:    10,
+			ModelEntries: []model.ModelEntry{
+				{Model: "claude-3-sonnet", RedirectModel: ""},
+				{Model: "old", RedirectModel: "new"},
+			},
+			Enabled:   true,
+			CreatedAt: model.JSONTime{Time: now},
+			UpdatedAt: model.JSONTime{Time: now},
 		},
 		{
-			ID:             2,
-			Name:           "test-empty-defaults",
-			ChannelType:    "", // 空值，GetChannelType()会返回默认值
-			URL:            "https://api.example.com",
-			Priority:       5,
-			Models:         []string{"test-model"},
-			ModelRedirects: map[string]string{}, // 初始化为空map
-			Enabled:        true,
-			CreatedAt:      model.JSONTime{Time: now},
-			UpdatedAt:      model.JSONTime{Time: now},
+			ID:           2,
+			Name:         "test-empty-defaults",
+			ChannelType:  "", // 空值，GetChannelType()会返回默认值
+			URL:          "https://api.example.com",
+			Priority:     5,
+			ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
+			Enabled:      true,
+			CreatedAt:    model.JSONTime{Time: now},
+			UpdatedAt:    model.JSONTime{Time: now},
 		},
 	}
 
@@ -94,15 +95,16 @@ func TestRedisSync_Serialization(t *testing.T) {
 		t.Errorf("Config[1] GetChannelType()应返回anthropic，实际为 %s", restored[1].GetChannelType())
 	}
 
-	if len(restored[1].ModelRedirects) != 0 {
-		t.Errorf("Config[1] model_redirects应为空map，实际长度 %d", len(restored[1].ModelRedirects))
+	// 验证第二个Config的ModelEntries只有一个模型且无重定向
+	if len(restored[1].ModelEntries) != 1 || restored[1].ModelEntries[0].RedirectModel != "" {
+		t.Errorf("Config[1] ModelEntries应有1个无重定向的模型，实际: %v", restored[1].ModelEntries)
 	}
 }
 
 // ==================== Redis恢复时默认值填充测试 ====================
 
 func TestRedisRestore_DefaultValuesFilling(t *testing.T) {
-	// 模拟从Redis恢复的原始数据（注：APIKey在api_keys表）
+	// 模拟从Redis恢复的原始数据（新架构使用 models 数组）
 	rawJSON := `[
 		{
 			"id": 1,
@@ -110,8 +112,7 @@ func TestRedisRestore_DefaultValuesFilling(t *testing.T) {
 			"channel_type": "",
 			"url": "https://api.example.com",
 			"priority": 10,
-			"models": ["test-model"],
-			"model_redirects": {},
+			"models": [{"model": "test-model", "redirect_model": ""}],
 			"enabled": true,
 			"created_at": 1759575045,
 			"updated_at": 1759575045
@@ -149,14 +150,13 @@ func BenchmarkConfigSerialization(b *testing.B) {
 	configs := make([]*model.Config, 100)
 	for i := 0; i < 100; i++ {
 		configs[i] = &model.Config{
-			ID:             int64(i),
-			Name:           "test",
-			ChannelType:    "anthropic",
-			URL:            "https://api.example.com",
-			Priority:       10,
-			Models:         []string{"model-1"},
-			ModelRedirects: map[string]string{},
-			Enabled:        true,
+			ID:           int64(i),
+			Name:         "test",
+			ChannelType:  "anthropic",
+			URL:          "https://api.example.com",
+			Priority:     10,
+			ModelEntries: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
+			Enabled:      true,
 		}
 	}
 

@@ -15,15 +15,14 @@ import (
 
 // ChannelRequest 渠道创建/更新请求结构
 type ChannelRequest struct {
-	Name           string            `json:"name" binding:"required"`
-	APIKey         string            `json:"api_key" binding:"required"`
-	ChannelType    string            `json:"channel_type,omitempty"` // 渠道类型:anthropic, codex, gemini
-	KeyStrategy    string            `json:"key_strategy,omitempty"` // Key使用策略:sequential, round_robin
-	URL            string            `json:"url" binding:"required,url"`
-	Priority       int               `json:"priority"`
-	Models         []string          `json:"models" binding:"required,min=1"`
-	ModelRedirects map[string]string `json:"model_redirects,omitempty"` // 可选的模型重定向映射
-	Enabled        bool              `json:"enabled"`
+	Name        string             `json:"name" binding:"required"`
+	APIKey      string             `json:"api_key" binding:"required"`
+	ChannelType string             `json:"channel_type,omitempty"` // 渠道类型:anthropic, codex, gemini
+	KeyStrategy string             `json:"key_strategy,omitempty"` // Key使用策略:sequential, round_robin
+	URL         string             `json:"url" binding:"required,url"`
+	Priority    int                `json:"priority"`
+	Models      []model.ModelEntry `json:"models" binding:"required,min=1"` // 模型配置（包含重定向）
+	Enabled     bool               `json:"enabled"`
 }
 
 func validateChannelBaseURL(raw string) (string, error) {
@@ -71,6 +70,12 @@ func (cr *ChannelRequest) Validate() error {
 	if len(cr.Models) == 0 {
 		return fmt.Errorf("models cannot be empty")
 	}
+	// 验证模型条目（DRY: 使用 ModelEntry.Validate()）
+	for i := range cr.Models {
+		if err := cr.Models[i].Validate(); err != nil {
+			return fmt.Errorf("models[%d]: %w", i, err)
+		}
+	}
 
 	// URL 验证规则（Fail-Fast 边界防御）：
 	// - 必须包含 scheme+host（http/https）
@@ -115,13 +120,12 @@ func (cr *ChannelRequest) Validate() error {
 // ToConfig 转换为Config结构(不包含API Key,API Key单独处理)
 func (cr *ChannelRequest) ToConfig() *model.Config {
 	return &model.Config{
-		Name:           strings.TrimSpace(cr.Name),
-		ChannelType:    strings.TrimSpace(cr.ChannelType), // 传递渠道类型
-		URL:            strings.TrimSpace(cr.URL),
-		Priority:       cr.Priority,
-		Models:         cr.Models,
-		ModelRedirects: cr.ModelRedirects,
-		Enabled:        cr.Enabled,
+		Name:         strings.TrimSpace(cr.Name),
+		ChannelType:  strings.TrimSpace(cr.ChannelType), // 传递渠道类型
+		URL:          strings.TrimSpace(cr.URL),
+		Priority:     cr.Priority,
+		ModelEntries: cr.Models,
+		Enabled:      cr.Enabled,
 	}
 }
 

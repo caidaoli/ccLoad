@@ -594,8 +594,10 @@ func createTestChannel(t *testing.T, store storage.Store, name string) *model.Co
 		Name:     name,
 		URL:      "https://api.example.com",
 		Priority: 10,
-		Models:   []string{"test-model"},
-		Enabled:  true,
+		ModelEntries: []model.ModelEntry{
+			{Model: "test-model", RedirectModel: ""},
+		},
+		Enabled: true,
 	}
 
 	created, err := store.CreateConfig(context.Background(), cfg)

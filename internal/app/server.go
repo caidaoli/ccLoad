@@ -493,7 +493,7 @@ func (s *Server) getModelsByChannelType(ctx context.Context, channelType string)
 	}
 	modelSet := make(map[string]struct{})
 	for _, cfg := range channels {
-		for _, modelName := range cfg.Models {
+		for _, modelName := range cfg.GetModels() {
 			modelSet[modelName] = struct{}{}
 		}
 	}

@@ -6,8 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bytedance/sonic"
-
 	"ccLoad/internal/model"
 )
 
@@ -104,18 +102,18 @@ func NewConfigScanner() *ConfigScanner {
 	return &ConfigScanner{}
 }
 
-// ScanConfig 扫描单行配置数据，消除重复的扫描逻辑
+// ScanConfig 扫描单行配置数据（不含模型数据，需要单独查询channel_models表）
 func (cs *ConfigScanner) ScanConfig(scanner interface {
 	Scan(...any) error
 }) (*model.Config, error) {
 	var c model.Config
-	var modelsStr, modelRedirectsStr string
 	var enabledInt int
 	var createdAtRaw, updatedAtRaw any // 使用any接受任意类型（兼容字符串、整数或RFC3339）
 
 	// 扫描key_count字段（从JOIN查询获取）
+	// 注意：不再包含 models 和 model_redirects 字段
 	if err := scanner.Scan(&c.ID, &c.Name, &c.URL, &c.Priority,
-		&modelsStr, &modelRedirectsStr, &c.ChannelType, &enabledInt,
+		&c.ChannelType, &enabledInt,
 		&c.CooldownUntil, &c.CooldownDurationMs, &c.KeyCount,
 		&createdAtRaw, &updatedAtRaw); err != nil {
 		return nil, err
@@ -128,12 +126,9 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	c.CreatedAt = model.JSONTime{Time: cs.parseTimestampOrNow(createdAtRaw, now)}
 	c.UpdatedAt = model.JSONTime{Time: cs.parseTimestampOrNow(updatedAtRaw, now)}
 
-	if err := parseModelsJSON(modelsStr, &c.Models); err != nil {
-		c.Models = nil // 解析失败时使用空切片
-	}
-	if err := parseModelRedirectsJSON(modelRedirectsStr, &c.ModelRedirects); err != nil {
-		c.ModelRedirects = nil // 解析失败时使用空映射
-	}
+	// ModelEntries 需要通过 LoadModelEntries 方法单独加载
+	c.ModelEntries = nil
+
 	return &c, nil
 }
 
@@ -258,32 +253,4 @@ func (qb *QueryBuilder) BuildWithSuffix(suffix string) (string, []any) {
 		query += " " + suffix
 	}
 	return query, args
-}
-
-// 辅助函数：解析模型JSON
-func parseModelsJSON(modelsStr string, models *[]string) error {
-	trimmed := strings.TrimSpace(modelsStr)
-	if trimmed == "" || trimmed == "null" {
-		*models = []string{}
-		return nil
-	}
-
-	// 使用现有的sonic库进行解析
-	if err := sonic.Unmarshal([]byte(trimmed), models); err != nil {
-		return err
-	}
-	if *models == nil {
-		*models = []string{}
-	}
-	return nil
-}
-
-// 辅助函数：解析模型重定向JSON
-func parseModelRedirectsJSON(redirectsStr string, redirects *map[string]string) error {
-	if redirectsStr == "" || redirectsStr == "{}" {
-		*redirects = make(map[string]string)
-		return nil
-	}
-
-	return sonic.Unmarshal([]byte(redirectsStr), redirects)
 }

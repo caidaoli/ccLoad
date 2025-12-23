@@ -28,7 +28,7 @@ func TestSelectAvailableKey_SingleKey(t *testing.T) {
 		Name:     "single-key-channel",
 		URL:      "https://api.com",
 		Priority: 100,
-		Models:   []string{"test-model"},
+		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
 		Enabled:  true,
 	})
 	if err != nil {
@@ -96,7 +96,7 @@ func TestSelectAvailableKey_SingleKeyCooldown(t *testing.T) {
 		Name:     "single-key-cooldown-channel",
 		URL:      "https://api.com",
 		Priority: 100,
-		Models:   []string{"test-model"},
+		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
 		Enabled:  true,
 	})
 	if err != nil {
@@ -155,7 +155,7 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 		Name:     "sequential-channel",
 		URL:      "https://api.com",
 		Priority: 100,
-		Models:   []string{"test-model"},
+		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
 		Enabled:  true,
 	})
 	if err != nil {
@@ -262,7 +262,7 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 		Name:     "roundrobin-channel",
 		URL:      "https://api.com",
 		Priority: 100,
-		Models:   []string{"test-model"},
+		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
 		Enabled:  true,
 	})
 	if err != nil {
@@ -352,7 +352,7 @@ func TestSelectAvailableKey_RoundRobin_NonContiguousKeyIndex(t *testing.T) {
 		Name:     "rr-noncontig-channel",
 		URL:      "https://api.com",
 		Priority: 100,
-		Models:   []string{"test-model"},
+		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
 		Enabled:  true,
 	})
 	if err != nil {
@@ -502,7 +502,7 @@ func TestSelectAvailableKey_KeyCooldown(t *testing.T) {
 		Name:     "cooldown-channel",
 		URL:      "https://api.com",
 		Priority: 100,
-		Models:   []string{"test-model"},
+		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
 		Enabled:  true,
 	})
 	if err != nil {
@@ -621,7 +621,7 @@ func TestSelectAvailableKey_CooldownAndExclude(t *testing.T) {
 		Name:     "combined-channel",
 		URL:      "https://api.com",
 		Priority: 100,
-		Models:   []string{"test-model"},
+		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
 		Enabled:  true,
 	})
 	if err != nil {
@@ -687,7 +687,7 @@ func TestSelectAvailableKey_NoKeys(t *testing.T) {
 		Name:     "no-keys-channel",
 		URL:      "https://api.com",
 		Priority: 100,
-		Models:   []string{"test-model"},
+		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
 		Enabled:  true,
 	})
 	if err != nil {
@@ -722,7 +722,7 @@ func assertSelectAvailableKeyFirstIndex(t *testing.T, channelName string, keyPre
 		Name:     channelName,
 		URL:      "https://api.com",
 		Priority: 100,
-		Models:   []string{"test-model"},
+		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
 		Enabled:  true,
 	})
 	if err != nil {

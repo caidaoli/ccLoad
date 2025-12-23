@@ -160,7 +160,10 @@ function createChannelCard(channel) {
     ? `<span class="channel-stats-inline">${renderChannelStatsInline(stats, statsCache, channelTypeRaw)}</span>`
     : '';
 
-  const modelsText = Array.isArray(channel.models) ? channel.models.join(', ') : '';
+  // 新格式：models 是 {model, redirect_model} 对象数组
+  const modelsText = Array.isArray(channel.models)
+    ? channel.models.map(m => m.model || m).join(', ')
+    : '';
 
   // 准备模板数据
   const cardData = {

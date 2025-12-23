@@ -9,6 +9,10 @@ function showAddModal() {
   document.querySelector('input[name="keyStrategy"][value="sequential"]').checked = true;
 
   redirectTableData = [];
+  selectedModelIndices.clear();
+  currentModelFilter = '';
+  const modelFilterInput = document.getElementById('modelFilterInput');
+  if (modelFilterInput) modelFilterInput.value = '';
   renderRedirectTable();
 
   inlineKeyTableData = [''];
@@ -66,11 +70,17 @@ async function editChannel(id) {
     strategyRadio.checked = true;
   }
   document.getElementById('channelPriority').value = channel.priority;
-  document.getElementById('channelModels').value = channel.models.join(',');
   document.getElementById('channelEnabled').checked = channel.enabled;
 
-  const modelRedirects = channel.model_redirects || {};
-  redirectTableData = jsonToRedirectTable(modelRedirects);
+  // 加载模型配置（新格式：models是 {model, redirect_model} 数组）
+  redirectTableData = (channel.models || []).map(m => ({
+    model: m.model || '',
+    redirect_model: m.redirect_model || ''
+  }));
+  selectedModelIndices.clear();
+  currentModelFilter = '';
+  const modelFilterInput = document.getElementById('modelFilterInput');
+  if (modelFilterInput) modelFilterInput.value = '';
   renderRedirectTable();
 
   document.getElementById('channelModal').classList.add('show');
@@ -96,7 +106,13 @@ async function saveChannel(event) {
 
   document.getElementById('channelApiKey').value = validKeys.join(',');
 
-  const modelRedirects = redirectTableToJSON();
+  // 构建模型配置（新格式：models 数组）
+  const models = redirectTableData
+    .filter(r => r.model && r.model.trim())
+    .map(r => ({
+      model: r.model.trim(),
+      redirect_model: (r.redirect_model || '').trim()
+    }));
 
   const channelType = document.querySelector('input[name="channelType"]:checked')?.value || 'anthropic';
   const keyStrategy = document.querySelector('input[name="keyStrategy"]:checked')?.value || 'sequential';
@@ -108,13 +124,12 @@ async function saveChannel(event) {
     channel_type: channelType,
     key_strategy: keyStrategy,
     priority: parseInt(document.getElementById('channelPriority').value) || 0,
-    models: document.getElementById('channelModels').value.split(',').map(m => m.trim()).filter(m => m),
-    model_redirects: modelRedirects,
+    models: models,
     enabled: document.getElementById('channelEnabled').checked
   };
 
   if (!formData.name || !formData.url || !formData.api_key || formData.models.length === 0) {
-    if (window.showError) window.showError('请填写所有必填字段');
+    if (window.showError) window.showError('请填写所有必填字段（至少添加一个模型）');
     return;
   }
 
@@ -232,11 +247,17 @@ async function copyChannel(id, name) {
     strategyRadio.checked = true;
   }
   document.getElementById('channelPriority').value = channel.priority;
-  document.getElementById('channelModels').value = channel.models.join(',');
   document.getElementById('channelEnabled').checked = true;
 
-  const modelRedirects = channel.model_redirects || {};
-  redirectTableData = jsonToRedirectTable(modelRedirects);
+  // 加载模型配置（新格式：models是 {model, redirect_model} 数组）
+  redirectTableData = (channel.models || []).map(m => ({
+    model: m.model || '',
+    redirect_model: m.redirect_model || ''
+  }));
+  selectedModelIndices.clear();
+  currentModelFilter = '';
+  const modelFilterInput = document.getElementById('modelFilterInput');
+  if (modelFilterInput) modelFilterInput.value = '';
   renderRedirectTable();
 
   document.getElementById('channelModal').classList.add('show');
@@ -264,9 +285,9 @@ function generateCopyName(originalName) {
 }
 
 function addRedirectRow() {
-  redirectTableData.push({ from: '', to: '' });
+  redirectTableData.push({ model: '', redirect_model: '' });
   renderRedirectTable();
-  
+
   setTimeout(() => {
     const tbody = document.getElementById('redirectTableBody');
     const lastRow = tbody.lastElementChild;
@@ -279,12 +300,35 @@ function addRedirectRow() {
 
 function deleteRedirectRow(index) {
   redirectTableData.splice(index, 1);
+  // 更新选中状态：删除该索引，并调整后续索引
+  const newSelectedIndices = new Set();
+  selectedModelIndices.forEach(i => {
+    if (i < index) {
+      newSelectedIndices.add(i);
+    } else if (i > index) {
+      newSelectedIndices.add(i - 1);
+    }
+  });
+  selectedModelIndices.clear();
+  newSelectedIndices.forEach(i => selectedModelIndices.add(i));
   renderRedirectTable();
 }
 
 function updateRedirectRow(index, field, value) {
   if (redirectTableData[index]) {
     redirectTableData[index][field] = value.trim();
+
+    // 当模型名称变化时，更新重定向目标的 placeholder
+    if (field === 'model') {
+      const tbody = document.getElementById('redirectTableBody');
+      const row = tbody?.children[index];
+      if (row) {
+        const toInput = row.querySelector('.redirect-to-input');
+        if (toInput) {
+          toInput.placeholder = value.trim() || '留空则不重定向';
+        }
+      }
+    }
   }
 }
 
@@ -295,10 +339,13 @@ function updateRedirectRow(index, field, value) {
  * @returns {HTMLElement|null} 表格行元素
  */
 function createRedirectRow(redirect, index) {
+  const modelName = redirect.model || '';
   const rowData = {
     index: index,
-    from: redirect.from || '',
-    to: redirect.to || ''
+    displayIndex: index + 1,
+    from: modelName,
+    to: redirect.redirect_model || '',
+    toPlaceholder: modelName || '留空则不重定向'
   };
 
   const row = TemplateEngine.render('tpl-redirect-row', rowData);
@@ -306,6 +353,12 @@ function createRedirectRow(redirect, index) {
     // 降级：模板不存在时使用原有方式
     console.warn('[Channels] Template tpl-redirect-row not found, using legacy rendering');
     return createRedirectRowLegacy(redirect, index);
+  }
+
+  // 设置复选框选中状态
+  const checkbox = row.querySelector('.model-checkbox');
+  if (checkbox) {
+    checkbox.checked = selectedModelIndices.has(index);
   }
 
   return row;
@@ -325,14 +378,14 @@ function initRedirectTableEventDelegation() {
     const fromInput = e.target.closest('.redirect-from-input');
     if (fromInput) {
       const index = parseInt(fromInput.dataset.index);
-      updateRedirectRow(index, 'from', fromInput.value);
+      updateRedirectRow(index, 'model', fromInput.value);
       return;
     }
 
     const toInput = e.target.closest('.redirect-to-input');
     if (toInput) {
       const index = parseInt(toInput.dataset.index);
-      updateRedirectRow(index, 'to', toInput.value);
+      updateRedirectRow(index, 'redirect_model', toInput.value);
     }
   });
 
@@ -363,11 +416,40 @@ function initRedirectTableEventDelegation() {
   });
 }
 
+/**
+ * 获取筛选后的模型索引列表
+ */
+function getVisibleModelIndices() {
+  if (!currentModelFilter) {
+    return redirectTableData.map((_, index) => index);
+  }
+  const keyword = currentModelFilter.toLowerCase();
+  return redirectTableData
+    .map((item, index) => {
+      const model = (item.model || '').toLowerCase();
+      const redirect = (item.redirect_model || '').toLowerCase();
+      if (model.includes(keyword) || redirect.includes(keyword)) {
+        return index;
+      }
+      return null;
+    })
+    .filter(index => index !== null);
+}
+
+/**
+ * 按关键字筛选模型
+ */
+function filterModelsByKeyword(keyword) {
+  currentModelFilter = (keyword || '').trim();
+  renderRedirectTable();
+}
+
 function renderRedirectTable() {
   const tbody = document.getElementById('redirectTableBody');
   const countSpan = document.getElementById('redirectCount');
 
-  const validCount = redirectTableData.filter(r => r.from && r.to).length;
+  // 计数所有有效模型（只要有模型名称就算）
+  const validCount = redirectTableData.filter(r => r.model && r.model.trim()).length;
   countSpan.textContent = validCount;
 
   // 初始化事件委托（仅一次）
@@ -375,27 +457,150 @@ function renderRedirectTable() {
 
   if (redirectTableData.length === 0) {
     const emptyRow = TemplateEngine.render('tpl-redirect-empty', {
-      message: '暂无重定向规则，点击"添加"按钮创建'
+      message: '暂无模型配置，点击"添加模型"按钮创建'
     });
     if (emptyRow) {
       tbody.innerHTML = '';
       tbody.appendChild(emptyRow);
     } else {
       // 降级：模板不存在时使用简单HTML
-      tbody.innerHTML = '<tr><td colspan="3" style="padding: 20px; text-align: center; color: var(--neutral-500);">暂无重定向规则，点击"添加"按钮创建</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="4" style="padding: 20px; text-align: center; color: var(--neutral-500);">暂无模型配置，点击"添加模型"按钮创建</td></tr>';
     }
+    return;
+  }
+
+  // 获取筛选后的索引
+  const visibleIndices = getVisibleModelIndices();
+
+  if (visibleIndices.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" style="padding: 20px; text-align: center; color: var(--neutral-500);">无匹配的模型</td></tr>';
     return;
   }
 
   // 使用DocumentFragment优化批量DOM操作
   const fragment = document.createDocumentFragment();
-  redirectTableData.forEach((redirect, index) => {
-    const row = createRedirectRow(redirect, index);
+  visibleIndices.forEach(index => {
+    const row = createRedirectRow(redirectTableData[index], index);
     if (row) fragment.appendChild(row);
   });
 
   tbody.innerHTML = '';
   tbody.appendChild(fragment);
+
+  // 更新全选复选框和批量删除按钮状态
+  updateSelectAllModelsCheckbox();
+  updateModelBatchDeleteButton();
+}
+
+// ===== 模型多选删除相关函数 =====
+
+/**
+ * 切换单个模型的选中状态
+ */
+function toggleModelSelection(index, checked) {
+  if (checked) {
+    selectedModelIndices.add(index);
+  } else {
+    selectedModelIndices.delete(index);
+  }
+  updateModelBatchDeleteButton();
+  updateSelectAllModelsCheckbox();
+}
+
+/**
+ * 全选/取消全选模型（仅操作当前可见的模型）
+ */
+function toggleSelectAllModels(checked) {
+  const visibleIndices = getVisibleModelIndices();
+
+  if (checked) {
+    visibleIndices.forEach(index => selectedModelIndices.add(index));
+  } else {
+    visibleIndices.forEach(index => selectedModelIndices.delete(index));
+  }
+
+  updateModelBatchDeleteButton();
+  renderRedirectTable();
+}
+
+/**
+ * 更新批量删除按钮状态
+ */
+function updateModelBatchDeleteButton() {
+  const btn = document.getElementById('batchDeleteModelsBtn');
+  if (!btn) return;
+
+  const count = selectedModelIndices.size;
+  const textSpan = btn.querySelector('span');
+
+  if (count > 0) {
+    btn.disabled = false;
+    if (textSpan) textSpan.textContent = `删除选中 (${count})`;
+    btn.classList.add('btn-danger-active');
+  } else {
+    btn.disabled = true;
+    if (textSpan) textSpan.textContent = '删除选中';
+    btn.classList.remove('btn-danger-active');
+  }
+}
+
+/**
+ * 更新全选复选框状态（基于当前可见的模型）
+ */
+function updateSelectAllModelsCheckbox() {
+  const checkbox = document.getElementById('selectAllModels');
+  if (!checkbox) return;
+
+  const visibleIndices = getVisibleModelIndices();
+  const visibleCount = visibleIndices.length;
+  const selectedVisibleCount = visibleIndices.filter(i => selectedModelIndices.has(i)).length;
+
+  if (visibleCount === 0) {
+    checkbox.checked = false;
+    checkbox.indeterminate = false;
+  } else if (selectedVisibleCount === visibleCount) {
+    checkbox.checked = true;
+    checkbox.indeterminate = false;
+  } else if (selectedVisibleCount > 0) {
+    checkbox.checked = false;
+    checkbox.indeterminate = true;
+  } else {
+    checkbox.checked = false;
+    checkbox.indeterminate = false;
+  }
+}
+
+/**
+ * 批量删除选中的模型
+ */
+function batchDeleteSelectedModels() {
+  const count = selectedModelIndices.size;
+  if (count === 0) return;
+
+  if (!confirm(`确定要删除选中的 ${count} 个模型吗？`)) {
+    return;
+  }
+
+  const tableContainer = document.querySelector('#redirectTableBody').closest('div[style*="max-height"]');
+  const scrollTop = tableContainer ? tableContainer.scrollTop : 0;
+
+  // 从大到小排序，确保删除时索引不会错位
+  const indicesToDelete = Array.from(selectedModelIndices).sort((a, b) => b - a);
+
+  indicesToDelete.forEach(index => {
+    redirectTableData.splice(index, 1);
+  });
+
+  selectedModelIndices.clear();
+  updateModelBatchDeleteButton();
+
+  renderRedirectTable();
+
+  setTimeout(() => {
+    if (tableContainer) {
+      tableContainer.scrollTop = Math.min(scrollTop, tableContainer.scrollHeight - tableContainer.clientHeight);
+    }
+  }, 50);
 }
 
 function redirectTableToJSON() {
@@ -449,13 +654,6 @@ async function fetchModelsFromAPI() {
     })
   };
 
-  const modelsTextarea = document.getElementById('channelModels');
-  const originalValue = modelsTextarea.value;
-  const originalPlaceholder = modelsTextarea.placeholder;
-
-  modelsTextarea.disabled = true;
-  modelsTextarea.placeholder = '正在获取模型列表...';
-
   try {
     const response = await fetchAPIWithAuth(endpoint, fetchOptions);
     if (!response.success) throw new Error(response.error || '获取模型列表失败');
@@ -465,39 +663,35 @@ async function fetchModelsFromAPI() {
       throw new Error('未获取到任何模型');
     }
 
-    const existingModels = originalValue.split(',').map(m => m.trim()).filter(m => m);
-    const allModels = [...new Set([...existingModels, ...data.models])];
+    // 获取现有模型名称集合
+    const existingModels = new Set(redirectTableData.map(r => r.model).filter(Boolean));
 
-    modelsTextarea.value = allModels.join(',');
+    // 添加新模型（不重复）
+    let addedCount = 0;
+    for (const modelName of data.models) {
+      if (!existingModels.has(modelName)) {
+        redirectTableData.push({ model: modelName, redirect_model: '' });
+        addedCount++;
+      }
+    }
+
+    renderRedirectTable();
 
     const source = data.source === 'api' ? '从API获取' : '预定义列表';
     if (window.showSuccess) {
-      window.showSuccess(`成功获取 ${data.models.length} 个模型 (${source})`);
+      window.showSuccess(`成功添加 ${addedCount} 个模型 (${source}，共获取 ${data.models.length} 个)`);
     } else {
-      alert(`成功获取 ${data.models.length} 个模型 (${source})`);
+      alert(`成功添加 ${addedCount} 个模型 (${source})`);
     }
 
   } catch (error) {
     console.error('获取模型列表失败', error);
-
-    modelsTextarea.value = originalValue;
 
     if (window.showError) {
       window.showError('获取模型列表失败: ' + error.message);
     } else {
       alert('获取模型列表失败: ' + error.message);
     }
-  } finally {
-    modelsTextarea.disabled = false;
-    modelsTextarea.placeholder = originalPlaceholder;
-  }
-}
-
-function clearAllModels() {
-  if (confirm('确定要清除所有模型吗？此操作不可恢复！')) {
-    const modelsTextarea = document.getElementById('channelModels');
-    modelsTextarea.value = '';
-    modelsTextarea.focus();
   }
 }
 
@@ -535,13 +729,21 @@ function addCommonModels() {
     return;
   }
 
-  const modelsTextarea = document.getElementById('channelModels');
-  const existingModels = modelsTextarea.value.split(',').map(m => m.trim()).filter(Boolean);
-  const allModels = [...new Set([...existingModels, ...commonModels])];
+  // 获取现有模型名称集合
+  const existingModels = new Set(redirectTableData.map(r => r.model).filter(Boolean));
 
-  modelsTextarea.value = allModels.join(',');
+  // 添加常用模型（不重复）
+  let addedCount = 0;
+  for (const modelName of commonModels) {
+    if (!existingModels.has(modelName)) {
+      redirectTableData.push({ model: modelName, redirect_model: '' });
+      addedCount++;
+    }
+  }
+
+  renderRedirectTable();
 
   if (window.showSuccess) {
-    window.showSuccess(`已添加 ${commonModels.length} 个常用模型`);
+    window.showSuccess(`已添加 ${addedCount} 个常用模型`);
   }
 }

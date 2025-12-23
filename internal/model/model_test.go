@@ -117,16 +117,18 @@ func TestJSONTime_UnmarshalJSON(t *testing.T) {
 func TestConfig_JSONSerialization(t *testing.T) {
 	now := time.Now()
 	config := &Config{
-		ID:             1,
-		Name:           "test-channel",
-		ChannelType:    "gemini",
-		URL:            "https://api.example.com",
-		Priority:       10,
-		Models:         []string{"model-1", "model-2"},
-		ModelRedirects: map[string]string{"old": "new"},
-		Enabled:        true,
-		CreatedAt:      JSONTime{Time: now},
-		UpdatedAt:      JSONTime{Time: now},
+		ID:          1,
+		Name:        "test-channel",
+		ChannelType: "gemini",
+		URL:         "https://api.example.com",
+		Priority:    10,
+		ModelEntries: []ModelEntry{
+			{Model: "model-1", RedirectModel: ""},
+			{Model: "model-2", RedirectModel: "model-2-new"},
+		},
+		Enabled:   true,
+		CreatedAt: JSONTime{Time: now},
+		UpdatedAt: JSONTime{Time: now},
 	}
 
 	// 序列化
@@ -150,12 +152,19 @@ func TestConfig_JSONSerialization(t *testing.T) {
 		t.Errorf("name不匹配: 期望 test-channel, 实际 %s", restored.Name)
 	}
 
-	if len(restored.Models) != 2 {
-		t.Errorf("models数量不匹配: 期望 2, 实际 %d", len(restored.Models))
+	if len(restored.ModelEntries) != 2 {
+		t.Errorf("model_entries数量不匹配: 期望 2, 实际 %d", len(restored.ModelEntries))
 	}
 
-	if len(restored.ModelRedirects) != 1 {
-		t.Errorf("model_redirects数量不匹配: 期望 1, 实际 %d", len(restored.ModelRedirects))
+	// 验证 GetModels() 返回正确的模型列表
+	models := restored.GetModels()
+	if len(models) != 2 {
+		t.Errorf("GetModels()数量不匹配: 期望 2, 实际 %d", len(models))
+	}
+
+	// 验证 GetRedirectModel() 返回正确的重定向
+	if redirect, ok := restored.GetRedirectModel("model-2"); !ok || redirect != "model-2-new" {
+		t.Errorf("GetRedirectModel()不匹配: 期望 (model-2-new, true), 实际 (%s, %v)", redirect, ok)
 	}
 
 	// 时间比较：允许1秒误差（JSON序列化精度损失）

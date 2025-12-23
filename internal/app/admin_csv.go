@@ -67,10 +67,22 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 			keyStrategy = apiKeys[0].KeyStrategy
 		}
 
-		// 序列化模型重定向为JSON字符串
+		// 序列化模型列表和重定向为CSV兼容格式
+		// TODO(v2.0): 移除此兼容代码，改用新的 CSV 格式（models 列直接存储 JSON 数组）
+		// 当前保留旧格式是为了支持从旧版本导出的 CSV 文件导入
+		// 预计移除时间：下一个主版本发布后
+		models := make([]string, 0, len(cfg.ModelEntries))
+		redirects := make(map[string]string)
+		for _, entry := range cfg.ModelEntries {
+			models = append(models, entry.Model)
+			if entry.RedirectModel != "" {
+				redirects[entry.Model] = entry.RedirectModel
+			}
+		}
+
 		modelRedirectsJSON := "{}"
-		if len(cfg.ModelRedirects) > 0 {
-			if jsonBytes, err := sonic.Marshal(cfg.ModelRedirects); err == nil {
+		if len(redirects) > 0 {
+			if jsonBytes, err := sonic.Marshal(redirects); err == nil {
 				modelRedirectsJSON = string(jsonBytes)
 			}
 		}
@@ -81,7 +93,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 			apiKeyStr,
 			cfg.URL,
 			strconv.Itoa(cfg.Priority),
-			strings.Join(cfg.Models, ","),
+			strings.Join(models, ","),
 			modelRedirectsJSON,
 			cfg.GetChannelType(), // 使用GetChannelType确保默认值
 			keyStrategy,
@@ -254,15 +266,25 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			}
 		}
 
+		// 构建模型条目（合并models和modelRedirects）
+		// TODO(v2.0): 当 CSV 格式更新后，此转换逻辑可简化
+		modelEntries := make([]model.ModelEntry, 0, len(models))
+		for _, m := range models {
+			entry := model.ModelEntry{Model: m}
+			if redirect, ok := modelRedirects[m]; ok {
+				entry.RedirectModel = redirect
+			}
+			modelEntries = append(modelEntries, entry)
+		}
+
 		// 构建渠道配置
 		cfg := &model.Config{
-			Name:           name,
-			URL:            url,
-			Priority:       priority,
-			Models:         models,
-			ModelRedirects: modelRedirects,
-			ChannelType:    channelType,
-			Enabled:        enabled,
+			Name:         name,
+			URL:          url,
+			Priority:     priority,
+			ModelEntries: modelEntries,
+			ChannelType:  channelType,
+			Enabled:      enabled,
 		}
 
 		// 解析并构建API Keys

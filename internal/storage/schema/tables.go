@@ -7,8 +7,6 @@ func DefineChannelsTable() *TableBuilder {
 		Column("name VARCHAR(191) NOT NULL UNIQUE").
 		Column("url VARCHAR(191) NOT NULL").
 		Column("priority INT NOT NULL DEFAULT 0").
-		Column("models TEXT NOT NULL").
-		Column("model_redirects TEXT NOT NULL").
 		Column("channel_type VARCHAR(64) NOT NULL DEFAULT 'anthropic'").
 		Column("enabled TINYINT NOT NULL DEFAULT 1").
 		Column("cooldown_until BIGINT NOT NULL DEFAULT 0").
@@ -44,10 +42,12 @@ func DefineChannelModelsTable() *TableBuilder {
 	return NewTable("channel_models").
 		Column("channel_id INT NOT NULL").
 		Column("model VARCHAR(191) NOT NULL").
+		Column("redirect_model VARCHAR(191) NOT NULL DEFAULT ''"). // 重定向目标模型（空表示不重定向）
 		Column("created_at BIGINT NOT NULL DEFAULT 0").
 		Column("PRIMARY KEY (channel_id, model)").
 		Column("FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE").
-		Index("idx_channel_models_model", "model")
+		Index("idx_channel_models_model", "model").
+		Index("idx_channel_models_redirect_model", "redirect_model")
 }
 
 // DefineAuthTokensTable 定义auth_tokens表结构
@@ -95,12 +95,20 @@ func DefineAdminSessionsTable() *TableBuilder {
 		Index("idx_admin_sessions_expires", "expires_at")
 }
 
+// DefineSchemaMigrationsTable 定义schema_migrations表结构（迁移版本控制）
+func DefineSchemaMigrationsTable() *TableBuilder {
+	return NewTable("schema_migrations").
+		Column("version VARCHAR(64) PRIMARY KEY"). // 迁移版本标识
+		Column("applied_at BIGINT NOT NULL")       // 应用时间（Unix秒）
+}
+
 // DefineLogsTable 定义logs表结构
 func DefineLogsTable() *TableBuilder {
 	return NewTable("logs").
 		Column("id INT PRIMARY KEY AUTO_INCREMENT").
 		Column("time BIGINT NOT NULL").
 		Column("model VARCHAR(191) NOT NULL DEFAULT ''").
+		Column("actual_model VARCHAR(191) NOT NULL DEFAULT ''"). // 实际转发的模型（空表示未重定向）
 		Column("channel_id INT NOT NULL DEFAULT 0").
 		Column("status_code INT NOT NULL").
 		Column("message TEXT NOT NULL").
@@ -121,5 +129,6 @@ func DefineLogsTable() *TableBuilder {
 		Index("idx_logs_time_channel", "time, channel_id").
 		Index("idx_logs_time_status", "time, status_code").
 		Index("idx_logs_time_channel_model", "time, channel_id, model").
-		Index("idx_logs_time_auth_token", "time, auth_token_id") // 按时间+令牌查询
+		Index("idx_logs_time_auth_token", "time, auth_token_id"). // 按时间+令牌查询
+		Index("idx_logs_time_actual_model", "time, actual_model") // 按时间+实际模型查询
 }

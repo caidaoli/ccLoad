@@ -5,12 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
 	"ccLoad/internal/model"
-	"ccLoad/internal/util"
 )
 
 // ==================== Config CRUD 实现 ====================
@@ -18,8 +16,9 @@ import (
 func (s *SQLStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
 	// 添加 key_count 字段，避免 N+1 查询
 	// 使用 LEFT JOIN 支持查询有或无API Key的渠道
+	// 注意：不再从 channels 表读取 models 和 model_redirects
 	query := `
-			SELECT c.id, c.name, c.url, c.priority, c.models, c.model_redirects, c.channel_type, c.enabled,
+			SELECT c.id, c.name, c.url, c.priority, c.channel_type, c.enabled,
 			       c.cooldown_until, c.cooldown_duration_ms,
 			       COUNT(k.id) as key_count,
 			       c.created_at, c.updated_at
@@ -34,16 +33,26 @@ func (s *SQLStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
 	}
 	defer rows.Close()
 
-	// 使用统一的扫描器(注入Dialect)
+	// 使用统一的扫描器
 	scanner := NewConfigScanner()
-	return scanner.ScanConfigs(rows)
+	configs, err := scanner.ScanConfigs(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	// 批量加载所有渠道的模型数据
+	if err := s.loadModelEntriesForConfigs(ctx, configs); err != nil {
+		return nil, err
+	}
+
+	return configs, nil
 }
 
 func (s *SQLStore) GetConfig(ctx context.Context, id int64) (*model.Config, error) {
-	// 新架构：包含内联的轮询索引字段
 	// 使用 LEFT JOIN 以支持创建渠道时（尚无API Key）仍能获取配置
+	// 注意：不再从 channels 表读取 models 和 model_redirects
 	query := `
-			SELECT c.id, c.name, c.url, c.priority, c.models, c.model_redirects, c.channel_type, c.enabled,
+			SELECT c.id, c.name, c.url, c.priority, c.channel_type, c.enabled,
 			       c.cooldown_until, c.cooldown_duration_ms,
 			       COUNT(k.id) as key_count,
 			       c.created_at, c.updated_at
@@ -54,7 +63,7 @@ func (s *SQLStore) GetConfig(ctx context.Context, id int64) (*model.Config, erro
 	`
 	row := s.db.QueryRowContext(ctx, query, id)
 
-	// 使用统一的扫描器(注入Dialect)
+	// 使用统一的扫描器
 	scanner := NewConfigScanner()
 	config, err := scanner.ScanConfig(row)
 	if err != nil {
@@ -63,21 +72,27 @@ func (s *SQLStore) GetConfig(ctx context.Context, id int64) (*model.Config, erro
 		}
 		return nil, err
 	}
+
+	// 加载模型数据
+	if err := s.loadModelEntriesForConfig(ctx, config); err != nil {
+		return nil, err
+	}
+
 	return config, nil
 }
 
 // GetEnabledChannelsByModel 查询支持指定模型的启用渠道（按优先级排序）
-func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, model string) ([]*model.Config, error) {
+func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, modelName string) ([]*model.Config, error) {
 	var query string
 	var args []any
 	nowUnix := timeToUnix(time.Now())
 
-	if model == "*" {
-		// 通配符：返回所有启用的渠道（新架构：从 channels 表读取内联冷却字段）
-		// 使用 LEFT JOIN 支持查询有或无API Key的渠道
+	if modelName == "*" {
+		// 通配符：返回所有启用的渠道
+		// 注意：不再从 channels 表读取 models 和 model_redirects
 		query = `
 	            SELECT c.id, c.name, c.url, c.priority,
-	                   c.models, c.model_redirects, c.channel_type, c.enabled,
+	                   c.channel_type, c.enabled,
 	                   c.cooldown_until, c.cooldown_duration_ms,
 	                   COUNT(k.id) as key_count,
 	                   c.created_at, c.updated_at
@@ -90,11 +105,10 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, model string) 
         `
 		args = []any{nowUnix}
 	} else {
-		// 精确匹配：使用去规范化的 channel_models 索引表（性能优化：消除JSON查询）
-		// 使用 LEFT JOIN 支持查询有或无API Key的渠道
+		// 精确匹配：使用 channel_models 索引表
 		query = `
 	            SELECT c.id, c.name, c.url, c.priority,
-	                   c.models, c.model_redirects, c.channel_type, c.enabled,
+	                   c.channel_type, c.enabled,
 	                   c.cooldown_until, c.cooldown_duration_ms,
 	                   COUNT(k.id) as key_count,
 	                   c.created_at, c.updated_at
@@ -107,7 +121,7 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, model string) 
             GROUP BY c.id
             ORDER BY c.priority DESC, c.id ASC
         `
-		args = []any{model, nowUnix}
+		args = []any{modelName, nowUnix}
 	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -117,17 +131,26 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, model string) 
 	defer rows.Close()
 
 	scanner := NewConfigScanner()
-	return scanner.ScanConfigs(rows)
+	configs, err := scanner.ScanConfigs(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	// 批量加载所有渠道的模型数据
+	if err := s.loadModelEntriesForConfigs(ctx, configs); err != nil {
+		return nil, err
+	}
+
+	return configs, nil
 }
 
 // GetEnabledChannelsByType 查询指定类型的启用渠道（按优先级排序）
-// 新架构：从 channels 表读取内联冷却字段，不再 JOIN cooldowns 表
-// 使用 LEFT JOIN 支持查询有或无API Key的渠道
 func (s *SQLStore) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*model.Config, error) {
 	nowUnix := timeToUnix(time.Now())
+	// 注意：不再从 channels 表读取 models 和 model_redirects
 	query := `
 			SELECT c.id, c.name, c.url, c.priority,
-			       c.models, c.model_redirects, c.channel_type, c.enabled,
+			       c.channel_type, c.enabled,
 			       c.cooldown_until, c.cooldown_duration_ms,
 			       COUNT(k.id) as key_count,
 			       c.created_at, c.updated_at
@@ -147,43 +170,51 @@ func (s *SQLStore) GetEnabledChannelsByType(ctx context.Context, channelType str
 	defer rows.Close()
 
 	scanner := NewConfigScanner()
-	return scanner.ScanConfigs(rows)
+	configs, err := scanner.ScanConfigs(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	// 批量加载所有渠道的模型数据
+	if err := s.loadModelEntriesForConfigs(ctx, configs); err != nil {
+		return nil, err
+	}
+
+	return configs, nil
 }
 
 func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Config, error) {
 	nowUnix := timeToUnix(time.Now())
-	modelsStr, _ := util.SerializeJSON(c.Models, "[]")
-	modelRedirectsStr, _ := util.SerializeJSON(c.ModelRedirects, "{}")
 
 	// 使用GetChannelType确保默认值
 	channelType := c.GetChannelType()
 
-	// 新架构：API Keys 不再存储在 channels 表中
-	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO channels(name, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, c.Name, c.URL, c.Priority, modelsStr, modelRedirectsStr, channelType,
-		boolToInt(c.Enabled), nowUnix, nowUnix)
+	var id int64
+	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		// 插入渠道记录
+		res, err := tx.ExecContext(ctx, `
+			INSERT INTO channels(name, url, priority, channel_type, enabled, created_at, updated_at)
+			VALUES(?, ?, ?, ?, ?, ?, ?)
+		`, c.Name, c.URL, c.Priority, channelType,
+			boolToInt(c.Enabled), nowUnix, nowUnix)
+		if err != nil {
+			return err
+		}
 
+		id, err = res.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("get last insert id: %w", err)
+		}
+
+		// 保存模型数据到 channel_models 表
+		if err := s.saveModelEntriesTx(ctx, tx, id, c.ModelEntries); err != nil {
+			return fmt.Errorf("save model entries: %w", err)
+		}
+
+		return nil
+	})
 	if err != nil {
 		return nil, err
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return nil, fmt.Errorf("get last insert id: %w", err)
-	}
-
-	// 同步模型数据到 channel_models 索引表（性能优化：去规范化）
-	for _, model := range c.Models {
-		var insertSQL string
-		if s.IsSQLite() {
-			insertSQL = `INSERT OR IGNORE INTO channel_models (channel_id, model) VALUES (?, ?)`
-		} else {
-			insertSQL = `INSERT IGNORE INTO channel_models (channel_id, model) VALUES (?, ?)`
-		}
-		if _, err := s.db.ExecContext(ctx, insertSQL, id, model); err != nil {
-			log.Printf("Warning: Failed to sync model %s to channel_models: %v", model, err)
-		}
 	}
 
 	// 获取完整的配置信息
@@ -210,45 +241,32 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 
 	name := strings.TrimSpace(upd.Name)
 	url := strings.TrimSpace(upd.URL)
-	modelsStr, _ := util.SerializeJSON(upd.Models, "[]")
-	modelRedirectsStr, _ := util.SerializeJSON(upd.ModelRedirects, "{}")
 
 	// 使用GetChannelType确保默认值
 	channelType := upd.GetChannelType()
 	updatedAtUnix := timeToUnix(time.Now())
 
-	// 新架构：API Keys 不再存储在 channels 表中，通过单独的 CreateAPIKey/UpdateAPIKey/DeleteAPIKey 管理
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE channels
-		SET name=?, url=?, priority=?, models=?, model_redirects=?, channel_type=?, enabled=?, updated_at=?
-		WHERE id=?
-	`, name, url, upd.Priority, modelsStr, modelRedirectsStr, channelType,
-		boolToInt(upd.Enabled), updatedAtUnix, id)
+	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		// 更新渠道记录
+		_, err := tx.ExecContext(ctx, `
+			UPDATE channels
+			SET name=?, url=?, priority=?, channel_type=?, enabled=?, updated_at=?
+			WHERE id=?
+		`, name, url, upd.Priority, channelType,
+			boolToInt(upd.Enabled), updatedAtUnix, id)
+		if err != nil {
+			return err
+		}
+
+		// 更新 channel_models 表（先删后插）
+		if err := s.saveModelEntriesTx(ctx, tx, id, upd.ModelEntries); err != nil {
+			return fmt.Errorf("save model entries: %w", err)
+		}
+
+		return nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	// 同步更新 channel_models 索引表（性能优化：去规范化）
-	// 先删除旧的模型索引
-	if _, err := s.db.ExecContext(ctx, `
-		DELETE FROM channel_models WHERE channel_id = ?
-	`, id); err != nil {
-		// 索引同步失败不影响主要功能，记录警告
-		log.Printf("Warning: Failed to delete old model indices: %v", err)
-	}
-
-	// 再插入新的模型索引
-	for _, model := range upd.Models {
-		var insertSQL string
-		if s.IsSQLite() {
-			insertSQL = `INSERT OR IGNORE INTO channel_models (channel_id, model) VALUES (?, ?)`
-		} else {
-			insertSQL = `INSERT IGNORE INTO channel_models (channel_id, model) VALUES (?, ?)`
-		}
-		if _, err := s.db.ExecContext(ctx, insertSQL, id, model); err != nil {
-			// 索引同步失败不影响主要功能，记录警告
-			log.Printf("Warning: Failed to sync model %s to channel_models: %v", model, err)
-		}
 	}
 
 	// 获取更新后的配置
@@ -265,72 +283,57 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 
 func (s *SQLStore) ReplaceConfig(ctx context.Context, c *model.Config) (*model.Config, error) {
 	nowUnix := timeToUnix(time.Now())
-	modelsStr, _ := util.SerializeJSON(c.Models, "[]")
-	modelRedirectsStr, _ := util.SerializeJSON(c.ModelRedirects, "{}")
 
 	// 使用GetChannelType确保默认值
 	channelType := c.GetChannelType()
 
-	// 新架构：API Keys 不再存储在 channels 表中，通过单独的 CreateAPIKey 管理
 	var upsertSQL string
 	if s.IsSQLite() {
 		upsertSQL = `
-			INSERT INTO channels(name, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at)
-			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO channels(name, url, priority, channel_type, enabled, created_at, updated_at)
+			VALUES(?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(name) DO UPDATE SET
 				url = excluded.url,
 				priority = excluded.priority,
-				models = excluded.models,
-				model_redirects = excluded.model_redirects,
 				channel_type = excluded.channel_type,
 				enabled = excluded.enabled,
 				updated_at = excluded.updated_at`
 	} else {
 		upsertSQL = `
-			INSERT INTO channels(name, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at)
-			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO channels(name, url, priority, channel_type, enabled, created_at, updated_at)
+			VALUES(?, ?, ?, ?, ?, ?, ?)
 			ON DUPLICATE KEY UPDATE
 				url = VALUES(url),
 				priority = VALUES(priority),
-				models = VALUES(models),
-				model_redirects = VALUES(model_redirects),
 				channel_type = VALUES(channel_type),
 				enabled = VALUES(enabled),
 				updated_at = VALUES(updated_at)`
 	}
-	_, err := s.db.ExecContext(ctx, upsertSQL, c.Name, c.URL, c.Priority, modelsStr, modelRedirectsStr, channelType,
-		boolToInt(c.Enabled), nowUnix, nowUnix)
-	if err != nil {
-		return nil, err
-	}
 
-	// 获取实际的记录ID（可能是新创建的或已存在的）
 	var id int64
-	err = s.db.QueryRowContext(ctx, `SELECT id FROM channels WHERE name = ?`, c.Name).Scan(&id)
+	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		// UPSERT 渠道记录
+		_, err := tx.ExecContext(ctx, upsertSQL, c.Name, c.URL, c.Priority, channelType,
+			boolToInt(c.Enabled), nowUnix, nowUnix)
+		if err != nil {
+			return err
+		}
+
+		// 获取实际的记录ID（可能是新创建的或已存在的）
+		err = tx.QueryRowContext(ctx, `SELECT id FROM channels WHERE name = ?`, c.Name).Scan(&id)
+		if err != nil {
+			return err
+		}
+
+		// 更新 channel_models 表（先删后插）
+		if err := s.saveModelEntriesTx(ctx, tx, id, c.ModelEntries); err != nil {
+			return fmt.Errorf("save model entries: %w", err)
+		}
+
+		return nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	// 同步更新 channel_models 索引表（性能优化：去规范化）
-	// 先删除旧的模型索引
-	if _, err := s.db.ExecContext(ctx, `
-		DELETE FROM channel_models WHERE channel_id = ?
-	`, id); err != nil {
-		// 索引同步失败不影响主要功能，记录警告
-		log.Printf("Warning: Failed to delete old model indices: %v", err)
-	}
-
-	// 再插入新的模型索引
-	for _, model := range c.Models {
-		var insertSQL string
-		if s.IsSQLite() {
-			insertSQL = `INSERT OR IGNORE INTO channel_models (channel_id, model) VALUES (?, ?)`
-		} else {
-			insertSQL = `INSERT IGNORE INTO channel_models (channel_id, model) VALUES (?, ?)`
-		}
-		if _, err := s.db.ExecContext(ctx, insertSQL, id, model); err != nil {
-			log.Printf("Warning: Failed to sync model %s to channel_models: %v", model, err)
-		}
 	}
 
 	// 获取完整的配置信息
@@ -418,4 +421,128 @@ func (s *SQLStore) BatchUpdatePriority(ctx context.Context, updates []struct{ ID
 	s.triggerAsyncSync(syncChannels)
 
 	return rowsAffected, nil
+}
+
+// ==================== ModelEntries 辅助方法 ====================
+
+// loadModelEntriesForConfig 加载单个渠道的模型数据
+func (s *SQLStore) loadModelEntriesForConfig(ctx context.Context, config *model.Config) error {
+	if config == nil {
+		return nil
+	}
+
+	query := `SELECT model, redirect_model FROM channel_models WHERE channel_id = ? ORDER BY created_at ASC, model ASC`
+	rows, err := s.db.QueryContext(ctx, query, config.ID)
+	if err != nil {
+		return fmt.Errorf("query model entries: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []model.ModelEntry
+	for rows.Next() {
+		var entry model.ModelEntry
+		if err := rows.Scan(&entry.Model, &entry.RedirectModel); err != nil {
+			return fmt.Errorf("scan model entry: %w", err)
+		}
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate model entries: %w", err)
+	}
+
+	config.ModelEntries = entries
+	return nil
+}
+
+// loadModelEntriesForConfigs 批量加载多个渠道的模型数据
+// 设计说明：使用 IN 子句批量查询而非 JOIN，原因：
+// 1. JOIN 会导致结果集膨胀（每个渠道有 N 个模型时重复 N 次渠道数据）
+// 2. 当前方案：2 次查询，但总数据传输量更小
+// 3. 热路径已由 ChannelCache 缓存，首次加载后不再查询数据库
+func (s *SQLStore) loadModelEntriesForConfigs(ctx context.Context, configs []*model.Config) error {
+	if len(configs) == 0 {
+		return nil
+	}
+
+	// 构建 channel_id IN (...) 查询
+	channelIDs := make([]any, len(configs))
+	placeholders := make([]string, len(configs))
+	idToConfig := make(map[int64]*model.Config)
+	for i, cfg := range configs {
+		channelIDs[i] = cfg.ID
+		placeholders[i] = "?"
+		idToConfig[cfg.ID] = cfg
+		cfg.ModelEntries = nil // 初始化为空
+	}
+
+	query := fmt.Sprintf(
+		`SELECT channel_id, model, redirect_model FROM channel_models WHERE channel_id IN (%s) ORDER BY channel_id, created_at ASC, model ASC`,
+		strings.Join(placeholders, ","),
+	)
+
+	rows, err := s.db.QueryContext(ctx, query, channelIDs...)
+	if err != nil {
+		return fmt.Errorf("query model entries: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var channelID int64
+		var entry model.ModelEntry
+		if err := rows.Scan(&channelID, &entry.Model, &entry.RedirectModel); err != nil {
+			return fmt.Errorf("scan model entry: %w", err)
+		}
+		if cfg, ok := idToConfig[channelID]; ok {
+			cfg.ModelEntries = append(cfg.ModelEntries, entry)
+		}
+	}
+
+	return rows.Err()
+}
+
+// saveModelEntriesTx 保存渠道的模型数据（事务版本，用于 Create/Update/Replace）
+func (s *SQLStore) saveModelEntriesTx(ctx context.Context, tx *sql.Tx, channelID int64, entries []model.ModelEntry) error {
+	return s.saveModelEntriesImpl(ctx, tx, channelID, entries)
+}
+
+// dbExecutor 数据库执行器接口，统一 *sql.DB 和 *sql.Tx
+type dbExecutor interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	PrepareContext(ctx context.Context, query string) (*sql.Stmt, error)
+}
+
+// saveModelEntriesImpl 保存渠道模型数据的统一实现
+// 注意：调用方必须保证 entries 中没有重复的模型名，否则会因 PRIMARY KEY 冲突而失败（Fail-Fast）
+func (s *SQLStore) saveModelEntriesImpl(ctx context.Context, exec dbExecutor, channelID int64, entries []model.ModelEntry) error {
+	// 先删除旧的记录
+	if _, err := exec.ExecContext(ctx, `DELETE FROM channel_models WHERE channel_id = ?`, channelID); err != nil {
+		return fmt.Errorf("delete old model entries: %w", err)
+	}
+
+	if len(entries) == 0 {
+		return nil
+	}
+
+	// 插入新记录（不使用 IGNORE，让错误暴露）
+	// 使用数据库函数生成时间戳，保证时间一致性和准确性
+	var insertSQL string
+	if s.IsSQLite() {
+		insertSQL = `INSERT INTO channel_models (channel_id, model, redirect_model, created_at) VALUES (?, ?, ?, unixepoch())`
+	} else {
+		insertSQL = `INSERT INTO channel_models (channel_id, model, redirect_model, created_at) VALUES (?, ?, ?, UNIX_TIMESTAMP())`
+	}
+
+	stmt, err := exec.PrepareContext(ctx, insertSQL)
+	if err != nil {
+		return fmt.Errorf("prepare insert statement: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, entry := range entries {
+		if _, err := stmt.ExecContext(ctx, channelID, entry.Model, entry.RedirectModel); err != nil {
+			return fmt.Errorf("save model entry %s: %w", entry.Model, err)
+		}
+	}
+
+	return nil
 }

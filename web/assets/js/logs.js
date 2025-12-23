@@ -135,10 +135,20 @@
           'status-success' : 'status-error';
         const statusCode = entry.status_code;
 
-        // 3. 模型显示
-        const modelDisplay = entry.model ?
-          `<span class="model-tag">${escapeHtml(entry.model)}</span>` :
-          '<span style="color: var(--neutral-500);">-</span>';
+        // 3. 模型显示（支持重定向角标）
+        let modelDisplay;
+        if (entry.model) {
+          if (entry.actual_model && entry.actual_model !== entry.model) {
+            // 有重定向：显示角标 + tooltip
+            modelDisplay = `<span class="model-tag model-redirected" title="→ ${escapeHtml(entry.actual_model)}">
+              ${escapeHtml(entry.model)}<sup class="redirect-badge">↗</sup>
+            </span>`;
+          } else {
+            modelDisplay = `<span class="model-tag">${escapeHtml(entry.model)}</span>`;
+          }
+        } else {
+          modelDisplay = '<span style="color: var(--neutral-500);">-</span>';
+        }
 
         // 4. 响应时间显示(流式/非流式)
         const hasDuration = entry.duration !== undefined && entry.duration !== null;

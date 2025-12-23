@@ -480,7 +480,7 @@ func (s *Server) HandleAddModels(c *gin.Context) {
 	}
 
 	var req struct {
-		Models []string `json:"models" binding:"required,min=1"`
+		Models []model.ModelEntry `json:"models" binding:"required,min=1"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid request")
@@ -494,15 +494,23 @@ func (s *Server) HandleAddModels(c *gin.Context) {
 		return
 	}
 
-	// 去重合并
-	existing := make(map[string]bool)
-	for _, m := range cfg.Models {
-		existing[m] = true
+	// 验证模型条目（DRY: 使用 ModelEntry.Validate()）
+	for i := range req.Models {
+		if err := req.Models[i].Validate(); err != nil {
+			RespondErrorMsg(c, http.StatusBadRequest, fmt.Sprintf("models[%d]: %s", i, err.Error()))
+			return
+		}
 	}
-	for _, m := range req.Models {
-		if !existing[m] {
-			cfg.Models = append(cfg.Models, m)
-			existing[m] = true
+
+	// 去重合并（使用规范化后的值）
+	existing := make(map[string]bool)
+	for _, e := range cfg.ModelEntries {
+		existing[e.Model] = true
+	}
+	for _, e := range req.Models {
+		if !existing[e.Model] {
+			cfg.ModelEntries = append(cfg.ModelEntries, e)
+			existing[e.Model] = true
 		}
 	}
 
@@ -512,7 +520,7 @@ func (s *Server) HandleAddModels(c *gin.Context) {
 	}
 
 	s.InvalidateChannelListCache()
-	RespondJSON(c, http.StatusOK, gin.H{"total": len(cfg.Models)})
+	RespondJSON(c, http.StatusOK, gin.H{"total": len(cfg.ModelEntries)})
 }
 
 // HandleDeleteModels 删除渠道中的指定模型
@@ -525,7 +533,7 @@ func (s *Server) HandleDeleteModels(c *gin.Context) {
 	}
 
 	var req struct {
-		Models []string `json:"models" binding:"required,min=1"`
+		Models []string `json:"models" binding:"required,min=1"` // 只需要模型名称列表
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid request")
@@ -544,14 +552,14 @@ func (s *Server) HandleDeleteModels(c *gin.Context) {
 	for _, m := range req.Models {
 		toDelete[m] = true
 	}
-	remaining := make([]string, 0, len(cfg.Models))
-	for _, m := range cfg.Models {
-		if !toDelete[m] {
-			remaining = append(remaining, m)
+	remaining := make([]model.ModelEntry, 0, len(cfg.ModelEntries))
+	for _, e := range cfg.ModelEntries {
+		if !toDelete[e.Model] {
+			remaining = append(remaining, e)
 		}
 	}
 
-	cfg.Models = remaining
+	cfg.ModelEntries = remaining
 	if _, err := s.store.UpdateConfig(ctx, channelID, cfg); err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return

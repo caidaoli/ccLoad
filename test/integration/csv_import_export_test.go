@@ -53,8 +53,10 @@ func TestCSVExportImportCycle(t *testing.T) {
 		ChannelType: "", // 数据库中的空值
 		URL:         "https://api.example.com",
 		Priority:    10,
-		Models:      []string{"test-model"},
-		Enabled:     true,
+		ModelEntries: []model.ModelEntry{
+			{Model: "test-model"},
+		},
+		Enabled: true,
 	}
 
 	// 步骤1：导出CSV（使用GetChannelType()）

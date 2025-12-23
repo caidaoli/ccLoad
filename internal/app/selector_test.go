@@ -19,9 +19,9 @@ func TestSelectRouteCandidates_NormalRequest(t *testing.T) {
 
 	// 创建测试渠道，支持不同模型
 	channels := []*model.Config{
-		{Name: "high-priority", URL: "https://api1.com", Priority: 100, Models: []string{"claude-3-opus", "claude-3-sonnet"}, Enabled: true},
-		{Name: "mid-priority", URL: "https://api2.com", Priority: 50, Models: []string{"claude-3-sonnet", "claude-3-haiku"}, Enabled: true},
-		{Name: "low-priority", URL: "https://api3.com", Priority: 10, Models: []string{"claude-3-haiku"}, Enabled: true},
+		{Name: "high-priority", URL: "https://api1.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "claude-3-opus", RedirectModel: ""}, {Model: "claude-3-sonnet", RedirectModel: ""}}, Enabled: true},
+		{Name: "mid-priority", URL: "https://api2.com", Priority: 50, ModelEntries: []model.ModelEntry{{Model: "claude-3-sonnet", RedirectModel: ""}, {Model: "claude-3-haiku", RedirectModel: ""}}, Enabled: true},
+		{Name: "low-priority", URL: "https://api3.com", Priority: 10, ModelEntries: []model.ModelEntry{{Model: "claude-3-haiku", RedirectModel: ""}}, Enabled: true},
 	}
 
 	for _, cfg := range channels {
@@ -59,7 +59,7 @@ func TestSelectRouteCandidates_NormalRequest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			candidates, err := server.selectCandidates(ctx, tt.model)
+			candidates, err := server.selectCandidatesByModelAndType(ctx, tt.model, "")
 
 			if err != nil {
 				t.Errorf("selectCandidates失败: %v", err)
@@ -97,9 +97,9 @@ func TestSelectRouteCandidates_CooledDownChannels(t *testing.T) {
 
 	// 创建3个渠道，其中2个处于冷却状态
 	channels := []*model.Config{
-		{Name: "active-channel", URL: "https://api1.com", Priority: 100, Models: []string{"test-model"}, Enabled: true},
-		{Name: "cooled-channel-1", URL: "https://api2.com", Priority: 90, Models: []string{"test-model"}, Enabled: true},
-		{Name: "cooled-channel-2", URL: "https://api3.com", Priority: 80, Models: []string{"test-model"}, Enabled: true},
+		{Name: "active-channel", URL: "https://api1.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "cooled-channel-1", URL: "https://api2.com", Priority: 90, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "cooled-channel-2", URL: "https://api3.com", Priority: 80, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
 	}
 
 	var createdIDs []int64
@@ -122,7 +122,7 @@ func TestSelectRouteCandidates_CooledDownChannels(t *testing.T) {
 	}
 
 	// 查询可用渠道
-	candidates, err := server.selectCandidates(ctx, "test-model")
+	candidates, err := server.selectCandidatesByModelAndType(ctx, "test-model", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -148,8 +148,8 @@ func TestSelectRouteCandidates_AllCooled_FallbackChoosesEarliestChannelCooldown(
 	now := time.Now()
 
 	channels := []*model.Config{
-		{Name: "cooldown-long", URL: "https://api1.com", Priority: 100, Models: []string{"test-model"}, Enabled: true},
-		{Name: "cooldown-short", URL: "https://api2.com", Priority: 90, Models: []string{"test-model"}, Enabled: true},
+		{Name: "cooldown-long", URL: "https://api1.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "cooldown-short", URL: "https://api2.com", Priority: 90, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
 	}
 
 	var ids []int64
@@ -169,7 +169,7 @@ func TestSelectRouteCandidates_AllCooled_FallbackChoosesEarliestChannelCooldown(
 		t.Fatalf("设置渠道冷却失败: %v", err)
 	}
 
-	candidates, err := server.selectCandidates(ctx, "test-model")
+	candidates, err := server.selectCandidatesByModelAndType(ctx, "test-model", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -191,8 +191,8 @@ func TestSelectRouteCandidates_AllCooledByKeys_FallbackChoosesEarliestKeyCooldow
 	now := time.Now()
 
 	channels := []*model.Config{
-		{Name: "keys-long", URL: "https://api1.com", Priority: 100, Models: []string{"test-model"}, Enabled: true},
-		{Name: "keys-short", URL: "https://api2.com", Priority: 90, Models: []string{"test-model"}, Enabled: true},
+		{Name: "keys-long", URL: "https://api1.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "keys-short", URL: "https://api2.com", Priority: 90, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
 	}
 
 	var ids []int64
@@ -228,7 +228,7 @@ func TestSelectRouteCandidates_AllCooledByKeys_FallbackChoosesEarliestKeyCooldow
 		}
 	}
 
-	candidates, err := server.selectCandidates(ctx, "test-model")
+	candidates, err := server.selectCandidatesByModelAndType(ctx, "test-model", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -254,14 +254,14 @@ func TestSelectRouteCandidates_DisabledChannels(t *testing.T) {
 		Name:     "enabled-channel",
 		URL:      "https://api1.com",
 		Priority: 100,
-		Models:   []string{"test-model"},
+		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
 		Enabled:  true,
 	}
 	disabledCfg := &model.Config{
 		Name:     "disabled-channel",
 		URL:      "https://api2.com",
 		Priority: 90,
-		Models:   []string{"test-model"},
+		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
 		Enabled:  false,
 	}
 
@@ -275,7 +275,7 @@ func TestSelectRouteCandidates_DisabledChannels(t *testing.T) {
 	}
 
 	// 查询可用渠道
-	candidates, err := server.selectCandidates(ctx, "test-model")
+	candidates, err := server.selectCandidatesByModelAndType(ctx, "test-model", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -302,9 +302,9 @@ func TestSelectRouteCandidates_PriorityGrouping(t *testing.T) {
 
 	// 创建相同优先级的多个渠道
 	samePriorityChannels := []*model.Config{
-		{Name: "channel-a", URL: "https://api1.com", Priority: 100, Models: []string{"test-model"}, Enabled: true},
-		{Name: "channel-b", URL: "https://api2.com", Priority: 100, Models: []string{"test-model"}, Enabled: true},
-		{Name: "channel-c", URL: "https://api3.com", Priority: 100, Models: []string{"test-model"}, Enabled: true},
+		{Name: "channel-a", URL: "https://api1.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "channel-b", URL: "https://api2.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "channel-c", URL: "https://api3.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
 	}
 
 	for _, cfg := range samePriorityChannels {
@@ -315,7 +315,7 @@ func TestSelectRouteCandidates_PriorityGrouping(t *testing.T) {
 	}
 
 	// 查询渠道
-	candidates, err := server.selectCandidates(ctx, "test-model")
+	candidates, err := server.selectCandidatesByModelAndType(ctx, "test-model", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -344,8 +344,8 @@ func TestSelectCandidates_FilterByChannelType(t *testing.T) {
 	ctx := context.Background()
 
 	channels := []*model.Config{
-		{Name: "anthropic-channel", URL: "https://anthropic.example.com", Priority: 50, Models: []string{"gpt-4"}, ChannelType: "anthropic", Enabled: true},
-		{Name: "codex-channel", URL: "https://openai.example.com", Priority: 100, Models: []string{"gpt-4"}, ChannelType: "codex", Enabled: true},
+		{Name: "anthropic-channel", URL: "https://anthropic.example.com", Priority: 50, ModelEntries: []model.ModelEntry{{Model: "gpt-4", RedirectModel: ""}}, ChannelType: "anthropic", Enabled: true},
+		{Name: "codex-channel", URL: "https://openai.example.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "gpt-4", RedirectModel: ""}}, ChannelType: "codex", Enabled: true},
 	}
 
 	for _, cfg := range channels {
@@ -354,7 +354,7 @@ func TestSelectCandidates_FilterByChannelType(t *testing.T) {
 		}
 	}
 
-	allCandidates, err := server.selectCandidates(ctx, "gpt-4")
+	allCandidates, err := server.selectCandidatesByModelAndType(ctx, "gpt-4", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -399,9 +399,9 @@ func TestSelectCandidatesByChannelType_GeminiFilter(t *testing.T) {
 
 	// 创建不同类型的渠道
 	channels := []*model.Config{
-		{Name: "gemini-channel", URL: "https://gemini.com", Priority: 100, Models: []string{"gemini-pro"}, ChannelType: "gemini", Enabled: true},
-		{Name: "anthropic-channel", URL: "https://api.anthropic.com", Priority: 90, Models: []string{"claude-3"}, ChannelType: "anthropic", Enabled: true},
-		{Name: "codex-channel", URL: "https://api.openai.com", Priority: 80, Models: []string{"gpt-4"}, ChannelType: "codex", Enabled: true},
+		{Name: "gemini-channel", URL: "https://gemini.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "gemini-pro", RedirectModel: ""}}, ChannelType: "gemini", Enabled: true},
+		{Name: "anthropic-channel", URL: "https://api.anthropic.com", Priority: 90, ModelEntries: []model.ModelEntry{{Model: "claude-3", RedirectModel: ""}}, ChannelType: "anthropic", Enabled: true},
+		{Name: "codex-channel", URL: "https://api.openai.com", Priority: 80, ModelEntries: []model.ModelEntry{{Model: "gpt-4", RedirectModel: ""}}, ChannelType: "codex", Enabled: true},
 	}
 
 	for _, cfg := range channels {
@@ -444,9 +444,9 @@ func TestSelectRouteCandidates_WildcardModel(t *testing.T) {
 
 	// 创建多个支持不同模型的渠道
 	channels := []*model.Config{
-		{Name: "channel-1", URL: "https://api1.com", Priority: 100, Models: []string{"model-a"}, Enabled: true},
-		{Name: "channel-2", URL: "https://api2.com", Priority: 90, Models: []string{"model-b"}, Enabled: true},
-		{Name: "channel-3", URL: "https://api3.com", Priority: 80, Models: []string{"model-c"}, Enabled: true},
+		{Name: "channel-1", URL: "https://api1.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "model-a", RedirectModel: ""}}, Enabled: true},
+		{Name: "channel-2", URL: "https://api2.com", Priority: 90, ModelEntries: []model.ModelEntry{{Model: "model-b", RedirectModel: ""}}, Enabled: true},
+		{Name: "channel-3", URL: "https://api3.com", Priority: 80, ModelEntries: []model.ModelEntry{{Model: "model-c", RedirectModel: ""}}, Enabled: true},
 	}
 
 	for _, cfg := range channels {
@@ -457,7 +457,7 @@ func TestSelectRouteCandidates_WildcardModel(t *testing.T) {
 	}
 
 	// 使用通配符"*"查询所有启用渠道
-	candidates, err := server.selectCandidates(ctx, "*")
+	candidates, err := server.selectCandidatesByModelAndType(ctx, "*", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -489,7 +489,7 @@ func TestSelectRouteCandidates_NoMatchingChannels(t *testing.T) {
 		Name:     "specific-channel",
 		URL:      "https://api.com",
 		Priority: 100,
-		Models:   []string{"specific-model"},
+		ModelEntries: []model.ModelEntry{{Model: "specific-model", RedirectModel: ""}},
 		Enabled:  true,
 	}
 	_, err := store.CreateConfig(ctx, cfg)
@@ -498,7 +498,7 @@ func TestSelectRouteCandidates_NoMatchingChannels(t *testing.T) {
 	}
 
 	// 查询不存在的模型
-	candidates, err := server.selectCandidates(ctx, "non-existent-model")
+	candidates, err := server.selectCandidatesByModelAndType(ctx, "non-existent-model", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -521,11 +521,11 @@ func TestSelectRouteCandidates_MixedPriorities(t *testing.T) {
 
 	// 创建不同优先级的渠道
 	channels := []*model.Config{
-		{Name: "low-1", URL: "https://api1.com", Priority: 10, Models: []string{"test-model"}, Enabled: true},
-		{Name: "high-1", URL: "https://api2.com", Priority: 100, Models: []string{"test-model"}, Enabled: true},
-		{Name: "mid-1", URL: "https://api3.com", Priority: 50, Models: []string{"test-model"}, Enabled: true},
-		{Name: "high-2", URL: "https://api4.com", Priority: 100, Models: []string{"test-model"}, Enabled: true},
-		{Name: "mid-2", URL: "https://api5.com", Priority: 50, Models: []string{"test-model"}, Enabled: true},
+		{Name: "low-1", URL: "https://api1.com", Priority: 10, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "high-1", URL: "https://api2.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "mid-1", URL: "https://api3.com", Priority: 50, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "high-2", URL: "https://api4.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "mid-2", URL: "https://api5.com", Priority: 50, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
 	}
 
 	for _, cfg := range channels {
@@ -536,7 +536,7 @@ func TestSelectRouteCandidates_MixedPriorities(t *testing.T) {
 	}
 
 	// 查询渠道
-	candidates, err := server.selectCandidates(ctx, "test-model")
+	candidates, err := server.selectCandidatesByModelAndType(ctx, "test-model", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -583,8 +583,8 @@ func TestShuffleSamePriorityChannels(t *testing.T) {
 
 	// 创建两个相同优先级的渠道（模拟渠道22和23）
 	channels := []*model.Config{
-		{Name: "channel-22", URL: "https://api22.com", Priority: 20, Models: []string{"qwen-3-32b"}, ChannelType: "codex", Enabled: true},
-		{Name: "channel-23", URL: "https://api23.com", Priority: 20, Models: []string{"qwen-3-32b"}, ChannelType: "codex", Enabled: true},
+		{Name: "channel-22", URL: "https://api22.com", Priority: 20, ModelEntries: []model.ModelEntry{{Model: "qwen-3-32b", RedirectModel: ""}}, ChannelType: "codex", Enabled: true},
+		{Name: "channel-23", URL: "https://api23.com", Priority: 20, ModelEntries: []model.ModelEntry{{Model: "qwen-3-32b", RedirectModel: ""}}, ChannelType: "codex", Enabled: true},
 	}
 
 	for _, cfg := range channels {

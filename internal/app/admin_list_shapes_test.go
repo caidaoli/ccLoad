@@ -48,7 +48,7 @@ func TestAdminAPI_ChannelKeys_ResponseShape_Empty(t *testing.T) {
 		Name:        "Test",
 		URL:         "https://example.com",
 		Priority:    10,
-		Models:      []string{},
+		ModelEntries: []model.ModelEntry{},
 		ChannelType: "anthropic",
 		Enabled:     true,
 	})

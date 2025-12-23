@@ -74,7 +74,7 @@ func TestHandleChannelTest(t *testing.T) {
 					Name:     "test-channel",
 					URL:      "http://test.example.com",
 					Priority: 1,
-					Models:   []string{"test-model"},
+					ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
 					Enabled:  true,
 				}
 				_, err := srv.store.CreateConfig(ctx, cfg)

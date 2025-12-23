@@ -24,19 +24,24 @@ func TestCSVExport_CompleteWorkflow(t *testing.T) {
 	// 步骤1：创建测试数据
 	testConfigs := []*model.Config{
 		{
-			Name:           "CSV-Export-Test-1",
-			URL:            "https://export1.example.com",
-			Priority:       10,
-			Models:         []string{"model-1", "model-2"},
-			ModelRedirects: map[string]string{"old": "new"},
-			ChannelType:    "anthropic",
-			Enabled:        true,
+			Name:     "CSV-Export-Test-1",
+			URL:      "https://export1.example.com",
+			Priority: 10,
+			ModelEntries: []model.ModelEntry{
+				{Model: "model-1"},
+				{Model: "model-2"},
+				{Model: "old", RedirectModel: "new"},
+			},
+			ChannelType: "anthropic",
+			Enabled:     true,
 		},
 		{
-			Name:        "CSV-Export-Test-2",
-			URL:         "https://export2.example.com",
-			Priority:    5,
-			Models:      []string{"model-3"},
+			Name:     "CSV-Export-Test-2",
+			URL:      "https://export2.example.com",
+			Priority: 5,
+			ModelEntries: []model.ModelEntry{
+				{Model: "model-3"},
+			},
 			ChannelType: "gemini",
 			Enabled:     false,
 		},
@@ -114,9 +119,16 @@ func TestCSVExport_CompleteWorkflow(t *testing.T) {
 		apiKeysStr := strings.Join(apiKeysList, ",")
 		keyStrategyStr := keyStrategies[0] // 使用第一个Key的策略
 
-		// 序列化复杂字段
-		modelsJSON, _ := json.Marshal(cfg.Models)
-		redirectsJSON, _ := json.Marshal(cfg.ModelRedirects)
+		// 序列化复杂字段（转换为旧格式用于CSV兼容）
+		models := cfg.GetModels()
+		redirects := make(map[string]string)
+		for _, e := range cfg.ModelEntries {
+			if e.RedirectModel != "" {
+				redirects[e.Model] = e.RedirectModel
+			}
+		}
+		modelsJSON, _ := json.Marshal(models)
+		redirectsJSON, _ := json.Marshal(redirects)
 
 		record := []string{
 			string(rune(cfg.ID + '0')),       // id (简化为单字符)
@@ -282,10 +294,13 @@ func TestCSVExportImport_SpecialCharacters(t *testing.T) {
 
 	// 包含特殊字符的测试数据
 	specialConfig := &model.Config{
-		Name:        "Special-Chars-Test \"with quotes\"",
-		URL:         "https://special.example.com?param=value&other=123",
-		Priority:    10,
-		Models:      []string{"model, with, commas", "model\"with\"quotes"},
+		Name:     "Special-Chars-Test \"with quotes\"",
+		URL:      "https://special.example.com?param=value&other=123",
+		Priority: 10,
+		ModelEntries: []model.ModelEntry{
+			{Model: "model, with, commas"},
+			{Model: "model\"with\"quotes"},
+		},
 		ChannelType: "anthropic",
 		Enabled:     true,
 	}
@@ -305,8 +320,8 @@ func TestCSVExportImport_SpecialCharacters(t *testing.T) {
 		t.Errorf("Name不匹配: 期望 %q, 实际 %q", specialConfig.Name, retrieved.Name)
 	}
 
-	if len(retrieved.Models) != len(specialConfig.Models) {
-		t.Errorf("Models数量不匹配: 期望 %d, 实际 %d", len(specialConfig.Models), len(retrieved.Models))
+	if len(retrieved.ModelEntries) != len(specialConfig.ModelEntries) {
+		t.Errorf("ModelEntries数量不匹配: 期望 %d, 实际 %d", len(specialConfig.ModelEntries), len(retrieved.ModelEntries))
 	}
 
 	t.Logf("✅ 特殊字符处理测试通过")
@@ -328,10 +343,12 @@ func TestCSVExportImport_LargeData(t *testing.T) {
 	totalChannels := 100
 	for i := 0; i < totalChannels; i++ {
 		cfg := &model.Config{
-			Name:        "Large-Test-" + string(rune('A'+i%26)) + string(rune('0'+i%10)),
-			URL:         "https://large" + string(rune('0'+i%10)) + ".example.com",
-			Priority:    i % 20,
-			Models:      []string{"model-" + string(rune('1'+i%9))},
+			Name:     "Large-Test-" + string(rune('A'+i%26)) + string(rune('0'+i%10)),
+			URL:      "https://large" + string(rune('0'+i%10)) + ".example.com",
+			Priority: i % 20,
+			ModelEntries: []model.ModelEntry{
+				{Model: "model-" + string(rune('1'+i%9))},
+			},
 			ChannelType: []string{"anthropic", "gemini", "codex"}[i%3],
 			Enabled:     i%2 == 0,
 		}

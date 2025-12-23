@@ -80,7 +80,7 @@ func TestHandleSetChannelCooldown(t *testing.T) {
 					Name:     "test-channel",
 					URL:      "http://test.example.com",
 					Priority: 1,
-					Models:   []string{"test-model"},
+					ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
 					Enabled:  true,
 				}
 				_, err := srv.store.CreateConfig(context.Background(), cfg)
@@ -214,7 +214,7 @@ func TestHandleSetKeyCooldown(t *testing.T) {
 					Name:     "test-channel",
 					URL:      "http://test.example.com",
 					Priority: 1,
-					Models:   []string{"test-model"},
+					ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
 					Enabled:  true,
 				}
 				_, err := srv.store.CreateConfig(ctx, cfg)
@@ -293,7 +293,7 @@ func TestSetChannelCooldown_Integration(t *testing.T) {
 		Name:     "test-channel",
 		URL:      "http://test.example.com",
 		Priority: 1,
-		Models:   []string{"test-model"},
+		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
 		Enabled:  true,
 	}
 	_, err := srv.store.CreateConfig(ctx, cfg)
@@ -356,7 +356,7 @@ func TestSetKeyCooldown_Integration(t *testing.T) {
 		Name:     "test-channel",
 		URL:      "http://test.example.com",
 		Priority: 1,
-		Models:   []string{"test-model"},
+		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
 		Enabled:  true,
 	}
 	_, err := srv.store.CreateConfig(ctx, cfg)

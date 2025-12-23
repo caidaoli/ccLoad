@@ -111,9 +111,16 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 		Enabled:  true,
 	}
 
+	// 创建测试用的请求上下文
+	reqCtx := &proxyRequestContext{
+		originalModel: "test-model",
+		tokenID:       0,
+		clientIP:      "",
+	}
+
 	t.Run("context canceled returns client error", func(t *testing.T) {
 		result, retryKey, retryChannel := srv.handleNetworkError(
-			ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, context.Canceled, nil, nil,
+			ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, context.Canceled, nil, reqCtx,
 		)
 
 		if result == nil {
@@ -129,7 +136,7 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 
 	t.Run("network error switches channel", func(t *testing.T) {
 		result, retryKey, retryChannel := srv.handleNetworkError(
-			ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, errors.New("connection refused"), nil, nil,
+			ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, errors.New("connection refused"), nil, reqCtx,
 		)
 
 		if result != nil {
@@ -146,7 +153,7 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 	t.Run("first byte timeout switches channel", func(t *testing.T) {
 		err := fmt.Errorf("wrap: %w", util.ErrUpstreamFirstByteTimeout)
 		result, retryKey, retryChannel := srv.handleNetworkError(
-			ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, err, nil, nil,
+			ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, err, nil, reqCtx,
 		)
 
 		if result != nil {

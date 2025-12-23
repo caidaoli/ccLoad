@@ -32,10 +32,10 @@ func TestConcurrentConfigCreate(t *testing.T) {
 			defer wg.Done()
 
 			cfg := &model.Config{
-				Name:    fmt.Sprintf("concurrent-channel-%d", idx),
-				URL:     "https://api.example.com",
-				Enabled: true,
-				Models:  []string{"gpt-4"},
+				Name:         fmt.Sprintf("concurrent-channel-%d", idx),
+				URL:          "https://api.example.com",
+				Enabled:      true,
+				ModelEntries: []model.ModelEntry{{Model: "gpt-4", RedirectModel: ""}},
 			}
 
 			_, err := store.CreateConfig(ctx, cfg)
@@ -79,10 +79,10 @@ func TestConcurrentConfigReadWrite(t *testing.T) {
 
 	// 预先创建一个配置
 	cfg := &model.Config{
-		Name:    "test-rw-channel",
-		URL:     "https://api.example.com",
-		Enabled: true,
-		Models:  []string{"gpt-4"},
+		Name:         "test-rw-channel",
+		URL:          "https://api.example.com",
+		Enabled:      true,
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4", RedirectModel: ""}},
 	}
 	created, err := store.CreateConfig(ctx, cfg)
 	if err != nil {

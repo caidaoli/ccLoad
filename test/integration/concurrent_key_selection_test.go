@@ -225,10 +225,12 @@ func TestConcurrentChannelOperations(t *testing.T) {
 			defer wg.Done()
 
 			cfg := &model.Config{
-				Name:        fmt.Sprintf("concurrent-channel-%d", idx),
-				URL:         "https://api.example.com",
-				Priority:    idx,
-				Models:      []string{"model-1"},
+				Name:     fmt.Sprintf("concurrent-channel-%d", idx),
+				URL:      "https://api.example.com",
+				Priority: idx,
+				ModelEntries: []model.ModelEntry{
+					{Model: "model-1"},
+				},
 				ChannelType: "anthropic",
 				Enabled:     true,
 			}
@@ -305,10 +307,12 @@ func createTestChannelWithKeys(t *testing.T, store storage.Store, keyCount int, 
 
 	// 1. 创建渠道配置（不包含APIKeys）
 	cfg := &model.Config{
-		Name:        "test-concurrent-channel",
-		URL:         "https://api.example.com",
-		Priority:    10,
-		Models:      []string{"test-model"},
+		Name:     "test-concurrent-channel",
+		URL:      "https://api.example.com",
+		Priority: 10,
+		ModelEntries: []model.ModelEntry{
+			{Model: "test-model"},
+		},
 		ChannelType: "anthropic",
 		Enabled:     true,
 	}

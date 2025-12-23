@@ -30,8 +30,14 @@ function filterChannels() {
       if (filters.status === 'cooldown' && !(channel.cooldown_remaining_ms > 0)) return false;
     }
 
-    if (filters.model !== 'all' && !channel.models.includes(filters.model)) {
-      return false;
+    if (filters.model !== 'all') {
+      // 新格式：models 是 {model, redirect_model} 对象数组
+      const modelNames = Array.isArray(channel.models)
+        ? channel.models.map(m => m.model || m)
+        : [];
+      if (!modelNames.includes(filters.model)) {
+        return false;
+      }
     }
 
     return true;
@@ -68,7 +74,11 @@ function updateModelOptions() {
   const modelSet = new Set();
   channels.forEach(channel => {
     if (Array.isArray(channel.models)) {
-      channel.models.forEach(model => modelSet.add(model));
+      // 新格式：models 是 {model, redirect_model} 对象数组
+      channel.models.forEach(m => {
+        const modelName = m.model || m;
+        if (modelName) modelSet.add(modelName);
+      });
     }
   });
 

@@ -305,10 +305,8 @@ func prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestContext) (actualM
 	actualModel = reqCtx.originalModel
 
 	// 检查模型重定向
-	if len(cfg.ModelRedirects) > 0 {
-		if redirectModel, ok := cfg.ModelRedirects[reqCtx.originalModel]; ok && redirectModel != "" {
-			actualModel = redirectModel
-		}
+	if redirectModel, ok := cfg.GetRedirectModel(reqCtx.originalModel); ok && redirectModel != "" {
+		actualModel = redirectModel
 	}
 
 	bodyToSend = reqCtx.body
@@ -331,27 +329,45 @@ func prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestContext) (actualM
 // 日志和字符串处理工具函数
 // ============================================================================
 
-// buildLogEntry 构建日志条目（消除重复代码，遵循DRY原则）
-func buildLogEntry(originalModel string, channelID int64, statusCode int,
-	duration float64, isStreaming bool, apiKeyUsed string, authTokenID int64, clientIP string,
-	res *fwResult, errMsg string) *model.LogEntry {
+// logEntryParams 日志条目构建参数（避免多个 string 参数顺序混淆）
+type logEntryParams struct {
+	RequestModel string // 客户端请求的原始模型名称
+	ActualModel  string // 实际转发到上游的模型名称（可能经过重定向）
+	ChannelID    int64
+	StatusCode   int
+	Duration     float64
+	IsStreaming  bool
+	APIKeyUsed   string
+	AuthTokenID  int64
+	ClientIP     string
+	Result       *fwResult
+	ErrMsg       string
+}
 
+// buildLogEntry 构建日志条目（消除重复代码，遵循DRY原则）
+func buildLogEntry(p logEntryParams) *model.LogEntry {
 	entry := &model.LogEntry{
 		Time:        model.JSONTime{Time: time.Now()},
-		Model:       originalModel,
-		ChannelID:   channelID,
-		StatusCode:  statusCode,
-		Duration:    duration,
-		IsStreaming: isStreaming,
-		APIKeyUsed:  apiKeyUsed,
-		AuthTokenID: authTokenID,
-		ClientIP:    clientIP,
+		Model:       p.RequestModel,
+		ChannelID:   p.ChannelID,
+		StatusCode:  p.StatusCode,
+		Duration:    p.Duration,
+		IsStreaming: p.IsStreaming,
+		APIKeyUsed:  p.APIKeyUsed,
+		AuthTokenID: p.AuthTokenID,
+		ClientIP:    p.ClientIP,
 	}
 
-	if errMsg != "" {
-		entry.Message = truncateErr(errMsg)
-	} else if res != nil {
-		if statusCode >= 200 && statusCode < 300 {
+	// 记录实际转发的模型（仅当发生重定向时）
+	if p.ActualModel != "" && p.ActualModel != p.RequestModel {
+		entry.ActualModel = p.ActualModel
+	}
+
+	if p.ErrMsg != "" {
+		entry.Message = truncateErr(p.ErrMsg)
+	} else if p.Result != nil {
+		res := p.Result
+		if p.StatusCode >= 200 && p.StatusCode < 300 {
 			// [INFO] 2025-12: 流传输诊断信息优先于 "ok"
 			if res.StreamDiagMsg != "" {
 				entry.Message = res.StreamDiagMsg
@@ -359,7 +375,7 @@ func buildLogEntry(originalModel string, channelID int64, statusCode int,
 				entry.Message = "ok"
 			}
 		} else {
-			msg := fmt.Sprintf("upstream status %d", statusCode)
+			msg := fmt.Sprintf("upstream status %d", p.StatusCode)
 			if len(res.Body) > 0 {
 				msg = fmt.Sprintf("%s: %s", msg, truncateErr(safeBodyToString(res.Body)))
 			}
@@ -367,7 +383,7 @@ func buildLogEntry(originalModel string, channelID int64, statusCode int,
 		}
 
 		// 流式请求记录首字节响应时间
-		if isStreaming && res.FirstByteTime > 0 {
+		if p.IsStreaming && res.FirstByteTime > 0 {
 			entry.FirstByteTime = res.FirstByteTime
 		}
 
@@ -381,9 +397,14 @@ func buildLogEntry(originalModel string, channelID int64, statusCode int,
 
 		// 成本计算（2025-11新增，基于token统计）
 		// 2025-12更新：使用CalculateCostDetailed支持5m和1h缓存分别计费
+		// 使用实际转发的模型来计算成本（重定向时价格可能不同）
 		if res.InputTokens > 0 || res.OutputTokens > 0 || res.CacheReadInputTokens > 0 || res.Cache5mInputTokens > 0 || res.Cache1hInputTokens > 0 {
+			costModel := p.ActualModel
+			if costModel == "" {
+				costModel = p.RequestModel
+			}
 			entry.Cost = util.CalculateCostDetailed(
-				originalModel,
+				costModel,
 				res.InputTokens,
 				res.OutputTokens,
 				res.CacheReadInputTokens,

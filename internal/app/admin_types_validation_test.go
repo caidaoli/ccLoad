@@ -3,6 +3,8 @@ package app
 import (
 	"strings"
 	"testing"
+
+	"ccLoad/internal/model"
 )
 
 type channelRequestFieldCase struct {
@@ -17,7 +19,7 @@ func newValidChannelRequest() *ChannelRequest {
 		Name:   "test-channel",
 		APIKey: "test-key",
 		URL:    "https://example.com",
-		Models: []string{"model-1"},
+		Models: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 	}
 }
 
@@ -194,7 +196,7 @@ func TestChannelRequestValidation_Combined(t *testing.T) {
 				Name:        "test-channel",
 				APIKey:      "test-key",
 				URL:         "https://example.com",
-				Models:      []string{"model-1"},
+				Models: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 				ChannelType: "anthropic",
 				KeyStrategy: "round_robin",
 			},
@@ -206,7 +208,7 @@ func TestChannelRequestValidation_Combined(t *testing.T) {
 				Name:        "test-channel",
 				APIKey:      "test-key",
 				URL:         "https://example.com",
-				Models:      []string{"model-1"},
+				Models: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 				ChannelType: "invalid",
 				KeyStrategy: "sequential",
 			},
@@ -219,7 +221,7 @@ func TestChannelRequestValidation_Combined(t *testing.T) {
 				Name:        "test-channel",
 				APIKey:      "test-key",
 				URL:         "https://example.com",
-				Models:      []string{"model-1"},
+				Models: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 				ChannelType: "anthropic",
 				KeyStrategy: "invalid",
 			},
@@ -232,7 +234,7 @@ func TestChannelRequestValidation_Combined(t *testing.T) {
 				Name:        "test-channel",
 				APIKey:      "test-key",
 				URL:         "https://example.com",
-				Models:      []string{"model-1"},
+				Models: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 				ChannelType: "invalid_type",
 				KeyStrategy: "invalid_strategy",
 			},

@@ -64,19 +64,12 @@ func (s *Server) HandleChannelTest(c *gin.Context) {
 	selectedKey := apiKeys[keyIndex].APIKey
 
 	// 检查模型是否支持
-	modelSupported := false
-	for _, model := range cfg.Models {
-		if model == testReq.Model {
-			modelSupported = true
-			break
-		}
-	}
-	if !modelSupported {
+	if !cfg.SupportsModel(testReq.Model) {
 		RespondJSON(c, http.StatusOK, gin.H{
 			"success":          false,
 			"error":            "模型 " + testReq.Model + " 不在此渠道的支持列表中",
 			"model":            testReq.Model,
-			"supported_models": cfg.Models,
+			"supported_models": cfg.GetModels(),
 		})
 		return
 	}
@@ -179,11 +172,9 @@ func (s *Server) testChannelAPI(cfg *model.Config, apiKey string, testReq *testu
 	actualModel := originalModel
 
 	// 检查模型重定向
-	if len(cfg.ModelRedirects) > 0 {
-		if redirectModel, ok := cfg.ModelRedirects[originalModel]; ok && redirectModel != "" {
-			actualModel = redirectModel
-			log.Printf("[RELOAD] [测试-模型重定向] 渠道ID=%d, 原始模型=%s, 重定向模型=%s", cfg.ID, originalModel, actualModel)
-		}
+	if redirectModel, ok := cfg.GetRedirectModel(originalModel); ok && redirectModel != "" {
+		actualModel = redirectModel
+		log.Printf("[RELOAD] [测试-模型重定向] 渠道ID=%d, 原始模型=%s, 重定向模型=%s", cfg.ID, originalModel, actualModel)
 	}
 
 	// 如果模型发生重定向，更新测试请求中的模型名称

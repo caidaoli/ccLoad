@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
-	"ccLoad/internal/util"
 )
 
 // ==================== API Keys CRUD 实现 ====================
@@ -249,28 +248,25 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 		nowUnix := timeToUnix(time.Now())
 
 		// 预编译渠道插入语句（复用，减少解析开销）
+		// 注意：models 和 model_redirects 已移至 channel_models 表
 		var channelUpsertSQL string
 		if s.IsSQLite() {
 			channelUpsertSQL = `
-				INSERT INTO channels(name, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at)
-				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+				INSERT INTO channels(name, url, priority, channel_type, enabled, created_at, updated_at)
+				VALUES(?, ?, ?, ?, ?, ?, ?)
 				ON CONFLICT(name) DO UPDATE SET
 					url = excluded.url,
 					priority = excluded.priority,
-					models = excluded.models,
-					model_redirects = excluded.model_redirects,
 					channel_type = excluded.channel_type,
 					enabled = excluded.enabled,
 					updated_at = excluded.updated_at`
 		} else {
 			channelUpsertSQL = `
-				INSERT INTO channels(name, url, priority, models, model_redirects, channel_type, enabled, created_at, updated_at)
-				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+				INSERT INTO channels(name, url, priority, channel_type, enabled, created_at, updated_at)
+				VALUES(?, ?, ?, ?, ?, ?, ?)
 				ON DUPLICATE KEY UPDATE
 					url = VALUES(url),
 					priority = VALUES(priority),
-					models = VALUES(models),
-					model_redirects = VALUES(model_redirects),
 					channel_type = VALUES(channel_type),
 					enabled = VALUES(enabled),
 					updated_at = VALUES(updated_at)`
@@ -295,20 +291,15 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 		// 批量导入渠道
 		for _, cwk := range channels {
 			config := cwk.Config
-
-			// 标准化数据
-			modelsStr, _ := util.SerializeJSON(config.Models, "[]")
-			modelRedirectsStr, _ := util.SerializeJSON(config.ModelRedirects, "{}")
 			channelType := config.GetChannelType()
 
 			// 检查是否为更新操作
 			_, isUpdate := existingNames[config.Name]
 
-			// 插入或更新渠道配置
+			// 插入或更新渠道配置（不含 models/model_redirects）
 			_, err := channelStmt.ExecContext(ctx,
 				config.Name, config.URL, config.Priority,
-				modelsStr, modelRedirectsStr, channelType,
-				boolToInt(config.Enabled), nowUnix, nowUnix)
+				channelType, boolToInt(config.Enabled), nowUnix, nowUnix)
 			if err != nil {
 				return fmt.Errorf("import channel %s: %w", config.Name, err)
 			}
@@ -330,16 +321,17 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 				}
 			}
 
-			// 同步模型索引到 channel_models 表
+			// 同步模型条目到 channel_models 表（包含 redirect_model）
 			var modelInsertSQL string
 			if s.IsSQLite() {
-				modelInsertSQL = `INSERT OR IGNORE INTO channel_models (channel_id, model) VALUES (?, ?)`
+				modelInsertSQL = `INSERT OR REPLACE INTO channel_models (channel_id, model, redirect_model) VALUES (?, ?, ?)`
 			} else {
-				modelInsertSQL = `INSERT IGNORE INTO channel_models (channel_id, model) VALUES (?, ?)`
+				modelInsertSQL = `INSERT INTO channel_models (channel_id, model, redirect_model) VALUES (?, ?, ?)
+					ON DUPLICATE KEY UPDATE redirect_model = VALUES(redirect_model)`
 			}
-			for _, model := range config.Models {
-				if _, err := tx.ExecContext(ctx, modelInsertSQL, channelID, model); err != nil {
-					return fmt.Errorf("insert model index %s for channel %d: %w", model, channelID, err)
+			for _, entry := range config.ModelEntries {
+				if _, err := tx.ExecContext(ctx, modelInsertSQL, channelID, entry.Model, entry.RedirectModel); err != nil {
+					return fmt.Errorf("insert model %s for channel %d: %w", entry.Model, channelID, err)
 				}
 			}
 

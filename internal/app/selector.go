@@ -30,19 +30,6 @@ func (s *Server) selectCandidatesByChannelType(ctx context.Context, channelType 
 	return s.filterCooldownChannels(ctx, shuffleSamePriorityChannels(channels))
 }
 
-// selectCandidates 选择支持指定模型的候选渠道
-// 性能优化：使用缓存层，消除JSON查询和聚合操作的性能杀手
-func (s *Server) selectCandidates(ctx context.Context, model string) ([]*modelpkg.Config, error) {
-	channels, err := s.getEnabledChannelsWithFallback(ctx,
-		func() ([]*modelpkg.Config, error) { return s.GetEnabledChannelsByModel(ctx, model) },
-		func(cfg *modelpkg.Config) bool { return s.configSupportsModel(cfg, model) },
-	)
-	if err != nil {
-		return nil, err
-	}
-	return s.filterCooldownChannels(ctx, shuffleSamePriorityChannels(channels))
-}
-
 // selectCandidatesByModelAndType 根据模型和渠道类型筛选候选渠道
 // 遵循SRP：数据库负责返回满足模型的渠道，本函数仅负责类型过滤
 func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model string, channelType string) ([]*modelpkg.Config, error) {
@@ -107,17 +94,7 @@ func (s *Server) configSupportsModel(cfg *modelpkg.Config, model string) bool {
 	if model == "*" {
 		return true
 	}
-	if cfg.ModelRedirects != nil {
-		if _, ok := cfg.ModelRedirects[model]; ok {
-			return true
-		}
-	}
-	for _, m := range cfg.Models {
-		if m == model {
-			return true
-		}
-	}
-	return false
+	return cfg.SupportsModel(model)
 }
 
 // filterCooldownChannels 过滤或降权冷却中的渠道

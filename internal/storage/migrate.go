@@ -3,7 +3,9 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"ccLoad/internal/storage/schema"
@@ -20,8 +22,11 @@ const (
 // sqliteMigratableTables 允许增量迁移的SQLite表名白名单
 // 安全设计：防止SQL注入，新增表时需在此处注册
 var sqliteMigratableTables = map[string]bool{
-	"logs":        true,
-	"auth_tokens": true,
+	"logs":              true,
+	"auth_tokens":       true,
+	"channel_models":    true,
+	"channels":          true,
+	"schema_migrations": true,
 }
 
 // migrateSQLite 执行SQLite数据库迁移
@@ -38,6 +43,7 @@ func migrateMySQL(ctx context.Context, db *sql.DB) error {
 func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	// 表定义（顺序重要：外键依赖）
 	tables := []func() *schema.TableBuilder{
+		schema.DefineSchemaMigrationsTable, // 迁移版本表必须最先创建
 		schema.DefineChannelsTable,
 		schema.DefineAPIKeysTable,
 		schema.DefineChannelModelsTable,
@@ -70,6 +76,13 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			}
 		}
 
+		// 增量迁移：channel_models表添加redirect_model字段，迁移数据后删除channels冗余字段
+		if tb.Name() == "channel_models" {
+			if err := migrateChannelModelsSchema(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate channel_models schema: %w", err)
+			}
+		}
+
 		// 创建索引
 		for _, idx := range buildIndexes(tb, dialect) {
 			if err := createIndex(ctx, db, idx, dialect); err != nil {
@@ -95,7 +108,10 @@ func ensureLogsNewColumns(ctx context.Context, db *sql.DB, dialect Dialect) erro
 		if err := ensureLogsClientIPMySQL(ctx, db); err != nil {
 			return err
 		}
-		return ensureLogsCacheFieldsMySQL(ctx, db)
+		if err := ensureLogsCacheFieldsMySQL(ctx, db); err != nil {
+			return err
+		}
+		return ensureLogsActualModelMySQL(ctx, db)
 	}
 	// SQLite: 使用PRAGMA table_info检查列
 	return ensureLogsColumnsSQLite(ctx, db)
@@ -132,6 +148,7 @@ func ensureLogsColumnsSQLite(ctx context.Context, db *sql.DB) error {
 		{name: "client_ip", definition: "TEXT NOT NULL DEFAULT ''"},
 		{name: "cache_5m_input_tokens", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{name: "cache_1h_input_tokens", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{name: "actual_model", definition: "TEXT NOT NULL DEFAULT ''"}, // 实际转发的模型
 	}); err != nil {
 		return err
 	}
@@ -382,5 +399,312 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		}
 	}
 
+	return nil
+}
+
+// ensureLogsActualModelMySQL 确保logs表有actual_model字段(MySQL增量迁移)
+func ensureLogsActualModelMySQL(ctx context.Context, db *sql.DB) error {
+	var count int
+	err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='logs' AND COLUMN_NAME='actual_model'",
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check actual_model existence: %w", err)
+	}
+
+	if count > 0 {
+		return nil
+	}
+
+	_, err = db.ExecContext(ctx,
+		"ALTER TABLE logs ADD COLUMN actual_model VARCHAR(191) NOT NULL DEFAULT '' COMMENT '实际转发的模型(空表示未重定向)'",
+	)
+	if err != nil {
+		return fmt.Errorf("add actual_model column: %w", err)
+	}
+
+	return nil
+}
+
+// migrateChannelModelsSchema 迁移channel_models表结构
+// 版本控制：使用 schema_migrations 表记录已执行的迁移，确保幂等性
+// 1. 添加redirect_model字段
+// 2. 从channels.models和model_redirects迁移数据到channel_models
+// 3. 放宽channels表废弃字段约束(NOT NULL → NULL)，保留兼容性以支持版本回滚
+func migrateChannelModelsSchema(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	const migrationVersion = "v1_channel_models_redirect"
+
+	// 检查迁移是否已执行（幂等性保证）
+	if applied, err := isMigrationApplied(ctx, db, migrationVersion); err != nil {
+		return fmt.Errorf("check migration status: %w", err)
+	} else if applied {
+		return nil // 已执行，跳过
+	}
+
+	// 第一步：添加redirect_model字段
+	if err := ensureChannelModelsRedirectField(ctx, db, dialect); err != nil {
+		return err
+	}
+
+	// 第二步：从channels.model_redirects迁移数据到channel_models
+	if err := migrateModelRedirectsData(ctx, db, dialect); err != nil {
+		return err
+	}
+
+	// 第三步：放宽channels表废弃字段约束（NOT NULL → NULL）
+	if err := relaxDeprecatedChannelFields(ctx, db, dialect); err != nil {
+		return err
+	}
+
+	// 记录迁移完成
+	if err := recordMigration(ctx, db, migrationVersion, dialect); err != nil {
+		log.Printf("[WARN] Failed to record migration %s: %v", migrationVersion, err)
+		// 不阻塞，迁移本身已成功
+	}
+
+	return nil
+}
+
+// isMigrationApplied 检查迁移是否已执行
+func isMigrationApplied(ctx context.Context, db *sql.DB, version string) (bool, error) {
+	var count int
+	err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM schema_migrations WHERE version = ?", version,
+	).Scan(&count)
+	if err != nil {
+		// 表不存在时视为未执行
+		return false, nil
+	}
+	return count > 0, nil
+}
+
+// recordMigration 记录迁移已执行
+func recordMigration(ctx context.Context, db *sql.DB, version string, dialect Dialect) error {
+	var insertSQL string
+	if dialect == DialectMySQL {
+		insertSQL = `INSERT IGNORE INTO schema_migrations (version, applied_at) VALUES (?, UNIX_TIMESTAMP())`
+	} else {
+		insertSQL = `INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, unixepoch())`
+	}
+	_, err := db.ExecContext(ctx, insertSQL, version)
+	return err
+}
+
+// ensureChannelModelsRedirectField 确保channel_models表有redirect_model字段
+func ensureChannelModelsRedirectField(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if dialect == DialectMySQL {
+		var count int
+		err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channel_models' AND COLUMN_NAME='redirect_model'",
+		).Scan(&count)
+		if err != nil {
+			return fmt.Errorf("check redirect_model existence: %w", err)
+		}
+		if count > 0 {
+			return nil
+		}
+		_, err = db.ExecContext(ctx,
+			"ALTER TABLE channel_models ADD COLUMN redirect_model VARCHAR(191) NOT NULL DEFAULT '' COMMENT '重定向目标模型(空表示不重定向)'",
+		)
+		if err != nil {
+			return fmt.Errorf("add redirect_model column: %w", err)
+		}
+		return nil
+	}
+
+	// SQLite
+	return ensureSQLiteColumns(ctx, db, "channel_models", []sqliteColumnDef{
+		{name: "redirect_model", definition: "TEXT NOT NULL DEFAULT ''"},
+	})
+}
+
+// migrateModelRedirectsData 从channels.models和model_redirects迁移数据到channel_models
+func migrateModelRedirectsData(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	// 检查是否需要迁移
+	needMigration, err := needChannelModelsMigration(ctx, db, dialect)
+	if err != nil {
+		return err
+	}
+	if !needMigration {
+		return nil
+	}
+
+	// 查询所有需要迁移的渠道（有models数据）
+	// 注意：必须同时查询 models 和 model_redirects
+	rows, err := db.QueryContext(ctx,
+		"SELECT id, models, model_redirects FROM channels WHERE models != '' AND models != '[]'")
+	if err != nil {
+		return fmt.Errorf("query channels for migration: %w", err)
+	}
+	defer rows.Close()
+
+	// 收集所有待迁移的数据
+	type modelEntry struct {
+		channelID     int64
+		model         string
+		redirectModel string
+	}
+	var entries []modelEntry
+	var channelIDs []int64
+
+	for rows.Next() {
+		var channelID int64
+		var modelsJSON, redirectsJSON string
+		if err := rows.Scan(&channelID, &modelsJSON, &redirectsJSON); err != nil {
+			return fmt.Errorf("scan channel data: %w", err)
+		}
+
+		// [FIX] P2: 解析 models JSON 数组，失败时中断迁移（Fail-Fast）
+		models, err := parseModelsForMigration(modelsJSON)
+		if err != nil {
+			return fmt.Errorf("channel %d: %w", channelID, err)
+		}
+		if len(models) == 0 {
+			continue
+		}
+
+		// 只有解析成功才记录 channelID（避免解析失败的渠道被重命名字段后丢失数据）
+		channelIDs = append(channelIDs, channelID)
+
+		// 解析 model_redirects JSON 对象
+		redirects, _ := parseModelRedirectsForMigration(redirectsJSON)
+		if redirects == nil {
+			redirects = make(map[string]string)
+		}
+
+		// 构建条目：每个模型一条记录
+		for _, model := range models {
+			entries = append(entries, modelEntry{
+				channelID:     channelID,
+				model:         model,
+				redirectModel: redirects[model], // 如果没有重定向则为空
+			})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	// 无数据需要迁移
+	if len(channelIDs) == 0 {
+		return nil
+	}
+
+	// 使用事务批量执行
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin migration tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 插入或更新 channel_models
+	for _, e := range entries {
+		var upsertSQL string
+		if dialect == DialectMySQL {
+			upsertSQL = `INSERT INTO channel_models (channel_id, model, redirect_model, created_at)
+				VALUES (?, ?, ?, UNIX_TIMESTAMP())
+				ON DUPLICATE KEY UPDATE redirect_model = VALUES(redirect_model)`
+		} else {
+			upsertSQL = `INSERT INTO channel_models (channel_id, model, redirect_model, created_at)
+				VALUES (?, ?, ?, unixepoch())
+				ON CONFLICT(channel_id, model) DO UPDATE SET redirect_model = excluded.redirect_model`
+		}
+		if _, err := tx.ExecContext(ctx, upsertSQL, e.channelID, e.model, e.redirectModel); err != nil {
+			return fmt.Errorf("upsert channel_model: %w", err)
+		}
+	}
+
+	// 数据迁移完成，字段约束放宽在 relaxDeprecatedChannelFields 中处理
+	return tx.Commit()
+}
+
+// needChannelModelsMigration 检查是否需要迁移
+// 检查 channels.models 字段是否存在（未被重命名为 _deprecated_models）
+func needChannelModelsMigration(ctx context.Context, db *sql.DB, dialect Dialect) (bool, error) {
+	if dialect == DialectMySQL {
+		// MySQL: 检查 models 字段是否存在
+		var count int
+		err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channels' AND COLUMN_NAME='models'",
+		).Scan(&count)
+		if err != nil {
+			return false, fmt.Errorf("check models column: %w", err)
+		}
+		return count > 0, nil
+	}
+
+	// SQLite: 检查 models 字段是否存在
+	existingCols, err := sqliteExistingColumns(ctx, db, "channels")
+	if err != nil {
+		return false, nil // 表不存在或其他错误，视为无需迁移
+	}
+	return existingCols["models"], nil
+}
+
+// parseModelsForMigration 解析 models JSON 数组用于迁移
+// [FIX] P2: 解析失败返回错误而非静默忽略，避免数据丢失
+func parseModelsForMigration(jsonStr string) ([]string, error) {
+	if jsonStr == "" || jsonStr == "[]" {
+		return nil, nil
+	}
+	var models []string
+	if err := json.Unmarshal([]byte(jsonStr), &models); err != nil {
+		return nil, fmt.Errorf("parse models JSON %q: %w", jsonStr, err)
+	}
+	return models, nil
+}
+
+// parseModelRedirectsForMigration 解析model_redirects JSON用于迁移
+func parseModelRedirectsForMigration(jsonStr string) (map[string]string, error) {
+	if jsonStr == "" || jsonStr == "{}" {
+		return nil, nil
+	}
+	var redirects map[string]string
+	if err := json.Unmarshal([]byte(jsonStr), &redirects); err != nil {
+		return nil, fmt.Errorf("parse model_redirects JSON: %w", err)
+	}
+	return redirects, nil
+}
+
+// relaxDeprecatedChannelFields 放宽channels表废弃字段的约束
+// 将 models 和 model_redirects 从 NOT NULL 改为允许 NULL
+// 这样新版程序 INSERT 时不提供这些字段也不会报错，同时保留字段名以支持版本回滚
+func relaxDeprecatedChannelFields(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if dialect == DialectMySQL {
+		// MySQL: 使用 MODIFY COLUMN 去除 NOT NULL
+		var count int
+		err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channels' AND COLUMN_NAME='models'",
+		).Scan(&count)
+		if err != nil {
+			return fmt.Errorf("check models field: %w", err)
+		}
+		if count > 0 {
+			if _, err := db.ExecContext(ctx,
+				"ALTER TABLE channels MODIFY COLUMN models TEXT NULL"); err != nil {
+				return fmt.Errorf("modify models column: %w", err)
+			}
+			log.Printf("[MIGRATE] Modified channels.models: NOT NULL → NULL")
+		}
+
+		err = db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channels' AND COLUMN_NAME='model_redirects'",
+		).Scan(&count)
+		if err != nil {
+			return fmt.Errorf("check model_redirects field: %w", err)
+		}
+		if count > 0 {
+			if _, err := db.ExecContext(ctx,
+				"ALTER TABLE channels MODIFY COLUMN model_redirects TEXT NULL"); err != nil {
+				return fmt.Errorf("modify model_redirects column: %w", err)
+			}
+			log.Printf("[MIGRATE] Modified channels.model_redirects: NOT NULL → NULL")
+		}
+		return nil
+	}
+
+	// SQLite: 不支持直接修改列约束，但 TEXT 类型天然允许 NULL
+	// SQLite 的 NOT NULL 约束只在显式 INSERT 该列时检查
+	// 新版程序 INSERT 语句不包含这些列，SQLite 会使用默认值（NULL）
 	return nil
 }

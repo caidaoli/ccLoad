@@ -39,18 +39,22 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 	ctx := context.Background()
 	testChannels := []*model.Config{
 		{
-			Name:        "Test-Export-1",
-			URL:         "https://api1.example.com",
-			Priority:    10,
-			Models:      []string{"model-1"},
+			Name:     "Test-Export-1",
+			URL:      "https://api1.example.com",
+			Priority: 10,
+			ModelEntries: []model.ModelEntry{
+				{Model: "model-1", RedirectModel: ""},
+			},
 			ChannelType: "anthropic",
 			Enabled:     true,
 		},
 		{
-			Name:        "Test-Export-2",
-			URL:         "https://api2.example.com",
-			Priority:    5,
-			Models:      []string{"model-2"},
+			Name:     "Test-Export-2",
+			URL:      "https://api2.example.com",
+			Priority: 5,
+			ModelEntries: []model.ModelEntry{
+				{Model: "model-2", RedirectModel: ""},
+			},
 			ChannelType: "gemini",
 			Enabled:     false,
 		},
@@ -149,8 +153,10 @@ func TestHandleCacheStats(t *testing.T) {
 		Name:     "Cache-Stats-Channel",
 		URL:      "https://cache.example.com",
 		Priority: 1,
-		Models:   []string{"cache-model"},
-		Enabled:  true,
+		ModelEntries: []model.ModelEntry{
+			{Model: "cache-model", RedirectModel: ""},
+		},
+		Enabled: true,
 	}
 	created, err := server.store.CreateConfig(ctx, cfg)
 	if err != nil {
@@ -420,13 +426,16 @@ func TestAdminAPI_ExportImportRoundTrip(t *testing.T) {
 
 	// 步骤1：创建原始测试数据
 	originalConfig := &model.Config{
-		Name:           "RoundTrip-Test",
-		URL:            "https://roundtrip.example.com",
-		Priority:       15,
-		Models:         []string{"model-a", "model-b"},
-		ModelRedirects: map[string]string{"old-model": "new-model"},
-		ChannelType:    "anthropic",
-		Enabled:        true,
+		Name:     "RoundTrip-Test",
+		URL:      "https://roundtrip.example.com",
+		Priority: 15,
+		ModelEntries: []model.ModelEntry{
+			{Model: "model-a", RedirectModel: ""},
+			{Model: "model-b", RedirectModel: ""},
+			{Model: "old-model", RedirectModel: "new-model"},
+		},
+		ChannelType: "anthropic",
+		Enabled:     true,
 	}
 
 	created, err := server.store.CreateConfig(ctx, originalConfig)
@@ -519,12 +528,8 @@ func TestAdminAPI_ExportImportRoundTrip(t *testing.T) {
 		t.Errorf("Priority不匹配: 期望 %d, 实际 %d", originalConfig.Priority, restoredConfig.Priority)
 	}
 
-	if len(restoredConfig.Models) != len(originalConfig.Models) {
-		t.Errorf("Models数量不匹配: 期望 %d, 实际 %d", len(originalConfig.Models), len(restoredConfig.Models))
-	}
-
-	if len(restoredConfig.ModelRedirects) != len(originalConfig.ModelRedirects) {
-		t.Errorf("ModelRedirects数量不匹配: 期望 %d, 实际 %d", len(originalConfig.ModelRedirects), len(restoredConfig.ModelRedirects))
+	if len(restoredConfig.ModelEntries) != len(originalConfig.ModelEntries) {
+		t.Errorf("ModelEntries数量不匹配: 期望 %d, 实际 %d", len(originalConfig.ModelEntries), len(restoredConfig.ModelEntries))
 	}
 
 	// 验证API Keys
@@ -650,7 +655,7 @@ func TestAdminAPI_ImportCSV_DuplicateNames(t *testing.T) {
 		Name:        "Duplicate-Test",
 		URL:         "https://existing.com",
 		Priority:    10,
-		Models:      []string{"model-1"},
+		ModelEntries: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 		ChannelType: "anthropic",
 		Enabled:     true,
 	}

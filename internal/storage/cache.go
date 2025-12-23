@@ -85,9 +85,10 @@ func NewChannelCache(store Store, ttl time.Duration) *ChannelCache {
 	}
 }
 
-// deepCopyConfig 深拷贝 Config 对象（包括 slice/map）
-// [FIX] P0-2: 防止调用方修改污染缓存
-// 设计：拷贝所有可变字段（Models, ModelRedirects），其他字段为值类型或不可变类型
+// deepCopyConfig 深拷贝 Config 对象（包括 slice）
+// 防止调用方修改污染缓存
+// 设计：拷贝所有可变字段（ModelEntries），重置索引缓存（modelIndex + indexOnce）
+// [FIX] P0: 重置索引缓存，避免复制 sync.Once 和指向旧 slice 的 map
 func deepCopyConfig(src *modelpkg.Config) *modelpkg.Config {
 	if src == nil {
 		return nil
@@ -96,25 +97,23 @@ func deepCopyConfig(src *modelpkg.Config) *modelpkg.Config {
 	// 浅拷贝对象本身
 	dst := *src
 
-	// 深拷贝 Models slice
-	if src.Models != nil {
-		dst.Models = make([]string, len(src.Models))
-		copy(dst.Models, src.Models)
+	// 深拷贝 ModelEntries slice
+	if src.ModelEntries != nil {
+		dst.ModelEntries = make([]modelpkg.ModelEntry, len(src.ModelEntries))
+		copy(dst.ModelEntries, src.ModelEntries)
 	}
 
-	// 深拷贝 ModelRedirects map
-	if src.ModelRedirects != nil {
-		dst.ModelRedirects = make(map[string]string, len(src.ModelRedirects))
-		for k, v := range src.ModelRedirects {
-			dst.ModelRedirects[k] = v
-		}
-	}
+	// [FIX] P0: 重置索引缓存
+	// 1. modelIndex 中存储的是指向 src.ModelEntries 元素的指针，必须重置
+	// 2. sync.Once 复制后状态不确定，必须重置为零值
+	// 副本在首次调用 buildIndexIfNeeded 时会重新构建指向自己 ModelEntries 的索引
+	dst.ResetModelIndex()
 
 	return &dst
 }
 
 // deepCopyConfigs 批量深拷贝 Config 对象
-// [FIX] P0-2: 缓存边界隔离，避免共享指针污染
+// 缓存边界隔离，避免共享指针污染
 func deepCopyConfigs(src []*modelpkg.Config) []*modelpkg.Config {
 	if src == nil {
 		return nil
@@ -143,7 +142,7 @@ func (c *ChannelCache) GetEnabledChannelsByModel(ctx context.Context, model stri
 	c.channelCounters.addHit()
 
 	if model == "*" {
-		// 返回所有渠道的深拷贝（隔离可变字段：Models, ModelRedirects）
+		// 返回所有渠道的深拷贝（隔离可变字段：ModelEntries）
 		return deepCopyConfigs(c.allChannels), nil
 	}
 
@@ -176,7 +175,7 @@ func (c *ChannelCache) GetEnabledChannelsByType(ctx context.Context, channelType
 		return []*modelpkg.Config{}, nil
 	}
 
-	// 返回深拷贝（隔离可变字段：Models, ModelRedirects）
+	// 返回深拷贝（隔离可变字段：ModelEntries）
 	return deepCopyConfigs(channels), nil
 }
 
@@ -242,8 +241,8 @@ func (c *ChannelCache) refreshCache(ctx context.Context) error {
 		channelType := channel.GetChannelType()
 		byType[channelType] = append(byType[channelType], channel) // 内部共享
 
-		// 同时填充模型索引
-		for _, model := range channel.Models {
+		// 同时填充模型索引（使用 GetModels() 辅助方法）
+		for _, model := range channel.GetModels() {
 			byModel[model] = append(byModel[model], channel) // 内部共享
 		}
 	}

@@ -25,8 +25,10 @@ func TestGetChannelSuccessRates_IgnoresClientNoise(t *testing.T) {
 		Name:     "test-channel",
 		URL:      "https://example.com",
 		Priority: 10,
-		Models:   []string{"model-a"},
-		Enabled:  true,
+		ModelEntries: []model.ModelEntry{
+			{Model: "model-a", RedirectModel: ""},
+		},
+		Enabled: true,
 	}
 	created, err := store.CreateConfig(ctx, cfg)
 	if err != nil {
@@ -78,8 +80,10 @@ func TestGetChannelSuccessRates_NoEligibleResults(t *testing.T) {
 		Name:     "test-channel",
 		URL:      "https://example.com",
 		Priority: 10,
-		Models:   []string{"model-a"},
-		Enabled:  true,
+		ModelEntries: []model.ModelEntry{
+			{Model: "model-a", RedirectModel: ""},
+		},
+		Enabled: true,
 	}
 	created, err := store.CreateConfig(ctx, cfg)
 	if err != nil {
