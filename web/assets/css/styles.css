@@ -1725,7 +1725,6 @@ a.model-tag.model-link:hover {
 /* 模型重定向角标 */
 .model-tag.model-redirected {
   position: relative;
-  cursor: help;
 }
 
 .redirect-badge {
