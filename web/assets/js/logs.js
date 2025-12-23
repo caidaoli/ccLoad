@@ -142,7 +142,7 @@
             // 有重定向：显示角标 + tooltip
             modelDisplay = `<span class="model-tag model-redirected" title="请求模型: ${escapeHtml(entry.model)}&#10;实际模型: ${escapeHtml(entry.actual_model)}">
               <span class="model-text">${escapeHtml(entry.model)}</span>
-              <sup class="redirect-badge">↗</sup>
+              <sup class="redirect-badge">↪</sup>
             </span>`;
           } else {
             modelDisplay = `<span class="model-tag">${escapeHtml(entry.model)}</span>`;
