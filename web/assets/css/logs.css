@@ -132,3 +132,45 @@
     .logs-table th {
       text-align: center;
     }
+
+    /* 模型标签样式 */
+    .model-tag {
+      display: inline-block;
+      position: relative;
+      padding: 2px 8px;
+      background: var(--neutral-100);
+      border-radius: 4px;
+      font-size: 0.9em;
+      color: var(--neutral-700);
+    }
+
+    .model-tag.model-redirected {
+      padding-right: 18px;
+      background: var(--warning-50);
+      border: 1px solid var(--warning-200);
+    }
+
+    .model-text {
+      display: inline-block;
+      max-width: 200px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      vertical-align: middle;
+    }
+
+    /* 重定向角标 - 显示在右上角 */
+    .redirect-badge {
+      position: absolute;
+      top: -6px;
+      right: -4px;
+      background: var(--warning-500);
+      color: white;
+      font-size: 0.65em;
+      padding: 2px 4px;
+      border-radius: 8px;
+      font-weight: 600;
+      line-height: 1;
+      transform: scale(0.9);
+      transform-origin: top right;
+    }

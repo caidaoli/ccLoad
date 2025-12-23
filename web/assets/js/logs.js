@@ -140,8 +140,9 @@
         if (entry.model) {
           if (entry.actual_model && entry.actual_model !== entry.model) {
             // 有重定向：显示角标 + tooltip
-            modelDisplay = `<span class="model-tag model-redirected" title="→ ${escapeHtml(entry.actual_model)}">
-              ${escapeHtml(entry.model)}<sup class="redirect-badge">↗</sup>
+            modelDisplay = `<span class="model-tag model-redirected" title="请求模型: ${escapeHtml(entry.model)}&#10;实际模型: ${escapeHtml(entry.actual_model)}">
+              <span class="model-text">${escapeHtml(entry.model)}</span>
+              <sup class="redirect-badge">↗</sup>
             </span>`;
           } else {
             modelDisplay = `<span class="model-tag">${escapeHtml(entry.model)}</span>`;
@@ -279,8 +280,8 @@
         const rowEl = TemplateEngine.render('tpl-log-row', {
           time: formatTime(entry.time),
           clientIPDisplay,
-          modelDisplay,
           configDisplay,
+          modelDisplay,
           apiKeyDisplay,
           statusClass,
           statusCode,
