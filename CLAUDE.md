@@ -34,11 +34,14 @@ internal/
 - Key级错误(401/403/429) → 重试同渠道其他Key
 - 渠道级错误(5xx/520/524) → 切换到其他渠道
 - 客户端错误(404/405) → 不重试,直接返回
+- **软错误检测(597)**: 识别200状态码但响应体为错误的情况 → 渠道级冷却
+- **1308配额错误(596)**: 专用处理,不计入渠道健康度 → Key级冷却
 - 指数退避: 2min → 4min → 8min → 30min(上限)
 
 **关键入口**:
 - `cooldown.Manager.HandleError()` - 冷却决策引擎
-- `util.ClassifyHTTPStatus()` - 错误分类
+- `util.ClassifyHTTPStatus()` - HTTP错误分类器
+- `util.ClassifyHTTPStatusWithBody()` - 带响应体的错误分类（支持软错误检测）
 - `app.KeySelector.SelectAvailableKey()` - Key负载均衡
 
 ## 开发指南
