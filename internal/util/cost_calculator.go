@@ -93,6 +93,20 @@ var basePricing = map[string]ModelPricing{
 	"gemini-2.0-flash-lite": {InputPrice: 0.075, OutputPrice: 0.30},
 	"gemini-1.5-pro":        {InputPrice: 1.25, OutputPrice: 5.00},
 	"gemini-1.5-flash":      {InputPrice: 0.20, OutputPrice: 0.60},
+
+	// ========== 智谱 GLM 模型 ==========
+	"glm-4.7":             {InputPrice: 0.60, OutputPrice: 2.20},
+	"glm-4.6":             {InputPrice: 0.60, OutputPrice: 2.20},
+	"glm-4.6v":            {InputPrice: 0.30, OutputPrice: 0.90},
+	"glm-4.6v-flashx":     {InputPrice: 0.04, OutputPrice: 0.40},
+	"glm-4.6v-flash":      {InputPrice: 0.00, OutputPrice: 0.00}, // 免费
+	"glm-4.5":             {InputPrice: 0.60, OutputPrice: 2.20},
+	"glm-4.5v":            {InputPrice: 0.60, OutputPrice: 1.80},
+	"glm-4.5-x":           {InputPrice: 2.20, OutputPrice: 8.90},
+	"glm-4.5-air":         {InputPrice: 0.20, OutputPrice: 1.10},
+	"glm-4.5-airx":        {InputPrice: 1.10, OutputPrice: 4.50},
+	"glm-4.5-flash":       {InputPrice: 0.00, OutputPrice: 0.00}, // 免费
+	"glm-4-32b-0414-128k": {InputPrice: 0.10, OutputPrice: 0.10},
 }
 
 // modelAliases 模型别名映射（多对一）
