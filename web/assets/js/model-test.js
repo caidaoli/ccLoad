@@ -52,11 +52,13 @@ function renderModelList() {
   }
 
   const fragment = document.createDocumentFragment();
-  models.forEach(model => {
-    const isNew = newModels.has(model);
+  models.forEach(entry => {
+    // models 是 ModelEntry 数组: {model: string, redirect_model?: string}
+    const modelName = typeof entry === 'string' ? entry : entry.model;
+    const isNew = newModels.has(modelName);
     const row = TemplateEngine.render('tpl-model-row', {
-      model: model,
-      displayName: isNew ? `[新] ${model}` : model,
+      model: modelName,
+      displayName: isNew ? `[新] ${modelName}` : modelName,
       nameStyle: isNew ? ' color: var(--success-500);' : ''
     });
     if (row) fragment.appendChild(row);
@@ -224,9 +226,10 @@ async function fetchAndAddModels() {
   try {
     const resp = await fetchAPIWithAuth(`/admin/channels/${selectedChannel.id}/models/fetch?channel_type=${channelType}`);
     if (resp.success && resp.data && resp.data.models) {
-      const existingSet = new Set(selectedChannel.models);
+      // models 是 ModelEntry 数组，提取模型名称
+      const existingNames = new Set(selectedChannel.models.map(e => typeof e === 'string' ? e : e.model));
       const fetched = resp.data.models;
-      const newOnes = fetched.filter(m => !existingSet.has(m));
+      const newOnes = fetched.filter(m => !existingNames.has(m));
 
       if (newOnes.length > 0) {
         // 保存到后端
@@ -239,7 +242,9 @@ async function fetchAndAddModels() {
         newOnes.forEach(m => newModels.add(m));
       }
 
-      selectedChannel.models = [...new Set([...selectedChannel.models, ...fetched])];
+      // 合并新模型到列表（转为 ModelEntry 格式）
+      const newEntries = fetched.filter(m => !existingNames.has(m)).map(m => ({ model: m }));
+      selectedChannel.models = [...selectedChannel.models, ...newEntries];
       renderModelList();
       showSuccess(`获取到 ${fetched.length} 个模型，新增 ${newOnes.length} 个`);
     } else {
@@ -265,7 +270,11 @@ async function deleteSelectedModels() {
       body: JSON.stringify({ models: selected.map(s => s.model) })
     });
     if (resp.success) {
-      selectedChannel.models = selectedChannel.models.filter(m => !selected.some(s => s.model === m));
+      const deleteSet = new Set(selected.map(s => s.model));
+      selectedChannel.models = selectedChannel.models.filter(entry => {
+        const name = typeof entry === 'string' ? entry : entry.model;
+        return !deleteSet.has(name);
+      });
       selected.forEach(({ row }) => row.remove());
       showSuccess('删除成功');
     } else {

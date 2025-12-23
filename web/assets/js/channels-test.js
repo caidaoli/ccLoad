@@ -7,10 +7,12 @@ async function testChannel(id, name) {
 
   const modelSelect = document.getElementById('testModelSelect');
   modelSelect.innerHTML = '';
-  channel.models.forEach(model => {
+  channel.models.forEach(entry => {
+    // models 是 ModelEntry 数组: {model: string, redirect_model?: string}
+    const modelName = typeof entry === 'string' ? entry : entry.model;
     const option = document.createElement('option');
-    option.value = model;
-    option.textContent = model;
+    option.value = modelName;
+    option.textContent = modelName;
     modelSelect.appendChild(option);
   });
 
