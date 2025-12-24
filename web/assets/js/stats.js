@@ -746,6 +746,8 @@
       const channelTokensMap = {}; // 渠道 -> Token用量
       const modelCallsMap = {}; // 模型 -> 成功调用次数
       const modelTokensMap = {}; // 模型 -> Token用量
+      const channelCostMap = {}; // 渠道 -> 成本（美元）
+      const modelCostMap = {}; // 模型 -> 成本（美元）
 
       for (const entry of statsData.stats) {
         const channelName = entry.channel_name || '未知渠道';
@@ -764,13 +766,22 @@
           // 模型Token用量
           modelTokensMap[modelName] = (modelTokensMap[modelName] || 0) + totalTokens;
         }
+
+        // 成本聚合（不依赖 successCount，因为成本可能来自失败请求的部分消耗）
+        const cost = entry.total_cost || 0;
+        if (cost > 0) {
+          channelCostMap[channelName] = (channelCostMap[channelName] || 0) + cost;
+          modelCostMap[modelName] = (modelCostMap[modelName] || 0) + cost;
+        }
       }
 
-      // 渲染4个饼图
+      // 渲染6个饼图
       renderPieChart('chart-channel-calls', channelCallsMap, '次');
       renderPieChart('chart-channel-tokens', channelTokensMap, '');
       renderPieChart('chart-model-calls', modelCallsMap, '次');
       renderPieChart('chart-model-tokens', modelTokensMap, '');
+      renderPieChart('chart-channel-cost', channelCostMap, '$');
+      renderPieChart('chart-model-cost', modelCostMap, '$');
     }
 
     // 渲染单个饼图
@@ -824,6 +835,12 @@
           formatter: function(params) {
             const value = params.value;
             let formattedValue;
+            // 成本特殊处理
+            if (unit === '$') {
+              formattedValue = formatCost(value);
+              return `${params.name}<br/>${formattedValue} (${params.percent}%)`;
+            }
+            // 原有逻辑：大数值缩写
             if (value >= 1000000) {
               formattedValue = (value / 1000000).toFixed(2) + 'M';
             } else if (value >= 1000) {
