@@ -94,8 +94,19 @@ func deepCopyConfig(src *modelpkg.Config) *modelpkg.Config {
 		return nil
 	}
 
-	// 浅拷贝对象本身
-	dst := *src
+	dst := &modelpkg.Config{
+		ID:                 src.ID,
+		Name:               src.Name,
+		ChannelType:        src.ChannelType,
+		URL:                src.URL,
+		Priority:           src.Priority,
+		Enabled:            src.Enabled,
+		CooldownUntil:      src.CooldownUntil,
+		CooldownDurationMs: src.CooldownDurationMs,
+		CreatedAt:          src.CreatedAt,
+		UpdatedAt:          src.UpdatedAt,
+		KeyCount:           src.KeyCount,
+	}
 
 	// 深拷贝 ModelEntries slice
 	if src.ModelEntries != nil {
@@ -103,13 +114,7 @@ func deepCopyConfig(src *modelpkg.Config) *modelpkg.Config {
 		copy(dst.ModelEntries, src.ModelEntries)
 	}
 
-	// [FIX] P0: 重置索引缓存
-	// 1. modelIndex 中存储的是指向 src.ModelEntries 元素的指针，必须重置
-	// 2. sync.Once 复制后状态不确定，必须重置为零值
-	// 副本在首次调用 buildIndexIfNeeded 时会重新构建指向自己 ModelEntries 的索引
-	dst.ResetModelIndex()
-
-	return &dst
+	return dst
 }
 
 // deepCopyConfigs 批量深拷贝 Config 对象

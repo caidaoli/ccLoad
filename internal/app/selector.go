@@ -123,12 +123,30 @@ func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpk
 	// 先执行冷却过滤，保证冷却语义不被绕开（正确性优先）
 	filtered := s.filterCooldownChannelsLegacy(channels, channelCooldowns, keyCooldowns, now)
 	if len(filtered) == 0 {
-		// 全冷却兜底：仍需返回一个最可能最快恢复的渠道，避免直接无路可走
-		// 原则：尽量少破坏冷却机制，只在“没有任何可用渠道”时选择 1 个候选
-		return s.pickBestChannelWhenAllCooled(channels, channelCooldowns, keyCooldowns, now), nil
+		// 全冷却兜底：基于阈值决策
+		// - 剩余时间 ≤ 阈值：返回最快恢复的渠道（短冷却兜底）
+		// - 剩余时间 > 阈值：返回空，让调用方返回503（尊重冷却语义）
+		threshold := 120 * time.Second // 默认2分钟
+		if s.configService != nil {
+			threshold = time.Duration(s.configService.GetInt("cooldown_fallback_threshold", 120)) * time.Second
+		}
+		best, readyIn := s.pickBestChannelWhenAllCooled(channels, channelCooldowns, keyCooldowns, now)
+		if best != nil && (threshold == 0 || readyIn <= threshold) {
+			if threshold > 0 {
+				log.Printf("[INFO] All channels cooled, fallback to channel %d (ready in %.1fs, threshold %.0fs)",
+					best.ID, readyIn.Seconds(), threshold.Seconds())
+			}
+			return []*modelpkg.Config{best}, nil
+		}
+		// 超过阈值或禁用兜底，返回空触发503
+		if best != nil {
+			log.Printf("[INFO] All channels cooled, no fallback (ready in %.1fs > threshold %.0fs)",
+				readyIn.Seconds(), threshold.Seconds())
+		}
+		return nil, nil
 	}
 
-	// 启用健康度排序：对“已通过冷却过滤”的渠道按健康度排序
+	// 启用健康度排序：对"已通过冷却过滤"的渠道按健康度排序
 	if s.healthCache != nil && s.healthCache.Config().Enabled {
 		return s.sortChannelsByHealth(filtered), nil
 	}
@@ -136,16 +154,17 @@ func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpk
 	return filtered, nil
 }
 
-// pickBestChannelWhenAllCooled 全冷却兜底选择。
+// pickBestChannelWhenAllCooled 全冷却时选择最佳渠道。
+// 返回最佳渠道和距离恢复的剩余时间。
 // 选择规则：最早恢复 > 有效优先级高 > 基础优先级高
 func (s *Server) pickBestChannelWhenAllCooled(
 	channels []*modelpkg.Config,
 	channelCooldowns map[int64]time.Time,
 	keyCooldowns map[int64]map[int]time.Time,
 	now time.Time,
-) []*modelpkg.Config {
+) (*modelpkg.Config, time.Duration) {
 	if len(channels) == 0 {
-		return channels
+		return nil, 0
 	}
 
 	healthEnabled := s.healthCache != nil && s.healthCache.Config().Enabled
@@ -184,7 +203,7 @@ func (s *Server) pickBestChannelWhenAllCooled(
 	// 过滤nil并找最优
 	valid := slices.DeleteFunc(slices.Clone(channels), func(ch *modelpkg.Config) bool { return ch == nil })
 	if len(valid) == 0 {
-		return nil
+		return nil, 0
 	}
 
 	best := slices.MinFunc(valid, func(a, b *modelpkg.Config) int {
@@ -204,7 +223,13 @@ func (s *Server) pickBestChannelWhenAllCooled(
 		return cmp.Compare(b.Priority, a.Priority)
 	})
 
-	return []*modelpkg.Config{best}
+	readyAt := getReadyAt(best)
+	readyIn := readyAt.Sub(now)
+	if readyIn < 0 {
+		readyIn = 0
+	}
+
+	return best, readyIn
 }
 
 // filterCooldownChannelsLegacy 原有过滤逻辑（健康度排序禁用时使用）

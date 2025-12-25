@@ -104,12 +104,12 @@ func executeSingleTransaction(db *sql.DB, ctx context.Context, fn func(*sql.Tx) 
 	}
 
 	// 2. 延迟回滚(幂等操作,提交后回滚无效)
-	// 设计原则:防御性编程,即使panic也能回滚
+	// 设计原则:Fail-Fast,panic回滚后继续炸掉(不隐藏编程错误)
 	defer func() {
 		if p := recover(); p != nil {
-			// panic恢复:强制回滚并转换为error
+			// panic恢复:强制回滚后继续panic(不吞掉编程错误)
 			_ = tx.Rollback()
-			err = fmt.Errorf("transaction panic: %v", p)
+			panic(p)
 		} else if err != nil {
 			// 函数返回错误:回滚事务
 			_ = tx.Rollback()

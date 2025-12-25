@@ -68,9 +68,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 		}
 
 		// 序列化模型列表和重定向为CSV兼容格式
-		// TODO(v2.0): 移除此兼容代码，改用新的 CSV 格式（models 列直接存储 JSON 数组）
-		// 当前保留旧格式是为了支持从旧版本导出的 CSV 文件导入
-		// 预计移除时间：下一个主版本发布后
+		// 格式设计：models用逗号分隔（人类可读+Excel友好），redirects用JSON（结构化数据）
 		models := make([]string, 0, len(cfg.ModelEntries))
 		redirects := make(map[string]string)
 		for _, entry := range cfg.ModelEntries {
@@ -267,7 +265,6 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 		}
 
 		// 构建模型条目（合并models和modelRedirects）
-		// TODO(v2.0): 当 CSV 格式更新后，此转换逻辑可简化
 		modelEntries := make([]model.ModelEntry, 0, len(models))
 		for _, m := range models {
 			entry := model.ModelEntry{Model: m}

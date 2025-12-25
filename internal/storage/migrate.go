@@ -384,6 +384,8 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"success_rate_penalty_weight", "100", "float", "成功率惩罚权重(乘以失败率)", "100"},
 		{"health_score_window_minutes", "30", "int", "成功率统计时间窗口(分钟)", "30"},
 		{"health_score_update_interval", "30", "int", "成功率缓存更新间隔(秒)", "30"},
+		// 冷却兜底配置
+		{"cooldown_fallback_threshold", "120", "int", "全冷却兜底阈值(秒,0=禁用兜底)", "120"},
 	}
 
 	var query string
