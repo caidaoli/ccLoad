@@ -220,6 +220,15 @@ func (s *Server) handleSuccessResponse(
 	_ *int64,
 	_ string,
 ) (*fwResult, float64, error) {
+	// [FIX] 流式请求：禁用 WriteTimeout，避免长时间流被服务器自己切断
+	// Go 1.20+ http.ResponseController 支持动态调整 WriteDeadline
+	if reqCtx.isStreaming {
+		rc := http.NewResponseController(w)
+		if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+			log.Printf("[WARN] 无法禁用流式请求的 WriteTimeout: %v", err)
+		}
+	}
+
 	// 写入响应头
 	filterAndWriteResponseHeaders(w, resp.Header)
 	w.WriteHeader(resp.StatusCode)

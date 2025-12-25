@@ -224,11 +224,9 @@ func TestClassifyHTTPStatus(t *testing.T) {
 	}{
 		{200, ErrorLevelNone, "2xx成功"},
 		{201, ErrorLevelNone, "2xx成功"},
-		{400, ErrorLevelKey, "Key级错误"},
 		{402, ErrorLevelKey, "402 应视为Key级（额度/余额/配额）"},
 		{401, ErrorLevelKey, "Key级错误（默认）"},
 		{403, ErrorLevelKey, "Key级错误"},
-		{404, ErrorLevelClient, "客户端错误"},
 		{429, ErrorLevelKey, "Key级限流"},
 		// 499 HTTP响应应触发渠道级重试
 		{499, ErrorLevelChannel, "499来自HTTP响应时，说明上游API返回，应重试其他渠道"},
@@ -686,6 +684,138 @@ func TestClassifySSEError(t *testing.T) {
 					tt.name, tt.expected, result, tt.reason)
 			} else {
 				t.Logf("[INFO] %s - %s", tt.name, tt.reason)
+			}
+		})
+	}
+}
+
+func TestClassify400Error(t *testing.T) {
+	tests := []struct {
+		name         string
+		responseBody []byte
+		expected     ErrorLevel
+		reason       string
+	}{
+		{
+			name:         "empty_body",
+			responseBody: []byte{},
+			expected:     ErrorLevelClient,
+			reason:       "空响应体应判定为客户端错误",
+		},
+		{
+			name:         "nil_body",
+			responseBody: nil,
+			expected:     ErrorLevelClient,
+			reason:       "nil响应体应判定为客户端错误",
+		},
+		{
+			name:         "invalid_api_key",
+			responseBody: []byte(`{"error": {"message": "Invalid API Key provided"}}`),
+			expected:     ErrorLevelKey,
+			reason:       "包含 invalid_api_key 特征应判定为 Key 级错误",
+		},
+		{
+			name:         "api_key_error",
+			responseBody: []byte(`{"error": {"message": "The API key you provided is malformed"}}`),
+			expected:     ErrorLevelKey,
+			reason:       "包含 api key 特征应判定为 Key 级错误",
+		},
+		{
+			name:         "bad_request_params",
+			responseBody: []byte(`{"error": {"message": "Missing required parameter: 'model'"}}`),
+			expected:     ErrorLevelClient,
+			reason:       "请求参数错误应判定为客户端级错误",
+		},
+		{
+			name:         "invalid_json_format",
+			responseBody: []byte(`{"error": {"message": "Invalid JSON format in request body"}}`),
+			expected:     ErrorLevelClient,
+			reason:       "JSON格式错误应判定为客户端级错误",
+		},
+		{
+			name:         "validation_error",
+			responseBody: []byte(`{"error": {"message": "Validation failed: max_tokens must be positive"}}`),
+			expected:     ErrorLevelClient,
+			reason:       "参数验证错误应判定为客户端级错误",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := classify400Error(tt.responseBody)
+			if result != tt.expected {
+				t.Errorf("❌ %s\n  期望: %v\n  实际: %v\n  原因: %s\n  响应体: %s",
+					tt.name, tt.expected, result, tt.reason, string(tt.responseBody))
+			} else {
+				t.Logf("✅ %s - %s", tt.name, tt.reason)
+			}
+		})
+	}
+}
+
+func TestClassify404Error(t *testing.T) {
+	tests := []struct {
+		name         string
+		responseBody []byte
+		expected     ErrorLevel
+		reason       string
+	}{
+		{
+			name:         "empty_body",
+			responseBody: []byte{},
+			expected:     ErrorLevelChannel,
+			reason:       "空响应体应判定为渠道配置错误（路径不存在）",
+		},
+		{
+			name:         "nil_body",
+			responseBody: nil,
+			expected:     ErrorLevelChannel,
+			reason:       "nil响应体应判定为渠道配置错误（路径不存在）",
+		},
+		{
+			name:         "model_not_found",
+			responseBody: []byte(`{"error": {"message": "The model 'gpt-5' could not be found", "type": "model_not_found"}}`),
+			expected:     ErrorLevelClient,
+			reason:       "模型不存在应判定为客户端级错误",
+		},
+		{
+			name:         "resource_not_exist",
+			responseBody: []byte(`{"error": {"message": "The requested resource does not exist"}}`),
+			expected:     ErrorLevelClient,
+			reason:       "资源不存在应判定为客户端级错误",
+		},
+		{
+			name:         "html_error_page",
+			responseBody: []byte(`<!DOCTYPE html>
+<html>
+<head><title>404 Not Found</title></head>
+<body><h1>404 Not Found</h1></body>
+</html>`),
+			expected:     ErrorLevelChannel,
+			reason:       "HTML错误页面应判定为渠道级错误（BaseURL配置错误）",
+		},
+		{
+			name:         "html_lowercase",
+			responseBody: []byte(`<html><head><title>Not Found</title></head><body>404</body></html>`),
+			expected:     ErrorLevelChannel,
+			reason:       "HTML错误页面（小写）应判定为渠道级错误",
+		},
+		{
+			name:         "endpoint_not_found",
+			responseBody: []byte(`{"error": {"message": "Endpoint /v1/completions not found"}}`),
+			expected:     ErrorLevelClient,
+			reason:       "端点不存在应判定为客户端级错误（默认保守策略）",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := classify404Error(tt.responseBody)
+			if result != tt.expected {
+				t.Errorf("❌ %s\n  期望: %v\n  实际: %v\n  原因: %s\n  响应体: %s",
+					tt.name, tt.expected, result, tt.reason, string(tt.responseBody))
+			} else {
+				t.Logf("✅ %s - %s", tt.name, tt.reason)
 			}
 		})
 	}

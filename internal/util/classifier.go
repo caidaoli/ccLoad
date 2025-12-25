@@ -84,7 +84,6 @@ var statusCodeClassification = map[int]ErrorLevel{
 	499: ErrorLevelChannel,
 
 	// Key级错误：API Key相关问题
-	400: ErrorLevelKey, // Bad Request - API Key格式错误
 	401: ErrorLevelKey, // Unauthorized - 默认Key级，需结合响应体分析
 	402: ErrorLevelKey, // Payment Required - 配额或余额不足
 	403: ErrorLevelKey, // Forbidden - 默认Key级，需结合响应体分析
@@ -109,7 +108,6 @@ var statusCodeClassification = map[int]ErrorLevel{
 	405: ErrorLevelChannel, // Method Not Allowed - 上游endpoint配置错误或不支持该方法
 
 	// 客户端错误：不冷却，直接返回
-	404: ErrorLevelClient, // Not Found
 	406: ErrorLevelClient, // Not Acceptable
 	408: ErrorLevelClient, // Request Timeout
 	410: ErrorLevelClient, // Gone
@@ -168,6 +166,16 @@ func ClassifyHTTPResponse(statusCode int, headers map[string][]string, responseB
 			return classifyRateLimitError(headers, responseBody)
 		}
 		return ErrorLevelKey
+	}
+
+	// 400错误：根据响应体智能分类
+	if statusCode == 400 {
+		return classify400Error(responseBody)
+	}
+
+	// 404错误：根据响应体智能分类
+	if statusCode == 404 {
+		return classify404Error(responseBody)
 	}
 
 	// 仅分析401和403错误,其他状态码使用标准分类器
@@ -324,6 +332,50 @@ func classifySSEError(responseBody []byte) ErrorLevel {
 		// 未知错误类型，保守处理为Key级
 		return ErrorLevelKey
 	}
+}
+
+// classify400Error 根据响应体内容智能分类 400 错误
+// 设计原则：90%+ 的 400 错误是客户端请求参数错误，只有极少数是 Key 级错误（如 invalid_api_key）
+func classify400Error(responseBody []byte) ErrorLevel {
+	if len(responseBody) == 0 {
+		return ErrorLevelClient // 空响应体 = 客户端错误
+	}
+	bodyLower := strings.ToLower(string(responseBody))
+
+	// Key 级特征（罕见）
+	if strings.Contains(bodyLower, "invalid_api_key") ||
+		strings.Contains(bodyLower, "api key") {
+		return ErrorLevelKey
+	}
+
+	// 默认：客户端级（参数错误、格式错误等）
+	return ErrorLevelClient
+}
+
+// classify404Error 根据响应体内容智能分类 404 错误
+// 设计原则：需要区分两种情况
+//   - BaseURL 配置错误（渠道级）：上游返回 HTML 错误页面
+//   - 模型不存在（客户端级）：上游返回 JSON 错误消息
+func classify404Error(responseBody []byte) ErrorLevel {
+	if len(responseBody) == 0 {
+		return ErrorLevelChannel // 空响应 = 路径错误，渠道配置问题
+	}
+	bodyLower := strings.ToLower(string(responseBody))
+
+	// 客户端级特征
+	if strings.Contains(bodyLower, "model_not_found") ||
+		strings.Contains(bodyLower, "does not exist") {
+		return ErrorLevelClient
+	}
+
+	// 渠道级特征（HTML 错误页面 = BaseURL 配错）
+	if strings.Contains(bodyLower, "<!doctype html") ||
+		strings.Contains(bodyLower, "<html") {
+		return ErrorLevelChannel
+	}
+
+	// 默认：客户端级（保守策略）
+	return ErrorLevelClient
 }
 
 // ParseResetTimeFrom1308Error 从1308错误响应中提取重置时间
