@@ -251,18 +251,18 @@ func TestSelectRouteCandidates_DisabledChannels(t *testing.T) {
 
 	// 创建2个渠道，1个启用，1个禁用
 	enabledCfg := &model.Config{
-		Name:     "enabled-channel",
-		URL:      "https://api1.com",
-		Priority: 100,
+		Name:         "enabled-channel",
+		URL:          "https://api1.com",
+		Priority:     100,
 		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
-		Enabled:  true,
+		Enabled:      true,
 	}
 	disabledCfg := &model.Config{
-		Name:     "disabled-channel",
-		URL:      "https://api2.com",
-		Priority: 90,
+		Name:         "disabled-channel",
+		URL:          "https://api2.com",
+		Priority:     90,
 		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
-		Enabled:  false,
+		Enabled:      false,
 	}
 
 	_, err := store.CreateConfig(ctx, enabledCfg)
@@ -486,11 +486,11 @@ func TestSelectRouteCandidates_NoMatchingChannels(t *testing.T) {
 
 	// 创建只支持特定模型的渠道
 	cfg := &model.Config{
-		Name:     "specific-channel",
-		URL:      "https://api.com",
-		Priority: 100,
+		Name:         "specific-channel",
+		URL:          "https://api.com",
+		Priority:     100,
 		ModelEntries: []model.ModelEntry{{Model: "specific-model", RedirectModel: ""}},
-		Enabled:  true,
+		Enabled:      true,
 	}
 	_, err := store.CreateConfig(ctx, cfg)
 	if err != nil {

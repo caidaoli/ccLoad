@@ -425,4 +425,3 @@ func TestCalculateCost_BackwardCompatibility(t *testing.T) {
 
 	t.Logf("[INFO] 向后兼容性测试通过: $%.6f", oldWay)
 }
-

@@ -39,9 +39,9 @@ type SQLStore struct {
 	driverName string // "sqlite" 或 "mysql"
 
 	// 异步Redis同步机制（性能优化: 避免同步等待）
-	syncCh           chan struct{}   // 同步触发信号（缓冲1，去重合并多个请求）
-	pendingSyncTypes atomic.Uint32   // 待同步类型（位标记，支持合并）
-	done             chan struct{}   // 优雅关闭信号
+	syncCh           chan struct{} // 同步触发信号（缓冲1，去重合并多个请求）
+	pendingSyncTypes atomic.Uint32 // 待同步类型（位标记，支持合并）
+	done             chan struct{} // 优雅关闭信号
 
 	redisSync RedisSync // Redis同步接口（依赖注入，支持测试和扩展）
 

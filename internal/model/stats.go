@@ -66,4 +66,3 @@ type RPMStats struct {
 	RecentRPM float64 `json:"recent_rpm"` // 最近一分钟RPM（仅本日有效）
 	RecentQPS float64 `json:"recent_qps"` // 最近一分钟QPS（仅本日有效）
 }
-

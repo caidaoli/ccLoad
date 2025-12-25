@@ -346,6 +346,7 @@ func isOpusModel(model string) bool {
 //   - GPT-5系列: 90%折扣（缓存=$0.125/1M, input=$1.25/1M → 0.1倍）
 //   - GPT-4.1/o3/o4系列: 75%折扣（缓存=$0.50/1M, input=$2.00/1M → 0.25倍）
 //   - GPT-4o/o1系列: 50%折扣（缓存=$1.25/1M, input=$2.50/1M → 0.5倍）
+//
 // 参考: https://openai.com/api/pricing/
 func getOpenAICacheMultiplier(model string) float64 {
 	lowerModel := strings.ToLower(model)

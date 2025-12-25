@@ -785,14 +785,14 @@ func TestClassify404Error(t *testing.T) {
 			reason:       "资源不存在应判定为客户端级错误",
 		},
 		{
-			name:         "html_error_page",
+			name: "html_error_page",
 			responseBody: []byte(`<!DOCTYPE html>
 <html>
 <head><title>404 Not Found</title></head>
 <body><h1>404 Not Found</h1></body>
 </html>`),
-			expected:     ErrorLevelChannel,
-			reason:       "HTML错误页面应判定为渠道级错误（BaseURL配置错误）",
+			expected: ErrorLevelChannel,
+			reason:   "HTML错误页面应判定为渠道级错误（BaseURL配置错误）",
 		},
 		{
 			name:         "html_lowercase",

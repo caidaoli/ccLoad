@@ -7,15 +7,22 @@ if [ -z "$STAGED_GO_FILES" ]; then
     exit 0
 fi
 
-# 检查 goimports 是否安装
-if ! command -v goimports >/dev/null 2>&1; then
+# 查找 goimports
+GOIMPORTS=""
+if command -v goimports >/dev/null 2>&1; then
+    GOIMPORTS="goimports"
+elif [ -x "$(go env GOPATH)/bin/goimports" ]; then
+    GOIMPORTS="$(go env GOPATH)/bin/goimports"
+elif [ -x "$HOME/go/bin/goimports" ]; then
+    GOIMPORTS="$HOME/go/bin/goimports"
+else
     echo "goimports not found, install: go install golang.org/x/tools/cmd/goimports@latest"
     exit 1
 fi
 
 for file in $STAGED_GO_FILES; do
     if [ -f "$file" ]; then
-        goimports -w "$file"
+        "$GOIMPORTS" -w "$file"
         git add "$file"
     fi
 done

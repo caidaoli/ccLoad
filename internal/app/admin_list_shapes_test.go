@@ -45,12 +45,12 @@ func TestAdminAPI_ChannelKeys_ResponseShape_Empty(t *testing.T) {
 
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
-		Name:        "Test",
-		URL:         "https://example.com",
-		Priority:    10,
+		Name:         "Test",
+		URL:          "https://example.com",
+		Priority:     10,
 		ModelEntries: []model.ModelEntry{},
-		ChannelType: "anthropic",
-		Enabled:     true,
+		ChannelType:  "anthropic",
+		Enabled:      true,
 	})
 	if err != nil {
 		t.Fatalf("CreateConfig: %v", err)

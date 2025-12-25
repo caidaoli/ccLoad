@@ -25,11 +25,11 @@ func TestSelectAvailableKey_SingleKey(t *testing.T) {
 
 	// 创建渠道
 	cfg, err := store.CreateConfig(ctx, &model.Config{
-		Name:     "single-key-channel",
-		URL:      "https://api.com",
-		Priority: 100,
+		Name:         "single-key-channel",
+		URL:          "https://api.com",
+		Priority:     100,
 		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
-		Enabled:  true,
+		Enabled:      true,
 	})
 	if err != nil {
 		t.Fatalf("创建渠道失败: %v", err)
@@ -93,11 +93,11 @@ func TestSelectAvailableKey_SingleKeyCooldown(t *testing.T) {
 
 	// 创建渠道
 	cfg, err := store.CreateConfig(ctx, &model.Config{
-		Name:     "single-key-cooldown-channel",
-		URL:      "https://api.com",
-		Priority: 100,
+		Name:         "single-key-cooldown-channel",
+		URL:          "https://api.com",
+		Priority:     100,
 		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
-		Enabled:  true,
+		Enabled:      true,
 	})
 	if err != nil {
 		t.Fatalf("创建渠道失败: %v", err)
@@ -152,11 +152,11 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 
 	// 创建渠道
 	cfg, err := store.CreateConfig(ctx, &model.Config{
-		Name:     "sequential-channel",
-		URL:      "https://api.com",
-		Priority: 100,
+		Name:         "sequential-channel",
+		URL:          "https://api.com",
+		Priority:     100,
 		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
-		Enabled:  true,
+		Enabled:      true,
 	})
 	if err != nil {
 		t.Fatalf("创建渠道失败: %v", err)
@@ -259,11 +259,11 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 
 	// 创建渠道
 	cfg, err := store.CreateConfig(ctx, &model.Config{
-		Name:     "roundrobin-channel",
-		URL:      "https://api.com",
-		Priority: 100,
+		Name:         "roundrobin-channel",
+		URL:          "https://api.com",
+		Priority:     100,
 		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
-		Enabled:  true,
+		Enabled:      true,
 	})
 	if err != nil {
 		t.Fatalf("创建渠道失败: %v", err)
@@ -349,11 +349,11 @@ func TestSelectAvailableKey_RoundRobin_NonContiguousKeyIndex(t *testing.T) {
 
 	// 创建渠道
 	cfg, err := store.CreateConfig(ctx, &model.Config{
-		Name:     "rr-noncontig-channel",
-		URL:      "https://api.com",
-		Priority: 100,
+		Name:         "rr-noncontig-channel",
+		URL:          "https://api.com",
+		Priority:     100,
 		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
-		Enabled:  true,
+		Enabled:      true,
 	})
 	if err != nil {
 		t.Fatalf("创建渠道失败: %v", err)
@@ -499,11 +499,11 @@ func TestSelectAvailableKey_KeyCooldown(t *testing.T) {
 
 	// 创建渠道
 	cfg, err := store.CreateConfig(ctx, &model.Config{
-		Name:     "cooldown-channel",
-		URL:      "https://api.com",
-		Priority: 100,
+		Name:         "cooldown-channel",
+		URL:          "https://api.com",
+		Priority:     100,
 		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
-		Enabled:  true,
+		Enabled:      true,
 	})
 	if err != nil {
 		t.Fatalf("创建渠道失败: %v", err)
@@ -618,11 +618,11 @@ func TestSelectAvailableKey_CooldownAndExclude(t *testing.T) {
 
 	// 创建渠道
 	cfg, err := store.CreateConfig(ctx, &model.Config{
-		Name:     "combined-channel",
-		URL:      "https://api.com",
-		Priority: 100,
+		Name:         "combined-channel",
+		URL:          "https://api.com",
+		Priority:     100,
 		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
-		Enabled:  true,
+		Enabled:      true,
 	})
 	if err != nil {
 		t.Fatalf("创建渠道失败: %v", err)
@@ -684,11 +684,11 @@ func TestSelectAvailableKey_NoKeys(t *testing.T) {
 
 	// 创建渠道（不配置API Keys）
 	cfg, err := store.CreateConfig(ctx, &model.Config{
-		Name:     "no-keys-channel",
-		URL:      "https://api.com",
-		Priority: 100,
+		Name:         "no-keys-channel",
+		URL:          "https://api.com",
+		Priority:     100,
 		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
-		Enabled:  true,
+		Enabled:      true,
 	})
 	if err != nil {
 		t.Fatalf("创建渠道失败: %v", err)
@@ -719,11 +719,11 @@ func assertSelectAvailableKeyFirstIndex(t *testing.T, channelName string, keyPre
 	ctx := context.WithValue(context.Background(), testingContextKey, true)
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
-		Name:     channelName,
-		URL:      "https://api.com",
-		Priority: 100,
+		Name:         channelName,
+		URL:          "https://api.com",
+		Priority:     100,
 		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
-		Enabled:  true,
+		Enabled:      true,
 	})
 	if err != nil {
 		t.Fatalf("创建渠道失败: %v", err)

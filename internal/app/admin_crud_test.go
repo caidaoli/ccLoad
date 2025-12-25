@@ -234,11 +234,11 @@ func TestHandleGetChannel(t *testing.T) {
 
 	// 创建测试渠道
 	cfg := &model.Config{
-		Name:     "Test-Get-Channel",
-		URL:      "https://api.example.com",
-		Priority: 100,
+		Name:         "Test-Get-Channel",
+		URL:          "https://api.example.com",
+		Priority:     100,
 		ModelEntries: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
-		Enabled:  true,
+		Enabled:      true,
 	}
 	created, err := store.CreateConfig(ctx, cfg)
 	if err != nil {
@@ -333,11 +333,11 @@ func TestHandleUpdateChannel(t *testing.T) {
 
 	// 创建测试渠道
 	cfg := &model.Config{
-		Name:     "Original-Name",
-		URL:      "https://api.original.com",
-		Priority: 50,
+		Name:         "Original-Name",
+		URL:          "https://api.original.com",
+		Priority:     50,
 		ModelEntries: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
-		Enabled:  true,
+		Enabled:      true,
 	}
 	created, err := store.CreateConfig(ctx, cfg)
 	if err != nil {
@@ -462,11 +462,11 @@ func TestHandleDeleteChannel(t *testing.T) {
 
 	// 创建测试渠道
 	cfg := &model.Config{
-		Name:     "To-Be-Deleted",
-		URL:      "https://api.example.com",
-		Priority: 50,
+		Name:         "To-Be-Deleted",
+		URL:          "https://api.example.com",
+		Priority:     50,
 		ModelEntries: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
-		Enabled:  true,
+		Enabled:      true,
 	}
 	created, err := store.CreateConfig(ctx, cfg)
 	if err != nil {
@@ -541,11 +541,11 @@ func TestHandleGetChannelKeys(t *testing.T) {
 
 	// 创建测试渠道
 	cfg := &model.Config{
-		Name:     "Test-Keys-Channel",
-		URL:      "https://api.example.com",
-		Priority: 100,
+		Name:         "Test-Keys-Channel",
+		URL:          "https://api.example.com",
+		Priority:     100,
 		ModelEntries: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
-		Enabled:  true,
+		Enabled:      true,
 	}
 	created, err := store.CreateConfig(ctx, cfg)
 	if err != nil {

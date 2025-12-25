@@ -207,7 +207,7 @@ func TestOpenAIPricingCalculation(t *testing.T) {
 			model:           "gpt-4o",
 			inputTokens:     0, // [INFO] 归一化后: 原始500k - 缓存800k = 0 (clamped)
 			outputTokens:    100_000,
-			cacheReadTokens: 800_000, // 缓存大于原始输入（边界情况）
+			cacheReadTokens: 800_000,     // 缓存大于原始输入（边界情况）
 			expectedCost:    1.00 + 1.00, // 输出$1 + 缓存$1（GPT-4o缓存50%折扣）
 			description:     "GPT-4o缓存超过输入token（防御性处理）",
 		},

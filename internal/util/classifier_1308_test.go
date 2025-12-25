@@ -13,34 +13,34 @@ func TestParseResetTimeFrom1308Error(t *testing.T) {
 		expectTime    string // 格式: "2006-01-02 15:04:05"
 	}{
 		{
-			name: "标准1308错误",
-			responseBody: `{"type":"error","error":{"type":"1308","message":"已达到 5 小时的使用上限。您的限额将在 2025-12-09 18:08:11 重置。"},"request_id":"20251209155304a15e2cfd9ae44ae8"}`,
+			name:          "标准1308错误",
+			responseBody:  `{"type":"error","error":{"type":"1308","message":"已达到 5 小时的使用上限。您的限额将在 2025-12-09 18:08:11 重置。"},"request_id":"20251209155304a15e2cfd9ae44ae8"}`,
 			expectSuccess: true,
 			expectTime:    "2025-12-09 18:08:11",
 		},
 		{
-			name: "非1308错误",
-			responseBody: `{"type":"error","error":{"type":"1307","message":"其他错误"},"request_id":"xxx"}`,
+			name:          "非1308错误",
+			responseBody:  `{"type":"error","error":{"type":"1307","message":"其他错误"},"request_id":"xxx"}`,
 			expectSuccess: false,
 		},
 		{
-			name: "格式错误的JSON",
-			responseBody: `{invalid json}`,
+			name:          "格式错误的JSON",
+			responseBody:  `{invalid json}`,
 			expectSuccess: false,
 		},
 		{
-			name: "缺少时间信息",
-			responseBody: `{"type":"error","error":{"type":"1308","message":"错误信息但没有时间"},"request_id":"xxx"}`,
+			name:          "缺少时间信息",
+			responseBody:  `{"type":"error","error":{"type":"1308","message":"错误信息但没有时间"},"request_id":"xxx"}`,
 			expectSuccess: false,
 		},
 		{
-			name: "时间格式错误",
-			responseBody: `{"type":"error","error":{"type":"1308","message":"您的限额将在 2025/12/09 重置。"},"request_id":"xxx"}`,
+			name:          "时间格式错误",
+			responseBody:  `{"type":"error","error":{"type":"1308","message":"您的限额将在 2025/12/09 重置。"},"request_id":"xxx"}`,
 			expectSuccess: false,
 		},
 		{
-			name: "使用code字段的1308错误（非Anthropic格式）",
-			responseBody: `{"error":{"code":"1308","message":"已达到 5 小时的使用上限。您的限额将在 2025-12-21 15:00:05 重置。"},"request_id":"202512211335142b05cc4f9bbb4e6c"}`,
+			name:          "使用code字段的1308错误（非Anthropic格式）",
+			responseBody:  `{"error":{"code":"1308","message":"已达到 5 小时的使用上限。您的限额将在 2025-12-21 15:00:05 重置。"},"request_id":"202512211335142b05cc4f9bbb4e6c"}`,
 			expectSuccess: true,
 			expectTime:    "2025-12-21 15:00:05",
 		},

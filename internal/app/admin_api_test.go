@@ -652,12 +652,12 @@ func TestAdminAPI_ImportCSV_DuplicateNames(t *testing.T) {
 
 	// 先创建一个渠道
 	existing := &model.Config{
-		Name:        "Duplicate-Test",
-		URL:         "https://existing.com",
-		Priority:    10,
+		Name:         "Duplicate-Test",
+		URL:          "https://existing.com",
+		Priority:     10,
 		ModelEntries: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
-		ChannelType: "anthropic",
-		Enabled:     true,
+		ChannelType:  "anthropic",
+		Enabled:      true,
 	}
 
 	_, err := server.store.CreateConfig(ctx, existing)

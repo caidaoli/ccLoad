@@ -55,8 +55,8 @@ type jsonUsageParser struct {
 type usageParser interface {
 	Feed([]byte) error
 	GetUsage() (inputTokens, outputTokens, cacheRead, cacheCreation int)
-	GetLastError() []byte    // [INFO] 返回SSE流中检测到的最后一个error事件（用于1308等错误的延迟处理）
-	IsStreamComplete() bool  // [INFO] 返回是否检测到流结束标志（[DONE]/message_stop）
+	GetLastError() []byte   // [INFO] 返回SSE流中检测到的最后一个error事件（用于1308等错误的延迟处理）
+	IsStreamComplete() bool // [INFO] 返回是否检测到流结束标志（[DONE]/message_stop）
 }
 
 const (

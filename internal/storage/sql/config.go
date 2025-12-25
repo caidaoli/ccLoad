@@ -377,7 +377,10 @@ func (s *SQLStore) DeleteConfig(ctx context.Context, id int64) error {
 
 // BatchUpdatePriority 批量更新渠道优先级
 // 性能优化：使用单条批量UPDATE + CASE WHEN语句，性能提升90倍（45渠道：90次→1次）
-func (s *SQLStore) BatchUpdatePriority(ctx context.Context, updates []struct{ ID int64; Priority int }) (int64, error) {
+func (s *SQLStore) BatchUpdatePriority(ctx context.Context, updates []struct {
+	ID       int64
+	Priority int
+}) (int64, error) {
 	if len(updates) == 0 {
 		return 0, nil
 	}

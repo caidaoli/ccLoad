@@ -70,12 +70,12 @@ func TestHandleChannelTest(t *testing.T) {
 			// 设置测试数据(如果需要)
 			if tt.setupData {
 				cfg := &model.Config{
-					ID:       1,
-					Name:     "test-channel",
-					URL:      "http://test.example.com",
-					Priority: 1,
+					ID:           1,
+					Name:         "test-channel",
+					URL:          "http://test.example.com",
+					Priority:     1,
 					ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
-					Enabled:  true,
+					Enabled:      true,
 				}
 				_, err := srv.store.CreateConfig(ctx, cfg)
 				if err != nil {

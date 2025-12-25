@@ -1,8 +1,8 @@
 package sqlite_test
 
 import (
-	"ccLoad/internal/storage"
 	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 	"context"
 	"testing"
@@ -289,4 +289,3 @@ func abs(d time.Duration) time.Duration {
 	}
 	return d
 }
-

@@ -17,8 +17,8 @@ import (
 // 配置修改后程序会自动重启，无需热重载
 type ConfigService struct {
 	store  storage.Store
-	mu     sync.RWMutex                         // 保护 cache 并发访问
-	cache  map[string]*model.SystemSetting     // 启动时加载，支持运行时懒加载
+	mu     sync.RWMutex                    // 保护 cache 并发访问
+	cache  map[string]*model.SystemSetting // 启动时加载，支持运行时懒加载
 	loaded bool
 }
 

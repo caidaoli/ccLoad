@@ -39,4 +39,3 @@ func setupTestStoreWithContext(t *testing.T) (storage.Store, context.Context, fu
 
 	return store, ctx, cleanup
 }
-

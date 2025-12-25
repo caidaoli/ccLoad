@@ -76,12 +76,12 @@ func TestHandleSetChannelCooldown(t *testing.T) {
 			// 设置渠道(如果需要)
 			if tt.setupChannel {
 				cfg := &model.Config{
-					ID:       1,
-					Name:     "test-channel",
-					URL:      "http://test.example.com",
-					Priority: 1,
+					ID:           1,
+					Name:         "test-channel",
+					URL:          "http://test.example.com",
+					Priority:     1,
 					ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
-					Enabled:  true,
+					Enabled:      true,
 				}
 				_, err := srv.store.CreateConfig(context.Background(), cfg)
 				if err != nil {
@@ -210,12 +210,12 @@ func TestHandleSetKeyCooldown(t *testing.T) {
 
 				// 创建渠道
 				cfg := &model.Config{
-					ID:       1,
-					Name:     "test-channel",
-					URL:      "http://test.example.com",
-					Priority: 1,
+					ID:           1,
+					Name:         "test-channel",
+					URL:          "http://test.example.com",
+					Priority:     1,
 					ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
-					Enabled:  true,
+					Enabled:      true,
 				}
 				_, err := srv.store.CreateConfig(ctx, cfg)
 				if err != nil {
@@ -289,12 +289,12 @@ func TestSetChannelCooldown_Integration(t *testing.T) {
 
 	// 创建测试渠道
 	cfg := &model.Config{
-		ID:       1,
-		Name:     "test-channel",
-		URL:      "http://test.example.com",
-		Priority: 1,
+		ID:           1,
+		Name:         "test-channel",
+		URL:          "http://test.example.com",
+		Priority:     1,
 		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
-		Enabled:  true,
+		Enabled:      true,
 	}
 	_, err := srv.store.CreateConfig(ctx, cfg)
 	if err != nil {
@@ -352,12 +352,12 @@ func TestSetKeyCooldown_Integration(t *testing.T) {
 
 	// 创建测试渠道
 	cfg := &model.Config{
-		ID:       1,
-		Name:     "test-channel",
-		URL:      "http://test.example.com",
-		Priority: 1,
+		ID:           1,
+		Name:         "test-channel",
+		URL:          "http://test.example.com",
+		Priority:     1,
 		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
-		Enabled:  true,
+		Enabled:      true,
 	}
 	_, err := srv.store.CreateConfig(ctx, cfg)
 	if err != nil {

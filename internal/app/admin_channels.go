@@ -593,9 +593,15 @@ func (s *Server) HandleBatchUpdatePriority(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	// 转换为storage层的类型
-	updates := make([]struct{ ID int64; Priority int }, len(req.Updates))
+	updates := make([]struct {
+		ID       int64
+		Priority int
+	}, len(req.Updates))
 	for i, u := range req.Updates {
-		updates[i] = struct{ ID int64; Priority int }{ID: u.ID, Priority: u.Priority}
+		updates[i] = struct {
+			ID       int64
+			Priority int
+		}{ID: u.ID, Priority: u.Priority}
 	}
 
 	// 调用storage层批量更新方法

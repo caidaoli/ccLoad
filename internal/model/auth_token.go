@@ -40,17 +40,17 @@ type AuthToken struct {
 
 // AuthTokenRangeStats 某个时间范围内的token统计（从logs表聚合，2025-12新增）
 type AuthTokenRangeStats struct {
-	SuccessCount         int64   `json:"success_count"`           // 成功次数
-	FailureCount         int64   `json:"failure_count"`           // 失败次数
-	PromptTokens         int64   `json:"prompt_tokens"`           // 输入Token总数
-	CompletionTokens     int64   `json:"completion_tokens"`       // 输出Token总数
-	CacheReadTokens      int64   `json:"cache_read_tokens"`       // 缓存读Token总数
-	CacheCreationTokens  int64   `json:"cache_creation_tokens"`   // 缓存写Token总数
-	TotalCost            float64 `json:"total_cost"`              // 总费用(美元)
-	StreamAvgTTFB        float64 `json:"stream_avg_ttfb"`         // 流式请求平均首字节时间
-	NonStreamAvgRT       float64 `json:"non_stream_avg_rt"`       // 非流式请求平均响应时间
-	StreamCount          int64   `json:"stream_count"`            // 流式请求计数
-	NonStreamCount       int64   `json:"non_stream_count"`        // 非流式请求计数
+	SuccessCount        int64   `json:"success_count"`         // 成功次数
+	FailureCount        int64   `json:"failure_count"`         // 失败次数
+	PromptTokens        int64   `json:"prompt_tokens"`         // 输入Token总数
+	CompletionTokens    int64   `json:"completion_tokens"`     // 输出Token总数
+	CacheReadTokens     int64   `json:"cache_read_tokens"`     // 缓存读Token总数
+	CacheCreationTokens int64   `json:"cache_creation_tokens"` // 缓存写Token总数
+	TotalCost           float64 `json:"total_cost"`            // 总费用(美元)
+	StreamAvgTTFB       float64 `json:"stream_avg_ttfb"`       // 流式请求平均首字节时间
+	NonStreamAvgRT      float64 `json:"non_stream_avg_rt"`     // 非流式请求平均响应时间
+	StreamCount         int64   `json:"stream_count"`          // 流式请求计数
+	NonStreamCount      int64   `json:"non_stream_count"`      // 非流式请求计数
 	// RPM统计（2025-12新增）
 	PeakRPM   float64 `json:"peak_rpm"`   // 峰值RPM（每分钟最大请求数）
 	AvgRPM    float64 `json:"avg_rpm"`    // 平均RPM
