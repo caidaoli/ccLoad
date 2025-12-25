@@ -1,0 +1,21 @@
+#!/bin/sh
+# Go 代码自动格式化 pre-commit hook (goimports)
+
+STAGED_GO_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.go$')
+
+if [ -z "$STAGED_GO_FILES" ]; then
+    exit 0
+fi
+
+# 检查 goimports 是否安装
+if ! command -v goimports >/dev/null 2>&1; then
+    echo "goimports not found, install: go install golang.org/x/tools/cmd/goimports@latest"
+    exit 1
+fi
+
+for file in $STAGED_GO_FILES; do
+    if [ -f "$file" ]; then
+        goimports -w "$file"
+        git add "$file"
+    fi
+done
