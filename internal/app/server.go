@@ -268,7 +268,6 @@ func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
 // 当前设计选择：保持简单直接，避免过度抽象（YAGNI）
 
 // GetConfig 获取渠道配置（实现cooldown.ConfigGetter接口）
-// 优先使用缓存层（60秒TTL），降级到数据库查询
 func (s *Server) GetConfig(ctx context.Context, channelID int64) (*model.Config, error) {
 	if cache := s.getChannelCache(); cache != nil {
 		return cache.GetConfig(ctx, channelID)

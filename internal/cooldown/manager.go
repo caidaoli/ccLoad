@@ -98,7 +98,6 @@ func (m *Manager) HandleError(
 
 	// 3. [TARGET] 动态调整:单Key渠道的Key级错误应该直接冷却渠道
 	// 设计原则:如果没有其他Key可以重试,Key级错误等同于渠道级错误
-	// 优先使用缓存的KeyCount,避免N+1查询(性能提升~60%)
 	// [WARN] 例外：1308错误保持Key级（因为它有精确时间，后续会特殊处理）
 	if errLevel == util.ErrorLevelKey && !has1308Time {
 		var config *model.Config
