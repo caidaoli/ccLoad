@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"sync"
 	"time"
 
 	"ccLoad/internal/model"
@@ -16,7 +17,8 @@ import (
 // 配置修改后程序会自动重启，无需热重载
 type ConfigService struct {
 	store  storage.Store
-	cache  map[string]*model.SystemSetting // 启动时加载，运行期间只读
+	mu     sync.RWMutex                         // 保护 cache 并发访问
+	cache  map[string]*model.SystemSetting     // 启动时加载，支持运行时懒加载
 	loaded bool
 }
 
@@ -30,6 +32,9 @@ func NewConfigService(store storage.Store) *ConfigService {
 
 // LoadDefaults 启动时从数据库加载配置到内存（只调用一次）
 func (cs *ConfigService) LoadDefaults(ctx context.Context) error {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+
 	if cs.loaded {
 		return nil
 	}
@@ -50,7 +55,11 @@ func (cs *ConfigService) LoadDefaults(ctx context.Context) error {
 
 // GetInt 获取整数配置
 func (cs *ConfigService) GetInt(key string, defaultValue int) int {
-	if setting, ok := cs.cache[key]; ok {
+	cs.mu.RLock()
+	setting, ok := cs.cache[key]
+	cs.mu.RUnlock()
+
+	if ok {
 		if intVal, err := strconv.Atoi(setting.Value); err == nil {
 			return intVal
 		}
@@ -60,7 +69,11 @@ func (cs *ConfigService) GetInt(key string, defaultValue int) int {
 
 // GetBool 获取布尔配置
 func (cs *ConfigService) GetBool(key string, defaultValue bool) bool {
-	if setting, ok := cs.cache[key]; ok {
+	cs.mu.RLock()
+	setting, ok := cs.cache[key]
+	cs.mu.RUnlock()
+
+	if ok {
 		return setting.Value == "true" || setting.Value == "1"
 	}
 	return defaultValue
@@ -68,7 +81,11 @@ func (cs *ConfigService) GetBool(key string, defaultValue bool) bool {
 
 // GetString 获取字符串配置
 func (cs *ConfigService) GetString(key string, defaultValue string) string {
-	if setting, ok := cs.cache[key]; ok {
+	cs.mu.RLock()
+	setting, ok := cs.cache[key]
+	cs.mu.RUnlock()
+
+	if ok {
 		return setting.Value
 	}
 	return defaultValue
@@ -76,7 +93,11 @@ func (cs *ConfigService) GetString(key string, defaultValue string) string {
 
 // GetFloat 获取浮点数配置
 func (cs *ConfigService) GetFloat(key string, defaultValue float64) float64 {
-	if setting, ok := cs.cache[key]; ok {
+	cs.mu.RLock()
+	setting, ok := cs.cache[key]
+	cs.mu.RUnlock()
+
+	if ok {
 		if floatVal, err := strconv.ParseFloat(setting.Value, 64); err == nil {
 			return floatVal
 		}
@@ -124,8 +145,41 @@ func (cs *ConfigService) GetDurationPositive(key string, defaultValue time.Durat
 }
 
 // GetSetting 获取完整配置对象（用于验证等场景）
+// 缓存未命中时从数据库懒加载，防止运行时添加的配置项（如数据库迁移）导致验证失败
 func (cs *ConfigService) GetSetting(key string) *model.SystemSetting {
-	return cs.cache[key]
+	// 先用读锁查缓存
+	cs.mu.RLock()
+	setting, ok := cs.cache[key]
+	cs.mu.RUnlock()
+
+	if ok {
+		return setting
+	}
+
+	// 缓存未命中，尝试从数据库加载（处理运行时新增的配置项）
+	ctx := context.Background()
+	dbSetting, err := cs.store.GetSetting(ctx, key)
+	if err != nil {
+		log.Printf("[WARN] GetSetting(%s) cache miss, db query failed: %v", key, err)
+		return nil
+	}
+
+	// 用写锁更新缓存（双检锁避免重复查询）
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+
+	// 再次检查缓存（可能其他 goroutine 已加载）
+	if existingSetting, ok := cs.cache[key]; ok {
+		return existingSetting
+	}
+
+	// 更新缓存（避免重复查询）
+	if dbSetting != nil {
+		cs.cache[key] = dbSetting
+		log.Printf("[INFO] GetSetting(%s) lazy loaded from db", key)
+	}
+
+	return dbSetting
 }
 
 // UpdateSetting 更新配置（仅写数据库，不更新缓存，因为会重启）
