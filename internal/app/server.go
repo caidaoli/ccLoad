@@ -34,13 +34,12 @@ type Server struct {
 	// ============================================================================
 	// 核心字段
 	// ============================================================================
-	store            storage.Store
-	channelCache     *storage.ChannelCache // 高性能渠道缓存层
-	keySelector      *KeySelector          // Key选择器（多Key支持）
-	cooldownManager  *cooldown.Manager     // 统一冷却管理器
-	validatorManager *validator.Manager    // 渠道验证器管理器
-	healthCache      *HealthCache          // 渠道健康度缓存
-	client           *http.Client          // HTTP客户端
+	store           storage.Store
+	channelCache    *storage.ChannelCache // 高性能渠道缓存层
+	keySelector     *KeySelector          // Key选择器（多Key支持）
+	cooldownManager *cooldown.Manager     // 统一冷却管理器
+	healthCache     *HealthCache          // 渠道健康度缓存
+	client          *http.Client          // HTTP客户端
 
 	// 异步统计（有界队列，避免每请求起goroutine）
 	tokenStatsCh        chan tokenStatsUpdate
@@ -86,10 +85,23 @@ func NewServer(store storage.Store) *Server {
 	log.Print("[INFO] API访问令牌将从数据库动态加载（支持Web界面管理）")
 
 	// 从ConfigService读取运行时配置（启动时加载一次，修改后重启生效）
-	// 配置验证已移至 ConfigService 的带约束 API（SRP）
-	maxKeyRetries := configService.GetIntMin("max_key_retries", config.DefaultMaxKeyRetries, 1)
-	firstByteTimeout := configService.GetDurationNonNegative("upstream_first_byte_timeout", 0)
-	nonStreamTimeout := configService.GetDurationPositive("non_stream_timeout", 120*time.Second)
+	maxKeyRetries := configService.GetInt("max_key_retries", config.DefaultMaxKeyRetries)
+	if maxKeyRetries < 1 {
+		log.Printf("[WARN] 无效的 max_key_retries=%d（必须 >= 1），已使用默认值 %d", maxKeyRetries, config.DefaultMaxKeyRetries)
+		maxKeyRetries = config.DefaultMaxKeyRetries
+	}
+
+	firstByteTimeout := configService.GetDuration("upstream_first_byte_timeout", 0)
+	if firstByteTimeout < 0 {
+		log.Printf("[WARN] 无效的 upstream_first_byte_timeout=%v（必须 >= 0），已设为 0（禁用）", firstByteTimeout)
+		firstByteTimeout = 0
+	}
+
+	nonStreamTimeout := configService.GetDuration("non_stream_timeout", 120*time.Second)
+	if nonStreamTimeout <= 0 {
+		log.Printf("[WARN] 无效的 non_stream_timeout=%v（必须 > 0），已使用默认值 %v", nonStreamTimeout, 120*time.Second)
+		nonStreamTimeout = 120 * time.Second
+	}
 
 	logRetentionDays := configService.GetInt("log_retention_days", 7)
 	enable88codeFreeOnly := configService.GetBool("88code_free_only", false)
@@ -148,17 +160,11 @@ func NewServer(store storage.Store) *Server {
 	// 传入Server作为configGetter，利用缓存层查询渠道配置
 	s.cooldownManager = cooldown.NewManager(store, s)
 
-	// 初始化渠道验证器管理器（支持88code套餐验证等扩展规则）
-	s.validatorManager = validator.NewManager()
-
-	// 注册88code套餐验证器（启动时读取配置，修改后重启生效）
-	s.validatorManager.AddValidator(validator.NewSubscriptionValidator(enable88codeFreeOnly))
-	if enable88codeFreeOnly {
-		log.Print("[INFO] 88code subscription validator enabled (non-FREE plans will be cooled down)")
-	}
-
 	// 初始化Key选择器（移除store依赖，避免重复查询）
 	s.keySelector = NewKeySelector()
+
+	// 初始化88code验证器（启动时读取配置，修改后重启生效）
+	validator.Init88CodeValidator(enable88codeFreeOnly)
 
 	// 初始化健康度缓存（启动时读取配置，修改后重启生效）
 	defaultHealthCfg := model.DefaultHealthScoreConfig()
@@ -167,11 +173,21 @@ func NewServer(store storage.Store) *Server {
 		log.Printf("[WARN] 无效的 success_rate_penalty_weight=%.2f（必须 >= 0），已使用默认值 %.2f", successRatePenaltyWeight, defaultHealthCfg.SuccessRatePenaltyWeight)
 		successRatePenaltyWeight = defaultHealthCfg.SuccessRatePenaltyWeight
 	}
+	windowMinutes := configService.GetInt("health_score_window_minutes", 30)
+	if windowMinutes < 1 {
+		log.Printf("[WARN] 无效的 health_score_window_minutes=%d（必须 >= 1），已使用默认值 30", windowMinutes)
+		windowMinutes = 30
+	}
+	updateInterval := configService.GetInt("health_score_update_interval", 30)
+	if updateInterval < 1 {
+		log.Printf("[WARN] 无效的 health_score_update_interval=%d（必须 >= 1），已使用默认值 30", updateInterval)
+		updateInterval = 30
+	}
 	healthConfig := model.HealthScoreConfig{
 		Enabled:                  configService.GetBool("enable_health_score", defaultHealthCfg.Enabled),
 		SuccessRatePenaltyWeight: successRatePenaltyWeight,
-		WindowMinutes:            configService.GetIntMin("health_score_window_minutes", 30, 1),
-		UpdateIntervalSeconds:    configService.GetIntMin("health_score_update_interval", 30, 1),
+		WindowMinutes:            windowMinutes,
+		UpdateIntervalSeconds:    updateInterval,
 	}
 	s.healthCache = NewHealthCache(store, healthConfig, s.shutdownCh, &s.isShuttingDown, &s.wg)
 	if healthConfig.Enabled {

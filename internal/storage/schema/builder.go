@@ -74,6 +74,7 @@ func mysqlToSQLite(mysqlCol string) string {
 	// 特殊模式先处理（避免部分匹配）
 	col = strings.ReplaceAll(col, "INT PRIMARY KEY AUTO_INCREMENT", "INTEGER PRIMARY KEY AUTOINCREMENT")
 	col = strings.ReplaceAll(col, "TINYINT", "INTEGER")
+	col = strings.ReplaceAll(col, "BIGINT", "INTEGER") // [FIX] P3: BIGINT应转换为INTEGER
 
 	// 通用类型映射（使用词边界）
 	col = replaceWord(col, "INT", "INTEGER")

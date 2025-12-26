@@ -263,7 +263,8 @@ func verifyIndexesCreated(t *testing.T, db *sql.DB, tableName string, indexes []
 			query = fmt.Sprintf("SELECT name FROM pragma_index_list('%s') WHERE name='%s'", tableName, idx.Name)
 			err := db.QueryRow(query).Scan(&result)
 			if err != nil {
-				t.Logf("Info: Index %s verification failed (may not be created): %v", idx.Name, err)
+				// [FIX] P3: 索引验证失败应该报错，而不是只记录日志
+				t.Errorf("Index %s not found in SQLite: %v", idx.Name, err)
 				continue
 			}
 			t.Logf("Index %s found in SQLite", idx.Name)
@@ -273,11 +274,12 @@ func verifyIndexesCreated(t *testing.T, db *sql.DB, tableName string, indexes []
 			var count int
 			err := db.QueryRow(query).Scan(&count)
 			if err != nil {
-				t.Logf("Info: Index %s verification failed: %v", idx.Name, err)
+				t.Errorf("Index %s verification failed in MySQL: %v", idx.Name, err)
 				continue
 			}
 			if count == 0 {
-				t.Logf("Info: Index %s not found in MySQL (may not be created)", idx.Name)
+				// [FIX] P3: 索引未创建应该报错
+				t.Errorf("Index %s not found in MySQL", idx.Name)
 			} else {
 				t.Logf("Index %s verified successfully in MySQL", idx.Name)
 			}
@@ -362,7 +364,7 @@ func TestTypeConversionCorrectness(t *testing.T) {
 	}{
 		{"INT PRIMARY KEY AUTO_INCREMENT", "INTEGER PRIMARY KEY AUTOINCREMENT", "Auto increment primary key"},
 		{"INT NOT NULL", "INTEGER NOT NULL", "Integer column"},
-		{"BIGINT NOT NULL", "BIGINT NOT NULL", "Big integer column"},
+		{"BIGINT NOT NULL", "INTEGER NOT NULL", "Big integer column"}, // [FIX] P3: BIGINT应转换为INTEGER
 		{"VARCHAR(191) NOT NULL", "TEXT NOT NULL", "Varchar column"},
 		{"TEXT NOT NULL", "TEXT NOT NULL", "Text column (unchanged)"},
 		{"TINYINT NOT NULL DEFAULT 1", "INTEGER NOT NULL DEFAULT 1", "Tinyint column"},
