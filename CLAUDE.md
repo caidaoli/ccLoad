@@ -48,15 +48,33 @@ internal/
 
 ### Serena MCP 工具规范
 
-**代码浏览**:
-- 优先用符号化工具: `get_symbols_overview` → `find_symbol`
-- **禁止**直接读取整文件，先了解结构
-- 查找引用: `find_referencing_symbols`
+**核心原则**: Serena 工具优先于内置工具。资源高效、按需获取，避免读取不必要的内容。
+
+**代码浏览策略**:
+- **禁止**直接读取整文件，采用渐进式信息获取
+- 工作流: `get_symbols_overview` → `find_symbol(depth=1)` → `find_symbol(include_body=True)`
+- 符号定位不确定时: 先用 `search_for_pattern` 找候选，再用符号化工具
+- 查找引用关系: `find_referencing_symbols`
+- 限制搜索范围: 始终传 `relative_path` 参数缩小搜索目录
+
+**符号路径 (name_path) 语法**:
+- 简单名称: `method` - 匹配任意同名符号
+- 相对路径: `class/method` - 匹配后缀
+- 绝对路径: `/class/method` - 精确匹配
+- 重载索引: `MyClass/method[0]` - 指定特定重载
 
 **代码编辑**:
-- 替换符号: `replace_symbol_body`
-- 插入代码: `insert_after_symbol` / `insert_before_symbol`
-- 小改动用 `Edit` 工具
+- 整符号替换: `replace_symbol_body`
+- 文件尾部插入: `insert_after_symbol` (最后一个顶级符号)
+- 文件头部插入: `insert_before_symbol` (第一个顶级符号)
+- 小改动 (几行代码): 用 `Edit` 工具
+- 编辑前必须用 `find_referencing_symbols` 检查影响范围
+
+**辅助工具**:
+- 目录结构: `list_dir`
+- 文件查找: `find_file`
+- 模式搜索: `search_for_pattern` (非代码文件或符号名未知时)
+- 项目记忆: `read_memory` / `list_memories` (查阅架构文档等)
 
 ### Playwright MCP 工具策略
 
