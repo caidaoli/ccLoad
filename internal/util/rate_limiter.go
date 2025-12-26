@@ -22,7 +22,8 @@ type LoginRateLimiter struct {
 	resetInterval   time.Duration // 计数重置间隔（默认1小时）
 
 	// 优雅关闭机制
-	stopCh chan struct{} // 关闭信号
+	stopCh   chan struct{} // 关闭信号
+	stopOnce sync.Once
 }
 
 // attemptRecord 尝试记录
@@ -183,5 +184,7 @@ func (rl *LoginRateLimiter) cleanup() {
 // 优雅关闭LoginRateLimiter
 // Stop 停止cleanupLoop后台协程
 func (rl *LoginRateLimiter) Stop() {
-	close(rl.stopCh)
+	rl.stopOnce.Do(func() {
+		close(rl.stopCh)
+	})
 }

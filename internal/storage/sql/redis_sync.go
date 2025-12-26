@@ -262,10 +262,14 @@ func (s *SQLStore) doSyncWithRetry(ctx context.Context, syncType syncType, retry
 	// 重试逻辑
 	for attempt := 0; attempt < len(retryBackoff); attempt++ {
 		// 可取消的退避等待（支持优雅关闭）
+		timer := time.NewTimer(retryBackoff[attempt])
 		select {
-		case <-time.After(retryBackoff[attempt]):
+		case <-timer.C:
 			// 正常等待完成
 		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
 			return ctx.Err() // 关闭时立即退出，不阻塞
 		}
 

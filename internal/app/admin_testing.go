@@ -115,7 +115,7 @@ func (s *Server) HandleChannelTest(c *gin.Context) {
 		}
 
 		// 调用统一冷却管理器处理错误
-		action, err := s.cooldownManager.HandleError(
+		action, _, err := s.cooldownManager.HandleError(
 			c.Request.Context(),
 			id,
 			keyIndex,

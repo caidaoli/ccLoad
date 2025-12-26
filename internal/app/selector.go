@@ -123,22 +123,29 @@ func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpk
 	// 先执行冷却过滤，保证冷却语义不被绕开（正确性优先）
 	filtered := s.filterCooldownChannelsLegacy(channels, channelCooldowns, keyCooldowns, now)
 	if len(filtered) == 0 {
-		// 全冷却兜底：基于阈值决策
-		// - 剩余时间 ≤ 阈值：返回最快恢复的渠道（短冷却兜底）
-		// - 剩余时间 > 阈值：返回空，让调用方返回503（尊重冷却语义）
-		threshold := 120 * time.Second // 默认2分钟
+		// 全冷却兜底：基于阈值决策（秒）
+		// - threshold <= 0：禁用兜底，返回空，让调用方返回503（尊重冷却语义）
+		// - readyIn <= threshold：返回最快恢复的渠道（短冷却兜底）
+		// - readyIn > threshold：返回空，让调用方返回503（尊重冷却语义）
+		thresholdSeconds := 120 // 默认2分钟
 		if s.configService != nil {
-			threshold = time.Duration(s.configService.GetInt("cooldown_fallback_threshold", 120)) * time.Second
+			thresholdSeconds = s.configService.GetInt("cooldown_fallback_threshold", 120)
 		}
+		if thresholdSeconds <= 0 {
+			log.Printf("[INFO] All channels cooled, fallback disabled (cooldown_fallback_threshold=%d)", thresholdSeconds)
+			return nil, nil
+		}
+		threshold := time.Duration(thresholdSeconds) * time.Second
+
 		best, readyIn := s.pickBestChannelWhenAllCooled(channels, channelCooldowns, keyCooldowns, now)
-		if best != nil && (threshold == 0 || readyIn <= threshold) {
+		if best != nil && readyIn <= threshold {
 			if threshold > 0 {
 				log.Printf("[INFO] All channels cooled, fallback to channel %d (ready in %.1fs, threshold %.0fs)",
 					best.ID, readyIn.Seconds(), threshold.Seconds())
 			}
 			return []*modelpkg.Config{best}, nil
 		}
-		// 超过阈值或禁用兜底，返回空触发503
+		// 超过阈值，返回空触发503
 		if best != nil {
 			log.Printf("[INFO] All channels cooled, no fallback (ready in %.1fs > threshold %.0fs)",
 				readyIn.Seconds(), threshold.Seconds())
@@ -301,11 +308,12 @@ func (s *Server) sortChannelsByHealth(
 	})
 
 	// 同有效优先级内随机打散（负载均衡）
+	// 精度：*10 取整，可区分 0.1 差异（如 5.0 vs 5.1）
+	// 设计考虑：优先级通常是整数（5, 10），成功率惩罚基于统计（精度有限），0.1 精度已足够
 	result := make([]*modelpkg.Config, len(scored))
 	groupStart := 0
 	for i := 1; i <= len(scored); i++ {
-		// 检测优先级边界（使用整数部分比较，避免浮点精度问题）
-		if i == len(scored) || int(scored[i].effPriority) != int(scored[groupStart].effPriority) {
+		if i == len(scored) || int(scored[i].effPriority*10) != int(scored[groupStart].effPriority*10) {
 			if i-groupStart > 1 {
 				rand.Shuffle(i-groupStart, func(a, b int) {
 					scored[groupStart+a], scored[groupStart+b] = scored[groupStart+b], scored[groupStart+a]

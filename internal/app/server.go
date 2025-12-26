@@ -68,7 +68,9 @@ type Server struct {
 func NewServer(store storage.Store) *Server {
 	// 初始化ConfigService（优先从数据库加载配置,环境变量作Fallback）
 	configService := NewConfigService(store)
-	if err := configService.LoadDefaults(context.Background()); err != nil {
+	loadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := configService.LoadDefaults(loadCtx); err != nil {
 		log.Fatalf("❌ ConfigService初始化失败: %v", err)
 	}
 	log.Print("[INFO] ConfigService已加载系统配置（支持Web界面管理）")
@@ -100,12 +102,11 @@ func NewServer(store storage.Store) *Server {
 		}
 	}
 
-	// TLS证书验证配置（从ConfigService读取）
-	skipTLSVerify := configService.GetBool("skip_tls_verify", false)
+	// TLS证书验证配置（仅环境变量）
+	// 这是一个危险开关：一旦关闭证书校验，上游 HTTPS 等同明文 + 任意中间人。
+	skipTLSVerify := os.Getenv("CCLOAD_ALLOW_INSECURE_TLS") == "1"
 	if skipTLSVerify {
-		log.Print("[WARN]  警告：TLS证书验证已禁用（skip_tls_verify=true）")
-		log.Print("   仅用于开发/测试环境，生产环境严禁使用！")
-		log.Print("   当前配置存在中间人攻击风险，API Key可能泄漏")
+		log.Print("[WARN] 已禁用上游 TLS 证书校验（InsecureSkipVerify=true）：仅用于临时排障/受控内网环境")
 	}
 
 	// 构建HTTP Transport（使用统一函数，消除DRY违反）

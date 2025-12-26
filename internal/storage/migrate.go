@@ -96,6 +96,30 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		return err
 	}
 
+	// 清理已移除的配置项（Fail-fast：确保Web管理界面不再暴露危险开关）
+	if err := cleanupRemovedSettings(ctx, db, dialect); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func cleanupRemovedSettings(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	// skip_tls_verify 已移除：仅允许通过环境变量 CCLOAD_ALLOW_INSECURE_TLS 控制
+	if err := deleteSystemSetting(ctx, db, dialect, "skip_tls_verify"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func deleteSystemSetting(ctx context.Context, db *sql.DB, dialect Dialect, key string) error {
+	query := "DELETE FROM system_settings WHERE key = ?"
+	if dialect == DialectMySQL {
+		query = "DELETE FROM system_settings WHERE `key` = ?"
+	}
+	if _, err := db.ExecContext(ctx, query, key); err != nil {
+		return fmt.Errorf("delete system setting %s: %w", key, err)
+	}
 	return nil
 }
 
@@ -376,7 +400,6 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"upstream_first_byte_timeout", "0", "duration", "上游首字节超时(秒,0=禁用)", "0"},
 		{"non_stream_timeout", "120", "duration", "非流式请求超时(秒,0=禁用)", "120"},
 		{"88code_free_only", "false", "bool", "仅允许使用88code免费订阅(free订阅可用时生效)", "false"},
-		{"skip_tls_verify", "false", "bool", "跳过TLS证书验证", "false"},
 		{"channel_test_content", "sonnet 4.0的发布日期是什么", "string", "渠道测试默认内容", "sonnet 4.0的发布日期是什么"},
 		{"channel_stats_range", "today", "string", "渠道管理费用统计范围", "today"},
 		// 健康度排序配置

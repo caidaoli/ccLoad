@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"ccLoad/internal/util"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -181,4 +182,68 @@ func TestAcquireConcurrencySlot(t *testing.T) {
 	release3()
 
 	t.Log("[INFO] 并发控制测试通过：2个槽位正确管理")
+}
+
+func TestDetermineFinalClientStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		last     *proxyResult
+		expected int
+	}{
+		{"nil last => 503", nil, http.StatusServiceUnavailable},
+		{"status 0 => 503", &proxyResult{status: 0}, http.StatusServiceUnavailable},
+		{"negative => 502", &proxyResult{status: -1, errorLevel: util.ErrorLevelChannel}, http.StatusBadGateway},
+		{"596 => 429", &proxyResult{status: util.StatusQuotaExceeded, errorLevel: util.ErrorLevelKey}, http.StatusTooManyRequests},
+		{"597 => 502", &proxyResult{status: util.StatusSSEError, errorLevel: util.ErrorLevelKey}, http.StatusBadGateway},
+		{"598 => 504", &proxyResult{status: util.StatusFirstByteTimeout, errorLevel: util.ErrorLevelChannel}, http.StatusGatewayTimeout},
+		{"599 => 502", &proxyResult{status: util.StatusStreamIncomplete, errorLevel: util.ErrorLevelChannel}, http.StatusBadGateway},
+		{"499 client-canceled passthrough", &proxyResult{status: 499, isClientCanceled: true, errorLevel: util.ErrorLevelClient}, 499},
+		{"499 client-canceled passthrough (no errorLevel)", &proxyResult{status: 499, isClientCanceled: true}, 499},
+		{"499 upstream mapped to 502", &proxyResult{status: 499, isClientCanceled: false, errorLevel: util.ErrorLevelChannel}, http.StatusBadGateway},
+		{"401 Key-level mapped to 401 (透明代理)", &proxyResult{status: http.StatusUnauthorized, errorLevel: util.ErrorLevelKey}, http.StatusUnauthorized},
+		{"5xx Channel-level passthrough", &proxyResult{status: http.StatusBadGateway, errorLevel: util.ErrorLevelChannel}, http.StatusBadGateway},
+		// [FIX] 透明代理：所有上游状态码都透传，不映射
+		{"400 Key-level (invalid_api_key) => 400", &proxyResult{status: 400, errorLevel: util.ErrorLevelKey}, 400},
+		{"400 Client-level (参数错误) => 400", &proxyResult{status: 400, errorLevel: util.ErrorLevelClient}, 400},
+		{"404 Channel-level (BaseURL错误) => 404", &proxyResult{status: 404, errorLevel: util.ErrorLevelChannel}, 404},
+		{"404 Client-level (模型不存在) => 404", &proxyResult{status: 404, errorLevel: util.ErrorLevelClient}, 404},
+		{"429 Key-level => 429", &proxyResult{status: 429, errorLevel: util.ErrorLevelKey}, 429},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := determineFinalClientStatus(tt.last); got != tt.expected {
+				t.Fatalf("determineFinalClientStatus()=%d, expected %d", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestShouldStopTryingChannels(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		in       *proxyResult
+		expected bool
+	}{
+		{"nil => stop", nil, true},
+		{"client canceled => stop", &proxyResult{status: 499, isClientCanceled: true, errorLevel: util.ErrorLevelClient, shouldRetry: false}, true},
+		{"broken pipe shouldRetry=false => stop", &proxyResult{status: 499, errorLevel: util.ErrorLevelClient, shouldRetry: false}, true},
+		{"client-level => stop", &proxyResult{status: 404, errorLevel: util.ErrorLevelClient, shouldRetry: false}, true},
+		{"client-level even if shouldRetry=true => stop", &proxyResult{status: 404, errorLevel: util.ErrorLevelClient, shouldRetry: true}, true},
+		{"channel-level => continue", &proxyResult{status: 404, errorLevel: util.ErrorLevelChannel, shouldRetry: true}, false},
+		{"key-level (400 invalid_api_key) => continue", &proxyResult{status: 400, errorLevel: util.ErrorLevelKey, shouldRetry: true}, false},
+		{"key-level 429 => continue", &proxyResult{status: 429, errorLevel: util.ErrorLevelKey, shouldRetry: true}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldStopTryingChannels(tt.in); got != tt.expected {
+				t.Fatalf("shouldStopTryingChannels()=%v, expected %v", got, tt.expected)
+			}
+		})
+	}
 }

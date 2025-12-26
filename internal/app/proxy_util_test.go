@@ -6,6 +6,44 @@ import (
 	"testing"
 )
 
+func TestWriteResponseWithHeaders_PreservesContentType(t *testing.T) {
+	t.Parallel()
+
+	w := httptest.NewRecorder()
+	hdr := http.Header{}
+	hdr.Set("Content-Type", "text/plain; charset=utf-8")
+	hdr.Set("Connection", "keep-alive") // hop-by-hop should be stripped
+
+	writeResponseWithHeaders(w, http.StatusBadGateway, hdr, []byte("oops"))
+
+	if got := w.Code; got != http.StatusBadGateway {
+		t.Fatalf("expected status %d, got %d", http.StatusBadGateway, got)
+	}
+	if got := w.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("expected Content-Type preserved, got %q", got)
+	}
+	if got := w.Header().Get("Connection"); got != "" {
+		t.Fatalf("expected hop-by-hop header stripped, got %q", got)
+	}
+	if got := w.Body.String(); got != "oops" {
+		t.Fatalf("expected body preserved, got %q", got)
+	}
+}
+
+func TestWriteResponseWithHeaders_DefaultsToJSONContentTypeWhenBodyLooksJSON(t *testing.T) {
+	t.Parallel()
+
+	w := httptest.NewRecorder()
+	writeResponseWithHeaders(w, http.StatusBadGateway, nil, []byte(`{"error":"x"}`))
+
+	if got := w.Code; got != http.StatusBadGateway {
+		t.Fatalf("expected status %d, got %d", http.StatusBadGateway, got)
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/json; charset=utf-8" {
+		t.Fatalf("expected Content-Type json, got %q", got)
+	}
+}
+
 func TestBuildLogEntry_StreamDiagMsg(t *testing.T) {
 	channelID := int64(1)
 

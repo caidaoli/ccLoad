@@ -57,6 +57,7 @@ func NewManager(store storage.Store, configGetter ConfigGetter) *Manager {
 //
 // 返回:
 //   - Action: 建议采取的行动
+//   - util.ErrorLevel: 错误分类级别
 //   - error: 执行冷却操作时的错误
 func (m *Manager) HandleError(
 	ctx context.Context,
@@ -66,20 +67,14 @@ func (m *Manager) HandleError(
 	errorBody []byte,
 	isNetworkError bool,
 	headers map[string][]string, // 新增headers参数用于429错误分析
-) (Action, error) {
+) (Action, util.ErrorLevel, error) {
 	var errLevel util.ErrorLevel
 
 	// 1. 区分网络错误和HTTP错误的分类策略
 	if isNetworkError {
-		// [INFO] 网络错误特殊处理: 区分首字节超时、整体超时以及普通网络波动
-		// util.StatusFirstByteTimeout (598) → 渠道级错误（首字节超时，固定1分钟冷却）
-		// 504 Gateway Timeout → 渠道级错误（上游整体超时）
-		// 其他可重试错误(502等) → 默认Key级错误（可能只是单个Key的连接问题）
-		if statusCode == util.StatusFirstByteTimeout || statusCode == 504 {
-			errLevel = util.ErrorLevelChannel
-		} else {
-			errLevel = util.ErrorLevelKey
-		}
+		// 网络错误默认按“渠道级”处理：这类问题通常是上游/链路/负载，而不是某个Key的固有属性。
+		// 继续在同一渠道里换Key只是在浪费重试预算、扩大故障面。
+		errLevel = util.ErrorLevelChannel
 	} else {
 		// HTTP错误: 使用智能分类器(结合响应体内容和headers)
 		errLevel = util.ClassifyHTTPResponse(statusCode, headers, errorBody)
@@ -120,7 +115,7 @@ func (m *Manager) HandleError(
 	switch errLevel {
 	case util.ErrorLevelClient:
 		// 客户端错误:不冷却,直接返回
-		return ActionReturnClient, nil
+		return ActionReturnClient, errLevel, nil
 
 	case util.ErrorLevelKey:
 		// Key级错误:冷却当前Key,继续尝试其他Key
@@ -136,7 +131,7 @@ func (m *Manager) HandleError(
 					log.Printf("[COOLDOWN] Key冷却(1308): 渠道=%d Key=%d 禁用至 %s (%.1f分钟)",
 						channelID, keyIndex, reset1308Time.Format("2006-01-02 15:04:05"), duration.Minutes())
 				}
-				return ActionRetryKey, nil
+				return ActionRetryKey, errLevel, nil
 			}
 
 			// 默认逻辑: 使用指数退避策略
@@ -147,7 +142,7 @@ func (m *Manager) HandleError(
 				log.Printf("[WARN] Failed to update key cooldown (channel=%d, key=%d): %v", channelID, keyIndex, err)
 			}
 		}
-		return ActionRetryKey, nil
+		return ActionRetryKey, errLevel, nil
 
 	case util.ErrorLevelChannel:
 		// 渠道级错误:冷却整个渠道,切换到其他渠道
@@ -161,7 +156,7 @@ func (m *Manager) HandleError(
 				log.Printf("[COOLDOWN] Channel冷却(1308): 渠道=%d 禁用至 %s (%.1f分钟)",
 					channelID, reset1308Time.Format("2006-01-02 15:04:05"), duration.Minutes())
 			}
-			return ActionRetryChannel, nil
+			return ActionRetryChannel, errLevel, nil
 		}
 
 		// 默认逻辑: 使用指数退避策略
@@ -172,11 +167,11 @@ func (m *Manager) HandleError(
 			// 影响: 可能导致短暂的冷却状态不一致,但总比拒绝服务更好
 			log.Printf("[WARN] Failed to update channel cooldown (channel=%d): %v", channelID, err)
 		}
-		return ActionRetryChannel, nil
+		return ActionRetryChannel, errLevel, nil
 
 	default:
 		// 未知错误级别:保守策略,直接返回
-		return ActionReturnClient, nil
+		return ActionReturnClient, errLevel, nil
 	}
 }
 

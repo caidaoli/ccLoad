@@ -30,6 +30,33 @@ const (
 	SSEBufferSize    = 4 * 1024  // SSE流式传输缓冲区（4KB，优化实时响应）
 )
 
+func writeResponseWithHeaders(w http.ResponseWriter, status int, hdr http.Header, body []byte) {
+	if hdr != nil {
+		filterAndWriteResponseHeaders(w, hdr)
+	} else if len(body) > 0 {
+		// [FIX] 网络/内部错误场景：failure 可能没有 header，设置默认 Content-Type
+		// - body 看起来像 JSON：按 JSON 返回
+		// - 否则：按纯文本返回
+		if looksLikeJSON(body) {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		} else {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		}
+	}
+	w.WriteHeader(status)
+	if len(body) > 0 {
+		_, _ = w.Write(body)
+	}
+}
+
+func looksLikeJSON(body []byte) bool {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return false
+	}
+	return trimmed[0] == '{' || trimmed[0] == '['
+}
+
 // ============================================================================
 // 类型定义
 // ============================================================================
@@ -79,10 +106,11 @@ type proxyResult struct {
 	header           http.Header
 	body             []byte
 	channelID        *int64
-	message          string
 	duration         float64
 	succeeded        bool
-	isClientCanceled bool // 客户端主动取消请求（context.Canceled）
+	isClientCanceled bool            // 客户端主动取消请求（context.Canceled）
+	errorLevel       util.ErrorLevel // [FIX] 错误分类结果（用于重试决策）
+	shouldRetry      bool            // [FIX] 是否应该重试（来自ClassifyError，用于broken pipe等场景）
 }
 
 // ErrorAction 已迁移到 cooldown.Action (internal/cooldown/manager.go)

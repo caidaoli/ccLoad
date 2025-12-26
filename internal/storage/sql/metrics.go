@@ -493,7 +493,7 @@ func (s *SQLStore) GetChannelSuccessRates(ctx context.Context, since time.Time) 
 
 	// 成功率统计口径：
 	// - 只统计能反映渠道/Key质量的结果（2xx成功 + 可重试/可冷却错误）
-	// - 排除客户端误用造成的4xx（404/405/415等）和客户端取消(499)，避免"坏客户端把好渠道打残"
+	// - 排除客户端误用造成的4xx（404/415等）和客户端取消(499)，避免"坏客户端把好渠道打残"
 	//
 	// 纳入统计的状态码：
 	//   2xx: 成功响应
@@ -505,10 +505,11 @@ func (s *SQLStore) GetChannelSuccessRates(ctx context.Context, since time.Time) 
 	//   注：596(1308配额超限)不纳入统计，因为它不反映渠道质量
 	//   598: 上游首字节超时（渠道级，自定义状态码）
 	//   599: 流式响应不完整（渠道级，自定义状态码）
+	//   注：408已改为客户端错误，不计入健康度
 	eligible := `
-		(status_code >= 200 AND status_code < 300)
-		OR status_code IN (401, 402, 403, 429, 500, 502, 503, 504, 520, 521, 524, 597, 598, 599)
-	`
+				(status_code >= 200 AND status_code < 300)
+				OR status_code IN (401, 402, 403, 405, 429, 500, 502, 503, 504, 520, 521, 524, 597, 598, 599)
+			`
 
 	query := `
 		SELECT

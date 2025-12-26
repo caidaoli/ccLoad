@@ -83,7 +83,7 @@ func Test_HandleProxyError_Basic(t *testing.T) {
 				err = tt.err
 			}
 
-			action, shouldRetry := srv.handleProxyError(ctx, cfg, 0, res, err)
+			action, _, shouldRetry := srv.handleProxyError(ctx, cfg, 0, res, err)
 
 			if action != tt.expectedAction {
 				t.Errorf("期望 action=%v, 实际=%v", tt.expectedAction, action)
@@ -139,8 +139,11 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 			ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, errors.New("connection refused"), nil, reqCtx,
 		)
 
-		if result != nil {
-			t.Error("期望 result=nil (切换渠道)")
+		if result == nil {
+			t.Error("期望返回错误结果")
+		}
+		if result != nil && result.status != http.StatusBadGateway {
+			t.Errorf("期望 status=502, 实际=%d", result.status)
 		}
 		if retryKey {
 			t.Error("期望 retryKey=false")
@@ -156,8 +159,11 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 			ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, err, nil, reqCtx,
 		)
 
-		if result != nil {
-			t.Error("期望 result=nil (切换渠道)")
+		if result == nil {
+			t.Error("期望返回错误结果")
+		}
+		if result != nil && result.status != util.StatusFirstByteTimeout {
+			t.Errorf("期望 status=%d, 实际=%d", util.StatusFirstByteTimeout, result.status)
 		}
 		if retryKey {
 			t.Error("期望 retryKey=false")
@@ -239,7 +245,7 @@ func Test_HandleProxyError_499(t *testing.T) {
 			Body:   []byte(`{"error": "client closed request"}`),
 			Header: make(http.Header),
 		}
-		action, shouldRetry := srv.handleProxyError(ctx, cfg, 0, res, nil)
+		action, _, shouldRetry := srv.handleProxyError(ctx, cfg, 0, res, nil)
 
 		if action != cooldown.ActionRetryChannel {
 			t.Errorf("期望 action=ActionRetryChannel, 实际=%v", action)
@@ -250,7 +256,7 @@ func Test_HandleProxyError_499(t *testing.T) {
 	})
 
 	t.Run("client canceled returns to client", func(t *testing.T) {
-		action, shouldRetry := srv.handleProxyError(ctx, cfg, 0, nil, context.Canceled)
+		action, _, shouldRetry := srv.handleProxyError(ctx, cfg, 0, nil, context.Canceled)
 
 		if action != cooldown.ActionReturnClient {
 			t.Errorf("期望 action=ActionReturnClient, 实际=%v", action)

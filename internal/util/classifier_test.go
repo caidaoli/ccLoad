@@ -370,6 +370,40 @@ func TestClassifyError_HTTP2StreamErrors(t *testing.T) {
 	}
 }
 
+func TestClassifyError_ConnectionResetAndBrokenPipe(t *testing.T) {
+	tests := []struct {
+		name           string
+		err            error
+		expectedStatus int
+		expectedLevel  ErrorLevel
+		expectedRetry  bool
+		reason         string
+	}{
+		{
+			name:           "broken_pipe_client_closed",
+			err:            errors.New("write: broken pipe"),
+			expectedStatus: 499,
+			expectedLevel:  ErrorLevelClient,
+			expectedRetry:  false,
+			reason:         "broken pipe 基本是客户端断开，不应重试",
+		},
+		{
+			name:           "connection_reset_by_peer_upstream",
+			err:            errors.New("read: connection reset by peer"),
+			expectedStatus: 502,
+			expectedLevel:  ErrorLevelChannel,
+			expectedRetry:  true,
+			reason:         "connection reset by peer 通常是上游断开，应按 502 进入健康度统计并允许切换渠道重试",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertClassifyError(t, tt.err, tt.expectedStatus, tt.expectedLevel, tt.expectedRetry, tt.reason)
+		})
+	}
+}
+
 // 测试429错误的智能分类
 func TestClassifyRateLimitError(t *testing.T) {
 	tests := []struct {
@@ -820,3 +854,123 @@ func TestClassify404Error(t *testing.T) {
 		})
 	}
 }
+
+func TestGetStatusCodeMeta(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		status      int
+		wantLevel   ErrorLevel
+		description string
+	}{
+		// Key级错误
+		{401, ErrorLevelKey, "401 -> Key级"},
+		{402, ErrorLevelKey, "402 -> Key级"},
+		{403, ErrorLevelKey, "403 -> Key级"},
+		{429, ErrorLevelKey, "429 -> Key级"},
+
+		// 渠道级错误
+		{499, ErrorLevelChannel, "499 -> 渠道级"},
+		{500, ErrorLevelChannel, "500 -> 渠道级"},
+		{502, ErrorLevelChannel, "502 -> 渠道级"},
+		{503, ErrorLevelChannel, "503 -> 渠道级"},
+		{504, ErrorLevelChannel, "504 -> 渠道级"},
+		{408, ErrorLevelClient, "408 -> 客户端级 (RFC7231: 客户端发送请求慢)"},
+		{405, ErrorLevelChannel, "405 -> 渠道级 (上游endpoint/方法不支持)"},
+
+		// 自定义状态码
+		{StatusQuotaExceeded, ErrorLevelKey, "596 -> Key级"},
+		{StatusSSEError, ErrorLevelKey, "597 -> Key级"},
+		{StatusFirstByteTimeout, ErrorLevelChannel, "598 -> 渠道级"},
+		{StatusStreamIncomplete, ErrorLevelChannel, "599 -> 渠道级"},
+
+		// 客户端错误
+		{406, ErrorLevelClient, "406 -> 客户端级"},
+		{413, ErrorLevelClient, "413 -> 客户端级"},
+
+		// 默认行为
+		{599, ErrorLevelChannel, "599 -> 渠道级(自定义)"},
+		{418, ErrorLevelClient, "418 -> 客户端级(默认4xx)"},
+		{511, ErrorLevelChannel, "511 -> 渠道级(默认5xx)"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.description, func(t *testing.T) {
+			meta := GetStatusCodeMeta(tt.status)
+			if meta.Level != tt.wantLevel {
+				t.Errorf("Level: got %v, want %v", meta.Level, tt.wantLevel)
+			}
+		})
+	}
+}
+
+func TestMapToClientStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		in       int
+		expected int
+		desc     string
+	}{
+		{-1, 502, "负值 -> 502"},
+		{0, 502, "零值 -> 502"},
+		{401, 401, "401 -> 401 (透明代理)"},
+		{402, 402, "402 -> 402 (透明代理)"},
+		{403, 403, "403 -> 403 (透明代理)"},
+		{429, 429, "429 -> 透传"},
+		{499, 502, "499(渠道级默认) -> 502"},
+		{404, 404, "404(默认客户端级) -> 404"},
+		{500, 500, "500 -> 透传"},
+		{502, 502, "502 -> 透传"},
+		{StatusQuotaExceeded, 429, "596 -> 429"},
+		{StatusSSEError, 502, "597 -> 502"},
+		{StatusFirstByteTimeout, 504, "598 -> 504"},
+		{StatusStreamIncomplete, 502, "599 -> 502"},
+		{408, 408, "408 -> 透传（客户端级错误）"},
+		{405, 405, "405 -> 405 (透明代理)"},
+		{418, 418, "418 -> 透传"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			if got := MapToClientStatus(tt.in); got != tt.expected {
+				t.Errorf("MapToClientStatus(%d) = %d, want %d", tt.in, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestClientStatusFor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		status   int
+		level    ErrorLevel
+		expected int
+		desc     string
+	}{
+		{-1, ErrorLevelChannel, 502, "负值 -> 502"},
+		{StatusQuotaExceeded, ErrorLevelKey, 429, "596 -> 429"},
+		{StatusSSEError, ErrorLevelKey, 502, "597 -> 502"},
+		{StatusFirstByteTimeout, ErrorLevelChannel, 504, "598 -> 504"},
+		{StatusStreamIncomplete, ErrorLevelChannel, 502, "599 -> 502"},
+		{429, ErrorLevelKey, 429, "429 保留语义"},
+		{401, ErrorLevelKey, 401, "Key级 401 -> 401 (透明代理)"},
+		{405, ErrorLevelChannel, 405, "渠道级 405 -> 405 (透明代理)"},
+		{404, ErrorLevelChannel, 404, "渠道级 404 -> 404 (透明代理)"},
+		{404, ErrorLevelClient, 404, "客户端级 404 -> 404"},
+		{499, ErrorLevelChannel, 502, "上游 499(非客户端取消语义) -> 502"},
+		{499, ErrorLevelClient, 499, "客户端取消语义 499 -> 499"},
+		{502, ErrorLevelChannel, 502, "渠道级 502 -> 502"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			if got := ClientStatusFor(tt.status, tt.level); got != tt.expected {
+				t.Fatalf("ClientStatusFor(%d,%v)=%d, expected %d", tt.status, tt.level, got, tt.expected)
+			}
+		})
+	}
+}
+
+// IsRetryableStatus 已移除：重试决策不应依赖静态状态码表，而应依赖 errorLevel/shouldRetry 等语义信息。

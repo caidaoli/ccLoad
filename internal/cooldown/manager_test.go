@@ -39,13 +39,13 @@ func TestHandleError_ClientError(t *testing.T) {
 		errorBody  []byte
 	}{
 		{"404未找到", 404, []byte(`{"error":"not found"}`)},
-		// 注意：405 已改为渠道级错误（上游endpoint配置问题），不再是客户端错误
+		// 注意：405 已改为渠道级错误（上游endpoint配置问题）
 		// 注意：400 Bad Request 被分类为Key级错误（API Key格式错误），不是客户端错误
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			action, err := manager.HandleError(ctx, cfg.ID, 0, tc.statusCode, tc.errorBody, false, nil)
+			action, _, err := manager.HandleError(ctx, cfg.ID, 0, tc.statusCode, tc.errorBody, false, nil)
 
 			if err != nil {
 				t.Errorf("HandleError should not return error for client errors: %v", err)
@@ -95,7 +95,7 @@ func TestHandleError_KeyLevelError(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			keyIndex := 0
-			action, err := manager.HandleError(ctx, cfg.ID, keyIndex, tc.statusCode, tc.errorBody, false, nil)
+			action, _, err := manager.HandleError(ctx, cfg.ID, keyIndex, tc.statusCode, tc.errorBody, false, nil)
 
 			if err != nil {
 				t.Errorf("HandleError failed: %v", err)
@@ -146,7 +146,7 @@ func TestHandleError_ChannelLevelError(t *testing.T) {
 			// 先重置冷却
 			_ = store.ResetChannelCooldown(ctx, cfg.ID)
 
-			action, err := manager.HandleError(ctx, cfg.ID, -1, tc.statusCode, tc.errorBody, false, nil)
+			action, _, err := manager.HandleError(ctx, cfg.ID, -1, tc.statusCode, tc.errorBody, false, nil)
 
 			if err != nil {
 				t.Errorf("HandleError failed: %v", err)
@@ -182,7 +182,7 @@ func TestHandleError_SingleKeyUpgrade(t *testing.T) {
 	})
 
 	// 401认证错误本应是Key级，但单Key渠道应升级为渠道级
-	action, err := manager.HandleError(ctx, cfg.ID, 0, 401, []byte(`{"error":{"type":"authentication_error"}}`), false, nil)
+	action, _, err := manager.HandleError(ctx, cfg.ID, 0, 401, []byte(`{"error":{"type":"authentication_error"}}`), false, nil)
 
 	if err != nil {
 		t.Fatalf("HandleError failed: %v", err)
@@ -228,10 +228,10 @@ func TestHandleError_NetworkError(t *testing.T) {
 			description:    "Gateway timeout should trigger channel-level cooldown",
 		},
 		{
-			name:           "连接重置(ErrCodeNetworkRetryable)",
-			statusCode:     -1,
-			expectedAction: ActionRetryKey,
-			description:    "Other network errors should be key-level",
+			name:           "其他网络错误(502)",
+			statusCode:     502,
+			expectedAction: ActionRetryChannel,
+			description:    "Other network errors should be channel-level",
 		},
 	}
 
@@ -250,7 +250,7 @@ func TestHandleError_NetworkError(t *testing.T) {
 			// 重置冷却
 			_ = store.ResetChannelCooldown(ctx, cfg.ID)
 
-			action, err := manager.HandleError(ctx, cfg.ID, 0, tc.statusCode, nil, true, nil)
+			action, _, err := manager.HandleError(ctx, cfg.ID, 0, tc.statusCode, nil, true, nil)
 
 			if err != nil {
 				t.Errorf("HandleError failed: %v", err)
@@ -273,7 +273,7 @@ func TestClearChannelCooldown(t *testing.T) {
 	cfg := createTestChannel(t, store, "test-clear-channel")
 
 	// 先触发冷却
-	_, _ = manager.HandleError(ctx, cfg.ID, -1, 500, nil, false, nil)
+	_, _, _ = manager.HandleError(ctx, cfg.ID, -1, 500, nil, false, nil)
 
 	// 验证已冷却
 	channelCfg, _ := store.GetConfig(ctx, cfg.ID)
@@ -316,7 +316,7 @@ func TestClearKeyCooldown(t *testing.T) {
 	})
 
 	// 先触发Key冷却
-	_, _ = manager.HandleError(ctx, cfg.ID, 0, 401, []byte(`{"error":{"type":"authentication_error"}}`), false, nil)
+	_, _, _ = manager.HandleError(ctx, cfg.ID, 0, 401, []byte(`{"error":{"type":"authentication_error"}}`), false, nil)
 
 	// 验证已冷却
 	cooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0)
@@ -347,7 +347,7 @@ func TestHandleError_EdgeCases(t *testing.T) {
 	t.Run("不存在的渠道", func(t *testing.T) {
 		// 冷却失败不应返回错误，而是记录警告
 		// 设计原则: 数据库错误不应阻塞用户请求，系统应降级服务
-		action, err := manager.HandleError(ctx, 99999, 0, 500, nil, false, nil)
+		action, _, err := manager.HandleError(ctx, 99999, 0, 500, nil, false, nil)
 		if err != nil {
 			t.Errorf("HandleError should not return error (logs warning instead): %v", err)
 		}
@@ -360,7 +360,7 @@ func TestHandleError_EdgeCases(t *testing.T) {
 	t.Run("负数keyIndex", func(t *testing.T) {
 		cfg := createTestChannel(t, store, "test-negative-key")
 		// 负数keyIndex表示网络错误，不应该尝试冷却Key
-		action, err := manager.HandleError(ctx, cfg.ID, -1, 500, nil, false, nil)
+		action, _, err := manager.HandleError(ctx, cfg.ID, -1, 500, nil, false, nil)
 		if err != nil {
 			t.Errorf("Should handle negative keyIndex: %v", err)
 		}
@@ -372,7 +372,7 @@ func TestHandleError_EdgeCases(t *testing.T) {
 	t.Run("nil错误体", func(t *testing.T) {
 		cfg := createTestChannel(t, store, "test-nil-body")
 		// nil错误体应该使用基础分类
-		action, err := manager.HandleError(ctx, cfg.ID, -1, 500, nil, false, nil)
+		action, _, err := manager.HandleError(ctx, cfg.ID, -1, 500, nil, false, nil)
 		if err != nil {
 			t.Errorf("Should handle nil error body: %v", err)
 		}
@@ -383,7 +383,7 @@ func TestHandleError_EdgeCases(t *testing.T) {
 
 	t.Run("空错误体", func(t *testing.T) {
 		cfg := createTestChannel(t, store, "test-empty-body")
-		action, err := manager.HandleError(ctx, cfg.ID, -1, 503, []byte{}, false, nil)
+		action, _, err := manager.HandleError(ctx, cfg.ID, -1, 503, []byte{}, false, nil)
 		if err != nil {
 			t.Errorf("Should handle empty error body: %v", err)
 		}
@@ -526,7 +526,7 @@ func TestHandleError_RateLimitClassification(t *testing.T) {
 				_ = store.ResetKeyCooldown(ctx, cfg.ID, i)
 			}
 
-			action, err := manager.HandleError(ctx, cfg.ID, 0, 429, tc.responseBody, false, tc.headers)
+			action, _, err := manager.HandleError(ctx, cfg.ID, 0, 429, tc.responseBody, false, tc.headers)
 
 			if err != nil {
 				t.Errorf("HandleError failed: %v", err)

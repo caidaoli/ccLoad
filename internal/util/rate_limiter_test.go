@@ -319,6 +319,20 @@ func TestCleanupLoop_GracefulShutdown(t *testing.T) {
 	t.Logf("[INFO] 优雅关闭测试通过（无goroutine泄漏）")
 }
 
+func TestStop_Idempotent(t *testing.T) {
+	limiter := NewLoginRateLimiter()
+	defer limiter.Stop()
+
+	limiter.Stop()
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Stop 不应因重复调用而 panic: %v", r)
+		}
+	}()
+	limiter.Stop()
+}
+
 // TestResetInterval 测试重置间隔功能
 func TestResetInterval(t *testing.T) {
 	limiter := NewLoginRateLimiter()

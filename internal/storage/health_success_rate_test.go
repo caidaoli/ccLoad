@@ -39,6 +39,8 @@ func TestGetChannelSuccessRates_IgnoresClientNoise(t *testing.T) {
 	logs := []*model.LogEntry{
 		{Time: model.JSONTime{Time: now.Add(-10 * time.Second)}, ChannelID: created.ID, StatusCode: 200, Message: "ok"},
 		{Time: model.JSONTime{Time: now.Add(-9 * time.Second)}, ChannelID: created.ID, StatusCode: 204, Message: "ok"},
+		{Time: model.JSONTime{Time: now.Add(-8 * time.Second)}, ChannelID: created.ID, StatusCode: 408, Message: "request timeout"},
+		{Time: model.JSONTime{Time: now.Add(-8 * time.Second)}, ChannelID: created.ID, StatusCode: 405, Message: "method not allowed"},
 		{Time: model.JSONTime{Time: now.Add(-8 * time.Second)}, ChannelID: created.ID, StatusCode: 502, Message: "bad gateway"},
 		{Time: model.JSONTime{Time: now.Add(-7 * time.Second)}, ChannelID: created.ID, StatusCode: 597, Message: "sse error"},
 		{Time: model.JSONTime{Time: now.Add(-6 * time.Second)}, ChannelID: created.ID, StatusCode: 404, Message: "client not found"}, // 应被忽略
@@ -55,13 +57,14 @@ func TestGetChannelSuccessRates_IgnoresClientNoise(t *testing.T) {
 		t.Fatalf("GetChannelSuccessRates error: %v", err)
 	}
 
-	// eligible: 200/204/502/597 -> 2 successes / 4 total = 0.5
+	// eligible: 200/204/405/502/597 -> 2 successes / 5 total = 0.4
+	// 注：408已改为客户端错误，不计入健康度统计
 	got, ok := rates[created.ID]
 	if !ok {
 		t.Fatalf("expected channel %d in rates", created.ID)
 	}
-	if got < 0.49 || got > 0.51 {
-		t.Fatalf("expected success rate ~0.5, got %v", got)
+	if got < 0.39 || got > 0.41 {
+		t.Fatalf("expected success rate ~0.4, got %v", got)
 	}
 }
 

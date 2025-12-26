@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
@@ -42,10 +43,6 @@ const (
 	// StatusStreamIncomplete 流式响应不完整（自定义状态码）
 	// 触发条件：流正常结束但没有usage数据，或流传输中断
 	StatusStreamIncomplete = 599
-
-	// ErrCodeNetworkRetryable 可重试的网络错误（内部标识符，非HTTP状态码）
-	// 使用负值避免与HTTP状态码混淆
-	ErrCodeNetworkRetryable = -1
 )
 
 // Rate Limit 相关常量
@@ -71,72 +68,139 @@ const (
 	ErrorLevelClient
 )
 
-// classifyHTTPStatus 分类HTTP状态码，返回错误级别
-// 遵循SRP原则：单一职责 - 仅负责状态码分类
+// StatusCodeMeta 状态码元数据（统一定义错误级别）
+// 设计原则：单一数据源，消除 proxy_handler.go / classifier.go 分散的状态码分类逻辑。
 //
-// 注意：401/403/429 需要结合响应体/headers进一步判断（通过ClassifyHTTPResponse）
-
-// statusCodeClassification 状态码→错误级别映射表
-// 设计原则：表驱动替代巨型switch，提高可维护性
-var statusCodeClassification = map[int]ErrorLevel{
-	// 499: 上游返回的客户端关闭请求，应切换渠道重试
-	// 注意：context.Canceled 在 ClassifyError 中单独处理
-	499: ErrorLevelChannel,
-
-	// Key级错误：API Key相关问题
-	401: ErrorLevelKey, // Unauthorized - 默认Key级，需结合响应体分析
-	402: ErrorLevelKey, // Payment Required - 配额或余额不足
-	403: ErrorLevelKey, // Forbidden - 默认Key级，需结合响应体分析
-	429: ErrorLevelKey, // Too Many Requests - Key限流
-
-	// 渠道级错误：服务器端问题
-	500: ErrorLevelChannel, // Internal Server Error
-	502: ErrorLevelChannel, // Bad Gateway
-	503: ErrorLevelChannel, // Service Unavailable
-	504: ErrorLevelChannel, // Gateway Timeout
-	520: ErrorLevelChannel, // Cloudflare: Unknown Error
-	521: ErrorLevelChannel, // Cloudflare: Web Server Is Down
-	524: ErrorLevelChannel, // Cloudflare: A Timeout Occurred
-
-	// 自定义内部状态码
-	StatusQuotaExceeded:    ErrorLevelKey,     // 596 1308配额超限
-	StatusSSEError:         ErrorLevelKey,     // 597 SSE error事件
-	StatusFirstByteTimeout: ErrorLevelChannel, // 598 上游首字节超时
-	StatusStreamIncomplete: ErrorLevelChannel, // 599 流式响应不完整
-
-	// 渠道配置错误：在代理场景下，这些错误通常表示上游配置问题
-	405: ErrorLevelChannel, // Method Not Allowed - 上游endpoint配置错误或不支持该方法
-
-	// 客户端错误：不冷却，直接返回
-	406: ErrorLevelClient, // Not Acceptable
-	408: ErrorLevelClient, // Request Timeout
-	410: ErrorLevelClient, // Gone
-	413: ErrorLevelClient, // Payload Too Large
-	414: ErrorLevelClient, // URI Too Long
-	415: ErrorLevelClient, // Unsupported Media Type
-	416: ErrorLevelClient, // Range Not Satisfiable
-	417: ErrorLevelClient, // Expectation Failed
+// 注意：对外状态码映射不应该掺进这个表里，否则很快就会变成另一份“半套规则”。
+type StatusCodeMeta struct {
+	Level ErrorLevel // 错误级别（Key/Channel/Client）
 }
 
+// sseErrorResponse SSE error事件的JSON结构（Anthropic API / 88code API）
+// [FIX] 提取为公共结构体，消除 classifySSEError 和 ParseResetTimeFrom1308Error 的重复定义
+type sseErrorResponse struct {
+	Type  string `json:"type"`
+	Error struct {
+		Type    string `json:"type"` // Anthropic使用
+		Code    string `json:"code"` // 其他渠道使用
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// ErrorType 返回错误类型（优先使用type字段，如果为空则使用code字段）
+// [FIX] 消除重复的errorType判断逻辑
+func (r *sseErrorResponse) ErrorType() string {
+	if r.Error.Type != "" {
+		return r.Error.Type
+	}
+	return r.Error.Code
+}
+
+// statusCodeMetaMap 状态码元数据映射表
+// 设计原则：表驱动替代分散的 switch/map，提高可维护性
+var statusCodeMetaMap = map[int]StatusCodeMeta{
+	// === 客户端取消 ===
+	// 499: 上游返回的客户端关闭请求，应切换渠道重试
+	// 注意：context.Canceled 在 ClassifyError 中单独处理
+	499: {ErrorLevelChannel},
+
+	// === Key级错误：API Key相关问题 ===
+	// 这些错误在本系统中属于"后端Key/渠道配置问题"，不应甩锅给客户端
+	401: {ErrorLevelKey}, // Unauthorized - Key invalid
+	402: {ErrorLevelKey}, // Payment Required - quota/balance
+	403: {ErrorLevelKey}, // Forbidden - Key permission
+	429: {ErrorLevelKey}, // Too Many Requests - rate limited
+
+	// === 渠道级错误：服务器端问题 ===
+	500: {ErrorLevelChannel}, // Internal Server Error
+	502: {ErrorLevelChannel}, // Bad Gateway
+	503: {ErrorLevelChannel}, // Service Unavailable
+	504: {ErrorLevelChannel}, // Gateway Timeout
+	520: {ErrorLevelChannel}, // Cloudflare: Unknown Error
+	521: {ErrorLevelChannel}, // Cloudflare: Web Server Is Down
+	524: {ErrorLevelChannel}, // Cloudflare: A Timeout Occurred
+
+	// === 自定义内部状态码 ===
+	StatusQuotaExceeded:    {ErrorLevelKey},     // 1308 quota exceeded
+	StatusSSEError:         {ErrorLevelKey},     // SSE error event
+	StatusFirstByteTimeout: {ErrorLevelChannel}, // First byte timeout
+	StatusStreamIncomplete: {ErrorLevelChannel}, // Stream incomplete
+
+	// === 客户端错误：不冷却，直接返回 ===
+	// 408 Request Timeout: RFC 7231 定义为"服务器等待客户端发送完整请求超时"（客户端慢）
+	408: {ErrorLevelClient}, // Request Timeout - client slow
+	// 405 Method Not Allowed: 在代理场景下，这更可能意味着上游 endpoint/路由配置错误（方法不被支持）
+	// 作为渠道级故障处理：触发渠道冷却。
+	405: {ErrorLevelChannel}, // Method Not Allowed
+	406: {ErrorLevelClient},  // Not Acceptable
+	410: {ErrorLevelClient},  // Gone
+	413: {ErrorLevelClient},  // Payload Too Large
+	414: {ErrorLevelClient},  // URI Too Long
+	415: {ErrorLevelClient},  // Unsupported Media Type
+	416: {ErrorLevelClient},  // Range Not Satisfiable
+	417: {ErrorLevelClient},  // Expectation Failed
+}
+
+// GetStatusCodeMeta 获取状态码元数据（统一入口）
+func GetStatusCodeMeta(status int) StatusCodeMeta {
+	if meta, ok := statusCodeMetaMap[status]; ok {
+		return meta
+	}
+	// 默认行为
+	if status >= 500 {
+		return StatusCodeMeta{ErrorLevelChannel}
+	}
+	if status >= 400 {
+		return StatusCodeMeta{ErrorLevelClient}
+	}
+	return StatusCodeMeta{ErrorLevelClient}
+}
+
+// ClientStatusFor 将 (status,errorLevel) 映射为对外暴露的状态码。
+//
+// 设计目标：
+// - 对外语义一致：不把后端 Key/渠道故障伪装成“客户端错误”
+// - 单一映射入口：避免在 app 层再堆一份 if/switch（那就是第二套规则）
+func ClientStatusFor(status int, level ErrorLevel) int {
+	if status <= 0 {
+		return http.StatusBadGateway
+	}
+
+	// 内部状态码：无条件映射为标准 HTTP 语义值
+	switch status {
+	case StatusQuotaExceeded:
+		return http.StatusTooManyRequests
+	case StatusSSEError:
+		return http.StatusBadGateway
+	case StatusFirstByteTimeout:
+		return http.StatusGatewayTimeout
+	case StatusStreamIncomplete:
+		return http.StatusBadGateway
+	}
+
+	// 499：只有在"客户端取消"语义下才对外保留 499；否则把上游 499 当作网关错误噪音
+	if status == StatusClientClosedRequest && level != ErrorLevelClient {
+		return http.StatusBadGateway
+	}
+
+	// 透明代理原则：透传所有上游状态码，不篡改HTTP语义
+	return status
+}
+
+// MapToClientStatus 将内部状态码映射为对外暴露的状态码（兼容入口）
+// 注意：该函数不接受 errorLevel，只能使用 statusCodeMetaMap 推导的默认 Level。
+func MapToClientStatus(status int) int {
+	meta := GetStatusCodeMeta(status)
+	return ClientStatusFor(status, meta.Level)
+}
+
+// ClassifyHTTPStatus 分类HTTP状态码，返回错误级别
+// 注意：401/403/429 需要结合响应体/headers进一步判断（通过ClassifyHTTPResponse）
 func ClassifyHTTPStatus(statusCode int) ErrorLevel {
-	// 2xx 成功
 	if statusCode >= 200 && statusCode < 300 {
 		return ErrorLevelNone
 	}
-
-	// 表驱动：状态码 → 错误级别映射
-	if level, ok := statusCodeClassification[statusCode]; ok {
-		return level
-	}
-
-	// 默认规则：4xx → Client, 5xx → Channel
-	if statusCode >= 400 && statusCode < 500 {
-		return ErrorLevelClient
-	}
-	if statusCode >= 500 {
-		return ErrorLevelChannel
-	}
-	return ErrorLevelClient
+	return GetStatusCodeMeta(statusCode).Level
 }
 
 // ClassifyHTTPResponse 基于状态码 + headers + 响应体智能分类错误级别
@@ -301,27 +365,14 @@ func classifySSEError(responseBody []byte) ErrorLevel {
 	// [FIX] 支持两种格式：
 	//   1. Anthropic格式: {"type":"error", "error":{"type":"1308", ...}}
 	//   2. 其他渠道格式: {"error":{"code":"1308", ...}}
-	var errResp struct {
-		Type  string `json:"type"`
-		Error struct {
-			Type    string `json:"type"` // Anthropic使用
-			Code    string `json:"code"` // 其他渠道使用
-			Message string `json:"message"`
-		} `json:"error"`
-	}
+	var errResp sseErrorResponse
 
 	if err := json.Unmarshal(responseBody, &errResp); err != nil {
 		return ErrorLevelKey // 解析失败，保守处理
 	}
 
-	// 优先使用type字段，如果为空则使用code字段
-	errorType := errResp.Error.Type
-	if errorType == "" {
-		errorType = errResp.Error.Code
-	}
-
 	// 根据error.type/code判断错误级别
-	switch errorType {
+	switch errResp.ErrorType() {
 	case "api_error", "overloaded_error":
 		// 上游服务错误或过载 → 渠道级冷却
 		return ErrorLevelChannel
@@ -395,25 +446,14 @@ func ParseResetTimeFrom1308Error(responseBody []byte) (time.Time, bool) {
 	// [FIX] 支持两种格式：
 	//   1. Anthropic格式: {"type":"error", "error":{"type":"1308", ...}}
 	//   2. 其他渠道格式: {"error":{"code":"1308", ...}}
-	var errResp struct {
-		Type  string `json:"type"`
-		Error struct {
-			Type    string `json:"type"` // Anthropic使用
-			Code    string `json:"code"` // 其他渠道使用
-			Message string `json:"message"`
-		} `json:"error"`
-	}
+	var errResp sseErrorResponse
 
 	if err := json.Unmarshal(responseBody, &errResp); err != nil {
 		return time.Time{}, false
 	}
 
 	// 2. 检查是否为1308错误（优先使用type，如果为空则使用code）
-	errorType := errResp.Error.Type
-	if errorType == "" {
-		errorType = errResp.Error.Code
-	}
-	if errorType != "1308" {
+	if errResp.ErrorType() != "1308" {
 		return time.Time{}, false
 	}
 
@@ -485,10 +525,15 @@ func ClassifyError(err error) (statusCode int, errorLevel ErrorLevel, shouldRetr
 func classifyErrorByString(errStr string) (int, ErrorLevel, bool) {
 	errLower := strings.ToLower(errStr)
 
-	// Connection reset by peer - 不应重试
-	if strings.Contains(errLower, "connection reset by peer") ||
-		strings.Contains(errLower, "broken pipe") {
-		return 499, ErrorLevelClient, false // StatusConnectionReset
+	// broken pipe - 客户端主动断开连接，完全不重试
+	if strings.Contains(errLower, "broken pipe") {
+		return 499, ErrorLevelClient, false
+	}
+
+	// connection reset by peer - 通常是对端（上游）突然断开连接
+	// 这不是“客户端取消”的语义，内部统一按 502 处理以进入健康度统计，并允许切换渠道重试。
+	if strings.Contains(errLower, "connection reset by peer") {
+		return 502, ErrorLevelChannel, true
 	}
 
 	// [INFO] 空响应检测：上游返回200但Content-Length=0
@@ -522,5 +567,6 @@ func classifyErrorByString(errStr string) (int, ErrorLevel, bool) {
 
 	// 使用负值错误码，避免与HTTP状态码混淆
 	// 其他网络错误 - 可以重试
-	return -1, ErrorLevelChannel, true // ErrCodeNetworkRetryable
+	// 对外/日志统一使用标准HTTP语义：502 Bad Gateway
+	return 502, ErrorLevelChannel, true
 }

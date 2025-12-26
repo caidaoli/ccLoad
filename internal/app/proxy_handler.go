@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -20,6 +21,7 @@ import (
 var errUnknownChannelType = errors.New("unknown channel type for path")
 var errBodyTooLarge = errors.New("request body too large")
 var ErrAllKeysUnavailable = errors.New("all channel keys unavailable")
+var ErrAllKeysExhausted = errors.New("all keys exhausted")
 
 // ============================================================================
 // 并发控制
@@ -225,9 +227,15 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		if err != nil && errors.Is(err, ErrAllKeysUnavailable) {
 			// [FIX] 2025-12: 使用独立 context，避免请求取消导致冷却写入失败
 			cooldownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			_, _ = s.cooldownManager.HandleError(cooldownCtx, cfg.ID, -1, 503, nil, false, nil)
+			_, _, _ = s.cooldownManager.HandleError(cooldownCtx, cfg.ID, -1, 503, nil, false, nil)
 			cancel()
 			s.invalidateChannelRelatedCache(cfg.ID)
+			continue
+		}
+
+		// [WARN] 所有Key验证失败（88code套餐等），尝试下一个渠道
+		if err != nil && errors.Is(err, ErrAllKeysExhausted) {
+			log.Printf("[WARN] 渠道 %s (ID=%d) 所有Key验证失败，跳过该渠道", cfg.Name, cfg.ID)
 			continue
 		}
 
@@ -238,33 +246,28 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 
 			lastResult = result
 
-			if result.status < 500 {
+			// 客户端已取消：别再浪费资源“重试”了。
+			if result.isClientCanceled {
+				break
+			}
+
+			if shouldStopTryingChannels(result) {
 				break
 			}
 		}
 	}
 
-	// 所有渠道都失败，透传最后一次4xx状态，否则503
-	finalStatus := http.StatusServiceUnavailable
-	if lastResult != nil && lastResult.status != 0 && lastResult.status < 500 {
-		finalStatus = lastResult.status
-	}
+	// 所有渠道都失败：返回“最后一次实际失败”的状态码（并映射内部状态码），避免一律伪装成503。
+	finalStatus := determineFinalClientStatus(lastResult)
 
-	// 区分499错误的具体来源，避免用户混淆
 	msg := "exhausted backends"
-	if finalStatus < 500 {
-		if finalStatus == 499 {
-			// 499错误有两种来源：
-			// 1. context.Canceled（客户端主动取消）→ isClientCanceled=true
-			// 2. 上游API返回HTTP 499（罕见）→ isClientCanceled=false
-			if lastResult != nil && lastResult.isClientCanceled {
-				msg = "client closed request (context canceled)"
-			} else {
-				msg = "upstream status 499 (client closed request)"
-			}
-		} else {
-			msg = fmt.Sprintf("upstream status %d", finalStatus)
-		}
+	if lastResult != nil && lastResult.isClientCanceled {
+		msg = "client closed request (context canceled)"
+	} else if lastResult != nil && lastResult.status == 499 && finalStatus != 499 {
+		// 上游返回 499 没有任何“客户端取消”的语义价值：对外统一视为网关错误。
+		msg = "upstream returned 499 (mapped)"
+	} else if finalStatus != http.StatusServiceUnavailable {
+		msg = fmt.Sprintf("upstream status %d", finalStatus)
 	}
 
 	// [FIX] 2025-12: 过滤无实际请求的客户端取消日志
@@ -284,10 +287,53 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	}
 
 	if lastResult != nil && lastResult.status != 0 {
-		filterAndWriteResponseHeaders(c.Writer, lastResult.header)
-		c.Data(finalStatus, "application/json", lastResult.body)
+		// 透明代理原则：透传所有上游响应（状态码+header+body）
+		writeResponseWithHeaders(c.Writer, finalStatus, lastResult.header, lastResult.body)
 		return
 	}
 
 	c.JSON(finalStatus, gin.H{"error": "no upstream available"})
+}
+
+func determineFinalClientStatus(lastResult *proxyResult) int {
+	if lastResult == nil || lastResult.status == 0 {
+		return http.StatusServiceUnavailable
+	}
+
+	status := lastResult.status
+	level := lastResult.errorLevel
+	if level == util.ErrorLevelNone {
+		level = util.ErrorLevelClient
+	}
+
+	// 客户端取消：直接透传原状态码（通常是 499）
+	if lastResult.isClientCanceled {
+		return status
+	}
+
+	// 仅映射内部状态码（596-599）和特殊状态码（499），其他全部透传
+	return util.ClientStatusFor(status, level)
+}
+
+func shouldStopTryingChannels(result *proxyResult) bool {
+	if result == nil {
+		return true
+	}
+	// 客户端取消：立即停止
+	if result.isClientCanceled {
+		return true
+	}
+	// [FIX] ClassifyError 明确说不重试（如 broken pipe）
+	if !result.shouldRetry {
+		return true
+	}
+	// [FIX] Key/渠道级错误：应该尝试其他渠道（在候选列表允许的前提下）
+	if result.errorLevel == util.ErrorLevelChannel {
+		return false
+	}
+	if result.errorLevel == util.ErrorLevelKey {
+		return false
+	}
+	// 客户端级/未知级别：停止
+	return true
 }

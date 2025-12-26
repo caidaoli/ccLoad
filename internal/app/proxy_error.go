@@ -16,9 +16,9 @@ import (
 
 // handleProxyError 统一错误处理与冷却决策（遵循OCP原则）
 // 使用 cooldownManager 统一处理冷却逻辑（DRY原则）
-// 返回：(处理动作, 是否需要保存响应信息)
+// 返回：(处理动作, 错误分类级别, 是否应该继续重试)
 func (s *Server) handleProxyError(ctx context.Context, cfg *model.Config, keyIndex int,
-	res *fwResult, err error) (cooldown.Action, bool) {
+	res *fwResult, err error) (cooldown.Action, util.ErrorLevel, bool) {
 
 	var statusCode int
 	var errorBody []byte
@@ -30,7 +30,7 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *model.Config, keyInd
 		// 网络错误：使用统一分类器
 		classifiedStatus, _, shouldRetry := util.ClassifyError(err)
 		if !shouldRetry {
-			return cooldown.ActionReturnClient, false
+			return cooldown.ActionReturnClient, util.ErrorLevelClient, false
 		}
 		statusCode = classifiedStatus
 		errorBody = []byte(err.Error())
@@ -54,23 +54,23 @@ func (s *Server) handleProxyError(ctx context.Context, cfg *model.Config, keyInd
 	// 会导致冷却写入被短路，同一个坏 Key/渠道被反复打爆
 	cooldownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 	defer cancel()
-	action, _ := s.cooldownManager.HandleError(cooldownCtx, cfg.ID, keyIndex, statusCode, errorBody, isNetworkError, headers)
+	action, errLevel, _ := s.cooldownManager.HandleError(cooldownCtx, cfg.ID, keyIndex, statusCode, errorBody, isNetworkError, headers)
 
 	// 根据冷却管理器的决策执行相应动作
 	switch action {
 	case cooldown.ActionRetryKey:
 		// Key级错误：立即刷新相关缓存
 		s.invalidateChannelRelatedCache(cfg.ID)
-		return action, true
+		return action, errLevel, true
 
 	case cooldown.ActionRetryChannel:
 		// 渠道级错误：刷新渠道与冷却缓存，确保下次选择避开问题渠道
 		s.invalidateChannelRelatedCache(cfg.ID)
-		return action, true
+		return action, errLevel, true
 
 	default:
 		// 客户端错误或未知错误：直接返回
-		return action, false
+		return action, errLevel, false
 	}
 }
 
@@ -100,13 +100,22 @@ func (s *Server) handleNetworkError(
 		ChannelID:    cfg.ID,
 		StatusCode:   statusCode,
 		Duration:     duration,
-		IsStreaming:  false,
+		IsStreaming:  reqCtx.isStreaming,
 		APIKeyUsed:   selectedKey,
 		AuthTokenID:  authTokenID,
 		ClientIP:     clientIP,
 		Result:       res,
 		ErrMsg:       err.Error(),
 	}))
+
+	failure := &proxyResult{
+		status:           statusCode,
+		body:             []byte(err.Error()),
+		channelID:        &cfg.ID,
+		duration:         duration,
+		succeeded:        false,
+		isClientCanceled: errors.Is(err, context.Canceled),
+	}
 
 	// [FIX] 2025-12: 保留 499 场景下已消耗的 token 统计
 	// 场景：流式响应中途取消（用户点"停止"），上游已消耗 token 但之前被丢弃
@@ -116,27 +125,21 @@ func (s *Server) handleNetworkError(
 		s.updateTokenStatsAsync(reqCtx.tokenHash, false, duration, reqCtx.isStreaming, res, actualModel)
 	}
 
-	action, _ := s.handleProxyError(ctx, cfg, keyIndex, nil, err)
+	action, errLevel, shouldRetry := s.handleProxyError(ctx, cfg, keyIndex, nil, err)
+	failure.errorLevel = errLevel     // 填充分类结果
+	failure.shouldRetry = shouldRetry // [FIX] 传递 ClassifyError 的 shouldRetry（用于 broken pipe 等场景）
 	if action == cooldown.ActionReturnClient {
-		return &proxyResult{
-			status:           statusCode,
-			body:             []byte(err.Error()),
-			channelID:        &cfg.ID,
-			message:          truncateErr(err.Error()),
-			duration:         duration,
-			succeeded:        false,
-			isClientCanceled: errors.Is(err, context.Canceled),
-		}, false, false
+		return failure, false, false
 	}
 
 	// 修复首字节超时不切换渠道的问题
 	// 当 handleProxyError 返回 ActionRetryChannel 时，应该立即切换到下一个渠道
 	// 而不是继续尝试当前渠道的其他Key
 	if action == cooldown.ActionRetryChannel {
-		return nil, false, true // 切换到下一个渠道
+		return failure, false, true // 切换到下一个渠道
 	}
 
-	return nil, true, false // 继续重试下一个Key
+	return failure, true, false // 继续重试下一个Key
 }
 
 // hasConsumedTokens 检查响应是否包含已消耗的 token 统计
@@ -335,7 +338,6 @@ func (s *Server) handleProxySuccess(
 		status:    res.Status,
 		header:    res.Header,
 		channelID: &cfg.ID,
-		message:   "ok",
 		duration:  duration,
 		succeeded: true,
 	}, false, false
@@ -373,7 +375,7 @@ func (s *Server) handleStreamingErrorNoRetry(
 	// 使用独立 context，避免请求取消导致冷却写入失败
 	cooldownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 	defer cancel()
-	_, _ = s.handleProxyError(cooldownCtx, cfg, keyIndex, res, nil)
+	_, _, _ = s.handleProxyError(cooldownCtx, cfg, keyIndex, res, nil)
 
 	// 返回"成功"：数据已发送给客户端，不触发重试
 	return &proxyResult{
@@ -420,21 +422,25 @@ func (s *Server) handleProxyErrorResponse(
 	// 异步更新Token统计（失败请求不计费）
 	s.updateTokenStatsAsync(reqCtx.tokenHash, false, duration, reqCtx.isStreaming, res, actualModel)
 
-	action, _ := s.handleProxyError(ctx, cfg, keyIndex, res, nil)
+	failure := &proxyResult{
+		status:    res.Status,
+		header:    res.Header,
+		body:      res.Body,
+		channelID: &cfg.ID,
+		duration:  duration,
+		succeeded: false,
+	}
+
+	action, errLevel, shouldRetry := s.handleProxyError(ctx, cfg, keyIndex, res, nil)
+	failure.errorLevel = errLevel     // 填充分类结果
+	failure.shouldRetry = shouldRetry // [FIX] 传递 shouldRetry
 	if action == cooldown.ActionReturnClient {
-		return &proxyResult{
-			status:    res.Status,
-			header:    res.Header,
-			body:      res.Body,
-			channelID: &cfg.ID,
-			duration:  duration,
-			succeeded: false,
-		}, false, false
+		return failure, false, false
 	}
 
 	if action == cooldown.ActionRetryChannel {
-		return nil, false, true // 切换到下一个渠道
+		return failure, false, true // 切换到下一个渠道
 	}
 
-	return nil, true, false // 继续重试下一个Key
+	return failure, true, false // 继续重试下一个Key
 }

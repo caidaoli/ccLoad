@@ -182,6 +182,56 @@ func TestSelectRouteCandidates_AllCooled_FallbackChoosesEarliestChannelCooldown(
 	}
 }
 
+func TestSelectRouteCandidates_AllCooled_FallbackDisabledWhenThresholdZero(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now()
+
+	if err := store.UpdateSetting(ctx, "cooldown_fallback_threshold", "0"); err != nil {
+		t.Fatalf("设置cooldown_fallback_threshold失败: %v", err)
+	}
+
+	cs := NewConfigService(store)
+	if err := cs.LoadDefaults(ctx); err != nil {
+		t.Fatalf("ConfigService加载失败: %v", err)
+	}
+
+	server := &Server{store: store, configService: cs}
+
+	channels := []*model.Config{
+		{Name: "cooldown-long", URL: "https://api1.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "cooldown-short", URL: "https://api2.com", Priority: 90, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+	}
+
+	var ids []int64
+	for _, cfg := range channels {
+		created, err := store.CreateConfig(ctx, cfg)
+		if err != nil {
+			t.Fatalf("创建测试渠道失败: %v", err)
+		}
+		ids = append(ids, created.ID)
+	}
+
+	// 全冷却场景：兜底被禁用时应返回空，触发上层503
+	if err := store.SetChannelCooldown(ctx, ids[0], now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("设置渠道冷却失败: %v", err)
+	}
+	if err := store.SetChannelCooldown(ctx, ids[1], now.Add(30*time.Second)); err != nil {
+		t.Fatalf("设置渠道冷却失败: %v", err)
+	}
+
+	candidates, err := server.selectCandidatesByModelAndType(ctx, "test-model", "")
+	if err != nil {
+		t.Fatalf("selectCandidates失败: %v", err)
+	}
+
+	if len(candidates) != 0 {
+		t.Fatalf("期望兜底禁用时返回0个候选渠道，实际%d个", len(candidates))
+	}
+}
+
 func TestSelectRouteCandidates_AllCooledByKeys_FallbackChoosesEarliestKeyCooldown(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()

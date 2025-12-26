@@ -41,7 +41,7 @@ func TestHandleError_1308Error(t *testing.T) {
 		defer log.SetOutput(oldOutput)
 
 		// 处理错误
-		action, err := manager.HandleError(ctx, cfg.ID, 0, 429, errorBody, false, nil)
+		action, _, err := manager.HandleError(ctx, cfg.ID, 0, 429, errorBody, false, nil)
 		if err != nil {
 			t.Fatalf("HandleError failed: %v", err)
 		}
@@ -102,7 +102,7 @@ func TestHandleError_1308Error(t *testing.T) {
 		beforeTime := time.Now()
 
 		// 处理错误
-		action, err := manager.HandleError(ctx, cfg.ID, 1, 429, errorBody, false, nil)
+		action, _, err := manager.HandleError(ctx, cfg.ID, 1, 429, errorBody, false, nil)
 		if err != nil {
 			t.Fatalf("HandleError failed: %v", err)
 		}
@@ -166,7 +166,7 @@ func TestHandleError_1308Error(t *testing.T) {
 		beforeTime := time.Now()
 
 		// 处理错误
-		action, err := manager.HandleError(ctx, cfg.ID, 0, 429, errorBody, false, nil)
+		action, _, err := manager.HandleError(ctx, cfg.ID, 0, 429, errorBody, false, nil)
 		if err != nil {
 			t.Fatalf("HandleError failed: %v", err)
 		}
@@ -220,7 +220,7 @@ func TestHandleError_1308Error(t *testing.T) {
 		defer log.SetOutput(oldOutput)
 
 		// 处理错误
-		action, err := manager.HandleError(ctx, singleKeyCfg.ID, 0, 429, errorBody, false, nil)
+		action, _, err := manager.HandleError(ctx, singleKeyCfg.ID, 0, 429, errorBody, false, nil)
 		if err != nil {
 			t.Fatalf("HandleError failed: %v", err)
 		}
@@ -276,7 +276,7 @@ func TestHandleError_1308Error(t *testing.T) {
 		defer log.SetOutput(oldOutput)
 
 		// 处理错误
-		action, err := manager.HandleError(ctx, cfg.ID, 0, 597, errorBody, false, nil)
+		action, _, err := manager.HandleError(ctx, cfg.ID, 0, 597, errorBody, false, nil)
 		if err != nil {
 			t.Fatalf("HandleError failed: %v", err)
 		}

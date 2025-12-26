@@ -460,8 +460,9 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 			})
 		}
 
-		// [INFO] 使用 context.AfterFunc 监听客户端取消（Go 1.21+，标准库保证无泄漏）
-		stop := context.AfterFunc(ctx, closeBodySafely)
+		// [INFO] 使用 context.AfterFunc 监听请求取消/超时（Go 1.21+，标准库保证无泄漏）
+		// 必须监听 reqCtx.ctx（而非父 ctx），否则 nonStreamTimeout/firstByteTimeout 触发时无法强制打断阻塞 Read。
+		stop := context.AfterFunc(reqCtx.ctx, closeBodySafely)
 		defer stop() // 取消注册（请求正常结束时避免内存泄漏）
 
 		// 正常返回时关闭（与 AfterFunc 互斥，Once 保证只执行一次）
@@ -604,6 +605,8 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 
 	triedKeys := make(map[int]bool) // 本次请求内已尝试过的Key
 
+	var lastFailure *proxyResult
+
 	// 准备请求体（处理模型重定向）
 	// [INFO] 修复：保存重定向后的模型名称，用于日志记录和调试
 	actualModel, bodyToSend := prepareRequestBody(cfg, reqCtx)
@@ -617,6 +620,8 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 				channelID:        &cfg.ID,
 				succeeded:        false,
 				isClientCanceled: true,
+				shouldRetry:      false,                 // [FIX] 客户端取消不重试
+				errorLevel:       util.ErrorLevelClient, // [FIX] 客户端取消是客户端问题，不映射
 			}, nil
 		}
 
@@ -635,9 +640,11 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		result, shouldContinue, shouldBreak := s.forwardAttempt(
 			ctx, cfg, keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, w)
 
-		// 如果返回了结果，直接返回
 		if result != nil {
-			return result, nil
+			if result.succeeded {
+				return result, nil
+			}
+			lastFailure = result
 		}
 
 		// 需要切换到下一个渠道
@@ -646,13 +653,20 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		}
 
 		// 继续重试下一个Key
-		if !shouldContinue {
-			break
+		if shouldContinue {
+			continue
 		}
+
+		break
 	}
 
-	// Key重试循环结束，所有Key都失败
-	return nil, fmt.Errorf("all keys exhausted")
+	// Key重试循环结束：返回最后一次失败结果
+	if lastFailure != nil {
+		return lastFailure, nil
+	}
+
+	// 所有Key都尝试过但都失败（无 lastFailure 说明循环未执行或逻辑异常）
+	return nil, ErrAllKeysExhausted
 }
 
 func shouldCheckSoftErrorForChannelType(channelType string) bool {

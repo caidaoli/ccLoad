@@ -181,17 +181,12 @@ func TestHandleRequestError(t *testing.T) {
 				t.Errorf("error = %v, should contain %s", err, tt.wantContains)
 			}
 
-			// ErrCodeNetworkRetryable = -1 是合法的内部标识符
-			// 对于某些网络错误（如DNS错误），无法映射到标准HTTP状态码
-			// 使用负值避免与HTTP状态码混淆
-			if result.Status == util.ErrCodeNetworkRetryable {
-				// 检查是否为网络操作错误
-				var netOpErr *net.OpError
-				if !errors.As(tt.err, &netOpErr) {
-					t.Errorf("expected network error, got status=%d", result.Status)
-				}
-			} else if result.Status <= 0 {
-				t.Errorf("unexpected negative status code: %d", result.Status)
+			// status 必须是合法的HTTP语义值（或内部状态码596-599），不应出现负值。
+			if result.Status <= 0 {
+				t.Errorf("unexpected non-positive status code: %d", result.Status)
+			}
+			if result.Status < 100 || result.Status > 999 {
+				t.Errorf("unexpected status code range: %d", result.Status)
 			}
 
 			if duration < 0 {

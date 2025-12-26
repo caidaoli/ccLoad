@@ -79,10 +79,14 @@ func withTransaction(db *sql.DB, ctx context.Context, fn func(*sql.Tx) error) er
 			}
 
 			// 检查 context 是否已取消
+			timer := time.NewTimer(nextDelay)
 			select {
 			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
 				return fmt.Errorf("transaction cancelled after %d retries: %w", attempt+1, ctx.Err())
-			case <-time.After(nextDelay):
+			case <-timer.C:
 				// 等待完成，继续重试
 			}
 			continue
@@ -104,10 +108,10 @@ func executeSingleTransaction(db *sql.DB, ctx context.Context, fn func(*sql.Tx) 
 	}
 
 	// 2. 延迟回滚(幂等操作,提交后回滚无效)
-	// 设计原则:Fail-Fast,panic回滚后继续炸掉(不隐藏编程错误)
+	// 设计原则: Fail-Fast，panic 回滚后继续炸掉（不隐藏编程错误）
 	defer func() {
 		if p := recover(); p != nil {
-			// panic恢复:强制回滚后继续panic(不吞掉编程错误)
+			// panic恢复: 强制回滚后继续 panic（不吞掉编程错误）
 			_ = tx.Rollback()
 			panic(p)
 		} else if err != nil {
