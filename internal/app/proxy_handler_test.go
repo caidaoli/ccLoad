@@ -3,9 +3,11 @@ package app
 import (
 	"bytes"
 	"ccLoad/internal/util"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -182,6 +184,56 @@ func TestAcquireConcurrencySlot(t *testing.T) {
 	release3()
 
 	t.Log("[INFO] 并发控制测试通过：2个槽位正确管理")
+}
+
+func TestAcquireConcurrencySlot_ContextCanceled_Returns499(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	srv := &Server{
+		concurrencySem: make(chan struct{}, 1),
+	}
+	srv.concurrencySem <- struct{}{} // 填满槽位，迫使走等待分支
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	req := httptest.NewRequest(http.MethodPost, "/test", nil).WithContext(ctx)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+
+	release, acquired := srv.acquireConcurrencySlot(c)
+	if acquired || release != nil {
+		t.Fatal("预期获取失败且release=nil")
+	}
+	if w.Code != StatusClientClosedRequest {
+		t.Fatalf("预期状态码%d，实际%d", StatusClientClosedRequest, w.Code)
+	}
+}
+
+func TestAcquireConcurrencySlot_DeadlineExceeded_Returns504(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	srv := &Server{
+		concurrencySem: make(chan struct{}, 1),
+	}
+	srv.concurrencySem <- struct{}{} // 填满槽位，迫使走等待分支
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	req := httptest.NewRequest(http.MethodPost, "/test", nil).WithContext(ctx)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+
+	release, acquired := srv.acquireConcurrencySlot(c)
+	if acquired || release != nil {
+		t.Fatal("预期获取失败且release=nil")
+	}
+	if w.Code != http.StatusGatewayTimeout {
+		t.Fatalf("预期状态码%d，实际%d", http.StatusGatewayTimeout, w.Code)
+	}
 }
 
 func TestDetermineFinalClientStatus(t *testing.T) {

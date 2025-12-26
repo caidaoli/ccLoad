@@ -588,6 +588,29 @@ func (s *Server) forwardAttempt(
 // tryChannelWithKeys 在单个渠道内尝试多个Key（Key级重试）
 // 从proxy.go提取，遵循SRP原则
 func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqCtx *proxyRequestContext, w http.ResponseWriter) (*proxyResult, error) {
+	makeCtxDoneResult := func(ctxErr error) *proxyResult {
+		status := util.StatusClientClosedRequest
+		isClientCanceled := errors.Is(ctxErr, context.Canceled)
+		if errors.Is(ctxErr, context.DeadlineExceeded) {
+			status = http.StatusGatewayTimeout
+		}
+
+		return &proxyResult{
+			status:           status,
+			body:             []byte(`{"error":"` + ctxErr.Error() + `"}`),
+			channelID:        &cfg.ID,
+			succeeded:        false,
+			isClientCanceled: isClientCanceled,
+			shouldRetry:      false,
+			errorLevel:       util.ErrorLevelClient,
+		}
+	}
+
+	// Fail-fast：ctx 已结束（客户端断开/请求超时）时不要再做任何 I/O（查库、选Key、发请求）。
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return makeCtxDoneResult(ctxErr), nil
+	}
+
 	// 查询渠道的API Keys（使用缓存层，<1ms vs 数据库查询10-20ms）
 	// 性能优化：缓存优先，避免高并发场景下的数据库瓶颈
 	apiKeys, err := s.getAPIKeys(ctx, cfg.ID)
@@ -613,16 +636,9 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 
 	// Key重试循环
 	for range maxKeyRetries {
-		// 检查context是否已取消（客户端断开连接）
-		if ctx.Err() != nil {
-			return &proxyResult{
-				status:           499,
-				channelID:        &cfg.ID,
-				succeeded:        false,
-				isClientCanceled: true,
-				shouldRetry:      false,                 // [FIX] 客户端取消不重试
-				errorLevel:       util.ErrorLevelClient, // [FIX] 客户端取消是客户端问题，不映射
-			}, nil
+		// 检查context是否已取消/超时
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return makeCtxDoneResult(ctxErr), nil
 		}
 
 		// 选择可用的API Key（直接传入apiKeys，避免重复查询）

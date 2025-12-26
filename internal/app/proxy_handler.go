@@ -34,6 +34,11 @@ func (s *Server) acquireConcurrencySlot(c *gin.Context) (release func(), ok bool
 	case s.concurrencySem <- struct{}{}:
 		return func() { <-s.concurrencySem }, true
 	case <-c.Request.Context().Done():
+		ctxErr := c.Request.Context().Err()
+		if errors.Is(ctxErr, context.DeadlineExceeded) {
+			c.JSON(http.StatusGatewayTimeout, gin.H{"error": "request timeout while waiting for slot"})
+			return nil, false
+		}
 		c.JSON(StatusClientClosedRequest, gin.H{"error": "request cancelled while waiting for slot"})
 		return nil, false
 	}
