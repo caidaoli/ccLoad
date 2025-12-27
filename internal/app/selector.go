@@ -121,7 +121,7 @@ func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpk
 	}
 
 	// 先执行冷却过滤，保证冷却语义不被绕开（正确性优先）
-	filtered := s.filterCooldownChannelsLegacy(channels, channelCooldowns, keyCooldowns, now)
+	filtered := s.filterCooledChannels(channels, channelCooldowns, keyCooldowns, now)
 	if len(filtered) == 0 {
 		// 全冷却兜底：基于阈值决策（秒）
 		// - threshold <= 0：禁用兜底，返回空，让调用方返回503（尊重冷却语义）
@@ -239,8 +239,9 @@ func (s *Server) pickBestChannelWhenAllCooled(
 	return best, readyIn
 }
 
-// filterCooldownChannelsLegacy 原有过滤逻辑（健康度排序禁用时使用）
-func (s *Server) filterCooldownChannelsLegacy(
+// filterCooledChannels 过滤冷却中的渠道
+// 渠道级冷却或所有Key都在冷却时，该渠道被过滤
+func (s *Server) filterCooledChannels(
 	channels []*modelpkg.Config,
 	channelCooldowns map[int64]time.Time,
 	keyCooldowns map[int64]map[int]time.Time,

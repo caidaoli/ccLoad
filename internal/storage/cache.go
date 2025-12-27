@@ -7,7 +7,6 @@ import (
 	"log"
 	"maps"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -30,35 +29,6 @@ type ChannelCache struct {
 		lastUpdate time.Time
 		ttl        time.Duration
 	}
-
-	// Metrics counters
-	channelCounters        cacheCounters
-	channelTypeCounters    cacheCounters
-	apiKeyCounters         cacheCounters
-	channelCooldownCounter cacheCounters
-	keyCooldownCounter     cacheCounters
-}
-
-type cacheCounters struct {
-	hits          atomic.Uint64
-	misses        atomic.Uint64
-	invalidations atomic.Uint64
-}
-
-func (c *cacheCounters) addHit() {
-	c.hits.Add(1)
-}
-
-func (c *cacheCounters) addMiss() {
-	c.misses.Add(1)
-}
-
-func (c *cacheCounters) addInvalidation() {
-	c.invalidations.Add(1)
-}
-
-func (c *cacheCounters) snapshot() (hits, misses, invalidations uint64) {
-	return c.hits.Load(), c.misses.Load(), c.invalidations.Load()
 }
 
 // NewChannelCache 创建渠道缓存实例
@@ -136,15 +106,12 @@ func deepCopyConfigs(src []*modelpkg.Config) []*modelpkg.Config {
 // [FIX] P0-2: 返回深拷贝，防止调用方污染缓存
 func (c *ChannelCache) GetEnabledChannelsByModel(ctx context.Context, model string) ([]*modelpkg.Config, error) {
 	if err := c.refreshIfNeeded(ctx); err != nil {
-		c.channelCounters.addMiss()
 		// 缓存失败时降级到数据库查询
 		return c.store.GetEnabledChannelsByModel(ctx, model)
 	}
 
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
-
-	c.channelCounters.addHit()
 
 	if model == "*" {
 		// 返回所有渠道的深拷贝（隔离可变字段：ModelEntries）
@@ -164,15 +131,12 @@ func (c *ChannelCache) GetEnabledChannelsByModel(ctx context.Context, model stri
 // [FIX] P0-2: 返回深拷贝，防止调用方污染缓存
 func (c *ChannelCache) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*modelpkg.Config, error) {
 	if err := c.refreshIfNeeded(ctx); err != nil {
-		c.channelTypeCounters.addMiss()
 		// 缓存失败时降级到数据库查询
 		return c.store.GetEnabledChannelsByType(ctx, channelType)
 	}
 
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
-
-	c.channelTypeCounters.addHit()
 
 	normalizedType := util.NormalizeChannelType(channelType)
 	channels, exists := c.channelsByType[normalizedType]
@@ -274,50 +238,6 @@ func (c *ChannelCache) InvalidateCache() {
 	defer c.mutex.Unlock()
 
 	c.lastUpdate = time.Time{} // 重置为0时间，强制刷新
-	c.channelCounters.addInvalidation()
-	c.channelTypeCounters.addInvalidation()
-}
-
-// GetCacheStats 获取缓存统计信息
-func (c *ChannelCache) GetCacheStats() map[string]any {
-	c.mutex.RLock()
-	lastUpdate := c.lastUpdate
-	ageSeconds := time.Since(c.lastUpdate).Seconds()
-	totalChannels := len(c.allChannels)
-	totalModels := len(c.channelsByModel)
-	totalTypes := len(c.channelsByType)
-	ttlSeconds := c.ttl.Seconds()
-	c.mutex.RUnlock()
-
-	channelHits, channelMisses, channelInvalidations := c.channelCounters.snapshot()
-	channelTypeHits, channelTypeMisses, channelTypeInvalidations := c.channelTypeCounters.snapshot()
-	apiHits, apiMisses, apiInvalidations := c.apiKeyCounters.snapshot()
-	chanCooldownHits, chanCooldownMisses, chanCooldownInvalidations := c.channelCooldownCounter.snapshot()
-	keyCooldownHits, keyCooldownMisses, keyCooldownInvalidations := c.keyCooldownCounter.snapshot()
-
-	return map[string]any{
-		"last_update":                    lastUpdate,
-		"age_seconds":                    ageSeconds,
-		"total_channels":                 totalChannels,
-		"total_models":                   totalModels,
-		"total_types":                    totalTypes,
-		"ttl_seconds":                    ttlSeconds,
-		"channels_hits":                  channelHits,
-		"channels_misses":                channelMisses,
-		"channels_invalidations":         channelInvalidations,
-		"channel_type_hits":              channelTypeHits,
-		"channel_type_misses":            channelTypeMisses,
-		"channel_type_invalidations":     channelTypeInvalidations,
-		"api_keys_hits":                  apiHits,
-		"api_keys_misses":                apiMisses,
-		"api_keys_invalidations":         apiInvalidations,
-		"channel_cooldown_hits":          chanCooldownHits,
-		"channel_cooldown_misses":        chanCooldownMisses,
-		"channel_cooldown_invalidations": chanCooldownInvalidations,
-		"key_cooldown_hits":              keyCooldownHits,
-		"key_cooldown_misses":            keyCooldownMisses,
-		"key_cooldown_invalidations":     keyCooldownInvalidations,
-	}
 }
 
 // GetAPIKeys 缓存优先的API Keys查询
@@ -327,7 +247,6 @@ func (c *ChannelCache) GetAPIKeys(ctx context.Context, channelID int64) ([]*mode
 	c.mutex.RLock()
 	if keys, exists := c.apiKeysByChannelID[channelID]; exists {
 		c.mutex.RUnlock()
-		c.apiKeyCounters.addHit()
 		// 深拷贝: 防止调用方修改污染缓存
 		result := make([]*modelpkg.APIKey, len(keys))
 		for i, key := range keys {
@@ -340,7 +259,6 @@ func (c *ChannelCache) GetAPIKeys(ctx context.Context, channelID int64) ([]*mode
 
 	// 缓存未命中，从数据库加载
 	keys, err := c.store.GetAPIKeys(ctx, channelID)
-	c.apiKeyCounters.addMiss()
 	if err != nil {
 		return nil, err
 	}
@@ -368,14 +286,12 @@ func (c *ChannelCache) GetAllChannelCooldowns(ctx context.Context) (map[int64]ti
 		result := make(map[int64]time.Time, len(c.cooldownCache.channels))
 		maps.Copy(result, c.cooldownCache.channels)
 		c.mutex.RUnlock()
-		c.channelCooldownCounter.addHit()
 		return result, nil
 	}
 	c.mutex.RUnlock()
 
 	// 缓存过期，从数据库加载
 	cooldowns, err := c.store.GetAllChannelCooldowns(ctx)
-	c.channelCooldownCounter.addMiss()
 	if err != nil {
 		return nil, err
 	}
@@ -405,14 +321,12 @@ func (c *ChannelCache) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[in
 			result[k] = keyMap
 		}
 		c.mutex.RUnlock()
-		c.keyCooldownCounter.addHit()
 		return result, nil
 	}
 	c.mutex.RUnlock()
 
 	// 缓存过期，从数据库加载
 	cooldowns, err := c.store.GetAllKeyCooldowns(ctx)
-	c.keyCooldownCounter.addMiss()
 	if err != nil {
 		return nil, err
 	}
@@ -437,7 +351,6 @@ func (c *ChannelCache) InvalidateAPIKeysCache(channelID int64) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	delete(c.apiKeysByChannelID, channelID)
-	c.apiKeyCounters.addInvalidation()
 }
 
 // InvalidateAllAPIKeysCache 清空所有API Key缓存（批量操作后使用）
@@ -445,7 +358,6 @@ func (c *ChannelCache) InvalidateAllAPIKeysCache() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	c.apiKeysByChannelID = make(map[int64][]*modelpkg.APIKey)
-	c.apiKeyCounters.addInvalidation()
 }
 
 // InvalidateCooldownCache 手动失效冷却缓存
@@ -453,6 +365,4 @@ func (c *ChannelCache) InvalidateCooldownCache() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	c.cooldownCache.lastUpdate = time.Time{}
-	c.channelCooldownCounter.addInvalidation()
-	c.keyCooldownCounter.addInvalidation()
 }

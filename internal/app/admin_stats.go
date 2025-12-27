@@ -264,25 +264,6 @@ func (s *Server) HandleCooldownStats(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, response)
 }
 
-// handleCacheStats 暴露缓存命中率等指标，方便监控采集
-// GET /admin/cache/stats
-func (s *Server) HandleCacheStats(c *gin.Context) {
-	cache := s.getChannelCache()
-	if cache == nil {
-		RespondJSON(c, http.StatusOK, gin.H{
-			"cache_enabled": false,
-			"stats":         gin.H{},
-		})
-		return
-	}
-
-	stats := cache.GetCacheStats()
-	RespondJSON(c, http.StatusOK, gin.H{
-		"cache_enabled": true,
-		"stats":         stats,
-	})
-}
-
 // handleGetChannelTypes 获取渠道类型配置(公开端点,前端动态加载)
 // GET /public/channel-types
 func (s *Server) HandleGetChannelTypes(c *gin.Context) {
