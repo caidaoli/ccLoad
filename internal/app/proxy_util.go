@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 	"context"
@@ -109,8 +110,7 @@ type proxyResult struct {
 	duration         float64
 	succeeded        bool
 	isClientCanceled bool            // 客户端主动取消请求（context.Canceled）
-	errorLevel       util.ErrorLevel // [FIX] 错误分类结果（用于重试决策）
-	shouldRetry      bool            // [FIX] 是否应该重试（来自ClassifyError，用于broken pipe等场景）
+	nextAction       cooldown.Action // 统一重试决策：RetryKey/RetryChannel/ReturnClient
 }
 
 // ErrorAction 已迁移到 cooldown.Action (internal/cooldown/manager.go)

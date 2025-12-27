@@ -205,7 +205,7 @@ func TestClassifyHTTPResponse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ClassifyHTTPResponse(tt.statusCode, nil, tt.responseBody)
+			result := ClassifyHTTPResponseWithMeta(tt.statusCode, nil, tt.responseBody).Level
 			if result != tt.expected {
 				t.Errorf("❌ %s\n  期望: %v\n  实际: %v\n  原因: %s\n  响应体: %s",
 					tt.name, tt.expected, result, tt.reason, string(tt.responseBody))
@@ -622,7 +622,7 @@ func TestClassifyRateLimitError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ClassifyHTTPResponse(429, tt.headers, tt.responseBody)
+			result := ClassifyHTTPResponseWithMeta(429, tt.headers, tt.responseBody).Level
 			if result != tt.expected {
 				t.Errorf("❌ %s\n  期望: %v\n  实际: %v\n  原因: %s",
 					tt.name, tt.expected, result, tt.reason)
@@ -711,8 +711,8 @@ func TestClassifySSEError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// 使用 ClassifyHTTPResponse 测试 597 状态码
-			result := ClassifyHTTPResponse(StatusSSEError, nil, tt.responseBody)
+			// 使用 ClassifyHTTPResponseWithMeta 测试 597 状态码
+			result := ClassifyHTTPResponseWithMeta(StatusSSEError, nil, tt.responseBody).Level
 			if result != tt.expected {
 				t.Errorf("❌ %s\n  期望: %v\n  实际: %v\n  原因: %s",
 					tt.name, tt.expected, result, tt.reason)
@@ -904,70 +904,32 @@ func TestGetStatusCodeMeta(t *testing.T) {
 	}
 }
 
-func TestMapToClientStatus(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		in       int
-		expected int
-		desc     string
-	}{
-		{-1, 502, "负值 -> 502"},
-		{0, 502, "零值 -> 502"},
-		{401, 401, "401 -> 401 (透明代理)"},
-		{402, 402, "402 -> 402 (透明代理)"},
-		{403, 403, "403 -> 403 (透明代理)"},
-		{429, 429, "429 -> 透传"},
-		{499, 502, "499(渠道级默认) -> 502"},
-		{404, 404, "404(默认客户端级) -> 404"},
-		{500, 500, "500 -> 透传"},
-		{502, 502, "502 -> 透传"},
-		{StatusQuotaExceeded, 429, "596 -> 429"},
-		{StatusSSEError, 502, "597 -> 502"},
-		{StatusFirstByteTimeout, 504, "598 -> 504"},
-		{StatusStreamIncomplete, 502, "599 -> 502"},
-		{408, 408, "408 -> 透传（客户端级错误）"},
-		{405, 405, "405 -> 405 (透明代理)"},
-		{418, 418, "418 -> 透传"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.desc, func(t *testing.T) {
-			if got := MapToClientStatus(tt.in); got != tt.expected {
-				t.Errorf("MapToClientStatus(%d) = %d, want %d", tt.in, got, tt.expected)
-			}
-		})
-	}
-}
-
 func TestClientStatusFor(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		status   int
-		level    ErrorLevel
 		expected int
 		desc     string
 	}{
-		{-1, ErrorLevelChannel, 502, "负值 -> 502"},
-		{StatusQuotaExceeded, ErrorLevelKey, 429, "596 -> 429"},
-		{StatusSSEError, ErrorLevelKey, 502, "597 -> 502"},
-		{StatusFirstByteTimeout, ErrorLevelChannel, 504, "598 -> 504"},
-		{StatusStreamIncomplete, ErrorLevelChannel, 502, "599 -> 502"},
-		{429, ErrorLevelKey, 429, "429 保留语义"},
-		{401, ErrorLevelKey, 401, "Key级 401 -> 401 (透明代理)"},
-		{405, ErrorLevelChannel, 405, "渠道级 405 -> 405 (透明代理)"},
-		{404, ErrorLevelChannel, 404, "渠道级 404 -> 404 (透明代理)"},
-		{404, ErrorLevelClient, 404, "客户端级 404 -> 404"},
-		{499, ErrorLevelChannel, 502, "上游 499(非客户端取消语义) -> 502"},
-		{499, ErrorLevelClient, 499, "客户端取消语义 499 -> 499"},
-		{502, ErrorLevelChannel, 502, "渠道级 502 -> 502"},
+		{-1, 502, "负值 -> 502"},
+		{0, 502, "零值 -> 502"},
+		{StatusQuotaExceeded, 429, "596 -> 429"},
+		{StatusSSEError, 502, "597 -> 502"},
+		{StatusFirstByteTimeout, 504, "598 -> 504"},
+		{StatusStreamIncomplete, 502, "599 -> 502"},
+		{429, 429, "429 -> 透传"},
+		{401, 401, "401 -> 401 (透明代理)"},
+		{405, 405, "405 -> 405 (透明代理)"},
+		{404, 404, "404 -> 404 (透明代理)"},
+		{499, 499, "499 -> 499（语义由上层决定）"},
+		{502, 502, "502 -> 502"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.desc, func(t *testing.T) {
-			if got := ClientStatusFor(tt.status, tt.level); got != tt.expected {
-				t.Fatalf("ClientStatusFor(%d,%v)=%d, expected %d", tt.status, tt.level, got, tt.expected)
+			if got := ClientStatusFor(tt.status); got != tt.expected {
+				t.Fatalf("ClientStatusFor(%d)=%d, expected %d", tt.status, got, tt.expected)
 			}
 		})
 	}

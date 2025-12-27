@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"ccLoad/internal/config"
+	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 	"ccLoad/internal/validator"
@@ -506,7 +507,7 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 
 // forwardAttempt 单次转发尝试（包含错误处理和日志记录）
 // 从proxy.go提取，遵循SRP原则
-// 返回：(proxyResult, shouldContinueRetry, shouldBreakToNextChannel)
+// 返回：(proxyResult, nextAction)
 func (s *Server) forwardAttempt(
 	ctx context.Context,
 	cfg *model.Config,
@@ -516,14 +517,14 @@ func (s *Server) forwardAttempt(
 	actualModel string, // [INFO] 重定向后的实际模型名称
 	bodyToSend []byte,
 	w http.ResponseWriter,
-) (*proxyResult, bool, bool) {
+) (*proxyResult, cooldown.Action) {
 	// [VALIDATE] Key级验证器检查(88code套餐验证等)
 	// 每个Key单独验证，避免误杀免费key或误放付费key
 	available, reason := validator.Validate88CodeSubscription(ctx, cfg, selectedKey)
 	if !available {
 		// Key验证失败: 跳过此key，尝试下一个
 		log.Printf("[VALIDATE] 渠道 %s (ID=%d) Key#%d 验证失败: %s, 跳过", cfg.Name, cfg.ID, keyIndex, reason)
-		return nil, true, false // shouldContinue=true, shouldBreak=false
+		return nil, cooldown.ActionRetryKey
 	}
 
 	// 转发请求（传递实际的API Key字符串）
@@ -600,8 +601,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 			channelID:        &cfg.ID,
 			succeeded:        false,
 			isClientCanceled: isClientCanceled,
-			shouldRetry:      false,
-			errorLevel:       util.ErrorLevelClient,
+			nextAction:       cooldown.ActionReturnClient,
 		}
 	}
 
@@ -652,7 +652,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 
 		// 单次转发尝试（传递实际的API Key字符串）
 		// [INFO] 修复：传递 actualModel 用于日志记录
-		result, shouldContinue, shouldBreak := s.forwardAttempt(
+		result, nextAction := s.forwardAttempt(
 			ctx, cfg, keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, w)
 
 		if result != nil {
@@ -662,16 +662,12 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 			lastFailure = result
 		}
 
-		// 需要切换到下一个渠道
-		if shouldBreak {
-			break
-		}
-
-		// 继续重试下一个Key
-		if shouldContinue {
+		if nextAction == cooldown.ActionRetryKey {
 			continue
 		}
-
+		if nextAction == cooldown.ActionRetryChannel {
+			break
+		}
 		break
 	}
 

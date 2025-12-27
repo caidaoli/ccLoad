@@ -1,8 +1,8 @@
 package app
 
 import (
+	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
-	"ccLoad/internal/util"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -24,17 +24,14 @@ func TestTryChannelWithKeys_ContextCanceled_Returns499(t *testing.T) {
 	if res == nil {
 		t.Fatal("expected result, got nil")
 	}
-	if res.status != util.StatusClientClosedRequest {
-		t.Fatalf("expected status %d, got %d", util.StatusClientClosedRequest, res.status)
+	if res.status != StatusClientClosedRequest {
+		t.Fatalf("expected status %d, got %d", StatusClientClosedRequest, res.status)
 	}
 	if !res.isClientCanceled {
 		t.Fatal("expected isClientCanceled=true")
 	}
-	if res.shouldRetry {
-		t.Fatal("expected shouldRetry=false")
-	}
-	if res.errorLevel != util.ErrorLevelClient {
-		t.Fatalf("expected errorLevel=%v, got %v", util.ErrorLevelClient, res.errorLevel)
+	if res.nextAction != cooldown.ActionReturnClient {
+		t.Fatalf("expected nextAction=ActionReturnClient, got %v", res.nextAction)
 	}
 }
 
@@ -58,10 +55,7 @@ func TestTryChannelWithKeys_ContextDeadlineExceeded_Returns504(t *testing.T) {
 	if res.isClientCanceled {
 		t.Fatal("expected isClientCanceled=false")
 	}
-	if res.shouldRetry {
-		t.Fatal("expected shouldRetry=false")
-	}
-	if res.errorLevel != util.ErrorLevelClient {
-		t.Fatalf("expected errorLevel=%v, got %v", util.ErrorLevelClient, res.errorLevel)
+	if res.nextAction != cooldown.ActionReturnClient {
+		t.Fatalf("expected nextAction=ActionReturnClient, got %v", res.nextAction)
 	}
 }

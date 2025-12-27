@@ -76,6 +76,12 @@ type StatusCodeMeta struct {
 	Level ErrorLevel // 错误级别（Key/Channel/Client）
 }
 
+type HTTPResponseClassification struct {
+	Level            ErrorLevel
+	ResetTime1308    time.Time
+	HasResetTime1308 bool
+}
+
 // sseErrorResponse SSE error事件的JSON结构（Anthropic API / 88code API）
 // [FIX] 提取为公共结构体，消除 classifySSEError 和 ParseResetTimeFrom1308Error 的重复定义
 type sseErrorResponse struct {
@@ -156,12 +162,12 @@ func GetStatusCodeMeta(status int) StatusCodeMeta {
 	return StatusCodeMeta{ErrorLevelClient}
 }
 
-// ClientStatusFor 将 (status,errorLevel) 映射为对外暴露的状态码。
+// ClientStatusFor 将 status 映射为对外暴露的状态码。
 //
 // 设计目标：
 // - 对外语义一致：不把后端 Key/渠道故障伪装成“客户端错误”
 // - 单一映射入口：避免在 app 层再堆一份 if/switch（那就是第二套规则）
-func ClientStatusFor(status int, level ErrorLevel) int {
+func ClientStatusFor(status int) int {
 	if status <= 0 {
 		return http.StatusBadGateway
 	}
@@ -178,20 +184,8 @@ func ClientStatusFor(status int, level ErrorLevel) int {
 		return http.StatusBadGateway
 	}
 
-	// 499：只有在"客户端取消"语义下才对外保留 499；否则把上游 499 当作网关错误噪音
-	if status == StatusClientClosedRequest && level != ErrorLevelClient {
-		return http.StatusBadGateway
-	}
-
 	// 透明代理原则：透传所有上游状态码，不篡改HTTP语义
 	return status
-}
-
-// MapToClientStatus 将内部状态码映射为对外暴露的状态码（兼容入口）
-// 注意：该函数不接受 errorLevel，只能使用 statusCodeMetaMap 推导的默认 Level。
-func MapToClientStatus(status int) int {
-	meta := GetStatusCodeMeta(status)
-	return ClientStatusFor(status, meta.Level)
 }
 
 // ClassifyHTTPStatus 分类HTTP状态码，返回错误级别
@@ -203,53 +197,58 @@ func ClassifyHTTPStatus(statusCode int) ErrorLevel {
 	return GetStatusCodeMeta(statusCode).Level
 }
 
-// ClassifyHTTPResponse 基于状态码 + headers + 响应体智能分类错误级别
-// 401/403 做语义分析；429 做限流范围分析；其余走表驱动状态码分类。
+// ClassifyHTTPResponseWithMeta 基于状态码 + headers + 响应体智能分类错误级别
+// 返回 HTTPResponseClassification，包含错误级别和1308重置时间（如果存在）
 //
-// 设计原则：
-//   - 401/403 默认 Key 级（保守），只在明确账户级不可逆错误时升级为 Channel 级
-//   - 429 默认 Key 级，只有明确长时间/全局限流特征才升级为 Channel 级
+// 分类策略：
+//   - 401/403 做语义分析：默认 Key 级，只在明确账户级不可逆错误时升级为 Channel 级
+//   - 429 做限流范围分析：默认 Key 级，只有明确长时间/全局限流特征才升级为 Channel 级
 //   - 1308 错误优先：无论 HTTP 状态码，检测到就按 Key 级处理（用于精确冷却时间）
-func ClassifyHTTPResponse(statusCode int, headers map[string][]string, responseBody []byte) ErrorLevel {
+//   - 其他状态码：走表驱动分类（statusCodeMetaMap）
+func ClassifyHTTPResponseWithMeta(statusCode int, headers map[string][]string, responseBody []byte) HTTPResponseClassification {
 	// [INFO] 特殊处理：检测1308错误（可能以SSE error事件形式出现，HTTP状态码是200）
 	// 1308错误表示达到使用上限，应该触发Key级冷却
-	if _, has1308 := ParseResetTimeFrom1308Error(responseBody); has1308 {
-		return ErrorLevelKey // 1308错误视为Key级错误，触发冷却
+	if resetTime, has1308 := ParseResetTimeFrom1308Error(responseBody); has1308 {
+		return HTTPResponseClassification{
+			Level:            ErrorLevelKey,
+			ResetTime1308:    resetTime,
+			HasResetTime1308: true,
+		}
 	}
 
 	// [INFO] 597 SSE error事件：解析实际错误类型动态判断级别
 	// SSE error JSON格式: {"type":"error","error":{"type":"api_error","message":"上游API返回错误: 500"}}
 	// 根据error.type判断：api_error/overloaded_error → 渠道级，其他 → Key级
 	if statusCode == StatusSSEError {
-		return classifySSEError(responseBody)
+		return HTTPResponseClassification{Level: classifySSEError(responseBody)}
 	}
 
 	// 429错误：需要结合 headers 判断限流范围
 	if statusCode == 429 {
 		if headers != nil {
-			return classifyRateLimitError(headers, responseBody)
+			return HTTPResponseClassification{Level: classifyRateLimitError(headers, responseBody)}
 		}
-		return ErrorLevelKey
+		return HTTPResponseClassification{Level: ErrorLevelKey}
 	}
 
 	// 400错误：根据响应体智能分类
 	if statusCode == 400 {
-		return classify400Error(responseBody)
+		return HTTPResponseClassification{Level: classify400Error(responseBody)}
 	}
 
 	// 404错误：根据响应体智能分类
 	if statusCode == 404 {
-		return classify404Error(responseBody)
+		return HTTPResponseClassification{Level: classify404Error(responseBody)}
 	}
 
 	// 仅分析401和403错误,其他状态码使用标准分类器
 	if statusCode != 401 && statusCode != 403 {
-		return ClassifyHTTPStatus(statusCode)
+		return HTTPResponseClassification{Level: ClassifyHTTPStatus(statusCode)}
 	}
 
 	// 401/403错误:分析响应体内容
 	if len(responseBody) == 0 {
-		return ErrorLevelKey // 无响应体,默认Key级错误
+		return HTTPResponseClassification{Level: ErrorLevelKey} // 无响应体,默认Key级错误
 	}
 
 	bodyLower := strings.ToLower(string(responseBody))
@@ -271,14 +270,14 @@ func ClassifyHTTPResponse(statusCode int, headers map[string][]string, responseB
 
 	for _, pattern := range channelErrorPatterns {
 		if strings.Contains(bodyLower, pattern) {
-			return ErrorLevelChannel // 明确的渠道级错误
+			return HTTPResponseClassification{Level: ErrorLevelChannel} // 明确的渠道级错误
 		}
 	}
 
 	// 默认:Key级错误
 	// 包括:认证失败、权限不足、额度用尽、余额不足等
 	// 让handleProxyError根据渠道Key数量决定是否升级为渠道级
-	return ErrorLevelKey
+	return HTTPResponseClassification{Level: ErrorLevelKey}
 }
 
 // classifyRateLimitError 分析429 Rate Limit错误的具体类型

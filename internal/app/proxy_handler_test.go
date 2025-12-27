@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"ccLoad/internal/cooldown"
 	"ccLoad/internal/util"
 	"context"
 	"net/http"
@@ -246,22 +247,21 @@ func TestDetermineFinalClientStatus(t *testing.T) {
 	}{
 		{"nil last => 503", nil, http.StatusServiceUnavailable},
 		{"status 0 => 503", &proxyResult{status: 0}, http.StatusServiceUnavailable},
-		{"negative => 502", &proxyResult{status: -1, errorLevel: util.ErrorLevelChannel}, http.StatusBadGateway},
-		{"596 => 429", &proxyResult{status: util.StatusQuotaExceeded, errorLevel: util.ErrorLevelKey}, http.StatusTooManyRequests},
-		{"597 => 502", &proxyResult{status: util.StatusSSEError, errorLevel: util.ErrorLevelKey}, http.StatusBadGateway},
-		{"598 => 504", &proxyResult{status: util.StatusFirstByteTimeout, errorLevel: util.ErrorLevelChannel}, http.StatusGatewayTimeout},
-		{"599 => 502", &proxyResult{status: util.StatusStreamIncomplete, errorLevel: util.ErrorLevelChannel}, http.StatusBadGateway},
-		{"499 client-canceled passthrough", &proxyResult{status: 499, isClientCanceled: true, errorLevel: util.ErrorLevelClient}, 499},
-		{"499 client-canceled passthrough (no errorLevel)", &proxyResult{status: 499, isClientCanceled: true}, 499},
-		{"499 upstream mapped to 502", &proxyResult{status: 499, isClientCanceled: false, errorLevel: util.ErrorLevelChannel}, http.StatusBadGateway},
-		{"401 Key-level mapped to 401 (透明代理)", &proxyResult{status: http.StatusUnauthorized, errorLevel: util.ErrorLevelKey}, http.StatusUnauthorized},
-		{"5xx Channel-level passthrough", &proxyResult{status: http.StatusBadGateway, errorLevel: util.ErrorLevelChannel}, http.StatusBadGateway},
+		{"negative => 502", &proxyResult{status: -1, nextAction: cooldown.ActionRetryChannel}, http.StatusBadGateway},
+		{"596 => 429", &proxyResult{status: util.StatusQuotaExceeded, nextAction: cooldown.ActionRetryKey}, http.StatusTooManyRequests},
+		{"597 => 502", &proxyResult{status: util.StatusSSEError, nextAction: cooldown.ActionRetryKey}, http.StatusBadGateway},
+		{"598 => 504", &proxyResult{status: util.StatusFirstByteTimeout, nextAction: cooldown.ActionRetryChannel}, http.StatusGatewayTimeout},
+		{"599 => 502", &proxyResult{status: util.StatusStreamIncomplete, nextAction: cooldown.ActionRetryChannel}, http.StatusBadGateway},
+		{"499 client-canceled passthrough", &proxyResult{status: 499, isClientCanceled: true, nextAction: cooldown.ActionReturnClient}, 499},
+		{"499 upstream mapped to 502", &proxyResult{status: 499, isClientCanceled: false, nextAction: cooldown.ActionRetryChannel}, http.StatusBadGateway},
+		{"401 Key-level mapped to 401 (透明代理)", &proxyResult{status: http.StatusUnauthorized, nextAction: cooldown.ActionRetryKey}, http.StatusUnauthorized},
+		{"5xx Channel-level passthrough", &proxyResult{status: http.StatusBadGateway, nextAction: cooldown.ActionRetryChannel}, http.StatusBadGateway},
 		// [FIX] 透明代理：所有上游状态码都透传，不映射
-		{"400 Key-level (invalid_api_key) => 400", &proxyResult{status: 400, errorLevel: util.ErrorLevelKey}, 400},
-		{"400 Client-level (参数错误) => 400", &proxyResult{status: 400, errorLevel: util.ErrorLevelClient}, 400},
-		{"404 Channel-level (BaseURL错误) => 404", &proxyResult{status: 404, errorLevel: util.ErrorLevelChannel}, 404},
-		{"404 Client-level (模型不存在) => 404", &proxyResult{status: 404, errorLevel: util.ErrorLevelClient}, 404},
-		{"429 Key-level => 429", &proxyResult{status: 429, errorLevel: util.ErrorLevelKey}, 429},
+		{"400 Key-level (invalid_api_key) => 400", &proxyResult{status: 400, nextAction: cooldown.ActionRetryKey}, 400},
+		{"400 Client-level (参数错误) => 400", &proxyResult{status: 400, nextAction: cooldown.ActionReturnClient}, 400},
+		{"404 Channel-level (BaseURL错误) => 404", &proxyResult{status: 404, nextAction: cooldown.ActionRetryChannel}, 404},
+		{"404 Client-level (模型不存在) => 404", &proxyResult{status: 404, nextAction: cooldown.ActionReturnClient}, 404},
+		{"429 Key-level => 429", &proxyResult{status: 429, nextAction: cooldown.ActionRetryKey}, 429},
 	}
 
 	for _, tt := range tests {
@@ -282,13 +282,12 @@ func TestShouldStopTryingChannels(t *testing.T) {
 		expected bool
 	}{
 		{"nil => stop", nil, true},
-		{"client canceled => stop", &proxyResult{status: 499, isClientCanceled: true, errorLevel: util.ErrorLevelClient, shouldRetry: false}, true},
-		{"broken pipe shouldRetry=false => stop", &proxyResult{status: 499, errorLevel: util.ErrorLevelClient, shouldRetry: false}, true},
-		{"client-level => stop", &proxyResult{status: 404, errorLevel: util.ErrorLevelClient, shouldRetry: false}, true},
-		{"client-level even if shouldRetry=true => stop", &proxyResult{status: 404, errorLevel: util.ErrorLevelClient, shouldRetry: true}, true},
-		{"channel-level => continue", &proxyResult{status: 404, errorLevel: util.ErrorLevelChannel, shouldRetry: true}, false},
-		{"key-level (400 invalid_api_key) => continue", &proxyResult{status: 400, errorLevel: util.ErrorLevelKey, shouldRetry: true}, false},
-		{"key-level 429 => continue", &proxyResult{status: 429, errorLevel: util.ErrorLevelKey, shouldRetry: true}, false},
+		{"client canceled => stop", &proxyResult{status: 499, isClientCanceled: true, nextAction: cooldown.ActionReturnClient}, true},
+		{"broken pipe => stop", &proxyResult{status: 499, nextAction: cooldown.ActionReturnClient}, true},
+		{"client-level => stop", &proxyResult{status: 404, nextAction: cooldown.ActionReturnClient}, true},
+		{"channel-level => continue", &proxyResult{status: 404, nextAction: cooldown.ActionRetryChannel}, false},
+		{"key-level (400 invalid_api_key) => continue", &proxyResult{status: 400, nextAction: cooldown.ActionRetryKey}, false},
+		{"key-level 429 => continue", &proxyResult{status: 429, nextAction: cooldown.ActionRetryKey}, false},
 	}
 
 	for _, tt := range tests {

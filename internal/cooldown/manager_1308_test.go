@@ -41,10 +41,14 @@ func TestHandleError_1308Error(t *testing.T) {
 		defer log.SetOutput(oldOutput)
 
 		// 处理错误
-		action, _, err := manager.HandleError(ctx, cfg.ID, 0, 429, errorBody, false, nil)
-		if err != nil {
-			t.Fatalf("HandleError failed: %v", err)
-		}
+		action := manager.HandleError(ctx, ErrorInput{
+			ChannelID:      cfg.ID,
+			KeyIndex:       0,
+			StatusCode:     429,
+			ErrorBody:      errorBody,
+			IsNetworkError: false,
+			Headers:        nil,
+		})
 
 		// 验证返回的Action
 		if action != ActionRetryKey {
@@ -102,10 +106,14 @@ func TestHandleError_1308Error(t *testing.T) {
 		beforeTime := time.Now()
 
 		// 处理错误
-		action, _, err := manager.HandleError(ctx, cfg.ID, 1, 429, errorBody, false, nil)
-		if err != nil {
-			t.Fatalf("HandleError failed: %v", err)
-		}
+		action := manager.HandleError(ctx, ErrorInput{
+			ChannelID:      cfg.ID,
+			KeyIndex:       1,
+			StatusCode:     429,
+			ErrorBody:      errorBody,
+			IsNetworkError: false,
+			Headers:        nil,
+		})
 
 		// 验证返回的Action
 		if action != ActionRetryKey {
@@ -166,10 +174,14 @@ func TestHandleError_1308Error(t *testing.T) {
 		beforeTime := time.Now()
 
 		// 处理错误
-		action, _, err := manager.HandleError(ctx, cfg.ID, 0, 429, errorBody, false, nil)
-		if err != nil {
-			t.Fatalf("HandleError failed: %v", err)
-		}
+		action := manager.HandleError(ctx, ErrorInput{
+			ChannelID:      cfg.ID,
+			KeyIndex:       0,
+			StatusCode:     429,
+			ErrorBody:      errorBody,
+			IsNetworkError: false,
+			Headers:        nil,
+		})
 
 		// 验证返回的Action
 		if action != ActionRetryKey {
@@ -220,10 +232,14 @@ func TestHandleError_1308Error(t *testing.T) {
 		defer log.SetOutput(oldOutput)
 
 		// 处理错误
-		action, _, err := manager.HandleError(ctx, singleKeyCfg.ID, 0, 429, errorBody, false, nil)
-		if err != nil {
-			t.Fatalf("HandleError failed: %v", err)
-		}
+		action := manager.HandleError(ctx, ErrorInput{
+			ChannelID:      singleKeyCfg.ID,
+			KeyIndex:       0,
+			StatusCode:     429,
+			ErrorBody:      errorBody,
+			IsNetworkError: false,
+			Headers:        nil,
+		})
 
 		// 验证返回的Action应该是RetryKey（虽然会升级为Channel级，但1308有精确时间时保持Key级）
 		if action != ActionRetryKey {
@@ -276,10 +292,14 @@ func TestHandleError_1308Error(t *testing.T) {
 		defer log.SetOutput(oldOutput)
 
 		// 处理错误
-		action, _, err := manager.HandleError(ctx, cfg.ID, 0, 597, errorBody, false, nil)
-		if err != nil {
-			t.Fatalf("HandleError failed: %v", err)
-		}
+		action := manager.HandleError(ctx, ErrorInput{
+			ChannelID:      cfg.ID,
+			KeyIndex:       0,
+			StatusCode:     597,
+			ErrorBody:      errorBody,
+			IsNetworkError: false,
+			Headers:        nil,
+		})
 
 		// 验证返回的Action
 		if action != ActionRetryKey {

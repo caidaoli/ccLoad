@@ -45,11 +45,14 @@ func TestHandleError_ClientError(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			action, _, err := manager.HandleError(ctx, cfg.ID, 0, tc.statusCode, tc.errorBody, false, nil)
-
-			if err != nil {
-				t.Errorf("HandleError should not return error for client errors: %v", err)
-			}
+			action := manager.HandleError(ctx, ErrorInput{
+				ChannelID:      cfg.ID,
+				KeyIndex:       0,
+				StatusCode:     tc.statusCode,
+				ErrorBody:      tc.errorBody,
+				IsNetworkError: false,
+				Headers:        nil,
+			})
 
 			if action != ActionReturnClient {
 				t.Errorf("Expected ActionReturnClient for %d, got %v", tc.statusCode, action)
@@ -95,11 +98,14 @@ func TestHandleError_KeyLevelError(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			keyIndex := 0
-			action, _, err := manager.HandleError(ctx, cfg.ID, keyIndex, tc.statusCode, tc.errorBody, false, nil)
-
-			if err != nil {
-				t.Errorf("HandleError failed: %v", err)
-			}
+			action := manager.HandleError(ctx, ErrorInput{
+				ChannelID:      cfg.ID,
+				KeyIndex:       keyIndex,
+				StatusCode:     tc.statusCode,
+				ErrorBody:      tc.errorBody,
+				IsNetworkError: false,
+				Headers:        nil,
+			})
 
 			if action != ActionRetryKey {
 				t.Errorf("Expected ActionRetryKey for %d, got %v", tc.statusCode, action)
@@ -146,11 +152,14 @@ func TestHandleError_ChannelLevelError(t *testing.T) {
 			// 先重置冷却
 			_ = store.ResetChannelCooldown(ctx, cfg.ID)
 
-			action, _, err := manager.HandleError(ctx, cfg.ID, -1, tc.statusCode, tc.errorBody, false, nil)
-
-			if err != nil {
-				t.Errorf("HandleError failed: %v", err)
-			}
+			action := manager.HandleError(ctx, ErrorInput{
+				ChannelID:      cfg.ID,
+				KeyIndex:       -1,
+				StatusCode:     tc.statusCode,
+				ErrorBody:      tc.errorBody,
+				IsNetworkError: false,
+				Headers:        nil,
+			})
 
 			if action != ActionRetryChannel {
 				t.Errorf("Expected ActionRetryChannel for %d, got %v", tc.statusCode, action)
@@ -182,11 +191,14 @@ func TestHandleError_SingleKeyUpgrade(t *testing.T) {
 	})
 
 	// 401认证错误本应是Key级，但单Key渠道应升级为渠道级
-	action, _, err := manager.HandleError(ctx, cfg.ID, 0, 401, []byte(`{"error":{"type":"authentication_error"}}`), false, nil)
-
-	if err != nil {
-		t.Fatalf("HandleError failed: %v", err)
-	}
+	action := manager.HandleError(ctx, ErrorInput{
+		ChannelID:      cfg.ID,
+		KeyIndex:       0,
+		StatusCode:     401,
+		ErrorBody:      []byte(`{"error":{"type":"authentication_error"}}`),
+		IsNetworkError: false,
+		Headers:        nil,
+	})
 
 	// [INFO] 关键断言：单Key渠道应升级为渠道级错误
 	if action != ActionRetryChannel {
@@ -250,11 +262,14 @@ func TestHandleError_NetworkError(t *testing.T) {
 			// 重置冷却
 			_ = store.ResetChannelCooldown(ctx, cfg.ID)
 
-			action, _, err := manager.HandleError(ctx, cfg.ID, 0, tc.statusCode, nil, true, nil)
-
-			if err != nil {
-				t.Errorf("HandleError failed: %v", err)
-			}
+			action := manager.HandleError(ctx, ErrorInput{
+				ChannelID:      cfg.ID,
+				KeyIndex:       0,
+				StatusCode:     tc.statusCode,
+				ErrorBody:      nil,
+				IsNetworkError: true,
+				Headers:        nil,
+			})
 
 			if action != tc.expectedAction {
 				t.Errorf("%s: expected %v, got %v", tc.description, tc.expectedAction, action)
@@ -273,7 +288,14 @@ func TestClearChannelCooldown(t *testing.T) {
 	cfg := createTestChannel(t, store, "test-clear-channel")
 
 	// 先触发冷却
-	_, _, _ = manager.HandleError(ctx, cfg.ID, -1, 500, nil, false, nil)
+	_ = manager.HandleError(ctx, ErrorInput{
+		ChannelID:      cfg.ID,
+		KeyIndex:       -1,
+		StatusCode:     500,
+		ErrorBody:      nil,
+		IsNetworkError: false,
+		Headers:        nil,
+	})
 
 	// 验证已冷却
 	channelCfg, _ := store.GetConfig(ctx, cfg.ID)
@@ -316,7 +338,14 @@ func TestClearKeyCooldown(t *testing.T) {
 	})
 
 	// 先触发Key冷却
-	_, _, _ = manager.HandleError(ctx, cfg.ID, 0, 401, []byte(`{"error":{"type":"authentication_error"}}`), false, nil)
+	_ = manager.HandleError(ctx, ErrorInput{
+		ChannelID:      cfg.ID,
+		KeyIndex:       0,
+		StatusCode:     401,
+		ErrorBody:      []byte(`{"error":{"type":"authentication_error"}}`),
+		IsNetworkError: false,
+		Headers:        nil,
+	})
 
 	// 验证已冷却
 	cooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0)
@@ -347,10 +376,14 @@ func TestHandleError_EdgeCases(t *testing.T) {
 	t.Run("不存在的渠道", func(t *testing.T) {
 		// 冷却失败不应返回错误，而是记录警告
 		// 设计原则: 数据库错误不应阻塞用户请求，系统应降级服务
-		action, _, err := manager.HandleError(ctx, 99999, 0, 500, nil, false, nil)
-		if err != nil {
-			t.Errorf("HandleError should not return error (logs warning instead): %v", err)
-		}
+		action := manager.HandleError(ctx, ErrorInput{
+			ChannelID:      99999,
+			KeyIndex:       0,
+			StatusCode:     500,
+			ErrorBody:      nil,
+			IsNetworkError: false,
+			Headers:        nil,
+		})
 		// 冷却失败时，保守策略返回 ActionRetryChannel
 		if action != ActionRetryChannel {
 			t.Errorf("Expected ActionRetryChannel when cooldown fails, got %v", action)
@@ -360,10 +393,14 @@ func TestHandleError_EdgeCases(t *testing.T) {
 	t.Run("负数keyIndex", func(t *testing.T) {
 		cfg := createTestChannel(t, store, "test-negative-key")
 		// 负数keyIndex表示网络错误，不应该尝试冷却Key
-		action, _, err := manager.HandleError(ctx, cfg.ID, -1, 500, nil, false, nil)
-		if err != nil {
-			t.Errorf("Should handle negative keyIndex: %v", err)
-		}
+		action := manager.HandleError(ctx, ErrorInput{
+			ChannelID:      cfg.ID,
+			KeyIndex:       -1,
+			StatusCode:     500,
+			ErrorBody:      nil,
+			IsNetworkError: false,
+			Headers:        nil,
+		})
 		if action != ActionRetryChannel {
 			t.Errorf("Expected ActionRetryChannel for channel-level error")
 		}
@@ -372,10 +409,14 @@ func TestHandleError_EdgeCases(t *testing.T) {
 	t.Run("nil错误体", func(t *testing.T) {
 		cfg := createTestChannel(t, store, "test-nil-body")
 		// nil错误体应该使用基础分类
-		action, _, err := manager.HandleError(ctx, cfg.ID, -1, 500, nil, false, nil)
-		if err != nil {
-			t.Errorf("Should handle nil error body: %v", err)
-		}
+		action := manager.HandleError(ctx, ErrorInput{
+			ChannelID:      cfg.ID,
+			KeyIndex:       -1,
+			StatusCode:     500,
+			ErrorBody:      nil,
+			IsNetworkError: false,
+			Headers:        nil,
+		})
 		if action != ActionRetryChannel {
 			t.Error("Should classify 500 as channel-level even with nil body")
 		}
@@ -383,10 +424,14 @@ func TestHandleError_EdgeCases(t *testing.T) {
 
 	t.Run("空错误体", func(t *testing.T) {
 		cfg := createTestChannel(t, store, "test-empty-body")
-		action, _, err := manager.HandleError(ctx, cfg.ID, -1, 503, []byte{}, false, nil)
-		if err != nil {
-			t.Errorf("Should handle empty error body: %v", err)
-		}
+		action := manager.HandleError(ctx, ErrorInput{
+			ChannelID:      cfg.ID,
+			KeyIndex:       -1,
+			StatusCode:     503,
+			ErrorBody:      []byte{},
+			IsNetworkError: false,
+			Headers:        nil,
+		})
 		if action != ActionRetryChannel {
 			t.Error("Should classify 503 as channel-level")
 		}
@@ -526,11 +571,14 @@ func TestHandleError_RateLimitClassification(t *testing.T) {
 				_ = store.ResetKeyCooldown(ctx, cfg.ID, i)
 			}
 
-			action, _, err := manager.HandleError(ctx, cfg.ID, 0, 429, tc.responseBody, false, tc.headers)
-
-			if err != nil {
-				t.Errorf("HandleError failed: %v", err)
-			}
+			action := manager.HandleError(ctx, ErrorInput{
+				ChannelID:      cfg.ID,
+				KeyIndex:       0,
+				StatusCode:     429,
+				ErrorBody:      tc.responseBody,
+				IsNetworkError: false,
+				Headers:        tc.headers,
+			})
 
 			if action != tc.expectedAction {
 				t.Errorf("%s: expected %v, got %v", tc.description, tc.expectedAction, action)

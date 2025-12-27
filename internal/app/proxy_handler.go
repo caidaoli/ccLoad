@@ -2,6 +2,7 @@ package app
 
 import (
 	"ccLoad/internal/config"
+	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 	"context"
@@ -230,11 +231,8 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		// 所有Key冷却：触发渠道级冷却(503)，防止后续请求重复尝试
 		// 使用 cooldownManager.HandleError 统一处理（DRY原则）
 		if err != nil && errors.Is(err, ErrAllKeysUnavailable) {
-			// [FIX] 2025-12: 使用独立 context，避免请求取消导致冷却写入失败
-			cooldownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			_, _, _ = s.cooldownManager.HandleError(cooldownCtx, cfg.ID, -1, 503, nil, false, nil)
-			cancel()
-			s.invalidateChannelRelatedCache(cfg.ID)
+			// 统一走 applyCooldownDecision：断开取消链+按决策执行缓存失效
+			s.applyCooldownDecision(ctx, cfg, httpErrorInputFromParts(cfg.ID, cooldown.NoKeyIndex, 503, nil, nil))
 			continue
 		}
 
@@ -306,18 +304,17 @@ func determineFinalClientStatus(lastResult *proxyResult) int {
 	}
 
 	status := lastResult.status
-	level := lastResult.errorLevel
-	if level == util.ErrorLevelNone {
-		level = util.ErrorLevelClient
+
+	// 499处理：区分客户端取消 vs 上游返回的499
+	if status == util.StatusClientClosedRequest {
+		if lastResult.isClientCanceled {
+			return status // 真正的客户端取消，透传499
+		}
+		return http.StatusBadGateway // 上游499，映射为502
 	}
 
-	// 客户端取消：直接透传原状态码（通常是 499）
-	if lastResult.isClientCanceled {
-		return status
-	}
-
-	// 仅映射内部状态码（596-599）和特殊状态码（499），其他全部透传
-	return util.ClientStatusFor(status, level)
+	// 仅映射内部状态码（596-599），其他全部透传
+	return util.ClientStatusFor(status)
 }
 
 func shouldStopTryingChannels(result *proxyResult) bool {
@@ -328,17 +325,5 @@ func shouldStopTryingChannels(result *proxyResult) bool {
 	if result.isClientCanceled {
 		return true
 	}
-	// [FIX] ClassifyError 明确说不重试（如 broken pipe）
-	if !result.shouldRetry {
-		return true
-	}
-	// [FIX] Key/渠道级错误：应该尝试其他渠道（在候选列表允许的前提下）
-	if result.errorLevel == util.ErrorLevelChannel {
-		return false
-	}
-	if result.errorLevel == util.ErrorLevelKey {
-		return false
-	}
-	// 客户端级/未知级别：停止
-	return true
+	return result.nextAction == cooldown.ActionReturnClient
 }

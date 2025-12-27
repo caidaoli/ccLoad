@@ -91,9 +91,8 @@ func (s *Server) HandleChannelTest(c *gin.Context) {
 		// 设计理念：测试成功证明渠道恢复正常，应立即解除渠道级冷却，避免选择器过滤该渠道
 		_ = s.store.ResetChannelCooldown(c.Request.Context(), id)
 
-		// [INFO] 修复：使API Keys缓存和冷却状态缓存失效，确保前端能立即看到状态更新
-		s.InvalidateAPIKeysCache(id)
-		s.invalidateCooldownCache()
+		// [INFO] 修复：统一使相关缓存失效，确保前端能立即看到状态更新
+		s.invalidateChannelRelatedCache(id)
 	} else {
 		// 🔥 修复：测试失败时应用冷却策略
 		// 提取状态码和错误体
@@ -115,32 +114,14 @@ func (s *Server) HandleChannelTest(c *gin.Context) {
 		}
 
 		// 调用统一冷却管理器处理错误
-		action, _, err := s.cooldownManager.HandleError(
+		action := s.cooldownManager.HandleError(
 			c.Request.Context(),
-			id,
-			keyIndex,
-			statusCode,
-			errorBody,
-			false,   // 测试API不是网络错误（已经收到HTTP响应）
-			headers, // 传递响应头以支持429错误的精确分类
+			httpErrorInputFromParts(id, keyIndex, statusCode, errorBody, headers),
 		)
-		if err != nil {
-			log.Printf("[WARN] 应用冷却策略失败 (channel=%d, key=%d, status=%d): %v", id, keyIndex, statusCode, err)
-			// 失败时降级尝试渠道级冷却，避免误报“已冷却”但实际未生效
-			if action == cooldown.ActionRetryKey {
-				if _, chErr := s.store.BumpChannelCooldown(c.Request.Context(), id, time.Now(), statusCode); chErr != nil {
-					log.Printf("[WARN] 渠道级降级冷却失败 (channel=%d): %v", id, chErr)
-				} else {
-					action = cooldown.ActionRetryChannel
-				}
-			}
-			testResult["cooldown_error"] = err.Error()
-		}
 
-		// [INFO] 修复：使API Keys缓存和冷却状态缓存失效，确保前端能立即看到冷却状态更新
+		// [INFO] 修复：统一使相关缓存失效，确保前端能立即看到冷却状态更新
 		// 无论是Key级冷却还是渠道级冷却，都需要使缓存失效
-		s.InvalidateAPIKeysCache(id)
-		s.invalidateCooldownCache()
+		s.invalidateChannelRelatedCache(id)
 
 		// 记录冷却决策结果到测试响应中
 		var actionStr string

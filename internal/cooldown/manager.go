@@ -22,6 +22,15 @@ const (
 // 用于 HandleError 的 keyIndex 参数
 const NoKeyIndex = -1
 
+type ErrorInput struct {
+	ChannelID      int64
+	KeyIndex       int
+	StatusCode     int
+	ErrorBody      []byte
+	IsNetworkError bool
+	Headers        map[string][]string
+}
+
 // ConfigGetter 获取渠道配置的接口（支持缓存）
 // 设计原则：接口隔离，cooldown包不依赖具体的cache实现
 type ConfigGetter interface {
@@ -48,47 +57,34 @@ func NewManager(store storage.Store, configGetter ConfigGetter) *Manager {
 // HandleError 统一错误处理与冷却决策
 // 将proxy_error.go中的handleProxyError逻辑提取到专用模块
 //
-// 参数:
-//   - channelID: 渠道ID
-//   - keyIndex: Key索引（NoKeyIndex 表示网络错误，非Key级错误）
-//   - statusCode: HTTP状态码（或内部错误码）
-//   - errorBody: 错误响应体（用于智能分类）
-//   - isNetworkError: 是否为网络错误（区分HTTP错误）
+// 输入:
+//   - ChannelID / KeyIndex: 目标渠道与Key（KeyIndex=NoKeyIndex 表示与特定Key无关）
+//   - StatusCode / ErrorBody / Headers: 上游错误信息（Headers 用于 429 限流范围分析）
+//   - IsNetworkError: 是否为网络错误（与HTTP错误区分）
 //
 // 返回:
 //   - Action: 建议采取的行动
-//   - util.ErrorLevel: 错误分类级别
-//   - error: 执行冷却操作时的错误
-func (m *Manager) HandleError(
-	ctx context.Context,
-	channelID int64,
-	keyIndex int,
-	statusCode int,
-	errorBody []byte,
-	isNetworkError bool,
-	headers map[string][]string, // 新增headers参数用于429错误分析
-) (Action, util.ErrorLevel, error) {
+func (m *Manager) HandleError(ctx context.Context, in ErrorInput) Action {
 	var errLevel util.ErrorLevel
 
+	channelID := in.ChannelID
+	keyIndex := in.KeyIndex
+	statusCode := in.StatusCode
+	errorBody := in.ErrorBody
+
 	// 1. 区分网络错误和HTTP错误的分类策略
-	if isNetworkError {
+	var reset1308Time time.Time
+	var has1308Time bool
+	if in.IsNetworkError {
 		// 网络错误默认按“渠道级”处理：这类问题通常是上游/链路/负载，而不是某个Key的固有属性。
 		// 继续在同一渠道里换Key只是在浪费重试预算、扩大故障面。
 		errLevel = util.ErrorLevelChannel
 	} else {
 		// HTTP错误: 使用智能分类器(结合响应体内容和headers)
-		errLevel = util.ClassifyHTTPResponse(statusCode, headers, errorBody)
-	}
-
-	// 2. [TARGET] 提前检查1308错误（在升级逻辑之前）
-	// 1308错误包含精确的重置时间，无论Key级还是Channel级都应该使用
-	// [INFO] 修复（2025-12-09）：不限制状态码，因为1308可能以不同方式返回：
-	//    - HTTP 429 + 错误体包含1308（传统方式）
-	//    - HTTP 200 + SSE error事件包含1308（流式响应方式）
-	var reset1308Time time.Time
-	var has1308Time bool
-	if len(errorBody) > 0 {
-		reset1308Time, has1308Time = util.ParseResetTimeFrom1308Error(errorBody)
+		classification := util.ClassifyHTTPResponseWithMeta(statusCode, in.Headers, errorBody)
+		errLevel = classification.Level
+		reset1308Time = classification.ResetTime1308
+		has1308Time = classification.HasResetTime1308
 	}
 
 	// 3. [TARGET] 动态调整:单Key渠道的Key级错误应该直接冷却渠道
@@ -115,7 +111,7 @@ func (m *Manager) HandleError(
 	switch errLevel {
 	case util.ErrorLevelClient:
 		// 客户端错误:不冷却,直接返回
-		return ActionReturnClient, errLevel, nil
+		return ActionReturnClient
 
 	case util.ErrorLevelKey:
 		// Key级错误:冷却当前Key,继续尝试其他Key
@@ -131,7 +127,7 @@ func (m *Manager) HandleError(
 					log.Printf("[COOLDOWN] Key冷却(1308): 渠道=%d Key=%d 禁用至 %s (%.1f分钟)",
 						channelID, keyIndex, reset1308Time.Format("2006-01-02 15:04:05"), duration.Minutes())
 				}
-				return ActionRetryKey, errLevel, nil
+				return ActionRetryKey
 			}
 
 			// 默认逻辑: 使用指数退避策略
@@ -142,7 +138,7 @@ func (m *Manager) HandleError(
 				log.Printf("[WARN] Failed to update key cooldown (channel=%d, key=%d): %v", channelID, keyIndex, err)
 			}
 		}
-		return ActionRetryKey, errLevel, nil
+		return ActionRetryKey
 
 	case util.ErrorLevelChannel:
 		// 渠道级错误:冷却整个渠道,切换到其他渠道
@@ -156,7 +152,7 @@ func (m *Manager) HandleError(
 				log.Printf("[COOLDOWN] Channel冷却(1308): 渠道=%d 禁用至 %s (%.1f分钟)",
 					channelID, reset1308Time.Format("2006-01-02 15:04:05"), duration.Minutes())
 			}
-			return ActionRetryChannel, errLevel, nil
+			return ActionRetryChannel
 		}
 
 		// 默认逻辑: 使用指数退避策略
@@ -167,11 +163,11 @@ func (m *Manager) HandleError(
 			// 影响: 可能导致短暂的冷却状态不一致,但总比拒绝服务更好
 			log.Printf("[WARN] Failed to update channel cooldown (channel=%d): %v", channelID, err)
 		}
-		return ActionRetryChannel, errLevel, nil
+		return ActionRetryChannel
 
 	default:
 		// 未知错误级别:保守策略,直接返回
-		return ActionReturnClient, errLevel, nil
+		return ActionReturnClient
 	}
 }
 

@@ -19,37 +19,31 @@ func Test_HandleProxyError_Basic(t *testing.T) {
 		err            error
 		statusCode     int
 		expectedAction cooldown.Action
-		shouldRetry    bool
 	}{
 		{
 			name:           "context canceled",
 			err:            context.Canceled,
 			expectedAction: cooldown.ActionReturnClient,
-			shouldRetry:    false,
 		},
 		{
 			name:           "connection refused",
 			err:            errors.New("connection refused"),
 			expectedAction: cooldown.ActionRetryChannel,
-			shouldRetry:    true,
 		},
 		{
 			name:           "401 unauthorized - 单Key升级为渠道级",
 			statusCode:     401,
 			expectedAction: cooldown.ActionRetryChannel, // 单Key时升级为渠道级
-			shouldRetry:    true,
 		},
 		{
 			name:           "500 server error",
 			statusCode:     500,
 			expectedAction: cooldown.ActionRetryChannel,
-			shouldRetry:    true,
 		},
 		{
 			name:           "404 not found",
 			statusCode:     404,
 			expectedAction: cooldown.ActionReturnClient,
-			shouldRetry:    false,
 		},
 	}
 
@@ -83,13 +77,18 @@ func Test_HandleProxyError_Basic(t *testing.T) {
 				err = tt.err
 			}
 
-			action, _, shouldRetry := srv.handleProxyError(ctx, cfg, 0, res, err)
+			var action cooldown.Action
+			if err != nil {
+				reqCtx := &proxyRequestContext{
+					originalModel: "test-model",
+				}
+				_, action = srv.handleNetworkError(ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, err, nil, reqCtx)
+			} else {
+				action = srv.applyCooldownDecision(ctx, cfg, httpErrorInput(cfg.ID, 0, res))
+			}
 
 			if action != tt.expectedAction {
 				t.Errorf("期望 action=%v, 实际=%v", tt.expectedAction, action)
-			}
-			if shouldRetry != tt.shouldRetry {
-				t.Errorf("期望 shouldRetry=%v, 实际=%v", tt.shouldRetry, shouldRetry)
 			}
 		})
 	}
@@ -119,23 +118,20 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 	}
 
 	t.Run("context canceled returns client error", func(t *testing.T) {
-		result, retryKey, retryChannel := srv.handleNetworkError(
+		result, action := srv.handleNetworkError(
 			ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, context.Canceled, nil, reqCtx,
 		)
 
 		if result == nil {
 			t.Error("期望返回错误结果")
 		}
-		if retryKey {
-			t.Error("期望 retryKey=false")
-		}
-		if retryChannel {
-			t.Error("期望 retryChannel=false")
+		if action != cooldown.ActionReturnClient {
+			t.Errorf("期望 action=ActionReturnClient, 实际=%v", action)
 		}
 	})
 
 	t.Run("network error switches channel", func(t *testing.T) {
-		result, retryKey, retryChannel := srv.handleNetworkError(
+		result, action := srv.handleNetworkError(
 			ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, errors.New("connection refused"), nil, reqCtx,
 		)
 
@@ -145,17 +141,14 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 		if result != nil && result.status != http.StatusBadGateway {
 			t.Errorf("期望 status=502, 实际=%d", result.status)
 		}
-		if retryKey {
-			t.Error("期望 retryKey=false")
-		}
-		if !retryChannel {
-			t.Error("期望 retryChannel=true")
+		if action != cooldown.ActionRetryChannel {
+			t.Errorf("期望 action=ActionRetryChannel, 实际=%v", action)
 		}
 	})
 
 	t.Run("first byte timeout switches channel", func(t *testing.T) {
 		err := fmt.Errorf("wrap: %w", util.ErrUpstreamFirstByteTimeout)
-		result, retryKey, retryChannel := srv.handleNetworkError(
+		result, action := srv.handleNetworkError(
 			ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, err, nil, reqCtx,
 		)
 
@@ -165,11 +158,8 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 		if result != nil && result.status != util.StatusFirstByteTimeout {
 			t.Errorf("期望 status=%d, 实际=%d", util.StatusFirstByteTimeout, result.status)
 		}
-		if retryKey {
-			t.Error("期望 retryKey=false")
-		}
-		if !retryChannel {
-			t.Error("期望 retryChannel=true")
+		if action != cooldown.ActionRetryChannel {
+			t.Errorf("期望 action=ActionRetryChannel, 实际=%v", action)
 		}
 	})
 }
@@ -202,7 +192,7 @@ func Test_HandleProxySuccess_Basic(t *testing.T) {
 		tokenHash: "", // 测试环境无需Token统计
 	}
 
-	result, retryKey, retryChannel := srv.handleProxySuccess(
+	result, action := srv.handleProxySuccess(
 		ctx, cfg, 0, "test-model", "test-key", res, 0.1, reqCtx,
 	)
 
@@ -215,11 +205,8 @@ func Test_HandleProxySuccess_Basic(t *testing.T) {
 	if !result.succeeded {
 		t.Error("期望 succeeded=true")
 	}
-	if retryKey {
-		t.Error("期望 retryKey=false")
-	}
-	if retryChannel {
-		t.Error("期望 retryChannel=false")
+	if action != cooldown.ActionReturnClient {
+		t.Errorf("期望 action=ActionReturnClient, 实际=%v", action)
 	}
 }
 
@@ -245,24 +232,21 @@ func Test_HandleProxyError_499(t *testing.T) {
 			Body:   []byte(`{"error": "client closed request"}`),
 			Header: make(http.Header),
 		}
-		action, _, shouldRetry := srv.handleProxyError(ctx, cfg, 0, res, nil)
+		action := srv.applyCooldownDecision(ctx, cfg, httpErrorInput(cfg.ID, 0, res))
 
 		if action != cooldown.ActionRetryChannel {
 			t.Errorf("期望 action=ActionRetryChannel, 实际=%v", action)
 		}
-		if !shouldRetry {
-			t.Error("期望 shouldRetry=true")
-		}
 	})
 
 	t.Run("client canceled returns to client", func(t *testing.T) {
-		action, _, shouldRetry := srv.handleProxyError(ctx, cfg, 0, nil, context.Canceled)
+		reqCtx := &proxyRequestContext{
+			originalModel: "test-model",
+		}
+		_, action := srv.handleNetworkError(ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, context.Canceled, nil, reqCtx)
 
 		if action != cooldown.ActionReturnClient {
 			t.Errorf("期望 action=ActionReturnClient, 实际=%v", action)
-		}
-		if shouldRetry {
-			t.Error("期望 shouldRetry=false")
 		}
 	})
 }
@@ -302,7 +286,7 @@ func Test_HandleNetworkError_499_PreservesTokenStats(t *testing.T) {
 	}
 
 	// 调用 handleNetworkError，传入 res 和 reqCtx
-	result, retryKey, retryChannel := srv.handleNetworkError(
+	result, action := srv.handleNetworkError(
 		ctx, cfg, 0, "claude-sonnet-4-5", "test-key", 0, "", 0.5, context.Canceled, res, reqCtx,
 	)
 
@@ -313,11 +297,8 @@ func Test_HandleNetworkError_499_PreservesTokenStats(t *testing.T) {
 	if result != nil && !result.isClientCanceled {
 		t.Error("期望 isClientCanceled=true")
 	}
-	if retryKey {
-		t.Error("期望 retryKey=false")
-	}
-	if retryChannel {
-		t.Error("期望 retryChannel=false")
+	if action != cooldown.ActionReturnClient {
+		t.Errorf("期望 action=ActionReturnClient, 实际=%v", action)
 	}
 
 	// 验证 hasConsumedTokens 函数
