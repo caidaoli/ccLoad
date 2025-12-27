@@ -358,8 +358,13 @@ func (s *SQLStore) DeleteConfig(ctx context.Context, id int64) error {
 	}
 
 	// 删除渠道配置（FOREIGN KEY CASCADE 自动级联删除 api_keys 和 key_rr）
-	// 使用事务高阶函数，消除重复代码（DRY原则）
+	// logs 表无外键约束，需显式删除
 	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		// 先删除关联日志（无外键，需显式删除）
+		if _, err := tx.ExecContext(ctx, `DELETE FROM logs WHERE channel_id = ?`, id); err != nil {
+			return fmt.Errorf("delete channel logs: %w", err)
+		}
+		// 再删除渠道配置
 		if _, err := tx.ExecContext(ctx, `DELETE FROM channels WHERE id = ?`, id); err != nil {
 			return fmt.Errorf("delete channel: %w", err)
 		}

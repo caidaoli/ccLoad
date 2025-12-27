@@ -108,16 +108,25 @@ func TestAllTablesSQLiteIntegration(t *testing.T) {
 			// 4. 验证表结构（仅验证列类型，不验证约束）
 			verifyTableStructure(t, suite.dbSQLite, tableName, builder, "SQLite")
 
-			// 5. 验证索引创建（可选，可能失败）
-			t.Logf("Attempting to verify indexes for %s...", tableName)
-			verifyIndexesCreated(t, suite.dbSQLite, tableName, builder.GetIndexesSQLite(), "SQLite")
+			// 5. 创建索引
+			indexes := builder.GetIndexesSQLite()
+			for _, idx := range indexes {
+				_, err := suite.dbSQLite.ExecContext(ctx, idx.SQL)
+				if err != nil {
+					t.Fatalf("Failed to create index %s: %v", idx.Name, err)
+				}
+			}
 
-			// 6. 测试插入基本数据
+			// 6. 验证索引创建
+			t.Logf("Attempting to verify indexes for %s...", tableName)
+			verifyIndexesCreated(t, suite.dbSQLite, tableName, indexes, "SQLite")
+
+			// 7. 测试插入基本数据
 			testBasicInsert(t, suite.dbSQLite, tableName)
 		})
 	}
 
-	// 7. 测试表间关联（如果存在外键）
+	// 8. 测试表间关联（如果存在外键）
 	t.Run("TableRelationships", func(t *testing.T) {
 		testTableRelationships(t, suite.dbSQLite)
 	})
