@@ -738,18 +738,21 @@
         modelSelect.innerHTML = '';
 
         if (channel.models && channel.models.length > 0) {
+          // channel.models 是 ModelEntry 对象数组，需访问 .model 属性
           channel.models.forEach(m => {
+            const modelName = m.model || m; // 兼容字符串和对象
             const option = document.createElement('option');
-            option.value = m;
-            option.textContent = m;
+            option.value = modelName;
+            option.textContent = modelName;
             modelSelect.appendChild(option);
           });
 
           // 如果日志中的模型在支持列表中，则预选；否则选择第一个
-          if (channel.models.includes(model)) {
+          const modelNames = channel.models.map(m => m.model || m);
+          if (modelNames.includes(model)) {
             modelSelect.value = model;
           } else {
-            modelSelect.value = channel.models[0];
+            modelSelect.value = modelNames[0];
           }
         } else {
           // 没有配置模型，使用日志中的模型
