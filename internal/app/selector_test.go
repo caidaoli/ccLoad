@@ -561,6 +561,93 @@ func TestSelectRouteCandidates_NoMatchingChannels(t *testing.T) {
 	t.Logf("[INFO] 无匹配渠道场景处理正确")
 }
 
+// TestSelectRouteCandidates_ModelDateSuffixFallback 测试“模型日期后缀回退匹配”功能开关
+func TestSelectRouteCandidates_ModelDateSuffixFallback(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// 渠道仅配置“无日期后缀”的模型
+	_, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "base-model-channel",
+		URL:          "https://api.com",
+		Priority:     100,
+		ModelEntries: []model.ModelEntry{{Model: "claude-sonnet-4-5", RedirectModel: ""}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+
+	// 1) 默认关闭：完全匹配失败后不回退
+	serverDisabled := &Server{store: store}
+	candidates, err := serverDisabled.selectCandidatesByModelAndType(ctx, "claude-sonnet-4-5-20250929", "")
+	if err != nil {
+		t.Fatalf("selectCandidates失败: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("期望0个匹配渠道（回退关闭），实际%d个", len(candidates))
+	}
+
+	// 2) 开启后：完全匹配失败时去除末尾-YYYYMMDD回退
+	serverEnabled := &Server{store: store, modelLookupStripDateSuffix: true}
+	candidates, err = serverEnabled.selectCandidatesByModelAndType(ctx, "claude-sonnet-4-5-20250929", "")
+	if err != nil {
+		t.Fatalf("selectCandidates失败: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("期望1个匹配渠道（回退开启），实际%d个", len(candidates))
+	}
+	if candidates[0].Name != "base-model-channel" {
+		t.Fatalf("期望命中base-model-channel，实际命中%s", candidates[0].Name)
+	}
+}
+
+// TestSelectRouteCandidates_ModelDateSuffixFallback_PreferExact 测试“优先完全匹配”
+func TestSelectRouteCandidates_ModelDateSuffixFallback_PreferExact(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// base 渠道：仅配置无日期后缀
+	_, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "base-model-channel",
+		URL:          "https://api-base.com",
+		Priority:     100,
+		ModelEntries: []model.ModelEntry{{Model: "claude-sonnet-4-5", RedirectModel: ""}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建base渠道失败: %v", err)
+	}
+
+	// dated 渠道：配置带日期后缀（完全匹配应命中它）
+	_, err = store.CreateConfig(ctx, &model.Config{
+		Name:         "dated-model-channel",
+		URL:          "https://api-dated.com",
+		Priority:     100,
+		ModelEntries: []model.ModelEntry{{Model: "claude-sonnet-4-5-20250929", RedirectModel: ""}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建dated渠道失败: %v", err)
+	}
+
+	server := &Server{store: store, modelLookupStripDateSuffix: true}
+	candidates, err := server.selectCandidatesByModelAndType(ctx, "claude-sonnet-4-5-20250929", "")
+	if err != nil {
+		t.Fatalf("selectCandidates失败: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("期望1个匹配渠道（完全匹配直接命中），实际%d个", len(candidates))
+	}
+	if candidates[0].Name != "dated-model-channel" {
+		t.Fatalf("期望优先命中dated-model-channel，实际命中%s", candidates[0].Name)
+	}
+}
+
 // TestSelectRouteCandidates_MixedPriorities 测试混合优先级排序
 func TestSelectRouteCandidates_MixedPriorities(t *testing.T) {
 	store, cleanup := setupTestStore(t)

@@ -10,6 +10,8 @@ import (
 	"math/rand/v2"
 	"slices"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -39,6 +41,17 @@ func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model strin
 	)
 	if err != nil {
 		return nil, err
+	}
+	if len(channels) == 0 && s.modelLookupStripDateSuffix && model != "*" {
+		if stripped, ok := stripTrailingYYYYMMDD(model); ok && stripped != model {
+			channels, err = s.getEnabledChannelsWithFallback(ctx,
+				func() ([]*modelpkg.Config, error) { return s.GetEnabledChannelsByModel(ctx, stripped) },
+				func(cfg *modelpkg.Config) bool { return s.configSupportsModel(cfg, stripped) },
+			)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	if channelType == "" {
@@ -95,6 +108,36 @@ func (s *Server) configSupportsModel(cfg *modelpkg.Config, model string) bool {
 		return true
 	}
 	return cfg.SupportsModel(model)
+}
+
+func stripTrailingYYYYMMDD(model string) (string, bool) {
+	dash := strings.LastIndexByte(model, '-')
+	if dash < 0 {
+		return model, false
+	}
+	suffix := model[dash+1:]
+	if len(suffix) != 8 {
+		return model, false
+	}
+	for i := 0; i < len(suffix); i++ {
+		if suffix[i] < '0' || suffix[i] > '9' {
+			return model, false
+		}
+	}
+	year, _ := strconv.Atoi(suffix[:4])
+	month, _ := strconv.Atoi(suffix[4:6])
+	day, _ := strconv.Atoi(suffix[6:8])
+	if year < 2000 || year > 2100 {
+		return model, false
+	}
+	if month < 1 || month > 12 {
+		return model, false
+	}
+	lastDay := time.Date(year, time.Month(month)+1, 0, 0, 0, 0, 0, time.UTC).Day()
+	if day < 1 || day > lastDay {
+		return model, false
+	}
+	return model[:dash], true
 }
 
 // filterCooldownChannels 过滤或降权冷却中的渠道

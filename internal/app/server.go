@@ -49,6 +49,8 @@ type Server struct {
 	maxKeyRetries    int           // 单个渠道内最大Key重试次数
 	firstByteTimeout time.Duration // 上游首字节超时（流式请求）
 	nonStreamTimeout time.Duration // 非流式请求超时
+	// 模型匹配配置（启动时从数据库加载，修改后重启生效）
+	modelLookupStripDateSuffix bool // 未命中时去除末尾-YYYYMMDD日期后缀再匹配渠道（优先精确匹配）
 
 	// 登录速率限制器（用于传递给AuthService）
 	loginRateLimiter *util.LoginRateLimiter
@@ -105,6 +107,10 @@ func NewServer(store storage.Store) *Server {
 
 	logRetentionDays := configService.GetInt("log_retention_days", 7)
 	enable88codeFreeOnly := configService.GetBool("88code_free_only", false)
+	modelLookupStripDateSuffix := configService.GetBool("model_lookup_strip_date_suffix", false)
+	if modelLookupStripDateSuffix {
+		log.Print("[INFO] 已启用模型日期后缀回退匹配：未命中时去除末尾-YYYYMMDD再匹配渠道（优先精确匹配）")
+	}
 
 	// 最大并发数保留环境变量读取（启动参数，不支持Web管理）
 	maxConcurrency := config.DefaultMaxConcurrency
@@ -134,6 +140,8 @@ func NewServer(store storage.Store) *Server {
 		maxKeyRetries:    maxKeyRetries,
 		firstByteTimeout: firstByteTimeout,
 		nonStreamTimeout: nonStreamTimeout,
+		// 模型匹配配置（启动时加载，修改后重启生效）
+		modelLookupStripDateSuffix: modelLookupStripDateSuffix,
 
 		// HTTP客户端
 		client: &http.Client{
