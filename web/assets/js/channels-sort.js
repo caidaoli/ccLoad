@@ -42,11 +42,6 @@ function closeSortModal() {
   }
   sortChannels = [];
   draggedItem = null;
-
-  // 重新加载渠道列表并执行筛选
-  if (typeof loadChannels === 'function') {
-    loadChannels();
-  }
 }
 
 // 渲染排序列表
@@ -259,6 +254,9 @@ async function saveSortOrder() {
 
     window.showSuccess('排序已保存');
     closeSortModal();
+    if (typeof clearChannelsCache === 'function') clearChannelsCache();
+    const currentType = (filters && filters.channelType) ? filters.channelType : 'all';
+    if (typeof loadChannels === 'function') await loadChannels(currentType);
   } catch (error) {
     console.error('保存排序失败:', error);
     window.showError(error.message || '保存排序失败');
