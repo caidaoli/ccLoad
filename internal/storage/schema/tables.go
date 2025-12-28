@@ -46,8 +46,7 @@ func DefineChannelModelsTable() *TableBuilder {
 		Column("created_at BIGINT NOT NULL DEFAULT 0").
 		Column("PRIMARY KEY (channel_id, model)").
 		Column("FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE").
-		Index("idx_channel_models_model", "model").
-		Index("idx_channel_models_redirect_model", "redirect_model")
+		Index("idx_channel_models_model", "model")
 }
 
 // DefineAuthTokensTable 定义auth_tokens表结构
