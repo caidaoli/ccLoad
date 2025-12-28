@@ -123,32 +123,21 @@ func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpk
 	// 先执行冷却过滤，保证冷却语义不被绕开（正确性优先）
 	filtered := s.filterCooledChannels(channels, channelCooldowns, keyCooldowns, now)
 	if len(filtered) == 0 {
-		// 全冷却兜底：基于阈值决策（秒）
-		// - threshold <= 0：禁用兜底，返回空，让调用方返回503（尊重冷却语义）
-		// - readyIn <= threshold：返回最快恢复的渠道（短冷却兜底）
-		// - readyIn > threshold：返回空，让调用方返回503（尊重冷却语义）
-		thresholdSeconds := 120 // 默认2分钟
+		// 全冷却兜底：简化为开关（0=禁用，非0=启用）
+		// 启用时：直接返回“最早恢复”的渠道，让上层继续走正常流程（不要再搞阈值这类花活）。
+		fallbackEnabled := true
 		if s.configService != nil {
-			thresholdSeconds = s.configService.GetInt("cooldown_fallback_threshold", 120)
+			fallbackEnabled = s.configService.GetInt("cooldown_fallback_threshold", 1) != 0
 		}
-		if thresholdSeconds <= 0 {
-			log.Printf("[INFO] All channels cooled, fallback disabled (cooldown_fallback_threshold=%d)", thresholdSeconds)
+		if !fallbackEnabled {
+			log.Printf("[INFO] All channels cooled, fallback disabled (cooldown_fallback_threshold=0)")
 			return nil, nil
 		}
-		threshold := time.Duration(thresholdSeconds) * time.Second
 
 		best, readyIn := s.pickBestChannelWhenAllCooled(channels, channelCooldowns, keyCooldowns, now)
-		if best != nil && readyIn <= threshold {
-			if threshold > 0 {
-				log.Printf("[INFO] All channels cooled, fallback to channel %d (ready in %.1fs, threshold %.0fs)",
-					best.ID, readyIn.Seconds(), threshold.Seconds())
-			}
-			return []*modelpkg.Config{best}, nil
-		}
-		// 超过阈值，返回空触发503
 		if best != nil {
-			log.Printf("[INFO] All channels cooled, no fallback (ready in %.1fs > threshold %.0fs)",
-				readyIn.Seconds(), threshold.Seconds())
+			log.Printf("[INFO] All channels cooled, fallback to channel %d (ready in %.1fs)", best.ID, readyIn.Seconds())
+			return []*modelpkg.Config{best}, nil
 		}
 		return nil, nil
 	}

@@ -408,7 +408,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"health_score_window_minutes", "30", "int", "成功率统计时间窗口(分钟)", "30"},
 		{"health_score_update_interval", "30", "int", "成功率缓存更新间隔(秒)", "30"},
 		// 冷却兜底配置
-		{"cooldown_fallback_threshold", "120", "int", "全冷却兜底阈值(秒,0=禁用兜底)", "120"},
+		{"cooldown_fallback_threshold", "1", "int", "全冷却兜底开关(0=禁用,非0=启用)", "1"},
 	}
 
 	var query string
@@ -421,6 +421,19 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 	for _, s := range settings {
 		if _, err := db.ExecContext(ctx, query, s.key, s.value, s.valueType, s.desc, s.defaultVal); err != nil {
 			return fmt.Errorf("insert default setting %s: %w", s.key, err)
+		}
+	}
+
+	// 元数据修正：历史版本里 cooldown_fallback_threshold 被当成“秒阈值”展示。
+	// 现在语义是开关(0禁用/非0启用)，仅更新 description/default_value，不动用户当前 value。
+	{
+		keyCol := "key"
+		if dialect == DialectMySQL {
+			keyCol = "`key`"
+		}
+		metaSQL := fmt.Sprintf("UPDATE system_settings SET description = ?, default_value = ? WHERE %s = ?", keyCol)
+		if _, err := db.ExecContext(ctx, metaSQL, "全冷却兜底开关(0=禁用,非0=启用)", "1", "cooldown_fallback_threshold"); err != nil {
+			return fmt.Errorf("update setting metadata cooldown_fallback_threshold: %w", err)
 		}
 	}
 
