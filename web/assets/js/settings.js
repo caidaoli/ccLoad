@@ -49,12 +49,20 @@ function renderGroupNav(groups) {
   nav.innerHTML = '';
   if (!groups || groups.length <= 1) return;
 
-  for (const g of groups) {
-    const a = document.createElement('a');
-    a.href = `#settings-group-${encodeURIComponent(g.id)}`;
-    a.textContent = g.name;
-    a.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:rgba(59,130,246,0.12);border:1px solid rgba(59,130,246,0.22);color:var(--primary-600);text-decoration:none;font-size:13px;font-weight:600;';
-    nav.appendChild(a);
+  for (let i = 0; i < groups.length; i++) {
+    const g = groups[i];
+    const btn = document.createElement('button');
+    btn.className = 'time-range-btn' + (i === 0 ? ' active' : '');
+    btn.textContent = g.name;
+    btn.addEventListener('click', () => {
+      // 移除所有按钮的 active 状态
+      nav.querySelectorAll('.time-range-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      // 滚动到对应分组
+      const target = document.getElementById(`settings-group-${g.id}`);
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    nav.appendChild(btn);
   }
 }
 
