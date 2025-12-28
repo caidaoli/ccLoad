@@ -109,7 +109,7 @@ func NewServer(store storage.Store) *Server {
 	enable88codeFreeOnly := configService.GetBool("88code_free_only", false)
 	modelLookupStripDateSuffix := configService.GetBool("model_lookup_strip_date_suffix", false)
 	if modelLookupStripDateSuffix {
-		log.Print("[INFO] 已启用模型日期后缀回退匹配：未命中时去除末尾-YYYYMMDD再匹配渠道（优先精确匹配）")
+		log.Print("[INFO] 已启用模型日期后缀回退匹配：未命中时忽略末尾-YYYYMMDD日期后缀进行匹配（优先精确匹配）")
 	}
 
 	// 最大并发数保留环境变量读取（启动参数，不支持Web管理）

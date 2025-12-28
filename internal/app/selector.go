@@ -35,23 +35,27 @@ func (s *Server) selectCandidatesByChannelType(ctx context.Context, channelType 
 // selectCandidatesByModelAndType 根据模型和渠道类型筛选候选渠道
 // 遵循SRP：数据库负责返回满足模型的渠道，本函数仅负责类型过滤
 func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model string, channelType string) ([]*modelpkg.Config, error) {
+	fastPath := func() ([]*modelpkg.Config, error) {
+		channels, err := s.GetEnabledChannelsByModel(ctx, model)
+		if err != nil {
+			return nil, err
+		}
+		if len(channels) > 0 || !s.modelLookupStripDateSuffix || model == "*" {
+			return channels, nil
+		}
+		stripped, ok := stripTrailingYYYYMMDD(model)
+		if !ok || stripped == model {
+			return channels, nil
+		}
+		return s.GetEnabledChannelsByModel(ctx, stripped)
+	}
+
 	channels, err := s.getEnabledChannelsWithFallback(ctx,
-		func() ([]*modelpkg.Config, error) { return s.GetEnabledChannelsByModel(ctx, model) },
-		func(cfg *modelpkg.Config) bool { return s.configSupportsModel(cfg, model) },
+		fastPath,
+		func(cfg *modelpkg.Config) bool { return s.configSupportsModelWithDateFallback(cfg, model) },
 	)
 	if err != nil {
 		return nil, err
-	}
-	if len(channels) == 0 && s.modelLookupStripDateSuffix && model != "*" {
-		if stripped, ok := stripTrailingYYYYMMDD(model); ok && stripped != model {
-			channels, err = s.getEnabledChannelsWithFallback(ctx,
-				func() ([]*modelpkg.Config, error) { return s.GetEnabledChannelsByModel(ctx, stripped) },
-				func(cfg *modelpkg.Config) bool { return s.configSupportsModel(cfg, stripped) },
-			)
-			if err != nil {
-				return nil, err
-			}
-		}
 	}
 
 	if channelType == "" {
@@ -108,6 +112,34 @@ func (s *Server) configSupportsModel(cfg *modelpkg.Config, model string) bool {
 		return true
 	}
 	return cfg.SupportsModel(model)
+}
+
+func (s *Server) configSupportsModelWithDateFallback(cfg *modelpkg.Config, model string) bool {
+	if s.configSupportsModel(cfg, model) {
+		return true
+	}
+	if !s.modelLookupStripDateSuffix || model == "*" {
+		return false
+	}
+
+	// 请求带日期：claude-3-5-sonnet-20241022 -> claude-3-5-sonnet
+	if stripped, ok := stripTrailingYYYYMMDD(model); ok && stripped != model {
+		if cfg.SupportsModel(stripped) {
+			return true
+		}
+	}
+
+	// 请求无日期：claude-sonnet-4-5 -> claude-sonnet-4-5-20250929
+	for _, entry := range cfg.ModelEntries {
+		if entry.Model == "" {
+			continue
+		}
+		if stripped, ok := stripTrailingYYYYMMDD(entry.Model); ok && stripped == model {
+			return true
+		}
+	}
+
+	return false
 }
 
 func stripTrailingYYYYMMDD(model string) (string, bool) {
