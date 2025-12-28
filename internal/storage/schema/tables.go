@@ -126,7 +126,6 @@ func DefineLogsTable() *TableBuilder {
 		Column("cache_1h_input_tokens INT NOT NULL DEFAULT 0").       // 1小时缓存写入Token数（新增2025-12）
 		Column("cost DOUBLE NOT NULL DEFAULT 0.0").
 		Index("idx_logs_time_model", "time, model").
-		Index("idx_logs_time_channel", "time, channel_id").
 		Index("idx_logs_time_status", "time, status_code").
 		Index("idx_logs_time_channel_model", "time, channel_id, model").
 		Index("idx_logs_time_auth_token", "time, auth_token_id"). // 按时间+令牌查询
