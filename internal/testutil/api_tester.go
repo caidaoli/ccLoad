@@ -1,6 +1,9 @@
 package testutil
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -292,6 +295,27 @@ func (t *GeminiTester) Parse(statusCode int, respBody []byte) map[string]any {
 // AnthropicTester 实现 Anthropic 测试协议
 type AnthropicTester struct{}
 
+func newClaudeCLIUserID() string {
+	// 格式示例：
+	// user_<64hex>_account__session_<uuid>
+	userBytes := make([]byte, 32)
+	if _, err := rand.Read(userBytes); err != nil {
+		return "user_0000000000000000000000000000000000000000000000000000000000000000_account__session_00000000-0000-0000-0000-000000000000"
+	}
+
+	uuidBytes := make([]byte, 16)
+	if _, err := rand.Read(uuidBytes); err != nil {
+		return "user_" + hex.EncodeToString(userBytes) + "_account__session_00000000-0000-0000-0000-000000000000"
+	}
+
+	// RFC 4122 UUID v4
+	uuidBytes[6] = (uuidBytes[6] & 0x0f) | 0x40
+	uuidBytes[8] = (uuidBytes[8] & 0x3f) | 0x80
+	u := fmt.Sprintf("%x-%x-%x-%x-%x", uuidBytes[0:4], uuidBytes[4:6], uuidBytes[6:8], uuidBytes[8:10], uuidBytes[10:16])
+
+	return "user_" + hex.EncodeToString(userBytes) + "_account__session_" + u
+}
+
 func (t *AnthropicTester) Build(cfg *model.Config, apiKey string, req *TestChannelRequest) (string, http.Header, []byte, error) {
 	maxTokens := req.MaxTokens
 	if maxTokens == 0 {
@@ -319,7 +343,7 @@ func (t *AnthropicTester) Build(cfg *model.Config, apiKey string, req *TestChann
 			},
 		},
 		"tools":      []any{},
-		"metadata":   map[string]any{"user_id": "test"},
+		"metadata":   map[string]any{"user_id": newClaudeCLIUserID()},
 		"max_tokens": maxTokens,
 		"stream":     req.Stream,
 	}
