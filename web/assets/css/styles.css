@@ -1891,6 +1891,48 @@ a.model-tag.model-link:hover {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
 }
 
+/* 趋势页：全高自适应布局（让图表吃掉剩余高度） */
+body.trend-page .main-content {
+  height: 100vh;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+body.trend-page .content-area {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  max-width: none;
+  width: 100%;
+}
+
+body.trend-page .trend-chart-section {
+  flex: 1;
+  min-height: 0;
+  margin-bottom: 0 !important;
+  display: flex;
+  flex-direction: column;
+}
+
+body.trend-page .trend-chart-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+body.trend-page .chart-container {
+  height: auto;
+  flex: 1;
+  min-height: 260px;
+}
+
+body.trend-page .chart-info {
+  flex: 0 0 auto;
+}
+
 .chart-loading,
 .chart-error {
   display: flex;

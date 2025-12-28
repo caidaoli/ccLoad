@@ -222,6 +222,7 @@
         window.chartInstance = echarts.init(chartDom, null, {
           renderer: 'canvas'
         });
+        attachChartResizeObserver(chartDom);
       }
 
       // 准备时间数据
@@ -234,12 +235,21 @@
         }
       });
 
+      const noRequestRanges = computeNoRequestRanges(window.trendData);
+      const markAreaData = noRequestRanges
+        .filter(([start, end]) => (end - start + 1) >= 3) // 太短的空窗不要标，避免噪音
+        .map(([start, end]) => ([
+          { xAxis: timestamps[start] },
+          { xAxis: timestamps[end] }
+        ]));
+
       // 为每个可见渠道生成颜色
       const channelColors = generateChannelColors(window.visibleChannels);
 
       // 准备series数据
       const series = [];
       const trendType = window.currentTrendType;
+      const showZoom = shouldShowZoom(timestamps.length, window.currentHours, trendType);
 
       // 根据趋势类型准备不同的总体数据
       if (trendType === 'count') {
@@ -247,42 +257,62 @@
         series.push({
           name: '总成功请求',
           type: 'line',
-          smooth: true,
+          smooth: 0.25,
           symbol: 'circle',
           symbolSize: 4,
+          showSymbol: false,
           sampling: 'lttb',
           connectNulls: false,
+          emphasis: { focus: 'series', showSymbol: true },
           itemStyle: {
             color: '#10b981'
           },
           lineStyle: {
             width: 2,
-            color: '#10b981'
+            color: '#10b981',
+            cap: 'round',
+            join: 'round'
+          },
+          areaStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: 'rgba(16, 185, 129, 0.22)' },
+              { offset: 1, color: 'rgba(16, 185, 129, 0.00)' }
+            ])
           },
           data: window.trendData.map(point => {
             const val = point.success || 0;
-            return val > 0 ? val : null; // 0值不显示
+            return val; // 0值显示为基线，避免大段空白
           })
         });
 
         series.push({
           name: '总失败请求',
           type: 'line',
-          smooth: true,
+          smooth: 0.25,
           symbol: 'circle',
           symbolSize: 4,
+          showSymbol: false,
           sampling: 'lttb',
           connectNulls: false,
+          emphasis: { focus: 'series', showSymbol: true },
           itemStyle: {
             color: '#ef4444'
           },
           lineStyle: {
             width: 2,
-            color: '#ef4444'
+            color: '#ef4444',
+            cap: 'round',
+            join: 'round'
+          },
+          areaStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: 'rgba(239, 68, 68, 0.12)' },
+              { offset: 1, color: 'rgba(239, 68, 68, 0.00)' }
+            ])
           },
           data: window.trendData.map(point => {
             const val = point.error || 0;
-            return val > 0 ? val : null; // 0值不显示
+            return val; // 0值显示为基线，避免大段空白
           })
         });
       } else if (trendType === 'first_byte') {
@@ -290,21 +320,31 @@
         series.push({
           name: '平均首字响应时间',
           type: 'line',
-          smooth: true,
+          smooth: 0.25,
           symbol: 'circle',
           symbolSize: 4,
+          showSymbol: false,
           sampling: 'lttb',
           connectNulls: false,
+          emphasis: { focus: 'series', showSymbol: true },
           itemStyle: {
             color: '#0ea5e9'
           },
           lineStyle: {
             width: 2,
-            color: '#0ea5e9'
+            color: '#0ea5e9',
+            cap: 'round',
+            join: 'round'
+          },
+          areaStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: 'rgba(14, 165, 233, 0.18)' },
+              { offset: 1, color: 'rgba(14, 165, 233, 0.00)' }
+            ])
           },
           data: window.trendData.map(point => {
             const fbt = point.avg_first_byte_time_seconds;
-            return (fbt != null && fbt > 0) ? (fbt * 1000) : null; // 转换为毫秒
+            return (fbt != null && fbt > 0) ? fbt : null; // 秒
           })
         });
       } else if (trendType === 'duration') {
@@ -312,21 +352,31 @@
         series.push({
           name: '平均总耗时',
           type: 'line',
-          smooth: true,
+          smooth: 0.25,
           symbol: 'circle',
           symbolSize: 4,
+          showSymbol: false,
           sampling: 'lttb',
           connectNulls: false,
+          emphasis: { focus: 'series', showSymbol: true },
           itemStyle: {
             color: '#a855f7'
           },
           lineStyle: {
             width: 2,
-            color: '#a855f7'
+            color: '#a855f7',
+            cap: 'round',
+            join: 'round'
+          },
+          areaStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: 'rgba(168, 85, 247, 0.16)' },
+              { offset: 1, color: 'rgba(168, 85, 247, 0.00)' }
+            ])
           },
           data: window.trendData.map(point => {
             const dur = point.avg_duration_seconds;
-            return (dur != null && dur > 0) ? (dur * 1000) : null; // 转换为毫秒
+            return (dur != null && dur > 0) ? dur : null; // 秒
           })
         });
       } else if (trendType === 'tokens') {
@@ -334,71 +384,89 @@
         series.push({
           name: '输入Token',
           type: 'line',
-          smooth: true,
+          smooth: 0.25,
           symbol: 'circle',
           symbolSize: 4,
+          showSymbol: false,
           sampling: 'lttb',
           connectNulls: false,
+          emphasis: { focus: 'series', showSymbol: true },
           itemStyle: { color: '#3b82f6' },
-          lineStyle: { width: 2, color: '#3b82f6' },
-          data: window.trendData.map(point => point.input_tokens > 0 ? point.input_tokens : null)
+          lineStyle: { width: 2, color: '#3b82f6', cap: 'round', join: 'round' },
+          data: window.trendData.map(point => point.input_tokens || 0)
         });
         series.push({
           name: '输出Token',
           type: 'line',
-          smooth: true,
+          smooth: 0.25,
           symbol: 'circle',
           symbolSize: 4,
+          showSymbol: false,
           sampling: 'lttb',
           connectNulls: false,
+          emphasis: { focus: 'series', showSymbol: true },
           itemStyle: { color: '#10b981' },
-          lineStyle: { width: 2, color: '#10b981' },
-          data: window.trendData.map(point => point.output_tokens > 0 ? point.output_tokens : null)
+          lineStyle: { width: 2, color: '#10b981', cap: 'round', join: 'round' },
+          data: window.trendData.map(point => point.output_tokens || 0)
         });
         series.push({
           name: '缓存读取',
           type: 'line',
-          smooth: true,
+          smooth: 0.25,
           symbol: 'circle',
           symbolSize: 4,
+          showSymbol: false,
           sampling: 'lttb',
           connectNulls: false,
+          emphasis: { focus: 'series', showSymbol: true },
           itemStyle: { color: '#f97316' },
-          lineStyle: { width: 2, color: '#f97316' },
-          data: window.trendData.map(point => point.cache_read_tokens > 0 ? point.cache_read_tokens : null)
+          lineStyle: { width: 2, color: '#f97316', cap: 'round', join: 'round' },
+          data: window.trendData.map(point => point.cache_read_tokens || 0)
         });
         series.push({
           name: '缓存创建',
           type: 'line',
-          smooth: true,
+          smooth: 0.25,
           symbol: 'circle',
           symbolSize: 4,
+          showSymbol: false,
           sampling: 'lttb',
           connectNulls: false,
+          emphasis: { focus: 'series', showSymbol: true },
           itemStyle: { color: '#a855f7' },
-          lineStyle: { width: 2, color: '#a855f7' },
-          data: window.trendData.map(point => point.cache_creation_tokens > 0 ? point.cache_creation_tokens : null)
+          lineStyle: { width: 2, color: '#a855f7', cap: 'round', join: 'round' },
+          data: window.trendData.map(point => point.cache_creation_tokens || 0)
         });
       } else if (trendType === 'cost') {
         // 费用消耗趋势：添加总体费用线
         series.push({
           name: '总费用',
           type: 'line',
-          smooth: true,
+          smooth: 0.25,
           symbol: 'circle',
           symbolSize: 4,
+          showSymbol: false,
           sampling: 'lttb',
           connectNulls: false,
+          emphasis: { focus: 'series', showSymbol: true },
           itemStyle: {
             color: '#f97316'
           },
           lineStyle: {
             width: 2,
-            color: '#f97316'
+            color: '#f97316',
+            cap: 'round',
+            join: 'round'
+          },
+          areaStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: 'rgba(249, 115, 22, 0.16)' },
+              { offset: 1, color: 'rgba(249, 115, 22, 0.00)' }
+            ])
           },
           data: window.trendData.map(point => {
             const cost = point.total_cost;
-            return (cost != null && cost > 0) ? cost : null;
+            return cost || 0;
           })
         });
       } else if (trendType === 'rpm') {
@@ -407,16 +475,24 @@
         series.push({
           name: 'RPM',
           type: 'line',
-          smooth: true,
+          smooth: 0.25,
           symbol: 'circle',
           symbolSize: 4,
+          showSymbol: false,
           sampling: 'lttb',
           connectNulls: false,
+          emphasis: { focus: 'series', showSymbol: true },
           itemStyle: { color: '#3b82f6' },
-          lineStyle: { width: 2, color: '#3b82f6' },
+          lineStyle: { width: 2, color: '#3b82f6', cap: 'round', join: 'round' },
+          areaStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: 'rgba(59, 130, 246, 0.16)' },
+              { offset: 1, color: 'rgba(59, 130, 246, 0.00)' }
+            ])
+          },
           data: window.trendData.map(point => {
             const total = (point.success || 0) + (point.error || 0);
-            return total > 0 ? total / bucketMin : null;
+            return total > 0 ? total / bucketMin : 0;
           })
         });
       }
@@ -454,12 +530,13 @@
             series.push({
               name: `${channelName}(成功)`,
               type: 'line',
-              smooth: true,
+              smooth: 0.25,
               symbol: 'none',
               sampling: 'lttb',
               connectNulls: false,
+              emphasis: { focus: 'series' },
               itemStyle: { color: color },
-              lineStyle: { width: 1.5, color: color, type: 'solid' },
+              lineStyle: { width: 1.5, color: color, type: 'solid', cap: 'round', join: 'round' },
               data: successData
             });
           }
@@ -469,12 +546,13 @@
             series.push({
               name: `${channelName}(失败)`,
               type: 'line',
-              smooth: true,
+              smooth: 0.25,
               symbol: 'none',
               sampling: 'lttb',
               connectNulls: false,
+              emphasis: { focus: 'series' },
               itemStyle: { color: color },
-              lineStyle: { width: 1.5, color: color, type: 'dashed' },
+              lineStyle: { width: 1.5, color: color, type: 'dashed', cap: 'round', join: 'round' },
               data: errorData
             });
           }
@@ -487,7 +565,7 @@
             const fbt = channelData.avg_first_byte_time_seconds;
             if (fbt != null && fbt > 0) {
               hasData = true;
-              return fbt * 1000; // 转换为毫秒
+              return fbt; // 秒
             }
             return null;
           });
@@ -496,12 +574,13 @@
             series.push({
               name: channelName,
               type: 'line',
-              smooth: true,
+              smooth: 0.25,
               symbol: 'none',
               sampling: 'lttb',
               connectNulls: false,
+              emphasis: { focus: 'series' },
               itemStyle: { color: color },
-              lineStyle: { width: 1.5, color: color },
+              lineStyle: { width: 1.5, color: color, cap: 'round', join: 'round' },
               data: fbtData
             });
           }
@@ -514,7 +593,7 @@
             const dur = channelData.avg_duration_seconds;
             if (dur != null && dur > 0) {
               hasData = true;
-              return dur * 1000; // 转换为毫秒
+              return dur; // 秒
             }
             return null;
           });
@@ -523,12 +602,13 @@
             series.push({
               name: channelName,
               type: 'line',
-              smooth: true,
+              smooth: 0.25,
               symbol: 'none',
               sampling: 'lttb',
               connectNulls: false,
+              emphasis: { focus: 'series' },
               itemStyle: { color: color },
-              lineStyle: { width: 1.5, color: color },
+              lineStyle: { width: 1.5, color: color, cap: 'round', join: 'round' },
               data: durData
             });
           }
@@ -550,12 +630,13 @@
             series.push({
               name: channelName,
               type: 'line',
-              smooth: true,
+              smooth: 0.25,
               symbol: 'none',
               sampling: 'lttb',
               connectNulls: false,
+              emphasis: { focus: 'series' },
               itemStyle: { color: color },
-              lineStyle: { width: 1.5, color: color },
+              lineStyle: { width: 1.5, color: color, cap: 'round', join: 'round' },
               data: tokenData
             });
           }
@@ -577,12 +658,13 @@
             series.push({
               name: channelName,
               type: 'line',
-              smooth: true,
+              smooth: 0.25,
               symbol: 'none',
               sampling: 'lttb',
               connectNulls: false,
+              emphasis: { focus: 'series' },
               itemStyle: { color: color },
-              lineStyle: { width: 1.5, color: color },
+              lineStyle: { width: 1.5, color: color, cap: 'round', join: 'round' },
               data: costData
             });
           }
@@ -605,19 +687,36 @@
             series.push({
               name: channelName,
               type: 'line',
-              smooth: true,
+              smooth: 0.25,
               symbol: 'none',
               sampling: 'lttb',
               connectNulls: false,
+              emphasis: { focus: 'series' },
               itemStyle: { color: color },
-              lineStyle: { width: 1.5, color: color },
+              lineStyle: { width: 1.5, color: color, cap: 'round', join: 'round' },
               data: rpmData
             });
           }
         }
       });
 
+      // 首字响应/总耗时：加参考线（P50/P90）和极值标记，便于读趋势/看尖峰
+      if (trendType === 'first_byte' || trendType === 'duration') {
+        enhanceLatencySeries(series);
+      }
+
       // ECharts 配置
+      const legendHeight = 28;
+      const gridTopPx = legendHeight + 18;
+      const gridBottomPx = showZoom ? 70 : 48;
+      const gridRightPx = (trendType === 'first_byte' || trendType === 'duration') ? 44 : 28;
+      const xAxisLabelInterval = computeXAxisLabelInterval(timestamps.length, 10);
+      const xAxisRotate = (window.currentHours > 24 || window.innerWidth < 640) ? 45 : 0;
+      const yAxisScale = (trendType === 'first_byte' || trendType === 'duration');
+      const useLatencyAxis = (trendType === 'first_byte' || trendType === 'duration');
+      const yAxisMin = useLatencyAxis ? latencyAxisMin : 0;
+      const yAxisMax = useLatencyAxis ? latencyAxisMax : null;
+
       const option = {
         backgroundColor: 'transparent',
         title: {
@@ -625,6 +724,7 @@
         },
         tooltip: {
           trigger: 'axis',
+          confine: true,
           backgroundColor: 'rgba(0, 0, 0, 0.85)',
           borderColor: 'rgba(255, 255, 255, 0.1)',
           borderWidth: 1,
@@ -641,7 +741,17 @@
             }
           },
           formatter: function(params) {
-            let html = `<div style="font-weight: 600; margin-bottom: 8px;">${params[0].axisValue}</div>`;
+            const dataIndex = params && params.length ? params[0].dataIndex : null;
+            const point = (dataIndex != null && window.trendData && window.trendData[dataIndex]) ? window.trendData[dataIndex] : null;
+            const totalReq = point ? ((point.success || 0) + (point.error || 0)) : null;
+
+            let html = `<div style="font-weight: 600; margin-bottom: 6px;">${params[0].axisValue}</div>`;
+            if (totalReq != null) {
+              const hint = totalReq === 0
+                ? `<span style="color: rgba(203, 213, 225, 0.95);">（该时间段无请求）</span>`
+                : '';
+              html += `<div style="margin-bottom: 8px; color: rgba(226, 232, 240, 0.95); font-size: 12px;">请求数: ${totalReq}${hint}</div>`;
+            }
             params.forEach(param => {
               const color = param.color;
               const value = param.value;
@@ -651,8 +761,8 @@
               if (value == null) {
                 formattedValue = 'N/A';
               } else if (window.currentTrendType === 'first_byte' || window.currentTrendType === 'duration') {
-                // 首字响应时间/总耗时：已转换为毫秒
-                formattedValue = value.toFixed(0) + 'ms';
+                // 首字响应时间/总耗时：秒
+                formattedValue = value.toFixed(1) + 's';
               } else if (window.currentTrendType === 'cost') {
                 // 费用消耗：美元格式
                 if (value >= 1) {
@@ -694,7 +804,8 @@
         legend: {
           data: series.map(s => s.name),
           top: 10,
-          right: 20,
+          left: 16,
+          right: 16,
           textStyle: {
             color: '#666',
             fontSize: 11
@@ -712,10 +823,10 @@
           }
         },
         grid: {
-          left: '3%',
-          right: '3%',
-          bottom: '12%',
-          top: '20%',
+          left: 16,
+          right: gridRightPx,
+          bottom: gridBottomPx,
+          top: gridTopPx,
           containLabel: true
         },
         xAxis: {
@@ -727,22 +838,30 @@
               color: '#e5e7eb'
             }
           },
+          axisTick: {
+            alignWithLabel: true,
+            lineStyle: { color: '#e5e7eb' }
+          },
           axisLabel: {
             color: '#6b7280',
             fontSize: 11,
-            rotate: window.currentHours > 24 ? 45 : 0,
-            interval: Math.floor(timestamps.length / 10) // 动态间隔
+            rotate: xAxisRotate,
+            hideOverlap: true,
+            interval: xAxisLabelInterval
           },
           splitLine: {
             show: true,
             lineStyle: {
-              color: '#f3f4f6',
+              color: 'rgba(148, 163, 184, 0.25)',
               type: 'dashed'
             }
           }
         },
         yAxis: {
           type: 'value',
+          scale: yAxisScale,
+          min: yAxisMin,
+          max: yAxisMax,
           axisLine: {
             lineStyle: {
               color: '#e5e7eb'
@@ -753,8 +872,8 @@
             fontSize: 11,
             formatter: function(value) {
               if (trendType === 'first_byte' || trendType === 'duration') {
-                // 首字响应时间/总耗时：毫秒格式
-                return value.toFixed(0) + 'ms';
+                // 首字响应时间/总耗时：秒格式
+                return value.toFixed(1) + 's';
               } else if (trendType === 'cost') {
                 // 费用消耗：美元格式
                 if (value >= 1) return '$' + value.toFixed(2);
@@ -778,13 +897,13 @@
           },
           splitLine: {
             lineStyle: {
-              color: '#f3f4f6',
+              color: 'rgba(148, 163, 184, 0.25)',
               type: 'dashed'
             }
           }
         },
-        series: series,
-        dataZoom: window.currentHours > 24 ? [
+        series: applyNoRequestMarkArea(series, markAreaData),
+        dataZoom: showZoom ? [
           {
             type: 'inside',
             start: 0,
@@ -794,12 +913,13 @@
           {
             show: true,
             type: 'slider',
-            bottom: '2%',
+            bottom: 18,
             start: 0,
             end: 100,
             height: 20,
             borderColor: '#e5e7eb',
-            fillerColor: 'rgba(59, 130, 246, 0.15)',
+            backgroundColor: 'rgba(148, 163, 184, 0.10)',
+            fillerColor: 'rgba(59, 130, 246, 0.16)',
             handleStyle: {
               color: '#3b82f6',
               borderColor: '#3b82f6'
@@ -816,6 +936,158 @@
 
       // 设置配置并渲染
       window.chartInstance.setOption(option, true); // true 表示不合并，全量更新
+    }
+
+    function attachChartResizeObserver(chartDom) {
+      if (!chartDom) return;
+      if (window.chartResizeObserver) return;
+      if (typeof ResizeObserver === 'undefined') return;
+
+      let raf = 0;
+      window.chartResizeObserver = new ResizeObserver(() => {
+        if (!window.chartInstance) return;
+        if (raf) cancelAnimationFrame(raf);
+        raf = requestAnimationFrame(() => {
+          try { window.chartInstance.resize(); } catch (_) {}
+        });
+      });
+
+      window.chartResizeObserver.observe(chartDom);
+    }
+
+    function shouldShowZoom(points, hours, trendType) {
+      if (hours > 24) return true;
+      if (trendType === 'first_byte' || trendType === 'duration') return points >= 60;
+      return points >= 120;
+    }
+
+    function computeXAxisLabelInterval(points, maxLabels) {
+      if (!points || points <= maxLabels) return 0;
+      return Math.max(0, Math.ceil(points / maxLabels) - 1);
+    }
+
+    // 标注无请求区间：视觉上解释“断线/空窗”，同时不篡改数据语义
+    function computeNoRequestRanges(trendData) {
+      const ranges = [];
+      let start = -1;
+      for (let i = 0; i < trendData.length; i++) {
+        const p = trendData[i] || {};
+        const total = (p.success || 0) + (p.error || 0);
+        if (total === 0) {
+          if (start === -1) start = i;
+        } else if (start !== -1) {
+          ranges.push([start, i - 1]);
+          start = -1;
+        }
+      }
+      if (start !== -1) ranges.push([start, trendData.length - 1]);
+      return ranges;
+    }
+
+    function applyNoRequestMarkArea(series, markAreaData) {
+      if (!markAreaData || markAreaData.length === 0) return series;
+      if (!series || series.length === 0) return series;
+
+      // 只挂在第一条 series 上，避免重复渲染造成性能和视觉噪音
+      const first = { ...series[0] };
+      first.markArea = {
+        silent: true,
+        itemStyle: {
+          color: 'rgba(148, 163, 184, 0.08)'
+        },
+        label: {
+          show: false
+        },
+        data: markAreaData
+      };
+      return [first, ...series.slice(1)];
+    }
+
+    function latencyAxisMin(value) {
+      if (!value) return 0;
+      const min = Number.isFinite(value.min) ? value.min : 0;
+      const max = Number.isFinite(value.max) ? value.max : 0;
+      const range = Math.max(0, max - min);
+      const pad = range > 0 ? range * 0.08 : max * 0.08;
+      return Math.max(0, min - pad);
+    }
+
+    function latencyAxisMax(value) {
+      if (!value) return null;
+      const min = Number.isFinite(value.min) ? value.min : 0;
+      const max = Number.isFinite(value.max) ? value.max : 0;
+      const range = Math.max(0, max - min);
+      const pad = range > 0 ? range * 0.08 : Math.max(10, max * 0.08);
+      return max + pad;
+    }
+
+    function enhanceLatencySeries(series) {
+      if (!series || series.length === 0) return;
+      const base = series[0];
+      if (!base || !Array.isArray(base.data)) return;
+
+      const values = base.data.filter(v => typeof v === 'number' && Number.isFinite(v) && v > 0);
+      if (values.length < 5) return;
+
+      const p50 = percentile(values, 0.50);
+      const p90 = percentile(values, 0.90);
+
+      base.markLine = {
+        silent: true,
+        symbol: 'none',
+        lineStyle: {
+          width: 1,
+          type: 'dashed',
+          color: 'rgba(100, 116, 139, 0.55)'
+        },
+        label: {
+          color: '#334155',
+          fontSize: 11,
+          position: 'insideEndTop',
+          padding: [2, 6],
+          borderRadius: 4,
+          backgroundColor: 'rgba(255, 255, 255, 0.85)',
+          borderColor: 'rgba(148, 163, 184, 0.55)',
+          borderWidth: 1,
+          formatter: (p) => {
+            const v = p && p.value != null ? p.value : null;
+            if (v == null) return '';
+            return `${p.name}: ${Number(v).toFixed(1)}s`;
+          }
+        },
+        data: [
+          { name: 'P50', yAxis: p50 },
+          { name: 'P90', yAxis: p90 }
+        ]
+      };
+
+      base.markPoint = {
+        symbol: 'pin',
+        symbolSize: 34,
+        label: {
+          color: '#0f172a',
+          fontSize: 10,
+          formatter: (p) => (p && p.value != null ? `${Number(p.value).toFixed(1)}s` : '')
+        },
+        itemStyle: {
+          color: 'rgba(14, 165, 233, 0.85)'
+        },
+        data: [
+          { type: 'max', name: 'MAX' }
+        ]
+      };
+    }
+
+    function percentile(values, p) {
+      if (!values || values.length === 0) return 0;
+      const sorted = values.slice().sort((a, b) => a - b);
+      const clamped = Math.min(1, Math.max(0, p));
+      const idx = (sorted.length - 1) * clamped;
+      const lo = Math.floor(idx);
+      const hi = Math.ceil(idx);
+      if (lo === hi) return sorted[lo];
+      const w = idx - lo;
+      return sorted[lo] * (1 - w) + sorted[hi] * w;
     }
 
     function formatInterval(min) { 
