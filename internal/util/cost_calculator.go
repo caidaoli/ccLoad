@@ -199,36 +199,11 @@ const (
 	// 参考：https://platform.claude.com/docs/en/build-with-claude/prompt-caching
 	cacheWrite1hMultiplier = 2.0
 
-	// cacheWriteMultiplier 缓存写入价格倍数（兼容旧版本，等同于5m缓存）
-	// Cache Write = Input Price × 1.25 (25%溢价)
-	// 仅适用于Claude模型（OpenAI不支持cache_creation）
-	cacheWriteMultiplier = 1.25
-
 	// geminiLongContextThreshold Gemini长上下文阈值（tokens）
 	// 超过此阈值的请求将使用InputPriceHigh/OutputPriceHigh定价
 	// 参考：https://ai.google.dev/gemini-api/docs/pricing
 	geminiLongContextThreshold = 200_000
 )
-
-// CalculateCost 计算单次请求的成本（美元）- 兼容版本
-// 参数：
-//   - model: 模型名称（如"claude-sonnet-4-5-20250929"或"gpt-5.1-codex"）
-//   - inputTokens: 输入token数量（已归一化为可计费token）
-//   - outputTokens: 输出token数量
-//   - cacheReadTokens: 缓存读取token数量（Claude: cache_read_input_tokens, OpenAI: cached_tokens）
-//   - cacheCreationTokens: 缓存创建token数量（Claude: cache_creation_input_tokens，5m+1h总和）
-//
-// 重要: inputTokens应为"可计费输入token"，由解析层（proxy_sse_parser.go）负责归一化：
-//   - OpenAI: 解析层已自动扣除cached_tokens（prompt_tokens - cached_tokens）
-//   - Claude/Gemini: 解析层直接返回input_tokens（本身就是非缓存部分）
-//
-// 设计原则: 平台语义差异在解析层处理，计费层无需关心（SRP原则）
-//
-// 返回：总成本（美元），如果模型未知则返回0.0
-func CalculateCost(model string, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
-	// 兼容旧版本：将cacheCreationTokens作为5m缓存处理
-	return CalculateCostDetailed(model, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, 0)
-}
 
 // CalculateCostDetailed 计算单次请求的成本（美元）- 详细版本，支持5m和1h缓存分别计费
 // 参数：

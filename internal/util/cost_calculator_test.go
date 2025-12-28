@@ -13,7 +13,7 @@ func TestCalculateCost_Sonnet45(t *testing.T) {
 	// 重要：Claude API的input_tokens不包含缓存，直接就是非缓存部分
 	// Input: 12 tokens (非缓存), Output: 73 tokens
 	// Cache Read: 17558 tokens, Cache Creation: 278 tokens
-	cost := CalculateCost("claude-sonnet-4-5-20250929", 12, 73, 17558, 278)
+	cost := CalculateCostDetailed("claude-sonnet-4-5-20250929", 12, 73, 17558, 278, 0)
 
 	// 预期计算：
 	// Input: 12 × $3.00 / 1M = $0.000036
@@ -29,7 +29,7 @@ func TestCalculateCost_Sonnet45(t *testing.T) {
 
 func TestCalculateCost_Haiku45(t *testing.T) {
 	// 场景：Claude Haiku 4.5轻量请求
-	cost := CalculateCost("claude-haiku-4-5", 100, 50, 0, 0)
+	cost := CalculateCostDetailed("claude-haiku-4-5", 100, 50, 0, 0, 0)
 
 	// 预期计算：
 	// Input: 100 × $1.00 / 1M = $0.0001
@@ -43,7 +43,7 @@ func TestCalculateCost_Haiku45(t *testing.T) {
 
 func TestCalculateCost_Opus41(t *testing.T) {
 	// 场景：Claude Opus 4.1高端请求
-	cost := CalculateCost("claude-opus-4-1-20250805", 1000, 2000, 0, 0)
+	cost := CalculateCostDetailed("claude-opus-4-1-20250805", 1000, 2000, 0, 0, 0)
 
 	// 预期计算：
 	// Input: 1000 × $15.00 / 1M = $0.015
@@ -57,7 +57,7 @@ func TestCalculateCost_Opus41(t *testing.T) {
 
 func TestCalculateCost_CacheOnly(t *testing.T) {
 	// 场景：纯缓存读取（cache hit）
-	cost := CalculateCost("claude-sonnet-4-5", 0, 100, 10000, 0)
+	cost := CalculateCostDetailed("claude-sonnet-4-5", 0, 100, 10000, 0, 0)
 
 	// 预期计算：
 	// Input: 0
@@ -82,7 +82,7 @@ func TestCalculateCost_LegacyModel(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		cost := CalculateCost(tc.model, 1000, 2000, 0, 0)
+		cost := CalculateCostDetailed(tc.model, 1000, 2000, 0, 0, 0)
 		if !floatEquals(cost, tc.expected, 0.000001) {
 			t.Errorf("%s成本 = %.6f, 期望 %.6f", tc.model, cost, tc.expected)
 		}
@@ -100,7 +100,7 @@ func TestCalculateCost_ModelAlias(t *testing.T) {
 	}
 
 	for _, model := range testCases {
-		cost := CalculateCost(model, 1000, 1000, 0, 0)
+		cost := CalculateCostDetailed(model, 1000, 1000, 0, 0, 0)
 		if cost == 0.0 {
 			t.Errorf("模型别名 %s 未识别", model)
 		}
@@ -109,7 +109,7 @@ func TestCalculateCost_ModelAlias(t *testing.T) {
 
 func TestCalculateCost_UnknownModel(t *testing.T) {
 	// 未知模型应返回0
-	cost := CalculateCost("unknown-model-xyz", 1000, 1000, 0, 0)
+	cost := CalculateCostDetailed("unknown-model-xyz", 1000, 1000, 0, 0, 0)
 	if cost != 0.0 {
 		t.Errorf("未知模型应返回0，实际 = %.6f", cost)
 	}
@@ -131,7 +131,7 @@ func TestCalculateCost_FuzzyMatch(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		cost := CalculateCost(tc.model, 1000, 1000, 0, 0)
+		cost := CalculateCostDetailed(tc.model, 1000, 1000, 0, 0, 0)
 		matched := cost > 0
 		if matched != tc.shouldMatch {
 			t.Errorf("模糊匹配 %s: 期望%v，实际%v", tc.model, tc.shouldMatch, matched)
@@ -141,7 +141,7 @@ func TestCalculateCost_FuzzyMatch(t *testing.T) {
 
 func TestCalculateCost_ZeroTokens(t *testing.T) {
 	// 全0 tokens应返回0
-	cost := CalculateCost("claude-sonnet-4-5", 0, 0, 0, 0)
+	cost := CalculateCostDetailed("claude-sonnet-4-5", 0, 0, 0, 0, 0)
 	if cost != 0.0 {
 		t.Errorf("全0 tokens成本应为0，实际 = %.6f", cost)
 	}
@@ -187,7 +187,7 @@ func TestCalculateCost_OpenAIModels(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		cost := CalculateCost(tc.model, tc.inputTokens, tc.outputTokens, tc.cacheRead, 0)
+		cost := CalculateCostDetailed(tc.model, tc.inputTokens, tc.outputTokens, tc.cacheRead, 0, 0)
 		if !floatEquals(cost, tc.expectedCost, 0.000001) {
 			t.Errorf("%s: 成本 = %.6f, 期望 %.6f", tc.model, cost, tc.expectedCost)
 		}
@@ -196,8 +196,8 @@ func TestCalculateCost_OpenAIModels(t *testing.T) {
 
 func TestCalculateCost_CacheSavings(t *testing.T) {
 	// 验证缓存节省（Cache Read vs 普通Input）
-	normalCost := CalculateCost("claude-sonnet-4-5", 10000, 0, 0, 0)
-	cacheCost := CalculateCost("claude-sonnet-4-5", 0, 0, 10000, 0)
+	normalCost := CalculateCostDetailed("claude-sonnet-4-5", 10000, 0, 0, 0, 0)
+	cacheCost := CalculateCostDetailed("claude-sonnet-4-5", 0, 0, 10000, 0, 0)
 
 	// Cache Read应该是普通Input的10%
 	expectedRatio := 0.1
@@ -213,8 +213,8 @@ func TestCalculateCost_CacheSavings(t *testing.T) {
 
 func TestCacheWriteCost(t *testing.T) {
 	// 验证缓存写入成本（应该是Input的125%）
-	inputCost := CalculateCost("claude-sonnet-4-5", 10000, 0, 0, 0)
-	cacheWriteCost := CalculateCost("claude-sonnet-4-5", 0, 0, 0, 10000)
+	inputCost := CalculateCostDetailed("claude-sonnet-4-5", 10000, 0, 0, 0, 0)
+	cacheWriteCost := CalculateCostDetailed("claude-sonnet-4-5", 0, 0, 0, 10000, 0)
 
 	expectedRatio := 1.25
 	actualRatio := cacheWriteCost / inputCost
@@ -238,7 +238,7 @@ func TestCalculateCost_OpusCacheRead(t *testing.T) {
 	// 缓存读取 tokens: 53660
 	// 缓存创建 tokens: 816
 	// 补全 tokens: 269
-	cost := CalculateCost("claude-opus-4-5-20251101", 8, 269, 53660, 816)
+	cost := CalculateCostDetailed("claude-opus-4-5-20251101", 8, 269, 53660, 816, 0)
 
 	// 预期计算（Opus缓存倍率=0.1）：
 	// Input: 8 × $5.00 / 1M = $0.00004
@@ -259,13 +259,13 @@ func TestCalculateCost_OpusVsSonnetCacheRatio(t *testing.T) {
 	cacheTokens := 10000
 
 	// Opus: 缓存读取 = 输入价格 × 0.1（90%折扣）
-	opusCacheCost := CalculateCost("claude-opus-4-5", 0, 0, cacheTokens, 0)
-	opusInputCost := CalculateCost("claude-opus-4-5", cacheTokens, 0, 0, 0)
+	opusCacheCost := CalculateCostDetailed("claude-opus-4-5", 0, 0, cacheTokens, 0, 0)
+	opusInputCost := CalculateCostDetailed("claude-opus-4-5", cacheTokens, 0, 0, 0, 0)
 	opusRatio := opusCacheCost / opusInputCost
 
 	// Sonnet: 缓存读取 = 输入价格 × 0.1（90%折扣）
-	sonnetCacheCost := CalculateCost("claude-sonnet-4-5", 0, 0, cacheTokens, 0)
-	sonnetInputCost := CalculateCost("claude-sonnet-4-5", cacheTokens, 0, 0, 0)
+	sonnetCacheCost := CalculateCostDetailed("claude-sonnet-4-5", 0, 0, cacheTokens, 0, 0)
+	sonnetInputCost := CalculateCostDetailed("claude-sonnet-4-5", cacheTokens, 0, 0, 0, 0)
 	sonnetRatio := sonnetCacheCost / sonnetInputCost
 
 	// 验证Opus缓存倍率为0.1
@@ -286,8 +286,8 @@ func TestRealWorldScenario(t *testing.T) {
 	// 真实场景：带缓存的长对话
 	// - 首次请求：创建缓存（系统prompt 2000 tokens）+ 输入100 + 输出200
 	// - 后续请求：读取缓存 + 输入50 + 输出150
-	firstCost := CalculateCost("claude-sonnet-4-5", 100, 200, 0, 2000)
-	laterCost := CalculateCost("claude-sonnet-4-5", 50, 150, 2000, 0)
+	firstCost := CalculateCostDetailed("claude-sonnet-4-5", 100, 200, 0, 2000, 0)
+	laterCost := CalculateCostDetailed("claude-sonnet-4-5", 50, 150, 2000, 0, 0)
 
 	t.Logf("首次请求成本: $%.6f", firstCost)
 	t.Logf("后续请求成本: $%.6f (缓存命中)", laterCost)
@@ -310,7 +310,7 @@ func floatEquals(a, b, epsilon float64) bool {
 
 func TestCalculateCost_Gpt4oLegacyFuzzy(t *testing.T) {
 	// 验证gpt-4o-legacy带日期后缀能正确匹配到legacy价格
-	cost := CalculateCost("gpt-4o-legacy-2024-05-13", 1000, 1000, 0, 0)
+	cost := CalculateCostDetailed("gpt-4o-legacy-2024-05-13", 1000, 1000, 0, 0, 0)
 
 	// gpt-4o-legacy: input=$5/1M, output=$15/1M
 	// 1000×$5/1M + 1000×$15/1M = $0.02
@@ -323,7 +323,7 @@ func TestCalculateCost_Gpt4oLegacyFuzzy(t *testing.T) {
 	}
 
 	// 验证不会误匹配到gpt-4o
-	gpt4oCost := CalculateCost("gpt-4o", 1000, 1000, 0, 0)
+	gpt4oCost := CalculateCostDetailed("gpt-4o", 1000, 1000, 0, 0, 0)
 	if floatEquals(cost, gpt4oCost, 0.000001) {
 		t.Errorf("gpt-4o-legacy和gpt-4o价格应不同！legacy=$%.6f, gpt-4o=$%.6f", cost, gpt4oCost)
 	}
@@ -405,23 +405,4 @@ func TestCalculateCostDetailed_CompleteScenario(t *testing.T) {
 	t.Logf("  总计: $%.6f", cost)
 }
 
-// TestCalculateCost_BackwardCompatibility 验证旧版本CalculateCost的兼容性
-// 确保旧代码调用CalculateCost(model, in, out, cacheRead, cacheCreation)时
-// cacheCreation被当作5m缓存处理
-func TestCalculateCost_BackwardCompatibility(t *testing.T) {
-	model := "claude-sonnet-4-5"
-	cacheTokens := 1000
-
-	// 旧版本调用: CalculateCost(model, 0, 0, 0, cacheCreation)
-	oldWay := CalculateCost(model, 0, 0, 0, cacheTokens)
-
-	// 新版本调用: CalculateCostDetailed(model, 0, 0, 0, cache5m, 0)
-	newWay := CalculateCostDetailed(model, 0, 0, 0, cacheTokens, 0)
-
-	// 应该完全相同
-	if !floatEquals(oldWay, newWay, 0.000001) {
-		t.Errorf("向后兼容性问题: CalculateCost=$%.6f, CalculateCostDetailed=$%.6f", oldWay, newWay)
-	}
-
-	t.Logf("[INFO] 向后兼容性测试通过: $%.6f", oldWay)
-}
+// 旧的 CalculateCost() 兼容壳已删除，避免重复API与歧义参数。

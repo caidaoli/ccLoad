@@ -250,7 +250,7 @@ func TestOpenAIPricingCalculation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.description, func(t *testing.T) {
-			cost := CalculateCost(tt.model, tt.inputTokens, tt.outputTokens, tt.cacheReadTokens, 0)
+			cost := CalculateCostDetailed(tt.model, tt.inputTokens, tt.outputTokens, tt.cacheReadTokens, 0, 0)
 
 			// 使用小的误差范围进行浮点数比较
 			if !floatEquals(cost, tt.expectedCost, 0.0001) {
@@ -270,7 +270,7 @@ func TestOpenAIModelAliases(t *testing.T) {
 
 	for alias, desc := range aliases {
 		t.Run(desc, func(t *testing.T) {
-			cost := CalculateCost(alias, 1_000_000, 1_000_000, 0, 0)
+			cost := CalculateCostDetailed(alias, 1_000_000, 1_000_000, 0, 0, 0)
 			if cost == 0.0 {
 				t.Errorf("模型 %s (%s) 没有定价数据", alias, desc)
 			}

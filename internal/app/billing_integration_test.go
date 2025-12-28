@@ -36,8 +36,8 @@ func TestBillingPipeline_OpenAI_ChatCompletions(t *testing.T) {
 		t.Errorf("❌ OpenAI completion_tokens提取错误: 期望50, 实际%d", outputTokens)
 	}
 
-	// 3. 计算费用 (inputTokens已归一化，CalculateCost直接使用)
-	cost := util.CalculateCost("gpt-4o", inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
+	// 3. 计算费用 (inputTokens已归一化，CalculateCostDetailed直接使用)
+	cost := util.CalculateCostDetailed("gpt-4o", inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, 0)
 
 	// 4. 验证计费公式正确性
 	// GPT-4o定价: $2.50/1M input, $10/1M output, 缓存50%折扣
@@ -88,7 +88,7 @@ data: {"type":"message_stop","usage":{"input_tokens":12,"output_tokens":73,"cach
 	}
 
 	// 3. 计算费用
-	cost := util.CalculateCost("claude-sonnet-4-5-20250929", inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
+	cost := util.CalculateCostDetailed("claude-sonnet-4-5-20250929", inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, 0)
 
 	// 4. 验证计费公式
 	// Sonnet 4.5定价: $3/1M input, $15/1M output, 缓存读10%, 缓存写125%
@@ -135,7 +135,7 @@ func TestBillingPipeline_Gemini_LongContext(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Gemini目前不支持缓存，只测试基础token计费
-			cost := util.CalculateCost("gemini-1.5-flash", tc.inputTokens, tc.outputTokens, 0, 0)
+			cost := util.CalculateCostDetailed("gemini-1.5-flash", tc.inputTokens, tc.outputTokens, 0, 0, 0)
 
 			// 允许±1%误差（定价可能更新）
 			tolerance := tc.expectCost * 0.01
@@ -153,7 +153,7 @@ func TestBillingPipeline_Gemini_LongContext(t *testing.T) {
 // TestBillingPipeline_UnknownModel 验证未知模型的兜底行为
 func TestBillingPipeline_UnknownModel(t *testing.T) {
 	// 场景：使用未定义定价的模型
-	cost := util.CalculateCost("gpt-999-ultra", 10000, 5000, 0, 0)
+	cost := util.CalculateCostDetailed("gpt-999-ultra", 10000, 5000, 0, 0, 0)
 
 	// 预期：返回0.0（不应崩溃）
 	if cost != 0.0 {
@@ -166,7 +166,7 @@ func TestBillingPipeline_UnknownModel(t *testing.T) {
 // TestBillingPipeline_NegativeTokens 验证防御性编程
 func TestBillingPipeline_NegativeTokens(t *testing.T) {
 	// 场景：异常数据（负数token）
-	cost := util.CalculateCost("claude-sonnet-4-5", -100, 200, -50, 0)
+	cost := util.CalculateCostDetailed("claude-sonnet-4-5", -100, 200, -50, 0, 0)
 
 	// 预期：返回0.0并记录错误日志
 	if cost != 0.0 {
@@ -198,7 +198,7 @@ func TestBillingPipeline_OpenAI_CacheExceedsInput(t *testing.T) {
 	}
 
 	// 计费验证
-	cost := util.CalculateCost("gpt-4o", inputTokens, outputTokens, cacheReadTokens, 0)
+	cost := util.CalculateCostDetailed("gpt-4o", inputTokens, outputTokens, cacheReadTokens, 0, 0)
 
 	// 预期：inputTokens=0(clamped)，只计算输出和缓存
 	// 公式: 0×$2.5/1M + 100×$10/1M + 800×($2.5×0.5)/1M
@@ -221,7 +221,7 @@ func TestBillingPipeline_ZeroCostWarning(t *testing.T) {
 	inputTokens := 10000
 	outputTokens := 5000
 
-	cost := util.CalculateCost(model, inputTokens, outputTokens, 0, 0)
+	cost := util.CalculateCostDetailed(model, inputTokens, outputTokens, 0, 0, 0)
 
 	// 验证：返回0费用
 	if cost != 0.0 {

@@ -17,7 +17,7 @@ func runGeminiCostTests(t *testing.T, tests []geminiCostTestCase) {
 	const tolerance = 0.0001
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := CalculateCost(tt.model, tt.inputTokens, tt.outputTokens, 0, 0)
+			got := CalculateCostDetailed(tt.model, tt.inputTokens, tt.outputTokens, 0, 0, 0)
 			if abs(got-tt.expectedCostUSD) > tolerance {
 				t.Errorf("%s\n模型: %s\n输入: %d tokens, 输出: %d tokens (总计: %d)\n期望费用: $%.4f\n实际费用: $%.4f\n差异: $%.4f",
 					tt.description,
@@ -205,7 +205,7 @@ func TestCalculateCost_GeminiFuzzyMatch(t *testing.T) {
 func TestCalculateCost_GeminiUnknownModel(t *testing.T) {
 	// 测试未知Gemini模型的fallback行为
 	model := "gemini-unknown-model-xyz"
-	cost := CalculateCost(model, 1_000_000, 1_000_000, 0, 0)
+	cost := CalculateCostDetailed(model, 1_000_000, 1_000_000, 0, 0, 0)
 
 	if cost != 0.0 {
 		t.Errorf("未知Gemini模型应返回0费用，实际返回: $%.4f", cost)
