@@ -35,42 +35,59 @@ func (s *Server) selectCandidatesByChannelType(ctx context.Context, channelType 
 // selectCandidatesByModelAndType 根据模型和渠道类型筛选候选渠道
 // 遵循SRP：数据库负责返回满足模型的渠道，本函数仅负责类型过滤
 func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model string, channelType string) ([]*modelpkg.Config, error) {
+	// 预计算 normalizedType（闭包捕获）
+	normalizedType := util.NormalizeChannelType(channelType)
+
+	// 类型过滤辅助函数
+	filterByType := func(channels []*modelpkg.Config) []*modelpkg.Config {
+		if channelType == "" {
+			return channels
+		}
+		filtered := make([]*modelpkg.Config, 0, len(channels))
+		for _, cfg := range channels {
+			if cfg.GetChannelType() == normalizedType {
+				filtered = append(filtered, cfg)
+			}
+		}
+		return filtered
+	}
+
 	fastPath := func() ([]*modelpkg.Config, error) {
 		channels, err := s.GetEnabledChannelsByModel(ctx, model)
 		if err != nil {
 			return nil, err
 		}
-		if len(channels) > 0 || !s.modelLookupStripDateSuffix || model == "*" {
-			return channels, nil
+		// [FIX] 在判断是否回退前，先应用 channelType 过滤
+		// 否则精确匹配到一个 openai 渠道会阻止回退到 anthropic 渠道
+		filtered := filterByType(channels)
+		if len(filtered) > 0 || !s.modelLookupStripDateSuffix || model == "*" {
+			return filtered, nil
 		}
 		stripped, ok := stripTrailingYYYYMMDD(model)
 		if !ok || stripped == model {
-			return channels, nil
+			return filtered, nil
 		}
-		return s.GetEnabledChannelsByModel(ctx, stripped)
+		channels, err = s.GetEnabledChannelsByModel(ctx, stripped)
+		if err != nil {
+			return nil, err
+		}
+		return filterByType(channels), nil
 	}
 
-	channels, err := s.getEnabledChannelsWithFallback(ctx,
-		fastPath,
-		func(cfg *modelpkg.Config) bool { return s.configSupportsModelWithDateFallback(cfg, model) },
-	)
+	// matcher 也需要考虑 channelType
+	matcher := func(cfg *modelpkg.Config) bool {
+		if channelType != "" && cfg.GetChannelType() != normalizedType {
+			return false
+		}
+		return s.configSupportsModelWithDateFallback(cfg, model)
+	}
+
+	channels, err := s.getEnabledChannelsWithFallback(ctx, fastPath, matcher)
 	if err != nil {
 		return nil, err
 	}
 
-	if channelType == "" {
-		return s.filterCooldownChannels(ctx, shuffleSamePriorityChannels(channels))
-	}
-
-	normalizedType := util.NormalizeChannelType(channelType)
-	filtered := make([]*modelpkg.Config, 0, len(channels))
-	for _, cfg := range channels {
-		if cfg.GetChannelType() == normalizedType {
-			filtered = append(filtered, cfg)
-		}
-	}
-
-	return s.filterCooldownChannels(ctx, shuffleSamePriorityChannels(filtered))
+	return s.filterCooldownChannels(ctx, shuffleSamePriorityChannels(channels))
 }
 
 // getEnabledChannelsWithFallback 统一的降级查询逻辑（DRY）

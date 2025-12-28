@@ -733,6 +733,57 @@ func TestSelectRouteCandidates_ModelDateSuffixFallback_PreferExactBase(t *testin
 	}
 }
 
+// TestSelectRouteCandidates_ModelDateSuffixFallback_CrossChannelType 测试跨渠道类型的日期后缀回退
+// 场景：请求 anthropic 类型的 claude-sonnet-4-5，但精确匹配只找到 openai 类型渠道
+// 应该回退到 anthropic 类型的带日期后缀渠道，而不是被 openai 渠道阻塞
+func TestSelectRouteCandidates_ModelDateSuffixFallback_CrossChannelType(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// 创建一个 openai 类型渠道，配置了无日期后缀的模型
+	_, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "openai-channel",
+		URL:          "https://api.openai.com",
+		ChannelType:  "openai",
+		Priority:     100,
+		ModelEntries: []model.ModelEntry{{Model: "claude-sonnet-4-5", RedirectModel: ""}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建openai渠道失败: %v", err)
+	}
+
+	// 创建一个 anthropic 类型渠道，只配置了带日期后缀的模型
+	_, err = store.CreateConfig(ctx, &model.Config{
+		Name:         "anthropic-channel",
+		URL:          "https://api.anthropic.com",
+		ChannelType:  "anthropic",
+		Priority:     100,
+		ModelEntries: []model.ModelEntry{{Model: "claude-sonnet-4-5-20250929", RedirectModel: ""}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建anthropic渠道失败: %v", err)
+	}
+
+	server := &Server{store: store, modelLookupStripDateSuffix: true}
+
+	// 请求 anthropic 类型 + claude-sonnet-4-5
+	// 应该回退匹配到 anthropic-channel（而不是被 openai-channel 阻塞）
+	candidates, err := server.selectCandidatesByModelAndType(ctx, "claude-sonnet-4-5", "anthropic")
+	if err != nil {
+		t.Fatalf("selectCandidates失败: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("期望1个匹配渠道（跨类型回退），实际%d个", len(candidates))
+	}
+	if candidates[0].Name != "anthropic-channel" {
+		t.Fatalf("期望命中anthropic-channel，实际命中%s", candidates[0].Name)
+	}
+}
+
 // TestSelectRouteCandidates_MixedPriorities 测试混合优先级排序
 func TestSelectRouteCandidates_MixedPriorities(t *testing.T) {
 	store, cleanup := setupTestStore(t)
