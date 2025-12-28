@@ -295,38 +295,33 @@ type AnthropicTester struct{}
 func (t *AnthropicTester) Build(cfg *model.Config, apiKey string, req *TestChannelRequest) (string, http.Header, []byte, error) {
 	maxTokens := req.MaxTokens
 	if maxTokens == 0 {
-		maxTokens = 4096
+		maxTokens = 32000
 	}
 	testContent := req.Content
 
 	msg := map[string]any{
-		"system": []map[string]any{
-			{
-				"type":          "text",
-				"text":          "You are Claude Code, Anthropic's official CLI for Claude.",
-				"cache_control": map[string]any{"type": "ephemeral"},
-			},
-		},
-		"stream": req.Stream,
+		"model": req.Model,
 		"messages": []map[string]any{
 			{
+				"role": "user",
 				"content": []map[string]any{
 					{
 						"type": "text",
-						"text": "<system-reminder>\nThis is a reminder that your todo list is currently empty. DO NOT mention this to the user explicitly because they are already aware. If you are working on tasks that would benefit from a todo list please use the TodoWrite tool to create one. If not, please feel free to ignore. Again do not mention this message to the user.\n</system-reminder>",
-					},
-					{
-						"type":          "text",
-						"text":          testContent,
-						"cache_control": map[string]any{"type": "ephemeral"},
+						"text": testContent,
 					},
 				},
-				"role": "user",
 			},
 		},
-		"model":      req.Model,
-		"max_tokens": maxTokens,
+		"system": []map[string]any{
+			{
+				"type": "text",
+				"text": "You are Claude Code, Anthropic's official CLI for Claude.",
+			},
+		},
+		"tools":      []any{},
 		"metadata":   map[string]any{"user_id": "test"},
+		"max_tokens": maxTokens,
+		"stream":     req.Stream,
 	}
 
 	body, err := sonic.Marshal(msg)
@@ -338,13 +333,14 @@ func (t *AnthropicTester) Build(cfg *model.Config, apiKey string, req *TestChann
 	fullURL := baseURL + "/v1/messages?beta=true"
 
 	h := make(http.Header)
+	h.Set("Accept", "application/json")
 	h.Set("Content-Type", "application/json")
 	h.Set("Authorization", "Bearer "+apiKey)
 	// Claude Code CLI headers
-	h.Set("User-Agent", "claude-cli/2.0.58 (external, cli)")
+	h.Set("User-Agent", "claude-cli/2.0.76 (external, cli)")
 	h.Set("x-app", "cli")
 	h.Set("anthropic-version", "2023-06-01")
-	h.Set("anthropic-beta", "claude-code-20250219,interleaved-thinking-2025-05-14")
+	h.Set("anthropic-beta", "interleaved-thinking-2025-05-14,advanced-tool-use-2025-11-20")
 	h.Set("anthropic-dangerous-direct-browser-access", "true")
 	// x-stainless-* headers
 	h.Set("x-stainless-arch", "arm64")
@@ -356,7 +352,7 @@ func (t *AnthropicTester) Build(cfg *model.Config, apiKey string, req *TestChann
 	h.Set("x-stainless-runtime-version", "v24.3.0")
 	h.Set("x-stainless-timeout", "600")
 	if req.Stream {
-		h.Set("Accept", "text/event-stream")
+		h.Set("x-stainless-helper-method", "stream")
 	}
 
 	return fullURL, h, body, nil
