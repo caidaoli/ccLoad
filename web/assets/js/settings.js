@@ -3,6 +3,61 @@ initTopbar('settings');
 
 let originalSettings = {}; // 保存原始值用于比较
 
+function getSettingGroupInfo(key) {
+  const k = String(key || '').toLowerCase();
+
+  const defs = [
+    { id: 'channel', name: '渠道与测试', order: 10, match: () => k.startsWith('channel_') || k === 'max_key_retries' },
+    { id: 'timeout', name: '超时', order: 20, match: () => k.includes('timeout') },
+    { id: 'health', name: '健康度排序', order: 30, match: () => k.includes('health_score') || k.includes('success_rate') || k.includes('penalty_weight') || k === 'enable_health_score' },
+    { id: 'cooldown', name: '冷却兜底', order: 40, match: () => k.startsWith('cooldown_') },
+    { id: 'log', name: '日志', order: 50, match: () => k.startsWith('log_') },
+    { id: 'access', name: '访问控制', order: 60, match: () => k.includes('88code') || k.includes('auth_') },
+  ];
+
+  for (const d of defs) {
+    if (d.match()) return d;
+  }
+  return { id: 'other', name: '其他', order: 999 };
+}
+
+function groupSettings(settings) {
+  const groupsById = new Map();
+
+  for (const s of settings) {
+    const g = getSettingGroupInfo(s.key);
+    if (!groupsById.has(g.id)) {
+      groupsById.set(g.id, { id: g.id, name: g.name, order: g.order, settings: [] });
+    }
+    groupsById.get(g.id).settings.push(s);
+  }
+
+  const groups = Array.from(groupsById.values())
+    .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
+
+  for (const g of groups) {
+    g.settings.sort((a, b) => String(a.key).localeCompare(String(b.key)));
+  }
+
+  return groups;
+}
+
+function renderGroupNav(groups) {
+  const nav = document.getElementById('settings-group-nav');
+  if (!nav) return;
+
+  nav.innerHTML = '';
+  if (!groups || groups.length <= 1) return;
+
+  for (const g of groups) {
+    const a = document.createElement('a');
+    a.href = `#settings-group-${encodeURIComponent(g.id)}`;
+    a.textContent = g.name;
+    a.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:rgba(59,130,246,0.12);border:1px solid rgba(59,130,246,0.22);color:var(--primary-600);text-decoration:none;font-size:13px;font-weight:600;';
+    nav.appendChild(a);
+  }
+}
+
 async function loadSettings() {
   try {
     const data = await fetchDataWithAuth('/admin/settings');
@@ -22,15 +77,26 @@ function renderSettings(settings) {
   // 初始化事件委托（仅一次）
   initSettingsEventDelegation();
 
-  settings.forEach(s => {
-    originalSettings[s.key] = s.value;
-    const row = TemplateEngine.render('tpl-setting-row', {
-      key: s.key,
-      description: s.description,
-      inputHtml: renderInput(s)
+  const groups = groupSettings(settings);
+  renderGroupNav(groups);
+
+  for (const g of groups) {
+    const groupRow = TemplateEngine.render('tpl-setting-group-row', {
+      groupId: g.id,
+      groupName: g.name
     });
-    if (row) tbody.appendChild(row);
-  });
+    if (groupRow) tbody.appendChild(groupRow);
+
+    for (const s of g.settings) {
+      originalSettings[s.key] = s.value;
+      const row = TemplateEngine.render('tpl-setting-row', {
+        key: s.key,
+        description: s.description,
+        inputHtml: renderInput(s)
+      });
+      if (row) tbody.appendChild(row);
+    }
+  }
 }
 
 // 初始化事件委托（替代 inline onclick）

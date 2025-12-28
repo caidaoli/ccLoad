@@ -30,6 +30,9 @@
         </header>
 
         <section class="glass-card mb-6 animate-slide-up">
+          <div id="settings-group-nav" style="display:flex; flex-wrap: wrap; gap: 8px; padding: 0 0 12px 0;">
+            <!-- 动态填充：分组快捷跳转 -->
+          </div>
           <div class="table-container">
             <table class="modern-table">
               <thead>
@@ -66,6 +69,15 @@
             <path d="M3 3v5h5"/>
           </svg>
         </button>
+      </td>
+    </tr>
+  </template>
+
+  <!-- 分组标题行模板 -->
+  <template id="tpl-setting-group-row">
+    <tr id="settings-group-{{groupId}}" data-group="{{groupId}}">
+      <td colspan="3" style="background: var(--neutral-100); color: var(--neutral-700); font-weight: 700; letter-spacing: 0.2px;">
+        {{groupName}}
       </td>
     </tr>
   </template>
