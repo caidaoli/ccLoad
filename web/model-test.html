@@ -19,7 +19,7 @@
          
         </header>
 
-        <section class="glass-card mb-2 animate-slide-up">
+        <section class="glass-card mb-2">
           <!-- 控制栏 -->
           <div style="display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center;">
             <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
@@ -65,11 +65,12 @@
                   <th style="width: 65px;">输出</th>
                   <th style="width: 65px;">缓读</th>
                   <th style="width: 65px;">缓建</th>
+                  <th style="width: 80px;">费用</th>
                   <th>响应内容</th>
                 </tr>
               </thead>
               <tbody id="model-test-tbody">
-                <tr><td colspan="8" style="text-align: center; color: var(--color-text-secondary); padding: 40px;">请先选择渠道</td></tr>
+                <tr><td colspan="9" style="text-align: center; color: var(--color-text-secondary); padding: 40px;">请先选择渠道</td></tr>
               </tbody>
             </table>
           </div>
@@ -87,13 +88,14 @@
       <td class="output-tokens">-</td>
       <td class="cache-read">-</td>
       <td class="cache-create">-</td>
+      <td class="cost">-</td>
       <td class="response" title="">-</td>
     </tr>
   </template>
 
   <!-- 空状态模板 -->
   <template id="tpl-empty-row">
-    <tr><td colspan="8" style="text-align: center; color: var(--color-text-secondary); padding: 40px;">{{message}}</td></tr>
+    <tr><td colspan="9" style="text-align: center; color: var(--color-text-secondary); padding: 40px;">{{message}}</td></tr>
   </template>
 
   <script src="/web/assets/js/template-engine.js?v=__VERSION__"></script>

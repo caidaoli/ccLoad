@@ -407,6 +407,11 @@ func (t *AnthropicTester) Parse(statusCode int, respBody []byte) map[string]any 
 			out["response_text"] = text
 		}
 
+		// 提取usage（与其他Tester保持一致，便于上层统一处理）
+		if usage, ok := getTypedValue[map[string]any](apiResp, "usage"); ok {
+			out["usage"] = usage
+		}
+
 		out["api_response"] = apiResp
 		return out
 	}

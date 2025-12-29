@@ -247,6 +247,10 @@ func (s *Server) testChannelAPI(cfg *model.Config, apiKey string, testReq *testu
 		var rawBuilder strings.Builder
 		var textBuilder strings.Builder
 		var lastErrMsg string
+		var lastUsage map[string]any
+
+		// [DRY] 复用代理链路的SSE usage解析器，保证tokens/成本口径一致
+		usageParser := newSSEUsageParser(channelType)
 
 		scanner := bufio.NewScanner(resp.Body)
 		// 提高扫描缓冲，避免长行截断
@@ -255,6 +259,11 @@ func (s *Server) testChannelAPI(cfg *model.Config, apiKey string, testReq *testu
 
 		for scanner.Scan() {
 			line := scanner.Text()
+			// 给usage解析器喂原始行（补回换行符），它依赖空行判断事件结束
+			if err := usageParser.Feed([]byte(line + "\n")); err != nil {
+				log.Printf("[WARN] SSE usage解析失败: %v", err)
+			}
+
 			rawBuilder.WriteString(line)
 			rawBuilder.WriteString("\n")
 
@@ -271,6 +280,11 @@ func (s *Server) testChannelAPI(cfg *model.Config, apiKey string, testReq *testu
 			if err := sonic.Unmarshal([]byte(data), &obj); err != nil {
 				// 非JSON数据，忽略
 				continue
+			}
+
+			// 记录最后一个usage（一般出现在message_start/message_delta/response.completed等事件）
+			if usage := extractUsage(obj); usage != nil {
+				lastUsage = usage
 			}
 
 			// OpenAI: choices[0].delta.content
@@ -325,6 +339,34 @@ func (s *Server) testChannelAPI(cfg *model.Config, apiKey string, testReq *testu
 			result["response_text"] = textBuilder.String()
 		}
 		result["raw_response"] = rawBuilder.String()
+
+		// 补齐tokens与成本信息（用于前端表格展示）
+		billableInput, output, cacheRead, _ := usageParser.GetUsage()
+		if lastUsage != nil {
+			result["api_response"] = map[string]any{"usage": lastUsage}
+		} else if billableInput+output+cacheRead > 0 {
+			result["api_response"] = map[string]any{
+				"usage": map[string]any{
+					"input_tokens":                billableInput,
+					"output_tokens":               output,
+					"cache_read_input_tokens":     cacheRead,
+					"cache_creation_input_tokens": 0,
+				},
+			}
+		}
+
+		if billableInput+output+cacheRead > 0 {
+			costUSD := util.CalculateCostDetailed(
+				testReq.Model,
+				billableInput,
+				output,
+				cacheRead,
+				usageParser.Cache5mInputTokens,
+				usageParser.Cache1hInputTokens,
+			)
+			result["cost_usd"] = costUSD
+		}
+
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			result["message"] = "API测试成功（流式）"
 		} else {
@@ -348,6 +390,22 @@ func (s *Server) testChannelAPI(cfg *model.Config, apiKey string, testReq *testu
 		for k, v := range parsed {
 			result[k] = v
 		}
+
+		// 补齐成本信息（与代理计费口径一致：使用归一化后的可计费inputTokens）
+		usageParser := newJSONUsageParser(channelType)
+		_ = usageParser.Feed(respBody)
+		billableInput, output, cacheRead, _ := usageParser.GetUsage()
+		if billableInput+output+cacheRead > 0 {
+			result["cost_usd"] = util.CalculateCostDetailed(
+				testReq.Model,
+				billableInput,
+				output,
+				cacheRead,
+				usageParser.Cache5mInputTokens,
+				usageParser.Cache1hInputTokens,
+			)
+		}
+
 		result["message"] = "API测试成功"
 	} else {
 		// 错误：统一解析

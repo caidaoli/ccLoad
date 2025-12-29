@@ -149,6 +149,7 @@ async function runModelTests() {
     row.querySelector('.output-tokens').textContent = '-';
     row.querySelector('.cache-read').textContent = '-';
     row.querySelector('.cache-create').textContent = '-';
+    row.querySelector('.cost').textContent = '-';
     row.querySelector('.response').textContent = '等待中...';
     row.querySelector('.response').title = '';
     row.style.background = '';
@@ -171,11 +172,13 @@ async function runModelTests() {
 
       if (data.success) {
         row.style.background = 'rgba(16, 185, 129, 0.1)';
-        const usage = data.api_response?.usage || {};
-        row.querySelector('.input-tokens').textContent = usage.input_tokens || usage.prompt_tokens || '-';
-        row.querySelector('.output-tokens').textContent = usage.output_tokens || usage.completion_tokens || '-';
-        row.querySelector('.cache-read').textContent = usage.cache_read_input_tokens || '-';
+        const apiResp = data.api_response || {};
+        const usage = apiResp.usage || apiResp.usageMetadata || data.usage || {};
+        row.querySelector('.input-tokens').textContent = usage.input_tokens || usage.prompt_tokens || usage.promptTokenCount || '-';
+        row.querySelector('.output-tokens').textContent = usage.output_tokens || usage.completion_tokens || usage.candidatesTokenCount || '-';
+        row.querySelector('.cache-read').textContent = usage.cache_read_input_tokens || usage.cached_tokens || '-';
         row.querySelector('.cache-create').textContent = usage.cache_creation_input_tokens || '-';
+        row.querySelector('.cost').textContent = (typeof data.cost_usd === 'number') ? formatCost(data.cost_usd) : '-';
 
         let respText = data.response_text;
         if (!respText && data.api_response?.choices?.[0]?.message) {
@@ -189,12 +192,14 @@ async function runModelTests() {
         const errMsg = data.error || '测试失败';
         row.querySelector('.response').textContent = errMsg;
         row.querySelector('.response').title = errMsg;
+        row.querySelector('.cost').textContent = '-';
       }
     } catch (e) {
       row.style.background = 'rgba(239, 68, 68, 0.1)';
       row.querySelector('.duration').textContent = '-';
       row.querySelector('.response').textContent = '请求失败';
       row.querySelector('.response').title = e.message;
+      row.querySelector('.cost').textContent = '-';
     }
     completed++;
     progressEl.textContent = `测试中 ${completed}/${total}`;
