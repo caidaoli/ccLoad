@@ -10,6 +10,7 @@ import (
 
 // AggregateRangeWithFilter 聚合指定时间范围的指标数据，支持多种筛选条件
 // filter 为 nil 时返回所有数据
+// [FIX] 2025-12: 排除499（客户端取消）避免污染趋势图统计
 func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until time.Time, bucket time.Duration, filter *model.LogFilter) ([]model.MetricPoint, error) {
 	bucketSeconds := int64(bucket.Seconds())
 	sinceUnix := since.Unix()
@@ -17,12 +18,13 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 
 	// 构建查询:使用IN子句过滤渠道
 	// 使用FLOOR确保bucket_ts是整数,避免浮点数导致map查找失败
+	// 排除499：客户端取消不应计入成功/失败/RPM统计
 	query := `
 		SELECT
 			FLOOR((logs.time / 1000) / ?) * ? AS bucket_ts,
 			logs.channel_id,
 			SUM(CASE WHEN logs.status_code >= 200 AND logs.status_code < 300 THEN 1 ELSE 0 END) AS success,
-			SUM(CASE WHEN logs.status_code < 200 OR logs.status_code >= 300 THEN 1 ELSE 0 END) AS error,
+			SUM(CASE WHEN (logs.status_code < 200 OR logs.status_code >= 300) AND logs.status_code != 499 THEN 1 ELSE 0 END) AS error,
 			ROUND(
 				AVG(CASE WHEN logs.is_streaming = 1 AND logs.first_byte_time > 0 AND logs.status_code >= 200 AND logs.status_code < 300 THEN logs.first_byte_time ELSE NULL END),
 				3
@@ -39,7 +41,7 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 			SUM(COALESCE(logs.cache_read_input_tokens, 0)) as cache_read_tokens,
 			SUM(COALESCE(logs.cache_creation_input_tokens, 0)) as cache_creation_tokens
 		FROM logs
-		WHERE (logs.time / 1000) >= ? AND (logs.time / 1000) <= ?
+		WHERE (logs.time / 1000) >= ? AND (logs.time / 1000) <= ? AND logs.status_code != 499
 	`
 
 	args := []any{bucketSeconds, bucketSeconds, sinceUnix, untilUnix}
