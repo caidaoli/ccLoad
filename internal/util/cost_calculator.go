@@ -14,7 +14,7 @@ type ModelPricing struct {
 	InputPrice  float64 // 基础输入token价格（$/1M tokens, ≤200k context for Gemini）
 	OutputPrice float64 // 输出token价格（$/1M tokens, ≤200k context for Gemini）
 
-	// 长上下文定价（Gemini >200k tokens）
+	// 长上下文定价（>200k tokens，Claude/Gemini）
 	// 如果为0，表示无分段定价，使用InputPrice/OutputPrice
 	InputPriceHigh  float64 // 高上下文输入价格（$/1M tokens, >200k context）
 	OutputPriceHigh float64 // 高上下文输出价格（$/1M tokens, >200k context）
@@ -27,10 +27,16 @@ type ModelPricing struct {
 // - Gemini: https://ai.google.dev/gemini-api/docs/pricing
 var basePricing = map[string]ModelPricing{
 	// ========== Claude 模型 ==========
-	"claude-sonnet-4-5": {InputPrice: 3.00, OutputPrice: 15.00},
+	"claude-sonnet-4-5": {
+		InputPrice: 3.00, OutputPrice: 15.00,
+		InputPriceHigh: 6.00, OutputPriceHigh: 22.50, // >200k context
+	},
+	"claude-sonnet-4-0": {
+		InputPrice: 3.00, OutputPrice: 15.00,
+		InputPriceHigh: 6.00, OutputPriceHigh: 22.50, // >200k context
+	},
 	"claude-haiku-4-5":  {InputPrice: 1.00, OutputPrice: 5.00},
 	"claude-opus-4-1":   {InputPrice: 15.00, OutputPrice: 75.00},
-	"claude-sonnet-4-0": {InputPrice: 3.00, OutputPrice: 15.00},
 	"claude-opus-4-0":   {InputPrice: 15.00, OutputPrice: 75.00},
 	"claude-opus-4-5":   {InputPrice: 5.00, OutputPrice: 25.00},
 	"claude-3-7-sonnet": {InputPrice: 3.00, OutputPrice: 15.00},
