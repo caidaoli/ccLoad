@@ -118,6 +118,7 @@ var statusCodeMetaMap = map[int]StatusCodeMeta{
 	429: {ErrorLevelKey}, // Too Many Requests - rate limited
 
 	// === 渠道级错误：服务器端问题 ===
+	444: {ErrorLevelChannel}, // nginx: No Response (服务器主动关闭连接)
 	500: {ErrorLevelChannel}, // Internal Server Error
 	502: {ErrorLevelChannel}, // Bad Gateway
 	503: {ErrorLevelChannel}, // Service Unavailable
@@ -152,12 +153,15 @@ func GetStatusCodeMeta(status int) StatusCodeMeta {
 	if meta, ok := statusCodeMetaMap[status]; ok {
 		return meta
 	}
-	// 默认行为
+	// 默认行为（兜底策略）
 	if status >= 500 {
 		return StatusCodeMeta{ErrorLevelChannel}
 	}
 	if status >= 400 {
-		return StatusCodeMeta{ErrorLevelClient}
+		// [FIX] 未知 4xx 状态码默认 Key 级冷却（保守策略）
+		// 设计理念：未知错误应保守处理，避免持续请求故障 Key
+		// 如果所有 Key 都冷却了，会自动升级为渠道级冷却
+		return StatusCodeMeta{ErrorLevelKey}
 	}
 	return StatusCodeMeta{ErrorLevelClient}
 }

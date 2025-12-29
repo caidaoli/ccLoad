@@ -230,6 +230,8 @@ func TestClassifyHTTPStatus(t *testing.T) {
 		{429, ErrorLevelKey, "Key级限流"},
 		// 499 HTTP响应应触发渠道级重试
 		{499, ErrorLevelChannel, "499来自HTTP响应时，说明上游API返回，应重试其他渠道"},
+		// nginx 非标准状态码
+		{444, ErrorLevelChannel, "444 nginx No Response - 服务器主动关闭连接，渠道级错误"},
 		{500, ErrorLevelChannel, "渠道级错误"},
 		{502, ErrorLevelChannel, "渠道级错误"},
 		{503, ErrorLevelChannel, "渠道级错误"},
@@ -237,6 +239,10 @@ func TestClassifyHTTPStatus(t *testing.T) {
 		{520, ErrorLevelChannel, "520 Web Server Returned an Unknown Error - 渠道级错误"},
 		{521, ErrorLevelChannel, "521 Web Server Is Down - 渠道级错误"},
 		{524, ErrorLevelChannel, "524 A Timeout Occurred - 渠道级错误"},
+		// 兜底策略测试
+		{418, ErrorLevelKey, "418 未知4xx - 兜底策略应为Key级冷却"},
+		{451, ErrorLevelKey, "451 未知4xx - 兜底策略应为Key级冷却"},
+		{599, ErrorLevelChannel, "599 未知5xx - 兜底策略应为Channel级冷却"},
 	}
 
 	for _, tt := range tests {
@@ -890,7 +896,7 @@ func TestGetStatusCodeMeta(t *testing.T) {
 
 		// 默认行为
 		{599, ErrorLevelChannel, "599 -> 渠道级(自定义)"},
-		{418, ErrorLevelClient, "418 -> 客户端级(默认4xx)"},
+		{418, ErrorLevelKey, "418 -> Key级(兜底策略:未知4xx)"},
 		{511, ErrorLevelChannel, "511 -> 渠道级(默认5xx)"},
 	}
 
