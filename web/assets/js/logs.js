@@ -415,7 +415,7 @@
       load();
     }
 
-    function initFilters() {
+    async function initFilters() {
       const u = new URLSearchParams(location.search);
       const saved = loadLogsFilters();
       // URL 参数优先，否则从 localStorage 恢复
@@ -451,10 +451,9 @@
       const channelTypeEl = document.getElementById('f_channel_type');
       if (channelTypeEl) channelTypeEl.value = channelType;
 
-      // 加载令牌列表
-      loadAuthTokens().then(() => {
-        document.getElementById('f_auth_token').value = authToken;
-      });
+      // 加载令牌列表（返回 Promise 以便等待完成）
+      await loadAuthTokens();
+      document.getElementById('f_auth_token').value = authToken;
 
       // 令牌选择器切换后立即筛选
       document.getElementById('f_auth_token').addEventListener('change', () => {
@@ -597,7 +596,7 @@
 
       await initChannelTypeFilter(currentChannelType);
 
-      initFilters();
+      await initFilters();
       await loadDefaultTestContent();
 
       // ✅ 修复：如果没有 URL 参数但有保存的筛选条件，先同步 URL 再加载数据
@@ -646,6 +645,44 @@
             deleteKeyFromLog(channelId, channelName, apiKey);
           }
         });
+      }
+    });
+
+    // 处理 bfcache（后退/前进缓存）：页面从缓存恢复时重新加载筛选条件
+    window.addEventListener('pageshow', async function(event) {
+      if (event.persisted) {
+        // 页面从 bfcache 恢复，重新同步筛选器状态
+        const savedFilters = loadLogsFilters();
+        if (savedFilters) {
+          // 重新加载令牌列表并设置值
+          await loadAuthTokens();
+          if (savedFilters.authToken) {
+            document.getElementById('f_auth_token').value = savedFilters.authToken;
+          }
+          // 同步其他筛选器
+          if (savedFilters.channelType) {
+            document.getElementById('f_channel_type').value = savedFilters.channelType;
+            currentChannelType = savedFilters.channelType;
+          }
+          if (savedFilters.range) {
+            document.getElementById('f_hours').value = savedFilters.range;
+          }
+          if (savedFilters.channelId) {
+            document.getElementById('f_id').value = savedFilters.channelId;
+          }
+          if (savedFilters.channelName) {
+            document.getElementById('f_name').value = savedFilters.channelName;
+          }
+          if (savedFilters.model) {
+            document.getElementById('f_model').value = savedFilters.model;
+          }
+          if (savedFilters.status) {
+            document.getElementById('f_status').value = savedFilters.status;
+          }
+          // 重新加载数据
+          currentLogsPage = 1;
+          load();
+        }
       }
     });
 
