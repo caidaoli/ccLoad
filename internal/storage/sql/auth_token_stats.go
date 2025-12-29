@@ -10,15 +10,17 @@ import (
 
 // GetAuthTokenStatsInRange 查询指定时间范围内每个token的统计数据（从logs表聚合）
 // 用于tokens.html页面按时间范围筛选显示（2025-12新增）
+// [FIX] 2025-12: 排除499（客户端取消）避免污染成功率统计
 func (s *SQLStore) GetAuthTokenStatsInRange(ctx context.Context, startTime, endTime time.Time) (map[int64]*model.AuthTokenRangeStats, error) {
 	sinceMs := startTime.UnixMilli()
 	untilMs := endTime.UnixMilli()
 
+	// 排除499：客户端取消不应计入成功/失败统计
 	query := `
 		SELECT
 			auth_token_id,
 			SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success_count,
-			SUM(CASE WHEN status_code < 200 OR status_code >= 300 THEN 1 ELSE 0 END) AS failure_count,
+			SUM(CASE WHEN (status_code < 200 OR status_code >= 300) AND status_code != 499 THEN 1 ELSE 0 END) AS failure_count,
 			SUM(input_tokens) AS prompt_tokens,
 			SUM(output_tokens) AS completion_tokens,
 			SUM(cache_read_input_tokens) AS cache_read_tokens,
@@ -26,8 +28,8 @@ func (s *SQLStore) GetAuthTokenStatsInRange(ctx context.Context, startTime, endT
 			SUM(cost) AS total_cost,
 			AVG(CASE WHEN is_streaming = 1 THEN first_byte_time ELSE NULL END) AS stream_avg_ttfb,
 			AVG(CASE WHEN is_streaming = 0 THEN duration ELSE NULL END) AS non_stream_avg_rt,
-			SUM(CASE WHEN is_streaming = 1 THEN 1 ELSE 0 END) AS stream_count,
-			SUM(CASE WHEN is_streaming = 0 THEN 1 ELSE 0 END) AS non_stream_count
+			SUM(CASE WHEN is_streaming = 1 AND status_code != 499 THEN 1 ELSE 0 END) AS stream_count,
+			SUM(CASE WHEN is_streaming = 0 AND status_code != 499 THEN 1 ELSE 0 END) AS non_stream_count
 		FROM logs
 		WHERE time >= ? AND time <= ? AND auth_token_id > 0
 		GROUP BY auth_token_id
@@ -70,6 +72,7 @@ func (s *SQLStore) GetAuthTokenStatsInRange(ctx context.Context, startTime, endT
 
 // FillAuthTokenRPMStats 计算每个token的RPM统计（峰值、平均、最近）
 // 直接修改传入的stats map中的RPM字段
+// [FIX] 2025-12: 排除499（客户端取消）避免污染RPM统计
 func (s *SQLStore) FillAuthTokenRPMStats(ctx context.Context, stats map[int64]*model.AuthTokenRangeStats, startTime, endTime time.Time, isToday bool) error {
 	if len(stats) == 0 {
 		return nil
@@ -91,12 +94,13 @@ func (s *SQLStore) FillAuthTokenRPMStats(ctx context.Context, stats map[int64]*m
 	}
 
 	// 2. 计算峰值RPM（每分钟请求数的最大值）
+	// 排除499：客户端取消不应计入RPM
 	peakQuery := `
 		SELECT auth_token_id, MAX(cnt) AS peak_rpm
 		FROM (
 			SELECT auth_token_id, COUNT(*) AS cnt
 			FROM logs
-			WHERE time >= ? AND time <= ? AND auth_token_id > 0
+			WHERE time >= ? AND time <= ? AND auth_token_id > 0 AND status_code != 499
 			GROUP BY auth_token_id, FLOOR(time / 60000)
 		) t
 		GROUP BY auth_token_id
@@ -119,6 +123,7 @@ func (s *SQLStore) FillAuthTokenRPMStats(ctx context.Context, stats map[int64]*m
 	}
 
 	// 3. 计算最近一分钟RPM（仅本日有效）
+	// 排除499：客户端取消不应计入RPM
 	if isToday {
 		now := time.Now()
 		recentStartMs := now.Add(-60 * time.Second).UnixMilli()
@@ -127,7 +132,7 @@ func (s *SQLStore) FillAuthTokenRPMStats(ctx context.Context, stats map[int64]*m
 		recentQuery := `
 			SELECT auth_token_id, COUNT(*) AS cnt
 			FROM logs
-			WHERE time >= ? AND time <= ? AND auth_token_id > 0
+			WHERE time >= ? AND time <= ? AND auth_token_id > 0 AND status_code != 499
 			GROUP BY auth_token_id
 		`
 		recentRows, err := s.db.QueryContext(ctx, recentQuery, recentStartMs, recentEndMs)

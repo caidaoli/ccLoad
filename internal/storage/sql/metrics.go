@@ -114,15 +114,17 @@ func (s *SQLStore) AggregateRange(ctx context.Context, since, until time.Time, b
 
 // GetStats 实现统计功能，按渠道和模型统计成功/失败次数
 // 性能优化：批量查询渠道名称消除N+1问题（100渠道场景提升50-100倍）
+// [FIX] 2025-12: 排除499（客户端取消）避免污染成功率和调用次数统计
 func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) ([]model.StatsEntry, error) {
 	// 使用查询构建器构建统计查询
+	// 排除499：客户端取消不应计入成功/失败统计
 	baseQuery := `
 		SELECT
 			channel_id,
 			COALESCE(model, '') AS model,
 			SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success,
-			SUM(CASE WHEN status_code < 200 OR status_code >= 300 THEN 1 ELSE 0 END) AS error,
-			COUNT(*) AS total,
+			SUM(CASE WHEN (status_code < 200 OR status_code >= 300) AND status_code != 499 THEN 1 ELSE 0 END) AS error,
+			SUM(CASE WHEN status_code != 499 THEN 1 ELSE 0 END) AS total,
 			ROUND(
 				AVG(CASE WHEN is_streaming = 1 AND first_byte_time > 0 AND status_code >= 200 AND status_code < 300 THEN first_byte_time ELSE NULL END),
 				3
@@ -253,6 +255,7 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 
 // GetRPMStats 获取RPM/QPS统计数据（峰值、平均、最近一分钟）
 // isToday参数控制是否计算最近一分钟数据（仅本日有意义）
+// [FIX] 2025-12: 排除499（客户端取消）避免污染RPM统计
 func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) (*model.RPMStats, error) {
 	stats := &model.RPMStats{}
 
@@ -261,6 +264,7 @@ func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time
 
 	// 1. 计算峰值RPM（每分钟请求数的最大值）
 	// 使用 FLOOR 确保 MySQL 返回整数（MySQL 的 / 返回浮点数，会导致分组错误）
+	// 排除499：客户端取消不应计入RPM
 	peakBaseQuery := `
 		SELECT COALESCE(MAX(cnt), 0) as peak_rpm FROM (
 			SELECT COUNT(*) as cnt
@@ -269,7 +273,8 @@ func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time
 	peakQB := NewQueryBuilder(peakBaseQuery).
 		Where("time >= ?", startMs).
 		Where("time <= ?", endMs).
-		Where("channel_id > 0")
+		Where("channel_id > 0").
+		Where("status_code != 499")
 
 	// 应用渠道类型或名称过滤
 	_, isEmpty, err := s.applyChannelFilter(ctx, peakQB, filter)
@@ -302,7 +307,8 @@ func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time
 	totalQB := NewQueryBuilder(totalBaseQuery).
 		Where("time >= ?", startMs).
 		Where("time <= ?", endMs).
-		Where("channel_id > 0")
+		Where("channel_id > 0").
+		Where("status_code != 499")
 
 	// 应用渠道过滤
 	_, isEmpty, err = s.applyChannelFilter(ctx, totalQB, filter)
@@ -335,7 +341,8 @@ func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time
 		recentQB := NewQueryBuilder(recentBaseQuery).
 			Where("time >= ?", recentStartMs).
 			Where("time <= ?", recentEndMs).
-			Where("channel_id > 0")
+			Where("channel_id > 0").
+			Where("status_code != 499")
 
 		// 应用渠道过滤
 		_, isEmpty, err = s.applyChannelFilter(ctx, recentQB, filter)
@@ -368,6 +375,7 @@ func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time
 
 // fillStatsRPM 计算每个channel_id+model组合的RPM统计数据
 // 使用分钟级分组计算峰值RPM，避免因时间跨度大导致的值过小问题
+// [FIX] 2025-12: 排除499（客户端取消）避免污染RPM统计
 func (s *SQLStore) fillStatsRPM(ctx context.Context, stats []model.StatsEntry, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) error {
 	startMs := startTime.UnixMilli()
 	endMs := endTime.UnixMilli()
@@ -380,12 +388,13 @@ func (s *SQLStore) fillStatsRPM(ctx context.Context, stats []model.StatsEntry, s
 
 	// 查询每个channel_id+model的峰值RPM（每分钟请求数的最大值）
 	// 使用 FLOOR 确保 MySQL 返回整数（MySQL 的 / 返回浮点数，会导致分组错误）
+	// 排除499：客户端取消不应计入RPM
 	peakQuery := `
 		SELECT channel_id, COALESCE(model, '') AS model, MAX(cnt) AS peak_rpm
 		FROM (
 			SELECT channel_id, model, COUNT(*) AS cnt
 			FROM logs
-			WHERE time >= ? AND time <= ? AND channel_id > 0
+			WHERE time >= ? AND time <= ? AND channel_id > 0 AND status_code != 499
 			GROUP BY channel_id, model, FLOOR(time / 60000)
 		) t
 		GROUP BY channel_id, model`
@@ -418,6 +427,7 @@ func (s *SQLStore) fillStatsRPM(ctx context.Context, stats []model.StatsEntry, s
 	}
 
 	// 如果是本日，查询每个channel_id+model的最近一分钟RPM
+	// 排除499：客户端取消不应计入RPM
 	recentRPMMap := make(map[statsKey]float64)
 	if isToday {
 		now := time.Now()
@@ -427,7 +437,7 @@ func (s *SQLStore) fillStatsRPM(ctx context.Context, stats []model.StatsEntry, s
 		recentQuery := `
 			SELECT channel_id, COALESCE(model, '') AS model, COUNT(*) AS cnt
 			FROM logs
-			WHERE time >= ? AND time <= ? AND channel_id > 0
+			WHERE time >= ? AND time <= ? AND channel_id > 0 AND status_code != 499
 			GROUP BY channel_id, model`
 
 		recentRows, err := s.db.QueryContext(ctx, recentQuery, recentStartMs, recentEndMs)
