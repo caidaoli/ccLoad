@@ -164,6 +164,15 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		})
 	}
 
+	// 填充空的重定向模型为请求模型（方便前端编辑时显示）
+	for i := range out {
+		for j := range out[i].Config.ModelEntries {
+			if out[i].Config.ModelEntries[j].RedirectModel == "" {
+				out[i].Config.ModelEntries[j].RedirectModel = out[i].Config.ModelEntries[j].Model
+			}
+		}
+	}
+
 	RespondJSON(c, http.StatusOK, out)
 }
 
@@ -236,6 +245,12 @@ func (s *Server) handleGetChannel(c *gin.Context, id int64) {
 	if err != nil {
 		RespondError(c, http.StatusNotFound, fmt.Errorf("channel not found"))
 		return
+	}
+	// 填充空的重定向模型为请求模型（方便前端编辑时显示）
+	for i := range cfg.ModelEntries {
+		if cfg.ModelEntries[i].RedirectModel == "" {
+			cfg.ModelEntries[i].RedirectModel = cfg.ModelEntries[i].Model
+		}
 	}
 	// 渠道详情仅返回配置本身；API Keys 通过 /admin/channels/:id/keys 单独获取（避免无意泄漏明文Key）。
 	RespondJSON(c, http.StatusOK, cfg)

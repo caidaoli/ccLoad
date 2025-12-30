@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
@@ -25,10 +26,10 @@ type FetchModelsRequest struct {
 
 // FetchModelsResponse 获取模型列表响应
 type FetchModelsResponse struct {
-	Models      []string          `json:"models"`          // 模型列表
-	ChannelType string            `json:"channel_type"`    // 渠道类型
-	Source      string            `json:"source"`          // 数据来源: "api"(从API获取) 或 "predefined"(预定义)
-	Debug       *FetchModelsDebug `json:"debug,omitempty"` // 调试信息（仅开发环境）
+	Models      []model.ModelEntry `json:"models"`          // 模型列表（包含redirect_model便于编辑）
+	ChannelType string             `json:"channel_type"`    // 渠道类型
+	Source      string             `json:"source"`          // 数据来源: "api"(从API获取) 或 "predefined"(预定义)
+	Debug       *FetchModelsDebug  `json:"debug,omitempty"` // 调试信息（仅开发环境）
 }
 
 // FetchModelsDebug 调试信息结构
@@ -115,15 +116,15 @@ func fetchModelsForConfig(ctx context.Context, channelType, channelURL, apiKey s
 	source := determineSource(channelType)
 
 	var (
-		models     []string
+		modelNames []string
 		fetcherStr string
 		err        error
 	)
 
 	// Anthropic/Codex等官方无开放接口的渠道，直接返回预设模型列表
 	if source == "predefined" {
-		models = util.PredefinedModels(normalizedType)
-		if len(models) == 0 {
+		modelNames = util.PredefinedModels(normalizedType)
+		if len(modelNames) == 0 {
 			return nil, fmt.Errorf("渠道类型:%s 暂无预设模型列表", normalizedType)
 		}
 		fetcherStr = "predefined"
@@ -134,12 +135,21 @@ func fetchModelsForConfig(ctx context.Context, channelType, channelURL, apiKey s
 		fetcher := util.NewModelsFetcher(channelType)
 		fetcherStr = fmt.Sprintf("%T", fetcher)
 
-		models, err = fetcher.FetchModels(ctx, channelURL, apiKey)
+		modelNames, err = fetcher.FetchModels(ctx, channelURL, apiKey)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"获取模型列表失败(渠道类型:%s, 规范化类型:%s, 数据来源:%s): %w",
 				channelType, normalizedType, source, err,
 			)
+		}
+	}
+
+	// 转换为 ModelEntry 格式，填充 RedirectModel 为 Model（方便前端编辑）
+	models := make([]model.ModelEntry, len(modelNames))
+	for i, name := range modelNames {
+		models[i] = model.ModelEntry{
+			Model:         name,
+			RedirectModel: name, // 填充为请求模型名称
 		}
 	}
 

@@ -234,22 +234,28 @@ async function fetchAndAddModels() {
       // models 是 ModelEntry 数组，提取模型名称
       const existingNames = new Set(selectedChannel.models.map(e => typeof e === 'string' ? e : e.model));
       const fetched = resp.data.models;
-      const newOnes = fetched.filter(m => !existingNames.has(m));
+      // 过滤新模型（fetched 现在是 ModelEntry 数组）
+      const newOnes = fetched.filter(entry => {
+        const name = typeof entry === 'string' ? entry : entry.model;
+        return name && !existingNames.has(name);
+      });
 
       if (newOnes.length > 0) {
-        // 保存到后端
+        // 保存到后端（发送 ModelEntry 数组）
         const saveResp = await fetchAPIWithAuth(`/admin/channels/${selectedChannel.id}/models`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ models: newOnes })
         });
         if (!saveResp.success) throw new Error(saveResp.error || '保存模型失败');
-        newOnes.forEach(m => newModels.add(m));
+        newOnes.forEach(entry => {
+          const name = typeof entry === 'string' ? entry : entry.model;
+          if (name) newModels.add(name);
+        });
       }
 
-      // 合并新模型到列表（转为 ModelEntry 格式）
-      const newEntries = fetched.filter(m => !existingNames.has(m)).map(m => ({ model: m }));
-      selectedChannel.models = [...selectedChannel.models, ...newEntries];
+      // 合并新模型到列表（已经是 ModelEntry 格式）
+      selectedChannel.models = [...selectedChannel.models, ...newOnes];
       renderModelList();
       showSuccess(`获取到 ${fetched.length} 个模型，新增 ${newOnes.length} 个`);
     } else {

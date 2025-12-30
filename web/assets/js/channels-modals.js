@@ -666,11 +666,14 @@ async function fetchModelsFromAPI() {
     // 获取现有模型名称集合
     const existingModels = new Set(redirectTableData.map(r => r.model).filter(Boolean));
 
-    // 添加新模型（不重复）
+    // 添加新模型（不重复）- data.models 现在是 ModelEntry 数组
     let addedCount = 0;
-    for (const modelName of data.models) {
-      if (!existingModels.has(modelName)) {
-        redirectTableData.push({ model: modelName, redirect_model: '' });
+    for (const entry of data.models) {
+      const modelName = typeof entry === 'string' ? entry : entry.model;
+      if (modelName && !existingModels.has(modelName)) {
+        // 使用返回的 redirect_model，如果没有则使用 model
+        const redirectModel = (typeof entry === 'object' && entry.redirect_model) ? entry.redirect_model : modelName;
+        redirectTableData.push({ model: modelName, redirect_model: redirectModel });
         addedCount++;
       }
     }

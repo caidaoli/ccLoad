@@ -118,13 +118,23 @@ func (cr *ChannelRequest) Validate() error {
 }
 
 // ToConfig 转换为Config结构(不包含API Key,API Key单独处理)
+// 规范化重定向模型：如果 RedirectModel == Model 则清空（透传语义，节省存储）
 func (cr *ChannelRequest) ToConfig() *model.Config {
+	// 规范化模型条目：同名重定向清空为透传
+	normalizedModels := make([]model.ModelEntry, len(cr.Models))
+	for i, m := range cr.Models {
+		normalizedModels[i] = m
+		if m.RedirectModel == m.Model {
+			normalizedModels[i].RedirectModel = ""
+		}
+	}
+
 	return &model.Config{
 		Name:         strings.TrimSpace(cr.Name),
 		ChannelType:  strings.TrimSpace(cr.ChannelType), // 传递渠道类型
 		URL:          strings.TrimSpace(cr.URL),
 		Priority:     cr.Priority,
-		ModelEntries: cr.Models,
+		ModelEntries: normalizedModels,
 		Enabled:      cr.Enabled,
 	}
 }
