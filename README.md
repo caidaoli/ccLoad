@@ -868,7 +868,6 @@ curl -X POST http://localhost:8080/logout \
   -H "Authorization: Bearer <your_token>"
 ```
 
-**迁移详情**：参见 [TOKEN_AUTH_MIGRATION.md](TOKEN_AUTH_MIGRATION.md)
 
 ## 🔄 CI/CD
 
