@@ -193,11 +193,17 @@ func NewServer(store storage.Store) *Server {
 		log.Printf("[WARN] 无效的 health_score_update_interval=%d（必须 >= 1），已使用默认值 30", updateInterval)
 		updateInterval = 30
 	}
+	minConfidentSample := configService.GetInt("health_min_confident_sample", defaultHealthCfg.MinConfidentSample)
+	if minConfidentSample < 1 {
+		log.Printf("[WARN] 无效的 health_min_confident_sample=%d（必须 >= 1），已使用默认值 %d", minConfidentSample, defaultHealthCfg.MinConfidentSample)
+		minConfidentSample = defaultHealthCfg.MinConfidentSample
+	}
 	healthConfig := model.HealthScoreConfig{
 		Enabled:                  configService.GetBool("enable_health_score", defaultHealthCfg.Enabled),
 		SuccessRatePenaltyWeight: successRatePenaltyWeight,
 		WindowMinutes:            windowMinutes,
 		UpdateIntervalSeconds:    updateInterval,
+		MinConfidentSample:       minConfidentSample,
 	}
 	s.healthCache = NewHealthCache(store, healthConfig, s.shutdownCh, &s.isShuttingDown, &s.wg)
 	if healthConfig.Enabled {

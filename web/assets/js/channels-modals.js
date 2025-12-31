@@ -148,11 +148,23 @@ async function saveChannel(event) {
 
     if (!resp.success) throw new Error(resp.error || '保存失败');
 
+    const isNewChannel = !editingChannelId;
+    const newChannelType = formData.channel_type;
+
     resetChannelFormDirty(); // 保存成功，重置dirty状态（避免closeModal弹确认框）
     closeModal();
     clearChannelsCache();
+
+    // 新增渠道时，如果类型与当前筛选器不匹配，切换到新渠道的类型
+    if (isNewChannel && filters.channelType !== 'all' && filters.channelType !== newChannelType) {
+      filters.channelType = newChannelType;
+      const typeFilter = document.getElementById('channelTypeFilter');
+      if (typeFilter) typeFilter.value = newChannelType;
+      if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
+    }
+
     await loadChannels(filters.channelType);
-    if (window.showSuccess) window.showSuccess(editingChannelId ? '渠道已更新' : '渠道已添加');
+    if (window.showSuccess) window.showSuccess(isNewChannel ? '渠道已添加' : '渠道已更新');
   } catch (e) {
     console.error('保存渠道失败', e);
     if (window.showError) window.showError('保存失败: ' + e.message);

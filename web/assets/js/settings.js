@@ -9,7 +9,7 @@ function getSettingGroupInfo(key) {
   const defs = [
     { id: 'channel', name: '渠道与测试', order: 10, match: () => k.startsWith('channel_') || k === 'max_key_retries' },
     { id: 'timeout', name: '超时', order: 20, match: () => k.includes('timeout') },
-    { id: 'health', name: '健康度排序', order: 30, match: () => k.includes('health_score') || k.includes('success_rate') || k.includes('penalty_weight') || k === 'enable_health_score' },
+    { id: 'health', name: '渠道动态排序', order: 30, match: () => k.includes('health_score') || k.includes('success_rate') || k.includes('penalty_weight') || k === 'enable_health_score' || k === 'health_min_confident_sample' },
     { id: 'cooldown', name: '冷却兜底', order: 40, match: () => k.startsWith('cooldown_') },
     { id: 'log', name: '日志', order: 50, match: () => k.startsWith('log_') },
     { id: 'access', name: '访问控制', order: 60, match: () => k.includes('88code') || k.includes('auth_') },

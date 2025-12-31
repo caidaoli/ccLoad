@@ -87,12 +87,8 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		allAPIKeys = make(map[int64][]*model.APIKey) // 降级：使用空map
 	}
 
-	// 健康度模式：获取成功率数据
-	var successRates map[int64]float64
+	// 健康度模式检查
 	healthEnabled := s.healthCache != nil && s.healthCache.Config().Enabled
-	if healthEnabled {
-		successRates = s.healthCache.GetAllSuccessRates()
-	}
 
 	out := make([]ChannelWithCooldown, 0, len(cfgs))
 	for _, cfg := range cfgs {
@@ -107,14 +103,11 @@ func (s *Server) handleListChannels(c *gin.Context) {
 
 		// 健康度模式：计算有效优先级和成功率
 		if healthEnabled {
-			rate := 1.0
-			if successRates != nil {
-				if v, exists := successRates[cfg.ID]; exists {
-					rate = v
-					oc.SuccessRate = &v
-				}
+			stats := s.healthCache.GetHealthStats(cfg.ID)
+			if stats.SampleCount > 0 {
+				oc.SuccessRate = &stats.SuccessRate
 			}
-			effPriority := s.calculateEffectivePriority(cfg, rate, s.healthCache.Config())
+			effPriority := s.calculateEffectivePriority(cfg, stats, s.healthCache.Config())
 			oc.EffectivePriority = &effPriority
 		}
 

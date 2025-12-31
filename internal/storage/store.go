@@ -67,7 +67,7 @@ type Store interface {
 	GetDistinctModels(ctx context.Context, since, until time.Time) ([]string, error)
 	GetStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) ([]model.StatsEntry, error)
 	GetRPMStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) (*model.RPMStats, error)
-	GetChannelSuccessRates(ctx context.Context, since time.Time) (map[int64]float64, error)
+	GetChannelSuccessRates(ctx context.Context, since time.Time) (map[int64]model.ChannelHealthStats, error)
 	GetHealthTimeline(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 
 	// === Auth Token Management ===

@@ -283,7 +283,7 @@ func (s *Server) pickBestChannelWhenAllCooled(
 	// 计算有效优先级
 	getEffPriority := func(ch *modelpkg.Config) float64 {
 		if healthEnabled {
-			return s.calculateEffectivePriority(ch, s.healthCache.GetSuccessRate(ch.ID), healthCfg)
+			return s.calculateEffectivePriority(ch, s.healthCache.GetHealthStats(ch.ID), healthCfg)
 		}
 		return float64(ch.Priority)
 	}
@@ -377,10 +377,10 @@ func (s *Server) sortChannelsByHealth(
 
 	scored := make([]channelWithScore, len(channels))
 	for i, ch := range channels {
-		successRate := s.healthCache.GetSuccessRate(ch.ID)
+		stats := s.healthCache.GetHealthStats(ch.ID)
 		scored[i] = channelWithScore{
 			config:      ch,
-			effPriority: s.calculateEffectivePriority(ch, successRate, cfg),
+			effPriority: s.calculateEffectivePriority(ch, stats, cfg),
 		}
 	}
 
@@ -412,24 +412,33 @@ func (s *Server) sortChannelsByHealth(
 }
 
 // calculateEffectivePriority 计算渠道的有效优先级
-// 有效优先级 = 基础优先级 - 成功率惩罚（越大越优先）
+// 有效优先级 = 基础优先级 - 成功率惩罚 × 置信度（越大越优先）
+// 置信度 = min(1.0, 样本量 / 置信阈值)，样本量越小惩罚越轻
 func (s *Server) calculateEffectivePriority(
 	ch *modelpkg.Config,
-	successRate float64,
+	stats modelpkg.ChannelHealthStats,
 	cfg modelpkg.HealthScoreConfig,
 ) float64 {
 	basePriority := float64(ch.Priority)
 
-	// 成功率惩罚（减少优先级）
+	successRate := stats.SuccessRate
 	if successRate < 0 {
 		successRate = 0
 	} else if successRate > 1 {
 		successRate = 1
 	}
 	failureRate := 1.0 - successRate
-	successRatePenalty := failureRate * cfg.SuccessRatePenaltyWeight
 
-	return basePriority - successRatePenalty
+	// 置信度：样本量越小，惩罚打折越多
+	confidence := 1.0
+	if cfg.MinConfidentSample > 0 {
+		confidence = min(1.0, float64(stats.SampleCount)/float64(cfg.MinConfidentSample))
+	}
+
+	// 惩罚 = 失败率 × 权重 × 置信度
+	penalty := failureRate * cfg.SuccessRatePenaltyWeight * confidence
+
+	return basePriority - penalty
 }
 
 // shuffleSamePriorityChannels 随机打乱相同优先级的渠道，实现负载均衡

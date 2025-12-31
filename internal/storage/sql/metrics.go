@@ -496,9 +496,9 @@ func (s *SQLStore) fillStatsRPM(ctx context.Context, stats []model.StatsEntry, s
 	return nil
 }
 
-// GetChannelSuccessRates 获取指定时间窗口内各渠道的成功率
-// 返回 map[channelID]successRate，成功率范围 0-1
-func (s *SQLStore) GetChannelSuccessRates(ctx context.Context, since time.Time) (map[int64]float64, error) {
+// GetChannelSuccessRates 获取指定时间窗口内各渠道的成功率和样本量
+// 返回 map[channelID]ChannelHealthStats
+func (s *SQLStore) GetChannelSuccessRates(ctx context.Context, since time.Time) (map[int64]model.ChannelHealthStats, error) {
 	sinceMs := since.UnixMilli()
 
 	// 成功率统计口径：
@@ -536,7 +536,7 @@ func (s *SQLStore) GetChannelSuccessRates(ctx context.Context, since time.Time) 
 	}
 	defer rows.Close()
 
-	result := make(map[int64]float64)
+	result := make(map[int64]model.ChannelHealthStats)
 	for rows.Next() {
 		var channelID int64
 		var success, total int64
@@ -544,7 +544,10 @@ func (s *SQLStore) GetChannelSuccessRates(ctx context.Context, since time.Time) 
 			return nil, err
 		}
 		if total > 0 {
-			result[channelID] = float64(success) / float64(total)
+			result[channelID] = model.ChannelHealthStats{
+				SuccessRate: float64(success) / float64(total),
+				SampleCount: total,
+			}
 		}
 	}
 

@@ -63,8 +63,11 @@ func TestGetChannelSuccessRates_IgnoresClientNoise(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected channel %d in rates", created.ID)
 	}
-	if got < 0.39 || got > 0.41 {
-		t.Fatalf("expected success rate ~0.4, got %v", got)
+	if got.SuccessRate < 0.39 || got.SuccessRate > 0.41 {
+		t.Fatalf("expected success rate ~0.4, got %v", got.SuccessRate)
+	}
+	if got.SampleCount != 5 {
+		t.Fatalf("expected sample count 5, got %d", got.SampleCount)
 	}
 }
 

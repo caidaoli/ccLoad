@@ -16,9 +16,9 @@ type HealthCache struct {
 	store  storage.Store
 	config model.HealthScoreConfig
 
-	// 成功率缓存：使用原子指针实现无锁快照替换
+	// 健康统计缓存：使用原子指针实现无锁快照替换
 	// 读取时直接Load，更新时用新map整体替换，避免遍历删除的并发问题
-	successRates atomic.Pointer[map[int64]float64]
+	healthStats atomic.Pointer[map[int64]model.ChannelHealthStats]
 
 	// 控制
 	stopCh chan struct{}
@@ -38,8 +38,8 @@ func NewHealthCache(store storage.Store, config model.HealthScoreConfig, shutdow
 		isShuttingDown: isShuttingDown,
 	}
 	// 初始化空map
-	emptyMap := make(map[int64]float64)
-	h.successRates.Store(&emptyMap)
+	emptyMap := make(map[int64]model.ChannelHealthStats)
+	h.healthStats.Store(&emptyMap)
 	return h
 }
 
@@ -87,38 +87,42 @@ func (h *HealthCache) update() {
 	defer cancel()
 
 	since := time.Now().Add(-time.Duration(h.config.WindowMinutes) * time.Minute)
-	rates, err := h.store.GetChannelSuccessRates(ctx, since)
+	stats, err := h.store.GetChannelSuccessRates(ctx, since)
 	if err != nil {
 		log.Printf("[WARN] 更新渠道成功率缓存失败: %v", err)
 		return
 	}
 
 	// 原子替换：用新快照整体替换旧数据，避免遍历删除的并发问题
-	h.successRates.Store(&rates)
+	h.healthStats.Store(&stats)
 }
 
-// GetSuccessRate 获取渠道成功率，不存在返回1.0（新渠道不惩罚）
-func (h *HealthCache) GetSuccessRate(channelID int64) float64 {
-	rates := h.successRates.Load()
-	if rates == nil {
-		return 1.0
+// GetHealthStats 获取渠道健康统计，不存在返回默认值（新渠道不惩罚）
+func (h *HealthCache) GetHealthStats(channelID int64) model.ChannelHealthStats {
+	stats := h.healthStats.Load()
+	if stats == nil {
+		return model.ChannelHealthStats{SuccessRate: 1.0, SampleCount: 0}
 	}
-	if v, ok := (*rates)[channelID]; ok {
+	if v, ok := (*stats)[channelID]; ok {
 		return v
 	}
-	return 1.0 // 新渠道默认成功率100%
+	return model.ChannelHealthStats{SuccessRate: 1.0, SampleCount: 0} // 新渠道默认成功率100%
 }
 
-// GetAllSuccessRates 获取所有渠道成功率（返回快照副本）
+// GetSuccessRate 获取渠道成功率（兼容旧接口）
+func (h *HealthCache) GetSuccessRate(channelID int64) float64 {
+	return h.GetHealthStats(channelID).SuccessRate
+}
+
+// GetAllSuccessRates 获取所有渠道成功率（返回快照副本，兼容旧接口）
 func (h *HealthCache) GetAllSuccessRates() map[int64]float64 {
-	rates := h.successRates.Load()
-	if rates == nil {
+	stats := h.healthStats.Load()
+	if stats == nil {
 		return make(map[int64]float64)
 	}
-	// 返回副本，避免调用方修改影响缓存
-	result := make(map[int64]float64, len(*rates))
-	for k, v := range *rates {
-		result[k] = v
+	result := make(map[int64]float64, len(*stats))
+	for k, v := range *stats {
+		result[k] = v.SuccessRate
 	}
 	return result
 }

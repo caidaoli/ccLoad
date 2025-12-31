@@ -408,6 +408,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"success_rate_penalty_weight", "100", "float", "成功率惩罚权重(乘以失败率)", "100"},
 		{"health_score_window_minutes", "30", "int", "成功率统计时间窗口(分钟)", "30"},
 		{"health_score_update_interval", "30", "int", "成功率缓存更新间隔(秒)", "30"},
+		{"health_min_confident_sample", "20", "int", "置信样本量阈值(样本量达到此值时惩罚全额生效)", "20"},
 		// 冷却兜底配置
 		{"cooldown_fallback_threshold", "true", "bool", "全冷却兜底开关", "true"},
 	}
