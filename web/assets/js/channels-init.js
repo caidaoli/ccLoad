@@ -57,6 +57,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupFilterListeners();
   setupImportExport();
   setupKeyImportPreview();
+  setupModelImportPreview();
 
   await window.ChannelTypeManager.renderChannelTypeRadios('channelTypeRadios');
 

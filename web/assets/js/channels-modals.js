@@ -296,18 +296,92 @@ function generateCopyName(originalName) {
   return proposedName;
 }
 
-function addRedirectRow() {
-  redirectTableData.push({ model: '', redirect_model: '' });
-  renderRedirectTable();
+// 解析模型输入，支持逗号和换行分隔
+function parseModels(input) {
+  const models = input
+    .split(/[,\n]/)
+    .map(m => m.trim())
+    .filter(m => m);
+  return [...new Set(models)];
+}
 
-  setTimeout(() => {
-    const tbody = document.getElementById('redirectTableBody');
-    const lastRow = tbody.lastElementChild;
-    if (lastRow) {
-      const firstInput = lastRow.querySelector('input');
-      if (firstInput) firstInput.focus();
+function addRedirectRow() {
+  openModelImportModal();
+}
+
+function openModelImportModal() {
+  document.getElementById('modelImportTextarea').value = '';
+  document.getElementById('modelImportPreview').style.display = 'none';
+  document.getElementById('modelImportModal').classList.add('show');
+  setTimeout(() => document.getElementById('modelImportTextarea').focus(), 100);
+}
+
+function closeModelImportModal() {
+  document.getElementById('modelImportModal').classList.remove('show');
+}
+
+function setupModelImportPreview() {
+  const textarea = document.getElementById('modelImportTextarea');
+  if (!textarea) return;
+
+  textarea.addEventListener('input', () => {
+    const input = textarea.value.trim();
+    const preview = document.getElementById('modelImportPreview');
+    const countSpan = document.getElementById('modelImportCount');
+
+    if (input) {
+      const models = parseModels(input);
+      if (models.length > 0) {
+        countSpan.textContent = models.length;
+        preview.style.display = 'block';
+      } else {
+        preview.style.display = 'none';
+      }
+    } else {
+      preview.style.display = 'none';
     }
-  }, 50);
+  });
+}
+
+function confirmModelImport() {
+  const textarea = document.getElementById('modelImportTextarea');
+  const input = textarea.value.trim();
+
+  if (!input) {
+    window.showNotification('请输入模型名称', 'warning');
+    return;
+  }
+
+  const newModels = parseModels(input);
+  if (newModels.length === 0) {
+    window.showNotification('未解析到有效模型', 'warning');
+    return;
+  }
+
+  // 获取现有模型名称用于去重
+  const existingModels = new Set(redirectTableData.map(r => r.model));
+  let addedCount = 0;
+
+  newModels.forEach(model => {
+    if (!existingModels.has(model)) {
+      redirectTableData.push({ model: model, redirect_model: '' });
+      existingModels.add(model);
+      addedCount++;
+    }
+  });
+
+  renderRedirectTable();
+  closeModelImportModal();
+
+  if (addedCount > 0) {
+    const duplicateCount = newModels.length - addedCount;
+    const msg = duplicateCount > 0
+      ? `成功添加 ${addedCount} 个模型，${duplicateCount} 个重复已忽略`
+      : `成功添加 ${addedCount} 个模型`;
+    window.showNotification(msg, 'success');
+  } else {
+    window.showNotification('所有模型已存在，无新增', 'info');
+  }
 }
 
 function deleteRedirectRow(index) {
@@ -548,11 +622,19 @@ function updateModelBatchDeleteButton() {
   if (count > 0) {
     btn.disabled = false;
     if (textSpan) textSpan.textContent = `删除选中 (${count})`;
-    btn.classList.add('btn-danger-active');
+    btn.style.cursor = 'pointer';
+    btn.style.opacity = '1';
+    btn.style.background = 'linear-gradient(135deg, #fef2f2 0%, #fecaca 100%)';
+    btn.style.borderColor = '#fca5a5';
+    btn.style.color = '#dc2626';
   } else {
     btn.disabled = true;
     if (textSpan) textSpan.textContent = '删除选中';
-    btn.classList.remove('btn-danger-active');
+    btn.style.cursor = '';
+    btn.style.opacity = '0.5';
+    btn.style.background = '';
+    btn.style.borderColor = '';
+    btn.style.color = '';
   }
 }
 

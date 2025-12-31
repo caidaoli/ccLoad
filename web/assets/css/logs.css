@@ -138,16 +138,15 @@
       display: inline-block;
       position: relative;
       padding: 2px 8px;
-      background: var(--neutral-100);
+      background: var(--primary-50);
+      border: 1px solid var(--primary-200);
       border-radius: 4px;
       font-size: 0.9em;
-      color: var(--neutral-700);
+      color: var(--primary-700);
     }
 
     .model-tag.model-redirected {
       padding-right: 18px;
-      background: var(--warning-50);
-      border: 1px solid var(--warning-200);
     }
 
     .model-text {

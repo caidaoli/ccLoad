@@ -176,7 +176,7 @@
                 disabled
                 title="批量删除选中的Keys"
                 class="btn btn-secondary btn-sm"
-                style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; opacity: 0.5; cursor: not-allowed;"
+                style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; opacity: 0.5;"
               >
                 <svg width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
                   <path d="M5.5 2.5V1.5C5.5 1.22386 5.72386 1 6 1H8C8.27614 1 8.5 1.22386 8.5 1.5V2.5M2 3.5H12M3 3.5V11.5C3 12.0523 3.44772 12.5 4 12.5H10C10.5523 12.5 11 12.0523 11 11.5V3.5M5.5 6.5V9.5M8.5 6.5V9.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -261,7 +261,7 @@
                 disabled
                 title="批量删除选中的模型"
                 class="btn btn-secondary btn-sm"
-                style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; opacity: 0.5; cursor: not-allowed;"
+                style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; opacity: 0.5;"
               >
                 <svg width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
                   <path d="M5.5 2.5V1.5C5.5 1.22386 5.72386 1 6 1H8C8.27614 1 8.5 1.22386 8.5 1.5V2.5M2 3.5H12M3 3.5V11.5C3 12.0523 3.44772 12.5 4 12.5H10C10.5523 12.5 11 12.0523 11 11.5V3.5M5.5 6.5V9.5M8.5 6.5V9.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -476,6 +476,62 @@
       <div class="form-actions">
         <button type="button" class="btn btn-secondary" onclick="closeKeyImportModal()">取消</button>
         <button type="button" class="btn btn-primary" onclick="confirmInlineKeyImport()">确认导入</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 模型导入模态框 -->
+  <div id="modelImportModal" class="modal">
+    <div class="modal-content" style="max-width: 600px;">
+      <div class="modal-header">
+        <h2 class="modal-title">批量添加模型</h2>
+        <button class="close-btn" onclick="closeModelImportModal()" style="width: 28px; height: 28px; border-radius: 50%; border: none; background: var(--neutral-100); color: var(--neutral-600); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;" onmouseover="this.style.background='var(--neutral-200)'" onmouseout="this.style.background='var(--neutral-100)'">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M10.5 3.5L3.5 10.5M3.5 3.5L10.5 10.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+      <div style="padding: 20px;">
+        <div class="form-group" style="margin-bottom: 12px;">
+          <label class="form-label" style="margin-bottom: 8px;">输入模型名称 <span style="color: var(--neutral-500); font-size: 13px; font-weight: normal;">(支持逗号或换行分隔)</span></label>
+          <textarea
+            id="modelImportTextarea"
+            class="form-input"
+            rows="10"
+            placeholder="gpt-4o,gpt-4o-mini&#10;claude-3-5-sonnet-20241022&#10;claude-3-5-haiku-latest"
+            style="resize: vertical; min-height: 200px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace; font-size: 13px;"
+          ></textarea>
+        </div>
+        <div style="padding: 12px; background: var(--info-50); border: 1px solid var(--info-500); border-radius: 6px; color: var(--neutral-700); font-size: 13px; margin-bottom: 16px;">
+          <div style="display: flex; align-items: flex-start; gap: 8px;">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex-shrink: 0; margin-top: 2px;">
+              <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M8 5V8.5M8 11H8.005" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <div>
+              <strong>使用说明：</strong>
+              <ul style="margin: 6px 0 0 0; padding-left: 16px; line-height: 1.6;">
+                <li>支持逗号分隔：<code style="background: rgba(0,0,0,0.05); padding: 2px 4px; border-radius: 3px;">model1,model2,model3</code></li>
+                <li>支持换行分隔：每行一个模型</li>
+                <li>自动去除空格、空行和重复模型</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+        <div id="modelImportPreview" style="display: none; margin-bottom: 16px;">
+          <div style="padding: 12px; background: var(--success-50); border: 1px solid var(--success-500); border-radius: 6px; color: var(--success-600);">
+            <div style="display: flex; align-items: center; gap: 8px; font-weight: 600;">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M3 8L6.5 11.5L13 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span>解析成功：将添加 <span id="modelImportCount">0</span> 个模型</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" onclick="closeModelImportModal()">取消</button>
+        <button type="button" class="btn btn-primary" onclick="confirmModelImport()">确认添加</button>
       </div>
     </div>
   </div>
