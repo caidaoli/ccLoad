@@ -231,7 +231,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 			statusCode int
 			expected   time.Duration
 		}{
-			{"429限流错误", 429, util.OtherErrorInitialCooldown},
+			{"429限流错误", 429, util.RateLimitErrorCooldown},
 			{"500服务器错误", 500, util.ServerErrorInitialCooldown},
 			{"502网关错误", 502, util.ServerErrorInitialCooldown},
 		}

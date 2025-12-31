@@ -116,7 +116,7 @@ func TestCalculateBackoffDuration_OtherErrors(t *testing.T) {
 		statusCode int
 		expected   time.Duration
 	}{
-		{429, 10 * time.Second}, // Too Many Requests
+		{429, time.Minute}, // Too Many Requests - 1分钟冷却
 	}
 
 	for _, tt := range tests {
@@ -149,34 +149,24 @@ func TestCalculateBackoffDuration_TimeoutError(t *testing.T) {
 
 func TestCalculateBackoffDuration_ExponentialBackoff(t *testing.T) {
 	now := time.Now()
-	statusCode := 429
+	statusCode := 500 // 使用服务器错误测试指数退避（2分钟起始）
 
-	// 测试指数退避序列：10s -> 20s -> 40s -> 80s -> 160s -> 30min(上限)
+	// 测试指数退避序列：2min -> 4min -> 8min -> 16min -> 30min(上限)
 	expectedSequence := []time.Duration{
-		10 * time.Second,
-		20 * time.Second,
-		40 * time.Second,
-		80 * time.Second,
-		160 * time.Second,
-		320 * time.Second,
-		640 * time.Second,
-		1280 * time.Second,
-		MaxCooldownDuration, // 应达到上限
+		2 * time.Minute,  // 初始
+		4 * time.Minute,  // 2x
+		8 * time.Minute,  // 4x
+		16 * time.Minute, // 8x
+		30 * time.Minute, // 达到上限
+		30 * time.Minute, // 保持上限
 	}
 
 	prevMs := int64(0)
 	for i, expected := range expectedSequence {
 		duration := CalculateBackoffDuration(prevMs, time.Time{}, now, &statusCode)
 
-		if i < len(expectedSequence)-1 {
-			if duration != expected {
-				t.Errorf("❌ 第%d次退避应为%v，实际%v", i+1, expected, duration)
-			}
-		} else {
-			// 最后一次应触发上限
-			if duration != MaxCooldownDuration {
-				t.Errorf("❌ 指数退避应达到上限%v，实际%v", MaxCooldownDuration, duration)
-			}
+		if duration != expected {
+			t.Errorf("❌ 第%d次退避应为%v，实际%v", i+1, expected, duration)
 		}
 
 		prevMs = int64(duration / time.Millisecond)
