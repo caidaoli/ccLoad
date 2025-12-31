@@ -32,6 +32,21 @@ type ChannelMetric struct {
 	CacheCreationTokens     int64    `json:"cache_creation_tokens,omitempty"`       // 缓存创建Token
 }
 
+// HealthPoint 健康状态数据点（用于健康状态指示器）
+type HealthPoint struct {
+	Ts                       time.Time `json:"ts"`                    // 时间点
+	SuccessRate              float64   `json:"rate"`                  // 成功率 (0-1), -1表示无数据
+	SuccessCount             int       `json:"success"`               // 成功次数
+	ErrorCount               int       `json:"error"`                 // 失败次数
+	AvgFirstByteTime         float64   `json:"avg_first_byte_time"`   // 平均首字时间(秒)
+	AvgDuration              float64   `json:"avg_duration"`          // 平均耗时(秒)
+	TotalInputTokens         int64     `json:"input_tokens"`          // 输入Token
+	TotalOutputTokens        int64     `json:"output_tokens"`         // 输出Token
+	TotalCacheReadTokens     int64     `json:"cache_read_tokens"`     // 缓存读取Token
+	TotalCacheCreationTokens int64     `json:"cache_creation_tokens"` // 缓存创建Token
+	TotalCost                float64   `json:"cost"`                  // 成本(美元)
+}
+
 // StatsEntry 统计数据条目
 type StatsEntry struct {
 	ChannelID               *int     `json:"channel_id,omitempty"`
@@ -55,6 +70,9 @@ type StatsEntry struct {
 	TotalCacheReadInputTokens     *int64   `json:"total_cache_read_input_tokens,omitempty"`     // 总缓存读取Token
 	TotalCacheCreationInputTokens *int64   `json:"total_cache_creation_input_tokens,omitempty"` // 总缓存创建Token
 	TotalCost                     *float64 `json:"total_cost,omitempty"`                        // 总成本（美元）
+
+	// 健康状态时间线（2025-12新增）
+	HealthTimeline []HealthPoint `json:"health_timeline,omitempty"` // 固定24个时间点的健康状态
 }
 
 // RPMStats 包含RPM/QPS相关的统计数据

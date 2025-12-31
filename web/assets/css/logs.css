@@ -15,11 +15,11 @@
 
     .test-key-btn:hover {
       background: var(--primary-100);
-      transform: scale(1.1);
+      transform: none;
     }
 
     .test-key-btn:active {
-      transform: scale(0.95);
+      transform: none;
     }
 
     /* 测试模态框样式 */

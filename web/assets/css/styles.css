@@ -315,7 +315,7 @@ body {
 }
 
 .glass-card:hover {
-  transform: translateY(-4px);
+  transform: none;
   box-shadow: var(--glass-shadow-hover);
   border-color: rgba(255, 255, 255, 0.3);
 }
@@ -392,7 +392,7 @@ body {
 }
 
 .channel-card:hover {
-  transform: translateY(-2px);
+  transform: none;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1), 0 2px 8px rgba(0, 0, 0, 0.06);
   border-color: rgba(255, 255, 255, 0.4);
 }
@@ -531,7 +531,7 @@ body {
 }
 
 .summary-card:hover {
-  transform: translateY(-2px);
+  transform: none;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1), 0 2px 8px rgba(0, 0, 0, 0.06);
 }
 
@@ -678,14 +678,14 @@ body {
 .toggle-btn:hover { 
   color: rgba(0, 0, 0, 0.85);
   background: rgba(255, 255, 255, 0.18);
-  transform: scale(1.02);
+  transform: none;
 }
 .toggle-btn.active {
   background: rgba(255, 255, 255, 0.95);
   color: #4f46e5;
   font-weight: 650;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15), 0 1px 3px rgba(0, 0, 0, 0.1);
-  transform: scale(1.02);
+  transform: none;
   text-shadow: none;
 }
 
@@ -758,7 +758,7 @@ body {
 }
 
 .btn-primary:hover {
-  transform: translateY(-2px);
+  transform: none;
   box-shadow: 0 8px 25px rgba(59, 130, 246, 0.4);
 }
 
@@ -769,7 +769,7 @@ body {
 }
 
 .btn-warning:hover {
-  transform: translateY(-2px);
+  transform: none;
   box-shadow: 0 8px 25px rgba(245, 158, 11, 0.4);
 }
 
@@ -782,7 +782,7 @@ body {
 
 .btn-secondary:hover {
   background: rgba(255, 255, 255, 0.9);
-  transform: translateY(-1px);
+  transform: none;
   box-shadow: var(--shadow-lg);
 }
 
@@ -792,7 +792,7 @@ body {
 }
 
 .btn-success:hover {
-  transform: translateY(-2px);
+  transform: none;
   box-shadow: 0 8px 25px rgba(16, 185, 129, 0.4);
 }
 
@@ -804,7 +804,7 @@ body {
 
 .btn-danger:hover {
   background: #dc2626;
-  transform: translateY(-2px) scale(1.05);
+  transform: none;
   box-shadow: 0 8px 25px rgba(239, 68, 68, 0.4);
 }
 
@@ -863,7 +863,7 @@ body {
   outline: none;
   border-color: var(--primary-500);
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-  transform: translateY(-1px);
+  transform: none;
   background: white;
 }
 
@@ -934,7 +934,7 @@ body {
 .nav-link:hover {
   background: rgba(59, 130, 246, 0.15);
   color: var(--primary-700);
-  transform: translateX(4px);
+  transform: none;
 }
 
 .nav-link:hover::before {
@@ -1370,6 +1370,20 @@ body {
   background: rgba(0, 0, 0, 0.02);
 }
 
+/* 统计页表格：减少列间距（更紧凑，避免横向溢出） */
+.stats-table th {
+  padding: var(--space-3) var(--space-3);
+}
+
+.stats-table td {
+  padding: var(--space-2) var(--space-3);
+}
+
+/* 统计页“详细统计数据”卡片：禁用 hover 位移，避免鼠标悬停导致整体“晃动” */
+.stats-detail-card:hover {
+  transform: none;
+}
+
 /* ===== 内联编辑表格（Modal内的Key/模型表格） ===== */
 .inline-table-container {
   max-height: 250px;
@@ -1478,7 +1492,7 @@ body {
 
 .add-channel-btn:hover {
   background: var(--primary-600);
-  transform: scale(1.1);
+  transform: none;
   box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
 }
 
@@ -2325,12 +2339,12 @@ body.trend-page .chart-info {
 }
 
 .login-button:hover {
-  transform: translateY(-2px);
+  transform: none;
   box-shadow: 0 12px 36px rgba(10, 132, 255, 0.35);
 }
 
 .login-button:active {
-  transform: translateY(0);
+  transform: none;
 }
 
 .login-button:disabled {

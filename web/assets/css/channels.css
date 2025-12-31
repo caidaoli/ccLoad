@@ -26,7 +26,7 @@
     }
 
     input[type="radio"]:hover {
-      transform: scale(1.1);
+      transform: none;
     }
 
     /* 单选框标签样式 */
@@ -195,4 +195,50 @@
     }
     .draggable-key-row.drag-over {
       border-top: 2px solid var(--primary-500) !important;
+    }
+
+    /* 健康状态指示器 */
+    .health-indicator {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      margin-top: 4px;
+      flex-wrap: wrap;
+    }
+
+    .health-block {
+      width: 6px;
+      height: 12px;
+      border-radius: 1px;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+      position: relative;
+    }
+
+    .health-block:hover {
+      transform: none;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+      z-index: 10;
+    }
+
+    .health-block.healthy {
+      background: #22c55e;
+    }
+
+    .health-block.warning {
+      background: #f59e0b;
+    }
+
+    .health-block.critical {
+      background: #ef4444;
+    }
+
+    .health-block.unknown {
+      background: #d1d5db;
+    }
+
+    .health-rate {
+      margin-left: 6px;
+      font-size: 11px;
+      font-weight: 500;
+      white-space: nowrap;
     }

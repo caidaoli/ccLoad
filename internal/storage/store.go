@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"time"
 
 	"ccLoad/internal/model"
@@ -67,6 +68,7 @@ type Store interface {
 	GetStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) ([]model.StatsEntry, error)
 	GetRPMStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) (*model.RPMStats, error)
 	GetChannelSuccessRates(ctx context.Context, since time.Time) (map[int64]float64, error)
+	GetHealthTimeline(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 
 	// === Auth Token Management ===
 	CreateAuthToken(ctx context.Context, token *model.AuthToken) error

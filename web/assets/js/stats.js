@@ -277,10 +277,14 @@
         const costText = entry.total_cost ?
           `<span style="color: var(--warning-600); font-weight: 500;">${formatCost(entry.total_cost)}</span>` : '';
 
+        // 构建健康状态指示器
+        const healthIndicator = buildHealthIndicator(entry.health_timeline, successRate / 100);
+
         const row = TemplateEngine.render('tpl-stats-row', {
           channelId: entry.channel_id,
           channelName: escapeHtml(entry.channel_name),
           channelIdBadge: entry.channel_id ? `<span class="channel-id">(ID: ${entry.channel_id})</span>` : '',
+          healthIndicator: healthIndicator,
           modelDisplay: modelDisplay,
           successCount: formatNumber(entry.success || 0),
           errorCount: formatNumber(entry.error || 0),
@@ -553,6 +557,84 @@
       } else {
         return 'var(--error-600)'; // 红色：慢速
       }
+    }
+
+    // 构建健康状态指示器 HTML（固定48个方块 + 当前成功率）
+    function buildHealthIndicator(timeline, currentRate) {
+      if (!timeline || timeline.length === 0) {
+        // 无健康数据时不显示指示器
+        return '';
+      }
+
+      // 后端已返回固定48个时间点，rate=-1 表示无数据
+      const blocks = [];
+
+      for (let i = 0; i < timeline.length; i++) {
+        const point = timeline[i];
+        const rate = point.rate;
+
+        // rate < 0 表示该时间桶无数据
+        if (rate < 0) {
+          blocks.push('<span class="health-block unknown" title="无数据"></span>');
+          continue;
+        }
+
+        let className = 'unknown';
+        if (rate >= 0.95) {
+          className = 'healthy';
+        } else if (rate >= 0.80) {
+          className = 'warning';
+        } else if (rate >= 0) {
+          className = 'critical';
+        }
+
+        // 格式化时间用于 tooltip
+        const timeStr = new Date(point.ts).toLocaleString('zh-CN', {
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit'
+        });
+
+        // 构建详细的 tooltip - 每项单独一行
+        const tooltipLines = [timeStr];
+        tooltipLines.push(`成功: ${point.success || 0} / 失败: ${point.error || 0}`);
+        if (point.avg_first_byte_time > 0) {
+          tooltipLines.push(`首字: ${point.avg_first_byte_time.toFixed(2)}s`);
+        }
+        if (point.avg_duration > 0) {
+          tooltipLines.push(`耗时: ${point.avg_duration.toFixed(2)}s`);
+        }
+        if (point.input_tokens > 0) {
+          tooltipLines.push(`输入: ${formatNumber(point.input_tokens)}`);
+        }
+        if (point.output_tokens > 0) {
+          tooltipLines.push(`输出: ${formatNumber(point.output_tokens)}`);
+        }
+        if (point.cache_read_tokens > 0) {
+          tooltipLines.push(`缓存读: ${formatNumber(point.cache_read_tokens)}`);
+        }
+        if (point.cache_creation_tokens > 0) {
+          tooltipLines.push(`缓存写: ${formatNumber(point.cache_creation_tokens)}`);
+        }
+        if (point.cost > 0) {
+          tooltipLines.push(`成本: $${point.cost.toFixed(4)}`);
+        }
+        const title = tooltipLines.join('\n');
+
+        blocks.push(`<span class="health-block ${className}" title="${escapeHtml(title)}"></span>`);
+      }
+
+      // 构建完整 HTML - 成功率颜色：>=95%绿色, >=80%橙色, <80%红色
+      const ratePercent = (currentRate * 100).toFixed(1);
+      const rateColor = currentRate >= 0.95 ? 'var(--success-600)' :
+                        currentRate >= 0.80 ? 'var(--warning-600)' : 'var(--error-600)';
+      return `
+        <div class="health-indicator">
+          ${blocks.join('')}
+          <span class="health-rate" style="color: ${rateColor}">${ratePercent}%</span>
+        </div>
+      `;
     }
 
     // 注销功能（已由 ui.js 的 onLogout 统一处理）

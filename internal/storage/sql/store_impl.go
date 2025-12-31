@@ -54,6 +54,11 @@ type SQLStore struct {
 	closeOnce sync.Once
 }
 
+// GetHealthTimeline 执行健康时间线查询（用于 stats API）
+func (s *SQLStore) GetHealthTimeline(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return s.db.QueryContext(ctx, query, args...)
+}
+
 // NewSQLStore 创建通用SQL存储实例
 // db: 数据库连接（由调用方初始化）
 // driverName: "sqlite" 或 "mysql"
