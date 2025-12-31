@@ -135,8 +135,14 @@ function renderInput(setting) {
 
   switch (setting.value_type) {
     case 'bool':
-      const checked = setting.value === 'true' || setting.value === '1';
-      return `<input type="checkbox" id="${safeKey}" ${checked ? 'checked' : ''} style="width: 18px; height: 18px; cursor: pointer;">`;
+      const isTrue = setting.value === 'true' || setting.value === '1';
+      return `
+        <label style="margin-right: 16px; cursor: pointer;">
+          <input type="radio" name="${safeKey}" value="true" ${isTrue ? 'checked' : ''} style="cursor: pointer;"> 启用
+        </label>
+        <label style="cursor: pointer;">
+          <input type="radio" name="${safeKey}" value="false" ${!isTrue ? 'checked' : ''} style="cursor: pointer;"> 禁用
+        </label>`;
     case 'int':
     case 'duration':
       return `<input type="number" id="${safeKey}" value="${safeValue}" style="${baseStyle} width: 100px; text-align: right;">`;
@@ -146,10 +152,18 @@ function renderInput(setting) {
 }
 
 function markChanged(input) {
-  const key = input.id;
   const row = input.closest('tr');
+  let key, currentValue;
 
-  const currentValue = input.type === 'checkbox' ? (input.checked ? 'true' : 'false') : input.value;
+  if (input.type === 'radio') {
+    key = input.name;
+    const checkedRadio = row.querySelector(`input[name="${key}"]:checked`);
+    currentValue = checkedRadio ? checkedRadio.value : '';
+  } else {
+    key = input.id;
+    currentValue = input.value;
+  }
+
   if (currentValue !== originalSettings[key]) {
     row.style.background = 'rgba(59, 130, 246, 0.08)';
   } else {
@@ -161,12 +175,29 @@ async function saveAllSettings() {
   // 收集所有变更
   const updates = {};
   const needsRestartKeys = [];
+  const processedRadioGroups = new Set();
 
   for (const key of Object.keys(originalSettings)) {
-    const input = document.getElementById(key);
-    if (!input) continue;
+    // 先尝试通过 id 查找（number/text 类型）
+    let input = document.getElementById(key);
+    let currentValue;
 
-    const currentValue = input.type === 'checkbox' ? (input.checked ? 'true' : 'false') : input.value;
+    if (input) {
+      currentValue = input.value;
+    } else {
+      // 尝试通过 name 查找 radio 组（bool 类型）
+      if (processedRadioGroups.has(key)) continue;
+      const radios = document.querySelectorAll(`input[name="${key}"]`);
+      if (radios.length > 0) {
+        processedRadioGroups.add(key);
+        const checkedRadio = document.querySelector(`input[name="${key}"]:checked`);
+        currentValue = checkedRadio ? checkedRadio.value : '';
+        input = radios[0]; // 用于获取 row
+      } else {
+        continue;
+      }
+    }
+
     if (currentValue !== originalSettings[key]) {
       updates[key] = currentValue;
       // 检查是否需要重启（从 DOM 中读取 description）

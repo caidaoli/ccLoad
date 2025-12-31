@@ -409,7 +409,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"health_score_window_minutes", "30", "int", "成功率统计时间窗口(分钟)", "30"},
 		{"health_score_update_interval", "30", "int", "成功率缓存更新间隔(秒)", "30"},
 		// 冷却兜底配置
-		{"cooldown_fallback_threshold", "1", "int", "全冷却兜底开关(0=禁用,非0=启用)", "1"},
+		{"cooldown_fallback_threshold", "true", "bool", "全冷却兜底开关", "true"},
 	}
 
 	var query string
@@ -425,15 +425,21 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		}
 	}
 
-	// 元数据修正：历史版本里 cooldown_fallback_threshold 被当成“秒阈值”展示。
-	// 现在语义是开关(0禁用/非0启用)，仅更新 description/default_value，不动用户当前 value。
+	// 元数据修正：cooldown_fallback_threshold 从 int 改为 bool 类型
+	// 迁移：value_type 改为 bool，description 和 default_value 更新，保留用户当前语义（非0视为true）
 	{
 		keyCol := "key"
 		if dialect == DialectMySQL {
 			keyCol = "`key`"
 		}
-		metaSQL := fmt.Sprintf("UPDATE system_settings SET description = ?, default_value = ? WHERE %s = ?", keyCol)
-		if _, err := db.ExecContext(ctx, metaSQL, "全冷却兜底开关(0=禁用,非0=启用)", "1", "cooldown_fallback_threshold"); err != nil {
+		// 先将旧的 int 值(0/非0)迁移为 bool 值(false/true)
+		valueMigrateSQL := fmt.Sprintf(`UPDATE system_settings SET value = CASE WHEN value = '0' THEN 'false' ELSE 'true' END WHERE %s = ? AND value_type = 'int'`, keyCol)
+		if _, err := db.ExecContext(ctx, valueMigrateSQL, "cooldown_fallback_threshold"); err != nil {
+			return fmt.Errorf("migrate setting value cooldown_fallback_threshold: %w", err)
+		}
+		// 更新元数据
+		metaSQL := fmt.Sprintf("UPDATE system_settings SET description = ?, default_value = ?, value_type = ? WHERE %s = ?", keyCol)
+		if _, err := db.ExecContext(ctx, metaSQL, "全冷却兜底开关", "true", "bool", "cooldown_fallback_threshold"); err != nil {
 			return fmt.Errorf("update setting metadata cooldown_fallback_threshold: %w", err)
 		}
 	}

@@ -215,14 +215,14 @@ func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpk
 	// 先执行冷却过滤，保证冷却语义不被绕开（正确性优先）
 	filtered := s.filterCooledChannels(channels, channelCooldowns, keyCooldowns, now)
 	if len(filtered) == 0 {
-		// 全冷却兜底：简化为开关（0=禁用，非0=启用）
-		// 启用时：直接返回“最早恢复”的渠道，让上层继续走正常流程（不要再搞阈值这类花活）。
+		// 全冷却兜底：开关控制（false=禁用，true=启用）
+		// 启用时：直接返回"最早恢复"的渠道，让上层继续走正常流程（不要再搞阈值这类花活）。
 		fallbackEnabled := true
 		if s.configService != nil {
-			fallbackEnabled = s.configService.GetInt("cooldown_fallback_threshold", 1) != 0
+			fallbackEnabled = s.configService.GetBool("cooldown_fallback_threshold", true)
 		}
 		if !fallbackEnabled {
-			log.Printf("[INFO] All channels cooled, fallback disabled (cooldown_fallback_threshold=0)")
+			log.Printf("[INFO] All channels cooled, fallback disabled (cooldown_fallback_threshold=false)")
 			return nil, nil
 		}
 
