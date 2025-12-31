@@ -167,6 +167,11 @@ var modelAliases = map[string]string{
 
 	// o系列别名
 	"o4-mini-deep-research": "o3-deep-research", // 相同定价
+
+	// Gemini Claude 别名（第三方封装）
+	"gemini-claude-opus-4-5-thinking":   "claude-opus-4-5",
+	"gemini-claude-sonnet-4-5-thinking": "claude-sonnet-4-5",
+	"gemini-claude-sonnet-4-5":          "claude-sonnet-4-5",
 }
 
 // getPricing 获取模型定价（先查别名再查基础表）
