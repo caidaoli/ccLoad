@@ -146,6 +146,15 @@ func isStreamingRequest(path string, body []byte) bool {
 // buildUpstreamURL 构建上游完整URL（KISS）
 func buildUpstreamURL(cfg *model.Config, requestPath, rawQuery string) string {
 	upstreamURL := strings.TrimRight(cfg.URL, "/") + requestPath
+
+	// 移除 key 参数（Gemini API 认证格式），避免泄露到上游
+	if rawQuery != "" {
+		if values, err := neturl.ParseQuery(rawQuery); err == nil {
+			values.Del("key")
+			rawQuery = values.Encode()
+		}
+	}
+
 	if rawQuery != "" {
 		upstreamURL += "?" + rawQuery
 	}
