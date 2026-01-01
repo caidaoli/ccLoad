@@ -309,12 +309,6 @@ func (s *Server) HandleHealth(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, gin.H{"status": "ok"})
 }
 
-// HandleActiveRequests 返回当前进行中的请求列表（内存状态，不持久化）
-func (s *Server) HandleActiveRequests(c *gin.Context) {
-	requests := activeReqMgr.List()
-	RespondJSONWithCount(c, http.StatusOK, requests, len(requests))
-}
-
 // fillHealthTimeline 为每个统计条目填充健康时间线
 // isToday=true: 显示最近4小时，每5分钟一个状态（48个）
 // isToday=false: 按总时间跨度/48计算时间桶

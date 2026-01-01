@@ -148,6 +148,11 @@ func (s *Server) handleSpecialRoutes(c *gin.Context) bool {
 
 // HandleProxyRequest 通用透明代理处理器
 func (s *Server) HandleProxyRequest(c *gin.Context) {
+	// 允许测试/最小化Server构造：避免 activeRequests 未初始化导致崩溃
+	if s.activeRequests == nil {
+		s.activeRequests = newActiveRequestManager()
+	}
+
 	// 并发控制
 	release, ok := s.acquireConcurrencySlot(c)
 	if !ok {
@@ -174,8 +179,8 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	}
 
 	// 注册活跃请求（内存状态，用于前端实时显示）
-	activeID := activeReqMgr.Register(originalModel, c.ClientIP(), isStreaming)
-	defer activeReqMgr.Remove(activeID)
+	activeID := s.activeRequests.Register(originalModel, c.ClientIP(), isStreaming)
+	defer s.activeRequests.Remove(activeID)
 
 	timeout := parseTimeout(c.Request.URL.Query(), c.Request.Header)
 	ctx := c.Request.Context()

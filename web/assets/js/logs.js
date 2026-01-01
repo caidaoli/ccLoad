@@ -5,6 +5,51 @@
     let currentChannelType = 'all'; // 当前选中的渠道类型
     let authTokens = []; // 令牌列表
     let defaultTestContent = 'sonnet 4.0的发布日期是什么'; // 默认测试内容（从设置加载）
+
+    const ACTIVE_REQUESTS_POLL_INTERVAL_MS = 2000;
+    let activeRequestsPollTimer = null;
+    let activeRequestsPollInFlight = false;
+
+    function toUnixMs(value) {
+      if (value === undefined || value === null) return null;
+
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        // 兼容：秒(10位) / 毫秒(13位)
+        if (value > 1e12) return value;
+        if (value > 1e9) return value * 1000;
+        return value;
+      }
+
+      if (typeof value === 'string') {
+        if (/^\d+$/.test(value)) {
+          const n = parseInt(value, 10);
+          if (!Number.isFinite(n)) return null;
+          return n > 1e12 ? n : n * 1000;
+        }
+        const parsed = Date.parse(value);
+        return Number.isNaN(parsed) ? null : parsed;
+      }
+
+      return null;
+    }
+
+    function clearActiveRequestsRows() {
+      document.querySelectorAll('tr.pending-row').forEach(el => el.remove());
+    }
+
+    function ensureActiveRequestsPollingStarted() {
+      if (activeRequestsPollTimer) return;
+      activeRequestsPollTimer = setInterval(async () => {
+        if (currentLogsPage !== 1) return;
+        if (activeRequestsPollInFlight) return;
+        activeRequestsPollInFlight = true;
+        try {
+          await fetchActiveRequests();
+        } finally {
+          activeRequestsPollInFlight = false;
+        }
+      }, ACTIVE_REQUESTS_POLL_INTERVAL_MS);
+    }
     // 生成流式标志HTML（公共函数，避免重复）
     function getStreamFlagHtml(isStreaming) {
       return isStreaming
@@ -73,18 +118,21 @@
           }
         }
 
-        updatePagination();
-        renderLogs(data);
-        updateStats(data);
+	        updatePagination();
+	        renderLogs(data);
+	        updateStats(data);
 
-        // 第一页时获取并显示进行中的请求
-        if (currentLogsPage === 1) {
-          await fetchActiveRequests();
-        }
+	        // 第一页时获取并显示进行中的请求（并开启轮询，做到真正“实时”）
+	        if (currentLogsPage === 1) {
+	          ensureActiveRequestsPollingStarted();
+	          await fetchActiveRequests();
+	        } else {
+	          clearActiveRequestsRows();
+	        }
 
-      } catch (error) {
-        console.error('加载日志失败:', error);
-        try { if (window.showError) window.showError('无法加载请求日志'); } catch(_){}
+	      } catch (error) {
+	        console.error('加载日志失败:', error);
+	        try { if (window.showError) window.showError('无法加载请求日志'); } catch(_){}
         renderLogsError();
       }
     }
@@ -100,19 +148,21 @@
       }
     }
 
-    // 渲染进行中的请求（插入到表格顶部）
-    function renderActiveRequests(activeRequests) {
-      // 移除旧的进行中行
-      document.querySelectorAll('tr.pending-row').forEach(el => el.remove());
+	    // 渲染进行中的请求（插入到表格顶部）
+	    function renderActiveRequests(activeRequests) {
+	      // 移除旧的进行中行
+	      clearActiveRequestsRows();
 
-      if (!activeRequests || activeRequests.length === 0) return;
+	      if (!activeRequests || activeRequests.length === 0) return;
 
-      const tbody = document.getElementById('tbody');
-      const firstRow = tbody.firstChild;
+	      const tbody = document.getElementById('tbody');
+	      const firstRow = tbody.firstChild;
+	      const totalCols = getTableColspan();
 
-      for (const req of activeRequests) {
-        const elapsed = ((Date.now() - req.start_time) / 1000).toFixed(1);
-        const streamFlag = getStreamFlagHtml(req.is_streaming);
+	      for (const req of activeRequests) {
+	        const startMs = toUnixMs(req.start_time);
+	        const elapsed = startMs ? ((Date.now() - startMs) / 1000).toFixed(1) : '-';
+	        const streamFlag = getStreamFlagHtml(req.is_streaming);
 
         // 渠道显示
         let channelDisplay = '<span style="color: var(--neutral-500);">选择中...</span>';
@@ -126,22 +176,36 @@
           keyDisplay = `<span style="font-family: monospace; font-size: 0.85em;">${escapeHtml(req.api_key_used)}</span>`;
         }
 
-        const row = document.createElement('tr');
-        row.className = 'pending-row';
-        row.innerHTML = `
-          <td>${formatTime(req.start_time)}</td>
-          <td>${escapeHtml(req.client_ip || '-')}</td>
-          <td class="config-info">${channelDisplay}</td>
-          <td><span class="model-tag">${escapeHtml(req.model)}</span></td>
-          <td style="text-align: center;">${keyDisplay}</td>
-          <td><span class="status-pending">进行中</span></td>
-          <td style="text-align: right;">${elapsed}s... ${streamFlag}</td>
-          <td></td><td></td><td></td><td></td><td></td>
-          <td><span style="color: var(--neutral-500);">请求处理中...</span></td>
-        `;
-        tbody.insertBefore(row, firstRow);
-      }
-    }
+	        const row = document.createElement('tr');
+	        row.className = 'pending-row';
+	        if (totalCols < 8) {
+	          row.innerHTML = `
+	            <td colspan="${totalCols}">
+	              <span class="status-pending">进行中</span>
+	              <span style="margin-left: 8px;">${formatTime(req.start_time)}</span>
+	              <span style="margin-left: 8px; color: var(--neutral-600);">${escapeHtml(req.client_ip || '-')}</span>
+	              <span style="margin-left: 8px;">${escapeHtml(req.model || '-')}</span>
+	              <span style="margin-left: 8px;">${elapsed}s... ${streamFlag}</span>
+	            </td>
+	          `;
+	        } else {
+	          const emptyCols = Math.max(0, totalCols - 8); // 7列固定信息 + 末尾消息列
+	          const emptyCells = '<td></td>'.repeat(emptyCols);
+	          row.innerHTML = `
+	            <td>${formatTime(req.start_time)}</td>
+	            <td>${escapeHtml(req.client_ip || '-')}</td>
+	            <td class="config-info">${channelDisplay}</td>
+	            <td><span class="model-tag">${escapeHtml(req.model)}</span></td>
+	            <td style="text-align: center;">${keyDisplay}</td>
+	            <td><span class="status-pending">进行中</span></td>
+	            <td style="text-align: right;">${elapsed}s... ${streamFlag}</td>
+	            ${emptyCells}
+	            <td><span style="color: var(--neutral-500);">请求处理中...</span></td>
+	          `;
+	        }
+	        tbody.insertBefore(row, firstRow);
+	      }
+	    }
 
     // ✅ 动态计算列数（避免硬编码维护成本）
     function getTableColspan() {
@@ -550,14 +614,10 @@
 
     function formatTime(timeStr) {
       try {
-        // 处理Unix timestamp（秒）或ISO字符串
-        let timestamp = timeStr;
-        if (typeof timeStr === 'number' || /^\d+$/.test(timeStr)) {
-          // Unix timestamp（秒）转换为毫秒
-          timestamp = parseInt(timeStr) * 1000;
-        }
+        const ts = toUnixMs(timeStr);
+        if (!ts) return '-';
 
-        const date = new Date(timestamp);
+        const date = new Date(ts);
         if (isNaN(date.getTime()) || date.getFullYear() < 2020) {
           return '-';
         }

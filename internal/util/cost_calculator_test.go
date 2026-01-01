@@ -194,6 +194,14 @@ func TestCalculateCost_OpenAIModels(t *testing.T) {
 	}
 }
 
+func TestCalculateCost_MimoModels(t *testing.T) {
+	cost := CalculateCostDetailed("mimo-v2-flash", 1_000_000, 1_000_000, 0, 0, 0)
+	expected := 0.10 + 0.30
+	if !floatEquals(cost, expected, 0.000001) {
+		t.Errorf("mimo-v2-flash: 成本 = %.6f, 期望 %.6f", cost, expected)
+	}
+}
+
 func TestCalculateCost_CacheSavings(t *testing.T) {
 	// 验证缓存节省（Cache Read vs 普通Input）
 	normalCost := CalculateCostDetailed("claude-sonnet-4-5", 10000, 0, 0, 0, 0)

@@ -114,6 +114,9 @@ var basePricing = map[string]ModelPricing{
 	"glm-4.5-airx":        {InputPrice: 1.10, OutputPrice: 4.50},
 	"glm-4.5-flash":       {InputPrice: 0.00, OutputPrice: 0.00}, // 免费
 	"glm-4-32b-0414-128k": {InputPrice: 0.10, OutputPrice: 0.10},
+
+	// ========== Mimo 模型 ==========
+	"mimo-v2-flash": {InputPrice: 0.10, OutputPrice: 0.30},
 }
 
 // modelAliases 模型别名映射（多对一）
@@ -406,6 +409,9 @@ func fuzzyMatchModel(model string) (ModelPricing, bool) {
 		// OpenAI其他专用模型
 		"computer-use-preview", "codex-mini-latest",
 		"davinci-002", "babbage-002",
+
+		// 其他厂商
+		"mimo-v2-flash",
 	}
 
 	for _, prefix := range prefixes {

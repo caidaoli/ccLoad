@@ -40,6 +40,7 @@ type Server struct {
 	cooldownManager *cooldown.Manager     // 统一冷却管理器
 	healthCache     *HealthCache          // 渠道健康度缓存
 	client          *http.Client          // HTTP客户端
+	activeRequests  *activeRequestManager // 进行中请求（内存状态，不持久化）
 
 	// 异步统计（有界队列，避免每请求起goroutine）
 	tokenStatsCh        chan tokenStatsUpdate
@@ -161,6 +162,8 @@ func NewServer(store storage.Store) *Server {
 
 		// Token统计队列（避免每请求起goroutine）
 		tokenStatsCh: make(chan tokenStatsUpdate, config.DefaultTokenStatsBufferSize),
+
+		activeRequests: newActiveRequestManager(),
 	}
 
 	// 初始化高性能缓存层（60秒TTL，避免数据库性能杀手查询）

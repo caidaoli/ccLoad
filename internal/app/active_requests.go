@@ -14,7 +14,7 @@ type ActiveRequest struct {
 	ID          int64  `json:"id"`
 	Model       string `json:"model"`
 	ClientIP    string `json:"client_ip"`
-	StartTime   int64  `json:"start_time"` // Unix毫秒
+	StartTime   int64  `json:"start_time"` // Unix秒
 	Streaming   bool   `json:"is_streaming"`
 	ChannelID   int64  `json:"channel_id,omitempty"`
 	ChannelName string `json:"channel_name,omitempty"`
@@ -28,8 +28,8 @@ type activeRequestManager struct {
 	nextID   atomic.Int64
 }
 
-var activeReqMgr = &activeRequestManager{
-	requests: make(map[int64]*ActiveRequest),
+func newActiveRequestManager() *activeRequestManager {
+	return &activeRequestManager{requests: make(map[int64]*ActiveRequest)}
 }
 
 // Register 注册一个新的活跃请求，返回请求ID（用于后续移除）
@@ -39,7 +39,7 @@ func (m *activeRequestManager) Register(model, clientIP string, streaming bool) 
 		ID:        id,
 		Model:     model,
 		ClientIP:  clientIP,
-		StartTime: time.Now().UnixMilli(),
+		StartTime: time.Now().Unix(),
 		Streaming: streaming,
 	}
 	m.mu.Lock()
@@ -69,13 +69,13 @@ func (m *activeRequestManager) Remove(id int64) {
 // List 返回所有活跃请求的快照（按开始时间降序，最新的在前）
 func (m *activeRequestManager) List() []*ActiveRequest {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
 	result := make([]*ActiveRequest, 0, len(m.requests))
 	for _, req := range m.requests {
 		// 拷贝结构体，避免返回内部指针
 		copied := *req
 		result = append(result, &copied)
 	}
+	m.mu.RUnlock()
 	// 按开始时间降序排序
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].StartTime > result[j].StartTime
