@@ -293,6 +293,15 @@ func (s *AuthService) RequireAPIAuth() gin.HandlerFunc {
 			}
 		}
 
+		// 检查 URL 查询参数 key（Gemini API格式：?key=xxx）
+		if !tokenFound {
+			queryKey := c.Query("key")
+			if queryKey != "" {
+				token = queryKey
+				tokenFound = true
+			}
+		}
+
 		if !tokenFound {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or missing authorization"})
 			c.Abort()
