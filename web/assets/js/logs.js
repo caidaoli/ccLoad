@@ -8,7 +8,20 @@
 
     const ACTIVE_REQUESTS_POLL_INTERVAL_MS = 2000;
     let activeRequestsPollTimer = null;
-    let activeRequestsPollInFlight = false;
+    let activeRequestsFetchInFlight = false;
+    let lastActiveRequestIDs = null; // 上次活跃请求ID集合（后端原始数据，用于检测完成）
+    let logsLoadInFlight = false;
+    let logsLoadPending = false;
+    let logsLoadScheduled = false;
+
+    function scheduleLoad() {
+      if (logsLoadScheduled) return;
+      logsLoadScheduled = true;
+      setTimeout(() => {
+        logsLoadScheduled = false;
+        load();
+      }, 0);
+    }
 
     function toUnixMs(value) {
       if (value === undefined || value === null) return null;
@@ -41,13 +54,7 @@
       if (activeRequestsPollTimer) return;
       activeRequestsPollTimer = setInterval(async () => {
         if (currentLogsPage !== 1) return;
-        if (activeRequestsPollInFlight) return;
-        activeRequestsPollInFlight = true;
-        try {
-          await fetchActiveRequests();
-        } finally {
-          activeRequestsPollInFlight = false;
-        }
+        await fetchActiveRequests();
       }, ACTIVE_REQUESTS_POLL_INTERVAL_MS);
     }
     // 生成流式标志HTML（公共函数，避免重复）
@@ -70,6 +77,11 @@
     }
 
     async function load() {
+      if (logsLoadInFlight) {
+        logsLoadPending = true;
+        return;
+      }
+      logsLoadInFlight = true;
       try {
         renderLogsLoading();
 
@@ -123,28 +135,90 @@
 	        updateStats(data);
 
 	        // 第一页时获取并显示进行中的请求（并开启轮询，做到真正“实时”）
-	        if (currentLogsPage === 1) {
-	          ensureActiveRequestsPollingStarted();
-	          await fetchActiveRequests();
-	        } else {
-	          clearActiveRequestsRows();
-	        }
+		        if (currentLogsPage === 1) {
+		          ensureActiveRequestsPollingStarted();
+		          await fetchActiveRequests();
+		        } else {
+		          lastActiveRequestIDs = null;
+		          clearActiveRequestsRows();
+		        }
 
-	      } catch (error) {
-	        console.error('加载日志失败:', error);
-	        try { if (window.showError) window.showError('无法加载请求日志'); } catch(_){}
-        renderLogsError();
-      }
+		      } catch (error) {
+		        console.error('加载日志失败:', error);
+		        try { if (window.showError) window.showError('无法加载请求日志'); } catch(_){}
+	        renderLogsError();
+	      } finally {
+          logsLoadInFlight = false;
+          if (logsLoadPending) {
+            logsLoadPending = false;
+            scheduleLoad();
+          }
+        }
+	    }
+
+    // 根据当前筛选条件过滤活跃请求
+    function filterActiveRequests(requests) {
+      const channelId = (document.getElementById('f_id')?.value || '').trim();
+      const channelName = (document.getElementById('f_name')?.value || '').trim().toLowerCase();
+      const model = (document.getElementById('f_model')?.value || '').trim().toLowerCase();
+
+      return requests.filter(req => {
+        // 渠道ID精确匹配
+        if (channelId) {
+          if (req.channel_id === undefined || req.channel_id === null) return false;
+          if (String(req.channel_id) !== channelId) return false;
+        }
+        // 渠道名称模糊匹配（包含）
+        if (channelName) {
+          const name = (typeof req.channel_name === 'string' ? req.channel_name : '').toLowerCase();
+          if (!name.includes(channelName)) return false;
+        }
+        // 模型名称模糊匹配（包含）
+        if (model) {
+          const reqModel = (typeof req.model === 'string' ? req.model : '').toLowerCase();
+          if (!reqModel.includes(model)) return false;
+        }
+        return true;
+      });
     }
 
     // 获取进行中的请求
     async function fetchActiveRequests() {
+      if (activeRequestsFetchInFlight) return;
+      activeRequestsFetchInFlight = true;
       try {
         const response = await fetchAPIWithAuth('/admin/active-requests');
-        const activeRequests = (response.success && Array.isArray(response.data)) ? response.data : [];
+        const rawActiveRequests = (response.success && Array.isArray(response.data)) ? response.data : [];
+
+        // 检测请求完成：用后端原始ID集合判断“消失的ID”，避免筛选条件变化导致误判
+        const currentIDs = new Set();
+        for (const req of rawActiveRequests) {
+          if (req && (req.id !== undefined && req.id !== null)) {
+            currentIDs.add(String(req.id));
+          }
+        }
+        if (lastActiveRequestIDs !== null) {
+          let hasCompleted = false;
+          for (const id of lastActiveRequestIDs) {
+            if (!currentIDs.has(id)) {
+              hasCompleted = true;
+              break;
+            }
+          }
+          if (hasCompleted && currentLogsPage === 1) {
+            scheduleLoad();
+          }
+        }
+        lastActiveRequestIDs = currentIDs;
+
+        // 根据当前筛选条件过滤（只影响展示，不影响完成检测）
+        const activeRequests = filterActiveRequests(rawActiveRequests);
+
         renderActiveRequests(activeRequests);
       } catch (e) {
         // 静默失败，不影响主日志显示
+      } finally {
+        activeRequestsFetchInFlight = false;
       }
     }
 

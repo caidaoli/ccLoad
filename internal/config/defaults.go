@@ -17,7 +17,8 @@ const (
 // HTTP客户端配置常量
 const (
 	// HTTPDialTimeout DNS解析+TCP连接建立超时
-	HTTPDialTimeout = 30 * time.Second
+	// 10秒：更快失败，减少请求卡住时间（代价：慢网络更容易超时）
+	HTTPDialTimeout = 10 * time.Second
 
 	// HTTPKeepAliveInterval TCP keepalive间隔
 	// 15秒：快速检测僵死连接（上游进程崩溃、网络中断）
@@ -25,13 +26,15 @@ const (
 	HTTPKeepAliveInterval = 15 * time.Second
 
 	// HTTPTLSHandshakeTimeout TLS握手超时
-	HTTPTLSHandshakeTimeout = 30 * time.Second
+	// 10秒：更快失败，上游TLS异常时尽快返回/切换（代价：握手慢时更容易超时）
+	HTTPTLSHandshakeTimeout = 10 * time.Second
 
 	// HTTPMaxIdleConns 全局空闲连接池大小
-	HTTPMaxIdleConns = 100
+	HTTPMaxIdleConns = 200
 
 	// HTTPMaxIdleConnsPerHost 单host空闲连接数
-	HTTPMaxIdleConnsPerHost = 5
+	// 20：允许更多连接复用，减少连接建立延迟
+	HTTPMaxIdleConnsPerHost = 20
 
 	// HTTPMaxConnsPerHost 单host最大连接数
 	HTTPMaxConnsPerHost = 50
