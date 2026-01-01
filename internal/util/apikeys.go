@@ -18,3 +18,11 @@ func ParseAPIKeys(apiKey string) []string {
 	}
 	return keys
 }
+
+// MaskAPIKey 将API Key脱敏为 "abcd...klmn" 格式（前4位 + ... + 后4位）
+func MaskAPIKey(key string) string {
+	if len(key) <= 8 {
+		return "****"
+	}
+	return key[:4] + "..." + key[len(key)-4:]
+}

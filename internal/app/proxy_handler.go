@@ -173,6 +173,10 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		return
 	}
 
+	// 注册活跃请求（内存状态，用于前端实时显示）
+	activeID := activeReqMgr.Register(originalModel, c.ClientIP(), isStreaming)
+	defer activeReqMgr.Remove(activeID)
+
 	timeout := parseTimeout(c.Request.URL.Query(), c.Request.Header)
 	ctx := c.Request.Context()
 	var cancel context.CancelFunc
@@ -221,6 +225,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		tokenHash:     tokenHashStr,
 		tokenID:       tokenIDInt64,
 		clientIP:      c.ClientIP(),
+		activeReqID:   activeID,
 	}
 
 	// 按优先级遍历候选渠道，尝试转发

@@ -650,6 +650,11 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		// 标记Key为已尝试
 		triedKeys[keyIndex] = true
 
+		// 更新活跃请求的渠道信息（用于前端显示）
+		if reqCtx.activeReqID > 0 {
+			activeReqMgr.Update(reqCtx.activeReqID, cfg.ID, cfg.Name, selectedKey)
+		}
+
 		// 单次转发尝试（传递实际的API Key字符串）
 		// [INFO] 修复：传递 actualModel 用于日志记录
 		result, nextAction := s.forwardAttempt(

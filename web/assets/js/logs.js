@@ -5,6 +5,12 @@
     let currentChannelType = 'all'; // 当前选中的渠道类型
     let authTokens = []; // 令牌列表
     let defaultTestContent = 'sonnet 4.0的发布日期是什么'; // 默认测试内容（从设置加载）
+    // 生成流式标志HTML（公共函数，避免重复）
+    function getStreamFlagHtml(isStreaming) {
+      return isStreaming
+        ? '<span class="stream-flag">流</span>'
+        : '<span class="stream-flag placeholder">流</span>';
+    }
 
     // 加载默认测试内容（从系统设置）
     async function loadDefaultTestContent() {
@@ -71,10 +77,69 @@
         renderLogs(data);
         updateStats(data);
 
+        // 第一页时获取并显示进行中的请求
+        if (currentLogsPage === 1) {
+          await fetchActiveRequests();
+        }
+
       } catch (error) {
         console.error('加载日志失败:', error);
         try { if (window.showError) window.showError('无法加载请求日志'); } catch(_){}
         renderLogsError();
+      }
+    }
+
+    // 获取进行中的请求
+    async function fetchActiveRequests() {
+      try {
+        const response = await fetchAPIWithAuth('/admin/active-requests');
+        const activeRequests = (response.success && Array.isArray(response.data)) ? response.data : [];
+        renderActiveRequests(activeRequests);
+      } catch (e) {
+        // 静默失败，不影响主日志显示
+      }
+    }
+
+    // 渲染进行中的请求（插入到表格顶部）
+    function renderActiveRequests(activeRequests) {
+      // 移除旧的进行中行
+      document.querySelectorAll('tr.pending-row').forEach(el => el.remove());
+
+      if (!activeRequests || activeRequests.length === 0) return;
+
+      const tbody = document.getElementById('tbody');
+      const firstRow = tbody.firstChild;
+
+      for (const req of activeRequests) {
+        const elapsed = ((Date.now() - req.start_time) / 1000).toFixed(1);
+        const streamFlag = getStreamFlagHtml(req.is_streaming);
+
+        // 渠道显示
+        let channelDisplay = '<span style="color: var(--neutral-500);">选择中...</span>';
+        if (req.channel_id && req.channel_name) {
+          channelDisplay = `<a class="channel-link" href="/web/channels.html?id=${req.channel_id}#channel-${req.channel_id}">${escapeHtml(req.channel_name)} <small>(#${req.channel_id})</small></a>`;
+        }
+
+        // Key显示
+        let keyDisplay = '<span style="color: var(--neutral-500);">-</span>';
+        if (req.api_key_used) {
+          keyDisplay = `<span style="font-family: monospace; font-size: 0.85em;">${escapeHtml(req.api_key_used)}</span>`;
+        }
+
+        const row = document.createElement('tr');
+        row.className = 'pending-row';
+        row.innerHTML = `
+          <td>${formatTime(req.start_time)}</td>
+          <td>${escapeHtml(req.client_ip || '-')}</td>
+          <td class="config-info">${channelDisplay}</td>
+          <td><span class="model-tag">${escapeHtml(req.model)}</span></td>
+          <td style="text-align: center;">${keyDisplay}</td>
+          <td><span class="status-pending">进行中</span></td>
+          <td style="text-align: right;">${elapsed}s... ${streamFlag}</td>
+          <td></td><td></td><td></td><td></td><td></td>
+          <td><span style="color: var(--neutral-500);">请求处理中...</span></td>
+        `;
+        tbody.insertBefore(row, firstRow);
       }
     }
 
@@ -157,9 +222,7 @@
           `<span style="color: var(--neutral-700);">${entry.duration.toFixed(3)}</span>` :
           '<span style="color: var(--neutral-500);">-</span>';
 
-        const streamFlag = entry.is_streaming ?
-          '<span class="stream-flag">流</span>' :
-          '<span class="stream-flag placeholder">流</span>';
+        const streamFlag = getStreamFlagHtml(entry.is_streaming);
 
         let responseTimingDisplay;
         if (entry.is_streaming) {

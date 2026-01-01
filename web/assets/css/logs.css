@@ -173,3 +173,29 @@
       transform: scale(0.9);
       transform-origin: top right;
     }
+
+    /* 进行中状态样式 */
+    .status-pending {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.85em;
+      font-weight: 500;
+      background: var(--warning-100);
+      color: var(--warning-700);
+      animation: pulse-pending 1.5s ease-in-out infinite;
+    }
+
+    @keyframes pulse-pending {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+
+    /* 进行中行高亮 */
+    tr.pending-row {
+      background: var(--warning-50);
+    }
+
+    tr.pending-row:hover {
+      background: var(--warning-100);
+    }

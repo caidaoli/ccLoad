@@ -201,14 +201,6 @@ func intersectIDs(a, b []int64) []int64 {
 	return result
 }
 
-// maskAPIKey 将API Key掩码为 "abcd...klmn" 格式（前4位 + ... + 后4位）
-func maskAPIKey(key string) string {
-	if len(key) <= 8 {
-		return "****" // 短key也要脱敏，防止泄露
-	}
-	return key[:4] + "..." + key[len(key)-4:]
-}
-
 // timeToUnix 将时间转换为Unix时间戳（秒）
 // SQLite和MySQL都存储为BIGINT类型的Unix时间戳
 func timeToUnix(t time.Time) int64 {

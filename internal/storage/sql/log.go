@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/util"
 )
 
 func scanLogEntry(scanner interface {
@@ -42,7 +43,7 @@ func scanLogEntry(scanner interface {
 		e.FirstByteTime = firstByteTime.Float64
 	}
 	if apiKeyUsed.Valid && apiKeyUsed.String != "" {
-		e.APIKeyUsed = maskAPIKey(apiKeyUsed.String)
+		e.APIKeyUsed = util.MaskAPIKey(apiKeyUsed.String)
 	}
 	if clientIP.Valid {
 		e.ClientIP = clientIP.String
@@ -108,7 +109,7 @@ func (s *SQLStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 	// 设计原则：数据库中不应存储完整API Key，避免备份和日志导出时泄露
 	maskedKey := e.APIKeyUsed
 	if maskedKey != "" {
-		maskedKey = maskAPIKey(maskedKey)
+		maskedKey = util.MaskAPIKey(maskedKey)
 	}
 
 	// 直接写入日志数据库（简化预编译语句缓存）
@@ -156,7 +157,7 @@ func (s *SQLStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) err
 
 		maskedKey := e.APIKeyUsed
 		if maskedKey != "" {
-			maskedKey = maskAPIKey(maskedKey)
+			maskedKey = util.MaskAPIKey(maskedKey)
 		}
 
 		if _, err := stmt.ExecContext(ctx,

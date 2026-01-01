@@ -457,6 +457,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 
 		// 统计分析
 		admin.GET("/logs", s.HandleErrors)
+		admin.GET("/active-requests", s.HandleActiveRequests) // 进行中请求（内存状态）
 		admin.GET("/metrics", s.HandleMetrics)
 		admin.GET("/stats", s.HandleStats)
 		admin.GET("/cooldown/stats", s.HandleCooldownStats)
