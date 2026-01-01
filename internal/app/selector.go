@@ -135,23 +135,33 @@ func (s *Server) configSupportsModelWithDateFallback(cfg *modelpkg.Config, model
 	if s.configSupportsModel(cfg, model) {
 		return true
 	}
-	if !s.modelLookupStripDateSuffix || model == "*" {
+	if model == "*" {
 		return false
 	}
 
-	// 请求带日期：claude-3-5-sonnet-20241022 -> claude-3-5-sonnet
-	if stripped, ok := stripTrailingYYYYMMDD(model); ok && stripped != model {
-		if cfg.SupportsModel(stripped) {
-			return true
+	// 日期后缀回退
+	if s.modelLookupStripDateSuffix {
+		// 请求带日期：claude-3-5-sonnet-20241022 -> claude-3-5-sonnet
+		if stripped, ok := stripTrailingYYYYMMDD(model); ok && stripped != model {
+			if cfg.SupportsModel(stripped) {
+				return true
+			}
+		}
+
+		// 请求无日期：claude-sonnet-4-5 -> claude-sonnet-4-5-20250929
+		for _, entry := range cfg.ModelEntries {
+			if entry.Model == "" {
+				continue
+			}
+			if stripped, ok := stripTrailingYYYYMMDD(entry.Model); ok && stripped == model {
+				return true
+			}
 		}
 	}
 
-	// 请求无日期：claude-sonnet-4-5 -> claude-sonnet-4-5-20250929
-	for _, entry := range cfg.ModelEntries {
-		if entry.Model == "" {
-			continue
-		}
-		if stripped, ok := stripTrailingYYYYMMDD(entry.Model); ok && stripped == model {
+	// 模糊匹配：sonnet -> claude-sonnet-4-5-20250929
+	if s.modelFuzzyMatch {
+		if _, ok := cfg.FuzzyMatchModel(model); ok {
 			return true
 		}
 	}

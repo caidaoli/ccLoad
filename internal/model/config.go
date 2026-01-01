@@ -153,3 +153,154 @@ type ChannelWithKeys struct {
 	Config  *Config  `json:"config"`
 	APIKeys []APIKey `json:"api_keys"` // 不使用指针避免额外分配
 }
+
+// FuzzyMatchModel 模糊匹配模型名称
+// 当精确匹配失败时，查找包含 query 子串的模型，按版本排序返回最新的
+// 返回 (匹配到的模型名, 是否匹配成功)
+func (c *Config) FuzzyMatchModel(query string) (string, bool) {
+	if query == "" {
+		return "", false
+	}
+
+	queryLower := strings.ToLower(query)
+	var matches []string
+
+	for _, entry := range c.ModelEntries {
+		if strings.Contains(strings.ToLower(entry.Model), queryLower) {
+			matches = append(matches, entry.Model)
+		}
+	}
+
+	if len(matches) == 0 {
+		return "", false
+	}
+	if len(matches) == 1 {
+		return matches[0], true
+	}
+
+	// 多个匹配：按版本排序，取最新
+	sortModelsByVersion(matches)
+	return matches[0], true
+}
+
+// sortModelsByVersion 按版本排序模型列表（最新优先）
+// 排序优先级：1.日期后缀 2.版本数字 3.字典序
+func sortModelsByVersion(models []string) {
+	for i := 0; i < len(models)-1; i++ {
+		for j := i + 1; j < len(models); j++ {
+			if compareModelVersion(models[i], models[j]) < 0 {
+				models[i], models[j] = models[j], models[i]
+			}
+		}
+	}
+}
+
+// compareModelVersion 比较两个模型版本
+// 返回 >0 表示 a 更新，<0 表示 b 更新，0 表示相同
+func compareModelVersion(a, b string) int {
+	// 1. 日期后缀优先（YYYYMMDD）
+	dateA := extractDateSuffix(a)
+	dateB := extractDateSuffix(b)
+	if dateA != dateB {
+		if dateA > dateB {
+			return 1
+		}
+		return -1
+	}
+
+	// 2. 版本数字序列比较
+	verA := extractVersionNumbers(a)
+	verB := extractVersionNumbers(b)
+	maxLen := len(verA)
+	if len(verB) > maxLen {
+		maxLen = len(verB)
+	}
+	for i := 0; i < maxLen; i++ {
+		va, vb := 0, 0
+		if i < len(verA) {
+			va = verA[i]
+		}
+		if i < len(verB) {
+			vb = verB[i]
+		}
+		if va != vb {
+			return va - vb
+		}
+	}
+
+	// 3. 兜底：字典序
+	if a > b {
+		return 1
+	} else if a < b {
+		return -1
+	}
+	return 0
+}
+
+// extractDateSuffix 提取模型名称末尾的日期后缀（YYYYMMDD）
+// 返回日期字符串，无日期返回空串
+func extractDateSuffix(model string) string {
+	// 查找最后一个分隔符
+	lastDash := strings.LastIndexByte(model, '-')
+	lastDot := strings.LastIndexByte(model, '.')
+	lastSep := lastDash
+	if lastDot > lastSep {
+		lastSep = lastDot
+	}
+	if lastSep < 0 {
+		return ""
+	}
+
+	suffix := model[lastSep+1:]
+	if len(suffix) != 8 {
+		return ""
+	}
+
+	// 验证是否全数字
+	for i := 0; i < len(suffix); i++ {
+		if suffix[i] < '0' || suffix[i] > '9' {
+			return ""
+		}
+	}
+
+	// 简单验证年份范围
+	year := (int(suffix[0]-'0') * 1000) + (int(suffix[1]-'0') * 100) +
+		(int(suffix[2]-'0') * 10) + int(suffix[3]-'0')
+	if year < 2000 || year > 2100 {
+		return ""
+	}
+
+	return suffix
+}
+
+// extractVersionNumbers 提取模型名称中的版本数字
+// 例如：gpt-5.2 → [5,2], claude-sonnet-4-5-20250929 → [4,5]
+func extractVersionNumbers(model string) []int {
+	// 移除日期后缀避免干扰
+	if date := extractDateSuffix(model); date != "" {
+		model = model[:len(model)-len(date)-1]
+	}
+
+	var nums []int
+	var current int
+	inNumber := false
+
+	for i := 0; i < len(model); i++ {
+		c := model[i]
+		if c >= '0' && c <= '9' {
+			current = current*10 + int(c-'0')
+			inNumber = true
+		} else {
+			if inNumber {
+				nums = append(nums, current)
+				current = 0
+				inNumber = false
+			}
+		}
+	}
+	if inNumber {
+		nums = append(nums, current)
+	}
+
+	return nums
+}

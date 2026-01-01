@@ -52,6 +52,7 @@ type Server struct {
 	nonStreamTimeout time.Duration // 非流式请求超时
 	// 模型匹配配置（启动时从数据库加载，修改后重启生效）
 	modelLookupStripDateSuffix bool // 未命中时去除末尾-YYYYMMDD日期后缀再匹配渠道（优先精确匹配）
+	modelFuzzyMatch            bool // 未命中时启用模糊匹配（子串匹配+版本排序）
 
 	// 登录速率限制器（用于传递给AuthService）
 	loginRateLimiter *util.LoginRateLimiter
@@ -115,6 +116,11 @@ func NewServer(store storage.Store) *Server {
 		log.Print("[INFO] 已启用模型日期后缀回退匹配：未命中时忽略末尾-YYYYMMDD日期后缀进行匹配（优先精确匹配）")
 	}
 
+	modelFuzzyMatch := configService.GetBool("model_fuzzy_match", false)
+	if modelFuzzyMatch {
+		log.Print("[INFO] 已启用模型模糊匹配：未命中时进行子串匹配并按版本排序选择最新模型")
+	}
+
 	// 最大并发数保留环境变量读取（启动参数，不支持Web管理）
 	maxConcurrency := config.DefaultMaxConcurrency
 	if concEnv := os.Getenv("CCLOAD_MAX_CONCURRENCY"); concEnv != "" {
@@ -145,6 +151,7 @@ func NewServer(store storage.Store) *Server {
 		nonStreamTimeout: nonStreamTimeout,
 		// 模型匹配配置（启动时加载，修改后重启生效）
 		modelLookupStripDateSuffix: modelLookupStripDateSuffix,
+		modelFuzzyMatch:            modelFuzzyMatch,
 
 		// HTTP客户端
 		client: &http.Client{
