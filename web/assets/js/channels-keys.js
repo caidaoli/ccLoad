@@ -738,7 +738,7 @@ function confirmInlineKeyImport() {
 
 function openKeyImportModal() {
   document.getElementById('keyImportTextarea').value = '';
-  document.getElementById('keyImportPreview').style.display = 'none';
+  document.getElementById('keyImportPreviewContent').style.display = 'none';
   document.getElementById('keyImportModal').classList.add('show');
   setTimeout(() => document.getElementById('keyImportTextarea').focus(), 100);
 }
@@ -753,19 +753,19 @@ function setupKeyImportPreview() {
 
   textarea.addEventListener('input', () => {
     const input = textarea.value.trim();
-    const preview = document.getElementById('keyImportPreview');
+    const previewContent = document.getElementById('keyImportPreviewContent');
     const countSpan = document.getElementById('keyImportCount');
 
     if (input) {
       const keys = parseKeys(input);
       if (keys.length > 0) {
         countSpan.textContent = keys.length;
-        preview.style.display = 'block';
+        previewContent.style.display = 'block';
       } else {
-        preview.style.display = 'none';
+        previewContent.style.display = 'none';
       }
     } else {
-      preview.style.display = 'none';
+      previewContent.style.display = 'none';
     }
   });
 }

@@ -435,7 +435,7 @@
           </svg>
         </button>
       </div>
-      <div style="padding: 20px;">
+      <div style="padding: 5px;">
         <div class="form-group" style="margin-bottom: 12px;">
           <label class="form-label" style="margin-bottom: 8px;">粘贴API Keys <span style="color: var(--neutral-500); font-size: 13px; font-weight: normal;">(支持逗号或换行分隔)</span></label>
           <textarea
@@ -446,7 +446,7 @@
             style="resize: vertical; min-height: 200px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace; font-size: 13px;"
           ></textarea>
         </div>
-        <div style="padding: 12px; background: var(--info-50); border: 1px solid var(--info-500); border-radius: 6px; color: var(--neutral-700); font-size: 13px; margin-bottom: 16px;">
+        <div style="padding: 2px; background: var(--info-50); border: 1px solid var(--info-500); border-radius: 6px; color: var(--neutral-700); font-size: 13px; margin-bottom: 16px;">
           <div style="display: flex; align-items: flex-start; gap: 8px;">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex-shrink: 0; margin-top: 2px;">
               <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.5"/>
@@ -462,8 +462,8 @@
             </div>
           </div>
         </div>
-        <div id="keyImportPreview" style="display: none; margin-bottom: 16px;">
-          <div style="padding: 12px; background: var(--success-50); border: 1px solid var(--success-500); border-radius: 6px; color: var(--success-600);">
+        <div id="keyImportPreview" style="margin-bottom: 2px; min-height: 44px;">
+          <div id="keyImportPreviewContent" style="display: none; padding: 12px; background: var(--success-50); border: 1px solid var(--success-500); border-radius: 6px; color: var(--success-600);">
             <div style="display: flex; align-items: center; gap: 8px; font-weight: 600;">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <path d="M3 8L6.5 11.5L13 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
@@ -491,7 +491,7 @@
           </svg>
         </button>
       </div>
-      <div style="padding: 20px;">
+      <div style="padding: 5px;">
         <div class="form-group" style="margin-bottom: 12px;">
           <label class="form-label" style="margin-bottom: 8px;">输入模型名称 <span style="color: var(--neutral-500); font-size: 13px; font-weight: normal;">(支持逗号或换行分隔)</span></label>
           <textarea
@@ -510,7 +510,7 @@
             </svg>
             <div>
               <strong>使用说明：</strong>
-              <ul style="margin: 6px 0 0 0; padding-left: 16px; line-height: 1.6;">
+              <ul style="margin: 6px 0 0 0; padding-left: 2px; line-height: 1.6;">
                 <li>支持逗号分隔：<code style="background: rgba(0,0,0,0.05); padding: 2px 4px; border-radius: 3px;">model1,model2,model3</code></li>
                 <li>支持换行分隔：每行一个模型</li>
                 <li>自动去除空格、空行和重复模型</li>
@@ -518,8 +518,8 @@
             </div>
           </div>
         </div>
-        <div id="modelImportPreview" style="display: none; margin-bottom: 16px;">
-          <div style="padding: 12px; background: var(--success-50); border: 1px solid var(--success-500); border-radius: 6px; color: var(--success-600);">
+        <div id="modelImportPreview" style="margin-bottom: 2px; min-height: 44px;">
+          <div id="modelImportPreviewContent" style="display: none; padding: 12px; background: var(--success-50); border: 1px solid var(--success-500); border-radius: 6px; color: var(--success-600);">
             <div style="display: flex; align-items: center; gap: 8px; font-weight: 600;">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <path d="M3 8L6.5 11.5L13 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>

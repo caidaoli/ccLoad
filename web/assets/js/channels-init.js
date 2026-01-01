@@ -122,9 +122,26 @@ async function initChannelTypeFilter(initialType) {
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
-    closeModal();
-    closeDeleteModal();
-    closeTestModal();
-    closeKeyImportModal();
+    // 按层级优先关闭最上层模态框
+    const modelImportModal = document.getElementById('modelImportModal');
+    const keyImportModal = document.getElementById('keyImportModal');
+    const sortModal = document.getElementById('sortModal');
+    const deleteModal = document.getElementById('deleteModal');
+    const testModal = document.getElementById('testModal');
+    const channelModal = document.getElementById('channelModal');
+
+    if (modelImportModal && modelImportModal.classList.contains('show')) {
+      closeModelImportModal();
+    } else if (keyImportModal && keyImportModal.classList.contains('show')) {
+      closeKeyImportModal();
+    } else if (sortModal && sortModal.classList.contains('show')) {
+      closeSortModal();
+    } else if (deleteModal && deleteModal.classList.contains('show')) {
+      closeDeleteModal();
+    } else if (testModal && testModal.classList.contains('show')) {
+      closeTestModal();
+    } else if (channelModal && channelModal.classList.contains('show')) {
+      closeModal();
+    }
   }
 });

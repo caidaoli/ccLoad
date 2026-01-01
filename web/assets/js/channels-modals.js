@@ -311,7 +311,7 @@ function addRedirectRow() {
 
 function openModelImportModal() {
   document.getElementById('modelImportTextarea').value = '';
-  document.getElementById('modelImportPreview').style.display = 'none';
+  document.getElementById('modelImportPreviewContent').style.display = 'none';
   document.getElementById('modelImportModal').classList.add('show');
   setTimeout(() => document.getElementById('modelImportTextarea').focus(), 100);
 }
@@ -326,19 +326,19 @@ function setupModelImportPreview() {
 
   textarea.addEventListener('input', () => {
     const input = textarea.value.trim();
-    const preview = document.getElementById('modelImportPreview');
+    const previewContent = document.getElementById('modelImportPreviewContent');
     const countSpan = document.getElementById('modelImportCount');
 
     if (input) {
       const models = parseModels(input);
       if (models.length > 0) {
         countSpan.textContent = models.length;
-        preview.style.display = 'block';
+        previewContent.style.display = 'block';
       } else {
-        preview.style.display = 'none';
+        previewContent.style.display = 'none';
       }
     } else {
-      preview.style.display = 'none';
+      previewContent.style.display = 'none';
     }
   });
 }
