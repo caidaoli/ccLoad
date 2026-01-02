@@ -652,7 +652,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 
 		// 更新活跃请求的渠道信息（用于前端显示）
 		if reqCtx.activeReqID > 0 && s.activeRequests != nil {
-			s.activeRequests.Update(reqCtx.activeReqID, cfg.ID, cfg.Name, selectedKey)
+			s.activeRequests.Update(reqCtx.activeReqID, cfg.ID, cfg.Name, cfg.GetChannelType(), selectedKey, reqCtx.tokenID)
 		}
 
 		// 单次转发尝试（传递实际的API Key字符串）

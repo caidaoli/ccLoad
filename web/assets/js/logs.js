@@ -133,7 +133,21 @@
         }
 
 	        updatePagination();
+
+	        // 自动刷新时，保存现有 pending 行以避免闪烁
+	        const pendingRows = skipLoading ? Array.from(document.querySelectorAll('tr.pending-row')) : [];
+
 	        renderLogs(data);
+
+	        // 立即恢复 pending 行（后续 fetchActiveRequests 会再更新）
+	        if (skipLoading && pendingRows.length > 0) {
+	          const tbody = document.getElementById('tbody');
+	          const firstRow = tbody.firstChild;
+	          const fragment = document.createDocumentFragment();
+	          pendingRows.forEach(row => fragment.appendChild(row));
+	          tbody.insertBefore(fragment, firstRow);
+	        }
+
 	        updateStats(data);
 
 	        // 第一页时获取并显示进行中的请求（并开启轮询，做到真正“实时”）
@@ -163,6 +177,8 @@
       const channelId = (document.getElementById('f_id')?.value || '').trim();
       const channelName = (document.getElementById('f_name')?.value || '').trim().toLowerCase();
       const model = (document.getElementById('f_model')?.value || '').trim().toLowerCase();
+      const channelType = (document.getElementById('f_channel_type')?.value || '').trim();
+      const tokenId = (document.getElementById('f_auth_token')?.value || '').trim();
 
       return requests.filter(req => {
         // 渠道ID精确匹配
@@ -180,6 +196,16 @@
           const reqModel = (typeof req.model === 'string' ? req.model : '').toLowerCase();
           if (!reqModel.includes(model)) return false;
         }
+        // 渠道类型精确匹配（'all' 表示全部，不过滤）
+        if (channelType && channelType !== 'all') {
+          const reqType = (typeof req.channel_type === 'string' ? req.channel_type : '').toLowerCase();
+          if (reqType !== channelType.toLowerCase()) return false;
+        }
+        // 令牌ID精确匹配
+        if (tokenId) {
+          if (req.token_id === undefined || req.token_id === null || req.token_id === 0) return false;
+          if (String(req.token_id) !== tokenId) return false;
+        }
         return true;
       });
     }
@@ -187,6 +213,17 @@
     // 获取进行中的请求
     async function fetchActiveRequests() {
       if (activeRequestsFetchInFlight) return;
+
+      // 优化：当筛选条件不可能匹配进行中请求时，跳过请求
+      const hours = (document.getElementById('f_hours')?.value || '').trim();
+      const status = (document.getElementById('f_status')?.value || '').trim();
+      // 进行中的请求只存在于"本日"，且没有状态码
+      if ((hours && hours !== 'today') || status) {
+        clearActiveRequestsRows();
+        lastActiveRequestIDs = null;
+        return;
+      }
+
       activeRequestsFetchInFlight = true;
       try {
         const response = await fetchAPIWithAuth('/admin/active-requests');
@@ -235,6 +272,9 @@
 	      const firstRow = tbody.firstChild;
 	      const totalCols = getTableColspan();
 
+	      // 使用 DocumentFragment 批量构建，减少 DOM 操作
+	      const fragment = document.createDocumentFragment();
+
 	      for (const req of activeRequests) {
 	        const startMs = toUnixMs(req.start_time);
 	        const elapsed = startMs ? ((Date.now() - startMs) / 1000).toFixed(1) : '-';
@@ -279,8 +319,11 @@
 	            <td><span style="color: var(--neutral-500);">请求处理中...</span></td>
 	          `;
 	        }
-	        tbody.insertBefore(row, firstRow);
+	        fragment.appendChild(row);
 	      }
+
+	      // 一次性插入所有 pending 行
+	      tbody.insertBefore(fragment, firstRow);
 	    }
 
     // ✅ 动态计算列数（避免硬编码维护成本）
@@ -316,7 +359,8 @@
         return;
       }
 
-      tbody.innerHTML = '';
+      // 使用 DocumentFragment 批量构建，避免逐行添加导致的闪烁
+      const fragment = document.createDocumentFragment();
 
       for (const entry of data) {
         // === 预处理数据：构建复杂HTML片段 ===
@@ -496,8 +540,12 @@
           costDisplay,
           message: entry.message || ''
         });
-        if (rowEl) tbody.appendChild(rowEl);
+        if (rowEl) fragment.appendChild(rowEl);
       }
+
+      // 一次性替换 tbody 内容，避免闪烁
+      tbody.innerHTML = '';
+      tbody.appendChild(fragment);
     }
 
     function updatePagination() {

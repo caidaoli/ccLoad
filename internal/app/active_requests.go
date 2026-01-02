@@ -18,7 +18,9 @@ type ActiveRequest struct {
 	Streaming   bool   `json:"is_streaming"`
 	ChannelID   int64  `json:"channel_id,omitempty"`
 	ChannelName string `json:"channel_name,omitempty"`
+	ChannelType string `json:"channel_type,omitempty"` // 渠道类型（用于前端筛选）
 	APIKeyUsed  string `json:"api_key_used,omitempty"` // 脱敏后的key
+	TokenID     int64  `json:"token_id,omitempty"`     // 令牌ID（用于前端筛选，0表示无令牌）
 }
 
 // activeRequestManager 管理进行中的请求（内存状态，不持久化）
@@ -49,12 +51,14 @@ func (m *activeRequestManager) Register(model, clientIP string, streaming bool) 
 }
 
 // Update 更新活跃请求的渠道信息（在选择渠道/key后调用）
-func (m *activeRequestManager) Update(id int64, channelID int64, channelName string, apiKey string) {
+func (m *activeRequestManager) Update(id int64, channelID int64, channelName, channelType, apiKey string, tokenID int64) {
 	m.mu.Lock()
 	if req, ok := m.requests[id]; ok {
 		req.ChannelID = channelID
 		req.ChannelName = channelName
+		req.ChannelType = channelType
 		req.APIKeyUsed = util.MaskAPIKey(apiKey)
+		req.TokenID = tokenID
 	}
 	m.mu.Unlock()
 }

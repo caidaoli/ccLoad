@@ -38,7 +38,7 @@ func TestActiveRequestManager_UpdateMasksKey(t *testing.T) {
 
 	id := m.Register("m", "1.1.1.1", false)
 	rawKey := "sk-1234567890abcdef"
-	m.Update(id, 1, "ch", rawKey)
+	m.Update(id, 1, "ch", "anthropic", rawKey, 0)
 
 	got := m.List()
 	if len(got) != 1 {
