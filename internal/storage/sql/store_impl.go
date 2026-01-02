@@ -123,7 +123,29 @@ func (s *SQLStore) Close() error {
 
 // CleanupLogsBefore 清理指定时间之前的日志
 func (s *SQLStore) CleanupLogsBefore(ctx context.Context, cutoff time.Time) error {
-	query := "DELETE FROM logs WHERE timestamp < ?"
-	_, err := s.db.ExecContext(ctx, query, timeToUnix(cutoff))
-	return err
+	// time 字段是 BIGINT 毫秒时间戳
+	// 分批删除避免长时间锁表（P2优化）
+	cutoffMs := cutoff.UnixMilli()
+	const batchSize = 5000
+
+	for {
+		var query string
+		if s.IsSQLite() {
+			// SQLite: 使用子查询实现分批删除（默认不支持 DELETE LIMIT）
+			query = `DELETE FROM logs WHERE id IN (SELECT id FROM logs WHERE time < ? LIMIT ?)`
+		} else {
+			// MySQL: 直接使用 LIMIT
+			query = `DELETE FROM logs WHERE time < ? LIMIT ?`
+		}
+
+		result, err := s.db.ExecContext(ctx, query, cutoffMs, batchSize)
+		if err != nil {
+			return err
+		}
+		affected, _ := result.RowsAffected()
+		if affected < batchSize {
+			break // 已删完
+		}
+	}
+	return nil
 }

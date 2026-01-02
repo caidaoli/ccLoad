@@ -12,16 +12,17 @@ import (
 // filter 为 nil 时返回所有数据
 // [FIX] 2025-12: 排除499（客户端取消）避免污染趋势图统计
 func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until time.Time, bucket time.Duration, filter *model.LogFilter) ([]model.MetricPoint, error) {
-	bucketSeconds := int64(bucket.Seconds())
-	sinceUnix := since.Unix()
-	untilUnix := until.Unix()
+	bucketMs := int64(bucket / time.Millisecond)
+	sinceMs := since.UnixMilli()
+	untilMs := until.UnixMilli()
 
 	// 构建查询:使用IN子句过滤渠道
 	// 使用FLOOR确保bucket_ts是整数,避免浮点数导致map查找失败
 	// 排除499：客户端取消不应计入成功/失败/RPM统计
+	// 优化：直接使用毫秒时间戳匹配索引，避免运行时除法阻止索引使用
 	query := `
 		SELECT
-			FLOOR((logs.time / 1000) / ?) * ? AS bucket_ts,
+			FLOOR(logs.time / ?) * ? / 1000 AS bucket_ts,
 			logs.channel_id,
 			SUM(CASE WHEN logs.status_code >= 200 AND logs.status_code < 300 THEN 1 ELSE 0 END) AS success,
 			SUM(CASE WHEN (logs.status_code < 200 OR logs.status_code >= 300) AND logs.status_code != 499 THEN 1 ELSE 0 END) AS error,
@@ -41,10 +42,10 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 			SUM(COALESCE(logs.cache_read_input_tokens, 0)) as cache_read_tokens,
 			SUM(COALESCE(logs.cache_creation_input_tokens, 0)) as cache_creation_tokens
 		FROM logs
-		WHERE (logs.time / 1000) >= ? AND (logs.time / 1000) <= ? AND logs.status_code != 499
+		WHERE logs.time >= ? AND logs.time <= ? AND logs.status_code != 499
 	`
 
-	args := []any{bucketSeconds, bucketSeconds, sinceUnix, untilUnix}
+	args := []any{bucketMs, bucketMs, sinceMs, untilMs}
 
 	// 应用渠道筛选（channel_type、channel_id、channel_name、channel_name_like）
 	if filter != nil {
@@ -165,14 +166,15 @@ func buildEmptyMetricPoints(since, until time.Time, bucket time.Duration) []mode
 
 // GetDistinctModels 获取指定时间范围内的去重模型列表
 func (s *SQLStore) GetDistinctModels(ctx context.Context, since, until time.Time) ([]string, error) {
+	// 优化：直接使用毫秒时间戳匹配索引，避免运行时除法阻止索引使用
 	query := `
 		SELECT DISTINCT model
 		FROM logs
-		WHERE (time / 1000) >= ? AND (time / 1000) <= ? AND model != ''
+		WHERE time >= ? AND time <= ? AND model != ''
 		ORDER BY model
 	`
 
-	rows, err := s.db.QueryContext(ctx, query, since.Unix(), until.Unix())
+	rows, err := s.db.QueryContext(ctx, query, since.UnixMilli(), until.UnixMilli())
 	if err != nil {
 		return nil, err
 	}
