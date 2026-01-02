@@ -237,6 +237,7 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 			"",
 			"/v1/messages",
 			recorder,
+			nil, // onBytesRead callback
 		)
 
 		if err != nil {
@@ -269,6 +270,7 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 			"",
 			"/v1/messages",
 			recorder,
+			nil, // onBytesRead callback
 		)
 
 		if err != nil {
@@ -359,6 +361,7 @@ func TestClientCancelClosesUpstream(t *testing.T) {
 			"",
 			"/v1/messages",
 			recorder,
+			nil, // onBytesRead callback
 		)
 		resultChan <- struct {
 			result   *fwResult
@@ -441,6 +444,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 				"",
 				"/v1/messages",
 				recorder,
+				nil, // onBytesRead callback
 			)
 		}
 
@@ -476,7 +480,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 				cancel()
 			}()
 
-			srv.forwardOnceAsync(ctx, cfg, "sk-test", http.MethodPost, []byte(`{}`), http.Header{}, "", "/v1/messages", recorder)
+			srv.forwardOnceAsync(ctx, cfg, "sk-test", http.MethodPost, []byte(`{}`), http.Header{}, "", "/v1/messages", recorder, nil)
 		}
 
 		runtime.GC()
@@ -513,6 +517,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 				"",
 				"/v1/messages",
 				recorder,
+				nil, // onBytesRead callback
 			)
 		}
 
@@ -567,6 +572,7 @@ func TestFirstByteTimeout_StreamingResponse(t *testing.T) {
 		"",
 		"/v1/messages",
 		recorder,
+		nil, // onBytesRead callback
 	)
 
 	// 验证返回结果

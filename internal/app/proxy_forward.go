@@ -221,6 +221,7 @@ func (s *Server) handleSuccessResponse(
 	channelType string,
 	_ *int64,
 	_ string,
+	onBytesRead func(int64),
 ) (*fwResult, float64, error) {
 	// [FIX] 流式请求：禁用 WriteTimeout，避免长时间流被服务器自己切断
 	// Go 1.20+ http.ResponseController 支持动态调整 WriteDeadline
@@ -246,6 +247,7 @@ func (s *Server) handleSuccessResponse(
 				actualFirstByteTime = reqCtx.Duration()
 			}
 		},
+		onBytesRead: onBytesRead, // 显式传递字节读取回调（可能为 nil）
 	}
 
 	// 流式传输并解析usage
@@ -337,6 +339,7 @@ func (s *Server) handleResponse(
 	channelType string,
 	cfg *model.Config,
 	apiKey string,
+	onBytesRead func(int64),
 ) (*fwResult, float64, error) {
 	hdrClone := resp.Header.Clone()
 
@@ -420,9 +423,9 @@ func (s *Server) handleResponse(
 		}, duration, err
 	}
 
-	// 成功状态：流式转发（传递渠道信息用于日志记录）
+	// 成功状态：流式转发（传递渠道信息用于日志记录，传递字节回调）
 	channelID := &cfg.ID
-	return s.handleSuccessResponse(reqCtx, resp, firstByteTime, hdrClone, w, channelType, channelID, apiKey)
+	return s.handleSuccessResponse(reqCtx, resp, firstByteTime, hdrClone, w, channelType, channelID, apiKey, onBytesRead)
 }
 
 // ============================================================================
@@ -433,7 +436,7 @@ func (s *Server) handleResponse(
 // 从proxy.go提取，遵循SRP原则
 // 参数新增 apiKey 用于直接传递已选中的API Key（从KeySelector获取）
 // 参数新增 method 用于支持任意HTTP方法（GET、POST、PUT、DELETE等）
-func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey string, method string, body []byte, hdr http.Header, rawQuery, requestPath string, w http.ResponseWriter) (*fwResult, float64, error) {
+func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey string, method string, body []byte, hdr http.Header, rawQuery, requestPath string, w http.ResponseWriter, onBytesRead func(int64)) (*fwResult, float64, error) {
 	// 1. 创建请求上下文（处理超时）
 	reqCtx := s.newRequestContext(ctx, requestPath, body)
 	defer reqCtx.cleanup() // [INFO] 统一清理：定时器 + context（总是安全）
@@ -479,10 +482,10 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 	reqCtx.stopFirstByteTimer()
 	firstByteTime := reqCtx.Duration()
 
-	// 5. 处理响应(传递channelType用于精确识别usage格式,传递渠道信息用于日志记录)
+	// 5. 处理响应(传递channelType用于精确识别usage格式,传递渠道信息用于日志记录,传递字节回调)
 	var res *fwResult
 	var duration float64
-	res, duration, err = s.handleResponse(reqCtx, resp, firstByteTime, w, cfg.ChannelType, cfg, apiKey)
+	res, duration, err = s.handleResponse(reqCtx, resp, firstByteTime, w, cfg.ChannelType, cfg, apiKey, onBytesRead)
 
 	// [FIX] 2025-12: 流式传输过程中首字节超时的错误修正
 	// 场景：响应头已收到(200 OK)，但在读取响应体时超时定时器触发
@@ -527,9 +530,9 @@ func (s *Server) forwardAttempt(
 		return nil, cooldown.ActionRetryKey
 	}
 
-	// 转发请求（传递实际的API Key字符串）
+	// 转发请求（传递实际的API Key字符串和字节回调）
 	res, duration, err := s.forwardOnceAsync(ctx, cfg, selectedKey, reqCtx.requestMethod,
-		bodyToSend, reqCtx.header, reqCtx.rawQuery, reqCtx.requestPath, w)
+		bodyToSend, reqCtx.header, reqCtx.rawQuery, reqCtx.requestPath, w, reqCtx.onBytesRead)
 
 	// 处理网络错误或异常响应（如空响应）
 	// [INFO] 修复：handleResponse可能返回err即使StatusCode=200（例如Content-Length=0）

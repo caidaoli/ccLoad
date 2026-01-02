@@ -46,6 +46,16 @@
       return null;
     }
 
+    // 格式化字节数为可读形式（K/M/G）- 使用对数优化
+    function formatBytes(bytes) {
+      if (bytes == null || bytes <= 0) return '';
+      const UNITS = ['B', 'K', 'M', 'G'];
+      const FACTOR = 1024;
+      const i = Math.min(Math.floor(Math.log(bytes) / Math.log(FACTOR)), UNITS.length - 1);
+      const value = bytes / Math.pow(FACTOR, i);
+      return value.toFixed(i > 0 ? 1 : 0) + ' ' + UNITS[i];
+    }
+
     function clearActiveRequestsRows() {
       document.querySelectorAll('tr.pending-row').forEach(el => el.remove());
     }
@@ -261,24 +271,24 @@
       }
     }
 
-	    // 渲染进行中的请求（插入到表格顶部）
-	    function renderActiveRequests(activeRequests) {
-	      // 移除旧的进行中行
-	      clearActiveRequestsRows();
+    // 渲染进行中的请求（插入到表格顶部）
+    function renderActiveRequests(activeRequests) {
+      // 移除旧的进行中行
+      clearActiveRequestsRows();
 
-	      if (!activeRequests || activeRequests.length === 0) return;
+      if (!activeRequests || activeRequests.length === 0) return;
 
-	      const tbody = document.getElementById('tbody');
-	      const firstRow = tbody.firstChild;
-	      const totalCols = getTableColspan();
+      const tbody = document.getElementById('tbody');
+      const firstRow = tbody.firstChild;
+      const totalCols = getTableColspan();
 
-	      // 使用 DocumentFragment 批量构建，减少 DOM 操作
-	      const fragment = document.createDocumentFragment();
+      // 使用 DocumentFragment 批量构建，减少 DOM 操作
+      const fragment = document.createDocumentFragment();
 
-	      for (const req of activeRequests) {
-	        const startMs = toUnixMs(req.start_time);
-	        const elapsed = startMs ? ((Date.now() - startMs) / 1000).toFixed(1) : '-';
-	        const streamFlag = getStreamFlagHtml(req.is_streaming);
+      for (const req of activeRequests) {
+        const startMs = toUnixMs(req.start_time);
+        const elapsed = startMs ? ((Date.now() - startMs) / 1000).toFixed(1) : '-';
+        const streamFlag = getStreamFlagHtml(req.is_streaming);
 
         // 渠道显示
         let channelDisplay = '<span style="color: var(--neutral-500);">选择中...</span>';
@@ -292,39 +302,45 @@
           keyDisplay = `<span style="font-family: monospace; font-size: 0.85em;">${escapeHtml(req.api_key_used)}</span>`;
         }
 
-	        const row = document.createElement('tr');
-	        row.className = 'pending-row';
-	        if (totalCols < 8) {
-	          row.innerHTML = `
-	            <td colspan="${totalCols}">
-	              <span class="status-pending">进行中</span>
-	              <span style="margin-left: 8px;">${formatTime(req.start_time)}</span>
-	              <span style="margin-left: 8px; color: var(--neutral-600);">${escapeHtml(req.client_ip || '-')}</span>
-	              <span style="margin-left: 8px;">${escapeHtml(req.model || '-')}</span>
-	              <span style="margin-left: 8px;">${elapsed}s... ${streamFlag}</span>
-	            </td>
-	          `;
-	        } else {
-	          const emptyCols = Math.max(0, totalCols - 8); // 7列固定信息 + 末尾消息列
-	          const emptyCells = '<td></td>'.repeat(emptyCols);
-	          row.innerHTML = `
-	            <td>${formatTime(req.start_time)}</td>
-	            <td>${escapeHtml(req.client_ip || '-')}</td>
-	            <td class="config-info">${channelDisplay}</td>
-	            <td><span class="model-tag">${escapeHtml(req.model)}</span></td>
-	            <td style="text-align: center;">${keyDisplay}</td>
-	            <td><span class="status-pending">进行中</span></td>
-	            <td style="text-align: right;">${elapsed}s... ${streamFlag}</td>
-	            ${emptyCells}
-	            <td><span style="color: var(--neutral-500);">请求处理中...</span></td>
-	          `;
-	        }
-	        fragment.appendChild(row);
-	      }
+        const bytesInfo = formatBytes(req.bytes_received);
+        const hasBytes = !!bytesInfo;
+        const infoDisplay = hasBytes ? `已接收 ${bytesInfo}` : '请求处理中...';
+        const infoColor = hasBytes ? 'var(--success-600)' : 'var(--neutral-500)';
 
-	      // 一次性插入所有 pending 行
-	      tbody.insertBefore(fragment, firstRow);
-	    }
+        const row = document.createElement('tr');
+        row.className = 'pending-row';
+        if (totalCols < 8) {
+          row.innerHTML = `
+            <td colspan="${totalCols}">
+              <span class="status-pending">进行中</span>
+              <span style="margin-left: 8px;">${formatTime(req.start_time)}</span>
+              <span style="margin-left: 8px; color: var(--neutral-600);">${escapeHtml(req.client_ip || '-')}</span>
+              <span style="margin-left: 8px;">${escapeHtml(req.model || '-')}</span>
+              <span style="margin-left: 8px;">${elapsed}s... ${streamFlag}</span>
+              <span style="margin-left: 8px; color: ${infoColor};">${escapeHtml(infoDisplay)}</span>
+            </td>
+          `;
+        } else {
+          const emptyCols = Math.max(0, totalCols - 8); // 7列固定信息 + 末尾消息列
+          const emptyCells = '<td></td>'.repeat(emptyCols);
+          row.innerHTML = `
+            <td>${formatTime(req.start_time)}</td>
+            <td>${escapeHtml(req.client_ip || '-')}</td>
+            <td class="config-info">${channelDisplay}</td>
+            <td><span class="model-tag">${escapeHtml(req.model)}</span></td>
+            <td style="text-align: center;">${keyDisplay}</td>
+            <td><span class="status-pending">进行中</span></td>
+            <td style="text-align: right;">${elapsed}s... ${streamFlag}</td>
+            ${emptyCells}
+            <td><span style="color: ${infoColor};">${escapeHtml(infoDisplay)}</span></td>
+          `;
+        }
+        fragment.appendChild(row);
+      }
+
+      // 一次性插入所有 pending 行
+      tbody.insertBefore(fragment, firstRow);
+    }
 
     // ✅ 动态计算列数（避免硬编码维护成本）
     function getTableColspan() {

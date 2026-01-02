@@ -10,10 +10,10 @@ import (
 	"ccLoad/internal/storage"
 )
 
-// contextKey 自定义类型用于 context key，避免 SA1029 警告
-type contextKey string
+// testContextKey 用于测试的 context key 类型
+type testContextKey string
 
-const testingContextKey contextKey = "testing"
+const testingContextKey testContextKey = "testing"
 
 // TestSelectAvailableKey_SingleKey 测试单Key场景
 func TestSelectAvailableKey_SingleKey(t *testing.T) {

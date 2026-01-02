@@ -21,6 +21,7 @@ type firstByteDetector struct {
 	io.ReadCloser
 	stats       *streamReadStats
 	onFirstRead func()
+	onBytesRead func(int64) // 可选：每次读取后的回调（nil 时不触发）
 }
 
 // Read 实现io.Reader接口，记录读取统计
@@ -36,6 +37,10 @@ func (r *firstByteDetector) Read(p []byte) (n int, err error) {
 		if r.onFirstRead != nil {
 			r.onFirstRead()
 			r.onFirstRead = nil // 只触发一次
+		}
+		// 触发字节读取回调（可选）
+		if r.onBytesRead != nil {
+			r.onBytesRead(int64(n))
 		}
 	}
 	return

@@ -96,10 +96,11 @@ type proxyRequestContext struct {
 	body          []byte
 	header        http.Header
 	isStreaming   bool
-	tokenHash     string // Token哈希值（用于统计，2025-11新增）
-	tokenID       int64  // Token ID（用于日志记录，2025-12新增，0表示未使用token）
-	clientIP      string // 客户端IP地址（用于日志记录，2025-12新增）
-	activeReqID   int64  // 活跃请求ID（用于更新渠道信息）
+	tokenHash     string      // Token哈希值（用于统计，2025-11新增）
+	tokenID       int64       // Token ID（用于日志记录，2025-12新增，0表示未使用token）
+	clientIP      string      // 客户端IP地址（用于日志记录，2025-12新增）
+	activeReqID   int64       // 活跃请求ID（用于更新渠道信息）
+	onBytesRead   func(int64) // 字节读取回调（可选，用于实时更新活跃请求统计）
 }
 
 // proxyResult 代理请求结果

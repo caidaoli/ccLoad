@@ -231,6 +231,9 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		tokenID:       tokenIDInt64,
 		clientIP:      c.ClientIP(),
 		activeReqID:   activeID,
+		onBytesRead: func(n int64) {
+			s.activeRequests.AddBytes(activeID, n)
+		},
 	}
 
 	// 按优先级遍历候选渠道，尝试转发

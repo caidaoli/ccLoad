@@ -32,7 +32,7 @@ func runHandleSuccessResponse(t *testing.T, body string, headers http.Header, is
 	testChannelID := int64(1)
 	testAPIKey := "sk-test-xxx"
 
-	res, _, err := s.handleSuccessResponse(reqCtx, resp, 0, resp.Header.Clone(), rec, channelType, &testChannelID, testAPIKey)
+	res, _, err := s.handleSuccessResponse(reqCtx, resp, 0, resp.Header.Clone(), rec, channelType, &testChannelID, testAPIKey, nil)
 	if err != nil {
 		t.Fatalf("handleSuccessResponse returned error: %v", err)
 	}
