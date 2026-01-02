@@ -416,13 +416,5 @@ func parseImportModels(raw string) []string {
 
 // parseImportEnabled 解析CSV中的启用状态
 func parseImportEnabled(raw string) (bool, bool) {
-	val := strings.TrimSpace(strings.ToLower(raw))
-	switch val {
-	case "1", "true", "yes", "y", "启用", "enabled", "on":
-		return true, true
-	case "0", "false", "no", "n", "禁用", "disabled", "off":
-		return false, true
-	default:
-		return false, false
-	}
+	return util.ParseBool(raw)
 }

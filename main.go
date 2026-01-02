@@ -15,6 +15,7 @@ import (
 	"ccLoad/internal/app"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/storage/redis"
+	"ccLoad/internal/util"
 	"ccLoad/internal/version"
 
 	"github.com/gin-gonic/gin"
@@ -141,7 +142,10 @@ func main() {
 	}
 
 	// 添加基础中间件
-	r.Use(gin.Logger())
+	// GIN_LOG 环境变量控制访问日志：false/0/no/off 关闭，默认开启
+	if util.ParseBoolDefault(os.Getenv("GIN_LOG"), true) {
+		r.Use(gin.Logger())
+	}
 	r.Use(gin.Recovery())
 
 	// 注册路由
