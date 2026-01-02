@@ -73,7 +73,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 			APIKey:      "sk-test-key-" + created.Name,
 			KeyStrategy: model.KeyStrategySequential,
 		}
-		if err := server.store.CreateAPIKey(ctx, apiKey); err != nil {
+		if err := server.store.CreateAPIKeysBatch(ctx, []*model.APIKey{apiKey}); err != nil {
 			t.Fatalf("创建API Key失败: %v", err)
 		}
 	}
@@ -377,10 +377,8 @@ func TestAdminAPI_ExportImportRoundTrip(t *testing.T) {
 		},
 	}
 
-	for _, key := range apiKeys {
-		if err := server.store.CreateAPIKey(ctx, key); err != nil {
-			t.Fatalf("创建API Key失败: %v", err)
-		}
+	if err := server.store.CreateAPIKeysBatch(ctx, apiKeys); err != nil {
+		t.Fatalf("创建API Keys失败: %v", err)
 	}
 
 	// 步骤2：导出CSV

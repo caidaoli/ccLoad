@@ -19,13 +19,15 @@ func TestHandleError_1308Error(t *testing.T) {
 	cfg := createTestChannel(t, store, "test-1308")
 
 	// 创建2个API Key
+	keys := make([]*model.APIKey, 2)
 	for i := 0; i < 2; i++ {
-		_ = store.CreateAPIKey(ctx, &model.APIKey{
+		keys[i] = &model.APIKey{
 			ChannelID: cfg.ID,
 			KeyIndex:  i,
 			APIKey:    "sk-test-key-" + string(rune('0'+i)),
-		})
+		}
 	}
+	_ = store.CreateAPIKeysBatch(ctx, keys)
 
 	// 创建Manager
 	manager := NewManager(store, nil)
@@ -216,11 +218,11 @@ func TestHandleError_1308Error(t *testing.T) {
 	t.Run("单Key渠道的1308错误-应该冷却Channel并使用精确时间", func(t *testing.T) {
 		// 创建单Key渠道
 		singleKeyCfg := createTestChannel(t, store, "single-key-1308")
-		_ = store.CreateAPIKey(ctx, &model.APIKey{
+		_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
 			ChannelID: singleKeyCfg.ID,
 			KeyIndex:  0,
 			APIKey:    "sk-single-key",
-		})
+		}})
 
 		// 模拟1308错误响应
 		errorBody := []byte(`{"type":"error","error":{"type":"1308","message":"已达到 5 小时的使用上限。您的限额将在 2025-12-09 18:08:11 重置。"},"request_id":"xxx"}`)

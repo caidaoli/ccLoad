@@ -76,14 +76,16 @@ func TestHandleError_KeyLevelError(t *testing.T) {
 
 	// 创建多Key渠道（3个Key）
 	cfg := createTestChannel(t, store, "test-key-error")
+	keys := make([]*model.APIKey, 3)
 	for i := 0; i < 3; i++ {
-		_ = store.CreateAPIKey(ctx, &model.APIKey{
+		keys[i] = &model.APIKey{
 			ChannelID:   cfg.ID,
 			KeyIndex:    i,
 			APIKey:      "sk-key-" + string(rune('0'+i)),
 			KeyStrategy: model.KeyStrategySequential,
-		})
+		}
 	}
+	_ = store.CreateAPIKeysBatch(ctx, keys)
 
 	testCases := []struct {
 		name       string
@@ -183,12 +185,12 @@ func TestHandleError_SingleKeyUpgrade(t *testing.T) {
 
 	// 创建单Key渠道
 	cfg := createTestChannel(t, store, "test-single-key")
-	_ = store.CreateAPIKey(ctx, &model.APIKey{
+	_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
 		ChannelID:   cfg.ID,
 		KeyIndex:    0,
 		APIKey:      "sk-only-key",
 		KeyStrategy: model.KeyStrategySequential,
-	})
+	}})
 
 	// 401认证错误本应是Key级，但单Key渠道应升级为渠道级
 	action := manager.HandleError(ctx, ErrorInput{
@@ -248,14 +250,16 @@ func TestHandleError_NetworkError(t *testing.T) {
 	}
 
 	// 为测试连接重置场景，创建多Key渠道
+	netKeys := make([]*model.APIKey, 2)
 	for i := 0; i < 2; i++ {
-		_ = store.CreateAPIKey(ctx, &model.APIKey{
+		netKeys[i] = &model.APIKey{
 			ChannelID:   cfg.ID,
 			KeyIndex:    i,
 			APIKey:      "sk-net-key-" + string(rune('0'+i)),
 			KeyStrategy: model.KeyStrategySequential,
-		})
+		}
 	}
+	_ = store.CreateAPIKeysBatch(ctx, netKeys)
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -324,17 +328,19 @@ func TestClearKeyCooldown(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := createTestChannel(t, store, "test-clear-key")
-	_ = store.CreateAPIKey(ctx, &model.APIKey{
-		ChannelID:   cfg.ID,
-		KeyIndex:    0,
-		APIKey:      "sk-test-clear",
-		KeyStrategy: model.KeyStrategySequential,
-	})
-	_ = store.CreateAPIKey(ctx, &model.APIKey{
-		ChannelID:   cfg.ID,
-		KeyIndex:    1,
-		APIKey:      "sk-test-clear-2",
-		KeyStrategy: model.KeyStrategySequential,
+	_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{
+			ChannelID:   cfg.ID,
+			KeyIndex:    0,
+			APIKey:      "sk-test-clear",
+			KeyStrategy: model.KeyStrategySequential,
+		},
+		{
+			ChannelID:   cfg.ID,
+			KeyIndex:    1,
+			APIKey:      "sk-test-clear-2",
+			KeyStrategy: model.KeyStrategySequential,
+		},
 	})
 
 	// 先触发Key冷却
@@ -448,14 +454,16 @@ func TestHandleError_RateLimitClassification(t *testing.T) {
 
 	// 创建多Key渠道
 	cfg := createTestChannel(t, store, "test-429-classification")
+	rateKeys := make([]*model.APIKey, 3)
 	for i := 0; i < 3; i++ {
-		_ = store.CreateAPIKey(ctx, &model.APIKey{
+		rateKeys[i] = &model.APIKey{
 			ChannelID:   cfg.ID,
 			KeyIndex:    i,
 			APIKey:      "sk-ratelimit-" + string(rune('0'+i)),
 			KeyStrategy: model.KeyStrategySequential,
-		})
+		}
 	}
+	_ = store.CreateAPIKeysBatch(ctx, rateKeys)
 
 	testCases := []struct {
 		name           string

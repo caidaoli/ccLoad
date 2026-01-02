@@ -229,7 +229,7 @@ func TestHandleSetKeyCooldown(t *testing.T) {
 					APIKey:      "test-key",
 					KeyStrategy: model.KeyStrategySequential,
 				}
-				if err := srv.store.CreateAPIKey(ctx, key); err != nil {
+				if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{key}); err != nil {
 					t.Fatalf("创建API Key失败: %v", err)
 				}
 			}
@@ -371,7 +371,7 @@ func TestSetKeyCooldown_Integration(t *testing.T) {
 		APIKey:      "test-key",
 		KeyStrategy: model.KeyStrategySequential,
 	}
-	if err := srv.store.CreateAPIKey(ctx, key); err != nil {
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{key}); err != nil {
 		t.Fatalf("创建API Key失败: %v", err)
 	}
 

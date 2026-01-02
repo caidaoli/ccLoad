@@ -40,7 +40,7 @@ function renderVirtualRows(tbody, visibleStart, visibleEnd, filteredIndices) {
   for (let i = visibleStart; i < visibleEnd; i++) {
     const actualIndex = filteredIndices[i];
     const row = createKeyRow(actualIndex);
-    tbody.appendChild(row);
+    if (row) tbody.appendChild(row);
   }
 
   if (visibleEnd < filteredIndices.length) {
@@ -137,7 +137,7 @@ function handleVirtualScroll(event) {
 }
 
 function initVirtualScroll() {
-  const tableContainer = document.querySelector('#inlineKeyTableBody').closest('div[style*="max-height"]');
+  const tableContainer = document.querySelector('#inlineKeyTableBody').closest('.inline-table-container');
   if (tableContainer) {
     tableContainer.removeEventListener('scroll', handleVirtualScroll);
     tableContainer.addEventListener('scroll', handleVirtualScroll, { passive: true });
@@ -145,7 +145,7 @@ function initVirtualScroll() {
 }
 
 function cleanupVirtualScroll() {
-  const tableContainer = document.querySelector('#inlineKeyTableBody').closest('div[style*="max-height"]');
+  const tableContainer = document.querySelector('#inlineKeyTableBody').closest('.inline-table-container');
   if (tableContainer) {
     tableContainer.removeEventListener('scroll', handleVirtualScroll);
   }
@@ -371,8 +371,9 @@ function renderInlineKeyTable() {
   }
 
   virtualScrollState.enabled = true;
-  if (!virtualScrollState.filteredIndices ||
-    virtualScrollState.filteredIndices.length !== visibleIndices.length) {
+  const shouldResetScroll = !virtualScrollState.filteredIndices ||
+    virtualScrollState.filteredIndices.length !== visibleIndices.length;
+  if (shouldResetScroll) {
     virtualScrollState.scrollTop = 0;
   }
   virtualScrollState.filteredIndices = visibleIndices;
@@ -383,6 +384,14 @@ function renderInlineKeyTable() {
 
   renderVirtualRows(tbody, visibleStart, visibleEnd, visibleIndices);
   initVirtualScroll();
+
+  // 同步容器滚动位置
+  if (shouldResetScroll) {
+    const tableContainer = tbody.closest('.inline-table-container');
+    if (tableContainer) {
+      tableContainer.scrollTop = 0;
+    }
+  }
 
   if (virtualScrollHint) {
     const showHint = visibleIndices.length >= VIRTUAL_SCROLL_CONFIG.ENABLE_THRESHOLD;
@@ -509,7 +518,7 @@ async function refreshKeyCooldownStatus() {
       };
     });
 
-    const tableContainer = document.querySelector('#inlineKeyTableBody').closest('div[style*="max-height"]');
+    const tableContainer = document.querySelector('#inlineKeyTableBody').closest('.inline-table-container');
     const savedScrollTop = tableContainer ? tableContainer.scrollTop : 0;
 
     renderInlineKeyTable();
@@ -533,7 +542,7 @@ function deleteInlineKey(index) {
   }
 
   if (confirm(`确定要删除第 ${index + 1} 个Key吗？`)) {
-    const tableContainer = document.querySelector('#inlineKeyTableBody').closest('div[style*="max-height"]');
+    const tableContainer = document.querySelector('#inlineKeyTableBody').closest('.inline-table-container');
     const scrollTop = tableContainer ? tableContainer.scrollTop : 0;
 
     inlineKeyTableData.splice(index, 1);
@@ -629,7 +638,7 @@ function batchDeleteSelectedKeys() {
     return;
   }
 
-  const tableContainer = document.querySelector('#inlineKeyTableBody').closest('div[style*="max-height"]');
+  const tableContainer = document.querySelector('#inlineKeyTableBody').closest('.inline-table-container');
   const scrollTop = tableContainer ? tableContainer.scrollTop : 0;
 
   const indicesToDelete = Array.from(selectedKeyIndices).sort((a, b) => b - a);

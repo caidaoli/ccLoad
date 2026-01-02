@@ -323,16 +323,17 @@ func createTestChannelWithKeys(t *testing.T, store storage.Store, keyCount int, 
 	}
 
 	// 2. 为渠道创建多个API Keys
+	keys := make([]*model.APIKey, keyCount)
 	for i := 0; i < keyCount; i++ {
-		apiKey := &model.APIKey{
+		keys[i] = &model.APIKey{
 			ChannelID:   createdCfg.ID,
 			KeyIndex:    i,
 			APIKey:      fmt.Sprintf("sk-test-key-%d", i),
 			KeyStrategy: strategy, // KeyStrategy属于APIKey而非Config
 		}
-		if err := store.CreateAPIKey(ctx, apiKey); err != nil {
-			t.Fatalf("Failed to create API key %d: %v", i, err)
-		}
+	}
+	if err := store.CreateAPIKeysBatch(ctx, keys); err != nil {
+		t.Fatalf("Failed to create API keys: %v", err)
 	}
 
 	return createdCfg.ID

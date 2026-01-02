@@ -69,10 +69,8 @@ func TestCSVExport_CompleteWorkflow(t *testing.T) {
 			},
 		}
 
-		for _, key := range apiKeys {
-			if err := store.CreateAPIKey(ctx, key); err != nil {
-				t.Fatalf("创建API Key失败: %v", err)
-			}
+		if err := store.CreateAPIKeysBatch(ctx, apiKeys); err != nil {
+			t.Fatalf("创建API Keys失败: %v", err)
 		}
 	}
 
@@ -359,16 +357,17 @@ func TestCSVExportImport_LargeData(t *testing.T) {
 		}
 
 		// 每个渠道创建2个API Keys
+		keys := make([]*model.APIKey, 2)
 		for j := 0; j < 2; j++ {
-			key := &model.APIKey{
+			keys[j] = &model.APIKey{
 				ChannelID:   created.ID,
 				KeyIndex:    j,
 				APIKey:      "sk-large-test-" + string(rune('0'+i%10)) + "-" + string(rune('0'+j)),
 				KeyStrategy: []string{"sequential", "round_robin"}[j%2],
 			}
-			if err := store.CreateAPIKey(ctx, key); err != nil {
-				t.Fatalf("创建API Key失败: %v", err)
-			}
+		}
+		if err := store.CreateAPIKeysBatch(ctx, keys); err != nil {
+			t.Fatalf("创建API Keys失败: %v", err)
 		}
 	}
 

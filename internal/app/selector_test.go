@@ -254,17 +254,19 @@ func TestSelectRouteCandidates_AllCooledByKeys_FallbackChoosesEarliestKeyCooldow
 		ids = append(ids, created.ID)
 
 		// 每个渠道创建2个Key，使 KeyCount 生效
+		keys := make([]*model.APIKey, 2)
 		for keyIndex := 0; keyIndex < 2; keyIndex++ {
-			if err := store.CreateAPIKey(ctx, &model.APIKey{
+			keys[keyIndex] = &model.APIKey{
 				ChannelID:   created.ID,
 				KeyIndex:    keyIndex,
 				APIKey:      "sk-test",
 				KeyStrategy: model.KeyStrategySequential,
 				CreatedAt:   model.JSONTime{Time: now},
 				UpdatedAt:   model.JSONTime{Time: now},
-			}); err != nil {
-				t.Fatalf("创建API Key失败: %v", err)
 			}
+		}
+		if err := store.CreateAPIKeysBatch(ctx, keys); err != nil {
+			t.Fatalf("创建API Keys失败: %v", err)
 		}
 	}
 

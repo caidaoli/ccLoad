@@ -46,17 +46,10 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 		}
 
 		// 为Key测试渠道创建2个API Keys
-		for i, key := range []string{"sk-key1", "sk-key2"} {
-			err = store.CreateAPIKey(ctx, &model.APIKey{
-				ChannelID:   keyCreated.ID,
-				KeyIndex:    i,
-				APIKey:      key,
-				KeyStrategy: model.KeyStrategySequential,
-			})
-			if err != nil {
-				t.Fatalf("创建API Key %d失败: %v", i, err)
-			}
-		}
+		_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+			{ChannelID: keyCreated.ID, KeyIndex: 0, APIKey: "sk-key1", KeyStrategy: model.KeyStrategySequential},
+			{ChannelID: keyCreated.ID, KeyIndex: 1, APIKey: "sk-key2", KeyStrategy: model.KeyStrategySequential},
+		})
 
 		// 触发渠道级401错误
 		channelDuration, err := store.BumpChannelCooldown(ctx, channelCreated.ID, now, 401)
@@ -116,17 +109,10 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 		}
 
 		// 为Key测试渠道创建2个API Keys
-		for i, key := range []string{"sk-key1", "sk-key2"} {
-			err = store.CreateAPIKey(ctx, &model.APIKey{
-				ChannelID:   keyCreated.ID,
-				KeyIndex:    i,
-				APIKey:      key,
-				KeyStrategy: model.KeyStrategySequential,
-			})
-			if err != nil {
-				t.Fatalf("创建API Key %d失败: %v", i, err)
-			}
-		}
+		_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+			{ChannelID: keyCreated.ID, KeyIndex: 0, APIKey: "sk-key1", KeyStrategy: model.KeyStrategySequential},
+			{ChannelID: keyCreated.ID, KeyIndex: 1, APIKey: "sk-key2", KeyStrategy: model.KeyStrategySequential},
+		})
 
 		// 预期序列：5min → 10min → 20min → 30min
 		expectedSequence := []time.Duration{
@@ -194,17 +180,10 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 		}
 
 		// 为Key测试渠道创建2个API Keys
-		for i, key := range []string{"sk-key1", "sk-key2"} {
-			err = store.CreateAPIKey(ctx, &model.APIKey{
-				ChannelID:   keyCreated.ID,
-				KeyIndex:    i,
-				APIKey:      key,
-				KeyStrategy: model.KeyStrategySequential,
-			})
-			if err != nil {
-				t.Fatalf("创建API Key %d失败: %v", i, err)
-			}
-		}
+		_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+			{ChannelID: keyCreated.ID, KeyIndex: 0, APIKey: "sk-key1", KeyStrategy: model.KeyStrategySequential},
+			{ChannelID: keyCreated.ID, KeyIndex: 1, APIKey: "sk-key2", KeyStrategy: model.KeyStrategySequential},
+		})
 
 		// 触发403错误
 		channelDuration, _ := store.BumpChannelCooldown(ctx, channelCreated.ID, now, 403)
@@ -253,14 +232,10 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 				keyCreated, _ := store.CreateConfig(ctx, keyCfg)
 
 				// 为Key测试渠道创建2个API Keys
-				for i, key := range []string{"sk-key1", "sk-key2"} {
-					_ = store.CreateAPIKey(ctx, &model.APIKey{
-						ChannelID:   keyCreated.ID,
-						KeyIndex:    i,
-						APIKey:      key,
-						KeyStrategy: model.KeyStrategySequential,
-					})
-				}
+				_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+					{ChannelID: keyCreated.ID, KeyIndex: 0, APIKey: "sk-key1", KeyStrategy: model.KeyStrategySequential},
+					{ChannelID: keyCreated.ID, KeyIndex: 1, APIKey: "sk-key2", KeyStrategy: model.KeyStrategySequential},
+				})
 
 				channelDuration, _ := store.BumpChannelCooldown(ctx, channelCreated.ID, now, tc.statusCode)
 				keyDuration, _ := store.BumpKeyCooldown(ctx, keyCreated.ID, 0, now, tc.statusCode)

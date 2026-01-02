@@ -278,7 +278,7 @@ func TestConcurrentAPIKeyOperations(t *testing.T) {
 	var createSuccess atomic.Int32
 	var readSuccess atomic.Int32
 
-	// 并发创建API Keys
+	// 并发创建API Keys（使用批量接口，每个goroutine创建单个key）
 	for i := 0; i < numKeys; i++ {
 		wg.Add(1)
 		go func(idx int) {
@@ -291,7 +291,7 @@ func TestConcurrentAPIKeyOperations(t *testing.T) {
 				KeyStrategy: model.KeyStrategySequential,
 			}
 
-			err := store.CreateAPIKey(ctx, key)
+			err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{key})
 			if err == nil {
 				createSuccess.Add(1)
 			} else {
@@ -361,15 +361,16 @@ func TestConcurrentCooldownOperations(t *testing.T) {
 	}
 
 	// 创建3个API Keys
+	cdKeys := make([]*model.APIKey, 3)
 	for i := 0; i < 3; i++ {
-		key := &model.APIKey{
+		cdKeys[i] = &model.APIKey{
 			ChannelID:   created.ID,
 			KeyIndex:    i,
 			APIKey:      fmt.Sprintf("sk-cooldown-key-%d", i),
 			KeyStrategy: model.KeyStrategySequential,
 		}
-		_ = store.CreateAPIKey(ctx, key)
 	}
+	_ = store.CreateAPIKeysBatch(ctx, cdKeys)
 
 	// 使用信号量控制并发度为2，避免过多BUSY错误
 	sem := make(chan struct{}, 2)

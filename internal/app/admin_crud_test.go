@@ -345,12 +345,12 @@ func TestHandleUpdateChannel(t *testing.T) {
 	}
 
 	// 创建API Key
-	err = store.CreateAPIKey(ctx, &model.APIKey{
+	err = store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
 		ChannelID:   created.ID,
 		KeyIndex:    0,
 		APIKey:      "sk-original-key",
 		KeyStrategy: model.KeyStrategySequential,
-	})
+	}})
 	if err != nil {
 		t.Fatalf("创建API Key失败: %v", err)
 	}
@@ -553,16 +553,17 @@ func TestHandleGetChannelKeys(t *testing.T) {
 	}
 
 	// 创建多个API Keys
+	keys := make([]*model.APIKey, 3)
 	for i := 0; i < 3; i++ {
-		err = store.CreateAPIKey(ctx, &model.APIKey{
+		keys[i] = &model.APIKey{
 			ChannelID:   created.ID,
 			KeyIndex:    i,
 			APIKey:      "sk-test-key-" + string(rune('0'+i)),
 			KeyStrategy: model.KeyStrategySequential,
-		})
-		if err != nil {
-			t.Fatalf("创建API Key失败: %v", err)
 		}
+	}
+	if err = store.CreateAPIKeysBatch(ctx, keys); err != nil {
+		t.Fatalf("批量创建API Keys失败: %v", err)
 	}
 
 	// 测试获取Keys

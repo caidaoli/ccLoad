@@ -675,7 +675,7 @@ function batchDeleteSelectedModels() {
     return;
   }
 
-  const tableContainer = document.querySelector('#redirectTableBody').closest('div[style*="max-height"]');
+  const tableContainer = document.querySelector('#redirectTableBody').closest('.inline-table-container');
   const scrollTop = tableContainer ? tableContainer.scrollTop : 0;
 
   // 从大到小排序，确保删除时索引不会错位

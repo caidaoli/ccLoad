@@ -36,12 +36,12 @@ func TestSelectAvailableKey_SingleKey(t *testing.T) {
 	}
 
 	// 创建单个API Key
-	err = store.CreateAPIKey(ctx, &model.APIKey{
+	err = store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
 		ChannelID:   cfg.ID,
 		KeyIndex:    0,
 		APIKey:      "sk-single-key",
 		KeyStrategy: model.KeyStrategySequential,
-	})
+	}})
 	if err != nil {
 		t.Fatalf("创建API Key失败: %v", err)
 	}
@@ -104,12 +104,12 @@ func TestSelectAvailableKey_SingleKeyCooldown(t *testing.T) {
 	}
 
 	// 创建单个API Key
-	err = store.CreateAPIKey(ctx, &model.APIKey{
+	err = store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
 		ChannelID:   cfg.ID,
 		KeyIndex:    0,
 		APIKey:      "sk-single-cooldown-key",
 		KeyStrategy: model.KeyStrategySequential,
-	})
+	}})
 	if err != nil {
 		t.Fatalf("创建API Key失败: %v", err)
 	}
@@ -163,16 +163,17 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 	}
 
 	// 创建3个API Keys（顺序策略）
+	seqKeys := make([]*model.APIKey, 3)
 	for i := 0; i < 3; i++ {
-		err = store.CreateAPIKey(ctx, &model.APIKey{
+		seqKeys[i] = &model.APIKey{
 			ChannelID:   cfg.ID,
 			KeyIndex:    i,
 			APIKey:      "sk-seq-key-" + string(rune('0'+i)),
 			KeyStrategy: model.KeyStrategySequential,
-		})
-		if err != nil {
-			t.Fatalf("创建API Key %d失败: %v", i, err)
 		}
+	}
+	if err = store.CreateAPIKeysBatch(ctx, seqKeys); err != nil {
+		t.Fatalf("批量创建API Keys失败: %v", err)
 	}
 
 	// 预先查询apiKeys
@@ -270,16 +271,17 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 	}
 
 	// 创建3个API Keys（轮询策略）
+	rrKeys := make([]*model.APIKey, 3)
 	for i := 0; i < 3; i++ {
-		err = store.CreateAPIKey(ctx, &model.APIKey{
+		rrKeys[i] = &model.APIKey{
 			ChannelID:   cfg.ID,
 			KeyIndex:    i,
 			APIKey:      "sk-rr-key-" + string(rune('0'+i)),
 			KeyStrategy: model.KeyStrategyRoundRobin,
-		})
-		if err != nil {
-			t.Fatalf("创建API Key %d失败: %v", i, err)
 		}
+	}
+	if err = store.CreateAPIKeysBatch(ctx, rrKeys); err != nil {
+		t.Fatalf("批量创建API Keys失败: %v", err)
 	}
 
 	// 预先查询apiKeys
@@ -362,16 +364,17 @@ func TestSelectAvailableKey_RoundRobin_NonContiguousKeyIndex(t *testing.T) {
 	// 创建非连续KeyIndex的Keys（模拟删除Key后留洞的场景）
 	// 故意留洞: 0, 2, 5 (缺少1, 3, 4)
 	nonContiguousIndexes := []int{0, 2, 5}
-	for _, idx := range nonContiguousIndexes {
-		err = store.CreateAPIKey(ctx, &model.APIKey{
+	nonContigKeys := make([]*model.APIKey, len(nonContiguousIndexes))
+	for i, idx := range nonContiguousIndexes {
+		nonContigKeys[i] = &model.APIKey{
 			ChannelID:   cfg.ID,
 			KeyIndex:    idx,
 			APIKey:      "sk-noncontig-" + string(rune('0'+idx)),
 			KeyStrategy: model.KeyStrategyRoundRobin,
-		})
-		if err != nil {
-			t.Fatalf("创建API Key index=%d失败: %v", idx, err)
 		}
+	}
+	if err = store.CreateAPIKeysBatch(ctx, nonContigKeys); err != nil {
+		t.Fatalf("批量创建非连续API Keys失败: %v", err)
 	}
 
 	apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
@@ -510,16 +513,17 @@ func TestSelectAvailableKey_KeyCooldown(t *testing.T) {
 	}
 
 	// 创建3个API Keys
+	cdKeys := make([]*model.APIKey, 3)
 	for i := 0; i < 3; i++ {
-		err = store.CreateAPIKey(ctx, &model.APIKey{
+		cdKeys[i] = &model.APIKey{
 			ChannelID:   cfg.ID,
 			KeyIndex:    i,
 			APIKey:      "sk-cooldown-key-" + string(rune('0'+i)),
 			KeyStrategy: model.KeyStrategySequential,
-		})
-		if err != nil {
-			t.Fatalf("创建API Key %d失败: %v", i, err)
 		}
+	}
+	if err = store.CreateAPIKeysBatch(ctx, cdKeys); err != nil {
+		t.Fatalf("批量创建API Keys失败: %v", err)
 	}
 
 	// 冷却Key0
@@ -629,16 +633,17 @@ func TestSelectAvailableKey_CooldownAndExclude(t *testing.T) {
 	}
 
 	// 创建4个API Keys
+	combKeys := make([]*model.APIKey, 4)
 	for i := 0; i < 4; i++ {
-		err = store.CreateAPIKey(ctx, &model.APIKey{
+		combKeys[i] = &model.APIKey{
 			ChannelID:   cfg.ID,
 			KeyIndex:    i,
 			APIKey:      "sk-combined-key-" + string(rune('0'+i)),
 			KeyStrategy: model.KeyStrategySequential,
-		})
-		if err != nil {
-			t.Fatalf("创建API Key %d失败: %v", i, err)
 		}
+	}
+	if err = store.CreateAPIKeysBatch(ctx, combKeys); err != nil {
+		t.Fatalf("批量创建API Keys失败: %v", err)
 	}
 
 	// 冷却Key1
@@ -729,16 +734,17 @@ func assertSelectAvailableKeyFirstIndex(t *testing.T, channelName string, keyPre
 		t.Fatalf("创建渠道失败: %v", err)
 	}
 
+	assertKeys := make([]*model.APIKey, 2)
 	for i := 0; i < 2; i++ {
-		err = store.CreateAPIKey(ctx, &model.APIKey{
+		assertKeys[i] = &model.APIKey{
 			ChannelID:   cfg.ID,
 			KeyIndex:    i,
 			APIKey:      keyPrefix + string(rune('0'+i)),
 			KeyStrategy: keyStrategy,
-		})
-		if err != nil {
-			t.Fatalf("创建API Key %d失败: %v", i, err)
 		}
+	}
+	if err = store.CreateAPIKeysBatch(ctx, assertKeys); err != nil {
+		t.Fatalf("批量创建API Keys失败: %v", err)
 	}
 
 	apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)

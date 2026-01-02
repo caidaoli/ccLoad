@@ -167,16 +167,18 @@ func TestKeyLevelAuthErrorCooldown(t *testing.T) {
 	}
 
 	// 创建3个API Keys
-	for i, key := range []string{"sk-key1", "sk-key2", "sk-key3"} {
-		err = store.CreateAPIKey(ctx, &model.APIKey{
+	keyNames := []string{"sk-key1", "sk-key2", "sk-key3"}
+	keys := make([]*model.APIKey, len(keyNames))
+	for i, key := range keyNames {
+		keys[i] = &model.APIKey{
 			ChannelID:   created.ID,
 			KeyIndex:    i,
 			APIKey:      key,
 			KeyStrategy: model.KeyStrategySequential,
-		})
-		if err != nil {
-			t.Fatalf("创建API Key %d失败: %v", i, err)
 		}
+	}
+	if err = store.CreateAPIKeysBatch(ctx, keys); err != nil {
+		t.Fatalf("批量创建API Keys失败: %v", err)
 	}
 
 	// 测试Key 0的401错误冷却
@@ -335,16 +337,18 @@ func TestConcurrentKeyCooldownUpdates(t *testing.T) {
 	}
 
 	// 创建3个API Keys
-	for i, key := range []string{"sk-key1", "sk-key2", "sk-key3"} {
-		err = store.CreateAPIKey(ctx, &model.APIKey{
+	keyNames := []string{"sk-key1", "sk-key2", "sk-key3"}
+	keys := make([]*model.APIKey, len(keyNames))
+	for i, key := range keyNames {
+		keys[i] = &model.APIKey{
 			ChannelID:   created.ID,
 			KeyIndex:    i,
 			APIKey:      key,
 			KeyStrategy: model.KeyStrategySequential,
-		})
-		if err != nil {
-			t.Fatalf("创建API Key %d失败: %v", i, err)
 		}
+	}
+	if err = store.CreateAPIKeysBatch(ctx, keys); err != nil {
+		t.Fatalf("批量创建API Keys失败: %v", err)
 	}
 
 	// 使用信号量控制并发度为2，避免过多BUSY错误
@@ -414,17 +418,10 @@ func TestRaceConditionDetection(t *testing.T) {
 	}
 
 	// 创建2个API Keys
-	for i, key := range []string{"sk-key1", "sk-key2"} {
-		err = store.CreateAPIKey(ctx, &model.APIKey{
-			ChannelID:   created.ID,
-			KeyIndex:    i,
-			APIKey:      key,
-			KeyStrategy: model.KeyStrategySequential,
-		})
-		if err != nil {
-			t.Fatalf("创建API Key %d失败: %v", i, err)
-		}
-	}
+	_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-key1", KeyStrategy: model.KeyStrategySequential},
+		{ChannelID: created.ID, KeyIndex: 1, APIKey: "sk-key2", KeyStrategy: model.KeyStrategySequential},
+	})
 
 	// 并发场景：同时读写冷却状态（降低并发度）
 	var wg sync.WaitGroup

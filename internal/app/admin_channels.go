@@ -192,17 +192,20 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 	}
 
 	now := time.Now()
+	keysToCreate := make([]*model.APIKey, 0, len(apiKeys))
 	for i, key := range apiKeys {
-		apiKey := &model.APIKey{
+		keysToCreate = append(keysToCreate, &model.APIKey{
 			ChannelID:   created.ID,
 			KeyIndex:    i,
 			APIKey:      key,
 			KeyStrategy: keyStrategy,
 			CreatedAt:   model.JSONTime{Time: now},
 			UpdatedAt:   model.JSONTime{Time: now},
-		}
-		if err := s.store.CreateAPIKey(c.Request.Context(), apiKey); err != nil {
-			log.Printf("[WARN] 创建API Key失败 (channel=%d, index=%d): %v", created.ID, i, err)
+		})
+	}
+	if len(keysToCreate) > 0 {
+		if err := s.store.CreateAPIKeysBatch(c.Request.Context(), keysToCreate); err != nil {
+			log.Printf("[WARN] 批量创建API Key失败 (channel=%d): %v", created.ID, err)
 		}
 	}
 
@@ -356,30 +359,26 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		// Key内容/数量变化：删除旧Key并重建
 		_ = s.store.DeleteAllAPIKeys(c.Request.Context(), id)
 
-		// 创建新的API Keys
+		// 批量创建新的API Keys（优化：单次事务插入替代循环单条插入）
 		now := time.Now()
+		apiKeys := make([]*model.APIKey, 0, len(newKeys))
 		for i, key := range newKeys {
-			apiKey := &model.APIKey{
+			apiKeys = append(apiKeys, &model.APIKey{
 				ChannelID:   id,
 				KeyIndex:    i,
 				APIKey:      key,
 				KeyStrategy: keyStrategy,
 				CreatedAt:   model.JSONTime{Time: now},
 				UpdatedAt:   model.JSONTime{Time: now},
-			}
-			if err := s.store.CreateAPIKey(c.Request.Context(), apiKey); err != nil {
-				log.Printf("[WARN] 创建API Key失败 (channel=%d, index=%d): %v", id, i, err)
-			}
+			})
+		}
+		if err := s.store.CreateAPIKeysBatch(c.Request.Context(), apiKeys); err != nil {
+			log.Printf("[WARN] 批量创建API Keys失败 (channel=%d, count=%d): %v", id, len(apiKeys), err)
 		}
 	} else if strategyChanged {
-		// 仅策略变化：高效更新所有Key的策略字段（无需删除重建）
-		now := time.Now()
-		for _, oldKey := range oldKeys {
-			oldKey.KeyStrategy = keyStrategy
-			oldKey.UpdatedAt = model.JSONTime{Time: now}
-			if err := s.store.UpdateAPIKey(c.Request.Context(), oldKey); err != nil {
-				log.Printf("[WARN] 更新API Key策略失败 (channel=%d, index=%d): %v", id, oldKey.KeyIndex, err)
-			}
+		// 仅策略变化：单条SQL批量更新所有Key的策略字段
+		if err := s.store.UpdateAPIKeysStrategy(c.Request.Context(), id, keyStrategy); err != nil {
+			log.Printf("[WARN] 批量更新API Key策略失败 (channel=%d): %v", id, err)
 		}
 	}
 

@@ -8,6 +8,7 @@ function getSettingGroupInfo(key) {
 
   const defs = [
     { id: 'channel', name: '渠道与测试', order: 10, match: () => k.startsWith('channel_') || k === 'max_key_retries' },
+    { id: 'model', name: '模型匹配', order: 15, match: () => k.startsWith('model_') },
     { id: 'timeout', name: '超时', order: 20, match: () => k.includes('timeout') },
     { id: 'health', name: '渠道动态排序', order: 30, match: () => k.includes('health_score') || k.includes('success_rate') || k.includes('penalty_weight') || k === 'enable_health_score' || k === 'health_min_confident_sample' },
     { id: 'cooldown', name: '冷却兜底', order: 40, match: () => k.startsWith('cooldown_') },

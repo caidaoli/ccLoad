@@ -399,8 +399,9 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"max_key_retries", "3", "int", "单渠道最大Key重试次数", "3"},
 		{"upstream_first_byte_timeout", "0", "duration", "上游首字节超时(秒,0=禁用)", "0"},
 		{"non_stream_timeout", "120", "duration", "非流式请求超时(秒,0=禁用)", "120"},
-		{"88code_free_only", "false", "bool", "仅允许使用88code免费订阅(free订阅可用时生效)", "false"},
+		{"88code_free_only", "false", "bool", "渠道名称88code开头时仅允许FREE订阅(非FREE订阅Key将被冷却)", "false"},
 		{"model_lookup_strip_date_suffix", "true", "bool", "模型匹配失败时，忽略末尾-YYYYMMDD日期后缀进行渠道匹配(优先精确匹配)", "true"},
+		{"model_fuzzy_match", "false", "bool", "模型匹配失败时，使用子串模糊匹配(多匹配时选最新版本)", "false"},
 		{"channel_test_content", "sonnet 4.0的发布日期是什么", "string", "渠道测试默认内容", "sonnet 4.0的发布日期是什么"},
 		{"channel_stats_range", "today", "string", "渠道管理费用统计范围", "today"},
 		// 健康度排序配置
@@ -410,7 +411,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"health_score_update_interval", "30", "int", "成功率缓存更新间隔(秒)", "30"},
 		{"health_min_confident_sample", "20", "int", "置信样本量阈值(样本量达到此值时惩罚全额生效)", "20"},
 		// 冷却兜底配置
-		{"cooldown_fallback_threshold", "true", "bool", "全冷却兜底开关", "true"},
+		{"cooldown_fallback_threshold", "true", "bool", "所有渠道冷却时选最优渠道兜底(关闭则直接拒绝请求)", "true"},
 	}
 
 	var query string
@@ -440,7 +441,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		}
 		// 更新元数据
 		metaSQL := fmt.Sprintf("UPDATE system_settings SET description = ?, default_value = ?, value_type = ? WHERE %s = ?", keyCol)
-		if _, err := db.ExecContext(ctx, metaSQL, "全冷却兜底开关", "true", "bool", "cooldown_fallback_threshold"); err != nil {
+		if _, err := db.ExecContext(ctx, metaSQL, "所有渠道冷却时选最优渠道兜底(关闭则直接拒绝请求)", "true", "bool", "cooldown_fallback_threshold"); err != nil {
 			return fmt.Errorf("update setting metadata cooldown_fallback_threshold: %w", err)
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"ccLoad/internal/model"
@@ -100,64 +101,84 @@ func (s *SQLStore) GetAPIKey(ctx context.Context, channelID int64, keyIndex int)
 	return key, nil
 }
 
-// CreateAPIKey 创建新的 API Key
-func (s *SQLStore) CreateAPIKey(ctx context.Context, key *model.APIKey) error {
-	if key == nil {
-		return errors.New("api key cannot be nil")
+// CreateAPIKeysBatch 批量创建 API Keys（高效批量插入）
+func (s *SQLStore) CreateAPIKeysBatch(ctx context.Context, keys []*model.APIKey) error {
+	if len(keys) == 0 {
+		return nil
 	}
 
 	nowUnix := timeToUnix(time.Now())
 
-	// 确保默认值
-	if key.KeyStrategy == "" {
-		key.KeyStrategy = model.KeyStrategySequential
-	}
-
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO api_keys (channel_id, key_index, api_key, key_strategy,
-		                      cooldown_until, cooldown_duration_ms, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, key.ChannelID, key.KeyIndex, key.APIKey, key.KeyStrategy,
-		key.CooldownUntil, key.CooldownDurationMs, nowUnix, nowUnix)
-
+	// 使用事务确保原子性
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("insert api key: %w", err)
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 构建批量插入语句（每批最多100条，避免SQL语句过长）
+	const batchSize = 100
+	for i := 0; i < len(keys); i += batchSize {
+		end := i + batchSize
+		if end > len(keys) {
+			end = len(keys)
+		}
+		batch := keys[i:end]
+
+		// 构建 VALUES 部分
+		var sb strings.Builder
+		sb.WriteString(`INSERT INTO api_keys (channel_id, key_index, api_key, key_strategy,
+		                      cooldown_until, cooldown_duration_ms, created_at, updated_at) VALUES `)
+
+		args := make([]any, 0, len(batch)*8)
+		for j, key := range batch {
+			if j > 0 {
+				sb.WriteString(",")
+			}
+			sb.WriteString("(?, ?, ?, ?, ?, ?, ?, ?)")
+
+			strategy := key.KeyStrategy
+			if strategy == "" {
+				strategy = model.KeyStrategySequential
+			}
+			args = append(args, key.ChannelID, key.KeyIndex, key.APIKey, strategy,
+				key.CooldownUntil, key.CooldownDurationMs, nowUnix, nowUnix)
+		}
+
+		if _, err := tx.ExecContext(ctx, sb.String(), args...); err != nil {
+			return fmt.Errorf("batch insert api keys: %w", err)
+		}
 	}
 
-	// 触发异步Redis同步(确保新增操作同步到Redis)
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+
+	// 触发异步Redis同步(确保批量新增操作同步到Redis)
 	s.triggerAsyncSync(syncChannels)
 
 	return nil
 }
 
-// UpdateAPIKey 更新 API Key 信息
-func (s *SQLStore) UpdateAPIKey(ctx context.Context, key *model.APIKey) error {
-	if key == nil {
-		return errors.New("api key cannot be nil")
+// UpdateAPIKeysStrategy 批量更新渠道所有Key的策略（单条SQL，高效）
+func (s *SQLStore) UpdateAPIKeysStrategy(ctx context.Context, channelID int64, strategy string) error {
+	if strategy == "" {
+		strategy = model.KeyStrategySequential
 	}
 
 	updatedAtUnix := timeToUnix(time.Now())
 
-	// 确保默认值
-	if key.KeyStrategy == "" {
-		key.KeyStrategy = model.KeyStrategySequential
-	}
-
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE api_keys
-		SET api_key = ?, key_strategy = ?,
-		    cooldown_until = ?, cooldown_duration_ms = ?,
-		    updated_at = ?
-		WHERE channel_id = ? AND key_index = ?
-	`, key.APIKey, key.KeyStrategy,
-		key.CooldownUntil, key.CooldownDurationMs,
-		updatedAtUnix, key.ChannelID, key.KeyIndex)
+		SET key_strategy = ?, updated_at = ?
+		WHERE channel_id = ?
+	`, strategy, updatedAtUnix, channelID)
 
 	if err != nil {
-		return fmt.Errorf("update api key: %w", err)
+		return fmt.Errorf("update api keys strategy: %w", err)
 	}
 
-	// 触发异步Redis同步(确保更新操作同步到Redis)
+	// 触发异步Redis同步
 	s.triggerAsyncSync(syncChannels)
 
 	return nil

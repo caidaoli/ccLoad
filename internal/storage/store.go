@@ -33,8 +33,8 @@ type Store interface {
 	GetAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error)
 	GetAPIKey(ctx context.Context, channelID int64, keyIndex int) (*model.APIKey, error)
 	GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey, error)
-	CreateAPIKey(ctx context.Context, key *model.APIKey) error
-	UpdateAPIKey(ctx context.Context, key *model.APIKey) error
+	CreateAPIKeysBatch(ctx context.Context, keys []*model.APIKey) error
+	UpdateAPIKeysStrategy(ctx context.Context, channelID int64, strategy string) error
 	DeleteAPIKey(ctx context.Context, channelID int64, keyIndex int) error
 	CompactKeyIndices(ctx context.Context, channelID int64, removedIndex int) error
 	DeleteAllAPIKeys(ctx context.Context, channelID int64) error
