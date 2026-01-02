@@ -19,7 +19,7 @@
       logsLoadScheduled = true;
       setTimeout(() => {
         logsLoadScheduled = false;
-        load();
+        load(true); // 自动刷新时跳过 loading 状态，避免闪烁
       }, 0);
     }
 
@@ -76,14 +76,16 @@
       }
     }
 
-    async function load() {
+    async function load(skipLoading = false) {
       if (logsLoadInFlight) {
         logsLoadPending = true;
         return;
       }
       logsLoadInFlight = true;
       try {
-        renderLogsLoading();
+        if (!skipLoading) {
+          renderLogsLoading();
+        }
 
         // 从表单元素获取筛选条件（支持下拉框切换后立即生效）
         const range = document.getElementById('f_hours')?.value || 'today';
