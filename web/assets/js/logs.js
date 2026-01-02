@@ -359,10 +359,11 @@
         return;
       }
 
-      // 使用 DocumentFragment 批量构建，避免逐行添加导致的闪烁
-      const fragment = document.createDocumentFragment();
+      // 性能优化：直接拼接 HTML 字符串，避免逐行调用 TemplateEngine.render
+      const htmlParts = new Array(data.length);
 
-      for (const entry of data) {
+      for (let i = 0; i < data.length; i++) {
+        const entry = data[i];
         // === 预处理数据：构建复杂HTML片段 ===
 
         // 0. 客户端IP显示
@@ -414,66 +415,27 @@
           const firstByteDisplay = hasFirstByte ?
             `<span style="color: var(--success-600);">${entry.first_byte_time.toFixed(3)}</span>` :
             '<span style="color: var(--neutral-500);">-</span>';
-          responseTimingDisplay = `
-            <span style="display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px; white-space: nowrap;">
-              ${firstByteDisplay}
-              <span style="color: var(--neutral-400);">/</span>
-              ${durationDisplay}
-            </span>
-            ${streamFlag}
-          `;
+          responseTimingDisplay = `<span style="display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px; white-space: nowrap;">${firstByteDisplay}<span style="color: var(--neutral-400);">/</span>${durationDisplay}</span>${streamFlag}`;
         } else {
-          responseTimingDisplay = `
-            <span style="display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px; white-space: nowrap;">
-              ${durationDisplay}
-            </span>
-            ${streamFlag}
-          `;
+          responseTimingDisplay = `<span style="display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px; white-space: nowrap;">${durationDisplay}</span>${streamFlag}`;
         }
 
         // 5. API Key显示(含按钮组)
         let apiKeyDisplay = '';
         if (entry.api_key_used && entry.channel_id && entry.model) {
-          const statusCode = entry.status_code || 0;
-          const showTestBtn = statusCode !== 200;
-          const showDeleteBtn = statusCode === 403;
+          const sc = entry.status_code || 0;
+          const showTestBtn = sc !== 200;
+          const showDeleteBtn = sc === 403;
 
           let buttons = '';
           if (showTestBtn) {
-            buttons += `
-              <button
-                class="test-key-btn"
-                data-action="test"
-                data-channel-id="${entry.channel_id}"
-                data-channel-name="${escapeHtml(entry.channel_name || '').replace(/"/g, '&quot;')}"
-                data-api-key="${escapeHtml(entry.api_key_used).replace(/"/g, '&quot;')}"
-                data-model="${escapeHtml(entry.model).replace(/"/g, '&quot;')}"
-                title="测试此 API Key">
-                ⚡
-              </button>
-            `;
+            buttons += `<button class="test-key-btn" data-action="test" data-channel-id="${entry.channel_id}" data-channel-name="${escapeHtml(entry.channel_name || '').replace(/"/g, '&quot;')}" data-api-key="${escapeHtml(entry.api_key_used).replace(/"/g, '&quot;')}" data-model="${escapeHtml(entry.model).replace(/"/g, '&quot;')}" title="测试此 API Key">⚡</button>`;
           }
           if (showDeleteBtn) {
-            buttons += `
-              <button
-                class="test-key-btn"
-                style="color: var(--error-600);"
-                data-action="delete"
-                data-channel-id="${entry.channel_id}"
-                data-channel-name="${escapeHtml(entry.channel_name || '').replace(/"/g, '&quot;')}"
-                data-api-key="${escapeHtml(entry.api_key_used).replace(/"/g, '&quot;')}"
-                title="删除此 API Key">
-                🗑
-              </button>
-            `;
+            buttons += `<button class="test-key-btn" style="color: var(--error-600);" data-action="delete" data-channel-id="${entry.channel_id}" data-channel-name="${escapeHtml(entry.channel_name || '').replace(/"/g, '&quot;')}" data-api-key="${escapeHtml(entry.api_key_used).replace(/"/g, '&quot;')}" title="删除此 API Key">🗑</button>`;
           }
 
-          apiKeyDisplay = `
-            <div style="display: flex; align-items: center; gap: 6px; justify-content: center;">
-              <code style="font-size: 0.9em; color: var(--neutral-600);">${escapeHtml(entry.api_key_used)}</code>
-              ${buttons}
-            </div>
-          `;
+          apiKeyDisplay = `<div style="display: flex; align-items: center; gap: 6px; justify-content: center;"><code style="font-size: 0.9em; color: var(--neutral-600);">${escapeHtml(entry.api_key_used)}</code>${buttons}</div>`;
         } else if (entry.api_key_used) {
           apiKeyDisplay = `<code style="font-size: 0.9em; color: var(--neutral-600);">${escapeHtml(entry.api_key_used)}</code>`;
         } else {
@@ -482,70 +444,60 @@
 
         // 6. Token统计显示(0值为空)
         const tokenValue = (value, color) => {
-          if (value === undefined || value === null || value === 0) {
-            return '';
-          }
+          if (value === undefined || value === null || value === 0) return '';
           return `<span class="token-metric-value" style="color: ${color};">${value.toLocaleString()}</span>`;
         };
         const inputTokensDisplay = tokenValue(entry.input_tokens, 'var(--neutral-700)');
         const outputTokensDisplay = tokenValue(entry.output_tokens, 'var(--neutral-700)');
         const cacheReadDisplay = tokenValue(entry.cache_read_input_tokens, 'var(--success-600)');
 
-        // 缓存建列：简洁角标展示，仅Claude/Codex渠道显示（新增2025-12）
+        // 缓存建列
         let cacheCreationDisplay = '';
         const total = entry.cache_creation_input_tokens || 0;
         const cache5m = entry.cache_5m_input_tokens || 0;
         const cache1h = entry.cache_1h_input_tokens || 0;
 
         if (total > 0) {
-          // 判断是否为Claude/Codex模型（支持prompt caching细分）
           const model = (entry.model || '').toLowerCase();
           const isClaudeOrCodex = model.includes('claude') || model.includes('codex');
 
           let badge = '';
-          // 仅Claude/Codex显示角标，其他渠道（OpenAI/Gemini）不显示
           if (isClaudeOrCodex && (cache5m > 0 || cache1h > 0)) {
-            // 简洁显示：仅标注类型，不重复数值
             if (cache5m > 0 && cache1h === 0) {
               badge = ' <sup style="color: var(--primary-500); font-size: 0.75em; font-weight: 600;">5m</sup>';
             } else if (cache1h > 0 && cache5m === 0) {
               badge = ' <sup style="color: var(--warning-600); font-size: 0.75em; font-weight: 600;">1h</sup>';
             } else if (cache5m > 0 && cache1h > 0) {
-              // 混合场景：显示两种类型
               badge = ' <sup style="color: var(--primary-500); font-size: 0.75em; font-weight: 600;">5m</sup><sup style="color: var(--warning-600); font-size: 0.75em; font-weight: 600;">+1h</sup>';
             }
           }
           cacheCreationDisplay = `<span class="token-metric-value" style="color: var(--primary-600);">${total.toLocaleString()}${badge}</span>`;
         }
 
-        // 7. 成本显示(0值为空)
+        // 7. 成本显示
         const costDisplay = entry.cost ?
-          `<span style="color: var(--warning-600); font-weight: 500;">${formatCost(entry.cost)}</span>` :
-          '';
+          `<span style="color: var(--warning-600); font-weight: 500;">${formatCost(entry.cost)}</span>` : '';
 
-        // === 渲染行 ===
-        const rowEl = TemplateEngine.render('tpl-log-row', {
-          time: formatTime(entry.time),
-          clientIPDisplay,
-          configDisplay,
-          modelDisplay,
-          apiKeyDisplay,
-          statusClass,
-          statusCode,
-          responseTimingDisplay,
-          inputTokensDisplay,
-          outputTokensDisplay,
-          cacheReadDisplay,
-          cacheCreationDisplay,
-          costDisplay,
-          message: entry.message || ''
-        });
-        if (rowEl) fragment.appendChild(rowEl);
+        // === 直接拼接行 HTML ===
+        htmlParts[i] = `<tr>
+          <td style="white-space: nowrap;">${formatTime(entry.time)}</td>
+          <td style="white-space: nowrap; font-family: monospace; font-size: 0.85em; color: var(--neutral-600);">${clientIPDisplay}</td>
+          <td class="config-info">${configDisplay}</td>
+          <td>${modelDisplay}</td>
+          <td style="text-align: center; white-space: nowrap;">${apiKeyDisplay}</td>
+          <td><span class="${statusClass}">${statusCode}</span></td>
+          <td style="text-align: right; white-space: nowrap;">${responseTimingDisplay}</td>
+          <td style="text-align: right; white-space: nowrap;">${inputTokensDisplay}</td>
+          <td style="text-align: right; white-space: nowrap;">${outputTokensDisplay}</td>
+          <td style="text-align: right; white-space: nowrap;">${cacheReadDisplay}</td>
+          <td style="text-align: right; white-space: nowrap;">${cacheCreationDisplay}</td>
+          <td style="text-align: right; white-space: nowrap;">${costDisplay}</td>
+          <td style="max-width: 300px; word-break: break-word;">${escapeHtml(entry.message || '')}</td>
+        </tr>`;
       }
 
-      // 一次性替换 tbody 内容，避免闪烁
-      tbody.innerHTML = '';
-      tbody.appendChild(fragment);
+      // 一次性替换 tbody 内容
+      tbody.innerHTML = htmlParts.join('');
     }
 
     function updatePagination() {
@@ -736,23 +688,25 @@
       });
     }
 
+    // 性能优化：避免 toLocaleString 的开销，使用手动格式化
     function formatTime(timeStr) {
       try {
         const ts = toUnixMs(timeStr);
         if (!ts) return '-';
 
-        const date = new Date(ts);
-        if (isNaN(date.getTime()) || date.getFullYear() < 2020) {
+        const d = new Date(ts);
+        if (isNaN(d.getTime()) || d.getFullYear() < 2020) {
           return '-';
         }
-        return date.toLocaleString('zh-CN', {
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit',
-          hour: '2-digit',
-          minute: '2-digit',
-          second: '2-digit'
-        });
+
+        // 手动格式化：YYYY/MM/DD HH:mm:ss
+        const Y = d.getFullYear();
+        const M = String(d.getMonth() + 1).padStart(2, '0');
+        const D = String(d.getDate()).padStart(2, '0');
+        const h = String(d.getHours()).padStart(2, '0');
+        const m = String(d.getMinutes()).padStart(2, '0');
+        const s = String(d.getSeconds()).padStart(2, '0');
+        return `${Y}/${M}/${D} ${h}:${m}:${s}`;
       } catch (e) {
         return '-';
       }

@@ -436,12 +436,20 @@
     }
 
     // 应用默认排序:按渠道优先级降序,相同优先级按渠道名称升序,相同渠道按模型名称升序
+    // 如果用户已选择自定义排序，则保持用户的排序
     function applyDefaultSorting() {
       if (!statsData || !statsData.stats || statsData.stats.length === 0) return;
 
       // 保存原始数据副本(仅首次)
       if (!statsData.originalStats) {
         statsData.originalStats = [...statsData.stats];
+      }
+
+      // 如果用户已选择自定义排序，应用用户的排序而非默认排序
+      if (sortState.column && sortState.order) {
+        applySorting();
+        updateSortHeaders();
+        return;
       }
 
       // 按渠道优先级降序(高优先级在前),相同优先级按渠道名称升序,相同渠道按模型名称升序
@@ -462,10 +470,6 @@
         const modelB = (b.model || '').toLowerCase();
         return modelA.localeCompare(modelB, 'zh-CN');
       });
-
-      // 重置排序状态(保持无排序指示器显示)
-      sortState.column = null;
-      sortState.order = null;
     }
 
     // 加载令牌列表
@@ -560,6 +564,7 @@
     }
 
     // 构建健康状态指示器 HTML（固定48个方块 + 当前成功率）
+    // 性能优化：使用快速时间格式化，避免 toLocaleString 开销
     function buildHealthIndicator(timeline, currentRate) {
       if (!timeline || timeline.length === 0) {
         // 无健康数据时不显示指示器
@@ -567,74 +572,44 @@
       }
 
       // 后端已返回固定48个时间点，rate=-1 表示无数据
-      const blocks = [];
+      // 使用数组预分配 + 直接拼接，减少内存分配
+      const len = timeline.length;
+      const blocks = new Array(len);
 
-      for (let i = 0; i < timeline.length; i++) {
+      for (let i = 0; i < len; i++) {
         const point = timeline[i];
         const rate = point.rate;
 
         // rate < 0 表示该时间桶无数据
         if (rate < 0) {
-          blocks.push('<span class="health-block unknown" title="无数据"></span>');
+          blocks[i] = '<span class="health-block unknown" title="无数据"></span>';
           continue;
         }
 
-        let className = 'unknown';
-        if (rate >= 0.95) {
-          className = 'healthy';
-        } else if (rate >= 0.80) {
-          className = 'warning';
-        } else if (rate >= 0) {
-          className = 'critical';
-        }
+        const className = rate >= 0.95 ? 'healthy' : rate >= 0.80 ? 'warning' : 'critical';
 
-        // 格式化时间用于 tooltip
-        const timeStr = new Date(point.ts).toLocaleString('zh-CN', {
-          month: '2-digit',
-          day: '2-digit',
-          hour: '2-digit',
-          minute: '2-digit'
-        });
+        // 快速时间格式化（避免 toLocaleString 的性能开销）
+        const d = new Date(point.ts);
+        const timeStr = `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 
-        // 构建详细的 tooltip - 每项单独一行
-        const tooltipLines = [timeStr];
-        tooltipLines.push(`成功: ${point.success || 0} / 失败: ${point.error || 0}`);
-        if (point.avg_first_byte_time > 0) {
-          tooltipLines.push(`首字: ${point.avg_first_byte_time.toFixed(2)}s`);
-        }
-        if (point.avg_duration > 0) {
-          tooltipLines.push(`耗时: ${point.avg_duration.toFixed(2)}s`);
-        }
-        if (point.input_tokens > 0) {
-          tooltipLines.push(`输入: ${formatNumber(point.input_tokens)}`);
-        }
-        if (point.output_tokens > 0) {
-          tooltipLines.push(`输出: ${formatNumber(point.output_tokens)}`);
-        }
-        if (point.cache_read_tokens > 0) {
-          tooltipLines.push(`缓存读: ${formatNumber(point.cache_read_tokens)}`);
-        }
-        if (point.cache_creation_tokens > 0) {
-          tooltipLines.push(`缓存写: ${formatNumber(point.cache_creation_tokens)}`);
-        }
-        if (point.cost > 0) {
-          tooltipLines.push(`成本: $${point.cost.toFixed(4)}`);
-        }
-        const title = tooltipLines.join('\n');
+        // 构建 tooltip - 使用条件拼接减少数组操作
+        let title = `${timeStr}\n成功: ${point.success || 0} / 失败: ${point.error || 0}`;
+        if (point.avg_first_byte_time > 0) title += `\n首字: ${point.avg_first_byte_time.toFixed(2)}s`;
+        if (point.avg_duration > 0) title += `\n耗时: ${point.avg_duration.toFixed(2)}s`;
+        if (point.input_tokens > 0) title += `\n输入: ${formatNumber(point.input_tokens)}`;
+        if (point.output_tokens > 0) title += `\n输出: ${formatNumber(point.output_tokens)}`;
+        if (point.cache_read_tokens > 0) title += `\n缓存读: ${formatNumber(point.cache_read_tokens)}`;
+        if (point.cache_creation_tokens > 0) title += `\n缓存写: ${formatNumber(point.cache_creation_tokens)}`;
+        if (point.cost > 0) title += `\n成本: $${point.cost.toFixed(4)}`;
 
-        blocks.push(`<span class="health-block ${className}" title="${escapeHtml(title)}"></span>`);
+        blocks[i] = `<span class="health-block ${className}" title="${escapeHtml(title)}"></span>`;
       }
 
       // 构建完整 HTML - 成功率颜色：>=95%绿色, >=80%橙色, <80%红色
       const ratePercent = (currentRate * 100).toFixed(1);
       const rateColor = currentRate >= 0.95 ? 'var(--success-600)' :
                         currentRate >= 0.80 ? 'var(--warning-600)' : 'var(--error-600)';
-      return `
-        <div class="health-indicator">
-          ${blocks.join('')}
-          <span class="health-rate" style="color: ${rateColor}">${ratePercent}%</span>
-        </div>
-      `;
+      return `<div class="health-indicator">${blocks.join('')}<span class="health-rate" style="color: ${rateColor}">${ratePercent}%</span></div>`;
     }
 
     // 注销功能（已由 ui.js 的 onLogout 统一处理）

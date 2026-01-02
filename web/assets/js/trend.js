@@ -131,7 +131,10 @@
 
         window.trendData = metrics.payload.data || [];
         window.channels = channels || [];
-        
+
+        // 构建渠道数据缓存（一次遍历，供后续 hasChannelData 使用）
+        buildChannelDataCache(window.trendData);
+
         // 修复：智能初始化渠道显示状态（处理localStorage过时数据）
         // 默认不显示任何渠道，只显示总数
         if (window.visibleChannels.size === 0) {
@@ -225,17 +228,23 @@
         attachChartResizeObserver(chartDom);
       }
 
-      // 准备时间数据
-      const timestamps = window.trendData.map(point => {
-        const date = new Date(point.ts || point.Ts);
-        if (window.currentHours > 24) {
-          return `${date.getMonth()+1}/${date.getDate()} ${pad(date.getHours())}:00`;
-        } else {
-          return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
-        }
-      });
+      // 准备时间数据（优化：使用 for 循环替代 map）
+      const trendData = window.trendData;
+      const dataLen = trendData.length;
+      const timestamps = new Array(dataLen);
+      const useShortFormat = window.currentHours <= 24;
 
-      const noRequestRanges = computeNoRequestRanges(window.trendData);
+      for (let i = 0; i < dataLen; i++) {
+        const point = trendData[i];
+        const date = new Date(point.ts || point.Ts);
+        if (useShortFormat) {
+          timestamps[i] = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+        } else {
+          timestamps[i] = `${date.getMonth()+1}/${date.getDate()} ${pad(date.getHours())}:00`;
+        }
+      }
+
+      const noRequestRanges = computeNoRequestRanges(trendData);
       const markAreaData = noRequestRanges
         .filter(([start, end]) => (end - start + 1) >= 3) // 太短的空窗不要标，避免噪音
         .map(([start, end]) => ([
@@ -498,32 +507,32 @@
       }
 
       // 为每个可见渠道添加对应趋势线
-      console.log('开始渲染渠道数据，可见渠道:', Array.from(window.visibleChannels));
+      // 优化：使用 for 循环替代 forEach，预分配数组
+      const visibleChannelsArray = Array.from(window.visibleChannels);
+      const visibleCount = visibleChannelsArray.length;
 
-      Array.from(window.visibleChannels).forEach(channelName => {
+      for (let ci = 0; ci < visibleCount; ci++) {
+        const channelName = visibleChannelsArray[ci];
         const color = channelColors[channelName];
 
         if (trendType === 'count') {
           // 调用次数趋势：渠道成功/失败线
+          // 优化：单次遍历同时提取 success 和 error 数据
+          const successData = new Array(dataLen);
+          const errorData = new Array(dataLen);
           let successTotal = 0;
           let errorTotal = 0;
-          const successData = window.trendData.map(point => {
-            const channels = point.channels || {};
-            const channelData = channels[channelName] || { success: 0, error: 0 };
-            const success = channelData.success || 0;
+
+          for (let i = 0; i < dataLen; i++) {
+            const channels = trendData[i].channels;
+            const channelData = channels ? channels[channelName] : null;
+            const success = channelData ? (channelData.success || 0) : 0;
+            const error = channelData ? (channelData.error || 0) : 0;
+            successData[i] = success;
+            errorData[i] = error;
             successTotal += success;
-            return success;
-          });
-
-          const errorData = window.trendData.map(point => {
-            const channels = point.channels || {};
-            const channelData = channels[channelName] || { success: 0, error: 0 };
-            const error = channelData.error || 0;
             errorTotal += error;
-            return error;
-          });
-
-          console.log(`渠道 ${channelName} 数据统计: 成功总数=${successTotal}, 错误总数=${errorTotal}`);
+          }
 
           // 成功线
           if (successTotal > 0) {
@@ -558,17 +567,20 @@
           }
         } else if (trendType === 'first_byte') {
           // 首字响应时间趋势：渠道平均首字响应时间线
+          const fbtData = new Array(dataLen);
           let hasData = false;
-          const fbtData = window.trendData.map(point => {
-            const channels = point.channels || {};
-            const channelData = channels[channelName] || {};
-            const fbt = channelData.avg_first_byte_time_seconds;
+
+          for (let i = 0; i < dataLen; i++) {
+            const channels = trendData[i].channels;
+            const channelData = channels ? channels[channelName] : null;
+            const fbt = channelData ? channelData.avg_first_byte_time_seconds : null;
             if (fbt != null && fbt > 0) {
+              fbtData[i] = fbt;
               hasData = true;
-              return fbt; // 秒
+            } else {
+              fbtData[i] = null;
             }
-            return null;
-          });
+          }
 
           if (hasData) {
             series.push({
@@ -586,17 +598,20 @@
           }
         } else if (trendType === 'duration') {
           // 总耗时趋势：渠道平均总耗时线
+          const durData = new Array(dataLen);
           let hasData = false;
-          const durData = window.trendData.map(point => {
-            const channels = point.channels || {};
-            const channelData = channels[channelName] || {};
-            const dur = channelData.avg_duration_seconds;
+
+          for (let i = 0; i < dataLen; i++) {
+            const channels = trendData[i].channels;
+            const channelData = channels ? channels[channelName] : null;
+            const dur = channelData ? channelData.avg_duration_seconds : null;
             if (dur != null && dur > 0) {
+              durData[i] = dur;
               hasData = true;
-              return dur; // 秒
+            } else {
+              durData[i] = null;
             }
-            return null;
-          });
+          }
 
           if (hasData) {
             series.push({
@@ -614,17 +629,20 @@
           }
         } else if (trendType === 'tokens') {
           // Token用量趋势：渠道Token线（输入+输出合计）
+          const tokenData = new Array(dataLen);
           let hasData = false;
-          const tokenData = window.trendData.map(point => {
-            const channels = point.channels || {};
-            const channelData = channels[channelName] || {};
-            const total = (channelData.input_tokens || 0) + (channelData.output_tokens || 0);
+
+          for (let i = 0; i < dataLen; i++) {
+            const channels = trendData[i].channels;
+            const channelData = channels ? channels[channelName] : null;
+            const total = channelData ? ((channelData.input_tokens || 0) + (channelData.output_tokens || 0)) : 0;
             if (total > 0) {
+              tokenData[i] = total;
               hasData = true;
-              return total;
+            } else {
+              tokenData[i] = null;
             }
-            return null;
-          });
+          }
 
           if (hasData) {
             series.push({
@@ -642,17 +660,20 @@
           }
         } else if (trendType === 'cost') {
           // 费用消耗趋势：渠道费用线
+          const costData = new Array(dataLen);
           let hasData = false;
-          const costData = window.trendData.map(point => {
-            const channels = point.channels || {};
-            const channelData = channels[channelName] || {};
-            const cost = channelData.total_cost;
+
+          for (let i = 0; i < dataLen; i++) {
+            const channels = trendData[i].channels;
+            const channelData = channels ? channels[channelName] : null;
+            const cost = channelData ? channelData.total_cost : null;
             if (cost != null && cost > 0) {
+              costData[i] = cost;
               hasData = true;
-              return cost;
+            } else {
+              costData[i] = null;
             }
-            return null;
-          });
+          }
 
           if (hasData) {
             series.push({
@@ -671,17 +692,20 @@
         } else if (trendType === 'rpm') {
           // RPM趋势：渠道每分钟请求数
           const bucketMin = window.currentHours ? computeBucketMin(window.currentHours) : 5;
+          const rpmData = new Array(dataLen);
           let hasData = false;
-          const rpmData = window.trendData.map(point => {
-            const channels = point.channels || {};
-            const channelData = channels[channelName] || {};
-            const total = (channelData.success || 0) + (channelData.error || 0);
+
+          for (let i = 0; i < dataLen; i++) {
+            const channels = trendData[i].channels;
+            const channelData = channels ? channels[channelName] : null;
+            const total = channelData ? ((channelData.success || 0) + (channelData.error || 0)) : 0;
             if (total > 0) {
+              rpmData[i] = total / bucketMin;
               hasData = true;
-              return total / bucketMin;
+            } else {
+              rpmData[i] = null;
             }
-            return null;
-          });
+          }
 
           if (hasData) {
             series.push({
@@ -698,7 +722,7 @@
             });
           }
         }
-      });
+      }
 
       // 首字响应/总耗时：加参考线（P50/P90）和极值标记，便于读趋势/看尖峰
       if (trendType === 'first_byte' || trendType === 'duration') {
@@ -1099,26 +1123,64 @@
       return (n < 10 ? '0' : '') + n;
     }
     
-    // 检查渠道是否有数据的函数
-    function hasChannelData(channelName, trendData) {
+    // ===== 渠道数据缓存（避免重复遍历 trendData）=====
+    // 缓存结构: { channelName: { success, error, hasData } }
+    window._channelDataCache = null;
+    window._channelDataCacheVersion = 0;
+
+    // 构建渠道数据缓存：一次遍历 trendData，统计所有渠道
+    function buildChannelDataCache(trendData) {
+      const cache = {};
       if (!trendData || !trendData.length) {
-        console.log(`hasChannelData: 没有趋势数据 for ${channelName}`);
-        return false;
+        window._channelDataCache = cache;
+        window._channelDataCacheVersion++;
+        return cache;
       }
-      
-      let totalSuccess = 0;
-      let totalError = 0;
-      
-      trendData.forEach(point => {
-        const channels = point.channels || {};
-        const channelData = channels[channelName] || { success: 0, error: 0 };
-        totalSuccess += channelData.success || 0;
-        totalError += channelData.error || 0;
-      });
-      
-      const hasData = (totalSuccess + totalError) > 0;
-      console.log(`hasChannelData: ${channelName} - success=${totalSuccess}, error=${totalError}, hasData=${hasData}`);
-      return hasData;
+
+      // 单次遍历：收集所有渠道的统计数据
+      for (let i = 0, len = trendData.length; i < len; i++) {
+        const channels = trendData[i].channels;
+        if (!channels) continue;
+
+        const names = Object.keys(channels);
+        for (let j = 0, nLen = names.length; j < nLen; j++) {
+          const name = names[j];
+          const chData = channels[name];
+          if (!cache[name]) {
+            cache[name] = { success: 0, error: 0 };
+          }
+          cache[name].success += chData.success || 0;
+          cache[name].error += chData.error || 0;
+        }
+      }
+
+      // 计算 hasData 标记
+      const cacheNames = Object.keys(cache);
+      for (let i = 0, len = cacheNames.length; i < len; i++) {
+        const name = cacheNames[i];
+        cache[name].hasData = (cache[name].success + cache[name].error) > 0;
+      }
+
+      window._channelDataCache = cache;
+      window._channelDataCacheVersion++;
+      return cache;
+    }
+
+    // 检查渠道是否有数据（使用缓存）
+    function hasChannelData(channelName, trendData) {
+      // 如果缓存不存在或为空，先构建缓存
+      if (!window._channelDataCache) {
+        buildChannelDataCache(trendData);
+      }
+
+      const cached = window._channelDataCache[channelName];
+      return cached ? cached.hasData : false;
+    }
+
+    // 获取渠道统计数据（用于调试）
+    function getChannelStats(channelName) {
+      if (!window._channelDataCache) return null;
+      return window._channelDataCache[channelName] || null;
     }
     
     // 生成渠道颜色（避免与总体趋势线颜色冲突）
@@ -1143,55 +1205,45 @@
       ];
 
       const channelColors = {};
-      let colorIndex = 0;
-      Array.from(channels).forEach(channelName => {
-        channelColors[channelName] = colors[colorIndex % colors.length];
-        colorIndex++;
-      });
+      const channelArray = Array.from(channels);
+      const colorsLen = colors.length;
+
+      for (let i = 0, len = channelArray.length; i < len; i++) {
+        channelColors[channelArray[i]] = colors[i % colorsLen];
+      }
 
       return channelColors;
     }
     
     // 更新渠道筛选器 - 显示所有有数据的渠道（包括未配置的渠道）
+    // 优化：直接使用缓存获取有数据的渠道，避免重复遍历 trendData
     function updateChannelFilter() {
       const filterList = document.getElementById('channel-filter-list');
       if (!filterList) return;
-      
-      // 收集所有有数据的渠道名称
+
+      // 直接从缓存获取所有有数据的渠道名称
       const allChannelNames = new Set();
-      
-      // 添加已配置的启用渠道
-      if (window.channels) {
-        window.channels.forEach(ch => {
-          if (ch.enabled && hasChannelData(ch.name, window.trendData)) {
-            allChannelNames.add(ch.name);
+
+      // 使用缓存：O(1) 查找
+      if (window._channelDataCache) {
+        const cachedNames = Object.keys(window._channelDataCache);
+        for (let i = 0, len = cachedNames.length; i < len; i++) {
+          const name = cachedNames[i];
+          if (window._channelDataCache[name].hasData) {
+            allChannelNames.add(name);
           }
-        });
+        }
       }
-      
-      // 添加趋势数据中存在但未配置的渠道（如"未知渠道"）
-      if (window.trendData) {
-        window.trendData.forEach(point => {
-          if (point.channels) {
-            Object.keys(point.channels).forEach(name => {
-              const chData = point.channels[name];
-              if ((chData.success || 0) + (chData.error || 0) > 0) {
-                allChannelNames.add(name);
-              }
-            });
-          }
-        });
-      }
-      
-      console.log('筛选器中的所有渠道:', Array.from(allChannelNames));
-      
+
       // 生成颜色映射
       const channelColors = generateChannelColors(allChannelNames);
-      
-      filterList.innerHTML = '';
-      
-      // 渲染渠道列表
-      Array.from(allChannelNames).sort().forEach(channelName => {
+
+      // 使用 DocumentFragment 批量插入 DOM
+      const fragment = document.createDocumentFragment();
+      const sortedNames = Array.from(allChannelNames).sort();
+
+      for (let i = 0, len = sortedNames.length; i < len; i++) {
+        const channelName = sortedNames[i];
         const isVisible = window.visibleChannels.has(channelName);
 
         // 为"未知渠道"添加特殊标识
@@ -1206,9 +1258,12 @@
         });
         if (item) {
           item.onclick = () => toggleChannel(channelName);
-          filterList.appendChild(item);
+          fragment.appendChild(item);
         }
-      });
+      }
+
+      filterList.innerHTML = '';
+      filterList.appendChild(fragment);
     }
     
     // 切换渠道显示/隐藏
@@ -1225,30 +1280,18 @@
     }
     
     // 全选渠道 - 选择所有有数据的渠道（包括未配置的渠道）
+    // 优化：直接使用缓存获取有数据的渠道
     function selectAllChannels() {
-      // 添加已配置的启用渠道
-      if (window.channels) {
-        window.channels.forEach(ch => {
-          if (ch.enabled && hasChannelData(ch.name, window.trendData)) {
-            window.visibleChannels.add(ch.name);
+      if (window._channelDataCache) {
+        const names = Object.keys(window._channelDataCache);
+        for (let i = 0, len = names.length; i < len; i++) {
+          const name = names[i];
+          if (window._channelDataCache[name].hasData) {
+            window.visibleChannels.add(name);
           }
-        });
+        }
       }
-      
-      // 添加趋势数据中存在但未配置的渠道
-      if (window.trendData) {
-        window.trendData.forEach(point => {
-          if (point.channels) {
-            Object.keys(point.channels).forEach(name => {
-              const chData = point.channels[name];
-              if ((chData.success || 0) + (chData.error || 0) > 0) {
-                window.visibleChannels.add(name);
-              }
-            });
-          }
-        });
-      }
-      
+
       updateChannelFilter();
       renderChart();
       persistChannelState();
