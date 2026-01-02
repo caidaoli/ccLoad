@@ -202,6 +202,144 @@ func TestCalculateCost_MimoModels(t *testing.T) {
 	}
 }
 
+func TestCalculateCost_QwenModels(t *testing.T) {
+	// qwen3-32b: Input $0.08/1M, Output $0.24/1M
+	cost := CalculateCostDetailed("qwen3-32b", 1_000_000, 1_000_000, 0, 0, 0)
+	expected := 0.08 + 0.24
+	if !floatEquals(cost, expected, 0.000001) {
+		t.Errorf("qwen3-32b: 成本 = %.6f, 期望 %.6f", cost, expected)
+	}
+
+	// qwen-max: Input $1.60/1M, Output $6.40/1M
+	costMax := CalculateCostDetailed("qwen-max", 1_000_000, 1_000_000, 0, 0, 0)
+	expectedMax := 1.60 + 6.40
+	if !floatEquals(costMax, expectedMax, 0.000001) {
+		t.Errorf("qwen-max: 成本 = %.6f, 期望 %.6f", costMax, expectedMax)
+	}
+
+	// 测试模糊匹配
+	fuzzyCost := CalculateCostDetailed("qwen3-32b-20260102", 1_000_000, 1_000_000, 0, 0, 0)
+	if !floatEquals(fuzzyCost, expected, 0.000001) {
+		t.Errorf("qwen3-32b 模糊匹配: 成本 = %.6f, 期望 %.6f", fuzzyCost, expected)
+	}
+
+	// 测试别名 qwen-3-32b → qwen3-32b
+	aliasCost := CalculateCostDetailed("qwen-3-32b", 1_000_000, 1_000_000, 0, 0, 0)
+	if !floatEquals(aliasCost, expected, 0.000001) {
+		t.Errorf("qwen-3-32b 别名: 成本 = %.6f, 期望 %.6f", aliasCost, expected)
+	}
+}
+
+func TestCalculateCost_DeepSeekModels(t *testing.T) {
+	// deepseek-r1: Input $0.30/1M, Output $1.20/1M
+	costR1 := CalculateCostDetailed("deepseek-r1", 1_000_000, 1_000_000, 0, 0, 0)
+	expectedR1 := 0.30 + 1.20
+	if !floatEquals(costR1, expectedR1, 0.000001) {
+		t.Errorf("deepseek-r1: 成本 = %.6f, 期望 %.6f", costR1, expectedR1)
+	}
+
+	// deepseek-chat (v3): Input $0.30/1M, Output $1.20/1M
+	costChat := CalculateCostDetailed("deepseek-chat", 1_000_000, 1_000_000, 0, 0, 0)
+	if !floatEquals(costChat, expectedR1, 0.000001) {
+		t.Errorf("deepseek-chat: 成本 = %.6f, 期望 %.6f", costChat, expectedR1)
+	}
+
+	// 别名测试
+	costV3 := CalculateCostDetailed("deepseek-v3", 1_000_000, 1_000_000, 0, 0, 0)
+	if !floatEquals(costV3, expectedR1, 0.000001) {
+		t.Errorf("deepseek-v3 别名: 成本 = %.6f, 期望 %.6f", costV3, expectedR1)
+	}
+
+	// 蒸馏模型测试
+	costDistill := CalculateCostDetailed("deepseek-r1-distill-llama-70b", 1_000_000, 1_000_000, 0, 0, 0)
+	expectedDistill := 0.03 + 0.11
+	if !floatEquals(costDistill, expectedDistill, 0.000001) {
+		t.Errorf("deepseek-distill-llama-70b: 成本 = %.6f, 期望 %.6f", costDistill, expectedDistill)
+	}
+}
+
+func TestCalculateCost_XAIModels(t *testing.T) {
+	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=xai
+	testCases := []struct {
+		model  string
+		input  float64 // $/M tokens
+		output float64 // $/M tokens
+	}{
+		{"grok-4", 3.00, 15.00},
+		{"grok-4-fast", 0.20, 0.50},
+		{"grok-3", 3.00, 15.00},
+		{"grok-3-beta", 3.00, 15.00},
+		{"grok-3-mini", 0.30, 0.50},
+		{"grok-3-mini-beta", 0.30, 0.50},
+		{"grok-2", 2.00, 10.00},
+		{"grok-2-1212", 2.00, 10.00},
+		{"grok-2-vision-1212", 2.00, 10.00},
+		{"grok-2-mini", 0.20, 0.50},
+		{"grok-code-fast-1", 0.20, 1.50},
+		{"grok-vision-beta", 5.00, 15.00},
+	}
+
+	for _, tc := range testCases {
+		cost := CalculateCostDetailed(tc.model, 1_000_000, 1_000_000, 0, 0, 0)
+		expected := tc.input + tc.output
+		if !floatEquals(cost, expected, 0.000001) {
+			t.Errorf("%s: 成本 = %.6f, 期望 %.6f", tc.model, cost, expected)
+		}
+	}
+
+	// 别名测试
+	costBeta := CalculateCostDetailed("grok-beta", 1_000_000, 1_000_000, 0, 0, 0)
+	expected3 := 3.00 + 15.00
+	if !floatEquals(costBeta, expected3, 0.000001) {
+		t.Errorf("grok-beta 别名: 成本 = %.6f, 期望 %.6f", costBeta, expected3)
+	}
+
+	// 模糊匹配测试
+	fuzzyTests := []struct {
+		model    string
+		expected float64
+	}{
+		{"grok-4-20260101", 3.00 + 15.00},      // 匹配 grok-4
+		{"grok-3-mini-custom", 0.30 + 0.50},    // 匹配 grok-3-mini
+		{"grok-2-1212-extended", 2.00 + 10.00}, // 匹配 grok-2-1212
+	}
+	for _, tc := range fuzzyTests {
+		cost := CalculateCostDetailed(tc.model, 1_000_000, 1_000_000, 0, 0, 0)
+		if !floatEquals(cost, tc.expected, 0.000001) {
+			t.Errorf("%s 模糊匹配: 成本 = %.6f, 期望 %.6f", tc.model, cost, tc.expected)
+		}
+	}
+}
+
+func TestCalculateCost_MiniMaxModels(t *testing.T) {
+	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=minimax
+	testCases := []struct {
+		model  string
+		input  float64
+		output float64
+	}{
+		{"minimax-01", 0.20, 1.10},
+		{"minimax-m1", 0.30, 1.65},
+		{"minimax-m2", 0.15, 0.45},
+		{"minimax-m2.1", 0.30, 1.20},
+	}
+
+	for _, tc := range testCases {
+		cost := CalculateCostDetailed(tc.model, 1_000_000, 1_000_000, 0, 0, 0)
+		expected := tc.input + tc.output
+		if !floatEquals(cost, expected, 0.000001) {
+			t.Errorf("%s: 成本 = %.6f, 期望 %.6f", tc.model, cost, expected)
+		}
+	}
+
+	// 模糊匹配测试
+	cost := CalculateCostDetailed("minimax-m2-20260101", 1_000_000, 1_000_000, 0, 0, 0)
+	expected := 0.15 + 0.45
+	if !floatEquals(cost, expected, 0.000001) {
+		t.Errorf("minimax-m2 模糊匹配: 成本 = %.6f, 期望 %.6f", cost, expected)
+	}
+}
+
 func TestCalculateCost_CacheSavings(t *testing.T) {
 	// 验证缓存节省（Cache Read vs 普通Input）
 	normalCost := CalculateCostDetailed("claude-sonnet-4-5", 10000, 0, 0, 0, 0)

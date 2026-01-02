@@ -117,6 +117,102 @@ var basePricing = map[string]ModelPricing{
 
 	// ========== Mimo 模型 ==========
 	"mimo-v2-flash": {InputPrice: 0.10, OutputPrice: 0.30},
+
+	// ========== Qwen 模型 ==========
+	"qwen3-32b":                    {InputPrice: 0.08, OutputPrice: 0.24},
+	"qwen3-4b":                     {InputPrice: 0.00, OutputPrice: 0.00},
+	"qwen3-8b":                     {InputPrice: 0.028, OutputPrice: 0.11},
+	"qwen2.5-coder-7b-instruct":    {InputPrice: 0.03, OutputPrice: 0.09},
+	"qwen-2.5-coder-32b-instruct":  {InputPrice: 0.03, OutputPrice: 0.11},
+	"qwen-2.5-7b-instruct":         {InputPrice: 0.04, OutputPrice: 0.10},
+	"qwen3-14b":                    {InputPrice: 0.05, OutputPrice: 0.22},
+	"qwen2.5-vl-32b-instruct":      {InputPrice: 0.05, OutputPrice: 0.22},
+	"qwen-turbo":                   {InputPrice: 0.05, OutputPrice: 0.20},
+	"qwen3-30b-a3b-thinking-2507":  {InputPrice: 0.051, OutputPrice: 0.34},
+	"qwen3-next-80b-a3b-instruct":  {InputPrice: 0.06, OutputPrice: 0.60},
+	"qwen3-30b-a3b":                {InputPrice: 0.06, OutputPrice: 0.22},
+	"qwen3-vl-8b-instruct":         {InputPrice: 0.064, OutputPrice: 0.40},
+	"qwen3-coder-30b-a3b-instruct": {InputPrice: 0.07, OutputPrice: 0.27},
+	"qwen2.5-vl-72b-instruct":      {InputPrice: 0.07, OutputPrice: 0.26},
+	"qwen3-235b-a22b-2507":         {InputPrice: 0.071, OutputPrice: 0.463},
+	"qwen3-30b-a3b-instruct-2507":  {InputPrice: 0.08, OutputPrice: 0.33},
+	"qwq-32b":                      {InputPrice: 0.15, OutputPrice: 0.40},
+	"qwen3-vl-30b-a3b-instruct":    {InputPrice: 0.15, OutputPrice: 0.60},
+	"qwen3-vl-30b-a3b-thinking":    {InputPrice: 0.16, OutputPrice: 0.80},
+	"qwen3-235b-a22b":              {InputPrice: 0.18, OutputPrice: 0.54},
+	"qwen3-vl-8b-thinking":         {InputPrice: 0.18, OutputPrice: 2.10},
+	"qwen3-vl-235b-a22b-instruct":  {InputPrice: 0.20, OutputPrice: 1.20},
+	"qwen-2.5-vl-7b-instruct":      {InputPrice: 0.20, OutputPrice: 0.20},
+	"qwen-vl-plus":                 {InputPrice: 0.21, OutputPrice: 0.63},
+	"qwen3-coder":                  {InputPrice: 0.22, OutputPrice: 1.80},
+	"qwen-2.5-72b-instruct":        {InputPrice: 0.12, OutputPrice: 0.39},
+	"qwen-plus-2025-07-28":         {InputPrice: 0.40, OutputPrice: 4.00},
+	"qwen-plus":                    {InputPrice: 0.40, OutputPrice: 1.20},
+	"qwen-vl-max":                  {InputPrice: 0.80, OutputPrice: 3.20},
+	"qwen3-coder-plus":             {InputPrice: 1.00, OutputPrice: 5.00},
+	"qwen-max":                     {InputPrice: 1.60, OutputPrice: 6.40},
+
+	// ========== DeepSeek 模型 ==========
+	"deepseek-r1-distill-llama-70b": {InputPrice: 0.03, OutputPrice: 0.11},
+	"deepseek-r1-0528-qwen3-8b":     {InputPrice: 0.048, OutputPrice: 0.072},
+	"deepseek-r1-distill-qwen-14b":  {InputPrice: 0.12, OutputPrice: 0.12},
+	"deepseek-r1":                   {InputPrice: 0.30, OutputPrice: 1.20},
+	"deepseek-chat":                 {InputPrice: 0.30, OutputPrice: 1.20},
+	"deepseek-v3.2-exp":             {InputPrice: 0.25, OutputPrice: 0.38},
+	"deepseek-v3.1-terminus":        {InputPrice: 0.21, OutputPrice: 0.79},
+	"deepseek-r1-distill-qwen-32b":  {InputPrice: 0.24, OutputPrice: 0.24},
+	"deepseek-v3.2":                 {InputPrice: 0.25, OutputPrice: 0.38},
+	"deepseek-v3.2-speciale":        {InputPrice: 0.27, OutputPrice: 0.41},
+	"deepseek-r1-0528":              {InputPrice: 0.40, OutputPrice: 1.75},
+	"deepseek-prover-v2":            {InputPrice: 0.50, OutputPrice: 2.18},
+
+	// ========== xAI Grok 模型 ==========
+	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=xai
+	"grok-4":             {InputPrice: 3.00, OutputPrice: 15.00},
+	"grok-4-fast":        {InputPrice: 0.20, OutputPrice: 0.50},
+	"grok-3":             {InputPrice: 3.00, OutputPrice: 15.00},
+	"grok-3-beta":        {InputPrice: 3.00, OutputPrice: 15.00},
+	"grok-3-mini":        {InputPrice: 0.30, OutputPrice: 0.50},
+	"grok-3-mini-beta":   {InputPrice: 0.30, OutputPrice: 0.50},
+	"grok-2":             {InputPrice: 2.00, OutputPrice: 10.00},
+	"grok-2-1212":        {InputPrice: 2.00, OutputPrice: 10.00},
+	"grok-2-vision-1212": {InputPrice: 2.00, OutputPrice: 10.00},
+	"grok-2-mini":        {InputPrice: 0.20, OutputPrice: 0.50},
+	"grok-code-fast-1":   {InputPrice: 0.20, OutputPrice: 1.50},
+	"grok-vision-beta":   {InputPrice: 5.00, OutputPrice: 15.00},
+
+	// ========== MiniMax 模型 ==========
+	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=minimax
+	"minimax-01":   {InputPrice: 0.20, OutputPrice: 1.10},
+	"minimax-m1":   {InputPrice: 0.30, OutputPrice: 1.65},
+	"minimax-m2":   {InputPrice: 0.15, OutputPrice: 0.45},
+	"minimax-m2.1": {InputPrice: 0.30, OutputPrice: 1.20},
+
+	// ========== Meta Llama 模型 ==========
+	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=meta-llama
+	"llama-3.2-3b-instruct":         {InputPrice: 0.003, OutputPrice: 0.006},
+	"llama-3.2-1b-instruct":         {InputPrice: 0.005, OutputPrice: 0.01},
+	"llama-3.1-8b-instruct":         {InputPrice: 0.015, OutputPrice: 0.02},
+	"llama-guard-3-8b":              {InputPrice: 0.02, OutputPrice: 0.03},
+	"llama-3-8b-instruct":           {InputPrice: 0.03, OutputPrice: 0.04},
+	"llama-3.3-70b-instruct":        {InputPrice: 0.038, OutputPrice: 0.12},
+	"llama-3.2-11b-vision-instruct": {InputPrice: 0.049, OutputPrice: 0.049},
+	"llama-guard-4-12b":             {InputPrice: 0.05, OutputPrice: 0.05},
+	"llama-4-scout":                 {InputPrice: 0.08, OutputPrice: 0.30},
+	"llama-3.1-70b-instruct":        {InputPrice: 0.10, OutputPrice: 0.28},
+	"llama-4-maverick":              {InputPrice: 0.15, OutputPrice: 0.50},
+	"llama-guard-2-8b":              {InputPrice: 0.20, OutputPrice: 0.20},
+	"llama-3-70b-instruct":          {InputPrice: 0.30, OutputPrice: 0.40},
+	"llama-3.2-90b-vision-instruct": {InputPrice: 0.35, OutputPrice: 0.40},
+	"llama-3.1-405b-instruct":       {InputPrice: 0.80, OutputPrice: 0.80},
+	"llama-3.1-405b":                {InputPrice: 2.00, OutputPrice: 2.00},
+
+	// ========== OpenAI OSS 模型 ==========
+	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=openai
+	"gpt-oss-20b":           {InputPrice: 0.05, OutputPrice: 0.20},
+	"gpt-oss-120b:exacto":   {InputPrice: 0.05, OutputPrice: 0.24},
+	"gpt-oss-safeguard-20b": {InputPrice: 0.075, OutputPrice: 0.30},
+	"gpt-oss-120b":          {InputPrice: 0.10, OutputPrice: 0.50},
 }
 
 // modelAliases 模型别名映射（多对一）
@@ -175,6 +271,23 @@ var modelAliases = map[string]string{
 	"gemini-claude-opus-4-5-thinking":   "claude-opus-4-5",
 	"gemini-claude-sonnet-4-5-thinking": "claude-sonnet-4-5",
 	"gemini-claude-sonnet-4-5":          "claude-sonnet-4-5",
+
+	// DeepSeek 别名
+	"deepseek-v3": "deepseek-chat",
+
+	// xAI 别名
+	"grok-beta": "grok-3",
+
+	// Qwen 别名（常见命名变体）
+	"qwen-3-32b":                     "qwen3-32b",
+	"qwen-3-235b-a22b-instruct-2507": "qwen3-235b-a22b",
+
+	// GLM 别名
+	"zai-glm-4.6": "glm-4.6",
+
+	// Meta Llama 别名（Cerebras等平台命名变体）
+	"llama3.1-8b":   "llama-3.1-8b-instruct",
+	"llama-3.3-70b": "llama-3.3-70b-instruct",
 }
 
 // getPricing 获取模型定价（先查别名再查基础表）
@@ -412,6 +525,40 @@ func fuzzyMatchModel(model string) (ModelPricing, bool) {
 
 		// 其他厂商
 		"mimo-v2-flash",
+		"qwen3-30b-a3b-thinking", "qwen3-30b-a3b-instruct", "qwen3-30b-a3b",
+		"qwen3-vl-235b-a22b-instruct", "qwen3-vl-30b-a3b-thinking", "qwen3-vl-30b-a3b-instruct",
+		"qwen3-vl-8b-thinking", "qwen3-vl-8b-instruct", "qwen3-vl",
+		"qwen3-235b-a22b", "qwen3-14b", "qwen3-32b", "qwen3-8b", "qwen3-4b",
+		"qwen3-coder-plus", "qwen3-coder",
+		"qwen2.5-coder-7b-instruct", "qwen-2.5-coder-32b-instruct",
+		"qwen2.5-vl-72b-instruct", "qwen2.5-vl-32b-instruct", "qwen-2.5-vl-7b-instruct",
+		"qwen-2.5-72b-instruct", "qwen-2.5-7b-instruct",
+		"qwen-plus-2025-07-28", "qwen-plus", "qwen-turbo", "qwen-max", "qwen-vl-plus", "qwen-vl-max",
+		"qwq-32b",
+		"deepseek-r1-distill-llama-70b", "deepseek-r1-distill-qwen-32b", "deepseek-r1-distill-qwen-14b",
+		"deepseek-r1-0528-qwen3-8b", "deepseek-r1-0528", "deepseek-r1",
+		"deepseek-v3.2-speciale", "deepseek-v3.2-exp", "deepseek-v3.2", "deepseek-v3.1-terminus",
+		"deepseek-chat", "deepseek-prover-v2",
+
+		// xAI Grok模型（长前缀优先）
+		"grok-4-fast", "grok-4",
+		"grok-3-mini-beta", "grok-3-mini", "grok-3-beta", "grok-3",
+		"grok-2-vision-1212", "grok-2-1212", "grok-2-mini", "grok-2",
+		"grok-code-fast-1", "grok-vision-beta",
+
+		// MiniMax模型
+		"minimax-m2.1", "minimax-m2", "minimax-m1", "minimax-01",
+
+		// Meta Llama模型（长前缀优先）
+		"llama-3.2-90b-vision-instruct", "llama-3.2-11b-vision-instruct",
+		"llama-3.1-405b-instruct", "llama-3.1-405b", "llama-3.1-70b-instruct", "llama-3.1-8b-instruct",
+		"llama-3.3-70b-instruct", "llama-3.2-3b-instruct", "llama-3.2-1b-instruct",
+		"llama-3-70b-instruct", "llama-3-8b-instruct",
+		"llama-guard-4-12b", "llama-guard-3-8b", "llama-guard-2-8b",
+		"llama-4-maverick", "llama-4-scout",
+
+		// OpenAI OSS模型
+		"gpt-oss-safeguard-20b", "gpt-oss-120b:exacto", "gpt-oss-120b", "gpt-oss-20b",
 	}
 
 	for _, prefix := range prefixes {
