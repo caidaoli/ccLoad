@@ -25,6 +25,9 @@ func (s *Server) applyCooldownDecision(
 	cooldownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 	defer cancel()
 
+	// 设置渠道类型，用于特定渠道的错误处理策略
+	in.ChannelType = cfg.ChannelType
+
 	action := s.cooldownManager.HandleError(cooldownCtx, in)
 
 	if action == cooldown.ActionRetryKey || action == cooldown.ActionRetryChannel {

@@ -24,6 +24,7 @@ const NoKeyIndex = -1
 
 type ErrorInput struct {
 	ChannelID      int64
+	ChannelType    string // 渠道类型，用于特定渠道的错误处理策略
 	KeyIndex       int
 	StatusCode     int
 	ErrorBody      []byte
@@ -76,7 +77,7 @@ func (m *Manager) HandleError(ctx context.Context, in ErrorInput) Action {
 	var reset1308Time time.Time
 	var has1308Time bool
 	if in.IsNetworkError {
-		// 网络错误默认按“渠道级”处理：这类问题通常是上游/链路/负载，而不是某个Key的固有属性。
+		// 网络错误默认按"渠道级"处理：这类问题通常是上游/链路/负载，而不是某个Key的固有属性。
 		// 继续在同一渠道里换Key只是在浪费重试预算、扩大故障面。
 		errLevel = util.ErrorLevelChannel
 	} else {
@@ -85,6 +86,12 @@ func (m *Manager) HandleError(ctx context.Context, in ErrorInput) Action {
 		errLevel = classification.Level
 		reset1308Time = classification.ResetTime1308
 		has1308Time = classification.HasResetTime1308
+	}
+
+	// 2. [INFO] 特定渠道类型的400错误策略覆盖
+	// anthropic (Claude Code) 和 codex 是专用软件渠道，400错误一定是上游问题而非客户端请求问题
+	if statusCode == 400 && (in.ChannelType == util.ChannelTypeAnthropic || in.ChannelType == util.ChannelTypeCodex) {
+		errLevel = util.ErrorLevelChannel
 	}
 
 	// 3. [TARGET] 动态调整:单Key渠道的Key级错误应该直接冷却渠道
