@@ -254,6 +254,105 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 	return stats, nil
 }
 
+// GetStatsLite 轻量版统计查询，跳过RPM计算和渠道名称填充
+// 适用于 /public/summary 等只需要基础聚合数据的场景
+func (s *SQLStore) GetStatsLite(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.StatsEntry, error) {
+	baseQuery := `
+		SELECT
+			channel_id,
+			COALESCE(model, '') AS model,
+			SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success,
+			SUM(CASE WHEN (status_code < 200 OR status_code >= 300) AND status_code != 499 THEN 1 ELSE 0 END) AS error,
+			SUM(CASE WHEN status_code != 499 THEN 1 ELSE 0 END) AS total,
+			ROUND(
+				AVG(CASE WHEN is_streaming = 1 AND first_byte_time > 0 AND status_code >= 200 AND status_code < 300 THEN first_byte_time ELSE NULL END),
+				3
+			) as avg_first_byte_time,
+			ROUND(
+				AVG(CASE WHEN duration > 0 THEN duration ELSE NULL END),
+				3
+			) as avg_duration,
+			SUM(COALESCE(input_tokens, 0)) as total_input_tokens,
+			SUM(COALESCE(output_tokens, 0)) as total_output_tokens,
+			SUM(COALESCE(cache_read_input_tokens, 0)) as total_cache_read_input_tokens,
+			SUM(COALESCE(cache_creation_input_tokens, 0)) as total_cache_creation_input_tokens,
+			SUM(COALESCE(cost, 0.0)) as total_cost
+		FROM logs`
+
+	startMs := startTime.UnixMilli()
+	endMs := endTime.UnixMilli()
+
+	qb := NewQueryBuilder(baseQuery).
+		Where("time >= ?", startMs).
+		Where("time <= ?", endMs).
+		Where("channel_id > 0")
+
+	_, isEmpty, err := s.applyChannelFilter(ctx, qb, filter)
+	if err != nil {
+		return nil, err
+	}
+	if isEmpty {
+		return []model.StatsEntry{}, nil
+	}
+
+	qb.ApplyFilter(filter)
+
+	suffix := "GROUP BY channel_id, model ORDER BY channel_id ASC, model ASC"
+	query, args := qb.BuildWithSuffix(suffix)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	stats := make([]model.StatsEntry, 0)
+
+	for rows.Next() {
+		var entry model.StatsEntry
+		var avgFirstByteTime, avgDuration sql.NullFloat64
+		var totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheCreationTokens sql.NullInt64
+		var totalCost sql.NullFloat64
+
+		err := rows.Scan(&entry.ChannelID, &entry.Model,
+			&entry.Success, &entry.Error, &entry.Total, &avgFirstByteTime, &avgDuration,
+			&totalInputTokens, &totalOutputTokens, &totalCacheReadTokens, &totalCacheCreationTokens, &totalCost)
+		if err != nil {
+			return nil, err
+		}
+
+		if avgFirstByteTime.Valid {
+			entry.AvgFirstByteTimeSeconds = &avgFirstByteTime.Float64
+		}
+		if avgDuration.Valid {
+			entry.AvgDurationSeconds = &avgDuration.Float64
+		}
+		if totalInputTokens.Valid && totalInputTokens.Int64 > 0 {
+			entry.TotalInputTokens = &totalInputTokens.Int64
+		}
+		if totalOutputTokens.Valid && totalOutputTokens.Int64 > 0 {
+			entry.TotalOutputTokens = &totalOutputTokens.Int64
+		}
+		if totalCacheReadTokens.Valid && totalCacheReadTokens.Int64 > 0 {
+			entry.TotalCacheReadInputTokens = &totalCacheReadTokens.Int64
+		}
+		if totalCacheCreationTokens.Valid && totalCacheCreationTokens.Int64 > 0 {
+			entry.TotalCacheCreationInputTokens = &totalCacheCreationTokens.Int64
+		}
+		if totalCost.Valid && totalCost.Float64 > 0 {
+			entry.TotalCost = &totalCost.Float64
+		}
+
+		stats = append(stats, entry)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return stats, nil
+}
+
 // GetRPMStats 获取RPM/QPS统计数据（峰值、平均、最近一分钟）
 // isToday参数控制是否计算最近一分钟数据（仅本日有意义）
 // [FIX] 2025-12: 排除499（客户端取消）避免污染RPM统计

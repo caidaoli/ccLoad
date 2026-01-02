@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"ccLoad/internal/model"
@@ -126,10 +127,52 @@ func (s *Server) HandlePublicSummary(c *gin.Context) {
 
 	// 判断是否为本日（本日才计算最近一分钟）
 	isToday := params.Range == "today" || params.Range == ""
+	ctx := c.Request.Context()
 
-	stats, err := s.store.GetStats(c.Request.Context(), startTime, endTime, nil, isToday) // 不使用过滤条件
-	if err != nil {
-		RespondError(c, http.StatusInternalServerError, err)
+	// [OPT] P1: 并行执行三个独立查询
+	var (
+		stats        []model.StatsEntry
+		rpmStats     *model.RPMStats
+		channelTypes map[int64]string
+		statsErr     error
+		rpmErr       error
+		typesErr     error
+		wg           sync.WaitGroup
+	)
+
+	wg.Add(3)
+
+	// 查询1: 基础统计（使用 Lite 版本跳过 fillStatsRPM）
+	go func() {
+		defer wg.Done()
+		stats, statsErr = s.store.GetStatsLite(ctx, startTime, endTime, nil)
+	}()
+
+	// 查询2: RPM统计
+	go func() {
+		defer wg.Done()
+		rpmStats, rpmErr = s.store.GetRPMStats(ctx, startTime, endTime, nil, isToday)
+	}()
+
+	// 查询3: 渠道类型映射（带缓存）
+	go func() {
+		defer wg.Done()
+		channelTypes, typesErr = s.getChannelTypesMapCached(ctx)
+	}()
+
+	wg.Wait()
+
+	// 错误处理
+	if statsErr != nil {
+		RespondError(c, http.StatusInternalServerError, statsErr)
+		return
+	}
+	if rpmErr != nil {
+		RespondError(c, http.StatusInternalServerError, rpmErr)
+		return
+	}
+	if typesErr != nil {
+		RespondError(c, http.StatusInternalServerError, typesErr)
 		return
 	}
 
@@ -137,20 +180,6 @@ func (s *Server) HandlePublicSummary(c *gin.Context) {
 	durationSeconds := endTime.Sub(startTime).Seconds()
 	if durationSeconds < 1 {
 		durationSeconds = 1 // 防止除零
-	}
-
-	// 获取RPM统计（峰值、平均、最近一分钟）
-	rpmStats, err := s.store.GetRPMStats(c.Request.Context(), startTime, endTime, nil, isToday)
-	if err != nil {
-		RespondError(c, http.StatusInternalServerError, err)
-		return
-	}
-
-	// 查询所有渠道的类型映射(channel_id -> channel_type)
-	channelTypes, err := s.fetchChannelTypesMap(c.Request.Context())
-	if err != nil {
-		RespondError(c, http.StatusInternalServerError, err)
-		return
 	}
 
 	// 按渠道类型分组统计
@@ -248,6 +277,39 @@ func (s *Server) fetchChannelTypesMap(ctx context.Context) (map[int64]string, er
 	return channelTypes, nil
 }
 
+// getChannelTypesMapCached 带 TTL 缓存的渠道类型映射查询
+// [OPT] P3: 渠道类型变化频率极低，使用 30 秒缓存减少数据库查询
+const channelTypesCacheTTL = 30 * time.Second
+
+func (s *Server) getChannelTypesMapCached(ctx context.Context) (map[int64]string, error) {
+	// 读锁检查缓存
+	s.channelTypesCacheMu.RLock()
+	if s.channelTypesCache != nil && time.Since(s.channelTypesCacheTime) < channelTypesCacheTTL {
+		result := s.channelTypesCache
+		s.channelTypesCacheMu.RUnlock()
+		return result, nil
+	}
+	s.channelTypesCacheMu.RUnlock()
+
+	// 写锁更新缓存
+	s.channelTypesCacheMu.Lock()
+	defer s.channelTypesCacheMu.Unlock()
+
+	// 双重检查：可能其他 goroutine 已更新
+	if s.channelTypesCache != nil && time.Since(s.channelTypesCacheTime) < channelTypesCacheTTL {
+		return s.channelTypesCache, nil
+	}
+
+	channelTypes, err := s.fetchChannelTypesMap(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	s.channelTypesCache = channelTypes
+	s.channelTypesCacheTime = time.Now()
+	return channelTypes, nil
+}
+
 // handleCooldownStats 获取当前冷却状态监控指标
 // GET /admin/cooldown/stats
 // [INFO] Linus风格:按需查询,简单直接
@@ -341,13 +403,16 @@ func (s *Server) fillHealthTimeline(ctx context.Context, stats []model.StatsEntr
 		healthStart = startTime
 	}
 
-	sinceUnix := healthStart.Unix()
-	untilUnix := endTime.Unix()
+	// 转换为毫秒，直接与 logs.time 比较，避免索引失效
+	sinceMs := healthStart.UnixMilli()
+	untilMs := endTime.UnixMilli()
+	bucketMs := bucketSeconds * 1000
 
 	// 构建查询：按 (bucket_ts, channel_id, model) 分组统计
+	// 关键优化：WHERE 条件直接比较毫秒，避免 logs.time / 1000 导致索引失效
 	query := `
 		SELECT
-			FLOOR((logs.time / 1000) / ?) * ? AS bucket_ts,
+			FLOOR(logs.time / ?) * ? AS bucket_ts,
 			logs.channel_id,
 			COALESCE(logs.model, '') AS model,
 			SUM(CASE WHEN logs.status_code >= 200 AND logs.status_code < 300 THEN 1 ELSE 0 END) AS success,
@@ -360,12 +425,12 @@ func (s *Server) fillHealthTimeline(ctx context.Context, stats []model.StatsEntr
 			SUM(COALESCE(logs.cache_creation_input_tokens, 0)) AS cache_creation_tokens,
 			SUM(COALESCE(logs.cost, 0.0)) AS total_cost
 		FROM logs
-		WHERE (logs.time / 1000) >= ? AND (logs.time / 1000) <= ?
+		WHERE logs.time >= ? AND logs.time <= ?
 			AND logs.status_code != 499
 			AND logs.channel_id > 0
 	`
 
-	args := []any{bucketSeconds, bucketSeconds, sinceUnix, untilUnix}
+	args := []any{bucketMs, bucketMs, sinceMs, untilMs}
 
 	// 应用筛选条件（复用现有的过滤逻辑）
 	if filter != nil {
@@ -408,6 +473,8 @@ func (s *Server) fillHealthTimeline(ctx context.Context, stats []model.StatsEntr
 	// 解析查询结果 - 按时间桶索引位置填充
 	timeline := make(map[channelModelKey][]model.HealthPoint)
 
+	sinceUnix := healthStart.Unix()
+
 	// 为每个渠道初始化48个空时间点
 	for key := range statsMap {
 		points := make([]model.HealthPoint, numBuckets)
@@ -421,7 +488,7 @@ func (s *Server) fillHealthTimeline(ctx context.Context, stats []model.StatsEntr
 	}
 
 	for rows.Next() {
-		var bucketTs int64
+		var bucketTs int64 // 现在是毫秒级
 		var channelID int
 		var modelStr string
 		var success, errorCount int
@@ -441,8 +508,8 @@ func (s *Server) fillHealthTimeline(ctx context.Context, stats []model.StatsEntr
 			continue
 		}
 
-		// 计算该时间桶对应的索引位置
-		bucketIndex := int((bucketTs - sinceUnix) / bucketSeconds)
+		// 计算该时间桶对应的索引位置（bucketTs 是毫秒，需转换为秒再计算）
+		bucketIndex := int((bucketTs/1000 - sinceUnix) / bucketSeconds)
 		if bucketIndex < 0 || bucketIndex >= numBuckets {
 			continue
 		}
@@ -453,9 +520,9 @@ func (s *Server) fillHealthTimeline(ctx context.Context, stats []model.StatsEntr
 			successRate = float64(success) / float64(total)
 		}
 
-		// duration/first_byte_time 在日志中以“秒”存储（requestContext.Duration().Seconds），这里直接透传
+		// duration/first_byte_time 在日志中以"秒"存储（requestContext.Duration().Seconds），这里直接透传
 		timeline[key][bucketIndex] = model.HealthPoint{
-			Ts:                       time.Unix(bucketTs, 0),
+			Ts:                       time.Unix(bucketTs/1000, 0),
 			SuccessRate:              successRate,
 			SuccessCount:             success,
 			ErrorCount:               errorCount,

@@ -66,6 +66,11 @@ type Server struct {
 	shutdownDone   chan struct{}  // Shutdown完成信号（幂等）
 	isShuttingDown atomic.Bool    // shutdown标志，防止向已关闭channel写入
 	wg             sync.WaitGroup // 等待所有后台goroutine结束
+
+	// [OPT] P3: 渠道类型缓存（TTL 30s）
+	channelTypesCache     map[int64]string
+	channelTypesCacheTime time.Time
+	channelTypesCacheMu   sync.RWMutex
 }
 
 func NewServer(store storage.Store) *Server {
