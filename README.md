@@ -581,6 +581,7 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
   - 用量单位显示为 M（百万 tokens）
   - 支持按 API 令牌 ID 分类统计
   - 支持缓存优化的统计查询
+  - 支持 Gemini/OpenAI 缓存 Token（Cache Read）展示
 
 ## 🔧 技术栈
 
@@ -606,7 +607,7 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
   - `proxy_util.go`：常量、类型定义、工具函数
   - `proxy_stream.go`：流式响应、首字节检测
   - `proxy_gemini.go`：Gemini API特殊处理
-  - `proxy_sse_parser.go`：SSE解析器（防御性处理，修复1308错误冷却逻辑）
+  - `proxy_sse_parser.go`：SSE解析器（防御性处理，支持 Gemini/OpenAI 缓存 Token 解析）
 - **admin模块拆分**（SRP原则）：
   - `admin_channels.go`：渠道CRUD操作
   - `admin_stats.go`：统计分析API
