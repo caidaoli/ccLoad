@@ -362,22 +362,23 @@ func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time
 	startMs := startTime.UnixMilli()
 	endMs := endTime.UnixMilli()
 
-	// 1. 计算峰值RPM（每分钟请求数的最大值）
+	// 合并峰值RPM和总数查询为单次数据库往返
+	// 子查询按分钟桶分组统计，外层查询同时计算峰值和总数
 	// 使用 FLOOR 确保 MySQL 返回整数（MySQL 的 / 返回浮点数，会导致分组错误）
 	// 排除499：客户端取消不应计入RPM
-	peakBaseQuery := `
-		SELECT COALESCE(MAX(cnt), 0) as peak_rpm FROM (
+	combinedBaseQuery := `
+		SELECT COALESCE(MAX(cnt), 0) as peak_rpm, COALESCE(SUM(cnt), 0) as total_count FROM (
 			SELECT COUNT(*) as cnt
 			FROM logs`
 
-	peakQB := NewQueryBuilder(peakBaseQuery).
+	combinedQB := NewQueryBuilder(combinedBaseQuery).
 		Where("time >= ?", startMs).
 		Where("time <= ?", endMs).
 		Where("channel_id > 0").
 		Where("status_code != 499")
 
 	// 应用渠道类型或名称过滤
-	_, isEmpty, err := s.applyChannelFilter(ctx, peakQB, filter)
+	_, isEmpty, err := s.applyChannelFilter(ctx, combinedQB, filter)
 	if err != nil {
 		return nil, fmt.Errorf("apply channel filter: %w", err)
 	}
@@ -386,52 +387,27 @@ func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time
 	}
 
 	// 应用其余过滤器（模型/状态码等）
-	peakQB.ApplyFilter(filter)
+	combinedQB.ApplyFilter(filter)
 
-	peakQuery, peakArgs := peakQB.BuildWithSuffix("GROUP BY FLOOR(time / 60000)) t")
+	combinedQuery, combinedArgs := combinedQB.BuildWithSuffix("GROUP BY FLOOR(time / 60000)) t")
 
 	var peakRPM float64
-	if err := s.db.QueryRowContext(ctx, peakQuery, peakArgs...).Scan(&peakRPM); err != nil {
-		return nil, fmt.Errorf("query peak RPM: %w", err)
+	var totalCount int64
+	if err := s.db.QueryRowContext(ctx, combinedQuery, combinedArgs...).Scan(&peakRPM, &totalCount); err != nil {
+		return nil, fmt.Errorf("query peak RPM and total: %w", err)
 	}
 	stats.PeakRPM = peakRPM
 	stats.PeakQPS = peakRPM / 60
 
-	// 2. 计算平均RPM/QPS
+	// 计算平均RPM/QPS
 	durationSeconds := endTime.Sub(startTime).Seconds()
 	if durationSeconds < 1 {
 		durationSeconds = 1
 	}
-
-	totalBaseQuery := `SELECT COUNT(*) FROM logs`
-	totalQB := NewQueryBuilder(totalBaseQuery).
-		Where("time >= ?", startMs).
-		Where("time <= ?", endMs).
-		Where("channel_id > 0").
-		Where("status_code != 499")
-
-	// 应用渠道过滤
-	_, isEmpty, err = s.applyChannelFilter(ctx, totalQB, filter)
-	if err != nil {
-		return nil, fmt.Errorf("apply channel filter for total: %w", err)
-	}
-	if isEmpty {
-		return stats, nil
-	}
-
-	// 应用其余过滤器
-	totalQB.ApplyFilter(filter)
-
-	totalQuery, totalArgs := totalQB.Build()
-	var totalCount int64
-	if err := s.db.QueryRowContext(ctx, totalQuery, totalArgs...).Scan(&totalCount); err != nil {
-		return nil, fmt.Errorf("query total count: %w", err)
-	}
-
 	stats.AvgRPM = float64(totalCount) * 60 / durationSeconds
 	stats.AvgQPS = float64(totalCount) / durationSeconds
 
-	// 3. 计算最近一分钟（仅本日有意义）
+	// 计算最近一分钟（仅本日有意义）
 	if isToday {
 		now := time.Now()
 		recentStartMs := now.Add(-60 * time.Second).UnixMilli()
@@ -600,6 +576,7 @@ func (s *SQLStore) fillStatsRPM(ctx context.Context, stats []model.StatsEntry, s
 // 返回 map[channelID]ChannelHealthStats
 func (s *SQLStore) GetChannelSuccessRates(ctx context.Context, since time.Time) (map[int64]model.ChannelHealthStats, error) {
 	sinceMs := since.UnixMilli()
+	untilMs := time.Now().UnixMilli() // 时间上界，确保查询范围有界
 
 	// 成功率统计口径：
 	// - 只统计能反映渠道/Key质量的结果（2xx成功 + 可重试/可冷却错误）
@@ -629,10 +606,10 @@ func (s *SQLStore) GetChannelSuccessRates(ctx context.Context, since time.Time) 
 			SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success,
 			SUM(CASE WHEN ` + eligible + ` THEN 1 ELSE 0 END) AS total
 		FROM logs
-		WHERE time >= ? AND channel_id > 0
+		WHERE time >= ? AND time <= ? AND channel_id > 0
 		GROUP BY channel_id`
 
-	rows, err := s.db.QueryContext(ctx, query, sinceMs)
+	rows, err := s.db.QueryContext(ctx, query, sinceMs, untilMs)
 	if err != nil {
 		return nil, err
 	}
