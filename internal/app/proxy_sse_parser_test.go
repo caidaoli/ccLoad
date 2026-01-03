@@ -458,6 +458,31 @@ func TestSSEUsageParser_GeminiThoughtsWithZeroCandidates(t *testing.T) {
 	}
 }
 
+func TestSSEUsageParser_GeminiCachedContentTokenCount(t *testing.T) {
+	// 测试Gemini缓存token（cachedContentTokenCount）
+	// Gemini API上下文缓存会返回此字段
+	sseData := `data: {"candidates": [{"content": {"parts": [{"text": "回答"}]}}],"usageMetadata": {"promptTokenCount": 1000,"candidatesTokenCount": 50,"totalTokenCount": 1050,"cachedContentTokenCount": 800}}
+
+`
+
+	parser := newSSEUsageParser("gemini")
+	if err := parser.Feed([]byte(sseData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+
+	input, output, cacheRead, _ := parser.GetUsage()
+
+	if input != 200 {
+		t.Errorf("InputTokens = %d, 期望 200 (promptTokenCount 1000 - cachedContentTokenCount 800)", input)
+	}
+	if output != 50 {
+		t.Errorf("OutputTokens = %d, 期望 50 (candidatesTokenCount)", output)
+	}
+	if cacheRead != 800 {
+		t.Errorf("CacheReadInputTokens = %d, 期望 800 (cachedContentTokenCount)", cacheRead)
+	}
+}
+
 // TestJSONUsageParser_CacheCreationDetailed_5mOnly 验证非流式JSON响应解析5m缓存细分字段
 // 新增2025-12：支持 cache_creation.ephemeral_5m_input_tokens
 func TestJSONUsageParser_CacheCreationDetailed_5mOnly(t *testing.T) {

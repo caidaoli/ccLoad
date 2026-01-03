@@ -116,12 +116,18 @@
       document.getElementById(`type-${type}-output`).textContent = formatNumber(outputTokens);
       document.getElementById(`type-${type}-cost`).textContent = formatCost(totalCost);
 
-      // Claude和Codex类型的缓存统计
+      // Claude和Codex类型的缓存统计（缓存读+缓存创建）
       if (type === 'anthropic' || type === 'codex') {
         const cacheReadTokens = data ? (data.total_cache_read_tokens || 0) : 0;
         const cacheCreateTokens = data ? (data.total_cache_creation_tokens || 0) : 0;
         document.getElementById(`type-${type}-cache-read`).textContent = formatNumber(cacheReadTokens);
         document.getElementById(`type-${type}-cache-create`).textContent = formatNumber(cacheCreateTokens);
+      }
+
+      // OpenAI和Gemini类型的缓存统计（仅缓存读）
+      if (type === 'openai' || type === 'gemini') {
+        const cacheReadTokens = data ? (data.total_cache_read_tokens || 0) : 0;
+        document.getElementById(`type-${type}-cache-read`).textContent = formatNumber(cacheReadTokens);
       }
     }
 

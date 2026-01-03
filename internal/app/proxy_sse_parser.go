@@ -204,13 +204,14 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 // GetUsage 获取累积的usage统计
 // 重要: 返回的inputTokens已归一化为"可计费输入token"
 // - OpenAI/Codex: prompt_tokens包含cached_tokens，已自动扣除避免双计
-// - Claude/Gemini: input_tokens本身就是非缓存部分，无需处理
+// - Gemini: promptTokenCount包含cachedContentTokenCount，已自动扣除
+// - Claude: input_tokens本身就是非缓存部分，无需处理
 func (p *sseUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cacheCreation int) {
 	billableInput := p.InputTokens
 
-	// OpenAI语义归一化: prompt_tokens包含cached_tokens，需扣除
+	// OpenAI/Codex/Gemini语义归一化: prompt_tokens包含cached_tokens，需扣除
 	// 设计原则: 平台差异在解析层处理，计费层无需关心
-	if (p.channelType == "openai" || p.channelType == "codex") && p.CacheReadInputTokens > 0 {
+	if (p.channelType == "openai" || p.channelType == "codex" || p.channelType == "gemini") && p.CacheReadInputTokens > 0 {
 		billableInput = p.InputTokens - p.CacheReadInputTokens
 		if billableInput < 0 {
 			log.Printf("WARN: %s model has cacheReadTokens(%d) > inputTokens(%d), clamped to 0",
@@ -270,9 +271,9 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 
 	p.applyUsage(extractUsage(payload), p.channelType)
 
-	// OpenAI语义归一化: 与sseUsageParser保持一致
+	// OpenAI/Codex/Gemini语义归一化: 与sseUsageParser保持一致
 	billableInput := p.InputTokens
-	if (p.channelType == "openai" || p.channelType == "codex") && p.CacheReadInputTokens > 0 {
+	if (p.channelType == "openai" || p.channelType == "codex" || p.channelType == "gemini") && p.CacheReadInputTokens > 0 {
 		billableInput = p.InputTokens - p.CacheReadInputTokens
 		if billableInput < 0 {
 			log.Printf("WARN: %s model has cacheReadTokens(%d) > inputTokens(%d), clamped to 0",
@@ -399,7 +400,11 @@ func (u *usageAccumulator) applyGeminiUsage(usage map[string]any) {
 	}
 
 	u.OutputTokens = outputTokens
-	// Gemini目前不支持缓存字段
+
+	// Gemini缓存字段: cachedContentTokenCount
+	if val, ok := usage["cachedContentTokenCount"].(float64); ok {
+		u.CacheReadInputTokens = int(val)
+	}
 }
 
 // applyOpenAIChatUsage 处理OpenAI Chat Completions API格式
