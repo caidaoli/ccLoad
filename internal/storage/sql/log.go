@@ -10,6 +10,8 @@ import (
 	"ccLoad/internal/util"
 )
 
+const minuteMs int64 = 60_000 // 用于 minute_bucket 计算
+
 func scanLogEntry(scanner interface {
 	Scan(...any) error
 }) (*model.LogEntry, error) {
@@ -104,6 +106,7 @@ func (s *SQLStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 
 	// Unix时间戳：直接存储毫秒级Unix时间戳
 	timeMs := cleanTime.UnixMilli()
+	minuteBucket := timeMs / minuteMs
 
 	// API Key在写入时强制脱敏（2025-10-06）
 	// 设计原则：数据库中不应存储完整API Key，避免备份和日志导出时泄露
@@ -114,12 +117,12 @@ func (s *SQLStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 
 	// 直接写入日志数据库（简化预编译语句缓存）
 	query := `
-		INSERT INTO logs(time, model, actual_model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used, auth_token_id, client_ip,
+		INSERT INTO logs(time, minute_bucket, model, actual_model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used, auth_token_id, client_ip,
 			input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
-	_, err := s.db.ExecContext(ctx, query, timeMs, e.Model, e.ActualModel, e.ChannelID, e.StatusCode, e.Message, e.Duration, e.IsStreaming, e.FirstByteTime, maskedKey, e.AuthTokenID, e.ClientIP,
+	_, err := s.db.ExecContext(ctx, query, timeMs, minuteBucket, e.Model, e.ActualModel, e.ChannelID, e.StatusCode, e.Message, e.Duration, e.IsStreaming, e.FirstByteTime, maskedKey, e.AuthTokenID, e.ClientIP,
 		e.InputTokens, e.OutputTokens, e.CacheReadInputTokens, e.CacheCreationInputTokens, e.Cache5mInputTokens, e.Cache1hInputTokens, e.Cost)
 	return err
 }
@@ -138,9 +141,9 @@ func (s *SQLStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) err
 	defer func() { _ = tx.Rollback() }()
 
 	stmt, err := tx.PrepareContext(ctx, `
-        INSERT INTO logs(time, model, actual_model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used, auth_token_id, client_ip,
+        INSERT INTO logs(time, minute_bucket, model, actual_model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used, auth_token_id, client_ip,
 			input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
 	if err != nil {
 		return err
@@ -154,6 +157,7 @@ func (s *SQLStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) err
 		}
 		cleanTime := t.Round(0)
 		timeMs := cleanTime.UnixMilli()
+		minuteBucket := timeMs / minuteMs
 
 		maskedKey := e.APIKeyUsed
 		if maskedKey != "" {
@@ -162,6 +166,7 @@ func (s *SQLStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) err
 
 		if _, err := stmt.ExecContext(ctx,
 			timeMs,
+			minuteBucket,
 			e.Model,
 			e.ActualModel,
 			e.ChannelID,

@@ -106,6 +106,7 @@ func DefineLogsTable() *TableBuilder {
 	return NewTable("logs").
 		Column("id INT PRIMARY KEY AUTO_INCREMENT").
 		Column("time BIGINT NOT NULL").
+		Column("minute_bucket BIGINT NOT NULL DEFAULT 0"). // time/60000，用于RPM类聚合避免运行时FLOOR
 		Column("model VARCHAR(191) NOT NULL DEFAULT ''").
 		Column("actual_model VARCHAR(191) NOT NULL DEFAULT ''"). // 实际转发的模型（空表示未重定向）
 		Column("channel_id INT NOT NULL DEFAULT 0").
@@ -127,6 +128,7 @@ func DefineLogsTable() *TableBuilder {
 		Index("idx_logs_time_model", "time, model").
 		Index("idx_logs_time_status", "time, status_code").
 		Index("idx_logs_time_channel_model", "time, channel_id, model").
+		Index("idx_logs_minute_channel_model", "minute_bucket, channel_id, model").
 		Index("idx_logs_time_auth_token", "time, auth_token_id"). // 按时间+令牌查询
 		Index("idx_logs_time_actual_model", "time, actual_model") // 按时间+实际模型查询
 }
