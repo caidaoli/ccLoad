@@ -78,8 +78,8 @@ func (s *SQLStore) FillAuthTokenRPMStats(ctx context.Context, stats map[int64]*m
 		return nil
 	}
 
-	sinceMs := startTime.UnixMilli()
-	untilMs := endTime.UnixMilli()
+	sinceBucket := startTime.UnixMilli() / minuteMs
+	untilBucket := endTime.UnixMilli() / minuteMs
 
 	// 计算时间跨度（秒）
 	durationSeconds := endTime.Sub(startTime).Seconds()
@@ -100,12 +100,12 @@ func (s *SQLStore) FillAuthTokenRPMStats(ctx context.Context, stats map[int64]*m
 		FROM (
 			SELECT auth_token_id, COUNT(*) AS cnt
 			FROM logs
-			WHERE time >= ? AND time <= ? AND auth_token_id > 0 AND status_code != 499
-			GROUP BY auth_token_id, FLOOR(time / 60000)
+			WHERE minute_bucket >= ? AND minute_bucket <= ? AND auth_token_id > 0 AND status_code != 499
+			GROUP BY auth_token_id, minute_bucket
 		) t
 		GROUP BY auth_token_id
 	`
-	peakRows, err := s.db.QueryContext(ctx, peakQuery, sinceMs, untilMs)
+	peakRows, err := s.db.QueryContext(ctx, peakQuery, sinceBucket, untilBucket)
 	if err != nil {
 		return err
 	}
@@ -126,16 +126,16 @@ func (s *SQLStore) FillAuthTokenRPMStats(ctx context.Context, stats map[int64]*m
 	// 排除499：客户端取消不应计入RPM
 	if isToday {
 		now := time.Now()
-		recentStartMs := now.Add(-60 * time.Second).UnixMilli()
-		recentEndMs := now.UnixMilli()
+		recentStartBucket := now.Add(-60*time.Second).UnixMilli() / minuteMs
+		recentEndBucket := now.UnixMilli() / minuteMs
 
 		recentQuery := `
 			SELECT auth_token_id, COUNT(*) AS cnt
 			FROM logs
-			WHERE time >= ? AND time <= ? AND auth_token_id > 0 AND status_code != 499
+			WHERE minute_bucket >= ? AND minute_bucket <= ? AND auth_token_id > 0 AND status_code != 499
 			GROUP BY auth_token_id
 		`
-		recentRows, err := s.db.QueryContext(ctx, recentQuery, recentStartMs, recentEndMs)
+		recentRows, err := s.db.QueryContext(ctx, recentQuery, recentStartBucket, recentEndBucket)
 		if err != nil {
 			return err
 		}

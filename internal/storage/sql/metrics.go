@@ -359,12 +359,11 @@ func (s *SQLStore) GetStatsLite(ctx context.Context, startTime, endTime time.Tim
 func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) (*model.RPMStats, error) {
 	stats := &model.RPMStats{}
 
-	startMs := startTime.UnixMilli()
-	endMs := endTime.UnixMilli()
+	startBucket := startTime.UnixMilli() / minuteMs
+	endBucket := endTime.UnixMilli() / minuteMs
 
 	// 合并峰值RPM和总数查询为单次数据库往返
 	// 子查询按分钟桶分组统计，外层查询同时计算峰值和总数
-	// 使用 FLOOR 确保 MySQL 返回整数（MySQL 的 / 返回浮点数，会导致分组错误）
 	// 排除499：客户端取消不应计入RPM
 	combinedBaseQuery := `
 		SELECT COALESCE(MAX(cnt), 0) as peak_rpm, COALESCE(SUM(cnt), 0) as total_count FROM (
@@ -372,8 +371,8 @@ func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time
 			FROM logs`
 
 	combinedQB := NewQueryBuilder(combinedBaseQuery).
-		Where("time >= ?", startMs).
-		Where("time <= ?", endMs).
+		Where("minute_bucket >= ?", startBucket).
+		Where("minute_bucket <= ?", endBucket).
 		Where("channel_id > 0").
 		Where("status_code != 499")
 
@@ -389,7 +388,7 @@ func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time
 	// 应用其余过滤器（模型/状态码等）
 	combinedQB.ApplyFilter(filter)
 
-	combinedQuery, combinedArgs := combinedQB.BuildWithSuffix("GROUP BY FLOOR(time / 60000)) t")
+	combinedQuery, combinedArgs := combinedQB.BuildWithSuffix("GROUP BY minute_bucket) t")
 
 	var peakRPM float64
 	var totalCount int64
@@ -410,13 +409,13 @@ func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time
 	// 计算最近一分钟（仅本日有意义）
 	if isToday {
 		now := time.Now()
-		recentStartMs := now.Add(-60 * time.Second).UnixMilli()
-		recentEndMs := now.UnixMilli()
+		recentStartBucket := now.Add(-60*time.Second).UnixMilli() / minuteMs
+		recentEndBucket := now.UnixMilli() / minuteMs
 
 		recentBaseQuery := `SELECT COUNT(*) FROM logs`
 		recentQB := NewQueryBuilder(recentBaseQuery).
-			Where("time >= ?", recentStartMs).
-			Where("time <= ?", recentEndMs).
+			Where("minute_bucket >= ?", recentStartBucket).
+			Where("minute_bucket <= ?", recentEndBucket).
 			Where("channel_id > 0").
 			Where("status_code != 499")
 
@@ -450,11 +449,10 @@ func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time
 }
 
 // fillStatsRPM 计算每个channel_id+model组合的RPM统计数据
-// 使用分钟级分组计算峰值RPM，避免因时间跨度大导致的值过小问题
 // [FIX] 2025-12: 排除499（客户端取消）避免污染RPM统计
 func (s *SQLStore) fillStatsRPM(ctx context.Context, stats []model.StatsEntry, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) error {
-	startMs := startTime.UnixMilli()
-	endMs := endTime.UnixMilli()
+	startBucket := startTime.UnixMilli() / minuteMs
+	endBucket := endTime.UnixMilli() / minuteMs
 
 	// 计算时间跨度（秒）用于平均RPM
 	durationSeconds := endTime.Sub(startTime).Seconds()
@@ -462,82 +460,102 @@ func (s *SQLStore) fillStatsRPM(ctx context.Context, stats []model.StatsEntry, s
 		durationSeconds = 1
 	}
 
-	// 查询每个channel_id+model的峰值RPM（每分钟请求数的最大值）
-	// 使用 FLOOR 确保 MySQL 返回整数（MySQL 的 / 返回浮点数，会导致分组错误）
-	// 排除499：客户端取消不应计入RPM
-	peakQuery := `
-		SELECT channel_id, COALESCE(model, '') AS model, MAX(cnt) AS peak_rpm
-		FROM (
-			SELECT channel_id, model, COUNT(*) AS cnt
-			FROM logs
-			WHERE time >= ? AND time <= ? AND channel_id > 0 AND status_code != 499
-			GROUP BY channel_id, model, FLOOR(time / 60000)
-		) t
-		GROUP BY channel_id, model`
-
-	rows, err := s.db.QueryContext(ctx, peakQuery, startMs, endMs)
-	if err != nil {
-		return fmt.Errorf("query peak RPM: %w", err)
-	}
-	defer rows.Close()
-
-	// 构建 (channel_id, model) -> peak_rpm 映射
 	type statsKey struct {
 		channelID int
 		model     string
 	}
 	peakRPMMap := make(map[statsKey]float64)
 
-	for rows.Next() {
-		var channelID int
-		var model string
-		var peakRPM float64
-		if err := rows.Scan(&channelID, &model, &peakRPM); err != nil {
-			return fmt.Errorf("scan peak RPM: %w", err)
+	// 1) 峰值RPM（分钟桶内最大请求数）
+	peakBaseQuery := `
+		SELECT channel_id, COALESCE(model, '') AS model, MAX(cnt) AS peak_rpm
+		FROM (
+			SELECT channel_id, COALESCE(model, '') AS model, COUNT(*) AS cnt
+			FROM logs`
+
+	peakQB := NewQueryBuilder(peakBaseQuery).
+		Where("minute_bucket >= ?", startBucket).
+		Where("minute_bucket <= ?", endBucket).
+		Where("channel_id > 0").
+		Where("status_code != 499")
+
+	_, isEmpty, err := s.applyChannelFilter(ctx, peakQB, filter)
+	if err != nil {
+		return fmt.Errorf("apply channel filter for peak: %w", err)
+	}
+
+	// 仅当渠道过滤非空时才执行查询
+	if !isEmpty {
+		peakQB.ApplyFilter(filter)
+		peakQuery, peakArgs := peakQB.BuildWithSuffix("GROUP BY channel_id, model, minute_bucket) t GROUP BY channel_id, model")
+
+		peakRows, err := s.db.QueryContext(ctx, peakQuery, peakArgs...)
+		if err != nil {
+			return fmt.Errorf("query peak RPM: %w", err)
 		}
-		peakRPMMap[statsKey{channelID, model}] = peakRPM
+		defer peakRows.Close()
+
+		for peakRows.Next() {
+			var channelID int
+			var model string
+			var peakRPM float64
+			if err := peakRows.Scan(&channelID, &model, &peakRPM); err != nil {
+				return fmt.Errorf("scan peak RPM: %w", err)
+			}
+			peakRPMMap[statsKey{channelID, model}] = peakRPM
+		}
+		if err := peakRows.Err(); err != nil {
+			return fmt.Errorf("iterate peak RPM rows: %w", err)
+		}
 	}
 
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate peak RPM rows: %w", err)
-	}
-
-	// 如果是本日，查询每个channel_id+model的最近一分钟RPM
-	// 排除499：客户端取消不应计入RPM
+	// 2) 最近一分钟RPM（仅本日有效）
 	recentRPMMap := make(map[statsKey]float64)
 	if isToday {
 		now := time.Now()
-		recentStartMs := now.Add(-60 * time.Second).UnixMilli()
-		recentEndMs := now.UnixMilli()
+		recentStartBucket := now.Add(-60*time.Second).UnixMilli() / minuteMs
+		recentEndBucket := now.UnixMilli() / minuteMs
 
-		recentQuery := `
+		recentBaseQuery := `
 			SELECT channel_id, COALESCE(model, '') AS model, COUNT(*) AS cnt
-			FROM logs
-			WHERE time >= ? AND time <= ? AND channel_id > 0 AND status_code != 499
-			GROUP BY channel_id, model`
+			FROM logs`
+		recentQB := NewQueryBuilder(recentBaseQuery).
+			Where("minute_bucket >= ?", recentStartBucket).
+			Where("minute_bucket <= ?", recentEndBucket).
+			Where("channel_id > 0").
+			Where("status_code != 499")
 
-		recentRows, err := s.db.QueryContext(ctx, recentQuery, recentStartMs, recentEndMs)
+		_, isEmpty, err := s.applyChannelFilter(ctx, recentQB, filter)
 		if err != nil {
-			return fmt.Errorf("query recent RPM: %w", err)
+			return fmt.Errorf("apply channel filter for recent: %w", err)
 		}
-		defer recentRows.Close()
 
-		for recentRows.Next() {
-			var channelID int
-			var model string
-			var cnt float64
-			if err := recentRows.Scan(&channelID, &model, &cnt); err != nil {
-				return fmt.Errorf("scan recent RPM: %w", err)
+		// 仅当渠道过滤非空时才执行查询
+		if !isEmpty {
+			recentQB.ApplyFilter(filter)
+			recentQuery, recentArgs := recentQB.BuildWithSuffix("GROUP BY channel_id, model")
+			recentRows, err := s.db.QueryContext(ctx, recentQuery, recentArgs...)
+			if err != nil {
+				return fmt.Errorf("query recent RPM: %w", err)
 			}
-			recentRPMMap[statsKey{channelID, model}] = cnt
-		}
+			defer recentRows.Close()
 
-		if err := recentRows.Err(); err != nil {
-			return fmt.Errorf("iterate recent RPM rows: %w", err)
+			for recentRows.Next() {
+				var channelID int
+				var model string
+				var cnt float64
+				if err := recentRows.Scan(&channelID, &model, &cnt); err != nil {
+					return fmt.Errorf("scan recent RPM: %w", err)
+				}
+				recentRPMMap[statsKey{channelID, model}] = cnt
+			}
+			if err := recentRows.Err(); err != nil {
+				return fmt.Errorf("iterate recent RPM rows: %w", err)
+			}
 		}
 	}
 
-	// 填充到stats中
+	// 3) 填充到stats中
 	for i := range stats {
 		entry := &stats[i]
 		if entry.ChannelID == nil {
@@ -546,22 +564,18 @@ func (s *SQLStore) fillStatsRPM(ctx context.Context, stats []model.StatsEntry, s
 
 		key := statsKey{*entry.ChannelID, entry.Model}
 
-		// 峰值RPM
 		if peakRPM, ok := peakRPMMap[key]; ok && peakRPM > 0 {
 			entry.PeakRPM = &peakRPM
 		}
 
-		// 平均RPM = total * 60 / durationSeconds
 		if entry.Total > 0 {
 			avgRPM := float64(entry.Total) * 60 / durationSeconds
 			entry.AvgRPM = &avgRPM
 		}
 
-		// 最近一分钟RPM（仅本日）
 		if isToday {
 			if recentRPM, ok := recentRPMMap[key]; ok && recentRPM > 0 {
 				entry.RecentRPM = &recentRPM
-				// 峰值必须 >= 最近值（滑动窗口可能比固定分钟桶更高）
 				if entry.PeakRPM == nil || *entry.PeakRPM < recentRPM {
 					entry.PeakRPM = &recentRPM
 				}
@@ -575,8 +589,8 @@ func (s *SQLStore) fillStatsRPM(ctx context.Context, stats []model.StatsEntry, s
 // GetChannelSuccessRates 获取指定时间窗口内各渠道的成功率和样本量
 // 返回 map[channelID]ChannelHealthStats
 func (s *SQLStore) GetChannelSuccessRates(ctx context.Context, since time.Time) (map[int64]model.ChannelHealthStats, error) {
-	sinceMs := since.UnixMilli()
-	untilMs := time.Now().UnixMilli() // 时间上界，确保查询范围有界
+	sinceBucket := since.UnixMilli() / minuteMs
+	untilBucket := time.Now().UnixMilli() / minuteMs
 
 	// 成功率统计口径：
 	// - 只统计能反映渠道/Key质量的结果（2xx成功 + 可重试/可冷却错误）
@@ -598,18 +612,17 @@ func (s *SQLStore) GetChannelSuccessRates(ctx context.Context, since time.Time) 
 				OR status_code IN (401, 402, 403, 405, 429, 500, 502, 503, 504, 520, 521, 524, 597, 598, 599)
 			`
 
-	// 优化：调整条件顺序，time条件在前以利用 idx_logs_time_channel_model 索引的最左前缀
-	// channel_id > 0 过滤无效记录（channel_id=0 表示未路由成功的请求）
+	// 使用 minute_bucket 索引优化查询
 	query := `
 		SELECT
 			channel_id,
 			SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success,
 			SUM(CASE WHEN ` + eligible + ` THEN 1 ELSE 0 END) AS total
 		FROM logs
-		WHERE time >= ? AND time <= ? AND channel_id > 0
+		WHERE minute_bucket >= ? AND minute_bucket <= ? AND channel_id > 0
 		GROUP BY channel_id`
 
-	rows, err := s.db.QueryContext(ctx, query, sinceMs, untilMs)
+	rows, err := s.db.QueryContext(ctx, query, sinceBucket, untilBucket)
 	if err != nil {
 		return nil, err
 	}
