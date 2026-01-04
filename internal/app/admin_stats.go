@@ -338,6 +338,7 @@ func (s *Server) HandleGetChannelTypes(c *gin.Context) {
 
 // HandleGetModels 获取数据库中存在的所有模型列表（去重）
 // GET /admin/models
+// 支持参数：range（时间范围）、channel_type（渠道类型筛选）
 func (s *Server) HandleGetModels(c *gin.Context) {
 	// 获取时间范围（默认最近30天）
 	rangeParam := c.DefaultQuery("range", "this_month")
@@ -345,8 +346,11 @@ func (s *Server) HandleGetModels(c *gin.Context) {
 	params.Range = rangeParam
 	since, until := params.GetTimeRange()
 
+	// 获取渠道类型筛选（可选）
+	channelType := c.Query("channel_type")
+
 	// 查询模型列表
-	models, err := s.store.GetDistinctModels(c.Request.Context(), since, until)
+	models, err := s.store.GetDistinctModels(c.Request.Context(), since, until, channelType)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return

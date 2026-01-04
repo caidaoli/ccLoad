@@ -102,6 +102,7 @@ type proxyRequestContext struct {
 	clientIP      string      // 客户端IP地址（用于日志记录，2025-12新增）
 	activeReqID   int64       // 活跃请求ID（用于更新渠道信息）
 	onBytesRead   func(int64) // 字节读取回调（可选，用于实时更新活跃请求统计）
+	startTime     time.Time   // 请求开始时间（用于日志记录）
 }
 
 // proxyResult 代理请求结果
@@ -382,12 +383,17 @@ type logEntryParams struct {
 	ClientIP     string
 	Result       *fwResult
 	ErrMsg       string
+	StartTime    time.Time // 请求开始时间（用于日志记录）
 }
 
 // buildLogEntry 构建日志条目（消除重复代码，遵循DRY原则）
 func buildLogEntry(p logEntryParams) *model.LogEntry {
+	logTime := p.StartTime
+	if logTime.IsZero() {
+		logTime = time.Now() // 兜底：未传入开始时间时使用当前时间
+	}
 	entry := &model.LogEntry{
-		Time:        model.JSONTime{Time: time.Now()},
+		Time:        model.JSONTime{Time: logTime},
 		Model:       p.RequestModel,
 		ChannelID:   p.ChannelID,
 		StatusCode:  p.StatusCode,

@@ -17,16 +17,18 @@ func (s *SQLStore) Aggregate(ctx context.Context, since time.Time, bucket time.D
 	// 新方案：数据库聚合（查询时间-80%，内存占用-90%）
 	// 批量查询渠道名称消除N+1问题（100渠道场景提升50-100倍）
 
-	bucketMs := int64(bucket / time.Millisecond)
-	sinceMs := since.UnixMilli()
+	bucketMinutes := int64(bucket / time.Minute)
+	if bucketMinutes < 1 {
+		bucketMinutes = 1
+	}
+	sinceBucket := since.UnixMilli() / minuteMs
 
-	// SQL聚合查询：使用毫秒时间戳实现时间桶分组
-	// 优化：直接使用毫秒时间戳匹配索引，避免运行时除法阻止索引使用
-	// bucket_ts = FLOOR(time_ms / bucket_ms) * bucket_ms / 1000 (返回秒级时间戳)
-	// 使用FLOOR确保bucket_ts是整数，避免浮点数导致map查找失败
+	// SQL聚合查询：使用 minute_bucket 索引优化
+	// bucket_ts = FLOOR(minute_bucket / bucketMinutes) * bucketMinutes * 60 (返回秒级时间戳)
+	// 排除 channel_id=0 的汇总日志（未关联到具体渠道的请求）
 	query := `
 		SELECT
-			FLOOR(time / ?) * ? / 1000 AS bucket_ts,
+			FLOOR(minute_bucket / ?) * ? * 60 AS bucket_ts,
 			channel_id,
 			SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success,
 			SUM(CASE WHEN status_code < 200 OR status_code >= 300 THEN 1 ELSE 0 END) AS error,
@@ -46,12 +48,12 @@ func (s *SQLStore) Aggregate(ctx context.Context, since time.Time, bucket time.D
 			SUM(COALESCE(cache_read_input_tokens, 0)) as cache_read_tokens,
 			SUM(COALESCE(cache_creation_input_tokens, 0)) as cache_creation_tokens
 		FROM logs
-		WHERE time >= ?
+		WHERE minute_bucket >= ? AND channel_id > 0
 		GROUP BY bucket_ts, channel_id
 		ORDER BY bucket_ts ASC
 	`
 
-	rows, err := s.db.QueryContext(ctx, query, bucketMs, bucketMs, sinceMs)
+	rows, err := s.db.QueryContext(ctx, query, bucketMinutes, bucketMinutes, sinceBucket)
 	if err != nil {
 		return nil, err
 	}
@@ -68,14 +70,17 @@ func (s *SQLStore) Aggregate(ctx context.Context, since time.Time, bucket time.D
 
 // AggregateRange 聚合指定时间范围内的指标数据（支持精确日期范围如"昨日"）
 func (s *SQLStore) AggregateRange(ctx context.Context, since, until time.Time, bucket time.Duration) ([]model.MetricPoint, error) {
-	bucketMs := int64(bucket / time.Millisecond)
-	sinceMs := since.UnixMilli()
-	untilMs := until.UnixMilli()
+	bucketMinutes := int64(bucket / time.Minute)
+	if bucketMinutes < 1 {
+		bucketMinutes = 1
+	}
+	sinceBucket := since.UnixMilli() / minuteMs
+	untilBucket := until.UnixMilli() / minuteMs
 
-	// 优化：直接使用毫秒时间戳匹配索引，避免运行时除法阻止索引使用
+	// 使用 minute_bucket 索引优化
 	query := `
 		SELECT
-			FLOOR(time / ?) * ? / 1000 AS bucket_ts,
+			FLOOR(minute_bucket / ?) * ? * 60 AS bucket_ts,
 			channel_id,
 			SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success,
 			SUM(CASE WHEN status_code < 200 OR status_code >= 300 THEN 1 ELSE 0 END) AS error,
@@ -95,12 +100,12 @@ func (s *SQLStore) AggregateRange(ctx context.Context, since, until time.Time, b
 			SUM(COALESCE(cache_read_input_tokens, 0)) as cache_read_tokens,
 			SUM(COALESCE(cache_creation_input_tokens, 0)) as cache_creation_tokens
 		FROM logs
-		WHERE time >= ? AND time <= ?
+		WHERE minute_bucket >= ? AND minute_bucket <= ? AND channel_id > 0
 		GROUP BY bucket_ts, channel_id
 		ORDER BY bucket_ts ASC
 	`
 
-	rows, err := s.db.QueryContext(ctx, query, bucketMs, bucketMs, sinceMs, untilMs)
+	rows, err := s.db.QueryContext(ctx, query, bucketMinutes, bucketMinutes, sinceBucket, untilBucket)
 	if err != nil {
 		return nil, err
 	}

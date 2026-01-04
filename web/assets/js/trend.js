@@ -14,13 +14,27 @@
     window.authTokens = []; // 令牌列表
 
     // 加载可用模型列表
-    async function loadModels() {
+    // channelType 参数：渠道类型筛选，空字符串或 'all' 表示全部
+    // range 参数：时间范围，可选，默认使用当前选择的时间范围
+    async function loadModels(channelType, range) {
       try {
-        window.availableModels = (await fetchDataWithAuth('/admin/models?range=this_month')) || [];
+        // 使用传入的时间范围，或者当前选择的时间范围，或者默认 today
+        const timeRange = range || window.currentRange || 'today';
+
+        // 构建 API URL，支持渠道类型和时间范围筛选
+        let url = `/admin/models?range=${encodeURIComponent(timeRange)}`;
+        if (channelType && channelType !== 'all') {
+          url += `&channel_type=${encodeURIComponent(channelType)}`;
+        }
+
+        const rawModels = (await fetchDataWithAuth(url)) || [];
+
+        // 去重：使用 Set 确保模型名称唯一
+        window.availableModels = [...new Set(rawModels)];
 
         // 填充模型选择器
         const modelSelect = document.getElementById('f_model');
-        if (modelSelect && window.availableModels.length > 0) {
+        if (modelSelect) {
           // 保留"全部模型"选项
           modelSelect.innerHTML = '<option value="">全部模型</option>';
           window.availableModels.forEach(model => {
@@ -30,9 +44,13 @@
             modelSelect.appendChild(option);
           });
 
-          // 恢复之前选择的模型
-          if (window.currentModel) {
+          // 恢复之前选择的模型（如果仍在列表中）
+          if (window.currentModel && window.availableModels.includes(window.currentModel)) {
             modelSelect.value = window.currentModel;
+          } else {
+            // 模型不在新列表中，重置为"全部"
+            window.currentModel = '';
+            modelSelect.value = '';
           }
         }
       } catch (error) {
@@ -1370,8 +1388,8 @@
       applyRangeUI();
       bindToggles();
 
-      // 加载模型列表
-      await loadModels();
+      // 加载模型列表（传入当前渠道类型）
+      await loadModels(window.currentChannelType);
 
       // 加载令牌列表
       await loadAuthTokens();
@@ -1417,6 +1435,8 @@
         } catch (_) {}
         // 切换渠道类型时重新加载数据并清除渠道选择状态
         window.visibleChannels.clear();
+        // 重新加载模型列表（根据新的渠道类型筛选）
+        loadModels(e.target.value);
         loadData();
       });
     }
@@ -1447,6 +1467,8 @@
             label.textContent = `${rangeLabel}数据展示`;
           }
           persistState();
+          // 时间范围变更时重新加载模型列表
+          loadModels(window.currentChannelType, range);
           loadData();
         });
       }

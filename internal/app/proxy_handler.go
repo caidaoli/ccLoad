@@ -236,6 +236,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		tokenID:       tokenIDInt64,
 		clientIP:      c.ClientIP(),
 		activeReqID:   activeID,
+		startTime:     time.Now(), // 请求开始时间
 		onBytesRead: func(n int64) {
 			s.activeRequests.AddBytes(activeID, n)
 		},
@@ -297,7 +298,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	skipLog := lastResult != nil && (lastResult.isClientCanceled || finalStatus == http.StatusBadRequest)
 	if !skipLog {
 		s.AddLogAsync(&model.LogEntry{
-			Time:        model.JSONTime{Time: time.Now()},
+			Time:        model.JSONTime{Time: reqCtx.startTime},
 			Model:       originalModel,
 			StatusCode:  finalStatus,
 			Message:     msg,

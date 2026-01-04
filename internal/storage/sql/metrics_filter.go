@@ -13,17 +13,18 @@ import (
 // filter 为 nil 时返回所有数据
 // [FIX] 2025-12: 排除499（客户端取消）避免污染趋势图统计
 func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until time.Time, bucket time.Duration, filter *model.LogFilter) ([]model.MetricPoint, error) {
-	bucketMs := int64(bucket / time.Millisecond)
-	sinceMs := since.UnixMilli()
-	untilMs := until.UnixMilli()
+	bucketMinutes := int64(bucket / time.Minute)
+	if bucketMinutes < 1 {
+		bucketMinutes = 1
+	}
+	sinceBucket := since.UnixMilli() / minuteMs
+	untilBucket := until.UnixMilli() / minuteMs
 
-	// 构建查询:使用IN子句过滤渠道
-	// 使用FLOOR确保bucket_ts是整数,避免浮点数导致map查找失败
+	// 使用 minute_bucket 索引优化
 	// 排除499：客户端取消不应计入成功/失败/RPM统计
-	// 优化：直接使用毫秒时间戳匹配索引，避免运行时除法阻止索引使用
 	query := `
 		SELECT
-			FLOOR(logs.time / ?) * ? / 1000 AS bucket_ts,
+			FLOOR(logs.minute_bucket / ?) * ? * 60 AS bucket_ts,
 			logs.channel_id,
 			SUM(CASE WHEN logs.status_code >= 200 AND logs.status_code < 300 THEN 1 ELSE 0 END) AS success,
 			SUM(CASE WHEN (logs.status_code < 200 OR logs.status_code >= 300) AND logs.status_code != 499 THEN 1 ELSE 0 END) AS error,
@@ -43,10 +44,10 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 			SUM(COALESCE(logs.cache_read_input_tokens, 0)) as cache_read_tokens,
 			SUM(COALESCE(logs.cache_creation_input_tokens, 0)) as cache_creation_tokens
 		FROM logs
-		WHERE logs.time >= ? AND logs.time <= ? AND logs.status_code != 499
+		WHERE logs.minute_bucket >= ? AND logs.minute_bucket <= ? AND logs.status_code != 499 AND logs.channel_id > 0
 	`
 
-	args := []any{bucketMs, bucketMs, sinceMs, untilMs}
+	args := []any{bucketMinutes, bucketMinutes, sinceBucket, untilBucket}
 
 	// 应用渠道筛选（channel_type、channel_id、channel_name、channel_name_like）
 	if filter != nil {
@@ -166,16 +167,36 @@ func buildEmptyMetricPoints(since, until time.Time, bucket time.Duration) []mode
 }
 
 // GetDistinctModels 获取指定时间范围内的去重模型列表
-func (s *SQLStore) GetDistinctModels(ctx context.Context, since, until time.Time) ([]string, error) {
-	// 优化：直接使用毫秒时间戳匹配索引，避免运行时除法阻止索引使用
+// channelType 为空时返回所有模型，否则只返回指定渠道类型的模型
+func (s *SQLStore) GetDistinctModels(ctx context.Context, since, until time.Time, channelType string) ([]string, error) {
+	args := []any{since.UnixMilli(), until.UnixMilli()}
+
 	query := `
-		SELECT DISTINCT model
+		SELECT DISTINCT logs.model
 		FROM logs
-		WHERE time >= ? AND time <= ? AND model != ''
-		ORDER BY model
+		WHERE logs.time >= ? AND logs.time <= ? AND logs.model != '' AND logs.channel_id > 0
 	`
 
-	rows, err := s.db.QueryContext(ctx, query, since.UnixMilli(), until.UnixMilli())
+	// 按渠道类型筛选
+	if channelType != "" {
+		channelIDs, err := s.fetchChannelIDsByType(ctx, channelType)
+		if err != nil {
+			return nil, fmt.Errorf("fetch channel IDs by type: %w", err)
+		}
+		if len(channelIDs) == 0 {
+			return []string{}, nil // 无匹配渠道，返回空列表
+		}
+		placeholders := make([]string, len(channelIDs))
+		for i := range channelIDs {
+			placeholders[i] = "?"
+			args = append(args, channelIDs[i])
+		}
+		query += fmt.Sprintf(" AND logs.channel_id IN (%s)", strings.Join(placeholders, ","))
+	}
+
+	query += " ORDER BY logs.model"
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
