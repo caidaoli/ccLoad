@@ -123,9 +123,37 @@ func deleteSystemSetting(ctx context.Context, db *sql.DB, dialect Dialect, key s
 	return nil
 }
 
+// hasSystemSetting 检查系统设置是否存在（用于迁移标记）
+func hasSystemSetting(ctx context.Context, db *sql.DB, dialect Dialect, key string) bool {
+	query := "SELECT 1 FROM system_settings WHERE key = ? LIMIT 1"
+	if dialect == DialectMySQL {
+		query = "SELECT 1 FROM system_settings WHERE `key` = ? LIMIT 1"
+	}
+	var exists int
+	err := db.QueryRowContext(ctx, query, key).Scan(&exists)
+	return err == nil
+}
+
+// setSystemSetting 设置系统标记（用于迁移完成标记）
+func setSystemSetting(ctx context.Context, db *sql.DB, dialect Dialect, key, value string) error {
+	var query string
+	if dialect == DialectMySQL {
+		query = "INSERT INTO system_settings (`key`, value, value_type, description, default_value, updated_at) VALUES (?, ?, 'string', 'migration marker', '', UNIX_TIMESTAMP()) ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = UNIX_TIMESTAMP()"
+	} else {
+		query = "INSERT INTO system_settings (key, value, value_type, description, default_value, updated_at) VALUES (?, ?, 'string', 'migration marker', '', unixepoch()) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = unixepoch()"
+	}
+	if _, err := db.ExecContext(ctx, query, key, value); err != nil {
+		return fmt.Errorf("set system setting %s: %w", key, err)
+	}
+	return nil
+}
+
 // ensureLogsNewColumns 确保logs表有新增字段(2025-12新增,支持MySQL和SQLite)
 func ensureLogsNewColumns(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	if dialect == DialectMySQL {
+		if err := ensureLogsMinuteBucketMySQL(ctx, db); err != nil {
+			return err
+		}
 		if err := ensureLogsAuthTokenIDMySQL(ctx, db); err != nil {
 			return err
 		}
@@ -166,8 +194,9 @@ func ensureSQLiteColumns(ctx context.Context, db *sql.DB, table string, cols []s
 
 // ensureLogsColumnsSQLite SQLite增量迁移logs表新字段
 func ensureLogsColumnsSQLite(ctx context.Context, db *sql.DB) error {
-	// 第一步：添加基础字段
+	// 第一步：添加基础字段（幂等操作）
 	if err := ensureSQLiteColumns(ctx, db, "logs", []sqliteColumnDef{
+		{name: "minute_bucket", definition: "INTEGER NOT NULL DEFAULT 0"}, // time/60000，用于RPM类聚合
 		{name: "auth_token_id", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{name: "client_ip", definition: "TEXT NOT NULL DEFAULT ''"},
 		{name: "cache_5m_input_tokens", definition: "INTEGER NOT NULL DEFAULT 0"},
@@ -185,7 +214,43 @@ func ensureLogsColumnsSQLite(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("migrate cache_5m data: %w", err)
 	}
 
+	// 第三步：回填 minute_bucket（基于标记机制，支持崩溃恢复）
+	const backfillMarker = "minute_bucket_backfill_done"
+	if !hasSystemSetting(ctx, db, DialectSQLite, backfillMarker) {
+		log.Println("[migrate] backfilling minute_bucket for SQLite...")
+		if err := backfillLogsMinuteBucketSQLite(ctx, db, 5_000); err != nil {
+			return fmt.Errorf("backfill minute_bucket: %w", err)
+		}
+		if err := setSystemSetting(ctx, db, DialectSQLite, backfillMarker, "1"); err != nil {
+			return fmt.Errorf("set backfill marker: %w", err)
+		}
+		log.Println("[migrate] minute_bucket backfill completed")
+	}
+
 	return nil
+}
+
+func backfillLogsMinuteBucketSQLite(ctx context.Context, db *sql.DB, batchSize int) error {
+	if batchSize <= 0 {
+		batchSize = 5_000
+	}
+
+	for {
+		res, err := db.ExecContext(ctx,
+			"UPDATE logs SET minute_bucket = (time / 60000) WHERE id IN (SELECT id FROM logs WHERE minute_bucket = 0 AND time > 0 LIMIT ?)",
+			batchSize,
+		)
+		if err != nil {
+			return err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return nil
+		}
+	}
 }
 
 // ensureLogsAuthTokenIDMySQL 确保logs表有auth_token_id字段(MySQL增量迁移,2025-12新增)
@@ -280,6 +345,62 @@ func ensureLogsCacheFieldsMySQL(ctx context.Context, db *sql.DB) error {
 	}
 
 	return nil
+}
+
+func ensureLogsMinuteBucketMySQL(ctx context.Context, db *sql.DB) error {
+	// 第一步：添加列（幂等操作）
+	var count int
+	err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='logs' AND COLUMN_NAME='minute_bucket'",
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check minute_bucket existence: %w", err)
+	}
+	if count == 0 {
+		_, err = db.ExecContext(ctx,
+			"ALTER TABLE logs ADD COLUMN minute_bucket BIGINT NOT NULL DEFAULT 0 COMMENT 'time/60000，用于RPM类聚合(新增2026-01)'",
+		)
+		if err != nil {
+			return fmt.Errorf("add minute_bucket column: %w", err)
+		}
+	}
+
+	// 第二步：回填历史数据（基于标记机制，支持崩溃恢复）
+	const backfillMarker = "minute_bucket_backfill_done"
+	if !hasSystemSetting(ctx, db, DialectMySQL, backfillMarker) {
+		log.Println("[migrate] backfilling minute_bucket for MySQL...")
+		if err := backfillLogsMinuteBucketMySQL(ctx, db, 10_000); err != nil {
+			return err
+		}
+		if err := setSystemSetting(ctx, db, DialectMySQL, backfillMarker, "1"); err != nil {
+			return fmt.Errorf("set backfill marker: %w", err)
+		}
+		log.Println("[migrate] minute_bucket backfill completed")
+	}
+	return nil
+}
+
+func backfillLogsMinuteBucketMySQL(ctx context.Context, db *sql.DB, batchSize int) error {
+	if batchSize <= 0 {
+		batchSize = 10_000
+	}
+
+	for {
+		res, err := db.ExecContext(ctx,
+			"UPDATE logs SET minute_bucket = FLOOR(time / 60000) WHERE minute_bucket = 0 AND time > 0 LIMIT ?",
+			batchSize,
+		)
+		if err != nil {
+			return fmt.Errorf("backfill minute_bucket: %w", err)
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return nil
+		}
+	}
 }
 
 // ensureAuthTokensCacheFields 确保auth_tokens表有缓存token字段(2025-12新增,支持MySQL和SQLite)
