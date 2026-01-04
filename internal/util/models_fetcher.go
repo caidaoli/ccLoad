@@ -54,7 +54,7 @@ func doHTTPRequest(req *http.Request) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("请求失败: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -72,9 +72,7 @@ func doHTTPRequest(req *http.Request) ([]byte, error) {
 	return body, nil
 }
 
-// ============================================================
-// Anthropic/Claude Code 渠道适配器
-// ============================================================
+// AnthropicModelsFetcher 实现 Anthropic/Claude Code 渠道的模型列表获取。
 type AnthropicModelsFetcher struct{}
 
 type anthropicModelsResponse struct {
@@ -89,6 +87,7 @@ type anthropicModelsResponse struct {
 	LastID  string `json:"last_id"`
 }
 
+// FetchModels 从 Anthropic API 获取可用模型列表。
 func (f *AnthropicModelsFetcher) FetchModels(ctx context.Context, baseURL string, apiKey string) ([]string, error) {
 	// Anthropic Models API: https://docs.claude.com/en/api/models-list
 	endpoint := baseURL + "/v1/models"
@@ -123,9 +122,7 @@ func (f *AnthropicModelsFetcher) FetchModels(ctx context.Context, baseURL string
 	return models, nil
 }
 
-// ============================================================
-// OpenAI 渠道适配器
-// ============================================================
+// OpenAIModelsFetcher 实现 OpenAI 渠道的模型列表获取。
 type OpenAIModelsFetcher struct{}
 
 type openAIModelsResponse struct {
@@ -134,6 +131,7 @@ type openAIModelsResponse struct {
 	} `json:"data"`
 }
 
+// FetchModels 从 OpenAI API 获取可用模型列表。
 func (f *OpenAIModelsFetcher) FetchModels(ctx context.Context, baseURL string, apiKey string) ([]string, error) {
 	// OpenAI Models API: https://platform.openai.com/docs/api-reference/models/list
 	endpoint := baseURL + "/v1/models"
@@ -166,9 +164,7 @@ func (f *OpenAIModelsFetcher) FetchModels(ctx context.Context, baseURL string, a
 	return models, nil
 }
 
-// ============================================================
-// Google Gemini 渠道适配器
-// ============================================================
+// GeminiModelsFetcher 实现 Google Gemini 渠道的模型列表获取。
 type GeminiModelsFetcher struct{}
 
 type geminiModelsResponse struct {
@@ -177,6 +173,7 @@ type geminiModelsResponse struct {
 	} `json:"models"`
 }
 
+// FetchModels 从 Gemini API 获取可用模型列表。
 func (f *GeminiModelsFetcher) FetchModels(ctx context.Context, baseURL string, apiKey string) ([]string, error) {
 	// Gemini Models API: https://ai.google.dev/api/rest/v1beta/models/list
 	endpoint := baseURL + "/v1beta/models?key=" + apiKey
@@ -210,11 +207,10 @@ func (f *GeminiModelsFetcher) FetchModels(ctx context.Context, baseURL string, a
 	return models, nil
 }
 
-// ============================================================
-// Codex 渠道适配器
-// ============================================================
+// CodexModelsFetcher 实现 Codex 渠道的模型列表获取。
 type CodexModelsFetcher struct{}
 
+// FetchModels 从 Codex API 获取可用模型列表（使用 OpenAI 兼容接口）。
 func (f *CodexModelsFetcher) FetchModels(ctx context.Context, baseURL string, apiKey string) ([]string, error) {
 	// Codex使用与OpenAI相同的标准接口 /v1/models
 	openAIFetcher := &OpenAIModelsFetcher{}

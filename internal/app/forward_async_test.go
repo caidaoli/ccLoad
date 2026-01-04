@@ -21,13 +21,13 @@ import (
 // TestMain 在所有测试运行前设置环境变量
 func TestMain(m *testing.M) {
 	// 为测试设置必需的环境变量
-	os.Setenv("CCLOAD_PASS", "test_password_123")
+	_ = os.Setenv("CCLOAD_PASS", "test_password_123")
 
 	// 运行测试
 	code := m.Run()
 
 	// 清理
-	os.Unsetenv("CCLOAD_PASS")
+	_ = os.Unsetenv("CCLOAD_PASS")
 
 	os.Exit(code)
 }
@@ -203,14 +203,14 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 		// 验证认证头
 		if r.Header.Get("x-api-key") != "sk-test" {
 			w.WriteHeader(401)
-			w.Write([]byte(`{"error":"unauthorized"}`))
+			_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
 			return
 		}
 
 		// 成功响应
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
-		w.Write([]byte(`{"id":"test","model":"claude-3"}`))
+		_, _ = w.Write([]byte(`{"id":"test","model":"claude-3"}`))
 	}))
 	defer upstream.Close()
 
@@ -295,7 +295,7 @@ func TestClientCancelClosesUpstream(t *testing.T) {
 	upstreamClosed := make(chan struct{})
 
 	// 创建模拟上游服务器：缓慢发送流式数据
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
 
@@ -306,7 +306,7 @@ func TestClientCancelClosesUpstream(t *testing.T) {
 		}
 
 		// 发送第一块数据，通知测试客户端已开始接收
-		w.Write([]byte("data: chunk1\n\n"))
+		_, _ = w.Write([]byte("data: chunk1\n\n"))
 		flusher.Flush()
 		close(upstreamStarted)
 
@@ -424,9 +424,9 @@ func TestNoGoroutineLeak(t *testing.T) {
 
 	// 场景1：正常请求（30次循环，足够检测泄漏）
 	t.Run("正常请求无泄漏", func(t *testing.T) {
-		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(200)
-			w.Write([]byte(`{"result":"ok"}`))
+			_, _ = w.Write([]byte(`{"result":"ok"}`))
 		}))
 		defer upstream.Close()
 
@@ -461,10 +461,10 @@ func TestNoGoroutineLeak(t *testing.T) {
 
 	// 场景2：客户端取消（20次循环）
 	t.Run("客户端取消无泄漏", func(t *testing.T) {
-		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			time.Sleep(30 * time.Millisecond) // 缩短慢响应时间
 			w.WriteHeader(200)
-			w.Write([]byte(`{"result":"ok"}`))
+			_, _ = w.Write([]byte(`{"result":"ok"}`))
 		}))
 		defer upstream.Close()
 
@@ -480,7 +480,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 				cancel()
 			}()
 
-			srv.forwardOnceAsync(ctx, cfg, "sk-test", http.MethodPost, []byte(`{}`), http.Header{}, "", "/v1/messages", recorder, nil)
+			_, _, _ = srv.forwardOnceAsync(ctx, cfg, "sk-test", http.MethodPost, []byte(`{}`), http.Header{}, "", "/v1/messages", recorder, nil)
 		}
 
 		runtime.GC()
@@ -497,7 +497,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 	t.Run("首字节超时无泄漏", func(t *testing.T) {
 		srv.firstByteTimeout = 20 * time.Millisecond // 缩短超时
 
-		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			time.Sleep(50 * time.Millisecond) // 缩短延迟，仍超过超时时间
 			w.WriteHeader(200)
 		}))
@@ -507,7 +507,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 
 		for i := 0; i < 10; i++ {
 			recorder := httptest.NewRecorder()
-			srv.forwardOnceAsync(
+			_, _, _ = srv.forwardOnceAsync(
 				context.Background(),
 				cfg,
 				"sk-test",
@@ -538,20 +538,20 @@ func TestNoGoroutineLeak(t *testing.T) {
 // 期望：返回 598 状态码和 ErrUpstreamFirstByteTimeout 错误
 func TestFirstByteTimeout_StreamingResponse(t *testing.T) {
 	store, _ := storage.CreateSQLiteStore(":memory:", nil)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	srv := NewServer(store)
 	// 设置非常短的超时，确保在响应头到达前触发
 	srv.firstByteTimeout = 10 * time.Millisecond
 
 	// 上游服务器：延迟发送响应头，模拟慢响应导致首字节超时
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// 等待足够长的时间，确保客户端超时
 		time.Sleep(500 * time.Millisecond)
 		// 然后才发送响应头
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("data: {\"content\":\"hello\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"content\":\"hello\"}\n\n"))
 	}))
 	defer upstream.Close()
 

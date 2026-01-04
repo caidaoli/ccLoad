@@ -27,7 +27,7 @@ func (s *SQLStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.AP
 	if err != nil {
 		return nil, fmt.Errorf("query api keys: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var keys []*model.APIKey
 	for rows.Next() {
@@ -114,7 +114,7 @@ func (s *SQLStore) CreateAPIKeysBatch(ctx context.Context, keys []*model.APIKey)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// 构建批量插入语句（每批最多100条，避免SQL语句过长）
 	const batchSize = 100
@@ -296,7 +296,7 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 		if err != nil {
 			return fmt.Errorf("prepare channel statement: %w", err)
 		}
-		defer channelStmt.Close()
+		defer func() { _ = channelStmt.Close() }()
 
 		// 预编译API Key插入语句
 		keyStmt, err := tx.PrepareContext(ctx, `
@@ -307,7 +307,7 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 		if err != nil {
 			return fmt.Errorf("prepare api key statement: %w", err)
 		}
-		defer keyStmt.Close()
+		defer func() { _ = keyStmt.Close() }()
 
 		// 批量导入渠道
 		for _, cwk := range channels {
@@ -402,7 +402,7 @@ func (s *SQLStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey
 	if err != nil {
 		return nil, fmt.Errorf("query all api keys: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	result := make(map[int64][]*model.APIKey)
 	for rows.Next() {

@@ -165,7 +165,9 @@ Import-Test-2,https://import2.example.com,5,"test-model-2,test-model-3","{""old"
 	if _, err := io.WriteString(part, csvContent); err != nil {
 		t.Fatalf("写入CSV内容失败: %v", err)
 	}
-	writer.Close()
+	if err := writer.Close(); err != nil {
+		t.Fatalf("关闭writer失败: %v", err)
+	}
 
 	// 创建Gin测试上下文
 	w := httptest.NewRecorder()
@@ -271,7 +273,9 @@ Good-URL,https://good.example.com,10,test-model,{},anthropic,true,sk-import-key-
 	if _, err := io.WriteString(part, csvContent); err != nil {
 		t.Fatalf("写入CSV内容失败: %v", err)
 	}
-	writer.Close()
+	if err := writer.Close(); err != nil {
+		t.Fatalf("关闭writer失败: %v", err)
+	}
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -402,9 +406,16 @@ func TestAdminAPI_ExportImportRoundTrip(t *testing.T) {
 	// 步骤4：重新导入CSV
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
-	part, _ := writer.CreateFormFile("file", "roundtrip.csv")
-	part.Write(exportedCSV)
-	writer.Close()
+	part, err := writer.CreateFormFile("file", "roundtrip.csv")
+	if err != nil {
+		t.Fatalf("创建表单文件字段失败: %v", err)
+	}
+	if _, err := part.Write(exportedCSV); err != nil {
+		t.Fatalf("写入CSV内容失败: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("关闭writer失败: %v", err)
+	}
 
 	importW := httptest.NewRecorder()
 	importC, _ := gin.CreateTestContext(importW)
@@ -539,9 +550,16 @@ Test-Invalid,https://invalid.com
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
-	part, _ := writer.CreateFormFile("file", "invalid.csv")
-	io.WriteString(part, invalidCSV)
-	writer.Close()
+	part, err := writer.CreateFormFile("file", "invalid.csv")
+	if err != nil {
+		t.Fatalf("创建表单文件字段失败: %v", err)
+	}
+	if _, err := io.WriteString(part, invalidCSV); err != nil {
+		t.Fatalf("写入CSV内容失败: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("关闭writer失败: %v", err)
+	}
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -588,9 +606,16 @@ Duplicate-Test,https://duplicate.com,5,model-2,{},gemini,false,sk-duplicate-key,
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
-	part, _ := writer.CreateFormFile("file", "duplicate.csv")
-	io.WriteString(part, duplicateCSV)
-	writer.Close()
+	part, err := writer.CreateFormFile("file", "duplicate.csv")
+	if err != nil {
+		t.Fatalf("创建表单文件字段失败: %v", err)
+	}
+	if _, err := io.WriteString(part, duplicateCSV); err != nil {
+		t.Fatalf("写入CSV内容失败: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("关闭writer失败: %v", err)
+	}
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -600,7 +625,9 @@ Duplicate-Test,https://duplicate.com,5,model-2,{},gemini,false,sk-duplicate-key,
 	server.HandleImportChannelsCSV(c)
 
 	var resp map[string]any
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("解析响应失败: %v", err)
+	}
 
 	t.Logf("[INFO] 重复名称处理: status=%v, message=%v", resp["status"], resp["message"])
 
@@ -675,9 +702,16 @@ func TestAdminAPI_LargeCSVImport(t *testing.T) {
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
-	part, _ := writer.CreateFormFile("file", "large.csv")
-	io.WriteString(part, csvBuilder.String())
-	writer.Close()
+	part, err := writer.CreateFormFile("file", "large.csv")
+	if err != nil {
+		t.Fatalf("创建表单文件字段失败: %v", err)
+	}
+	if _, err := io.WriteString(part, csvBuilder.String()); err != nil {
+		t.Fatalf("写入CSV内容失败: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("关闭writer失败: %v", err)
+	}
 
 	// 测试导入性能
 	startTime := time.Now()

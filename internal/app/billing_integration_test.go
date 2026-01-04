@@ -1,8 +1,9 @@
 package app
 
 import (
-	"ccLoad/internal/util"
 	"testing"
+
+	"ccLoad/internal/util"
 )
 
 // ============================================================================

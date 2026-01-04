@@ -65,12 +65,12 @@ func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) 
 	token.CreatedAt = time.Now()
 
 	// 处理可空字段：SQLite NOT NULL DEFAULT 0 需要传入 0 而不是 nil
-	var expiresAt int64 = 0
+	var expiresAt int64
 	if token.ExpiresAt != nil {
 		expiresAt = *token.ExpiresAt
 	}
 
-	var lastUsedAt int64 = 0
+	var lastUsedAt int64
 	if token.LastUsedAt != nil {
 		lastUsedAt = *token.LastUsedAt
 	}
@@ -157,7 +157,7 @@ func (s *SQLStore) ListAuthTokens(ctx context.Context) ([]*model.AuthToken, erro
 	if err != nil {
 		return nil, fmt.Errorf("list auth tokens: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var tokens []*model.AuthToken
 	for rows.Next() {
@@ -189,7 +189,7 @@ func (s *SQLStore) ListActiveAuthTokens(ctx context.Context) ([]*model.AuthToken
 	if err != nil {
 		return nil, fmt.Errorf("list active auth tokens: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var tokens []*model.AuthToken
 	for rows.Next() {
@@ -314,7 +314,7 @@ func (s *SQLStore) UpdateTokenStats(
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
-	defer tx.Rollback() // 失败时自动回滚
+	defer func() { _ = tx.Rollback() }() // 失败时自动回滚
 
 	// 1. 查询当前统计数据
 	var stats struct {

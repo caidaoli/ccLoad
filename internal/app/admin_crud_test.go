@@ -31,7 +31,7 @@ func setupAdminTestServer(t *testing.T) (*Server, storage.Store, func()) {
 	}
 
 	cleanup := func() {
-		store.Close()
+		_ = store.Close()
 	}
 
 	return server, store, cleanup

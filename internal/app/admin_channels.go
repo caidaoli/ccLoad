@@ -19,6 +19,7 @@ import (
 // ==================== 渠道CRUD管理 ====================
 // 从admin.go拆分渠道CRUD,遵循SRP原则
 
+// HandleChannels 处理渠道列表请求
 func (s *Server) HandleChannels(c *gin.Context) {
 	switch c.Request.Method {
 	case "GET":
@@ -159,7 +160,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 
 	// 填充空的重定向模型为请求模型（方便前端编辑时显示）
 	for i := range out {
-		for j := range out[i].Config.ModelEntries {
+		for j := range out[i].ModelEntries {
 			if out[i].Config.ModelEntries[j].RedirectModel == "" {
 				out[i].Config.ModelEntries[j].RedirectModel = out[i].Config.ModelEntries[j].Model
 			}
@@ -215,6 +216,7 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 	RespondJSON(c, http.StatusCreated, created)
 }
 
+// HandleChannelByID 处理单个渠道的CRUD操作
 func (s *Server) HandleChannelByID(c *gin.Context) {
 	id, err := ParseInt64Param(c, "id")
 	if err != nil {
@@ -412,7 +414,7 @@ func (s *Server) handleDeleteChannel(c *gin.Context, id int64) {
 	RespondJSON(c, http.StatusOK, gin.H{"id": id})
 }
 
-// 删除渠道下的单个Key，并保持key_index连续
+// HandleDeleteAPIKey 删除渠道下的单个Key，并保持key_index连续
 func (s *Server) HandleDeleteAPIKey(c *gin.Context) {
 	// 解析渠道ID
 	channelID, err := ParseInt64Param(c, "id")
@@ -576,7 +578,7 @@ func (s *Server) HandleDeleteModels(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, gin.H{"remaining": len(remaining)})
 }
 
-// 批量更新渠道优先级
+// HandleBatchUpdatePriority 批量更新渠道优先级
 // POST /admin/channels/batch-priority
 // 性能优化：使用单条批量UPDATE语句替代N次独立查询（90次→1次）
 func (s *Server) HandleBatchUpdatePriority(c *gin.Context) {

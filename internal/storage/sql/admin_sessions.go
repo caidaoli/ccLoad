@@ -1,3 +1,5 @@
+// Package sql 提供基于 SQL 的数据存储实现。
+// 支持 SQLite 和 MySQL 两种后端，实现统一的 storage.Store 接口。
 package sql
 
 import (
@@ -65,7 +67,7 @@ func (s *SQLStore) LoadAllSessions(ctx context.Context) (map[string]time.Time, e
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	sessions := make(map[string]time.Time)
 	for rows.Next() {

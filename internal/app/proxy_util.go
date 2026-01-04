@@ -2,9 +2,6 @@ package app
 
 import (
 	"bytes"
-	"ccLoad/internal/cooldown"
-	"ccLoad/internal/model"
-	"ccLoad/internal/util"
 	"context"
 	"fmt"
 	"io"
@@ -13,6 +10,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"ccLoad/internal/cooldown"
+	"ccLoad/internal/model"
+	"ccLoad/internal/util"
 
 	"github.com/bytedance/sonic"
 )

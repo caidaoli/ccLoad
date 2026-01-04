@@ -105,7 +105,7 @@ func TestJSONTime_UnmarshalJSON(t *testing.T) {
 				t.Fatalf("反序列化失败: %v", err)
 			}
 
-			if !jt.Time.Equal(tt.expected) {
+			if !jt.Equal(tt.expected) {
 				t.Errorf("时间不匹配:\n期望: %v\n实际: %v", tt.expected, jt.Time)
 			}
 		})

@@ -181,8 +181,7 @@ func (rl *LoginRateLimiter) cleanup() {
 	}
 }
 
-// 优雅关闭LoginRateLimiter
-// Stop 停止cleanupLoop后台协程
+// Stop 停止 cleanupLoop 后台协程，优雅关闭 LoginRateLimiter。
 func (rl *LoginRateLimiter) Stop() {
 	rl.stopOnce.Do(func() {
 		close(rl.stopCh)

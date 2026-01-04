@@ -1,9 +1,10 @@
 package integration_test
 
 import (
+	"testing"
+
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
-	"testing"
 )
 
 // ==================== CSV导出默认值测试 ====================

@@ -12,8 +12,8 @@ import (
 	"ccLoad/internal/config"
 	sqlstore "ccLoad/internal/storage/sql"
 
-	_ "github.com/go-sql-driver/mysql"
-	_ "modernc.org/sqlite"
+	_ "github.com/go-sql-driver/mysql" // MySQL driver
+	_ "modernc.org/sqlite"             // SQLite driver
 )
 
 // RedisSync Redis同步接口（与sql.RedisSync保持一致）
@@ -108,7 +108,7 @@ func createMySQLStore(dsn string, redisSync RedisSync) (*sqlstore.SQLStore, erro
 	pingCtx, pingCancel := context.WithTimeout(context.Background(), config.StartupDBPingTimeout)
 	defer pingCancel()
 	if err := db.PingContext(pingCtx); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("MySQL连接测试失败（超时%v）: %w", config.StartupDBPingTimeout, err)
 	}
 
@@ -119,7 +119,7 @@ func createMySQLStore(dsn string, redisSync RedisSync) (*sqlstore.SQLStore, erro
 	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), config.StartupMigrationTimeout)
 	defer migrateCancel()
 	if err := migrateMySQL(migrateCtx, db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("MySQL迁移失败（超时%v）: %w", config.StartupMigrationTimeout, err)
 	}
 
@@ -137,7 +137,7 @@ func CreateSQLiteStore(path string, redisSync RedisSync) (Store, error) {
 // createSQLiteStore 内部函数，返回具体类型以支持生命周期方法调用
 func createSQLiteStore(path string, redisSync RedisSync) (*sqlstore.SQLStore, error) {
 	// 创建数据目录
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil { //nolint:gosec // G301: 数据目录需要服务进程可写
 		return nil, err
 	}
 
@@ -164,7 +164,7 @@ func createSQLiteStore(path string, redisSync RedisSync) (*sqlstore.SQLStore, er
 	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), config.StartupMigrationTimeout)
 	defer migrateCancel()
 	if err := migrateSQLite(migrateCtx, db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("SQLite迁移失败（超时%v）: %w", config.StartupMigrationTimeout, err)
 	}
 

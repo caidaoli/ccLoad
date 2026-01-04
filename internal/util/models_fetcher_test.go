@@ -61,7 +61,7 @@ func TestAnthropicModelsFetcher(t *testing.T) {
 			}
 
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{
+			if err := json.NewEncoder(w).Encode(map[string]any{
 				"data": []map[string]any{
 					{
 						"id":           "claude-3-5-sonnet-20241022",
@@ -85,7 +85,9 @@ func TestAnthropicModelsFetcher(t *testing.T) {
 				"has_more": false,
 				"first_id": "claude-3-5-sonnet-20241022",
 				"last_id":  "claude-3-sonnet-20240229",
-			})
+			}); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
 			return
 		}
 		http.NotFound(w, r)
@@ -144,13 +146,15 @@ func TestOpenAIModelsFetcher(t *testing.T) {
 		// 返回模拟响应
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{
+		if _, err := w.Write([]byte(`{
 			"data": [
 				{"id": "gpt-4o"},
 				{"id": "gpt-4-turbo"},
 				{"id": "gpt-3.5-turbo"}
 			]
-		}`))
+		}`)); err != nil {
+			t.Logf("写入响应失败: %v", err)
+		}
 	}))
 	defer server.Close()
 
@@ -183,9 +187,9 @@ func TestOpenAIModelsFetcher(t *testing.T) {
 
 func TestOpenAIModelsFetcher_APIError(t *testing.T) {
 	// 模拟API错误
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"error": {"message": "Invalid API key"}}`))
+		_, _ = w.Write([]byte(`{"error": {"message": "Invalid API key"}}`))
 	}))
 	defer server.Close()
 
@@ -218,7 +222,7 @@ func TestGeminiModelsFetcher(t *testing.T) {
 		// 返回模拟响应
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{
+		_, _ = w.Write([]byte(`{
 			"models": [
 				{"name": "models/gemini-1.5-flash"},
 				{"name": "models/gemini-1.5-pro"},
@@ -268,13 +272,15 @@ func TestCodexModelsFetcher(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/models" {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{
+			if err := json.NewEncoder(w).Encode(map[string]any{
 				"data": []map[string]any{
 					{"id": "gpt-4"},
 					{"id": "gpt-3.5-turbo"},
 					{"id": "text-davinci-003"},
 				},
-			})
+			}); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
 			return
 		}
 		http.NotFound(w, r)

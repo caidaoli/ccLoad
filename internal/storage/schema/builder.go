@@ -1,3 +1,4 @@
+// Package schema 提供数据库表结构定义和DDL生成
 package schema
 
 import (
@@ -90,13 +91,13 @@ func mysqlToSQLite(mysqlCol string) string {
 }
 
 // replaceWord 替换单词（避免部分匹配）
-func replaceWord(s, old, new string) string {
+func replaceWord(s, oldWord, newWord string) string {
 	words := strings.Fields(s)
 	for i, word := range words {
 		// 去除标点符号检查
 		cleanWord := strings.TrimRight(word, ",")
-		if cleanWord == old {
-			words[i] = strings.Replace(word, old, new, 1)
+		if cleanWord == oldWord {
+			words[i] = strings.Replace(word, oldWord, newWord, 1)
 		}
 	}
 	return strings.Join(words, " ")

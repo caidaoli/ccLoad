@@ -71,6 +71,7 @@ func streamCopyWithBufferSize(ctx context.Context, src io.Reader, dst http.Respo
 				if hookErr := onData(buf[:n]); hookErr != nil {
 					// 钩子错误不中断流传输（容错设计）
 					// 错误日志由钩子内部自行处理
+					_ = hookErr // 显式忽略，保持代码清晰
 				}
 			}
 		}

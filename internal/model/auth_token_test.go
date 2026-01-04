@@ -210,7 +210,7 @@ func TestAuthToken_UpdateLastUsed(t *testing.T) {
 
 func TestHashToken_Consistency(t *testing.T) {
 	// 验证相同输入总是产生相同输出
-	token := "sk-ant-test-token-12345"
+	token := "sk-ant-test-token-12345" //nolint:gosec // G101: 测试用假凭证
 	hash1 := HashToken(token)
 	hash2 := HashToken(token)
 	hash3 := HashToken(token)
@@ -220,7 +220,7 @@ func TestHashToken_Consistency(t *testing.T) {
 	}
 
 	// 验证不同输入产生不同输出
-	differentToken := "sk-ant-test-token-54321"
+	differentToken := "sk-ant-test-token-54321" //nolint:gosec // G101: 测试用假凭证
 	differentHash := HashToken(differentToken)
 
 	if hash1 == differentHash {

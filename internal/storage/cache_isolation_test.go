@@ -20,7 +20,7 @@ func TestCacheIsolation_GetEnabledChannelsByModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建 store 失败: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 创建测试渠道
 	cfg := &model.Config{
@@ -132,7 +132,7 @@ func TestCacheIsolation_GetEnabledChannelsByType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建 store 失败: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 创建测试渠道
 	cfg := &model.Config{
@@ -210,7 +210,7 @@ func TestCacheIsolation_MultipleQueries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建 store 失败: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 创建测试渠道
 	cfg := &model.Config{
@@ -273,7 +273,7 @@ func TestCacheIsolation_WildcardQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建 store 失败: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 创建多个测试渠道
 	for i := 1; i <= 3; i++ {

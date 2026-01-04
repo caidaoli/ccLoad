@@ -98,12 +98,12 @@ func (s *SQLStore) IsSQLite() bool {
 	return s.driverName == "sqlite"
 }
 
-// Close 关闭存储（优雅关闭）
 // Ping 检查数据库连接是否活跃（用于健康检查，<1ms）
 func (s *SQLStore) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
 }
 
+// Close 关闭存储（优雅关闭）
 func (s *SQLStore) Close() error {
 	var err error
 	s.closeOnce.Do(func() {

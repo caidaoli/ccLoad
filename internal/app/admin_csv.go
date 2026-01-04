@@ -21,7 +21,7 @@ import (
 // ==================== CSV导入导出 ====================
 // 从admin.go拆分CSV功能,遵循SRP原则
 
-// handleExportChannelsCSV 导出渠道为CSV
+// HandleExportChannelsCSV 导出渠道为CSV
 // GET /admin/channels/export
 func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 	cfgs, err := s.store.ListConfigs(c.Request.Context())
@@ -116,7 +116,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 	c.String(http.StatusOK, buf.String())
 }
 
-// handleImportChannelsCSV 导入渠道CSV
+// HandleImportChannelsCSV 导入渠道CSV
 // POST /admin/channels/import
 func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 	fileHeader, err := c.FormFile("file")
@@ -130,7 +130,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 
 	reader := csv.NewReader(src)
 	reader.TrimLeadingSpace = true

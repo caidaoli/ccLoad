@@ -2,13 +2,14 @@ package app
 
 import (
 	"bytes"
-	"ccLoad/internal/cooldown"
-	"ccLoad/internal/util"
 	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"ccLoad/internal/cooldown"
+	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
 )

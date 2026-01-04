@@ -23,6 +23,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// Server 是 ccLoad 的核心HTTP服务器，负责代理请求转发和管理API
 type Server struct {
 	// ============================================================================
 	// 服务层
@@ -73,6 +74,7 @@ type Server struct {
 	channelTypesCacheMu   sync.RWMutex
 }
 
+// NewServer 创建并初始化一个新的 Server 实例
 func NewServer(store storage.Store) *Server {
 	// 初始化ConfigService（优先从数据库加载配置,环境变量作Fallback）
 	configService := NewConfigService(store)
@@ -284,7 +286,7 @@ func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
 	dialer := &net.Dialer{
 		Timeout:   config.HTTPDialTimeout,
 		KeepAlive: config.HTTPKeepAliveInterval,
-		Control: func(network, address string, c syscall.RawConn) error {
+		Control: func(_, _ string, c syscall.RawConn) error {
 			return c.Control(func(fd uintptr) {
 				_ = setTCPNoDelay(fd)
 			})
@@ -305,7 +307,7 @@ func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
 		TLSClientConfig: &tls.Config{
 			ClientSessionCache: tls.NewLRUClientSessionCache(config.TLSSessionCacheSize),
 			MinVersion:         tls.VersionTLS12,
-			InsecureSkipVerify: skipTLSVerify,
+			InsecureSkipVerify: skipTLSVerify, //nolint:gosec // G402: 由环境变量CCLOAD_SKIP_TLS_VERIFY控制，用于开发测试
 		},
 	}
 
@@ -323,6 +325,7 @@ func (s *Server) GetConfig(ctx context.Context, channelID int64) (*model.Config,
 	return s.store.GetConfig(ctx, channelID)
 }
 
+// GetEnabledChannelsByModel 根据模型名称获取所有启用的渠道配置
 func (s *Server) GetEnabledChannelsByModel(ctx context.Context, model string) ([]*model.Config, error) {
 	if cache := s.getChannelCache(); cache != nil {
 		if channels, err := cache.GetEnabledChannelsByModel(ctx, model); err == nil {
@@ -332,6 +335,7 @@ func (s *Server) GetEnabledChannelsByModel(ctx context.Context, model string) ([
 	return s.store.GetEnabledChannelsByModel(ctx, model)
 }
 
+// GetEnabledChannelsByType 根据渠道类型获取所有启用的渠道配置
 func (s *Server) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*model.Config, error) {
 	if cache := s.getChannelCache(); cache != nil {
 		if channels, err := cache.GetEnabledChannelsByType(ctx, channelType); err == nil {
@@ -559,8 +563,8 @@ func (s *Server) getModelsByChannelType(ctx context.Context, channelType string)
 	return models, nil
 }
 
-// [INFO] 修复：handleChannelKeys 路由处理器(2025-10新架构支持)
-// GET /admin/channels/:id/keys - 获取渠道的所有API Keys
+// HandleChannelKeys 获取渠道的所有API Keys
+// GET /admin/channels/:id/keys
 func (s *Server) HandleChannelKeys(c *gin.Context) {
 	id, err := ParseInt64Param(c, "id")
 	if err != nil {
@@ -570,7 +574,6 @@ func (s *Server) HandleChannelKeys(c *gin.Context) {
 	s.handleGetChannelKeys(c, id)
 }
 
-// 优雅关闭Server
 // Shutdown 优雅关闭Server，等待所有后台goroutine完成
 // 参数ctx用于控制最大等待时间，超时后强制退出
 // 返回值：nil表示成功，context.DeadlineExceeded表示超时

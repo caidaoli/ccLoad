@@ -7,6 +7,7 @@ import (
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
+	"ccLoad/internal/testutil"
 )
 
 // TestSelectRouteCandidates_NormalRequest 测试普通请求的路由选择
@@ -910,17 +911,5 @@ func TestShuffleSamePriorityChannels(t *testing.T) {
 // ========== 辅助函数 ==========
 
 func setupTestStore(t *testing.T) (storage.Store, func()) {
-	t.Helper()
-
-	tmpDB := t.TempDir() + "/selector_test.db"
-	store, err := storage.CreateSQLiteStore(tmpDB, nil)
-	if err != nil {
-		t.Fatalf("创建测试数据库失败: %v", err)
-	}
-
-	cleanup := func() {
-		store.Close()
-	}
-
-	return store, cleanup
+	return testutil.SetupTestStore(t)
 }

@@ -1,10 +1,11 @@
 package app
 
 import (
-	"ccLoad/internal/model"
 	"strconv"
 	"strings"
 	"time"
+
+	"ccLoad/internal/model"
 
 	"github.com/gin-gonic/gin"
 )

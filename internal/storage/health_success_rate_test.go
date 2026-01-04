@@ -19,7 +19,7 @@ func TestGetChannelSuccessRates_IgnoresClientNoise(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create sqlite store: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	cfg := &model.Config{
 		Name:     "test-channel",
@@ -80,7 +80,7 @@ func TestGetChannelSuccessRates_NoEligibleResults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create sqlite store: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	cfg := &model.Config{
 		Name:     "test-channel",

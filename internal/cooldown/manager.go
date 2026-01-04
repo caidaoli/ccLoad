@@ -1,27 +1,31 @@
+// Package cooldown 提供渠道和Key的冷却决策管理
 package cooldown
 
 import (
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
-	"ccLoad/internal/util"
 	"context"
 	"log"
 	"time"
+
+	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
+	"ccLoad/internal/util"
 )
 
-// Action 冷却后的建议行动
+// Action 表示冷却后的建议行动类型。
 type Action int
 
+// Action 常量定义冷却后的建议行动。
 const (
-	ActionRetryKey     Action = iota // 重试当前渠道的其他Key
-	ActionRetryChannel               // 切换到下一个渠道
-	ActionReturnClient               // 直接返回给客户端
+	ActionRetryKey     Action = iota // ActionRetryKey 表示重试当前渠道的其他Key
+	ActionRetryChannel               // ActionRetryChannel 表示切换到下一个渠道
+	ActionReturnClient               // ActionReturnClient 表示直接返回给客户端
 )
 
-// NoKeyIndex 表示错误与特定Key无关（网络错误、DNS解析失败等）
-// 用于 HandleError 的 keyIndex 参数
+// NoKeyIndex 表示错误与特定Key无关（网络错误、DNS解析失败等）。
+// 用于 HandleError 的 keyIndex 参数。
 const NoKeyIndex = -1
 
+// ErrorInput 包含错误处理所需的输入信息。
 type ErrorInput struct {
 	ChannelID      int64
 	ChannelType    string // 渠道类型，用于特定渠道的错误处理策略

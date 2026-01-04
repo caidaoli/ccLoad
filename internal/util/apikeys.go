@@ -1,3 +1,4 @@
+// Package util 提供通用工具函数
 package util
 
 import "strings"

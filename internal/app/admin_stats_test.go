@@ -55,6 +55,9 @@ func TestFillHealthTimeline_UsesSecondsForAvgTimes(t *testing.T) {
 
 	s.fillHealthTimeline(context.Background(), stats, startTime, endTime, filter, false)
 
+	if len(stats) == 0 {
+		t.Fatal("stats 切片为空")
+	}
 	if len(stats[0].HealthTimeline) != 48 {
 		t.Fatalf("期望 health timeline 长度=48，实际=%d", len(stats[0].HealthTimeline))
 	}

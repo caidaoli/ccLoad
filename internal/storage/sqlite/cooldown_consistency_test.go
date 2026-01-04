@@ -1,12 +1,13 @@
 package sqlite_test
 
 import (
-	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
-	"ccLoad/internal/util"
 	"context"
 	"testing"
 	"time"
+
+	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
+	"ccLoad/internal/util"
 )
 
 // TestCooldownConsistency_401Error 验证401错误时Key级别和渠道级别冷却时间一致性
@@ -17,7 +18,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建测试数据库失败: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	now := time.Now()

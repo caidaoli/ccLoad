@@ -2,11 +2,12 @@ package cooldown
 
 import (
 	"bytes"
-	"ccLoad/internal/model"
 	"context"
 	"log"
 	"testing"
 	"time"
+
+	"ccLoad/internal/model"
 )
 
 func TestHandleError_1308Error(t *testing.T) {

@@ -1,13 +1,14 @@
 package app
 
 import (
-	"ccLoad/internal/cooldown"
-	"ccLoad/internal/model"
 	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"ccLoad/internal/cooldown"
+	"ccLoad/internal/model"
 )
 
 func TestTryChannelWithKeys_ContextCanceled_Returns499(t *testing.T) {

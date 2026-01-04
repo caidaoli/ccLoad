@@ -13,10 +13,10 @@ type JSONTime struct {
 
 // MarshalJSON 实现JSON序列化
 func (jt JSONTime) MarshalJSON() ([]byte, error) {
-	if jt.Time.IsZero() {
+	if jt.IsZero() {
 		return []byte("0"), nil
 	}
-	return []byte(strconv.FormatInt(jt.Time.Unix(), 10)), nil
+	return []byte(strconv.FormatInt(jt.Unix(), 10)), nil
 }
 
 // UnmarshalJSON 实现JSON反序列化

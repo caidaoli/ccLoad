@@ -286,9 +286,9 @@ func (s *AuthService) RequireAPIAuth() gin.HandlerFunc {
 
 		// 检查 x-goog-api-key 头（Google API格式）
 		if !tokenFound {
-			googApiKey := c.GetHeader("x-goog-api-key")
-			if googApiKey != "" {
-				token = googApiKey
+			googAPIKey := c.GetHeader("x-goog-api-key")
+			if googAPIKey != "" {
+				token = googAPIKey
 				tokenFound = true
 			}
 		}

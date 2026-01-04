@@ -10,6 +10,7 @@ import (
 	"ccLoad/internal/model"
 )
 
+// Aggregate 聚合指标数据
 func (s *SQLStore) Aggregate(ctx context.Context, since time.Time, bucket time.Duration) ([]model.MetricPoint, error) {
 	// 性能优化：使用SQL GROUP BY进行数据库层聚合，避免内存聚合
 	// 原方案：加载所有日志到内存聚合（10万条日志需2-5秒，占用100-200MB内存）
@@ -54,7 +55,7 @@ func (s *SQLStore) Aggregate(ctx context.Context, since time.Time, bucket time.D
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	mapp, helperMap, channelIDsToFetch, err := scanAggregatedMetricsRows(rows)
 	if err != nil {
@@ -103,7 +104,7 @@ func (s *SQLStore) AggregateRange(ctx context.Context, since, until time.Time, b
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	mapp, helperMap, channelIDsToFetch, err := scanAggregatedMetricsRows(rows)
 	if err != nil {
@@ -169,7 +170,7 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	stats := make([]model.StatsEntry, 0)
 	channelIDsToFetch := make(map[int64]bool)
@@ -304,7 +305,7 @@ func (s *SQLStore) GetStatsLite(ctx context.Context, startTime, endTime time.Tim
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	stats := make([]model.StatsEntry, 0)
 
@@ -493,7 +494,7 @@ func (s *SQLStore) fillStatsRPM(ctx context.Context, stats []model.StatsEntry, s
 		if err != nil {
 			return fmt.Errorf("query peak RPM: %w", err)
 		}
-		defer peakRows.Close()
+		defer func() { _ = peakRows.Close() }()
 
 		for peakRows.Next() {
 			var channelID int
@@ -538,7 +539,7 @@ func (s *SQLStore) fillStatsRPM(ctx context.Context, stats []model.StatsEntry, s
 			if err != nil {
 				return fmt.Errorf("query recent RPM: %w", err)
 			}
-			defer recentRows.Close()
+			defer func() { _ = recentRows.Close() }()
 
 			for recentRows.Next() {
 				var channelID int
@@ -613,6 +614,7 @@ func (s *SQLStore) GetChannelSuccessRates(ctx context.Context, since time.Time) 
 			`
 
 	// 使用 minute_bucket 索引优化查询
+	//nolint:gosec // G202: eligible 为内部定义的常量SQL片段，安全可控
 	query := `
 		SELECT
 			channel_id,
@@ -626,7 +628,7 @@ func (s *SQLStore) GetChannelSuccessRates(ctx context.Context, since time.Time) 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	result := make(map[int64]model.ChannelHealthStats)
 	for rows.Next() {

@@ -1,9 +1,10 @@
 package sqlite_test
 
 import (
-	"ccLoad/internal/model"
 	"testing"
 	"time"
+
+	"ccLoad/internal/model"
 
 	"github.com/bytedance/sonic"
 )

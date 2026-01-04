@@ -1,4 +1,4 @@
-package sqlite_test
+package testutil
 
 import (
 	"testing"
@@ -6,10 +6,13 @@ import (
 	"ccLoad/internal/storage"
 )
 
-func setupSQLiteTestStore(t testing.TB, dbFile string) (storage.Store, func()) {
+// SetupTestStore 创建一个用于测试的 SQLite 存储实例
+// 返回 store 实例和 cleanup 函数
+// 使用方式：store, cleanup := testutil.SetupTestStore(t); defer cleanup()
+func SetupTestStore(t testing.TB) (storage.Store, func()) {
 	t.Helper()
 
-	tmpDB := t.TempDir() + "/" + dbFile
+	tmpDB := t.TempDir() + "/test.db"
 	store, err := storage.CreateSQLiteStore(tmpDB, nil)
 	if err != nil {
 		t.Fatalf("创建测试数据库失败: %v", err)

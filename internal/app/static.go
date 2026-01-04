@@ -123,7 +123,7 @@ func isPathUnder(path, base string) bool {
 
 // serveHTMLWithVersion 处理 HTML 文件，替换版本号占位符
 func serveHTMLWithVersion(c *gin.Context, filePath string) {
-	content, err := os.ReadFile(filePath)
+	content, err := os.ReadFile(filePath) //nolint:gosec // G304: filePath 已通过 isPathSafe() 验证
 	if err != nil {
 		c.Status(http.StatusInternalServerError)
 		return

@@ -19,7 +19,7 @@ func TestWithTransaction_ContextDeadline(t *testing.T) {
 		if err != nil {
 			t.Fatalf("打开数据库失败: %v", err)
 		}
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		// 创建一个 500ms deadline 的 context
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
@@ -29,7 +29,7 @@ func TestWithTransaction_ContextDeadline(t *testing.T) {
 		start := time.Now()
 
 		// 模拟一个总是返回 BUSY 错误的事务
-		err = withTransaction(db, ctx, func(tx *sql.Tx) error {
+		err = withTransaction(ctx, db, func(_ *sql.Tx) error {
 			attemptCount++
 			// 模拟 SQLite BUSY 错误
 			return errors.New("database is locked")
@@ -66,7 +66,7 @@ func TestWithTransaction_ContextDeadline(t *testing.T) {
 		if err != nil {
 			t.Fatalf("打开数据库失败: %v", err)
 		}
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		// 使用 background context（无 deadline）
 		ctx := context.Background()
@@ -74,7 +74,7 @@ func TestWithTransaction_ContextDeadline(t *testing.T) {
 		attemptCount := 0
 
 		// 模拟一个总是返回 BUSY 错误的事务
-		err = withTransaction(db, ctx, func(tx *sql.Tx) error {
+		err = withTransaction(ctx, db, func(_ *sql.Tx) error {
 			attemptCount++
 			return errors.New("database is locked")
 		})
@@ -98,7 +98,7 @@ func TestWithTransaction_ContextDeadline(t *testing.T) {
 		if err != nil {
 			t.Fatalf("打开数据库失败: %v", err)
 		}
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		// 创建可取消的 context
 		ctx, cancel := context.WithCancel(context.Background())
@@ -113,7 +113,7 @@ func TestWithTransaction_ContextDeadline(t *testing.T) {
 		}()
 
 		// 模拟一个总是返回 BUSY 错误的事务
-		err = withTransaction(db, ctx, func(tx *sql.Tx) error {
+		err = withTransaction(ctx, db, func(_ *sql.Tx) error {
 			attemptCount++
 			return errors.New("database is locked")
 		})
@@ -142,7 +142,7 @@ func TestWithTransaction_DeadlineRealWorld(t *testing.T) {
 		if err != nil {
 			t.Fatalf("打开数据库失败: %v", err)
 		}
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		// 模拟 HTTP 请求的 1 秒超时
 		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
@@ -152,7 +152,7 @@ func TestWithTransaction_DeadlineRealWorld(t *testing.T) {
 		start := time.Now()
 
 		// 模拟事务操作（总是失败）
-		err = withTransaction(db, ctx, func(tx *sql.Tx) error {
+		err = withTransaction(ctx, db, func(_ *sql.Tx) error {
 			attemptCount++
 			return errors.New("database is deadlocked")
 		})

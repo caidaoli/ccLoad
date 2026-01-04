@@ -15,8 +15,7 @@ import (
 // HTTP状态码错误分类器
 // 设计原则：区分Key级错误和渠道级错误，避免误判导致多Key功能失效
 
-// ErrorLevel 错误级别枚举
-// ErrUpstreamFirstByteTimeout 是上游首字节超时的统一错误标识，避免依赖具体报错文案
+// ErrUpstreamFirstByteTimeout 是上游首字节超时的统一错误标识，避免依赖具体报错文案。
 var ErrUpstreamFirstByteTimeout = errors.New("upstream first byte timeout")
 
 // resetTime1308Regex 匹配1308错误 message 中的重置时间（不依赖具体语言文案）
@@ -55,6 +54,7 @@ const (
 	RateLimitScopeAccount = "account"
 )
 
+// ErrorLevel 表示错误的严重级别。
 type ErrorLevel int
 
 const (
@@ -76,6 +76,7 @@ type StatusCodeMeta struct {
 	Level ErrorLevel // 错误级别（Key/Channel/Client）
 }
 
+// HTTPResponseClassification 包含 HTTP 响应分类的结果。
 type HTTPResponseClassification struct {
 	Level            ErrorLevel
 	ResetTime1308    time.Time

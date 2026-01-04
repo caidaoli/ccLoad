@@ -39,7 +39,7 @@ func (s *SQLStore) GetAuthTokenStatsInRange(ctx context.Context, startTime, endT
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	stats := make(map[int64]*model.AuthTokenRangeStats)
 	for rows.Next() {
@@ -109,7 +109,7 @@ func (s *SQLStore) FillAuthTokenRPMStats(ctx context.Context, stats map[int64]*m
 	if err != nil {
 		return err
 	}
-	defer peakRows.Close()
+	defer func() { _ = peakRows.Close() }()
 
 	for peakRows.Next() {
 		var tokenID int64
@@ -139,7 +139,7 @@ func (s *SQLStore) FillAuthTokenRPMStats(ctx context.Context, stats map[int64]*m
 		if err != nil {
 			return err
 		}
-		defer recentRows.Close()
+		defer func() { _ = recentRows.Close() }()
 
 		for recentRows.Next() {
 			var tokenID int64

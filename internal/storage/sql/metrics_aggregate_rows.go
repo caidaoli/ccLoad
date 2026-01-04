@@ -1,10 +1,11 @@
 package sql
 
 import (
-	"ccLoad/internal/model"
 	"database/sql"
 	"fmt"
 	"time"
+
+	"ccLoad/internal/model"
 )
 
 func scanAggregatedMetricsRows(rows *sql.Rows) (map[int64]*model.MetricPoint, map[int64]*metricAggregationHelper, map[int64]bool, error) {

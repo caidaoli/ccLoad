@@ -1,3 +1,4 @@
+// Package config 定义应用配置常量和默认值
 package config
 
 import "time"

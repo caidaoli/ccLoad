@@ -96,13 +96,14 @@ func (s *SQLStore) fillLogChannelNames(ctx context.Context, entries []*model.Log
 	}
 }
 
+// AddLog 添加日志记录
 func (s *SQLStore) AddLog(ctx context.Context, e *model.LogEntry) error {
-	if e.Time.Time.IsZero() {
+	if e.Time.IsZero() {
 		e.Time = model.JSONTime{Time: time.Now()}
 	}
 
 	// 清理单调时钟信息，确保时间格式标准化
-	cleanTime := e.Time.Time.Round(0) // 移除单调时钟部分
+	cleanTime := e.Time.Round(0) // 移除单调时钟部分
 
 	// Unix时间戳：直接存储毫秒级Unix时间戳
 	timeMs := cleanTime.UnixMilli()
@@ -148,7 +149,7 @@ func (s *SQLStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) err
 	if err != nil {
 		return err
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	for _, e := range logs {
 		t := e.Time.Time
@@ -193,6 +194,7 @@ func (s *SQLStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) err
 	return tx.Commit()
 }
 
+// ListLogs 查询日志列表
 func (s *SQLStore) ListLogs(ctx context.Context, since time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error) {
 	// 使用查询构建器构建复杂查询
 	// 性能优化：批量查询渠道名称消除N+1问题（100渠道场景提升50-100倍）
@@ -225,7 +227,7 @@ func (s *SQLStore) ListLogs(ctx context.Context, since time.Time, limit, offset 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := []*model.LogEntry{}
 	channelIDsToFetch := make(map[int64]bool)
@@ -306,7 +308,7 @@ func (s *SQLStore) ListLogsRange(ctx context.Context, since, until time.Time, li
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := []*model.LogEntry{}
 	channelIDsToFetch := make(map[int64]bool)

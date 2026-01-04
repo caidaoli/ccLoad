@@ -41,7 +41,7 @@ func (s *Server) HandleErrors(c *gin.Context) {
 	RespondJSONWithCount(c, http.StatusOK, logs, total)
 }
 
-// handleMetrics 获取聚合指标数据
+// HandleMetrics 获取聚合指标数据
 // GET /admin/metrics?range=today&bucket_min=5&channel_type=anthropic&model=claude-3-5-sonnet-20241022&channel_id=1&channel_name_like=xxx
 func (s *Server) HandleMetrics(c *gin.Context) {
 	params := ParsePaginationParams(c)
@@ -74,7 +74,7 @@ func (s *Server) HandleMetrics(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, pts)
 }
 
-// handleStats 获取渠道和模型统计
+// HandleStats 获取渠道和模型统计
 // GET /admin/stats?range=today&channel_name_like=xxx&model_like=xxx
 func (s *Server) HandleStats(c *gin.Context) {
 	params := ParsePaginationParams(c)
@@ -115,7 +115,7 @@ func (s *Server) HandleStats(c *gin.Context) {
 	})
 }
 
-// handlePublicSummary 获取基础统计摘要(公开端点,无需认证)
+// HandlePublicSummary 获取基础统计摘要(公开端点,无需认证)
 // GET /public/summary?range=today
 // 按渠道类型分组统计，Claude和Codex类型包含Token和成本信息
 //
@@ -310,7 +310,7 @@ func (s *Server) getChannelTypesMapCached(ctx context.Context) (map[int64]string
 	return channelTypes, nil
 }
 
-// handleCooldownStats 获取当前冷却状态监控指标
+// HandleCooldownStats 获取当前冷却状态监控指标
 // GET /admin/cooldown/stats
 // [INFO] Linus风格:按需查询,简单直接
 func (s *Server) HandleCooldownStats(c *gin.Context) {
@@ -330,7 +330,7 @@ func (s *Server) HandleCooldownStats(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, response)
 }
 
-// handleGetChannelTypes 获取渠道类型配置(公开端点,前端动态加载)
+// HandleGetChannelTypes 获取渠道类型配置(公开端点,前端动态加载)
 // GET /public/channel-types
 func (s *Server) HandleGetChannelTypes(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, util.ChannelTypes)
@@ -452,7 +452,7 @@ func (s *Server) fillHealthTimeline(ctx context.Context, stats []model.StatsEntr
 		// 静默失败，不影响主流程
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// 构建映射：(channel_id, model) -> StatsEntry索引
 	type channelModelKey struct {

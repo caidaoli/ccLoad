@@ -216,7 +216,7 @@ func TestRedisSyncWorker_RealWorld(t *testing.T) {
 
 			defer func() {
 				if r := recover(); r != nil {
-					// 捕获 panic，但 defer wg.Done() 仍会执行
+					_ = r // 捕获 panic，但 defer wg.Done() 仍会执行
 				}
 			}()
 
@@ -263,7 +263,7 @@ func TestRedisSyncWorker_RealWorld(t *testing.T) {
 
 			defer func() {
 				if r := recover(); r != nil {
-					// 捕获 panic，但 defer wg.Done() 仍会执行
+					_ = r // 捕获 panic，但 defer wg.Done() 仍会执行
 				}
 			}()
 
@@ -308,7 +308,7 @@ func TestRedisSyncWorker_CorrectShutdown(t *testing.T) {
 		// 启动 3 个 worker（模拟多个后台任务）
 		for i := 0; i < 3; i++ {
 			wg.Add(1)
-			go func(id int) {
+			go func(_ int) {
 				defer wg.Done() // P0-3 修复
 
 				for {

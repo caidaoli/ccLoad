@@ -3,11 +3,6 @@ package app
 import (
 	"bufio"
 	"bytes"
-	"ccLoad/internal/config"
-	"ccLoad/internal/cooldown"
-	"ccLoad/internal/model"
-	"ccLoad/internal/util"
-	"ccLoad/internal/validator"
 	"context"
 	"errors"
 	"fmt"
@@ -17,6 +12,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"ccLoad/internal/config"
+	"ccLoad/internal/cooldown"
+	"ccLoad/internal/model"
+	"ccLoad/internal/util"
+	"ccLoad/internal/validator"
 
 	"github.com/bytedance/sonic"
 )
@@ -461,7 +462,7 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 		var bodyCloseOnce sync.Once
 		closeBodySafely := func() {
 			bodyCloseOnce.Do(func() {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 			})
 		}
 

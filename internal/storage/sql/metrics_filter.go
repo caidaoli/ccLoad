@@ -1,11 +1,12 @@
 package sql
 
 import (
-	"ccLoad/internal/model"
 	"context"
 	"fmt"
 	"strings"
 	"time"
+
+	"ccLoad/internal/model"
 )
 
 // AggregateRangeWithFilter 聚合指定时间范围的指标数据，支持多种筛选条件
@@ -87,7 +88,7 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	mapp, helperMap, channelIDsToFetch, err := scanAggregatedMetricsRows(rows)
 	if err != nil {
@@ -178,7 +179,7 @@ func (s *SQLStore) GetDistinctModels(ctx context.Context, since, until time.Time
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var models []string
 	for rows.Next() {

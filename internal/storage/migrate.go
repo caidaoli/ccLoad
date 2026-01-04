@@ -14,8 +14,11 @@ import (
 // Dialect 数据库方言
 type Dialect int
 
+// Dialect 数据库方言常量
 const (
+	// DialectSQLite SQLite数据库方言
 	DialectSQLite Dialect = iota
+	// DialectMySQL MySQL数据库方言
 	DialectMySQL
 )
 
@@ -463,7 +466,7 @@ func sqliteExistingColumns(ctx context.Context, db *sql.DB, table string) (map[s
 	if err != nil {
 		return nil, fmt.Errorf("get table info: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	existingCols := make(map[string]bool)
 	for rows.Next() {
@@ -556,11 +559,13 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 			keyCol = "`key`"
 		}
 		// 先将旧的 int 值(0/非0)迁移为 bool 值(false/true)
+		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
 		valueMigrateSQL := fmt.Sprintf(`UPDATE system_settings SET value = CASE WHEN value = '0' THEN 'false' ELSE 'true' END WHERE %s = ? AND value_type = 'int'`, keyCol)
 		if _, err := db.ExecContext(ctx, valueMigrateSQL, "cooldown_fallback_threshold"); err != nil {
 			return fmt.Errorf("migrate setting value cooldown_fallback_threshold: %w", err)
 		}
 		// 更新元数据
+		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
 		metaSQL := fmt.Sprintf("UPDATE system_settings SET description = ?, default_value = ?, value_type = ? WHERE %s = ?", keyCol)
 		if _, err := db.ExecContext(ctx, metaSQL, "所有渠道冷却时选最优渠道兜底(关闭则直接拒绝请求)", "true", "bool", "cooldown_fallback_threshold"); err != nil {
 			return fmt.Errorf("update setting metadata cooldown_fallback_threshold: %w", err)
@@ -704,7 +709,7 @@ func migrateModelRedirectsData(ctx context.Context, db *sql.DB, dialect Dialect)
 	if err != nil {
 		return fmt.Errorf("query channels for migration: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// 收集所有待迁移的数据
 	type modelEntry struct {
@@ -763,7 +768,7 @@ func migrateModelRedirectsData(ctx context.Context, db *sql.DB, dialect Dialect)
 	if err != nil {
 		return fmt.Errorf("begin migration tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// 插入或更新 channel_models
 	for _, e := range entries {

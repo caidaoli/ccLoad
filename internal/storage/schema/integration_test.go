@@ -71,12 +71,12 @@ func setupIntegrationTest(t *testing.T) *TestSuiteIntegration {
 }
 
 // teardownIntegrationTest 清理测试环境
-func teardownIntegrationTest(suite *TestSuiteIntegration, t *testing.T) {
+func teardownIntegrationTest(suite *TestSuiteIntegration, _ *testing.T) {
 	if suite.dbSQLite != nil {
-		suite.dbSQLite.Close()
+		_ = suite.dbSQLite.Close()
 	}
 	if suite.dbMySQL != nil && !suite.skipMySQL {
-		suite.dbMySQL.Close()
+		_ = suite.dbMySQL.Close()
 	}
 }
 
@@ -207,7 +207,7 @@ func verifyTableExists(t *testing.T, db *sql.DB, tableName, dbType string) {
 }
 
 // verifyTableStructure 验证表结构是否符合预期
-func verifyTableStructure(t *testing.T, db *sql.DB, tableName string, builder *TableBuilder, dbType string) {
+func verifyTableStructure(t *testing.T, db *sql.DB, tableName string, _ *TableBuilder, dbType string) {
 	var query string
 	switch dbType {
 	case "SQLite":
@@ -220,7 +220,7 @@ func verifyTableStructure(t *testing.T, db *sql.DB, tableName string, builder *T
 	if err != nil {
 		t.Fatalf("Failed to get table structure for %s: %v", tableName, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// 验证实际存在的列
 	var actualColumns []string

@@ -112,6 +112,7 @@ func (c *Config) GetChannelType() string {
 	return c.ChannelType
 }
 
+// IsCoolingDown 检查渠道是否处于冷却状态
 func (c *Config) IsCoolingDown(now time.Time) bool {
 	return c.CooldownUntil > now.Unix()
 }
@@ -127,6 +128,7 @@ func IsValidKeyStrategy(s string) bool {
 	return s == "" || s == KeyStrategySequential || s == KeyStrategyRoundRobin
 }
 
+// APIKey 表示渠道的 API 密钥配置
 type APIKey struct {
 	ID        int64  `json:"id"`
 	ChannelID int64  `json:"channel_id"`
@@ -143,6 +145,7 @@ type APIKey struct {
 	UpdatedAt JSONTime `json:"updated_at"`
 }
 
+// IsCoolingDown 检查密钥是否处于冷却状态
 func (k *APIKey) IsCoolingDown(now time.Time) bool {
 	return k.CooldownUntil > now.Unix()
 }

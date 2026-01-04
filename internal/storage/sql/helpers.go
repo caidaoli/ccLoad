@@ -1,10 +1,11 @@
 package sql
 
 import (
-	"ccLoad/internal/model"
 	"context"
 	"fmt"
 	"time"
+
+	"ccLoad/internal/model"
 )
 
 // ChannelInfo 渠道基本信息（用于批量查询）
@@ -29,7 +30,7 @@ func (s *SQLStore) fetchChannelInfoBatch(ctx context.Context, channelIDs map[int
 	if err != nil {
 		return nil, fmt.Errorf("query all channel info: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// 解析并过滤需要的渠道（内存过滤，O(N)但N<1000）
 	channelInfos := make(map[int64]ChannelInfo, len(channelIDs))
@@ -85,7 +86,7 @@ func (s *SQLStore) fetchChannelIDsByNameFilter(ctx context.Context, exact string
 	if err != nil {
 		return nil, fmt.Errorf("query channel ids by name: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var ids []int64
 	for rows.Next() {
@@ -113,7 +114,7 @@ func (s *SQLStore) fetchChannelIDsByType(ctx context.Context, channelType string
 	if err != nil {
 		return nil, fmt.Errorf("query channel ids by type: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var ids []int64
 	for rows.Next() {

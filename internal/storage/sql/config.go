@@ -13,6 +13,7 @@ import (
 
 // ==================== Config CRUD 实现 ====================
 
+// ListConfigs 获取所有渠道配置列表
 func (s *SQLStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
 	// 添加 key_count 字段，避免 N+1 查询
 	// 使用 LEFT JOIN 支持查询有或无API Key的渠道
@@ -31,7 +32,7 @@ func (s *SQLStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// 使用统一的扫描器
 	scanner := NewConfigScanner()
@@ -48,6 +49,7 @@ func (s *SQLStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
 	return configs, nil
 }
 
+// GetConfig 根据ID获取渠道配置
 func (s *SQLStore) GetConfig(ctx context.Context, id int64) (*model.Config, error) {
 	// 使用 LEFT JOIN 以支持创建渠道时（尚无API Key）仍能获取配置
 	// 注意：不再从 channels 表读取 models 和 model_redirects
@@ -128,7 +130,7 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, modelName stri
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	scanner := NewConfigScanner()
 	configs, err := scanner.ScanConfigs(rows)
@@ -167,7 +169,7 @@ func (s *SQLStore) GetEnabledChannelsByType(ctx context.Context, channelType str
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	scanner := NewConfigScanner()
 	configs, err := scanner.ScanConfigs(rows)
@@ -183,6 +185,7 @@ func (s *SQLStore) GetEnabledChannelsByType(ctx context.Context, channelType str
 	return configs, nil
 }
 
+// CreateConfig 创建新的渠道配置
 func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Config, error) {
 	nowUnix := timeToUnix(time.Now())
 
@@ -229,6 +232,7 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 	return config, nil
 }
 
+// UpdateConfig 更新渠道配置
 func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config) (*model.Config, error) {
 	if upd == nil {
 		return nil, errors.New("update payload cannot be nil")
@@ -281,6 +285,7 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 	return config, nil
 }
 
+// ReplaceConfig 替换或创建渠道配置（UPSERT）
 func (s *SQLStore) ReplaceConfig(ctx context.Context, c *model.Config) (*model.Config, error) {
 	nowUnix := timeToUnix(time.Now())
 
@@ -348,6 +353,7 @@ func (s *SQLStore) ReplaceConfig(ctx context.Context, c *model.Config) (*model.C
 	return config, nil
 }
 
+// DeleteConfig 删除渠道配置
 func (s *SQLStore) DeleteConfig(ctx context.Context, id int64) error {
 	// 检查记录是否存在（幂等性）
 	if _, err := s.GetConfig(ctx, id); err != nil {
@@ -444,7 +450,7 @@ func (s *SQLStore) loadModelEntriesForConfig(ctx context.Context, config *model.
 	if err != nil {
 		return fmt.Errorf("query model entries: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var entries []model.ModelEntry
 	for rows.Next() {
@@ -483,6 +489,7 @@ func (s *SQLStore) loadModelEntriesForConfigs(ctx context.Context, configs []*mo
 		cfg.ModelEntries = nil // 初始化为空
 	}
 
+	//nolint:gosec // G201: placeholders 由内部构建的 "?" 占位符组成，安全可控
 	query := fmt.Sprintf(
 		`SELECT channel_id, model, redirect_model FROM channel_models WHERE channel_id IN (%s) ORDER BY channel_id, created_at ASC, model ASC`,
 		strings.Join(placeholders, ","),
@@ -492,7 +499,7 @@ func (s *SQLStore) loadModelEntriesForConfigs(ctx context.Context, configs []*mo
 	if err != nil {
 		return fmt.Errorf("query model entries: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var channelID int64
@@ -544,7 +551,7 @@ func (s *SQLStore) saveModelEntriesImpl(ctx context.Context, exec dbExecutor, ch
 	if err != nil {
 		return fmt.Errorf("prepare insert statement: %w", err)
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	for _, entry := range entries {
 		if _, err := stmt.ExecContext(ctx, channelID, entry.Model, entry.RedirectModel); err != nil {

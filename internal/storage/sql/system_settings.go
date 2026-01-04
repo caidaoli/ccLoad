@@ -38,7 +38,7 @@ func (s *SQLStore) ListAllSettings(ctx context.Context) ([]*model.SystemSetting,
 	if err != nil {
 		return nil, fmt.Errorf("query all settings: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var settings []*model.SystemSetting
 	for rows.Next() {
@@ -89,7 +89,7 @@ func (s *SQLStore) BatchUpdateSettings(ctx context.Context, updates map[string]s
 		if err != nil {
 			return fmt.Errorf("prepare statement: %w", err)
 		}
-		defer stmt.Close()
+		defer func() { _ = stmt.Close() }()
 
 		for key, value := range updates {
 			result, err := stmt.ExecContext(ctx, value, now, key)

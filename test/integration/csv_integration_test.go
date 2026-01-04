@@ -1,7 +1,6 @@
 package integration_test
 
 import (
-	"ccLoad/internal/model"
 	"encoding/csv"
 	"encoding/json"
 	"os"
@@ -9,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"ccLoad/internal/model"
 )
 
 // ==================== CSV导入导出集成测试 ====================
@@ -81,11 +82,11 @@ func TestCSVExport_CompleteWorkflow(t *testing.T) {
 	}
 
 	csvFile := filepath.Join(tmpDir, "export.csv")
-	file, err := os.Create(csvFile)
+	file, err := os.Create(csvFile) //nolint:gosec // 测试代码使用临时目录中的路径
 	if err != nil {
 		t.Fatalf("创建CSV文件失败: %v", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	writer := csv.NewWriter(file)
 
@@ -216,16 +217,16 @@ No-URL-Channel,10,"[""model-1""]",anthropic,true
 		t.Run(tt.name, func(t *testing.T) {
 			// 创建临时CSV文件
 			csvFile := filepath.Join(tmpDir, tt.name+".csv")
-			if err := os.WriteFile(csvFile, []byte(tt.csvContent), 0644); err != nil {
+			if err := os.WriteFile(csvFile, []byte(tt.csvContent), 0600); err != nil {
 				t.Fatalf("创建CSV文件失败: %v", err)
 			}
 
 			// 读取CSV文件
-			file, err := os.Open(csvFile)
+			file, err := os.Open(csvFile) //nolint:gosec // 测试代码使用临时目录中的路径
 			if err != nil {
 				t.Fatalf("打开CSV文件失败: %v", err)
 			}
-			defer file.Close()
+			defer func() { _ = file.Close() }()
 
 			reader := csv.NewReader(file)
 			records, err := reader.ReadAll()
@@ -347,7 +348,7 @@ func TestCSVExportImport_LargeData(t *testing.T) {
 			ModelEntries: []model.ModelEntry{
 				{Model: "model-" + string(rune('1'+i%9))},
 			},
-			ChannelType: []string{"anthropic", "gemini", "codex"}[i%3],
+			ChannelType: []string{"anthropic", "gemini", "codex"}[i%3], //nolint:gosec // 测试代码中 i 范围可控
 			Enabled:     i%2 == 0,
 		}
 

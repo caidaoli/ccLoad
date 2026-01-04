@@ -1,11 +1,12 @@
 package sql
 
 import (
-	"ccLoad/internal/model"
 	"context"
 	"fmt"
 	"log"
 	"time"
+
+	"ccLoad/internal/model"
 )
 
 type metricAggregationHelper struct {
@@ -30,7 +31,7 @@ func (s *SQLStore) finalizeMetricPoints(ctx context.Context, mapp map[int64]*mod
 				continue
 			}
 			var channelID int64
-			fmt.Sscanf(key, "ch_%d", &channelID)
+			_, _ = fmt.Sscanf(key, "ch_%d", &channelID)
 			if name, ok := channelNames[channelID]; ok {
 				newChannels[name] = metric
 			} else {

@@ -1,3 +1,4 @@
+// Package testutil 提供测试工具和辅助函数
 package testutil
 
 import (
@@ -68,6 +69,7 @@ func parseAPIResponse(respBody []byte, extractText func(map[string]any) (string,
 // CodexTester 兼容 Codex 风格（渠道类型: codex）
 type CodexTester struct{}
 
+// Build 构建 Codex 格式的 API 请求
 func (t *CodexTester) Build(cfg *model.Config, apiKey string, req *TestChannelRequest) (string, http.Header, []byte, error) {
 	testContent := req.Content
 	if strings.TrimSpace(testContent) == "" {
@@ -149,13 +151,15 @@ func extractCodexResponseText(apiResp map[string]any) (string, bool) {
 	return "", false
 }
 
-func (t *CodexTester) Parse(statusCode int, respBody []byte) map[string]any {
+// Parse 解析 Codex 格式的 API 响应
+func (t *CodexTester) Parse(_ int, respBody []byte) map[string]any {
 	return parseAPIResponse(respBody, extractCodexResponseText, "usage")
 }
 
 // OpenAITester 标准OpenAI API格式（渠道类型: openai）
 type OpenAITester struct{}
 
+// Build 构建 OpenAI 格式的 API 请求
 func (t *OpenAITester) Build(cfg *model.Config, apiKey string, req *TestChannelRequest) (string, http.Header, []byte, error) {
 	testContent := req.Content
 	if strings.TrimSpace(testContent) == "" {
@@ -193,7 +197,8 @@ func (t *OpenAITester) Build(cfg *model.Config, apiKey string, req *TestChannelR
 	return fullURL, h, body, nil
 }
 
-func (t *OpenAITester) Parse(statusCode int, respBody []byte) map[string]any {
+// Parse 解析 OpenAI 格式的 API 响应
+func (t *OpenAITester) Parse(_ int, respBody []byte) map[string]any {
 	out := map[string]any{}
 	var apiResp map[string]any
 	if err := sonic.Unmarshal(respBody, &apiResp); err == nil {
@@ -223,6 +228,7 @@ func (t *OpenAITester) Parse(statusCode int, respBody []byte) map[string]any {
 // GeminiTester 实现 Google Gemini 测试协议
 type GeminiTester struct{}
 
+// Build 构建 Gemini 格式的 API 请求
 func (t *GeminiTester) Build(cfg *model.Config, apiKey string, req *TestChannelRequest) (string, http.Header, []byte, error) {
 	testContent := req.Content
 	if strings.TrimSpace(testContent) == "" {
@@ -288,13 +294,15 @@ func extractGeminiResponseText(apiResp map[string]any) (string, bool) {
 	return text, ok
 }
 
-func (t *GeminiTester) Parse(statusCode int, respBody []byte) map[string]any {
+// Parse 解析 Gemini 格式的 API 响应
+func (t *GeminiTester) Parse(_ int, respBody []byte) map[string]any {
 	return parseAPIResponse(respBody, extractGeminiResponseText, "usageMetadata")
 }
 
 // AnthropicTester 实现 Anthropic 测试协议
 type AnthropicTester struct{}
 
+// newClaudeCLIUserID 生成 Claude CLI 用户ID
 func newClaudeCLIUserID() string {
 	// 格式示例：
 	// user_<64hex>_account__session_<uuid>
@@ -316,6 +324,7 @@ func newClaudeCLIUserID() string {
 	return "user_" + hex.EncodeToString(userBytes) + "_account__session_" + u
 }
 
+// Build 构建 Anthropic 格式的 API 请求
 func (t *AnthropicTester) Build(cfg *model.Config, apiKey string, req *TestChannelRequest) (string, http.Header, []byte, error) {
 	maxTokens := req.MaxTokens
 	if maxTokens == 0 {
@@ -398,7 +407,8 @@ func extractAnthropicResponseText(apiResp map[string]any) (string, bool) {
 	return text, ok
 }
 
-func (t *AnthropicTester) Parse(statusCode int, respBody []byte) map[string]any {
+// Parse 解析 Anthropic 格式的 API 响应
+func (t *AnthropicTester) Parse(_ int, respBody []byte) map[string]any {
 	out := map[string]any{}
 	var apiResp map[string]any
 	if err := sonic.Unmarshal(respBody, &apiResp); err == nil {

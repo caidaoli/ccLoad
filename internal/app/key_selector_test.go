@@ -8,6 +8,7 @@ import (
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
+	"ccLoad/internal/testutil"
 )
 
 // testContextKey 用于测试的 context key 类型
@@ -63,7 +64,7 @@ func TestSelectAvailableKey_SingleKey(t *testing.T) {
 			t.Errorf("期望keyIndex=0，实际%d", keyIndex)
 		}
 
-		if apiKey != "sk-single-key" {
+		if apiKey != "sk-single-key" { //nolint:gosec // 测试用的假 API Key
 			t.Errorf("期望apiKey=sk-single-key，实际%s", apiKey)
 		}
 
@@ -193,7 +194,7 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 			t.Errorf("顺序策略首次应返回keyIndex=0，实际%d", keyIndex)
 		}
 
-		if apiKey != "sk-seq-key-0" {
+		if apiKey != "sk-seq-key-0" { //nolint:gosec // 测试用的假 API Key
 			t.Errorf("期望apiKey=sk-seq-key-0，实际%s", apiKey)
 		}
 
@@ -212,7 +213,7 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 			t.Errorf("排除Key0后应返回keyIndex=1，实际%d", keyIndex)
 		}
 
-		if apiKey != "sk-seq-key-1" {
+		if apiKey != "sk-seq-key-1" { //nolint:gosec // 测试用的假 API Key
 			t.Errorf("期望apiKey=sk-seq-key-1，实际%s", apiKey)
 		}
 
@@ -231,7 +232,7 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 			t.Errorf("排除Key0和Key1后应返回keyIndex=2，实际%d", keyIndex)
 		}
 
-		if apiKey != "sk-seq-key-2" {
+		if apiKey != "sk-seq-key-2" { //nolint:gosec // 测试用的假 API Key
 			t.Errorf("期望apiKey=sk-seq-key-2，实际%s", apiKey)
 		}
 
@@ -457,7 +458,7 @@ func TestSelectAvailableKey_SingleKey_NonZeroKeyIndex(t *testing.T) {
 		if keyIndex != 5 {
 			t.Errorf("期望keyIndex=5，实际%d", keyIndex)
 		}
-		if apiKey != "sk-single-nonzero" {
+		if apiKey != "sk-single-nonzero" { //nolint:gosec // 测试用的假 API Key
 			t.Errorf("期望apiKey=sk-single-nonzero，实际%s", apiKey)
 		}
 		t.Logf("[INFO] 单Key非零KeyIndex正常选择: keyIndex=%d", keyIndex)
@@ -550,7 +551,7 @@ func TestSelectAvailableKey_KeyCooldown(t *testing.T) {
 			t.Errorf("期望跳过冷却的Key0返回keyIndex=1，实际%d", keyIndex)
 		}
 
-		if apiKey != "sk-cooldown-key-1" {
+		if apiKey != "sk-cooldown-key-1" { //nolint:gosec // 测试用的假 API Key
 			t.Errorf("期望apiKey=sk-cooldown-key-1，实际%s", apiKey)
 		}
 
@@ -581,7 +582,7 @@ func TestSelectAvailableKey_KeyCooldown(t *testing.T) {
 			t.Errorf("期望跳过Key0和Key1返回keyIndex=2，实际%d", keyIndex)
 		}
 
-		if apiKey != "sk-cooldown-key-2" {
+		if apiKey != "sk-cooldown-key-2" { //nolint:gosec // 测试用的假 API Key
 			t.Errorf("期望apiKey=sk-cooldown-key-2，实际%s", apiKey)
 		}
 
@@ -672,7 +673,7 @@ func TestSelectAvailableKey_CooldownAndExclude(t *testing.T) {
 		t.Errorf("期望返回keyIndex=3（跳过排除和冷却的Key），实际%d", keyIndex)
 	}
 
-	if apiKey != "sk-combined-key-3" {
+	if apiKey != "sk-combined-key-3" { //nolint:gosec // 测试用的假 API Key
 		t.Errorf("期望apiKey=sk-combined-key-3，实际%s", apiKey)
 	}
 
@@ -792,17 +793,5 @@ func TestSelectAvailableKey_UnknownStrategy(t *testing.T) {
 // ========== 辅助函数 ==========
 
 func setupTestKeyStore(t *testing.T) (storage.Store, func()) {
-	t.Helper()
-
-	tmpDB := t.TempDir() + "/key_selector_test.db"
-	store, err := storage.CreateSQLiteStore(tmpDB, nil)
-	if err != nil {
-		t.Fatalf("创建测试数据库失败: %v", err)
-	}
-
-	cleanup := func() {
-		store.Close()
-	}
-
-	return store, cleanup
+	return testutil.SetupTestStore(t)
 }

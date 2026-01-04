@@ -1,7 +1,6 @@
 package app
 
 import (
-	"ccLoad/internal/model"
 	"fmt"
 	"log"
 	"net/http"
@@ -9,6 +8,8 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+
+	"ccLoad/internal/model"
 
 	"github.com/gin-gonic/gin"
 )

@@ -1,13 +1,16 @@
+// Package storage 提供数据持久化和缓存层的实现。
+// 包括 SQLite/MySQL 存储、内存缓存和 Redis 同步功能。
 package storage
 
 import (
-	modelpkg "ccLoad/internal/model"
-	"ccLoad/internal/util"
 	"context"
 	"log"
 	"maps"
 	"sync"
 	"time"
+
+	modelpkg "ccLoad/internal/model"
+	"ccLoad/internal/util"
 )
 
 // ChannelCache 高性能渠道缓存层

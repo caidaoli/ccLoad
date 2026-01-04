@@ -1,3 +1,4 @@
+// Package main 是 ccLoad 应用入口
 package main
 
 import (
@@ -41,6 +42,7 @@ func execSelf() {
 	log.Printf("[INFO] 正在重启程序: %s", executable)
 
 	// syscall.Exec 替换当前进程，不会返回
+	//nolint:gosec // G204: executable 来自 os.Executable()，用于自重启，安全可控
 	if err := syscall.Exec(executable, os.Args, os.Environ()); err != nil {
 		log.Printf("[ERROR] 重启失败: %v", err)
 	}
@@ -99,7 +101,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Redis初始化失败: %v", err)
 	}
-	defer redisSync.Close()
+	defer func() { _ = redisSync.Close() }()
 
 	if redisSync.IsEnabled() {
 		log.Printf("Redis同步已启用")

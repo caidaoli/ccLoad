@@ -27,7 +27,7 @@ import (
 //	    return err // 成功则自动提交
 //	})
 func (s *SQLStore) WithTransaction(ctx context.Context, fn func(*sql.Tx) error) error {
-	return withTransaction(s.db, ctx, fn)
+	return withTransaction(ctx, s.db, fn)
 }
 
 // withTransaction 核心事务执行逻辑（私有函数，遵循DRY原则）
@@ -35,7 +35,7 @@ func (s *SQLStore) WithTransaction(ctx context.Context, fn func(*sql.Tx) error) 
 // [INFO] 安全性：panic恢复 + defer回滚双重保障
 // [FIX] P1-5: 对齐注释和实现，说明实际重试次数
 // [FIX] 后续优化: 支持 context.Deadline 限制总重试时间
-func withTransaction(db *sql.DB, ctx context.Context, fn func(*sql.Tx) error) error {
+func withTransaction(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) error {
 	// 增加死锁重试机制
 	// 问题: SQLite在高并发事务下可能返回"database is deadlocked"错误
 	// 解决: 自动重试带指数退避，最多12次重试（attempt 0-11）
@@ -58,7 +58,7 @@ func withTransaction(db *sql.DB, ctx context.Context, fn func(*sql.Tx) error) er
 	deadline, hasDeadline := ctx.Deadline()
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		err := executeSingleTransaction(db, ctx, fn)
+		err := executeSingleTransaction(ctx, db, fn)
 
 		// 成功或非BUSY错误,立即返回
 		if err == nil || !isSQLiteBusyError(err) {
@@ -100,7 +100,7 @@ func withTransaction(db *sql.DB, ctx context.Context, fn func(*sql.Tx) error) er
 }
 
 // executeSingleTransaction 执行单次事务(无重试)
-func executeSingleTransaction(db *sql.DB, ctx context.Context, fn func(*sql.Tx) error) (err error) {
+func executeSingleTransaction(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) (err error) {
 	// 1. 开启事务
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -172,8 +172,9 @@ func isSQLiteBusyError(err error) bool {
 //	attempt 1: 50ms * [0.5, 0.995] = 25ms ~ 49.8ms
 //	attempt 2: 100ms * [0.5, 0.995] = 50ms ~ 99.5ms
 func calculateBackoffDelay(attempt int, baseDelay time.Duration) time.Duration {
-	// 计算基础延迟：指数增长
-	delay := baseDelay * time.Duration(1<<uint(attempt))
+	// 计算基础延迟：指数增长（限制最大位移防止溢出）
+	shift := min(max(attempt, 0), 10)                  // 限制在 [0, 10] 范围，最大 1024x
+	delay := baseDelay * time.Duration(1<<uint(shift)) //nolint:gosec // shift 已限制在 [0, 10] 范围
 
 	// 添加随机抖动，避免多个 goroutine 同时重试（惊群效应）
 	// 使用纳秒时间戳的后两位作为随机因子 (0-99)

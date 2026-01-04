@@ -1,13 +1,14 @@
 package sqlite_test
 
 import (
-	"ccLoad/internal/model"
 	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"ccLoad/internal/model"
 )
 
 // ============================================================================
@@ -65,7 +66,7 @@ func TestConcurrentConfigCreate(t *testing.T) {
 		t.Fatalf("ListConfigs失败: %v", err)
 	}
 
-	if int32(len(configs)) != success {
+	if len(configs) != int(success) {
 		t.Errorf("数据不一致: 数据库中有%d个配置，期望%d个", len(configs), success)
 	}
 }
@@ -99,7 +100,7 @@ func TestConcurrentConfigReadWrite(t *testing.T) {
 	// 启动读协程
 	for i := 0; i < numReaders; i++ {
 		wg.Add(1)
-		go func(idx int) {
+		go func(_ int) {
 			defer wg.Done()
 			for j := 0; j < 10; j++ {
 				_, err := store.GetConfig(ctx, created.ID)
@@ -198,7 +199,7 @@ func TestConcurrentLogAdd(t *testing.T) {
 		t.Fatalf("ListLogs失败: %v", err)
 	}
 
-	if int32(len(logs)) < success*9/10 {
+	if len(logs) < int(success)*9/10 {
 		t.Errorf("日志数量不匹配: 数据库中有%d条，期望至少%d条", len(logs), success*9/10)
 	}
 }
@@ -333,7 +334,7 @@ func TestConcurrentAPIKeyOperations(t *testing.T) {
 		t.Fatalf("GetAPIKeys失败: %v", err)
 	}
 
-	if int32(len(allKeys)) < creates*9/10 {
+	if len(allKeys) < int(creates)*9/10 {
 		t.Errorf("API Key数量不匹配: 数据库中有%d个，期望至少%d个", len(allKeys), creates*9/10)
 	}
 }

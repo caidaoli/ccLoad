@@ -284,20 +284,20 @@ func (m *mockRedisSync) IsEnabled() bool {
 	return true // 假装Redis已启用，绕过安全检查
 }
 
-func (m *mockRedisSync) LoadChannelsWithKeysFromRedis(ctx context.Context) ([]*model.ChannelWithKeys, error) {
+func (m *mockRedisSync) LoadChannelsWithKeysFromRedis(_ context.Context) ([]*model.ChannelWithKeys, error) {
 	return nil, nil // 测试环境无需从Redis加载
 }
 
-func (m *mockRedisSync) SyncAllChannelsWithKeys(ctx context.Context, channels []*model.ChannelWithKeys) error {
+func (m *mockRedisSync) SyncAllChannelsWithKeys(_ context.Context, _ []*model.ChannelWithKeys) error {
 	return nil // 测试环境不执行实际同步
 }
 
 // Auth Tokens 同步方法 (新增 2025-11)
-func (m *mockRedisSync) SyncAllAuthTokens(ctx context.Context, tokens []*model.AuthToken) error {
+func (m *mockRedisSync) SyncAllAuthTokens(_ context.Context, _ []*model.AuthToken) error {
 	return nil // 测试环境不执行实际同步
 }
 
-func (m *mockRedisSync) LoadAuthTokensFromRedis(ctx context.Context) ([]*model.AuthToken, error) {
+func (m *mockRedisSync) LoadAuthTokensFromRedis(_ context.Context) ([]*model.AuthToken, error) {
 	return nil, nil // 测试环境无需从Redis加载
 }
 

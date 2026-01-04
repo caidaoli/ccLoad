@@ -1,3 +1,4 @@
+// Package app 实现 ccLoad 应用的核心业务逻辑
 package app
 
 import (

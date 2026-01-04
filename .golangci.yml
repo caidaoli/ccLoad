@@ -1,0 +1,41 @@
+version: "2"
+
+run:
+  build-tags:
+    - go_json
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - errcheck     # 检查未处理的错误
+    - govet        # 核心逻辑检查
+    - staticcheck  # 大量的静态逻辑检查 (包含 gosimple)
+    - unused       # 检查未使用的代码
+    - gosec        # 安全审计
+    - revive       # 代码风格检查
+    - bodyclose    # 确保 HTTP body 已关闭（防止连接泄漏）
+  settings:
+    revive:
+      rules:
+        # 禁用类型名称重叠检查（如 sql.SQLStore），重命名会破坏 API
+        - name: exported
+          arguments:
+            - "disableStutteringCheck"
+        # 禁用包名检查（util 等通用包名在 internal 中是合理的）
+        - name: var-naming
+          disabled: true
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - ccLoad
+
+issues:
+  exclude-dirs:
+    - vendor
+    - testdata

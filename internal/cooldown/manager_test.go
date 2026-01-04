@@ -7,6 +7,7 @@ import (
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
+	"ccLoad/internal/testutil"
 )
 
 // TestNewManager 测试管理器创建
@@ -628,19 +629,7 @@ func getKeyCooldownUntil(ctx context.Context, store storage.Store, channelID int
 }
 
 func setupTestStore(t *testing.T) (storage.Store, func()) {
-	t.Helper()
-
-	tmpDB := t.TempDir() + "/cooldown_test.db"
-	store, err := storage.CreateSQLiteStore(tmpDB, nil)
-	if err != nil {
-		t.Fatalf("Failed to create test store: %v", err)
-	}
-
-	cleanup := func() {
-		store.Close()
-	}
-
-	return store, cleanup
+	return testutil.SetupTestStore(t)
 }
 
 func createTestChannel(t *testing.T, store storage.Store, name string) *model.Config {

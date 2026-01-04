@@ -23,6 +23,7 @@ import (
 // ==================== 渠道测试功能 ====================
 // 从admin.go拆分渠道测试,遵循SRP原则
 
+// HandleChannelTest 测试指定渠道的连通性
 func (s *Server) HandleChannelTest(c *gin.Context) {
 	// 解析渠道ID
 	id, err := ParseInt64Param(c, "id")
@@ -213,7 +214,7 @@ func (s *Server) testChannelAPI(cfg *model.Config, apiKey string, testReq *testu
 	if err != nil {
 		return map[string]any{"success": false, "error": "网络请求失败: " + err.Error(), "duration_ms": duration.Milliseconds()}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// 判断是否为SSE响应，以及是否请求了流式
 	contentType := resp.Header.Get("Content-Type")

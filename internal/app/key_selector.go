@@ -1,11 +1,12 @@
 package app
 
 import (
-	"ccLoad/internal/model"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"ccLoad/internal/model"
 )
 
 // KeySelector 负责从渠道的多个API Key中选择可用的Key
@@ -127,7 +128,7 @@ func (ks *KeySelector) selectRoundRobin(channelID int64, apiKeys []*model.APIKey
 	now := time.Now()
 
 	counter := ks.getOrCreateCounter(channelID)
-	startIdx := int(counter.counter.Add(1) % uint32(keyCount))
+	startIdx := int(counter.counter.Add(1) % uint32(keyCount)) //nolint:gosec // G115: keyCount 来自 API Keys 切片长度，不可能溢出
 
 	// 从startIdx开始轮询，最多尝试keyCount次
 	for i := range keyCount {

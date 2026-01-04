@@ -12,7 +12,7 @@ import (
 // ==================== 冷却管理 ====================
 // 从admin.go拆分冷却管理,遵循SRP原则
 
-// handleSetChannelCooldown 设置渠道级别冷却
+// HandleSetChannelCooldown 设置渠道级别冷却
 func (s *Server) HandleSetChannelCooldown(c *gin.Context) {
 	id, err := ParseInt64Param(c, "id")
 	if err != nil {
@@ -38,7 +38,7 @@ func (s *Server) HandleSetChannelCooldown(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, gin.H{"message": fmt.Sprintf("渠道已冷却 %d 毫秒", req.DurationMs)})
 }
 
-// handleSetKeyCooldown 设置Key级别冷却
+// HandleSetKeyCooldown 设置Key级别冷却
 func (s *Server) HandleSetKeyCooldown(c *gin.Context) {
 	id, err := ParseInt64Param(c, "id")
 	if err != nil {

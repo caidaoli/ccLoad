@@ -1,3 +1,4 @@
+// Package redis 提供 Redis 数据同步功能
 package redis
 
 import (
@@ -125,6 +126,7 @@ func (rs *RedisSync) SyncAllChannelsWithKeys(ctx context.Context, channelsWithKe
 // Auth Tokens Sync - 认证令牌同步 (新增 2025-11)
 // ============================================================================
 
+//nolint:gosec // G101: 这是 Redis key 名称，不是凭证
 const authTokensKey = "ccload:auth_tokens"
 
 // SyncAllAuthTokens 全量同步所有AuthToken到Redis

@@ -1,3 +1,4 @@
+// Package model 定义核心业务模型和数据结构
 package model
 
 import (

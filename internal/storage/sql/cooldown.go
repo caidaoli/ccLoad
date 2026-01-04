@@ -99,7 +99,7 @@ func (s *SQLStore) GetAllChannelCooldowns(ctx context.Context) (map[int64]time.T
 	if err != nil {
 		return nil, fmt.Errorf("query all channel cooldowns: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	result := make(map[int64]time.Time)
 	for rows.Next() {
@@ -152,7 +152,7 @@ func (s *SQLStore) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int]ti
 	if err != nil {
 		return nil, fmt.Errorf("query all key cooldowns: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	result := make(map[int64]map[int]time.Time)
 	for rows.Next() {

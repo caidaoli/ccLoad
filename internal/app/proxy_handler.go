@@ -1,10 +1,6 @@
 package app
 
 import (
-	"ccLoad/internal/config"
-	"ccLoad/internal/cooldown"
-	"ccLoad/internal/model"
-	"ccLoad/internal/util"
 	"context"
 	"errors"
 	"fmt"
@@ -15,13 +11,22 @@ import (
 	"strconv"
 	"time"
 
+	"ccLoad/internal/config"
+	"ccLoad/internal/cooldown"
+	"ccLoad/internal/model"
+	"ccLoad/internal/util"
+
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
 )
 
 var errUnknownChannelType = errors.New("unknown channel type for path")
 var errBodyTooLarge = errors.New("request body too large")
+
+// ErrAllKeysUnavailable 表示所有渠道密钥都不可用
 var ErrAllKeysUnavailable = errors.New("all channel keys unavailable")
+
+// ErrAllKeysExhausted 表示所有密钥都已耗尽
 var ErrAllKeysExhausted = errors.New("all keys exhausted")
 
 // ============================================================================
