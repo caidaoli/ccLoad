@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func setupSQLiteTestStore(t *testing.T, dbFile string) (storage.Store, func()) {
+func setupSQLiteTestStore(t testing.TB, dbFile string) (storage.Store, func()) {
 	t.Helper()
 
 	tmpDB := t.TempDir() + "/" + dbFile
