@@ -293,9 +293,11 @@ func (s *Server) handleSuccessResponse(
 		if diagMsg := buildStreamDiagnostics(streamErr, readStats, streamComplete, channelType, contentType); diagMsg != "" {
 			result.StreamDiagMsg = diagMsg
 			log.Print(diagMsg)
-		} else if streamComplete && streamErr != nil && !isClientDisconnectError(streamErr) {
+		} else if streamComplete && streamErr != nil {
 			// [FIX] 流式请求：检测到流结束标志（[DONE]/message_stop）说明数据完整
-			// http2流关闭只是正常结束信号，清除streamErr避免被误判为网络错误
+			// 所有收尾阶段的错误都应忽略，包括：
+			// - http2 流关闭（正常结束信号）
+			// - context.Canceled（客户端在传输完成后取消，不应标记为499）
 			streamErr = nil
 		}
 	} else {
@@ -522,6 +524,9 @@ func (s *Server) forwardAttempt(
 	bodyToSend []byte,
 	w http.ResponseWriter,
 ) (*proxyResult, cooldown.Action) {
+	// 记录渠道尝试开始时间（用于日志记录，每次渠道/Key切换时更新）
+	reqCtx.attemptStartTime = time.Now()
+
 	// [VALIDATE] Key级验证器检查(88code套餐验证等)
 	// 每个Key单独验证，避免误杀免费key或误放付费key
 	available, reason := validator.Validate88CodeSubscription(ctx, cfg, selectedKey)

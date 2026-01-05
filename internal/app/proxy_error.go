@@ -95,7 +95,7 @@ func (s *Server) logProxyResult(
 		ClientIP:     reqCtx.clientIP,
 		Result:       res,
 		ErrMsg:       errMsg,
-		StartTime:    reqCtx.startTime,
+		StartTime:    reqCtx.attemptStartTime,
 	}))
 }
 

@@ -90,19 +90,20 @@ type fwResult struct {
 
 // proxyRequestContext 代理请求上下文（封装请求信息，遵循DIP原则）
 type proxyRequestContext struct {
-	originalModel string
-	requestMethod string
-	requestPath   string
-	rawQuery      string
-	body          []byte
-	header        http.Header
-	isStreaming   bool
-	tokenHash     string      // Token哈希值（用于统计，2025-11新增）
-	tokenID       int64       // Token ID（用于日志记录，2025-12新增，0表示未使用token）
-	clientIP      string      // 客户端IP地址（用于日志记录，2025-12新增）
-	activeReqID   int64       // 活跃请求ID（用于更新渠道信息）
-	onBytesRead   func(int64) // 字节读取回调（可选，用于实时更新活跃请求统计）
-	startTime     time.Time   // 请求开始时间（用于日志记录）
+	originalModel    string
+	requestMethod    string
+	requestPath      string
+	rawQuery         string
+	body             []byte
+	header           http.Header
+	isStreaming      bool
+	tokenHash        string      // Token哈希值（用于统计，2025-11新增）
+	tokenID          int64       // Token ID（用于日志记录，2025-12新增，0表示未使用token）
+	clientIP         string      // 客户端IP地址（用于日志记录，2025-12新增）
+	activeReqID      int64       // 活跃请求ID（用于更新渠道信息）
+	onBytesRead      func(int64) // 字节读取回调（可选，用于实时更新活跃请求统计）
+	startTime        time.Time   // 请求开始时间（用于统计）
+	attemptStartTime time.Time   // 渠道尝试开始时间（用于日志记录，每次渠道切换时更新）
 }
 
 // proxyResult 代理请求结果
@@ -383,7 +384,7 @@ type logEntryParams struct {
 	ClientIP     string
 	Result       *fwResult
 	ErrMsg       string
-	StartTime    time.Time // 请求开始时间（用于日志记录）
+	StartTime    time.Time // 渠道尝试开始时间（用于日志记录）
 }
 
 // buildLogEntry 构建日志条目（消除重复代码，遵循DRY原则）
