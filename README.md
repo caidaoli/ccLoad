@@ -1,5 +1,7 @@
 # ccLoad - Claude Code & Codex & Gemini & OpenAI 兼容 API 代理服务
 
+**[English](README_EN.md) | 简体中文**
+
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8.svg)](https://golang.org)
 [![Gin](https://img.shields.io/badge/Gin-v1.10+-blue.svg)](https://github.com/gin-gonic/gin)
 [![Docker](https://img.shields.io/badge/Docker-Supported-2496ED.svg)](https://hub.docker.com)
@@ -16,6 +18,7 @@
 - **多渠道管理复杂**：需要同时管理多个 API 渠道，有的渠道时效短，有的渠道每天有限量
 - **手动切换不便**：每次手动切换渠道费时费力，影响工作效率
 - **故障处理困难**：当某个渠道出现故障时，需要手动切换到其他可用渠道
+- **请求状态不透明**：传统方式发起请求后只能傻等，不知道请求进展到哪一步
 
 ccLoad 通过以下特性解决这些痛点：
 
@@ -23,6 +26,7 @@ ccLoad 通过以下特性解决这些痛点：
 - **自动故障切换**：当渠道出现故障时，自动切换到其他可用渠道
 - **指数级冷却机制**：故障渠道使用指数级别冷却时间，避免持续请求故障服务
 - **零手动干预**：客户端无需手动切换上游渠道，系统自动处理
+- **实时请求监控**：日志管理界面可查看正在进行的请求，告别盲等，清晰掌握每个请求的实时状态
 
 ## ✨ 主要特性
 
@@ -298,15 +302,45 @@ Hugging Face Spaces 提供免费的容器托管服务，支持 Docker 应用，�
 
 **重要**: Hugging Face Spaces 的存储策略
 
-由于 Hugging Face Spaces 的限制，推荐使用 **Redis 备份方案**：
+由于 Hugging Face Spaces 的限制（`/tmp` 目录重启后清空），**强烈推荐使用外部 MySQL 数据库**实现完整的数据持久化：
 
-**方案一：Redis 备份（推荐）**
+**方案一：MySQL 外部数据库（推荐）**
+- ✅ **完整持久化**: 渠道配置、日志记录、统计数据全部保留
+- ✅ **重启不丢数据**: 数据存储在外部数据库，不受 Space 重启影响
+- ✅ **免费方案**: 多个服务商提供免费 MySQL 数据库
+- 配置方法: 在 Secrets 中添加 `CCLOAD_MYSQL` 环境变量
+
+**推荐的免费 MySQL 服务**:
+- [TiDB Cloud Serverless](https://tidbcloud.com/) - 免费 5GB 存储，MySQL 兼容，无连接数限制，推荐首选
+- [Aiven for MySQL](https://aiven.io/) - 免费 1GB 存储，支持多区域部署
+
+**MySQL 配置示例（以 TiDB Cloud 为例）**:
+1. 注册 [TiDB Cloud](https://tidbcloud.com/) 账户
+2. 创建 Serverless Cluster（免费）
+3. 获取连接信息，格式为：`user:password@tcp(host:4000)/database?tls=true`
+4. 在 Hugging Face Space 的 Secrets 中添加 `CCLOAD_MYSQL` 变量
+5. 重启 Space，所有数据将自动持久化到 MySQL
+
+**Dockerfile 示例（使用 MySQL）**:
+```dockerfile
+FROM ghcr.io/caidaoli/ccload:latest
+ENV TZ=Asia/Shanghai
+ENV PORT=7860
+# 不需要 SQLITE_PATH，使用 CCLOAD_MYSQL 环境变量
+EXPOSE 7860
+```
+
+**方案二：Redis 备份（仅渠道配置）**
 - ✅ **自动恢复**: Space 重启后自动从 Redis 恢复渠道配置
 - ✅ **实时同步**: 渠道增删改自动同步到 Redis
-- ✅ **数据安全**: Redis 数据不受 Space 重启影响
+- ⚠️ **仅配置数据**: 日志和统计数据不会备份，重启后丢失
 - 配置方法: 在 Secrets 中添加 `REDIS_URL` 环境变量
 
-**方案二：仅本地存储（不推荐）**
+**推荐的免费 Redis 服务**:
+- [Upstash Redis](https://upstash.com/) - 免费 10,000 命令/天，支持 TLS
+- [Redis Cloud](https://redis.com/try-free/) - 免费 30MB 存储
+
+**方案三：仅本地存储（不推荐）**
 - ⚠️ **数据丢失**: Space 重启后 `/tmp` 目录会清空，渠道配置会丢失
 - ⚠️ **手动恢复**: 需要重新通过 Web 界面或 CSV 导入配置渠道
 - 使用场景: 仅用于临时测试
@@ -316,18 +350,6 @@ Hugging Face Spaces 提供免费的容器托管服务，支持 Docker 应用，�
 2. **运行期间**: 渠道增删改自动同步到 Redis
 3. **Space 重启**: `/tmp` 清空，应用启动时从 Redis 恢复渠道配置
 4. **日志数据**: 存储在 `/tmp`，重启后清空（可通过 Web 界面导出历史日志）
-
-**推荐的免费 Redis 服务**:
-- [Upstash Redis](https://upstash.com/) - 免费 10,000 命令/天，支持 TLS
-- [Redis Cloud](https://redis.com/try-free/) - 免费 30MB 存储
-- [Railway Redis](https://railway.app/) - 免费 512MB
-
-**配置示例（以 Upstash 为例）**:
-1. 注册 [Upstash](https://upstash.com/) 账户
-2. 创建 Redis 数据库（选择 TLS 启用）
-3. 复制连接地址（格式：`rediss://default:xxx@xxx.upstash.io:6379`）
-4. 在 Hugging Face Space 的 Secrets 中添加 `REDIS_URL` 变量，粘贴连接地址
-5. 重启 Space，渠道数据会自动同步到 Redis
 
 #### 更新部署
 
