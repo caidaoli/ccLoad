@@ -10,6 +10,7 @@ import (
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
+	"ccLoad/internal/version"
 
 	"github.com/gin-gonic/gin"
 )
@@ -334,6 +335,18 @@ func (s *Server) HandleCooldownStats(c *gin.Context) {
 // GET /public/channel-types
 func (s *Server) HandleGetChannelTypes(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, util.ChannelTypes)
+}
+
+// HandlePublicVersion 获取当前版本信息(公开端点,前端显示版本)
+// GET /public/version
+func (s *Server) HandlePublicVersion(c *gin.Context) {
+	hasUpdate, latestVersion, releaseURL := version.GetUpdateInfo()
+	c.JSON(http.StatusOK, gin.H{
+		"version":        version.Version,
+		"has_update":     hasUpdate,
+		"latest_version": latestVersion,
+		"release_url":    releaseURL,
+	})
 }
 
 // HandleGetModels 获取数据库中存在的所有模型列表（去重）

@@ -445,6 +445,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 	{
 		public.GET("/summary", s.HandlePublicSummary)
 		public.GET("/channel-types", s.HandleGetChannelTypes)
+		public.GET("/version", s.HandlePublicVersion)
 	}
 
 	// 事件日志（公开访问，兼容性占位接口）

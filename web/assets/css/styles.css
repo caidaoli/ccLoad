@@ -262,7 +262,8 @@ body {
   z-index: 300;
 }
 .topbar-left { display: flex; align-items: center; gap: var(--space-4); }
-.brand { display: flex; align-items: center; gap: var(--space-3); }
+.brand { display: flex; align-items: center; gap: var(--space-3); text-decoration: none; }
+.brand:hover { opacity: 0.8; }
 .brand-icon {
   width: 36px; height: 36px; border-radius: var(--radius-lg);
   box-shadow: 0 4px 16px rgba(99,102,241,0.35);
@@ -279,6 +280,55 @@ body {
 .topnav-link:hover { background: rgba(17,24,39,0.06); color: var(--topbar-fg); }
 .topnav-link.active { background: rgba(17,24,39,0.10); color: var(--topbar-fg); border: 1px solid rgba(17,24,39,0.12); }
 .topbar-right { display: flex; align-items: center; gap: var(--space-3); }
+
+/* 版本徽章 */
+.version-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: 12px;
+  font-family: monospace;
+  color: var(--neutral-600);
+  margin-right: 8px;
+  position: relative;
+  transition: background 0.2s, border-color 0.2s;
+  text-decoration: none;
+}
+.version-badge:hover {
+  background: var(--neutral-100);
+  border-color: var(--neutral-300);
+  color: var(--neutral-700);
+}
+/* 有新版本时显示小圆点 */
+.version-badge.has-update::after {
+  content: '';
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 8px;
+  height: 8px;
+  background: var(--success-500);
+  border-radius: 50%;
+  border: 2px solid white;
+}
+
+/* GitHub链接 */
+.github-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  color: var(--neutral-600);
+  margin-right: 8px;
+  transition: color 0.2s, background 0.2s;
+}
+.github-link:hover { background: var(--neutral-100); color: var(--neutral-900); }
 
 /* 顶部背景（静态渐变，无动画） */
 .bg-anim {

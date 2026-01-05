@@ -85,6 +85,9 @@ func main() {
 	// 打印启动 Banner
 	version.PrintBanner()
 
+	// 启动后台版本检测（每4小时检查GitHub releases）
+	version.StartChecker()
+
 	// 优先读取.env文件
 	if err := godotenv.Load(); err != nil {
 		log.Printf("No .env file found: %v", err)
