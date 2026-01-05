@@ -281,39 +281,40 @@ body {
 .topnav-link.active { background: rgba(17,24,39,0.10); color: var(--topbar-fg); border: 1px solid rgba(17,24,39,0.12); }
 .topbar-right { display: flex; align-items: center; gap: var(--space-3); }
 
-/* 版本徽章 */
+/* 版本+GitHub组 */
+.version-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* 版本徽章 - 轻量纯文本样式 */
 .version-badge {
   display: inline-flex;
   align-items: center;
-  padding: 4px 10px;
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-md);
+  padding: 4px 6px;
   cursor: pointer;
   font-size: 12px;
   font-family: monospace;
-  color: var(--neutral-600);
-  margin-right: 8px;
+  color: var(--neutral-500);
+  margin-right: 0;
   position: relative;
-  transition: background 0.2s, border-color 0.2s;
+  transition: color 0.2s;
   text-decoration: none;
 }
 .version-badge:hover {
-  background: var(--neutral-100);
-  border-color: var(--neutral-300);
   color: var(--neutral-700);
 }
 /* 有新版本时显示小圆点 */
 .version-badge.has-update::after {
   content: '';
   position: absolute;
-  top: -3px;
-  right: -3px;
-  width: 8px;
-  height: 8px;
+  top: 2px;
+  right: 0;
+  width: 6px;
+  height: 6px;
   background: var(--success-500);
   border-radius: 50%;
-  border: 2px solid white;
 }
 
 /* GitHub链接 */
@@ -324,8 +325,7 @@ body {
   width: 32px;
   height: 32px;
   border-radius: var(--radius-md);
-  color: var(--neutral-600);
-  margin-right: 8px;
+  color: var(--neutral-500);
   transition: color 0.2s, background 0.2s;
 }
 .github-link:hover { background: var(--neutral-100); color: var(--neutral-900); }

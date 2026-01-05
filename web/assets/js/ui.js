@@ -298,9 +298,11 @@
       title: 'GitHub仓库'
     }, [iconGitHub()]);
 
+    // 版本+GitHub组合成一个视觉组
+    const versionGroup = h('div', { class: 'version-group' }, [versionBadge, githubLink]);
+
     const right = h('div', { class: 'topbar-right' }, [
-      versionBadge,
-      githubLink,
+      versionGroup,
       h('button', {
         class: 'btn btn-secondary btn-sm',
         onclick: loggedIn ? onLogout : () => location.href = window.getLoginUrl()
