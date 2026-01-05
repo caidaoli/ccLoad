@@ -9,7 +9,9 @@
 [![GitHub Actions](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-2088FF.svg)](https://github.com/features/actions)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A high-performance transparent proxy service for Claude Code & Codex & Gemini & OpenAI compatible APIs, built with Go 1.25.0 and Gin framework. Supports multi-channel load balancing, failover, and real-time monitoring. Supports both SQLite and MySQL storage engines for flexible deployment.
+> 🚀 High-Performance AI API Proxy | Smart Multi-Channel Routing | Instant Failover | Real-time Monitoring | Production-Ready
+
+Managing multiple Claude API channels getting chaotic? Manual failover when rate limits hit? ccLoad has you covered! A high-performance Go-based proxy service supporting Claude Code, Codex, Gemini, and OpenAI. **Smart routing + automatic failover + real-time monitoring** - rock-solid API reliability 🚀
 
 ## 🎯 Pain Points Solved
 
@@ -19,6 +21,7 @@ When using Claude API services, users typically face these challenges:
 - **Inconvenient manual switching**: Time-consuming manual channel switching affects work efficiency
 - **Difficult failure handling**: Manual switching to other available channels when one fails
 - **Opaque request status**: Traditional approaches leave you blindly waiting without knowing request progress
+- **Hidden upstream errors**: Some third-party channels return HTTP 200 status but with error content in the response body, making it difficult for clients to detect and handle
 
 ccLoad solves these pain points through:
 
@@ -27,6 +30,10 @@ ccLoad solves these pain points through:
 - **Exponential cooldown**: Failed channels use exponential backoff to avoid hammering failed services
 - **Zero manual intervention**: Clients don't need to manually switch upstream channels
 - **Real-time request monitoring**: Log management interface shows ongoing requests - no more blind waiting, clear visibility into each request's status
+- **Soft error detection**: Automatically detects HTTP 200 responses that are actually errors ("masqueraded responses"), triggering channel cooldown and failover. Common scenarios include:
+  - JSON responses containing `{"error": {...}}` structure
+  - Responses with `type` field set to `"error"`
+  - Plain text messages like `"当前模型负载过高"` / `"Current model load too high"` (load warnings)
 
 ## ✨ Key Features
 
@@ -579,15 +586,27 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 
 ## 📊 Monitoring Metrics
 
-Access admin interface to view:
-- 24-hour request trend charts
-- Real-time error logs
-- Channel call statistics
-- Performance metrics monitoring
-- **Token Usage Stats**:
-  - Custom time range selector
-  - Usage displayed in M (million tokens)
-  - Per API token ID classification
+Check out the awesome admin dashboard 👇
+
+![ccLoad Dashboard](images/ccload-dashboard.jpeg)
+![ccLoad Logs](images/ccload-logs.jpg)
+*Real-time Monitoring Dashboard: Claude Code, Codex, OpenAI, and Gemini platform metrics at a glance*
+
+**Core Features**:
+- 📈 **24-hour Trend Charts** - Request volumes clearly visualized with peaks and valleys
+- 🔴 **Real-time Error Logs** - Instantly detect which channel has issues
+- 📊 **Channel Call Statistics** - See which channels are performing well with data-backed insights
+- ⚡ **Performance Metrics** - Latency, success rates, and bottleneck detection
+- 💰 **Token Usage Stats** - Know exactly where your budget goes:
+  - Custom time range selector for flexible analysis
+  - Per API token ID classification for multi-tenant billing
+  - Supports Gemini/OpenAI cache token visualization
+
+**UI Highlights**:
+- 🎨 Modern gradient purple theme for comfortable viewing
+- 📱 Responsive design works great on mobile and desktop
+- ⚡ Real-time data refresh without manual page reload
+- 📊 Multi-dimensional stat cards show key metrics on one screen
   - Cached query optimization
   - Gemini/OpenAI Cache Token (Cache Read) display
 

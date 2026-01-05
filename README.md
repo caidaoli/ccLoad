@@ -9,43 +9,60 @@
 [![GitHub Actions](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-2088FF.svg)](https://github.com/features/actions)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-一个高性能的 Claude Code & Codex & Gemini & OpenAI 兼容 API 透明代理服务，使用 Go 1.25.0 和 Gin 框架构建。支持多渠道负载均衡、故障切换和实时监控。支持 SQLite 和 MySQL 双存储引擎，灵活适配不同部署场景。
+> 🚀 高性能AI API透明代理 | 多渠道智能调度 | 故障秒切 | 实时监控 | 开箱即用
+
+兄弟们，用Claude API是不是有这些烦恼：渠道太多管不过来、限流了手动切换、挂了只能干等？ccLoad帮你全搞定！一个Go语言写的高性能代理服务，支持Claude Code、Codex、Gemini、OpenAI四大平台。**智能路由+自动故障切换+实时监控**，让你的API调用稳如老狗🐶
 
 ## 🎯 痛点解决
 
-在使用 Claude API 服务时，用户通常会面临以下痛点：
+用 Claude API 的兄弟们，这些场景是不是似曾相识👇
 
-- **多渠道管理复杂**：需要同时管理多个 API 渠道，有的渠道时效短，有的渠道每天有限量
-- **手动切换不便**：每次手动切换渠道费时费力，影响工作效率
-- **故障处理困难**：当某个渠道出现故障时，需要手动切换到其他可用渠道
-- **请求状态不透明**：传统方式发起请求后只能傻等，不知道请求进展到哪一步
+- 😫 **渠道管理累死人**：手里一堆API渠道，有的快过期，有的有限额，切来切去头都大
+- 🔄 **手动切换烦透了**：这个渠道挂了换那个，那个限流了再换，一天光切渠道了
+- 🤯 **故障来了手忙脚乱**：渠道突然 502/504，只能干等着，影响工作进度
+- 👀 **请求发出去就像石沉大海**：发完请求傻等，不知道卡在哪一步，焦虑感拉满
+- 🎭 **上游骗你说成功了**：返回 200 状态码，结果响应内容是报错，坑得你一脸懵
 
-ccLoad 通过以下特性解决这些痛点：
+ccLoad 一站式解决👇
 
-- **智能路由**：根据渠道优先级优先请求高优先级渠道，相同优先级则轮询调用
-- **自动故障切换**：当渠道出现故障时，自动切换到其他可用渠道
-- **指数级冷却机制**：故障渠道使用指数级别冷却时间，避免持续请求故障服务
-- **零手动干预**：客户端无需手动切换上游渠道，系统自动处理
-- **实时请求监控**：日志管理界面可查看正在进行的请求，告别盲等，清晰掌握每个请求的实时状态
+- 🎯 **智能路由**：高优先级渠道优先用，同级轮询，省心
+- 🔀 **自动故障切换**：渠道挂了秒切，你甚至感知不到
+- ⏰ **指数级冷却**：故障渠道自动休息，2分钟→4分钟→8分钟，不会反复踩坑
+- 🙌 **零手动干预**：躺平就行，系统全自动处理
+- 📊 **实时请求监控**：正在跑的请求一目了然，告别盲等
+- 🔍 **软错误检测**：HTTP 200 伪装成功？逃不过检测！自动识别以下"假成功"：
+  - `{"error": {...}}` 结构的 JSON 错误
+  - `type` 字段是 `"error"` 的响应
+  - `"当前模型负载过高"` 之类的纯文本告警
 
 ## ✨ 主要特性
 
-- 🚀 **高性能架构** - 基于 Gin 框架，支持 1000+ 并发连接，异步Redis同步响应<1ms
-- 🧮 **本地Token计数** - 符合官方API规范的本地Token估算，响应<5ms，准确度93%+，支持大规模工具场景
-- 🎯 **智能错误分类** - 区分Key级/渠道级/客户端错误，支持软错误检测（200伪装错误）和1308配额专用处理（596/597状态码），精准故障切换
-- 🔀 **智能路由** - 基于优先级和轮询的渠道选择算法，**预过滤冷却渠道**提升性能，支持多Key负载均衡，**健康度动态排序**（置信度因子防止小样本过惩罚）
-- 🛡️ **故障切换** - 自动失败检测和指数退避冷却机制（1s → 2s → 4s → ... → 30min），修复SSE流1308错误冷却逻辑
-- 🔒 **竞态安全** - Key选择器竞态条件防护，启动时配置验证，资源自动清理
-- 📊 **实时监控** - 内置趋势分析、日志记录和统计面板，**Token用量统计**支持时间范围选择和按令牌分类
-- 🎯 **透明代理** - 支持Claude、Gemini和OpenAI兼容API，智能识别认证方式
-- 📦 **单文件部署** - 无外部依赖，包含嵌入式 SQLite
-- 🔒 **安全认证** - 基于 Token 的管理界面和API访问控制
-- 🏷️ **构建标签** - 支持 GOTAGS，默认启用高性能 JSON 库
-- 🐳 **Docker 支持** - 多架构镜像（amd64/arm64），自动化 CI/CD
-- ☁️ **云原生** - 支持容器化部署，GitHub Actions 自动构建
-- 🤗 **Hugging Face** - 支持一键部署到 Hugging Face Spaces，免费托管
+这波配置真的很顶👇
+
+| 能力 | 亮点 | 效果 |
+|------|------|------|
+| 🚀 **性能怪兽** | Gin框架 + Sonic JSON | 1000+并发，Redis同步<1ms |
+| 🧮 **本地算Token** | 不调API就能估算消耗 | 响应<5ms，准确度93%+ |
+| 🎯 **错误分类器** | Key级/渠道级/客户端错误 | 200伪装错误也能揪出来 |
+| 🔀 **智能调度** | 优先级+轮询+健康度排序 | 烂渠道自动靠边站 |
+| 🛡️ **故障秒切** | 指数退避冷却机制 | 2min→4min→8min→30min |
+| 📊 **数据大屏** | 趋势图+日志+Token统计 | 一眼看清用量情况 |
+| 🎯 **多API兼容** | Claude/Gemini/OpenAI | 一套配置走天下 |
+| 📦 **开箱即用** | 单文件+嵌入式SQLite | 零依赖，下载就能跑 |
+| 🐳 **云原生** | 多架构镜像+CI/CD | amd64/arm64都支持 |
+| 🤗 **白嫖福利** | Hugging Face免费托管 | 个人用完全够了 |
 
 ## 🏗️ 架构概览
+
+想知道ccLoad怎么跑起来的？其实很简单👇
+
+从你的应用发请求到API返回结果，中间经过这几层：
+- **认证层** - 验证你的访问权限，拒绝白嫖党
+- **路由分发** - 判断是Claude还是Gemini，分流处理
+- **智能调度** - 从一堆渠道里选个最靠谱的给你用
+- **故障切换** - 选中的渠道挂了？秒切备用，你根本感知不到
+
+核心亮点：**存储层用工厂模式**，SQLite和MySQL共享代码，消除了467行重复代码（DRY原则拉满）。数据层架构清晰，想换数据库？改个环境变量就完事👇
 
 ```mermaid
 graph TB
@@ -103,16 +120,18 @@ graph TB
 
 ## 🚀 快速开始
 
-选择最适合你的部署方式：
+3分钟部署，选一个适合你的方式👇
 
-| 部署方式 | 难度 | 成本 | 适用场景 | HTTPS | 持久化 |
-|---------|------|------|----------|-------|--------|
-| 🐳 **Docker** | ⭐⭐ | 需VPS | 生产环境、高性能需求 | 需配置 | ✅ |
-| 🤗 **Hugging Face** | ⭐ | **免费** | 个人使用、快速体验 | ✅自动 | ✅ |
-| 🔧 **源码编译** | ⭐⭐⭐ | 需服务器 | 开发调试、定制化 | 需配置 | ✅ |
-| 📦 **二进制** | ⭐⭐ | 需服务器 | 轻量部署、简单环境 | 需配置 | ✅ |
+| 部署方式 | 难度 | 成本 | 适合谁 | HTTPS | 持久化 |
+|---------|------|------|--------|-------|--------|
+| 🐳 **Docker** | ⭐⭐ | 需VPS | 生产环境、追求稳定 | 需配置 | ✅ |
+| 🤗 **Hugging Face** | ⭐ | **白嫖** | 个人玩家、先体验一下 | ✅自动 | ✅ |
+| 🔧 **源码编译** | ⭐⭐⭐ | 需服务器 | 爱折腾、想魔改 | 需配置 | ✅ |
+| 📦 **二进制** | ⭐⭐ | 需服务器 | 懒人福音、轻量部署 | 需配置 | ✅ |
 
-### 方式一：Docker 部署（推荐）
+### 方式一：Docker 部署（推荐）💪
+
+兄弟们，生产环境就选这个！镜像已经打好了，直接拉下来用，稳定又省心。
 
 **使用预构建镜像（推荐）**：
 ```bash
@@ -132,6 +151,8 @@ docker run -d --name ccload \
 ```
 
 **从源码构建**：
+
+想自己编译镜像？也行，适合对官方镜像不放心的同学👇
 ```bash
 # 克隆项目
 git clone https://github.com/caidaoli/ccLoad.git
@@ -150,6 +171,8 @@ docker run -d --name ccload \
 ```
 
 ### 方式二：源码编译
+
+爱折腾的兄弟看过来！想魔改代码就选这个，Go环境准备好就能跑👇
 
 ```bash
 # 克隆项目
@@ -170,6 +193,8 @@ make dev
 
 ### 方式三：二进制下载
 
+懒人福音！不想装Docker，也不想装Go？直接下个可执行文件就完事👇
+
 ```bash
 # 从 GitHub Releases 下载对应平台的二进制文件
 wget https://github.com/caidaoli/ccLoad/releases/latest/download/ccload-linux-amd64
@@ -179,7 +204,7 @@ chmod +x ccload-linux-amd64
 
 ### 方式四：Hugging Face Spaces 部署
 
-Hugging Face Spaces 提供免费的容器托管服务，支持 Docker 应用，适合个人和小团队使用。
+白嫖党狂喜时刻！Hugging Face提供免费Docker托管，HTTPS自动配，个人用绝对够👇
 
 #### 部署步骤
 
@@ -379,7 +404,10 @@ EXPOSE 7860
 
 ### 基本配置
 
-**SQLite 模式（默认）**:
+部署完了就该配置了！选SQLite还是MySQL？看你场景👇
+
+**SQLite 模式（默认）**：
+个人用或小团队，这个最省心，零配置，单文件搞定👇
 ```bash
 # 设置环境变量
 export CCLOAD_PASS=your_admin_password
@@ -395,7 +423,8 @@ echo "SQLITE_PATH=./data/ccload.db" >> .env
 ./ccload
 ```
 
-**MySQL 模式**:
+**MySQL 模式**：
+生产环境or高并发？上MySQL稳定性更好，多实例也不怕👇
 ```bash
 # 1. 创建 MySQL 数据库
 mysql -u root -p -e "CREATE DATABASE ccload CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
@@ -470,11 +499,13 @@ docker run -d --name ccload \
 
 ## 📖 使用说明
 
+配好了就该用起来了！看看怎么调用API👇
+
 ### API 代理
 
 **Claude API 代理（需授权）**：
 
-首先，在 Web 管理界面 `http://localhost:8080/web/tokens.html` 配置 API 访问令牌，然后使用该令牌访问 API：
+先在Web界面配个令牌，然后就能用了。把ccLoad当Claude官方API用就行👇
 
 ```bash
 curl -X POST http://localhost:8080/v1/messages \
@@ -496,6 +527,8 @@ curl -X POST http://localhost:8080/v1/messages \
 
 **OpenAI 兼容 API 代理（Chat Completions）**：
 
+用OpenAI SDK的兄弟有福了！直接换个base_url就能用，原来的代码一行不用改👇
+
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
@@ -513,7 +546,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ### 本地 Token 计数
 
-快速估算请求的 Token 消耗（无需调用上游 API）：
+发请求前想知道要花多少Token？用这个接口秒算，不花一分钱👇
 
 ```bash
 curl -X POST http://localhost:8080/v1/messages/count_tokens \
@@ -541,6 +574,8 @@ curl -X POST http://localhost:8080/v1/messages/count_tokens \
 
 ### 渠道管理
 
+Web界面和API都能管理渠道，看你喜欢哪种👇
+
 通过 Web 界面 `/web/channels.html` 或 API 管理渠道：
 
 ```bash
@@ -559,7 +594,7 @@ curl -X POST http://localhost:8080/admin/channels \
 
 ### 批量数据管理
 
-支持CSV格式的渠道配置导入导出：
+渠道多了手动加太累？支持CSV导入导出，Excel编辑完直接导入👇
 
 **导出配置**:
 ```bash
@@ -593,19 +628,31 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 
 ## 📊 监控指标
 
-访问管理界面查看：
-- 24 小时请求趋势图
-- 实时错误日志
-- 渠道调用统计
-- 性能指标监控
-- **Token 用量统计**：
-  - 支持自定义时间范围选择器
-  - 用量单位显示为 M（百万 tokens）
-  - 支持按 API 令牌 ID 分类统计
-  - 支持缓存优化的统计查询
-  - 支持 Gemini/OpenAI 缓存 Token（Cache Read）展示
+管理后台有多香？一看便知👇
+
+![ccLoad管理界面](images/ccload-dashboard.jpeg)
+![ccLoad日志界面](images/ccload-logs.jpg)
+*实时监控大屏：Claude Code、Codex、OpenAI、Gemini四大平台数据一目了然*
+
+**核心功能**：
+- 📈 **24小时趋势图** - 请求量一目了然，高峰低谷清清楚楚
+- 🔴 **实时错误日志** - 哪个渠道炸了，秒级发现
+- 📊 **渠道调用统计** - 谁在干活谁在摸鱼，数据说话
+- ⚡ **性能指标** - 延迟、成功率，性能瓶颈无处藏
+- 💰 **Token用量统计** - 钱花哪了心里有数：
+  - 自定义时间范围，想看哪段看哪段
+  - 按API令牌分类，多租户也能分账
+  - 支持Gemini/OpenAI缓存Token展示
+
+**界面亮点**：
+- 🎨 渐变紫色主题，看着舒服
+- 📱 响应式设计，手机电脑都好用
+- ⚡ 数据实时刷新，不用手动F5
+- 📊 多维度统计卡片，关键数据一屏看完
 
 ## 🔧 技术栈
+
+想知道ccLoad用了啥技术？看这里👇
 
 ### 核心依赖
 
@@ -621,7 +668,9 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 
 ### 架构特点
 
-**模块化架构** :
+代码写得怎么样？来看看这些亮点👇
+
+**模块化架构**（SOLID原则实践）:
 - **proxy模块拆分**（SRP原则）：
   - `proxy_handler.go`：HTTP入口、并发控制、路由选择
   - `proxy_forward.go`：核心转发逻辑、请求构建、响应处理
@@ -651,28 +700,30 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
   - `storage/factory.go`：工厂模式自动选择数据库
   - 复合索引优化，统计查询性能提升
 
-**多级缓存系统**:
-- 渠道配置缓存（60秒TTL）
-- 轮询指针缓存（内存）
-- 冷却状态内联（channels/api_keys表直接存储）
-- 错误分类缓存（1000容量）
+**多级缓存系统**（性能拉满）:
+- 渠道配置缓存（60秒TTL）- 减少数据库查询
+- 轮询指针缓存（内存）- 毫秒级选择
+- 冷却状态内联（直接存表）- 无需JOIN，速度飞起
+- 错误分类缓存（1000容量）- 重复错误秒判
 
-**异步处理架构**:
+**异步处理架构**（响应贼快）:
 - Redis同步（单worker协程，非阻塞触发，响应<1ms）
 - 日志系统（1000条缓冲 + 单worker，保证FIFO顺序）
 - Token/日志清理（后台协程，定期维护）
 
-**统一响应系统** :
-- `StandardResponse[T]` 泛型结构体（DRY原则）
-- `ResponseHelper` 辅助类及9个快捷方法
-- 自动提取应用级错误码，统一JSON格式
+**统一响应系统**（代码复用典范）:
+- `StandardResponse[T]` 泛型结构体（DRY原则）- 一个结构搞定所有响应
+- `ResponseHelper` 辅助类及9个快捷方法 - 少写重复代码
+- 自动提取应用级错误码，统一JSON格式 - 前端调用更方便
 
-**连接池优化**:
+**连接池优化**（榨干性能）:
 - SQLite: 内存模式10个连接/文件模式5个连接，5分钟生命周期
 - HTTP客户端: 100最大连接，30秒超时，keepalive优化
 - TLS: 会话缓存（1024容量），减少握手耗时
 
 ## 🔧 配置说明
+
+想精细调优？这些配置项了解一下👇
 
 ### 环境变量
 
@@ -698,7 +749,7 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 
 ### Web 管理配置（支持热重载）
 
-以下配置项已迁移到数据库，通过 Web 界面 `/web/settings.html` 管理，修改后立即生效无需重启：
+这些配置在Web界面就能改，不用重启服务，改完立即生效👇
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
@@ -714,7 +765,9 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 
 #### 健康度排序说明
 
-启用 `enable_health_score` 后，系统会根据渠道的历史成功率动态调整优先级：
+想让烂渠道自动靠边站？启用健康度排序就行了👇
+
+启用 `enable_health_score` 后，系统会根据渠道的历史成功率动态调整优先级，成功率低的渠道优先级自动降低：
 
 ```
 置信度 = min(1.0, 样本量 / health_min_confident_sample)
@@ -748,7 +801,7 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 
 #### API 访问令牌配置
 
-**重要**: API 访问令牌现在通过 Web 管理界面进行配置，不再使用环境变量。
+**划重点**：API令牌现在在Web界面管理，不用改环境变量了👇
 
 - 访问 `http://localhost:8080/web/tokens.html` 进行令牌管理
 - 支持添加、删除、查看令牌
@@ -757,13 +810,15 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 
 #### 行为摘要
 
-- 未设置 `CCLOAD_PASS`：程序启动失败并退出（安全默认）。
-- 未配置 API 访问令牌：所有 `/v1/*` 与 `/v1beta/*` API 返回 `401 Unauthorized`。通过 Web 界面 `/web/tokens.html` 配置令牌。
-- 公开端点：`GET /health`（健康检查）和 `GET /public/summary`（统计摘要）无需认证，其他端点均需授权令牌。
+兄弟们注意这几条安全策略👇
+
+- 未设置 `CCLOAD_PASS`：程序启动失败并退出（安全第一）
+- 未配置 API 访问令牌：所有 `/v1/*` 与 `/v1beta/*` API 返回 `401 Unauthorized`，去Web界面 `/web/tokens.html` 配置令牌
+- 公开端点：`GET /health`（健康检查）和 `GET /public/summary`（统计摘要）无需认证，其他都要授权
 
 ### Docker 镜像
 
-项目支持多架构 Docker 镜像：
+多架构镜像都准备好了，amd64/arm64随便选👇
 
 - **支持架构**：`linux/amd64`, `linux/arm64`
 - **镜像仓库**：`ghcr.io/caidaoli/ccload`
@@ -788,6 +843,8 @@ docker pull --platform linux/arm64 ghcr.io/caidaoli/ccload:latest
 ```
 
 ### 数据库结构
+
+想了解数据怎么存的？看这里👇
 
 **存储架构（工厂模式）**:
 ```
@@ -848,28 +905,32 @@ storage/
 
 ## 🛡️ 安全考虑
 
-- 生产环境必须设置强密码 `CCLOAD_PASS`
-- 通过 Web 管理界面 `/web/tokens.html` 配置 API 访问令牌以保护 API 端点访问
-- API Key 仅在内存使用，不记录日志
-- Token 存储在客户端 localStorage，24小时有效期
-- 建议使用 HTTPS 反向代理
-- Docker 镜像使用非 root 用户运行，增强安全性
+兄弟们，安全这块不能马虎！注意这几点👇
+
+- 生产环境**务必**设置强密码 `CCLOAD_PASS`，别用123456
+- 在Web界面 `/web/tokens.html` 配好API令牌，保护你的接口
+- API Key只在内存用，日志里不记录，放心
+- Token存在浏览器localStorage，24小时过期，安全又方便
+- 建议套一层HTTPS反向代理（nginx/Caddy），别裸奔
+- Docker镜像用非root用户跑，黑客拿到容器也搞不了大事
 
 ### Token 认证系统
 
-ccLoad 使用基于 Token 的认证机制，提供简洁高效的安全访问控制。
+基于Token的认证，简单又高效👇
 
 **认证方式**：
 - **管理界面**：登录后获取24小时有效期的Token，存储在 `localStorage`
 - **API端点**：支持 `Authorization: Bearer <token>` 头认证
 
 **核心特性**：
-- ✅ **无状态认证**：Token不依赖服务端Session，天然支持水平扩展
-- ✅ **统一认证体系**：API和管理界面使用相同的Token机制
-- ✅ **简洁架构**：纯Token认证，代码简单可靠（KISS原则）
-- ✅ **跨域支持**：Token存储在localStorage，完全支持跨域访问
+- ✅ **无状态认证**：Token不依赖服务端Session，水平扩展随便搞
+- ✅ **统一认证体系**：API和Web用同一套Token，简单
+- ✅ **简洁架构**：纯Token认证，代码又少又稳（KISS原则）
+- ✅ **跨域支持**：Token存localStorage，跨域访问完全OK
 
 **使用示例**：
+
+看个例子就懂了👇
 ```bash
 # 1. 登录获取Token
 curl -X POST http://localhost:8080/login \
@@ -895,7 +956,7 @@ curl -X POST http://localhost:8080/logout \
 
 ## 🔄 CI/CD
 
-项目使用 GitHub Actions 实现自动化 CI/CD：
+GitHub Actions全自动化，推个tag就能发版👇
 
 - **触发条件**：推送版本标签（`v*`）或手动触发
 - **构建输出**：多架构 Docker 镜像推送到 GitHub Container Registry
@@ -906,18 +967,27 @@ curl -X POST http://localhost:8080/logout \
 
 ## 🤝 贡献
 
-欢迎提交 Issue 和 Pull Request！
+欢迎贡献代码！发现Bug或有新想法？来提Issue或PR吧👇
 
+- 提Issue：https://github.com/caidaoli/ccLoad/issues
+- 提PR：Fork项目→改代码→提交PR
+- 代码规范：遵循项目现有风格，保持KISS原则
 
 ### 故障排除
 
-**端口被占用**:
+遇到问题了？常见坑在这里👇
+
+**端口被占用**：
+
+8080端口已经被占了？换个端口或干掉占用的进程👇
 ```bash
 # 查找并终止占用 8080 端口的进程
 lsof -i :8080 && kill -9 <PID>
 ```
 
-**容器问题**:
+**容器问题**：
+
+Docker容器起不来？看看日志找找原因👇
 ```bash
 # 查看容器日志
 docker logs ccload -f
@@ -925,7 +995,9 @@ docker logs ccload -f
 docker inspect ccload --format='{{.State.Health.Status}}'
 ```
 
-**配置验证**:
+**配置验证**：
+
+想确认服务启动成功？试试这几个命令👇
 ```bash
 # 测试服务健康状态（轻量级健康检查，<5ms）
 curl -s http://localhost:8080/health
