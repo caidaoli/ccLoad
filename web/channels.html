@@ -21,7 +21,7 @@
         <header class="mb-4">
           <div class="glass-card" style="padding: var(--space-6);">
             <div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;">
-              <p class="page-subtitle" style="margin: 0;">配置API渠道、优先级和模型支持（<b>优先请求高优先级渠道，相同优先级则轮询调用</b>）</p>
+              <p class="page-subtitle" style="margin: 0;">配置API渠道、优先级和模型支持（<b>优先请求高优先级渠道，相同优先级按Key数量加权随机</b>）</p>
               <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
                 <button id="exportCsvBtn" type="button" class="btn btn-secondary" style="padding: 8px 16px; font-size: 14px;" title="导出渠道列表为CSV">
                   导出 CSV
