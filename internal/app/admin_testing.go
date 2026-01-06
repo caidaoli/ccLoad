@@ -310,6 +310,13 @@ func (s *Server) testChannelAPI(cfg *model.Config, apiKey string, testReq *testu
 						}
 					}
 				}
+				// Codex: type == response.output_text.delta 且 delta 直接是文本
+				if typ == "response.output_text.delta" {
+					if delta, ok := obj["delta"].(string); ok && delta != "" {
+						textBuilder.WriteString(delta)
+						continue
+					}
+				}
 			}
 
 			// 错误事件通用: data 中包含 error 字段或 message

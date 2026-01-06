@@ -1,0 +1,26 @@
+{
+  "model": "{{MODEL}}",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "{{CONTENT}}"
+        }
+      ]
+    }
+  ],
+  "system": [
+    {
+      "type": "text",
+      "text": "You are Claude Code, Anthropic's official CLI for Claude."
+    }
+  ],
+  "tools": [],
+  "metadata": {
+    "user_id": "{{USER_ID}}"
+  },
+  "max_tokens": "{{MAX_TOKENS}}",
+  "stream": "{{STREAM}}"
+}

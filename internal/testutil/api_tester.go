@@ -76,25 +76,11 @@ func (t *CodexTester) Build(cfg *model.Config, apiKey string, req *TestChannelRe
 		testContent = "test"
 	}
 
-	msg := map[string]any{
-		"model":        req.Model,
-		"stream":       req.Stream,
-		"instructions": "You are Codex, based on GPT-5. You are running as a coding agent in the Codex CLI on a user's computer.",
-		"input": []map[string]any{
-			{
-				"type": "message",
-				"role": "user",
-				"content": []map[string]any{
-					{
-						"type": "input_text",
-						"text": testContent,
-					},
-				},
-			},
-		},
-	}
-
-	body, err := sonic.Marshal(msg)
+	body, err := buildRequestFromTemplate("codex", map[string]any{
+		"MODEL":   req.Model,
+		"STREAM":  req.Stream,
+		"CONTENT": testContent,
+	})
 	if err != nil {
 		return "", nil, nil, err
 	}
@@ -166,24 +152,15 @@ func (t *OpenAITester) Build(cfg *model.Config, apiKey string, req *TestChannelR
 		testContent = "test"
 	}
 
-	// 标准OpenAI Chat Completions格式
-	msg := map[string]any{
-		"model": req.Model,
-		"messages": []map[string]any{
-			{
-				"role":    "user",
-				"content": testContent,
-			},
-		},
-		"stream": req.Stream,
-	}
-
-	body, err := sonic.Marshal(msg)
+	body, err := buildRequestFromTemplate("openai", map[string]any{
+		"MODEL":   req.Model,
+		"STREAM":  req.Stream,
+		"CONTENT": testContent,
+	})
 	if err != nil {
 		return "", nil, nil, err
 	}
 
-	// 使用标准OpenAI API路径
 	baseURL := strings.TrimRight(cfg.URL, "/")
 	fullURL := baseURL + "/v1/chat/completions"
 
@@ -235,19 +212,9 @@ func (t *GeminiTester) Build(cfg *model.Config, apiKey string, req *TestChannelR
 		testContent = "test"
 	}
 
-	msg := map[string]any{
-		"contents": []map[string]any{
-			{
-				"parts": []map[string]any{
-					{
-						"text": testContent,
-					},
-				},
-			},
-		},
-	}
-
-	body, err := sonic.Marshal(msg)
+	body, err := buildRequestFromTemplate("gemini", map[string]any{
+		"CONTENT": testContent,
+	})
 	if err != nil {
 		return "", nil, nil, err
 	}
@@ -332,32 +299,13 @@ func (t *AnthropicTester) Build(cfg *model.Config, apiKey string, req *TestChann
 	}
 	testContent := req.Content
 
-	msg := map[string]any{
-		"model": req.Model,
-		"messages": []map[string]any{
-			{
-				"role": "user",
-				"content": []map[string]any{
-					{
-						"type": "text",
-						"text": testContent,
-					},
-				},
-			},
-		},
-		"system": []map[string]any{
-			{
-				"type": "text",
-				"text": "You are Claude Code, Anthropic's official CLI for Claude.",
-			},
-		},
-		"tools":      []any{},
-		"metadata":   map[string]any{"user_id": newClaudeCLIUserID()},
-		"max_tokens": maxTokens,
-		"stream":     req.Stream,
-	}
-
-	body, err := sonic.Marshal(msg)
+	body, err := buildRequestFromTemplate("anthropic", map[string]any{
+		"MODEL":      req.Model,
+		"STREAM":     req.Stream,
+		"CONTENT":    testContent,
+		"MAX_TOKENS": maxTokens,
+		"USER_ID":    newClaudeCLIUserID(),
+	})
 	if err != nil {
 		return "", nil, nil, err
 	}
