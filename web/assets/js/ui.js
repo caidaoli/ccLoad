@@ -202,7 +202,8 @@
   async function fetchVersionInfo() {
     try {
       const res = await fetch('/public/version');
-      versionInfo = await res.json();
+      const resp = await res.json();
+      versionInfo = resp.data;
       return versionInfo;
     } catch (e) {
       console.error('Failed to fetch version info:', e);
