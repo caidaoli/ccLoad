@@ -910,7 +910,7 @@ func TestShuffleSamePriorityChannels(t *testing.T) {
 
 // TestWeightedShuffleSamePriorityChannels 测试按Key数量加权的随机化
 func TestWeightedShuffleSamePriorityChannels(t *testing.T) {
-	// 直接测试 weightedShuffleInPlace 函数
+	// 测试 weightedShuffleSamePriorityWithCooldown 函数
 	// 渠道A: 10 Keys, 渠道B: 2 Keys
 	// 期望A首位出现概率约 10/12 ≈ 83%
 
@@ -919,12 +919,12 @@ func TestWeightedShuffleSamePriorityChannels(t *testing.T) {
 
 	for i := 0; i < iterations; i++ {
 		channels := []*model.Config{
-			{Name: "channel-A", Priority: 10, KeyCount: 10},
-			{Name: "channel-B", Priority: 10, KeyCount: 2},
+			{ID: 1, Name: "channel-A", Priority: 10, KeyCount: 10},
+			{ID: 2, Name: "channel-B", Priority: 10, KeyCount: 2},
 		}
 
-		// 调用被测函数
-		result := shuffleSamePriorityChannels(channels)
+		// 调用被测函数（无冷却Key）
+		result := weightedShuffleSamePriorityWithCooldown(channels, nil, time.Now())
 
 		// 统计第一个渠道
 		firstPositionCount[result[0].Name]++
@@ -948,6 +948,114 @@ func TestWeightedShuffleSamePriorityChannels(t *testing.T) {
 	}
 
 	t.Logf("[INFO] Key数量加权随机正常，渠道容量大的获得更多流量")
+}
+
+func TestSortChannelsByHealth_WeightedByKeyCount(t *testing.T) {
+	// 期望：healthCache 开启时，同有效优先级组内也要按 KeyCount 分流（容量大的拿更多流量）
+	// 这里把健康惩罚权重设为0，确保两个渠道有效优先级完全相同，只验证“组内加权打散”。
+
+	server := &Server{
+		healthCache: &HealthCache{
+			config: model.HealthScoreConfig{
+				Enabled:                  true,
+				SuccessRatePenaltyWeight: 0,
+				MinConfidentSample:       0,
+			},
+		},
+	}
+	empty := make(map[int64]model.ChannelHealthStats)
+	server.healthCache.healthStats.Store(&empty)
+
+	iterations := 1000
+	firstPositionCount := make(map[string]int)
+
+	for i := 0; i < iterations; i++ {
+		channels := []*model.Config{
+			{ID: 1, Name: "channel-A", Priority: 10, KeyCount: 10},
+			{ID: 2, Name: "channel-B", Priority: 10, KeyCount: 2},
+		}
+
+		result := server.sortChannelsByHealth(channels, nil, time.Now())
+		firstPositionCount[result[0].Name]++
+	}
+
+	ratioA := float64(firstPositionCount["channel-A"]) / float64(iterations) * 100
+	ratioB := float64(firstPositionCount["channel-B"]) / float64(iterations) * 100
+
+	t.Logf("[STATS] healthCache组内加权随机统计（%d次）:", iterations)
+	t.Logf("  - channel-A (10 Keys) 首位: %d次 (%.1f%%), 期望≈83%%", firstPositionCount["channel-A"], ratioA)
+	t.Logf("  - channel-B (2 Keys)  首位: %d次 (%.1f%%), 期望≈17%%", firstPositionCount["channel-B"], ratioB)
+
+	// 验证加权分布：A应该在70%-95%范围，B在5%-30%范围
+	if ratioA < 70 || ratioA > 95 {
+		t.Errorf("加权分布异常: channel-A出现%.1f%%，期望70%%-95%%", ratioA)
+	}
+	if ratioB < 5 || ratioB > 30 {
+		t.Errorf("加权分布异常: channel-B出现%.1f%%，期望5%%-30%%", ratioB)
+	}
+}
+
+func TestSortChannelsByHealth_WeightedByEffectiveKeyCount(t *testing.T) {
+	// 期望：当部分Key冷却时，使用有效Key数量（排除冷却中的Key）进行加权
+	// channel-A: 10 keys, 8个冷却 → 有效2个
+	// channel-B: 2 keys, 0个冷却 → 有效2个
+	// 结果：两者应该各占约50%
+
+	server := &Server{
+		healthCache: &HealthCache{
+			config: model.HealthScoreConfig{
+				Enabled:                  true,
+				SuccessRatePenaltyWeight: 0,
+				MinConfidentSample:       0,
+			},
+		},
+	}
+	empty := make(map[int64]model.ChannelHealthStats)
+	server.healthCache.healthStats.Store(&empty)
+
+	now := time.Now()
+	// 模拟channel-A的8个key处于冷却中
+	keyCooldowns := map[int64]map[int]time.Time{
+		1: { // channel-A
+			0: now.Add(time.Minute), // 冷却中
+			1: now.Add(time.Minute),
+			2: now.Add(time.Minute),
+			3: now.Add(time.Minute),
+			4: now.Add(time.Minute),
+			5: now.Add(time.Minute),
+			6: now.Add(time.Minute),
+			7: now.Add(time.Minute),
+			// key 8, 9 不在冷却中
+		},
+	}
+
+	iterations := 1000
+	firstPositionCount := make(map[string]int)
+
+	for i := 0; i < iterations; i++ {
+		channels := []*model.Config{
+			{ID: 1, Name: "channel-A", Priority: 10, KeyCount: 10},
+			{ID: 2, Name: "channel-B", Priority: 10, KeyCount: 2},
+		}
+
+		result := server.sortChannelsByHealth(channels, keyCooldowns, now)
+		firstPositionCount[result[0].Name]++
+	}
+
+	ratioA := float64(firstPositionCount["channel-A"]) / float64(iterations) * 100
+	ratioB := float64(firstPositionCount["channel-B"]) / float64(iterations) * 100
+
+	t.Logf("[STATS] 冷却感知加权随机统计（%d次）:", iterations)
+	t.Logf("  - channel-A (10 Keys, 8冷却, 有效2) 首位: %d次 (%.1f%%), 期望≈50%%", firstPositionCount["channel-A"], ratioA)
+	t.Logf("  - channel-B (2 Keys, 0冷却, 有效2)  首位: %d次 (%.1f%%), 期望≈50%%", firstPositionCount["channel-B"], ratioB)
+
+	// 验证：两者都应在40%-60%范围（有效Key数量相同时接近均匀分布）
+	if ratioA < 40 || ratioA > 60 {
+		t.Errorf("冷却感知加权分布异常: channel-A出现%.1f%%，期望40%%-60%%", ratioA)
+	}
+	if ratioB < 40 || ratioB > 60 {
+		t.Errorf("冷却感知加权分布异常: channel-B出现%.1f%%，期望40%%-60%%", ratioB)
+	}
 }
 
 // ========== 辅助函数 ==========

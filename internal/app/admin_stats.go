@@ -341,7 +341,7 @@ func (s *Server) HandleGetChannelTypes(c *gin.Context) {
 // GET /public/version
 func (s *Server) HandlePublicVersion(c *gin.Context) {
 	hasUpdate, latestVersion, releaseURL := version.GetUpdateInfo()
-	c.JSON(http.StatusOK, gin.H{
+	RespondJSON(c, http.StatusOK, gin.H{
 		"version":        version.Version,
 		"has_update":     hasUpdate,
 		"latest_version": latestVersion,

@@ -246,10 +246,11 @@ func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpk
 
 	// 启用健康度排序：对"已通过冷却过滤"的渠道按健康度排序
 	if s.healthCache != nil && s.healthCache.Config().Enabled {
-		return s.sortChannelsByHealth(filtered), nil
+		return s.sortChannelsByHealth(filtered, keyCooldowns, now), nil
 	}
 
-	return filtered, nil
+	// healthCache 关闭时：按优先级分组，使用有效Key数量加权随机
+	return weightedShuffleSamePriorityWithCooldown(filtered, keyCooldowns, now), nil
 }
 
 // pickBestChannelWhenAllCooled 全冷却时选择最佳渠道。
@@ -376,8 +377,12 @@ type channelWithScore struct {
 }
 
 // sortChannelsByHealth 按健康度排序渠道（仅排序，不改变冷却过滤语义）
+// keyCooldowns: Key级冷却状态，用于计算有效Key数量（排除冷却中的Key）
+// now: 当前时间，用于判断Key是否处于冷却中
 func (s *Server) sortChannelsByHealth(
 	channels []*modelpkg.Config,
+	keyCooldowns map[int64]map[int]time.Time,
+	now time.Time,
 ) []*modelpkg.Config {
 	if len(channels) == 0 {
 		return channels
@@ -399,7 +404,8 @@ func (s *Server) sortChannelsByHealth(
 		return scored[i].effPriority > scored[j].effPriority
 	})
 
-	// 同有效优先级内随机打散（负载均衡）
+	// 同有效优先级内按 KeyCount 加权打散（负载均衡）
+	// 说明：healthCache 开启后仍需按 Key 数量分流，不能退化成均匀随机。
 	// 精度：*10 取整，可区分 0.1 差异（如 5.0 vs 5.1）
 	// 设计考虑：优先级通常是整数（5, 10），成功率惩罚基于统计（精度有限），0.1 精度已足够
 	result := make([]*modelpkg.Config, len(scored))
@@ -407,9 +413,7 @@ func (s *Server) sortChannelsByHealth(
 	for i := 1; i <= len(scored); i++ {
 		if i == len(scored) || int(scored[i].effPriority*10) != int(scored[groupStart].effPriority*10) {
 			if i-groupStart > 1 {
-				rand.Shuffle(i-groupStart, func(a, b int) {
-					scored[groupStart+a], scored[groupStart+b] = scored[groupStart+b], scored[groupStart+a]
-				})
+				weightedShuffleScoredInPlace(scored[groupStart:i], keyCooldowns, now)
 			}
 			groupStart = i
 		}
@@ -419,6 +423,141 @@ func (s *Server) sortChannelsByHealth(
 		result[i] = item.config
 	}
 	return result
+}
+
+func weightedShuffleScoredInPlace(items []channelWithScore, keyCooldowns map[int64]map[int]time.Time, now time.Time) {
+	n := len(items)
+	if n <= 1 {
+		return
+	}
+
+	// 计算权重（有效KeyCount = 总KeyCount - 冷却中的Key数量，最小为1）
+	weights := make([]int, n)
+	totalWeight := 0
+	for i := range items {
+		w := calcEffectiveKeyCount(items[i].config, keyCooldowns, now)
+		weights[i] = w
+		totalWeight += w
+	}
+
+	// 加权随机选择排列：每次从剩余元素中按权重选一个放到当前位置
+	for i := 0; i < n-1; i++ {
+		r := rand.IntN(totalWeight)
+		cumulative := 0
+		selected := i
+		for j := i; j < n; j++ {
+			cumulative += weights[j]
+			if r < cumulative {
+				selected = j
+				break
+			}
+		}
+
+		if selected != i {
+			items[i], items[selected] = items[selected], items[i]
+			weights[i], weights[selected] = weights[selected], weights[i]
+		}
+
+		totalWeight -= weights[i]
+	}
+}
+
+// calcEffectiveKeyCount 计算渠道的有效Key数量（排除冷却中的Key）
+func calcEffectiveKeyCount(cfg *modelpkg.Config, keyCooldowns map[int64]map[int]time.Time, now time.Time) int {
+	total := cfg.KeyCount
+	if total <= 0 {
+		return 1 // 最小为1
+	}
+
+	keyMap, ok := keyCooldowns[cfg.ID]
+	if !ok || len(keyMap) == 0 {
+		return total // 无冷却信息，使用全部Key数量
+	}
+
+	// 统计冷却中的Key数量
+	cooledCount := 0
+	for _, cooldownUntil := range keyMap {
+		if cooldownUntil.After(now) {
+			cooledCount++
+		}
+	}
+
+	effective := total - cooledCount
+	if effective <= 0 {
+		return 1 // 最小为1
+	}
+	return effective
+}
+
+// weightedShuffleSamePriorityWithCooldown 按优先级分组，使用有效Key数量加权随机
+// 用于 healthCache 关闭时的场景，确保冷却感知的加权分流
+func weightedShuffleSamePriorityWithCooldown(
+	channels []*modelpkg.Config,
+	keyCooldowns map[int64]map[int]time.Time,
+	now time.Time,
+) []*modelpkg.Config {
+	n := len(channels)
+	if n <= 1 {
+		return channels
+	}
+
+	result := make([]*modelpkg.Config, n)
+	copy(result, channels)
+
+	// 按优先级分组，组内按有效Key数量加权随机
+	groupStart := 0
+	for i := 1; i <= n; i++ {
+		if i == n || result[i].Priority != result[groupStart].Priority {
+			if i-groupStart > 1 {
+				weightedShuffleWithCooldownInPlace(result[groupStart:i], keyCooldowns, now)
+			}
+			groupStart = i
+		}
+	}
+
+	return result
+}
+
+// weightedShuffleWithCooldownInPlace 按有效Key数量（排除冷却）加权随机排列
+func weightedShuffleWithCooldownInPlace(
+	channels []*modelpkg.Config,
+	keyCooldowns map[int64]map[int]time.Time,
+	now time.Time,
+) {
+	n := len(channels)
+	if n <= 1 {
+		return
+	}
+
+	// 计算权重（有效KeyCount = 总KeyCount - 冷却中的Key数量，最小为1）
+	weights := make([]int, n)
+	totalWeight := 0
+	for i, ch := range channels {
+		w := calcEffectiveKeyCount(ch, keyCooldowns, now)
+		weights[i] = w
+		totalWeight += w
+	}
+
+	// 加权随机选择排列：每次从剩余元素中按权重选一个放到当前位置
+	for i := 0; i < n-1; i++ {
+		r := rand.IntN(totalWeight)
+		cumulative := 0
+		selected := i
+		for j := i; j < n; j++ {
+			cumulative += weights[j]
+			if r < cumulative {
+				selected = j
+				break
+			}
+		}
+
+		if selected != i {
+			channels[i], channels[selected] = channels[selected], channels[i]
+			weights[i], weights[selected] = weights[selected], weights[i]
+		}
+
+		totalWeight -= weights[i]
+	}
 }
 
 // calculateEffectivePriority 计算渠道的有效优先级
@@ -462,63 +601,20 @@ func shuffleSamePriorityChannels(channels []*modelpkg.Config) []*modelpkg.Config
 	result := make([]*modelpkg.Config, n)
 	copy(result, channels)
 
-	// 单次遍历：识别优先级边界并按Key数量加权随机排列
+	// 仅按优先级排序，加权随机将在 filterCooldownChannels 中执行（需要冷却信息）
+	// 使用简单随机打乱同优先级渠道，提供初始随机化
 	groupStart := 0
 	for i := 1; i <= n; i++ {
-		// 检测优先级边界（包括末尾）
 		if i == n || result[i].Priority != result[groupStart].Priority {
-			// 加权随机排列 [groupStart, i) 区间
+			// 简单随机打乱 [groupStart, i) 区间
 			if i-groupStart > 1 {
-				weightedShuffleInPlace(result[groupStart:i])
+				rand.Shuffle(i-groupStart, func(a, b int) {
+					result[groupStart+a], result[groupStart+b] = result[groupStart+b], result[groupStart+a]
+				})
 			}
 			groupStart = i
 		}
 	}
 
 	return result
-}
-
-// weightedShuffleInPlace 按KeyCount加权随机排列渠道
-// Key数量多的渠道被排在前面的概率更高
-func weightedShuffleInPlace(channels []*modelpkg.Config) {
-	n := len(channels)
-	if n <= 1 {
-		return
-	}
-
-	// 计算权重（KeyCount，最小为1）
-	weights := make([]int, n)
-	totalWeight := 0
-	for i, ch := range channels {
-		w := ch.KeyCount
-		if w <= 0 {
-			w = 1 // 至少权重1（无Key配置的渠道）
-		}
-		weights[i] = w
-		totalWeight += w
-	}
-
-	// 加权随机选择排列：每次从剩余元素中按权重选一个放到当前位置
-	for i := 0; i < n-1; i++ {
-		// 从 [i, n) 范围内按权重选择
-		r := rand.IntN(totalWeight)
-		cumulative := 0
-		selected := i
-		for j := i; j < n; j++ {
-			cumulative += weights[j]
-			if r < cumulative {
-				selected = j
-				break
-			}
-		}
-
-		// 交换到位置i
-		if selected != i {
-			channels[i], channels[selected] = channels[selected], channels[i]
-			weights[i], weights[selected] = weights[selected], weights[i]
-		}
-
-		// 更新剩余总权重
-		totalWeight -= weights[i]
-	}
 }
