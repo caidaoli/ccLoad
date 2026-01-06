@@ -34,10 +34,10 @@ RUN --mount=type=cache,target=/root/.cache/go-mod \
 # 复制源代码
 COPY . .
 
-# 交叉编译二进制文件（启用 CGO 以支持 bytedance/sonic）
-# xx-go 自动设置 GOOS/GOARCH/CC 等环境变量
-# VERSION 为空时从 git tag 获取，都没有则默认 "dev"
-ENV CGO_ENABLED=1
+# 静态编译（CGO_ENABLED=0 + -trimpath）
+# go_json tag 使用纯Go JSON实现
+# -trimpath 移除构建路径信息，增强安全性和可复现性
+ENV CGO_ENABLED=0
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/root/.cache/go-mod \
     BUILD_VERSION=${VERSION:-$(git describe --tags --always 2>/dev/null || echo "dev")} && \
@@ -46,6 +46,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     BUILD_TIME=$(date '+%Y-%m-%d %H:%M:%S %z') && \
     xx-go build \
     -tags go_json \
+    -trimpath \
     -ldflags="-s -w \
       -X ccLoad/internal/version.Version=${BUILD_VERSION} \
       -X ccLoad/internal/version.Commit=${BUILD_COMMIT} \

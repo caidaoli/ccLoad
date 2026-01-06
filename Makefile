@@ -42,10 +42,10 @@ help:
 	@echo "  logs             - 查看服务日志"
 	@echo "  clean            - 清理构建文件和日志"
 
-# 构建二进制文件
+# 构建二进制文件（纯Go静态编译 + trimpath）
 build:
 	@echo "构建 $(BINARY_NAME) ($(VERSION))..."
-	@go build -tags "$(GOTAGS)" -ldflags="$(LDFLAGS)" -o $(BINARY_NAME) .
+	@CGO_ENABLED=0 go build -tags "$(GOTAGS)" -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY_NAME) .
 	@echo "构建完成: $(BINARY_NAME)"
 
 # 构建 Docker 镜像（自动注入版本信息）
