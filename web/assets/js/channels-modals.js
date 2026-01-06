@@ -297,12 +297,32 @@ function generateCopyName(originalName) {
 }
 
 // 解析模型输入，支持逗号和换行分隔
+// 支持格式：model 或 model:redirect 或 model->redirect
+// 返回 [{model, redirect_model}] 数组
 function parseModels(input) {
-  const models = input
+  const entries = input
     .split(/[,\n]/)
     .map(m => m.trim())
     .filter(m => m);
-  return [...new Set(models)];
+
+  const seen = new Set();
+  const result = [];
+
+  for (const entry of entries) {
+    // 支持 model:redirect 或 model->redirect 格式
+    const match = entry.match(/^([^:->]+)(?:[:->]+(.+))?$/);
+    if (!match) continue;
+
+    const model = match[1].trim();
+    const redirect = match[2] ? match[2].trim() : model;
+
+    if (model && !seen.has(model)) {
+      seen.add(model);
+      result.push({ model, redirect_model: redirect });
+    }
+  }
+
+  return result;
 }
 
 function addRedirectRow() {
@@ -362,10 +382,10 @@ function confirmModelImport() {
   const existingModels = new Set(redirectTableData.map(r => r.model));
   let addedCount = 0;
 
-  newModels.forEach(model => {
-    if (!existingModels.has(model)) {
-      redirectTableData.push({ model: model, redirect_model: '' });
-      existingModels.add(model);
+  newModels.forEach(entry => {
+    if (!existingModels.has(entry.model)) {
+      redirectTableData.push({ model: entry.model, redirect_model: entry.redirect_model });
+      existingModels.add(entry.model);
       addedCount++;
     }
   });
