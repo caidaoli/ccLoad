@@ -908,6 +908,48 @@ func TestShuffleSamePriorityChannels(t *testing.T) {
 	t.Logf("[INFO] 相同优先级渠道随机化正常，负载均衡有效")
 }
 
+// TestWeightedShuffleSamePriorityChannels 测试按Key数量加权的随机化
+func TestWeightedShuffleSamePriorityChannels(t *testing.T) {
+	// 直接测试 weightedShuffleInPlace 函数
+	// 渠道A: 10 Keys, 渠道B: 2 Keys
+	// 期望A首位出现概率约 10/12 ≈ 83%
+
+	iterations := 1000
+	firstPositionCount := make(map[string]int)
+
+	for i := 0; i < iterations; i++ {
+		channels := []*model.Config{
+			{Name: "channel-A", Priority: 10, KeyCount: 10},
+			{Name: "channel-B", Priority: 10, KeyCount: 2},
+		}
+
+		// 调用被测函数
+		result := shuffleSamePriorityChannels(channels)
+
+		// 统计第一个渠道
+		firstPositionCount[result[0].Name]++
+	}
+
+	ratioA := float64(firstPositionCount["channel-A"]) / float64(iterations) * 100
+	ratioB := float64(firstPositionCount["channel-B"]) / float64(iterations) * 100
+
+	t.Logf("[STATS] 加权随机统计（%d次）:", iterations)
+	t.Logf("  - channel-A (10 Keys) 首位: %d次 (%.1f%%), 期望≈83%%",
+		firstPositionCount["channel-A"], ratioA)
+	t.Logf("  - channel-B (2 Keys) 首位: %d次 (%.1f%%), 期望≈17%%",
+		firstPositionCount["channel-B"], ratioB)
+
+	// 验证加权分布：A应该在70%-95%范围，B在5%-30%范围
+	if ratioA < 70 || ratioA > 95 {
+		t.Errorf("加权分布异常: channel-A出现%.1f%%，期望70%%-95%%", ratioA)
+	}
+	if ratioB < 5 || ratioB > 30 {
+		t.Errorf("加权分布异常: channel-B出现%.1f%%，期望5%%-30%%", ratioB)
+	}
+
+	t.Logf("[INFO] Key数量加权随机正常，渠道容量大的获得更多流量")
+}
+
 // ========== 辅助函数 ==========
 
 func setupTestStore(t *testing.T) (storage.Store, func()) {

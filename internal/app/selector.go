@@ -462,20 +462,63 @@ func shuffleSamePriorityChannels(channels []*modelpkg.Config) []*modelpkg.Config
 	result := make([]*modelpkg.Config, n)
 	copy(result, channels)
 
-	// 单次遍历：识别优先级边界并就地打乱
+	// 单次遍历：识别优先级边界并按Key数量加权随机排列
 	groupStart := 0
 	for i := 1; i <= n; i++ {
 		// 检测优先级边界（包括末尾）
 		if i == n || result[i].Priority != result[groupStart].Priority {
-			// 打乱 [groupStart, i) 区间
+			// 加权随机排列 [groupStart, i) 区间
 			if i-groupStart > 1 {
-				rand.Shuffle(i-groupStart, func(a, b int) {
-					result[groupStart+a], result[groupStart+b] = result[groupStart+b], result[groupStart+a]
-				})
+				weightedShuffleInPlace(result[groupStart:i])
 			}
 			groupStart = i
 		}
 	}
 
 	return result
+}
+
+// weightedShuffleInPlace 按KeyCount加权随机排列渠道
+// Key数量多的渠道被排在前面的概率更高
+func weightedShuffleInPlace(channels []*modelpkg.Config) {
+	n := len(channels)
+	if n <= 1 {
+		return
+	}
+
+	// 计算权重（KeyCount，最小为1）
+	weights := make([]int, n)
+	totalWeight := 0
+	for i, ch := range channels {
+		w := ch.KeyCount
+		if w <= 0 {
+			w = 1 // 至少权重1（无Key配置的渠道）
+		}
+		weights[i] = w
+		totalWeight += w
+	}
+
+	// 加权随机选择排列：每次从剩余元素中按权重选一个放到当前位置
+	for i := 0; i < n-1; i++ {
+		// 从 [i, n) 范围内按权重选择
+		r := rand.IntN(totalWeight)
+		cumulative := 0
+		selected := i
+		for j := i; j < n; j++ {
+			cumulative += weights[j]
+			if r < cumulative {
+				selected = j
+				break
+			}
+		}
+
+		// 交换到位置i
+		if selected != i {
+			channels[i], channels[selected] = channels[selected], channels[i]
+			weights[i], weights[selected] = weights[selected], weights[i]
+		}
+
+		// 更新剩余总权重
+		totalWeight -= weights[i]
+	}
 }
