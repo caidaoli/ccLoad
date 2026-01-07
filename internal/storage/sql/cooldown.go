@@ -58,11 +58,12 @@ func (s *SQLStore) BumpChannelCooldown(ctx context.Context, channelID int64, now
 }
 
 // ResetChannelCooldown 重置渠道冷却状态
+// 优化：仅更新实际处于冷却中的记录，避免无谓的写入
 func (s *SQLStore) ResetChannelCooldown(ctx context.Context, channelID int64) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE channels
 		SET cooldown_until = 0, cooldown_duration_ms = 0, updated_at = ?
-		WHERE id = ?
+		WHERE id = ? AND cooldown_until > 0
 	`, timeToUnix(time.Now()), channelID)
 
 	if err != nil {
@@ -244,11 +245,12 @@ func (s *SQLStore) SetKeyCooldown(ctx context.Context, configID int64, keyIndex 
 }
 
 // ResetKeyCooldown 重置指定Key的冷却状态（操作 api_keys 表）
+// 优化：仅更新实际处于冷却中的记录，避免无谓的写入
 func (s *SQLStore) ResetKeyCooldown(ctx context.Context, configID int64, keyIndex int) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE api_keys
 		SET cooldown_until = 0, cooldown_duration_ms = 0, updated_at = ?
-		WHERE channel_id = ? AND key_index = ?
+		WHERE channel_id = ? AND key_index = ? AND cooldown_until > 0
 	`, timeToUnix(time.Now()), configID, keyIndex)
 
 	return err

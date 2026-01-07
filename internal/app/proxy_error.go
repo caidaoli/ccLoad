@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"sync/atomic"
 	"time"
 
 	"ccLoad/internal/cooldown"
@@ -15,15 +16,23 @@ import (
 // 错误处理核心函数
 // ============================================================================
 
+const cooldownWriteTimeout = 3 * time.Second
+
+var cooldownClearChannelFailCount atomic.Uint64
+var cooldownClearKeyFailCount atomic.Uint64
+
+func cooldownWriteContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	// 断开请求取消链，但保留 ctx.Value（例如 trace ID）。
+	// 避免客户端取消/首字节超时导致冷却写入或清理被短路，从而出现“坏 Key/渠道反复被打爆”或“冷却未清除”的假象。
+	return context.WithTimeout(context.WithoutCancel(ctx), cooldownWriteTimeout)
+}
+
 func (s *Server) applyCooldownDecision(
 	ctx context.Context,
 	cfg *model.Config,
 	in cooldown.ErrorInput,
 ) cooldown.Action {
-	// [FIX] 2025-12: 使用 WithoutCancel 断开取消链，但保留 context 值（如 trace ID）
-	// 原因：当客户端取消或首字节超时时，请求 ctx 已经 Done，
-	// 会导致冷却写入被短路，同一个坏 Key/渠道被反复打爆
-	cooldownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	cooldownCtx, cancel := cooldownWriteContext(ctx)
 	defer cancel()
 
 	// 设置渠道类型，用于特定渠道的错误处理策略
@@ -325,10 +334,23 @@ func (s *Server) handleProxySuccess(
 	duration float64,
 	reqCtx *proxyRequestContext,
 ) (*proxyResult, cooldown.Action) {
+	cooldownCtx, cancel := cooldownWriteContext(ctx)
+	defer cancel()
+
 	// 使用 cooldownManager 清除冷却状态
 	// 设计原则: 清除失败不应影响用户请求成功
-	_ = s.cooldownManager.ClearChannelCooldown(ctx, cfg.ID)
-	_ = s.cooldownManager.ClearKeyCooldown(ctx, cfg.ID, keyIndex)
+	if err := s.cooldownManager.ClearChannelCooldown(cooldownCtx, cfg.ID); err != nil {
+		count := cooldownClearChannelFailCount.Add(1)
+		if count%100 == 1 {
+			log.Printf("[WARN] ClearChannelCooldown 失败 (累计: %d): channel_id=%d err=%v", count, cfg.ID, err)
+		}
+	}
+	if err := s.cooldownManager.ClearKeyCooldown(cooldownCtx, cfg.ID, keyIndex); err != nil {
+		count := cooldownClearKeyFailCount.Add(1)
+		if count%100 == 1 {
+			log.Printf("[WARN] ClearKeyCooldown 失败 (累计: %d): channel_id=%d key_index=%d err=%v", count, cfg.ID, keyIndex, err)
+		}
+	}
 
 	// 冷却状态已恢复，刷新相关缓存避免下次命中过期数据
 	s.invalidateChannelRelatedCache(cfg.ID)

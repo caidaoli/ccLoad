@@ -312,3 +312,25 @@ func Test_HandleNetworkError_499_PreservesTokenStats(t *testing.T) {
 		t.Error("hasConsumedTokens(空结果) 应返回 false")
 	}
 }
+
+func TestCooldownWriteContext_DetachesCancelButPreservesValues(t *testing.T) {
+	type ctxKey string
+
+	const key ctxKey = "k"
+	baseCtx := context.WithValue(context.Background(), key, "v")
+	canceledCtx, cancel := context.WithCancel(baseCtx)
+	cancel()
+
+	ctx, cancel := cooldownWriteContext(canceledCtx)
+	defer cancel()
+
+	select {
+	case <-ctx.Done():
+		t.Fatalf("cooldownWriteContext 不应立即继承取消信号: err=%v", ctx.Err())
+	default:
+	}
+
+	if got := ctx.Value(key); got != "v" {
+		t.Fatalf("cooldownWriteContext 应保留 ctx.Value: got=%v", got)
+	}
+}
