@@ -382,7 +382,7 @@ EXPOSE 7860
 
 **自动更新**:
 - 当官方发布新版本镜像（`ghcr.io/caidaoli/ccload:latest`）时
-- 在 Space 设置中点击 "Factory reboot" 即可自动拉取最新镜像
+- 在 Space 设置中点击 "Factory rebuild" 即可自动拉取最新镜像
 - 或等待 Hugging Face 自动重启（通常 48 小时后）
 
 **手动触发更新**:

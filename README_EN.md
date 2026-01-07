@@ -350,7 +350,7 @@ With pre-built images, updates are simple:
 
 **Auto Update**:
 - When new version image (`ghcr.io/caidaoli/ccload:latest`) is released
-- Click "Factory reboot" in Space settings to pull latest image
+- Click "Factory rebuild" in Space settings to pull latest image
 - Or wait for Hugging Face auto-restart (typically after 48 hours)
 
 **Manual Trigger Update**:
