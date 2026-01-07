@@ -682,15 +682,13 @@ func (s *Server) balanceScoredChannelsInPlace(
 	// 使用平滑加权轮询获取排序后的结果
 	balanced := s.channelBalancer.BalanceChannels(configs, keyCooldowns, now)
 
-	// 按轮询结果重排 items
-	// 创建 ID -> 新位置的映射
-	newOrder := make(map[int64]int, n)
-	for i, cfg := range balanced {
-		newOrder[cfg.ID] = i
+	// 按轮询结果重排 items（O(n) 交换）
+	// balanced[0] 是选中的渠道，需要把它移到 items[0]
+	selectedID := balanced[0].ID
+	for i, item := range items {
+		if item.config.ID == selectedID && i != 0 {
+			items[0], items[i] = items[i], items[0]
+			break
+		}
 	}
-
-	// 按新顺序排列
-	sort.SliceStable(items, func(i, j int) bool {
-		return newOrder[items[i].config.ID] < newOrder[items[j].config.ID]
-	})
 }

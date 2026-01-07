@@ -382,6 +382,10 @@ func (s *Server) InvalidateChannelListCache() {
 	if cache := s.getChannelCache(); cache != nil {
 		cache.InvalidateCache()
 	}
+	// 渠道配置变更时重置轮询状态，确保新配置下的分布正确
+	if s.channelBalancer != nil {
+		s.channelBalancer.ResetAll()
+	}
 }
 
 // InvalidateAPIKeysCache 使指定渠道的 API Keys 缓存失效
@@ -520,7 +524,7 @@ func (s *Server) HandleEventLoggingBatch(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{})
 }
 
-// Token清理循环（定期清理过期Token）
+// Token清理循环（定期清理过期Token和轮询状态）
 // 支持优雅关闭
 func (s *Server) tokenCleanupLoop() {
 	defer s.wg.Done()
@@ -537,6 +541,10 @@ func (s *Server) tokenCleanupLoop() {
 			return
 		case <-ticker.C:
 			s.authService.CleanExpiredTokens()
+			// 清理过期的轮询状态（30分钟无访问视为过期）
+			if s.channelBalancer != nil {
+				s.channelBalancer.Cleanup(30 * time.Minute)
+			}
 		}
 	}
 }

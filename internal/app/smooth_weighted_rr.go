@@ -2,6 +2,7 @@ package app
 
 import (
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -131,21 +132,24 @@ func (rr *SmoothWeightedRR) SelectWithCooldown(
 }
 
 // generateGroupKey 生成渠道组的唯一标识
-// 使用渠道ID排序后拼接，确保相同渠道组合生成相同的key
+// 使用所有渠道ID拼接，确保不同渠道组合生成不同的key
 func (rr *SmoothWeightedRR) generateGroupKey(channels []*modelpkg.Config) string {
-	// 简单实现：直接用第一个和最后一个渠道ID + 数量
-	// 对于同优先级组，渠道组合通常相对稳定
-	if len(channels) == 0 {
+	n := len(channels)
+	if n == 0 {
 		return ""
 	}
 
-	// 使用快速hash：首ID + 尾ID + 数量
-	first := channels[0].ID
-	last := channels[len(channels)-1].ID
-	count := len(channels)
+	// 预估容量：每个ID约3-4字符 + 分隔符
+	var b strings.Builder
+	b.Grow(n * 4)
 
-	// 格式: "first:last:count"（使用 strconv 避免 rune 溢出）
-	return strconv.FormatInt(first, 36) + ":" + strconv.FormatInt(last, 36) + ":" + strconv.Itoa(count)
+	for i, ch := range channels {
+		if i > 0 {
+			b.WriteByte(':')
+		}
+		b.WriteString(strconv.FormatInt(ch.ID, 36))
+	}
+	return b.String()
 }
 
 // Cleanup 清理过期的轮询状态（可选，避免内存泄漏）
@@ -202,4 +206,11 @@ func (cb *ChannelBalancer) BalanceChannels(
 // Cleanup 清理过期状态
 func (cb *ChannelBalancer) Cleanup(maxAge time.Duration) {
 	cb.smoothRR.Cleanup(maxAge)
+}
+
+// ResetAll 重置所有轮询状态（渠道配置变更时调用）
+func (cb *ChannelBalancer) ResetAll() {
+	cb.smoothRR.mu.Lock()
+	defer cb.smoothRR.mu.Unlock()
+	cb.smoothRR.states = make(map[string]*rrGroupState)
 }
