@@ -7,7 +7,6 @@ import (
 	"cmp"
 	"context"
 	"log"
-	"math/rand/v2"
 	"slices"
 	"sort"
 	"strconv"
@@ -29,7 +28,7 @@ func (s *Server) selectCandidatesByChannelType(ctx context.Context, channelType 
 	if err != nil {
 		return nil, err
 	}
-	return s.filterCooldownChannels(ctx, shuffleSamePriorityChannels(channels))
+	return s.filterCooldownChannels(ctx, channels)
 }
 
 // selectCandidatesByModelAndType 根据模型和渠道类型筛选候选渠道
@@ -87,7 +86,7 @@ func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model strin
 		return nil, err
 	}
 
-	return s.filterCooldownChannels(ctx, shuffleSamePriorityChannels(channels))
+	return s.filterCooldownChannels(ctx, channels)
 }
 
 // getEnabledChannelsWithFallback 统一的降级查询逻辑（DRY）
@@ -229,10 +228,10 @@ func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpk
 		// 启用时：直接返回"最早恢复"的渠道，让上层继续走正常流程（不要再搞阈值这类花活）。
 		fallbackEnabled := true
 		if s.configService != nil {
-			fallbackEnabled = s.configService.GetBool("cooldown_fallback_threshold", true)
+			fallbackEnabled = s.configService.GetBool("cooldown_fallback_enabled", true)
 		}
 		if !fallbackEnabled {
-			log.Printf("[INFO] All channels cooled, fallback disabled (cooldown_fallback_threshold=false)")
+			log.Printf("[INFO] All channels cooled, fallback disabled (cooldown_fallback_enabled=false)")
 			return nil, nil
 		}
 
@@ -307,8 +306,7 @@ func (s *Server) pickBestChannelWhenAllCooled(
 
 	best := slices.MinFunc(valid, func(a, b *modelpkg.Config) int {
 		// 1. 最早恢复优先（时间小的排前面）
-		if c := a.ID - b.ID; getReadyAt(a) != getReadyAt(b) {
-			_ = c // 避免unused
+		if getReadyAt(a) != getReadyAt(b) {
 			if getReadyAt(a).Before(getReadyAt(b)) {
 				return -1
 			}
@@ -425,43 +423,6 @@ func (s *Server) sortChannelsByHealth(
 	return result
 }
 
-func weightedShuffleScoredInPlace(items []channelWithScore, keyCooldowns map[int64]map[int]time.Time, now time.Time) {
-	n := len(items)
-	if n <= 1 {
-		return
-	}
-
-	// 计算权重（有效KeyCount = 总KeyCount - 冷却中的Key数量，最小为1）
-	weights := make([]int, n)
-	totalWeight := 0
-	for i := range items {
-		w := calcEffectiveKeyCount(items[i].config, keyCooldowns, now)
-		weights[i] = w
-		totalWeight += w
-	}
-
-	// 加权随机选择排列：每次从剩余元素中按权重选一个放到当前位置
-	for i := 0; i < n-1; i++ {
-		r := rand.IntN(totalWeight)
-		cumulative := 0
-		selected := i
-		for j := i; j < n; j++ {
-			cumulative += weights[j]
-			if r < cumulative {
-				selected = j
-				break
-			}
-		}
-
-		if selected != i {
-			items[i], items[selected] = items[selected], items[i]
-			weights[i], weights[selected] = weights[selected], weights[i]
-		}
-
-		totalWeight -= weights[i]
-	}
-}
-
 // calcEffectiveKeyCount 计算渠道的有效Key数量（排除冷却中的Key）
 func calcEffectiveKeyCount(cfg *modelpkg.Config, keyCooldowns map[int64]map[int]time.Time, now time.Time) int {
 	total := cfg.KeyCount
@@ -487,77 +448,6 @@ func calcEffectiveKeyCount(cfg *modelpkg.Config, keyCooldowns map[int64]map[int]
 		return 1 // 最小为1
 	}
 	return effective
-}
-
-// weightedShuffleSamePriorityWithCooldown 按优先级分组，使用有效Key数量加权随机
-// 用于 healthCache 关闭时的场景，确保冷却感知的加权分流
-func weightedShuffleSamePriorityWithCooldown(
-	channels []*modelpkg.Config,
-	keyCooldowns map[int64]map[int]time.Time,
-	now time.Time,
-) []*modelpkg.Config {
-	n := len(channels)
-	if n <= 1 {
-		return channels
-	}
-
-	result := make([]*modelpkg.Config, n)
-	copy(result, channels)
-
-	// 按优先级分组，组内按有效Key数量加权随机
-	groupStart := 0
-	for i := 1; i <= n; i++ {
-		if i == n || result[i].Priority != result[groupStart].Priority {
-			if i-groupStart > 1 {
-				weightedShuffleWithCooldownInPlace(result[groupStart:i], keyCooldowns, now)
-			}
-			groupStart = i
-		}
-	}
-
-	return result
-}
-
-// weightedShuffleWithCooldownInPlace 按有效Key数量（排除冷却）加权随机排列
-func weightedShuffleWithCooldownInPlace(
-	channels []*modelpkg.Config,
-	keyCooldowns map[int64]map[int]time.Time,
-	now time.Time,
-) {
-	n := len(channels)
-	if n <= 1 {
-		return
-	}
-
-	// 计算权重（有效KeyCount = 总KeyCount - 冷却中的Key数量，最小为1）
-	weights := make([]int, n)
-	totalWeight := 0
-	for i, ch := range channels {
-		w := calcEffectiveKeyCount(ch, keyCooldowns, now)
-		weights[i] = w
-		totalWeight += w
-	}
-
-	// 加权随机选择排列：每次从剩余元素中按权重选一个放到当前位置
-	for i := 0; i < n-1; i++ {
-		r := rand.IntN(totalWeight)
-		cumulative := 0
-		selected := i
-		for j := i; j < n; j++ {
-			cumulative += weights[j]
-			if r < cumulative {
-				selected = j
-				break
-			}
-		}
-
-		if selected != i {
-			channels[i], channels[selected] = channels[selected], channels[i]
-			weights[i], weights[selected] = weights[selected], weights[i]
-		}
-
-		totalWeight -= weights[i]
-	}
 }
 
 // calculateEffectivePriority 计算渠道的有效优先级
@@ -590,35 +480,6 @@ func (s *Server) calculateEffectivePriority(
 	return basePriority - penalty
 }
 
-// shuffleSamePriorityChannels 随机打乱相同优先级的渠道，实现负载均衡
-// 设计原则：KISS、无状态、保持优先级排序
-func shuffleSamePriorityChannels(channels []*modelpkg.Config) []*modelpkg.Config {
-	n := len(channels)
-	if n <= 1 {
-		return channels
-	}
-
-	result := make([]*modelpkg.Config, n)
-	copy(result, channels)
-
-	// 仅按优先级排序，加权随机将在 filterCooldownChannels 中执行（需要冷却信息）
-	// 使用简单随机打乱同优先级渠道，提供初始随机化
-	groupStart := 0
-	for i := 1; i <= n; i++ {
-		if i == n || result[i].Priority != result[groupStart].Priority {
-			// 简单随机打乱 [groupStart, i) 区间
-			if i-groupStart > 1 {
-				rand.Shuffle(i-groupStart, func(a, b int) {
-					result[groupStart+a], result[groupStart+b] = result[groupStart+b], result[groupStart+a]
-				})
-			}
-			groupStart = i
-		}
-	}
-
-	return result
-}
-
 // balanceSamePriorityChannels 按优先级分组，组内使用平滑加权轮询
 // 用于 healthCache 关闭时的场景，确保确定性分流
 func (s *Server) balanceSamePriorityChannels(
@@ -631,9 +492,9 @@ func (s *Server) balanceSamePriorityChannels(
 		return channels
 	}
 
-	// 没有 channelBalancer 时降级为随机
+	// channelBalancer 在 Init() 中无条件初始化，nil 表示初始化错误
 	if s.channelBalancer == nil {
-		return weightedShuffleSamePriorityWithCooldown(channels, keyCooldowns, now)
+		panic("channelBalancer is nil: server not properly initialized")
 	}
 
 	result := make([]*modelpkg.Config, n)
@@ -645,7 +506,7 @@ func (s *Server) balanceSamePriorityChannels(
 		if i == n || result[i].Priority != result[groupStart].Priority {
 			if i-groupStart > 1 {
 				group := result[groupStart:i]
-				balanced := s.channelBalancer.BalanceChannels(group, keyCooldowns, now)
+				balanced := s.channelBalancer.SelectWithCooldown(group, keyCooldowns, now)
 				copy(result[groupStart:i], balanced)
 			}
 			groupStart = i
@@ -667,10 +528,9 @@ func (s *Server) balanceScoredChannelsInPlace(
 		return
 	}
 
-	// 没有 channelBalancer 时降级为加权随机
+	// channelBalancer 在 Init() 中无条件初始化，nil 表示初始化错误
 	if s.channelBalancer == nil {
-		weightedShuffleScoredInPlace(items, keyCooldowns, now)
-		return
+		panic("channelBalancer is nil: server not properly initialized")
 	}
 
 	// 提取 Config 列表用于轮询选择
@@ -680,7 +540,7 @@ func (s *Server) balanceScoredChannelsInPlace(
 	}
 
 	// 使用平滑加权轮询获取排序后的结果
-	balanced := s.channelBalancer.BalanceChannels(configs, keyCooldowns, now)
+	balanced := s.channelBalancer.SelectWithCooldown(configs, keyCooldowns, now)
 
 	// 按轮询结果重排 items（O(n) 交换）
 	// balanced[0] 是选中的渠道，需要把它移到 items[0]

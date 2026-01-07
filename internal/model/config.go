@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -56,7 +57,7 @@ type Config struct {
 
 	// 模型查找索引（懒加载，不序列化）
 	modelIndex map[string]*ModelEntry `json:"-"`
-	indexOnce  sync.Once              `json:"-"` // 保证线程安全的单次初始化
+	indexMu    sync.RWMutex           `json:"-"` // 保护索引的并发访问
 }
 
 // GetModels 获取所有支持的模型名称列表
@@ -69,28 +70,35 @@ func (c *Config) GetModels() []string {
 }
 
 // buildIndexIfNeeded 懒加载构建模型查找索引（性能优化：O(n) → O(1)）
-// 使用 sync.Once 保证并发安全，避免竞态条件
+// 使用双重检查锁定（DCL）模式保证并发安全
 func (c *Config) buildIndexIfNeeded() {
-	c.indexOnce.Do(func() {
-		c.modelIndex = make(map[string]*ModelEntry, len(c.ModelEntries))
-		for i := range c.ModelEntries {
-			c.modelIndex[c.ModelEntries[i].Model] = &c.ModelEntries[i]
-		}
-	})
-}
+	// 快路径：读锁检查
+	c.indexMu.RLock()
+	if c.modelIndex != nil {
+		c.indexMu.RUnlock()
+		return
+	}
+	c.indexMu.RUnlock()
 
-// ResetModelIndex 重置模型索引缓存
-// 用于 deepCopy 或 ModelEntries 被外部修改后，确保下次访问时重新构建索引
-// [FIX] P0: 收敛索引生命周期管理，避免 sync.Once 复制和索引指向旧数据
-func (c *Config) ResetModelIndex() {
-	c.modelIndex = nil
-	c.indexOnce = sync.Once{}
+	// 慢路径：写锁构建
+	c.indexMu.Lock()
+	defer c.indexMu.Unlock()
+	// 双重检查：可能其他 goroutine 已构建
+	if c.modelIndex != nil {
+		return
+	}
+	c.modelIndex = make(map[string]*ModelEntry, len(c.ModelEntries))
+	for i := range c.ModelEntries {
+		c.modelIndex[c.ModelEntries[i].Model] = &c.ModelEntries[i]
+	}
 }
 
 // GetRedirectModel 获取模型的重定向目标
 // 返回 (目标模型, 是否有重定向)
 func (c *Config) GetRedirectModel(model string) (string, bool) {
 	c.buildIndexIfNeeded()
+	c.indexMu.RLock()
+	defer c.indexMu.RUnlock()
 	if entry, exists := c.modelIndex[model]; exists && entry.RedirectModel != "" {
 		return entry.RedirectModel, true
 	}
@@ -100,6 +108,8 @@ func (c *Config) GetRedirectModel(model string) (string, bool) {
 // SupportsModel 检查渠道是否支持指定模型
 func (c *Config) SupportsModel(model string) bool {
 	c.buildIndexIfNeeded()
+	c.indexMu.RLock()
+	defer c.indexMu.RUnlock()
 	_, exists := c.modelIndex[model]
 	return exists
 }
@@ -188,14 +198,11 @@ func (c *Config) FuzzyMatchModel(query string) (string, bool) {
 
 // sortModelsByVersion 按版本排序模型列表（最新优先）
 // 排序优先级：1.日期后缀 2.版本数字 3.字典序
+// 使用标准库 slices.SortFunc，O(n log n) 复杂度
 func sortModelsByVersion(models []string) {
-	for i := 0; i < len(models)-1; i++ {
-		for j := i + 1; j < len(models); j++ {
-			if compareModelVersion(models[i], models[j]) < 0 {
-				models[i], models[j] = models[j], models[i]
-			}
-		}
-	}
+	slices.SortFunc(models, func(a, b string) int {
+		return -compareModelVersion(a, b) // 降序（最新优先）
+	})
 }
 
 // compareModelVersion 比较两个模型版本

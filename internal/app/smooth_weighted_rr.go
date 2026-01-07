@@ -166,51 +166,9 @@ func (rr *SmoothWeightedRR) Cleanup(maxAge time.Duration) {
 	}
 }
 
-// Reset 重置指定组的轮询状态（渠道配置变更时调用）
-func (rr *SmoothWeightedRR) Reset(channels []*modelpkg.Config) {
-	if len(channels) == 0 {
-		return
-	}
-
-	groupKey := rr.generateGroupKey(channels)
-
+// ResetAll 重置所有轮询状态（渠道配置变更时调用）
+func (rr *SmoothWeightedRR) ResetAll() {
 	rr.mu.Lock()
 	defer rr.mu.Unlock()
-
-	delete(rr.states, groupKey)
-}
-
-// ChannelBalancer 渠道负载均衡器接口
-// 同时支持平滑加权轮询和加权随机两种策略
-type ChannelBalancer struct {
-	smoothRR *SmoothWeightedRR
-}
-
-// NewChannelBalancer 创建渠道负载均衡器
-func NewChannelBalancer() *ChannelBalancer {
-	return &ChannelBalancer{
-		smoothRR: NewSmoothWeightedRR(),
-	}
-}
-
-// BalanceChannels 对同优先级渠道进行负载均衡
-// 使用平滑加权轮询，权重基于有效Key数量
-func (cb *ChannelBalancer) BalanceChannels(
-	channels []*modelpkg.Config,
-	keyCooldowns map[int64]map[int]time.Time,
-	now time.Time,
-) []*modelpkg.Config {
-	return cb.smoothRR.SelectWithCooldown(channels, keyCooldowns, now)
-}
-
-// Cleanup 清理过期状态
-func (cb *ChannelBalancer) Cleanup(maxAge time.Duration) {
-	cb.smoothRR.Cleanup(maxAge)
-}
-
-// ResetAll 重置所有轮询状态（渠道配置变更时调用）
-func (cb *ChannelBalancer) ResetAll() {
-	cb.smoothRR.mu.Lock()
-	defer cb.smoothRR.mu.Unlock()
-	cb.smoothRR.states = make(map[string]*rrGroupState)
+	rr.states = make(map[string]*rrGroupState)
 }

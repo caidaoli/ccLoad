@@ -40,7 +40,7 @@ type Server struct {
 	keySelector     *KeySelector          // Key选择器（多Key支持）
 	cooldownManager *cooldown.Manager     // 统一冷却管理器
 	healthCache     *HealthCache          // 渠道健康度缓存
-	channelBalancer *ChannelBalancer      // 渠道负载均衡器（平滑加权轮询）
+	channelBalancer *SmoothWeightedRR     // 渠道负载均衡器（平滑加权轮询）
 	client          *http.Client          // HTTP客户端
 	activeRequests  *activeRequestManager // 进行中请求（内存状态，不持久化）
 
@@ -192,7 +192,7 @@ func NewServer(store storage.Store) *Server {
 	s.keySelector = NewKeySelector()
 
 	// 初始化渠道负载均衡器（平滑加权轮询，确定性分流）
-	s.channelBalancer = NewChannelBalancer()
+	s.channelBalancer = NewSmoothWeightedRR()
 
 	// 初始化88code验证器（启动时读取配置，修改后重启生效）
 	validator.Init88CodeValidator(enable88codeFreeOnly)

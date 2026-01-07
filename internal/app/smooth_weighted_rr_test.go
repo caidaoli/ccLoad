@@ -164,10 +164,10 @@ func TestSmoothWeightedRR_WithCooldown(t *testing.T) {
 	}
 }
 
-func TestChannelBalancer_Integration(t *testing.T) {
-	// 集成测试：验证 ChannelBalancer 的完整工作流
+func TestSmoothWeightedRR_Integration(t *testing.T) {
+	// 集成测试：验证 SmoothWeightedRR 的完整工作流
 
-	balancer := NewChannelBalancer()
+	balancer := NewSmoothWeightedRR()
 
 	channels := []*modelpkg.Config{
 		{ID: 39, Name: "glm", Priority: 190, KeyCount: 3},
@@ -181,11 +181,11 @@ func TestChannelBalancer_Integration(t *testing.T) {
 	callCount := make(map[int64]int)
 
 	for i := 0; i < iterations; i++ {
-		result := balancer.BalanceChannels(channels, keyCooldowns, now)
+		result := balancer.SelectWithCooldown(channels, keyCooldowns, now)
 		callCount[result[0].ID]++
 	}
 
-	t.Logf("[STATS] ChannelBalancer 集成测试（%d次）:", iterations)
+	t.Logf("[STATS] SmoothWeightedRR 集成测试（%d次）:", iterations)
 	t.Logf("  - 渠道39 (3 Keys): %d次 (%.1f%%), 期望75%%",
 		callCount[39], float64(callCount[39])/float64(iterations)*100)
 	t.Logf("  - 渠道5 (1 Key): %d次 (%.1f%%), 期望25%%",

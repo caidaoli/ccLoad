@@ -15,7 +15,7 @@ func TestSelectRouteCandidates_NormalRequest(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store}
+	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
 	ctx := context.Background()
 
 	// 创建测试渠道，支持不同模型
@@ -92,7 +92,7 @@ func TestSelectRouteCandidates_CooledDownChannels(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store}
+	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
 	ctx := context.Background()
 	now := time.Now()
 
@@ -144,7 +144,7 @@ func TestSelectRouteCandidates_AllCooled_FallbackChoosesEarliestChannelCooldown(
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store}
+	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
 	ctx := context.Background()
 	now := time.Now()
 
@@ -190,8 +190,8 @@ func TestSelectRouteCandidates_AllCooled_FallbackDisabledWhenThresholdZero(t *te
 	ctx := context.Background()
 	now := time.Now()
 
-	if err := store.UpdateSetting(ctx, "cooldown_fallback_threshold", "0"); err != nil {
-		t.Fatalf("设置cooldown_fallback_threshold失败: %v", err)
+	if err := store.UpdateSetting(ctx, "cooldown_fallback_enabled", "0"); err != nil {
+		t.Fatalf("设置cooldown_fallback_enabled失败: %v", err)
 	}
 
 	cs := NewConfigService(store)
@@ -237,7 +237,7 @@ func TestSelectRouteCandidates_AllCooledByKeys_FallbackChoosesEarliestKeyCooldow
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store}
+	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
 	ctx := context.Background()
 	now := time.Now()
 
@@ -299,7 +299,7 @@ func TestSelectRouteCandidates_DisabledChannels(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store}
+	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
 	ctx := context.Background()
 
 	// 创建2个渠道，1个启用，1个禁用
@@ -350,7 +350,7 @@ func TestSelectRouteCandidates_PriorityGrouping(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store}
+	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
 	ctx := context.Background()
 
 	// 创建相同优先级的多个渠道
@@ -393,7 +393,7 @@ func TestSelectCandidates_FilterByChannelType(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store}
+	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
 	ctx := context.Background()
 
 	channels := []*model.Config{
@@ -447,7 +447,7 @@ func TestSelectCandidatesByChannelType_GeminiFilter(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store}
+	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
 	ctx := context.Background()
 
 	// 创建不同类型的渠道
@@ -492,7 +492,7 @@ func TestSelectRouteCandidates_WildcardModel(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store}
+	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
 	ctx := context.Background()
 
 	// 创建多个支持不同模型的渠道
@@ -534,7 +534,7 @@ func TestSelectRouteCandidates_NoMatchingChannels(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store}
+	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
 	ctx := context.Background()
 
 	// 创建只支持特定模型的渠道
@@ -792,7 +792,7 @@ func TestSelectRouteCandidates_MixedPriorities(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store}
+	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
 	ctx := context.Background()
 
 	// 创建不同优先级的渠道
@@ -854,7 +854,7 @@ func TestShuffleSamePriorityChannels(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store}
+	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
 	ctx := context.Background()
 
 	// 创建两个相同优先级的渠道（模拟渠道22和23）
@@ -908,48 +908,6 @@ func TestShuffleSamePriorityChannels(t *testing.T) {
 	t.Logf("[INFO] 相同优先级渠道随机化正常，负载均衡有效")
 }
 
-// TestWeightedShuffleSamePriorityChannels 测试按Key数量加权的随机化
-func TestWeightedShuffleSamePriorityChannels(t *testing.T) {
-	// 测试 weightedShuffleSamePriorityWithCooldown 函数
-	// 渠道A: 10 Keys, 渠道B: 2 Keys
-	// 期望A首位出现概率约 10/12 ≈ 83%
-
-	iterations := 1000
-	firstPositionCount := make(map[string]int)
-
-	for i := 0; i < iterations; i++ {
-		channels := []*model.Config{
-			{ID: 1, Name: "channel-A", Priority: 10, KeyCount: 10},
-			{ID: 2, Name: "channel-B", Priority: 10, KeyCount: 2},
-		}
-
-		// 调用被测函数（无冷却Key）
-		result := weightedShuffleSamePriorityWithCooldown(channels, nil, time.Now())
-
-		// 统计第一个渠道
-		firstPositionCount[result[0].Name]++
-	}
-
-	ratioA := float64(firstPositionCount["channel-A"]) / float64(iterations) * 100
-	ratioB := float64(firstPositionCount["channel-B"]) / float64(iterations) * 100
-
-	t.Logf("[STATS] 加权随机统计（%d次）:", iterations)
-	t.Logf("  - channel-A (10 Keys) 首位: %d次 (%.1f%%), 期望≈83%%",
-		firstPositionCount["channel-A"], ratioA)
-	t.Logf("  - channel-B (2 Keys) 首位: %d次 (%.1f%%), 期望≈17%%",
-		firstPositionCount["channel-B"], ratioB)
-
-	// 验证加权分布：A应该在70%-95%范围，B在5%-30%范围
-	if ratioA < 70 || ratioA > 95 {
-		t.Errorf("加权分布异常: channel-A出现%.1f%%，期望70%%-95%%", ratioA)
-	}
-	if ratioB < 5 || ratioB > 30 {
-		t.Errorf("加权分布异常: channel-B出现%.1f%%，期望5%%-30%%", ratioB)
-	}
-
-	t.Logf("[INFO] Key数量加权随机正常，渠道容量大的获得更多流量")
-}
-
 func TestSortChannelsByHealth_WeightedByKeyCount(t *testing.T) {
 	// 期望：healthCache 开启时，同有效优先级组内也要按 KeyCount 分流（容量大的拿更多流量）
 	// 这里把健康惩罚权重设为0，确保两个渠道有效优先级完全相同，只验证“组内加权打散”。
@@ -962,6 +920,7 @@ func TestSortChannelsByHealth_WeightedByKeyCount(t *testing.T) {
 				MinConfidentSample:       0,
 			},
 		},
+		channelBalancer: NewSmoothWeightedRR(),
 	}
 	empty := make(map[int64]model.ChannelHealthStats)
 	server.healthCache.healthStats.Store(&empty)
@@ -1009,6 +968,7 @@ func TestSortChannelsByHealth_WeightedByEffectiveKeyCount(t *testing.T) {
 				MinConfidentSample:       0,
 			},
 		},
+		channelBalancer: NewSmoothWeightedRR(),
 	}
 	empty := make(map[int64]model.ChannelHealthStats)
 	server.healthCache.healthStats.Store(&empty)

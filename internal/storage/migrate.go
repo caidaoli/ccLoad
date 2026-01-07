@@ -535,7 +535,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"health_score_update_interval", "30", "int", "成功率缓存更新间隔(秒)", "30"},
 		{"health_min_confident_sample", "20", "int", "置信样本量阈值(样本量达到此值时惩罚全额生效)", "20"},
 		// 冷却兜底配置
-		{"cooldown_fallback_threshold", "true", "bool", "所有渠道冷却时选最优渠道兜底(关闭则直接拒绝请求)", "true"},
+		{"cooldown_fallback_enabled", "true", "bool", "所有渠道冷却时选最优渠道兜底(关闭则直接拒绝请求)", "true"},
 	}
 
 	var query string
@@ -551,24 +551,24 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		}
 	}
 
-	// 元数据修正：cooldown_fallback_threshold 从 int 改为 bool 类型
-	// 迁移：value_type 改为 bool，description 和 default_value 更新，保留用户当前语义（非0视为true）
+	// 迁移旧键名 cooldown_fallback_threshold → cooldown_fallback_enabled
+	// 同时处理 int→bool 的类型迁移
 	{
 		keyCol := "key"
 		if dialect == DialectMySQL {
 			keyCol = "`key`"
 		}
-		// 先将旧的 int 值(0/非0)迁移为 bool 值(false/true)
+		// 1. 先将旧的 int 值(0/非0)迁移为 bool 值(false/true)
 		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
 		valueMigrateSQL := fmt.Sprintf(`UPDATE system_settings SET value = CASE WHEN value = '0' THEN 'false' ELSE 'true' END WHERE %s = ? AND value_type = 'int'`, keyCol)
 		if _, err := db.ExecContext(ctx, valueMigrateSQL, "cooldown_fallback_threshold"); err != nil {
 			return fmt.Errorf("migrate setting value cooldown_fallback_threshold: %w", err)
 		}
-		// 更新元数据
+		// 2. 重命名键：cooldown_fallback_threshold → cooldown_fallback_enabled
 		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
-		metaSQL := fmt.Sprintf("UPDATE system_settings SET description = ?, default_value = ?, value_type = ? WHERE %s = ?", keyCol)
-		if _, err := db.ExecContext(ctx, metaSQL, "所有渠道冷却时选最优渠道兜底(关闭则直接拒绝请求)", "true", "bool", "cooldown_fallback_threshold"); err != nil {
-			return fmt.Errorf("update setting metadata cooldown_fallback_threshold: %w", err)
+		renameSQL := fmt.Sprintf("UPDATE system_settings SET %s = ?, description = ?, default_value = ?, value_type = ? WHERE %s = ?", keyCol, keyCol)
+		if _, err := db.ExecContext(ctx, renameSQL, "cooldown_fallback_enabled", "所有渠道冷却时选最优渠道兜底(关闭则直接拒绝请求)", "true", "bool", "cooldown_fallback_threshold"); err != nil {
+			return fmt.Errorf("rename setting cooldown_fallback_threshold to cooldown_fallback_enabled: %w", err)
 		}
 	}
 

@@ -21,7 +21,6 @@ type Store interface {
 	CreateConfig(ctx context.Context, c *model.Config) (*model.Config, error)
 	UpdateConfig(ctx context.Context, id int64, upd *model.Config) (*model.Config, error)
 	DeleteConfig(ctx context.Context, id int64) error
-	ReplaceConfig(ctx context.Context, c *model.Config) (*model.Config, error)
 	GetEnabledChannelsByModel(ctx context.Context, modelName string) ([]*model.Config, error)
 	GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*model.Config, error)
 	BatchUpdatePriority(ctx context.Context, updates []struct {
@@ -61,8 +60,6 @@ type Store interface {
 	CleanupLogsBefore(ctx context.Context, cutoff time.Time) error
 
 	// === Metrics & Statistics ===
-	Aggregate(ctx context.Context, since time.Time, bucket time.Duration) ([]model.MetricPoint, error)
-	AggregateRange(ctx context.Context, since, until time.Time, bucket time.Duration) ([]model.MetricPoint, error)
 	AggregateRangeWithFilter(ctx context.Context, since, until time.Time, bucket time.Duration, filter *model.LogFilter) ([]model.MetricPoint, error)
 	GetDistinctModels(ctx context.Context, since, until time.Time, channelType string) ([]string, error)
 	GetStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) ([]model.StatsEntry, error)
