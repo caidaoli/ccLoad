@@ -249,8 +249,8 @@ func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpk
 		return s.sortChannelsByHealth(filtered, keyCooldowns, now), nil
 	}
 
-	// healthCache 关闭时：按优先级分组，使用有效Key数量加权随机
-	return weightedShuffleSamePriorityWithCooldown(filtered, keyCooldowns, now), nil
+	// healthCache 关闭时：按优先级分组，使用平滑加权轮询
+	return s.balanceSamePriorityChannels(filtered, keyCooldowns, now), nil
 }
 
 // pickBestChannelWhenAllCooled 全冷却时选择最佳渠道。
@@ -404,8 +404,8 @@ func (s *Server) sortChannelsByHealth(
 		return scored[i].effPriority > scored[j].effPriority
 	})
 
-	// 同有效优先级内按 KeyCount 加权打散（负载均衡）
-	// 说明：healthCache 开启后仍需按 Key 数量分流，不能退化成均匀随机。
+	// 同有效优先级内按 KeyCount 平滑加权轮询（负载均衡）
+	// 说明：healthCache 开启后仍需按 Key 数量分流，使用确定性轮询替代随机
 	// 精度：*10 取整，可区分 0.1 差异（如 5.0 vs 5.1）
 	// 设计考虑：优先级通常是整数（5, 10），成功率惩罚基于统计（精度有限），0.1 精度已足够
 	result := make([]*modelpkg.Config, len(scored))
@@ -413,7 +413,7 @@ func (s *Server) sortChannelsByHealth(
 	for i := 1; i <= len(scored); i++ {
 		if i == len(scored) || int(scored[i].effPriority*10) != int(scored[groupStart].effPriority*10) {
 			if i-groupStart > 1 {
-				weightedShuffleScoredInPlace(scored[groupStart:i], keyCooldowns, now)
+				s.balanceScoredChannelsInPlace(scored[groupStart:i], keyCooldowns, now)
 			}
 			groupStart = i
 		}
@@ -617,4 +617,80 @@ func shuffleSamePriorityChannels(channels []*modelpkg.Config) []*modelpkg.Config
 	}
 
 	return result
+}
+
+// balanceSamePriorityChannels 按优先级分组，组内使用平滑加权轮询
+// 用于 healthCache 关闭时的场景，确保确定性分流
+func (s *Server) balanceSamePriorityChannels(
+	channels []*modelpkg.Config,
+	keyCooldowns map[int64]map[int]time.Time,
+	now time.Time,
+) []*modelpkg.Config {
+	n := len(channels)
+	if n <= 1 {
+		return channels
+	}
+
+	// 没有 channelBalancer 时降级为随机
+	if s.channelBalancer == nil {
+		return weightedShuffleSamePriorityWithCooldown(channels, keyCooldowns, now)
+	}
+
+	result := make([]*modelpkg.Config, n)
+	copy(result, channels)
+
+	// 按优先级分组，组内使用平滑加权轮询
+	groupStart := 0
+	for i := 1; i <= n; i++ {
+		if i == n || result[i].Priority != result[groupStart].Priority {
+			if i-groupStart > 1 {
+				group := result[groupStart:i]
+				balanced := s.channelBalancer.BalanceChannels(group, keyCooldowns, now)
+				copy(result[groupStart:i], balanced)
+			}
+			groupStart = i
+		}
+	}
+
+	return result
+}
+
+// balanceScoredChannelsInPlace 对带分数的渠道列表进行平滑加权轮询
+// 用于 healthCache 开启时的同有效优先级组内负载均衡
+func (s *Server) balanceScoredChannelsInPlace(
+	items []channelWithScore,
+	keyCooldowns map[int64]map[int]time.Time,
+	now time.Time,
+) {
+	n := len(items)
+	if n <= 1 {
+		return
+	}
+
+	// 没有 channelBalancer 时降级为加权随机
+	if s.channelBalancer == nil {
+		weightedShuffleScoredInPlace(items, keyCooldowns, now)
+		return
+	}
+
+	// 提取 Config 列表用于轮询选择
+	configs := make([]*modelpkg.Config, n)
+	for i, item := range items {
+		configs[i] = item.config
+	}
+
+	// 使用平滑加权轮询获取排序后的结果
+	balanced := s.channelBalancer.BalanceChannels(configs, keyCooldowns, now)
+
+	// 按轮询结果重排 items
+	// 创建 ID -> 新位置的映射
+	newOrder := make(map[int64]int, n)
+	for i, cfg := range balanced {
+		newOrder[cfg.ID] = i
+	}
+
+	// 按新顺序排列
+	sort.SliceStable(items, func(i, j int) bool {
+		return newOrder[items[i].config.ID] < newOrder[items[j].config.ID]
+	})
 }
