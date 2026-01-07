@@ -15,10 +15,9 @@ go test -tags go_json ./internal/... -v
 go test -tags go_json -race ./internal/...  # 竞态检测
 
 # 开发运行(版本号为dev)
-export CCLOAD_PASS=test123  # 必填
 go run -tags go_json .
 ```
-
+运行所需环境变量定义在.env文件中
 ## 核心架构
 
 ```
