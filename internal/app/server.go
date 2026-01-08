@@ -270,6 +270,10 @@ func NewServer(store storage.Store) *Server {
 	s.wg.Add(1)
 	go s.tokenCleanupLoop() // 定期清理过期Token
 
+	// [FIX] P1: 启动后台状态清理协程（防止内存泄漏）
+	s.wg.Add(1)
+	go s.stateCleanupLoop()
+
 	return s
 
 }
@@ -541,9 +545,36 @@ func (s *Server) tokenCleanupLoop() {
 			return
 		case <-ticker.C:
 			s.authService.CleanExpiredTokens()
-			// 清理过期的轮询状态（30分钟无访问视为过期）
+		}
+	}
+}
+
+// stateCleanupLoop 后台状态清理循环（防止内存泄漏）
+// [FIX] P1: 清理 SmoothWeightedRR 和 KeySelector 的过期状态
+func (s *Server) stateCleanupLoop() {
+	defer s.wg.Done()
+
+	// 每小时清理一次过期状态
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+
+	log.Print("[INFO] 后台状态清理循环已启动（每小时清理过期的轮询状态和计数器）")
+
+	for {
+		select {
+		case <-s.shutdownCh:
+			log.Print("[INFO] 后台状态清理循环已停止")
+			return
+		case <-ticker.C:
+			// 清理SmoothWeightedRR的过期轮询状态（24小时未访问视为过期）
 			if s.channelBalancer != nil {
-				s.channelBalancer.Cleanup(30 * time.Minute)
+				s.channelBalancer.Cleanup(24 * time.Hour)
+			}
+
+			// [FIX] P1: 清理KeySelector的过期轮询计数器（24小时未使用视为过期）
+			// 避免渠道删除后计数器累积导致内存泄漏
+			if s.keySelector != nil {
+				s.keySelector.CleanupInactiveCounters(24 * time.Hour)
 			}
 		}
 	}

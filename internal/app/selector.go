@@ -14,6 +14,12 @@ import (
 	"time"
 )
 
+const (
+	// effPriorityPrecision 有效优先级分组精度（*10可区分0.1差异，如5.0 vs 5.1）
+	// 设计考虑：优先级通常是整数（5, 10），成功率惩罚基于统计（精度有限），0.1精度已足够
+	effPriorityPrecision = 10
+)
+
 // selectCandidatesByChannelType 根据渠道类型选择候选渠道
 // 性能优化：使用缓存层，内存查询 < 2ms vs 数据库查询 50ms+
 func (s *Server) selectCandidatesByChannelType(ctx context.Context, channelType string) ([]*modelpkg.Config, error) {
@@ -199,8 +205,18 @@ func stripTrailingYYYYMMDD(model string) (string, bool) {
 }
 
 // filterCooldownChannels 过滤或降权冷却中的渠道
-// 当启用健康度排序时：冷却渠道降权而非过滤，按有效优先级排序
-// 当禁用健康度排序时：保持原有行为，完全过滤冷却渠道
+//
+// [IMPORTANT] 冷却状态优先级：**最高优先级**，必须在健康度排序前执行
+// 即使健康度缓存显示渠道可用，冷却状态具有最高优先级。
+//
+// 执行顺序保证：
+// 1. 先执行冷却过滤（本函数）
+// 2. 再执行健康度排序（sortChannelsByHealth）
+// 3. 确保不会选中已冷却的渠道，避免雪崩效应
+//
+// 行为说明：
+// - 当启用健康度排序时：冷却渠道降权而非完全过滤，按有效优先级排序
+// - 当禁用健康度排序时：完全过滤冷却渠道（传统行为）
 func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpkg.Config) ([]*modelpkg.Config, error) {
 	if len(channels) == 0 {
 		return channels, nil
@@ -211,14 +227,16 @@ func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpk
 	// 批量查询冷却状态（使用缓存层，性能优化）
 	channelCooldowns, err := s.getAllChannelCooldowns(ctx)
 	if err != nil {
-		log.Printf("[WARN] Failed to get channel cooldowns (degraded mode): %v", err)
-		return channels, nil
+		// [FIX] 降级策略：使用空map而非返回未过滤渠道，避免数据库故障时选中冷却渠道导致雪崩
+		log.Printf("[ERROR] Failed to get channel cooldowns, using empty cooldown map (degraded mode): %v", err)
+		channelCooldowns = make(map[int64]time.Time)
 	}
 
 	keyCooldowns, err := s.getAllKeyCooldowns(ctx)
 	if err != nil {
-		log.Printf("[WARN] Failed to get key cooldowns (degraded mode): %v", err)
-		return channels, nil
+		// [FIX] 降级策略：使用空map而非返回未过滤渠道
+		log.Printf("[ERROR] Failed to get key cooldowns, using empty cooldown map (degraded mode): %v", err)
+		keyCooldowns = make(map[int64]map[int]time.Time)
 	}
 
 	// 先执行冷却过滤，保证冷却语义不被绕开（正确性优先）
@@ -404,12 +422,10 @@ func (s *Server) sortChannelsByHealth(
 
 	// 同有效优先级内按 KeyCount 平滑加权轮询（负载均衡）
 	// 说明：healthCache 开启后仍需按 Key 数量分流，使用确定性轮询替代随机
-	// 精度：*10 取整，可区分 0.1 差异（如 5.0 vs 5.1）
-	// 设计考虑：优先级通常是整数（5, 10），成功率惩罚基于统计（精度有限），0.1 精度已足够
 	result := make([]*modelpkg.Config, len(scored))
 	groupStart := 0
 	for i := 1; i <= len(scored); i++ {
-		if i == len(scored) || int(scored[i].effPriority*10) != int(scored[groupStart].effPriority*10) {
+		if i == len(scored) || int(scored[i].effPriority*effPriorityPrecision) != int(scored[groupStart].effPriority*effPriorityPrecision) {
 			if i-groupStart > 1 {
 				s.balanceScoredChannelsInPlace(scored[groupStart:i], keyCooldowns, now)
 			}

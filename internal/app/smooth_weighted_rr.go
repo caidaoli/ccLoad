@@ -133,21 +133,22 @@ func (rr *SmoothWeightedRR) SelectWithCooldown(
 
 // generateGroupKey 生成渠道组的唯一标识
 // 使用所有渠道ID拼接，确保不同渠道组合生成不同的key
+// [FIX] 使用十进制+逗号分隔，避免哈希冲突（如 [10,36]→"10,36" vs [370]→"370"）
 func (rr *SmoothWeightedRR) generateGroupKey(channels []*modelpkg.Config) string {
 	n := len(channels)
 	if n == 0 {
 		return ""
 	}
 
-	// 预估容量：每个ID约3-4字符 + 分隔符
+	// 预估容量：每个ID约6字符（int64最大19位）+ 分隔符
 	var b strings.Builder
-	b.Grow(n * 4)
+	b.Grow(n * 7)
 
 	for i, ch := range channels {
 		if i > 0 {
-			b.WriteByte(':')
+			b.WriteByte(',')
 		}
-		b.WriteString(strconv.FormatInt(ch.ID, 36))
+		b.WriteString(strconv.FormatInt(ch.ID, 10))
 	}
 	return b.String()
 }

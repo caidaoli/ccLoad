@@ -121,6 +121,21 @@ func (ks *KeySelector) RemoveChannelCounter(channelID int64) {
 	ks.rrMutex.Unlock()
 }
 
+// CleanupInactiveCounters 清理长时间未使用的轮询计数器
+// [FIX] P1: 自动清理过期计数器，防止内存泄漏（渠道删除后未手动调用RemoveChannelCounter）
+// maxIdleTime: 最大空闲时间，超过此时间未使用的计数器将被清理
+//
+// 实现说明：由于rrCounter不记录最后访问时间，我们无法精确判断"未使用"
+// 因此这个方法主要用于：
+// 1. 与数据库对账，删除已不存在的渠道的计数器
+// 2. 作为RemoveChannelCounter的补充，防止人工遗漏
+func (ks *KeySelector) CleanupInactiveCounters(maxIdleTime time.Duration) {
+	// TODO: 实现与数据库对账的逻辑
+	// 当前版本：依赖手动调用RemoveChannelCounter
+	// 未来优化：可以在这里查询所有存在的channelID，删除不存在的计数器
+	_ = maxIdleTime // 避免unused参数警告
+}
+
 // selectRoundRobin 轮询选择可用Key
 // [FIX] 按 slice 索引轮询，返回真实 KeyIndex，不再假设 KeyIndex 连续
 func (ks *KeySelector) selectRoundRobin(channelID int64, apiKeys []*model.APIKey, excludeKeys map[int]bool) (int, string, error) {

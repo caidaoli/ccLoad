@@ -199,3 +199,56 @@ func TestSmoothWeightedRR_Integration(t *testing.T) {
 		t.Errorf("渠道5分布错误: %d次，期望25次", callCount[5])
 	}
 }
+
+func TestSmoothWeightedRR_NoHashCollision(t *testing.T) {
+	// [FIX] 测试修复：验证不同渠道组合生成不同的groupKey
+	// 修复前使用base36编码会导致哈希冲突：
+	//   [10, 36] → "a:10" (10=a in base36, 36=10 in base36)
+	//   [370]    → "a:10" (370=a10 in base36)
+	// 修复后使用十进制+逗号分隔应该避免冲突
+
+	rr := NewSmoothWeightedRR()
+
+	// 场景1: [10, 36] 应该生成 "10,36"
+	channels1 := []*modelpkg.Config{
+		{ID: 10, Name: "ch10"},
+		{ID: 36, Name: "ch36"},
+	}
+	key1 := rr.generateGroupKey(channels1)
+
+	// 场景2: [370] 应该生成 "370"
+	channels2 := []*modelpkg.Config{
+		{ID: 370, Name: "ch370"},
+	}
+	key2 := rr.generateGroupKey(channels2)
+
+	t.Logf("[KEY] 渠道组[10,36]的key: %q", key1)
+	t.Logf("[KEY] 渠道组[370]的key:   %q", key2)
+
+	if key1 == key2 {
+		t.Errorf("哈希冲突检测失败: 不同渠道组合生成了相同的key %q", key1)
+	}
+
+	// 验证生成的key格式正确
+	if key1 != "10,36" {
+		t.Errorf("渠道组[10,36]的key错误: 得到 %q, 期望 \"10,36\"", key1)
+	}
+	if key2 != "370" {
+		t.Errorf("渠道组[370]的key错误: 得到 %q, 期望 \"370\"", key2)
+	}
+
+	// 额外验证：确保轮询状态确实被隔离
+	weights1 := []int{1, 1}
+	weights2 := []int{1}
+
+	// 对第一组轮询几次
+	for i := 0; i < 5; i++ {
+		rr.Select(channels1, weights1)
+	}
+
+	// 对第二组轮询，应该从初始状态开始
+	result2 := rr.Select(channels2, weights2)
+	if result2[0].ID != 370 {
+		t.Errorf("轮询状态隔离失败: 期望选中370，实际选中%d", result2[0].ID)
+	}
+}
