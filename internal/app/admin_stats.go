@@ -448,9 +448,8 @@ func (s *Server) fillHealthTimeline(ctx context.Context, stats []model.StatsEntr
 
 	args := []any{bucketMs, bucketMs, sinceMs, untilMs}
 
-	// 应用筛选条件（复用现有的过滤逻辑）
+	// 应用筛选条件
 	if filter != nil {
-		// TODO: 添加渠道类型、模型等筛选
 		if filter.ChannelID != nil && *filter.ChannelID > 0 {
 			query += " AND logs.channel_id = ?"
 			args = append(args, *filter.ChannelID)

@@ -90,8 +90,8 @@ func (rr *SmoothWeightedRR) Select(
 	maxWeight := state.currentWeights[channels[0].ID]
 	selectedIdx := 0
 	for i := 1; i < n; i++ {
-		cw := state.currentWeights[channels[i].ID]
-		if cw > maxWeight || (cw == maxWeight && channels[i].ID < channels[selectedIdx].ID) {
+		cw := state.currentWeights[channels[i].ID]                                            //nolint:gosec // G602: i < n = len(channels)
+		if cw > maxWeight || (cw == maxWeight && channels[i].ID < channels[selectedIdx].ID) { //nolint:gosec // G602: 同上
 			maxWeight = cw
 			selectedIdx = i
 		}
