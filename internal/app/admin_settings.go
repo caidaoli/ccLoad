@@ -90,7 +90,7 @@ func (s *Server) AdminUpdateSetting(c *gin.Context) {
 		return
 	}
 
-	log.Printf("[INFO] Setting updated: %s = %s (restart required)", key, req.Value)
+	// log.Printf("[INFO] Setting updated: %s = %s (restart required)", key, req.Value)
 
 	// 返回成功响应，告知需要重启
 	RespondJSON(c, http.StatusOK, gin.H{
@@ -126,7 +126,7 @@ func (s *Server) AdminResetSetting(c *gin.Context) {
 		return
 	}
 
-	log.Printf("[INFO] Setting reset to default: %s = %s (restart required)", key, setting.DefaultValue)
+	// log.Printf("[INFO] Setting reset to default: %s = %s (restart required)", key, setting.DefaultValue)
 
 	RespondJSON(c, http.StatusOK, gin.H{
 		"message": "配置已重置为默认值，程序将在2秒后重启",
