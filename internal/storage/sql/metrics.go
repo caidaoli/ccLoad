@@ -543,3 +543,32 @@ func (s *SQLStore) GetChannelSuccessRates(ctx context.Context, since time.Time) 
 
 	return result, rows.Err()
 }
+
+// GetTodayChannelCosts 获取今日各渠道成本（启动时加载缓存用）
+func (s *SQLStore) GetTodayChannelCosts(ctx context.Context, todayStart time.Time) (map[int64]float64, error) {
+	todayStartMs := todayStart.UnixMilli()
+
+	query := `
+		SELECT channel_id, COALESCE(SUM(cost), 0) as total_cost
+		FROM logs
+		WHERE time >= ? AND channel_id > 0
+		GROUP BY channel_id`
+
+	rows, err := s.db.QueryContext(ctx, query, todayStartMs)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	result := make(map[int64]float64)
+	for rows.Next() {
+		var channelID int64
+		var totalCost float64
+		if err := rows.Scan(&channelID, &totalCost); err != nil {
+			return nil, err
+		}
+		result[channelID] = totalCost
+	}
+
+	return result, rows.Err()
+}

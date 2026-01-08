@@ -39,6 +39,7 @@ type Server struct {
 	keySelector     *KeySelector          // Key选择器（多Key支持）
 	cooldownManager *cooldown.Manager     // 统一冷却管理器
 	healthCache     *HealthCache          // 渠道健康度缓存
+	costCache       *CostCache            // 渠道每日成本缓存
 	channelBalancer *SmoothWeightedRR     // 渠道负载均衡器（平滑加权轮询）
 	client          *http.Client          // HTTP客户端
 	activeRequests  *activeRequestManager // 进行中请求（内存状态，不持久化）
@@ -225,6 +226,18 @@ func NewServer(store storage.Store) *Server {
 	if healthConfig.Enabled {
 		s.healthCache.Start()
 		log.Print("[INFO] 健康度排序已启用（基于成功率动态调整渠道优先级；冷却仍按原规则过滤）")
+	}
+
+	// 初始化成本缓存（启动时从数据库加载当日成本）
+	s.costCache = NewCostCache()
+	costLoadCtx, costCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer costCancel()
+	todayCosts, err := store.GetTodayChannelCosts(costLoadCtx, s.costCache.DayStart())
+	if err != nil {
+		log.Printf("[WARN] 加载今日渠道成本失败: %v（成本限额功能可能不准确）", err)
+	} else {
+		s.costCache.Load(todayCosts)
+		log.Printf("[INFO] 已加载今日渠道成本缓存（%d个渠道有消耗）", len(todayCosts))
 	}
 
 	// ============================================================================
@@ -578,6 +591,11 @@ func (s *Server) stateCleanupLoop() {
 // AddLogAsync 异步添加日志（委托给LogService处理）
 // 在代理请求完成后调用，记录请求日志
 func (s *Server) AddLogAsync(entry *model.LogEntry) {
+	// 更新成本缓存（用于每日成本限额功能）
+	if s.costCache != nil && entry.ChannelID > 0 && entry.Cost > 0 {
+		s.costCache.Add(entry.ChannelID, entry.Cost)
+	}
+
 	// 委托给 LogService 处理日志写入
 	s.logService.AddLogAsync(entry)
 }

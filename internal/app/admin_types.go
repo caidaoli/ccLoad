@@ -15,14 +15,15 @@ import (
 
 // ChannelRequest 渠道创建/更新请求结构
 type ChannelRequest struct {
-	Name        string             `json:"name" binding:"required"`
-	APIKey      string             `json:"api_key" binding:"required"`
-	ChannelType string             `json:"channel_type,omitempty"` // 渠道类型:anthropic, codex, gemini
-	KeyStrategy string             `json:"key_strategy,omitempty"` // Key使用策略:sequential, round_robin
-	URL         string             `json:"url" binding:"required,url"`
-	Priority    int                `json:"priority"`
-	Models      []model.ModelEntry `json:"models" binding:"required,min=1"` // 模型配置（包含重定向）
-	Enabled     bool               `json:"enabled"`
+	Name           string             `json:"name" binding:"required"`
+	APIKey         string             `json:"api_key" binding:"required"`
+	ChannelType    string             `json:"channel_type,omitempty"` // 渠道类型:anthropic, codex, gemini
+	KeyStrategy    string             `json:"key_strategy,omitempty"` // Key使用策略:sequential, round_robin
+	URL            string             `json:"url" binding:"required,url"`
+	Priority       int                `json:"priority"`
+	Models         []model.ModelEntry `json:"models" binding:"required,min=1"` // 模型配置（包含重定向）
+	Enabled        bool               `json:"enabled"`
+	DailyCostLimit float64            `json:"daily_cost_limit"` // 每日成本限额（美元），0表示无限制
 }
 
 func validateChannelBaseURL(raw string) (string, error) {
@@ -130,12 +131,13 @@ func (cr *ChannelRequest) ToConfig() *model.Config {
 	}
 
 	return &model.Config{
-		Name:         strings.TrimSpace(cr.Name),
-		ChannelType:  strings.TrimSpace(cr.ChannelType), // 传递渠道类型
-		URL:          strings.TrimSpace(cr.URL),
-		Priority:     cr.Priority,
-		ModelEntries: normalizedModels,
-		Enabled:      cr.Enabled,
+		Name:           strings.TrimSpace(cr.Name),
+		ChannelType:    strings.TrimSpace(cr.ChannelType), // 传递渠道类型
+		URL:            strings.TrimSpace(cr.URL),
+		Priority:       cr.Priority,
+		ModelEntries:   normalizedModels,
+		Enabled:        cr.Enabled,
+		DailyCostLimit: cr.DailyCostLimit,
 	}
 }
 

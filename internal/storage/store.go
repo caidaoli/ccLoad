@@ -67,6 +67,7 @@ type Store interface {
 	GetRPMStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) (*model.RPMStats, error)
 	GetChannelSuccessRates(ctx context.Context, since time.Time) (map[int64]model.ChannelHealthStats, error)
 	GetHealthTimeline(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	GetTodayChannelCosts(ctx context.Context, todayStart time.Time) (map[int64]float64, error) // 获取今日各渠道成本（启动时加载）
 
 	// === Auth Token Management ===
 	CreateAuthToken(ctx context.Context, token *model.AuthToken) error

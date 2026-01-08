@@ -30,6 +30,13 @@ func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpk
 
 	now := time.Now()
 
+	// === 成本限额过滤（在冷却过滤之前）===
+	channels = s.filterCostLimitExceededChannels(channels)
+	if len(channels) == 0 {
+		log.Print("[INFO] All channels exceeded daily cost limit")
+		return nil, nil
+	}
+
 	// 批量查询冷却状态（优先走缓存层）
 	channelCooldowns, err := s.getAllChannelCooldowns(ctx)
 	if err != nil {
@@ -198,6 +205,34 @@ func (s *Server) filterCooledChannels(
 		}
 
 		filtered = append(filtered, cfg)
+	}
+	return filtered
+}
+
+// filterCostLimitExceededChannels 过滤超过每日成本限额的渠道
+func (s *Server) filterCostLimitExceededChannels(channels []*modelpkg.Config) []*modelpkg.Config {
+	if s.costCache == nil {
+		return channels
+	}
+
+	costs := s.costCache.GetAll()
+	filtered := make([]*modelpkg.Config, 0, len(channels))
+	for _, ch := range channels {
+		// DailyCostLimit <= 0 表示无限制
+		if ch.DailyCostLimit <= 0 {
+			filtered = append(filtered, ch)
+			continue
+		}
+
+		usedCost := costs[ch.ID]
+		if usedCost < ch.DailyCostLimit {
+			filtered = append(filtered, ch)
+			log.Printf("[DEBUG] Channel %d (%s) cost check passed: $%.4f/$%.2f",
+				ch.ID, ch.Name, usedCost, ch.DailyCostLimit)
+		} else {
+			log.Printf("[INFO] Channel %d (%s) exceeded daily cost limit: $%.4f/$%.2f",
+				ch.ID, ch.Name, usedCost, ch.DailyCostLimit)
+		}
 	}
 	return filtered
 }

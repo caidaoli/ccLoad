@@ -114,7 +114,7 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	// 注意：不再包含 models 和 model_redirects 字段
 	if err := scanner.Scan(&c.ID, &c.Name, &c.URL, &c.Priority,
 		&c.ChannelType, &enabledInt,
-		&c.CooldownUntil, &c.CooldownDurationMs, &c.KeyCount,
+		&c.CooldownUntil, &c.CooldownDurationMs, &c.DailyCostLimit, &c.KeyCount,
 		&createdAtRaw, &updatedAtRaw); err != nil {
 		return nil, err
 	}

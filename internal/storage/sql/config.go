@@ -20,7 +20,7 @@ func (s *SQLStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
 	// 注意：不再从 channels 表读取 models 和 model_redirects
 	query := `
 			SELECT c.id, c.name, c.url, c.priority, c.channel_type, c.enabled,
-			       c.cooldown_until, c.cooldown_duration_ms,
+			       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit,
 			       COUNT(k.id) as key_count,
 			       c.created_at, c.updated_at
 			FROM channels c
@@ -55,7 +55,7 @@ func (s *SQLStore) GetConfig(ctx context.Context, id int64) (*model.Config, erro
 	// 注意：不再从 channels 表读取 models 和 model_redirects
 	query := `
 			SELECT c.id, c.name, c.url, c.priority, c.channel_type, c.enabled,
-			       c.cooldown_until, c.cooldown_duration_ms,
+			       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit,
 			       COUNT(k.id) as key_count,
 			       c.created_at, c.updated_at
 			FROM channels c
@@ -95,7 +95,7 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, modelName stri
 		query = `
 	            SELECT c.id, c.name, c.url, c.priority,
 	                   c.channel_type, c.enabled,
-	                   c.cooldown_until, c.cooldown_duration_ms,
+	                   c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit,
 	                   COUNT(k.id) as key_count,
 	                   c.created_at, c.updated_at
 	            FROM channels c
@@ -111,7 +111,7 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, modelName stri
 		query = `
 	            SELECT c.id, c.name, c.url, c.priority,
 	                   c.channel_type, c.enabled,
-	                   c.cooldown_until, c.cooldown_duration_ms,
+	                   c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit,
 	                   COUNT(k.id) as key_count,
 	                   c.created_at, c.updated_at
 	            FROM channels c
@@ -153,7 +153,7 @@ func (s *SQLStore) GetEnabledChannelsByType(ctx context.Context, channelType str
 	query := `
 			SELECT c.id, c.name, c.url, c.priority,
 			       c.channel_type, c.enabled,
-			       c.cooldown_until, c.cooldown_duration_ms,
+			       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit,
 			       COUNT(k.id) as key_count,
 			       c.created_at, c.updated_at
 			FROM channels c
@@ -196,10 +196,10 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
 		// 插入渠道记录
 		res, err := tx.ExecContext(ctx, `
-			INSERT INTO channels(name, url, priority, channel_type, enabled, created_at, updated_at)
-			VALUES(?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO channels(name, url, priority, channel_type, enabled, daily_cost_limit, created_at, updated_at)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?)
 		`, c.Name, c.URL, c.Priority, channelType,
-			boolToInt(c.Enabled), nowUnix, nowUnix)
+			boolToInt(c.Enabled), c.DailyCostLimit, nowUnix, nowUnix)
 		if err != nil {
 			return err
 		}
@@ -254,10 +254,10 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 		// 更新渠道记录
 		_, err := tx.ExecContext(ctx, `
 			UPDATE channels
-			SET name=?, url=?, priority=?, channel_type=?, enabled=?, updated_at=?
+			SET name=?, url=?, priority=?, channel_type=?, enabled=?, daily_cost_limit=?, updated_at=?
 			WHERE id=?
 		`, name, url, upd.Priority, channelType,
-			boolToInt(upd.Enabled), updatedAtUnix, id)
+			boolToInt(upd.Enabled), upd.DailyCostLimit, updatedAtUnix, id)
 		if err != nil {
 			return err
 		}

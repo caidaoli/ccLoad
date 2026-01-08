@@ -72,6 +72,13 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			}
 		}
 
+		// 增量迁移：确保channels表有daily_cost_limit字段（2026-01新增）
+		if tb.Name() == "channels" {
+			if err := ensureChannelsDailyCostLimit(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate channels daily_cost_limit: %w", err)
+			}
+		}
+
 		// 增量迁移：确保auth_tokens表有缓存token字段（2025-12新增）
 		if tb.Name() == "auth_tokens" {
 			if err := ensureAuthTokensCacheFields(ctx, db, dialect); err != nil {
@@ -550,6 +557,14 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		}
 	}
 
+	// 清理已废弃的配置项（先执行，避免被后续逻辑的 return 跳过）
+	obsoleteKeys := []string{
+		"88code_free_only", // 2026-01移除：88code免费订阅限制功能已删除
+	}
+	for _, key := range obsoleteKeys {
+		_ = deleteSystemSetting(ctx, db, dialect, key) // 忽略错误（可能不存在）
+	}
+
 	// 迁移旧键名 cooldown_fallback_threshold → cooldown_fallback_enabled
 	// 同时处理 int→bool 的类型迁移
 	{
@@ -585,14 +600,6 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 				return fmt.Errorf("rename setting %s to %s: %w", oldKey, newKey, err)
 			}
 		}
-	}
-
-	// 清理已废弃的配置项
-	obsoleteKeys := []string{
-		"88code_free_only", // 2026-01移除：88code免费订阅限制功能已删除
-	}
-	for _, key := range obsoleteKeys {
-		_ = deleteSystemSetting(ctx, db, dialect, key) // 忽略错误（可能不存在）
 	}
 
 	return nil
@@ -903,4 +910,31 @@ func relaxDeprecatedChannelFields(ctx context.Context, db *sql.DB, dialect Diale
 	// SQLite 的 NOT NULL 约束只在显式 INSERT 该列时检查
 	// 新版程序 INSERT 语句不包含这些列，SQLite 会使用默认值（NULL）
 	return nil
+}
+
+// ensureChannelsDailyCostLimit 确保channels表有daily_cost_limit字段
+func ensureChannelsDailyCostLimit(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if dialect == DialectMySQL {
+		// MySQL: 检查字段是否存在
+		var count int
+		err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channels' AND COLUMN_NAME='daily_cost_limit'",
+		).Scan(&count)
+		if err != nil {
+			return fmt.Errorf("check daily_cost_limit field: %w", err)
+		}
+		if count == 0 {
+			if _, err := db.ExecContext(ctx,
+				"ALTER TABLE channels ADD COLUMN daily_cost_limit DOUBLE NOT NULL DEFAULT 0"); err != nil {
+				return fmt.Errorf("add daily_cost_limit column: %w", err)
+			}
+			log.Printf("[MIGRATE] Added channels.daily_cost_limit column")
+		}
+		return nil
+	}
+
+	// SQLite: 使用通用添加列函数
+	return ensureSQLiteColumns(ctx, db, "channels", []sqliteColumnDef{
+		{name: "daily_cost_limit", definition: "REAL NOT NULL DEFAULT 0"},
+	})
 }
