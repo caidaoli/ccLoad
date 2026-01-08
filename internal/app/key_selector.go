@@ -11,6 +11,13 @@ import (
 
 // KeySelector 负责从渠道的多个API Key中选择可用的Key
 // 移除store依赖，避免重复查询数据库
+//
+// [设计决策] 为什么使用 RWMutex 而不是 sync.Map：
+//  1. 访问模式：多个请求访问**同一渠道**的计数器（channelID相同），sync.Map无优势
+//  2. 读多写少：RWMutex在读多写少场景下性能优秀，多goroutine可并发读
+//  3. 类型安全：map[int64]*rrCounter 编译期类型检查，sync.Map需类型断言
+//  4. 简单性：双重检查锁定模式简单直接，sync.Map的API更复杂
+//  5. 无性能瓶颈：写操作（创建计数器）极少，无需优化
 type KeySelector struct {
 	// 轮询计数器：channelID -> *rrCounter
 	// 渠道删除时需要清理对应计数器，避免rrCounters无界增长。
