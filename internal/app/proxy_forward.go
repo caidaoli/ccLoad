@@ -27,6 +27,20 @@ const (
 	SSEProbeSize = 2 * 1024
 )
 
+// prependedBody 将已读取的前缀数据与原始Body合并，保留原Closer
+type prependedBody struct {
+	io.Reader
+	io.Closer
+}
+
+// prependToBody 将前缀数据合并到resp.Body（用于恢复已探测的数据）
+func prependToBody(resp *http.Response, prefix []byte) {
+	resp.Body = prependedBody{
+		Reader: io.MultiReader(bytes.NewReader(prefix), resp.Body),
+		Closer: resp.Body,
+	}
+}
+
 // ============================================================================
 // 请求构建和转发
 // ============================================================================
@@ -382,14 +396,7 @@ func (s *Server) handleResponse(
 			}
 
 			// 恢复 Body 以便 handleErrorResponse 读取完整信息
-			// 使用匿名结构体组合 Reader 和 Closer
-			resp.Body = struct {
-				io.Reader
-				io.Closer
-			}{
-				Reader: io.MultiReader(bytes.NewReader(validData), resp.Body),
-				Closer: resp.Body,
-			}
+			prependToBody(resp, validData)
 
 			// 转交给错误处理流程
 			return s.handleErrorResponse(reqCtx, resp, firstByteTime, hdrClone)
@@ -397,13 +404,7 @@ func (s *Server) handleResponse(
 
 		// 未检测到错误，必须恢复 Body 供后续流程使用
 		if n > 0 {
-			resp.Body = struct {
-				io.Reader
-				io.Closer
-			}{
-				Reader: io.MultiReader(bytes.NewReader(validData), resp.Body),
-				Closer: resp.Body,
-			}
+			prependToBody(resp, validData)
 		}
 	}
 
