@@ -168,30 +168,3 @@ func (s *Server) balanceScoredChannelsInPlace(
 		}
 	}
 }
-
-// calcEffectiveKeyCount 计算渠道的有效Key数量（排除冷却中的Key）
-func calcEffectiveKeyCount(cfg *modelpkg.Config, keyCooldowns map[int64]map[int]time.Time, now time.Time) int {
-	total := cfg.KeyCount
-	if total <= 0 {
-		return 1 // 最小为1
-	}
-
-	keyMap, ok := keyCooldowns[cfg.ID]
-	if !ok || len(keyMap) == 0 {
-		return total // 无冷却信息，使用全部Key数量
-	}
-
-	// 统计冷却中的Key数量
-	cooledCount := 0
-	for _, cooldownUntil := range keyMap {
-		if cooldownUntil.After(now) {
-			cooledCount++
-		}
-	}
-
-	effective := total - cooledCount
-	if effective <= 0 {
-		return 1 // 最小为1
-	}
-	return effective
-}
