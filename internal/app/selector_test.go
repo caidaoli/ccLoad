@@ -294,6 +294,73 @@ func TestSelectRouteCandidates_AllCooledByKeys_FallbackChoosesEarliestKeyCooldow
 	}
 }
 
+func TestSelectRouteCandidates_AllCooled_MixedCooldown_RespectsChannelCooldown(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	ctx := context.Background()
+	now := time.Now()
+
+	channels := []*model.Config{
+		{Name: "channel-cooled-long", URL: "https://api1.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "keys-cooled-short", URL: "https://api2.com", Priority: 90, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+	}
+
+	var ids []int64
+	for _, cfg := range channels {
+		created, err := store.CreateConfig(ctx, cfg)
+		if err != nil {
+			t.Fatalf("创建测试渠道失败: %v", err)
+		}
+		ids = append(ids, created.ID)
+
+		keys := make([]*model.APIKey, 2)
+		for keyIndex := 0; keyIndex < 2; keyIndex++ {
+			keys[keyIndex] = &model.APIKey{
+				ChannelID:   created.ID,
+				KeyIndex:    keyIndex,
+				APIKey:      "sk-test",
+				KeyStrategy: model.KeyStrategySequential,
+				CreatedAt:   model.JSONTime{Time: now},
+				UpdatedAt:   model.JSONTime{Time: now},
+			}
+		}
+		if err := store.CreateAPIKeysBatch(ctx, keys); err != nil {
+			t.Fatalf("创建API Keys失败: %v", err)
+		}
+	}
+
+	// 渠道1：渠道级冷却很久，但Key较早解禁（真实可用时间应由渠道冷却主导）
+	if err := store.SetChannelCooldown(ctx, ids[0], now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("设置渠道冷却失败: %v", err)
+	}
+	for keyIndex := 0; keyIndex < 2; keyIndex++ {
+		if err := store.SetKeyCooldown(ctx, ids[0], keyIndex, now.Add(10*time.Second)); err != nil {
+			t.Fatalf("设置Key冷却失败: %v", err)
+		}
+	}
+
+	// 渠道2：仅Key全冷却，较早解禁（应被选中）
+	for keyIndex := 0; keyIndex < 2; keyIndex++ {
+		if err := store.SetKeyCooldown(ctx, ids[1], keyIndex, now.Add(30*time.Second)); err != nil {
+			t.Fatalf("设置Key冷却失败: %v", err)
+		}
+	}
+
+	candidates, err := server.selectCandidatesByModelAndType(ctx, "test-model", "")
+	if err != nil {
+		t.Fatalf("selectCandidates失败: %v", err)
+	}
+
+	if len(candidates) != 1 {
+		t.Fatalf("期望全冷却(混合)兜底返回1个候选渠道，实际%d个", len(candidates))
+	}
+	if candidates[0].Name != "keys-cooled-short" {
+		t.Fatalf("期望选择 keys-cooled-short，实际返回%s", candidates[0].Name)
+	}
+}
+
 // TestSelectRouteCandidates_DisabledChannels 测试禁用渠道过滤
 func TestSelectRouteCandidates_DisabledChannels(t *testing.T) {
 	store, cleanup := setupTestStore(t)
@@ -849,8 +916,8 @@ func TestSelectRouteCandidates_MixedPriorities(t *testing.T) {
 	}())
 }
 
-// TestShuffleSamePriorityChannels 测试相同优先级渠道的随机化
-func TestShuffleSamePriorityChannels(t *testing.T) {
+// TestBalanceSamePriorityChannels 测试相同优先级渠道的负载均衡（确定性轮询）
+func TestBalanceSamePriorityChannels(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
@@ -888,7 +955,7 @@ func TestShuffleSamePriorityChannels(t *testing.T) {
 		firstPositionCount[candidates[0].Name]++
 	}
 
-	t.Logf("[STATS] 随机化统计（%d次查询）:", iterations)
+	t.Logf("[STATS] 负载均衡统计（%d次查询）:", iterations)
 	t.Logf("  - channel-22 首位出现: %d次 (%.1f%%)",
 		firstPositionCount["channel-22"],
 		float64(firstPositionCount["channel-22"])/float64(iterations)*100)
@@ -896,16 +963,18 @@ func TestShuffleSamePriorityChannels(t *testing.T) {
 		firstPositionCount["channel-23"],
 		float64(firstPositionCount["channel-23"])/float64(iterations)*100)
 
-	// 验证两个渠道都有机会出现在第一位（允许一定的随机偏差）
-	// 理论上应该各50%，但允许30%-70%的范围
-	if firstPositionCount["channel-22"] < 30 || firstPositionCount["channel-22"] > 70 {
-		t.Errorf("随机化分布异常: channel-22出现%d次，期望30-70次", firstPositionCount["channel-22"])
+	// 相同权重的确定性轮询：两者应该严格接近 50/50。
+	// iterations 为偶数时应精确对半；为奇数时允许相差1。
+	diff := firstPositionCount["channel-22"] - firstPositionCount["channel-23"]
+	if diff < 0 {
+		diff = -diff
 	}
-	if firstPositionCount["channel-23"] < 30 || firstPositionCount["channel-23"] > 70 {
-		t.Errorf("随机化分布异常: channel-23出现%d次，期望30-70次", firstPositionCount["channel-23"])
+	if diff > 1 {
+		t.Errorf("分布异常: channel-22=%d, channel-23=%d（diff=%d，期望<=1）",
+			firstPositionCount["channel-22"], firstPositionCount["channel-23"], diff)
 	}
 
-	t.Logf("[INFO] 相同优先级渠道随机化正常，负载均衡有效")
+	t.Logf("[INFO] 相同优先级渠道负载均衡正常")
 }
 
 func TestSortChannelsByHealth_WeightedByKeyCount(t *testing.T) {
@@ -941,7 +1010,7 @@ func TestSortChannelsByHealth_WeightedByKeyCount(t *testing.T) {
 	ratioA := float64(firstPositionCount["channel-A"]) / float64(iterations) * 100
 	ratioB := float64(firstPositionCount["channel-B"]) / float64(iterations) * 100
 
-	t.Logf("[STATS] healthCache组内加权随机统计（%d次）:", iterations)
+	t.Logf("[STATS] healthCache组内加权统计（%d次）:", iterations)
 	t.Logf("  - channel-A (10 Keys) 首位: %d次 (%.1f%%), 期望≈83%%", firstPositionCount["channel-A"], ratioA)
 	t.Logf("  - channel-B (2 Keys)  首位: %d次 (%.1f%%), 期望≈17%%", firstPositionCount["channel-B"], ratioB)
 
@@ -1005,7 +1074,7 @@ func TestSortChannelsByHealth_WeightedByEffectiveKeyCount(t *testing.T) {
 	ratioA := float64(firstPositionCount["channel-A"]) / float64(iterations) * 100
 	ratioB := float64(firstPositionCount["channel-B"]) / float64(iterations) * 100
 
-	t.Logf("[STATS] 冷却感知加权随机统计（%d次）:", iterations)
+	t.Logf("[STATS] 冷却感知加权统计（%d次）:", iterations)
 	t.Logf("  - channel-A (10 Keys, 8冷却, 有效2) 首位: %d次 (%.1f%%), 期望≈50%%", firstPositionCount["channel-A"], ratioA)
 	t.Logf("  - channel-B (2 Keys, 0冷却, 有效2)  首位: %d次 (%.1f%%), 期望≈50%%", firstPositionCount["channel-B"], ratioB)
 

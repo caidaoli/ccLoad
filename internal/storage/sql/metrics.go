@@ -11,7 +11,7 @@ import (
 )
 
 // GetStats 实现统计功能，按渠道和模型统计成功/失败次数
-// 性能优化：批量查询渠道名称消除N+1问题（100渠道场景提升50-100倍）
+// 消除 N+1：渠道过滤/名称解析用一次批量查询完成
 // [FIX] 2025-12: 排除499（客户端取消）避免污染成功率和调用次数统计
 func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) ([]model.StatsEntry, error) {
 	// 使用查询构建器构建统计查询

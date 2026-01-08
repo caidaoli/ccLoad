@@ -98,7 +98,7 @@ func (s *SQLStore) IsSQLite() bool {
 	return s.driverName == "sqlite"
 }
 
-// Ping 检查数据库连接是否活跃（用于健康检查，<1ms）
+// Ping 检查数据库连接是否活跃（用于健康检查）
 func (s *SQLStore) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
 }

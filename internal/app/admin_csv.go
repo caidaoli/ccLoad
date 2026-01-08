@@ -30,7 +30,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 		return
 	}
 
-	// 批量查询所有API Keys,消除N+1问题(100渠道从100次查询降为1次)
+	// 批量查询所有API Keys，消除 N+1
 	allAPIKeys, err := s.store.GetAllAPIKeys(c.Request.Context())
 	if err != nil {
 		log.Printf("[WARN] 批量查询API Keys失败: %v", err)

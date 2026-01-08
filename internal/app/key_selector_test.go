@@ -790,6 +790,45 @@ func TestSelectAvailableKey_UnknownStrategy(t *testing.T) {
 	)
 }
 
+func TestKeySelector_CleanupInactiveCounters(t *testing.T) {
+	ks := NewKeySelector()
+
+	keys := []*model.APIKey{
+		{KeyIndex: 10, APIKey: "k10", KeyStrategy: model.KeyStrategyRoundRobin},
+		{KeyIndex: 11, APIKey: "k11", KeyStrategy: model.KeyStrategyRoundRobin},
+	}
+
+	// 创建两个渠道计数器
+	if _, _, err := ks.SelectAvailableKey(100, keys, nil); err != nil {
+		t.Fatalf("SelectAvailableKey(channel=100) failed: %v", err)
+	}
+	if _, _, err := ks.SelectAvailableKey(200, keys, nil); err != nil {
+		t.Fatalf("SelectAvailableKey(channel=200) failed: %v", err)
+	}
+
+	// 将 channel=100 标记为“很久没用”
+	expired := ks.getOrCreateCounter(100)
+	expired.lastAccess.Store(time.Now().Add(-48 * time.Hour).UnixNano())
+
+	// 保持 channel=200 活跃
+	active := ks.getOrCreateCounter(200)
+	active.lastAccess.Store(time.Now().UnixNano())
+
+	ks.CleanupInactiveCounters(24 * time.Hour)
+
+	ks.rrMutex.RLock()
+	_, okExpired := ks.rrCounters[100]
+	_, okActive := ks.rrCounters[200]
+	ks.rrMutex.RUnlock()
+
+	if okExpired {
+		t.Fatalf("expected channel=100 counter to be cleaned up")
+	}
+	if !okActive {
+		t.Fatalf("expected channel=200 counter to remain")
+	}
+}
+
 // ========== 辅助函数 ==========
 
 func setupTestKeyStore(t *testing.T) (storage.Store, func()) {

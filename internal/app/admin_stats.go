@@ -313,9 +313,8 @@ func (s *Server) getChannelTypesMapCached(ctx context.Context) (map[int64]string
 
 // HandleCooldownStats 获取当前冷却状态监控指标
 // GET /admin/cooldown/stats
-// [INFO] Linus风格:按需查询,简单直接
 func (s *Server) HandleCooldownStats(c *gin.Context) {
-	// 使用缓存层查询（<1ms vs 数据库查询5-10ms），若缓存不可用自动退化
+	// 优先走缓存层，缓存不可用时自动降级到数据库查询
 	channelCooldowns, _ := s.getAllChannelCooldowns(c.Request.Context())
 	keyCooldowns, _ := s.getAllKeyCooldowns(c.Request.Context())
 
@@ -374,7 +373,7 @@ func (s *Server) HandleGetModels(c *gin.Context) {
 
 // HandleHealth 健康检查端点(公开访问,无需认证)
 // GET /health
-// 仅检查数据库连接是否活跃（<5ms，适用于K8s liveness/readiness probe）
+// 仅检查数据库连接是否活跃（适用于K8s liveness/readiness probe）
 func (s *Server) HandleHealth(c *gin.Context) {
 	// 设置100ms超时，避免慢查询阻塞healthcheck
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 100*time.Millisecond)

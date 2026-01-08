@@ -15,8 +15,8 @@ type ChannelInfo struct {
 }
 
 // fetchChannelInfoBatch 批量查询渠道信息（名称+优先级）
-// 性能提升：N+1查询 → 1次全表查询 + 内存过滤（100渠道场景提升50-100倍）
-// 设计原则（KISS）：渠道总数<1000，全表扫描比IN子查询更简单、更快
+// 消除 N+1：一次全表查询 + 内存过滤
+// 设计原则（KISS）：渠道总数<1000时，全表扫描比动态 IN 子查询更简单
 // 输入：渠道ID集合 map[int64]bool
 // 输出：ID→渠道信息映射 map[int64]ChannelInfo
 func (s *SQLStore) fetchChannelInfoBatch(ctx context.Context, channelIDs map[int64]bool) (map[int64]ChannelInfo, error) {

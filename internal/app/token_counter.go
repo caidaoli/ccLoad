@@ -40,7 +40,7 @@ type CountTokensResponse struct {
 // 设计原则：
 // - KISS: 简单高效的估算算法，避免引入复杂的tokenizer库
 // - 向后兼容: 支持所有Claude模型和消息格式
-// - 性能优先: 本地计算，响应时间<5ms
+// - 本地计算: 避免引入复杂依赖
 func (s *Server) handleCountTokens(c *gin.Context) {
 	var req CountTokensRequest
 
@@ -223,7 +223,7 @@ func estimateToolName(name string) int {
 	}
 
 	// 基础估算：按字符长度
-	baseTokens := len(name) / 2 // 工具名称通常极其密集（比普通文本密集2倍）
+	baseTokens := len(name) / 2 // 工具名称通常比普通文本更密集
 
 	// 下划线分词惩罚：每个下划线可能导致额外的token
 	underscoreCount := strings.Count(name, "_")

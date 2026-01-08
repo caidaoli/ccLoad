@@ -1,6 +1,7 @@
 package app
 
 import (
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -11,7 +12,6 @@ import (
 
 // SmoothWeightedRR 平滑加权轮询调度器
 // 算法来源：Nginx upstream smooth weighted round-robin
-// 特点：确定性分流，无随机性，分布均匀
 type SmoothWeightedRR struct {
 	mu     sync.Mutex
 	states map[string]*rrGroupState // key: 渠道ID组合的签名
@@ -41,6 +41,10 @@ func (rr *SmoothWeightedRR) Select(
 ) []*modelpkg.Config {
 	n := len(channels)
 	if n == 0 {
+		return channels
+	}
+	if len(weights) != n {
+		// 参数不匹配时直接返回原列表
 		return channels
 	}
 	if n == 1 {
@@ -85,10 +89,9 @@ func (rr *SmoothWeightedRR) Select(
 	// 步骤2: 找到 currentWeight 最大的节点
 	maxWeight := state.currentWeights[channels[0].ID]
 	selectedIdx := 0
-	//nolint:gosec // G602: i is bounded by n=len(channels), access is safe
 	for i := 1; i < n; i++ {
 		cw := state.currentWeights[channels[i].ID]
-		if cw > maxWeight {
+		if cw > maxWeight || (cw == maxWeight && channels[i].ID < channels[selectedIdx].ID) {
 			maxWeight = cw
 			selectedIdx = i
 		}
@@ -133,23 +136,35 @@ func (rr *SmoothWeightedRR) SelectWithCooldown(
 }
 
 // generateGroupKey 生成渠道组的唯一标识
-// 使用所有渠道ID拼接，确保不同渠道组合生成不同的key
-// [FIX] 使用十进制+逗号分隔，避免哈希冲突（如 [10,36]→"10,36" vs [370]→"370"）
+// 使用所有渠道ID拼接，确保不同渠道组合生成不同的key。
+// 规则：
+// - 对 ID 排序，使同一集合不同顺序复用同一状态（避免状态爆炸）
+// - 使用十进制+逗号分隔，保证可读且无歧义
 func (rr *SmoothWeightedRR) generateGroupKey(channels []*modelpkg.Config) string {
 	n := len(channels)
 	if n == 0 {
 		return ""
 	}
 
-	// 预估容量：每个ID约6字符（int64最大19位）+ 分隔符
-	var b strings.Builder
-	b.Grow(n * 7)
+	ids := make([]int64, 0, n)
+	for _, ch := range channels {
+		if ch == nil {
+			continue
+		}
+		ids = append(ids, ch.ID)
+	}
+	if len(ids) == 0 {
+		return ""
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 
-	for i, ch := range channels {
+	var b strings.Builder
+
+	for i, id := range ids {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		b.WriteString(strconv.FormatInt(ch.ID, 10))
+		b.WriteString(strconv.FormatInt(id, 10))
 	}
 	return b.String()
 }

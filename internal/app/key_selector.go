@@ -12,12 +12,7 @@ import (
 // KeySelector 负责从渠道的多个API Key中选择可用的Key
 // 移除store依赖，避免重复查询数据库
 //
-// [设计决策] 为什么使用 RWMutex 而不是 sync.Map：
-//  1. 访问模式：多个请求访问**同一渠道**的计数器（channelID相同），sync.Map无优势
-//  2. 读多写少：RWMutex在读多写少场景下性能优秀，多goroutine可并发读
-//  3. 类型安全：map[int64]*rrCounter 编译期类型检查，sync.Map需类型断言
-//  4. 简单性：双重检查锁定模式简单直接，sync.Map的API更复杂
-//  5. 无性能瓶颈：写操作（创建计数器）极少，无需优化
+// 说明：使用 RWMutex + map 取代 sync.Map，原因是读多写少且保持类型安全。
 type KeySelector struct {
 	// 轮询计数器：channelID -> *rrCounter
 	// 渠道删除时需要清理对应计数器，避免rrCounters无界增长。
@@ -27,7 +22,8 @@ type KeySelector struct {
 
 // rrCounter 轮询计数器（简化版）
 type rrCounter struct {
-	counter atomic.Uint32
+	counter    atomic.Uint32
+	lastAccess atomic.Int64 // UnixNano: 最后一次访问时间，用于后台清理
 }
 
 // NewKeySelector 创建Key选择器
@@ -115,6 +111,7 @@ func (ks *KeySelector) getOrCreateCounter(channelID int64) *rrCounter {
 	// 再次检查，避免多个goroutine同时创建
 	if counter, ok = ks.rrCounters[channelID]; !ok {
 		counter = &rrCounter{}
+		counter.lastAccess.Store(time.Now().UnixNano())
 		ks.rrCounters[channelID] = counter
 	}
 	return counter
@@ -131,16 +128,24 @@ func (ks *KeySelector) RemoveChannelCounter(channelID int64) {
 // CleanupInactiveCounters 清理长时间未使用的轮询计数器
 // [FIX] P1: 自动清理过期计数器，防止内存泄漏（渠道删除后未手动调用RemoveChannelCounter）
 // maxIdleTime: 最大空闲时间，超过此时间未使用的计数器将被清理
-//
-// 实现说明：由于rrCounter不记录最后访问时间，我们无法精确判断"未使用"
-// 因此这个方法主要用于：
-// 1. 与数据库对账，删除已不存在的渠道的计数器
-// 2. 作为RemoveChannelCounter的补充，防止人工遗漏
 func (ks *KeySelector) CleanupInactiveCounters(maxIdleTime time.Duration) {
-	// TODO: 实现与数据库对账的逻辑
-	// 当前版本：依赖手动调用RemoveChannelCounter
-	// 未来优化：可以在这里查询所有存在的channelID，删除不存在的计数器
-	_ = maxIdleTime // 避免unused参数警告
+	if maxIdleTime <= 0 {
+		return
+	}
+
+	cutoff := time.Now().Add(-maxIdleTime).UnixNano()
+
+	ks.rrMutex.Lock()
+	for channelID, counter := range ks.rrCounters {
+		if counter == nil {
+			delete(ks.rrCounters, channelID)
+			continue
+		}
+		if counter.lastAccess.Load() < cutoff {
+			delete(ks.rrCounters, channelID)
+		}
+	}
+	ks.rrMutex.Unlock()
 }
 
 // selectRoundRobin 轮询选择可用Key
@@ -150,6 +155,7 @@ func (ks *KeySelector) selectRoundRobin(channelID int64, apiKeys []*model.APIKey
 	now := time.Now()
 
 	counter := ks.getOrCreateCounter(channelID)
+	counter.lastAccess.Store(now.UnixNano())
 	startIdx := int(counter.counter.Add(1) % uint32(keyCount)) //nolint:gosec // G115: keyCount 来自 API Keys 切片长度，不可能溢出
 
 	// 从startIdx开始轮询，最多尝试keyCount次

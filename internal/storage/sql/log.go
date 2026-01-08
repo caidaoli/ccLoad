@@ -197,11 +197,11 @@ func (s *SQLStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) err
 // ListLogs 查询日志列表
 func (s *SQLStore) ListLogs(ctx context.Context, since time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error) {
 	// 使用查询构建器构建复杂查询
-	// 性能优化：批量查询渠道名称消除N+1问题（100渠道场景提升50-100倍）
+	// 消除 N+1：渠道过滤/名称解析用一次批量查询完成
 	baseQuery := `
-		SELECT id, time, model, actual_model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used, auth_token_id, client_ip,
-			input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost
-		FROM logs`
+			SELECT id, time, model, actual_model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used, auth_token_id, client_ip,
+				input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost
+			FROM logs`
 
 	// time字段现在是BIGINT毫秒时间戳，需要转换为Unix毫秒进行比较
 	sinceMs := since.UnixMilli()

@@ -105,7 +105,6 @@ func deepCopyConfigs(src []*modelpkg.Config) []*modelpkg.Config {
 }
 
 // GetEnabledChannelsByModel 缓存优先的模型查询
-// 性能：内存查询 < 2ms vs 数据库查询 50ms+
 // [FIX] P0-2: 返回深拷贝，防止调用方污染缓存
 func (c *ChannelCache) GetEnabledChannelsByModel(ctx context.Context, model string) ([]*modelpkg.Config, error) {
 	if err := c.refreshIfNeeded(ctx); err != nil {
@@ -133,15 +132,15 @@ func (c *ChannelCache) GetEnabledChannelsByModel(ctx context.Context, model stri
 // GetEnabledChannelsByType 缓存优先的类型查询
 // [FIX] P0-2: 返回深拷贝，防止调用方污染缓存
 func (c *ChannelCache) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*modelpkg.Config, error) {
+	normalizedType := util.NormalizeChannelType(channelType)
 	if err := c.refreshIfNeeded(ctx); err != nil {
 		// 缓存失败时降级到数据库查询
-		return c.store.GetEnabledChannelsByType(ctx, channelType)
+		return c.store.GetEnabledChannelsByType(ctx, normalizedType)
 	}
 
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 
-	normalizedType := util.NormalizeChannelType(channelType)
 	channels, exists := c.channelsByType[normalizedType]
 	if !exists {
 		return []*modelpkg.Config{}, nil
@@ -154,18 +153,6 @@ func (c *ChannelCache) GetEnabledChannelsByType(ctx context.Context, channelType
 // GetConfig 获取指定ID的渠道配置
 // 直接查询数据库，保证数据永远是最新的
 func (c *ChannelCache) GetConfig(ctx context.Context, channelID int64) (*modelpkg.Config, error) {
-	// 🔧 修复 (2025-11-16): 直接查询数据库,删除复杂的缓存逻辑
-	//
-	// 原问题: 缓存失效后仍可能返回旧数据,且缓存只包含enabled=true的渠道
-	//
-	// Linus风格: "Talk is cheap. Show me the code."
-	// - 缓存是过早优化,增加复杂度却收益甚微(1-2ms vs 0.1ms)
-	// - 单个渠道查询有主键索引,性能已经足够好
-	// - 直接查数据库保证数据永远是最新的,简单可靠
-	//
-	// 保留的缓存: GetEnabledChannelsByModel/Type (批量查询,真正的热路径)
-	// 删除的缓存: GetConfig的allChannels遍历(过度设计)
-
 	return c.store.GetConfig(ctx, channelID)
 }
 
@@ -192,11 +179,7 @@ func (c *ChannelCache) refreshIfNeeded(ctx context.Context) error {
 }
 
 // refreshCache 刷新缓存数据
-// [INFO] 内部共享指针设计说明：
-//   - allChannels, byModel, byType 三个索引共享同一批 *Config 指针（节省内存）
-//   - 这是**安全的**：缓存内部实现，外部无法访问
-//   - 对外防御：GetEnabledChannelsByModel/Type 返回深拷贝，完全隔离
-//   - 刷新安全：整体替换缓存（原子更新），不修改单个对象
+// 说明：缓存内部索引共享指针；对外统一返回深拷贝，避免调用方污染缓存。
 func (c *ChannelCache) refreshCache(ctx context.Context) error {
 	start := time.Now()
 
@@ -225,7 +208,6 @@ func (c *ChannelCache) refreshCache(ctx context.Context) error {
 	c.channelsByType = byType
 	c.lastUpdate = time.Now()
 
-	// 性能日志
 	refreshDuration := time.Since(start)
 	if refreshDuration > 5*time.Second {
 		log.Printf("[WARN]  缓存刷新过慢: %v, 渠道数: %d, 模型数: %d, 类型数: %d",
@@ -244,7 +226,6 @@ func (c *ChannelCache) InvalidateCache() {
 }
 
 // GetAPIKeys 缓存优先的API Keys查询
-// 性能：内存查询 <1ms vs 数据库查询 10-20ms
 func (c *ChannelCache) GetAPIKeys(ctx context.Context, channelID int64) ([]*modelpkg.APIKey, error) {
 	// 检查缓存
 	c.mutex.RLock()
@@ -280,7 +261,6 @@ func (c *ChannelCache) GetAPIKeys(ctx context.Context, channelID int64) ([]*mode
 }
 
 // GetAllChannelCooldowns 缓存优先的渠道冷却查询
-// 性能：内存查询 <1ms vs 数据库查询 5-10ms
 func (c *ChannelCache) GetAllChannelCooldowns(ctx context.Context) (map[int64]time.Time, error) {
 	// 检查冷却缓存是否有效
 	c.mutex.RLock()
@@ -311,7 +291,6 @@ func (c *ChannelCache) GetAllChannelCooldowns(ctx context.Context) (map[int64]ti
 }
 
 // GetAllKeyCooldowns 缓存优先的Key冷却查询
-// 性能：内存查询 <1ms vs 数据库查询 5-10ms
 func (c *ChannelCache) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int]time.Time, error) {
 	// 检查冷却缓存是否有效
 	c.mutex.RLock()

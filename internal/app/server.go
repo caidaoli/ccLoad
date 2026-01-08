@@ -528,7 +528,7 @@ func (s *Server) HandleEventLoggingBatch(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{})
 }
 
-// Token清理循环（定期清理过期Token和轮询状态）
+// Token清理循环（定期清理过期Token）
 // 支持优雅关闭
 func (s *Server) tokenCleanupLoop() {
 	defer s.wg.Done()

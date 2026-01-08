@@ -200,12 +200,9 @@ func TestSmoothWeightedRR_Integration(t *testing.T) {
 	}
 }
 
-func TestSmoothWeightedRR_NoHashCollision(t *testing.T) {
-	// [FIX] 测试修复：验证不同渠道组合生成不同的groupKey
-	// 修复前使用base36编码会导致哈希冲突：
-	//   [10, 36] → "a:10" (10=a in base36, 36=10 in base36)
-	//   [370]    → "a:10" (370=a10 in base36)
-	// 修复后使用十进制+逗号分隔应该避免冲突
+func TestSmoothWeightedRR_GroupKeyFormat(t *testing.T) {
+	// 验证 groupKey 的格式与可读性：十进制 + 逗号分隔。
+	// 这不是“修复玄学碰撞”，而是把 key 做成明确、可测试的字符串格式。
 
 	rr := NewSmoothWeightedRR()
 
@@ -250,5 +247,48 @@ func TestSmoothWeightedRR_NoHashCollision(t *testing.T) {
 	result2 := rr.Select(channels2, weights2)
 	if result2[0].ID != 370 {
 		t.Errorf("轮询状态隔离失败: 期望选中370，实际选中%d", result2[0].ID)
+	}
+}
+
+func TestSmoothWeightedRR_GroupKeyOrderIndependent(t *testing.T) {
+	rr := NewSmoothWeightedRR()
+
+	a := []*modelpkg.Config{
+		{ID: 10, Name: "ch10"},
+		{ID: 36, Name: "ch36"},
+	}
+	b := []*modelpkg.Config{
+		{ID: 36, Name: "ch36"},
+		{ID: 10, Name: "ch10"},
+	}
+
+	keyA := rr.generateGroupKey(a)
+	keyB := rr.generateGroupKey(b)
+
+	if keyA != keyB {
+		t.Fatalf("same set should have same key: keyA=%q keyB=%q", keyA, keyB)
+	}
+	if keyA != "10,36" {
+		t.Fatalf("unexpected key: %q", keyA)
+	}
+}
+
+func TestSmoothWeightedRR_TieBreakIndependentOfInputOrder(t *testing.T) {
+	chA := &modelpkg.Config{ID: 10, Name: "A", Priority: 10, KeyCount: 1}
+	chB := &modelpkg.Config{ID: 36, Name: "B", Priority: 10, KeyCount: 1}
+
+	weights := []int{1, 1}
+
+	// 相同集合、相同权重，只是输入顺序不同：在“干净状态”下首选应一致（由 tie-break 决定）。
+	rr1 := NewSmoothWeightedRR()
+	rr2 := NewSmoothWeightedRR()
+	r1 := rr1.Select([]*modelpkg.Config{chA, chB}, weights)
+	r2 := rr2.Select([]*modelpkg.Config{chB, chA}, weights)
+
+	if r1[0].ID != r2[0].ID {
+		t.Fatalf("tie-break should be order independent: r1=%d r2=%d", r1[0].ID, r2[0].ID)
+	}
+	if r1[0].ID != 10 {
+		t.Fatalf("expected smaller ID to win tie-break, got %d", r1[0].ID)
 	}
 }

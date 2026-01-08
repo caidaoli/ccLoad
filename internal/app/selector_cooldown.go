@@ -10,7 +10,7 @@ import (
 	modelpkg "ccLoad/internal/model"
 )
 
-// filterCooldownChannels 过滤或降权冷却中的渠道
+// filterCooldownChannels 过滤冷却中的渠道
 //
 // [IMPORTANT] 冷却状态优先级：**最高优先级**，必须在健康度排序前执行
 // 即使健康度缓存显示渠道可用，冷却状态具有最高优先级。
@@ -21,8 +21,8 @@ import (
 // 3. 确保不会选中已冷却的渠道，避免雪崩效应
 //
 // 行为说明：
-// - 当启用健康度排序时：冷却渠道降权而非完全过滤，按有效优先级排序
-// - 当禁用健康度排序时：完全过滤冷却渠道（传统行为）
+// - 冷却语义：渠道级冷却、或“所有Key均在冷却”的渠道会被过滤
+// - 健康度排序：仅对“已通过冷却过滤”的渠道进行排序/负载均衡
 func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpkg.Config) ([]*modelpkg.Config, error) {
 	if len(channels) == 0 {
 		return channels, nil
@@ -30,18 +30,18 @@ func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpk
 
 	now := time.Now()
 
-	// 批量查询冷却状态（使用缓存层，性能优化）
+	// 批量查询冷却状态（优先走缓存层）
 	channelCooldowns, err := s.getAllChannelCooldowns(ctx)
 	if err != nil {
-		// [FIX] 降级策略：使用空map而非返回未过滤渠道，避免数据库故障时选中冷却渠道导致雪崩
-		log.Printf("[ERROR] Failed to get channel cooldowns, using empty cooldown map (degraded mode): %v", err)
+		// 降级策略：无法获取冷却数据时，跳过冷却过滤；仍保留后续健康度/负载均衡逻辑，避免直接返回未排序列表。
+		log.Printf("[ERROR] Failed to get channel cooldowns, skipping cooldown filtering (degraded mode): %v", err)
 		channelCooldowns = make(map[int64]time.Time)
 	}
 
 	keyCooldowns, err := s.getAllKeyCooldowns(ctx)
 	if err != nil {
-		// [FIX] 降级策略：使用空map而非返回未过滤渠道
-		log.Printf("[ERROR] Failed to get key cooldowns, using empty cooldown map (degraded mode): %v", err)
+		// 降级策略：同上。
+		log.Printf("[ERROR] Failed to get key cooldowns, skipping cooldown filtering (degraded mode): %v", err)
 		keyCooldowns = make(map[int64]map[int]time.Time)
 	}
 
@@ -104,10 +104,20 @@ func (s *Server) pickBestChannelWhenAllCooled(
 		// Key全冷却时，取最早解禁时间
 		if ch.KeyCount > 0 {
 			if keyMap := keyCooldowns[ch.ID]; keyMap != nil && len(keyMap) >= ch.KeyCount {
+				var earliest time.Time
+				hasAvailableKey := false
 				for _, until := range keyMap {
-					if until.After(now) && (readyAt.Equal(now) || until.Before(readyAt)) {
-						readyAt = until
+					if !until.After(now) {
+						hasAvailableKey = true
+						break
 					}
+					if earliest.IsZero() || until.Before(earliest) {
+						earliest = until
+					}
+				}
+				// 当“所有Key都在冷却”时：渠道真正可用时间 = max(渠道冷却, 最早Key解禁)
+				if !hasAvailableKey && !earliest.IsZero() && earliest.After(readyAt) {
+					readyAt = earliest
 				}
 			}
 		}

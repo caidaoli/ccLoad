@@ -8,17 +8,16 @@ import (
 )
 
 // selectCandidatesByChannelType 根据渠道类型选择候选渠道
-// 性能优化：使用缓存层，内存查询 < 2ms vs 数据库查询 50ms+
 func (s *Server) selectCandidatesByChannelType(ctx context.Context, channelType string) ([]*modelpkg.Config, error) {
 	normalizedType := util.NormalizeChannelType(channelType)
 
-	// 快路径：优先走缓存查询
+	// 优先走缓存查询
 	channels, err := s.GetEnabledChannelsByType(ctx, channelType)
 	if err != nil {
 		return nil, err
 	}
 
-	// 降级：全量查询（用于"全冷却兜底"场景）
+	// 兜底：全量查询（用于“全冷却兜底”场景）
 	if len(channels) == 0 {
 		all, err := s.store.ListConfigs(ctx)
 		if err != nil {
@@ -54,7 +53,7 @@ func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model strin
 		return filtered
 	}
 
-	// 快路径：优先走索引查询
+	// 优先走索引查询
 	channels, err := s.GetEnabledChannelsByModel(ctx, model)
 	if err != nil {
 		return nil, err
@@ -75,7 +74,7 @@ func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model strin
 		}
 	}
 
-	// 降级：全量查询（用于"全冷却兜底"场景）
+	// 兜底：全量查询（用于“全冷却兜底”场景）
 	if len(channels) == 0 {
 		all, err := s.store.ListConfigs(ctx)
 		if err != nil {

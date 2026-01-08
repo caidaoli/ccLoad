@@ -40,7 +40,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		return
 	}
 
-	// 支持按渠道类型过滤（性能优化：减少后续批量查询的数据量）
+	// 支持按渠道类型过滤（减少后续批量查询的数据量）
 	// [FIX] P2-7: 标准化类型比较，避免"同一概念多种写法"
 	channelType := c.Query("type")
 	if channelType != "" && channelType != "all" {
@@ -62,8 +62,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	// 附带冷却状态
 	now := time.Now()
 
-	// 使用缓存层查询（<1ms vs 数据库查询5-10ms）
-	// 性能优化：批量获取冷却状态，减少管理API的数据库查询
+	// 批量获取冷却状态（缓存优先）
 	allChannelCooldowns, err := s.getAllChannelCooldowns(c.Request.Context())
 	if err != nil {
 		// 渠道冷却查询失败不影响主流程，仅记录错误
@@ -71,9 +70,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		allChannelCooldowns = make(map[int64]time.Time)
 	}
 
-	// 性能优化：批量查询所有Key冷却状态（一次查询替代 N*M 次）
-	// 使用缓存层查询（<1ms vs 数据库查询5-10ms）
-	// 性能优化：批量获取Key冷却状态，减少管理API的数据库查询
+	// 批量查询所有Key冷却状态（缓存优先）
 	allKeyCooldowns, err := s.getAllKeyCooldowns(c.Request.Context())
 	if err != nil {
 		// Key冷却查询失败不影响主流程，仅记录错误
@@ -254,8 +251,7 @@ func (s *Server) handleGetChannel(c *gin.Context, id int64) {
 	RespondJSON(c, http.StatusOK, cfg)
 }
 
-// [INFO] 修复:获取渠道的所有 API Keys(2025-10 新架构支持)
-// 使用缓存层查询（<1ms vs 数据库查询10-20ms）
+// handleGetChannelKeys 获取渠道的所有 API Keys
 // GET /admin/channels/{id}/keys
 func (s *Server) handleGetChannelKeys(c *gin.Context, id int64) {
 	apiKeys, err := s.getAPIKeys(c.Request.Context(), id)
@@ -315,7 +311,6 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	}
 
 	// 检测api_key是否变化（需要重建API Keys）
-	// 使用缓存层查询（<1ms vs 数据库查询10-20ms）
 	oldKeys, err := s.getAPIKeys(c.Request.Context(), id)
 	if err != nil {
 		log.Printf("[WARN] 查询旧API Keys失败: %v", err)
@@ -580,7 +575,7 @@ func (s *Server) HandleDeleteModels(c *gin.Context) {
 
 // HandleBatchUpdatePriority 批量更新渠道优先级
 // POST /admin/channels/batch-priority
-// 性能优化：使用单条批量UPDATE语句替代N次独立查询（90次→1次）
+// 使用单条批量 UPDATE 语句更新多个渠道优先级
 func (s *Server) HandleBatchUpdatePriority(c *gin.Context) {
 	var req struct {
 		Updates []struct {
