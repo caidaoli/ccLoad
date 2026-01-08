@@ -255,7 +255,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			continue
 		}
 
-		// [WARN] 所有Key验证失败（88code套餐等），尝试下一个渠道
+		// [WARN] 所有Key验证失败，尝试下一个渠道
 		if err != nil && errors.Is(err, ErrAllKeysExhausted) {
 			log.Printf("[WARN] 渠道 %s (ID=%d) 所有Key验证失败，跳过该渠道", cfg.Name, cfg.ID)
 			continue

@@ -710,7 +710,6 @@ These settings have been migrated to database, managed via Web interface `/web/s
 | `log_retention_days` | `7` | Log retention days (-1 for permanent, 1-365 days) |
 | `max_key_retries` | `3` | Max key retries within single channel |
 | `upstream_first_byte_timeout` | `0` | Upstream first byte timeout (seconds, 0=disabled) |
-| `88code_free_only` | `false` | Allow only 88code free subscriptions |
 | `enable_health_score` | `false` | Enable health-based dynamic channel sorting |
 | `success_rate_penalty_weight` | `100` | Success rate penalty weight (see below) |
 | `health_score_window_minutes` | `30` | Success rate stats time window (minutes) |

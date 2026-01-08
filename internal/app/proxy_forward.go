@@ -17,7 +17,6 @@ import (
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
-	"ccLoad/internal/validator"
 
 	"github.com/bytedance/sonic"
 )
@@ -527,15 +526,6 @@ func (s *Server) forwardAttempt(
 ) (*proxyResult, cooldown.Action) {
 	// 记录渠道尝试开始时间（用于日志记录，每次渠道/Key切换时更新）
 	reqCtx.attemptStartTime = time.Now()
-
-	// [VALIDATE] Key级验证器检查(88code套餐验证等)
-	// 每个Key单独验证，避免误杀免费key或误放付费key
-	available, reason := validator.Validate88CodeSubscription(ctx, cfg, selectedKey)
-	if !available {
-		// Key验证失败: 跳过此key，尝试下一个
-		log.Printf("[VALIDATE] 渠道 %s (ID=%d) Key#%d 验证失败: %s, 跳过", cfg.Name, cfg.ID, keyIndex, reason)
-		return nil, cooldown.ActionRetryKey
-	}
 
 	// 转发请求（传递实际的API Key字符串和字节回调）
 	res, duration, err := s.forwardOnceAsync(ctx, cfg, selectedKey, reqCtx.requestMethod,

@@ -18,7 +18,6 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
-	"ccLoad/internal/validator"
 
 	"github.com/gin-gonic/gin"
 )
@@ -116,7 +115,6 @@ func NewServer(store storage.Store) *Server {
 	}
 
 	logRetentionDays := configService.GetInt("log_retention_days", 7)
-	enable88codeFreeOnly := configService.GetBool("88code_free_only", false)
 	modelLookupStripDateSuffix := configService.GetBool("model_lookup_strip_date_suffix", true)
 	if configService.GetSetting("model_lookup_strip_date_suffix") == nil {
 		log.Print("[WARN] 未找到系统设置 model_lookup_strip_date_suffix，已默认启用模型日期后缀回退匹配（建议检查数据库迁移/运行目录）")
@@ -193,9 +191,6 @@ func NewServer(store storage.Store) *Server {
 
 	// 初始化渠道负载均衡器（平滑加权轮询，确定性分流）
 	s.channelBalancer = NewSmoothWeightedRR()
-
-	// 初始化88code验证器（启动时读取配置，修改后重启生效）
-	validator.Init88CodeValidator(enable88codeFreeOnly)
 
 	// 初始化健康度缓存（启动时读取配置，修改后重启生效）
 	defaultHealthCfg := model.DefaultHealthScoreConfig()

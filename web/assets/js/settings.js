@@ -13,7 +13,7 @@ function getSettingGroupInfo(key) {
     { id: 'health', name: '渠道动态排序', order: 30, match: () => k.includes('health_score') || k.includes('success_rate') || k.includes('penalty_weight') || k === 'enable_health_score' || k === 'health_min_confident_sample' },
     { id: 'cooldown', name: '冷却兜底', order: 40, match: () => k.startsWith('cooldown_') },
     { id: 'log', name: '日志', order: 50, match: () => k.startsWith('log_') },
-    { id: 'access', name: '访问控制', order: 60, match: () => k.includes('88code') || k.includes('auth_') },
+    { id: 'access', name: '访问控制', order: 60, match: () => k.includes('auth_') },
   ];
 
   for (const d of defs) {

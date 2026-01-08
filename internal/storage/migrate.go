@@ -523,7 +523,6 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"max_key_retries", "3", "int", "单渠道最大Key重试次数", "3"},
 		{"upstream_first_byte_timeout", "0", "duration", "上游首字节超时(秒,0=禁用)", "0"},
 		{"non_stream_timeout", "120", "duration", "非流式请求超时(秒,0=禁用)", "120"},
-		{"88code_free_only", "false", "bool", "渠道名称88code开头时仅允许FREE订阅(非FREE订阅Key将被冷却)", "false"},
 		{"model_lookup_strip_date_suffix", "true", "bool", "模型匹配失败时，忽略末尾-YYYYMMDD日期后缀进行渠道匹配(优先精确匹配)", "true"},
 		{"model_fuzzy_match", "false", "bool", "模型匹配失败时，使用子串模糊匹配(多匹配时选最新版本)", "false"},
 		{"channel_test_content", "sonnet 4.0的发布日期是什么", "string", "渠道测试默认内容", "sonnet 4.0的发布日期是什么"},
@@ -586,6 +585,14 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 				return fmt.Errorf("rename setting %s to %s: %w", oldKey, newKey, err)
 			}
 		}
+	}
+
+	// 清理已废弃的配置项
+	obsoleteKeys := []string{
+		"88code_free_only", // 2026-01移除：88code免费订阅限制功能已删除
+	}
+	for _, key := range obsoleteKeys {
+		_ = deleteSystemSetting(ctx, db, dialect, key) // 忽略错误（可能不存在）
 	}
 
 	return nil
