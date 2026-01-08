@@ -554,21 +554,37 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 	// 迁移旧键名 cooldown_fallback_threshold → cooldown_fallback_enabled
 	// 同时处理 int→bool 的类型迁移
 	{
+		const oldKey = "cooldown_fallback_threshold"
+		const newKey = "cooldown_fallback_enabled"
+
+		// 旧键不存在则跳过迁移（已迁移或从未存在）
+		if !hasSystemSetting(ctx, db, dialect, oldKey) {
+			return nil
+		}
+
 		keyCol := "key"
 		if dialect == DialectMySQL {
 			keyCol = "`key`"
 		}
+
 		// 1. 先将旧的 int 值(0/非0)迁移为 bool 值(false/true)
 		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
 		valueMigrateSQL := fmt.Sprintf(`UPDATE system_settings SET value = CASE WHEN value = '0' THEN 'false' ELSE 'true' END WHERE %s = ? AND value_type = 'int'`, keyCol)
-		if _, err := db.ExecContext(ctx, valueMigrateSQL, "cooldown_fallback_threshold"); err != nil {
-			return fmt.Errorf("migrate setting value cooldown_fallback_threshold: %w", err)
+		if _, err := db.ExecContext(ctx, valueMigrateSQL, oldKey); err != nil {
+			return fmt.Errorf("migrate setting value %s: %w", oldKey, err)
 		}
-		// 2. 重命名键：cooldown_fallback_threshold → cooldown_fallback_enabled
-		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
-		renameSQL := fmt.Sprintf("UPDATE system_settings SET %s = ?, description = ?, default_value = ?, value_type = ? WHERE %s = ?", keyCol, keyCol)
-		if _, err := db.ExecContext(ctx, renameSQL, "cooldown_fallback_enabled", "所有渠道冷却时选最优渠道兜底(关闭则直接拒绝请求)", "true", "bool", "cooldown_fallback_threshold"); err != nil {
-			return fmt.Errorf("rename setting cooldown_fallback_threshold to cooldown_fallback_enabled: %w", err)
+
+		// 2. 如果新键已存在，直接删除旧键；否则重命名
+		if hasSystemSetting(ctx, db, dialect, newKey) {
+			if err := deleteSystemSetting(ctx, db, dialect, oldKey); err != nil {
+				return err
+			}
+		} else {
+			//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
+			renameSQL := fmt.Sprintf("UPDATE system_settings SET %s = ?, description = ?, default_value = ?, value_type = ? WHERE %s = ?", keyCol, keyCol)
+			if _, err := db.ExecContext(ctx, renameSQL, newKey, "所有渠道冷却时选最优渠道兜底(关闭则直接拒绝请求)", "true", "bool", oldKey); err != nil {
+				return fmt.Errorf("rename setting %s to %s: %w", oldKey, newKey, err)
+			}
 		}
 	}
 
