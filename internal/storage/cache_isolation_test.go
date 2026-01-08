@@ -27,6 +27,8 @@ func TestCacheIsolation_GetEnabledChannelsByModel(t *testing.T) {
 		Name:     "test-channel",
 		URL:      "https://test.example.com",
 		Priority: 10,
+		// 验证缓存深拷贝不会丢字段：DailyCostLimit 需被正确保留，否则成本限额过滤会失效。
+		DailyCostLimit: 2.0,
 		ModelEntries: []model.ModelEntry{
 			{Model: "model-1", RedirectModel: ""},
 			{Model: "model-2", RedirectModel: ""},
@@ -99,6 +101,9 @@ func TestCacheIsolation_GetEnabledChannelsByModel(t *testing.T) {
 	if ch2.Priority != 10 {
 		t.Errorf("Priority 被污染: 期望 10, 实际 %d", ch2.Priority)
 	}
+	if ch2.DailyCostLimit != 2.0 {
+		t.Errorf("DailyCostLimit 丢失/被污染: 期望 2.0, 实际 %v", ch2.DailyCostLimit)
+	}
 
 	// 验证：数据库中的数据未被污染
 	dbCfg, err := store.GetConfig(ctx, created.ID)
@@ -136,10 +141,11 @@ func TestCacheIsolation_GetEnabledChannelsByType(t *testing.T) {
 
 	// 创建测试渠道
 	cfg := &model.Config{
-		Name:        "test-anthropic",
-		ChannelType: "anthropic",
-		URL:         "https://test.example.com",
-		Priority:    10,
+		Name:           "test-anthropic",
+		ChannelType:    "anthropic",
+		URL:            "https://test.example.com",
+		Priority:       10,
+		DailyCostLimit: 2.0,
 		ModelEntries: []model.ModelEntry{
 			{Model: "claude-3-sonnet", RedirectModel: ""},
 			{Model: "claude", RedirectModel: "claude-3-sonnet"},
@@ -179,6 +185,9 @@ func TestCacheIsolation_GetEnabledChannelsByType(t *testing.T) {
 	// 验证：未被污染（顺序无关）
 	if len(ch2.ModelEntries) != 2 {
 		t.Errorf("ModelEntries 长度被污染: 期望 2, 实际 %d", len(ch2.ModelEntries))
+	}
+	if ch2.DailyCostLimit != 2.0 {
+		t.Errorf("DailyCostLimit 丢失/被污染: 期望 2.0, 实际 %v", ch2.DailyCostLimit)
 	}
 	// 验证包含原始模型
 	foundClaude3Sonnet := false
