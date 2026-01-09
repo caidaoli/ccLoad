@@ -52,6 +52,8 @@ ccLoad 一站式解决👇
 | 🐳 **云原生** | 多架构镜像+CI/CD | amd64/arm64都支持 |
 | 🤗 **白嫖福利** | Hugging Face免费托管 | 个人用完全够了 |
 | 💰 **成本限额** | 渠道每日成本上限 | 达到限额自动跳过 |
+| 🔐 **令牌限额** | API令牌费用上限+模型限制 | 精细化访问控制 |
+| ⏱️ **首字节监控** | 流式请求TTFB记录 | 便于诊断上游延迟 |
 
 ## 🏗️ 架构概览
 
@@ -686,7 +688,7 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
   - `admin_cooldown.go`：冷却管理API
   - `admin_csv.go`：CSV导入导出
   - `admin_types.go`：管理API类型定义
-  - `admin_auth_tokens.go`：API访问令牌CRUD（支持Token统计）
+  - `admin_auth_tokens.go`：API访问令牌CRUD（支持Token统计、费用限额、模型限制）
   - `admin_settings.go`：系统设置管理
   - `admin_models.go`：模型列表管理
   - `admin_testing.go`：渠道测试功能
@@ -808,6 +810,11 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 - 所有令牌存储在数据库中，支持持久化
 - 未配置任何令牌时，所有 `/v1/*` 与 `/v1beta/*` API 返回 `401 Unauthorized`
 
+**令牌高级功能**（2026-01新增）：
+- **费用限额**：为每个令牌设置费用上限（美元），超限后拒绝请求返回 429
+- **模型限制**：限制令牌可访问的模型列表，增强访问控制
+- **首字节时间**：记录流式请求的 TTFB（毫秒），便于诊断上游延迟
+
 #### 行为摘要
 
 兄弟们注意这几条安全策略👇
@@ -881,7 +888,7 @@ storage/
 - `api_keys` - API 密钥（Key 级冷却内联，支持多 Key 策略）
 - `logs` - 请求日志（已合并到主数据库）
 - `key_rr` - 轮询指针（channel_id → idx）
-- `auth_tokens` - 认证令牌
+- `auth_tokens` - 认证令牌（支持费用限额、模型限制、首字节时间记录）
 - `admin_sessions` - 管理会话
 - `system_settings` - 系统配置（支持热重载）
 

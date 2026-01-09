@@ -51,6 +51,9 @@ ccLoad solves these pain points through:
 - 🐳 **Docker Support** - Multi-arch images (amd64/arm64), automated CI/CD
 - ☁️ **Cloud Native** - Container deployment support, GitHub Actions auto-build
 - 🤗 **Hugging Face** - One-click deployment to Hugging Face Spaces, free hosting
+- 💰 **Cost Limits** - Per-channel daily cost limits, per-token cost limits
+- 🔐 **Token Restrictions** - API token cost limits + model restrictions for fine-grained access control
+- ⏱️ **TTFB Monitoring** - Streaming request first byte time tracking for upstream latency diagnosis
 
 ## 🏗️ Architecture Overview
 
@@ -641,7 +644,7 @@ Check out the awesome admin dashboard 👇
   - `admin_cooldown.go`: Cooldown management API
   - `admin_csv.go`: CSV import/export
   - `admin_types.go`: Admin API type definitions
-  - `admin_auth_tokens.go`: API access token CRUD (with token stats)
+  - `admin_auth_tokens.go`: API access token CRUD (with token stats, cost limits, model restrictions)
   - `admin_settings.go`: System settings management
   - `admin_models.go`: Model list management
   - `admin_testing.go`: Channel testing
@@ -748,6 +751,11 @@ Base priority order: A > B > C > D
 - All tokens stored in database with persistence
 - Without any tokens configured, all `/v1/*` and `/v1beta/*` APIs return `401 Unauthorized`
 
+**Advanced Token Features** (2026-01 New):
+- **Cost Limits**: Set cost limits per token (USD), requests rejected with 429 when exceeded
+- **Model Restrictions**: Restrict which models a token can access for fine-grained access control
+- **First Byte Time**: Records streaming request TTFB (milliseconds) for upstream latency diagnosis
+
 #### Behavior Summary
 
 - `CCLOAD_PASS` not set: Program fails to start and exits (secure default)
@@ -817,7 +825,7 @@ storage/
 - `api_keys` - API keys (key-level cooldown inline, multi-key strategies)
 - `logs` - Request logs (merged into main database)
 - `key_rr` - Round-robin pointers (channel_id → idx)
-- `auth_tokens` - Auth tokens
+- `auth_tokens` - Auth tokens (with cost limits, model restrictions, first byte time tracking)
 - `admin_sessions` - Admin sessions
 - `system_settings` - System config (hot reload support)
 
