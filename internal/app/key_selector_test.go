@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
 	"ccLoad/internal/testutil"
 )
 
@@ -18,7 +17,7 @@ const testingContextKey testContextKey = "testing"
 
 // TestSelectAvailableKey_SingleKey 测试单Key场景
 func TestSelectAvailableKey_SingleKey(t *testing.T) {
-	store, cleanup := setupTestKeyStore(t)
+	store, cleanup := testutil.SetupTestStore(t)
 	defer cleanup()
 
 	selector := NewKeySelector() // 移除store参数
@@ -85,7 +84,7 @@ func TestSelectAvailableKey_SingleKey(t *testing.T) {
 
 // TestSelectAvailableKey_SingleKeyCooldown 测试单Key冷却场景（修复Bug验证）
 func TestSelectAvailableKey_SingleKeyCooldown(t *testing.T) {
-	store, cleanup := setupTestKeyStore(t)
+	store, cleanup := testutil.SetupTestStore(t)
 	defer cleanup()
 
 	selector := NewKeySelector()
@@ -145,7 +144,7 @@ func TestSelectAvailableKey_SingleKeyCooldown(t *testing.T) {
 
 // TestSelectAvailableKey_Sequential 测试顺序策略
 func TestSelectAvailableKey_Sequential(t *testing.T) {
-	store, cleanup := setupTestKeyStore(t)
+	store, cleanup := testutil.SetupTestStore(t)
 	defer cleanup()
 
 	selector := NewKeySelector() // 移除store参数
@@ -253,7 +252,7 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 
 // TestSelectAvailableKey_RoundRobin 测试轮询策略
 func TestSelectAvailableKey_RoundRobin(t *testing.T) {
-	store, cleanup := setupTestKeyStore(t)
+	store, cleanup := testutil.SetupTestStore(t)
 	defer cleanup()
 
 	selector := NewKeySelector() // 移除store参数
@@ -344,7 +343,7 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 // TestSelectAvailableKey_RoundRobin_NonContiguousKeyIndex 验证RR不依赖KeyIndex连续性
 // [REGRESSION] 这个测试防止回归到"假设KeyIndex=0..N-1连续"的错误实现
 func TestSelectAvailableKey_RoundRobin_NonContiguousKeyIndex(t *testing.T) {
-	store, cleanup := setupTestKeyStore(t)
+	store, cleanup := testutil.SetupTestStore(t)
 	defer cleanup()
 
 	selector := NewKeySelector()
@@ -494,7 +493,7 @@ func TestSelectAvailableKey_SingleKey_NonZeroKeyIndex(t *testing.T) {
 
 // TestSelectAvailableKey_KeyCooldown 测试Key冷却过滤
 func TestSelectAvailableKey_KeyCooldown(t *testing.T) {
-	store, cleanup := setupTestKeyStore(t)
+	store, cleanup := testutil.SetupTestStore(t)
 	defer cleanup()
 
 	selector := NewKeySelector() // 移除store参数
@@ -614,7 +613,7 @@ func TestSelectAvailableKey_KeyCooldown(t *testing.T) {
 
 // TestSelectAvailableKey_CooldownAndExclude 测试冷却与排除组合
 func TestSelectAvailableKey_CooldownAndExclude(t *testing.T) {
-	store, cleanup := setupTestKeyStore(t)
+	store, cleanup := testutil.SetupTestStore(t)
 	defer cleanup()
 
 	selector := NewKeySelector() // 移除store参数
@@ -682,7 +681,7 @@ func TestSelectAvailableKey_CooldownAndExclude(t *testing.T) {
 
 // TestSelectAvailableKey_NoKeys 测试无Key配置场景
 func TestSelectAvailableKey_NoKeys(t *testing.T) {
-	store, cleanup := setupTestKeyStore(t)
+	store, cleanup := testutil.SetupTestStore(t)
 	defer cleanup()
 
 	selector := NewKeySelector() // 移除store参数
@@ -718,7 +717,7 @@ func TestSelectAvailableKey_NoKeys(t *testing.T) {
 func assertSelectAvailableKeyFirstIndex(t *testing.T, channelName string, keyPrefix string, keyStrategy string, wantIndex int, reason string) {
 	t.Helper()
 
-	store, cleanup := setupTestKeyStore(t)
+	store, cleanup := testutil.SetupTestStore(t)
 	defer cleanup()
 
 	selector := NewKeySelector()
@@ -827,10 +826,4 @@ func TestKeySelector_CleanupInactiveCounters(t *testing.T) {
 	if !okActive {
 		t.Fatalf("expected channel=200 counter to remain")
 	}
-}
-
-// ========== 辅助函数 ==========
-
-func setupTestKeyStore(t *testing.T) (storage.Store, func()) {
-	return testutil.SetupTestStore(t)
 }
