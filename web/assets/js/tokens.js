@@ -11,6 +11,28 @@
     let allChannels = [];                    // 渠道数据缓存
     let availableModelsCache = [];           // 可用模型缓存
     let selectedModelsForAdd = new Set();    // 模型选择对话框中已选的模型
+    let currentVisibleModels = [];            // 当前可见的模型列表（用于全选功能）
+
+    // 对话框栈，用于 ESC 键层级关闭
+    const modalStack = [];
+
+    /** 注册全局 ESC 键处理 */
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && modalStack.length > 0) {
+        const topModal = modalStack[modalStack.length - 1];
+        topModal.close();
+      }
+    });
+
+    /** 压入对话框栈 */
+    function pushModal(closeFunc) {
+      modalStack.push({ close: closeFunc });
+    }
+
+    /** 弹出对话框栈 */
+    function popModal() {
+      modalStack.pop();
+    }
 
     document.addEventListener('DOMContentLoaded', () => {
       // 初始化时间范围选择器
@@ -499,6 +521,7 @@
       renderAllowedModelsTable();
 
       document.getElementById('editModal').style.display = 'block';
+      pushModal(closeEditModal);
     }
 
     function closeEditModal() {
@@ -506,6 +529,7 @@
       // 清理模型限制状态
       editAllowedModels = [];
       selectedAllowedModelIndices.clear();
+      popModal();
     }
 
     async function updateToken() {
@@ -736,6 +760,7 @@
       document.getElementById('modelSearchInput').value = '';
       renderAvailableModels('');
       document.getElementById('modelSelectModal').style.display = 'block';
+      pushModal(closeModelSelectModal);
     }
 
     /**
@@ -744,6 +769,7 @@
     function closeModelSelectModal() {
       document.getElementById('modelSelectModal').style.display = 'none';
       selectedModelsForAdd.clear();
+      popModal();
     }
 
     /**
@@ -759,6 +785,9 @@
     function renderAvailableModels(searchText) {
       const container = document.getElementById('availableModelsContainer');
       const countSpan = document.getElementById('selectedModelsCount');
+      const selectAllContainer = document.getElementById('selectAllContainer');
+      const selectAllCheckbox = document.getElementById('selectAllModelsCheckbox');
+      const visibleModelsCount = document.getElementById('visibleModelsCount');
       if (!container) return;
 
       // 过滤已添加的模型
@@ -770,6 +799,9 @@
         const search = searchText.toLowerCase();
         models = models.filter(m => m.toLowerCase().includes(search));
       }
+
+      // 保存当前可见模型列表（用于全选功能）
+      currentVisibleModels = models;
 
       // 更新选中计数
       if (countSpan) countSpan.textContent = selectedModelsForAdd.size;
@@ -786,7 +818,26 @@
             ${message}
           </div>
         `;
+        // 隐藏全选容器，恢复列表圆角
+        if (selectAllContainer) selectAllContainer.style.display = 'none';
+        container.style.borderRadius = '6px';
         return;
+      }
+
+      // 显示全选容器，调整列表圆角
+      if (selectAllContainer) {
+        selectAllContainer.style.display = 'block';
+        container.style.borderRadius = '0 0 6px 6px';
+      }
+
+      // 更新全选复选框状态
+      if (selectAllCheckbox) {
+        const allSelected = models.every(m => selectedModelsForAdd.has(m));
+        selectAllCheckbox.checked = allSelected;
+        selectAllCheckbox.indeterminate = !allSelected && models.some(m => selectedModelsForAdd.has(m));
+      }
+      if (visibleModelsCount) {
+        visibleModelsCount.textContent = `(${models.length} 个)`;
       }
 
       container.innerHTML = models.map(model => `
@@ -810,6 +861,36 @@
         selectedModelsForAdd.delete(model);
       }
       document.getElementById('selectedModelsCount').textContent = selectedModelsForAdd.size;
+      updateSelectAllCheckboxState();
+    }
+
+    /**
+     * 更新全选复选框状态
+     */
+    function updateSelectAllCheckboxState() {
+      const selectAllCheckbox = document.getElementById('selectAllModelsCheckbox');
+      if (!selectAllCheckbox || currentVisibleModels.length === 0) return;
+
+      const allSelected = currentVisibleModels.every(m => selectedModelsForAdd.has(m));
+      selectAllCheckbox.checked = allSelected;
+      selectAllCheckbox.indeterminate = !allSelected && currentVisibleModels.some(m => selectedModelsForAdd.has(m));
+    }
+
+    /**
+     * 全选/取消全选当前可见模型
+     */
+    function toggleSelectAllModels(checked) {
+      currentVisibleModels.forEach(model => {
+        if (checked) {
+          selectedModelsForAdd.add(model);
+        } else {
+          selectedModelsForAdd.delete(model);
+        }
+      });
+      document.getElementById('selectedModelsCount').textContent = selectedModelsForAdd.size;
+      // 重新渲染以更新复选框状态
+      const searchText = document.getElementById('modelSearchInput')?.value || '';
+      renderAvailableModels(searchText);
     }
 
     /**
@@ -856,6 +937,7 @@
       document.getElementById('tokenModelImportPreview').style.display = 'none';
       document.getElementById('modelImportModal').style.display = 'block';
       setTimeout(() => document.getElementById('tokenModelImportTextarea').focus(), 100);
+      pushModal(closeModelImportModal);
     }
 
     /**
@@ -863,6 +945,7 @@
      */
     function closeModelImportModal() {
       document.getElementById('modelImportModal').style.display = 'none';
+      popModal();
     }
 
     /**
