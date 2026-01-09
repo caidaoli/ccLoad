@@ -51,6 +51,8 @@ var basePricing = map[string]ModelPricing{
 	"claude-haiku":  {InputPrice: 1.00, OutputPrice: 5.00},
 
 	// ========== OpenAI GPT系列 ==========
+	"gpt-5.2":        {InputPrice: 1.75, OutputPrice: 14.00},
+	"gpt-5.1":        {InputPrice: 1.25, OutputPrice: 10.00},
 	"gpt-5":          {InputPrice: 1.25, OutputPrice: 10.00},
 	"gpt-5-mini":     {InputPrice: 0.25, OutputPrice: 2.00},
 	"gpt-5-nano":     {InputPrice: 0.05, OutputPrice: 0.40},
