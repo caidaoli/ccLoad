@@ -225,6 +225,12 @@ func (s *Server) applyTokenStatsUpdate(upd tokenStatsUpdate) {
 
 	if err := s.store.UpdateTokenStats(updateCtx, upd.tokenHash, upd.isSuccess, upd.duration, upd.isStreaming, upd.firstByteTime, upd.promptTokens, upd.completionTokens, upd.cacheReadTokens, upd.cacheCreationTokens, upd.costUSD); err != nil {
 		log.Printf("ERROR: failed to update token stats for hash=%s: %v", upd.tokenHash, err)
+		return // 数据库更新失败，不更新内存缓存，保持一致性
+	}
+
+	// 数据库更新成功后，同步更新费用缓存（用于限额检查，2026-01新增）
+	if upd.isSuccess && upd.costUSD > 0 {
+		s.authService.AddCostToCache(upd.tokenHash, util.USDToMicroUSD(upd.costUSD))
 	}
 }
 
@@ -267,6 +273,7 @@ func (s *Server) updateTokenStatsAsync(tokenHash string, isSuccess bool, duratio
 			log.Printf("WARN: billing cost=0 for model=%s with tokens (in=%d, out=%d, cache_r=%d, cache_5m=%d, cache_1h=%d), pricing missing?",
 				actualModel, res.InputTokens, res.OutputTokens, res.CacheReadInputTokens, res.Cache5mInputTokens, res.Cache1hInputTokens)
 		}
+		// 注意：费用缓存更新已移至 applyTokenStatsUpdate，确保数据库先写成功
 	}
 
 	upd := tokenStatsUpdate{

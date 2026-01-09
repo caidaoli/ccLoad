@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -138,10 +140,15 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 		ExpiresAt     *int64   `json:"expires_at"`     // Unix毫秒时间戳，nil表示永不过期
 		IsActive      *bool    `json:"is_active"`      // nil表示默认启用
 		AllowedModels []string `json:"allowed_models"` // 允许的模型列表，空表示无限制
+		CostLimitUSD  *float64 `json:"cost_limit_usd"` // 费用上限（0=无限制）
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.CostLimitUSD != nil && *req.CostLimitUSD < 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "cost_limit_usd must be >= 0")
 		return
 	}
 
@@ -168,6 +175,9 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 		ExpiresAt:     req.ExpiresAt,
 		IsActive:      isActive,
 		AllowedModels: req.AllowedModels,
+	}
+	if req.CostLimitUSD != nil {
+		authToken.SetCostLimitUSD(*req.CostLimitUSD)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -212,10 +222,15 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 		IsActive      *bool    `json:"is_active"`
 		ExpiresAt     *int64   `json:"expires_at"`
 		AllowedModels []string `json:"allowed_models"` // 允许的模型列表，空数组表示清除限制
+		CostLimitUSD  *float64 `json:"cost_limit_usd"` // 费用上限（0=无限制）
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.CostLimitUSD != nil && *req.CostLimitUSD < 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "cost_limit_usd must be >= 0")
 		return
 	}
 
@@ -241,6 +256,10 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 	}
 	// allowed_models 总是更新（空数组表示清除限制）
 	token.AllowedModels = req.AllowedModels
+	// cost_limit_usd 只有传入时才更新
+	if req.CostLimitUSD != nil {
+		token.SetCostLimitUSD(*req.CostLimitUSD)
+	}
 
 	if err := s.store.UpdateAuthToken(ctx, token); err != nil {
 		log.Print("❌ 更新令牌失败: " + err.Error())
@@ -284,4 +303,38 @@ func (s *Server) HandleDeleteAuthToken(c *gin.Context) {
 	log.Printf("[INFO] 删除API令牌: ID=%d", id)
 
 	RespondJSON(c, http.StatusOK, gin.H{"id": id})
+}
+
+// HandleResetTokenCost 重置令牌的已消耗费用（用于管理员手动恢复配额）
+// POST /admin/auth-tokens/:id/reset-cost
+func (s *Server) HandleResetTokenCost(c *gin.Context) {
+	id, err := ParseInt64Param(c, "id")
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid token id")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := s.store.ResetTokenCost(ctx, id); err != nil {
+		log.Print("❌ 重置费用失败: " + err.Error())
+		if errors.Is(err, sql.ErrNoRows) {
+			RespondErrorMsg(c, http.StatusNotFound, "token not found")
+			return
+		}
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	// 触发热更新（刷新缓存）
+	if s.authService != nil {
+		if err := s.authService.ReloadAuthTokens(); err != nil {
+			log.Print("[WARN]  热更新失败: " + err.Error())
+		}
+	}
+
+	log.Printf("[INFO] 重置API令牌费用: ID=%d", id)
+
+	RespondJSON(c, http.StatusOK, gin.H{"id": id, "cost_used_usd": 0})
 }

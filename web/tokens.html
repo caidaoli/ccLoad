@@ -94,6 +94,14 @@
           <input type="datetime-local" id="customExpiry" class="form-input">
         </div>
 
+        <div class="form-group" style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
+          <label class="form-label" style="margin: 0; white-space: nowrap; min-width: 60px;">费用上限</label>
+          <div style="flex: 1; display: flex; align-items: center; gap: 8px;">
+            <span style="color: var(--neutral-500);">$</span>
+            <input type="number" id="tokenCostLimitUSD" class="form-input" style="flex: 1;" min="0" step="0.01" placeholder="0 表示无限制">
+          </div>
+        </div>
+
         <div class="form-group">
           <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
             <input type="checkbox" id="tokenActive" checked style="width: 18px; height: 18px;">
@@ -170,6 +178,16 @@
           <div style="display: flex; align-items: center; gap: 12px;">
             <label class="form-label" style="margin: 0; white-space: nowrap; min-width: 60px;">自定义</label>
             <input type="datetime-local" id="editCustomExpiry" class="form-input" style="flex: 1;">
+          </div>
+        </div>
+
+        <div class="form-group" style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
+          <label class="form-label" style="margin: 0; white-space: nowrap; min-width: 60px;">费用上限</label>
+          <div style="flex: 1; display: flex; align-items: center; gap: 8px;">
+            <span style="color: var(--neutral-500);">$</span>
+            <input type="number" id="editCostLimitUSD" class="form-input" style="flex: 1;" min="0" step="0.01" placeholder="0 表示无限制">
+            <span id="editCostUsedDisplay" style="color: var(--neutral-600); font-size: 13px; white-space: nowrap;"></span>
+            <button type="button" id="resetCostBtn" class="btn btn-secondary btn-sm" onclick="resetTokenCost()" style="padding: 4px 10px; font-size: 12px; display: none;">重置消耗</button>
           </div>
         </div>
 

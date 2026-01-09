@@ -183,15 +183,39 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		return
 	}
 
+	tokenHashStr := ""
+	if v, ok := c.Get("token_hash"); ok {
+		tokenHashStr, _ = v.(string)
+	}
+
 	// 检查令牌模型限制（2026-01新增）
-	if tokenHash, exists := c.Get("token_hash"); exists {
-		if tokenHashStr, ok := tokenHash.(string); ok && originalModel != "" {
-			if !s.authService.IsModelAllowed(tokenHashStr, originalModel) {
-				c.JSON(http.StatusForbidden, gin.H{
-					"error": fmt.Sprintf("model '%s' is not allowed for this token", originalModel),
-				})
-				return
-			}
+	if tokenHashStr != "" && originalModel != "" {
+		if !s.authService.IsModelAllowed(tokenHashStr, originalModel) {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": fmt.Sprintf("model '%s' is not allowed for this token", originalModel),
+			})
+			return
+		}
+	}
+
+	// 检查令牌费用限额（2026-01新增）
+	// 设计决策：在请求开始时检查，费用在请求完成后记账。
+	// 这是有意的设计——允许"最多超额一个请求"的窗口。
+	// 原因：费用只有在请求完成后才能精确计算（token数量由上游返回），
+	// 而此处只能做预检查。如果严格要求"先扣费后请求"，需要复杂的预估+退款机制。
+	if tokenHashStr != "" {
+		usedMicro, limitMicro, exceeded := s.authService.IsCostLimitExceeded(tokenHashStr)
+		if exceeded {
+			used := util.MicroUSDToUSD(usedMicro)
+			limit := util.MicroUSDToUSD(limitMicro)
+			c.JSON(http.StatusTooManyRequests, gin.H{
+				"error": gin.H{
+					"message": fmt.Sprintf("Cost limit exceeded: $%.2f used of $%.2f limit", used, limit),
+					"type":    "insufficient_quota",
+					"code":    "cost_limit_exceeded",
+				},
+			})
+			return
 		}
 	}
 
@@ -230,9 +254,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		return
 	}
 
-	// 从context提取tokenHash和tokenID（用于统计和日志，2025-11新增tokenHash, 2025-12新增tokenID）
-	tokenHash, _ := c.Get("token_hash")
-	tokenHashStr, _ := tokenHash.(string)
+	// 从context提取tokenID（用于统计和日志，2025-12新增tokenID）
 	tokenID, _ := c.Get("token_id")
 	tokenIDInt64, _ := tokenID.(int64)
 

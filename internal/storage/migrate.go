@@ -88,6 +88,10 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureAuthTokensAllowedModels(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate auth_tokens allowed_models: %w", err)
 			}
+			// 增量迁移：确保auth_tokens表有费用限额字段（2026-01新增）
+			if err := ensureAuthTokensCostLimit(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate auth_tokens cost_limit: %w", err)
+			}
 		}
 
 		// 增量迁移：channel_models表添加redirect_model字段，迁移数据后删除channels冗余字段
@@ -203,6 +207,36 @@ func ensureSQLiteColumns(ctx context.Context, db *sql.DB, table string, cols []s
 		}
 	}
 
+	return nil
+}
+
+// mysqlColumnDef MySQL列定义
+type mysqlColumnDef struct {
+	name       string
+	definition string
+}
+
+// ensureMySQLColumns 通用MySQL添加列函数（幂等操作）
+func ensureMySQLColumns(ctx context.Context, db *sql.DB, table string, cols []mysqlColumnDef) error {
+	added := false
+	for _, col := range cols {
+		var count int
+		if err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME=?",
+			table, col.name,
+		).Scan(&count); err != nil {
+			return fmt.Errorf("check %s field: %w", col.name, err)
+		}
+		if count == 0 {
+			if _, err := db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, col.name, col.definition)); err != nil {
+				return fmt.Errorf("add %s column: %w", col.name, err)
+			}
+			added = true
+		}
+	}
+	if added {
+		log.Printf("[MIGRATE] Added columns to %s", table)
+	}
 	return nil
 }
 
@@ -967,5 +1001,21 @@ func ensureAuthTokensAllowedModels(ctx context.Context, db *sql.DB, dialect Dial
 	// SQLite: 使用通用添加列函数
 	return ensureSQLiteColumns(ctx, db, "auth_tokens", []sqliteColumnDef{
 		{name: "allowed_models", definition: "TEXT NOT NULL DEFAULT ''"},
+	})
+}
+
+// ensureAuthTokensCostLimit 确保auth_tokens表有费用限额字段（2026-01新增）
+func ensureAuthTokensCostLimit(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if dialect == DialectMySQL {
+		return ensureMySQLColumns(ctx, db, "auth_tokens", []mysqlColumnDef{
+			{name: "cost_used_microusd", definition: "BIGINT NOT NULL DEFAULT 0"},
+			{name: "cost_limit_microusd", definition: "BIGINT NOT NULL DEFAULT 0"},
+		})
+	}
+
+	// SQLite: 使用通用添加列函数
+	return ensureSQLiteColumns(ctx, db, "auth_tokens", []sqliteColumnDef{
+		{name: "cost_used_microusd", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{name: "cost_limit_microusd", definition: "INTEGER NOT NULL DEFAULT 0"},
 	})
 }

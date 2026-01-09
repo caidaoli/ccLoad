@@ -43,6 +43,11 @@ internal/
 - `util.ClassifyHTTPStatusWithBody()` - 带响应体的错误分类（支持软错误检测）
 - `app.KeySelector.SelectAvailableKey()` - Key负载均衡
 
+**Token费用限额（Auth Token）**:
+- 存储：`auth_tokens.cost_used_microusd/cost_limit_microusd`（微美元整数），避免浮点误差
+- 语义：在请求开始处做限额检查；费用在请求结束后记账，因此允许“最多超额一个请求”的窗口
+- 计费：仅成功请求（2xx）累加费用与Token统计；失败请求只计失败次数
+
 ## 开发指南
 
 ### Serena MCP 工具规范

@@ -9,7 +9,16 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/util"
 )
+
+//nolint:gosec // SQL列清单包含“token”字段名，并非硬编码凭据
+const authTokenSelectColumns = `
+	id, token, description, created_at, expires_at, last_used_at, is_active,
+	success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
+	prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd,
+	cost_used_microusd, cost_limit_microusd, allowed_models
+`
 
 func scanAuthToken(scanner interface {
 	Scan(...any) error
@@ -19,6 +28,8 @@ func scanAuthToken(scanner interface {
 	var expiresAt, lastUsedAt sql.NullInt64
 	var isActive int
 	var allowedModelsJSON string
+	var costUsedMicroUSD int64
+	var costLimitMicroUSD int64
 
 	if err := scanner.Scan(
 		&token.ID,
@@ -39,6 +50,8 @@ func scanAuthToken(scanner interface {
 		&token.CacheReadTokensTotal,
 		&token.CacheCreationTokensTotal,
 		&token.TotalCostUSD,
+		&costUsedMicroUSD,
+		&costLimitMicroUSD,
 		&allowedModelsJSON,
 	); err != nil {
 		return nil, err
@@ -54,6 +67,8 @@ func scanAuthToken(scanner interface {
 		token.LastUsedAt = &v
 	}
 	token.IsActive = isActive != 0
+	token.CostUsedMicroUSD = costUsedMicroUSD
+	token.CostLimitMicroUSD = costLimitMicroUSD
 
 	// 解析 allowed_models JSON
 	if allowedModelsJSON != "" {
@@ -95,13 +110,14 @@ func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) 
 	}
 
 	result, err := s.db.ExecContext(ctx, `
-		INSERT INTO auth_tokens (
-			token, description, created_at, expires_at, last_used_at, is_active,
-			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
-			prompt_tokens_total, completion_tokens_total, total_cost_usd, allowed_models
-		)
-		VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, ?)
-	`, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, boolToInt(token.IsActive), allowedModelsJSON)
+			INSERT INTO auth_tokens (
+				token, description, created_at, expires_at, last_used_at, is_active,
+				success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
+				prompt_tokens_total, completion_tokens_total, total_cost_usd, allowed_models,
+				cost_used_microusd, cost_limit_microusd
+			)
+			VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, ?, 0, ?)
+		`, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, boolToInt(token.IsActive), allowedModelsJSON, token.CostLimitMicroUSD)
 
 	if err != nil {
 		return fmt.Errorf("create auth token: %w", err)
@@ -122,15 +138,11 @@ func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) 
 
 // GetAuthToken 根据ID获取令牌
 func (s *SQLStore) GetAuthToken(ctx context.Context, id int64) (*model.AuthToken, error) {
-	token, err := scanAuthToken(s.db.QueryRowContext(ctx, `
-			SELECT
-				id, token, description, created_at, expires_at, last_used_at, is_active,
-				success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
-				prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd,
-				allowed_models
-			FROM auth_tokens
-			WHERE id = ?
-	`, id))
+	token, err := scanAuthToken(s.db.QueryRowContext(
+		ctx,
+		fmt.Sprintf("SELECT %s FROM auth_tokens WHERE id = ?", authTokenSelectColumns),
+		id,
+	))
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("auth token not found")
@@ -145,15 +157,11 @@ func (s *SQLStore) GetAuthToken(ctx context.Context, id int64) (*model.AuthToken
 // GetAuthTokenByValue 根据令牌哈希值获取令牌信息
 // 用于认证时快速查找令牌
 func (s *SQLStore) GetAuthTokenByValue(ctx context.Context, tokenHash string) (*model.AuthToken, error) {
-	token, err := scanAuthToken(s.db.QueryRowContext(ctx, `
-			SELECT
-				id, token, description, created_at, expires_at, last_used_at, is_active,
-				success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
-				prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd,
-				allowed_models
-			FROM auth_tokens
-			WHERE token = ?
-	`, tokenHash))
+	token, err := scanAuthToken(s.db.QueryRowContext(
+		ctx,
+		fmt.Sprintf("SELECT %s FROM auth_tokens WHERE token = ?", authTokenSelectColumns),
+		tokenHash,
+	))
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("auth token not found")
@@ -167,15 +175,10 @@ func (s *SQLStore) GetAuthTokenByValue(ctx context.Context, tokenHash string) (*
 
 // ListAuthTokens 列出所有令牌
 func (s *SQLStore) ListAuthTokens(ctx context.Context) ([]*model.AuthToken, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT
-			id, token, description, created_at, expires_at, last_used_at, is_active,
-			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
-			prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd,
-			allowed_models
-		FROM auth_tokens
-		ORDER BY created_at DESC
-	`)
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(
+		"SELECT %s FROM auth_tokens ORDER BY created_at DESC",
+		authTokenSelectColumns,
+	))
 	if err != nil {
 		return nil, fmt.Errorf("list auth tokens: %w", err)
 	}
@@ -199,16 +202,10 @@ func (s *SQLStore) ListAuthTokens(ctx context.Context) ([]*model.AuthToken, erro
 func (s *SQLStore) ListActiveAuthTokens(ctx context.Context) ([]*model.AuthToken, error) {
 	now := time.Now().UnixMilli()
 
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT
-			id, token, description, created_at, expires_at, last_used_at, is_active,
-			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
-			prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd,
-			allowed_models
-		FROM auth_tokens
-		WHERE is_active = 1 AND (expires_at = 0 OR expires_at > ?)
-		ORDER BY created_at DESC
-	`, now)
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(
+		"SELECT %s FROM auth_tokens WHERE is_active = 1 AND (expires_at = 0 OR expires_at > ?) ORDER BY created_at DESC",
+		authTokenSelectColumns,
+	), now)
 	if err != nil {
 		return nil, fmt.Errorf("list active auth tokens: %w", err)
 	}
@@ -253,9 +250,10 @@ func (s *SQLStore) UpdateAuthToken(ctx context.Context, token *model.AuthToken) 
 		    expires_at = ?,
 		    last_used_at = ?,
 		    is_active = ?,
+		    cost_limit_microusd = ?,
 		    allowed_models = ?
 		WHERE id = ?
-	`, token.Description, expiresAt, lastUsedAt, boolToInt(token.IsActive), allowedModelsJSON, token.ID)
+	`, token.Description, expiresAt, lastUsedAt, boolToInt(token.IsActive), token.CostLimitMicroUSD, allowedModelsJSON, token.ID)
 
 	if err != nil {
 		return fmt.Errorf("update auth token: %w", err)
@@ -419,7 +417,8 @@ func (s *SQLStore) UpdateTokenStats(
 		stats.NonStreamCount++
 	}
 
-	// 4. 写回数据库
+	// 4. 写回数据库（同时更新 cost_used_microusd 用于限额检查）
+	costMicroUSD := util.USDToMicroUSD(costUSD)
 	_, err = tx.ExecContext(ctx, `
 		UPDATE auth_tokens
 		SET
@@ -434,6 +433,7 @@ func (s *SQLStore) UpdateTokenStats(
 			cache_read_tokens_total = ?,
 			cache_creation_tokens_total = ?,
 			total_cost_usd = ?,
+			cost_used_microusd = cost_used_microusd + ?,
 			last_used_at = ?
 		WHERE token = ?
 	`,
@@ -448,6 +448,7 @@ func (s *SQLStore) UpdateTokenStats(
 		stats.CacheReadTokensTotal,
 		stats.CacheCreationTokensTotal,
 		stats.TotalCostUSD,
+		costMicroUSD, // 增量更新 cost_used_microusd
 		time.Now().UnixMilli(),
 		tokenHash,
 	)
@@ -460,6 +461,33 @@ func (s *SQLStore) UpdateTokenStats(
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit transaction: %w", err)
 	}
+
+	return nil
+}
+
+// ResetTokenCost 重置令牌的已消耗费用（用于管理员手动恢复配额）
+func (s *SQLStore) ResetTokenCost(ctx context.Context, tokenID int64) error {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE auth_tokens
+		SET cost_used_microusd = 0
+		WHERE id = ?
+	`, tokenID)
+
+	if err != nil {
+		return fmt.Errorf("reset token cost: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return sql.ErrNoRows
+	}
+
+	// 触发异步Redis同步
+	s.triggerAsyncSync(syncAuthTokens)
 
 	return nil
 }
