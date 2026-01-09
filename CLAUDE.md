@@ -98,3 +98,27 @@ internal/
 - **禁止** 过度工程，YAGNI原则
 - **Fail-Fast**: 配置错误直接 `log.Fatal()` 退出
 - **Context**: `defer cancel()` 必须无条件调用，用 `context.AfterFunc` 监听取消
+
+### 代码质量检查 (golangci-lint)
+
+```bash
+# 运行 lint 检查
+golangci-lint run ./...
+
+# 仅检查指定目录
+golangci-lint run ./internal/app/...
+
+# 自动修复可修复的问题
+golangci-lint run --fix ./...
+```
+
+**启用的 Linters**:
+- `errcheck` - 检查未处理的错误返回值
+- `govet` - Go 官方静态分析工具
+- `staticcheck` - 包含 gosimple 的静态逻辑检查
+- `unused` - 检查未使用的代码
+- `gosec` - 安全漏洞审计
+- `revive` - 代码风格检查
+- `bodyclose` - HTTP response body 关闭检查
+
+**提交前必须**: `golangci-lint run ./...` 通过，零警告

@@ -227,9 +227,6 @@ func (s *Server) filterCostLimitExceededChannels(channels []*modelpkg.Config) []
 		usedCost := costs[ch.ID]
 		if usedCost < ch.DailyCostLimit {
 			filtered = append(filtered, ch)
-			// log.Printf("[DEBUG] Channel %d (%s) cost check passed: $%.4f/$%.2f", ch.ID, ch.Name, usedCost, ch.DailyCostLimit)
-		} else {
-			// log.Printf("[INFO] Channel %d (%s) exceeded daily cost limit: $%.4f/$%.2f", ch.ID, ch.Name, usedCost, ch.DailyCostLimit)
 		}
 	}
 	return filtered
