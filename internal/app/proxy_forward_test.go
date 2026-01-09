@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ccLoad/internal/model"
 )
 
 func runHandleSuccessResponse(t *testing.T, body string, headers http.Header, isStreaming bool, channelType string) (*fwResult, string) {
@@ -29,12 +31,10 @@ func runHandleSuccessResponse(t *testing.T, body string, headers http.Header, is
 	rec := httptest.NewRecorder()
 	s := &Server{}
 
-	testChannelID := int64(1)
-	testAPIKey := "sk-test-xxx"
-
-	res, _, err := s.handleSuccessResponse(reqCtx, resp, 0, resp.Header.Clone(), rec, channelType, &testChannelID, testAPIKey, nil)
+	cfg := &model.Config{ID: 1}
+	res, _, err := s.handleResponse(reqCtx, resp, rec, channelType, cfg, "sk-test", nil)
 	if err != nil {
-		t.Fatalf("handleSuccessResponse returned error: %v", err)
+		t.Fatalf("handleResponse returned error: %v", err)
 	}
 
 	return res, rec.Body.String()

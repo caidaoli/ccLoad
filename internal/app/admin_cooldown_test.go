@@ -15,8 +15,6 @@ import (
 
 // TestHandleSetChannelCooldown 测试设置渠道冷却
 func TestHandleSetChannelCooldown(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	tests := []struct {
 		name           string
 		channelID      string
@@ -130,8 +128,6 @@ func TestHandleSetChannelCooldown(t *testing.T) {
 
 // TestHandleSetKeyCooldown 测试设置Key冷却
 func TestHandleSetKeyCooldown(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	tests := []struct {
 		name           string
 		channelID      string
@@ -280,8 +276,6 @@ func TestHandleSetKeyCooldown(t *testing.T) {
 
 // TestSetChannelCooldown_Integration 测试渠道冷却集成
 func TestSetChannelCooldown_Integration(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	srv, cleanup := setupTestServer(t)
 	defer cleanup()
 
@@ -343,8 +337,6 @@ func TestSetChannelCooldown_Integration(t *testing.T) {
 
 // TestSetKeyCooldown_Integration 测试Key冷却集成
 func TestSetKeyCooldown_Integration(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	srv, cleanup := setupTestServer(t)
 	defer cleanup()
 

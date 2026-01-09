@@ -24,11 +24,6 @@ import (
 
 // ==================== Admin API 集成测试 ====================
 
-func init() {
-	// 测试环境使用测试模式
-	gin.SetMode(gin.TestMode)
-}
-
 // TestAdminAPI_ExportChannelsCSV 测试CSV导出功能
 func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 	// 创建测试环境

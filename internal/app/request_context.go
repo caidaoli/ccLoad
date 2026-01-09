@@ -69,9 +69,9 @@ func (rc *requestContext) firstByteTimeoutTriggered() bool {
 	return rc.firstByteTimedOut.Load()
 }
 
-// Duration 返回从请求开始到现在的时间（秒）
-func (rc *requestContext) Duration() float64 {
-	return time.Since(rc.startTime).Seconds()
+// Duration 返回从请求开始到现在的时间
+func (rc *requestContext) Duration() time.Duration {
+	return time.Since(rc.startTime)
 }
 
 // cleanup 统一清理请求上下文资源（定时器 + context）

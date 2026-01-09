@@ -45,7 +45,6 @@ func (resetCostDBErrorStore) ResetTokenCost(ctx context.Context, tokenID int64) 
 func TestHandleResetTokenCost_NotFound_Returns404(t *testing.T) {
 	t.Parallel()
 
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
 	srv := &Server{
@@ -65,7 +64,6 @@ func TestHandleResetTokenCost_NotFound_Returns404(t *testing.T) {
 func TestHandleResetTokenCost_InvalidID_Returns400(t *testing.T) {
 	t.Parallel()
 
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
 	srv := &Server{
@@ -86,7 +84,6 @@ func TestHandleResetTokenCost_InvalidID_Returns400(t *testing.T) {
 func TestHandleResetTokenCost_DBError_Returns500(t *testing.T) {
 	t.Parallel()
 
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
 	srv := &Server{
@@ -106,7 +103,6 @@ func TestHandleResetTokenCost_DBError_Returns500(t *testing.T) {
 func TestHandleResetTokenCost_Success_Returns200(t *testing.T) {
 	t.Parallel()
 
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
 	store := &resetCostSuccessStore{}

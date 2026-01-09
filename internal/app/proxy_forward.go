@@ -32,6 +32,20 @@ type prependedBody struct {
 	io.Closer
 }
 
+// onceCloseReadCloser 确保 Close 只执行一次（用于协调 defer 与 context.AfterFunc 的并发关闭）
+type onceCloseReadCloser struct {
+	io.ReadCloser
+	once sync.Once
+}
+
+func (rc *onceCloseReadCloser) Close() error {
+	var closeErr error
+	rc.once.Do(func() {
+		closeErr = rc.ReadCloser.Close()
+	})
+	return closeErr
+}
+
 // prependToBody 将前缀数据合并到resp.Body（用于恢复已探测的数据）
 func prependToBody(resp *http.Response, prefix []byte) {
 	resp.Body = prependedBody{
@@ -86,31 +100,32 @@ func (s *Server) handleRequestError(
 ) (*fwResult, float64, error) {
 	reqCtx.stopFirstByteTimer()
 	duration := reqCtx.Duration()
+	durationSec := duration.Seconds()
 
 	// 检测超时错误：使用统一的内部状态码+冷却策略
 	var statusCode int
 	if reqCtx.firstByteTimeoutTriggered() {
 		// 流式请求首字节超时（定时器触发）
 		statusCode = util.StatusFirstByteTimeout
-		timeoutMsg := fmt.Sprintf("upstream first byte timeout after %.2fs", duration)
+		timeoutMsg := fmt.Sprintf("upstream first byte timeout after %.2fs", durationSec)
 		timeout := s.firstByteTimeout
 		if timeout > 0 {
 			timeoutMsg = fmt.Sprintf("%s (threshold=%v)", timeoutMsg, timeout)
 		}
 		err = fmt.Errorf("%s: %w", timeoutMsg, util.ErrUpstreamFirstByteTimeout)
-		log.Printf("[TIMEOUT] [上游首字节超时] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, timeout, duration)
+		log.Printf("[TIMEOUT] [上游首字节超时] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, timeout, durationSec)
 	} else if errors.Is(err, context.DeadlineExceeded) {
 		if reqCtx.isStreaming {
 			// 流式请求超时
-			err = fmt.Errorf("upstream timeout after %.2fs (streaming): %w", duration, err)
+			err = fmt.Errorf("upstream timeout after %.2fs (streaming): %w", durationSec, err)
 			statusCode = util.StatusFirstByteTimeout
-			log.Printf("[TIMEOUT] [流式请求超时] 渠道ID=%d, 耗时=%.2fs", cfg.ID, duration)
+			log.Printf("[TIMEOUT] [流式请求超时] 渠道ID=%d, 耗时=%.2fs", cfg.ID, durationSec)
 		} else {
 			// 非流式请求超时（context.WithTimeout触发）
 			err = fmt.Errorf("upstream timeout after %.2fs (non-stream, threshold=%v): %w",
-				duration, s.nonStreamTimeout, err)
+				durationSec, s.nonStreamTimeout, err)
 			statusCode = 504 // Gateway Timeout
-			log.Printf("[TIMEOUT] [非流式请求超时] 渠道ID=%d, 阈值=%v, 耗时=%.2fs", cfg.ID, s.nonStreamTimeout, duration)
+			log.Printf("[TIMEOUT] [非流式请求超时] 渠道ID=%d, 阈值=%v, 耗时=%.2fs", cfg.ID, s.nonStreamTimeout, durationSec)
 		}
 	} else {
 		// 其他错误：使用统一分类器
@@ -120,8 +135,8 @@ func (s *Server) handleRequestError(
 	return &fwResult{
 		Status:        statusCode,
 		Body:          []byte(err.Error()),
-		FirstByteTime: duration,
-	}, duration, err
+		FirstByteTime: 0,
+	}, durationSec, err
 }
 
 // handleErrorResponse 处理错误响应（读取完整响应体）
@@ -130,8 +145,8 @@ func (s *Server) handleRequestError(
 func (s *Server) handleErrorResponse(
 	reqCtx *requestContext,
 	resp *http.Response,
-	firstByteTime float64,
 	hdrClone http.Header,
+	firstBodyReadTimeSec *float64,
 ) (*fwResult, float64, error) {
 	rb, readErr := io.ReadAll(io.LimitReader(resp.Body, int64(config.DefaultMaxBodyBytes)))
 	if readErr != nil {
@@ -141,13 +156,13 @@ func (s *Server) handleErrorResponse(
 		})
 	}
 
-	duration := reqCtx.Duration()
+	duration := reqCtx.Duration().Seconds()
 
 	return &fwResult{
 		Status:        resp.StatusCode,
 		Header:        hdrClone,
 		Body:          rb,
-		FirstByteTime: firstByteTime,
+		FirstByteTime: *firstBodyReadTimeSec,
 	}, duration, nil
 }
 
@@ -229,13 +244,11 @@ func buildStreamDiagnostics(streamErr error, readStats *streamReadStats, streamC
 func (s *Server) handleSuccessResponse(
 	reqCtx *requestContext,
 	resp *http.Response,
-	firstByteTime float64,
 	hdrClone http.Header,
 	w http.ResponseWriter,
 	channelType string,
-	_ *int64,
-	_ string,
-	onBytesRead func(int64),
+	readStats *streamReadStats,
+	firstBodyReadTimeSec *float64,
 ) (*fwResult, float64, error) {
 	// [FIX] 流式请求：禁用 WriteTimeout，避免长时间流被服务器自己切断
 	// Go 1.20+ http.ResponseController 支持动态调整 WriteDeadline
@@ -250,20 +263,6 @@ func (s *Server) handleSuccessResponse(
 	filterAndWriteResponseHeaders(w, resp.Header)
 	w.WriteHeader(resp.StatusCode)
 
-	// 设置读取统计（流式和非流式都需要，用于判断数据是否传输）
-	actualFirstByteTime := firstByteTime
-	readStats := &streamReadStats{}
-	resp.Body = &firstByteDetector{
-		ReadCloser: resp.Body,
-		stats:      readStats,
-		onFirstRead: func() {
-			if reqCtx.isStreaming {
-				actualFirstByteTime = reqCtx.Duration()
-			}
-		},
-		onBytesRead: onBytesRead, // 显式传递字节读取回调（可能为 nil）
-	}
-
 	// 流式传输并解析usage
 	contentType := resp.Header.Get("Content-Type")
 	parser, streamErr := streamAndParseResponse(
@@ -274,7 +273,7 @@ func (s *Server) handleSuccessResponse(
 	result := &fwResult{
 		Status:        resp.StatusCode,
 		Header:        hdrClone,
-		FirstByteTime: actualFirstByteTime,
+		FirstByteTime: *firstBodyReadTimeSec,
 	}
 
 	// 提取usage数据和错误事件
@@ -322,7 +321,7 @@ func (s *Server) handleSuccessResponse(
 		}
 	}
 
-	return result, reqCtx.Duration(), streamErr
+	return result, reqCtx.Duration().Seconds(), streamErr
 }
 
 // isHTTP2StreamCloseError 判断是否是 HTTP/2 流关闭相关的错误
@@ -350,20 +349,45 @@ func looksLikeSSE(data []byte) bool {
 func (s *Server) handleResponse(
 	reqCtx *requestContext,
 	resp *http.Response,
-	firstByteTime float64,
 	w http.ResponseWriter,
 	channelType string,
 	cfg *model.Config,
 	apiKey string,
-	onBytesRead func(int64),
+	observer *ForwardObserver,
 ) (*fwResult, float64, error) {
 	hdrClone := resp.Header.Clone()
+
+	// 首字节响应时间（秒）：以第一次从 resp.Body 读到 n>0 的时刻为准。
+	// 流式请求：该时刻同时用于停止 firstByteTimeout。
+	firstBodyReadTimeSec := 0.0
+	readStats := &streamReadStats{}
+	resp.Body = &firstByteDetector{
+		ReadCloser: resp.Body,
+		stats:      readStats,
+		onFirstRead: func() {
+			if reqCtx.isStreaming {
+				reqCtx.stopFirstByteTimer()
+			}
+			if firstBodyReadTimeSec == 0 {
+				firstBodyReadTimeSec = reqCtx.Duration().Seconds()
+			}
+			if reqCtx.isStreaming && observer != nil && observer.OnFirstByteRead != nil {
+				observer.OnFirstByteRead()
+			}
+		},
+		onBytesRead: func(n int64) {
+			if observer != nil && observer.OnBytesRead != nil {
+				observer.OnBytesRead(n)
+			}
+		},
+	}
 
 	// [INFO] 软错误检测：200状态码但响应体包含明确错误信息（如"当前模型负载过高"）
 	// 检测条件：Content-Type为text/plain或application/json
 	// 针对渠道17等上游返回200但实际内容为错误信息的情况
 	ct := resp.Header.Get("Content-Type")
 	if resp.StatusCode == 200 &&
+		!reqCtx.isStreaming &&
 		shouldCheckSoftErrorForChannelType(channelType) &&
 		(strings.Contains(ct, "text/plain") || strings.Contains(ct, "application/json")) {
 		// 预读 512 字节进行检测
@@ -398,7 +422,7 @@ func (s *Server) handleResponse(
 			prependToBody(resp, validData)
 
 			// 转交给错误处理流程
-			return s.handleErrorResponse(reqCtx, resp, firstByteTime, hdrClone)
+			return s.handleErrorResponse(reqCtx, resp, hdrClone, &firstBodyReadTimeSec)
 		}
 
 		// 未检测到错误，必须恢复 Body 供后续流程使用
@@ -409,26 +433,25 @@ func (s *Server) handleResponse(
 
 	// 错误状态：读取完整响应体
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return s.handleErrorResponse(reqCtx, resp, firstByteTime, hdrClone)
+		return s.handleErrorResponse(reqCtx, resp, hdrClone, &firstBodyReadTimeSec)
 	}
 
 	// [INFO] 空响应检测：200状态码但Content-Length=0视为上游故障
 	// 常见于CDN/代理错误、认证失败等异常场景，应触发渠道级重试
 	if contentLen := resp.Header.Get("Content-Length"); contentLen == "0" {
-		duration := reqCtx.Duration()
+		duration := reqCtx.Duration().Seconds()
 		err := fmt.Errorf("upstream returned empty response (200 OK with Content-Length: 0)")
 
 		return &fwResult{
 			Status:        resp.StatusCode,
 			Header:        hdrClone,
 			Body:          []byte(err.Error()),
-			FirstByteTime: firstByteTime,
+			FirstByteTime: firstBodyReadTimeSec,
 		}, duration, err
 	}
 
-	// 成功状态：流式转发（传递渠道信息用于日志记录，传递字节回调）
-	channelID := &cfg.ID
-	return s.handleSuccessResponse(reqCtx, resp, firstByteTime, hdrClone, w, channelType, channelID, apiKey, onBytesRead)
+	// 成功状态：流式转发（传递渠道信息用于日志记录，传递观测回调）
+	return s.handleSuccessResponse(reqCtx, resp, hdrClone, w, channelType, readStats, &firstBodyReadTimeSec)
 }
 
 // ============================================================================
@@ -439,7 +462,7 @@ func (s *Server) handleResponse(
 // 从proxy.go提取，遵循SRP原则
 // 参数新增 apiKey 用于直接传递已选中的API Key（从KeySelector获取）
 // 参数新增 method 用于支持任意HTTP方法（GET、POST、PUT、DELETE等）
-func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey string, method string, body []byte, hdr http.Header, rawQuery, requestPath string, w http.ResponseWriter, onBytesRead func(int64)) (*fwResult, float64, error) {
+func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey string, method string, body []byte, hdr http.Header, rawQuery, requestPath string, w http.ResponseWriter, observer *ForwardObserver) (*fwResult, float64, error) {
 	// 1. 创建请求上下文（处理超时）
 	reqCtx := s.newRequestContext(ctx, requestPath, body)
 	defer reqCtx.cleanup() // [INFO] 统一清理：定时器 + context（总是安全）
@@ -460,35 +483,28 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 	//   - HTTP/2: 发送 RST_STREAM 帧 → 取消当前 stream（不影响同连接的其他请求）
 	// 效果：避免 AI 流式生成场景下，用户点"停止"后上游仍生成数千 tokens 的浪费
 	if resp != nil {
-		// 使用 sync.Once 确保 body 只关闭一次（协调 defer 和 AfterFunc）
-		var bodyCloseOnce sync.Once
-		closeBodySafely := func() {
-			bodyCloseOnce.Do(func() {
-				_ = resp.Body.Close()
-			})
-		}
+		// 注意：resp.Body 后续会被包装（例如 firstByteDetector）。
+		// 因此需要先把 body 封装成“稳定引用”，避免取消 goroutine 与包装赋值发生 data race。
+		body := &onceCloseReadCloser{ReadCloser: resp.Body}
+		resp.Body = body
+
+		// 正常返回时关闭（Close 幂等，允许与 AfterFunc 并发触发）
+		defer func() { _ = resp.Body.Close() }()
 
 		// [INFO] 使用 context.AfterFunc 监听请求取消/超时（Go 1.21+，标准库保证无泄漏）
 		// 必须监听 reqCtx.ctx（而非父 ctx），否则 nonStreamTimeout/firstByteTimeout 触发时无法强制打断阻塞 Read。
-		stop := context.AfterFunc(reqCtx.ctx, closeBodySafely)
+		stop := context.AfterFunc(reqCtx.ctx, func() { _ = body.Close() })
 		defer stop() // 取消注册（请求正常结束时避免内存泄漏）
-
-		// 正常返回时关闭（与 AfterFunc 互斥，Once 保证只执行一次）
-		defer closeBodySafely()
 	}
 
 	if err != nil {
 		return s.handleRequestError(reqCtx, cfg, err)
 	}
 
-	// 4. 首字节到达，停止计时器
-	reqCtx.stopFirstByteTimer()
-	firstByteTime := reqCtx.Duration()
-
-	// 5. 处理响应(传递channelType用于精确识别usage格式,传递渠道信息用于日志记录,传递字节回调)
+	// 4. 处理响应(传递channelType用于精确识别usage格式,传递渠道信息用于日志记录,传递观测回调)
 	var res *fwResult
 	var duration float64
-	res, duration, err = s.handleResponse(reqCtx, resp, firstByteTime, w, cfg.ChannelType, cfg, apiKey, onBytesRead)
+	res, duration, err = s.handleResponse(reqCtx, resp, w, cfg.ChannelType, cfg, apiKey, observer)
 
 	// [FIX] 2025-12: 流式传输过程中首字节超时的错误修正
 	// 场景：响应头已收到(200 OK)，但在读取响应体时超时定时器触发
@@ -527,9 +543,9 @@ func (s *Server) forwardAttempt(
 	// 记录渠道尝试开始时间（用于日志记录，每次渠道/Key切换时更新）
 	reqCtx.attemptStartTime = time.Now()
 
-	// 转发请求（传递实际的API Key字符串和字节回调）
+	// 转发请求（传递实际的API Key字符串和观测回调）
 	res, duration, err := s.forwardOnceAsync(ctx, cfg, selectedKey, reqCtx.requestMethod,
-		bodyToSend, reqCtx.header, reqCtx.rawQuery, reqCtx.requestPath, w, reqCtx.onBytesRead)
+		bodyToSend, reqCtx.header, reqCtx.rawQuery, reqCtx.requestPath, w, reqCtx.observer)
 
 	// 处理网络错误或异常响应（如空响应）
 	// [INFO] 修复：handleResponse可能返回err即使StatusCode=200（例如Content-Length=0）
@@ -650,7 +666,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		triedKeys[keyIndex] = true
 
 		// 更新活跃请求的渠道信息（用于前端显示）
-		if reqCtx.activeReqID > 0 && s.activeRequests != nil {
+		if reqCtx.activeReqID > 0 {
 			s.activeRequests.Update(reqCtx.activeReqID, cfg.ID, cfg.Name, cfg.GetChannelType(), selectedKey, reqCtx.tokenID)
 		}
 

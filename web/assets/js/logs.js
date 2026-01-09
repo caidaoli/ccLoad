@@ -290,6 +290,12 @@
         const elapsed = startMs ? ((Date.now() - startMs) / 1000).toFixed(1) : '-';
         const streamFlag = getStreamFlagHtml(req.is_streaming);
 
+        // 耗时显示：流式请求有首字时间则显示 "首字/总耗时" 格式
+        let durationDisplay = startMs ? `${elapsed}s...` : '-';
+        if (req.is_streaming && req.client_first_byte_time > 0 && startMs) {
+          durationDisplay = `${req.client_first_byte_time.toFixed(2)}s/${elapsed}s...`;
+        }
+
         // 渠道显示
         let channelDisplay = '<span style="color: var(--neutral-500);">选择中...</span>';
         if (req.channel_id && req.channel_name) {
@@ -316,7 +322,7 @@
               <span style="margin-left: 8px;">${formatTime(req.start_time)}</span>
               <span style="margin-left: 8px; color: var(--neutral-600);">${escapeHtml(req.client_ip || '-')}</span>
               <span style="margin-left: 8px;">${escapeHtml(req.model || '-')}</span>
-              <span style="margin-left: 8px;">${elapsed}s... ${streamFlag}</span>
+              <span style="margin-left: 8px;">${durationDisplay} ${streamFlag}</span>
               <span style="margin-left: 8px; color: ${infoColor};">${escapeHtml(infoDisplay)}</span>
             </td>
           `;
@@ -330,7 +336,7 @@
             <td><span class="model-tag">${escapeHtml(req.model)}</span></td>
             <td style="text-align: center;">${keyDisplay}</td>
             <td><span class="status-pending">进行中</span></td>
-            <td style="text-align: right;">${elapsed}s... ${streamFlag}</td>
+            <td style="text-align: right;">${durationDisplay} ${streamFlag}</td>
             ${emptyCells}
             <td><span style="color: ${infoColor};">${escapeHtml(infoDisplay)}</span></td>
           `;

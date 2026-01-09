@@ -153,10 +153,7 @@ func (s *Server) handleSpecialRoutes(c *gin.Context) bool {
 
 // HandleProxyRequest 通用透明代理处理器
 func (s *Server) HandleProxyRequest(c *gin.Context) {
-	// 允许测试/最小化Server构造：避免 activeRequests 未初始化导致崩溃
-	if s.activeRequests == nil {
-		s.activeRequests = newActiveRequestManager()
-	}
+	startTime := time.Now()
 
 	// 并发控制
 	release, ok := s.acquireConcurrencySlot(c)
@@ -220,7 +217,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	}
 
 	// 注册活跃请求（内存状态，用于前端实时显示）
-	activeID := s.activeRequests.Register(originalModel, c.ClientIP(), isStreaming)
+	activeID := s.activeRequests.Register(startTime, originalModel, c.ClientIP(), isStreaming)
 	defer s.activeRequests.Remove(activeID)
 
 	timeout := parseTimeout(c.Request.URL.Query(), c.Request.Header)
@@ -270,9 +267,14 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		tokenID:       tokenIDInt64,
 		clientIP:      c.ClientIP(),
 		activeReqID:   activeID,
-		startTime:     time.Now(), // 请求开始时间
-		onBytesRead: func(n int64) {
-			s.activeRequests.AddBytes(activeID, n)
+		startTime:     startTime,
+		observer: &ForwardObserver{
+			OnBytesRead: func(n int64) {
+				s.activeRequests.AddBytes(activeID, n)
+			},
+			OnFirstByteRead: func() {
+				s.activeRequests.SetClientFirstByteTime(activeID, time.Since(startTime))
+			},
 		},
 	}
 
@@ -336,6 +338,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			Model:       originalModel,
 			StatusCode:  finalStatus,
 			Message:     msg,
+			Duration:    time.Since(reqCtx.startTime).Seconds(),
 			IsStreaming: isStreaming,
 			ClientIP:    reqCtx.clientIP,
 		})

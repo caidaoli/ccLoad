@@ -15,10 +15,9 @@ import (
 )
 
 func TestHandleProxyRequest_UnknownPathReturns404(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	srv := &Server{
 		concurrencySem: make(chan struct{}, 1),
+		activeRequests: newActiveRequestManager(),
 	}
 
 	body := bytes.NewBufferString(`{"model":"gpt-4"}`)
@@ -46,8 +45,6 @@ func TestHandleProxyRequest_UnknownPathReturns404(t *testing.T) {
 
 // TestParseIncomingRequest_ValidJSON 测试有效JSON解析
 func TestParseIncomingRequest_ValidJSON(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	tests := []struct {
 		name         string
 		body         string
@@ -123,8 +120,6 @@ func TestParseIncomingRequest_ValidJSON(t *testing.T) {
 
 // TestParseIncomingRequest_BodyTooLarge 测试请求体过大
 func TestParseIncomingRequest_BodyTooLarge(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	// 创建超大请求体（>2MB）
 	largeBody := make([]byte, 3*1024*1024) // 3MB
 	for i := range largeBody {
@@ -147,8 +142,6 @@ func TestParseIncomingRequest_BodyTooLarge(t *testing.T) {
 
 // TestAcquireConcurrencySlot 测试并发槽位获取
 func TestAcquireConcurrencySlot(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	srv := &Server{
 		concurrencySem: make(chan struct{}, 2), // 最大并发数=2
 		maxConcurrency: 2,
@@ -189,8 +182,6 @@ func TestAcquireConcurrencySlot(t *testing.T) {
 }
 
 func TestAcquireConcurrencySlot_ContextCanceled_Returns499(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	srv := &Server{
 		concurrencySem: make(chan struct{}, 1),
 	}
@@ -214,8 +205,6 @@ func TestAcquireConcurrencySlot_ContextCanceled_Returns499(t *testing.T) {
 }
 
 func TestAcquireConcurrencySlot_DeadlineExceeded_Returns504(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	srv := &Server{
 		concurrencySem: make(chan struct{}, 1),
 	}

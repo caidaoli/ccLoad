@@ -25,7 +25,6 @@ func setupAdminTestServer(t *testing.T) (*Server, storage.Store, func()) {
 		t.Fatalf("创建测试数据库失败: %v", err)
 	}
 
-	gin.SetMode(gin.TestMode)
 	server := &Server{
 		store: store,
 	}

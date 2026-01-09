@@ -105,7 +105,7 @@ func NewServer(store storage.Store) *Server {
 
 	firstByteTimeout := configService.GetDuration("upstream_first_byte_timeout", 0)
 	if firstByteTimeout < 0 {
-		log.Printf("[WARN] 无效的 upstream_first_byte_timeout=%v（必须 >= 0），已设为 0（禁用）", firstByteTimeout)
+		log.Printf("[WARN] 无效的 upstream_first_byte_timeout=%v（必须 >= 0），已设为 0（禁用首字节超时，仅流式生效）", firstByteTimeout)
 		firstByteTimeout = 0
 	}
 

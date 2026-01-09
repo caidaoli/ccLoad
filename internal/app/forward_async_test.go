@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -17,20 +16,6 @@ import (
 	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 )
-
-// TestMain 在所有测试运行前设置环境变量
-func TestMain(m *testing.M) {
-	// 为测试设置必需的环境变量
-	_ = os.Setenv("CCLOAD_PASS", "test_password_123")
-
-	// 运行测试
-	code := m.Run()
-
-	// 清理
-	_ = os.Unsetenv("CCLOAD_PASS")
-
-	os.Exit(code)
-}
 
 // TestRequestContextCreation 测试请求上下文创建
 func TestRequestContextCreation(t *testing.T) {
@@ -237,7 +222,7 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 			"",
 			"/v1/messages",
 			recorder,
-			nil, // onBytesRead callback
+			nil, // observer
 		)
 
 		if err != nil {
@@ -270,7 +255,7 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 			"",
 			"/v1/messages",
 			recorder,
-			nil, // onBytesRead callback
+			nil, // observer
 		)
 
 		if err != nil {
@@ -361,7 +346,7 @@ func TestClientCancelClosesUpstream(t *testing.T) {
 			"",
 			"/v1/messages",
 			recorder,
-			nil, // onBytesRead callback
+			nil, // observer
 		)
 		resultChan <- struct {
 			result   *fwResult
@@ -444,7 +429,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 				"",
 				"/v1/messages",
 				recorder,
-				nil, // onBytesRead callback
+				nil, // observer
 			)
 		}
 
@@ -517,7 +502,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 				"",
 				"/v1/messages",
 				recorder,
-				nil, // onBytesRead callback
+				nil, // observer
 			)
 		}
 
@@ -572,7 +557,7 @@ func TestFirstByteTimeout_StreamingResponse(t *testing.T) {
 		"",
 		"/v1/messages",
 		recorder,
-		nil, // onBytesRead callback
+		nil, // observer
 	)
 
 	// 验证返回结果
@@ -597,4 +582,56 @@ func TestFirstByteTimeout_StreamingResponse(t *testing.T) {
 	}
 
 	t.Logf("✓ 首字节超时测试通过: 状态码=%d, 耗时=%.3fs, 错误=%v", res.Status, duration, err)
+}
+
+// TestFirstByteTimeout_StreamingResponseBodyDelayed 测试响应头已到但响应体迟迟不来时的首字节超时
+// 场景：上游先发送响应头并 flush，但延迟发送 SSE body
+// 期望：返回 598 状态码和 ErrUpstreamFirstByteTimeout 错误
+func TestFirstByteTimeout_StreamingResponseBodyDelayed(t *testing.T) {
+	store, _ := storage.CreateSQLiteStore(":memory:", nil)
+	defer func() { _ = store.Close() }()
+
+	srv := NewServer(store)
+	srv.firstByteTimeout = 10 * time.Millisecond
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		time.Sleep(200 * time.Millisecond)
+		_, _ = w.Write([]byte("data: {\"content\":\"hello\"}\n\n"))
+	}))
+	defer upstream.Close()
+
+	cfg := &model.Config{
+		ID:   1,
+		URL:  upstream.URL,
+		Name: "test-timeout-body-delayed",
+	}
+
+	recorder := httptest.NewRecorder()
+	res, _, err := srv.forwardOnceAsync(
+		context.Background(),
+		cfg,
+		"sk-test",
+		http.MethodPost,
+		[]byte(`{"stream":true}`),
+		http.Header{},
+		"",
+		"/v1/messages",
+		recorder,
+		nil, // observer
+	)
+
+	if err == nil {
+		t.Fatalf("期望返回错误，但 err 为 nil（res.Status=%d）", res.Status)
+	}
+	if !errors.Is(err, util.ErrUpstreamFirstByteTimeout) {
+		t.Fatalf("期望错误为 ErrUpstreamFirstByteTimeout，实际: %v", err)
+	}
+	if res.Status != util.StatusFirstByteTimeout {
+		t.Fatalf("期望状态码 %d，实际: %d", util.StatusFirstByteTimeout, res.Status)
+	}
 }

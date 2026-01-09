@@ -535,7 +535,7 @@ func (s *Server) fillHealthTimeline(ctx context.Context, stats []model.StatsEntr
 			successRate = float64(success) / float64(total)
 		}
 
-		// duration/first_byte_time 在日志中以"秒"存储（requestContext.Duration().Seconds），这里直接透传
+		// duration/first_byte_time 在日志中以“秒”存储，这里直接透传
 		timeline[key][bucketIndex] = model.HealthPoint{
 			Ts:                       time.Unix(bucketTs/1000, 0),
 			SuccessRate:              successRate,

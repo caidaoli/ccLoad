@@ -88,6 +88,12 @@ type fwResult struct {
 	SSEErrorEvent []byte // SSE流中检测到的最后一个error事件的完整JSON
 }
 
+// ForwardObserver 封装转发过程中的观测回调（遵循SRP，避免函数签名膨胀）
+type ForwardObserver struct {
+	OnBytesRead     func(int64) // 字节读取回调（可选）
+	OnFirstByteRead func()      // 首字节读取回调（可选）
+}
+
 // proxyRequestContext 代理请求上下文（封装请求信息，遵循DIP原则）
 type proxyRequestContext struct {
 	originalModel    string
@@ -97,13 +103,13 @@ type proxyRequestContext struct {
 	body             []byte
 	header           http.Header
 	isStreaming      bool
-	tokenHash        string      // Token哈希值（用于统计，2025-11新增）
-	tokenID          int64       // Token ID（用于日志记录，2025-12新增，0表示未使用token）
-	clientIP         string      // 客户端IP地址（用于日志记录，2025-12新增）
-	activeReqID      int64       // 活跃请求ID（用于更新渠道信息）
-	onBytesRead      func(int64) // 字节读取回调（可选，用于实时更新活跃请求统计）
-	startTime        time.Time   // 请求开始时间（用于统计）
-	attemptStartTime time.Time   // 渠道尝试开始时间（用于日志记录，每次渠道切换时更新）
+	tokenHash        string           // Token哈希值（用于统计）
+	tokenID          int64            // Token ID（用于日志记录，0表示未使用token）
+	clientIP         string           // 客户端IP地址（用于日志记录）
+	activeReqID      int64            // 活跃请求ID（用于更新渠道信息）
+	observer         *ForwardObserver // 转发观测回调（可选）
+	startTime        time.Time        // 请求开始时间（用于统计）
+	attemptStartTime time.Time        // 渠道尝试开始时间（用于日志记录）
 }
 
 // proxyResult 代理请求结果

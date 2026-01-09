@@ -7,10 +7,10 @@ type MetricPoint struct {
 	Ts                      time.Time                `json:"ts"`
 	Success                 int                      `json:"success"`
 	Error                   int                      `json:"error"`
-	AvgFirstByteTimeSeconds *float64                 `json:"avg_first_byte_time_seconds,omitempty"` // 平均首字响应时间(秒)
+	AvgFirstByteTimeSeconds *float64                 `json:"avg_first_byte_time_seconds,omitempty"` // 平均首字节响应时间(秒)
 	AvgDurationSeconds      *float64                 `json:"avg_duration_seconds,omitempty"`        // 平均总耗时(秒)
 	TotalCost               *float64                 `json:"total_cost,omitempty"`                  // 总费用（美元）
-	FirstByteSampleCount    int                      `json:"first_byte_count,omitempty"`            // 首字响应样本数（流式成功且有首字时间）
+	FirstByteSampleCount    int                      `json:"first_byte_count,omitempty"`            // 首字节样本数（流式成功且有首字节时间）
 	DurationSampleCount     int                      `json:"duration_count,omitempty"`              // 总耗时样本数（成功且有耗时）
 	InputTokens             int64                    `json:"input_tokens,omitempty"`                // 输入Token
 	OutputTokens            int64                    `json:"output_tokens,omitempty"`               // 输出Token
@@ -23,7 +23,7 @@ type MetricPoint struct {
 type ChannelMetric struct {
 	Success                 int      `json:"success"`
 	Error                   int      `json:"error"`
-	AvgFirstByteTimeSeconds *float64 `json:"avg_first_byte_time_seconds,omitempty"` // 平均首字响应时间(秒)
+	AvgFirstByteTimeSeconds *float64 `json:"avg_first_byte_time_seconds,omitempty"` // 平均上游首块响应体时间(秒)
 	AvgDurationSeconds      *float64 `json:"avg_duration_seconds,omitempty"`        // 平均总耗时(秒)
 	TotalCost               *float64 `json:"total_cost,omitempty"`                  // 总费用（美元）
 	InputTokens             int64    `json:"input_tokens,omitempty"`                // 输入Token
@@ -38,7 +38,7 @@ type HealthPoint struct {
 	SuccessRate              float64   `json:"rate"`                  // 成功率 (0-1), -1表示无数据
 	SuccessCount             int       `json:"success"`               // 成功次数
 	ErrorCount               int       `json:"error"`                 // 失败次数
-	AvgFirstByteTime         float64   `json:"avg_first_byte_time"`   // 平均首字时间(秒)
+	AvgFirstByteTime         float64   `json:"avg_first_byte_time"`   // 平均上游首块响应体时间(秒)
 	AvgDuration              float64   `json:"avg_duration"`          // 平均耗时(秒)
 	TotalInputTokens         int64     `json:"input_tokens"`          // 输入Token
 	TotalOutputTokens        int64     `json:"output_tokens"`         // 输出Token
@@ -56,7 +56,7 @@ type StatsEntry struct {
 	Success                 int      `json:"success"`
 	Error                   int      `json:"error"`
 	Total                   int      `json:"total"`
-	AvgFirstByteTimeSeconds *float64 `json:"avg_first_byte_time_seconds,omitempty"` // 流式请求平均首字响应时间(秒)
+	AvgFirstByteTimeSeconds *float64 `json:"avg_first_byte_time_seconds,omitempty"` // 流式请求平均上游首块响应体时间(秒)
 	AvgDurationSeconds      *float64 `json:"avg_duration_seconds,omitempty"`        // 平均总耗时(秒)
 
 	// RPM/QPS统计（基于分钟级数据）

@@ -566,7 +566,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 	}{
 		{"log_retention_days", "7", "int", "日志保留天数(-1永久保留,1-365天)", "7"},
 		{"max_key_retries", "3", "int", "单渠道最大Key重试次数", "3"},
-		{"upstream_first_byte_timeout", "0", "duration", "上游首字节超时(秒,0=禁用)", "0"},
+		{"upstream_first_byte_timeout", "0", "duration", "上游首块响应体超时(秒,0=禁用，仅流式)", "0"},
 		{"non_stream_timeout", "120", "duration", "非流式请求超时(秒,0=禁用)", "120"},
 		{"model_lookup_strip_date_suffix", "true", "bool", "模型匹配失败时，忽略末尾-YYYYMMDD日期后缀进行渠道匹配(优先精确匹配)", "true"},
 		{"model_fuzzy_match", "false", "bool", "模型匹配失败时，使用子串模糊匹配(多匹配时选最新版本)", "false"},
@@ -595,6 +595,25 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		}
 	}
 
+	// 刷新部分配置项的元信息（description/default/value_type），避免“代码语义已变但DB描述仍旧”。
+	// 不更新 updated_at：这不是用户配置变更，只是元数据对齐。
+	{
+		keyCol := "key"
+		if dialect == DialectMySQL {
+			keyCol = "`key`"
+		}
+		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
+		metaSQL := fmt.Sprintf("UPDATE system_settings SET description = ?, default_value = ?, value_type = ? WHERE %s = ?", keyCol)
+		if _, err := db.ExecContext(ctx, metaSQL,
+			"上游首块响应体超时(秒,0=禁用，仅流式)",
+			"0",
+			"duration",
+			"upstream_first_byte_timeout",
+		); err != nil {
+			return fmt.Errorf("refresh setting metadata upstream_first_byte_timeout: %w", err)
+		}
+	}
+
 	// 清理已废弃的配置项（先执行，避免被后续逻辑的 return 跳过）
 	obsoleteKeys := []string{
 		"88code_free_only", // 2026-01移除：88code免费订阅限制功能已删除
@@ -605,14 +624,9 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 
 	// 迁移旧键名 cooldown_fallback_threshold → cooldown_fallback_enabled
 	// 同时处理 int→bool 的类型迁移
-	{
+	if hasSystemSetting(ctx, db, dialect, "cooldown_fallback_threshold") {
 		const oldKey = "cooldown_fallback_threshold"
 		const newKey = "cooldown_fallback_enabled"
-
-		// 旧键不存在则跳过迁移（已迁移或从未存在）
-		if !hasSystemSetting(ctx, db, dialect, oldKey) {
-			return nil
-		}
 
 		keyCol := "key"
 		if dialect == DialectMySQL {

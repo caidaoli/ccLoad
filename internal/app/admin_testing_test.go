@@ -15,8 +15,6 @@ import (
 
 // TestHandleChannelTest 测试渠道测试功能
 func TestHandleChannelTest(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
 	tests := []struct {
 		name           string
 		channelID      string

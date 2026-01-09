@@ -12,44 +12,58 @@ import (
 
 // ActiveRequest 表示一个进行中的请求
 type ActiveRequest struct {
-	ID            int64  `json:"id"`
-	Model         string `json:"model"`
-	ClientIP      string `json:"client_ip"`
-	StartTime     int64  `json:"start_time"` // Unix秒
-	Streaming     bool   `json:"is_streaming"`
-	ChannelID     int64  `json:"channel_id,omitempty"`
-	ChannelName   string `json:"channel_name,omitempty"`
-	ChannelType   string `json:"channel_type,omitempty"`   // 渠道类型（用于前端筛选）
-	APIKeyUsed    string `json:"api_key_used,omitempty"`   // 脱敏后的key
-	TokenID       int64  `json:"token_id,omitempty"`       // 令牌ID（用于前端筛选，0表示无令牌）
-	BytesReceived int64  `json:"bytes_received,omitempty"` // 上游已返回的字节数（从 bytesCounter 拷贝）
+	ID                  int64   `json:"id"`
+	Model               string  `json:"model"`
+	ClientIP            string  `json:"client_ip"`
+	StartTime           int64   `json:"start_time"` // Unix毫秒
+	Streaming           bool    `json:"is_streaming"`
+	ChannelID           int64   `json:"channel_id,omitempty"`
+	ChannelName         string  `json:"channel_name,omitempty"`
+	ChannelType         string  `json:"channel_type,omitempty"`           // 渠道类型（用于前端筛选）
+	APIKeyUsed          string  `json:"api_key_used,omitempty"`           // 脱敏后的key
+	TokenID             int64   `json:"token_id,omitempty"`               // 令牌ID（用于前端筛选，0表示无令牌）
+	BytesReceived       int64   `json:"bytes_received,omitempty"`         // 上游已返回的字节数（快照）
+	ClientFirstByteTime float64 `json:"client_first_byte_time,omitempty"` // 客户端侧首字节响应时间（秒），流式请求有效
+}
 
-	bytesCounter *atomic.Int64 `json:"-"` // 内部字节计数器（不序列化）
+type activeRequest struct {
+	ID          int64
+	Model       string
+	ClientIP    string
+	StartTime   int64 // Unix毫秒
+	Streaming   bool
+	ChannelID   int64
+	ChannelName string
+	ChannelType string
+	APIKeyUsed  string
+	TokenID     int64
+
+	bytesCounter            atomic.Int64 // 上游已返回的字节数（原子累加）
+	clientFirstByteTimeUsec atomic.Int64 // 客户端侧首字节响应时间（微秒），CAS保证只写一次，0表示未设置
 }
 
 // activeRequestManager 管理进行中的请求（内存状态，不持久化）
 type activeRequestManager struct {
 	mu       sync.RWMutex
-	requests map[int64]*ActiveRequest
+	requests map[int64]*activeRequest
 	nextID   atomic.Int64
 }
 
 func newActiveRequestManager() *activeRequestManager {
 	return &activeRequestManager{
-		requests: make(map[int64]*ActiveRequest),
+		requests: make(map[int64]*activeRequest),
 	}
 }
 
 // Register 注册一个新的活跃请求，返回请求ID（用于后续移除）
-func (m *activeRequestManager) Register(model, clientIP string, streaming bool) int64 {
+func (m *activeRequestManager) Register(startTime time.Time, model, clientIP string, streaming bool) int64 {
 	id := m.nextID.Add(1)
-	req := &ActiveRequest{
-		ID:           id,
-		Model:        model,
-		ClientIP:     clientIP,
-		StartTime:    time.Now().Unix(),
-		Streaming:    streaming,
-		bytesCounter: &atomic.Int64{}, // 初始化字节计数器
+	req := &activeRequest{
+		ID:        id,
+		Model:     model,
+		ClientIP:  clientIP,
+		StartTime: startTime.UnixMilli(),
+		Streaming: streaming,
 	}
 	m.mu.Lock()
 	m.requests[id] = req
@@ -77,7 +91,7 @@ func (m *activeRequestManager) Remove(id int64) {
 	m.mu.Unlock()
 }
 
-// AddBytes 原子地增加指定请求的字节数（线程安全，避免TOCTTOU竞态）
+// AddBytes 原子地增加指定请求的字节数（线程安全）
 func (m *activeRequestManager) AddBytes(id int64, n int64) {
 	if n <= 0 {
 		return
@@ -85,9 +99,27 @@ func (m *activeRequestManager) AddBytes(id int64, n int64) {
 	m.mu.RLock()
 	req := m.requests[id]
 	m.mu.RUnlock()
-	if req != nil && req.bytesCounter != nil {
+	if req != nil {
 		req.bytesCounter.Add(n)
 	}
+}
+
+// SetClientFirstByteTime 设置客户端侧首字节响应时间（CAS保证只写一次，线程安全）
+func (m *activeRequestManager) SetClientFirstByteTime(id int64, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	m.mu.RLock()
+	req := m.requests[id]
+	m.mu.RUnlock()
+	if req == nil {
+		return
+	}
+	usec := d.Microseconds()
+	if usec <= 0 {
+		return
+	}
+	req.clientFirstByteTimeUsec.CompareAndSwap(0, usec) // 只有首次（0值）才写入
 }
 
 // List 返回所有活跃请求的快照（按开始时间降序，最新的在前）
@@ -95,19 +127,31 @@ func (m *activeRequestManager) List() []*ActiveRequest {
 	m.mu.RLock()
 	result := make([]*ActiveRequest, 0, len(m.requests))
 	for _, req := range m.requests {
-		// 安全拷贝结构体（不拷贝 bytesCounter 指针）
-		copied := *req
-		copied.bytesCounter = nil // 清空内部字段，避免外部访问
-		// 从 bytesCounter 读取字节数（原子操作，无需额外锁）
-		if req.bytesCounter != nil {
-			copied.BytesReceived = req.bytesCounter.Load()
+		view := &ActiveRequest{
+			ID:            req.ID,
+			Model:         req.Model,
+			ClientIP:      req.ClientIP,
+			StartTime:     req.StartTime,
+			Streaming:     req.Streaming,
+			ChannelID:     req.ChannelID,
+			ChannelName:   req.ChannelName,
+			ChannelType:   req.ChannelType,
+			APIKeyUsed:    req.APIKeyUsed,
+			TokenID:       req.TokenID,
+			BytesReceived: req.bytesCounter.Load(),
 		}
-		result = append(result, &copied)
+		if usec := req.clientFirstByteTimeUsec.Load(); usec > 0 {
+			view.ClientFirstByteTime = float64(usec) / 1e6
+		}
+		result = append(result, view)
 	}
 	m.mu.RUnlock()
 	// 按开始时间降序排序
 	sort.Slice(result, func(i, j int) bool {
-		return result[i].StartTime > result[j].StartTime
+		if result[i].StartTime != result[j].StartTime {
+			return result[i].StartTime > result[j].StartTime
+		}
+		return result[i].ID > result[j].ID
 	})
 	return result
 }

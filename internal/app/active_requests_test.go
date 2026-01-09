@@ -1,21 +1,17 @@
 package app
 
 import (
+	"math"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestActiveRequestManager_ListSnapshotAndSort(t *testing.T) {
 	m := newActiveRequestManager()
 
-	id1 := m.Register("m1", "1.1.1.1", false)
-	id2 := m.Register("m2", "2.2.2.2", true)
-
-	// 人为制造可预测的开始时间，避免依赖 time.Sleep()
-	m.mu.Lock()
-	m.requests[id1].StartTime = 100
-	m.requests[id2].StartTime = 200
-	m.mu.Unlock()
+	id1 := m.Register(time.UnixMilli(100), "m1", "1.1.1.1", false)
+	id2 := m.Register(time.UnixMilli(200), "m2", "2.2.2.2", true)
 
 	got := m.List()
 	if len(got) != 2 {
@@ -36,7 +32,7 @@ func TestActiveRequestManager_ListSnapshotAndSort(t *testing.T) {
 func TestActiveRequestManager_UpdateMasksKey(t *testing.T) {
 	m := newActiveRequestManager()
 
-	id := m.Register("m", "1.1.1.1", false)
+	id := m.Register(time.UnixMilli(100), "m", "1.1.1.1", false)
 	rawKey := "sk-1234567890abcdef"
 	m.Update(id, 1, "ch", "anthropic", rawKey, 0)
 
@@ -49,5 +45,29 @@ func TestActiveRequestManager_UpdateMasksKey(t *testing.T) {
 	}
 	if got[0].APIKeyUsed != "****" && !strings.Contains(got[0].APIKeyUsed, "...") {
 		t.Fatalf("expected masked key format, got %q", got[0].APIKeyUsed)
+	}
+}
+
+func TestActiveRequestManager_BytesAndFirstByteTime(t *testing.T) {
+	m := newActiveRequestManager()
+
+	id := m.Register(time.UnixMilli(100), "m", "1.1.1.1", true)
+
+	m.AddBytes(id, 10)
+	m.AddBytes(id, 0) // no-op
+
+	m.SetClientFirstByteTime(id, -1*time.Second)        // must not poison the value
+	m.SetClientFirstByteTime(id, 750*time.Millisecond)  // first set wins
+	m.SetClientFirstByteTime(id, 1250*time.Millisecond) // ignored
+
+	got := m.List()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(got))
+	}
+	if got[0].BytesReceived != 10 {
+		t.Fatalf("expected bytes_received=10, got %d", got[0].BytesReceived)
+	}
+	if math.Abs(got[0].ClientFirstByteTime-0.75) > 1e-6 {
+		t.Fatalf("expected client_first_byte_time≈0.75, got %f", got[0].ClientFirstByteTime)
 	}
 }

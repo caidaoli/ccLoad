@@ -1,7 +1,7 @@
     // 全局变量
     window.trendData = null;
     window.currentRange = 'today'; // 默认"本日"
-    window.currentTrendType = 'first_byte'; // 默认显示首字响应时间趋势 (count/first_byte/cost)
+    window.currentTrendType = 'first_byte'; // 默认显示首字响应趋势 (count/rpm/first_byte/duration/tokens/cost)
     window.currentChannelType = 'all'; // 当前选中的渠道类型
     window.currentModel = ''; // 当前选中的模型（空字符串表示全部模型）
     window.currentAuthToken = ''; // 当前选中的令牌（空字符串表示全部令牌）
@@ -343,10 +343,10 @@
           })
         });
       } else if (trendType === 'first_byte') {
-        // 首字响应时间趋势：添加总体平均首字响应时间线
-        series.push({
-          name: '平均首字响应时间',
-          type: 'line',
+	        // 首字响应时间趋势：添加总体平均首字响应时间线
+	        series.push({
+	          name: '平均首字响应时间',
+	          type: 'line',
           smooth: 0.25,
           symbol: 'circle',
           symbolSize: 4,
@@ -803,7 +803,7 @@
               if (value == null) {
                 formattedValue = 'N/A';
               } else if (window.currentTrendType === 'first_byte' || window.currentTrendType === 'duration') {
-                // 首字响应时间/总耗时：秒
+                // 首块响应体时间/总耗时：秒
                 formattedValue = value.toFixed(1) + 's';
               } else if (window.currentTrendType === 'cost') {
                 // 费用消耗：美元格式
@@ -914,7 +914,7 @@
             fontSize: 11,
             formatter: function(value) {
               if (trendType === 'first_byte' || trendType === 'duration') {
-                // 首字响应时间/总耗时：秒格式
+                // 首块响应体时间/总耗时：秒格式
                 return value.toFixed(1) + 's';
               } else if (trendType === 'cost') {
                 // 费用消耗：美元格式
@@ -997,11 +997,11 @@
       window.chartResizeObserver.observe(chartDom);
     }
 
-    function shouldShowZoom(points, hours, trendType) {
-      if (hours > 24) return true;
-      if (trendType === 'first_byte' || trendType === 'duration') return points >= 60;
-      return points >= 120;
-    }
+function shouldShowZoom(points, hours, trendType) {
+	if (hours > 24) return true;
+	if (trendType === 'first_byte' || trendType === 'duration') return points >= 60;
+	return points >= 120;
+}
 
     function computeXAxisLabelInterval(points, maxLabels) {
       if (!points || points <= maxLabels) return 0;
