@@ -3,9 +3,7 @@ package app
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
-	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -303,38 +301,4 @@ func (s *Server) HandleDeleteAuthToken(c *gin.Context) {
 	log.Printf("[INFO] 删除API令牌: ID=%d", id)
 
 	RespondJSON(c, http.StatusOK, gin.H{"id": id})
-}
-
-// HandleResetTokenCost 重置令牌的已消耗费用（用于管理员手动恢复配额）
-// POST /admin/auth-tokens/:id/reset-cost
-func (s *Server) HandleResetTokenCost(c *gin.Context) {
-	id, err := ParseInt64Param(c, "id")
-	if err != nil {
-		RespondErrorMsg(c, http.StatusBadRequest, "invalid token id")
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if err := s.store.ResetTokenCost(ctx, id); err != nil {
-		log.Print("❌ 重置费用失败: " + err.Error())
-		if errors.Is(err, sql.ErrNoRows) {
-			RespondErrorMsg(c, http.StatusNotFound, "token not found")
-			return
-		}
-		RespondError(c, http.StatusInternalServerError, err)
-		return
-	}
-
-	// 触发热更新（刷新缓存）
-	if s.authService != nil {
-		if err := s.authService.ReloadAuthTokens(); err != nil {
-			log.Print("[WARN]  热更新失败: " + err.Error())
-		}
-	}
-
-	log.Printf("[INFO] 重置API令牌费用: ID=%d", id)
-
-	RespondJSON(c, http.StatusOK, gin.H{"id": id, "cost_used_usd": 0})
 }

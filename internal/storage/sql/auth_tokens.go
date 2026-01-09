@@ -464,30 +464,3 @@ func (s *SQLStore) UpdateTokenStats(
 
 	return nil
 }
-
-// ResetTokenCost 重置令牌的已消耗费用（用于管理员手动恢复配额）
-func (s *SQLStore) ResetTokenCost(ctx context.Context, tokenID int64) error {
-	result, err := s.db.ExecContext(ctx, `
-		UPDATE auth_tokens
-		SET cost_used_microusd = 0
-		WHERE id = ?
-	`, tokenID)
-
-	if err != nil {
-		return fmt.Errorf("reset token cost: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("get rows affected: %w", err)
-	}
-
-	if rowsAffected == 0 {
-		return sql.ErrNoRows
-	}
-
-	// 触发异步Redis同步
-	s.triggerAsyncSync(syncAuthTokens)
-
-	return nil
-}

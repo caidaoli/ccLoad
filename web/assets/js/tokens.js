@@ -524,18 +524,11 @@
       // 初始化费用限额状态（2026-01新增）
       const costLimitInput = document.getElementById('editCostLimitUSD');
       const costUsedDisplay = document.getElementById('editCostUsedDisplay');
-      const resetCostBtn = document.getElementById('resetCostBtn');
       costLimitInput.value = token.cost_limit_usd || 0;
 
       // 显示已消耗费用
       const costUsed = token.cost_used_usd || 0;
-      if (costUsed > 0) {
-        costUsedDisplay.textContent = `已消耗: $${costUsed.toFixed(4)}`;
-        resetCostBtn.style.display = 'inline-block';
-      } else {
-        costUsedDisplay.textContent = '';
-        resetCostBtn.style.display = 'none';
-      }
+      costUsedDisplay.textContent = costUsed > 0 ? `已消耗: $${costUsed.toFixed(4)}` : '';
 
       // 初始化模型限制状态（2026-01新增）
       editAllowedModels = (token.allowed_models || []).slice();
@@ -1039,37 +1032,4 @@
         ? `成功添加 ${newModels.length} 个模型，${duplicateCount} 个重复已忽略`
         : `成功添加 ${newModels.length} 个模型`;
       window.showNotification(msg, 'success');
-    }
-
-    // ============================================================================
-    // 费用限额功能（2026-01新增）
-    // ============================================================================
-
-    /**
-     * 重置令牌的已消耗费用
-     */
-    async function resetTokenCost() {
-      const id = document.getElementById('editTokenId').value;
-      if (!id) return;
-
-      if (!confirm('确定要重置此令牌的已消耗费用吗？')) return;
-
-      try {
-        await fetchDataWithAuth(`${API_BASE}/auth-tokens/${id}/reset-cost`, {
-          method: 'POST'
-        });
-
-        // 更新UI
-        const costUsedDisplay = document.getElementById('editCostUsedDisplay');
-        const resetCostBtn = document.getElementById('resetCostBtn');
-        costUsedDisplay.textContent = '';
-        resetCostBtn.style.display = 'none';
-
-        // 刷新令牌列表
-        loadTokens();
-        window.showNotification('费用消耗已重置', 'success');
-      } catch (error) {
-        console.error('重置费用失败:', error);
-        window.showNotification('重置失败: ' + error.message, 'error');
-      }
     }
