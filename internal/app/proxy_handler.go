@@ -183,6 +183,18 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		return
 	}
 
+	// 检查令牌模型限制（2026-01新增）
+	if tokenHash, exists := c.Get("token_hash"); exists {
+		if tokenHashStr, ok := tokenHash.(string); ok && originalModel != "" {
+			if !s.authService.IsModelAllowed(tokenHashStr, originalModel) {
+				c.JSON(http.StatusForbidden, gin.H{
+					"error": fmt.Sprintf("model '%s' is not allowed for this token", originalModel),
+				})
+				return
+			}
+		}
+	}
+
 	// 注册活跃请求（内存状态，用于前端实时显示）
 	activeID := s.activeRequests.Register(originalModel, c.ClientIP(), isStreaming)
 	defer s.activeRequests.Remove(activeID)

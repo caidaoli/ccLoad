@@ -84,6 +84,10 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureAuthTokensCacheFields(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate auth_tokens cache fields: %w", err)
 			}
+			// 增量迁移：确保auth_tokens表有allowed_models字段（2026-01新增）
+			if err := ensureAuthTokensAllowedModels(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate auth_tokens allowed_models: %w", err)
+			}
 		}
 
 		// 增量迁移：channel_models表添加redirect_model字段，迁移数据后删除channels冗余字段
@@ -936,5 +940,32 @@ func ensureChannelsDailyCostLimit(ctx context.Context, db *sql.DB, dialect Diale
 	// SQLite: 使用通用添加列函数
 	return ensureSQLiteColumns(ctx, db, "channels", []sqliteColumnDef{
 		{name: "daily_cost_limit", definition: "REAL NOT NULL DEFAULT 0"},
+	})
+}
+
+// ensureAuthTokensAllowedModels 确保auth_tokens表有allowed_models字段
+func ensureAuthTokensAllowedModels(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if dialect == DialectMySQL {
+		// MySQL: 检查字段是否存在
+		var count int
+		err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='auth_tokens' AND COLUMN_NAME='allowed_models'",
+		).Scan(&count)
+		if err != nil {
+			return fmt.Errorf("check allowed_models field: %w", err)
+		}
+		if count == 0 {
+			if _, err := db.ExecContext(ctx,
+				"ALTER TABLE auth_tokens ADD COLUMN allowed_models TEXT NOT NULL DEFAULT ''"); err != nil {
+				return fmt.Errorf("add allowed_models column: %w", err)
+			}
+			log.Printf("[MIGRATE] Added auth_tokens.allowed_models column")
+		}
+		return nil
+	}
+
+	// SQLite: 使用通用添加列函数
+	return ensureSQLiteColumns(ctx, db, "auth_tokens", []sqliteColumnDef{
+		{name: "allowed_models", definition: "TEXT NOT NULL DEFAULT ''"},
 	})
 }

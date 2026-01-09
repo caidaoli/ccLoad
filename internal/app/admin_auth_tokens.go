@@ -134,9 +134,10 @@ func (s *Server) HandleListAuthTokens(c *gin.Context) {
 // POST /admin/auth-tokens
 func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 	var req struct {
-		Description string `json:"description" binding:"required"`
-		ExpiresAt   *int64 `json:"expires_at"` // Unix毫秒时间戳，nil表示永不过期
-		IsActive    *bool  `json:"is_active"`  // nil表示默认启用
+		Description   string   `json:"description" binding:"required"`
+		ExpiresAt     *int64   `json:"expires_at"`     // Unix毫秒时间戳，nil表示永不过期
+		IsActive      *bool    `json:"is_active"`      // nil表示默认启用
+		AllowedModels []string `json:"allowed_models"` // 允许的模型列表，空表示无限制
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -162,10 +163,11 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 	}
 
 	authToken := &model.AuthToken{
-		Token:       tokenHash,
-		Description: req.Description,
-		ExpiresAt:   req.ExpiresAt,
-		IsActive:    isActive,
+		Token:         tokenHash,
+		Description:   req.Description,
+		ExpiresAt:     req.ExpiresAt,
+		IsActive:      isActive,
+		AllowedModels: req.AllowedModels,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -186,12 +188,13 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 
 	// 返回明文令牌（仅此一次机会）
 	RespondJSON(c, http.StatusOK, gin.H{
-		"id":          authToken.ID,
-		"token":       tokenPlain, // 明文令牌，仅创建时返回
-		"description": authToken.Description,
-		"created_at":  authToken.CreatedAt,
-		"expires_at":  authToken.ExpiresAt,
-		"is_active":   authToken.IsActive,
+		"id":             authToken.ID,
+		"token":          tokenPlain, // 明文令牌，仅创建时返回
+		"description":    authToken.Description,
+		"created_at":     authToken.CreatedAt,
+		"expires_at":     authToken.ExpiresAt,
+		"is_active":      authToken.IsActive,
+		"allowed_models": authToken.AllowedModels,
 	})
 }
 
@@ -205,9 +208,10 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 	}
 
 	var req struct {
-		Description *string `json:"description"`
-		IsActive    *bool   `json:"is_active"`
-		ExpiresAt   *int64  `json:"expires_at"`
+		Description   *string  `json:"description"`
+		IsActive      *bool    `json:"is_active"`
+		ExpiresAt     *int64   `json:"expires_at"`
+		AllowedModels []string `json:"allowed_models"` // 允许的模型列表，空数组表示清除限制
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -235,6 +239,8 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 	if req.ExpiresAt != nil {
 		token.ExpiresAt = req.ExpiresAt
 	}
+	// allowed_models 总是更新（空数组表示清除限制）
+	token.AllowedModels = req.AllowedModels
 
 	if err := s.store.UpdateAuthToken(ctx, token); err != nil {
 		log.Print("❌ 更新令牌失败: " + err.Error())
@@ -246,8 +252,6 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 	if err := s.authService.ReloadAuthTokens(); err != nil {
 		log.Print("[WARN]  热更新失败: " + err.Error())
 	}
-
-	log.Printf("[INFO] 更新API令牌: ID=%d", id)
 
 	// 返回脱敏后的令牌信息
 	token.Token = model.MaskToken(token.Token)

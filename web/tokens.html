@@ -177,10 +177,105 @@
             <span>启用令牌</span>
           </label>
         </div>
+
+        <!-- 模型限制区域 -->
+        <div class="form-group">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <label class="form-label" style="margin: 0;">
+              模型限制 <span style="color: var(--neutral-500); font-size: 12px; margin-left: 8px;">共 <span id="editAllowedModelsCount">0</span> 个模型（空表示允许所有）</span>
+            </label>
+            <div style="display: flex; gap: 6px;">
+              <button type="button" class="btn btn-secondary btn-sm" onclick="showModelSelectModal()" style="padding: 5px 10px; font-size: 12px;" title="从渠道模型列表中选择">
+                + 从列表选择
+              </button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="showModelImportModal()" style="padding: 5px 10px; font-size: 12px;" title="手动输入模型名称">
+                + 手动输入
+              </button>
+              <button type="button" id="batchDeleteAllowedModelsBtn" onclick="batchDeleteSelectedAllowedModels()" disabled
+                class="btn btn-secondary btn-sm" style="padding: 5px 10px; font-size: 12px; opacity: 0.5;">
+                删除选中
+              </button>
+            </div>
+          </div>
+          <div class="inline-table-container" style="max-height: 200px; overflow-y: auto; border: 1px solid var(--neutral-200); border-radius: 6px;">
+            <table class="inline-table" style="width: 100%; border-collapse: collapse;">
+              <thead>
+                <tr style="background: var(--neutral-100);">
+                  <th style="width: 40px; padding: 8px; text-align: center;">
+                    <input type="checkbox" id="selectAllAllowedModels" onchange="toggleSelectAllAllowedModels(this.checked)">
+                  </th>
+                  <th style="padding: 8px; text-align: left;">模型名称</th>
+                  <th style="width: 60px; padding: 8px;"></th>
+                </tr>
+              </thead>
+              <tbody id="allowedModelsTableBody">
+                <!-- 动态渲染 -->
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
       <div class="modal-footer">
         <button onclick="closeEditModal()" class="btn btn-secondary">取消</button>
         <button onclick="updateToken()" class="btn btn-primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 模型选择对话框 -->
+  <div id="modelSelectModal" class="modal">
+    <div class="modal-content" style="max-width: 500px;">
+      <div class="modal-header">
+        <h2 style="margin: 0; font-size: 18px;">选择模型</h2>
+        <button onclick="closeModelSelectModal()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: var(--neutral-500);">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <input type="text" id="modelSearchInput" class="form-input" placeholder="搜索模型..." oninput="filterAvailableModels(this.value)">
+        </div>
+        <div id="availableModelsContainer" style="max-height: 300px; overflow-y: auto; border: 1px solid var(--neutral-200); border-radius: 6px;">
+          <!-- 动态渲染可选模型列表 -->
+        </div>
+        <div style="margin-top: 8px; font-size: 12px; color: var(--neutral-500);">
+          已选择 <span id="selectedModelsCount">0</span> 个模型
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button onclick="closeModelSelectModal()" class="btn btn-secondary">取消</button>
+        <button onclick="confirmModelSelection()" class="btn btn-primary">确定添加</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 批量导入模型对话框 -->
+  <div id="modelImportModal" class="modal">
+    <div class="modal-content" style="max-width: 550px;">
+      <div class="modal-header">
+        <h2 style="margin: 0; font-size: 18px;">手动输入模型</h2>
+        <button onclick="closeModelImportModal()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: var(--neutral-500);">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group" style="margin-bottom: 12px;">
+          <label class="form-label" style="margin-bottom: 8px;">输入模型名称 <span style="color: var(--neutral-500); font-size: 13px; font-weight: normal;">(支持逗号或换行分隔)</span></label>
+          <textarea
+            id="tokenModelImportTextarea"
+            class="form-input"
+            rows="8"
+            placeholder="gpt-4o,gpt-4o-mini&#10;claude-3-5-sonnet-20241022&#10;claude-3-5-haiku-latest"
+            style="resize: vertical; min-height: 160px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace; font-size: 13px;"
+            oninput="updateModelImportPreview()"
+          ></textarea>
+        </div>
+        <div style="padding: 10px 12px; background: var(--info-50); border: 1px solid var(--info-200); border-radius: 6px; color: var(--neutral-700); font-size: 12px; margin-bottom: 12px;">
+          <strong>提示：</strong>支持逗号分隔 <code style="background: rgba(0,0,0,0.05); padding: 2px 4px; border-radius: 3px;">model1,model2</code> 或每行一个模型，自动去重
+        </div>
+        <div id="tokenModelImportPreview" style="display: none; padding: 10px 12px; background: var(--success-50); border: 1px solid var(--success-200); border-radius: 6px; color: var(--success-700); font-size: 13px;">
+          将添加 <span id="tokenModelImportCount">0</span> 个模型
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button onclick="closeModelImportModal()" class="btn btn-secondary">取消</button>
+        <button onclick="confirmModelImport()" class="btn btn-primary">确定添加</button>
       </div>
     </div>
   </div>

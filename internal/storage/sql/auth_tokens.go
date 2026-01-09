@@ -3,6 +3,7 @@ package sql
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -17,6 +18,7 @@ func scanAuthToken(scanner interface {
 	var createdAtMs int64
 	var expiresAt, lastUsedAt sql.NullInt64
 	var isActive int
+	var allowedModelsJSON string
 
 	if err := scanner.Scan(
 		&token.ID,
@@ -37,6 +39,7 @@ func scanAuthToken(scanner interface {
 		&token.CacheReadTokensTotal,
 		&token.CacheCreationTokensTotal,
 		&token.TotalCostUSD,
+		&allowedModelsJSON,
 	); err != nil {
 		return nil, err
 	}
@@ -51,6 +54,14 @@ func scanAuthToken(scanner interface {
 		token.LastUsedAt = &v
 	}
 	token.IsActive = isActive != 0
+
+	// 解析 allowed_models JSON
+	if allowedModelsJSON != "" {
+		if err := json.Unmarshal([]byte(allowedModelsJSON), &token.AllowedModels); err != nil {
+			// 解析失败则忽略，视为无限制
+			token.AllowedModels = nil
+		}
+	}
 
 	return token, nil
 }
@@ -75,14 +86,22 @@ func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) 
 		lastUsedAt = *token.LastUsedAt
 	}
 
+	// 序列化 allowed_models 为 JSON
+	var allowedModelsJSON string
+	if len(token.AllowedModels) > 0 {
+		if data, err := json.Marshal(token.AllowedModels); err == nil {
+			allowedModelsJSON = string(data)
+		}
+	}
+
 	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO auth_tokens (
 			token, description, created_at, expires_at, last_used_at, is_active,
 			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
-			prompt_tokens_total, completion_tokens_total, total_cost_usd
+			prompt_tokens_total, completion_tokens_total, total_cost_usd, allowed_models
 		)
-		VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0)
-	`, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, boolToInt(token.IsActive))
+		VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, ?)
+	`, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, boolToInt(token.IsActive), allowedModelsJSON)
 
 	if err != nil {
 		return fmt.Errorf("create auth token: %w", err)
@@ -107,7 +126,8 @@ func (s *SQLStore) GetAuthToken(ctx context.Context, id int64) (*model.AuthToken
 			SELECT
 				id, token, description, created_at, expires_at, last_used_at, is_active,
 				success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
-				prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd
+				prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd,
+				allowed_models
 			FROM auth_tokens
 			WHERE id = ?
 	`, id))
@@ -129,7 +149,8 @@ func (s *SQLStore) GetAuthTokenByValue(ctx context.Context, tokenHash string) (*
 			SELECT
 				id, token, description, created_at, expires_at, last_used_at, is_active,
 				success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
-				prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd
+				prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd,
+				allowed_models
 			FROM auth_tokens
 			WHERE token = ?
 	`, tokenHash))
@@ -150,7 +171,8 @@ func (s *SQLStore) ListAuthTokens(ctx context.Context) ([]*model.AuthToken, erro
 		SELECT
 			id, token, description, created_at, expires_at, last_used_at, is_active,
 			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
-			prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd
+			prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd,
+			allowed_models
 		FROM auth_tokens
 		ORDER BY created_at DESC
 	`)
@@ -181,7 +203,8 @@ func (s *SQLStore) ListActiveAuthTokens(ctx context.Context) ([]*model.AuthToken
 		SELECT
 			id, token, description, created_at, expires_at, last_used_at, is_active,
 			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
-			prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd
+			prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd,
+			allowed_models
 		FROM auth_tokens
 		WHERE is_active = 1 AND (expires_at = 0 OR expires_at > ?)
 		ORDER BY created_at DESC
@@ -216,14 +239,23 @@ func (s *SQLStore) UpdateAuthToken(ctx context.Context, token *model.AuthToken) 
 		lastUsedAt = *token.LastUsedAt
 	}
 
+	// 序列化 allowed_models 为 JSON
+	var allowedModelsJSON string
+	if len(token.AllowedModels) > 0 {
+		if data, err := json.Marshal(token.AllowedModels); err == nil {
+			allowedModelsJSON = string(data)
+		}
+	}
+
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE auth_tokens
 		SET description = ?,
 		    expires_at = ?,
 		    last_used_at = ?,
-		    is_active = ?
+		    is_active = ?,
+		    allowed_models = ?
 		WHERE id = ?
-	`, token.Description, expiresAt, lastUsedAt, boolToInt(token.IsActive), token.ID)
+	`, token.Description, expiresAt, lastUsedAt, boolToInt(token.IsActive), allowedModelsJSON, token.ID)
 
 	if err != nil {
 		return fmt.Errorf("update auth token: %w", err)

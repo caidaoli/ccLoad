@@ -4,6 +4,7 @@ package model
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 	"time"
 )
 
@@ -37,6 +38,9 @@ type AuthToken struct {
 	PeakRPM   float64 `json:"peak_rpm,omitempty"`   // 峰值RPM
 	AvgRPM    float64 `json:"avg_rpm,omitempty"`    // 平均RPM
 	RecentRPM float64 `json:"recent_rpm,omitempty"` // 最近一分钟RPM
+
+	// 模型限制（2026-01新增）
+	AllowedModels []string `json:"allowed_models,omitempty"` // 允许的模型列表，空表示无限制
 }
 
 // AuthTokenRangeStats 某个时间范围内的token统计（从logs表聚合，2025-12新增）
@@ -91,4 +95,18 @@ func MaskToken(token string) string {
 func (t *AuthToken) UpdateLastUsed() {
 	now := time.Now().UnixMilli()
 	t.LastUsedAt = &now
+}
+
+// IsModelAllowed 检查模型是否被令牌允许访问
+// 如果 AllowedModels 为空，表示无限制，允许所有模型
+func (t *AuthToken) IsModelAllowed(model string) bool {
+	if len(t.AllowedModels) == 0 {
+		return true
+	}
+	for _, m := range t.AllowedModels {
+		if strings.EqualFold(m, model) {
+			return true
+		}
+	}
+	return false
 }

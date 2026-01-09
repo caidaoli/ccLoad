@@ -5,12 +5,22 @@
     // 当前选中的时间范围(默认为本日)
     let currentTimeRange = 'today';
 
+    // 模型限制相关状态（2026-01新增）
+    let editAllowedModels = [];              // 编辑模态框中当前的模型限制列表
+    let selectedAllowedModelIndices = new Set(); // 已选中的模型索引（批量删除用）
+    let allChannels = [];                    // 渠道数据缓存
+    let availableModelsCache = [];           // 可用模型缓存
+    let selectedModelsForAdd = new Set();    // 模型选择对话框中已选的模型
+
     document.addEventListener('DOMContentLoaded', () => {
       // 初始化时间范围选择器
       initTimeRangeSelector();
 
       // 加载令牌列表(默认显示本日统计)
       loadTokens();
+
+      // 预加载渠道数据（用于模型选择）
+      loadChannelsData();
 
       // 初始化事件委托
       initEventDelegation();
@@ -482,11 +492,20 @@
         const date = new Date(token.expires_at);
         document.getElementById('editCustomExpiry').value = date.toISOString().slice(0, 16);
       }
+
+      // 初始化模型限制状态（2026-01新增）
+      editAllowedModels = (token.allowed_models || []).slice();
+      selectedAllowedModelIndices.clear();
+      renderAllowedModelsTable();
+
       document.getElementById('editModal').style.display = 'block';
     }
 
     function closeEditModal() {
       document.getElementById('editModal').style.display = 'none';
+      // 清理模型限制状态
+      editAllowedModels = [];
+      selectedAllowedModelIndices.clear();
     }
 
     async function updateToken() {
@@ -514,7 +533,12 @@
           headers: {
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify({ description, is_active: isActive, expires_at: expiresAt })
+          body: JSON.stringify({
+            description,
+            is_active: isActive,
+            expires_at: expiresAt,
+            allowed_models: editAllowedModels  // 2026-01新增：模型限制
+          })
         });
         closeEditModal();
         loadTokens();
@@ -543,3 +567,369 @@
     document.addEventListener('DOMContentLoaded', () => {
       initTopbar('tokens');
     });
+
+    // ============================================================================
+    // 模型限制功能（2026-01新增）
+    // ============================================================================
+
+    /**
+     * 加载渠道数据（用于模型选择）
+     */
+    async function loadChannelsData() {
+      try {
+        const data = await fetchDataWithAuth(`${API_BASE}/channels`);
+        // API 直接返回渠道数组
+        allChannels = Array.isArray(data) ? data : (data && data.channels) || [];
+        // 聚合可用模型
+        availableModelsCache = getAvailableModels();
+      } catch (error) {
+        console.error('加载渠道数据失败:', error);
+      }
+    }
+
+    /**
+     * 从渠道数据聚合所有模型（去重+排序）
+     */
+    function getAvailableModels() {
+      const modelSet = new Set();
+      allChannels.forEach(ch => {
+        (ch.models || []).forEach(m => {
+          if (m.model) modelSet.add(m.model);
+        });
+      });
+      return Array.from(modelSet).sort();
+    }
+
+    /**
+     * 渲染模型限制表格
+     */
+    function renderAllowedModelsTable() {
+      const tbody = document.getElementById('allowedModelsTableBody');
+      const countSpan = document.getElementById('editAllowedModelsCount');
+      const batchDeleteBtn = document.getElementById('batchDeleteAllowedModelsBtn');
+      const selectAllCheckbox = document.getElementById('selectAllAllowedModels');
+
+      if (!tbody) return;
+
+      // 更新计数
+      if (countSpan) countSpan.textContent = editAllowedModels.length;
+
+      // 更新批量删除按钮状态
+      updateBatchDeleteBtn();
+
+      // 更新全选复选框状态
+      if (selectAllCheckbox) {
+        selectAllCheckbox.checked = editAllowedModels.length > 0 &&
+          selectedAllowedModelIndices.size === editAllowedModels.length;
+      }
+
+      if (editAllowedModels.length === 0) {
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="3" style="text-align: center; color: var(--neutral-500); padding: 16px;">
+              无模型限制（允许所有模型）
+            </td>
+          </tr>
+        `;
+        return;
+      }
+
+      tbody.innerHTML = editAllowedModels.map((model, index) => `
+        <tr>
+          <td style="text-align: center; padding: 8px;">
+            <input type="checkbox" class="allowed-model-checkbox" data-index="${index}"
+              ${selectedAllowedModelIndices.has(index) ? 'checked' : ''}
+              onchange="toggleAllowedModelSelection(${index}, this.checked)">
+          </td>
+          <td style="padding: 8px; font-family: monospace; font-size: 13px;">${escapeHtml(model)}</td>
+          <td style="text-align: center; padding: 8px;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="removeAllowedModel(${index})"
+              style="padding: 2px 8px; font-size: 12px;">删除</button>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    /**
+     * 切换单个模型的选中状态
+     */
+    function toggleAllowedModelSelection(index, checked) {
+      if (checked) {
+        selectedAllowedModelIndices.add(index);
+      } else {
+        selectedAllowedModelIndices.delete(index);
+      }
+      updateBatchDeleteBtn();
+      updateSelectAllCheckbox();
+    }
+
+    /**
+     * 全选/取消全选模型
+     */
+    function toggleSelectAllAllowedModels(checked) {
+      if (checked) {
+        editAllowedModels.forEach((_, index) => selectedAllowedModelIndices.add(index));
+      } else {
+        selectedAllowedModelIndices.clear();
+      }
+      renderAllowedModelsTable();
+    }
+
+    /**
+     * 更新批量删除按钮状态
+     */
+    function updateBatchDeleteBtn() {
+      const btn = document.getElementById('batchDeleteAllowedModelsBtn');
+      if (btn) {
+        const hasSelection = selectedAllowedModelIndices.size > 0;
+        btn.disabled = !hasSelection;
+        btn.style.opacity = hasSelection ? '1' : '0.5';
+      }
+    }
+
+    /**
+     * 更新全选复选框状态
+     */
+    function updateSelectAllCheckbox() {
+      const checkbox = document.getElementById('selectAllAllowedModels');
+      if (checkbox) {
+        checkbox.checked = editAllowedModels.length > 0 &&
+          selectedAllowedModelIndices.size === editAllowedModels.length;
+      }
+    }
+
+    /**
+     * 删除单个模型
+     */
+    function removeAllowedModel(index) {
+      editAllowedModels.splice(index, 1);
+      // 重建选中索引（删除后索引会变化）
+      const newIndices = new Set();
+      selectedAllowedModelIndices.forEach(i => {
+        if (i < index) newIndices.add(i);
+        else if (i > index) newIndices.add(i - 1);
+      });
+      selectedAllowedModelIndices = newIndices;
+      renderAllowedModelsTable();
+    }
+
+    /**
+     * 批量删除选中的模型
+     */
+    function batchDeleteSelectedAllowedModels() {
+      if (selectedAllowedModelIndices.size === 0) return;
+
+      // 从大到小排序，避免删除时索引偏移问题
+      const indices = Array.from(selectedAllowedModelIndices).sort((a, b) => b - a);
+      indices.forEach(index => {
+        editAllowedModels.splice(index, 1);
+      });
+      selectedAllowedModelIndices.clear();
+      renderAllowedModelsTable();
+    }
+
+    /**
+     * 显示模型选择对话框
+     */
+    function showModelSelectModal() {
+      selectedModelsForAdd.clear();
+      document.getElementById('modelSearchInput').value = '';
+      renderAvailableModels('');
+      document.getElementById('modelSelectModal').style.display = 'block';
+    }
+
+    /**
+     * 关闭模型选择对话框
+     */
+    function closeModelSelectModal() {
+      document.getElementById('modelSelectModal').style.display = 'none';
+      selectedModelsForAdd.clear();
+    }
+
+    /**
+     * 搜索过滤可用模型
+     */
+    function filterAvailableModels(searchText) {
+      renderAvailableModels(searchText);
+    }
+
+    /**
+     * 渲染可用模型列表
+     */
+    function renderAvailableModels(searchText) {
+      const container = document.getElementById('availableModelsContainer');
+      const countSpan = document.getElementById('selectedModelsCount');
+      if (!container) return;
+
+      // 过滤已添加的模型
+      const existingModels = new Set(editAllowedModels.map(m => m.toLowerCase()));
+      let models = availableModelsCache.filter(m => !existingModels.has(m.toLowerCase()));
+
+      // 搜索过滤
+      if (searchText) {
+        const search = searchText.toLowerCase();
+        models = models.filter(m => m.toLowerCase().includes(search));
+      }
+
+      // 更新选中计数
+      if (countSpan) countSpan.textContent = selectedModelsForAdd.size;
+
+      if (models.length === 0) {
+        const isEmptyCache = availableModelsCache.length === 0;
+        const message = searchText
+          ? '无匹配模型'
+          : isEmptyCache
+            ? '渠道未配置模型，请使用"手动输入"添加'
+            : '所有模型已添加';
+        container.innerHTML = `
+          <div style="text-align: center; color: var(--neutral-500); padding: 24px;">
+            ${message}
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = models.map(model => `
+        <label style="display: flex; align-items: center; padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--neutral-100);"
+          onmouseover="this.style.background='var(--neutral-50)'" onmouseout="this.style.background=''">
+          <input type="checkbox" style="margin-right: 8px;"
+            ${selectedModelsForAdd.has(model) ? 'checked' : ''}
+            onchange="toggleModelForAdd('${escapeHtml(model)}', this.checked)">
+          <span style="font-family: monospace; font-size: 13px;">${escapeHtml(model)}</span>
+        </label>
+      `).join('');
+    }
+
+    /**
+     * 切换待添加模型的选中状态
+     */
+    function toggleModelForAdd(model, checked) {
+      if (checked) {
+        selectedModelsForAdd.add(model);
+      } else {
+        selectedModelsForAdd.delete(model);
+      }
+      document.getElementById('selectedModelsCount').textContent = selectedModelsForAdd.size;
+    }
+
+    /**
+     * 确认添加选中的模型
+     */
+    function confirmModelSelection() {
+      if (selectedModelsForAdd.size === 0) {
+        window.showNotification('请选择至少一个模型', 'warning');
+        return;
+      }
+
+      // 添加到模型限制列表
+      selectedModelsForAdd.forEach(model => {
+        if (!editAllowedModels.includes(model)) {
+          editAllowedModels.push(model);
+        }
+      });
+
+      // 排序
+      editAllowedModels.sort();
+
+      closeModelSelectModal();
+      renderAllowedModelsTable();
+      window.showNotification(`已添加 ${selectedModelsForAdd.size} 个模型`, 'success');
+    }
+
+    // ==================== 模型手动输入 ====================
+
+    /**
+     * 解析模型输入，支持逗号和换行分隔
+     */
+    function parseModelInput(input) {
+      return input
+        .split(/[,\n]/)
+        .map(m => m.trim())
+        .filter(m => m);
+    }
+
+    /**
+     * 显示模型导入对话框
+     */
+    function showModelImportModal() {
+      document.getElementById('tokenModelImportTextarea').value = '';
+      document.getElementById('tokenModelImportPreview').style.display = 'none';
+      document.getElementById('modelImportModal').style.display = 'block';
+      setTimeout(() => document.getElementById('tokenModelImportTextarea').focus(), 100);
+    }
+
+    /**
+     * 关闭模型导入对话框
+     */
+    function closeModelImportModal() {
+      document.getElementById('modelImportModal').style.display = 'none';
+    }
+
+    /**
+     * 更新模型导入预览
+     */
+    function updateModelImportPreview() {
+      const textarea = document.getElementById('tokenModelImportTextarea');
+      const preview = document.getElementById('tokenModelImportPreview');
+      const countSpan = document.getElementById('tokenModelImportCount');
+      const input = textarea.value.trim();
+
+      if (!input) {
+        preview.style.display = 'none';
+        return;
+      }
+
+      const models = parseModelInput(input);
+      // 去重并排除已存在的模型
+      const existingModels = new Set(editAllowedModels.map(m => m.toLowerCase()));
+      const newModels = [...new Set(models)].filter(m => !existingModels.has(m.toLowerCase()));
+
+      if (newModels.length > 0) {
+        countSpan.textContent = newModels.length;
+        preview.style.display = 'block';
+      } else {
+        preview.style.display = 'none';
+      }
+    }
+
+    /**
+     * 确认模型导入
+     */
+    function confirmModelImport() {
+      const textarea = document.getElementById('tokenModelImportTextarea');
+      const input = textarea.value.trim();
+
+      if (!input) {
+        window.showNotification('请输入模型名称', 'warning');
+        return;
+      }
+
+      const models = parseModelInput(input);
+      if (models.length === 0) {
+        window.showNotification('未解析到有效模型', 'warning');
+        return;
+      }
+
+      // 去重并排除已存在的模型
+      const existingModels = new Set(editAllowedModels.map(m => m.toLowerCase()));
+      const newModels = [...new Set(models)].filter(m => !existingModels.has(m.toLowerCase()));
+
+      if (newModels.length === 0) {
+        window.showNotification('所有模型已存在，无新增', 'info');
+        closeModelImportModal();
+        return;
+      }
+
+      // 添加新模型
+      newModels.forEach(model => editAllowedModels.push(model));
+      editAllowedModels.sort();
+
+      closeModelImportModal();
+      renderAllowedModelsTable();
+
+      const duplicateCount = models.length - newModels.length;
+      const msg = duplicateCount > 0
+        ? `成功添加 ${newModels.length} 个模型，${duplicateCount} 个重复已忽略`
+        : `成功添加 ${newModels.length} 个模型`;
+      window.showNotification(msg, 'success');
+    }

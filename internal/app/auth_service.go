@@ -37,9 +37,10 @@ type AuthService struct {
 
 	// API 认证（代理 API 使用的数据库令牌）
 	// [FIX] 2025-12: 存储过期时间而非bool，支持懒惰过期校验
-	authTokens    map[string]int64 // Token哈希 → 过期时间(Unix毫秒，0=永不过期)
-	authTokenIDs  map[string]int64 // Token哈希 → Token ID 映射（用于日志记录，2025-12新增）
-	authTokensMux sync.RWMutex     // 并发保护（支持热更新）
+	authTokens      map[string]int64    // Token哈希 → 过期时间(Unix毫秒，0=永不过期)
+	authTokenIDs    map[string]int64    // Token哈希 → Token ID 映射（用于日志记录，2025-12新增）
+	authTokenModels map[string][]string // Token哈希 → 允许的模型列表（2026-01新增）
+	authTokensMux   sync.RWMutex        // 并发保护（支持热更新）
 
 	// 数据库依赖（用于热更新令牌）
 	store storage.Store
@@ -480,6 +481,7 @@ func (s *AuthService) ReloadAuthTokens() error {
 	// 构建新的令牌映射（存储过期时间而非bool）
 	newTokens := make(map[string]int64, len(tokens))
 	newTokenIDs := make(map[string]int64, len(tokens))
+	newTokenModels := make(map[string][]string, len(tokens))
 	for _, t := range tokens {
 		// ExpiresAt: nil → 0 (永不过期), *int64 → Unix毫秒
 		var expiresAt int64
@@ -488,14 +490,37 @@ func (s *AuthService) ReloadAuthTokens() error {
 		}
 		newTokens[t.Token] = expiresAt
 		newTokenIDs[t.Token] = t.ID
+		// 只有有限制时才存储（节省内存）
+		if len(t.AllowedModels) > 0 {
+			newTokenModels[t.Token] = t.AllowedModels
+		}
 	}
 
 	// 原子替换（避免读写竞争）
 	s.authTokensMux.Lock()
 	s.authTokens = newTokens
 	s.authTokenIDs = newTokenIDs
+	s.authTokenModels = newTokenModels
 	s.authTokensMux.Unlock()
 
-	log.Printf("[RELOAD] API令牌已热更新（%d个有效令牌）", len(newTokens))
 	return nil
+}
+
+// IsModelAllowed 检查令牌是否允许访问指定模型
+// 如果令牌没有模型限制，返回 true
+func (s *AuthService) IsModelAllowed(tokenHash, model string) bool {
+	s.authTokensMux.RLock()
+	allowedModels, hasRestriction := s.authTokenModels[tokenHash]
+	s.authTokensMux.RUnlock()
+
+	if !hasRestriction {
+		return true // 无限制
+	}
+
+	for _, m := range allowedModels {
+		if strings.EqualFold(m, model) {
+			return true
+		}
+	}
+	return false
 }
