@@ -560,7 +560,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"channel_stats_range", "today", "string", "渠道管理费用统计范围", "today"},
 		// 健康度排序配置
 		{"enable_health_score", "false", "bool", "启用基于健康度的渠道动态排序", "false"},
-		{"success_rate_penalty_weight", "100", "float", "成功率惩罚权重(乘以失败率)", "100"},
+		{"success_rate_penalty_weight", "100", "int", "成功率惩罚权重(乘以失败率)", "100"},
 		{"health_score_window_minutes", "30", "int", "成功率统计时间窗口(分钟)", "30"},
 		{"health_score_update_interval", "30", "int", "成功率缓存更新间隔(秒)", "30"},
 		{"health_min_confident_sample", "20", "int", "置信样本量阈值(样本量达到此值时惩罚全额生效)", "20"},
@@ -597,6 +597,19 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 			"upstream_first_byte_timeout",
 		); err != nil {
 			return fmt.Errorf("refresh setting metadata upstream_first_byte_timeout: %w", err)
+		}
+	}
+
+	// 迁移 success_rate_penalty_weight 类型：float → int（2026-01 类型修正）
+	{
+		keyCol := "key"
+		if dialect == DialectMySQL {
+			keyCol = "`key`"
+		}
+		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
+		typeSQL := fmt.Sprintf("UPDATE system_settings SET value_type = 'int' WHERE %s = 'success_rate_penalty_weight' AND value_type = 'float'", keyCol)
+		if _, err := db.ExecContext(ctx, typeSQL); err != nil {
+			return fmt.Errorf("migrate success_rate_penalty_weight type: %w", err)
 		}
 	}
 

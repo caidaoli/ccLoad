@@ -104,7 +104,7 @@ func (s *Server) calculateEffectivePriority(
 	}
 
 	// 惩罚 = 失败率 × 权重 × 置信度
-	penalty := failureRate * cfg.SuccessRatePenaltyWeight * confidence
+	penalty := failureRate * float64(cfg.SuccessRatePenaltyWeight) * confidence
 
 	return basePriority - penalty
 }

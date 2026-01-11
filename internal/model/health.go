@@ -8,11 +8,11 @@ type ChannelHealthStats struct {
 
 // HealthScoreConfig 健康度排序配置
 type HealthScoreConfig struct {
-	Enabled                  bool    // 是否启用健康度排序
-	SuccessRatePenaltyWeight float64 // 成功率惩罚权重(乘以失败率)
-	WindowMinutes            int     // 成功率统计时间窗口(分钟)
-	UpdateIntervalSeconds    int     // 成功率缓存更新间隔(秒)
-	MinConfidentSample       int     // 置信样本量阈值（样本量达到此值时惩罚全额生效）
+	Enabled                  bool // 是否启用健康度排序
+	SuccessRatePenaltyWeight int  // 成功率惩罚权重(乘以失败率)
+	WindowMinutes            int  // 成功率统计时间窗口(分钟)
+	UpdateIntervalSeconds    int  // 成功率缓存更新间隔(秒)
+	MinConfidentSample       int  // 置信样本量阈值（样本量达到此值时惩罚全额生效）
 }
 
 // DefaultHealthScoreConfig 返回默认健康度配置

@@ -195,9 +195,9 @@ func NewServer(store storage.Store) *Server {
 
 	// 初始化健康度缓存（启动时读取配置，修改后重启生效）
 	defaultHealthCfg := model.DefaultHealthScoreConfig()
-	successRatePenaltyWeight := configService.GetFloat("success_rate_penalty_weight", defaultHealthCfg.SuccessRatePenaltyWeight)
+	successRatePenaltyWeight := configService.GetInt("success_rate_penalty_weight", defaultHealthCfg.SuccessRatePenaltyWeight)
 	if successRatePenaltyWeight < 0 {
-		log.Printf("[WARN] 无效的 success_rate_penalty_weight=%.2f（必须 >= 0），已使用默认值 %.2f", successRatePenaltyWeight, defaultHealthCfg.SuccessRatePenaltyWeight)
+		log.Printf("[WARN] 无效的 success_rate_penalty_weight=%d（必须 >= 0），已使用默认值 %d", successRatePenaltyWeight, defaultHealthCfg.SuccessRatePenaltyWeight)
 		successRatePenaltyWeight = defaultHealthCfg.SuccessRatePenaltyWeight
 	}
 	windowMinutes := configService.GetInt("health_score_window_minutes", 30)
