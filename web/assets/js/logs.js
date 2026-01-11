@@ -56,6 +56,26 @@
       return value.toFixed(i > 0 ? 1 : 0) + ' ' + UNITS[i];
     }
 
+    // IP 地址掩码处理（隐藏最后两段）
+    function maskIP(ip) {
+      if (!ip) return '';
+      // IPv4: 192.168.1.100 -> 192.168.*.*
+      if (ip.includes('.')) {
+        const parts = ip.split('.');
+        if (parts.length === 4) {
+          return `${parts[0]}.${parts[1]}.*.*`;
+        }
+      }
+      // IPv6: 简化处理，保留前两段
+      if (ip.includes(':')) {
+        const parts = ip.split(':');
+        if (parts.length >= 2) {
+          return `${parts[0]}:${parts[1]}::*`;
+        }
+      }
+      return ip;
+    }
+
     function clearActiveRequestsRows() {
       document.querySelectorAll('tr.pending-row').forEach(el => el.remove());
     }
@@ -320,7 +340,7 @@
             <td colspan="${totalCols}">
               <span class="status-pending">进行中</span>
               <span style="margin-left: 8px;">${formatTime(req.start_time)}</span>
-              <span style="margin-left: 8px; color: var(--neutral-600);">${escapeHtml(req.client_ip || '-')}</span>
+              <span style="margin-left: 8px; color: var(--neutral-600);">${escapeHtml(maskIP(req.client_ip) || '-')}</span>
               <span style="margin-left: 8px;">${escapeHtml(req.model || '-')}</span>
               <span style="margin-left: 8px;">${durationDisplay} ${streamFlag}</span>
               <span style="margin-left: 8px; color: ${infoColor};">${escapeHtml(infoDisplay)}</span>
@@ -331,10 +351,10 @@
           const emptyCells = '<td></td>'.repeat(emptyCols);
           row.innerHTML = `
             <td>${formatTime(req.start_time)}</td>
-            <td>${escapeHtml(req.client_ip || '-')}</td>
+            <td>${escapeHtml(maskIP(req.client_ip) || '-')}</td>
+            <td style="text-align: center;">${keyDisplay}</td>
             <td class="config-info">${channelDisplay}</td>
             <td><span class="model-tag">${escapeHtml(req.model)}</span></td>
-            <td style="text-align: center;">${keyDisplay}</td>
             <td><span class="status-pending">进行中</span></td>
             <td style="text-align: right;">${durationDisplay} ${streamFlag}</td>
             ${emptyCells}
@@ -388,9 +408,9 @@
         const entry = data[i];
         // === 预处理数据：构建复杂HTML片段 ===
 
-        // 0. 客户端IP显示
+        // 0. 客户端IP显示（掩码处理）
         const clientIPDisplay = entry.client_ip ?
-          escapeHtml(entry.client_ip) :
+          escapeHtml(maskIP(entry.client_ip)) :
           '<span style="color: var(--neutral-400);">-</span>';
 
         // 1. 渠道信息显示
@@ -504,9 +524,9 @@
         htmlParts[i] = `<tr>
           <td style="white-space: nowrap;">${formatTime(entry.time)}</td>
           <td style="white-space: nowrap; font-family: monospace; font-size: 0.85em; color: var(--neutral-600);">${clientIPDisplay}</td>
+          <td style="text-align: center; white-space: nowrap;">${apiKeyDisplay}</td>
           <td class="config-info">${configDisplay}</td>
           <td>${modelDisplay}</td>
-          <td style="text-align: center; white-space: nowrap;">${apiKeyDisplay}</td>
           <td><span class="${statusClass}">${statusCode}</span></td>
           <td style="text-align: right; white-space: nowrap;">${responseTimingDisplay}</td>
           <td style="text-align: right; white-space: nowrap;">${inputTokensDisplay}</td>

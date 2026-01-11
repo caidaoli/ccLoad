@@ -133,6 +133,35 @@
       text-align: center;
     }
 
+    /* 固定宽度列 */
+    .logs-table th:nth-child(1),
+    .logs-table td:nth-child(1) {
+      width: 145px;  /* 时间: YYYY/MM/DD HH:mm:ss */
+      min-width: 145px;
+      max-width: 145px;
+    }
+
+    .logs-table th:nth-child(2),
+    .logs-table td:nth-child(2) {
+      width: 100px;  /* IP: xxx.xxx.*.* */
+      min-width: 100px;
+      max-width: 100px;
+    }
+
+    .logs-table th:nth-child(3),
+    .logs-table td:nth-child(3) {
+      width: 120px;  /* API Key: xxxx...xxxx */
+      min-width: 120px;
+    }
+
+    .logs-table th:nth-child(6),
+    .logs-table td:nth-child(6) {
+      width: 60px;  /* 状态码: 200/403/500 */
+      min-width: 60px;
+      max-width: 60px;
+      text-align: center;
+    }
+
     /* 模型标签样式 */
     .model-tag {
       display: inline-block;
