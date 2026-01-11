@@ -1383,6 +1383,28 @@ body {
   white-space: nowrap;
 }
 
+.filter-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: var(--text-xs);
+  color: var(--neutral-600);
+  user-select: none;
+  white-space: nowrap;
+}
+
+.filter-checkbox-label input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  accent-color: var(--primary-500);
+}
+
+.filter-checkbox-label span {
+  font-weight: 500;
+}
+
 /* ===== 表格组件 ===== */
 .table-container {
   overflow-x: auto;

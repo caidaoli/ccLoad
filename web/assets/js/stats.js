@@ -7,6 +7,7 @@
     let durationSeconds = 0; // 时间跨度（秒），用于计算RPM
     let currentChannelType = 'all'; // 当前选中的渠道类型
     let authTokens = []; // 令牌列表
+    let hideZeroSuccess = true; // 是否隐藏0成功的模型（默认开启）
     let sortState = {
       column: null,
       order: null // null, 'asc', 'desc'
@@ -218,6 +219,18 @@
         return;
       }
 
+      // 根据 hideZeroSuccess 过滤数据
+      const filteredStats = hideZeroSuccess
+        ? statsData.stats.filter(entry => (entry.success || 0) > 0)
+        : statsData.stats;
+
+      if (filteredStats.length === 0) {
+        tbody.innerHTML = '';
+        const emptyRow = TemplateEngine.render('tpl-stats-empty', { colspan: STATS_TABLE_COLUMNS });
+        if (emptyRow) tbody.appendChild(emptyRow);
+        return;
+      }
+
       tbody.innerHTML = '';
 
       // 初始化合计变量
@@ -232,7 +245,7 @@
 
       const fragment = document.createDocumentFragment();
 
-      for (const entry of statsData.stats) {
+      for (const entry of filteredStats) {
         const successRate = entry.total > 0 ? ((entry.success / entry.total) * 100) : 0;
         const successRateText = successRate > 0 ? successRate.toFixed(1) + '%' : '';
 
@@ -420,10 +433,13 @@
     }
 
     function updateStatsCount() {
-      // 更新筛选器统计信息
+      // 更新筛选器统计信息（显示过滤后的记录数）
       const statsCountEl = document.getElementById('statsCount');
       if (statsCountEl && statsData && statsData.stats) {
-        statsCountEl.textContent = statsData.stats.length;
+        const count = hideZeroSuccess
+          ? statsData.stats.filter(entry => (entry.success || 0) > 0).length
+          : statsData.stats.length;
+        statsCountEl.textContent = count;
       }
     }
 
@@ -625,7 +641,8 @@
           channelId: document.getElementById('f_id')?.value || '',
           channelName: document.getElementById('f_name')?.value || '',
           model: document.getElementById('f_model')?.value || '',
-          authToken: document.getElementById('f_auth_token')?.value || ''
+          authToken: document.getElementById('f_auth_token')?.value || '',
+          hideZeroSuccess: hideZeroSuccess
         };
         localStorage.setItem(STATS_FILTER_KEY, JSON.stringify(filters));
       } catch (_) {}
@@ -648,6 +665,19 @@
       const hasUrlParams = u.toString().length > 0;
       const savedFilters = loadStatsFilters();
       currentChannelType = u.get('channel_type') || (!hasUrlParams && savedFilters?.channelType) || 'all';
+
+      // 恢复隐藏0成功选项状态（从 localStorage 读取，默认 true）
+      hideZeroSuccess = savedFilters?.hideZeroSuccess !== false;
+      const hideZeroCheckbox = document.getElementById('f_hide_zero_success');
+      if (hideZeroCheckbox) {
+        hideZeroCheckbox.checked = hideZeroSuccess;
+        hideZeroCheckbox.addEventListener('change', (e) => {
+          hideZeroSuccess = e.target.checked;
+          saveStatsFilters();
+          renderStatsTable();
+          updateStatsCount();
+        });
+      }
 
       await initChannelTypeFilter(currentChannelType);
 
