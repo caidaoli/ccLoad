@@ -22,11 +22,21 @@ go run -tags go_json .
 
 ```
 internal/
-├── app/           # HTTP层+业务逻辑 (proxy_*.go, admin_*.go, selector.go, key_selector.go)
+├── app/           # HTTP层+业务逻辑
+│   ├── proxy_*.go          # 代理模块（handler/forward/error/stream/gemini/sse_parser）
+│   ├── admin_*.go          # 管理API（channels/stats/cooldown/csv/auth_tokens/settings/models/testing）
+│   ├── selector*.go        # 渠道选择（已拆分为4个模块）
+│   │   ├── selector.go           # 主入口
+│   │   ├── selector_balancer.go  # 平滑加权轮询负载均衡
+│   │   ├── selector_cooldown.go  # 冷却过滤+成本限额检查
+│   │   └── selector_model_matcher.go  # 模型匹配+日期后缀回退
+│   ├── smooth_weighted_rr.go   # 平滑加权轮询算法（替换加权随机）
+│   ├── cost_cache.go           # 渠道每日成本缓存（按天重置）
+│   ├── health_cache.go         # 健康度缓存（原子指针无锁快照）
+│   └── key_selector.go         # Key负载均衡（sequential/round_robin）
 ├── cooldown/      # 冷却决策引擎 (manager.go)
 ├── storage/sql/   # 数据持久层 (SQLite/MySQL统一实现)
-├── validator/     # 渠道验证器
-└── util/          # 工具库 (classifier.go错误分类, models_fetcher.go)
+└── util/          # 工具库 (classifier.go错误分类, models_fetcher.go, cost_calculator.go)
 ```
 
 **故障切换策略**:
@@ -35,18 +45,32 @@ internal/
 - 客户端错误(404/405) → 不重试,直接返回
 - **软错误检测(597)**: 识别200状态码但响应体为错误的情况 → 渠道级冷却
 - **1308配额错误(596)**: 专用处理,不计入渠道健康度 → Key级冷却
+- **渠道每日成本限额**: 达到`daily_cost_limit`自动跳过该渠道
 - 指数退避: 2min → 4min → 8min → 30min(上限)
+
+**渠道选择算法**:
+- **平滑加权轮询**: 替换加权随机，按有效Key数量分配流量，更均匀
+- **冷却感知**: 实时排除冷却中的Key，权重反映实际可用容量
+- **成本限额检查**: 优先于冷却检查，达到限额的渠道被排除
 
 **关键入口**:
 - `cooldown.Manager.HandleError()` - 冷却决策引擎
 - `util.ClassifyHTTPStatus()` - HTTP错误分类器
-- `util.ClassifyHTTPStatusWithBody()` - 带响应体的错误分类（支持软错误检测）
+- `util.ClassifyHTTPResponseWithMeta()` - 带响应体的错误分类（返回完整元数据）
 - `app.KeySelector.SelectAvailableKey()` - Key负载均衡
+- `app.SmoothWeightedRR.SelectWithCooldown()` - 平滑加权轮询选择
 
 **Token费用限额（Auth Token）**:
 - 存储：`auth_tokens.cost_used_microusd/cost_limit_microusd`（微美元整数），避免浮点误差
-- 语义：在请求开始处做限额检查；费用在请求结束后记账，因此允许“最多超额一个请求”的窗口
+- 语义：在请求开始处做限额检查；费用在请求结束后记账，因此允许"最多超额一个请求"的窗口
 - 计费：仅成功请求（2xx）累加费用与Token统计；失败请求只计失败次数
+- **模型限制**：`auth_tokens.allowed_models`（逗号分隔），空值表示无限制
+- **首字节时间**：`auth_tokens.first_byte_time_ms`（毫秒），记录流式请求TTFB
+
+**渠道每日成本限额**:
+- 存储：`channels.daily_cost_limit`（美元），0表示无限制
+- 缓存：`CostCache`组件在内存中缓存当日成本，按天自动重置
+- 启动加载：从数据库加载当日已消耗成本
 
 ## 开发指南
 
