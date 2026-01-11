@@ -141,7 +141,7 @@ func deleteSystemSetting(ctx context.Context, db *sql.DB, dialect Dialect, key s
 	return nil
 }
 
-// hasSystemSetting 检查系统设置是否存在（用于迁移标记）
+// hasSystemSetting 检查系统设置是否存在（用于配置迁移和旧版标记兼容）
 func hasSystemSetting(ctx context.Context, db *sql.DB, dialect Dialect, key string) bool {
 	query := "SELECT 1 FROM system_settings WHERE key = ? LIMIT 1"
 	if dialect == DialectMySQL {
@@ -150,20 +150,6 @@ func hasSystemSetting(ctx context.Context, db *sql.DB, dialect Dialect, key stri
 	var exists int
 	err := db.QueryRowContext(ctx, query, key).Scan(&exists)
 	return err == nil
-}
-
-// setSystemSetting 设置系统标记（用于迁移完成标记）
-func setSystemSetting(ctx context.Context, db *sql.DB, dialect Dialect, key, value string) error {
-	var query string
-	if dialect == DialectMySQL {
-		query = "INSERT INTO system_settings (`key`, value, value_type, description, default_value, updated_at) VALUES (?, ?, 'string', 'migration marker', '', UNIX_TIMESTAMP()) ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = UNIX_TIMESTAMP()"
-	} else {
-		query = "INSERT INTO system_settings (key, value, value_type, description, default_value, updated_at) VALUES (?, ?, 'string', 'migration marker', '', unixepoch()) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = unixepoch()"
-	}
-	if _, err := db.ExecContext(ctx, query, key, value); err != nil {
-		return fmt.Errorf("set system setting %s: %w", key, err)
-	}
-	return nil
 }
 
 // ensureLogsNewColumns 确保logs表有新增字段(2025-12新增,支持MySQL和SQLite)
@@ -264,13 +250,13 @@ func ensureLogsColumnsSQLite(ctx context.Context, db *sql.DB) error {
 
 	// 第三步：回填 minute_bucket（基于标记机制，支持崩溃恢复）
 	const backfillMarker = "minute_bucket_backfill_done"
-	if !hasSystemSetting(ctx, db, DialectSQLite, backfillMarker) {
+	if !hasMigration(ctx, db, backfillMarker) {
 		log.Println("[migrate] backfilling minute_bucket for SQLite...")
 		if err := backfillLogsMinuteBucketSQLite(ctx, db, 5_000); err != nil {
 			return fmt.Errorf("backfill minute_bucket: %w", err)
 		}
-		if err := setSystemSetting(ctx, db, DialectSQLite, backfillMarker, "1"); err != nil {
-			return fmt.Errorf("set backfill marker: %w", err)
+		if err := recordMigration(ctx, db, backfillMarker, DialectSQLite); err != nil {
+			return fmt.Errorf("record migration marker: %w", err)
 		}
 		log.Println("[migrate] minute_bucket backfill completed")
 	}
@@ -415,13 +401,13 @@ func ensureLogsMinuteBucketMySQL(ctx context.Context, db *sql.DB) error {
 
 	// 第二步：回填历史数据（基于标记机制，支持崩溃恢复）
 	const backfillMarker = "minute_bucket_backfill_done"
-	if !hasSystemSetting(ctx, db, DialectMySQL, backfillMarker) {
+	if !hasMigration(ctx, db, backfillMarker) {
 		log.Println("[migrate] backfilling minute_bucket for MySQL...")
 		if err := backfillLogsMinuteBucketMySQL(ctx, db, 10_000); err != nil {
 			return err
 		}
-		if err := setSystemSetting(ctx, db, DialectMySQL, backfillMarker, "1"); err != nil {
-			return fmt.Errorf("set backfill marker: %w", err)
+		if err := recordMigration(ctx, db, backfillMarker, DialectMySQL); err != nil {
+			return fmt.Errorf("record migration marker: %w", err)
 		}
 		log.Println("[migrate] minute_bucket backfill completed")
 	}
@@ -622,6 +608,18 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		_ = deleteSystemSetting(ctx, db, dialect, key) // 忽略错误（可能不存在）
 	}
 
+	// 迁移旧 migration marker 从 system_settings 到 schema_migrations
+	legacyMigrationMarkers := []string{
+		"minute_bucket_backfill_done", // 2026-01迁移：迁移标记改存 schema_migrations 表
+	}
+	for _, marker := range legacyMigrationMarkers {
+		if hasSystemSetting(ctx, db, dialect, marker) {
+			// 先迁移到 schema_migrations，再删除旧记录
+			_ = recordMigration(ctx, db, marker, dialect)
+			_ = deleteSystemSetting(ctx, db, dialect, marker)
+		}
+	}
+
 	// 迁移旧键名 cooldown_fallback_threshold → cooldown_fallback_enabled
 	// 同时处理 int→bool 的类型迁移
 	if hasSystemSetting(ctx, db, dialect, "cooldown_fallback_threshold") {
@@ -731,6 +729,12 @@ func isMigrationApplied(ctx context.Context, db *sql.DB, version string) (bool, 
 		return false, nil
 	}
 	return count > 0, nil
+}
+
+// hasMigration 检查迁移是否已执行（简化版，忽略错误）
+func hasMigration(ctx context.Context, db *sql.DB, version string) bool {
+	applied, _ := isMigrationApplied(ctx, db, version)
+	return applied
 }
 
 // recordMigration 记录迁移已执行
