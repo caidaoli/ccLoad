@@ -1,10 +1,10 @@
     /* API Key 测试按钮样式 */
     .test-key-btn {
-      padding: 4px 8px;
+      padding: 2px 4px;
       border: none;
       background: transparent;
       cursor: pointer;
-      font-size: 16px;
+      font-size: 14px;
       border-radius: 4px;
       transition: all 0.2s ease;
       line-height: 1;

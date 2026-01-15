@@ -467,7 +467,7 @@
         if (entry.api_key_used && entry.channel_id && entry.model) {
           const sc = entry.status_code || 0;
           const showTestBtn = sc !== 200;
-          const showDeleteBtn = sc === 403;
+          const showDeleteBtn = sc === 401 || sc === 403;
 
           let buttons = '';
           if (showTestBtn) {
@@ -477,7 +477,7 @@
             buttons += `<button class="test-key-btn" style="color: var(--error-600);" data-action="delete" data-channel-id="${entry.channel_id}" data-channel-name="${escapeHtml(entry.channel_name || '').replace(/"/g, '&quot;')}" data-api-key="${escapeHtml(entry.api_key_used).replace(/"/g, '&quot;')}" title="删除此 API Key">🗑</button>`;
           }
 
-          apiKeyDisplay = `<div style="display: flex; align-items: center; gap: 6px; justify-content: center;"><code style="font-size: 0.9em; color: var(--neutral-600);">${escapeHtml(entry.api_key_used)}</code>${buttons}</div>`;
+          apiKeyDisplay = `<div style="display: flex; align-items: center; gap: 2px; justify-content: center;"><code style="font-size: 0.9em; color: var(--neutral-600);">${escapeHtml(entry.api_key_used)}</code>${buttons}</div>`;
         } else if (entry.api_key_used) {
           apiKeyDisplay = `<code style="font-size: 0.9em; color: var(--neutral-600);">${escapeHtml(entry.api_key_used)}</code>`;
         } else {

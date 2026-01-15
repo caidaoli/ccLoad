@@ -433,15 +433,12 @@ async function testSingleKey(keyIndex) {
     return;
   }
 
-  const modelsInput = document.getElementById('channelModels');
-  if (!modelsInput || !modelsInput.value.trim()) {
-    alert('请先配置支持的模型列表');
-    return;
-  }
-
-  const models = modelsInput.value.split(',').map(m => m.trim()).filter(m => m);
+  // 从 redirectTableData 获取模型列表（定义在 channels-state.js）
+  const models = redirectTableData
+    .map(r => r.model)
+    .filter(m => m && m.trim());
   if (models.length === 0) {
-    alert('模型列表为空，请先配置支持的模型');
+    alert('请先配置支持的模型列表');
     return;
   }
 
