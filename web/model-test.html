@@ -19,14 +19,12 @@
          
         </header>
 
-        <section class="glass-card mb-2">
+        <section class="glass-card mb-2" style="overflow: visible;">
           <!-- 控制栏 -->
           <div style="display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center;">
             <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
               <span style="color: var(--color-text-secondary);">渠道</span>
-              <select id="testChannelSelect" onchange="onChannelChange()" style="width: 150px; padding: 6px 4px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px;">
-                <option value="">选择...</option>
-              </select>
+              <div id="testChannelSelectContainer"></div>
             </label>
             <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
               <span style="color: var(--color-text-secondary);">类型</span>
@@ -54,7 +52,7 @@
           </div>
 
           <!-- 模型测试表格 -->
-          <div class="table-container" style="max-height: calc(100vh - 300px); overflow-y: auto;">
+          <div class="table-container">
             <table class="modern-table" style="font-size: 13px; table-layout: fixed; width: 100%;">
               <thead style="position: sticky; top: 0; background: var(--glass-bg); z-index: 1;">
                 <tr>

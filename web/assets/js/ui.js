@@ -511,6 +511,104 @@
   }
 
   /**
+   * 渲染可搜索的渠道类型选择框
+   * @param {string} containerId - 容器元素ID
+   * @param {string} selectedValue - 选中的值（默认'anthropic'）
+   */
+  async function renderSearchableChannelTypeSelect(containerId, selectedValue = 'anthropic') {
+    const container = document.getElementById(containerId);
+    if (!container) {
+      console.error('容器元素不存在:', containerId);
+      return;
+    }
+
+    const types = await getChannelTypes();
+    const selectedType = types.find(t => t.value === selectedValue) || types[0];
+
+    // 创建可搜索下拉框结构
+    container.innerHTML = `
+      <div class="searchable-select" style="position: relative; width: 150px;">
+        <input type="text" class="searchable-select-input"
+               value="${escapeHtml(selectedType?.display_name || '')}"
+               data-value="${escapeHtml(selectedType?.value || '')}"
+               placeholder="搜索类型..."
+               autocomplete="off"
+               style="width: 100%; padding: 6px 8px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px;">
+        <div class="searchable-select-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; max-height: 200px; overflow-y: auto; background: #fff; border: 1px solid var(--color-border); border-radius: 6px; margin-top: 2px; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.15);"></div>
+      </div>
+    `;
+
+    const input = container.querySelector('.searchable-select-input');
+    const dropdown = container.querySelector('.searchable-select-dropdown');
+
+    // 渲染下拉选项
+    function renderOptions(filter = '') {
+      const filterLower = filter.toLowerCase();
+      const filtered = types.filter(t =>
+        t.display_name.toLowerCase().includes(filterLower) ||
+        t.value.toLowerCase().includes(filterLower)
+      );
+
+      dropdown.innerHTML = filtered.map(type => `
+        <div class="searchable-select-option"
+             data-value="${escapeHtml(type.value)}"
+             data-display="${escapeHtml(type.display_name)}"
+             title="${escapeHtml(type.description)}"
+             style="padding: 8px 10px; cursor: pointer; font-size: 13px; ${type.value === input.dataset.value ? 'background: var(--color-bg-tertiary);' : ''}">
+          ${escapeHtml(type.display_name)}
+        </div>
+      `).join('');
+
+      // 绑定选项点击事件
+      dropdown.querySelectorAll('.searchable-select-option').forEach(opt => {
+        opt.addEventListener('click', () => {
+          input.value = opt.dataset.display;
+          input.dataset.value = opt.dataset.value;
+          dropdown.style.display = 'none';
+        });
+        opt.addEventListener('mouseenter', () => {
+          opt.style.background = 'var(--color-bg-tertiary)';
+        });
+        opt.addEventListener('mouseleave', () => {
+          opt.style.background = opt.dataset.value === input.dataset.value ? 'var(--color-bg-tertiary)' : '';
+        });
+      });
+    }
+
+    // 输入框事件
+    input.addEventListener('focus', () => {
+      renderOptions(input.value);
+      dropdown.style.display = 'block';
+    });
+
+    input.addEventListener('input', () => {
+      renderOptions(input.value);
+      dropdown.style.display = 'block';
+    });
+
+    // 点击外部关闭
+    document.addEventListener('click', (e) => {
+      if (!container.contains(e.target)) {
+        dropdown.style.display = 'none';
+        // 恢复显示已选择的值
+        const selected = types.find(t => t.value === input.dataset.value);
+        if (selected) input.value = selected.display_name;
+      }
+    });
+  }
+
+  /**
+   * 获取可搜索选择框的当前值
+   * @param {string} containerId - 容器元素ID
+   * @returns {string} 当前选中的值
+   */
+  function getSearchableSelectValue(containerId) {
+    const container = document.getElementById(containerId);
+    const input = container?.querySelector('.searchable-select-input');
+    return input?.dataset.value || '';
+  }
+
+  /**
    * 渲染渠道类型Tab页（包含"全部"选项）
    * @param {string} containerId - 容器元素ID
    * @param {Function} onTabChange - tab切换回调函数
@@ -556,6 +654,8 @@
     getChannelTypes,
     renderChannelTypeRadios,
     renderChannelTypeSelect,
+    renderSearchableChannelTypeSelect,
+    getSearchableSelectValue,
     renderChannelTypeTabs
   };
 })();
