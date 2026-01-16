@@ -1021,7 +1021,7 @@ func ensureAuthTokensAllowedModels(ctx context.Context, db *sql.DB, dialect Dial
 		}
 		if count == 0 {
 			if _, err := db.ExecContext(ctx,
-				"ALTER TABLE auth_tokens ADD COLUMN allowed_models TEXT NOT NULL DEFAULT ''"); err != nil {
+				"ALTER TABLE auth_tokens ADD COLUMN allowed_models VARCHAR(2000) NOT NULL DEFAULT ''"); err != nil {
 				return fmt.Errorf("add allowed_models column: %w", err)
 			}
 			log.Printf("[MIGRATE] Added auth_tokens.allowed_models column")
