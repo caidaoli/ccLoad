@@ -5,7 +5,7 @@
 # ============================================
 # 阶段1: 基础工具链 (与 TARGETPLATFORM 无关，可复用)
 # ============================================
-FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS base
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS base
 
 # 安装交叉编译工具链（这层很少变，缓存命中率高）
 COPY --from=tonistiigi/xx:1.6.1 / /
