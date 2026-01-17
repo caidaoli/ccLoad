@@ -40,7 +40,7 @@ func NewStore(redisSync RedisSync) (Store, error) {
 		// SQLite模式：自动获取路径
 		dbPath := os.Getenv("SQLITE_PATH")
 		if dbPath == "" {
-			dbPath = filepath.Join("data", "ccload.db")
+			dbPath = resolveSQLitePath()
 		}
 
 		store, err = createSQLiteStore(dbPath, redisSync)
@@ -169,6 +169,56 @@ func createSQLiteStore(path string, redisSync RedisSync) (*sqlstore.SQLStore, er
 	}
 
 	return store, nil
+}
+
+// resolveSQLitePath 解析SQLite数据库路径（未设置SQLITE_PATH时调用）
+// 优先使用默认路径 data/ccload.db，如果目录不可写则回退到系统临时目录
+func resolveSQLitePath() string {
+	defaultDir := "data"
+	defaultPath := filepath.Join(defaultDir, "ccload.db")
+
+	// 检查默认目录是否可写
+	if isDirWritable(defaultDir) {
+		return defaultPath
+	}
+
+	// 尝试创建目录后再检查
+	if err := os.MkdirAll(defaultDir, 0o750); err == nil {
+		if isDirWritable(defaultDir) {
+			return defaultPath
+		}
+	}
+
+	// 回退到系统临时目录
+	tmpPath := filepath.Join(os.TempDir(), "ccload", "ccload.db")
+	log.Printf("════════════════════════════════════════════════════════════")
+	log.Printf("⚠️  警告: 默认路径 %s 不可写", defaultDir)
+	log.Printf("⚠️  数据将存储在临时目录: %s", tmpPath)
+	log.Printf("⚠️  临时目录数据可能在系统重启后丢失！")
+	log.Printf("⚠️  生产环境请设置 SQLITE_PATH 环境变量指定持久化路径")
+	log.Printf("════════════════════════════════════════════════════════════")
+	return tmpPath
+}
+
+// isDirWritable 检查目录是否存在且可写
+func isDirWritable(dir string) bool {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return false // 目录不存在
+	}
+	if !info.IsDir() {
+		return false // 不是目录
+	}
+
+	// 尝试创建临时文件来验证写权限
+	testFile := filepath.Join(dir, ".write_test_"+fmt.Sprintf("%d", os.Getpid()))
+	f, err := os.Create(testFile) //nolint:gosec // G304: 临时文件用于测试写权限，路径由程序控制
+	if err != nil {
+		return false
+	}
+	_ = f.Close()
+	_ = os.Remove(testFile)
+	return true
 }
 
 // buildSQLiteDSN 构建SQLite DSN
