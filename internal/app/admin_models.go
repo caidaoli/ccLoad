@@ -168,7 +168,7 @@ func fetchModelsForConfig(ctx context.Context, channelType, channelURL, apiKey s
 // determineSource 判断模型列表来源（辅助函数）
 func determineSource(channelType string) string {
 	switch util.NormalizeChannelType(channelType) {
-	case util.ChannelTypeOpenAI, util.ChannelTypeGemini:
+	case util.ChannelTypeOpenAI, util.ChannelTypeGemini, util.ChannelTypeAnthropic:
 		return "api" // 从API获取
 	default:
 		return "predefined" // 预定义列表
