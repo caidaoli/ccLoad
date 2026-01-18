@@ -422,10 +422,12 @@ func (s *Server) invalidateCooldownCache() {
 	}
 }
 
-// invalidateChannelRelatedCache 统一失效渠道相关的所有缓存
-// 在渠道CRUD、冷却状态变更后调用
+// invalidateChannelRelatedCache 失效渠道相关的冷却/Key缓存
+// 注意：此函数仅失效冷却和Key缓存，不重置轮询状态
+// 在冷却状态变更后调用（成功请求清除冷却、错误重试等场景）
 func (s *Server) invalidateChannelRelatedCache(channelID int64) {
-	s.InvalidateChannelListCache()
+	// 仅失效冷却缓存，不调用 InvalidateChannelListCache
+	// 因为渠道列表本身未变更，只是冷却状态变更
 	s.InvalidateAPIKeysCache(channelID)
 	s.invalidateCooldownCache()
 }

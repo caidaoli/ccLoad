@@ -126,8 +126,12 @@ func (s *Server) balanceSamePriorityChannels(
 		panic("channelBalancer is nil: server not properly initialized")
 	}
 
+	// 按优先级降序排序（优先级大的排前面），确保相同优先级渠道连续
 	result := make([]*modelpkg.Config, n)
 	copy(result, channels)
+	sort.SliceStable(result, func(i, j int) bool {
+		return result[i].Priority > result[j].Priority
+	})
 
 	// 按优先级分组，组内使用平滑加权轮询
 	groupStart := 0
