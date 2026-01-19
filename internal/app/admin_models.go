@@ -43,8 +43,8 @@ type FetchModelsDebug struct {
 // 路由: GET /admin/channels/:id/models/fetch
 // 功能:
 //   - 根据渠道类型调用对应的Models API
-//   - Anthropic/Codex: 返回预定义列表(官方无API)
-//   - OpenAI/Gemini: 调用官方/v1/models接口
+//   - Anthropic/Codex/OpenAI/Gemini: 调用官方/v1/models接口
+//   - 其它渠道: 返回预定义列表
 //
 // 设计模式: 适配器模式(Adapter Pattern) + 策略模式(Strategy Pattern)
 func (s *Server) HandleFetchModels(c *gin.Context) {
@@ -168,7 +168,7 @@ func fetchModelsForConfig(ctx context.Context, channelType, channelURL, apiKey s
 // determineSource 判断模型列表来源（辅助函数）
 func determineSource(channelType string) string {
 	switch util.NormalizeChannelType(channelType) {
-	case util.ChannelTypeOpenAI, util.ChannelTypeGemini, util.ChannelTypeAnthropic:
+	case util.ChannelTypeOpenAI, util.ChannelTypeGemini, util.ChannelTypeAnthropic, util.ChannelTypeCodex:
 		return "api" // 从API获取
 	default:
 		return "predefined" // 预定义列表
