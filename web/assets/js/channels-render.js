@@ -14,19 +14,19 @@ function buildEffectivePriorityHtml(channel) {
 
   // 成功率文本
   const successRateText = channel.success_rate !== undefined
-    ? `成功率: ${(channel.success_rate * 100).toFixed(1)}%`
+    ? window.t('channels.stats.successRate', { rate: (channel.success_rate * 100).toFixed(1) + '%' })
     : '';
 
   // 如果有效优先级与基础优先级相同，显示绿色勾号
   if (Math.abs(diff) < 0.1) {
-    const title = successRateText ? `健康 | ${successRateText}` : '健康';
+    const title = successRateText ? `${window.t('channels.stats.healthy')} | ${successRateText}` : window.t('channels.stats.healthy');
     return ` <span style="color: #16a34a; font-size: 0.8rem;" title="${title}">(✓${effPriority})</span>`;
   }
 
   // 有效优先级降低时显示红色
   const color = '#dc2626';
   const arrow = '↓';
-  const title = successRateText ? `有效优先级: ${effPriority} | ${successRateText}` : `有效优先级: ${effPriority}`;
+  const title = successRateText ? `${window.t('channels.stats.effectivePriority', { priority: effPriority })} | ${successRateText}` : window.t('channels.stats.effectivePriority', { priority: effPriority });
 
   return ` <span style="color: ${color}; font-size: 0.8rem;" title="${title}">(${arrow}${effPriority})</span>`;
 }
@@ -35,12 +35,12 @@ function inlineCooldownBadge(c) {
   const ms = c.cooldown_remaining_ms || 0;
   if (!ms || ms <= 0) return '';
   const text = humanizeMS(ms);
-  return ` <span style="color: #dc2626; font-size: 0.875rem; font-weight: 500; background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%); padding: 2px 8px; border-radius: 4px; border: 1px solid #fca5a5;">⚠️ 冷却中·${text}</span>`;
+  return ` <span style="color: #dc2626; font-size: 0.875rem; font-weight: 500; background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%); padding: 2px 8px; border-radius: 4px; border: 1px solid #fca5a5;">${window.t('channels.cooldownBadge', { time: text })}</span>`;
 }
 
 function renderChannelStatsInline(stats, cache, channelType) {
   if (!stats) {
-    return `<span class="channel-stat-badge" style="margin-left: 6px; color: var(--neutral-500);">统计: --</span>`;
+    return `<span class="channel-stat-badge" style="margin-left: 6px; color: var(--neutral-500);">${window.t('channels.stats.noStats')}</span>`;
   }
 
   const successRateText = cache?.successRateText || formatSuccessRate(stats.success, stats.total);
@@ -63,9 +63,9 @@ function renderChannelStatsInline(stats, cache, channelType) {
   const rangeLabel = getStatsRangeLabel(channelStatsRange);
 
   const parts = [
-    `<span class="channel-stat-badge" style="color: var(--neutral-800);"><strong>${rangeLabel}调用</strong> ${callText}</span>`,
-    `<span class="channel-stat-badge" style="color: ${successRateColor};"><strong>率</strong> ${successRateText}</span>`,
-    `<span class="channel-stat-badge" style="color: var(--primary-700);"><strong>首字</strong> ${avgFirstByteText}</span>`,
+    `<span class="channel-stat-badge" style="color: var(--neutral-800);"><strong>${rangeLabel}${window.t('channels.stats.calls')}</strong> ${callText}</span>`,
+    `<span class="channel-stat-badge" style="color: ${successRateColor};"><strong>${window.t('channels.stats.rate')}</strong> ${successRateText}</span>`,
+    `<span class="channel-stat-badge" style="color: var(--primary-700);"><strong>${window.t('channels.stats.firstByte')}</strong> ${avgFirstByteText}</span>`,
     `<span class="channel-stat-badge" style="color: var(--neutral-800);"><strong>In</strong> ${inputTokensText}</span>`,
     `<span class="channel-stat-badge" style="color: var(--neutral-800);"><strong>Out</strong> ${outputTokensText}</span>`
   ];
@@ -73,13 +73,13 @@ function renderChannelStatsInline(stats, cache, channelType) {
   const supportsCaching = channelType === 'anthropic' || channelType === 'codex';
   if (supportsCaching) {
     parts.push(
-      `<span class="channel-stat-badge" style="color: var(--success-600); background: var(--success-50); border-color: var(--success-100);"><strong>缓存读</strong> ${cacheReadText}</span>`,
-      `<span class="channel-stat-badge" style="color: var(--primary-700); background: var(--primary-50); border-color: var(--primary-100);"><strong>缓存建</strong> ${cacheCreationText}</span>`
+      `<span class="channel-stat-badge" style="color: var(--success-600); background: var(--success-50); border-color: var(--success-100);"><strong>${window.t('channels.stats.cacheRead')}</strong> ${cacheReadText}</span>`,
+      `<span class="channel-stat-badge" style="color: var(--primary-700); background: var(--primary-50); border-color: var(--primary-100);"><strong>${window.t('channels.stats.cacheCreate')}</strong> ${cacheCreationText}</span>`
     );
   }
 
   parts.push(
-    `<span class="channel-stat-badge" style="color: var(--warning-700); background: var(--warning-50); border-color: var(--warning-100);"><strong>成本</strong> ${costDisplay}</span>`
+    `<span class="channel-stat-badge" style="color: var(--warning-700); background: var(--warning-50); border-color: var(--warning-100);"><strong>${window.t('channels.stats.cost')}</strong> ${costDisplay}</span>`
   );
 
   return parts.join(' ');
@@ -175,12 +175,12 @@ function createChannelCard(channel) {
     url: channel.url,
     priority: channel.priority,
     effectivePriorityHtml: buildEffectivePriorityHtml(channel),
-    statusText: channel.enabled ? '已启用' : '已禁用',
+    statusText: channel.enabled ? window.t('channels.statusEnabled') : window.t('channels.statusDisabled'),
     cooldownBadge: inlineCooldownBadge(channel),
     statsHtml: statsHtml,
     enabled: channel.enabled,
-    toggleText: channel.enabled ? '禁用' : '启用',
-    toggleTitle: channel.enabled ? '禁用渠道' : '启用渠道'
+    toggleText: channel.enabled ? window.t('common.disable') : window.t('common.enable'),
+    toggleTitle: channel.enabled ? window.t('channels.toggleDisable') : window.t('channels.toggleEnable')
   };
 
   // 使用模板引擎渲染
@@ -230,7 +230,7 @@ function initChannelEventDelegation() {
 function renderChannels(channelsToRender = channels) {
   const el = document.getElementById('channels-container');
   if (!channelsToRender || channelsToRender.length === 0) {
-    el.innerHTML = '<div class="glass-card">暂无符合条件的渠道</div>';
+    el.innerHTML = `<div class="glass-card">${window.t('channels.noChannels')}</div>`;
     return;
   }
 
@@ -246,4 +246,9 @@ function renderChannels(channelsToRender = channels) {
 
   el.innerHTML = '';
   el.appendChild(fragment);
+
+  // Translate dynamically rendered elements
+  if (window.i18n && window.i18n.translatePage) {
+    window.i18n.translatePage();
+  }
 }

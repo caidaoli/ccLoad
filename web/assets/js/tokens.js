@@ -1,3 +1,4 @@
+    const t = window.t;
     const API_BASE = '/admin';
     let allTokens = [];
     let isToday = true;      // 是否为本日（本日才显示最近一分钟）
@@ -54,6 +55,11 @@
       document.getElementById('editTokenExpiry').addEventListener('change', (e) => {
         document.getElementById('editCustomExpiryContainer').style.display =
           e.target.value === 'custom' ? 'block' : 'none';
+      });
+
+      // 监听语言切换事件，重新渲染令牌列表
+      window.i18n.onLocaleChange(() => {
+        renderTokens();
       });
     });
 
@@ -114,8 +120,9 @@
         isToday = !!(data && data.is_today);
         renderTokens();
       } catch (error) {
-        console.error('加载令牌失败:', error);
-        window.showNotification('加载令牌失败: ' + error.message, 'error');
+        
+        console.error('Failed to load tokens:', error);
+        window.showNotification(t('tokens.msg.loadFailed') + ': ' + error.message, 'error');
       }
     }
 
@@ -133,20 +140,21 @@
 
       // 构建表格结构
       const table = document.createElement('table');
+      
       table.innerHTML = `
         <thead>
           <tr>
-            <th>描述</th>
-            <th>令牌</th>
-            <th style="text-align: center;">调用次数</th>
-            <th style="text-align: center;">成功率</th>
-            <th style="text-align: center;" title="每分钟请求数(峰值/平均/最近)">RPM(峰/均/近)</th>
-            <th style="text-align: center;">Token用量</th>
-            <th style="text-align: center;">总费用</th>
-            <th style="text-align: center;">流首字平均</th>
-            <th style="text-align: center;">非流平均</th>
-            <th>最后使用</th>
-            <th style="width: 200px;">操作</th>
+            <th>${t('tokens.table.description')}</th>
+            <th>${t('tokens.table.token')}</th>
+            <th style="text-align: center;">${t('tokens.table.callCount')}</th>
+            <th style="text-align: center;">${t('tokens.table.successRate')}</th>
+            <th style="text-align: center;" title="${t('tokens.table.rpmTitle')}">${t('tokens.table.rpm')}</th>
+            <th style="text-align: center;">${t('tokens.table.tokenUsage')}</th>
+            <th style="text-align: center;">${t('tokens.table.totalCost')}</th>
+            <th style="text-align: center;">${t('tokens.table.streamAvg')}</th>
+            <th style="text-align: center;">${t('tokens.table.nonStreamAvg')}</th>
+            <th>${t('tokens.table.lastUsed')}</th>
+            <th style="width: 200px;">${t('tokens.table.actions')}</th>
           </tr>
         </thead>
       `;
@@ -168,6 +176,11 @@
       table.appendChild(tbody);
       container.innerHTML = '';
       container.appendChild(table);
+
+      // 翻译动态渲染的内容中的 data-i18n 属性
+      if (window.i18n.translatePage) {
+        window.i18n.translatePage();
+      }
     }
 
     // 格式化 Token 数量为 M 单位
@@ -181,10 +194,12 @@
      * 使用模板引擎渲染令牌行
      */
     function createTokenRowWithTemplate(token) {
+      
+      const locale = window.i18n?.getLocale?.() || 'en';
       const status = getTokenStatus(token);
-      const createdAt = new Date(token.created_at).toLocaleString('zh-CN');
-      const lastUsed = token.last_used_at ? new Date(token.last_used_at).toLocaleString('zh-CN') : '从未使用';
-      const expiresAt = token.expires_at ? new Date(token.expires_at).toLocaleString('zh-CN') : '永不过期';
+      const createdAt = new Date(token.created_at).toLocaleString(locale);
+      const lastUsed = token.last_used_at ? new Date(token.last_used_at).toLocaleString(locale) : t('tokens.neverUsed');
+      const expiresAt = token.expires_at ? new Date(token.expires_at).toLocaleString(locale) : t('tokens.expiryNever');
 
       // 计算统计信息
       const successCount = token.success_count || 0;
@@ -208,6 +223,7 @@
         token: token.token,
         statusClass: status.class,
         createdAt: createdAt,
+        createdLabel: t('tokens.createdSuffix'),
         expiresAt: expiresAt,
         callsHtml: callsHtml,
         rpmHtml: rpmHtml,
@@ -228,13 +244,14 @@
         return '<span style="color: var(--neutral-500); font-size: 13px;">-</span>';
       }
 
+      
       let html = '<div style="display: flex; flex-direction: column; gap: 4px; align-items: center;">';
-      html += `<span class="stats-badge" style="background: var(--success-50); color: var(--success-700); font-weight: 600; border: 1px solid var(--success-200);" title="成功调用">`;
+      html += `<span class="stats-badge" style="background: var(--success-50); color: var(--success-700); font-weight: 600; border: 1px solid var(--success-200);" title="${t('tokens.successCall')}">`;
       html += `<span style="color: var(--success-600); font-size: 14px; font-weight: 700;">✓</span> ${successCount.toLocaleString()}`;
       html += `</span>`;
 
       if (failureCount > 0) {
-        html += `<span class="stats-badge" style="background: var(--error-50); color: var(--error-700); font-weight: 600; border: 1px solid var(--error-200);" title="失败调用">`;
+        html += `<span class="stats-badge" style="background: var(--error-50); color: var(--error-700); font-weight: 600; border: 1px solid var(--error-200);" title="${t('tokens.failedCall')}">`;
         html += `<span style="color: var(--error-600); font-size: 14px; font-weight: 700;">✗</span> ${failureCount.toLocaleString()}`;
         html += `</span>`;
       }
@@ -306,15 +323,16 @@
         return '<span style="color: var(--neutral-500); font-size: 13px;">-</span>';
       }
 
+      
       let html = '<div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">';
 
       // 输入/输出
       html += '<div style="display: inline-flex; gap: 4px; font-size: 12px;">';
-      html += `<span class="stats-badge" style="background: var(--primary-50); color: var(--primary-700);" title="输入Tokens">`;
-      html += `输入 ${formatTokenCount(token.prompt_tokens_total || 0)}`;
+      html += `<span class="stats-badge" style="background: var(--primary-50); color: var(--primary-700);" title="${t('tokens.inputTokens')}">`;
+      html += `${t('tokens.input')} ${formatTokenCount(token.prompt_tokens_total || 0)}`;
       html += `</span>`;
-      html += `<span class="stats-badge" style="background: var(--secondary-50); color: var(--secondary-700);" title="输出Tokens">`;
-      html += `输出 ${formatTokenCount(token.completion_tokens_total || 0)}`;
+      html += `<span class="stats-badge" style="background: var(--secondary-50); color: var(--secondary-700);" title="${t('tokens.outputTokens')}">`;
+      html += `${t('tokens.output')} ${formatTokenCount(token.completion_tokens_total || 0)}`;
       html += `</span>`;
       html += '</div>';
 
@@ -323,14 +341,14 @@
         html += '<div style="display: inline-flex; gap: 4px; font-size: 12px;">';
 
         if (token.cache_read_tokens_total > 0) {
-          html += `<span class="stats-badge" style="background: var(--success-50); color: var(--success-700);" title="缓存读Tokens">`;
-          html += `缓存读 ${formatTokenCount(token.cache_read_tokens_total || 0)}`;
+          html += `<span class="stats-badge" style="background: var(--success-50); color: var(--success-700);" title="${t('tokens.cacheReadTokens')}">`;
+          html += `${t('tokens.cacheRead')} ${formatTokenCount(token.cache_read_tokens_total || 0)}`;
           html += `</span>`;
         }
 
         if (token.cache_creation_tokens_total > 0) {
-          html += `<span class="stats-badge" style="background: var(--warning-50); color: var(--warning-700);" title="缓存建Tokens">`;
-          html += `缓存建 ${formatTokenCount(token.cache_creation_tokens_total || 0)}`;
+          html += `<span class="stats-badge" style="background: var(--warning-50); color: var(--warning-700);" title="${t('tokens.cacheCreateTokens')}">`;
+          html += `${t('tokens.cacheCreate')} ${formatTokenCount(token.cache_creation_tokens_total || 0)}`;
           html += `</span>`;
         }
 
@@ -385,10 +403,12 @@
      * 降级：模板引擎不可用时的渲染方式
      */
     function createTokenRowFallback(token) {
+      
+      const locale = window.i18n?.getLocale?.() || 'en';
       const status = getTokenStatus(token);
-      const createdAt = new Date(token.created_at).toLocaleString('zh-CN');
-      const lastUsed = token.last_used_at ? new Date(token.last_used_at).toLocaleString('zh-CN') : '从未使用';
-      const expiresAt = token.expires_at ? new Date(token.expires_at).toLocaleString('zh-CN') : '永不过期';
+      const createdAt = new Date(token.created_at).toLocaleString(locale);
+      const lastUsed = token.last_used_at ? new Date(token.last_used_at).toLocaleString(locale) : t('tokens.neverUsed');
+      const expiresAt = token.expires_at ? new Date(token.expires_at).toLocaleString(locale) : t('tokens.expiryNever');
 
       // 计算统计信息
       const successCount = token.success_count || 0;
@@ -410,7 +430,7 @@
           <td style="font-weight: 500;">${escapeHtml(token.description)}</td>
           <td>
             <div><span class="token-display token-display-${status.class}">${escapeHtml(token.token)}</span></div>
-            <div style="font-size: 12px; color: var(--neutral-500); margin-top: 4px;">${createdAt}创建 · ${expiresAt}</div>
+            <div style="font-size: 12px; color: var(--neutral-500); margin-top: 4px;">${createdAt}${t('tokens.createdSuffix')} · ${expiresAt}</div>
           </td>
           <td style="text-align: center;">${callsHtml}</td>
           <td style="text-align: center;">${successRateHtml}</td>
@@ -421,17 +441,18 @@
           <td style="text-align: center;">${nonStreamAvgHtml}</td>
           <td style="color: var(--neutral-600);">${lastUsed}</td>
           <td>
-            <button class="btn btn-secondary btn-edit" style="padding: 4px 12px; font-size: 13px; margin-right: 4px;">编辑</button>
-            <button class="btn btn-danger btn-delete" style="padding: 4px 12px; font-size: 13px;">删除</button>
+            <button class="btn btn-secondary btn-edit" style="padding: 4px 12px; font-size: 13px; margin-right: 4px;">${t('common.edit')}</button>
+            <button class="btn btn-danger btn-delete" style="padding: 4px 12px; font-size: 13px;">${t('common.delete')}</button>
           </td>
         </tr>
       `;
     }
 
     function getTokenStatus(token) {
-      if (token.is_expired) return { class: 'expired', text: '已过期' };
-      if (!token.is_active) return { class: 'inactive', text: '未启用' };
-      return { class: 'active', text: '正常' };
+      
+      if (token.is_expired) return { class: 'expired', text: t('tokens.status.expired') };
+      if (!token.is_active) return { class: 'inactive', text: t('tokens.status.inactive') };
+      return { class: 'active', text: t('tokens.status.active') };
     }
 
     function showCreateModal() {
@@ -448,9 +469,10 @@
     }
 
     async function createToken() {
+      
       const description = document.getElementById('tokenDescription').value.trim();
       if (!description) {
-        window.showNotification('请输入描述', 'error');
+        window.showNotification(t('tokens.msg.enterDescription'), 'error');
         return;
       }
       const expiryType = document.getElementById('tokenExpiry').value;
@@ -459,7 +481,7 @@
         if (expiryType === 'custom') {
           const customDate = document.getElementById('customExpiry').value;
           if (!customDate) {
-            window.showNotification('请选择过期时间', 'error');
+            window.showNotification(t('tokens.msg.selectExpiry'), 'error');
             return;
           }
           expiresAt = new Date(customDate).getTime();
@@ -471,7 +493,7 @@
       const isActive = document.getElementById('tokenActive').checked;
       const costLimitUSD = parseFloat(document.getElementById('tokenCostLimitUSD').value) || 0;
       if (costLimitUSD < 0) {
-        window.showNotification('费用上限不能为负数', 'error');
+        window.showNotification(t('tokens.msg.costLimitNegative'), 'error');
         return;
       }
       try {
@@ -487,10 +509,10 @@
         document.getElementById('newTokenValue').value = data.token;
         document.getElementById('tokenResultModal').style.display = 'block';
         loadTokens();
-        window.showNotification('令牌创建成功', 'success');
+        window.showNotification(t('tokens.msg.createSuccess'), 'success');
       } catch (error) {
-        console.error('创建令牌失败:', error);
-        window.showNotification('创建失败: ' + error.message, 'error');
+        console.error('Failed to create token:', error);
+        window.showNotification(t('tokens.msg.createFailed') + ': ' + error.message, 'error');
       }
     }
 
@@ -498,7 +520,8 @@
       const textarea = document.getElementById('newTokenValue');
       textarea.select();
       document.execCommand('copy');
-      window.showNotification('已复制到剪贴板', 'success');
+      
+      window.showNotification(t('tokens.msg.copySuccess'), 'success');
     }
 
     function closeTokenResultModal() {
@@ -528,7 +551,8 @@
 
       // 显示已消耗费用
       const costUsed = token.cost_used_usd || 0;
-      costUsedDisplay.textContent = costUsed > 0 ? `已消耗: $${costUsed.toFixed(4)}` : '';
+      
+      costUsedDisplay.textContent = costUsed > 0 ? `${t('tokens.costUsedPrefix')}: $${costUsed.toFixed(4)}` : '';
 
       // 初始化模型限制状态（2026-01新增）
       editAllowedModels = (token.allowed_models || []).slice();
@@ -548,6 +572,7 @@
     }
 
     async function updateToken() {
+      
       const id = document.getElementById('editTokenId').value;
       const description = document.getElementById('editTokenDescription').value.trim();
       const isActive = document.getElementById('editTokenActive').checked;
@@ -558,7 +583,7 @@
         if (expiryType === 'custom') {
           const customDate = document.getElementById('editCustomExpiry').value;
           if (!customDate) {
-            window.showNotification('请选择过期时间', 'error');
+            window.showNotification(t('tokens.msg.selectExpiry'), 'error');
             return;
           }
           expiresAt = new Date(customDate).getTime();
@@ -583,24 +608,25 @@
         });
         closeEditModal();
         loadTokens();
-        window.showNotification('更新成功', 'success');
+        window.showNotification(t('tokens.msg.updateSuccess'), 'success');
       } catch (error) {
-        console.error('更新失败:', error);
-        window.showNotification('更新失败: ' + error.message, 'error');
+        console.error('Failed to update token:', error);
+        window.showNotification(t('tokens.msg.updateFailed') + ': ' + error.message, 'error');
       }
     }
 
     async function deleteToken(id) {
-      if (!confirm('确定要删除此令牌吗?删除后无法恢复。')) return;
+      
+      if (!confirm(t('tokens.msg.deleteConfirm'))) return;
       try {
         await fetchDataWithAuth(`${API_BASE}/auth-tokens/${id}`, {
           method: 'DELETE'
         });
         loadTokens();
-        window.showNotification('删除成功', 'success');
+        window.showNotification(t('tokens.msg.deleteSuccess'), 'success');
       } catch (error) {
-        console.error('删除失败:', error);
-        window.showNotification('删除失败: ' + error.message, 'error');
+        console.error('Failed to delete token:', error);
+        window.showNotification(t('tokens.msg.deleteFailed') + ': ' + error.message, 'error');
       }
     }
 
@@ -624,7 +650,7 @@
         // 聚合可用模型
         availableModelsCache = getAvailableModels();
       } catch (error) {
-        console.error('加载渠道数据失败:', error);
+        console.error('Failed to load channels data:', error);
       }
     }
 
@@ -665,17 +691,20 @@
       }
 
       if (editAllowedModels.length === 0) {
+        
         tbody.innerHTML = `
           <tr>
             <td colspan="3" style="text-align: center; color: var(--neutral-500); padding: 16px;">
-              无模型限制（允许所有模型）
+              ${t('tokens.noModelRestriction')}
             </td>
           </tr>
         `;
         return;
       }
 
-      tbody.innerHTML = editAllowedModels.map((model, index) => `
+      tbody.innerHTML = editAllowedModels.map((model, index) => {
+        
+        return `
         <tr>
           <td style="text-align: center; padding: 8px;">
             <input type="checkbox" class="allowed-model-checkbox" data-index="${index}"
@@ -685,10 +714,10 @@
           <td style="padding: 8px; font-family: monospace; font-size: 13px;">${escapeHtml(model)}</td>
           <td style="text-align: center; padding: 8px;">
             <button type="button" class="btn btn-secondary btn-sm" onclick="removeAllowedModel(${index})"
-              style="padding: 2px 8px; font-size: 12px;">删除</button>
+              style="padding: 2px 8px; font-size: 12px;">${t('common.delete')}</button>
           </td>
         </tr>
-      `).join('');
+      `}).join('');
     }
 
     /**
@@ -823,13 +852,14 @@
       // 更新选中计数
       if (countSpan) countSpan.textContent = selectedModelsForAdd.size;
 
+      
       if (models.length === 0) {
         const isEmptyCache = availableModelsCache.length === 0;
         const message = searchText
-          ? '无匹配模型'
+          ? t('tokens.noMatchingModel')
           : isEmptyCache
-            ? '渠道未配置模型，请使用"手动输入"添加'
-            : '所有模型已添加';
+            ? t('tokens.channelNoModel')
+            : t('tokens.allModelsAdded');
         container.innerHTML = `
           <div style="text-align: center; color: var(--neutral-500); padding: 24px;">
             ${message}
@@ -854,7 +884,8 @@
         selectAllCheckbox.indeterminate = !allSelected && models.some(m => selectedModelsForAdd.has(m));
       }
       if (visibleModelsCount) {
-        visibleModelsCount.textContent = `(${models.length} 个)`;
+        
+        visibleModelsCount.textContent = t('tokens.visibleModelsCount', { count: models.length });
       }
 
       container.innerHTML = models.map(model => `
@@ -914,8 +945,9 @@
      * 确认添加选中的模型
      */
     function confirmModelSelection() {
+      
       if (selectedModelsForAdd.size === 0) {
-        window.showNotification('请选择至少一个模型', 'warning');
+        window.showNotification(t('tokens.msg.selectAtLeastOne'), 'warning');
         return;
       }
 
@@ -931,7 +963,7 @@
 
       closeModelSelectModal();
       renderAllowedModelsTable();
-      window.showNotification(`已添加 ${selectedModelsForAdd.size} 个模型`, 'success');
+      window.showNotification(t('tokens.msg.modelsAdded', { count: selectedModelsForAdd.size }), 'success');
     }
 
     // ==================== 模型手动输入 ====================
@@ -996,17 +1028,18 @@
      * 确认模型导入
      */
     function confirmModelImport() {
+      
       const textarea = document.getElementById('tokenModelImportTextarea');
       const input = textarea.value.trim();
 
       if (!input) {
-        window.showNotification('请输入模型名称', 'warning');
+        window.showNotification(t('tokens.msg.enterModelName'), 'warning');
         return;
       }
 
       const models = parseModelInput(input);
       if (models.length === 0) {
-        window.showNotification('未解析到有效模型', 'warning');
+        window.showNotification(t('tokens.msg.noValidModel'), 'warning');
         return;
       }
 
@@ -1015,7 +1048,7 @@
       const newModels = [...new Set(models)].filter(m => !existingModels.has(m.toLowerCase()));
 
       if (newModels.length === 0) {
-        window.showNotification('所有模型已存在，无新增', 'info');
+        window.showNotification(t('tokens.msg.allModelsExist'), 'info');
         closeModelImportModal();
         return;
       }
@@ -1029,7 +1062,7 @@
 
       const duplicateCount = models.length - newModels.length;
       const msg = duplicateCount > 0
-        ? `成功添加 ${newModels.length} 个模型，${duplicateCount} 个重复已忽略`
-        : `成功添加 ${newModels.length} 个模型`;
+        ? t('tokens.msg.importSuccessWithDuplicates', { added: newModels.length, duplicates: duplicateCount })
+        : t('tokens.msg.importSuccess', { count: newModels.length });
       window.showNotification(msg, 'success');
     }

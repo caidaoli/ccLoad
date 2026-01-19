@@ -7,11 +7,14 @@
   <link rel="apple-touch-icon" href="/web/apple-touch-icon.png">
   <link rel="manifest" href="/web/manifest.json">
   <meta name="theme-color" content="#3b82f6">
-  <title>请求日志 - Claude Code & Codex Proxy</title>
+  <title data-i18n="logs.title">请求日志 - Claude Code & Codex Proxy</title>
   <link rel="stylesheet" href="/web/assets/css/styles.css?v=__VERSION__">
   <link href="/web/assets/css/inter.css?v=__VERSION__" rel="stylesheet">
   <link rel="stylesheet" href="/web/assets/css/channels.css?v=__VERSION__">
   <link rel="stylesheet" href="/web/assets/css/logs.css?v=__VERSION__">
+  <script src="/web/assets/locales/zh-CN.js?v=__VERSION__"></script>
+  <script src="/web/assets/locales/en.js?v=__VERSION__"></script>
+  <script src="/web/assets/js/i18n.js?v=__VERSION__"></script>
 </head>
 <body>
   <div class="app-container">
@@ -29,7 +32,7 @@
           <div class="filter-controls">
             <!-- 渠道类型筛选 -->
             <div class="filter-group">
-              <label for="f_channel_type" class="filter-label">渠道类型</label>
+              <label for="f_channel_type" class="filter-label" data-i18n="stats.channelType">渠道类型</label>
               <select id="f_channel_type" class="filter-select" style="min-width: 120px;">
                 <!-- 动态加载渠道类型选项 -->
               </select>
@@ -37,7 +40,7 @@
 
             <!-- 时间范围筛选 -->
             <div class="filter-group">
-              <label for="f_hours" class="filter-label">时间范围</label>
+              <label for="f_hours" class="filter-label" data-i18n="stats.timeRange">时间范围</label>
               <select id="f_hours" class="filter-select" style="min-width: 100px;">
                 <!-- 动态生成选项 by date-range-selector.js -->
               </select>
@@ -45,45 +48,45 @@
 
             <!-- 渠道ID筛选 -->
             <div class="filter-group">
-              <label for="f_id" class="filter-label">渠道ID</label>
-              <input type="number" id="f_id" class="filter-input" placeholder="输入ID..." style="max-width: 100px;">
+              <label for="f_id" class="filter-label" data-i18n="stats.channelId">渠道ID</label>
+              <input type="number" id="f_id" class="filter-input" data-i18n-placeholder="stats.inputIdPlaceholder" placeholder="输入ID..." style="max-width: 100px;">
             </div>
 
             <!-- 渠道名筛选 -->
             <div class="filter-group">
-              <label for="f_name" class="filter-label">渠道名</label>
-              <input type="text" id="f_name" class="filter-input" placeholder="包含文本...">
+              <label for="f_name" class="filter-label" data-i18n="stats.channelName">渠道名</label>
+              <input type="text" id="f_name" class="filter-input" data-i18n-placeholder="stats.containsTextPlaceholder" placeholder="包含文本...">
             </div>
 
             <!-- 模型筛选（合并重复字段） -->
             <div class="filter-group">
-              <label for="f_model" class="filter-label">模型</label>
-              <input type="text" id="f_model" class="filter-input" placeholder="包含文本...">
+              <label for="f_model" class="filter-label" data-i18n="common.model">模型</label>
+              <input type="text" id="f_model" class="filter-input" data-i18n-placeholder="stats.containsTextPlaceholder" placeholder="包含文本...">
             </div>
 
             <!-- 状态码筛选 -->
             <div class="filter-group">
-              <label for="f_status" class="filter-label">状态码</label>
-              <input type="number" id="f_status" class="filter-input" placeholder="如 200 / 403" style="max-width: 110px;">
+              <label for="f_status" class="filter-label" data-i18n="logs.statusCode">状态码</label>
+              <input type="number" id="f_status" class="filter-input" data-i18n-placeholder="logs.statusPlaceholder" placeholder="如 200 / 403" style="max-width: 110px;">
             </div>
 
             <!-- 令牌筛选 -->
             <div class="filter-group">
-              <label for="f_auth_token" class="filter-label">令牌</label>
+              <label for="f_auth_token" class="filter-label" data-i18n="stats.token">令牌</label>
               <select id="f_auth_token" class="filter-select" style="min-width: 150px;">
-                <option value="">全部令牌</option>
+                <option value="" data-i18n="stats.allTokens">全部令牌</option>
                 <!-- 动态加载令牌列表 -->
               </select>
             </div>
 
             <!-- 统计信息 -->
             <div class="filter-info">
-              显示 <span id="displayedCount">0</span> / <span id="totalCount">0</span> 条
+              <span data-i18n="logs.showPrefix">显示</span><span id="displayedCount">0</span>/<span id="totalCount">0</span><span data-i18n="logs.recordsSuffix">条</span>
             </div>
 
             <!-- 操作按钮组 -->
             <div style="flex: none;">
-              <button id="btn_filter" type="button" class="btn btn-primary" style="padding: 8px 16px; font-size: 14px;">筛选</button>
+              <button id="btn_filter" type="button" class="btn btn-primary" style="padding: 8px 16px; font-size: 14px;" data-i18n="common.filter">筛选</button>
             </div>
           </div>
         </div>
@@ -99,26 +102,26 @@
               <table class="modern-table logs-table">
                 <thead>
                   <tr>
-                    <th>时间</th>
-                    <th>IP</th>
-                    <th>API Key</th>
-                    <th>渠道</th>
-                    <th>模型</th>
-                    <th>状态码</th>
-                    <th>首字/耗时(秒)</th>
-                    <th>输入</th>
-                    <th>输出</th>
-                    <th>缓存读</th>
-                    <th>缓存建</th>
-                    <th>成本</th>
-                    <th>信息</th>
+                    <th data-i18n="logs.colTime">时间</th>
+                    <th data-i18n="logs.colIP">IP</th>
+                    <th data-i18n="logs.colApiKey">API Key</th>
+                    <th data-i18n="logs.colChannel">渠道</th>
+                    <th data-i18n="common.model">模型</th>
+                    <th data-i18n="logs.statusCode">状态码</th>
+                    <th data-i18n="logs.colTiming">首字/耗时(秒)</th>
+                    <th data-i18n="logs.colInput">输入</th>
+                    <th data-i18n="logs.colOutput">输出</th>
+                    <th data-i18n="logs.colCacheRead">缓存读</th>
+                    <th data-i18n="logs.colCacheWrite">缓存建</th>
+                    <th data-i18n="logs.colCost">成本</th>
+                    <th data-i18n="logs.colMessage">信息</th>
                   </tr>
                 </thead>
                 <tbody id="tbody">
                   <tr>
                     <td colspan="13" class="loading-state">
                       <div class="loading-spinner" style="margin: 0 auto var(--space-2)"></div>
-                      正在加载日志...
+                      <span data-i18n="logs.loading">正在加载日志...</span>
                     </td>
                   </tr>
                 </tbody>
@@ -136,25 +139,26 @@
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
                   </svg>
-                  上一页
+                  <span data-i18n="common.prevPage">上一页</span>
                 </button>
                 <span class="pagination-info" style="margin: 0 var(--space-4); display: flex; align-items: center; gap: var(--space-2);">
-                  第 <span id="logs_current_page2">1</span> 页，共 <span id="logs_total_pages2">1</span> 页
+                  <span data-i18n="logs.pagePrefix">第</span> <span id="logs_current_page2">1</span> <span data-i18n="logs.pageMid">页，共</span> <span id="logs_total_pages2">1</span> <span data-i18n="logs.pageSuffix">页</span>
                   <span style="margin-left: var(--space-2);">|</span>
-                  跳转到
+                  <span data-i18n="logs.jumpTo">跳转到</span>
                   <input
                     type="number"
                     id="logs_jump_page"
                     min="1"
                     max="1"
+                    data-i18n-placeholder="logs.pagePlaceholder"
                     placeholder="页码"
                     style="width: 100px; padding: 4px 8px; border: 1px solid var(--neutral-300); border-radius: 4px; text-align: center;"
                     onkeydown="if(event.key==='Enter') jumpToPage()"
                   />
-                  页
+                  <span data-i18n="logs.pageUnit">页</span>
                 </span>
                 <button id="logs_next2" class="btn btn-secondary btn-sm" onclick="nextLogsPage()">
-                  下一页
+                  <span data-i18n="common.nextPage">下一页</span>
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
                   </svg>
@@ -171,42 +175,42 @@
   <div id="testKeyModal" class="modal">
     <div class="modal-content test-modal-content">
       <div class="modal-header">
-        <h2 class="modal-title">测试 API Key - <span id="testKeyChannelName"></span></h2>
+        <h2 class="modal-title"><span data-i18n="logs.testKeyTitle">测试 API Key</span> - <span id="testKeyChannelName"></span></h2>
         <button class="close-btn" onclick="closeTestKeyModal()">&times;</button>
       </div>
 
       <div class="form-group">
-        <label class="form-label">API Key</label>
+        <label class="form-label" data-i18n="logs.apiKeyLabel">API Key</label>
         <code id="testKeyDisplay" style="display: block; padding: 8px; background: var(--neutral-100); border-radius: 4px; color: var(--neutral-700);"></code>
         <small id="testKeyIndexInfo" style="color: var(--neutral-600); font-size: 0.85em; display: block; margin-top: 6px;"></small>
       </div>
 
       <div class="form-group">
-        <label class="form-label" for="testKeyModel">测试模型</label>
+        <label class="form-label" for="testKeyModel" data-i18n="logs.testModel">测试模型</label>
         <select id="testKeyModel" class="form-input">
-          <option value="">加载中...</option>
+          <option value="" data-i18n="common.loading">加载中...</option>
         </select>
         <small style="color: var(--neutral-600); font-size: 0.85em; margin-top: 4px; display: block;">
-          日志中的模型: <code id="testKeyOriginalModel" style="color: var(--neutral-700);"></code>
+          <span data-i18n="logs.originalModel">日志中的模型:</span> <code id="testKeyOriginalModel" style="color: var(--neutral-700);"></code>
         </small>
       </div>
 
       <div class="form-group">
-        <label class="form-label" for="testKeyContent">测试内容</label>
-        <input type="text" id="testKeyContent" class="form-input" placeholder="输入测试消息内容">
+        <label class="form-label" for="testKeyContent" data-i18n="logs.testContent">测试内容</label>
+        <input type="text" id="testKeyContent" class="form-input" data-i18n-placeholder="logs.testContentPlaceholder" placeholder="输入测试消息内容">
       </div>
 
       <div class="form-group">
         <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
           <input type="checkbox" id="testKeyStream" checked>
-          <span class="form-label" style="margin: 0;">启用流式响应</span>
+          <span class="form-label" style="margin: 0;" data-i18n="logs.enableStream">启用流式响应</span>
         </label>
       </div>
 
       <!-- 测试进度 -->
       <div id="testKeyProgress" class="test-progress">
         <div class="loading-spinner"></div>
-        <p>正在测试 API Key...</p>
+        <p data-i18n="logs.testingKey">正在测试 API Key...</p>
       </div>
 
       <!-- 测试结果 -->
@@ -216,8 +220,8 @@
       </div>
 
       <div class="form-actions">
-        <button type="button" class="btn btn-secondary" onclick="closeTestKeyModal()">关闭</button>
-        <button type="button" id="runKeyTestBtn" class="btn btn-primary" onclick="runKeyTest()">开始测试</button>
+        <button type="button" class="btn btn-secondary" onclick="closeTestKeyModal()" data-i18n="common.close">关闭</button>
+        <button type="button" id="runKeyTestBtn" class="btn btn-primary" onclick="runKeyTest()" data-i18n="logs.startTest">开始测试</button>
       </div>
     </div>
   </div>
@@ -249,8 +253,8 @@
         <svg class="w-12 h-12 mx-auto mb-4" style="color: var(--neutral-400);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
         </svg>
-        <div style="font-weight: var(--font-medium); margin-bottom: var(--space-1); color: var(--neutral-700);">暂无日志数据</div>
-        <div>请调整筛选条件或检查时间范围</div>
+        <div style="font-weight: var(--font-medium); margin-bottom: var(--space-1); color: var(--neutral-700);" data-i18n="logs.noData">暂无日志数据</div>
+        <div data-i18n="logs.adjustFilter">请调整筛选条件或检查时间范围</div>
       </td>
     </tr>
   </template>
@@ -260,7 +264,7 @@
     <tr>
       <td colspan="{{colspan}}" class="loading-state">
         <div class="loading-spinner" style="margin: 0 auto var(--space-2)"></div>
-        正在加载日志...
+        <span data-i18n="logs.loading">正在加载日志...</span>
       </td>
     </tr>
   </template>
@@ -272,8 +276,8 @@
         <svg class="w-12 h-12 mx-auto mb-4" style="color: var(--error-400);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.864-.833-2.634 0L4.18 16.5c-.77.833.192 2.5 1.732 2.5z"/>
         </svg>
-        <div style="color: var(--error-400); font-weight: var(--font-medium); margin-bottom: var(--space-1);">加载失败</div>
-        <div>请检查网络连接或重试</div>
+        <div style="color: var(--error-400); font-weight: var(--font-medium); margin-bottom: var(--space-1);" data-i18n="logs.loadFailed">加载失败</div>
+        <div data-i18n="logs.checkNetwork">请检查网络连接或重试</div>
       </td>
     </tr>
   </template>
@@ -282,5 +286,12 @@
   <script src="/web/assets/js/date-range-selector.js?v=__VERSION__"></script>
   <script src="/web/assets/js/ui.js?v=__VERSION__"></script>
   <script src="/web/assets/js/logs.js?v=__VERSION__"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      if (window.i18n) {
+        window.i18n.translatePage();
+      }
+    });
+  </script>
 </body>
 </html>

@@ -1,8 +1,8 @@
 function showAddModal() {
   editingChannelId = null;
   currentChannelKeyCooldowns = [];
-  
-  document.getElementById('modalTitle').textContent = '添加渠道';
+
+  document.getElementById('modalTitle').textContent = window.t('channels.addChannel');
   document.getElementById('channelForm').reset();
   document.getElementById('channelEnabled').checked = true;
   document.querySelector('input[name="channelType"][value="anthropic"]').checked = true;
@@ -30,7 +30,7 @@ async function editChannel(id) {
 
   editingChannelId = id;
 
-  document.getElementById('modalTitle').textContent = '编辑渠道';
+  document.getElementById('modalTitle').textContent = window.t('channels.editChannel');
   document.getElementById('channelName').value = channel.name;
   document.getElementById('channelUrl').value = channel.url;
 
@@ -38,7 +38,7 @@ async function editChannel(id) {
   try {
     apiKeys = (await fetchDataWithAuth(`/admin/channels/${id}/keys`)) || [];
   } catch (e) {
-    console.error('获取API Keys失败', e);
+    console.error('Failed to fetch API Keys', e);
   }
 
   const now = Date.now();
@@ -88,7 +88,7 @@ async function editChannel(id) {
 }
 
 function closeModal() {
-  if (channelFormDirty && !confirm('有未保存的更改，确定要关闭吗？')) {
+  if (channelFormDirty && !confirm(window.t('channels.unsavedChanges'))) {
     return;
   }
   document.getElementById('channelModal').classList.remove('show');
@@ -101,7 +101,7 @@ async function saveChannel(event) {
 
   const validKeys = inlineKeyTableData.filter(k => k && k.trim());
   if (validKeys.length === 0) {
-    alert('请至少添加一个有效的API Key');
+    alert(window.t('channels.atLeastOneKey'));
     return;
   }
 
@@ -131,7 +131,7 @@ async function saveChannel(event) {
   };
 
   if (!formData.name || !formData.url || !formData.api_key || formData.models.length === 0) {
-    if (window.showError) window.showError('请填写所有必填字段（至少添加一个模型）');
+    if (window.showError) window.showError(window.t('channels.fillAllRequired'));
     return;
   }
 
@@ -148,7 +148,7 @@ async function saveChannel(event) {
           body: JSON.stringify(formData)
         });
 
-    if (!resp.success) throw new Error(resp.error || '保存失败');
+    if (!resp.success) throw new Error(resp.error || window.t('channels.msg.saveFailed'));
 
     const isNewChannel = !editingChannelId;
     const newChannelType = formData.channel_type;
@@ -166,10 +166,10 @@ async function saveChannel(event) {
     }
 
     await loadChannels(filters.channelType);
-    if (window.showSuccess) window.showSuccess(isNewChannel ? '渠道已添加' : '渠道已更新');
+    if (window.showSuccess) window.showSuccess(isNewChannel ? window.t('channels.channelAdded') : window.t('channels.channelUpdated'));
   } catch (e) {
-    console.error('保存渠道失败', e);
-    if (window.showError) window.showError('保存失败: ' + e.message);
+    console.error('Save channel failed', e);
+    if (window.showError) window.showError(window.t('channels.saveFailed', { error: e.message }));
   }
 }
 
@@ -192,15 +192,15 @@ async function confirmDelete() {
       method: 'DELETE'
     });
 
-    if (!resp.success) throw new Error(resp.error || '删除失败');
+    if (!resp.success) throw new Error(resp.error || window.t('common.failed'));
 
     closeDeleteModal();
     clearChannelsCache();
     await loadChannels(filters.channelType);
-    if (window.showSuccess) window.showSuccess('渠道已删除');
+    if (window.showSuccess) window.showSuccess(window.t('channels.channelDeleted'));
   } catch (e) {
-    console.error('删除渠道失败', e);
-    if (window.showError) window.showError('删除失败: ' + e.message);
+    console.error('Delete channel failed', e);
+    if (window.showError) window.showError(window.t('channels.saveFailed', { error: e.message }));
   }
 }
 
@@ -211,13 +211,13 @@ async function toggleChannel(id, enabled) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled })
     });
-    if (!resp.success) throw new Error(resp.error || '操作失败');
+    if (!resp.success) throw new Error(resp.error || window.t('common.failed'));
     clearChannelsCache();
     await loadChannels(filters.channelType);
-    if (window.showSuccess) window.showSuccess(enabled ? '渠道已启用' : '渠道已禁用');
+    if (window.showSuccess) window.showSuccess(enabled ? window.t('channels.channelEnabled') : window.t('channels.channelDisabled'));
   } catch (e) {
-    console.error('切换失败', e);
-    if (window.showError) window.showError('操作失败');
+    console.error('Toggle failed', e);
+    if (window.showError) window.showError(window.t('common.failed'));
   }
 }
 
@@ -229,7 +229,7 @@ async function copyChannel(id, name) {
 
   editingChannelId = null;
   currentChannelKeyCooldowns = [];
-  document.getElementById('modalTitle').textContent = '复制渠道';
+  document.getElementById('modalTitle').textContent = window.t('channels.copyChannel');
   document.getElementById('channelName').value = copiedName;
   document.getElementById('channelUrl').value = channel.url;
 
@@ -237,7 +237,7 @@ async function copyChannel(id, name) {
   try {
     apiKeys = (await fetchDataWithAuth(`/admin/channels/${id}/keys`)) || [];
   } catch (e) {
-    console.error('获取API Keys失败', e);
+    console.error('Failed to fetch API Keys', e);
   }
 
   inlineKeyTableData = apiKeys.map(k => k.api_key || k);
@@ -279,17 +279,19 @@ async function copyChannel(id, name) {
 }
 
 function generateCopyName(originalName) {
-  const copyPattern = /^(.+?)(?:\s*-\s*复制(?:\s*(\d+))?)?$/;
+  const suffix = window.t('channels.copySuffix');
+  // 匹配带有 " - 复制" 或 " - Copy" 后缀的名称
+  const copyPattern = new RegExp(`^(.+?)(?:\\s*-\\s*${suffix}(?:\\s*(\\d+))?)?$`);
   const match = originalName.match(copyPattern);
 
   if (!match) {
-    return originalName + ' - 复制';
+    return originalName + ' - ' + suffix;
   }
 
   const baseName = match[1];
   const copyNumber = match[2] ? parseInt(match[2]) + 1 : 1;
 
-  const proposedName = copyNumber === 1 ? `${baseName} - 复制` : `${baseName} - 复制 ${copyNumber}`;
+  const proposedName = copyNumber === 1 ? `${baseName} - ${suffix}` : `${baseName} - ${suffix} ${copyNumber}`;
 
   const existingNames = channels.map(c => c.name.toLowerCase());
   if (existingNames.includes(proposedName.toLowerCase())) {
@@ -371,13 +373,13 @@ function confirmModelImport() {
   const input = textarea.value.trim();
 
   if (!input) {
-    window.showNotification('请输入模型名称', 'warning');
+    window.showNotification(window.t('channels.enterModelName'), 'warning');
     return;
   }
 
   const newModels = parseModels(input);
   if (newModels.length === 0) {
-    window.showNotification('未解析到有效模型', 'warning');
+    window.showNotification(window.t('channels.noValidModelParsed'), 'warning');
     return;
   }
 
@@ -399,11 +401,11 @@ function confirmModelImport() {
   if (addedCount > 0) {
     const duplicateCount = newModels.length - addedCount;
     const msg = duplicateCount > 0
-      ? `成功添加 ${addedCount} 个模型，${duplicateCount} 个重复已忽略`
-      : `成功添加 ${addedCount} 个模型`;
+      ? window.t('channels.modelAddedWithDuplicates', { added: addedCount, duplicates: duplicateCount })
+      : window.t('channels.modelAddedSuccess', { added: addedCount });
     window.showNotification(msg, 'success');
   } else {
-    window.showNotification('所有模型已存在，无新增', 'info');
+    window.showNotification(window.t('channels.allModelsExist'), 'info');
   }
 }
 
@@ -434,7 +436,7 @@ function updateRedirectRow(index, field, value) {
       if (row) {
         const toInput = row.querySelector('.redirect-to-input');
         if (toInput) {
-          toInput.placeholder = value.trim() || '留空则不重定向';
+          toInput.placeholder = value.trim() || window.t('channels.leaveEmptyNoRedirect');
         }
       }
     }
@@ -454,7 +456,7 @@ function createRedirectRow(redirect, index) {
     displayIndex: index + 1,
     from: modelName,
     to: redirect.redirect_model || '',
-    toPlaceholder: modelName || '留空则不重定向'
+    toPlaceholder: modelName || window.t('channels.leaveEmptyNoRedirect')
   };
 
   const row = TemplateEngine.render('tpl-redirect-row', rowData);
@@ -566,14 +568,14 @@ function renderRedirectTable() {
 
   if (redirectTableData.length === 0) {
     const emptyRow = TemplateEngine.render('tpl-redirect-empty', {
-      message: '暂无模型配置，点击"添加模型"按钮创建'
+      message: window.t('channels.noModelConfig')
     });
     if (emptyRow) {
       tbody.innerHTML = '';
       tbody.appendChild(emptyRow);
     } else {
       // 降级：模板不存在时使用简单HTML
-      tbody.innerHTML = '<tr><td colspan="4" style="padding: 20px; text-align: center; color: var(--neutral-500);">暂无模型配置，点击"添加模型"按钮创建</td></tr>';
+      tbody.innerHTML = `<tr><td colspan="4" style="padding: 20px; text-align: center; color: var(--neutral-500);">${window.t('channels.noModelConfig')}</td></tr>`;
     }
     return;
   }
@@ -582,7 +584,7 @@ function renderRedirectTable() {
   const visibleIndices = getVisibleModelIndices();
 
   if (visibleIndices.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="4" style="padding: 20px; text-align: center; color: var(--neutral-500);">无匹配的模型</td></tr>';
+    tbody.innerHTML = `<tr><td colspan="4" style="padding: 20px; text-align: center; color: var(--neutral-500);">${window.t('channels.noMatchingModels')}</td></tr>`;
     return;
   }
 
@@ -599,6 +601,11 @@ function renderRedirectTable() {
   // 更新全选复选框和批量删除按钮状态
   updateSelectAllModelsCheckbox();
   updateModelBatchDeleteButton();
+
+  // Translate dynamically rendered elements
+  if (window.i18n && window.i18n.translatePage) {
+    window.i18n.translatePage();
+  }
 }
 
 // ===== 模型多选删除相关函数 =====
@@ -644,7 +651,7 @@ function updateModelBatchDeleteButton() {
 
   if (count > 0) {
     btn.disabled = false;
-    if (textSpan) textSpan.textContent = `删除选中 (${count})`;
+    if (textSpan) textSpan.textContent = window.t('channels.deleteSelectedCount', { count });
     btn.style.cursor = 'pointer';
     btn.style.opacity = '1';
     btn.style.background = 'linear-gradient(135deg, #fef2f2 0%, #fecaca 100%)';
@@ -652,7 +659,7 @@ function updateModelBatchDeleteButton() {
     btn.style.color = '#dc2626';
   } else {
     btn.disabled = true;
-    if (textSpan) textSpan.textContent = '删除选中';
+    if (textSpan) textSpan.textContent = window.t('channels.deleteSelected');
     btn.style.cursor = '';
     btn.style.opacity = '0.5';
     btn.style.background = '';
@@ -694,7 +701,7 @@ function batchDeleteSelectedModels() {
   const count = selectedModelIndices.size;
   if (count === 0) return;
 
-  if (!confirm(`确定要删除选中的 ${count} 个模型吗？`)) {
+  if (!confirm(window.t('channels.confirmBatchDeleteModels', { count }))) {
     return;
   }
 
@@ -744,18 +751,18 @@ async function fetchModelsFromAPI() {
 
   if (!channelUrl) {
     if (window.showError) {
-      window.showError('请先填写API URL');
+      window.showError(window.t('channels.fillApiUrlFirst'));
     } else {
-      alert('请先填写API URL');
+      alert(window.t('channels.fillApiUrlFirst'));
     }
     return;
   }
 
   if (!firstValidKey) {
     if (window.showError) {
-      window.showError('请至少添加一个API Key');
+      window.showError(window.t('channels.addAtLeastOneKey'));
     } else {
-      alert('请至少添加一个API Key');
+      alert(window.t('channels.addAtLeastOneKey'));
     }
     return;
   }
@@ -773,11 +780,11 @@ async function fetchModelsFromAPI() {
 
   try {
     const response = await fetchAPIWithAuth(endpoint, fetchOptions);
-    if (!response.success) throw new Error(response.error || '获取模型列表失败');
+    if (!response.success) throw new Error(response.error || window.t('channels.fetchModelsFailed', { error: '' }));
     const data = response.data || {};
 
     if (!data.models || data.models.length === 0) {
-      throw new Error('未获取到任何模型');
+      throw new Error(window.t('channels.noModelsFromApi'));
     }
 
     // 获取现有模型名称集合
@@ -797,20 +804,20 @@ async function fetchModelsFromAPI() {
 
     renderRedirectTable();
 
-    const source = data.source === 'api' ? '从API获取' : '预定义列表';
+    const source = data.source === 'api' ? window.t('channels.fetchModelsSource.api') : window.t('channels.fetchModelsSource.predefined');
     if (window.showSuccess) {
-      window.showSuccess(`成功添加 ${addedCount} 个模型 (${source}，共获取 ${data.models.length} 个)`);
+      window.showSuccess(window.t('channels.fetchModelsSuccess', { added: addedCount, source, total: data.models.length }));
     } else {
-      alert(`成功添加 ${addedCount} 个模型 (${source})`);
+      alert(window.t('channels.fetchModelsSuccess', { added: addedCount, source, total: data.models.length }));
     }
 
   } catch (error) {
-    console.error('获取模型列表失败', error);
+    console.error('Fetch models failed', error);
 
     if (window.showError) {
-      window.showError('获取模型列表失败: ' + error.message);
+      window.showError(window.t('channels.fetchModelsFailed', { error: error.message }));
     } else {
-      alert('获取模型列表失败: ' + error.message);
+      alert(window.t('channels.fetchModelsFailed', { error: error.message }));
     }
   }
 }
@@ -842,9 +849,9 @@ function addCommonModels() {
 
   if (!commonModels || commonModels.length === 0) {
     if (window.showWarning) {
-      window.showWarning(`渠道类型 "${channelType}" 暂无预设常用模型`);
+      window.showWarning(window.t('channels.noPresetModels', { type: channelType }));
     } else {
-      alert(`渠道类型 "${channelType}" 暂无预设常用模型`);
+      alert(window.t('channels.noPresetModels', { type: channelType }));
     }
     return;
   }
@@ -864,6 +871,6 @@ function addCommonModels() {
   renderRedirectTable();
 
   if (window.showSuccess) {
-    window.showSuccess(`已添加 ${addedCount} 个常用模型`);
+    window.showSuccess(window.t('channels.addedCommonModels', { count: addedCount }));
   }
 }

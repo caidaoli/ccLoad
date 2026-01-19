@@ -13,7 +13,7 @@ function showSortModal() {
   const sourceChannels = filteredChannels.length > 0 ? filteredChannels : channels;
 
   if (!sourceChannels || sourceChannels.length === 0) {
-    window.showError('无法加载渠道列表');
+    window.showError(window.t('channels.loadChannelsFailed'));
     return;
   }
 
@@ -52,7 +52,7 @@ function renderSortList() {
   container.innerHTML = '';
 
   if (sortChannels.length === 0) {
-    container.innerHTML = '<p style="text-align: center; color: var(--neutral-500); padding: 40px;">暂无渠道</p>';
+    container.innerHTML = `<p style="text-align: center; color: var(--neutral-500); padding: 40px;">${window.t('channels.noChannelsForSort')}</p>`;
     return;
   }
 
@@ -63,6 +63,11 @@ function renderSortList() {
 
   // 添加拖拽事件监听
   attachDragListeners();
+
+  // Translate dynamically rendered elements
+  if (window.i18n && window.i18n.translatePage) {
+    window.i18n.translatePage();
+  }
 }
 
 // 创建排序卡片
@@ -76,11 +81,11 @@ function createSortItem(channel, index) {
   // 状态徽章
   let statusBadge = '';
   if (!channel.enabled) {
-    statusBadge = '<span style="background: var(--neutral-200); color: var(--neutral-600); padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 500;">已禁用</span>';
+    statusBadge = `<span style="background: var(--neutral-200); color: var(--neutral-600); padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 500;">${window.t('channels.statusDisabled')}</span>`;
   } else if (channel.cooldown_until && new Date(channel.cooldown_until) > new Date()) {
-    statusBadge = '<span style="background: var(--error-100); color: var(--error-600); padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 500;">冷却中</span>';
+    statusBadge = `<span style="background: var(--error-100); color: var(--error-600); padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 500;">${window.t('channels.cooldownStatus')}</span>`;
   } else {
-    statusBadge = '<span style="background: var(--success-100); color: var(--success-600); padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 500;">正常</span>';
+    statusBadge = `<span style="background: var(--success-100); color: var(--success-600); padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 500;">${window.t('channels.statusNormal')}</span>`;
   }
 
   const html = template.innerHTML
@@ -230,7 +235,7 @@ function handleDrop(e) {
 // 保存排序
 async function saveSortOrder() {
   if (sortChannels.length === 0) {
-    window.showNotification('没有需要保存的排序', 'warning');
+    window.showNotification(window.t('channels.sortNoChanges'), 'warning');
     return;
   }
 
@@ -252,14 +257,14 @@ async function saveSortOrder() {
       body: JSON.stringify({ updates })
     });
 
-    window.showSuccess('排序已保存');
+    window.showSuccess(window.t('channels.sortSaveSuccess'));
     closeSortModal();
     if (typeof clearChannelsCache === 'function') clearChannelsCache();
     const currentType = (filters && filters.channelType) ? filters.channelType : 'all';
     if (typeof loadChannels === 'function') await loadChannels(currentType);
   } catch (error) {
-    console.error('保存排序失败:', error);
-    window.showError(error.message || '保存排序失败');
+    console.error('Save sort order failed:', error);
+    window.showError(error.message || window.t('channels.sortSaveFailed'));
   }
 }
 

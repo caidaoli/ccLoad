@@ -24,7 +24,7 @@ async function getTargetChannelType() {
     const channel = await fetchDataWithAuth(`/admin/channels/${channelId}`);
     return channel.channel_type || 'anthropic';
   } catch (e) {
-    console.error('获取渠道类型失败:', e);
+    console.error('Failed to get channel type:', e);
     return null;
   }
 }
@@ -53,6 +53,11 @@ function loadChannelsFilters() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+  // Translate static elements first
+  if (window.i18n && window.i18n.translatePage) {
+    window.i18n.translatePage();
+  }
+
   if (window.initTopbar) initTopbar('channels');
   setupFilterListeners();
   setupImportExport();
@@ -88,6 +93,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadChannelStats();
   highlightFromHash();
   window.addEventListener('hashchange', highlightFromHash);
+
+  // 监听语言切换事件，重新渲染渠道列表
+  window.i18n.onLocaleChange(() => {
+    renderChannels();
+  });
 });
 
 // 初始化渠道类型筛选器
@@ -97,8 +107,8 @@ async function initChannelTypeFilter(initialType) {
 
   const types = await window.ChannelTypeManager.getChannelTypes();
 
-  // 添加"全部"选项
-  select.innerHTML = '<option value="all">全部</option>';
+  // Add "All" option
+  select.innerHTML = `<option value="all">${window.t('common.all')}</option>`;
   types.forEach(type => {
     const option = document.createElement('option');
     option.value = type.value;

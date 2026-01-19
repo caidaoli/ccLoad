@@ -1,4 +1,5 @@
     // 常量定义
+    const t = window.t;
     const STATS_TABLE_COLUMNS = 12; // 统计表列数
 
     let statsData = null;
@@ -54,8 +55,8 @@
         }
 
       } catch (error) {
-        console.error('加载统计数据失败:', error);
-        if (window.showError) try { window.showError('无法加载统计数据'); } catch(_){}
+        console.error('Failed to load stats:', error);
+        if (window.showError) try { window.showError(t('stats.noData')); } catch(_){}
         renderStatsError();
       }
     }
@@ -258,8 +259,8 @@
         else if (successRate > 0 && successRate < 80) successRateClass += ' low';
 
         const modelDisplay = entry.model ?
-          `<a href="#" class="model-tag model-link" data-model="${escapeHtml(entry.model)}" data-channel-id="${entry.channel_id || ''}" title="查看该渠道此模型的日志">${escapeHtml(entry.model)}</a>` :
-          '<span style="color: var(--neutral-500);">未知模型</span>';
+          `<a href="#" class="model-tag model-link" data-model="${escapeHtml(entry.model)}" data-channel-id="${entry.channel_id || ''}" title="${t('stats.viewLogsTitle')}">${escapeHtml(entry.model)}</a>` :
+          `<span style="color: var(--neutral-500);">${t('stats.unknownModel')}</span>`;
 
         // 格式化平均首字响应时间/平均耗时
         const avgFirstByteTime = entry.avg_first_byte_time_seconds || 0;
@@ -447,7 +448,15 @@
     function updateRpmHeader() {
       const rpmHeader = document.querySelector('[data-column="rpm"]');
       if (rpmHeader) {
-        rpmHeader.childNodes[0].textContent = isToday ? 'RPM(峰/均/近)' : 'RPM(峰/均)';
+        const span = rpmHeader.querySelector('span[data-i18n]');
+        if (span) {
+          const key = isToday ? 'stats.rpm' : 'stats.rpmNoRecent';
+          const titleKey = isToday ? 'stats.rpmTitle' : 'stats.rpmNoRecentTitle';
+          span.textContent = t(key);
+          span.setAttribute('data-i18n', key);
+          rpmHeader.title = t(titleKey);
+          rpmHeader.setAttribute('data-i18n-title', titleKey);
+        }
       }
     }
 
@@ -488,26 +497,33 @@
       });
     }
 
+    // 渲染令牌选择器（支持语言切换时重新渲染）
+    function renderTokenSelect() {
+      const tokenSelect = document.getElementById('f_auth_token');
+      if (!tokenSelect) return;
+
+      const currentValue = tokenSelect.value;
+      tokenSelect.innerHTML = `<option value="">${t('stats.allTokens')}</option>`;
+      authTokens.forEach(token => {
+        const option = document.createElement('option');
+        option.value = token.id;
+        option.textContent = token.description || `${t('stats.tokenPrefix')}${token.id}`;
+        tokenSelect.appendChild(option);
+      });
+      // 恢复之前的选择
+      if (currentValue) {
+        tokenSelect.value = currentValue;
+      }
+    }
+
     // 加载令牌列表
     async function loadAuthTokens() {
       try {
         const data = await fetchDataWithAuth('/admin/auth-tokens');
         authTokens = (data && data.tokens) || [];
-
-        // 填充令牌选择器
-        const tokenSelect = document.getElementById('f_auth_token');
-        if (tokenSelect && authTokens.length > 0) {
-          // 保留"全部令牌"选项
-          tokenSelect.innerHTML = '<option value="">全部令牌</option>';
-          authTokens.forEach(token => {
-            const option = document.createElement('option');
-            option.value = token.id;
-            option.textContent = token.description || `令牌 #${token.id}`;
-            tokenSelect.appendChild(option);
-          });
-        }
+        renderTokenSelect();
       } catch (error) {
-        console.error('加载令牌列表失败:', error);
+        console.error('Failed to load token list:', error);
       }
     }
 
@@ -598,7 +614,7 @@
 
         // rate < 0 表示该时间桶无数据
         if (rate < 0) {
-          blocks[i] = '<span class="health-block unknown" title="无数据"></span>';
+          blocks[i] = `<span class="health-block unknown" title="${t('stats.healthNoData')}"></span>`;
           continue;
         }
 
@@ -609,14 +625,14 @@
         const timeStr = `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 
         // 构建 tooltip - 使用条件拼接减少数组操作
-        let title = `${timeStr}\n成功: ${point.success || 0} / 失败: ${point.error || 0}`;
-        if (point.avg_first_byte_time > 0) title += `\n首字: ${point.avg_first_byte_time.toFixed(2)}s`;
-        if (point.avg_duration > 0) title += `\n耗时: ${point.avg_duration.toFixed(2)}s`;
-        if (point.input_tokens > 0) title += `\n输入: ${formatNumber(point.input_tokens)}`;
-        if (point.output_tokens > 0) title += `\n输出: ${formatNumber(point.output_tokens)}`;
-        if (point.cache_read_tokens > 0) title += `\n缓存读: ${formatNumber(point.cache_read_tokens)}`;
-        if (point.cache_creation_tokens > 0) title += `\n缓存写: ${formatNumber(point.cache_creation_tokens)}`;
-        if (point.cost > 0) title += `\n成本: $${point.cost.toFixed(4)}`;
+        let title = `${timeStr}\n${t('stats.tooltipSuccess')}: ${point.success || 0} / ${t('stats.tooltipFailed')}: ${point.error || 0}`;
+        if (point.avg_first_byte_time > 0) title += `\n${t('stats.tooltipTTFT')}: ${point.avg_first_byte_time.toFixed(2)}s`;
+        if (point.avg_duration > 0) title += `\n${t('stats.tooltipDuration')}: ${point.avg_duration.toFixed(2)}s`;
+        if (point.input_tokens > 0) title += `\n${t('stats.tooltipInput')}: ${formatNumber(point.input_tokens)}`;
+        if (point.output_tokens > 0) title += `\n${t('stats.tooltipOutput')}: ${formatNumber(point.output_tokens)}`;
+        if (point.cache_read_tokens > 0) title += `\n${t('stats.tooltipCacheRead')}: ${formatNumber(point.cache_read_tokens)}`;
+        if (point.cache_creation_tokens > 0) title += `\n${t('stats.tooltipCacheWrite')}: ${formatNumber(point.cache_creation_tokens)}`;
+        if (point.cost > 0) title += `\n${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
 
         blocks[i] = `<span class="health-block ${className}" title="${escapeHtml(title)}"></span>`;
       }
@@ -705,6 +721,16 @@
         restoreViewState();
       });
 
+      // 注册语言切换回调，重新渲染动态内容
+      window.i18n.onLocaleChange(() => {
+        renderTokenSelect();
+        renderStatsTable();
+        updateRpmHeader();
+        if (currentView === 'chart') {
+          renderCharts();
+        }
+      });
+
       // 事件委托：处理统计表格中的渠道名称和模型名称点击
       const statsTableBody = document.getElementById('stats_tbody');
       if (statsTableBody) {
@@ -751,7 +777,7 @@
       const types = await window.ChannelTypeManager.getChannelTypes();
 
       // 添加"全部"选项
-      select.innerHTML = '<option value="all">全部</option>';
+      select.innerHTML = `<option value="all">${t('common.all')}</option>`;
       types.forEach(type => {
         const option = document.createElement('option');
         option.value = type.value;
@@ -837,8 +863,8 @@
       const modelCostMap = {}; // 模型 -> 成本（美元）
 
       for (const entry of statsData.stats) {
-        const channelName = entry.channel_name || '未知渠道';
-        const modelName = entry.model || '未知模型';
+        const channelName = entry.channel_name || t('stats.unknownChannel');
+        const modelName = entry.model || t('stats.unknownModel');
         const successCount = entry.success || 0;
         const totalTokens = (entry.total_input_tokens || 0) + (entry.total_output_tokens || 0) + (entry.total_cache_read_input_tokens || 0) + (entry.total_cache_creation_input_tokens || 0);
 
@@ -863,9 +889,10 @@
       }
 
       // 渲染6个饼图
-      renderPieChart('chart-channel-calls', channelCallsMap, '次');
+      const unitTimes = t('stats.unitTimes');
+      renderPieChart('chart-channel-calls', channelCallsMap, unitTimes);
       renderPieChart('chart-channel-tokens', channelTokensMap, '');
-      renderPieChart('chart-model-calls', modelCallsMap, '次');
+      renderPieChart('chart-model-calls', modelCallsMap, unitTimes);
       renderPieChart('chart-model-tokens', modelTokensMap, '');
       renderPieChart('chart-channel-cost', channelCostMap, '$');
       renderPieChart('chart-model-cost', modelCostMap, '$');
@@ -891,7 +918,7 @@
       if (data.length === 0) {
         chart.setOption({
           title: {
-            text: '暂无数据',
+            text: t('stats.chartNoData'),
             left: 'center',
             top: 'center',
             textStyle: {

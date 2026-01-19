@@ -2861,3 +2861,98 @@ body.trend-page .chart-info {
     .stats-table th {
       text-align: center;
     }
+
+/* ===== 语言切换下拉菜单样式 ===== */
+.lang-dropdown {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.lang-dropdown-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 8px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--neutral-600);
+  transition: all var(--duration-fast) var(--timing-function);
+}
+
+.lang-dropdown-trigger:hover {
+  background: var(--neutral-100);
+  color: var(--neutral-800);
+}
+
+.lang-dropdown-trigger .lang-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.lang-dropdown-trigger .lang-arrow {
+  width: 12px;
+  height: 12px;
+  transition: transform var(--duration-fast) var(--timing-function);
+}
+
+.lang-dropdown.open .lang-dropdown-trigger .lang-arrow {
+  transform: rotate(180deg);
+}
+
+.lang-dropdown-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  min-width: 120px;
+  background: white;
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.05);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-8px);
+  transition: all var(--duration-fast) var(--timing-function);
+  z-index: 1000;
+  overflow: hidden;
+}
+
+.lang-dropdown.open .lang-dropdown-menu {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.lang-dropdown-item {
+  display: block;
+  width: 100%;
+  padding: 10px 16px;
+  text-align: left;
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--neutral-700);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--timing-function);
+}
+
+.lang-dropdown-item:hover {
+  background: var(--neutral-100);
+}
+
+.lang-dropdown-item.active {
+  color: var(--primary-600);
+  background: var(--primary-50);
+}
+
+.lang-dropdown-item:first-child {
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+}
+
+.lang-dropdown-item:last-child {
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+}
+

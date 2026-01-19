@@ -16,8 +16,8 @@ async function loadChannels(type = 'all') {
     updateModelOptions();
     filterChannels();
   } catch (e) {
-    console.error('加载渠道失败', e);
-    if (window.showError) window.showError('加载渠道失败');
+    console.error('Failed to load channels', e);
+    if (window.showError) window.showError(window.t('channels.loadChannelsFailed'));
   }
 }
 
@@ -28,7 +28,7 @@ async function loadChannelStatsRange() {
       channelStatsRange = setting.value;
     }
   } catch (e) {
-    console.error('加载统计范围设置失败', e);
+    console.error('Failed to load stats range setting', e);
   }
 }
 
@@ -39,7 +39,7 @@ async function loadChannelStats(range = channelStatsRange) {
     channelStatsById = aggregateChannelStats((data && data.stats) || []);
     filterChannels();
   } catch (err) {
-    console.error('加载渠道统计数据失败', err);
+    console.error('Failed to load channel stats', err);
   }
 }
 
@@ -113,6 +113,6 @@ async function loadDefaultTestContent() {
       defaultTestContent = setting.value;
     }
   } catch (e) {
-    console.warn('加载默认测试内容失败，使用内置默认值', e);
+    console.warn('Failed to load default test content, using built-in default', e);
   }
 }

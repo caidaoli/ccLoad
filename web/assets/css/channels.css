@@ -33,7 +33,7 @@
     #channelTypeRadios label,
     #keyStrategyRadios label {
       transition: all 0.2s ease;
-      padding: 4px 8px;
+      padding: 4px 4px;
       border-radius: 6px;
     }
 

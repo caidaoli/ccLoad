@@ -1,4 +1,6 @@
 // 系统设置页面
+const t = window.t;
+
 initTopbar('settings');
 
 let originalSettings = {}; // 保存原始值用于比较
@@ -7,19 +9,19 @@ function getSettingGroupInfo(key) {
   const k = String(key || '').toLowerCase();
 
   const defs = [
-    { id: 'channel', name: '渠道与测试', order: 10, match: () => k.startsWith('channel_') || k === 'max_key_retries' },
-    { id: 'model', name: '模型匹配', order: 15, match: () => k.startsWith('model_') },
-    { id: 'timeout', name: '超时', order: 20, match: () => k.includes('timeout') },
-    { id: 'health', name: '渠道动态排序', order: 30, match: () => k.includes('health_score') || k.includes('success_rate') || k.includes('penalty_weight') || k === 'enable_health_score' || k === 'health_min_confident_sample' },
-    { id: 'cooldown', name: '冷却兜底', order: 40, match: () => k.startsWith('cooldown_') },
-    { id: 'log', name: '日志', order: 50, match: () => k.startsWith('log_') },
-    { id: 'access', name: '访问控制', order: 60, match: () => k.includes('auth_') },
+    { id: 'channel', nameKey: 'settings.group.channel', order: 10, match: () => k.startsWith('channel_') || k === 'max_key_retries' },
+    { id: 'model', nameKey: 'settings.group.model', order: 15, match: () => k.startsWith('model_') },
+    { id: 'timeout', nameKey: 'settings.group.timeout', order: 20, match: () => k.includes('timeout') },
+    { id: 'health', nameKey: 'settings.group.health', order: 30, match: () => k.includes('health_score') || k.includes('success_rate') || k.includes('penalty_weight') || k === 'enable_health_score' || k === 'health_min_confident_sample' },
+    { id: 'cooldown', nameKey: 'settings.group.cooldown', order: 40, match: () => k.startsWith('cooldown_') },
+    { id: 'log', nameKey: 'settings.group.log', order: 50, match: () => k.startsWith('log_') },
+    { id: 'access', nameKey: 'settings.group.access', order: 60, match: () => k.includes('auth_') },
   ];
 
   for (const d of defs) {
-    if (d.match()) return d;
+    if (d.match()) return { ...d, name: t(d.nameKey) };
   }
-  return { id: 'other', name: '其他', order: 999 };
+  return { id: 'other', nameKey: 'settings.group.other', name: t('settings.group.other'), order: 999 };
 }
 
 function groupSettings(settings) {
@@ -70,11 +72,11 @@ function renderGroupNav(groups) {
 async function loadSettings() {
   try {
     const data = await fetchDataWithAuth('/admin/settings');
-    if (!Array.isArray(data)) throw new Error('响应不是数组');
+    if (!Array.isArray(data)) throw new Error(t('settings.msg.invalidResponse'));
     renderSettings(data);
   } catch (err) {
-    console.error('加载配置异常:', err);
-    showError('加载配置异常: ' + err.message);
+    console.error('Failed to load settings:', err);
+    showError(t('settings.msg.loadFailed') + ': ' + err.message);
   }
 }
 
@@ -98,9 +100,13 @@ function renderSettings(settings) {
 
     for (const s of g.settings) {
       originalSettings[s.key] = s.value;
+      // 优先使用语言包中的描述，若没有则回退到后端返回的描述
+      const descKey = `settings.desc.${s.key}`;
+      const translatedDesc = t(descKey);
+      const description = (translatedDesc !== descKey) ? translatedDesc : s.description;
       const row = TemplateEngine.render('tpl-setting-row', {
         key: s.key,
-        description: s.description,
+        description: description,
         inputHtml: renderInput(s)
       });
       if (row) tbody.appendChild(row);
@@ -139,10 +145,10 @@ function renderInput(setting) {
       const isTrue = setting.value === 'true' || setting.value === '1';
       return `
         <label style="margin-right: 16px; cursor: pointer;">
-          <input type="radio" name="${safeKey}" value="true" ${isTrue ? 'checked' : ''} style="cursor: pointer;"> 启用
+          <input type="radio" name="${safeKey}" value="true" ${isTrue ? 'checked' : ''} style="cursor: pointer;"> ${t('common.enable')}
         </label>
         <label style="cursor: pointer;">
-          <input type="radio" name="${safeKey}" value="false" ${!isTrue ? 'checked' : ''} style="cursor: pointer;"> 禁用
+          <input type="radio" name="${safeKey}" value="false" ${!isTrue ? 'checked' : ''} style="cursor: pointer;"> ${t('common.disable')}
         </label>`;
     case 'int':
     case 'duration':
@@ -210,7 +216,7 @@ async function saveAllSettings() {
   }
 
   if (Object.keys(updates).length === 0) {
-    showInfo('没有需要保存的更改');
+    showInfo(t('settings.msg.noChanges'));
     return;
   }
 
@@ -221,29 +227,29 @@ async function saveAllSettings() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updates)
     });
-    let msg = `已保存 ${Object.keys(updates).length} 项配置`;
+    let msg = t('settings.msg.savedCount', { count: Object.keys(updates).length });
     if (needsRestartKeys.length > 0) {
-      msg += `\n\n以下配置需要重启服务才能生效:\n${needsRestartKeys.join(', ')}`;
+      msg += `\n\n${t('settings.msg.restartRequired')}:\n${needsRestartKeys.join(', ')}`;
     }
     showSuccess(msg);
   } catch (err) {
     console.error('保存异常:', err);
-    showError('保存异常: ' + err.message);
+    showError(t('settings.msg.saveFailed') + ': ' + err.message);
   }
 
   loadSettings();
 }
 
 async function resetSetting(key) {
-  if (!confirm(`确定要重置 "${key}" 为默认值吗?`)) return;
+  if (!confirm(t('settings.msg.confirmReset', { key }))) return;
 
   try {
     await fetchDataWithAuth(`/admin/settings/${key}/reset`, { method: 'POST' });
-    showSuccess(`配置 ${key} 已重置为默认值`);
+    showSuccess(t('settings.msg.resetSuccess', { key }));
     loadSettings();
   } catch (err) {
     console.error('重置异常:', err);
-    showError('重置异常: ' + err.message);
+    showError(t('settings.msg.resetFailed') + ': ' + err.message);
   }
 }
 

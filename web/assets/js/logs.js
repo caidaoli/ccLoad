@@ -1,3 +1,5 @@
+    const t = window.t;
+
     let currentLogsPage = 1;
     let logsPageSize = 15;
     let totalLogsPages = 1;
@@ -764,16 +766,17 @@
         const tokenSelect = document.getElementById('f_auth_token');
         if (tokenSelect && authTokens.length > 0) {
           // 保留"全部令牌"选项
-          tokenSelect.innerHTML = '<option value="">全部令牌</option>';
+          const allTokensText = t('stats.allTokens');
+          tokenSelect.innerHTML = `<option value="" data-i18n="stats.allTokens">${allTokensText}</option>`;
           authTokens.forEach(token => {
             const option = document.createElement('option');
             option.value = token.id;
-            option.textContent = token.description || `令牌 #${token.id}`;
+            option.textContent = token.description || `Token #${token.id}`;
             tokenSelect.appendChild(option);
           });
         }
       } catch (error) {
-        console.error('加载令牌列表失败:', error);
+        console.error('Failed to load auth tokens:', error);
       }
     }
 
@@ -939,7 +942,8 @@
       // 添加"全部"选项
       const allOption = document.createElement('option');
       allOption.value = 'all';
-      allOption.textContent = '全部';
+      allOption.textContent = t('common.all');
+      allOption.setAttribute('data-i18n', 'common.all');
       if (!initialType || initialType === 'all') {
         allOption.selected = true;
       }

@@ -1,4 +1,6 @@
     // 全局变量
+    const t = window.t;
+
     window.trendData = null;
     window.currentRange = 'today'; // 默认"本日"
     window.currentTrendType = 'first_byte'; // 默认显示首字响应趋势 (count/rpm/first_byte/duration/tokens/cost)
@@ -36,7 +38,7 @@
         const modelSelect = document.getElementById('f_model');
         if (modelSelect) {
           // 保留"全部模型"选项
-          modelSelect.innerHTML = '<option value="">全部模型</option>';
+          modelSelect.innerHTML = `<option value="">${t('trend.allModels')}</option>`;
           window.availableModels.forEach(model => {
             const option = document.createElement('option');
             option.value = model;
@@ -68,11 +70,11 @@
         const tokenSelect = document.getElementById('f_auth_token');
         if (tokenSelect && window.authTokens.length > 0) {
           // 保留"全部令牌"选项
-          tokenSelect.innerHTML = '<option value="">全部令牌</option>';
+          tokenSelect.innerHTML = `<option value="">${t('stats.allTokens')}</option>`;
           window.authTokens.forEach(token => {
             const option = document.createElement('option');
             option.value = token.id;
-            option.textContent = token.description || `令牌 #${token.id}`;
+            option.textContent = token.description || `${t('trend.tokenPrefix')}${token.id}`;
             tokenSelect.appendChild(option);
           });
 
@@ -145,7 +147,9 @@
           fetchDataWithAuth(channelsUrl + (channelTypeParamForList ? '?' + channelTypeParamForList.slice(1) : ''))
         ]);
 
-        if (!metrics.payload.success) throw new Error(metrics.payload.error || '获取趋势数据失败');
+        if (!metrics.payload.success) {
+          throw new Error(metrics.payload.error || t('trend.fetchDataFailed'));
+        }
 
         window.trendData = metrics.payload.data || [];
         window.channels = channels || [];
@@ -197,11 +201,17 @@
 
         // 更新分桶提示
         const iv = document.getElementById('bucket-interval');
-        if (iv) iv.textContent = `数据更新间隔：${formatInterval(bucketMin)} | 数据点：${trendData.length} | 总请求：${debugTotal || '未知'}`;
+        if (iv) {
+          iv.textContent = t('trend.dataInterval', {
+            interval: formatInterval(bucketMin),
+            points: trendData.length,
+            total: debugTotal || t('trend.unknown')
+          });
+        }
 
       } catch (error) {
         console.error('加载趋势数据失败:', error);
-        try { if (window.showError) window.showError('无法加载趋势数据'); } catch(_){}
+        try { if (window.showError) window.showError(t('trend.loadDataFailed')); } catch(_){}
         renderTrendError();
       }
     }
@@ -282,7 +292,7 @@
       if (trendType === 'count') {
         // 调用次数趋势：添加总体成功/失败线
         series.push({
-          name: '总成功请求',
+          name: t('trend.totalSuccess'),
           type: 'line',
           smooth: 0.25,
           symbol: 'circle',
@@ -313,7 +323,7 @@
         });
 
         series.push({
-          name: '总失败请求',
+          name: t('trend.totalFailed'),
           type: 'line',
           smooth: 0.25,
           symbol: 'circle',
@@ -345,7 +355,7 @@
       } else if (trendType === 'first_byte') {
 	        // 首字响应时间趋势：添加总体平均首字响应时间线
 	        series.push({
-	          name: '平均首字响应时间',
+	          name: t('trend.avgFirstByteTime'),
 	          type: 'line',
           smooth: 0.25,
           symbol: 'circle',
@@ -377,7 +387,7 @@
       } else if (trendType === 'duration') {
         // 总耗时趋势：添加总体平均总耗时线
         series.push({
-          name: '平均总耗时',
+          name: t('trend.avgDuration'),
           type: 'line',
           smooth: 0.25,
           symbol: 'circle',
@@ -409,7 +419,7 @@
       } else if (trendType === 'tokens') {
         // Token用量趋势：添加输入、输出、缓存读、缓存建四条线
         series.push({
-          name: '输入Token',
+          name: t('trend.inputTokens'),
           type: 'line',
           smooth: 0.25,
           symbol: 'circle',
@@ -423,7 +433,7 @@
           data: window.trendData.map(point => point.input_tokens || 0)
         });
         series.push({
-          name: '输出Token',
+          name: t('trend.outputTokens'),
           type: 'line',
           smooth: 0.25,
           symbol: 'circle',
@@ -437,7 +447,7 @@
           data: window.trendData.map(point => point.output_tokens || 0)
         });
         series.push({
-          name: '缓存读取',
+          name: t('trend.cacheRead'),
           type: 'line',
           smooth: 0.25,
           symbol: 'circle',
@@ -451,7 +461,7 @@
           data: window.trendData.map(point => point.cache_read_tokens || 0)
         });
         series.push({
-          name: '缓存创建',
+          name: t('trend.cacheCreate'),
           type: 'line',
           smooth: 0.25,
           symbol: 'circle',
@@ -467,7 +477,7 @@
       } else if (trendType === 'cost') {
         // 费用消耗趋势：添加总体费用线
         series.push({
-          name: '总费用',
+          name: t('trend.totalCost'),
           type: 'line',
           smooth: 0.25,
           symbol: 'circle',
@@ -555,7 +565,7 @@
           // 成功线
           if (successTotal > 0) {
             series.push({
-              name: `${channelName}(成功)`,
+              name: t('trend.channelSuccess', { channel: channelName }),
               type: 'line',
               smooth: 0.25,
               symbol: 'none',
@@ -571,7 +581,7 @@
           // 失败线
           if (errorTotal > 0) {
             series.push({
-              name: `${channelName}(失败)`,
+              name: t('trend.channelFailed', { channel: channelName }),
               type: 'line',
               smooth: 0.25,
               symbol: 'none',
@@ -790,9 +800,9 @@
             let html = `<div style="font-weight: 600; margin-bottom: 6px;">${params[0].axisValue}</div>`;
             if (totalReq != null) {
               const hint = totalReq === 0
-                ? `<span style="color: rgba(203, 213, 225, 0.95);">（该时间段无请求）</span>`
+                ? `<span style="color: rgba(203, 213, 225, 0.95);">${t('trend.noRequestInPeriod')}</span>`
                 : '';
-              html += `<div style="margin-bottom: 8px; color: rgba(226, 232, 240, 0.95); font-size: 12px;">请求数: ${totalReq}${hint}</div>`;
+              html += `<div style="margin-bottom: 8px; color: rgba(226, 232, 240, 0.95); font-size: 12px;">${t('trend.requestCount')}: ${totalReq}${hint}</div>`;
             }
             params.forEach(param => {
               const color = param.color;
@@ -1132,8 +1142,8 @@ function shouldShowZoom(points, hours, trendType) {
       return sorted[lo] * (1 - w) + sorted[hi] * w;
     }
 
-    function formatInterval(min) { 
-      return min >= 60 ? (min/60) + '小时' : min + '分钟';
+    function formatInterval(min) {
+      return min >= 60 ? (min/60) + t('trend.hour') : min + t('trend.minute');
     }
 
     // 工具函数
@@ -1264,9 +1274,10 @@ function shouldShowZoom(points, hours, trendType) {
         const channelName = sortedNames[i];
         const isVisible = window.visibleChannels.has(channelName);
 
-        // 为"未知渠道"添加特殊标识
-        const displayName = channelName === '未知渠道'
-          ? `${channelName} ⚠️`
+        // Add special marker for "Unknown Channel"
+        const unknownChannelName = t('trend.unknownChannel');
+        const displayName = channelName === 'Unknown Channel' || channelName === unknownChannelName
+          ? `${unknownChannelName} ⚠️`
           : channelName;
 
         const item = TemplateEngine.render('tpl-channel-filter-item', {
@@ -1415,7 +1426,7 @@ function shouldShowZoom(points, hours, trendType) {
       const types = await window.ChannelTypeManager.getChannelTypes();
 
       // 添加"全部"选项
-      select.innerHTML = '<option value="all">全部</option>';
+      select.innerHTML = `<option value="all">${t('common.all')}</option>`;
       types.forEach(type => {
         const option = document.createElement('option');
         option.value = type.value;
@@ -1464,7 +1475,7 @@ function shouldShowZoom(points, hours, trendType) {
           const label = document.getElementById('data-timerange');
           if (label) {
             const rangeLabel = window.getRangeLabel ? getRangeLabel(range) : range;
-            label.textContent = `${rangeLabel}数据展示`;
+            label.textContent = t('trend.dataDisplay', { range: rangeLabel });
           }
           persistState();
           // 时间范围变更时重新加载模型列表
@@ -1592,7 +1603,7 @@ function shouldShowZoom(points, hours, trendType) {
         const label = document.getElementById('data-timerange');
         if (label) {
           const rangeLabel = window.getRangeLabel ? getRangeLabel(window.currentRange) : window.currentRange;
-          label.textContent = `${rangeLabel}数据展示`;
+          label.textContent = t('trend.dataDisplay', { range: rangeLabel });
         }
 
         // 恢复趋势类型

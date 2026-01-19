@@ -8,7 +8,7 @@ let currentChannelKeyCooldowns = []; // 当前编辑渠道的Key冷却信息
 let redirectTableData = []; // 模型重定向表格数据: [{from: '', to: ''}]
 let selectedModelIndices = new Set(); // 选中的模型索引集合
 let currentModelFilter = ''; // 模型名称筛选关键字
-let defaultTestContent = 'sonnet 4.0的发布日期是什么'; // 默认测试内容（从设置加载）
+let defaultTestContent = 'When was Claude 3.5 Sonnet released?'; // Default test content (loaded from settings)
 let channelStatsRange = 'today'; // 渠道统计时间范围（从设置加载）
 let channelsCache = {}; // 按类型缓存渠道数据: {type: channels[]}
 
@@ -56,10 +56,10 @@ function humanizeMS(ms) {
   s = s % 3600;
   const m = Math.floor(s / 60);
   s = s % 60;
-  
-  if (h > 0) return `${h}小时${m}分`;
-  if (m > 0) return `${m}分${s}秒`;
-  return `${s}秒`;
+
+  if (h > 0) return window.t('common.timeHM', { h, m });
+  if (m > 0) return window.t('common.timeMS', { m, s });
+  return window.t('common.timeS', { s });
 }
 
 function formatMetricNumber(value) {
@@ -88,7 +88,7 @@ function formatAvgFirstByte(value) {
   if (value === null || value === undefined) return '--';
   const num = Number(value);
   if (!Number.isFinite(num) || num <= 0) return '--';
-  return num.toFixed(2) + '秒';
+  return num.toFixed(2) + window.t('common.seconds');
 }
 
 function formatCostValue(cost) {
@@ -101,13 +101,14 @@ function formatCostValue(cost) {
 }
 
 function getStatsRangeLabel(range) {
-  const labels = {
-    'today': '本日',
-    'this_week': '本周',
-    'this_month': '本月',
-    'all': '全部'
+  const keyMap = {
+    'today': 'index.timeRange.today',
+    'this_week': 'index.timeRange.thisWeek',
+    'this_month': 'index.timeRange.thisMonth',
+    'all': 'common.all'
   };
-  return labels[range] || '本日';
+  const key = keyMap[range] || 'index.timeRange.today';
+  return window.t(key);
 }
 
 function formatTimestampForFilename() {
@@ -122,25 +123,25 @@ function maskKey(key) {
   return key.slice(0, 4) + '***' + key.slice(-4);
 }
 
-// 标记表单有未保存的更改
+// Mark form as having unsaved changes
 function markChannelFormDirty() {
   channelFormDirty = true;
   const saveBtn = document.getElementById('channelSaveBtn');
   if (saveBtn && !saveBtn.classList.contains('btn-warning')) {
     saveBtn.classList.remove('btn-primary');
     saveBtn.classList.add('btn-warning');
-    saveBtn.textContent = '保存 *';
+    saveBtn.textContent = window.t('common.save') + ' *';
   }
 }
 
-// 重置表单dirty状态
+// Reset form dirty state
 function resetChannelFormDirty() {
   channelFormDirty = false;
   const saveBtn = document.getElementById('channelSaveBtn');
   if (saveBtn) {
     saveBtn.classList.remove('btn-warning');
     saveBtn.classList.add('btn-primary');
-    saveBtn.textContent = '保存';
+    saveBtn.textContent = window.t('common.save');
   }
 }
 

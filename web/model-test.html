@@ -7,9 +7,12 @@
   <link rel="apple-touch-icon" href="/web/apple-touch-icon.png">
   <link rel="manifest" href="/web/manifest.json">
   <meta name="theme-color" content="#3b82f6">
-  <title>模型测试 - Claude Code & Codex Proxy</title>
+  <title data-i18n="modelTest.title">模型测试 - Claude Code & Codex Proxy</title>
   <link rel="stylesheet" href="/web/assets/css/styles.css?v=__VERSION__">
   <link href="/web/assets/css/inter.css?v=__VERSION__" rel="stylesheet">
+  <script src="/web/assets/locales/zh-CN.js?v=__VERSION__"></script>
+  <script src="/web/assets/locales/en.js?v=__VERSION__"></script>
+  <script src="/web/assets/js/i18n.js?v=__VERSION__"></script>
 </head>
 <body>
   <div class="app-container">
@@ -23,32 +26,32 @@
           <!-- 控制栏 -->
           <div style="display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center;">
             <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-              <span style="color: var(--color-text-secondary);">渠道</span>
+              <span style="color: var(--color-text-secondary);" data-i18n="modelTest.channel">渠道</span>
               <div id="testChannelSelectContainer"></div>
             </label>
             <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-              <span style="color: var(--color-text-secondary);">类型</span>
+              <span style="color: var(--color-text-secondary);" data-i18n="common.type">类型</span>
               <select id="testChannelType" style="padding: 6px 8px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px;">
               </select>
             </label>
             <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; flex: 1; min-width: 200px;">
-              <span style="color: var(--color-text-secondary);">内容</span>
-              <input type="text" id="modelTestContent" value="" placeholder="加载中..." style="flex: 1; padding: 6px 10px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px;">
+              <span style="color: var(--color-text-secondary);" data-i18n="modelTest.content">内容</span>
+              <input type="text" id="modelTestContent" value="" data-i18n-placeholder="common.loading" placeholder="加载中..." style="flex: 1; padding: 6px 10px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px;">
             </label>
             <span id="testProgress" style="font-size: 13px; color: var(--color-text-secondary);"></span>
-            <button onclick="selectAllModels()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;">全选</button>
-            <button onclick="deselectAllModels()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;">取消全选</button>
-            <button onclick="fetchAndAddModels()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;">获取模型</button>
-            <button onclick="deleteSelectedModels()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px; color: var(--error-500);">删除模型</button>
+            <button onclick="selectAllModels()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;" data-i18n="modelTest.selectAll">全选</button>
+            <button onclick="deselectAllModels()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;" data-i18n="modelTest.deselectAll">取消全选</button>
+            <button onclick="fetchAndAddModels()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;" data-i18n="modelTest.fetchModels">获取模型</button>
+            <button onclick="deleteSelectedModels()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px; color: var(--error-500);" data-i18n="modelTest.deleteModels">删除模型</button>
             <label style="display: flex; align-items: center; gap: 4px; font-size: 13px; cursor: pointer;">
               <input type="checkbox" id="streamEnabled" style="width: 16px; height: 16px;">
-              <span>流式</span>
+              <span data-i18n="modelTest.stream">流式</span>
             </label>
             <label style="display: flex; align-items: center; gap: 4px; font-size: 13px;">
-              <span>并发</span>
+              <span data-i18n="modelTest.concurrency">并发</span>
               <input type="number" id="concurrency" value="5" min="1" max="20" style="width: 50px; padding: 4px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px; text-align: center;">
             </label>
-            <button id="runTestBtn" onclick="runModelTests()" class="btn btn-primary" style="font-size: 13px; padding: 8px 16px;">开始测试</button>
+            <button id="runTestBtn" onclick="runModelTests()" class="btn btn-primary" style="font-size: 13px; padding: 8px 16px;" data-i18n="modelTest.startTest">开始测试</button>
           </div>
 
           <!-- 模型测试表格 -->
@@ -57,18 +60,18 @@
               <thead style="position: sticky; top: 0; background: var(--glass-bg); z-index: 1;">
                 <tr>
                   <th style="width: 30px;"><input type="checkbox" id="selectAllCheckbox" onchange="toggleAllModels(this.checked)"></th>
-                  <th style="width: 200px;">模型</th>
-                  <th style="width: 70px;">耗时</th>
-                  <th style="width: 65px;">输入</th>
-                  <th style="width: 65px;">输出</th>
-                  <th style="width: 65px;">缓读</th>
-                  <th style="width: 65px;">缓建</th>
-                  <th style="width: 80px;">费用</th>
-                  <th>响应内容</th>
+                  <th style="width: 200px;" data-i18n="common.model">模型</th>
+                  <th style="width: 70px;" data-i18n="modelTest.duration">耗时</th>
+                  <th style="width: 65px;" data-i18n="common.input">输入</th>
+                  <th style="width: 65px;" data-i18n="common.output">输出</th>
+                  <th style="width: 65px;" data-i18n="modelTest.cacheRead">缓读</th>
+                  <th style="width: 65px;" data-i18n="modelTest.cacheCreate">缓建</th>
+                  <th style="width: 80px;" data-i18n="common.cost">费用</th>
+                  <th data-i18n="modelTest.responseContent">响应内容</th>
                 </tr>
               </thead>
               <tbody id="model-test-tbody">
-                <tr><td colspan="9" style="text-align: center; color: var(--color-text-secondary); padding: 40px;">请先选择渠道</td></tr>
+                <tr><td colspan="9" style="text-align: center; color: var(--color-text-secondary); padding: 40px;" data-i18n="modelTest.selectChannelFirst">请先选择渠道</td></tr>
               </tbody>
             </table>
           </div>
@@ -99,5 +102,12 @@
   <script src="/web/assets/js/template-engine.js?v=__VERSION__"></script>
   <script src="/web/assets/js/ui.js?v=__VERSION__"></script>
   <script src="/web/assets/js/model-test.js?v=__VERSION__"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      if (window.i18n) {
+        window.i18n.translatePage();
+      }
+    });
+  </script>
 </body>
 </html>

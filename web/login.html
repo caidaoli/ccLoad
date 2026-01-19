@@ -7,7 +7,7 @@
   <link rel="apple-touch-icon" href="/web/apple-touch-icon.png">
   <link rel="manifest" href="/web/manifest.json">
   <meta name="theme-color" content="#3b82f6">
-  <title>登录 - Claude Code & Codex Proxy</title>
+  <title data-i18n="login.title">登录 - Claude Code & Codex Proxy</title>
   <link rel="stylesheet" href="/web/assets/css/styles.css?v=__VERSION__">
   <link href="/web/assets/css/inter.css?v=__VERSION__" rel="stylesheet">
 </head>
@@ -31,14 +31,14 @@
           <img class="logo-icon animate-float" src="/web/favicon.svg" alt="Logo">
         </div>
         <h1 class="brand-title">Claude Code & Codex Proxy</h1>
-        <p class="brand-subtitle">智能API代理管理系统</p>
+        <p class="brand-subtitle" data-i18n="login.brandSubtitle">智能API代理管理系统</p>
       </div>
 
       <!-- 登录表单 -->
       <div class="login-form-container">
         <div class="login-header">
-          <h2>管理员登录</h2>
-          <p>请输入您的管理密码以访问系统</p>
+          <h2 data-i18n="login.adminLogin">管理员登录</h2>
+          <p data-i18n="login.passwordHint">请输入您的管理密码以访问系统</p>
         </div>
 
         <div id="error-message" class="error-notification" style="display: none;">
@@ -54,10 +54,10 @@
               <svg class="label-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
               </svg>
-              管理密码
+              <span data-i18n="login.passwordLabel">管理密码</span>
             </label>
             <div class="input-container">
-              <input type="password" id="password" name="password" class="form-input" required autofocus placeholder="请输入管理密码" />
+              <input type="password" id="password" name="password" class="form-input" required autofocus data-i18n-placeholder="login.passwordPlaceholder" placeholder="请输入管理密码" />
               <div class="input-decoration"></div>
             </div>
           </div>
@@ -67,7 +67,7 @@
               <svg class="button-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"/>
               </svg>
-              <span class="button-text">登录系统</span>
+              <span class="button-text" data-i18n="login.loginButton">登录系统</span>
             </span>
             <div class="button-loader">
               <div class="spinner"></div>
@@ -81,8 +81,8 @@
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.031 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
           </svg>
           <div class="notice-text">
-            <div class="notice-title">安全保护</div>
-            <div class="notice-desc">您的登录会话将在24小时后自动过期</div>
+            <div class="notice-title" data-i18n="login.securityTitle">安全保护</div>
+            <div class="notice-desc" data-i18n="login.securityDesc">您的登录会话将在24小时后自动过期</div>
           </div>
         </div>
       </div>
@@ -90,7 +90,7 @@
 
     <!-- 功能特色展示 -->
     <div class="features-showcase animate-slide-up" style="animation-delay: 0.2s;">
-      <h3>系统特性</h3>
+      <h3 data-i18n="login.featuresTitle">系统特性</h3>
       <div class="features-grid">
         <div class="feature-item">
           <div class="feature-icon">
@@ -99,8 +99,8 @@
             </svg>
           </div>
           <div class="feature-content">
-            <h4>智能路由</h4>
-            <p>基于负载均衡的智能请求分发</p>
+            <h4 data-i18n="login.feature1Title">智能路由</h4>
+            <p data-i18n="login.feature1Desc">基于负载均衡的智能请求分发</p>
           </div>
         </div>
         <div class="feature-item">
@@ -110,8 +110,8 @@
             </svg>
           </div>
           <div class="feature-content">
-            <h4>故障切换</h4>
-            <p>自动检测并切换到可用节点</p>
+            <h4 data-i18n="login.feature2Title">故障切换</h4>
+            <p data-i18n="login.feature2Desc">自动检测并切换到可用节点</p>
           </div>
         </div>
         <div class="feature-item">
@@ -121,8 +121,8 @@
             </svg>
           </div>
           <div class="feature-content">
-            <h4>实时监控</h4>
-            <p>详细的请求统计和性能分析</p>
+            <h4 data-i18n="login.feature3Title">实时监控</h4>
+            <p data-i18n="login.feature3Desc">详细的请求统计和性能分析</p>
           </div>
         </div>
       </div>
@@ -130,7 +130,18 @@
   </div>
 
 
+  <script src="/web/assets/locales/zh-CN.js?v=__VERSION__"></script>
+  <script src="/web/assets/locales/en.js?v=__VERSION__"></script>
+  <script src="/web/assets/js/i18n.js?v=__VERSION__"></script>
   <script src="/web/assets/js/ui.js?v=__VERSION__"></script>
   <script src="/web/assets/js/login.js?v=__VERSION__"></script>
+  <script>
+    // 页面加载后翻译
+    document.addEventListener('DOMContentLoaded', function() {
+      if (window.i18n) {
+        window.i18n.translatePage();
+      }
+    });
+  </script>
 </body>
 </html>

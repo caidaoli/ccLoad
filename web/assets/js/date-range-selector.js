@@ -12,17 +12,20 @@
 (function(window) {
   'use strict';
 
-  // 时间范围预设 (key → 显示标签)
+  const t = window.t;
+
+  // 时间范围预设 (key → i18n key)
   // key与后端GetTimeRange()支持的range参数一致
-  const DATE_RANGES = {
-    'today': { label: '本日' },
-    'yesterday': { label: '昨日' },
-    'day_before_yesterday': { label: '前日' },
-    'this_week': { label: '本周' },
-    'last_week': { label: '上周' },
-    'this_month': { label: '本月' },
-    'last_month': { label: '上月' }
-  };
+  const DATE_RANGE_KEYS = [
+    { value: 'today', i18nKey: 'index.timeRange.today', fallback: 'Today' },
+    { value: 'yesterday', i18nKey: 'index.timeRange.yesterday', fallback: 'Yesterday' },
+    { value: 'day_before_yesterday', i18nKey: 'index.timeRange.dayBeforeYesterday', fallback: 'Day Before' },
+    { value: 'this_week', i18nKey: 'index.timeRange.thisWeek', fallback: 'This Week' },
+    { value: 'last_week', i18nKey: 'index.timeRange.lastWeek', fallback: 'Last Week' },
+    { value: 'this_month', i18nKey: 'index.timeRange.thisMonth', fallback: 'This Month' },
+    { value: 'last_month', i18nKey: 'index.timeRange.lastMonth', fallback: 'Last Month' }
+  ];
+
 
   /**
    * 初始化时间范围选择器
@@ -33,22 +36,34 @@
   window.initDateRangeSelector = function(elementId, defaultRange, onChangeCallback) {
     const selectEl = document.getElementById(elementId);
     if (!selectEl) {
-      console.error(`时间范围选择器初始化失败: 未找到元素 #${elementId}`);
+      console.error(`Date range selector init failed: element #${elementId} not found`);
       return;
     }
 
-    // 清空并重新生成选项
-    selectEl.innerHTML = '';
-    Object.keys(DATE_RANGES).forEach(key => {
-      const range = DATE_RANGES[key];
-      const option = document.createElement('option');
-      option.value = key; // 使用range key作为value
-      option.textContent = range.label;
-      selectEl.appendChild(option);
-    });
+    // 渲染选项
+    function renderOptions() {
+      const currentValue = selectEl.value;
+      selectEl.innerHTML = '';
+      DATE_RANGE_KEYS.forEach(range => {
+        const option = document.createElement('option');
+        option.value = range.value;
+        option.textContent = t(range.i18nKey, range.fallback);
+        selectEl.appendChild(option);
+      });
+      // 恢复之前的选择
+      if (currentValue && DATE_RANGE_KEYS.some(r => r.value === currentValue)) {
+        selectEl.value = currentValue;
+      }
+    }
+
+    // 初次渲染
+    renderOptions();
+
+    // 监听语言切换事件
+    window.i18n.onLocaleChange(renderOptions);
 
     // 设置默认值
-    const validDefault = DATE_RANGES[defaultRange] ? defaultRange : 'today';
+    const validDefault = DATE_RANGE_KEYS.some(r => r.value === defaultRange) ? defaultRange : 'today';
     selectEl.value = validDefault;
 
     // 绑定change事件
@@ -65,7 +80,8 @@
    * @returns {string} 显示标签
    */
   window.getRangeLabel = function(rangeKey) {
-    return DATE_RANGES[rangeKey]?.label || '本日';
+    const range = DATE_RANGE_KEYS.find(r => r.value === rangeKey);
+    return range ? t(range.i18nKey, range.fallback) : t('index.timeRange.today', 'Today');
   };
 
   /**

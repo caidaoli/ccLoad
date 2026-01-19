@@ -20,7 +20,7 @@ async function testChannel(id, name) {
   try {
     apiKeys = (await fetchDataWithAuth(`/admin/channels/${id}/keys`)) || [];
   } catch (e) {
-    console.error('获取API Keys失败', e);
+    console.error('Failed to fetch API keys', e);
   }
 
   const keys = apiKeys.map(k => k.api_key || k);
@@ -44,7 +44,7 @@ async function testChannel(id, name) {
     if (keys.length > 10) {
       const hintOption = document.createElement('option');
       hintOption.disabled = true;
-      hintOption.textContent = `... 还有 ${keys.length - 10} 个Key（使用批量测试）`;
+      hintOption.textContent = window.t('channels.test.moreKeysHint', { count: keys.length - 10 });
       keySelect.appendChild(hintOption);
     }
   } else {
@@ -90,7 +90,7 @@ async function runChannelTest() {
   const streamEnabled = streamCheckbox.checked;
 
   if (!selectedModel) {
-    if (window.showError) window.showError('请选择一个模型');
+    if (window.showError) window.showError(window.t('channels.test.selectModelRequired'));
     return;
   }
 
@@ -115,13 +115,13 @@ async function runChannelTest() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(testRequest)
     });
-    displayTestResult(testResult || { success: false, error: '空响应' });
+    displayTestResult(testResult || { success: false, error: window.t('error.emptyResponse') });
   } catch (e) {
-    console.error('测试失败', e);
+    console.error('Test failed', e);
 
     displayTestResult({
       success: false,
-      error: '测试请求失败: ' + e.message
+      error: window.t('channels.test.requestFailed') + e.message
     });
   } finally {
     document.getElementById('testProgress').classList.remove('show');
@@ -142,12 +142,12 @@ async function runBatchTest() {
   try {
     apiKeys = (await fetchDataWithAuth(`/admin/channels/${testingChannelId}/keys`)) || [];
   } catch (e) {
-    console.error('获取API Keys失败', e);
+    console.error('Failed to fetch API keys', e);
   }
 
   const keys = apiKeys.map(k => k.api_key || k);
   if (keys.length === 0) {
-    if (window.showError) window.showError('没有可用的API Key');
+    if (window.showError) window.showError(window.t('channels.test.noApiKey'));
     return;
   }
 
@@ -164,7 +164,7 @@ async function runBatchTest() {
   const concurrency = Math.max(1, Math.min(50, parseInt(concurrencyInput.value) || 10));
 
   if (!selectedModel) {
-    if (window.showError) window.showError('请选择一个模型');
+    if (window.showError) window.showError(window.t('channels.test.selectModelRequired'));
     return;
   }
 
@@ -188,7 +188,7 @@ async function runBatchTest() {
     const progress = (completedCount / keys.length * 100).toFixed(0);
     counterSpan.textContent = `${completedCount} / ${keys.length}`;
     progressBar.style.width = `${progress}%`;
-    statusDiv.textContent = `已完成 ${completedCount} / ${keys.length}（并发数: ${concurrency}）`;
+    statusDiv.textContent = window.t('channels.test.progressStatus', { completed: completedCount, total: keys.length, concurrency });
   };
 
   const testSingleKey = async (keyIndex) => {
@@ -256,7 +256,7 @@ function displayBatchTestResult(successCount, failedCount, totalCount, failedKey
   testResultDiv.classList.remove('success', 'error');
   testResultDiv.classList.add('show');
 
-  statusDiv.textContent = `完成！成功: ${successCount}, 失败: ${failedCount}`;
+  statusDiv.textContent = window.t('channels.test.completed', { success: successCount, failed: failedCount });
 
   // 使用模板渲染头部
   const renderHeader = (icon, message) => {
@@ -280,16 +280,16 @@ function displayBatchTestResult(successCount, failedCount, totalCount, failedKey
 
   if (failedCount === 0) {
     testResultDiv.classList.add('success');
-    renderHeader('✅', `批量测试完成：全部 ${totalCount} 个Key测试成功`);
+    renderHeader('✅', window.t('channels.test.batchAllSuccess', { count: totalCount }));
     detailsDiv.innerHTML = '';
   } else if (successCount === 0) {
     testResultDiv.classList.add('error');
-    renderHeader('❌', `批量测试完成：全部 ${totalCount} 个Key测试失败`);
-    detailsDiv.innerHTML = `<h4 style="margin-top: 12px; color: var(--error-600);">失败详情：</h4>${buildFailDetails()}<p style="color: var(--error-600); margin-top: 8px;">失败的Key已自动冷却</p>`;
+    renderHeader('❌', window.t('channels.test.batchAllFailed', { count: totalCount }));
+    detailsDiv.innerHTML = `<h4 style="margin-top: 12px; color: var(--error-600);">${window.t('channels.test.failDetails')}</h4>${buildFailDetails()}<p style="color: var(--error-600); margin-top: 8px;">${window.t('channels.test.failedKeysAutoCooldown')}</p>`;
   } else {
     testResultDiv.classList.add('success');
-    renderHeader('⚠️', `批量测试完成：${successCount} 个成功，${failedCount} 个失败`);
-    detailsDiv.innerHTML = `<p style="color: var(--success-600);">✅ ${successCount} 个Key可用</p><h4 style="margin-top: 12px; color: var(--error-600);">失败详情：</h4>${buildFailDetails()}<p style="color: var(--error-600); margin-top: 8px;">失败的Key已自动冷却</p>`;
+    renderHeader('⚠️', window.t('channels.test.batchPartial', { success: successCount, failed: failedCount }));
+    detailsDiv.innerHTML = `<p style="color: var(--success-600);">✅ ${window.t('channels.test.keysAvailable', { count: successCount })}</p><h4 style="margin-top: 12px; color: var(--error-600);">${window.t('channels.test.failDetails')}</h4>${buildFailDetails()}<p style="color: var(--error-600); margin-top: 8px;">${window.t('channels.test.failedKeysAutoCooldown')}</p>`;
   }
 }
 
@@ -311,7 +311,7 @@ function displayTestResult(result) {
   // 渲染响应区块
   const renderResponseSection = (title, content, display = 'none', hasToggle = true) => {
     const contentId = `response-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    const toggleBtn = hasToggle ? `<button class="toggle-btn" onclick="toggleResponse('${contentId}')">显示/隐藏</button>` : '';
+    const toggleBtn = hasToggle ? `<button class="toggle-btn" onclick="toggleResponse('${contentId}')">${window.t('channels.test.toggleResponse')}</button>` : '';
     const section = TemplateEngine.render('tpl-response-section', {
       title,
       toggleBtn,
@@ -324,45 +324,45 @@ function displayTestResult(result) {
 
   if (result.success) {
     testResultDiv.classList.add('success');
-    renderHeader('✅', result.message || 'API测试成功');
+    renderHeader('✅', result.message || window.t('channels.test.apiTestSuccess'));
 
-    let details = `响应时间: ${result.duration_ms}ms`;
+    let details = `${window.t('channels.test.responseTime')}: ${result.duration_ms}ms`;
     if (result.status_code) {
-      details += ` | 状态码: ${result.status_code}`;
+      details += ` | ${window.t('channels.test.statusCode')}: ${result.status_code}`;
     }
 
     if (result.response_text) {
-      details += renderResponseSection('API 响应内容', result.response_text, 'block', false);
+      details += renderResponseSection(window.t('channels.test.apiResponseContent'), result.response_text, 'block', false);
     }
 
     if (result.api_response) {
-      details += renderResponseSection('完整 API 响应', JSON.stringify(result.api_response, null, 2));
+      details += renderResponseSection(window.t('channels.test.fullApiResponse'), JSON.stringify(result.api_response, null, 2));
     } else if (result.raw_response) {
-      details += renderResponseSection('原始响应', result.raw_response);
+      details += renderResponseSection(window.t('channels.test.rawResponse'), result.raw_response);
     }
 
     detailsDiv.innerHTML = details;
   } else {
     testResultDiv.classList.add('error');
-    renderHeader('❌', '测试失败');
+    renderHeader('❌', window.t('channels.msg.testFailed'));
 
-    // [FIX] 转义 result.error 防止 XSS
-    let details = escapeHtml(result.error || '未知错误');
+    // [FIX] Escape result.error to prevent XSS
+    let details = escapeHtml(result.error || window.t('error.unknown'));
     if (result.duration_ms) {
-      details += `<br>响应时间: ${result.duration_ms}ms`;
+      details += `<br>${window.t('channels.test.responseTime')}: ${result.duration_ms}ms`;
     }
     if (result.status_code) {
-      details += ` | 状态码: ${result.status_code}`;
+      details += ` | ${window.t('channels.test.statusCode')}: ${result.status_code}`;
     }
 
     if (result.api_error) {
-      details += renderResponseSection('完整错误响应', JSON.stringify(result.api_error, null, 2), 'block');
+      details += renderResponseSection(window.t('channels.test.fullErrorResponse'), JSON.stringify(result.api_error, null, 2), 'block');
     }
     if (typeof result.raw_response !== 'undefined') {
-      details += renderResponseSection('原始错误响应', result.raw_response || '(无响应体)', 'block');
+      details += renderResponseSection(window.t('channels.test.rawErrorResponse'), result.raw_response || window.t('channels.test.noResponseBody'), 'block');
     }
     if (result.response_headers) {
-      details += renderResponseSection('响应头', JSON.stringify(result.response_headers, null, 2), 'block');
+      details += renderResponseSection(window.t('channels.test.responseHeaders'), JSON.stringify(result.response_headers, null, 2), 'block');
     }
 
     detailsDiv.innerHTML = details;

@@ -66,18 +66,18 @@
   async function parseAPIResponse(res) {
     const text = await res.text();
     if (!text) {
-      throw new Error(`空响应 (HTTP ${res.status})`);
+      throw new Error(t('error.emptyResponse') + ` (HTTP ${res.status})`);
     }
 
     let payload;
     try {
       payload = JSON.parse(text);
     } catch (e) {
-      throw new Error(`响应不是JSON (HTTP ${res.status})`);
+      throw new Error(t('error.invalidJson') + ` (HTTP ${res.status})`);
     }
 
     if (!payload || typeof payload !== 'object' || typeof payload.success !== 'boolean') {
-      throw new Error(`响应格式不符合APIResponse (HTTP ${res.status})`);
+      throw new Error(t('error.invalidFormat') + ` (HTTP ${res.status})`);
     }
 
     return payload;
@@ -102,13 +102,13 @@
 
   async function fetchData(url, options = {}) {
     const resp = await fetchAPI(url, options);
-    if (!resp.success) throw new Error(resp.error || '请求失败');
+    if (!resp.success) throw new Error(resp.error || t('error.requestFailed'));
     return resp.data;
   }
 
   async function fetchDataWithAuth(url, options = {}) {
     const resp = await fetchAPIWithAuth(url, options);
-    if (!resp.success) throw new Error(resp.error || '请求失败');
+    if (!resp.success) throw new Error(resp.error || t('error.requestFailed'));
     return resp.data;
   }
 
@@ -125,14 +125,14 @@
 // ============================================================
 (function () {
   const NAVS = [
-    { key: 'index', label: '概览', href: '/web/index.html', icon: iconHome },
-    { key: 'channels', label: '渠道管理', href: '/web/channels.html', icon: iconSettings },
-    { key: 'tokens', label: 'API令牌', href: '/web/tokens.html', icon: iconKey },
-    { key: 'stats', label: '调用统计', href: '/web/stats.html', icon: iconBars },
-    { key: 'trend', label: '请求趋势', href: '/web/trend.html', icon: iconTrend },
-    { key: 'logs', label: '日志', href: '/web/logs.html', icon: iconAlert },
-    { key: 'model-test', label: '模型测试', href: '/web/model-test.html', icon: iconTest },
-    { key: 'settings', label: '设置', href: '/web/settings.html', icon: iconCog },
+    { key: 'index', labelKey: 'nav.overview', href: '/web/index.html', icon: iconHome },
+    { key: 'channels', labelKey: 'nav.channels', href: '/web/channels.html', icon: iconSettings },
+    { key: 'tokens', labelKey: 'nav.tokens', href: '/web/tokens.html', icon: iconKey },
+    { key: 'stats', labelKey: 'nav.stats', href: '/web/stats.html', icon: iconBars },
+    { key: 'trend', labelKey: 'nav.trend', href: '/web/trend.html', icon: iconTrend },
+    { key: 'logs', labelKey: 'nav.logs', href: '/web/logs.html', icon: iconAlert },
+    { key: 'model-test', labelKey: 'nav.modelTest', href: '/web/model-test.html', icon: iconTest },
+    { key: 'settings', labelKey: 'nav.settings', href: '/web/settings.html', icon: iconCog },
   ];
 
   function h(tag, attrs = {}, children = []) {
@@ -222,10 +222,10 @@
     }
     if (badgeEl) {
       if (versionInfo.has_update && versionInfo.latest_version) {
-        badgeEl.title = `点击查看新版本: ${versionInfo.latest_version}`;
+        badgeEl.title = t('version.hasUpdate', { version: versionInfo.latest_version });
         badgeEl.classList.add('has-update');
       } else {
-        badgeEl.title = '点击查看发布页面';
+        badgeEl.title = t('version.checkUpdate');
         badgeEl.classList.remove('has-update');
       }
     }
@@ -264,7 +264,7 @@
         href: GITHUB_REPO_URL,
         target: '_blank',
         rel: 'noopener noreferrer',
-        title: 'GitHub仓库'
+        title: t('nav.githubRepo')
       }, [
         h('img', { class: 'brand-icon', src: '/web/favicon.svg', alt: 'Logo' }),
         h('div', { class: 'brand-text' }, 'Claude Code & Codex Proxy')
@@ -273,8 +273,9 @@
     const nav = h('nav', { class: 'topnav' }, [
       ...NAVS.map(n => h('a', {
         class: `topnav-link ${n.key === active ? 'active' : ''}`,
-        href: n.href
-      }, [n.icon(), h('span', {}, n.label)]) )
+        href: n.href,
+        'data-nav-key': n.key
+      }, [n.icon(), h('span', { 'data-i18n': n.labelKey }, t(n.labelKey))]) )
     ]);
     const loggedIn = isLoggedIn();
 
@@ -285,7 +286,7 @@
       href: GITHUB_RELEASES_URL,
       target: '_blank',
       rel: 'noopener noreferrer',
-      title: '点击查看发布页面'
+      title: t('version.checkUpdate')
     }, [
       h('span', { id: 'version-display' }, 'v...')
     ]);
@@ -296,25 +297,31 @@
       target: '_blank',
       rel: 'noopener noreferrer',
       class: 'github-link',
-      title: 'GitHub仓库'
+      title: t('nav.githubRepo')
     }, [iconGitHub()]);
 
     // 版本+GitHub组合成一个视觉组
     const versionGroup = h('div', { class: 'version-group' }, [versionBadge, githubLink]);
 
+    // 语言切换器
+    const langSwitcher = window.i18n ? window.i18n.createLanguageSwitcher() : null;
+
     const right = h('div', { class: 'topbar-right' }, [
       versionGroup,
+      langSwitcher,
       h('button', {
+        id: 'auth-btn',
         class: 'btn btn-secondary btn-sm',
+        'data-i18n': loggedIn ? 'common.logout' : 'common.login',
         onclick: loggedIn ? onLogout : () => location.href = window.getLoginUrl()
-      }, loggedIn ? '注销' : '登录')
-    ]);
+      }, t(loggedIn ? 'common.logout' : 'common.login'))
+    ].filter(Boolean));
     bar.appendChild(left); bar.appendChild(nav); bar.appendChild(right);
     return bar;
   }
 
   async function onLogout() {
-    if (!confirm('确定要注销吗？')) return;
+    if (!confirm(t('confirm.logout'))) return;
 
     // 先清理本地Token，避免后续请求触发token检查
     const token = localStorage.getItem('ccload_token');
@@ -469,14 +476,14 @@
   async function renderChannelTypeRadios(containerId, selectedValue = 'anthropic') {
     const container = document.getElementById(containerId);
     if (!container) {
-      console.error('容器元素不存在:', containerId);
+      console.error('Container element not found:', containerId);
       return;
     }
 
     const types = await getChannelTypes();
 
     container.innerHTML = types.map(type => `
-      <label style="margin-right: 15px; cursor: pointer; display: inline-flex; align-items: center;">
+      <label style="margin-right: 5px; cursor: pointer; display: inline-flex; align-items: center;">
         <input type="radio"
                name="channelType"
                value="${escapeHtml(type.value)}"
@@ -495,7 +502,7 @@
   async function renderChannelTypeSelect(selectId, selectedValue = 'anthropic') {
     const select = document.getElementById(selectId);
     if (!select) {
-      console.error('select元素不存在:', selectId);
+      console.error('select element not found:', selectId);
       return;
     }
 
@@ -518,7 +525,7 @@
   async function renderSearchableChannelTypeSelect(containerId, selectedValue = 'anthropic') {
     const container = document.getElementById(containerId);
     if (!container) {
-      console.error('容器元素不存在:', containerId);
+      console.error('Container element not found:', containerId);
       return;
     }
 
@@ -531,7 +538,7 @@
         <input type="text" class="searchable-select-input"
                value="${escapeHtml(selectedType?.display_name || '')}"
                data-value="${escapeHtml(selectedType?.value || '')}"
-               placeholder="搜索类型..."
+               placeholder="${t('common.searchType')}"
                autocomplete="off"
                style="width: 100%; padding: 6px 8px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px;">
         <div class="searchable-select-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; max-height: 200px; overflow-y: auto; background: #fff; border: 1px solid var(--color-border); border-radius: 6px; margin-top: 2px; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.15);"></div>
@@ -617,14 +624,14 @@
   async function renderChannelTypeTabs(containerId, onTabChange, initialType = null) {
     const container = document.getElementById(containerId);
     if (!container) {
-      console.error('容器元素不存在:', containerId);
+      console.error('Container element not found:', containerId);
       return;
     }
 
     const types = await getChannelTypes();
 
     // 添加"全部"选项到末尾
-    const allTab = { value: 'all', display_name: '全部' };
+    const allTab = { value: 'all', display_name: t('common.all') };
     const allTypes = [...types, allTab];
 
     // 确定初始选中的类型
@@ -633,7 +640,7 @@
     container.innerHTML = allTypes.map((type) => `
       <button class="channel-tab ${type.value === activeType ? 'active' : ''}"
               data-type="${escapeHtml(type.value)}"
-              title="${escapeHtml(type.description || '显示所有渠道类型')}">
+              title="${escapeHtml(type.description || t('common.showAllTypes'))}">
         ${escapeHtml(type.display_name)}
       </button>
     `).join('');

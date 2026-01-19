@@ -88,7 +88,7 @@ function updateModelOptions() {
   });
 
   const modelFilter = document.getElementById('modelFilter');
-  modelFilter.innerHTML = '<option value="all">所有模型</option>';
+  modelFilter.innerHTML = `<option value="all">${window.t('channels.modelAll')}</option>`;
 
   Array.from(modelSet).sort().forEach(model => {
     const option = document.createElement('option');

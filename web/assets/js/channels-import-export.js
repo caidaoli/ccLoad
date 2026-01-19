@@ -30,7 +30,7 @@ async function exportChannelsCSV(buttonEl) {
     const res = await fetchWithAuth('/admin/channels/export');
     if (!res.ok) {
       const errorText = await res.text();
-      throw new Error(errorText || `导出失败 (HTTP ${res.status})`);
+      throw new Error(errorText || window.t('channels.import.exportHttpFailed', { status: res.status }));
     }
 
     const blob = await res.blob();
@@ -43,10 +43,10 @@ async function exportChannelsCSV(buttonEl) {
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
 
-    if (window.showSuccess) window.showSuccess('导出成功');
+    if (window.showSuccess) window.showSuccess(window.t('channels.msg.exportSuccess'));
   } catch (err) {
-    console.error('导出CSV失败', err);
-    if (window.showError) window.showError(err.message || '导出失败');
+    console.error('Export CSV failed', err);
+    if (window.showError) window.showError(err.message || window.t('channels.msg.exportFailed'));
   } finally {
     if (buttonEl) buttonEl.disabled = false;
   }
@@ -72,16 +72,20 @@ async function handleImportCSV(event, importBtn) {
 
     const summary = resp.data;
     if (!resp.success) {
-      throw new Error(resp.error || '导入失败');
+      throw new Error(resp.error || window.t('channels.msg.importFailed'));
     }
     if (summary) {
-      let msg = `导入完成：新增 ${summary.created || 0}，更新 ${summary.updated || 0}，跳过 ${summary.skipped || 0}`;
+      let msg = window.t('channels.import.summary', {
+        created: summary.created || 0,
+        updated: summary.updated || 0,
+        skipped: summary.skipped || 0
+      });
 
       if (summary.redis_sync_enabled) {
         if (summary.redis_sync_success) {
-          msg += `，已同步 ${summary.redis_synced_channels || 0} 个渠道到Redis`;
+          msg += window.t('channels.import.redisSyncSuccess', { count: summary.redis_synced_channels || 0 });
         } else {
-          msg += '，Redis同步失败';
+          msg += window.t('channels.import.redisSyncFailed');
         }
       }
 
@@ -89,22 +93,22 @@ async function handleImportCSV(event, importBtn) {
 
       if (summary.errors && summary.errors.length) {
         const preview = summary.errors.slice(0, 3).join('；');
-        const extra = summary.errors.length > 3 ? ` 等${summary.errors.length}条记录` : '';
-        if (window.showError) window.showError(`部分记录导入失败：${preview}${extra}`);
+        const extra = summary.errors.length > 3 ? window.t('channels.import.moreErrors', { count: summary.errors.length }) : '';
+        if (window.showError) window.showError(window.t('channels.import.partialFailed', { preview, extra }));
       }
 
       if (summary.redis_sync_enabled && !summary.redis_sync_success && summary.redis_sync_error) {
-        if (window.showError) window.showError(`Redis同步失败：${summary.redis_sync_error}`);
+        if (window.showError) window.showError(window.t('channels.import.redisSyncError', { error: summary.redis_sync_error }));
       }
     } else if (window.showSuccess) {
-      window.showSuccess('导入完成');
+      window.showSuccess(window.t('channels.msg.importSuccess'));
     }
 
     clearChannelsCache();
     await loadChannels(filters.channelType);
   } catch (err) {
-    console.error('导入CSV失败', err);
-    if (window.showError) window.showError(err.message || '导入失败');
+    console.error('Import CSV failed', err);
+    if (window.showError) window.showError(err.message || window.t('channels.msg.importFailed'));
   } finally {
     if (importBtn) importBtn.disabled = false;
     input.value = '';

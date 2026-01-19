@@ -7,10 +7,13 @@
   <link rel="apple-touch-icon" href="/web/apple-touch-icon.png">
   <link rel="manifest" href="/web/manifest.json">
   <meta name="theme-color" content="#3b82f6">
-  <title>调用统计 - Claude Code & Codex Proxy</title>
+  <title data-i18n="stats.title">调用统计 - Claude Code & Codex Proxy</title>
   <link rel="stylesheet" href="/web/assets/css/styles.css?v=__VERSION__">
   <link href="/web/assets/css/inter.css?v=__VERSION__" rel="stylesheet">
   <link rel="stylesheet" href="/web/assets/css/channels.css?v=__VERSION__">
+  <script src="/web/assets/locales/zh-CN.js?v=__VERSION__"></script>
+  <script src="/web/assets/locales/en.js?v=__VERSION__"></script>
+  <script src="/web/assets/js/i18n.js?v=__VERSION__"></script>
 </head>
 <body>
   <div class="app-container">
@@ -28,7 +31,7 @@
           <div class="filter-controls">
             <!-- 渠道类型筛选 -->
             <div class="filter-group">
-              <label for="f_channel_type" class="filter-label">渠道类型</label>
+              <label for="f_channel_type" class="filter-label" data-i18n="stats.channelType">渠道类型</label>
               <select id="f_channel_type" class="filter-select" style="min-width: 120px;">
                 <!-- 动态加载渠道类型选项 -->
               </select>
@@ -36,7 +39,7 @@
 
             <!-- 时间范围筛选 -->
             <div class="filter-group">
-              <label for="f_hours" class="filter-label">时间范围</label>
+              <label for="f_hours" class="filter-label" data-i18n="stats.timeRange">时间范围</label>
               <select id="f_hours" class="filter-select" style="min-width: 100px;">
                 <!-- 动态生成选项 by date-range-selector.js -->
               </select>
@@ -44,27 +47,27 @@
 
             <!-- 渠道ID筛选 -->
             <div class="filter-group">
-              <label for="f_id" class="filter-label">渠道ID</label>
-              <input type="number" id="f_id" class="filter-input" placeholder="输入ID..." style="max-width: 100px;">
+              <label for="f_id" class="filter-label" data-i18n="stats.channelId">渠道ID</label>
+              <input type="number" id="f_id" class="filter-input" data-i18n-placeholder="stats.inputIdPlaceholder" placeholder="输入ID..." style="max-width: 100px;">
             </div>
 
             <!-- 渠道名筛选 -->
             <div class="filter-group">
-              <label for="f_name" class="filter-label">渠道名</label>
-              <input type="text" id="f_name" class="filter-input" placeholder="包含文本...">
+              <label for="f_name" class="filter-label" data-i18n="stats.channelName">渠道名</label>
+              <input type="text" id="f_name" class="filter-input" data-i18n-placeholder="stats.containsTextPlaceholder" placeholder="包含文本...">
             </div>
 
             <!-- 模型筛选（合并重复字段） -->
             <div class="filter-group">
-              <label for="f_model" class="filter-label">模型</label>
-              <input type="text" id="f_model" class="filter-input" placeholder="包含文本...">
+              <label for="f_model" class="filter-label" data-i18n="common.model">模型</label>
+              <input type="text" id="f_model" class="filter-input" data-i18n-placeholder="stats.containsTextPlaceholder" placeholder="包含文本...">
             </div>
 
             <!-- 令牌筛选 -->
             <div class="filter-group">
-              <label for="f_auth_token" class="filter-label">令牌</label>
+              <label for="f_auth_token" class="filter-label" data-i18n="stats.token">令牌</label>
               <select id="f_auth_token" class="filter-select" style="min-width: 150px;">
-                <option value="">全部令牌</option>
+                <option value="" data-i18n="stats.allTokens">全部令牌</option>
                 <!-- 动态加载令牌列表 -->
               </select>
             </div>
@@ -73,18 +76,18 @@
             <div class="filter-group" style="align-items: center;">
               <label class="filter-checkbox-label">
                 <input type="checkbox" id="f_hide_zero_success" checked>
-                <span>隐藏0成功</span>
+                <span data-i18n="stats.hideZeroSuccess">隐藏0成功</span>
               </label>
             </div>
 
             <!-- 统计信息 -->
             <div class="filter-info">
-              共 <span id="statsCount">0</span> 条记录
+              <span data-i18n="stats.totalRecordsPrefix">共</span> <span id="statsCount">0</span> <span data-i18n="stats.totalRecordsSuffix">条记录</span>
             </div>
 
             <!-- 操作按钮组 -->
             <div style="flex: none;">
-              <button id="btn_filter" type="button" class="btn btn-primary" style="padding: 8px 16px; font-size: 14px;">筛选</button>
+              <button id="btn_filter" type="button" class="btn btn-primary" style="padding: 8px 16px; font-size: 14px;" data-i18n="common.filter">筛选</button>
             </div>
           </div>
         </div>
@@ -97,8 +100,8 @@
                 <svg class="inline-block w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
                 </svg>
-                详细统计数据
-                <small style="color: var(--neutral-600); font-weight: var(--font-normal); margin-left: var(--space-2);">
+                <span data-i18n="stats.detailTitle">详细统计数据</span>
+                <small style="color: var(--neutral-600); font-weight: var(--font-normal); margin-left: var(--space-2);" data-i18n="stats.sortByPriority">
                   按渠道优先级排序
                 </small>
               </span>
@@ -108,14 +111,14 @@
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
                   </svg>
-                  表格
+                  <span data-i18n="stats.viewTable">表格</span>
                 </button>
                 <button type="button" class="view-toggle-btn" data-view="chart" onclick="switchView('chart')">
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z"/>
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z"/>
                   </svg>
-                  图表
+                  <span data-i18n="stats.viewChart">图表</span>
                 </button>
               </div>
             </h3>
@@ -137,47 +140,47 @@
                 <thead>
                   <tr>
                     <th class="sortable" data-column="channel_name" onclick="sortTable('channel_name')">
-                      渠道名称
+                      <span data-i18n="stats.channelName">渠道名称</span>
                       <span class="sort-indicator" id="sort-channel_name"></span>
                     </th>
                     <th class="sortable" data-column="model" onclick="sortTable('model')">
-                      模型
+                      <span data-i18n="common.model">模型</span>
                       <span class="sort-indicator" id="sort-model"></span>
                     </th>
                     <th class="sortable" data-column="success" onclick="sortTable('success')" style="color: var(--success-400);">
-                      成功
+                      <span data-i18n="common.success">成功</span>
                       <span class="sort-indicator" id="sort-success"></span>
                     </th>
                     <th class="sortable" data-column="error" onclick="sortTable('error')" style="color: var(--error-400);">
-                      失败
+                      <span data-i18n="common.failed">失败</span>
                       <span class="sort-indicator" id="sort-error"></span>
                     </th>
                     <th class="sortable" data-column="avg_first_byte_time" onclick="sortTable('avg_first_byte_time')">
-                      平均首字/耗时(秒)
+                      <span data-i18n="stats.avgFirstByte">平均首字/耗时(秒)</span>
                       <span class="sort-indicator" id="sort-avg_first_byte_time"></span>
                     </th>
-                    <th class="sortable" data-column="rpm" onclick="sortTable('rpm')" title="每分钟请求数(峰值/平均/最近)">
-                      RPM(峰/均/近)
+                    <th class="sortable" data-column="rpm" onclick="sortTable('rpm')" data-i18n-title="stats.rpmTitle" title="每分钟请求数(峰值/平均/最近)">
+                      <span data-i18n="stats.rpm">RPM(峰/均/近)</span>
                       <span class="sort-indicator" id="sort-rpm"></span>
                     </th>
                     <th class="sortable" data-column="total_input_tokens" onclick="sortTable('total_input_tokens')">
-                      输入Token
+                      <span data-i18n="stats.inputTokens">输入Token</span>
                       <span class="sort-indicator" id="sort-total_input_tokens"></span>
                     </th>
                     <th class="sortable" data-column="total_output_tokens" onclick="sortTable('total_output_tokens')">
-                      输出Token
+                      <span data-i18n="stats.outputTokens">输出Token</span>
                       <span class="sort-indicator" id="sort-total_output_tokens"></span>
                     </th>
                     <th class="sortable" data-column="total_cache_read" onclick="sortTable('total_cache_read')" style="color: var(--success-600);">
-                      缓存读取
+                      <span data-i18n="stats.cacheRead">缓存读取</span>
                       <span class="sort-indicator" id="sort-total_cache_read"></span>
                     </th>
                     <th class="sortable" data-column="total_cache_creation" onclick="sortTable('total_cache_creation')" style="color: var(--primary-600);">
-                      缓存创建
+                      <span data-i18n="stats.cacheCreation">缓存创建</span>
                       <span class="sort-indicator" id="sort-total_cache_creation"></span>
                     </th>
                     <th class="sortable" data-column="total_cost" onclick="sortTable('total_cost')" style="color: var(--warning-600);">
-                      成本($)
+                      <span data-i18n="stats.costUsd">成本($)</span>
                       <span class="sort-indicator" id="sort-total_cost"></span>
                     </th>
                   </tr>
@@ -186,7 +189,7 @@
                   <tr>
                     <td colspan="12" class="loading-state">
                       <div class="loading-spinner" style="margin: 0 auto var(--space-2)"></div>
-                      正在加载统计数据...
+                      <span data-i18n="stats.loading">正在加载统计数据...</span>
                     </td>
                   </tr>
                 </tbody>
@@ -199,34 +202,34 @@
                 <!-- 第1行：调用次数 -->
                 <!-- 渠道调用次数饼图 -->
                 <div class="chart-card">
-                  <h4 class="chart-title">渠道调用次数</h4>
+                  <h4 class="chart-title" data-i18n="stats.chartChannelCalls">渠道调用次数</h4>
                   <div id="chart-channel-calls" class="pie-chart-container"></div>
                 </div>
                 <!-- 模型调用次数饼图 -->
                 <div class="chart-card">
-                  <h4 class="chart-title">模型调用次数</h4>
+                  <h4 class="chart-title" data-i18n="stats.chartModelCalls">模型调用次数</h4>
                   <div id="chart-model-calls" class="pie-chart-container"></div>
                 </div>
                 <!-- 第2行：成本 -->
                 <!-- 渠道成本饼图 -->
                 <div class="chart-card">
-                  <h4 class="chart-title">渠道成本</h4>
+                  <h4 class="chart-title" data-i18n="stats.chartChannelCost">渠道成本</h4>
                   <div id="chart-channel-cost" class="pie-chart-container"></div>
                 </div>
                 <!-- 模型成本饼图 -->
                 <div class="chart-card">
-                  <h4 class="chart-title">模型成本</h4>
+                  <h4 class="chart-title" data-i18n="stats.chartModelCost">模型成本</h4>
                   <div id="chart-model-cost" class="pie-chart-container"></div>
                 </div>
                 <!-- 第3行：Token用量 -->
                 <!-- 渠道Token用量饼图 -->
                 <div class="chart-card">
-                  <h4 class="chart-title">渠道Token用量</h4>
+                  <h4 class="chart-title" data-i18n="stats.chartChannelTokens">渠道Token用量</h4>
                   <div id="chart-channel-tokens" class="pie-chart-container"></div>
                 </div>
                 <!-- 模型Token用量饼图 -->
                 <div class="chart-card">
-                  <h4 class="chart-title">模型Token用量</h4>
+                  <h4 class="chart-title" data-i18n="stats.chartModelTokens">模型Token用量</h4>
                   <div id="chart-model-tokens" class="pie-chart-container"></div>
                 </div>
               </div>
@@ -242,7 +245,7 @@
     <tr>
       <td colspan="{{colspan}}" class="loading-state">
         <div class="loading-spinner" style="margin: 0 auto var(--space-2)"></div>
-        正在加载统计数据...
+        <span data-i18n="stats.loading">正在加载统计数据...</span>
       </td>
     </tr>
   </template>
@@ -254,8 +257,8 @@
         <svg class="w-12 h-12 mx-auto mb-4" style="color: var(--error-400);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.864-.833-2.634 0L4.18 16.5c-.77.833.192 2.5 1.732 2.5z"/>
         </svg>
-        <div style="color: var(--error-400); font-weight: var(--font-medium); margin-bottom: var(--space-1);">加载失败</div>
-        <div>请检查网络连接或重试</div>
+        <div style="color: var(--error-400); font-weight: var(--font-medium); margin-bottom: var(--space-1);" data-i18n="stats.loadFailed">加载失败</div>
+        <div data-i18n="stats.checkNetwork">请检查网络连接或重试</div>
       </td>
     </tr>
   </template>
@@ -267,8 +270,8 @@
         <svg class="w-12 h-12 mx-auto mb-4" style="color: var(--neutral-400);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
         </svg>
-        <div style="font-weight: var(--font-medium); margin-bottom: var(--space-1); color: var(--neutral-700);">暂无统计数据</div>
-        <div>请调整筛选条件或检查时间范围</div>
+        <div style="font-weight: var(--font-medium); margin-bottom: var(--space-1); color: var(--neutral-700);" data-i18n="stats.noData">暂无统计数据</div>
+        <div data-i18n="stats.adjustFilter">请调整筛选条件或检查时间范围</div>
       </td>
     </tr>
   </template>
@@ -297,7 +300,7 @@
   <!-- 合计行模板 -->
   <template id="tpl-stats-total">
     <tr style="background-color: var(--primary-50); font-weight: bold; border-top: 2px solid var(--primary-200);">
-      <td colspan="2" style="text-align: center; font-size: 15px; color: var(--primary-700);">合计</td>
+      <td colspan="2" style="text-align: center; font-size: 15px; color: var(--primary-700);" data-i18n="stats.total">合计</td>
       <td><span class="success-count">{{successCount}}</span></td>
       <td><span class="error-count">{{errorCount}}</span></td>
       <td style="text-align: center;"></td>
@@ -315,5 +318,12 @@
   <script src="/web/assets/js/date-range-selector.js?v=__VERSION__"></script>
   <script src="/web/assets/js/ui.js?v=__VERSION__"></script>
   <script src="/web/assets/js/stats.js?v=__VERSION__"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      if (window.i18n) {
+        window.i18n.translatePage();
+      }
+    });
+  </script>
 </body>
 </html>

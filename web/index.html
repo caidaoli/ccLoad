@@ -7,7 +7,7 @@
   <link rel="apple-touch-icon" href="/web/apple-touch-icon.png">
   <link rel="manifest" href="/web/manifest.json">
   <meta name="theme-color" content="#3b82f6">
-  <title>Claude Code & Codex Proxy 代理服务</title>
+  <title data-i18n="index.title">Claude Code & Codex Proxy 代理服务</title>
   <link rel="stylesheet" href="/web/assets/css/styles.css?v=__VERSION__">
   <link href="/web/assets/css/inter.css?v=__VERSION__" rel="stylesheet">
 </head>
@@ -26,10 +26,10 @@
               </svg>
             </div>
             <div>
-              <h1 class="hero-title">
+              <h1 class="hero-title" data-i18n="index.heroTitle">
                 Claude Code & Codex API 代理服务
               </h1>
-              <p class="hero-subtitle">
+              <p class="hero-subtitle" data-i18n="index.heroSubtitle">
                 智能路由 · 故障切换 · 统计分析
               </p>
             </div>
@@ -40,13 +40,13 @@
         <section class="mb-4">
           <div class="time-range-container">
             <div class="time-range-selector">
-              <button class="time-range-btn active" data-range="today">本日</button>
-              <button class="time-range-btn" data-range="yesterday">昨日</button>
-              <button class="time-range-btn" data-range="day_before_yesterday">前日</button>
-              <button class="time-range-btn" data-range="this_week">本周</button>
-              <button class="time-range-btn" data-range="last_week">上周</button>
-              <button class="time-range-btn" data-range="this_month">本月</button>
-              <button class="time-range-btn" data-range="last_month">上月</button>
+              <button class="time-range-btn active" data-range="today" data-i18n="index.timeRange.today">本日</button>
+              <button class="time-range-btn" data-range="yesterday" data-i18n="index.timeRange.yesterday">昨日</button>
+              <button class="time-range-btn" data-range="day_before_yesterday" data-i18n="index.timeRange.dayBeforeYesterday">前日</button>
+              <button class="time-range-btn" data-range="this_week" data-i18n="index.timeRange.thisWeek">本周</button>
+              <button class="time-range-btn" data-range="last_week" data-i18n="index.timeRange.lastWeek">上周</button>
+              <button class="time-range-btn" data-range="this_month" data-i18n="index.timeRange.thisMonth">本月</button>
+              <button class="time-range-btn" data-range="last_month" data-i18n="index.timeRange.lastMonth">上月</button>
             </div>
           </div>
         </section>
@@ -66,7 +66,7 @@
                   <span>Claude Code</span>
                 </div>
                 <div class="channel-cost">
-                  <span class="cost-label">成本</span>
+                  <span class="cost-label" data-i18n="common.cost">成本</span>
                   <span class="cost-value" id="type-anthropic-cost">$0.00</span>
                 </div>
               </div>
@@ -74,37 +74,37 @@
               <div class="channel-metrics">
                 <div class="metric-item">
                   <div class="metric-value metric-total" id="type-anthropic-requests">0</div>
-                  <div class="metric-label">总请求</div>
+                  <div class="metric-label" data-i18n="index.metrics.totalRequests">总请求</div>
                 </div>
                 <div class="metric-item">
                   <div class="metric-value metric-success" id="type-anthropic-success">0</div>
-                  <div class="metric-label">成功</div>
+                  <div class="metric-label" data-i18n="index.metrics.success">成功</div>
                 </div>
                 <div class="metric-item">
                   <div class="metric-value metric-error" id="type-anthropic-error">0</div>
-                  <div class="metric-label">失败</div>
+                  <div class="metric-label" data-i18n="index.metrics.failed">失败</div>
                 </div>
                 <div class="metric-item">
                   <div class="metric-value metric-rate" id="type-anthropic-rate">0.0%</div>
-                  <div class="metric-label">成功率</div>
+                  <div class="metric-label" data-i18n="index.metrics.successRate">成功率</div>
                 </div>
               </div>
               <!-- Token统计 -->
               <div class="token-stats">
                 <div class="token-item">
-                  <span class="token-label">输入</span>
+                  <span class="token-label" data-i18n="common.input">输入</span>
                   <span class="token-value" id="type-anthropic-input">0</span>
                 </div>
                 <div class="token-item">
-                  <span class="token-label">输出</span>
+                  <span class="token-label" data-i18n="common.output">输出</span>
                   <span class="token-value" id="type-anthropic-output">0</span>
                 </div>
                 <div class="token-item">
-                  <span class="token-label">缓存读</span>
+                  <span class="token-label" data-i18n="common.cacheRead">缓存读</span>
                   <span class="token-value token-cache" id="type-anthropic-cache-read">0</span>
                 </div>
                 <div class="token-item">
-                  <span class="token-label">缓存创</span>
+                  <span class="token-label" data-i18n="common.cacheCreate">缓存创</span>
                   <span class="token-value token-cache" id="type-anthropic-cache-create">0</span>
                 </div>
               </div>
@@ -122,7 +122,7 @@
                   <span>Codex</span>
                 </div>
                 <div class="channel-cost">
-                  <span class="cost-label">成本</span>
+                  <span class="cost-label" data-i18n="common.cost">成本</span>
                   <span class="cost-value" id="type-codex-cost">$0.00</span>
                 </div>
               </div>
@@ -130,37 +130,37 @@
               <div class="channel-metrics">
                 <div class="metric-item">
                   <div class="metric-value metric-total" id="type-codex-requests">0</div>
-                  <div class="metric-label">总请求</div>
+                  <div class="metric-label" data-i18n="index.metrics.totalRequests">总请求</div>
                 </div>
                 <div class="metric-item">
                   <div class="metric-value metric-success" id="type-codex-success">0</div>
-                  <div class="metric-label">成功</div>
+                  <div class="metric-label" data-i18n="index.metrics.success">成功</div>
                 </div>
                 <div class="metric-item">
                   <div class="metric-value metric-error" id="type-codex-error">0</div>
-                  <div class="metric-label">失败</div>
+                  <div class="metric-label" data-i18n="index.metrics.failed">失败</div>
                 </div>
                 <div class="metric-item">
                   <div class="metric-value metric-rate" id="type-codex-rate">0.0%</div>
-                  <div class="metric-label">成功率</div>
+                  <div class="metric-label" data-i18n="index.metrics.successRate">成功率</div>
                 </div>
               </div>
               <!-- Token统计 -->
               <div class="token-stats">
                 <div class="token-item">
-                  <span class="token-label">输入</span>
+                  <span class="token-label" data-i18n="common.input">输入</span>
                   <span class="token-value" id="type-codex-input">0</span>
                 </div>
                 <div class="token-item">
-                  <span class="token-label">输出</span>
+                  <span class="token-label" data-i18n="common.output">输出</span>
                   <span class="token-value" id="type-codex-output">0</span>
                 </div>
                 <div class="token-item">
-                  <span class="token-label">缓存读</span>
+                  <span class="token-label" data-i18n="common.cacheRead">缓存读</span>
                   <span class="token-value token-cache" id="type-codex-cache-read">0</span>
                 </div>
                 <div class="token-item">
-                  <span class="token-label">缓存创</span>
+                  <span class="token-label" data-i18n="common.cacheCreate">缓存创</span>
                   <span class="token-value token-cache" id="type-codex-cache-create">0</span>
                 </div>
               </div>
@@ -178,7 +178,7 @@
                   <span>OpenAI</span>
                 </div>
                 <div class="channel-cost">
-                  <span class="cost-label">成本</span>
+                  <span class="cost-label" data-i18n="common.cost">成本</span>
                   <span class="cost-value" id="type-openai-cost">$0.00</span>
                 </div>
               </div>
@@ -186,33 +186,33 @@
               <div class="channel-metrics">
                 <div class="metric-item">
                   <div class="metric-value metric-total" id="type-openai-requests">0</div>
-                  <div class="metric-label">总请求</div>
+                  <div class="metric-label" data-i18n="index.metrics.totalRequests">总请求</div>
                 </div>
                 <div class="metric-item">
                   <div class="metric-value metric-success" id="type-openai-success">0</div>
-                  <div class="metric-label">成功</div>
+                  <div class="metric-label" data-i18n="index.metrics.success">成功</div>
                 </div>
                 <div class="metric-item">
                   <div class="metric-value metric-error" id="type-openai-error">0</div>
-                  <div class="metric-label">失败</div>
+                  <div class="metric-label" data-i18n="index.metrics.failed">失败</div>
                 </div>
                 <div class="metric-item">
                   <div class="metric-value metric-rate" id="type-openai-rate">0.0%</div>
-                  <div class="metric-label">成功率</div>
+                  <div class="metric-label" data-i18n="index.metrics.successRate">成功率</div>
                 </div>
               </div>
               <!-- Token统计 -->
               <div class="token-stats">
                 <div class="token-item">
-                  <span class="token-label">输入</span>
+                  <span class="token-label" data-i18n="common.input">输入</span>
                   <span class="token-value" id="type-openai-input">0</span>
                 </div>
                 <div class="token-item">
-                  <span class="token-label">输出</span>
+                  <span class="token-label" data-i18n="common.output">输出</span>
                   <span class="token-value" id="type-openai-output">0</span>
                 </div>
                 <div class="token-item">
-                  <span class="token-label">缓存读</span>
+                  <span class="token-label" data-i18n="common.cacheRead">缓存读</span>
                   <span class="token-value token-cache" id="type-openai-cache-read">0</span>
                 </div>
               </div>
@@ -230,7 +230,7 @@
                   <span>Google Gemini</span>
                 </div>
                 <div class="channel-cost">
-                  <span class="cost-label">成本</span>
+                  <span class="cost-label" data-i18n="common.cost">成本</span>
                   <span class="cost-value" id="type-gemini-cost">$0.00</span>
                 </div>
               </div>
@@ -238,33 +238,33 @@
               <div class="channel-metrics">
                 <div class="metric-item">
                   <div class="metric-value metric-total" id="type-gemini-requests">0</div>
-                  <div class="metric-label">总请求</div>
+                  <div class="metric-label" data-i18n="index.metrics.totalRequests">总请求</div>
                 </div>
                 <div class="metric-item">
                   <div class="metric-value metric-success" id="type-gemini-success">0</div>
-                  <div class="metric-label">成功</div>
+                  <div class="metric-label" data-i18n="index.metrics.success">成功</div>
                 </div>
                 <div class="metric-item">
                   <div class="metric-value metric-error" id="type-gemini-error">0</div>
-                  <div class="metric-label">失败</div>
+                  <div class="metric-label" data-i18n="index.metrics.failed">失败</div>
                 </div>
                 <div class="metric-item">
                   <div class="metric-value metric-rate" id="type-gemini-rate">0.0%</div>
-                  <div class="metric-label">成功率</div>
+                  <div class="metric-label" data-i18n="index.metrics.successRate">成功率</div>
                 </div>
               </div>
               <!-- Token统计 -->
               <div class="token-stats">
                 <div class="token-item">
-                  <span class="token-label">输入</span>
+                  <span class="token-label" data-i18n="common.input">输入</span>
                   <span class="token-value" id="type-gemini-input">0</span>
                 </div>
                 <div class="token-item">
-                  <span class="token-label">输出</span>
+                  <span class="token-label" data-i18n="common.output">输出</span>
                   <span class="token-value" id="type-gemini-output">0</span>
                 </div>
                 <div class="token-item">
-                  <span class="token-label">缓存读</span>
+                  <span class="token-label" data-i18n="common.cacheRead">缓存读</span>
                   <span class="token-value token-cache" id="type-gemini-cache-read">0</span>
                 </div>
               </div>
@@ -282,7 +282,7 @@
               </div>
               <div class="summary-content">
                 <div class="summary-value"><span class="metric-success" id="success-requests">--</span>/<span class="metric-error" id="error-requests">--</span> <span style="font-size:0.7em;color:var(--neutral-500)">(<span id="success-rate">--</span>)</span></div>
-                <div class="summary-label">成功/失败 (成功率)</div>
+                <div class="summary-label" data-i18n="index.metrics.successFailed">成功/失败 (成功率)</div>
               </div>
             </div>
             <div class="summary-card summary-card-info" style="flex: 1; min-width: 0;" title="每分钟请求数">
@@ -294,7 +294,7 @@
               </div>
               <div class="summary-content">
                 <div class="summary-value" id="total-rpm">--</div>
-                <div class="summary-label">RPM(峰值 平均 最近)</div>
+                <div class="summary-label" data-i18n="index.metrics.rpm">RPM(峰值 平均 最近)</div>
               </div>
             </div>
           </div>
@@ -311,33 +311,33 @@
                 <svg class="inline-block w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2-2v16z"/>
                 </svg>
-                API 接口
+                <span data-i18n="index.apiSection">API 接口</span>
               </h3>
               <div class="space-y-3">
                 <div class="bg-neutral-100 bg-opacity-90 rounded-lg p-3 border border-neutral-200">
                   <div class="text-xs font-mono font-semibold" style="color: var(--success-600);">POST</div>
                   <div class="font-mono text-sm font-medium" style="color: var(--neutral-800);">/v1/messages</div>
-                  <div class="text-xs mt-1" style="color: var(--neutral-600);">Claude API 透明代理</div>
+                  <div class="text-xs mt-1" style="color: var(--neutral-600);" data-i18n="index.apiClaudeDesc">Claude API 透明代理</div>
                 </div>
                 <div class="bg-neutral-100 bg-opacity-90 rounded-lg p-3 border border-neutral-200">
                   <div class="text-xs font-mono font-semibold" style="color: var(--success-600);">POST</div>
                   <div class="font-mono text-sm font-medium" style="color: var(--neutral-800);">/v1/responses</div>
-                  <div class="text-xs mt-1" style="color: var(--neutral-600);">Codex API 透明代理</div>
-                </div>  
+                  <div class="text-xs mt-1" style="color: var(--neutral-600);" data-i18n="index.apiCodexDesc">Codex API 透明代理</div>
+                </div>
                 <div class="bg-neutral-100 bg-opacity-90 rounded-lg p-3 border border-neutral-200">
                   <div class="text-xs font-mono font-semibold" style="color: var(--success-600);">POST</div>
                   <div class="font-mono text-sm font-medium" style="color: var(--neutral-800);">/v1beta</div>
-                  <div class="text-xs mt-1" style="color: var(--neutral-600);">Gemini 透明代理</div>
+                  <div class="text-xs mt-1" style="color: var(--neutral-600);" data-i18n="index.apiGeminiDesc">Gemini 透明代理</div>
                 </div>
                 <div class="bg-neutral-100 bg-opacity-90 rounded-lg p-3 border border-neutral-200">
                   <div class="text-xs font-mono font-semibold" style="color: var(--primary-600);">GET</div>
                   <div class="font-mono text-sm font-medium" style="color: var(--neutral-800);">/public/summary</div>
-                  <div class="text-xs mt-1" style="color: var(--neutral-600);">公开统计数据</div>
+                  <div class="text-xs mt-1" style="color: var(--neutral-600);" data-i18n="index.apiSummaryDesc">公开统计数据</div>
                 </div>
               </div>
               <div class="mt-6 p-3 bg-info-50 rounded-lg border border-info-200">
-                <div class="text-xs font-semibold" style="color: var(--info-600);">提示</div>
-                <div class="text-sm mt-1" style="color: var(--neutral-700);">
+                <div class="text-xs font-semibold" style="color: var(--info-600);" data-i18n="common.info">提示</div>
+                <div class="text-sm mt-1" style="color: var(--neutral-700);" data-i18n="index.apiTip">
                   管理功能需要登录访问，代理服务公开使用
                 </div>
               </div>
@@ -352,7 +352,17 @@
   </div>
 
 
+  <script src="/web/assets/locales/zh-CN.js?v=__VERSION__"></script>
+  <script src="/web/assets/locales/en.js?v=__VERSION__"></script>
+  <script src="/web/assets/js/i18n.js?v=__VERSION__"></script>
   <script src="/web/assets/js/ui.js?v=__VERSION__"></script>
   <script src="/web/assets/js/index.js?v=__VERSION__"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      if (window.i18n) {
+        window.i18n.translatePage();
+      }
+    });
+  </script>
 </body>
 </html>

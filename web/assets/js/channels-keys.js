@@ -61,10 +61,10 @@ function buildCooldownHtml(index) {
   if (keyCooldown && keyCooldown.cooldown_remaining_ms > 0) {
     const cooldownText = humanizeMS(keyCooldown.cooldown_remaining_ms);
     const tpl = document.getElementById('tpl-cooldown-badge');
-    return tpl ? tpl.innerHTML.replace('{{text}}', cooldownText) : `⚠️ 冷却中·${cooldownText}`;
+    return tpl ? tpl.innerHTML.replace('{{text}}', cooldownText) : window.t('channels.cooldownBadge', { time: cooldownText });
   }
   const normalTpl = document.getElementById('tpl-key-normal-status');
-  return normalTpl ? normalTpl.innerHTML : '<span style="color: var(--success-600); font-size: 12px;">✓ 正常</span>';
+  return normalTpl ? normalTpl.innerHTML : `<span style="color: var(--success-600); font-size: 12px;">✓ ${window.t('channels.statusNormal')}</span>`;
 }
 
 /**
@@ -78,8 +78,8 @@ function buildActionsHtml(index) {
     return tpl.innerHTML.replace(/\{\{index\}\}/g, String(index));
   }
   // 降级：无模板时返回简单按钮
-  return `<button type="button" data-action="test" data-index="${index}">测试</button>
-          <button type="button" data-action="delete" data-index="${index}">删除</button>`;
+  return `<button type="button" data-action="test" data-index="${index}">${window.t('common.test')}</button>
+          <button type="button" data-action="delete" data-index="${index}">${window.t('common.delete')}</button>`;
 }
 
 /**
@@ -347,7 +347,7 @@ function renderInlineKeyTable() {
 
   if (inlineKeyTableData.length === 0) {
     const emptyRow = TemplateEngine.render('tpl-key-empty', {
-      message: '暂无API Key，点击"添加"或"导入"按钮添加'
+      message: window.t('channels.noApiKey')
     });
     if (emptyRow) tbody.appendChild(emptyRow);
     cleanupVirtualScroll();
@@ -360,8 +360,8 @@ function renderInlineKeyTable() {
 
   if (visibleIndices.length === 0) {
     const filterMessage = currentKeyStatusFilter === 'normal'
-      ? '当前无正常状态的Key'
-      : '当前无冷却中的Key';
+      ? window.t('channels.noNormalKeys')
+      : window.t('channels.noCooldownKeys');
     const emptyRow = TemplateEngine.render('tpl-key-empty', { message: filterMessage });
     if (emptyRow) tbody.appendChild(emptyRow);
     cleanupVirtualScroll();
@@ -400,6 +400,11 @@ function renderInlineKeyTable() {
 
   updateSelectAllCheckbox();
   updateBatchDeleteButton();
+
+  // Translate dynamically rendered elements
+  if (window.i18n && window.i18n.translatePage) {
+    window.i18n.translatePage();
+  }
 }
 
 function toggleInlineKeyVisibility() {
@@ -429,7 +434,7 @@ function updateInlineKey(index, value) {
 
 async function testSingleKey(keyIndex) {
   if (!editingChannelId) {
-    alert('无法获取渠道ID');
+    alert(window.t('channels.cannotGetChannelId'));
     return;
   }
 
@@ -438,7 +443,7 @@ async function testSingleKey(keyIndex) {
     .map(r => r.model)
     .filter(m => m && m.trim());
   if (models.length === 0) {
-    alert('请先配置支持的模型列表');
+    alert(window.t('channels.configModelsFirst'));
     return;
   }
 
@@ -446,7 +451,7 @@ async function testSingleKey(keyIndex) {
   const apiKey = inlineKeyTableData[keyIndex];
 
   if (!apiKey || !apiKey.trim()) {
-    alert('API Key为空，无法测试');
+    alert(window.t('channels.emptyKeyCannotTest'));
     return;
   }
 
@@ -480,14 +485,14 @@ async function testSingleKey(keyIndex) {
     await refreshKeyCooldownStatus();
 
     if (testResult.success) {
-      window.showNotification(`✅ Key #${keyIndex + 1} 测试成功`, 'success');
+      window.showNotification(window.t('channels.testKeySuccess', { index: keyIndex + 1 }), 'success');
     } else {
-      const errorMsg = testResult.error || '测试失败';
-      window.showNotification(`❌ Key #${keyIndex + 1} 测试失败: ${errorMsg}`, 'error');
+      const errorMsg = testResult.error || window.t('common.failed');
+      window.showNotification(window.t('channels.testKeyFailed', { index: keyIndex + 1, error: errorMsg }), 'error');
     }
   } catch (e) {
-    console.error('测试失败', e);
-    window.showNotification(`❌ Key #${keyIndex + 1} 测试请求失败: ${e.message}`, 'error');
+    console.error('Test failed', e);
+    window.showNotification(window.t('channels.testRequestFailed', { index: keyIndex + 1, error: e.message }), 'error');
   } finally {
     testButton.disabled = false;
     testButton.innerHTML = originalHTML;
@@ -528,17 +533,17 @@ async function refreshKeyCooldownStatus() {
       }, 0);
     }
   } catch (e) {
-    console.error('刷新冷却状态失败', e);
+    console.error('Refresh cooldown status failed', e);
   }
 }
 
 function deleteInlineKey(index) {
   if (inlineKeyTableData.length === 1) {
-    alert('至少需要保留一个API Key');
+    alert(window.t('channels.keepOneKey'));
     return;
   }
 
-  if (confirm(`确定要删除第 ${index + 1} 个Key吗？`)) {
+  if (confirm(window.t('channels.confirmDeleteKey', { index: index + 1 }))) {
     const tableContainer = document.querySelector('#inlineKeyTableBody').closest('.inline-table-container');
     const scrollTop = tableContainer ? tableContainer.scrollTop : 0;
 
@@ -592,7 +597,7 @@ function updateBatchDeleteButton() {
 
   if (count > 0) {
     btn.disabled = false;
-    if (textSpan) textSpan.textContent = `删除选中 (${count})`;
+    if (textSpan) textSpan.textContent = window.t('channels.deleteSelectedCount', { count });
     btn.style.cursor = 'pointer';
     btn.style.opacity = '1';
     btn.style.background = 'linear-gradient(135deg, #fef2f2 0%, #fecaca 100%)';
@@ -600,7 +605,7 @@ function updateBatchDeleteButton() {
     btn.style.color = '#dc2626';
   } else {
     btn.disabled = true;
-    if (textSpan) textSpan.textContent = '删除选中';
+    if (textSpan) textSpan.textContent = window.t('channels.deleteSelected');
     btn.style.cursor = 'not-allowed';
     btn.style.opacity = '0.5';
     btn.style.background = '';
@@ -627,11 +632,11 @@ function batchDeleteSelectedKeys() {
   if (count === 0) return;
 
   if (inlineKeyTableData.length - count < 1) {
-    alert('至少需要保留一个API Key');
+    alert(window.t('channels.keepOneKey'));
     return;
   }
 
-  if (!confirm(`确定要删除选中的 ${count} 个Key吗？`)) {
+  if (!confirm(window.t('channels.confirmBatchDeleteKeys', { count }))) {
     return;
   }
 
@@ -714,14 +719,14 @@ function confirmInlineKeyImport() {
   const input = textarea.value.trim();
 
   if (!input) {
-    alert('请输入至少一个API Key');
+    alert(window.t('channels.enterAtLeastOneKey'));
     return;
   }
 
   const newKeys = parseKeys(input);
 
   if (newKeys.length === 0) {
-    alert('未能解析到有效的API Key，请检查格式');
+    alert(window.t('channels.noValidKeyParsed'));
     return;
   }
 
@@ -739,7 +744,11 @@ function confirmInlineKeyImport() {
   closeKeyImportModal();
   renderInlineKeyTable();
 
-  window.showNotification(`成功导入 ${addedCount} 个新Key${newKeys.length - addedCount > 0 ? `，${newKeys.length - addedCount} 个重复已忽略` : ''}`, 'success');
+  const duplicates = newKeys.length - addedCount;
+  const msg = duplicates > 0
+    ? window.t('channels.keyImportDuplicates', { added: addedCount, duplicates })
+    : window.t('channels.keyImportSuccess', { added: addedCount });
+  window.showNotification(msg, 'success');
 }
 
 function openKeyImportModal() {

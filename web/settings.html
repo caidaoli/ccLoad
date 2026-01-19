@@ -7,9 +7,12 @@
   <link rel="apple-touch-icon" href="/web/apple-touch-icon.png">
   <link rel="manifest" href="/web/manifest.json">
   <meta name="theme-color" content="#3b82f6">
-  <title>系统设置 - Claude Code & Codex Proxy</title>
+  <title data-i18n="settings.title">系统设置 - Claude Code & Codex Proxy</title>
   <link rel="stylesheet" href="/web/assets/css/styles.css?v=__VERSION__">
   <link href="/web/assets/css/inter.css?v=__VERSION__" rel="stylesheet">
+  <script src="/web/assets/locales/zh-CN.js?v=__VERSION__"></script>
+  <script src="/web/assets/locales/en.js?v=__VERSION__"></script>
+  <script src="/web/assets/js/i18n.js?v=__VERSION__"></script>
 </head>
 <body>
   <div class="app-container">
@@ -32,9 +35,9 @@
             <table class="modern-table">
               <thead>
                 <tr>
-                  <th style="width: 60%;">配置项</th>
-                  <th style="width: 30%; text-align: right;">当前值</th>
-                  <th style="width: 10%;">操作</th>
+                  <th style="width: 60%;" data-i18n="settings.configItem">配置项</th>
+                  <th style="width: 30%; text-align: right;" data-i18n="settings.currentValue">当前值</th>
+                  <th style="width: 10%;" data-i18n="common.actions">操作</th>
                 </tr>
               </thead>
               <tbody id="settings-tbody">
@@ -43,7 +46,7 @@
             </table>
           </div>
           <div style="display: flex; justify-content: flex-end; padding: 16px 0 0 0;">
-            <button id="save-all-btn" onclick="saveAllSettings()" class="btn btn-primary" style="min-width: 120px;">
+            <button id="save-all-btn" onclick="saveAllSettings()" class="btn btn-primary" style="min-width: 120px;" data-i18n="settings.saveAll">
               保存所有更改
             </button>
           </div>
@@ -58,7 +61,7 @@
       <td>{{description}}</td>
       <td style="text-align: right;">{{{inputHtml}}}</td>
       <td>
-        <button class="btn-icon setting-reset-btn" data-key="{{key}}" title="重置为默认值">
+        <button class="btn-icon setting-reset-btn" data-key="{{key}}" data-i18n-title="settings.resetToDefault" title="重置为默认值">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
             <path d="M3 3v5h5"/>
@@ -80,5 +83,12 @@
   <script src="/web/assets/js/template-engine.js?v=__VERSION__"></script>
   <script src="/web/assets/js/ui.js?v=__VERSION__"></script>
   <script src="/web/assets/js/settings.js?v=__VERSION__"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      if (window.i18n) {
+        window.i18n.translatePage();
+      }
+    });
+  </script>
 </body>
 </html>
