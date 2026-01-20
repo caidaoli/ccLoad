@@ -25,7 +25,7 @@ When using Claude API services, users typically face these challenges:
 
 ccLoad solves these pain points through:
 
-- **Smart routing**: Prioritizes high-priority channels, round-robin for same priority
+- **Smart routing**: Prioritizes high-priority channels, smooth weighted round-robin for same priority with more even distribution
 - **Automatic failover**: Automatically switches to available channels when failures occur
 - **Exponential cooldown**: Failed channels use exponential backoff to avoid hammering failed services
 - **Zero manual intervention**: Clients don't need to manually switch upstream channels
@@ -40,7 +40,7 @@ ccLoad solves these pain points through:
 - 🚀 **High-Performance Architecture** - Gin framework, 1000+ concurrent connections, async Redis sync <1ms
 - 🧮 **Local Token Counting** - API-compliant local token estimation, <5ms response, 93%+ accuracy, supports large-scale tool scenarios
 - 🎯 **Smart Error Classification** - Distinguishes Key/Channel/Client errors, soft error detection (200 masquerading as error), 1308 quota handling (596/597 status codes)
-- 🔀 **Smart Routing** - Priority + round-robin channel selection, **pre-filters cooled channels**, multi-key load balancing, **health-based dynamic sorting** (confidence factor prevents small sample over-penalization)
+- 🔀 **Smart Routing** - Priority + smooth weighted round-robin channel selection, **pre-filters cooled channels**, multi-key load balancing, **health-based dynamic sorting** (confidence factor prevents small sample over-penalization)
 - 🛡️ **Failover** - Automatic failure detection with exponential backoff cooldown (1s → 2s → 4s → ... → 30min)
 - 🔒 **Race-Safe** - Key selector race condition protection, startup config validation, automatic resource cleanup
 - 📊 **Real-time Monitoring** - Built-in trend analysis, logging, and stats dashboard, **Token usage stats** with time range selection and per-token classification
