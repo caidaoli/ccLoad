@@ -201,6 +201,7 @@ var basePricing = map[string]ModelPricing{
 
 	// ========== xAI Grok 模型 ==========
 	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=xai
+	"grok-4.1-fast":      {InputPrice: 0.50, OutputPrice: 1.50},
 	"grok-4":             {InputPrice: 3.00, OutputPrice: 15.00},
 	"grok-4-fast":        {InputPrice: 0.20, OutputPrice: 0.50},
 	"grok-3":             {InputPrice: 3.00, OutputPrice: 15.00},
@@ -574,7 +575,7 @@ func fuzzyMatchModel(model string) (ModelPricing, bool) {
 		"deepseek-chat", "deepseek-prover-v2",
 
 		// xAI Grok模型（长前缀优先）
-		"grok-4-fast", "grok-4",
+		"grok-4.1-fast", "grok-4.1", "grok-4-fast", "grok-4",
 		"grok-3-mini-beta", "grok-3-mini", "grok-3-beta", "grok-3",
 		"grok-2-vision-1212", "grok-2-1212", "grok-2-mini", "grok-2",
 		"grok-code-fast-1", "grok-vision-beta",
