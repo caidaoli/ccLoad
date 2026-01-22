@@ -695,7 +695,7 @@ Check out the awesome admin dashboard 👇
 | `SQLITE_PATH` | `data/ccload.db` | SQLite database file path (SQLite mode only) |
 | `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal mode (WAL/TRUNCATE/DELETE, recommend TRUNCATE for containers) |
 | `CCLOAD_MAX_CONCURRENCY` | `1000` | Max concurrent requests (limits simultaneous proxy requests) |
-| `CCLOAD_MAX_BODY_BYTES` | `2097152` | Max request body bytes (2MB, prevents memory overflow) |
+| `CCLOAD_MAX_BODY_BYTES` | `10485760` | Max request body bytes (10MB, prevents memory overflow) |
 | `REDIS_URL` | None | Redis connection URL (optional, for async channel data backup) |
 | `CCLOAD_COOLDOWN_AUTH_SEC` | `300` | Auth error (401/402/403) initial cooldown (seconds) |
 | `CCLOAD_COOLDOWN_SERVER_SEC` | `120` | Server error (5xx) initial cooldown (seconds) |

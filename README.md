@@ -741,7 +741,7 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 | `SQLITE_PATH` | `data/ccload.db` | SQLite 数据库文件路径（仅 SQLite 模式） |
 | `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal 模式（WAL/TRUNCATE/DELETE 等，容器环境建议 TRUNCATE） |
 | `CCLOAD_MAX_CONCURRENCY` | `1000` | 最大并发请求数（限制同时处理的代理请求数量） |
-| `CCLOAD_MAX_BODY_BYTES` | `2097152` | 请求体最大字节数（2MB，防止大包打爆内存） |
+| `CCLOAD_MAX_BODY_BYTES` | `10485760` | 请求体最大字节数（10MB，防止大包打爆内存） |
 | `REDIS_URL` | 无 | Redis 连接 URL（可选，用于渠道数据异步备份） |
 | `CCLOAD_COOLDOWN_AUTH_SEC` | `300` | 认证错误(401/402/403)初始冷却时间（秒） |
 | `CCLOAD_COOLDOWN_SERVER_SEC` | `120` | 服务器错误(5xx)初始冷却时间（秒） |

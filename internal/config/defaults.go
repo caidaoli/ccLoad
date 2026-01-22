@@ -12,7 +12,7 @@ const (
 	DefaultMaxKeyRetries = 3
 
 	// DefaultMaxBodyBytes 默认最大请求体字节数（用于代理入口的解析）
-	DefaultMaxBodyBytes = 2 * 1024 * 1024 // 2MB
+	DefaultMaxBodyBytes = 10 * 1024 * 1024 // 10MB
 )
 
 // HTTP客户端配置常量
