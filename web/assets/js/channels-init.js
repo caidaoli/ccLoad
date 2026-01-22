@@ -78,7 +78,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     filters.search = savedFilters.search || '';
     filters.id = savedFilters.id || '';
     document.getElementById('statusFilter').value = filters.status;
-    document.getElementById('modelFilter').value = filters.model;
+    const modelFilterEl = document.getElementById('modelFilter');
+    if (modelFilterEl) {
+      modelFilterEl.value = (typeof modelFilterInputValueFromFilterValue === 'function')
+        ? modelFilterInputValueFromFilterValue(filters.model)
+        : (filters.model === 'all' ? window.t('channels.modelAll') : filters.model);
+    }
     document.getElementById('searchInput').value = filters.search;
     document.getElementById('idFilter').value = filters.id;
   }
@@ -97,6 +102,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 监听语言切换事件，重新渲染渠道列表
   window.i18n.onLocaleChange(() => {
     renderChannels();
+    updateModelOptions();
   });
 });
 
@@ -124,7 +130,12 @@ async function initChannelTypeFilter(initialType) {
     const type = e.target.value;
     filters.channelType = type;
     filters.model = 'all';
-    document.getElementById('modelFilter').value = 'all';
+    const modelFilterEl = document.getElementById('modelFilter');
+    if (modelFilterEl) {
+      modelFilterEl.value = (typeof modelFilterInputValueFromFilterValue === 'function')
+        ? modelFilterInputValueFromFilterValue('all')
+        : window.t('channels.modelAll');
+    }
     saveChannelsFilters();
     loadChannels(type);
   });

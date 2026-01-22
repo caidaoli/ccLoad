@@ -2,6 +2,8 @@
 
 /* ===== CSS 变量和设计令牌 ===== */
 :root {
+  color-scheme: light dark;
+
   /* 品牌色彩系统 */
   --primary-50: #f0f7ff;
   --primary-100: #e0efff;
@@ -25,6 +27,15 @@
   --neutral-700: #374151;
   --neutral-800: #1f2937;
   --neutral-900: #111827;
+
+  /* 下拉控件（自定义）配色：随系统浅/深色主题 */
+  --filter-dropdown-bg: #ffffff;
+  --filter-dropdown-border: var(--neutral-200);
+  --filter-dropdown-item-fg: var(--neutral-900);
+  --filter-dropdown-item-hover-bg: var(--neutral-50);
+  --filter-dropdown-item-active-bg: var(--neutral-100);
+  --filter-dropdown-item-highlight-bg: var(--primary-500);
+  --filter-dropdown-item-highlight-fg: #fff;
 
   /* 功能色彩 */
   --success-50: #ecfdf5;
@@ -118,6 +129,30 @@
   /* Topbar 前景色（提高对比度） */
   --topbar-fg: var(--neutral-900);
   --topbar-fg-muted: var(--neutral-700);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --filter-dropdown-bg: rgb(31, 41, 55);
+    --filter-dropdown-border: rgba(255, 255, 255, 0.12);
+    --filter-dropdown-item-fg: var(--neutral-50);
+    --filter-dropdown-item-hover-bg: rgba(255, 255, 255, 0.08);
+    --filter-dropdown-item-active-bg: rgba(255, 255, 255, 0.12);
+    --filter-dropdown-item-highlight-bg: var(--primary-500);
+    --filter-dropdown-item-highlight-fg: #fff;
+  }
+}
+
+@media (forced-colors: active) {
+  :root {
+    --filter-dropdown-bg: Canvas;
+    --filter-dropdown-border: CanvasText;
+    --filter-dropdown-item-fg: CanvasText;
+    --filter-dropdown-item-hover-bg: Highlight;
+    --filter-dropdown-item-active-bg: Highlight;
+    --filter-dropdown-item-highlight-bg: Highlight;
+    --filter-dropdown-item-highlight-fg: HighlightText;
+  }
 }
 
 
@@ -1356,6 +1391,7 @@ body {
   border: 1px solid var(--neutral-300);
   border-radius: var(--radius-base);
   font-size: var(--text-sm);
+  color: var(--neutral-900);
   background: rgba(255, 255, 255, 0.9);
   transition: all var(--duration-fast);
 }
@@ -1365,6 +1401,71 @@ body {
   outline: none;
   border-color: var(--primary-500);
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.filter-combobox {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none'%3E%3Cpath d='M6 8l4 4 4-4' stroke='%236b7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 14px 14px;
+  padding-right: 32px;
+}
+
+.filter-combobox-wrapper {
+  position: relative;
+  flex: 1;
+}
+
+.filter-dropdown {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 240px;
+  display: none;
+  background: var(--filter-dropdown-bg);
+  border: 1px solid var(--filter-dropdown-border);
+  border-radius: var(--radius-base);
+  box-shadow: var(--shadow-lg);
+  padding: 6px 0;
+  max-height: 640px;
+  overflow: auto;
+  z-index: 99999;
+}
+
+.filter-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 10px 14px;
+  font-size: var(--text-sm);
+  color: var(--filter-dropdown-item-fg);
+  cursor: pointer;
+  user-select: none;
+}
+
+.filter-dropdown-item::before {
+  content: "";
+  display: none;
+}
+
+.filter-dropdown-item:hover {
+  background: var(--filter-dropdown-item-highlight-bg);
+  color: var(--filter-dropdown-item-highlight-fg);
+}
+
+.filter-dropdown-item.selected {
+  background: transparent;
+  color: var(--filter-dropdown-item-fg);
+  font-weight: var(--font-semibold);
+}
+
+.filter-dropdown-item.selected::before {
+  display: none;
+}
+
+.filter-dropdown-item.active:not(.selected) {
+  background: var(--filter-dropdown-item-highlight-bg);
+  color: var(--filter-dropdown-item-highlight-fg);
 }
 
 .filter-label {
@@ -2955,4 +3056,3 @@ body.trend-page .chart-info {
 .lang-dropdown-item:last-child {
   border-radius: 0 0 var(--radius-md) var(--radius-md);
 }
-

@@ -64,12 +64,19 @@
               </select>
             </div>
 
-            <div class="filter-group">
-              <label class="filter-label" data-i18n="channels.filterModel">模型</label>
-              <select id="modelFilter" class="filter-select" style="min-width: 100px;">
-                <option value="all" data-i18n="channels.modelAll">所有模型</option>
-              </select>
-            </div>
+	            <div class="filter-group">
+	              <label class="filter-label" data-i18n="channels.filterModel">模型</label>
+	              <div class="filter-combobox-wrapper" style="min-width: 100px;">
+		                <input
+		                  id="modelFilter"
+		                  class="filter-select filter-combobox"
+		                  type="text"
+		                  autocomplete="off"
+		                  spellcheck="false"
+		                />
+	                <div id="modelFilterDropdown" class="filter-dropdown" role="listbox" aria-label="模型"></div>
+	              </div>
+	            </div>
              <div class="filter-group">
               <label class="filter-label" data-i18n="channels.filterSearch">搜索渠道</label>
               <div style="position: relative; flex: 1; min-width: 140px;">
