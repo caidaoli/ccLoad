@@ -537,9 +537,15 @@ func createIndex(ctx context.Context, db *sql.DB, idx schema.IndexDef, dialect D
 		return nil
 	}
 
-	// MySQL 5.6不支持IF NOT EXISTS，忽略重复索引错误
-	if dialect == DialectMySQL && strings.Contains(err.Error(), "Duplicate key name") {
-		return nil
+	// MySQL 5.6不支持IF NOT EXISTS，忽略重复索引错误(1061)
+	// 不同版本消息不同: "Duplicate key name" 或 "index already exist"
+	if dialect == DialectMySQL {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "1061") ||
+			strings.Contains(errMsg, "Duplicate key name") ||
+			strings.Contains(errMsg, "already exist") {
+			return nil
+		}
 	}
 
 	// SQLite的IF NOT EXISTS应该不会报错，但如果报错则返回
