@@ -756,3 +756,335 @@
   window.escapeHtml = escapeHtml;
   window.toggleResponse = toggleResponse;
 })();
+
+// ============================================================
+// 通用可搜索下拉选择框组件 (SearchableCombobox)
+// ============================================================
+(function() {
+  /**
+   * 创建可搜索下拉选择框
+   * @param {Object} config - 配置对象
+   * @param {HTMLElement|string} [config.container] - 容器元素或ID（生成模式必需）
+   * @param {string} config.inputId - input 元素 ID
+   * @param {string} config.dropdownId - 下拉框元素 ID
+   * @param {Function} config.getOptions - 获取选项列表的函数，返回 [{value, label}]
+   * @param {Function} config.onSelect - 选中回调 (value, label) => void
+   * @param {Function} [config.onCancel] - 取消选择回调
+   * @param {string} [config.placeholder] - placeholder 文本
+   * @param {string} [config.initialValue] - 初始值
+   * @param {string} [config.initialLabel] - 初始显示文本
+   * @param {number} [config.minWidth] - 最小宽度 (px)
+   * @param {boolean} [config.attachMode] - 附着模式，使用已存在的 HTML 元素
+   * @returns {Object} 组件实例
+   */
+  function createSearchableCombobox(config) {
+    const {
+      container: containerArg,
+      inputId,
+      dropdownId,
+      getOptions,
+      onSelect,
+      onCancel,
+      placeholder = '',
+      initialValue = '',
+      initialLabel = '',
+      minWidth = 150,
+      attachMode = false
+    } = config;
+
+    let input, dropdown, wrapper, dropdownHome;
+
+    if (attachMode) {
+      // 附着模式：使用已存在的 HTML 元素
+      input = document.getElementById(inputId);
+      dropdown = document.getElementById(dropdownId);
+      if (!input || !dropdown) {
+        console.error('SearchableCombobox: input or dropdown not found in attach mode');
+        return null;
+      }
+      wrapper = input.closest('.filter-combobox-wrapper');
+      dropdownHome = dropdown.parentElement;
+      if (initialLabel) input.value = initialLabel;
+    } else {
+      // 生成模式：创建新的 HTML 结构
+      const container = typeof containerArg === 'string'
+        ? document.getElementById(containerArg)
+        : containerArg;
+
+      if (!container) {
+        console.error('SearchableCombobox: container not found');
+        return null;
+      }
+
+      container.innerHTML = `
+        <div class="filter-combobox-wrapper" style="min-width: ${minWidth}px;">
+          <input
+            id="${inputId}"
+            class="filter-select filter-combobox"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="${escapeHtml(placeholder)}"
+            value="${escapeHtml(initialLabel)}"
+          />
+          <div id="${dropdownId}" class="filter-dropdown" role="listbox"></div>
+        </div>
+      `;
+
+      input = document.getElementById(inputId);
+      dropdown = document.getElementById(dropdownId);
+      wrapper = input.closest('.filter-combobox-wrapper');
+      dropdownHome = dropdown.parentElement;
+    }
+
+    let activeIndex = -1;
+    let outsideHandler = null;
+    let repositionHandler = null;
+    let currentValue = initialValue;
+
+    function clearOutsideHandler() {
+      if (!outsideHandler) return;
+      document.removeEventListener('mousedown', outsideHandler, true);
+      outsideHandler = null;
+    }
+
+    function clearRepositionHandler() {
+      if (!repositionHandler) return;
+      window.removeEventListener('resize', repositionHandler, true);
+      window.removeEventListener('scroll', repositionHandler, true);
+      repositionHandler = null;
+    }
+
+    function closeDropdown() {
+      dropdown.style.display = 'none';
+      dropdown.dataset.open = '0';
+      activeIndex = -1;
+      clearOutsideHandler();
+      clearRepositionHandler();
+      if (dropdownHome && dropdown.parentElement !== dropdownHome) {
+        dropdownHome.appendChild(dropdown);
+      }
+    }
+
+    function beginPick() {
+      if (input.dataset.pickActive === '1') return;
+      input.dataset.pickActive = '1';
+      input.dataset.prevInputValue = input.value;
+      input.dataset.prevValue = currentValue;
+      input.value = '';
+      activeIndex = -1;
+    }
+
+    function cancelPick() {
+      if (input.dataset.pickActive !== '1') {
+        closeDropdown();
+        return;
+      }
+
+      const prevInputValue = input.dataset.prevInputValue ?? '';
+      const prevValue = input.dataset.prevValue ?? '';
+
+      input.value = prevInputValue;
+      currentValue = prevValue;
+
+      delete input.dataset.pickActive;
+      delete input.dataset.prevInputValue;
+      delete input.dataset.prevValue;
+
+      closeDropdown();
+      if (onCancel) onCancel();
+    }
+
+    function commitValue(value, label) {
+      currentValue = value;
+      input.value = label;
+
+      delete input.dataset.pickActive;
+      delete input.dataset.prevInputValue;
+      delete input.dataset.prevValue;
+
+      closeDropdown();
+      if (onSelect) onSelect(value, label);
+    }
+
+    function getDropdownItems() {
+      const keyword = input.value.trim().toLowerCase();
+      const allOptions = getOptions();
+      if (!keyword) return allOptions;
+      return allOptions.filter(opt =>
+        String(opt.label).toLowerCase().includes(keyword) ||
+        String(opt.value).toLowerCase().includes(keyword)
+      );
+    }
+
+    function renderDropdown() {
+      if (dropdown.dataset.open !== '1') return;
+
+      const items = getDropdownItems();
+      dropdown.innerHTML = '';
+
+      if (activeIndex >= items.length) activeIndex = items.length - 1;
+      if (activeIndex < -1) activeIndex = -1;
+
+      items.forEach((item, idx) => {
+        const row = document.createElement('div');
+        row.className = 'filter-dropdown-item';
+        row.setAttribute('role', 'option');
+        row.dataset.value = item.value;
+        row.dataset.index = String(idx);
+        row.textContent = item.label;
+
+        if (item.value === currentValue) row.classList.add('selected');
+        if (idx === activeIndex) row.classList.add('active');
+
+        row.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          commitValue(item.value, item.label);
+        });
+
+        dropdown.appendChild(row);
+      });
+    }
+
+    function positionDropdown() {
+      if (dropdown.dataset.open !== '1') return;
+      const rect = input.getBoundingClientRect();
+      const margin = 6;
+
+      dropdown.style.left = `${Math.round(rect.left)}px`;
+      dropdown.style.width = `${Math.round(rect.width)}px`;
+      dropdown.style.top = `${Math.round(rect.bottom + margin)}px`;
+
+      const dropdownHeight = dropdown.offsetHeight || 0;
+      const viewportBottom = window.innerHeight || 0;
+      if (dropdownHeight && rect.bottom + margin + dropdownHeight > viewportBottom && rect.top - margin - dropdownHeight >= 0) {
+        dropdown.style.top = `${Math.round(rect.top - margin - dropdownHeight)}px`;
+      }
+    }
+
+    function openDropdown() {
+      if (dropdownHome && dropdown.parentElement !== document.body) {
+        document.body.appendChild(dropdown);
+      }
+      dropdown.style.display = 'block';
+      dropdown.dataset.open = '1';
+      renderDropdown();
+      positionDropdown();
+
+      clearOutsideHandler();
+      outsideHandler = (e) => {
+        if (!wrapper.contains(e.target) && !dropdown.contains(e.target)) {
+          cancelPick();
+        }
+      };
+      document.addEventListener('mousedown', outsideHandler, true);
+
+      clearRepositionHandler();
+      repositionHandler = () => positionDropdown();
+      window.addEventListener('resize', repositionHandler, true);
+      window.addEventListener('scroll', repositionHandler, true);
+    }
+
+    function moveActive(delta) {
+      const items = getDropdownItems();
+      if (items.length <= 0) return;
+      if (activeIndex === -1) {
+        activeIndex = 0;
+      } else {
+        activeIndex = Math.max(0, Math.min(items.length - 1, activeIndex + delta));
+      }
+      renderDropdown();
+    }
+
+    // 事件绑定
+    input.addEventListener('mousedown', () => {
+      beginPick();
+      openDropdown();
+    });
+
+    input.addEventListener('input', () => {
+      if (dropdown.dataset.open === '1') {
+        activeIndex = -1;
+        renderDropdown();
+      }
+    });
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        if (dropdown.dataset.open === '1') {
+          e.preventDefault();
+          cancelPick();
+        }
+        return;
+      }
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (dropdown.dataset.open !== '1') {
+          beginPick();
+          openDropdown();
+          return;
+        }
+        moveActive(1);
+        return;
+      }
+
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (dropdown.dataset.open !== '1') {
+          beginPick();
+          openDropdown();
+          return;
+        }
+        moveActive(-1);
+        return;
+      }
+
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (dropdown.dataset.open === '1') {
+          const items = getDropdownItems();
+          if (activeIndex >= 0 && activeIndex < items.length) {
+            commitValue(items[activeIndex].value, items[activeIndex].label);
+            return;
+          }
+        }
+        // 没有选中项时，取消编辑
+        if (input.dataset.pickActive === '1' && !input.value.trim()) {
+          cancelPick();
+        }
+      }
+    });
+
+    input.addEventListener('blur', () => {
+      if (dropdown.dataset.open === '1') {
+        cancelPick();
+      }
+    });
+
+    // 返回组件实例，提供外部控制接口
+    return {
+      getValue: () => currentValue,
+      setValue: (value, label) => {
+        currentValue = value;
+        input.value = label;
+      },
+      refresh: () => {
+        if (dropdown.dataset.open === '1') {
+          renderDropdown();
+        }
+      },
+      getInput: () => input,
+      getDropdown: () => dropdown,
+      destroy: () => {
+        clearOutsideHandler();
+        clearRepositionHandler();
+        container.innerHTML = '';
+      }
+    };
+  }
+
+  // 导出到全局作用域
+  window.createSearchableCombobox = createSearchableCombobox;
+})();

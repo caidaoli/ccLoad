@@ -33,76 +33,25 @@ async function loadChannels() {
 }
 
 // 渲染可搜索的渠道选择框
+let channelSelectCombobox = null;
+
 function renderSearchableChannelSelect() {
-  const container = document.getElementById('testChannelSelectContainer');
-  container.innerHTML = `
-    <div class="searchable-select" style="position: relative; width: 250px;">
-      <input type="text" class="searchable-select-input"
-             placeholder="搜索渠道..."
-             data-value=""
-             autocomplete="off"
-             style="width: 100%; padding: 6px 8px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px;">
-      <div class="searchable-select-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; max-height: 400px; overflow-y: auto; background: #fff; border: 1px solid var(--color-border); border-radius: 6px; margin-top: 2px; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.15);"></div>
-    </div>
-  `;
-
-  const input = container.querySelector('.searchable-select-input');
-  const dropdown = container.querySelector('.searchable-select-dropdown');
-
-  function renderOptions(filter = '') {
-    const filterLower = filter.toLowerCase();
-    const filtered = channelsList.filter(ch =>
-      ch.name.toLowerCase().includes(filterLower) ||
-      ch.channel_type.toLowerCase().includes(filterLower)
-    );
-
-    dropdown.innerHTML = filtered.map(ch => {
-      const displayName = `[${ch.channel_type}] ${ch.name}`;
-      return `
-      <div class="searchable-select-option"
-           data-value="${ch.id}"
-           data-display="${escapeHtml(displayName)}"
-           style="padding: 8px 10px; cursor: pointer; font-size: 13px; ${String(ch.id) === input.dataset.value ? 'background: var(--color-bg-tertiary);' : ''}">
-        ${escapeHtml(displayName)}
-      </div>
-    `}).join('');
-
-    dropdown.querySelectorAll('.searchable-select-option').forEach(opt => {
-      opt.addEventListener('mousedown', (e) => {
-        e.preventDefault();
-        input.value = opt.dataset.display;
-        input.dataset.value = opt.dataset.value;
-        dropdown.style.display = 'none';
-        input.blur();
-        onChannelChange();
-      });
-      opt.addEventListener('mouseenter', () => {
-        opt.style.background = '#3b82f6';
-        opt.style.color = '#fff';
-      });
-      opt.addEventListener('mouseleave', () => {
-        opt.style.background = opt.dataset.value === input.dataset.value ? '#3b82f6' : '';
-        opt.style.color = opt.dataset.value === input.dataset.value ? '#fff' : '';
-      });
-    });
-  }
-
-  input.addEventListener('focus', () => {
-    if (input.dataset.value) input.value = '';
-    renderOptions('');
-    dropdown.style.display = 'block';
-  });
-
-  input.addEventListener('input', () => {
-    renderOptions(input.value);
-    dropdown.style.display = 'block';
-  });
-
-  document.addEventListener('click', (e) => {
-    if (!container.contains(e.target)) {
-      dropdown.style.display = 'none';
-      const selected = channelsList.find(ch => String(ch.id) === input.dataset.value);
-      if (selected) input.value = selected.name;
+  channelSelectCombobox = createSearchableCombobox({
+    container: 'testChannelSelectContainer',
+    inputId: 'testChannelSelect',
+    dropdownId: 'testChannelSelectDropdown',
+    placeholder: window.t ? window.t('modelTest.searchChannel') : '搜索渠道...',
+    minWidth: 250,
+    getOptions: () => {
+      return channelsList.map(ch => ({
+        value: String(ch.id),
+        label: `[${ch.channel_type}] ${ch.name}`
+      }));
+    },
+    onSelect: (value) => {
+      const channelId = parseInt(value);
+      selectedChannel = channelsList.find(c => c.id === channelId) || null;
+      onChannelChange();
     }
   });
 }
@@ -139,11 +88,6 @@ function renderModelList() {
 
 // 渠道切换
 async function onChannelChange() {
-  const container = document.getElementById('testChannelSelectContainer');
-  const input = container.querySelector('input');
-  const channelId = parseInt(input.dataset.value);
-  selectedChannel = channelsList.find(c => c.id === channelId) || null;
-
   if (!selectedChannel) {
     const tbody = document.getElementById('model-test-tbody');
     tbody.innerHTML = '';

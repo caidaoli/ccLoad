@@ -683,6 +683,7 @@ window.I18N_LOCALES['en'] = {
   // ============================================================
   'modelTest.title': 'Model Test - Claude Code & Codex Proxy',
   'modelTest.channel': 'Channel',
+  'modelTest.searchChannel': 'Search channel...',
   'modelTest.content': 'Content',
   'modelTest.selectAll': 'Select All',
   'modelTest.deselectAll': 'Deselect All',

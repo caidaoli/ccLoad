@@ -683,6 +683,7 @@ window.I18N_LOCALES['zh-CN'] = {
   // ============================================================
   'modelTest.title': '模型测试 - Claude Code & Codex Proxy',
   'modelTest.channel': '渠道',
+  'modelTest.searchChannel': '搜索渠道...',
   'modelTest.content': '内容',
   'modelTest.selectAll': '全选',
   'modelTest.deselectAll': '取消全选',

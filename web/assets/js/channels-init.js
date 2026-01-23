@@ -130,11 +130,16 @@ async function initChannelTypeFilter(initialType) {
     const type = e.target.value;
     filters.channelType = type;
     filters.model = 'all';
-    const modelFilterEl = document.getElementById('modelFilter');
-    if (modelFilterEl) {
-      modelFilterEl.value = (typeof modelFilterInputValueFromFilterValue === 'function')
-        ? modelFilterInputValueFromFilterValue('all')
-        : window.t('channels.modelAll');
+    // 使用通用组件更新模型筛选器
+    if (typeof modelFilterCombobox !== 'undefined' && modelFilterCombobox) {
+      modelFilterCombobox.setValue('all', modelFilterInputValueFromFilterValue('all'));
+    } else {
+      const modelFilterEl = document.getElementById('modelFilter');
+      if (modelFilterEl) {
+        modelFilterEl.value = (typeof modelFilterInputValueFromFilterValue === 'function')
+          ? modelFilterInputValueFromFilterValue('all')
+          : window.t('channels.modelAll');
+      }
     }
     saveChannelsFilters();
     loadChannels(type);
