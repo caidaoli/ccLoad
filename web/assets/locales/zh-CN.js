@@ -873,6 +873,18 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.emptyKeyCannotTest': 'API Key为空，无法测试',
   'channels.deleteSelected': '删除选中',
   'channels.deleteSelectedCount': '删除选中 ({count})',
+  'channels.copyThisKey': '复制此Key',
+  'channels.keyCopied': 'Key已复制到剪贴板',
+  'channels.keyCopyFailed': '复制失败，请手动复制',
+  // Key导出
+  'channels.exportKeys': '导出',
+  'channels.exportKeysTitle': '导出 API Keys',
+  'channels.exportSeparator': '分隔方式',
+  'channels.separatorNewline': '换行分隔',
+  'channels.separatorComma': '逗号分隔',
+  'channels.exportPreview': '预览',
+  'channels.exportToFile': '导出文件',
+  'channels.keysCopied': '已复制 {count} 个Key到剪贴板',
   // Key导入
   'channels.keyImportSuccess': '成功导入 {added} 个新Key',
   'channels.keyImportDuplicates': '成功导入 {added} 个新Key，{duplicates} 个重复已忽略',

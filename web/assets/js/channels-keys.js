@@ -263,6 +263,7 @@ function initKeyTableEventDelegation() {
       const action = actionBtn.dataset.action;
       const index = parseInt(actionBtn.dataset.index);
       if (action === 'test') testSingleKey(index);
+      else if (action === 'copy') copyKeyToClipboard(index);
       else if (action === 'delete') deleteInlineKey(index);
       return;
     }
@@ -313,6 +314,10 @@ function initKeyTableEventDelegation() {
         btn.style.background = '#eff6ff';
         btn.style.borderColor = '#93c5fd';
         btn.style.color = '#3b82f6';
+      } else if (action === 'copy') {
+        btn.style.background = '#f0fdf4';
+        btn.style.borderColor = '#86efac';
+        btn.style.color = '#16a34a';
       } else if (action === 'delete') {
         btn.style.background = '#fef2f2';
         btn.style.borderColor = '#fca5a5';
@@ -537,6 +542,34 @@ async function refreshKeyCooldownStatus() {
   }
 }
 
+/**
+ * 复制Key到剪贴板
+ * @param {number} index - Key在数据数组中的索引
+ */
+function copyKeyToClipboard(index) {
+  const keyText = inlineKeyTableData[index];
+  if (!keyText) return;
+
+  navigator.clipboard.writeText(keyText).then(() => {
+    showToast(window.t('channels.keyCopied'), 'success');
+  }).catch(() => {
+    // 降级：使用传统方式复制
+    const textArea = document.createElement('textarea');
+    textArea.value = keyText;
+    textArea.style.position = 'fixed';
+    textArea.style.left = '-9999px';
+    document.body.appendChild(textArea);
+    textArea.select();
+    try {
+      document.execCommand('copy');
+      showToast(window.t('channels.keyCopied'), 'success');
+    } catch {
+      showToast(window.t('channels.keyCopyFailed'), 'error');
+    }
+    document.body.removeChild(textArea);
+  });
+}
+
 function deleteInlineKey(index) {
   if (inlineKeyTableData.length === 1) {
     alert(window.t('channels.keepOneKey'));
@@ -612,6 +645,9 @@ function updateBatchDeleteButton() {
     btn.style.borderColor = '';
     btn.style.color = '';
   }
+
+  // 同步更新导出按钮状态
+  updateExportButton(count);
 }
 
 function updateSelectAllCheckbox() {
@@ -783,4 +819,110 @@ function setupKeyImportPreview() {
       previewContent.style.display = 'none';
     }
   });
+}
+
+// ============================================================
+// Key 导出功能
+// ============================================================
+
+/**
+ * 更新导出按钮状态
+ * @param {number} count - 选中的 Key 数量
+ */
+function updateExportButton(count) {
+  const btn = document.getElementById('exportKeysBtn');
+  if (!btn) return;
+
+  if (count > 0) {
+    btn.disabled = false;
+    btn.style.opacity = '1';
+    btn.style.cursor = 'pointer';
+  } else {
+    btn.disabled = true;
+    btn.style.opacity = '0.5';
+    btn.style.cursor = 'not-allowed';
+  }
+}
+
+/**
+ * 打开导出对话框
+ */
+function openKeyExportModal() {
+  if (selectedKeyIndices.size === 0) return;
+  document.getElementById('keyExportModal').classList.add('show');
+  updateExportPreview();
+}
+
+/**
+ * 关闭导出对话框
+ */
+function closeKeyExportModal() {
+  document.getElementById('keyExportModal').classList.remove('show');
+}
+
+/**
+ * 更新预览内容
+ */
+function updateExportPreview() {
+  const separator = document.querySelector('input[name="exportSeparator"]:checked').value;
+  const keys = getSelectedKeys();
+  const text = separator === 'newline' ? keys.join('\n') : keys.join(',');
+  document.getElementById('keyExportPreview').value = text;
+}
+
+/**
+ * 获取选中的 Keys
+ * @returns {string[]} 选中的 Key 数组
+ */
+function getSelectedKeys() {
+  return Array.from(selectedKeyIndices)
+    .sort((a, b) => a - b)
+    .map(index => inlineKeyTableData[index])
+    .filter(key => key); // 过滤掉空值
+}
+
+/**
+ * 复制导出内容到剪贴板
+ */
+function copyExportKeys() {
+  const text = document.getElementById('keyExportPreview').value;
+  const count = selectedKeyIndices.size;
+
+  navigator.clipboard.writeText(text).then(() => {
+    showToast(window.t('channels.keysCopied', { count }), 'success');
+    closeKeyExportModal();
+  }).catch(() => {
+    // 降级：使用传统方式复制
+    const textArea = document.createElement('textarea');
+    textArea.value = text;
+    textArea.style.position = 'fixed';
+    textArea.style.left = '-9999px';
+    document.body.appendChild(textArea);
+    textArea.select();
+    try {
+      document.execCommand('copy');
+      showToast(window.t('channels.keysCopied', { count }), 'success');
+      closeKeyExportModal();
+    } catch {
+      showToast(window.t('channels.keyCopyFailed'), 'error');
+    }
+    document.body.removeChild(textArea);
+  });
+}
+
+/**
+ * 导出为文件下载
+ */
+function downloadExportKeys() {
+  const text = document.getElementById('keyExportPreview').value;
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'api-keys.txt';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  closeKeyExportModal();
 }

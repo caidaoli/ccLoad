@@ -873,6 +873,18 @@ window.I18N_LOCALES['en'] = {
   'channels.emptyKeyCannotTest': 'API Key is empty, cannot test',
   'channels.deleteSelected': 'Delete Selected',
   'channels.deleteSelectedCount': 'Delete Selected ({count})',
+  'channels.copyThisKey': 'Copy this Key',
+  'channels.keyCopied': 'Key copied to clipboard',
+  'channels.keyCopyFailed': 'Copy failed, please copy manually',
+  // Key Export
+  'channels.exportKeys': 'Export',
+  'channels.exportKeysTitle': 'Export API Keys',
+  'channels.exportSeparator': 'Separator',
+  'channels.separatorNewline': 'Newline',
+  'channels.separatorComma': 'Comma',
+  'channels.exportPreview': 'Preview',
+  'channels.exportToFile': 'Export File',
+  'channels.keysCopied': '{count} Keys copied to clipboard',
   // Key Import
   'channels.keyImportSuccess': 'Successfully imported {added} new Keys',
   'channels.keyImportDuplicates': 'Successfully imported {added} new Keys, {duplicates} duplicates ignored',

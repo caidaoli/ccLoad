@@ -167,6 +167,13 @@
                   </svg>
                   <span data-i18n="channels.importKeys">导入</span>
                 </button>
+                <button type="button" id="exportKeysBtn" class="btn btn-secondary btn-sm" onclick="openKeyExportModal()" disabled style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; opacity: 0.5;">
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M8 12.5V4M8 4L5 7M8 4L11 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M2 2.5H14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                  </svg>
+                  <span data-i18n="channels.exportKeys">导出</span>
+                </button>
                 <button type="button" id="toggleInlineKeyBtn" onclick="toggleInlineKeyVisibility()" style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--neutral-300); background: white; color: var(--neutral-500); cursor: pointer; padding: 0; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;" data-i18n-title="channels.toggleKeyVisibility" title="显示/隐藏API Key" onmouseover="this.style.background='var(--neutral-50)'; this.style.borderColor='var(--neutral-400)';" onmouseout="this.style.background='white'; this.style.borderColor='var(--neutral-300)';">
                   <svg id="inlineEyeIcon" width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
                     <path d="M1.5 8C1.5 8 3.5 3.5 8 3.5C12.5 3.5 14.5 8 14.5 8C14.5 8 12.5 12.5 8 12.5C3.5 12.5 1.5 8 1.5 8Z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -498,6 +505,46 @@
     </div>
   </div>
 
+  <!-- Key导出模态框 -->
+  <div id="keyExportModal" class="modal">
+    <div class="modal-content" style="max-width: 500px;">
+      <div class="modal-header">
+        <h2 class="modal-title" data-i18n="channels.exportKeysTitle">导出 API Keys</h2>
+        <button class="close-btn" onclick="closeKeyExportModal()" style="width: 28px; height: 28px; border-radius: 50%; border: none; background: var(--neutral-100); color: var(--neutral-600); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;" onmouseover="this.style.background='var(--neutral-200)'" onmouseout="this.style.background='var(--neutral-100)'">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M10.5 3.5L3.5 10.5M3.5 3.5L10.5 10.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+      <div style="padding: 15px;">
+        <!-- 分隔符选项 -->
+        <div class="form-group" style="margin-bottom: 15px;">
+          <label class="form-label" data-i18n="channels.exportSeparator">分隔方式</label>
+          <div style="display: flex; gap: 20px; margin-top: 8px;">
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+              <input type="radio" name="exportSeparator" value="newline" checked onchange="updateExportPreview()">
+              <span data-i18n="channels.separatorNewline">换行分隔</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+              <input type="radio" name="exportSeparator" value="comma" onchange="updateExportPreview()">
+              <span data-i18n="channels.separatorComma">逗号分隔</span>
+            </label>
+          </div>
+        </div>
+        <!-- 预览区域 -->
+        <div class="form-group">
+          <label class="form-label" data-i18n="channels.exportPreview">预览</label>
+          <textarea id="keyExportPreview" class="form-input" rows="8" readonly style="resize: vertical; min-height: 150px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace; font-size: 13px;"></textarea>
+        </div>
+      </div>
+      <div class="form-actions" style="display: flex; gap: 8px; justify-content: flex-end;">
+        <button type="button" class="btn btn-secondary" onclick="closeKeyExportModal()" data-i18n="common.cancel">取消</button>
+        <button type="button" class="btn btn-secondary" onclick="copyExportKeys()" data-i18n="common.copy">复制</button>
+        <button type="button" class="btn btn-primary" onclick="downloadExportKeys()" data-i18n="channels.exportToFile">导出文件</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 模型导入模态框 -->
   <div id="modelImportModal" class="modal">
     <div class="modal-content" style="max-width: 600px;">
@@ -630,6 +677,20 @@
 
   <template id="tpl-key-actions">
     <div style="display: flex; gap: 6px; justify-content: center;">
+      <button
+        type="button"
+        class="key-action-btn"
+        data-action="copy"
+        data-index="{{index}}"
+        data-i18n-title="channels.copyThisKey"
+        title="复制此Key"
+        style="width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--neutral-200); background: white; color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;"
+      >
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4.5 2H10.5C11.0523 2 11.5 2.44772 11.5 3V4H12.5C13.0523 4 13.5 4.44772 13.5 5V13C13.5 13.5523 13.0523 14 12.5 14H6.5C5.94772 14 5.5 13.5523 5.5 13V12H4.5C3.94772 12 3.5 11.5523 3.5 11V3C3.5 2.44772 3.94772 2 4.5 2Z" stroke="currentColor" stroke-width="1.2" fill="none"/>
+          <path d="M5.5 4H10.5C11.0523 4 11.5 4.44772 11.5 5V11" stroke="currentColor" stroke-width="1.2" fill="none"/>
+        </svg>
+      </button>
       <button
         type="button"
         class="key-action-btn"
