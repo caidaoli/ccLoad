@@ -1438,7 +1438,7 @@ function shouldShowZoom(points, hours, trendType) {
       });
 
       // 绑定change事件
-      select.addEventListener('change', (e) => {
+      select.addEventListener('change', async (e) => {
         window.currentChannelType = e.target.value;
         try {
           localStorage.setItem('trend.channelType', e.target.value);
@@ -1446,8 +1446,8 @@ function shouldShowZoom(points, hours, trendType) {
         } catch (_) {}
         // 切换渠道类型时重新加载数据并清除渠道选择状态
         window.visibleChannels.clear();
-        // 重新加载模型列表（根据新的渠道类型筛选）
-        loadModels(e.target.value);
+        // 重新加载模型列表（根据新的渠道类型筛选），等待完成后再加载数据
+        await loadModels(e.target.value);
         loadData();
       });
     }
@@ -1469,7 +1469,7 @@ function shouldShowZoom(points, hours, trendType) {
       // 时间范围选择 - 使用 f_hours 元素
       const rangeSelect = document.getElementById('f_hours');
       if (rangeSelect) {
-        rangeSelect.addEventListener('change', (e) => {
+        rangeSelect.addEventListener('change', async (e) => {
           const range = e.target.value;
           window.currentRange = range;
           const label = document.getElementById('data-timerange');
@@ -1478,8 +1478,8 @@ function shouldShowZoom(points, hours, trendType) {
             label.textContent = t('trend.dataDisplay', { range: rangeLabel });
           }
           persistState();
-          // 时间范围变更时重新加载模型列表
-          loadModels(window.currentChannelType, range);
+          // 时间范围变更时重新加载模型列表，等待完成后再加载数据
+          await loadModels(window.currentChannelType, range);
           loadData();
         });
       }
