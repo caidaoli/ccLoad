@@ -61,7 +61,7 @@ function buildCooldownHtml(index) {
   if (keyCooldown && keyCooldown.cooldown_remaining_ms > 0) {
     const cooldownText = humanizeMS(keyCooldown.cooldown_remaining_ms);
     const tpl = document.getElementById('tpl-cooldown-badge');
-    return tpl ? tpl.innerHTML.replace('{{text}}', cooldownText) : window.t('channels.cooldownBadge', { time: cooldownText });
+    return tpl ? tpl.innerHTML.replaceAll('{{text}}', cooldownText) : window.t('channels.cooldownBadge', { time: cooldownText });
   }
   const normalTpl = document.getElementById('tpl-key-normal-status');
   return normalTpl ? normalTpl.innerHTML : `<span style="color: var(--success-600); font-size: 12px;">✓ ${window.t('channels.statusNormal')}</span>`;
