@@ -500,29 +500,58 @@ function initRedirectTableEventDelegation() {
     }
   });
 
-  // 处理删除按钮点击
+  // 处理删除按钮和转小写按钮点击
   tbody.addEventListener('click', (e) => {
     const deleteBtn = e.target.closest('.redirect-delete-btn');
     if (deleteBtn) {
       const index = parseInt(deleteBtn.dataset.index);
       deleteRedirectRow(index);
+      return;
+    }
+
+    const lowercaseBtn = e.target.closest('.lowercase-btn');
+    if (lowercaseBtn) {
+      const index = parseInt(lowercaseBtn.dataset.index);
+      const row = lowercaseBtn.closest('tr');
+      const fromInput = row?.querySelector('.redirect-from-input');
+      if (fromInput && fromInput.value) {
+        const lowercased = fromInput.value.toLowerCase();
+        fromInput.value = lowercased;
+        updateRedirectRow(index, 'model', lowercased);
+      }
     }
   });
 
-  // 处理删除按钮悬停样式
+  // 处理按钮悬停样式
   tbody.addEventListener('mouseover', (e) => {
-    const btn = e.target.closest('.redirect-delete-btn');
-    if (btn) {
-      btn.style.background = 'var(--error-50)';
-      btn.style.borderColor = 'var(--error-500)';
+    const deleteBtn = e.target.closest('.redirect-delete-btn');
+    if (deleteBtn) {
+      deleteBtn.style.background = 'var(--error-50)';
+      deleteBtn.style.borderColor = 'var(--error-500)';
+      return;
+    }
+
+    const lowercaseBtn = e.target.closest('.lowercase-btn');
+    if (lowercaseBtn) {
+      lowercaseBtn.style.background = 'var(--primary-50)';
+      lowercaseBtn.style.borderColor = 'var(--primary-500)';
+      lowercaseBtn.style.color = 'var(--primary-600)';
     }
   });
 
   tbody.addEventListener('mouseout', (e) => {
-    const btn = e.target.closest('.redirect-delete-btn');
-    if (btn) {
-      btn.style.background = 'white';
-      btn.style.borderColor = 'var(--error-300)';
+    const deleteBtn = e.target.closest('.redirect-delete-btn');
+    if (deleteBtn) {
+      deleteBtn.style.background = 'white';
+      deleteBtn.style.borderColor = 'var(--error-300)';
+      return;
+    }
+
+    const lowercaseBtn = e.target.closest('.lowercase-btn');
+    if (lowercaseBtn) {
+      lowercaseBtn.style.background = 'white';
+      lowercaseBtn.style.borderColor = 'var(--neutral-300)';
+      lowercaseBtn.style.color = 'var(--neutral-500)';
     }
   });
 }
@@ -643,29 +672,73 @@ function toggleSelectAllModels(checked) {
  * 更新批量删除按钮状态
  */
 function updateModelBatchDeleteButton() {
-  const btn = document.getElementById('batchDeleteModelsBtn');
-  if (!btn) return;
-
+  const deleteBtn = document.getElementById('batchDeleteModelsBtn');
+  const lowercaseBtn = document.getElementById('batchLowercaseModelsBtn');
   const count = selectedModelIndices.size;
-  const textSpan = btn.querySelector('span');
 
-  if (count > 0) {
-    btn.disabled = false;
-    if (textSpan) textSpan.textContent = window.t('channels.deleteSelectedCount', { count });
-    btn.style.cursor = 'pointer';
-    btn.style.opacity = '1';
-    btn.style.background = 'linear-gradient(135deg, #fef2f2 0%, #fecaca 100%)';
-    btn.style.borderColor = '#fca5a5';
-    btn.style.color = '#dc2626';
-  } else {
-    btn.disabled = true;
-    if (textSpan) textSpan.textContent = window.t('channels.deleteSelected');
-    btn.style.cursor = '';
-    btn.style.opacity = '0.5';
-    btn.style.background = '';
-    btn.style.borderColor = '';
-    btn.style.color = '';
+  // 更新删除按钮
+  if (deleteBtn) {
+    const textSpan = deleteBtn.querySelector('span');
+    if (count > 0) {
+      deleteBtn.disabled = false;
+      if (textSpan) textSpan.textContent = window.t('channels.deleteSelectedCount', { count });
+      deleteBtn.style.cursor = 'pointer';
+      deleteBtn.style.opacity = '1';
+      deleteBtn.style.background = 'linear-gradient(135deg, #fef2f2 0%, #fecaca 100%)';
+      deleteBtn.style.borderColor = '#fca5a5';
+      deleteBtn.style.color = '#dc2626';
+    } else {
+      deleteBtn.disabled = true;
+      if (textSpan) textSpan.textContent = window.t('channels.deleteSelected');
+      deleteBtn.style.cursor = '';
+      deleteBtn.style.opacity = '0.5';
+      deleteBtn.style.background = '';
+      deleteBtn.style.borderColor = '';
+      deleteBtn.style.color = '';
+    }
   }
+
+  // 更新转小写按钮
+  if (lowercaseBtn) {
+    const textSpan = lowercaseBtn.querySelector('span');
+    if (count > 0) {
+      lowercaseBtn.disabled = false;
+      if (textSpan) textSpan.textContent = window.t('channels.lowercaseSelectedCount', { count });
+      lowercaseBtn.style.cursor = 'pointer';
+      lowercaseBtn.style.opacity = '1';
+      lowercaseBtn.style.background = 'linear-gradient(135deg, #eff6ff 0%, #bfdbfe 100%)';
+      lowercaseBtn.style.borderColor = '#93c5fd';
+      lowercaseBtn.style.color = '#2563eb';
+    } else {
+      lowercaseBtn.disabled = true;
+      if (textSpan) textSpan.textContent = window.t('channels.lowercaseSelected');
+      lowercaseBtn.style.cursor = '';
+      lowercaseBtn.style.opacity = '0.5';
+      lowercaseBtn.style.background = '';
+      lowercaseBtn.style.borderColor = '';
+      lowercaseBtn.style.color = '';
+    }
+  }
+}
+
+/**
+ * 批量转换选中模型为小写
+ */
+function batchLowercaseSelectedModels() {
+  const count = selectedModelIndices.size;
+  if (count === 0) return;
+
+  // 转换选中的模型为小写
+  selectedModelIndices.forEach(index => {
+    if (redirectTableData[index]) {
+      redirectTableData[index].model = (redirectTableData[index].model || '').toLowerCase();
+    }
+  });
+
+  // 清除选择并刷新表格
+  selectedModelIndices.clear();
+  updateModelBatchDeleteButton();
+  renderRedirectTable();
 }
 
 /**

@@ -273,6 +273,21 @@
               </div>
               <button
                 type="button"
+                id="batchLowercaseModelsBtn"
+                onclick="batchLowercaseSelectedModels()"
+                disabled
+                data-i18n-title="channels.batchLowercaseModelsTitle"
+                title="批量转换选中模型为小写"
+                class="btn btn-secondary btn-sm"
+                style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; opacity: 0.5;"
+              >
+                <svg width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M1.5 10.5L3.5 4H5L7 10.5M2.5 8.5H6M8.5 10.5V7.5C8.5 6.5 9.5 6 10.5 6C11.5 6 12.5 6.5 12.5 7.5V10.5M8.5 8.5H12.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span data-i18n="channels.lowercaseSelected">转小写</span>
+              </button>
+              <button
+                type="button"
                 id="batchDeleteModelsBtn"
                 onclick="batchDeleteSelectedModels()"
                 disabled
@@ -764,14 +779,28 @@
         </div>
       </td>
       <td style="padding: 4px 10px;">
-        <input
-          type="text"
-          class="redirect-from-input"
-          data-index="{{index}}"
-          value="{{from}}"
-          placeholder="claude-3-opus-20240229"
-          style="width: 100%; padding: 5px 8px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace;"
-        >
+        <div style="display: flex; align-items: center; gap: 4px;">
+          <input
+            type="text"
+            class="redirect-from-input"
+            data-index="{{index}}"
+            value="{{from}}"
+            placeholder="claude-3-opus-20240229"
+            style="flex: 1; padding: 5px 8px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace;"
+          >
+          <button
+            type="button"
+            class="lowercase-btn"
+            data-index="{{index}}"
+            style="width: 24px; height: 24px; border-radius: 4px; border: 1px solid var(--neutral-300); background: white; color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0; flex-shrink: 0;"
+            data-i18n-title="channels.toLowercase"
+            title="转为小写"
+          >
+            <svg width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M1.5 10.5L3.5 4H5L7 10.5M2.5 8.5H6M8.5 10.5V7.5C8.5 6.5 9.5 6 10.5 6C11.5 6 12.5 6.5 12.5 7.5V10.5M8.5 8.5H12.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+        </div>
       </td>
       <td style="padding: 4px 10px;">
         <input
