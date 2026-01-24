@@ -477,7 +477,7 @@ func setupTestServer(t *testing.T) (*Server, func()) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
-	store, err := storage.CreateSQLiteStore(dbPath, nil)
+	store, err := storage.CreateSQLiteStore(dbPath)
 	if err != nil {
 		t.Fatalf("创建测试数据库失败: %v", err)
 	}

@@ -154,9 +154,6 @@ func (s *SQLStore) CreateAPIKeysBatch(ctx context.Context, keys []*model.APIKey)
 		return fmt.Errorf("commit transaction: %w", err)
 	}
 
-	// 触发异步Redis同步(确保批量新增操作同步到Redis)
-	s.triggerAsyncSync(syncChannels)
-
 	return nil
 }
 
@@ -178,9 +175,6 @@ func (s *SQLStore) UpdateAPIKeysStrategy(ctx context.Context, channelID int64, s
 		return fmt.Errorf("update api keys strategy: %w", err)
 	}
 
-	// 触发异步Redis同步
-	s.triggerAsyncSync(syncChannels)
-
 	return nil
 }
 
@@ -194,9 +188,6 @@ func (s *SQLStore) DeleteAPIKey(ctx context.Context, channelID int64, keyIndex i
 	if err != nil {
 		return fmt.Errorf("delete api key: %w", err)
 	}
-
-	// 触发异步Redis同步(确保删除操作同步到Redis)
-	s.triggerAsyncSync(syncChannels)
 
 	return nil
 }
@@ -213,13 +204,10 @@ func (s *SQLStore) CompactKeyIndices(ctx context.Context, channelID int64, remov
 		return fmt.Errorf("compact key indices: %w", err)
 	}
 
-	// 触发异步Redis同步，确保索引更新同步到缓存
-	s.triggerAsyncSync(syncChannels)
 	return nil
 }
 
 // DeleteAllAPIKeys 删除渠道的所有 API Key（用于渠道删除时级联清理）
-// [FIX] 2025-12：添加 Redis 同步触发，避免删除后 Redis 保留旧 keys 导致恢复时复活
 func (s *SQLStore) DeleteAllAPIKeys(ctx context.Context, channelID int64) error {
 	_, err := s.db.ExecContext(ctx, `
 		DELETE FROM api_keys
@@ -229,9 +217,6 @@ func (s *SQLStore) DeleteAllAPIKeys(ctx context.Context, channelID int64) error 
 	if err != nil {
 		return fmt.Errorf("delete all api keys: %w", err)
 	}
-
-	// 触发异步Redis同步（确保删除操作同步到Redis）
-	s.triggerAsyncSync(syncChannels)
 
 	return nil
 }
@@ -381,9 +366,6 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 	if err != nil {
 		return 0, 0, err
 	}
-
-	// 异步同步到Redis（非阻塞）
-	s.triggerAsyncSync(syncChannels)
 
 	return created, updated, nil
 }

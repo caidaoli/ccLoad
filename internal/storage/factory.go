@@ -16,22 +16,16 @@ import (
 	_ "modernc.org/sqlite"             // SQLite driver
 )
 
-// RedisSync Redis同步接口（与sql.RedisSync保持一致）
-type RedisSync = sqlstore.RedisSync
-
 // NewStore 根据环境变量创建存储实例（工厂模式）
 // 环境变量 CCLOAD_MYSQL：设置时使用MySQL，否则使用SQLite
 // 环境变量 SQLITE_PATH：SQLite数据库路径（默认: data/ccload.db）
-//
-// [FIX] 2025-12：收敛初始化逻辑（迁移→恢复→启动同步），遵循 ISP 原则
-// 生产代码应使用此函数，测试代码可使用 CreateSQLiteStore() 直接创建
-func NewStore(redisSync RedisSync) (Store, error) {
+func NewStore() (Store, error) {
 	var store *sqlstore.SQLStore
 	var err error
 
 	mysqlDSN := os.Getenv("CCLOAD_MYSQL")
 	if mysqlDSN != "" {
-		store, err = createMySQLStore(mysqlDSN, redisSync)
+		store, err = createMySQLStore(mysqlDSN)
 		if err != nil {
 			return nil, fmt.Errorf("MySQL 初始化失败: %w", err)
 		}
@@ -43,52 +37,18 @@ func NewStore(redisSync RedisSync) (Store, error) {
 			dbPath = resolveSQLitePath()
 		}
 
-		store, err = createSQLiteStore(dbPath, redisSync)
+		store, err = createSQLiteStore(dbPath)
 		if err != nil {
 			return nil, fmt.Errorf("SQLite 初始化失败: %w", err)
 		}
 		log.Printf("使用 SQLite 存储: %s", dbPath)
 	}
 
-	// ============================================================================
-	// 统一的 Redis 恢复逻辑（迁移完成后执行）
-	// 顺序很重要：先恢复数据，再启动同步 worker，避免空数据覆盖 Redis 备份
-	// [FIX] P1-4: 分别检查 channels 和 auth_tokens，避免部分表丢失时恢复不完整
-	// [FIX] 2025-12: 添加硬超时，避免 Redis 网络问题卡死启动
-	// ============================================================================
-	if redisSync != nil && redisSync.IsEnabled() {
-		restoreCtx, restoreCancel := context.WithTimeout(context.Background(), config.StartupRedisRestoreTimeout)
-		defer restoreCancel()
-
-		// 检查 channels 表是否为空
-		channelsEmpty, checkErr := store.CheckChannelsEmpty(restoreCtx)
-		if checkErr != nil {
-			log.Printf("检查 channels 表状态失败: %v", checkErr)
-		}
-
-		// 检查 auth_tokens 表是否为空
-		tokensEmpty, checkErr := store.CheckAuthTokensEmpty(restoreCtx)
-		if checkErr != nil {
-			log.Printf("检查 auth_tokens 表状态失败: %v", checkErr)
-		}
-
-		// 任意一张表为空就触发恢复（防止部分表丢失）
-		if channelsEmpty || tokensEmpty {
-			log.Printf("数据库部分为空（channels=%v, tokens=%v），尝试从Redis恢复...", channelsEmpty, tokensEmpty)
-			if restoreErr := store.LoadChannelsFromRedis(restoreCtx); restoreErr != nil {
-				log.Printf("从Redis恢复失败（超时%v）: %v", config.StartupRedisRestoreTimeout, restoreErr)
-			}
-		}
-	}
-
-	// 启动 Redis 同步 worker（恢复完成后）
-	store.StartRedisSync()
-
 	return store, nil
 }
 
 // createMySQLStore 创建 MySQL 存储实例（内部函数，返回具体类型以支持生命周期方法调用）
-func createMySQLStore(dsn string, redisSync RedisSync) (*sqlstore.SQLStore, error) {
+func createMySQLStore(dsn string) (*sqlstore.SQLStore, error) {
 	// 确保DSN包含必要参数
 	if dsn == "" {
 		return nil, fmt.Errorf("MySQL DSN不能为空")
@@ -113,7 +73,7 @@ func createMySQLStore(dsn string, redisSync RedisSync) (*sqlstore.SQLStore, erro
 	}
 
 	// 创建统一的 SQLStore
-	store := sqlstore.NewSQLStore(db, "mysql", redisSync)
+	store := sqlstore.NewSQLStore(db, "mysql")
 
 	// 执行MySQL迁移（带超时）
 	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), config.StartupMigrationTimeout)
@@ -129,13 +89,12 @@ func createMySQLStore(dsn string, redisSync RedisSync) (*sqlstore.SQLStore, erro
 // CreateSQLiteStore 直接创建 SQLite 存储实例（测试辅助函数）
 // 生产代码应使用 NewStore() 工厂函数
 // 测试代码可用此函数创建独立的测试数据库
-// 注意：此函数不会启动 Redis 同步 worker，测试需要时可手动调用 StartRedisSync()
-func CreateSQLiteStore(path string, redisSync RedisSync) (Store, error) {
-	return createSQLiteStore(path, redisSync)
+func CreateSQLiteStore(path string) (Store, error) {
+	return createSQLiteStore(path)
 }
 
 // createSQLiteStore 内部函数，返回具体类型以支持生命周期方法调用
-func createSQLiteStore(path string, redisSync RedisSync) (*sqlstore.SQLStore, error) {
+func createSQLiteStore(path string) (*sqlstore.SQLStore, error) {
 	// 创建数据目录
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil { //nolint:gosec // G301: 数据目录需要服务进程可写
 		return nil, err
@@ -158,7 +117,7 @@ func createSQLiteStore(path string, redisSync RedisSync) (*sqlstore.SQLStore, er
 	db.SetConnMaxLifetime(config.SQLiteConnMaxLifetime)
 
 	// 创建统一的 SQLStore
-	store := sqlstore.NewSQLStore(db, "sqlite", redisSync)
+	store := sqlstore.NewSQLStore(db, "sqlite")
 
 	// 执行SQLite迁移（带超时）
 	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), config.StartupMigrationTimeout)

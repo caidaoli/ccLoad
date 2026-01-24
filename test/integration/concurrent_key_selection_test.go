@@ -264,7 +264,7 @@ func TestConcurrentChannelOperations(t *testing.T) {
 func setupTestStore(t *testing.T) (storage.Store, func()) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
-	store, err := storage.CreateSQLiteStore(dbPath, &mockRedisSync{})
+	store, err := storage.CreateSQLiteStore(dbPath)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
@@ -274,31 +274,6 @@ func setupTestStore(t *testing.T) (storage.Store, func()) {
 	}
 
 	return store, cleanup
-}
-
-// mockRedisSync 用于测试的Mock Redis同步实现
-// 实现最小接口以绕过Redis强制检查，但不执行实际同步
-type mockRedisSync struct{}
-
-func (m *mockRedisSync) IsEnabled() bool {
-	return true // 假装Redis已启用，绕过安全检查
-}
-
-func (m *mockRedisSync) LoadChannelsWithKeysFromRedis(_ context.Context) ([]*model.ChannelWithKeys, error) {
-	return nil, nil // 测试环境无需从Redis加载
-}
-
-func (m *mockRedisSync) SyncAllChannelsWithKeys(_ context.Context, _ []*model.ChannelWithKeys) error {
-	return nil // 测试环境不执行实际同步
-}
-
-// Auth Tokens 同步方法 (新增 2025-11)
-func (m *mockRedisSync) SyncAllAuthTokens(_ context.Context, _ []*model.AuthToken) error {
-	return nil // 测试环境不执行实际同步
-}
-
-func (m *mockRedisSync) LoadAuthTokensFromRedis(_ context.Context) ([]*model.AuthToken, error) {
-	return nil, nil // 测试环境无需从Redis加载
 }
 
 // 辅助函数：创建带多个Key的测试渠道

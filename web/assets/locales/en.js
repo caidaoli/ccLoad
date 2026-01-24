@@ -936,9 +936,6 @@ window.I18N_LOCALES['en'] = {
   // Channel import/export
   'channels.import.exportHttpFailed': 'Export failed (HTTP {status})',
   'channels.import.summary': 'Import complete: {created} created, {updated} updated, {skipped} skipped',
-  'channels.import.redisSyncSuccess': ', synced {count} channels to Redis',
-  'channels.import.redisSyncFailed': ', Redis sync failed',
   'channels.import.moreErrors': ' and {count} more records',
-  'channels.import.partialFailed': 'Some records failed: {preview}{extra}',
-  'channels.import.redisSyncError': 'Redis sync failed: {error}'
+  'channels.import.partialFailed': 'Some records failed: {preview}{extra}'
 };

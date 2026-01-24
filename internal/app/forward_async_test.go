@@ -19,7 +19,7 @@ import (
 
 // TestRequestContextCreation 测试请求上下文创建
 func TestRequestContextCreation(t *testing.T) {
-	store, _ := storage.CreateSQLiteStore(":memory:", nil)
+	store, _ := storage.CreateSQLiteStore(":memory:")
 	srv := NewServer(store)
 
 	tests := []struct {
@@ -70,7 +70,7 @@ func TestRequestContextCreation(t *testing.T) {
 
 // TestBuildProxyRequest 测试请求构建
 func TestBuildProxyRequest(t *testing.T) {
-	store, _ := storage.CreateSQLiteStore(":memory:", nil)
+	store, _ := storage.CreateSQLiteStore(":memory:")
 	srv := NewServer(store)
 
 	cfg := &model.Config{
@@ -118,7 +118,7 @@ func TestBuildProxyRequest(t *testing.T) {
 
 // TestHandleRequestError 测试错误处理
 func TestHandleRequestError(t *testing.T) {
-	store, _ := storage.CreateSQLiteStore(":memory:", nil)
+	store, _ := storage.CreateSQLiteStore(":memory:")
 	srv := NewServer(store)
 
 	cfg := &model.Config{ID: 1}
@@ -200,7 +200,7 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 	defer upstream.Close()
 
 	// 创建代理服务器
-	store, _ := storage.CreateSQLiteStore(":memory:", nil)
+	store, _ := storage.CreateSQLiteStore(":memory:")
 	srv := NewServer(store)
 
 	cfg := &model.Config{
@@ -315,7 +315,7 @@ func TestClientCancelClosesUpstream(t *testing.T) {
 	defer upstream.Close()
 
 	// 创建代理服务器
-	store, _ := storage.CreateSQLiteStore(":memory:", nil)
+	store, _ := storage.CreateSQLiteStore(":memory:")
 	srv := NewServer(store)
 
 	cfg := &model.Config{
@@ -396,7 +396,7 @@ func TestClientCancelClosesUpstream(t *testing.T) {
 // 2. 客户端取消（499） - AfterFunc 触发，但无泄漏
 // 3. 首字节超时 - 定时器触发，context 取消
 func TestNoGoroutineLeak(t *testing.T) {
-	store, _ := storage.CreateSQLiteStore(":memory:", nil)
+	store, _ := storage.CreateSQLiteStore(":memory:")
 	srv := NewServer(store)
 
 	// 等待 Server 初始化完成（连接池、后台任务等）
@@ -522,7 +522,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 // 场景：请求发出后，响应头还未收到时超时定时器触发
 // 期望：返回 598 状态码和 ErrUpstreamFirstByteTimeout 错误
 func TestFirstByteTimeout_StreamingResponse(t *testing.T) {
-	store, _ := storage.CreateSQLiteStore(":memory:", nil)
+	store, _ := storage.CreateSQLiteStore(":memory:")
 	defer func() { _ = store.Close() }()
 
 	srv := NewServer(store)
@@ -588,7 +588,7 @@ func TestFirstByteTimeout_StreamingResponse(t *testing.T) {
 // 场景：上游先发送响应头并 flush，但延迟发送 SSE body
 // 期望：返回 598 状态码和 ErrUpstreamFirstByteTimeout 错误
 func TestFirstByteTimeout_StreamingResponseBodyDelayed(t *testing.T) {
-	store, _ := storage.CreateSQLiteStore(":memory:", nil)
+	store, _ := storage.CreateSQLiteStore(":memory:")
 	defer func() { _ = store.Close() }()
 
 	srv := NewServer(store)

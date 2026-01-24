@@ -14,7 +14,7 @@ import (
 // 设计目标：确保相同错误码在不同级别产生相同的冷却时长
 func TestCooldownConsistency_401Error(t *testing.T) {
 	tmpDB := t.TempDir() + "/test-cooldown-consistency.db"
-	store, err := storage.CreateSQLiteStore(tmpDB, nil)
+	store, err := storage.CreateSQLiteStore(tmpDB)
 	if err != nil {
 		t.Fatalf("创建测试数据库失败: %v", err)
 	}

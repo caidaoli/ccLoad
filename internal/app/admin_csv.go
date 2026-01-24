@@ -322,16 +322,6 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 		s.invalidateCooldownCache()
 	}
 
-	// 导入完成后,检查Redis同步状态(批量导入方法会自动触发同步)
-	summary.RedisSyncEnabled = s.store.IsRedisEnabled()
-	if summary.RedisSyncEnabled {
-		summary.RedisSyncSuccess = true // 批量导入方法已自动同步
-		// 获取当前渠道总数作为同步数量
-		if configs, err := s.store.ListConfigs(c.Request.Context()); err == nil {
-			summary.RedisSyncedChannels = len(configs)
-		}
-	}
-
 	RespondJSON(c, http.StatusOK, summary)
 }
 

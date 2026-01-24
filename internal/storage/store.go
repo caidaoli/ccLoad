@@ -99,7 +99,6 @@ type Store interface {
 	ImportChannelBatch(ctx context.Context, channels []*model.ChannelWithKeys) (created, updated int, err error)
 
 	// === Infrastructure ===
-	IsRedisEnabled() bool
 	Ping(ctx context.Context) error
 	Close() error
 }

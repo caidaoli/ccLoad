@@ -163,8 +163,8 @@ func (k *APIKey) IsCoolingDown(now time.Time) bool {
 	return k.CooldownUntil > now.Unix()
 }
 
-// ChannelWithKeys 用于Redis完整同步
-// 设计目标：解决Redis恢复后渠道缺少API Keys的问题
+// ChannelWithKeys 渠道和API Keys的完整数据
+// 用于批量导入导出等需要完整渠道数据的场景
 type ChannelWithKeys struct {
 	Config  *Config  `json:"config"`
 	APIKeys []APIKey `json:"api_keys"` // 不使用指针避免额外分配

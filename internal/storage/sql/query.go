@@ -172,7 +172,7 @@ func (cs *ConfigScanner) parseTimestampOrNow(val any, fallback time.Time) time.T
 		if ts, err := strconv.ParseInt(v, 10, 64); err == nil && ts > 0 {
 			return unixToTime(ts)
 		}
-		// 2. 尝试解析RFC3339格式（Redis恢复场景）
+		// 2. 尝试解析RFC3339格式
 		if t, err := time.Parse(time.RFC3339, v); err == nil {
 			return t
 		}

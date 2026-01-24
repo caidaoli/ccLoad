@@ -11,7 +11,7 @@ import (
 )
 
 func TestFillHealthTimeline_UsesSecondsForAvgTimes(t *testing.T) {
-	store, err := storage.CreateSQLiteStore(t.TempDir()+"/test.db", nil)
+	store, err := storage.CreateSQLiteStore(t.TempDir() + "/test.db")
 	if err != nil {
 		t.Fatalf("创建测试数据库失败: %v", err)
 	}

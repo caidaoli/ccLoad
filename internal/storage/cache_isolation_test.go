@@ -16,7 +16,7 @@ func TestCacheIsolation_GetEnabledChannelsByModel(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "isolation.db")
-	store, err := storage.CreateSQLiteStore(dbPath, nil)
+	store, err := storage.CreateSQLiteStore(dbPath)
 	if err != nil {
 		t.Fatalf("创建 store 失败: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestCacheIsolation_GetEnabledChannelsByType(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "isolation_type.db")
-	store, err := storage.CreateSQLiteStore(dbPath, nil)
+	store, err := storage.CreateSQLiteStore(dbPath)
 	if err != nil {
 		t.Fatalf("创建 store 失败: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestCacheIsolation_MultipleQueries(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "isolation_multi.db")
-	store, err := storage.CreateSQLiteStore(dbPath, nil)
+	store, err := storage.CreateSQLiteStore(dbPath)
 	if err != nil {
 		t.Fatalf("创建 store 失败: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestCacheIsolation_WildcardQuery(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "isolation_wildcard.db")
-	store, err := storage.CreateSQLiteStore(dbPath, nil)
+	store, err := storage.CreateSQLiteStore(dbPath)
 	if err != nil {
 		t.Fatalf("创建 store 失败: %v", err)
 	}

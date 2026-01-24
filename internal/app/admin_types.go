@@ -166,11 +166,6 @@ type ChannelImportSummary struct {
 	Skipped   int      `json:"skipped"`
 	Processed int      `json:"processed"`
 	Errors    []string `json:"errors,omitempty"`
-	// Redis同步相关字段 (OCP: 开放扩展)
-	RedisSyncEnabled    bool   `json:"redis_sync_enabled"`              // Redis同步是否启用
-	RedisSyncSuccess    bool   `json:"redis_sync_success,omitempty"`    // Redis同步是否成功
-	RedisSyncError      string `json:"redis_sync_error,omitempty"`      // Redis同步错误信息
-	RedisSyncedChannels int    `json:"redis_synced_channels,omitempty"` // 成功同步到Redis的渠道数量
 }
 
 // CooldownRequest 冷却设置请求

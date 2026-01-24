@@ -11,7 +11,7 @@ import (
 )
 
 func TestUpdateTokenStatsDuringShutdown(t *testing.T) {
-	store, err := storage.CreateSQLiteStore(":memory:", nil)
+	store, err := storage.CreateSQLiteStore(":memory:")
 	if err != nil {
 		t.Fatalf("CreateSQLiteStore failed: %v", err)
 	}

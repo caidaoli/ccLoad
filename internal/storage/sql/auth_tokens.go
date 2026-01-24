@@ -130,9 +130,6 @@ func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) 
 
 	token.ID = id
 
-	// 触发异步Redis同步 (新增 2025-11)
-	s.triggerAsyncSync(syncAuthTokens)
-
 	return nil
 }
 
@@ -268,9 +265,6 @@ func (s *SQLStore) UpdateAuthToken(ctx context.Context, token *model.AuthToken) 
 		return fmt.Errorf("auth token not found")
 	}
 
-	// 触发异步Redis同步 (新增 2025-11)
-	s.triggerAsyncSync(syncAuthTokens)
-
 	return nil
 }
 
@@ -292,9 +286,6 @@ func (s *SQLStore) DeleteAuthToken(ctx context.Context, id int64) error {
 	if rowsAffected == 0 {
 		return fmt.Errorf("auth token not found")
 	}
-
-	// 触发异步Redis同步 (新增 2025-11)
-	s.triggerAsyncSync(syncAuthTokens)
 
 	return nil
 }

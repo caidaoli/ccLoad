@@ -15,7 +15,6 @@ import (
 
 	"ccLoad/internal/app"
 	"ccLoad/internal/storage"
-	"ccLoad/internal/storage/redis"
 	"ccLoad/internal/util"
 	"ccLoad/internal/version"
 
@@ -98,23 +97,8 @@ func main() {
 		gin.SetMode(gin.ReleaseMode) // 生产模式
 	}
 
-	// 初始化Redis同步客户端 (可选功能)
-	redisURL := os.Getenv("REDIS_URL")
-	redisSync, err := redis.NewRedisSync(redisURL)
-	if err != nil {
-		log.Fatalf("Redis初始化失败: %v", err)
-	}
-	defer func() { _ = redisSync.Close() }()
-
-	if redisSync.IsEnabled() {
-		log.Printf("Redis同步已启用")
-	} else {
-		log.Printf("Redis同步未配置")
-	}
-
 	// 使用工厂函数创建存储实例（自动识别MySQL/SQLite）
-	// [FIX] 2025-12：初始化逻辑（迁移→恢复→启动同步）已收敛到 NewStore()
-	store, err := storage.NewStore(redisSync)
+	store, err := storage.NewStore()
 	if err != nil {
 		log.Fatalf("存储初始化失败: %v", err)
 	}

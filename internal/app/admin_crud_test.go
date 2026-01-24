@@ -20,7 +20,7 @@ func setupAdminTestServer(t *testing.T) (*Server, storage.Store, func()) {
 	t.Helper()
 
 	tmpDB := t.TempDir() + "/admin_crud_test.db"
-	store, err := storage.CreateSQLiteStore(tmpDB, nil)
+	store, err := storage.CreateSQLiteStore(tmpDB)
 	if err != nil {
 		t.Fatalf("创建测试数据库失败: %v", err)
 	}

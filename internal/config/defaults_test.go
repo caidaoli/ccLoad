@@ -35,7 +35,6 @@ func TestDefaultConstants(t *testing.T) {
 
 		// 日志超时配置
 		{"LogFlushTimeoutMs", LogFlushTimeoutMs, 100, 60000}, // 毫秒
-		{"RedisSyncShutdownTimeoutMs", RedisSyncShutdownTimeoutMs, 100, 10000},
 	}
 
 	for _, tt := range tests {
@@ -95,17 +94,6 @@ func TestConfigRelationships(t *testing.T) {
 	if cleanupHours >= minRetentionHours {
 		t.Errorf("日志清理: CleanupInterval(%dh) >= MinRetention(%dh)",
 			cleanupHours, minRetentionHours)
-	}
-}
-
-// TestRedisSyncShutdownTimeout 测试Redis同步关闭超时
-func TestRedisSyncShutdownTimeout(t *testing.T) {
-	// 关闭超时应该在合理范围内 (100ms - 10s)
-	if RedisSyncShutdownTimeoutMs < 100 {
-		t.Errorf("RedisSyncShutdownTimeout=%dms 太短", RedisSyncShutdownTimeoutMs)
-	}
-	if RedisSyncShutdownTimeoutMs > 10000 {
-		t.Errorf("RedisSyncShutdownTimeout=%dms 太长", RedisSyncShutdownTimeoutMs)
 	}
 }
 

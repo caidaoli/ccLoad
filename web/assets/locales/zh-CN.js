@@ -936,9 +936,6 @@ window.I18N_LOCALES['zh-CN'] = {
   // 渠道导入导出
   'channels.import.exportHttpFailed': '导出失败 (HTTP {status})',
   'channels.import.summary': '导入完成：新增 {created}，更新 {updated}，跳过 {skipped}',
-  'channels.import.redisSyncSuccess': '，已同步 {count} 个渠道到Redis',
-  'channels.import.redisSyncFailed': '，Redis同步失败',
   'channels.import.moreErrors': ' 等{count}条记录',
-  'channels.import.partialFailed': '部分记录导入失败：{preview}{extra}',
-  'channels.import.redisSyncError': 'Redis同步失败：{error}'
+  'channels.import.partialFailed': '部分记录导入失败：{preview}{extra}'
 };

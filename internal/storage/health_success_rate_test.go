@@ -15,7 +15,7 @@ func TestGetChannelSuccessRates_IgnoresClientNoise(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	dbPath := filepath.Join(tmpDir, "success_rate.db")
-	store, err := storage.CreateSQLiteStore(dbPath, nil)
+	store, err := storage.CreateSQLiteStore(dbPath)
 	if err != nil {
 		t.Fatalf("failed to create sqlite store: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestGetChannelSuccessRates_NoEligibleResults(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	dbPath := filepath.Join(tmpDir, "success_rate_empty.db")
-	store, err := storage.CreateSQLiteStore(dbPath, nil)
+	store, err := storage.CreateSQLiteStore(dbPath)
 	if err != nil {
 		t.Fatalf("failed to create sqlite store: %v", err)
 	}

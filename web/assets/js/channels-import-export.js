@@ -81,24 +81,12 @@ async function handleImportCSV(event, importBtn) {
         skipped: summary.skipped || 0
       });
 
-      if (summary.redis_sync_enabled) {
-        if (summary.redis_sync_success) {
-          msg += window.t('channels.import.redisSyncSuccess', { count: summary.redis_synced_channels || 0 });
-        } else {
-          msg += window.t('channels.import.redisSyncFailed');
-        }
-      }
-
       if (window.showSuccess) window.showSuccess(msg);
 
       if (summary.errors && summary.errors.length) {
         const preview = summary.errors.slice(0, 3).join('；');
         const extra = summary.errors.length > 3 ? window.t('channels.import.moreErrors', { count: summary.errors.length }) : '';
         if (window.showError) window.showError(window.t('channels.import.partialFailed', { preview, extra }));
-      }
-
-      if (summary.redis_sync_enabled && !summary.redis_sync_success && summary.redis_sync_error) {
-        if (window.showError) window.showError(window.t('channels.import.redisSyncError', { error: summary.redis_sync_error }));
       }
     } else if (window.showSuccess) {
       window.showSuccess(window.t('channels.msg.importSuccess'));

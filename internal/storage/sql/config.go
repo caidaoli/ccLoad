@@ -226,9 +226,6 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 		return nil, err
 	}
 
-	// 异步同步渠道配置到Redis（非阻塞，立即返回）
-	s.triggerAsyncSync(syncChannels)
-
 	return config, nil
 }
 
@@ -279,9 +276,6 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 		return nil, err
 	}
 
-	// 异步同步渠道配置到Redis（非阻塞，立即返回）
-	s.triggerAsyncSync(syncChannels)
-
 	return config, nil
 }
 
@@ -311,9 +305,6 @@ func (s *SQLStore) DeleteConfig(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
-
-	// 异步同步渠道配置到Redis（非阻塞，立即返回）
-	s.triggerAsyncSync(syncChannels)
 
 	return nil
 }
@@ -362,9 +353,6 @@ func (s *SQLStore) BatchUpdatePriority(ctx context.Context, updates []struct {
 	}
 
 	rowsAffected, _ := result.RowsAffected()
-
-	// 异步同步到Redis
-	s.triggerAsyncSync(syncChannels)
 
 	return rowsAffected, nil
 }
