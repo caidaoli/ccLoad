@@ -1004,10 +1004,12 @@
     });
 
     input.addEventListener('input', () => {
-      if (dropdown.dataset.open === '1') {
-        activeIndex = -1;
-        renderDropdown();
+      if (dropdown.dataset.open !== '1') {
+        beginPick();
+        openDropdown();
       }
+      activeIndex = -1;
+      renderDropdown();
     });
 
     input.addEventListener('keydown', (e) => {
@@ -1058,9 +1060,17 @@
     });
 
     input.addEventListener('blur', () => {
-      if (dropdown.dataset.open === '1') {
-        cancelPick();
+      if (dropdown.dataset.open !== '1') return;
+
+      // 如果用户输入了内容，自动选择第一个匹配项
+      if (input.value.trim()) {
+        const items = getDropdownItems();
+        if (items.length > 0) {
+          commitValue(items[0].value, items[0].label);
+          return;
+        }
       }
+      cancelPick();
     });
 
     // 返回组件实例，提供外部控制接口
