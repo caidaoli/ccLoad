@@ -37,7 +37,7 @@ ccLoad solves these pain points through:
 
 ## ✨ Key Features
 
-- 🚀 **High-Performance Architecture** - Gin framework, 1000+ concurrent connections, async Redis sync <1ms
+- 🚀 **High-Performance Architecture** - Gin framework, 1000+ concurrent connections, high-performance caching
 - 🧮 **Local Token Counting** - API-compliant local token estimation, <5ms response, 93%+ accuracy, supports large-scale tool scenarios
 - 🎯 **Smart Error Classification** - Distinguishes Key/Channel/Client errors, soft error detection (200 masquerading as error), 1308 quota handling (596/597 status codes)
 - 🔀 **Smart Routing** - Priority + smooth weighted round-robin channel selection, **pre-filters cooled channels**, multi-key load balancing, **health-based dynamic sorting** (confidence factor prevents small sample over-penalization)
@@ -255,7 +255,6 @@ Hugging Face Spaces provides free container hosting with Docker support, ideal f
    | Variable | Value | Required | Description |
    |----------|-------|----------|-------------|
    | `CCLOAD_PASS` | `your_admin_password` | ✅ **Required** | Admin interface password |
-   | `REDIS_URL` | `rediss://user:pass@host:port` | ⚪ Optional | Redis URL for channel data backup |
 
    **Note**: API access tokens are now configured via Web admin interface `/web/tokens.html`, not environment variables.
 
@@ -283,7 +282,6 @@ Hugging Face Spaces provides free container hosting with Docker support, ideal f
 - ✅ **Completely Free**: Public Spaces are permanently free with CPU and storage
 - ✅ **Fast Deployment**: Pre-built image, 1-2 minutes (3-5x faster than source build)
 - ✅ **Auto HTTPS**: No SSL certificate configuration needed
-- ✅ **Redis Backup**: Channel data auto-backup when Redis configured
 - ✅ **Auto Restart**: Automatic restart after crashes
 - ✅ **Version Control**: Git-based, easy rollback and collaboration
 - ✅ **Simple Maintenance**: Only 5-line Dockerfile, no source code management
@@ -326,26 +324,10 @@ ENV PORT=7860
 EXPOSE 7860
 ```
 
-**Option 2: Redis Backup (Channel Config Only)**
-- ✅ **Auto Recovery**: Auto-restores channel config from Redis after Space restart
-- ✅ **Real-time Sync**: Channel changes auto-sync to Redis
-- ⚠️ **Config Only**: Logs and stats not backed up, lost on restart
-- Configuration: Add `REDIS_URL` environment variable in Secrets
-
-**Recommended Free Redis Services**:
-- [Upstash Redis](https://upstash.com/) - Free 10,000 commands/day, TLS support
-- [Redis Cloud](https://redis.com/try-free/) - Free 30MB storage
-
-**Option 3: Local Storage Only (Not Recommended)**
+**Option 2: Local Storage Only (Not Recommended)**
 - ⚠️ **Data Loss**: `/tmp` clears on Space restart, channel config lost
 - ⚠️ **Manual Recovery**: Must re-import via Web interface or CSV
 - Use case: Temporary testing only
-
-**Redis Backup Workflow**:
-1. **First Start**: If `/tmp/ccload.db` doesn't exist and `REDIS_URL` is configured, auto-restores channels from Redis
-2. **During Runtime**: Channel changes auto-sync to Redis
-3. **Space Restart**: `/tmp` clears, app restores channel config from Redis on startup
-4. **Log Data**: Stored in `/tmp`, clears on restart (export via Web interface)
 
 #### Update Deployment
 
@@ -624,7 +606,6 @@ Check out the awesome admin dashboard 👇
 | **SQLite3** | v1.38.2 | Embedded Database | Zero config, single file (default) |
 | **MySQL** | v1.8.1 | RDBMS | Optional, for high-concurrency production |
 | **Sonic** | v1.14.1 | JSON Library | 2-3x faster than stdlib |
-| **go-redis** | v9.7.0 | Redis Client | Optional channel data sync |
 | **godotenv** | v1.5.1 | Env Config | Simplified config management |
 
 ### Architecture Features
@@ -666,7 +647,6 @@ Check out the awesome admin dashboard 👇
 - Error classification cache (1000 capacity)
 
 **Async Processing Architecture**:
-- Redis sync (single worker goroutine, non-blocking trigger, <1ms response)
 - Log system (1000 buffer + single worker, guarantees FIFO order)
 - Token/log cleanup (background goroutine, periodic maintenance)
 
@@ -696,7 +676,6 @@ Check out the awesome admin dashboard 👇
 | `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal mode (WAL/TRUNCATE/DELETE, recommend TRUNCATE for containers) |
 | `CCLOAD_MAX_CONCURRENCY` | `1000` | Max concurrent requests (limits simultaneous proxy requests) |
 | `CCLOAD_MAX_BODY_BYTES` | `10485760` | Max request body bytes (10MB, prevents memory overflow) |
-| `REDIS_URL` | None | Redis connection URL (optional, for async channel data backup) |
 | `CCLOAD_COOLDOWN_AUTH_SEC` | `300` | Auth error (401/402/403) initial cooldown (seconds) |
 | `CCLOAD_COOLDOWN_SERVER_SEC` | `120` | Server error (5xx) initial cooldown (seconds) |
 | `CCLOAD_COOLDOWN_TIMEOUT_SEC` | `60` | Timeout error (597/598) initial cooldown (seconds) |
@@ -809,11 +788,8 @@ storage/
 │   ├── auth_tokens.go     # API access tokens
 │   ├── admin_sessions.go  # Admin sessions
 │   ├── system_settings.go # System settings
-│   ├── redis_sync.go      # Redis sync
 │   └── helpers.go         # Helper functions
-├── sqlite/          # SQLite specific (test files only)
-└── redis/           # Redis sync
-    └── sync.go      # Redis backup/restore
+└── sqlite/          # SQLite specific (test files only)
 ```
 
 **Database Selection Logic**:

@@ -120,8 +120,11 @@ func TestParseIncomingRequest_ValidJSON(t *testing.T) {
 
 // TestParseIncomingRequest_BodyTooLarge 测试请求体过大
 func TestParseIncomingRequest_BodyTooLarge(t *testing.T) {
-	// 创建超大请求体（>2MB）
-	largeBody := make([]byte, 3*1024*1024) // 3MB
+	// 设置较小的限制以便测试
+	t.Setenv("CCLOAD_MAX_BODY_BYTES", "1048576") // 1MB
+
+	// 创建超大请求体（>1MB）
+	largeBody := make([]byte, 2*1024*1024) // 2MB
 	for i := range largeBody {
 		largeBody[i] = 'a'
 	}

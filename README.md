@@ -41,7 +41,7 @@ ccLoad 一站式解决👇
 
 | 能力 | 亮点 | 效果 |
 |------|------|------|
-| 🚀 **性能怪兽** | Gin框架 + Sonic JSON | 1000+并发，Redis同步<1ms |
+| 🚀 **性能怪兽** | Gin框架 + Sonic JSON | 1000+并发，高性能缓存 |
 | 🧮 **本地算Token** | 不调API就能估算消耗 | 响应<5ms，准确度93%+ |
 | 🎯 **错误分类器** | Key级/渠道级/客户端错误 | 200伪装错误也能揪出来 |
 | 🔀 **智能调度** | 优先级+平滑加权轮询+健康度排序 | 烂渠道自动靠边站 |
@@ -273,23 +273,11 @@ chmod +x ccload-linux-amd64
    | 变量名 | 值 | 必填 | 说明 |
    |--------|-----|------|------|
    | `CCLOAD_PASS` | `your_admin_password` | ✅ **必填** | 管理界面密码 |
-   | `REDIS_URL` | `rediss://user:pass@host:port` | ⚪ 可选 | Redis 连接地址，用于渠道数据备份和恢复 |
-
-   **注意**: API 访问令牌现在通过 Web 管理界面 `/web/tokens.html` 进行配置，不再通过环境变量设置。
-
-   **Redis URL 格式说明**:
-   ```
-   rediss://用户名:密码@服务器地址:端口
-
-   示例:
-   rediss://default:mypassword@redis.example.com:6379
-   rediss://user123:pass456@127.0.0.1:6380
-   ```
 
    **注意**:
+   - API 访问令牌通过 Web 管理界面 `/web/tokens.html` 配置
    - `PORT` 和 `SQLITE_PATH` 已在 Dockerfile 中设置，无需配置
    - Hugging Face Spaces 重启后 `/tmp` 目录会清空
-   - 配置 `REDIS_URL` 后，渠道数据会自动从 Redis 恢复
 
 5. **等待构建和启动**
 
@@ -315,7 +303,6 @@ chmod +x ccload-linux-amd64
 - ✅ **完全免费**: 公开 Space 永久免费，包含 CPU 和存储
 - ✅ **极速部署**: 使用预构建镜像，1-2 分钟即可完成（比源码构建快 3-5 倍）
 - ✅ **自动 HTTPS**: 无需配置 SSL 证书，自动提供安全连接
-- ✅ **Redis 备份**: 配置 Redis 后渠道数据自动备份，重启自动恢复
 - ✅ **自动重启**: 应用崩溃后自动重启
 - ✅ **版本控制**: 基于 Git，方便回滚和协作
 - ✅ **简单维护**: 仅需 5 行 Dockerfile，无需管理源码
@@ -358,26 +345,10 @@ ENV PORT=7860
 EXPOSE 7860
 ```
 
-**方案二：Redis 备份（仅渠道配置）**
-- ✅ **自动恢复**: Space 重启后自动从 Redis 恢复渠道配置
-- ✅ **实时同步**: 渠道增删改自动同步到 Redis
-- ⚠️ **仅配置数据**: 日志和统计数据不会备份，重启后丢失
-- 配置方法: 在 Secrets 中添加 `REDIS_URL` 环境变量
-
-**推荐的免费 Redis 服务**:
-- [Upstash Redis](https://upstash.com/) - 免费 10,000 命令/天，支持 TLS
-- [Redis Cloud](https://redis.com/try-free/) - 免费 30MB 存储
-
-**方案三：仅本地存储（不推荐）**
+**方案二：仅本地存储（不推荐）**
 - ⚠️ **数据丢失**: Space 重启后 `/tmp` 目录会清空，渠道配置会丢失
 - ⚠️ **手动恢复**: 需要重新通过 Web 界面或 CSV 导入配置渠道
 - 使用场景: 仅用于临时测试
-
-**Redis 备份工作流程**:
-1. **首次启动**: 如果 `/tmp/ccload.db` 不存在且配置了 `REDIS_URL`，自动从 Redis 恢复渠道
-2. **运行期间**: 渠道增删改自动同步到 Redis
-3. **Space 重启**: `/tmp` 清空，应用启动时从 Redis 恢复渠道配置
-4. **日志数据**: 存储在 `/tmp`，重启后清空（可通过 Web 界面导出历史日志）
 
 #### 更新部署
 
@@ -666,7 +637,6 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 | **SQLite3** | v1.38.2 | 嵌入式数据库 | 零配置，单文件存储（默认） |
 | **MySQL** | v1.8.1 | 关系型数据库 | 可选，适合高并发生产环境 |
 | **Sonic** | v1.14.1 | JSON库 | 比标准库快2-3倍 |
-| **go-redis** | v9.7.0 | Redis客户端 | 可选渠道数据同步 |
 | **godotenv** | v1.5.1 | 环境配置 | 简化配置管理 |
 
 ### 架构特点
@@ -710,7 +680,6 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 - 错误分类缓存（1000容量）- 重复错误秒判
 
 **异步处理架构**（响应贼快）:
-- Redis同步（单worker协程，非阻塞触发，响应<1ms）
 - 日志系统（1000条缓冲 + 单worker，保证FIFO顺序）
 - Token/日志清理（后台协程，定期维护）
 
@@ -742,7 +711,6 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 | `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal 模式（WAL/TRUNCATE/DELETE 等，容器环境建议 TRUNCATE） |
 | `CCLOAD_MAX_CONCURRENCY` | `1000` | 最大并发请求数（限制同时处理的代理请求数量） |
 | `CCLOAD_MAX_BODY_BYTES` | `10485760` | 请求体最大字节数（10MB，防止大包打爆内存） |
-| `REDIS_URL` | 无 | Redis 连接 URL（可选，用于渠道数据异步备份） |
 | `CCLOAD_COOLDOWN_AUTH_SEC` | `300` | 认证错误(401/402/403)初始冷却时间（秒） |
 | `CCLOAD_COOLDOWN_SERVER_SEC` | `120` | 服务器错误(5xx)初始冷却时间（秒） |
 | `CCLOAD_COOLDOWN_TIMEOUT_SEC` | `60` | 超时错误(597/598)初始冷却时间（秒） |
@@ -872,11 +840,8 @@ storage/
 │   ├── auth_tokens.go     # API 访问令牌
 │   ├── admin_sessions.go  # 管理会话
 │   ├── system_settings.go # 系统设置
-│   ├── redis_sync.go      # Redis 同步
 │   └── helpers.go         # 辅助函数
-├── sqlite/          # SQLite 特定（仅测试文件）
-└── redis/           # Redis 同步
-    └── sync.go      # Redis 备份恢复
+└── sqlite/          # SQLite 特定（仅测试文件）
 ```
 
 **数据库选择逻辑**:
