@@ -189,16 +189,20 @@ func (s *Server) HandlePublicSummary(c *gin.Context) {
 	totalError := 0
 
 	for _, stat := range stats {
-		totalSuccess += stat.Success
-		totalError += stat.Error
-
-		// 获取渠道类型(默认anthropic)
-		channelType := "anthropic"
+		// 获取渠道类型，跳过无法确定类型的记录（已删除的渠道）
+		var channelType string
 		if stat.ChannelID != nil {
 			if ct, ok := channelTypes[int64(*stat.ChannelID)]; ok {
 				channelType = ct
 			}
 		}
+		if channelType == "" {
+			// 渠道已删除或类型未知，不计入按类型统计（与 /admin/stats 保持一致）
+			continue
+		}
+
+		totalSuccess += stat.Success
+		totalError += stat.Error
 
 		// 初始化类型统计
 		if _, exists := typeStats[channelType]; !exists {
@@ -279,8 +283,8 @@ func (s *Server) fetchChannelTypesMap(ctx context.Context) (map[int64]string, er
 }
 
 // getChannelTypesMapCached 带 TTL 缓存的渠道类型映射查询
-// [OPT] P3: 渠道类型变化频率极低，使用 30 秒缓存减少数据库查询
-const channelTypesCacheTTL = 30 * time.Second
+// [OPT] P3: 渠道类型变化频率极低，使用 60 秒缓存减少数据库查询
+const channelTypesCacheTTL = 60 * time.Second
 
 func (s *Server) getChannelTypesMapCached(ctx context.Context) (map[int64]string, error) {
 	// 读锁检查缓存
