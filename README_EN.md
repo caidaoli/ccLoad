@@ -298,10 +298,25 @@ Hugging Face Spaces provides free container hosting with Docker support, ideal f
 
 Due to Hugging Face Spaces limitations (`/tmp` directory clears on restart), **we strongly recommend using an external MySQL database** for complete data persistence:
 
-**Option 1: MySQL External Database (Recommended)**
+**Option 1: Hybrid Storage Mode (Recommended, Best Performance)**
+- ✅ **Ultra-fast queries**: All reads/writes go through local SQLite, latency <1ms (free MySQL has 800ms+ latency)
+- ✅ **Restart-safe**: Async sync to MySQL, auto-restore on startup
+- ✅ **Stats caching**: Smart TTL cache reduces repetitive aggregate queries
+- Configuration: Add `CCLOAD_MYSQL` + `CCLOAD_ENABLE_SQLITE_REPLICA=1` in Secrets
+
+**Dockerfile Example (Hybrid Mode)**:
+```dockerfile
+FROM ghcr.io/caidaoli/ccload:latest
+ENV TZ=Asia/Shanghai
+ENV PORT=7860
+# Configure in Secrets: CCLOAD_MYSQL + CCLOAD_ENABLE_SQLITE_REPLICA=1
+EXPOSE 7860
+```
+
+**Option 2: Pure MySQL Mode**
 - ✅ **Complete Persistence**: Channel configs, logs, and stats all preserved
 - ✅ **Restart-Safe**: Data stored externally, unaffected by Space restarts
-- ✅ **Free Options**: Several providers offer free MySQL databases
+- ⚠️ **Slower Queries**: Free MySQL has higher latency, stats pages respond slowly
 - Configuration: Add `CCLOAD_MYSQL` environment variable in Secrets
 
 **Recommended Free MySQL Services**:
@@ -313,9 +328,10 @@ Due to Hugging Face Spaces limitations (`/tmp` directory clears on restart), **w
 2. Create Serverless Cluster (free)
 3. Get connection info, format: `user:password@tcp(host:4000)/database?tls=true`
 4. Add `CCLOAD_MYSQL` variable in Hugging Face Space Secrets
-5. Restart Space, all data will auto-persist to MySQL
+5. **(Optional) Enable Hybrid Mode**: Add `CCLOAD_ENABLE_SQLITE_REPLICA=1` for best performance
+6. Restart Space, all data will auto-persist to MySQL
 
-**Dockerfile Example (with MySQL)**:
+**Dockerfile Example (Pure MySQL)**:
 ```dockerfile
 FROM ghcr.io/caidaoli/ccload:latest
 ENV TZ=Asia/Shanghai
@@ -324,7 +340,7 @@ ENV PORT=7860
 EXPOSE 7860
 ```
 
-**Option 2: Local Storage Only (Not Recommended)**
+**Option 3: Local Storage Only (Not Recommended)**
 - ⚠️ **Data Loss**: `/tmp` clears on Space restart, channel config lost
 - ⚠️ **Manual Recovery**: Must re-import via Web interface or CSV
 - Use case: Temporary testing only
@@ -668,6 +684,8 @@ Check out the awesome admin dashboard 👇
 |----------|---------|-------------|
 | `CCLOAD_PASS` | None | Admin password (**Required**, exits if not set) |
 | `CCLOAD_MYSQL` | None | MySQL DSN (optional, format: `user:pass@tcp(host:port)/db?charset=utf8mb4`)<br/>**If set uses MySQL, otherwise SQLite** |
+| `CCLOAD_ENABLE_SQLITE_REPLICA` | `0` | Hybrid storage mode switch (`1`=enable, see below) |
+| `CCLOAD_SQLITE_LOG_DAYS` | `7` | Days of logs to restore from MySQL on startup in hybrid mode (0=no logs, 999=all) |
 | `CCLOAD_ALLOW_INSECURE_TLS` | `0` | Disable upstream TLS cert validation (`1`=enable; ⚠️for troubleshooting/controlled intranet only) |
 | `PORT` | `8080` | Service port |
 | `GIN_MODE` | `release` | Run mode (`debug`/`release`) |
@@ -682,6 +700,28 @@ Check out the awesome admin dashboard 👇
 | `CCLOAD_COOLDOWN_RATE_LIMIT_SEC` | `60` | Rate limit error (429) initial cooldown (seconds) |
 | `CCLOAD_COOLDOWN_MAX_SEC` | `1800` | Exponential backoff cooldown max (seconds, 30 minutes) |
 | `CCLOAD_COOLDOWN_MIN_SEC` | `10` | Exponential backoff cooldown min (seconds) |
+
+#### Hybrid Storage Mode (SQLite Primary + MySQL Backup)
+
+HuggingFace Spaces and similar environments lose local data on restart, but free MySQL has high query latency (800ms+). Hybrid mode offers the best of both worlds:
+
+- **SQLite Primary Storage**: All read/write operations go through local SQLite, latency <1ms
+- **MySQL Backup Storage**: Async sync writes, data persistence guaranteed
+- **Startup Recovery**: Restore data from MySQL to SQLite, supports restoring logs by days
+
+```bash
+# Enable hybrid mode
+export CCLOAD_MYSQL="user:pass@tcp(host:3306)/db?charset=utf8mb4"
+export CCLOAD_ENABLE_SQLITE_REPLICA=1
+export CCLOAD_SQLITE_LOG_DAYS=7  # Restore last 7 days of logs (optional)
+```
+
+**Three Storage Modes**:
+| Mode | Configuration | Use Case |
+|------|---------------|----------|
+| Pure SQLite | Don't set `CCLOAD_MYSQL` | Local dev, single instance |
+| Pure MySQL | Set `CCLOAD_MYSQL` | Standard production |
+| Hybrid Mode | Set `CCLOAD_MYSQL` + `CCLOAD_ENABLE_SQLITE_REPLICA=1` | HuggingFace Spaces |
 
 ### Web Admin Configuration (Hot Reload Supported)
 

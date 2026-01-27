@@ -33,9 +33,14 @@ internal/
 │   ├── smooth_weighted_rr.go   # 平滑加权轮询算法（替换加权随机）
 │   ├── cost_cache.go           # 渠道每日成本缓存（按天重置）
 │   ├── health_cache.go         # 健康度缓存（原子指针无锁快照）
+│   ├── stats_cache.go          # 统计结果缓存（智能TTL）
 │   └── key_selector.go         # Key负载均衡（sequential/round_robin）
 ├── cooldown/      # 冷却决策引擎 (manager.go)
-├── storage/sql/   # 数据持久层 (SQLite/MySQL统一实现)
+├── storage/       # 存储层
+│   ├── factory.go        # 存储工厂（三种模式选择）
+│   ├── hybrid_store.go   # 混合存储（SQLite主+MySQL异步备份）
+│   ├── sync_manager.go   # 启动时数据恢复
+│   └── sql/              # SQL实现（SQLite/MySQL统一）
 └── util/          # 工具库 (classifier.go错误分类, models_fetcher.go, cost_calculator.go)
 ```
 
@@ -71,6 +76,15 @@ internal/
 - 存储：`channels.daily_cost_limit`（美元），0表示无限制
 - 缓存：`CostCache`组件在内存中缓存当日成本，按天自动重置
 - 启动加载：从数据库加载当日已消耗成本
+
+**混合存储模式**（HuggingFace Spaces 场景）:
+- 三种模式：纯SQLite（默认）/ 纯MySQL / 混合（SQLite主+MySQL备）
+- 启用：`CCLOAD_MYSQL` + `CCLOAD_ENABLE_SQLITE_REPLICA=1`
+- 日志恢复天数：`CCLOAD_SQLITE_LOG_DAYS`（默认7天）
+- 核心组件：
+  - `HybridStore`: SQLite主存储 + MySQL异步备份（channel队列）
+  - `SyncManager`: 启动时从MySQL恢复数据到SQLite
+  - `StatsCache`: 统计结果缓存（TTL: 30秒~2小时）
 
 ## 开发指南
 

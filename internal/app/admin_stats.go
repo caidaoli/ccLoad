@@ -86,7 +86,7 @@ func (s *Server) HandleStats(c *gin.Context) {
 	// 判断是否为本日（本日才计算最近一分钟）
 	isToday := params.Range == "today" || params.Range == ""
 
-	stats, err := s.store.GetStats(c.Request.Context(), startTime, endTime, &lf, isToday)
+	stats, err := s.statsCache.GetStats(c.Request.Context(), startTime, endTime, &lf, isToday)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -99,7 +99,7 @@ func (s *Server) HandleStats(c *gin.Context) {
 	}
 
 	// 获取RPM统计（峰值、平均、最近一分钟）
-	rpmStats, err := s.store.GetRPMStats(c.Request.Context(), startTime, endTime, &lf, isToday)
+	rpmStats, err := s.statsCache.GetRPMStats(c.Request.Context(), startTime, endTime, &lf, isToday)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -146,13 +146,13 @@ func (s *Server) HandlePublicSummary(c *gin.Context) {
 	// 查询1: 基础统计（使用 Lite 版本跳过 fillStatsRPM）
 	go func() {
 		defer wg.Done()
-		stats, statsErr = s.store.GetStatsLite(ctx, startTime, endTime, nil)
+		stats, statsErr = s.statsCache.GetStatsLite(ctx, startTime, endTime, nil)
 	}()
 
 	// 查询2: RPM统计
 	go func() {
 		defer wg.Done()
-		rpmStats, rpmErr = s.store.GetRPMStats(ctx, startTime, endTime, nil, isToday)
+		rpmStats, rpmErr = s.statsCache.GetRPMStats(ctx, startTime, endTime, nil, isToday)
 	}()
 
 	// 查询3: 渠道类型映射（带缓存）

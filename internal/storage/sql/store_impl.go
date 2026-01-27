@@ -81,3 +81,27 @@ func (s *SQLStore) CleanupLogsBefore(ctx context.Context, cutoff time.Time) erro
 	}
 	return nil
 }
+
+// ============================================================================
+// 底层数据库访问方法（供 SyncManager 等组件使用）
+// ============================================================================
+
+// QueryContext 执行查询语句
+func (s *SQLStore) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return s.db.QueryContext(ctx, query, args...)
+}
+
+// QueryRowContext 执行查询单行
+func (s *SQLStore) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	return s.db.QueryRowContext(ctx, query, args...)
+}
+
+// ExecContext 执行非查询语句
+func (s *SQLStore) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return s.db.ExecContext(ctx, query, args...)
+}
+
+// BeginTx 开启事务
+func (s *SQLStore) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error) {
+	return s.db.BeginTx(ctx, opts)
+}

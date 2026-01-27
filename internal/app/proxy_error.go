@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -224,6 +225,10 @@ func (s *Server) applyTokenStatsUpdate(upd tokenStatsUpdate) {
 	defer cancel()
 
 	if err := s.store.UpdateTokenStats(updateCtx, upd.tokenHash, upd.isSuccess, upd.duration, upd.isStreaming, upd.firstByteTime, upd.promptTokens, upd.completionTokens, upd.cacheReadTokens, upd.cacheCreationTokens, upd.costUSD); err != nil {
+		// Token 被删除是正常的并发场景（请求进行中 token 被删除），静默忽略
+		if strings.Contains(err.Error(), "token not found") {
+			return
+		}
 		log.Printf("ERROR: failed to update token stats for hash=%s: %v", upd.tokenHash, err)
 		return // 数据库更新失败，不更新内存缓存，保持一致性
 	}

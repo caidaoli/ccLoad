@@ -7,7 +7,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"ccLoad/internal/config"
 	sqlstore "ccLoad/internal/storage/sql"
@@ -17,34 +19,88 @@ import (
 )
 
 // NewStore 根据环境变量创建存储实例（工厂模式）
-// 环境变量 CCLOAD_MYSQL：设置时使用MySQL，否则使用SQLite
-// 环境变量 SQLITE_PATH：SQLite数据库路径（默认: data/ccload.db）
+//
+// 三种模式：
+//   - 纯 SQLite 模式：CCLOAD_MYSQL 不设置（默认，单机开发，无备份）
+//   - 纯 MySQL 模式：CCLOAD_MYSQL 设置 + CCLOAD_ENABLE_SQLITE_REPLICA 不设置或为 0（标准生产环境）
+//   - 混合模式（SQLite 主 + MySQL 备）：CCLOAD_MYSQL 设置 + CCLOAD_ENABLE_SQLITE_REPLICA=1（HuggingFace Spaces）
+//
+// 环境变量：
+//   - CCLOAD_MYSQL：MySQL DSN（备份存储）
+//   - CCLOAD_ENABLE_SQLITE_REPLICA：混合模式开关（1=启用）
+//   - SQLITE_PATH：SQLite 数据库路径（默认: data/ccload.db）
+//   - CCLOAD_SQLITE_LOG_DAYS：日志恢复天数（默认 7 天，0=不恢复日志，999=全量）
 func NewStore() (Store, error) {
-	var store *sqlstore.SQLStore
-	var err error
-
 	mysqlDSN := os.Getenv("CCLOAD_MYSQL")
-	if mysqlDSN != "" {
-		store, err = createMySQLStore(mysqlDSN)
-		if err != nil {
-			return nil, fmt.Errorf("MySQL 初始化失败: %w", err)
-		}
-		log.Printf("使用 MySQL 存储")
-	} else {
-		// SQLite模式：自动获取路径
+
+	// 场景 1：纯 SQLite 模式（默认，单机开发，无备份）
+	if mysqlDSN == "" {
 		dbPath := os.Getenv("SQLITE_PATH")
 		if dbPath == "" {
 			dbPath = resolveSQLitePath()
 		}
 
-		store, err = createSQLiteStore(dbPath)
+		store, err := createSQLiteStore(dbPath)
 		if err != nil {
 			return nil, fmt.Errorf("SQLite 初始化失败: %w", err)
 		}
-		log.Printf("使用 SQLite 存储: %s", dbPath)
+		log.Printf("使用 SQLite 存储（纯模式）: %s", dbPath)
+		return store, nil
 	}
 
-	return store, nil
+	// 检查是否启用混合模式
+	enableHybrid := os.Getenv("CCLOAD_ENABLE_SQLITE_REPLICA") == "1"
+
+	// 场景 2：纯 MySQL 模式（标准生产环境）
+	if !enableHybrid {
+		mysql, err := createMySQLStore(mysqlDSN)
+		if err != nil {
+			return nil, fmt.Errorf("MySQL 初始化失败: %w", err)
+		}
+		log.Print("使用 MySQL 存储（纯模式）")
+		return mysql, nil
+	}
+
+	// 场景 3：混合模式（SQLite 主 + MySQL 备）
+	log.Print("[INFO] 启动混合存储模式（SQLite 主 + MySQL 备份）")
+
+	// 步骤 1：创建 MySQL 连接（备份存储）
+	mysql, err := createMySQLStore(mysqlDSN)
+	if err != nil {
+		return nil, fmt.Errorf("MySQL 初始化失败: %w", err)
+	}
+	log.Print("[INFO] MySQL 备份存储已连接")
+
+	// 步骤 2：创建 SQLite 数据库（主存储）
+	sqlitePath := os.Getenv("SQLITE_PATH")
+	if sqlitePath == "" {
+		sqlitePath = "data/ccload.db"
+	}
+	sqlite, err := createSQLiteStore(sqlitePath)
+	if err != nil {
+		_ = mysql.Close()
+		return nil, fmt.Errorf("SQLite 初始化失败: %w", err)
+	}
+	log.Printf("[INFO] SQLite 主存储已创建: %s", sqlitePath)
+
+	// 步骤 3：启动时数据恢复（从 MySQL 恢复到 SQLite）
+	logDays := getLogSyncDays()
+	syncMgr := NewSyncManager(mysql, sqlite)
+
+	// 恢复超时：10 分钟（全量恢复可能需要较长时间）
+	restoreCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	if err := syncMgr.RestoreOnStartup(restoreCtx, logDays); err != nil {
+		_ = sqlite.Close()
+		_ = mysql.Close()
+		return nil, fmt.Errorf("数据恢复失败: %w", err)
+	}
+
+	// 步骤 4：创建 HybridStore（启动异步同步 worker）
+	hybrid := NewHybridStore(sqlite, mysql)
+	log.Printf("[INFO] 混合存储已启用（logs 恢复天数: %d）", logDays)
+	return hybrid, nil
 }
 
 // createMySQLStore 创建 MySQL 存储实例（内部函数，返回具体类型以支持生命周期方法调用）
@@ -213,4 +269,22 @@ func validateJournalMode(mode string) string {
 	}
 
 	return modeUpper
+}
+
+// getLogSyncDays 获取日志同步天数配置
+// 环境变量 CCLOAD_SQLITE_LOG_DAYS：
+//   - 0 = 仅恢复配置表，不恢复日志
+//   - 7 = 恢复配置表 + 最近 7 天日志（默认）
+//   - 999 = 全量恢复（慎用，启动慢）
+func getLogSyncDays() int {
+	daysStr := os.Getenv("CCLOAD_SQLITE_LOG_DAYS")
+	if daysStr == "" {
+		return 7 // 默认 7 天
+	}
+	days, err := strconv.Atoi(daysStr)
+	if err != nil || days < 0 {
+		log.Printf("[WARN] 无效的 CCLOAD_SQLITE_LOG_DAYS=%s，使用默认值 7", daysStr)
+		return 7
+	}
+	return days
 }

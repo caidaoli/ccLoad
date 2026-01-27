@@ -25,11 +25,14 @@ func setupAdminTestServer(t *testing.T) (*Server, storage.Store, func()) {
 		t.Fatalf("创建测试数据库失败: %v", err)
 	}
 
+	statsCache := NewStatsCache(store)
 	server := &Server{
-		store: store,
+		store:      store,
+		statsCache: statsCache,
 	}
 
 	cleanup := func() {
+		statsCache.Close() // 关闭后台清理 goroutine
 		_ = store.Close()
 	}
 

@@ -319,10 +319,25 @@ chmod +x ccload-linux-amd64
 
 由于 Hugging Face Spaces 的限制（`/tmp` 目录重启后清空），**强烈推荐使用外部 MySQL 数据库**实现完整的数据持久化：
 
-**方案一：MySQL 外部数据库（推荐）**
+**方案一：混合存储模式（推荐，性能最优）**
+- ✅ **极速查询**: 所有读写走本地 SQLite，延迟 <1ms（免费 MySQL 延迟 800ms+）
+- ✅ **重启不丢数据**: 异步同步到 MySQL，启动时自动恢复
+- ✅ **统计缓存**: 智能 TTL 缓存，减少重复聚合查询
+- 配置方法: 在 Secrets 中添加 `CCLOAD_MYSQL` + `CCLOAD_ENABLE_SQLITE_REPLICA=1`
+
+**Dockerfile 示例（混合模式）**:
+```dockerfile
+FROM ghcr.io/caidaoli/ccload:latest
+ENV TZ=Asia/Shanghai
+ENV PORT=7860
+# Secrets 中配置: CCLOAD_MYSQL + CCLOAD_ENABLE_SQLITE_REPLICA=1
+EXPOSE 7860
+```
+
+**方案二：纯 MySQL 模式**
 - ✅ **完整持久化**: 渠道配置、日志记录、统计数据全部保留
 - ✅ **重启不丢数据**: 数据存储在外部数据库，不受 Space 重启影响
-- ✅ **免费方案**: 多个服务商提供免费 MySQL 数据库
+- ⚠️ **查询较慢**: 免费 MySQL 延迟较高，统计页面响应慢
 - 配置方法: 在 Secrets 中添加 `CCLOAD_MYSQL` 环境变量
 
 **推荐的免费 MySQL 服务**:
@@ -334,9 +349,10 @@ chmod +x ccload-linux-amd64
 2. 创建 Serverless Cluster（免费）
 3. 获取连接信息，格式为：`user:password@tcp(host:4000)/database?tls=true`
 4. 在 Hugging Face Space 的 Secrets 中添加 `CCLOAD_MYSQL` 变量
-5. 重启 Space，所有数据将自动持久化到 MySQL
+5. **（可选）启用混合模式**: 添加 `CCLOAD_ENABLE_SQLITE_REPLICA=1` 获得最佳性能
+6. 重启 Space，所有数据将自动持久化到 MySQL
 
-**Dockerfile 示例（使用 MySQL）**:
+**Dockerfile 示例（纯 MySQL）**:
 ```dockerfile
 FROM ghcr.io/caidaoli/ccload:latest
 ENV TZ=Asia/Shanghai
@@ -345,7 +361,7 @@ ENV PORT=7860
 EXPOSE 7860
 ```
 
-**方案二：仅本地存储（不推荐）**
+**方案三：仅本地存储（不推荐）**
 - ⚠️ **数据丢失**: Space 重启后 `/tmp` 目录会清空，渠道配置会丢失
 - ⚠️ **手动恢复**: 需要重新通过 Web 界面或 CSV 导入配置渠道
 - 使用场景: 仅用于临时测试
@@ -703,6 +719,8 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 |--------|--------|------|
 | `CCLOAD_PASS` | 无 | 管理界面密码（**必填**，未设置将退出） |
 | `CCLOAD_MYSQL` | 无 | MySQL DSN（可选，格式: `user:pass@tcp(host:port)/db?charset=utf8mb4`）<br/>**设置后使用 MySQL，否则使用 SQLite** |
+| `CCLOAD_ENABLE_SQLITE_REPLICA` | `0` | 混合存储模式开关（`1`=启用，见下方说明） |
+| `CCLOAD_SQLITE_LOG_DAYS` | `7` | 混合模式启动时从 MySQL 恢复日志的天数（0=不恢复日志，999=全量） |
 | `CCLOAD_ALLOW_INSECURE_TLS` | `0` | 禁用上游 TLS 证书校验（`1`=启用；⚠️仅用于临时排障/受控内网环境） |
 | `PORT` | `8080` | 服务端口 |
 | `GIN_MODE` | `release` | 运行模式（`debug`/`release`） |
@@ -717,6 +735,28 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 | `CCLOAD_COOLDOWN_RATE_LIMIT_SEC` | `60` | 限流错误(429)初始冷却时间（秒） |
 | `CCLOAD_COOLDOWN_MAX_SEC` | `1800` | 指数退避冷却上限（秒，30分钟） |
 | `CCLOAD_COOLDOWN_MIN_SEC` | `10` | 指数退避冷却下限（秒） |
+
+#### 混合存储模式（SQLite 主 + MySQL 备份）
+
+HuggingFace Spaces 等环境重启后本地数据会丢失，但免费 MySQL 查询延迟较高（800ms+）。混合模式两全其美：
+
+- **SQLite 主存储**：所有读写操作走本地 SQLite，延迟 <1ms
+- **MySQL 备份存储**：异步同步写入，数据持久化不丢失
+- **启动恢复**：从 MySQL 恢复数据到 SQLite，支持按天数恢复日志
+
+```bash
+# 启用混合模式
+export CCLOAD_MYSQL="user:pass@tcp(host:3306)/db?charset=utf8mb4"
+export CCLOAD_ENABLE_SQLITE_REPLICA=1
+export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
+```
+
+**三种存储模式**：
+| 模式 | 配置 | 适用场景 |
+|------|------|---------|
+| 纯 SQLite | 不设置 `CCLOAD_MYSQL` | 本地开发、单机部署 |
+| 纯 MySQL | 设置 `CCLOAD_MYSQL` | 标准生产环境 |
+| 混合模式 | 设置 `CCLOAD_MYSQL` + `CCLOAD_ENABLE_SQLITE_REPLICA=1` | HuggingFace Spaces |
 
 ### Web 管理配置（支持热重载）
 

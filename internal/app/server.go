@@ -40,6 +40,7 @@ type Server struct {
 	cooldownManager *cooldown.Manager     // 统一冷却管理器
 	healthCache     *HealthCache          // 渠道健康度缓存
 	costCache       *CostCache            // 渠道每日成本缓存
+	statsCache      *StatsCache           // 统计结果缓存层
 	channelBalancer *SmoothWeightedRR     // 渠道负载均衡器（平滑加权轮询）
 	client          *http.Client          // HTTP客户端
 	activeRequests  *activeRequestManager // 进行中请求（内存状态，不持久化）
@@ -239,6 +240,10 @@ func NewServer(store storage.Store) *Server {
 		s.costCache.Load(todayCosts)
 		log.Printf("[INFO] 已加载今日渠道成本缓存（%d个渠道有消耗）", len(todayCosts))
 	}
+
+	// 初始化统计缓存层（减少重复聚合查询）
+	s.statsCache = NewStatsCache(store)
+	log.Print("[INFO] 统计缓存已启用（智能 TTL，减少数据库聚合查询）")
 
 	// ============================================================================
 	// 创建服务层（仅保留有价值的服务）
@@ -660,6 +665,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// 关闭AuthService的后台worker
 	if s.authService != nil {
 		s.authService.Close()
+	}
+
+	// 关闭StatsCache的后台清理worker
+	if s.statsCache != nil {
+		s.statsCache.Close()
 	}
 
 	// 使用channel等待所有goroutine完成
