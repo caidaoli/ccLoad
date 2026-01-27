@@ -1,6 +1,7 @@
 package app
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -132,5 +133,40 @@ func TestStatsCache_CleanupExpired(t *testing.T) {
 	// 验证未过期条目仍存在
 	if _, ok := cache.cache.Load("valid-key"); !ok {
 		t.Error("未过期条目不应该被清理")
+	}
+}
+
+func TestStatsCache_CleanupExpired_ConcurrentDoesNotUnderflow(t *testing.T) {
+	tmpDB := t.TempDir() + "/stats_cache_underflow_test.db"
+	store, err := storage.CreateSQLiteStore(tmpDB)
+	if err != nil {
+		t.Fatalf("创建测试数据库失败: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	cache := NewStatsCache(store)
+	defer cache.Close()
+
+	cache.cache.Store("expired-key", &cachedStats{
+		data:   []model.StatsEntry{},
+		expiry: time.Now().Add(-1 * time.Hour),
+	})
+	cache.entryCount.Store(1)
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			cache.cleanupExpired()
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if got := cache.entryCount.Load(); got != 0 {
+		t.Fatalf("entryCount 漂移: got %d, want 0", got)
 	}
 }

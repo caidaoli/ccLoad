@@ -720,7 +720,7 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 | `CCLOAD_PASS` | 无 | 管理界面密码（**必填**，未设置将退出） |
 | `CCLOAD_MYSQL` | 无 | MySQL DSN（可选，格式: `user:pass@tcp(host:port)/db?charset=utf8mb4`）<br/>**设置后使用 MySQL，否则使用 SQLite** |
 | `CCLOAD_ENABLE_SQLITE_REPLICA` | `0` | 混合存储模式开关（`1`=启用，见下方说明） |
-| `CCLOAD_SQLITE_LOG_DAYS` | `7` | 混合模式启动时从 MySQL 恢复日志的天数（0=不恢复日志，999=全量） |
+| `CCLOAD_SQLITE_LOG_DAYS` | `7` | 混合模式启动时从 MySQL 恢复日志的天数（-1=全量，0=不恢复日志） |
 | `CCLOAD_ALLOW_INSECURE_TLS` | `0` | 禁用上游 TLS 证书校验（`1`=启用；⚠️仅用于临时排障/受控内网环境） |
 | `PORT` | `8080` | 服务端口 |
 | `GIN_MODE` | `release` | 运行模式（`debug`/`release`） |
@@ -736,13 +736,14 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 | `CCLOAD_COOLDOWN_MAX_SEC` | `1800` | 指数退避冷却上限（秒，30分钟） |
 | `CCLOAD_COOLDOWN_MIN_SEC` | `10` | 指数退避冷却下限（秒） |
 
-#### 混合存储模式（SQLite 主 + MySQL 备份）
+#### 混合存储模式（MySQL 主 + SQLite 缓存）
 
 HuggingFace Spaces 等环境重启后本地数据会丢失，但免费 MySQL 查询延迟较高（800ms+）。混合模式两全其美：
 
-- **SQLite 主存储**：所有读写操作走本地 SQLite，延迟 <1ms
-- **MySQL 备份存储**：异步同步写入，数据持久化不丢失
+- **MySQL 主存储**：写操作先写 MySQL，确保数据持久化
+- **SQLite 本地缓存**：读操作走本地 SQLite，延迟 <1ms
 - **启动恢复**：从 MySQL 恢复数据到 SQLite，支持按天数恢复日志
+- **日志特殊处理**：先写 SQLite（快），再异步同步到 MySQL（备份）
 
 ```bash
 # 启用混合模式

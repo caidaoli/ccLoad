@@ -37,9 +37,9 @@ func NewSyncManager(mysql, sqlite *sqlstore.SQLStore) *SyncManager {
 // RestoreOnStartup 启动时恢复数据（从 MySQL 恢复到 SQLite）
 //
 // logDays 参数：
+//   - -1 = 全量恢复（慎用，启动慢）
 //   - 0 = 仅恢复配置表，不恢复 logs
 //   - 7 = 恢复配置表 + 最近 7 天 logs
-//   - 999 = 全量恢复（慎用，启动慢）
 func (sm *SyncManager) RestoreOnStartup(ctx context.Context, logDays int) error {
 	start := time.Now()
 
@@ -62,7 +62,8 @@ func (sm *SyncManager) RestoreOnStartup(ctx context.Context, logDays int) error 
 	log.Printf("[INFO] 配置表恢复完成，耗时: %v", time.Since(start))
 
 	// 第二步：恢复 logs 表（可选，按天数）
-	if logDays > 0 {
+	// logDays: -1=全量, 0=不恢复, >0=恢复指定天数
+	if logDays != 0 {
 		logsStart := time.Now()
 		if err := sm.restoreLogsIncremental(ctx, logDays); err != nil {
 			// 日志恢复失败不阻止启动，仅警告
@@ -163,19 +164,19 @@ func (sm *SyncManager) restoreTable(ctx context.Context, tableName string) error
 		return nil
 	}
 
-	// 7. 清空 SQLite 表
-	deleteQuery := fmt.Sprintf("DELETE FROM %s", tableName)
-	if _, err := sm.sqlite.ExecContext(ctx, deleteQuery); err != nil {
-		return fmt.Errorf("清空 SQLite 表失败: %w", err)
-	}
-
-	// 8. 批量插入 SQLite（显式指定列名）
+	// 7. 清空 + 插入必须在同一个事务里，保证原子性
 	tx, err := sm.sqlite.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("开启事务失败: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	deleteQuery := fmt.Sprintf("DELETE FROM %s", tableName) //nolint:gosec // G201: 表名来自代码硬编码
+	if _, err := tx.ExecContext(ctx, deleteQuery); err != nil {
+		return fmt.Errorf("清空 SQLite 表失败: %w", err)
+	}
+
+	// 8. 批量插入 SQLite（显式指定列名）
 	// 构建 INSERT 语句（显式列名）
 	colNames := strings.Join(commonCols, ", ")
 	placeholders := strings.Repeat("?,", len(commonCols))
@@ -215,32 +216,49 @@ func (sm *SyncManager) getTableColumns(ctx context.Context, store *sqlstore.SQLS
 	return rows.Columns()
 }
 
-// restoreLogsIncremental 增量恢复 logs 表（最近 N 天）
+// restoreLogsIncremental 增量恢复 logs 表（基于 id 增量同步）
+//
+// 设计：不删除 SQLite 现有数据，只拉取 id > MAX(sqlite.id) 的新记录
+// 优势：
+//   - SQLite 为空时（HuggingFace 重启）：MAX(id)=0，等价于全量恢复
+//   - SQLite 有数据时（程序重启）：只拉取增量，启动更快
+//   - 避免 DELETE 导致的数据丢失风险
 func (sm *SyncManager) restoreLogsIncremental(ctx context.Context, days int) error {
-	var startTime int64
-	if days >= 999 {
-		startTime = 0 // 全量恢复
-		log.Print("[INFO] 准备全量恢复 logs 表（可能耗时较长）...")
-	} else {
-		startTime = time.Now().AddDate(0, 0, -days).UnixMilli()
-		log.Printf("[INFO] 准备恢复最近 %d 天的日志...", days)
+	// 1. 获取 SQLite 中最大的 id（为空时返回 0）
+	var maxID int64
+	if err := sm.sqlite.QueryRowContext(ctx, "SELECT COALESCE(MAX(id), 0) FROM logs").Scan(&maxID); err != nil {
+		return fmt.Errorf("获取 SQLite 最大 ID 失败: %w", err)
 	}
 
-	// 计数预估
+	// 2. 计算时间范围
+	var startTime int64
+	if days < 0 {
+		startTime = 0 // 全量恢复
+		log.Printf("[INFO] 准备增量恢复 logs 表（从 id > %d）...", maxID)
+	} else {
+		startTime = time.Now().AddDate(0, 0, -days).UnixMilli()
+		log.Printf("[INFO] 准备增量恢复最近 %d 天的日志（从 id > %d）...", days, maxID)
+	}
+
+	// 3. 统计需要恢复的数量
 	var count int64
-	countQuery := "SELECT COUNT(*) FROM logs WHERE time >= ?"
-	if err := sm.mysql.QueryRowContext(ctx, countQuery, startTime).Scan(&count); err != nil {
+	countQuery := "SELECT COUNT(*) FROM logs WHERE id > ? AND time >= ?"
+	if err := sm.mysql.QueryRowContext(ctx, countQuery, maxID, startTime).Scan(&count); err != nil {
 		return fmt.Errorf("统计日志数量失败: %w", err)
 	}
 
 	if count == 0 {
-		log.Print("[INFO] 无日志需要恢复")
+		if maxID > 0 {
+			log.Print("[INFO] SQLite 日志已是最新，无需恢复")
+		} else {
+			log.Print("[INFO] MySQL 无日志需要恢复")
+		}
 		return nil
 	}
 
 	log.Printf("[INFO] 预计恢复 %d 条日志", count)
 
-	// 预先计算列映射（只计算一次）
+	// 4. 预先计算列映射（只计算一次）
 	sqliteCols, err := sm.getTableColumns(ctx, sm.sqlite, "logs")
 	if err != nil {
 		return fmt.Errorf("获取 SQLite logs 表列失败: %w", err)
@@ -269,25 +287,21 @@ func (sm *SyncManager) restoreLogsIncremental(ctx context.Context, days int) err
 		return fmt.Errorf("logs 表无共同列，无法恢复")
 	}
 
-	// 清空 SQLite logs 表
-	if _, err := sm.sqlite.ExecContext(ctx, "DELETE FROM logs"); err != nil {
-		return fmt.Errorf("清空 SQLite logs 表失败: %w", err)
-	}
-
-	// 分批恢复（避免内存溢出）
+	// 5. 分批增量恢复（基于 id 游标，避免 OFFSET 性能问题）
 	const batchSize = 5000
-	offset := 0
+	lastID := maxID
+	totalRestored := 0
 
 	for {
-		// 查询一批数据
-		query := "SELECT * FROM logs WHERE time >= ? ORDER BY id LIMIT ? OFFSET ?"
-		rows, err := sm.mysql.QueryContext(ctx, query, startTime, batchSize, offset)
+		// 查询一批数据（id > lastID，无需 OFFSET）
+		query := "SELECT * FROM logs WHERE id > ? AND time >= ? ORDER BY id LIMIT ?"
+		rows, err := sm.mysql.QueryContext(ctx, query, lastID, startTime, batchSize)
 		if err != nil {
 			return fmt.Errorf("查询日志失败: %w", err)
 		}
 
 		// 读取批次并插入（传入列映射）
-		batchCount, err := sm.insertLogBatch(ctx, rows, len(mysqlCols), commonCols, mysqlColIndices)
+		batchCount, batchLastID, err := sm.insertLogBatchWithLastID(ctx, rows, len(mysqlCols), commonCols, mysqlColIndices)
 		_ = rows.Close()
 		if err != nil {
 			return fmt.Errorf("批量插入日志失败: %w", err)
@@ -297,11 +311,12 @@ func (sm *SyncManager) restoreLogsIncremental(ctx context.Context, days int) err
 			break
 		}
 
-		offset += batchCount
+		lastID = batchLastID
+		totalRestored += batchCount
 
 		// 进度提示
-		if offset%50000 == 0 {
-			log.Printf("[INFO] 已恢复 %d 条日志...", offset)
+		if totalRestored%50000 == 0 {
+			log.Printf("[INFO] 已恢复 %d 条日志...", totalRestored)
 		}
 
 		// 如果读取的数量小于批次大小，说明已经读完
@@ -310,18 +325,31 @@ func (sm *SyncManager) restoreLogsIncremental(ctx context.Context, days int) err
 		}
 	}
 
-	log.Printf("[INFO] 日志恢复完成，共 %d 条（%d/%d 列）", offset, len(commonCols), len(mysqlCols))
+	log.Printf("[INFO] 日志恢复完成，共 %d 条（%d/%d 列）", totalRestored, len(commonCols), len(mysqlCols))
 	return nil
 }
 
-// insertLogBatch 批量插入日志到 SQLite
+// insertLogBatchWithLastID 批量插入日志到 SQLite，返回插入数量和最后一条记录的 ID
 // mysqlColCount: MySQL 结果集的列数
 // commonCols: 交集列名列表
 // mysqlColIndices: 交集列在 MySQL 结果集中的索引
-func (sm *SyncManager) insertLogBatch(ctx context.Context, rows interface {
+func (sm *SyncManager) insertLogBatchWithLastID(ctx context.Context, rows interface {
 	Next() bool
 	Scan(...any) error
-}, mysqlColCount int, commonCols []string, mysqlColIndices []int) (int, error) {
+	Err() error
+}, mysqlColCount int, commonCols []string, mysqlColIndices []int) (count int, lastID int64, err error) {
+	// 找到 id 列在 commonCols 中的索引
+	idColIdx := -1
+	for i, col := range commonCols {
+		if col == "id" {
+			idColIdx = i
+			break
+		}
+	}
+	if idColIdx < 0 {
+		return 0, 0, fmt.Errorf("commonCols 中缺少 id 列")
+	}
+
 	// 读取所有数据到内存，只保留交集列
 	var records [][]any
 	for rows.Next() {
@@ -333,7 +361,7 @@ func (sm *SyncManager) insertLogBatch(ctx context.Context, rows interface {
 		}
 
 		if err := rows.Scan(scanArgs...); err != nil {
-			return 0, fmt.Errorf("扫描行失败: %w", err)
+			return 0, 0, fmt.Errorf("扫描行失败: %w", err)
 		}
 
 		// 只保留交集列的值
@@ -344,14 +372,29 @@ func (sm *SyncManager) insertLogBatch(ctx context.Context, rows interface {
 		records = append(records, record)
 	}
 
+	if err := rows.Err(); err != nil {
+		return 0, 0, fmt.Errorf("读取日志失败: %w", err)
+	}
+
 	if len(records) == 0 {
-		return 0, nil
+		return 0, 0, nil
+	}
+
+	// 提取最后一条记录的 ID
+	lastRecord := records[len(records)-1]
+	switch v := lastRecord[idColIdx].(type) {
+	case int64:
+		lastID = v
+	case int:
+		lastID = int64(v)
+	default:
+		return 0, 0, fmt.Errorf("无法解析 id 列值: %T", v)
 	}
 
 	// 批量插入 SQLite
 	tx, err := sm.sqlite.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, fmt.Errorf("开启事务失败: %w", err)
+		return 0, 0, fmt.Errorf("开启事务失败: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -363,19 +406,19 @@ func (sm *SyncManager) insertLogBatch(ctx context.Context, rows interface {
 
 	stmt, err := tx.Prepare(insertQuery)
 	if err != nil {
-		return 0, fmt.Errorf("准备插入语句失败: %w", err)
+		return 0, 0, fmt.Errorf("准备插入语句失败: %w", err)
 	}
 	defer func() { _ = stmt.Close() }()
 
 	for _, record := range records {
 		if _, err := stmt.Exec(record...); err != nil {
-			return 0, fmt.Errorf("插入数据失败: %w", err)
+			return 0, 0, fmt.Errorf("插入数据失败: %w", err)
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("提交事务失败: %w", err)
+		return 0, 0, fmt.Errorf("提交事务失败: %w", err)
 	}
 
-	return len(records), nil
+	return len(records), lastID, nil
 }

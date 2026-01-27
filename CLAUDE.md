@@ -38,7 +38,7 @@ internal/
 ├── cooldown/      # 冷却决策引擎 (manager.go)
 ├── storage/       # 存储层
 │   ├── factory.go        # 存储工厂（三种模式选择）
-│   ├── hybrid_store.go   # 混合存储（SQLite主+MySQL异步备份）
+│   ├── hybrid_store.go   # 混合存储（MySQL主+SQLite本地缓存）
 │   ├── sync_manager.go   # 启动时数据恢复
 │   └── sql/              # SQL实现（SQLite/MySQL统一）
 └── util/          # 工具库 (classifier.go错误分类, models_fetcher.go, cost_calculator.go)
@@ -78,13 +78,17 @@ internal/
 - 启动加载：从数据库加载当日已消耗成本
 
 **混合存储模式**（HuggingFace Spaces 场景）:
-- 三种模式：纯SQLite（默认）/ 纯MySQL / 混合（SQLite主+MySQL备）
+- 三种模式：纯SQLite（默认）/ 纯MySQL / 混合（MySQL主+SQLite缓存）
 - 启用：`CCLOAD_MYSQL` + `CCLOAD_ENABLE_SQLITE_REPLICA=1`
-- 日志恢复天数：`CCLOAD_SQLITE_LOG_DAYS`（默认7天）
+- 日志恢复天数：`CCLOAD_SQLITE_LOG_DAYS`（默认7天，-1=全量，0=不恢复）
 - 核心组件：
-  - `HybridStore`: SQLite主存储 + MySQL异步备份（channel队列）
+  - `HybridStore`: MySQL主存储 + SQLite本地缓存（读加速）
   - `SyncManager`: 启动时从MySQL恢复数据到SQLite
   - `StatsCache`: 统计结果缓存（TTL: 30秒~2小时）
+- 数据流：
+  - 写操作：先写MySQL（主），成功后同步到SQLite（缓存）
+  - 读操作：从SQLite读取（本地缓存，低延迟）
+  - 日志特殊：先写SQLite（快），再异步同步到MySQL（备份）
 
 ## 开发指南
 

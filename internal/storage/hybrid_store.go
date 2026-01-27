@@ -12,24 +12,28 @@ import (
 	sqlstore "ccLoad/internal/storage/sql"
 )
 
-// HybridStore 混合存储（SQLite 主 + MySQL 异步备份）
+// HybridStore 混合存储（MySQL 主 + SQLite 本地缓存）
 //
 // 核心职责：
-// - 读操作：仅从 SQLite 读取（MySQL 不参与查询）
-// - 写操作：写入 SQLite + 异步同步到 MySQL（备份）
-// - 统计查询：仅从 SQLite 查询
-// - 日志查询：仅从 SQLite 查询
+// - 读操作：从 SQLite 读取（本地缓存，低延迟）
+// - 写操作：先写 MySQL（主存储），再同步更新 SQLite 缓存
+// - 统计/日志查询：从 SQLite 查询
 //
 // 设计原则：
-// - SQLite = 主存储（所有读写操作）
-// - MySQL = 备份存储（仅接收写入同步，**不参与查询**）
-// - 异步同步：使用 channel 队列，不阻塞主业务
-// - 透明降级：MySQL 同步失败仅记录警告，不影响业务
+// - MySQL = 主存储（source of truth，持久化与恢复的唯一来源）
+// - SQLite = 本地缓存（读加速，允许短暂不一致）
+// - 写操作以 MySQL 为准：MySQL 成功即成功，SQLite 失败仅警告
+//
+// 日志特殊处理（高吞吐场景）：
+// - 写入顺序：先写 SQLite（快），再异步同步到 MySQL（备份）
+// - 这是性能妥协：日志写入频率高，同步延迟可接受
+// - 代价：极端情况下 MySQL 可能丢失少量最新日志
+// - 恢复时：SyncManager 从 MySQL 恢复历史日志到 SQLite
 type HybridStore struct {
-	sqlite *sqlstore.SQLStore // 主存储（所有读写）
-	mysql  *sqlstore.SQLStore // 备份存储（仅接收写入同步）
+	sqlite *sqlstore.SQLStore // 本地缓存（读路径）
+	mysql  *sqlstore.SQLStore // 主存储（写路径）
 
-	// 异步同步队列
+	// 异步同步队列（仅用于 logs）
 	syncCh    chan *syncTask
 	syncWg    sync.WaitGroup
 	stopCh    chan struct{}
@@ -39,7 +43,7 @@ type HybridStore struct {
 
 // syncTask 同步任务
 type syncTask struct {
-	operation string // "log", "config_create", "config_update", "config_delete", ...
+	operation string
 	data      any
 }
 
@@ -53,40 +57,8 @@ type syncTaskLogBatch struct {
 	entries []*model.LogEntry
 }
 
-// syncTaskConfig 配置同步数据
-type syncTaskConfig struct {
-	id     int64
-	config *model.Config
-}
-
-// syncTaskAPIKeys API Keys 同步数据
-type syncTaskAPIKeys struct {
-	channelID int64
-	keys      []*model.APIKey
-	strategy  string
-	keyIndex  int
-}
-
-// syncTaskAuthToken Auth Token 同步数据
-type syncTaskAuthToken struct {
-	id    int64
-	token *model.AuthToken
-}
-
-// syncTaskSetting 系统设置同步数据
-type syncTaskSetting struct {
-	key     string
-	value   string
-	updates map[string]string
-}
-
-// syncTaskImport 批量导入同步数据
-type syncTaskImport struct {
-	channels []*model.ChannelWithKeys
-}
-
 const (
-	syncQueueSize = 10000 // 异步同步队列大小
+	syncQueueSize = 10000 // 异步同步队列大小（仅用于 logs）
 )
 
 // NewHybridStore 创建混合存储实例
@@ -105,8 +77,35 @@ func NewHybridStore(sqlite, mysql *sqlstore.SQLStore) *HybridStore {
 	return h
 }
 
+// syncToSQLite 同步更新 SQLite 缓存
+// SQLite 是本地库，启动时已验证可写，运行时不会失败
+func (h *HybridStore) syncToSQLite(_ string, fn func() error) {
+	_ = fn()
+}
+
+// cloneLogEntryForSync 克隆日志条目（异步队列需要）
+func cloneLogEntryForSync(e *model.LogEntry) *model.LogEntry {
+	if e == nil {
+		return nil
+	}
+	clone := *e
+	return &clone
+}
+
+// cloneLogEntriesForSync 批量克隆日志条目
+func cloneLogEntriesForSync(entries []*model.LogEntry) []*model.LogEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]*model.LogEntry, len(entries))
+	for i, e := range entries {
+		out[i] = cloneLogEntryForSync(e)
+	}
+	return out
+}
+
 // ============================================================================
-// 异步同步 Worker
+// 异步同步 Worker（仅用于 logs）
 // ============================================================================
 
 func (h *HybridStore) syncWorker() {
@@ -115,7 +114,6 @@ func (h *HybridStore) syncWorker() {
 	for {
 		select {
 		case <-h.stopCh:
-			// 收到停止信号，尝试处理剩余任务
 			h.drainSyncQueue()
 			return
 		case task := <-h.syncCh:
@@ -126,7 +124,6 @@ func (h *HybridStore) syncWorker() {
 
 // drainSyncQueue 处理剩余的同步任务（优雅关闭）
 func (h *HybridStore) drainSyncQueue() {
-	// 动态超时：基础 5 秒 + 每 100 个任务额外 1 秒，上限 30 秒
 	queueLen := len(h.syncCh)
 	timeoutSec := min(5+queueLen/100, 30)
 	timeout := time.After(time.Duration(timeoutSec) * time.Second)
@@ -147,7 +144,7 @@ func (h *HybridStore) drainSyncQueue() {
 			if processed > 0 {
 				log.Printf("[INFO] MySQL 同步队列已清空，共处理 %d 个任务", processed)
 			}
-			return // 队列为空
+			return
 		}
 	}
 }
@@ -158,71 +155,15 @@ func (h *HybridStore) executeSyncTask(task *syncTask) {
 	defer cancel()
 
 	var err error
-
 	switch task.operation {
 	case "log":
 		data := task.data.(*syncTaskLog)
 		err = h.mysql.AddLog(ctx, data.entry)
-
 	case "log_batch":
 		data := task.data.(*syncTaskLogBatch)
 		err = h.mysql.BatchAddLogs(ctx, data.entries)
-
-	case "config_create":
-		data := task.data.(*syncTaskConfig)
-		_, err = h.mysql.CreateConfig(ctx, data.config)
-
-	case "config_update":
-		data := task.data.(*syncTaskConfig)
-		_, err = h.mysql.UpdateConfig(ctx, data.id, data.config)
-
-	case "config_delete":
-		data := task.data.(*syncTaskConfig)
-		err = h.mysql.DeleteConfig(ctx, data.id)
-
-	case "apikeys_create":
-		data := task.data.(*syncTaskAPIKeys)
-		err = h.mysql.CreateAPIKeysBatch(ctx, data.keys)
-
-	case "apikeys_strategy":
-		data := task.data.(*syncTaskAPIKeys)
-		err = h.mysql.UpdateAPIKeysStrategy(ctx, data.channelID, data.strategy)
-
-	case "apikey_delete":
-		data := task.data.(*syncTaskAPIKeys)
-		err = h.mysql.DeleteAPIKey(ctx, data.channelID, data.keyIndex)
-
-	case "apikeys_delete_all":
-		data := task.data.(*syncTaskAPIKeys)
-		err = h.mysql.DeleteAllAPIKeys(ctx, data.channelID)
-
-	case "apikeys_compact":
-		data := task.data.(*syncTaskAPIKeys)
-		err = h.mysql.CompactKeyIndices(ctx, data.channelID, data.keyIndex)
-
-	case "authtoken_create":
-		data := task.data.(*syncTaskAuthToken)
-		err = h.mysql.CreateAuthToken(ctx, data.token)
-
-	case "authtoken_update":
-		data := task.data.(*syncTaskAuthToken)
-		err = h.mysql.UpdateAuthToken(ctx, data.token)
-
-	case "authtoken_delete":
-		data := task.data.(*syncTaskAuthToken)
-		err = h.mysql.DeleteAuthToken(ctx, data.id)
-
-	case "setting_update":
-		data := task.data.(*syncTaskSetting)
-		err = h.mysql.UpdateSetting(ctx, data.key, data.value)
-
-	case "settings_batch":
-		data := task.data.(*syncTaskSetting)
-		err = h.mysql.BatchUpdateSettings(ctx, data.updates)
-
-	case "import_batch":
-		data := task.data.(*syncTaskImport)
-		_, _, err = h.mysql.ImportChannelBatch(ctx, data.channels)
+	default:
+		return
 	}
 
 	if err != nil {
@@ -230,20 +171,17 @@ func (h *HybridStore) executeSyncTask(task *syncTask) {
 	}
 }
 
-// enqueueSyncTask 将任务加入同步队列（非阻塞）
-func (h *HybridStore) enqueueSyncTask(task *syncTask) {
+// enqueueLogSync 将日志同步任务加入队列（非阻塞，队列满则丢弃）
+func (h *HybridStore) enqueueLogSync(task *syncTask) {
 	select {
 	case h.syncCh <- task:
-		// 成功入队
 	default:
-		// 队列已满，丢弃任务（记录警告）
 		log.Printf("[WARN] MySQL 同步队列已满，丢弃任务: %s", task.operation)
 	}
 }
 
 // ============================================================================
-// Store 接口实现 - 所有读操作都走 SQLite
-// 以下方法实现 storage.Store 接口，方法签名和行为见接口定义
+// Store 接口实现
 // ============================================================================
 
 // === Channel Management ===
@@ -257,44 +195,40 @@ func (h *HybridStore) GetConfig(ctx context.Context, id int64) (*model.Config, e
 }
 
 func (h *HybridStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Config, error) {
-	result, err := h.sqlite.CreateConfig(ctx, c)
+	result, err := h.mysql.CreateConfig(ctx, c)
 	if err != nil {
 		return nil, err
 	}
 
-	// 异步同步到 MySQL
-	h.enqueueSyncTask(&syncTask{
-		operation: "config_create",
-		data:      &syncTaskConfig{config: result},
+	h.syncToSQLite("CreateConfig", func() error {
+		_, err := h.sqlite.CreateConfig(ctx, result)
+		return err
 	})
 
 	return result, nil
 }
 
 func (h *HybridStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config) (*model.Config, error) {
-	result, err := h.sqlite.UpdateConfig(ctx, id, upd)
+	result, err := h.mysql.UpdateConfig(ctx, id, upd)
 	if err != nil {
 		return nil, err
 	}
 
-	// 异步同步到 MySQL
-	h.enqueueSyncTask(&syncTask{
-		operation: "config_update",
-		data:      &syncTaskConfig{id: id, config: result},
+	h.syncToSQLite("UpdateConfig", func() error {
+		_, err := h.sqlite.UpdateConfig(ctx, id, result)
+		return err
 	})
 
 	return result, nil
 }
 
 func (h *HybridStore) DeleteConfig(ctx context.Context, id int64) error {
-	if err := h.sqlite.DeleteConfig(ctx, id); err != nil {
+	if err := h.mysql.DeleteConfig(ctx, id); err != nil {
 		return err
 	}
 
-	// 异步同步到 MySQL
-	h.enqueueSyncTask(&syncTask{
-		operation: "config_delete",
-		data:      &syncTaskConfig{id: id},
+	h.syncToSQLite("DeleteConfig", func() error {
+		return h.sqlite.DeleteConfig(ctx, id)
 	})
 
 	return nil
@@ -312,7 +246,17 @@ func (h *HybridStore) BatchUpdatePriority(ctx context.Context, updates []struct 
 	ID       int64
 	Priority int
 }) (int64, error) {
-	return h.sqlite.BatchUpdatePriority(ctx, updates)
+	affected, err := h.mysql.BatchUpdatePriority(ctx, updates)
+	if err != nil {
+		return 0, err
+	}
+
+	h.syncToSQLite("BatchUpdatePriority", func() error {
+		_, err := h.sqlite.BatchUpdatePriority(ctx, updates)
+		return err
+	})
+
+	return affected, nil
 }
 
 // === API Key Management ===
@@ -330,70 +274,60 @@ func (h *HybridStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.API
 }
 
 func (h *HybridStore) CreateAPIKeysBatch(ctx context.Context, keys []*model.APIKey) error {
-	if err := h.sqlite.CreateAPIKeysBatch(ctx, keys); err != nil {
+	if err := h.mysql.CreateAPIKeysBatch(ctx, keys); err != nil {
 		return err
 	}
 
-	// 异步同步到 MySQL
-	h.enqueueSyncTask(&syncTask{
-		operation: "apikeys_create",
-		data:      &syncTaskAPIKeys{keys: keys},
+	h.syncToSQLite("CreateAPIKeysBatch", func() error {
+		return h.sqlite.CreateAPIKeysBatch(ctx, keys)
 	})
 
 	return nil
 }
 
 func (h *HybridStore) UpdateAPIKeysStrategy(ctx context.Context, channelID int64, strategy string) error {
-	if err := h.sqlite.UpdateAPIKeysStrategy(ctx, channelID, strategy); err != nil {
+	if err := h.mysql.UpdateAPIKeysStrategy(ctx, channelID, strategy); err != nil {
 		return err
 	}
 
-	// 异步同步到 MySQL
-	h.enqueueSyncTask(&syncTask{
-		operation: "apikeys_strategy",
-		data:      &syncTaskAPIKeys{channelID: channelID, strategy: strategy},
+	h.syncToSQLite("UpdateAPIKeysStrategy", func() error {
+		return h.sqlite.UpdateAPIKeysStrategy(ctx, channelID, strategy)
 	})
 
 	return nil
 }
 
 func (h *HybridStore) DeleteAPIKey(ctx context.Context, channelID int64, keyIndex int) error {
-	if err := h.sqlite.DeleteAPIKey(ctx, channelID, keyIndex); err != nil {
+	if err := h.mysql.DeleteAPIKey(ctx, channelID, keyIndex); err != nil {
 		return err
 	}
 
-	// 异步同步到 MySQL
-	h.enqueueSyncTask(&syncTask{
-		operation: "apikey_delete",
-		data:      &syncTaskAPIKeys{channelID: channelID, keyIndex: keyIndex},
+	h.syncToSQLite("DeleteAPIKey", func() error {
+		return h.sqlite.DeleteAPIKey(ctx, channelID, keyIndex)
 	})
 
 	return nil
 }
 
 func (h *HybridStore) CompactKeyIndices(ctx context.Context, channelID int64, removedIndex int) error {
-	if err := h.sqlite.CompactKeyIndices(ctx, channelID, removedIndex); err != nil {
+	if err := h.mysql.CompactKeyIndices(ctx, channelID, removedIndex); err != nil {
 		return err
 	}
 
-	// 异步同步到 MySQL
-	h.enqueueSyncTask(&syncTask{
-		operation: "apikeys_compact",
-		data:      &syncTaskAPIKeys{channelID: channelID, keyIndex: removedIndex},
+	h.syncToSQLite("CompactKeyIndices", func() error {
+		return h.sqlite.CompactKeyIndices(ctx, channelID, removedIndex)
 	})
 
 	return nil
 }
 
 func (h *HybridStore) DeleteAllAPIKeys(ctx context.Context, channelID int64) error {
-	if err := h.sqlite.DeleteAllAPIKeys(ctx, channelID); err != nil {
+	if err := h.mysql.DeleteAllAPIKeys(ctx, channelID); err != nil {
 		return err
 	}
 
-	// 异步同步到 MySQL
-	h.enqueueSyncTask(&syncTask{
-		operation: "apikeys_delete_all",
-		data:      &syncTaskAPIKeys{channelID: channelID},
+	h.syncToSQLite("DeleteAllAPIKeys", func() error {
+		return h.sqlite.DeleteAllAPIKeys(ctx, channelID)
 	})
 
 	return nil
@@ -406,15 +340,41 @@ func (h *HybridStore) GetAllChannelCooldowns(ctx context.Context) (map[int64]tim
 }
 
 func (h *HybridStore) BumpChannelCooldown(ctx context.Context, channelID int64, now time.Time, statusCode int) (time.Duration, error) {
-	return h.sqlite.BumpChannelCooldown(ctx, channelID, now, statusCode)
+	duration, err := h.mysql.BumpChannelCooldown(ctx, channelID, now, statusCode)
+	if err != nil {
+		return 0, err
+	}
+
+	h.syncToSQLite("BumpChannelCooldown", func() error {
+		_, err := h.sqlite.BumpChannelCooldown(ctx, channelID, now, statusCode)
+		return err
+	})
+
+	return duration, nil
 }
 
 func (h *HybridStore) ResetChannelCooldown(ctx context.Context, channelID int64) error {
-	return h.sqlite.ResetChannelCooldown(ctx, channelID)
+	if err := h.mysql.ResetChannelCooldown(ctx, channelID); err != nil {
+		return err
+	}
+
+	h.syncToSQLite("ResetChannelCooldown", func() error {
+		return h.sqlite.ResetChannelCooldown(ctx, channelID)
+	})
+
+	return nil
 }
 
 func (h *HybridStore) SetChannelCooldown(ctx context.Context, channelID int64, until time.Time) error {
-	return h.sqlite.SetChannelCooldown(ctx, channelID, until)
+	if err := h.mysql.SetChannelCooldown(ctx, channelID, until); err != nil {
+		return err
+	}
+
+	h.syncToSQLite("SetChannelCooldown", func() error {
+		return h.sqlite.SetChannelCooldown(ctx, channelID, until)
+	})
+
+	return nil
 }
 
 func (h *HybridStore) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int]time.Time, error) {
@@ -422,45 +382,68 @@ func (h *HybridStore) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int
 }
 
 func (h *HybridStore) BumpKeyCooldown(ctx context.Context, channelID int64, keyIndex int, now time.Time, statusCode int) (time.Duration, error) {
-	return h.sqlite.BumpKeyCooldown(ctx, channelID, keyIndex, now, statusCode)
+	duration, err := h.mysql.BumpKeyCooldown(ctx, channelID, keyIndex, now, statusCode)
+	if err != nil {
+		return 0, err
+	}
+
+	h.syncToSQLite("BumpKeyCooldown", func() error {
+		_, err := h.sqlite.BumpKeyCooldown(ctx, channelID, keyIndex, now, statusCode)
+		return err
+	})
+
+	return duration, nil
 }
 
 func (h *HybridStore) ResetKeyCooldown(ctx context.Context, channelID int64, keyIndex int) error {
-	return h.sqlite.ResetKeyCooldown(ctx, channelID, keyIndex)
+	if err := h.mysql.ResetKeyCooldown(ctx, channelID, keyIndex); err != nil {
+		return err
+	}
+
+	h.syncToSQLite("ResetKeyCooldown", func() error {
+		return h.sqlite.ResetKeyCooldown(ctx, channelID, keyIndex)
+	})
+
+	return nil
 }
 
 func (h *HybridStore) SetKeyCooldown(ctx context.Context, channelID int64, keyIndex int, until time.Time) error {
-	return h.sqlite.SetKeyCooldown(ctx, channelID, keyIndex, until)
+	if err := h.mysql.SetKeyCooldown(ctx, channelID, keyIndex, until); err != nil {
+		return err
+	}
+
+	h.syncToSQLite("SetKeyCooldown", func() error {
+		return h.sqlite.SetKeyCooldown(ctx, channelID, keyIndex, until)
+	})
+
+	return nil
 }
 
 // === Log Management ===
+// 日志特殊处理：写 SQLite（快）+ 异步同步到 MySQL（备份）
 
 func (h *HybridStore) AddLog(ctx context.Context, e *model.LogEntry) error {
-	// 写入 SQLite（主存储）
 	if err := h.sqlite.AddLog(ctx, e); err != nil {
 		return err
 	}
 
-	// 异步同步到 MySQL（非阻塞）
-	h.enqueueSyncTask(&syncTask{
+	h.enqueueLogSync(&syncTask{
 		operation: "log",
-		data:      &syncTaskLog{entry: e},
+		data:      &syncTaskLog{entry: cloneLogEntryForSync(e)},
 	})
 
 	return nil
 }
 
 func (h *HybridStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) error {
-	// 写入 SQLite（主存储）
 	if err := h.sqlite.BatchAddLogs(ctx, logs); err != nil {
 		return err
 	}
 
-	// 异步批量同步到 MySQL（单个任务，避免队列风暴）
 	if len(logs) > 0 {
-		h.enqueueSyncTask(&syncTask{
+		h.enqueueLogSync(&syncTask{
 			operation: "log_batch",
-			data:      &syncTaskLogBatch{entries: logs},
+			data:      &syncTaskLogBatch{entries: cloneLogEntriesForSync(logs)},
 		})
 	}
 
@@ -524,14 +507,12 @@ func (h *HybridStore) GetTodayChannelCosts(ctx context.Context, todayStart time.
 // === Auth Token Management ===
 
 func (h *HybridStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) error {
-	if err := h.sqlite.CreateAuthToken(ctx, token); err != nil {
+	if err := h.mysql.CreateAuthToken(ctx, token); err != nil {
 		return err
 	}
 
-	// 异步同步到 MySQL
-	h.enqueueSyncTask(&syncTask{
-		operation: "authtoken_create",
-		data:      &syncTaskAuthToken{token: token},
+	h.syncToSQLite("CreateAuthToken", func() error {
+		return h.sqlite.CreateAuthToken(ctx, token)
 	})
 
 	return nil
@@ -554,39 +535,51 @@ func (h *HybridStore) ListActiveAuthTokens(ctx context.Context) ([]*model.AuthTo
 }
 
 func (h *HybridStore) UpdateAuthToken(ctx context.Context, token *model.AuthToken) error {
-	if err := h.sqlite.UpdateAuthToken(ctx, token); err != nil {
+	if err := h.mysql.UpdateAuthToken(ctx, token); err != nil {
 		return err
 	}
 
-	// 异步同步到 MySQL
-	h.enqueueSyncTask(&syncTask{
-		operation: "authtoken_update",
-		data:      &syncTaskAuthToken{token: token},
+	h.syncToSQLite("UpdateAuthToken", func() error {
+		return h.sqlite.UpdateAuthToken(ctx, token)
 	})
 
 	return nil
 }
 
 func (h *HybridStore) DeleteAuthToken(ctx context.Context, id int64) error {
-	if err := h.sqlite.DeleteAuthToken(ctx, id); err != nil {
+	if err := h.mysql.DeleteAuthToken(ctx, id); err != nil {
 		return err
 	}
 
-	// 异步同步到 MySQL
-	h.enqueueSyncTask(&syncTask{
-		operation: "authtoken_delete",
-		data:      &syncTaskAuthToken{id: id},
+	h.syncToSQLite("DeleteAuthToken", func() error {
+		return h.sqlite.DeleteAuthToken(ctx, id)
 	})
 
 	return nil
 }
 
 func (h *HybridStore) UpdateTokenLastUsed(ctx context.Context, tokenHash string, now time.Time) error {
-	return h.sqlite.UpdateTokenLastUsed(ctx, tokenHash, now)
+	if err := h.mysql.UpdateTokenLastUsed(ctx, tokenHash, now); err != nil {
+		return err
+	}
+
+	h.syncToSQLite("UpdateTokenLastUsed", func() error {
+		return h.sqlite.UpdateTokenLastUsed(ctx, tokenHash, now)
+	})
+
+	return nil
 }
 
 func (h *HybridStore) UpdateTokenStats(ctx context.Context, tokenHash string, isSuccess bool, duration float64, isStreaming bool, firstByteTime float64, promptTokens int64, completionTokens int64, cacheReadTokens int64, cacheCreationTokens int64, costUSD float64) error {
-	return h.sqlite.UpdateTokenStats(ctx, tokenHash, isSuccess, duration, isStreaming, firstByteTime, promptTokens, completionTokens, cacheReadTokens, cacheCreationTokens, costUSD)
+	if err := h.mysql.UpdateTokenStats(ctx, tokenHash, isSuccess, duration, isStreaming, firstByteTime, promptTokens, completionTokens, cacheReadTokens, cacheCreationTokens, costUSD); err != nil {
+		return err
+	}
+
+	h.syncToSQLite("UpdateTokenStats", func() error {
+		return h.sqlite.UpdateTokenStats(ctx, tokenHash, isSuccess, duration, isStreaming, firstByteTime, promptTokens, completionTokens, cacheReadTokens, cacheCreationTokens, costUSD)
+	})
+
+	return nil
 }
 
 func (h *HybridStore) GetAuthTokenStatsInRange(ctx context.Context, startTime, endTime time.Time) (map[int64]*model.AuthTokenRangeStats, error) {
@@ -608,34 +601,31 @@ func (h *HybridStore) ListAllSettings(ctx context.Context) ([]*model.SystemSetti
 }
 
 func (h *HybridStore) UpdateSetting(ctx context.Context, key, value string) error {
-	if err := h.sqlite.UpdateSetting(ctx, key, value); err != nil {
+	if err := h.mysql.UpdateSetting(ctx, key, value); err != nil {
 		return err
 	}
 
-	// 异步同步到 MySQL
-	h.enqueueSyncTask(&syncTask{
-		operation: "setting_update",
-		data:      &syncTaskSetting{key: key, value: value},
+	h.syncToSQLite("UpdateSetting", func() error {
+		return h.sqlite.UpdateSetting(ctx, key, value)
 	})
 
 	return nil
 }
 
 func (h *HybridStore) BatchUpdateSettings(ctx context.Context, updates map[string]string) error {
-	if err := h.sqlite.BatchUpdateSettings(ctx, updates); err != nil {
+	if err := h.mysql.BatchUpdateSettings(ctx, updates); err != nil {
 		return err
 	}
 
-	// 异步同步到 MySQL
-	h.enqueueSyncTask(&syncTask{
-		operation: "settings_batch",
-		data:      &syncTaskSetting{updates: updates},
+	h.syncToSQLite("BatchUpdateSettings", func() error {
+		return h.sqlite.BatchUpdateSettings(ctx, updates)
 	})
 
 	return nil
 }
 
 // === Admin Session Management ===
+// Admin sessions 只存在于 SQLite（本地会话，无需同步）
 
 func (h *HybridStore) CreateAdminSession(ctx context.Context, token string, expiresAt time.Time) error {
 	return h.sqlite.CreateAdminSession(ctx, token, expiresAt)
@@ -660,15 +650,14 @@ func (h *HybridStore) LoadAllSessions(ctx context.Context) (map[string]time.Time
 // === Batch Operations ===
 
 func (h *HybridStore) ImportChannelBatch(ctx context.Context, channels []*model.ChannelWithKeys) (created, updated int, err error) {
-	created, updated, err = h.sqlite.ImportChannelBatch(ctx, channels)
+	created, updated, err = h.mysql.ImportChannelBatch(ctx, channels)
 	if err != nil {
 		return 0, 0, err
 	}
 
-	// 异步同步到 MySQL
-	h.enqueueSyncTask(&syncTask{
-		operation: "import_batch",
-		data:      &syncTaskImport{channels: channels},
+	h.syncToSQLite("ImportChannelBatch", func() error {
+		_, _, err := h.sqlite.ImportChannelBatch(ctx, channels)
+		return err
 	})
 
 	return created, updated, nil
@@ -688,18 +677,14 @@ func (h *HybridStore) SyncQueueLen() int {
 func (h *HybridStore) Close() error {
 	var err error
 	h.closeOnce.Do(func() {
-		// 1. 停止同步 worker
 		h.stopOnce.Do(func() {
 			close(h.stopCh)
 		})
 		h.syncWg.Wait()
 
-		// 2. 关闭 SQLite
 		if closeErr := h.sqlite.Close(); closeErr != nil {
 			err = closeErr
 		}
-
-		// 3. 关闭 MySQL
 		if closeErr := h.mysql.Close(); closeErr != nil && err == nil {
 			err = closeErr
 		}

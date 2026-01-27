@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -184,5 +185,139 @@ func TestSyncManager_RestoreLogsIncremental_ZeroDays(t *testing.T) {
 	}
 	if len(sqliteLogs) != 0 {
 		t.Errorf("SQLite 不应该有日志（logDays=0），got %d", len(sqliteLogs))
+	}
+}
+
+// TestSyncManager_RestoreLogsIncremental_TrueIncremental 验证真正的增量恢复：
+// SQLite 已有部分数据时，只拉取新增的记录
+func TestSyncManager_RestoreLogsIncremental_TrueIncremental(t *testing.T) {
+	mysql := createTestStoreForSync(t, "mysql_incr")
+	sqlite := createTestStoreForSync(t, "sqlite_incr")
+	defer func() {
+		_ = mysql.Close()
+		_ = sqlite.Close()
+	}()
+
+	ctx := context.Background()
+	now := time.Now()
+
+	// 第一步：在 MySQL 中添加 3 条日志
+	for i := 0; i < 3; i++ {
+		entry := &model.LogEntry{
+			Time:       model.JSONTime{Time: now.Add(-time.Duration(i) * time.Hour)},
+			ChannelID:  1,
+			Model:      "gpt-4",
+			StatusCode: 200,
+			Duration:   1.5,
+		}
+		if err := mysql.AddLog(ctx, entry); err != nil {
+			t.Fatalf("添加日志失败: %v", err)
+		}
+	}
+
+	// 第二步：第一次恢复
+	sm := NewSyncManager(mysql, sqlite)
+	if err := sm.RestoreOnStartup(ctx, 7); err != nil {
+		t.Fatalf("第一次 RestoreOnStartup 失败: %v", err)
+	}
+
+	// 验证 SQLite 有 3 条日志
+	sqliteLogs, err := sqlite.ListLogs(ctx, now.Add(-24*time.Hour), 100, 0, nil)
+	if err != nil {
+		t.Fatalf("查询 SQLite 日志失败: %v", err)
+	}
+	if len(sqliteLogs) != 3 {
+		t.Fatalf("第一次恢复后 SQLite 日志数量不匹配: got %d, want 3", len(sqliteLogs))
+	}
+
+	// 第三步：在 MySQL 中再添加 2 条新日志
+	for i := 0; i < 2; i++ {
+		entry := &model.LogEntry{
+			Time:       model.JSONTime{Time: now.Add(time.Duration(i+1) * time.Minute)}, // 新增时间更晚
+			ChannelID:  2,
+			Model:      "gpt-3.5",
+			StatusCode: 200,
+			Duration:   0.5,
+		}
+		if err := mysql.AddLog(ctx, entry); err != nil {
+			t.Fatalf("添加新日志失败: %v", err)
+		}
+	}
+
+	// 第四步：第二次恢复（增量）
+	sm2 := NewSyncManager(mysql, sqlite)
+	if err := sm2.RestoreOnStartup(ctx, 7); err != nil {
+		t.Fatalf("第二次 RestoreOnStartup 失败: %v", err)
+	}
+
+	// 验证 SQLite 现在有 5 条日志（3 + 2）
+	sqliteLogs, err = sqlite.ListLogs(ctx, now.Add(-24*time.Hour), 100, 0, nil)
+	if err != nil {
+		t.Fatalf("查询 SQLite 日志失败: %v", err)
+	}
+	if len(sqliteLogs) != 5 {
+		t.Fatalf("第二次恢复后 SQLite 日志数量不匹配: got %d, want 5", len(sqliteLogs))
+	}
+
+	// 验证原有数据未被删除（检查 channel_id=1 的记录仍然存在）
+	count1 := 0
+	count2 := 0
+	for _, entry := range sqliteLogs {
+		switch entry.ChannelID {
+		case 1:
+			count1++
+		case 2:
+			count2++
+		}
+	}
+	if count1 != 3 {
+		t.Errorf("原有日志（channel_id=1）被意外修改: got %d, want 3", count1)
+	}
+	if count2 != 2 {
+		t.Errorf("新增日志（channel_id=2）数量不对: got %d, want 2", count2)
+	}
+}
+
+type fakeRowsErrAfterOne struct {
+	scanned bool
+	err     error
+}
+
+func (r *fakeRowsErrAfterOne) Next() bool {
+	if r.scanned {
+		return false
+	}
+	r.scanned = true
+	return true
+}
+
+func (r *fakeRowsErrAfterOne) Scan(dest ...any) error {
+	for i := range dest {
+		*(dest[i].(*any)) = int64(i + 1)
+	}
+	return nil
+}
+
+func (r *fakeRowsErrAfterOne) Err() error { return r.err }
+
+func TestSyncManager_InsertLogBatch_ChecksRowsErr(t *testing.T) {
+	mysql := createTestStoreForSync(t, "mysql_data")
+	sqlite := createTestStoreForSync(t, "sqlite_data")
+	defer func() {
+		_ = mysql.Close()
+		_ = sqlite.Close()
+	}()
+
+	sm := NewSyncManager(mysql, sqlite)
+
+	_, _, err := sm.insertLogBatchWithLastID(
+		context.Background(),
+		&fakeRowsErrAfterOne{err: errors.New("driver error")},
+		2,
+		[]string{"id"},
+		[]int{0},
+	)
+	if err == nil {
+		t.Fatalf("期望返回错误，但得到 nil")
 	}
 }

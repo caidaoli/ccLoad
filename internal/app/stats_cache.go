@@ -76,34 +76,28 @@ func (sc *StatsCache) cleanupWorker() {
 // cleanupExpired 清理所有过期条目
 func (sc *StatsCache) cleanupExpired() {
 	now := time.Now()
-	var deleted int64
 	sc.cache.Range(func(key, value any) bool {
 		cs := value.(*cachedStats)
 		if now.After(cs.expiry) {
-			sc.cache.Delete(key)
-			deleted++
+			if _, ok := sc.cache.LoadAndDelete(key); ok {
+				sc.entryCount.Add(-1)
+			}
 		}
 		return true
 	})
-	if deleted > 0 {
-		sc.entryCount.Add(-deleted)
-	}
 }
 
 // storeCache 存储缓存条目（带容量检查）
+//
+// 使用 LoadOrStore 保证原子性：要么是新插入（计数+1），要么是更新（计数不变）
 func (sc *StatsCache) storeCache(key string, value *cachedStats) {
-	// 检查是否是更新已有条目
 	if _, loaded := sc.cache.LoadOrStore(key, value); loaded {
-		// 已存在，直接更新
+		// key 已存在，LoadOrStore 不会插入，手动更新值
 		sc.cache.Store(key, value)
 		return
 	}
-
-	// 新条目，增加计数
-	newCount := sc.entryCount.Add(1)
-
-	// 容量超限，触发强制清理
-	if newCount > maxCacheEntries {
+	// 新插入成功，增加计数
+	if sc.entryCount.Add(1) > maxCacheEntries {
 		sc.cleanupExpired()
 	}
 }

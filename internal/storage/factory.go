@@ -23,10 +23,10 @@ import (
 // 三种模式：
 //   - 纯 SQLite 模式：CCLOAD_MYSQL 不设置（默认，单机开发，无备份）
 //   - 纯 MySQL 模式：CCLOAD_MYSQL 设置 + CCLOAD_ENABLE_SQLITE_REPLICA 不设置或为 0（标准生产环境）
-//   - 混合模式（SQLite 主 + MySQL 备）：CCLOAD_MYSQL 设置 + CCLOAD_ENABLE_SQLITE_REPLICA=1（HuggingFace Spaces）
+//   - 混合模式（MySQL 主 + SQLite 缓存）：CCLOAD_MYSQL 设置 + CCLOAD_ENABLE_SQLITE_REPLICA=1（HuggingFace Spaces）
 //
 // 环境变量：
-//   - CCLOAD_MYSQL：MySQL DSN（备份存储）
+//   - CCLOAD_MYSQL：MySQL DSN（主存储）
 //   - CCLOAD_ENABLE_SQLITE_REPLICA：混合模式开关（1=启用）
 //   - SQLITE_PATH：SQLite 数据库路径（默认: data/ccload.db）
 //   - CCLOAD_SQLITE_LOG_DAYS：日志恢复天数（默认 7 天，0=不恢复日志，999=全量）
@@ -61,27 +61,27 @@ func NewStore() (Store, error) {
 		return mysql, nil
 	}
 
-	// 场景 3：混合模式（SQLite 主 + MySQL 备）
-	log.Print("[INFO] 启动混合存储模式（SQLite 主 + MySQL 备份）")
+	// 场景 3：混合模式（MySQL 主 + SQLite 缓存）
+	log.Print("[INFO] 启动混合存储模式（MySQL 主 + SQLite 缓存）")
 
-	// 步骤 1：创建 MySQL 连接（备份存储）
+	// 步骤 1：创建 MySQL 连接（主存储）
 	mysql, err := createMySQLStore(mysqlDSN)
 	if err != nil {
 		return nil, fmt.Errorf("MySQL 初始化失败: %w", err)
 	}
-	log.Print("[INFO] MySQL 备份存储已连接")
+	log.Print("[INFO] MySQL 主存储已连接")
 
-	// 步骤 2：创建 SQLite 数据库（主存储）
+	// 步骤 2：创建 SQLite 数据库（本地缓存）
 	sqlitePath := os.Getenv("SQLITE_PATH")
 	if sqlitePath == "" {
-		sqlitePath = "data/ccload.db"
+		sqlitePath = resolveSQLitePath()
 	}
 	sqlite, err := createSQLiteStore(sqlitePath)
 	if err != nil {
 		_ = mysql.Close()
 		return nil, fmt.Errorf("SQLite 初始化失败: %w", err)
 	}
-	log.Printf("[INFO] SQLite 主存储已创建: %s", sqlitePath)
+	log.Printf("[INFO] SQLite 本地缓存已创建: %s", sqlitePath)
 
 	// 步骤 3：启动时数据恢复（从 MySQL 恢复到 SQLite）
 	logDays := getLogSyncDays()
@@ -273,16 +273,16 @@ func validateJournalMode(mode string) string {
 
 // getLogSyncDays 获取日志同步天数配置
 // 环境变量 CCLOAD_SQLITE_LOG_DAYS：
+//   - -1 = 全量恢复（慎用，启动慢）
 //   - 0 = 仅恢复配置表，不恢复日志
 //   - 7 = 恢复配置表 + 最近 7 天日志（默认）
-//   - 999 = 全量恢复（慎用，启动慢）
 func getLogSyncDays() int {
 	daysStr := os.Getenv("CCLOAD_SQLITE_LOG_DAYS")
 	if daysStr == "" {
 		return 7 // 默认 7 天
 	}
 	days, err := strconv.Atoi(daysStr)
-	if err != nil || days < 0 {
+	if err != nil || days < -1 {
 		log.Printf("[WARN] 无效的 CCLOAD_SQLITE_LOG_DAYS=%s，使用默认值 7", daysStr)
 		return 7
 	}

@@ -239,14 +239,25 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 		return 0, 0, nil
 	}
 
+	// 如果携带显式 ID，则按 ID upsert，保证主键一致（用于混合存储同步/恢复）。
+	preserveIDs := false
+	for _, cwk := range channels {
+		if cwk != nil && cwk.Config != nil && cwk.Config.ID != 0 {
+			preserveIDs = true
+			break
+		}
+	}
+
 	// 预加载现有渠道名称集合（用于区分创建/更新）
 	existingConfigs, err := s.ListConfigs(ctx)
 	if err != nil {
 		return 0, 0, fmt.Errorf("query existing channels: %w", err)
 	}
 	existingNames := make(map[string]struct{}, len(existingConfigs))
+	existingIDs := make(map[int64]struct{}, len(existingConfigs))
 	for _, ec := range existingConfigs {
 		existingNames[ec.Name] = struct{}{}
+		existingIDs[ec.ID] = struct{}{}
 	}
 
 	// 使用事务确保原子性
@@ -256,26 +267,52 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 		// 预编译渠道插入语句（复用，减少解析开销）
 		// 注意：models 和 model_redirects 已移至 channel_models 表
 		var channelUpsertSQL string
-		if s.IsSQLite() {
-			channelUpsertSQL = `
-				INSERT INTO channels(name, url, priority, channel_type, enabled, created_at, updated_at)
-				VALUES(?, ?, ?, ?, ?, ?, ?)
-				ON CONFLICT(name) DO UPDATE SET
-					url = excluded.url,
-					priority = excluded.priority,
-					channel_type = excluded.channel_type,
-					enabled = excluded.enabled,
-					updated_at = excluded.updated_at`
+		if preserveIDs {
+			if s.IsSQLite() {
+				channelUpsertSQL = `
+					INSERT INTO channels(id, name, url, priority, channel_type, enabled, created_at, updated_at)
+					VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+					ON CONFLICT(id) DO UPDATE SET
+						name = excluded.name,
+						url = excluded.url,
+						priority = excluded.priority,
+						channel_type = excluded.channel_type,
+						enabled = excluded.enabled,
+						updated_at = excluded.updated_at`
+			} else {
+				channelUpsertSQL = `
+					INSERT INTO channels(id, name, url, priority, channel_type, enabled, created_at, updated_at)
+					VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+					ON DUPLICATE KEY UPDATE
+						name = VALUES(name),
+						url = VALUES(url),
+						priority = VALUES(priority),
+						channel_type = VALUES(channel_type),
+						enabled = VALUES(enabled),
+						updated_at = VALUES(updated_at)`
+			}
 		} else {
-			channelUpsertSQL = `
-				INSERT INTO channels(name, url, priority, channel_type, enabled, created_at, updated_at)
-				VALUES(?, ?, ?, ?, ?, ?, ?)
-				ON DUPLICATE KEY UPDATE
-					url = VALUES(url),
-					priority = VALUES(priority),
-					channel_type = VALUES(channel_type),
-					enabled = VALUES(enabled),
-					updated_at = VALUES(updated_at)`
+			if s.IsSQLite() {
+				channelUpsertSQL = `
+					INSERT INTO channels(name, url, priority, channel_type, enabled, created_at, updated_at)
+					VALUES(?, ?, ?, ?, ?, ?, ?)
+					ON CONFLICT(name) DO UPDATE SET
+						url = excluded.url,
+						priority = excluded.priority,
+						channel_type = excluded.channel_type,
+						enabled = excluded.enabled,
+						updated_at = excluded.updated_at`
+			} else {
+				channelUpsertSQL = `
+					INSERT INTO channels(name, url, priority, channel_type, enabled, created_at, updated_at)
+					VALUES(?, ?, ?, ?, ?, ?, ?)
+					ON DUPLICATE KEY UPDATE
+						url = VALUES(url),
+						priority = VALUES(priority),
+						channel_type = VALUES(channel_type),
+						enabled = VALUES(enabled),
+						updated_at = VALUES(updated_at)`
+			}
 		}
 		channelStmt, err := tx.PrepareContext(ctx, channelUpsertSQL)
 		if err != nil {
@@ -300,22 +337,39 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 			channelType := config.GetChannelType()
 
 			// 检查是否为更新操作
-			_, isUpdate := existingNames[config.Name]
+			var isUpdate bool
+			if preserveIDs {
+				_, isUpdate = existingIDs[config.ID]
+			} else {
+				_, isUpdate = existingNames[config.Name]
+			}
 
 			// 插入或更新渠道配置（不含 models/model_redirects）
-			_, err := channelStmt.ExecContext(ctx,
-				config.Name, config.URL, config.Priority,
-				channelType, boolToInt(config.Enabled), nowUnix, nowUnix)
-			if err != nil {
-				return fmt.Errorf("import channel %s: %w", config.Name, err)
+			var channelID int64
+			if preserveIDs {
+				channelID = config.ID
+				_, err := channelStmt.ExecContext(ctx,
+					config.ID, config.Name, config.URL, config.Priority,
+					channelType, boolToInt(config.Enabled), nowUnix, nowUnix)
+				if err != nil {
+					return fmt.Errorf("import channel %s: %w", config.Name, err)
+				}
+			} else {
+				_, err := channelStmt.ExecContext(ctx,
+					config.Name, config.URL, config.Priority,
+					channelType, boolToInt(config.Enabled), nowUnix, nowUnix)
+				if err != nil {
+					return fmt.Errorf("import channel %s: %w", config.Name, err)
+				}
+
+				// 获取渠道ID
+				err = tx.QueryRowContext(ctx, `SELECT id FROM channels WHERE name = ?`, config.Name).Scan(&channelID)
+				if err != nil {
+					return fmt.Errorf("get channel id for %s: %w", config.Name, err)
+				}
 			}
 
-			// 获取渠道ID
-			var channelID int64
-			err = tx.QueryRowContext(ctx, `SELECT id FROM channels WHERE name = ?`, config.Name).Scan(&channelID)
-			if err != nil {
-				return fmt.Errorf("get channel id for %s: %w", config.Name, err)
-			}
+			config.ID = channelID
 
 			// 删除旧的API Keys和模型索引（如果是更新）
 			if isUpdate {
@@ -342,7 +396,9 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 			}
 
 			// 批量插入API Keys（使用预编译语句）
-			for _, key := range cwk.APIKeys {
+			for i := range cwk.APIKeys {
+				cwk.APIKeys[i].ChannelID = channelID
+				key := cwk.APIKeys[i]
 				_, err := keyStmt.ExecContext(ctx,
 					channelID, key.KeyIndex, key.APIKey, key.KeyStrategy,
 					key.CooldownUntil, key.CooldownDurationMs, nowUnix, nowUnix)
@@ -357,6 +413,7 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 			} else {
 				created++
 				existingNames[config.Name] = struct{}{} // 加入集合，避免后续重复计算
+				existingIDs[channelID] = struct{}{}
 			}
 		}
 

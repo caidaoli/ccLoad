@@ -192,21 +192,52 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 	// 使用GetChannelType确保默认值
 	channelType := c.GetChannelType()
 
-	var id int64
+	id := c.ID
 	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
-		// 插入渠道记录
-		res, err := tx.ExecContext(ctx, `
-			INSERT INTO channels(name, url, priority, channel_type, enabled, daily_cost_limit, created_at, updated_at)
-			VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-		`, c.Name, c.URL, c.Priority, channelType,
-			boolToInt(c.Enabled), c.DailyCostLimit, nowUnix, nowUnix)
-		if err != nil {
-			return err
-		}
+		if id == 0 {
+			// 插入渠道记录（数据库生成自增 id）
+			res, err := tx.ExecContext(ctx, `
+				INSERT INTO channels(name, url, priority, channel_type, enabled, daily_cost_limit, created_at, updated_at)
+				VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+			`, c.Name, c.URL, c.Priority, channelType,
+				boolToInt(c.Enabled), c.DailyCostLimit, nowUnix, nowUnix)
+			if err != nil {
+				return err
+			}
 
-		id, err = res.LastInsertId()
-		if err != nil {
-			return fmt.Errorf("get last insert id: %w", err)
+			id, err = res.LastInsertId()
+			if err != nil {
+				return fmt.Errorf("get last insert id: %w", err)
+			}
+		} else {
+			// 显式主键：用于混合存储同步/恢复，保证两端主键一致
+			if s.IsSQLite() {
+				_, err := tx.ExecContext(ctx, `
+					INSERT INTO channels(id, name, url, priority, channel_type, enabled, daily_cost_limit, created_at, updated_at)
+					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+				`, id, c.Name, c.URL, c.Priority, channelType,
+					boolToInt(c.Enabled), c.DailyCostLimit, nowUnix, nowUnix)
+				if err != nil {
+					return err
+				}
+			} else {
+				_, err := tx.ExecContext(ctx, `
+					INSERT INTO channels(id, name, url, priority, channel_type, enabled, daily_cost_limit, created_at, updated_at)
+					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+					ON DUPLICATE KEY UPDATE
+						name = VALUES(name),
+						url = VALUES(url),
+						priority = VALUES(priority),
+						channel_type = VALUES(channel_type),
+						enabled = VALUES(enabled),
+						daily_cost_limit = VALUES(daily_cost_limit),
+						updated_at = VALUES(updated_at)
+				`, id, c.Name, c.URL, c.Priority, channelType,
+					boolToInt(c.Enabled), c.DailyCostLimit, nowUnix, nowUnix)
+				if err != nil {
+					return err
+				}
+			}
 		}
 
 		// 保存模型数据到 channel_models 表

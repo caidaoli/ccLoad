@@ -685,7 +685,7 @@ Check out the awesome admin dashboard 👇
 | `CCLOAD_PASS` | None | Admin password (**Required**, exits if not set) |
 | `CCLOAD_MYSQL` | None | MySQL DSN (optional, format: `user:pass@tcp(host:port)/db?charset=utf8mb4`)<br/>**If set uses MySQL, otherwise SQLite** |
 | `CCLOAD_ENABLE_SQLITE_REPLICA` | `0` | Hybrid storage mode switch (`1`=enable, see below) |
-| `CCLOAD_SQLITE_LOG_DAYS` | `7` | Days of logs to restore from MySQL on startup in hybrid mode (0=no logs, 999=all) |
+| `CCLOAD_SQLITE_LOG_DAYS` | `7` | Days of logs to restore from MySQL on startup in hybrid mode (-1=all, 0=no logs) |
 | `CCLOAD_ALLOW_INSECURE_TLS` | `0` | Disable upstream TLS cert validation (`1`=enable; ⚠️for troubleshooting/controlled intranet only) |
 | `PORT` | `8080` | Service port |
 | `GIN_MODE` | `release` | Run mode (`debug`/`release`) |
@@ -701,13 +701,14 @@ Check out the awesome admin dashboard 👇
 | `CCLOAD_COOLDOWN_MAX_SEC` | `1800` | Exponential backoff cooldown max (seconds, 30 minutes) |
 | `CCLOAD_COOLDOWN_MIN_SEC` | `10` | Exponential backoff cooldown min (seconds) |
 
-#### Hybrid Storage Mode (SQLite Primary + MySQL Backup)
+#### Hybrid Storage Mode (MySQL Primary + SQLite Cache)
 
 HuggingFace Spaces and similar environments lose local data on restart, but free MySQL has high query latency (800ms+). Hybrid mode offers the best of both worlds:
 
-- **SQLite Primary Storage**: All read/write operations go through local SQLite, latency <1ms
-- **MySQL Backup Storage**: Async sync writes, data persistence guaranteed
+- **MySQL Primary Storage**: Write operations go to MySQL first, ensuring data persistence
+- **SQLite Local Cache**: Read operations go through local SQLite, latency <1ms
 - **Startup Recovery**: Restore data from MySQL to SQLite, supports restoring logs by days
+- **Log Special Handling**: Write to SQLite first (fast), then async sync to MySQL (backup)
 
 ```bash
 # Enable hybrid mode

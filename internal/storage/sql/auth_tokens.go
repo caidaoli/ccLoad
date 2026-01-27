@@ -81,6 +81,152 @@ func scanAuthToken(scanner interface {
 	return token, nil
 }
 
+// UpsertAuthTokenAllFields 用于混合存储/恢复场景：按既有 id 写入完整行，保证两端数据一致。
+// 注意：这不是常规业务写路径，调用方必须确保 token.Token 已是哈希值而非明文。
+func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.AuthToken) error {
+	if token == nil {
+		return errors.New("token cannot be nil")
+	}
+	if token.ID == 0 {
+		return errors.New("token id cannot be 0")
+	}
+	if token.CreatedAt.IsZero() {
+		token.CreatedAt = time.Now()
+	}
+
+	expiresAt := int64(0)
+	if token.ExpiresAt != nil {
+		expiresAt = *token.ExpiresAt
+	}
+	lastUsedAt := int64(0)
+	if token.LastUsedAt != nil {
+		lastUsedAt = *token.LastUsedAt
+	}
+
+	var allowedModelsJSON string
+	if len(token.AllowedModels) > 0 {
+		if data, err := json.Marshal(token.AllowedModels); err == nil {
+			allowedModelsJSON = string(data)
+		}
+	}
+
+	if s.IsSQLite() {
+		_, err := s.db.ExecContext(ctx, `
+			INSERT INTO auth_tokens (
+				id, token, description, created_at, expires_at, last_used_at, is_active,
+				success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
+				prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd,
+				cost_used_microusd, cost_limit_microusd, allowed_models
+			)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET
+				token = excluded.token,
+				description = excluded.description,
+				created_at = excluded.created_at,
+				expires_at = excluded.expires_at,
+				last_used_at = excluded.last_used_at,
+				is_active = excluded.is_active,
+				success_count = excluded.success_count,
+				failure_count = excluded.failure_count,
+				stream_avg_ttfb = excluded.stream_avg_ttfb,
+				non_stream_avg_rt = excluded.non_stream_avg_rt,
+				stream_count = excluded.stream_count,
+				non_stream_count = excluded.non_stream_count,
+				prompt_tokens_total = excluded.prompt_tokens_total,
+				completion_tokens_total = excluded.completion_tokens_total,
+				cache_read_tokens_total = excluded.cache_read_tokens_total,
+				cache_creation_tokens_total = excluded.cache_creation_tokens_total,
+				total_cost_usd = excluded.total_cost_usd,
+				cost_used_microusd = excluded.cost_used_microusd,
+				cost_limit_microusd = excluded.cost_limit_microusd,
+				allowed_models = excluded.allowed_models
+		`,
+			token.ID,
+			token.Token,
+			token.Description,
+			token.CreatedAt.UnixMilli(),
+			expiresAt,
+			lastUsedAt,
+			boolToInt(token.IsActive),
+			token.SuccessCount,
+			token.FailureCount,
+			token.StreamAvgTTFB,
+			token.NonStreamAvgRT,
+			token.StreamCount,
+			token.NonStreamCount,
+			token.PromptTokensTotal,
+			token.CompletionTokensTotal,
+			token.CacheReadTokensTotal,
+			token.CacheCreationTokensTotal,
+			token.TotalCostUSD,
+			token.CostUsedMicroUSD,
+			token.CostLimitMicroUSD,
+			allowedModelsJSON,
+		)
+		if err != nil {
+			return fmt.Errorf("upsert auth token all fields: %w", err)
+		}
+		return nil
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO auth_tokens (
+			id, token, description, created_at, expires_at, last_used_at, is_active,
+			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
+			prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd,
+			cost_used_microusd, cost_limit_microusd, allowed_models
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+			token = VALUES(token),
+			description = VALUES(description),
+			created_at = VALUES(created_at),
+			expires_at = VALUES(expires_at),
+			last_used_at = VALUES(last_used_at),
+			is_active = VALUES(is_active),
+			success_count = VALUES(success_count),
+			failure_count = VALUES(failure_count),
+			stream_avg_ttfb = VALUES(stream_avg_ttfb),
+			non_stream_avg_rt = VALUES(non_stream_avg_rt),
+			stream_count = VALUES(stream_count),
+			non_stream_count = VALUES(non_stream_count),
+			prompt_tokens_total = VALUES(prompt_tokens_total),
+			completion_tokens_total = VALUES(completion_tokens_total),
+			cache_read_tokens_total = VALUES(cache_read_tokens_total),
+			cache_creation_tokens_total = VALUES(cache_creation_tokens_total),
+			total_cost_usd = VALUES(total_cost_usd),
+			cost_used_microusd = VALUES(cost_used_microusd),
+			cost_limit_microusd = VALUES(cost_limit_microusd),
+			allowed_models = VALUES(allowed_models)
+	`,
+		token.ID,
+		token.Token,
+		token.Description,
+		token.CreatedAt.UnixMilli(),
+		expiresAt,
+		lastUsedAt,
+		boolToInt(token.IsActive),
+		token.SuccessCount,
+		token.FailureCount,
+		token.StreamAvgTTFB,
+		token.NonStreamAvgRT,
+		token.StreamCount,
+		token.NonStreamCount,
+		token.PromptTokensTotal,
+		token.CompletionTokensTotal,
+		token.CacheReadTokensTotal,
+		token.CacheCreationTokensTotal,
+		token.TotalCostUSD,
+		token.CostUsedMicroUSD,
+		token.CostLimitMicroUSD,
+		allowedModelsJSON,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert auth token all fields: %w", err)
+	}
+	return nil
+}
+
 // ============================================================================
 // Auth Tokens Management - API访问令牌管理
 // ============================================================================
@@ -88,7 +234,9 @@ func scanAuthToken(scanner interface {
 // CreateAuthToken 创建新的API访问令牌
 // 注意: token字段存储的是SHA256哈希值，而非明文
 func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) error {
-	token.CreatedAt = time.Now()
+	if token.CreatedAt.IsZero() {
+		token.CreatedAt = time.Now()
+	}
 
 	// 处理可空字段：SQLite NOT NULL DEFAULT 0 需要传入 0 而不是 nil
 	var expiresAt int64
@@ -109,15 +257,50 @@ func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) 
 		}
 	}
 
-	result, err := s.db.ExecContext(ctx, `
+	if token.ID != 0 {
+		if s.IsSQLite() {
+			_, err := s.db.ExecContext(ctx, `
+				INSERT INTO auth_tokens (
+					id,
+					token, description, created_at, expires_at, last_used_at, is_active,
+					success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
+					prompt_tokens_total, completion_tokens_total, total_cost_usd, allowed_models,
+					cost_used_microusd, cost_limit_microusd
+				)
+				VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, ?, 0, ?)
+			`, token.ID, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, boolToInt(token.IsActive), allowedModelsJSON, token.CostLimitMicroUSD)
+			if err != nil {
+				return fmt.Errorf("create auth token: %w", err)
+			}
+			return nil
+		}
+
+		_, err := s.db.ExecContext(ctx, `
 			INSERT INTO auth_tokens (
+				id,
 				token, description, created_at, expires_at, last_used_at, is_active,
 				success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
 				prompt_tokens_total, completion_tokens_total, total_cost_usd, allowed_models,
 				cost_used_microusd, cost_limit_microusd
 			)
-			VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, ?, 0, ?)
-		`, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, boolToInt(token.IsActive), allowedModelsJSON, token.CostLimitMicroUSD)
+			VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, ?, 0, ?)
+			ON DUPLICATE KEY UPDATE id = id
+		`, token.ID, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, boolToInt(token.IsActive), allowedModelsJSON, token.CostLimitMicroUSD)
+		if err != nil {
+			return fmt.Errorf("create auth token: %w", err)
+		}
+		return nil
+	}
+
+	result, err := s.db.ExecContext(ctx, `
+		INSERT INTO auth_tokens (
+			token, description, created_at, expires_at, last_used_at, is_active,
+			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
+			prompt_tokens_total, completion_tokens_total, total_cost_usd, allowed_models,
+			cost_used_microusd, cost_limit_microusd
+		)
+		VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, ?, 0, ?)
+	`, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, boolToInt(token.IsActive), allowedModelsJSON, token.CostLimitMicroUSD)
 
 	if err != nil {
 		return fmt.Errorf("create auth token: %w", err)
