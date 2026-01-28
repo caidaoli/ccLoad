@@ -149,6 +149,13 @@ func CreateSQLiteStore(path string) (Store, error) {
 	return createSQLiteStore(path)
 }
 
+// CreateMySQLStoreForTest 直接创建 MySQL 存储实例（测试/Benchmark 辅助函数）
+// 生产代码应使用 NewStore() 工厂函数
+// 测试代码可用此函数创建独立的 MySQL 连接进行性能对比
+func CreateMySQLStoreForTest(dsn string) (Store, error) {
+	return createMySQLStore(dsn)
+}
+
 // createSQLiteStore 内部函数，返回具体类型以支持生命周期方法调用
 func createSQLiteStore(path string) (*sqlstore.SQLStore, error) {
 	// 创建数据目录
