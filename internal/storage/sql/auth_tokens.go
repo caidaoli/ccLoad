@@ -20,6 +20,37 @@ const authTokenSelectColumns = `
 	cost_used_microusd, cost_limit_microusd, allowed_models
 `
 
+//nolint:gosec // SQL查询模板包含"token"字段名，并非硬编码凭据
+const updateTokenStatsQuery = `
+	UPDATE auth_tokens
+	SET
+		success_count = success_count + CASE WHEN ? = 1 THEN 1 ELSE 0 END,
+		failure_count = failure_count + CASE WHEN ? = 1 THEN 1 ELSE 0 END,
+
+		-- 只有成功请求才累加 token 与费用（与内存费用缓存语义保持一致）
+		prompt_tokens_total = prompt_tokens_total + CASE WHEN ? = 1 THEN ? ELSE 0 END,
+		completion_tokens_total = completion_tokens_total + CASE WHEN ? = 1 THEN ? ELSE 0 END,
+		cache_read_tokens_total = cache_read_tokens_total + CASE WHEN ? = 1 THEN ? ELSE 0 END,
+		cache_creation_tokens_total = cache_creation_tokens_total + CASE WHEN ? = 1 THEN ? ELSE 0 END,
+		total_cost_usd = total_cost_usd + CASE WHEN ? = 1 THEN ? ELSE 0 END,
+		cost_used_microusd = cost_used_microusd + CASE WHEN ? = 1 THEN ? ELSE 0 END,
+
+		-- 增量更新平均值（new_avg = (old_avg*old_count + v)/(old_count+1)）
+		stream_avg_ttfb = CASE
+			WHEN ? = 1 THEN ((stream_avg_ttfb * stream_count) + ?) / (stream_count + 1)
+			ELSE stream_avg_ttfb
+		END,
+		stream_count = stream_count + CASE WHEN ? = 1 THEN 1 ELSE 0 END,
+		non_stream_avg_rt = CASE
+			WHEN ? = 1 THEN ((non_stream_avg_rt * non_stream_count) + ?) / (non_stream_count + 1)
+			ELSE non_stream_avg_rt
+		END,
+		non_stream_count = non_stream_count + CASE WHEN ? = 1 THEN 1 ELSE 0 END,
+
+		last_used_at = ?
+	WHERE token = ?
+`
+
 func scanAuthToken(scanner interface {
 	Scan(...any) error
 }) (*model.AuthToken, error) {
@@ -513,127 +544,38 @@ func (s *SQLStore) UpdateTokenStats(
 	cacheCreationTokens int64,
 	costUSD float64,
 ) error {
-	// 使用事务保证原子性（读-计算-写）
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }() // 失败时自动回滚
-
-	// 1. 查询当前统计数据
-	var stats struct {
-		SuccessCount             int64
-		FailureCount             int64
-		StreamAvgTTFB            float64
-		NonStreamAvgRT           float64
-		StreamCount              int64
-		NonStreamCount           int64
-		PromptTokensTotal        int64
-		CompletionTokensTotal    int64
-		CacheReadTokensTotal     int64
-		CacheCreationTokensTotal int64
-		TotalCostUSD             float64
-	}
-
-	err = tx.QueryRowContext(ctx, `
-		SELECT
-			success_count, failure_count,
-			stream_avg_ttfb, non_stream_avg_rt,
-			stream_count, non_stream_count,
-			prompt_tokens_total, completion_tokens_total,
-			cache_read_tokens_total, cache_creation_tokens_total,
-			total_cost_usd
-		FROM auth_tokens
-		WHERE token = ?
-	`, tokenHash).Scan(
-		&stats.SuccessCount,
-		&stats.FailureCount,
-		&stats.StreamAvgTTFB,
-		&stats.NonStreamAvgRT,
-		&stats.StreamCount,
-		&stats.NonStreamCount,
-		&stats.PromptTokensTotal,
-		&stats.CompletionTokensTotal,
-		&stats.CacheReadTokensTotal,
-		&stats.CacheCreationTokensTotal,
-		&stats.TotalCostUSD,
-	)
-
-	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("token not found: %s", tokenHash)
-	}
-	if err != nil {
-		return fmt.Errorf("query current stats: %w", err)
-	}
-
-	// 2. 增量更新计数器
-	if isSuccess {
-		stats.SuccessCount++
-		// 只有成功请求才累加token和费用
-		stats.PromptTokensTotal += promptTokens
-		stats.CompletionTokensTotal += completionTokens
-		stats.CacheReadTokensTotal += cacheReadTokens
-		stats.CacheCreationTokensTotal += cacheCreationTokens
-		stats.TotalCostUSD += costUSD
-	} else {
-		stats.FailureCount++
-	}
-
-	// 3. 增量更新平均值（使用累加公式避免扫描历史数据）
-	// 公式: new_avg = (old_avg * old_count + new_value) / (old_count + 1)
-	if isStreaming && firstByteTime > 0 {
-		// 流式请求：更新平均首字节时间
-		stats.StreamAvgTTFB = ((stats.StreamAvgTTFB * float64(stats.StreamCount)) + firstByteTime) / float64(stats.StreamCount+1)
-		stats.StreamCount++
-	} else if !isStreaming {
-		// 非流式请求：更新平均响应时间
-		stats.NonStreamAvgRT = ((stats.NonStreamAvgRT * float64(stats.NonStreamCount)) + duration) / float64(stats.NonStreamCount+1)
-		stats.NonStreamCount++
-	}
-
-	// 4. 写回数据库（同时更新 cost_used_microusd 用于限额检查）
+	// 单条 UPDATE 保证原子性：避免每次请求都做 BEGIN+SELECT+UPDATE+COMMIT
+	// 这对 SQLite（减少写锁持有时间/往返）和 MySQL（减少往返/行锁竞争）都更友好。
+	successFlag := boolToInt(isSuccess)
+	failureFlag := boolToInt(!isSuccess)
+	streamUpdateFlag := boolToInt(isStreaming && firstByteTime > 0)
+	nonStreamUpdateFlag := boolToInt(!isStreaming)
+	nowMs := time.Now().UnixMilli()
 	costMicroUSD := util.USDToMicroUSD(costUSD)
-	_, err = tx.ExecContext(ctx, `
-		UPDATE auth_tokens
-		SET
-			success_count = ?,
-			failure_count = ?,
-			stream_avg_ttfb = ?,
-			non_stream_avg_rt = ?,
-			stream_count = ?,
-			non_stream_count = ?,
-			prompt_tokens_total = ?,
-			completion_tokens_total = ?,
-			cache_read_tokens_total = ?,
-			cache_creation_tokens_total = ?,
-			total_cost_usd = ?,
-			cost_used_microusd = cost_used_microusd + ?,
-			last_used_at = ?
-		WHERE token = ?
-	`,
-		stats.SuccessCount,
-		stats.FailureCount,
-		stats.StreamAvgTTFB,
-		stats.NonStreamAvgRT,
-		stats.StreamCount,
-		stats.NonStreamCount,
-		stats.PromptTokensTotal,
-		stats.CompletionTokensTotal,
-		stats.CacheReadTokensTotal,
-		stats.CacheCreationTokensTotal,
-		stats.TotalCostUSD,
-		costMicroUSD, // 增量更新 cost_used_microusd
-		time.Now().UnixMilli(),
+
+	result, err := s.db.ExecContext(ctx, updateTokenStatsQuery,
+		successFlag,
+		failureFlag,
+		successFlag, promptTokens,
+		successFlag, completionTokens,
+		successFlag, cacheReadTokens,
+		successFlag, cacheCreationTokens,
+		successFlag, costUSD,
+		successFlag, costMicroUSD,
+		streamUpdateFlag, firstByteTime,
+		streamUpdateFlag,
+		nonStreamUpdateFlag, duration,
+		nonStreamUpdateFlag,
+		nowMs,
 		tokenHash,
 	)
-
 	if err != nil {
 		return fmt.Errorf("update stats: %w", err)
 	}
 
-	// 5. 提交事务
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
+	// 兼容性：少数驱动可能不支持 RowsAffected，这里尽力检查
+	if rows, err := result.RowsAffected(); err == nil && rows == 0 {
+		return fmt.Errorf("token not found: %s", tokenHash)
 	}
 
 	return nil
