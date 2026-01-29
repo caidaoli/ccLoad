@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"strconv"
 	"sync"
@@ -61,16 +60,6 @@ func (s *Server) HandleMetrics(c *gin.Context) {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
-
-	// 添加调试信息
-	totalReqs := 0
-	for _, pt := range pts {
-		totalReqs += pt.Success + pt.Error
-	}
-
-	c.Header("X-Debug-Since", since.Format(time.RFC3339))
-	c.Header("X-Debug-Points", fmt.Sprintf("%d", len(pts)))
-	c.Header("X-Debug-Total", fmt.Sprintf("%d", totalReqs))
 
 	RespondJSON(c, http.StatusOK, pts)
 }

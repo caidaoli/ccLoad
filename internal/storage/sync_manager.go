@@ -148,9 +148,17 @@ func (sm *SyncManager) restoreTable(ctx context.Context, tableName string) error
 		}
 
 		// 只保留交集列的值
+		// 注意：MySQL 驱动将 VARCHAR 扫描为 []byte，需要转换为 string
+		// 否则 SQLite 驱动会将 []byte 绑定为 BLOB（类型亲和性问题）
 		record := make([]any, len(commonCols))
 		for i, idx := range mysqlColIndices {
-			record[i] = scanVals[idx]
+			val := scanVals[idx]
+			// 将 []byte 转为 string（MySQL VARCHAR -> Go string）
+			if b, ok := val.([]byte); ok {
+				record[i] = string(b)
+			} else {
+				record[i] = val
+			}
 		}
 		records = append(records, record)
 	}
@@ -365,9 +373,16 @@ func (sm *SyncManager) insertLogBatchWithLastID(ctx context.Context, rows interf
 		}
 
 		// 只保留交集列的值
+		// 注意：MySQL 驱动将 VARCHAR 扫描为 []byte，需要转换为 string
+		// 否则 SQLite 驱动会将 []byte 绑定为 BLOB（类型亲和性问题）
 		record := make([]any, len(commonCols))
 		for i, idx := range mysqlColIndices {
-			record[i] = scanVals[idx]
+			val := scanVals[idx]
+			if b, ok := val.([]byte); ok {
+				record[i] = string(b)
+			} else {
+				record[i] = val
+			}
 		}
 		records = append(records, record)
 	}
