@@ -153,7 +153,8 @@ func (s *Server) handleNetworkError(
 	// [FIX] 2025-12: 保留 499 场景下已消耗的 token 统计
 	// 场景：流式响应中途取消（用户点"停止"），上游已消耗 token 但之前被丢弃
 	// 修复：即使请求失败，也记录已解析的 token 统计（用于计费和统计）
-	if res != nil && hasConsumedTokens(res) {
+	// [FIX] 2026-01: 499（客户端取消）不计入 failure_count，与 logs 表聚合逻辑保持一致
+	if statusCode != 499 && res != nil && hasConsumedTokens(res) {
 		// isSuccess=false 表示请求失败，但仍记录已消耗的 token
 		s.updateTokenStatsForProxy(reqCtx, false, duration, res, actualModel)
 	}
@@ -433,8 +434,11 @@ func (s *Server) handleProxyErrorResponse(
 
 	s.logProxyResult(reqCtx, cfg, actualModel, selectedKey, res.Status, duration, res, errMsg)
 
-	// 异步更新Token统计（失败请求不计费）
-	s.updateTokenStatsForProxy(reqCtx, false, duration, res, actualModel)
+	// [FIX] 2026-01: 499（客户端取消）不计入成功/失败统计，与 logs 表聚合逻辑保持一致
+	if res.Status != 499 {
+		// 异步更新Token统计（失败请求不计费）
+		s.updateTokenStatsForProxy(reqCtx, false, duration, res, actualModel)
+	}
 
 	failure := &proxyResult{
 		status:    res.Status,
