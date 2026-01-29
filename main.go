@@ -97,6 +97,9 @@ func main() {
 		gin.SetMode(gin.ReleaseMode) // 生产模式
 	}
 
+	// 初始化嵌入的静态资源文件系统
+	app.SetEmbedFS(WebFS, "web")
+
 	// 使用工厂函数创建存储实例（自动识别MySQL/SQLite）
 	store, err := storage.NewStore()
 	if err != nil {

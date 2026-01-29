@@ -1,44 +1,58 @@
 package app
 
 import (
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
+	"path"
 	"strings"
 
 	"ccLoad/internal/version"
 
+	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
 )
 
-// webRoot 是 web 目录的真实绝对路径，启动时初始化
-var webRoot string
+// embedFS 是嵌入的 web 静态资源文件系统
+// 通过 SetEmbedFS 在 main 包中初始化
+var embedFS fs.FS
+
+// SetEmbedFS 设置嵌入的静态资源文件系统
+// embedRoot: 嵌入的 embed.FS
+// subDir: 子目录名称（如 "web"），因为 //go:embed web 会保留 web/ 前缀
+func SetEmbedFS(embedRoot fs.FS, subDir string) {
+	subFS, err := fs.Sub(embedRoot, subDir)
+	if err != nil {
+		log.Fatalf("[FATAL] 无法访问嵌入的 %s 目录: %v", subDir, err)
+	}
+	embedFS = subFS
+}
 
 // setupStaticFiles 配置静态文件服务
 // - HTML 文件：不缓存，动态替换版本号占位符
 // - CSS/JS/字体：长缓存（1年），依赖版本号刷新
 // - dev 版本：不缓存，方便开发调试
+// - 支持 gzip 压缩（根据 Accept-Encoding 自动启用）
 func setupStaticFiles(r *gin.Engine) {
-	// 初始化 web 目录真实绝对路径（解析符号链接，用于安全检查）
-	absPath, err := filepath.Abs("./web")
-	if err != nil {
-		log.Fatalf("[FATAL] 无法解析 web 目录路径: %v", err)
-	}
-
-	// 解析符号链接获取真实路径
-	webRoot, err = filepath.EvalSymlinks(absPath)
-	if err != nil {
-		// web 目录不存在：生产环境 Fatal，测试环境警告
+	// 检查嵌入的文件系统是否已初始化
+	if embedFS == nil {
 		if isTestMode() {
-			log.Printf("[WARN] web 目录不存在: %v（测试环境忽略）", err)
-			webRoot = absPath // 请求时会返回 404
-		} else {
-			log.Fatalf("[FATAL] web 目录不存在或无法访问: %v", err)
+			log.Printf("[WARN] 嵌入文件系统未初始化（测试环境忽略）")
+			return
 		}
+		log.Fatalf("[FATAL] 嵌入文件系统未初始化，请在 main 中调用 SetEmbedFS")
 	}
 
-	r.GET("/web/*filepath", serveStaticFile)
+	// 使用路由组为静态文件启用 gzip 压缩
+	// 排除已压缩的文件类型（图片、字体等）
+	webGroup := r.Group("/web", gzip.Gzip(gzip.DefaultCompression,
+		gzip.WithExcludedExtensions([]string{
+			".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", // 图片
+			".woff", ".woff2", ".eot", // 已压缩字体
+		}),
+	))
+	webGroup.GET("/*filepath", serveStaticFile)
 }
 
 // isTestMode 检测是否在 Go 测试环境中运行
@@ -53,6 +67,11 @@ func isTestMode() bool {
 
 // serveStaticFile 处理静态文件请求
 func serveStaticFile(c *gin.Context) {
+	if embedFS == nil {
+		c.Status(http.StatusNotFound)
+		return
+	}
+
 	// Gin wildcard 参数带前导斜杠，如 "/index.html"
 	reqPath := c.Param("filepath")
 
@@ -60,19 +79,21 @@ func serveStaticFile(c *gin.Context) {
 	reqPath = strings.TrimPrefix(reqPath, "/")
 
 	// Clean 处理 .. 和多余的斜杠
-	reqPath = filepath.Clean(reqPath)
+	reqPath = path.Clean(reqPath)
 
 	// 防止路径遍历：Clean 后仍以 .. 开头说明试图逃逸
-	if reqPath == ".." || strings.HasPrefix(reqPath, ".."+string(filepath.Separator)) {
+	if reqPath == ".." || strings.HasPrefix(reqPath, "../") {
 		c.Status(http.StatusForbidden)
 		return
 	}
 
-	// 构建完整文件路径
-	filePath := filepath.Join(webRoot, reqPath)
+	// 空路径时默认返回 index.html
+	if reqPath == "." || reqPath == "" {
+		reqPath = "index.html"
+	}
 
 	// 检查文件是否存在
-	info, err := os.Stat(filePath)
+	info, err := fs.Stat(embedFS, reqPath)
 	if err != nil {
 		c.Status(http.StatusNotFound)
 		return
@@ -80,50 +101,26 @@ func serveStaticFile(c *gin.Context) {
 
 	// 如果是目录，尝试返回 index.html
 	if info.IsDir() {
-		filePath = filepath.Join(filePath, "index.html")
-		if _, err = os.Stat(filePath); err != nil {
+		reqPath = path.Join(reqPath, "index.html")
+		if _, err = fs.Stat(embedFS, reqPath); err != nil {
 			c.Status(http.StatusNotFound)
 			return
 		}
 	}
 
-	// 最终防线：解析符号链接后验证真实路径在 webRoot 下
-	realPath, err := filepath.EvalSymlinks(filePath)
-	if err != nil {
-		c.Status(http.StatusForbidden)
-		return
-	}
-
-	// 使用 filepath.Rel 检查是否逃逸（比 HasPrefix 更可靠，处理大小写不敏感文件系统）
-	if !isPathUnder(realPath, webRoot) {
-		c.Status(http.StatusForbidden)
-		return
-	}
-
-	ext := strings.ToLower(filepath.Ext(realPath))
+	ext := strings.ToLower(path.Ext(reqPath))
 
 	// 根据文件类型设置缓存策略
 	if ext == ".html" {
-		serveHTMLWithVersion(c, realPath)
+		serveHTMLWithVersion(c, reqPath)
 	} else {
-		serveStaticWithCache(c, realPath, ext)
+		serveStaticWithCache(c, reqPath, ext)
 	}
-}
-
-// isPathUnder 检查 path 是否在 base 目录下（含 base 自身）
-// 使用 filepath.Rel 而非 HasPrefix，正确处理大小写不敏感文件系统
-func isPathUnder(path, base string) bool {
-	rel, err := filepath.Rel(base, path)
-	if err != nil {
-		return false
-	}
-	// 相对路径不能以 .. 开头（表示逃逸）
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // serveHTMLWithVersion 处理 HTML 文件，替换版本号占位符
 func serveHTMLWithVersion(c *gin.Context, filePath string) {
-	content, err := os.ReadFile(filePath) //nolint:gosec // G304: filePath 已通过 isPathSafe() 验证
+	content, err := fs.ReadFile(embedFS, filePath)
 	if err != nil {
 		c.Status(http.StatusInternalServerError)
 		return
@@ -144,7 +141,7 @@ func serveStaticWithCache(c *gin.Context, filePath, ext string) {
 	// - dev 版本：不缓存，方便开发调试
 	// - manifest.json/favicon：短缓存（无版本号控制）
 	// - 其他静态资源：长缓存（通过 URL 版本号刷新）
-	fileName := filepath.Base(filePath)
+	fileName := path.Base(filePath)
 
 	if version.Version == "dev" {
 		// 开发环境：不缓存，避免前端修改看不到
@@ -157,7 +154,49 @@ func serveStaticWithCache(c *gin.Context, filePath, ext string) {
 		c.Header("Cache-Control", "public, max-age=31536000, immutable")
 	}
 
-	// 使用 c.File() 替代手写 Open+io.Copy
-	// 自动处理：Content-Type、Content-Length、HEAD、Range、If-Modified-Since/304
-	c.File(filePath)
+	// 读取文件内容
+	content, err := fs.ReadFile(embedFS, filePath)
+	if err != nil {
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+
+	// 设置 Content-Type
+	contentType := getContentType(ext)
+	c.Header("Content-Type", contentType)
+	c.Data(http.StatusOK, contentType, content)
+}
+
+// getContentType 根据文件扩展名返回 MIME 类型
+func getContentType(ext string) string {
+	switch ext {
+	case ".html":
+		return "text/html; charset=utf-8"
+	case ".css":
+		return "text/css; charset=utf-8"
+	case ".js":
+		return "application/javascript; charset=utf-8"
+	case ".json":
+		return "application/json; charset=utf-8"
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".svg":
+		return "image/svg+xml"
+	case ".ico":
+		return "image/x-icon"
+	case ".woff":
+		return "font/woff"
+	case ".woff2":
+		return "font/woff2"
+	case ".ttf":
+		return "font/ttf"
+	case ".eot":
+		return "application/vnd.ms-fontobject"
+	default:
+		return "application/octet-stream"
+	}
 }

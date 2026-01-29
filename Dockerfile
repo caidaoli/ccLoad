@@ -74,9 +74,8 @@ RUN addgroup -g 1001 -S ccload && \
 
 WORKDIR /app
 
-# 从构建阶段复制
+# 从构建阶段复制（web资源已嵌入二进制）
 COPY --from=builder /app/ccload .
-COPY --from=builder /app/web ./web
 
 # 创建数据目录并设置权限
 RUN mkdir -p /app/data && \
