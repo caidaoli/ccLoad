@@ -631,101 +631,15 @@ func TestSelectRouteCandidates_NoMatchingChannels(t *testing.T) {
 	t.Logf("[INFO] 无匹配渠道场景处理正确")
 }
 
-// TestSelectRouteCandidates_ModelDateSuffixFallback 测试“模型日期后缀回退匹配”功能开关
-func TestSelectRouteCandidates_ModelDateSuffixFallback(t *testing.T) {
+// TestSelectRouteCandidates_ModelFuzzyMatch 测试"模型模糊匹配"功能
+// 场景：请求无日期后缀模型，渠道配置带日期后缀模型
+func TestSelectRouteCandidates_ModelFuzzyMatch(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
 	ctx := context.Background()
 
-	// 渠道仅配置“无日期后缀”的模型
-	_, err := store.CreateConfig(ctx, &model.Config{
-		Name:         "base-model-channel",
-		URL:          "https://api.com",
-		Priority:     100,
-		ModelEntries: []model.ModelEntry{{Model: "claude-sonnet-4-5", RedirectModel: ""}},
-		Enabled:      true,
-	})
-	if err != nil {
-		t.Fatalf("创建测试渠道失败: %v", err)
-	}
-
-	// 1) 默认关闭：完全匹配失败后不回退
-	serverDisabled := &Server{store: store}
-	candidates, err := serverDisabled.selectCandidatesByModelAndType(ctx, "claude-sonnet-4-5-20250929", "")
-	if err != nil {
-		t.Fatalf("selectCandidates失败: %v", err)
-	}
-	if len(candidates) != 0 {
-		t.Fatalf("期望0个匹配渠道（回退关闭），实际%d个", len(candidates))
-	}
-
-	// 2) 开启后：完全匹配失败时去除末尾-YYYYMMDD回退
-	serverEnabled := &Server{store: store, modelLookupStripDateSuffix: true}
-	candidates, err = serverEnabled.selectCandidatesByModelAndType(ctx, "claude-sonnet-4-5-20250929", "")
-	if err != nil {
-		t.Fatalf("selectCandidates失败: %v", err)
-	}
-	if len(candidates) != 1 {
-		t.Fatalf("期望1个匹配渠道（回退开启），实际%d个", len(candidates))
-	}
-	if candidates[0].Name != "base-model-channel" {
-		t.Fatalf("期望命中base-model-channel，实际命中%s", candidates[0].Name)
-	}
-}
-
-// TestSelectRouteCandidates_ModelDateSuffixFallback_PreferExact 测试“优先完全匹配”
-func TestSelectRouteCandidates_ModelDateSuffixFallback_PreferExact(t *testing.T) {
-	store, cleanup := setupTestStore(t)
-	defer cleanup()
-
-	ctx := context.Background()
-
-	// base 渠道：仅配置无日期后缀
-	_, err := store.CreateConfig(ctx, &model.Config{
-		Name:         "base-model-channel",
-		URL:          "https://api-base.com",
-		Priority:     100,
-		ModelEntries: []model.ModelEntry{{Model: "claude-sonnet-4-5", RedirectModel: ""}},
-		Enabled:      true,
-	})
-	if err != nil {
-		t.Fatalf("创建base渠道失败: %v", err)
-	}
-
-	// dated 渠道：配置带日期后缀（完全匹配应命中它）
-	_, err = store.CreateConfig(ctx, &model.Config{
-		Name:         "dated-model-channel",
-		URL:          "https://api-dated.com",
-		Priority:     100,
-		ModelEntries: []model.ModelEntry{{Model: "claude-sonnet-4-5-20250929", RedirectModel: ""}},
-		Enabled:      true,
-	})
-	if err != nil {
-		t.Fatalf("创建dated渠道失败: %v", err)
-	}
-
-	server := &Server{store: store, modelLookupStripDateSuffix: true}
-	candidates, err := server.selectCandidatesByModelAndType(ctx, "claude-sonnet-4-5-20250929", "")
-	if err != nil {
-		t.Fatalf("selectCandidates失败: %v", err)
-	}
-	if len(candidates) != 1 {
-		t.Fatalf("期望1个匹配渠道（完全匹配直接命中），实际%d个", len(candidates))
-	}
-	if candidates[0].Name != "dated-model-channel" {
-		t.Fatalf("期望优先命中dated-model-channel，实际命中%s", candidates[0].Name)
-	}
-}
-
-// TestSelectRouteCandidates_ModelDateSuffixFallback_Reverse 测试“请求无日期→匹配渠道带日期模型”
-func TestSelectRouteCandidates_ModelDateSuffixFallback_Reverse(t *testing.T) {
-	store, cleanup := setupTestStore(t)
-	defer cleanup()
-
-	ctx := context.Background()
-
-	// 渠道仅配置“带日期后缀”的模型
+	// 渠道配置"带日期后缀"的模型
 	_, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "dated-model-channel",
 		URL:          "https://api.com",
@@ -737,37 +651,38 @@ func TestSelectRouteCandidates_ModelDateSuffixFallback_Reverse(t *testing.T) {
 		t.Fatalf("创建测试渠道失败: %v", err)
 	}
 
-	// 1) 默认关闭：完全匹配失败后不回退
-	serverDisabled := &Server{store: store}
+	// 1) 默认关闭：模糊匹配不生效
+	serverDisabled := &Server{store: store, modelFuzzyMatch: false}
 	candidates, err := serverDisabled.selectCandidatesByModelAndType(ctx, "claude-sonnet-4-5", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
 	if len(candidates) != 0 {
-		t.Fatalf("期望0个匹配渠道（回退关闭），实际%d个", len(candidates))
+		t.Fatalf("期望0个匹配渠道（模糊匹配关闭），实际%d个", len(candidates))
 	}
 
-	// 2) 开启后：完全匹配失败时允许匹配到带日期后缀的模型配置
-	serverEnabled := &Server{store: store, modelLookupStripDateSuffix: true}
+	// 2) 开启后：无日期后缀可匹配到带日期后缀的模型
+	serverEnabled := &Server{store: store, modelFuzzyMatch: true}
 	candidates, err = serverEnabled.selectCandidatesByModelAndType(ctx, "claude-sonnet-4-5", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
 	if len(candidates) != 1 {
-		t.Fatalf("期望1个匹配渠道（回退开启），实际%d个", len(candidates))
+		t.Fatalf("期望1个匹配渠道（模糊匹配开启），实际%d个", len(candidates))
 	}
 	if candidates[0].Name != "dated-model-channel" {
 		t.Fatalf("期望命中dated-model-channel，实际命中%s", candidates[0].Name)
 	}
 }
 
-// TestSelectRouteCandidates_ModelDateSuffixFallback_PreferExactBase 测试“请求无日期时也优先精确匹配”
-func TestSelectRouteCandidates_ModelDateSuffixFallback_PreferExactBase(t *testing.T) {
+// TestSelectRouteCandidates_ModelFuzzyMatch_PreferExact 测试"优先精确匹配"
+func TestSelectRouteCandidates_ModelFuzzyMatch_PreferExact(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
 	ctx := context.Background()
 
+	// base 渠道：配置无日期后缀
 	_, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "base-model-channel",
 		URL:          "https://api-base.com",
@@ -779,6 +694,7 @@ func TestSelectRouteCandidates_ModelDateSuffixFallback_PreferExactBase(t *testin
 		t.Fatalf("创建base渠道失败: %v", err)
 	}
 
+	// dated 渠道：配置带日期后缀
 	_, err = store.CreateConfig(ctx, &model.Config{
 		Name:         "dated-model-channel",
 		URL:          "https://api-dated.com",
@@ -790,7 +706,9 @@ func TestSelectRouteCandidates_ModelDateSuffixFallback_PreferExactBase(t *testin
 		t.Fatalf("创建dated渠道失败: %v", err)
 	}
 
-	server := &Server{store: store, modelLookupStripDateSuffix: true}
+	server := &Server{store: store, modelFuzzyMatch: true}
+
+	// 请求无日期后缀时，应优先精确匹配
 	candidates, err := server.selectCandidatesByModelAndType(ctx, "claude-sonnet-4-5", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
@@ -803,54 +721,89 @@ func TestSelectRouteCandidates_ModelDateSuffixFallback_PreferExactBase(t *testin
 	}
 }
 
-// TestSelectRouteCandidates_ModelDateSuffixFallback_CrossChannelType 测试跨渠道类型的日期后缀回退
-// 场景：请求 anthropic 类型的 claude-sonnet-4-5，但精确匹配只找到 openai 类型渠道
-// 应该回退到 anthropic 类型的带日期后缀渠道，而不是被 openai 渠道阻塞
-func TestSelectRouteCandidates_ModelDateSuffixFallback_CrossChannelType(t *testing.T) {
+func TestSelectRouteCandidates_ModelFuzzyMatch_AfterCooldownFiltering(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now()
+
+	// 精确匹配渠道：但处于冷却中
+	exactCfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "exact-cooled-channel",
+		URL:          "https://api-exact.com",
+		Priority:     100,
+		ModelEntries: []model.ModelEntry{{Model: "gemini-3-flash", RedirectModel: ""}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建exact渠道失败: %v", err)
+	}
+	if err := store.SetChannelCooldown(ctx, exactCfg.ID, now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("设置exact渠道冷却失败: %v", err)
+	}
+
+	// 模糊匹配渠道：可用
+	_, err = store.CreateConfig(ctx, &model.Config{
+		Name:         "fuzzy-available-channel",
+		URL:          "https://api-fuzzy.com",
+		Priority:     90,
+		ModelEntries: []model.ModelEntry{{Model: "gemini-3-flash-preview", RedirectModel: ""}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建fuzzy渠道失败: %v", err)
+	}
+
+	server := &Server{
+		store:           store,
+		channelBalancer: NewSmoothWeightedRR(),
+		modelFuzzyMatch: true,
+	}
+
+	candidates, err := server.selectCandidatesByModelAndType(ctx, "gemini-3-flash", "")
+	if err != nil {
+		t.Fatalf("selectCandidates失败: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("期望1个匹配渠道，实际%d个", len(candidates))
+	}
+	if candidates[0].Name != "fuzzy-available-channel" {
+		t.Fatalf("期望命中fuzzy-available-channel，实际命中%s", candidates[0].Name)
+	}
+}
+
+// TestSelectRouteCandidates_ModelFuzzyMatch_SubstringMatch 测试子串模糊匹配
+// 场景：请求简短模型名如 "sonnet"，匹配到完整模型名
+func TestSelectRouteCandidates_ModelFuzzyMatch_SubstringMatch(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
 	ctx := context.Background()
 
-	// 创建一个 openai 类型渠道，配置了无日期后缀的模型
 	_, err := store.CreateConfig(ctx, &model.Config{
-		Name:         "openai-channel",
-		URL:          "https://api.openai.com",
-		ChannelType:  "openai",
-		Priority:     100,
-		ModelEntries: []model.ModelEntry{{Model: "claude-sonnet-4-5", RedirectModel: ""}},
-		Enabled:      true,
-	})
-	if err != nil {
-		t.Fatalf("创建openai渠道失败: %v", err)
-	}
-
-	// 创建一个 anthropic 类型渠道，只配置了带日期后缀的模型
-	_, err = store.CreateConfig(ctx, &model.Config{
-		Name:         "anthropic-channel",
-		URL:          "https://api.anthropic.com",
-		ChannelType:  "anthropic",
+		Name:         "claude-channel",
+		URL:          "https://api.com",
 		Priority:     100,
 		ModelEntries: []model.ModelEntry{{Model: "claude-sonnet-4-5-20250929", RedirectModel: ""}},
 		Enabled:      true,
 	})
 	if err != nil {
-		t.Fatalf("创建anthropic渠道失败: %v", err)
+		t.Fatalf("创建测试渠道失败: %v", err)
 	}
 
-	server := &Server{store: store, modelLookupStripDateSuffix: true}
+	server := &Server{store: store, modelFuzzyMatch: true}
 
-	// 请求 anthropic 类型 + claude-sonnet-4-5
-	// 应该回退匹配到 anthropic-channel（而不是被 openai-channel 阻塞）
-	candidates, err := server.selectCandidatesByModelAndType(ctx, "claude-sonnet-4-5", "anthropic")
+	// 请求 "sonnet" 应匹配到 "claude-sonnet-4-5-20250929"
+	candidates, err := server.selectCandidatesByModelAndType(ctx, "sonnet", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
 	if len(candidates) != 1 {
-		t.Fatalf("期望1个匹配渠道（跨类型回退），实际%d个", len(candidates))
+		t.Fatalf("期望1个匹配渠道，实际%d个", len(candidates))
 	}
-	if candidates[0].Name != "anthropic-channel" {
-		t.Fatalf("期望命中anthropic-channel，实际命中%s", candidates[0].Name)
+	if candidates[0].Name != "claude-channel" {
+		t.Fatalf("期望命中claude-channel，实际命中%s", candidates[0].Name)
 	}
 }
 

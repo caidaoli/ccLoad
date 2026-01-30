@@ -24,6 +24,16 @@ import (
 // - 冷却语义：渠道级冷却、或“所有Key均在冷却”的渠道会被过滤
 // - 健康度排序：仅对“已通过冷却过滤”的渠道进行排序/负载均衡
 func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpkg.Config) ([]*modelpkg.Config, error) {
+	return s.filterCooldownChannelsInternal(ctx, channels, true)
+}
+
+// filterCooldownChannelsStrict 与 filterCooldownChannels 类似，但不会触发“全冷却兜底”选择。
+// 用于需要在“候选为空”时继续做下一步回退（例如模型模糊匹配）的场景。
+func (s *Server) filterCooldownChannelsStrict(ctx context.Context, channels []*modelpkg.Config) ([]*modelpkg.Config, error) {
+	return s.filterCooldownChannelsInternal(ctx, channels, false)
+}
+
+func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []*modelpkg.Config, allowAllCooledFallback bool) ([]*modelpkg.Config, error) {
 	if len(channels) == 0 {
 		return channels, nil
 	}
@@ -55,6 +65,9 @@ func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpk
 	// 先执行冷却过滤，保证冷却语义不被绕开（正确性优先）
 	filtered := s.filterCooledChannels(channels, channelCooldowns, keyCooldowns, now)
 	if len(filtered) == 0 {
+		if !allowAllCooledFallback {
+			return nil, nil
+		}
 		// 全冷却兜底：开关控制（false=禁用，true=启用）
 		// 启用时：直接返回"最早恢复"的渠道，让上层继续走正常流程（不要再搞阈值这类花活）。
 		fallbackEnabled := true

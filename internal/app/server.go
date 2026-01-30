@@ -54,8 +54,7 @@ type Server struct {
 	firstByteTimeout time.Duration // 上游首字节超时（流式请求）
 	nonStreamTimeout time.Duration // 非流式请求超时
 	// 模型匹配配置（启动时从数据库加载，修改后重启生效）
-	modelLookupStripDateSuffix bool // 未命中时去除末尾-YYYYMMDD日期后缀再匹配渠道（优先精确匹配）
-	modelFuzzyMatch            bool // 未命中时启用模糊匹配（子串匹配+版本排序）
+	modelFuzzyMatch bool // 未命中时启用模糊匹配（子串匹配+版本排序）
 
 	// 登录速率限制器（用于传递给AuthService）
 	loginRateLimiter *util.LoginRateLimiter
@@ -117,12 +116,6 @@ func NewServer(store storage.Store) *Server {
 	}
 
 	logRetentionDays := configService.GetInt("log_retention_days", 7)
-	modelLookupStripDateSuffix := configService.GetBool("model_lookup_strip_date_suffix", true)
-	if configService.GetSetting("model_lookup_strip_date_suffix") == nil {
-		log.Print("[WARN] 未找到系统设置 model_lookup_strip_date_suffix，已默认启用模型日期后缀回退匹配（建议检查数据库迁移/运行目录）")
-	} else if modelLookupStripDateSuffix {
-		log.Print("[INFO] 已启用模型日期后缀回退匹配：未命中时忽略末尾-YYYYMMDD日期后缀进行匹配（优先精确匹配）")
-	}
 
 	modelFuzzyMatch := configService.GetBool("model_fuzzy_match", false)
 	if modelFuzzyMatch {
@@ -158,8 +151,7 @@ func NewServer(store storage.Store) *Server {
 		firstByteTimeout: firstByteTimeout,
 		nonStreamTimeout: nonStreamTimeout,
 		// 模型匹配配置（启动时加载，修改后重启生效）
-		modelLookupStripDateSuffix: modelLookupStripDateSuffix,
-		modelFuzzyMatch:            modelFuzzyMatch,
+		modelFuzzyMatch: modelFuzzyMatch,
 
 		// HTTP客户端
 		client: &http.Client{

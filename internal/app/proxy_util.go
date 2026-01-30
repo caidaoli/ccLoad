@@ -347,19 +347,50 @@ func extractModelFromPath(path string) string {
 	return remaining[:end]
 }
 
-// prepareRequestBody 准备请求体（处理模型重定向）
-// 遵循SRP原则：单一职责 - 仅负责模型重定向和请求体准备
-func prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestContext) (actualModel string, bodyToSend []byte) {
+func replaceModelInPath(path string, originalModel string, actualModel string) string {
+	if originalModel == "" || actualModel == "" || originalModel == actualModel {
+		return path
+	}
+	return strings.Replace(path, originalModel, actualModel, 1)
+}
+
+// prepareRequestBody 准备请求体（处理模型重定向和模糊匹配）
+// 遵循SRP原则：单一职责 - 负责模型名解析和请求体准备
+//
+// 模型名解析优先级：
+// 1. 精确匹配的重定向（redirect_model 配置）
+// 2. 模糊匹配（启用 model_fuzzy_match 时）
+// 3. [FIX] 2026-01: 模糊匹配结果的重定向（链式解析）
+func (s *Server) prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestContext) (actualModel string, bodyToSend []byte) {
 	actualModel = reqCtx.originalModel
 
-	// 检查模型重定向
+	// 1. 检查模型重定向（精确匹配优先）
 	if redirectModel, ok := cfg.GetRedirectModel(reqCtx.originalModel); ok && redirectModel != "" {
 		actualModel = redirectModel
 	}
 
+	// 2. 模糊匹配回退（仅当未触发重定向时）
+	if actualModel == reqCtx.originalModel && s.modelFuzzyMatch {
+		// 先检查精确匹配，避免不必要的模糊匹配
+		if !cfg.SupportsModel(reqCtx.originalModel) {
+			if matched, ok := cfg.FuzzyMatchModel(reqCtx.originalModel); ok {
+				actualModel = matched
+			}
+		}
+	}
+
+	// 3. [FIX] 2026-01: 模糊匹配结果的重定向（链式解析）
+	// 场景：请求 gemini-3-flash → 模糊匹配 gemini-3-flash-preview → 重定向 gemini-3-flash-preview-0719
+	// 仅当模型已变更且变更后的模型有重定向配置时触发
+	if actualModel != reqCtx.originalModel {
+		if redirectModel, ok := cfg.GetRedirectModel(actualModel); ok && redirectModel != "" {
+			actualModel = redirectModel
+		}
+	}
+
 	bodyToSend = reqCtx.body
 
-	// 如果模型发生重定向，修改请求体
+	// 如果模型发生变更，修改请求体
 	if actualModel != reqCtx.originalModel {
 		var reqData map[string]any
 		if err := sonic.Unmarshal(reqCtx.body, &reqData); err == nil {

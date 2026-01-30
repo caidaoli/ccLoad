@@ -62,25 +62,26 @@ func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model strin
 	// [FIX] 在判断是否回退前，先应用 channelType 过滤
 	// 否则精确匹配到一个 openai 渠道会阻止回退到 anthropic 渠道
 	channels = filterByType(channels)
-	if len(channels) == 0 && s.modelLookupStripDateSuffix && model != "*" {
-		// 尝试去除日期后缀重新查询
-		stripped, ok := stripTrailingYYYYMMDD(model)
-		if ok && stripped != model {
-			channels, err = s.GetEnabledChannelsByModel(ctx, stripped)
-			if err != nil {
-				return nil, err
-			}
-			channels = filterByType(channels)
-		}
+
+	// 先做冷却/成本过滤，但不触发“全冷却兜底”，以便后续还能继续做模糊匹配回退。
+	filtered, err := s.filterCooldownChannelsStrict(ctx, channels)
+	if err != nil {
+		return nil, err
+	}
+	if len(filtered) > 0 {
+		return filtered, nil
 	}
 
-	// 兜底：全量查询（用于“全冷却兜底”场景）
-	if len(channels) == 0 {
+	// 兜底：全量查询（用于“模糊匹配回退”以及最终“全冷却兜底”场景）
+	// 注意：此处不能以 len(channels)==0 作为是否回退的条件。
+	// 精确候选可能存在但全部在冷却/成本限额下不可用，这时仍需尝试模糊匹配补充候选。
+	var allCandidates []*modelpkg.Config
+	if model != "*" {
 		all, err := s.store.ListConfigs(ctx)
 		if err != nil {
 			return nil, err
 		}
-		channels = make([]*modelpkg.Config, 0, len(all))
+		allCandidates = make([]*modelpkg.Config, 0, len(all))
 		for _, cfg := range all {
 			if cfg == nil || !cfg.Enabled {
 				continue
@@ -88,11 +89,21 @@ func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model strin
 			if channelType != "" && cfg.GetChannelType() != normalizedType {
 				continue
 			}
-			if s.configSupportsModelWithDateFallback(cfg, model) {
-				channels = append(channels, cfg)
+			if s.configSupportsModelWithFuzzyMatch(cfg, model) {
+				allCandidates = append(allCandidates, cfg)
 			}
 		}
 	}
 
-	return s.filterCooldownChannels(ctx, channels)
+	// 再次过滤，但仍不触发“全冷却兜底”：先把可用的候选尽可能找出来。
+	filtered, err = s.filterCooldownChannelsStrict(ctx, allCandidates)
+	if err != nil {
+		return nil, err
+	}
+	if len(filtered) > 0 {
+		return filtered, nil
+	}
+
+	// 最终兜底：如果候选存在但全部在冷却中，让全冷却兜底逻辑选择“最早恢复”的渠道。
+	return s.filterCooldownChannels(ctx, allCandidates)
 }

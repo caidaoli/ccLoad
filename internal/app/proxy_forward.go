@@ -538,14 +538,16 @@ func (s *Server) forwardAttempt(
 	reqCtx *proxyRequestContext,
 	actualModel string, // [INFO] 重定向后的实际模型名称
 	bodyToSend []byte,
+	requestPath string, // [FIX] 2026-01: 可能经过模型名替换的请求路径
 	w http.ResponseWriter,
 ) (*proxyResult, cooldown.Action) {
 	// 记录渠道尝试开始时间（用于日志记录，每次渠道/Key切换时更新）
 	reqCtx.attemptStartTime = time.Now()
 
 	// 转发请求（传递实际的API Key字符串和观测回调）
+	// [FIX] 2026-01: 使用传入的 requestPath（可能已替换模型名）而非 reqCtx.requestPath
 	res, duration, err := s.forwardOnceAsync(ctx, cfg, selectedKey, reqCtx.requestMethod,
-		bodyToSend, reqCtx.header, reqCtx.rawQuery, reqCtx.requestPath, w, reqCtx.observer)
+		bodyToSend, reqCtx.header, reqCtx.rawQuery, requestPath, w, reqCtx.observer)
 
 	// 处理网络错误或异常响应（如空响应）
 	// [INFO] 修复：handleResponse可能返回err即使StatusCode=200（例如Content-Length=0）
@@ -646,7 +648,12 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 
 	// 准备请求体（处理模型重定向）
 	// [INFO] 修复：保存重定向后的模型名称，用于日志记录和调试
-	actualModel, bodyToSend := prepareRequestBody(cfg, reqCtx)
+	actualModel, bodyToSend := s.prepareRequestBody(cfg, reqCtx)
+
+	// [FIX] 2026-01: 模型名变更时同步替换 URL 路径
+	// 场景：Gemini API 的模型名在 URL 路径中（如 /v1beta/models/gemini-3-flash:streamGenerateContent）
+	// 如果模糊匹配将 gemini-3-flash 改为 gemini-3-flash-preview，URL 路径也需要同步更新
+	requestPath := replaceModelInPath(reqCtx.requestPath, reqCtx.originalModel, actualModel)
 
 	// Key重试循环
 	for range maxKeyRetries {
@@ -672,8 +679,9 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 
 		// 单次转发尝试（传递实际的API Key字符串）
 		// [INFO] 修复：传递 actualModel 用于日志记录
+		// [FIX] 2026-01: 传递 requestPath（可能经过模型名替换）
 		result, nextAction := s.forwardAttempt(
-			ctx, cfg, keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, w)
+			ctx, cfg, keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, requestPath, w)
 
 		if result != nil {
 			if result.succeeded {

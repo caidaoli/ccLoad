@@ -1,9 +1,12 @@
 package app
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"ccLoad/internal/model"
 )
 
 func TestWriteResponseWithHeaders_PreservesContentType(t *testing.T) {
@@ -208,5 +211,218 @@ func TestFilterAndWriteResponseHeaders_StripsHopByHop(t *testing.T) {
 		if v := w.Header().Get(k); v != "" {
 			t.Fatalf("expected header %q stripped, got %q", k, v)
 		}
+	}
+}
+
+// TestPrepareRequestBody_FuzzyMatch 测试模糊匹配模型名替换
+// 确保 model_fuzzy_match 启用时，请求体中的模型名会被替换为匹配到的实际模型名
+func TestPrepareRequestBody_FuzzyMatch(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		modelFuzzyMatch bool
+		configModels    []model.ModelEntry
+		originalModel   string
+		requestBody     string
+		wantModel       string
+		wantBodyModel   string // 期望请求体中的模型名
+	}{
+		{
+			name:            "精确匹配_不修改模型名",
+			modelFuzzyMatch: true,
+			configModels:    []model.ModelEntry{{Model: "gpt-4"}},
+			originalModel:   "gpt-4",
+			requestBody:     `{"model":"gpt-4","messages":[]}`,
+			wantModel:       "gpt-4",
+			wantBodyModel:   "gpt-4",
+		},
+		{
+			name:            "模糊匹配_替换为实际模型名",
+			modelFuzzyMatch: true,
+			configModels:    []model.ModelEntry{{Model: "gemini-2.5-flash"}},
+			originalModel:   "flash", // 用户请求的模糊名称
+			requestBody:     `{"model":"flash","messages":[]}`,
+			wantModel:       "gemini-2.5-flash",
+			wantBodyModel:   "gemini-2.5-flash",
+		},
+		{
+			name:            "模糊匹配关闭_不替换模型名",
+			modelFuzzyMatch: false,
+			configModels:    []model.ModelEntry{{Model: "gemini-2.5-flash"}},
+			originalModel:   "flash",
+			requestBody:     `{"model":"flash","messages":[]}`,
+			wantModel:       "flash", // 不替换
+			wantBodyModel:   "flash",
+		},
+		{
+			name:            "模糊匹配_多个候选选最新版本",
+			modelFuzzyMatch: true,
+			configModels: []model.ModelEntry{
+				{Model: "claude-sonnet-4-5-20250514"},
+				{Model: "claude-sonnet-4-5-20250929"},
+			},
+			originalModel: "sonnet",
+			requestBody:   `{"model":"sonnet","messages":[]}`,
+			wantModel:     "claude-sonnet-4-5-20250929", // 最新版本
+			wantBodyModel: "claude-sonnet-4-5-20250929",
+		},
+		{
+			name:            "重定向优先于模糊匹配",
+			modelFuzzyMatch: true,
+			configModels: []model.ModelEntry{
+				{Model: "gpt-4", RedirectModel: "gpt-4-turbo"},
+				{Model: "gpt-4-turbo"},
+			},
+			originalModel: "gpt-4",
+			requestBody:   `{"model":"gpt-4","messages":[]}`,
+			wantModel:     "gpt-4-turbo", // 重定向优先
+			wantBodyModel: "gpt-4-turbo",
+		},
+		{
+			name:            "模糊匹配_无匹配时保持原样",
+			modelFuzzyMatch: true,
+			configModels:    []model.ModelEntry{{Model: "gpt-4"}},
+			originalModel:   "claude",
+			requestBody:     `{"model":"claude","messages":[]}`,
+			wantModel:       "claude", // 无匹配，保持原样
+			wantBodyModel:   "claude",
+		},
+		{
+			// 注意：gemini-3-flash 不包含于 gemini-2.5-flash，因此不会匹配
+			// 模糊匹配是子串包含，不是相似度匹配
+			name:            "模糊匹配_不同版本号不匹配",
+			modelFuzzyMatch: true,
+			configModels:    []model.ModelEntry{{Model: "gemini-2.5-flash"}},
+			originalModel:   "gemini-3-flash", // 不存在的模型
+			requestBody:     `{"model":"gemini-3-flash","messages":[]}`,
+			wantModel:       "gemini-3-flash", // 不匹配，保持原样
+			wantBodyModel:   "gemini-3-flash",
+		},
+		{
+			// 子串匹配：flash 包含于 gemini-2.5-flash
+			name:            "模糊匹配_子串匹配成功",
+			modelFuzzyMatch: true,
+			configModels:    []model.ModelEntry{{Model: "gemini-2.5-flash"}},
+			originalModel:   "2.5-flash", // 子串
+			requestBody:     `{"model":"2.5-flash","messages":[]}`,
+			wantModel:       "gemini-2.5-flash",
+			wantBodyModel:   "gemini-2.5-flash",
+		},
+		{
+			// 核心场景：gemini-3-flash → gemini-3-flash-preview
+			// gemini-3-flash 是 gemini-3-flash-preview 的子串
+			name:            "模糊匹配_gemini-3-flash到preview版本",
+			modelFuzzyMatch: true,
+			configModels:    []model.ModelEntry{{Model: "gemini-3-flash-preview"}},
+			originalModel:   "gemini-3-flash",
+			requestBody:     `{"model":"gemini-3-flash","messages":[]}`,
+			wantModel:       "gemini-3-flash-preview",
+			wantBodyModel:   "gemini-3-flash-preview",
+		},
+		{
+			// [FIX] 2026-01: 链式解析场景
+			// gemini-3-flash → 模糊匹配 gemini-3-flash-preview → 重定向 gemini-3-flash-preview-0719
+			name:            "链式解析_模糊匹配后再重定向",
+			modelFuzzyMatch: true,
+			configModels: []model.ModelEntry{
+				{Model: "gemini-3-flash-preview", RedirectModel: "gemini-3-flash-preview-0719"},
+				{Model: "gemini-3-flash-preview-0719"},
+			},
+			originalModel: "gemini-3-flash",
+			requestBody:   `{"model":"gemini-3-flash","messages":[]}`,
+			wantModel:     "gemini-3-flash-preview-0719", // 模糊匹配后再重定向
+			wantBodyModel: "gemini-3-flash-preview-0719",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// 构造 Server（只设置 modelFuzzyMatch）
+			s := &Server{
+				modelFuzzyMatch: tt.modelFuzzyMatch,
+			}
+
+			// 构造 Config
+			cfg := &model.Config{
+				ModelEntries: tt.configModels,
+			}
+
+			// 构造请求上下文
+			reqCtx := &proxyRequestContext{
+				originalModel: tt.originalModel,
+				body:          []byte(tt.requestBody),
+			}
+
+			// 调用被测函数
+			actualModel, bodyToSend := s.prepareRequestBody(cfg, reqCtx)
+
+			// 验证返回的模型名
+			if actualModel != tt.wantModel {
+				t.Errorf("actualModel = %q, want %q", actualModel, tt.wantModel)
+			}
+
+			// 验证请求体中的模型名
+			var reqData map[string]any
+			if err := json.Unmarshal(bodyToSend, &reqData); err != nil {
+				t.Fatalf("failed to unmarshal body: %v", err)
+			}
+			if gotModel, _ := reqData["model"].(string); gotModel != tt.wantBodyModel {
+				t.Errorf("body model = %q, want %q", gotModel, tt.wantBodyModel)
+			}
+		})
+	}
+}
+
+// TestReplaceModelInPath_GeminiAPI 测试 Gemini API URL 路径中模型名替换
+// [FIX] 2026-01: 验证模糊匹配后 URL 路径中的模型名也被正确替换
+func TestReplaceModelInPath_GeminiAPI(t *testing.T) {
+	tests := []struct {
+		name          string
+		originalPath  string
+		originalModel string
+		actualModel   string
+		wantPath      string
+	}{
+		{
+			name:          "Gemini streamGenerateContent 模型名替换",
+			originalPath:  "/v1beta/models/gemini-3-flash:streamGenerateContent",
+			originalModel: "gemini-3-flash",
+			actualModel:   "gemini-3-flash-preview",
+			wantPath:      "/v1beta/models/gemini-3-flash-preview:streamGenerateContent",
+		},
+		{
+			name:          "Gemini generateContent 模型名替换",
+			originalPath:  "/v1beta/models/gemini-pro:generateContent",
+			originalModel: "gemini-pro",
+			actualModel:   "gemini-1.5-pro",
+			wantPath:      "/v1beta/models/gemini-1.5-pro:generateContent",
+		},
+		{
+			name:          "模型名未变更不替换",
+			originalPath:  "/v1beta/models/gemini-2.0-flash:streamGenerateContent",
+			originalModel: "gemini-2.0-flash",
+			actualModel:   "gemini-2.0-flash",
+			wantPath:      "/v1beta/models/gemini-2.0-flash:streamGenerateContent",
+		},
+		{
+			name:          "OpenAI 路径无模型名",
+			originalPath:  "/v1/chat/completions",
+			originalModel: "gpt-4",
+			actualModel:   "gpt-4-turbo",
+			wantPath:      "/v1/chat/completions",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requestPath := replaceModelInPath(tt.originalPath, tt.originalModel, tt.actualModel)
+
+			if requestPath != tt.wantPath {
+				t.Errorf("requestPath = %q, want %q", requestPath, tt.wantPath)
+			}
+		})
 	}
 }
