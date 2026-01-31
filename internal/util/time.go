@@ -28,29 +28,11 @@ var (
 )
 
 func init() {
-	// 环境变量覆盖（启动时读取一次，重启生效）
-	if v := envSeconds("CCLOAD_COOLDOWN_AUTH_SEC"); v > 0 {
-		AuthErrorInitialCooldown = v
-	}
-	if v := envSeconds("CCLOAD_COOLDOWN_TIMEOUT_SEC"); v > 0 {
-		TimeoutErrorCooldown = v
-	}
-	if v := envSeconds("CCLOAD_COOLDOWN_SERVER_SEC"); v > 0 {
-		ServerErrorInitialCooldown = v
-	}
-	if v := envSeconds("CCLOAD_COOLDOWN_RATE_LIMIT_SEC"); v > 0 {
-		RateLimitErrorCooldown = v
-	}
-	if v := envSeconds("CCLOAD_COOLDOWN_MAX_SEC"); v > 0 {
-		MaxCooldownDuration = v
-	}
-	if v := envSeconds("CCLOAD_COOLDOWN_MIN_SEC"); v > 0 {
-		MinCooldownDuration = v
-	}
+	applyCooldownEnvOverrides(os.Getenv)
 }
 
-func envSeconds(key string) time.Duration {
-	s := os.Getenv(key)
+func envSecondsFrom(getenv func(string) string, key string) time.Duration {
+	s := getenv(key)
 	if s == "" {
 		return 0
 	}
@@ -59,6 +41,28 @@ func envSeconds(key string) time.Duration {
 		return 0
 	}
 	return time.Duration(v) * time.Second
+}
+
+func applyCooldownEnvOverrides(getenv func(string) string) {
+	// 环境变量覆盖（启动时读取一次，重启生效）
+	if v := envSecondsFrom(getenv, "CCLOAD_COOLDOWN_AUTH_SEC"); v > 0 {
+		AuthErrorInitialCooldown = v
+	}
+	if v := envSecondsFrom(getenv, "CCLOAD_COOLDOWN_TIMEOUT_SEC"); v > 0 {
+		TimeoutErrorCooldown = v
+	}
+	if v := envSecondsFrom(getenv, "CCLOAD_COOLDOWN_SERVER_SEC"); v > 0 {
+		ServerErrorInitialCooldown = v
+	}
+	if v := envSecondsFrom(getenv, "CCLOAD_COOLDOWN_RATE_LIMIT_SEC"); v > 0 {
+		RateLimitErrorCooldown = v
+	}
+	if v := envSecondsFrom(getenv, "CCLOAD_COOLDOWN_MAX_SEC"); v > 0 {
+		MaxCooldownDuration = v
+	}
+	if v := envSecondsFrom(getenv, "CCLOAD_COOLDOWN_MIN_SEC"); v > 0 {
+		MinCooldownDuration = v
+	}
 }
 
 // CalculateBackoffDuration 计算指数退避冷却时间

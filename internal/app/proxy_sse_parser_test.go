@@ -1,6 +1,7 @@
 package app
 
 import (
+	"sort"
 	"strings"
 	"testing"
 )
@@ -24,6 +25,41 @@ func feedAndAssertUsage(t *testing.T, parser usageParser, data string, wantInput
 	}
 	if cacheCreation != wantCacheCreation {
 		t.Errorf("CacheCreationInputTokens = %d, 期望 %d", cacheCreation, wantCacheCreation)
+	}
+}
+
+func TestHasGeminiUsageFields(t *testing.T) {
+	t.Parallel()
+
+	if !hasGeminiUsageFields(map[string]any{
+		"usageMetadata": map[string]any{"promptTokenCount": float64(1)},
+	}) {
+		t.Fatal("expected usageMetadata wrapper to be detected")
+	}
+
+	if !hasGeminiUsageFields(map[string]any{"promptTokenCount": float64(1)}) {
+		t.Fatal("expected promptTokenCount to be detected")
+	}
+
+	if !hasGeminiUsageFields(map[string]any{"candidatesTokenCount": float64(1)}) {
+		t.Fatal("expected candidatesTokenCount to be detected")
+	}
+
+	if hasGeminiUsageFields(map[string]any{}) {
+		t.Fatal("expected empty map to not be detected as gemini usage")
+	}
+}
+
+func TestGetUsageKeys(t *testing.T) {
+	t.Parallel()
+
+	keys := getUsageKeys(map[string]any{
+		"b": float64(2),
+		"a": float64(1),
+	})
+	sort.Strings(keys)
+	if strings.Join(keys, ",") != "a,b" {
+		t.Fatalf("unexpected keys: %v", keys)
 	}
 }
 

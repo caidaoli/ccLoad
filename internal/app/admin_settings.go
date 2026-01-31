@@ -4,10 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
-	"syscall"
-	"time"
 
 	"ccLoad/internal/model"
 
@@ -235,24 +232,13 @@ func validateSettingValue(key, valueType, value string) error {
 var RestartFunc func()
 
 // triggerRestart 触发程序重启
-// 等待2秒让HTTP响应完成发送，然后向自己发送SIGTERM信号
+// 依赖优雅关闭语义：触发 SIGTERM 后，HTTP 服务器应完成当前请求再退出。
 func triggerRestart() {
-	time.Sleep(2 * time.Second)
 	log.Print("[INFO] Triggering restart due to settings change...")
 
-	// 设置重启标志（main.go 会在优雅关闭后检查并执行重启）
-	if RestartFunc != nil {
-		RestartFunc()
-	}
-
-	// 向自己发送 SIGTERM 信号，触发优雅关闭
-	p, err := os.FindProcess(os.Getpid())
-	if err != nil {
-		log.Printf("[ERROR] Failed to find process: %v", err)
+	if RestartFunc == nil {
+		log.Printf("[ERROR] RestartFunc is nil, restart skipped")
 		return
 	}
-
-	if err := p.Signal(syscall.SIGTERM); err != nil {
-		log.Printf("[ERROR] Failed to send SIGTERM: %v", err)
-	}
+	RestartFunc()
 }

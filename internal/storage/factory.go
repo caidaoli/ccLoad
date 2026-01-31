@@ -146,14 +146,22 @@ func createMySQLStore(dsn string) (*sqlstore.SQLStore, error) {
 // 生产代码应使用 NewStore() 工厂函数
 // 测试代码可用此函数创建独立的测试数据库
 func CreateSQLiteStore(path string) (Store, error) {
-	return createSQLiteStore(path)
+	s, err := createSQLiteStore(path)
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // CreateMySQLStoreForTest 直接创建 MySQL 存储实例（测试/Benchmark 辅助函数）
 // 生产代码应使用 NewStore() 工厂函数
 // 测试代码可用此函数创建独立的 MySQL 连接进行性能对比
 func CreateMySQLStoreForTest(dsn string) (Store, error) {
-	return createMySQLStore(dsn)
+	s, err := createMySQLStore(dsn)
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // createSQLiteStore 内部函数，返回具体类型以支持生命周期方法调用

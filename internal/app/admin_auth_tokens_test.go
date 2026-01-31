@@ -1,16 +1,11 @@
 package app
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"ccLoad/internal/model"
-
-	"github.com/gin-gonic/gin"
 )
 
 func TestAuthToken_MaskToken(t *testing.T) {
@@ -45,15 +40,9 @@ func TestAdminAPI_CreateAuthToken_Basic(t *testing.T) {
 	server, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	requestBody := map[string]any{
+	c, w := newTestContext(t, newJSONRequest(http.MethodPost, "/admin/auth-tokens", map[string]any{
 		"description": "Test Token",
-	}
-
-	body, _ := json.Marshal(requestBody)
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/admin/auth-tokens", bytes.NewBuffer(body))
-	c.Request.Header.Set("Content-Type", "application/json")
+	}))
 
 	server.HandleCreateAuthToken(c)
 
@@ -68,9 +57,7 @@ func TestAdminAPI_CreateAuthToken_Basic(t *testing.T) {
 			Token string `json:"token"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-		t.Fatalf("Parse error: %v", err)
-	}
+	mustUnmarshalJSON(t, w.Body.Bytes(), &response)
 
 	if !response.Success || len(response.Data.Token) == 0 {
 		t.Error("Token creation failed")
@@ -92,9 +79,7 @@ func TestAdminAPI_ListAuthTokens_ResponseShape(t *testing.T) {
 	server, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodGet, "/admin/auth-tokens", nil)
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/auth-tokens", nil))
 
 	server.HandleListAuthTokens(c)
 
@@ -102,32 +87,15 @@ func TestAdminAPI_ListAuthTokens_ResponseShape(t *testing.T) {
 		t.Fatalf("Expected 200, got %d", w.Code)
 	}
 
-	var resp map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("Parse error: %v", err)
+	type listResp struct {
+		Tokens  []*model.AuthToken `json:"tokens"`
+		IsToday bool               `json:"is_today"`
 	}
-
-	if resp["success"] != true {
-		t.Fatalf("Expected success=true, got %v", resp["success"])
+	resp := mustParseAPIResponse[listResp](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("success=false, error=%q", resp.Error)
 	}
-
-	data, ok := resp["data"].(map[string]any)
-	if !ok {
-		t.Fatalf("Expected data object, got %T", resp["data"])
-	}
-
-	if _, ok := data["is_today"]; !ok {
-		t.Fatalf("Expected data.is_today to exist")
-	}
-
-	tokens, ok := data["tokens"]
-	if !ok {
-		t.Fatalf("Expected data.tokens to exist")
-	}
-	if tokens == nil {
-		t.Fatalf("Expected data.tokens to be [], got null")
-	}
-	if _, ok := tokens.([]any); !ok {
-		t.Fatalf("Expected data.tokens to be array, got %T", tokens)
+	if resp.Data.Tokens == nil {
+		t.Fatalf("tokens is null, want []")
 	}
 }

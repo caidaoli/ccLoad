@@ -1,12 +1,10 @@
 package app
 
 import (
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
-	"github.com/gin-gonic/gin"
+	"ccLoad/internal/model"
 )
 
 func TestAdminAPI_ListSettings_ResponseShape(t *testing.T) {
@@ -15,9 +13,7 @@ func TestAdminAPI_ListSettings_ResponseShape(t *testing.T) {
 
 	server.configService = NewConfigService(store)
 
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodGet, "/admin/settings", nil)
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/settings", nil))
 
 	server.AdminListSettings(c)
 
@@ -25,20 +21,11 @@ func TestAdminAPI_ListSettings_ResponseShape(t *testing.T) {
 		t.Fatalf("Expected 200, got %d", w.Code)
 	}
 
-	var resp map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("Parse error: %v", err)
+	resp := mustParseAPIResponse[[]*model.SystemSetting](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("success=false, error=%q", resp.Error)
 	}
-
-	if resp["success"] != true {
-		t.Fatalf("Expected success=true, got %v", resp["success"])
-	}
-
-	data := resp["data"]
-	if data == nil {
-		t.Fatalf("Expected data to be [], got null")
-	}
-	if _, ok := data.([]any); !ok {
-		t.Fatalf("Expected data to be array, got %T", data)
+	if resp.Data == nil {
+		t.Fatalf("data is null, want []")
 	}
 }

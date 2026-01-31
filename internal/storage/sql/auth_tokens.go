@@ -90,12 +90,18 @@ func scanAuthToken(scanner interface {
 
 	token.CreatedAt = time.UnixMilli(createdAtMs)
 	if expiresAt.Valid {
-		v := expiresAt.Int64
-		token.ExpiresAt = &v
+		// 语义：0 表示永不过期；对外保持 nil（omitempty）更干净
+		if expiresAt.Int64 > 0 {
+			v := expiresAt.Int64
+			token.ExpiresAt = &v
+		}
 	}
 	if lastUsedAt.Valid {
-		v := lastUsedAt.Int64
-		token.LastUsedAt = &v
+		// 语义：0 表示从未使用过；对外保持 nil（omitempty）
+		if lastUsedAt.Int64 > 0 {
+			v := lastUsedAt.Int64
+			token.LastUsedAt = &v
+		}
 	}
 	token.IsActive = isActive != 0
 	token.CostUsedMicroUSD = costUsedMicroUSD
@@ -437,12 +443,12 @@ func (s *SQLStore) ListActiveAuthTokens(ctx context.Context) ([]*model.AuthToken
 
 // UpdateAuthToken 更新令牌信息
 func (s *SQLStore) UpdateAuthToken(ctx context.Context, token *model.AuthToken) error {
-	var expiresAt any
+	var expiresAt any = int64(0)
 	if token.ExpiresAt != nil {
 		expiresAt = *token.ExpiresAt
 	}
 
-	var lastUsedAt any
+	var lastUsedAt any = int64(0)
 	if token.LastUsedAt != nil {
 		lastUsedAt = *token.LastUsedAt
 	}

@@ -1,11 +1,9 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"ccLoad/internal/model"
@@ -87,17 +85,7 @@ func TestHandleSetChannelCooldown(t *testing.T) {
 				}
 			}
 
-			// 创建请求
-			body, _ := json.Marshal(tt.requestBody)
-			req := httptest.NewRequest(http.MethodPost, "/admin/channels/"+tt.channelID+"/cooldown", bytes.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-
-			// 创建响应记录器
-			w := httptest.NewRecorder()
-
-			// 创建Gin上下文
-			c, _ := gin.CreateTestContext(w)
-			c.Request = req
+			c, w := newTestContext(t, newJSONRequest(http.MethodPost, "/admin/channels/"+tt.channelID+"/cooldown", tt.requestBody))
 			c.Params = gin.Params{{Key: "id", Value: tt.channelID}}
 
 			// 调用处理函数
@@ -108,19 +96,9 @@ func TestHandleSetChannelCooldown(t *testing.T) {
 				t.Errorf("期望状态码 %d, 实际 %d", tt.expectedStatus, w.Code)
 			}
 
-			// 解析响应
-			var response map[string]any
-			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-				t.Fatalf("解析响应失败: %v", err)
-			}
-
-			// 验证success字段
-			success, ok := response["success"].(bool)
-			if !ok {
-				t.Fatal("响应缺少success字段")
-			}
-			if success != tt.expectSuccess {
-				t.Errorf("期望 success=%v, 实际=%v", tt.expectSuccess, success)
+			resp := mustParseAPIResponse[json.RawMessage](t, w.Body.Bytes())
+			if resp.Success != tt.expectSuccess {
+				t.Errorf("期望 success=%v, 实际=%v, error=%q", tt.expectSuccess, resp.Success, resp.Error)
 			}
 		})
 	}
@@ -230,19 +208,7 @@ func TestHandleSetKeyCooldown(t *testing.T) {
 				}
 			}
 
-			// 创建请求
-			body, _ := json.Marshal(tt.requestBody)
-			req := httptest.NewRequest(http.MethodPost,
-				"/admin/channels/"+tt.channelID+"/keys/"+tt.keyIndex+"/cooldown",
-				bytes.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-
-			// 创建响应记录器
-			w := httptest.NewRecorder()
-
-			// 创建Gin上下文
-			c, _ := gin.CreateTestContext(w)
-			c.Request = req
+			c, w := newTestContext(t, newJSONRequest(http.MethodPost, "/admin/channels/"+tt.channelID+"/keys/"+tt.keyIndex+"/cooldown", tt.requestBody))
 			c.Params = gin.Params{
 				{Key: "id", Value: tt.channelID},
 				{Key: "keyIndex", Value: tt.keyIndex},
@@ -256,19 +222,9 @@ func TestHandleSetKeyCooldown(t *testing.T) {
 				t.Errorf("期望状态码 %d, 实际 %d", tt.expectedStatus, w.Code)
 			}
 
-			// 解析响应
-			var response map[string]any
-			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-				t.Fatalf("解析响应失败: %v", err)
-			}
-
-			// 验证success字段
-			success, ok := response["success"].(bool)
-			if !ok {
-				t.Fatal("响应缺少success字段")
-			}
-			if success != tt.expectSuccess {
-				t.Errorf("期望 success=%v, 实际=%v", tt.expectSuccess, success)
+			resp := mustParseAPIResponse[json.RawMessage](t, w.Body.Bytes())
+			if resp.Success != tt.expectSuccess {
+				t.Errorf("期望 success=%v, 实际=%v, error=%q", tt.expectSuccess, resp.Success, resp.Error)
 			}
 		})
 	}
@@ -299,13 +255,7 @@ func TestSetChannelCooldown_Integration(t *testing.T) {
 	requestBody := map[string]any{
 		"duration_ms": 120000, // 2分钟
 	}
-	body, _ := json.Marshal(requestBody)
-	req := httptest.NewRequest(http.MethodPost, "/admin/channels/1/cooldown", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = req
+	c, w := newTestContext(t, newJSONRequest(http.MethodPost, "/admin/channels/1/cooldown", requestBody))
 	c.Params = gin.Params{{Key: "id", Value: "1"}}
 
 	srv.HandleSetChannelCooldown(c)
@@ -315,12 +265,8 @@ func TestSetChannelCooldown_Integration(t *testing.T) {
 		t.Errorf("期望状态码 200, 实际 %d", w.Code)
 	}
 
-	var response map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-		t.Fatalf("解析响应失败: %v", err)
-	}
-
-	if !response["success"].(bool) {
+	resp := mustParseAPIResponse[json.RawMessage](t, w.Body.Bytes())
+	if !resp.Success {
 		t.Error("期望 success=true")
 	}
 
@@ -371,13 +317,7 @@ func TestSetKeyCooldown_Integration(t *testing.T) {
 	requestBody := map[string]any{
 		"duration_ms": 90000, // 90秒
 	}
-	body, _ := json.Marshal(requestBody)
-	req := httptest.NewRequest(http.MethodPost, "/admin/channels/1/keys/0/cooldown", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = req
+	c, w := newTestContext(t, newJSONRequest(http.MethodPost, "/admin/channels/1/keys/0/cooldown", requestBody))
 	c.Params = gin.Params{
 		{Key: "id", Value: "1"},
 		{Key: "keyIndex", Value: "0"},
@@ -390,12 +330,8 @@ func TestSetKeyCooldown_Integration(t *testing.T) {
 		t.Errorf("期望状态码 200, 实际 %d", w.Code)
 	}
 
-	var response map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-		t.Fatalf("解析响应失败: %v", err)
-	}
-
-	if !response["success"].(bool) {
+	resp := mustParseAPIResponse[json.RawMessage](t, w.Body.Bytes())
+	if !resp.Success {
 		t.Error("期望 success=true")
 	}
 

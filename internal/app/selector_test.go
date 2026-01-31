@@ -1045,3 +1045,59 @@ func TestSortChannelsByHealth_WeightedByEffectiveKeyCount(t *testing.T) {
 func setupTestStore(t *testing.T) (storage.Store, func()) {
 	return testutil.SetupTestStore(t)
 }
+
+func TestFilterCostLimitExceededChannels(t *testing.T) {
+	t.Parallel()
+
+	// costCache 为 nil 时应返回原始列表
+	t.Run("nil_cost_cache_returns_all", func(t *testing.T) {
+		server := &Server{costCache: nil}
+		channels := []*model.Config{
+			{ID: 1, Name: "ch1", DailyCostLimit: 10},
+		}
+		result := server.filterCostLimitExceededChannels(channels)
+		if len(result) != 1 {
+			t.Errorf("expected 1 channel, got %d", len(result))
+		}
+	})
+
+	// 无限额渠道（DailyCostLimit <= 0）应通过
+	t.Run("no_limit_channels_pass", func(t *testing.T) {
+		cache := NewCostCache()
+		cache.Add(1, 100) // 已使用 100 美元
+		server := &Server{costCache: cache}
+
+		channels := []*model.Config{
+			{ID: 1, Name: "no-limit", DailyCostLimit: 0},  // 无限额
+			{ID: 2, Name: "negative", DailyCostLimit: -1}, // 负值也表示无限额
+		}
+		result := server.filterCostLimitExceededChannels(channels)
+		if len(result) != 2 {
+			t.Errorf("expected 2 channels, got %d", len(result))
+		}
+	})
+
+	// 超限渠道应被过滤
+	t.Run("exceeded_channels_filtered", func(t *testing.T) {
+		cache := NewCostCache()
+		cache.Add(1, 50)  // ch1 已用 50
+		cache.Add(2, 100) // ch2 已用 100（超限）
+		cache.Add(3, 80)  // ch3 已用 80（未超）
+		server := &Server{costCache: cache}
+
+		channels := []*model.Config{
+			{ID: 1, Name: "ch1", DailyCostLimit: 100}, // 50 < 100，通过
+			{ID: 2, Name: "ch2", DailyCostLimit: 100}, // 100 >= 100，过滤
+			{ID: 3, Name: "ch3", DailyCostLimit: 100}, // 80 < 100，通过
+		}
+		result := server.filterCostLimitExceededChannels(channels)
+		if len(result) != 2 {
+			t.Errorf("expected 2 channels, got %d", len(result))
+		}
+		for _, ch := range result {
+			if ch.ID == 2 {
+				t.Error("ch2 should be filtered out")
+			}
+		}
+	})
+}

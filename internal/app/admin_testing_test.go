@@ -1,11 +1,9 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"ccLoad/internal/model"
@@ -81,17 +79,7 @@ func TestHandleChannelTest(t *testing.T) {
 				}
 			}
 
-			// 创建请求
-			body, _ := json.Marshal(tt.requestBody)
-			req := httptest.NewRequest(http.MethodPost, "/admin/channels/"+tt.channelID+"/test", bytes.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-
-			// 创建响应记录器
-			w := httptest.NewRecorder()
-
-			// 创建Gin上下文
-			c, _ := gin.CreateTestContext(w)
-			c.Request = req
+			c, w := newTestContext(t, newJSONRequest(http.MethodPost, "/admin/channels/"+tt.channelID+"/test", tt.requestBody))
 			c.Params = gin.Params{{Key: "id", Value: tt.channelID}}
 
 			// 调用处理函数
@@ -102,21 +90,9 @@ func TestHandleChannelTest(t *testing.T) {
 				t.Errorf("期望状态码 %d, 实际 %d, 响应: %s", tt.expectedStatus, w.Code, w.Body.String())
 			}
 
-			// 解析响应
-			var response map[string]any
-			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-				t.Fatalf("解析响应失败: %v, 响应: %s", err, w.Body.String())
-			}
-
-			// 验证success字段
-			if tt.expectedStatus == http.StatusOK {
-				success, ok := response["success"].(bool)
-				if !ok {
-					t.Fatal("响应缺少success字段")
-				}
-				if success != tt.expectSuccess {
-					t.Errorf("期望 success=%v, 实际=%v", tt.expectSuccess, success)
-				}
+			resp := mustParseAPIResponse[json.RawMessage](t, w.Body.Bytes())
+			if resp.Success != tt.expectSuccess {
+				t.Errorf("期望 success=%v, 实际=%v, error=%q", tt.expectSuccess, resp.Success, resp.Error)
 			}
 		})
 	}

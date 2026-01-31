@@ -259,6 +259,9 @@ func (s *Server) handleGetChannelKeys(c *gin.Context, id int64) {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
+	if apiKeys == nil {
+		apiKeys = make([]*model.APIKey, 0)
+	}
 	RespondJSON(c, http.StatusOK, apiKeys)
 }
 

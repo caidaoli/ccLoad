@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -28,7 +27,7 @@ func runHandleSuccessResponse(t *testing.T, body string, headers http.Header, is
 		isStreaming: isStreaming,
 	}
 
-	rec := httptest.NewRecorder()
+	rec := newRecorder()
 	s := &Server{}
 
 	cfg := &model.Config{ID: 1}
@@ -250,7 +249,7 @@ func TestStreamCopySSE_ContextCanceledDuringRead(t *testing.T) {
 
 			// 创建模拟 Reader 返回指定错误
 			reader := &errorReader{err: tt.readErr}
-			recorder := httptest.NewRecorder()
+			recorder := newRecorder()
 
 			// 调用 streamCopySSE
 			err := streamCopySSE(ctx, reader, recorder, nil)
@@ -274,7 +273,7 @@ func TestStreamCopy_ContextCanceledDuringRead(t *testing.T) {
 	cancel() // 模拟客户端取消
 
 	reader := &errorReader{err: errors.New("http2: response body closed")}
-	recorder := httptest.NewRecorder()
+	recorder := newRecorder()
 
 	err := streamCopy(ctx, reader, recorder, nil)
 

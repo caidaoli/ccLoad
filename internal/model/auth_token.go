@@ -18,7 +18,7 @@ type AuthToken struct {
 	Token       string    `json:"token"`                  // SHA256哈希值(存储时)或明文(创建时返回)
 	Description string    `json:"description"`            // 令牌用途描述
 	CreatedAt   time.Time `json:"created_at"`             // 创建时间
-	ExpiresAt   *int64    `json:"expires_at,omitempty"`   // 过期时间(Unix毫秒时间戳)，nil表示永不过期
+	ExpiresAt   *int64    `json:"expires_at,omitempty"`   // 过期时间(Unix毫秒时间戳)，nil/0 表示永不过期
 	LastUsedAt  *int64    `json:"last_used_at,omitempty"` // 最后使用时间(Unix毫秒时间戳)
 	IsActive    bool      `json:"is_active"`              // 是否启用
 
@@ -80,7 +80,7 @@ func HashToken(token string) string {
 
 // IsExpired 检查令牌是否已过期
 func (t *AuthToken) IsExpired() bool {
-	if t.ExpiresAt == nil {
+	if t.ExpiresAt == nil || *t.ExpiresAt == 0 {
 		return false
 	}
 	return time.Now().UnixMilli() > *t.ExpiresAt

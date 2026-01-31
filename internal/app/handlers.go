@@ -32,7 +32,11 @@ func (p *PaginationParams) SetDefaults() {
 //
 //	this_week(本周), last_week(上周), this_month(本月), last_month(上月)
 func (p *PaginationParams) GetTimeRange() (startTime, endTime time.Time) {
-	now := time.Now()
+	return p.GetTimeRangeAt(time.Now())
+}
+
+// GetTimeRangeAt 用于测试/可注入时钟场景，避免依赖 time.Now() 引入不稳定因素。
+func (p *PaginationParams) GetTimeRangeAt(now time.Time) (startTime, endTime time.Time) {
 
 	switch p.Range {
 	case "today":

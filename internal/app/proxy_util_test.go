@@ -3,8 +3,8 @@ package app
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
+	"time"
 
 	"ccLoad/internal/model"
 )
@@ -12,7 +12,7 @@ import (
 func TestWriteResponseWithHeaders_PreservesContentType(t *testing.T) {
 	t.Parallel()
 
-	w := httptest.NewRecorder()
+	w := newRecorder()
 	hdr := http.Header{}
 	hdr.Set("Content-Type", "text/plain; charset=utf-8")
 	hdr.Set("Connection", "keep-alive") // hop-by-hop should be stripped
@@ -36,7 +36,7 @@ func TestWriteResponseWithHeaders_PreservesContentType(t *testing.T) {
 func TestWriteResponseWithHeaders_DefaultsToJSONContentTypeWhenBodyLooksJSON(t *testing.T) {
 	t.Parallel()
 
-	w := httptest.NewRecorder()
+	w := newRecorder()
 	writeResponseWithHeaders(w, http.StatusBadGateway, nil, []byte(`{"error":"x"}`))
 
 	if got := w.Code; got != http.StatusBadGateway {
@@ -179,7 +179,7 @@ func TestCopyRequestHeaders_StripsHopByHopAndAuth(t *testing.T) {
 }
 
 func TestFilterAndWriteResponseHeaders_StripsHopByHop(t *testing.T) {
-	w := httptest.NewRecorder()
+	w := newRecorder()
 
 	hdr := http.Header{}
 	hdr.Set("Connection", "Upgrade, X-Hop")
@@ -211,6 +211,130 @@ func TestFilterAndWriteResponseHeaders_StripsHopByHop(t *testing.T) {
 		if v := w.Header().Get(k); v != "" {
 			t.Fatalf("expected header %q stripped, got %q", k, v)
 		}
+	}
+}
+
+func TestSafeBodyToString(t *testing.T) {
+	t.Parallel()
+
+	if got := safeBodyToString(nil); got != "" {
+		t.Fatalf("expected empty string for nil, got %q", got)
+	}
+	if got := safeBodyToString([]byte("hello\nworld")); got != "hello\nworld" {
+		t.Fatalf("expected plain string passthrough, got %q", got)
+	}
+
+	bin := make([]byte, 200) // 全0：显然不是文本
+	if got := safeBodyToString(bin); got != "[binary/compressed response]" {
+		t.Fatalf("expected binary placeholder, got %q", got)
+	}
+}
+
+func TestIsLikelyText(t *testing.T) {
+	t.Parallel()
+
+	if !isLikelyText([]byte("abc\tdef\n")) {
+		t.Fatal("expected ascii text to be likely text")
+	}
+
+	// 高字节（UTF-8/非ASCII）不应被当作“不可打印字符”
+	if !isLikelyText([]byte{0xe4, 0xbd, 0xa0, 0xe5, 0xa5, 0xbd}) { // "你好" 的 UTF-8
+		t.Fatal("expected utf-8 bytes to be likely text")
+	}
+
+	notText := make([]byte, 100)
+	for i := range notText {
+		notText[i] = 0x00
+	}
+	if isLikelyText(notText) {
+		t.Fatal("expected binary data to be not likely text")
+	}
+}
+
+func TestFormatModelDisplayName(t *testing.T) {
+	t.Parallel()
+
+	if got := formatModelDisplayName("gemini-2.5-flash-20250101"); got != "Gemini 2.5 Flash" {
+		t.Fatalf("unexpected display name: %q", got)
+	}
+}
+
+func TestParseTimeout(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		query  map[string][]string
+		header http.Header
+		want   time.Duration
+	}{
+		{
+			name:   "query_timeout_ms",
+			query:  map[string][]string{"timeout_ms": {"500"}},
+			header: nil,
+			want:   500 * time.Millisecond,
+		},
+		{
+			name:   "query_timeout_s",
+			query:  map[string][]string{"timeout_s": {"10"}},
+			header: nil,
+			want:   10 * time.Second,
+		},
+		{
+			name:   "query_timeout_ms_priority",
+			query:  map[string][]string{"timeout_ms": {"1000"}, "timeout_s": {"5"}},
+			header: nil,
+			want:   1 * time.Second, // timeout_ms 优先
+		},
+		{
+			name:  "header_timeout_ms",
+			query: nil,
+			header: http.Header{
+				"X-Timeout-Ms": []string{"2000"},
+			},
+			want: 2 * time.Second,
+		},
+		{
+			name:  "header_timeout_s",
+			query: nil,
+			header: http.Header{
+				"X-Timeout-S": []string{"30"},
+			},
+			want: 30 * time.Second,
+		},
+		{
+			name:   "query_priority_over_header",
+			query:  map[string][]string{"timeout_ms": {"100"}},
+			header: http.Header{"X-Timeout-Ms": []string{"9999"}},
+			want:   100 * time.Millisecond, // query 优先
+		},
+		{
+			name:   "invalid_value_returns_zero",
+			query:  map[string][]string{"timeout_ms": {"invalid"}},
+			header: nil,
+			want:   0,
+		},
+		{
+			name:   "negative_value_returns_zero",
+			query:  map[string][]string{"timeout_ms": {"-100"}},
+			header: nil,
+			want:   0,
+		},
+		{
+			name:   "empty_returns_zero",
+			query:  nil,
+			header: nil,
+			want:   0,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseTimeout(tc.query, tc.header)
+			if got != tc.want {
+				t.Errorf("parseTimeout()=%v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

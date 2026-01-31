@@ -1,11 +1,9 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"testing"
 
@@ -65,10 +63,7 @@ func TestHandleListChannels(t *testing.T) {
 	}
 
 	// 模拟请求
-	req := httptest.NewRequest(http.MethodGet, "/admin/channels", nil)
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = req
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
 
 	// 调用处理函数
 	server.handleListChannels(c)
@@ -82,9 +77,7 @@ func TestHandleListChannels(t *testing.T) {
 		Success bool            `json:"success"`
 		Data    []*model.Config `json:"data"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("解析响应失败: %v", err)
-	}
+	mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
 
 	if !resp.Success {
 		t.Error("期望success=true")
@@ -182,14 +175,7 @@ func TestHandleCreateChannel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// 序列化请求
-			body, _ := json.Marshal(tt.payload)
-			req := httptest.NewRequest(http.MethodPost, "/admin/channels", bytes.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-
-			w := httptest.NewRecorder()
-			c, _ := gin.CreateTestContext(w)
-			c.Request = req
+			c, w := newTestContext(t, newJSONRequest(http.MethodPost, "/admin/channels", tt.payload))
 
 			// 调用处理函数
 			server.handleCreateChannel(c)
@@ -205,9 +191,7 @@ func TestHandleCreateChannel(t *testing.T) {
 					Success bool          `json:"success"`
 					Data    *model.Config `json:"data"`
 				}
-				if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-					t.Fatalf("解析响应失败: %v", err)
-				}
+				mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
 
 				if !resp.Success {
 					t.Error("期望success=true")
@@ -275,10 +259,7 @@ func TestHandleGetChannel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/admin/channels/"+tt.channelID, nil)
-			w := httptest.NewRecorder()
-			c, _ := gin.CreateTestContext(w)
-			c.Request = req
+			c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/"+tt.channelID, nil))
 			c.Params = gin.Params{{Key: "id", Value: tt.channelID}}
 
 			// 从Params中解析ID并调用
@@ -294,9 +275,7 @@ func TestHandleGetChannel(t *testing.T) {
 					Success bool          `json:"success"`
 					Data    *model.Config `json:"data"`
 				}
-				if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-					t.Fatalf("解析响应失败: %v", err)
-				}
+				mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
 
 				if !resp.Success {
 					t.Error("期望success=true")
@@ -307,17 +286,19 @@ func TestHandleGetChannel(t *testing.T) {
 				}
 
 				// 治本：渠道详情不应包含明文Key或策略派生字段（Keys 只能通过 /keys 端点获取）
-				var raw map[string]any
-				if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
-					t.Fatalf("解析原始响应失败: %v", err)
+				rawResp := mustParseAPIResponse[json.RawMessage](t, w.Body.Bytes())
+				var leakCheck struct {
+					APIKey      *string `json:"api_key"`
+					KeyStrategy *string `json:"key_strategy"`
 				}
-				if data, ok := raw["data"].(map[string]any); ok {
-					if _, ok := data["api_key"]; ok {
-						t.Fatalf("渠道详情不应返回 api_key 字段")
-					}
-					if _, ok := data["key_strategy"]; ok {
-						t.Fatalf("渠道详情不应返回 key_strategy 字段")
-					}
+				if err := json.Unmarshal(rawResp.Data, &leakCheck); err != nil {
+					t.Fatalf("unmarshal data failed: %v", err)
+				}
+				if leakCheck.APIKey != nil {
+					t.Fatalf("渠道详情不应返回 api_key 字段")
+				}
+				if leakCheck.KeyStrategy != nil {
+					t.Fatalf("渠道详情不应返回 key_strategy 字段")
 				}
 
 				t.Logf("[INFO] 获取成功: ID=%d, Name=%s", resp.Data.ID, resp.Data.Name)
@@ -411,13 +392,7 @@ func TestHandleUpdateChannel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			body, _ := json.Marshal(tt.payload)
-			req := httptest.NewRequest(http.MethodPut, "/admin/channels/"+tt.channelID, bytes.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-
-			w := httptest.NewRecorder()
-			c, _ := gin.CreateTestContext(w)
-			c.Request = req
+			c, w := newTestContext(t, newJSONRequest(http.MethodPut, "/admin/channels/"+tt.channelID, tt.payload))
 			c.Params = gin.Params{{Key: "id", Value: tt.channelID}}
 
 			// 从Params中解析ID并调用
@@ -433,9 +408,7 @@ func TestHandleUpdateChannel(t *testing.T) {
 					Success bool          `json:"success"`
 					Data    *model.Config `json:"data"`
 				}
-				if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-					t.Fatalf("解析响应失败: %v", err)
-				}
+				mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
 
 				if !resp.Success {
 					t.Error("期望success=true")
@@ -503,10 +476,7 @@ func TestHandleDeleteChannel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodDelete, "/admin/channels/"+tt.channelID, nil)
-			w := httptest.NewRecorder()
-			c, _ := gin.CreateTestContext(w)
-			c.Request = req
+			c, w := newTestContext(t, newRequest(http.MethodDelete, "/admin/channels/"+tt.channelID, nil))
 			c.Params = gin.Params{{Key: "id", Value: tt.channelID}}
 
 			// 从Params中解析ID并调用
@@ -569,10 +539,7 @@ func TestHandleGetChannelKeys(t *testing.T) {
 	}
 
 	// 测试获取Keys
-	req := httptest.NewRequest(http.MethodGet, "/admin/channels/1/keys", nil)
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = req
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/1/keys", nil))
 	c.Params = gin.Params{{Key: "id", Value: "1"}}
 
 	// 从Params中解析ID并调用
@@ -587,9 +554,7 @@ func TestHandleGetChannelKeys(t *testing.T) {
 		Success bool            `json:"success"`
 		Data    []*model.APIKey `json:"data"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("解析响应失败: %v", err)
-	}
+	mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
 
 	if !resp.Success {
 		t.Error("期望success=true")

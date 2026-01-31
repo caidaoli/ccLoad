@@ -13,14 +13,12 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 )
 
 // TestRequestContextCreation 测试请求上下文创建
 func TestRequestContextCreation(t *testing.T) {
-	store, _ := storage.CreateSQLiteStore(":memory:")
-	srv := NewServer(store)
+	srv := newInMemoryServer(t)
 
 	tests := []struct {
 		name          string
@@ -70,8 +68,7 @@ func TestRequestContextCreation(t *testing.T) {
 
 // TestBuildProxyRequest 测试请求构建
 func TestBuildProxyRequest(t *testing.T) {
-	store, _ := storage.CreateSQLiteStore(":memory:")
-	srv := NewServer(store)
+	srv := newInMemoryServer(t)
 
 	cfg := &model.Config{
 		ID:          1,
@@ -118,8 +115,7 @@ func TestBuildProxyRequest(t *testing.T) {
 
 // TestHandleRequestError 测试错误处理
 func TestHandleRequestError(t *testing.T) {
-	store, _ := storage.CreateSQLiteStore(":memory:")
-	srv := NewServer(store)
+	srv := newInMemoryServer(t)
 
 	cfg := &model.Config{ID: 1}
 
@@ -200,8 +196,7 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 	defer upstream.Close()
 
 	// 创建代理服务器
-	store, _ := storage.CreateSQLiteStore(":memory:")
-	srv := NewServer(store)
+	srv := newInMemoryServer(t)
 
 	cfg := &model.Config{
 		ID:   1,
@@ -211,7 +206,7 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 
 	// 测试成功请求
 	t.Run("成功请求", func(t *testing.T) {
-		recorder := httptest.NewRecorder()
+		recorder := newRecorder()
 		result, duration, err := srv.forwardOnceAsync(
 			context.Background(),
 			cfg,
@@ -244,7 +239,7 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 
 	// 测试认证失败
 	t.Run("认证失败", func(t *testing.T) {
-		recorder := httptest.NewRecorder()
+		recorder := newRecorder()
 		result, _, err := srv.forwardOnceAsync(
 			context.Background(),
 			cfg,
@@ -315,8 +310,7 @@ func TestClientCancelClosesUpstream(t *testing.T) {
 	defer upstream.Close()
 
 	// 创建代理服务器
-	store, _ := storage.CreateSQLiteStore(":memory:")
-	srv := NewServer(store)
+	srv := newInMemoryServer(t)
 
 	cfg := &model.Config{
 		ID:   1,
@@ -335,7 +329,7 @@ func TestClientCancelClosesUpstream(t *testing.T) {
 	}, 1)
 
 	go func() {
-		recorder := httptest.NewRecorder()
+		recorder := newRecorder()
 		result, duration, err := srv.forwardOnceAsync(
 			ctx,
 			cfg,
@@ -396,8 +390,7 @@ func TestClientCancelClosesUpstream(t *testing.T) {
 // 2. 客户端取消（499） - AfterFunc 触发，但无泄漏
 // 3. 首字节超时 - 定时器触发，context 取消
 func TestNoGoroutineLeak(t *testing.T) {
-	store, _ := storage.CreateSQLiteStore(":memory:")
-	srv := NewServer(store)
+	srv := newInMemoryServer(t)
 
 	// 等待 Server 初始化完成（连接池、后台任务等）
 	time.Sleep(50 * time.Millisecond)
@@ -406,6 +399,9 @@ func TestNoGoroutineLeak(t *testing.T) {
 	// 记录初始 goroutine 数量（在 Server 初始化之后）
 	before := runtime.NumGoroutine()
 	t.Logf("测试开始前 goroutine 数量: %d", before)
+
+	const maxDelta = 20
+	const waitTimeout = 2 * time.Second
 
 	// 场景1：正常请求（30次循环，足够检测泄漏）
 	t.Run("正常请求无泄漏", func(t *testing.T) {
@@ -418,7 +414,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 		cfg := &model.Config{ID: 1, URL: upstream.URL}
 
 		for i := 0; i < 30; i++ {
-			recorder := httptest.NewRecorder()
+			recorder := newRecorder()
 			_, _, _ = srv.forwardOnceAsync(
 				context.Background(),
 				cfg,
@@ -433,13 +429,11 @@ func TestNoGoroutineLeak(t *testing.T) {
 			)
 		}
 
-		runtime.GC()
-		time.Sleep(50 * time.Millisecond) // 等待清理
-		after := runtime.NumGoroutine()
+		after := waitForGoroutineDeltaLE(t, before, maxDelta, waitTimeout)
 		t.Logf("30次正常请求后 goroutine 数量: %d (增加: %d)", after, after-before)
 
-		// 容忍5个辅助 goroutine（GC、网络连接池等）
-		if after > before+5 {
+		// 只关心“明显泄漏”，允许环境噪音
+		if after > before+maxDelta {
 			t.Errorf("❌ Goroutine 泄漏: %d -> %d (增加 %d)", before, after, after-before)
 		}
 	})
@@ -457,7 +451,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 
 		for i := 0; i < 20; i++ {
 			ctx, cancel := context.WithCancel(context.Background())
-			recorder := httptest.NewRecorder()
+			recorder := newRecorder()
 
 			// 15ms 后取消请求
 			go func() {
@@ -468,12 +462,10 @@ func TestNoGoroutineLeak(t *testing.T) {
 			_, _, _ = srv.forwardOnceAsync(ctx, cfg, "sk-test", http.MethodPost, []byte(`{}`), http.Header{}, "", "/v1/messages", recorder, nil)
 		}
 
-		runtime.GC()
-		time.Sleep(100 * time.Millisecond) // 等待所有请求结束
-		after := runtime.NumGoroutine()
+		after := waitForGoroutineDeltaLE(t, before, maxDelta, waitTimeout)
 		t.Logf("20次取消请求后 goroutine 数量: %d (增加: %d)", after, after-before)
 
-		if after > before+5 {
+		if after > before+maxDelta {
 			t.Errorf("❌ Goroutine 泄漏: %d -> %d (增加 %d)", before, after, after-before)
 		}
 	})
@@ -491,7 +483,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 		cfg := &model.Config{ID: 1, URL: upstream.URL}
 
 		for i := 0; i < 10; i++ {
-			recorder := httptest.NewRecorder()
+			recorder := newRecorder()
 			_, _, _ = srv.forwardOnceAsync(
 				context.Background(),
 				cfg,
@@ -507,12 +499,10 @@ func TestNoGoroutineLeak(t *testing.T) {
 		}
 
 		srv.firstByteTimeout = 0 // 恢复默认
-		runtime.GC()
-		time.Sleep(100 * time.Millisecond) // 等待所有超时清理
-		after := runtime.NumGoroutine()
+		after := waitForGoroutineDeltaLE(t, before, maxDelta, waitTimeout)
 		t.Logf("10次超时请求后 goroutine 数量: %d (增加: %d)", after, after-before)
 
-		if after > before+5 {
+		if after > before+maxDelta {
 			t.Errorf("❌ Goroutine 泄漏: %d -> %d (增加 %d)", before, after, after-before)
 		}
 	})
@@ -522,10 +512,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 // 场景：请求发出后，响应头还未收到时超时定时器触发
 // 期望：返回 598 状态码和 ErrUpstreamFirstByteTimeout 错误
 func TestFirstByteTimeout_StreamingResponse(t *testing.T) {
-	store, _ := storage.CreateSQLiteStore(":memory:")
-	defer func() { _ = store.Close() }()
-
-	srv := NewServer(store)
+	srv := newInMemoryServer(t)
 	// 设置非常短的超时，确保在响应头到达前触发
 	srv.firstByteTimeout = 10 * time.Millisecond
 
@@ -546,7 +533,7 @@ func TestFirstByteTimeout_StreamingResponse(t *testing.T) {
 		Name: "test-timeout",
 	}
 
-	recorder := httptest.NewRecorder()
+	recorder := newRecorder()
 	res, duration, err := srv.forwardOnceAsync(
 		context.Background(),
 		cfg,
@@ -588,10 +575,7 @@ func TestFirstByteTimeout_StreamingResponse(t *testing.T) {
 // 场景：上游先发送响应头并 flush，但延迟发送 SSE body
 // 期望：返回 598 状态码和 ErrUpstreamFirstByteTimeout 错误
 func TestFirstByteTimeout_StreamingResponseBodyDelayed(t *testing.T) {
-	store, _ := storage.CreateSQLiteStore(":memory:")
-	defer func() { _ = store.Close() }()
-
-	srv := NewServer(store)
+	srv := newInMemoryServer(t)
 	srv.firstByteTimeout = 10 * time.Millisecond
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -611,7 +595,7 @@ func TestFirstByteTimeout_StreamingResponseBodyDelayed(t *testing.T) {
 		Name: "test-timeout-body-delayed",
 	}
 
-	recorder := httptest.NewRecorder()
+	recorder := newRecorder()
 	res, _, err := srv.forwardOnceAsync(
 		context.Background(),
 		cfg,

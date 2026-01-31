@@ -292,3 +292,44 @@ func TestSmoothWeightedRR_TieBreakIndependentOfInputOrder(t *testing.T) {
 		t.Fatalf("expected smaller ID to win tie-break, got %d", r1[0].ID)
 	}
 }
+
+func TestSmoothWeightedRR_Cleanup_RemovesOldStates(t *testing.T) {
+	rr := NewSmoothWeightedRR()
+
+	channels := []*modelpkg.Config{
+		{ID: 1, Name: "A", Priority: 10, KeyCount: 1},
+		{ID: 2, Name: "B", Priority: 10, KeyCount: 1},
+	}
+	rr.Select(channels, []int{1, 1})
+
+	key := rr.generateGroupKey(channels)
+	if rr.states[key] == nil {
+		t.Fatalf("expected state created for key %q", key)
+	}
+
+	rr.states[key].lastAccess = time.Now().Add(-time.Hour)
+	rr.Cleanup(30 * time.Minute)
+
+	if _, ok := rr.states[key]; ok {
+		t.Fatalf("expected state %q cleaned up", key)
+	}
+}
+
+func TestSmoothWeightedRR_ResetAll_ClearsStates(t *testing.T) {
+	rr := NewSmoothWeightedRR()
+
+	channels := []*modelpkg.Config{
+		{ID: 1, Name: "A", Priority: 10, KeyCount: 1},
+		{ID: 2, Name: "B", Priority: 10, KeyCount: 1},
+	}
+	rr.Select(channels, []int{1, 1})
+
+	if len(rr.states) == 0 {
+		t.Fatal("expected states non-empty after Select")
+	}
+
+	rr.ResetAll()
+	if len(rr.states) != 0 {
+		t.Fatalf("expected states cleared, got len=%d", len(rr.states))
+	}
+}

@@ -4,14 +4,11 @@ import (
 	"bytes"
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/util"
-
-	"github.com/gin-gonic/gin"
 )
 
 func TestHandleProxyRequest_UnknownPathReturns404(t *testing.T) {
@@ -21,12 +18,10 @@ func TestHandleProxyRequest_UnknownPathReturns404(t *testing.T) {
 	}
 
 	body := bytes.NewBufferString(`{"model":"gpt-4"}`)
-	req := httptest.NewRequest(http.MethodPost, "/v1/unknown", body)
+	req := newRequest(http.MethodPost, "/v1/unknown", body)
 	req.Header.Set("Content-Type", "application/json")
 
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = req
+	c, w := newTestContext(t, req)
 
 	srv.HandleProxyRequest(c)
 
@@ -90,15 +85,13 @@ func TestParseIncomingRequest_ValidJSON(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			body := bytes.NewBufferString(tt.body)
-			req := httptest.NewRequest(http.MethodPost, tt.path, body)
+			req := newRequest(http.MethodPost, tt.path, body)
 			if tt.body == "" {
 				req.Method = http.MethodGet
 			}
 			req.Header.Set("Content-Type", "application/json")
 
-			w := httptest.NewRecorder()
-			c, _ := gin.CreateTestContext(w)
-			c.Request = req
+			c, _ := newTestContext(t, req)
 
 			model, _, isStreaming, err := parseIncomingRequest(c)
 
@@ -129,12 +122,10 @@ func TestParseIncomingRequest_BodyTooLarge(t *testing.T) {
 		largeBody[i] = 'a'
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(largeBody))
+	req := newRequest(http.MethodPost, "/v1/messages", bytes.NewReader(largeBody))
 	req.Header.Set("Content-Type", "application/json")
 
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = req
+	c, _ := newTestContext(t, req)
 
 	_, _, _, err := parseIncomingRequest(c)
 
@@ -151,10 +142,7 @@ func TestAcquireConcurrencySlot(t *testing.T) {
 	}
 
 	// 创建有效的gin.Context
-	req := httptest.NewRequest(http.MethodPost, "/test", nil)
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = req
+	c, _ := newTestContext(t, newRequest(http.MethodPost, "/test", nil))
 
 	// 第一次获取应该成功
 	release1, acquired1 := srv.acquireConcurrencySlot(c)
@@ -193,10 +181,7 @@ func TestAcquireConcurrencySlot_ContextCanceled_Returns499(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	req := httptest.NewRequest(http.MethodPost, "/test", nil).WithContext(ctx)
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = req
+	c, w := newTestContext(t, newRequest(http.MethodPost, "/test", nil).WithContext(ctx))
 
 	release, acquired := srv.acquireConcurrencySlot(c)
 	if acquired || release != nil {
@@ -216,10 +201,7 @@ func TestAcquireConcurrencySlot_DeadlineExceeded_Returns504(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 
-	req := httptest.NewRequest(http.MethodPost, "/test", nil).WithContext(ctx)
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = req
+	c, w := newTestContext(t, newRequest(http.MethodPost, "/test", nil).WithContext(ctx))
 
 	release, acquired := srv.acquireConcurrencySlot(c)
 	if acquired || release != nil {

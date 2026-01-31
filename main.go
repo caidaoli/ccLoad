@@ -111,7 +111,19 @@ func main() {
 	srv := app.NewServer(store)
 
 	// 注入重启函数（避免循环依赖）
-	app.RestartFunc = RequestRestart
+	// 语义：标记“需要重启”，并发送 SIGTERM 触发优雅关闭；main 在退出前检测标记并 execSelf。
+	app.RestartFunc = func() {
+		RequestRestart()
+
+		p, err := os.FindProcess(os.Getpid())
+		if err != nil {
+			log.Printf("[ERROR] Failed to find process: %v", err)
+			return
+		}
+		if err := p.Signal(syscall.SIGTERM); err != nil {
+			log.Printf("[ERROR] Failed to send SIGTERM: %v", err)
+		}
+	}
 
 	// 创建Gin引擎
 	r := gin.New()

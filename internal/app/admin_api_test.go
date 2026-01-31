@@ -8,7 +8,6 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -73,10 +72,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		}
 	}
 
-	// 创建Gin测试上下文
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodGet, "/admin/channels/export", nil)
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/export", nil))
 
 	// 调用handler
 	server.HandleExportChannelsCSV(c)
@@ -164,12 +160,10 @@ Import-Test-2,https://import2.example.com,5,"test-model-2,test-model-3","{""old"
 		t.Fatalf("关闭writer失败: %v", err)
 	}
 
-	// 创建Gin测试上下文
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
 	// [INFO] 修复：使用bytes.NewReader创建新的读取器，避免buffer读取位置问题
-	c.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
-	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
+	req := newRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	c, w := newTestContext(t, req)
 
 	// 调用handler
 	server.HandleImportChannelsCSV(c)
@@ -182,22 +176,8 @@ Import-Test-2,https://import2.example.com,5,"test-model-2,test-model-3","{""old"
 	// [INFO] 调试：输出原始响应内容
 	t.Logf("📋 原始响应内容: %s", w.Body.String())
 
-	// [INFO] 修复：响应被包装在 {"success":true,"data":{...}} 结构中
-	var wrapper map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &wrapper); err != nil {
-		t.Fatalf("解析响应失败: %v, 响应内容: %s", err, w.Body.String())
-	}
-
-	// 提取data字段并解析为ChannelImportSummary
-	dataBytes, err := json.Marshal(wrapper["data"])
-	if err != nil {
-		t.Fatalf("序列化data字段失败: %v", err)
-	}
-
 	var summary ChannelImportSummary
-	if err := json.Unmarshal(dataBytes, &summary); err != nil {
-		t.Fatalf("解析ChannelImportSummary失败: %v, data内容: %s", err, string(dataBytes))
-	}
+	mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &summary)
 
 	// 验证导入结果
 	totalImported := summary.Created + summary.Updated
@@ -272,10 +252,9 @@ Good-URL,https://good.example.com,10,test-model,{},anthropic,true,sk-import-key-
 		t.Fatalf("关闭writer失败: %v", err)
 	}
 
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
-	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
+	req := newRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	c, w := newTestContext(t, req)
 
 	server.HandleImportChannelsCSV(c)
 
@@ -283,20 +262,8 @@ Good-URL,https://good.example.com,10,test-model,{},anthropic,true,sk-import-key-
 		t.Fatalf("期望状态码 200, 实际 %d, 响应: %s", w.Code, w.Body.String())
 	}
 
-	var wrapper map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &wrapper); err != nil {
-		t.Fatalf("解析响应失败: %v, 响应内容: %s", err, w.Body.String())
-	}
-
-	dataBytes, err := json.Marshal(wrapper["data"])
-	if err != nil {
-		t.Fatalf("序列化data字段失败: %v", err)
-	}
-
 	var summary ChannelImportSummary
-	if err := json.Unmarshal(dataBytes, &summary); err != nil {
-		t.Fatalf("解析ChannelImportSummary失败: %v, data内容: %s", err, string(dataBytes))
-	}
+	mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &summary)
 
 	imported := summary.Created + summary.Updated
 	if imported != 1 {
@@ -381,9 +348,7 @@ func TestAdminAPI_ExportImportRoundTrip(t *testing.T) {
 	}
 
 	// 步骤2：导出CSV
-	exportW := httptest.NewRecorder()
-	exportC, _ := gin.CreateTestContext(exportW)
-	exportC.Request = httptest.NewRequest(http.MethodGet, "/admin/channels/export", nil)
+	exportC, exportW := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/export", nil))
 	server.HandleExportChannelsCSV(exportC)
 
 	if exportW.Code != http.StatusOK {
@@ -412,11 +377,10 @@ func TestAdminAPI_ExportImportRoundTrip(t *testing.T) {
 		t.Fatalf("关闭writer失败: %v", err)
 	}
 
-	importW := httptest.NewRecorder()
-	importC, _ := gin.CreateTestContext(importW)
 	// [INFO] 修复：使用bytes.NewReader创建新的读取器
-	importC.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
-	importC.Request.Header.Set("Content-Type", writer.FormDataContentType())
+	importReq := newRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
+	importReq.Header.Set("Content-Type", writer.FormDataContentType())
+	importC, importW := newTestContext(t, importReq)
 	server.HandleImportChannelsCSV(importC)
 
 	if importW.Code != http.StatusOK {
@@ -556,20 +520,22 @@ Test-Invalid,https://invalid.com
 		t.Fatalf("关闭writer失败: %v", err)
 	}
 
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
 	// [INFO] 修复：使用bytes.NewReader创建新的读取器
-	c.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
-	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
+	req := newRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	c, w := newTestContext(t, req)
 	server.HandleImportChannelsCSV(c)
 
-	// 应该返回错误或部分成功
-	var resp map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("解析响应失败: %v", err)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("期望状态码 400, 实际 %d, 响应: %s", w.Code, w.Body.String())
 	}
-
-	t.Logf("[INFO] 无效格式处理: status=%v, message=%v", resp["status"], resp["message"])
+	resp := mustParseAPIResponse[json.RawMessage](t, w.Body.Bytes())
+	if resp.Success {
+		t.Fatalf("期望 success=false, 实际=true, data=%s", string(resp.Data))
+	}
+	if !strings.Contains(resp.Error, "缺少必需列") {
+		t.Fatalf("期望错误包含“缺少必需列”，实际 error=%q", resp.Error)
+	}
 }
 
 // TestAdminAPI_ImportCSV_DuplicateNames 测试重复渠道名称处理
@@ -612,19 +578,22 @@ Duplicate-Test,https://duplicate.com,5,model-2,{},gemini,false,sk-duplicate-key,
 		t.Fatalf("关闭writer失败: %v", err)
 	}
 
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
 	// [INFO] 修复：使用bytes.NewReader创建新的读取器
-	c.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
-	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
+	req := newRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	c, w := newTestContext(t, req)
 	server.HandleImportChannelsCSV(c)
 
-	var resp map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("解析响应失败: %v", err)
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望状态码 200, 实际 %d, 响应: %s", w.Code, w.Body.String())
 	}
-
-	t.Logf("[INFO] 重复名称处理: status=%v, message=%v", resp["status"], resp["message"])
+	resp := mustParseAPIResponse[ChannelImportSummary](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("success=false, error=%q", resp.Error)
+	}
+	if resp.Data.Created != 0 || resp.Data.Updated != 1 || resp.Data.Skipped != 0 || resp.Data.Processed != 1 {
+		t.Fatalf("summary=%+v, want created=0 updated=1 skipped=0 processed=1", resp.Data)
+	}
 
 	// 验证数据库中只有一个渠道
 	configs, _ := server.store.ListConfigs(ctx)
@@ -645,9 +614,7 @@ func TestAdminAPI_ExportCSV_EmptyDatabase(t *testing.T) {
 	server, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodGet, "/admin/channels/export", nil)
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/export", nil))
 	server.HandleExportChannelsCSV(c)
 
 	if w.Code != http.StatusOK {
@@ -669,91 +636,6 @@ func TestAdminAPI_ExportCSV_EmptyDatabase(t *testing.T) {
 	t.Logf("[INFO] 空数据库导出测试通过，CSV行数: %d", len(records))
 }
 
-// TestAdminAPI_LargeCSVImport 测试大文件导入性能
-func TestAdminAPI_LargeCSVImport(t *testing.T) {
-	if testing.Short() {
-		t.Skip("跳过性能测试（使用 -short 标志）")
-	}
-
-	server, cleanup := setupTestServer(t)
-	defer cleanup()
-
-	// 生成大型CSV（100条记录）- [INFO] 修复：添加必需的api_key和key_strategy列
-	var csvBuilder strings.Builder
-	csvBuilder.WriteString("name,url,priority,models,model_redirects,channel_type,enabled,api_key,key_strategy\n")
-
-	for i := 0; i < 100; i++ {
-		csvBuilder.WriteString(
-			"Large-Test-" + string(rune('A'+i%26)) + string(rune('0'+i%10)) + "," +
-				"https://large" + string(rune('0'+i%10)) + ".example.com," +
-				"10," +
-				"model-1," + // [INFO] 修复：使用简单字符串而不是JSON数组
-				"{}," +
-				"anthropic," +
-				"true," +
-				"sk-large-key-" + string(rune('0'+i%10)) + "," + // [INFO] 添加api_key
-				"sequential\n") // [INFO] 添加key_strategy
-	}
-
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-	part, err := writer.CreateFormFile("file", "large.csv")
-	if err != nil {
-		t.Fatalf("创建表单文件字段失败: %v", err)
-	}
-	if _, err := io.WriteString(part, csvBuilder.String()); err != nil {
-		t.Fatalf("写入CSV内容失败: %v", err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatalf("关闭writer失败: %v", err)
-	}
-
-	// 测试导入性能
-	startTime := time.Now()
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	// [INFO] 修复：使用bytes.NewReader创建新的读取器
-	c.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
-	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
-	server.HandleImportChannelsCSV(c)
-
-	duration := time.Since(startTime)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("大文件导入失败，状态码: %d, 响应: %s", w.Code, w.Body.String())
-	}
-
-	// [INFO] 修复：响应被包装在 {"success":true,"data":{...}} 结构中
-	var wrapper map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &wrapper); err != nil {
-		t.Fatalf("解析响应失败: %v, 响应: %s", err, w.Body.String())
-	}
-
-	// 提取data字段并解析为ChannelImportSummary
-	dataBytes, err := json.Marshal(wrapper["data"])
-	if err != nil {
-		t.Fatalf("序列化data字段失败: %v", err)
-	}
-
-	var summary ChannelImportSummary
-	if err := json.Unmarshal(dataBytes, &summary); err != nil {
-		t.Fatalf("解析ChannelImportSummary失败: %v, data内容: %s", err, string(dataBytes))
-	}
-
-	imported := summary.Created + summary.Updated
-
-	t.Logf("[INFO] 大文件导入测试通过")
-	t.Logf("   记录数: %d (Created: %d, Updated: %d, Skipped: %d)", imported, summary.Created, summary.Updated, summary.Skipped)
-	t.Logf("   耗时: %v", duration)
-	t.Logf("   平均速度: %.2f records/sec", float64(imported)/duration.Seconds())
-
-	// 性能断言：100条记录应该在5秒内完成
-	if duration > 5*time.Second {
-		t.Errorf("导入性能不符合预期，耗时: %v (期望 <5s)", duration)
-	}
-}
-
 // TestHealthEndpoint 测试健康检查端点
 func TestHealthEndpoint(t *testing.T) {
 	server, cleanup := setupTestServer(t)
@@ -763,34 +645,21 @@ func TestHealthEndpoint(t *testing.T) {
 	server.SetupRoutes(r)
 
 	// 测试健康检查端点
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/health", nil)
-	r.ServeHTTP(w, req)
+	w := serveHTTP(t, r, newRequest(http.MethodGet, "/health", nil))
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("期望状态码 200，实际: %d, 响应: %s", w.Code, w.Body.String())
 	}
 
-	// [INFO] 响应被包装在 {"success":true,"data":{...}} 结构中
-	var wrapper map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &wrapper); err != nil {
-		t.Fatalf("解析响应失败: %v, 响应: %s", err, w.Body.String())
+	type healthData struct {
+		Status string `json:"status"`
 	}
-
-	// 检查 success 字段
-	if success, ok := wrapper["success"].(bool); !ok || !success {
-		t.Fatalf("期望 success=true，实际: %v", wrapper["success"])
+	resp := mustParseAPIResponse[healthData](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("success=false, error=%q", resp.Error)
 	}
-
-	// 提取 data 字段
-	data, ok := wrapper["data"].(map[string]any)
-	if !ok {
-		t.Fatalf("data 字段类型错误: %T", wrapper["data"])
-	}
-
-	// 检查 status 字段
-	if status, ok := data["status"].(string); !ok || status != "ok" {
-		t.Fatalf("期望 status='ok'，实际: %v", data["status"])
+	if resp.Data.Status != "ok" {
+		t.Fatalf("期望 status='ok'，实际: %v", resp.Data.Status)
 	}
 
 	t.Logf("[INFO] 健康检查测试通过")

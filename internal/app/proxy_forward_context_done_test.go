@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -18,7 +17,7 @@ func TestTryChannelWithKeys_ContextCanceled_Returns499(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	res, err := s.tryChannelWithKeys(ctx, cfg, &proxyRequestContext{}, httptest.NewRecorder())
+	res, err := s.tryChannelWithKeys(ctx, cfg, &proxyRequestContext{}, newRecorder())
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -43,7 +42,7 @@ func TestTryChannelWithKeys_ContextDeadlineExceeded_Returns504(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 
-	res, err := s.tryChannelWithKeys(ctx, cfg, &proxyRequestContext{}, httptest.NewRecorder())
+	res, err := s.tryChannelWithKeys(ctx, cfg, &proxyRequestContext{}, newRecorder())
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}

@@ -20,30 +20,22 @@ func TestOpenAIChatCompletionsTokenParsing(t *testing.T) {
 		}
 	}`
 
-	var response map[string]any
+	var response struct {
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
+	}
 	if err := json.Unmarshal([]byte(responseJSON), &response); err != nil {
 		t.Fatalf("JSON解析失败: %v", err)
 	}
 
-	usage, ok := response["usage"].(map[string]any)
-	if !ok {
-		t.Fatal("无法提取usage字段")
-	}
-
-	// 验证字段存在
-	if _, ok := usage["prompt_tokens"]; !ok {
-		t.Error("缺少prompt_tokens字段")
-	}
-	if _, ok := usage["completion_tokens"]; !ok {
-		t.Error("缺少completion_tokens字段")
-	}
-
 	// 验证值
-	if int(usage["prompt_tokens"].(float64)) != 100 {
-		t.Errorf("prompt_tokens = %v, 期望 100", usage["prompt_tokens"])
+	if response.Usage.PromptTokens != 100 {
+		t.Errorf("prompt_tokens = %v, 期望 100", response.Usage.PromptTokens)
 	}
-	if int(usage["completion_tokens"].(float64)) != 50 {
-		t.Errorf("completion_tokens = %v, 期望 50", usage["completion_tokens"])
+	if response.Usage.CompletionTokens != 50 {
+		t.Errorf("completion_tokens = %v, 期望 50", response.Usage.CompletionTokens)
 	}
 }
 
@@ -70,29 +62,26 @@ func TestOpenAIChatCompletionsWithCacheTokenParsing(t *testing.T) {
 		}
 	}`
 
-	var response map[string]any
+	var response struct {
+		Usage struct {
+			PromptTokens        int `json:"prompt_tokens"`
+			PromptTokensDetails struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
+		} `json:"usage"`
+	}
 	if err := json.Unmarshal([]byte(responseJSON), &response); err != nil {
 		t.Fatalf("JSON解析失败: %v", err)
 	}
 
-	usage, ok := response["usage"].(map[string]any)
-	if !ok {
-		t.Fatal("无法提取usage字段")
-	}
-
 	// 验证基础字段
-	if int(usage["prompt_tokens"].(float64)) != 200 {
-		t.Errorf("prompt_tokens = %v, 期望 200", usage["prompt_tokens"])
+	if response.Usage.PromptTokens != 200 {
+		t.Errorf("prompt_tokens = %v, 期望 200", response.Usage.PromptTokens)
 	}
 
 	// 验证缓存字段
-	details, ok := usage["prompt_tokens_details"].(map[string]any)
-	if !ok {
-		t.Fatal("无法提取prompt_tokens_details字段")
-	}
-
-	if int(details["cached_tokens"].(float64)) != 150 {
-		t.Errorf("cached_tokens = %v, 期望 150", details["cached_tokens"])
+	if response.Usage.PromptTokensDetails.CachedTokens != 150 {
+		t.Errorf("cached_tokens = %v, 期望 150", response.Usage.PromptTokensDetails.CachedTokens)
 	}
 }
 
@@ -114,32 +103,30 @@ func TestOpenAIResponsesAPITokenParsing(t *testing.T) {
 		}
 	}`
 
-	var response map[string]any
+	var response struct {
+		Usage struct {
+			InputTokens        int `json:"input_tokens"`
+			OutputTokens       int `json:"output_tokens"`
+			InputTokensDetails struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"input_tokens_details"`
+		} `json:"usage"`
+	}
 	if err := json.Unmarshal([]byte(responseJSON), &response); err != nil {
 		t.Fatalf("JSON解析失败: %v", err)
 	}
 
-	usage, ok := response["usage"].(map[string]any)
-	if !ok {
-		t.Fatal("无法提取usage字段")
-	}
-
 	// 验证Responses API字段
-	if int(usage["input_tokens"].(float64)) != 120 {
-		t.Errorf("input_tokens = %v, 期望 120", usage["input_tokens"])
+	if response.Usage.InputTokens != 120 {
+		t.Errorf("input_tokens = %v, 期望 120", response.Usage.InputTokens)
 	}
-	if int(usage["output_tokens"].(float64)) != 60 {
-		t.Errorf("output_tokens = %v, 期望 60", usage["output_tokens"])
+	if response.Usage.OutputTokens != 60 {
+		t.Errorf("output_tokens = %v, 期望 60", response.Usage.OutputTokens)
 	}
 
 	// 验证缓存字段
-	details, ok := usage["input_tokens_details"].(map[string]any)
-	if !ok {
-		t.Fatal("无法提取input_tokens_details字段")
-	}
-
-	if int(details["cached_tokens"].(float64)) != 80 {
-		t.Errorf("cached_tokens = %v, 期望 80", details["cached_tokens"])
+	if response.Usage.InputTokensDetails.CachedTokens != 80 {
+		t.Errorf("cached_tokens = %v, 期望 80", response.Usage.InputTokensDetails.CachedTokens)
 	}
 }
 

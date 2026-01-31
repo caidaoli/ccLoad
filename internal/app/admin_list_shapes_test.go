@@ -2,42 +2,11 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"ccLoad/internal/model"
-
-	"github.com/gin-gonic/gin"
 )
-
-func parseAPIResponseMap(t *testing.T, body []byte) map[string]any {
-	t.Helper()
-
-	var resp map[string]any
-	if err := json.Unmarshal(body, &resp); err != nil {
-		t.Fatalf("Parse error: %v", err)
-	}
-
-	// 治本：APIResponse 四字段必须始终存在（success/data/error/count）。
-	for _, k := range []string{"success", "data", "error", "count"} {
-		if _, ok := resp[k]; !ok {
-			t.Fatalf("Expected key %q to exist", k)
-		}
-	}
-	if _, ok := resp["success"].(bool); !ok {
-		t.Fatalf("Expected success bool, got %T", resp["success"])
-	}
-	if _, ok := resp["error"].(string); !ok {
-		t.Fatalf("Expected error string, got %T", resp["error"])
-	}
-	if _, ok := resp["count"].(float64); !ok {
-		t.Fatalf("Expected count number, got %T", resp["count"])
-	}
-
-	return resp
-}
 
 func TestAdminAPI_ChannelKeys_ResponseShape_Empty(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
@@ -56,9 +25,7 @@ func TestAdminAPI_ChannelKeys_ResponseShape_Empty(t *testing.T) {
 		t.Fatalf("CreateConfig: %v", err)
 	}
 
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodGet, "/admin/channels/1/keys", nil)
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/1/keys", nil))
 
 	server.handleGetChannelKeys(c, created.ID)
 
@@ -66,13 +33,12 @@ func TestAdminAPI_ChannelKeys_ResponseShape_Empty(t *testing.T) {
 		t.Fatalf("Expected 200, got %d", w.Code)
 	}
 
-	resp := parseAPIResponseMap(t, w.Body.Bytes())
-	data := resp["data"]
-	if data == nil {
-		t.Fatalf("Expected data to be [], got null")
+	resp := mustParseAPIResponse[[]*model.APIKey](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("success=false, error=%q", resp.Error)
 	}
-	if _, ok := data.([]any); !ok {
-		t.Fatalf("Expected data to be array, got %T", data)
+	if resp.Data == nil {
+		t.Fatalf("data is null, want []")
 	}
 }
 
@@ -80,9 +46,7 @@ func TestAdminAPI_GetModels_ResponseShape_Empty(t *testing.T) {
 	server, _, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodGet, "/admin/models?range=today", nil)
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/models?range=today", nil))
 
 	server.HandleGetModels(c)
 
@@ -90,13 +54,12 @@ func TestAdminAPI_GetModels_ResponseShape_Empty(t *testing.T) {
 		t.Fatalf("Expected 200, got %d", w.Code)
 	}
 
-	resp := parseAPIResponseMap(t, w.Body.Bytes())
-	data := resp["data"]
-	if data == nil {
-		t.Fatalf("Expected data to be [], got null")
+	resp := mustParseAPIResponse[[]string](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("success=false, error=%q", resp.Error)
 	}
-	if _, ok := data.([]any); !ok {
-		t.Fatalf("Expected data to be array, got %T", data)
+	if resp.Data == nil {
+		t.Fatalf("data is null, want []")
 	}
 }
 
@@ -104,9 +67,7 @@ func TestAdminAPI_GetLogs_ResponseShape_Empty(t *testing.T) {
 	server, _, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodGet, "/admin/logs?range=today&limit=10&offset=0", nil)
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/logs?range=today&limit=10&offset=0", nil))
 
 	server.HandleErrors(c)
 
@@ -114,13 +75,12 @@ func TestAdminAPI_GetLogs_ResponseShape_Empty(t *testing.T) {
 		t.Fatalf("Expected 200, got %d", w.Code)
 	}
 
-	resp := parseAPIResponseMap(t, w.Body.Bytes())
-	data := resp["data"]
-	if data == nil {
-		t.Fatalf("Expected data to be [], got null")
+	resp := mustParseAPIResponse[[]*model.LogEntry](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("success=false, error=%q", resp.Error)
 	}
-	if _, ok := data.([]any); !ok {
-		t.Fatalf("Expected data to be array, got %T", data)
+	if resp.Data == nil {
+		t.Fatalf("data is null, want []")
 	}
 }
 
@@ -128,9 +88,7 @@ func TestAdminAPI_GetStats_ResponseShape_Empty(t *testing.T) {
 	server, _, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodGet, "/admin/stats?range=today", nil)
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/stats?range=today", nil))
 
 	server.HandleStats(c)
 
@@ -138,18 +96,15 @@ func TestAdminAPI_GetStats_ResponseShape_Empty(t *testing.T) {
 		t.Fatalf("Expected 200, got %d", w.Code)
 	}
 
-	resp := parseAPIResponseMap(t, w.Body.Bytes())
-	data, ok := resp["data"].(map[string]any)
-	if !ok {
-		t.Fatalf("Expected data object, got %T", resp["data"])
+	type statsResp struct {
+		Stats []model.StatsEntry `json:"stats"`
 	}
-
-	stats := data["stats"]
-	if stats == nil {
-		t.Fatalf("Expected data.stats to be [], got null")
+	resp := mustParseAPIResponse[statsResp](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("success=false, error=%q", resp.Error)
 	}
-	if _, ok := stats.([]any); !ok {
-		t.Fatalf("Expected data.stats to be array, got %T", stats)
+	if resp.Data.Stats == nil {
+		t.Fatalf("stats is null, want []")
 	}
 }
 
@@ -157,9 +112,7 @@ func TestAdminAPI_GetMetrics_ResponseShape(t *testing.T) {
 	server, _, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodGet, "/admin/metrics?range=today&bucket_min=5", nil)
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/metrics?range=today&bucket_min=5", nil))
 
 	server.HandleMetrics(c)
 
@@ -167,12 +120,11 @@ func TestAdminAPI_GetMetrics_ResponseShape(t *testing.T) {
 		t.Fatalf("Expected 200, got %d", w.Code)
 	}
 
-	resp := parseAPIResponseMap(t, w.Body.Bytes())
-	data := resp["data"]
-	if data == nil {
-		t.Fatalf("Expected data to be [], got null")
+	resp := mustParseAPIResponse[[]model.MetricPoint](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("success=false, error=%q", resp.Error)
 	}
-	if _, ok := data.([]any); !ok {
-		t.Fatalf("Expected data to be array, got %T", data)
+	if resp.Data == nil {
+		t.Fatalf("data is null, want []")
 	}
 }
