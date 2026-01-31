@@ -81,7 +81,7 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 			"cost_limit_usd":  1.5,
 			"unknown_ignored": "x",
 		}
-		c, w := newTestContext(t, newJSONRequest(http.MethodPut, "/admin/auth-tokens/1", body))
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/auth-tokens/1", body))
 		c.Params = gin.Params{{Key: "id", Value: "1"}}
 
 		server.HandleUpdateAuthToken(c)

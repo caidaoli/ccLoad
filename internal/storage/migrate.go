@@ -88,6 +88,10 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureAuthTokensAllowedModels(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate auth_tokens allowed_models: %w", err)
 			}
+			// 启动期校验：拒绝脏数据静默放权（allowed_models 解析失败就直接失败）
+			if err := validateAuthTokensAllowedModelsJSON(ctx, db); err != nil {
+				return fmt.Errorf("validate auth_tokens allowed_models: %w", err)
+			}
 			// 增量迁移：确保auth_tokens表有费用限额字段（2026-01新增）
 			if err := ensureAuthTokensCostLimit(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate auth_tokens cost_limit: %w", err)
@@ -1042,6 +1046,39 @@ func ensureAuthTokensAllowedModels(ctx context.Context, db *sql.DB, dialect Dial
 	return ensureSQLiteColumns(ctx, db, "auth_tokens", []sqliteColumnDef{
 		{name: "allowed_models", definition: "TEXT NOT NULL DEFAULT ''"},
 	})
+}
+
+func validateAuthTokensAllowedModelsJSON(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, "SELECT id, allowed_models FROM auth_tokens WHERE allowed_models <> ''")
+	if err != nil {
+		return fmt.Errorf("query auth_tokens.allowed_models: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var id int64
+		var raw string
+		if err := rows.Scan(&id, &raw); err != nil {
+			return fmt.Errorf("scan auth_tokens.allowed_models: %w", err)
+		}
+
+		// SQLite BLOB 类型亲和性可能导致 WHERE <> '' 过滤失效，显式跳过空字符串
+		if raw == "" {
+			continue
+		}
+		var models []string
+		if err := json.Unmarshal([]byte(raw), &models); err != nil {
+			return fmt.Errorf(
+				"auth_tokens.allowed_models invalid json: id=%d allowed_models=%q: %w (fix: UPDATE auth_tokens SET allowed_models='' WHERE id=%d)",
+				id, raw, err, id,
+			)
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate auth_tokens.allowed_models: %w", err)
+	}
+	return nil
 }
 
 // ensureAuthTokensCostLimit 确保auth_tokens表有费用限额字段（2026-01新增）

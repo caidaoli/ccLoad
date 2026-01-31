@@ -40,7 +40,7 @@ func TestAdminAPI_CreateAuthToken_Basic(t *testing.T) {
 	server, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	c, w := newTestContext(t, newJSONRequest(http.MethodPost, "/admin/auth-tokens", map[string]any{
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/auth-tokens", map[string]any{
 		"description": "Test Token",
 	}))
 

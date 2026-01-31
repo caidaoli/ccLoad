@@ -126,8 +126,14 @@ func TestCSVExport_CompleteWorkflow(t *testing.T) {
 				redirects[e.Model] = e.RedirectModel
 			}
 		}
-		modelsJSON, _ := json.Marshal(models)
-		redirectsJSON, _ := json.Marshal(redirects)
+		modelsJSON, err := json.Marshal(models)
+		if err != nil {
+			t.Fatalf("marshal models failed: %v", err)
+		}
+		redirectsJSON, err := json.Marshal(redirects)
+		if err != nil {
+			t.Fatalf("marshal model_redirects failed: %v", err)
+		}
 
 		record := []string{
 			string(rune(cfg.ID + '0')),       // id (简化为单字符)

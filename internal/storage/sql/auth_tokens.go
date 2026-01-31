@@ -20,6 +20,17 @@ const authTokenSelectColumns = `
 	cost_used_microusd, cost_limit_microusd, allowed_models
 `
 
+func marshalAllowedModels(models []string) (string, error) {
+	if len(models) == 0 {
+		return "", nil
+	}
+	data, err := json.Marshal(models)
+	if err != nil {
+		return "", fmt.Errorf("marshal allowed_models: %w", err)
+	}
+	return string(data), nil
+}
+
 //nolint:gosec // SQL查询模板包含"token"字段名，并非硬编码凭据
 const updateTokenStatsQuery = `
 	UPDATE auth_tokens
@@ -110,8 +121,7 @@ func scanAuthToken(scanner interface {
 	// 解析 allowed_models JSON
 	if allowedModelsJSON != "" {
 		if err := json.Unmarshal([]byte(allowedModelsJSON), &token.AllowedModels); err != nil {
-			// 解析失败则忽略，视为无限制
-			token.AllowedModels = nil
+			return nil, fmt.Errorf("invalid allowed_models json: %w", err)
 		}
 	}
 
@@ -140,11 +150,9 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 		lastUsedAt = *token.LastUsedAt
 	}
 
-	var allowedModelsJSON string
-	if len(token.AllowedModels) > 0 {
-		if data, err := json.Marshal(token.AllowedModels); err == nil {
-			allowedModelsJSON = string(data)
-		}
+	allowedModelsJSON, err := marshalAllowedModels(token.AllowedModels)
+	if err != nil {
+		return err
 	}
 
 	if s.IsSQLite() {
@@ -206,7 +214,7 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 		return nil
 	}
 
-	_, err := s.db.ExecContext(ctx, `
+	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO auth_tokens (
 			id, token, description, created_at, expires_at, last_used_at, is_active,
 			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
@@ -286,12 +294,9 @@ func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) 
 		lastUsedAt = *token.LastUsedAt
 	}
 
-	// 序列化 allowed_models 为 JSON
-	var allowedModelsJSON string
-	if len(token.AllowedModels) > 0 {
-		if data, err := json.Marshal(token.AllowedModels); err == nil {
-			allowedModelsJSON = string(data)
-		}
+	allowedModelsJSON, err := marshalAllowedModels(token.AllowedModels)
+	if err != nil {
+		return err
 	}
 
 	if token.ID != 0 {
@@ -453,12 +458,9 @@ func (s *SQLStore) UpdateAuthToken(ctx context.Context, token *model.AuthToken) 
 		lastUsedAt = *token.LastUsedAt
 	}
 
-	// 序列化 allowed_models 为 JSON
-	var allowedModelsJSON string
-	if len(token.AllowedModels) > 0 {
-		if data, err := json.Marshal(token.AllowedModels); err == nil {
-			allowedModelsJSON = string(data)
-		}
+	allowedModelsJSON, err := marshalAllowedModels(token.AllowedModels)
+	if err != nil {
+		return err
 	}
 
 	result, err := s.db.ExecContext(ctx, `

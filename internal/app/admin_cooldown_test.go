@@ -85,7 +85,7 @@ func TestHandleSetChannelCooldown(t *testing.T) {
 				}
 			}
 
-			c, w := newTestContext(t, newJSONRequest(http.MethodPost, "/admin/channels/"+tt.channelID+"/cooldown", tt.requestBody))
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+tt.channelID+"/cooldown", tt.requestBody))
 			c.Params = gin.Params{{Key: "id", Value: tt.channelID}}
 
 			// 调用处理函数
@@ -208,7 +208,7 @@ func TestHandleSetKeyCooldown(t *testing.T) {
 				}
 			}
 
-			c, w := newTestContext(t, newJSONRequest(http.MethodPost, "/admin/channels/"+tt.channelID+"/keys/"+tt.keyIndex+"/cooldown", tt.requestBody))
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+tt.channelID+"/keys/"+tt.keyIndex+"/cooldown", tt.requestBody))
 			c.Params = gin.Params{
 				{Key: "id", Value: tt.channelID},
 				{Key: "keyIndex", Value: tt.keyIndex},
@@ -255,7 +255,7 @@ func TestSetChannelCooldown_Integration(t *testing.T) {
 	requestBody := map[string]any{
 		"duration_ms": 120000, // 2分钟
 	}
-	c, w := newTestContext(t, newJSONRequest(http.MethodPost, "/admin/channels/1/cooldown", requestBody))
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/1/cooldown", requestBody))
 	c.Params = gin.Params{{Key: "id", Value: "1"}}
 
 	srv.HandleSetChannelCooldown(c)
@@ -317,7 +317,7 @@ func TestSetKeyCooldown_Integration(t *testing.T) {
 	requestBody := map[string]any{
 		"duration_ms": 90000, // 90秒
 	}
-	c, w := newTestContext(t, newJSONRequest(http.MethodPost, "/admin/channels/1/keys/0/cooldown", requestBody))
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/1/keys/0/cooldown", requestBody))
 	c.Params = gin.Params{
 		{Key: "id", Value: "1"},
 		{Key: "keyIndex", Value: "0"},

@@ -79,7 +79,7 @@ func TestHandleChannelTest(t *testing.T) {
 				}
 			}
 
-			c, w := newTestContext(t, newJSONRequest(http.MethodPost, "/admin/channels/"+tt.channelID+"/test", tt.requestBody))
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+tt.channelID+"/test", tt.requestBody))
 			c.Params = gin.Params{{Key: "id", Value: tt.channelID}}
 
 			// 调用处理函数

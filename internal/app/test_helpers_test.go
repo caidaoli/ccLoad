@@ -1,60 +1,34 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"runtime"
 	"testing"
 	"time"
 
 	"ccLoad/internal/storage"
+	"ccLoad/internal/testutil"
 
 	"github.com/gin-gonic/gin"
 )
 
 func newTestContext(t testing.TB, req *http.Request) (*gin.Context, *httptest.ResponseRecorder) {
-	t.Helper()
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = req
-	return c, w
+	return testutil.NewTestContext(t, req)
 }
 
 func newRecorder() *httptest.ResponseRecorder {
-	return httptest.NewRecorder()
+	return testutil.NewRecorder()
 }
 
 func waitForGoroutineDeltaLE(t testing.TB, baseline int, maxDelta int, timeout time.Duration) int {
-	t.Helper()
-
-	if maxDelta < 0 {
-		maxDelta = 0
-	}
-	deadline := time.Now().Add(timeout)
-	for {
-		runtime.GC()
-		cur := runtime.NumGoroutine()
-		if cur <= baseline+maxDelta {
-			return cur
-		}
-		if time.Now().After(deadline) {
-			return cur
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	return testutil.WaitForGoroutineDeltaLE(t, baseline, maxDelta, timeout)
 }
 
 func serveHTTP(t testing.TB, h http.Handler, req *http.Request) *httptest.ResponseRecorder {
-	t.Helper()
-
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
-	return w
+	return testutil.ServeHTTP(t, h, req)
 }
 
 func newInMemoryServer(t testing.TB) *Server {
@@ -76,20 +50,15 @@ func newInMemoryServer(t testing.TB) *Server {
 }
 
 func newRequest(method, target string, body io.Reader) *http.Request {
-	return httptest.NewRequest(method, target, body)
+	return testutil.NewRequestReader(method, target, body)
 }
 
-func newJSONRequest(method, target string, v any) *http.Request {
-	b, _ := json.Marshal(v)
-	req := httptest.NewRequest(method, target, bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	return req
+func newJSONRequest(t testing.TB, method, target string, v any) *http.Request {
+	return testutil.MustNewJSONRequest(t, method, target, v)
 }
 
 func newJSONRequestBytes(method, target string, b []byte) *http.Request {
-	req := httptest.NewRequest(method, target, bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	return req
+	return testutil.NewJSONRequestBytes(method, target, b)
 }
 
 func mustUnmarshalJSON(t testing.TB, b []byte, v any) {

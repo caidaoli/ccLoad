@@ -79,6 +79,29 @@ func TestMigrate_SQLite_Idempotent(t *testing.T) {
 	}
 }
 
+func TestMigrate_SQLite_FailsOnInvalidAllowedModelsJSON(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	// 插入脏数据：allowed_models 非法 JSON
+	_, err := db.ExecContext(ctx,
+		"INSERT INTO auth_tokens (token, description, created_at, is_active, allowed_models) VALUES (?, ?, ?, ?, ?)",
+		"bad-json-token", "Bad JSON", int64(1), 1, "{not-json",
+	)
+	if err != nil {
+		t.Fatalf("insert auth_tokens: %v", err)
+	}
+
+	// 再次启动迁移应直接失败（Fail-fast）
+	if err := migrate(ctx, db, DialectSQLite); err == nil {
+		t.Fatal("expected migrate to fail due to invalid allowed_models json")
+	}
+}
+
 func TestEnsureChannelsDailyCostLimit_SQLite(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

@@ -1,7 +1,6 @@
 package app
 
 import (
-	"encoding/json"
 	"net/http"
 	"testing"
 )
@@ -52,8 +51,7 @@ func TestHandleCountTokens(t *testing.T) {
 				},
 			},
 		}
-		b, _ := json.Marshal(payload)
-		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/v1/messages/count_tokens", b))
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/v1/messages/count_tokens", payload))
 
 		srv.handleCountTokens(c)
 		if w.Code != http.StatusOK {

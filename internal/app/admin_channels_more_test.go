@@ -209,7 +209,7 @@ func TestHandleBatchUpdatePriority(t *testing.T) {
 	})
 
 	t.Run("success", func(t *testing.T) {
-		c, w := newTestContext(t, newJSONRequest(http.MethodPost, "/admin/channels/batch-priority", map[string]any{
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/batch-priority", map[string]any{
 			"updates": []map[string]any{
 				{"id": c1.ID, "priority": 100},
 				{"id": c2.ID, "priority": 200},

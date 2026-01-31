@@ -175,7 +175,7 @@ func TestHandleCreateChannel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c, w := newTestContext(t, newJSONRequest(http.MethodPost, "/admin/channels", tt.payload))
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels", tt.payload))
 
 			// 调用处理函数
 			server.handleCreateChannel(c)
@@ -392,7 +392,7 @@ func TestHandleUpdateChannel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c, w := newTestContext(t, newJSONRequest(http.MethodPut, "/admin/channels/"+tt.channelID, tt.payload))
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/channels/"+tt.channelID, tt.payload))
 			c.Params = gin.Params{{Key: "id", Value: tt.channelID}}
 
 			// 从Params中解析ID并调用

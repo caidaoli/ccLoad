@@ -44,7 +44,7 @@ func TestAdminModels_FetchModelsPreview(t *testing.T) {
 			"url":          upstream.URL,
 			"api_key":      "sk-test",
 		}
-		c, w := newTestContext(t, newJSONRequest(http.MethodPost, "/admin/channels/models/fetch", payload))
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/fetch", payload))
 
 		server.HandleFetchModelsPreview(c)
 		if w.Code != http.StatusOK {
