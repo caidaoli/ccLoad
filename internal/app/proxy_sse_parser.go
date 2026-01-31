@@ -126,8 +126,10 @@ func (p *sseUsageParser) parseBuffer() error {
 
 		if after, ok := strings.CutPrefix(line, "event:"); ok {
 			p.eventType = strings.TrimSpace(after)
-			// [INFO] Anthropic 流结束标志: event: message_stop
-			if p.eventType == "message_stop" {
+			// [INFO] 流结束标志检测（按事件类型）
+			// - Anthropic: event: message_stop
+			// - OpenAI Responses API: event: response.completed
+			if p.eventType == "message_stop" || p.eventType == "response.completed" {
 				p.streamComplete = true
 			}
 		} else if after0, ok0 := strings.CutPrefix(line, "data:"); ok0 {

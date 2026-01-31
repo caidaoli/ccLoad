@@ -61,18 +61,19 @@ func streamCopyWithBufferSize(ctx context.Context, src io.Reader, dst http.Respo
 
 		n, err := src.Read(buf)
 		if n > 0 {
+			// [FIX] 2026-01: 先 Feed 数据到 parser，再写入客户端
+			// 原因：即使写入失败（客户端断开），也需要检测流结束标志（如 response.completed）
+			// 这样当上游完整返回但客户端取消时，可以正确识别为"流完整"而非 499
+			if onData != nil {
+				if hookErr := onData(buf[:n]); hookErr != nil {
+					_ = hookErr // 钩子错误不中断流传输（容错设计）
+				}
+			}
 			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
 				return writeErr
 			}
 			if flusher, ok := dst.(http.Flusher); ok {
 				flusher.Flush()
-			}
-			if onData != nil {
-				if hookErr := onData(buf[:n]); hookErr != nil {
-					// 钩子错误不中断流传输（容错设计）
-					// 错误日志由钩子内部自行处理
-					_ = hookErr // 显式忽略，保持代码清晰
-				}
 			}
 		}
 		if err != nil {

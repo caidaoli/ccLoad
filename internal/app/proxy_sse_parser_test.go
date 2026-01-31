@@ -302,6 +302,40 @@ data: {"type":"response.completed","sequence_number":28,"response":{"id":"resp_0
 	feedAndAssertUsage(t, newSSEUsageParser("codex"), sseData, 4293, 17, 6016, 0)
 }
 
+func TestSSEUsageParser_StreamComplete(t *testing.T) {
+	// 测试各种流结束标志是否正确设置 streamComplete
+	// [FIX] 2026-01: 添加 response.completed 检测，修复客户端取消时费用丢失问题
+	tests := []struct {
+		name    string
+		sseData string
+	}{
+		{
+			name:    "OpenAI Chat [DONE]",
+			sseData: "data: {\"choices\":[]}\n\ndata: [DONE]\n\n",
+		},
+		{
+			name:    "Anthropic message_stop",
+			sseData: "event: message_stop\ndata: {}\n\n",
+		},
+		{
+			name:    "OpenAI Responses API response.completed",
+			sseData: "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parser := newSSEUsageParser("openai")
+			if err := parser.Feed([]byte(tt.sseData)); err != nil {
+				t.Fatalf("Feed 失败: %v", err)
+			}
+			if !parser.IsStreamComplete() {
+				t.Errorf("期望 streamComplete=true，实际为 false")
+			}
+		})
+	}
+}
+
 func TestSSEUsageParser_OpenAIChatCompletionsSSE(t *testing.T) {
 	// 测试OpenAI Chat Completions API的SSE流式响应
 	// OpenAI Chat使用prompt_tokens + completion_tokens格式
