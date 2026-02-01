@@ -49,11 +49,7 @@ func Test_HandleProxyError_Basic(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv, cleanup := setupTestServer(t)
-			defer cleanup()
-
-			// 添加必要的组件
-			srv.cooldownManager = cooldown.NewManager(srv.store, nil)
+			srv := newInMemoryServer(t)
 
 			ctx := context.Background()
 			cfg := &model.Config{
@@ -96,10 +92,7 @@ func Test_HandleProxyError_Basic(t *testing.T) {
 
 // Test_HandleNetworkError_Basic 基础网络错误处理测试
 func Test_HandleNetworkError_Basic(t *testing.T) {
-	srv, cleanup := setupTestServer(t)
-	defer cleanup()
-
-	srv.cooldownManager = cooldown.NewManager(srv.store, nil)
+	srv := newInMemoryServer(t)
 
 	ctx := context.Background()
 	cfg := &model.Config{
@@ -166,10 +159,7 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 
 // Test_HandleProxySuccess_Basic 基础成功处理测试
 func Test_HandleProxySuccess_Basic(t *testing.T) {
-	srv, cleanup := setupTestServer(t)
-	defer cleanup()
-
-	srv.cooldownManager = cooldown.NewManager(srv.store, nil)
+	srv := newInMemoryServer(t)
 
 	ctx := context.Background()
 	cfg := &model.Config{
@@ -212,10 +202,7 @@ func Test_HandleProxySuccess_Basic(t *testing.T) {
 
 // Test_HandleProxyError_499 测试499状态码处理
 func Test_HandleProxyError_499(t *testing.T) {
-	srv, cleanup := setupTestServer(t)
-	defer cleanup()
-
-	srv.cooldownManager = cooldown.NewManager(srv.store, nil)
+	srv := newInMemoryServer(t)
 
 	ctx := context.Background()
 	cfg := &model.Config{
@@ -254,10 +241,7 @@ func Test_HandleProxyError_499(t *testing.T) {
 // Test_HandleNetworkError_499_PreservesTokenStats 测试 499 场景下 token 统计被保留
 // [FIX] 2025-12: 修复流式响应中途取消时 token 统计丢失的问题
 func Test_HandleNetworkError_499_PreservesTokenStats(t *testing.T) {
-	srv, cleanup := setupTestServer(t)
-	defer cleanup()
-
-	srv.cooldownManager = cooldown.NewManager(srv.store, nil)
+	srv := newInMemoryServer(t)
 
 	ctx := context.Background()
 	cfg := &model.Config{

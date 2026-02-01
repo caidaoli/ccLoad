@@ -8,15 +8,10 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"path/filepath"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
 
 	"github.com/gin-gonic/gin"
 )
@@ -26,8 +21,7 @@ import (
 // TestAdminAPI_ExportChannelsCSV 测试CSV导出功能
 func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 	// 创建测试环境
-	server, cleanup := setupTestServer(t)
-	defer cleanup()
+	server := newInMemoryServer(t)
 
 	// 先创建测试渠道
 	ctx := context.Background()
@@ -127,16 +121,11 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 	if len(records[1]) < 10 {
 		t.Errorf("数据行字段不足，期望至少10个字段，实际: %d", len(records[1]))
 	}
-
-	t.Logf("[INFO] CSV导出成功，共 %d 行记录（含header）", len(records))
-	t.Logf("   CSV Header: %v", header)
-	t.Logf("   第一行数据: %v", records[1])
 }
 
 func TestAdminAPI_ImportChannelsCSV(t *testing.T) {
 	// 创建测试环境
-	server, cleanup := setupTestServer(t)
-	defer cleanup()
+	server := newInMemoryServer(t)
 
 	// 创建测试CSV文件（注意：列名是api_key而不是api_keys）
 	csvContent := `name,url,priority,models,model_redirects,channel_type,enabled,api_key,key_strategy
@@ -174,7 +163,7 @@ Import-Test-2,https://import2.example.com,5,"test-model-2,test-model-3","{""old"
 	}
 
 	// [INFO] 调试：输出原始响应内容
-	t.Logf("📋 原始响应内容: %s", w.Body.String())
+	t.Logf("原始响应内容: %s", w.Body.String())
 
 	var summary ChannelImportSummary
 	mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &summary)
@@ -225,14 +214,10 @@ Import-Test-2,https://import2.example.com,5,"test-model-2,test-model-3","{""old"
 			t.Errorf("渠道 %s 应有1个API Key，实际: %d", cfg.Name, len(keys))
 		}
 	}
-
-	t.Logf("[INFO] CSV导入成功，导入 %d 条记录 (Created: %d, Updated: %d)", totalImported, summary.Created, summary.Updated)
-	t.Logf("   导入的渠道: %v", importedConfigs)
 }
 
 func TestAdminAPI_ImportChannelsCSV_InvalidURLRejected(t *testing.T) {
-	server, cleanup := setupTestServer(t)
-	defer cleanup()
+	server := newInMemoryServer(t)
 
 	csvContent := `name,url,priority,models,model_redirects,channel_type,enabled,api_key,key_strategy
 Bad-URL,https://bad.example.com/v1,10,test-model,{},anthropic,true,sk-import-key-1,sequential
@@ -303,8 +288,7 @@ Good-URL,https://good.example.com,10,test-model,{},anthropic,true,sk-import-key-
 // TestAdminAPI_ExportImportRoundTrip 测试完整的导出-导入循环
 func TestAdminAPI_ExportImportRoundTrip(t *testing.T) {
 	// 创建测试环境
-	server, cleanup := setupTestServer(t)
-	defer cleanup()
+	server := newInMemoryServer(t)
 
 	ctx := context.Background()
 
@@ -356,7 +340,6 @@ func TestAdminAPI_ExportImportRoundTrip(t *testing.T) {
 	}
 
 	exportedCSV := exportW.Body.Bytes()
-	t.Logf("[INFO] 导出CSV成功，大小: %d bytes", len(exportedCSV))
 
 	// 步骤3：删除原始数据
 	if err := server.store.DeleteConfig(ctx, created.ID); err != nil {
@@ -427,80 +410,13 @@ func TestAdminAPI_ExportImportRoundTrip(t *testing.T) {
 	if len(restoredKeys) != len(apiKeys) {
 		t.Errorf("API Keys数量不匹配: 期望 %d, 实际 %d", len(apiKeys), len(restoredKeys))
 	}
-
-	t.Logf("[INFO] 导出-导入循环测试通过")
-	t.Logf("   原始渠道ID: %d", created.ID)
-	t.Logf("   恢复渠道ID: %d", restoredConfig.ID)
-	t.Logf("   API Keys: %d → %d", len(apiKeys), len(restoredKeys))
-}
-
-// ==================== 辅助函数 ====================
-
-// setupTestServer 创建测试服务器环境
-func setupTestServer(t *testing.T) (*Server, func()) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
-
-	store, err := storage.CreateSQLiteStore(dbPath)
-	if err != nil {
-		t.Fatalf("创建测试数据库失败: %v", err)
-	}
-
-	// [INFO] 修复: 初始化测试所需的基础设施
-	shutdownCh := make(chan struct{})
-	isShuttingDown := &atomic.Bool{}
-	wg := &sync.WaitGroup{}
-
-	server := &Server{
-		store:       store,
-		keySelector: NewKeySelector(), // 移除store参数
-		shutdownCh:  shutdownCh,
-		// [WARN] 注意: isShuttingDown和wg不能在此处初始化(包含noCopy字段,会触发go vet错误)
-	}
-
-	// [INFO] 修复: 初始化 LogService（修复日志丢失问题）
-	server.logService = NewLogService(
-		store,
-		1000, // logBufferSize
-		1,    // logWorkers
-		7,    // retentionDays
-		shutdownCh,
-		isShuttingDown,
-		wg,
-	)
-	server.logService.StartWorkers()
-
-	// [INFO] 初始化 AuthService（Token管理需要）
-	server.authService = NewAuthService(
-		"test-password",
-		nil, // loginRateLimiter
-		store,
-	)
-
-	server.channelCache = storage.NewChannelCache(store, time.Minute)
-
-	cleanup := func() {
-		// 关闭后台Workers
-		isShuttingDown.Store(true)
-		close(shutdownCh)
-
-		// 等待所有goroutine完成
-		wg.Wait()
-
-		if err := store.Close(); err != nil {
-			t.Logf("关闭数据库失败: %v", err)
-		}
-	}
-
-	return server, cleanup
 }
 
 // ==================== 边界条件测试 ====================
 
 // TestAdminAPI_ImportCSV_InvalidFormat 测试无效CSV格式
 func TestAdminAPI_ImportCSV_InvalidFormat(t *testing.T) {
-	server, cleanup := setupTestServer(t)
-	defer cleanup()
+	server := newInMemoryServer(t)
 
 	// 缺少必要字段的CSV
 	invalidCSV := `name,url
@@ -540,8 +456,7 @@ Test-Invalid,https://invalid.com
 
 // TestAdminAPI_ImportCSV_DuplicateNames 测试重复渠道名称处理
 func TestAdminAPI_ImportCSV_DuplicateNames(t *testing.T) {
-	server, cleanup := setupTestServer(t)
-	defer cleanup()
+	server := newInMemoryServer(t)
 
 	ctx := context.Background()
 
@@ -611,8 +526,7 @@ Duplicate-Test,https://duplicate.com,5,model-2,{},gemini,false,sk-duplicate-key,
 
 // TestAdminAPI_ExportCSV_EmptyDatabase 测试空数据库导出
 func TestAdminAPI_ExportCSV_EmptyDatabase(t *testing.T) {
-	server, cleanup := setupTestServer(t)
-	defer cleanup()
+	server := newInMemoryServer(t)
 
 	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/export", nil))
 	server.HandleExportChannelsCSV(c)
@@ -632,14 +546,11 @@ func TestAdminAPI_ExportCSV_EmptyDatabase(t *testing.T) {
 	if len(records) != 1 {
 		t.Errorf("空数据库导出应该只有1行（header），实际: %d", len(records))
 	}
-
-	t.Logf("[INFO] 空数据库导出测试通过，CSV行数: %d", len(records))
 }
 
 // TestHealthEndpoint 测试健康检查端点
 func TestHealthEndpoint(t *testing.T) {
-	server, cleanup := setupTestServer(t)
-	defer cleanup()
+	server := newInMemoryServer(t)
 
 	r := gin.New()
 	server.SetupRoutes(r)
@@ -661,6 +572,4 @@ func TestHealthEndpoint(t *testing.T) {
 	if resp.Data.Status != "ok" {
 		t.Fatalf("期望 status='ok'，实际: %v", resp.Data.Status)
 	}
-
-	t.Logf("[INFO] 健康检查测试通过")
 }

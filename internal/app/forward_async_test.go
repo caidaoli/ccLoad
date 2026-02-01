@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -366,7 +365,7 @@ func TestClientCancelClosesUpstream(t *testing.T) {
 		// [INFO] 成功！上游检测到连接关闭
 		t.Log("[INFO] 客户端取消后，上游连接立即关闭（预期行为）")
 	case <-time.After(500 * time.Millisecond):
-		t.Error("❌ 客户端取消后500ms，上游仍在发送数据（连接未关闭）")
+		t.Error("客户端取消后500ms，上游仍在发送数据（连接未关闭）")
 	}
 
 	// 验证forwardOnceAsync返回context.Canceled错误
@@ -392,16 +391,12 @@ func TestClientCancelClosesUpstream(t *testing.T) {
 func TestNoGoroutineLeak(t *testing.T) {
 	srv := newInMemoryServer(t)
 
-	// 等待 Server 初始化完成（连接池、后台任务等）
-	time.Sleep(50 * time.Millisecond)
-	runtime.GC()
-
-	// 记录初始 goroutine 数量（在 Server 初始化之后）
-	before := runtime.NumGoroutine()
-	t.Logf("测试开始前 goroutine 数量: %d", before)
-
 	const maxDelta = 20
 	const waitTimeout = 2 * time.Second
+
+	// 等待 Server 后台 goroutine 起齐后再取基线，避免把“启动过程”当成“泄漏”
+	before := waitForGoroutineBaselineStable(t, 500*time.Millisecond, waitTimeout)
+	t.Logf("测试开始前 goroutine 数量(稳定基线): %d", before)
 
 	// 场景1：正常请求（30次循环，足够检测泄漏）
 	t.Run("正常请求无泄漏", func(t *testing.T) {
@@ -434,7 +429,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 
 		// 只关心“明显泄漏”，允许环境噪音
 		if after > before+maxDelta {
-			t.Errorf("❌ Goroutine 泄漏: %d -> %d (增加 %d)", before, after, after-before)
+			t.Errorf("Goroutine 泄漏: %d -> %d (增加 %d)", before, after, after-before)
 		}
 	})
 
@@ -453,7 +448,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			recorder := newRecorder()
 
-			// 15ms 后取消请求
+			// 15ms 后取消请求，模拟客户端主动取消（context.Canceled 而非 DeadlineExceeded）
 			go func() {
 				time.Sleep(15 * time.Millisecond)
 				cancel()
@@ -466,16 +461,19 @@ func TestNoGoroutineLeak(t *testing.T) {
 		t.Logf("20次取消请求后 goroutine 数量: %d (增加: %d)", after, after-before)
 
 		if after > before+maxDelta {
-			t.Errorf("❌ Goroutine 泄漏: %d -> %d (增加 %d)", before, after, after-before)
+			t.Errorf("Goroutine 泄漏: %d -> %d (增加 %d)", before, after, after-before)
 		}
 	})
 
 	// 场景3：首字节超时（10次循环）
 	t.Run("首字节超时无泄漏", func(t *testing.T) {
-		srv.firstByteTimeout = 20 * time.Millisecond // 缩短超时
+		const testTimeout = 20 * time.Millisecond
+		const upstreamDelay = testTimeout * 3 // 明确3倍超时
+
+		srv.firstByteTimeout = testTimeout
 
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			time.Sleep(50 * time.Millisecond) // 缩短延迟，仍超过超时时间
+			time.Sleep(upstreamDelay)
 			w.WriteHeader(200)
 		}))
 		defer upstream.Close()
@@ -503,7 +501,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 		t.Logf("10次超时请求后 goroutine 数量: %d (增加: %d)", after, after-before)
 
 		if after > before+maxDelta {
-			t.Errorf("❌ Goroutine 泄漏: %d -> %d (增加 %d)", before, after, after-before)
+			t.Errorf("Goroutine 泄漏: %d -> %d (增加 %d)", before, after, after-before)
 		}
 	})
 }
@@ -513,14 +511,16 @@ func TestNoGoroutineLeak(t *testing.T) {
 // 期望：返回 598 状态码和 ErrUpstreamFirstByteTimeout 错误
 func TestFirstByteTimeout_StreamingResponse(t *testing.T) {
 	srv := newInMemoryServer(t)
-	// 设置非常短的超时，确保在响应头到达前触发
-	srv.firstByteTimeout = 10 * time.Millisecond
+
+	// 定义超时与延迟的明确倍数关系，避免魔法数字
+	const testTimeout = 10 * time.Millisecond
+	const upstreamDelay = testTimeout * 10 // 明确10倍超时
+
+	srv.firstByteTimeout = testTimeout
 
 	// 上游服务器：延迟发送响应头，模拟慢响应导致首字节超时
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		// 等待足够长的时间，确保客户端超时
-		time.Sleep(500 * time.Millisecond)
-		// 然后才发送响应头
+		time.Sleep(upstreamDelay)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("data: {\"content\":\"hello\"}\n\n"))
@@ -568,7 +568,6 @@ func TestFirstByteTimeout_StreamingResponse(t *testing.T) {
 		t.Errorf("期望状态码 %d，实际: %d", util.StatusFirstByteTimeout, res.Status)
 	}
 
-	t.Logf("✓ 首字节超时测试通过: 状态码=%d, 耗时=%.3fs, 错误=%v", res.Status, duration, err)
 }
 
 // TestFirstByteTimeout_StreamingResponseBodyDelayed 测试响应头已到但响应体迟迟不来时的首字节超时
@@ -576,7 +575,11 @@ func TestFirstByteTimeout_StreamingResponse(t *testing.T) {
 // 期望：返回 598 状态码和 ErrUpstreamFirstByteTimeout 错误
 func TestFirstByteTimeout_StreamingResponseBodyDelayed(t *testing.T) {
 	srv := newInMemoryServer(t)
-	srv.firstByteTimeout = 10 * time.Millisecond
+
+	const testTimeout = 10 * time.Millisecond
+	const upstreamBodyDelay = testTimeout * 20 // 明确20倍超时
+
+	srv.firstByteTimeout = testTimeout
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -584,7 +587,7 @@ func TestFirstByteTimeout_StreamingResponseBodyDelayed(t *testing.T) {
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(upstreamBodyDelay)
 		_, _ = w.Write([]byte("data: {\"content\":\"hello\"}\n\n"))
 	}))
 	defer upstream.Close()

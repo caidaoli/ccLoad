@@ -66,8 +66,7 @@ func TestHandleSetChannelCooldown(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// 创建测试服务器
-			srv, cleanup := setupTestServer(t)
-			defer cleanup()
+			srv := newInMemoryServer(t)
 
 			// 设置渠道(如果需要)
 			if tt.setupChannel {
@@ -175,8 +174,7 @@ func TestHandleSetKeyCooldown(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// 创建测试服务器
-			srv, cleanup := setupTestServer(t)
-			defer cleanup()
+			srv := newInMemoryServer(t)
 
 			// 设置测试数据(如果需要)
 			if tt.setupData {
@@ -232,8 +230,7 @@ func TestHandleSetKeyCooldown(t *testing.T) {
 
 // TestSetChannelCooldown_Integration 测试渠道冷却集成
 func TestSetChannelCooldown_Integration(t *testing.T) {
-	srv, cleanup := setupTestServer(t)
-	defer cleanup()
+	srv := newInMemoryServer(t)
 
 	ctx := context.Background()
 
@@ -283,8 +280,7 @@ func TestSetChannelCooldown_Integration(t *testing.T) {
 
 // TestSetKeyCooldown_Integration 测试Key冷却集成
 func TestSetKeyCooldown_Integration(t *testing.T) {
-	srv, cleanup := setupTestServer(t)
-	defer cleanup()
+	srv := newInMemoryServer(t)
 
 	ctx := context.Background()
 

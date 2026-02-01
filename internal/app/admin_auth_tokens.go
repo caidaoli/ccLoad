@@ -26,7 +26,7 @@ func (s *Server) HandleListAuthTokens(c *gin.Context) {
 
 	tokens, err := s.store.ListAuthTokens(ctx)
 	if err != nil {
-		log.Print("❌ 列出令牌失败: " + err.Error())
+		log.Print("[ERROR] 列出令牌失败: " + err.Error())
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
@@ -153,7 +153,7 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 	// 生成安全令牌(64字符十六进制)
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
-		log.Print("❌ 生成令牌失败: " + err.Error())
+		log.Print("[ERROR] 生成令牌失败: " + err.Error())
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
@@ -182,7 +182,7 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 	defer cancel()
 
 	if err := s.store.CreateAuthToken(ctx, authToken); err != nil {
-		log.Print("❌ 创建令牌失败: " + err.Error())
+		log.Print("[ERROR] 创建令牌失败: " + err.Error())
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
@@ -260,7 +260,7 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 	}
 
 	if err := s.store.UpdateAuthToken(ctx, token); err != nil {
-		log.Print("❌ 更新令牌失败: " + err.Error())
+		log.Print("[ERROR] 更新令牌失败: " + err.Error())
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
@@ -288,7 +288,7 @@ func (s *Server) HandleDeleteAuthToken(c *gin.Context) {
 	defer cancel()
 
 	if err := s.store.DeleteAuthToken(ctx, id); err != nil {
-		log.Print("❌ 删除令牌失败: " + err.Error())
+		log.Print("[ERROR] 删除令牌失败: " + err.Error())
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}

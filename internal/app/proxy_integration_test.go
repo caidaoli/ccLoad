@@ -45,10 +45,8 @@ type proxyTestEnv struct {
 func setupProxyTestEnv(t testing.TB, channels []testChannel, upstreamURLs map[int]string) *proxyTestEnv {
 	t.Helper()
 
-	store, err := storage.CreateSQLiteStore(":memory:")
-	if err != nil {
-		t.Fatalf("CreateSQLiteStore: %v", err)
-	}
+	srv := newInMemoryServer(t)
+	store := srv.store
 
 	ctx := context.Background()
 
@@ -104,9 +102,7 @@ func setupProxyTestEnv(t testing.TB, channels []testChannel, upstreamURLs map[in
 		}
 	}
 
-	authSvc := newTestAuthService(t)
-	injectAPIToken(authSvc, "test-api-key", 0, 1)
-	srv := newMinimalTestServer(t, store, authSvc)
+	injectAPIToken(srv.authService, "test-api-key", 0, 1)
 
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
@@ -282,11 +278,10 @@ func TestProxy_KeyRetry_On401(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	// 创建一个有两个 key 的渠道
-	store, err := storage.CreateSQLiteStore(":memory:")
-	if err != nil {
-		t.Fatalf("CreateSQLiteStore: %v", err)
-	}
+	// 创建服务器并使用其 store
+	srv := newInMemoryServer(t)
+	store := srv.store
+
 	ctx := context.Background()
 	cfg := &model.Config{
 		Name:         "ch1-multikey",
@@ -308,9 +303,7 @@ func TestProxy_KeyRetry_On401(t *testing.T) {
 		t.Fatalf("CreateAPIKeysBatch: %v", err)
 	}
 
-	authSvc := newTestAuthService(t)
-	injectAPIToken(authSvc, "test-api-key", 0, 1)
-	srv := newMinimalTestServer(t, store, authSvc)
+	injectAPIToken(srv.authService, "test-api-key", 0, 1)
 
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
@@ -478,14 +471,8 @@ func TestProxy_NoChannels_Returns503(t *testing.T) {
 	t.Parallel()
 
 	// 创建没有渠道的环境
-	store, err := storage.CreateSQLiteStore(":memory:")
-	if err != nil {
-		t.Fatalf("CreateSQLiteStore: %v", err)
-	}
-
-	authSvc := newTestAuthService(t)
-	injectAPIToken(authSvc, "test-api-key", 0, 1)
-	srv := newMinimalTestServer(t, store, authSvc)
+	srv := newInMemoryServer(t)
+	injectAPIToken(srv.authService, "test-api-key", 0, 1)
 
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()

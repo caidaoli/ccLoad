@@ -6,10 +6,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"testing"
 	"time"
 
-	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/testutil"
@@ -18,6 +18,7 @@ import (
 )
 
 func newTestContext(t testing.TB, req *http.Request) (*gin.Context, *httptest.ResponseRecorder) {
+	t.Helper()
 	return testutil.NewTestContext(t, req)
 }
 
@@ -26,10 +27,50 @@ func newRecorder() *httptest.ResponseRecorder {
 }
 
 func waitForGoroutineDeltaLE(t testing.TB, baseline int, maxDelta int, timeout time.Duration) int {
+	t.Helper()
 	return testutil.WaitForGoroutineDeltaLE(t, baseline, maxDelta, timeout)
 }
 
+// waitForGoroutineBaselineStable 等待 goroutine 数量“启动完成并稳定”后再取基线。
+//
+// 逻辑：持续 GC + 采样 goroutine 数量，只要在 stableFor 时间内没有出现“新峰值”，就认为后台 goroutine 已经起齐。
+// 返回观测到的最大值（保守基线，避免把惰性启动/调度噪音误判成泄漏）。
+func waitForGoroutineBaselineStable(t testing.TB, stableFor, timeout time.Duration) int {
+	t.Helper()
+
+	if stableFor <= 0 {
+		runtime.GC()
+		return runtime.NumGoroutine()
+	}
+
+	if timeout <= 0 {
+		timeout = stableFor
+	}
+
+	deadline := time.Now().Add(timeout)
+
+	runtime.GC()
+	maxSeen := runtime.NumGoroutine()
+	lastMaxAt := time.Now()
+
+	for {
+		cur := runtime.NumGoroutine()
+		if cur > maxSeen {
+			maxSeen = cur
+			lastMaxAt = time.Now()
+		}
+		if time.Since(lastMaxAt) >= stableFor {
+			return maxSeen
+		}
+		if time.Now().After(deadline) {
+			return maxSeen
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func serveHTTP(t testing.TB, h http.Handler, req *http.Request) *httptest.ResponseRecorder {
+	t.Helper()
 	return testutil.ServeHTTP(t, h, req)
 }
 
@@ -45,7 +86,10 @@ func newInMemoryServer(t testing.TB) *Server {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		_ = srv.Shutdown(ctx)
+		if err := srv.Shutdown(ctx); err != nil {
+			t.Errorf("Server.Shutdown failed: %v", err)
+		}
+		// store.Close() 已在 srv.Shutdown 内部调用，无需重复关闭
 	})
 
 	return srv
@@ -56,6 +100,7 @@ func newRequest(method, target string, body io.Reader) *http.Request {
 }
 
 func newJSONRequest(t testing.TB, method, target string, v any) *http.Request {
+	t.Helper()
 	return testutil.MustNewJSONRequest(t, method, target, v)
 }
 
@@ -145,48 +190,4 @@ func runMiddleware(t testing.TB, middleware gin.HandlerFunc, req *http.Request) 
 
 	engine.ServeHTTP(w, req)
 	return w
-}
-
-// newMinimalTestServer 创建最小化测试 Server（不依赖环境变量）
-func newMinimalTestServer(t testing.TB, store storage.Store, authSvc *AuthService) *Server {
-	t.Helper()
-
-	statsCache := NewStatsCache(store)
-	channelCache := storage.NewChannelCache(store, 60*time.Second)
-	costCache := NewCostCache()
-
-	srv := &Server{
-		store:            store,
-		authService:      authSvc,
-		channelCache:     channelCache,
-		statsCache:       statsCache,
-		costCache:        costCache,
-		cooldownManager:  cooldown.NewManager(store, nil),
-		keySelector:      NewKeySelector(),
-		channelBalancer:  NewSmoothWeightedRR(),
-		healthCache:      NewHealthCache(store, model.HealthScoreConfig{}, make(chan struct{}), nil, nil),
-		client:           http.DefaultClient,
-		maxKeyRetries:    3,
-		concurrencySem:   make(chan struct{}, 100),
-		maxConcurrency:   100,
-		shutdownCh:       make(chan struct{}),
-		shutdownDone:     make(chan struct{}),
-		tokenStatsCh:     make(chan tokenStatsUpdate, 256),
-		activeRequests:   newActiveRequestManager(),
-		nonStreamTimeout: 30 * time.Second,
-	}
-
-	logSvc := NewLogService(store, 100, 1, 7, srv.shutdownCh, &srv.isShuttingDown, &srv.wg)
-	srv.logService = logSvc
-	logSvc.StartWorkers()
-	srv.wg.Add(1)
-	go srv.tokenStatsWorker()
-
-	t.Cleanup(func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
-	})
-
-	return srv
 }

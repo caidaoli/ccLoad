@@ -12,16 +12,15 @@ func assertClassifyError(t *testing.T, err error, wantStatus int, wantLevel Erro
 
 	statusCode, errorLevel, shouldRetry := ClassifyError(err)
 	if statusCode != wantStatus {
-		t.Errorf("❌ 状态码错误: 期望 %d, 实际 %d (%s)", wantStatus, statusCode, reason)
+		t.Errorf("状态码错误: 期望 %d, 实际 %d (%s)", wantStatus, statusCode, reason)
 	}
 	if errorLevel != wantLevel {
-		t.Errorf("❌ 错误级别错误: 期望 %v, 实际 %v (%s)", wantLevel, errorLevel, reason)
+		t.Errorf("错误级别错误: 期望 %v, 实际 %v (%s)", wantLevel, errorLevel, reason)
 	}
 	if shouldRetry != wantRetry {
-		t.Errorf("❌ 重试标志错误: 期望 %v, 实际 %v (%s)", wantRetry, shouldRetry, reason)
+		t.Errorf("重试标志错误: 期望 %v, 实际 %v (%s)", wantRetry, shouldRetry, reason)
 	}
 
-	t.Logf("[INFO] %s - 状态码:%d, 错误级别:%v, 重试:%v", reason, statusCode, errorLevel, shouldRetry)
 }
 
 func TestClassifyHTTPResponse(t *testing.T) {
@@ -207,10 +206,8 @@ func TestClassifyHTTPResponse(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := ClassifyHTTPResponseWithMeta(tt.statusCode, nil, tt.responseBody).Level
 			if result != tt.expected {
-				t.Errorf("❌ %s\n  期望: %v\n  实际: %v\n  原因: %s\n  响应体: %s",
+				t.Errorf("%s\n  期望: %v\n  实际: %v\n  原因: %s\n  响应体: %s",
 					tt.name, tt.expected, result, tt.reason, string(tt.responseBody))
-			} else {
-				t.Logf("[INFO] %s - %s", tt.name, tt.reason)
 			}
 		})
 	}
@@ -630,10 +627,8 @@ func TestClassifyRateLimitError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := ClassifyHTTPResponseWithMeta(429, tt.headers, tt.responseBody).Level
 			if result != tt.expected {
-				t.Errorf("❌ %s\n  期望: %v\n  实际: %v\n  原因: %s",
+				t.Errorf("%s\n  期望: %v\n  实际: %v\n  原因: %s",
 					tt.name, tt.expected, result, tt.reason)
-			} else {
-				t.Logf("[INFO] %s - %s", tt.name, tt.reason)
 			}
 		})
 	}
@@ -720,10 +715,8 @@ func TestClassifySSEError(t *testing.T) {
 			// 使用 ClassifyHTTPResponseWithMeta 测试 597 状态码
 			result := ClassifyHTTPResponseWithMeta(StatusSSEError, nil, tt.responseBody).Level
 			if result != tt.expected {
-				t.Errorf("❌ %s\n  期望: %v\n  实际: %v\n  原因: %s",
+				t.Errorf("%s\n  期望: %v\n  实际: %v\n  原因: %s",
 					tt.name, tt.expected, result, tt.reason)
-			} else {
-				t.Logf("[INFO] %s - %s", tt.name, tt.reason)
 			}
 		})
 	}
@@ -784,10 +777,8 @@ func TestClassify400Error(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := classify400Error(tt.responseBody)
 			if result != tt.expected {
-				t.Errorf("❌ %s\n  期望: %v\n  实际: %v\n  原因: %s\n  响应体: %s",
+				t.Errorf("%s\n  期望: %v\n  实际: %v\n  原因: %s\n  响应体: %s",
 					tt.name, tt.expected, result, tt.reason, string(tt.responseBody))
-			} else {
-				t.Logf("✅ %s - %s", tt.name, tt.reason)
 			}
 		})
 	}
@@ -852,10 +843,8 @@ func TestClassify404Error(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := classify404Error(tt.responseBody)
 			if result != tt.expected {
-				t.Errorf("❌ %s\n  期望: %v\n  实际: %v\n  原因: %s\n  响应体: %s",
+				t.Errorf("%s\n  期望: %v\n  实际: %v\n  原因: %s\n  响应体: %s",
 					tt.name, tt.expected, result, tt.reason, string(tt.responseBody))
-			} else {
-				t.Logf("✅ %s - %s", tt.name, tt.reason)
 			}
 		})
 	}

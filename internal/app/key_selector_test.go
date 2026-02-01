@@ -66,8 +66,6 @@ func TestSelectAvailableKey_SingleKey(t *testing.T) {
 		if apiKey != "sk-single-key" { //nolint:gosec // 测试用的假 API Key
 			t.Errorf("期望apiKey=sk-single-key，实际%s", apiKey)
 		}
-
-		t.Logf("[INFO] 单Key场景选择正确: keyIndex=%d", keyIndex)
 	})
 
 	t.Run("排除唯一Key后无可用Key", func(t *testing.T) {
@@ -77,8 +75,6 @@ func TestSelectAvailableKey_SingleKey(t *testing.T) {
 		if err == nil {
 			t.Error("期望返回错误（唯一Key已被排除），但成功返回")
 		}
-
-		t.Logf("[INFO] 单Key被排除后正确返回错误: %v", err)
 	})
 }
 
@@ -137,8 +133,6 @@ func TestSelectAvailableKey_SingleKeyCooldown(t *testing.T) {
 		if !strings.Contains(err.Error(), "cooldown") {
 			t.Errorf("错误消息应包含'cooldown'，实际: %v", err)
 		}
-
-		t.Logf("[INFO] 单Key冷却后正确返回错误: %v", err)
 	})
 }
 
@@ -196,8 +190,6 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 		if apiKey != "sk-seq-key-0" { //nolint:gosec // 测试用的假 API Key
 			t.Errorf("期望apiKey=sk-seq-key-0，实际%s", apiKey)
 		}
-
-		t.Logf("[INFO] 顺序策略首次选择正确: keyIndex=%d", keyIndex)
 	})
 
 	t.Run("排除第一个Key后返回第二个", func(t *testing.T) {
@@ -215,8 +207,6 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 		if apiKey != "sk-seq-key-1" { //nolint:gosec // 测试用的假 API Key
 			t.Errorf("期望apiKey=sk-seq-key-1，实际%s", apiKey)
 		}
-
-		t.Logf("[INFO] 顺序策略排除后选择正确: keyIndex=%d", keyIndex)
 	})
 
 	t.Run("排除前两个Key后返回第三个", func(t *testing.T) {
@@ -234,8 +224,6 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 		if apiKey != "sk-seq-key-2" { //nolint:gosec // 测试用的假 API Key
 			t.Errorf("期望apiKey=sk-seq-key-2，实际%s", apiKey)
 		}
-
-		t.Logf("[INFO] 顺序策略多次排除后选择正确: keyIndex=%d", keyIndex)
 	})
 
 	t.Run("所有Key被排除后返回错误", func(t *testing.T) {
@@ -245,8 +233,6 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 		if err == nil {
 			t.Error("期望返回错误（所有Key已被排除），但成功返回")
 		}
-
-		t.Logf("[INFO] 所有Key被排除后正确返回错误: %v", err)
 	})
 }
 
@@ -317,8 +303,6 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 				t.Errorf("轮询失败: 连续选择了相同Key=%d", selectedKeys[i])
 			}
 		}
-
-		t.Logf("[INFO] 轮询策略正确: %v", selectedKeys)
 	})
 
 	t.Run("排除当前Key后跳到下一个", func(t *testing.T) {
@@ -335,8 +319,6 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 		if keyIndex != 1 {
 			t.Errorf("排除Key0后应返回keyIndex=1，实际%d", keyIndex)
 		}
-
-		t.Logf("[INFO] 轮询策略排除后选择正确: keyIndex=%d", keyIndex)
 	})
 }
 
@@ -405,8 +387,6 @@ func TestSelectAvailableKey_RoundRobin_NonContiguousKeyIndex(t *testing.T) {
 				t.Errorf("轮询未覆盖KeyIndex=%d，seen=%v", expectedIdx, keysSeen)
 			}
 		}
-
-		t.Logf("[INFO] 非连续KeyIndex轮询正确: seen=%v", keysSeen)
 	})
 
 	t.Run("排除非连续KeyIndex中的特定Key", func(t *testing.T) {
@@ -429,8 +409,6 @@ func TestSelectAvailableKey_RoundRobin_NonContiguousKeyIndex(t *testing.T) {
 		if !keysSeen[0] || !keysSeen[5] {
 			t.Errorf("未被排除的KeyIndex 0和5应被选中，seen=%v", keysSeen)
 		}
-
-		t.Logf("[INFO] 非连续KeyIndex排除正确: seen=%v", keysSeen)
 	})
 }
 
@@ -460,7 +438,6 @@ func TestSelectAvailableKey_SingleKey_NonZeroKeyIndex(t *testing.T) {
 		if apiKey != "sk-single-nonzero" { //nolint:gosec // 测试用的假 API Key
 			t.Errorf("期望apiKey=sk-single-nonzero，实际%s", apiKey)
 		}
-		t.Logf("[INFO] 单Key非零KeyIndex正常选择: keyIndex=%d", keyIndex)
 	})
 
 	t.Run("单Key非零KeyIndex排除正确", func(t *testing.T) {
@@ -474,7 +451,6 @@ func TestSelectAvailableKey_SingleKey_NonZeroKeyIndex(t *testing.T) {
 		if !strings.Contains(err.Error(), "index=5") {
 			t.Errorf("错误信息应包含正确的KeyIndex=5: %v", err)
 		}
-		t.Logf("[INFO] 单Key非零KeyIndex排除正确: %v", err)
 	})
 
 	t.Run("排除错误的KeyIndex不影响选择", func(t *testing.T) {
@@ -487,7 +463,6 @@ func TestSelectAvailableKey_SingleKey_NonZeroKeyIndex(t *testing.T) {
 		if keyIndex != 5 {
 			t.Errorf("排除不存在的KeyIndex=0不应影响KeyIndex=5的选择，实际%d", keyIndex)
 		}
-		t.Logf("[INFO] 排除不存在的KeyIndex不影响正确选择")
 	})
 }
 
@@ -553,8 +528,6 @@ func TestSelectAvailableKey_KeyCooldown(t *testing.T) {
 		if apiKey != "sk-cooldown-key-1" { //nolint:gosec // 测试用的假 API Key
 			t.Errorf("期望apiKey=sk-cooldown-key-1，实际%s", apiKey)
 		}
-
-		t.Logf("[INFO] Key冷却过滤正确: 跳过Key0，选择Key1")
 	})
 
 	t.Run("冷却多个Key", func(t *testing.T) {
@@ -584,8 +557,6 @@ func TestSelectAvailableKey_KeyCooldown(t *testing.T) {
 		if apiKey != "sk-cooldown-key-2" { //nolint:gosec // 测试用的假 API Key
 			t.Errorf("期望apiKey=sk-cooldown-key-2，实际%s", apiKey)
 		}
-
-		t.Logf("[INFO] 多Key冷却过滤正确: 跳过Key0和Key1，选择Key2")
 	})
 
 	t.Run("所有Key冷却后返回错误", func(t *testing.T) {
@@ -606,8 +577,6 @@ func TestSelectAvailableKey_KeyCooldown(t *testing.T) {
 		if err == nil {
 			t.Error("期望返回错误（所有Key都在冷却），但成功返回")
 		}
-
-		t.Logf("[INFO] 所有Key冷却后正确返回错误: %v", err)
 	})
 }
 
@@ -675,8 +644,6 @@ func TestSelectAvailableKey_CooldownAndExclude(t *testing.T) {
 	if apiKey != "sk-combined-key-3" { //nolint:gosec // 测试用的假 API Key
 		t.Errorf("期望apiKey=sk-combined-key-3，实际%s", apiKey)
 	}
-
-	t.Logf("[INFO] 冷却与排除组合过滤正确: 跳过Key0(排除)、Key1(冷却)、Key2(排除)，选择Key3")
 }
 
 // TestSelectAvailableKey_NoKeys 测试无Key配置场景
@@ -710,8 +677,6 @@ func TestSelectAvailableKey_NoKeys(t *testing.T) {
 	if err == nil {
 		t.Error("期望返回错误（渠道未配置API Keys），但成功返回")
 	}
-
-	t.Logf("[INFO] 无Key配置场景正确返回错误: %v", err)
 }
 
 func assertSelectAvailableKeyFirstIndex(t *testing.T, channelName string, keyPrefix string, keyStrategy string, wantIndex int, reason string) {
@@ -758,10 +723,6 @@ func assertSelectAvailableKeyFirstIndex(t *testing.T, channelName string, keyPre
 	}
 	if keyIndex != wantIndex {
 		t.Errorf("期望返回keyIndex=%d，实际%d", wantIndex, keyIndex)
-	}
-
-	if reason != "" {
-		t.Logf("[INFO] %s", reason)
 	}
 }
 

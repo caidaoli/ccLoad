@@ -93,8 +93,6 @@ func TestHandleListChannels(t *testing.T) {
 			t.Error("渠道应该按优先级降序排序")
 		}
 	}
-
-	t.Logf("[INFO] 列表查询成功: 返回%d个渠道", len(resp.Data))
 }
 
 // TestHandleCreateChannel 测试创建渠道
@@ -204,8 +202,6 @@ func TestHandleCreateChannel(t *testing.T) {
 						t.Errorf("期望名称%s，实际%s", tt.payload.Name, resp.Data.Name)
 					}
 				}
-
-				t.Logf("[INFO] 创建成功: ID=%d, Name=%s", resp.Data.ID, resp.Data.Name)
 			}
 		})
 	}
@@ -300,8 +296,6 @@ func TestHandleGetChannel(t *testing.T) {
 				if leakCheck.KeyStrategy != nil {
 					t.Fatalf("渠道详情不应返回 key_strategy 字段")
 				}
-
-				t.Logf("[INFO] 获取成功: ID=%d, Name=%s", resp.Data.ID, resp.Data.Name)
 			}
 		})
 	}
@@ -421,8 +415,6 @@ func TestHandleUpdateChannel(t *testing.T) {
 				if resp.Data.Priority != tt.payload.Priority {
 					t.Errorf("期望优先级%d，实际%d", tt.payload.Priority, resp.Data.Priority)
 				}
-
-				t.Logf("[INFO] 更新成功: Name=%s, Priority=%d", resp.Data.Name, resp.Data.Priority)
 			}
 		})
 	}
@@ -495,9 +487,6 @@ func TestHandleDeleteChannel(t *testing.T) {
 					if err == nil {
 						t.Error("渠道应该已被删除")
 					}
-					t.Logf("[INFO] 删除成功: 渠道ID=%d已被删除", created.ID)
-				} else {
-					t.Logf("[INFO] 删除操作成功(幂等): ID=%s", tt.channelID)
 				}
 			}
 		})
@@ -570,8 +559,6 @@ func TestHandleGetChannelKeys(t *testing.T) {
 			t.Errorf("Keys应该按KeyIndex排序，位置%d期望KeyIndex=%d，实际%d", i, i, key.KeyIndex)
 		}
 	}
-
-	t.Logf("[INFO] 获取渠道Keys成功: 返回%d个Keys", len(resp.Data))
 }
 
 // TestChannelRequestValidate 测试ChannelRequest验证
@@ -797,14 +784,11 @@ func TestChannelRequestValidate(t *testing.T) {
 					t.Error("期望返回错误，但成功了")
 				} else if err.Error() != tt.errorMsg {
 					t.Errorf("期望错误消息'%s'，实际'%s'", tt.errorMsg, err.Error())
-				} else {
-					t.Logf("[INFO] 验证错误正确: %s", err.Error())
 				}
 			} else {
 				if err != nil {
 					t.Errorf("期望成功，但返回错误: %v", err)
 				} else {
-					t.Logf("[INFO] 验证成功")
 					// 验证 URL 标准化
 					if tt.expectNormalize != "" && tt.req.URL != tt.expectNormalize {
 						t.Errorf("URL标准化失败：期望 %q，实际 %q", tt.expectNormalize, tt.req.URL)

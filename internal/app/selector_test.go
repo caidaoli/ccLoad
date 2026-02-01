@@ -79,9 +79,6 @@ func TestSelectRouteCandidates_NormalRequest(t *testing.T) {
 							candidates[i+1].Name, candidates[i+1].Priority)
 					}
 				}
-				t.Logf("[INFO] 优先级排序正确: %s(%d) > %s(%d)",
-					candidates[0].Name, candidates[0].Priority,
-					candidates[1].Name, candidates[1].Priority)
 			}
 		})
 	}
@@ -136,8 +133,6 @@ func TestSelectRouteCandidates_CooledDownChannels(t *testing.T) {
 	if len(candidates) > 0 && candidates[0].Name != "active-channel" {
 		t.Errorf("期望返回active-channel，实际返回%s", candidates[0].Name)
 	}
-
-	t.Logf("[INFO] 冷却过滤正确: 3个渠道中2个被冷却，只返回1个可用渠道")
 }
 
 func TestSelectRouteCandidates_AllCooled_FallbackChoosesEarliestChannelCooldown(t *testing.T) {
@@ -408,8 +403,6 @@ func TestSelectRouteCandidates_DisabledChannels(t *testing.T) {
 	if len(candidates) > 0 && candidates[0].Name != "enabled-channel" {
 		t.Errorf("期望返回enabled-channel，实际返回%s", candidates[0].Name)
 	}
-
-	t.Logf("[INFO] 禁用渠道过滤正确")
 }
 
 // TestSelectRouteCandidates_PriorityGrouping 测试优先级分组和轮询
@@ -451,8 +444,6 @@ func TestSelectRouteCandidates_PriorityGrouping(t *testing.T) {
 			t.Errorf("渠道%d优先级错误: 期望100，实际%d", i, c.Priority)
 		}
 	}
-
-	t.Logf("[INFO] 相同优先级渠道分组正确，返回%d个渠道", len(candidates))
 }
 
 // TestSelectCandidates_FilterByChannelType 测试按渠道类型过滤
@@ -550,8 +541,6 @@ func TestSelectCandidatesByChannelType_GeminiFilter(t *testing.T) {
 			t.Errorf("期望返回gemini-channel，实际返回%s", candidates[0].Name)
 		}
 	}
-
-	t.Logf("[INFO] 渠道类型过滤正确")
 }
 
 // TestSelectRouteCandidates_WildcardModel 测试通配符模型
@@ -592,7 +581,6 @@ func TestSelectRouteCandidates_WildcardModel(t *testing.T) {
 		if candidates[0].Priority < candidates[1].Priority {
 			t.Errorf("优先级排序错误")
 		}
-		t.Logf("[INFO] 通配符查询正确，返回%d个渠道，优先级排序正确", len(candidates))
 	}
 }
 
@@ -627,8 +615,6 @@ func TestSelectRouteCandidates_NoMatchingChannels(t *testing.T) {
 	if len(candidates) != 0 {
 		t.Errorf("期望0个匹配渠道，实际%d个", len(candidates))
 	}
-
-	t.Logf("[INFO] 无匹配渠道场景处理正确")
 }
 
 // TestSelectRouteCandidates_ModelFuzzyMatch 测试"模型模糊匹配"功能
@@ -859,14 +845,6 @@ func TestSelectRouteCandidates_MixedPriorities(t *testing.T) {
 				i, expectedPrefix, candidates[i].Name, candidates[i].Priority)
 		}
 	}
-
-	t.Logf("[INFO] 混合优先级排序正确: %v", func() []string {
-		names := make([]string, len(candidates))
-		for i, c := range candidates {
-			names[i] = c.Name
-		}
-		return names
-	}())
 }
 
 // TestBalanceSamePriorityChannels 测试相同优先级渠道的负载均衡（确定性轮询）
@@ -926,8 +904,6 @@ func TestBalanceSamePriorityChannels(t *testing.T) {
 		t.Errorf("分布异常: channel-22=%d, channel-23=%d（diff=%d，期望<=1）",
 			firstPositionCount["channel-22"], firstPositionCount["channel-23"], diff)
 	}
-
-	t.Logf("[INFO] 相同优先级渠道负载均衡正常")
 }
 
 func TestSortChannelsByHealth_WeightedByKeyCount(t *testing.T) {

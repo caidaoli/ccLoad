@@ -58,8 +58,7 @@ func TestHandleChannelTest(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// 创建测试服务器
-			srv, cleanup := setupTestServer(t)
-			defer cleanup()
+			srv := newInMemoryServer(t)
 
 			ctx := context.Background()
 

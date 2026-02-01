@@ -43,10 +43,8 @@ func TestCalculateBackoffDuration_504Error(t *testing.T) {
 			duration := CalculateBackoffDuration(tt.prevMs, tt.until, now, tt.statusCode)
 
 			if duration < tt.expectedMin || duration > tt.expectedMax {
-				t.Errorf("❌ %s\n期望冷却时间: %v-%v\n实际冷却时间: %v",
+				t.Errorf("%s\n期望冷却时间: %v-%v\n实际冷却时间: %v",
 					tt.description, tt.expectedMin, tt.expectedMax, duration)
-			} else {
-				t.Logf("[INFO] %s\n冷却时间: %v", tt.description, duration)
 			}
 		})
 	}
@@ -74,10 +72,8 @@ func TestCalculateBackoffDuration_ChannelErrors(t *testing.T) {
 			duration := CalculateBackoffDuration(0, time.Time{}, now, &tt.statusCode)
 
 			if duration != tt.expected {
-				t.Errorf("❌ 状态码%d首次错误应冷却%v，实际%v",
+				t.Errorf("状态码%d首次错误应冷却%v，实际%v",
 					tt.statusCode, tt.expected, duration)
-			} else {
-				t.Logf("[INFO] 状态码%d首次错误正确冷却%v", tt.statusCode, duration)
 			}
 		})
 	}
@@ -100,10 +96,8 @@ func TestCalculateBackoffDuration_AuthErrors(t *testing.T) {
 			duration := CalculateBackoffDuration(0, time.Time{}, now, &tt.statusCode)
 
 			if duration != tt.expected {
-				t.Errorf("❌ 认证错误%d首次应冷却%v，实际%v",
+				t.Errorf("认证错误%d首次应冷却%v，实际%v",
 					tt.statusCode, tt.expected, duration)
-			} else {
-				t.Logf("[INFO] 认证错误%d首次正确冷却%v", tt.statusCode, duration)
 			}
 		})
 	}
@@ -124,10 +118,8 @@ func TestCalculateBackoffDuration_OtherErrors(t *testing.T) {
 			duration := CalculateBackoffDuration(0, time.Time{}, now, &tt.statusCode)
 
 			if duration != tt.expected {
-				t.Errorf("❌ 状态码%d首次错误应冷却%v，实际%v",
+				t.Errorf("状态码%d首次错误应冷却%v，实际%v",
 					tt.statusCode, tt.expected, duration)
-			} else {
-				t.Logf("[INFO] 状态码%d首次错误正确冷却%v", tt.statusCode, duration)
 			}
 		})
 	}
@@ -140,10 +132,8 @@ func TestCalculateBackoffDuration_TimeoutError(t *testing.T) {
 	duration := CalculateBackoffDuration(0, time.Time{}, now, &statusCode598)
 
 	if duration != TimeoutErrorCooldown {
-		t.Errorf("❌ 超时错误(598)应固定冷却%v，实际%v",
+		t.Errorf("超时错误(598)应固定冷却%v，实际%v",
 			TimeoutErrorCooldown, duration)
-	} else {
-		t.Logf("[INFO] 超时错误(598)正确固定冷却%v", duration)
 	}
 }
 
@@ -166,11 +156,9 @@ func TestCalculateBackoffDuration_ExponentialBackoff(t *testing.T) {
 		duration := CalculateBackoffDuration(prevMs, time.Time{}, now, &statusCode)
 
 		if duration != expected {
-			t.Errorf("❌ 第%d次退避应为%v，实际%v", i+1, expected, duration)
+			t.Errorf("第%d次退避应为%v，实际%v", i+1, expected, duration)
 		}
 
 		prevMs = int64(duration / time.Millisecond)
 	}
-
-	t.Logf("[INFO] 指数退避序列测试通过，最终达到上限%v", MaxCooldownDuration)
 }

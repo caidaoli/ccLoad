@@ -81,9 +81,6 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 		if abs(keyDuration-expectedDuration) > tolerance {
 			t.Errorf("Key级冷却时间错误: 期望%v，实际%v", expectedDuration, keyDuration)
 		}
-
-		t.Logf("[INFO] 401错误冷却时间一致: 渠道级=%v, Key级=%v (期望%v)",
-			channelDuration, keyDuration, expectedDuration)
 	})
 
 	// 测试场景：指数退避序列一致性
@@ -150,9 +147,6 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 					i+1, expected, channelDuration, keyDuration)
 			}
 
-			t.Logf("[INFO] 第%d次401错误: 渠道级=%v, Key级=%v (期望%v)",
-				i+1, channelDuration, keyDuration, expected)
-
 			// 推进时间（确保不被当作同一次错误）
 			currentTime = currentTime.Add(expected + 1*time.Second)
 		}
@@ -199,9 +193,6 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 			t.Errorf("403错误初始冷却时间错误: 期望%v，实际%v",
 				util.AuthErrorInitialCooldown, channelDuration)
 		}
-
-		t.Logf("[INFO] 403错误冷却时间一致: 渠道级=%v, Key级=%v",
-			channelDuration, keyDuration)
 	})
 
 	// 测试场景：其他错误码一致性（429/500）
@@ -250,9 +241,6 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 					t.Errorf("%s初始冷却时间错误: 期望%v，实际%v",
 						tc.name, tc.expected, channelDuration)
 				}
-
-				t.Logf("[INFO] %s一致: 渠道级=%v, Key级=%v",
-					tc.name, channelDuration, keyDuration)
 			})
 		}
 	})

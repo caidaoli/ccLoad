@@ -35,8 +35,7 @@ func TestTestChannelAPI_StreamIncludesUsageAndCost(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	srv, cleanup := setupTestServer(t)
-	defer cleanup()
+	srv := newInMemoryServer(t)
 	srv.client = upstream.Client()
 
 	cfg := &model.Config{

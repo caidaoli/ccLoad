@@ -37,8 +37,7 @@ func TestAuthToken_MaskToken(t *testing.T) {
 }
 
 func TestAdminAPI_CreateAuthToken_Basic(t *testing.T) {
-	server, cleanup := setupTestServer(t)
-	defer cleanup()
+	server := newInMemoryServer(t)
 
 	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/auth-tokens", map[string]any{
 		"description": "Test Token",
@@ -76,8 +75,7 @@ func TestAdminAPI_CreateAuthToken_Basic(t *testing.T) {
 }
 
 func TestAdminAPI_ListAuthTokens_ResponseShape(t *testing.T) {
-	server, cleanup := setupTestServer(t)
-	defer cleanup()
+	server := newInMemoryServer(t)
 
 	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/auth-tokens", nil))
 

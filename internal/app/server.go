@@ -82,14 +82,14 @@ func NewServer(store storage.Store) *Server {
 	loadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := configService.LoadDefaults(loadCtx); err != nil {
-		log.Fatalf("❌ ConfigService初始化失败: %v", err)
+		log.Fatalf("[FATAL] ConfigService初始化失败: %v", err)
 	}
 	log.Print("[INFO] ConfigService已加载系统配置（支持Web界面管理）")
 
 	// 管理员密码：仅从环境变量读取（安全考虑：密码不应存储在数据库中）
 	password := os.Getenv("CCLOAD_PASS")
 	if password == "" {
-		log.Print("❌ 未设置 CCLOAD_PASS，出于安全原因程序将退出。请设置强管理员密码后重试。")
+		log.Print("[FATAL] 未设置 CCLOAD_PASS，出于安全原因程序将退出。请设置强管理员密码后重试。")
 		os.Exit(1)
 	}
 
@@ -684,7 +684,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// 无论成功还是超时，都要关闭数据库连接
 	if closer, ok := s.store.(interface{ Close() error }); ok {
 		if closeErr := closer.Close(); closeErr != nil {
-			log.Printf("❌ 关闭数据库连接失败: %v", closeErr)
+			log.Printf("[ERROR] 关闭数据库连接失败: %v", closeErr)
 		}
 	}
 

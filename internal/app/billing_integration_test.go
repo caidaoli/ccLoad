@@ -28,13 +28,13 @@ func TestBillingPipeline_OpenAI_ChatCompletions(t *testing.T) {
 	// 2. 验证Token提取正确性
 	// [INFO] 重要: GetUsage()返回的inputTokens已归一化为可计费token (1000-800=200)
 	if inputTokens != 200 {
-		t.Errorf("❌ OpenAI归一化后inputTokens错误: 期望200(1000-800), 实际%d", inputTokens)
+		t.Errorf("OpenAI归一化后inputTokens错误: 期望200(1000-800), 实际%d", inputTokens)
 	}
 	if cacheReadTokens != 800 {
-		t.Errorf("❌ OpenAI cached_tokens提取错误: 期望800, 实际%d", cacheReadTokens)
+		t.Errorf("OpenAI cached_tokens提取错误: 期望800, 实际%d", cacheReadTokens)
 	}
 	if outputTokens != 50 {
-		t.Errorf("❌ OpenAI completion_tokens提取错误: 期望50, 实际%d", outputTokens)
+		t.Errorf("OpenAI completion_tokens提取错误: 期望50, 实际%d", outputTokens)
 	}
 
 	// 3. 计算费用 (inputTokens已归一化，CalculateCostDetailed直接使用)
@@ -48,14 +48,9 @@ func TestBillingPipeline_OpenAI_ChatCompletions(t *testing.T) {
 	//     = 0.002
 	expected := 0.002
 	if !floatEquals(cost, expected, 0.000001) {
-		t.Errorf("❌ OpenAI计费错误: 期望%.6f, 实际%.6f", expected, cost)
+		t.Errorf("OpenAI计费错误: 期望%.6f, 实际%.6f", expected, cost)
 	}
 
-	t.Logf("[INFO] OpenAI Chat Completions计费链路验证通过")
-	t.Logf("   原始prompt_tokens: 1000, 归一化后inputTokens: %d (已扣除缓存)", inputTokens)
-	t.Logf("   缓存读取: %d tokens", cacheReadTokens)
-	t.Logf("   输出token: %d", outputTokens)
-	t.Logf("   费用: $%.6f", cost)
 }
 
 // TestBillingPipeline_Claude_WithCache 验证Claude Prompt Caching完整计费链路
@@ -76,16 +71,16 @@ data: {"type":"message_stop","usage":{"input_tokens":12,"output_tokens":73,"cach
 
 	// 2. 验证Token提取
 	if inputTokens != 12 {
-		t.Errorf("❌ Claude input_tokens错误: 期望12, 实际%d", inputTokens)
+		t.Errorf("Claude input_tokens错误: 期望12, 实际%d", inputTokens)
 	}
 	if outputTokens != 73 {
-		t.Errorf("❌ Claude output_tokens错误: 期望73, 实际%d", outputTokens)
+		t.Errorf("Claude output_tokens错误: 期望73, 实际%d", outputTokens)
 	}
 	if cacheReadTokens != 17558 {
-		t.Errorf("❌ Claude cache_read错误: 期望17558, 实际%d", cacheReadTokens)
+		t.Errorf("Claude cache_read错误: 期望17558, 实际%d", cacheReadTokens)
 	}
 	if cacheCreationTokens != 278 {
-		t.Errorf("❌ Claude cache_creation错误: 期望278, 实际%d", cacheCreationTokens)
+		t.Errorf("Claude cache_creation错误: 期望278, 实际%d", cacheCreationTokens)
 	}
 
 	// 3. 计算费用
@@ -98,14 +93,9 @@ data: {"type":"message_stop","usage":{"input_tokens":12,"output_tokens":73,"cach
 	//     = 0.007441
 	expected := 0.007441
 	if !floatEquals(cost, expected, 0.000001) {
-		t.Errorf("❌ Claude计费错误: 期望%.6f, 实际%.6f", expected, cost)
+		t.Errorf("Claude计费错误: 期望%.6f, 实际%.6f", expected, cost)
 	}
 
-	t.Logf("[INFO] Claude Prompt Caching计费链路验证通过")
-	t.Logf("   非缓存输入: %d tokens", inputTokens)
-	t.Logf("   缓存读取: %d tokens (节省90%%)", cacheReadTokens)
-	t.Logf("   缓存创建: %d tokens (额外25%%)", cacheCreationTokens)
-	t.Logf("   费用: $%.6f", cost)
 }
 
 // TestBillingPipeline_Gemini_LongContext 验证Gemini长上下文分段定价
@@ -141,12 +131,10 @@ func TestBillingPipeline_Gemini_LongContext(t *testing.T) {
 			// 允许±1%误差（定价可能更新）
 			tolerance := tc.expectCost * 0.01
 			if cost < tc.expectCost-tolerance || cost > tc.expectCost+tolerance {
-				t.Errorf("❌ Gemini %s计费错误: 期望%.6f±%.6f, 实际%.6f",
+				t.Errorf("Gemini %s计费错误: 期望%.6f±%.6f, 实际%.6f",
 					tc.name, tc.expectCost, tolerance, cost)
 			}
 
-			t.Logf("[INFO] %s: %d tokens → $%.6f (%s)",
-				tc.name, tc.inputTokens, cost, tc.description)
 		})
 	}
 }
@@ -158,10 +146,9 @@ func TestBillingPipeline_UnknownModel(t *testing.T) {
 
 	// 预期：返回0.0（不应崩溃）
 	if cost != 0.0 {
-		t.Errorf("❌ 未知模型应返回0成本，实际%.6f", cost)
+		t.Errorf("未知模型应返回0成本，实际%.6f", cost)
 	}
 
-	t.Logf("[INFO] 未知模型兜底行为正确: $%.6f", cost)
 }
 
 // TestBillingPipeline_NegativeTokens 验证防御性编程
@@ -171,10 +158,9 @@ func TestBillingPipeline_NegativeTokens(t *testing.T) {
 
 	// 预期：返回0.0并记录错误日志
 	if cost != 0.0 {
-		t.Errorf("❌ 负数token应返回0成本，实际%.6f", cost)
+		t.Errorf("负数token应返回0成本，实际%.6f", cost)
 	}
 
-	t.Logf("[INFO] 负数token防御性检查通过: $%.6f", cost)
 }
 
 // TestBillingPipeline_OpenAI_CacheExceedsInput 验证OpenAI边界情况
@@ -192,10 +178,10 @@ func TestBillingPipeline_OpenAI_CacheExceedsInput(t *testing.T) {
 
 	// 验证解析层边界检查：inputTokens被clamp到0
 	if inputTokens != 0 {
-		t.Errorf("❌ 解析层边界检查失败: 期望inputTokens=0(clamped), 实际%d", inputTokens)
+		t.Errorf("解析层边界检查失败: 期望inputTokens=0(clamped), 实际%d", inputTokens)
 	}
 	if cacheReadTokens != 800 {
-		t.Errorf("❌ cacheReadTokens应保持800, 实际%d", cacheReadTokens)
+		t.Errorf("cacheReadTokens应保持800, 实际%d", cacheReadTokens)
 	}
 
 	// 计费验证
@@ -207,10 +193,9 @@ func TestBillingPipeline_OpenAI_CacheExceedsInput(t *testing.T) {
 	//     = 0.002
 	expected := 0.002
 	if !floatEquals(cost, expected, 0.000001) {
-		t.Errorf("❌ OpenAI缓存超限计费错误: 期望%.6f, 实际%.6f", expected, cost)
+		t.Errorf("OpenAI缓存超限计费错误: 期望%.6f, 实际%.6f", expected, cost)
 	}
 
-	t.Logf("[INFO] OpenAI缓存超限边界情况(解析层检查)通过: $%.6f", cost)
 }
 
 // TestBillingPipeline_ZeroCostWarning 验证费用0值告警机制
@@ -226,14 +211,8 @@ func TestBillingPipeline_ZeroCostWarning(t *testing.T) {
 
 	// 验证：返回0费用
 	if cost != 0.0 {
-		t.Errorf("❌ 未知模型应返回0成本，实际%.6f", cost)
+		t.Errorf("未知模型应返回0成本，实际%.6f", cost)
 	}
-
-	// 验证：这种情况应该触发告警（通过日志检查）
-	// 在实际生产环境中，此告警应触发监控系统
-	t.Logf("[WARN]  财务风险检测: model=%s tokens=%d+%d cost=$%.6f (应触发WARN日志)",
-		model, inputTokens, outputTokens, cost)
-	t.Logf("[INFO] 零成本告警机制测试通过 - 生产环境应配置监控告警")
 }
 
 // floatEquals 浮点数相等性比较（避免精度问题）

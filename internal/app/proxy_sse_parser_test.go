@@ -588,9 +588,6 @@ func TestJSONUsageParser_CacheCreationDetailed_5mOnly(t *testing.T) {
 	if parser.Cache1hInputTokens != 0 {
 		t.Errorf("Cache1hInputTokens = %d, 期望 0", parser.Cache1hInputTokens)
 	}
-
-	t.Logf("[INFO] 非流式JSON响应5m缓存解析正确: cache_5m=%d, cache_1h=%d",
-		parser.Cache5mInputTokens, parser.Cache1hInputTokens)
 }
 
 // TestJSONUsageParser_CacheCreationDetailed_Mixed 验证非流式JSON响应解析5m+1h混合缓存
@@ -626,9 +623,6 @@ func TestJSONUsageParser_CacheCreationDetailed_Mixed(t *testing.T) {
 	if parser.Cache1hInputTokens != 200 {
 		t.Errorf("Cache1hInputTokens = %d, 期望 200", parser.Cache1hInputTokens)
 	}
-
-	t.Logf("[INFO] 非流式JSON响应混合缓存解析正确: total=%d (5m=%d + 1h=%d)",
-		cacheCreation, parser.Cache5mInputTokens, parser.Cache1hInputTokens)
 }
 
 // TestSSEUsageParser_CacheCreationDetailed_1hOnly 验证流式SSE响应解析1h缓存
@@ -656,7 +650,4 @@ data: {"type":"message_delta","usage":{"output_tokens":100}}
 	if parser.CacheCreationInputTokens != 500 {
 		t.Errorf("CacheCreationInputTokens = %d, 期望 500 (兼容字段)", parser.CacheCreationInputTokens)
 	}
-
-	t.Logf("[INFO] 流式SSE响应1h缓存解析正确: cache_5m=%d, cache_1h=%d",
-		parser.Cache5mInputTokens, parser.Cache1hInputTokens)
 }

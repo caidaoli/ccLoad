@@ -222,10 +222,10 @@ func resolveSQLitePath() string {
 	// 回退到系统临时目录
 	tmpPath := filepath.Join(os.TempDir(), "ccload", "ccload.db")
 	log.Printf("════════════════════════════════════════════════════════════")
-	log.Printf("⚠️  警告: 默认路径 %s 不可写", defaultDir)
-	log.Printf("⚠️  数据将存储在临时目录: %s", tmpPath)
-	log.Printf("⚠️  临时目录数据可能在系统重启后丢失！")
-	log.Printf("⚠️  生产环境请设置 SQLITE_PATH 环境变量指定持久化路径")
+	log.Printf("[WARN] 警告: 默认路径 %s 不可写", defaultDir)
+	log.Printf("[WARN] 数据将存储在临时目录: %s", tmpPath)
+	log.Printf("[WARN] 临时目录数据可能在系统重启后丢失！")
+	log.Printf("[WARN] 生产环境请设置 SQLITE_PATH 环境变量指定持久化路径")
 	log.Printf("════════════════════════════════════════════════════════════")
 	return tmpPath
 }
@@ -274,7 +274,7 @@ func validateJournalMode(mode string) string {
 
 	modeUpper := strings.ToUpper(mode)
 	if !validModes[modeUpper] {
-		log.Fatalf("❌ 安全错误: SQLITE_JOURNAL_MODE 环境变量值非法: %q\n"+
+		log.Fatalf("[FATAL] 安全错误: SQLITE_JOURNAL_MODE 环境变量值非法: %q\n"+
 			"   允许的值: DELETE, TRUNCATE, PERSIST, MEMORY, WAL, OFF\n"+
 			"   当前值: %q\n"+
 			"   修复方法:\n"+
