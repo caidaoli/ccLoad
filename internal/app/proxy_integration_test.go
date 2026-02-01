@@ -325,17 +325,28 @@ func TestProxy_KeyRetry_On401(t *testing.T) {
 func TestProxy_AllChannelsExhausted(t *testing.T) {
 	t.Parallel()
 
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	callCount1 := 0
+	upstream1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount1++
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"error":"internal server error"}`))
 	}))
-	defer upstream.Close()
+	defer upstream1.Close()
+
+	callCount2 := 0
+	upstream2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount2++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"internal server error"}`))
+	}))
+	defer upstream2.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{
 		{name: "ch1", models: "gpt-4", apiKey: "sk-1", priority: 100},
 		{name: "ch2", models: "gpt-4", apiKey: "sk-2", priority: 50},
-	}, map[int]string{0: upstream.URL, 1: upstream.URL})
+	}, map[int]string{0: upstream1.URL, 1: upstream2.URL})
 
 	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
@@ -345,6 +356,10 @@ func TestProxy_AllChannelsExhausted(t *testing.T) {
 	// 所有渠道失败时应返回最后一个错误状态码
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+	// 关键行为：必须耗尽所有可用渠道，而不是只尝试第一个就返回（避免“假绿”）。
+	if callCount1 < 1 || callCount2 < 1 {
+		t.Fatalf("expected to try all channels at least once, got upstream1=%d upstream2=%d", callCount1, callCount2)
 	}
 }
 
@@ -514,6 +529,32 @@ func TestProxy_SSEErrorEvent_TriggersCooldown(t *testing.T) {
 		{name: "ch1", models: "gpt-4", apiKey: "sk-1"},
 	}, map[int]string{0: upstream.URL})
 
+	ctx := context.Background()
+	// 先拿到渠道ID（避免硬编码）
+	var channelID int64
+	configs, err := env.store.ListConfigs(ctx)
+	if err != nil {
+		t.Fatalf("ListConfigs: %v", err)
+	}
+	for _, cfg := range configs {
+		if cfg.Name == "ch1" {
+			channelID = cfg.ID
+			break
+		}
+	}
+	if channelID == 0 {
+		t.Fatalf("channel ch1 not found")
+	}
+
+	// 预期：请求前没有渠道冷却（否则测试语义不成立）
+	beforeCooldowns, err := env.store.GetAllChannelCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("GetAllChannelCooldowns(before): %v", err)
+	}
+	if _, exists := beforeCooldowns[channelID]; exists {
+		t.Fatalf("expected no channel cooldown before request, but found one for channel_id=%d", channelID)
+	}
+
 	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
 		"stream":   true,
@@ -525,5 +566,18 @@ func TestProxy_SSEErrorEvent_TriggersCooldown(t *testing.T) {
 	// 响应仍是 200（因为 header 已发送），但内部会记录冷却
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 (header already sent), got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 关键断言：SSE error 事件必须触发冷却副作用（单Key渠道会升级为渠道级冷却）。
+	afterCooldowns, err := env.store.GetAllChannelCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("GetAllChannelCooldowns(after): %v", err)
+	}
+	until, exists := afterCooldowns[channelID]
+	if !exists {
+		t.Fatalf("expected channel cooldown to be set after SSE error event, channel_id=%d", channelID)
+	}
+	if time.Until(until) <= 0 {
+		t.Fatalf("expected channel cooldown until in the future, got %v", until)
 	}
 }

@@ -55,6 +55,7 @@ func setupMySQLEnv(t *testing.T) *mysqlTestEnv {
 		if err != nil {
 			t.Fatalf("连接 MySQL 失败: %v", err)
 		}
+		t.Cleanup(func() { _ = db.Close() })
 		if err := db.Ping(); err != nil {
 			t.Fatalf("MySQL ping 失败: %v", err)
 		}
@@ -115,6 +116,7 @@ func startDockerMySQL(t *testing.T) *mysqlTestEnv {
 		}
 		if err := db.Ping(); err == nil {
 			t.Logf("MySQL 就绪（等待 %d 秒）", i+1)
+			t.Cleanup(func() { _ = db.Close() })
 			return &mysqlTestEnv{dsn: dsn, containerID: containerID, db: db}
 		}
 		_ = db.Close()
