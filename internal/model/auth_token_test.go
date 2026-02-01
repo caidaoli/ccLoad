@@ -191,9 +191,6 @@ func TestAuthToken_UpdateLastUsed(t *testing.T) {
 
 	firstTime := *token.LastUsedAt
 
-	// 等待一小段时间
-	time.Sleep(2 * time.Millisecond)
-
 	// 第二次更新
 	token.UpdateLastUsed()
 	if token.LastUsedAt == nil {

@@ -337,16 +337,20 @@ func TestHybridStore_AddLog(t *testing.T) {
 		t.Errorf("ListLogs 返回数量不匹配: got %d, want 1", len(logs))
 	}
 
-	// 等待异步同步到 MySQL
-	time.Sleep(200 * time.Millisecond)
-
-	// 验证 MySQL 也有数据
-	mysqlLogs, err := mysql.ListLogs(ctx, time.Now().Add(-1*time.Hour), 10, 0, nil)
-	if err != nil {
-		t.Fatalf("MySQL ListLogs 失败: %v", err)
-	}
-	if len(mysqlLogs) != 1 {
-		t.Logf("MySQL 异步同步可能还在进行中，got %d logs", len(mysqlLogs))
+	// 等待异步同步到 MySQL（条件等待，避免固定 sleep 造成漂移/假绿）
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mysqlLogs, err := mysql.ListLogs(ctx, time.Now().Add(-1*time.Hour), 10, 0, nil)
+		if err != nil {
+			t.Fatalf("MySQL ListLogs 失败: %v", err)
+		}
+		if len(mysqlLogs) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("等待 MySQL 异步同步超时：got %d logs, want 1", len(mysqlLogs))
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

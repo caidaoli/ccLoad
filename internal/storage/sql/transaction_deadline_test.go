@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -102,21 +103,28 @@ func TestWithTransaction_ContextDeadline(t *testing.T) {
 
 		// 创建可取消的 context
 		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
 		attemptCount := 0
 		start := time.Now()
 
-		// 在第一次重试后取消 context
+		firstAttempt := make(chan struct{})
+		var closeOnce sync.Once
+		closeFirstAttempt := func() { closeOnce.Do(func() { close(firstAttempt) }) }
 		go func() {
-			time.Sleep(100 * time.Millisecond)
+			<-firstAttempt
 			cancel()
 		}()
 
 		// 模拟一个总是返回 BUSY 错误的事务
 		err = withTransaction(ctx, db, func(_ *sql.Tx) error {
 			attemptCount++
+			if attemptCount == 1 {
+				closeFirstAttempt()
+			}
 			return errors.New("database is locked")
 		})
+		closeFirstAttempt()
 
 		elapsed := time.Since(start)
 

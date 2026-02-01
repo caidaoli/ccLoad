@@ -359,7 +359,14 @@ func TestProxy_ClientCancel_Returns499(t *testing.T) {
 	t.Parallel()
 
 	// 上游延迟响应
+	upstreamStarted := make(chan struct{})
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-upstreamStarted:
+			// already closed
+		default:
+			close(upstreamStarted)
+		}
 		select {
 		case <-r.Context().Done():
 			return
@@ -384,9 +391,12 @@ func TestProxy_ClientCancel_Returns499(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer test-api-key")
 
-	// 快速取消
+	// 等上游请求真的发出后再取消，避免“还没发出去就 cancel”导致语义漂移
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		select {
+		case <-upstreamStarted:
+		case <-time.After(1 * time.Second):
+		}
 		cancel()
 	}()
 

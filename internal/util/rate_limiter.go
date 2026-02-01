@@ -20,9 +20,11 @@ type LoginRateLimiter struct {
 	maxAttempts     int           // 最大尝试次数（默认5次）
 	lockoutDuration time.Duration // 锁定时长（默认15分钟）
 	resetInterval   time.Duration // 计数重置间隔（默认1小时）
+	now             func() time.Time
 
 	// 优雅关闭机制
 	stopCh   chan struct{} // 关闭信号
+	doneCh   chan struct{} // cleanupLoop 退出信号（用于测试与验证）
 	stopOnce sync.Once
 }
 
@@ -37,10 +39,12 @@ type attemptRecord struct {
 func NewLoginRateLimiter() *LoginRateLimiter {
 	limiter := &LoginRateLimiter{
 		attempts:        make(map[string]*attemptRecord),
-		maxAttempts:     5,                   // 最大5次尝试
-		lockoutDuration: 15 * time.Minute,    // 锁定15分钟
-		resetInterval:   1 * time.Hour,       // 1小时后重置
+		maxAttempts:     5,                // 最大5次尝试
+		lockoutDuration: 15 * time.Minute, // 锁定15分钟
+		resetInterval:   1 * time.Hour,    // 1小时后重置
+		now:             time.Now,
 		stopCh:          make(chan struct{}), // 初始化关闭信号
+		doneCh:          make(chan struct{}), // 初始化退出信号
 	}
 
 	// 启动后台清理协程（每小时清理过期记录）
@@ -56,7 +60,7 @@ func (rl *LoginRateLimiter) AllowAttempt(ip string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	now := time.Now()
+	now := rl.now()
 	record, exists := rl.attempts[ip]
 
 	// 首次尝试
@@ -111,7 +115,7 @@ func (rl *LoginRateLimiter) GetLockoutTime(ip string) int {
 		return 0
 	}
 
-	now := time.Now()
+	now := rl.now()
 	if now.Before(record.lockUntil) {
 		return int(record.lockUntil.Sub(now).Seconds())
 	}
@@ -130,7 +134,8 @@ func (rl *LoginRateLimiter) GetAttemptCount(ip string) int {
 	}
 
 	// 检查是否已过期
-	if time.Since(record.lastAttempt) > rl.resetInterval {
+	now := rl.now()
+	if now.Sub(record.lastAttempt) > rl.resetInterval {
 		return 0
 	}
 
@@ -140,6 +145,8 @@ func (rl *LoginRateLimiter) GetAttemptCount(ip string) int {
 // cleanupLoop 定期清理过期记录（后台协程）
 // 支持优雅关闭
 func (rl *LoginRateLimiter) cleanupLoop() {
+	defer close(rl.doneCh)
+
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 
@@ -160,7 +167,7 @@ func (rl *LoginRateLimiter) cleanup() {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	now := time.Now()
+	now := rl.now()
 	toDelete := make([]string, 0)
 
 	for ip, record := range rl.attempts {

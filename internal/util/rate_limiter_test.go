@@ -6,6 +6,23 @@ import (
 	"time"
 )
 
+type fakeClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *fakeClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	c.now = c.now.Add(d)
+	c.mu.Unlock()
+}
+
 // TestNewLoginRateLimiter 测试速率限制器创建
 func TestNewLoginRateLimiter(t *testing.T) {
 	limiter := NewLoginRateLimiter()
@@ -273,6 +290,9 @@ func TestCleanup(t *testing.T) {
 	limiter := NewLoginRateLimiter()
 	defer limiter.Stop()
 
+	clock := &fakeClock{now: time.Unix(0, 0)}
+	limiter.now = clock.Now
+
 	// 修改重置间隔为短时间（用于测试）
 	limiter.resetInterval = 100 * time.Millisecond
 
@@ -285,8 +305,7 @@ func TestCleanup(t *testing.T) {
 		t.Fatalf("尝试计数应为1，实际%d", count)
 	}
 
-	// 等待超过重置间隔
-	time.Sleep(150 * time.Millisecond)
+	clock.Advance(150 * time.Millisecond)
 
 	// 手动触发清理
 	limiter.cleanup()
@@ -307,16 +326,15 @@ func TestCleanup(t *testing.T) {
 func TestCleanupLoop_GracefulShutdown(t *testing.T) {
 	limiter := NewLoginRateLimiter()
 
-	// 等待一小段时间确保cleanupLoop启动
-	time.Sleep(10 * time.Millisecond)
-
 	// 调用Stop应该能正常关闭
 	limiter.Stop()
 
-	// 等待一小段时间确保goroutine退出
-	time.Sleep(50 * time.Millisecond)
-
-	t.Logf("[INFO] 优雅关闭测试通过（无goroutine泄漏）")
+	select {
+	case <-limiter.doneCh:
+		// ok
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Stop 后 cleanupLoop 未在预期时间内退出（疑似 goroutine 泄漏或关闭未生效）")
+	}
 }
 
 func TestStop_Idempotent(t *testing.T) {
@@ -338,6 +356,9 @@ func TestResetInterval(t *testing.T) {
 	limiter := NewLoginRateLimiter()
 	defer limiter.Stop()
 
+	clock := &fakeClock{now: time.Unix(0, 0)}
+	limiter.now = clock.Now
+
 	// 修改重置间隔为短时间
 	limiter.resetInterval = 100 * time.Millisecond
 
@@ -353,8 +374,7 @@ func TestResetInterval(t *testing.T) {
 		t.Fatalf("3次尝试后计数应为3，实际%d", count)
 	}
 
-	// 等待超过重置间隔
-	time.Sleep(150 * time.Millisecond)
+	clock.Advance(150 * time.Millisecond)
 
 	// 再次尝试应该重置计数
 	allowed := limiter.AllowAttempt(ip)
@@ -375,6 +395,9 @@ func TestLockoutExpiry(t *testing.T) {
 	limiter := NewLoginRateLimiter()
 	defer limiter.Stop()
 
+	clock := &fakeClock{now: time.Unix(0, 0)}
+	limiter.now = clock.Now
+
 	// 修改锁定时长为短时间
 	limiter.lockoutDuration = 100 * time.Millisecond
 	// 修改重置间隔为更长时间，避免计数重置干扰
@@ -393,20 +416,42 @@ func TestLockoutExpiry(t *testing.T) {
 		t.Error("应该处于锁定状态")
 	}
 
-	// 等待锁定过期
-	time.Sleep(150 * time.Millisecond)
-
-	// 锁定过期后应该允许尝试（但计数仍然>5）
-	allowed = limiter.AllowAttempt(ip)
-	if !allowed {
-		// 锁定过期后，如果计数仍>5，会立即再次锁定
-		// 这是正确的行为，所以我们需要修改测试逻辑
-		t.Logf("锁定过期后，由于计数仍>5，会再次锁定（这是正确行为）")
+	// 读取当前 lockUntil（避免 GetLockoutTime 的秒级取整导致 <1s 永远为0）
+	limiter.mu.RLock()
+	record := limiter.attempts[ip]
+	limiter.mu.RUnlock()
+	if record == nil {
+		t.Fatal("应存在该 IP 的尝试记录")
+	}
+	initialLockUntil := record.lockUntil
+	if !initialLockUntil.After(clock.Now()) {
+		t.Fatalf("应被锁定：lockUntil=%v now=%v", initialLockUntil, clock.Now())
 	}
 
-	// 验证锁定时间（可能为0或接近lockoutDuration）
-	lockoutTime := limiter.GetLockoutTime(ip)
-	t.Logf("[INFO] 锁定过期功能测试：lockoutTime=%d秒（锁定过期后因计数仍超限会再次锁定）", lockoutTime)
+	clock.Advance(150 * time.Millisecond)
+
+	limiter.mu.RLock()
+	afterLockUntil := limiter.attempts[ip].lockUntil
+	limiter.mu.RUnlock()
+	if !clock.Now().After(afterLockUntil) {
+		t.Fatalf("锁定应已过期：lockUntil=%v now=%v", afterLockUntil, clock.Now())
+	}
+
+	// 锁定过期后，下一次尝试会因为计数仍超限而“立刻重新锁定”（这是预期行为）
+	allowed = limiter.AllowAttempt(ip)
+	if allowed {
+		t.Fatal("锁定过期但计数仍超限时，不应允许尝试（应触发重新锁定）")
+	}
+
+	limiter.mu.RLock()
+	relockedUntil := limiter.attempts[ip].lockUntil
+	limiter.mu.RUnlock()
+	if !relockedUntil.After(clock.Now()) {
+		t.Fatalf("重新锁定应生效：lockUntil=%v now=%v", relockedUntil, clock.Now())
+	}
+	if !relockedUntil.After(initialLockUntil) {
+		t.Fatalf("重新锁定应更新 lockUntil：initial=%v relocked=%v", initialLockUntil, relockedUntil)
+	}
 }
 
 // TestMultipleIPs 测试多个IP独立限制

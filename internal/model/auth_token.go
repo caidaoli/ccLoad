@@ -103,6 +103,9 @@ func MaskToken(token string) string {
 // UpdateLastUsed 更新最后使用时间为当前时间
 func (t *AuthToken) UpdateLastUsed() {
 	now := time.Now().UnixMilli()
+	if t.LastUsedAt != nil && now <= *t.LastUsedAt {
+		now = *t.LastUsedAt + 1
+	}
 	t.LastUsedAt = &now
 }
 

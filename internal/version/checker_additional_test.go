@@ -15,6 +15,21 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+type signalReadCloser struct {
+	rc      io.ReadCloser
+	onClose func()
+}
+
+func (s *signalReadCloser) Read(p []byte) (int, error) { return s.rc.Read(p) }
+
+func (s *signalReadCloser) Close() error {
+	if s.onClose != nil {
+		s.onClose()
+		s.onClose = nil
+	}
+	return s.rc.Close()
+}
+
 func httpResp(status int, body string) *http.Response {
 	return &http.Response{
 		StatusCode: status,
@@ -113,36 +128,48 @@ func TestChecker_Check_ErrorsAndSuccess(t *testing.T) {
 func TestStartChecker_RunsCheckOnce(t *testing.T) {
 	origVersion := Version
 	origClient := checker.client
+	t.Cleanup(func() {
+		Version = origVersion
+		checker.client = origClient
+	})
 
 	Version = "v1.0.0"
 
 	var calls int32
+	done := make(chan struct{})
 	checker.client = &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			atomic.AddInt32(&calls, 1)
-			return httpResp(http.StatusOK, `{"tag_name":"v2.0.0","html_url":"https://example.com/release"}`), nil
+			resp := httpResp(http.StatusOK, `{"tag_name":"v2.0.0","html_url":"https://example.com/release"}`)
+			resp.Body = &signalReadCloser{
+				rc: resp.Body,
+				onClose: func() {
+					select {
+					case <-done:
+					default:
+						close(done)
+					}
+				},
+			}
+			return resp, nil
 		}),
 	}
 
 	StartChecker()
 
-	deadline := time.Now().Add(1 * time.Second)
-	for time.Now().Before(deadline) {
-		if atomic.LoadInt32(&calls) > 0 {
-			checker.mu.RLock()
-			done := !checker.lastCheck.IsZero()
-			checker.mu.RUnlock()
-			if done {
-				Version = origVersion
-				checker.client = origClient
-				return
-			}
-		}
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatalf("expected StartChecker to run check at least once")
 	}
 
-	// 失败时也要恢复全局状态，避免影响其它测试
-	Version = origVersion
-	checker.client = origClient
-	t.Fatalf("expected StartChecker to run check at least once")
+	if atomic.LoadInt32(&calls) == 0 {
+		t.Fatalf("expected StartChecker to issue at least one HTTP call")
+	}
+	checker.mu.RLock()
+	lastCheck := checker.lastCheck
+	checker.mu.RUnlock()
+	if lastCheck.IsZero() {
+		t.Fatalf("expected lastCheck to be set")
+	}
 }

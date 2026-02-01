@@ -47,13 +47,11 @@ func TestUpdateTokenStatsDuringShutdown(t *testing.T) {
 		<-shutdownErrCh
 	}()
 
-	// 等待Shutdown进入“shutting down”状态
-	deadline := time.Now().Add(1 * time.Second)
-	for !srv.isShuttingDown.Load() {
-		if time.Now().After(deadline) {
-			t.Fatal("server did not enter shutting down state in time")
-		}
-		time.Sleep(1 * time.Millisecond)
+	// 等待 Shutdown 开始（Shutdown 会关闭 shutdownCh）
+	select {
+	case <-srv.shutdownCh:
+	case <-time.After(1 * time.Second):
+		t.Fatal("server did not start shutdown in time")
 	}
 
 	// 模拟：shutdown开始后，一个在途请求完成并尝试写入计费/用量统计

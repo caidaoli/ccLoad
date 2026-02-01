@@ -33,7 +33,6 @@ import (
 
 const (
 	testMySQLImage    = "mysql:8.0"
-	testMySQLPort     = "3307" // 避免与生产 MySQL 冲突
 	testMySQLRootPass = "testroot"
 	testMySQLDB       = "ccload_test"
 )
@@ -82,7 +81,8 @@ func startDockerMySQL(t *testing.T) *mysqlTestEnv {
 		"--name", containerName,
 		"-e", "MYSQL_ROOT_PASSWORD=" + testMySQLRootPass,
 		"-e", "MYSQL_DATABASE=" + testMySQLDB,
-		"-p", testMySQLPort + ":3306",
+		// 随机挑选空闲端口，避免与并行测试/本机服务冲突
+		"-p", "127.0.0.1::3306",
 		testMySQLImage,
 	}
 	out, err := exec.Command("docker", args...).CombinedOutput()
@@ -91,6 +91,9 @@ func startDockerMySQL(t *testing.T) *mysqlTestEnv {
 	}
 	containerID := strings.TrimSpace(string(out))
 	t.Logf("启动 MySQL 容器: %s", containerID[:12])
+
+	hostPort := dockerMappedHostPort(t, containerID, "3306/tcp")
+	t.Logf("MySQL 端口映射: 127.0.0.1:%s -> 3306", hostPort)
 
 	// 注册清理（在顶层测试结束时执行）
 	t.Cleanup(func() {
@@ -101,7 +104,7 @@ func startDockerMySQL(t *testing.T) *mysqlTestEnv {
 
 	// 等待 MySQL 就绪
 	dsn := fmt.Sprintf("root:%s@tcp(127.0.0.1:%s)/%s?parseTime=true&multiStatements=true",
-		testMySQLRootPass, testMySQLPort, testMySQLDB)
+		testMySQLRootPass, hostPort, testMySQLDB)
 
 	var db *sql.DB
 	for i := range 30 {
@@ -119,6 +122,34 @@ func startDockerMySQL(t *testing.T) *mysqlTestEnv {
 
 	t.Fatalf("MySQL 容器启动超时（30秒）")
 	return nil
+}
+
+func dockerMappedHostPort(t *testing.T, containerID, privatePort string) string {
+	t.Helper()
+
+	out, err := exec.Command("docker", "port", containerID, privatePort).CombinedOutput()
+	if err != nil {
+		t.Fatalf("获取容器端口映射失败: %v\n%s", err, out)
+	}
+
+	line := strings.TrimSpace(string(out))
+	if line == "" {
+		t.Fatalf("容器端口映射为空: container=%s port=%s", containerID[:12], privatePort)
+	}
+
+	// docker port 有时返回多行；我们只需要第一条映射
+	line = strings.Split(line, "\n")[0]
+	if strings.Contains(line, "->") {
+		parts := strings.Split(line, "->")
+		line = strings.TrimSpace(parts[len(parts)-1])
+	}
+
+	idx := strings.LastIndex(line, ":")
+	if idx == -1 || idx == len(line)-1 {
+		t.Fatalf("无法解析容器端口映射: %q", line)
+	}
+
+	return line[idx+1:]
 }
 
 // cleanupMySQLTables 清理所有表（用于测试前重置）

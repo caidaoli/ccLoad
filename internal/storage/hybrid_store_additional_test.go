@@ -312,16 +312,20 @@ func TestHybridStore_AddLog_SyncsToMySQL(t *testing.T) {
 		t.Fatalf("AddLog failed: %v", err)
 	}
 
-	// 等待同步
-	time.Sleep(100 * time.Millisecond)
-
-	// 验证 MySQL 收到日志
-	logs, err := mysql.ListLogs(ctx, now.Add(-time.Minute), 10, 0, nil)
-	if err != nil {
-		t.Fatalf("mysql.ListLogs failed: %v", err)
-	}
-	if len(logs) == 0 {
-		t.Error("expected log to be synced to MySQL")
+	// 等待同步（条件等待，避免固定 sleep）
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		logs, err := mysql.ListLogs(ctx, now.Add(-time.Minute), 10, 0, nil)
+		if err != nil {
+			t.Fatalf("mysql.ListLogs failed: %v", err)
+		}
+		if len(logs) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expected log to be synced to MySQL (timeout)")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
