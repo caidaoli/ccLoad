@@ -23,25 +23,24 @@ go run -tags go_json .
 ```
 internal/
 ├── app/           # HTTP层+业务逻辑
-│   ├── proxy_*.go          # 代理模块（handler/forward/error/stream/gemini/sse_parser）
-│   ├── admin_*.go          # 管理API（channels/stats/cooldown/csv/auth_tokens/settings/models/testing）
-│   ├── selector*.go        # 渠道选择（已拆分为4个模块）
-│   │   ├── selector.go           # 主入口
-│   │   ├── selector_balancer.go  # 平滑加权轮询负载均衡
-│   │   ├── selector_cooldown.go  # 冷却过滤+成本限额检查
-│   │   └── selector_model_matcher.go  # 模型匹配+日期后缀回退
-│   ├── smooth_weighted_rr.go   # 平滑加权轮询算法（替换加权随机）
-│   ├── cost_cache.go           # 渠道每日成本缓存（按天重置）
-│   ├── health_cache.go         # 健康度缓存（原子指针无锁快照）
-│   ├── stats_cache.go          # 统计结果缓存（智能TTL）
-│   └── key_selector.go         # Key负载均衡（sequential/round_robin）
-├── cooldown/      # 冷却决策引擎 (manager.go)
+│   ├── proxy_*.go       # 代理（handler/forward/stream/gemini/sse_parser）
+│   ├── admin_*.go       # 管理API
+│   ├── selector*.go     # 渠道选择（balancer/cooldown/model_matcher）
+│   ├── *_cache.go       # 缓存（cost/health/stats）
+│   └── key_selector.go  # Key负载均衡
+├── model/         # 数据模型（auth_token/config/log/stats）
+├── cooldown/      # 冷却决策引擎
 ├── storage/       # 存储层
-│   ├── factory.go        # 存储工厂（三种模式选择）
-│   ├── hybrid_store.go   # 混合存储（MySQL主+SQLite本地缓存）
-│   ├── sync_manager.go   # 启动时数据恢复
-│   └── sql/              # SQL实现（SQLite/MySQL统一）
-└── util/          # 工具库 (classifier.go错误分类, models_fetcher.go, cost_calculator.go)
+│   ├── factory.go       # 存储工厂（SQLite/MySQL/混合）
+│   ├── store.go         # 统一存储接口
+│   ├── hybrid_store.go  # 混合存储实现
+│   ├── cache.go         # 渠道/Key缓存
+│   ├── migrate.go       # Schema迁移
+│   ├── sync_manager.go  # 启动数据恢复
+│   └── sql/             # SQL实现
+├── util/          # 工具库（classifier/cost_calculator）
+├── config/        # 配置加载
+└── testutil/      # 测试辅助
 ```
 
 **故障切换策略**:
@@ -92,35 +91,20 @@ internal/
 
 ## 开发指南
 
-### Serena MCP 工具规范
+### Serena MCP 工具
 
-**核心原则**: Serena 工具优先于内置工具。资源高效、按需获取，避免读取不必要的内容。
+Serena 优先于内置工具。按需获取，不读整文件。
 
-**代码浏览策略**:
-- **禁止**直接读取整文件，采用渐进式信息获取
-- 工作流: `get_symbols_overview` → `find_symbol(depth=1)` → `find_symbol(include_body=True)`
-- 符号定位不确定时: 先用 `search_for_pattern` 找候选，再用符号化工具
-- 查找引用关系: `find_referencing_symbols`
-- 限制搜索范围: 始终传 `relative_path` 参数缩小搜索目录
+**读取**: `get_symbols_overview` → `find_symbol(include_body=True)`
+- 始终传 `relative_path` 限制范围
+- 符号名不确定时先 `search_for_pattern`
 
-**符号路径 (name_path) 语法**:
-- 简单名称: `method` - 匹配任意同名符号
-- 相对路径: `class/method` - 匹配后缀
-- 绝对路径: `/class/method` - 精确匹配
-- 重载索引: `MyClass/method[0]` - 指定特定重载
+**符号路径**: `Struct/Method` (Go), `/pkg/func` (绝对), `Method[0]` (重载)
 
-**代码编辑**:
-- 整符号替换: `replace_symbol_body`
-- 文件尾部插入: `insert_after_symbol` (最后一个顶级符号)
-- 文件头部插入: `insert_before_symbol` (第一个顶级符号)
-- 小改动 (几行代码): 用 `Edit` 工具
-- 编辑前必须用 `find_referencing_symbols` 检查影响范围
-
-**辅助工具**:
-- 目录结构: `list_dir`
-- 文件查找: `find_file`
-- 模式搜索: `search_for_pattern` (非代码文件或符号名未知时)
-- 项目记忆: `read_memory` / `list_memories` (查阅架构文档等)
+**编辑**:
+- 整函数/方法: `replace_symbol_body`
+- 几行代码: `Edit` 工具
+- 编辑前 `find_referencing_symbols` 检查影响
 
 ### Playwright MCP 工具策略
 
