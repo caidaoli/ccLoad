@@ -408,29 +408,24 @@ func classify400Error(responseBody []byte) ErrorLevel {
 }
 
 // classify404Error 根据响应体内容智能分类 404 错误
-// 设计原则：需要区分两种情况
-//   - BaseURL 配置错误（渠道级）：上游返回 HTML 错误页面
-//   - 模型不存在（客户端级）：上游返回 JSON 错误消息
+// 设计原则：404 本身是异常情况，只有明确的客户端错误才不切换
+//   - 模型不存在（客户端级）：明确的 model_not_found 或 does not exist
+//   - 其他情况（渠道级）：空响应、HTML、异常 JSON 等都应切换渠道
 func classify404Error(responseBody []byte) ErrorLevel {
 	if len(responseBody) == 0 {
 		return ErrorLevelChannel // 空响应 = 路径错误，渠道配置问题
 	}
 	bodyLower := strings.ToLower(string(responseBody))
 
-	// 客户端级特征
+	// 仅当明确是"模型不存在"时才视为客户端错误
 	if strings.Contains(bodyLower, "model_not_found") ||
 		strings.Contains(bodyLower, "does not exist") {
 		return ErrorLevelClient
 	}
 
-	// 渠道级特征（HTML 错误页面 = BaseURL 配错）
-	if strings.Contains(bodyLower, "<!doctype html") ||
-		strings.Contains(bodyLower, "<html") {
-		return ErrorLevelChannel
-	}
-
-	// 默认：客户端级（保守策略）
-	return ErrorLevelClient
+	// 其他 404 一律视为渠道问题（HTML/JSON/其他）
+	// 例如：BaseURL 配错、上游服务异常、路由不存在等
+	return ErrorLevelChannel
 }
 
 // ParseResetTimeFrom1308Error 从1308错误响应中提取重置时间

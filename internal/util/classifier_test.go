@@ -167,8 +167,8 @@ func TestClassifyHTTPResponse(t *testing.T) {
 			name:         "404_not_found",
 			statusCode:   404,
 			responseBody: []byte(`{"error":"not found"}`),
-			expected:     ErrorLevelClient,
-			reason:       "404应该返回客户端错误",
+			expected:     ErrorLevelChannel,
+			reason:       "404非model_not_found应返回渠道级错误以触发切换",
 		},
 		{
 			name:         "500_internal_error",
@@ -834,8 +834,8 @@ func TestClassify404Error(t *testing.T) {
 		{
 			name:         "endpoint_not_found",
 			responseBody: []byte(`{"error": {"message": "Endpoint /v1/completions not found"}}`),
-			expected:     ErrorLevelClient,
-			reason:       "端点不存在应判定为客户端级错误（默认保守策略）",
+			expected:     ErrorLevelChannel,
+			reason:       "端点不存在应判定为渠道级错误（标准路径返回404更可能是渠道配置问题）",
 		},
 	}
 
