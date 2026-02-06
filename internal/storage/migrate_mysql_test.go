@@ -3,6 +3,7 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ccLoad/internal/model"
 
 	_ "github.com/go-sql-driver/mysql"
 )
@@ -285,5 +288,138 @@ func TestMySQL(t *testing.T) {
 		store2.Close()
 
 		t.Log("已存在列验证通过：不报错")
+	})
+
+	t.Run("EnsureColumns_APIKeyLengthDrift", func(t *testing.T) {
+		cleanupMySQLTables(t, env.db)
+
+		mustExec := func(stmt string) {
+			t.Helper()
+			if _, err := env.db.Exec(stmt); err != nil {
+				t.Fatalf("预置旧表失败: %v\nSQL=%s", err, stmt)
+			}
+		}
+
+		// 预置旧版 schema：api_keys.api_key 仍是 VARCHAR(64)
+		mustExec(`
+			CREATE TABLE channels (
+				id INT PRIMARY KEY AUTO_INCREMENT,
+				name VARCHAR(191) NOT NULL UNIQUE,
+				url VARCHAR(191) NOT NULL,
+				priority INT NOT NULL DEFAULT 0,
+				channel_type VARCHAR(64) NOT NULL DEFAULT 'anthropic',
+				enabled TINYINT NOT NULL DEFAULT 1,
+				cooldown_until BIGINT NOT NULL DEFAULT 0,
+				cooldown_duration_ms BIGINT NOT NULL DEFAULT 0,
+				daily_cost_limit DOUBLE NOT NULL DEFAULT 0,
+				created_at BIGINT NOT NULL,
+				updated_at BIGINT NOT NULL,
+				INDEX idx_channels_enabled (enabled),
+				INDEX idx_channels_priority (priority DESC),
+				INDEX idx_channels_type_enabled (channel_type, enabled),
+				INDEX idx_channels_cooldown (cooldown_until)
+			)
+		`)
+
+		mustExec(`
+			CREATE TABLE api_keys (
+				id INT PRIMARY KEY AUTO_INCREMENT,
+				channel_id INT NOT NULL,
+				key_index INT NOT NULL,
+				api_key VARCHAR(64) NOT NULL,
+				key_strategy VARCHAR(32) NOT NULL DEFAULT 'sequential',
+				cooldown_until BIGINT NOT NULL DEFAULT 0,
+				cooldown_duration_ms BIGINT NOT NULL DEFAULT 0,
+				created_at BIGINT NOT NULL,
+				updated_at BIGINT NOT NULL,
+				UNIQUE KEY uk_channel_key (channel_id, key_index),
+				FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE,
+				INDEX idx_api_keys_cooldown (cooldown_until),
+				INDEX idx_api_keys_channel_cooldown (channel_id, cooldown_until)
+			)
+		`)
+
+		mustExec(`
+			CREATE TABLE channel_models (
+				channel_id INT NOT NULL,
+				model VARCHAR(191) NOT NULL,
+				redirect_model VARCHAR(191) NOT NULL DEFAULT '',
+				created_at BIGINT NOT NULL DEFAULT 0,
+				PRIMARY KEY (channel_id, model),
+				FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE,
+				INDEX idx_channel_models_model (model)
+			)
+		`)
+
+		store, err := CreateMySQLStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatalf("迁移旧 schema 失败: %v", err)
+		}
+		defer store.Close()
+
+		var (
+			dataType   string
+			charLen    sql.NullInt64
+			isNullable string
+		)
+		err = env.db.QueryRow(`
+			SELECT DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE
+			FROM INFORMATION_SCHEMA.COLUMNS
+			WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'api_keys' AND COLUMN_NAME = 'api_key'
+		`).Scan(&dataType, &charLen, &isNullable)
+		if err != nil {
+			t.Fatalf("查询 api_keys.api_key 列定义失败: %v", err)
+		}
+
+		if !strings.EqualFold(dataType, "varchar") {
+			t.Fatalf("api_keys.api_key 类型错误: got=%s want=varchar", dataType)
+		}
+		if !charLen.Valid || charLen.Int64 != 100 {
+			t.Fatalf("api_keys.api_key 长度错误: got=%v want=100", charLen)
+		}
+		if !strings.EqualFold(isNullable, "NO") {
+			t.Fatalf("api_keys.api_key 可空性错误: got=%s want=NO", isNullable)
+		}
+
+		longKey := "sk-" + strings.Repeat("x", 77) // 长度 80，验证旧64约束已解除
+		created, updated, err := store.ImportChannelBatch(context.Background(), []*model.ChannelWithKeys{
+			{
+				Config: &model.Config{
+					Name:        "legacy-key-len",
+					URL:         "https://api.example.com",
+					Priority:    1,
+					ChannelType: "openai",
+					Enabled:     true,
+					ModelEntries: []model.ModelEntry{
+						{Model: "gpt-4"},
+					},
+				},
+				APIKeys: []model.APIKey{
+					{KeyIndex: 0, APIKey: longKey, KeyStrategy: model.KeyStrategySequential},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("导入长 key 失败: %v", err)
+		}
+		if created != 1 || updated != 0 {
+			t.Fatalf("导入计数异常: created=%d updated=%d", created, updated)
+		}
+
+		var keyLen int
+		err = env.db.QueryRow("SELECT CHAR_LENGTH(api_key) FROM api_keys WHERE key_index = 0 LIMIT 1").Scan(&keyLen)
+		if err != nil {
+			t.Fatalf("查询导入 key 长度失败: %v", err)
+		}
+		if keyLen != len(longKey) {
+			t.Fatalf("导入 key 长度不匹配: got=%d want=%d", keyLen, len(longKey))
+		}
+
+		store.Close()
+		store2, err := CreateMySQLStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatalf("二次迁移失败（应幂等）: %v", err)
+		}
+		defer store2.Close()
 	})
 }

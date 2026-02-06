@@ -79,6 +79,13 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			}
 		}
 
+		// 增量迁移：修复 api_keys.api_key 历史长度漂移（旧版可能为 VARCHAR(64)）
+		if tb.Name() == "api_keys" {
+			if err := ensureAPIKeysAPIKeyLength(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate api_keys api_key column: %w", err)
+			}
+		}
+
 		// 增量迁移：确保auth_tokens表有缓存token字段（2025-12新增）
 		if tb.Name() == "auth_tokens" {
 			if err := ensureAuthTokensCacheFields(ctx, db, dialect); err != nil {
@@ -1019,6 +1026,52 @@ func ensureChannelsDailyCostLimit(ctx context.Context, db *sql.DB, dialect Diale
 	return ensureSQLiteColumns(ctx, db, "channels", []sqliteColumnDef{
 		{name: "daily_cost_limit", definition: "REAL NOT NULL DEFAULT 0"},
 	})
+}
+
+// ensureAPIKeysAPIKeyLength 修复 api_keys.api_key 列定义漂移（MySQL）
+func ensureAPIKeysAPIKeyLength(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if dialect != DialectMySQL {
+		return nil
+	}
+
+	var (
+		dataType   string
+		charMaxLen sql.NullInt64
+		isNullable string
+	)
+	err := db.QueryRowContext(ctx, `
+		SELECT DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE
+		FROM INFORMATION_SCHEMA.COLUMNS
+		WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='api_keys' AND COLUMN_NAME='api_key'
+	`).Scan(&dataType, &charMaxLen, &isNullable)
+	if err != nil {
+		return fmt.Errorf("query api_keys.api_key column info: %w", err)
+	}
+
+	needModify := !strings.EqualFold(dataType, "varchar") ||
+		!charMaxLen.Valid ||
+		charMaxLen.Int64 < 100 ||
+		!strings.EqualFold(isNullable, "NO")
+	if !needModify {
+		return nil
+	}
+
+	if _, err := db.ExecContext(ctx, "ALTER TABLE api_keys MODIFY COLUMN api_key VARCHAR(100) NOT NULL"); err != nil {
+		return fmt.Errorf("modify api_keys.api_key column: %w", err)
+	}
+
+	currentLen := int64(0)
+	if charMaxLen.Valid {
+		currentLen = charMaxLen.Int64
+	}
+	log.Printf(
+		"[MIGRATE] Modified api_keys.api_key column: type=%s len=%d nullable=%s -> VARCHAR(100) NOT NULL",
+		dataType,
+		currentLen,
+		isNullable,
+	)
+
+	return nil
 }
 
 // ensureAuthTokensAllowedModels 确保auth_tokens表有allowed_models字段
