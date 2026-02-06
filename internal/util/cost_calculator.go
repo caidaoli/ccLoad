@@ -35,9 +35,13 @@ var basePricing = map[string]ModelPricing{
 		InputPrice: 3.00, OutputPrice: 15.00,
 		InputPriceHigh: 6.00, OutputPriceHigh: 22.50, // >200k context
 	},
-	"claude-haiku-4-5":  {InputPrice: 1.00, OutputPrice: 5.00},
-	"claude-opus-4-1":   {InputPrice: 15.00, OutputPrice: 75.00},
-	"claude-opus-4-0":   {InputPrice: 15.00, OutputPrice: 75.00},
+	"claude-haiku-4-5": {InputPrice: 1.00, OutputPrice: 5.00},
+	"claude-opus-4-1":  {InputPrice: 15.00, OutputPrice: 75.00},
+	"claude-opus-4-0":  {InputPrice: 15.00, OutputPrice: 75.00},
+	"claude-opus-4-6": {
+		InputPrice: 5.00, OutputPrice: 25.00,
+		InputPriceHigh: 10.00, OutputPriceHigh: 37.50, // >200k context
+	},
 	"claude-opus-4-5":   {InputPrice: 5.00, OutputPrice: 25.00},
 	"claude-3-7-sonnet": {InputPrice: 3.00, OutputPrice: 15.00},
 	"claude-3-5-sonnet": {InputPrice: 3.00, OutputPrice: 15.00},
@@ -302,6 +306,7 @@ var modelAliases = map[string]string{
 	"o4-mini-deep-research": "o3-deep-research", // 相同定价
 
 	// Gemini Claude 别名（第三方封装）
+	"gemini-claude-opus-4-6-thinking":   "claude-opus-4-6",
 	"gemini-claude-opus-4-5-thinking":   "claude-opus-4-5",
 	"gemini-claude-sonnet-4-5-thinking": "claude-sonnet-4-5",
 	"gemini-claude-sonnet-4-5":          "claude-sonnet-4-5",
@@ -530,7 +535,7 @@ func fuzzyMatchModel(model string) (ModelPricing, bool) {
 	// 优点：比动态排序快，可预测，并发安全
 	prefixes := []string{
 		// Claude模型（按版本降序，具体版本优先，通用兜底在最后）
-		"claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-5", "claude-opus-4-1",
+		"claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-6", "claude-opus-4-5", "claude-opus-4-1",
 		"claude-sonnet-4-0", "claude-opus-4-0", "claude-3-7-sonnet",
 		"claude-3-5-sonnet", "claude-3-5-haiku",
 		"claude-3-opus", "claude-3-sonnet", "claude-3-haiku",

@@ -55,6 +55,36 @@ func TestCalculateCost_Opus41(t *testing.T) {
 	}
 }
 
+func TestCalculateCost_Opus46(t *testing.T) {
+	// 场景：Claude Opus 4.6 标准上下文（<=200k）
+	cost := CalculateCostDetailed("claude-opus-4-6", 1000, 2000, 0, 0, 0)
+
+	// 预期计算：
+	// Input: 1000 × $5.00 / 1M = $0.005
+	// Output: 2000 × $25.00 / 1M = $0.050
+	// Total: $0.055
+	expected := 0.055
+	if !floatEquals(cost, expected, 0.000001) {
+		t.Errorf("Opus 4.6 标准上下文成本 = %.6f, 期望 %.6f", cost, expected)
+	}
+}
+
+func TestCalculateCost_Opus46HighContext(t *testing.T) {
+	// 场景：Claude Opus 4.6 长上下文（>200k）+ 缓存
+	cost := CalculateCostDetailed("claude-opus-4-6", 250000, 2000, 10000, 10000, 0)
+
+	// 预期计算（>200k 启用高阶价格）：
+	// Input: 250000 × $10.00 / 1M = $2.500000
+	// Output: 2000 × $37.50 / 1M = $0.075000
+	// Cache Read: 10000 × ($10.00 × 0.1) / 1M = $0.010000
+	// Cache Creation(5m): 10000 × ($10.00 × 1.25) / 1M = $0.125000
+	// Total: $2.710000
+	expected := 2.71
+	if !floatEquals(cost, expected, 0.000001) {
+		t.Errorf("Opus 4.6 长上下文成本 = %.6f, 期望 %.6f", cost, expected)
+	}
+}
+
 func TestCalculateCost_CacheOnly(t *testing.T) {
 	// 场景：纯缓存读取（cache hit）
 	cost := CalculateCostDetailed("claude-sonnet-4-5", 0, 100, 10000, 0, 0)
@@ -94,6 +124,7 @@ func TestCalculateCost_ModelAlias(t *testing.T) {
 	testCases := []string{
 		"claude-sonnet-4-5",
 		"claude-haiku-4-5",
+		"claude-opus-4-6",
 		"claude-opus-4-1",
 		"claude-3-5-sonnet-latest",
 		"claude-3-opus-latest",
@@ -124,6 +155,7 @@ func TestCalculateCost_FuzzyMatch(t *testing.T) {
 		{"claude-3-opus-extended", true},
 		{"claude-3-sonnet-custom", true},
 		{"claude-sonnet-4-5-custom", true},
+		{"claude-opus-4-6-custom", true},
 		{"gpt-4-turbo", true},          // 现在支持OpenAI模型
 		{"gpt-4o-2024-12-01", true},    // 模糊匹配到gpt-4o
 		{"gpt-5.1-codex-custom", true}, // 模糊匹配到gpt-5.1-codex

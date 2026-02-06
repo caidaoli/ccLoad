@@ -900,7 +900,7 @@ const COMMON_MODELS = {
   anthropic: [
     'claude-sonnet-4-5-20250929',
     'claude-haiku-4-5-20251001',
-    'claude-opus-4-5-20251101'
+    'claude-opus-4-6'
   ],
   codex: [
     'gpt-5.1',

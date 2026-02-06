@@ -41,9 +41,9 @@ func Test_HandleProxyError_Basic(t *testing.T) {
 			expectedAction: cooldown.ActionRetryChannel,
 		},
 		{
-			name:           "404 not found",
+			name:           "404 not found - 渠道级",
 			statusCode:     404,
-			expectedAction: cooldown.ActionReturnClient,
+			expectedAction: cooldown.ActionRetryChannel,
 		},
 	}
 
