@@ -900,19 +900,20 @@ const COMMON_MODELS = {
   anthropic: [
     'claude-sonnet-4-5-20250929',
     'claude-haiku-4-5-20251001',
+    'claude-opus-4-5-20251101',
     'claude-opus-4-6'
   ],
   codex: [
-    'gpt-5.1',
-    'gpt-5.1-codex',
-    'gpt-5.1-codex-max',
     'gpt-5.2',
-    'gpt-5.2-codex'
+    'gpt-5.2-codex',
+    'gpt-5.3-codex'
   ],
   gemini: [
     'gemini-2.5-flash',
     'gemini-2.5-pro',
-    'gemini-2.5-flash-lite'
+    'gemini-2.5-flash-lite',
+    'gemini-3-flash-preview',
+    'gemini-3-pro-preview'
   ]
 };
 
