@@ -207,8 +207,8 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 		}
 	}
 
-	// 新增、删除或更新渠道后，失效缓存保持一致性
-	s.invalidateChannelRelatedCache(created.ID)
+	// 新增渠道后，失效渠道列表缓存使选择器立即可见
+	s.InvalidateChannelListCache()
 
 	RespondJSON(c, http.StatusCreated, created)
 }
@@ -290,6 +290,8 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 				RespondError(c, http.StatusInternalServerError, err)
 				return
 			}
+			// enabled 状态变更影响渠道选择，必须立即失效缓存
+			s.InvalidateChannelListCache()
 			RespondJSON(c, http.StatusOK, upd)
 			return
 		}
@@ -390,8 +392,8 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		}
 	}
 
-	// 渠道更新后刷新缓存，避免返回陈旧数据
-	s.invalidateChannelRelatedCache(id)
+	// 渠道更新后刷新缓存，确保选择器立即生效
+	s.InvalidateChannelListCache()
 
 	RespondJSON(c, http.StatusOK, upd)
 }
@@ -406,8 +408,8 @@ func (s *Server) handleDeleteChannel(c *gin.Context, id int64) {
 	if s.keySelector != nil {
 		s.keySelector.RemoveChannelCounter(id)
 	}
-	// 删除渠道后刷新缓存
-	s.invalidateChannelRelatedCache(id)
+	// 删除渠道后刷新缓存，确保选择器立即生效
+	s.InvalidateChannelListCache()
 	// 数据库级联删除会自动清理冷却数据（无需手动清理缓存）
 	RespondJSON(c, http.StatusOK, gin.H{"id": id})
 }
