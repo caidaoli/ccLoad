@@ -309,7 +309,8 @@
 
       for (const req of activeRequests) {
         const startMs = toUnixMs(req.start_time);
-        const elapsed = startMs ? ((Date.now() - startMs) / 1000).toFixed(1) : '-';
+        const elapsedRaw = startMs ? Math.max(0, (Date.now() - startMs) / 1000) : null;
+        const elapsed = elapsedRaw !== null ? elapsedRaw.toFixed(1) : '-';
         const streamFlag = getStreamFlagHtml(req.is_streaming);
 
         // 耗时显示：流式请求有首字时间则显示 "首字/总耗时" 格式
@@ -352,8 +353,8 @@
           const emptyCols = Math.max(0, totalCols - 8); // 7列固定信息 + 末尾消息列
           const emptyCells = '<td></td>'.repeat(emptyCols);
           row.innerHTML = `
-            <td>${formatTime(req.start_time)}</td>
-            <td>${escapeHtml(maskIP(req.client_ip) || '-')}</td>
+            <td style="white-space: nowrap;">${formatTime(req.start_time)}</td>
+            <td style="white-space: nowrap;">${escapeHtml(maskIP(req.client_ip) || '-')}</td>
             <td style="text-align: center;">${keyDisplay}</td>
             <td class="config-info">${channelDisplay}</td>
             <td><span class="model-tag">${escapeHtml(req.model)}</span></td>
