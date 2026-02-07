@@ -277,6 +277,7 @@ func (s *Server) handleSuccessResponse(
 		Status:        resp.StatusCode,
 		Header:        hdrClone,
 		FirstByteTime: *firstBodyReadTimeSec,
+		BytesReceived: readStats.totalBytes, // 记录已接收字节数，用于499诊断
 	}
 
 	// 提取usage数据和错误事件

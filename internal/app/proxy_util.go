@@ -82,6 +82,10 @@ type fwResult struct {
 	// 流传输诊断信息（2025-12新增）
 	StreamDiagMsg string // 流中断/不完整时的诊断消息，合并到成功日志的Message字段
 
+	// 上游响应字节数（2026-02新增）
+	// 用于499场景诊断：区分客户端在首字节前取消还是接收部分数据后取消
+	BytesReceived int64
+
 	// [INFO] SSE错误事件（2025-12新增）
 	// 用于捕获SSE流中的error事件（如1308错误），在流结束后触发冷却逻辑
 	// 虽然HTTP状态码是200，但error事件表示实际上发生了错误
@@ -448,7 +452,19 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 	}
 
 	if p.ErrMsg != "" {
-		entry.Message = truncateErr(p.ErrMsg)
+		// [FIX] 2026-02: 错误场景下也保留诊断信息（特别是499客户端取消）
+		// 场景：流式请求中途取消，此时已有 FirstByteTime 和 BytesReceived
+		// 将字节数追加到 message 中便于诊断
+		msg := truncateErr(p.ErrMsg)
+		if p.Result != nil && p.IsStreaming {
+			if p.Result.FirstByteTime > 0 {
+				entry.FirstByteTime = p.Result.FirstByteTime
+			}
+			if p.Result.BytesReceived > 0 {
+				msg = fmt.Sprintf("%s (received %s)", msg, formatBytes(p.Result.BytesReceived))
+			}
+		}
+		entry.Message = msg
 	} else if p.Result != nil {
 		res := p.Result
 		if p.StatusCode >= 200 && p.StatusCode < 300 {
@@ -511,6 +527,22 @@ func truncateErr(s string) string {
 		return s[:maxLen]
 	}
 	return s
+}
+
+// formatBytes 格式化字节数为人类可读的格式（KB/MB）
+func formatBytes(b int64) string {
+	const (
+		kb = 1024
+		mb = 1024 * 1024
+	)
+	switch {
+	case b >= mb:
+		return fmt.Sprintf("%.1fMB", float64(b)/mb)
+	case b >= kb:
+		return fmt.Sprintf("%.1fKB", float64(b)/kb)
+	default:
+		return fmt.Sprintf("%dB", b)
+	}
 }
 
 // safeBodyToString 安全地将响应体转换为字符串，处理可能的gzip压缩
