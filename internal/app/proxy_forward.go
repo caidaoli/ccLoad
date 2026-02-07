@@ -147,12 +147,15 @@ func (s *Server) handleErrorResponse(
 	resp *http.Response,
 	hdrClone http.Header,
 	firstBodyReadTimeSec *float64,
+	cfg *model.Config,
 ) (*fwResult, float64, error) {
 	rb, readErr := io.ReadAll(io.LimitReader(resp.Body, int64(config.DefaultMaxBodyBytes)))
 	if readErr != nil {
 		s.AddLogAsync(&model.LogEntry{
-			Time:    model.JSONTime{Time: time.Now()},
-			Message: fmt.Sprintf("error reading upstream body: %v", readErr),
+			Time:        model.JSONTime{Time: time.Now()},
+			ChannelID:   cfg.ID,
+			ChannelName: cfg.Name,
+			Message:     fmt.Sprintf("error reading upstream body: %v", readErr),
 		})
 	}
 
@@ -422,7 +425,7 @@ func (s *Server) handleResponse(
 			prependToBody(resp, validData)
 
 			// 转交给错误处理流程
-			return s.handleErrorResponse(reqCtx, resp, hdrClone, &firstBodyReadTimeSec)
+			return s.handleErrorResponse(reqCtx, resp, hdrClone, &firstBodyReadTimeSec, cfg)
 		}
 
 		// 未检测到错误，必须恢复 Body 供后续流程使用
@@ -433,7 +436,7 @@ func (s *Server) handleResponse(
 
 	// 错误状态：读取完整响应体
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return s.handleErrorResponse(reqCtx, resp, hdrClone, &firstBodyReadTimeSec)
+		return s.handleErrorResponse(reqCtx, resp, hdrClone, &firstBodyReadTimeSec, cfg)
 	}
 
 	// [INFO] 空响应检测：200状态码但Content-Length=0视为上游故障
