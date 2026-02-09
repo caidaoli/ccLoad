@@ -316,11 +316,16 @@ func (s *AuthService) RequireAPIAuth() gin.HandlerFunc {
 			return
 		}
 
-		// 计算令牌哈希并验证
-		tokenHash := model.HashToken(token)
-
+		// 双路径验证：先尝试直接匹配（客户端发送的是hash值），再尝试SHA256匹配（客户端发送的是明文）
 		s.authTokensMux.RLock()
-		expiresAt, exists := s.authTokens[tokenHash]
+		var tokenHash string
+		expiresAt, exists := s.authTokens[token]
+		if exists {
+			tokenHash = token
+		} else {
+			tokenHash = model.HashToken(token)
+			expiresAt, exists = s.authTokens[tokenHash]
+		}
 		tokenID, hasTokenID := s.authTokenIDs[tokenHash]
 		s.authTokensMux.RUnlock()
 

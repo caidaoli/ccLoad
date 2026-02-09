@@ -31,10 +31,6 @@ func (s *Server) HandleListAuthTokens(c *gin.Context) {
 		return
 	}
 
-	// 脱敏处理（仅显示前4后4字符）
-	for _, t := range tokens {
-		t.Token = model.MaskToken(t.Token)
-	}
 	if tokens == nil {
 		tokens = make([]*model.AuthToken, 0)
 	}
@@ -270,8 +266,6 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 		log.Print("[WARN]  热更新失败: " + err.Error())
 	}
 
-	// 返回脱敏后的令牌信息
-	token.Token = model.MaskToken(token.Token)
 	RespondJSON(c, http.StatusOK, token)
 }
 

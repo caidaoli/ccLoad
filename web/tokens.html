@@ -317,7 +317,7 @@
     <tr data-token-id="{{id}}">
       <td style="font-weight: 500;">{{description}}</td>
       <td>
-        <div><span class="token-display token-display-{{statusClass}}">{{token}}</span></div>
+        <div><span class="token-display token-display-{{statusClass}}">{{maskedToken}}</span></div>
         <div style="font-size: 12px; color: var(--neutral-500); margin-top: 4px;">{{createdAt}}{{createdLabel}} · {{expiresAt}}</div>
       </td>
       <td style="text-align: center;">{{{callsHtml}}}</td>
@@ -328,7 +328,8 @@
       <td style="text-align: center;">{{{streamAvgHtml}}}</td>
       <td style="text-align: center;">{{{nonStreamAvgHtml}}}</td>
       <td style="color: var(--neutral-600);">{{lastUsed}}</td>
-      <td>
+      <td style="white-space: nowrap;">
+        <button class="btn-copy-token btn btn-secondary" style="padding: 4px 12px; font-size: 13px; margin-right: 4px;" data-token="{{token}}" data-i18n="common.copy">复制</button>
         <button class="btn btn-secondary btn-edit" style="padding: 4px 12px; font-size: 13px; margin-right: 4px;" data-i18n="common.edit">编辑</button>
         <button class="btn btn-danger btn-delete" style="padding: 4px 12px; font-size: 13px;" data-i18n="common.delete">删除</button>
       </td>

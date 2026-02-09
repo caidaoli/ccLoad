@@ -89,6 +89,13 @@
       container.addEventListener('click', (e) => {
         const target = e.target;
 
+        // 处理复制令牌按钮
+        if (target.classList.contains('btn-copy-token')) {
+          const tokenHash = target.dataset.token;
+          if (tokenHash) copyTokenToClipboard(tokenHash);
+          return;
+        }
+
         // 处理编辑按钮
         if (target.classList.contains('btn-edit')) {
           const row = target.closest('tr');
@@ -154,7 +161,7 @@
             <th style="text-align: center;">${t('tokens.table.streamAvg')}</th>
             <th style="text-align: center;">${t('tokens.table.nonStreamAvg')}</th>
             <th>${t('tokens.table.lastUsed')}</th>
-            <th style="width: 200px;">${t('tokens.table.actions')}</th>
+            <th style="width: 260px;">${t('tokens.table.actions')}</th>
           </tr>
         </thead>
       `;
@@ -217,10 +224,15 @@
       const nonStreamAvgHtml = buildResponseTimeHtml(token.non_stream_avg_rt, token.non_stream_count);
 
       // 使用模板引擎渲染
+      const maskedToken = token.token.length > 8
+        ? token.token.substring(0, 4) + '****' + token.token.slice(-4)
+        : token.token;
+
       return TemplateEngine.render('tpl-token-row', {
         id: token.id,
         description: token.description,
         token: token.token,
+        maskedToken: maskedToken,
         statusClass: status.class,
         createdAt: createdAt,
         createdLabel: t('tokens.createdSuffix'),
@@ -425,11 +437,15 @@
       const streamAvgHtml = buildResponseTimeHtml(token.stream_avg_ttfb, token.stream_count);
       const nonStreamAvgHtml = buildResponseTimeHtml(token.non_stream_avg_rt, token.non_stream_count);
 
+      const maskedToken = token.token.length > 8
+        ? token.token.substring(0, 4) + '****' + token.token.slice(-4)
+        : token.token;
+
       return `
         <tr data-token-id="${token.id}">
           <td style="font-weight: 500;">${escapeHtml(token.description)}</td>
           <td>
-            <div><span class="token-display token-display-${status.class}">${escapeHtml(token.token)}</span></div>
+            <div><span class="token-display token-display-${status.class}">${escapeHtml(maskedToken)}</span></div>
             <div style="font-size: 12px; color: var(--neutral-500); margin-top: 4px;">${createdAt}${t('tokens.createdSuffix')} · ${expiresAt}</div>
           </td>
           <td style="text-align: center;">${callsHtml}</td>
@@ -440,7 +456,8 @@
           <td style="text-align: center;">${streamAvgHtml}</td>
           <td style="text-align: center;">${nonStreamAvgHtml}</td>
           <td style="color: var(--neutral-600);">${lastUsed}</td>
-          <td>
+          <td style="white-space: nowrap;">
+            <button class="btn-copy-token btn btn-secondary" style="padding: 4px 12px; font-size: 13px; margin-right: 4px;" data-token="${escapeHtml(token.token)}">${t('common.copy')}</button>
             <button class="btn btn-secondary btn-edit" style="padding: 4px 12px; font-size: 13px; margin-right: 4px;">${t('common.edit')}</button>
             <button class="btn btn-danger btn-delete" style="padding: 4px 12px; font-size: 13px;">${t('common.delete')}</button>
           </td>
@@ -520,8 +537,25 @@
       const textarea = document.getElementById('newTokenValue');
       textarea.select();
       document.execCommand('copy');
-      
+
       window.showNotification(t('tokens.msg.copySuccess'), 'success');
+    }
+
+    function copyTokenToClipboard(hash) {
+      navigator.clipboard.writeText(hash).then(() => {
+        window.showNotification(t('tokens.msg.copySuccess'), 'success');
+      }).catch(() => {
+        // fallback
+        const textarea = document.createElement('textarea');
+        textarea.value = hash;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        window.showNotification(t('tokens.msg.copySuccess'), 'success');
+      });
     }
 
     function closeTokenResultModal() {

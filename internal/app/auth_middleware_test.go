@@ -282,6 +282,68 @@ func TestRequireTokenAuth_NoBearerPrefix(t *testing.T) {
 	}
 }
 
+func TestRequireAPIAuth_HashDirectMatch(t *testing.T) {
+	t.Parallel()
+	svc := newTestAuthService(t)
+	injectAPIToken(svc, "plaintext-token", 0, 10)
+
+	// 计算hash，用hash值作为Bearer token发送
+	hash := model.HashToken("plaintext-token")
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+hash)
+
+	w := runMiddleware(t, svc.RequireAPIAuth(), req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 验证 context 中的 token_hash 和 token_id
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if got, ok := resp["token_hash"].(string); !ok || got != hash {
+		t.Fatalf("expected token_hash=%s, got=%v", hash, resp["token_hash"])
+	}
+	if got, ok := resp["token_id"].(float64); !ok || int64(got) != 10 {
+		t.Fatalf("expected token_id=10, got=%v", resp["token_id"])
+	}
+}
+
+func TestRequireAPIAuth_HashExpired(t *testing.T) {
+	t.Parallel()
+	svc := newTestAuthService(t)
+	expiredAt := time.Now().Add(-time.Hour).UnixMilli()
+	injectAPIToken(svc, "expired-plain", expiredAt, 20)
+
+	// 用hash值作为Bearer token发送
+	hash := model.HashToken("expired-plain")
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+hash)
+
+	w := runMiddleware(t, svc.RequireAPIAuth(), req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 验证响应包含 "token expired"
+	var resp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp["error"] != "token expired" {
+		t.Fatalf("expected 'token expired' error, got: %s", resp["error"])
+	}
+
+	// 验证懒惰删除：hash应已从内存中移除
+	svc.authTokensMux.RLock()
+	_, stillExists := svc.authTokens[hash]
+	svc.authTokensMux.RUnlock()
+	if stillExists {
+		t.Fatal("expected expired token to be lazily deleted from memory")
+	}
+}
+
 // TestRequireAPIAuth_TokenPriority 验证 token 提取优先级（Bearer > X-API-Key > x-goog-api-key > query）
 func TestRequireAPIAuth_TokenPriority(t *testing.T) {
 	t.Parallel()
