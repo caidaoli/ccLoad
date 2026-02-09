@@ -354,7 +354,7 @@
           const emptyCells = '<td></td>'.repeat(emptyCols);
           row.innerHTML = `
             <td style="white-space: nowrap;">${formatTime(req.start_time)}</td>
-            <td style="white-space: nowrap;">${escapeHtml(maskIP(req.client_ip) || '-')}</td>
+            <td class="config-info" style="white-space: nowrap; font-family: monospace; font-size: 0.85em; color: var(--neutral-600);">${escapeHtml(maskIP(req.client_ip) || '-')}</td>
             <td style="text-align: center;">${keyDisplay}</td>
             <td class="config-info">${channelDisplay}</td>
             <td><span class="model-tag">${escapeHtml(req.model)}</span></td>
@@ -526,7 +526,7 @@
         // === 直接拼接行 HTML ===
         htmlParts[i] = `<tr>
           <td style="white-space: nowrap;">${formatTime(entry.time)}</td>
-          <td style="white-space: nowrap; font-family: monospace; font-size: 0.85em; color: var(--neutral-600);">${clientIPDisplay}</td>
+          <td class="config-info" style="white-space: nowrap; font-family: monospace; font-size: 0.85em; color: var(--neutral-600);">${clientIPDisplay}</td>
           <td style="text-align: center; white-space: nowrap;">${apiKeyDisplay}</td>
           <td class="config-info">${configDisplay}</td>
           <td>${modelDisplay}</td>

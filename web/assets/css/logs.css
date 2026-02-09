@@ -133,19 +133,29 @@
       text-align: center;
     }
 
+    /* 列背景交替（按列斑马纹） */
+    .logs-table tbody td:nth-child(odd) {
+      background: rgba(255, 255, 255, 0.92);
+    }
+
+    .logs-table tbody td:nth-child(even) {
+      background: rgba(248, 250, 252, 0.96);
+    }
+
     /* 固定宽度列 */
     .logs-table th:nth-child(1),
     .logs-table td:nth-child(1) {
-      width: 145px;  /* 时间: YYYY/MM/DD HH:mm:ss */
-      min-width: 145px;
-      max-width: 145px;
+      width: 150px;  /* 时间: YYYY/MM/DD HH:mm:ss */
+      min-width: 150px;
+      max-width: 150px;
     }
 
     .logs-table th:nth-child(2),
     .logs-table td:nth-child(2) {
-      width: 100px;  /* IP: xxx.xxx.*.* */
-      min-width: 100px;
-      max-width: 100px;
+      width: 110px;  /* IP: xxx.xxx.*.* */
+      min-width: 110px;
+      max-width: 110px;
+      text-align: center;
     }
 
     .logs-table th:nth-child(3),
@@ -167,8 +177,8 @@
       display: inline-block;
       position: relative;
       padding: 2px 8px;
-      background: var(--primary-50);
-      border: 1px solid var(--primary-200);
+      background: transparent;
+      border: none;
       border-radius: 4px;
       font-size: 0.9em;
       color: var(--primary-700);
@@ -221,10 +231,10 @@
     }
 
     /* 进行中行高亮 */
-    tr.pending-row {
+    .logs-table tr.pending-row td {
       background: var(--warning-50);
     }
 
-    tr.pending-row:hover {
+    .logs-table tr.pending-row:hover td {
       background: var(--warning-100);
     }
