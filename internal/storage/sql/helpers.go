@@ -3,6 +3,7 @@ package sql
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"ccLoad/internal/model"
@@ -39,12 +40,16 @@ func (s *SQLStore) fetchChannelInfoBatch(ctx context.Context, channelIDs map[int
 		var name string
 		var priority int
 		if err := rows.Scan(&id, &name, &priority); err != nil {
+			log.Printf("[WARN]  scan channel info: %v", err)
 			continue // 跳过扫描错误的行
 		}
 		// 只保留需要的渠道
 		if channelIDs[id] {
 			channelInfos[id] = ChannelInfo{Name: name, Priority: priority}
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate channel info rows: %w", err)
 	}
 
 	return channelInfos, nil

@@ -417,50 +417,26 @@ func (s *Server) fillHealthTimeline(ctx context.Context, stats []model.StatsEntr
 	untilMs := endTime.UnixMilli()
 	bucketMs := bucketSeconds * 1000
 
-	// 构建查询：按 (bucket_ts, channel_id, model) 分组统计
-	// 关键优化：WHERE 条件直接比较毫秒，避免 logs.time / 1000 导致索引失效
-	query := `
-		SELECT
-			FLOOR(logs.time / ?) * ? AS bucket_ts,
-			logs.channel_id,
-			COALESCE(logs.model, '') AS model,
-			SUM(CASE WHEN logs.status_code >= 200 AND logs.status_code < 300 THEN 1 ELSE 0 END) AS success,
-			SUM(CASE WHEN (logs.status_code < 200 OR logs.status_code >= 300) AND logs.status_code != 499 THEN 1 ELSE 0 END) AS error,
-			COALESCE(AVG(CASE WHEN logs.first_byte_time > 0 AND logs.status_code >= 200 AND logs.status_code < 300 THEN logs.first_byte_time ELSE NULL END), 0) AS avg_first_byte_time,
-			COALESCE(AVG(CASE WHEN logs.duration > 0 AND logs.status_code >= 200 AND logs.status_code < 300 THEN logs.duration ELSE NULL END), 0) AS avg_duration,
-			SUM(COALESCE(logs.input_tokens, 0)) AS input_tokens,
-			SUM(COALESCE(logs.output_tokens, 0)) AS output_tokens,
-			SUM(COALESCE(logs.cache_read_input_tokens, 0)) AS cache_read_tokens,
-			SUM(COALESCE(logs.cache_creation_input_tokens, 0)) AS cache_creation_tokens,
-			SUM(COALESCE(logs.cost, 0.0)) AS total_cost
-		FROM logs
-		WHERE logs.time >= ? AND logs.time <= ?
-			AND logs.status_code != 499
-			AND logs.channel_id > 0
-	`
-
-	args := []any{bucketMs, bucketMs, sinceMs, untilMs}
-
-	// 应用筛选条件
+	// 构建结构化查询参数（SQL 构建已下沉到存储层）
+	params := model.HealthTimelineParams{
+		SinceMs:  sinceMs,
+		UntilMs:  untilMs,
+		BucketMs: bucketMs,
+	}
 	if filter != nil {
 		if filter.ChannelID != nil && *filter.ChannelID > 0 {
-			query += " AND logs.channel_id = ?"
-			args = append(args, *filter.ChannelID)
+			params.ChannelID = filter.ChannelID
 		}
 		if filter.Model != "" {
-			query += " AND logs.model = ?"
-			args = append(args, filter.Model)
+			params.Model = filter.Model
 		}
 	}
 
-	query += " GROUP BY bucket_ts, logs.channel_id, logs.model ORDER BY bucket_ts ASC"
-
-	rows, err := s.store.GetHealthTimeline(ctx, query, args...)
+	rows, err := s.store.GetHealthTimeline(ctx, params)
 	if err != nil {
 		// 静默失败，不影响主流程
 		return
 	}
-	defer func() { _ = rows.Close() }()
 
 	// 构建映射：(channel_id, model) -> StatsEntry索引
 	type channelModelKey struct {
@@ -495,52 +471,39 @@ func (s *Server) fillHealthTimeline(ctx context.Context, stats []model.StatsEntr
 		timeline[key] = points
 	}
 
-	for rows.Next() {
-		var bucketTs int64 // 现在是毫秒级
-		var channelID int
-		var modelStr string
-		var success, errorCount int
-		var avgFirstByteTime, avgDuration float64
-		var inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int64
-		var totalCost float64
-
-		if err := rows.Scan(&bucketTs, &channelID, &modelStr, &success, &errorCount,
-			&avgFirstByteTime, &avgDuration, &inputTokens, &outputTokens, &cacheReadTokens, &cacheCreationTokens, &totalCost); err != nil {
-			continue
-		}
-
-		key := channelModelKey{channelID: channelID, model: modelStr}
+	for _, row := range rows {
+		key := channelModelKey{channelID: row.ChannelID, model: row.Model}
 
 		// 只处理 stats 中存在的组合
 		if _, exists := statsMap[key]; !exists {
 			continue
 		}
 
-		// 计算该时间桶对应的索引位置（bucketTs 是毫秒，需转换为秒再计算）
-		bucketIndex := int((bucketTs/1000 - sinceUnix) / bucketSeconds)
+		// 计算该时间桶对应的索引位置（BucketTs 是毫秒，需转换为秒再计算）
+		bucketIndex := int((row.BucketTs/1000 - sinceUnix) / bucketSeconds)
 		if bucketIndex < 0 || bucketIndex >= numBuckets {
 			continue
 		}
 
-		total := success + errorCount
+		total := row.Success + row.ErrorCount
 		successRate := 0.0
 		if total > 0 {
-			successRate = float64(success) / float64(total)
+			successRate = float64(row.Success) / float64(total)
 		}
 
-		// duration/first_byte_time 在日志中以“秒”存储，这里直接透传
+		// duration/first_byte_time 在日志中以"秒"存储，这里直接透传
 		timeline[key][bucketIndex] = model.HealthPoint{
-			Ts:                       time.Unix(bucketTs/1000, 0),
+			Ts:                       time.Unix(row.BucketTs/1000, 0),
 			SuccessRate:              successRate,
-			SuccessCount:             success,
-			ErrorCount:               errorCount,
-			AvgFirstByteTime:         avgFirstByteTime,
-			AvgDuration:              avgDuration,
-			TotalInputTokens:         inputTokens,
-			TotalOutputTokens:        outputTokens,
-			TotalCacheReadTokens:     cacheReadTokens,
-			TotalCacheCreationTokens: cacheCreationTokens,
-			TotalCost:                totalCost,
+			SuccessCount:             row.Success,
+			ErrorCount:               row.ErrorCount,
+			AvgFirstByteTime:         row.AvgFirstByteTime,
+			AvgDuration:              row.AvgDuration,
+			TotalInputTokens:         row.InputTokens,
+			TotalOutputTokens:        row.OutputTokens,
+			TotalCacheReadTokens:     row.CacheReadTokens,
+			TotalCacheCreationTokens: row.CacheCreationTokens,
+			TotalCost:                row.TotalCost,
 		}
 	}
 

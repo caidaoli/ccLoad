@@ -84,3 +84,28 @@ type RPMStats struct {
 	RecentRPM float64 `json:"recent_rpm"` // 最近一分钟RPM（仅本日有效）
 	RecentQPS float64 `json:"recent_qps"` // 最近一分钟QPS（仅本日有效）
 }
+
+// HealthTimelineParams 健康时间线查询参数
+type HealthTimelineParams struct {
+	SinceMs   int64  // 起始时间（毫秒）
+	UntilMs   int64  // 结束时间（毫秒）
+	BucketMs  int64  // 时间桶大小（毫秒）
+	ChannelID *int64 // 可选：按渠道ID过滤
+	Model     string // 可选：按模型名称过滤
+}
+
+// HealthTimelineRow 健康时间线数据行
+type HealthTimelineRow struct {
+	BucketTs            int64
+	ChannelID           int
+	Model               string
+	Success             int
+	ErrorCount          int
+	AvgFirstByteTime    float64
+	AvgDuration         float64
+	InputTokens         int64
+	OutputTokens        int64
+	CacheReadTokens     int64
+	CacheCreationTokens int64
+	TotalCost           float64
+}

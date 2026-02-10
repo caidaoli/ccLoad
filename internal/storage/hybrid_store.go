@@ -3,7 +3,6 @@ package storage
 
 import (
 	"context"
-	"database/sql"
 	"log"
 	"sync"
 	"time"
@@ -78,9 +77,12 @@ func NewHybridStore(sqlite, mysql *sqlstore.SQLStore) *HybridStore {
 }
 
 // syncToSQLite 同步更新 SQLite 缓存
-// SQLite 是本地库，启动时已验证可写，运行时不会失败
-func (h *HybridStore) syncToSQLite(_ string, fn func() error) {
-	_ = fn()
+// SQLite 是本地库，启动时已验证可写，运行时通常不会失败
+// 但磁盘空间不足等极端情况仍可能导致写入失败，记录日志以便排查
+func (h *HybridStore) syncToSQLite(op string, fn func() error) {
+	if err := fn(); err != nil {
+		log.Printf("[WARN]  SQLite sync failed (%s): %v", op, err)
+	}
 }
 
 // cloneLogEntryForSync 克隆日志条目（异步队列需要）
@@ -496,8 +498,8 @@ func (h *HybridStore) GetChannelSuccessRates(ctx context.Context, since time.Tim
 	return h.sqlite.GetChannelSuccessRates(ctx, since)
 }
 
-func (h *HybridStore) GetHealthTimeline(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	return h.sqlite.GetHealthTimeline(ctx, query, args...)
+func (h *HybridStore) GetHealthTimeline(ctx context.Context, params model.HealthTimelineParams) ([]model.HealthTimelineRow, error) {
+	return h.sqlite.GetHealthTimeline(ctx, params)
 }
 
 func (h *HybridStore) GetTodayChannelCosts(ctx context.Context, todayStart time.Time) (map[int64]float64, error) {

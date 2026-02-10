@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"net/http"
 	"testing"
@@ -106,8 +105,8 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 		if resp.Data.IsActive {
 			t.Fatalf("is_active=%v, want false", resp.Data.IsActive)
 		}
-		if resp.Data.Token == "" || resp.Data.Token == model.HashToken("plain-token") || !bytes.Contains([]byte(resp.Data.Token), []byte("****")) {
-			t.Fatalf("token should be masked, got %q", resp.Data.Token)
+		if resp.Data.Token != model.HashToken("plain-token") {
+			t.Fatalf("token should be hash value for dual-path auth, got %q", resp.Data.Token)
 		}
 		if resp.Data.ExpiresAt == nil || *resp.Data.ExpiresAt != expiresAt {
 			t.Fatalf("expiresAt=%v, want %d", resp.Data.ExpiresAt, expiresAt)

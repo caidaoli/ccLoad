@@ -198,11 +198,13 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 		t.Fatalf("BeginTx failed: %v", err)
 	}
 	_ = tx.Rollback()
-	hlRows, err := ss.GetHealthTimeline(ctx, "SELECT 1")
+	hlRows, err := ss.GetHealthTimeline(ctx, model.HealthTimelineParams{
+		SinceMs: 0, UntilMs: time.Now().UnixMilli(), BucketMs: 60000,
+	})
 	if err != nil {
 		t.Fatalf("GetHealthTimeline failed: %v", err)
 	}
-	_ = hlRows.Close()
+	_ = hlRows
 
 	// CleanupLogsBefore：删除所有日志
 	if err := store.CleanupLogsBefore(ctx, time.Now().Add(time.Hour)); err != nil {

@@ -67,9 +67,8 @@ func looksLikeJSON(body []byte) bool {
 type fwResult struct {
 	Status        int
 	Header        http.Header
-	Body          []byte         // filled for non-2xx or when needed
-	Resp          *http.Response // non-nil only when Status is 2xx to support streaming
-	FirstByteTime float64        // 首字节响应时间（秒）
+	Body          []byte  // filled for non-2xx or when needed
+	FirstByteTime float64 // 首字节响应时间（秒）
 
 	// Token统计（2025-11新增，从SSE响应中提取）
 	InputTokens              int

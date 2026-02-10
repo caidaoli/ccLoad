@@ -3,8 +3,11 @@ package sql
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"sync"
 	"time"
+
+	"ccLoad/internal/model"
 )
 
 // SQLStore 通用SQL存储实现
@@ -17,9 +20,61 @@ type SQLStore struct {
 	closeOnce sync.Once
 }
 
-// GetHealthTimeline 执行健康时间线查询（用于 stats API）
-func (s *SQLStore) GetHealthTimeline(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	return s.db.QueryContext(ctx, query, args...)
+// GetHealthTimeline 查询健康时间线数据
+// SQL 构建封装在存储层内部，业务层只传结构化参数
+func (s *SQLStore) GetHealthTimeline(ctx context.Context, params model.HealthTimelineParams) ([]model.HealthTimelineRow, error) {
+	query := `
+		SELECT
+			FLOOR(logs.time / ?) * ? AS bucket_ts,
+			logs.channel_id,
+			COALESCE(logs.model, '') AS model,
+			SUM(CASE WHEN logs.status_code >= 200 AND logs.status_code < 300 THEN 1 ELSE 0 END) AS success,
+			SUM(CASE WHEN (logs.status_code < 200 OR logs.status_code >= 300) AND logs.status_code != 499 THEN 1 ELSE 0 END) AS error,
+			COALESCE(AVG(CASE WHEN logs.first_byte_time > 0 AND logs.status_code >= 200 AND logs.status_code < 300 THEN logs.first_byte_time ELSE NULL END), 0) AS avg_first_byte_time,
+			COALESCE(AVG(CASE WHEN logs.duration > 0 AND logs.status_code >= 200 AND logs.status_code < 300 THEN logs.duration ELSE NULL END), 0) AS avg_duration,
+			SUM(COALESCE(logs.input_tokens, 0)) AS input_tokens,
+			SUM(COALESCE(logs.output_tokens, 0)) AS output_tokens,
+			SUM(COALESCE(logs.cache_read_input_tokens, 0)) AS cache_read_tokens,
+			SUM(COALESCE(logs.cache_creation_input_tokens, 0)) AS cache_creation_tokens,
+			SUM(COALESCE(logs.cost, 0.0)) AS total_cost
+		FROM logs
+		WHERE logs.time >= ? AND logs.time <= ?
+			AND logs.status_code != 499
+			AND logs.channel_id > 0
+	`
+	args := []any{params.BucketMs, params.BucketMs, params.SinceMs, params.UntilMs}
+
+	if params.ChannelID != nil && *params.ChannelID > 0 {
+		query += " AND logs.channel_id = ?"
+		args = append(args, *params.ChannelID)
+	}
+	if params.Model != "" {
+		query += " AND logs.model = ?"
+		args = append(args, params.Model)
+	}
+
+	query += " GROUP BY bucket_ts, logs.channel_id, logs.model ORDER BY bucket_ts ASC"
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query health timeline: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var result []model.HealthTimelineRow
+	for rows.Next() {
+		var r model.HealthTimelineRow
+		if err := rows.Scan(&r.BucketTs, &r.ChannelID, &r.Model, &r.Success, &r.ErrorCount,
+			&r.AvgFirstByteTime, &r.AvgDuration, &r.InputTokens, &r.OutputTokens,
+			&r.CacheReadTokens, &r.CacheCreationTokens, &r.TotalCost); err != nil {
+			continue
+		}
+		result = append(result, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate health timeline rows: %w", err)
+	}
+	return result, nil
 }
 
 // NewSQLStore 创建通用SQL存储实例

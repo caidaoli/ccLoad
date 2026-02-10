@@ -189,11 +189,13 @@ func TestHybridStore_WrapperCoverage(t *testing.T) {
 	if _, err := h.GetChannelSuccessRates(ctx, since); err != nil {
 		t.Fatalf("GetChannelSuccessRates failed: %v", err)
 	}
-	rows, err := h.GetHealthTimeline(ctx, "SELECT 1")
+	rows, err := h.GetHealthTimeline(ctx, model.HealthTimelineParams{
+		SinceMs: 0, UntilMs: now.UnixMilli(), BucketMs: 60000,
+	})
 	if err != nil {
 		t.Fatalf("GetHealthTimeline failed: %v", err)
 	}
-	_ = rows.Close()
+	_ = rows
 	if _, err := h.GetTodayChannelCosts(ctx, now.Add(-time.Hour)); err != nil {
 		t.Fatalf("GetTodayChannelCosts failed: %v", err)
 	}

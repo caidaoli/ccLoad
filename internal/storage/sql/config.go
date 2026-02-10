@@ -341,7 +341,7 @@ func (s *SQLStore) DeleteConfig(ctx context.Context, id int64) error {
 }
 
 // BatchUpdatePriority 批量更新渠道优先级
-// 使用单条批量 UPDATE + CASE WHEN 语句更新优先级
+// 使用单条批量 UPDATE + CASE WHEN 语句更新优先级（全参数化）
 func (s *SQLStore) BatchUpdatePriority(ctx context.Context, updates []struct {
 	ID       int64
 	Priority int
@@ -352,30 +352,27 @@ func (s *SQLStore) BatchUpdatePriority(ctx context.Context, updates []struct {
 
 	updatedAtUnix := timeToUnix(time.Now())
 
-	// 构建批量UPDATE语句
+	// 构建批量UPDATE语句（CASE WHEN 使用参数化占位符）
 	var caseBuilder strings.Builder
-	var ids []int64
+	// args 顺序：CASE WHEN 的 (id, priority) 对 + updated_at + WHERE IN 的 ids
+	args := make([]any, 0, len(updates)*2+1+len(updates))
 
 	caseBuilder.WriteString("UPDATE channels SET priority = CASE id ")
 	for _, update := range updates {
-		caseBuilder.WriteString(fmt.Sprintf("WHEN %d THEN %d ", update.ID, update.Priority))
-		ids = append(ids, update.ID)
+		caseBuilder.WriteString("WHEN ? THEN ? ")
+		args = append(args, update.ID, update.Priority)
 	}
 	caseBuilder.WriteString("END, updated_at = ? WHERE id IN (")
+	args = append(args, updatedAtUnix)
 
-	for i := range ids {
+	for i, update := range updates {
 		if i > 0 {
 			caseBuilder.WriteString(",")
 		}
 		caseBuilder.WriteString("?")
+		args = append(args, update.ID)
 	}
 	caseBuilder.WriteString(")")
-
-	// 构建参数列表：updated_at + ids
-	args := []any{updatedAtUnix}
-	for _, id := range ids {
-		args = append(args, id)
-	}
 
 	// 执行批量更新
 	result, err := s.db.ExecContext(ctx, caseBuilder.String(), args...)
