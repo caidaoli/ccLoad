@@ -21,7 +21,7 @@ import (
 // HandleListAuthTokens 列出所有API访问令牌（支持时间范围统计，2025-12扩展）
 // GET /admin/auth-tokens?range=today
 func (s *Server) HandleListAuthTokens(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
 
 	tokens, err := s.store.ListAuthTokens(ctx)
@@ -174,7 +174,7 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 		authToken.SetCostLimitUSD(*req.CostLimitUSD)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
 
 	if err := s.store.CreateAuthToken(ctx, authToken); err != nil {
@@ -228,7 +228,7 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
 
 	// 获取现有令牌
@@ -278,7 +278,7 @@ func (s *Server) HandleDeleteAuthToken(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
 
 	if err := s.store.DeleteAuthToken(ctx, id); err != nil {

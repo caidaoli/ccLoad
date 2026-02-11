@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
@@ -269,6 +270,107 @@ func TestShouldStopTryingChannels(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := shouldStopTryingChannels(tt.in); got != tt.expected {
 				t.Fatalf("shouldStopTryingChannels()=%v, expected %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+// ============================================================================
+// handleSpecialRoutes 测试
+// ============================================================================
+
+// TestHandleSpecialRoutes_OpenAIModels 测试 GET /v1/models 路由匹配
+func TestHandleSpecialRoutes_OpenAIModels(t *testing.T) {
+	srv := newInMemoryServer(t)
+
+	req := newRequest(http.MethodGet, "/v1/models", nil)
+	c, w := newTestContext(t, req)
+
+	handled := srv.handleSpecialRoutes(c)
+	if !handled {
+		t.Fatal("GET /v1/models 应被 handleSpecialRoutes 处理")
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200, 实际 %d", w.Code)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("响应解析失败: %v", err)
+	}
+	if resp["object"] != "list" {
+		t.Fatalf("期望 object=list, 实际=%v", resp["object"])
+	}
+}
+
+// TestHandleSpecialRoutes_GeminiModels 测试 GET /v1beta/models 路由匹配
+func TestHandleSpecialRoutes_GeminiModels(t *testing.T) {
+	srv := newInMemoryServer(t)
+
+	req := newRequest(http.MethodGet, "/v1beta/models", nil)
+	c, w := newTestContext(t, req)
+
+	handled := srv.handleSpecialRoutes(c)
+	if !handled {
+		t.Fatal("GET /v1beta/models 应被 handleSpecialRoutes 处理")
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200, 实际 %d", w.Code)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("响应解析失败: %v", err)
+	}
+	if _, ok := resp["models"]; !ok {
+		t.Fatal("Gemini models 响应应包含 models 字段")
+	}
+}
+
+// TestHandleSpecialRoutes_CountTokens 测试 POST /v1/messages/count_tokens 路由匹配
+func TestHandleSpecialRoutes_CountTokens(t *testing.T) {
+	srv := newInMemoryServer(t)
+
+	body := `{"model":"claude-sonnet-4-20250514","messages":[{"role":"user","content":"hello"}]}`
+	req := newRequest(http.MethodPost, "/v1/messages/count_tokens", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	c, w := newTestContext(t, req)
+
+	handled := srv.handleSpecialRoutes(c)
+	if !handled {
+		t.Fatal("POST /v1/messages/count_tokens 应被 handleSpecialRoutes 处理")
+	}
+	// count_tokens 返回 200（成功解析）或 400（解析失败），都是被处理了
+	if w.Code != http.StatusOK {
+		t.Logf("count_tokens 返回非 200 (code=%d)，但路由已匹配", w.Code)
+	}
+}
+
+// TestHandleSpecialRoutes_Fallthrough 测试不匹配的路由返回 false
+func TestHandleSpecialRoutes_Fallthrough(t *testing.T) {
+	srv := newInMemoryServer(t)
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{"POST /v1/models 不匹配", http.MethodPost, "/v1/models"},
+		{"GET /v1/chat/completions 不匹配", http.MethodGet, "/v1/chat/completions"},
+		{"POST /v1/messages 不匹配", http.MethodPost, "/v1/messages"},
+		{"GET /v1/messages/count_tokens 不匹配", http.MethodGet, "/v1/messages/count_tokens"},
+		{"GET /v1beta/models/xxx 不匹配", http.MethodGet, "/v1beta/models/xxx"},
+		{"POST /v1beta/models 不匹配", http.MethodPost, "/v1beta/models"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := newRequest(tt.method, tt.path, nil)
+			c, _ := newTestContext(t, req)
+
+			handled := srv.handleSpecialRoutes(c)
+			if handled {
+				t.Fatalf("%s %s 不应被 handleSpecialRoutes 处理", tt.method, tt.path)
 			}
 		})
 	}

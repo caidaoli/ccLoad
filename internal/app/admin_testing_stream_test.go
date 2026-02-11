@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -55,7 +56,7 @@ func TestTestChannelAPI_StreamIncludesUsageAndCost(t *testing.T) {
 		ChannelType: "anthropic",
 	}
 
-	result := srv.testChannelAPI(cfg, "sk-test", req)
+	result := srv.testChannelAPI(context.Background(), cfg, "sk-test", req)
 
 	if success, _ := result["success"].(bool); !success {
 		t.Fatalf("expected success, got: %#v", result)

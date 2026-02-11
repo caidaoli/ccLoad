@@ -76,7 +76,7 @@ func (s *Server) HandleChannelTest(c *gin.Context) {
 	}
 
 	// 执行测试（传递实际的API Key字符串）
-	testResult := s.testChannelAPI(cfg, selectedKey, &testReq)
+	testResult := s.testChannelAPI(c.Request.Context(), cfg, selectedKey, &testReq)
 	// 添加测试的 Key 索引信息到结果中
 	testResult["tested_key_index"] = keyIndex
 	testResult["total_keys"] = len(apiKeys)
@@ -143,7 +143,7 @@ func (s *Server) HandleChannelTest(c *gin.Context) {
 }
 
 // 测试渠道API连通性
-func (s *Server) testChannelAPI(cfg *model.Config, apiKey string, testReq *testutil.TestChannelRequest) map[string]any {
+func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKey string, testReq *testutil.TestChannelRequest) map[string]any {
 	// 设置默认测试内容（从配置读取）
 	if strings.TrimSpace(testReq.Content) == "" {
 		testReq.Content = s.configService.GetString("channel_test_content", "sonnet 4.0的发布日期是什么")
@@ -188,7 +188,7 @@ func (s *Server) testChannelAPI(cfg *model.Config, apiKey string, testReq *testu
 	}
 
 	// 创建HTTP请求
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(reqCtx, 2*time.Minute)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "POST", fullURL, bytes.NewReader(body))

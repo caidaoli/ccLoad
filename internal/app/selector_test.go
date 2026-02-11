@@ -1022,6 +1022,262 @@ func setupTestStore(t *testing.T) (storage.Store, func()) {
 	return testutil.SetupTestStore(t)
 }
 
+// --- selectCandidatesByChannelType 补充测试 ---
+
+// TestSelectCandidatesByChannelType_CacheHit 测试缓存命中路径
+// 当 GetEnabledChannelsByType 返回结果时，不应走 ListConfigs 兜底
+func TestSelectCandidatesByChannelType_CacheHit(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	ctx := context.Background()
+
+	// 创建 2 个 gemini 渠道和 1 个 anthropic 渠道
+	channels := []*model.Config{
+		{Name: "gemini-1", URL: "https://g1.com", Priority: 100, ChannelType: "gemini", ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true},
+		{Name: "gemini-2", URL: "https://g2.com", Priority: 90, ChannelType: "gemini", ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true},
+		{Name: "anthropic-1", URL: "https://a1.com", Priority: 80, ChannelType: "anthropic", ModelEntries: []model.ModelEntry{{Model: "claude-3"}}, Enabled: true},
+	}
+
+	for _, cfg := range channels {
+		if _, err := store.CreateConfig(ctx, cfg); err != nil {
+			t.Fatalf("CreateConfig failed: %v", err)
+		}
+	}
+
+	candidates, err := server.selectCandidatesByChannelType(ctx, "gemini")
+	if err != nil {
+		t.Fatalf("selectCandidatesByChannelType failed: %v", err)
+	}
+
+	if len(candidates) != 2 {
+		t.Fatalf("Expected 2 gemini channels, got %d", len(candidates))
+	}
+	for _, c := range candidates {
+		if c.ChannelType != "gemini" {
+			t.Errorf("Expected gemini type, got %s", c.ChannelType)
+		}
+	}
+}
+
+// TestSelectCandidatesByChannelType_FallbackToFullQuery 测试缓存为空时的全量查询兜底
+// 当 GetEnabledChannelsByType 返回空结果时（如所有匹配渠道冷却后缓存为空），
+// 应走 ListConfigs → 类型过滤兜底路径 (selector.go 第 21-32 行)
+func TestSelectCandidatesByChannelType_FallbackToFullQuery(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now()
+
+	// 创建 gemini 渠道，使其全部冷却（缓存层过滤后返回空）
+	geminiCfg := &model.Config{
+		Name: "gemini-cooled", URL: "https://g.com", Priority: 100,
+		ChannelType: "gemini", ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true,
+	}
+	created, err := store.CreateConfig(ctx, geminiCfg)
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	// 冷却该渠道
+	if err := store.SetChannelCooldown(ctx, created.ID, now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("SetChannelCooldown failed: %v", err)
+	}
+
+	// 还需要一个 anthropic 渠道确保不被误选
+	_, err = store.CreateConfig(ctx, &model.Config{
+		Name: "anthropic-1", URL: "https://a.com", Priority: 100,
+		ChannelType: "anthropic", ModelEntries: []model.ModelEntry{{Model: "claude"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+
+	// selectCandidatesByChannelType 应走兜底路径
+	// 全冷却场景下，兜底返回最早恢复的 gemini 渠道
+	candidates, err := server.selectCandidatesByChannelType(ctx, "gemini")
+	if err != nil {
+		t.Fatalf("selectCandidatesByChannelType failed: %v", err)
+	}
+
+	// 全冷却兜底：应返回1个渠道（最早恢复）
+	if len(candidates) != 1 {
+		t.Fatalf("Expected 1 candidate (all-cooled fallback), got %d", len(candidates))
+	}
+	if candidates[0].Name != "gemini-cooled" {
+		t.Errorf("Expected gemini-cooled, got %s", candidates[0].Name)
+	}
+}
+
+// TestSelectCandidatesByChannelType_TypeNormalization 测试类型归一化（大小写）
+func TestSelectCandidatesByChannelType_TypeNormalization(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	ctx := context.Background()
+
+	_, err := store.CreateConfig(ctx, &model.Config{
+		Name: "codex-ch", URL: "https://codex.com", Priority: 100,
+		ChannelType: "codex", ModelEntries: []model.ModelEntry{{Model: "gpt-4"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	// 大写输入应匹配小写存储
+	candidates, err := server.selectCandidatesByChannelType(ctx, "CODEX")
+	if err != nil {
+		t.Fatalf("selectCandidatesByChannelType failed: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("Expected 1 channel, got %d", len(candidates))
+	}
+	if candidates[0].Name != "codex-ch" {
+		t.Errorf("Expected codex-ch, got %s", candidates[0].Name)
+	}
+}
+
+// TestSelectCandidatesByChannelType_EmptyType 测试空类型（默认为 anthropic）
+func TestSelectCandidatesByChannelType_EmptyType(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	ctx := context.Background()
+
+	// 创建一个 anthropic 渠道（ChannelType="" 默认为 anthropic）
+	_, err := store.CreateConfig(ctx, &model.Config{
+		Name: "default-ch", URL: "https://default.com", Priority: 100,
+		ChannelType: "", ModelEntries: []model.ModelEntry{{Model: "claude"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	// 空类型归一化为 "anthropic"
+	candidates, err := server.selectCandidatesByChannelType(ctx, "")
+	if err != nil {
+		t.Fatalf("selectCandidatesByChannelType failed: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("Expected 1 channel (default anthropic type), got %d", len(candidates))
+	}
+}
+
+// TestSelectCandidatesByChannelType_NoMatchingType 测试无匹配类型
+func TestSelectCandidatesByChannelType_NoMatchingType(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	ctx := context.Background()
+
+	// 只创建 anthropic 渠道
+	_, err := store.CreateConfig(ctx, &model.Config{
+		Name: "anthropic-only", URL: "https://a.com", Priority: 100,
+		ChannelType: "anthropic", ModelEntries: []model.ModelEntry{{Model: "claude"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	// 查询 gemini 类型应返回空
+	candidates, err := server.selectCandidatesByChannelType(ctx, "gemini")
+	if err != nil {
+		t.Fatalf("selectCandidatesByChannelType failed: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Errorf("Expected 0 channels for unmatched type, got %d", len(candidates))
+	}
+}
+
+// TestSelectCandidatesByChannelType_CooldownFiltering 测试冷却渠道过滤
+func TestSelectCandidatesByChannelType_CooldownFiltering(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	ctx := context.Background()
+	now := time.Now()
+
+	// 创建 2 个 gemini 渠道
+	ch1, err := store.CreateConfig(ctx, &model.Config{
+		Name: "gemini-active", URL: "https://g1.com", Priority: 100,
+		ChannelType: "gemini", ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	ch2, err := store.CreateConfig(ctx, &model.Config{
+		Name: "gemini-cooled", URL: "https://g2.com", Priority: 90,
+		ChannelType: "gemini", ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	// 冷却 ch2
+	if err := store.SetChannelCooldown(ctx, ch2.ID, now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("SetChannelCooldown failed: %v", err)
+	}
+	// ch1 保持活跃
+	_ = ch1
+
+	candidates, err := server.selectCandidatesByChannelType(ctx, "gemini")
+	if err != nil {
+		t.Fatalf("selectCandidatesByChannelType failed: %v", err)
+	}
+
+	if len(candidates) != 1 {
+		t.Fatalf("Expected 1 active channel, got %d", len(candidates))
+	}
+	if candidates[0].Name != "gemini-active" {
+		t.Errorf("Expected gemini-active, got %s", candidates[0].Name)
+	}
+}
+
+// TestSelectCandidatesByChannelType_DisabledChannelExcluded 测试禁用渠道不参与选择
+func TestSelectCandidatesByChannelType_DisabledChannelExcluded(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	ctx := context.Background()
+
+	_, err := store.CreateConfig(ctx, &model.Config{
+		Name: "enabled-gemini", URL: "https://g1.com", Priority: 100,
+		ChannelType: "gemini", ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	_, err = store.CreateConfig(ctx, &model.Config{
+		Name: "disabled-gemini", URL: "https://g2.com", Priority: 90,
+		ChannelType: "gemini", ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: false,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	candidates, err := server.selectCandidatesByChannelType(ctx, "gemini")
+	if err != nil {
+		t.Fatalf("selectCandidatesByChannelType failed: %v", err)
+	}
+
+	if len(candidates) != 1 {
+		t.Fatalf("Expected 1 enabled channel, got %d", len(candidates))
+	}
+	if candidates[0].Name != "enabled-gemini" {
+		t.Errorf("Expected enabled-gemini, got %s", candidates[0].Name)
+	}
+}
+
 func TestFilterCostLimitExceededChannels(t *testing.T) {
 	t.Parallel()
 

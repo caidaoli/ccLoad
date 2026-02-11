@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"ccLoad/internal/model"
@@ -94,5 +96,236 @@ func TestHandleChannelTest(t *testing.T) {
 				t.Errorf("期望 success=%v, 实际=%v, error=%q", tt.expectSuccess, resp.Success, resp.Error)
 			}
 		})
+	}
+}
+
+// TestHandleChannelTest_NoAPIKey 渠道存在但无 API key
+func TestHandleChannelTest_NoAPIKey(t *testing.T) {
+	srv := newInMemoryServer(t)
+	ctx := context.Background()
+
+	// 创建渠道但不添加 API key
+	cfg := &model.Config{
+		Name:         "no-key-channel",
+		URL:          "http://test.example.com",
+		Priority:     1,
+		ModelEntries: []model.ModelEntry{{Model: "test-model"}},
+		Enabled:      true,
+	}
+	created, err := srv.store.CreateConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+
+	channelID := fmt.Sprintf("%d", created.ID)
+	reqBody := map[string]any{
+		"model":        "test-model",
+		"channel_type": "anthropic",
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", reqBody))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelTest(c)
+
+	// 状态码 200，但 data 中 success=false
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200, 实际 %d, 响应: %s", w.Code, w.Body.String())
+	}
+
+	// RespondJSON 包装 success=true (外层), data 内部有 success: false
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("外层 APIResponse.Success 应为 true, error=%q", resp.Error)
+	}
+
+	dataSuccess, _ := resp.Data["success"].(bool)
+	if dataSuccess {
+		t.Fatal("data.success 应为 false（渠道无 API key）")
+	}
+
+	dataError, _ := resp.Data["error"].(string)
+	if dataError == "" {
+		t.Fatal("data.error 不应为空")
+	}
+}
+
+// TestHandleChannelTest_UnsupportedModel 渠道存在、有 Key，但模型不支持
+func TestHandleChannelTest_UnsupportedModel(t *testing.T) {
+	srv := newInMemoryServer(t)
+	ctx := context.Background()
+
+	cfg := &model.Config{
+		Name:         "limited-model-channel",
+		URL:          "http://test.example.com",
+		Priority:     1,
+		ModelEntries: []model.ModelEntry{{Model: "claude-3-5-sonnet"}},
+		Enabled:      true,
+	}
+	created, err := srv.store.CreateConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+
+	// 添加 API key
+	err = srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "test-key-001"},
+	})
+	if err != nil {
+		t.Fatalf("添加 API key 失败: %v", err)
+	}
+
+	channelID := fmt.Sprintf("%d", created.ID)
+	reqBody := map[string]any{
+		"model":        "gpt-4-not-supported",
+		"channel_type": "anthropic",
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", reqBody))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200, 实际 %d, 响应: %s", w.Code, w.Body.String())
+	}
+
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	dataSuccess, _ := resp.Data["success"].(bool)
+	if dataSuccess {
+		t.Fatal("data.success 应为 false（模型不支持）")
+	}
+}
+
+// TestHandleChannelTest_SuccessfulAPI 使用 mock server 模拟成功的 API 调用
+func TestHandleChannelTest_SuccessfulAPI(t *testing.T) {
+	// 创建 mock 上游服务器，返回成功的 Anthropic 响应
+	mockResp := `{
+		"id": "msg_test",
+		"type": "message",
+		"role": "assistant",
+		"content": [{"type": "text", "text": "Hello"}],
+		"model": "claude-3-5-sonnet",
+		"usage": {"input_tokens": 10, "output_tokens": 5}
+	}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(mockResp))
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	// 替换 HTTP client 以使用 mock server
+	srv.client = upstream.Client()
+
+	ctx := context.Background()
+
+	cfg := &model.Config{
+		Name:         "test-success-channel",
+		URL:          upstream.URL,
+		Priority:     1,
+		ModelEntries: []model.ModelEntry{{Model: "claude-3-5-sonnet"}},
+		Enabled:      true,
+	}
+	created, err := srv.store.CreateConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+
+	err = srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test-key"},
+	})
+	if err != nil {
+		t.Fatalf("添加 API key 失败: %v", err)
+	}
+
+	channelID := fmt.Sprintf("%d", created.ID)
+	reqBody := map[string]any{
+		"model":        "claude-3-5-sonnet",
+		"channel_type": "anthropic",
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", reqBody))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200, 实际 %d, 响应: %s", w.Code, w.Body.String())
+	}
+
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("外层 APIResponse.Success 应为 true, error=%q", resp.Error)
+	}
+
+	dataSuccess, _ := resp.Data["success"].(bool)
+	if !dataSuccess {
+		t.Fatalf("data.success 应为 true（API 调用成功）, data=%+v", resp.Data)
+	}
+}
+
+// TestHandleChannelTest_FailedAPI 使用 mock server 模拟失败的 API 调用
+func TestHandleChannelTest_FailedAPI(t *testing.T) {
+	// 创建 mock 上游服务器，返回 401 错误
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"type":"authentication_error","message":"invalid api key"}}`))
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+
+	ctx := context.Background()
+
+	cfg := &model.Config{
+		Name:         "test-fail-channel",
+		URL:          upstream.URL,
+		Priority:     1,
+		ModelEntries: []model.ModelEntry{{Model: "claude-3-5-sonnet"}},
+		Enabled:      true,
+	}
+	created, err := srv.store.CreateConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+
+	err = srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-invalid-key"},
+	})
+	if err != nil {
+		t.Fatalf("添加 API key 失败: %v", err)
+	}
+
+	channelID := fmt.Sprintf("%d", created.ID)
+	reqBody := map[string]any{
+		"model":        "claude-3-5-sonnet",
+		"channel_type": "anthropic",
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", reqBody))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200, 实际 %d, 响应: %s", w.Code, w.Body.String())
+	}
+
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	dataSuccess, _ := resp.Data["success"].(bool)
+	if dataSuccess {
+		t.Fatal("data.success 应为 false（API 调用失败 401）")
+	}
+
+	// 验证冷却决策被记录
+	if action, ok := resp.Data["cooldown_action"].(string); ok {
+		if action == "" {
+			t.Fatal("失败时应有冷却决策记录")
+		}
+		t.Logf("冷却决策: %s", action)
 	}
 }
