@@ -10,6 +10,50 @@
   <title data-i18n="modelTest.title">模型测试 - Claude Code & Codex Proxy</title>
   <link rel="stylesheet" href="/web/assets/css/styles.css?v=__VERSION__">
   <link href="/web/assets/css/inter.css?v=__VERSION__" rel="stylesheet">
+  <style>
+    .mode-tab-btn {
+      padding: 8px 14px;
+      font-size: 13px;
+      border: 1px solid var(--color-border);
+      border-radius: 8px;
+      background: var(--color-bg-secondary);
+      color: var(--color-text-secondary);
+      cursor: pointer;
+    }
+
+    .mode-tab-btn.active {
+      background: var(--primary-500);
+      border-color: var(--primary-500);
+      color: white;
+    }
+
+    .delete-preview-text {
+      margin: 0;
+      margin-top: 10px;
+      white-space: pre-wrap;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--color-text-secondary);
+      background: var(--color-bg-secondary);
+      border: 1px solid var(--color-border);
+      border-radius: 8px;
+      padding: 10px;
+      max-height: 260px;
+      overflow: auto;
+    }
+
+    #runTestBtn:disabled,
+    #runTestBtn.is-disabled {
+      opacity: 0.62;
+      filter: saturate(60%);
+      background: var(--color-border);
+      border-color: var(--color-border);
+      color: var(--color-text-secondary);
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+  </style>
   <script src="/web/assets/locales/zh-CN.js?v=__VERSION__"></script>
   <script src="/web/assets/locales/en.js?v=__VERSION__"></script>
   <script src="/web/assets/js/i18n.js?v=__VERSION__"></script>
@@ -23,9 +67,15 @@
         </header>
 
         <section class="glass-card mb-2" style="overflow: visible;">
+          <!-- 模式切换 -->
+          <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+            <button id="modeTabChannel" class="mode-tab-btn active" onclick="setTestMode('channel')" data-i18n="modelTest.mode.channel">按渠道测试</button>
+            <button id="modeTabModel" class="mode-tab-btn" onclick="setTestMode('model')" data-i18n="modelTest.mode.model">按模型测试</button>
+          </div>
+
           <!-- 控制栏 -->
           <div style="display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center;">
-            <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
+            <label id="channelSelectorLabel" style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
               <span style="color: var(--color-text-secondary);" data-i18n="modelTest.channel">渠道</span>
               <div id="testChannelSelectContainer"></div>
             </label>
@@ -34,6 +84,21 @@
               <select id="testChannelType" style="padding: 6px 8px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px;">
               </select>
             </label>
+            <label id="modelSelectorLabel" style="display: none; align-items: center; gap: 6px; font-size: 13px; min-width: 280px;">
+              <span style="color: var(--color-text-secondary);" data-i18n="common.model">模型</span>
+              <div class="filter-combobox-wrapper" style="min-width: 220px; flex: 1;">
+                <input
+                  id="testModelSelect"
+                  class="filter-select filter-combobox"
+                  type="text"
+                  autocomplete="off"
+                  spellcheck="false"
+                  data-i18n-placeholder="modelTest.modelInputPlaceholder"
+                  placeholder="输入或选择模型"
+                >
+                <div id="testModelSelectDropdown" class="filter-dropdown" role="listbox" aria-label="模型"></div>
+              </div>
+            </label>
             <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; flex: 1; min-width: 200px;">
               <span style="color: var(--color-text-secondary);" data-i18n="modelTest.content">内容</span>
               <input type="text" id="modelTestContent" value="" data-i18n-placeholder="common.loading" placeholder="加载中..." style="flex: 1; padding: 6px 10px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px;">
@@ -41,8 +106,7 @@
             <span id="testProgress" style="font-size: 13px; color: var(--color-text-secondary);"></span>
             <button onclick="selectAllModels()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;" data-i18n="modelTest.selectAll">全选</button>
             <button onclick="deselectAllModels()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;" data-i18n="modelTest.deselectAll">取消全选</button>
-            <button onclick="fetchAndAddModels()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;" data-i18n="modelTest.fetchModels">获取模型</button>
-            <button onclick="deleteSelectedModels()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px; color: var(--error-500);" data-i18n="modelTest.deleteModels">删除模型</button>
+            <button id="deleteModelsBtn" onclick="deleteSelectedModels()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px; color: var(--error-500);" data-i18n="modelTest.deleteModels">删除模型</button>
             <label style="display: flex; align-items: center; gap: 4px; font-size: 13px; cursor: pointer;">
               <input type="checkbox" id="streamEnabled" style="width: 16px; height: 16px;">
               <span data-i18n="modelTest.stream">流式</span>
@@ -58,7 +122,7 @@
           <div class="table-container">
             <table class="modern-table" style="font-size: 13px; table-layout: fixed; width: 100%;">
               <thead style="position: sticky; top: 0; background: var(--glass-bg); z-index: 1;">
-                <tr>
+                <tr id="model-test-head-row">
                   <th style="width: 30px;"><input type="checkbox" id="selectAllCheckbox" onchange="toggleAllModels(this.checked)"></th>
                   <th style="width: 200px;" data-i18n="common.model">模型</th>
                   <th style="width: 70px;" data-i18n="modelTest.duration">耗时</th>
@@ -82,8 +146,23 @@
   <!-- 模型行模板 -->
   <template id="tpl-model-row">
     <tr data-model="{{model}}">
-      <td><input type="checkbox" class="model-checkbox" checked></td>
+      <td><input type="checkbox" class="row-checkbox model-checkbox" checked></td>
       <td title="{{model}}" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;{{nameStyle}}">{{displayName}}</td>
+      <td class="duration">-</td>
+      <td class="input-tokens">-</td>
+      <td class="output-tokens">-</td>
+      <td class="cache-read">-</td>
+      <td class="cache-create">-</td>
+      <td class="cost">-</td>
+      <td class="response" title="">-</td>
+    </tr>
+  </template>
+
+  <!-- 按模型测试时的渠道行模板 -->
+  <template id="tpl-channel-row-by-model">
+    <tr data-channel-id="{{channelId}}" data-model="{{model}}">
+      <td><input type="checkbox" class="row-checkbox channel-checkbox" checked></td>
+      <td title="{{channelName}}" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{channelName}}</td>
       <td class="duration">-</td>
       <td class="input-tokens">-</td>
       <td class="output-tokens">-</td>
@@ -96,8 +175,26 @@
 
   <!-- 空状态模板 -->
   <template id="tpl-empty-row">
-    <tr><td colspan="9" style="text-align: center; color: var(--color-text-secondary); padding: 40px;">{{message}}</td></tr>
+    <tr><td colspan="{{colspan}}" style="text-align: center; color: var(--color-text-secondary); padding: 40px;">{{message}}</td></tr>
   </template>
+
+  <!-- 删除预览确认弹窗 -->
+  <div id="deletePreviewModal" class="modal">
+    <div class="modal-content" style="max-width: 760px; width: min(90vw, 760px);">
+      <div class="modal-header" style="margin-bottom: 8px;">
+        <h2 class="modal-title" data-i18n="modelTest.deletePreviewTitle">确认删除模型</h2>
+        <button id="deletePreviewCloseBtn" class="close-btn" aria-label="Close">&times;</button>
+      </div>
+      <p style="margin: 0; color: var(--color-text-secondary); font-size: 13px;" data-i18n="modelTest.deletePreviewDesc">将按以下分组删除，请确认：</p>
+      <pre id="deletePreviewContent" class="delete-preview-text">-</pre>
+      <p id="deletePreviewProgress" style="display: none; margin: 0; margin-top: 10px; font-size: 13px; color: var(--color-text-secondary);">-</p>
+      <pre id="deletePreviewRuntimeLog" class="delete-preview-text" style="display: none; max-height: 180px;">-</pre>
+      <div class="confirm-actions" style="justify-content: flex-end; margin-top: 16px;">
+        <button id="deletePreviewCancelBtn" class="btn btn-secondary" data-i18n="common.cancel">取消</button>
+        <button id="deletePreviewConfirmBtn" class="btn btn-danger" data-i18n="modelTest.deletePreviewConfirm">确认删除</button>
+      </div>
+    </div>
+  </div>
 
   <script src="/web/assets/js/template-engine.js?v=__VERSION__"></script>
   <script src="/web/assets/js/ui.js?v=__VERSION__"></script>
