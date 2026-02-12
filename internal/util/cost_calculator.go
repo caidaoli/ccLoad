@@ -141,9 +141,14 @@ var basePricing = map[string]ModelPricing{
 	"gemini-1.5-flash":      {InputPrice: 0.20, OutputPrice: 0.60},
 
 	// ========== 智谱 GLM 模型 ==========
+	"glm-5":               {InputPrice: 1.00, OutputPrice: 3.20},
+	"glm-5-code":          {InputPrice: 1.20, OutputPrice: 5.00},
 	"glm-4.7":             {InputPrice: 0.60, OutputPrice: 2.20},
+	"glm-4.7-flashx":      {InputPrice: 0.07, OutputPrice: 0.40},
+	"glm-4.7-flash":       {InputPrice: 0.00, OutputPrice: 0.00}, // 免费
 	"glm-4.6":             {InputPrice: 0.60, OutputPrice: 2.20},
 	"glm-4.6v":            {InputPrice: 0.30, OutputPrice: 0.90},
+	"glm-ocr":             {InputPrice: 0.03, OutputPrice: 0.03},
 	"glm-4.6v-flashx":     {InputPrice: 0.04, OutputPrice: 0.40},
 	"glm-4.6v-flash":      {InputPrice: 0.00, OutputPrice: 0.00}, // 免费
 	"glm-4.5":             {InputPrice: 0.60, OutputPrice: 2.20},
@@ -227,6 +232,7 @@ var basePricing = map[string]ModelPricing{
 	"minimax-m1":   {InputPrice: 0.30, OutputPrice: 1.65},
 	"minimax-m2":   {InputPrice: 0.15, OutputPrice: 0.45},
 	"minimax-m2.1": {InputPrice: 0.30, OutputPrice: 1.20},
+	"minimax-m2.5": {InputPrice: 0.30, OutputPrice: 1.20},
 
 	// ========== Meta Llama 模型 ==========
 	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=meta-llama
@@ -588,7 +594,7 @@ func fuzzyMatchModel(model string) (ModelPricing, bool) {
 		"grok-code-fast-1", "grok-vision-beta",
 
 		// MiniMax模型
-		"minimax-m2.1", "minimax-m2", "minimax-m1", "minimax-01",
+		"minimax-m2.5", "minimax-m2.1", "minimax-m2", "minimax-m1", "minimax-01",
 
 		// Meta Llama模型（长前缀优先）
 		"llama-3.2-90b-vision-instruct", "llama-3.2-11b-vision-instruct",
