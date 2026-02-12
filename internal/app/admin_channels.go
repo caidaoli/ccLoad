@@ -395,6 +395,11 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	// 渠道更新后刷新缓存，确保选择器立即生效
 	s.InvalidateChannelListCache()
 
+	// Key变更时必须失效API Keys缓存，否则再次编辑会读到旧缓存
+	if keyChanged || strategyChanged {
+		s.InvalidateAPIKeysCache(id)
+	}
+
 	RespondJSON(c, http.StatusOK, upd)
 }
 
