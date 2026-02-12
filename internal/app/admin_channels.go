@@ -511,15 +511,16 @@ func (s *Server) HandleAddModels(c *gin.Context) {
 		}
 	}
 
-	// 去重合并（使用规范化后的值）
+	// 去重合并（大小写不敏感，兼容 MySQL utf8mb4_general_ci 排序规则）
 	existing := make(map[string]bool)
 	for _, e := range cfg.ModelEntries {
-		existing[e.Model] = true
+		existing[strings.ToLower(e.Model)] = true
 	}
 	for _, e := range req.Models {
-		if !existing[e.Model] {
+		key := strings.ToLower(e.Model)
+		if !existing[key] {
 			cfg.ModelEntries = append(cfg.ModelEntries, e)
-			existing[e.Model] = true
+			existing[key] = true
 		}
 	}
 
@@ -556,14 +557,14 @@ func (s *Server) HandleDeleteModels(c *gin.Context) {
 		return
 	}
 
-	// 过滤掉要删除的模型
+	// 过滤掉要删除的模型（大小写不敏感，兼容 MySQL utf8mb4_general_ci）
 	toDelete := make(map[string]bool)
 	for _, m := range req.Models {
-		toDelete[m] = true
+		toDelete[strings.ToLower(m)] = true
 	}
 	remaining := make([]model.ModelEntry, 0, len(cfg.ModelEntries))
 	for _, e := range cfg.ModelEntries {
-		if !toDelete[e.Model] {
+		if !toDelete[strings.ToLower(e.Model)] {
 			remaining = append(remaining, e)
 		}
 	}

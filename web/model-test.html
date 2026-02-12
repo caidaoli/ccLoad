@@ -106,6 +106,7 @@
             <span id="testProgress" style="font-size: 13px; color: var(--color-text-secondary);"></span>
             <button onclick="selectAllModels()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;" data-i18n="modelTest.selectAll">全选</button>
             <button onclick="deselectAllModels()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;" data-i18n="modelTest.deselectAll">取消全选</button>
+            <button id="fetchModelsBtn" onclick="fetchAndAddModels()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;" data-i18n="modelTest.fetchModels">获取模型</button>
             <button id="deleteModelsBtn" onclick="deleteSelectedModels()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px; color: var(--error-500);" data-i18n="modelTest.deleteModels">删除模型</button>
             <label style="display: flex; align-items: center; gap: 4px; font-size: 13px; cursor: pointer;">
               <input type="checkbox" id="streamEnabled" style="width: 16px; height: 16px;">

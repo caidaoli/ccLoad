@@ -20,6 +20,7 @@ const channelSelectorLabel = document.getElementById('channelSelectorLabel');
 const modelSelectorLabel = document.getElementById('modelSelectorLabel');
 const typeSelect = document.getElementById('testChannelType');
 const modelSelect = document.getElementById('testModelSelect');
+const fetchModelsBtn = document.getElementById('fetchModelsBtn');
 const deleteModelsBtn = document.getElementById('deleteModelsBtn');
 const runTestBtn = document.getElementById('runTestBtn');
 
@@ -328,6 +329,7 @@ function updateModeUI() {
 
   channelSelectorLabel.style.display = isModelMode ? 'none' : 'flex';
   modelSelectorLabel.style.display = isModelMode ? 'flex' : 'none';
+  fetchModelsBtn.style.display = isModelMode ? 'none' : '';
   deleteModelsBtn.disabled = false;
   deleteModelsBtn.title = isModelMode ? i18nText('modelTest.deleteBySelectionHint', '按勾选记录删除对应渠道中的模型') : '';
 
@@ -832,6 +834,47 @@ async function executeDeletePlan(deletePlan, progress = null) {
   return { failed, successCount, totalChannelCount };
 }
 
+async function fetchAndAddModels() {
+  if (!selectedChannel) {
+    showError(i18nText('modelTest.selectChannelFirst', '请先选择渠道'));
+    return;
+  }
+
+  const channelType = typeSelect.value;
+  try {
+    const resp = await fetchAPIWithAuth(`/admin/channels/${selectedChannel.id}/models/fetch?channel_type=${channelType}`);
+    if (!resp.success || !resp.data?.models) {
+      showError(resp.error || i18nText('modelTest.fetchModelsFailed', '获取模型失败'));
+      return;
+    }
+
+    const existingNames = new Set((selectedChannel.models || []).map(e => getModelName(e)));
+    const fetched = resp.data.models;
+    const newOnes = fetched.filter(entry => {
+      const name = getModelName(entry);
+      return name && !existingNames.has(name);
+    });
+
+    if (newOnes.length > 0) {
+      const saveResp = await fetchAPIWithAuth(`/admin/channels/${selectedChannel.id}/models`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ models: newOnes })
+      });
+      if (!saveResp.success) throw new Error(saveResp.error || i18nText('modelTest.saveModelsFailed', '保存模型失败'));
+    }
+
+    selectedChannel.models = [...(selectedChannel.models || []), ...newOnes];
+    renderChannelModeRows();
+    showSuccess(i18nText('modelTest.fetchModelsResult', `获取到 ${fetched.length} 个模型，新增 ${newOnes.length} 个`, {
+      total: fetched.length,
+      added: newOnes.length
+    }));
+  } catch (e) {
+    showError(e.message || i18nText('modelTest.fetchModelsFailed', '获取模型失败'));
+  }
+}
+
 async function deleteSelectedModels() {
   if (isDeletingModels) return;
   if (!ensureDeleteContext()) return;
@@ -1055,6 +1098,7 @@ window.selectAllModels = selectAllModels;
 window.deselectAllModels = deselectAllModels;
 window.toggleAllModels = toggleAllModels;
 window.runModelTests = runModelTests;
+window.fetchAndAddModels = fetchAndAddModels;
 window.deleteSelectedModels = deleteSelectedModels;
 
 async function bootstrap() {
