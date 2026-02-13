@@ -151,6 +151,7 @@ document.addEventListener('keydown', (e) => {
     // 按层级优先关闭最上层模态框
     const modelImportModal = document.getElementById('modelImportModal');
     const keyImportModal = document.getElementById('keyImportModal');
+    const keyExportModal = document.getElementById('keyExportModal');
     const sortModal = document.getElementById('sortModal');
     const deleteModal = document.getElementById('deleteModal');
     const testModal = document.getElementById('testModal');
@@ -160,6 +161,8 @@ document.addEventListener('keydown', (e) => {
       closeModelImportModal();
     } else if (keyImportModal && keyImportModal.classList.contains('show')) {
       closeKeyImportModal();
+    } else if (keyExportModal && keyExportModal.classList.contains('show')) {
+      closeKeyExportModal();
     } else if (sortModal && sortModal.classList.contains('show')) {
       closeSortModal();
     } else if (deleteModal && deleteModal.classList.contains('show')) {

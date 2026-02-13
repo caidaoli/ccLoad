@@ -227,6 +227,55 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 		"duration_ms": duration.Milliseconds(),
 	}
 
+	parseNonStreamResponse := func(bodyBytes []byte) map[string]any {
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			// 成功：委托给 tester 解析
+			parsed := tester.Parse(resp.StatusCode, bodyBytes)
+			for k, v := range parsed {
+				result[k] = v
+			}
+
+			// 补齐成本信息（与代理计费口径一致：使用归一化后的可计费inputTokens）
+			usageParser := newJSONUsageParser(channelType)
+			_ = usageParser.Feed(bodyBytes)
+			billableInput, output, cacheRead, _ := usageParser.GetUsage()
+			if billableInput+output+cacheRead > 0 {
+				result["cost_usd"] = util.CalculateCostDetailed(
+					testReq.Model,
+					billableInput,
+					output,
+					cacheRead,
+					usageParser.Cache5mInputTokens,
+					usageParser.Cache1hInputTokens,
+				)
+			}
+
+			result["message"] = "API测试成功"
+			return result
+		}
+
+		// 错误：统一解析
+		var errorMsg string
+		var apiError map[string]any
+		if err := sonic.Unmarshal(bodyBytes, &apiError); err == nil {
+			if errInfo, ok := apiError["error"].(map[string]any); ok {
+				if msg, ok := errInfo["message"].(string); ok {
+					errorMsg = msg
+				} else if typeStr, ok := errInfo["type"].(string); ok {
+					errorMsg = typeStr
+				}
+			}
+			result["api_error"] = apiError
+		} else {
+			result["raw_response"] = string(bodyBytes)
+		}
+		if errorMsg == "" {
+			errorMsg = "API返回错误状态: " + resp.Status
+		}
+		result["error"] = errorMsg
+		return result
+	}
+
 	// 附带响应头与类型，便于排查（不含请求头以避免泄露）
 	if len(resp.Header) > 0 {
 		hdr := make(map[string]string, len(resp.Header))
@@ -249,6 +298,7 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 		var textBuilder strings.Builder
 		var lastErrMsg string
 		var lastUsage map[string]any
+		dataLineCount := 0
 
 		// [DRY] 复用代理链路的SSE usage解析器，保证tokens/成本口径一致
 		usageParser := newSSEUsageParser(channelType)
@@ -272,6 +322,7 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 			if !strings.HasPrefix(line, "data:") {
 				continue
 			}
+			dataLineCount++
 			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			if data == "" || data == "[DONE]" {
 				continue
@@ -342,6 +393,11 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 			result["raw_response"] = rawBuilder.String()
 			return result
 		}
+		// 容错：部分上游错误地返回 text/event-stream 但实际是完整 JSON。
+		// 若未发现任何 SSE data 行，按非流式响应解析，避免“测试成功但无 response_text”。
+		if dataLineCount == 0 {
+			return parseNonStreamResponse([]byte(rawBuilder.String()))
+		}
 
 		if textBuilder.Len() > 0 {
 			result["response_text"] = textBuilder.String()
@@ -391,51 +447,5 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 	if err != nil {
 		return map[string]any{"success": false, "error": "读取响应失败: " + err.Error(), "duration_ms": duration.Milliseconds(), "status_code": resp.StatusCode}
 	}
-
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		// 成功：委托给 tester 解析
-		parsed := tester.Parse(resp.StatusCode, respBody)
-		for k, v := range parsed {
-			result[k] = v
-		}
-
-		// 补齐成本信息（与代理计费口径一致：使用归一化后的可计费inputTokens）
-		usageParser := newJSONUsageParser(channelType)
-		_ = usageParser.Feed(respBody)
-		billableInput, output, cacheRead, _ := usageParser.GetUsage()
-		if billableInput+output+cacheRead > 0 {
-			result["cost_usd"] = util.CalculateCostDetailed(
-				testReq.Model,
-				billableInput,
-				output,
-				cacheRead,
-				usageParser.Cache5mInputTokens,
-				usageParser.Cache1hInputTokens,
-			)
-		}
-
-		result["message"] = "API测试成功"
-	} else {
-		// 错误：统一解析
-		var errorMsg string
-		var apiError map[string]any
-		if err := sonic.Unmarshal(respBody, &apiError); err == nil {
-			if errInfo, ok := apiError["error"].(map[string]any); ok {
-				if msg, ok := errInfo["message"].(string); ok {
-					errorMsg = msg
-				} else if typeStr, ok := errInfo["type"].(string); ok {
-					errorMsg = typeStr
-				}
-			}
-			result["api_error"] = apiError
-		} else {
-			result["raw_response"] = string(respBody)
-		}
-		if errorMsg == "" {
-			errorMsg = "API返回错误状态: " + resp.Status
-		}
-		result["error"] = errorMsg
-	}
-
-	return result
+	return parseNonStreamResponse(respBody)
 }

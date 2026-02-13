@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"strconv"
 	"testing"
+	"time"
 
+	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 
@@ -417,6 +419,82 @@ func TestHandleUpdateChannel(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestHandleUpdateChannel_ClearCooldownShouldTakeEffectImmediately(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	server.channelCache = storage.NewChannelCache(store, time.Minute)
+	server.cooldownManager = cooldown.NewManager(store, server)
+
+	ctx := context.Background()
+
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "Cooldown-Channel",
+		URL:          "https://api.example.com",
+		Priority:     10,
+		ModelEntries: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID:   created.ID,
+		KeyIndex:    0,
+		APIKey:      "sk-test-key",
+		KeyStrategy: model.KeyStrategySequential,
+	}}); err != nil {
+		t.Fatalf("创建测试 API Key 失败: %v", err)
+	}
+
+	if err := store.SetChannelCooldown(ctx, created.ID, time.Now().Add(2*time.Minute)); err != nil {
+		t.Fatalf("设置渠道冷却失败: %v", err)
+	}
+
+	// 先查询一次，预热冷却缓存（复现“更新后仍显示旧冷却”问题）
+	c1, w1 := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
+	server.handleListChannels(c1)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("预热列表请求失败: %d", w1.Code)
+	}
+	before := mustParseAPIResponse[[]ChannelWithCooldown](t, w1.Body.Bytes())
+	if len(before.Data) != 1 || before.Data[0].CooldownRemainingMS <= 0 {
+		t.Fatalf("预期渠道处于冷却中，实际 cooldown_remaining_ms=%d", before.Data[0].CooldownRemainingMS)
+	}
+
+	updatePayload := ChannelRequest{
+		Name:     "Cooldown-Channel-Updated",
+		APIKey:   "sk-test-key",
+		URL:      "https://api.updated.com",
+		Priority: 20,
+		Models: []model.ModelEntry{
+			{Model: "model-1", RedirectModel: ""},
+		},
+		Enabled: true,
+	}
+
+	c2, w2 := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/channels/"+strconv.FormatInt(created.ID, 10), updatePayload))
+	c2.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(created.ID, 10)}}
+	server.handleUpdateChannel(c2, created.ID)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("更新渠道失败: %d body=%s", w2.Code, w2.Body.String())
+	}
+
+	// 立即再次查询，必须看不到旧冷却状态
+	c3, w3 := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
+	server.handleListChannels(c3)
+	if w3.Code != http.StatusOK {
+		t.Fatalf("更新后列表请求失败: %d", w3.Code)
+	}
+	after := mustParseAPIResponse[[]ChannelWithCooldown](t, w3.Body.Bytes())
+	if len(after.Data) != 1 {
+		t.Fatalf("预期1个渠道，实际%d个", len(after.Data))
+	}
+	if after.Data[0].CooldownUntil != nil || after.Data[0].CooldownRemainingMS > 0 {
+		t.Fatalf("预期冷却已清除，实际 cooldown_until=%v cooldown_remaining_ms=%d", after.Data[0].CooldownUntil, after.Data[0].CooldownRemainingMS)
 	}
 }
 

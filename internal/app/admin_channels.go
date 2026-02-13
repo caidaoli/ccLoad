@@ -391,6 +391,8 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 			log.Printf("[WARN] 清除渠道冷却状态失败 (channel=%d): %v", id, err)
 		}
 	}
+	// 冷却状态可能被更新，必须失效冷却缓存，避免前端立即刷新仍读到旧冷却状态
+	s.invalidateCooldownCache()
 
 	// 渠道更新后刷新缓存，确保选择器立即生效
 	s.InvalidateChannelListCache()

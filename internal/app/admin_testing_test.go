@@ -329,3 +329,82 @@ func TestHandleChannelTest_FailedAPI(t *testing.T) {
 		t.Logf("冷却决策: %s", action)
 	}
 }
+
+func TestHandleChannelTest_EventStreamHeaderWithJSONBodyFallback(t *testing.T) {
+	// 模拟“Content-Type=event-stream，但实际返回完整JSON”场景
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"id":"resp_test",
+			"status":"completed",
+			"output":[
+				{
+					"type":"message",
+					"content":[{"type":"output_text","text":"fallback text"}]
+				}
+			],
+			"usage":{"input_tokens":12,"output_tokens":8}
+		}`))
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+
+	ctx := context.Background()
+	cfg := &model.Config{
+		Name:         "test-codex-json-fallback",
+		URL:          upstream.URL,
+		Priority:     1,
+		ModelEntries: []model.ModelEntry{{Model: "gpt-5.2"}},
+		Enabled:      true,
+		ChannelType:  "codex",
+	}
+	created, err := srv.store.CreateConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+
+	err = srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test-key"},
+	})
+	if err != nil {
+		t.Fatalf("添加 API key 失败: %v", err)
+	}
+
+	channelID := fmt.Sprintf("%d", created.ID)
+	reqBody := map[string]any{
+		"model":        "gpt-5.2",
+		"channel_type": "codex",
+		"stream":       false,
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", reqBody))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200, 实际 %d, 响应: %s", w.Code, w.Body.String())
+	}
+
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	dataSuccess, _ := resp.Data["success"].(bool)
+	if !dataSuccess {
+		t.Fatalf("data.success 应为 true, data=%+v", resp.Data)
+	}
+
+	responseText, _ := resp.Data["response_text"].(string)
+	if responseText == "" {
+		t.Fatalf("应解析出 response_text, data=%+v", resp.Data)
+	}
+	if responseText != "fallback text" {
+		t.Fatalf("response_text 解析错误: %q", responseText)
+	}
+
+	message, _ := resp.Data["message"].(string)
+	if message != "API测试成功" {
+		t.Fatalf("应按非流式成功文案返回，实际: %q", message)
+	}
+}
