@@ -129,15 +129,61 @@ func (s *LogService) logWorker() {
 
 // flushLogs 批量写入日志
 func (s *LogService) flushLogs(logs []*model.LogEntry) {
-	// 为日志持久化增加超时控制，避免阻塞关闭或积压
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(config.LogFlushTimeoutMs)*time.Millisecond)
-	defer cancel()
-
-	// 使用批量写入接口（SQLite/MySQL均支持）
-	// [FIX] 数据库写入失败时记录错误，避免静默丢失日志
-	if err := s.store.BatchAddLogs(ctx, logs); err != nil {
-		log.Printf("[ERROR] 日志批量写入失败 (batch_size=%d): %v", len(logs), err)
+	if len(logs) == 0 {
+		return
 	}
+
+	timeout := time.Duration(config.LogFlushTimeoutMs) * time.Millisecond
+	maxRetries := config.LogFlushMaxRetries
+	if s.isShutdownInProgress() {
+		// 关停阶段不做重试，避免单批刷盘耗时放大拖垮优雅关闭预算。
+		maxRetries = 1
+	}
+
+	var lastErr error
+	attempts := 0
+retryLoop:
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		attempts = attempt
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		err := s.store.BatchAddLogs(ctx, logs)
+		cancel()
+		if err == nil {
+			if attempt > 1 {
+				log.Printf("[WARN] 日志批量写入重试成功 (attempt=%d/%d, batch_size=%d)", attempt, maxRetries, len(logs))
+			}
+			return
+		}
+
+		lastErr = err
+		if attempt < maxRetries {
+			// 运行中可能刚进入关停流程，此时停止重试，避免拖慢 drain。
+			if s.isShutdownInProgress() {
+				break
+			}
+
+			log.Printf("[WARN] 日志批量写入失败，准备重试 (attempt=%d/%d, batch_size=%d): %v", attempt, maxRetries, len(logs), err)
+			backoff := time.Duration(attempt) * config.LogFlushRetryBackoff
+			timer := time.NewTimer(backoff)
+			select {
+			case <-timer.C:
+			case <-s.shutdownCh:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				break retryLoop
+			}
+		}
+	}
+
+	log.Printf("[ERROR] 日志批量写入最终失败 (attempts=%d, batch_size=%d): %v", attempts, len(logs), lastErr)
+}
+
+func (s *LogService) isShutdownInProgress() bool {
+	return s.isShuttingDown != nil && s.isShuttingDown.Load()
 }
 
 // flushIfNeeded 辅助函数：当batch非空时执行flush
@@ -167,7 +213,7 @@ func (s *LogService) AddLogAsync(entry *model.LogEntry) {
 		// [FIX] 降低采样频率，每10次丢弃打印一次（原来是100次）
 		// 设计原则：及早暴露问题，避免用户在黑暗中调试
 		if count%10 == 1 {
-			log.Printf("[ERROR] 日志队列已满，日志被丢弃 (累计丢弃: %d) - 考虑增大LOG_BUFFER_SIZE或LOG_WORKERS", count)
+			log.Printf("[ERROR] 日志队列已满，日志被丢弃 (累计丢弃: %d) - 考虑增大 LOG_BUFFER_SIZE 或 LOG_WORKERS", count)
 		}
 	}
 }

@@ -62,8 +62,15 @@ const (
 	LogBatchTimeout = 1 * time.Second
 
 	// LogFlushTimeoutMs 单次日志刷盘的超时时间（毫秒）
-	// 关停期间需要尽快完成，避免测试和生产关停卡顿
-	LogFlushTimeoutMs = 300
+	// 纯 MySQL 场景下 300ms 过于激进，轻微网络抖动会导致日志写入失败。
+	// SQLite 场景下该超时通常不会触发（本地写入<10ms），但会影响最坏情况的关停耗时。
+	LogFlushTimeoutMs = 3000
+
+	// LogFlushMaxRetries 单批日志写入最大重试次数（含首次尝试）
+	LogFlushMaxRetries = 2
+
+	// LogFlushRetryBackoff 重试退避基准时间
+	LogFlushRetryBackoff = 100 * time.Millisecond
 )
 
 // Token认证配置常量
