@@ -216,6 +216,11 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 			t.Fatalf("status=%d, want %d", w.Code, http.StatusOK)
 		}
 
+		// 验证缓存头（编译时常量，缓存24小时）
+		if cc := w.Header().Get("Cache-Control"); cc != "public, max-age=86400" {
+			t.Fatalf("Cache-Control=%q, want %q", cc, "public, max-age=86400")
+		}
+
 		var resp struct {
 			Success bool                     `json:"success"`
 			Data    []util.ChannelTypeConfig `json:"data"`
@@ -236,6 +241,11 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 		server.HandlePublicVersion(c)
 		if w.Code != http.StatusOK {
 			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		// 验证缓存头（版本信息缓存5分钟）
+		if cc := w.Header().Get("Cache-Control"); cc != "public, max-age=300" {
+			t.Fatalf("Cache-Control=%q, want %q", cc, "public, max-age=300")
 		}
 
 		var resp struct {

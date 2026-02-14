@@ -325,13 +325,17 @@ func (s *Server) HandleCooldownStats(c *gin.Context) {
 
 // HandleGetChannelTypes 获取渠道类型配置(公开端点,前端动态加载)
 // GET /public/channel-types
+// 编译时常量，浏览器缓存24小时减少HF Spaces等高延迟环境的网络往返
 func (s *Server) HandleGetChannelTypes(c *gin.Context) {
+	c.Header("Cache-Control", "public, max-age=86400")
 	RespondJSON(c, http.StatusOK, util.ChannelTypes)
 }
 
 // HandlePublicVersion 获取当前版本信息(公开端点,前端显示版本)
 // GET /public/version
+// 版本信息变化频率极低（后台每4小时检查一次），缓存5分钟
 func (s *Server) HandlePublicVersion(c *gin.Context) {
+	c.Header("Cache-Control", "public, max-age=300")
 	hasUpdate, latestVersion, releaseURL := version.GetUpdateInfo()
 	RespondJSON(c, http.StatusOK, gin.H{
 		"version":        version.Version,
