@@ -23,11 +23,16 @@ go run -tags go_json .
 ```
 internal/
 ├── app/           # HTTP层+业务逻辑
-│   ├── proxy_*.go       # 代理（handler/forward/stream/gemini/sse_parser）
+│   ├── proxy_*.go       # 代理（handler/forward/stream/gemini/sse_parser/error）
 │   ├── admin_*.go       # 管理API
 │   ├── selector*.go     # 渠道选择（balancer/cooldown/model_matcher）
 │   ├── *_cache.go       # 缓存（cost/health/stats）
-│   └── key_selector.go  # Key负载均衡
+│   ├── *_service.go     # 服务层（auth/config/log）
+│   ├── key_selector.go  # Key负载均衡
+│   ├── smooth_weighted_rr.go  # 平滑加权轮询实现
+│   ├── request_context.go     # 请求上下文与超时控制
+│   ├── token_counter.go       # Token计数（Anthropic count-tokens）
+│   └── active_requests.go     # 活跃请求追踪
 ├── model/         # 数据模型（auth_token/config/log/stats）
 ├── cooldown/      # 冷却决策引擎
 ├── storage/       # 存储层
@@ -37,8 +42,11 @@ internal/
 │   ├── cache.go         # 渠道/Key缓存
 │   ├── migrate.go       # Schema迁移
 │   ├── sync_manager.go  # 启动数据恢复
+│   ├── schema/          # Schema定义与构建器
+│   ├── sqlite/          # SQLite特定实现
 │   └── sql/             # SQL实现
-├── util/          # 工具库（classifier/cost_calculator）
+├── util/          # 工具库（classifier/cost_calculator/money/rate_limiter/models_fetcher/channel_types）
+├── version/       # 版本信息、启动banner、版本检查
 ├── config/        # 配置加载
 └── testutil/      # 测试辅助
 ```
