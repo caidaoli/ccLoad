@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,8 @@ import (
 
 	"github.com/bytedance/sonic"
 )
+
+const anthropicBillingHeaderPrefix = "x-anthropic-billing-header:"
 
 // ============================================================================
 // 常量定义
@@ -395,9 +398,13 @@ func (s *Server) prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestConte
 
 	// 如果模型发生变更，修改请求体
 	if actualModel != reqCtx.originalModel {
-		var reqData map[string]any
+		var reqData map[string]json.RawMessage
 		if err := sonic.Unmarshal(reqCtx.body, &reqData); err == nil {
-			reqData["model"] = actualModel
+			modelRaw, err := sonic.Marshal(actualModel)
+			if err != nil {
+				return actualModel, bodyToSend
+			}
+			reqData["model"] = modelRaw
 			if modifiedBody, err := sonic.Marshal(reqData); err == nil {
 				bodyToSend = modifiedBody
 			}
@@ -405,6 +412,110 @@ func (s *Server) prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestConte
 	}
 
 	return actualModel, bodyToSend
+}
+
+// stripAnthropicBillingHeaders 从 Anthropic /v1/messages 请求体的 system 数组中
+// 移除固定注入格式的 x-anthropic-billing-header 条目（上游计费元数据，不应转发）
+// 注意：仅解析/重建 system 字段，其他字段保留 RawMessage，避免大整数精度丢失。
+func stripAnthropicBillingHeaders(body []byte) []byte {
+	// 快速路径：不含特征前缀则直接返回，避免 JSON 解析
+	if !bytes.Contains(body, []byte(anthropicBillingHeaderPrefix)) {
+		return body
+	}
+
+	var reqData map[string]json.RawMessage
+	if err := sonic.Unmarshal(body, &reqData); err != nil {
+		return body
+	}
+
+	systemRaw, ok := reqData["system"]
+	if !ok {
+		return body
+	}
+
+	var systemArr []json.RawMessage
+	if err := sonic.Unmarshal(systemRaw, &systemArr); err != nil {
+		return body // system 是 string，不处理
+	}
+
+	filtered := make([]json.RawMessage, 0, len(systemArr))
+	changed := false
+	for _, item := range systemArr {
+		if isAnthropicBillingHeaderSystemBlock(item) {
+			changed = true
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+
+	if !changed {
+		return body
+	}
+
+	if len(filtered) == 0 {
+		delete(reqData, "system")
+	} else {
+		filteredSystemRaw, err := sonic.Marshal(filtered)
+		if err != nil {
+			return body
+		}
+		reqData["system"] = filteredSystemRaw
+	}
+
+	result, err := sonic.Marshal(reqData)
+	if err != nil {
+		return body
+	}
+	return result
+}
+
+func isAnthropicBillingHeaderSystemBlock(raw json.RawMessage) bool {
+	var block struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := sonic.Unmarshal(raw, &block); err != nil {
+		return false
+	}
+	if block.Type != "text" {
+		return false
+	}
+
+	text := strings.TrimSpace(block.Text)
+	if !strings.HasPrefix(text, anthropicBillingHeaderPrefix) {
+		return false
+	}
+
+	payload := strings.TrimSpace(text[len(anthropicBillingHeaderPrefix):])
+	if payload == "" {
+		return false
+	}
+
+	parts := strings.Split(payload, ";")
+	hasKnownKey := false
+	hasAnyPair := false
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		key, _, ok := strings.Cut(part, "=")
+		if !ok {
+			return false
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return false
+		}
+
+		hasAnyPair = true
+		switch key {
+		case "cc_version", "cc_entrypoint", "cch": // cch = client config hash
+			hasKnownKey = true
+		}
+	}
+
+	return hasAnyPair && hasKnownKey
 }
 
 // ============================================================================

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -495,6 +496,155 @@ func TestPrepareRequestBody_FuzzyMatch(t *testing.T) {
 			}
 			if gotModel, _ := reqData["model"].(string); gotModel != tt.wantBodyModel {
 				t.Errorf("body model = %q, want %q", gotModel, tt.wantBodyModel)
+			}
+		})
+	}
+}
+
+func TestPrepareRequestBody_PreservesLargeIntegersOnModelRewrite(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{
+		modelFuzzyMatch: true,
+	}
+	cfg := &model.Config{
+		ModelEntries: []model.ModelEntry{
+			{Model: "gemini-3-flash-preview"},
+		},
+	}
+	reqCtx := &proxyRequestContext{
+		originalModel: "gemini-3-flash",
+		body:          []byte(`{"model":"gemini-3-flash","id":9223372036854775807,"messages":[]}`),
+	}
+
+	actualModel, bodyToSend := s.prepareRequestBody(cfg, reqCtx)
+	if actualModel != "gemini-3-flash-preview" {
+		t.Fatalf("actualModel = %q, want %q", actualModel, "gemini-3-flash-preview")
+	}
+	if !bytes.Contains(bodyToSend, []byte(`"id":9223372036854775807`)) {
+		t.Fatalf("expected large integer preserved, got %s", bodyToSend)
+	}
+
+	var reqData map[string]any
+	if err := json.Unmarshal(bodyToSend, &reqData); err != nil {
+		t.Fatalf("failed to unmarshal body: %v", err)
+	}
+	if gotModel, _ := reqData["model"].(string); gotModel != "gemini-3-flash-preview" {
+		t.Fatalf("body model = %q, want %q", gotModel, "gemini-3-flash-preview")
+	}
+}
+
+func TestStripAnthropicBillingHeaders(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		input         string
+		wantHasSystem bool
+		wantSystem    any
+		extraAssert   func(t *testing.T, result []byte)
+	}{
+		{
+			name:          "无system字段_不修改",
+			input:         `{"model":"claude-3","messages":[]}`,
+			wantHasSystem: false,
+		},
+		{
+			name:          "system为字符串_不修改",
+			input:         `{"model":"claude-3","system":"you are helpful","messages":[]}`,
+			wantHasSystem: true,
+			wantSystem:    "you are helpful",
+		},
+		{
+			name:          "过滤billing_header条目",
+			input:         `{"model":"claude-3","system":[{"type":"text","text":"you are helpful"},{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.42.603; cc_entrypoint=cli; cch=00000;"}],"messages":[]}`,
+			wantHasSystem: true,
+			wantSystem: []any{
+				map[string]any{"type": "text", "text": "you are helpful"},
+			},
+		},
+		{
+			name:          "全部为billing_header_移除system",
+			input:         `{"model":"claude-3","system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.42.603; cc_entrypoint=cli; cch=00000;"}],"messages":[]}`,
+			wantHasSystem: false, // system 被完全移除
+		},
+		{
+			name:          "无billing_header_不修改",
+			input:         `{"model":"claude-3","system":[{"type":"text","text":"prompt1"},{"type":"text","text":"prompt2"}],"messages":[]}`,
+			wantHasSystem: true,
+			wantSystem: []any{
+				map[string]any{"type": "text", "text": "prompt1"},
+				map[string]any{"type": "text", "text": "prompt2"},
+			},
+		},
+		{
+			name:          "混合多条_只过滤billing",
+			input:         `{"model":"claude-3","system":[{"type":"text","text":"system prompt"},{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.42.603; cc_entrypoint=cli; cch=00000;"},{"type":"text","text":"another prompt"}],"messages":[]}`,
+			wantHasSystem: true,
+			wantSystem: []any{
+				map[string]any{"type": "text", "text": "system prompt"},
+				map[string]any{"type": "text", "text": "another prompt"},
+			},
+		},
+		{
+			name:          "包含子串但非注入格式_不删除",
+			input:         `{"model":"claude-3","system":[{"type":"text","text":"请解释 x-anthropic-billing-header 的含义"}],"messages":[]}`,
+			wantHasSystem: true,
+			wantSystem: []any{
+				map[string]any{"type": "text", "text": "请解释 x-anthropic-billing-header 的含义"},
+			},
+		},
+		{
+			name:          "billing前缀但无键值对_不删除",
+			input:         `{"model":"claude-3","system":[{"type":"text","text":"x-anthropic-billing-header: this is plain text"}],"messages":[]}`,
+			wantHasSystem: true,
+			wantSystem: []any{
+				map[string]any{"type": "text", "text": "x-anthropic-billing-header: this is plain text"},
+			},
+		},
+		{
+			name:          "过滤时保持大整数精度",
+			input:         `{"model":"claude-3","id":9223372036854775807,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.42.603; cc_entrypoint=cli; cch=00000;"},{"type":"text","text":"keep me"}],"messages":[]}`,
+			wantHasSystem: true,
+			wantSystem: []any{
+				map[string]any{"type": "text", "text": "keep me"},
+			},
+			extraAssert: func(t *testing.T, result []byte) {
+				t.Helper()
+				if !bytes.Contains(result, []byte(`"id":9223372036854775807`)) {
+					t.Fatalf("expected large integer preserved, got %s", result)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := stripAnthropicBillingHeaders([]byte(tt.input))
+			if tt.extraAssert != nil {
+				tt.extraAssert(t, result)
+			}
+
+			var got map[string]any
+			if err := json.Unmarshal(result, &got); err != nil {
+				t.Fatalf("failed to unmarshal result: %v", err)
+			}
+
+			systemVal, hasSystem := got["system"]
+			if hasSystem != tt.wantHasSystem {
+				t.Fatalf("has system = %v, want %v (value=%v)", hasSystem, tt.wantHasSystem, systemVal)
+			}
+			if !tt.wantHasSystem {
+				return
+			}
+
+			// 验证 system 内容
+			wantJSON, _ := json.Marshal(tt.wantSystem)
+			gotJSON, _ := json.Marshal(systemVal)
+			if string(gotJSON) != string(wantJSON) {
+				t.Errorf("system = %s, want %s", gotJSON, wantJSON)
 			}
 		})
 	}

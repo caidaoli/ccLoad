@@ -180,6 +180,11 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		return
 	}
 
+	// 清理 Anthropic 请求中注入的 billing header 元数据
+	if util.DetectChannelTypeFromPath(requestPath) == util.ChannelTypeAnthropic {
+		all = stripAnthropicBillingHeaders(all)
+	}
+
 	tokenHashStr := ""
 	if v, ok := c.Get("token_hash"); ok {
 		tokenHashStr, _ = v.(string)
