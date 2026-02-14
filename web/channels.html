@@ -81,8 +81,10 @@
               <label class="filter-label" data-i18n="channels.filterSearch">搜索渠道</label>
               <div style="position: relative; flex: 1; min-width: 140px;">
                 <input type="text" id="searchInput" class="filter-input" data-i18n-placeholder="channels.searchPlaceholder" placeholder="输入渠道名称..." style="padding-right: 36px;">
-                <button id="clearSearchBtn" type="button" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--neutral-500); cursor: pointer; font-size: 14px; padding: 2px; opacity: 0; transition: opacity 0.2s; border-radius: 3px;" data-i18n-title="common.clearSearch" title="清空搜索" onmouseover="this.style.background='var(--neutral-100)'" onmouseout="this.style.background='none'">
-                  ✕
+                <button id="clearSearchBtn" type="button" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--neutral-500); cursor: pointer; padding: 2px; opacity: 0; transition: opacity 0.2s; border-radius: 3px; display: inline-flex; align-items: center; justify-content: center;" data-i18n-title="common.clearSearch" title="清空搜索" onmouseover="this.style.background='var(--neutral-100)'" onmouseout="this.style.background='none'">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+                    <path d="M4 4L10 10M10 4L4 10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                  </svg>
                 </button>
               </div>
             </div>

@@ -472,15 +472,17 @@
           const showTestBtn = sc !== 200;
           const showDeleteBtn = sc === 401 || sc === 403;
 
+          const testBtnIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M13 2L4 14H11L9 22L20 10H13L13 2Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+          const deleteBtnIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M3 6H21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M8 6V4H16V6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M19 6L18 20H6L5 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11V17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M14 11V17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`;
           let buttons = '';
           if (showTestBtn) {
-            buttons += `<button class="test-key-btn" data-action="test" data-channel-id="${entry.channel_id}" data-channel-name="${escapeHtml(entry.channel_name || '').replace(/"/g, '&quot;')}" data-api-key="${escapeHtml(entry.api_key_used).replace(/"/g, '&quot;')}" data-model="${escapeHtml(entry.model).replace(/"/g, '&quot;')}" title="测试此 API Key">⚡</button>`;
+            buttons += `<button class="test-key-btn" data-action="test" data-channel-id="${entry.channel_id}" data-channel-name="${escapeHtml(entry.channel_name || '').replace(/"/g, '&quot;')}" data-api-key="${escapeHtml(entry.api_key_used).replace(/"/g, '&quot;')}" data-model="${escapeHtml(entry.model).replace(/"/g, '&quot;')}" title="测试此 API Key">${testBtnIcon}</button>`;
           }
           if (showDeleteBtn) {
-            buttons += `<button class="test-key-btn" style="color: var(--error-600);" data-action="delete" data-channel-id="${entry.channel_id}" data-channel-name="${escapeHtml(entry.channel_name || '').replace(/"/g, '&quot;')}" data-api-key="${escapeHtml(entry.api_key_used).replace(/"/g, '&quot;')}" title="删除此 API Key">🗑</button>`;
+            buttons += `<button class="test-key-btn" style="color: var(--error-600);" data-action="delete" data-channel-id="${entry.channel_id}" data-channel-name="${escapeHtml(entry.channel_name || '').replace(/"/g, '&quot;')}" data-api-key="${escapeHtml(entry.api_key_used).replace(/"/g, '&quot;')}" title="删除此 API Key">${deleteBtnIcon}</button>`;
           }
 
-          apiKeyDisplay = `<div style="display: flex; align-items: center; gap: 2px; justify-content: center;"><code style="font-size: 0.9em; color: var(--neutral-600);">${escapeHtml(entry.api_key_used)}</code>${buttons}</div>`;
+          apiKeyDisplay = `<div style="display: flex; align-items: center; gap: 4px; justify-content: center;"><code style="font-size: 0.9em; color: var(--neutral-600);">${escapeHtml(entry.api_key_used)}</code><span style="display: inline-flex; align-items: center; gap: 1px;">${buttons}</span></div>`;
         } else if (entry.api_key_used) {
           apiKeyDisplay = `<code style="font-size: 0.9em; color: var(--neutral-600);">${escapeHtml(entry.api_key_used)}</code>`;
         } else {

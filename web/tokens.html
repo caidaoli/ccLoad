@@ -57,7 +57,12 @@
 
           <!-- 空状态 -->
           <div id="empty-state" class="glass-card" style="display: none; text-align: center; padding: 60px 20px;">
-            <div style="font-size: 48px; margin-bottom: 16px;">🔑</div>
+            <div style="margin-bottom: 16px; color: var(--primary-500);">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+                <circle cx="8.5" cy="12" r="4.5" stroke="currentColor" stroke-width="1.8"/>
+                <path d="M12.8 12H21V14.6H19.2V16.4H17.4V14.6H15.6V13H12.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
             <h3 style="color: var(--neutral-900); margin-bottom: 8px; font-weight: 600;" data-i18n="tokens.emptyTitle">暂无API令牌</h3>
             <p style="color: var(--neutral-700); margin-bottom: 24px; font-size: 15px;" data-i18n="tokens.emptyDesc">点击"创建令牌"按钮,生成第一个API访问令牌</p>
             <button onclick="showCreateModal()" class="btn btn-primary" data-i18n="tokens.createTokenBtn">创建令牌</button>

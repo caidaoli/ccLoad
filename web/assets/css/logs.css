@@ -1,6 +1,6 @@
     /* API Key 测试按钮样式 */
     .test-key-btn {
-      padding: 2px 4px;
+      padding: 0;
       border: none;
       background: transparent;
       cursor: pointer;
@@ -11,6 +11,16 @@
       display: inline-flex;
       align-items: center;
       justify-content: center;
+      width: 18px;
+      height: 18px;
+      flex-shrink: 0;
+    }
+
+    .test-key-btn svg {
+      display: block;
+      width: 14px;
+      height: 14px;
+      pointer-events: none;
     }
 
     .test-key-btn:hover {
