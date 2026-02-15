@@ -931,20 +931,16 @@
         </label>
       `).join('');
 
-      container.querySelectorAll('.model-option-item').forEach((label) => {
-        label.addEventListener('mouseenter', () => {
-          label.style.background = 'var(--neutral-50)';
+      // Event delegation: attach once on container
+      if (!container.dataset.delegated) {
+        container.addEventListener('change', (e) => {
+          const checkbox = e.target.closest('.model-option-checkbox');
+          if (checkbox) {
+            toggleModelForAdd(checkbox.dataset.model || '', checkbox.checked);
+          }
         });
-        label.addEventListener('mouseleave', () => {
-          label.style.background = '';
-        });
-      });
-
-      container.querySelectorAll('.model-option-checkbox').forEach((checkbox) => {
-        checkbox.addEventListener('change', () => {
-          toggleModelForAdd(checkbox.dataset.model || '', checkbox.checked);
-        });
-      });
+        container.dataset.delegated = '1';
+      }
     }
 
     /**

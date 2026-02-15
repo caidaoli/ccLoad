@@ -154,6 +154,9 @@
       justify-content: flex-end;
       gap: 12px;
     }
+    .model-option-item:hover {
+      background: var(--neutral-50);
+    }
     @keyframes fadeIn {
       from { opacity: 0; }
       to { opacity: 1; }
