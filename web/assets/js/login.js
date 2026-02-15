@@ -32,6 +32,23 @@
       }
     }
 
+    function getSafeRedirectPath(redirect) {
+      if (!redirect || typeof redirect !== 'string') return '/web/index.html';
+
+      const candidate = redirect.trim();
+      if (!candidate.startsWith('/') || candidate.startsWith('//')) {
+        return '/web/index.html';
+      }
+
+      try {
+        const url = new URL(candidate, window.location.origin);
+        if (url.origin !== window.location.origin) return '/web/index.html';
+        return `${url.pathname}${url.search}${url.hash}`;
+      } catch (_) {
+        return '/web/index.html';
+      }
+    }
+
     // 表单提交处理
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -61,7 +78,7 @@
 
           setTimeout(() => {
             const urlParams = new URLSearchParams(window.location.search);
-            const redirect = urlParams.get('redirect') || '/web/index.html';
+            const redirect = getSafeRedirectPath(urlParams.get('redirect'));
             window.location.href = redirect;
           }, 500);
         } else {
@@ -98,7 +115,7 @@
     const urlParams = new URLSearchParams(window.location.search);
     const errorParam = urlParams.get('error');
     if (errorParam) {
-      showError(decodeURIComponent(errorParam));
+      showError(errorParam);
     }
 
     // 页面加载完成后的初始化
