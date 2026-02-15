@@ -262,7 +262,7 @@ function initKeyTableEventDelegation() {
     if (actionBtn) {
       const action = actionBtn.dataset.action;
       const index = parseInt(actionBtn.dataset.index);
-      if (action === 'test') testSingleKey(index);
+      if (action === 'test') testSingleKey(index, actionBtn);
       else if (action === 'copy') copyKeyToClipboard(index);
       else if (action === 'delete') deleteInlineKey(index);
       return;
@@ -437,7 +437,7 @@ function updateInlineKey(index, value) {
   }
 }
 
-async function testSingleKey(keyIndex) {
+async function testSingleKey(keyIndex, testButton) {
   if (!editingChannelId) {
     alert(window.t('channels.cannotGetChannelId'));
     return;
@@ -469,7 +469,7 @@ async function testSingleKey(keyIndex) {
     }
   }
 
-  const testButton = event.target.closest('button');
+  if (!testButton) return;
   const originalHTML = testButton.innerHTML;
   testButton.disabled = true;
   testButton.innerHTML = '<span style="font-size: 10px;">⏳</span>';

@@ -923,14 +923,28 @@
       }
 
       container.innerHTML = models.map(model => `
-        <label style="display: flex; align-items: center; padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--neutral-100);"
-          onmouseover="this.style.background='var(--neutral-50)'" onmouseout="this.style.background=''">
-          <input type="checkbox" style="margin-right: 8px;"
-            ${selectedModelsForAdd.has(model) ? 'checked' : ''}
-            onchange="toggleModelForAdd('${escapeHtml(model)}', this.checked)">
+        <label class="model-option-item" data-model="${escapeHtml(model)}"
+          style="display: flex; align-items: center; padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--neutral-100);">
+          <input type="checkbox" class="model-option-checkbox" data-model="${escapeHtml(model)}" style="margin-right: 8px;"
+            ${selectedModelsForAdd.has(model) ? 'checked' : ''}>
           <span style="font-family: monospace; font-size: 13px;">${escapeHtml(model)}</span>
         </label>
       `).join('');
+
+      container.querySelectorAll('.model-option-item').forEach((label) => {
+        label.addEventListener('mouseenter', () => {
+          label.style.background = 'var(--neutral-50)';
+        });
+        label.addEventListener('mouseleave', () => {
+          label.style.background = '';
+        });
+      });
+
+      container.querySelectorAll('.model-option-checkbox').forEach((checkbox) => {
+        checkbox.addEventListener('change', () => {
+          toggleModelForAdd(checkbox.dataset.model || '', checkbox.checked);
+        });
+      });
     }
 
     /**
