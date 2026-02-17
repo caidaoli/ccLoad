@@ -77,6 +77,15 @@ func (cr *ChannelRequest) Validate() error {
 			return fmt.Errorf("models[%d]: %w", i, err)
 		}
 	}
+	// Fail-Fast: 同一渠道内模型名必须唯一（大小写不敏感，匹配数据库唯一约束语义）
+	seenModels := make(map[string]int, len(cr.Models))
+	for i := range cr.Models {
+		modelKey := strings.ToLower(cr.Models[i].Model)
+		if firstIdx, exists := seenModels[modelKey]; exists {
+			return fmt.Errorf("models[%d]: duplicate model %q (already defined at models[%d])", i, cr.Models[i].Model, firstIdx)
+		}
+		seenModels[modelKey] = i
+	}
 
 	// URL 验证规则（Fail-Fast 边界防御）：
 	// - 必须包含 scheme+host（http/https）

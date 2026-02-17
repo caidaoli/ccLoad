@@ -114,6 +114,26 @@ async function saveChannel(event) {
       model: r.model.trim(),
       redirect_model: (r.redirect_model || '').trim()
     }));
+  const seenModels = new Set();
+  const duplicateModels = [];
+  for (const entry of models) {
+    const modelKey = entry.model.toLowerCase();
+    if (seenModels.has(modelKey)) {
+      duplicateModels.push(entry.model);
+      continue;
+    }
+    seenModels.add(modelKey);
+  }
+  if (duplicateModels.length > 0) {
+    const uniqueDuplicates = [...new Set(duplicateModels)];
+    const msg = window.t('channels.duplicateModelsNotAllowed', { models: uniqueDuplicates.join(', ') });
+    if (window.showError) {
+      window.showError(msg);
+    } else {
+      alert(msg);
+    }
+    return;
+  }
 
   const channelType = document.querySelector('input[name="channelType"]:checked')?.value || 'anthropic';
   const keyStrategy = document.querySelector('input[name="keyStrategy"]:checked')?.value || 'sequential';

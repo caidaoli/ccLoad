@@ -902,6 +902,7 @@ window.I18N_LOCALES['en'] = {
   'channels.channelDisabled': 'Channel disabled',
   'channels.saveFailed': 'Save failed: {error}',
   'channels.fillAllRequired': 'Please fill all required fields (at least one model)',
+  'channels.duplicateModelsNotAllowed': 'Duplicate models found: {models} (model names must be unique within one channel)',
   'channels.atLeastOneKey': 'Please add at least one valid API Key',
   'channels.unsavedChanges': 'You have unsaved changes. Are you sure you want to close?',
   'channels.confirmDeleteKey': 'Are you sure you want to delete Key #{index}?',

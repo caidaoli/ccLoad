@@ -902,6 +902,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.channelDisabled': '渠道已禁用',
   'channels.saveFailed': '保存失败: {error}',
   'channels.fillAllRequired': '请填写所有必填字段（至少添加一个模型）',
+  'channels.duplicateModelsNotAllowed': '存在重复模型：{models}（同一渠道内模型名必须唯一）',
   'channels.atLeastOneKey': '请至少添加一个有效的API Key',
   'channels.unsavedChanges': '有未保存的更改，确定要关闭吗？',
   'channels.confirmDeleteKey': '确定要删除第 {index} 个Key吗？',

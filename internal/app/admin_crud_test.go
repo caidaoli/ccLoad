@@ -359,6 +359,23 @@ func TestHandleUpdateChannel(t *testing.T) {
 			checkSuccess:   true,
 		},
 		{
+			name:      "重复模型应被提前拦截",
+			channelID: "1",
+			payload: ChannelRequest{
+				Name:     "Updated-Name",
+				APIKey:   "sk-updated-key",
+				URL:      "https://api.updated.com",
+				Priority: 100,
+				Models: []model.ModelEntry{
+					{Model: "gpt-5.2", RedirectModel: "gpt-5.2"},
+					{Model: "gpt-5.2", RedirectModel: "gpt-5.2-2c"},
+				},
+				Enabled: true,
+			},
+			expectedStatus: http.StatusBadRequest,
+			checkSuccess:   false,
+		},
+		{
 			name:      "更新不存在的渠道",
 			channelID: "999",
 			payload: ChannelRequest{

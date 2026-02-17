@@ -259,3 +259,41 @@ func TestChannelRequestValidation_Combined(t *testing.T) {
 		})
 	}
 }
+
+// TestChannelRequestValidation_DuplicateModels 测试重复模型校验（对应 channel_models 主键约束）
+func TestChannelRequestValidation_DuplicateModels(t *testing.T) {
+	tests := []struct {
+		name   string
+		models []model.ModelEntry
+	}{
+		{
+			name: "完全重复模型应该拒绝",
+			models: []model.ModelEntry{
+				{Model: "gpt-5.2"},
+				{Model: "gpt-5.2"},
+			},
+		},
+		{
+			name: "大小写差异模型应视为重复并拒绝",
+			models: []model.ModelEntry{
+				{Model: "GPT-5.2"},
+				{Model: "gpt-5.2"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := newValidChannelRequest()
+			req.Models = tt.models
+
+			err := req.Validate()
+			if err == nil {
+				t.Fatal("expected duplicate model validation error, got nil")
+			}
+			if !strings.Contains(err.Error(), "duplicate model") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
