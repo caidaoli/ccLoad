@@ -163,38 +163,101 @@ var basePricing = map[string]ModelPricing{
 	"mimo-v2-flash": {InputPrice: 0.10, OutputPrice: 0.30},
 
 	// ========== Qwen 模型 ==========
-	"qwen3-32b":                    {InputPrice: 0.08, OutputPrice: 0.24},
-	"qwen3-4b":                     {InputPrice: 0.00, OutputPrice: 0.00},
-	"qwen3-8b":                     {InputPrice: 0.028, OutputPrice: 0.11},
-	"qwen2.5-coder-7b-instruct":    {InputPrice: 0.03, OutputPrice: 0.09},
-	"qwen-2.5-coder-32b-instruct":  {InputPrice: 0.03, OutputPrice: 0.11},
-	"qwen-2.5-7b-instruct":         {InputPrice: 0.04, OutputPrice: 0.10},
-	"qwen3-14b":                    {InputPrice: 0.05, OutputPrice: 0.22},
-	"qwen2.5-vl-32b-instruct":      {InputPrice: 0.05, OutputPrice: 0.22},
-	"qwen-turbo":                   {InputPrice: 0.05, OutputPrice: 0.20},
-	"qwen3-30b-a3b-thinking-2507":  {InputPrice: 0.051, OutputPrice: 0.34},
-	"qwen3-next-80b-a3b-instruct":  {InputPrice: 0.06, OutputPrice: 0.60},
-	"qwen3-30b-a3b":                {InputPrice: 0.06, OutputPrice: 0.22},
-	"qwen3-vl-8b-instruct":         {InputPrice: 0.064, OutputPrice: 0.40},
-	"qwen3-coder-30b-a3b-instruct": {InputPrice: 0.07, OutputPrice: 0.27},
-	"qwen2.5-vl-72b-instruct":      {InputPrice: 0.07, OutputPrice: 0.26},
-	"qwen3-235b-a22b-2507":         {InputPrice: 0.071, OutputPrice: 0.463},
-	"qwen3-30b-a3b-instruct-2507":  {InputPrice: 0.08, OutputPrice: 0.33},
-	"qwq-32b":                      {InputPrice: 0.15, OutputPrice: 0.40},
-	"qwen3-vl-30b-a3b-instruct":    {InputPrice: 0.15, OutputPrice: 0.60},
-	"qwen3-vl-30b-a3b-thinking":    {InputPrice: 0.16, OutputPrice: 0.80},
-	"qwen3-235b-a22b":              {InputPrice: 0.18, OutputPrice: 0.54},
-	"qwen3-vl-8b-thinking":         {InputPrice: 0.18, OutputPrice: 2.10},
-	"qwen3-vl-235b-a22b-instruct":  {InputPrice: 0.20, OutputPrice: 1.20},
-	"qwen-2.5-vl-7b-instruct":      {InputPrice: 0.20, OutputPrice: 0.20},
-	"qwen-vl-plus":                 {InputPrice: 0.21, OutputPrice: 0.63},
-	"qwen3-coder":                  {InputPrice: 0.22, OutputPrice: 1.80},
-	"qwen-2.5-72b-instruct":        {InputPrice: 0.12, OutputPrice: 0.39},
-	"qwen-plus-2025-07-28":         {InputPrice: 0.40, OutputPrice: 4.00},
-	"qwen-plus":                    {InputPrice: 0.40, OutputPrice: 1.20},
-	"qwen-vl-max":                  {InputPrice: 0.80, OutputPrice: 3.20},
-	"qwen3-coder-plus":             {InputPrice: 1.00, OutputPrice: 5.00},
-	"qwen-max":                     {InputPrice: 1.60, OutputPrice: 6.40},
+	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=qwen
+	"qwen-2-72b-instruct":              {InputPrice: 0.90, OutputPrice: 0.90},
+	"qwen-2.5-72b-instruct":            {InputPrice: 0.12, OutputPrice: 0.39},
+	"qwen-2.5-72b-instruct:free":       {InputPrice: 0.00, OutputPrice: 0.00},
+	"qwen-2.5-7b-instruct":             {InputPrice: 0.04, OutputPrice: 0.10},
+	"qwen-2.5-coder-32b-instruct":      {InputPrice: 0.03, OutputPrice: 0.11},
+	"qwen-2.5-coder-32b-instruct:free": {InputPrice: 0.00, OutputPrice: 0.00},
+	"qwen-2.5-vl-7b-instruct":          {InputPrice: 0.20, OutputPrice: 0.20},
+	"qwen-2.5-vl-7b-instruct:free":     {InputPrice: 0.00, OutputPrice: 0.00},
+	"qwen-max":                         {InputPrice: 1.60, OutputPrice: 6.40},
+	// qwen3.5-plus（按表格：输入分档0.4/1.2，输出分档2.4/7.2）
+	"qwen3.5-plus": {
+		InputPrice: 0.40, OutputPrice: 2.40,
+		InputPriceHigh: 1.20, OutputPriceHigh: 7.20, // >256k input tokens
+	},
+	"qwen3.5-plus-2026-02-15": {
+		InputPrice: 0.40, OutputPrice: 2.40,
+		InputPriceHigh: 1.20, OutputPriceHigh: 7.20, // >256k input tokens
+	},
+	// qwen-plus（按表格 non-thinking 列）
+	"qwen-plus": {
+		InputPrice: 0.40, OutputPrice: 1.20,
+		InputPriceHigh: 1.20, OutputPriceHigh: 3.60, // >256k input tokens
+	},
+	"qwen-plus-latest": {
+		InputPrice: 0.40, OutputPrice: 1.20,
+		InputPriceHigh: 1.20, OutputPriceHigh: 3.60, // >256k input tokens
+	},
+	"qwen-plus-2025-12-01": {
+		InputPrice: 0.40, OutputPrice: 1.20,
+		InputPriceHigh: 1.20, OutputPriceHigh: 3.60, // >256k input tokens
+	},
+	"qwen-plus-2025-09-11": {
+		InputPrice: 0.40, OutputPrice: 1.20,
+		InputPriceHigh: 1.20, OutputPriceHigh: 3.60, // >256k input tokens
+	},
+	"qwen-plus-2025-07-28": {
+		InputPrice: 0.40, OutputPrice: 1.20,
+		InputPriceHigh: 1.20, OutputPriceHigh: 3.60, // >256k input tokens
+	},
+	// thinking 版本按表格 thinking 列计费
+	"qwen-plus-2025-07-28:thinking": {
+		InputPrice: 0.40, OutputPrice: 4.00,
+		InputPriceHigh: 1.20, OutputPriceHigh: 12.00, // >256k input tokens
+	},
+	// 历史无分档版本
+	"qwen-plus-2025-07-14":             {InputPrice: 0.40, OutputPrice: 1.20},
+	"qwen-plus-2025-04-28":             {InputPrice: 0.40, OutputPrice: 1.20},
+	"qwen-plus-2025-01-25":             {InputPrice: 0.40, OutputPrice: 1.20},
+	"qwen-turbo":                       {InputPrice: 0.05, OutputPrice: 0.20},
+	"qwen-vl-max":                      {InputPrice: 0.80, OutputPrice: 3.20},
+	"qwen-vl-plus":                     {InputPrice: 0.21, OutputPrice: 0.63},
+	"qwen2.5-coder-7b-instruct":        {InputPrice: 0.03, OutputPrice: 0.09},
+	"qwen2.5-vl-32b-instruct":          {InputPrice: 0.05, OutputPrice: 0.22},
+	"qwen2.5-vl-32b-instruct:free":     {InputPrice: 0.00, OutputPrice: 0.00},
+	"qwen2.5-vl-72b-instruct":          {InputPrice: 0.15, OutputPrice: 0.60},
+	"qwen2.5-vl-72b-instruct:free":     {InputPrice: 0.00, OutputPrice: 0.00},
+	"qwen3-14b":                        {InputPrice: 0.05, OutputPrice: 0.22},
+	"qwen3-14b:free":                   {InputPrice: 0.00, OutputPrice: 0.00},
+	"qwen3-235b-a22b":                  {InputPrice: 0.30, OutputPrice: 1.20},
+	"qwen3-235b-a22b-2507":             {InputPrice: 0.071, OutputPrice: 0.10},
+	"qwen3-235b-a22b-2507:free":        {InputPrice: 0.00, OutputPrice: 0.00},
+	"qwen3-235b-a22b-thinking-2507":    {InputPrice: 0.00, OutputPrice: 0.00},
+	"qwen3-235b-a22b:free":             {InputPrice: 0.00, OutputPrice: 0.00},
+	"qwen3-30b-a3b":                    {InputPrice: 0.06, OutputPrice: 0.22},
+	"qwen3-30b-a3b-instruct-2507":      {InputPrice: 0.08, OutputPrice: 0.30},
+	"qwen3-30b-a3b-thinking-2507":      {InputPrice: 0.051, OutputPrice: 0.30},
+	"qwen3-30b-a3b:free":               {InputPrice: 0.00, OutputPrice: 0.00},
+	"qwen3-32b":                        {InputPrice: 0.08, OutputPrice: 0.24},
+	"qwen3-4b":                         {InputPrice: 0.0715, OutputPrice: 0.273},
+	"qwen3-4b:free":                    {InputPrice: 0.00, OutputPrice: 0.00},
+	"qwen3-8b":                         {InputPrice: 0.05, OutputPrice: 0.40},
+	"qwen3-8b:free":                    {InputPrice: 0.00, OutputPrice: 0.00},
+	"qwen3-coder":                      {InputPrice: 0.22, OutputPrice: 1.00},
+	"qwen3-coder-30b-a3b-instruct":     {InputPrice: 0.07, OutputPrice: 0.27},
+	"qwen3-coder-flash":                {InputPrice: 0.30, OutputPrice: 1.50},
+	"qwen3-coder-next":                 {InputPrice: 0.07, OutputPrice: 0.30},
+	"qwen3-coder-plus":                 {InputPrice: 1.00, OutputPrice: 5.00},
+	"qwen3-coder:exacto":               {InputPrice: 0.22, OutputPrice: 1.80},
+	"qwen3-coder:free":                 {InputPrice: 0.00, OutputPrice: 0.00},
+	"qwen3-max":                        {InputPrice: 1.20, OutputPrice: 6.00},
+	"qwen3-max-thinking":               {InputPrice: 1.20, OutputPrice: 6.00},
+	"qwen3-next-80b-a3b-instruct":      {InputPrice: 0.09, OutputPrice: 0.78},
+	"qwen3-next-80b-a3b-instruct:free": {InputPrice: 0.00, OutputPrice: 0.00},
+	"qwen3-next-80b-a3b-thinking":      {InputPrice: 0.15, OutputPrice: 0.30},
+	"qwen3-vl-235b-a22b-instruct":      {InputPrice: 0.20, OutputPrice: 0.88},
+	"qwen3-vl-235b-a22b-thinking":      {InputPrice: 0.00, OutputPrice: 0.00},
+	"qwen3-vl-30b-a3b-instruct":        {InputPrice: 0.13, OutputPrice: 0.52},
+	"qwen3-vl-30b-a3b-thinking":        {InputPrice: 0.00, OutputPrice: 0.00},
+	"qwen3-vl-32b-instruct":            {InputPrice: 0.104, OutputPrice: 0.416},
+	"qwen3-vl-8b-instruct":             {InputPrice: 0.08, OutputPrice: 0.455},
+	"qwen3-vl-8b-thinking":             {InputPrice: 0.117, OutputPrice: 1.365},
+	"qwq-32b":                          {InputPrice: 0.15, OutputPrice: 0.25},
+	"qwq-32b-preview":                  {InputPrice: 0.20, OutputPrice: 0.20},
+	"qwq-32b:free":                     {InputPrice: 0.00, OutputPrice: 0.00},
 
 	// ========== DeepSeek 模型 ==========
 	"deepseek-r1-distill-llama-70b": {InputPrice: 0.03, OutputPrice: 0.11},
@@ -326,8 +389,13 @@ var modelAliases = map[string]string{
 	"grok-beta": "grok-3",
 
 	// Qwen 别名（常见命名变体）
+	"qwen-3.5-plus":                  "qwen3.5-plus",
+	"qwen-3.5-plus-2026-02-15":       "qwen3.5-plus-2026-02-15",
 	"qwen-3-32b":                     "qwen3-32b",
-	"qwen-3-235b-a22b-instruct-2507": "qwen3-235b-a22b",
+	"qwen-3-4b":                      "qwen3-4b",
+	"qwen-3-8b":                      "qwen3-8b",
+	"qwen-3-14b":                     "qwen3-14b",
+	"qwen-3-235b-a22b-instruct-2507": "qwen3-235b-a22b-2507",
 
 	// GLM 别名
 	"zai-glm-4.6": "glm-4.6",
@@ -378,7 +446,23 @@ const (
 	// 超过此阈值的请求将使用InputPriceHigh/OutputPriceHigh定价
 	// 参考：https://ai.google.dev/gemini-api/docs/pricing
 	geminiLongContextThreshold = 200_000
+
+	// qwenPlusTierThreshold Qwen Plus 系列分档阈值（tokens）
+	// 参考用户提供的价格表：0<Tokens<=256K 与 256K<Tokens<=1M
+	qwenPlusTierThreshold = 256_000
 )
+
+func getTierThresholdForModel(model string) int {
+	lowerModel := strings.ToLower(model)
+	switch {
+	case strings.HasPrefix(lowerModel, "qwen3.5-plus"),
+		strings.HasPrefix(lowerModel, "qwen-3.5-plus"),
+		strings.HasPrefix(lowerModel, "qwen-plus"):
+		return qwenPlusTierThreshold
+	default:
+		return geminiLongContextThreshold
+	}
+}
 
 // CalculateCostDetailed 计算单次请求的成本（美元）- 详细版本，支持5m和1h缓存分别计费
 // 参数：
@@ -417,17 +501,17 @@ func CalculateCostDetailed(model string, inputTokens, outputTokens, cacheReadTok
 	// 注意:价格是per 1M tokens,需要除以1,000,000
 	cost := 0.0
 
-	// Gemini长上下文分段定价逻辑
-	// 官方文档: https://ai.google.dev/pricing (updated: 2025-01)
-	// 阈值判断:仅针对输入侧非缓存token(不包括输出,不包括缓存)
-	useHighPricing := pricing.InputPriceHigh > 0 && inputTokens > geminiLongContextThreshold
+	// 分段定价逻辑（当前用于 Gemini / Qwen Plus 系列）
+	// 阈值判断: 仅针对输入侧非缓存token(不包括输出,不包括缓存)
+	tierThreshold := getTierThresholdForModel(model)
+	useHighPricing := pricing.InputPriceHigh > 0 && inputTokens > tierThreshold
 
 	// 选择适用的价格
 	inputPricePerM := pricing.InputPrice
 	outputPricePerM := pricing.OutputPrice
 	if useHighPricing {
 		inputPricePerM = pricing.InputPriceHigh
-		outputPricePerM = pricing.OutputPriceHigh // Gemini长上下文定价同时影响输入和输出
+		outputPricePerM = pricing.OutputPriceHigh // 分段定价同时影响输入和输出
 	}
 
 	// 1. 基础输入token成本（inputTokens已由解析层归一化，无需再处理平台差异）
@@ -572,16 +656,23 @@ func fuzzyMatchModel(model string) (ModelPricing, bool) {
 
 		// 其他厂商
 		"mimo-v2-flash",
-		"qwen3-30b-a3b-thinking", "qwen3-30b-a3b-instruct", "qwen3-30b-a3b",
-		"qwen3-vl-235b-a22b-instruct", "qwen3-vl-30b-a3b-thinking", "qwen3-vl-30b-a3b-instruct",
-		"qwen3-vl-8b-thinking", "qwen3-vl-8b-instruct", "qwen3-vl",
-		"qwen3-235b-a22b", "qwen3-14b", "qwen3-32b", "qwen3-8b", "qwen3-4b",
-		"qwen3-coder-plus", "qwen3-coder",
+		"qwen3.5-plus-2026-02-15", "qwen3.5-plus",
+		"qwen-plus-2025-12-01", "qwen-plus-2025-09-11", "qwen-plus-2025-07-28:thinking", "qwen-plus-2025-07-28",
+		"qwen-plus-2025-07-14", "qwen-plus-2025-04-28", "qwen-plus-2025-01-25", "qwen-plus-latest", "qwen-plus",
+		"qwen-turbo", "qwen-max", "qwen-vl-plus", "qwen-vl-max",
+		"qwen3-next-80b-a3b-instruct", "qwen3-next-80b-a3b-thinking",
+		"qwen3-max-thinking", "qwen3-max",
+		"qwen3-30b-a3b-thinking-2507", "qwen3-30b-a3b-instruct-2507", "qwen3-30b-a3b",
+		"qwen3-vl-235b-a22b-instruct", "qwen3-vl-235b-a22b-thinking",
+		"qwen3-vl-30b-a3b-thinking", "qwen3-vl-30b-a3b-instruct",
+		"qwen3-vl-32b-instruct", "qwen3-vl-8b-thinking", "qwen3-vl-8b-instruct", "qwen3-vl",
+		"qwen3-235b-a22b-thinking-2507", "qwen3-235b-a22b-2507", "qwen3-235b-a22b",
+		"qwen3-14b", "qwen3-32b", "qwen3-8b", "qwen3-4b",
+		"qwen3-coder-flash", "qwen3-coder-next", "qwen3-coder-plus", "qwen3-coder:exacto", "qwen3-coder",
 		"qwen2.5-coder-7b-instruct", "qwen-2.5-coder-32b-instruct",
 		"qwen2.5-vl-72b-instruct", "qwen2.5-vl-32b-instruct", "qwen-2.5-vl-7b-instruct",
-		"qwen-2.5-72b-instruct", "qwen-2.5-7b-instruct",
-		"qwen-plus-2025-07-28", "qwen-plus", "qwen-turbo", "qwen-max", "qwen-vl-plus", "qwen-vl-max",
-		"qwq-32b",
+		"qwen-2.5-72b-instruct", "qwen-2.5-7b-instruct", "qwen-2-72b-instruct",
+		"qwq-32b-preview", "qwq-32b",
 		"deepseek-r1-distill-llama-70b", "deepseek-r1-distill-qwen-32b", "deepseek-r1-distill-qwen-14b",
 		"deepseek-r1-0528-qwen3-8b", "deepseek-r1-0528", "deepseek-r1",
 		"deepseek-v3.2-speciale", "deepseek-v3.2-exp", "deepseek-v3.2", "deepseek-v3.1-terminus",

@@ -264,6 +264,107 @@ func TestCalculateCost_QwenModels(t *testing.T) {
 	}
 }
 
+func TestCalculateCost_QwenModelsFromPricePerToken(t *testing.T) {
+	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=qwen
+	// 取该接口最新历史点（按模型聚合）的$/1M token价格
+	testCases := []struct {
+		model       string
+		expectedSum float64
+	}{
+		{"qwen-plus-2025-07-14", 0.40 + 1.20},
+		{"qwen3-4b", 0.0715 + 0.273},
+		{"qwen3-vl-32b-instruct", 0.104 + 0.416},
+		{"qwen3-coder-flash", 0.30 + 1.50},
+		{"qwen3-coder-next", 0.07 + 0.30},
+		{"qwen3-max", 1.20 + 6.00},
+		{"qwen3-max-thinking", 1.20 + 6.00},
+		{"qwen3-next-80b-a3b-thinking", 0.15 + 0.30},
+		{"qwq-32b-preview", 0.20 + 0.20},
+		{"qwen3-coder:exacto", 0.22 + 1.80},
+	}
+
+	for _, tc := range testCases {
+		cost := CalculateCostDetailed(tc.model, 1_000_000, 1_000_000, 0, 0, 0)
+		if !floatEquals(cost, tc.expectedSum, 0.000001) {
+			t.Errorf("%s: 成本 = %.6f, 期望 %.6f", tc.model, cost, tc.expectedSum)
+		}
+	}
+}
+
+func TestCalculateCost_QwenFreeVariants(t *testing.T) {
+	// 免费模型必须是0，且不能被前缀模糊匹配误计费
+	testCases := []string{
+		"qwen3-8b:free",
+		"qwen3-4b:free",
+		"qwen2.5-vl-72b-instruct:free",
+		"qwen3-next-80b-a3b-instruct:free",
+		"qwq-32b:free",
+	}
+
+	for _, model := range testCases {
+		cost := CalculateCostDetailed(model, 1_000_000, 1_000_000, 0, 0, 0)
+		if cost != 0 {
+			t.Errorf("%s: 免费模型成本应为0，实际 %.6f", model, cost)
+		}
+	}
+}
+
+func TestCalculateCost_QwenTieredPricingFromTable(t *testing.T) {
+	// 用户提供表格（2026-02）：
+	// - qwen3.5-plus: input 0.4/1.2, output(non-thinking) 2.4/7.2（阈值256K）
+	// - qwen-plus: input 0.4/1.2, output(non-thinking) 1.2/3.6（阈值256K）
+	//
+	// 说明：当前计费器没有“thinking mode”维度，这里按 non-thinking 列做验证。
+
+	// qwen3.5-plus 低档（<=256K）
+	low35 := CalculateCostDetailed("qwen3.5-plus", 256_000, 1_000_000, 0, 0, 0)
+	expectedLow35 := (256_000 * 0.4 / 1_000_000) + 2.4
+	if !floatEquals(low35, expectedLow35, 0.000001) {
+		t.Errorf("qwen3.5-plus 低档: 成本 = %.6f, 期望 %.6f", low35, expectedLow35)
+	}
+
+	// qwen3.5-plus 高档（>256K）
+	high35 := CalculateCostDetailed("qwen3.5-plus", 256_001, 1_000_000, 0, 0, 0)
+	expectedHigh35 := (256_001 * 1.2 / 1_000_000) + 7.2
+	if !floatEquals(high35, expectedHigh35, 0.000001) {
+		t.Errorf("qwen3.5-plus 高档: 成本 = %.6f, 期望 %.6f", high35, expectedHigh35)
+	}
+
+	// 版本化模型同价
+	dated35 := CalculateCostDetailed("qwen3.5-plus-2026-02-15", 300_000, 1_000_000, 0, 0, 0)
+	expectedDated35 := (300_000 * 1.2 / 1_000_000) + 7.2
+	if !floatEquals(dated35, expectedDated35, 0.000001) {
+		t.Errorf("qwen3.5-plus-2026-02-15: 成本 = %.6f, 期望 %.6f", dated35, expectedDated35)
+	}
+
+	// qwen-plus 低档（<=256K）
+	lowPlus := CalculateCostDetailed("qwen-plus", 256_000, 1_000_000, 0, 0, 0)
+	expectedLowPlus := (256_000 * 0.4 / 1_000_000) + 1.2
+	if !floatEquals(lowPlus, expectedLowPlus, 0.000001) {
+		t.Errorf("qwen-plus 低档: 成本 = %.6f, 期望 %.6f", lowPlus, expectedLowPlus)
+	}
+
+	// qwen-plus 高档（>256K）
+	highPlus := CalculateCostDetailed("qwen-plus", 300_000, 1_000_000, 0, 0, 0)
+	expectedHighPlus := (300_000 * 1.2 / 1_000_000) + 3.6
+	if !floatEquals(highPlus, expectedHighPlus, 0.000001) {
+		t.Errorf("qwen-plus 高档: 成本 = %.6f, 期望 %.6f", highPlus, expectedHighPlus)
+	}
+
+	// qwen-plus-latest 与 qwen-plus 同价
+	latestPlus := CalculateCostDetailed("qwen-plus-latest", 300_000, 1_000_000, 0, 0, 0)
+	if !floatEquals(latestPlus, expectedHighPlus, 0.000001) {
+		t.Errorf("qwen-plus-latest: 成本 = %.6f, 期望 %.6f", latestPlus, expectedHighPlus)
+	}
+
+	// qwen-plus-2025-07-28:thinking 按 thinking 列计费
+	thinkingPlus := CalculateCostDetailed("qwen-plus-2025-07-28:thinking", 300_000, 1_000_000, 0, 0, 0)
+	expectedThinkingPlus := (300_000 * 1.2 / 1_000_000) + 12.0
+	if !floatEquals(thinkingPlus, expectedThinkingPlus, 0.000001) {
+		t.Errorf("qwen-plus-2025-07-28:thinking: 成本 = %.6f, 期望 %.6f", thinkingPlus, expectedThinkingPlus)
+	}
+}
+
 func TestCalculateCost_DeepSeekModels(t *testing.T) {
 	// deepseek-r1: Input $0.30/1M, Output $1.20/1M
 	costR1 := CalculateCostDetailed("deepseek-r1", 1_000_000, 1_000_000, 0, 0, 0)
