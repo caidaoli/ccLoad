@@ -22,6 +22,10 @@ type ModelPricing struct {
 	// 固定按次计费（图像生成等非token计费模型）
 	// 如果 > 0，当token成本为0时使用此值作为每次请求成本
 	FixedCostPerRequest float64
+
+	// 按秒计费（视频生成模型），需配合响应中的duration使用
+	// 如果 > 0 且 FixedCostPerRequest == 0，表示按秒计费模型
+	CostPerSecond float64
 }
 
 // basePricing 基础定价表（无重复，每个模型只定义一次）
@@ -298,6 +302,7 @@ var basePricing = map[string]ModelPricing{
 	"grok-2-image-1212":      {FixedCostPerRequest: 0.07},
 	"grok-imagine-image":     {FixedCostPerRequest: 0.02},
 	"grok-imagine-image-pro": {FixedCostPerRequest: 0.07},
+	"grok-imagine-video":     {CostPerSecond: 0.05}, // $0.05/秒，需从响应解析duration
 
 	// ========== MiniMax 模型 ==========
 	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=minimax
@@ -698,7 +703,7 @@ func fuzzyMatchModel(model string) (ModelPricing, bool) {
 		"grok-4.1-fast", "grok-4.1", "grok-4-fast", "grok-4",
 		"grok-3-mini-beta", "grok-3-mini", "grok-3-beta", "grok-3",
 		"grok-2-vision-1212", "grok-2-image-1212", "grok-2-1212", "grok-2-mini", "grok-2",
-		"grok-imagine-image-pro", "grok-imagine-image",
+		"grok-imagine-image-pro", "grok-imagine-image", "grok-imagine-video",
 		"grok-code-fast-1", "grok-vision-beta",
 
 		// MiniMax模型

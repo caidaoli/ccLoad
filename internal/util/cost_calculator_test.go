@@ -478,6 +478,24 @@ func TestCalculateCost_FixedCostPerRequest(t *testing.T) {
 	if !floatEquals(cost, 0.07, 0.000001) {
 		t.Errorf("grok-2-image-1212-custom 模糊匹配: 成本 = %.6f, 期望 0.07", cost)
 	}
+
+	// 视频模型：按秒计费，当前无duration信息，应返回0
+	cost = CalculateCostDetailed("grok-imagine-video", 0, 0, 0, 0, 0)
+	if cost != 0 {
+		t.Errorf("grok-imagine-video 无duration时应返回0, 实际: %.6f", cost)
+	}
+
+	// 视频模型模糊匹配：确认模型被识别
+	pricing, ok := getPricing("grok-imagine-video")
+	if !ok {
+		pricing, ok = fuzzyMatchModel("grok-imagine-video")
+	}
+	if !ok {
+		t.Fatal("grok-imagine-video 应被定价表识别")
+	}
+	if !floatEquals(pricing.CostPerSecond, 0.05, 0.000001) {
+		t.Errorf("grok-imagine-video CostPerSecond = %.4f, 期望 0.05", pricing.CostPerSecond)
+	}
 }
 
 func TestCalculateCost_MiniMaxModels(t *testing.T) {
