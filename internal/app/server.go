@@ -492,14 +492,16 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/channels/export", s.HandleExportChannelsCSV)
 		admin.POST("/channels/import", s.HandleImportChannelsCSV)
 		admin.POST("/channels/batch-priority", s.HandleBatchUpdatePriority) // 批量更新渠道优先级
+		admin.POST("/channels/batch-enabled", s.HandleBatchSetEnabled)      // 批量启用/禁用渠道
 		admin.GET("/channels/:id", s.HandleChannelByID)
 		admin.PUT("/channels/:id", s.HandleChannelByID)
 		admin.DELETE("/channels/:id", s.HandleChannelByID)
 		admin.GET("/channels/:id/keys", s.HandleChannelKeys)
 		admin.POST("/channels/models/fetch", s.HandleFetchModelsPreview) // 临时渠道配置获取模型列表
-		admin.GET("/channels/:id/models/fetch", s.HandleFetchModels)     // 获取渠道可用模型列表(新增)
-		admin.POST("/channels/:id/models", s.HandleAddModels)            // 添加渠道模型
-		admin.DELETE("/channels/:id/models", s.HandleDeleteModels)       // 删除渠道模型
+		admin.POST("/channels/models/refresh-batch", s.HandleBatchRefreshModels)
+		admin.GET("/channels/:id/models/fetch", s.HandleFetchModels) // 获取渠道可用模型列表(新增)
+		admin.POST("/channels/:id/models", s.HandleAddModels)        // 添加渠道模型
+		admin.DELETE("/channels/:id/models", s.HandleDeleteModels)   // 删除渠道模型
 		admin.POST("/channels/:id/test", s.HandleChannelTest)
 		admin.POST("/channels/:id/cooldown", s.HandleSetChannelCooldown)
 		admin.POST("/channels/:id/keys/:keyIndex/cooldown", s.HandleSetKeyCooldown)

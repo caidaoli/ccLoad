@@ -228,3 +228,88 @@ func TestHandleBatchUpdatePriority(t *testing.T) {
 		}
 	})
 }
+
+func TestHandleBatchSetEnabled(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	c1, err := store.CreateConfig(ctx, &model.Config{Name: "c1", URL: "https://x", Priority: 1, ModelEntries: []model.ModelEntry{{Model: "m"}}, Enabled: true})
+	if err != nil {
+		t.Fatalf("CreateConfig c1 failed: %v", err)
+	}
+	c2, err := store.CreateConfig(ctx, &model.Config{Name: "c2", URL: "https://x", Priority: 2, ModelEntries: []model.ModelEntry{{Model: "m"}}, Enabled: false})
+	if err != nil {
+		t.Fatalf("CreateConfig c2 failed: %v", err)
+	}
+
+	t.Run("invalid json", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/admin/channels/batch-enabled", []byte(`{`)))
+
+		server.HandleBatchSetEnabled(c)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("missing enabled", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/admin/channels/batch-enabled", []byte(`{"channel_ids":[1]}`)))
+
+		server.HandleBatchSetEnabled(c)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("empty channel ids", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/admin/channels/batch-enabled", []byte(`{"channel_ids":[],"enabled":true}`)))
+
+		server.HandleBatchSetEnabled(c)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("partial success", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/batch-enabled", map[string]any{
+			"channel_ids": []int64{c1.ID, c2.ID, c2.ID, 99999},
+			"enabled":     false,
+		}))
+
+		server.HandleBatchSetEnabled(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		var resp struct {
+			Success bool `json:"success"`
+			Data    struct {
+				Updated       int `json:"updated"`
+				Unchanged     int `json:"unchanged"`
+				NotFoundCount int `json:"not_found_count"`
+			} `json:"data"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+		if !resp.Success {
+			t.Fatalf("expected success=true, body=%s", w.Body.String())
+		}
+		if resp.Data.Updated != 1 || resp.Data.Unchanged != 1 || resp.Data.NotFoundCount != 1 {
+			t.Fatalf("unexpected summary: %+v", resp.Data)
+		}
+
+		updated1, err := store.GetConfig(ctx, c1.ID)
+		if err != nil {
+			t.Fatalf("GetConfig c1 failed: %v", err)
+		}
+		updated2, err := store.GetConfig(ctx, c2.ID)
+		if err != nil {
+			t.Fatalf("GetConfig c2 failed: %v", err)
+		}
+		if updated1.Enabled {
+			t.Fatalf("c1 should be disabled")
+		}
+		if updated2.Enabled {
+			t.Fatalf("c2 should remain disabled")
+		}
+	})
+}

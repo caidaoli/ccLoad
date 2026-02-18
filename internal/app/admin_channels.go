@@ -637,3 +637,86 @@ func (s *Server) HandleBatchUpdatePriority(c *gin.Context) {
 		"total":   len(req.Updates),
 	})
 }
+
+// HandleBatchSetEnabled 批量启用/禁用渠道
+// POST /admin/channels/batch-enabled
+func (s *Server) HandleBatchSetEnabled(c *gin.Context) {
+	var req struct {
+		ChannelIDs []int64 `json:"channel_ids"`
+		Enabled    *bool   `json:"enabled"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
+	if req.Enabled == nil {
+		RespondError(c, http.StatusBadRequest, fmt.Errorf("enabled is required"))
+		return
+	}
+
+	channelIDs := normalizeBatchChannelIDs(req.ChannelIDs)
+	if len(channelIDs) == 0 {
+		RespondError(c, http.StatusBadRequest, fmt.Errorf("channel_ids cannot be empty"))
+		return
+	}
+
+	ctx := c.Request.Context()
+	updated := 0
+	unchanged := 0
+	notFound := make([]int64, 0)
+
+	for _, channelID := range channelIDs {
+		cfg, err := s.store.GetConfig(ctx, channelID)
+		if err != nil {
+			notFound = append(notFound, channelID)
+			continue
+		}
+
+		if cfg.Enabled == *req.Enabled {
+			unchanged++
+			continue
+		}
+
+		cfg.Enabled = *req.Enabled
+		if _, err := s.store.UpdateConfig(ctx, channelID, cfg); err != nil {
+			log.Printf("batch-enabled: update channel %d failed: %v", channelID, err)
+			RespondError(c, http.StatusInternalServerError, err)
+			return
+		}
+		updated++
+	}
+
+	if updated > 0 {
+		s.InvalidateChannelListCache()
+	}
+
+	RespondJSON(c, http.StatusOK, gin.H{
+		"enabled":         *req.Enabled,
+		"total":           len(channelIDs),
+		"updated":         updated,
+		"unchanged":       unchanged,
+		"not_found":       notFound,
+		"not_found_count": len(notFound),
+	})
+}
+
+func normalizeBatchChannelIDs(rawIDs []int64) []int64 {
+	if len(rawIDs) == 0 {
+		return nil
+	}
+
+	seen := make(map[int64]struct{}, len(rawIDs))
+	ids := make([]int64, 0, len(rawIDs))
+	for _, id := range rawIDs {
+		if id <= 0 {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
+}

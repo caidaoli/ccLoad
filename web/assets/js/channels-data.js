@@ -2,6 +2,9 @@ async function loadChannels(type = 'all') {
   try {
     if (channelsCache[type]) {
       channels = channelsCache[type];
+      if (typeof syncSelectedChannelsWithLoadedChannels === 'function') {
+        syncSelectedChannelsWithLoadedChannels();
+      }
       updateModelOptions();
       filterChannels();
       return;
@@ -12,6 +15,9 @@ async function loadChannels(type = 'all') {
 
     channelsCache[type] = data || [];
     channels = channelsCache[type];
+    if (typeof syncSelectedChannelsWithLoadedChannels === 'function') {
+      syncSelectedChannelsWithLoadedChannels();
+    }
 
     updateModelOptions();
     filterChannels();

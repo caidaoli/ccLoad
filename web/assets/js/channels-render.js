@@ -197,6 +197,25 @@ function initChannelEventDelegation() {
 
   container.dataset.delegated = 'true';
 
+  // 事件委托：处理渠道多选复选框
+  container.addEventListener('change', (e) => {
+    const checkbox = e.target.closest('.channel-select-checkbox');
+    if (!checkbox) return;
+
+    const channelId = normalizeSelectedChannelID(checkbox.dataset.channelId);
+    if (!channelId) return;
+
+    if (checkbox.checked) {
+      selectedChannelIds.add(channelId);
+    } else {
+      selectedChannelIds.delete(channelId);
+    }
+
+    if (typeof updateBatchChannelSelectionUI === 'function') {
+      updateBatchChannelSelectionUI();
+    }
+  });
+
   // 事件委托：处理所有渠道操作按钮
   container.addEventListener('click', (e) => {
     const btn = e.target.closest('.channel-action-btn');
@@ -231,6 +250,9 @@ function renderChannels(channelsToRender = channels) {
   const el = document.getElementById('channels-container');
   if (!channelsToRender || channelsToRender.length === 0) {
     el.innerHTML = `<div class="glass-card">${window.t('channels.noChannels')}</div>`;
+    if (typeof updateBatchChannelSelectionUI === 'function') {
+      updateBatchChannelSelectionUI();
+    }
     return;
   }
 
@@ -247,8 +269,17 @@ function renderChannels(channelsToRender = channels) {
   el.innerHTML = '';
   el.appendChild(fragment);
 
+  // 模板渲染后设置 checkbox 选中态（HTML <template> 会小写化属性名，不能用模板变量做 boolean attribute）
+  el.querySelectorAll('.channel-select-checkbox').forEach(cb => {
+    cb.checked = selectedChannelIds.has(normalizeSelectedChannelID(cb.dataset.channelId));
+  });
+
   // Translate dynamically rendered elements
   if (window.i18n && window.i18n.translatePage) {
     window.i18n.translatePage();
+  }
+
+  if (typeof updateBatchChannelSelectionUI === 'function') {
+    updateBatchChannelSelectionUI();
   }
 }

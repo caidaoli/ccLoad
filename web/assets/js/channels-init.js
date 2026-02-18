@@ -63,6 +63,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupImportExport();
   setupKeyImportPreview();
   setupModelImportPreview();
+  if (typeof updateBatchChannelSelectionUI === 'function') {
+    updateBatchChannelSelectionUI();
+  }
 
   await window.ChannelTypeManager.renderChannelTypeRadios('channelTypeRadios');
 
