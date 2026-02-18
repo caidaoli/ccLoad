@@ -1229,11 +1229,22 @@ async function deleteSelectedModels() {
 
   const { failed, successCount, totalChannelCount } = deleteResult;
 
-  if (testMode === TEST_MODE_CHANNEL) {
-    renderChannelModeRows();
-  } else {
+  const failedChannelIds = new Set(failed.map(f => f.channelId));
+  selected.forEach(item => {
+    if (failedChannelIds.has(item.channelId)) return;
+    item.row.remove();
+  });
+
+  if (testMode === TEST_MODE_MODEL) {
     populateModelSelector();
-    renderModelModeRows();
+  }
+
+  const hasDataRows = Array.from(tbody.querySelectorAll('tr')).some(r => !r.querySelector('td[colspan]'));
+  if (!hasDataRows) {
+    renderRowsByMode();
+  } else {
+    markRowBaseOrder();
+    syncSelectAllCheckbox();
   }
 
   if (failed.length === 0) {
