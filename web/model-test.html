@@ -125,18 +125,19 @@
               <thead style="position: sticky; top: 0; background: var(--glass-bg); z-index: 1;">
                 <tr id="model-test-head-row">
                   <th style="width: 30px;"><input type="checkbox" id="selectAllCheckbox" onchange="toggleAllModels(this.checked)"></th>
-                  <th style="width: 200px;" data-i18n="common.model">模型</th>
-                  <th style="width: 70px;" data-i18n="modelTest.duration">耗时</th>
-                  <th style="width: 65px;" data-i18n="common.input">输入</th>
-                  <th style="width: 65px;" data-i18n="common.output">输出</th>
-                  <th style="width: 65px;" data-i18n="modelTest.cacheRead">缓读</th>
-                  <th style="width: 65px;" data-i18n="modelTest.cacheCreate">缓建</th>
-                  <th style="width: 80px;" data-i18n="common.cost">费用</th>
-                  <th data-i18n="modelTest.responseContent">响应内容</th>
+                  <th style="width: 200px;" data-i18n="common.model" data-sort-key="name">模型</th>
+                  <th class="first-byte-col" style="width: 76px;" data-i18n="modelTest.firstByteDuration" data-sort-key="firstByteDuration">首字</th>
+                  <th style="width: 76px;" data-i18n="modelTest.totalDuration" data-sort-key="duration">总耗时</th>
+                  <th style="width: 65px;" data-i18n="common.input" data-sort-key="inputTokens">输入</th>
+                  <th style="width: 65px;" data-i18n="common.output" data-sort-key="outputTokens">输出</th>
+                  <th style="width: 65px;" data-i18n="modelTest.cacheRead" data-sort-key="cacheRead">缓读</th>
+                  <th style="width: 65px;" data-i18n="modelTest.cacheCreate" data-sort-key="cacheCreate">缓建</th>
+                  <th style="width: 80px;" data-i18n="common.cost" data-sort-key="cost">费用</th>
+                  <th data-i18n="modelTest.responseContent" data-sort-key="response">响应内容</th>
                 </tr>
               </thead>
               <tbody id="model-test-tbody">
-                <tr><td colspan="9" style="text-align: center; color: var(--color-text-secondary); padding: 40px;" data-i18n="modelTest.selectChannelFirst">请先选择渠道</td></tr>
+                <tr><td colspan="10" style="text-align: center; color: var(--color-text-secondary); padding: 40px;" data-i18n="modelTest.selectChannelFirst">请先选择渠道</td></tr>
               </tbody>
             </table>
           </div>
@@ -149,6 +150,7 @@
     <tr data-model="{{model}}">
       <td><input type="checkbox" class="row-checkbox model-checkbox" checked></td>
       <td title="{{model}}" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;{{nameStyle}}">{{displayName}}</td>
+      <td class="first-byte-duration">-</td>
       <td class="duration">-</td>
       <td class="input-tokens">-</td>
       <td class="output-tokens">-</td>
@@ -164,6 +166,7 @@
     <tr data-channel-id="{{channelId}}" data-model="{{model}}">
       <td><input type="checkbox" class="row-checkbox channel-checkbox" checked></td>
       <td title="{{channelName}}" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{channelName}}</td>
+      <td class="first-byte-duration">-</td>
       <td class="duration">-</td>
       <td class="input-tokens">-</td>
       <td class="output-tokens">-</td>

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/testutil"
@@ -20,6 +21,7 @@ func TestTestChannelAPI_StreamIncludesUsageAndCost(t *testing.T) {
 
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
+		time.Sleep(20 * time.Millisecond)
 
 		// 模拟Claude风格SSE：usage在message_start/message_delta给出，内容在content_block_delta给出
 		_, _ = io.WriteString(w, "event: message_start\n")
@@ -30,6 +32,7 @@ func TestTestChannelAPI_StreamIncludesUsageAndCost(t *testing.T) {
 
 		_, _ = io.WriteString(w, "event: message_delta\n")
 		_, _ = io.WriteString(w, "data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":10,\"output_tokens\":20,\"cache_read_input_tokens\":5,\"cache_creation_input_tokens\":5,\"cache_creation\":{\"ephemeral_5m_input_tokens\":3,\"ephemeral_1h_input_tokens\":2}}}\n\n")
+		time.Sleep(20 * time.Millisecond)
 
 		_, _ = io.WriteString(w, "event: message_stop\n")
 		_, _ = io.WriteString(w, "data: {\"type\":\"message_stop\"}\n\n")
@@ -86,5 +89,18 @@ func TestTestChannelAPI_StreamIncludesUsageAndCost(t *testing.T) {
 	}
 	if cost <= 0 {
 		t.Fatalf("expected cost_usd > 0, got: %v", cost)
+	}
+
+	firstByteDurationMs, ok := result["first_byte_duration_ms"].(int64)
+	if !ok || firstByteDurationMs <= 0 {
+		t.Fatalf("expected first_byte_duration_ms(int64)>0, got: %#v", result["first_byte_duration_ms"])
+	}
+
+	totalDurationMs, ok := result["duration_ms"].(int64)
+	if !ok || totalDurationMs <= 0 {
+		t.Fatalf("expected duration_ms(int64)>0, got: %#v", result["duration_ms"])
+	}
+	if totalDurationMs < firstByteDurationMs {
+		t.Fatalf("expected duration_ms>=first_byte_duration_ms, got %d < %d", totalDurationMs, firstByteDurationMs)
 	}
 }

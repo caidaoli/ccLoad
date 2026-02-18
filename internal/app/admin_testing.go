@@ -210,9 +210,12 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 	// 发送请求
 	start := time.Now()
 	resp, err := s.client.Do(req)
-	duration := time.Since(start)
 	if err != nil {
-		return map[string]any{"success": false, "error": "网络请求失败: " + err.Error(), "duration_ms": duration.Milliseconds()}
+		return map[string]any{
+			"success":     false,
+			"error":       "网络请求失败: " + err.Error(),
+			"duration_ms": time.Since(start).Milliseconds(),
+		}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -224,10 +227,12 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 	result := map[string]any{
 		"success":     resp.StatusCode >= 200 && resp.StatusCode < 300,
 		"status_code": resp.StatusCode,
-		"duration_ms": duration.Milliseconds(),
 	}
 
 	parseNonStreamResponse := func(bodyBytes []byte) map[string]any {
+		// duration_ms 统一表示完整响应总耗时（含读取响应体）
+		result["duration_ms"] = time.Since(start).Milliseconds()
+
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			// 成功：委托给 tester 解析
 			parsed := tester.Parse(resp.StatusCode, bodyBytes)
@@ -299,6 +304,7 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 		var lastErrMsg string
 		var lastUsage map[string]any
 		dataLineCount := 0
+		firstByteCaptured := false
 
 		// [DRY] 复用代理链路的SSE usage解析器，保证tokens/成本口径一致
 		usageParser := newSSEUsageParser(channelType)
@@ -309,6 +315,12 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 		scanner.Buffer(buf, 16*1024*1024)
 
 		for scanner.Scan() {
+			// first_byte_duration_ms 表示从请求发起到读取到首个响应字节的时间
+			if !firstByteCaptured {
+				firstByteCaptured = true
+				result["first_byte_duration_ms"] = time.Since(start).Milliseconds()
+			}
+
 			line := scanner.Text()
 			// 给usage解析器喂原始行（补回换行符），它依赖空行判断事件结束
 			if err := usageParser.Feed([]byte(line + "\n")); err != nil {
@@ -389,6 +401,7 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 		}
 
 		if err := scanner.Err(); err != nil {
+			result["duration_ms"] = time.Since(start).Milliseconds()
 			result["error"] = "读取流式响应失败: " + err.Error()
 			result["raw_response"] = rawBuilder.String()
 			return result
@@ -398,6 +411,8 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 		if dataLineCount == 0 {
 			return parseNonStreamResponse([]byte(rawBuilder.String()))
 		}
+
+		result["duration_ms"] = time.Since(start).Milliseconds()
 
 		if textBuilder.Len() > 0 {
 			result["response_text"] = textBuilder.String()
@@ -445,7 +460,12 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 	// 非流式或非SSE响应：按原逻辑读取完整响应（即便前端请求了流式，但上游未返回SSE，也按普通响应处理，确保能展示完整错误体）
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return map[string]any{"success": false, "error": "读取响应失败: " + err.Error(), "duration_ms": duration.Milliseconds(), "status_code": resp.StatusCode}
+		return map[string]any{
+			"success":     false,
+			"error":       "读取响应失败: " + err.Error(),
+			"duration_ms": time.Since(start).Milliseconds(),
+			"status_code": resp.StatusCode,
+		}
 	}
 	return parseNonStreamResponse(respBody)
 }

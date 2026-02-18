@@ -32,28 +32,38 @@ const deletePreviewCloseBtn = document.getElementById('deletePreviewCloseBtn');
 const deletePreviewCancelBtn = document.getElementById('deletePreviewCancelBtn');
 const deletePreviewConfirmBtn = document.getElementById('deletePreviewConfirmBtn');
 
+const RESULT_TABLE_COLSPAN_WITH_FIRST_BYTE = 10;
+const RESULT_TABLE_COLSPAN_NO_FIRST_BYTE = 9;
+const SORT_DIRECTION_ASC = 1;
+const SORT_DIRECTION_DESC = -1;
+const SORT_DIRECTION_NONE = 0;
+let sortState = { key: '', direction: SORT_DIRECTION_NONE };
+let nameFilterKeyword = '';
+
 const CHANNEL_MODE_HEAD = `
   <th style="width: 30px;"><input type="checkbox" id="selectAllCheckbox" onchange="toggleAllModels(this.checked)"></th>
-  <th style="width: 200px;" data-i18n="common.model">模型</th>
-  <th style="width: 70px;" data-i18n="modelTest.duration">耗时</th>
-  <th style="width: 65px;" data-i18n="common.input">输入</th>
-  <th style="width: 65px;" data-i18n="common.output">输出</th>
-  <th style="width: 65px;" data-i18n="modelTest.cacheRead">缓读</th>
-  <th style="width: 65px;" data-i18n="modelTest.cacheCreate">缓建</th>
-  <th style="width: 80px;" data-i18n="common.cost">费用</th>
-  <th data-i18n="modelTest.responseContent">响应内容</th>
+  <th style="width: 200px;" data-i18n="common.model" data-sort-key="name">模型</th>
+  <th class="first-byte-col" style="width: 76px;" data-i18n="modelTest.firstByteDuration" data-sort-key="firstByteDuration">首字</th>
+  <th style="width: 76px;" data-i18n="modelTest.totalDuration" data-sort-key="duration">总耗时</th>
+  <th style="width: 65px;" data-i18n="common.input" data-sort-key="inputTokens">输入</th>
+  <th style="width: 65px;" data-i18n="common.output" data-sort-key="outputTokens">输出</th>
+  <th style="width: 65px;" data-i18n="modelTest.cacheRead" data-sort-key="cacheRead">缓读</th>
+  <th style="width: 65px;" data-i18n="modelTest.cacheCreate" data-sort-key="cacheCreate">缓建</th>
+  <th style="width: 80px;" data-i18n="common.cost" data-sort-key="cost">费用</th>
+  <th data-i18n="modelTest.responseContent" data-sort-key="response">响应内容</th>
 `;
 
 const MODEL_MODE_HEAD = `
   <th style="width: 30px;"><input type="checkbox" id="selectAllCheckbox" onchange="toggleAllModels(this.checked)"></th>
-  <th style="width: 280px;" data-i18n="modelTest.channelName">渠道</th>
-  <th style="width: 70px;" data-i18n="modelTest.duration">耗时</th>
-  <th style="width: 65px;" data-i18n="common.input">输入</th>
-  <th style="width: 65px;" data-i18n="common.output">输出</th>
-  <th style="width: 65px;" data-i18n="modelTest.cacheRead">缓读</th>
-  <th style="width: 65px;" data-i18n="modelTest.cacheCreate">缓建</th>
-  <th style="width: 80px;" data-i18n="common.cost">费用</th>
-  <th data-i18n="modelTest.responseContent">响应内容</th>
+  <th style="width: 280px;" data-i18n="modelTest.channelName" data-sort-key="name">渠道</th>
+  <th class="first-byte-col" style="width: 76px;" data-i18n="modelTest.firstByteDuration" data-sort-key="firstByteDuration">首字</th>
+  <th style="width: 76px;" data-i18n="modelTest.totalDuration" data-sort-key="duration">总耗时</th>
+  <th style="width: 65px;" data-i18n="common.input" data-sort-key="inputTokens">输入</th>
+  <th style="width: 65px;" data-i18n="common.output" data-sort-key="outputTokens">输出</th>
+  <th style="width: 65px;" data-i18n="modelTest.cacheRead" data-sort-key="cacheRead">缓读</th>
+  <th style="width: 65px;" data-i18n="modelTest.cacheCreate" data-sort-key="cacheCreate">缓建</th>
+  <th style="width: 80px;" data-i18n="common.cost" data-sort-key="cost">费用</th>
+  <th data-i18n="modelTest.responseContent" data-sort-key="response">响应内容</th>
 `;
 
 function i18nText(key, fallback, params) {
@@ -62,6 +72,289 @@ function i18nText(key, fallback, params) {
     if (result && result !== key) return result;
   }
   return fallback;
+}
+
+function formatDurationMs(durationMs) {
+  return (typeof durationMs === 'number' && Number.isFinite(durationMs) && durationMs > 0)
+    ? `${(durationMs / 1000).toFixed(2)}s`
+    : '-';
+}
+
+function parseNumericCellValue(text) {
+  const normalized = String(text || '')
+    .replace(/[^0-9.+-]/g, '')
+    .trim();
+  if (!normalized) return null;
+  const value = Number.parseFloat(normalized);
+  return Number.isFinite(value) ? value : null;
+}
+
+function compareSortValues(a, b) {
+  const aNil = a === null || a === undefined || a === '';
+  const bNil = b === null || b === undefined || b === '';
+  if (aNil && bNil) return 0;
+  if (aNil) return 1;
+  if (bNil) return -1;
+
+  if (typeof a === 'number' && typeof b === 'number') {
+    return a - b;
+  }
+  return String(a).localeCompare(String(b), 'zh-CN', { numeric: true, sensitivity: 'base' });
+}
+
+function isFirstByteColumnVisible() {
+  const streamEnabled = document.getElementById('streamEnabled');
+  return Boolean(streamEnabled?.checked);
+}
+
+function getResultTableColspan() {
+  return String(isFirstByteColumnVisible() ? RESULT_TABLE_COLSPAN_WITH_FIRST_BYTE : RESULT_TABLE_COLSPAN_NO_FIRST_BYTE);
+}
+
+function isDataRowVisible(row) {
+  return row.style.display !== 'none';
+}
+
+function getVisibleRowCheckboxes() {
+  return Array.from(document.querySelectorAll('#model-test-tbody tr'))
+    .filter(row => isDataRowVisible(row))
+    .map(row => row.querySelector('.row-checkbox'))
+    .filter(Boolean);
+}
+
+function getNameFilterPlaceholder() {
+  if (testMode === TEST_MODE_MODEL) {
+    return i18nText('modelTest.filterChannelPlaceholder', '搜索渠道名称...');
+  }
+  return i18nText('modelTest.filterModelPlaceholder', '搜索模型名称...');
+}
+
+function renderNameFilterInHeader() {
+  const nameTh = headRow.querySelector('th[data-sort-key="name"]');
+  if (!nameTh) return;
+  const filterWidth = testMode === TEST_MODE_MODEL ? '160px' : '130px';
+
+  let headerLine = nameTh.querySelector('.model-test-name-head-line');
+  let label = nameTh.querySelector('.model-test-name-label');
+  let input = nameTh.querySelector('#modelTestNameFilter');
+
+  if (!headerLine || !label || !input) {
+    const baseLabel = (nameTh.textContent || '').trim();
+    nameTh.textContent = '';
+    nameTh.style.whiteSpace = 'nowrap';
+    nameTh.style.verticalAlign = 'middle';
+
+    headerLine = document.createElement('div');
+    headerLine.className = 'model-test-name-head-line';
+    headerLine.style.display = 'flex';
+    headerLine.style.alignItems = 'center';
+    headerLine.style.gap = '6px';
+    headerLine.style.width = '100%';
+    headerLine.style.transform = 'translateY(10px)';
+
+    label = document.createElement('span');
+    label.className = 'model-test-name-label';
+    label.textContent = baseLabel;
+    label.style.flex = '0 0 auto';
+    headerLine.appendChild(label);
+
+    input = document.createElement('input');
+    input.id = 'modelTestNameFilter';
+    input.type = 'text';
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.style.flex = `0 1 ${filterWidth}`;
+    input.style.width = filterWidth;
+    input.style.maxWidth = '100%';
+    input.style.minWidth = '90px';
+    input.style.padding = '6px 10px';
+    input.style.border = '1px solid var(--color-border)';
+    input.style.borderRadius = '6px';
+    input.style.background = 'var(--color-bg-secondary)';
+    input.style.color = 'var(--color-text)';
+    input.style.fontSize = '13px';
+    input.addEventListener('click', (event) => event.stopPropagation());
+    input.addEventListener('keydown', (event) => event.stopPropagation());
+    input.addEventListener('input', () => {
+      nameFilterKeyword = input.value || '';
+      applyNameFilter();
+    });
+
+    headerLine.appendChild(input);
+    nameTh.appendChild(headerLine);
+  }
+
+  const indicator = nameTh.querySelector('.model-test-sort-indicator');
+  if (indicator && indicator.parentElement !== headerLine) {
+    headerLine.insertBefore(indicator, input);
+  }
+
+  input.style.flex = `0 1 ${filterWidth}`;
+  input.style.width = filterWidth;
+  input.placeholder = getNameFilterPlaceholder();
+  input.value = nameFilterKeyword;
+}
+
+function applyNameFilter() {
+  const keyword = nameFilterKeyword.trim().toLowerCase();
+  const rows = Array.from(tbody.querySelectorAll('tr'));
+  rows.forEach(row => {
+    const checkbox = row.querySelector('.row-checkbox');
+    if (!checkbox) return;
+    if (!keyword) {
+      row.style.display = '';
+      return;
+    }
+
+    const nameText = (row.children[1]?.textContent || '').trim().toLowerCase();
+    row.style.display = nameText.includes(keyword) ? '' : 'none';
+  });
+  syncSelectAllCheckbox();
+}
+
+function getRowSortValue(row, key) {
+  switch (key) {
+    case 'name':
+      return row.children[1]?.textContent?.trim() || '';
+    case 'firstByteDuration':
+      return parseNumericCellValue(row.querySelector('.first-byte-duration')?.textContent);
+    case 'duration':
+      return parseNumericCellValue(row.querySelector('.duration')?.textContent);
+    case 'inputTokens':
+      return parseNumericCellValue(row.querySelector('.input-tokens')?.textContent);
+    case 'outputTokens':
+      return parseNumericCellValue(row.querySelector('.output-tokens')?.textContent);
+    case 'cacheRead':
+      return parseNumericCellValue(row.querySelector('.cache-read')?.textContent);
+    case 'cacheCreate':
+      return parseNumericCellValue(row.querySelector('.cache-create')?.textContent);
+    case 'cost':
+      return parseNumericCellValue(row.querySelector('.cost')?.textContent);
+    case 'response':
+      return row.querySelector('.response')?.textContent?.trim() || '';
+    default:
+      return null;
+  }
+}
+
+function bindSortableHeaders() {
+  headRow.querySelectorAll('th[data-sort-key]').forEach(th => {
+    let indicator = th.querySelector('.model-test-sort-indicator');
+
+    if (!indicator) {
+      indicator = document.createElement('span');
+      indicator.className = 'model-test-sort-indicator';
+      indicator.style.display = 'inline-block';
+      indicator.style.minWidth = '0.7em';
+      indicator.style.marginLeft = '2px';
+      indicator.style.fontSize = '11px';
+      indicator.style.lineHeight = '1';
+      indicator.style.verticalAlign = 'middle';
+      th.appendChild(indicator);
+    }
+
+    th.style.cursor = 'pointer';
+    th.style.whiteSpace = 'nowrap';
+    th.style.verticalAlign = 'middle';
+    th.onclick = () => {
+      const key = th.dataset.sortKey || '';
+      if (!key) return;
+
+      if (sortState.key !== key) {
+        sortState = { key, direction: SORT_DIRECTION_ASC };
+      } else if (sortState.direction === SORT_DIRECTION_ASC) {
+        sortState = { key, direction: SORT_DIRECTION_DESC };
+      } else if (sortState.direction === SORT_DIRECTION_DESC) {
+        sortState = { key: '', direction: SORT_DIRECTION_NONE };
+      } else {
+        sortState = { key, direction: SORT_DIRECTION_ASC };
+      }
+
+      applyCurrentSort();
+      updateSortIndicators();
+    };
+  });
+}
+
+function updateSortIndicators() {
+  headRow.querySelectorAll('th[data-sort-key]').forEach(th => {
+    const key = th.dataset.sortKey || '';
+    let indicator = th.querySelector('.model-test-sort-indicator');
+    if (!indicator) return;
+
+    if (sortState.key !== key || sortState.direction === SORT_DIRECTION_NONE) {
+      indicator.textContent = '';
+      return;
+    }
+
+    if (sortState.direction === SORT_DIRECTION_ASC) {
+      indicator.textContent = '↑';
+      return;
+    }
+
+    indicator.textContent = '↓';
+  });
+}
+
+function applyCurrentSort() {
+  const rows = Array.from(tbody.querySelectorAll('tr'));
+  const dataRows = rows.filter(row => !row.querySelector('td[colspan]'));
+  if (dataRows.length === 0) return;
+
+  if (!isFirstByteColumnVisible() && sortState.key === 'firstByteDuration') {
+    sortState = { key: '', direction: SORT_DIRECTION_NONE };
+  }
+
+  if (sortState.direction === SORT_DIRECTION_NONE || !sortState.key) {
+    dataRows.sort((a, b) => Number(a.dataset.baseOrder || 0) - Number(b.dataset.baseOrder || 0));
+  } else {
+    dataRows.sort((a, b) => {
+      const av = getRowSortValue(a, sortState.key);
+      const bv = getRowSortValue(b, sortState.key);
+      const primary = compareSortValues(av, bv) * sortState.direction;
+      if (primary !== 0) return primary;
+      return Number(a.dataset.baseOrder || 0) - Number(b.dataset.baseOrder || 0);
+    });
+  }
+
+  const fragment = document.createDocumentFragment();
+  dataRows.forEach(row => fragment.appendChild(row));
+  tbody.appendChild(fragment);
+}
+
+function applyFirstByteVisibility() {
+  const visible = isFirstByteColumnVisible();
+  headRow.querySelectorAll('.first-byte-col').forEach(cell => {
+    cell.style.display = visible ? '' : 'none';
+  });
+  tbody.querySelectorAll('.first-byte-duration').forEach(cell => {
+    cell.style.display = visible ? '' : 'none';
+  });
+
+  const emptyCell = tbody.querySelector('tr > td[colspan]');
+  if (emptyCell) {
+    emptyCell.setAttribute('colspan', getResultTableColspan());
+  }
+
+  if (!visible && sortState.key === 'firstByteDuration') {
+    sortState = { key: '', direction: SORT_DIRECTION_NONE };
+    applyCurrentSort();
+    updateSortIndicators();
+  }
+}
+
+function markRowBaseOrder() {
+  Array.from(tbody.querySelectorAll('tr')).forEach((row, index) => {
+    if (row.querySelector('td[colspan]')) return;
+    row.dataset.baseOrder = String(index);
+  });
+}
+
+function finalizeTableRender() {
+  markRowBaseOrder();
+  applyCurrentSort();
+  applyNameFilter();
+  applyFirstByteVisibility();
 }
 
 function getModelName(entry) {
@@ -162,13 +455,17 @@ function updateHeadByMode() {
   if (window.i18n) {
     window.i18n.translatePage();
   }
+  renderNameFilterInHeader();
+  bindSortableHeaders();
+  updateSortIndicators();
+  applyFirstByteVisibility();
 }
 
 function syncSelectAllCheckbox() {
   const selectAllCheckbox = document.getElementById('selectAllCheckbox');
   if (!selectAllCheckbox) return;
 
-  const checkboxes = Array.from(document.querySelectorAll('#model-test-tbody .row-checkbox'));
+  const checkboxes = getVisibleRowCheckboxes();
   if (checkboxes.length === 0) {
     selectAllCheckbox.checked = false;
     selectAllCheckbox.indeterminate = false;
@@ -194,10 +491,9 @@ function syncSelectAllCheckbox() {
 
 function renderEmptyRow(message) {
   tbody.innerHTML = '';
-  const colspan = testMode === TEST_MODE_MODEL ? '9' : '9';
-  const row = TemplateEngine.render('tpl-empty-row', { message, colspan });
+  const row = TemplateEngine.render('tpl-empty-row', { message, colspan: getResultTableColspan() });
   if (row) tbody.appendChild(row);
-  syncSelectAllCheckbox();
+  finalizeTableRender();
 }
 
 function renderChannelModeRows() {
@@ -226,7 +522,7 @@ function renderChannelModeRows() {
 
   tbody.innerHTML = '';
   tbody.appendChild(fragment);
-  syncSelectAllCheckbox();
+  finalizeTableRender();
 }
 
 function populateModelSelector() {
@@ -308,7 +604,7 @@ function renderModelModeRows() {
 
   tbody.innerHTML = '';
   tbody.appendChild(fragment);
-  syncSelectAllCheckbox();
+  finalizeTableRender();
 }
 
 function renderRowsByMode() {
@@ -346,6 +642,7 @@ function getSelectedTargets() {
   const rows = Array.from(document.querySelectorAll('#model-test-tbody tr'));
   return rows
     .map(row => {
+      if (!isDataRowVisible(row)) return null;
       const checkbox = row.querySelector('.row-checkbox');
       if (!checkbox || !checkbox.checked) return null;
 
@@ -373,6 +670,7 @@ function getSelectedTargets() {
 }
 
 function resetRowStatus(row) {
+  row.querySelector('.first-byte-duration').textContent = '-';
   row.querySelector('.duration').textContent = '-';
   row.querySelector('.input-tokens').textContent = '-';
   row.querySelector('.output-tokens').textContent = '-';
@@ -385,7 +683,8 @@ function resetRowStatus(row) {
 }
 
 function applyTestResultToRow(row, data) {
-  row.querySelector('.duration').textContent = data.duration_ms ? `${(data.duration_ms / 1000).toFixed(2)}s` : '-';
+  row.querySelector('.first-byte-duration').textContent = formatDurationMs(data.first_byte_duration_ms);
+  row.querySelector('.duration').textContent = formatDurationMs(data.duration_ms);
 
   if (data.success) {
     row.style.background = 'rgba(16, 185, 129, 0.1)';
@@ -439,6 +738,7 @@ async function runBatchTests(targets) {
       applyTestResultToRow(row, data);
     } catch (e) {
       row.style.background = 'rgba(239, 68, 68, 0.1)';
+      row.querySelector('.first-byte-duration').textContent = '-';
       row.querySelector('.duration').textContent = '-';
       row.querySelector('.response').textContent = i18nText('modelTest.requestFailed', '请求失败');
       row.querySelector('.response').title = e.message;
@@ -468,6 +768,7 @@ async function runBatchTests(targets) {
     checkbox.checked = row.style.background.includes('239, 68, 68');
   });
 
+  applyCurrentSort();
   syncSelectAllCheckbox();
 }
 
@@ -524,21 +825,21 @@ async function runModelTests() {
 }
 
 function selectAllModels() {
-  document.querySelectorAll('.row-checkbox').forEach(cb => {
+  getVisibleRowCheckboxes().forEach(cb => {
     cb.checked = true;
   });
   syncSelectAllCheckbox();
 }
 
 function deselectAllModels() {
-  document.querySelectorAll('.row-checkbox').forEach(cb => {
+  getVisibleRowCheckboxes().forEach(cb => {
     cb.checked = false;
   });
   syncSelectAllCheckbox();
 }
 
 function toggleAllModels(checked) {
-  document.querySelectorAll('.row-checkbox').forEach(cb => {
+  getVisibleRowCheckboxes().forEach(cb => {
     cb.checked = checked;
   });
   syncSelectAllCheckbox();
@@ -548,6 +849,7 @@ function getSelectedModelsForDelete() {
   if (testMode === TEST_MODE_MODEL) {
     return Array.from(document.querySelectorAll('#model-test-tbody tr[data-channel-id][data-model]'))
       .map(row => {
+        if (!isDataRowVisible(row)) return null;
         const checkbox = row.querySelector('.row-checkbox');
         if (!checkbox || !checkbox.checked) return null;
 
@@ -567,6 +869,7 @@ function getSelectedModelsForDelete() {
 
   return Array.from(document.querySelectorAll('#model-test-tbody tr[data-model]'))
     .map(row => {
+      if (!isDataRowVisible(row)) return null;
       const checkbox = row.querySelector('.model-checkbox');
       if (!checkbox || !checkbox.checked) return null;
       return {
@@ -1041,6 +1344,12 @@ async function loadDefaultTestContent() {
 
 function bindEvents() {
   ensureModelSelectCombobox();
+  const streamEnabled = document.getElementById('streamEnabled');
+  if (streamEnabled) {
+    streamEnabled.addEventListener('change', () => {
+      applyFirstByteVisibility();
+    });
+  }
 
   typeSelect.addEventListener('change', async () => {
     if (testMode === TEST_MODE_CHANNEL) {
