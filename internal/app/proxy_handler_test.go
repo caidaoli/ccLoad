@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"testing"
 	"time"
@@ -373,5 +374,77 @@ func TestHandleSpecialRoutes_Fallthrough(t *testing.T) {
 				t.Fatalf("%s %s 不应被 handleSpecialRoutes 处理", tt.method, tt.path)
 			}
 		})
+	}
+}
+
+// TestParseIncomingRequest_MultipartModel 测试 multipart/form-data 中提取 model
+func TestParseIncomingRequest_MultipartModel(t *testing.T) {
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	_ = writer.WriteField("model", "dall-e-2")
+	_ = writer.WriteField("prompt", "a cute cat")
+	_ = writer.WriteField("n", "1")
+	_ = writer.Close()
+
+	req := newRequest(http.MethodPost, "/v1/images/edits", &buf)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	c, _ := newTestContext(t, req)
+
+	model, _, isStreaming, err := parseIncomingRequest(c)
+	if err != nil {
+		t.Fatalf("不期望错误: %v", err)
+	}
+	if model != "dall-e-2" {
+		t.Fatalf("模型名应为 dall-e-2, 实际: %s", model)
+	}
+	if isStreaming {
+		t.Fatal("images 请求不应为流式")
+	}
+}
+
+// TestParseIncomingRequest_ImagesJSON 测试 images/generations 的标准 JSON 请求
+func TestParseIncomingRequest_ImagesJSON(t *testing.T) {
+	body := `{"model":"gpt-image-1","prompt":"a white cat","n":1,"size":"1024x1024"}`
+	req := newRequest(http.MethodPost, "/v1/images/generations", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	c, _ := newTestContext(t, req)
+
+	model, _, isStreaming, err := parseIncomingRequest(c)
+	if err != nil {
+		t.Fatalf("不期望错误: %v", err)
+	}
+	if model != "gpt-image-1" {
+		t.Fatalf("模型名应为 gpt-image-1, 实际: %s", model)
+	}
+	if isStreaming {
+		t.Fatal("images 请求不应为流式")
+	}
+}
+
+// TestParseIncomingRequest_ImagesLargerBodyAllowed 测试 images 路径允许更大的请求体
+func TestParseIncomingRequest_ImagesLargerBodyAllowed(t *testing.T) {
+	// 创建 15MB 的 multipart 请求体（超过默认 10MB，但在 images 20MB 限制内）
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	_ = writer.WriteField("model", "gpt-image-1")
+	_ = writer.WriteField("prompt", "test")
+	part, _ := writer.CreateFormFile("image", "test.png")
+	largeData := make([]byte, 15*1024*1024)
+	_, _ = part.Write(largeData)
+	_ = writer.Close()
+
+	req := newRequest(http.MethodPost, "/v1/images/edits", &buf)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	c, _ := newTestContext(t, req)
+
+	model, _, _, err := parseIncomingRequest(c)
+	if err != nil {
+		t.Fatalf("images 路径 15MB 请求体不应报错, 实际: %v", err)
+	}
+	if model != "gpt-image-1" {
+		t.Fatalf("模型名应为 gpt-image-1, 实际: %s", model)
 	}
 }

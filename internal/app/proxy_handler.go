@@ -1,14 +1,18 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"ccLoad/internal/config"
@@ -60,8 +64,11 @@ func parseIncomingRequest(c *gin.Context) (string, []byte, bool, error) {
 	requestMethod := c.Request.Method
 
 	// 读取请求体（带上限，防止大包打爆内存）
-	// 默认 2MB，可通过 CCLOAD_MAX_BODY_BYTES 调整
+	// 默认 10MB，images 路径 20MB，可通过 CCLOAD_MAX_BODY_BYTES 覆盖
 	maxBody := int64(config.DefaultMaxBodyBytes)
+	if strings.HasPrefix(requestPath, "/v1/images/") {
+		maxBody = int64(config.DefaultMaxImageBodyBytes)
+	}
 	if v := os.Getenv("CCLOAD_MAX_BODY_BYTES"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			maxBody = int64(n)
@@ -82,6 +89,18 @@ func parseIncomingRequest(c *gin.Context) (string, []byte, bool, error) {
 	}
 	_ = sonic.Unmarshal(all, &reqModel)
 
+	// multipart/form-data 支持：当 JSON 解析无 model 时，尝试从 multipart 表单字段提取
+	if reqModel.Model == "" {
+		if ct := c.Request.Header.Get("Content-Type"); ct != "" {
+			mediaType, params, _ := mime.ParseMediaType(ct)
+			if mediaType == "multipart/form-data" {
+				if boundary := params["boundary"]; boundary != "" {
+					reqModel.Model = extractModelFromMultipart(all, boundary)
+				}
+			}
+		}
+	}
+
 	// 智能检测流式请求
 	isStreaming := isStreamingRequest(requestPath, all)
 
@@ -101,6 +120,27 @@ func parseIncomingRequest(c *gin.Context) (string, []byte, bool, error) {
 	}
 
 	return originalModel, all, isStreaming, nil
+}
+
+// extractModelFromMultipart 从 multipart/form-data 原始字节中提取 model 字段
+func extractModelFromMultipart(body []byte, boundary string) string {
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	for {
+		part, err := reader.NextPart()
+		if err != nil {
+			break
+		}
+		if part.FormName() == "model" {
+			val, err := io.ReadAll(io.LimitReader(part, 256))
+			_ = part.Close()
+			if err == nil {
+				return strings.TrimSpace(string(val))
+			}
+			break
+		}
+		_ = part.Close()
+	}
+	return ""
 }
 
 // ============================================================================

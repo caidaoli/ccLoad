@@ -13,6 +13,9 @@ const (
 
 	// DefaultMaxBodyBytes 默认最大请求体字节数（用于代理入口的解析）
 	DefaultMaxBodyBytes = 10 * 1024 * 1024 // 10MB
+
+	// DefaultMaxImageBodyBytes Images API 默认最大请求体字节数（支持图片上传）
+	DefaultMaxImageBodyBytes = 20 * 1024 * 1024 // 20MB
 )
 
 // HTTP客户端配置常量
