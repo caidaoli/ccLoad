@@ -20,6 +20,11 @@ func TestDetectChannelTypeFromPath(t *testing.T) {
 		{"OpenAI Completions", "/v1/completions", ChannelTypeOpenAI},
 		{"OpenAI Embeddings", "/v1/embeddings", ChannelTypeOpenAI},
 
+		// OpenAI Images paths
+		{"OpenAI Images Generations", "/v1/images/generations", ChannelTypeOpenAI},
+		{"OpenAI Images Edits", "/v1/images/edits", ChannelTypeOpenAI},
+		{"OpenAI Images Variations", "/v1/images/variations", ChannelTypeOpenAI},
+
 		// Gemini paths
 		{"Gemini Stream", "/v1beta/models/gemini-pro:streamGenerateContent", ChannelTypeGemini},
 		{"Gemini Generate", "/v1beta/models/gemini-2.5-flash:generateContent", ChannelTypeGemini},

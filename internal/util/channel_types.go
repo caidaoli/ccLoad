@@ -31,7 +31,7 @@ var ChannelTypes = []ChannelTypeConfig{
 		Value:        ChannelTypeOpenAI,
 		DisplayName:  "OpenAI",
 		Description:  "OpenAI API (GPT系列)",
-		PathPatterns: []string{"/v1/chat/completions", "/v1/completions", "/v1/embeddings"},
+		PathPatterns: []string{"/v1/chat/completions", "/v1/completions", "/v1/embeddings", "/v1/images/"},
 		MatchType:    MatchTypePrefix,
 	},
 	{
