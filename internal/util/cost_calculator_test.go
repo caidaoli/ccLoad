@@ -446,6 +446,40 @@ func TestCalculateCost_XAIModels(t *testing.T) {
 	}
 }
 
+// TestCalculateCost_FixedCostPerRequest 测试按次计费的图像生成模型
+func TestCalculateCost_FixedCostPerRequest(t *testing.T) {
+	// 图像生成模型：tokens为0时返回固定成本
+	testCases := []struct {
+		model    string
+		expected float64
+	}{
+		{"grok-2-image-1212", 0.07},
+		{"grok-imagine-image", 0.02},
+		{"grok-imagine-image-pro", 0.07},
+	}
+
+	for _, tc := range testCases {
+		// tokens全为0，应返回固定成本
+		cost := CalculateCostDetailed(tc.model, 0, 0, 0, 0, 0)
+		if !floatEquals(cost, tc.expected, 0.000001) {
+			t.Errorf("%s: 成本 = %.6f, 期望 %.6f", tc.model, cost, tc.expected)
+		}
+	}
+
+	// 如果有tokens，应按token计费（固定成本不叠加）
+	// grok-imagine-image InputPrice=0, OutputPrice=0, 所以token成本为0，回退到固定成本
+	cost := CalculateCostDetailed("grok-imagine-image", 1000, 0, 0, 0, 0)
+	if !floatEquals(cost, 0.02, 0.000001) {
+		t.Errorf("grok-imagine-image 有tokens但无token定价，应回退到固定成本: %.6f", cost)
+	}
+
+	// 模糊匹配测试
+	cost = CalculateCostDetailed("grok-2-image-1212-custom", 0, 0, 0, 0, 0)
+	if !floatEquals(cost, 0.07, 0.000001) {
+		t.Errorf("grok-2-image-1212-custom 模糊匹配: 成本 = %.6f, 期望 0.07", cost)
+	}
+}
+
 func TestCalculateCost_MiniMaxModels(t *testing.T) {
 	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=minimax
 	testCases := []struct {

@@ -608,20 +608,19 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		// 成本计算（2025-11新增，基于token统计）
 		// 2025-12更新：使用CalculateCostDetailed支持5m和1h缓存分别计费
 		// 使用实际转发的模型来计算成本（重定向时价格可能不同）
-		if res.InputTokens > 0 || res.OutputTokens > 0 || res.CacheReadInputTokens > 0 || res.Cache5mInputTokens > 0 || res.Cache1hInputTokens > 0 {
-			costModel := p.ActualModel
-			if costModel == "" {
-				costModel = p.RequestModel
-			}
-			entry.Cost = util.CalculateCostDetailed(
-				costModel,
-				res.InputTokens,
-				res.OutputTokens,
-				res.CacheReadInputTokens,
-				res.Cache5mInputTokens,
-				res.Cache1hInputTokens,
-			)
+		// 注意：始终调用，支持按次计费的图像模型（tokens为0时返回固定成本）
+		costModel := p.ActualModel
+		if costModel == "" {
+			costModel = p.RequestModel
 		}
+		entry.Cost = util.CalculateCostDetailed(
+			costModel,
+			res.InputTokens,
+			res.OutputTokens,
+			res.CacheReadInputTokens,
+			res.Cache5mInputTokens,
+			res.Cache1hInputTokens,
+		)
 	} else {
 		entry.Message = "unknown"
 	}

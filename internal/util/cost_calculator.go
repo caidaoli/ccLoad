@@ -18,6 +18,10 @@ type ModelPricing struct {
 	// 如果为0，表示无分段定价，使用InputPrice/OutputPrice
 	InputPriceHigh  float64 // 高上下文输入价格（$/1M tokens, >200k context）
 	OutputPriceHigh float64 // 高上下文输出价格（$/1M tokens, >200k context）
+
+	// 固定按次计费（图像生成等非token计费模型）
+	// 如果 > 0，当token成本为0时使用此值作为每次请求成本
+	FixedCostPerRequest float64
 }
 
 // basePricing 基础定价表（无重复，每个模型只定义一次）
@@ -289,6 +293,12 @@ var basePricing = map[string]ModelPricing{
 	"grok-code-fast-1":   {InputPrice: 0.20, OutputPrice: 1.50},
 	"grok-vision-beta":   {InputPrice: 5.00, OutputPrice: 15.00},
 
+	// xAI Grok 图像生成模型（按张计费，非token计费）
+	// 来源: https://docs.x.ai/developers/models
+	"grok-2-image-1212":      {FixedCostPerRequest: 0.07},
+	"grok-imagine-image":     {FixedCostPerRequest: 0.02},
+	"grok-imagine-image-pro": {FixedCostPerRequest: 0.07},
+
 	// ========== MiniMax 模型 ==========
 	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=minimax
 	"minimax-01":   {InputPrice: 0.20, OutputPrice: 1.10},
@@ -549,6 +559,12 @@ func CalculateCostDetailed(model string, inputTokens, outputTokens, cacheReadTok
 		cost += float64(cache1hTokens) * cache1hWritePrice / 1_000_000
 	}
 
+	// 6. 固定按次计费（图像生成等非token计费模型）
+	// 当token成本为0但模型有固定费用时，使用每次请求成本
+	if cost == 0 && pricing.FixedCostPerRequest > 0 {
+		return pricing.FixedCostPerRequest
+	}
+
 	return cost
 }
 
@@ -681,7 +697,8 @@ func fuzzyMatchModel(model string) (ModelPricing, bool) {
 		// xAI Grok模型（长前缀优先）
 		"grok-4.1-fast", "grok-4.1", "grok-4-fast", "grok-4",
 		"grok-3-mini-beta", "grok-3-mini", "grok-3-beta", "grok-3",
-		"grok-2-vision-1212", "grok-2-1212", "grok-2-mini", "grok-2",
+		"grok-2-vision-1212", "grok-2-image-1212", "grok-2-1212", "grok-2-mini", "grok-2",
+		"grok-imagine-image-pro", "grok-imagine-image",
 		"grok-code-fast-1", "grok-vision-beta",
 
 		// MiniMax模型
