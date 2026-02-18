@@ -182,6 +182,9 @@ func ensureLogsNewColumns(ctx context.Context, db *sql.DB, dialect Dialect) erro
 		if err := ensureLogsCacheFieldsMySQL(ctx, db); err != nil {
 			return err
 		}
+		if err := ensureLogsAPIKeyHashMySQL(ctx, db); err != nil {
+			return err
+		}
 		return ensureLogsActualModelMySQL(ctx, db)
 	}
 	// SQLite: 使用PRAGMA table_info检查列
@@ -251,6 +254,7 @@ func ensureLogsColumnsSQLite(ctx context.Context, db *sql.DB) error {
 		{name: "cache_5m_input_tokens", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{name: "cache_1h_input_tokens", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{name: "actual_model", definition: "TEXT NOT NULL DEFAULT ''"}, // 实际转发的模型
+		{name: "api_key_hash", definition: "TEXT NOT NULL DEFAULT ''"}, // API Key SHA256（用于精确定位 key_index）
 	}); err != nil {
 		return err
 	}
@@ -348,6 +352,29 @@ func ensureLogsClientIPMySQL(ctx context.Context, db *sql.DB) error {
 	)
 	if err != nil {
 		return fmt.Errorf("add client_ip column: %w", err)
+	}
+
+	return nil
+}
+
+func ensureLogsAPIKeyHashMySQL(ctx context.Context, db *sql.DB) error {
+	var count int
+	err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='logs' AND COLUMN_NAME='api_key_hash'",
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check api_key_hash existence: %w", err)
+	}
+
+	if count > 0 {
+		return nil
+	}
+
+	_, err = db.ExecContext(ctx,
+		"ALTER TABLE logs ADD COLUMN api_key_hash VARCHAR(64) NOT NULL DEFAULT '' COMMENT 'API Key SHA256(新增2026-02)'",
+	)
+	if err != nil {
+		return fmt.Errorf("add api_key_hash column: %w", err)
 	}
 
 	return nil

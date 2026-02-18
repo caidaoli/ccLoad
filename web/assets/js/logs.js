@@ -471,15 +471,16 @@
           const sc = entry.status_code || 0;
           const showTestBtn = sc !== 200;
           const showDeleteBtn = sc === 401 || sc === 403;
+          const keyHashAttr = escapeHtml(entry.api_key_hash || '').replace(/"/g, '&quot;');
 
           const testBtnIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M13 2L4 14H11L9 22L20 10H13L13 2Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
           const deleteBtnIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M3 6H21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M8 6V4H16V6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M19 6L18 20H6L5 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11V17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M14 11V17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`;
           let buttons = '';
           if (showTestBtn) {
-            buttons += `<button class="test-key-btn" data-action="test" data-channel-id="${entry.channel_id}" data-channel-name="${escapeHtml(entry.channel_name || '').replace(/"/g, '&quot;')}" data-api-key="${escapeHtml(entry.api_key_used).replace(/"/g, '&quot;')}" data-model="${escapeHtml(entry.model).replace(/"/g, '&quot;')}" title="测试此 API Key">${testBtnIcon}</button>`;
+            buttons += `<button class="test-key-btn" data-action="test" data-channel-id="${entry.channel_id}" data-channel-name="${escapeHtml(entry.channel_name || '').replace(/"/g, '&quot;')}" data-api-key="${escapeHtml(entry.api_key_used).replace(/"/g, '&quot;')}" data-api-key-hash="${keyHashAttr}" data-model="${escapeHtml(entry.model).replace(/"/g, '&quot;')}" title="测试此 API Key">${testBtnIcon}</button>`;
           }
           if (showDeleteBtn) {
-            buttons += `<button class="test-key-btn" style="color: var(--error-600);" data-action="delete" data-channel-id="${entry.channel_id}" data-channel-name="${escapeHtml(entry.channel_name || '').replace(/"/g, '&quot;')}" data-api-key="${escapeHtml(entry.api_key_used).replace(/"/g, '&quot;')}" title="删除此 API Key">${deleteBtnIcon}</button>`;
+            buttons += `<button class="test-key-btn" style="color: var(--error-600);" data-action="delete" data-channel-id="${entry.channel_id}" data-channel-name="${escapeHtml(entry.channel_name || '').replace(/"/g, '&quot;')}" data-api-key="${escapeHtml(entry.api_key_used).replace(/"/g, '&quot;')}" data-api-key-hash="${keyHashAttr}" title="删除此 API Key">${deleteBtnIcon}</button>`;
           }
 
           apiKeyDisplay = `<div style="display: flex; align-items: center; gap: 4px; justify-content: center;"><code style="font-size: 0.9em; color: var(--neutral-600);">${escapeHtml(entry.api_key_used)}</code><span style="display: inline-flex; align-items: center; gap: 1px;">${buttons}</span></div>`;
@@ -783,21 +784,96 @@
       }
     }
 
+    const apiKeyHashCache = new Map();
+
     function maskKeyForCompare(key) {
       if (!key) return '';
-      if (key.length <= 8) return key;
+      if (key.length <= 8) return '****';
       return `${key.slice(0, 4)}...${key.slice(-4)}`;
     }
 
-    function findKeyIndexByMaskedKey(apiKeys, maskedKey) {
-      if (!maskedKey || !apiKeys || !apiKeys.length) return null;
+    function findKeyIndexCandidatesByMaskedKey(apiKeys, maskedKey) {
+      if (!maskedKey || !apiKeys || !apiKeys.length) return [];
       const target = maskedKey.trim();
+      const candidates = [];
+
       for (const k of apiKeys) {
         const rawKey = (k && (k.api_key || k.key)) || '';
         if (maskKeyForCompare(rawKey) !== target) continue;
-        if (k && typeof k.key_index === 'number') return k.key_index;
+        if (k && typeof k.key_index === 'number') {
+          candidates.push(k.key_index);
+        }
       }
-      return null;
+
+      return candidates;
+    }
+
+    function findUniqueKeyIndexByMaskedKey(apiKeys, maskedKey) {
+      const candidates = findKeyIndexCandidatesByMaskedKey(apiKeys, maskedKey);
+      if (candidates.length !== 1) {
+        return { keyIndex: null, matchCount: candidates.length };
+      }
+
+      return { keyIndex: candidates[0], matchCount: 1 };
+    }
+
+    async function sha256Hex(value) {
+      if (!value) return '';
+      const key = `sha256:${value}`;
+      if (apiKeyHashCache.has(key)) {
+        return apiKeyHashCache.get(key);
+      }
+
+      const canHash = typeof crypto !== 'undefined' && crypto.subtle && typeof TextEncoder !== 'undefined';
+      if (!canHash) return '';
+
+      try {
+        const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+        const hex = Array.from(new Uint8Array(digest))
+          .map(b => b.toString(16).padStart(2, '0'))
+          .join('');
+        apiKeyHashCache.set(key, hex);
+        return hex;
+      } catch (err) {
+        console.warn('计算 API Key 哈希失败，将回退掩码匹配:', err);
+        return '';
+      }
+    }
+
+    async function findUniqueKeyIndexByHash(apiKeys, apiKeyHash) {
+      if (!apiKeyHash || !apiKeys || !apiKeys.length) {
+        return { keyIndex: null, matchCount: 0 };
+      }
+
+      const target = apiKeyHash.trim().toLowerCase();
+      const candidates = [];
+
+      for (const k of apiKeys) {
+        const rawKey = (k && (k.api_key || k.key)) || '';
+        if (!rawKey) continue;
+        const hashed = await sha256Hex(rawKey);
+        if (!hashed || hashed !== target) continue;
+        if (k && typeof k.key_index === 'number') {
+          candidates.push(k.key_index);
+        }
+      }
+
+      if (candidates.length !== 1) {
+        return { keyIndex: null, matchCount: candidates.length };
+      }
+      return { keyIndex: candidates[0], matchCount: 1 };
+    }
+
+    async function resolveKeyIndexForLogEntry(apiKeys, maskedKey, apiKeyHash) {
+      if (apiKeyHash) {
+        const byHash = await findUniqueKeyIndexByHash(apiKeys, apiKeyHash);
+        if (byHash.keyIndex !== null || byHash.matchCount > 1) {
+          return { ...byHash, method: 'hash' };
+        }
+      }
+
+      const byMask = findUniqueKeyIndexByMaskedKey(apiKeys, maskedKey);
+      return { ...byMask, method: 'mask' };
     }
 
     function updateTestKeyIndexInfo(text) {
@@ -886,12 +962,13 @@
           const channelId = parseInt(btn.dataset.channelId);
           const channelName = btn.dataset.channelName || '';
           const apiKey = btn.dataset.apiKey || '';
+          const apiKeyHash = btn.dataset.apiKeyHash || '';
           const model = btn.dataset.model || '';
 
           if (action === 'test') {
-            testKey(channelId, channelName, apiKey, model);
+            testKey(channelId, channelName, apiKey, model, apiKeyHash);
           } else if (action === 'delete') {
-            deleteKeyFromLog(channelId, channelName, apiKey);
+            deleteKeyFromLog(channelId, channelName, apiKey, apiKeyHash);
           }
         });
       }
@@ -976,11 +1053,12 @@
     // ========== API Key 测试功能 ==========
     let testingKeyData = null;
 
-    async function testKey(channelId, channelName, apiKey, model) {
+    async function testKey(channelId, channelName, apiKey, model, apiKeyHash = '') {
       testingKeyData = {
         channelId,
         channelName,
         maskedApiKey: apiKey,
+        apiKeyHash,
         originalModel: model,
         channelType: null, // 将在异步加载渠道配置后填充
         keyIndex: null
@@ -1008,13 +1086,19 @@
 
         // ✅ 保存渠道类型,用于后续测试请求
         testingKeyData.channelType = channel.channel_type || 'anthropic';
-        const matchedIndex = findKeyIndexByMaskedKey(apiKeys, apiKey);
+        const { keyIndex: matchedIndex, matchCount, method } = await resolveKeyIndexForLogEntry(apiKeys, apiKey, apiKeyHash);
         testingKeyData.keyIndex = matchedIndex;
         if (apiKeys.length > 0) {
           updateTestKeyIndexInfo(
             matchedIndex !== null
-              ? `匹配到 Key #${matchedIndex + 1}，按日志所用Key测试`
-              : '未匹配到日志中的 Key，将按默认顺序测试'
+              ? method === 'hash'
+                ? `匹配到 Key #${matchedIndex + 1}（哈希精确匹配），按日志所用Key测试`
+                : `匹配到 Key #${matchedIndex + 1}（掩码匹配），按日志所用Key测试`
+              : matchCount > 1
+                ? method === 'hash'
+                  ? `匹配到 ${matchCount} 个哈希相同 Key，已回退默认顺序测试`
+                  : `匹配到 ${matchCount} 个同掩码 Key，为避免误测将按默认顺序测试`
+                : '未匹配到日志中的 Key，将按默认顺序测试'
           );
         } else {
           updateTestKeyIndexInfo('未获取到渠道 Key，将按默认顺序测试');
@@ -1207,18 +1291,24 @@
     }
 
     // ========== 删除 Key（从日志列表入口） ==========
-    async function deleteKeyFromLog(channelId, channelName, maskedApiKey) {
+    async function deleteKeyFromLog(channelId, channelName, maskedApiKey, apiKeyHash = '') {
       if (!channelId || !maskedApiKey) return;
 
       const confirmDel = confirm(`确定删除渠道“${channelName || ('#' + channelId)}”中的此Key (${maskedApiKey}) 吗？`);
       if (!confirmDel) return;
 
       try {
-        // 通过 Keys 列表匹配掩码对应的 key_index（渠道详情不再返回明文Key）
+        // 通过 logs 返回的哈希优先精确匹配 key_index；无哈希时回退掩码匹配
         const apiKeys = await fetchDataWithAuth(`/admin/channels/${channelId}/keys`);
-        const keyIndex = findKeyIndexByMaskedKey(apiKeys, maskedApiKey);
+        const { keyIndex, matchCount, method } = await resolveKeyIndexForLogEntry(apiKeys, maskedApiKey, apiKeyHash);
         if (keyIndex === null) {
-          alert('未能匹配到该Key，请检查渠道配置。');
+          if (matchCount > 1) {
+            alert(method === 'hash'
+              ? '匹配到多个同哈希 Key，为避免误删已阻止操作，请到渠道管理页手动删除。'
+              : '匹配到多个同掩码 Key，为避免误删已阻止操作，请到渠道管理页手动删除。');
+          } else {
+            alert('未能匹配到该Key，请检查渠道配置。');
+          }
           return;
         }
 

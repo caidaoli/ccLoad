@@ -58,3 +58,40 @@ func TestParseAPIKeys(t *testing.T) {
 		})
 	}
 }
+
+func TestMaskAPIKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{name: "短Key", input: "short", expected: "****"},
+		{name: "长度8", input: "12345678", expected: "****"},
+		{name: "长度9", input: "123456789", expected: "1234...6789"},
+		{name: "普通Key", input: "sk-test-key", expected: "sk-t...-key"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := MaskAPIKey(tt.input); got != tt.expected {
+				t.Fatalf("MaskAPIKey(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestHashAPIKey(t *testing.T) {
+	t.Parallel()
+
+	// echo -n "sk-test-key" | sha256sum
+	const expected = "0d62f396c1317066f55a96086517047c737087c61eb2bf016b72e6298927b15b"
+	if got := HashAPIKey("sk-test-key"); got != expected {
+		t.Fatalf("HashAPIKey mismatch: got %q, want %q", got, expected)
+	}
+
+	if got := HashAPIKey(""); got != "" {
+		t.Fatalf("HashAPIKey(\"\") = %q, want empty string", got)
+	}
+}
