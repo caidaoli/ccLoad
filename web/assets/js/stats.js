@@ -400,7 +400,8 @@
       document.getElementById('f_model').value = model;
 
       // 加载令牌列表
-      loadAuthTokens().then(() => {
+      window.loadAuthTokensIntoSelect('f_auth_token', { tokenPrefix: t('stats.tokenPrefix') }).then((tokens) => {
+        authTokens = tokens;
         document.getElementById('f_auth_token').value = authToken;
       });
 
@@ -518,13 +519,7 @@
 
     // 加载令牌列表
     async function loadAuthTokens() {
-      try {
-        const data = await fetchDataWithAuth('/admin/auth-tokens');
-        authTokens = (data && data.tokens) || [];
-        renderTokenSelect();
-      } catch (error) {
-        console.error('Failed to load token list:', error);
-      }
+      authTokens = await window.loadAuthTokensIntoSelect('f_auth_token', { tokenPrefix: t('stats.tokenPrefix') });
     }
 
     // 格式化 RPM（每分钟请求数）带颜色
@@ -695,7 +690,11 @@
         });
       }
 
-      await initChannelTypeFilter(currentChannelType);
+      await window.initChannelTypeFilter('f_channel_type', currentChannelType, (value) => {
+        currentChannelType = value;
+        saveStatsFilters();
+        loadStats();
+      });
 
       initFilters();
 
@@ -768,33 +767,6 @@
         });
       }
     });
-
-    // 初始化渠道类型筛选器
-    async function initChannelTypeFilter(initialType) {
-      const select = document.getElementById('f_channel_type');
-      if (!select) return;
-
-      const types = await window.ChannelTypeManager.getChannelTypes();
-
-      // 添加"全部"选项
-      select.innerHTML = `<option value="all">${t('common.all')}</option>`;
-      types.forEach(type => {
-        const option = document.createElement('option');
-        option.value = type.value;
-        option.textContent = type.display_name;
-        if (type.value === initialType) {
-          option.selected = true;
-        }
-        select.appendChild(option);
-      });
-
-      // 绑定change事件
-      select.addEventListener('change', (e) => {
-        currentChannelType = e.target.value;
-        saveStatsFilters();
-        loadStats();
-      });
-    }
 
     // ========== 图表视图功能 ==========
     let currentView = 'table'; // 当前视图: 'table' | 'chart'

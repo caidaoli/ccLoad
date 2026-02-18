@@ -131,35 +131,6 @@
       }
     }
 
-    // 数字滚动动画
-    function animateCountUp(elementId, target, duration = 1000) {
-      const element = document.getElementById(elementId);
-      const start = 0;
-      const startTime = performance.now();
-
-      function updateCount(currentTime) {
-        const elapsed = currentTime - startTime;
-        const progress = Math.min(elapsed / duration, 1);
-        
-        const current = Math.floor(start + (target - start) * progress);
-        element.textContent = formatNumber(current);
-        
-        if (progress < 1) {
-          requestAnimationFrame(updateCount);
-        } else {
-          element.textContent = formatNumber(target);
-        }
-      }
-      
-      requestAnimationFrame(updateCount);
-    }
-
-    // 刷新统计数据
-    function refreshStats() {
-      loadStats();
-      showSuccess('数据已刷新');
-    }
-
     // 通知系统统一由 ui.js 提供（showSuccess/showError/showNotification）
 
     // 注销功能（已由 ui.js 的 onLogout 统一处理）
@@ -191,28 +162,15 @@
       }
     });
 
-    // 时间范围选择器事件处理
-    function initTimeRangeSelector() {
-      const buttons = document.querySelectorAll('.time-range-btn');
-      buttons.forEach(btn => {
-        btn.addEventListener('click', function() {
-          // 更新按钮激活状态
-          buttons.forEach(b => b.classList.remove('active'));
-          this.classList.add('active');
-
-          // 更新当前时间范围并重新加载数据
-          currentTimeRange = this.dataset.range;
-          loadStats();
-        });
-      });
-    }
-
     // 页面初始化
     document.addEventListener('DOMContentLoaded', function() {
       if (window.initTopbar) initTopbar('index');
 
       // 初始化时间范围选择器
-      initTimeRangeSelector();
+      window.initTimeRangeSelector((range) => {
+        currentTimeRange = range;
+        loadStats();
+      });
 
       // 加载统计数据
       loadStats();

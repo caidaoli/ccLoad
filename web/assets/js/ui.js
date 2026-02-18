@@ -132,7 +132,7 @@
     { key: 'trend', labelKey: 'nav.trend', href: '/web/trend.html', icon: iconTrend },
     { key: 'logs', labelKey: 'nav.logs', href: '/web/logs.html', icon: iconAlert },
     { key: 'model-test', labelKey: 'nav.modelTest', href: '/web/model-test.html', icon: iconTest },
-    { key: 'settings', labelKey: 'nav.settings', href: '/web/settings.html', icon: iconCog },
+    { key: 'settings', labelKey: 'nav.settings', href: '/web/settings.html', icon: iconSettings },
   ];
 
   function h(tag, attrs = {}, children = []) {
@@ -168,9 +168,6 @@
   }
   function iconKey() {
     return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/>`);
-  }
-  function iconCog() {
-    return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>`);
   }
   function iconTest() {
     return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>`);
@@ -1117,4 +1114,107 @@
 
   // 导出到全局作用域
   window.createSearchableCombobox = createSearchableCombobox;
+})();
+
+// ============================================================
+// 跨页面共享工具函数
+// ============================================================
+(function() {
+  /**
+   * 复制文本到剪贴板（带降级处理）
+   * @param {string} text - 要复制的文本
+   * @returns {Promise<void>}
+   */
+  function copyToClipboard(text) {
+    return navigator.clipboard.writeText(text).catch(() => {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+      } catch {
+        document.body.removeChild(ta);
+        return Promise.reject(new Error('copy failed'));
+      }
+      document.body.removeChild(ta);
+    });
+  }
+
+  /**
+   * 初始化渠道类型筛选下拉框
+   * @param {string} selectId - select 元素 ID
+   * @param {string} initialType - 初始选中的类型
+   * @param {function(string)} onChange - 选中值变更回调
+   */
+  async function initChannelTypeFilter(selectId, initialType, onChange) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+
+    const types = await window.ChannelTypeManager.getChannelTypes();
+    select.innerHTML = `<option value="all">${window.t('common.all')}</option>`;
+    types.forEach(type => {
+      const option = document.createElement('option');
+      option.value = type.value;
+      option.textContent = type.display_name;
+      if (type.value === initialType) option.selected = true;
+      select.appendChild(option);
+    });
+
+    select.addEventListener('change', (e) => onChange(e.target.value));
+  }
+
+  /**
+   * 加载令牌列表并填充下拉框
+   * @param {string} selectId - select 元素 ID
+   * @param {Object} [opts] - 选项
+   * @param {string} [opts.tokenPrefix] - 令牌显示前缀（默认 'Token #'）
+   * @param {string} [opts.restoreValue] - 恢复选中值
+   * @returns {Promise<Array>} 令牌数组
+   */
+  async function loadAuthTokensIntoSelect(selectId, opts) {
+    const o = opts || {};
+    try {
+      const data = await fetchDataWithAuth('/admin/auth-tokens');
+      const tokens = (data && data.tokens) || [];
+
+      const select = document.getElementById(selectId);
+      if (select && tokens.length > 0) {
+        select.innerHTML = `<option value="">${window.t('stats.allTokens')}</option>`;
+        tokens.forEach(token => {
+          const option = document.createElement('option');
+          option.value = token.id;
+          option.textContent = token.description || `${o.tokenPrefix || 'Token #'}${token.id}`;
+          select.appendChild(option);
+        });
+        if (o.restoreValue) select.value = o.restoreValue;
+      }
+      return tokens;
+    } catch (error) {
+      console.error('Failed to load auth tokens:', error);
+      return [];
+    }
+  }
+
+  /**
+   * 初始化时间范围按钮选择器
+   * @param {function(string)} onRangeChange - 范围变更回调，参数为 range 值
+   */
+  function initTimeRangeSelector(onRangeChange) {
+    const buttons = document.querySelectorAll('.time-range-btn');
+    buttons.forEach(btn => {
+      btn.addEventListener('click', function() {
+        buttons.forEach(b => b.classList.remove('active'));
+        this.classList.add('active');
+        onRangeChange(this.dataset.range);
+      });
+    });
+  }
+
+  window.copyToClipboard = copyToClipboard;
+  window.initChannelTypeFilter = initChannelTypeFilter;
+  window.loadAuthTokensIntoSelect = loadAuthTokensIntoSelect;
+  window.initTimeRangeSelector = initTimeRangeSelector;
 })();

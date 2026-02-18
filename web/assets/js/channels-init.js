@@ -95,45 +95,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // 初始化渠道类型筛选器（替换原Tab逻辑）
-  await initChannelTypeFilter(initialType);
-
-  await loadDefaultTestContent();
-  await loadChannelStatsRange();
-
-  await loadChannels(initialType);
-  await loadChannelStats();
-  highlightFromHash();
-  window.addEventListener('hashchange', highlightFromHash);
-
-  // 监听语言切换事件，重新渲染渠道列表
-  window.i18n.onLocaleChange(() => {
-    renderChannels();
-    updateModelOptions();
-  });
-});
-
-// 初始化渠道类型筛选器
-async function initChannelTypeFilter(initialType) {
-  const select = document.getElementById('channelTypeFilter');
-  if (!select) return;
-
-  const types = await window.ChannelTypeManager.getChannelTypes();
-
-  // Add "All" option
-  select.innerHTML = `<option value="all">${window.t('common.all')}</option>`;
-  types.forEach(type => {
-    const option = document.createElement('option');
-    option.value = type.value;
-    option.textContent = type.display_name;
-    if (type.value === initialType) {
-      option.selected = true;
-    }
-    select.appendChild(option);
-  });
-
-  // 绑定change事件
-  select.addEventListener('change', (e) => {
-    const type = e.target.value;
+  await window.initChannelTypeFilter('channelTypeFilter', initialType, (type) => {
     filters.channelType = type;
     filters.model = 'all';
     // 使用通用组件更新模型筛选器
@@ -150,7 +112,21 @@ async function initChannelTypeFilter(initialType) {
     saveChannelsFilters();
     loadChannels(type);
   });
-}
+
+  await loadDefaultTestContent();
+  await loadChannelStatsRange();
+
+  await loadChannels(initialType);
+  await loadChannelStats();
+  highlightFromHash();
+  window.addEventListener('hashchange', highlightFromHash);
+
+  // 监听语言切换事件，重新渲染渠道列表
+  window.i18n.onLocaleChange(() => {
+    renderChannels();
+    updateModelOptions();
+  });
+});
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {

@@ -37,7 +37,10 @@
 
     document.addEventListener('DOMContentLoaded', () => {
       // 初始化时间范围选择器
-      initTimeRangeSelector();
+      window.initTimeRangeSelector((range) => {
+        currentTimeRange = range;
+        loadTokens();
+      });
 
       // 加载令牌列表(默认显示本日统计)
       loadTokens();
@@ -62,22 +65,6 @@
         renderTokens();
       });
     });
-
-    // 时间范围选择器事件处理
-    function initTimeRangeSelector() {
-      const buttons = document.querySelectorAll('.time-range-btn');
-      buttons.forEach(btn => {
-        btn.addEventListener('click', function() {
-          // 更新按钮激活状态
-          buttons.forEach(b => b.classList.remove('active'));
-          this.classList.add('active');
-
-          // 更新当前时间范围并重新加载数据
-          currentTimeRange = this.dataset.range;
-          loadTokens();
-        });
-      });
-    }
 
     /**
      * 初始化事件委托(统一处理表格内按钮点击)
@@ -535,25 +522,13 @@
 
     function copyToken() {
       const textarea = document.getElementById('newTokenValue');
-      textarea.select();
-      document.execCommand('copy');
-
-      window.showNotification(t('tokens.msg.copySuccess'), 'success');
+      window.copyToClipboard(textarea.value).then(() => {
+        window.showNotification(t('tokens.msg.copySuccess'), 'success');
+      });
     }
 
     function copyTokenToClipboard(hash) {
-      navigator.clipboard.writeText(hash).then(() => {
-        window.showNotification(t('tokens.msg.copySuccess'), 'success');
-      }).catch(() => {
-        // fallback
-        const textarea = document.createElement('textarea');
-        textarea.value = hash;
-        textarea.style.position = 'fixed';
-        textarea.style.opacity = '0';
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textarea);
+      window.copyToClipboard(hash).then(() => {
         window.showNotification(t('tokens.msg.copySuccess'), 'success');
       });
     }

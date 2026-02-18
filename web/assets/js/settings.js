@@ -216,7 +216,7 @@ async function saveAllSettings() {
   }
 
   if (Object.keys(updates).length === 0) {
-    showInfo(t('settings.msg.noChanges'));
+    window.showNotification(t('settings.msg.noChanges'), 'info');
     return;
   }
 
@@ -251,11 +251,6 @@ async function resetSetting(key) {
     console.error('重置异常:', err);
     showError(t('settings.msg.resetFailed') + ': ' + err.message);
   }
-}
-
-// showSuccess/showError 已在 ui.js 中定义（toast 通知），无需重复定义
-function showInfo(msg) {
-  window.showNotification(msg, 'info');
 }
 
 // 页面加载时执行

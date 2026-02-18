@@ -703,7 +703,7 @@
       if (channelTypeEl) channelTypeEl.value = channelType;
 
       // 加载令牌列表（返回 Promise 以便等待完成）
-      await loadAuthTokens();
+      authTokens = await window.loadAuthTokensIntoSelect('f_auth_token');
       document.getElementById('f_auth_token').value = authToken;
 
       // 令牌选择器切换后立即筛选
@@ -757,30 +757,6 @@
         return `${Y}/${M}/${D} ${h}:${m}:${s}`;
       } catch (e) {
         return '-';
-      }
-    }
-
-    // 加载令牌列表
-    async function loadAuthTokens() {
-      try {
-        const data = await fetchDataWithAuth('/admin/auth-tokens');
-        authTokens = (data && data.tokens) || [];
-
-        // 填充令牌选择器
-        const tokenSelect = document.getElementById('f_auth_token');
-        if (tokenSelect && authTokens.length > 0) {
-          // 保留"全部令牌"选项
-          const allTokensText = t('stats.allTokens');
-          tokenSelect.innerHTML = `<option value="" data-i18n="stats.allTokens">${allTokensText}</option>`;
-          authTokens.forEach(token => {
-            const option = document.createElement('option');
-            option.value = token.id;
-            option.textContent = token.description || `Token #${token.id}`;
-            tokenSelect.appendChild(option);
-          });
-        }
-      } catch (error) {
-        console.error('Failed to load auth tokens:', error);
       }
     }
 
@@ -919,7 +895,12 @@
       const savedFilters = loadLogsFilters();
       currentChannelType = u.get('channel_type') || (!hasUrlParams && savedFilters?.channelType) || 'all';
 
-      await initChannelTypeFilter(currentChannelType);
+      await window.initChannelTypeFilter('f_channel_type', currentChannelType, (value) => {
+        currentChannelType = value;
+        saveLogsFilters();
+        currentLogsPage = 1;
+        load();
+      });
 
       await initFilters();
       await loadDefaultTestContent();
@@ -981,7 +962,7 @@
         const savedFilters = loadLogsFilters();
         if (savedFilters) {
           // 重新加载令牌列表并设置值
-          await loadAuthTokens();
+          authTokens = await window.loadAuthTokensIntoSelect('f_auth_token');
           if (savedFilters.authToken) {
             document.getElementById('f_auth_token').value = savedFilters.authToken;
           }
@@ -1011,44 +992,6 @@
         }
       }
     });
-
-    // 初始化渠道类型筛选器
-    async function initChannelTypeFilter(initialType) {
-      const select = document.getElementById('f_channel_type');
-      if (!select) return;
-
-      const types = await window.ChannelTypeManager.getChannelTypes();
-
-      // 添加"全部"选项
-      const allOption = document.createElement('option');
-      allOption.value = 'all';
-      allOption.textContent = t('common.all');
-      allOption.setAttribute('data-i18n', 'common.all');
-      if (!initialType || initialType === 'all') {
-        allOption.selected = true;
-      }
-      select.innerHTML = '';
-      select.appendChild(allOption);
-
-      types.forEach(type => {
-        const option = document.createElement('option');
-        option.value = type.value;
-        option.textContent = type.display_name;
-        if (type.value === initialType) {
-          option.selected = true;
-        }
-        select.appendChild(option);
-      });
-
-      // 绑定change事件
-      select.addEventListener('change', (e) => {
-        currentChannelType = e.target.value;
-        saveLogsFilters();
-        // 切换渠道类型时重置到第一页并重新加载
-        currentLogsPage = 1;
-        load();
-      });
-    }
 
     // ========== API Key 测试功能 ==========
     let testingKeyData = null;

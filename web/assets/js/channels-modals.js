@@ -752,9 +752,8 @@ function createRedirectRow(redirect, index) {
 
   const row = TemplateEngine.render('tpl-redirect-row', rowData);
   if (!row) {
-    // 降级：模板不存在时使用原有方式
-    console.warn('[Channels] Template tpl-redirect-row not found, using legacy rendering');
-    return createRedirectRowLegacy(redirect, index);
+    console.error('[Channels] Template tpl-redirect-row not found');
+    return null;
   }
 
   // 设置复选框选中状态
@@ -1098,21 +1097,6 @@ function batchDeleteSelectedModels() {
       tableContainer.scrollTop = Math.min(scrollTop, tableContainer.scrollHeight - tableContainer.clientHeight);
     }
   }, 50);
-}
-
-function redirectTableToJSON() {
-  const result = {};
-  redirectTableData.forEach(redirect => {
-    if (redirect.from && redirect.to) {
-      result[redirect.from] = redirect.to;
-    }
-  });
-  return result;
-}
-
-function jsonToRedirectTable(json) {
-  if (!json || typeof json !== 'object') return [];
-  return Object.entries(json).map(([from, to]) => ({ from, to }));
 }
 
 async function fetchModelsFromAPI() {

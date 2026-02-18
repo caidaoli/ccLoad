@@ -60,34 +60,6 @@
       }
     }
 
-    // 加载令牌列表
-    async function loadAuthTokens() {
-      try {
-        const data = await fetchDataWithAuth('/admin/auth-tokens');
-        window.authTokens = (data && data.tokens) || [];
-
-        // 填充令牌选择器
-        const tokenSelect = document.getElementById('f_auth_token');
-        if (tokenSelect && window.authTokens.length > 0) {
-          // 保留"全部令牌"选项
-          tokenSelect.innerHTML = `<option value="">${t('stats.allTokens')}</option>`;
-          window.authTokens.forEach(token => {
-            const option = document.createElement('option');
-            option.value = token.id;
-            option.textContent = token.description || `${t('trend.tokenPrefix')}${token.id}`;
-            tokenSelect.appendChild(option);
-          });
-
-          // 恢复之前选择的令牌
-          if (window.currentAuthToken) {
-            tokenSelect.value = window.currentAuthToken;
-          }
-        }
-      } catch (error) {
-        console.error('加载令牌列表失败:', error);
-      }
-    }
-
     async function loadData() {
       try {
         renderTrendLoading();
@@ -1205,12 +1177,6 @@ function shouldShowZoom(points, hours, trendType) {
       return cached ? cached.hasData : false;
     }
 
-    // 获取渠道统计数据（用于调试）
-    function getChannelStats(channelName) {
-      if (!window._channelDataCache) return null;
-      return window._channelDataCache[channelName] || null;
-    }
-    
     // 生成渠道颜色（避免与总体趋势线颜色冲突）
     // 总体趋势线保留颜色: #10b981(绿), #ef4444(红), #0ea5e9(天蓝), #a855f7(紫), #f97316(橙)
     function generateChannelColors(channels) {
@@ -1392,7 +1358,16 @@ function shouldShowZoom(points, hours, trendType) {
       const savedChannelType = urlParams.get('channel_type') || (!hasUrlParams && localStorage.getItem('trend.channelType')) || 'all';
       window.currentChannelType = savedChannelType;
 
-      await initChannelTypeFilter(window.currentChannelType);
+      await window.initChannelTypeFilter('f_channel_type', window.currentChannelType, async (value) => {
+        window.currentChannelType = value;
+        try {
+          localStorage.setItem('trend.channelType', value);
+          updateURLParams();
+        } catch (_) {}
+        window.visibleChannels.clear();
+        await loadModels(value);
+        loadData();
+      });
 
       restoreState();
       restoreChannelState();
@@ -1403,7 +1378,10 @@ function shouldShowZoom(points, hours, trendType) {
       await loadModels(window.currentChannelType);
 
       // 加载令牌列表
-      await loadAuthTokens();
+      window.authTokens = await window.loadAuthTokensIntoSelect('f_auth_token', {
+        tokenPrefix: t('trend.tokenPrefix'),
+        restoreValue: window.currentAuthToken
+      });
 
       loadData();
 
@@ -1417,40 +1395,6 @@ function shouldShowZoom(points, hours, trendType) {
       // 定期刷新数据（每5分钟）
       setInterval(loadData, 5 * 60 * 1000);
     });
-
-    // 初始化渠道类型筛选器
-    async function initChannelTypeFilter(initialType) {
-      const select = document.getElementById('f_channel_type');
-      if (!select) return;
-
-      const types = await window.ChannelTypeManager.getChannelTypes();
-
-      // 添加"全部"选项
-      select.innerHTML = `<option value="all">${t('common.all')}</option>`;
-      types.forEach(type => {
-        const option = document.createElement('option');
-        option.value = type.value;
-        option.textContent = type.display_name;
-        if (type.value === initialType) {
-          option.selected = true;
-        }
-        select.appendChild(option);
-      });
-
-      // 绑定change事件
-      select.addEventListener('change', async (e) => {
-        window.currentChannelType = e.target.value;
-        try {
-          localStorage.setItem('trend.channelType', e.target.value);
-          updateURLParams(); // ✅ 同步到 URL 参数
-        } catch (_) {}
-        // 切换渠道类型时重新加载数据并清除渠道选择状态
-        window.visibleChannels.clear();
-        // 重新加载模型列表（根据新的渠道类型筛选），等待完成后再加载数据
-        await loadModels(e.target.value);
-        loadData();
-      });
-    }
 
     function bindToggles() {
       // 趋势类型切换
