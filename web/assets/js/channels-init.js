@@ -63,6 +63,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupImportExport();
   setupKeyImportPreview();
   setupModelImportPreview();
+  if (typeof initChannelFormDirtyTracking === 'function') {
+    initChannelFormDirtyTracking();
+  }
   if (typeof updateBatchChannelSelectionUI === 'function') {
     updateBatchChannelSelectionUI();
   }

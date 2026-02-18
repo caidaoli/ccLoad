@@ -154,4 +154,40 @@ function resetChannelFormDirty() {
   }
 }
 
+// 初始化表单变更追踪（覆盖输入类改动，非输入改动由调用方手动 mark）
+function initChannelFormDirtyTracking() {
+  const form = document.getElementById('channelForm');
+  if (!form || form.dataset.dirtyTracking === '1') return;
+  form.dataset.dirtyTracking = '1';
+
+  const uiOnlyIDs = new Set([
+    'channelApiKey',
+    'selectAllKeys',
+    'keyStatusFilter',
+    'selectAllModels',
+    'modelFilterInput'
+  ]);
+
+  const uiOnlyClasses = ['key-checkbox', 'model-checkbox'];
+
+  const shouldTrackTarget = (target) => {
+    if (!(target instanceof HTMLElement)) return false;
+    if (!target.closest('#channelForm')) return false;
+
+    if (uiOnlyIDs.has(target.id)) return false;
+    if (uiOnlyClasses.some(cls => target.classList.contains(cls))) return false;
+
+    const tag = target.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+  };
+
+  const markDirtyOnEdit = (event) => {
+    if (!shouldTrackTarget(event.target)) return;
+    markChannelFormDirty();
+  };
+
+  form.addEventListener('input', markDirtyOnEdit);
+  form.addEventListener('change', markDirtyOnEdit);
+}
+
 // 通知系统统一由 ui.js 提供（showNotification/showSuccess/showError）

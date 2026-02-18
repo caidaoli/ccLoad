@@ -429,7 +429,11 @@ function toggleInlineKeyVisibility() {
 }
 
 function updateInlineKey(index, value) {
-  inlineKeyTableData[index] = value.trim();
+  const nextValue = value.trim();
+  if (inlineKeyTableData[index] === nextValue) return;
+
+  inlineKeyTableData[index] = nextValue;
+  markChannelFormDirty();
 
   const hiddenInput = document.getElementById('channelApiKey');
   if (hiddenInput) {
@@ -590,6 +594,7 @@ function deleteInlineKey(index) {
     updateBatchDeleteButton();
 
     renderInlineKeyTable();
+    markChannelFormDirty();
 
     setTimeout(() => {
       if (tableContainer) {
@@ -693,6 +698,7 @@ function batchDeleteSelectedKeys() {
   updateBatchDeleteButton();
 
   renderInlineKeyTable();
+  markChannelFormDirty();
 
   setTimeout(() => {
     if (tableContainer) {
@@ -779,6 +785,7 @@ function confirmInlineKeyImport() {
 
   closeKeyImportModal();
   renderInlineKeyTable();
+  if (addedCount > 0) markChannelFormDirty();
 
   const duplicates = newKeys.length - addedCount;
   const msg = duplicates > 0

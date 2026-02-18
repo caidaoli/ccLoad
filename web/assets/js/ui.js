@@ -451,6 +451,7 @@
 // ============================================================
 (function() {
   let channelTypesCache = null;
+  const searchableSelectOutsideClickHandlers = new Map();
 
   // 复用公共工具（DRY）：真实实现由下方公共工具模块导出到 window.escapeHtml
   const escapeHtml = (str) => window.escapeHtml(str);
@@ -529,6 +530,12 @@
       return;
     }
 
+    const prevOutsideClickHandler = searchableSelectOutsideClickHandlers.get(containerId);
+    if (prevOutsideClickHandler) {
+      document.removeEventListener('click', prevOutsideClickHandler);
+      searchableSelectOutsideClickHandlers.delete(containerId);
+    }
+
     const types = await getChannelTypes();
     const selectedType = types.find(t => t.value === selectedValue) || types[0];
 
@@ -594,14 +601,24 @@
     });
 
     // 点击外部关闭
-    document.addEventListener('click', (e) => {
-      if (!container.contains(e.target)) {
+    const outsideClickHandler = (e) => {
+      const currentContainer = document.getElementById(containerId);
+      if (!currentContainer) {
+        document.removeEventListener('click', outsideClickHandler);
+        searchableSelectOutsideClickHandlers.delete(containerId);
+        return;
+      }
+
+      if (!currentContainer.contains(e.target)) {
         dropdown.style.display = 'none';
         // 恢复显示已选择的值
         const selected = types.find(t => t.value === input.dataset.value);
         if (selected) input.value = selected.display_name;
       }
-    });
+    };
+
+    searchableSelectOutsideClickHandlers.set(containerId, outsideClickHandler);
+    document.addEventListener('click', outsideClickHandler);
   }
 
   /**
@@ -792,7 +809,7 @@
       attachMode = false
     } = config;
 
-    let input, dropdown, wrapper, dropdownHome;
+    let input, dropdown, wrapper, dropdownHome, container = null;
 
     if (attachMode) {
       // 附着模式：使用已存在的 HTML 元素
@@ -807,7 +824,7 @@
       if (initialLabel) input.value = initialLabel;
     } else {
       // 生成模式：创建新的 HTML 结构
-      const container = typeof containerArg === 'string'
+      container = typeof containerArg === 'string'
         ? document.getElementById(containerArg)
         : containerArg;
 
@@ -1088,9 +1105,12 @@
       getInput: () => input,
       getDropdown: () => dropdown,
       destroy: () => {
+        closeDropdown();
         clearOutsideHandler();
         clearRepositionHandler();
-        container.innerHTML = '';
+        if (!attachMode && container) {
+          container.innerHTML = '';
+        }
       }
     };
   }

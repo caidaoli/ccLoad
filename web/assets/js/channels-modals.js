@@ -21,6 +21,7 @@ function showAddModal() {
   document.getElementById('inlineEyeOffIcon').style.display = 'block';
   renderInlineKeyTable();
 
+  resetChannelFormDirty();
   document.getElementById('channelModal').classList.add('show');
 }
 
@@ -84,6 +85,7 @@ async function editChannel(id) {
   if (modelFilterInput) modelFilterInput.value = '';
   renderRedirectTable();
 
+  resetChannelFormDirty();
   document.getElementById('channelModal').classList.add('show');
 }
 
@@ -536,6 +538,7 @@ async function copyChannel(id, name) {
   if (modelFilterInput) modelFilterInput.value = '';
   renderRedirectTable();
 
+  resetChannelFormDirty();
   document.getElementById('channelModal').classList.add('show');
 }
 
@@ -562,6 +565,21 @@ function generateCopyName(originalName) {
   return proposedName;
 }
 
+// 拆分模型映射，支持 model:redirect / model->redirect / model
+function splitModelMapping(entry) {
+  const arrowIndex = entry.indexOf('->');
+  if (arrowIndex >= 0) {
+    return [entry.slice(0, arrowIndex), entry.slice(arrowIndex + 2)];
+  }
+
+  const colonIndex = entry.indexOf(':');
+  if (colonIndex >= 0) {
+    return [entry.slice(0, colonIndex), entry.slice(colonIndex + 1)];
+  }
+
+  return [entry, ''];
+}
+
 // 解析模型输入，支持逗号和换行分隔
 // 支持格式：model 或 model:redirect 或 model->redirect
 // 返回 [{model, redirect_model}] 数组
@@ -575,15 +593,15 @@ function parseModels(input) {
   const result = [];
 
   for (const entry of entries) {
-    // 支持 model:redirect 或 model->redirect 格式
-    const match = entry.match(/^([^:->]+)(?:[:->]+(.+))?$/);
-    if (!match) continue;
+    const [modelRaw, redirectRaw] = splitModelMapping(entry);
+    const model = modelRaw.trim();
+    if (!model) continue;
 
-    const model = match[1].trim();
-    const redirect = match[2] ? match[2].trim() : model;
+    const redirect = redirectRaw.trim() || model;
+    const modelKey = model.toLowerCase();
 
-    if (model && !seen.has(model)) {
-      seen.add(model);
+    if (!seen.has(modelKey)) {
+      seen.add(modelKey);
       result.push({ model, redirect_model: redirect });
     }
   }
@@ -644,20 +662,26 @@ function confirmModelImport() {
     return;
   }
 
-  // 获取现有模型名称用于去重
-  const existingModels = new Set(redirectTableData.map(r => r.model));
+  // 获取现有模型名称用于去重（忽略大小写）
+  const existingModels = new Set(
+    redirectTableData
+      .map(r => (r.model || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
   let addedCount = 0;
 
   newModels.forEach(entry => {
-    if (!existingModels.has(entry.model)) {
+    const modelKey = entry.model.toLowerCase();
+    if (!existingModels.has(modelKey)) {
       redirectTableData.push({ model: entry.model, redirect_model: entry.redirect_model });
-      existingModels.add(entry.model);
+      existingModels.add(modelKey);
       addedCount++;
     }
   });
 
   renderRedirectTable();
   closeModelImportModal();
+  if (addedCount > 0) markChannelFormDirty();
 
   if (addedCount > 0) {
     const duplicateCount = newModels.length - addedCount;
@@ -684,11 +708,15 @@ function deleteRedirectRow(index) {
   selectedModelIndices.clear();
   newSelectedIndices.forEach(i => selectedModelIndices.add(i));
   renderRedirectTable();
+  markChannelFormDirty();
 }
 
 function updateRedirectRow(index, field, value) {
   if (redirectTableData[index]) {
-    redirectTableData[index][field] = value.trim();
+    const nextValue = value.trim();
+    if (redirectTableData[index][field] === nextValue) return;
+
+    redirectTableData[index][field] = nextValue;
 
     // 当模型名称变化时，更新重定向目标的 placeholder
     if (field === 'model') {
@@ -697,10 +725,12 @@ function updateRedirectRow(index, field, value) {
       if (row) {
         const toInput = row.querySelector('.redirect-to-input');
         if (toInput) {
-          toInput.placeholder = value.trim() || window.t('channels.leaveEmptyNoRedirect');
+          toInput.placeholder = nextValue || window.t('channels.leaveEmptyNoRedirect');
         }
       }
     }
+
+    markChannelFormDirty();
   }
 }
 
@@ -989,10 +1019,17 @@ function batchLowercaseSelectedModels() {
   const count = selectedModelIndices.size;
   if (count === 0) return;
 
+  let changedCount = 0;
+
   // 转换选中的模型为小写
   selectedModelIndices.forEach(index => {
     if (redirectTableData[index]) {
-      redirectTableData[index].model = (redirectTableData[index].model || '').toLowerCase();
+      const current = redirectTableData[index].model || '';
+      const lowercased = current.toLowerCase();
+      if (current !== lowercased) {
+        redirectTableData[index].model = lowercased;
+        changedCount++;
+      }
     }
   });
 
@@ -1000,6 +1037,7 @@ function batchLowercaseSelectedModels() {
   selectedModelIndices.clear();
   updateModelBatchDeleteButton();
   renderRedirectTable();
+  if (changedCount > 0) markChannelFormDirty();
 }
 
 /**
@@ -1053,6 +1091,7 @@ function batchDeleteSelectedModels() {
   updateModelBatchDeleteButton();
 
   renderRedirectTable();
+  markChannelFormDirty();
 
   setTimeout(() => {
     if (tableContainer) {
@@ -1122,21 +1161,28 @@ async function fetchModelsFromAPI() {
     }
 
     // 获取现有模型名称集合
-    const existingModels = new Set(redirectTableData.map(r => r.model).filter(Boolean));
+    const existingModels = new Set(
+      redirectTableData
+        .map(r => (r.model || '').trim().toLowerCase())
+        .filter(Boolean)
+    );
 
     // 添加新模型（不重复）- data.models 现在是 ModelEntry 数组
     let addedCount = 0;
     for (const entry of data.models) {
       const modelName = typeof entry === 'string' ? entry : entry.model;
-      if (modelName && !existingModels.has(modelName)) {
+      const modelKey = (modelName || '').trim().toLowerCase();
+      if (modelName && !existingModels.has(modelKey)) {
         // 使用返回的 redirect_model，如果没有则使用 model
         const redirectModel = (typeof entry === 'object' && entry.redirect_model) ? entry.redirect_model : modelName;
         redirectTableData.push({ model: modelName, redirect_model: redirectModel });
+        existingModels.add(modelKey);
         addedCount++;
       }
     }
 
     renderRedirectTable();
+    if (addedCount > 0) markChannelFormDirty();
 
     const source = data.source === 'api' ? window.t('channels.fetchModelsSource.api') : window.t('channels.fetchModelsSource.predefined');
     if (window.showSuccess) {
@@ -1193,18 +1239,25 @@ function addCommonModels() {
   }
 
   // 获取现有模型名称集合
-  const existingModels = new Set(redirectTableData.map(r => r.model).filter(Boolean));
+  const existingModels = new Set(
+    redirectTableData
+      .map(r => (r.model || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
 
   // 添加常用模型（不重复）
   let addedCount = 0;
   for (const modelName of commonModels) {
-    if (!existingModels.has(modelName)) {
+    const modelKey = modelName.toLowerCase();
+    if (!existingModels.has(modelKey)) {
       redirectTableData.push({ model: modelName, redirect_model: '' });
+      existingModels.add(modelKey);
       addedCount++;
     }
   }
 
   renderRedirectTable();
+  if (addedCount > 0) markChannelFormDirty();
 
   if (window.showSuccess) {
     window.showSuccess(window.t('channels.addedCommonModels', { count: addedCount }));
