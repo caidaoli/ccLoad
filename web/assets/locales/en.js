@@ -927,6 +927,8 @@ window.I18N_LOCALES['en'] = {
   'channels.batchModeMerge': 'merge',
   'channels.batchModeReplace': 'replace',
   'channels.batchRefreshReplaceConfirm': 'Replace mode will overwrite model configs for {count} selected channels (models not returned will be removed). Continue?',
+  'channels.batchRefreshCopy': 'Copy',
+  'channels.batchRefreshCopied': 'Copied',
   'channels.batchOperationFailed': 'Batch operation failed: {error}',
   'channels.unsavedChanges': 'You have unsaved changes. Are you sure you want to close?',
   'channels.confirmDeleteKey': 'Are you sure you want to delete Key #{index}?',

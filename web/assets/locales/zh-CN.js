@@ -927,6 +927,8 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.batchModeMerge': '增量',
   'channels.batchModeReplace': '覆盖',
   'channels.batchRefreshReplaceConfirm': '将覆盖所选 {count} 个渠道的模型配置（会移除未返回模型）。确定继续吗？',
+  'channels.batchRefreshCopy': '复制',
+  'channels.batchRefreshCopied': '已复制',
   'channels.batchOperationFailed': '批量操作失败: {error}',
   'channels.unsavedChanges': '有未保存的更改，确定要关闭吗？',
   'channels.confirmDeleteKey': '确定要删除第 {index} 个Key吗？',

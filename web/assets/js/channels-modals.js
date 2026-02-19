@@ -525,27 +525,60 @@ async function batchRefreshSelectedChannels(mode) {
   barInner.style.width = '100%';
   titleSpan.textContent = window.t('channels.batchRefreshSummary', { mode: modeLabel, updated, unchanged, failed });
 
+  // 构建可复制的纯文本摘要
+  let copyText = titleSpan.textContent;
+
   // 显示失败详情
   if (failedItems.length > 0) {
     progressEl.style.borderColor = 'var(--error-300)';
     const failDetail = document.createElement('div');
-    failDetail.style.cssText = 'font-size:0.82em;color:var(--error-600);margin-top:var(--space-2);max-height:120px;overflow-y:auto';
-    failDetail.textContent = failedItems.map(f => `${f.name}: ${f.error}`).join('\n');
-    failDetail.style.whiteSpace = 'pre-wrap';
+    failDetail.style.cssText = 'font-size:0.82em;color:var(--error-600);margin-top:var(--space-2);max-height:200px;overflow-y:auto;white-space:pre-wrap';
+    const failText = failedItems.map(f => `${f.name}: ${f.error}`).join('\n');
+    failDetail.textContent = failText;
     progressEl.appendChild(failDetail);
+    copyText += '\n' + failText;
   } else {
     progressEl.style.borderColor = 'var(--success-400)';
   }
 
   detailSpan.textContent = '';
 
-  // 自动消失（有失败则停留更久）
-  const dismissDelay = failedItems.length > 0 ? 8000 : 4000;
-  setTimeout(() => {
+  // 关闭动画辅助函数
+  function dismissProgress() {
     progressEl.style.opacity = '0';
     progressEl.style.transform = 'translateX(20px)';
     setTimeout(() => { if (progressEl.parentNode) progressEl.parentNode.removeChild(progressEl); }, 320);
-  }, dismissDelay);
+  }
+
+  // 操作按钮栏：复制 + 关闭
+  const actionBar = document.createElement('div');
+  actionBar.style.cssText = 'display:flex;justify-content:flex-end;gap:var(--space-2);margin-top:var(--space-3)';
+
+  if (failedItems.length > 0) {
+    const copyBtn = document.createElement('button');
+    copyBtn.textContent = window.t('channels.batchRefreshCopy');
+    copyBtn.style.cssText = 'padding:2px 10px;font-size:0.82em;border:1px solid var(--neutral-300);border-radius:var(--radius-md);background:var(--neutral-50);color:var(--neutral-700);cursor:pointer';
+    copyBtn.onclick = () => {
+      navigator.clipboard.writeText(copyText).then(() => {
+        copyBtn.textContent = window.t('channels.batchRefreshCopied');
+        setTimeout(() => { copyBtn.textContent = window.t('channels.batchRefreshCopy'); }, 1500);
+      });
+    };
+    actionBar.appendChild(copyBtn);
+  }
+
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '✕';
+  closeBtn.style.cssText = 'padding:2px 8px;font-size:0.9em;border:1px solid var(--neutral-300);border-radius:var(--radius-md);background:var(--neutral-50);color:var(--neutral-700);cursor:pointer;font-weight:bold';
+  closeBtn.onclick = dismissProgress;
+  actionBar.appendChild(closeBtn);
+
+  progressEl.appendChild(actionBar);
+
+  // 无失败时10秒自动关闭，有失败则保持直到手动关闭
+  if (failedItems.length === 0) {
+    setTimeout(dismissProgress, 10000);
+  }
 
   selectedChannelIds.clear();
   clearChannelsCache();
