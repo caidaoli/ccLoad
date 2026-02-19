@@ -129,6 +129,35 @@ func TestBuildLogEntry_StreamDiagMsg(t *testing.T) {
 			t.Errorf("expected Message=%q, got %q", errMsg, entry.Message)
 		}
 	})
+
+	t.Run("错误响应附带诊断", func(t *testing.T) {
+		res := &fwResult{
+			Status:        403,
+			Body:          []byte(`{"error":"余额不足"}`),
+			StreamDiagMsg: "error reading upstream body: stream error: INTERNAL_ERROR",
+		}
+		entry := buildLogEntry(logEntryParams{
+			RequestModel: "gpt-5.2",
+			ChannelID:    channelID,
+			StatusCode:   403,
+			Duration:     0.1,
+			IsStreaming:  false,
+			APIKeyUsed:   "sk-test",
+			Result:       res,
+		})
+		if entry.Message == "" {
+			t.Fatalf("expected Message not empty")
+		}
+		if !bytes.Contains([]byte(entry.Message), []byte("upstream status 403")) {
+			t.Errorf("expected Message to include upstream status, got %q", entry.Message)
+		}
+		if !bytes.Contains([]byte(entry.Message), []byte("余额不足")) {
+			t.Errorf("expected Message to include body excerpt, got %q", entry.Message)
+		}
+		if !bytes.Contains([]byte(entry.Message), []byte("error reading upstream body")) {
+			t.Errorf("expected Message to include diag, got %q", entry.Message)
+		}
+	})
 }
 
 func TestCopyRequestHeaders_StripsHopByHopAndAuth(t *testing.T) {

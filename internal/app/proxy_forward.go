@@ -147,16 +147,12 @@ func (s *Server) handleErrorResponse(
 	resp *http.Response,
 	hdrClone http.Header,
 	firstBodyReadTimeSec *float64,
-	cfg *model.Config,
 ) (*fwResult, float64, error) {
 	rb, readErr := io.ReadAll(io.LimitReader(resp.Body, int64(config.DefaultMaxBodyBytes)))
+	diagMsg := ""
 	if readErr != nil {
-		s.AddLogAsync(&model.LogEntry{
-			Time:        model.JSONTime{Time: time.Now()},
-			ChannelID:   cfg.ID,
-			ChannelName: cfg.Name,
-			Message:     fmt.Sprintf("error reading upstream body: %v", readErr),
-		})
+		// 不要创建“孤儿日志”（StatusCode=0），而是把诊断信息合并到本次请求的日志中（KISS）。
+		diagMsg = fmt.Sprintf("error reading upstream body: %v", readErr)
 	}
 
 	duration := reqCtx.Duration().Seconds()
@@ -166,6 +162,7 @@ func (s *Server) handleErrorResponse(
 		Header:        hdrClone,
 		Body:          rb,
 		FirstByteTime: *firstBodyReadTimeSec,
+		StreamDiagMsg: diagMsg,
 	}, duration, nil
 }
 
@@ -426,7 +423,7 @@ func (s *Server) handleResponse(
 			prependToBody(resp, validData)
 
 			// 转交给错误处理流程
-			return s.handleErrorResponse(reqCtx, resp, hdrClone, &firstBodyReadTimeSec, cfg)
+			return s.handleErrorResponse(reqCtx, resp, hdrClone, &firstBodyReadTimeSec)
 		}
 
 		// 未检测到错误，必须恢复 Body 供后续流程使用
@@ -437,7 +434,7 @@ func (s *Server) handleResponse(
 
 	// 错误状态：读取完整响应体
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return s.handleErrorResponse(reqCtx, resp, hdrClone, &firstBodyReadTimeSec, cfg)
+		return s.handleErrorResponse(reqCtx, resp, hdrClone, &firstBodyReadTimeSec)
 	}
 
 	// [INFO] 空响应检测：200状态码但Content-Length=0视为上游故障

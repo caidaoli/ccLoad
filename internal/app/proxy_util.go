@@ -81,8 +81,8 @@ type fwResult struct {
 	Cache5mInputTokens       int // 5分钟缓存写入Token数（新增2025-12）
 	Cache1hInputTokens       int // 1小时缓存写入Token数（新增2025-12）
 
-	// 流传输诊断信息（2025-12新增）
-	StreamDiagMsg string // 流中断/不完整时的诊断消息，合并到成功日志的Message字段
+	// 转发诊断信息（2025-12新增）
+	StreamDiagMsg string // 诊断消息（例如：流中断/不完整、上游响应体读取失败），合并到日志的 Message 字段
 
 	// 上游响应字节数（2026-02新增）
 	// 用于499场景诊断：区分客户端在首字节前取消还是接收部分数据后取消
@@ -586,10 +586,14 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 			}
 		} else {
 			msg := fmt.Sprintf("upstream status %d", p.StatusCode)
+			// 诊断信息优先：body 已存于 fwResult.Body 可随时查阅，但 diag 仅记录在 Message
+			if res.StreamDiagMsg != "" {
+				msg = fmt.Sprintf("%s [%s]", msg, truncateErr(res.StreamDiagMsg))
+			}
 			if len(res.Body) > 0 {
 				msg = fmt.Sprintf("%s: %s", msg, truncateErr(safeBodyToString(res.Body)))
 			}
-			entry.Message = msg
+			entry.Message = truncateErr(msg)
 		}
 
 		// 流式请求记录首字节响应时间

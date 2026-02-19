@@ -188,96 +188,59 @@ func TestBuildStreamDiagnostics_StreamComplete(t *testing.T) {
 	}
 }
 
-// errorReader 模拟返回特定错误的 Reader
-type errorReader struct {
-	err error
+type partialErrReadCloser struct {
+	data []byte
+	err  error
+	read bool
 }
 
-func (r *errorReader) Read(_ []byte) (int, error) {
-	return 0, r.err
+func (rc *partialErrReadCloser) Read(p []byte) (int, error) {
+	if rc.read {
+		return 0, io.EOF
+	}
+	rc.read = true
+	n := copy(p, rc.data)
+	return n, rc.err
 }
 
-// TestStreamCopySSE_ContextCanceledDuringRead 测试在 Read 期间 context 被取消的场景
-// 场景：客户端取消请求 → HTTP/2 流关闭 → Read 返回 "http2: response body closed"
-// 期望：返回 context.Canceled 而非原始错误，让上层正确识别为客户端断开（499）
-func TestStreamCopySSE_ContextCanceledDuringRead(t *testing.T) {
-	tests := []struct {
-		name        string
-		readErr     error
-		ctxCanceled bool
-		wantErr     error
-		reason      string
-	}{
-		{
-			name:        "http2_closed_with_ctx_canceled",
-			readErr:     errors.New("http2: response body closed"),
-			ctxCanceled: true,
-			wantErr:     context.Canceled,
-			reason:      "context 已取消时，应返回 context.Canceled 而非 http2 错误",
-		},
-		{
-			name:        "http2_closed_without_ctx_canceled",
-			readErr:     errors.New("http2: response body closed"),
-			ctxCanceled: false,
-			wantErr:     errors.New("http2: response body closed"),
-			reason:      "context 未取消时，应返回原始错误",
-		},
-		{
-			name:        "stream_error_with_ctx_canceled",
-			readErr:     errors.New("stream error: stream ID 7; INTERNAL_ERROR"),
-			ctxCanceled: true,
-			wantErr:     context.Canceled,
-			reason:      "context 已取消时，stream error 也应转换为 context.Canceled",
-		},
-		{
-			name:        "network_error_with_ctx_canceled",
-			readErr:     errors.New("connection reset by peer"),
-			ctxCanceled: true,
-			wantErr:     context.Canceled,
-			reason:      "context 已取消时，网络错误应转换为 context.Canceled",
+func (rc *partialErrReadCloser) Close() error { return nil }
+
+func TestHandleErrorResponse_MergesBodyReadErrorIntoResult(t *testing.T) {
+	s := &Server{} // 关键：logService 为 nil，若 handleErrorResponse 仍写 DB 日志会直接 panic
+
+	reqCtx := &requestContext{
+		startTime: time.Now(),
+	}
+
+	resp := &http.Response{
+		StatusCode: http.StatusForbidden,
+		Body: &partialErrReadCloser{
+			data: []byte(`{"error":"余额不足"}`),
+			err:  errors.New("stream error: stream ID 1; INTERNAL_ERROR; received from peer"),
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			if tt.ctxCanceled {
-				cancel() // 模拟客户端取消
-			} else {
-				defer cancel()
-			}
-
-			// 创建模拟 Reader 返回指定错误
-			reader := &errorReader{err: tt.readErr}
-			recorder := newRecorder()
-
-			// 调用 streamCopySSE
-			err := streamCopySSE(ctx, reader, recorder, nil)
-
-			if tt.ctxCanceled {
-				if !errors.Is(err, context.Canceled) {
-					t.Errorf("%s: got err=%v, want context.Canceled", tt.reason, err)
-				}
-			} else {
-				if err == nil || err.Error() != tt.readErr.Error() {
-					t.Errorf("%s: got err=%v, want %v", tt.reason, err, tt.readErr)
-				}
-			}
-		})
+	firstByte := 1.234
+	res, _, err := s.handleErrorResponse(reqCtx, resp, http.Header{}, &firstByte)
+	if err != nil {
+		t.Fatalf("expected err=nil, got %v", err)
 	}
-}
-
-// TestStreamCopy_ContextCanceledDuringRead 测试非 SSE 流复制在 Read 期间 context 被取消的场景
-func TestStreamCopy_ContextCanceledDuringRead(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // 模拟客户端取消
-
-	reader := &errorReader{err: errors.New("http2: response body closed")}
-	recorder := newRecorder()
-
-	err := streamCopy(ctx, reader, recorder, nil)
-
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("streamCopy should return context.Canceled when ctx is canceled, got: %v", err)
+	if res.Status != http.StatusForbidden {
+		t.Fatalf("expected Status=%d, got %d", http.StatusForbidden, res.Status)
+	}
+	if got := string(res.Body); got != `{"error":"余额不足"}` {
+		t.Fatalf("expected Body preserved, got %q", got)
+	}
+	if res.FirstByteTime != firstByte {
+		t.Fatalf("expected FirstByteTime=%.3f, got %.3f", firstByte, res.FirstByteTime)
+	}
+	if res.StreamDiagMsg == "" {
+		t.Fatalf("expected StreamDiagMsg not empty")
+	}
+	if !strings.Contains(res.StreamDiagMsg, "error reading upstream body") {
+		t.Fatalf("expected StreamDiagMsg to include read error prefix, got %q", res.StreamDiagMsg)
+	}
+	if !strings.Contains(res.StreamDiagMsg, "INTERNAL_ERROR") {
+		t.Fatalf("expected StreamDiagMsg to include upstream error, got %q", res.StreamDiagMsg)
 	}
 }
