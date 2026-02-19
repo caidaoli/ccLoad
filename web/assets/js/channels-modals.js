@@ -438,34 +438,119 @@ async function batchRefreshSelectedChannels(mode) {
     return;
   }
 
-  try {
-    const resp = await fetchAPIWithAuth('/admin/channels/models/refresh-batch', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        channel_ids: channelIDs,
-        mode
-      })
-    });
-    if (!resp.success) throw new Error(resp.error || window.t('common.failed'));
+  // 禁用批量操作按钮
+  const actionBtnIDs = ['batchRefreshMergeBtn', 'batchRefreshReplaceBtn', 'batchEnableChannelsBtn', 'batchDisableChannelsBtn'];
+  actionBtnIDs.forEach(id => { const btn = document.getElementById(id); if (btn) btn.disabled = true; });
 
-    const data = resp.data || {};
-    selectedChannelIds.clear();
-    clearChannelsCache();
-    await loadChannels(filters.channelType);
+  const total = channelIDs.length;
+  const modeLabel = mode === 'replace' ? window.t('channels.batchModeReplace') : window.t('channels.batchModeMerge');
 
-    if (window.showSuccess) {
-      window.showSuccess(window.t('channels.batchRefreshSummary', {
-        mode: mode === 'replace' ? window.t('channels.batchModeReplace') : window.t('channels.batchModeMerge'),
-        updated: data.updated || 0,
-        unchanged: data.unchanged || 0,
-        failed: data.failed || 0
-      }));
-    }
-  } catch (e) {
-    console.error('Batch refresh models failed', e);
-    if (window.showError) window.showError(window.t('channels.batchOperationFailed', { error: e.message }));
+  // 创建持久化进度通知
+  const progressEl = document.createElement('div');
+  progressEl.style.cssText = [
+    'background: var(--glass-bg)', 'backdrop-filter: blur(16px)',
+    'border: 1px solid var(--info-300)', 'border-radius: var(--radius-lg)',
+    'padding: var(--space-4) var(--space-6)', 'color: var(--neutral-900)',
+    'font-weight: var(--font-medium)', 'max-width: 420px',
+    'box-shadow: 0 10px 25px rgba(0,0,0,0.12)', 'pointer-events: auto',
+    'opacity: 0', 'transform: translateX(20px)',
+    'transition: all var(--duration-normal) var(--timing-function)'
+  ].join(';');
+
+  const titleSpan = document.createElement('div');
+  titleSpan.style.marginBottom = 'var(--space-2)';
+  titleSpan.textContent = window.t('channels.batchRefreshProgress', { current: 0, total, mode: modeLabel });
+  progressEl.appendChild(titleSpan);
+
+  const barOuter = document.createElement('div');
+  barOuter.style.cssText = 'height:4px;background:var(--neutral-200);border-radius:2px;overflow:hidden;margin-bottom:var(--space-2)';
+  const barInner = document.createElement('div');
+  barInner.style.cssText = 'height:100%;width:0%;background:var(--primary-500);border-radius:2px;transition:width 0.3s ease';
+  barOuter.appendChild(barInner);
+  progressEl.appendChild(barOuter);
+
+  const detailSpan = document.createElement('div');
+  detailSpan.style.cssText = 'font-size:0.85em;color:var(--neutral-600)';
+  progressEl.appendChild(detailSpan);
+
+  let host = document.getElementById('notify-host');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'notify-host';
+    host.style.cssText = 'position:fixed;top:var(--space-6);right:var(--space-6);display:flex;flex-direction:column;gap:var(--space-2);z-index:9999;pointer-events:none';
+    document.body.appendChild(host);
   }
+  host.appendChild(progressEl);
+  requestAnimationFrame(() => { progressEl.style.opacity = '1'; progressEl.style.transform = 'translateX(0)'; });
+
+  let updated = 0, unchanged = 0, failed = 0;
+  const failedItems = [];
+
+  for (let i = 0; i < channelIDs.length; i++) {
+    const channelID = channelIDs[i];
+    const info = channels.find(c => c.id === channelID);
+    const name = info ? info.name : `#${channelID}`;
+
+    titleSpan.textContent = window.t('channels.batchRefreshProgress', { current: i, total, mode: modeLabel });
+    detailSpan.textContent = window.t('channels.batchRefreshCurrent', { name });
+    barInner.style.width = `${(i / total * 100).toFixed(0)}%`;
+
+    try {
+      const resp = await fetchAPIWithAuth('/admin/channels/models/refresh-batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel_ids: [channelID], mode })
+      });
+
+      if (!resp.success) throw new Error(resp.error || window.t('common.failed'));
+
+      const item = ((resp.data || {}).results || [])[0] || {};
+      if (item.status === 'updated') {
+        updated++;
+      } else if (item.status === 'unchanged') {
+        unchanged++;
+      } else {
+        failed++;
+        failedItems.push({ name, error: item.error || window.t('common.failed') });
+      }
+    } catch (e) {
+      failed++;
+      failedItems.push({ name, error: e.message });
+    }
+
+    detailSpan.textContent = window.t('channels.batchRefreshCounts', { updated, unchanged, failed });
+  }
+
+  // 完成：更新进度条到100%
+  barInner.style.width = '100%';
+  titleSpan.textContent = window.t('channels.batchRefreshSummary', { mode: modeLabel, updated, unchanged, failed });
+
+  // 显示失败详情
+  if (failedItems.length > 0) {
+    progressEl.style.borderColor = 'var(--error-300)';
+    const failDetail = document.createElement('div');
+    failDetail.style.cssText = 'font-size:0.82em;color:var(--error-600);margin-top:var(--space-2);max-height:120px;overflow-y:auto';
+    failDetail.textContent = failedItems.map(f => `${f.name}: ${f.error}`).join('\n');
+    failDetail.style.whiteSpace = 'pre-wrap';
+    progressEl.appendChild(failDetail);
+  } else {
+    progressEl.style.borderColor = 'var(--success-400)';
+  }
+
+  detailSpan.textContent = '';
+
+  // 自动消失（有失败则停留更久）
+  const dismissDelay = failedItems.length > 0 ? 8000 : 4000;
+  setTimeout(() => {
+    progressEl.style.opacity = '0';
+    progressEl.style.transform = 'translateX(20px)';
+    setTimeout(() => { if (progressEl.parentNode) progressEl.parentNode.removeChild(progressEl); }, 320);
+  }, dismissDelay);
+
+  selectedChannelIds.clear();
+  clearChannelsCache();
+  await loadChannels(filters.channelType);
+  updateBatchChannelSelectionUI();
 }
 
 function batchEnableSelectedChannels() {
