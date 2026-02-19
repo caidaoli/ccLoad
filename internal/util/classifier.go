@@ -390,10 +390,10 @@ func classifySSEError(responseBody []byte) ErrorLevel {
 }
 
 // classify400Error 根据响应体内容智能分类 400 错误
-// 设计原则：90%+ 的 400 错误是客户端请求参数错误，只有极少数是 Key 级错误（如 invalid_api_key）
+// 设计原则：代理场景下 400 通常是上游服务异常，应触发渠道冷却并切换
 func classify400Error(responseBody []byte) ErrorLevel {
 	if len(responseBody) == 0 {
-		return ErrorLevelClient // 空响应体 = 客户端错误
+		return ErrorLevelChannel // 空响应体 = 上游异常
 	}
 	bodyLower := strings.ToLower(string(responseBody))
 
@@ -403,8 +403,8 @@ func classify400Error(responseBody []byte) ErrorLevel {
 		return ErrorLevelKey
 	}
 
-	// 默认：客户端级（参数错误、格式错误等）
-	return ErrorLevelClient
+	// 默认：渠道级（上游服务异常，触发冷却并切换渠道）
+	return ErrorLevelChannel
 }
 
 // classify404Error 根据响应体内容智能分类 404 错误

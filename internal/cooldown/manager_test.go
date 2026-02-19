@@ -41,7 +41,7 @@ func TestHandleError_ClientError(t *testing.T) {
 	}{
 		{"406不可接受", 406, []byte(`{"error":"not acceptable"}`)},
 		// 注意：405/404 已改为渠道级错误（上游endpoint配置问题）
-		// 注意：400 Bad Request 被分类为Key级错误（API Key格式错误），不是客户端错误
+		// 注意：400 已改为渠道级错误（代理场景下视为上游异常）
 	}
 
 	for _, tc := range testCases {

@@ -92,13 +92,7 @@ func (m *Manager) HandleError(ctx context.Context, in ErrorInput) Action {
 		has1308Time = classification.HasResetTime1308
 	}
 
-	// 2. [INFO] 特定渠道类型的400错误策略覆盖
-	// anthropic (Claude Code) 和 codex 是专用软件渠道，400错误一定是上游问题而非客户端请求问题
-	if statusCode == 400 && (in.ChannelType == util.ChannelTypeAnthropic || in.ChannelType == util.ChannelTypeCodex) {
-		errLevel = util.ErrorLevelChannel
-	}
-
-	// 3. [TARGET] 动态调整:单Key渠道的Key级错误应该直接冷却渠道
+	// 2. [TARGET] 动态调整:单Key渠道的Key级错误应该直接冷却渠道
 	// 设计原则:如果没有其他Key可以重试,Key级错误等同于渠道级错误
 	// [WARN] 例外：1308错误保持Key级（因为它有精确时间，后续会特殊处理）
 	if errLevel == util.ErrorLevelKey && !has1308Time {

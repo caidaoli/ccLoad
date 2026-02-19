@@ -313,13 +313,13 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		clientIP:      c.ClientIP(),
 		activeReqID:   activeID,
 		startTime:     startTime,
-		observer: &ForwardObserver{
-			OnBytesRead: func(n int64) {
-				s.activeRequests.AddBytes(activeID, n)
-			},
-			OnFirstByteRead: func() {
-				s.activeRequests.SetClientFirstByteTime(activeID, time.Since(startTime))
-			},
+	}
+	reqCtx.observer = &ForwardObserver{
+		OnBytesRead: func(n int64) {
+			s.activeRequests.AddBytes(activeID, n)
+		},
+		OnFirstByteRead: func() {
+			s.activeRequests.SetClientFirstByteTime(activeID, time.Since(reqCtx.attemptStartTime))
 		},
 	}
 

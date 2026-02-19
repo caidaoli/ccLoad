@@ -235,7 +235,7 @@ func TestDetermineFinalClientStatus(t *testing.T) {
 		{"5xx Channel-level passthrough", &proxyResult{status: http.StatusBadGateway, nextAction: cooldown.ActionRetryChannel}, http.StatusBadGateway},
 		// [FIX] 透明代理：所有上游状态码都透传，不映射
 		{"400 Key-level (invalid_api_key) => 400", &proxyResult{status: 400, nextAction: cooldown.ActionRetryKey}, 400},
-		{"400 Client-level (参数错误) => 400", &proxyResult{status: 400, nextAction: cooldown.ActionReturnClient}, 400},
+		{"400 Channel-level (参数错误) => 400", &proxyResult{status: 400, nextAction: cooldown.ActionRetryChannel}, 400},
 		{"404 Channel-level (BaseURL错误) => 404", &proxyResult{status: 404, nextAction: cooldown.ActionRetryChannel}, 404},
 		{"404 Client-level (模型不存在) => 404", &proxyResult{status: 404, nextAction: cooldown.ActionReturnClient}, 404},
 		{"429 Key-level => 429", &proxyResult{status: 429, nextAction: cooldown.ActionRetryKey}, 429},

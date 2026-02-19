@@ -732,14 +732,14 @@ func TestClassify400Error(t *testing.T) {
 		{
 			name:         "empty_body",
 			responseBody: []byte{},
-			expected:     ErrorLevelClient,
-			reason:       "空响应体应判定为客户端错误",
+			expected:     ErrorLevelChannel,
+			reason:       "空响应体应判定为上游异常",
 		},
 		{
 			name:         "nil_body",
 			responseBody: nil,
-			expected:     ErrorLevelClient,
-			reason:       "nil响应体应判定为客户端错误",
+			expected:     ErrorLevelChannel,
+			reason:       "nil响应体应判定为上游异常",
 		},
 		{
 			name:         "invalid_api_key",
@@ -756,20 +756,20 @@ func TestClassify400Error(t *testing.T) {
 		{
 			name:         "bad_request_params",
 			responseBody: []byte(`{"error": {"message": "Missing required parameter: 'model'"}}`),
-			expected:     ErrorLevelClient,
-			reason:       "请求参数错误应判定为客户端级错误",
+			expected:     ErrorLevelChannel,
+			reason:       "代理场景下400默认视为上游异常",
 		},
 		{
 			name:         "invalid_json_format",
 			responseBody: []byte(`{"error": {"message": "Invalid JSON format in request body"}}`),
-			expected:     ErrorLevelClient,
-			reason:       "JSON格式错误应判定为客户端级错误",
+			expected:     ErrorLevelChannel,
+			reason:       "代理场景下400默认视为上游异常",
 		},
 		{
 			name:         "validation_error",
 			responseBody: []byte(`{"error": {"message": "Validation failed: max_tokens must be positive"}}`),
-			expected:     ErrorLevelClient,
-			reason:       "参数验证错误应判定为客户端级错误",
+			expected:     ErrorLevelChannel,
+			reason:       "代理场景下400默认视为上游异常",
 		},
 	}
 
