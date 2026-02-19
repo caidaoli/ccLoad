@@ -1075,15 +1075,17 @@ func ensureAPIKeysAPIKeyLength(ctx context.Context, db *sql.DB, dialect Dialect)
 		return fmt.Errorf("query api_keys.api_key column info: %w", err)
 	}
 
+	const targetLen = 255
+
 	needModify := !strings.EqualFold(dataType, "varchar") ||
 		!charMaxLen.Valid ||
-		charMaxLen.Int64 < 100 ||
+		charMaxLen.Int64 < targetLen ||
 		!strings.EqualFold(isNullable, "NO")
 	if !needModify {
 		return nil
 	}
 
-	if _, err := db.ExecContext(ctx, "ALTER TABLE api_keys MODIFY COLUMN api_key VARCHAR(100) NOT NULL"); err != nil {
+	if _, err := db.ExecContext(ctx, "ALTER TABLE api_keys MODIFY COLUMN api_key VARCHAR(255) NOT NULL"); err != nil {
 		return fmt.Errorf("modify api_keys.api_key column: %w", err)
 	}
 
@@ -1092,7 +1094,7 @@ func ensureAPIKeysAPIKeyLength(ctx context.Context, db *sql.DB, dialect Dialect)
 		currentLen = charMaxLen.Int64
 	}
 	log.Printf(
-		"[MIGRATE] Modified api_keys.api_key column: type=%s len=%d nullable=%s -> VARCHAR(100) NOT NULL",
+		"[MIGRATE] Modified api_keys.api_key column: type=%s len=%d nullable=%s -> VARCHAR(255) NOT NULL",
 		dataType,
 		currentLen,
 		isNullable,
