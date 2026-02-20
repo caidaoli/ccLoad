@@ -97,8 +97,10 @@ func (f *AnthropicModelsFetcher) FetchModels(ctx context.Context, baseURL string
 		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
 
-	// Anthropic要求的请求头
+	// 同时设置两个认证头，与代理转发保持一致
+	// 官方API使用x-api-key，第三方中转通常使用Authorization Bearer
 	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
 	// 使用公共HTTP请求函数 (ctx已包含在req中)
