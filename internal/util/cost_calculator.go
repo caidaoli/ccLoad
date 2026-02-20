@@ -69,6 +69,7 @@ var basePricing = map[string]ModelPricing{
 	// ========== OpenAI GPT-5系列 ==========
 	"gpt-5.3":             {InputPrice: 1.75, OutputPrice: 14.00},
 	"gpt-5.3-codex":       {InputPrice: 1.75, OutputPrice: 14.00},
+	"gpt-5.3-codex-spark": {InputPrice: 1.75, OutputPrice: 14.00},
 	"gpt-5.2":             {InputPrice: 1.75, OutputPrice: 14.00},
 	"gpt-5.2-chat-latest": {InputPrice: 1.75, OutputPrice: 14.00},
 	"gpt-5.2-pro":         {InputPrice: 21.00, OutputPrice: 168.00},
