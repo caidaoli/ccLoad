@@ -363,6 +363,22 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 				}
 			}
 
+			// Gemini: candidates[0].content.parts[0].text
+			if candidates, ok := obj["candidates"].([]any); ok && len(candidates) > 0 {
+				if candidate, ok := candidates[0].(map[string]any); ok {
+					if content, ok := candidate["content"].(map[string]any); ok {
+						if parts, ok := content["parts"].([]any); ok && len(parts) > 0 {
+							if part, ok := parts[0].(map[string]any); ok {
+								if text, ok := part["text"].(string); ok && text != "" {
+									textBuilder.WriteString(text)
+									continue
+								}
+							}
+						}
+					}
+				}
+			}
+
 			// Anthropic: type == content_block_delta 且 delta.text 为增量
 			if typ, ok := obj["type"].(string); ok {
 				if typ == "content_block_delta" {

@@ -220,8 +220,12 @@ func (t *GeminiTester) Build(cfg *model.Config, apiKey string, req *TestChannelR
 	}
 
 	baseURL := strings.TrimRight(cfg.URL, "/")
-	// Gemini API 路径格式: /v1beta/models/{model}:generateContent
-	fullURL := baseURL + "/v1beta/models/" + req.Model + ":generateContent"
+	// Gemini API: 流式用 :streamGenerateContent?alt=sse，非流式用 :generateContent
+	action := ":generateContent"
+	if req.Stream {
+		action = ":streamGenerateContent?alt=sse"
+	}
+	fullURL := baseURL + "/v1beta/models/" + req.Model + action
 
 	h := make(http.Header)
 	h.Set("Content-Type", "application/json")
