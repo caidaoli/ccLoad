@@ -145,10 +145,10 @@ function renderInput(setting) {
       const isTrue = setting.value === 'true' || setting.value === '1';
       return `
         <label style="margin-right: 16px; cursor: pointer;">
-          <input type="radio" name="${safeKey}" value="true" ${isTrue ? 'checked' : ''} style="cursor: pointer;"> ${t('common.enable')}
+          <input type="radio" name="${safeKey}" value="true" ${isTrue ? 'checked' : ''}> ${t('common.enable')}
         </label>
         <label style="cursor: pointer;">
-          <input type="radio" name="${safeKey}" value="false" ${!isTrue ? 'checked' : ''} style="cursor: pointer;"> ${t('common.disable')}
+          <input type="radio" name="${safeKey}" value="false" ${!isTrue ? 'checked' : ''}> ${t('common.disable')}
         </label>`;
     case 'int':
     case 'duration':

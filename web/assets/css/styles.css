@@ -168,6 +168,60 @@
   outline-offset: 2px;
 }
 
+/* 自定义 checkbox/radio 样式，修复 Edge 暗色模式下原生控件显示为黑色 */
+input[type="checkbox"],
+input[type="radio"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 1.5px solid var(--neutral-300);
+  background: var(--white, #fff) no-repeat center;
+  background-size: 10px;
+  cursor: pointer;
+  vertical-align: middle;
+  flex-shrink: 0;
+  transition: all var(--duration-fast, 0.15s);
+}
+
+input[type="checkbox"] {
+  border-radius: 4px;
+}
+
+input[type="radio"] {
+  border-radius: 50%;
+}
+
+input[type="checkbox"]:hover,
+input[type="radio"]:hover {
+  border-color: var(--primary-400);
+}
+
+input[type="checkbox"]:checked {
+  background: var(--primary-500) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 8'%3E%3Cpath d='M1 4l2.5 2.5L9 1' fill='none' stroke='%23fff' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat center;
+  background-size: 10px;
+  border-color: var(--primary-500);
+}
+
+input[type="checkbox"]:indeterminate {
+  background: var(--primary-500) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 2'%3E%3Cpath d='M1 1h8' fill='none' stroke='%23fff' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat center;
+  background-size: 10px;
+  border-color: var(--primary-500);
+}
+
+input[type="radio"]:checked {
+  background: var(--primary-500) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Ccircle cx='5' cy='5' r='3' fill='%23fff'/%3E%3C/svg%3E") no-repeat center;
+  background-size: 10px;
+  border-color: var(--primary-500);
+}
+
+input[type="checkbox"]:focus-visible,
+input[type="radio"]:focus-visible {
+  outline: 2px solid var(--primary-500);
+  outline-offset: 2px;
+}
+
 html {
   scroll-behavior: smooth;
   font-size: 16px;
@@ -1499,8 +1553,6 @@ body {
 .filter-checkbox-label input[type="checkbox"] {
   width: 14px;
   height: 14px;
-  cursor: pointer;
-  accent-color: var(--primary-500);
 }
 
 .filter-checkbox-label span {
