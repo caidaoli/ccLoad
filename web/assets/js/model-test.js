@@ -150,7 +150,6 @@ function renderNameFilterInHeader() {
     headerLine.style.alignItems = 'center';
     headerLine.style.gap = '6px';
     headerLine.style.width = '100%';
-    headerLine.style.transform = 'translateY(10px)';
 
     label = document.createElement('span');
     label.className = 'model-test-name-label';
@@ -240,6 +239,8 @@ function getRowSortValue(row, key) {
 function bindSortableHeaders() {
   headRow.querySelectorAll('th[data-sort-key]').forEach(th => {
     let indicator = th.querySelector('.model-test-sort-indicator');
+    const headerLine = th.querySelector('.model-test-name-head-line');
+    const filterInput = th.querySelector('#modelTestNameFilter');
 
     if (!indicator) {
       indicator = document.createElement('span');
@@ -250,6 +251,13 @@ function bindSortableHeaders() {
       indicator.style.fontSize = '11px';
       indicator.style.lineHeight = '1';
       indicator.style.verticalAlign = 'middle';
+    }
+
+    if (headerLine && filterInput) {
+      if (indicator.parentElement !== headerLine || indicator.nextSibling !== filterInput) {
+        headerLine.insertBefore(indicator, filterInput);
+      }
+    } else if (indicator.parentElement !== th) {
       th.appendChild(indicator);
     }
 
