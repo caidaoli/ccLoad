@@ -191,7 +191,7 @@
       border: none;
       border-radius: 4px;
       font-size: 0.9em;
-      color: var(--primary-700);
+      color: inherit;
     }
 
     .model-tag.model-redirected {

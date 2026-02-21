@@ -78,7 +78,29 @@ document.addEventListener('DOMContentLoaded', async () => {
   const initialType = targetChannelType || (savedFilters?.channelType) || 'all';
 
   filters.channelType = initialType;
-  if (savedFilters) {
+  const urlChannelId = new URLSearchParams(location.search).get('id');
+  if (urlChannelId) {
+    // 从日志等页面跳转过来时，仅按渠道ID过滤，清除其他条件
+    filters.status = 'all';
+    filters.model = 'all';
+    filters.search = '';
+    filters.id = urlChannelId;
+    document.getElementById('statusFilter').value = 'all';
+    const modelFilterEl = document.getElementById('modelFilter');
+    if (modelFilterEl) {
+      modelFilterEl.value = (typeof modelFilterInputValueFromFilterValue === 'function')
+        ? modelFilterInputValueFromFilterValue('all')
+        : window.t('channels.modelAll');
+    }
+    if (typeof modelFilterCombobox !== 'undefined' && modelFilterCombobox) {
+      modelFilterCombobox.setValue('all', modelFilterInputValueFromFilterValue('all'));
+    }
+    document.getElementById('searchInput').value = '';
+    document.getElementById('idFilter').value = urlChannelId;
+    const clearBtn = document.getElementById('clearSearchBtn');
+    if (clearBtn) clearBtn.style.opacity = '0';
+    saveChannelsFilters();
+  } else if (savedFilters) {
     filters.status = savedFilters.status || 'all';
     filters.model = savedFilters.model || 'all';
     filters.search = savedFilters.search || '';
@@ -98,6 +120,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   await window.initChannelTypeFilter('channelTypeFilter', initialType, (type) => {
     filters.channelType = type;
     filters.model = 'all';
+    filters.search = '';
+    // 清空搜索输入框
+    const searchInput = document.getElementById('searchInput');
+    if (searchInput) {
+      searchInput.value = '';
+      const clearBtn = document.getElementById('clearSearchBtn');
+      if (clearBtn) clearBtn.style.opacity = '0';
+    }
     // 使用通用组件更新模型筛选器
     if (typeof modelFilterCombobox !== 'undefined' && modelFilterCombobox) {
       modelFilterCombobox.setValue('all', modelFilterInputValueFromFilterValue('all'));
