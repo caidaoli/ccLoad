@@ -9,7 +9,16 @@
   <meta name="theme-color" content="#3b82f6">
   <title data-i18n="index.title">Claude Code & Codex Proxy 代理服务</title>
   <link rel="stylesheet" href="/web/assets/css/styles.css?v=__VERSION__">
-  <link href="/web/assets/css/inter.css?v=__VERSION__" rel="stylesheet">
+  <script>
+    window.__prefetch_summary = fetch('/public/summary?range=today')
+      .then(r => r.json())
+      .catch(() => null);
+  </script>
+  <script defer src="/web/assets/locales/zh-CN.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/locales/en.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/i18n.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/ui.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/index.js?v=__VERSION__"></script>
 </head>
 <body>
   <div class="app-container">
@@ -351,18 +360,5 @@
     </main>
   </div>
 
-
-  <script src="/web/assets/locales/zh-CN.js?v=__VERSION__"></script>
-  <script src="/web/assets/locales/en.js?v=__VERSION__"></script>
-  <script src="/web/assets/js/i18n.js?v=__VERSION__"></script>
-  <script src="/web/assets/js/ui.js?v=__VERSION__"></script>
-  <script src="/web/assets/js/index.js?v=__VERSION__"></script>
-  <script>
-    document.addEventListener('DOMContentLoaded', function() {
-      if (window.i18n) {
-        window.i18n.translatePage();
-      }
-    });
-  </script>
 </body>
 </html>

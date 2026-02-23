@@ -460,6 +460,10 @@ func (h *HybridStore) ListLogsRange(ctx context.Context, since, until time.Time,
 	return h.sqlite.ListLogsRange(ctx, since, until, limit, offset, filter)
 }
 
+func (h *HybridStore) ListLogsRangeWithCount(ctx context.Context, since, until time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, int, error) {
+	return h.sqlite.ListLogsRangeWithCount(ctx, since, until, limit, offset, filter)
+}
+
 func (h *HybridStore) CountLogs(ctx context.Context, since time.Time, filter *model.LogFilter) (int, error) {
 	return h.sqlite.CountLogs(ctx, since, filter)
 }

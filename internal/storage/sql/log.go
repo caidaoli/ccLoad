@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log"
+	"sync"
 	"time"
 
 	"ccLoad/internal/model"
@@ -364,4 +365,104 @@ func (s *SQLStore) CountLogsRange(ctx context.Context, since, until time.Time, f
 	var count int
 	err := s.db.QueryRowContext(ctx, query, args...).Scan(&count)
 	return count, err
+}
+
+// ListLogsRangeWithCount 合并日志列表和计数查询，消除重复的 channel filter 解析
+// 将原来的 ListLogsRange + CountLogsRange 合并为一次调用：
+// - resolveChannelFilter 只执行一次（省 1-2 次 DB 查询）
+// - list 和 count 并行执行
+// - fillLogChannelNames 只执行一次
+func (s *SQLStore) ListLogsRangeWithCount(ctx context.Context, since, until time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, int, error) {
+	sinceMs := since.UnixMilli()
+	untilMs := until.UnixMilli()
+
+	// 1. resolveChannelFilter 只调用一次
+	channelIDs, isEmpty, err := s.resolveChannelFilter(ctx, filter)
+	if err != nil {
+		return nil, 0, err
+	}
+	if isEmpty {
+		return []*model.LogEntry{}, 0, nil
+	}
+
+	// 构建共享条件的辅助函数（list 和 count 共用）
+	applySharedConditions := func(qb *QueryBuilder) {
+		if len(channelIDs) > 0 {
+			vals := make([]any, 0, len(channelIDs))
+			for _, id := range channelIDs {
+				vals = append(vals, id)
+			}
+			qb.WhereIn("channel_id", vals)
+		}
+		qb.ApplyFilter(filter)
+	}
+
+	// 2. 并行执行 list + count
+	var wg sync.WaitGroup
+	var logs []*model.LogEntry
+	var total int
+	var logsErr, countErr error
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		qb := NewQueryBuilder(`SELECT id, time, model, actual_model, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used, api_key_hash, auth_token_id, client_ip,
+			input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost
+		FROM logs`).
+			Where("time >= ?", sinceMs).
+			Where("time <= ?", untilMs)
+		applySharedConditions(qb)
+
+		query, args := qb.BuildWithSuffix("ORDER BY time DESC LIMIT ? OFFSET ?")
+		args = append(args, limit, offset)
+
+		rows, err := s.db.QueryContext(ctx, query, args...)
+		if err != nil {
+			logsErr = err
+			return
+		}
+		defer func() { _ = rows.Close() }()
+
+		logs = []*model.LogEntry{}
+		for rows.Next() {
+			e, err := scanLogEntry(rows)
+			if err != nil {
+				logsErr = err
+				return
+			}
+			logs = append(logs, e)
+		}
+		logsErr = rows.Err()
+	}()
+
+	go func() {
+		defer wg.Done()
+		qb := NewQueryBuilder(`SELECT COUNT(*) FROM logs`).
+			Where("time >= ?", sinceMs).
+			Where("time <= ?", untilMs)
+		applySharedConditions(qb)
+
+		query, args := qb.Build()
+		countErr = s.db.QueryRowContext(ctx, query, args...).Scan(&total)
+	}()
+
+	wg.Wait()
+
+	if logsErr != nil {
+		return nil, 0, logsErr
+	}
+	if countErr != nil {
+		return nil, 0, countErr
+	}
+
+	// 3. 填充渠道名称（仅一次）
+	channelIDsToFetch := make(map[int64]bool)
+	for _, e := range logs {
+		if e.ChannelID != 0 {
+			channelIDsToFetch[e.ChannelID] = true
+		}
+	}
+	s.fillLogChannelNames(ctx, logs, channelIDsToFetch)
+
+	return logs, total, nil
 }

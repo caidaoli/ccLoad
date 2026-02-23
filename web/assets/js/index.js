@@ -21,7 +21,20 @@
           el.classList.add('animate-pulse');
         });
 
-        statsData = (await fetchData(`/public/summary?range=${currentTimeRange}`)) || statsData;
+        let data;
+        // 首次加载使用预取数据（与 JS 下载并行获取）
+        if (window.__prefetch_summary) {
+          const prefetched = await window.__prefetch_summary;
+          window.__prefetch_summary = null;
+          if (prefetched && prefetched.success) {
+            data = prefetched.data;
+          }
+        }
+        // 预取失败或后续轮询走正常路径
+        if (!data) {
+          data = await fetchData(`/public/summary?range=${currentTimeRange}`);
+        }
+        statsData = data || statsData;
         updateStatsDisplay();
 
       } catch (error) {
@@ -164,6 +177,7 @@
 
     // 页面初始化
     document.addEventListener('DOMContentLoaded', function() {
+      if (window.i18n) window.i18n.translatePage();
       if (window.initTopbar) initTopbar('index');
 
       // 初始化时间范围选择器

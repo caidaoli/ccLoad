@@ -9,12 +9,15 @@
   <meta name="theme-color" content="#3b82f6">
   <title data-i18n="logs.title">请求日志 - Claude Code & Codex Proxy</title>
   <link rel="stylesheet" href="/web/assets/css/styles.css?v=__VERSION__">
-  <link href="/web/assets/css/inter.css?v=__VERSION__" rel="stylesheet">
   <link rel="stylesheet" href="/web/assets/css/channels.css?v=__VERSION__">
   <link rel="stylesheet" href="/web/assets/css/logs.css?v=__VERSION__">
-  <script src="/web/assets/locales/zh-CN.js?v=__VERSION__"></script>
-  <script src="/web/assets/locales/en.js?v=__VERSION__"></script>
-  <script src="/web/assets/js/i18n.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/locales/zh-CN.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/locales/en.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/i18n.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/template-engine.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/date-range-selector.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/ui.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/logs.js?v=__VERSION__"></script>
 </head>
 <body>
   <div class="app-container">
@@ -282,16 +285,5 @@
     </tr>
   </template>
 
-  <script src="/web/assets/js/template-engine.js?v=__VERSION__"></script>
-  <script src="/web/assets/js/date-range-selector.js?v=__VERSION__"></script>
-  <script src="/web/assets/js/ui.js?v=__VERSION__"></script>
-  <script src="/web/assets/js/logs.js?v=__VERSION__"></script>
-  <script>
-    document.addEventListener('DOMContentLoaded', function() {
-      if (window.i18n) {
-        window.i18n.translatePage();
-      }
-    });
-  </script>
 </body>
 </html>

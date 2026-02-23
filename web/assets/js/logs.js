@@ -887,6 +887,7 @@
 
     // 页面初始化
     document.addEventListener('DOMContentLoaded', async function() {
+      if (window.i18n) window.i18n.translatePage();
       if (window.initTopbar) initTopbar('logs');
 
       // 优先从 URL 读取，其次从 localStorage 恢复，默认 all
@@ -895,15 +896,18 @@
       const savedFilters = loadLogsFilters();
       currentChannelType = u.get('channel_type') || (!hasUrlParams && savedFilters?.channelType) || 'all';
 
-      await window.initChannelTypeFilter('f_channel_type', currentChannelType, (value) => {
-        currentChannelType = value;
-        saveLogsFilters();
-        currentLogsPage = 1;
-        load();
-      });
+      // 并行初始化：渠道类型 + 默认测试内容同时加载（节省一次 RTT）
+      await Promise.all([
+        window.initChannelTypeFilter('f_channel_type', currentChannelType, (value) => {
+          currentChannelType = value;
+          saveLogsFilters();
+          currentLogsPage = 1;
+          load();
+        }),
+        loadDefaultTestContent()
+      ]);
 
       await initFilters();
-      await loadDefaultTestContent();
 
       // ✅ 修复：如果没有 URL 参数但有保存的筛选条件，先同步 URL 再加载数据
       if (!hasUrlParams && savedFilters) {
@@ -924,6 +928,19 @@
       }
 
       load();
+
+      // 页面可见性变化时暂停/恢复轮询（减少 HF 等高延迟环境的无效请求）
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+          if (activeRequestsPollTimer) {
+            clearInterval(activeRequestsPollTimer);
+            activeRequestsPollTimer = null;
+          }
+        } else if (currentLogsPage === 1) {
+          ensureActiveRequestsPollingStarted();
+          fetchActiveRequests();
+        }
+      });
 
       // ESC键关闭测试模态框
       document.addEventListener('keydown', (e) => {

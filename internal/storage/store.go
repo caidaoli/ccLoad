@@ -54,6 +54,7 @@ type Store interface {
 	BatchAddLogs(ctx context.Context, logs []*model.LogEntry) error
 	ListLogs(ctx context.Context, since time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error)
 	ListLogsRange(ctx context.Context, since, until time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error)
+	ListLogsRangeWithCount(ctx context.Context, since, until time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, int, error)
 	CountLogs(ctx context.Context, since time.Time, filter *model.LogFilter) (int, error)
 	CountLogsRange(ctx context.Context, since, until time.Time, filter *model.LogFilter) (int, error)
 	CleanupLogsBefore(ctx context.Context, cutoff time.Time) error

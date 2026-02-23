@@ -468,7 +468,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 	// 公开访问的API（首页仪表盘数据）
 	// [SECURITY NOTE] /public/* 端点故意不做认证，用于首页展示。
 	// 如需隐藏运营数据，可添加 s.authService.RequireTokenAuth() 中间件。
-	public := r.Group("/public")
+	public := r.Group("/public", ZstdMiddleware())
 	{
 		public.GET("/summary", s.HandlePublicSummary)
 		public.GET("/channel-types", s.HandleGetChannelTypes)
@@ -483,7 +483,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 	r.POST("/logout", s.authService.HandleLogout)
 
 	// 需要身份验证的admin APIs（使用Token认证）
-	admin := r.Group("/admin")
+	admin := r.Group("/admin", ZstdMiddleware())
 	admin.Use(s.authService.RequireTokenAuth())
 	{
 		// 渠道管理

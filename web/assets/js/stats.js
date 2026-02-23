@@ -669,6 +669,7 @@
 
     // 页面初始化
     document.addEventListener('DOMContentLoaded', async function() {
+      if (window.i18n) window.i18n.translatePage();
       if (window.initTopbar) initTopbar('stats');
 
       // 优先从 URL 读取，其次从 localStorage 恢复，默认 all

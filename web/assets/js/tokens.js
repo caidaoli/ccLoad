@@ -642,6 +642,7 @@
     // 初始化顶部导航栏
     document.addEventListener('DOMContentLoaded', () => {
       initTopbar('tokens');
+      if (window.i18n) window.i18n.translatePage();
     });
 
     // ============================================================================

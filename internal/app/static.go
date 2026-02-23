@@ -10,7 +10,6 @@ import (
 
 	"ccLoad/internal/version"
 
-	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
 )
 
@@ -33,7 +32,7 @@ func SetEmbedFS(embedRoot fs.FS, subDir string) {
 // - HTML 文件：不缓存，动态替换版本号占位符
 // - CSS/JS/字体：长缓存（1年），依赖版本号刷新
 // - dev 版本：不缓存，方便开发调试
-// - 支持 gzip 压缩（根据 Accept-Encoding 自动启用）
+// - 支持 zstd 压缩（根据 Accept-Encoding 自动启用）
 func setupStaticFiles(r *gin.Engine) {
 	// 检查嵌入的文件系统是否已初始化
 	if embedFS == nil {
@@ -44,14 +43,9 @@ func setupStaticFiles(r *gin.Engine) {
 		log.Fatalf("[FATAL] 嵌入文件系统未初始化，请在 main 中调用 SetEmbedFS")
 	}
 
-	// 使用路由组为静态文件启用 gzip 压缩
-	// 排除已压缩的文件类型（图片、字体等）
-	webGroup := r.Group("/web", gzip.Gzip(gzip.DefaultCompression,
-		gzip.WithExcludedExtensions([]string{
-			".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", // 图片
-			".woff", ".woff2", ".eot", // 已压缩字体
-		}),
-	))
+	// 使用路由组为静态文件启用 zstd 压缩
+	// 已压缩的文件类型（图片、字体等）在中间件内自动跳过
+	webGroup := r.Group("/web", ZstdMiddleware())
 	webGroup.GET("/*filepath", serveStaticFile)
 }
 

@@ -2,6 +2,7 @@
 const t = window.t;
 
 initTopbar('settings');
+if (window.i18n) window.i18n.translatePage();
 
 let originalSettings = {}; // 保存原始值用于比较
 

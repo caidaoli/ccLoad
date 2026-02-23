@@ -120,6 +120,7 @@
 
     // 页面加载完成后的初始化
     document.addEventListener('DOMContentLoaded', function() {
+      if (window.i18n) window.i18n.translatePage();
       // 聚焦到密码输入框
       setTimeout(() => {
         passwordInput.focus();

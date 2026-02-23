@@ -137,58 +137,23 @@ func (s *SQLStore) fetchChannelIDsByType(ctx context.Context, channelType string
 
 // applyChannelFilter 应用渠道类型或名称过滤（优先级：ChannelType > ChannelName/Like）
 // 返回值：是否应用了过滤、是否为空结果、错误
+// 注意：ChannelID 精确匹配不在此处处理，由 QueryBuilder.ApplyFilter 负责
 func (s *SQLStore) applyChannelFilter(ctx context.Context, qb *QueryBuilder, filter *model.LogFilter) (bool, bool, error) {
-	if filter == nil {
-		return false, false, nil
+	channelIDs, isEmpty, err := s.resolveChannelFilter(ctx, filter)
+	if err != nil {
+		return false, false, err
 	}
-
-	var candidateIDs []int64
-	hasTypeFilter := filter.ChannelType != ""
-	hasNameFilter := filter.ChannelName != "" || filter.ChannelNameLike != ""
-
-	// 按渠道类型过滤
-	if hasTypeFilter {
-		ids, err := s.fetchChannelIDsByType(ctx, filter.ChannelType)
-		if err != nil {
-			return false, false, err
-		}
-		if len(ids) == 0 {
-			return true, true, nil // 应用了过滤，结果为空
-		}
-		candidateIDs = ids
+	if isEmpty {
+		return true, true, nil
 	}
-
-	// 按渠道名称过滤
-	if hasNameFilter {
-		ids, err := s.fetchChannelIDsByNameFilter(ctx, filter.ChannelName, filter.ChannelNameLike)
-		if err != nil {
-			return false, false, err
-		}
-		if len(ids) == 0 {
-			return true, true, nil // 应用了过滤，结果为空
-		}
-
-		if hasTypeFilter {
-			// 取交集：同时满足类型和名称条件
-			candidateIDs = intersectIDs(candidateIDs, ids)
-			if len(candidateIDs) == 0 {
-				return true, true, nil
-			}
-		} else {
-			candidateIDs = ids
-		}
-	}
-
-	// 应用过滤条件
-	if len(candidateIDs) > 0 {
-		vals := make([]any, 0, len(candidateIDs))
-		for _, id := range candidateIDs {
+	if len(channelIDs) > 0 {
+		vals := make([]any, 0, len(channelIDs))
+		for _, id := range channelIDs {
 			vals = append(vals, id)
 		}
 		qb.WhereIn("channel_id", vals)
 		return true, false, nil
 	}
-
 	return false, false, nil
 }
 

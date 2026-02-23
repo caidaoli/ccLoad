@@ -9,12 +9,13 @@
   <meta name="theme-color" content="#3b82f6">
   <title data-i18n="tokens.title">API访问令牌 - Claude Code & Codex Proxy</title>
   <link rel="stylesheet" href="/web/assets/css/styles.css?v=__VERSION__">
-  <link href="/web/assets/css/inter.css?v=__VERSION__" rel="stylesheet">
   <link rel="stylesheet" href="/web/assets/css/tokens.css?v=__VERSION__">
-  <script src="/web/assets/locales/zh-CN.js?v=__VERSION__"></script>
-  <script src="/web/assets/locales/en.js?v=__VERSION__"></script>
-  <script src="/web/assets/js/i18n.js?v=__VERSION__"></script>
-  <script src="/web/assets/js/ui.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/locales/zh-CN.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/locales/en.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/i18n.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/ui.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/template-engine.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/tokens.js?v=__VERSION__"></script>
 </head>
 <body>
   <div class="app-container">
@@ -314,9 +315,6 @@
     </div>
   </div>
 
-  <!-- 模板引擎 -->
-  <script src="/web/assets/js/template-engine.js?v=__VERSION__"></script>
-
   <!-- 令牌行模板 -->
   <template id="tpl-token-row">
     <tr data-token-id="{{id}}">
@@ -346,13 +344,5 @@
     <span class="stats-badge" style="{{style}}" title="{{title}}">{{text}}</span>
   </template>
 
-  <script src="/web/assets/js/tokens.js?v=__VERSION__"></script>
-  <script>
-    document.addEventListener('DOMContentLoaded', function() {
-      if (window.i18n) {
-        window.i18n.translatePage();
-      }
-    });
-  </script>
 </body>
 </html>

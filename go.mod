@@ -9,7 +9,7 @@ require (
 )
 
 require (
-	github.com/gin-contrib/gzip v1.2.5
+	github.com/klauspost/compress v1.18.4
 	golang.org/x/term v0.40.0
 )
 
@@ -17,6 +17,7 @@ require (
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.59.0 // indirect
+	go.uber.org/mock v0.6.0 // indirect
 )
 
 require (

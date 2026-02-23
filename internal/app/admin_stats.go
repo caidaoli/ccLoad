@@ -24,20 +24,12 @@ func (s *Server) HandleErrors(c *gin.Context) {
 	lf := BuildLogFilter(c)
 	since, until := params.GetTimeRange()
 
-	// 并行查询日志列表和总数（优化性能）
-	logs, err := s.store.ListLogsRange(c.Request.Context(), since, until, params.Limit, params.Offset, &lf)
+	logs, total, err := s.store.ListLogsRangeWithCount(c.Request.Context(), since, until, params.Limit, params.Offset, &lf)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
 
-	total, err := s.store.CountLogsRange(c.Request.Context(), since, until, &lf)
-	if err != nil {
-		RespondError(c, http.StatusInternalServerError, err)
-		return
-	}
-
-	// 返回包含总数的响应（支持前端精确分页）
 	RespondJSONWithCount(c, http.StatusOK, logs, total)
 }
 

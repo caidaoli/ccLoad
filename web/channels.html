@@ -9,8 +9,22 @@
   <meta name="theme-color" content="#3b82f6">
   <title data-i18n="channels.title">渠道管理 - Claude Code & Codex Proxy</title>
   <link rel="stylesheet" href="/web/assets/css/styles.css?v=__VERSION__">
-  <link href="/web/assets/css/inter.css?v=__VERSION__" rel="stylesheet">
   <link rel="stylesheet" href="/web/assets/css/channels.css?v=__VERSION__">
+  <script defer src="/web/assets/locales/zh-CN.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/locales/en.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/i18n.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/ui.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/template-engine.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/channels-state.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/channels-render.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/channels-filters.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/channels-data.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/channels-import-export.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/channels-keys.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/channels-modals.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/channels-test.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/channels-sort.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/channels-init.js?v=__VERSION__"></script>
 </head>
 <body>
   <div class="app-container">
@@ -957,28 +971,5 @@
     <li style="margin: 4px 0;"><strong>Key #{{keyNum}}</strong> ({{keyMask}}): {{error}}</li>
   </template>
 
-  <script src="/web/assets/locales/zh-CN.js?v=__VERSION__"></script>
-  <script src="/web/assets/locales/en.js?v=__VERSION__"></script>
-  <script src="/web/assets/js/i18n.js?v=__VERSION__"></script>
-  <script src="/web/assets/js/ui.js?v=__VERSION__"></script>
-  <script src="/web/assets/js/template-engine.js?v=__VERSION__"></script>
-  <script src="/web/assets/js/channels-state.js?v=__VERSION__"></script>
-  <script src="/web/assets/js/channels-render.js?v=__VERSION__"></script>
-  <script src="/web/assets/js/channels-filters.js?v=__VERSION__"></script>
-  <script src="/web/assets/js/channels-data.js?v=__VERSION__"></script>
-  <script src="/web/assets/js/channels-import-export.js?v=__VERSION__"></script>
-  <script src="/web/assets/js/channels-keys.js?v=__VERSION__"></script>
-  <script src="/web/assets/js/channels-modals.js?v=__VERSION__"></script>
-  <script src="/web/assets/js/channels-test.js?v=__VERSION__"></script>
-  <script src="/web/assets/js/channels-sort.js?v=__VERSION__"></script>
-  <script src="/web/assets/js/channels-init.js?v=__VERSION__"></script>
-  <script>
-    // 页面加载后翻译
-    document.addEventListener('DOMContentLoaded', function() {
-      if (window.i18n) {
-        window.i18n.translatePage();
-      }
-    });
-  </script>
 </body>
 </html>

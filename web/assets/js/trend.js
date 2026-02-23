@@ -1350,6 +1350,7 @@ function shouldShowZoom(points, hours, trendType) {
 
     // 页面初始化
     document.addEventListener('DOMContentLoaded', async function() {
+      if (window.i18n) window.i18n.translatePage();
       if (window.initTopbar) initTopbar('trend');
 
       // ✅ 优先从 URL 参数恢复渠道类型，否则从 localStorage，默认 all
