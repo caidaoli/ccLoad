@@ -121,6 +121,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     filters.channelType = type;
     filters.model = 'all';
     filters.search = '';
+    filters.id = '';
     // 清空搜索输入框
     const searchInput = document.getElementById('searchInput');
     if (searchInput) {
@@ -128,6 +129,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       const clearBtn = document.getElementById('clearSearchBtn');
       if (clearBtn) clearBtn.style.opacity = '0';
     }
+    // 清空ID筛选框
+    const idFilterEl = document.getElementById('idFilter');
+    if (idFilterEl) idFilterEl.value = '';
     // 使用通用组件更新模型筛选器
     if (typeof modelFilterCombobox !== 'undefined' && modelFilterCombobox) {
       modelFilterCombobox.setValue('all', modelFilterInputValueFromFilterValue('all'));
