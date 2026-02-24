@@ -259,12 +259,25 @@ func ensureLogsColumnsSQLite(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 
-	// 第二步：迁移历史数据，将cache_creation_input_tokens复制到cache_5m_input_tokens
-	_, err := db.ExecContext(ctx,
-		"UPDATE logs SET cache_5m_input_tokens = cache_creation_input_tokens WHERE cache_5m_input_tokens = 0 AND cache_creation_input_tokens > 0",
-	)
-	if err != nil {
-		return fmt.Errorf("migrate cache_5m data: %w", err)
+	// 第二步：迁移历史数据，将cache_creation_input_tokens复制到cache_5m_input_tokens（一次性）
+	const cache5mBackfillMarker = "cache_5m_backfill_done"
+	if !hasMigration(ctx, db, cache5mBackfillMarker) {
+		_, err := db.ExecContext(ctx,
+			"UPDATE logs SET cache_5m_input_tokens = cache_creation_input_tokens WHERE cache_5m_input_tokens = 0 AND cache_1h_input_tokens = 0 AND cache_creation_input_tokens > 0",
+		)
+		if err != nil {
+			return fmt.Errorf("migrate cache_5m data: %w", err)
+		}
+		// 修复已损坏的数据：之前的迁移对1h缓存行错误地设置了cache_5m
+		_, err = db.ExecContext(ctx,
+			"UPDATE logs SET cache_5m_input_tokens = cache_creation_input_tokens - cache_1h_input_tokens WHERE cache_1h_input_tokens > 0 AND cache_5m_input_tokens = cache_creation_input_tokens",
+		)
+		if err != nil {
+			return fmt.Errorf("repair cache_5m data: %w", err)
+		}
+		if err := recordMigration(ctx, db, cache5mBackfillMarker, DialectSQLite); err != nil {
+			return fmt.Errorf("record cache_5m migration marker: %w", err)
+		}
 	}
 
 	// 第三步：回填 minute_bucket（基于标记机制，支持崩溃恢复）
