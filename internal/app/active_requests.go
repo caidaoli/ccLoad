@@ -81,6 +81,7 @@ func (m *activeRequestManager) Update(id int64, channelID int64, channelName, ch
 		req.ChannelType = channelType
 		req.APIKeyUsed = util.MaskAPIKey(apiKey)
 		req.TokenID = tokenID
+		req.StartTime = time.Now().UnixMilli()
 		req.clientFirstByteTimeUsec.Store(0)
 		req.bytesCounter.Store(0)
 	}
