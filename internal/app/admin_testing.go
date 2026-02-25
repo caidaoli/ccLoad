@@ -462,7 +462,11 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 			result["cost_usd"] = costUSD
 		}
 
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		if lastErrMsg != "" {
+			// 软错误检测：HTTP 200但SSE流中包含错误事件（如余额不足、配额耗尽等）
+			result["success"] = false
+			result["error"] = lastErrMsg
+		} else if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			result["message"] = "API测试成功（流式）"
 		} else {
 			if lastErrMsg == "" {
