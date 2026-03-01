@@ -77,6 +77,10 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureChannelsDailyCostLimit(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels daily_cost_limit: %w", err)
 			}
+			// 增量迁移：将url字段从VARCHAR(191)扩展为TEXT（支持多URL存储）
+			if err := migrateChannelsURLToText(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate channels url to text: %w", err)
+			}
 		}
 
 		// 增量迁移：修复 api_keys.api_key 历史长度漂移（旧版可能为 VARCHAR(64)）
@@ -1038,6 +1042,35 @@ func relaxDeprecatedChannelFields(ctx context.Context, db *sql.DB, dialect Diale
 	// SQLite: 不支持直接修改列约束，但 TEXT 类型天然允许 NULL
 	// SQLite 的 NOT NULL 约束只在显式 INSERT 该列时检查
 	// 新版程序 INSERT 语句不包含这些列，SQLite 会使用默认值（NULL）
+	return nil
+}
+
+// migrateChannelsURLToText 将channels.url从VARCHAR(191)扩展为TEXT
+// 支持多URL存储（换行分隔）
+func migrateChannelsURLToText(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if dialect != DialectMySQL {
+		// SQLite: VARCHAR(191) 本质上就是 TEXT，无需变更
+		return nil
+	}
+
+	// MySQL: 检查当前列类型
+	var dataType string
+	err := db.QueryRowContext(ctx,
+		"SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channels' AND COLUMN_NAME='url'",
+	).Scan(&dataType)
+	if err != nil {
+		return fmt.Errorf("check url column type: %w", err)
+	}
+
+	if strings.EqualFold(dataType, "text") {
+		return nil // 已经是 TEXT
+	}
+
+	if _, err := db.ExecContext(ctx,
+		"ALTER TABLE channels MODIFY COLUMN url TEXT NOT NULL"); err != nil {
+		return fmt.Errorf("modify url column to TEXT: %w", err)
+	}
+	log.Printf("[MIGRATE] Modified channels.url: VARCHAR → TEXT")
 	return nil
 }
 

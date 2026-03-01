@@ -5,7 +5,7 @@ func DefineChannelsTable() *TableBuilder {
 	return NewTable("channels").
 		Column("id INT PRIMARY KEY AUTO_INCREMENT").
 		Column("name VARCHAR(191) NOT NULL UNIQUE").
-		Column("url VARCHAR(191) NOT NULL").
+		Column("url TEXT NOT NULL").
 		Column("priority INT NOT NULL DEFAULT 0").
 		Column("channel_type VARCHAR(64) NOT NULL DEFAULT 'anthropic'").
 		Column("enabled TINYINT NOT NULL DEFAULT 1").
