@@ -15,6 +15,10 @@ function showAddModal() {
   if (modelFilterInput) modelFilterInput.value = '';
   renderRedirectTable();
 
+  inlineURLTableData = [''];
+  selectedURLIndices.clear();
+  renderInlineURLTable();
+
   inlineKeyTableData = [''];
   inlineKeyVisible = true;
   document.getElementById('inlineEyeIcon').style.display = 'none';
@@ -33,7 +37,7 @@ async function editChannel(id) {
 
   document.getElementById('modalTitle').textContent = window.t('channels.editChannel');
   document.getElementById('channelName').value = channel.name;
-  document.getElementById('channelUrl').value = channel.url;
+  setInlineURLTableData(channel.url);
 
   let apiKeys = [];
   try {
@@ -101,12 +105,19 @@ function closeModal() {
 async function saveChannel(event) {
   event.preventDefault();
 
+  const validURLs = getValidInlineURLs();
+  if (validURLs.length === 0) {
+    alert(window.t('channels.fillApiUrlFirst'));
+    return;
+  }
+
   const validKeys = inlineKeyTableData.filter(k => k && k.trim());
   if (validKeys.length === 0) {
     alert(window.t('channels.atLeastOneKey'));
     return;
   }
 
+  document.getElementById('channelUrl').value = validURLs.join('\n');
   document.getElementById('channelApiKey').value = validKeys.join(',');
 
   // 构建模型配置（新格式：models 数组）
@@ -142,7 +153,7 @@ async function saveChannel(event) {
 
   const formData = {
     name: document.getElementById('channelName').value.trim(),
-    url: document.getElementById('channelUrl').value.trim(),
+    url: validURLs.join('\n'),
     api_key: validKeys.join(','),
     channel_type: channelType,
     key_strategy: keyStrategy,
@@ -612,7 +623,7 @@ async function copyChannel(id, name) {
   currentChannelKeyCooldowns = [];
   document.getElementById('modalTitle').textContent = window.t('channels.copyChannel');
   document.getElementById('channelName').value = copiedName;
-  document.getElementById('channelUrl').value = channel.url;
+  setInlineURLTableData(channel.url);
 
   let apiKeys = [];
   try {
@@ -1218,7 +1229,7 @@ function batchDeleteSelectedModels() {
 }
 
 async function fetchModelsFromAPI() {
-  const channelUrl = document.getElementById('channelUrl').value.trim();
+  const channelUrl = getValidInlineURLs()[0] || '';
   const channelType = document.querySelector('input[name="channelType"]:checked')?.value || 'anthropic';
   const firstValidKey = inlineKeyTableData
     .map(key => (key || '').trim())

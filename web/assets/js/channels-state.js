@@ -35,6 +35,8 @@ let inlineKeyTableData = [];
 let inlineKeyVisible = false; // 密码可见性状态
 let selectedKeyIndices = new Set(); // 选中的Key索引集合
 let currentKeyStatusFilter = 'all'; // 当前状态筛选：all/normal/cooldown
+let inlineURLTableData = []; // API URL 表格数据
+let selectedURLIndices = new Set(); // 选中的 URL 索引集合
 let channelFormDirty = false; // 表单是否有未保存的更改
 
 // 虚拟滚动实现：优化大量Key时的渲染性能
@@ -162,13 +164,14 @@ function initChannelFormDirtyTracking() {
 
   const uiOnlyIDs = new Set([
     'channelApiKey',
+    'selectAllURLs',
     'selectAllKeys',
     'keyStatusFilter',
     'selectAllModels',
     'modelFilterInput'
   ]);
 
-  const uiOnlyClasses = ['key-checkbox', 'model-checkbox'];
+  const uiOnlyClasses = ['url-checkbox', 'key-checkbox', 'model-checkbox'];
 
   const shouldTrackTarget = (target) => {
     if (!(target instanceof HTMLElement)) return false;

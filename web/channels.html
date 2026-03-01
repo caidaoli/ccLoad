@@ -21,6 +21,7 @@
   <script defer src="/web/assets/js/channels-data.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-import-export.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-keys.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/channels-urls.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-modals.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-test.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-sort.js?v=__VERSION__"></script>
@@ -214,24 +215,75 @@
 
         <div class="form-group">
           <!-- API URL和Key策略在第二行 -->
-          <div style="display: flex; gap: 20px; align-items: center;">
-            <div style="display: flex; align-items: center; gap: 8px; flex: 1;">
-              <label class="form-label" for="channelUrl" style="margin: 0; font-size: 13px; white-space: nowrap; color: var(--neutral-700);" data-i18n="channels.apiUrl">API URL *</label>
-              <textarea id="channelUrl" class="form-input" placeholder="https://api.anthropic.com&#10;https://mirror.api.com" required style="flex: 1; min-height: 36px; resize: vertical; font-family: monospace; font-size: 13px;" rows="2"></textarea>
+          <div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 8px; flex-wrap: wrap;">
+              <label class="form-label" style="margin: 0; font-size: 13px; color: var(--neutral-700);">
+                <span data-i18n="channels.apiUrl">API URL *</span> <span class="models-hint" style="margin-left: 8px; margin-top: 0;"><span data-i18n="channels.keyCountPrefix">共</span> <span id="inlineUrlCount">0</span> <span data-i18n="channels.urlCountSuffix">个URL</span></span>
+              </label>
+              <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                <label style="margin: 0; font-size: 13px; white-space: nowrap; color: var(--neutral-700);" data-i18n="channels.keyStrategy">Key 策略</label>
+                <div style="display: flex; gap: 6px; margin-right: 8px;" id="keyStrategyRadios">
+                  <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 13px;">
+                    <input type="radio" name="keyStrategy" value="sequential" checked>
+                    <span data-i18n="channels.keyStrategySequential">顺序</span>
+                  </label>
+                  <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 13px;">
+                    <input type="radio" name="keyStrategy" value="round_robin">
+                    <span data-i18n="channels.keyStrategyRoundRobin">轮询</span>
+                  </label>
+                </div>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="addInlineURL()" style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px;" data-i18n-title="channels.addUrlTitle" title="添加URL">
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M8 3.5V12.5M3.5 8H12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                  <span data-i18n="channels.addUrl">添加URL</span>
+                </button>
+                <button
+                  type="button"
+                  id="batchDeleteUrlsBtn"
+                  onclick="batchDeleteSelectedURLs()"
+                  disabled
+                  data-i18n-title="channels.batchDeleteUrlsTitle"
+                  title="批量删除选中的URL"
+                  class="btn btn-secondary btn-sm"
+                  style="padding: 5px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; opacity: 0.5;"
+                >
+                  <svg width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M5.5 2.5V1.5C5.5 1.22386 5.72386 1 6 1H8C8.27614 1 8.5 1.22386 8.5 1.5V2.5M2 3.5H12M3 3.5V11.5C3 12.0523 3.44772 12.5 4 12.5H10C10.5523 12.5 11 12.0523 11 11.5V3.5M5.5 6.5V9.5M8.5 6.5V9.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                  <span data-i18n="channels.deleteSelected">删除选中</span>
+                </button>
+              </div>
             </div>
 
-            <div style="display: flex; align-items: center; gap: 8px; flex: 0 0 550px;">
-              <label style="margin: 0; font-size: 13px; white-space: nowrap; color: var(--neutral-700);" data-i18n="channels.keyStrategy">Key 策略</label>
-              <div style="display: flex; gap: 6px;" id="keyStrategyRadios">
-                <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 13px;">
-                  <input type="radio" name="keyStrategy" value="sequential" checked>
-                  <span data-i18n="channels.keyStrategySequential">顺序</span>
-                </label>
-                <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 13px;">
-                  <input type="radio" name="keyStrategy" value="round_robin">
-                  <span data-i18n="channels.keyStrategyRoundRobin">轮询</span>
-                </label>
-              </div>
+            <!-- 隐藏字段：与后端保持兼容，提交时按换行拼接 -->
+            <input type="hidden" id="channelUrl" required>
+
+            <div class="inline-table-container">
+              <table class="inline-table">
+                <thead>
+                  <tr>
+                    <th style="width: 70px;">
+                      <div style="display: flex; align-items: center; gap: 6px;">
+                        <input
+                          type="checkbox"
+                          id="selectAllURLs"
+                          onchange="toggleSelectAllURLs(this.checked)"
+                          style="width: 16px; height: 16px;"
+                          data-i18n-title="common.selectAll"
+                          title="全选/取消全选"
+                        >
+                        <span>#</span>
+                      </div>
+                    </th>
+                    <th data-i18n="channels.tableApiUrl">API URL</th>
+                    <th style="width: 120px;"></th>
+                  </tr>
+                </thead>
+                <tbody id="inlineUrlTableBody">
+                  <!-- URL行动态渲染 -->
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
@@ -817,6 +869,68 @@
         </svg>
       </button>
     </div>
+  </template>
+
+  <template id="tpl-url-row">
+    <tr style="border-bottom: 1px solid var(--neutral-200);">
+      <td style="padding: 6px 10px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <input
+            type="checkbox"
+            class="url-checkbox"
+            data-index="{{index}}"
+            onchange="toggleURLSelection({{index}}, this.checked)"
+            style="width: 16px; height: 16px;"
+          >
+          <span style="color: var(--neutral-600); font-weight: 500; font-size: 13px;">{{displayIndex}}</span>
+        </div>
+      </td>
+      <td style="padding: 6px 10px;">
+        <input
+          type="text"
+          value="{{url}}"
+          class="inline-url-input"
+          data-index="{{index}}"
+          onchange="updateInlineURL({{index}}, this.value)"
+          placeholder="https://api.example.com"
+          style="width: 100%; padding: 5px 8px; border: 1px solid var(--neutral-300); border-radius: 6px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace; font-size: 13px;"
+        >
+      </td>
+      <td style="padding: 6px 10px; text-align: center;">
+        <div style="display: flex; gap: 6px; justify-content: center;">
+          <button
+            type="button"
+            onclick="testInlineURL({{index}}, this)"
+            data-i18n-title="channels.testThisUrl"
+            title="测试此URL"
+            style="width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--neutral-200); background: white; color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;"
+          >
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M4 2L12 8L4 14V2Z" fill="currentColor"/>
+            </svg>
+          </button>
+          <button
+            type="button"
+            onclick="deleteInlineURL({{index}})"
+            data-i18n-title="channels.deleteThisUrl"
+            title="删除此URL"
+            style="width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--neutral-200); background: white; color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;"
+          >
+            <svg width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M5.5 2.5V1.5C5.5 1.22386 5.72386 1 6 1H8C8.27614 1 8.5 1.22386 8.5 1.5V2.5M2 3.5H12M3 3.5V11.5C3 12.0523 3.44772 12.5 4 12.5H10C10.5523 12.5 11 12.0523 11 11.5V3.5M5.5 6.5V9.5M8.5 6.5V9.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+        </div>
+      </td>
+    </tr>
+  </template>
+
+  <template id="tpl-url-empty">
+    <tr>
+      <td colspan="3" style="padding: 20px; text-align: center; color: var(--neutral-500);">
+        {{message}}
+      </td>
+    </tr>
   </template>
 
   <!-- 渠道卡片模板 -->
