@@ -24,6 +24,15 @@ function updateInlineURLCount() {
   const countEl = document.getElementById('inlineUrlCount');
   if (!countEl) return;
   countEl.textContent = inlineURLTableData.length;
+  updateMultiUrlHint();
+}
+
+function updateMultiUrlHint() {
+  const hintEl = document.getElementById('multiUrlStrategyHint');
+  if (hintEl) {
+    const validCount = getValidInlineURLs().length;
+    hintEl.style.display = validCount > 1 ? '' : 'none';
+  }
 }
 
 function updateURLBatchDeleteButton() {
@@ -131,6 +140,7 @@ function updateInlineURL(index, value) {
 
   inlineURLTableData[index] = nextValue;
   syncInlineURLInput();
+  updateMultiUrlHint();
   markChannelFormDirty();
 }
 

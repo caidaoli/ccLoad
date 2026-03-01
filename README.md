@@ -28,6 +28,7 @@ ccLoad 一站式解决👇
 - 🎯 **智能路由**：高优先级渠道优先用，同级按平滑加权轮询分流，更均匀
 - 🔀 **自动故障切换**：渠道挂了秒切，你甚至感知不到
 - ⏰ **指数级冷却**：故障渠道自动休息，2分钟→4分钟→8分钟，不会反复踩坑
+- 🌐 **多URL智能调度**：一个渠道配多个URL，按延迟加权随机分流，慢的自动少用
 - 🙌 **零手动干预**：躺平就行，系统全自动处理
 - 📊 **实时请求监控**：正在跑的请求一目了然，告别盲等
 - 🔍 **软错误检测**：HTTP 200 伪装成功？逃不过检测！自动识别以下"假成功"：
@@ -54,6 +55,7 @@ ccLoad 一站式解决👇
 | 💰 **成本限额** | 渠道每日成本上限 | 达到限额自动跳过 |
 | 🔐 **令牌限额** | API令牌费用上限+模型限制 | 精细化访问控制 |
 | ⏱️ **首字节监控** | 流式请求TTFB记录 | 便于诊断上游延迟 |
+| 🌐 **多URL负载均衡** | 单渠道多URL+加权随机 | 延迟低的URL自动多分流 |
 
 ## 🏗️ 架构概览
 
@@ -78,11 +80,14 @@ graph TB
         C --> D[路由分发]
         D --> E[渠道选择器]
         E --> F[负载均衡器]
-        
+
         subgraph "核心组件"
             F --> G[渠道A<br/>优先级:10]
             F --> H[渠道B<br/>优先级:5]
             F --> I[渠道C<br/>优先级:5]
+            G --> G1[URL选择器<br/>加权随机]
+            H --> H1[URL选择器<br/>加权随机]
+            I --> I1[URL选择器<br/>加权随机]
         end
         
         subgraph "存储层"
@@ -105,9 +110,9 @@ graph TB
     end
     
     subgraph "上游服务"
-        G --> N[Claude API]
-        H --> O[Claude API]
-        I --> P[Claude API]
+        G1 --> N[Claude API]
+        H1 --> O[Claude API]
+        I1 --> P[Claude API]
     end
     
     E <--> J
@@ -569,18 +574,20 @@ Web界面和API都能管理渠道，看你喜欢哪种👇
 通过 Web 界面 `/web/channels.html` 或 API 管理渠道：
 
 ```bash
-# 添加渠道
+# 添加渠道（支持多URL，逗号分隔）
 curl -X POST http://localhost:8080/admin/channels \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Claude-API",
     "api_key": "sk-ant-api03-xxx",
-    "url": "https://api.anthropic.com",
+    "url": "https://api.anthropic.com,https://api2.anthropic.com",
     "priority": 10,
     "models": ["claude-3-sonnet-20240229", "claude-3-opus-20240229"],
     "enabled": true
   }'
 ```
+
+> **多URL说明**：`url` 字段支持逗号分隔的多个URL。系统会按延迟加权随机选择最优URL，故障URL自动冷却，实现同渠道内的URL级负载均衡与故障切换。
 
 ### 批量数据管理
 
@@ -683,6 +690,12 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
   - 消除重复代码，冷却逻辑统一管理
   - 区分网络错误和HTTP错误的分类策略
   - 内置单Key渠道自动升级逻辑
+- **多URL选择器**（URLSelector）：
+  - `url_selector.go`：单渠道多URL智能调度
+  - 探索优先：未访问过的URL优先尝试，确保收集延迟数据
+  - 加权随机：权重=1/EWMA延迟，延迟低的URL自动多分流
+  - 独立冷却：故障URL指数退避，不影响同渠道其他URL
+  - BaseURL追踪：活跃请求、日志和UI全链路携带上游URL
 - **存储层重构**（2025-12优化，消除467行重复代码）：
   - `storage/schema/`：统一Schema定义（支持SQLite/MySQL差异）
   - `storage/sql/`：通用SQL实现层（SQLite/MySQL共享）
@@ -876,9 +889,12 @@ storage/
 │   ├── apikey.go          # API 密钥 CRUD
 │   ├── cooldown.go        # 冷却管理
 │   ├── log.go             # 日志存储
-│   ├── metrics.go         # 指标统计
-│   ├── metrics_filter.go  # 过滤条件交集支持
-│   ├── auth_tokens.go     # API 访问令牌
+│   ├── metrics.go             # 指标统计
+│   ├── metrics_filter.go      # 过滤条件交集支持
+│   ├── metrics_aggregate_rows.go  # 聚合行处理
+│   ├── metrics_finalize.go    # 终结化处理
+│   ├── auth_tokens.go         # API 访问令牌
+│   ├── auth_token_stats.go    # 令牌统计
 │   ├── admin_sessions.go  # 管理会话
 │   ├── system_settings.go # 系统设置
 │   └── helpers.go         # 辅助函数
@@ -892,7 +908,7 @@ storage/
 **核心表结构**（SQLite 和 MySQL 共用）:
 - `channels` - 渠道配置（冷却数据内联，UNIQUE 约束 name）
 - `api_keys` - API 密钥（Key 级冷却内联，支持多 Key 策略）
-- `logs` - 请求日志（已合并到主数据库）
+- `logs` - 请求日志（含base_url上游URL追踪）
 - `key_rr` - 轮询指针（channel_id → idx）
 - `auth_tokens` - 认证令牌（支持费用限额、模型限制、首字节时间记录）
 - `admin_sessions` - 管理会话

@@ -23,17 +23,21 @@ go run -tags go_json .
 ```
 internal/
 ├── app/           # HTTP层+业务逻辑
-│   ├── proxy_*.go       # 代理（handler/forward/stream/gemini/sse_parser/error）
-│   ├── admin_*.go       # 管理API
+│   ├── proxy_*.go       # 代理（handler/forward/stream/gemini/sse_parser/error/util）
+│   ├── admin_*.go       # 管理API（channels/auth_tokens/stats/models/settings/cooldown/testing/csv/active_requests）
 │   ├── selector*.go     # 渠道选择（balancer/cooldown/model_matcher）
+│   ├── url_selector.go  # 多URL选择（加权随机/EWMA延迟/冷却/探索优先）
 │   ├── *_cache.go       # 缓存（cost/health/stats）
 │   ├── *_service.go     # 服务层（auth/config/log）
 │   ├── key_selector.go  # Key负载均衡
 │   ├── smooth_weighted_rr.go  # 平滑加权轮询实现
 │   ├── request_context.go     # 请求上下文与超时控制
 │   ├── token_counter.go       # Token计数（Anthropic count-tokens）
-│   └── active_requests.go     # 活跃请求追踪
-├── model/         # 数据模型（auth_token/config/log/stats）
+│   ├── active_requests.go     # 活跃请求追踪（含BaseURL）
+│   ├── handlers.go            # 处理器注册
+│   ├── middleware_zstd.go     # zstd压缩中间件
+│   └── static.go              # 静态资源服务
+├── model/         # 数据模型（auth_token/config/log/stats/health/system_setting）
 ├── cooldown/      # 冷却决策引擎
 ├── storage/       # 存储层
 │   ├── factory.go       # 存储工厂（SQLite/MySQL/混合）
@@ -44,11 +48,11 @@ internal/
 │   ├── sync_manager.go  # 启动数据恢复
 │   ├── schema/          # Schema定义与构建器
 │   ├── sqlite/          # SQLite特定实现
-│   └── sql/             # SQL实现
-├── util/          # 工具库（classifier/cost_calculator/money/rate_limiter/models_fetcher/channel_types）
+│   └── sql/             # SQL实现（含metrics聚合/过滤/终结化）
+├── util/          # 工具库（classifier/cost_calculator/money/rate_limiter/models_fetcher/channel_types/apikeys/parse/time）
 ├── version/       # 版本信息、启动banner、版本检查
 ├── config/        # 配置加载
-└── testutil/      # 测试辅助
+└── testutil/      # 测试辅助（api_tester/data/http/store/templates/types）
 ```
 
 **故障切换策略**:
@@ -66,12 +70,21 @@ internal/
 - **冷却感知**: 实时排除冷却中的Key，权重反映实际可用容量
 - **成本限额检查**: 优先于冷却检查，达到限额的渠道被排除
 
+**多URL选择算法**（`URLSelector`）:
+- **探索优先**: 未被探索过的URL优先选择，确保所有URL都有延迟数据
+- **加权随机**: 权重=1/EWMA延迟，延迟越低被选中概率越高
+- **EWMA延迟追踪**: 指数加权移动平均记录每个URL的首字节时间
+- **指数退避冷却**: 失败URL独立冷却（2min→4min→8min→30min）
+- **BaseURL追踪**: 活跃请求、日志记录和UI展示均携带当前上游URL
+
 **关键入口**:
 - `cooldown.Manager.HandleError()` - 冷却决策引擎
 - `util.ClassifyHTTPStatus()` - HTTP错误分类器
 - `util.ClassifyHTTPResponseWithMeta()` - 带响应体的错误分类（返回完整元数据）
 - `app.KeySelector.SelectAvailableKey()` - Key负载均衡
 - `app.SmoothWeightedRR.SelectWithCooldown()` - 平滑加权轮询选择
+- `app.URLSelector.SelectURL()` - 多URL加权随机选择
+- `app.URLSelector.SortURLs()` - 按EWMA延迟排序（用于故障切换）
 
 **Token费用限额（Auth Token）**:
 - 存储：`auth_tokens.cost_used_microusd/cost_limit_microusd`（微美元整数），避免浮点误差

@@ -188,6 +188,7 @@ window.I18N_LOCALES['en'] = {
   'channels.batchDeleteKeysTitle': 'Batch delete selected Keys',
   'channels.deleteSelected': 'Delete Selected',
   'channels.tableApiUrl': 'API URL',
+  'channels.multiUrlStrategyHint': 'Multi-URL smart routing enabled: latency-weighted random dispatch, independent cooldown per failed URL (2min→30min exponential backoff), unexplored URLs prioritized',
   'channels.tableApiKey': 'API Key',
   'channels.keyStatusAll': 'All',
   'channels.keyStatusNormal': 'Normal',

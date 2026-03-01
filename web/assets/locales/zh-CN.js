@@ -188,6 +188,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.batchDeleteKeysTitle': '批量删除选中的Keys',
   'channels.deleteSelected': '删除选中',
   'channels.tableApiUrl': 'API URL',
+  'channels.multiUrlStrategyHint': '多URL时自动启用智能调度：基于延迟加权随机分发请求，失败URL独立冷却（2min→30min指数退避），优先探索未测试的URL',
   'channels.tableApiKey': 'API Key',
   'channels.keyStatusAll': '全部',
   'channels.keyStatusNormal': '正常',

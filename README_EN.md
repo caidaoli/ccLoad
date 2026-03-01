@@ -28,6 +28,7 @@ ccLoad solves these pain points through:
 - **Smart routing**: Prioritizes high-priority channels, smooth weighted round-robin for same priority with more even distribution
 - **Automatic failover**: Automatically switches to available channels when failures occur
 - **Exponential cooldown**: Failed channels use exponential backoff to avoid hammering failed services
+- **Multi-URL smart routing**: Multiple URLs per channel with latency-weighted random selection, slower URLs automatically get less traffic
 - **Zero manual intervention**: Clients don't need to manually switch upstream channels
 - **Real-time request monitoring**: Log management interface shows ongoing requests - no more blind waiting, clear visibility into each request's status
 - **Soft error detection**: Automatically detects HTTP 200 responses that are actually errors ("masqueraded responses"), triggering channel cooldown and failover. Common scenarios include:
@@ -54,6 +55,7 @@ ccLoad solves these pain points through:
 - 💰 **Cost Limits** - Per-channel daily cost limits, per-token cost limits
 - 🔐 **Token Restrictions** - API token cost limits + model restrictions for fine-grained access control
 - ⏱️ **TTFB Monitoring** - Streaming request first byte time tracking for upstream latency diagnosis
+- 🌐 **Multi-URL Load Balancing** - Multiple URLs per channel with latency-weighted random selection
 
 ## 🏗️ Architecture Overview
 
@@ -73,6 +75,9 @@ graph TB
             F --> G[Channel A<br/>Priority:10]
             F --> H[Channel B<br/>Priority:5]
             F --> I[Channel C<br/>Priority:5]
+            G --> G1[URL Selector<br/>Weighted Random]
+            H --> H1[URL Selector<br/>Weighted Random]
+            I --> I1[URL Selector<br/>Weighted Random]
         end
 
         subgraph "Storage Layer"
@@ -95,9 +100,9 @@ graph TB
     end
 
     subgraph "Upstream Services"
-        G --> N[Claude API]
-        H --> O[Claude API]
-        I --> P[Claude API]
+        G1 --> N[Claude API]
+        H1 --> O[Claude API]
+        I1 --> P[Claude API]
     end
 
     E <--> J
@@ -538,18 +543,20 @@ curl -X POST http://localhost:8080/v1/messages/count_tokens \
 Manage channels via Web interface `/web/channels.html` or API:
 
 ```bash
-# Add channel
+# Add channel (supports multiple URLs, comma-separated)
 curl -X POST http://localhost:8080/admin/channels \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Claude-API",
     "api_key": "sk-ant-api03-xxx",
-    "url": "https://api.anthropic.com",
+    "url": "https://api.anthropic.com,https://api2.anthropic.com",
     "priority": 10,
     "models": ["claude-3-sonnet-20240229", "claude-3-opus-20240229"],
     "enabled": true
   }'
 ```
+
+> **Multi-URL Note**: The `url` field supports comma-separated multiple URLs. The system uses latency-weighted random selection for optimal URL choice, with automatic cooldown for failed URLs, enabling URL-level load balancing and failover within a single channel.
 
 ### Batch Data Management
 
@@ -650,6 +657,12 @@ Check out the awesome admin dashboard 👇
   - Eliminates duplicate code, unified cooldown logic
   - Distinguishes network vs HTTP error classification
   - Built-in single-key channel auto-upgrade logic
+- **Multi-URL Selector** (URLSelector):
+  - `url_selector.go`: Smart URL selection within a single channel
+  - Explore-first: Unvisited URLs get priority to collect latency data
+  - Weighted random: Weight = 1/EWMA latency, lower latency = higher selection probability
+  - Independent cooldown: Failed URLs cool down independently without affecting other URLs
+  - BaseURL tracking: Active requests, logs, and UI carry upstream URL throughout
 - **Storage Layer Refactor** (2025-12 optimization, eliminated 467 lines of duplicate code):
   - `storage/schema/`: Unified schema definition (supports SQLite/MySQL differences)
   - `storage/sql/`: Common SQL implementation layer (SQLite/MySQL shared)
@@ -824,9 +837,12 @@ storage/
 │   ├── apikey.go          # API key CRUD
 │   ├── cooldown.go        # Cooldown management
 │   ├── log.go             # Log storage
-│   ├── metrics.go         # Metrics stats
-│   ├── metrics_filter.go  # Filter intersection support
-│   ├── auth_tokens.go     # API access tokens
+│   ├── metrics.go             # Metrics stats
+│   ├── metrics_filter.go      # Filter intersection support
+│   ├── metrics_aggregate_rows.go  # Aggregate row processing
+│   ├── metrics_finalize.go    # Finalization processing
+│   ├── auth_tokens.go         # API access tokens
+│   ├── auth_token_stats.go    # Token statistics
 │   ├── admin_sessions.go  # Admin sessions
 │   ├── system_settings.go # System settings
 │   └── helpers.go         # Helper functions
@@ -840,7 +856,7 @@ storage/
 **Core Table Structure** (SQLite and MySQL shared):
 - `channels` - Channel config (cooldown data inline, UNIQUE constraint on name)
 - `api_keys` - API keys (key-level cooldown inline, multi-key strategies)
-- `logs` - Request logs (merged into main database)
+- `logs` - Request logs (with base_url upstream URL tracking)
 - `key_rr` - Round-robin pointers (channel_id → idx)
 - `auth_tokens` - Auth tokens (with cost limits, model restrictions, first byte time tracking)
 - `admin_sessions` - Admin sessions
