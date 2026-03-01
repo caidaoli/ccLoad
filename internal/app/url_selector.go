@@ -3,7 +3,7 @@ package app
 import (
 	"math"
 	"math/rand/v2"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 )
@@ -32,7 +32,6 @@ type URLSelector struct {
 	latencies    map[urlKey]*ewmaValue
 	cooldowns    map[urlKey]urlCooldownState
 	alpha        float64       // EWMA权重因子
-	epsilon      float64       // 探索概率 (epsilon-greedy)
 	cooldownBase time.Duration // 基础冷却时间
 	cooldownMax  time.Duration // 最大冷却时间
 }
@@ -43,7 +42,6 @@ func NewURLSelector() *URLSelector {
 		latencies:    make(map[urlKey]*ewmaValue),
 		cooldowns:    make(map[urlKey]urlCooldownState),
 		alpha:        0.3,
-		epsilon:      0.1, // 10%概率随机探索
 		cooldownBase: 2 * time.Minute,
 		cooldownMax:  30 * time.Minute,
 	}
@@ -96,29 +94,35 @@ func (s *URLSelector) SelectURL(channelID int64, urls []string) (string, int) {
 		available = cooled
 	}
 
-	// 先随机打乱（同组内随机），再稳定排序
-	rand.Shuffle(len(available), func(i, j int) {
-		available[i], available[j] = available[j], available[i]
-	})
-	// 探索优先：未探索URL排在已知URL前面，已知URL按EWMA升序
-	sort.SliceStable(available, func(i, j int) bool {
-		iKnown, jKnown := available[i].latency >= 0, available[j].latency >= 0
-		if iKnown != jKnown {
-			return !iKnown // 未探索的优先
+	// 未探索URL优先：随机选一个未探索的
+	var unknown, known []candidate
+	for _, c := range available {
+		if c.latency < 0 {
+			unknown = append(unknown, c)
+		} else {
+			known = append(known, c)
 		}
-		if !iKnown {
-			return false // 都未探索：保持随机顺序
-		}
-		return available[i].latency < available[j].latency
-	})
-
-	// Epsilon-greedy：所有URL都已探索且有多个可选时，以epsilon概率随机选
-	if len(available) > 1 && available[0].latency >= 0 && rand.Float64() < s.epsilon {
-		pick := rand.IntN(len(available)-1) + 1 // 排除[0]，从剩余中随机选
-		return available[pick].url, available[pick].idx
+	}
+	if len(unknown) > 0 {
+		pick := unknown[rand.IntN(len(unknown))]
+		return pick.url, pick.idx
 	}
 
-	return available[0].url, available[0].idx
+	// 所有URL已探索：加权随机（权重=1/latency），延迟越低概率越高
+	totalWeight := 0.0
+	weights := make([]float64, len(known))
+	for i, c := range known {
+		weights[i] = 1.0 / c.latency
+		totalWeight += weights[i]
+	}
+	r := rand.Float64() * totalWeight
+	for i, w := range weights {
+		r -= w
+		if r <= 0 {
+			return known[i].url, known[i].idx
+		}
+	}
+	return known[len(known)-1].url, known[len(known)-1].idx
 }
 
 // RecordLatency 记录URL的首字节时间，更新EWMA
@@ -214,19 +218,30 @@ func (s *URLSelector) SortURLs(channelID int64, urls []string) []sortedURL {
 		candidates[i], candidates[j] = candidates[j], candidates[i]
 	})
 	// 排序优先级：非冷却 > 冷却，同组内未探索 > 已知，已知按EWMA升序
-	sort.SliceStable(candidates, func(i, j int) bool {
-		ci, cj := candidates[i], candidates[j]
+	slices.SortStableFunc(candidates, func(ci, cj candidate) int {
 		if ci.cooled != cj.cooled {
-			return !ci.cooled // 非冷却优先
+			if !ci.cooled {
+				return -1 // 非冷却优先
+			}
+			return 1
 		}
 		iKnown, jKnown := ci.latency >= 0, cj.latency >= 0
 		if iKnown != jKnown {
-			return !iKnown // 未探索的优先
+			if !iKnown {
+				return -1 // 未探索的优先
+			}
+			return 1
 		}
 		if !iKnown {
-			return false // 都未探索：保持随机顺序
+			return 0 // 都未探索：保持随机顺序
 		}
-		return ci.latency < cj.latency
+		if ci.latency < cj.latency {
+			return -1
+		}
+		if ci.latency > cj.latency {
+			return 1
+		}
+		return 0
 	})
 
 	result := make([]sortedURL, len(candidates))

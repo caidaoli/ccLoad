@@ -30,24 +30,24 @@ func TestURLSelector_ColdStart_Distributes(t *testing.T) {
 	}
 }
 
-func TestURLSelector_SelectsFastest(t *testing.T) {
+func TestURLSelector_WeightedRandom(t *testing.T) {
 	sel := NewURLSelector()
 	urls := []string{"https://slow.com", "https://fast.com"}
 	// 记录延迟: slow=500ms, fast=100ms
+	// 加权随机: fast权重=1/100, slow权重=1/500 → fast占83.3%
 	sel.RecordLatency(1, "https://slow.com", 500*time.Millisecond)
 	sel.RecordLatency(1, "https://fast.com", 100*time.Millisecond)
 
-	// epsilon-greedy: ~90%选最快，统计验证
 	fastCount := 0
-	for range 200 {
+	for range 1000 {
 		url, _ := sel.SelectURL(1, urls)
 		if url == "https://fast.com" {
 			fastCount++
 		}
 	}
-	// 期望~90%（epsilon=0.1），允许80%~98%
-	if fastCount < 160 || fastCount > 196 {
-		t.Errorf("expected ~90%% fast selections, got %d/200 (%.0f%%)", fastCount, float64(fastCount)/2)
+	// 期望~83%，允许75%~92%
+	if fastCount < 750 || fastCount > 920 {
+		t.Errorf("weighted random: expected ~83%% fast, got %d/1000 (%.1f%%)", fastCount, float64(fastCount)/10)
 	}
 }
 
@@ -70,7 +70,7 @@ func TestURLSelector_AllCooledDown_ReturnsBest(t *testing.T) {
 	sel.CooldownURL(1, "https://a.com")
 	sel.CooldownURL(1, "https://b.com")
 
-	// 所有URL都冷却时，仍然返回第一个（兜底）
+	// 所有URL都冷却时，仍然返回一个URL（兜底）
 	url, _ := sel.SelectURL(1, urls)
 	if url == "" {
 		t.Error("all cooled: should still return a URL as fallback")
@@ -91,17 +91,18 @@ func TestURLSelector_CooldownExpires(t *testing.T) {
 		t.Errorf("during cooldown: expected b, got %s", url)
 	}
 
-	// 等待冷却过期后：a（最快）应该被大多数时候选中（epsilon-greedy）
+	// 等待冷却过期后：a（最快）应该被大多数时候选中
+	// a(50ms) vs b(200ms) → a权重=1/50=0.02, b权重=1/200=0.005 → a占80%
 	time.Sleep(15 * time.Millisecond)
 	aCount := 0
-	for range 100 {
+	for range 200 {
 		url, _ = sel.SelectURL(1, urls)
 		if url == "https://a.com" {
 			aCount++
 		}
 	}
-	if aCount < 80 {
-		t.Errorf("after cooldown: expected a selected ~90%%, got %d/100", aCount)
+	if aCount < 130 {
+		t.Errorf("after cooldown: expected a selected ~80%%, got %d/200", aCount)
 	}
 }
 
@@ -116,8 +117,9 @@ func TestURLSelector_IndependentChannels(t *testing.T) {
 
 	urls := []string{"https://a.com", "https://b.com"}
 	// 渠道2应大多选a（最快），渠道1应大多选b（最快）
+	// 50ms vs 500ms → 快的占 1/50 / (1/50+1/500) = 90.9%
 	ch2a, ch1b := 0, 0
-	for range 100 {
+	for range 200 {
 		if url, _ := sel.SelectURL(2, urls); url == "https://a.com" {
 			ch2a++
 		}
@@ -125,11 +127,11 @@ func TestURLSelector_IndependentChannels(t *testing.T) {
 			ch1b++
 		}
 	}
-	if ch2a < 80 {
-		t.Errorf("channel 2: expected a.com ~90%%, got %d/100", ch2a)
+	if ch2a < 150 {
+		t.Errorf("channel 2: expected a.com ~91%%, got %d/200", ch2a)
 	}
-	if ch1b < 80 {
-		t.Errorf("channel 1: expected b.com ~90%%, got %d/100", ch1b)
+	if ch1b < 150 {
+		t.Errorf("channel 1: expected b.com ~91%%, got %d/200", ch1b)
 	}
 }
 
