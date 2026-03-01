@@ -72,6 +72,26 @@ func (c *Config) GetModels() []string {
 	return models
 }
 
+// GetURLs 解析URL字段，返回URL列表
+// 支持换行分隔多个URL，向后兼容单URL场景
+func (c *Config) GetURLs() []string {
+	if !strings.Contains(c.URL, "\n") {
+		return []string{c.URL}
+	}
+	lines := strings.Split(c.URL, "\n")
+	urls := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			urls = append(urls, line)
+		}
+	}
+	if len(urls) == 0 {
+		return []string{c.URL}
+	}
+	return urls
+}
+
 // buildIndexIfNeeded 懒加载构建模型查找索引（性能优化：O(n) → O(1)）
 // 使用双重检查锁定（DCL）模式保证并发安全
 func (c *Config) buildIndexIfNeeded() {
