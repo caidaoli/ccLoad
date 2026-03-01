@@ -2,6 +2,7 @@ package app
 
 import (
 	"math"
+	"math/rand/v2"
 	"sort"
 	"sync"
 	"time"
@@ -31,6 +32,7 @@ type URLSelector struct {
 	latencies    map[urlKey]*ewmaValue
 	cooldowns    map[urlKey]urlCooldownState
 	alpha        float64       // EWMA权重因子
+	epsilon      float64       // 探索概率 (epsilon-greedy)
 	cooldownBase time.Duration // 基础冷却时间
 	cooldownMax  time.Duration // 最大冷却时间
 }
@@ -41,6 +43,7 @@ func NewURLSelector() *URLSelector {
 		latencies:    make(map[urlKey]*ewmaValue),
 		cooldowns:    make(map[urlKey]urlCooldownState),
 		alpha:        0.3,
+		epsilon:      0.1, // 10%概率随机探索
 		cooldownBase: 2 * time.Minute,
 		cooldownMax:  30 * time.Minute,
 	}
@@ -93,17 +96,27 @@ func (s *URLSelector) SelectURL(channelID int64, urls []string) (string, int) {
 		available = cooled
 	}
 
-	// 排序：有延迟数据的按EWMA升序排前面，无数据的保持原始顺序排后面
-	sort.SliceStable(available, func(i, j int) bool {
-		li, lj := available[i].latency, available[j].latency
-		if li >= 0 && lj >= 0 {
-			return li < lj // 都有数据：按延迟排序
-		}
-		if li >= 0 {
-			return true // i有数据j没有，i优先
-		}
-		return false // j有数据或都没有，保持原序
+	// 先随机打乱（同组内随机），再稳定排序
+	rand.Shuffle(len(available), func(i, j int) {
+		available[i], available[j] = available[j], available[i]
 	})
+	// 探索优先：未探索URL排在已知URL前面，已知URL按EWMA升序
+	sort.SliceStable(available, func(i, j int) bool {
+		iKnown, jKnown := available[i].latency >= 0, available[j].latency >= 0
+		if iKnown != jKnown {
+			return !iKnown // 未探索的优先
+		}
+		if !iKnown {
+			return false // 都未探索：保持随机顺序
+		}
+		return available[i].latency < available[j].latency
+	})
+
+	// Epsilon-greedy：所有URL都已探索且有多个可选时，以epsilon概率随机选
+	if len(available) > 1 && available[0].latency >= 0 && rand.Float64() < s.epsilon {
+		pick := rand.IntN(len(available)-1) + 1 // 排除[0]，从剩余中随机选
+		return available[pick].url, available[pick].idx
+	}
 
 	return available[0].url, available[0].idx
 }
@@ -160,17 +173,6 @@ func (s *URLSelector) IsCooledDown(channelID int64, url string) bool {
 	return ok && time.Now().Before(cd.until)
 }
 
-// LastSeen 返回URL最后一次被使用的时间（用于探测器判断是否需要主动探测）
-func (s *URLSelector) LastSeen(channelID int64, url string) time.Time {
-	key := urlKey{channelID: channelID, url: url}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if e, ok := s.latencies[key]; ok {
-		return e.lastSeen
-	}
-	return time.Time{} // 零值表示从未被使用
-}
-
 // sortedURL 排序后的URL条目
 type sortedURL struct {
 	url string
@@ -207,20 +209,24 @@ func (s *URLSelector) SortURLs(channelID int64, urls []string) []sortedURL {
 		candidates[i] = c
 	}
 
-	// 排序：非冷却URL优先，同组内按EWMA升序，无数据的保持原序
+	// 先随机打乱，再稳定排序
+	rand.Shuffle(len(candidates), func(i, j int) {
+		candidates[i], candidates[j] = candidates[j], candidates[i]
+	})
+	// 排序优先级：非冷却 > 冷却，同组内未探索 > 已知，已知按EWMA升序
 	sort.SliceStable(candidates, func(i, j int) bool {
 		ci, cj := candidates[i], candidates[j]
 		if ci.cooled != cj.cooled {
 			return !ci.cooled // 非冷却优先
 		}
-		li, lj := ci.latency, cj.latency
-		if li >= 0 && lj >= 0 {
-			return li < lj
+		iKnown, jKnown := ci.latency >= 0, cj.latency >= 0
+		if iKnown != jKnown {
+			return !iKnown // 未探索的优先
 		}
-		if li >= 0 {
-			return true
+		if !iKnown {
+			return false // 都未探索：保持随机顺序
 		}
-		return false
+		return ci.latency < cj.latency
 	})
 
 	result := make([]sortedURL, len(candidates))

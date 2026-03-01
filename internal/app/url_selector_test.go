@@ -13,12 +13,20 @@ func TestURLSelector_SingleURL(t *testing.T) {
 	}
 }
 
-func TestURLSelector_ColdStart_ReturnsFirst(t *testing.T) {
+func TestURLSelector_ColdStart_Distributes(t *testing.T) {
 	sel := NewURLSelector()
 	urls := []string{"https://a.com", "https://b.com", "https://c.com"}
-	url, idx := sel.SelectURL(1, urls)
-	if url != "https://a.com" || idx != 0 {
-		t.Errorf("cold start: expected first URL, got (%s, %d)", url, idx)
+
+	// 冷启动时应随机分布到所有URL，而非永远选第一个
+	seen := map[string]int{}
+	for range 100 {
+		url, _ := sel.SelectURL(1, urls)
+		seen[url]++
+	}
+	for _, u := range urls {
+		if seen[u] == 0 {
+			t.Errorf("cold start: URL %s was never selected in 100 rounds", u)
+		}
 	}
 }
 
@@ -29,9 +37,17 @@ func TestURLSelector_SelectsFastest(t *testing.T) {
 	sel.RecordLatency(1, "https://slow.com", 500*time.Millisecond)
 	sel.RecordLatency(1, "https://fast.com", 100*time.Millisecond)
 
-	url, _ := sel.SelectURL(1, urls)
-	if url != "https://fast.com" {
-		t.Errorf("expected fastest URL https://fast.com, got %s", url)
+	// epsilon-greedy: ~90%选最快，统计验证
+	fastCount := 0
+	for range 200 {
+		url, _ := sel.SelectURL(1, urls)
+		if url == "https://fast.com" {
+			fastCount++
+		}
+	}
+	// 期望~90%（epsilon=0.1），允许80%~98%
+	if fastCount < 160 || fastCount > 196 {
+		t.Errorf("expected ~90%% fast selections, got %d/200 (%.0f%%)", fastCount, float64(fastCount)/2)
 	}
 }
 
@@ -69,29 +85,72 @@ func TestURLSelector_CooldownExpires(t *testing.T) {
 	sel.RecordLatency(1, "https://b.com", 200*time.Millisecond)
 	sel.CooldownURL(1, "https://a.com")
 
-	// 冷却期间选b
+	// 冷却期间：a被排除，只能选b
 	url, _ := sel.SelectURL(1, urls)
 	if url != "https://b.com" {
 		t.Errorf("during cooldown: expected b, got %s", url)
 	}
 
-	// 等待冷却过期
+	// 等待冷却过期后：a（最快）应该被大多数时候选中（epsilon-greedy）
 	time.Sleep(15 * time.Millisecond)
-	url, _ = sel.SelectURL(1, urls)
-	if url != "https://a.com" {
-		t.Errorf("after cooldown: expected a (fastest), got %s", url)
+	aCount := 0
+	for range 100 {
+		url, _ = sel.SelectURL(1, urls)
+		if url == "https://a.com" {
+			aCount++
+		}
+	}
+	if aCount < 80 {
+		t.Errorf("after cooldown: expected a selected ~90%%, got %d/100", aCount)
 	}
 }
 
 func TestURLSelector_IndependentChannels(t *testing.T) {
 	sel := NewURLSelector()
+	// 渠道1: a慢, b快
 	sel.RecordLatency(1, "https://a.com", 500*time.Millisecond)
+	sel.RecordLatency(1, "https://b.com", 50*time.Millisecond)
+	// 渠道2: a快, b慢（与渠道1相反）
 	sel.RecordLatency(2, "https://a.com", 50*time.Millisecond)
+	sel.RecordLatency(2, "https://b.com", 500*time.Millisecond)
 
-	// 渠道1的延迟不影响渠道2
-	url, _ := sel.SelectURL(2, []string{"https://a.com", "https://b.com"})
-	if url != "https://a.com" {
-		t.Errorf("channel isolation: expected a.com for channel 2, got %s", url)
+	urls := []string{"https://a.com", "https://b.com"}
+	// 渠道2应大多选a（最快），渠道1应大多选b（最快）
+	ch2a, ch1b := 0, 0
+	for range 100 {
+		if url, _ := sel.SelectURL(2, urls); url == "https://a.com" {
+			ch2a++
+		}
+		if url, _ := sel.SelectURL(1, urls); url == "https://b.com" {
+			ch1b++
+		}
+	}
+	if ch2a < 80 {
+		t.Errorf("channel 2: expected a.com ~90%%, got %d/100", ch2a)
+	}
+	if ch1b < 80 {
+		t.Errorf("channel 1: expected b.com ~90%%, got %d/100", ch1b)
+	}
+}
+
+func TestURLSelector_ExploreFirst(t *testing.T) {
+	sel := NewURLSelector()
+	urls := []string{"https://a.com", "https://b.com", "https://c.com"}
+
+	// 只有a有延迟数据
+	sel.RecordLatency(1, "https://a.com", 100*time.Millisecond)
+
+	// 未探索URL应该被优先选择（b或c），而非已知的a
+	seen := map[string]int{}
+	for range 50 {
+		url, _ := sel.SelectURL(1, urls)
+		seen[url]++
+	}
+	if seen["https://a.com"] > 0 {
+		t.Errorf("explore-first: a.com (known) should not be selected while b.com/c.com are unexplored, got a=%d", seen["https://a.com"])
+	}
+	if seen["https://b.com"] == 0 || seen["https://c.com"] == 0 {
+		t.Errorf("explore-first: both unexplored URLs should be selected, got b=%d c=%d", seen["https://b.com"], seen["https://c.com"])
 	}
 }
 
