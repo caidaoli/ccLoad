@@ -90,6 +90,7 @@ func TestBuildProxyRequest(t *testing.T) {
 		http.Header{"User-Agent": []string{"test"}},
 		"",
 		"/v1/messages",
+		cfg.URL,
 	)
 
 	if err != nil {
@@ -215,6 +216,7 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 			http.Header{},
 			"",
 			"/v1/messages",
+			cfg.URL,
 			recorder,
 			nil, // observer
 		)
@@ -248,6 +250,7 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 			http.Header{},
 			"",
 			"/v1/messages",
+			cfg.URL,
 			recorder,
 			nil, // observer
 		)
@@ -338,6 +341,7 @@ func TestClientCancelClosesUpstream(t *testing.T) {
 			http.Header{},
 			"",
 			"/v1/messages",
+			cfg.URL,
 			recorder,
 			nil, // observer
 		)
@@ -419,6 +423,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 				http.Header{},
 				"",
 				"/v1/messages",
+				cfg.URL,
 				recorder,
 				nil, // observer
 			)
@@ -454,7 +459,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 				cancel()
 			}()
 
-			_, _, _ = srv.forwardOnceAsync(ctx, cfg, "sk-test", http.MethodPost, []byte(`{}`), http.Header{}, "", "/v1/messages", recorder, nil)
+			_, _, _ = srv.forwardOnceAsync(ctx, cfg, "sk-test", http.MethodPost, []byte(`{}`), http.Header{}, "", "/v1/messages", cfg.URL, recorder, nil)
 		}
 
 		after := waitForGoroutineDeltaLE(t, before, maxDelta, waitTimeout)
@@ -491,6 +496,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 				http.Header{},
 				"",
 				"/v1/messages",
+				cfg.URL,
 				recorder,
 				nil, // observer
 			)
@@ -543,6 +549,7 @@ func TestFirstByteTimeout_StreamingResponse(t *testing.T) {
 		http.Header{},
 		"",
 		"/v1/messages",
+		cfg.URL,
 		recorder,
 		nil, // observer
 	)
@@ -608,6 +615,7 @@ func TestFirstByteTimeout_StreamingResponseBodyDelayed(t *testing.T) {
 		http.Header{},
 		"",
 		"/v1/messages",
+		cfg.URL,
 		recorder,
 		nil, // observer
 	)

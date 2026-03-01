@@ -68,9 +68,10 @@ func (s *Server) buildProxyRequest(
 	body []byte,
 	hdr http.Header,
 	rawQuery, requestPath string,
+	baseURL string,
 ) (*http.Request, error) {
 	// 1. 构建完整 URL
-	upstreamURL := buildUpstreamURL(cfg, requestPath, rawQuery)
+	upstreamURL := buildUpstreamURL(baseURL, requestPath, rawQuery)
 
 	// 2. 创建带上下文的请求
 	req, err := buildUpstreamRequest(reqCtx.ctx, method, upstreamURL, body)
@@ -463,13 +464,13 @@ func (s *Server) handleResponse(
 // 从proxy.go提取，遵循SRP原则
 // 参数新增 apiKey 用于直接传递已选中的API Key（从KeySelector获取）
 // 参数新增 method 用于支持任意HTTP方法（GET、POST、PUT、DELETE等）
-func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey string, method string, body []byte, hdr http.Header, rawQuery, requestPath string, w http.ResponseWriter, observer *ForwardObserver) (*fwResult, float64, error) {
+func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey string, method string, body []byte, hdr http.Header, rawQuery, requestPath string, baseURL string, w http.ResponseWriter, observer *ForwardObserver) (*fwResult, float64, error) {
 	// 1. 创建请求上下文（处理超时）
 	reqCtx := s.newRequestContext(ctx, requestPath, body)
 	defer reqCtx.cleanup() // [INFO] 统一清理：定时器 + context（总是安全）
 
 	// 2. 构建上游请求
-	req, err := s.buildProxyRequest(reqCtx, cfg, apiKey, method, body, hdr, rawQuery, requestPath)
+	req, err := s.buildProxyRequest(reqCtx, cfg, apiKey, method, body, hdr, rawQuery, requestPath, baseURL)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -540,6 +541,7 @@ func (s *Server) forwardAttempt(
 	actualModel string, // [INFO] 重定向后的实际模型名称
 	bodyToSend []byte,
 	requestPath string, // [FIX] 2026-01: 可能经过模型名替换的请求路径
+	baseURL string, // 显式传入的URL（多URL场景）
 	w http.ResponseWriter,
 ) (*proxyResult, cooldown.Action) {
 	// 记录渠道尝试开始时间（用于日志记录，每次渠道/Key切换时更新）
@@ -548,7 +550,7 @@ func (s *Server) forwardAttempt(
 	// 转发请求（传递实际的API Key字符串和观测回调）
 	// [FIX] 2026-01: 使用传入的 requestPath（可能已替换模型名）而非 reqCtx.requestPath
 	res, duration, err := s.forwardOnceAsync(ctx, cfg, selectedKey, reqCtx.requestMethod,
-		bodyToSend, reqCtx.header, reqCtx.rawQuery, requestPath, w, reqCtx.observer)
+		bodyToSend, reqCtx.header, reqCtx.rawQuery, requestPath, baseURL, w, reqCtx.observer)
 
 	// 处理网络错误或异常响应（如空响应）
 	// [INFO] 修复：handleResponse可能返回err即使StatusCode=200（例如Content-Length=0）
@@ -682,7 +684,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		// [INFO] 修复：传递 actualModel 用于日志记录
 		// [FIX] 2026-01: 传递 requestPath（可能经过模型名替换）
 		result, nextAction := s.forwardAttempt(
-			ctx, cfg, keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, requestPath, w)
+			ctx, cfg, keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, requestPath, cfg.URL, w)
 
 		if result != nil {
 			if result.succeeded {
