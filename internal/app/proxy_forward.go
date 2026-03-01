@@ -658,6 +658,9 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	// 如果模糊匹配将 gemini-3-flash 改为 gemini-3-flash-preview，URL 路径也需要同步更新
 	requestPath := replaceModelInPath(reqCtx.requestPath, reqCtx.originalModel, actualModel)
 
+	// 获取渠道URL列表（单URL时退化为单元素切片）
+	urls := cfg.GetURLs()
+
 	// Key重试循环
 	for range maxKeyRetries {
 		// 检查context是否已取消/超时
@@ -680,24 +683,54 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 			s.activeRequests.Update(reqCtx.activeReqID, cfg.ID, cfg.Name, cfg.GetChannelType(), selectedKey, reqCtx.tokenID)
 		}
 
-		// 单次转发尝试（传递实际的API Key字符串）
-		// [INFO] 修复：传递 actualModel 用于日志记录
-		// [FIX] 2026-01: 传递 requestPath（可能经过模型名替换）
-		result, nextAction := s.forwardAttempt(
-			ctx, cfg, keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, requestPath, cfg.URL, w)
+		// URL循环（单URL时退化为单次迭代）
+		sortedURLs := s.urlSelector.SortURLs(cfg.ID, urls)
+		var urlLastFailure *proxyResult
+		for _, urlEntry := range sortedURLs {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return makeCtxDoneResult(ctxErr), nil
+			}
 
-		if result != nil {
-			if result.succeeded {
+			result, nextAction := s.forwardAttempt(
+				ctx, cfg, keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, requestPath, urlEntry.url, w)
+
+			if result != nil && result.succeeded {
+				// 成功：记录TTFB到URLSelector（仅多URL场景）
+				if len(urls) > 1 {
+					s.urlSelector.RecordLatency(cfg.ID, urlEntry.url, time.Since(reqCtx.attemptStartTime))
+				}
 				return result, nil
 			}
-			lastFailure = result
+
+			if result != nil {
+				urlLastFailure = result
+			}
+
+			// Key级错误：换URL无意义，跳出URL循环
+			if nextAction == cooldown.ActionRetryKey {
+				break
+			}
+			// 客户端错误：直接返回
+			if nextAction == cooldown.ActionReturnClient {
+				return urlLastFailure, nil
+			}
+			// 渠道级错误 (ActionRetryChannel) 或网络错误：
+			// 在多URL场景下，先尝试下一个URL
+			if len(urls) > 1 {
+				s.urlSelector.CooldownURL(cfg.ID, urlEntry.url)
+				continue // 下一个URL
+			}
+			// 单URL：保持原有行为
+			break
 		}
 
-		if nextAction == cooldown.ActionRetryKey {
-			continue
-		}
-		if nextAction == cooldown.ActionRetryChannel {
-			break
+		// URL循环结束后的Key级决策
+		if urlLastFailure != nil {
+			lastFailure = urlLastFailure
+			if urlLastFailure.nextAction == cooldown.ActionRetryKey {
+				continue // 下一个Key
+			}
+			break // ActionRetryChannel 或 ActionReturnClient
 		}
 		break
 	}

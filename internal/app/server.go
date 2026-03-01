@@ -42,6 +42,7 @@ type Server struct {
 	costCache       *CostCache            // 渠道每日成本缓存
 	statsCache      *StatsCache           // 统计结果缓存层
 	channelBalancer *SmoothWeightedRR     // 渠道负载均衡器（平滑加权轮询）
+	urlSelector     *URLSelector          // URL选择器（多URL场景的延迟追踪与冷却）
 	client          *http.Client          // HTTP客户端
 	activeRequests  *activeRequestManager // 进行中请求（内存状态，不持久化）
 
@@ -185,6 +186,9 @@ func NewServer(store storage.Store) *Server {
 
 	// 初始化渠道负载均衡器（平滑加权轮询，确定性分流）
 	s.channelBalancer = NewSmoothWeightedRR()
+
+	// 初始化URL选择器（多URL场景：EWMA延迟追踪+URL级冷却）
+	s.urlSelector = NewURLSelector()
 
 	// 初始化健康度缓存（启动时读取配置，修改后重启生效）
 	defaultHealthCfg := model.DefaultHealthScoreConfig()

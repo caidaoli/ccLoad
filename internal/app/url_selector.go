@@ -170,3 +170,62 @@ func (s *URLSelector) LastSeen(channelID int64, url string) time.Time {
 	}
 	return time.Time{} // 零值表示从未被使用
 }
+
+// sortedURL 排序后的URL条目
+type sortedURL struct {
+	url string
+	idx int
+}
+
+// SortURLs 返回按EWMA延迟排序的全部URL列表（非冷却URL优先，用于故障切换遍历）
+func (s *URLSelector) SortURLs(channelID int64, urls []string) []sortedURL {
+	if len(urls) <= 1 {
+		return []sortedURL{{url: urls[0], idx: 0}}
+	}
+
+	now := time.Now()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	type candidate struct {
+		url     string
+		idx     int
+		latency float64
+		cooled  bool
+	}
+
+	candidates := make([]candidate, len(urls))
+	for i, u := range urls {
+		key := urlKey{channelID: channelID, url: u}
+		c := candidate{url: u, idx: i, latency: -1}
+		if e, ok := s.latencies[key]; ok {
+			c.latency = e.value
+		}
+		if cd, ok := s.cooldowns[key]; ok && now.Before(cd.until) {
+			c.cooled = true
+		}
+		candidates[i] = c
+	}
+
+	// 排序：非冷却URL优先，同组内按EWMA升序，无数据的保持原序
+	sort.SliceStable(candidates, func(i, j int) bool {
+		ci, cj := candidates[i], candidates[j]
+		if ci.cooled != cj.cooled {
+			return !ci.cooled // 非冷却优先
+		}
+		li, lj := ci.latency, cj.latency
+		if li >= 0 && lj >= 0 {
+			return li < lj
+		}
+		if li >= 0 {
+			return true
+		}
+		return false
+	})
+
+	result := make([]sortedURL, len(candidates))
+	for i, c := range candidates {
+		result[i] = sortedURL{url: c.url, idx: c.idx}
+	}
+	return result
+}
