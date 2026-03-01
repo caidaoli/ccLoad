@@ -15,6 +15,13 @@
     {
       "type": "text",
       "text": "You are Claude Code, Anthropic's official CLI for Claude."
+    },
+    {
+      "type": "text",
+      "text": "\nYou are an interactive agent that helps users with software engineering tasks.",
+      "cache_control": {
+        "type": "ephemeral"
+      }
     }
   ],
   "tools": [],
