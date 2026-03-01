@@ -116,6 +116,7 @@ type proxyRequestContext struct {
 	observer         *ForwardObserver // 转发观测回调（可选）
 	startTime        time.Time        // 请求开始时间（用于统计）
 	attemptStartTime time.Time        // 渠道尝试开始时间（用于日志记录）
+	baseURL          string           // 当前尝试使用的上游URL（多URL场景）
 }
 
 // proxyResult 代理请求结果
@@ -533,6 +534,7 @@ type logEntryParams struct {
 	APIKeyUsed   string
 	AuthTokenID  int64
 	ClientIP     string
+	BaseURL      string // 请求使用的上游URL
 	Result       *fwResult
 	ErrMsg       string
 	StartTime    time.Time // 渠道尝试开始时间（用于日志记录）
@@ -554,6 +556,7 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		APIKeyUsed:  p.APIKeyUsed,
 		AuthTokenID: p.AuthTokenID,
 		ClientIP:    p.ClientIP,
+		BaseURL:     p.BaseURL,
 	}
 
 	// 记录实际转发的模型（仅当发生重定向时）

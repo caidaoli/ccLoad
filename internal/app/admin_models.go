@@ -199,7 +199,13 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 			channelType = cfg.ChannelType
 		}
 
-		resp, err := fetchModelsForConfig(ctx, channelType, cfg.URL, apiKey)
+		urls := cfg.GetURLs()
+		baseURL := urls[0]
+		if len(urls) > 1 {
+			baseURL, _ = s.urlSelector.SelectURL(cfg.ID, urls)
+		}
+
+		resp, err := fetchModelsForConfig(ctx, channelType, baseURL, apiKey)
 		if err != nil {
 			item.Status = "failed"
 			item.Error = err.Error()

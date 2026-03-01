@@ -22,6 +22,7 @@ type ActiveRequest struct {
 	ChannelType         string  `json:"channel_type,omitempty"`           // 渠道类型（用于前端筛选）
 	APIKeyUsed          string  `json:"api_key_used,omitempty"`           // 脱敏后的key
 	TokenID             int64   `json:"token_id,omitempty"`               // 令牌ID（用于前端筛选，0表示无令牌）
+	BaseURL             string  `json:"base_url,omitempty"`               // 当前使用的上游URL
 	BytesReceived       int64   `json:"bytes_received,omitempty"`         // 上游已返回的字节数（快照）
 	ClientFirstByteTime float64 `json:"client_first_byte_time,omitempty"` // 客户端侧首字节响应时间（秒），流式请求有效
 }
@@ -37,6 +38,7 @@ type activeRequest struct {
 	ChannelType string
 	APIKeyUsed  string
 	TokenID     int64
+	BaseURL     string
 
 	bytesCounter            atomic.Int64 // 上游已返回的字节数（原子累加）
 	clientFirstByteTimeUsec atomic.Int64 // 客户端侧首字节响应时间（微秒），CAS保证只写一次，0表示未设置
@@ -84,6 +86,15 @@ func (m *activeRequestManager) Update(id int64, channelID int64, channelName, ch
 		req.StartTime = time.Now().UnixMilli()
 		req.clientFirstByteTimeUsec.Store(0)
 		req.bytesCounter.Store(0)
+	}
+	m.mu.Unlock()
+}
+
+// SetBaseURL 更新活跃请求的上游URL（在URL循环中调用）
+func (m *activeRequestManager) SetBaseURL(id int64, baseURL string) {
+	m.mu.Lock()
+	if req, ok := m.requests[id]; ok {
+		req.BaseURL = baseURL
 	}
 	m.mu.Unlock()
 }
@@ -142,6 +153,7 @@ func (m *activeRequestManager) List() []*ActiveRequest {
 			ChannelType:   req.ChannelType,
 			APIKeyUsed:    req.APIKeyUsed,
 			TokenID:       req.TokenID,
+			BaseURL:       req.BaseURL,
 			BytesReceived: req.bytesCounter.Load(),
 		}
 		if usec := req.clientFirstByteTimeUsec.Load(); usec > 0 {

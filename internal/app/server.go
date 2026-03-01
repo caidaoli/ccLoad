@@ -283,17 +283,6 @@ func NewServer(store storage.Store) *Server {
 	s.wg.Add(1)
 	go s.stateCleanupLoop()
 
-	// 启动URL探测器（多URL渠道：后台探测低流量URL延迟）
-	urlProberCtx, urlProberCancel := context.WithCancel(context.Background())
-	prober := NewURLProber(s.urlSelector, s.channelCache, s.client)
-	prober.Start(urlProberCtx)
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		<-s.shutdownCh
-		urlProberCancel()
-	}()
-
 	return s
 
 }

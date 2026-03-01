@@ -103,6 +103,7 @@ func (s *Server) logProxyResult(
 		APIKeyUsed:   selectedKey,
 		AuthTokenID:  reqCtx.tokenID,
 		ClientIP:     reqCtx.clientIP,
+		BaseURL:      reqCtx.baseURL,
 		Result:       res,
 		ErrMsg:       errMsg,
 		StartTime:    reqCtx.attemptStartTime,

@@ -546,6 +546,7 @@ func (s *Server) forwardAttempt(
 ) (*proxyResult, cooldown.Action) {
 	// 记录渠道尝试开始时间（用于日志记录，每次渠道/Key切换时更新）
 	reqCtx.attemptStartTime = time.Now()
+	reqCtx.baseURL = baseURL
 
 	// 转发请求（传递实际的API Key字符串和观测回调）
 	// [FIX] 2026-01: 使用传入的 requestPath（可能已替换模型名）而非 reqCtx.requestPath
@@ -689,6 +690,11 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		for _, urlEntry := range sortedURLs {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return makeCtxDoneResult(ctxErr), nil
+			}
+
+			// 更新活跃请求的当前URL（用于前端显示）
+			if reqCtx.activeReqID > 0 {
+				s.activeRequests.SetBaseURL(reqCtx.activeReqID, urlEntry.url)
 			}
 
 			result, nextAction := s.forwardAttempt(

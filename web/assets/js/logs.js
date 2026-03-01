@@ -336,6 +336,17 @@
         const infoDisplay = hasBytes ? `已接收 ${bytesInfo}` : '请求处理中...';
         const infoColor = hasBytes ? 'var(--success-600)' : 'var(--neutral-500)';
 
+        // URL显示
+        let pendingUrlDisplay = '';
+        if (req.base_url) {
+          try {
+            const u = new URL(req.base_url);
+            pendingUrlDisplay = `<span style="color: var(--neutral-600);" title="${escapeHtml(req.base_url)}">${escapeHtml(u.host)}</span>`;
+          } catch {
+            pendingUrlDisplay = `<span style="color: var(--neutral-600);">${escapeHtml(req.base_url)}</span>`;
+          }
+        }
+
         const row = document.createElement('tr');
         row.className = 'pending-row';
         if (totalCols < 8) {
@@ -350,13 +361,14 @@
             </td>
           `;
         } else {
-          const emptyCols = Math.max(0, totalCols - 8); // 7列固定信息 + 末尾消息列
+          const emptyCols = Math.max(0, totalCols - 9); // 8列固定信息 + 末尾消息列
           const emptyCells = '<td></td>'.repeat(emptyCols);
           row.innerHTML = `
             <td style="white-space: nowrap;">${formatTime(req.start_time)}</td>
             <td class="config-info" style="white-space: nowrap; font-family: monospace; font-size: 0.85em; color: var(--neutral-600);">${escapeHtml(maskIP(req.client_ip) || '-')}</td>
             <td style="text-align: center;">${keyDisplay}</td>
             <td class="config-info">${channelDisplay}</td>
+            <td class="config-info" style="white-space: nowrap;">${pendingUrlDisplay}</td>
             <td><span class="model-tag">${escapeHtml(req.model)}</span></td>
             <td><span class="status-pending">进行中</span></td>
             <td style="text-align: right;">${durationDisplay} ${streamFlag}</td>
@@ -449,7 +461,7 @@
         // 4. 响应时间显示(流式/非流式)
         const hasDuration = entry.duration !== undefined && entry.duration !== null;
         const durationDisplay = hasDuration ?
-          `<span style="color: var(--neutral-700);">${entry.duration.toFixed(3)}</span>` :
+          `<span style="color: var(--neutral-700);">${entry.duration.toFixed(2)}</span>` :
           '<span style="color: var(--neutral-500);">-</span>';
 
         const streamFlag = getStreamFlagHtml(entry.is_streaming);
@@ -458,7 +470,7 @@
         if (entry.is_streaming) {
           const hasFirstByte = entry.first_byte_time !== undefined && entry.first_byte_time !== null;
           const firstByteDisplay = hasFirstByte ?
-            `<span style="color: var(--success-600);">${entry.first_byte_time.toFixed(3)}</span>` :
+            `<span style="color: var(--success-600);">${entry.first_byte_time.toFixed(2)}</span>` :
             '<span style="color: var(--neutral-500);">-</span>';
           responseTimingDisplay = `<span style="display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px; white-space: nowrap;">${firstByteDisplay}<span style="color: var(--neutral-400);">/</span>${durationDisplay}</span>${streamFlag}`;
         } else {
@@ -526,12 +538,24 @@
         const costDisplay = entry.cost ?
           `<span style="color: var(--warning-600); font-weight: 500;">${formatCost(entry.cost)}</span>` : '';
 
+        // 8. URL显示（仅显示域名部分）
+        let urlDisplay = '';
+        if (entry.base_url) {
+          try {
+            const u = new URL(entry.base_url);
+            urlDisplay = `<span style="color: var(--neutral-600);" title="${escapeHtml(entry.base_url)}">${escapeHtml(u.host)}</span>`;
+          } catch {
+            urlDisplay = `<span style="color: var(--neutral-600);">${escapeHtml(entry.base_url)}</span>`;
+          }
+        }
+
         // === 直接拼接行 HTML ===
         htmlParts[i] = `<tr>
           <td style="white-space: nowrap;">${formatTime(entry.time)}</td>
           <td class="config-info" style="white-space: nowrap; font-family: monospace; font-size: 0.85em; color: var(--neutral-600);">${clientIPDisplay}</td>
           <td style="text-align: center; white-space: nowrap;">${apiKeyDisplay}</td>
           <td class="config-info">${configDisplay}</td>
+          <td class="config-info" style="white-space: nowrap;">${urlDisplay}</td>
           <td>${modelDisplay}</td>
           <td><span class="${statusClass}">${statusCode}</span></td>
           <td style="text-align: right; white-space: nowrap;">${responseTimingDisplay}</td>
@@ -747,14 +771,13 @@
           return '-';
         }
 
-        // 手动格式化：YYYY/MM/DD HH:mm:ss
-        const Y = d.getFullYear();
+        // 手动格式化：MM-DD HH:mm:ss
         const M = String(d.getMonth() + 1).padStart(2, '0');
         const D = String(d.getDate()).padStart(2, '0');
         const h = String(d.getHours()).padStart(2, '0');
         const m = String(d.getMinutes()).padStart(2, '0');
         const s = String(d.getSeconds()).padStart(2, '0');
-        return `${Y}/${M}/${D} ${h}:${m}:${s}`;
+        return `${M}-${D} ${h}:${m}:${s}`;
       } catch (e) {
         return '-';
       }

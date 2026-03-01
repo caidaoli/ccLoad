@@ -181,6 +181,17 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 		tester = &testutil.AnthropicTester{}
 	}
 
+	// 多URL场景：用URLSelector选最优URL
+	urls := cfg.GetURLs()
+	selectedURL := urls[0]
+	if len(urls) > 1 {
+		selectedURL, _ = s.urlSelector.SelectURL(cfg.ID, urls)
+	}
+	// 临时覆盖cfg.URL为选中的单个URL，供Build使用
+	origURL := cfg.URL
+	cfg.URL = selectedURL
+	defer func() { cfg.URL = origURL }()
+
 	// 构建请求（传递实际的API Key和重定向后的模型）
 	fullURL, baseHeaders, body, err := tester.Build(cfg, apiKey, testReq)
 	if err != nil {

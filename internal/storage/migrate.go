@@ -189,7 +189,10 @@ func ensureLogsNewColumns(ctx context.Context, db *sql.DB, dialect Dialect) erro
 		if err := ensureLogsAPIKeyHashMySQL(ctx, db); err != nil {
 			return err
 		}
-		return ensureLogsActualModelMySQL(ctx, db)
+		if err := ensureLogsActualModelMySQL(ctx, db); err != nil {
+			return err
+		}
+		return ensureLogsBaseURLMySQL(ctx, db)
 	}
 	// SQLite: 使用PRAGMA table_info检查列
 	return ensureLogsColumnsSQLite(ctx, db)
@@ -259,6 +262,7 @@ func ensureLogsColumnsSQLite(ctx context.Context, db *sql.DB) error {
 		{name: "cache_1h_input_tokens", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{name: "actual_model", definition: "TEXT NOT NULL DEFAULT ''"}, // 实际转发的模型
 		{name: "api_key_hash", definition: "TEXT NOT NULL DEFAULT ''"}, // API Key SHA256（用于精确定位 key_index）
+		{name: "base_url", definition: "TEXT NOT NULL DEFAULT ''"},     // 请求使用的上游URL（多URL场景）
 	}); err != nil {
 		return err
 	}
@@ -392,6 +396,29 @@ func ensureLogsAPIKeyHashMySQL(ctx context.Context, db *sql.DB) error {
 	)
 	if err != nil {
 		return fmt.Errorf("add api_key_hash column: %w", err)
+	}
+
+	return nil
+}
+
+func ensureLogsBaseURLMySQL(ctx context.Context, db *sql.DB) error {
+	var count int
+	err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='logs' AND COLUMN_NAME='base_url'",
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check base_url existence: %w", err)
+	}
+
+	if count > 0 {
+		return nil
+	}
+
+	_, err = db.ExecContext(ctx,
+		"ALTER TABLE logs ADD COLUMN base_url VARCHAR(500) NOT NULL DEFAULT '' COMMENT '请求使用的上游URL(新增2026-03)'",
+	)
+	if err != nil {
+		return fmt.Errorf("add base_url column: %w", err)
 	}
 
 	return nil

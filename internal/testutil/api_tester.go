@@ -85,7 +85,7 @@ func (t *CodexTester) Build(cfg *model.Config, apiKey string, req *TestChannelRe
 		return "", nil, nil, err
 	}
 
-	baseURL := strings.TrimRight(cfg.URL, "/")
+	baseURL := strings.TrimRight(cfg.GetURLs()[0], "/")
 	fullURL := baseURL + "/v1/responses"
 
 	h := make(http.Header)
@@ -161,7 +161,7 @@ func (t *OpenAITester) Build(cfg *model.Config, apiKey string, req *TestChannelR
 		return "", nil, nil, err
 	}
 
-	baseURL := strings.TrimRight(cfg.URL, "/")
+	baseURL := strings.TrimRight(cfg.GetURLs()[0], "/")
 	fullURL := baseURL + "/v1/chat/completions"
 
 	h := make(http.Header)
@@ -219,7 +219,7 @@ func (t *GeminiTester) Build(cfg *model.Config, apiKey string, req *TestChannelR
 		return "", nil, nil, err
 	}
 
-	baseURL := strings.TrimRight(cfg.URL, "/")
+	baseURL := strings.TrimRight(cfg.GetURLs()[0], "/")
 	// Gemini API: 流式用 :streamGenerateContent?alt=sse，非流式用 :generateContent
 	action := ":generateContent"
 	if req.Stream {
@@ -314,7 +314,7 @@ func (t *AnthropicTester) Build(cfg *model.Config, apiKey string, req *TestChann
 		return "", nil, nil, err
 	}
 
-	baseURL := strings.TrimRight(cfg.URL, "/")
+	baseURL := strings.TrimRight(cfg.GetURLs()[0], "/")
 	fullURL := baseURL + "/v1/messages?beta=true"
 
 	h := make(http.Header)

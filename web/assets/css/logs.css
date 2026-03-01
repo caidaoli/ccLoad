@@ -155,9 +155,9 @@
     /* 固定宽度列 */
     .logs-table th:nth-child(1),
     .logs-table td:nth-child(1) {
-      width: 150px;  /* 时间: YYYY/MM/DD HH:mm:ss */
-      min-width: 150px;
-      max-width: 150px;
+      width: 120px;  /* 时间: MM-DD HH:mm:ss */
+      min-width: 120px;
+      max-width: 120px;
     }
 
     .logs-table th:nth-child(2),
@@ -174,12 +174,19 @@
       min-width: 120px;
     }
 
-    .logs-table th:nth-child(6),
-    .logs-table td:nth-child(6) {
+    .logs-table th:nth-child(7),
+    .logs-table td:nth-child(7) {
       width: 60px;  /* 状态码: 200/403/500 */
       min-width: 60px;
       max-width: 60px;
       text-align: center;
+    }
+
+    .logs-table th:nth-child(13),
+    .logs-table td:nth-child(13) {
+      width: 70px;  /* 成本 */
+      min-width: 70px;
+      max-width: 70px;
     }
 
     /* 模型标签样式 */
