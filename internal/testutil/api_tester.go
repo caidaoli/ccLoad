@@ -343,20 +343,28 @@ func (t *AnthropicTester) Build(cfg *model.Config, apiKey string, req *TestChann
 	return fullURL, h, body, nil
 }
 
-// extractAnthropicResponseText 从Anthropic响应中提取文本（消除3层嵌套）
+// extractAnthropicResponseText 从Anthropic响应中提取文本
+// 遍历content数组，跳过thinking block，取第一个type=text的block
 func extractAnthropicResponseText(apiResp map[string]any) (string, bool) {
 	content, ok := getTypedValue[[]any](apiResp, "content")
 	if !ok || len(content) == 0 {
 		return "", false
 	}
 
-	textBlock, ok := getSliceItem[map[string]any](content, 0)
-	if !ok {
-		return "", false
+	for i := range content {
+		block, ok := getSliceItem[map[string]any](content, i)
+		if !ok {
+			continue
+		}
+		// 优先匹配 type=text 的 block
+		if blockType, ok := getTypedValue[string](block, "type"); ok && blockType != "text" {
+			continue
+		}
+		if text, ok := getTypedValue[string](block, "text"); ok {
+			return text, true
+		}
 	}
-
-	text, ok := getTypedValue[string](textBlock, "text")
-	return text, ok
+	return "", false
 }
 
 // Parse 解析 Anthropic 格式的 API 响应

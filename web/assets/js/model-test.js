@@ -710,6 +710,11 @@ function applyTestResultToRow(row, data) {
       const msg = data.api_response.choices[0].message;
       respText = msg.content || msg.reasoning_content || msg.reasoning || msg.text;
     }
+    // Anthropic format: content is array of {type, text/thinking}
+    if (!respText && Array.isArray(data.api_response?.content)) {
+      const textBlock = data.api_response.content.find(b => b.type === 'text');
+      if (textBlock) respText = textBlock.text;
+    }
     const successText = respText || i18nText('common.success', '成功');
     row.querySelector('.response').textContent = successText;
     row.querySelector('.response').title = successText;
