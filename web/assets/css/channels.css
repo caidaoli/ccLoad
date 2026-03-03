@@ -1,10 +1,12 @@
     /* 响应式布局样式 */
     @media (max-width: 640px) {
+
       /* 移动端：垂直布局 */
       .form-row-flex {
         flex-direction: column !important;
       }
-      .form-row-flex > div {
+
+      .form-row-flex>div {
         width: 100% !important;
       }
     }
@@ -31,7 +33,6 @@
 
     #channelTypeRadios label:has(input:checked),
     #keyStrategyRadios label:has(input:checked) {
-      background-color: var(--primary-100);
       color: var(--primary-700);
       font-weight: 500;
     }
@@ -42,6 +43,7 @@
         transform: translateX(400px);
         opacity: 0;
       }
+
       to {
         transform: translateX(0);
         opacity: 1;
@@ -53,6 +55,7 @@
         transform: translateX(0);
         opacity: 1;
       }
+
       to {
         transform: translateX(400px);
         opacity: 0;
@@ -176,10 +179,12 @@
       cursor: move;
       transition: background-color 0.2s;
     }
+
     .draggable-key-row.dragging {
       opacity: 0.5;
       background-color: var(--neutral-100);
     }
+
     .draggable-key-row.drag-over {
       border-top: 2px solid var(--primary-500) !important;
     }
