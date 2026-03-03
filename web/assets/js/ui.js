@@ -1,7 +1,7 @@
 // ============================================================
 // Token认证工具（统一API调用，替代Cookie Session）
 // ============================================================
-(function() {
+(function () {
   /**
    * 生成带redirect参数的登录页URL
    * @returns {string}
@@ -62,7 +62,7 @@
 // ============================================================
 // API响应解析（统一后端返回格式：{success,data,error,count}）
 // ============================================================
-(function() {
+(function () {
   async function parseAPIResponse(res) {
     const text = await res.text();
     if (!text) {
@@ -272,7 +272,7 @@
         class: `topnav-link ${n.key === active ? 'active' : ''}`,
         href: n.href,
         'data-nav-key': n.key
-      }, [n.icon(), h('span', { 'data-i18n': n.labelKey }, t(n.labelKey))]) )
+      }, [n.icon(), h('span', { 'data-i18n': n.labelKey }, t(n.labelKey))]))
     ]);
     const loggedIn = isLoggedIn();
 
@@ -350,13 +350,13 @@
   }
 
   // 暂停/恢复背景动画（性能优化：减少文件选择器打开时的CPU占用）
-  window.pauseBackgroundAnimation = function() {
+  window.pauseBackgroundAnimation = function () {
     if (bgAnimElement) {
       bgAnimElement.style.animationPlayState = 'paused';
     }
   }
 
-  window.resumeBackgroundAnimation = function() {
+  window.resumeBackgroundAnimation = function () {
     if (bgAnimElement) {
       bgAnimElement.style.animationPlayState = 'running';
     }
@@ -394,7 +394,7 @@
     return host;
   }
 
-  window.showNotification = function(message, type = 'info') {
+  window.showNotification = function (message, type = 'info') {
     const el = document.createElement('div');
     el.className = `notification notification-${type}`;
     el.style.cssText = `
@@ -446,7 +446,7 @@
 // ============================================================
 // 渠道类型管理模块（动态加载配置，单一数据源）
 // ============================================================
-(function() {
+(function () {
   let channelTypesCache = null;
   const searchableSelectOutsideClickHandlers = new Map();
 
@@ -684,7 +684,7 @@
 // ============================================================
 // 公共工具函数（DRY原则：消除重复代码）
 // ============================================================
-(function() {
+(function () {
   /**
    * 防抖函数
    * @param {Function} func - 要防抖的函数
@@ -709,13 +709,7 @@
    * @returns {string} 格式化后的字符串
    */
   function formatCost(cost) {
-    if (cost === 0) return '$0.000';
-    if (cost < 0.001) {
-      if (cost < 0.000001) {
-        return '$' + cost.toExponential(2);
-      }
-      return '$' + cost.toFixed(6).replace(/0+$/, '');
-    }
+    if (!cost) return '';
     return '$' + cost.toFixed(3);
   }
 
@@ -771,7 +765,7 @@
 // ============================================================
 // 通用可搜索下拉选择框组件 (SearchableCombobox)
 // ============================================================
-(function() {
+(function () {
   /**
    * 创建可搜索下拉选择框
    * @param {Object} config - 配置对象
@@ -1116,7 +1110,7 @@
 // ============================================================
 // 跨页面共享工具函数
 // ============================================================
-(function() {
+(function () {
   /**
    * 复制文本到剪贴板（带降级处理）
    * @param {string} text - 要复制的文本
@@ -1202,7 +1196,7 @@
   function initTimeRangeSelector(onRangeChange) {
     const buttons = document.querySelectorAll('.time-range-btn');
     buttons.forEach(btn => {
-      btn.addEventListener('click', function() {
+      btn.addEventListener('click', function () {
         buttons.forEach(b => b.classList.remove('active'));
         this.classList.add('active');
         onRangeChange(this.dataset.range);

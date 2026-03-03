@@ -102,7 +102,9 @@
     }
 
     @keyframes spin {
-      to { transform: rotate(360deg); }
+      to {
+        transform: rotate(360deg);
+      }
     }
 
     /* 输入/输出列统一宽度，方便对齐 */
@@ -155,14 +157,16 @@
     /* 固定宽度列 */
     .logs-table th:nth-child(1),
     .logs-table td:nth-child(1) {
-      width: 120px;  /* 时间: MM-DD HH:mm:ss */
+      width: 120px;
+      /* 时间: MM-DD HH:mm:ss */
       min-width: 120px;
       max-width: 120px;
     }
 
     .logs-table th:nth-child(2),
     .logs-table td:nth-child(2) {
-      width: 110px;  /* IP: xxx.xxx.*.* */
+      width: 110px;
+      /* IP: xxx.xxx.*.* */
       min-width: 110px;
       max-width: 110px;
       text-align: center;
@@ -170,21 +174,24 @@
 
     .logs-table th:nth-child(3),
     .logs-table td:nth-child(3) {
-      width: 120px;  /* API Key: xxxx...xxxx */
+      width: 120px;
+      /* API Key: xxxx...xxxx */
       min-width: 120px;
     }
 
-    .logs-table th:nth-child(7),
-    .logs-table td:nth-child(7) {
-      width: 60px;  /* 状态码: 200/403/500 */
+    .logs-table th:nth-child(6),
+    .logs-table td:nth-child(6) {
+      width: 60px;
+      /* 状态码: 200/403/500 */
       min-width: 60px;
       max-width: 60px;
       text-align: center;
     }
 
-    .logs-table th:nth-child(13),
-    .logs-table td:nth-child(13) {
-      width: 70px;  /* 成本 */
+    .logs-table th:nth-child(12),
+    .logs-table td:nth-child(12) {
+      width: 70px;
+      /* 成本 */
       min-width: 70px;
       max-width: 70px;
     }
@@ -243,8 +250,15 @@
     }
 
     @keyframes pulse-pending {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.6; }
+
+      0%,
+      100% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: 0.6;
+      }
     }
 
     /* 进行中行高亮 */
