@@ -181,19 +181,63 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 		tester = &testutil.AnthropicTester{}
 	}
 
-	// 多URL场景：用URLSelector选最优URL
 	urls := cfg.GetURLs()
-	selectedURL := urls[0]
-	if len(urls) > 1 {
-		selectedURL, _ = s.urlSelector.SelectURL(cfg.ID, urls)
+	if len(urls) == 0 {
+		return map[string]any{"success": false, "error": "渠道URL为空"}
 	}
-	// 临时覆盖cfg.URL为选中的单个URL，供Build使用
-	origURL := cfg.URL
-	cfg.URL = selectedURL
-	defer func() { cfg.URL = origURL }()
+
+	var selector *URLSelector
+	if len(urls) > 1 && s != nil && s.urlSelector != nil {
+		selector = s.urlSelector
+	}
+	orderedURLs := orderURLsWithSelector(selector, cfg.ID, urls)
+
+	var lastResult map[string]any
+	for idx, entry := range orderedURLs {
+		attemptResult := s.testChannelAPIWithURL(reqCtx, cfg, apiKey, testReq, tester, channelType, entry.url)
+		success, _ := attemptResult["success"].(bool)
+		if success {
+			if selector != nil {
+				latency := pickURLSelectorLatency(attemptResult)
+				selector.RecordLatency(cfg.ID, entry.url, latency)
+			}
+			return attemptResult
+		}
+
+		lastResult = attemptResult
+		if idx == len(orderedURLs)-1 {
+			break
+		}
+
+		continueFallback, shouldCooldown := shouldFallbackToNextURL(attemptResult)
+		if shouldCooldown && selector != nil {
+			selector.CooldownURL(cfg.ID, entry.url)
+		}
+		if !continueFallback {
+			return attemptResult
+		}
+	}
+
+	if lastResult != nil {
+		return lastResult
+	}
+	return map[string]any{"success": false, "error": "渠道测试失败: 未找到可用URL"}
+}
+
+func (s *Server) testChannelAPIWithURL(
+	reqCtx context.Context,
+	cfg *model.Config,
+	apiKey string,
+	testReq *testutil.TestChannelRequest,
+	tester testutil.ChannelTester,
+	channelType, selectedURL string,
+) map[string]any {
+	// 使用局部副本，避免并发请求时修改共享cfg
+	cfgCopy := *cfg
+	cfgCopy.URL = selectedURL
 
 	// 构建请求（传递实际的API Key和重定向后的模型）
-	fullURL, baseHeaders, body, err := tester.Build(cfg, apiKey, testReq)
+	fullURL, baseHeaders, body, err := tester.Build(&cfgCopy, apiKey, testReq)
 	if err != nil {
 		return map[string]any{"success": false, "error": "构造测试请求失败: " + err.Error()}
 	}
@@ -499,4 +543,90 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 		}
 	}
 	return parseNonStreamResponse(respBody)
+}
+
+func shouldFallbackToNextURL(result map[string]any) (continueFallback bool, shouldCooldown bool) {
+	statusCode, hasStatus := getResultInt(result["status_code"])
+	if !hasStatus {
+		errMsg, _ := result["error"].(string)
+		if strings.HasPrefix(errMsg, "网络请求失败:") || strings.HasPrefix(errMsg, "读取响应失败:") {
+			return true, true
+		}
+		return false, false
+	}
+
+	var errorBody []byte
+	if apiError, ok := result["api_error"].(map[string]any); ok {
+		errorBody, _ = sonic.Marshal(apiError)
+	} else if rawResp, ok := result["raw_response"].(string); ok {
+		errorBody = []byte(rawResp)
+	} else if errMsg, ok := result["error"].(string); ok {
+		errorBody = []byte(errMsg)
+	}
+
+	var headers map[string][]string
+	switch h := result["response_headers"].(type) {
+	case map[string]string:
+		headers = make(map[string][]string, len(h))
+		for k, v := range h {
+			headers[k] = []string{v}
+		}
+	case map[string]any:
+		headers = make(map[string][]string, len(h))
+		for k, v := range h {
+			if vs, ok := v.(string); ok {
+				headers[k] = []string{vs}
+			}
+		}
+	}
+
+	classification := util.ClassifyHTTPResponseWithMeta(statusCode, headers, errorBody)
+	switch classification.Level {
+	case util.ErrorLevelChannel:
+		return true, true
+	case util.ErrorLevelNone:
+		// 软错误场景：2xx 但业务层已标记 success=false，继续换URL尝试。
+		if statusCode >= 200 && statusCode < 300 {
+			return true, true
+		}
+		return false, false
+	default:
+		return false, false
+	}
+}
+
+func pickURLSelectorLatency(result map[string]any) time.Duration {
+	if ms, ok := getResultInt64(result["first_byte_duration_ms"]); ok && ms > 0 {
+		return time.Duration(ms) * time.Millisecond
+	}
+	if ms, ok := getResultInt64(result["duration_ms"]); ok && ms > 0 {
+		return time.Duration(ms) * time.Millisecond
+	}
+	return time.Millisecond
+}
+
+func getResultInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	case float64:
+		return int(n), true
+	default:
+		return 0, false
+	}
+}
+
+func getResultInt64(v any) (int64, bool) {
+	switch n := v.(type) {
+	case int:
+		return int64(n), true
+	case int64:
+		return n, true
+	case float64:
+		return int64(n), true
+	default:
+		return 0, false
+	}
 }

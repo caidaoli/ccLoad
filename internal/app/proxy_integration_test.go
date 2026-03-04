@@ -299,9 +299,8 @@ func TestProxy_MultiURLFallback_DoesNotChannelCooldownEarly(t *testing.T) {
 	}
 	channelID := configs[0].ID
 
-	// 强制 URL1 在排序中靠前，确保本测试覆盖“先失败再回退”的路径
-	env.server.urlSelector.RecordLatency(channelID, upstreamFail.URL, 10*time.Millisecond)
-	env.server.urlSelector.RecordLatency(channelID, upstreamOK.URL, 200*time.Millisecond)
+	// 强制 URL2 进入冷却，确保首跳先打到失败URL，稳定覆盖“先失败再回退”的路径
+	env.server.urlSelector.CooldownURL(channelID, upstreamOK.URL)
 
 	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",

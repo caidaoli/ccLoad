@@ -121,7 +121,14 @@ func (s *Server) HandleFetchModelsPreview(c *gin.Context) {
 		return
 	}
 
-	response, err := fetchModelsForConfig(c.Request.Context(), req.ChannelType, req.URL, req.APIKey)
+	normalizedURL, err := validateChannelURLs(req.URL)
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "url无效: "+err.Error())
+		return
+	}
+
+	tmpCfg := &model.Config{URL: normalizedURL}
+	response, err := s.fetchModelsWithURLFallback(c.Request.Context(), 0, tmpCfg.GetURLs(), req.ChannelType, req.APIKey)
 	if err != nil {
 		// [INFO] 修复：统一返回200，通过success字段区分成功/失败（上游错误是预期内的）
 		RespondErrorMsg(c, http.StatusOK, err.Error())
@@ -279,21 +286,31 @@ func (s *Server) fetchModelsWithURLFallback(
 		return fetchModelsForConfig(ctx, channelType, urls[0], apiKey)
 	}
 
-	sortedURLs := make([]sortedURL, 0, len(urls))
-	if s != nil && s.urlSelector != nil {
-		sortedURLs = s.urlSelector.SortURLs(channelID, urls)
-	} else {
-		for i, u := range urls {
-			sortedURLs = append(sortedURLs, sortedURL{url: u, idx: i})
-		}
+	selectorEnabled := s != nil && s.urlSelector != nil && channelID > 0
+	var selector *URLSelector
+	if selectorEnabled {
+		selector = s.urlSelector
 	}
+	sortedURLs := orderURLsWithSelector(selector, channelID, urls)
+
 	var lastErr error
 	for _, entry := range sortedURLs {
+		start := time.Now()
 		resp, err := fetchModelsForConfig(ctx, channelType, entry.url, apiKey)
 		if err == nil {
+			if selectorEnabled {
+				latency := time.Since(start)
+				if latency <= 0 {
+					latency = time.Millisecond
+				}
+				s.urlSelector.RecordLatency(channelID, entry.url, latency)
+			}
 			return resp, nil
 		}
 		lastErr = err
+		if selectorEnabled {
+			s.urlSelector.CooldownURL(channelID, entry.url)
+		}
 	}
 
 	if lastErr != nil {

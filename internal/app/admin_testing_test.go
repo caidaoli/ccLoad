@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/testutil"
 
 	"github.com/gin-gonic/gin"
 )
@@ -96,6 +98,64 @@ func TestHandleChannelTest(t *testing.T) {
 				t.Errorf("期望 success=%v, 实际=%v, error=%q", tt.expectSuccess, resp.Success, resp.Error)
 			}
 		})
+	}
+}
+
+func TestTestChannelAPI_MultiURLFallbackAndSelectorFeedback(t *testing.T) {
+	failCalls := 0
+	okCalls := 0
+
+	failUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		failCalls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":{"type":"server_error","message":"upstream fail"}}`))
+	}))
+	defer failUpstream.Close()
+
+	okUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		okCalls++
+		time.Sleep(15 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	}))
+	defer okUpstream.Close()
+
+	srv := newInMemoryServer(t)
+
+	cfg := &model.Config{
+		ID:           9527,
+		Name:         "multi-url-test",
+		URL:          failUpstream.URL + "\n" + okUpstream.URL,
+		Priority:     1,
+		ChannelType:  "openai",
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
+		Enabled:      true,
+	}
+
+	// 强制第一跳命中失败URL，验证是否会回退到第二个URL。
+	srv.urlSelector.CooldownURL(cfg.ID, okUpstream.URL)
+
+	req := &testutil.TestChannelRequest{
+		Model:       "gpt-4o-mini",
+		ChannelType: "openai",
+		Content:     "hello",
+	}
+
+	result := srv.testChannelAPI(context.Background(), cfg, "sk-test", req)
+	success, _ := result["success"].(bool)
+	if !success {
+		t.Fatalf("expected fallback success, got result=%+v", result)
+	}
+	if failCalls < 1 || okCalls < 1 {
+		t.Fatalf("expected both URLs attempted, failCalls=%d okCalls=%d", failCalls, okCalls)
+	}
+	if !srv.urlSelector.IsCooledDown(cfg.ID, failUpstream.URL) {
+		t.Fatalf("expected failed URL to be cooled down, url=%s", failUpstream.URL)
+	}
+	if lat, ok := srv.urlSelector.latencies[urlKey{channelID: cfg.ID, url: okUpstream.URL}]; !ok || lat == nil || lat.value <= 0 {
+		t.Fatalf("expected success URL latency recorded, got=%v", lat)
 	}
 }
 
