@@ -48,6 +48,16 @@ func (s *Server) applyCooldownDecision(
 	return action
 }
 
+func (s *Server) decideCooldownAction(
+	ctx context.Context,
+	cfg *model.Config,
+	in cooldown.ErrorInput,
+) cooldown.Action {
+	// 设置渠道类型，用于特定渠道的错误处理策略
+	in.ChannelType = cfg.ChannelType
+	return s.cooldownManager.DecideAction(ctx, in)
+}
+
 func httpErrorInput(channelID int64, keyIndex int, res *fwResult) cooldown.ErrorInput {
 	if res == nil {
 		return httpErrorInputFromParts(channelID, keyIndex, 0, nil, nil)
@@ -136,6 +146,7 @@ func (s *Server) handleNetworkError(
 	err error,
 	res *fwResult, // [FIX] 流式响应中途取消时，res 包含已解析的 token 统计
 	reqCtx *proxyRequestContext, // [FIX] 用于获取 tokenHash 和 isStreaming
+	deferChannelCooldown bool,
 ) (*proxyResult, cooldown.Action) {
 	statusCode, _, shouldRetry := util.ClassifyError(err)
 
@@ -165,7 +176,16 @@ func (s *Server) handleNetworkError(
 		return failure, cooldown.ActionReturnClient
 	}
 
-	action := s.applyCooldownDecision(ctx, cfg, networkErrorInput(cfg.ID, keyIndex, statusCode))
+	input := networkErrorInput(cfg.ID, keyIndex, statusCode)
+	if deferChannelCooldown {
+		action := s.decideCooldownAction(ctx, cfg, input)
+		if action == cooldown.ActionRetryChannel {
+			failure.nextAction = action
+			return failure, action
+		}
+	}
+
+	action := s.applyCooldownDecision(ctx, cfg, input)
 	failure.nextAction = action
 	return failure, action
 }
@@ -376,12 +396,13 @@ func (s *Server) handleProxySuccess(
 	s.updateTokenStatsForProxy(reqCtx, true, duration, res, actualModel)
 
 	return &proxyResult{
-		status:     res.Status,
-		header:     res.Header,
-		channelID:  &cfg.ID,
-		duration:   duration,
-		succeeded:  true,
-		nextAction: cooldown.ActionReturnClient,
+		status:        res.Status,
+		header:        res.Header,
+		channelID:     &cfg.ID,
+		duration:      duration,
+		firstByteTime: res.FirstByteTime,
+		succeeded:     true,
+		nextAction:    cooldown.ActionReturnClient,
 	}, cooldown.ActionReturnClient
 }
 
@@ -426,6 +447,7 @@ func (s *Server) handleProxyErrorResponse(
 	res *fwResult,
 	duration float64,
 	reqCtx *proxyRequestContext,
+	deferChannelCooldown bool,
 ) (*proxyResult, cooldown.Action) {
 	// 日志改进: 明确标识上游返回的499错误
 	errMsg := ""
@@ -450,7 +472,16 @@ func (s *Server) handleProxyErrorResponse(
 		succeeded: false,
 	}
 
-	action := s.applyCooldownDecision(ctx, cfg, httpErrorInput(cfg.ID, keyIndex, res))
+	input := httpErrorInput(cfg.ID, keyIndex, res)
+	if deferChannelCooldown {
+		action := s.decideCooldownAction(ctx, cfg, input)
+		if action == cooldown.ActionRetryChannel {
+			failure.nextAction = action
+			return failure, action
+		}
+	}
+
+	action := s.applyCooldownDecision(ctx, cfg, input)
 	failure.nextAction = action
 	return failure, action
 }

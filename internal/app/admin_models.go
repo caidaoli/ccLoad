@@ -94,7 +94,7 @@ func (s *Server) HandleFetchModels(c *gin.Context) {
 	if channelType == "" {
 		channelType = channel.ChannelType
 	}
-	response, err := fetchModelsForConfig(c.Request.Context(), channelType, channel.URL, apiKey)
+	response, err := s.fetchModelsWithURLFallback(c.Request.Context(), channel.ID, channel.GetURLs(), channelType, apiKey)
 	if err != nil {
 		// [INFO] 修复：统一返回200，通过success字段区分成功/失败（上游错误是预期内的）
 		RespondErrorMsg(c, http.StatusOK, err.Error())
@@ -199,13 +199,7 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 			channelType = cfg.ChannelType
 		}
 
-		urls := cfg.GetURLs()
-		baseURL := urls[0]
-		if len(urls) > 1 {
-			baseURL, _ = s.urlSelector.SelectURL(cfg.ID, urls)
-		}
-
-		resp, err := fetchModelsForConfig(ctx, channelType, baseURL, apiKey)
+		resp, err := s.fetchModelsWithURLFallback(ctx, cfg.ID, cfg.GetURLs(), channelType, apiKey)
 		if err != nil {
 			item.Status = "failed"
 			item.Error = err.Error()
@@ -268,6 +262,44 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 		"failed":    failed,
 		"results":   results,
 	})
+}
+
+// fetchModelsWithURLFallback 按URL排序顺序抓取模型列表。
+// 设计目标：多URL渠道下，单个URL异常不应导致整个管理操作失败。
+func (s *Server) fetchModelsWithURLFallback(
+	ctx context.Context,
+	channelID int64,
+	urls []string,
+	channelType, apiKey string,
+) (*FetchModelsResponse, error) {
+	if len(urls) == 0 {
+		return nil, fmt.Errorf("渠道URL为空")
+	}
+	if len(urls) == 1 {
+		return fetchModelsForConfig(ctx, channelType, urls[0], apiKey)
+	}
+
+	sortedURLs := make([]sortedURL, 0, len(urls))
+	if s != nil && s.urlSelector != nil {
+		sortedURLs = s.urlSelector.SortURLs(channelID, urls)
+	} else {
+		for i, u := range urls {
+			sortedURLs = append(sortedURLs, sortedURL{url: u, idx: i})
+		}
+	}
+	var lastErr error
+	for _, entry := range sortedURLs {
+		resp, err := fetchModelsForConfig(ctx, channelType, entry.url, apiKey)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+	}
+
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("获取模型列表失败: 未找到可用URL")
 }
 
 func fetchModelsForConfig(ctx context.Context, channelType, channelURL, apiKey string) (*FetchModelsResponse, error) {

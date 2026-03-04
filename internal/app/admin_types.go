@@ -65,6 +65,7 @@ func validateChannelURLs(raw string) (string, error) {
 	}
 	lines := strings.Split(raw, "\n")
 	var normalized []string
+	seen := make(map[string]struct{}, len(lines))
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -74,6 +75,10 @@ func validateChannelURLs(raw string) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		if _, exists := seen[u]; exists {
+			continue
+		}
+		seen[u] = struct{}{}
 		normalized = append(normalized, u)
 	}
 	if len(normalized) == 0 {

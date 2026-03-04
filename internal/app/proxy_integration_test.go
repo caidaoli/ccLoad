@@ -259,6 +259,138 @@ func TestProxy_ChannelRetry_On503(t *testing.T) {
 	}
 }
 
+func TestProxy_MultiURLFallback_DoesNotChannelCooldownEarly(t *testing.T) {
+	t.Parallel()
+
+	failCalls := 0
+	okCalls := 0
+
+	// URL1: 固定失败（模拟单URL故障）
+	upstreamFail := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		failCalls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"service unavailable"}`))
+	}))
+	defer upstreamFail.Close()
+
+	// URL2: 正常返回
+	upstreamOK := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		okCalls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"from-url2","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstreamOK.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "ch-multi-url", models: "gpt-4", apiKey: "sk-1"},
+	}, map[int]string{
+		0: upstreamFail.URL + "\n" + upstreamOK.URL,
+	})
+
+	ctx := context.Background()
+	configs, err := env.store.ListConfigs(ctx)
+	if err != nil {
+		t.Fatalf("ListConfigs: %v", err)
+	}
+	if len(configs) != 1 {
+		t.Fatalf("expected 1 config, got %d", len(configs))
+	}
+	channelID := configs[0].ID
+
+	// 强制 URL1 在排序中靠前，确保本测试覆盖“先失败再回退”的路径
+	env.server.urlSelector.RecordLatency(channelID, upstreamFail.URL, 10*time.Millisecond)
+	env.server.urlSelector.RecordLatency(channelID, upstreamOK.URL, 200*time.Millisecond)
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-4",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "from-url2") {
+		t.Fatalf("expected fallback to url2, got body: %s", w.Body.String())
+	}
+	if failCalls < 1 || okCalls < 1 {
+		t.Fatalf("expected both URLs attempted, failCalls=%d okCalls=%d", failCalls, okCalls)
+	}
+
+	// 关键断言：多URL内部回退成功后，不应残留渠道级冷却
+	cooldowns, err := env.store.GetAllChannelCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("GetAllChannelCooldowns: %v", err)
+	}
+	if _, exists := cooldowns[channelID]; exists {
+		t.Fatalf("unexpected channel cooldown for multi-url fallback success, channel_id=%d", channelID)
+	}
+}
+
+func TestProxy_MultiURLFirstAttempt_UsesWeightedRandom(t *testing.T) {
+	t.Parallel()
+
+	fastCalls := 0
+	slowCalls := 0
+
+	upstreamFast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fastCalls++
+		time.Sleep(5 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"from-fast","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstreamFast.Close()
+
+	upstreamSlow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slowCalls++
+		time.Sleep(30 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"from-slow","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstreamSlow.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "ch-weighted-first", models: "gpt-4", apiKey: "sk-1"},
+	}, map[int]string{
+		0: upstreamSlow.URL + "\n" + upstreamFast.URL,
+	})
+
+	ctx := context.Background()
+	configs, err := env.store.ListConfigs(ctx)
+	if err != nil {
+		t.Fatalf("ListConfigs: %v", err)
+	}
+	if len(configs) != 1 {
+		t.Fatalf("expected 1 config, got %d", len(configs))
+	}
+	channelID := configs[0].ID
+
+	// 预热EWMA，确保不是“未探索优先”分支
+	env.server.urlSelector.RecordLatency(channelID, upstreamFast.URL, 5*time.Millisecond)
+	env.server.urlSelector.RecordLatency(channelID, upstreamSlow.URL, 30*time.Millisecond)
+
+	const rounds = 120
+	for range rounds {
+		w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+			"model":    "gpt-4",
+			"messages": []map[string]string{{"role": "user", "content": "hi"}},
+		}, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+	}
+
+	if fastCalls <= slowCalls {
+		t.Fatalf("expected weighted random to prefer fast URL, fast=%d slow=%d", fastCalls, slowCalls)
+	}
+	if slowCalls < 5 {
+		t.Fatalf("expected slow URL to be selected sometimes (not deterministic first pick), fast=%d slow=%d", fastCalls, slowCalls)
+	}
+}
+
 func TestProxy_KeyRetry_On401(t *testing.T) {
 	t.Parallel()
 

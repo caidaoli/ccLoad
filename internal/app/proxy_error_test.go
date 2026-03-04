@@ -78,7 +78,7 @@ func Test_HandleProxyError_Basic(t *testing.T) {
 				reqCtx := &proxyRequestContext{
 					originalModel: "test-model",
 				}
-				_, action = srv.handleNetworkError(ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, err, nil, reqCtx)
+				_, action = srv.handleNetworkError(ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, err, nil, reqCtx, false)
 			} else {
 				action = srv.applyCooldownDecision(ctx, cfg, httpErrorInput(cfg.ID, 0, res))
 			}
@@ -112,7 +112,7 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 
 	t.Run("context canceled returns client error", func(t *testing.T) {
 		result, action := srv.handleNetworkError(
-			ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, context.Canceled, nil, reqCtx,
+			ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, context.Canceled, nil, reqCtx, false,
 		)
 
 		if result == nil {
@@ -125,7 +125,7 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 
 	t.Run("network error switches channel", func(t *testing.T) {
 		result, action := srv.handleNetworkError(
-			ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, errors.New("connection refused"), nil, reqCtx,
+			ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, errors.New("connection refused"), nil, reqCtx, false,
 		)
 
 		if result == nil {
@@ -142,7 +142,7 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 	t.Run("first byte timeout switches channel", func(t *testing.T) {
 		err := fmt.Errorf("wrap: %w", util.ErrUpstreamFirstByteTimeout)
 		result, action := srv.handleNetworkError(
-			ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, err, nil, reqCtx,
+			ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, err, nil, reqCtx, false,
 		)
 
 		if result == nil {
@@ -230,7 +230,7 @@ func Test_HandleProxyError_499(t *testing.T) {
 		reqCtx := &proxyRequestContext{
 			originalModel: "test-model",
 		}
-		_, action := srv.handleNetworkError(ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, context.Canceled, nil, reqCtx)
+		_, action := srv.handleNetworkError(ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, context.Canceled, nil, reqCtx, false)
 
 		if action != cooldown.ActionReturnClient {
 			t.Errorf("期望 action=ActionReturnClient, 实际=%v", action)
@@ -271,7 +271,7 @@ func Test_HandleNetworkError_499_PreservesTokenStats(t *testing.T) {
 
 	// 调用 handleNetworkError，传入 res 和 reqCtx
 	result, action := srv.handleNetworkError(
-		ctx, cfg, 0, "claude-sonnet-4-5", "test-key", 0, "", 0.5, context.Canceled, res, reqCtx,
+		ctx, cfg, 0, "claude-sonnet-4-5", "test-key", 0, "", 0.5, context.Canceled, res, reqCtx, false,
 	)
 
 	// 验证返回值正确

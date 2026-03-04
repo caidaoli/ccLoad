@@ -297,3 +297,16 @@ func TestChannelRequestValidation_DuplicateModels(t *testing.T) {
 		})
 	}
 }
+
+func TestChannelRequestValidation_URLDeduplication(t *testing.T) {
+	req := newValidChannelRequest()
+	req.URL = " https://a.example.com/\nhttps://b.example.com\nhttps://a.example.com \nhttps://b.example.com/ "
+
+	if err := req.Validate(); err != nil {
+		t.Fatalf("Validate() failed: %v", err)
+	}
+
+	if req.URL != "https://a.example.com\nhttps://b.example.com" {
+		t.Fatalf("URL dedupe/normalize failed, got %q", req.URL)
+	}
+}

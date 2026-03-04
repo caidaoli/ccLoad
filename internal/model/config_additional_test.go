@@ -147,6 +147,17 @@ func TestGetURLs_EmptyLinesIgnored(t *testing.T) {
 	}
 }
 
+func TestGetURLs_DuplicateURLsDeduped(t *testing.T) {
+	c := &Config{URL: "https://a.com\nhttps://b.com\nhttps://a.com\nhttps://b.com"}
+	urls := c.GetURLs()
+	if len(urls) != 2 {
+		t.Fatalf("expected 2 unique urls, got %d: %v", len(urls), urls)
+	}
+	if urls[0] != "https://a.com" || urls[1] != "https://b.com" {
+		t.Fatalf("unexpected urls order/content: %v", urls)
+	}
+}
+
 func TestGetURLs_TrailingSlashPreserved(t *testing.T) {
 	c := &Config{URL: "https://api.openai.com/v1/"}
 	urls := c.GetURLs()

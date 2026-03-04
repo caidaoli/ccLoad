@@ -543,6 +543,7 @@ func (s *Server) forwardAttempt(
 	requestPath string, // [FIX] 2026-01: 可能经过模型名替换的请求路径
 	baseURL string, // 显式传入的URL（多URL场景）
 	w http.ResponseWriter,
+	deferChannelCooldown bool, // 多URL场景下，非最后一个URL不应触发渠道级冷却
 ) (*proxyResult, cooldown.Action) {
 	// 记录渠道尝试开始时间（用于日志记录，每次渠道/Key切换时更新）
 	reqCtx.attemptStartTime = time.Now()
@@ -557,7 +558,10 @@ func (s *Server) forwardAttempt(
 	// [INFO] 修复：handleResponse可能返回err即使StatusCode=200（例如Content-Length=0）
 	// [FIX] 2025-12: 传递 res 和 reqCtx，用于保留 499 场景下已消耗的 token 统计
 	if err != nil {
-		return s.handleNetworkError(ctx, cfg, keyIndex, actualModel, selectedKey, reqCtx.tokenID, reqCtx.clientIP, duration, err, res, reqCtx)
+		return s.handleNetworkError(
+			ctx, cfg, keyIndex, actualModel, selectedKey, reqCtx.tokenID, reqCtx.clientIP,
+			duration, err, res, reqCtx, deferChannelCooldown,
+		)
 	}
 
 	// 处理成功响应（仅当err==nil且状态码2xx时）
@@ -600,7 +604,9 @@ func (s *Server) forwardAttempt(
 	}
 
 	// 处理错误响应
-	return s.handleProxyErrorResponse(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
+	return s.handleProxyErrorResponse(
+		ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown,
+	)
 }
 
 // ============================================================================
@@ -686,8 +692,28 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 
 		// URL循环（单URL时退化为单次迭代）
 		sortedURLs := s.urlSelector.SortURLs(cfg.ID, urls)
+		if len(sortedURLs) > 1 {
+			// 主链路首选URL采用加权随机，兼顾延迟与负载分散；
+			// 后续URL仍按排序兜底，保证故障切换确定性。
+			preferredURL, _ := s.urlSelector.SelectURL(cfg.ID, urls)
+			for i, entry := range sortedURLs {
+				if entry.url != preferredURL {
+					continue
+				}
+				if i == 0 {
+					break
+				}
+				preferred := entry
+				reordered := make([]sortedURL, 0, len(sortedURLs))
+				reordered = append(reordered, preferred)
+				reordered = append(reordered, sortedURLs[:i]...)
+				reordered = append(reordered, sortedURLs[i+1:]...)
+				sortedURLs = reordered
+				break
+			}
+		}
 		var urlLastFailure *proxyResult
-		for _, urlEntry := range sortedURLs {
+		for urlIdx, urlEntry := range sortedURLs {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return makeCtxDoneResult(ctxErr), nil
 			}
@@ -697,13 +723,20 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 				s.activeRequests.SetBaseURL(reqCtx.activeReqID, urlEntry.url)
 			}
 
+			shouldDeferChannelCooldown := len(urls) > 1 && urlIdx < len(sortedURLs)-1
 			result, nextAction := s.forwardAttempt(
-				ctx, cfg, keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, requestPath, urlEntry.url, w)
+				ctx, cfg, keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, requestPath, urlEntry.url, w, shouldDeferChannelCooldown)
 
 			if result != nil && result.succeeded {
 				// 成功：记录TTFB到URLSelector（仅多URL场景）
-				if len(urls) > 1 {
-					s.urlSelector.RecordLatency(cfg.ID, urlEntry.url, time.Since(reqCtx.attemptStartTime))
+				if len(urls) > 1 && result.status >= 200 && result.status < 300 {
+					ttfb := time.Duration(result.firstByteTime * float64(time.Second))
+					if ttfb <= 0 {
+						ttfb = time.Duration(result.duration * float64(time.Second))
+					}
+					if ttfb > 0 {
+						s.urlSelector.RecordLatency(cfg.ID, urlEntry.url, ttfb)
+					}
 				}
 				return result, nil
 			}

@@ -80,11 +80,17 @@ func (c *Config) GetURLs() []string {
 	}
 	lines := strings.Split(c.URL, "\n")
 	urls := make([]string, 0, len(lines))
+	seen := make(map[string]struct{}, len(lines))
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line != "" {
-			urls = append(urls, line)
+		if line == "" {
+			continue
 		}
+		if _, exists := seen[line]; exists {
+			continue
+		}
+		seen[line] = struct{}{}
+		urls = append(urls, line)
 	}
 	if len(urls) == 0 {
 		return []string{c.URL}

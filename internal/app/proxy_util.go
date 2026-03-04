@@ -126,6 +126,7 @@ type proxyResult struct {
 	body             []byte
 	channelID        *int64
 	duration         float64
+	firstByteTime    float64
 	succeeded        bool
 	isClientCanceled bool            // 客户端主动取消请求（context.Canceled）
 	nextAction       cooldown.Action // 统一重试决策：RetryKey/RetryChannel/ReturnClient

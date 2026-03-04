@@ -50,6 +50,12 @@ type Manager struct {
 	configGetter ConfigGetter // 可选：优先使用缓存层（性能提升~60%）
 }
 
+type cooldownDecision struct {
+	action       Action
+	reset1308At  time.Time
+	hasReset1308 bool
+}
+
 // NewManager 创建冷却管理器实例
 // configGetter: 可选参数，传入nil时降级到store.GetConfig
 func NewManager(store storage.Store, configGetter ConfigGetter) *Manager {
@@ -59,27 +65,18 @@ func NewManager(store storage.Store, configGetter ConfigGetter) *Manager {
 	}
 }
 
-// HandleError 统一错误处理与冷却决策
-// 将proxy_error.go中的handleProxyError逻辑提取到专用模块
-//
-// 输入:
-//   - ChannelID / KeyIndex: 目标渠道与Key（KeyIndex=NoKeyIndex 表示与特定Key无关）
-//   - StatusCode / ErrorBody / Headers: 上游错误信息（Headers 用于 429 限流范围分析）
-//   - IsNetworkError: 是否为网络错误（与HTTP错误区分）
-//
-// 返回:
-//   - Action: 建议采取的行动
-func (m *Manager) HandleError(ctx context.Context, in ErrorInput) Action {
+func (m *Manager) classifyDecision(ctx context.Context, in ErrorInput) cooldownDecision {
 	var errLevel util.ErrorLevel
 
 	channelID := in.ChannelID
-	keyIndex := in.KeyIndex
 	statusCode := in.StatusCode
 	errorBody := in.ErrorBody
 
+	decision := cooldownDecision{
+		action: ActionReturnClient,
+	}
+
 	// 1. 区分网络错误和HTTP错误的分类策略
-	var reset1308Time time.Time
-	var has1308Time bool
 	if in.IsNetworkError {
 		// 网络错误默认按"渠道级"处理：这类问题通常是上游/链路/负载，而不是某个Key的固有属性。
 		// 继续在同一渠道里换Key只是在浪费重试预算、扩大故障面。
@@ -88,14 +85,14 @@ func (m *Manager) HandleError(ctx context.Context, in ErrorInput) Action {
 		// HTTP错误: 使用智能分类器(结合响应体内容和headers)
 		classification := util.ClassifyHTTPResponseWithMeta(statusCode, in.Headers, errorBody)
 		errLevel = classification.Level
-		reset1308Time = classification.ResetTime1308
-		has1308Time = classification.HasResetTime1308
+		decision.reset1308At = classification.ResetTime1308
+		decision.hasReset1308 = classification.HasResetTime1308
 	}
 
 	// 2. [TARGET] 动态调整:单Key渠道的Key级错误应该直接冷却渠道
 	// 设计原则:如果没有其他Key可以重试,Key级错误等同于渠道级错误
 	// [WARN] 例外：1308错误保持Key级（因为它有精确时间，后续会特殊处理）
-	if errLevel == util.ErrorLevelKey && !has1308Time {
+	if errLevel == util.ErrorLevelKey && !decision.hasReset1308 {
 		var config *model.Config
 		var err error
 
@@ -112,25 +109,61 @@ func (m *Manager) HandleError(ctx context.Context, in ErrorInput) Action {
 		}
 	}
 
-	// 4. 根据错误级别执行冷却
+	// 3. 仅给出动作决策（不产生副作用）
 	switch errLevel {
 	case util.ErrorLevelClient:
+		decision.action = ActionReturnClient
+	case util.ErrorLevelKey:
+		decision.action = ActionRetryKey
+	case util.ErrorLevelChannel:
+		decision.action = ActionRetryChannel
+	default:
+		decision.action = ActionReturnClient
+	}
+
+	return decision
+}
+
+// DecideAction 仅做错误分类和动作决策，不写入任何冷却状态。
+func (m *Manager) DecideAction(ctx context.Context, in ErrorInput) Action {
+	return m.classifyDecision(ctx, in).action
+}
+
+// HandleError 统一错误处理与冷却决策
+// 将proxy_error.go中的handleProxyError逻辑提取到专用模块
+//
+// 输入:
+//   - ChannelID / KeyIndex: 目标渠道与Key（KeyIndex=NoKeyIndex 表示与特定Key无关）
+//   - StatusCode / ErrorBody / Headers: 上游错误信息（Headers 用于 429 限流范围分析）
+//   - IsNetworkError: 是否为网络错误（与HTTP错误区分）
+//
+// 返回:
+//   - Action: 建议采取的行动
+func (m *Manager) HandleError(ctx context.Context, in ErrorInput) Action {
+	decision := m.classifyDecision(ctx, in)
+	channelID := in.ChannelID
+	keyIndex := in.KeyIndex
+	statusCode := in.StatusCode
+
+	// 4. 根据错误级别执行冷却
+	switch decision.action {
+	case ActionReturnClient:
 		// 客户端错误:不冷却,直接返回
 		return ActionReturnClient
 
-	case util.ErrorLevelKey:
+	case ActionRetryKey:
 		// Key级错误:冷却当前Key,继续尝试其他Key
 		if keyIndex != NoKeyIndex {
 			// [INFO] 特殊处理: 1308错误自动禁用到指定时间
-			if has1308Time {
+			if decision.hasReset1308 {
 				// 直接设置冷却时间到指定时刻
-				if err := m.store.SetKeyCooldown(ctx, channelID, keyIndex, reset1308Time); err != nil {
+				if err := m.store.SetKeyCooldown(ctx, channelID, keyIndex, decision.reset1308At); err != nil {
 					log.Printf("[WARN] Failed to set key cooldown to reset time (channel=%d, key=%d, until=%v): %v",
-						channelID, keyIndex, reset1308Time, err)
+						channelID, keyIndex, decision.reset1308At, err)
 				} else {
-					duration := time.Until(reset1308Time)
+					duration := time.Until(decision.reset1308At)
 					log.Printf("[COOLDOWN] Key冷却(1308): 渠道=%d Key=%d 禁用至 %s (%.1f分钟)",
-						channelID, keyIndex, reset1308Time.Format("2006-01-02 15:04:05"), duration.Minutes())
+						channelID, keyIndex, decision.reset1308At.Format("2006-01-02 15:04:05"), duration.Minutes())
 				}
 				return ActionRetryKey
 			}
@@ -145,17 +178,17 @@ func (m *Manager) HandleError(ctx context.Context, in ErrorInput) Action {
 		}
 		return ActionRetryKey
 
-	case util.ErrorLevelChannel:
+	case ActionRetryChannel:
 		// 渠道级错误:冷却整个渠道,切换到其他渠道
 		// [INFO] 特殊处理: 如果有1308精确时间，直接设置（单Key渠道的1308错误会走到这里）
-		if has1308Time {
-			if err := m.store.SetChannelCooldown(ctx, channelID, reset1308Time); err != nil {
+		if decision.hasReset1308 {
+			if err := m.store.SetChannelCooldown(ctx, channelID, decision.reset1308At); err != nil {
 				log.Printf("[WARN] Failed to set channel cooldown to reset time (channel=%d, until=%v): %v",
-					channelID, reset1308Time, err)
+					channelID, decision.reset1308At, err)
 			} else {
-				duration := time.Until(reset1308Time)
+				duration := time.Until(decision.reset1308At)
 				log.Printf("[COOLDOWN] Channel冷却(1308): 渠道=%d 禁用至 %s (%.1f分钟)",
-					channelID, reset1308Time.Format("2006-01-02 15:04:05"), duration.Minutes())
+					channelID, decision.reset1308At.Format("2006-01-02 15:04:05"), duration.Minutes())
 			}
 			return ActionRetryChannel
 		}
