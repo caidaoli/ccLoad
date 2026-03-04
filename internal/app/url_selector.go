@@ -112,8 +112,16 @@ func (s *URLSelector) SelectURL(channelID int64, urls []string) (string, int) {
 	totalWeight := 0.0
 	weights := make([]float64, len(known))
 	for i, c := range known {
-		weights[i] = 1.0 / c.latency
+		latency := c.latency
+		if latency <= 0 || math.IsNaN(latency) || math.IsInf(latency, 0) {
+			latency = 0.1
+		}
+		weights[i] = 1.0 / latency
 		totalWeight += weights[i]
+	}
+	if totalWeight <= 0 || math.IsNaN(totalWeight) || math.IsInf(totalWeight, 0) {
+		pick := known[rand.IntN(len(known))]
+		return pick.url, pick.idx
 	}
 	r := rand.Float64() * totalWeight
 	for i, w := range weights {
@@ -128,7 +136,10 @@ func (s *URLSelector) SelectURL(channelID int64, urls []string) (string, int) {
 // RecordLatency 记录URL的首字节时间，更新EWMA
 func (s *URLSelector) RecordLatency(channelID int64, url string, ttfb time.Duration) {
 	key := urlKey{channelID: channelID, url: url}
-	ms := float64(ttfb.Milliseconds())
+	ms := float64(ttfb) / float64(time.Millisecond)
+	if ms <= 0 || math.IsNaN(ms) || math.IsInf(ms, 0) {
+		ms = 0.1
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -140,11 +151,8 @@ func (s *URLSelector) RecordLatency(channelID int64, url string, ttfb time.Durat
 		s.latencies[key] = &ewmaValue{value: ms, lastSeen: time.Now()}
 	}
 
-	// 成功请求：重置冷却连续失败计数
-	if cd, ok := s.cooldowns[key]; ok {
-		cd.consecutiveFails = 0
-		s.cooldowns[key] = cd
-	}
+	// 成功请求：清除冷却状态，立即恢复可用
+	delete(s.cooldowns, key)
 }
 
 // CooldownURL 对URL施加指数退避冷却

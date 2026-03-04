@@ -45,6 +45,26 @@ func (s *Server) HandleChannelTest(c *gin.Context) {
 		RespondError(c, http.StatusNotFound, fmt.Errorf("channel not found"))
 		return
 	}
+	if strings.TrimSpace(testReq.BaseURL) != "" {
+		normalizedBaseURL, err := validateChannelBaseURL(testReq.BaseURL)
+		if err != nil {
+			RespondErrorMsg(c, http.StatusBadRequest, "invalid base_url: "+err.Error())
+			return
+		}
+
+		allowed := false
+		for _, u := range cfg.GetURLs() {
+			if u == normalizedBaseURL {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			RespondErrorMsg(c, http.StatusBadRequest, "base_url不属于该渠道配置")
+			return
+		}
+		testReq.BaseURL = normalizedBaseURL
+	}
 
 	// 查询渠道的API Keys
 	apiKeys, err := s.store.GetAPIKeys(c.Request.Context(), id)
@@ -182,6 +202,9 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 	}
 
 	urls := cfg.GetURLs()
+	if forcedBaseURL := strings.TrimSpace(testReq.BaseURL); forcedBaseURL != "" {
+		urls = []string{forcedBaseURL}
+	}
 	if len(urls) == 0 {
 		return map[string]any{"success": false, "error": "渠道URL为空"}
 	}
@@ -232,12 +255,17 @@ func (s *Server) testChannelAPIWithURL(
 	tester testutil.ChannelTester,
 	channelType, selectedURL string,
 ) map[string]any {
-	// 使用局部副本，避免并发请求时修改共享cfg
-	cfgCopy := *cfg
-	cfgCopy.URL = selectedURL
+	// 仅构造测试请求必需字段，避免复制带锁 Config 结构体。
+	cfgForBuild := &model.Config{
+		ID:           cfg.ID,
+		Name:         cfg.Name,
+		ChannelType:  cfg.ChannelType,
+		URL:          selectedURL,
+		ModelEntries: append([]model.ModelEntry(nil), cfg.ModelEntries...),
+	}
 
 	// 构建请求（传递实际的API Key和重定向后的模型）
-	fullURL, baseHeaders, body, err := tester.Build(&cfgCopy, apiKey, testReq)
+	fullURL, baseHeaders, body, err := tester.Build(cfgForBuild, apiKey, testReq)
 	if err != nil {
 		return map[string]any{"success": false, "error": "构造测试请求失败: " + err.Error()}
 	}

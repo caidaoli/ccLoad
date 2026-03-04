@@ -159,6 +159,74 @@ func TestTestChannelAPI_MultiURLFallbackAndSelectorFeedback(t *testing.T) {
 	}
 }
 
+func TestHandleChannelTest_WithBaseURLOverridesURLSelection(t *testing.T) {
+	failCalls := 0
+	failUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		failCalls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":{"type":"server_error","message":"should not hit this url"}}`))
+	}))
+	defer failUpstream.Close()
+
+	okCalls := 0
+	okUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		okCalls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	}))
+	defer okUpstream.Close()
+
+	srv := newInMemoryServer(t)
+	ctx := context.Background()
+
+	cfg := &model.Config{
+		Name:         "base-url-override-channel",
+		URL:          failUpstream.URL + "\n" + okUpstream.URL,
+		Priority:     1,
+		ChannelType:  "openai",
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
+		Enabled:      true,
+	}
+	created, err := srv.store.CreateConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+	err = srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test-key"},
+	})
+	if err != nil {
+		t.Fatalf("添加 API key 失败: %v", err)
+	}
+	// 不支持 base_url 覆盖时，默认 URL 选择会优先打到 failUpstream。
+	srv.urlSelector.CooldownURL(created.ID, okUpstream.URL)
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+fmt.Sprintf("%d", created.ID)+"/test", map[string]any{
+		"model":        "gpt-4o-mini",
+		"channel_type": "openai",
+		"base_url":     okUpstream.URL,
+	}))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+
+	srv.HandleChannelTest(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	dataSuccess, _ := resp.Data["success"].(bool)
+	if !dataSuccess {
+		t.Fatalf("expected success=true, data=%+v", resp.Data)
+	}
+	if failCalls != 0 {
+		t.Fatalf("expected forced base_url to skip fail url, failCalls=%d", failCalls)
+	}
+	if okCalls != 1 {
+		t.Fatalf("expected forced base_url called once, okCalls=%d", okCalls)
+	}
+}
+
 // TestHandleChannelTest_NoAPIKey 渠道存在但无 API key
 func TestHandleChannelTest_NoAPIKey(t *testing.T) {
 	srv := newInMemoryServer(t)

@@ -177,3 +177,42 @@ func TestURLSelector_ExponentialBackoff(t *testing.T) {
 		t.Errorf("expected 2 fails, got %d", state2.consecutiveFails)
 	}
 }
+
+func TestURLSelector_SubMillisecondLatencyWeightedRandom(t *testing.T) {
+	sel := NewURLSelector()
+	urls := []string{"https://fast.com", "https://slow.com"}
+
+	// 复现边界：<1ms 延迟如果被量化为 0，会导致 1/latency 出现 Inf。
+	sel.RecordLatency(1, "https://fast.com", 500*time.Microsecond)
+	sel.RecordLatency(1, "https://slow.com", 100*time.Millisecond)
+
+	fastCount := 0
+	rounds := 200
+	for range rounds {
+		url, _ := sel.SelectURL(1, urls)
+		if url == "https://fast.com" {
+			fastCount++
+		}
+	}
+
+	if fastCount <= rounds/2 {
+		t.Fatalf("expected fast URL to be preferred, fastCount=%d slowCount=%d", fastCount, rounds-fastCount)
+	}
+}
+
+func TestURLSelector_RecordLatencyClearsCooldownWindow(t *testing.T) {
+	sel := NewURLSelector()
+	channelID := int64(1)
+	url := "https://a.com"
+
+	sel.CooldownURL(channelID, url)
+	if !sel.IsCooledDown(channelID, url) {
+		t.Fatalf("expected url cooled down before success")
+	}
+
+	// 成功反馈后应立刻可用，不应继续停留在旧的 cooldown until。
+	sel.RecordLatency(channelID, url, 20*time.Millisecond)
+	if sel.IsCooledDown(channelID, url) {
+		t.Fatalf("expected cooldown cleared after successful latency record")
+	}
+}

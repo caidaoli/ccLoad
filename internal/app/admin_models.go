@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,6 +14,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+var fetchModelsHTTPStatusPattern = regexp.MustCompile(`HTTP\s+(\d{3})`)
 
 // ============================================================
 // Admin API: 获取渠道可用模型列表
@@ -308,7 +312,7 @@ func (s *Server) fetchModelsWithURLFallback(
 			return resp, nil
 		}
 		lastErr = err
-		if selectorEnabled {
+		if selectorEnabled && shouldCooldownURLOnFetchModelsError(err) {
 			s.urlSelector.CooldownURL(channelID, entry.url)
 		}
 	}
@@ -317,6 +321,54 @@ func (s *Server) fetchModelsWithURLFallback(
 		return nil, lastErr
 	}
 	return nil, fmt.Errorf("获取模型列表失败: 未找到可用URL")
+}
+
+func shouldCooldownURLOnFetchModelsError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := err.Error()
+	if statusCode, body, ok := parseFetchModelsStatus(errMsg); ok {
+		classification := util.ClassifyHTTPResponseWithMeta(statusCode, nil, []byte(body))
+		return classification.Level == util.ErrorLevelChannel
+	}
+
+	msgLower := strings.ToLower(errMsg)
+	networkErrorMarkers := []string{
+		"请求失败:",
+		"读取响应失败:",
+		"context deadline exceeded",
+		"i/o timeout",
+		"connection refused",
+		"connection reset",
+		"no route to host",
+	}
+	for _, marker := range networkErrorMarkers {
+		if strings.Contains(msgLower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseFetchModelsStatus(errMsg string) (statusCode int, body string, ok bool) {
+	matches := fetchModelsHTTPStatusPattern.FindStringSubmatch(errMsg)
+	if len(matches) < 2 {
+		return 0, "", false
+	}
+
+	code, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return 0, "", false
+	}
+
+	body = errMsg
+	if fullMatch := matches[0]; fullMatch != "" {
+		if idx := strings.Index(errMsg, fullMatch); idx >= 0 {
+			body = strings.TrimLeft(errMsg[idx+len(fullMatch):], "): \t")
+		}
+	}
+	return code, strings.TrimSpace(body), true
 }
 
 func fetchModelsForConfig(ctx context.Context, channelType, channelURL, apiKey string) (*FetchModelsResponse, error) {

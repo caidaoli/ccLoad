@@ -272,6 +272,77 @@ func TestAdminModels_HandleFetchModels_MultiURL(t *testing.T) {
 	}
 }
 
+func TestAdminModels_HandleFetchModels_MultiURL_KeyErrorDoesNotCooldownURL(t *testing.T) {
+	keyErrCalls := 0
+	keyErrUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		keyErrCalls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"type":"authentication_error","message":"invalid api key"}}`))
+	}))
+	t.Cleanup(keyErrUpstream.Close)
+
+	okCalls := 0
+	okUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		okCalls++
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-4.1"}]}`))
+	}))
+	t.Cleanup(okUpstream.Close)
+
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.channelCache = storage.NewChannelCache(store, time.Minute)
+	server.urlSelector = NewURLSelector()
+
+	ctx := context.Background()
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "multi-url-key-error",
+		URL:          keyErrUpstream.URL + "\n" + okUpstream.URL,
+		Priority:     1,
+		ChannelType:  "openai",
+		ModelEntries: []model.ModelEntry{{Model: "m1"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "sk-test", KeyStrategy: model.KeyStrategySequential},
+	}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+	// 强制首跳优先命中 keyErrUpstream，覆盖“先401再fallback”的路径。
+	server.urlSelector.CooldownURL(cfg.ID, okUpstream.URL)
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/1/models/fetch", nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", cfg.ID)}}
+
+	server.HandleFetchModels(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp struct {
+		Success bool                `json:"success"`
+		Data    FetchModelsResponse `json:"data"`
+	}
+	mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+	if !resp.Success {
+		t.Fatalf("expected success=true, body=%s", w.Body.String())
+	}
+	if keyErrCalls < 1 || okCalls < 1 {
+		t.Fatalf("expected both URLs attempted, keyErrCalls=%d okCalls=%d", keyErrCalls, okCalls)
+	}
+	if server.urlSelector.IsCooledDown(cfg.ID, keyErrUpstream.URL) {
+		t.Fatalf("expected key-error URL not cooled down, url=%s", keyErrUpstream.URL)
+	}
+}
+
 func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 	t.Run("merge mode partial success", func(t *testing.T) {
 		// channel1: 返回 m1,m2（新增1个）

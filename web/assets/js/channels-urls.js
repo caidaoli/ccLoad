@@ -254,7 +254,8 @@ async function testInlineURL(index, buttonElement) {
         stream: true,
         content: 'test',
         channel_type: channelType,
-        key_index: 0
+        key_index: 0,
+        base_url: url
       })
     });
 
