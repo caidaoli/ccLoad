@@ -75,10 +75,15 @@ func (c *Config) GetModels() []string {
 // GetURLs 解析URL字段，返回URL列表
 // 支持换行分隔多个URL，向后兼容单URL场景
 func (c *Config) GetURLs() []string {
-	if !strings.Contains(c.URL, "\n") {
-		return []string{c.URL}
+	raw := c.URL
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
 	}
-	lines := strings.Split(c.URL, "\n")
+	if !strings.Contains(raw, "\n") {
+		return []string{trimmed}
+	}
+	lines := strings.Split(raw, "\n")
 	urls := make([]string, 0, len(lines))
 	seen := make(map[string]struct{}, len(lines))
 	for _, line := range lines {
@@ -91,9 +96,6 @@ func (c *Config) GetURLs() []string {
 		}
 		seen[line] = struct{}{}
 		urls = append(urls, line)
-	}
-	if len(urls) == 0 {
-		return []string{c.URL}
 	}
 	return urls
 }

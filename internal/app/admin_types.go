@@ -19,7 +19,7 @@ type ChannelRequest struct {
 	APIKey         string             `json:"api_key" binding:"required"`
 	ChannelType    string             `json:"channel_type,omitempty"` // 渠道类型:anthropic, codex, gemini
 	KeyStrategy    string             `json:"key_strategy,omitempty"` // Key使用策略:sequential, round_robin
-	URL            string             `json:"url" binding:"required,url"`
+	URL            string             `json:"url" binding:"required"`
 	Priority       int                `json:"priority"`
 	Models         []model.ModelEntry `json:"models" binding:"required,min=1"` // 模型配置（包含重定向）
 	Enabled        bool               `json:"enabled"`

@@ -8,6 +8,11 @@ import (
 	"time"
 )
 
+const (
+	defaultURLSelectorCleanupInterval = time.Hour
+	defaultURLSelectorLatencyMaxAge   = 24 * time.Hour
+)
+
 // urlKey 标识渠道+URL的组合
 type urlKey struct {
 	channelID int64
@@ -34,23 +39,107 @@ type URLSelector struct {
 	alpha        float64       // EWMA权重因子
 	cooldownBase time.Duration // 基础冷却时间
 	cooldownMax  time.Duration // 最大冷却时间
+	// 低频清理调度，避免 map 长期只增不减。
+	cleanupInterval time.Duration
+	latencyMaxAge   time.Duration
+	nextCleanup     time.Time
 }
 
 // NewURLSelector 创建URL选择器
 func NewURLSelector() *URLSelector {
+	now := time.Now()
 	return &URLSelector{
-		latencies:    make(map[urlKey]*ewmaValue),
-		cooldowns:    make(map[urlKey]urlCooldownState),
-		alpha:        0.3,
-		cooldownBase: 2 * time.Minute,
-		cooldownMax:  30 * time.Minute,
+		latencies:       make(map[urlKey]*ewmaValue),
+		cooldowns:       make(map[urlKey]urlCooldownState),
+		alpha:           0.3,
+		cooldownBase:    2 * time.Minute,
+		cooldownMax:     30 * time.Minute,
+		cleanupInterval: defaultURLSelectorCleanupInterval,
+		latencyMaxAge:   defaultURLSelectorLatencyMaxAge,
+		nextCleanup:     now.Add(defaultURLSelectorCleanupInterval),
 	}
+}
+
+func (s *URLSelector) gcLocked(now time.Time, maxAge time.Duration) {
+	if maxAge <= 0 {
+		maxAge = s.latencyMaxAge
+	}
+	if maxAge > 0 {
+		cutoff := now.Add(-maxAge)
+		for key, ewma := range s.latencies {
+			if ewma == nil || ewma.lastSeen.IsZero() || ewma.lastSeen.Before(cutoff) {
+				delete(s.latencies, key)
+			}
+		}
+	}
+
+	for key, cooldown := range s.cooldowns {
+		if !now.Before(cooldown.until) {
+			delete(s.cooldowns, key)
+		}
+	}
+}
+
+func (s *URLSelector) maybeCleanupLocked(now time.Time) {
+	if s.cleanupInterval <= 0 {
+		return
+	}
+	if !s.nextCleanup.IsZero() && now.Before(s.nextCleanup) {
+		return
+	}
+	s.gcLocked(now, s.latencyMaxAge)
+	s.nextCleanup = now.Add(s.cleanupInterval)
+}
+
+// GC 手动触发状态清理（用于测试或运维兜底）。
+// maxAge 控制 latency 条目的保留时长，cooldown 条目始终按 until 过期清理。
+func (s *URLSelector) GC(maxAge time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.gcLocked(time.Now(), maxAge)
+}
+
+// PruneChannel 清理指定渠道中不再存在的 URL 状态。
+// keepURLs 为空时会移除该渠道全部状态。
+func (s *URLSelector) PruneChannel(channelID int64, keepURLs []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	keep := make(map[string]struct{}, len(keepURLs))
+	for _, u := range keepURLs {
+		keep[u] = struct{}{}
+	}
+
+	for key := range s.latencies {
+		if key.channelID != channelID {
+			continue
+		}
+		if _, ok := keep[key.url]; !ok {
+			delete(s.latencies, key)
+		}
+	}
+	for key := range s.cooldowns {
+		if key.channelID != channelID {
+			continue
+		}
+		if _, ok := keep[key.url]; !ok {
+			delete(s.cooldowns, key)
+		}
+	}
+}
+
+// RemoveChannel 移除指定渠道的全部 URL 状态。
+func (s *URLSelector) RemoveChannel(channelID int64) {
+	s.PruneChannel(channelID, nil)
 }
 
 // SelectURL 从候选URL中选择最优的
 // 返回选中的URL和在原列表中的索引
 func (s *URLSelector) SelectURL(channelID int64, urls []string) (string, int) {
-	if len(urls) <= 1 {
+	if len(urls) == 0 {
+		return "", -1
+	}
+	if len(urls) == 1 {
 		return urls[0], 0
 	}
 
@@ -144,11 +233,14 @@ func (s *URLSelector) RecordLatency(channelID int64, url string, ttfb time.Durat
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	now := time.Now()
+	s.maybeCleanupLocked(now)
+
 	if e, ok := s.latencies[key]; ok {
 		e.value = s.alpha*ms + (1-s.alpha)*e.value
-		e.lastSeen = time.Now()
+		e.lastSeen = now
 	} else {
-		s.latencies[key] = &ewmaValue{value: ms, lastSeen: time.Now()}
+		s.latencies[key] = &ewmaValue{value: ms, lastSeen: now}
 	}
 
 	// 成功请求：清除冷却状态，立即恢复可用
@@ -162,6 +254,9 @@ func (s *URLSelector) CooldownURL(channelID int64, url string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	now := time.Now()
+	s.maybeCleanupLocked(now)
+
 	cd := s.cooldowns[key]
 	cd.consecutiveFails++
 
@@ -172,7 +267,7 @@ func (s *URLSelector) CooldownURL(channelID int64, url string) {
 		duration = s.cooldownMax
 	}
 
-	cd.until = time.Now().Add(duration)
+	cd.until = now.Add(duration)
 	s.cooldowns[key] = cd
 }
 
@@ -193,7 +288,10 @@ type sortedURL struct {
 
 // SortURLs 返回按EWMA延迟排序的全部URL列表（非冷却URL优先，用于故障切换遍历）
 func (s *URLSelector) SortURLs(channelID int64, urls []string) []sortedURL {
-	if len(urls) <= 1 {
+	if len(urls) == 0 {
+		return nil
+	}
+	if len(urls) == 1 {
 		return []sortedURL{{url: urls[0], idx: 0}}
 	}
 

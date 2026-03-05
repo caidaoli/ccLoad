@@ -312,6 +312,24 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 		}
 		summary.Created = created
 		summary.Updated = updated
+
+		// 导入会更新渠道URL，立即清理 URLSelector 中失效URL状态，避免旧状态长期残留。
+		if s.urlSelector != nil {
+			seenIDs := make(map[int64]struct{}, len(validChannels))
+			for _, channel := range validChannels {
+				if channel == nil || channel.Config == nil || channel.Config.ID <= 0 {
+					continue
+				}
+				seenIDs[channel.Config.ID] = struct{}{}
+			}
+			for channelID := range seenIDs {
+				cfg, getErr := s.store.GetConfig(c.Request.Context(), channelID)
+				if getErr != nil || cfg == nil {
+					continue
+				}
+				s.urlSelector.PruneChannel(channelID, cfg.GetURLs())
+			}
+		}
 	}
 
 	summary.Processed = summary.Created + summary.Updated + summary.Skipped

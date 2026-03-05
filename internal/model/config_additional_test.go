@@ -165,3 +165,19 @@ func TestGetURLs_TrailingSlashPreserved(t *testing.T) {
 		t.Errorf("trailing slash should be preserved, got %q", urls[0])
 	}
 }
+
+func TestGetURLs_SingleURLTrimmed(t *testing.T) {
+	c := &Config{URL: "  https://api.openai.com/v1  "}
+	urls := c.GetURLs()
+	if len(urls) != 1 || urls[0] != "https://api.openai.com/v1" {
+		t.Fatalf("expected trimmed single url, got %v", urls)
+	}
+}
+
+func TestGetURLs_WhitespaceOnlyReturnsEmpty(t *testing.T) {
+	c := &Config{URL: "\n \n\t\n"}
+	urls := c.GetURLs()
+	if len(urls) != 0 {
+		t.Fatalf("expected empty urls for whitespace-only input, got %v", urls)
+	}
+}

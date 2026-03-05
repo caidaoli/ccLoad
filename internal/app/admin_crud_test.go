@@ -136,6 +136,19 @@ func TestHandleCreateChannel(t *testing.T) {
 			checkSuccess:   true,
 		},
 		{
+			name: "成功创建多URL渠道",
+			payload: ChannelRequest{
+				Name:     "Multi-URL-Channel",
+				APIKey:   "sk-test-key",
+				URL:      "https://us.api.com\nhttps://eu.api.com",
+				Priority: 80,
+				Models:   []model.ModelEntry{{Model: "gpt-4o-mini", RedirectModel: ""}},
+				Enabled:  true,
+			},
+			expectedStatus: http.StatusCreated,
+			checkSuccess:   true,
+		},
+		{
 			name: "缺少name字段",
 			payload: ChannelRequest{
 				Name:     "",
@@ -515,6 +528,77 @@ func TestHandleUpdateChannel_ClearCooldownShouldTakeEffectImmediately(t *testing
 	}
 }
 
+func TestHandleUpdateChannel_PrunesURLSelectorState(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.urlSelector = NewURLSelector()
+
+	ctx := context.Background()
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "update-prune",
+		URL:          "https://old-1.example.com\nhttps://keep.example.com",
+		Priority:     10,
+		ModelEntries: []model.ModelEntry{{Model: "m1", RedirectModel: ""}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID:   cfg.ID,
+		KeyIndex:    0,
+		APIKey:      "sk-update-prune",
+		KeyStrategy: model.KeyStrategySequential,
+	}}); err != nil {
+		t.Fatalf("创建测试 key 失败: %v", err)
+	}
+
+	// 另一渠道状态，用于验证不会被误删
+	otherCfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "other-channel",
+		URL:          "https://other.example.com",
+		Priority:     10,
+		ModelEntries: []model.ModelEntry{{Model: "m1", RedirectModel: ""}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建其他渠道失败: %v", err)
+	}
+
+	server.urlSelector.RecordLatency(cfg.ID, "https://old-1.example.com", 20*time.Millisecond)
+	server.urlSelector.RecordLatency(cfg.ID, "https://keep.example.com", 30*time.Millisecond)
+	server.urlSelector.CooldownURL(cfg.ID, "https://old-1.example.com")
+	server.urlSelector.RecordLatency(otherCfg.ID, "https://other.example.com", 40*time.Millisecond)
+
+	payload := ChannelRequest{
+		Name:     "update-prune",
+		APIKey:   "sk-update-prune",
+		URL:      "https://keep.example.com\nhttps://new.example.com",
+		Priority: 11,
+		Models:   []model.ModelEntry{{Model: "m1", RedirectModel: ""}},
+		Enabled:  true,
+	}
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/channels/"+strconv.FormatInt(cfg.ID, 10), payload))
+	c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(cfg.ID, 10)}}
+	server.handleUpdateChannel(c, cfg.ID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if _, ok := server.urlSelector.latencies[urlKey{channelID: cfg.ID, url: "https://old-1.example.com"}]; ok {
+		t.Fatalf("expected old url latency state removed after update")
+	}
+	if _, ok := server.urlSelector.cooldowns[urlKey{channelID: cfg.ID, url: "https://old-1.example.com"}]; ok {
+		t.Fatalf("expected old url cooldown state removed after update")
+	}
+	if _, ok := server.urlSelector.latencies[urlKey{channelID: cfg.ID, url: "https://keep.example.com"}]; !ok {
+		t.Fatalf("expected kept url latency state preserved after update")
+	}
+	if _, ok := server.urlSelector.latencies[urlKey{channelID: otherCfg.ID, url: "https://other.example.com"}]; !ok {
+		t.Fatalf("expected other channel state preserved")
+	}
+}
+
 // TestHandleDeleteChannel 测试删除渠道
 func TestHandleDeleteChannel(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
@@ -585,6 +669,60 @@ func TestHandleDeleteChannel(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestHandleDeleteChannel_RemovesURLSelectorState(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.urlSelector = NewURLSelector()
+
+	ctx := context.Background()
+	targetCfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "delete-prune-target",
+		URL:          "https://target-1.example.com\nhttps://target-2.example.com",
+		Priority:     10,
+		ModelEntries: []model.ModelEntry{{Model: "m1", RedirectModel: ""}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建目标渠道失败: %v", err)
+	}
+	otherCfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "delete-prune-other",
+		URL:          "https://other.example.com",
+		Priority:     10,
+		ModelEntries: []model.ModelEntry{{Model: "m1", RedirectModel: ""}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建其他渠道失败: %v", err)
+	}
+
+	server.urlSelector.RecordLatency(targetCfg.ID, "https://target-1.example.com", 10*time.Millisecond)
+	server.urlSelector.RecordLatency(targetCfg.ID, "https://target-2.example.com", 20*time.Millisecond)
+	server.urlSelector.CooldownURL(targetCfg.ID, "https://target-1.example.com")
+	server.urlSelector.RecordLatency(otherCfg.ID, "https://other.example.com", 30*time.Millisecond)
+
+	c, w := newTestContext(t, newRequest(http.MethodDelete, "/admin/channels/"+strconv.FormatInt(targetCfg.ID, 10), nil))
+	c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(targetCfg.ID, 10)}}
+	server.handleDeleteChannel(c, targetCfg.ID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	for key := range server.urlSelector.latencies {
+		if key.channelID == targetCfg.ID {
+			t.Fatalf("expected deleted channel latency state removed, found key=%+v", key)
+		}
+	}
+	for key := range server.urlSelector.cooldowns {
+		if key.channelID == targetCfg.ID {
+			t.Fatalf("expected deleted channel cooldown state removed, found key=%+v", key)
+		}
+	}
+	if _, ok := server.urlSelector.latencies[urlKey{channelID: otherCfg.ID, url: "https://other.example.com"}]; !ok {
+		t.Fatalf("expected other channel state preserved")
 	}
 }
 

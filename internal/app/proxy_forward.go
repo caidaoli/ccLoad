@@ -667,6 +667,9 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 
 	// 获取渠道URL列表（单URL时退化为单元素切片）
 	urls := cfg.GetURLs()
+	if len(urls) == 0 {
+		return nil, fmt.Errorf("no valid URLs configured for channel %d", cfg.ID)
+	}
 
 	// Key重试循环
 	for range maxKeyRetries {
@@ -691,27 +694,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		}
 
 		// URL循环（单URL时退化为单次迭代）
-		sortedURLs := s.urlSelector.SortURLs(cfg.ID, urls)
-		if len(sortedURLs) > 1 {
-			// 主链路首选URL采用加权随机，兼顾延迟与负载分散；
-			// 后续URL仍按排序兜底，保证故障切换确定性。
-			preferredURL, _ := s.urlSelector.SelectURL(cfg.ID, urls)
-			for i, entry := range sortedURLs {
-				if entry.url != preferredURL {
-					continue
-				}
-				if i == 0 {
-					break
-				}
-				preferred := entry
-				reordered := make([]sortedURL, 0, len(sortedURLs))
-				reordered = append(reordered, preferred)
-				reordered = append(reordered, sortedURLs[:i]...)
-				reordered = append(reordered, sortedURLs[i+1:]...)
-				sortedURLs = reordered
-				break
-			}
-		}
+		sortedURLs := orderURLsWithSelector(s.urlSelector, cfg.ID, urls)
 		var urlLastFailure *proxyResult
 		for urlIdx, urlEntry := range sortedURLs {
 			if ctxErr := ctx.Err(); ctxErr != nil {

@@ -13,6 +13,20 @@ func TestURLSelector_SingleURL(t *testing.T) {
 	}
 }
 
+func TestURLSelector_EmptyURLs(t *testing.T) {
+	sel := NewURLSelector()
+
+	url, idx := sel.SelectURL(1, nil)
+	if url != "" || idx != -1 {
+		t.Fatalf("expected empty selection for empty urls, got (%q, %d)", url, idx)
+	}
+
+	sorted := sel.SortURLs(1, nil)
+	if len(sorted) != 0 {
+		t.Fatalf("expected empty sorted urls, got %v", sorted)
+	}
+}
+
 func TestURLSelector_ColdStart_Distributes(t *testing.T) {
 	sel := NewURLSelector()
 	urls := []string{"https://a.com", "https://b.com", "https://c.com"}
@@ -214,5 +228,59 @@ func TestURLSelector_RecordLatencyClearsCooldownWindow(t *testing.T) {
 	sel.RecordLatency(channelID, url, 20*time.Millisecond)
 	if sel.IsCooledDown(channelID, url) {
 		t.Fatalf("expected cooldown cleared after successful latency record")
+	}
+}
+
+func TestURLSelector_GC_RemovesExpiredState(t *testing.T) {
+	sel := NewURLSelector()
+	now := time.Now()
+
+	oldLatencyKey := urlKey{channelID: 1, url: "https://old-latency.com"}
+	freshLatencyKey := urlKey{channelID: 1, url: "https://fresh-latency.com"}
+	expiredCooldownKey := urlKey{channelID: 1, url: "https://expired-cooldown.com"}
+	activeCooldownKey := urlKey{channelID: 1, url: "https://active-cooldown.com"}
+
+	sel.latencies[oldLatencyKey] = &ewmaValue{value: 120, lastSeen: now.Add(-25 * time.Hour)}
+	sel.latencies[freshLatencyKey] = &ewmaValue{value: 80, lastSeen: now.Add(-2 * time.Hour)}
+	sel.cooldowns[expiredCooldownKey] = urlCooldownState{until: now.Add(-time.Minute), consecutiveFails: 2}
+	sel.cooldowns[activeCooldownKey] = urlCooldownState{until: now.Add(2 * time.Minute), consecutiveFails: 1}
+
+	sel.GC(24 * time.Hour)
+
+	if _, ok := sel.latencies[oldLatencyKey]; ok {
+		t.Fatalf("expected expired latency to be removed")
+	}
+	if _, ok := sel.latencies[freshLatencyKey]; !ok {
+		t.Fatalf("expected fresh latency to be preserved")
+	}
+	if _, ok := sel.cooldowns[expiredCooldownKey]; ok {
+		t.Fatalf("expected expired cooldown to be removed")
+	}
+	if _, ok := sel.cooldowns[activeCooldownKey]; !ok {
+		t.Fatalf("expected active cooldown to be preserved")
+	}
+}
+
+func TestURLSelector_RecordLatency_TriggersScheduledCleanup(t *testing.T) {
+	sel := NewURLSelector()
+	now := time.Now()
+
+	staleKey := urlKey{channelID: 1, url: "https://stale.com"}
+	expiredCooldownKey := urlKey{channelID: 1, url: "https://expired.com"}
+	sel.latencies[staleKey] = &ewmaValue{value: 100, lastSeen: now.Add(-48 * time.Hour)}
+	sel.cooldowns[expiredCooldownKey] = urlCooldownState{until: now.Add(-time.Minute), consecutiveFails: 1}
+
+	// 强制下一次写路径触发清理
+	sel.cleanupInterval = time.Millisecond
+	sel.latencyMaxAge = 24 * time.Hour
+	sel.nextCleanup = now.Add(-time.Second)
+
+	sel.RecordLatency(1, "https://new.com", 10*time.Millisecond)
+
+	if _, ok := sel.latencies[staleKey]; ok {
+		t.Fatalf("expected stale latency removed by scheduled cleanup")
+	}
+	if _, ok := sel.cooldowns[expiredCooldownKey]; ok {
+		t.Fatalf("expected expired cooldown removed by scheduled cleanup")
 	}
 }

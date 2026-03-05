@@ -402,6 +402,11 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		s.InvalidateAPIKeysCache(id)
 	}
 
+	// URL 更新后立即清理失效的 URLSelector 状态，避免旧URL状态长期残留。
+	if s.urlSelector != nil {
+		s.urlSelector.PruneChannel(id, upd.GetURLs())
+	}
+
 	RespondJSON(c, http.StatusOK, upd)
 }
 
@@ -414,6 +419,10 @@ func (s *Server) handleDeleteChannel(c *gin.Context, id int64) {
 	// 删除渠道对应的轮询计数器，避免KeySelector内部状态泄漏
 	if s.keySelector != nil {
 		s.keySelector.RemoveChannelCounter(id)
+	}
+	// 删除渠道时同步清理 URLSelector 内存状态。
+	if s.urlSelector != nil {
+		s.urlSelector.RemoveChannel(id)
 	}
 	// 删除渠道后刷新缓存，确保选择器立即生效
 	s.InvalidateChannelListCache()

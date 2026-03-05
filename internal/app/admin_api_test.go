@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"ccLoad/internal/model"
 
@@ -282,6 +283,94 @@ Good-URL,https://good.example.com,10,test-model,{},anthropic,true,sk-import-key-
 	}
 	if !hasGood {
 		t.Fatalf("Good-URL 应被导入")
+	}
+}
+
+func TestAdminAPI_ImportChannelsCSV_PrunesURLSelectorStateForUpdatedChannel(t *testing.T) {
+	server := newInMemoryServer(t)
+	ctx := context.Background()
+
+	targetCfg, err := server.store.CreateConfig(ctx, &model.Config{
+		Name:         "Import-Prune-Target",
+		URL:          "https://old-import.example.com\nhttps://keep-import.example.com",
+		Priority:     10,
+		ModelEntries: []model.ModelEntry{{Model: "m1", RedirectModel: ""}},
+		ChannelType:  "anthropic",
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建目标渠道失败: %v", err)
+	}
+	if err := server.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID:   targetCfg.ID,
+		KeyIndex:    0,
+		APIKey:      "sk-target-import",
+		KeyStrategy: model.KeyStrategySequential,
+	}}); err != nil {
+		t.Fatalf("创建目标渠道 key 失败: %v", err)
+	}
+
+	otherCfg, err := server.store.CreateConfig(ctx, &model.Config{
+		Name:         "Import-Prune-Other",
+		URL:          "https://other-import.example.com",
+		Priority:     10,
+		ModelEntries: []model.ModelEntry{{Model: "m1", RedirectModel: ""}},
+		ChannelType:  "anthropic",
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建其他渠道失败: %v", err)
+	}
+
+	server.urlSelector.RecordLatency(targetCfg.ID, "https://old-import.example.com", 10*time.Millisecond)
+	server.urlSelector.RecordLatency(targetCfg.ID, "https://keep-import.example.com", 20*time.Millisecond)
+	server.urlSelector.CooldownURL(targetCfg.ID, "https://old-import.example.com")
+	server.urlSelector.RecordLatency(otherCfg.ID, "https://other-import.example.com", 30*time.Millisecond)
+
+	csvContent := `name,url,priority,models,model_redirects,channel_type,enabled,api_key,key_strategy
+Import-Prune-Target,https://keep-import.example.com,10,m1,{},anthropic,true,sk-target-import,sequential
+`
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", "import-prune.csv")
+	if err != nil {
+		t.Fatalf("创建表单文件字段失败: %v", err)
+	}
+	if _, err := io.WriteString(part, csvContent); err != nil {
+		t.Fatalf("写入CSV内容失败: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("关闭writer失败: %v", err)
+	}
+
+	req := newRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	c, w := newTestContext(t, req)
+
+	server.HandleImportChannelsCSV(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望状态码 200, 实际 %d, 响应: %s", w.Code, w.Body.String())
+	}
+
+	var summary ChannelImportSummary
+	mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &summary)
+	if summary.Updated < 1 {
+		t.Fatalf("期望至少更新1条记录，实际 summary=%+v", summary)
+	}
+
+	if _, ok := server.urlSelector.latencies[urlKey{channelID: targetCfg.ID, url: "https://old-import.example.com"}]; ok {
+		t.Fatalf("期望导入更新后旧URL latency状态被清理")
+	}
+	if _, ok := server.urlSelector.cooldowns[urlKey{channelID: targetCfg.ID, url: "https://old-import.example.com"}]; ok {
+		t.Fatalf("期望导入更新后旧URL cooldown状态被清理")
+	}
+	if _, ok := server.urlSelector.latencies[urlKey{channelID: targetCfg.ID, url: "https://keep-import.example.com"}]; !ok {
+		t.Fatalf("期望保留更新后URL的状态")
+	}
+	if _, ok := server.urlSelector.latencies[urlKey{channelID: otherCfg.ID, url: "https://other-import.example.com"}]; !ok {
+		t.Fatalf("期望其他渠道状态不受影响")
 	}
 }
 
