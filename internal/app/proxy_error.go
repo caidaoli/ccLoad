@@ -293,7 +293,7 @@ func (s *Server) updateTokenStatsAsync(tokenHash string, isSuccess bool, duratio
 			res.CacheReadInputTokens,
 			res.Cache5mInputTokens,
 			res.Cache1hInputTokens,
-		)
+		) * util.OpenAIServiceTierMultiplier(actualModel, res.ServiceTier)
 
 		// 财务安全检查：费用为0但有token消耗时告警（可能是定价缺失）
 		if costUSD == 0.0 && (res.InputTokens > 0 || res.OutputTokens > 0) {

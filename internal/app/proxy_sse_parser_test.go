@@ -651,3 +651,72 @@ data: {"type":"message_delta","usage":{"output_tokens":100}}
 		t.Errorf("CacheCreationInputTokens = %d, 期望 500 (兼容字段)", parser.CacheCreationInputTokens)
 	}
 }
+
+func TestSSEUsageParser_ServiceTier(t *testing.T) {
+	// 测试从SSE流中提取 service_tier（OpenAI Chat Completions 格式）
+	sseData := `data: {"id":"chatcmpl-1","service_tier":"priority","choices":[]}
+
+data: {"id":"chatcmpl-1","service_tier":"priority","usage":{"prompt_tokens":100,"completion_tokens":50}}
+
+`
+	parser := newSSEUsageParser("openai")
+	if err := parser.Feed([]byte(sseData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	if parser.ServiceTier != "priority" {
+		t.Errorf("ServiceTier = %q, 期望 %q", parser.ServiceTier, "priority")
+	}
+}
+
+func TestSSEUsageParser_ServiceTierFlex(t *testing.T) {
+	sseData := `data: {"id":"chatcmpl-2","service_tier":"flex","usage":{"prompt_tokens":200,"completion_tokens":100}}
+
+`
+	parser := newSSEUsageParser("openai")
+	if err := parser.Feed([]byte(sseData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	if parser.ServiceTier != "flex" {
+		t.Errorf("ServiceTier = %q, 期望 %q", parser.ServiceTier, "flex")
+	}
+}
+
+func TestSSEUsageParser_ServiceTierDefault(t *testing.T) {
+	// 没有 service_tier 字段时应为空
+	sseData := `data: {"id":"chatcmpl-3","usage":{"prompt_tokens":50,"completion_tokens":25}}
+
+`
+	parser := newSSEUsageParser("openai")
+	if err := parser.Feed([]byte(sseData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	if parser.ServiceTier != "" {
+		t.Errorf("ServiceTier = %q, 期望空字符串", parser.ServiceTier)
+	}
+}
+
+func TestJSONUsageParser_ServiceTier(t *testing.T) {
+	// 测试JSON解析器提取 service_tier（非流式响应）
+	body := `{"id":"chatcmpl-4","model":"gpt-5","service_tier":"priority","usage":{"prompt_tokens":100,"completion_tokens":50}}`
+	parser := newJSONUsageParser("openai")
+	if err := parser.Feed([]byte(body)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	parser.GetUsage() // 触发解析
+	if parser.ServiceTier != "priority" {
+		t.Errorf("ServiceTier = %q, 期望 %q", parser.ServiceTier, "priority")
+	}
+}
+
+func TestJSONUsageParser_ServiceTierResponsesAPI(t *testing.T) {
+	// 测试 Responses API 格式: service_tier 在 response 对象内
+	body := `{"type":"response.completed","response":{"id":"resp-1","service_tier":"flex","usage":{"input_tokens":100,"output_tokens":50}}}`
+	parser := newJSONUsageParser("openai")
+	if err := parser.Feed([]byte(body)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	parser.GetUsage()
+	if parser.ServiceTier != "flex" {
+		t.Errorf("ServiceTier = %q, 期望 %q", parser.ServiceTier, "flex")
+	}
+}

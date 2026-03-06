@@ -20,9 +20,10 @@ type usageAccumulator struct {
 	InputTokens              int
 	OutputTokens             int
 	CacheReadInputTokens     int
-	CacheCreationInputTokens int // 5m+1h缓存总和（兼容字段）
-	Cache5mInputTokens       int // 5分钟缓存写入Token数（新增2025-12）
-	Cache1hInputTokens       int // 1小时缓存写入Token数（新增2025-12）
+	CacheCreationInputTokens int
+	Cache5mInputTokens       int
+	Cache1hInputTokens       int
+	ServiceTier              string // OpenAI service_tier: "priority"/"flex"/"default"
 }
 
 type sseUsageParser struct {
@@ -193,6 +194,15 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		return fmt.Errorf("json unmarshal failed: %w", err)
 	}
 
+	// 提取 service_tier（OpenAI Chat/Responses API 顶层字段）
+	if tier, ok := event["service_tier"].(string); ok && tier != "" {
+		p.ServiceTier = tier
+	} else if resp, ok := event["response"].(map[string]any); ok {
+		if tier, ok := resp["service_tier"].(string); ok && tier != "" {
+			p.ServiceTier = tier
+		}
+	}
+
 	usage := extractUsage(event)
 
 	if usage == nil {
@@ -262,6 +272,7 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 		if err := sseParser.Feed(data); err != nil {
 			log.Printf("WARN: usage sse-like parse failed: %v", err)
 		} else {
+			p.ServiceTier = sseParser.ServiceTier
 			return sseParser.GetUsage()
 		}
 	}
@@ -273,6 +284,15 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 	}
 
 	p.applyUsage(extractUsage(payload), p.channelType)
+
+	// 提取 service_tier（OpenAI Chat/Responses API 顶层字段）
+	if tier, ok := payload["service_tier"].(string); ok && tier != "" {
+		p.ServiceTier = tier
+	} else if resp, ok := payload["response"].(map[string]any); ok {
+		if tier, ok := resp["service_tier"].(string); ok && tier != "" {
+			p.ServiceTier = tier
+		}
+	}
 
 	// OpenAI/Codex/Gemini语义归一化: 与sseUsageParser保持一致
 	billableInput := p.InputTokens

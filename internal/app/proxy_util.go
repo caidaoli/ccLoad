@@ -92,6 +92,10 @@ type fwResult struct {
 	// 用于捕获SSE流中的error事件（如1308错误），在流结束后触发冷却逻辑
 	// 虽然HTTP状态码是200，但error事件表示实际上发生了错误
 	SSEErrorEvent []byte // SSE流中检测到的最后一个error事件的完整JSON
+
+	// OpenAI service_tier（2026-03新增）
+	// 响应中的 service_tier 字段决定计费倍率：priority=2x, flex=0.5x, default=1x
+	ServiceTier string
 }
 
 // ForwardObserver 封装转发过程中的观测回调（遵循SRP，避免函数签名膨胀）
@@ -628,7 +632,7 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 			res.CacheReadInputTokens,
 			res.Cache5mInputTokens,
 			res.Cache1hInputTokens,
-		)
+		) * util.OpenAIServiceTierMultiplier(costModel, res.ServiceTier)
 	} else {
 		entry.Message = "unknown"
 	}

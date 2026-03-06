@@ -608,6 +608,76 @@ func isOpenAIModel(model string) bool {
 		lowerModel == "computer-use-preview"
 }
 
+// serviceTierModels 列出支持 priority/flex service_tier 的 OpenAI 模型。
+// 来源：OpenAI 官方 Pricing 页 Priority 表（2026-03-06）。
+// 注意：gpt-5.4-pro 虽在表中出现但价格列为空，不算支持。
+var serviceTierModels = map[string]bool{
+	"gpt-5.4":           true,
+	"gpt-5.3-codex":     true,
+	"gpt-5.2":           true,
+	"gpt-5.2-codex":     true,
+	"gpt-5.1":           true,
+	"gpt-5.1-codex-max": true,
+	"gpt-5.1-codex":     true,
+	"gpt-5":             true,
+	"gpt-5-mini":        true,
+	"gpt-5-codex":       true,
+	"gpt-4.1":           true,
+	"gpt-4.1-mini":      true,
+	"gpt-4.1-nano":      true,
+	"gpt-4o":            true,
+	"gpt-4o-2024-05-13": true,
+	"gpt-4o-mini":       true,
+	"o3":                true,
+	"o4-mini":           true,
+}
+
+// modelSupportsTier 检查模型是否在 service_tier 白名单中。
+// 支持日期后缀变体：gpt-5.4-2026-03-01 匹配 gpt-5.4。
+// 非日期后缀（如 -pro、-nano）不会误匹配。
+func modelSupportsTier(model string) bool {
+	m := strings.ToLower(model)
+	if serviceTierModels[m] {
+		return true
+	}
+	// 逐段剥离日期后缀（纯数字段），尝试匹配白名单
+	for {
+		idx := strings.LastIndex(m, "-")
+		if idx <= 0 {
+			break
+		}
+		suffix := m[idx+1:]
+		if len(suffix) == 0 || suffix[0] < '0' || suffix[0] > '9' {
+			break // 非日期后缀，停止
+		}
+		m = m[:idx]
+		if serviceTierModels[m] {
+			return true
+		}
+	}
+	return false
+}
+
+// OpenAIServiceTierMultiplier 返回 OpenAI service_tier 的费用倍率。
+// priority=2x（加钱降延迟）, flex=0.5x（便宜但慢）, default/""=1x（标准）。
+// 仅当响应中携带 service_tier 字段时才生效。
+func OpenAIServiceTierMultiplier(model, serviceTier string) float64 {
+	if serviceTier == "" || serviceTier == "default" {
+		return 1.0
+	}
+	if !modelSupportsTier(model) {
+		return 1.0
+	}
+	switch serviceTier {
+	case "priority":
+		return 2.0
+	case "flex":
+		return 0.5
+	default:
+		return 1.0
+	}
+}
+
 // isOpusModel 判断是否为Claude Opus系列模型
 // Opus模型缓存定价与Sonnet/Haiku不同：无折扣(100%基础输入价格)
 // 参考：https://docs.claude.com/en/docs/about-claude/pricing

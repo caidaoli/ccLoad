@@ -289,9 +289,11 @@ func (s *Server) handleSuccessResponse(
 		case *sseUsageParser:
 			result.Cache5mInputTokens = p.Cache5mInputTokens
 			result.Cache1hInputTokens = p.Cache1hInputTokens
+			result.ServiceTier = p.ServiceTier
 		case *jsonUsageParser:
 			result.Cache5mInputTokens = p.Cache5mInputTokens
 			result.Cache1hInputTokens = p.Cache1hInputTokens
+			result.ServiceTier = p.ServiceTier
 		}
 
 		if errorEvent := parser.GetLastError(); errorEvent != nil {

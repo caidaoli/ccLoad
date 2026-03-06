@@ -234,6 +234,76 @@ func TestCalculateCost_OpenAIModels(t *testing.T) {
 	}
 }
 
+func TestOpenAIServiceTierMultiplier(t *testing.T) {
+	// gpt-5 standard: input $1.25/1M, output $10/1M → 1000 tokens each = $0.01125
+	baseCost := CalculateCostDetailed("gpt-5", 1000, 1000, 0, 0, 0)
+
+	// 白名单内模型 + 不同 tier
+	testCases := []struct {
+		model      string
+		tier       string
+		multiplier float64
+	}{
+		{"gpt-5", "priority", 2.0},
+		{"gpt-5", "flex", 0.5},
+		{"gpt-5", "default", 1.0},
+		{"gpt-5", "", 1.0},
+		{"gpt-5", "auto", 1.0},
+		{"gpt-4o", "priority", 2.0},
+		{"gpt-4.1-mini", "flex", 0.5},
+		{"o3", "priority", 2.0},
+		{"o4-mini", "flex", 0.5},
+		// 日期后缀变体
+		{"gpt-5.4-2026-03-01", "priority", 2.0},
+		{"gpt-4o-2024-05-13", "priority", 2.0},
+		{"o3-2026-01", "flex", 0.5},
+	}
+
+	for _, tc := range testCases {
+		m := OpenAIServiceTierMultiplier(tc.model, tc.tier)
+		if m != tc.multiplier {
+			t.Errorf("model=%q tier=%q: multiplier = %.1f, 期望 %.1f", tc.model, tc.tier, m, tc.multiplier)
+		}
+	}
+
+	// 白名单外模型：即使响应带 service_tier 也不应用倍率
+	unsupportedCases := []struct {
+		model string
+		tier  string
+	}{
+		{"gpt-5-pro", "priority"},
+		{"gpt-5-nano", "priority"},
+		{"gpt-5.4-pro", "priority"},
+		{"gpt-5.3-codex-spark", "priority"},
+		{"o1", "priority"},
+		{"o1-pro", "priority"},
+		{"o3-pro", "priority"},
+		{"o3-mini", "priority"},
+		{"claude-sonnet-4-5", "priority"},
+		{"deepseek-r1", "priority"},
+	}
+	for _, tc := range unsupportedCases {
+		m := OpenAIServiceTierMultiplier(tc.model, tc.tier)
+		if m != 1.0 {
+			t.Errorf("不支持的model=%q tier=%q: multiplier = %.1f, 期望 1.0", tc.model, tc.tier, m)
+		}
+	}
+
+	// 验证 gpt-5 priority 具体数值: input $2.50/1M, output $20/1M
+	priorityCost := baseCost * OpenAIServiceTierMultiplier("gpt-5", "priority")
+	expectedPriority := (2.50*1000 + 20.0*1000) / 1_000_000
+	if !floatEquals(priorityCost, expectedPriority, 0.000001) {
+		t.Errorf("gpt-5 priority: cost = %.6f, 期望 %.6f", priorityCost, expectedPriority)
+	}
+
+	// 验证 gpt-5 flex 具体数值: input $0.625/1M, output $5/1M
+	flexCost := baseCost * OpenAIServiceTierMultiplier("gpt-5", "flex")
+	expectedFlex := (0.625*1000 + 5.0*1000) / 1_000_000
+	if !floatEquals(flexCost, expectedFlex, 0.000001) {
+		t.Errorf("gpt-5 flex: cost = %.6f, 期望 %.6f", flexCost, expectedFlex)
+	}
+}
+
 func TestCalculateCost_MimoModels(t *testing.T) {
 	cost := CalculateCostDetailed("mimo-v2-flash", 1_000_000, 1_000_000, 0, 0, 0)
 	expected := 0.10 + 0.30
