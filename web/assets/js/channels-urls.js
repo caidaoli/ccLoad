@@ -246,7 +246,7 @@ async function testInlineURL(index, buttonElement) {
   buttonElement.innerHTML = '<span style="font-size: 10px;">⏳</span>';
 
   try {
-    const testResult = await fetchDataWithAuth(`/admin/channels/${editingChannelId}/test`, {
+    const testResult = await fetchDataWithAuth(`/admin/channels/${editingChannelId}/test-url`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

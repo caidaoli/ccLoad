@@ -11,7 +11,7 @@ type TestChannelRequest struct {
 	Headers     map[string]string `json:"headers,omitempty"`      // 可选，自定义请求头
 	ChannelType string            `json:"channel_type,omitempty"` // 可选，渠道类型：anthropic(默认)、codex、gemini
 	KeyIndex    int               `json:"key_index,omitempty"`    // 可选，指定测试的Key索引，默认0（第一个）
-	BaseURL     string            `json:"base_url,omitempty"`     // 可选，强制使用指定URL（必须属于该渠道）
+	BaseURL     string            `json:"base_url,omitempty"`     // 可选，仅 /test-url 使用，强制指定测试URL（必须属于该渠道）
 }
 
 // Validate 实现RequestValidator接口

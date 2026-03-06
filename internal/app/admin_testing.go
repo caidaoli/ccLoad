@@ -25,28 +25,45 @@ import (
 
 // HandleChannelTest 测试指定渠道的连通性
 func (s *Server) HandleChannelTest(c *gin.Context) {
-	// 解析渠道ID
+	s.handleChannelTestRequest(c, false)
+}
+
+// HandleChannelURLTest 测试指定渠道的单个 URL。
+func (s *Server) HandleChannelURLTest(c *gin.Context) {
+	s.handleChannelTestRequest(c, true)
+}
+
+func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 	id, err := ParseInt64Param(c, "id")
 	if err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel id")
 		return
 	}
 
-	// 解析请求体
 	var testReq testutil.TestChannelRequest
 	if err := BindAndValidate(c, &testReq); err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid request: "+err.Error())
 		return
 	}
 
-	// 获取渠道配置
+	forcedBaseURL := strings.TrimSpace(testReq.BaseURL)
+	if requireBaseURL {
+		if forcedBaseURL == "" {
+			RespondErrorMsg(c, http.StatusBadRequest, "base_url is required for /admin/channels/:id/test-url")
+			return
+		}
+	} else if forcedBaseURL != "" {
+		RespondErrorMsg(c, http.StatusBadRequest, "base_url is not supported on /admin/channels/:id/test; use /admin/channels/:id/test-url")
+		return
+	}
+
 	cfg, err := s.store.GetConfig(c.Request.Context(), id)
 	if err != nil {
 		RespondError(c, http.StatusNotFound, fmt.Errorf("channel not found"))
 		return
 	}
-	if strings.TrimSpace(testReq.BaseURL) != "" {
-		normalizedBaseURL, err := validateChannelBaseURL(testReq.BaseURL)
+	if forcedBaseURL != "" {
+		normalizedBaseURL, err := validateChannelBaseURL(forcedBaseURL)
 		if err != nil {
 			RespondErrorMsg(c, http.StatusBadRequest, "invalid base_url: "+err.Error())
 			return
@@ -66,7 +83,6 @@ func (s *Server) HandleChannelTest(c *gin.Context) {
 		testReq.BaseURL = normalizedBaseURL
 	}
 
-	// 查询渠道的API Keys
 	apiKeys, err := s.store.GetAPIKeys(c.Request.Context(), id)
 	if err != nil || len(apiKeys) == 0 {
 		RespondJSON(c, http.StatusOK, gin.H{
@@ -76,15 +92,13 @@ func (s *Server) HandleChannelTest(c *gin.Context) {
 		return
 	}
 
-	// 验证并选择 Key 索引
 	keyIndex := testReq.KeyIndex
 	if keyIndex < 0 || keyIndex >= len(apiKeys) {
-		keyIndex = 0 // 默认使用第一个 Key
+		keyIndex = 0
 	}
 
 	selectedKey := apiKeys[keyIndex].APIKey
 
-	// 检查模型是否支持
 	if !cfg.SupportsModel(testReq.Model) {
 		RespondJSON(c, http.StatusOK, gin.H{
 			"success":          false,
@@ -95,28 +109,18 @@ func (s *Server) HandleChannelTest(c *gin.Context) {
 		return
 	}
 
-	// 执行测试（传递实际的API Key字符串）
 	testResult := s.testChannelAPI(c.Request.Context(), cfg, selectedKey, &testReq)
-	// 添加测试的 Key 索引信息到结果中
 	testResult["tested_key_index"] = keyIndex
 	testResult["total_keys"] = len(apiKeys)
 
-	// [INFO] 修复：根据测试结果应用冷却逻辑
 	if success, ok := testResult["success"].(bool); ok && success {
-		// 测试成功：清除该Key的冷却状态
 		if err := s.store.ResetKeyCooldown(c.Request.Context(), id, keyIndex); err != nil {
 			log.Printf("[WARN] 清除Key #%d冷却状态失败: %v", keyIndex, err)
 		}
 
-		// ✨ 优化：同时清除渠道级冷却（因为至少有一个Key可用）
-		// 设计理念：测试成功证明渠道恢复正常，应立即解除渠道级冷却，避免选择器过滤该渠道
 		_ = s.store.ResetChannelCooldown(c.Request.Context(), id)
-
-		// [INFO] 修复：统一使相关缓存失效，确保前端能立即看到状态更新
 		s.invalidateChannelRelatedCache(id)
 	} else {
-		// 🔥 修复：测试失败时应用冷却策略
-		// 提取状态码和错误体
 		statusCode, _ := testResult["status_code"].(int)
 		var errorBody []byte
 		if apiError, ok := testResult["api_error"].(map[string]any); ok {
@@ -125,7 +129,6 @@ func (s *Server) HandleChannelTest(c *gin.Context) {
 			errorBody = []byte(rawResp)
 		}
 
-		// 提取响应头（用于429错误的精确分类）
 		var headers map[string][]string
 		if respHeaders, ok := testResult["response_headers"].(map[string]string); ok && statusCode == 429 {
 			headers = make(map[string][]string, len(respHeaders))
@@ -134,17 +137,13 @@ func (s *Server) HandleChannelTest(c *gin.Context) {
 			}
 		}
 
-		// 调用统一冷却管理器处理错误
 		action := s.cooldownManager.HandleError(
 			c.Request.Context(),
 			httpErrorInputFromParts(id, keyIndex, statusCode, errorBody, headers),
 		)
 
-		// [INFO] 修复：统一使相关缓存失效，确保前端能立即看到冷却状态更新
-		// 无论是Key级冷却还是渠道级冷却，都需要使缓存失效
 		s.invalidateChannelRelatedCache(id)
 
-		// 记录冷却决策结果到测试响应中
 		var actionStr string
 		switch action {
 		case cooldown.ActionRetryKey:

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -159,7 +160,122 @@ func TestTestChannelAPI_MultiURLFallbackAndSelectorFeedback(t *testing.T) {
 	}
 }
 
-func TestHandleChannelTest_WithBaseURLOverridesURLSelection(t *testing.T) {
+func TestTestChannelAPI_MultiURLFallbackOnPlainText502(t *testing.T) {
+	failCalls := 0
+	okCalls := 0
+
+	failUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		failCalls++
+		w.Header().Set("Content-Type", "text/plain; charset=UTF-8")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("error code: 502"))
+	}))
+	defer failUpstream.Close()
+
+	okUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		okCalls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	}))
+	defer okUpstream.Close()
+
+	srv := newInMemoryServer(t)
+
+	cfg := &model.Config{
+		ID:           9528,
+		Name:         "multi-url-plain-502-test",
+		URL:          failUpstream.URL + "\n" + okUpstream.URL,
+		Priority:     1,
+		ChannelType:  "openai",
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
+		Enabled:      true,
+	}
+
+	// 强制第一跳命中 502 的坏 URL，验证 text/plain 错误体也会继续回退。
+	srv.urlSelector.CooldownURL(cfg.ID, okUpstream.URL)
+
+	req := &testutil.TestChannelRequest{
+		Model:       "gpt-4o-mini",
+		ChannelType: "openai",
+		Content:     "hello",
+	}
+
+	result := srv.testChannelAPI(context.Background(), cfg, "sk-test", req)
+	success, _ := result["success"].(bool)
+	if !success {
+		t.Fatalf("expected fallback success on plain 502, got result=%+v", result)
+	}
+	if failCalls < 1 || okCalls < 1 {
+		t.Fatalf("expected both URLs attempted, failCalls=%d okCalls=%d", failCalls, okCalls)
+	}
+	if !srv.urlSelector.IsCooledDown(cfg.ID, failUpstream.URL) {
+		t.Fatalf("expected failed URL to be cooled down, url=%s", failUpstream.URL)
+	}
+	if got, ok := result["response_text"].(string); !ok || got != "ok" {
+		t.Fatalf("expected second URL success response_text=ok, got=%+v", result)
+	}
+}
+
+func TestHandleChannelTest_RejectsBaseURL(t *testing.T) {
+	failCalls := 0
+	failUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		failCalls++
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer failUpstream.Close()
+
+	okCalls := 0
+	okUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		okCalls++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer okUpstream.Close()
+
+	srv := newInMemoryServer(t)
+	ctx := context.Background()
+
+	cfg := &model.Config{
+		Name:         "channel-test-reject-base-url",
+		URL:          failUpstream.URL + "\n" + okUpstream.URL,
+		Priority:     1,
+		ChannelType:  "openai",
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
+		Enabled:      true,
+	}
+	created, err := srv.store.CreateConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test-key"}}); err != nil {
+		t.Fatalf("添加 API key 失败: %v", err)
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+fmt.Sprintf("%d", created.ID)+"/test", map[string]any{
+		"model":        "gpt-4o-mini",
+		"channel_type": "openai",
+		"base_url":     okUpstream.URL,
+	}))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+
+	srv.HandleChannelTest(c)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+
+	resp := mustParseAPIResponse[json.RawMessage](t, w.Body.Bytes())
+	if resp.Success {
+		t.Fatalf("expected success=false, resp=%+v", resp)
+	}
+	if !strings.Contains(resp.Error, "/test-url") {
+		t.Fatalf("expected error to guide /test-url, got %q", resp.Error)
+	}
+	if failCalls != 0 || okCalls != 0 {
+		t.Fatalf("expected no upstream request, failCalls=%d okCalls=%d", failCalls, okCalls)
+	}
+}
+
+func TestHandleChannelURLTest_UsesForcedURL(t *testing.T) {
 	failCalls := 0
 	failUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		failCalls++
@@ -182,7 +298,7 @@ func TestHandleChannelTest_WithBaseURLOverridesURLSelection(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := &model.Config{
-		Name:         "base-url-override-channel",
+		Name:         "single-url-test",
 		URL:          failUpstream.URL + "\n" + okUpstream.URL,
 		Priority:     1,
 		ChannelType:  "openai",
@@ -193,23 +309,20 @@ func TestHandleChannelTest_WithBaseURLOverridesURLSelection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建测试渠道失败: %v", err)
 	}
-	err = srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
-		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test-key"},
-	})
-	if err != nil {
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test-key"}}); err != nil {
 		t.Fatalf("添加 API key 失败: %v", err)
 	}
-	// 不支持 base_url 覆盖时，默认 URL 选择会优先打到 failUpstream。
+	// selector 和多 URL 顺序都不该影响显式单 URL 测试。
 	srv.urlSelector.CooldownURL(created.ID, okUpstream.URL)
 
-	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+fmt.Sprintf("%d", created.ID)+"/test", map[string]any{
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+fmt.Sprintf("%d", created.ID)+"/test-url", map[string]any{
 		"model":        "gpt-4o-mini",
 		"channel_type": "openai",
 		"base_url":     okUpstream.URL,
 	}))
 	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
 
-	srv.HandleChannelTest(c)
+	srv.HandleChannelURLTest(c)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
 	}
