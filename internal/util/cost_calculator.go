@@ -67,6 +67,7 @@ var basePricing = map[string]ModelPricing{
 	"claude-haiku":  {InputPrice: 1.00, OutputPrice: 5.00},
 
 	// ========== OpenAI GPT-5系列 ==========
+	"gpt-5.4":             {InputPrice: 2.50, OutputPrice: 15.00},
 	"gpt-5.3":             {InputPrice: 1.75, OutputPrice: 14.00},
 	"gpt-5.3-codex":       {InputPrice: 1.75, OutputPrice: 14.00},
 	"gpt-5.3-codex-spark": {InputPrice: 1.75, OutputPrice: 14.00},
@@ -667,7 +668,7 @@ func fuzzyMatchModel(model string) (ModelPricing, bool) {
 		"gemini-1.5-pro", "gemini-1.5-flash",
 
 		// OpenAI GPT系列（更长的前缀优先，避免gpt-4o-legacy被gpt-4o截断）
-		"gpt-5-pro", "gpt-5-nano", "gpt-5-mini", "gpt-5",
+		"gpt-5-pro", "gpt-5-nano", "gpt-5-mini", "gpt-5.4", "gpt-5",
 		"gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1",
 		"gpt-4o-legacy", "gpt-4o-mini", "gpt-4o", // legacy必须在gpt-4o之前
 		"gpt-4-turbo", "gpt-4-32k", "gpt-4",
