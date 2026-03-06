@@ -192,7 +192,10 @@ func ensureLogsNewColumns(ctx context.Context, db *sql.DB, dialect Dialect) erro
 		if err := ensureLogsActualModelMySQL(ctx, db); err != nil {
 			return err
 		}
-		return ensureLogsBaseURLMySQL(ctx, db)
+		if err := ensureLogsBaseURLMySQL(ctx, db); err != nil {
+			return err
+		}
+		return ensureLogsServiceTierMySQL(ctx, db)
 	}
 	// SQLite: 使用PRAGMA table_info检查列
 	return ensureLogsColumnsSQLite(ctx, db)
@@ -263,6 +266,7 @@ func ensureLogsColumnsSQLite(ctx context.Context, db *sql.DB) error {
 		{name: "actual_model", definition: "TEXT NOT NULL DEFAULT ''"}, // 实际转发的模型
 		{name: "api_key_hash", definition: "TEXT NOT NULL DEFAULT ''"}, // API Key SHA256（用于精确定位 key_index）
 		{name: "base_url", definition: "TEXT NOT NULL DEFAULT ''"},     // 请求使用的上游URL（多URL场景）
+		{name: "service_tier", definition: "TEXT NOT NULL DEFAULT ''"}, // OpenAI service_tier: priority/flex
 	}); err != nil {
 		return err
 	}
@@ -421,6 +425,26 @@ func ensureLogsBaseURLMySQL(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("add base_url column: %w", err)
 	}
 
+	return nil
+}
+
+func ensureLogsServiceTierMySQL(ctx context.Context, db *sql.DB) error {
+	var count int
+	err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='logs' AND COLUMN_NAME='service_tier'",
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check service_tier existence: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+	_, err = db.ExecContext(ctx,
+		"ALTER TABLE logs ADD COLUMN service_tier VARCHAR(20) NOT NULL DEFAULT '' COMMENT 'OpenAI service_tier: priority/flex(新增2026-03)'",
+	)
+	if err != nil {
+		return fmt.Errorf("add service_tier column: %w", err)
+	}
 	return nil
 }
 

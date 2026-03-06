@@ -616,6 +616,7 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		entry.CacheCreationInputTokens = res.CacheCreationInputTokens
 		entry.Cache5mInputTokens = res.Cache5mInputTokens
 		entry.Cache1hInputTokens = res.Cache1hInputTokens
+		entry.ServiceTier = res.ServiceTier
 
 		// 成本计算（2025-11新增，基于token统计）
 		// 2025-12更新：使用CalculateCostDetailed支持5m和1h缓存分别计费

@@ -536,8 +536,14 @@ function renderLogs(data) {
     }
 
     // 7. 成本显示
+    let tierBadge = '';
+    if (entry.service_tier === 'priority') {
+      tierBadge = ' <sup style="color: var(--error-600); font-size: 0.7em; font-weight: 600;">2x</sup>';
+    } else if (entry.service_tier === 'flex') {
+      tierBadge = ' <sup style="color: var(--success-600); font-size: 0.7em; font-weight: 600;">0.5x</sup>';
+    }
     const costDisplay = entry.cost ?
-      `<span style="color: var(--warning-600); font-weight: 500;">${formatCost(entry.cost)}</span>` : '';
+      `<span style="color: var(--warning-600); font-weight: 500;">${formatCost(entry.cost)}${tierBadge}</span>` : '';
 
     // === 直接拼接行 HTML ===
     htmlParts[i] = `<tr>

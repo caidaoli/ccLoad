@@ -123,6 +123,7 @@ func DefineLogsTable() *TableBuilder {
 		Column("auth_token_id BIGINT NOT NULL DEFAULT 0").      // 客户端使用的API令牌ID（新增2025-12）
 		Column("client_ip VARCHAR(45) NOT NULL DEFAULT ''").    // 客户端IP地址（新增2025-12）
 		Column("base_url VARCHAR(500) NOT NULL DEFAULT ''").    // 请求使用的上游URL（多URL场景）
+		Column("service_tier VARCHAR(20) NOT NULL DEFAULT ''"). // OpenAI service_tier: priority/flex
 		Column("input_tokens INT NOT NULL DEFAULT 0").
 		Column("output_tokens INT NOT NULL DEFAULT 0").
 		Column("cache_read_input_tokens INT NOT NULL DEFAULT 0").
