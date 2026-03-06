@@ -67,7 +67,14 @@ var basePricing = map[string]ModelPricing{
 	"claude-haiku":  {InputPrice: 1.00, OutputPrice: 5.00},
 
 	// ========== OpenAI GPT-5系列 ==========
-	"gpt-5.4":             {InputPrice: 2.50, OutputPrice: 15.00},
+	"gpt-5.4": {
+		InputPrice: 2.50, OutputPrice: 15.00,
+		InputPriceHigh: 5.00, OutputPriceHigh: 22.50, // >272K context
+	},
+	"gpt-5.4-pro": {
+		InputPrice: 30.00, OutputPrice: 180.00,
+		InputPriceHigh: 60.00, OutputPriceHigh: 270.00, // >272K context
+	},
 	"gpt-5.3":             {InputPrice: 1.75, OutputPrice: 14.00},
 	"gpt-5.3-codex":       {InputPrice: 1.75, OutputPrice: 14.00},
 	"gpt-5.3-codex-spark": {InputPrice: 1.75, OutputPrice: 14.00},
@@ -472,11 +479,17 @@ const (
 	// qwenPlusTierThreshold Qwen Plus 系列分档阈值（tokens）
 	// 参考用户提供的价格表：0<Tokens<=256K 与 256K<Tokens<=1M
 	qwenPlusTierThreshold = 256_000
+
+	// gpt54TierThreshold GPT-5.4 系列分档阈值（tokens）
+	// 参考：<=272K 与 >272K context length
+	gpt54TierThreshold = 272_000
 )
 
 func getTierThresholdForModel(model string) int {
 	lowerModel := strings.ToLower(model)
 	switch {
+	case strings.HasPrefix(lowerModel, "gpt-5.4"):
+		return gpt54TierThreshold
 	case strings.HasPrefix(lowerModel, "qwen3.5-plus"),
 		strings.HasPrefix(lowerModel, "qwen-3.5-plus"),
 		strings.HasPrefix(lowerModel, "qwen-plus"):
@@ -668,7 +681,7 @@ func fuzzyMatchModel(model string) (ModelPricing, bool) {
 		"gemini-1.5-pro", "gemini-1.5-flash",
 
 		// OpenAI GPT系列（更长的前缀优先，避免gpt-4o-legacy被gpt-4o截断）
-		"gpt-5-pro", "gpt-5-nano", "gpt-5-mini", "gpt-5.4", "gpt-5",
+		"gpt-5-pro", "gpt-5-nano", "gpt-5-mini", "gpt-5.4-pro", "gpt-5.4", "gpt-5",
 		"gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1",
 		"gpt-4o-legacy", "gpt-4o-mini", "gpt-4o", // legacy必须在gpt-4o之前
 		"gpt-4-turbo", "gpt-4-32k", "gpt-4",
