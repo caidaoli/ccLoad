@@ -679,7 +679,7 @@ func TestSelectAvailableKey_NoKeys(t *testing.T) {
 	}
 }
 
-func assertSelectAvailableKeyFirstIndex(t *testing.T, channelName string, keyPrefix string, keyStrategy string, wantIndex int, reason string) {
+func assertSelectAvailableKeyFirstIndex(t *testing.T, channelName string, keyPrefix string, keyStrategy string, wantIndex int, _ string) {
 	t.Helper()
 
 	store, cleanup := testutil.SetupTestStore(t)

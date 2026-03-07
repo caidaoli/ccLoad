@@ -1,6 +1,7 @@
-package integration_test
+package app_test
 
 import (
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"os"
@@ -10,7 +11,19 @@ import (
 	"testing"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
+	"ccLoad/internal/testutil"
 )
+
+// setupTestStoreWithContext 创建测试用的 Store 和 Context
+func setupTestStoreWithContext(t *testing.T) (storage.Store, context.Context, func()) {
+	t.Helper()
+
+	store, cleanup := testutil.SetupTestStore(t)
+	ctx := context.Background()
+
+	return store, ctx, cleanup
+}
 
 // ==================== CSV导入导出集成测试 ====================
 

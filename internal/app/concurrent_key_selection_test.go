@@ -1,23 +1,16 @@
-package integration
+package app
 
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"ccLoad/internal/app"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 )
-
-// contextKey 自定义类型用于 context key，避免 SA1029 警告
-type contextKey string
-
-const testingContextKey contextKey = "testing"
 
 // TestConcurrentKeySelection 测试高并发Key选择时的数据竞争和正确性
 // 场景：1000个并发请求同时选择Key
@@ -39,10 +32,8 @@ func TestConcurrentKeySelection(t *testing.T) {
 		t.Fatalf("Failed to get config: %v", err)
 	}
 
-	// ✅ Linus风格：轮询指针内存化后无需初始化
-
 	// 初始化KeySelector
-	selector := app.NewKeySelector() // 移除store参数
+	selector := NewKeySelector()
 
 	// 预先查询apiKeys，避免并发重复查询
 	apiKeys, err := store.GetAPIKeys(ctx, channelID)
@@ -149,7 +140,7 @@ func TestConcurrentKeyCooldown(t *testing.T) {
 		t.Fatalf("Failed to get config: %v", err)
 	}
 
-	selector := app.NewKeySelector() // 移除store参数
+	selector := NewKeySelector()
 
 	var wg sync.WaitGroup
 	errors := make(chan error, 100)
@@ -260,27 +251,11 @@ func TestConcurrentChannelOperations(t *testing.T) {
 	}
 }
 
-// 辅助函数：创建测试Store
-func setupTestStore(t *testing.T) (storage.Store, func()) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
-	store, err := storage.CreateSQLiteStore(dbPath)
-	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
-	}
-
-	cleanup := func() {
-		_ = store.Close()
-	}
-
-	return store, cleanup
-}
-
-// 辅助函数：创建带多个Key的测试渠道
+// createTestChannelWithKeys 创建带多个Key的测试渠道
 func createTestChannelWithKeys(t *testing.T, store storage.Store, keyCount int, strategy string) int64 {
+	t.Helper()
 	ctx := context.Background()
 
-	// 1. 创建渠道配置（不包含APIKeys）
 	cfg := &model.Config{
 		Name:     "test-concurrent-channel",
 		URL:      "https://api.example.com",
@@ -297,14 +272,13 @@ func createTestChannelWithKeys(t *testing.T, store storage.Store, keyCount int, 
 		t.Fatalf("Failed to create test channel: %v", err)
 	}
 
-	// 2. 为渠道创建多个API Keys
 	keys := make([]*model.APIKey, keyCount)
 	for i := 0; i < keyCount; i++ {
 		keys[i] = &model.APIKey{
 			ChannelID:   createdCfg.ID,
 			KeyIndex:    i,
 			APIKey:      fmt.Sprintf("sk-test-key-%d", i),
-			KeyStrategy: strategy, // KeyStrategy属于APIKey而非Config
+			KeyStrategy: strategy,
 		}
 	}
 	if err := store.CreateAPIKeysBatch(ctx, keys); err != nil {

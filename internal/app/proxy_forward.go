@@ -62,7 +62,7 @@ func prependToBody(resp *http.Response, prefix []byte) {
 // 从proxy.go提取，遵循SRP原则
 func (s *Server) buildProxyRequest(
 	reqCtx *requestContext,
-	cfg *model.Config,
+	_ *model.Config,
 	apiKey string,
 	method string,
 	body []byte,
@@ -356,7 +356,7 @@ func (s *Server) handleResponse(
 	w http.ResponseWriter,
 	channelType string,
 	cfg *model.Config,
-	apiKey string,
+	_ string,
 	observer *ForwardObserver,
 ) (*fwResult, float64, error) {
 	hdrClone := resp.Header.Clone()
