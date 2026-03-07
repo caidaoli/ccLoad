@@ -815,3 +815,95 @@ func TestCalculateCostDetailed_CompleteScenario(t *testing.T) {
 }
 
 // 旧的 CalculateCost() 兼容壳已删除，避免重复API与歧义参数。
+
+// ============================================================================
+// Anthropic Fast Mode 测试
+// ============================================================================
+
+func TestIsFastModeModel(t *testing.T) {
+	tests := []struct {
+		model string
+		want  bool
+	}{
+		{"claude-opus-4-6", true},
+		{"claude-opus-4-6-20260301", true},
+		{"Claude-Opus-4-6", true}, // 大小写不敏感
+		{"claude-opus-4-5", false},
+		{"claude-sonnet-4-6", false},
+		{"gpt-5", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := IsFastModeModel(tt.model); got != tt.want {
+			t.Errorf("IsFastModeModel(%q) = %v, 期望 %v", tt.model, got, tt.want)
+		}
+	}
+}
+
+func TestCalculateFastModeCost_Basic(t *testing.T) {
+	// 场景：Fast mode 基础输入/输出
+	// Input: 1000 × $30 / 1M = $0.030
+	// Output: 2000 × $150 / 1M = $0.300
+	// Total: $0.330
+	cost := CalculateFastModeCost(1000, 2000, 0, 0, 0)
+	expected := 0.330
+	if !floatEquals(cost, expected, 0.000001) {
+		t.Errorf("Fast mode 基础成本 = %.6f, 期望 %.6f", cost, expected)
+	}
+}
+
+func TestCalculateFastModeCost_WithCache(t *testing.T) {
+	// 场景：Fast mode + 缓存
+	// Input: 1000 × $30 / 1M = $0.030000
+	// Output: 500 × $150 / 1M = $0.075000
+	// Cache Read: 5000 × ($30 × 0.1) / 1M = $0.015000
+	// 5m Write: 2000 × ($30 × 1.25) / 1M = $0.075000
+	// 1h Write: 1000 × ($30 × 2.0) / 1M = $0.060000
+	// Total: $0.255000
+	cost := CalculateFastModeCost(1000, 500, 5000, 2000, 1000)
+	expected := 0.255
+	if !floatEquals(cost, expected, 0.000001) {
+		t.Errorf("Fast mode 缓存成本 = %.6f, 期望 %.6f", cost, expected)
+	}
+}
+
+func TestCalculateFastModeCost_VsStandard(t *testing.T) {
+	// 验证 fast mode 不使用 >200K 分段定价
+	// 标准模式 >200K: Input=$10, Output=$37.50
+	// Fast mode 统一: Input=$30, Output=$150
+	inputTokens := 250000 // >200K 阈值
+
+	standardCost := CalculateCostDetailed("claude-opus-4-6", inputTokens, 1000, 0, 0, 0)
+	fastCost := CalculateFastModeCost(inputTokens, 1000, 0, 0, 0)
+
+	// 标准: 250000×$10/1M + 1000×$37.50/1M = $2.5375
+	expectedStandard := 2.5375
+	if !floatEquals(standardCost, expectedStandard, 0.000001) {
+		t.Errorf("标准模式 >200K 成本 = %.6f, 期望 %.6f", standardCost, expectedStandard)
+	}
+
+	// Fast: 250000×$30/1M + 1000×$150/1M = $7.65
+	expectedFast := 7.65
+	if !floatEquals(fastCost, expectedFast, 0.000001) {
+		t.Errorf("Fast mode 成本 = %.6f, 期望 %.6f", fastCost, expectedFast)
+	}
+
+	// Fast 不应该是标准 ×6（因为标准 >200K 用了分段价格）
+	if floatEquals(fastCost, standardCost*6.0, 0.000001) {
+		t.Error("Fast mode 不应是标准成本的简单6倍（分段定价差异）")
+	}
+}
+
+func TestCalculateFastModeCost_NegativeTokens(t *testing.T) {
+	cost := CalculateFastModeCost(-1, 100, 0, 0, 0)
+	if cost != 0.0 {
+		t.Errorf("负数token应返回0, 实际 %.6f", cost)
+	}
+}
+
+func TestCalculateFastModeCost_ZeroTokens(t *testing.T) {
+	cost := CalculateFastModeCost(0, 0, 0, 0, 0)
+	if cost != 0.0 {
+		t.Errorf("零token应返回0, 实际 %.6f", cost)
+	}
+}

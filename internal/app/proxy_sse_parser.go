@@ -209,6 +209,11 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		return nil
 	}
 
+	// Anthropic fast mode: 从 usage.speed 推断计费层级
+	if speed, ok := usage["speed"].(string); ok && speed == "fast" {
+		p.ServiceTier = "fast"
+	}
+
 	p.applyUsage(usage, p.channelType)
 
 	return nil
@@ -283,7 +288,14 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 		return 0, 0, 0, 0
 	}
 
-	p.applyUsage(extractUsage(payload), p.channelType)
+	usage := extractUsage(payload)
+	// Anthropic fast mode: 从 usage.speed 推断计费层级
+	if usage != nil {
+		if speed, ok := usage["speed"].(string); ok && speed == "fast" {
+			p.ServiceTier = "fast"
+		}
+	}
+	p.applyUsage(usage, p.channelType)
 
 	// 提取 service_tier（OpenAI Chat/Responses API 顶层字段）
 	if tier, ok := payload["service_tier"].(string); ok && tier != "" {

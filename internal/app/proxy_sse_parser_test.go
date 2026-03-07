@@ -720,3 +720,76 @@ func TestJSONUsageParser_ServiceTierResponsesAPI(t *testing.T) {
 		t.Errorf("ServiceTier = %q, 期望 %q", parser.ServiceTier, "flex")
 	}
 }
+
+// ============================================================================
+// Anthropic Fast Mode speed 提取测试
+// ============================================================================
+
+func TestSSEUsageParser_SpeedFast(t *testing.T) {
+	// Anthropic fast mode: usage 中包含 speed:"fast"
+	sseData := `data: {"type":"message_delta","usage":{"input_tokens":100,"output_tokens":50,"speed":"fast"}}
+
+`
+	parser := newSSEUsageParser("anthropic")
+	if err := parser.Feed([]byte(sseData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	if parser.ServiceTier != "fast" {
+		t.Errorf("ServiceTier = %q, 期望 %q", parser.ServiceTier, "fast")
+	}
+}
+
+func TestSSEUsageParser_SpeedStandard(t *testing.T) {
+	// speed:"standard" 不应设置 ServiceTier
+	sseData := `data: {"type":"message_delta","usage":{"input_tokens":100,"output_tokens":50,"speed":"standard"}}
+
+`
+	parser := newSSEUsageParser("anthropic")
+	if err := parser.Feed([]byte(sseData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	if parser.ServiceTier != "" {
+		t.Errorf("ServiceTier = %q, 期望空字符串（standard不设置tier）", parser.ServiceTier)
+	}
+}
+
+func TestSSEUsageParser_SpeedAbsent(t *testing.T) {
+	// 没有 speed 字段时 ServiceTier 应为空
+	sseData := `data: {"type":"message_delta","usage":{"input_tokens":100,"output_tokens":50}}
+
+`
+	parser := newSSEUsageParser("anthropic")
+	if err := parser.Feed([]byte(sseData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	if parser.ServiceTier != "" {
+		t.Errorf("ServiceTier = %q, 期望空字符串", parser.ServiceTier)
+	}
+}
+
+func TestJSONUsageParser_SpeedFast(t *testing.T) {
+	// JSON 解析器也应从 usage.speed 提取 fast
+	body := `{"type":"message","usage":{"input_tokens":200,"output_tokens":100,"speed":"fast"}}`
+	parser := newJSONUsageParser("anthropic")
+	if err := parser.Feed([]byte(body)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	parser.GetUsage()
+	if parser.ServiceTier != "fast" {
+		t.Errorf("ServiceTier = %q, 期望 %q", parser.ServiceTier, "fast")
+	}
+}
+
+func TestSSEUsageParser_SpeedInMessageUsage(t *testing.T) {
+	// Anthropic message 格式: usage 在 message 对象内
+	sseData := `data: {"type":"message_start","message":{"usage":{"input_tokens":500,"output_tokens":0,"speed":"fast"}}}
+
+`
+	parser := newSSEUsageParser("anthropic")
+	if err := parser.Feed([]byte(sseData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	if parser.ServiceTier != "fast" {
+		t.Errorf("ServiceTier = %q, 期望 %q", parser.ServiceTier, "fast")
+	}
+}

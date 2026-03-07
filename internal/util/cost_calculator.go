@@ -686,6 +686,41 @@ func isOpusModel(model string) bool {
 	return strings.Contains(lowerModel, "opus")
 }
 
+// IsFastModeModel 判断模型是否支持 Anthropic fast mode
+// 当前仅 claude-opus-4-6 支持 fast mode（2.5x输出速度，独立定价）
+func IsFastModeModel(model string) bool {
+	lowerModel := strings.ToLower(model)
+	return strings.HasPrefix(lowerModel, "claude-opus-4-6")
+}
+
+// CalculateFastModeCost 计算 Anthropic fast mode 的独立费用
+// Fast mode 使用全上下文统一定价（无 >200K 加价），缓存倍率叠加在 fast 价格之上
+// 参考: https://docs.anthropic.com/en/docs/about-claude/pricing
+func CalculateFastModeCost(inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int) float64 {
+	if inputTokens < 0 || outputTokens < 0 || cacheReadTokens < 0 || cache5mTokens < 0 || cache1hTokens < 0 {
+		return 0.0
+	}
+
+	// Fast mode 固定价格（全上下文统一，无 >200K 分段）
+	const inputPrice = 30.0   // $30/MTok
+	const outputPrice = 150.0 // $150/MTok
+
+	cost := float64(inputTokens)*inputPrice/1e6 + float64(outputTokens)*outputPrice/1e6
+
+	// 缓存倍率叠加在 fast mode 价格之上
+	if cacheReadTokens > 0 {
+		cost += float64(cacheReadTokens) * inputPrice * cacheReadMultiplierOpus / 1e6
+	}
+	if cache5mTokens > 0 {
+		cost += float64(cache5mTokens) * inputPrice * cacheWrite5mMultiplier / 1e6
+	}
+	if cache1hTokens > 0 {
+		cost += float64(cache1hTokens) * inputPrice * cacheWrite1hMultiplier / 1e6
+	}
+
+	return cost
+}
+
 // getOpenAICacheMultiplier 获取OpenAI模型的缓存价格倍数
 // OpenAI缓存定价策略（2025-12官方）：
 //   - GPT-5系列: 90%折扣（缓存=$0.125/1M, input=$1.25/1M → 0.1倍）

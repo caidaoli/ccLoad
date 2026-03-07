@@ -286,14 +286,21 @@ func (s *Server) updateTokenStatsAsync(tokenHash string, isSuccess bool, duratio
 		completionTokens = int64(res.OutputTokens)
 		cacheReadTokens = int64(res.CacheReadInputTokens)
 		cacheCreationTokens = int64(res.CacheCreationInputTokens)
-		costUSD = util.CalculateCostDetailed(
-			actualModel,
-			res.InputTokens,
-			res.OutputTokens,
-			res.CacheReadInputTokens,
-			res.Cache5mInputTokens,
-			res.Cache1hInputTokens,
-		) * util.OpenAIServiceTierMultiplier(actualModel, res.ServiceTier)
+		if res.ServiceTier == "fast" && util.IsFastModeModel(actualModel) {
+			costUSD = util.CalculateFastModeCost(
+				res.InputTokens, res.OutputTokens,
+				res.CacheReadInputTokens, res.Cache5mInputTokens, res.Cache1hInputTokens,
+			)
+		} else {
+			costUSD = util.CalculateCostDetailed(
+				actualModel,
+				res.InputTokens,
+				res.OutputTokens,
+				res.CacheReadInputTokens,
+				res.Cache5mInputTokens,
+				res.Cache1hInputTokens,
+			) * util.OpenAIServiceTierMultiplier(actualModel, res.ServiceTier)
+		}
 
 		// 财务安全检查：费用为0但有token消耗时告警（可能是定价缺失）
 		if costUSD == 0.0 && (res.InputTokens > 0 || res.OutputTokens > 0) {

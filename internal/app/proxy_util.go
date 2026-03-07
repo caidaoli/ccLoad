@@ -626,14 +626,21 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		if costModel == "" {
 			costModel = p.RequestModel
 		}
-		entry.Cost = util.CalculateCostDetailed(
-			costModel,
-			res.InputTokens,
-			res.OutputTokens,
-			res.CacheReadInputTokens,
-			res.Cache5mInputTokens,
-			res.Cache1hInputTokens,
-		) * util.OpenAIServiceTierMultiplier(costModel, res.ServiceTier)
+		if res.ServiceTier == "fast" && util.IsFastModeModel(costModel) {
+			entry.Cost = util.CalculateFastModeCost(
+				res.InputTokens, res.OutputTokens,
+				res.CacheReadInputTokens, res.Cache5mInputTokens, res.Cache1hInputTokens,
+			)
+		} else {
+			entry.Cost = util.CalculateCostDetailed(
+				costModel,
+				res.InputTokens,
+				res.OutputTokens,
+				res.CacheReadInputTokens,
+				res.Cache5mInputTokens,
+				res.Cache1hInputTokens,
+			) * util.OpenAIServiceTierMultiplier(costModel, res.ServiceTier)
+		}
 	} else {
 		entry.Message = "unknown"
 	}

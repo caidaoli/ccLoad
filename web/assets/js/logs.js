@@ -541,6 +541,8 @@ function renderLogs(data) {
       tierBadge = ' <sup style="color: var(--error-600); font-size: 0.7em; font-weight: 600;">2x</sup>';
     } else if (entry.service_tier === 'flex') {
       tierBadge = ' <sup style="color: var(--success-600); font-size: 0.7em; font-weight: 600;">0.5x</sup>';
+    } else if (entry.service_tier === 'fast') {
+      tierBadge = ' <sup style="color: var(--error-600); font-size: 0.7em; font-weight: 600;">\u26A16x</sup>';
     }
     const costDisplay = entry.cost ?
       `<span style="color: var(--warning-600); font-weight: 500;">${formatCost(entry.cost)}${tierBadge}</span>` : '';
