@@ -23,36 +23,52 @@ go run -tags go_json .
 ```
 internal/
 ├── app/           # HTTP层+业务逻辑
-│   ├── proxy_*.go       # 代理（handler/forward/stream/gemini/sse_parser/error/util）
-│   ├── admin_*.go       # 管理API（channels/auth_tokens/stats/models/settings/cooldown/testing/csv/active_requests）
-│   ├── selector*.go     # 渠道选择（balancer/cooldown/model_matcher）
-│   ├── url_selector.go  # 多URL选择（加权随机/EWMA延迟/冷却/探索优先）
-│   ├── *_cache.go       # 缓存（cost/health/stats）
-│   ├── *_service.go     # 服务层（auth/config/log）
-│   ├── key_selector.go  # Key负载均衡
+│   ├── server.go              # Server结构体、NewServer、SetupRoutes、Shutdown
+│   ├── proxy_*.go             # 代理（handler/forward/stream/gemini/sse_parser/error/util）
+│   ├── admin_*.go             # 管理API（channels/auth_tokens/stats/models/settings/cooldown/testing/csv/active_requests/types）
+│   ├── selector*.go           # 渠道选择（balancer/cooldown/model_matcher）
+│   ├── url_selector.go        # 多URL选择（加权随机/EWMA延迟/冷却/探索优先）
+│   ├── url_fallback.go        # URL故障转移排序（按EWMA延迟排序备选URL）
+│   ├── *_cache.go             # 缓存（cost/health/stats）
+│   ├── *_service.go           # 服务层（auth/config/log）
+│   ├── key_selector.go        # Key负载均衡
 │   ├── smooth_weighted_rr.go  # 平滑加权轮询实现
 │   ├── request_context.go     # 请求上下文与超时控制
 │   ├── token_counter.go       # Token计数（Anthropic count-tokens）
 │   ├── active_requests.go     # 活跃请求追踪（含BaseURL）
-│   ├── handlers.go            # 处理器注册
+│   ├── handlers.go            # 通用处理器与响应工具
 │   ├── middleware_zstd.go     # zstd压缩中间件
+│   ├── socket_{unix,windows}.go  # 平台TCP优化（TCP_NODELAY）
 │   └── static.go              # 静态资源服务
 ├── model/         # 数据模型（auth_token/config/log/stats/health/system_setting）
 ├── cooldown/      # 冷却决策引擎
 ├── storage/       # 存储层
 │   ├── factory.go       # 存储工厂（SQLite/MySQL/混合）
-│   ├── store.go         # 统一存储接口
+│   ├── store.go         # 统一存储接口（Store interface）
 │   ├── hybrid_store.go  # 混合存储实现
 │   ├── cache.go         # 渠道/Key缓存
-│   ├── migrate.go       # Schema迁移
+│   ├── migrate.go       # Schema迁移（SQLite/MySQL增量）
 │   ├── sync_manager.go  # 启动数据恢复
 │   ├── schema/          # Schema定义与构建器
-│   ├── sqlite/          # SQLite特定实现
-│   └── sql/             # SQL实现（含metrics聚合/过滤/终结化）
+│   ├── sqlite/          # SQLite特定实现（并发测试/冷却一致性）
+│   └── sql/             # SQL通用实现
+│       ├── store_impl.go       # SQLStore核心（NewSQLStore/Ping/Close）
+│       ├── transaction.go      # 事务处理（含SQLite busy重试+指数退避）
+│       ├── query.go            # 查询构建器（WhereBuilder/QueryBuilder/ConfigScanner）
+│       ├── admin_sessions.go   # Admin会话管理（创建/验证/过期清理）
+│       ├── auth_token_stats.go # Auth Token统计（时间范围查询/RPM填充）
+│       ├── log.go              # 日志读写（含service_tier）
+│       ├── metrics*.go         # metrics聚合/过滤/终结化
+│       └── ...                 # config/apikey/cooldown/system_settings
 ├── util/          # 工具库（classifier/cost_calculator/money/rate_limiter/models_fetcher/channel_types/apikeys/parse/time）
 ├── version/       # 版本信息、启动banner、版本检查
-├── config/        # 配置加载
+├── config/        # 配置加载与默认常量（defaults.go定义所有可调参数）
 └── testutil/      # 测试辅助（api_tester/data/http/store/templates/types）
+web/               # 前端页面
+├── *.html         # 页面（index/channels/logs/stats/tokens/settings/trend/model-test/login）
+└── assets/
+    ├── css/       # 样式（styles/channels/logs/tokens）
+    └── js/        # 模块化JS（channels-*/logs/stats/tokens/settings/trend/i18n/ui/...）
 ```
 
 **故障切换策略**:
@@ -85,6 +101,9 @@ internal/
 - `app.SmoothWeightedRR.SelectWithCooldown()` - 平滑加权轮询选择
 - `app.URLSelector.SelectURL()` - 多URL加权随机选择
 - `app.URLSelector.SortURLs()` - 按EWMA延迟排序（用于故障切换）
+- `app.orderURLsWithSelector()` - URL故障转移排序（结合URLSelector延迟数据）
+- `util.CalculateCostDetailed()` - 费用计算（含分层定价/缓存折扣/service_tier倍率）
+- `util.OpenAIServiceTierMultiplier()` - OpenAI service_tier价格倍率
 
 **Token费用限额（Auth Token）**:
 - 存储：`auth_tokens.cost_used_microusd/cost_limit_microusd`（微美元整数），避免浮点误差
@@ -92,6 +111,7 @@ internal/
 - 计费：仅成功请求（2xx）累加费用与Token统计；失败请求只计失败次数
 - **模型限制**：`auth_tokens.allowed_models`（逗号分隔），空值表示无限制
 - **首字节时间**：`auth_tokens.first_byte_time_ms`（毫秒），记录流式请求TTFB
+- **RPM统计**：`PeakRPM/AvgRPM/RecentRPM`，支持按时间范围查询（`GetAuthTokenStatsInRange`）
 
 **渠道每日成本限额**:
 - 存储：`channels.daily_cost_limit`（美元），0表示无限制
@@ -110,6 +130,29 @@ internal/
   - 写操作：先写MySQL（主），成功后同步到SQLite（缓存）
   - 读操作：从SQLite读取（本地缓存，低延迟）
   - 日志特殊：先写SQLite（快），再异步同步到MySQL（备份）
+
+**OpenAI service_tier 定价**:
+- 支持 `priority`/`flex`/`default` 层级，影响最终费用倍率
+- `util.OpenAIServiceTierMultiplier()` 返回层级对应的价格系数
+- `serviceTierModels` 定义支持分层定价的模型列表
+- 日志链路：`LogEntry.ServiceTier` 持久化到数据库，前端成本列显示层级提示
+
+**分层定价（Tiered Pricing）**:
+- **GPT-5.4**: 超过 `gpt54TierThreshold` token后输入价格降档
+- **Qwen-Plus**: 超过 `qwenPlusTierThreshold` token后价格降档
+- **Gemini长上下文**: 超过 `geminiLongContextThreshold` token后价格翻倍
+- 缓存折扣：Claude系列/Opus单独乘数，OpenAI缓存50%折扣
+
+**Admin会话管理**:
+- `CreateAdminSession/GetAdminSession/DeleteAdminSession` - 会话CRUD
+- `CleanExpiredSessions` - 过期会话自动清理
+- `LoadAllSessions` - 启动时恢复所有有效会话
+
+**健康评分配置**（`HealthScoreConfig`）:
+- `Enabled` - 是否启用健康评分影响渠道选择
+- `SuccessRatePenaltyWeight` - 成功率惩罚权重
+- `WindowMinutes` - 统计窗口（分钟）
+- `MinConfidentSample` - 最小置信样本数
 
 ## 开发指南
 
