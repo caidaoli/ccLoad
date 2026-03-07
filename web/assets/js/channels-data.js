@@ -67,7 +67,9 @@ function aggregateChannelStats(statsEntries = []) {
         totalCacheCreationInputTokens: 0,
         totalCost: 0,
         _firstByteWeightedSum: 0,
-        _firstByteWeight: 0
+        _firstByteWeight: 0,
+        _durationWeightedSum: 0,
+        _durationWeight: 0
       };
     }
 
@@ -87,6 +89,12 @@ function aggregateChannelStats(statsEntries = []) {
       stats._firstByteWeight += weight;
     }
 
+    const avgDuration = Number(entry.avg_duration_seconds);
+    if (Number.isFinite(avgDuration) && avgDuration > 0 && weight > 0) {
+      stats._durationWeightedSum += avgDuration * weight;
+      stats._durationWeight += weight;
+    }
+
     stats.totalInputTokens += toSafeNumber(entry.total_input_tokens);
     stats.totalOutputTokens += toSafeNumber(entry.total_output_tokens);
     stats.totalCacheReadInputTokens += toSafeNumber(entry.total_cache_read_input_tokens);
@@ -99,8 +107,13 @@ function aggregateChannelStats(statsEntries = []) {
     if (stats._firstByteWeight > 0) {
       stats.avgFirstByteTimeSeconds = stats._firstByteWeightedSum / stats._firstByteWeight;
     }
+    if (stats._durationWeight > 0) {
+      stats.avgDurationSeconds = stats._durationWeightedSum / stats._durationWeight;
+    }
     delete stats._firstByteWeightedSum;
     delete stats._firstByteWeight;
+    delete stats._durationWeightedSum;
+    delete stats._durationWeight;
   }
 
   return result;

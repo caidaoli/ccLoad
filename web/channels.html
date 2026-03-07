@@ -976,26 +976,26 @@
   <!-- 渠道卡片模板 -->
   <template id="tpl-channel-card">
     <div class="{{cardClasses}}" id="channel-{{id}}" data-channel-id="{{id}}">
-      <div class="flex justify-between items-center">
-        <div style="flex: 1;">
-          <div class="section-title">
-            <input type="checkbox" class="channel-select-checkbox" data-channel-id="{{id}}"
-              style="margin-right: 8px; vertical-align: middle;" data-i18n-title="channels.selectChannel" title="选择渠道">
-            {{name}} {{{typeBadge}}}
-            <span style="color: var(--neutral-500); font-size: 0.875rem; font-weight: 400;">(ID: {{id}})</span>
-            <span
-              style="color: var(--neutral-600); font-size: 1rem; font-weight: 400; display: inline-block; max-width: 1100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom;"
-              title="{{modelsText}}"><span data-i18n="channels.modelPrefix">模型:</span> {{modelsText}}</span>
-          </div>
-          <div class="text-sm" style="color: var(--neutral-600); margin-top: 4px;">
-            <div class="channel-meta-line">
-              <span><span data-i18n="channels.urlLabel">URL:</span> {{url}} | <span
-                  data-i18n="channels.priorityLabel">优先级:</span> {{priority}}{{{effectivePriorityHtml}}} |
-                {{statusText}}{{{cooldownBadge}}}</span>
-              {{{statsHtml}}}
-            </div>
-          </div>
+      <div class="channel-card-top-row">
+        <div class="section-title" style="flex: 1; min-width: 0;">
+          <input type="checkbox" class="channel-select-checkbox" data-channel-id="{{id}}"
+            style="margin-right: 8px; vertical-align: middle;" data-i18n-title="channels.selectChannel" title="选择渠道">
+          {{name}} {{{typeBadge}}}
+          <span style="color: var(--neutral-500); font-size: 0.875rem; font-weight: 400;">(ID: {{id}})</span>
+          <span style="color: var(--neutral-600); font-size: 0.875rem; font-weight: 400; margin-left: 4px;">{{url}}</span>
         </div>
+        <div class="channel-card-status">
+          <span data-i18n="channels.priorityLabel">优先级:</span> {{priority}}{{{effectivePriorityHtml}}} |
+          {{statusText}}{{{cooldownBadge}}}
+        </div>
+      </div>
+      <div class="text-sm" style="color: var(--neutral-600); margin-top: 2px;">
+        <span
+          style="display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+          title="{{modelsText}}"><span data-i18n="channels.modelPrefix">模型:</span> {{modelsText}}</span>
+      </div>
+      <div class="channel-card-bottom-row">
+        {{{statsHtml}}}
         <div class="channel-actions">
           <button class="btn-icon channel-action-btn" data-action="edit" data-channel-id="{{id}}"
             data-i18n-title="common.edit" title="编辑" data-i18n="common.edit">编辑</button>

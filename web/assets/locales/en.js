@@ -906,6 +906,8 @@ window.I18N_LOCALES['en'] = {
   'channels.stats.cacheRead': 'Cache Read',
   'channels.stats.cacheCreate': 'Cache Create',
   'channels.stats.cost': 'Cost',
+  'channels.stats.input': 'In',
+  'channels.stats.output': 'Out',
   'channels.stats.successRate': 'Success Rate: {rate}',
   'channels.stats.effectivePriority': 'Effective Priority: {priority}',
   'channels.stats.healthy': 'Healthy',

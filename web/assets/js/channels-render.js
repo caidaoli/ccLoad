@@ -44,42 +44,64 @@ function renderChannelStatsInline(stats, cache, channelType) {
   }
 
   const successRateText = cache?.successRateText || formatSuccessRate(stats.success, stats.total);
-  const avgFirstByteText = cache?.avgFirstByteText || formatAvgFirstByte(stats.avgFirstByteTimeSeconds);
   const inputTokensText = cache?.inputTokensText || formatMetricNumber(stats.totalInputTokens);
   const outputTokensText = cache?.outputTokensText || formatMetricNumber(stats.totalOutputTokens);
   const cacheReadText = cache?.cacheReadText || formatMetricNumber(stats.totalCacheReadInputTokens);
   const cacheCreationText = cache?.cacheCreationText || formatMetricNumber(stats.totalCacheCreationInputTokens);
   const costDisplay = cache?.costDisplay || formatCostValue(stats.totalCost);
 
+  // 成功率颜色与stats页面一致：>=95%绿色, <80%红色, 中间默认色
   const successRateColor = (() => {
     const rateNum = Number(successRateText.replace('%', ''));
-    if (!Number.isFinite(rateNum)) return 'var(--neutral-600)';
-    if (rateNum >= 95) return 'var(--success-600)';
-    if (rateNum < 80) return 'var(--error-500)';
-    return 'var(--warning-600)';
+    if (!Number.isFinite(rateNum)) return 'var(--neutral-800)';
+    if (rateNum >= 95) return 'var(--success-400)';
+    if (rateNum < 80) return 'var(--error-400)';
+    return 'var(--neutral-800)';
   })();
 
-  const callText = `${formatMetricNumber(stats.success)}/${formatMetricNumber(stats.error)}`;
+  const callText = `<span style="color: var(--success-400);">${formatMetricNumber(stats.success)}</span>/<span style="color: var(--error-400);">${formatMetricNumber(stats.error)}</span>`;
   const rangeLabel = getStatsRangeLabel(channelStatsRange);
 
+  const avgFirstByte = stats.avgFirstByteTimeSeconds || 0;
+  const avgDuration = stats.avgDurationSeconds || 0;
+
+  // 构建首字/耗时显示文本和颜色（与stats.js getDurationColor一致）
+  const durationColorBase = avgDuration > 0 ? avgDuration : avgFirstByte;
+  const durationColor = (() => {
+    if (durationColorBase <= 0) return 'var(--neutral-600)';
+    if (durationColorBase <= 5) return 'var(--success-600)';
+    if (durationColorBase <= 30) return 'var(--warning-600)';
+    return 'var(--error-600)';
+  })();
+
+  let durationText;
+  if (avgFirstByte > 0 && avgDuration > 0) {
+    durationText = avgFirstByte.toFixed(2) + '/' + avgDuration.toFixed(2) + window.t('common.seconds');
+  } else if (avgDuration > 0) {
+    durationText = avgDuration.toFixed(2) + window.t('common.seconds');
+  } else if (avgFirstByte > 0) {
+    durationText = avgFirstByte.toFixed(2) + window.t('common.seconds');
+  } else {
+    durationText = '--';
+  }
+
   const parts = [
-    `<span class="channel-stat-badge" style="color: var(--neutral-800);"><strong>${rangeLabel}${window.t('channels.stats.calls')}</strong> ${callText}</span>`,
-    `<span class="channel-stat-badge" style="color: ${successRateColor};"><strong>${window.t('channels.stats.rate')}</strong> ${successRateText}</span>`,
-    `<span class="channel-stat-badge" style="color: var(--primary-700);"><strong>${window.t('channels.stats.firstByte')}</strong> ${avgFirstByteText}</span>`,
-    `<span class="channel-stat-badge" style="color: var(--neutral-800);"><strong>In</strong> ${inputTokensText}</span>`,
-    `<span class="channel-stat-badge" style="color: var(--neutral-800);"><strong>Out</strong> ${outputTokensText}</span>`
+    `<span class="channel-stat-badge"><strong>${rangeLabel} ${window.t('channels.stats.calls')}</strong> ${callText}(<span style="color: ${successRateColor};">${successRateText}</span>)</span>`,
+    `<span class="channel-stat-badge"><strong>${window.t('channels.stats.firstByte')}</strong> <span style="color: ${durationColor};">${durationText}</span></span>`,
+    `<span class="channel-stat-badge"><strong>${window.t('channels.stats.input')}</strong> ${inputTokensText}</span>`,
+    `<span class="channel-stat-badge"><strong>${window.t('channels.stats.output')}</strong> ${outputTokensText}</span>`
   ];
 
   const supportsCaching = channelType === 'anthropic' || channelType === 'codex';
   if (supportsCaching) {
     parts.push(
-      `<span class="channel-stat-badge" style="color: var(--success-600); background: var(--success-50); border-color: var(--success-100);"><strong>${window.t('channels.stats.cacheRead')}</strong> ${cacheReadText}</span>`,
-      `<span class="channel-stat-badge" style="color: var(--primary-700); background: var(--primary-50); border-color: var(--primary-100);"><strong>${window.t('channels.stats.cacheCreate')}</strong> ${cacheCreationText}</span>`
+      `<span class="channel-stat-badge"><strong style="color: var(--success-600);">${window.t('channels.stats.cacheRead')}</strong> ${cacheReadText}</span>`,
+      `<span class="channel-stat-badge"><strong style="color: var(--primary-600);">${window.t('channels.stats.cacheCreate')}</strong> ${cacheCreationText}</span>`
     );
   }
 
   parts.push(
-    `<span class="channel-stat-badge" style="color: var(--warning-700); background: var(--warning-50); border-color: var(--warning-100);"><strong>${window.t('channels.stats.cost')}</strong> ${costDisplay}</span>`
+    `<span class="channel-stat-badge"><strong style="color: var(--warning-600);">${window.t('channels.stats.cost')}</strong> ${costDisplay}</span>`
   );
 
   return parts.join(' ');
@@ -148,7 +170,6 @@ function createChannelCard(channel) {
   // 预计算统计数据
   const statsCache = stats ? {
     successRateText: formatSuccessRate(stats.success, stats.total),
-    avgFirstByteText: formatAvgFirstByte(stats.avgFirstByteTimeSeconds),
     inputTokensText: formatMetricNumber(stats.totalInputTokens),
     outputTokensText: formatMetricNumber(stats.totalOutputTokens),
     cacheReadText: formatMetricNumber(stats.totalCacheReadInputTokens),

@@ -80,12 +80,35 @@
       color: var(--neutral-900);
     }
 
-    .channel-meta-line {
+    #channel-list .glass-card {
+      padding: 2px 14px;
+    }
+
+    .channel-card-top-row {
       display: flex;
       align-items: center;
-      justify-content: space-between;
       gap: 12px;
+    }
+
+    .channel-card-status {
+      flex-shrink: 0;
+      font-size: 0.875rem;
+      color: var(--neutral-600);
+      white-space: nowrap;
+    }
+
+    .channel-card-bottom-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--neutral-200);
       flex-wrap: wrap;
+    }
+
+    .channel-card-bottom-row>.channel-actions {
+      margin-left: auto;
     }
 
     .channel-stats-inline {
@@ -93,9 +116,6 @@
       align-items: center;
       gap: 6px;
       flex-wrap: wrap;
-      margin-left: auto;
-      justify-content: flex-end;
-      margin-right: 32px;
     }
 
     /* 表格/图表视图切换按钮 */

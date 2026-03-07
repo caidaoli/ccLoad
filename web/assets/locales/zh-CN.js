@@ -906,6 +906,8 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.stats.cacheRead': '缓存读',
   'channels.stats.cacheCreate': '缓存建',
   'channels.stats.cost': '成本',
+  'channels.stats.input': '输入',
+  'channels.stats.output': '输出',
   'channels.stats.successRate': '成功率: {rate}',
   'channels.stats.effectivePriority': '有效优先级: {priority}',
   'channels.stats.healthy': '健康',
