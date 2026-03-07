@@ -68,7 +68,7 @@ func ZstdMiddleware() gin.HandlerFunc {
 		c.Next()
 
 		// flush 并归还 encoder
-		enc.Close()
+		_ = enc.Close()
 		zstdEncoderPool.Put(enc)
 	}
 }

@@ -68,18 +68,6 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 			RespondErrorMsg(c, http.StatusBadRequest, "invalid base_url: "+err.Error())
 			return
 		}
-
-		allowed := false
-		for _, u := range cfg.GetURLs() {
-			if u == normalizedBaseURL {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			RespondErrorMsg(c, http.StatusBadRequest, "base_url不属于该渠道配置")
-			return
-		}
 		testReq.BaseURL = normalizedBaseURL
 	}
 
