@@ -995,6 +995,7 @@ window.I18N_LOCALES['en'] = {
 
   // Channel test results
   'channels.test.moreKeysHint': '... {count} more Keys (use batch test)',
+  'channels.test.noModels': 'No models configured for this channel',
   'channels.test.selectModelRequired': 'Please select a model',
   'channels.test.noApiKey': 'No API Keys available',
   'channels.test.requestFailed': 'Test request failed: ',

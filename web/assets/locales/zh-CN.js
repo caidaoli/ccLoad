@@ -995,6 +995,7 @@ window.I18N_LOCALES['zh-CN'] = {
 
   // 渠道测试结果
   'channels.test.moreKeysHint': '... 还有 {count} 个Key（使用批量测试）',
+  'channels.test.noModels': '该渠道未配置任何模型',
   'channels.test.selectModelRequired': '请选择一个模型',
   'channels.test.noApiKey': '没有可用的API Key',
   'channels.test.requestFailed': '测试请求失败: ',

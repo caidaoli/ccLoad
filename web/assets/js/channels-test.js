@@ -5,9 +5,15 @@ async function testChannel(id, name) {
   testingChannelId = id;
   document.getElementById('testChannelName').textContent = name;
 
+  const models = channel.models || [];
+  if (models.length === 0) {
+    if (window.showError) window.showError(window.t('channels.test.noModels') || 'No models configured for this channel');
+    return;
+  }
+
   const modelSelect = document.getElementById('testModelSelect');
   modelSelect.innerHTML = '';
-  channel.models.forEach(entry => {
+  models.forEach(entry => {
     // models 是 ModelEntry 数组: {model: string, redirect_model?: string}
     const modelName = typeof entry === 'string' ? entry : entry.model;
     const option = document.createElement('option');

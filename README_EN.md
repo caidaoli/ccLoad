@@ -56,6 +56,8 @@ ccLoad solves these pain points through:
 - 🔐 **Token Restrictions** - API token cost limits + model restrictions for fine-grained access control
 - ⏱️ **TTFB Monitoring** - Streaming request first byte time tracking for upstream latency diagnosis
 - 🌐 **Multi-URL Load Balancing** - Multiple URLs per channel with latency-weighted random selection
+- 💵 **service_tier Pricing** - OpenAI priority/flex/default tier multipliers for accurate cost accounting
+- 📉 **Tiered Pricing** - GPT-5.4/Qwen-Plus/Gemini long-context step pricing, auto-applies lower rate at token thresholds
 
 ## 🏗️ Architecture Overview
 
@@ -668,6 +670,15 @@ Check out the awesome admin dashboard 👇
   - `storage/sql/`: Common SQL implementation layer (SQLite/MySQL shared)
   - `storage/factory.go`: Factory pattern auto-selects database
   - Composite index optimization, stats query performance improved
+- **OpenAI service_tier Pricing** (2026-03 new):
+  - `util.OpenAIServiceTierMultiplier()`: Returns multiplier for priority/flex/default tiers
+  - `LogEntry.ServiceTier`: Persisted to database, log cost column shows tier annotation
+  - Supports GPT-5.4, GPT-5.4-pro, and other latest model pricing
+- **Tiered Pricing**:
+  - GPT-5.4: Input price auto-steps down after token threshold
+  - Qwen-Plus: Lower price tier kicks in after threshold
+  - Gemini long-context: Price doubles above threshold
+  - Cache discounts: Claude/Opus independent multipliers, OpenAI cache hit 50% discount
 
 **Multi-level Cache System**:
 - Channel config cache (60s TTL)
@@ -862,7 +873,7 @@ storage/
 - `admin_sessions` - Admin sessions
 - `system_settings` - System config (hot reload support)
 
-**Architecture Features** (✅ 2025-12 optimization):
+**Architecture Features** (✅ 2025-12 through 2026-03 continuous improvements):
 - ✅ **Unified SQL Layer** (refactor): SQLite/MySQL share `storage/sql/` implementation, eliminated 467 lines of duplicate code
 - ✅ **Unified Schema Definition** (new): `storage/schema/` defines table structures, supports database differences
 - ✅ Factory pattern unified interface (OCP, easy to extend new storage)
@@ -873,6 +884,9 @@ storage/
 - ✅ Multi-key support (sequential/round_robin strategies)
 - ✅ Auto migration (auto creates/updates table structure on startup)
 - ✅ Token stats enhancement (time range selection, per-token ID classification, cache optimization)
+- ✅ **service_tier cost tracking**: Logs persist service_tier field, cost column shows tier label
+- ✅ **Tiered pricing engine**: GPT-5.4/Qwen-Plus/Gemini long-context step billing
+- ✅ **Log UX improvements**: Cost column formats to 3 decimal places (empty for zero), IP column shows full address on hover
 
 **Backward Compatible Migration**:
 - Auto-detects and fixes duplicate channel names

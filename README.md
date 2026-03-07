@@ -56,6 +56,8 @@ ccLoad 一站式解决👇
 | 🔐 **令牌限额** | API令牌费用上限+模型限制 | 精细化访问控制 |
 | ⏱️ **首字节监控** | 流式请求TTFB记录 | 便于诊断上游延迟 |
 | 🌐 **多URL负载均衡** | 单渠道多URL+加权随机 | 延迟低的URL自动多分流 |
+| 💵 **service_tier定价** | OpenAI priority/flex/default层级 | 费用倍率精准计算 |
+| 📉 **分层定价** | GPT-5.4/Qwen-Plus/Gemini长上下文 | 超量token自动降档计费 |
 
 ## 🏗️ 架构概览
 
@@ -701,6 +703,15 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
   - `storage/sql/`：通用SQL实现层（SQLite/MySQL共享）
   - `storage/factory.go`：工厂模式自动选择数据库
   - 复合索引优化，统计查询性能提升
+- **OpenAI service_tier 定价**（2026-03新增）：
+  - `util.OpenAIServiceTierMultiplier()`：返回 priority/flex/default 层级对应倍率
+  - `LogEntry.ServiceTier`：持久化到数据库，日志成本列显示层级标注
+  - 支持 GPT-5.4、GPT-5.4-pro 等最新模型定价
+- **分层定价（Tiered Pricing）**：
+  - GPT-5.4：超过阈值 token 后输入价格自动降档
+  - Qwen-Plus：超过阈值后触发低价区间
+  - Gemini 长上下文：超过阈值后价格翻倍
+  - 缓存折扣：Claude/Opus 独立乘数，OpenAI 缓存命中50%折扣
 
 **多级缓存系统**（性能拉满）:
 - 渠道配置缓存（60秒TTL）- 减少数据库查询
@@ -914,7 +925,7 @@ storage/
 - `admin_sessions` - 管理会话
 - `system_settings` - 系统配置（支持热重载）
 
-**架构特性** (✅ 2025-12月优化):
+**架构特性** (✅ 2025-12月 ~ 2026-03月持续优化):
 - ✅ **统一SQL层**（重构）：SQLite/MySQL共享`storage/sql/`实现，消除467行重复代码
 - ✅ **统一Schema定义**（新增）：`storage/schema/`定义表结构，支持数据库差异
 - ✅ 工厂模式统一接口（OCP 原则，易扩展新存储）
@@ -925,6 +936,9 @@ storage/
 - ✅ 多 Key 支持（sequential/round_robin 策略）
 - ✅ 自动迁移（启动时自动创建/更新表结构）
 - ✅ Token统计增强（支持时间范围选择、按令牌ID分类、缓存优化）
+- ✅ **service_tier 成本计量**：日志持久化 service_tier 字段，成本列展示层级提示
+- ✅ **分层定价引擎**：GPT-5.4/Qwen-Plus/Gemini 长上下文阶梯计价
+- ✅ **日志体验优化**：成本格式化精度提升（3位小数/空值空串），IP列悬停显示完整地址
 
 **向后兼容迁移**:
 - 自动检测并修复重复渠道名称
