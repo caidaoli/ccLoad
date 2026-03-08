@@ -3,6 +3,13 @@
  * @param {Object} channel - 渠道数据
  * @returns {string} HTML字符串
  */
+function formatHealthScoreDisplay(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '';
+  const formatted = num.toFixed(1);
+  return formatted.endsWith('.0') ? formatted.slice(0, -2) : formatted;
+}
+
 function buildEffectivePriorityHtml(channel) {
   const basePriority = channel.priority;
   const priorityLabel = window.t('channels.table.priority');
@@ -13,7 +20,7 @@ function buildEffectivePriorityHtml(channel) {
     return `<div class="ch-priority-stack" title="${title.replace(/"/g, '&quot;')}"><div class="ch-priority-row ch-priority-base"><span class="ch-priority-label">${priorityLabel}</span><span class="ch-priority-value">${basePriority}</span></div></div>`;
   }
 
-  const effPriority = channel.effective_priority.toFixed(1);
+  const effPriority = formatHealthScoreDisplay(channel.effective_priority);
   const diff = channel.effective_priority - basePriority;
   const isConsistent = Math.abs(diff) < 0.1;
 
@@ -40,11 +47,16 @@ function buildEffectivePriorityHtml(channel) {
   return `<div class="ch-priority-stack" title="${title.replace(/"/g, '&quot;')}"><div class="ch-priority-row ch-priority-base"><span class="ch-priority-label">${priorityLabel}</span><span class="${baseValueClass}">${basePriority}</span></div><div class="ch-priority-row ch-priority-health"><span class="ch-priority-label">${healthLabel}</span><span class="${healthValueClass}">${effPriority}</span></div></div>`;
 }
 
+function inlineDisabledBadge(enabled) {
+  if (enabled !== false) return '';
+  return `<span style="display: inline-flex; align-items: center; color: #dc2626; font-size: 0.75rem; font-weight: 600; background: #eef2f7; padding: 1px 6px; border-radius: 4px; border: 1px solid #cbd5e1; vertical-align: middle;">${window.t('channels.statusDisabled')}</span>`;
+}
+
 function inlineCooldownBadge(c) {
   const ms = c.cooldown_remaining_ms || 0;
   if (!ms || ms <= 0) return '';
   const text = humanizeMS(ms);
-  return ` <span style="color: #dc2626; font-size: 0.75rem; font-weight: 500; background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%); padding: 1px 6px; border-radius: 4px; border: 1px solid #fca5a5;">${window.t('channels.cooldownBadge', { time: text })}</span>`;
+  return `<span style="display: inline-flex; align-items: center; color: #dc2626; font-size: 0.75rem; font-weight: 500; background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%); padding: 1px 6px; border-radius: 4px; border: 1px solid #fca5a5; vertical-align: middle;">${window.t('channels.cooldownBadge', { time: text })}</span>`;
 }
 
 /**
@@ -90,7 +102,7 @@ function getChannelTypeConfig(channelType) {
  */
 function buildChannelTypeBadge(channelType) {
   const config = getChannelTypeConfig(channelType);
-  return `<span style="background: ${config.bgColor}; color: ${config.color}; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 700; margin-left: 6px; border: 1px solid ${config.borderColor}; letter-spacing: 0.025em; text-transform: uppercase;">${config.text}</span>`;
+  return `<span style="background: ${config.bgColor}; color: ${config.color}; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 700; border: 1px solid ${config.borderColor}; letter-spacing: 0.025em; text-transform: uppercase;">${config.text}</span>`;
 }
 
 /**
@@ -213,7 +225,6 @@ function createChannelCard(channel) {
   // 行class
   const rowClasses = ['channel-table-row'];
   if (isCooldown) rowClasses.push('channel-card-cooldown');
-  if (!channel.enabled) rowClasses.push('channel-disabled');
 
   // 准备模板数据
   const cardData = {
@@ -225,6 +236,7 @@ function createChannelCard(channel) {
     modelsText: modelsText,
     priority: channel.priority,
     effectivePriorityHtml: buildEffectivePriorityHtml(channel),
+    disabledBadge: inlineDisabledBadge(channel.enabled),
     cooldownBadge: inlineCooldownBadge(channel),
     durationHtml: durationHtml,
     usageHtml: usageHtml,

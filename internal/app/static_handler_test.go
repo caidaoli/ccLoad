@@ -2,6 +2,8 @@ package app
 
 import (
 	"net/http"
+	"os"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -112,6 +114,38 @@ func TestStaticFileServing(t *testing.T) {
 			t.Fatalf("status=%d, want %d", w.Code, http.StatusForbidden)
 		}
 	})
+}
+
+func TestChannelsTemplateNameLineLayout(t *testing.T) {
+	origFS := embedFS
+	origVersion := version.Version
+	defer func() {
+		embedFS = origFS
+		version.Version = origVersion
+	}()
+
+	SetEmbedFS(os.DirFS("../.."), "web")
+	version.Version = "test"
+
+	r := gin.New()
+	setupStaticFiles(r)
+
+	w := serveHTTP(t, r, newRequest(http.MethodGet, "/web/channels.html", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d", w.Code, http.StatusOK)
+	}
+
+	body := w.Body.String()
+	checks := []string{
+		`<div class="ch-name-main">`,
+		`{{{typeBadge}}}<strong>{{name}}</strong><span class="ch-id-text">(ID: {{id}})</span>{{{disabledBadge}}}`,
+		`<div class="ch-name-statuses">{{{cooldownBadge}}}</div>`,
+	}
+	for _, want := range checks {
+		if !strings.Contains(body, want) {
+			t.Fatalf("channels.html missing %q", want)
+		}
+	}
 }
 
 func TestGetContentType(t *testing.T) {

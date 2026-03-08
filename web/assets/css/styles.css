@@ -256,9 +256,10 @@ body {
   font-size: var(--text-base);
   line-height: var(--leading-normal);
   color: var(--neutral-800);
-  background: radial-gradient(1200px 600px at -10% -10%, rgba(99, 102, 241, 0.35), transparent 60%),
-    radial-gradient(900px 600px at 110% -10%, rgba(236, 72, 153, 0.25), transparent 60%),
-    linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background:
+    radial-gradient(1200px 600px at -10% -10%, rgba(213, 205, 194, 0.10), transparent 60%),
+    radial-gradient(900px 600px at 110% -10%, rgba(241, 238, 233, 0.16), transparent 60%),
+    linear-gradient(180deg, #fcfbf9 0%, #f3f1ed 100%);
   min-height: 100vh;
   overflow-x: hidden;
 }
@@ -1947,11 +1948,6 @@ body {
   }
 }
 
-.channel-disabled {
-  opacity: 0.6;
-  filter: grayscale(20%);
-}
-
 /* ===== 测试模态框样式 ===== */
 .test-modal-content {
   max-width: 600px;
@@ -2478,9 +2474,9 @@ body.trend-page .chart-info {
   right: 0;
   bottom: 0;
   background:
-    radial-gradient(1200px 600px at -10% -10%, rgba(99, 102, 241, 0.35), transparent 60%),
-    radial-gradient(900px 600px at 110% -10%, rgba(236, 72, 153, 0.25), transparent 60%),
-    linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    radial-gradient(1200px 600px at -10% -10%, rgba(213, 205, 194, 0.10), transparent 60%),
+    radial-gradient(900px 600px at 110% -10%, rgba(241, 238, 233, 0.16), transparent 60%),
+    linear-gradient(180deg, #fcfbf9 0%, #f3f1ed 100%);
   z-index: -1;
 }
 
