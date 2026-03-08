@@ -573,8 +573,10 @@ function updatePagination() {
   // 更新页码显示（只更新底部分页）
   const currentPage2El = document.getElementById('logs_current_page2');
   const totalPages2El = document.getElementById('logs_total_pages2');
+  const first2El = document.getElementById('logs_first2');
   const prev2El = document.getElementById('logs_prev2');
   const next2El = document.getElementById('logs_next2');
+  const last2El = document.getElementById('logs_last2');
   const jumpPageInput = document.getElementById('logs_jump_page');
 
   if (currentPage2El) currentPage2El.textContent = currentLogsPage;
@@ -590,8 +592,10 @@ function updatePagination() {
   const prevDisabled = currentLogsPage <= 1;
   const nextDisabled = currentLogsPage >= totalLogsPages;
 
+  if (first2El) first2El.disabled = prevDisabled;
   if (prev2El) prev2El.disabled = prevDisabled;
   if (next2El) next2El.disabled = nextDisabled;
+  if (last2El) last2El.disabled = nextDisabled;
 }
 
 function updateStats(data) {
@@ -601,6 +605,13 @@ function updateStats(data) {
 
   if (displayedCountEl) displayedCountEl.textContent = data.length;
   if (totalCountEl) totalCountEl.textContent = totalLogs || data.length;
+}
+
+function firstLogsPage() {
+  if (currentLogsPage > 1) {
+    currentLogsPage = 1;
+    load();
+  }
 }
 
 function prevLogsPage() {
@@ -613,6 +624,13 @@ function prevLogsPage() {
 function nextLogsPage() {
   if (currentLogsPage < totalLogsPages) {
     currentLogsPage++;
+    load();
+  }
+}
+
+function lastLogsPage() {
+  if (currentLogsPage < totalLogsPages) {
+    currentLogsPage = totalLogsPages;
     load();
   }
 }

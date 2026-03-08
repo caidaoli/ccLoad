@@ -138,9 +138,16 @@
           <div class="glass-card" style="padding: var(--space-2);">
             <div class="flex justify-center items-center">
               <div class="pagination-controls">
+                <button id="logs_first2" class="btn btn-secondary btn-sm" onclick="firstLogsPage()">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 17l-5-5 5-5"/>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18V6"/>
+                  </svg>
+                  <span data-i18n="common.firstPage">首页</span>
+                </button>
                 <button id="logs_prev2" class="btn btn-secondary btn-sm" onclick="prevLogsPage()">
-                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 18l-6-6 6-6"/>
                   </svg>
                   <span data-i18n="common.prevPage">上一页</span>
                 </button>
@@ -162,8 +169,15 @@
                 </span>
                 <button id="logs_next2" class="btn btn-secondary btn-sm" onclick="nextLogsPage()">
                   <span data-i18n="common.nextPage">下一页</span>
-                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 6l6 6-6 6"/>
+                  </svg>
+                </button>
+                <button id="logs_last2" class="btn btn-secondary btn-sm" onclick="lastLogsPage()">
+                  <span data-i18n="common.lastPage">尾页</span>
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 7l5 5-5 5"/>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 6v12"/>
                   </svg>
                 </button>
               </div>
