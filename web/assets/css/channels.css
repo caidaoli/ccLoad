@@ -691,6 +691,37 @@
       white-space: nowrap;
     }
 
+    .modal-inline-input {
+      background: rgba(255, 255, 255, 0.9);
+      color: var(--neutral-900);
+      color-scheme: light;
+      backdrop-filter: blur(8px);
+      transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+    }
+
+    .modal-inline-input:focus {
+      outline: none;
+      border-color: var(--primary-500) !important;
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+      background: white;
+    }
+
+    .modal-inline-input::placeholder {
+      color: var(--neutral-400);
+    }
+
+    .model-select {
+      color: var(--neutral-900);
+      background: rgba(255, 255, 255, 0.9);
+      color-scheme: light;
+      -webkit-text-fill-color: var(--neutral-900);
+    }
+
+    .model-select option {
+      color: var(--neutral-900);
+      background: white;
+    }
+
     .channel-batch-float {
       position: fixed;
       left: 50%;

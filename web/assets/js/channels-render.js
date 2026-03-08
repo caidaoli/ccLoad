@@ -10,6 +10,10 @@ function formatHealthScoreDisplay(value) {
   return formatted.endsWith('.0') ? formatted.slice(0, -2) : formatted;
 }
 
+function buildPriorityRow(rowClass, valueClass, value) {
+  return `<div class="ch-priority-row ${rowClass}"><span class="${valueClass}">${value}</span></div>`;
+}
+
 function buildEffectivePriorityHtml(channel) {
   const basePriority = channel.priority;
   const priorityLabel = window.t('channels.table.priority');
@@ -17,7 +21,7 @@ function buildEffectivePriorityHtml(channel) {
 
   if (channel.effective_priority === undefined || channel.effective_priority === null) {
     const title = `${priorityLabel}: ${basePriority}`;
-    return `<div class="ch-priority-stack" title="${title.replace(/"/g, '&quot;')}"><div class="ch-priority-row ch-priority-base"><span class="ch-priority-label">${priorityLabel}</span><span class="ch-priority-value">${basePriority}</span></div></div>`;
+    return `<div class="ch-priority-stack" title="${title.replace(/"/g, '&quot;')}">${buildPriorityRow('ch-priority-base', 'ch-priority-value', basePriority)}</div>`;
   }
 
   const effPriority = formatHealthScoreDisplay(channel.effective_priority);
@@ -44,7 +48,12 @@ function buildEffectivePriorityHtml(channel) {
     ? 'ch-priority-value ch-priority-health-good'
     : 'ch-priority-value ch-priority-health-bad';
 
-  return `<div class="ch-priority-stack" title="${title.replace(/"/g, '&quot;')}"><div class="ch-priority-row ch-priority-base"><span class="ch-priority-label">${priorityLabel}</span><span class="${baseValueClass}">${basePriority}</span></div><div class="ch-priority-row ch-priority-health"><span class="ch-priority-label">${healthLabel}</span><span class="${healthValueClass}">${effPriority}</span></div></div>`;
+  const rows = [buildPriorityRow('ch-priority-base', baseValueClass, basePriority)];
+  if (!isConsistent) {
+    rows.push(buildPriorityRow('ch-priority-health', healthValueClass, effPriority));
+  }
+
+  return `<div class="ch-priority-stack" title="${title.replace(/"/g, '&quot;')}">${rows.join('')}</div>`;
 }
 
 function inlineDisabledBadge(enabled) {

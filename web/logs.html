@@ -31,10 +31,10 @@
         </header>
 
         <!-- Filter Bar -->
-        <div class="filter-bar">
-          <div class="filter-controls">
+        <div class="filter-bar logs-filter-bar">
+          <div class="filter-controls logs-filter-controls">
             <!-- 渠道类型筛选 -->
-            <div class="filter-group">
+            <div class="filter-group logs-filter-group">
               <label for="f_channel_type" class="filter-label" data-i18n="stats.channelType">渠道类型</label>
               <select id="f_channel_type" class="filter-select" style="min-width: 120px;">
                 <!-- 动态加载渠道类型选项 -->
@@ -42,7 +42,7 @@
             </div>
 
             <!-- 时间范围筛选 -->
-            <div class="filter-group">
+            <div class="filter-group logs-filter-group">
               <label for="f_hours" class="filter-label" data-i18n="stats.timeRange">时间范围</label>
               <select id="f_hours" class="filter-select" style="min-width: 100px;">
                 <!-- 动态生成选项 by date-range-selector.js -->
@@ -50,31 +50,31 @@
             </div>
 
             <!-- 渠道ID筛选 -->
-            <div class="filter-group">
+            <div class="filter-group logs-filter-group">
               <label for="f_id" class="filter-label" data-i18n="stats.channelId">渠道ID</label>
               <input type="number" id="f_id" class="filter-input" data-i18n-placeholder="stats.inputIdPlaceholder" placeholder="输入ID..." style="max-width: 100px;">
             </div>
 
             <!-- 渠道名筛选 -->
-            <div class="filter-group">
+            <div class="filter-group logs-filter-group">
               <label for="f_name" class="filter-label" data-i18n="stats.channelName">渠道名</label>
               <input type="text" id="f_name" class="filter-input" data-i18n-placeholder="stats.containsTextPlaceholder" placeholder="包含文本...">
             </div>
 
             <!-- 模型筛选（合并重复字段） -->
-            <div class="filter-group">
+            <div class="filter-group logs-filter-group">
               <label for="f_model" class="filter-label" data-i18n="common.model">模型</label>
               <input type="text" id="f_model" class="filter-input" data-i18n-placeholder="stats.containsTextPlaceholder" placeholder="包含文本...">
             </div>
 
             <!-- 状态码筛选 -->
-            <div class="filter-group">
+            <div class="filter-group logs-filter-group">
               <label for="f_status" class="filter-label" data-i18n="logs.statusCode">状态码</label>
               <input type="number" id="f_status" class="filter-input" data-i18n-placeholder="logs.statusPlaceholder" placeholder="如 200 / 403" style="max-width: 110px;">
             </div>
 
             <!-- 令牌筛选 -->
-            <div class="filter-group">
+            <div class="filter-group logs-filter-group">
               <label for="f_auth_token" class="filter-label" data-i18n="stats.token">令牌</label>
               <select id="f_auth_token" class="filter-select" style="min-width: 150px;">
                 <option value="" data-i18n="stats.allTokens">全部令牌</option>
@@ -83,12 +83,12 @@
             </div>
 
             <!-- 统计信息 -->
-            <div class="filter-info">
+            <div class="filter-info logs-filter-info">
               <span data-i18n="logs.showPrefix">显示</span><span id="displayedCount">0</span>/<span id="totalCount">0</span><span data-i18n="logs.recordsSuffix">条</span>
             </div>
 
             <!-- 操作按钮组 -->
-            <div style="flex: none;">
+            <div class="logs-filter-actions">
               <button id="btn_filter" type="button" class="btn btn-primary" style="padding: 8px 16px; font-size: 14px;" data-i18n="common.filter">筛选</button>
             </div>
           </div>
@@ -137,7 +137,7 @@
         <section class="mb-2">
           <div class="glass-card" style="padding: var(--space-2);">
             <div class="flex justify-center items-center">
-              <div class="pagination-controls">
+              <div class="pagination-controls logs-pagination-controls">
                 <button id="logs_first2" class="btn btn-secondary btn-sm" onclick="firstLogsPage()">
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 17l-5-5 5-5"/>
@@ -151,18 +151,18 @@
                   </svg>
                   <span data-i18n="common.prevPage">上一页</span>
                 </button>
-                <span class="pagination-info" style="margin: 0 var(--space-4); display: flex; align-items: center; gap: var(--space-2);">
+                <span class="pagination-info logs-pagination-info">
                   <span data-i18n="logs.pagePrefix">第</span> <span id="logs_current_page2">1</span> <span data-i18n="logs.pageMid">页，共</span> <span id="logs_total_pages2">1</span> <span data-i18n="logs.pageSuffix">页</span>
-                  <span style="margin-left: var(--space-2);">|</span>
+                  <span class="logs-pagination-separator">|</span>
                   <span data-i18n="logs.jumpTo">跳转到</span>
                   <input
                     type="number"
                     id="logs_jump_page"
+                    class="logs-jump-input"
                     min="1"
                     max="1"
                     data-i18n-placeholder="logs.pagePlaceholder"
                     placeholder="页码"
-                    style="width: 100px; padding: 4px 8px; border: 1px solid var(--neutral-300); border-radius: 4px; text-align: center;"
                     onkeydown="if(event.key==='Enter') jumpToPage()"
                   />
                   <span data-i18n="logs.pageUnit">页</span>

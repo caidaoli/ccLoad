@@ -866,7 +866,7 @@
         </div>
       </td>
       <td style="padding: 6px 10px;">
-        <input type="{{inputType}}" value="{{key}}" class="inline-key-input" data-index="{{index}}"
+        <input type="{{inputType}}" value="{{key}}" class="inline-key-input modal-inline-input" data-index="{{index}}"
           style="width: 100%; padding: 5px 8px; border: 1px solid var(--neutral-300); border-radius: 6px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace; font-size: 13px; transition: all 0.2s;">
       </td>
       <td style="padding: 6px 10px;">{{{cooldownHtml}}}</td>
@@ -933,7 +933,7 @@
         </div>
       </td>
       <td style="padding: 6px 10px;">
-        <input type="text" value="{{url}}" class="inline-url-input" data-index="{{index}}"
+        <input type="text" value="{{url}}" class="inline-url-input modal-inline-input" data-index="{{index}}"
           onchange="updateInlineURL({{index}}, this.value)" placeholder="https://api.example.com"
           style="width: 100%; padding: 5px 8px; border: 1px solid var(--neutral-300); border-radius: 6px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace; font-size: 13px;">
       </td>
@@ -1021,7 +1021,7 @@
       </td>
       <td style="padding: 4px 10px;">
         <div style="display: flex; align-items: center; gap: 4px;">
-          <input type="text" class="redirect-from-input" data-index="{{index}}" value="{{from}}"
+          <input type="text" class="redirect-from-input modal-inline-input" data-index="{{index}}" value="{{from}}"
             placeholder="claude-3-opus-20240229"
             style="flex: 1; padding: 5px 8px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace;">
           <button type="button" class="lowercase-btn" data-index="{{index}}"
@@ -1036,7 +1036,7 @@
         </div>
       </td>
       <td style="padding: 4px 10px;">
-        <input type="text" class="redirect-to-input" data-index="{{index}}" value="{{to}}"
+        <input type="text" class="redirect-to-input modal-inline-input" data-index="{{index}}" value="{{to}}"
           placeholder="{{toPlaceholder}}"
           style="width: 100%; padding: 5px 8px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace;">
       </td>
