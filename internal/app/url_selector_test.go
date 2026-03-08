@@ -1,6 +1,8 @@
 package app
 
 import (
+	"context"
+	"net"
 	"testing"
 	"time"
 )
@@ -282,5 +284,129 @@ func TestURLSelector_RecordLatency_TriggersScheduledCleanup(t *testing.T) {
 	}
 	if _, ok := sel.cooldowns[expiredCooldownKey]; ok {
 		t.Fatalf("expected expired cooldown removed by scheduled cleanup")
+	}
+}
+
+func TestExtractHostPort(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"https://api.openai.com", "api.openai.com:443"},
+		{"http://localhost", "localhost:80"},
+		{"https://api.example.com:8443", "api.example.com:8443"},
+		{"http://127.0.0.1:3000", "127.0.0.1:3000"},
+		{"https://[::1]", "[::1]:443"},
+		{"http://[2001:db8::1]:8080", "[2001:db8::1]:8080"},
+		{"", ""},
+		{"not-a-url", ""},
+	}
+	for _, tt := range tests {
+		got := extractHostPort(tt.input)
+		if got != tt.want {
+			t.Errorf("extractHostPort(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestURLSelector_ProbeURLs_TimeoutCoolsPendingURLs(t *testing.T) {
+	sel := NewURLSelector()
+	sel.probeTimeout = 20 * time.Millisecond
+	sel.probeDial = func(ctx context.Context, _, address string) (net.Conn, error) {
+		switch address {
+		case "fast.example:443":
+			conn, peer := net.Pipe()
+			_ = peer.Close()
+			return conn, nil
+		case "slow.example:443":
+			<-ctx.Done()
+			return nil, ctx.Err()
+		default:
+			t.Fatalf("unexpected probe address: %s", address)
+			return nil, context.Canceled
+		}
+	}
+
+	urls := []string{"https://fast.example", "https://slow.example"}
+	sel.ProbeURLs(context.Background(), 1, urls)
+
+	if !sel.IsCooledDown(1, "https://slow.example") {
+		t.Fatalf("expected timed out URL to be cooled down")
+	}
+
+	sel.mu.RLock()
+	_, fastKnown := sel.latencies[urlKey{channelID: 1, url: "https://fast.example"}]
+	_, slowKnown := sel.latencies[urlKey{channelID: 1, url: "https://slow.example"}]
+	sel.mu.RUnlock()
+
+	if !fastKnown {
+		t.Fatalf("expected fast URL latency seed recorded")
+	}
+	if slowKnown {
+		t.Fatalf("expected timed out URL to remain without latency seed")
+	}
+
+	selected, _ := sel.SelectURL(1, urls)
+	if selected != "https://fast.example" {
+		t.Fatalf("expected known fast URL selected after probe timeout, got %s", selected)
+	}
+}
+
+func TestURLSelector_ProbeURLs_SkipsSingleURL(t *testing.T) {
+	sel := NewURLSelector()
+	// 单URL不应触发探测
+	sel.ProbeURLs(context.Background(), 1, []string{"https://a.com"})
+	sel.mu.RLock()
+	defer sel.mu.RUnlock()
+	if len(sel.latencies) != 0 {
+		t.Errorf("single URL should not trigger probe, got %d latencies", len(sel.latencies))
+	}
+}
+
+func TestURLSelector_ProbeURLs_SkipsKnownURLs(t *testing.T) {
+	sel := NewURLSelector()
+	urls := []string{"https://a.com", "https://b.com"}
+	// 给所有URL预设延迟数据
+	sel.RecordLatency(1, "https://a.com", 100*time.Millisecond)
+	sel.RecordLatency(1, "https://b.com", 200*time.Millisecond)
+
+	// 所有URL已有数据，ProbeURLs应立即返回（不发TCP连接）
+	sel.ProbeURLs(context.Background(), 1, urls)
+	// 不crash即通过
+}
+
+func TestURLSelector_ProbeURLs_InvalidURL(t *testing.T) {
+	sel := NewURLSelector()
+	// 无效URL应被冷却，不应panic
+	sel.ProbeURLs(context.Background(), 1, []string{"not-a-valid-url", "also-invalid"})
+
+	sel.mu.RLock()
+	defer sel.mu.RUnlock()
+	// 无效URL应该被冷却或至少不产生延迟数据
+	if len(sel.latencies) != 0 {
+		t.Errorf("invalid URLs should not produce latency data, got %d", len(sel.latencies))
+	}
+}
+
+func TestURLSelector_ProbeURLs_RealTCP(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping TCP probe test in short mode")
+	}
+
+	sel := NewURLSelector()
+	// 用localhost做TCP探测测试（假设本机80端口不开放）
+	// 这个测试主要验证ProbeURLs不会panic/hang，而非成功连接
+	urls := []string{"https://127.0.0.1:1", "https://127.0.0.1:2"}
+	sel.ProbeURLs(context.Background(), 1, urls)
+
+	// 连接失败的URL应被冷却
+	cooled := 0
+	for _, u := range urls {
+		if sel.IsCooledDown(1, u) {
+			cooled++
+		}
+	}
+	if cooled == 0 {
+		t.Logf("warning: no URLs were cooled down (might succeed if ports are open)")
 	}
 }

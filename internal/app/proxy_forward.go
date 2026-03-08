@@ -673,6 +673,13 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		return nil, fmt.Errorf("no valid URLs configured for channel %d", cfg.ID)
 	}
 
+	// 多URL场景：首次使用前做TCP连接探测预热
+	// 目的：通过TCP连接耗时（纯网络延迟，与模型推理无关）为URLSelector提供初始EWMA种子，
+	// 避免首次请求随机选到网络延迟更高的URL。
+	if len(urls) > 1 && s.urlSelector != nil {
+		s.urlSelector.ProbeURLs(ctx, cfg.ID, urls)
+	}
+
 	// Key重试循环
 	for range maxKeyRetries {
 		// 检查context是否已取消/超时
