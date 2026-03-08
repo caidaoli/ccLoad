@@ -80,8 +80,320 @@
       color: var(--neutral-900);
     }
 
-    #channel-list .glass-card {
-      padding: 2px 14px;
+    /* ===== 渠道表格布局 ===== */
+    .channel-table {
+      table-layout: fixed;
+    }
+
+    .channel-table thead th,
+    .channel-table td {
+      font-size: 13px;
+      line-height: 1.35;
+      vertical-align: middle;
+      box-sizing: border-box;
+    }
+
+    .channel-table thead th {
+      height: 44px;
+      padding: 8px 10px;
+      white-space: nowrap;
+      user-select: none;
+      text-align: center;
+    }
+
+    .channel-table td {
+      padding: 6px 10px;
+    }
+
+    .channel-table td.ch-col-priority,
+    .channel-table td.ch-col-duration,
+    .channel-table td.ch-col-usage,
+    .channel-table td.ch-col-cost {
+      text-align: right;
+    }
+
+
+    .channel-table tbody tr,
+    .channel-table tbody td {
+      height: 90px;
+    }
+
+    .channel-table tbody tr {
+      transition: background 0.15s ease;
+      background: #ffffff;
+    }
+
+    .channel-table tbody tr:nth-child(odd) {
+      background: #ffffff;
+    }
+
+    .channel-table tbody tr:nth-child(even) {
+      background: #fafbfc;
+    }
+
+    .channel-table tbody tr:last-child td {
+      border-bottom: none;
+    }
+
+    .channel-table tbody tr:hover {
+      background: #f1f5f9;
+    }
+
+    /* 列宽定义 */
+    .ch-col-checkbox {
+      width: 32px;
+      min-width: 32px;
+      max-width: 32px;
+      text-align: center;
+      box-sizing: border-box;
+    }
+
+    .ch-col-name {
+      width: 480px;
+      min-width: 480px;
+      max-width: 480px;
+    }
+
+    .ch-col-priority {
+      width: 120px;
+      min-width: 120px;
+      max-width: 120px;
+      white-space: normal;
+      text-align: right;
+    }
+
+    .ch-priority-stack {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      justify-content: center;
+      width: 100%;
+      gap: 2px;
+      line-height: 1.15;
+    }
+
+    .ch-priority-row {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      width: 100%;
+      gap: 4px;
+      min-width: 0;
+      line-height: 1.15;
+    }
+
+    .ch-priority-label {
+      color: var(--neutral-500);
+      font-size: 13px;
+      white-space: nowrap;
+      text-align: left;
+      flex: 0 0 auto;
+    }
+
+    .ch-priority-value {
+      margin-left: auto;
+      text-align: right;
+      font-size: 13px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .ch-priority-base-value {
+      color: var(--neutral-600);
+    }
+
+    .ch-priority-stale {
+      color: var(--neutral-400);
+      text-decoration: line-through;
+      text-decoration-thickness: 1px;
+    }
+
+    .ch-priority-health-good {
+      color: var(--success-600);
+    }
+
+    .ch-priority-health-bad {
+      color: var(--error-600);
+    }
+
+    .ch-col-duration {
+      width: 100px;
+      min-width: 100px;
+      max-width: 100px;
+      white-space: normal;
+      text-align: right;
+    }
+
+    .ch-col-usage {
+      width: 100px;
+      line-height: 1.35;
+      text-align: right;
+    }
+
+    .ch-col-cost {
+      width: 100px;
+      white-space: nowrap;
+      text-align: right;
+    }
+
+    .ch-col-actions {
+      width: 180px;
+      min-width: 180px;
+      max-width: 180px;
+      white-space: nowrap;
+      text-align: right;
+    }
+
+    /* 渠道名称行 */
+    .ch-name-line {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      min-width: 0;
+      font-size: 13px;
+      line-height: 1.3;
+    }
+
+    .ch-name-line strong {
+      flex: 0 1 auto;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--neutral-900);
+      font-size: 13px;
+    }
+
+    .ch-id-text {
+      color: var(--neutral-400);
+      font-size: 13px;
+      font-weight: 400;
+    }
+
+    .ch-url-line {
+      color: var(--neutral-400);
+      font-size: 12px;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      margin-top: 1px;
+    }
+
+    .ch-timing {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      width: 100%;
+      gap: 2px;
+      line-height: 1.15;
+    }
+
+    .ch-timing-row,
+    .ch-usage-row {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      width: 100%;
+      gap: 4px;
+      min-width: 0;
+      line-height: 1.15;
+    }
+
+    .ch-timing-label,
+    .ch-usage-label {
+      color: var(--neutral-500);
+      font-size: 13px;
+      white-space: nowrap;
+      text-align: left;
+      flex: 0 0 auto;
+    }
+
+    .ch-timing-value,
+    .ch-usage-value {
+      margin-left: auto;
+      text-align: right;
+      font-size: 13px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .ch-cell-placeholder {
+      color: var(--neutral-400);
+    }
+
+    .ch-usage-list {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      width: 100%;
+      gap: 2px;
+    }
+
+    /* 模型文本 */
+    .ch-models-text {
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      word-break: break-all;
+      font-size: 13px;
+      color: var(--neutral-600);
+      line-height: 1.35;
+    }
+
+    /* 操作按钮组 - 横向排列 */
+    .ch-action-group {
+      display: inline-flex;
+      flex-wrap: nowrap;
+      gap: 2px;
+      align-items: center;
+    }
+
+    .ch-action-group .btn-icon {
+      font-size: 13px;
+      padding: 2px 6px;
+      white-space: nowrap;
+    }
+
+    .channel-table-selection-toggle {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      gap: 0;
+    }
+
+    .channel-table-selection-toggle #visibleSelectionToggleText {
+      display: none;
+    }
+
+    .channel-table-selection-toggle #visibleSelectionCheckbox {
+      width: 16px;
+      height: 16px;
+      margin: 0;
+    }
+
+    /* 行状态 */
+    .channel-table-row.channel-disabled {
+      opacity: 0.55;
+    }
+
+    .channel-table-row.channel-card-cooldown {
+      background: linear-gradient(135deg, #fff7ed 0%, #fffbeb 100%);
+    }
+
+    .channel-table-row.channel-card-cooldown:hover {
+      background: linear-gradient(135deg, #ffedd5 0%, #fef9c3 100%);
+    }
+
+    /* 健康指示器 - 表格内微调 */
+    .channel-table .health-indicator {
+      margin-top: 2px;
     }
 
     .channel-card-top-row {
@@ -213,13 +525,24 @@
     .health-indicator {
       display: flex;
       align-items: center;
-      gap: 2px;
+      gap: 6px;
       margin-top: 4px;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
+      min-width: 0;
+    }
+
+    .health-track {
+      display: grid;
+      grid-template-columns: repeat(48, 6px);
+      gap: 1px;
+      width: 335px;
+      min-width: 335px;
+      max-width: 335px;
+      flex: 0 0 335px;
     }
 
     .health-block {
-      width: 6px;
+      width: 100%;
       height: 12px;
       border-radius: 1px;
       transition: transform 0.2s ease, box-shadow 0.2s ease;
@@ -249,10 +572,11 @@
     }
 
     .health-rate {
-      margin-left: 6px;
-      font-size: 11px;
+      margin-left: 0;
+      font-size: 12px;
       font-weight: 500;
       white-space: nowrap;
+      font-variant-numeric: tabular-nums;
     }
 
     .channel-toolbar-actions {

@@ -12,6 +12,15 @@ function modelFilterInputValueFromFilterValue(filterValue) {
   return filterValue;
 }
 
+function normalizeModelFilterOption() {
+  if (!filters || !filters.model || filters.model === 'all') return false;
+  if (modelFilterOptions.includes(filters.model)) return false;
+
+  filters.model = 'all';
+  if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
+  return true;
+}
+
 function filterChannels() {
   const filtered = channels.filter(channel => {
     if (filters.search && !channel.name.toLowerCase().includes(filters.search.toLowerCase())) {
@@ -100,10 +109,17 @@ function updateModelOptions() {
 
   modelFilterOptions = Array.from(modelSet).sort();
 
+  normalizeModelFilterOption();
+
   // 使用通用组件刷新下拉框
   if (modelFilterCombobox) {
     modelFilterCombobox.setValue(filters.model, modelFilterInputValueFromFilterValue(filters.model));
     modelFilterCombobox.refresh();
+  } else {
+    const modelFilterInput = document.getElementById('modelFilter');
+    if (modelFilterInput) {
+      modelFilterInput.value = modelFilterInputValueFromFilterValue(filters.model);
+    }
   }
 }
 

@@ -119,11 +119,6 @@
             </div>
 
             <div class="channel-toolbar-actions">
-              <label id="visibleSelectionToggle" class="channel-selection-toggle"
-                data-i18n-title="channels.batchSelectVisible" title="全选">
-                <input id="visibleSelectionCheckbox" type="checkbox" onchange="toggleVisibleChannelsSelection()">
-                <span id="visibleSelectionToggleText" data-i18n="channels.batchSelectVisible">全选</span>
-              </label>
               <button id="btn_sort" type="button" class="btn btn-secondary" style="padding: 8px 16px; font-size: 14px;"
                 data-i18n="channels.sortBtn">排序</button>
               <button id="btn_filter" type="button" class="btn btn-primary" style="padding: 8px 16px; font-size: 14px;"
@@ -973,30 +968,33 @@
     </tr>
   </template>
 
-  <!-- 渠道卡片模板 -->
+  <!-- 渠道表格行模板 -->
   <template id="tpl-channel-card">
-    <div class="{{cardClasses}}" id="channel-{{id}}" data-channel-id="{{id}}">
-      <div class="channel-card-top-row">
-        <div class="section-title" style="flex: 1; min-width: 0;">
-          <input type="checkbox" class="channel-select-checkbox" data-channel-id="{{id}}"
-            style="margin-right: 8px; vertical-align: middle;" data-i18n-title="channels.selectChannel" title="选择渠道">
-          {{name}} {{{typeBadge}}}
-          <span style="color: var(--neutral-500); font-size: 0.875rem; font-weight: 400;">(ID: {{id}})</span>
-          <span style="color: var(--neutral-600); font-size: 0.875rem; font-weight: 400; margin-left: 4px;">{{url}}</span>
+    <tr class="{{rowClasses}}" id="channel-{{id}}" data-channel-id="{{id}}">
+      <td class="ch-col-checkbox">
+        <input type="checkbox" class="channel-select-checkbox" data-channel-id="{{id}}"
+          data-i18n-title="channels.selectChannel" title="选择渠道">
+      </td>
+      <td class="ch-col-name">
+        <div class="ch-name-line">
+          <strong>{{name}}</strong> {{{typeBadge}}}
+          <span class="ch-id-text">(ID: {{id}})</span>
         </div>
-        <div class="channel-card-status">
-          <span data-i18n="channels.priorityLabel">优先级:</span> {{priority}}{{{effectivePriorityHtml}}} |
-          {{statusText}}{{{cooldownBadge}}}
-        </div>
-      </div>
-      <div class="text-sm" style="color: var(--neutral-600); margin-top: 2px;">
-        <span
-          style="display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-          title="{{modelsText}}"><span data-i18n="channels.modelPrefix">模型:</span> {{modelsText}}</span>
-      </div>
-      <div class="channel-card-bottom-row">
-        {{{statsHtml}}}
-        <div class="channel-actions">
+        <div class="ch-url-line" title="{{url}}">{{url}}</div>
+        {{{cooldownBadge}}}
+        {{{healthHtml}}}
+      </td>
+      <td class="ch-col-models">
+        <span class="ch-models-text" title="{{modelsText}}">{{modelsText}}</span>
+      </td>
+      <td class="ch-col-priority">
+        {{{effectivePriorityHtml}}}
+      </td>
+      <td class="ch-col-duration">{{{durationHtml}}}</td>
+      <td class="ch-col-usage">{{{usageHtml}}}</td>
+      <td class="ch-col-cost">{{{costHtml}}}</td>
+      <td class="ch-col-actions">
+        <div class="ch-action-group">
           <button class="btn-icon channel-action-btn" data-action="edit" data-channel-id="{{id}}"
             data-i18n-title="common.edit" title="编辑" data-i18n="common.edit">编辑</button>
           <button class="btn-icon channel-action-btn" data-action="test" data-channel-id="{{id}}"
@@ -1004,15 +1002,12 @@
             data-i18n="common.test">测试</button>
           <button class="btn-icon channel-action-btn" data-action="toggle" data-channel-id="{{id}}"
             data-enabled="{{enabled}}" title="{{toggleTitle}}">{{toggleText}}</button>
-          <button class="btn-icon channel-action-btn" data-action="copy" data-channel-id="{{id}}"
-            data-channel-name="{{name}}" data-i18n-title="channels.copyChannelTitle" title="复制渠道"
-            data-i18n="common.copy">复制</button>
           <button class="btn-icon btn-danger channel-action-btn" data-action="delete" data-channel-id="{{id}}"
             data-channel-name="{{name}}" data-i18n-title="common.delete" title="删除"
             data-i18n="common.delete">删除</button>
         </div>
-      </div>
-    </div>
+      </td>
+    </tr>
   </template>
 
   <!-- 重定向规则行模板 -->

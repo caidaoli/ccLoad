@@ -69,7 +69,8 @@ function aggregateChannelStats(statsEntries = []) {
         _firstByteWeightedSum: 0,
         _firstByteWeight: 0,
         _durationWeightedSum: 0,
-        _durationWeight: 0
+        _durationWeight: 0,
+        _healthMap: {} // ts -> merged HealthPoint
       };
     }
 
@@ -100,6 +101,45 @@ function aggregateChannelStats(statsEntries = []) {
     stats.totalCacheReadInputTokens += toSafeNumber(entry.total_cache_read_input_tokens);
     stats.totalCacheCreationInputTokens += toSafeNumber(entry.total_cache_creation_input_tokens);
     stats.totalCost += toSafeNumber(entry.total_cost);
+
+    // 合并 health_timeline 到渠道级别
+    if (Array.isArray(entry.health_timeline)) {
+      for (const point of entry.health_timeline) {
+        const ts = point.ts;
+        if (!stats._healthMap[ts]) {
+          stats._healthMap[ts] = {
+            ts: ts,
+            success: 0,
+            error: 0,
+            _ftSum: 0, _ftWeight: 0,
+            _durSum: 0, _durWeight: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            cost: 0
+          };
+        }
+        const hp = stats._healthMap[ts];
+        if (point.rate < 0) continue; // 无数据的时间桶跳过
+        hp.success += (point.success || 0);
+        hp.error += (point.error || 0);
+        const ptTotal = (point.success || 0) + (point.error || 0);
+        if (point.avg_first_byte_time > 0 && ptTotal > 0) {
+          hp._ftSum += point.avg_first_byte_time * ptTotal;
+          hp._ftWeight += ptTotal;
+        }
+        if (point.avg_duration > 0 && ptTotal > 0) {
+          hp._durSum += point.avg_duration * ptTotal;
+          hp._durWeight += ptTotal;
+        }
+        hp.input_tokens += (point.input_tokens || 0);
+        hp.output_tokens += (point.output_tokens || 0);
+        hp.cache_read_tokens += (point.cache_read_tokens || 0);
+        hp.cache_creation_tokens += (point.cache_creation_tokens || 0);
+        hp.cost += (point.cost || 0);
+      }
+    }
   }
 
   for (const id of Object.keys(result)) {
@@ -110,10 +150,36 @@ function aggregateChannelStats(statsEntries = []) {
     if (stats._durationWeight > 0) {
       stats.avgDurationSeconds = stats._durationWeightedSum / stats._durationWeight;
     }
+
+    // 构建 healthTimeline 数组
+    const healthMap = stats._healthMap;
+    const keys = Object.keys(healthMap);
+    if (keys.length > 0) {
+      keys.sort(); // 按时间排序
+      stats.healthTimeline = keys.map(ts => {
+        const hp = healthMap[ts];
+        const total = hp.success + hp.error;
+        return {
+          ts: hp.ts,
+          rate: total > 0 ? hp.success / total : -1,
+          success: hp.success,
+          error: hp.error,
+          avg_first_byte_time: hp._ftWeight > 0 ? hp._ftSum / hp._ftWeight : 0,
+          avg_duration: hp._durWeight > 0 ? hp._durSum / hp._durWeight : 0,
+          input_tokens: hp.input_tokens,
+          output_tokens: hp.output_tokens,
+          cache_read_tokens: hp.cache_read_tokens,
+          cache_creation_tokens: hp.cache_creation_tokens,
+          cost: hp.cost
+        };
+      });
+    }
+
     delete stats._firstByteWeightedSum;
     delete stats._firstByteWeight;
     delete stats._durationWeightedSum;
     delete stats._durationWeight;
+    delete stats._healthMap;
   }
 
   return result;

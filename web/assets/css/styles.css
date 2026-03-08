@@ -360,7 +360,7 @@ body {
   flex: 1;
   margin-left: 0;
   min-height: 100vh;
-  padding: var(--space-6);
+  padding: var(--space-3);
   transition: margin-left var(--duration-normal) var(--timing-function);
 }
 

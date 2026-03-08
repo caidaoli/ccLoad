@@ -598,21 +598,20 @@
         return '';
       }
 
-      // 后端已返回固定48个时间点，rate=-1 表示无数据
-      // 使用数组预分配 + 直接拼接，减少内存分配
-      const len = timeline.length;
-      const blocks = new Array(len);
+      const fixedBucketCount = 48;
+      const normalizedTimeline = timeline.length >= fixedBucketCount
+        ? timeline.slice(-fixedBucketCount)
+        : [...Array(fixedBucketCount - timeline.length).fill(null), ...timeline];
+      const blocks = new Array(fixedBucketCount);
 
-      for (let i = 0; i < len; i++) {
-        const point = timeline[i];
-        const rate = point.rate;
-
-        // rate < 0 表示该时间桶无数据
-        if (rate < 0) {
+      for (let i = 0; i < fixedBucketCount; i++) {
+        const point = normalizedTimeline[i];
+        if (!point || point.rate < 0) {
           blocks[i] = `<span class="health-block unknown" title="${t('stats.healthNoData')}"></span>`;
           continue;
         }
 
+        const rate = point.rate;
         const className = rate >= 0.95 ? 'healthy' : rate >= 0.80 ? 'warning' : 'critical';
 
         // 快速时间格式化（避免 toLocaleString 的性能开销）
@@ -620,14 +619,22 @@
         const timeStr = `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 
         // 构建 tooltip - 使用条件拼接减少数组操作
-        let title = `${timeStr}\n${t('stats.tooltipSuccess')}: ${point.success || 0} / ${t('stats.tooltipFailed')}: ${point.error || 0}`;
-        if (point.avg_first_byte_time > 0) title += `\n${t('stats.tooltipTTFT')}: ${point.avg_first_byte_time.toFixed(2)}s`;
-        if (point.avg_duration > 0) title += `\n${t('stats.tooltipDuration')}: ${point.avg_duration.toFixed(2)}s`;
-        if (point.input_tokens > 0) title += `\n${t('stats.tooltipInput')}: ${formatNumber(point.input_tokens)}`;
-        if (point.output_tokens > 0) title += `\n${t('stats.tooltipOutput')}: ${formatNumber(point.output_tokens)}`;
-        if (point.cache_read_tokens > 0) title += `\n${t('stats.tooltipCacheRead')}: ${formatNumber(point.cache_read_tokens)}`;
-        if (point.cache_creation_tokens > 0) title += `\n${t('stats.tooltipCacheWrite')}: ${formatNumber(point.cache_creation_tokens)}`;
-        if (point.cost > 0) title += `\n${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
+        let title = `${timeStr}
+${t('stats.tooltipSuccess')}: ${point.success || 0} / ${t('stats.tooltipFailed')}: ${point.error || 0}`;
+        if (point.avg_first_byte_time > 0) title += `
+${t('stats.tooltipTTFT')}: ${point.avg_first_byte_time.toFixed(2)}s`;
+        if (point.avg_duration > 0) title += `
+${t('stats.tooltipDuration')}: ${point.avg_duration.toFixed(2)}s`;
+        if (point.input_tokens > 0) title += `
+${t('stats.tooltipInput')}: ${formatNumber(point.input_tokens)}`;
+        if (point.output_tokens > 0) title += `
+${t('stats.tooltipOutput')}: ${formatNumber(point.output_tokens)}`;
+        if (point.cache_read_tokens > 0) title += `
+${t('stats.tooltipCacheRead')}: ${formatNumber(point.cache_read_tokens)}`;
+        if (point.cache_creation_tokens > 0) title += `
+${t('stats.tooltipCacheWrite')}: ${formatNumber(point.cache_creation_tokens)}`;
+        if (point.cost > 0) title += `
+${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
 
         blocks[i] = `<span class="health-block ${className}" title="${escapeHtml(title)}"></span>`;
       }
@@ -636,7 +643,7 @@
       const ratePercent = (currentRate * 100).toFixed(1);
       const rateColor = currentRate >= 0.95 ? 'var(--success-600)' :
                         currentRate >= 0.80 ? 'var(--warning-600)' : 'var(--error-600)';
-      return `<div class="health-indicator">${blocks.join('')}<span class="health-rate" style="color: ${rateColor}">${ratePercent}%</span></div>`;
+      return `<div class="health-indicator"><span class="health-track">${blocks.join('')}</span><span class="health-rate" style="color: ${rateColor}">${ratePercent}%</span></div>`;
     }
 
     // 注销功能（已由 ui.js 的 onLogout 统一处理）
