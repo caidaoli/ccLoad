@@ -576,15 +576,6 @@ body {
   overflow: hidden;
 }
 
-.hero-header::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 3px;
-  background: linear-gradient(90deg, #6366f1, #8b5cf6, #ec4899);
-}
 
 .hero-icon {
   width: 56px;

@@ -101,3 +101,21 @@ test('日志页分页数字使用等宽数字并预留最小宽度', () => {
   assert.match(numberMatch[0], /display:\s*inline-block/);
   assert.match(numberMatch[0], /min-width:\s*3ch/);
 });
+
+
+test('日志页桌面筛选组设置基准宽度避免互相挤压', () => {
+  const groupMatch = css.match(/\.logs-filter-group\s*\{[^}]+\}/);
+  assert.ok(groupMatch, '缺少 .logs-filter-group 样式');
+
+  const styleBlock = groupMatch[0];
+  assert.match(styleBlock, /flex:\s*1\s+1\s+180px/);
+});
+
+test('日志页筛选输入控件允许在 flex 布局中收缩', () => {
+  const controlMatch = css.match(/\.logs-filter-group\s+\.filter-input,\s*\.logs-filter-group\s+\.filter-select\s*\{[^}]+\}/);
+  assert.ok(controlMatch, '缺少日志页筛选控件收缩样式');
+
+  const styleBlock = controlMatch[0];
+  assert.match(styleBlock, /min-width:\s*0/);
+  assert.match(styleBlock, /width:\s*100%/);
+});

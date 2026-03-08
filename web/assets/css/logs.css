@@ -215,6 +215,13 @@
     }
 
     .logs-filter-group {
+      flex: 1 1 180px;
+      min-width: 0;
+    }
+
+    .logs-filter-group .filter-input,
+    .logs-filter-group .filter-select {
+      width: 100%;
       min-width: 0;
     }
 
