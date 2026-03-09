@@ -32,6 +32,15 @@
       transform: none;
     }
 
+    .logs-table .channel-link {
+      padding: 0;
+      border: none;
+      background: transparent;
+      font: inherit;
+      cursor: pointer;
+      display: inline;
+    }
+
     /* 测试模态框样式 */
     .test-modal-content {
       max-width: 700px;
