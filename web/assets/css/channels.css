@@ -710,6 +710,122 @@
       color: var(--neutral-400);
     }
 
+    .inline-url-col-select {
+      width: 70px;
+    }
+
+    .inline-url-col-url {
+      width: auto;
+      min-width: 0;
+    }
+
+    .inline-url-col-actions {
+      width: 96px;
+      white-space: nowrap;
+    }
+
+    .inline-url-col-status {
+      width: 72px;
+      white-space: nowrap;
+      text-align: center;
+    }
+
+    .inline-url-col-latency {
+      width: 60px;
+      white-space: nowrap;
+      text-align: center;
+    }
+
+    .inline-url-col-requests {
+      width: 68px;
+      white-space: nowrap;
+      text-align: center;
+    }
+
+    .inline-url-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .inline-url-header > span:first-child {
+      white-space: nowrap;
+    }
+
+    .inline-url-header-hint {
+      margin: 0;
+      font-weight: 400;
+    }
+
+    .inline-url-cell-center {
+      padding: 6px 6px !important;
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    .inline-url-cell-metric {
+      font-family: Monaco, Menlo, monospace;
+      font-size: 12px;
+      color: var(--neutral-600);
+    }
+
+    .inline-url-actions {
+      display: flex;
+      justify-content: center;
+      gap: 6px;
+    }
+
+    .inline-url-status-placeholder {
+      color: var(--neutral-400);
+      font-size: 12px;
+    }
+
+    .inline-url-status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      padding: 2px 6px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 500;
+      line-height: 1.2;
+    }
+
+    .inline-url-status-badge--ok {
+      background: #DCFCE7;
+      color: #16A34A;
+    }
+
+    .inline-url-status-badge--cooldown {
+      background: #FEE2E2;
+      color: #DC2626;
+    }
+
+    .inline-url-status-badge--unknown {
+      background: var(--neutral-100);
+      color: var(--neutral-500);
+    }
+
+    .inline-url-status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex: 0 0 auto;
+    }
+
+    .inline-url-status-dot--ok {
+      background: #16A34A;
+    }
+
+    .inline-url-status-dot--cooldown {
+      background: #DC2626;
+    }
+
+    .inline-url-status-dot--unknown {
+      background: var(--neutral-400);
+    }
+
     .model-select {
       color: var(--neutral-900);
       background: rgba(255, 255, 255, 0.9);

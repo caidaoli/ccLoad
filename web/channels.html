@@ -276,19 +276,20 @@
               <table class="inline-table">
                 <thead>
                   <tr>
-                    <th style="width: 70px;">
+                    <th class="inline-url-col-select">
                       <div style="display: flex; align-items: center; gap: 6px;">
                         <input type="checkbox" id="selectAllURLs" onchange="toggleSelectAllURLs(this.checked)"
                           style="width: 16px; height: 16px;" data-i18n-title="common.selectAll" title="全选/取消全选">
                         <span>#</span>
                       </div>
                     </th>
-                    <th>
-                      <span data-i18n="channels.tableApiUrl">API URL</span>
-                      <span class="models-hint" style="margin-left: 8px; margin-top: 0; font-weight: normal;"
-                        data-i18n="channels.multiUrlStrategyHint">多URL时自动启用智能调度：基于延迟加权随机分发请求，失败URL独立冷却（2min→30min指数退避），优先探索未测试的URL</span>
+                    <th class="inline-url-col-url">
+                      <div class="inline-url-header">
+                        <span data-i18n="channels.tableApiUrl">API URL</span>
+                        <span class="models-hint inline-url-header-hint" data-i18n="channels.multiUrlStrategyHint">多URL时自动启用智能调度：基于延迟加权随机分发请求，失败URL独立冷却（2min→30min指数退避），优先探索未测试的URL</span>
+                      </div>
                     </th>
-                    <th style="width: 120px;"></th>
+                    <th class="inline-url-col-actions"></th>
                   </tr>
                 </thead>
                 <tbody id="inlineUrlTableBody">
@@ -925,20 +926,20 @@
 
   <template id="tpl-url-row">
     <tr style="border-bottom: 1px solid var(--neutral-200);">
-      <td style="padding: 6px 10px;">
+      <td class="inline-url-col-select">
         <div style="display: flex; align-items: center; gap: 8px;">
           <input type="checkbox" class="url-checkbox" data-index="{{index}}"
             onchange="toggleURLSelection({{index}}, this.checked)" style="width: 16px; height: 16px;">
           <span style="color: var(--neutral-600); font-weight: 500; font-size: 13px;">{{displayIndex}}</span>
         </div>
       </td>
-      <td style="padding: 6px 10px;">
+      <td class="inline-url-col-url">
         <input type="text" value="{{url}}" class="inline-url-input modal-inline-input" data-index="{{index}}"
           onchange="updateInlineURL({{index}}, this.value)" placeholder="https://api.example.com"
           style="width: 100%; padding: 5px 8px; border: 1px solid var(--neutral-300); border-radius: 6px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace; font-size: 13px;">
       </td>
-      <td style="padding: 6px 10px; text-align: center;">
-        <div style="display: flex; gap: 6px; justify-content: center;">
+      <td class="inline-url-col-actions inline-url-cell-center">
+        <div class="inline-url-actions">
           <button type="button" onclick="testInlineURL({{index}}, this)" data-i18n-title="channels.testThisUrl"
             title="测试此URL"
             style="width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--neutral-200); background: white; color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;">

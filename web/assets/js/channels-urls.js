@@ -88,15 +88,15 @@ function createURLRow(index) {
     const lastTd = actionsTd[actionsTd.length - 1]; // actions列
 
     const statusTd = document.createElement('td');
-    statusTd.style.cssText = 'padding: 6px 8px; text-align: center; white-space: nowrap;';
+    statusTd.className = 'inline-url-cell-center inline-url-col-status';
     statusTd.innerHTML = formatURLStatus(stat);
 
     const latencyTd = document.createElement('td');
-    latencyTd.style.cssText = 'padding: 6px 8px; text-align: center; white-space: nowrap; font-family: Monaco, Menlo, monospace; font-size: 12px; color: var(--neutral-600);';
+    latencyTd.className = 'inline-url-cell-center inline-url-cell-metric inline-url-col-latency';
     latencyTd.textContent = formatURLLatency(stat);
 
     const requestsTd = document.createElement('td');
-    requestsTd.style.cssText = 'padding: 6px 8px; text-align: center; white-space: nowrap; font-family: Monaco, Menlo, monospace; font-size: 12px; color: var(--neutral-600);';
+    requestsTd.className = 'inline-url-cell-center inline-url-cell-metric inline-url-col-requests';
     requestsTd.innerHTML = formatURLRequests(stat);
 
     row.insertBefore(statusTd, lastTd);
@@ -328,21 +328,21 @@ async function fetchURLStats(channelId) {
 
 function formatURLStatus(stat) {
   if (!stat) {
-    return `<span style="color: var(--neutral-400); font-size: 12px;">--</span>`;
+    return '<span class="inline-url-status-placeholder">--</span>';
   }
   if (stat.cooled_down) {
     const remain = humanizeMS(stat.cooldown_remain_ms);
-    return `<span style="display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; background: #FEE2E2; color: #DC2626;" title="${window.t('channels.urlStatusCooldown')} ${remain}">`
-      + `<span style="width: 6px; height: 6px; border-radius: 50%; background: #DC2626;"></span>`
+    return `<span class="inline-url-status-badge inline-url-status-badge--cooldown" title="${window.t('channels.urlStatusCooldown')} ${remain}">`
+      + '<span class="inline-url-status-dot inline-url-status-dot--cooldown"></span>'
       + `${remain}</span>`;
   }
   if (stat.latency_ms < 0) {
-    return `<span style="display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; background: var(--neutral-100); color: var(--neutral-500);">`
-      + `<span style="width: 6px; height: 6px; border-radius: 50%; background: var(--neutral-400);"></span>`
+    return '<span class="inline-url-status-badge inline-url-status-badge--unknown">'
+      + '<span class="inline-url-status-dot inline-url-status-dot--unknown"></span>'
       + `${window.t('channels.urlStatusUnknown')}</span>`;
   }
-  return `<span style="display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; background: #DCFCE7; color: #16A34A;">`
-    + `<span style="width: 6px; height: 6px; border-radius: 50%; background: #16A34A;"></span>`
+  return '<span class="inline-url-status-badge inline-url-status-badge--ok">'
+    + '<span class="inline-url-status-dot inline-url-status-dot--ok"></span>'
     + `${window.t('channels.urlStatusNormal')}</span>`;
 }
 
@@ -374,18 +374,15 @@ function updateURLStatsHeader() {
   const actionsTh = thead.querySelector('th:last-child');
 
   const statusTh = document.createElement('th');
-  statusTh.className = 'url-stats-th';
-  statusTh.style.cssText = 'width: 90px; text-align: center; font-size: 12px;';
+  statusTh.className = 'url-stats-th inline-url-col-status';
   statusTh.textContent = window.t('channels.urlStatus');
 
   const latencyTh = document.createElement('th');
-  latencyTh.className = 'url-stats-th';
-  latencyTh.style.cssText = 'width: 70px; text-align: center; font-size: 12px;';
+  latencyTh.className = 'url-stats-th inline-url-col-latency';
   latencyTh.textContent = window.t('channels.urlLatency');
 
   const requestsTh = document.createElement('th');
-  requestsTh.className = 'url-stats-th';
-  requestsTh.style.cssText = 'width: 70px; text-align: center; font-size: 12px;';
+  requestsTh.className = 'url-stats-th inline-url-col-requests';
   requestsTh.textContent = window.t('channels.urlRequests');
 
   thead.insertBefore(statusTh, actionsTh);

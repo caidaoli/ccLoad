@@ -1,8 +1,16 @@
+function setChannelModalTitle(i18nKey) {
+  const titleEl = document.getElementById('modalTitle');
+  if (!titleEl) return;
+
+  titleEl.setAttribute('data-i18n', i18nKey);
+  titleEl.textContent = window.t(i18nKey);
+}
+
 function showAddModal() {
   editingChannelId = null;
   currentChannelKeyCooldowns = [];
 
-  document.getElementById('modalTitle').textContent = window.t('channels.addChannel');
+  setChannelModalTitle('channels.addChannel');
   document.getElementById('channelForm').reset();
   document.getElementById('channelEnabled').checked = true;
   document.querySelector('input[name="channelType"][value="anthropic"]').checked = true;
@@ -35,7 +43,7 @@ async function editChannel(id) {
 
   editingChannelId = id;
 
-  document.getElementById('modalTitle').textContent = window.t('channels.editChannel');
+  setChannelModalTitle('channels.editChannel');
   document.getElementById('channelName').value = channel.name;
   setInlineURLTableData(channel.url);
 
@@ -627,7 +635,7 @@ async function copyChannel(id, name) {
 
   editingChannelId = null;
   currentChannelKeyCooldowns = [];
-  document.getElementById('modalTitle').textContent = window.t('channels.copyChannel');
+  setChannelModalTitle('channels.copyChannel');
   document.getElementById('channelName').value = copiedName;
   setInlineURLTableData(channel.url);
 
