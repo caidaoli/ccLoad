@@ -194,13 +194,26 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 		channelType := fetch("channel_type")
 		keyStrategy := fetch("key_strategy")
 
-		if name == "" || apiKey == "" || url == "" || modelsRaw == "" {
-			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行缺少必填字段", lineNo))
+		var missing []string
+		if name == "" {
+			missing = append(missing, "name")
+		}
+		if apiKey == "" {
+			missing = append(missing, "api_key")
+		}
+		if url == "" {
+			missing = append(missing, "url")
+		}
+		if modelsRaw == "" {
+			missing = append(missing, "models")
+		}
+		if len(missing) > 0 {
+			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行缺少必填字段: %s", lineNo, strings.Join(missing, ", ")))
 			summary.Skipped++
 			continue
 		}
 
-		normalizedURL, err := validateChannelBaseURL(url)
+		normalizedURL, err := validateChannelURLs(url)
 		if err != nil {
 			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行URL无效: %v", lineNo, err))
 			summary.Skipped++
