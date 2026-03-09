@@ -36,11 +36,18 @@ type urlCooldownState struct {
 	consecutiveFails int
 }
 
+// urlRequestCount URL调用计数（内存）
+type urlRequestCount struct {
+	success int64
+	failure int64
+}
+
 // URLSelector 基于EWMA延迟和冷却状态选择最优URL
 type URLSelector struct {
 	mu           sync.RWMutex
 	latencies    map[urlKey]*ewmaValue
 	cooldowns    map[urlKey]urlCooldownState
+	requests     map[urlKey]*urlRequestCount
 	alpha        float64       // EWMA权重因子
 	cooldownBase time.Duration // 基础冷却时间
 	cooldownMax  time.Duration // 最大冷却时间
@@ -58,6 +65,7 @@ func NewURLSelector() *URLSelector {
 	return &URLSelector{
 		latencies:       make(map[urlKey]*ewmaValue),
 		cooldowns:       make(map[urlKey]urlCooldownState),
+		requests:        make(map[urlKey]*urlRequestCount),
 		alpha:           0.3,
 		cooldownBase:    2 * time.Minute,
 		cooldownMax:     30 * time.Minute,
@@ -78,6 +86,7 @@ func (s *URLSelector) gcLocked(now time.Time, maxAge time.Duration) {
 		for key, ewma := range s.latencies {
 			if ewma == nil || ewma.lastSeen.IsZero() || ewma.lastSeen.Before(cutoff) {
 				delete(s.latencies, key)
+				delete(s.requests, key)
 			}
 		}
 	}
@@ -133,6 +142,14 @@ func (s *URLSelector) PruneChannel(channelID int64, keepURLs []string) {
 		}
 		if _, ok := keep[key.url]; !ok {
 			delete(s.cooldowns, key)
+		}
+	}
+	for key := range s.requests {
+		if key.channelID != channelID {
+			continue
+		}
+		if _, ok := keep[key.url]; !ok {
+			delete(s.requests, key)
 		}
 	}
 }
@@ -254,6 +271,13 @@ func (s *URLSelector) RecordLatency(channelID int64, url string, ttfb time.Durat
 
 	// 成功请求：清除冷却状态，立即恢复可用
 	delete(s.cooldowns, key)
+
+	// 递增成功计数
+	if rc := s.requests[key]; rc != nil {
+		rc.success++
+	} else {
+		s.requests[key] = &urlRequestCount{success: 1}
+	}
 }
 
 // CooldownURL 对URL施加指数退避冷却
@@ -278,6 +302,13 @@ func (s *URLSelector) CooldownURL(channelID int64, url string) {
 
 	cd.until = now.Add(duration)
 	s.cooldowns[key] = cd
+
+	// 递增失败计数
+	if rc := s.requests[key]; rc != nil {
+		rc.failure++
+	} else {
+		s.requests[key] = &urlRequestCount{failure: 1}
+	}
 }
 
 // IsCooledDown 检查URL是否在冷却中
@@ -287,6 +318,43 @@ func (s *URLSelector) IsCooledDown(channelID int64, url string) bool {
 	defer s.mu.RUnlock()
 	cd, ok := s.cooldowns[key]
 	return ok && time.Now().Before(cd.until)
+}
+
+// URLStat 单个URL的运行时状态快照
+type URLStat struct {
+	URL              string  `json:"url"`
+	LatencyMs        float64 `json:"latency_ms"`         // EWMA延迟（毫秒），-1表示无数据
+	CooledDown       bool    `json:"cooled_down"`        // 是否在冷却中
+	CooldownRemainMs int64   `json:"cooldown_remain_ms"` // 剩余冷却时间（毫秒）
+	Requests         int64   `json:"requests"`           // 成功调用次数
+	Failures         int64   `json:"failures"`           // 失败调用次数
+}
+
+// GetURLStats 返回指定渠道各URL的运行时状态（延迟、冷却）
+func (s *URLSelector) GetURLStats(channelID int64, urls []string) []URLStat {
+	now := time.Now()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	stats := make([]URLStat, len(urls))
+	for i, u := range urls {
+		key := urlKey{channelID: channelID, url: u}
+		st := URLStat{URL: u, LatencyMs: -1}
+
+		if e, ok := s.latencies[key]; ok {
+			st.LatencyMs = e.value
+		}
+		if cd, ok := s.cooldowns[key]; ok && now.Before(cd.until) {
+			st.CooledDown = true
+			st.CooldownRemainMs = cd.until.Sub(now).Milliseconds()
+		}
+		if rc, ok := s.requests[key]; ok {
+			st.Requests = rc.success
+			st.Failures = rc.failure
+		}
+		stats[i] = st
+	}
+	return stats
 }
 
 // sortedURL 排序后的URL条目

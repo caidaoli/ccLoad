@@ -974,6 +974,12 @@ window.I18N_LOCALES['en'] = {
   'channels.urlTestSuccess': '✅ URL #{index} test successful',
   'channels.urlTestFailed': '❌ URL #{index} test failed: {error}',
   'channels.urlTestRequestFailed': '❌ URL #{index} test request failed: {error}',
+  'channels.urlStatus': 'Status',
+  'channels.urlLatency': 'Latency',
+  'channels.urlRequests': 'Requests',
+  'channels.urlStatusNormal': 'Normal',
+  'channels.urlStatusCooldown': 'Cooldown',
+  'channels.urlStatusUnknown': 'Unknown',
   // Key Export
   'channels.exportKeys': 'Export',
   'channels.exportKeysTitle': 'Export API Keys',

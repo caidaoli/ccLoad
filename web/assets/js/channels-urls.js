@@ -80,6 +80,30 @@ function createURLRow(index) {
     checkbox.checked = true;
   }
 
+  // 多URL时注入统计列
+  if (hasURLStats()) {
+    const url = (inlineURLTableData[index] || '').trim();
+    const stat = urlStatsMap[url];
+    const actionsTd = row.querySelectorAll('td');
+    const lastTd = actionsTd[actionsTd.length - 1]; // actions列
+
+    const statusTd = document.createElement('td');
+    statusTd.style.cssText = 'padding: 6px 8px; text-align: center; white-space: nowrap;';
+    statusTd.innerHTML = formatURLStatus(stat);
+
+    const latencyTd = document.createElement('td');
+    latencyTd.style.cssText = 'padding: 6px 8px; text-align: center; white-space: nowrap; font-family: Monaco, Menlo, monospace; font-size: 12px; color: var(--neutral-600);';
+    latencyTd.textContent = formatURLLatency(stat);
+
+    const requestsTd = document.createElement('td');
+    requestsTd.style.cssText = 'padding: 6px 8px; text-align: center; white-space: nowrap; font-family: Monaco, Menlo, monospace; font-size: 12px; color: var(--neutral-600);';
+    requestsTd.innerHTML = formatURLRequests(stat);
+
+    row.insertBefore(statusTd, lastTd);
+    row.insertBefore(latencyTd, lastTd);
+    row.insertBefore(requestsTd, lastTd);
+  }
+
   return row;
 }
 
@@ -93,6 +117,7 @@ function renderInlineURLTable() {
 
   updateInlineURLCount();
   syncInlineURLInput();
+  updateURLStatsHeader();
 
   tbody.innerHTML = '';
   inlineURLTableData.forEach((_, index) => {
@@ -110,6 +135,7 @@ function setInlineURLTableData(rawURL) {
     inlineURLTableData = [''];
   }
   selectedURLIndices.clear();
+  urlStatsMap = {};
   renderInlineURLTable();
 }
 
@@ -274,4 +300,95 @@ async function testInlineURL(index, buttonElement) {
     buttonElement.disabled = false;
     buttonElement.innerHTML = originalHTML;
   }
+}
+
+// === URL 实时状态 ===
+
+function hasURLStats() {
+  return Object.keys(urlStatsMap).length > 0;
+}
+
+async function fetchURLStats(channelId) {
+  if (!channelId) return;
+  try {
+    const stats = await fetchDataWithAuth(`/admin/channels/${channelId}/url-stats`);
+    urlStatsMap = {};
+    if (Array.isArray(stats)) {
+      for (const s of stats) {
+        urlStatsMap[s.url] = s;
+      }
+    }
+    if (hasURLStats()) {
+      renderInlineURLTable();
+    }
+  } catch (e) {
+    console.error('Failed to fetch URL stats', e);
+  }
+}
+
+function formatURLStatus(stat) {
+  if (!stat) {
+    return `<span style="color: var(--neutral-400); font-size: 12px;">--</span>`;
+  }
+  if (stat.cooled_down) {
+    const remain = humanizeMS(stat.cooldown_remain_ms);
+    return `<span style="display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; background: #FEE2E2; color: #DC2626;" title="${window.t('channels.urlStatusCooldown')} ${remain}">`
+      + `<span style="width: 6px; height: 6px; border-radius: 50%; background: #DC2626;"></span>`
+      + `${remain}</span>`;
+  }
+  if (stat.latency_ms < 0) {
+    return `<span style="display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; background: var(--neutral-100); color: var(--neutral-500);">`
+      + `<span style="width: 6px; height: 6px; border-radius: 50%; background: var(--neutral-400);"></span>`
+      + `${window.t('channels.urlStatusUnknown')}</span>`;
+  }
+  return `<span style="display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; background: #DCFCE7; color: #16A34A;">`
+    + `<span style="width: 6px; height: 6px; border-radius: 50%; background: #16A34A;"></span>`
+    + `${window.t('channels.urlStatusNormal')}</span>`;
+}
+
+function formatURLLatency(stat) {
+  if (!stat || stat.latency_ms < 0) return '--';
+  const ms = Math.round(stat.latency_ms);
+  if (ms < 1000) return ms + 'ms';
+  return (ms / 1000).toFixed(1) + 's';
+}
+
+function formatURLRequests(stat) {
+  if (!stat) return '--';
+  const s = stat.requests || 0;
+  const f = stat.failures || 0;
+  if (s === 0 && f === 0) return '--';
+  if (f === 0) return `<span style="color: #16A34A;">${s}</span>`;
+  return `<span style="color: #16A34A;">${s}</span><span style="color: var(--neutral-300); margin: 0 2px;">/</span><span style="color: #DC2626;">${f}</span>`;
+}
+
+function updateURLStatsHeader() {
+  const thead = document.querySelector('#inlineUrlTableBody')?.closest('table')?.querySelector('thead tr');
+  if (!thead) return;
+
+  // 移除已有的统计列头
+  thead.querySelectorAll('.url-stats-th').forEach(el => el.remove());
+
+  if (!hasURLStats()) return;
+
+  const actionsTh = thead.querySelector('th:last-child');
+
+  const statusTh = document.createElement('th');
+  statusTh.className = 'url-stats-th';
+  statusTh.style.cssText = 'width: 90px; text-align: center; font-size: 12px;';
+  statusTh.textContent = window.t('channels.urlStatus');
+
+  const latencyTh = document.createElement('th');
+  latencyTh.className = 'url-stats-th';
+  latencyTh.style.cssText = 'width: 70px; text-align: center; font-size: 12px;';
+  latencyTh.textContent = window.t('channels.urlLatency');
+
+  const requestsTh = document.createElement('th');
+  requestsTh.className = 'url-stats-th';
+  requestsTh.style.cssText = 'width: 70px; text-align: center; font-size: 12px;';
+  requestsTh.textContent = window.t('channels.urlRequests');
+
+  thead.insertBefore(statusTh, actionsTh);
+  thead.insertBefore(latencyTh, actionsTh);
+  thead.insertBefore(requestsTh, actionsTh);
 }

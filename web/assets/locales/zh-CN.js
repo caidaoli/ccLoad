@@ -974,6 +974,12 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.urlTestSuccess': '✅ URL #{index} 测试成功',
   'channels.urlTestFailed': '❌ URL #{index} 测试失败: {error}',
   'channels.urlTestRequestFailed': '❌ URL #{index} 测试请求失败: {error}',
+  'channels.urlStatus': '状态',
+  'channels.urlLatency': '延迟',
+  'channels.urlRequests': '调用',
+  'channels.urlStatusNormal': '正常',
+  'channels.urlStatusCooldown': '冷却中',
+  'channels.urlStatusUnknown': '未探测',
   // Key导出
   'channels.exportKeys': '导出',
   'channels.exportKeysTitle': '导出 API Keys',

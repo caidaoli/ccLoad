@@ -37,6 +37,7 @@ let selectedKeyIndices = new Set(); // 选中的Key索引集合
 let currentKeyStatusFilter = 'all'; // 当前状态筛选：all/normal/cooldown
 let inlineURLTableData = []; // API URL 表格数据
 let selectedURLIndices = new Set(); // 选中的 URL 索引集合
+let urlStatsMap = {}; // URL实时状态：{ url: { latency_ms, cooled_down, cooldown_remain_ms } }
 let channelFormDirty = false; // 表单是否有未保存的更改
 
 // 虚拟滚动实现：优化大量Key时的渲染性能

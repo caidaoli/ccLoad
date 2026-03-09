@@ -265,6 +265,31 @@ func (s *Server) handleGetChannelKeys(c *gin.Context, id int64) {
 	RespondJSON(c, http.StatusOK, apiKeys)
 }
 
+// HandleChannelURLStats 返回多URL渠道各URL的实时状态（延迟、冷却）
+// GET /admin/channels/:id/url-stats
+func (s *Server) HandleChannelURLStats(c *gin.Context) {
+	id, err := ParseInt64Param(c, "id")
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+
+	cfg, err := s.store.GetConfig(c.Request.Context(), id)
+	if err != nil {
+		RespondErrorMsg(c, http.StatusNotFound, "channel not found")
+		return
+	}
+
+	urls := cfg.GetURLs()
+	if len(urls) <= 1 {
+		RespondJSON(c, http.StatusOK, []URLStat{})
+		return
+	}
+
+	stats := s.urlSelector.GetURLStats(id, urls)
+	RespondJSON(c, http.StatusOK, stats)
+}
+
 // 更新渠道
 func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	// 先获取现有配置

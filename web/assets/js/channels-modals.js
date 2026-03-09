@@ -39,6 +39,12 @@ async function editChannel(id) {
   document.getElementById('channelName').value = channel.name;
   setInlineURLTableData(channel.url);
 
+  // 多URL时异步加载URL实时状态（延迟、冷却）
+  const urlCount = getValidInlineURLs().length;
+  if (urlCount > 1) {
+    fetchURLStats(id);
+  }
+
   let apiKeys = [];
   try {
     apiKeys = (await fetchDataWithAuth(`/admin/channels/${id}/keys`)) || [];
