@@ -450,17 +450,25 @@
       border-color: inherit !important;
     }
 
+    .channel-table tbody tr.channel-card-cooldown {
+      background: linear-gradient(135deg, #fff7ed 0%, #fffbeb 100%);
+    }
+
+    .channel-table tbody tr.channel-card-cooldown:hover {
+      background: linear-gradient(135deg, #ffedd5 0%, #fef9c3 100%);
+    }
+
     .channel-table-row.channel-card-cooldown::before {
       content: none;
       display: none;
     }
 
     .channel-table-row.channel-card-cooldown > td {
-      background: linear-gradient(135deg, #fff7ed 0%, #fffbeb 100%);
+      background: transparent;
     }
 
     .channel-table-row.channel-card-cooldown:hover > td {
-      background: linear-gradient(135deg, #ffedd5 0%, #fef9c3 100%);
+      background: transparent;
     }
 
     /* 健康指示器 - 表格内微调 */
