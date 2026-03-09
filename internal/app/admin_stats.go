@@ -87,10 +87,11 @@ func (s *Server) HandleStats(c *gin.Context) {
 	}
 
 	// 计算健康时间线（固定48个时间点，当日显示最近4小时）
-	s.fillHealthTimeline(c.Request.Context(), stats, startTime, endTime, &lf, isToday)
+	channelHealth := s.fillHealthTimeline(c.Request.Context(), stats, startTime, endTime, &lf, isToday)
 
 	RespondJSON(c, http.StatusOK, gin.H{
 		"stats":            stats,
+		"channel_health":   channelHealth,
 		"duration_seconds": durationSeconds,
 		"rpm_stats":        rpmStats,
 		"is_today":         isToday,
@@ -379,9 +380,9 @@ func (s *Server) HandleHealth(c *gin.Context) {
 // fillHealthTimeline 为每个统计条目填充健康时间线
 // isToday=true: 显示最近4小时，每5分钟一个状态（48个）
 // isToday=false: 按总时间跨度/48计算时间桶
-func (s *Server) fillHealthTimeline(ctx context.Context, stats []model.StatsEntry, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) {
+func (s *Server) fillHealthTimeline(ctx context.Context, stats []model.StatsEntry, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) map[int][]model.HealthPoint {
 	if len(stats) == 0 {
-		return
+		return nil
 	}
 
 	const numBuckets = 48
@@ -431,7 +432,7 @@ func (s *Server) fillHealthTimeline(ctx context.Context, stats []model.StatsEntr
 	rows, err := s.store.GetHealthTimeline(ctx, params)
 	if err != nil {
 		// 静默失败，不影响主流程
-		return
+		return nil
 	}
 
 	// 构建映射：(channel_id, model) -> StatsEntry索引
@@ -487,26 +488,71 @@ func (s *Server) fillHealthTimeline(ctx context.Context, stats []model.StatsEntr
 			successRate = float64(row.Success) / float64(total)
 		}
 
-		// duration/first_byte_time 在日志中以"秒"存储，这里直接透传
-		timeline[key][bucketIndex] = model.HealthPoint{
-			Ts:                       time.Unix(row.BucketTs/1000, 0),
-			SuccessRate:              successRate,
-			SuccessCount:             row.Success,
-			ErrorCount:               row.ErrorCount,
-			AvgFirstByteTime:         row.AvgFirstByteTime,
-			AvgDuration:              row.AvgDuration,
-			TotalInputTokens:         row.InputTokens,
-			TotalOutputTokens:        row.OutputTokens,
-			TotalCacheReadTokens:     row.CacheReadTokens,
-			TotalCacheCreationTokens: row.CacheCreationTokens,
-			TotalCost:                row.TotalCost,
-		}
+		// 更新数据字段，保留初始化时的 Ts（Go 计算的桶起始时间）
+		// 不能用 SQL 的 FLOOR 桶边界覆盖 Ts，否则同一桶索引在不同模型间
+		// 产生不同时间戳，导致前端按 ts 合并时出现幽灵条目
+		p := &timeline[key][bucketIndex]
+		p.SuccessRate = successRate
+		p.SuccessCount = row.Success
+		p.ErrorCount = row.ErrorCount
+		p.AvgFirstByteTime = row.AvgFirstByteTime
+		p.AvgDuration = row.AvgDuration
+		p.TotalInputTokens = row.InputTokens
+		p.TotalOutputTokens = row.OutputTokens
+		p.TotalCacheReadTokens = row.CacheReadTokens
+		p.TotalCacheCreationTokens = row.CacheCreationTokens
+		p.TotalCost = row.TotalCost
 	}
 
-	// 填充到 stats 中
+	// 填充到 stats 中（per-model，供 stats 页面使用）
 	for key, idx := range statsMap {
 		if points, exists := timeline[key]; exists {
 			stats[idx].HealthTimeline = points
 		}
 	}
+
+	// 按渠道聚合健康时间线（供渠道管理页面使用）
+	// 用桶索引合并，不依赖时间戳字符串，彻底避免前端 merge 的对齐问题
+	channelHealth := make(map[int][]model.HealthPoint)
+	for key, points := range timeline {
+		ch, exists := channelHealth[key.channelID]
+		if !exists {
+			ch = make([]model.HealthPoint, numBuckets)
+			for i := range ch {
+				ch[i] = model.HealthPoint{
+					Ts:          points[i].Ts,
+					SuccessRate: -1,
+				}
+			}
+			channelHealth[key.channelID] = ch
+		}
+		for i, pt := range points {
+			if pt.SuccessRate < 0 {
+				continue
+			}
+			if ch[i].SuccessRate < 0 {
+				ch[i] = pt
+				continue
+			}
+			// 加权合并平均值（用 SuccessCount 做权重，比前端用 total 更准确）
+			oldSucc := ch[i].SuccessCount
+			newSucc := pt.SuccessCount
+			if totalSucc := oldSucc + newSucc; totalSucc > 0 {
+				w := float64(totalSucc)
+				ch[i].AvgFirstByteTime = (ch[i].AvgFirstByteTime*float64(oldSucc) + pt.AvgFirstByteTime*float64(newSucc)) / w
+				ch[i].AvgDuration = (ch[i].AvgDuration*float64(oldSucc) + pt.AvgDuration*float64(newSucc)) / w
+			}
+			ch[i].SuccessCount += pt.SuccessCount
+			ch[i].ErrorCount += pt.ErrorCount
+			if total := ch[i].SuccessCount + ch[i].ErrorCount; total > 0 {
+				ch[i].SuccessRate = float64(ch[i].SuccessCount) / float64(total)
+			}
+			ch[i].TotalInputTokens += pt.TotalInputTokens
+			ch[i].TotalOutputTokens += pt.TotalOutputTokens
+			ch[i].TotalCacheReadTokens += pt.TotalCacheReadTokens
+			ch[i].TotalCacheCreationTokens += pt.TotalCacheCreationTokens
+			ch[i].TotalCost += pt.TotalCost
+		}
+	}
+	return channelHealth
 }
