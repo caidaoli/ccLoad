@@ -113,14 +113,9 @@ function formatCostValue(cost) {
 }
 
 function getStatsRangeLabel(range) {
-  const keyMap = {
-    'today': 'index.timeRange.today',
-    'this_week': 'index.timeRange.thisWeek',
-    'this_month': 'index.timeRange.thisMonth',
-    'all': 'common.all'
-  };
-  const key = keyMap[range] || 'index.timeRange.today';
-  return window.t(key);
+  return window.getRangeLabel
+    ? window.getRangeLabel(range)
+    : window.t('index.timeRange.today');
 }
 
 function formatTimestampForFilename() {

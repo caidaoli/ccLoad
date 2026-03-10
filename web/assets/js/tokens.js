@@ -35,12 +35,24 @@
       modalStack.pop();
     }
 
-    document.addEventListener('DOMContentLoaded', () => {
-      // 初始化时间范围选择器
-      window.initTimeRangeSelector((range) => {
-        currentTimeRange = range;
-        loadTokens();
-      });
+	    document.addEventListener('DOMContentLoaded', () => {
+      const renderTimeRangeSelector = () => {
+        if (typeof window.renderDateRangeButtons === 'function') {
+          window.renderDateRangeButtons('tokens-time-range', {
+            values: ['today', 'yesterday', 'day_before_yesterday', 'this_week', 'this_month', 'last_month', 'all'],
+            includeAll: true,
+            activeValue: currentTimeRange
+          });
+        }
+      };
+
+      renderTimeRangeSelector();
+
+	      // 初始化时间范围选择器
+	      window.initTimeRangeSelector((range) => {
+	        currentTimeRange = range;
+	        loadTokens();
+	      });
 
       // 加载令牌列表(默认显示本日统计)
       loadTokens();
@@ -60,11 +72,16 @@
           e.target.value === 'custom' ? 'block' : 'none';
       });
 
-      // 监听语言切换事件，重新渲染令牌列表
-      window.i18n.onLocaleChange(() => {
-        renderTokens();
-      });
-    });
+	      // 监听语言切换事件，重新渲染令牌列表
+	      window.i18n.onLocaleChange(() => {
+	        renderTimeRangeSelector();
+	        window.initTimeRangeSelector((range) => {
+	          currentTimeRange = range;
+	          loadTokens();
+	        });
+	        renderTokens();
+	      });
+	    });
 
     /**
      * 初始化事件委托(统一处理表格内按钮点击)

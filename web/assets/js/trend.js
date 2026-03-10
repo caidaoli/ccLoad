@@ -15,19 +15,106 @@
     window.availableModels = []; // 可用模型列表
     window.authTokens = []; // 令牌列表
 
+    const TREND_FILTER_KEY = 'trend.filters';
+    const TREND_FILTER_LEGACY_KEYS = {
+      range: 'trend.range',
+      trendType: 'trend.trendType',
+      model: 'trend.model',
+      authToken: 'trend.authToken',
+      channelType: 'trend.channelType',
+      channelId: 'trend.channelId',
+      channelName: 'trend.channelName'
+    };
+    const TREND_FILTER_FIELDS = [
+      {
+        key: 'range',
+        queryKeys: ['range'],
+        defaultValue: 'today',
+        includeInQuery(value) {
+          return Boolean(value) && value !== 'today';
+        }
+      },
+      {
+        key: 'trendType',
+        queryKeys: ['type'],
+        defaultValue: 'first_byte',
+        includeInQuery(value) {
+          return Boolean(value) && value !== 'first_byte';
+        },
+        includeInRequest() {
+          return false;
+        }
+      },
+      { key: 'model', queryKeys: ['model'], defaultValue: '' },
+      { key: 'authToken', queryKeys: ['token'], requestKey: 'auth_token_id', defaultValue: '' },
+      {
+        key: 'channelType',
+        queryKeys: ['channel_type'],
+        defaultValue: 'all',
+        includeInQuery(value) {
+          return Boolean(value) && value !== 'all';
+        },
+        includeInRequest(value) {
+          return Boolean(value) && value !== 'all';
+        }
+      },
+      {
+        key: 'channelId',
+        queryKeys: ['channel_id'],
+        defaultValue: '',
+        includeInQuery() {
+          return false;
+        }
+      },
+      {
+        key: 'channelName',
+        queryKeys: ['channel_name_like'],
+        defaultValue: '',
+        includeInQuery() {
+          return false;
+        }
+      }
+    ];
+    const TREND_MODELS_REQUEST_FIELDS = TREND_FILTER_FIELDS.filter((field) =>
+      field.key === 'range' || field.key === 'channelType'
+    );
+
+    function getTrendFilters() {
+      return {
+        range: window.currentRange || 'today',
+        trendType: window.currentTrendType || 'first_byte',
+        model: window.currentModel || '',
+        authToken: window.currentAuthToken || '',
+        channelType: window.currentChannelType || 'all',
+        channelId: window.currentChannelId || '',
+        channelName: window.currentChannelName || ''
+      };
+    }
+
+    function loadSavedTrendFilters(storage = window.localStorage) {
+      return window.FilterState.load(TREND_FILTER_KEY, storage, {
+        legacyKeyMap: TREND_FILTER_LEGACY_KEYS
+      });
+    }
+
+    function buildChannelsQueryString(channelType) {
+      if (!channelType || channelType === 'all') {
+        return '';
+      }
+
+      return `?type=${encodeURIComponent(channelType)}`;
+    }
+
     // 加载可用模型列表
     // channelType 参数：渠道类型筛选，空字符串或 'all' 表示全部
     // range 参数：时间范围，可选，默认使用当前选择的时间范围
     async function loadModels(channelType, range) {
       try {
-        // 使用传入的时间范围，或者当前选择的时间范围，或者默认 today
-        const timeRange = range || window.currentRange || 'today';
-
-        // 构建 API URL，支持渠道类型和时间范围筛选
-        let url = `/admin/models?range=${encodeURIComponent(timeRange)}`;
-        if (channelType && channelType !== 'all') {
-          url += `&channel_type=${encodeURIComponent(channelType)}`;
-        }
+        const params = window.FilterQuery.buildRequestParams({
+          range: range || window.currentRange || 'today',
+          channelType: channelType || window.currentChannelType || 'all'
+        }, TREND_MODELS_REQUEST_FIELDS);
+        const url = `/admin/models?${params.toString()}`;
 
         const rawModels = (await fetchDataWithAuth(url)) || [];
 
@@ -80,43 +167,27 @@
         }
 
         // 读取渠道ID和渠道名筛选
-        const idInput = document.getElementById('f_id');
-        if (idInput) {
-          window.currentChannelId = idInput.value.trim() || '';
-        }
-        const nameInput = document.getElementById('f_name');
-        if (nameInput) {
-          window.currentChannelName = nameInput.value.trim() || '';
-        }
+        const textFilters = window.readFilterControlValues({
+          channelId: { id: 'f_id', trim: true },
+          channelName: { id: 'f_name', trim: true }
+        });
+        window.currentChannelId = textFilters.channelId;
+        window.currentChannelName = textFilters.channelName;
 
         const hours = window.getRangeHours ? getRangeHours(currentRange) : 24;
         window.currentHours = hours; // 同步到全局变量，供 renderChart 使用
         const bucketMin = computeBucketMin(hours);
 
-        // 并行加载趋势数据和渠道列表
-        // metrics API使用range参数获取精确时间范围
-        const metricsUrl = `/admin/metrics?range=${currentRange}&bucket_min=${bucketMin}`;
+        const metricsParams = window.FilterQuery.buildRequestParams(getTrendFilters(), TREND_FILTER_FIELDS, {
+          baseParams: {
+            bucket_min: bucketMin
+          }
+        });
         const channelsUrl = '/admin/channels';
 
-        // 添加渠道类型筛选
-        const channelTypeParam = (window.currentChannelType && window.currentChannelType !== 'all') ?
-          `&channel_type=${window.currentChannelType}` : '';
-        const channelTypeParamForList = (window.currentChannelType && window.currentChannelType !== 'all') ?
-          `&type=${window.currentChannelType}` : '';
-
-        // 添加模型筛选参数
-        const modelParam = window.currentModel ? `&model=${encodeURIComponent(window.currentModel)}` : '';
-
-        // 添加令牌筛选参数
-        const tokenParam = window.currentAuthToken ? `&auth_token_id=${encodeURIComponent(window.currentAuthToken)}` : '';
-
-        // 添加渠道ID和渠道名筛选参数
-        const channelIdParam = window.currentChannelId ? `&channel_id=${encodeURIComponent(window.currentChannelId)}` : '';
-        const channelNameParam = window.currentChannelName ? `&channel_name_like=${encodeURIComponent(window.currentChannelName)}` : '';
-
         const [metrics, channels] = await Promise.all([
-          fetchAPIWithAuthRaw(metricsUrl + channelTypeParam + modelParam + tokenParam + channelIdParam + channelNameParam),
-          fetchDataWithAuth(channelsUrl + (channelTypeParamForList ? '?' + channelTypeParamForList.slice(1) : ''))
+          fetchAPIWithAuthRaw('/admin/metrics?' + metricsParams.toString()),
+          fetchDataWithAuth(channelsUrl + buildChannelsQueryString(window.currentChannelType))
         ]);
 
         if (!metrics.payload.success) {
@@ -1352,36 +1423,31 @@ function shouldShowZoom(points, hours, trendType) {
     document.addEventListener('DOMContentLoaded', async function() {
       if (window.i18n) window.i18n.translatePage();
       if (window.initTopbar) initTopbar('trend');
-
-      // ✅ 优先从 URL 参数恢复渠道类型，否则从 localStorage，默认 all
-      const urlParams = new URLSearchParams(location.search);
-      const hasUrlParams = urlParams.toString().length > 0;
-      const savedChannelType = urlParams.get('channel_type') || (!hasUrlParams && localStorage.getItem('trend.channelType')) || 'all';
-      window.currentChannelType = savedChannelType;
+      restoreState();
+      restoreChannelState();
+      applyRangeUI();
 
       await window.initChannelTypeFilter('f_channel_type', window.currentChannelType, async (value) => {
         window.currentChannelType = value;
-        try {
-          localStorage.setItem('trend.channelType', value);
-          updateURLParams();
-        } catch (_) {}
+        persistState();
         window.visibleChannels.clear();
         await loadModels(value);
         loadData();
       });
 
-      restoreState();
-      restoreChannelState();
-      applyRangeUI();
       bindToggles();
 
       // 加载模型列表（传入当前渠道类型）
       await loadModels(window.currentChannelType);
 
       // 加载令牌列表
-      window.authTokens = await window.loadAuthTokensIntoSelect('f_auth_token', {
-        tokenPrefix: t('trend.tokenPrefix'),
-        restoreValue: window.currentAuthToken
+      window.authTokens = await window.initAuthTokenFilter({
+        selectId: 'f_auth_token',
+        value: window.currentAuthToken,
+        loadOptions: {
+          tokenPrefix: t('trend.tokenPrefix'),
+          restoreValue: window.currentAuthToken
+        }
       });
 
       loadData();
@@ -1457,93 +1523,57 @@ function shouldShowZoom(points, hours, trendType) {
         });
       }
 
-      // 输入框自动筛选（防抖）
-      const debouncedFilter = debounce(() => {
-        // 读取输入框值到全局变量
-        const idInput = document.getElementById('f_id');
-        if (idInput) window.currentChannelId = idInput.value.trim() || '';
-        const nameInput = document.getElementById('f_name');
-        if (nameInput) window.currentChannelName = nameInput.value.trim() || '';
+      const applyTextFilters = () => {
+        const textFilters = window.readFilterControlValues({
+          channelId: { id: 'f_id', trim: true },
+          channelName: { id: 'f_name', trim: true }
+        });
+        window.currentChannelId = textFilters.channelId;
+        window.currentChannelName = textFilters.channelName;
 
         persistState();
         loadData();
-      }, 500);
-      ['f_id', 'f_name'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) {
-          el.addEventListener('input', debouncedFilter);
-        }
-      });
+      };
 
-      // 回车键筛选
-      ['f_id', 'f_name'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) {
-          el.addEventListener('keydown', e => {
-            if (e.key === 'Enter') {
-              // 读取输入框值到全局变量
-              const idInput = document.getElementById('f_id');
-              if (idInput) window.currentChannelId = idInput.value.trim() || '';
-              const nameInput = document.getElementById('f_name');
-              if (nameInput) window.currentChannelName = nameInput.value.trim() || '';
-
-              persistState();
-              loadData();
-            }
-          });
-        }
+      window.bindFilterApplyInputs({
+        apply: applyTextFilters,
+        debounceInputIds: ['f_id', 'f_name'],
+        enterInputIds: ['f_id', 'f_name']
       });
     }
 
     function persistState() {
       try {
-        localStorage.setItem('trend.range', window.currentRange);
-        localStorage.setItem('trend.trendType', window.currentTrendType);
-        localStorage.setItem('trend.model', window.currentModel);
-        localStorage.setItem('trend.authToken', window.currentAuthToken);
-        localStorage.setItem('trend.channelId', window.currentChannelId || '');
-        localStorage.setItem('trend.channelName', window.currentChannelName || '');
-
-        // ✅ 新增：同步到 URL 参数（不刷新页面）
+        window.FilterState.save(TREND_FILTER_KEY, getTrendFilters());
         updateURLParams();
       } catch (_) {}
     }
 
     function updateURLParams() {
       try {
-        const params = new URLSearchParams();
-        if (window.currentRange && window.currentRange !== 'today') {
-          params.set('range', window.currentRange);
-        }
-        if (window.currentTrendType && window.currentTrendType !== 'first_byte') {
-          params.set('type', window.currentTrendType);
-        }
-        if (window.currentModel) {
-          params.set('model', window.currentModel);
-        }
-        if (window.currentAuthToken) {
-          params.set('token', window.currentAuthToken);
-        }
-        if (window.currentChannelType && window.currentChannelType !== 'all') {
-          params.set('channel_type', window.currentChannelType);
-        }
-
-        const newSearch = params.toString();
-        const newUrl = newSearch ? `?${newSearch}` : location.pathname;
-        history.replaceState(null, '', newUrl);
+        window.FilterState.writeHistory({
+          pathname: location.pathname,
+          values: getTrendFilters(),
+          fields: TREND_FILTER_FIELDS,
+          historyMethod: 'replaceState'
+        });
       } catch (_) {}
     }
 
     function restoreState() {
       try {
-        // ✅ 优先从 URL 参数恢复，否则从 localStorage 恢复
-        const urlParams = new URLSearchParams(location.search);
-        const hasUrlParams = urlParams.toString().length > 0;
+        const savedFilters = loadSavedTrendFilters();
+        const restoredFilters = window.FilterState.restore({
+          search: location.search,
+          savedFilters,
+          fields: TREND_FILTER_FIELDS
+        });
 
         // 恢复时间范围 (默认"本日")
-        let savedRange = urlParams.get('range') || (!hasUrlParams && localStorage.getItem('trend.range')) || 'today';
-        const validRanges = ['today', 'yesterday', 'day_before_yesterday', 'this_week', 'last_week', 'this_month', 'last_month'];
-        window.currentRange = validRanges.includes(savedRange) ? savedRange : 'today';
+        const validRanges = window.getDateRangePresets
+          ? window.getDateRangePresets().map((range) => range.value)
+          : ['today'];
+        window.currentRange = validRanges.includes(restoredFilters.range) ? restoredFilters.range : 'today';
 
         const label = document.getElementById('data-timerange');
         if (label) {
@@ -1552,40 +1582,44 @@ function shouldShowZoom(points, hours, trendType) {
         }
 
         // 恢复趋势类型
-        let savedType = urlParams.get('type') || (!hasUrlParams && localStorage.getItem('trend.trendType')) || 'first_byte';
-        if (['count', 'rpm', 'first_byte', 'duration', 'tokens', 'cost'].includes(savedType)) {
-          window.currentTrendType = savedType;
+        window.currentTrendType = 'first_byte';
+        if (['count', 'rpm', 'first_byte', 'duration', 'tokens', 'cost'].includes(restoredFilters.trendType)) {
+          window.currentTrendType = restoredFilters.trendType;
         }
 
         // 恢复模型选择
-        window.currentModel = urlParams.get('model') || (!hasUrlParams && localStorage.getItem('trend.model')) || '';
+        window.currentModel = restoredFilters.model || '';
 
         // 恢复令牌选择
-        window.currentAuthToken = urlParams.get('token') || (!hasUrlParams && localStorage.getItem('trend.authToken')) || '';
+        window.currentAuthToken = restoredFilters.authToken || '';
+
+        // 恢复渠道类型
+        window.currentChannelType = restoredFilters.channelType || 'all';
 
         // 恢复渠道ID和渠道名
-        window.currentChannelId = urlParams.get('channel_id') || (!hasUrlParams && localStorage.getItem('trend.channelId')) || '';
-        window.currentChannelName = urlParams.get('channel_name_like') || (!hasUrlParams && localStorage.getItem('trend.channelName')) || '';
+        window.currentChannelId = restoredFilters.channelId || '';
+        window.currentChannelName = restoredFilters.channelName || '';
 
         // 同步到输入框
-        const idInput = document.getElementById('f_id');
-        if (idInput && window.currentChannelId) {
-          idInput.value = window.currentChannelId;
-        }
-        const nameInput = document.getElementById('f_name');
-        if (nameInput && window.currentChannelName) {
-          nameInput.value = window.currentChannelName;
-        }
+        window.applyFilterControlValues(
+          {
+            channelId: window.currentChannelId,
+            channelName: window.currentChannelName
+          },
+          {
+            channelId: 'f_id',
+            channelName: 'f_name'
+          }
+        );
       } catch (_) {}
     }
 
     function applyRangeUI() {
-      // 初始化时间范围选择器 (默认"本日")
-      if (window.initDateRangeSelector) {
-        initDateRangeSelector('f_hours', 'today', null);
-        // 设置已保存的值
-        document.getElementById('f_hours').value = window.currentRange;
-      }
+      window.initSavedDateRangeFilter({
+        selectId: 'f_hours',
+        defaultValue: 'today',
+        restoredValue: window.currentRange
+      });
 
       // 应用趋势类型UI
       const trendTypeGroup = document.getElementById('trend-type-group');

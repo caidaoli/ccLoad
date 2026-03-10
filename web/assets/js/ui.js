@@ -448,7 +448,6 @@
 // ============================================================
 (function () {
   let channelTypesCache = null;
-  const searchableSelectOutsideClickHandlers = new Map();
 
   // 复用公共工具（DRY）：真实实现由下方公共工具模块导出到 window.escapeHtml
   const escapeHtml = (str) => window.escapeHtml(str);
@@ -515,169 +514,11 @@
     `).join('');
   }
 
-  /**
-   * 渲染可搜索的渠道类型选择框
-   * @param {string} containerId - 容器元素ID
-   * @param {string} selectedValue - 选中的值（默认'anthropic'）
-   */
-  async function renderSearchableChannelTypeSelect(containerId, selectedValue = 'anthropic') {
-    const container = document.getElementById(containerId);
-    if (!container) {
-      console.error('Container element not found:', containerId);
-      return;
-    }
-
-    const prevOutsideClickHandler = searchableSelectOutsideClickHandlers.get(containerId);
-    if (prevOutsideClickHandler) {
-      document.removeEventListener('click', prevOutsideClickHandler);
-      searchableSelectOutsideClickHandlers.delete(containerId);
-    }
-
-    const types = await getChannelTypes();
-    const selectedType = types.find(t => t.value === selectedValue) || types[0];
-
-    // 创建可搜索下拉框结构
-    container.innerHTML = `
-      <div class="searchable-select" style="position: relative; width: 150px;">
-        <input type="text" class="searchable-select-input"
-               value="${escapeHtml(selectedType?.display_name || '')}"
-               data-value="${escapeHtml(selectedType?.value || '')}"
-               placeholder="${t('common.searchType')}"
-               autocomplete="off"
-               style="width: 100%; padding: 6px 8px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px;">
-        <div class="searchable-select-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; max-height: 200px; overflow-y: auto; background: #fff; border: 1px solid var(--color-border); border-radius: 6px; margin-top: 2px; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.15);"></div>
-      </div>
-    `;
-
-    const input = container.querySelector('.searchable-select-input');
-    const dropdown = container.querySelector('.searchable-select-dropdown');
-
-    // 渲染下拉选项
-    function renderOptions(filter = '') {
-      const filterLower = filter.toLowerCase();
-      const filtered = types.filter(t =>
-        t.display_name.toLowerCase().includes(filterLower) ||
-        t.value.toLowerCase().includes(filterLower)
-      );
-
-      dropdown.innerHTML = filtered.map(type => `
-        <div class="searchable-select-option"
-             data-value="${escapeHtml(type.value)}"
-             data-display="${escapeHtml(type.display_name)}"
-             title="${escapeHtml(type.description)}"
-             style="padding: 8px 10px; cursor: pointer; font-size: 13px; ${type.value === input.dataset.value ? 'background: var(--color-bg-tertiary);' : ''}">
-          ${escapeHtml(type.display_name)}
-        </div>
-      `).join('');
-
-      // 绑定选项点击事件
-      dropdown.querySelectorAll('.searchable-select-option').forEach(opt => {
-        opt.addEventListener('click', () => {
-          input.value = opt.dataset.display;
-          input.dataset.value = opt.dataset.value;
-          dropdown.style.display = 'none';
-        });
-        opt.addEventListener('mouseenter', () => {
-          opt.style.background = 'var(--color-bg-tertiary)';
-        });
-        opt.addEventListener('mouseleave', () => {
-          opt.style.background = opt.dataset.value === input.dataset.value ? 'var(--color-bg-tertiary)' : '';
-        });
-      });
-    }
-
-    // 输入框事件
-    input.addEventListener('focus', () => {
-      renderOptions(input.value);
-      dropdown.style.display = 'block';
-    });
-
-    input.addEventListener('input', () => {
-      renderOptions(input.value);
-      dropdown.style.display = 'block';
-    });
-
-    // 点击外部关闭
-    const outsideClickHandler = (e) => {
-      const currentContainer = document.getElementById(containerId);
-      if (!currentContainer) {
-        document.removeEventListener('click', outsideClickHandler);
-        searchableSelectOutsideClickHandlers.delete(containerId);
-        return;
-      }
-
-      if (!currentContainer.contains(e.target)) {
-        dropdown.style.display = 'none';
-        // 恢复显示已选择的值
-        const selected = types.find(t => t.value === input.dataset.value);
-        if (selected) input.value = selected.display_name;
-      }
-    };
-
-    searchableSelectOutsideClickHandlers.set(containerId, outsideClickHandler);
-    document.addEventListener('click', outsideClickHandler);
-  }
-
-  /**
-   * 获取可搜索选择框的当前值
-   * @param {string} containerId - 容器元素ID
-   * @returns {string} 当前选中的值
-   */
-  function getSearchableSelectValue(containerId) {
-    const container = document.getElementById(containerId);
-    const input = container?.querySelector('.searchable-select-input');
-    return input?.dataset.value || '';
-  }
-
-  /**
-   * 渲染渠道类型Tab页（包含"全部"选项）
-   * @param {string} containerId - 容器元素ID
-   * @param {Function} onTabChange - tab切换回调函数
-   * @param {string} initialType - 初始选中的类型（可选，默认选中第一个）
-   */
-  async function renderChannelTypeTabs(containerId, onTabChange, initialType = null) {
-    const container = document.getElementById(containerId);
-    if (!container) {
-      console.error('Container element not found:', containerId);
-      return;
-    }
-
-    const types = await getChannelTypes();
-
-    // 添加"全部"选项到末尾
-    const allTab = { value: 'all', display_name: t('common.all') };
-    const allTypes = [...types, allTab];
-
-    // 确定初始选中的类型
-    const activeType = initialType || (types.length > 0 ? types[0].value : 'all');
-
-    container.innerHTML = allTypes.map((type) => `
-      <button class="channel-tab ${type.value === activeType ? 'active' : ''}"
-              data-type="${escapeHtml(type.value)}"
-              title="${escapeHtml(type.description || t('common.showAllTypes'))}">
-        ${escapeHtml(type.display_name)}
-      </button>
-    `).join('');
-
-    // 绑定点击事件
-    container.querySelectorAll('.channel-tab').forEach(tab => {
-      tab.addEventListener('click', () => {
-        const type = tab.dataset.type;
-        container.querySelectorAll('.channel-tab').forEach(t => t.classList.remove('active'));
-        tab.classList.add('active');
-        if (onTabChange) onTabChange(type);
-      });
-    });
-  }
-
   // 导出到全局作用域
   window.ChannelTypeManager = {
     getChannelTypes,
     renderChannelTypeRadios,
-    renderChannelTypeSelect,
-    renderSearchableChannelTypeSelect,
-    getSearchableSelectValue,
-    renderChannelTypeTabs
+    renderChannelTypeSelect
   };
 })();
 
@@ -701,6 +542,102 @@
       clearTimeout(timeout);
       timeout = setTimeout(later, wait);
     };
+  }
+
+  function bindFilterApplyInputs(options = {}) {
+    const apply = typeof options.apply === 'function' ? options.apply : null;
+    if (!apply) return;
+
+    const debounceMs = Number.isFinite(options.debounceMs) ? options.debounceMs : 500;
+    const debouncedApply = debounce(apply, debounceMs);
+
+    (Array.isArray(options.debounceInputIds) ? options.debounceInputIds : []).forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('input', debouncedApply);
+    });
+
+    (Array.isArray(options.enterInputIds) ? options.enterInputIds : []).forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          apply();
+        }
+      });
+    });
+  }
+
+  function getFilterControlConfig(config) {
+    if (typeof config === 'string') {
+      return { id: config, defaultValue: '', trim: false };
+    }
+    return {
+      id: config && config.id ? config.id : '',
+      defaultValue: config && config.defaultValue !== undefined ? config.defaultValue : '',
+      trim: Boolean(config && config.trim)
+    };
+  }
+
+  function readFilterControlValues(fieldMap = {}) {
+    const values = {};
+    Object.entries(fieldMap).forEach(([key, config]) => {
+      const { id, defaultValue, trim } = getFilterControlConfig(config);
+      const rawValue = document.getElementById(id)?.value;
+      const normalizedValue = typeof rawValue === 'string' && trim ? rawValue.trim() : rawValue;
+      values[key] = normalizedValue || defaultValue;
+    });
+    return values;
+  }
+
+  function applyFilterControlValues(values = {}, fieldMap = {}) {
+    Object.entries(fieldMap).forEach(([key, config]) => {
+      const { id, defaultValue } = getFilterControlConfig(config);
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.value = values[key] || defaultValue;
+    });
+  }
+
+  function initSavedDateRangeFilter(options = {}) {
+    if (typeof window.initDateRangeSelector !== 'function') return null;
+
+    const selectId = options.selectId;
+    if (!selectId) return null;
+
+    const defaultValue = typeof options.defaultValue === 'string' && options.defaultValue
+      ? options.defaultValue
+      : 'today';
+    const restoredValue = typeof options.restoredValue === 'string' && options.restoredValue
+      ? options.restoredValue
+      : defaultValue;
+    const onChange = typeof options.onChange === 'function' ? options.onChange : () => {};
+
+    window.initDateRangeSelector(selectId, defaultValue, onChange);
+
+    const el = document.getElementById(selectId);
+    if (el) {
+      el.value = restoredValue;
+    }
+    return el;
+  }
+
+  async function initAuthTokenFilter(options = {}) {
+    if (typeof window.loadAuthTokensIntoSelect !== 'function') return [];
+
+    const selectId = options.selectId;
+    if (!selectId) return [];
+
+    const tokens = await window.loadAuthTokensIntoSelect(selectId, options.loadOptions);
+    const el = document.getElementById(selectId);
+    if (!el) return tokens;
+
+    el.value = options.value || '';
+    if (typeof options.onChange === 'function') {
+      el.addEventListener('change', options.onChange);
+    }
+
+    return tokens;
   }
 
   /**
@@ -755,6 +692,11 @@
 
   // 导出到全局作用域
   window.debounce = debounce;
+  window.bindFilterApplyInputs = bindFilterApplyInputs;
+  window.readFilterControlValues = readFilterControlValues;
+  window.applyFilterControlValues = applyFilterControlValues;
+  window.initSavedDateRangeFilter = initSavedDateRangeFilter;
+  window.initAuthTokenFilter = initAuthTokenFilter;
   window.formatCost = formatCost;
   window.formatNumber = formatNumber;
   window.getRpmColor = getRpmColor;

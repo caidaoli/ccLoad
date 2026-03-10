@@ -13,6 +13,7 @@
   <script defer src="/web/assets/locales/zh-CN.js?v=__VERSION__"></script>
   <script defer src="/web/assets/locales/en.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/i18n.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/date-range-selector.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/ui.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/template-engine.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/tokens.js?v=__VERSION__"></script>
@@ -40,15 +41,7 @@
         <!-- 时间范围选择器 -->
         <section class="mb-2">
           <div class="time-range-container">
-            <div class="time-range-selector">
-              <button class="time-range-btn active" data-range="today" data-i18n="index.timeRange.today">本日</button>
-              <button class="time-range-btn" data-range="yesterday" data-i18n="index.timeRange.yesterday">昨日</button>
-              <button class="time-range-btn" data-range="day_before_yesterday" data-i18n="index.timeRange.dayBeforeYesterday">前日</button>
-              <button class="time-range-btn" data-range="this_week" data-i18n="index.timeRange.thisWeek">本周</button>
-              <button class="time-range-btn" data-range="this_month" data-i18n="index.timeRange.thisMonth">本月</button>
-              <button class="time-range-btn" data-range="last_month" data-i18n="index.timeRange.lastMonth">上月</button>
-              <button class="time-range-btn" data-range="all" data-i18n="common.all">全部</button>
-            </div>
+            <div id="tokens-time-range" class="time-range-selector"></div>
           </div>
         </section>
 

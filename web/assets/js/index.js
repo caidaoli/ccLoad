@@ -180,11 +180,32 @@
       if (window.i18n) window.i18n.translatePage();
       if (window.initTopbar) initTopbar('index');
 
+      const renderTimeRangeSelector = () => {
+        if (typeof window.renderDateRangeButtons === 'function') {
+          window.renderDateRangeButtons('index-time-range', {
+            values: ['today', 'yesterday', 'day_before_yesterday', 'this_week', 'last_week', 'this_month', 'last_month'],
+            activeValue: currentTimeRange
+          });
+        }
+      };
+
+      renderTimeRangeSelector();
+
       // 初始化时间范围选择器
       window.initTimeRangeSelector((range) => {
         currentTimeRange = range;
         loadStats();
       });
+
+      if (window.i18n && typeof window.i18n.onLocaleChange === 'function') {
+        window.i18n.onLocaleChange(() => {
+          renderTimeRangeSelector();
+          window.initTimeRangeSelector((range) => {
+            currentTimeRange = range;
+            loadStats();
+          });
+        });
+      }
 
       // 加载统计数据
       loadStats();

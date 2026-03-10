@@ -16,7 +16,7 @@
 
   // 时间范围预设 (key → i18n key)
   // key与后端GetTimeRange()支持的range参数一致
-  const DATE_RANGE_KEYS = [
+  const BASE_DATE_RANGE_PRESETS = [
     { value: 'today', i18nKey: 'index.timeRange.today', fallback: 'Today' },
     { value: 'yesterday', i18nKey: 'index.timeRange.yesterday', fallback: 'Yesterday' },
     { value: 'day_before_yesterday', i18nKey: 'index.timeRange.dayBeforeYesterday', fallback: 'Day Before' },
@@ -25,6 +25,48 @@
     { value: 'this_month', i18nKey: 'index.timeRange.thisMonth', fallback: 'This Month' },
     { value: 'last_month', i18nKey: 'index.timeRange.lastMonth', fallback: 'Last Month' }
   ];
+
+  const ALL_DATE_RANGE_PRESET = { value: 'all', i18nKey: 'common.all', fallback: 'All' };
+
+  function buildPresetMap(includeAll) {
+    const presets = includeAll
+      ? [...BASE_DATE_RANGE_PRESETS, ALL_DATE_RANGE_PRESET]
+      : BASE_DATE_RANGE_PRESETS;
+    return new Map(presets.map((preset) => [preset.value, preset]));
+  }
+
+  function getDateRangePresets(options = {}) {
+    const includeAll = options.includeAll === true;
+    const values = Array.isArray(options.values) && options.values.length > 0
+      ? options.values
+      : (includeAll
+          ? [...BASE_DATE_RANGE_PRESETS.map((preset) => preset.value), ALL_DATE_RANGE_PRESET.value]
+          : BASE_DATE_RANGE_PRESETS.map((preset) => preset.value));
+    const presetMap = buildPresetMap(includeAll || values.includes(ALL_DATE_RANGE_PRESET.value));
+
+    return values
+      .map((value) => presetMap.get(value))
+      .filter(Boolean)
+      .map((preset) => ({ ...preset }));
+  }
+
+  function renderDateRangeButtons(containerId, options = {}) {
+    const container = document.getElementById(containerId);
+    if (!container) {
+      console.error(`Date range button render failed: element #${containerId} not found`);
+      return;
+    }
+
+    const presets = getDateRangePresets({
+      includeAll: options.includeAll === true,
+      values: options.values
+    });
+    const activeValue = options.activeValue || 'today';
+
+    container.innerHTML = presets.map((preset) => `
+      <button class="time-range-btn${preset.value === activeValue ? ' active' : ''}" data-range="${preset.value}">${t(preset.i18nKey, preset.fallback)}</button>
+    `).join('');
+  }
 
 
   /**
@@ -44,14 +86,14 @@
     function renderOptions() {
       const currentValue = selectEl.value;
       selectEl.innerHTML = '';
-      DATE_RANGE_KEYS.forEach(range => {
+      getDateRangePresets().forEach(range => {
         const option = document.createElement('option');
         option.value = range.value;
         option.textContent = t(range.i18nKey, range.fallback);
         selectEl.appendChild(option);
       });
       // 恢复之前的选择
-      if (currentValue && DATE_RANGE_KEYS.some(r => r.value === currentValue)) {
+      if (currentValue && getDateRangePresets().some(r => r.value === currentValue)) {
         selectEl.value = currentValue;
       }
     }
@@ -63,7 +105,7 @@
     window.i18n.onLocaleChange(renderOptions);
 
     // 设置默认值
-    const validDefault = DATE_RANGE_KEYS.some(r => r.value === defaultRange) ? defaultRange : 'today';
+    const validDefault = getDateRangePresets().some(r => r.value === defaultRange) ? defaultRange : 'today';
     selectEl.value = validDefault;
 
     // 绑定change事件
@@ -80,7 +122,7 @@
    * @returns {string} 显示标签
    */
   window.getRangeLabel = function(rangeKey) {
-    const range = DATE_RANGE_KEYS.find(r => r.value === rangeKey);
+    const range = getDateRangePresets({ includeAll: true }).find(r => r.value === rangeKey);
     return range ? t(range.i18nKey, range.fallback) : t('index.timeRange.today', 'Today');
   };
 
@@ -97,9 +139,13 @@
       'this_week': 168,
       'last_week': 168,
       'this_month': 720,
-      'last_month': 720
+      'last_month': 720,
+      'all': 24
     };
     return hoursMap[rangeKey] || 24;
   };
+
+  window.getDateRangePresets = getDateRangePresets;
+  window.renderDateRangeButtons = renderDateRangeButtons;
 
 })(window);
