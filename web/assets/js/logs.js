@@ -385,7 +385,9 @@ function renderActiveRequests(activeRequests) {
 
 // ✅ 动态计算列数（避免硬编码维护成本）
 function getTableColspan() {
-  const headerCells = document.querySelectorAll('thead th');
+  const table = document.getElementById('tbody')?.closest('table')
+    || document.querySelector('.logs-table');
+  const headerCells = table ? table.querySelectorAll('thead th') : [];
   return headerCells.length || 13; // fallback到13列（向后兼容）
 }
 
