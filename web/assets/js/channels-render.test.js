@@ -12,6 +12,13 @@ function loadRenderHelpers() {
         if (key === 'channels.table.priority') return '优先级';
         if (key === 'channels.stats.healthScoreLabel') return '健康度';
         if (key === 'channels.stats.successRate') return `成功率 ${params.rate}`;
+        if (key === 'channels.stats.firstByte') return '首字';
+        if (key === 'channels.stats.calls') return '调用';
+        if (key === 'stats.tooltipDuration') return '耗时';
+        if (key === 'stats.unitTimes') return '次';
+        if (key === 'common.success') return '成功';
+        if (key === 'common.failed') return '失败';
+        if (key === 'common.seconds') return '秒';
         return key;
       }
     },
@@ -48,4 +55,24 @@ test('buildEffectivePriorityHtml 在健康度等于优先级时只显示一次�
   assert.equal((html.match(/ch-priority-row/g) || []).length, 1);
   assert.equal((html.match(/>100</g) || []).length, 1);
   assert.ok(!html.includes('ch-priority-health'));
+});
+
+test('buildChannelTimingHtml 渲染耗时和带单位的调用汇总', () => {
+  const { buildChannelTimingHtml } = loadRenderHelpers();
+
+  const html = buildChannelTimingHtml({
+    avgFirstByteTimeSeconds: 2.3,
+    avgDurationSeconds: 22.23,
+    success: 17,
+    error: 3
+  });
+
+  assert.match(html, /首字/);
+  assert.match(html, /耗时/);
+  assert.match(html, /调用/);
+  assert.match(html, />2\.30秒</);
+  assert.match(html, />22\.23秒</);
+  assert.match(html, /17<\/span>\/<span style="color: var\(--error-600\);">3<\/span>次/);
+  assert.doesNotMatch(html, />成功</);
+  assert.doesNotMatch(html, />失败</);
 });

@@ -158,6 +158,33 @@ function buildChannelHealthIndicator(timeline, currentRate) {
   return `<div class="health-indicator"><span class="health-track">${blocks.join('')}</span><span class="health-rate" style="color: ${rateColor}">${ratePercent}%</span></div>`;
 }
 
+function buildChannelTimingHtml(stats) {
+  if (!stats) return '';
+
+  const avgFirstByte = stats.avgFirstByteTimeSeconds || 0;
+  const avgDuration = stats.avgDurationSeconds || 0;
+  const successCount = Number.isFinite(Number(stats.success)) ? Number(stats.success) : 0;
+  const failureCount = Number.isFinite(Number(stats.error)) ? Number(stats.error) : 0;
+  const durationColorBase = avgDuration > 0 ? avgDuration : avgFirstByte;
+  const durationColor = (() => {
+    if (durationColorBase <= 0) return 'var(--neutral-600)';
+    if (durationColorBase <= 5) return 'var(--success-600)';
+    if (durationColorBase <= 30) return 'var(--warning-600)';
+    return 'var(--error-600)';
+  })();
+
+  const rows = [];
+  if (avgFirstByte > 0) {
+    rows.push(`<div class="ch-timing-row"><span class="ch-timing-label">${window.t('channels.stats.firstByte')}</span><span class="ch-timing-value" style="color: ${durationColor};">${avgFirstByte.toFixed(2)}${window.t('common.seconds')}</span></div>`);
+  }
+  if (avgDuration > 0) {
+    rows.push(`<div class="ch-timing-row"><span class="ch-timing-label">${window.t('stats.tooltipDuration')}</span><span class="ch-timing-value" style="color: ${durationColor};">${avgDuration.toFixed(2)}${window.t('common.seconds')}</span></div>`);
+  }
+  rows.push(`<div class="ch-timing-row"><span class="ch-timing-label">${window.t('channels.stats.calls')}</span><span class="ch-timing-value"><span style="color: var(--success-600);">${successCount}</span>/<span style="color: var(--error-600);">${failureCount}</span>${window.t('stats.unitTimes')}</span></div>`);
+
+  return rows.length > 0 ? `<div class="ch-timing">${rows.join('')}</div>` : '';
+}
+
 /**
  * 使用模板引擎创建渠道表格行
  * @param {Object} channel - 渠道数据
@@ -183,24 +210,7 @@ function createChannelCard(channel) {
     ? channel.models.map(m => m.model || m).join(', ')
     : '';
 
-  // 耗时文本：无统计数据时留空，有数据时仅显示实际存在的指标
-  const avgFirstByte = stats ? (stats.avgFirstByteTimeSeconds || 0) : 0;
-  const avgDuration = stats ? (stats.avgDurationSeconds || 0) : 0;
-  const durationColorBase = avgDuration > 0 ? avgDuration : avgFirstByte;
-  const durationColor = (() => {
-    if (durationColorBase <= 0) return 'var(--neutral-600)';
-    if (durationColorBase <= 5) return 'var(--success-600)';
-    if (durationColorBase <= 30) return 'var(--warning-600)';
-    return 'var(--error-600)';
-  })();
-  const durationParts = [];
-  if (avgFirstByte > 0) {
-    durationParts.push(`<div class="ch-timing-row"><span class="ch-timing-label">${window.t('channels.stats.firstByte')}</span><span class="ch-timing-value" style="color: ${durationColor};">${avgFirstByte.toFixed(2)}${window.t('common.seconds')}</span></div>`);
-  }
-  if (avgDuration > 0) {
-    durationParts.push(`<div class="ch-timing-row"><span class="ch-timing-label">${window.t('stats.tooltipDuration')}</span><span class="ch-timing-value" style="color: ${durationColor};">${avgDuration.toFixed(2)}${window.t('common.seconds')}</span></div>`);
-  }
-  const durationHtml = durationParts.length > 0 ? `<div class="ch-timing">${durationParts.join('')}</div>` : '';
+  const durationHtml = buildChannelTimingHtml(stats);
 
   // 消耗HTML：仅保留 token 相关消耗项
   let usageHtml = '';
