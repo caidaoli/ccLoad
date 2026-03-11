@@ -2,9 +2,27 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 
 const html = fs.readFileSync(path.join(__dirname, '..', '..', 'logs.html'), 'utf8');
 const css = fs.readFileSync(path.join(__dirname, '..', 'css', 'logs.css'), 'utf8');
+const pageFiltersSource = fs.readFileSync(path.join(__dirname, 'page-filters.js'), 'utf8');
+
+function renderLogsFilters() {
+  const sandbox = {
+    console,
+    window: {},
+    document: {
+      querySelectorAll() {
+        return [];
+      }
+    }
+  };
+
+  vm.createContext(sandbox);
+  vm.runInContext(pageFiltersSource, sandbox);
+  return sandbox.window.PageFilters.renderLayout('logs');
+}
 
 test('日志页底部分页使用专用紧凑样式类', () => {
   assert.match(html, /class="pagination-controls\s+logs-pagination-controls"/);
@@ -37,11 +55,13 @@ test('日志页窄屏分页覆盖全局纵向堆叠规则', () => {
   assert.ok(mobileMatch, '缺少日志页窄屏分页覆盖样式');
 });
 
-test('日志页顶部筛选栏使用页面专用布局类', () => {
-  assert.match(html, /class="filter-controls\s+logs-filter-controls"/);
-  assert.match(html, /class="filter-group\s+logs-filter-group"/);
-  assert.match(html, /class="filter-info\s+logs-filter-info"/);
-  assert.match(html, /<div class="logs-filter-actions">[\s\S]*id="btn_filter"/);
+test('日志页顶部筛选栏通过共享渲染器输出页面专用布局类', () => {
+  const filtersHtml = renderLogsFilters();
+  assert.match(html, /data-page-filters="logs"/);
+  assert.match(filtersHtml, /class="filter-controls\s+logs-filter-controls"/);
+  assert.match(filtersHtml, /class="filter-group\s+logs-filter-group"/);
+  assert.match(filtersHtml, /class="filter-info\s+logs-filter-info"/);
+  assert.match(filtersHtml, /<div class="logs-filter-actions">[\s\S]*id="btn_filter"/);
 });
 
 test('日志页窄屏筛选栏压缩标签和按钮布局', () => {

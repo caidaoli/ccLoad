@@ -376,6 +376,10 @@ body {
   padding-top: var(--topbar-height);
 }
 
+.top-layout .main-content.index-main-content {
+  padding-top: calc(var(--topbar-height) + 10px);
+}
+
 .topbar {
   position: fixed;
   top: 0;

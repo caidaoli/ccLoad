@@ -22,9 +22,7 @@
   <div class="app-container">
     <main class="main-content">
       <div class="content-area">
-         <header class="mb-2">
-        </header>
-        <header class="mb-4">
+        <header class="mt-2 mb-4">
           <div class="glass-card" style="padding: var(--space-6);">
             <div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;">
               <div>
@@ -70,8 +68,8 @@
   <div id="createModal" class="modal">
     <div class="modal-content">
       <div class="modal-header">
-        <h2 style="margin: 0; font-size: 18px;" data-i18n="tokens.createModalTitle">创建API令牌</h2>
-        <button onclick="closeCreateModal()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: var(--neutral-500);">&times;</button>
+        <h2 class="modal-title" data-i18n="tokens.createModalTitle">创建API令牌</h2>
+        <button type="button" class="close-btn" aria-label="Close" onclick="closeCreateModal()">&times;</button>
       </div>
       <div class="modal-body">
         <div class="form-group">
@@ -81,14 +79,7 @@
 
         <div class="form-group">
           <label class="form-label" data-i18n="tokens.expiryLabel">过期时间</label>
-          <select id="tokenExpiry" class="form-input">
-            <option value="never" data-i18n="tokens.expiryNever">永不过期</option>
-            <option value="30d" data-i18n="tokens.expiry30d">30天后过期</option>
-            <option value="90d" data-i18n="tokens.expiry90d">90天后过期</option>
-            <option value="180d" data-i18n="tokens.expiry180d">180天后过期</option>
-            <option value="365d" data-i18n="tokens.expiry365d">1年后过期</option>
-            <option value="custom" data-i18n="tokens.expiryCustom">自定义...</option>
-          </select>
+          <select id="tokenExpiry" class="form-input" data-expiry-select></select>
         </div>
 
         <div id="customExpiryContainer" style="display: none;" class="form-group">
@@ -122,8 +113,8 @@
   <div id="tokenResultModal" class="modal">
     <div class="modal-content">
       <div class="modal-header">
-        <h2 style="margin: 0; font-size: 18px;" data-i18n="tokens.resultModalTitle">令牌创建成功</h2>
-        <button onclick="closeTokenResultModal()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: var(--neutral-500);">&times;</button>
+        <h2 class="modal-title" data-i18n="tokens.resultModalTitle">令牌创建成功</h2>
+        <button type="button" class="close-btn" aria-label="Close" onclick="closeTokenResultModal()">&times;</button>
       </div>
       <div class="modal-body">
         <div style="background: var(--warning-50); border: 1px solid var(--warning-200); border-radius: 8px; padding: 16px; margin-bottom: 16px;">
@@ -153,8 +144,8 @@
   <div id="editModal" class="modal">
     <div class="modal-content" style="height: 680px; display: flex; flex-direction: column;">
       <div class="modal-header">
-        <h2 style="margin: 0; font-size: 18px;" data-i18n="tokens.editModalTitle">编辑令牌</h2>
-        <button onclick="closeEditModal()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: var(--neutral-500);">&times;</button>
+        <h2 class="modal-title" data-i18n="tokens.editModalTitle">编辑令牌</h2>
+        <button type="button" class="close-btn" aria-label="Close" onclick="closeEditModal()">&times;</button>
       </div>
       <div class="modal-body" style="padding-top: 12px; padding-bottom: 12px; flex: 1; display: flex; flex-direction: column; overflow: hidden;">
         <input type="hidden" id="editTokenId">
@@ -166,14 +157,7 @@
 
         <div class="form-group" style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
           <label class="form-label" style="margin: 0; white-space: nowrap; min-width: 60px;" data-i18n="tokens.expiryLabel">过期时间</label>
-          <select id="editTokenExpiry" class="form-input" style="flex: 1;">
-            <option value="never" data-i18n="tokens.expiryNever">永不过期</option>
-            <option value="30d" data-i18n="tokens.expiry30d">30天后过期</option>
-            <option value="90d" data-i18n="tokens.expiry90d">90天后过期</option>
-            <option value="180d" data-i18n="tokens.expiry180d">180天后过期</option>
-            <option value="365d" data-i18n="tokens.expiry365d">1年后过期</option>
-            <option value="custom" data-i18n="tokens.expiryCustom">自定义...</option>
-          </select>
+          <select id="editTokenExpiry" class="form-input" style="flex: 1;" data-expiry-select></select>
         </div>
 
         <div id="editCustomExpiryContainer" style="display: none; margin-bottom: 12px;" class="form-group">
@@ -247,8 +231,8 @@
   <div id="modelSelectModal" class="modal">
     <div class="modal-content" style="max-width: 500px;">
       <div class="modal-header">
-        <h2 style="margin: 0; font-size: 18px;" data-i18n="tokens.selectModelTitle">选择模型</h2>
-        <button onclick="closeModelSelectModal()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: var(--neutral-500);">&times;</button>
+        <h2 class="modal-title" data-i18n="tokens.selectModelTitle">选择模型</h2>
+        <button type="button" class="close-btn" aria-label="Close" onclick="closeModelSelectModal()">&times;</button>
       </div>
       <div class="modal-body">
         <div class="form-group">
@@ -279,8 +263,8 @@
   <div id="modelImportModal" class="modal">
     <div class="modal-content" style="max-width: 550px;">
       <div class="modal-header">
-        <h2 style="margin: 0; font-size: 18px;" data-i18n="tokens.importModelTitle">手动输入模型</h2>
-        <button onclick="closeModelImportModal()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: var(--neutral-500);">&times;</button>
+        <h2 class="modal-title" data-i18n="tokens.importModelTitle">手动输入模型</h2>
+        <button type="button" class="close-btn" aria-label="Close" onclick="closeModelImportModal()">&times;</button>
       </div>
       <div class="modal-body">
         <div class="form-group" style="margin-bottom: 12px;">
@@ -308,6 +292,15 @@
     </div>
   </div>
 
+  <template id="tpl-token-expiry-options">
+    <option value="never" data-i18n="tokens.expiryNever">永不过期</option>
+    <option value="30d" data-i18n="tokens.expiry30d">30天后过期</option>
+    <option value="90d" data-i18n="tokens.expiry90d">90天后过期</option>
+    <option value="180d" data-i18n="tokens.expiry180d">180天后过期</option>
+    <option value="365d" data-i18n="tokens.expiry365d">1年后过期</option>
+    <option value="custom" data-i18n="tokens.expiryCustom">自定义...</option>
+  </template>
+
   <!-- 令牌行模板 -->
   <template id="tpl-token-row">
     <tr data-token-id="{{id}}">
@@ -330,11 +323,6 @@
         <button class="btn btn-danger btn-delete" style="padding: 4px 12px; font-size: 13px;" data-i18n="common.delete">删除</button>
       </td>
     </tr>
-  </template>
-
-  <!-- 统计徽章组件(可复用) -->
-  <template id="tpl-stats-badge">
-    <span class="stats-badge" style="{{style}}" title="{{title}}">{{text}}</span>
   </template>
 
 </body>

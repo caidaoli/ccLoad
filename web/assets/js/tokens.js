@@ -35,7 +35,23 @@
       modalStack.pop();
     }
 
-	    document.addEventListener('DOMContentLoaded', () => {
+    function initExpirySelects() {
+      const template = document.getElementById('tpl-token-expiry-options');
+      if (!template) return;
+
+      const optionsHtml = template.innerHTML.trim();
+      document.querySelectorAll('[data-expiry-select]').forEach((select) => {
+        const currentValue = select.value;
+        select.innerHTML = optionsHtml;
+        if (currentValue) {
+          select.value = currentValue;
+        }
+      });
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      initExpirySelects();
+
       const renderTimeRangeSelector = () => {
         if (typeof window.renderDateRangeButtons === 'function') {
           window.renderDateRangeButtons('tokens-time-range', {
@@ -48,11 +64,11 @@
 
       renderTimeRangeSelector();
 
-	      // 初始化时间范围选择器
-	      window.initTimeRangeSelector((range) => {
-	        currentTimeRange = range;
-	        loadTokens();
-	      });
+      // 初始化时间范围选择器
+      window.initTimeRangeSelector((range) => {
+        currentTimeRange = range;
+        loadTokens();
+      });
 
       // 加载令牌列表(默认显示本日统计)
       loadTokens();
@@ -72,16 +88,16 @@
           e.target.value === 'custom' ? 'block' : 'none';
       });
 
-	      // 监听语言切换事件，重新渲染令牌列表
-	      window.i18n.onLocaleChange(() => {
-	        renderTimeRangeSelector();
-	        window.initTimeRangeSelector((range) => {
-	          currentTimeRange = range;
-	          loadTokens();
-	        });
-	        renderTokens();
-	      });
-	    });
+      // 监听语言切换事件，重新渲染令牌列表
+      window.i18n.onLocaleChange(() => {
+        renderTimeRangeSelector();
+        window.initTimeRangeSelector((range) => {
+          currentTimeRange = range;
+          loadTokens();
+        });
+        renderTokens();
+      });
+    });
 
     /**
      * 初始化事件委托(统一处理表格内按钮点击)
