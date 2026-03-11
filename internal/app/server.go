@@ -453,6 +453,26 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		c.Next()
 	})
 
+	// 统一处理跨域请求，预检请求不应进入鉴权链路。
+	r.Use(func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+
+		allowHeaders := c.GetHeader("Access-Control-Request-Headers")
+		if allowHeaders == "" {
+			allowHeaders = "Authorization, Content-Type, X-API-Key, x-goog-api-key"
+		}
+		c.Header("Access-Control-Allow-Headers", allowHeaders)
+		c.Header("Access-Control-Max-Age", "86400")
+
+		if c.Request.Method == http.MethodOptions {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+
+		c.Next()
+	})
+
 	// 公开访问的API（代理服务）- 需要 API 认证
 	// 透明代理：统一处理所有 /v1/* 端点，支持所有HTTP方法
 	apiV1 := r.Group("/v1")

@@ -59,6 +59,23 @@ type URLSelector struct {
 	nextCleanup     time.Time
 }
 
+func normalizeLatencyMS(ttfb time.Duration) float64 {
+	ms := float64(ttfb) / float64(time.Millisecond)
+	if ms <= 0 || math.IsNaN(ms) || math.IsInf(ms, 0) {
+		return 0.1
+	}
+	return ms
+}
+
+func (s *URLSelector) upsertLatencyLocked(key urlKey, ms float64, now time.Time) {
+	if e, ok := s.latencies[key]; ok {
+		e.value = s.alpha*ms + (1-s.alpha)*e.value
+		e.lastSeen = now
+		return
+	}
+	s.latencies[key] = &ewmaValue{value: ms, lastSeen: now}
+}
+
 // NewURLSelector 创建URL选择器
 func NewURLSelector() *URLSelector {
 	now := time.Now()
@@ -251,10 +268,7 @@ func (s *URLSelector) SelectURL(channelID int64, urls []string) (string, int) {
 // RecordLatency 记录URL的首字节时间，更新EWMA
 func (s *URLSelector) RecordLatency(channelID int64, url string, ttfb time.Duration) {
 	key := urlKey{channelID: channelID, url: url}
-	ms := float64(ttfb) / float64(time.Millisecond)
-	if ms <= 0 || math.IsNaN(ms) || math.IsInf(ms, 0) {
-		ms = 0.1
-	}
+	ms := normalizeLatencyMS(ttfb)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -262,12 +276,7 @@ func (s *URLSelector) RecordLatency(channelID int64, url string, ttfb time.Durat
 	now := time.Now()
 	s.maybeCleanupLocked(now)
 
-	if e, ok := s.latencies[key]; ok {
-		e.value = s.alpha*ms + (1-s.alpha)*e.value
-		e.lastSeen = now
-	} else {
-		s.latencies[key] = &ewmaValue{value: ms, lastSeen: now}
-	}
+	s.upsertLatencyLocked(key, ms, now)
 
 	// 成功请求：清除冷却状态，立即恢复可用
 	delete(s.cooldowns, key)
@@ -543,7 +552,12 @@ func (s *URLSelector) ProbeURLs(parentCtx context.Context, channelID int64, urls
 		if latency <= 0 {
 			latency = time.Millisecond
 		}
-		s.RecordLatency(channelID, r.url, latency)
+		key := urlKey{channelID: channelID, url: r.url}
+		s.mu.Lock()
+		now := time.Now()
+		s.maybeCleanupLocked(now)
+		s.upsertLatencyLocked(key, normalizeLatencyMS(latency), now)
+		s.mu.Unlock()
 		probed++
 	}
 

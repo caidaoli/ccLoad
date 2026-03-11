@@ -352,6 +352,24 @@ func TestURLSelector_ProbeURLs_TimeoutCoolsPendingURLs(t *testing.T) {
 	}
 }
 
+func TestURLSelector_ProbeURLs_SuccessDoesNotClearExistingCooldown(t *testing.T) {
+	sel := NewURLSelector()
+	sel.probeDial = func(context.Context, string, string) (net.Conn, error) {
+		conn, peer := net.Pipe()
+		_ = peer.Close()
+		return conn, nil
+	}
+
+	urls := []string{"https://a.example", "https://b.example"}
+	sel.CooldownURL(1, "https://b.example")
+
+	sel.ProbeURLs(context.Background(), 1, urls)
+
+	if !sel.IsCooledDown(1, "https://b.example") {
+		t.Fatalf("expected successful probe to preserve existing cooldown")
+	}
+}
+
 func TestURLSelector_ProbeURLs_SkipsSingleURL(t *testing.T) {
 	sel := NewURLSelector()
 	// 单URL不应触发探测

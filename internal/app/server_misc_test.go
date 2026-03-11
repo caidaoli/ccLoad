@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -10,6 +11,100 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestServer_SetupRoutes_CORSPreflightBypassesAuth(t *testing.T) {
+	srv := newInMemoryServer(t)
+
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	srv.SetupRoutes(engine)
+
+	req := httptest.NewRequest(http.MethodOptions, "/v1/chat/completions", nil)
+	req.Header.Set("Origin", "https://example.com")
+	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	req.Header.Set("Access-Control-Request-Headers", "authorization,content-type")
+
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusNoContent, w.Body.String())
+	}
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("allow-origin=%q, want *", got)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Methods"); got == "" {
+		t.Fatal("allow-methods header missing")
+	}
+	if got := w.Header().Get("Access-Control-Allow-Headers"); got != "authorization,content-type" {
+		t.Fatalf("allow-headers=%q, want authorization,content-type", got)
+	}
+}
+
+func TestServer_SetupRoutes_CORSHeadersOnAuthFailure(t *testing.T) {
+	srv := newInMemoryServer(t)
+
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	srv.SetupRoutes(engine)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("Origin", "https://example.com")
+
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("allow-origin=%q, want *", got)
+	}
+}
+
+func TestServer_SetupRoutes_V1BetaCORSPreflightBypassesAuth(t *testing.T) {
+	srv := newInMemoryServer(t)
+
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	srv.SetupRoutes(engine)
+
+	req := httptest.NewRequest(http.MethodOptions, "/v1beta/models", nil)
+	req.Header.Set("Origin", "https://example.com")
+	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	req.Header.Set("Access-Control-Request-Headers", "authorization,content-type")
+
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusNoContent, w.Body.String())
+	}
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("allow-origin=%q, want *", got)
+	}
+}
+
+func TestServer_SetupRoutes_V1BetaCORSHeadersOnAuthFailure(t *testing.T) {
+	srv := newInMemoryServer(t)
+
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	srv.SetupRoutes(engine)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1beta/models", nil)
+	req.Header.Set("Origin", "https://example.com")
+
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("allow-origin=%q, want *", got)
+	}
+}
 
 func TestServer_GetWriteTimeout(t *testing.T) {
 	t.Parallel()
