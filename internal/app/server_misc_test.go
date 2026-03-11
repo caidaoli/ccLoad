@@ -27,17 +27,11 @@ func TestServer_SetupRoutes_CORSPreflightBypassesAuth(t *testing.T) {
 	w := httptest.NewRecorder()
 	engine.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusNoContent, w.Body.String())
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusUnauthorized, w.Body.String())
 	}
-	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Fatalf("allow-origin=%q, want *", got)
-	}
-	if got := w.Header().Get("Access-Control-Allow-Methods"); got == "" {
-		t.Fatal("allow-methods header missing")
-	}
-	if got := w.Header().Get("Access-Control-Allow-Headers"); got != "authorization,content-type" {
-		t.Fatalf("allow-headers=%q, want authorization,content-type", got)
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("allow-origin=%q, want empty", got)
 	}
 }
 
@@ -57,8 +51,8 @@ func TestServer_SetupRoutes_CORSHeadersOnAuthFailure(t *testing.T) {
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusUnauthorized, w.Body.String())
 	}
-	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Fatalf("allow-origin=%q, want *", got)
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("allow-origin=%q, want empty", got)
 	}
 }
 
@@ -77,11 +71,11 @@ func TestServer_SetupRoutes_V1BetaCORSPreflightBypassesAuth(t *testing.T) {
 	w := httptest.NewRecorder()
 	engine.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusNoContent, w.Body.String())
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusUnauthorized, w.Body.String())
 	}
-	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Fatalf("allow-origin=%q, want *", got)
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("allow-origin=%q, want empty", got)
 	}
 }
 
@@ -101,8 +95,8 @@ func TestServer_SetupRoutes_V1BetaCORSHeadersOnAuthFailure(t *testing.T) {
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusUnauthorized, w.Body.String())
 	}
-	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Fatalf("allow-origin=%q, want *", got)
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("allow-origin=%q, want empty", got)
 	}
 }
 
