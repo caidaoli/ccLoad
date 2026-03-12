@@ -16,6 +16,12 @@ go test -tags go_json -race ./internal/...  # 竞态检测
 
 # 开发运行(版本号为dev)
 go run -tags go_json .
+
+# 或使用 Makefile（含版本注入、前端测试等）
+make build          # 构建（自动注入版本号+strip）
+make web-test       # 前端 node:test 测试
+make verify-web     # 前端验证（含 web-test）
+make dev            # 开发运行
 ```
 运行所需环境变量定义在.env文件中
 ## 核心架构
@@ -68,7 +74,7 @@ web/               # 前端页面
 ├── *.html         # 页面（index/channels/logs/stats/tokens/settings/trend/model-test/login）
 └── assets/
     ├── css/       # 样式（styles/channels/logs/tokens）
-    └── js/        # 模块化JS（channels-*/logs/stats/tokens/settings/trend/i18n/ui/...）
+    └── js/        # 模块化JS（channels-*/logs/stats/tokens/settings/trend/i18n/ui/page-filters/filter-*/date-range-selector/template-engine/...）
 ```
 
 **故障切换策略**:
@@ -213,7 +219,7 @@ golangci-lint run --fix ./...
 - `govet` - Go 官方静态分析工具
 - `staticcheck` - 包含 gosimple 的静态逻辑检查
 - `unused` - 检查未使用的代码
-- `gosec` - 安全漏洞审计
+- ~~`gosec`~~ - 安全漏洞审计（v2.11.1 + go1.26.1 下挂死，暂时禁用）
 - `revive` - 代码风格检查
 - `bodyclose` - HTTP response body 关闭检查
 
