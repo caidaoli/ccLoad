@@ -955,16 +955,23 @@ function initRedirectTableEventDelegation() {
 
   // 处理输入框变更
   tbody.addEventListener('change', (e) => {
+    const checkbox = e.target.closest('.model-checkbox');
+    if (checkbox) {
+      const index = parseInt(checkbox.dataset.index, 10);
+      toggleModelSelection(index, checkbox.checked);
+      return;
+    }
+
     const fromInput = e.target.closest('.redirect-from-input');
     if (fromInput) {
-      const index = parseInt(fromInput.dataset.index);
+      const index = parseInt(fromInput.dataset.index, 10);
       updateRedirectRow(index, 'model', fromInput.value);
       return;
     }
 
     const toInput = e.target.closest('.redirect-to-input');
     if (toInput) {
-      const index = parseInt(toInput.dataset.index);
+      const index = parseInt(toInput.dataset.index, 10);
       updateRedirectRow(index, 'redirect_model', toInput.value);
     }
   });
@@ -973,14 +980,14 @@ function initRedirectTableEventDelegation() {
   tbody.addEventListener('click', (e) => {
     const deleteBtn = e.target.closest('.redirect-delete-btn');
     if (deleteBtn) {
-      const index = parseInt(deleteBtn.dataset.index);
+      const index = parseInt(deleteBtn.dataset.index, 10);
       deleteRedirectRow(index);
       return;
     }
 
     const lowercaseBtn = e.target.closest('.lowercase-btn');
     if (lowercaseBtn) {
-      const index = parseInt(lowercaseBtn.dataset.index);
+      const index = parseInt(lowercaseBtn.dataset.index, 10);
       const row = lowercaseBtn.closest('tr');
       const fromInput = row?.querySelector('.redirect-from-input');
       if (fromInput && fromInput.value) {

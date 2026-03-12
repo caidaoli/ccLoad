@@ -52,13 +52,77 @@ function loadChannelsFilters() {
   return null;
 }
 
-document.addEventListener('DOMContentLoaded', async () => {
-  // Translate static elements first
-  if (window.i18n && window.i18n.translatePage) {
-    window.i18n.translatePage();
+function initChannelsPageActions() {
+  if (typeof window.initDelegatedActions === 'function') {
+    window.initDelegatedActions({
+      boundKey: 'channelsPageActionsBound',
+      click: {
+        'show-add-modal': () => showAddModal(),
+        'batch-enable-channels': () => batchEnableSelectedChannels(),
+        'batch-disable-channels': () => batchDisableSelectedChannels(),
+        'batch-refresh-channels-merge': () => batchRefreshSelectedChannelsMerge(),
+        'batch-refresh-channels-replace': () => batchRefreshSelectedChannelsReplace(),
+        'clear-selected-channels': () => clearSelectedChannels(),
+        'close-channel-modal': () => closeModal(),
+        'add-inline-url': () => addInlineURL(),
+        'batch-delete-urls': () => batchDeleteSelectedURLs(),
+        'open-key-import-modal': () => openKeyImportModal(),
+        'open-key-export-modal': () => openKeyExportModal(),
+        'toggle-inline-key-visibility': () => toggleInlineKeyVisibility(),
+        'batch-delete-keys': () => batchDeleteSelectedKeys(),
+        'add-common-models': () => addCommonModels(),
+        'fetch-models-from-api': () => fetchModelsFromAPI(),
+        'add-redirect-row': () => addRedirectRow(),
+        'batch-lowercase-models': () => batchLowercaseSelectedModels(),
+        'batch-delete-models': () => batchDeleteSelectedModels(),
+        'close-delete-modal': () => closeDeleteModal(),
+        'confirm-delete-channel': () => confirmDelete(),
+        'close-test-modal': () => closeTestModal(),
+        'run-channel-test': () => runChannelTest(),
+        'run-batch-test': () => runBatchTest(),
+        'close-key-import-modal': () => closeKeyImportModal(),
+        'confirm-inline-key-import': () => confirmInlineKeyImport(),
+        'close-key-export-modal': () => closeKeyExportModal(),
+        'copy-export-keys': () => copyExportKeys(),
+        'download-export-keys': () => downloadExportKeys(),
+        'close-model-import-modal': () => closeModelImportModal(),
+        'confirm-model-import': () => confirmModelImport(),
+        'close-sort-modal': () => closeSortModal(),
+        'save-sort-order': () => saveSortOrder(),
+        'toggle-response': (actionTarget) => {
+          const responseTarget = actionTarget.dataset.responseTarget;
+          if (responseTarget && typeof window.toggleResponse === 'function') {
+            window.toggleResponse(responseTarget);
+          }
+        }
+      },
+      change: {
+        'toggle-select-all-urls': (actionTarget) => toggleSelectAllURLs(actionTarget.checked),
+        'toggle-select-all-keys': (actionTarget) => toggleSelectAllKeys(actionTarget.checked),
+        'filter-keys-by-status': (actionTarget) => filterKeysByStatus(actionTarget.value),
+        'toggle-select-all-models': (actionTarget) => toggleSelectAllModels(actionTarget.checked),
+        'update-test-url': () => updateTestURL(),
+        'update-export-preview': () => updateExportPreview()
+      },
+      input: {
+        'filter-models-by-keyword': (actionTarget) => filterModelsByKeyword(actionTarget.value)
+      }
+    });
   }
 
-  if (window.initTopbar) initTopbar('channels');
+  const channelForm = document.getElementById('channelForm');
+  if (channelForm && !channelForm.dataset.bound) {
+    channelForm.addEventListener('submit', (event) => {
+      saveChannel(event);
+    });
+    channelForm.dataset.bound = '1';
+  }
+}
+
+window.initPageBootstrap({
+  topbarKey: 'channels',
+  run: async () => {
+  initChannelsPageActions();
   setupFilterListeners();
   setupImportExport();
   setupKeyImportPreview();
@@ -160,6 +224,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     renderChannels();
     updateModelOptions();
   });
+  }
 });
 
 document.addEventListener('keydown', (e) => {

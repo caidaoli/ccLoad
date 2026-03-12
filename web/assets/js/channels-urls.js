@@ -107,6 +107,43 @@ function createURLRow(index) {
   return row;
 }
 
+function initInlineURLTableEventDelegation() {
+  const tbody = document.getElementById('inlineUrlTableBody');
+  if (!tbody || tbody.dataset.delegated) return;
+
+  tbody.dataset.delegated = 'true';
+
+  tbody.addEventListener('change', (e) => {
+    const checkbox = e.target.closest('.url-checkbox');
+    if (checkbox) {
+      const index = parseInt(checkbox.dataset.index, 10);
+      toggleURLSelection(index, checkbox.checked);
+      return;
+    }
+
+    const input = e.target.closest('.inline-url-input');
+    if (input) {
+      const index = parseInt(input.dataset.index, 10);
+      updateInlineURL(index, input.value);
+    }
+  });
+
+  tbody.addEventListener('click', (e) => {
+    const testBtn = e.target.closest('.inline-url-test-btn');
+    if (testBtn) {
+      const index = parseInt(testBtn.dataset.index, 10);
+      testInlineURL(index, testBtn);
+      return;
+    }
+
+    const deleteBtn = e.target.closest('.inline-url-delete-btn');
+    if (deleteBtn) {
+      const index = parseInt(deleteBtn.dataset.index, 10);
+      deleteInlineURL(index);
+    }
+  });
+}
+
 function renderInlineURLTable() {
   const tbody = document.getElementById('inlineUrlTableBody');
   if (!tbody) return;
@@ -115,6 +152,7 @@ function renderInlineURLTable() {
     inlineURLTableData = [''];
   }
 
+  initInlineURLTableEventDelegation();
   updateInlineURLCount();
   syncInlineURLInput();
   updateURLStatsHeader();

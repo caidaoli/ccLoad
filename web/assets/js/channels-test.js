@@ -317,7 +317,9 @@ function displayTestResult(result) {
   // 渲染响应区块
   const renderResponseSection = (title, content, display = 'none', hasToggle = true) => {
     const contentId = `response-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    const toggleBtn = hasToggle ? `<button class="toggle-btn" onclick="toggleResponse('${contentId}')">${window.t('channels.test.toggleResponse')}</button>` : '';
+    const toggleBtn = hasToggle
+      ? `<button type="button" class="toggle-btn" data-action="toggle-response" data-response-target="${contentId}">${window.t('channels.test.toggleResponse')}</button>`
+      : '';
     const section = TemplateEngine.render('tpl-response-section', {
       title,
       toggleBtn,

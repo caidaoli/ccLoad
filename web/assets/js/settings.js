@@ -1,10 +1,17 @@
 // 系统设置页面
 const t = window.t;
 
-initTopbar('settings');
-if (window.i18n) window.i18n.translatePage();
-
 let originalSettings = {}; // 保存原始值用于比较
+
+function bindSettingsPageActions() {
+  const saveAllBtn = document.getElementById('save-all-btn');
+  if (!saveAllBtn || saveAllBtn.dataset.bound) return;
+
+  saveAllBtn.addEventListener('click', () => {
+    saveAllSettings();
+  });
+  saveAllBtn.dataset.bound = '1';
+}
 
 function getSettingGroupInfo(key) {
   const k = String(key || '').toLowerCase();
@@ -254,5 +261,10 @@ async function resetSetting(key) {
   }
 }
 
-// 页面加载时执行
-loadSettings();
+window.initPageBootstrap({
+  topbarKey: 'settings',
+  run: () => {
+    bindSettingsPageActions();
+    loadSettings();
+  }
+});

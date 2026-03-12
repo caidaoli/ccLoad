@@ -67,8 +67,8 @@
         <section class="glass-card mt-2 mb-2" style="overflow: visible;">
           <!-- 模式切换 -->
           <div style="display: flex; gap: 8px; margin-bottom: 12px;">
-            <button id="modeTabChannel" class="mode-tab-btn active" onclick="setTestMode('channel')" data-i18n="modelTest.mode.channel">按渠道测试</button>
-            <button id="modeTabModel" class="mode-tab-btn" onclick="setTestMode('model')" data-i18n="modelTest.mode.model">按模型测试</button>
+            <button id="modeTabChannel" type="button" class="mode-tab-btn active" data-action="set-test-mode" data-mode="channel" data-i18n="modelTest.mode.channel">按渠道测试</button>
+            <button id="modeTabModel" type="button" class="mode-tab-btn" data-action="set-test-mode" data-mode="model" data-i18n="modelTest.mode.model">按模型测试</button>
           </div>
 
           <!-- 控制栏 -->
@@ -102,10 +102,10 @@
               <input type="text" id="modelTestContent" value="" data-i18n-placeholder="common.loading" placeholder="加载中..." style="flex: 1; padding: 6px 10px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px;">
             </label>
             <span id="testProgress" style="font-size: 13px; color: var(--color-text-secondary);"></span>
-            <button onclick="selectAllModels()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;" data-i18n="modelTest.selectAll">全选</button>
-            <button onclick="deselectAllModels()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;" data-i18n="modelTest.deselectAll">取消全选</button>
-            <button id="fetchModelsBtn" onclick="fetchAndAddModels()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;" data-i18n="modelTest.fetchModels">获取模型</button>
-            <button id="deleteModelsBtn" onclick="deleteSelectedModels()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px; color: var(--error-500);" data-i18n="modelTest.deleteModels">删除模型</button>
+            <button type="button" data-action="select-all-models" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;" data-i18n="modelTest.selectAll">全选</button>
+            <button type="button" data-action="deselect-all-models" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;" data-i18n="modelTest.deselectAll">取消全选</button>
+            <button id="fetchModelsBtn" type="button" data-action="fetch-and-add-models" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;" data-i18n="modelTest.fetchModels">获取模型</button>
+            <button id="deleteModelsBtn" type="button" data-action="delete-selected-models" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px; color: var(--error-500);" data-i18n="modelTest.deleteModels">删除模型</button>
             <label style="display: flex; align-items: center; gap: 4px; font-size: 13px; cursor: pointer;">
               <input type="checkbox" id="streamEnabled" style="width: 16px; height: 16px;">
               <span data-i18n="modelTest.stream">流式</span>
@@ -114,7 +114,7 @@
               <span data-i18n="modelTest.concurrency">并发</span>
               <input type="number" id="concurrency" value="5" min="1" max="20" style="width: 50px; padding: 4px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px; text-align: center;">
             </label>
-            <button id="runTestBtn" onclick="runModelTests()" class="btn btn-primary" style="font-size: 13px; padding: 8px 16px;" data-i18n="modelTest.startTest">开始测试</button>
+            <button id="runTestBtn" type="button" data-action="run-model-tests" class="btn btn-primary" style="font-size: 13px; padding: 8px 16px;" data-i18n="modelTest.startTest">开始测试</button>
           </div>
 
           <!-- 模型测试表格 -->
@@ -122,7 +122,7 @@
             <table class="modern-table" style="font-size: 13px; table-layout: fixed; width: 100%;">
               <thead style="position: sticky; top: 0; background: var(--glass-bg); z-index: 1;">
                 <tr id="model-test-head-row">
-                  <th style="width: 30px;"><input type="checkbox" id="selectAllCheckbox" onchange="toggleAllModels(this.checked)"></th>
+                  <th style="width: 30px;"><input type="checkbox" id="selectAllCheckbox" data-change-action="toggle-all-models"></th>
                   <th style="width: 200px;" data-i18n="common.model" data-sort-key="name">模型</th>
                   <th class="first-byte-col" style="width: 76px;" data-i18n="modelTest.firstByteDuration" data-sort-key="firstByteDuration">首字</th>
                   <th style="width: 76px;" data-i18n="modelTest.totalDuration" data-sort-key="duration">总耗时</th>

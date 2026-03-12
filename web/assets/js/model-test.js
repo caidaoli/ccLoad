@@ -1,7 +1,3 @@
-// 模型测试页面
-initTopbar('model-test');
-if (window.i18n) window.i18n.translatePage();
-
 const TEST_MODE_CHANNEL = 'channel';
 const TEST_MODE_MODEL = 'model';
 
@@ -42,7 +38,7 @@ let sortState = { key: '', direction: SORT_DIRECTION_NONE };
 let nameFilterKeyword = '';
 
 const CHANNEL_MODE_HEAD = `
-  <th style="width: 30px;"><input type="checkbox" id="selectAllCheckbox" onchange="toggleAllModels(this.checked)"></th>
+  <th style="width: 30px;"><input type="checkbox" id="selectAllCheckbox" data-change-action="toggle-all-models"></th>
   <th style="width: 200px;" data-i18n="common.model" data-sort-key="name">模型</th>
   <th class="first-byte-col" style="width: 76px;" data-i18n="modelTest.firstByteDuration" data-sort-key="firstByteDuration">首字</th>
   <th style="width: 76px;" data-i18n="modelTest.totalDuration" data-sort-key="duration">总耗时</th>
@@ -55,7 +51,7 @@ const CHANNEL_MODE_HEAD = `
 `;
 
 const MODEL_MODE_HEAD = `
-  <th style="width: 30px;"><input type="checkbox" id="selectAllCheckbox" onchange="toggleAllModels(this.checked)"></th>
+  <th style="width: 30px;"><input type="checkbox" id="selectAllCheckbox" data-change-action="toggle-all-models"></th>
   <th style="width: 280px;" data-i18n="modelTest.channelName" data-sort-key="name">渠道</th>
   <th class="first-byte-col" style="width: 76px;" data-i18n="modelTest.firstByteDuration" data-sort-key="firstByteDuration">首字</th>
   <th style="width: 76px;" data-i18n="modelTest.totalDuration" data-sort-key="duration">总耗时</th>
@@ -128,6 +124,25 @@ function getNameFilterPlaceholder() {
     return i18nText('modelTest.filterChannelPlaceholder', '搜索渠道名称...');
   }
   return i18nText('modelTest.filterModelPlaceholder', '搜索模型名称...');
+}
+
+function initModelTestActions() {
+  if (typeof window.initDelegatedActions !== 'function') return;
+
+  window.initDelegatedActions({
+    boundKey: 'modelTestActionsBound',
+    click: {
+      'set-test-mode': (actionTarget) => setTestMode(actionTarget.dataset.mode || ''),
+      'select-all-models': () => selectAllModels(),
+      'deselect-all-models': () => deselectAllModels(),
+      'fetch-and-add-models': () => fetchAndAddModels(),
+      'delete-selected-models': () => deleteSelectedModels(),
+      'run-model-tests': () => runModelTests()
+    },
+    change: {
+      'toggle-all-models': (actionTarget) => toggleAllModels(actionTarget.checked)
+    }
+  });
 }
 
 function renderNameFilterInHeader() {
@@ -1436,6 +1451,7 @@ window.fetchAndAddModels = fetchAndAddModels;
 window.deleteSelectedModels = deleteSelectedModels;
 
 async function bootstrap() {
+  initModelTestActions();
   bindEvents();
   await loadChannels();
   await loadDefaultTestContent();
@@ -1444,4 +1460,9 @@ async function bootstrap() {
   renderRowsByMode();
 }
 
-bootstrap();
+window.initPageBootstrap({
+  topbarKey: 'model-test',
+  run: () => {
+    bootstrap();
+  }
+});

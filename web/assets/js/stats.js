@@ -652,10 +652,35 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
       return window.FilterQuery.buildRequestParams(getStatsFilters(), STATS_FILTER_FIELDS);
     }
 
+    function bindStatsStaticControls() {
+      const viewToggleGroup = document.getElementById('view-toggle-group');
+      if (viewToggleGroup && !viewToggleGroup.dataset.bound) {
+        viewToggleGroup.addEventListener('click', (e) => {
+          const viewBtn = e.target.closest('.view-toggle-btn[data-view]');
+          if (!viewBtn) return;
+
+          switchView(viewBtn.dataset.view);
+        });
+        viewToggleGroup.dataset.bound = '1';
+      }
+
+      const thead = document.querySelector('.stats-table thead');
+      if (thead && !thead.dataset.bound) {
+        thead.addEventListener('click', (e) => {
+          const sortable = e.target.closest('.sortable[data-column]');
+          if (!sortable) return;
+
+          sortTable(sortable.dataset.column);
+        });
+        thead.dataset.bound = '1';
+      }
+    }
+
     // 页面初始化
-    document.addEventListener('DOMContentLoaded', async function() {
-      if (window.i18n) window.i18n.translatePage();
-      if (window.initTopbar) initTopbar('stats');
+    window.initPageBootstrap({
+      topbarKey: 'stats',
+      run: async () => {
+      bindStatsStaticControls();
 
       // 优先从 URL 读取，其次从 localStorage 恢复，默认 all
       const u = new URLSearchParams(location.search);
@@ -748,6 +773,7 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
             return;
           }
         });
+      }
       }
     });
 

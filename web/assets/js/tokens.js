@@ -49,7 +49,9 @@
       });
     }
 
-    document.addEventListener('DOMContentLoaded', () => {
+    window.initPageBootstrap({
+      topbarKey: 'tokens',
+      run: () => {
       initExpirySelects();
 
       const renderTimeRangeSelector = () => {
@@ -76,17 +78,10 @@
       // 预加载渠道数据（用于模型选择）
       loadChannelsData();
 
+      initPageActionDelegation();
+
       // 初始化事件委托
       initEventDelegation();
-
-      document.getElementById('tokenExpiry').addEventListener('change', (e) => {
-        document.getElementById('customExpiryContainer').style.display =
-          e.target.value === 'custom' ? 'block' : 'none';
-      });
-      document.getElementById('editTokenExpiry').addEventListener('change', (e) => {
-        document.getElementById('editCustomExpiryContainer').style.display =
-          e.target.value === 'custom' ? 'block' : 'none';
-      });
 
       // 监听语言切换事件，重新渲染令牌列表
       window.i18n.onLocaleChange(() => {
@@ -97,7 +92,60 @@
         });
         renderTokens();
       });
+      }
     });
+
+    function initPageActionDelegation() {
+      if (typeof window.initDelegatedActions !== 'function') return;
+
+      window.initDelegatedActions({
+        boundKey: 'tokensPageActionsBound',
+        click: {
+          'show-create-modal': () => showCreateModal(),
+          'close-create-modal': () => closeCreateModal(),
+          'create-token': () => createToken(),
+          'close-token-result-modal': () => closeTokenResultModal(),
+          'copy-token-result': () => copyToken(),
+          'close-edit-modal': () => closeEditModal(),
+          'update-token': () => updateToken(),
+          'show-model-select-modal': () => showModelSelectModal(),
+          'show-model-import-modal': () => showModelImportModal(),
+          'batch-delete-allowed-models': () => batchDeleteSelectedAllowedModels(),
+          'close-model-select-modal': () => closeModelSelectModal(),
+          'confirm-model-selection': () => confirmModelSelection(),
+          'close-model-import-modal': () => closeModelImportModal(),
+          'confirm-model-import': () => confirmModelImport(),
+          'remove-allowed-model': (actionTarget) => {
+            const index = Number(actionTarget.dataset.index);
+            if (!Number.isNaN(index)) {
+              removeAllowedModel(index);
+            }
+          }
+        },
+        change: {
+          'toggle-custom-expiry': (actionTarget) => {
+            document.getElementById('customExpiryContainer').style.display =
+              actionTarget.value === 'custom' ? 'block' : 'none';
+          },
+          'toggle-edit-custom-expiry': (actionTarget) => {
+            document.getElementById('editCustomExpiryContainer').style.display =
+              actionTarget.value === 'custom' ? 'block' : 'none';
+          },
+          'toggle-select-all-allowed-models': (actionTarget) => toggleSelectAllAllowedModels(actionTarget.checked),
+          'toggle-select-all-models': (actionTarget) => toggleSelectAllModels(actionTarget.checked),
+          'toggle-allowed-model': (actionTarget) => {
+            const index = Number(actionTarget.dataset.index);
+            if (!Number.isNaN(index)) {
+              toggleAllowedModelSelection(index, actionTarget.checked);
+            }
+          }
+        },
+        input: {
+          'filter-available-models': (actionTarget) => filterAvailableModels(actionTarget.value),
+          'update-model-import-preview': () => updateModelImportPreview()
+        }
+      });
+    }
 
     /**
      * 初始化事件委托(统一处理表格内按钮点击)
@@ -672,12 +720,6 @@
       }
     }
 
-    // 初始化顶部导航栏
-    document.addEventListener('DOMContentLoaded', () => {
-      initTopbar('tokens');
-      if (window.i18n) window.i18n.translatePage();
-    });
-
     // ============================================================================
     // 模型限制功能（2026-01新增）
     // ============================================================================
@@ -751,12 +793,13 @@
         <tr>
           <td style="text-align: center; padding: 8px;">
             <input type="checkbox" class="allowed-model-checkbox" data-index="${index}"
+              data-change-action="toggle-allowed-model"
               ${selectedAllowedModelIndices.has(index) ? 'checked' : ''}
-              onchange="toggleAllowedModelSelection(${index}, this.checked)">
+            >
           </td>
           <td style="padding: 8px; font-family: monospace; font-size: 13px;">${escapeHtml(model)}</td>
           <td style="text-align: center; padding: 8px;">
-            <button type="button" class="btn btn-secondary btn-sm" onclick="removeAllowedModel(${index})"
+            <button type="button" class="btn btn-secondary btn-sm" data-action="remove-allowed-model" data-index="${index}"
               style="padding: 2px 8px; font-size: 12px;">${t('common.delete')}</button>
           </td>
         </tr>

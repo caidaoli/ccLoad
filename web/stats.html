@@ -44,13 +44,13 @@
               </span>
               <!-- 表格/图表切换按钮 -->
               <div class="view-toggle-group" id="view-toggle-group">
-                <button type="button" class="view-toggle-btn active" data-view="table" onclick="switchView('table')">
+                <button type="button" class="view-toggle-btn active" data-view="table">
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
                   </svg>
                   <span data-i18n="stats.viewTable">表格</span>
                 </button>
-                <button type="button" class="view-toggle-btn" data-view="chart" onclick="switchView('chart')">
+                <button type="button" class="view-toggle-btn" data-view="chart">
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z"/>
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z"/>
@@ -76,47 +76,47 @@
               <table class="modern-table stats-table">
                 <thead>
                   <tr>
-                    <th class="sortable" data-column="channel_name" onclick="sortTable('channel_name')">
+                    <th class="sortable" data-column="channel_name">
                       <span data-i18n="stats.channelName">渠道名称</span>
                       <span class="sort-indicator" id="sort-channel_name"></span>
                     </th>
-                    <th class="sortable" data-column="model" onclick="sortTable('model')">
+                    <th class="sortable" data-column="model">
                       <span data-i18n="common.model">模型</span>
                       <span class="sort-indicator" id="sort-model"></span>
                     </th>
-                    <th class="sortable" data-column="success" onclick="sortTable('success')" style="color: var(--success-400);">
+                    <th class="sortable" data-column="success" style="color: var(--success-400);">
                       <span data-i18n="common.success">成功</span>
                       <span class="sort-indicator" id="sort-success"></span>
                     </th>
-                    <th class="sortable" data-column="error" onclick="sortTable('error')" style="color: var(--error-400);">
+                    <th class="sortable" data-column="error" style="color: var(--error-400);">
                       <span data-i18n="common.failed">失败</span>
                       <span class="sort-indicator" id="sort-error"></span>
                     </th>
-                    <th class="sortable" data-column="avg_first_byte_time" onclick="sortTable('avg_first_byte_time')">
+                    <th class="sortable" data-column="avg_first_byte_time">
                       <span data-i18n="stats.avgFirstByte">平均首字/耗时(秒)</span>
                       <span class="sort-indicator" id="sort-avg_first_byte_time"></span>
                     </th>
-                    <th class="sortable" data-column="rpm" onclick="sortTable('rpm')" data-i18n-title="stats.rpmTitle" title="每分钟请求数(峰值/平均/最近)">
+                    <th class="sortable" data-column="rpm" data-i18n-title="stats.rpmTitle" title="每分钟请求数(峰值/平均/最近)">
                       <span data-i18n="stats.rpm">RPM(峰/均/近)</span>
                       <span class="sort-indicator" id="sort-rpm"></span>
                     </th>
-                    <th class="sortable" data-column="total_input_tokens" onclick="sortTable('total_input_tokens')">
+                    <th class="sortable" data-column="total_input_tokens">
                       <span data-i18n="stats.inputTokens">输入Token</span>
                       <span class="sort-indicator" id="sort-total_input_tokens"></span>
                     </th>
-                    <th class="sortable" data-column="total_output_tokens" onclick="sortTable('total_output_tokens')">
+                    <th class="sortable" data-column="total_output_tokens">
                       <span data-i18n="stats.outputTokens">输出Token</span>
                       <span class="sort-indicator" id="sort-total_output_tokens"></span>
                     </th>
-                    <th class="sortable" data-column="total_cache_read" onclick="sortTable('total_cache_read')" style="color: var(--success-600);">
+                    <th class="sortable" data-column="total_cache_read" style="color: var(--success-600);">
                       <span data-i18n="stats.cacheRead">缓存读取</span>
                       <span class="sort-indicator" id="sort-total_cache_read"></span>
                     </th>
-                    <th class="sortable" data-column="total_cache_creation" onclick="sortTable('total_cache_creation')" style="color: var(--primary-600);">
+                    <th class="sortable" data-column="total_cache_creation" style="color: var(--primary-600);">
                       <span data-i18n="stats.cacheCreation">缓存创建</span>
                       <span class="sort-indicator" id="sort-total_cache_creation"></span>
                     </th>
-                    <th class="sortable" data-column="total_cost" onclick="sortTable('total_cost')" style="color: var(--warning-600);">
+                    <th class="sortable" data-column="total_cost" style="color: var(--warning-600);">
                       <span data-i18n="stats.costUsd">成本($)</span>
                       <span class="sort-indicator" id="sort-total_cost"></span>
                     </th>

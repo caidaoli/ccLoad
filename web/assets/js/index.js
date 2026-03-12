@@ -176,10 +176,9 @@
     });
 
     // 页面初始化
-    document.addEventListener('DOMContentLoaded', function() {
-      if (window.i18n) window.i18n.translatePage();
-      if (window.initTopbar) initTopbar('index');
-
+    window.initPageBootstrap({
+      topbarKey: 'index',
+      run: () => {
       const renderTimeRangeSelector = () => {
         if (typeof window.renderDateRangeButtons === 'function') {
           window.renderDateRangeButtons('index-time-range', {
@@ -217,4 +216,5 @@
       document.querySelectorAll('.animate-slide-up').forEach((el, index) => {
         el.style.animationDelay = `${index * 0.1}s`;
       });
+      }
     });
