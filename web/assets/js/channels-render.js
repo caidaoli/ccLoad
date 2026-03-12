@@ -282,6 +282,11 @@ function initChannelEventDelegation() {
   // 事件委托：处理渠道多选复选框
   container.addEventListener('change', (e) => {
     const checkbox = e.target.closest('.channel-select-checkbox');
+    if (checkbox && checkbox.id === 'visibleSelectionCheckbox') {
+      toggleVisibleChannelsSelection();
+      return;
+    }
+
     if (!checkbox) return;
 
     const channelId = normalizeSelectedChannelID(checkbox.dataset.channelId);
@@ -344,7 +349,7 @@ function renderChannels(channelsToRender = channels) {
   // 构建表格
   const thead = `<thead>
     <tr>
-      <th class="ch-col-checkbox"><label id="visibleSelectionToggle" class="channel-selection-toggle channel-table-selection-toggle" data-i18n-title="channels.batchSelectVisible" title="全选"><input id="visibleSelectionCheckbox" type="checkbox" onchange="toggleVisibleChannelsSelection()"><span id="visibleSelectionToggleText" data-i18n="channels.batchSelectVisible">全选</span></label></th>
+      <th class="ch-col-checkbox"><label id="visibleSelectionToggle" class="channel-selection-toggle channel-table-selection-toggle" data-i18n-title="channels.batchSelectVisible" title="全选"><input id="visibleSelectionCheckbox" type="checkbox" data-change-action="toggle-visible-channels-selection"><span id="visibleSelectionToggleText" data-i18n="channels.batchSelectVisible">全选</span></label></th>
       <th class="ch-col-name">${window.t('channels.table.nameAndUrl')}</th>
       <th class="ch-col-models">${window.t('channels.table.models')}</th>
       <th class="ch-col-priority">${window.t('channels.table.priority')}</th>

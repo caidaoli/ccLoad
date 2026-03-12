@@ -568,6 +568,119 @@
     });
   }
 
+  const delegatedActionConfig = {
+    click: {
+      selector: '[data-action]',
+      datasetKey: 'action'
+    },
+    change: {
+      selector: '[data-change-action]',
+      datasetKey: 'changeAction'
+    },
+    input: {
+      selector: '[data-input-action]',
+      datasetKey: 'inputAction'
+    }
+  };
+
+  function initDelegatedActions(options = {}) {
+    const root = options.root || document;
+    const boundElement = options.boundElement || document.body;
+    const boundKey = options.boundKey;
+
+    if (!root || !boundElement || !boundElement.dataset || !boundKey) {
+      return false;
+    }
+
+    if (boundElement.dataset[boundKey]) {
+      return false;
+    }
+
+    Object.entries(delegatedActionConfig).forEach(([eventType, config]) => {
+      const handlers = options[eventType];
+      if (!handlers || typeof handlers !== 'object') return;
+
+      root.addEventListener(eventType, (event) => {
+        const eventTarget = event.target;
+        if (!eventTarget || typeof eventTarget.closest !== 'function') return;
+
+        const actionTarget = eventTarget.closest(config.selector);
+        if (!actionTarget) return;
+
+        const actionName = actionTarget.dataset[config.datasetKey];
+        const handler = handlers[actionName];
+        if (typeof handler === 'function') {
+          handler(actionTarget, event);
+        }
+      });
+    });
+
+    boundElement.dataset[boundKey] = '1';
+    return true;
+  }
+
+  function initPageBootstrap(options = {}) {
+    const run = typeof options.run === 'function' ? options.run : () => {};
+
+    const execute = async () => {
+      if (options.translate !== false && window.i18n && typeof window.i18n.translatePage === 'function') {
+        window.i18n.translatePage();
+      }
+
+      if (options.topbarKey && typeof window.initTopbar === 'function') {
+        window.initTopbar(options.topbarKey);
+      }
+
+      await run();
+    };
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', () => {
+        void execute();
+      }, { once: true });
+      return;
+    }
+
+    void execute();
+  }
+
+  function initRenderedTimeRangeSelector(options = {}) {
+    if (!options.containerId || typeof window.initTimeRangeSelector !== 'function') {
+      return null;
+    }
+
+    const getActiveValue = typeof options.getActiveValue === 'function'
+      ? options.getActiveValue
+      : () => options.activeValue || 'today';
+    const onChange = typeof options.onChange === 'function' ? options.onChange : () => {};
+    const afterLocaleChange = typeof options.afterLocaleChange === 'function' ? options.afterLocaleChange : null;
+
+    const render = () => {
+      if (typeof window.renderDateRangeButtons === 'function') {
+        window.renderDateRangeButtons(options.containerId, {
+          values: options.values,
+          includeAll: options.includeAll === true,
+          activeValue: getActiveValue()
+        });
+      }
+
+      window.initTimeRangeSelector(onChange);
+    };
+
+    render();
+
+    if (window.i18n && typeof window.i18n.onLocaleChange === 'function') {
+      window.i18n.onLocaleChange(() => {
+        render();
+        if (afterLocaleChange) {
+          afterLocaleChange();
+        }
+      });
+    }
+
+    return render;
+  }
+
   function getFilterControlConfig(config) {
     if (typeof config === 'string') {
       return { id: config, defaultValue: '', trim: false };
@@ -693,6 +806,9 @@
   // 导出到全局作用域
   window.debounce = debounce;
   window.bindFilterApplyInputs = bindFilterApplyInputs;
+  window.initDelegatedActions = initDelegatedActions;
+  window.initPageBootstrap = initPageBootstrap;
+  window.initRenderedTimeRangeSelector = initRenderedTimeRangeSelector;
   window.readFilterControlValues = readFilterControlValues;
   window.applyFilterControlValues = applyFilterControlValues;
   window.initSavedDateRangeFilter = initSavedDateRangeFilter;
@@ -1138,11 +1254,18 @@
   function initTimeRangeSelector(onRangeChange) {
     const buttons = document.querySelectorAll('.time-range-btn');
     buttons.forEach(btn => {
-      btn.addEventListener('click', function () {
+      if (typeof btn.__timeRangeClickHandler === 'function') {
+        btn.removeEventListener('click', btn.__timeRangeClickHandler);
+      }
+
+      const handleClick = function () {
         buttons.forEach(b => b.classList.remove('active'));
         this.classList.add('active');
         onRangeChange(this.dataset.range);
-      });
+      };
+
+      btn.__timeRangeClickHandler = handleClick;
+      btn.addEventListener('click', handleClick);
     });
   }
 

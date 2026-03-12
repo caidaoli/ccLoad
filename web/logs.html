@@ -74,14 +74,14 @@
           <div class="glass-card" style="padding: var(--space-2);">
             <div class="flex justify-center items-center">
               <div class="pagination-controls logs-pagination-controls">
-                <button id="logs_first2" class="btn btn-secondary btn-sm" onclick="firstLogsPage()">
+                <button id="logs_first2" class="btn btn-secondary btn-sm" type="button" data-action="first-logs-page">
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 17l-5-5 5-5"/>
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18V6"/>
                   </svg>
                   <span data-i18n="common.firstPage">首页</span>
                 </button>
-                <button id="logs_prev2" class="btn btn-secondary btn-sm" onclick="prevLogsPage()">
+                <button id="logs_prev2" class="btn btn-secondary btn-sm" type="button" data-action="prev-logs-page">
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 18l-6-6 6-6"/>
                   </svg>
@@ -99,17 +99,16 @@
                     max="1"
                     data-i18n-placeholder="logs.pagePlaceholder"
                     placeholder="页码"
-                    onkeydown="if(event.key==='Enter') jumpToPage()"
                   />
                   <span data-i18n="logs.pageUnit">页</span>
                 </span>
-                <button id="logs_next2" class="btn btn-secondary btn-sm" onclick="nextLogsPage()">
+                <button id="logs_next2" class="btn btn-secondary btn-sm" type="button" data-action="next-logs-page">
                   <span data-i18n="common.nextPage">下一页</span>
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 6l6 6-6 6"/>
                   </svg>
                 </button>
-                <button id="logs_last2" class="btn btn-secondary btn-sm" onclick="lastLogsPage()">
+                <button id="logs_last2" class="btn btn-secondary btn-sm" type="button" data-action="last-logs-page">
                   <span data-i18n="common.lastPage">尾页</span>
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 7l5 5-5 5"/>
@@ -129,7 +128,7 @@
     <div class="modal-content test-modal-content">
       <div class="modal-header">
         <h2 class="modal-title"><span data-i18n="logs.testKeyTitle">测试 API Key</span> - <span id="testKeyChannelName"></span></h2>
-        <button class="close-btn" onclick="closeTestKeyModal()">&times;</button>
+        <button type="button" class="close-btn" data-action="close-test-key-modal">&times;</button>
       </div>
 
       <div class="form-group">
@@ -173,8 +172,8 @@
       </div>
 
       <div class="form-actions">
-        <button type="button" class="btn btn-secondary" onclick="closeTestKeyModal()" data-i18n="common.close">关闭</button>
-        <button type="button" id="runKeyTestBtn" class="btn btn-primary" onclick="runKeyTest()" data-i18n="logs.startTest">开始测试</button>
+        <button type="button" class="btn btn-secondary" data-action="close-test-key-modal" data-i18n="common.close">关闭</button>
+        <button type="button" id="runKeyTestBtn" class="btn btn-primary" data-action="run-key-test" data-i18n="logs.startTest">开始测试</button>
       </div>
     </div>
   </div>

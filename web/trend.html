@@ -56,7 +56,7 @@
                 </div>
                 <!-- 渠道筛选器 -->
                 <div class="channel-filter-container">
-                  <button class="btn btn-secondary btn-sm" onclick="toggleChannelFilter()">
+                  <button class="btn btn-secondary btn-sm" id="btn-channel-filter-toggle" type="button">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 100 4m0-4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 100 4m0-4v2m0-6V4"/>
                     </svg>
@@ -66,8 +66,8 @@
                     <div class="filter-header">
                       <span data-i18n="trend.selectChannels">选择渠道</span>
                       <div class="filter-actions">
-                        <button class="filter-action" onclick="selectAllChannels()" data-i18n="common.selectAll">全选</button>
-                        <button class="filter-action" onclick="clearAllChannels()" data-i18n="common.clear">清空</button>
+                        <button class="filter-action" id="btn-select-all-channels" type="button" data-i18n="common.selectAll">全选</button>
+                        <button class="filter-action" id="btn-clear-all-channels" type="button" data-i18n="common.clear">清空</button>
                       </div>
                     </div>
                     <div class="filter-content" id="channel-filter-list">

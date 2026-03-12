@@ -80,6 +80,7 @@ function loadTrendStateHarness(entries = {}) {
       return key;
     },
     localStorage,
+    initPageBootstrap() {},
     getDateRangePresets() {
       return [{ value: 'today' }, { value: 'last_month' }];
     },

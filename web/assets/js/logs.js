@@ -718,6 +718,38 @@ async function initFilters(restoredFilters) {
   });
 }
 
+function initLogsPageActions() {
+  if (typeof window.initDelegatedActions === 'function') {
+    window.initDelegatedActions({
+      boundKey: 'logsPageActionsBound',
+      click: {
+        'first-logs-page': () => firstLogsPage(),
+        'prev-logs-page': () => prevLogsPage(),
+        'next-logs-page': () => nextLogsPage(),
+        'last-logs-page': () => lastLogsPage(),
+        'close-test-key-modal': () => closeTestKeyModal(),
+        'run-key-test': () => runKeyTest(),
+        'toggle-response': (actionTarget) => {
+          const responseTarget = actionTarget.dataset.responseTarget;
+          if (responseTarget && typeof window.toggleResponse === 'function') {
+            window.toggleResponse(responseTarget);
+          }
+        }
+      }
+    });
+  }
+
+  const jumpPageInput = document.getElementById('logs_jump_page');
+  if (jumpPageInput && !jumpPageInput.dataset.bound) {
+    jumpPageInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        jumpToPage();
+      }
+    });
+    jumpPageInput.dataset.bound = '1';
+  }
+}
+
 // 性能优化：避免 toLocaleString 的开销，使用手动格式化
 function formatTime(timeStr) {
   try {
@@ -886,9 +918,10 @@ function buildLogsRequestParams() {
 }
 
 // 页面初始化
-document.addEventListener('DOMContentLoaded', async function () {
-  if (window.i18n) window.i18n.translatePage();
-  if (window.initTopbar) initTopbar('logs');
+window.initPageBootstrap({
+  topbarKey: 'logs',
+  run: async () => {
+  initLogsPageActions();
 
   // 优先从 URL 读取，其次从 localStorage 恢复，默认 all
   const u = new URLSearchParams(location.search);
@@ -974,6 +1007,7 @@ document.addEventListener('DOMContentLoaded', async function () {
         deleteKeyFromLog(channelId, channelName, apiKey, apiKeyHash);
       }
     });
+  }
   }
 });
 
@@ -1208,7 +1242,7 @@ function displayKeyTestResult(result) {
       details += `
             <div style="margin-top: 12px;">
               <h4 style="margin-bottom: 8px; color: var(--neutral-700);">完整 API 响应</h4>
-              <button class="btn btn-secondary btn-sm" onclick="toggleResponse('${responseId}')" style="margin-bottom: 8px;">显示/隐藏 JSON</button>
+              <button type="button" class="btn btn-secondary btn-sm" data-action="toggle-response" data-response-target="${responseId}" style="margin-bottom: 8px;">显示/隐藏 JSON</button>
               <div id="${responseId}" style="display: none; padding: 12px; background: var(--neutral-50); border-radius: 4px; border: 1px solid var(--neutral-200); color: var(--neutral-700); white-space: pre-wrap; font-family: monospace; font-size: 0.85em; max-height: 400px; overflow-y: auto;">${escapeHtml(JSON.stringify(result.api_response, null, 2))}</div>
             </div>
           `;
@@ -1235,7 +1269,7 @@ function displayKeyTestResult(result) {
       details += `
             <div style="margin-top: 12px;">
               <h4 style="margin-bottom: 8px; color: var(--neutral-700);">原始响应</h4>
-              <button class="btn btn-secondary btn-sm" onclick="toggleResponse('${rawId}')" style="margin-bottom: 8px;">显示/隐藏</button>
+              <button type="button" class="btn btn-secondary btn-sm" data-action="toggle-response" data-response-target="${rawId}" style="margin-bottom: 8px;">显示/隐藏</button>
               <div id="${rawId}" style="display: none; padding: 12px; background: var(--neutral-50); border-radius: 4px; border: 1px solid var(--neutral-200); color: var(--error-700); white-space: pre-wrap; font-family: monospace; font-size: 0.85em; max-height: 400px; overflow-y: auto;">${escapeHtml(result.raw_response)}</div>
             </div>
           `;

@@ -1323,7 +1323,9 @@ function shouldShowZoom(points, hours, trendType) {
           displayName: displayName
         });
         if (item) {
-          item.onclick = () => toggleChannel(channelName);
+          item.addEventListener('click', () => {
+            toggleChannel(channelName);
+          });
           fragment.appendChild(item);
         }
       }
@@ -1387,6 +1389,29 @@ function shouldShowZoom(points, hours, trendType) {
         }, 10);
       }
     }
+
+    function bindChannelFilterControls() {
+      const channelFilterToggle = document.getElementById('btn-channel-filter-toggle');
+      if (channelFilterToggle) {
+        channelFilterToggle.addEventListener('click', () => {
+          toggleChannelFilter();
+        });
+      }
+
+      const selectAllBtn = document.getElementById('btn-select-all-channels');
+      if (selectAllBtn) {
+        selectAllBtn.addEventListener('click', () => {
+          selectAllChannels();
+        });
+      }
+
+      const clearAllBtn = document.getElementById('btn-clear-all-channels');
+      if (clearAllBtn) {
+        clearAllBtn.addEventListener('click', () => {
+          clearAllChannels();
+        });
+      }
+    }
     
     function closeChannelFilter(event) {
       const dropdown = document.getElementById('channel-filter-dropdown');
@@ -1420,9 +1445,9 @@ function shouldShowZoom(points, hours, trendType) {
     }
 
     // 页面初始化
-    document.addEventListener('DOMContentLoaded', async function() {
-      if (window.i18n) window.i18n.translatePage();
-      if (window.initTopbar) initTopbar('trend');
+    window.initPageBootstrap({
+      topbarKey: 'trend',
+      run: async () => {
       restoreState();
       restoreChannelState();
       applyRangeUI();
@@ -1436,6 +1461,7 @@ function shouldShowZoom(points, hours, trendType) {
       });
 
       bindToggles();
+      bindChannelFilterControls();
 
       // 加载模型列表（传入当前渠道类型）
       await loadModels(window.currentChannelType);
@@ -1461,6 +1487,7 @@ function shouldShowZoom(points, hours, trendType) {
 
       // 定期刷新数据（每5分钟）
       setInterval(loadData, 5 * 60 * 1000);
+      }
     });
 
     function bindToggles() {

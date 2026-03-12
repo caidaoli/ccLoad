@@ -110,6 +110,19 @@
       font-weight: 500;
     }
 
+    .channel-hover-clear-btn:hover {
+      background: var(--neutral-100) !important;
+    }
+
+    .channel-hover-key-toggle-btn:hover {
+      background: var(--neutral-50) !important;
+      border-color: var(--neutral-400) !important;
+    }
+
+    .channel-hover-modal-close-btn:hover {
+      background: var(--neutral-200) !important;
+    }
+
     .table-container {
       background: rgba(255, 255, 255, 0.97);
       border-color: rgba(148, 163, 184, 0.18);
