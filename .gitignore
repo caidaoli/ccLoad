@@ -56,6 +56,7 @@ dist
 *.bak
 .docs
 docs/
+.worktrees/
 # 步骤1：忽略所有目录下的 claude.md
 **/claude.md
 # 步骤2：通过 "!" 取消对根目录下该文件的忽略
