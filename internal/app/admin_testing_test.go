@@ -571,6 +571,73 @@ func TestHandleChannelTest_FailedAPI(t *testing.T) {
 	}
 }
 
+func TestHandleChannelTest_SSESoftErrorTriggersCooldown(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "event: \n")
+		_, _ = fmt.Fprint(w, "data: {\"error\":{\"code\":\"1113\",\"message\":\"Insufficient balance or no resource package. Please recharge.\"},\"request_id\":\"req_1113\"}\n\n")
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+
+	ctx := context.Background()
+	cfg := &model.Config{
+		Name:         "test-sse-soft-error",
+		URL:          upstream.URL,
+		Priority:     1,
+		ModelEntries: []model.ModelEntry{{Model: "claude-3-5-sonnet"}},
+		Enabled:      true,
+	}
+	created, err := srv.store.CreateConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+
+	err = srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-soft-error"},
+	})
+	if err != nil {
+		t.Fatalf("添加 API key 失败: %v", err)
+	}
+
+	channelID := fmt.Sprintf("%d", created.ID)
+	reqBody := map[string]any{
+		"model":        "claude-3-5-sonnet",
+		"channel_type": "anthropic",
+		"stream":       true,
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", reqBody))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200, 实际 %d, 响应: %s", w.Code, w.Body.String())
+	}
+
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("外层 APIResponse.Success 应为 true, error=%q", resp.Error)
+	}
+
+	dataSuccess, _ := resp.Data["success"].(bool)
+	if dataSuccess {
+		t.Fatalf("data.success 应为 false, data=%+v", resp.Data)
+	}
+
+	if got, _ := resp.Data["error"].(string); got != "Insufficient balance or no resource package. Please recharge." {
+		t.Fatalf("错误信息不对，got=%q data=%+v", got, resp.Data)
+	}
+
+	if got, _ := resp.Data["cooldown_action"].(string); got != "channel_cooldown_applied" {
+		t.Fatalf("1113 软错误在单 Key 渠道应升级为渠道冷却，got=%q data=%+v", got, resp.Data)
+	}
+}
+
 func TestHandleChannelTest_EventStreamHeaderWithJSONBodyFallback(t *testing.T) {
 	// 模拟“Content-Type=event-stream，但实际返回完整JSON”场景
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -648,4 +715,46 @@ func TestHandleChannelTest_EventStreamHeaderWithJSONBodyFallback(t *testing.T) {
 	if message != "API测试成功" {
 		t.Fatalf("应按非流式成功文案返回，实际: %q", message)
 	}
+}
+
+func TestShouldFallbackToNextURL_StructuredSoftErrors(t *testing.T) {
+	t.Run("key_level_soft_error_should_not_fallback_or_cooldown_url", func(t *testing.T) {
+		result := map[string]any{
+			"success":     false,
+			"status_code": http.StatusOK,
+			"api_error": map[string]any{
+				"error": map[string]any{
+					"code":    "1113",
+					"message": "Insufficient balance or no resource package. Please recharge.",
+				},
+			},
+			"response_headers": map[string]string{
+				"Content-Type": "text/event-stream",
+			},
+		}
+
+		continueFallback, shouldCooldown := shouldFallbackToNextURL(result)
+		if continueFallback || shouldCooldown {
+			t.Fatalf("Key级软错误不应继续切URL或冷却URL，got fallback=%v cooldown=%v", continueFallback, shouldCooldown)
+		}
+	})
+
+	t.Run("channel_level_soft_error_should_fallback_and_cooldown_url", func(t *testing.T) {
+		result := map[string]any{
+			"success":     false,
+			"status_code": http.StatusOK,
+			"api_error": map[string]any{
+				"type": "error",
+				"error": map[string]any{
+					"type":    "api_error",
+					"message": "upstream overloaded",
+				},
+			},
+		}
+
+		continueFallback, shouldCooldown := shouldFallbackToNextURL(result)
+		if !continueFallback || !shouldCooldown {
+			t.Fatalf("渠道级软错误应继续切URL并冷却当前URL，got fallback=%v cooldown=%v", continueFallback, shouldCooldown)
+		}
+	})
 }

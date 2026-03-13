@@ -109,21 +109,7 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 		_ = s.store.ResetChannelCooldown(c.Request.Context(), id)
 		s.invalidateChannelRelatedCache(id)
 	} else {
-		statusCode, _ := testResult["status_code"].(int)
-		var errorBody []byte
-		if apiError, ok := testResult["api_error"].(map[string]any); ok {
-			errorBody, _ = sonic.Marshal(apiError)
-		} else if rawResp, ok := testResult["raw_response"].(string); ok {
-			errorBody = []byte(rawResp)
-		}
-
-		var headers map[string][]string
-		if respHeaders, ok := testResult["response_headers"].(map[string]string); ok && statusCode == 429 {
-			headers = make(map[string][]string, len(respHeaders))
-			for k, v := range respHeaders {
-				headers[k] = []string{v}
-			}
-		}
+		statusCode, errorBody, headers := buildTestFailureClassificationInput(testResult)
 
 		action := s.cooldownManager.HandleError(
 			c.Request.Context(),
@@ -560,26 +546,19 @@ func (s *Server) testChannelAPIWithURL(
 	return parseNonStreamResponse(respBody)
 }
 
-func shouldFallbackToNextURL(result map[string]any) (continueFallback bool, shouldCooldown bool) {
-	statusCode, hasStatus := getResultInt(result["status_code"])
-	if !hasStatus {
-		errMsg, _ := result["error"].(string)
-		if strings.HasPrefix(errMsg, "网络请求失败:") || strings.HasPrefix(errMsg, "读取响应失败:") {
-			return true, true
-		}
-		return false, false
-	}
+func buildTestFailureClassificationInput(result map[string]any) (statusCode int, errorBody []byte, headers map[string][]string) {
+	statusCode, _ = getResultInt(result["status_code"])
 
-	var errorBody []byte
+	hasStructuredAPIError := false
 	if apiError, ok := result["api_error"].(map[string]any); ok {
 		errorBody, _ = sonic.Marshal(apiError)
+		hasStructuredAPIError = true
 	} else if rawResp, ok := result["raw_response"].(string); ok {
 		errorBody = []byte(rawResp)
 	} else if errMsg, ok := result["error"].(string); ok {
 		errorBody = []byte(errMsg)
 	}
 
-	var headers map[string][]string
 	switch h := result["response_headers"].(type) {
 	case map[string]string:
 		headers = make(map[string][]string, len(h))
@@ -594,6 +573,30 @@ func shouldFallbackToNextURL(result map[string]any) (continueFallback bool, shou
 			}
 		}
 	}
+
+	// 上游测试会保留真实HTTP状态码，但冷却分类器需要内部软错误码才能正确识别
+	// “HTTP 200 + 结构化 error 对象”本质上不是成功，只是上游把错误塞进了响应体。
+	if statusCode >= 200 && statusCode < 300 && hasStructuredAPIError {
+		if _, is1308 := util.ParseResetTimeFrom1308Error(errorBody); is1308 {
+			statusCode = util.StatusQuotaExceeded
+		} else {
+			statusCode = util.StatusSSEError
+		}
+	}
+
+	return statusCode, errorBody, headers
+}
+
+func shouldFallbackToNextURL(result map[string]any) (continueFallback bool, shouldCooldown bool) {
+	if _, hasStatus := getResultInt(result["status_code"]); !hasStatus {
+		errMsg, _ := result["error"].(string)
+		if strings.HasPrefix(errMsg, "网络请求失败:") || strings.HasPrefix(errMsg, "读取响应失败:") {
+			return true, true
+		}
+		return false, false
+	}
+
+	statusCode, errorBody, headers := buildTestFailureClassificationInput(result)
 
 	classification := util.ClassifyHTTPResponseWithMeta(statusCode, headers, errorBody)
 	switch classification.Level {
