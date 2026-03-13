@@ -259,35 +259,128 @@ func TestProxy_ChannelRetry_On503(t *testing.T) {
 	}
 }
 
-func TestProxy_MultiURLFallback_DoesNotChannelCooldownEarly(t *testing.T) {
+func TestProxy_MultiURL5xx_SwitchesToNextChannel(t *testing.T) {
 	t.Parallel()
 
-	failCalls := 0
-	okCalls := 0
+	ch1FailCalls := 0
+	ch1SecondURLCalls := 0
+	ch2Calls := 0
 
-	// URL1: 固定失败（模拟单URL故障）
+	// 渠道1 URL1: 固定 503
 	upstreamFail := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		failCalls++
+		ch1FailCalls++
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte(`{"error":"service unavailable"}`))
 	}))
 	defer upstreamFail.Close()
 
+	// 渠道1 URL2: 即使可用也不应被尝试（新策略：5xx 直接切渠道）
+	upstreamShouldSkip := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ch1SecondURLCalls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"from-ch1-url2","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstreamShouldSkip.Close()
+
+	// 渠道2: 正常返回，用于验证“切换到下一个渠道”
+	upstreamCh2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ch2Calls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"from-ch2","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstreamCh2.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "ch-multi-url", models: "gpt-4", apiKey: "sk-1", priority: 100},
+		{name: "ch-fallback", models: "gpt-4", apiKey: "sk-2", priority: 50},
+	}, map[int]string{
+		0: upstreamFail.URL + "\n" + upstreamShouldSkip.URL,
+		1: upstreamCh2.URL,
+	})
+
+	ctx := context.Background()
+	configs, err := env.store.ListConfigs(ctx)
+	if err != nil {
+		t.Fatalf("ListConfigs: %v", err)
+	}
+	if len(configs) != 2 {
+		t.Fatalf("expected 2 config, got %d", len(configs))
+	}
+
+	var channelID int64
+	for _, cfg := range configs {
+		if cfg.Name == "ch-multi-url" {
+			channelID = cfg.ID
+			break
+		}
+	}
+	if channelID == 0 {
+		t.Fatalf("ch-multi-url not found in configs")
+	}
+
+	// 强制渠道1首跳命中失败URL，避免随机首跳影响稳定性
+	env.server.urlSelector.CooldownURL(channelID, upstreamShouldSkip.URL)
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-4",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "from-ch2") {
+		t.Fatalf("expected switch to next channel, got body: %s", w.Body.String())
+	}
+	if ch1FailCalls < 1 {
+		t.Fatalf("expected channel1 first URL attempted, got %d", ch1FailCalls)
+	}
+	if ch1SecondURLCalls != 0 {
+		t.Fatalf("expected channel1 second URL not attempted on 5xx, got %d", ch1SecondURLCalls)
+	}
+	if ch2Calls < 1 {
+		t.Fatalf("expected next channel attempted, got %d", ch2Calls)
+	}
+}
+
+func TestProxy_MultiURLFallbackOn598_DoesNotChannelCooldownEarly(t *testing.T) {
+	t.Parallel()
+
+	failCalls := 0
+	okCalls := 0
+
+	// URL1: 首字节超时（598）
+	upstreamTimeout := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		failCalls++
+		time.Sleep(120 * time.Millisecond)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"late\"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer upstreamTimeout.Close()
+
 	// URL2: 正常返回
 	upstreamOK := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		okCalls++
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"from-url2","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"from-url2\"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	defer upstreamOK.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{
 		{name: "ch-multi-url", models: "gpt-4", apiKey: "sk-1"},
 	}, map[int]string{
-		0: upstreamFail.URL + "\n" + upstreamOK.URL,
+		0: upstreamTimeout.URL + "\n" + upstreamOK.URL,
 	})
+
+	// 缩短首字节超时，稳定触发 598
+	env.server.firstByteTimeout = 50 * time.Millisecond
 
 	ctx := context.Background()
 	configs, err := env.store.ListConfigs(ctx)
@@ -299,11 +392,12 @@ func TestProxy_MultiURLFallback_DoesNotChannelCooldownEarly(t *testing.T) {
 	}
 	channelID := configs[0].ID
 
-	// 强制 URL2 进入冷却，确保首跳先打到失败URL，稳定覆盖“先失败再回退”的路径
+	// 强制 URL2 进入冷却，确保首跳先打到 timeout URL
 	env.server.urlSelector.CooldownURL(channelID, upstreamOK.URL)
 
 	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
+		"stream":   true,
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
 
@@ -311,13 +405,13 @@ func TestProxy_MultiURLFallback_DoesNotChannelCooldownEarly(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	if !strings.Contains(w.Body.String(), "from-url2") {
-		t.Fatalf("expected fallback to url2, got body: %s", w.Body.String())
+		t.Fatalf("expected fallback to url2 on 598, got body: %s", w.Body.String())
 	}
 	if failCalls < 1 || okCalls < 1 {
 		t.Fatalf("expected both URLs attempted, failCalls=%d okCalls=%d", failCalls, okCalls)
 	}
 
-	// 关键断言：多URL内部回退成功后，不应残留渠道级冷却
+	// 关键断言：598 触发多URL内部回退成功后，不应残留渠道级冷却
 	cooldowns, err := env.store.GetAllChannelCooldowns(ctx)
 	if err != nil {
 		t.Fatalf("GetAllChannelCooldowns: %v", err)

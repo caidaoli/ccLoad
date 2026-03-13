@@ -746,9 +746,19 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 				return urlLastFailure, nil
 			}
 			// 渠道级错误 (ActionRetryChannel) 或网络错误：
-			// 在多URL场景下，先尝试下一个URL
+			// 在多URL场景下，默认先尝试下一个URL
 			if len(urls) > 1 {
 				s.urlSelector.CooldownURL(cfg.ID, urlEntry.url)
+
+				// 新策略：上游明确返回 5xx（598 首字节超时除外）时，直接切换下一个渠道。
+				// 该分支命中时，当前URL若使用了 deferChannelCooldown，需要补做一次渠道级冷却写入。
+				if shouldSwitchChannelImmediatelyOnHTTP5xx(result) {
+					if shouldDeferChannelCooldown && result != nil {
+						input := httpErrorInputFromParts(cfg.ID, keyIndex, result.status, result.body, result.header)
+						s.applyCooldownDecision(ctx, cfg, input)
+					}
+					break
+				}
 				continue // 下一个URL
 			}
 			// 单URL：保持原有行为
@@ -773,6 +783,17 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 
 	// 所有Key都尝试过但都失败（无 lastFailure 说明循环未执行或逻辑异常）
 	return nil, ErrAllKeysExhausted
+}
+
+func shouldSwitchChannelImmediatelyOnHTTP5xx(result *proxyResult) bool {
+	// 仅针对“上游已返回HTTP响应”的5xx生效，避免把网络错误误判为同一策略。
+	if result == nil || result.header == nil {
+		return false
+	}
+	if result.status < 500 || result.status > 599 {
+		return false
+	}
+	return result.status != util.StatusFirstByteTimeout
 }
 
 func shouldCheckSoftErrorForChannelType(channelType string) bool {
