@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -427,4 +428,108 @@ func TestURLSelector_ProbeURLs_RealTCP(t *testing.T) {
 	if cooled == 0 {
 		t.Logf("warning: no URLs were cooled down (might succeed if ports are open)")
 	}
+}
+
+func TestURLSelector_ProbeURLs_CancelDoesNotCooldownPendingURLs(t *testing.T) {
+	sel := NewURLSelector()
+	sel.probeTimeout = time.Second
+
+	slowStarted := make(chan struct{})
+	sel.probeDial = func(ctx context.Context, _, address string) (net.Conn, error) {
+		switch address {
+		case "fast.example:443":
+			conn, peer := net.Pipe()
+			_ = peer.Close()
+			return conn, nil
+		case "slow.example:443":
+			close(slowStarted)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		default:
+			t.Fatalf("unexpected probe address: %s", address)
+			return nil, context.Canceled
+		}
+	}
+
+	parentCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		<-slowStarted
+		cancel()
+	}()
+
+	urls := []string{"https://fast.example", "https://slow.example"}
+	sel.ProbeURLs(parentCtx, 1, urls)
+
+	if sel.IsCooledDown(1, "https://slow.example") {
+		t.Fatalf("expected canceled probe not to cooldown pending URL")
+	}
+}
+
+func TestURLSelector_ProbeURLs_DeduplicatesInFlightRequests(t *testing.T) {
+	sel := NewURLSelector()
+	sel.probeTimeout = time.Second
+
+	var dialCount atomic.Int64
+	release := make(chan struct{})
+	closed := false
+	closeRelease := func() {
+		if !closed {
+			close(release)
+			closed = true
+		}
+	}
+	defer closeRelease()
+
+	sel.probeDial = func(ctx context.Context, _, address string) (net.Conn, error) {
+		dialCount.Add(1)
+		select {
+		case <-release:
+			conn, peer := net.Pipe()
+			_ = peer.Close()
+			return conn, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	urls := []string{"https://a.example", "https://b.example"}
+	done1 := make(chan struct{})
+	go func() {
+		sel.ProbeURLs(context.Background(), 1, urls)
+		close(done1)
+	}()
+
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for dialCount.Load() < int64(len(urls)) {
+		if time.Now().After(deadline) {
+			closeRelease()
+			<-done1
+			t.Fatalf("first probe did not start all dials in time, got=%d want=%d", dialCount.Load(), len(urls))
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	done2 := make(chan struct{})
+	go func() {
+		sel.ProbeURLs(context.Background(), 1, urls)
+		close(done2)
+	}()
+
+	select {
+	case <-done2:
+	case <-time.After(100 * time.Millisecond):
+		closeRelease()
+		<-done1
+		t.Fatalf("second probe should return quickly when URLs are already being probed")
+	}
+
+	if got := dialCount.Load(); got != int64(len(urls)) {
+		closeRelease()
+		<-done1
+		t.Fatalf("expected no duplicate probe dials, got=%d want=%d", got, len(urls))
+	}
+
+	closeRelease()
+	<-done1
 }

@@ -65,10 +65,12 @@ type Server struct {
 	maxConcurrency int           // 最大并发数（默认1000）
 
 	// 优雅关闭机制
-	shutdownCh     chan struct{}  // 关闭信号channel
-	shutdownDone   chan struct{}  // Shutdown完成信号（幂等）
-	isShuttingDown atomic.Bool    // shutdown标志，防止向已关闭channel写入
-	wg             sync.WaitGroup // 等待所有后台goroutine结束
+	baseCtx        context.Context    // server生命周期context，Shutdown时取消
+	baseCancel     context.CancelFunc // 取消baseCtx
+	shutdownCh     chan struct{}      // 关闭信号channel
+	shutdownDone   chan struct{}      // Shutdown完成信号（幂等）
+	isShuttingDown atomic.Bool        // shutdown标志，防止向已关闭channel写入
+	wg             sync.WaitGroup     // 等待所有后台goroutine结束
 
 	// [OPT] P3: 渠道类型缓存（TTL 30s）
 	channelTypesCache     map[int64]string
@@ -142,6 +144,8 @@ func NewServer(store storage.Store) *Server {
 	transport := buildHTTPTransport(skipTLSVerify)
 	log.Print("[INFO] HTTP/2已启用（头部压缩+多路复用，HTTPS自动协商）")
 
+	baseCtx, baseCancel := context.WithCancel(context.Background())
+
 	s := &Server{
 		store:            store,
 		configService:    configService,
@@ -165,6 +169,8 @@ func NewServer(store storage.Store) *Server {
 		maxConcurrency: maxConcurrency,
 
 		// 初始化优雅关闭机制
+		baseCtx:      baseCtx,
+		baseCancel:   baseCancel,
 		shutdownCh:   make(chan struct{}),
 		shutdownDone: make(chan struct{}),
 
@@ -661,6 +667,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	defer close(s.shutdownDone)
 
 	log.Print("🛑 正在关闭Server，等待后台任务完成...")
+
+	// 取消server级context，通知所有派生的后台任务退出
+	s.baseCancel()
 
 	// 关闭shutdownCh，通知所有goroutine退出（幂等：由isShuttingDown守护）
 	close(s.shutdownCh)

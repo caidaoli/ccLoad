@@ -672,12 +672,14 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	if len(urls) == 0 {
 		return nil, fmt.Errorf("no valid URLs configured for channel %d", cfg.ID)
 	}
+	selector := s.urlSelector
 
-	// 多URL场景：首次使用前做TCP连接探测预热
+	// 多URL场景：异步做TCP连接探测预热
 	// 目的：通过TCP连接耗时（纯网络延迟，与模型推理无关）为URLSelector提供初始EWMA种子，
 	// 避免首次请求随机选到网络延迟更高的URL。
-	if len(urls) > 1 && s.urlSelector != nil {
-		s.urlSelector.ProbeURLs(ctx, cfg.ID, urls)
+	if len(urls) > 1 && selector != nil {
+		urlsSnapshot := append([]string(nil), urls...)
+		go selector.ProbeURLs(s.baseCtx, cfg.ID, urlsSnapshot)
 	}
 
 	// Key重试循环
@@ -703,7 +705,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		}
 
 		// URL循环（单URL时退化为单次迭代）
-		sortedURLs := orderURLsWithSelector(s.urlSelector, cfg.ID, urls)
+		sortedURLs := orderURLsWithSelector(selector, cfg.ID, urls)
 		var urlLastFailure *proxyResult
 		for urlIdx, urlEntry := range sortedURLs {
 			if ctxErr := ctx.Err(); ctxErr != nil {
@@ -721,13 +723,13 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 
 			if result != nil && result.succeeded {
 				// 成功：记录TTFB到URLSelector（仅多URL场景）
-				if len(urls) > 1 && result.status >= 200 && result.status < 300 {
+				if len(urls) > 1 && selector != nil && result.status >= 200 && result.status < 300 {
 					ttfb := time.Duration(result.firstByteTime * float64(time.Second))
 					if ttfb <= 0 {
 						ttfb = time.Duration(result.duration * float64(time.Second))
 					}
 					if ttfb > 0 {
-						s.urlSelector.RecordLatency(cfg.ID, urlEntry.url, ttfb)
+						selector.RecordLatency(cfg.ID, urlEntry.url, ttfb)
 					}
 				}
 				return result, nil
@@ -748,7 +750,9 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 			// 渠道级错误 (ActionRetryChannel) 或网络错误：
 			// 在多URL场景下，默认先尝试下一个URL
 			if len(urls) > 1 {
-				s.urlSelector.CooldownURL(cfg.ID, urlEntry.url)
+				if selector != nil {
+					selector.CooldownURL(cfg.ID, urlEntry.url)
+				}
 
 				// 新策略：上游明确返回 5xx（598 首字节超时除外）时，直接切换下一个渠道。
 				// 该分支命中时，当前URL若使用了 deferChannelCooldown，需要补做一次渠道级冷却写入。

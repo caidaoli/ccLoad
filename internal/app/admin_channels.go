@@ -281,7 +281,7 @@ func (s *Server) HandleChannelURLStats(c *gin.Context) {
 	}
 
 	urls := cfg.GetURLs()
-	if len(urls) <= 1 {
+	if len(urls) <= 1 || s.urlSelector == nil {
 		RespondJSON(c, http.StatusOK, []URLStat{})
 		return
 	}

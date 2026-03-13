@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -263,4 +264,59 @@ func TestServer_HandleChannelKeys(t *testing.T) {
 			t.Fatalf("keys=%v, want 1", len(resp.Data))
 		}
 	})
+}
+
+func TestServer_ShutdownCancelsInFlightURLProbe(t *testing.T) {
+	srv := newInMemoryServer(t)
+
+	srv.urlSelector.probeTimeout = 5 * time.Second
+
+	started := make(chan struct{}, 2)
+	srv.urlSelector.probeDial = func(ctx context.Context, _, _ string) (net.Conn, error) {
+		started <- struct{}{}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	channelID := int64(1)
+	urls := []string{"https://a.example", "https://b.example"}
+
+	probeDone := make(chan struct{})
+	go func() {
+		srv.urlSelector.ProbeURLs(srv.baseCtx, channelID, urls)
+		close(probeDone)
+	}()
+
+	for range len(urls) {
+		select {
+		case <-started:
+		case <-time.After(500 * time.Millisecond):
+			t.Fatal("probe dials did not start in time")
+		}
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown failed: %v", err)
+	}
+
+	select {
+	case <-probeDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("ProbeURLs did not exit promptly after shutdown")
+	}
+
+	for _, u := range urls {
+		if srv.urlSelector.IsCooledDown(channelID, u) {
+			t.Fatalf("expected canceled probe not to cooldown url: %s", u)
+		}
+	}
+
+	srv.urlSelector.mu.RLock()
+	probingLeft := len(srv.urlSelector.probing)
+	srv.urlSelector.mu.RUnlock()
+	if probingLeft != 0 {
+		t.Fatalf("expected probing markers cleared after shutdown cancellation, got %d", probingLeft)
+	}
 }
