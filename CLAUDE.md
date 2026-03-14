@@ -72,7 +72,10 @@ internal/
 └── testutil/      # 测试辅助（api_tester/data/http/store/templates/types）
 web/               # 前端页面
 ├── *.html         # 页面（index/channels/logs/stats/tokens/settings/trend/model-test/login）
+├── manifest.json  # PWA清单（可安装为桌面应用）
+├── favicon*       # 多尺寸favicon（svg/ico/192png/512png）
 └── assets/
+    ├── locales/   # i18n本地化（zh-CN.js, en.js）
     ├── css/       # 样式（styles/channels/logs/tokens）
     └── js/        # 模块化JS（channels-*/logs/stats/tokens/settings/trend/i18n/ui/page-filters/filter-*/date-range-selector/template-engine/...）
 ```
@@ -82,10 +85,15 @@ web/               # 前端页面
 - 渠道级错误(5xx/520/524) → 切换到其他渠道
 - 404/405（非明确客户端语义）→ 视为渠道级错误并切换渠道（常见于BaseURL/endpoint配置问题）
 - 客户端错误（如406/413，或404且响应体明确`model_not_found`）→ 不重试,直接返回
-- **软错误检测(597)**: 识别200状态码但响应体为错误的情况 → 渠道级冷却
-- **1308配额错误(596)**: 专用处理,不计入渠道健康度 → Key级冷却
 - **渠道每日成本限额**: 达到`daily_cost_limit`自动跳过该渠道
 - 指数退避: 2min → 4min → 8min → 30min(上限)
+
+**自定义状态码**（`util/classifier.go`）:
+- **499** `StatusClientClosedRequest` — 客户端取消，不计入失败统计，不冷却
+- **596** `StatusQuotaExceeded` — 1308配额超限 → Key级冷却，不计入渠道健康度
+- **597** `StatusSSEError` — SSE流中error事件（HTTP 200但响应体含错误）→ 由`classifySSEError()`按error.type动态决定级别（api_error/overloaded_error→渠道级，其他→Key级）
+- **598** `StatusFirstByteTimeout` — 上游首字节超时 → 渠道级冷却
+- **599** `StatusStreamIncomplete` — 流式响应不完整/中断 → 渠道级冷却
 
 **渠道选择算法**:
 - **平滑加权轮询**: 替换加权随机，按有效Key数量分配流量，更均匀
@@ -100,6 +108,8 @@ web/               # 前端页面
 - **BaseURL追踪**: 活跃请求、日志记录和UI展示均携带当前上游URL
 
 **关键入口**:
+- `app.Server.HandleProxyRequest()` - 代理请求主入口
+- `app.Server.selectCandidatesByModelAndType()` - 渠道候选筛选（模型匹配+日期后缀回退）
 - `cooldown.Manager.HandleError()` - 冷却决策引擎
 - `util.ClassifyHTTPStatus()` - HTTP错误分类器
 - `util.ClassifyHTTPResponseWithMeta()` - 带响应体的错误分类（返回完整元数据）
