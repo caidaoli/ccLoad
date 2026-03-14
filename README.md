@@ -392,7 +392,7 @@ git push
 **版本锁定**（可选）:
 如果需要锁定特定版本，修改 Dockerfile：
 ```dockerfile
-FROM ghcr.io/caidaoli/ccload:v0.2.0  # 指定版本号
+FROM ghcr.io/caidaoli/ccload:v1.85.4  # 指定版本号
 ENV TZ=Asia/Shanghai
 ENV PORT=7860
 ENV SQLITE_PATH=/tmp/ccload.db
@@ -511,7 +511,7 @@ curl -X POST http://localhost:8080/v1/messages \
   -H "x-api-key: your-claude-api-key" \
   -H "anthropic-version: 2023-06-01" \
   -d '{
-    "model": "claude-3-sonnet-20240229",
+    "model": "claude-sonnet-4-6",
     "max_tokens": 1024,
     "messages": [
       {
@@ -549,7 +549,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 curl -X POST http://localhost:8080/v1/messages/count_tokens \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "claude-3-5-sonnet-20241022",
+    "model": "claude-sonnet-4-6",
     "messages": [
       {"role": "user", "content": "Hello, how are you?"}
     ],
@@ -584,7 +584,7 @@ curl -X POST http://localhost:8080/admin/channels \
     "api_key": "sk-ant-api03-xxx",
     "url": "https://api.anthropic.com,https://api2.anthropic.com",
     "priority": 10,
-    "models": ["claude-3-sonnet-20240229", "claude-3-opus-20240229"],
+    "models": ["claude-sonnet-4-6", "claude-opus-4-6"],
     "enabled": true
   }'
 ```
@@ -615,8 +615,8 @@ curl -X POST -H "Authorization: Bearer your_token" \
 **CSV格式示例**:
 ```csv
 name,api_key,url,priority,models,enabled
-Claude-API-1,sk-ant-xxx,https://api.anthropic.com,10,"[\"claude-3-sonnet-20240229\"]",true
-Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"]",true
+Claude-API-1,sk-ant-xxx,https://api.anthropic.com,10,"[\"claude-sonnet-4-6\"]",true
+Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-opus-4-6\"]",true
 ```
 
 **特性**:
@@ -658,10 +658,10 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"
 | 组件 | 版本 | 用途 | 性能优势 |
 |------|------|------|----------|
 | **Go** | 1.25.0+ | 运行时环境 | 原生并发支持，内置 min 函数 |
-| **Gin** | v1.10.1 | Web框架 | 高性能HTTP路由 |
-| **SQLite3** | v1.38.2 | 嵌入式数据库 | 零配置，单文件存储（默认） |
-| **MySQL** | v1.8.1 | 关系型数据库 | 可选，适合高并发生产环境 |
-| **Sonic** | v1.14.1 | JSON库 | 比标准库快2-3倍 |
+| **Gin** | v1.11.0 | Web框架 | 高性能HTTP路由 |
+| **modernc/sqlite** | v1.45.0 | 嵌入式数据库 | 纯Go实现，零CGO依赖，单文件存储（默认） |
+| **MySQL** | v1.9.3 | 关系型数据库 | 可选，适合高并发生产环境 |
+| **Sonic** | v1.15.0 | JSON库 | 比标准库快2-3倍 |
 | **godotenv** | v1.5.1 | 环境配置 | 简化配置管理 |
 
 ### 架构特点
@@ -864,9 +864,9 @@ export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
 - **镜像仓库**：`ghcr.io/caidaoli/ccload`
 - **可用标签**：
   - `latest` - 最新稳定版本
-  - `v0.1.0` - 具体版本号
-  - `v0.1` - 主要.次要版本
-  - `v0` - 主要版本
+  - `v1.85.4` - 具体版本号
+  - `v1.85` - 主要.次要版本
+  - `v1` - 主要版本
 
 ### 镜像标签说明
 
@@ -875,7 +875,7 @@ export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
 docker pull ghcr.io/caidaoli/ccload:latest
 
 # 拉取指定版本
-docker pull ghcr.io/caidaoli/ccload:v0.1.0
+docker pull ghcr.io/caidaoli/ccload:v1.85.4
 
 # 指定架构（Docker 通常自动选择）
 docker pull --platform linux/amd64 ghcr.io/caidaoli/ccload:latest

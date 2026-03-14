@@ -371,7 +371,7 @@ git push
 **Version Pinning** (Optional):
 To lock specific version, modify Dockerfile:
 ```dockerfile
-FROM ghcr.io/caidaoli/ccload:v0.2.0  # Specify version
+FROM ghcr.io/caidaoli/ccload:v1.85.4  # Specify version
 ENV TZ=Asia/Shanghai
 ENV PORT=7860
 ENV SQLITE_PATH=/tmp/ccload.db
@@ -484,7 +484,7 @@ curl -X POST http://localhost:8080/v1/messages \
   -H "x-api-key: your-claude-api-key" \
   -H "anthropic-version: 2023-06-01" \
   -d '{
-    "model": "claude-3-sonnet-20240229",
+    "model": "claude-sonnet-4-6",
     "max_tokens": 1024,
     "messages": [
       {
@@ -520,7 +520,7 @@ Quickly estimate request token consumption (no upstream API call needed):
 curl -X POST http://localhost:8080/v1/messages/count_tokens \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "claude-3-5-sonnet-20241022",
+    "model": "claude-sonnet-4-6",
     "messages": [
       {"role": "user", "content": "Hello, how are you?"}
     ],
@@ -553,7 +553,7 @@ curl -X POST http://localhost:8080/admin/channels \
     "api_key": "sk-ant-api03-xxx",
     "url": "https://api.anthropic.com,https://api2.anthropic.com",
     "priority": 10,
-    "models": ["claude-3-sonnet-20240229", "claude-3-opus-20240229"],
+    "models": ["claude-sonnet-4-6", "claude-opus-4-6"],
     "enabled": true
   }'
 ```
@@ -584,8 +584,8 @@ curl -X POST -H "Authorization: Bearer your_token" \
 **CSV Format Example**:
 ```csv
 name,api_key,url,priority,models,enabled
-Claude-API-1,sk-ant-xxx,https://api.anthropic.com,10,"[\"claude-3-sonnet-20240229\"]",true
-Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-3-opus-20240229\"]",true
+Claude-API-1,sk-ant-xxx,https://api.anthropic.com,10,"[\"claude-sonnet-4-6\"]",true
+Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-opus-4-6\"]",true
 ```
 
 **Features**:
@@ -627,10 +627,10 @@ Check out the awesome admin dashboard 👇
 | Component | Version | Purpose | Performance Advantage |
 |-----------|---------|---------|----------------------|
 | **Go** | 1.25.0+ | Runtime | Native concurrency, built-in min function |
-| **Gin** | v1.10.1 | Web Framework | High-performance HTTP routing |
-| **SQLite3** | v1.38.2 | Embedded Database | Zero config, single file (default) |
-| **MySQL** | v1.8.1 | RDBMS | Optional, for high-concurrency production |
-| **Sonic** | v1.14.1 | JSON Library | 2-3x faster than stdlib |
+| **Gin** | v1.11.0 | Web Framework | High-performance HTTP routing |
+| **modernc/sqlite** | v1.45.0 | Embedded Database | Pure Go, zero CGO dependency, single file (default) |
+| **MySQL** | v1.9.3 | RDBMS | Optional, for high-concurrency production |
+| **Sonic** | v1.15.0 | JSON Library | 2-3x faster than stdlib |
 | **godotenv** | v1.5.1 | Env Config | Simplified config management |
 
 ### Architecture Features
@@ -814,9 +814,9 @@ Project supports multi-arch Docker images:
 - **Image Registry**: `ghcr.io/caidaoli/ccload`
 - **Available Tags**:
   - `latest` - Latest stable version
-  - `v0.1.0` - Specific version number
-  - `v0.1` - Major.minor version
-  - `v0` - Major version
+  - `v1.85.4` - Specific version number
+  - `v1.85` - Major.minor version
+  - `v1` - Major version
 
 ### Image Tag Guide
 
@@ -825,7 +825,7 @@ Project supports multi-arch Docker images:
 docker pull ghcr.io/caidaoli/ccload:latest
 
 # Pull specific version
-docker pull ghcr.io/caidaoli/ccload:v0.1.0
+docker pull ghcr.io/caidaoli/ccload:v1.85.4
 
 # Specify architecture (Docker usually auto-selects)
 docker pull --platform linux/amd64 ghcr.io/caidaoli/ccload:latest
