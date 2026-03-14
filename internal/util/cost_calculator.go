@@ -35,10 +35,7 @@ type ModelPricing struct {
 // - Gemini: https://ai.google.dev/gemini-api/docs/pricing
 var basePricing = map[string]ModelPricing{
 	// ========== Claude 模型 ==========
-	"claude-sonnet-4-6": {
-		InputPrice: 3.00, OutputPrice: 15.00,
-		InputPriceHigh: 6.00, OutputPriceHigh: 22.50, // >200k context
-	},
+	"claude-sonnet-4-6": {InputPrice: 3.00, OutputPrice: 15.00}, // 全1M窗口统一价格
 	"claude-sonnet-4-5": {
 		InputPrice: 3.00, OutputPrice: 15.00,
 		InputPriceHigh: 6.00, OutputPriceHigh: 22.50, // >200k context
@@ -47,13 +44,10 @@ var basePricing = map[string]ModelPricing{
 		InputPrice: 3.00, OutputPrice: 15.00,
 		InputPriceHigh: 6.00, OutputPriceHigh: 22.50, // >200k context
 	},
-	"claude-haiku-4-5": {InputPrice: 1.00, OutputPrice: 5.00},
-	"claude-opus-4-1":  {InputPrice: 15.00, OutputPrice: 75.00},
-	"claude-opus-4-0":  {InputPrice: 15.00, OutputPrice: 75.00},
-	"claude-opus-4-6": {
-		InputPrice: 5.00, OutputPrice: 25.00,
-		InputPriceHigh: 10.00, OutputPriceHigh: 37.50, // >200k context
-	},
+	"claude-haiku-4-5":  {InputPrice: 1.00, OutputPrice: 5.00},
+	"claude-opus-4-1":   {InputPrice: 15.00, OutputPrice: 75.00},
+	"claude-opus-4-0":   {InputPrice: 15.00, OutputPrice: 75.00},
+	"claude-opus-4-6":   {InputPrice: 5.00, OutputPrice: 25.00}, // 全1M窗口统一价格
 	"claude-opus-4-5":   {InputPrice: 5.00, OutputPrice: 25.00},
 	"claude-3-7-sonnet": {InputPrice: 3.00, OutputPrice: 15.00},
 	"claude-3-5-sonnet": {InputPrice: 3.00, OutputPrice: 15.00},

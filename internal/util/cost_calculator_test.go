@@ -71,15 +71,16 @@ func TestCalculateCost_Opus46(t *testing.T) {
 
 func TestCalculateCost_Opus46HighContext(t *testing.T) {
 	// 场景：Claude Opus 4.6 长上下文（>200k）+ 缓存
+	// Opus 4.6 全1M窗口统一价格，无分段定价
 	cost := CalculateCostDetailed("claude-opus-4-6", 250000, 2000, 10000, 10000, 0)
 
-	// 预期计算（>200k 启用高阶价格）：
-	// Input: 250000 × $10.00 / 1M = $2.500000
-	// Output: 2000 × $37.50 / 1M = $0.075000
-	// Cache Read: 10000 × ($10.00 × 0.1) / 1M = $0.010000
-	// Cache Creation(5m): 10000 × ($10.00 × 1.25) / 1M = $0.125000
-	// Total: $2.710000
-	expected := 2.71
+	// 预期计算（统一价格 $5/$25）：
+	// Input: 250000 × $5.00 / 1M = $1.250000
+	// Output: 2000 × $25.00 / 1M = $0.050000
+	// Cache Read: 10000 × ($5.00 × 0.1) / 1M = $0.005000
+	// Cache Creation(5m): 10000 × ($5.00 × 1.25) / 1M = $0.062500
+	// Total: $1.367500
+	expected := 1.3675
 	if !floatEquals(cost, expected, 0.000001) {
 		t.Errorf("Opus 4.6 长上下文成本 = %.6f, 期望 %.6f", cost, expected)
 	}
@@ -868,18 +869,18 @@ func TestCalculateFastModeCost_WithCache(t *testing.T) {
 }
 
 func TestCalculateFastModeCost_VsStandard(t *testing.T) {
-	// 验证 fast mode 不使用 >200K 分段定价
-	// 标准模式 >200K: Input=$10, Output=$37.50
+	// 验证 fast mode 与标准模式的价格差异
+	// 标准模式统一价格: Input=$5, Output=$25（全1M窗口）
 	// Fast mode 统一: Input=$30, Output=$150
-	inputTokens := 250000 // >200K 阈值
+	inputTokens := 250000
 
 	standardCost := CalculateCostDetailed("claude-opus-4-6", inputTokens, 1000, 0, 0, 0)
 	fastCost := CalculateFastModeCost(inputTokens, 1000, 0, 0, 0)
 
-	// 标准: 250000×$10/1M + 1000×$37.50/1M = $2.5375
-	expectedStandard := 2.5375
+	// 标准: 250000×$5/1M + 1000×$25/1M = $1.275
+	expectedStandard := 1.275
 	if !floatEquals(standardCost, expectedStandard, 0.000001) {
-		t.Errorf("标准模式 >200K 成本 = %.6f, 期望 %.6f", standardCost, expectedStandard)
+		t.Errorf("标准模式成本 = %.6f, 期望 %.6f", standardCost, expectedStandard)
 	}
 
 	// Fast: 250000×$30/1M + 1000×$150/1M = $7.65
@@ -888,9 +889,9 @@ func TestCalculateFastModeCost_VsStandard(t *testing.T) {
 		t.Errorf("Fast mode 成本 = %.6f, 期望 %.6f", fastCost, expectedFast)
 	}
 
-	// Fast 不应该是标准 ×6（因为标准 >200K 用了分段价格）
-	if floatEquals(fastCost, standardCost*6.0, 0.000001) {
-		t.Error("Fast mode 不应是标准成本的简单6倍（分段定价差异）")
+	// Opus 4.6 全窗口统一价格后，fast mode 恰好是标准的6倍（$30/$5, $150/$25）
+	if !floatEquals(fastCost, standardCost*6.0, 0.000001) {
+		t.Errorf("Fast mode 应为标准成本的6倍: fast=%.6f, standard×6=%.6f", fastCost, standardCost*6.0)
 	}
 }
 
