@@ -39,6 +39,19 @@ test('测试渠道模型下拉显式锁定文字颜色和浅色控件配色', ()
   assert.match(styleBlock, /color-scheme:\s*light/);
 });
 
+test('编辑弹窗 Key 状态筛选下拉复用统一浅色选择框样式', () => {
+  assert.match(html, /<select id="keyStatusFilter"[^>]*class="modal-inline-select"[^>]*>/);
+
+  const styleBlockMatch = css.match(/\.modal-inline-select\s*\{[^}]+\}/);
+  assert.ok(styleBlockMatch, '缺少 .modal-inline-select 样式');
+
+  const styleBlock = styleBlockMatch[0];
+  assert.match(styleBlock, /background:\s*rgba\(255,\s*255,\s*255,\s*0\.9\)/);
+  assert.match(styleBlock, /color:\s*var\(--neutral-900\)/);
+  assert.match(styleBlock, /color-scheme:\s*light/);
+  assert.match(styleBlock, /-webkit-text-fill-color:\s*var\(--neutral-900\)/);
+});
+
 test('URL 统计列使用紧凑列宽样式，避免挤压 API URL 列', () => {
   assert.match(urlScript, /statusTh\.className = 'url-stats-th inline-url-col-status'/);
   assert.match(urlScript, /latencyTh\.className = 'url-stats-th inline-url-col-latency'/);

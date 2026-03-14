@@ -182,6 +182,9 @@
   function initializeChannelEditorFeatures() {
     installChannelModalHooks();
 
+    if (typeof initChannelEditorActions === 'function') {
+      initChannelEditorActions();
+    }
     if (typeof initChannelFormDirtyTracking === 'function') {
       initChannelFormDirtyTracking();
     }

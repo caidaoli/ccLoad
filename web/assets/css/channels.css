@@ -731,6 +731,19 @@
       color: var(--neutral-400);
     }
 
+    .modal-inline-select {
+      background: rgba(255, 255, 255, 0.9);
+      color: var(--neutral-900);
+      color-scheme: light;
+      -webkit-text-fill-color: var(--neutral-900);
+      backdrop-filter: blur(8px);
+    }
+
+    .modal-inline-select option {
+      color: var(--neutral-900);
+      background: white;
+    }
+
     .inline-url-col-select {
       width: 70px;
     }

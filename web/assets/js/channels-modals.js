@@ -51,6 +51,65 @@ async function handleChannelSaveSuccess({ isNewChannel, newChannelType, savedCha
   }
 }
 
+function invokeChannelEditorAction(actionName, ...args) {
+  const action = window[actionName];
+  if (typeof action === 'function') {
+    return action(...args);
+  }
+  return undefined;
+}
+
+function initChannelEditorActions() {
+  if (typeof window.initDelegatedActions === 'function') {
+    window.initDelegatedActions({
+      root: document.body,
+      boundElement: document.body,
+      boundKey: 'channelEditorActionsBound',
+      click: {
+        'close-channel-modal': () => invokeChannelEditorAction('closeModal'),
+        'add-inline-url': () => invokeChannelEditorAction('addInlineURL'),
+        'batch-delete-urls': () => invokeChannelEditorAction('batchDeleteSelectedURLs'),
+        'open-key-import-modal': () => invokeChannelEditorAction('openKeyImportModal'),
+        'open-key-export-modal': () => invokeChannelEditorAction('openKeyExportModal'),
+        'toggle-inline-key-visibility': () => invokeChannelEditorAction('toggleInlineKeyVisibility'),
+        'batch-delete-keys': () => invokeChannelEditorAction('batchDeleteSelectedKeys'),
+        'add-common-models': () => invokeChannelEditorAction('addCommonModels'),
+        'fetch-models-from-api': () => invokeChannelEditorAction('fetchModelsFromAPI'),
+        'add-redirect-row': () => invokeChannelEditorAction('addRedirectRow'),
+        'batch-lowercase-models': () => invokeChannelEditorAction('batchLowercaseSelectedModels'),
+        'batch-delete-models': () => invokeChannelEditorAction('batchDeleteSelectedModels'),
+        'close-delete-modal': () => invokeChannelEditorAction('closeDeleteModal'),
+        'confirm-delete-channel': () => invokeChannelEditorAction('confirmDelete'),
+        'close-key-import-modal': () => invokeChannelEditorAction('closeKeyImportModal'),
+        'confirm-inline-key-import': () => invokeChannelEditorAction('confirmInlineKeyImport'),
+        'close-key-export-modal': () => invokeChannelEditorAction('closeKeyExportModal'),
+        'copy-export-keys': () => invokeChannelEditorAction('copyExportKeys'),
+        'download-export-keys': () => invokeChannelEditorAction('downloadExportKeys'),
+        'close-model-import-modal': () => invokeChannelEditorAction('closeModelImportModal'),
+        'confirm-model-import': () => invokeChannelEditorAction('confirmModelImport')
+      },
+      change: {
+        'toggle-select-all-urls': (actionTarget) => invokeChannelEditorAction('toggleSelectAllURLs', actionTarget.checked),
+        'toggle-select-all-keys': (actionTarget) => invokeChannelEditorAction('toggleSelectAllKeys', actionTarget.checked),
+        'filter-keys-by-status': (actionTarget) => invokeChannelEditorAction('filterKeysByStatus', actionTarget.value),
+        'toggle-select-all-models': (actionTarget) => invokeChannelEditorAction('toggleSelectAllModels', actionTarget.checked),
+        'update-export-preview': () => invokeChannelEditorAction('updateExportPreview')
+      },
+      input: {
+        'filter-models-by-keyword': (actionTarget) => invokeChannelEditorAction('filterModelsByKeyword', actionTarget.value)
+      }
+    });
+  }
+
+  const channelForm = document.getElementById('channelForm');
+  if (channelForm && !channelForm.dataset.channelFormBound) {
+    channelForm.addEventListener('submit', (event) => {
+      saveChannel(event);
+    });
+    channelForm.dataset.channelFormBound = '1';
+  }
+}
+
 function showAddModal() {
   editingChannelId = null;
   currentChannelKeyCooldowns = [];
