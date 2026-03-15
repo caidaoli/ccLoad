@@ -24,6 +24,16 @@ test('channels 页将数量、排序和筛选归到同一个移动端摘要行',
   assert.match(channelsHtml, /class="channel-filter-summary"[\s\S]*id="filterInfo"[\s\S]*id="btn_sort"[\s\S]*id="btn_filter"/);
 });
 
+test('channels 页手机端批量选择浮层拆成头部和两排操作区，关闭按钮固定右上角', () => {
+  assert.match(channelsHtml, /id="batchFloatingMenu"[\s\S]*class="channel-batch-float__content"[\s\S]*class="channel-batch-float__header"[\s\S]*class="channel-batch-selection"[\s\S]*class="channel-batch-actions"[\s\S]*id="batchFloatingMenuCloseBtn"/);
+
+  assert.match(channelsCss, /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.channel-batch-float__content\s*\{[^}]*position:\s*relative;[^}]*flex-direction:\s*column;[^}]*align-items:\s*stretch;/);
+  assert.match(channelsCss, /\.channel-batch-actions\s*\{[\s\S]*?display:\s*inline-flex;[\s\S]*?gap:\s*10px;/);
+  assert.match(channelsCss, /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.channel-batch-float__header\s*\{[\s\S]*?width:\s*100%;[\s\S]*?padding-right:\s*34px;/);
+  assert.match(channelsCss, /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.channel-batch-actions\s*\{[\s\S]*?width:\s*100%;[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/);
+  assert.match(channelsCss, /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.channel-batch-close\s*\{[\s\S]*?position:\s*absolute;[\s\S]*?top:\s*10px;[\s\S]*?right:\s*10px;/);
+});
+
 test('channels 页为手机卡片式表格预留移动端标签与样式', () => {
   const templateMatch = channelsHtml.match(/<template id="tpl-channel-card">[\s\S]*?<\/template>/);
   assert.ok(templateMatch, '缺少渠道行模板');

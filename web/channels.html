@@ -132,69 +132,73 @@
 
         <div id="batchFloatingMenu" class="channel-batch-float" aria-hidden="true">
           <div class="channel-batch-float__content">
-            <div class="channel-batch-selection">
-              <span id="selectedChannelsCountBadge" class="channel-batch-count-badge">0</span>
-              <div class="channel-batch-selection-meta">
-                <span id="selectedChannelsSummary" class="channel-batch-summary">渠道已选择</span>
+            <div class="channel-batch-float__header">
+              <div class="channel-batch-selection">
+                <span id="selectedChannelsCountBadge" class="channel-batch-count-badge">0</span>
+                <div class="channel-batch-selection-meta">
+                  <span id="selectedChannelsSummary" class="channel-batch-summary">渠道已选择</span>
+                </div>
               </div>
+              <span class="channel-batch-divider" aria-hidden="true"></span>
             </div>
-            <span class="channel-batch-divider" aria-hidden="true"></span>
-            <button id="batchEnableChannelsBtn" type="button"
-              class="btn btn-sm channel-batch-action channel-batch-action--enable"
-              data-action="batch-enable-channels" disabled>
-              <span class="channel-batch-action__icon" aria-hidden="true">
-                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M4.5 10.3L8.15 13.95L15.35 6.75" stroke="currentColor" stroke-width="2.2"
-                    stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
-              </span>
-              <span data-i18n="channels.batchEnableChannels">批量启用</span>
-            </button>
-            <button id="batchDisableChannelsBtn" type="button"
-              class="btn btn-sm channel-batch-action channel-batch-action--disable"
-              data-action="batch-disable-channels" disabled>
-              <span class="channel-batch-action__icon" aria-hidden="true">
-                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="1.8" />
-                  <path d="M5.5 5.5L14.5 14.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
-                </svg>
-              </span>
-              <span data-i18n="channels.batchDisableChannels">批量禁用</span>
-            </button>
-            <button id="batchRefreshMergeBtn" type="button"
-              class="btn btn-sm channel-batch-action channel-batch-action--refresh"
-              data-action="batch-refresh-channels-merge" disabled>
-              <span class="channel-batch-action__icon" aria-hidden="true">
-                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M15.9 7.5A6.6 6.6 0 0 0 4.2 7.1" stroke="currentColor" stroke-width="1.8"
-                    stroke-linecap="round" />
-                  <path d="M15.8 4.3V7.7H12.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-                    stroke-linejoin="round" />
-                  <path d="M4.1 12.5A6.6 6.6 0 0 0 15.8 12.9" stroke="currentColor" stroke-width="1.8"
-                    stroke-linecap="round" />
-                  <path d="M4.2 15.7V12.3H7.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-                    stroke-linejoin="round" />
-                </svg>
-              </span>
-              <span data-i18n="channels.batchRefreshMerge">模型增量刷新</span>
-            </button>
-            <button id="batchRefreshReplaceBtn" type="button"
-              class="btn btn-sm channel-batch-action channel-batch-action--refresh"
-              data-action="batch-refresh-channels-replace" disabled>
-              <span class="channel-batch-action__icon" aria-hidden="true">
-                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M15.9 7.5A6.6 6.6 0 0 0 4.2 7.1" stroke="currentColor" stroke-width="1.8"
-                    stroke-linecap="round" />
-                  <path d="M15.8 4.3V7.7H12.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-                    stroke-linejoin="round" />
-                  <path d="M4.1 12.5A6.6 6.6 0 0 0 15.8 12.9" stroke="currentColor" stroke-width="1.8"
-                    stroke-linecap="round" />
-                  <path d="M4.2 15.7V12.3H7.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-                    stroke-linejoin="round" />
-                </svg>
-              </span>
-              <span data-i18n="channels.batchRefreshReplace">模型覆盖刷新</span>
-            </button>
+            <div class="channel-batch-actions">
+              <button id="batchEnableChannelsBtn" type="button"
+                class="btn btn-sm channel-batch-action channel-batch-action--enable"
+                data-action="batch-enable-channels" disabled>
+                <span class="channel-batch-action__icon" aria-hidden="true">
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M4.5 10.3L8.15 13.95L15.35 6.75" stroke="currentColor" stroke-width="2.2"
+                      stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </span>
+                <span data-i18n="channels.batchEnableChannels">批量启用</span>
+              </button>
+              <button id="batchDisableChannelsBtn" type="button"
+                class="btn btn-sm channel-batch-action channel-batch-action--disable"
+                data-action="batch-disable-channels" disabled>
+                <span class="channel-batch-action__icon" aria-hidden="true">
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="1.8" />
+                    <path d="M5.5 5.5L14.5 14.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                  </svg>
+                </span>
+                <span data-i18n="channels.batchDisableChannels">批量禁用</span>
+              </button>
+              <button id="batchRefreshMergeBtn" type="button"
+                class="btn btn-sm channel-batch-action channel-batch-action--refresh"
+                data-action="batch-refresh-channels-merge" disabled>
+                <span class="channel-batch-action__icon" aria-hidden="true">
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M15.9 7.5A6.6 6.6 0 0 0 4.2 7.1" stroke="currentColor" stroke-width="1.8"
+                      stroke-linecap="round" />
+                    <path d="M15.8 4.3V7.7H12.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                      stroke-linejoin="round" />
+                    <path d="M4.1 12.5A6.6 6.6 0 0 0 15.8 12.9" stroke="currentColor" stroke-width="1.8"
+                      stroke-linecap="round" />
+                    <path d="M4.2 15.7V12.3H7.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                      stroke-linejoin="round" />
+                  </svg>
+                </span>
+                <span data-i18n="channels.batchRefreshMerge">模型增量刷新</span>
+              </button>
+              <button id="batchRefreshReplaceBtn" type="button"
+                class="btn btn-sm channel-batch-action channel-batch-action--refresh"
+                data-action="batch-refresh-channels-replace" disabled>
+                <span class="channel-batch-action__icon" aria-hidden="true">
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M15.9 7.5A6.6 6.6 0 0 0 4.2 7.1" stroke="currentColor" stroke-width="1.8"
+                      stroke-linecap="round" />
+                    <path d="M15.8 4.3V7.7H12.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                      stroke-linejoin="round" />
+                    <path d="M4.1 12.5A6.6 6.6 0 0 0 15.8 12.9" stroke="currentColor" stroke-width="1.8"
+                      stroke-linecap="round" />
+                    <path d="M4.2 15.7V12.3H7.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                      stroke-linejoin="round" />
+                  </svg>
+                </span>
+                <span data-i18n="channels.batchRefreshReplace">模型覆盖刷新</span>
+              </button>
+            </div>
             <button id="batchFloatingMenuCloseBtn" type="button" class="channel-batch-close"
               data-action="clear-selected-channels" data-i18n-title="common.close" title="关闭" disabled>
               <svg width="26" height="26" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"
