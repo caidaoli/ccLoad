@@ -33,9 +33,9 @@
             <table class="modern-table settings-table mobile-card-table">
               <thead>
                 <tr>
-                  <th style="width: 60%;" data-i18n="settings.configItem">配置项</th>
-                  <th style="width: 30%; text-align: right;" data-i18n="settings.currentValue">当前值</th>
-                  <th style="width: 10%;" data-i18n="common.actions">操作</th>
+                  <th class="settings-head-item" data-i18n="settings.configItem">配置项</th>
+                  <th class="settings-head-value" data-i18n="settings.currentValue">当前值</th>
+                  <th class="settings-head-actions" data-i18n="common.actions">操作</th>
                 </tr>
               </thead>
               <tbody id="settings-tbody">
@@ -57,7 +57,7 @@
   <template id="tpl-setting-row">
     <tr class="mobile-card-row setting-data-row" data-key="{{key}}">
       <td class="setting-col-description" data-mobile-label="{{mobileLabelDescription}}">{{description}}</td>
-      <td class="setting-col-value" style="text-align: right;" data-mobile-label="{{mobileLabelValue}}">{{{inputHtml}}}</td>
+      <td class="setting-col-value" data-mobile-label="{{mobileLabelValue}}">{{{inputHtml}}}</td>
       <td class="setting-col-actions" data-mobile-label="{{mobileLabelActions}}">
         <button class="btn-icon setting-reset-btn" data-key="{{key}}" data-i18n-title="settings.resetToDefault" title="重置为默认值">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -72,7 +72,7 @@
   <!-- 分组标题行模板 -->
   <template id="tpl-setting-group-row">
     <tr class="setting-group-row" id="settings-group-{{groupId}}" data-group="{{groupId}}">
-      <td colspan="3" style="background: var(--neutral-100); color: var(--neutral-700); font-weight: 700; letter-spacing: 0.2px;">
+      <td colspan="3" class="setting-group-cell">
         {{groupName}}
       </td>
     </tr>

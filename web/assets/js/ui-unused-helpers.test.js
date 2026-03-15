@@ -9,4 +9,5 @@ test('ui.js 不再保留未使用的渠道类型搜索/Tab helper', () => {
   assert.doesNotMatch(source, /\brenderSearchableChannelTypeSelect\b/);
   assert.doesNotMatch(source, /\bgetSearchableSelectValue\b/);
   assert.doesNotMatch(source, /\brenderChannelTypeTabs\b/);
+  assert.doesNotMatch(source, /\binitRenderedTimeRangeSelector\b/);
 });

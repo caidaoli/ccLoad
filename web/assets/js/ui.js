@@ -394,6 +394,8 @@
     return host;
   }
 
+  window.ensureNotifyHost = ensureNotifyHost;
+
   window.showNotification = function (message, type = 'info') {
     const el = document.createElement('div');
     el.className = `notification notification-${type}`;
@@ -425,6 +427,11 @@
       el.style.color = 'var(--error-600)';
       el.style.borderColor = 'var(--error-500)';
       el.style.boxShadow = '0 6px 28px rgba(239,68,68,0.18)';
+    } else if (type === 'warning') {
+      el.style.background = 'var(--warning-50)';
+      el.style.color = 'var(--warning-700)';
+      el.style.borderColor = 'var(--warning-500)';
+      el.style.boxShadow = '0 6px 28px rgba(245,158,11,0.18)';
     } else if (type === 'info') {
       el.style.background = 'var(--info-50)';
       el.style.color = 'var(--neutral-800)';
@@ -441,6 +448,7 @@
   }
   window.showSuccess = (msg) => window.showNotification(msg, 'success');
   window.showError = (msg) => window.showNotification(msg, 'error');
+  window.showWarning = (msg) => window.showNotification(msg, 'warning');
 })();
 
 // ============================================================
@@ -644,43 +652,6 @@
     void execute();
   }
 
-  function initRenderedTimeRangeSelector(options = {}) {
-    if (!options.containerId || typeof window.initTimeRangeSelector !== 'function') {
-      return null;
-    }
-
-    const getActiveValue = typeof options.getActiveValue === 'function'
-      ? options.getActiveValue
-      : () => options.activeValue || 'today';
-    const onChange = typeof options.onChange === 'function' ? options.onChange : () => {};
-    const afterLocaleChange = typeof options.afterLocaleChange === 'function' ? options.afterLocaleChange : null;
-
-    const render = () => {
-      if (typeof window.renderDateRangeButtons === 'function') {
-        window.renderDateRangeButtons(options.containerId, {
-          values: options.values,
-          includeAll: options.includeAll === true,
-          activeValue: getActiveValue()
-        });
-      }
-
-      window.initTimeRangeSelector(onChange);
-    };
-
-    render();
-
-    if (window.i18n && typeof window.i18n.onLocaleChange === 'function') {
-      window.i18n.onLocaleChange(() => {
-        render();
-        if (afterLocaleChange) {
-          afterLocaleChange();
-        }
-      });
-    }
-
-    return render;
-  }
-
   function getFilterControlConfig(config) {
     if (typeof config === 'string') {
       return { id: config, defaultValue: '', trim: false };
@@ -710,6 +681,37 @@
       if (!el) return;
       el.value = values[key] || defaultValue;
     });
+  }
+
+  function persistFilterState(options = {}) {
+    const values = options.values !== undefined
+      ? options.values
+      : (typeof options.getValues === 'function' ? options.getValues() : {});
+
+    if (!window.FilterState) {
+      return values;
+    }
+
+    if (options.key) {
+      window.FilterState.save(options.key, values);
+    }
+
+    if (options.fields) {
+      const historyOptions = {
+        values,
+        fields: options.fields
+      };
+
+      ['search', 'pathname', 'preserveExistingParams', 'historyMethod'].forEach((key) => {
+        if (options[key] !== undefined) {
+          historyOptions[key] = options[key];
+        }
+      });
+
+      window.FilterState.writeHistory(historyOptions);
+    }
+
+    return values;
   }
 
   function initSavedDateRangeFilter(options = {}) {
@@ -808,9 +810,9 @@
   window.bindFilterApplyInputs = bindFilterApplyInputs;
   window.initDelegatedActions = initDelegatedActions;
   window.initPageBootstrap = initPageBootstrap;
-  window.initRenderedTimeRangeSelector = initRenderedTimeRangeSelector;
   window.readFilterControlValues = readFilterControlValues;
   window.applyFilterControlValues = applyFilterControlValues;
+  window.persistFilterState = persistFilterState;
   window.initSavedDateRangeFilter = initSavedDateRangeFilter;
   window.initAuthTokenFilter = initAuthTokenFilter;
   window.formatCost = formatCost;

@@ -30,12 +30,8 @@
               </label>
             </div>`;
     const statsInfo = `<div class="${infoClass}"><span data-i18n="stats.totalRecordsPrefix">共</span> <span id="statsCount">0</span> <span data-i18n="stats.totalRecordsSuffix">条记录</span></div>`;
-    const filterButton = config.actionsClass
-      ? `<div class="${config.actionsClass}">
-              <button id="btn_filter" type="button" class="btn btn-primary" style="padding: 8px 16px; font-size: 14px;" data-i18n="common.filter">筛选</button>
-            </div>`
-      : `<div style="flex: none;">
-              <button id="btn_filter" type="button" class="btn btn-primary" style="padding: 8px 16px; font-size: 14px;" data-i18n="common.filter">筛选</button>
+    const filterButton = `<div class="${joinClasses('filter-actions', 'filter-actions--page', config.actionsClass)}">
+              <button id="btn_filter" type="button" class="btn btn-primary filter-btn" data-i18n="common.filter">筛选</button>
             </div>`;
     const logsInfo = `<div class="${infoClass}"><span data-i18n="logs.showPrefix">显示</span><span id="displayedCount">0</span>/<span id="totalCount">0</span><span data-i18n="logs.recordsSuffix">条</span></div>`;
 

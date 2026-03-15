@@ -244,7 +244,7 @@
 
         const modelDisplay = entry.model ?
           `<a href="#" class="model-tag model-link" data-model="${escapeHtml(entry.model)}" data-channel-id="${entry.channel_id || ''}" title="${t('stats.viewLogsTitle')}">${escapeHtml(entry.model)}</a>` :
-          `<span style="color: var(--neutral-500);">${t('stats.unknownModel')}</span>`;
+          `<span class="stats-value-muted">${t('stats.unknownModel')}</span>`;
 
         // 格式化平均首字响应时间/平均耗时
         const avgFirstByteTime = entry.avg_first_byte_time_seconds || 0;
@@ -254,26 +254,26 @@
         if (avgFirstByteTime > 0 && avgDuration > 0) {
           // 流式请求：显示首字/耗时
           const durationColor = getDurationColor(avgDuration);
-          avgTimeText = `<span style="color: ${durationColor};">${avgFirstByteTime.toFixed(2)}/${avgDuration.toFixed(2)}</span>`;
+          avgTimeText = `<span class="stats-value-dynamic" style="--stats-accent:${durationColor};">${avgFirstByteTime.toFixed(2)}/${avgDuration.toFixed(2)}</span>`;
         } else if (avgDuration > 0) {
           // 非流式请求：只显示耗时
           const durationColor = getDurationColor(avgDuration);
-          avgTimeText = `<span style="color: ${durationColor};">${avgDuration.toFixed(2)}</span>`;
+          avgTimeText = `<span class="stats-value-dynamic" style="--stats-accent:${durationColor};">${avgDuration.toFixed(2)}</span>`;
         } else if (avgFirstByteTime > 0) {
           // 仅有首字时间（理论上不应出现）
           const durationColor = getDurationColor(avgFirstByteTime);
-          avgTimeText = `<span style="color: ${durationColor};">${avgFirstByteTime.toFixed(2)}</span>`;
+          avgTimeText = `<span class="stats-value-dynamic" style="--stats-accent:${durationColor};">${avgFirstByteTime.toFixed(2)}</span>`;
         }
 
         // 格式化Token数据
         const inputTokensText = entry.total_input_tokens ? formatNumber(entry.total_input_tokens) : '';
         const outputTokensText = entry.total_output_tokens ? formatNumber(entry.total_output_tokens) : '';
         const cacheReadTokensText = entry.total_cache_read_input_tokens ?
-          `<span style="color: var(--success-600);">${formatNumber(entry.total_cache_read_input_tokens)}</span>` : '';
+          `<span class="stats-value-success">${formatNumber(entry.total_cache_read_input_tokens)}</span>` : '';
         const cacheCreationTokensText = entry.total_cache_creation_input_tokens ?
-          `<span style="color: var(--primary-600);">${formatNumber(entry.total_cache_creation_input_tokens)}</span>` : '';
+          `<span class="stats-value-primary">${formatNumber(entry.total_cache_creation_input_tokens)}</span>` : '';
         const costText = entry.total_cost ?
-          `<span style="color: var(--warning-600); font-weight: 500;">${formatCost(entry.total_cost)}</span>` : '';
+          `<span class="stats-value-warning">${formatCost(entry.total_cost)}</span>` : '';
         const timingCellClass = avgTimeText ? '' : 'mobile-empty-cell';
         const inputCellClass = inputTokensText ? '' : 'mobile-empty-cell';
         const outputCellClass = outputTokensText ? '' : 'mobile-empty-cell';
@@ -389,14 +389,11 @@
     }
 
     function applyFilter() {
-      const filters = getStatsFilters();
-
-      // 保存筛选条件到 localStorage
-      window.FilterState.save(STATS_FILTER_KEY, filters);
-      window.FilterState.writeHistory({
+      window.persistFilterState({
+        key: STATS_FILTER_KEY,
+        values: getStatsFilters(),
         search: location.search,
         pathname: location.pathname,
-        values: filters,
         fields: STATS_FILTER_FIELDS,
         preserveExistingParams: true
       });
@@ -415,7 +412,10 @@
         defaultValue: 'today',
         restoredValue: range,
         onChange: () => {
-          window.FilterState.save(STATS_FILTER_KEY, getStatsFilters());
+          window.persistFilterState({
+            key: STATS_FILTER_KEY,
+            getValues: getStatsFilters
+          });
           applyFilter();
         }
       });
@@ -438,7 +438,10 @@
         value: authToken,
         loadOptions: { tokenPrefix: t('stats.tokenPrefix') },
         onChange: () => {
-          window.FilterState.save(STATS_FILTER_KEY, getStatsFilters());
+          window.persistFilterState({
+            key: STATS_FILTER_KEY,
+            getValues: getStatsFilters
+          });
           applyFilter();
         }
       }).then((tokens) => {
@@ -548,7 +551,7 @@
       if (rpm < 0.01) return '';
       const color = getRpmColor(rpm);
       const text = rpm >= 1000 ? (rpm / 1000).toFixed(1) + 'K' : rpm >= 1 ? rpm.toFixed(1) : rpm.toFixed(2);
-      return `<span style="color: ${color}; font-weight: 500;">${text}</span>`;
+      return `<span class="stats-rpm-value" style="--stats-rpm-color:${color};">${text}</span>`;
     }
 
     // 格式化全局RPM（峰值/平均/最近），固定格式，0显示为-
@@ -619,7 +622,7 @@
     function buildCompactRpmDisplay(parts) {
       const html = parts.map((part, index) => {
         const separator = index === 0 ? '' : '<span class="stats-rpm-separator">/</span>';
-        return `${separator}<span class="stats-rpm-value" style="color: ${part.color};">${part.text}</span>`;
+        return `${separator}<span class="stats-rpm-value" style="--stats-rpm-color:${part.color};">${part.text}</span>`;
       }).join('');
 
       return `<span class="stats-rpm-inline">${html}</span>`;
@@ -689,7 +692,7 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
       const ratePercent = (currentRate * 100).toFixed(1);
       const rateColor = currentRate >= 0.95 ? 'var(--success-600)' :
                         currentRate >= 0.80 ? 'var(--warning-600)' : 'var(--error-600)';
-      return `<div class="health-indicator"><span class="health-track">${blocks.join('')}</span><span class="health-rate" style="color: ${rateColor}">${ratePercent}%</span></div>`;
+      return `<div class="health-indicator"><span class="health-track">${blocks.join('')}</span><span class="health-rate" style="--health-rate-color:${rateColor};">${ratePercent}%</span></div>`;
     }
 
     // 注销功能（已由 ui.js 的 onLogout 统一处理）
@@ -781,7 +784,10 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
         hideZeroCheckbox.checked = hideZeroSuccess;
         hideZeroCheckbox.addEventListener('change', (e) => {
           hideZeroSuccess = e.target.checked;
-          window.FilterState.save(STATS_FILTER_KEY, getStatsFilters());
+          window.persistFilterState({
+            key: STATS_FILTER_KEY,
+            getValues: getStatsFilters
+          });
           renderStatsTable();
           updateStatsCount();
         });
@@ -789,19 +795,22 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
 
       await window.initChannelTypeFilter('f_channel_type', currentChannelType, (value) => {
         currentChannelType = value;
-        window.FilterState.save(STATS_FILTER_KEY, getStatsFilters());
+        window.persistFilterState({
+          key: STATS_FILTER_KEY,
+          getValues: getStatsFilters
+        });
         loadStats();
       });
 
       initFilters(restoredFilters);
 
-      const restoredSearch = window.FilterState.buildRestoreSearch(
-        hasUrlParams ? location.search : '',
-        savedFilters,
-        STATS_FILTER_FIELDS
-      );
-      if (restoredSearch) {
-        history.replaceState(null, '', restoredSearch);
+      if (!hasUrlParams && savedFilters) {
+        window.persistFilterState({
+          values: savedFilters,
+          pathname: location.pathname,
+          fields: STATS_FILTER_FIELDS,
+          historyMethod: 'replaceState'
+        });
       }
 
       loadStats().then(() => {
@@ -865,12 +874,7 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
     // 切换视图
     function switchView(view) {
       currentView = view;
-
-      // 移除初始化时注入的样式（避免与动态切换冲突）
-      const initStyle = document.getElementById('stats-view-init-style');
-      if (initStyle) {
-        initStyle.remove();
-      }
+      document.documentElement.classList.toggle('stats-view-init-chart', view === 'chart');
 
       // 持久化视图状态
       try {

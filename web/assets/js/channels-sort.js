@@ -52,7 +52,7 @@ function renderSortList() {
   container.innerHTML = '';
 
   if (sortChannels.length === 0) {
-    container.innerHTML = `<p style="text-align: center; color: var(--neutral-500); padding: 40px;">${window.t('channels.noChannelsForSort')}</p>`;
+    container.innerHTML = `<p class="sort-list-empty">${window.t('channels.noChannelsForSort')}</p>`;
     return;
   }
 
@@ -75,17 +75,14 @@ function createSortItem(channel, index) {
   const template = document.getElementById('tpl-sort-item');
   if (!template) return document.createElement('div');
 
-  // 渠道类型徽章
-  const typeColor = getChannelTypeColor(channel.type || 'anthropic');
-
   // 状态徽章
   let statusBadge = '';
   if (!channel.enabled) {
-    statusBadge = `<span style="background: var(--neutral-200); color: var(--neutral-600); padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 500;">${window.t('channels.statusDisabled')}</span>`;
+    statusBadge = `<span class="sort-item-status-badge sort-item-status-badge--disabled">${window.t('channels.statusDisabled')}</span>`;
   } else if (channel.cooldown_until && new Date(channel.cooldown_until) > new Date()) {
-    statusBadge = `<span style="background: var(--error-100); color: var(--error-600); padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 500;">${window.t('channels.cooldownStatus')}</span>`;
+    statusBadge = `<span class="sort-item-status-badge sort-item-status-badge--cooldown">${window.t('channels.cooldownStatus')}</span>`;
   } else {
-    statusBadge = `<span style="background: var(--success-100); color: var(--success-600); padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 500;">${window.t('channels.statusNormal')}</span>`;
+    statusBadge = `<span class="sort-item-status-badge sort-item-status-badge--normal">${window.t('channels.statusNormal')}</span>`;
   }
 
   const html = template.innerHTML
@@ -102,27 +99,6 @@ function createSortItem(channel, index) {
   item.dataset.index = index;
 
   return item;
-}
-
-// 获取渠道类型颜色
-function getChannelTypeColor(type) {
-  const colors = {
-    anthropic: '#3b82f6',
-    openai: '#10b981',
-    azure: '#0ea5e9',
-    bedrock: '#f59e0b',
-    vertex: '#8b5cf6',
-    openrouter: '#ec4899',
-    cohere: '#06b6d4',
-    groq: '#f97316',
-    deepseek: '#6366f1',
-    qwen: '#14b8a6',
-    zhipu: '#a855f7',
-    baidu: '#3b82f6',
-    ollama: '#84cc16',
-    custom: '#6b7280'
-  };
-  return colors[type.toLowerCase()] || colors.custom;
 }
 
 // 添加拖拽事件监听
@@ -142,18 +118,17 @@ function attachDragListeners() {
 // 拖拽开始
 function handleDragStart(e) {
   draggedItem = this;
-  this.style.opacity = '0.5';
+  this.classList.add('is-dragging');
   e.dataTransfer.effectAllowed = 'move';
 }
 
 // 拖拽结束
 function handleDragEnd(e) {
-  this.style.opacity = '1';
+  this.classList.remove('is-dragging');
 
   // 移除所有拖拽样式
   document.querySelectorAll('.sort-item').forEach(item => {
-    item.style.borderTop = '';
-    item.style.borderBottom = '';
+    item.classList.remove('is-drop-before', 'is-drop-after');
   });
 
   draggedItem = null;
@@ -176,19 +151,17 @@ function handleDragEnter(e) {
   const rect = this.getBoundingClientRect();
   const midpoint = rect.top + rect.height / 2;
 
+  this.classList.remove('is-drop-before', 'is-drop-after');
   if (e.clientY < midpoint) {
-    this.style.borderTop = '2px solid var(--primary-500)';
-    this.style.borderBottom = '';
+    this.classList.add('is-drop-before');
   } else {
-    this.style.borderTop = '';
-    this.style.borderBottom = '2px solid var(--primary-500)';
+    this.classList.add('is-drop-after');
   }
 }
 
 // 拖拽离开
 function handleDragLeave(e) {
-  this.style.borderTop = '';
-  this.style.borderBottom = '';
+  this.classList.remove('is-drop-before', 'is-drop-after');
 }
 
 // 放置

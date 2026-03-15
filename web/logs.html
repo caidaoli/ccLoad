@@ -33,7 +33,7 @@
   
         <!-- 日志列表 -->
         <section class="mb-2">
-          <div class="glass-card" style="animation-delay: 0.2s;">
+          <div class="glass-card">
            
             
             <!-- 日志表格 -->
@@ -59,7 +59,7 @@
                 <tbody id="tbody">
                   <tr>
                     <td colspan="13" class="loading-state">
-                      <div class="loading-spinner" style="margin: 0 auto var(--space-2)"></div>
+                      <div class="loading-spinner loading-spinner--block"></div>
                       <span data-i18n="logs.loading">正在加载日志...</span>
                     </td>
                   </tr>
@@ -71,7 +71,7 @@
 
         <!-- 底部分页控制 -->
         <section class="mb-2">
-          <div class="glass-card" style="padding: var(--space-2);">
+          <div class="glass-card logs-pagination-card">
             <div class="flex justify-center items-center">
               <div class="pagination-controls logs-pagination-controls">
                 <button id="logs_first2" class="btn btn-secondary btn-sm" type="button" data-action="first-logs-page">
@@ -133,8 +133,8 @@
 
       <div class="form-group">
         <label class="form-label" data-i18n="logs.apiKeyLabel">API Key</label>
-        <code id="testKeyDisplay" style="display: block; padding: 8px; background: var(--neutral-100); border-radius: 4px; color: var(--neutral-700);"></code>
-        <small id="testKeyIndexInfo" style="color: var(--neutral-600); font-size: 0.85em; display: block; margin-top: 6px;"></small>
+        <code id="testKeyDisplay" class="logs-test-key-display"></code>
+        <small id="testKeyIndexInfo" class="logs-test-key-index"></small>
       </div>
 
       <div class="form-group">
@@ -142,8 +142,8 @@
         <select id="testKeyModel" class="form-input">
           <option value="" data-i18n="common.loading">加载中...</option>
         </select>
-        <small style="color: var(--neutral-600); font-size: 0.85em; margin-top: 4px; display: block;">
-          <span data-i18n="logs.originalModel">日志中的模型:</span> <code id="testKeyOriginalModel" style="color: var(--neutral-700);"></code>
+        <small class="logs-test-key-hint">
+          <span data-i18n="logs.originalModel">日志中的模型:</span> <code id="testKeyOriginalModel" class="logs-test-key-original"></code>
         </small>
       </div>
 
@@ -153,9 +153,9 @@
       </div>
 
       <div class="form-group">
-        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+        <label class="logs-stream-toggle">
           <input type="checkbox" id="testKeyStream" checked>
-          <span class="form-label" style="margin: 0;" data-i18n="logs.enableStream">启用流式响应</span>
+          <span class="form-label" data-i18n="logs.enableStream">启用流式响应</span>
         </label>
       </div>
 
@@ -182,10 +182,10 @@
   <template id="tpl-log-empty">
     <tr>
       <td colspan="{{colspan}}" class="empty-state">
-        <svg class="w-12 h-12 mx-auto mb-4" style="color: var(--neutral-400);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <svg class="w-12 h-12 mx-auto mb-4 empty-state-icon--neutral" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
         </svg>
-        <div style="font-weight: var(--font-medium); margin-bottom: var(--space-1); color: var(--neutral-700);" data-i18n="logs.noData">暂无日志数据</div>
+        <div class="empty-state-title" data-i18n="logs.noData">暂无日志数据</div>
         <div data-i18n="logs.adjustFilter">请调整筛选条件或检查时间范围</div>
       </td>
     </tr>
@@ -195,7 +195,7 @@
   <template id="tpl-log-loading">
     <tr>
       <td colspan="{{colspan}}" class="loading-state">
-        <div class="loading-spinner" style="margin: 0 auto var(--space-2)"></div>
+        <div class="loading-spinner loading-spinner--block"></div>
         <span data-i18n="logs.loading">正在加载日志...</span>
       </td>
     </tr>
@@ -205,10 +205,10 @@
   <template id="tpl-log-error">
     <tr>
       <td colspan="{{colspan}}" class="empty-state">
-        <svg class="w-12 h-12 mx-auto mb-4" style="color: var(--error-400);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <svg class="w-12 h-12 mx-auto mb-4 empty-state-icon--error" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.864-.833-2.634 0L4.18 16.5c-.77.833.192 2.5 1.732 2.5z"/>
         </svg>
-        <div style="color: var(--error-400); font-weight: var(--font-medium); margin-bottom: var(--space-1);" data-i18n="logs.loadFailed">加载失败</div>
+        <div class="empty-state-title empty-state-title--error" data-i18n="logs.loadFailed">加载失败</div>
         <div data-i18n="logs.checkNetwork">请检查网络连接或重试</div>
       </td>
     </tr>

@@ -588,9 +588,9 @@ function copyKeyToClipboard(index) {
   if (!keyText) return;
 
   window.copyToClipboard(keyText).then(() => {
-    showToast(window.t('channels.keyCopied'), 'success');
+    if (window.showSuccess) window.showSuccess(window.t('channels.keyCopied'));
   }).catch(() => {
-    showToast(window.t('channels.keyCopyFailed'), 'error');
+    if (window.showError) window.showError(window.t('channels.keyCopyFailed'));
   });
 }
 
@@ -794,7 +794,7 @@ function confirmInlineKeyImport() {
 
 function openKeyImportModal() {
   document.getElementById('keyImportTextarea').value = '';
-  document.getElementById('keyImportPreviewContent').style.display = 'none';
+  document.getElementById('keyImportPreviewContent').classList.add('hidden');
   document.getElementById('keyImportModal').classList.add('show');
   setTimeout(() => document.getElementById('keyImportTextarea').focus(), 100);
 }
@@ -816,12 +816,12 @@ function setupKeyImportPreview() {
       const keys = parseKeys(input);
       if (keys.length > 0) {
         countSpan.textContent = keys.length;
-        previewContent.style.display = 'block';
+        previewContent.classList.remove('hidden');
       } else {
-        previewContent.style.display = 'none';
+        previewContent.classList.add('hidden');
       }
     } else {
-      previewContent.style.display = 'none';
+      previewContent.classList.add('hidden');
     }
   });
 }
@@ -894,10 +894,10 @@ function copyExportKeys() {
   const count = selectedKeyIndices.size;
 
   window.copyToClipboard(text).then(() => {
-    showToast(window.t('channels.keysCopied', { count }), 'success');
+    if (window.showSuccess) window.showSuccess(window.t('channels.keysCopied', { count }));
     closeKeyExportModal();
   }).catch(() => {
-    showToast(window.t('channels.keyCopyFailed'), 'error');
+    if (window.showError) window.showError(window.t('channels.keyCopyFailed'));
   });
 }
 

@@ -670,14 +670,11 @@ function applyFilter() {
   currentLogsPage = 1;
   totalLogsPages = 1;
 
-  const filters = getLogsFilters();
-
-  // 保存筛选条件到 localStorage
-  window.FilterState.save(LOGS_FILTER_KEY, filters);
-  window.FilterState.writeHistory({
+  window.persistFilterState({
+    key: LOGS_FILTER_KEY,
+    values: getLogsFilters(),
     search: location.search,
     pathname: location.pathname,
-    values: filters,
     fields: LOGS_FILTER_FIELDS,
     preserveExistingParams: true
   });
@@ -706,7 +703,10 @@ async function initFilters(restoredFilters) {
     defaultValue: 'today',
     restoredValue: range,
     onChange: () => {
-      window.FilterState.save(LOGS_FILTER_KEY, getLogsFilters());
+      window.persistFilterState({
+        key: LOGS_FILTER_KEY,
+        getValues: getLogsFilters
+      });
       currentLogsPage = 1;
       load();
     }
@@ -718,7 +718,10 @@ async function initFilters(restoredFilters) {
     selectId: 'f_auth_token',
     value: authToken,
     onChange: () => {
-      window.FilterState.save(LOGS_FILTER_KEY, getLogsFilters());
+      window.persistFilterState({
+        key: LOGS_FILTER_KEY,
+        getValues: getLogsFilters
+      });
       currentLogsPage = 1;
       load();
     }
@@ -954,7 +957,10 @@ window.initPageBootstrap({
   await Promise.all([
     window.initChannelTypeFilter('f_channel_type', currentChannelType, (value) => {
       currentChannelType = value;
-      window.FilterState.save(LOGS_FILTER_KEY, getLogsFilters());
+      window.persistFilterState({
+        key: LOGS_FILTER_KEY,
+        getValues: getLogsFilters
+      });
       currentLogsPage = 1;
       load();
     }),
@@ -963,13 +969,13 @@ window.initPageBootstrap({
 
   await initFilters(restoredFilters);
 
-  const restoredSearch = window.FilterState.buildRestoreSearch(
-    hasUrlParams ? location.search : '',
-    savedFilters,
-    LOGS_FILTER_FIELDS
-  );
-  if (restoredSearch) {
-    history.replaceState(null, '', restoredSearch);
+  if (!hasUrlParams && savedFilters) {
+    window.persistFilterState({
+      values: savedFilters,
+      pathname: location.pathname,
+      fields: LOGS_FILTER_FIELDS,
+      historyMethod: 'replaceState'
+    });
   }
 
   load();

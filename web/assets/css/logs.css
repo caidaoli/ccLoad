@@ -242,6 +242,48 @@
       flex: none;
     }
 
+    .logs-pagination-card {
+      padding: var(--space-2);
+    }
+
+    .logs-test-key-display {
+      display: block;
+      padding: 8px;
+      background: var(--neutral-100);
+      border-radius: 4px;
+      color: var(--neutral-700);
+    }
+
+    .logs-test-key-index,
+    .logs-test-key-hint {
+      display: block;
+      color: var(--neutral-600);
+      font-size: 0.85em;
+    }
+
+    .logs-test-key-index {
+      margin-top: 6px;
+    }
+
+    .logs-test-key-hint {
+      margin-top: 4px;
+    }
+
+    .logs-test-key-original {
+      color: var(--neutral-700);
+    }
+
+    .logs-stream-toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+    }
+
+    .logs-stream-toggle .form-label {
+      margin: 0;
+    }
+
     .log-timing-pair {
       display: inline-flex;
       align-items: center;

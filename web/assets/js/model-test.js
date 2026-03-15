@@ -575,7 +575,6 @@ function renderChannelModeRows() {
     const row = TemplateEngine.render('tpl-model-row', {
       model: modelName,
       displayName: modelName,
-      nameStyle: '',
       ...getResultRowMobileLabels('common.model', '模型')
     });
     if (row) fragment.appendChild(row);
@@ -845,8 +844,6 @@ function setRunTestButtonDisabled(disabled) {
 
   runTestBtn.disabled = disabled;
   runTestBtn.setAttribute('aria-disabled', disabled ? 'true' : 'false');
-  runTestBtn.style.pointerEvents = disabled ? 'none' : '';
-  runTestBtn.style.cursor = disabled ? 'not-allowed' : '';
   runTestBtn.classList.toggle('is-disabled', disabled);
 
   if (disabled) {

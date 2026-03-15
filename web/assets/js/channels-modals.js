@@ -593,13 +593,9 @@ async function batchRefreshSelectedChannels(mode) {
   detailSpan.style.cssText = 'font-size:0.85em;color:var(--neutral-600)';
   progressEl.appendChild(detailSpan);
 
-  let host = document.getElementById('notify-host');
-  if (!host) {
-    host = document.createElement('div');
-    host.id = 'notify-host';
-    host.style.cssText = 'position:fixed;top:var(--space-6);right:var(--space-6);display:flex;flex-direction:column;gap:var(--space-2);z-index:9999;pointer-events:none';
-    document.body.appendChild(host);
-  }
+  const host = typeof window.ensureNotifyHost === 'function'
+    ? window.ensureNotifyHost()
+    : document.body;
   host.appendChild(progressEl);
   requestAnimationFrame(() => { progressEl.style.opacity = '1'; progressEl.style.transform = 'translateX(0)'; });
 
@@ -853,7 +849,7 @@ function addRedirectRow() {
 
 function openModelImportModal() {
   document.getElementById('modelImportTextarea').value = '';
-  document.getElementById('modelImportPreviewContent').style.display = 'none';
+  document.getElementById('modelImportPreviewContent').classList.add('hidden');
   document.getElementById('modelImportModal').classList.add('show');
   setTimeout(() => document.getElementById('modelImportTextarea').focus(), 100);
 }
@@ -875,12 +871,12 @@ function setupModelImportPreview() {
       const models = parseModels(input);
       if (models.length > 0) {
         countSpan.textContent = models.length;
-        previewContent.style.display = 'block';
+        previewContent.classList.remove('hidden');
       } else {
-        previewContent.style.display = 'none';
+        previewContent.classList.add('hidden');
       }
     } else {
-      previewContent.style.display = 'none';
+      previewContent.classList.add('hidden');
     }
   });
 }

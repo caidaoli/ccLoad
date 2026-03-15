@@ -31,14 +31,14 @@
 
         <!-- 统计详情表格 -->
         <section class="mb-8">
-	          <div class="glass-card stats-detail-card" style="animation-delay: 0.3s;">
-            <h3 class="section-title stats-detail-heading mb-6" style="display: flex; align-items: center; justify-content: space-between;">
-              <span class="stats-detail-heading-main" style="display: flex; align-items: center;">
+		          <div class="glass-card stats-detail-card">
+            <h3 class="section-title stats-detail-heading mb-6">
+              <span class="stats-detail-heading-main">
                 <svg class="inline-block w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
                 </svg>
                 <span data-i18n="stats.detailTitle">详细统计数据</span>
-                <small class="stats-detail-sort-hint" style="color: var(--neutral-600); font-weight: var(--font-normal); margin-left: var(--space-2);" data-i18n="stats.sortByPriority">
+                <small class="stats-detail-sort-hint" data-i18n="stats.sortByPriority">
                   按渠道优先级排序
                 </small>
               </span>
@@ -67,7 +67,7 @@
                 try {
                   var savedView = localStorage.getItem('stats.view');
                   if (savedView === 'chart') {
-                    document.write('<style id="stats-view-init-style">#stats-table-view{display:none}#stats-chart-view{display:block}.view-toggle-btn[data-view="table"]{background:transparent;color:var(--neutral-600);box-shadow:none}.view-toggle-btn[data-view="chart"]{background:var(--white);color:var(--primary-600);box-shadow:0 1px 3px rgba(0,0,0,0.1)}</style>');
+                    document.documentElement.classList.add('stats-view-init-chart');
                   }
                 } catch(_) {}
               })();
@@ -84,11 +84,11 @@
                       <span data-i18n="common.model">模型</span>
                       <span class="sort-indicator" id="sort-model"></span>
                     </th>
-                    <th class="sortable" data-column="success" style="color: var(--success-400);">
+                    <th class="sortable stats-header-accent--success" data-column="success">
                       <span data-i18n="common.success">成功</span>
                       <span class="sort-indicator" id="sort-success"></span>
                     </th>
-                    <th class="sortable" data-column="error" style="color: var(--error-400);">
+                    <th class="sortable stats-header-accent--error" data-column="error">
                       <span data-i18n="common.failed">失败</span>
                       <span class="sort-indicator" id="sort-error"></span>
                     </th>
@@ -108,15 +108,15 @@
                       <span data-i18n="stats.outputTokens">输出Token</span>
                       <span class="sort-indicator" id="sort-total_output_tokens"></span>
                     </th>
-                    <th class="sortable" data-column="total_cache_read" style="color: var(--success-600);">
+                    <th class="sortable stats-header-accent--cache-read" data-column="total_cache_read">
                       <span data-i18n="stats.cacheRead">缓存读取</span>
                       <span class="sort-indicator" id="sort-total_cache_read"></span>
                     </th>
-                    <th class="sortable" data-column="total_cache_creation" style="color: var(--primary-600);">
+                    <th class="sortable stats-header-accent--cache-create" data-column="total_cache_creation">
                       <span data-i18n="stats.cacheCreation">缓存创建</span>
                       <span class="sort-indicator" id="sort-total_cache_creation"></span>
                     </th>
-                    <th class="sortable" data-column="total_cost" style="color: var(--warning-600);">
+                    <th class="sortable stats-header-accent--cost" data-column="total_cost">
                       <span data-i18n="stats.costUsd">成本($)</span>
                       <span class="sort-indicator" id="sort-total_cost"></span>
                     </th>
@@ -125,7 +125,7 @@
                 <tbody id="stats_tbody">
                   <tr>
                     <td colspan="12" class="loading-state">
-                      <div class="loading-spinner" style="margin: 0 auto var(--space-2)"></div>
+                      <div class="loading-spinner loading-spinner--block"></div>
                       <span data-i18n="stats.loading">正在加载统计数据...</span>
                     </td>
                   </tr>
@@ -134,7 +134,7 @@
             </div>
 
             <!-- 图表视图 -->
-            <div id="stats-chart-view" style="display: none;">
+            <div id="stats-chart-view" class="hidden">
               <div class="charts-grid">
                 <!-- 第1行：调用次数 -->
                 <!-- 渠道调用次数饼图 -->
@@ -181,7 +181,7 @@
   <template id="tpl-stats-loading">
     <tr>
       <td colspan="{{colspan}}" class="loading-state">
-        <div class="loading-spinner" style="margin: 0 auto var(--space-2)"></div>
+        <div class="loading-spinner loading-spinner--block"></div>
         <span data-i18n="stats.loading">正在加载统计数据...</span>
       </td>
     </tr>
@@ -191,10 +191,10 @@
   <template id="tpl-stats-error">
     <tr>
       <td colspan="{{colspan}}" class="empty-state">
-        <svg class="w-12 h-12 mx-auto mb-4" style="color: var(--error-400);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <svg class="w-12 h-12 mx-auto mb-4 empty-state-icon--error" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.864-.833-2.634 0L4.18 16.5c-.77.833.192 2.5 1.732 2.5z"/>
         </svg>
-        <div style="color: var(--error-400); font-weight: var(--font-medium); margin-bottom: var(--space-1);" data-i18n="stats.loadFailed">加载失败</div>
+        <div class="empty-state-title empty-state-title--error" data-i18n="stats.loadFailed">加载失败</div>
         <div data-i18n="stats.checkNetwork">请检查网络连接或重试</div>
       </td>
     </tr>
@@ -204,10 +204,10 @@
   <template id="tpl-stats-empty">
     <tr>
       <td colspan="{{colspan}}" class="empty-state">
-        <svg class="w-12 h-12 mx-auto mb-4" style="color: var(--neutral-400);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <svg class="w-12 h-12 mx-auto mb-4 empty-state-icon--neutral" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
         </svg>
-        <div style="font-weight: var(--font-medium); margin-bottom: var(--space-1); color: var(--neutral-700);" data-i18n="stats.noData">暂无统计数据</div>
+        <div class="empty-state-title" data-i18n="stats.noData">暂无统计数据</div>
         <div data-i18n="stats.adjustFilter">请调整筛选条件或检查时间范围</div>
       </td>
     </tr>
@@ -224,29 +224,29 @@
       <td class="stats-col-model" data-mobile-label="{{mobileLabelModel}}">{{{modelDisplay}}}</td>
       <td class="stats-col-success" data-mobile-label="{{mobileLabelSuccess}}">{{{successDisplay}}}</td>
       <td class="stats-col-error" data-mobile-label="{{mobileLabelError}}"><span class="error-count">{{errorCount}}</span></td>
-      <td class="stats-col-timing {{timingCellClass}}" style="text-align: center;" data-mobile-label="{{mobileLabelTiming}}">{{{avgFirstByteTime}}}</td>
-      <td class="stats-col-rpm" style="text-align: right;" data-mobile-label="{{mobileLabelRpm}}">{{{rpm}}}</td>
-      <td class="stats-col-input {{inputCellClass}}" style="text-align: right;" data-mobile-label="{{mobileLabelInput}}">{{{inputTokens}}}</td>
-      <td class="stats-col-output {{outputCellClass}}" style="text-align: right;" data-mobile-label="{{mobileLabelOutput}}">{{{outputTokens}}}</td>
-      <td class="stats-col-cache-read {{cacheReadCellClass}}" style="text-align: right;" data-mobile-label="{{mobileLabelCacheRead}}">{{{cacheReadTokens}}}</td>
-      <td class="stats-col-cache-create {{cacheCreateCellClass}}" style="text-align: right;" data-mobile-label="{{mobileLabelCacheCreate}}">{{{cacheCreationTokens}}}</td>
-      <td class="stats-col-cost {{costCellClass}}" style="text-align: right;" data-mobile-label="{{mobileLabelCost}}">{{{costText}}}</td>
+      <td class="stats-col-timing {{timingCellClass}}" data-mobile-label="{{mobileLabelTiming}}">{{{avgFirstByteTime}}}</td>
+      <td class="stats-col-rpm" data-mobile-label="{{mobileLabelRpm}}">{{{rpm}}}</td>
+      <td class="stats-col-input {{inputCellClass}}" data-mobile-label="{{mobileLabelInput}}">{{{inputTokens}}}</td>
+      <td class="stats-col-output {{outputCellClass}}" data-mobile-label="{{mobileLabelOutput}}">{{{outputTokens}}}</td>
+      <td class="stats-col-cache-read {{cacheReadCellClass}}" data-mobile-label="{{mobileLabelCacheRead}}">{{{cacheReadTokens}}}</td>
+      <td class="stats-col-cache-create {{cacheCreateCellClass}}" data-mobile-label="{{mobileLabelCacheCreate}}">{{{cacheCreationTokens}}}</td>
+      <td class="stats-col-cost {{costCellClass}}" data-mobile-label="{{mobileLabelCost}}">{{{costText}}}</td>
     </tr>
   </template>
 
   <!-- 合计行模板 -->
   <template id="tpl-stats-total">
-    <tr class="mobile-card-row stats-total-row" style="background-color: var(--primary-50); font-weight: bold; border-top: 2px solid var(--primary-200);">
-      <td colspan="2" class="stats-col-total-label" style="text-align: center; font-size: 15px; color: var(--primary-700);" data-mobile-label="{{mobileLabelSummary}}" data-i18n="stats.total">合计</td>
+    <tr class="mobile-card-row stats-total-row">
+      <td colspan="2" class="stats-col-total-label" data-mobile-label="{{mobileLabelSummary}}" data-i18n="stats.total">合计</td>
       <td class="stats-col-success" data-mobile-label="{{mobileLabelSuccess}}">{{{successDisplay}}}</td>
       <td class="stats-col-error" data-mobile-label="{{mobileLabelError}}"><span class="error-count">{{errorCount}}</span></td>
-      <td class="stats-col-timing mobile-empty-cell" style="text-align: center;" data-mobile-label="{{mobileLabelTiming}}"></td>
-      <td class="stats-col-rpm" style="text-align: right;" data-mobile-label="{{mobileLabelRpm}}">{{{rpm}}}</td>
-      <td class="stats-col-input" style="text-align: right;" data-mobile-label="{{mobileLabelInput}}">{{inputTokens}}</td>
-      <td class="stats-col-output" style="text-align: right;" data-mobile-label="{{mobileLabelOutput}}">{{outputTokens}}</td>
-      <td class="stats-col-cache-read" style="text-align: right;" data-mobile-label="{{mobileLabelCacheRead}}"><span style="color: var(--success-600);">{{cacheReadTokens}}</span></td>
-      <td class="stats-col-cache-create" style="text-align: right;" data-mobile-label="{{mobileLabelCacheCreate}}"><span style="color: var(--primary-600);">{{cacheCreationTokens}}</span></td>
-      <td class="stats-col-cost" style="text-align: right;" data-mobile-label="{{mobileLabelCost}}"><span style="color: var(--warning-600); font-weight: 600;">{{costText}}</span></td>
+      <td class="stats-col-timing mobile-empty-cell" data-mobile-label="{{mobileLabelTiming}}"></td>
+      <td class="stats-col-rpm" data-mobile-label="{{mobileLabelRpm}}">{{{rpm}}}</td>
+      <td class="stats-col-input" data-mobile-label="{{mobileLabelInput}}">{{inputTokens}}</td>
+      <td class="stats-col-output" data-mobile-label="{{mobileLabelOutput}}">{{outputTokens}}</td>
+      <td class="stats-col-cache-read" data-mobile-label="{{mobileLabelCacheRead}}"><span class="stats-value-success">{{cacheReadTokens}}</span></td>
+      <td class="stats-col-cache-create" data-mobile-label="{{mobileLabelCacheCreate}}"><span class="stats-value-primary">{{cacheCreationTokens}}</span></td>
+      <td class="stats-col-cost" data-mobile-label="{{mobileLabelCost}}"><span class="stats-value-warning">{{costText}}</span></td>
     </tr>
   </template>
 

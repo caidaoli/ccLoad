@@ -192,6 +192,6 @@ test('logs.js、stats.js 和 trend.js 使用共享筛选输入绑定 helper，lo
   assert.match(logsSource, /trim:\s*true/);
   assert.match(statsSource, /trim:\s*true/);
   assert.match(trendSource, /trim:\s*true/);
-  assert.match(logsSource, /const filters = getLogsFilters\(\);/);
-  assert.match(statsSource, /const filters = getStatsFilters\(\);/);
+  assert.match(logsSource, /getValues:\s*getLogsFilters|values:\s*getLogsFilters\(\)/);
+  assert.match(statsSource, /getValues:\s*getStatsFilters|values:\s*getStatsFilters\(\)/);
 });

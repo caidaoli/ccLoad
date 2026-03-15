@@ -35,9 +35,9 @@ async function testChannel(id, name) {
   const batchTestBtn = document.getElementById('batchTestBtn');
 
   if (keys.length > 1) {
-    keySelectGroup.style.display = 'block';
-    batchTestBtn.style.display = 'inline-block';
-    
+    keySelectGroup.classList.remove('hidden');
+    batchTestBtn.classList.remove('hidden');
+
     keySelect.innerHTML = '';
     const maxKeys = Math.min(keys.length, 10);
     for (let i = 0; i < maxKeys; i++) {
@@ -46,7 +46,7 @@ async function testChannel(id, name) {
       option.textContent = `Key ${i + 1}: ${maskKey(keys[i])}`;
       keySelect.appendChild(option);
     }
-    
+
     if (keys.length > 10) {
       const hintOption = document.createElement('option');
       hintOption.disabled = true;
@@ -54,8 +54,8 @@ async function testChannel(id, name) {
       keySelect.appendChild(hintOption);
     }
   } else {
-    keySelectGroup.style.display = 'none';
-    batchTestBtn.style.display = 'none';
+    keySelectGroup.classList.add('hidden');
+    batchTestBtn.classList.add('hidden');
   }
 
   resetTestModal();
@@ -73,7 +73,7 @@ function closeTestModal() {
 
 function resetTestModal() {
   document.getElementById('testProgress').classList.remove('show');
-  document.getElementById('batchTestProgress').style.display = 'none';
+  document.getElementById('batchTestProgress').classList.add('hidden');
   document.getElementById('testResult').classList.remove('show', 'success', 'error');
   document.getElementById('runTestBtn').disabled = false;
   document.getElementById('batchTestBtn').disabled = false;
@@ -90,6 +90,7 @@ async function runChannelTest() {
   const channelTypeSelect = document.getElementById('testChannelType');
   const keySelect = document.getElementById('testKeySelect');
   const streamCheckbox = document.getElementById('testStreamEnabled');
+  const keySelectGroup = document.getElementById('testKeySelectGroup');
   const selectedModel = modelSelect.value;
   const testContent = contentInput.value.trim() || defaultTestContent;
   const channelType = channelTypeSelect.value;
@@ -112,7 +113,7 @@ async function runChannelTest() {
       channel_type: channelType
     };
 
-    if (keySelect && keySelect.parentElement.style.display !== 'none') {
+    if (keySelect && keySelectGroup && !keySelectGroup.classList.contains('hidden')) {
       testRequest.key_index = parseInt(keySelect.value) || 0;
     }
 
@@ -181,8 +182,8 @@ async function runBatchTest() {
   const counterSpan = document.getElementById('batchTestCounter');
   const progressBar = document.getElementById('batchTestProgressBar');
   const statusDiv = document.getElementById('batchTestStatus');
-  
-  progressDiv.style.display = 'block';
+
+  progressDiv.classList.remove('hidden');
   document.getElementById('testResult').classList.remove('show');
 
   let successCount = 0;
@@ -281,7 +282,7 @@ function displayBatchTestResult(successCount, failedCount, totalCount, failedKey
       });
       return item ? item.outerHTML : '';
     }).join('');
-    return `<ul style="margin: 8px 0; padding-left: 20px;">${items}</ul>`;
+    return `<ul class="batch-test-fail-list">${items}</ul>`;
   };
 
   if (failedCount === 0) {
@@ -291,11 +292,11 @@ function displayBatchTestResult(successCount, failedCount, totalCount, failedKey
   } else if (successCount === 0) {
     testResultDiv.classList.add('error');
     renderHeader('❌', window.t('channels.test.batchAllFailed', { count: totalCount }));
-    detailsDiv.innerHTML = `<h4 style="margin-top: 12px; color: var(--error-600);">${window.t('channels.test.failDetails')}</h4>${buildFailDetails()}<p style="color: var(--error-600); margin-top: 8px;">${window.t('channels.test.failedKeysAutoCooldown')}</p>`;
+    detailsDiv.innerHTML = `<h4 class="batch-test-fail-title">${window.t('channels.test.failDetails')}</h4>${buildFailDetails()}<p class="batch-test-fail-note">${window.t('channels.test.failedKeysAutoCooldown')}</p>`;
   } else {
     testResultDiv.classList.add('success');
     renderHeader('⚠️', window.t('channels.test.batchPartial', { success: successCount, failed: failedCount }));
-    detailsDiv.innerHTML = `<p style="color: var(--success-600);">✅ ${window.t('channels.test.keysAvailable', { count: successCount })}</p><h4 style="margin-top: 12px; color: var(--error-600);">${window.t('channels.test.failDetails')}</h4>${buildFailDetails()}<p style="color: var(--error-600); margin-top: 8px;">${window.t('channels.test.failedKeysAutoCooldown')}</p>`;
+    detailsDiv.innerHTML = `<p class="batch-test-success-note">✅ ${window.t('channels.test.keysAvailable', { count: successCount })}</p><h4 class="batch-test-fail-title">${window.t('channels.test.failDetails')}</h4>${buildFailDetails()}<p class="batch-test-fail-note">${window.t('channels.test.failedKeysAutoCooldown')}</p>`;
   }
 }
 

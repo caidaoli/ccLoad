@@ -55,12 +55,12 @@
 
         <!-- 按渠道类型统计 -->
         <section class="mb-6">
-          <div class="grid grid-cols-2 animate-slide-up" style="animation-delay: 0.1s; gap: var(--space-3);">
+          <div class="grid grid-cols-2 animate-slide-up animate-delay-1 gap-space-3">
             <!-- Claude Code -->
             <div class="channel-card" id="type-anthropic-card">
               <div class="channel-card-header">
                 <div class="channel-card-title">
-                  <div class="channel-icon" style="background: linear-gradient(135deg, #CC9B7A, #D4A574);">
+                  <div class="channel-icon channel-icon--anthropic">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                       <path d="M12 2L2 22h20L12 2zm0 4.5L18.5 20h-13L12 6.5z"/>
                     </svg>
@@ -116,7 +116,7 @@
             <div class="channel-card" id="type-codex-card">
               <div class="channel-card-header">
                 <div class="channel-card-title">
-                  <div class="channel-icon" style="background: linear-gradient(135deg, #10a37f, #0d8a6a);">
+                  <div class="channel-icon channel-icon--codex">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                       <path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/>
                     </svg>
@@ -172,7 +172,7 @@
             <div class="channel-card" id="type-openai-card">
               <div class="channel-card-header">
                 <div class="channel-card-title">
-                  <div class="channel-icon" style="background: linear-gradient(135deg, #10a37f, #0d8a6a);">
+                  <div class="channel-icon channel-icon--openai">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                       <path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/>
                     </svg>
@@ -224,7 +224,7 @@
             <div class="channel-card" id="type-gemini-card">
               <div class="channel-card-header">
                 <div class="channel-card-title">
-                  <div class="channel-icon" style="background: linear-gradient(135deg, #4285f4, #1a73e8);">
+                  <div class="channel-icon channel-icon--gemini">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                       <path d="M12 2L2 7v10l10 5 10-5V7L12 2zm0 2.18L19.82 8 12 11.82 4.18 8 12 4.18zM4 9.48l7 3.5v7.84l-7-3.5V9.48zm16 0v7.84l-7 3.5v-7.84l7-3.5z"/>
                     </svg>
@@ -275,19 +275,19 @@
         </section>
         <!-- 实时状态栏 - 总览 -->
         <section class="mb-6">
-          <div class="animate-slide-up" style="animation-delay: 0.2s; display: flex; gap: var(--space-3); flex-wrap: nowrap;">
-            <div class="summary-card summary-card-success" style="flex: 1; min-width: 0;">
+          <div class="flex index-summary-grid animate-slide-up animate-delay-2 gap-space-3 flex-nowrap">
+            <div class="summary-card summary-card-success">
               <div class="summary-icon">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M20 6L9 17l-5-5"/>
                 </svg>
               </div>
               <div class="summary-content">
-                <div class="summary-value"><span class="metric-success" id="success-requests">--</span>/<span class="metric-error" id="error-requests">--</span> <span style="font-size:0.7em;color:var(--neutral-500)">(<span id="success-rate">--</span>)</span></div>
+                <div class="summary-value"><span class="metric-success" id="success-requests">--</span>/<span class="metric-error" id="error-requests">--</span> <span class="summary-value-note">(<span id="success-rate">--</span>)</span></div>
                 <div class="summary-label" data-i18n="index.metrics.successFailed">成功/失败 (成功率)</div>
               </div>
             </div>
-            <div class="summary-card summary-card-info" style="flex: 1; min-width: 0;" title="每分钟请求数">
+            <div class="summary-card summary-card-primary" title="每分钟请求数">
               <div class="summary-icon">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <circle cx="12" cy="12" r="10"/>
@@ -302,50 +302,43 @@
           </div>
         </section>
 
-        <!-- 服务详情 -->
+        <!-- API 接口 -->
         <section class="mb-8">
-            <div class="glass-card animate-slide-up" style="animation-delay: 0.4s;">
-
-
-            <!-- API接口 -->
-            <div class="glass-card animate-slide-up" style="animation-delay: 0.3s;">
-              <h3 class="text-xl font-semibold mb-6">
-                <svg class="inline-block w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2-2v16z"/>
-                </svg>
-                <span data-i18n="index.apiSection">API 接口</span>
-              </h3>
-              <div class="space-y-3">
-                <div class="bg-neutral-100 bg-opacity-90 rounded-lg p-3 border border-neutral-200">
-                  <div class="text-xs font-mono font-semibold" style="color: var(--success-600);">POST</div>
-                  <div class="font-mono text-sm font-medium" style="color: var(--neutral-800);">/v1/messages</div>
-                  <div class="text-xs mt-1" style="color: var(--neutral-600);" data-i18n="index.apiClaudeDesc">Claude API 透明代理</div>
-                </div>
-                <div class="bg-neutral-100 bg-opacity-90 rounded-lg p-3 border border-neutral-200">
-                  <div class="text-xs font-mono font-semibold" style="color: var(--success-600);">POST</div>
-                  <div class="font-mono text-sm font-medium" style="color: var(--neutral-800);">/v1/responses</div>
-                  <div class="text-xs mt-1" style="color: var(--neutral-600);" data-i18n="index.apiCodexDesc">Codex API 透明代理</div>
-                </div>
-                <div class="bg-neutral-100 bg-opacity-90 rounded-lg p-3 border border-neutral-200">
-                  <div class="text-xs font-mono font-semibold" style="color: var(--success-600);">POST</div>
-                  <div class="font-mono text-sm font-medium" style="color: var(--neutral-800);">/v1beta</div>
-                  <div class="text-xs mt-1" style="color: var(--neutral-600);" data-i18n="index.apiGeminiDesc">Gemini 透明代理</div>
-                </div>
-                <div class="bg-neutral-100 bg-opacity-90 rounded-lg p-3 border border-neutral-200">
-                  <div class="text-xs font-mono font-semibold" style="color: var(--primary-600);">GET</div>
-                  <div class="font-mono text-sm font-medium" style="color: var(--neutral-800);">/public/summary</div>
-                  <div class="text-xs mt-1" style="color: var(--neutral-600);" data-i18n="index.apiSummaryDesc">公开统计数据</div>
-                </div>
+          <div class="glass-card animate-slide-up animate-delay-3">
+            <h3 class="text-xl font-semibold mb-6">
+              <svg class="inline-block w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2-2v16z"/>
+              </svg>
+              <span data-i18n="index.apiSection">API 接口</span>
+            </h3>
+            <div class="index-api-list">
+              <div class="index-api-entry">
+                <div class="index-api-method index-api-method--post">POST</div>
+                <div class="index-api-path">/v1/messages</div>
+                <div class="index-api-desc" data-i18n="index.apiClaudeDesc">Claude API 透明代理</div>
               </div>
-              <div class="mt-6 p-3 bg-info-50 rounded-lg border border-info-200">
-                <div class="text-xs font-semibold" style="color: var(--info-600);" data-i18n="common.info">提示</div>
-                <div class="text-sm mt-1" style="color: var(--neutral-700);" data-i18n="index.apiTip">
-                  管理功能需要登录访问，代理服务公开使用
-                </div>
+              <div class="index-api-entry">
+                <div class="index-api-method index-api-method--post">POST</div>
+                <div class="index-api-path">/v1/responses</div>
+                <div class="index-api-desc" data-i18n="index.apiCodexDesc">Codex API 透明代理</div>
+              </div>
+              <div class="index-api-entry">
+                <div class="index-api-method index-api-method--post">POST</div>
+                <div class="index-api-path">/v1beta</div>
+                <div class="index-api-desc" data-i18n="index.apiGeminiDesc">Gemini 透明代理</div>
+              </div>
+              <div class="index-api-entry">
+                <div class="index-api-method index-api-method--get">GET</div>
+                <div class="index-api-path">/public/summary</div>
+                <div class="index-api-desc" data-i18n="index.apiSummaryDesc">公开统计数据</div>
               </div>
             </div>
-
-            
+            <div class="index-api-tip">
+              <div class="index-api-tip-title" data-i18n="common.info">提示</div>
+              <div class="index-api-tip-body" data-i18n="index.apiTip">
+                管理功能需要登录访问，代理服务公开使用
+              </div>
+            </div>
           </div>
         </section>
 

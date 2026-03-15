@@ -354,13 +354,13 @@ test('logs.js、stats.js 和 trend.js 接入共享 helper，而不是各自复�
   assert.doesNotMatch(logsSource, /function loadLogsFilters/);
   assert.doesNotMatch(statsSource, /function saveStatsFilters/);
   assert.doesNotMatch(statsSource, /function loadStatsFilters/);
-  assert.match(logsSource, /FilterState\.buildRestoreSearch/);
-  assert.match(statsSource, /FilterState\.buildRestoreSearch/);
-  assert.match(logsSource, /FilterState\.writeHistory/);
-  assert.match(statsSource, /FilterState\.writeHistory/);
-  assert.match(trendSource, /FilterState\.writeHistory/);
+  assert.match(logsSource, /persistFilterState\(/);
+  assert.match(statsSource, /persistFilterState\(/);
+  assert.match(trendSource, /persistFilterState\(/);
   assert.doesNotMatch(logsSource, /history\.pushState/);
+  assert.doesNotMatch(logsSource, /history\.replaceState/);
   assert.doesNotMatch(statsSource, /history\.pushState/);
+  assert.doesNotMatch(statsSource, /history\.replaceState/);
   assert.doesNotMatch(trendSource, /history\.replaceState/);
   assert.doesNotMatch(trendSource, /localStorage\.setItem\('trend\.(channelType|range|trendType|model|authToken|channelId|channelName)'/);
   assert.doesNotMatch(trendSource, /localStorage\.getItem\('trend\.(channelType|range|trendType|model|authToken|channelId|channelName)'/);

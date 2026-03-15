@@ -1571,16 +1571,10 @@ function shouldShowZoom(points, hours, trendType) {
 
     function persistState() {
       try {
-        window.FilterState.save(TREND_FILTER_KEY, getTrendFilters());
-        updateURLParams();
-      } catch (_) {}
-    }
-
-    function updateURLParams() {
-      try {
-        window.FilterState.writeHistory({
-          pathname: location.pathname,
+        window.persistFilterState({
+          key: TREND_FILTER_KEY,
           values: getTrendFilters(),
+          pathname: location.pathname,
           fields: TREND_FILTER_FIELDS,
           historyMethod: 'replaceState'
         });

@@ -33,7 +33,7 @@ test('page-filters 渲染 logs 布局时保留专用 class 和关键筛选控件
   assert.match(html, /class="filter-controls logs-filter-controls"/);
   assert.match(html, /class="filter-group logs-filter-group"/);
   assert.match(html, /class="filter-info logs-filter-info"/);
-  assert.match(html, /class="logs-filter-actions"/);
+  assert.match(html, /class="filter-actions filter-actions--page logs-filter-actions"/);
   assert.match(html, /class="logs-filter-summary-row"[\s\S]*id="displayedCount"[\s\S]*id="btn_filter"/);
   assert.match(html, /id="f_channel_type"/);
   assert.match(html, /id="f_hours"/);
@@ -55,7 +55,7 @@ test('page-filters 渲染 stats/trend 布局时保留各自特有控件', () => 
   assert.match(statsLayout, /class="stats-filter-summary-row"/);
   assert.match(statsLayout, /class="filter-group filter-group--checkbox stats-filter-group stats-filter-group--checkbox"/);
   assert.match(statsLayout, /class="filter-info stats-filter-info"/);
-  assert.match(statsLayout, /class="stats-filter-actions"/);
+  assert.match(statsLayout, /class="filter-actions filter-actions--page stats-filter-actions"/);
   assert.match(statsLayout, /id="f_hide_zero_success"/);
   assert.match(statsLayout, /id="statsCount"/);
   assert.match(trendLayout, /id="f_model" class="filter-select(?:\s+[^"]+)?"/);
@@ -71,6 +71,7 @@ test('page-filters 使用响应式宽度类代替筛选控件内联像素宽度'
 
   [logsLayout, statsLayout, trendLayout].forEach((layout) => {
     assert.doesNotMatch(layout, /style="[^"]*(?:min-width|max-width)\s*:/);
+    assert.doesNotMatch(layout, /style="[^"]*(?:padding|font-size|flex)\s*:/);
   });
 
   assert.match(statsLayout, /id="f_channel_type" class="filter-select filter-control--compact"/);

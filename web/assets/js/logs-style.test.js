@@ -62,7 +62,7 @@ test('日志页顶部筛选栏通过共享渲染器输出页面专用布局类',
   assert.match(filtersHtml, /class="filter-group\s+logs-filter-group"/);
   assert.match(filtersHtml, /class="filter-info\s+logs-filter-info"/);
   assert.match(filtersHtml, /class="logs-filter-summary-row"/);
-  assert.match(filtersHtml, /<div class="logs-filter-actions">[\s\S]*id="btn_filter"/);
+  assert.match(filtersHtml, /<div class="filter-actions filter-actions--page logs-filter-actions">[\s\S]*id="btn_filter"/);
 });
 
 test('日志页窄屏筛选栏压缩标签和按钮布局', () => {

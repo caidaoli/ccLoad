@@ -9,50 +9,6 @@
   <meta name="theme-color" content="#3b82f6">
   <title data-i18n="modelTest.title">模型测试 - Claude Code & Codex Proxy</title>
   <link rel="stylesheet" href="/web/assets/css/styles.css?v=__VERSION__">
-  <style>
-    .mode-tab-btn {
-      padding: 8px 14px;
-      font-size: 13px;
-      border: 1px solid var(--color-border);
-      border-radius: 8px;
-      background: var(--color-bg-secondary);
-      color: var(--color-text-secondary);
-      cursor: pointer;
-    }
-
-    .mode-tab-btn.active {
-      background: var(--primary-500);
-      border-color: var(--primary-500);
-      color: white;
-    }
-
-    .delete-preview-text {
-      margin: 0;
-      margin-top: 10px;
-      white-space: pre-wrap;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 12px;
-      line-height: 1.5;
-      color: var(--color-text-secondary);
-      background: var(--color-bg-secondary);
-      border: 1px solid var(--color-border);
-      border-radius: 8px;
-      padding: 10px;
-      max-height: 260px;
-      overflow: auto;
-    }
-
-    #runTestBtn:disabled,
-    #runTestBtn.is-disabled {
-      opacity: 0.62;
-      filter: saturate(60%);
-      background: var(--color-border);
-      border-color: var(--color-border);
-      color: var(--color-text-secondary);
-      cursor: not-allowed;
-      pointer-events: none;
-    }
-  </style>
   <script defer src="/web/assets/locales/zh-CN.js?v=__VERSION__"></script>
   <script defer src="/web/assets/locales/en.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/i18n.js?v=__VERSION__"></script>
@@ -64,7 +20,7 @@
   <div class="app-container">
     <main class="main-content">
       <div class="content-area">
-        <section class="glass-card mt-2 mb-2" style="overflow: visible;">
+        <section class="glass-card mt-2 mb-2 overflow-visible">
           <!-- 模式切换 -->
           <div class="model-test-tabs">
             <button id="modeTabChannel" type="button" class="mode-tab-btn active" data-action="set-test-mode" data-mode="channel" data-i18n="modelTest.mode.channel">按渠道测试</button>
@@ -83,7 +39,7 @@
                 <select id="testChannelType" class="model-test-inline-select">
                 </select>
               </label>
-              <label id="modelSelectorLabel" class="model-test-control model-test-control--model" style="display: none;">
+              <label id="modelSelectorLabel" class="model-test-control model-test-control--model hidden">
                 <span class="model-test-control__label" data-i18n="common.model">模型</span>
                 <div class="filter-combobox-wrapper model-test-model-combobox">
                   <input
@@ -132,7 +88,7 @@
           <!-- 模型测试表格 -->
           <div class="table-container model-test-table-container mobile-card-table-container">
             <table class="modern-table model-test-table mobile-card-table">
-              <thead style="position: sticky; top: 0; background: var(--glass-bg); z-index: 1;">
+              <thead class="table-head-sticky">
                 <tr id="model-test-head-row">
                   <th class="table-col-select mobile-card-select-header"><input type="checkbox" id="selectAllCheckbox" data-change-action="toggle-all-models"></th>
                   <th class="table-col-name" data-i18n="common.model" data-sort-key="name">模型</th>
@@ -147,7 +103,7 @@
                 </tr>
               </thead>
               <tbody id="model-test-tbody">
-                <tr class="model-test-empty-row"><td colspan="10" style="text-align: center; color: var(--color-text-secondary); padding: 40px;" data-i18n="modelTest.selectChannelFirst">请先选择渠道</td></tr>
+                <tr class="model-test-empty-row"><td colspan="10" data-i18n="modelTest.selectChannelFirst">请先选择渠道</td></tr>
               </tbody>
             </table>
           </div>
@@ -159,7 +115,7 @@
   <template id="tpl-model-row">
     <tr class="mobile-card-row model-test-row" data-model="{{model}}">
       <td class="model-test-col-select mobile-card-no-label" data-mobile-label="{{mobileLabelSelect}}"><input type="checkbox" class="row-checkbox model-checkbox" checked></td>
-      <td class="model-test-col-name" title="{{model}}" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;{{nameStyle}}" data-mobile-label="{{mobileLabelName}}">{{displayName}}</td>
+      <td class="model-test-col-name truncate-cell" title="{{model}}" data-mobile-label="{{mobileLabelName}}">{{displayName}}</td>
       <td class="model-test-col-first-byte first-byte-duration" data-mobile-label="{{mobileLabelFirstByte}}">-</td>
       <td class="model-test-col-duration duration" data-mobile-label="{{mobileLabelDuration}}">-</td>
       <td class="model-test-col-input input-tokens" data-mobile-label="{{mobileLabelInput}}">-</td>
@@ -175,7 +131,7 @@
   <template id="tpl-channel-row-by-model">
     <tr class="mobile-card-row model-test-row" data-channel-id="{{channelId}}" data-model="{{model}}">
       <td class="model-test-col-select mobile-card-no-label" data-mobile-label="{{mobileLabelSelect}}"><input type="checkbox" class="row-checkbox channel-checkbox" checked></td>
-      <td class="model-test-col-name" title="{{channelName}}" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" data-mobile-label="{{mobileLabelName}}">{{channelName}}</td>
+      <td class="model-test-col-name truncate-cell" title="{{channelName}}" data-mobile-label="{{mobileLabelName}}">{{channelName}}</td>
       <td class="model-test-col-first-byte first-byte-duration" data-mobile-label="{{mobileLabelFirstByte}}">-</td>
       <td class="model-test-col-duration duration" data-mobile-label="{{mobileLabelDuration}}">-</td>
       <td class="model-test-col-input input-tokens" data-mobile-label="{{mobileLabelInput}}">-</td>
@@ -189,21 +145,21 @@
 
   <!-- 空状态模板 -->
   <template id="tpl-empty-row">
-    <tr class="model-test-empty-row"><td colspan="{{colspan}}" style="text-align: center; color: var(--color-text-secondary); padding: 40px;">{{message}}</td></tr>
+    <tr class="model-test-empty-row"><td colspan="{{colspan}}">{{message}}</td></tr>
   </template>
 
   <!-- 删除预览确认弹窗 -->
   <div id="deletePreviewModal" class="modal">
     <div class="modal-content modal-content--lg">
-      <div class="modal-header" style="margin-bottom: 8px;">
+      <div class="modal-header modal-header--compact">
         <h2 class="modal-title" data-i18n="modelTest.deletePreviewTitle">确认删除模型</h2>
         <button id="deletePreviewCloseBtn" class="close-btn" aria-label="Close">&times;</button>
       </div>
-      <p style="margin: 0; color: var(--color-text-secondary); font-size: 13px;" data-i18n="modelTest.deletePreviewDesc">将按以下分组删除，请确认：</p>
+      <p class="modal-description" data-i18n="modelTest.deletePreviewDesc">将按以下分组删除，请确认：</p>
       <pre id="deletePreviewContent" class="delete-preview-text">-</pre>
-      <p id="deletePreviewProgress" style="display: none; margin: 0; margin-top: 10px; font-size: 13px; color: var(--color-text-secondary);">-</p>
-      <pre id="deletePreviewRuntimeLog" class="delete-preview-text" style="display: none; max-height: 180px;">-</pre>
-      <div class="confirm-actions" style="justify-content: flex-end; margin-top: 16px;">
+      <p id="deletePreviewProgress" class="model-test-delete-preview-progress hidden">-</p>
+      <pre id="deletePreviewRuntimeLog" class="delete-preview-text model-test-delete-preview-log hidden">-</pre>
+      <div class="confirm-actions confirm-actions--end">
         <button id="deletePreviewCancelBtn" class="btn btn-secondary" data-i18n="common.cancel">取消</button>
         <button id="deletePreviewConfirmBtn" class="btn btn-danger" data-i18n="modelTest.deletePreviewConfirm">确认删除</button>
       </div>
