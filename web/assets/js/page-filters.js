@@ -11,34 +11,48 @@
     return `<label for="${forId}" class="filter-label" data-i18n="${i18nKey}">${text}</label>`;
   }
 
-  function buildSelect(id, optionsHtml = '', style = '') {
-    const styleAttr = style ? ` style="${style}"` : '';
-    return `<select id="${id}" class="filter-select"${styleAttr}>${optionsHtml}</select>`;
+  function buildSelect(id, optionsHtml = '', extraClass = '') {
+    return `<select id="${id}" class="${joinClasses('filter-select', extraClass)}">${optionsHtml}</select>`;
   }
 
-  function buildInput(type, id, placeholderKey, placeholder, style = '') {
-    const styleAttr = style ? ` style="${style}"` : '';
-    return `<input type="${type}" id="${id}" class="filter-input" data-i18n-placeholder="${placeholderKey}" placeholder="${placeholder}"${styleAttr}>`;
+  function buildInput(type, id, placeholderKey, placeholder, extraClass = '') {
+    return `<input type="${type}" id="${id}" class="${joinClasses('filter-input', extraClass)}" data-i18n-placeholder="${placeholderKey}" placeholder="${placeholder}">`;
   }
 
   function buildSharedFields(config) {
     const groupClass = config.groupClass || '';
     const infoClass = config.infoClass || 'filter-info';
+    const checkboxGroupClass = config.checkboxGroupClass || groupClass;
+    const hideZeroSuccess = `<div class="${joinClasses('filter-group', 'filter-group--checkbox', checkboxGroupClass)}">
+              <label class="filter-checkbox-label">
+                <input type="checkbox" id="f_hide_zero_success" checked>
+                <span data-i18n="stats.hideZeroSuccess">隐藏0成功</span>
+              </label>
+            </div>`;
+    const statsInfo = `<div class="${infoClass}"><span data-i18n="stats.totalRecordsPrefix">共</span> <span id="statsCount">0</span> <span data-i18n="stats.totalRecordsSuffix">条记录</span></div>`;
+    const filterButton = config.actionsClass
+      ? `<div class="${config.actionsClass}">
+              <button id="btn_filter" type="button" class="btn btn-primary" style="padding: 8px 16px; font-size: 14px;" data-i18n="common.filter">筛选</button>
+            </div>`
+      : `<div style="flex: none;">
+              <button id="btn_filter" type="button" class="btn btn-primary" style="padding: 8px 16px; font-size: 14px;" data-i18n="common.filter">筛选</button>
+            </div>`;
+    const logsInfo = `<div class="${infoClass}"><span data-i18n="logs.showPrefix">显示</span><span id="displayedCount">0</span>/<span id="totalCount">0</span><span data-i18n="logs.recordsSuffix">条</span></div>`;
 
     return {
       channelType: buildFilterGroup(
         `${buildFilterLabel('f_channel_type', 'stats.channelType', '渠道类型')}
-        ${buildSelect('f_channel_type', '\n                <!-- 动态加载渠道类型选项 -->\n              ', 'min-width: 120px;')}`,
+        ${buildSelect('f_channel_type', '\n                <!-- 动态加载渠道类型选项 -->\n              ', 'filter-control--compact')}`,
         groupClass
       ),
       timeRange: buildFilterGroup(
         `${buildFilterLabel('f_hours', 'stats.timeRange', '时间范围')}
-        ${buildSelect('f_hours', '\n                <!-- 动态生成选项 by date-range-selector.js -->\n              ', 'min-width: 100px;')}`,
+        ${buildSelect('f_hours', '\n                <!-- 动态生成选项 by date-range-selector.js -->\n              ', 'filter-control--compact')}`,
         groupClass
       ),
       channelId: buildFilterGroup(
         `${buildFilterLabel('f_id', 'stats.channelId', '渠道ID')}
-        ${buildInput('number', 'f_id', 'stats.inputIdPlaceholder', '输入ID...', 'max-width: 100px;')}`,
+        ${buildInput('number', 'f_id', 'stats.inputIdPlaceholder', '输入ID...', 'filter-control--narrow')}`,
         groupClass
       ),
       channelName: buildFilterGroup(
@@ -53,45 +67,37 @@
       ),
       modelSelect: buildFilterGroup(
         `${buildFilterLabel('f_model', 'common.model', '模型')}
-        ${buildSelect('f_model', '\n                <option value="" data-i18n="trend.allModels">全部模型</option>\n                <!-- 动态加载模型列表 -->\n              ', 'min-width: 150px;')}`,
+        ${buildSelect('f_model', '\n                <option value="" data-i18n="trend.allModels">全部模型</option>\n                <!-- 动态加载模型列表 -->\n              ', 'filter-control--wide')}`,
         groupClass
       ),
       authToken: buildFilterGroup(
         `${buildFilterLabel('f_auth_token', 'stats.token', '令牌')}
-        ${buildSelect('f_auth_token', '\n                <option value="" data-i18n="stats.allTokens">全部令牌</option>\n                <!-- 动态加载令牌列表 -->\n              ', 'min-width: 150px;')}`,
+        ${buildSelect('f_auth_token', '\n                <option value="" data-i18n="stats.allTokens">全部令牌</option>\n                <!-- 动态加载令牌列表 -->\n              ', 'filter-control--wide')}`,
         groupClass
       ),
       status: buildFilterGroup(
         `${buildFilterLabel('f_status', 'logs.statusCode', '状态码')}
-        ${buildInput('number', 'f_status', 'logs.statusPlaceholder', '如 200 / 403', 'max-width: 110px;')}`,
+        ${buildInput('number', 'f_status', 'logs.statusPlaceholder', '如 200 / 403', 'filter-control--narrow')}`,
         groupClass
       ),
-      logsInfo: `<div class="${infoClass}"><span data-i18n="logs.showPrefix">显示</span><span id="displayedCount">0</span>/<span id="totalCount">0</span><span data-i18n="logs.recordsSuffix">条</span></div>`,
-      statsInfo: `<div class="${infoClass}"><span data-i18n="stats.totalRecordsPrefix">共</span> <span id="statsCount">0</span> <span data-i18n="stats.totalRecordsSuffix">条记录</span></div>`,
-      hideZeroSuccess: `<div class="filter-group" style="align-items: center;">
-              <label class="filter-checkbox-label">
-                <input type="checkbox" id="f_hide_zero_success" checked>
-                <span data-i18n="stats.hideZeroSuccess">隐藏0成功</span>
-              </label>
-            </div>`,
-      filterButton: config.actionsClass
-        ? `<div class="${config.actionsClass}">
-              <button id="btn_filter" type="button" class="btn btn-primary" style="padding: 8px 16px; font-size: 14px;" data-i18n="common.filter">筛选</button>
-            </div>`
-        : `<div style="flex: none;">
-              <button id="btn_filter" type="button" class="btn btn-primary" style="padding: 8px 16px; font-size: 14px;" data-i18n="common.filter">筛选</button>
-            </div>`
+      logsInfo,
+      statsInfo,
+      hideZeroSuccess,
+      filterButton,
+      logsSummary: `<div class="logs-filter-summary-row">${logsInfo}${filterButton}</div>`,
+      statsSummary: `<div class="stats-filter-summary-row">${hideZeroSuccess}${statsInfo}${filterButton}</div>`
     };
   }
 
   const LAYOUTS = {
     stats: {
-      barClass: 'filter-bar mt-2',
-      controlsClass: 'filter-controls',
-      groupClass: '',
-      infoClass: 'filter-info',
-      actionsClass: '',
-      items: ['channelType', 'timeRange', 'channelId', 'channelName', 'modelText', 'authToken', 'hideZeroSuccess', 'statsInfo', 'filterButton']
+      barClass: 'filter-bar stats-filter-bar mt-2',
+      controlsClass: 'filter-controls stats-filter-controls',
+      groupClass: 'stats-filter-group',
+      checkboxGroupClass: 'stats-filter-group stats-filter-group--checkbox',
+      infoClass: 'filter-info stats-filter-info',
+      actionsClass: 'stats-filter-actions',
+      items: ['channelType', 'timeRange', 'channelId', 'channelName', 'modelText', 'authToken', 'statsSummary']
     },
     logs: {
       barClass: 'filter-bar logs-filter-bar mt-2',
@@ -99,7 +105,7 @@
       groupClass: 'logs-filter-group',
       infoClass: 'filter-info logs-filter-info',
       actionsClass: 'logs-filter-actions',
-      items: ['channelType', 'timeRange', 'channelId', 'channelName', 'modelText', 'status', 'authToken', 'logsInfo', 'filterButton']
+      items: ['channelType', 'timeRange', 'channelId', 'channelName', 'modelText', 'status', 'authToken', 'logsSummary']
     },
     trend: {
       barClass: 'filter-bar mt-2',

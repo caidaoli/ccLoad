@@ -985,7 +985,10 @@ function createRedirectRow(redirect, index) {
     displayIndex: index + 1,
     from: modelName,
     to: redirect.redirect_model || '',
-    toPlaceholder: modelName || window.t('channels.leaveEmptyNoRedirect')
+    toPlaceholder: modelName || window.t('channels.leaveEmptyNoRedirect'),
+    mobileLabelModel: window.t('channels.modal.modelName'),
+    mobileLabelTarget: window.t('channels.modal.redirectTarget'),
+    mobileLabelActions: window.t('common.actions')
   };
 
   const row = TemplateEngine.render('tpl-redirect-row', rowData);

@@ -33,5 +33,7 @@ test('model-test.js 使用集中绑定处理页面控件和重渲染表头复选
   assert.match(script, /'toggle-all-models':\s*\(actionTarget\)\s*=> toggleAllModels\(actionTarget\.checked\)/);
   assert.match(script, /data-change-action="toggle-all-models"/);
   assert.doesNotMatch(script, /onchange="toggleAllModels/);
+  assert.match(script, /const toolbar = document\.querySelector\('\.model-test-toolbar'\);/);
+  assert.match(script, /toolbar\?\.classList\.toggle\('model-test-toolbar--model-mode',\s*isModelMode\)/);
   assert.match(script, /bootstrap\(\);/);
 });

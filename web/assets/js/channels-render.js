@@ -263,7 +263,16 @@ function createChannelCard(channel) {
     healthHtml: healthHtml,
     enabled: channel.enabled,
     toggleText: channel.enabled ? window.t('common.disable') : window.t('common.enable'),
-    toggleTitle: channel.enabled ? window.t('channels.toggleDisable') : window.t('channels.toggleEnable')
+    toggleTitle: channel.enabled ? window.t('channels.toggleDisable') : window.t('channels.toggleEnable'),
+    durationCellClass: durationHtml ? '' : 'ch-mobile-empty',
+    usageCellClass: usageHtml ? '' : 'ch-mobile-empty',
+    costCellClass: costHtml ? '' : 'ch-mobile-empty',
+    mobileLabelModels: window.t('channels.table.models'),
+    mobileLabelPriority: window.t('channels.table.priority'),
+    mobileLabelDuration: window.t('channels.table.duration'),
+    mobileLabelUsage: window.t('channels.table.usage'),
+    mobileLabelCost: window.t('channels.stats.cost'),
+    mobileLabelActions: window.t('channels.table.actions')
   };
 
   const card = TemplateEngine.render('tpl-channel-card', cardData);
@@ -366,7 +375,7 @@ function renderChannels(channelsToRender = channels) {
     if (row) tbody.appendChild(row);
   });
 
-  el.innerHTML = `<div class="table-container"><table class="modern-table channel-table">${thead}</table></div>`;
+  el.innerHTML = `<div class="table-container channel-table-container"><table class="modern-table channel-table">${thead}</table></div>`;
   el.querySelector('table').appendChild(tbody);
 
   // 模板渲染后设置 checkbox 选中态

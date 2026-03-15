@@ -386,6 +386,21 @@ function renderLogsError() {
 function renderLogs(data) {
   const tbody = document.getElementById('tbody');
   const colspan = getTableColspan();
+  const logMobileLabels = {
+    time: escapeHtml(t('logs.colTime')),
+    ip: escapeHtml(t('logs.colIP')),
+    apiKey: escapeHtml(t('logs.colApiKey')),
+    channel: escapeHtml(t('logs.colChannel')),
+    model: escapeHtml(t('common.model')),
+    status: escapeHtml(t('logs.statusCode')),
+    timing: escapeHtml(t('logs.colTiming')),
+    input: escapeHtml(t('logs.colInput')),
+    output: escapeHtml(t('logs.colOutput')),
+    cacheRead: escapeHtml(t('logs.colCacheRead')),
+    cacheWrite: escapeHtml(t('logs.colCacheWrite')),
+    cost: escapeHtml(t('logs.colCost')),
+    message: escapeHtml(t('logs.colMessage'))
+  };
 
   if (data.length === 0) {
     const emptyRow = TemplateEngine.render('tpl-log-empty', { colspan });
@@ -449,11 +464,11 @@ function renderLogs(data) {
     if (entry.is_streaming) {
       const hasFirstByte = entry.first_byte_time !== undefined && entry.first_byte_time !== null;
       const firstByteDisplay = hasFirstByte ?
-        `<span style="color: var(--success-600);">${entry.first_byte_time.toFixed(2)}</span>` :
-        '<span style="color: var(--neutral-500);">-</span>';
-      responseTimingDisplay = `<span style="display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px; white-space: nowrap;">${firstByteDisplay}<span style="color: var(--neutral-400);">/</span>${durationDisplay}</span>${streamFlag}`;
+        `<span class="log-timing-first-byte" style="color: var(--success-600);">${entry.first_byte_time.toFixed(2)}</span>` :
+        '<span class="log-timing-first-byte" style="color: var(--neutral-500);">-</span>';
+      responseTimingDisplay = `<span class="log-timing-pair">${firstByteDisplay}<span class="log-timing-separator" style="color: var(--neutral-400);">/</span><span class="log-timing-duration">${durationDisplay}</span></span>${streamFlag}`;
     } else {
-      responseTimingDisplay = `<span style="display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px; white-space: nowrap;">${durationDisplay}</span>${streamFlag}`;
+      responseTimingDisplay = `<span class="log-timing-pair"><span class="log-timing-duration">${durationDisplay}</span></span>${streamFlag}`;
     }
 
     // 5. API Key显示(含按钮组)
@@ -524,22 +539,23 @@ function renderLogs(data) {
     }
     const costDisplay = entry.cost ?
       `<span style="color: var(--warning-600); font-weight: 500;">${formatCost(entry.cost)}${tierBadge}</span>` : '';
+    const messageText = escapeHtml(entry.message || '');
 
     // === 直接拼接行 HTML ===
-    htmlParts[i] = `<tr>
-          <td style="white-space: nowrap;">${formatTime(entry.time)}</td>
-          <td class="config-info" style="white-space: nowrap; font-family: monospace; font-size: 0.85em; color: var(--neutral-600);">${clientIPDisplay}</td>
-          <td style="text-align: center; white-space: nowrap;">${apiKeyDisplay}</td>
-          <td class="config-info">${configDisplay}</td>
-          <td>${modelDisplay}</td>
-          <td><span class="${statusClass}">${statusCode}</span></td>
-          <td style="text-align: right; white-space: nowrap;">${responseTimingDisplay}</td>
-          <td style="text-align: right; white-space: nowrap;">${inputTokensDisplay}</td>
-          <td style="text-align: right; white-space: nowrap;">${outputTokensDisplay}</td>
-          <td style="text-align: right; white-space: nowrap;">${cacheReadDisplay}</td>
-          <td style="text-align: right; white-space: nowrap;">${cacheCreationDisplay}</td>
-          <td style="text-align: right; white-space: nowrap;">${costDisplay}</td>
-          <td style="max-width: 300px; word-break: break-word;">${escapeHtml(entry.message || '')}</td>
+    htmlParts[i] = `<tr class="mobile-card-row logs-table-row">
+          <td class="logs-col-time" data-mobile-label="${logMobileLabels.time}" style="white-space: nowrap;">${formatTime(entry.time)}</td>
+          <td class="logs-col-ip" data-mobile-label="${logMobileLabels.ip}" style="white-space: nowrap; font-family: monospace; font-size: 0.85em; color: var(--neutral-600);">${clientIPDisplay}</td>
+          <td class="logs-col-api-key" data-mobile-label="${logMobileLabels.apiKey}" style="text-align: center; white-space: nowrap;">${apiKeyDisplay}</td>
+          <td class="logs-col-channel" data-mobile-label="${logMobileLabels.channel}">${configDisplay}</td>
+          <td class="logs-col-model" data-mobile-label="${logMobileLabels.model}">${modelDisplay}</td>
+          <td class="logs-col-status" data-mobile-label="${logMobileLabels.status}"><span class="${statusClass}">${statusCode}</span></td>
+          <td class="logs-col-timing" data-mobile-label="${logMobileLabels.timing}" style="text-align: right; white-space: nowrap;">${responseTimingDisplay}</td>
+          <td class="logs-col-input${inputTokensDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.input}" style="text-align: right; white-space: nowrap;">${inputTokensDisplay}</td>
+          <td class="logs-col-output${outputTokensDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.output}" style="text-align: right; white-space: nowrap;">${outputTokensDisplay}</td>
+          <td class="logs-col-cache-read${cacheReadDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.cacheRead}" style="text-align: right; white-space: nowrap;">${cacheReadDisplay}</td>
+          <td class="logs-col-cache-write${cacheCreationDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.cacheWrite}" style="text-align: right; white-space: nowrap;">${cacheCreationDisplay}</td>
+          <td class="logs-col-cost${costDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.cost}" style="text-align: right; white-space: nowrap;">${costDisplay}</td>
+          <td class="logs-col-message${messageText ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.message}" style="max-width: 300px; word-break: break-word;">${messageText}</td>
         </tr>`;
   }
 

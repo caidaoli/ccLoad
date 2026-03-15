@@ -55,10 +55,13 @@ function groupSettings(settings) {
 
 function renderGroupNav(groups) {
   const nav = document.getElementById('settings-group-nav');
+  const navSection = document.getElementById('settings-group-nav-section');
   if (!nav) return;
 
   nav.innerHTML = '';
-  if (!groups || groups.length <= 1) return;
+  const hasMultipleGroups = Array.isArray(groups) && groups.length > 1;
+  if (navSection) navSection.hidden = !hasMultipleGroups;
+  if (!hasMultipleGroups) return;
 
   for (let i = 0; i < groups.length; i++) {
     const g = groups[i];
@@ -115,7 +118,10 @@ function renderSettings(settings) {
       const row = TemplateEngine.render('tpl-setting-row', {
         key: s.key,
         description: description,
-        inputHtml: renderInput(s)
+        inputHtml: renderInput(s),
+        mobileLabelDescription: t('settings.configItem'),
+        mobileLabelValue: t('settings.currentValue'),
+        mobileLabelActions: t('common.actions')
       });
       if (row) tbody.appendChild(row);
     }
@@ -146,23 +152,24 @@ function initSettingsEventDelegation() {
 function renderInput(setting) {
   const safeKey = escapeHtml(setting.key);
   const safeValue = escapeHtml(setting.value);
-  const baseStyle = 'padding: 6px 10px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px;';
 
   switch (setting.value_type) {
     case 'bool':
       const isTrue = setting.value === 'true' || setting.value === '1';
       return `
-        <label style="margin-right: 16px; cursor: pointer;">
-          <input type="radio" name="${safeKey}" value="true" ${isTrue ? 'checked' : ''}> ${t('common.enable')}
-        </label>
-        <label style="cursor: pointer;">
-          <input type="radio" name="${safeKey}" value="false" ${!isTrue ? 'checked' : ''}> ${t('common.disable')}
-        </label>`;
+        <div class="settings-bool-group">
+          <label class="settings-bool-option">
+            <input type="radio" name="${safeKey}" value="true" ${isTrue ? 'checked' : ''}> ${t('common.enable')}
+          </label>
+          <label class="settings-bool-option">
+            <input type="radio" name="${safeKey}" value="false" ${!isTrue ? 'checked' : ''}> ${t('common.disable')}
+          </label>
+        </div>`;
     case 'int':
     case 'duration':
-      return `<input type="number" id="${safeKey}" value="${safeValue}" style="${baseStyle} width: 100px; text-align: right;">`;
+      return `<input type="number" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--number">`;
     default:
-      return `<input type="text" id="${safeKey}" value="${safeValue}" style="${baseStyle} width: 280px;">`;
+      return `<input type="text" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--text">`;
   }
 }
 

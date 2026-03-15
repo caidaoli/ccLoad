@@ -215,6 +215,7 @@
 
       // 构建表格结构
       const table = document.createElement('table');
+      table.className = 'mobile-card-table tokens-table';
       
       table.innerHTML = `
         <thead>
@@ -229,7 +230,7 @@
             <th style="text-align: center;">${t('tokens.table.streamAvg')}</th>
             <th style="text-align: center;">${t('tokens.table.nonStreamAvg')}</th>
             <th>${t('tokens.table.lastUsed')}</th>
-            <th style="width: 260px;">${t('tokens.table.actions')}</th>
+            <th class="tokens-actions-col">${t('tokens.table.actions')}</th>
           </tr>
         </thead>
       `;
@@ -290,6 +291,9 @@
       const costHtml = buildCostHtml(token.total_cost_usd);
       const streamAvgHtml = buildResponseTimeHtml(token.stream_avg_ttfb, token.stream_count);
       const nonStreamAvgHtml = buildResponseTimeHtml(token.non_stream_avg_rt, token.non_stream_count);
+      const costCellClass = costHtml ? '' : 'mobile-empty-cell';
+      const streamCellClass = token.stream_count ? '' : 'mobile-empty-cell';
+      const nonStreamCellClass = token.non_stream_count ? '' : 'mobile-empty-cell';
 
       // 使用模板引擎渲染
       const maskedToken = token.token.length > 8
@@ -310,9 +314,23 @@
         successRateHtml: successRateHtml,
         tokensHtml: tokensHtml,
         costHtml: costHtml,
+        costCellClass: costCellClass,
         streamAvgHtml: streamAvgHtml,
+        streamCellClass: streamCellClass,
         nonStreamAvgHtml: nonStreamAvgHtml,
-        lastUsed: lastUsed
+        nonStreamCellClass: nonStreamCellClass,
+        lastUsed: lastUsed,
+        mobileLabelDescription: t('tokens.table.description'),
+        mobileLabelToken: t('tokens.table.token'),
+        mobileLabelCalls: t('tokens.table.callCount'),
+        mobileLabelSuccessRate: t('tokens.table.successRate'),
+        mobileLabelRpm: t('tokens.table.rpm'),
+        mobileLabelTokenUsage: t('tokens.table.tokenUsage'),
+        mobileLabelCost: t('tokens.table.totalCost'),
+        mobileLabelStream: t('tokens.table.streamAvg'),
+        mobileLabelNonStream: t('tokens.table.nonStreamAvg'),
+        mobileLabelLastUsed: t('tokens.table.lastUsed'),
+        mobileLabelActions: t('tokens.table.actions')
       });
     }
 
@@ -325,7 +343,7 @@
       }
 
       
-      let html = '<div style="display: flex; flex-direction: column; gap: 4px; align-items: center;">';
+      let html = '<div style="display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px; flex-wrap: wrap;">';
       html += `<span class="stats-badge" style="background: var(--success-50); color: var(--success-700); font-weight: 600; border: 1px solid var(--success-200);" title="${t('tokens.successCall')}">`;
       html += `<span style="color: var(--success-600); font-size: 14px; font-weight: 700;">✓</span> ${successCount.toLocaleString()}`;
       html += `</span>`;
@@ -403,40 +421,23 @@
         return '<span style="color: var(--neutral-500); font-size: 13px;">-</span>';
       }
 
-      
-      let html = '<div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">';
+      const items = [];
+      const pushUsageItem = (variant, label, title, count) => {
+        if (!count || count <= 0) return;
+        items.push(
+          `<span class="token-usage-item token-usage-item--${variant}" title="${title}">` +
+            `<span class="token-usage-label">${label}</span>` +
+            `<span class="token-usage-value">${formatTokenCount(count)}</span>` +
+          `</span>`
+        );
+      };
 
-      // 输入/输出
-      html += '<div style="display: inline-flex; gap: 4px; font-size: 12px;">';
-      html += `<span class="stats-badge" style="background: var(--primary-50); color: var(--primary-700);" title="${t('tokens.inputTokens')}">`;
-      html += `${t('tokens.input')} ${formatTokenCount(token.prompt_tokens_total || 0)}`;
-      html += `</span>`;
-      html += `<span class="stats-badge" style="background: var(--secondary-50); color: var(--secondary-700);" title="${t('tokens.outputTokens')}">`;
-      html += `${t('tokens.output')} ${formatTokenCount(token.completion_tokens_total || 0)}`;
-      html += `</span>`;
-      html += '</div>';
+      pushUsageItem('input', t('tokens.input'), t('tokens.inputTokens'), token.prompt_tokens_total || 0);
+      pushUsageItem('output', t('tokens.output'), t('tokens.outputTokens'), token.completion_tokens_total || 0);
+      pushUsageItem('cache-read', t('tokens.cacheRead'), t('tokens.cacheReadTokens'), token.cache_read_tokens_total || 0);
+      pushUsageItem('cache-create', t('tokens.cacheCreate'), t('tokens.cacheCreateTokens'), token.cache_creation_tokens_total || 0);
 
-      // 缓存
-      if (token.cache_read_tokens_total > 0 || token.cache_creation_tokens_total > 0) {
-        html += '<div style="display: inline-flex; gap: 4px; font-size: 12px;">';
-
-        if (token.cache_read_tokens_total > 0) {
-          html += `<span class="stats-badge" style="background: var(--success-50); color: var(--success-700);" title="${t('tokens.cacheReadTokens')}">`;
-          html += `${t('tokens.cacheRead')} ${formatTokenCount(token.cache_read_tokens_total || 0)}`;
-          html += `</span>`;
-        }
-
-        if (token.cache_creation_tokens_total > 0) {
-          html += `<span class="stats-badge" style="background: var(--warning-50); color: var(--warning-700);" title="${t('tokens.cacheCreateTokens')}">`;
-          html += `${t('tokens.cacheCreate')} ${formatTokenCount(token.cache_creation_tokens_total || 0)}`;
-          html += `</span>`;
-        }
-
-        html += '</div>';
-      }
-
-      html += '</div>';
-      return html;
+      return `<div class="token-usage-metrics">${items.join('')}</div>`;
     }
 
     /**
@@ -504,30 +505,35 @@
       const costHtml = buildCostHtml(token.total_cost_usd);
       const streamAvgHtml = buildResponseTimeHtml(token.stream_avg_ttfb, token.stream_count);
       const nonStreamAvgHtml = buildResponseTimeHtml(token.non_stream_avg_rt, token.non_stream_count);
+      const costCellClass = costHtml ? ' mobile-empty-cell' : '';
+      const streamCellClass = token.stream_count ? '' : ' mobile-empty-cell';
+      const nonStreamCellClass = token.non_stream_count ? '' : ' mobile-empty-cell';
 
       const maskedToken = token.token.length > 8
         ? token.token.substring(0, 4) + '****' + token.token.slice(-4)
         : token.token;
 
       return `
-        <tr data-token-id="${token.id}">
-          <td style="font-weight: 500;">${escapeHtml(token.description)}</td>
-          <td>
+        <tr class="mobile-card-row token-card-row" data-token-id="${token.id}">
+          <td class="tokens-col-description mobile-card-span-full" data-mobile-label="${t('tokens.table.description')}" style="font-weight: 500;">${escapeHtml(token.description)}</td>
+          <td class="tokens-col-token mobile-card-span-full" data-mobile-label="${t('tokens.table.token')}">
             <div><span class="token-display token-display-${status.class}">${escapeHtml(maskedToken)}</span></div>
             <div style="font-size: 12px; color: var(--neutral-500); margin-top: 4px;">${createdAt}${t('tokens.createdSuffix')} · ${expiresAt}</div>
           </td>
-          <td style="text-align: center;">${callsHtml}</td>
-          <td style="text-align: center;">${successRateHtml}</td>
-          <td style="text-align: center;">${rpmHtml}</td>
-          <td style="text-align: center;">${tokensHtml}</td>
-          <td style="text-align: center;">${costHtml}</td>
-          <td style="text-align: center;">${streamAvgHtml}</td>
-          <td style="text-align: center;">${nonStreamAvgHtml}</td>
-          <td style="color: var(--neutral-600);">${lastUsed}</td>
-          <td style="white-space: nowrap;">
-            <button class="btn-copy-token btn btn-secondary" style="padding: 4px 12px; font-size: 13px; margin-right: 4px;" data-token="${escapeHtml(token.token)}">${t('common.copy')}</button>
-            <button class="btn btn-secondary btn-edit" style="padding: 4px 12px; font-size: 13px; margin-right: 4px;">${t('common.edit')}</button>
-            <button class="btn btn-danger btn-delete" style="padding: 4px 12px; font-size: 13px;">${t('common.delete')}</button>
+          <td class="tokens-col-calls" data-mobile-label="${t('tokens.table.callCount')}" style="text-align: center;">${callsHtml}</td>
+          <td class="tokens-col-success-rate" data-mobile-label="${t('tokens.table.successRate')}" style="text-align: center;">${successRateHtml}</td>
+          <td class="tokens-col-rpm" data-mobile-label="${t('tokens.table.rpm')}" style="text-align: center;">${rpmHtml}</td>
+          <td class="tokens-col-token-usage" data-mobile-label="${t('tokens.table.tokenUsage')}" style="text-align: center;">${tokensHtml}</td>
+          <td class="tokens-col-cost${costCellClass}" data-mobile-label="${t('tokens.table.totalCost')}" style="text-align: center;">${costHtml}</td>
+          <td class="tokens-col-stream${streamCellClass}" data-mobile-label="${t('tokens.table.streamAvg')}" style="text-align: center;">${streamAvgHtml}</td>
+          <td class="tokens-col-non-stream${nonStreamCellClass}" data-mobile-label="${t('tokens.table.nonStreamAvg')}" style="text-align: center;">${nonStreamAvgHtml}</td>
+          <td class="tokens-col-last-used mobile-card-span-full" data-mobile-label="${t('tokens.table.lastUsed')}" style="color: var(--neutral-600);">${lastUsed}</td>
+          <td class="tokens-col-actions mobile-card-actions" data-mobile-label="${t('tokens.table.actions')}" style="white-space: nowrap;">
+            <div class="token-row-actions">
+              <button class="btn-copy-token btn btn-secondary" style="padding: 4px 12px; font-size: 13px;" data-token="${escapeHtml(token.token)}">${t('common.copy')}</button>
+              <button class="btn btn-secondary btn-edit" style="padding: 4px 12px; font-size: 13px;">${t('common.edit')}</button>
+              <button class="btn btn-danger btn-delete" style="padding: 4px 12px; font-size: 13px;">${t('common.delete')}</button>
+            </div>
           </td>
         </tr>
       `;
@@ -760,6 +766,8 @@
       const countSpan = document.getElementById('editAllowedModelsCount');
       const batchDeleteBtn = document.getElementById('batchDeleteAllowedModelsBtn');
       const selectAllCheckbox = document.getElementById('selectAllAllowedModels');
+      const mobileLabelModelName = t('tokens.modelName');
+      const mobileLabelActions = t('tokens.table.actions');
 
       if (!tbody) return;
 
@@ -790,15 +798,15 @@
       tbody.innerHTML = editAllowedModels.map((model, index) => {
         
         return `
-        <tr>
-          <td style="text-align: center; padding: 8px;">
+        <tr class="mobile-inline-row allowed-model-row">
+          <td class="allowed-model-col-select mobile-inline-no-label" style="text-align: center; padding: 8px;">
             <input type="checkbox" class="allowed-model-checkbox" data-index="${index}"
               data-change-action="toggle-allowed-model"
               ${selectedAllowedModelIndices.has(index) ? 'checked' : ''}
             >
           </td>
-          <td style="padding: 8px; font-family: monospace; font-size: 13px;">${escapeHtml(model)}</td>
-          <td style="text-align: center; padding: 8px;">
+          <td class="allowed-model-col-name" data-mobile-label="${mobileLabelModelName}" style="padding: 8px; font-family: monospace; font-size: 13px;">${escapeHtml(model)}</td>
+          <td class="allowed-model-col-actions" data-mobile-label="${mobileLabelActions}" style="text-align: center; padding: 8px;">
             <button type="button" class="btn btn-secondary btn-sm" data-action="remove-allowed-model" data-index="${index}"
               style="padding: 2px 8px; font-size: 12px;">${t('common.delete')}</button>
           </td>

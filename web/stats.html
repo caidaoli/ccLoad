@@ -32,13 +32,13 @@
         <!-- 统计详情表格 -->
         <section class="mb-8">
 	          <div class="glass-card stats-detail-card" style="animation-delay: 0.3s;">
-            <h3 class="section-title mb-6" style="display: flex; align-items: center; justify-content: space-between;">
-              <span style="display: flex; align-items: center;">
+            <h3 class="section-title stats-detail-heading mb-6" style="display: flex; align-items: center; justify-content: space-between;">
+              <span class="stats-detail-heading-main" style="display: flex; align-items: center;">
                 <svg class="inline-block w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
                 </svg>
                 <span data-i18n="stats.detailTitle">详细统计数据</span>
-                <small style="color: var(--neutral-600); font-weight: var(--font-normal); margin-left: var(--space-2);" data-i18n="stats.sortByPriority">
+                <small class="stats-detail-sort-hint" style="color: var(--neutral-600); font-weight: var(--font-normal); margin-left: var(--space-2);" data-i18n="stats.sortByPriority">
                   按渠道优先级排序
                 </small>
               </span>
@@ -72,8 +72,8 @@
                 } catch(_) {}
               })();
             </script>
-            <div class="table-container" id="stats-table-view">
-              <table class="modern-table stats-table">
+            <div class="table-container stats-table-container mobile-card-table-container" id="stats-table-view">
+              <table class="modern-table stats-table mobile-card-table">
                 <thead>
                   <tr>
                     <th class="sortable" data-column="channel_name">
@@ -215,38 +215,38 @@
 
   <!-- 数据行模板 -->
   <template id="tpl-stats-row">
-    <tr>
-      <td>
+    <tr class="mobile-card-row stats-data-row">
+      <td class="stats-col-channel" data-mobile-label="{{mobileLabelChannel}}">
         <a href="#" class="config-name channel-link" data-channel-id="{{channelId}}" title="查看该渠道的日志">{{channelName}}</a>
         {{{channelIdBadge}}}
         {{{healthIndicator}}}
       </td>
-      <td>{{{modelDisplay}}}</td>
-      <td><span class="success-count">{{successCount}}</span></td>
-      <td><span class="error-count">{{errorCount}}</span></td>
-      <td style="text-align: center;">{{{avgFirstByteTime}}}</td>
-      <td style="text-align: right;">{{{rpm}}}</td>
-      <td style="text-align: right;">{{{inputTokens}}}</td>
-      <td style="text-align: right;">{{{outputTokens}}}</td>
-      <td style="text-align: right;">{{{cacheReadTokens}}}</td>
-      <td style="text-align: right;">{{{cacheCreationTokens}}}</td>
-      <td style="text-align: right;">{{{costText}}}</td>
+      <td class="stats-col-model" data-mobile-label="{{mobileLabelModel}}">{{{modelDisplay}}}</td>
+      <td class="stats-col-success" data-mobile-label="{{mobileLabelSuccess}}">{{{successDisplay}}}</td>
+      <td class="stats-col-error" data-mobile-label="{{mobileLabelError}}"><span class="error-count">{{errorCount}}</span></td>
+      <td class="stats-col-timing {{timingCellClass}}" style="text-align: center;" data-mobile-label="{{mobileLabelTiming}}">{{{avgFirstByteTime}}}</td>
+      <td class="stats-col-rpm" style="text-align: right;" data-mobile-label="{{mobileLabelRpm}}">{{{rpm}}}</td>
+      <td class="stats-col-input {{inputCellClass}}" style="text-align: right;" data-mobile-label="{{mobileLabelInput}}">{{{inputTokens}}}</td>
+      <td class="stats-col-output {{outputCellClass}}" style="text-align: right;" data-mobile-label="{{mobileLabelOutput}}">{{{outputTokens}}}</td>
+      <td class="stats-col-cache-read {{cacheReadCellClass}}" style="text-align: right;" data-mobile-label="{{mobileLabelCacheRead}}">{{{cacheReadTokens}}}</td>
+      <td class="stats-col-cache-create {{cacheCreateCellClass}}" style="text-align: right;" data-mobile-label="{{mobileLabelCacheCreate}}">{{{cacheCreationTokens}}}</td>
+      <td class="stats-col-cost {{costCellClass}}" style="text-align: right;" data-mobile-label="{{mobileLabelCost}}">{{{costText}}}</td>
     </tr>
   </template>
 
   <!-- 合计行模板 -->
   <template id="tpl-stats-total">
-    <tr style="background-color: var(--primary-50); font-weight: bold; border-top: 2px solid var(--primary-200);">
-      <td colspan="2" style="text-align: center; font-size: 15px; color: var(--primary-700);" data-i18n="stats.total">合计</td>
-      <td><span class="success-count">{{successCount}}</span></td>
-      <td><span class="error-count">{{errorCount}}</span></td>
-      <td style="text-align: center;"></td>
-      <td style="text-align: right;">{{{rpm}}}</td>
-      <td style="text-align: right;">{{inputTokens}}</td>
-      <td style="text-align: right;">{{outputTokens}}</td>
-      <td style="text-align: right;"><span style="color: var(--success-600);">{{cacheReadTokens}}</span></td>
-      <td style="text-align: right;"><span style="color: var(--primary-600);">{{cacheCreationTokens}}</span></td>
-      <td style="text-align: right;"><span style="color: var(--warning-600); font-weight: 600;">{{costText}}</span></td>
+    <tr class="mobile-card-row stats-total-row" style="background-color: var(--primary-50); font-weight: bold; border-top: 2px solid var(--primary-200);">
+      <td colspan="2" class="stats-col-total-label" style="text-align: center; font-size: 15px; color: var(--primary-700);" data-mobile-label="{{mobileLabelSummary}}" data-i18n="stats.total">合计</td>
+      <td class="stats-col-success" data-mobile-label="{{mobileLabelSuccess}}">{{{successDisplay}}}</td>
+      <td class="stats-col-error" data-mobile-label="{{mobileLabelError}}"><span class="error-count">{{errorCount}}</span></td>
+      <td class="stats-col-timing mobile-empty-cell" style="text-align: center;" data-mobile-label="{{mobileLabelTiming}}"></td>
+      <td class="stats-col-rpm" style="text-align: right;" data-mobile-label="{{mobileLabelRpm}}">{{{rpm}}}</td>
+      <td class="stats-col-input" style="text-align: right;" data-mobile-label="{{mobileLabelInput}}">{{inputTokens}}</td>
+      <td class="stats-col-output" style="text-align: right;" data-mobile-label="{{mobileLabelOutput}}">{{outputTokens}}</td>
+      <td class="stats-col-cache-read" style="text-align: right;" data-mobile-label="{{mobileLabelCacheRead}}"><span style="color: var(--success-600);">{{cacheReadTokens}}</span></td>
+      <td class="stats-col-cache-create" style="text-align: right;" data-mobile-label="{{mobileLabelCacheCreate}}"><span style="color: var(--primary-600);">{{cacheCreationTokens}}</span></td>
+      <td class="stats-col-cost" style="text-align: right;" data-mobile-label="{{mobileLabelCost}}"><span style="color: var(--warning-600); font-weight: 600;">{{costText}}</span></td>
     </tr>
   </template>
 

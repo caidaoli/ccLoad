@@ -20,3 +20,10 @@ test('settings.js 在脚本中绑定保存按钮点击事件', () => {
   assert.match(script, /bindSettingsPageActions\(\);/);
   assert.match(script, /loadSettings\(\);/);
 });
+
+test('settings.js 用响应式 class 生成输入控件，不再写死像素宽度', () => {
+  assert.match(script, /class="settings-input settings-input--number"/);
+  assert.match(script, /class="settings-input settings-input--text"/);
+  assert.doesNotMatch(script, /width:\s*100px/);
+  assert.doesNotMatch(script, /width:\s*280px/);
+});

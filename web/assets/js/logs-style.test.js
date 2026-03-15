@@ -61,11 +61,12 @@ test('日志页顶部筛选栏通过共享渲染器输出页面专用布局类',
   assert.match(filtersHtml, /class="filter-controls\s+logs-filter-controls"/);
   assert.match(filtersHtml, /class="filter-group\s+logs-filter-group"/);
   assert.match(filtersHtml, /class="filter-info\s+logs-filter-info"/);
+  assert.match(filtersHtml, /class="logs-filter-summary-row"/);
   assert.match(filtersHtml, /<div class="logs-filter-actions">[\s\S]*id="btn_filter"/);
 });
 
 test('日志页窄屏筛选栏压缩标签和按钮布局', () => {
-  const mobileMatch = css.match(/@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.logs-filter-group\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*72px\s+minmax\(0,\s*1fr\);[\s\S]*?\.logs-filter-info\s*\{[\s\S]*?width:\s*100%;[\s\S]*?\.logs-filter-actions\s*\{[\s\S]*?width:\s*100%;[\s\S]*?\.logs-filter-actions\s+\.btn\s*\{[\s\S]*?width:\s*100%;/);
+  const mobileMatch = css.match(/@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.logs-filter-group\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*72px\s+minmax\(0,\s*1fr\);[\s\S]*?flex:\s*none;[\s\S]*?\.logs-filter-summary-row\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto;[\s\S]*?\.logs-filter-summary-row\s+\.logs-filter-info\s*\{[\s\S]*?width:\s*auto;[\s\S]*?\.logs-filter-summary-row\s+\.logs-filter-actions\s*\{[\s\S]*?width:\s*auto;[\s\S]*?\.logs-filter-summary-row\s+\.logs-filter-actions\s+\.btn\s*\{[\s\S]*?width:\s*auto;/);
   assert.ok(mobileMatch, '缺少日志页窄屏筛选栏压缩样式');
 });
 

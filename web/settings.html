@@ -20,17 +20,17 @@
   <div class="app-container">
     <main class="main-content">
       <div class="content-area">
-        <section class="mt-2 mb-2">
-          <div class="time-range-container">
-            <div id="settings-group-nav" class="time-range-selector">
+        <section id="settings-group-nav-section" class="mt-2 mb-2 settings-group-nav-section" hidden>
+          <div class="time-range-container settings-group-nav-container">
+            <div id="settings-group-nav" class="time-range-selector settings-group-nav">
               <!-- 动态填充：分组快捷跳转 -->
             </div>
           </div>
         </section>
 
         <section class="glass-card mb-6">
-          <div class="table-container">
-            <table class="modern-table">
+          <div class="table-container settings-table-container mobile-card-table-container">
+            <table class="modern-table settings-table mobile-card-table">
               <thead>
                 <tr>
                   <th style="width: 60%;" data-i18n="settings.configItem">配置项</th>
@@ -43,8 +43,8 @@
               </tbody>
             </table>
           </div>
-          <div style="display: flex; justify-content: flex-end; padding: 16px 0 0 0;">
-            <button id="save-all-btn" class="btn btn-primary" style="min-width: 120px;" data-i18n="settings.saveAll">
+          <div class="settings-save-actions">
+            <button id="save-all-btn" class="btn btn-primary settings-save-btn" data-i18n="settings.saveAll">
               保存所有更改
             </button>
           </div>
@@ -55,10 +55,10 @@
 
   <!-- 设置行模板 -->
   <template id="tpl-setting-row">
-    <tr data-key="{{key}}">
-      <td>{{description}}</td>
-      <td style="text-align: right;">{{{inputHtml}}}</td>
-      <td>
+    <tr class="mobile-card-row setting-data-row" data-key="{{key}}">
+      <td class="setting-col-description" data-mobile-label="{{mobileLabelDescription}}">{{description}}</td>
+      <td class="setting-col-value" style="text-align: right;" data-mobile-label="{{mobileLabelValue}}">{{{inputHtml}}}</td>
+      <td class="setting-col-actions" data-mobile-label="{{mobileLabelActions}}">
         <button class="btn-icon setting-reset-btn" data-key="{{key}}" data-i18n-title="settings.resetToDefault" title="重置为默认值">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
@@ -71,7 +71,7 @@
 
   <!-- 分组标题行模板 -->
   <template id="tpl-setting-group-row">
-    <tr id="settings-group-{{groupId}}" data-group="{{groupId}}">
+    <tr class="setting-group-row" id="settings-group-{{groupId}}" data-group="{{groupId}}">
       <td colspan="3" style="background: var(--neutral-100); color: var(--neutral-700); font-weight: 700; letter-spacing: 0.2px;">
         {{groupName}}
       </td>

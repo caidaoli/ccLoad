@@ -3,6 +3,7 @@
       background: white;
       border-radius: 12px;
       overflow: hidden;
+      overflow-x: auto;
       box-shadow: 0 1px 3px rgba(0,0,0,0.1);
     }
     .token-table table {
@@ -30,6 +31,12 @@
     }
     .token-table tbody tr:last-child td {
       border-bottom: none;
+    }
+    .token-row-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-wrap: wrap;
     }
     .token-display {
       font-family: monospace;
@@ -117,6 +124,53 @@
       color: var(--error-700);
       font-weight: 600;
     }
+    .token-usage-metrics {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, max-content));
+      gap: 4px;
+      justify-content: center;
+    }
+    .token-usage-item {
+      display: inline-flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      min-width: 0;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+      border: 1px solid transparent;
+    }
+    .token-usage-label {
+      color: inherit;
+    }
+    .token-usage-value {
+      color: var(--neutral-900);
+      font-variant-numeric: tabular-nums;
+      font-feature-settings: "tnum";
+    }
+    .token-usage-item--input {
+      background: var(--primary-50);
+      color: var(--primary-700);
+      border-color: var(--primary-200);
+    }
+    .token-usage-item--output {
+      background: var(--secondary-50);
+      color: var(--secondary-700);
+      border-color: var(--secondary-200);
+    }
+    .token-usage-item--cache-read {
+      background: var(--success-50);
+      color: var(--success-700);
+      border-color: var(--success-200);
+    }
+    .token-usage-item--cache-create {
+      background: var(--warning-50);
+      color: var(--warning-700);
+      border-color: var(--warning-200);
+    }
     .modal {
       display: none;
       position: fixed;
@@ -136,6 +190,83 @@
       max-width: 600px;
       box-shadow: 0 10px 40px rgba(0,0,0,0.2);
       animation: slideUp 0.3s;
+    }
+    .modal-content--sm {
+      max-width: 500px;
+    }
+    .modal-content--md {
+      max-width: 600px;
+    }
+    .token-edit-modal {
+      display: flex;
+      flex-direction: column;
+      min-height: min(680px, calc(100vh - 32px));
+    }
+    .token-edit-body {
+      gap: 0;
+    }
+    .token-edit-field {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .token-edit-field .form-label {
+      margin-bottom: 0;
+      flex: 0 0 60px;
+      min-width: 60px;
+      white-space: nowrap;
+    }
+    .token-edit-field .form-row-inline__content,
+    .token-edit-field .field-grow {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .token-edit-cost-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+    .token-edit-active-label {
+      margin: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+    }
+    .token-edit-models-section {
+      min-height: 0;
+    }
+    .token-edit-models-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px 12px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+    .token-edit-models-title {
+      margin: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex-wrap: wrap;
+    }
+    .token-edit-models-meta {
+      color: var(--neutral-500);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .token-edit-models-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      min-width: 0;
+    }
+    .token-edit-models-actions .btn {
+      white-space: nowrap;
     }
     .modal-header {
       padding: 20px 24px;
@@ -164,4 +295,261 @@
     @keyframes slideUp {
       from { transform: translateY(50px); opacity: 0; }
       to { transform: translateY(0); opacity: 1; }
+    }
+    .tokens-actions-col {
+      width: 260px;
+    }
+    @media (max-width: 768px) {
+      .token-table {
+        overflow: visible;
+        background: transparent;
+        box-shadow: none;
+        border-radius: 0;
+      }
+      .tokens-table .tokens-col-description,
+      .tokens-table .tokens-col-token,
+      .tokens-table .tokens-col-token-usage,
+      .tokens-table .tokens-col-last-used,
+      .tokens-table .tokens-col-actions {
+        grid-column: 1 / -1;
+      }
+      .tokens-table .tokens-col-description {
+        order: 1;
+      }
+      .tokens-table .tokens-col-token {
+        order: 2;
+      }
+      .tokens-table .tokens-col-calls {
+        order: 10;
+      }
+      .tokens-table .tokens-col-success-rate {
+        order: 11;
+      }
+      .tokens-table .tokens-col-rpm {
+        order: 12;
+      }
+      .tokens-table .tokens-col-token-usage {
+        order: 20;
+      }
+      .tokens-table .tokens-col-cost {
+        order: 21;
+      }
+      .tokens-table .tokens-col-stream {
+        order: 22;
+      }
+      .tokens-table .tokens-col-non-stream {
+        order: 23;
+      }
+      .tokens-table .tokens-col-last-used {
+        order: 24;
+      }
+      .tokens-table .tokens-col-actions {
+        order: 30;
+      }
+      .tokens-table .tokens-col-description,
+      .tokens-table .tokens-col-token {
+        display: flex !important;
+        align-items: center;
+        gap: 8px 12px;
+      }
+      .tokens-table .tokens-col-description::before,
+      .tokens-table .tokens-col-token::before {
+        width: auto !important;
+        margin-bottom: 0 !important;
+        flex: 0 0 auto;
+        white-space: nowrap;
+      }
+      .tokens-table .tokens-col-token {
+        flex-wrap: wrap;
+      }
+      .tokens-table .tokens-col-token > div:first-of-type {
+        flex: 0 0 auto;
+        min-width: 0;
+      }
+      .tokens-table .tokens-col-token > div:last-of-type {
+        flex: 0 0 100%;
+        margin-top: 0 !important;
+      }
+      .tokens-table .tokens-col-calls,
+      .tokens-table .tokens-col-success-rate,
+      .tokens-table .tokens-col-rpm,
+      .tokens-table .tokens-col-token-usage,
+      .tokens-table .tokens-col-cost,
+      .tokens-table .tokens-col-stream,
+      .tokens-table .tokens-col-non-stream,
+      .tokens-table .tokens-col-last-used {
+        display: flex !important;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .tokens-table .tokens-col-calls::before,
+      .tokens-table .tokens-col-success-rate::before,
+      .tokens-table .tokens-col-rpm::before,
+      .tokens-table .tokens-col-token-usage::before,
+      .tokens-table .tokens-col-cost::before,
+      .tokens-table .tokens-col-stream::before,
+      .tokens-table .tokens-col-non-stream::before,
+      .tokens-table .tokens-col-last-used::before {
+        width: auto !important;
+        margin-bottom: 0 !important;
+        flex: 0 0 auto;
+        white-space: nowrap;
+      }
+      .tokens-table .tokens-col-calls > div,
+      .tokens-table .tokens-col-cost > div {
+        align-items: flex-end !important;
+        text-align: right;
+      }
+      .tokens-table .tokens-col-token-usage > .token-usage-metrics {
+        justify-content: flex-end;
+        grid-template-columns: repeat(2, minmax(0, max-content));
+      }
+      .tokens-table .tokens-col-token-usage > .token-usage-metrics .token-usage-item {
+        justify-content: space-between;
+        flex-wrap: nowrap;
+      }
+      .tokens-table .token-row-actions {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        max-width: 100%;
+      }
+      .tokens-table .tokens-col-actions .btn {
+        margin-right: 0 !important;
+        flex: 0 0 auto;
+      }
+      .tokens-table .tokens-col-token .token-display {
+        word-break: break-all;
+      }
+      .token-row-actions {
+        justify-content: center;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        max-width: 100%;
+      }
+      .token-row-actions::-webkit-scrollbar {
+        display: none;
+      }
+      .allowed-models-table tbody .mobile-inline-row {
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 8px 12px;
+      }
+      .allowed-models-table tbody .mobile-inline-row .allowed-model-col-select,
+      .allowed-models-table tbody .mobile-inline-row .allowed-model-col-name,
+      .allowed-models-table tbody .mobile-inline-row .allowed-model-col-actions {
+        grid-column: auto;
+      }
+      .allowed-models-table tbody .mobile-inline-row td.allowed-model-col-select {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .allowed-models-table tbody .mobile-inline-row td.allowed-model-col-name {
+        grid-column: auto;
+        display: flex;
+        align-items: center;
+        min-width: 0;
+        white-space: nowrap;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-width: none;
+      }
+      .allowed-models-table tbody .mobile-inline-row td.allowed-model-col-name::-webkit-scrollbar {
+        display: none;
+      }
+      .allowed-models-table tbody .mobile-inline-row td.allowed-model-col-actions {
+        grid-column: auto;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+      }
+      .allowed-models-table .mobile-inline-row .allowed-model-col-actions {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        padding-top: 0;
+        border-top: none;
+        text-align: right !important;
+      }
+      .allowed-models-table tbody .mobile-inline-row td.allowed-model-col-name::before,
+      .allowed-models-table tbody .mobile-inline-row td.allowed-model-col-actions::before {
+        content: none;
+        display: none;
+      }
+      .modal {
+        padding: 12px;
+      }
+      .modal-content {
+        width: min(720px, calc(100vw - 24px));
+        max-width: none;
+        margin: 0 auto;
+      }
+      .token-edit-modal {
+        min-height: auto;
+      }
+      .token-edit-body {
+        gap: 12px;
+      }
+      .token-edit-field {
+        flex-direction: row;
+        align-items: center;
+        gap: 8px;
+      }
+      .token-edit-field .form-label {
+        flex: 0 0 60px;
+        min-width: 60px;
+        white-space: nowrap;
+      }
+      .token-edit-field .form-row-inline__content,
+      .token-edit-field .field-grow {
+        width: auto;
+      }
+      .token-edit-field .form-label,
+      .token-edit-active-row label,
+      .token-edit-models-title {
+        margin-bottom: 0;
+      }
+      .token-edit-cost-row,
+      .token-edit-models-actions {
+        display: flex;
+        align-items: center;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        scrollbar-width: none;
+      }
+      .token-edit-cost-row::-webkit-scrollbar,
+      .token-edit-models-actions::-webkit-scrollbar {
+        display: none;
+      }
+      .token-edit-cost-row .field-grow {
+        min-width: 120px;
+      }
+      .token-edit-models-header {
+        align-items: flex-start;
+      }
+      .token-edit-models-actions {
+        width: 100%;
+        gap: 8px;
+      }
+      .token-edit-models-actions .btn,
+      .token-edit-cost-row #editCostUsedDisplay {
+        flex: 0 0 auto;
+      }
+      .modal-header,
+      .modal-body,
+      .modal-footer {
+        padding-left: 16px;
+        padding-right: 16px;
+      }
+      .modal-footer {
+        flex-wrap: wrap;
+      }
+      .modal-footer .btn {
+        flex: 1 1 140px;
+      }
     }

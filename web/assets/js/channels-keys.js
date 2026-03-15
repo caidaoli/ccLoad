@@ -26,6 +26,10 @@ function calculateVisibleRange(totalItems) {
   return { visibleStart, visibleEnd };
 }
 
+function shouldUseKeyVirtualScroll() {
+  return !(window.matchMedia && window.matchMedia('(max-width: 768px)').matches);
+}
+
 function renderVirtualRows(tbody, visibleStart, visibleEnd, filteredIndices) {
   const { ROW_HEIGHT } = VIRTUAL_SCROLL_CONFIG;
 
@@ -98,7 +102,10 @@ function createKeyRow(index) {
     key: key || '',
     inputType: inlineKeyVisible ? 'text' : 'password',
     cooldownHtml: buildCooldownHtml(index),
-    actionsHtml: buildActionsHtml(index)
+    actionsHtml: buildActionsHtml(index),
+    mobileLabelKey: window.t('channels.modal.apiKey'),
+    mobileLabelStatus: window.t('common.status'),
+    mobileLabelActions: window.t('common.actions')
   };
 
   // 使用模板引擎渲染
@@ -372,6 +379,32 @@ function renderInlineKeyTable() {
     cleanupVirtualScroll();
     virtualScrollState.enabled = false;
     if (virtualScrollHint) virtualScrollHint.style.display = 'none';
+    return;
+  }
+
+  if (!shouldUseKeyVirtualScroll()) {
+    cleanupVirtualScroll();
+    virtualScrollState.enabled = false;
+    virtualScrollState.filteredIndices = visibleIndices;
+    virtualScrollState.visibleStart = 0;
+    virtualScrollState.visibleEnd = visibleIndices.length;
+
+    const fragment = document.createDocumentFragment();
+    visibleIndices.forEach(index => {
+      const row = createKeyRow(index);
+      if (row) fragment.appendChild(row);
+    });
+
+    tbody.innerHTML = '';
+    tbody.appendChild(fragment);
+
+    if (virtualScrollHint) virtualScrollHint.style.display = 'none';
+    updateSelectAllCheckbox();
+    updateBatchDeleteButton();
+
+    if (window.i18n && window.i18n.translatePage) {
+      window.i18n.translatePage();
+    }
     return;
   }
 

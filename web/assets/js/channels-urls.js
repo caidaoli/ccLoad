@@ -69,7 +69,9 @@ function createURLRow(index) {
   const tplData = {
     index: index,
     displayIndex: index + 1,
-    url: inlineURLTableData[index] || ''
+    url: inlineURLTableData[index] || '',
+    mobileLabelUrl: window.t('channels.tableApiUrl'),
+    mobileLabelActions: window.t('common.actions')
   };
 
   const row = TemplateEngine.render('tpl-url-row', tplData);
@@ -89,14 +91,17 @@ function createURLRow(index) {
 
     const statusTd = document.createElement('td');
     statusTd.className = 'inline-url-cell-center inline-url-col-status';
+    statusTd.setAttribute('data-mobile-label', window.t('common.status'));
     statusTd.innerHTML = formatURLStatus(stat);
 
     const latencyTd = document.createElement('td');
     latencyTd.className = 'inline-url-cell-center inline-url-cell-metric inline-url-col-latency';
+    latencyTd.setAttribute('data-mobile-label', window.t('stats.latency'));
     latencyTd.textContent = formatURLLatency(stat);
 
     const requestsTd = document.createElement('td');
     requestsTd.className = 'inline-url-cell-center inline-url-cell-metric inline-url-col-requests';
+    requestsTd.setAttribute('data-mobile-label', window.t('common.requests'));
     requestsTd.innerHTML = formatURLRequests(stat);
 
     row.insertBefore(statusTd, lastTd);

@@ -242,16 +242,156 @@
       flex: none;
     }
 
+    .log-timing-pair {
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 4px;
+      white-space: nowrap;
+    }
+
     @media (max-width: 768px) {
+      .logs-table-container {
+        overflow-x: visible;
+        border: none;
+        background: transparent;
+        box-shadow: none;
+        padding: 0;
+      }
+
+      .logs-table .logs-col-message {
+        grid-column: 1 / -1;
+      }
+
+      .logs-table .logs-col-time {
+        order: 1;
+      }
+
+      .logs-table .logs-col-status {
+        order: 2;
+      }
+
+      .logs-table .logs-col-channel {
+        order: 3;
+      }
+
+      .logs-table .logs-col-model {
+        order: 4;
+      }
+
+      .logs-table .logs-col-api-key {
+        order: 5;
+      }
+
+      .logs-table .logs-col-ip {
+        order: 6;
+      }
+
+      .logs-table .logs-col-timing {
+        order: 7;
+      }
+
+      .logs-table .logs-col-input {
+        order: 10;
+      }
+
+      .logs-table .logs-col-output {
+        order: 11;
+      }
+
+      .logs-table .logs-col-cache-read {
+        order: 12;
+      }
+
+      .logs-table .logs-col-cache-write {
+        order: 13;
+      }
+
+      .logs-table .logs-col-cost {
+        order: 14;
+      }
+
+      .logs-table .logs-col-message {
+        order: 30;
+        word-break: break-word;
+        white-space: pre-wrap;
+      }
+
+      .logs-table .logs-col-time,
+      .logs-table .logs-col-status,
+      .logs-table .logs-col-channel,
+      .logs-table .logs-col-model,
+      .logs-table .logs-col-api-key,
+      .logs-table .logs-col-ip,
+      .logs-table .logs-col-timing,
+      .logs-table .logs-col-input,
+      .logs-table .logs-col-output,
+      .logs-table .logs-col-cache-read,
+      .logs-table .logs-col-cache-write,
+      .logs-table .logs-col-cost,
+      .logs-table .logs-col-message {
+        display: flex !important;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        text-align: right !important;
+      }
+
+      .logs-table .logs-col-time::before,
+      .logs-table .logs-col-status::before,
+      .logs-table .logs-col-channel::before,
+      .logs-table .logs-col-model::before,
+      .logs-table .logs-col-api-key::before,
+      .logs-table .logs-col-ip::before,
+      .logs-table .logs-col-timing::before,
+      .logs-table .logs-col-input::before,
+      .logs-table .logs-col-output::before,
+      .logs-table .logs-col-cache-read::before,
+      .logs-table .logs-col-cache-write::before,
+      .logs-table .logs-col-cost::before,
+      .logs-table .logs-col-message::before {
+        width: auto !important;
+        margin-bottom: 0 !important;
+        flex: 0 0 auto;
+        white-space: nowrap;
+      }
+
+      .logs-table .logs-col-channel,
+      .logs-table .logs-col-model,
+      .logs-table .logs-col-message {
+        align-items: flex-start;
+      }
+
+      .logs-table .logs-col-channel .channel-link,
+      .logs-table .logs-col-model .model-tag,
+      .logs-table .logs-col-message {
+        min-width: 0;
+      }
+
+      .logs-table .logs-col-api-key code {
+        word-break: break-all;
+      }
+
+      .logs-table .logs-col-timing .log-timing-pair {
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 2px;
+      }
+
+      .logs-table .logs-col-timing .log-timing-separator {
+        display: none;
+      }
+
       .logs-filter-controls {
-        gap: 8px;
+        gap: 6px;
       }
 
       .logs-filter-group {
         display: grid;
         grid-template-columns: 72px minmax(0, 1fr);
         align-items: center;
-        gap: 8px;
+        gap: 6px;
+        flex: none;
         width: 100%;
       }
 
@@ -260,18 +400,28 @@
         text-align: right;
       }
 
-      .logs-filter-info {
-        width: 100%;
-        text-align: center;
-        justify-self: stretch;
+      .logs-filter-summary-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+        align-items: center;
       }
 
-      .logs-filter-actions {
-        width: 100%;
+      .logs-filter-summary-row .logs-filter-info {
+        width: auto;
+        min-width: 0;
+        text-align: left;
+        justify-self: start;
       }
 
-      .logs-filter-actions .btn {
-        width: 100%;
+      .logs-filter-summary-row .logs-filter-actions {
+        width: auto;
+        justify-self: end;
+      }
+
+      .logs-filter-summary-row .logs-filter-actions .btn {
+        width: auto;
+        padding: 8px 12px;
       }
 
       .logs-pagination-controls {

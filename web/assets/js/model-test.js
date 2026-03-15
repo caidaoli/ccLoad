@@ -13,10 +13,12 @@ let modelSelectCombobox = null;
 
 const headRow = document.getElementById('model-test-head-row');
 const tbody = document.getElementById('model-test-tbody');
+const toolbar = document.querySelector('.model-test-toolbar');
 const channelSelectorLabel = document.getElementById('channelSelectorLabel');
 const modelSelectorLabel = document.getElementById('modelSelectorLabel');
 const typeSelect = document.getElementById('testChannelType');
 const modelSelect = document.getElementById('testModelSelect');
+const mobileNameFilterInput = document.getElementById('modelTestMobileNameFilter');
 const fetchModelsBtn = document.getElementById('fetchModelsBtn');
 const deleteModelsBtn = document.getElementById('deleteModelsBtn');
 const runTestBtn = document.getElementById('runTestBtn');
@@ -38,28 +40,28 @@ let sortState = { key: '', direction: SORT_DIRECTION_NONE };
 let nameFilterKeyword = '';
 
 const CHANNEL_MODE_HEAD = `
-  <th style="width: 30px;"><input type="checkbox" id="selectAllCheckbox" data-change-action="toggle-all-models"></th>
-  <th style="width: 200px;" data-i18n="common.model" data-sort-key="name">模型</th>
-  <th class="first-byte-col" style="width: 76px;" data-i18n="modelTest.firstByteDuration" data-sort-key="firstByteDuration">首字</th>
-  <th style="width: 76px;" data-i18n="modelTest.totalDuration" data-sort-key="duration">总耗时</th>
-  <th style="width: 65px;" data-i18n="common.input" data-sort-key="inputTokens">输入</th>
-  <th style="width: 65px;" data-i18n="common.output" data-sort-key="outputTokens">输出</th>
-  <th style="width: 65px;" data-i18n="modelTest.cacheRead" data-sort-key="cacheRead">缓读</th>
-  <th style="width: 65px;" data-i18n="modelTest.cacheCreate" data-sort-key="cacheCreate">缓建</th>
-  <th style="width: 80px;" data-i18n="common.cost" data-sort-key="cost">费用</th>
+  <th class="table-col-select mobile-card-select-header"><input type="checkbox" id="selectAllCheckbox" data-change-action="toggle-all-models"></th>
+  <th class="table-col-name" data-i18n="common.model" data-sort-key="name">模型</th>
+  <th class="first-byte-col table-col-duration" data-i18n="modelTest.firstByteDuration" data-sort-key="firstByteDuration">首字</th>
+  <th class="table-col-duration" data-i18n="modelTest.totalDuration" data-sort-key="duration">总耗时</th>
+  <th class="table-col-metric" data-i18n="common.input" data-sort-key="inputTokens">输入</th>
+  <th class="table-col-metric" data-i18n="common.output" data-sort-key="outputTokens">输出</th>
+  <th class="table-col-metric" data-i18n="modelTest.cacheRead" data-sort-key="cacheRead">缓读</th>
+  <th class="table-col-metric" data-i18n="modelTest.cacheCreate" data-sort-key="cacheCreate">缓建</th>
+  <th class="table-col-cost" data-i18n="common.cost" data-sort-key="cost">费用</th>
   <th data-i18n="modelTest.responseContent" data-sort-key="response">响应内容</th>
 `;
 
 const MODEL_MODE_HEAD = `
-  <th style="width: 30px;"><input type="checkbox" id="selectAllCheckbox" data-change-action="toggle-all-models"></th>
-  <th style="width: 280px;" data-i18n="modelTest.channelName" data-sort-key="name">渠道</th>
-  <th class="first-byte-col" style="width: 76px;" data-i18n="modelTest.firstByteDuration" data-sort-key="firstByteDuration">首字</th>
-  <th style="width: 76px;" data-i18n="modelTest.totalDuration" data-sort-key="duration">总耗时</th>
-  <th style="width: 65px;" data-i18n="common.input" data-sort-key="inputTokens">输入</th>
-  <th style="width: 65px;" data-i18n="common.output" data-sort-key="outputTokens">输出</th>
-  <th style="width: 65px;" data-i18n="modelTest.cacheRead" data-sort-key="cacheRead">缓读</th>
-  <th style="width: 65px;" data-i18n="modelTest.cacheCreate" data-sort-key="cacheCreate">缓建</th>
-  <th style="width: 80px;" data-i18n="common.cost" data-sort-key="cost">费用</th>
+  <th class="table-col-select mobile-card-select-header"><input type="checkbox" id="selectAllCheckbox" data-change-action="toggle-all-models"></th>
+  <th class="table-col-channel" data-i18n="modelTest.channelName" data-sort-key="name">渠道</th>
+  <th class="first-byte-col table-col-duration" data-i18n="modelTest.firstByteDuration" data-sort-key="firstByteDuration">首字</th>
+  <th class="table-col-duration" data-i18n="modelTest.totalDuration" data-sort-key="duration">总耗时</th>
+  <th class="table-col-metric" data-i18n="common.input" data-sort-key="inputTokens">输入</th>
+  <th class="table-col-metric" data-i18n="common.output" data-sort-key="outputTokens">输出</th>
+  <th class="table-col-metric" data-i18n="modelTest.cacheRead" data-sort-key="cacheRead">缓读</th>
+  <th class="table-col-metric" data-i18n="modelTest.cacheCreate" data-sort-key="cacheCreate">缓建</th>
+  <th class="table-col-cost" data-i18n="common.cost" data-sort-key="cost">费用</th>
   <th data-i18n="modelTest.responseContent" data-sort-key="response">响应内容</th>
 `;
 
@@ -124,6 +126,42 @@ function getNameFilterPlaceholder() {
     return i18nText('modelTest.filterChannelPlaceholder', '搜索渠道名称...');
   }
   return i18nText('modelTest.filterModelPlaceholder', '搜索模型名称...');
+}
+
+function syncNameFilterInputs() {
+  const placeholder = getNameFilterPlaceholder();
+  const headerInput = document.getElementById('modelTestNameFilter');
+
+  if (headerInput) {
+    headerInput.placeholder = placeholder;
+    headerInput.value = nameFilterKeyword;
+  }
+
+  if (mobileNameFilterInput) {
+    mobileNameFilterInput.placeholder = placeholder;
+    mobileNameFilterInput.value = nameFilterKeyword;
+  }
+}
+
+function setNameFilterKeyword(value) {
+  nameFilterKeyword = String(value || '');
+  syncNameFilterInputs();
+  applyNameFilter();
+}
+
+function getResultRowMobileLabels(nameKey, nameFallback) {
+  return {
+    mobileLabelSelect: '',
+    mobileLabelName: i18nText(nameKey, nameFallback),
+    mobileLabelFirstByte: i18nText('modelTest.firstByteDuration', '首字'),
+    mobileLabelDuration: i18nText('modelTest.totalDuration', '总耗时'),
+    mobileLabelInput: i18nText('common.input', '输入'),
+    mobileLabelOutput: i18nText('common.output', '输出'),
+    mobileLabelCacheRead: i18nText('modelTest.cacheRead', '缓读'),
+    mobileLabelCacheCreate: i18nText('modelTest.cacheCreate', '缓建'),
+    mobileLabelCost: i18nText('common.cost', '费用'),
+    mobileLabelResponse: i18nText('modelTest.responseContent', '响应内容')
+  };
 }
 
 function initModelTestActions() {
@@ -191,8 +229,7 @@ function renderNameFilterInHeader() {
     input.addEventListener('click', (event) => event.stopPropagation());
     input.addEventListener('keydown', (event) => event.stopPropagation());
     input.addEventListener('input', () => {
-      nameFilterKeyword = input.value || '';
-      applyNameFilter();
+      setNameFilterKeyword(input.value || '');
     });
 
     headerLine.appendChild(input);
@@ -206,8 +243,7 @@ function renderNameFilterInHeader() {
 
   input.style.flex = `0 1 ${filterWidth}`;
   input.style.width = filterWidth;
-  input.placeholder = getNameFilterPlaceholder();
-  input.value = nameFilterKeyword;
+  syncNameFilterInputs();
 }
 
 function applyNameFilter() {
@@ -539,7 +575,8 @@ function renderChannelModeRows() {
     const row = TemplateEngine.render('tpl-model-row', {
       model: modelName,
       displayName: modelName,
-      nameStyle: ''
+      nameStyle: '',
+      ...getResultRowMobileLabels('common.model', '模型')
     });
     if (row) fragment.appendChild(row);
   });
@@ -610,7 +647,8 @@ function renderModelModeRows() {
     const row = TemplateEngine.render('tpl-channel-row-by-model', {
       channelId: String(ch.id),
       channelName,
-      model: selectedModelName
+      model: selectedModelName,
+      ...getResultRowMobileLabels('modelTest.channel', '渠道')
     });
 
     if (row) {
@@ -646,6 +684,7 @@ function updateModeUI() {
   const modeTabModel = document.getElementById('modeTabModel');
   modeTabChannel.classList.toggle('active', !isModelMode);
   modeTabModel.classList.toggle('active', isModelMode);
+  toolbar?.classList.toggle('model-test-toolbar--model-mode', isModelMode);
 
   channelSelectorLabel.style.display = isModelMode ? 'none' : 'flex';
   modelSelectorLabel.style.display = isModelMode ? 'flex' : 'none';
@@ -1413,6 +1452,12 @@ function bindEvents() {
       if (testMode === TEST_MODE_MODEL) {
         renderModelModeRows();
       }
+    });
+  }
+
+  if (mobileNameFilterInput) {
+    mobileNameFilterInput.addEventListener('input', () => {
+      setNameFilterKeyword(mobileNameFilterInput.value || '');
     });
   }
 

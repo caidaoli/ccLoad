@@ -231,15 +231,16 @@
 
       for (const entry of filteredStats) {
         const successRate = entry.total > 0 ? ((entry.success / entry.total) * 100) : 0;
-        const successRateText = successRate > 0 ? successRate.toFixed(1) + '%' : '';
+        const successCountText = formatNumber(entry.success || 0);
+        const errorCountText = formatNumber(entry.error || 0);
+        const successRateText = formatSuccessRateText(successRate, entry.total || 0);
 
         // 使用后端返回的 RPM 数据（峰值/平均/最近）
         const rpmHtml = formatEntryRpm(entry, isToday);
 
         // 根据成功率设置颜色类
-        let successRateClass = 'success-rate';
-        if (successRate >= 95) successRateClass += ' high';
-        else if (successRate > 0 && successRate < 80) successRateClass += ' low';
+        const successRateClass = getSuccessRateClass(successRate);
+        const successDisplay = buildSuccessDisplay(successCountText, successRateText, successRateClass);
 
         const modelDisplay = entry.model ?
           `<a href="#" class="model-tag model-link" data-model="${escapeHtml(entry.model)}" data-channel-id="${entry.channel_id || ''}" title="${t('stats.viewLogsTitle')}">${escapeHtml(entry.model)}</a>` :
@@ -273,6 +274,12 @@
           `<span style="color: var(--primary-600);">${formatNumber(entry.total_cache_creation_input_tokens)}</span>` : '';
         const costText = entry.total_cost ?
           `<span style="color: var(--warning-600); font-weight: 500;">${formatCost(entry.total_cost)}</span>` : '';
+        const timingCellClass = avgTimeText ? '' : 'mobile-empty-cell';
+        const inputCellClass = inputTokensText ? '' : 'mobile-empty-cell';
+        const outputCellClass = outputTokensText ? '' : 'mobile-empty-cell';
+        const cacheReadCellClass = cacheReadTokensText ? '' : 'mobile-empty-cell';
+        const cacheCreateCellClass = cacheCreationTokensText ? '' : 'mobile-empty-cell';
+        const costCellClass = costText ? '' : 'mobile-empty-cell';
 
         // 构建健康状态指示器
         const healthIndicator = buildHealthIndicator(entry.health_timeline, successRate / 100);
@@ -283,18 +290,32 @@
           channelIdBadge: entry.channel_id ? `<span class="channel-id">(ID: ${entry.channel_id})</span>` : '',
           healthIndicator: healthIndicator,
           modelDisplay: modelDisplay,
-          successCount: formatNumber(entry.success || 0),
-          errorCount: formatNumber(entry.error || 0),
+          successDisplay: successDisplay,
+          errorCount: errorCountText,
           rpm: rpmHtml,
-          successRateClass: successRateClass,
-          successRateText: successRateText,
-          successRate: successRate,
           avgFirstByteTime: avgTimeText,
+          timingCellClass: timingCellClass,
           inputTokens: inputTokensText,
+          inputCellClass: inputCellClass,
           outputTokens: outputTokensText,
+          outputCellClass: outputCellClass,
           cacheReadTokens: cacheReadTokensText,
+          cacheReadCellClass: cacheReadCellClass,
           cacheCreationTokens: cacheCreationTokensText,
-          costText: costText
+          cacheCreateCellClass: cacheCreateCellClass,
+          costText: costText,
+          costCellClass: costCellClass,
+          mobileLabelChannel: t('stats.channelName'),
+          mobileLabelModel: t('common.model'),
+          mobileLabelSuccess: t('common.success'),
+          mobileLabelError: t('common.failed'),
+          mobileLabelTiming: t('stats.avgFirstByte'),
+          mobileLabelRpm: t('stats.rpm'),
+          mobileLabelInput: t('stats.inputTokens'),
+          mobileLabelOutput: t('stats.outputTokens'),
+          mobileLabelCacheRead: t('stats.cacheRead'),
+          mobileLabelCacheCreate: t('stats.cacheCreation'),
+          mobileLabelCost: t('stats.costUsd')
         });
         if (row) fragment.appendChild(row);
 
@@ -313,23 +334,58 @@
 
       // 追加合计行（使用全局rpm_stats显示峰值/平均/最近）
       const totalSuccessRateVal = totalRequests > 0 ? (totalSuccess / totalRequests) * 100 : 0;
-      const totalSuccessRate = totalSuccessRateVal > 0 ? totalSuccessRateVal.toFixed(1) + '%' : '';
+      const totalSuccessRate = formatSuccessRateText(totalSuccessRateVal, totalRequests);
+      const totalSuccessDisplay = buildSuccessDisplay(
+        formatNumber(totalSuccess),
+        totalSuccessRate,
+        getSuccessRateClass(totalSuccessRateVal)
+      );
 
       // 使用全局rpm_stats格式化RPM
       const totalRpmHtml = formatGlobalRpm(rpmStats, isToday);
 
       const totalRow = TemplateEngine.render('tpl-stats-total', {
-        successCount: formatNumber(totalSuccess),
+        successDisplay: totalSuccessDisplay,
         errorCount: formatNumber(totalError),
         rpm: totalRpmHtml,
-        successRateText: totalSuccessRate,
         inputTokens: formatNumber(totalInputTokens),
         outputTokens: formatNumber(totalOutputTokens),
         cacheReadTokens: formatNumber(totalCacheRead),
         cacheCreationTokens: formatNumber(totalCacheCreation),
-        costText: formatCost(totalCost)
+        costText: formatCost(totalCost),
+        mobileLabelSummary: t('stats.total'),
+        mobileLabelSuccess: t('common.success'),
+        mobileLabelError: t('common.failed'),
+        mobileLabelTiming: t('stats.avgFirstByte'),
+        mobileLabelRpm: t('stats.rpm'),
+        mobileLabelInput: t('stats.inputTokens'),
+        mobileLabelOutput: t('stats.outputTokens'),
+        mobileLabelCacheRead: t('stats.cacheRead'),
+        mobileLabelCacheCreate: t('stats.cacheCreation'),
+        mobileLabelCost: t('stats.costUsd')
       });
       if (totalRow) tbody.appendChild(totalRow);
+    }
+
+    function formatSuccessRateText(successRate, totalRequests) {
+      if (!(totalRequests > 0)) return '';
+      const text = successRate.toFixed(1) + '%';
+      return text.endsWith('.0%') ? text.slice(0, -3) + '%' : text;
+    }
+
+    function getSuccessRateClass(successRate) {
+      let successRateClass = 'success-rate';
+      if (successRate >= 95) successRateClass += ' high';
+      else if (successRate < 80) successRateClass += ' low';
+      return successRateClass;
+    }
+
+    function buildSuccessDisplay(successCountText, successRateText, successRateClass) {
+      if (!successRateText) {
+        return `<span class="success-count">${successCountText}</span>`;
+      }
+
+      return `<span class="stats-success-inline"><span class="success-count">${successCountText}</span><span class="stats-success-separator">/</span><span class="${successRateClass}">${successRateText}</span></span>`;
     }
 
     function applyFilter() {
@@ -506,18 +562,26 @@
       const peakText = formatVal(stats.peak_rpm);
       const avgText = formatVal(stats.avg_rpm);
 
-      const peakColor = peakText !== '-' ? getRpmColor(stats.peak_rpm) : 'inherit';
-      const avgColor = avgText !== '-' ? getRpmColor(stats.avg_rpm) : 'inherit';
-
-      let result = `<span style="color: ${peakColor};">${peakText}</span>/<span style="color: ${avgColor};">${avgText}</span>`;
+      const parts = [
+        {
+          text: peakText,
+          color: peakText !== '-' ? getRpmColor(stats.peak_rpm) : 'inherit'
+        },
+        {
+          text: avgText,
+          color: avgText !== '-' ? getRpmColor(stats.avg_rpm) : 'inherit'
+        }
+      ];
 
       if (showRecent) {
         const recentText = formatVal(stats.recent_rpm);
-        const recentColor = recentText !== '-' ? getRpmColor(stats.recent_rpm) : 'inherit';
-        result += `/<span style="color: ${recentColor};">${recentText}</span>`;
+        parts.push({
+          text: recentText,
+          color: recentText !== '-' ? getRpmColor(stats.recent_rpm) : 'inherit'
+        });
       }
 
-      return result;
+      return buildCompactRpmDisplay(parts);
     }
 
     // 格式化每行的RPM（峰值/平均/最近），固定格式，0显示为-
@@ -530,18 +594,35 @@
       const peakText = formatVal(entry.peak_rpm);
       const avgText = formatVal(entry.avg_rpm);
 
-      const peakColor = peakText !== '-' ? getRpmColor(entry.peak_rpm) : 'inherit';
-      const avgColor = avgText !== '-' ? getRpmColor(entry.avg_rpm) : 'inherit';
-
-      let result = `<span style="color: ${peakColor};">${peakText}</span>/<span style="color: ${avgColor};">${avgText}</span>`;
+      const parts = [
+        {
+          text: peakText,
+          color: peakText !== '-' ? getRpmColor(entry.peak_rpm) : 'inherit'
+        },
+        {
+          text: avgText,
+          color: avgText !== '-' ? getRpmColor(entry.avg_rpm) : 'inherit'
+        }
+      ];
 
       if (showRecent) {
         const recentText = formatVal(entry.recent_rpm);
-        const recentColor = recentText !== '-' ? getRpmColor(entry.recent_rpm) : 'inherit';
-        result += `/<span style="color: ${recentColor};">${recentText}</span>`;
+        parts.push({
+          text: recentText,
+          color: recentText !== '-' ? getRpmColor(entry.recent_rpm) : 'inherit'
+        });
       }
 
-      return result;
+      return buildCompactRpmDisplay(parts);
+    }
+
+    function buildCompactRpmDisplay(parts) {
+      const html = parts.map((part, index) => {
+        const separator = index === 0 ? '' : '<span class="stats-rpm-separator">/</span>';
+        return `${separator}<span class="stats-rpm-value" style="color: ${part.color};">${part.text}</span>`;
+      }).join('');
+
+      return `<span class="stats-rpm-inline">${html}</span>`;
     }
 
     // 根据耗时返回颜色

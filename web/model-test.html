@@ -66,76 +66,88 @@
       <div class="content-area">
         <section class="glass-card mt-2 mb-2" style="overflow: visible;">
           <!-- 模式切换 -->
-          <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+          <div class="model-test-tabs">
             <button id="modeTabChannel" type="button" class="mode-tab-btn active" data-action="set-test-mode" data-mode="channel" data-i18n="modelTest.mode.channel">按渠道测试</button>
             <button id="modeTabModel" type="button" class="mode-tab-btn" data-action="set-test-mode" data-mode="model" data-i18n="modelTest.mode.model">按模型测试</button>
           </div>
 
           <!-- 控制栏 -->
-          <div style="display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center;">
-            <label id="channelSelectorLabel" style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-              <span style="color: var(--color-text-secondary);" data-i18n="modelTest.channel">渠道</span>
-              <div id="testChannelSelectContainer"></div>
-            </label>
-            <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-              <span style="color: var(--color-text-secondary);" data-i18n="common.type">类型</span>
-              <select id="testChannelType" style="padding: 6px 8px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px;">
-              </select>
-            </label>
-            <label id="modelSelectorLabel" style="display: none; align-items: center; gap: 6px; font-size: 13px; min-width: 280px;">
-              <span style="color: var(--color-text-secondary);" data-i18n="common.model">模型</span>
-              <div class="filter-combobox-wrapper" style="min-width: 220px; flex: 1;">
-                <input
-                  id="testModelSelect"
-                  class="filter-select filter-combobox"
-                  type="text"
-                  autocomplete="off"
-                  spellcheck="false"
-                  data-i18n-placeholder="modelTest.modelInputPlaceholder"
-                  placeholder="输入或选择模型"
-                >
-                <div id="testModelSelectDropdown" class="filter-dropdown" role="listbox" aria-label="模型"></div>
+          <div class="model-test-toolbar">
+            <div class="model-test-toolbar-section model-test-toolbar-section--filters">
+              <label id="channelSelectorLabel" class="model-test-control">
+                <span class="model-test-control__label" data-i18n="modelTest.channel">渠道</span>
+                <div id="testChannelSelectContainer"></div>
+              </label>
+              <label class="model-test-control model-test-control--type">
+                <span class="model-test-control__label" data-i18n="common.type">类型</span>
+                <select id="testChannelType" class="model-test-inline-select">
+                </select>
+              </label>
+              <label id="modelSelectorLabel" class="model-test-control model-test-control--model" style="display: none;">
+                <span class="model-test-control__label" data-i18n="common.model">模型</span>
+                <div class="filter-combobox-wrapper model-test-model-combobox">
+                  <input
+                    id="testModelSelect"
+                    class="filter-select filter-combobox"
+                    type="text"
+                    autocomplete="off"
+                    spellcheck="false"
+                    data-i18n-placeholder="modelTest.modelInputPlaceholder"
+                    placeholder="输入或选择模型"
+                  >
+                  <div id="testModelSelectDropdown" class="filter-dropdown" role="listbox" aria-label="模型"></div>
+                </div>
+              </label>
+              <label class="model-test-control model-test-control--content">
+                <span class="model-test-control__label" data-i18n="modelTest.content">内容</span>
+                <input type="text" id="modelTestContent" value="" class="model-test-inline-input" data-i18n-placeholder="common.loading" placeholder="加载中...">
+              </label>
+            </div>
+            <div class="model-test-toolbar-section model-test-toolbar-section--actions">
+              <button type="button" data-action="select-all-models" class="btn btn-secondary model-test-toolbar-btn" data-i18n="modelTest.selectAll">全选</button>
+              <button type="button" data-action="deselect-all-models" class="btn btn-secondary model-test-toolbar-btn" data-i18n="modelTest.deselectAll">取消全选</button>
+              <button id="fetchModelsBtn" type="button" data-action="fetch-and-add-models" class="btn btn-secondary model-test-toolbar-btn" data-i18n="modelTest.fetchModels">获取模型</button>
+              <button id="deleteModelsBtn" type="button" data-action="delete-selected-models" class="btn btn-secondary model-test-toolbar-btn model-test-toolbar-btn--danger" data-i18n="modelTest.deleteModels">删除模型</button>
+              <button id="runTestBtn" type="button" data-action="run-model-tests" class="btn btn-primary model-test-toolbar-btn" data-i18n="modelTest.startTest">开始测试</button>
+            </div>
+            <div class="model-test-toolbar-section model-test-toolbar-section--meta">
+              <label class="model-test-control model-test-control--name-filter">
+                <span class="model-test-control__label" data-i18n="common.search">搜索</span>
+                <input type="text" id="modelTestMobileNameFilter" value="" class="model-test-inline-input" autocomplete="off" spellcheck="false" placeholder="搜索模型名称...">
+              </label>
+              <span id="testProgress" class="model-test-progress"></span>
+              <div class="model-test-toolbar-toggles">
+                <label class="model-test-toggle">
+                  <input type="checkbox" id="streamEnabled" class="control-checkbox control-checkbox--sm">
+                  <span data-i18n="modelTest.stream">流式</span>
+                </label>
+                <label class="model-test-toggle">
+                  <span data-i18n="modelTest.concurrency">并发</span>
+                  <input type="number" id="concurrency" value="5" min="1" max="20" class="model-test-concurrency-input">
+                </label>
               </div>
-            </label>
-            <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; flex: 1; min-width: 200px;">
-              <span style="color: var(--color-text-secondary);" data-i18n="modelTest.content">内容</span>
-              <input type="text" id="modelTestContent" value="" data-i18n-placeholder="common.loading" placeholder="加载中..." style="flex: 1; padding: 6px 10px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px;">
-            </label>
-            <span id="testProgress" style="font-size: 13px; color: var(--color-text-secondary);"></span>
-            <button type="button" data-action="select-all-models" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;" data-i18n="modelTest.selectAll">全选</button>
-            <button type="button" data-action="deselect-all-models" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;" data-i18n="modelTest.deselectAll">取消全选</button>
-            <button id="fetchModelsBtn" type="button" data-action="fetch-and-add-models" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px;" data-i18n="modelTest.fetchModels">获取模型</button>
-            <button id="deleteModelsBtn" type="button" data-action="delete-selected-models" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px; color: var(--error-500);" data-i18n="modelTest.deleteModels">删除模型</button>
-            <label style="display: flex; align-items: center; gap: 4px; font-size: 13px; cursor: pointer;">
-              <input type="checkbox" id="streamEnabled" style="width: 16px; height: 16px;">
-              <span data-i18n="modelTest.stream">流式</span>
-            </label>
-            <label style="display: flex; align-items: center; gap: 4px; font-size: 13px;">
-              <span data-i18n="modelTest.concurrency">并发</span>
-              <input type="number" id="concurrency" value="5" min="1" max="20" style="width: 50px; padding: 4px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-bg-secondary); color: var(--color-text); font-size: 13px; text-align: center;">
-            </label>
-            <button id="runTestBtn" type="button" data-action="run-model-tests" class="btn btn-primary" style="font-size: 13px; padding: 8px 16px;" data-i18n="modelTest.startTest">开始测试</button>
+            </div>
           </div>
 
           <!-- 模型测试表格 -->
-          <div class="table-container">
-            <table class="modern-table" style="font-size: 13px; table-layout: fixed; width: 100%;">
+          <div class="table-container model-test-table-container mobile-card-table-container">
+            <table class="modern-table model-test-table mobile-card-table">
               <thead style="position: sticky; top: 0; background: var(--glass-bg); z-index: 1;">
                 <tr id="model-test-head-row">
-                  <th style="width: 30px;"><input type="checkbox" id="selectAllCheckbox" data-change-action="toggle-all-models"></th>
-                  <th style="width: 200px;" data-i18n="common.model" data-sort-key="name">模型</th>
-                  <th class="first-byte-col" style="width: 76px;" data-i18n="modelTest.firstByteDuration" data-sort-key="firstByteDuration">首字</th>
-                  <th style="width: 76px;" data-i18n="modelTest.totalDuration" data-sort-key="duration">总耗时</th>
-                  <th style="width: 65px;" data-i18n="common.input" data-sort-key="inputTokens">输入</th>
-                  <th style="width: 65px;" data-i18n="common.output" data-sort-key="outputTokens">输出</th>
-                  <th style="width: 65px;" data-i18n="modelTest.cacheRead" data-sort-key="cacheRead">缓读</th>
-                  <th style="width: 65px;" data-i18n="modelTest.cacheCreate" data-sort-key="cacheCreate">缓建</th>
-                  <th style="width: 80px;" data-i18n="common.cost" data-sort-key="cost">费用</th>
+                  <th class="table-col-select mobile-card-select-header"><input type="checkbox" id="selectAllCheckbox" data-change-action="toggle-all-models"></th>
+                  <th class="table-col-name" data-i18n="common.model" data-sort-key="name">模型</th>
+                  <th class="first-byte-col table-col-duration" data-i18n="modelTest.firstByteDuration" data-sort-key="firstByteDuration">首字</th>
+                  <th class="table-col-duration" data-i18n="modelTest.totalDuration" data-sort-key="duration">总耗时</th>
+                  <th class="table-col-metric" data-i18n="common.input" data-sort-key="inputTokens">输入</th>
+                  <th class="table-col-metric" data-i18n="common.output" data-sort-key="outputTokens">输出</th>
+                  <th class="table-col-metric" data-i18n="modelTest.cacheRead" data-sort-key="cacheRead">缓读</th>
+                  <th class="table-col-metric" data-i18n="modelTest.cacheCreate" data-sort-key="cacheCreate">缓建</th>
+                  <th class="table-col-cost" data-i18n="common.cost" data-sort-key="cost">费用</th>
                   <th data-i18n="modelTest.responseContent" data-sort-key="response">响应内容</th>
                 </tr>
               </thead>
               <tbody id="model-test-tbody">
-                <tr><td colspan="10" style="text-align: center; color: var(--color-text-secondary); padding: 40px;" data-i18n="modelTest.selectChannelFirst">请先选择渠道</td></tr>
+                <tr class="model-test-empty-row"><td colspan="10" style="text-align: center; color: var(--color-text-secondary); padding: 40px;" data-i18n="modelTest.selectChannelFirst">请先选择渠道</td></tr>
               </tbody>
             </table>
           </div>
@@ -145,44 +157,44 @@
   </div>
   <!-- 模型行模板 -->
   <template id="tpl-model-row">
-    <tr data-model="{{model}}">
-      <td><input type="checkbox" class="row-checkbox model-checkbox" checked></td>
-      <td title="{{model}}" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;{{nameStyle}}">{{displayName}}</td>
-      <td class="first-byte-duration">-</td>
-      <td class="duration">-</td>
-      <td class="input-tokens">-</td>
-      <td class="output-tokens">-</td>
-      <td class="cache-read">-</td>
-      <td class="cache-create">-</td>
-      <td class="cost">-</td>
-      <td class="response" title="">-</td>
+    <tr class="mobile-card-row model-test-row" data-model="{{model}}">
+      <td class="model-test-col-select mobile-card-no-label" data-mobile-label="{{mobileLabelSelect}}"><input type="checkbox" class="row-checkbox model-checkbox" checked></td>
+      <td class="model-test-col-name" title="{{model}}" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;{{nameStyle}}" data-mobile-label="{{mobileLabelName}}">{{displayName}}</td>
+      <td class="model-test-col-first-byte first-byte-duration" data-mobile-label="{{mobileLabelFirstByte}}">-</td>
+      <td class="model-test-col-duration duration" data-mobile-label="{{mobileLabelDuration}}">-</td>
+      <td class="model-test-col-input input-tokens" data-mobile-label="{{mobileLabelInput}}">-</td>
+      <td class="model-test-col-output output-tokens" data-mobile-label="{{mobileLabelOutput}}">-</td>
+      <td class="model-test-col-cache-read cache-read" data-mobile-label="{{mobileLabelCacheRead}}">-</td>
+      <td class="model-test-col-cache-create cache-create" data-mobile-label="{{mobileLabelCacheCreate}}">-</td>
+      <td class="model-test-col-cost cost" data-mobile-label="{{mobileLabelCost}}">-</td>
+      <td class="model-test-col-response response" title="" data-mobile-label="{{mobileLabelResponse}}">-</td>
     </tr>
   </template>
 
   <!-- 按模型测试时的渠道行模板 -->
   <template id="tpl-channel-row-by-model">
-    <tr data-channel-id="{{channelId}}" data-model="{{model}}">
-      <td><input type="checkbox" class="row-checkbox channel-checkbox" checked></td>
-      <td title="{{channelName}}" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{channelName}}</td>
-      <td class="first-byte-duration">-</td>
-      <td class="duration">-</td>
-      <td class="input-tokens">-</td>
-      <td class="output-tokens">-</td>
-      <td class="cache-read">-</td>
-      <td class="cache-create">-</td>
-      <td class="cost">-</td>
-      <td class="response" title="">-</td>
+    <tr class="mobile-card-row model-test-row" data-channel-id="{{channelId}}" data-model="{{model}}">
+      <td class="model-test-col-select mobile-card-no-label" data-mobile-label="{{mobileLabelSelect}}"><input type="checkbox" class="row-checkbox channel-checkbox" checked></td>
+      <td class="model-test-col-name" title="{{channelName}}" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" data-mobile-label="{{mobileLabelName}}">{{channelName}}</td>
+      <td class="model-test-col-first-byte first-byte-duration" data-mobile-label="{{mobileLabelFirstByte}}">-</td>
+      <td class="model-test-col-duration duration" data-mobile-label="{{mobileLabelDuration}}">-</td>
+      <td class="model-test-col-input input-tokens" data-mobile-label="{{mobileLabelInput}}">-</td>
+      <td class="model-test-col-output output-tokens" data-mobile-label="{{mobileLabelOutput}}">-</td>
+      <td class="model-test-col-cache-read cache-read" data-mobile-label="{{mobileLabelCacheRead}}">-</td>
+      <td class="model-test-col-cache-create cache-create" data-mobile-label="{{mobileLabelCacheCreate}}">-</td>
+      <td class="model-test-col-cost cost" data-mobile-label="{{mobileLabelCost}}">-</td>
+      <td class="model-test-col-response response" title="" data-mobile-label="{{mobileLabelResponse}}">-</td>
     </tr>
   </template>
 
   <!-- 空状态模板 -->
   <template id="tpl-empty-row">
-    <tr><td colspan="{{colspan}}" style="text-align: center; color: var(--color-text-secondary); padding: 40px;">{{message}}</td></tr>
+    <tr class="model-test-empty-row"><td colspan="{{colspan}}" style="text-align: center; color: var(--color-text-secondary); padding: 40px;">{{message}}</td></tr>
   </template>
 
   <!-- 删除预览确认弹窗 -->
   <div id="deletePreviewModal" class="modal">
-    <div class="modal-content" style="max-width: 760px; width: min(90vw, 760px);">
+    <div class="modal-content modal-content--lg">
       <div class="modal-header" style="margin-bottom: 8px;">
         <h2 class="modal-title" data-i18n="modelTest.deletePreviewTitle">确认删除模型</h2>
         <button id="deletePreviewCloseBtn" class="close-btn" aria-label="Close">&times;</button>
