@@ -65,6 +65,7 @@ internal/
 │       ├── auth_token_stats.go # Auth Token统计（时间范围查询/RPM填充）
 │       ├── log.go              # 日志读写（含service_tier）
 │       ├── metrics*.go         # metrics聚合/过滤/终结化
+│       ├── helpers.go          # 渠道信息批量查询辅助（ChannelInfo/过滤器）
 │       └── ...                 # config/apikey/cooldown/system_settings
 ├── util/          # 工具库（classifier/cost_calculator/money/rate_limiter/models_fetcher/channel_types/apikeys/parse/time）
 ├── version/       # 版本信息、启动banner、版本检查
@@ -77,7 +78,7 @@ web/               # 前端页面
 └── assets/
     ├── locales/   # i18n本地化（zh-CN.js, en.js）
     ├── css/       # 样式（styles/channels/logs/tokens）
-    └── js/        # 模块化JS（channels-*/logs/stats/tokens/settings/trend/i18n/ui/page-filters/filter-*/date-range-selector/template-engine/...）
+    └── js/        # 模块化JS（channels-*/logs/logs-channel-editor/stats/tokens/settings/trend/model-test/i18n/ui/page-filters/filter-*/date-range-selector/template-engine/...）
 ```
 
 **故障切换策略**:
@@ -109,6 +110,7 @@ web/               # 前端页面
 
 **关键入口**:
 - `app.Server.HandleProxyRequest()` - 代理请求主入口
+- `app.Server.selectRouteCandidates()` - 智能路由选择（含Gemini GET特殊路由，委托给selectCandidatesByModelAndType）
 - `app.Server.selectCandidatesByModelAndType()` - 渠道候选筛选（模型匹配+日期后缀回退）
 - `cooldown.Manager.HandleError()` - 冷却决策引擎
 - `util.ClassifyHTTPStatus()` - HTTP错误分类器
@@ -120,6 +122,8 @@ web/               # 前端页面
 - `app.orderURLsWithSelector()` - URL故障转移排序（结合URLSelector延迟数据）
 - `util.CalculateCostDetailed()` - 费用计算（含分层定价/缓存折扣/service_tier倍率）
 - `util.OpenAIServiceTierMultiplier()` - OpenAI service_tier价格倍率
+- `util.IsFastModeModel()` - 判断是否支持Anthropic fast mode
+- `util.CalculateFastModeCost()` - 计算fast mode独立费用
 
 **Token费用限额（Auth Token）**:
 - 存储：`auth_tokens.cost_used_microusd/cost_limit_microusd`（微美元整数），避免浮点误差
@@ -157,7 +161,8 @@ web/               # 前端页面
 - **GPT-5.4**: 超过 `gpt54TierThreshold` token后输入价格降档
 - **Qwen-Plus**: 超过 `qwenPlusTierThreshold` token后价格降档
 - **Gemini长上下文**: 超过 `geminiLongContextThreshold` token后价格翻倍
-- 缓存折扣：Claude系列/Opus单独乘数，OpenAI缓存50%折扣
+- 缓存读取折扣：Claude系列/Opus单独乘数，OpenAI缓存50%折扣
+- 缓存写入定价：`cacheWrite5mMultiplier`(1.25x)、`cacheWrite1hMultiplier`(2.0x)，基于input价格
 
 **Admin会话管理**:
 - `CreateAdminSession/GetAdminSession/DeleteAdminSession` - 会话CRUD
@@ -169,6 +174,12 @@ web/               # 前端页面
 - `SuccessRatePenaltyWeight` - 成功率惩罚权重
 - `WindowMinutes` - 统计窗口（分钟）
 - `MinConfidentSample` - 最小置信样本数
+
+**批量Admin操作**:
+- `HandleBatchUpdatePriority` - 批量更新渠道优先级
+- `HandleBatchSetEnabled` - 批量启用/禁用渠道
+- `HandleBatchRefreshModels` - 批量刷新渠道上游模型列表
+- `HandleChannelURLStats` - 渠道各URL调用次数统计
 
 ## 开发指南
 
