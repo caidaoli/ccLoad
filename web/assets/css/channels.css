@@ -2453,6 +2453,7 @@
       }
 
       .channel-batch-float {
+        width: min(320px, calc(100vw - 16px));
         max-width: calc(100vw - 16px);
         bottom: 10px;
       }
@@ -2503,9 +2504,9 @@
         width: 100%;
         min-width: 0;
         min-height: 40px;
-        padding: 6px 10px;
-        font-size: 0.8rem;
-        white-space: normal;
+        padding: 8px 6px;
+        font-size: 0.75rem;
+        white-space: nowrap;
         text-align: center;
         line-height: 1.2;
       }
