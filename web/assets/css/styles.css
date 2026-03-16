@@ -2213,11 +2213,7 @@ body {
 }
 
 .stats-filter-summary-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-  width: 100%;
+  display: contents;
 }
 
 .stats-filter-summary-row .stats-filter-info {
