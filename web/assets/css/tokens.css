@@ -274,17 +274,15 @@
       display: inline-flex;
       align-items: center;
       gap: 4px;
-      border: 1px solid transparent;
+      padding: 0;
+      border-radius: 0;
+      background: transparent;
     }
     .token-call-badge--success {
-      background: var(--success-50);
       color: var(--success-700);
-      border-color: var(--success-200);
     }
     .token-call-badge--failure {
-      background: var(--error-50);
       color: var(--error-700);
-      border-color: var(--error-200);
     }
     .token-call-icon {
       font-size: 14px;
@@ -345,12 +343,12 @@
       justify-content: space-between;
       gap: 6px;
       min-width: 0;
-      padding: 2px 8px;
-      border-radius: 4px;
+      padding: 0;
+      border-radius: 0;
       font-size: 12px;
       font-weight: 600;
       white-space: nowrap;
-      border: 1px solid transparent;
+      background: transparent;
     }
     .token-usage-label {
       color: inherit;
@@ -361,24 +359,16 @@
       font-feature-settings: "tnum";
     }
     .token-usage-item--input {
-      background: var(--primary-50);
       color: var(--primary-700);
-      border-color: var(--primary-200);
     }
     .token-usage-item--output {
-      background: var(--secondary-50);
       color: var(--secondary-700);
-      border-color: var(--secondary-200);
     }
     .token-usage-item--cache-read {
-      background: var(--success-50);
       color: var(--success-700);
-      border-color: var(--success-200);
     }
     .token-usage-item--cache-create {
-      background: var(--warning-50);
       color: var(--warning-700);
-      border-color: var(--warning-200);
     }
     .modal {
       display: none;

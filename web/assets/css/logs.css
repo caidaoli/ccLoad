@@ -238,6 +238,10 @@
       white-space: nowrap;
     }
 
+    .logs-filter-summary-row {
+      display: contents;
+    }
+
     .logs-filter-actions {
       flex: none;
     }

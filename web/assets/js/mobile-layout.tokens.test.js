@@ -48,6 +48,29 @@ test('tokens 页手机卡片将 token 用量压成紧凑二维指标块', () => 
   assert.match(tokensCss, /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.tokens-table\s+\.tokens-col-token-usage\s+>\s+\.token-usage-metrics\s*\{[\s\S]*?justify-content:\s*flex-end;[\s\S]*?grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*max-content\)\);/);
 });
 
+test('tokens 页调用次数和 token 用量指标退化为纯文字样式', () => {
+  assert.doesNotMatch(tokensCss, /\.token-call-badge\s*\{[^}]*\bborder\s*:/);
+  assert.doesNotMatch(tokensCss, /\.token-call-badge--success\s*\{[^}]*\bborder-color\s*:/);
+  assert.doesNotMatch(tokensCss, /\.token-call-badge--failure\s*\{[^}]*\bborder-color\s*:/);
+  assert.match(tokensCss, /\.token-call-badge\s*\{[^}]*\bpadding\s*:\s*0;/);
+  assert.match(tokensCss, /\.token-call-badge\s*\{[^}]*\bborder-radius\s*:\s*0;/);
+  assert.match(tokensCss, /\.token-call-badge\s*\{[^}]*\bbackground\s*:\s*transparent;/);
+  assert.doesNotMatch(tokensCss, /\.token-call-badge--success\s*\{[^}]*\bbackground\s*:/);
+  assert.doesNotMatch(tokensCss, /\.token-call-badge--failure\s*\{[^}]*\bbackground\s*:/);
+  assert.doesNotMatch(tokensCss, /\.token-usage-item\s*\{[^}]*\bborder\s*:/);
+  assert.match(tokensCss, /\.token-usage-item\s*\{[^}]*\bpadding\s*:\s*0;/);
+  assert.match(tokensCss, /\.token-usage-item\s*\{[^}]*\bborder-radius\s*:\s*0;/);
+  assert.match(tokensCss, /\.token-usage-item\s*\{[^}]*\bbackground\s*:\s*transparent;/);
+  assert.doesNotMatch(tokensCss, /\.token-usage-item--input\s*\{[^}]*\bborder-color\s*:/);
+  assert.doesNotMatch(tokensCss, /\.token-usage-item--output\s*\{[^}]*\bborder-color\s*:/);
+  assert.doesNotMatch(tokensCss, /\.token-usage-item--cache-read\s*\{[^}]*\bborder-color\s*:/);
+  assert.doesNotMatch(tokensCss, /\.token-usage-item--cache-create\s*\{[^}]*\bborder-color\s*:/);
+  assert.doesNotMatch(tokensCss, /\.token-usage-item--input\s*\{[^}]*\bbackground\s*:/);
+  assert.doesNotMatch(tokensCss, /\.token-usage-item--output\s*\{[^}]*\bbackground\s*:/);
+  assert.doesNotMatch(tokensCss, /\.token-usage-item--cache-read\s*\{[^}]*\bbackground\s*:/);
+  assert.doesNotMatch(tokensCss, /\.token-usage-item--cache-create\s*\{[^}]*\bbackground\s*:/);
+});
+
 test('tokens 弹窗模型限制表为手机布局补齐类名、标签和按钮重排', () => {
   assert.match(tokensHtml, /<table class="inline-table mobile-inline-table allowed-models-table">/);
   assert.match(tokensScript, /class="mobile-inline-row allowed-model-row"/);
