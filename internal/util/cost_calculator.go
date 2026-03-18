@@ -69,6 +69,8 @@ var basePricing = map[string]ModelPricing{
 		InputPrice: 30.00, OutputPrice: 180.00,
 		InputPriceHigh: 60.00, OutputPriceHigh: 270.00, // >272K context
 	},
+	"gpt-5.4-mini":        {InputPrice: 0.75, OutputPrice: 4.50},
+	"gpt-5.4-nano":        {InputPrice: 0.20, OutputPrice: 1.25},
 	"gpt-5.3":             {InputPrice: 1.75, OutputPrice: 14.00},
 	"gpt-5.3-codex":       {InputPrice: 1.75, OutputPrice: 14.00},
 	"gpt-5.3-codex-spark": {InputPrice: 1.75, OutputPrice: 14.00},
@@ -607,6 +609,8 @@ func isOpenAIModel(model string) bool {
 // 注意：gpt-5.4-pro 虽在表中出现但价格列为空，不算支持。
 var serviceTierModels = map[string]bool{
 	"gpt-5.4":           true,
+	"gpt-5.4-mini":      true,
+	"gpt-5.4-nano":      true,
 	"gpt-5.3-codex":     true,
 	"gpt-5.2":           true,
 	"gpt-5.2-codex":     true,
@@ -780,7 +784,7 @@ func fuzzyMatchModel(model string) (ModelPricing, bool) {
 		"gemini-1.5-pro", "gemini-1.5-flash",
 
 		// OpenAI GPT系列（更长的前缀优先，避免gpt-4o-legacy被gpt-4o截断）
-		"gpt-5-pro", "gpt-5-nano", "gpt-5-mini", "gpt-5.4-pro", "gpt-5.4", "gpt-5",
+		"gpt-5-pro", "gpt-5-nano", "gpt-5-mini", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.4", "gpt-5",
 		"gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1",
 		"gpt-4o-legacy", "gpt-4o-mini", "gpt-4o", // legacy必须在gpt-4o之前
 		"gpt-4-turbo", "gpt-4-32k", "gpt-4",

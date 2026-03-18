@@ -198,6 +198,9 @@ func TestCalculateCost_OpenAIModels(t *testing.T) {
 		{"gpt-5.4-pro", 1000, 1000, 0, 0.21},                // $30/1M input, $180/1M output (<=272K)
 		{"gpt-5.4-pro", 300000, 1000, 0, 18.27},             // $60/1M input, $270/1M output (>272K)
 		{"gpt-5.4-custom", 1000, 1000, 0, 0.0175},           // 模糊匹配到gpt-5.4
+		{"gpt-5.4-mini", 1000, 1000, 0, 0.00525},            // $0.75/1M input, $4.50/1M output
+		{"gpt-5.4-nano", 1000, 1000, 0, 0.00145},            // $0.20/1M input, $1.25/1M output
+		{"gpt-5.4-mini-2026-03-18", 1000, 1000, 0, 0.00525}, // 模糊匹配到gpt-5.4-mini
 		{"gpt-5.3-codex-spark", 4293, 17, 6016, 0.00880355}, // 4293×1.75/1M + 17×14/1M + 6016×(1.75×0.1)/1M
 		{"gpt-5.3-codex", 4293, 17, 6016, 0.00880355},       // 4293×1.75/1M + 17×14/1M + 6016×(1.75×0.1)/1M
 		{"gpt-5.3", 1000, 1000, 0, 0.01575},                 // $1.75/1M input, $14/1M output
@@ -256,6 +259,8 @@ func TestOpenAIServiceTierMultiplier(t *testing.T) {
 		{"o4-mini", "flex", 0.5},
 		// 日期后缀变体
 		{"gpt-5.4-2026-03-01", "priority", 2.0},
+		{"gpt-5.4-mini", "priority", 2.0},
+		{"gpt-5.4-nano", "flex", 0.5},
 		{"gpt-4o-2024-05-13", "priority", 2.0},
 		{"o3-2026-01", "flex", 0.5},
 	}
