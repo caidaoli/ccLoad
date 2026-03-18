@@ -223,6 +223,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	// 清理 Anthropic 请求中注入的 billing header 元数据
 	if util.DetectChannelTypeFromPath(requestPath) == util.ChannelTypeAnthropic {
 		all = stripAnthropicBillingHeaders(all)
+		all = normalizeMetadataUserID(all)
 	}
 
 	tokenHashStr := ""
