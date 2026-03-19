@@ -325,7 +325,7 @@ func (t *AnthropicTester) Build(cfg *model.Config, apiKey string, req *TestChann
 	h.Set("User-Agent", "claude-cli/2.0.76 (external, cli)")
 	h.Set("x-app", "cli")
 	h.Set("anthropic-version", "2023-06-01")
-	h.Set("anthropic-beta", "interleaved-thinking-2025-05-14,advanced-tool-use-2025-11-20")
+	h.Set("anthropic-beta", "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,effort-2025-11-24")
 	h.Set("anthropic-dangerous-direct-browser-access", "true")
 	// x-stainless-* headers
 	h.Set("x-stainless-arch", "arm64")
