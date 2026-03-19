@@ -64,3 +64,44 @@ test('URL 统计列使用紧凑列宽样式，避免挤压 API URL 列', () => {
   assert.ok(latencyColumnStyle, '缺少 .inline-url-col-latency 样式');
   assert.match(latencyColumnStyle[0], /width:\s*60px/);
 });
+
+test('编辑弹窗 Key 策略与 Key 数量同行展示，避免单独换行', () => {
+  assert.match(html, /channel-editor-section-title--key/);
+  assert.match(html, /channel-editor-inline-strategy/);
+  assert.match(html, /channel-editor-section-title--key[\s\S]*?id="inlineKeyCount"[\s\S]*?channel-editor-inline-strategy[\s\S]*?id="keyStrategyRadios"/);
+
+  const keyTitleStyle = css.match(/\.channel-editor-section-title--key\s*\{[^}]+\}/);
+  assert.ok(keyTitleStyle, '缺少 .channel-editor-section-title--key 样式');
+  assert.match(keyTitleStyle[0], /flex-wrap:\s*nowrap/);
+
+  const inlineStrategyStyle = css.match(/\.channel-editor-inline-strategy\s*\{[^}]+\}/);
+  assert.ok(inlineStrategyStyle, '缺少 .channel-editor-inline-strategy 样式');
+  assert.match(inlineStrategyStyle[0], /display:\s*inline-flex/);
+  assert.match(inlineStrategyStyle[0], /align-items:\s*center/);
+});
+
+test('编辑弹窗主区块间距收紧，减少名称、URL、Key、模型配置之间的空隙', () => {
+  const formBlockMatch = css.match(/\.channel-editor-form\s*\{[^}]+\}/);
+  assert.ok(formBlockMatch, '缺少 .channel-editor-form 样式');
+  assert.match(formBlockMatch[0], /gap:\s*14px/);
+
+  const headerBlockMatch = css.match(/\.channel-editor-section-header\s*\{[^}]+\}/);
+  assert.ok(headerBlockMatch, '缺少 .channel-editor-section-header 样式');
+  assert.match(headerBlockMatch[0], /margin-bottom:\s*6px/);
+});
+
+test('API URL 表格列间距减半，调度提示文字降一号', () => {
+  assert.match(html, /class="inline-table mobile-inline-table inline-url-table"/);
+
+  const urlTableHeadBlock = css.match(/\.inline-url-table th\s*\{[^}]+\}/);
+  assert.ok(urlTableHeadBlock, '缺少 .inline-url-table th 样式');
+  assert.match(urlTableHeadBlock[0], /padding:\s*6px 5px/);
+
+  const urlTableCellBlock = css.match(/\.inline-url-table td\s*\{[^}]+\}/);
+  assert.ok(urlTableCellBlock, '缺少 .inline-url-table td 样式');
+  assert.match(urlTableCellBlock[0], /padding:\s*4px 4px/);
+
+  const hintBlock = css.match(/\.inline-url-header-hint\s*\{[^}]+\}/);
+  assert.ok(hintBlock, '缺少 .inline-url-header-hint 样式');
+  assert.match(hintBlock[0], /font-size:\s*12px/);
+});

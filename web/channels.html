@@ -302,14 +302,12 @@
         <div class="form-group channel-editor-group">
           <!-- API Key标签行：包含标签、Key计数和操作按钮 -->
           <div class="channel-editor-section-header">
-            <div class="channel-editor-section-stack">
-              <label class="form-label channel-editor-section-title">
+            <div class="form-label channel-editor-section-title channel-editor-section-title--key">
                 <span data-i18n="channels.apiKey">API Key *</span> <span class="models-hint channel-editor-section-meta"><span data-i18n="channels.keyCountPrefix">共</span> <span
                     id="inlineKeyCount">0</span> <span data-i18n="channels.keyCountSuffix">个Key</span> <span
                     id="virtualScrollHint" style="display: none; color: var(--primary-600); font-weight: 600;"
                     data-i18n="channels.virtualScrollEnabled">· 虚拟滚动已启用</span></span>
-              </label>
-              <div class="channel-editor-strategy-row">
+              <div class="channel-editor-inline-strategy">
                 <label class="channel-editor-inline-label channel-editor-inline-label--muted"
                   data-i18n="channels.keyStrategy">Key 策略</label>
                 <div class="channel-editor-radio-group channel-editor-radio-group--strategy" id="keyStrategyRadios">

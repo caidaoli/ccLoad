@@ -129,7 +129,7 @@
     .channel-editor-form {
       display: flex;
       flex-direction: column;
-      gap: 20px;
+      gap: 14px;
       min-height: 100%;
       flex: 1 1 auto;
     }
@@ -199,7 +199,7 @@
       align-items: flex-start;
       gap: 10px 16px;
       flex-wrap: wrap;
-      margin-bottom: 8px;
+      margin-bottom: 6px;
     }
 
     .channel-editor-section-title {
@@ -214,6 +214,7 @@
     .channel-editor-section-meta {
       margin: 0;
       font-weight: 500;
+      white-space: nowrap;
     }
 
     .channel-editor-strategy-row {
@@ -222,6 +223,24 @@
       gap: 12px;
       flex-wrap: wrap;
       min-width: 0;
+    }
+
+    .channel-editor-section-title--key {
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+
+    .channel-editor-section-title--key::-webkit-scrollbar {
+      display: none;
+    }
+
+    .channel-editor-inline-strategy {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      flex: 0 0 auto;
     }
 
     .channel-editor-section-actions {
@@ -1188,6 +1207,14 @@
       width: 70px;
     }
 
+    .inline-url-table th {
+      padding: 6px 5px;
+    }
+
+    .inline-url-table td {
+      padding: 4px 4px;
+    }
+
     .inline-url-col-url {
       width: auto;
       min-width: 0;
@@ -1435,7 +1462,7 @@
     .inline-url-header {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 4px;
       flex-wrap: wrap;
     }
 
@@ -1446,6 +1473,8 @@
     .inline-url-header-hint {
       margin: 0;
       font-weight: 400;
+      font-size: 12px;
+      line-height: 1.35;
     }
 
     .inline-url-cell-center {
@@ -1735,7 +1764,7 @@
       }
 
       .channel-editor-form {
-        gap: 16px;
+        gap: 12px;
       }
 
       .channel-editor-primary-row {
