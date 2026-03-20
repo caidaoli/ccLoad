@@ -275,24 +275,24 @@ type AnthropicTester struct{}
 
 // newClaudeCLIUserID 生成 Claude CLI 用户ID
 func newClaudeCLIUserID() string {
-	// 格式示例：
-	// user_<64hex>_account__session_<uuid>
-	userBytes := make([]byte, 32)
-	if _, err := rand.Read(userBytes); err != nil {
-		return "user_0000000000000000000000000000000000000000000000000000000000000000_account__session_00000000-0000-0000-0000-000000000000"
+	// Claude Code 真实格式：metadata.user_id 是一个 JSON 字符串
+	// 例如：{"device_id":"76efe6...","account_uuid":"","session_id":"ce6c5d34-..."}
+	deviceID := make([]byte, 32)
+	if _, err := rand.Read(deviceID); err != nil {
+		return `{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"","session_id":"00000000-0000-0000-0000-000000000000"}`
 	}
 
 	uuidBytes := make([]byte, 16)
 	if _, err := rand.Read(uuidBytes); err != nil {
-		return "user_" + hex.EncodeToString(userBytes) + "_account__session_00000000-0000-0000-0000-000000000000"
+		return fmt.Sprintf(`{"device_id":"%s","account_uuid":"","session_id":"00000000-0000-0000-0000-000000000000"}`, hex.EncodeToString(deviceID))
 	}
 
 	// RFC 4122 UUID v4
 	uuidBytes[6] = (uuidBytes[6] & 0x0f) | 0x40
 	uuidBytes[8] = (uuidBytes[8] & 0x3f) | 0x80
-	u := fmt.Sprintf("%x-%x-%x-%x-%x", uuidBytes[0:4], uuidBytes[4:6], uuidBytes[6:8], uuidBytes[8:10], uuidBytes[10:16])
+	sessionID := fmt.Sprintf("%x-%x-%x-%x-%x", uuidBytes[0:4], uuidBytes[4:6], uuidBytes[6:8], uuidBytes[8:10], uuidBytes[10:16])
 
-	return "user_" + hex.EncodeToString(userBytes) + "_account__session_" + u
+	return fmt.Sprintf(`{"device_id":"%s","account_uuid":"","session_id":"%s"}`, hex.EncodeToString(deviceID), sessionID)
 }
 
 // Build 构建 Anthropic 格式的 API 请求
@@ -322,7 +322,7 @@ func (t *AnthropicTester) Build(cfg *model.Config, apiKey string, req *TestChann
 	h.Set("Content-Type", "application/json")
 	h.Set("Authorization", "Bearer "+apiKey)
 	// Claude Code CLI headers
-	h.Set("User-Agent", "claude-cli/2.0.76 (external, cli)")
+	h.Set("User-Agent", "claude-cli/2.1.76 (external, cli)")
 	h.Set("x-app", "cli")
 	h.Set("anthropic-version", "2023-06-01")
 	h.Set("anthropic-beta", "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,effort-2025-11-24")
@@ -331,7 +331,7 @@ func (t *AnthropicTester) Build(cfg *model.Config, apiKey string, req *TestChann
 	h.Set("x-stainless-arch", "arm64")
 	h.Set("x-stainless-lang", "js")
 	h.Set("x-stainless-os", "MacOS")
-	h.Set("x-stainless-package-version", "0.70.0")
+	h.Set("x-stainless-package-version", "0.74.0")
 	h.Set("x-stainless-retry-count", "0")
 	h.Set("x-stainless-runtime", "node")
 	h.Set("x-stainless-runtime-version", "v24.3.0")
