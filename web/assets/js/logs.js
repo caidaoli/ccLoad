@@ -107,6 +107,24 @@ function getStreamFlagHtml(isStreaming) {
     : '<span class="stream-flag placeholder">流</span>';
 }
 
+function getLogMobileLabels() {
+  return {
+    time: escapeHtml(t('logs.colTime')),
+    ip: escapeHtml(t('logs.colIP')),
+    apiKey: escapeHtml(t('logs.colApiKey')),
+    channel: escapeHtml(t('logs.colChannel')),
+    model: escapeHtml(t('common.model')),
+    status: escapeHtml(t('logs.statusCode')),
+    timing: escapeHtml(t('logs.colTiming')),
+    input: escapeHtml(t('logs.colInput')),
+    output: escapeHtml(t('logs.colOutput')),
+    cacheRead: escapeHtml(t('logs.colCacheRead')),
+    cacheWrite: escapeHtml(t('logs.colCacheWrite')),
+    cost: escapeHtml(t('logs.colCost')),
+    message: escapeHtml(t('logs.colMessage'))
+  };
+}
+
 // 加载默认测试内容（从系统设置）
 async function loadDefaultTestContent() {
   try {
@@ -290,6 +308,7 @@ function renderActiveRequests(activeRequests) {
   const tbody = document.getElementById('tbody');
   const firstRow = tbody.firstChild;
   const totalCols = getTableColspan();
+  const logMobileLabels = getLogMobileLabels();
 
   // 使用 DocumentFragment 批量构建，减少 DOM 操作
   const fragment = document.createDocumentFragment();
@@ -314,7 +333,7 @@ function renderActiveRequests(activeRequests) {
     // Key显示
     let keyDisplay = '<span style="color: var(--neutral-500);">-</span>';
     if (req.api_key_used) {
-      keyDisplay = `<span style="font-family: monospace; font-size: 0.85em;">${escapeHtml(req.api_key_used)}</span>`;
+      keyDisplay = `<span class="logs-api-key-text logs-mono-text">${escapeHtml(req.api_key_used)}</span>`;
     }
 
     const bytesInfo = formatBytes(req.bytes_received);
@@ -331,25 +350,27 @@ function renderActiveRequests(activeRequests) {
             <td colspan="${totalCols}">
               <span class="status-pending">进行中</span>
               <span style="margin-left: 8px;">${formatTime(req.start_time)}</span>
-              <span style="margin-left: 8px; color: var(--neutral-600);" title="${escapeHtml(req.client_ip || '')}">${escapeHtml(maskIP(req.client_ip) || '-')}</span>
+              <span class="logs-mono-text" style="margin-left: 8px;" title="${escapeHtml(req.client_ip || '')}">${escapeHtml(maskIP(req.client_ip) || '-')}</span>
               <span style="margin-left: 8px;">${escapeHtml(req.model || '-')}</span>
               <span style="margin-left: 8px;">${durationDisplay} ${streamFlag}</span>
               <span style="margin-left: 8px; color: ${infoColor};">${escapeHtml(infoDisplay)}</span>
             </td>
           `;
     } else {
-      const emptyCols = Math.max(0, totalCols - 8); // 7列固定信息 + 末尾消息列
-      const emptyCells = '<td></td>'.repeat(emptyCols);
       row.innerHTML = `
-            <td style="white-space: nowrap;">${formatTime(req.start_time)}</td>
-            <td class="config-info" style="white-space: nowrap; font-family: monospace; font-size: 0.85em; color: var(--neutral-600);" title="${escapeHtml(req.client_ip || '')}">${escapeHtml(maskIP(req.client_ip) || '-')}</td>
-            <td style="text-align: center;">${keyDisplay}</td>
-            <td class="config-info">${channelDisplay}</td>
-            <td><span class="model-tag">${escapeHtml(req.model)}</span></td>
-            <td><span class="status-pending">进行中</span></td>
-            <td style="text-align: right;">${durationDisplay} ${streamFlag}</td>
-            ${emptyCells}
-            <td><span style="color: ${infoColor};">${escapeHtml(infoDisplay)}</span></td>
+            <td class="logs-col-time" data-mobile-label="${logMobileLabels.time}" style="white-space: nowrap;">${formatTime(req.start_time)}</td>
+            <td class="logs-col-ip logs-mono-text" data-mobile-label="${logMobileLabels.ip}" style="white-space: nowrap;" title="${escapeHtml(req.client_ip || '')}">${escapeHtml(maskIP(req.client_ip) || '-')}</td>
+            <td class="logs-col-api-key" data-mobile-label="${logMobileLabels.apiKey}" style="text-align: center; white-space: nowrap;">${keyDisplay}</td>
+            <td class="logs-col-channel" data-mobile-label="${logMobileLabels.channel}">${channelDisplay}</td>
+            <td class="logs-col-model" data-mobile-label="${logMobileLabels.model}"><span class="model-tag">${escapeHtml(req.model || '-')}</span></td>
+            <td class="logs-col-status" data-mobile-label="${logMobileLabels.status}"><span class="status-pending">进行中</span></td>
+            <td class="logs-col-timing" data-mobile-label="${logMobileLabels.timing}" style="text-align: right; white-space: nowrap;">${durationDisplay} ${streamFlag}</td>
+            <td class="logs-col-input mobile-empty-cell" data-mobile-label="${logMobileLabels.input}" style="text-align: right; white-space: nowrap;"></td>
+            <td class="logs-col-output mobile-empty-cell" data-mobile-label="${logMobileLabels.output}" style="text-align: right; white-space: nowrap;"></td>
+            <td class="logs-col-cache-read mobile-empty-cell" data-mobile-label="${logMobileLabels.cacheRead}" style="text-align: right; white-space: nowrap;"></td>
+            <td class="logs-col-cache-write mobile-empty-cell" data-mobile-label="${logMobileLabels.cacheWrite}" style="text-align: right; white-space: nowrap;"></td>
+            <td class="logs-col-cost mobile-empty-cell" data-mobile-label="${logMobileLabels.cost}" style="text-align: right; white-space: nowrap;"></td>
+            <td class="logs-col-message" data-mobile-label="${logMobileLabels.message}"><span style="color: ${infoColor};">${escapeHtml(infoDisplay)}</span></td>
           `;
     }
     fragment.appendChild(row);
@@ -386,21 +407,7 @@ function renderLogsError() {
 function renderLogs(data) {
   const tbody = document.getElementById('tbody');
   const colspan = getTableColspan();
-  const logMobileLabels = {
-    time: escapeHtml(t('logs.colTime')),
-    ip: escapeHtml(t('logs.colIP')),
-    apiKey: escapeHtml(t('logs.colApiKey')),
-    channel: escapeHtml(t('logs.colChannel')),
-    model: escapeHtml(t('common.model')),
-    status: escapeHtml(t('logs.statusCode')),
-    timing: escapeHtml(t('logs.colTiming')),
-    input: escapeHtml(t('logs.colInput')),
-    output: escapeHtml(t('logs.colOutput')),
-    cacheRead: escapeHtml(t('logs.colCacheRead')),
-    cacheWrite: escapeHtml(t('logs.colCacheWrite')),
-    cost: escapeHtml(t('logs.colCost')),
-    message: escapeHtml(t('logs.colMessage'))
-  };
+  const logMobileLabels = getLogMobileLabels();
 
   if (data.length === 0) {
     const emptyRow = TemplateEngine.render('tpl-log-empty', { colspan });
@@ -489,9 +496,9 @@ function renderLogs(data) {
         buttons += `<button class="test-key-btn" style="color: var(--error-600);" data-action="delete" data-channel-id="${entry.channel_id}" data-channel-name="${escapeHtml(entry.channel_name || '').replace(/"/g, '&quot;')}" data-api-key="${escapeHtml(entry.api_key_used).replace(/"/g, '&quot;')}" data-api-key-hash="${keyHashAttr}" title="删除此 API Key">${deleteBtnIcon}</button>`;
       }
 
-      apiKeyDisplay = `<div style="display: flex; align-items: center; gap: 4px; justify-content: center;"><code style="font-size: 0.9em; color: var(--neutral-600);">${escapeHtml(entry.api_key_used)}</code><span style="display: inline-flex; align-items: center; gap: 1px;">${buttons}</span></div>`;
+      apiKeyDisplay = `<div class="logs-api-key-group"><code class="logs-api-key-text logs-mono-text">${escapeHtml(entry.api_key_used)}</code><span class="logs-api-key-actions">${buttons}</span></div>`;
     } else if (entry.api_key_used) {
-      apiKeyDisplay = `<code style="font-size: 0.9em; color: var(--neutral-600);">${escapeHtml(entry.api_key_used)}</code>`;
+      apiKeyDisplay = `<code class="logs-api-key-text logs-mono-text">${escapeHtml(entry.api_key_used)}</code>`;
     } else {
       apiKeyDisplay = '<span style="color: var(--neutral-500);">-</span>';
     }
@@ -544,7 +551,7 @@ function renderLogs(data) {
     // === 直接拼接行 HTML ===
     htmlParts[i] = `<tr class="mobile-card-row logs-table-row">
           <td class="logs-col-time" data-mobile-label="${logMobileLabels.time}" style="white-space: nowrap;">${formatTime(entry.time)}</td>
-          <td class="logs-col-ip" data-mobile-label="${logMobileLabels.ip}" style="white-space: nowrap; font-family: monospace; font-size: 0.85em; color: var(--neutral-600);">${clientIPDisplay}</td>
+          <td class="logs-col-ip logs-mono-text" data-mobile-label="${logMobileLabels.ip}" style="white-space: nowrap;">${clientIPDisplay}</td>
           <td class="logs-col-api-key" data-mobile-label="${logMobileLabels.apiKey}" style="text-align: center; white-space: nowrap;">${apiKeyDisplay}</td>
           <td class="logs-col-channel" data-mobile-label="${logMobileLabels.channel}">${configDisplay}</td>
           <td class="logs-col-model" data-mobile-label="${logMobileLabels.model}">${modelDisplay}</td>

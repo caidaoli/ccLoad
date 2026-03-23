@@ -2330,11 +2330,11 @@ body {
 }
 
 .settings-group-nav-container {
-  justify-content: flex-start;
+  justify-content: flex-end;
 }
 
 .settings-group-nav {
-  width: 100%;
+  width: auto;
 }
 
 .table-col-select {

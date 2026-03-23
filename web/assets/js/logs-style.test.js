@@ -6,6 +6,7 @@ const vm = require('node:vm');
 
 const html = fs.readFileSync(path.join(__dirname, '..', '..', 'logs.html'), 'utf8');
 const css = fs.readFileSync(path.join(__dirname, '..', 'css', 'logs.css'), 'utf8');
+const logsSource = fs.readFileSync(path.join(__dirname, 'logs.js'), 'utf8');
 const pageFiltersSource = fs.readFileSync(path.join(__dirname, 'page-filters.js'), 'utf8');
 
 function renderLogsFilters() {
@@ -147,4 +148,41 @@ test('日志页筛选输入控件允许在 flex 布局中收缩', () => {
   const styleBlock = controlMatch[0];
   assert.match(styleBlock, /min-width:\s*0/);
   assert.match(styleBlock, /width:\s*100%/);
+});
+
+test('日志页为 IP 和 API Key 提供共享等宽文本样式类', () => {
+  const monoMatch = css.match(/\.logs-mono-text\s*\{[^}]+\}/);
+  assert.ok(monoMatch, '缺少 .logs-mono-text 样式');
+
+  const styleBlock = monoMatch[0];
+  assert.match(styleBlock, /font-family:\s*var\(--font-family-mono\)/);
+  assert.match(styleBlock, /font-size:\s*0\.85em/);
+  assert.match(styleBlock, /color:\s*var\(--neutral-600\)/);
+});
+
+test('进行中请求复用日志表格列类名和共享字体类', () => {
+  const activeMatch = logsSource.match(/function renderActiveRequests\(activeRequests\)\s*\{[\s\S]*?\n\}/);
+  assert.ok(activeMatch, '缺少 renderActiveRequests');
+
+  const activeSource = activeMatch[0];
+  assert.match(activeSource, /class="logs-col-time"/);
+  assert.match(activeSource, /class="logs-col-ip logs-mono-text"/);
+  assert.match(activeSource, /class="logs-col-api-key"/);
+  assert.match(activeSource, /class="logs-col-channel"/);
+  assert.match(activeSource, /class="logs-col-model"/);
+  assert.match(activeSource, /class="logs-col-status"/);
+  assert.match(activeSource, /class="logs-col-timing"/);
+  assert.match(activeSource, /class="logs-col-message"/);
+  assert.match(activeSource, /data-mobile-label="\$\{logMobileLabels\.ip\}"/);
+  assert.doesNotMatch(activeSource, /font-family:\s*monospace/);
+});
+
+test('普通日志渲染也使用共享等宽字体类而不是内联 monospace', () => {
+  const renderMatch = logsSource.match(/function renderLogs\(data\)\s*\{[\s\S]*?\n\}/);
+  assert.ok(renderMatch, '缺少 renderLogs');
+
+  const renderSource = renderMatch[0];
+  assert.match(renderSource, /class="logs-col-ip logs-mono-text"/);
+  assert.match(renderSource, /class="logs-api-key-text logs-mono-text"/);
+  assert.doesNotMatch(renderSource, /font-family:\s*monospace/);
 });

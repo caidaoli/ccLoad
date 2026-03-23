@@ -145,6 +145,25 @@
       visibility: hidden;
     }
 
+    .logs-mono-text {
+      font-family: var(--font-family-mono);
+      font-size: 0.85em;
+      color: var(--neutral-600);
+    }
+
+    .logs-api-key-group {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      justify-content: center;
+    }
+
+    .logs-api-key-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 1px;
+    }
+
     .logs-table th,
     .logs-table td {
       padding: var(--space-2) var(--space-1);

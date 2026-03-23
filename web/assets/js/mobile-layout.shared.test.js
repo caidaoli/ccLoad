@@ -65,7 +65,8 @@ test('共享样式为弹窗 inline-table 提供手机卡片骨架', () => {
 
 test('logs 页为手机卡片布局补齐类名、标签和重排样式', () => {
   assert.match(logsHtml, /class="modern-table logs-table mobile-card-table"/);
-  assert.match(logsScript, /const logMobileLabels = \{/);
+  assert.match(logsScript, /function getLogMobileLabels\(\)\s*\{/);
+  assert.match(logsScript, /const logMobileLabels = getLogMobileLabels\(\);/);
   assert.match(logsScript, /class="mobile-card-row logs-table-row"/);
   assert.match(logsScript, /class="logs-col-time"[^`]*data-mobile-label="\$\{logMobileLabels\.time\}"/);
   assert.match(logsScript, /class="logs-col-message[^"]*"[^`]*data-mobile-label="\$\{logMobileLabels\.message\}"/);
@@ -158,6 +159,9 @@ test('settings 页为手机卡片布局补齐模板标签和分组样式', () =>
   assert.match(settingsScript, /const hasMultipleGroups = Array\.isArray\(groups\) && groups\.length > 1;/);
   assert.match(settingsScript, /navSection\.hidden = !hasMultipleGroups;/);
   assert.match(sharedCss, /\.settings-group-nav-section\[hidden\]\s*\{[\s\S]*?display:\s*none\s*!important;/);
+  assert.match(sharedCss, /\.settings-group-nav-container\s*\{[^}]*justify-content:\s*flex-end;/);
+  assert.match(sharedCss, /\.settings-group-nav\s*\{[^}]*width:\s*auto;/);
+  assert.doesNotMatch(sharedCss, /\.settings-group-nav\s*\{[^}]*width:\s*100%;/);
   assert.match(sharedCss, /\.settings-table\s+\.setting-data-row\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto;/);
   assert.match(sharedCss, /\.settings-table\.mobile-card-table\s+td\.setting-col-description::before,\s*[\r\n\s]*\.settings-table\.mobile-card-table\s+td\.setting-col-value::before\s*\{[\s\S]*?display:\s*inline(?:-block|-flex)?;[\s\S]*?margin:\s*0\s+8px\s+0\s+0;/);
   assert.match(sharedCss, /\.settings-table\.mobile-card-table\s+td\.setting-col-value\s*\{[\s\S]*?display:\s*flex;[\s\S]*?align-items:\s*center;[\s\S]*?flex-wrap:\s*wrap;/);
