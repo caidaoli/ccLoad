@@ -241,6 +241,13 @@ func TestHandleGetChannel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建测试渠道失败: %v", err)
 	}
+	err = store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test-key-0", KeyStrategy: model.KeyStrategyRoundRobin},
+		{ChannelID: created.ID, KeyIndex: 1, APIKey: "sk-test-key-1", KeyStrategy: model.KeyStrategyRoundRobin},
+	})
+	if err != nil {
+		t.Fatalf("创建测试 API Keys 失败: %v", err)
+	}
 
 	tests := []struct {
 		name           string
@@ -282,34 +289,28 @@ func TestHandleGetChannel(t *testing.T) {
 			}
 
 			if tt.checkSuccess {
-				var resp struct {
-					Success bool          `json:"success"`
-					Data    *model.Config `json:"data"`
-				}
-				mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
-
-				if !resp.Success {
+				rawResp := mustParseAPIResponse[json.RawMessage](t, w.Body.Bytes())
+				if !rawResp.Success {
 					t.Error("期望success=true")
 				}
 
-				if resp.Data.ID != created.ID {
-					t.Errorf("期望ID=%d，实际%d", created.ID, resp.Data.ID)
-				}
-
-				// 治本：渠道详情不应包含明文Key或策略派生字段（Keys 只能通过 /keys 端点获取）
-				rawResp := mustParseAPIResponse[json.RawMessage](t, w.Body.Bytes())
-				var leakCheck struct {
+				var detail struct {
+					ID          int64   `json:"id"`
 					APIKey      *string `json:"api_key"`
-					KeyStrategy *string `json:"key_strategy"`
+					KeyStrategy string  `json:"key_strategy"`
 				}
-				if err := json.Unmarshal(rawResp.Data, &leakCheck); err != nil {
+				if err := json.Unmarshal(rawResp.Data, &detail); err != nil {
 					t.Fatalf("unmarshal data failed: %v", err)
 				}
-				if leakCheck.APIKey != nil {
+
+				if detail.ID != created.ID {
+					t.Errorf("期望ID=%d，实际%d", created.ID, detail.ID)
+				}
+				if detail.APIKey != nil {
 					t.Fatalf("渠道详情不应返回 api_key 字段")
 				}
-				if leakCheck.KeyStrategy != nil {
-					t.Fatalf("渠道详情不应返回 key_strategy 字段")
+				if detail.KeyStrategy != model.KeyStrategyRoundRobin {
+					t.Fatalf("期望 key_strategy=%q，实际=%q", model.KeyStrategyRoundRobin, detail.KeyStrategy)
 				}
 			}
 		})

@@ -31,6 +31,13 @@ func (s *Server) HandleChannels(c *gin.Context) {
 	}
 }
 
+func channelKeyStrategy(apiKeys []*model.APIKey) string {
+	if len(apiKeys) > 0 && apiKeys[0].KeyStrategy != "" {
+		return apiKeys[0].KeyStrategy
+	}
+	return model.KeyStrategySequential
+}
+
 // 获取渠道列表
 // 使用批量查询优化N+1问题
 func (s *Server) handleListChannels(c *gin.Context) {
@@ -112,12 +119,8 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		// 从预加载的map中获取API Keys（O(1)查找）
 		apiKeys := allAPIKeys[cfg.ID]
 
-		// [INFO] 修复 (2025-10-11): 填充key_strategy字段（从第一个Key获取，所有Key的策略应该相同）
-		if len(apiKeys) > 0 && apiKeys[0].KeyStrategy != "" {
-			oc.KeyStrategy = apiKeys[0].KeyStrategy
-		} else {
-			oc.KeyStrategy = model.KeyStrategySequential // 默认值
-		}
+		// Key 策略属于渠道行为，详情和列表都必须返回同一语义。
+		oc.KeyStrategy = channelKeyStrategy(apiKeys)
 
 		keyCooldowns := make([]KeyCooldownInfo, 0, len(apiKeys))
 
@@ -247,8 +250,18 @@ func (s *Server) handleGetChannel(c *gin.Context, id int64) {
 			cfg.ModelEntries[i].RedirectModel = cfg.ModelEntries[i].Model
 		}
 	}
-	// 渠道详情仅返回配置本身；API Keys 通过 /admin/channels/:id/keys 单独获取（避免无意泄漏明文Key）。
-	RespondJSON(c, http.StatusOK, cfg)
+
+	apiKeys, err := s.getAPIKeys(c.Request.Context(), id)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	// 渠道详情返回配置和策略，但仍不返回明文 Key；API Keys 继续走 /keys 端点。
+	RespondJSON(c, http.StatusOK, ChannelWithCooldown{
+		Config:      cfg,
+		KeyStrategy: channelKeyStrategy(apiKeys),
+	})
 }
 
 // handleGetChannelKeys 获取渠道的所有 API Keys
