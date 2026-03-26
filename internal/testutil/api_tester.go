@@ -45,6 +45,47 @@ func getSliceItem[T any](slice []any, index int) (T, bool) {
 	return typed, ok
 }
 
+func extractStructuredAPIError(apiResp map[string]any) (string, bool) {
+	if errInfo, ok := getTypedValue[map[string]any](apiResp, "error"); ok {
+		if msg, ok := getTypedValue[string](errInfo, "message"); ok && strings.TrimSpace(msg) != "" {
+			return msg, true
+		}
+		if typeStr, ok := getTypedValue[string](errInfo, "type"); ok && strings.TrimSpace(typeStr) != "" {
+			return typeStr, true
+		}
+		if code, ok := getTypedValue[string](errInfo, "code"); ok && strings.TrimSpace(code) != "" {
+			return code, true
+		}
+		return "上游返回结构化错误", true
+	}
+
+	objectType, hasObjectType := getTypedValue[string](apiResp, "object")
+	status, hasStatus := getTypedValue[string](apiResp, "status")
+	if hasObjectType && objectType == "response" && hasStatus {
+		normalizedStatus := strings.ToLower(strings.TrimSpace(status))
+		if normalizedStatus != "" && normalizedStatus != "completed" {
+			if details, ok := getTypedValue[map[string]any](apiResp, "incomplete_details"); ok {
+				if reason, ok := getTypedValue[string](details, "reason"); ok && strings.TrimSpace(reason) != "" {
+					return "响应未完成: " + reason, true
+				}
+			}
+			return "响应状态为 " + status, true
+		}
+	}
+
+	return "", false
+}
+
+func finalizeParsedAPIResponse(out map[string]any, apiResp map[string]any) map[string]any {
+	out["api_response"] = apiResp
+	if errorMsg, ok := extractStructuredAPIError(apiResp); ok {
+		out["success"] = false
+		out["error"] = errorMsg
+		out["api_error"] = apiResp
+	}
+	return out
+}
+
 func parseAPIResponse(respBody []byte, extractText func(map[string]any) (string, bool), usageKey string) map[string]any {
 	out := map[string]any{}
 	var apiResp map[string]any
@@ -59,8 +100,7 @@ func parseAPIResponse(respBody []byte, extractText func(map[string]any) (string,
 				out["usage"] = usage
 			}
 		}
-		out["api_response"] = apiResp
-		return out
+		return finalizeParsedAPIResponse(out, apiResp)
 	}
 	out["raw_response"] = string(respBody)
 	return out
@@ -195,8 +235,7 @@ func (t *OpenAITester) Parse(_ int, respBody []byte) map[string]any {
 			out["usage"] = usage
 		}
 
-		out["api_response"] = apiResp
-		return out
+		return finalizeParsedAPIResponse(out, apiResp)
 	}
 	out["raw_response"] = string(respBody)
 	return out
@@ -382,8 +421,7 @@ func (t *AnthropicTester) Parse(_ int, respBody []byte) map[string]any {
 			out["usage"] = usage
 		}
 
-		out["api_response"] = apiResp
-		return out
+		return finalizeParsedAPIResponse(out, apiResp)
 	}
 	out["raw_response"] = string(respBody)
 	return out

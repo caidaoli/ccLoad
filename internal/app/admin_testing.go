@@ -311,7 +311,9 @@ func (s *Server) testChannelAPIWithURL(
 				)
 			}
 
-			result["message"] = "API测试成功"
+			if success, ok := result["success"].(bool); !ok || success {
+				result["message"] = "API测试成功"
+			}
 			return result
 		}
 
