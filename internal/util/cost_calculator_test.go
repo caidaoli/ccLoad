@@ -318,6 +318,41 @@ func TestCalculateCost_MimoModels(t *testing.T) {
 	}
 }
 
+func TestCalculateCost_GLMModelsFromUserTable(t *testing.T) {
+	testCases := []struct {
+		model          string
+		inputPrice     float64
+		outputPrice    float64
+		cacheReadPrice float64
+	}{
+		{"glm-5", 1.00, 3.20, 0.20},
+		{"glm-5.1", 1.00, 3.20, 0.20},
+		{"glm-5-turbo", 1.20, 4.00, 0.24},
+		{"glm-5-code", 1.20, 5.00, 0.30},
+		{"glm-4.7", 0.60, 2.20, 0.11},
+		{"glm-4.7-flashx", 0.07, 0.40, 0.01},
+		{"glm-4.6", 0.60, 2.20, 0.11},
+		{"glm-4.5", 0.60, 2.20, 0.11},
+		{"glm-4.5-x", 2.20, 8.90, 0.45},
+		{"glm-4.5-air", 0.20, 1.10, 0.03},
+		{"glm-4.5-airx", 1.10, 4.50, 0.22},
+		{"glm-4-32b-0414-128k", 0.10, 0.10, 0.00},
+	}
+
+	for _, tc := range testCases {
+		fullCost := CalculateCostDetailed(tc.model, 1_000_000, 1_000_000, 0, 0, 0)
+		expectedFullCost := tc.inputPrice + tc.outputPrice
+		if !floatEquals(fullCost, expectedFullCost, 0.000001) {
+			t.Errorf("%s 输入+补全成本 = %.6f, 期望 %.6f", tc.model, fullCost, expectedFullCost)
+		}
+
+		cacheCost := CalculateCostDetailed(tc.model, 0, 0, 1_000_000, 0, 0)
+		if !floatEquals(cacheCost, tc.cacheReadPrice, 0.000001) {
+			t.Errorf("%s 缓存读取成本 = %.6f, 期望 %.6f", tc.model, cacheCost, tc.cacheReadPrice)
+		}
+	}
+}
+
 func TestCalculateCost_QwenModels(t *testing.T) {
 	// qwen3-32b: Input $0.08/1M, Output $0.24/1M
 	cost := CalculateCostDetailed("qwen3-32b", 1_000_000, 1_000_000, 0, 0, 0)

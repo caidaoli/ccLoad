@@ -11,8 +11,10 @@ import (
 
 // ModelPricing AI模型定价（单位：美元/百万tokens）
 type ModelPricing struct {
-	InputPrice  float64 // 基础输入token价格（$/1M tokens, ≤200k context for Gemini）
-	OutputPrice float64 // 输出token价格（$/1M tokens, ≤200k context for Gemini）
+	InputPrice        float64 // 基础输入token价格（$/1M tokens, ≤200k context for Gemini）
+	OutputPrice       float64 // 输出token价格（$/1M tokens, ≤200k context for Gemini）
+	CacheReadPrice    float64 // 显式缓存读取价格（$/1M tokens）
+	HasCacheReadPrice bool    // 是否使用显式缓存读取价格；false 时按模型系列倍率回退计算
 
 	// 长上下文定价（>200k tokens，Claude/Gemini）
 	// 如果为0，表示无分段定价，使用InputPrice/OutputPrice
@@ -159,23 +161,26 @@ var basePricing = map[string]ModelPricing{
 	"gemini-1.5-flash":      {InputPrice: 0.20, OutputPrice: 0.60},
 
 	// ========== 智谱 GLM 模型 ==========
-	"glm-5":               {InputPrice: 1.00, OutputPrice: 3.20},
-	"glm-5-code":          {InputPrice: 1.20, OutputPrice: 5.00},
-	"glm-4.7":             {InputPrice: 0.60, OutputPrice: 2.20},
-	"glm-4.7-flashx":      {InputPrice: 0.07, OutputPrice: 0.40},
+	// 来源：用户提供的价格表截图（2026-03）
+	"glm-5":               {InputPrice: 1.00, OutputPrice: 3.20, CacheReadPrice: 0.20, HasCacheReadPrice: true},
+	"glm-5.1":             {InputPrice: 1.00, OutputPrice: 3.20, CacheReadPrice: 0.20, HasCacheReadPrice: true},
+	"glm-5-turbo":         {InputPrice: 1.20, OutputPrice: 4.00, CacheReadPrice: 0.24, HasCacheReadPrice: true},
+	"glm-5-code":          {InputPrice: 1.20, OutputPrice: 5.00, CacheReadPrice: 0.30, HasCacheReadPrice: true},
+	"glm-4.7":             {InputPrice: 0.60, OutputPrice: 2.20, CacheReadPrice: 0.11, HasCacheReadPrice: true},
+	"glm-4.7-flashx":      {InputPrice: 0.07, OutputPrice: 0.40, CacheReadPrice: 0.01, HasCacheReadPrice: true},
 	"glm-4.7-flash":       {InputPrice: 0.00, OutputPrice: 0.00}, // 免费
-	"glm-4.6":             {InputPrice: 0.60, OutputPrice: 2.20},
+	"glm-4.6":             {InputPrice: 0.60, OutputPrice: 2.20, CacheReadPrice: 0.11, HasCacheReadPrice: true},
 	"glm-4.6v":            {InputPrice: 0.30, OutputPrice: 0.90},
 	"glm-ocr":             {InputPrice: 0.03, OutputPrice: 0.03},
 	"glm-4.6v-flashx":     {InputPrice: 0.04, OutputPrice: 0.40},
 	"glm-4.6v-flash":      {InputPrice: 0.00, OutputPrice: 0.00}, // 免费
-	"glm-4.5":             {InputPrice: 0.60, OutputPrice: 2.20},
+	"glm-4.5":             {InputPrice: 0.60, OutputPrice: 2.20, CacheReadPrice: 0.11, HasCacheReadPrice: true},
 	"glm-4.5v":            {InputPrice: 0.60, OutputPrice: 1.80},
-	"glm-4.5-x":           {InputPrice: 2.20, OutputPrice: 8.90},
-	"glm-4.5-air":         {InputPrice: 0.20, OutputPrice: 1.10},
-	"glm-4.5-airx":        {InputPrice: 1.10, OutputPrice: 4.50},
+	"glm-4.5-x":           {InputPrice: 2.20, OutputPrice: 8.90, CacheReadPrice: 0.45, HasCacheReadPrice: true},
+	"glm-4.5-air":         {InputPrice: 0.20, OutputPrice: 1.10, CacheReadPrice: 0.03, HasCacheReadPrice: true},
+	"glm-4.5-airx":        {InputPrice: 1.10, OutputPrice: 4.50, CacheReadPrice: 0.22, HasCacheReadPrice: true},
 	"glm-4.5-flash":       {InputPrice: 0.00, OutputPrice: 0.00}, // 免费
-	"glm-4-32b-0414-128k": {InputPrice: 0.10, OutputPrice: 0.10},
+	"glm-4-32b-0414-128k": {InputPrice: 0.10, OutputPrice: 0.10, CacheReadPrice: 0.00, HasCacheReadPrice: true},
 
 	// ========== Mimo 模型 ==========
 	"mimo-v2-flash": {InputPrice: 0.10, OutputPrice: 0.30},
@@ -557,14 +562,17 @@ func CalculateCostDetailed(model string, inputTokens, outputTokens, cacheReadTok
 
 	// 3. 缓存读取成本（OpenAI按模型系列有不同折扣率）
 	if cacheReadTokens > 0 {
-		cacheMultiplier := cacheReadMultiplierClaude // Claude全系/Gemini: 10%折扣
-		if isOpenAIModel(model) {
-			// OpenAI缓存折扣率按模型系列区分（2025-12官方定价）
-			cacheMultiplier = getOpenAICacheMultiplier(model)
-		} else if isOpusModel(model) {
-			cacheMultiplier = cacheReadMultiplierOpus // Opus: 10%折扣
+		cacheReadPrice := pricing.CacheReadPrice
+		if !pricing.HasCacheReadPrice {
+			cacheMultiplier := cacheReadMultiplierClaude // Claude全系/Gemini: 10%折扣
+			if isOpenAIModel(model) {
+				// OpenAI缓存折扣率按模型系列区分（2025-12官方定价）
+				cacheMultiplier = getOpenAICacheMultiplier(model)
+			} else if isOpusModel(model) {
+				cacheMultiplier = cacheReadMultiplierOpus // Opus: 10%折扣
+			}
+			cacheReadPrice = inputPricePerM * cacheMultiplier
 		}
-		cacheReadPrice := inputPricePerM * cacheMultiplier
 		cost += float64(cacheReadTokens) * cacheReadPrice / 1_000_000
 	}
 
