@@ -649,7 +649,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'logs.colApiKey': 'API Key',
   'logs.colChannel': '渠道',
   'logs.colTiming': '首字/耗时(秒)',
-  'logs.colSpeed': '速度',
+  'logs.colSpeed': '速度(tok/s)',
   'logs.colInput': '输入',
   'logs.colOutput': '输出',
   'logs.colCacheRead': '缓存读',

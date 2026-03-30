@@ -37,6 +37,14 @@ test('stats 页表头和模板新增平均速度列并补齐文案', () => {
   assert.match(enLocale, /'stats\.avgSpeed': 'Avg Speed \(tok\/s\)'/);
 });
 
+test('stats 页平均速度单元格只显示数值不重复单位', () => {
+  assert.doesNotMatch(
+    script,
+    /avgSpeed[^]*tok\/s/,
+    '平均速度列单元格不应重复拼接 tok/s'
+  );
+});
+
 test('stats 页平均速度公式按成功请求数折算总生成时长', () => {
   const calculateAverageSpeed = vm.runInNewContext(
     `(${extractFunction(script, 'calculateAverageSpeed')})`,

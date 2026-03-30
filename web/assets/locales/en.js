@@ -649,7 +649,7 @@ window.I18N_LOCALES['en'] = {
   'logs.colApiKey': 'API Key',
   'logs.colChannel': 'Channel',
   'logs.colTiming': 'TTFT/Duration(s)',
-  'logs.colSpeed': 'Speed',
+  'logs.colSpeed': 'Speed (tok/s)',
   'logs.colInput': 'Input',
   'logs.colOutput': 'Output',
   'logs.colCacheRead': 'Cache Read',

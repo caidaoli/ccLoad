@@ -293,7 +293,7 @@
         const avgSpeed = calculateAverageSpeed(entry);
         const avgSpeedText = avgSpeed === null
           ? ''
-          : `<span class="stats-value-dynamic" style="--stats-accent:var(--neutral-700);">${avgSpeed >= 100 ? avgSpeed.toFixed(0) : avgSpeed.toFixed(1)} tok/s</span>`;
+          : `<span class="stats-value-dynamic" style="--stats-accent:var(--neutral-700);">${avgSpeed >= 100 ? avgSpeed.toFixed(0) : avgSpeed.toFixed(1)}</span>`;
 
         // 格式化Token数据
         const inputTokensText = entry.total_input_tokens ? formatNumber(entry.total_input_tokens) : '';
