@@ -3007,6 +3007,7 @@ a.model-tag.model-link:hover {
   text-align: center;
 }
 
+.stats-table .stats-col-speed,
 .stats-table .stats-col-rpm,
 .stats-table .stats-col-input,
 .stats-table .stats-col-output,
@@ -4609,8 +4610,13 @@ body.trend-page .chart-info {
     order: 12;
   }
 
-  .stats-table .stats-col-rpm {
+  .stats-table .stats-col-speed {
     order: 13;
+    grid-column: 1 / -1;
+  }
+
+  .stats-table .stats-col-rpm {
+    order: 14;
   }
 
   .stats-table .stats-col-input {
@@ -4740,6 +4746,7 @@ body.trend-page .chart-info {
   .stats-table .stats-col-success,
   .stats-table .stats-col-error,
   .stats-table .stats-col-timing,
+  .stats-table .stats-col-speed,
   .stats-table .stats-col-rpm,
   .stats-table .stats-col-input,
   .stats-table .stats-col-output,
@@ -4756,6 +4763,7 @@ body.trend-page .chart-info {
   .stats-table .stats-col-success::before,
   .stats-table .stats-col-error::before,
   .stats-table .stats-col-timing::before,
+  .stats-table .stats-col-speed::before,
   .stats-table .stats-col-rpm::before,
   .stats-table .stats-col-input::before,
   .stats-table .stats-col-output::before,

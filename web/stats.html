@@ -96,6 +96,10 @@
                       <span data-i18n="stats.avgFirstByte">平均首字/耗时(秒)</span>
                       <span class="sort-indicator" id="sort-avg_first_byte_time"></span>
                     </th>
+                    <th class="sortable" data-column="avg_speed">
+                      <span data-i18n="stats.avgSpeed">平均速度(tok/s)</span>
+                      <span class="sort-indicator" id="sort-avg_speed"></span>
+                    </th>
                     <th class="sortable" data-column="rpm" data-i18n-title="stats.rpmTitle" title="每分钟请求数(峰值/平均/最近)">
                       <span data-i18n="stats.rpm">RPM(峰/均/近)</span>
                       <span class="sort-indicator" id="sort-rpm"></span>
@@ -225,6 +229,7 @@
       <td class="stats-col-success" data-mobile-label="{{mobileLabelSuccess}}">{{{successDisplay}}}</td>
       <td class="stats-col-error" data-mobile-label="{{mobileLabelError}}"><span class="error-count">{{errorCount}}</span></td>
       <td class="stats-col-timing {{timingCellClass}}" data-mobile-label="{{mobileLabelTiming}}">{{{avgFirstByteTime}}}</td>
+      <td class="stats-col-speed {{speedCellClass}}" data-mobile-label="{{mobileLabelSpeed}}">{{{avgSpeed}}}</td>
       <td class="stats-col-rpm" data-mobile-label="{{mobileLabelRpm}}">{{{rpm}}}</td>
       <td class="stats-col-input {{inputCellClass}}" data-mobile-label="{{mobileLabelInput}}">{{{inputTokens}}}</td>
       <td class="stats-col-output {{outputCellClass}}" data-mobile-label="{{mobileLabelOutput}}">{{{outputTokens}}}</td>
@@ -241,6 +246,7 @@
       <td class="stats-col-success" data-mobile-label="{{mobileLabelSuccess}}">{{{successDisplay}}}</td>
       <td class="stats-col-error" data-mobile-label="{{mobileLabelError}}"><span class="error-count">{{errorCount}}</span></td>
       <td class="stats-col-timing mobile-empty-cell" data-mobile-label="{{mobileLabelTiming}}"></td>
+      <td class="stats-col-speed mobile-empty-cell" data-mobile-label="{{mobileLabelSpeed}}"></td>
       <td class="stats-col-rpm" data-mobile-label="{{mobileLabelRpm}}">{{{rpm}}}</td>
       <td class="stats-col-input" data-mobile-label="{{mobileLabelInput}}">{{inputTokens}}</td>
       <td class="stats-col-output" data-mobile-label="{{mobileLabelOutput}}">{{outputTokens}}</td>

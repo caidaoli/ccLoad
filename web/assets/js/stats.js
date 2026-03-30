@@ -158,6 +158,10 @@
             valueA = a.avg_duration_seconds || a.avg_first_byte_time_seconds || 0;
             valueB = b.avg_duration_seconds || b.avg_first_byte_time_seconds || 0;
             break;
+          case 'avg_speed':
+            valueA = calculateAverageSpeed(a) || 0;
+            valueB = calculateAverageSpeed(b) || 0;
+            break;
           case 'total_input_tokens':
             valueA = a.total_input_tokens || 0;
             valueB = b.total_input_tokens || 0;
@@ -191,6 +195,27 @@
 
         return isAsc ? result : -result;
       });
+    }
+
+    function calculateAverageSpeed(entry) {
+      const successCount = Number(entry?.success);
+      const outputTokens = Number(entry?.total_output_tokens);
+      const avgDuration = Number(entry?.avg_duration_seconds);
+      if (!Number.isFinite(successCount) || successCount <= 0 || !Number.isFinite(outputTokens) || outputTokens <= 0 || !Number.isFinite(avgDuration) || avgDuration <= 0) {
+        return null;
+      }
+
+      let generationDuration = avgDuration;
+      const avgFirstByte = Number(entry?.avg_first_byte_time_seconds);
+      if (Number.isFinite(avgFirstByte) && avgFirstByte > 0) {
+        generationDuration = avgDuration - avgFirstByte;
+      }
+
+      if (!Number.isFinite(generationDuration) || generationDuration <= 0) {
+        return null;
+      }
+
+      return outputTokens / (successCount * generationDuration);
     }
 
     function renderStatsTable() {
@@ -265,6 +290,11 @@
           avgTimeText = `<span class="stats-value-dynamic" style="--stats-accent:${durationColor};">${avgFirstByteTime.toFixed(2)}</span>`;
         }
 
+        const avgSpeed = calculateAverageSpeed(entry);
+        const avgSpeedText = avgSpeed === null
+          ? ''
+          : `<span class="stats-value-dynamic" style="--stats-accent:var(--neutral-700);">${avgSpeed >= 100 ? avgSpeed.toFixed(0) : avgSpeed.toFixed(1)} tok/s</span>`;
+
         // 格式化Token数据
         const inputTokensText = entry.total_input_tokens ? formatNumber(entry.total_input_tokens) : '';
         const outputTokensText = entry.total_output_tokens ? formatNumber(entry.total_output_tokens) : '';
@@ -275,6 +305,7 @@
         const costText = entry.total_cost ?
           `<span class="stats-value-warning">${formatCost(entry.total_cost)}</span>` : '';
         const timingCellClass = avgTimeText ? '' : 'mobile-empty-cell';
+        const speedCellClass = avgSpeedText ? '' : 'mobile-empty-cell';
         const inputCellClass = inputTokensText ? '' : 'mobile-empty-cell';
         const outputCellClass = outputTokensText ? '' : 'mobile-empty-cell';
         const cacheReadCellClass = cacheReadTokensText ? '' : 'mobile-empty-cell';
@@ -295,6 +326,8 @@
           rpm: rpmHtml,
           avgFirstByteTime: avgTimeText,
           timingCellClass: timingCellClass,
+          avgSpeed: avgSpeedText,
+          speedCellClass: speedCellClass,
           inputTokens: inputTokensText,
           inputCellClass: inputCellClass,
           outputTokens: outputTokensText,
@@ -310,6 +343,7 @@
           mobileLabelSuccess: t('common.success'),
           mobileLabelError: t('common.failed'),
           mobileLabelTiming: t('stats.avgFirstByte'),
+          mobileLabelSpeed: t('stats.avgSpeed'),
           mobileLabelRpm: t('stats.rpm'),
           mobileLabelInput: t('stats.inputTokens'),
           mobileLabelOutput: t('stats.outputTokens'),
@@ -357,6 +391,7 @@
         mobileLabelSuccess: t('common.success'),
         mobileLabelError: t('common.failed'),
         mobileLabelTiming: t('stats.avgFirstByte'),
+        mobileLabelSpeed: t('stats.avgSpeed'),
         mobileLabelRpm: t('stats.rpm'),
         mobileLabelInput: t('stats.inputTokens'),
         mobileLabelOutput: t('stats.outputTokens'),

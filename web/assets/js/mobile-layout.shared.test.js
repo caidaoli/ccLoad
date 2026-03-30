@@ -98,9 +98,11 @@ test('stats 页为手机卡片布局补齐模板标签和重排样式', () => {
   assert.match(statsHtml, /class="modern-table stats-table mobile-card-table"/);
   assert.match(statsHtml, /<template id="tpl-stats-row">[\s\S]*?class="mobile-card-row stats-data-row"/);
   assert.match(statsHtml, /class="stats-col-channel"[^>]*data-mobile-label="\{\{mobileLabelChannel\}\}"/);
+  assert.match(statsHtml, /class="stats-col-speed [^"]*" data-mobile-label="\{\{mobileLabelSpeed\}\}"/);
   assert.match(statsHtml, /class="stats-col-cost"[^>]*data-mobile-label="\{\{mobileLabelCost\}\}"/);
   assert.match(statsHtml, /<template id="tpl-stats-total">[\s\S]*?class="mobile-card-row stats-total-row"/);
   assert.match(statsScript, /mobileLabelChannel:\s*t\('stats\.channelName'\)/);
+  assert.match(statsScript, /mobileLabelSpeed:\s*t\('stats\.avgSpeed'\)/);
   assert.match(statsScript, /mobileLabelCost:\s*t\('stats\.costUsd'\)/);
   assert.match(sharedCss, /\.stats-table\s+\.stats-col-channel,\s*[\r\n\s]*\.stats-table\s+\.stats-col-model,\s*[\r\n\s]*\.stats-table\s+\.stats-col-total-label\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1;/);
 });
@@ -112,10 +114,15 @@ test('stats 页手机端压缩筛选摘要行、渠道信息和健康度指示�
   assert.match(sharedCss, /\.stats-filter-summary-row\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto\s+auto;[\s\S]*?align-items:\s*center;/);
   assert.match(sharedCss, /\.stats-table\s+\.stats-col-channel,\s*[\r\n\s]*\.stats-table\s+\.stats-col-model\s*\{[\s\S]*?display:\s*flex\s*!important;[\s\S]*?align-items:\s*center;/);
   assert.match(sharedCss, /\.stats-table\s+\.stats-col-channel::before,\s*[\r\n\s]*\.stats-table\s+\.stats-col-model::before\s*\{[\s\S]*?width:\s*auto\s*!important;[\s\S]*?margin-bottom:\s*0\s*!important;/);
-  assert.match(sharedCss, /\.stats-table\s+\.stats-col-success,\s*[\r\n\s]*\.stats-table\s+\.stats-col-error,\s*[\r\n\s]*\.stats-table\s+\.stats-col-timing,\s*[\r\n\s]*\.stats-table\s+\.stats-col-rpm,\s*[\r\n\s]*\.stats-table\s+\.stats-col-input,\s*[\r\n\s]*\.stats-table\s+\.stats-col-output,\s*[\r\n\s]*\.stats-table\s+\.stats-col-cache-read,\s*[\r\n\s]*\.stats-table\s+\.stats-col-cache-create,\s*[\r\n\s]*\.stats-table\s+\.stats-col-cost\s*\{[\s\S]*?display:\s*flex\s*!important;[\s\S]*?justify-content:\s*space-between;/);
+  assert.match(sharedCss, /\.stats-table\s+\.stats-col-success,\s*[\r\n\s]*\.stats-table\s+\.stats-col-error,\s*[\r\n\s]*\.stats-table\s+\.stats-col-timing,\s*[\r\n\s]*\.stats-table\s+\.stats-col-speed,\s*[\r\n\s]*\.stats-table\s+\.stats-col-rpm,\s*[\r\n\s]*\.stats-table\s+\.stats-col-input,\s*[\r\n\s]*\.stats-table\s+\.stats-col-output,\s*[\r\n\s]*\.stats-table\s+\.stats-col-cache-read,\s*[\r\n\s]*\.stats-table\s+\.stats-col-cache-create,\s*[\r\n\s]*\.stats-table\s+\.stats-col-cost\s*\{[\s\S]*?display:\s*flex\s*!important;[\s\S]*?justify-content:\s*space-between;/);
   assert.match(sharedCss, /\.stats-table\s+\.health-indicator\s*\{[\s\S]*?max-width:\s*100%;[\s\S]*?overflow:\s*hidden;/);
   assert.match(sharedCss, /\.stats-table\s+\.health-track\s*\{[\s\S]*?width:\s*min\(100%,\s*335px\);[\s\S]*?min-width:\s*0;[\s\S]*?flex:\s*1\s+1\s+auto;/);
   assert.match(sharedCss, /\.stats-table\s+\.health-rate\s*\{[\s\S]*?display:\s*none;/);
+});
+
+test('stats 页手机端将平均速度独占一整行，避免和平均首字耗时并排挤压', () => {
+  const speedRule = getLastRuleBody(sharedCss, '.stats-table .stats-col-speed');
+  assert.match(speedRule, /grid-column:\s*1\s*\/\s*-1/);
 });
 
 test('stats 页桌面端将摘要容器打平到父级 flex，避免筛选栏固定断成两行', () => {
