@@ -1458,6 +1458,16 @@ function bindEvents() {
     });
   }
 
+  tbody.addEventListener('click', (event) => {
+    const channelBtn = event.target.closest('.channel-link[data-channel-id]');
+    if (testMode !== TEST_MODE_MODEL || !channelBtn) return;
+
+    const channelId = parseInt(channelBtn.dataset.channelId, 10);
+    if (Number.isFinite(channelId) && channelId > 0 && typeof openLogChannelEditor === 'function') {
+      openLogChannelEditor(channelId);
+    }
+  });
+
   tbody.addEventListener('change', (event) => {
     const target = event.target;
     if (!(target instanceof HTMLInputElement)) return;

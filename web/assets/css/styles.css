@@ -2517,6 +2517,15 @@ body {
   min-width: 900px;
 }
 
+.model-test-table .channel-link {
+  padding: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+  display: inline;
+}
+
 .model-test-empty-row td {
   text-align: center;
   color: var(--color-text-secondary);
