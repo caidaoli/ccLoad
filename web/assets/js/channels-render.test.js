@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-function loadRenderHelpers() {
+function loadRenderSandbox(overrides = {}) {
   const source = fs.readFileSync(path.join(__dirname, 'channels-render.js'), 'utf8');
   const sandbox = {
     window: {
@@ -25,9 +25,15 @@ function loadRenderHelpers() {
     console
   };
 
+  Object.assign(sandbox, overrides);
+
   vm.createContext(sandbox);
   vm.runInContext(source, sandbox);
   return sandbox;
+}
+
+function loadRenderHelpers() {
+  return loadRenderSandbox();
 }
 
 test('buildEffectivePriorityHtml 不渲染优先级和健康度标签', () => {
@@ -75,4 +81,44 @@ test('buildChannelTimingHtml 渲染耗时和带单位的调用汇总', () => {
   assert.match(html, /17<\/span>\/<span style="color: var\(--error-600\);">3<\/span>次/);
   assert.doesNotMatch(html, />成功</);
   assert.doesNotMatch(html, />失败</);
+});
+
+test('initChannelEventDelegation 允许表头全选 checkbox 触发可见渠道批量选择', () => {
+  const listeners = {};
+  const container = {
+    dataset: {},
+    addEventListener(type, handler) {
+      listeners[type] = handler;
+    }
+  };
+  let toggleCalls = 0;
+
+  const { initChannelEventDelegation } = loadRenderSandbox({
+    document: {
+      getElementById(id) {
+        return id === 'channels-container' ? container : null;
+      }
+    },
+    toggleVisibleChannelsSelection() {
+      toggleCalls += 1;
+    },
+    selectedChannelIds: new Set(),
+    normalizeSelectedChannelID(value) {
+      return value;
+    }
+  });
+
+  initChannelEventDelegation();
+
+  const headerCheckbox = {
+    id: 'visibleSelectionCheckbox',
+    closest(selector) {
+      if (selector === '#visibleSelectionCheckbox') return this;
+      return null;
+    }
+  };
+
+  listeners.change({ target: headerCheckbox });
+
+  assert.equal(toggleCalls, 1);
 });

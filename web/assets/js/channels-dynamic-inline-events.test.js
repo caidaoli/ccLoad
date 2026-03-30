@@ -13,7 +13,8 @@ const channelsTestScript = fs.readFileSync(path.join(__dirname, 'channels-test.j
 test('channels-render.js 不再拼表头全选框 onchange', () => {
   assert.doesNotMatch(channelsRenderScript, /onchange="toggleVisibleChannelsSelection\(\)"/);
   assert.match(channelsRenderScript, /data-change-action="toggle-visible-channels-selection"/);
-  assert.match(channelsRenderScript, /if \(checkbox && checkbox\.id === 'visibleSelectionCheckbox'\)/);
+  assert.match(channelsRenderScript, /const headerCheckbox = e\.target\.closest\('#visibleSelectionCheckbox'\);/);
+  assert.match(channelsRenderScript, /if \(headerCheckbox\) \{/);
   assert.match(channelsRenderScript, /toggleVisibleChannelsSelection\(\);/);
 });
 

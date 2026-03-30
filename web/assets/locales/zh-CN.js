@@ -157,7 +157,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.filterBtn': '筛选',
   'channels.batchSelectedCount': '{count} 渠道已选择',
   'channels.batchSelectVisible': '全选',
-  'channels.batchInvertVisible': '反选',
+  'channels.batchDeselectVisible': '取消全选',
   'channels.batchEnableChannels': '批量启用',
   'channels.batchDisableChannels': '批量禁用',
   'channels.batchRefreshMerge': '模型增量刷新',

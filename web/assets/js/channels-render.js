@@ -290,11 +290,13 @@ function initChannelEventDelegation() {
 
   // 事件委托：处理渠道多选复选框
   container.addEventListener('change', (e) => {
-    const checkbox = e.target.closest('.channel-select-checkbox');
-    if (checkbox && checkbox.id === 'visibleSelectionCheckbox') {
+    const headerCheckbox = e.target.closest('#visibleSelectionCheckbox');
+    if (headerCheckbox) {
       toggleVisibleChannelsSelection();
       return;
     }
+
+    const checkbox = e.target.closest('.channel-select-checkbox');
 
     if (!checkbox) return;
 

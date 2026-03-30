@@ -157,7 +157,7 @@ window.I18N_LOCALES['en'] = {
   'channels.filterBtn': 'Filter',
   'channels.batchSelectedCount': '{count} selected',
   'channels.batchSelectVisible': 'Select All',
-  'channels.batchInvertVisible': 'Invert',
+  'channels.batchDeselectVisible': 'Deselect All',
   'channels.batchEnableChannels': 'Batch Enable',
   'channels.batchDisableChannels': 'Batch Disable',
   'channels.batchRefreshMerge': 'Models Merge',

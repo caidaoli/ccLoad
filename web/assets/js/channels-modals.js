@@ -404,7 +404,6 @@ function renderBatchSummary(selectedCount) {
 
 function updateBatchChannelSelectionUI() {
   const selectedCount = getSelectedChannelIDs().length;
-  const hasAnySelection = selectedCount > 0;
   const visibleChannels = getVisibleChannelsForSelection();
   const visibleCount = visibleChannels.length;
   let visibleSelectedCount = 0;
@@ -437,13 +436,18 @@ function updateBatchChannelSelectionUI() {
   const selectionToggle = document.getElementById('visibleSelectionToggle');
   const selectionCheckbox = document.getElementById('visibleSelectionCheckbox');
   const selectionText = document.getElementById('visibleSelectionToggleText');
-  const selectionLabel = window.t(hasAnySelection ? 'channels.batchInvertVisible' : 'channels.batchSelectVisible');
+  const selectionI18nKey = visibleSelectedCount > 0
+    ? 'channels.batchDeselectVisible'
+    : 'channels.batchSelectVisible';
+  const selectionLabel = window.t(selectionI18nKey);
 
   if (selectionText) {
+    selectionText.setAttribute('data-i18n', selectionI18nKey);
     selectionText.textContent = selectionLabel;
   }
   if (selectionToggle) {
     selectionToggle.classList.toggle('is-disabled', visibleCount === 0);
+    selectionToggle.setAttribute('data-i18n-title', selectionI18nKey);
     selectionToggle.title = selectionLabel;
   }
   if (selectionCheckbox) {
@@ -481,14 +485,26 @@ function selectAllVisibleChannels() {
 }
 
 function toggleVisibleChannelsSelection() {
-  if (getSelectedChannelIDs().length === 0) {
+  const visibleChannels = getVisibleChannelsForSelection();
+
+  if (visibleChannels.length === 0) {
+    return;
+  }
+
+  const hasSelectedVisibleChannel = visibleChannels.some((ch) => {
+    const channelID = normalizeSelectedChannelID(ch.id);
+    return channelID && selectedChannelIds.has(channelID);
+  });
+
+  if (!hasSelectedVisibleChannel) {
     selectAllVisibleChannels();
     return;
   }
-  invertVisibleChannelsSelection();
+
+  deselectVisibleChannels();
 }
 
-function invertVisibleChannelsSelection() {
+function deselectVisibleChannels() {
   const visibleChannels = getVisibleChannelsForSelection();
 
   if (visibleChannels.length === 0) {
@@ -498,11 +514,7 @@ function invertVisibleChannelsSelection() {
   visibleChannels.forEach((ch) => {
     const channelID = normalizeSelectedChannelID(ch.id);
     if (!channelID) return;
-    if (selectedChannelIds.has(channelID)) {
-      selectedChannelIds.delete(channelID);
-    } else {
-      selectedChannelIds.add(channelID);
-    }
+    selectedChannelIds.delete(channelID);
   });
   filterChannels();
 }
