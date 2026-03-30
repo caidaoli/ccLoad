@@ -527,7 +527,7 @@ window.I18N_LOCALES['en'] = {
   'stats.totalRecordsPrefix': '',
   'stats.totalRecordsSuffix': 'records',
   'stats.detailTitle': 'Detailed Statistics',
-  'stats.sortByPriority': 'Sorted by channel priority',
+  'stats.sortByPriority': 'Sorted by channel type, priority, and name',
   'stats.viewTable': 'Table',
   'stats.viewChart': 'Chart',
   'stats.avgFirstByte': 'Avg TTFT/Latency(s)',

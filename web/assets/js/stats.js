@@ -25,7 +25,7 @@
         rpmStats = statsData.rpm_stats || null;
         isToday = statsData.is_today !== false;
 
-        // 🎯 新增: 初始化时应用默认排序(渠道名称→模型名称)
+        // 初始化时应用默认排序(渠道类型→优先级→渠道名称→模型名称)
         applyDefaultSorting();
 
         renderStatsTable();
@@ -108,7 +108,7 @@
     }
 
     function applySorting() {
-      // 如果没有排序状态,从原始数据恢复默认排序(渠道名称→模型名称)
+      // 如果没有排序状态,从原始数据恢复默认排序(渠道类型→优先级→渠道名称→模型名称)
       if (!sortState.column || !sortState.order) {
         if (statsData && statsData.originalStats) {
           statsData.stats = [...statsData.originalStats];
@@ -537,9 +537,14 @@
         return;
       }
 
-      // 按渠道优先级降序(高优先级在前),相同优先级按渠道名称升序,相同渠道按模型名称升序
+      // 按渠道类型升序,同类型按渠道优先级降序,再按渠道名称和模型名称升序
       statsData.stats.sort((a, b) => {
-        // 首先按优先级降序(数值大的在前)
+        const typeA = (a.channel_type || '').toLowerCase();
+        const typeB = (b.channel_type || '').toLowerCase();
+        const typeCompare = typeA.localeCompare(typeB, 'zh-CN');
+        if (typeCompare !== 0) return typeCompare;
+
+        // 同类型按优先级降序(数值大的在前)
         const priorityA = a.channel_priority ?? 0;
         const priorityB = b.channel_priority ?? 0;
         if (priorityA !== priorityB) return priorityB - priorityA;

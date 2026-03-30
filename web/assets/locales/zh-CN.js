@@ -527,7 +527,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'stats.totalRecordsPrefix': '共',
   'stats.totalRecordsSuffix': '条记录',
   'stats.detailTitle': '详细统计数据',
-  'stats.sortByPriority': '按渠道优先级排序',
+  'stats.sortByPriority': '按渠道类型、优先级、名称排序',
   'stats.viewTable': '表格',
   'stats.viewChart': '图表',
   'stats.avgFirstByte': '平均首字/耗时(秒)',

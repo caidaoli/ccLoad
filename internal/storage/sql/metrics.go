@@ -126,12 +126,13 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 			channelInfos = make(map[int64]ChannelInfo)
 		}
 
-		// 填充渠道名称和优先级
+		// 填充渠道名称、优先级和类型
 		for i := range stats {
 			if stats[i].ChannelID != nil {
 				if info, ok := channelInfos[int64(*stats[i].ChannelID)]; ok {
 					stats[i].ChannelName = info.Name
 					stats[i].ChannelPriority = &info.Priority
+					stats[i].ChannelType = info.Type
 				} else {
 					// 如果查询不到渠道信息,使用默认值
 					stats[i].ChannelName = "未知渠道"

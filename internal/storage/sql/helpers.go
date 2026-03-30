@@ -13,9 +13,10 @@ import (
 type ChannelInfo struct {
 	Name     string
 	Priority int
+	Type     string
 }
 
-// fetchChannelInfoBatch 批量查询渠道信息（名称+优先级）
+// fetchChannelInfoBatch 批量查询渠道信息（名称+优先级+类型）
 // 消除 N+1：一次全表查询 + 内存过滤
 // 设计原则（KISS）：渠道总数<1000时，全表扫描比动态 IN 子查询更简单
 // 输入：渠道ID集合 map[int64]bool
@@ -27,7 +28,14 @@ func (s *SQLStore) fetchChannelInfoBatch(ctx context.Context, channelIDs map[int
 
 	// 查询所有渠道（全表扫描，渠道数<1000时比IN子查询更快）
 	// 优势：固定SQL（查询计划缓存）、无动态参数绑定、代码简单
-	rows, err := s.db.QueryContext(ctx, "SELECT id, name, priority FROM channels")
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			id,
+			name,
+			priority,
+			LOWER(COALESCE(NULLIF(TRIM(channel_type), ''), 'anthropic'))
+		FROM channels
+	`)
 	if err != nil {
 		return nil, fmt.Errorf("query all channel info: %w", err)
 	}
@@ -39,13 +47,14 @@ func (s *SQLStore) fetchChannelInfoBatch(ctx context.Context, channelIDs map[int
 		var id int64
 		var name string
 		var priority int
-		if err := rows.Scan(&id, &name, &priority); err != nil {
+		var channelType string
+		if err := rows.Scan(&id, &name, &priority, &channelType); err != nil {
 			log.Printf("[WARN]  scan channel info: %v", err)
 			continue // 跳过扫描错误的行
 		}
 		// 只保留需要的渠道
 		if channelIDs[id] {
-			channelInfos[id] = ChannelInfo{Name: name, Priority: priority}
+			channelInfos[id] = ChannelInfo{Name: name, Priority: priority, Type: channelType}
 		}
 	}
 	if err := rows.Err(); err != nil {

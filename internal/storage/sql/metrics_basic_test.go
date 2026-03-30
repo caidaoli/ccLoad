@@ -3,6 +3,7 @@ package sql_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -100,6 +101,18 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 			}
 			if e.ChannelName == "" || e.ChannelPriority == nil {
 				t.Fatalf("expected channel info filled, got %+v", e)
+			}
+
+			encoded, err := json.Marshal(e)
+			if err != nil {
+				t.Fatalf("marshal stats entry failed: %v", err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(encoded, &payload); err != nil {
+				t.Fatalf("unmarshal stats entry failed: %v", err)
+			}
+			if got, ok := payload["channel_type"].(string); !ok || got != "openai" {
+				t.Fatalf("expected channel_type=openai in stats payload, got %+v", payload)
 			}
 		}
 	}
