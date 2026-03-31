@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
 
 	"github.com/gin-gonic/gin"
 )
@@ -112,6 +113,35 @@ func TestServer_GetWriteTimeout(t *testing.T) {
 	s.nonStreamTimeout = 300 * time.Second
 	if got := s.GetWriteTimeout(); got != 300*time.Second {
 		t.Fatalf("GetWriteTimeout()=%v, want 300s", got)
+	}
+}
+
+func TestNewServer_ZeroNonStreamTimeoutDisablesTimeout(t *testing.T) {
+	t.Parallel()
+
+	store, err := storage.CreateSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("CreateSQLiteStore failed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := store.UpdateSetting(ctx, "non_stream_timeout", "0"); err != nil {
+		_ = store.Close()
+		t.Fatalf("UpdateSetting failed: %v", err)
+	}
+
+	srv := NewServer(store)
+	t.Cleanup(func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer shutdownCancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			t.Errorf("Server.Shutdown failed: %v", err)
+		}
+	})
+
+	if srv.nonStreamTimeout != 0 {
+		t.Fatalf("nonStreamTimeout=%v, want 0", srv.nonStreamTimeout)
 	}
 }
 

@@ -113,8 +113,8 @@ func NewServer(store storage.Store) *Server {
 	}
 
 	nonStreamTimeout := configService.GetDuration("non_stream_timeout", 120*time.Second)
-	if nonStreamTimeout <= 0 {
-		log.Printf("[WARN] 无效的 non_stream_timeout=%v（必须 > 0），已使用默认值 %v", nonStreamTimeout, 120*time.Second)
+	if nonStreamTimeout < 0 {
+		log.Printf("[WARN] 无效的 non_stream_timeout=%v（必须 >= 0，0=禁用），已使用默认值 %v", nonStreamTimeout, 120*time.Second)
 		nonStreamTimeout = 120 * time.Second
 	}
 
