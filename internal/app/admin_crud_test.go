@@ -635,13 +635,13 @@ func TestHandleDeleteChannel(t *testing.T) {
 		{
 			name:           "删除不存在的渠道",
 			channelID:      "999",
-			expectedStatus: http.StatusOK, // DeleteConfig对不存在ID返回nil，不触发错误分支
-			checkSuccess:   true,          // 需要验证删除效果
+			expectedStatus: http.StatusNotFound,
+			checkSuccess:   false,
 		},
 		{
 			name:           "无效的渠道ID",
 			channelID:      "invalid",
-			expectedStatus: http.StatusOK, // strconv.ParseInt失败传入0，Delete(0)也不报错
+			expectedStatus: http.StatusNotFound,
 			checkSuccess:   false,
 		},
 	}

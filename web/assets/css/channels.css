@@ -1705,6 +1705,18 @@
       border-color: #fca5a5;
     }
 
+    .channel-batch-action--delete {
+      color: #fff;
+      background: #dc2626;
+      border-color: #dc2626;
+      box-shadow: 0 1px 3px rgba(220, 38, 38, 0.28);
+    }
+
+    .channel-batch-action--delete:hover {
+      background: #b91c1c;
+      border-color: #b91c1c;
+    }
+
     .channel-batch-action--refresh {
       color: var(--neutral-700);
       background: var(--white);

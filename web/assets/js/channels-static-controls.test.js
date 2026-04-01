@@ -18,7 +18,7 @@ function sliceSection(source, startMarker, endMarker) {
 }
 
 test('channels 页固定控件不再使用静态 inline 事件', () => {
-  assert.doesNotMatch(html, /onclick="(?:showAddModal|batchEnableSelectedChannels|batchDisableSelectedChannels|batchRefreshSelectedChannelsMerge|batchRefreshSelectedChannelsReplace|clearSelectedChannels|closeModal|openKeyImportModal|openKeyExportModal|toggleInlineKeyVisibility|batchDeleteSelectedKeys|addCommonModels|fetchModelsFromAPI|addRedirectRow|batchLowercaseSelectedModels|batchDeleteSelectedModels|closeDeleteModal|confirmDelete|closeTestModal|runChannelTest|runBatchTest|closeKeyImportModal|confirmInlineKeyImport|closeKeyExportModal|copyExportKeys|downloadExportKeys|closeModelImportModal|confirmModelImport|closeSortModal|saveSortOrder)\(\)"/);
+  assert.doesNotMatch(html, /onclick="(?:showAddModal|batchEnableSelectedChannels|batchDisableSelectedChannels|batchDeleteSelectedChannels|batchRefreshSelectedChannelsMerge|batchRefreshSelectedChannelsReplace|clearSelectedChannels|closeModal|openKeyImportModal|openKeyExportModal|toggleInlineKeyVisibility|batchDeleteSelectedKeys|addCommonModels|fetchModelsFromAPI|addRedirectRow|batchLowercaseSelectedModels|batchDeleteSelectedModels|closeDeleteModal|confirmDelete|closeTestModal|runChannelTest|runBatchTest|closeKeyImportModal|confirmInlineKeyImport|closeKeyExportModal|copyExportKeys|downloadExportKeys|closeModelImportModal|confirmModelImport|closeSortModal|saveSortOrder)\(\)"/);
   assert.doesNotMatch(html, /onsubmit="saveChannel\(event\)"/);
   assert.doesNotMatch(html, /onchange="(?:updateTestURL|updateExportPreview)\(\)"/);
   assert.doesNotMatch(html, /onchange="(?:toggleSelectAllURLs|toggleSelectAllKeys|filterKeysByStatus|toggleSelectAllModels)\([^"]*\)"/);
@@ -26,6 +26,7 @@ test('channels 页固定控件不再使用静态 inline 事件', () => {
   assert.doesNotMatch(html, /onmouseover=|onmouseout=/);
   assert.match(html, /data-action="show-add-modal"/);
   assert.match(html, /data-action="batch-enable-channels"/);
+  assert.match(html, /data-action="batch-delete-channels"/);
   assert.match(html, /data-action="open-key-import-modal"/);
   assert.match(html, /data-action="close-key-export-modal"/);
   assert.match(html, /data-action="save-sort-order"/);
@@ -71,6 +72,7 @@ test('channels-init.js 使用集中绑定处理固定控件动作', () => {
   assert.match(initScript, /boundKey:\s*'channelsPageActionsBound'/);
   assert.match(initScript, /'show-add-modal':\s*\(\)\s*=> showAddModal\(\)/);
   assert.match(initScript, /'batch-enable-channels':\s*\(\)\s*=> batchEnableSelectedChannels\(\)/);
+  assert.match(initScript, /'batch-delete-channels':\s*\(\)\s*=> batchDeleteSelectedChannels\(\)/);
   assert.match(initScript, /'close-test-modal':\s*\(\)\s*=> closeTestModal\(\)/);
   assert.match(initScript, /'save-sort-order':\s*\(\)\s*=> saveSortOrder\(\)/);
   assert.match(initScript, /'update-test-url':\s*\(\)\s*=> updateTestURL\(\)/);

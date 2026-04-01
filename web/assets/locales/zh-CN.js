@@ -213,8 +213,9 @@ window.I18N_LOCALES['zh-CN'] = {
 
   // 删除确认（扁平化键名）
   'channels.confirmDeleteTitle': '确认删除',
-  'channels.confirmDeleteMsg': '确定要删除渠道',
-  'channels.confirmDeleteMsgSuffix': '吗？',
+  'channels.confirmDeleteMsg': '确定要删除渠道吗？',
+  'channels.confirmDeleteNamed': '确定要删除渠道 "{name}" 吗？',
+  'channels.confirmBatchDeleteMsg': '将删除 {count} 个渠道，确认继续吗？',
   'channels.deleteWarning': '此操作不可恢复！',
 
   // 测试模态框（扁平化键名）
@@ -942,6 +943,8 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.atLeastOneKey': '请至少添加一个有效的API Key',
   'channels.batchNoSelection': '请先选择至少一个渠道',
   'channels.batchEnabledSummary': '批量{action}完成：更新 {updated}，未变化 {unchanged}，不存在 {notFound}',
+  'channels.batchDeleteChannels': '批量删除',
+  'channels.batchDeleteSummary': '批量删除完成：删除 {deleted}，不存在 {notFound}',
   'channels.batchRefreshProgress': '模型{mode}刷新中... ({current}/{total})',
   'channels.batchRefreshCurrent': '正在处理: {name}',
   'channels.batchRefreshCounts': '✓ 更新: {updated}　— 未变化: {unchanged}　✗ 失败: {failed}',

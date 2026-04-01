@@ -164,6 +164,22 @@
                 </span>
                 <span data-i18n="channels.batchDisableChannels">批量禁用</span>
               </button>
+              <button id="batchDeleteChannelsBtn" type="button"
+                class="btn btn-sm channel-batch-action channel-batch-action--delete"
+                data-action="batch-delete-channels" disabled>
+                <span class="channel-batch-action__icon" aria-hidden="true">
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M6.2 6.2H13.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                    <path d="M7.3 6.2V4.9C7.3 4.4 7.7 4 8.2 4H11.8C12.3 4 12.7 4.4 12.7 4.9V6.2" stroke="currentColor"
+                      stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                    <path d="M7.1 8.1V13.2C7.1 13.9 7.6 14.4 8.3 14.4H11.7C12.4 14.4 12.9 13.9 12.9 13.2V8.1"
+                      stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                    <path d="M8.9 8.9V12.6M11.1 8.9V12.6" stroke="currentColor" stroke-width="1.8"
+                      stroke-linecap="round" />
+                  </svg>
+                </span>
+                <span data-i18n="channels.batchDeleteChannels">批量删除</span>
+              </button>
               <button id="batchRefreshMergeBtn" type="button"
                 class="btn btn-sm channel-batch-action channel-batch-action--refresh"
                 data-action="batch-refresh-channels-merge" disabled>
@@ -529,8 +545,7 @@
   <div id="deleteModal" class="modal">
     <div class="modal-content confirm-modal">
       <h2 class="modal-title" data-i18n="channels.confirmDeleteTitle">确认删除</h2>
-      <p><span data-i18n="channels.confirmDeleteMsg">确定要删除渠道</span> "<span id="deleteChannelName"></span>" <span
-          data-i18n="channels.confirmDeleteMsgSuffix">吗？</span></p>
+      <p id="deleteModalMessage" data-i18n="channels.confirmDeleteMsg">确定要删除渠道吗？</p>
       <p style="color: var(--error-600); font-size: 0.875rem;" data-i18n="channels.deleteWarning">此操作不可恢复！</p>
       <div class="confirm-actions">
         <button type="button" class="btn btn-secondary" data-action="close-delete-modal" data-i18n="common.cancel">取消</button>

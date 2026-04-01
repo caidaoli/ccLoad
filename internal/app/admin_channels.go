@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -450,21 +451,17 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 
 // 删除渠道
 func (s *Server) handleDeleteChannel(c *gin.Context, id int64) {
-	if err := s.store.DeleteConfig(c.Request.Context(), id); err != nil {
-		RespondError(c, http.StatusNotFound, err)
+	deleted, err := s.deleteChannelByID(c.Request.Context(), id)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
-	// 删除渠道对应的轮询计数器，避免KeySelector内部状态泄漏
-	if s.keySelector != nil {
-		s.keySelector.RemoveChannelCounter(id)
+	if !deleted {
+		RespondErrorMsg(c, http.StatusNotFound, "channel not found")
+		return
 	}
-	// 删除渠道时同步清理 URLSelector 内存状态。
-	if s.urlSelector != nil {
-		s.urlSelector.RemoveChannel(id)
-	}
-	// 删除渠道后刷新缓存，确保选择器立即生效
+
 	s.InvalidateChannelListCache()
-	// 数据库级联删除会自动清理冷却数据（无需手动清理缓存）
 	RespondJSON(c, http.StatusOK, gin.H{"id": id})
 }
 
@@ -748,6 +745,53 @@ func (s *Server) HandleBatchSetEnabled(c *gin.Context) {
 	})
 }
 
+// HandleBatchDeleteChannels 批量删除渠道
+func (s *Server) HandleBatchDeleteChannels(c *gin.Context) {
+	var req struct {
+		ChannelIDs []int64 `json:"channel_ids"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
+
+	channelIDs := normalizeBatchChannelIDs(req.ChannelIDs)
+	if len(channelIDs) == 0 {
+		RespondError(c, http.StatusBadRequest, fmt.Errorf("channel_ids cannot be empty"))
+		return
+	}
+
+	ctx := c.Request.Context()
+	deleted := 0
+	notFound := make([]int64, 0)
+
+	for _, channelID := range channelIDs {
+		wasDeleted, err := s.deleteChannelByID(ctx, channelID)
+		if err != nil {
+			log.Printf("batch-delete: delete channel %d failed: %v", channelID, err)
+			RespondError(c, http.StatusInternalServerError, err)
+			return
+		}
+		if !wasDeleted {
+			notFound = append(notFound, channelID)
+			continue
+		}
+		deleted++
+	}
+
+	if deleted > 0 {
+		s.InvalidateChannelListCache()
+	}
+
+	RespondJSON(c, http.StatusOK, gin.H{
+		"total":           len(channelIDs),
+		"deleted":         deleted,
+		"not_found":       notFound,
+		"not_found_count": len(notFound),
+	})
+}
+
 func normalizeBatchChannelIDs(rawIDs []int64) []int64 {
 	if len(rawIDs) == 0 {
 		return nil
@@ -766,4 +810,28 @@ func normalizeBatchChannelIDs(rawIDs []int64) []int64 {
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+func (s *Server) deleteChannelByID(ctx context.Context, id int64) (bool, error) {
+	if id <= 0 {
+		return false, nil
+	}
+
+	if _, err := s.store.GetConfig(ctx, id); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return false, nil
+		}
+		return false, err
+	}
+
+	if err := s.store.DeleteConfig(ctx, id); err != nil {
+		return false, err
+	}
+	if s.keySelector != nil {
+		s.keySelector.RemoveChannelCounter(id)
+	}
+	if s.urlSelector != nil {
+		s.urlSelector.RemoveChannel(id)
+	}
+	return true, nil
 }

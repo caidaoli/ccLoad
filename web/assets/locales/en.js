@@ -213,8 +213,9 @@ window.I18N_LOCALES['en'] = {
 
   // Delete Confirmation (flattened keys)
   'channels.confirmDeleteTitle': 'Confirm Delete',
-  'channels.confirmDeleteMsg': 'Are you sure you want to delete channel',
-  'channels.confirmDeleteMsgSuffix': '?',
+  'channels.confirmDeleteMsg': 'Are you sure you want to delete this channel?',
+  'channels.confirmDeleteNamed': 'Are you sure you want to delete channel "{name}"?',
+  'channels.confirmBatchDeleteMsg': 'Delete {count} selected channels?',
   'channels.deleteWarning': 'This action cannot be undone!',
 
   // Test Modal (flattened keys)
@@ -942,6 +943,8 @@ window.I18N_LOCALES['en'] = {
   'channels.atLeastOneKey': 'Please add at least one valid API Key',
   'channels.batchNoSelection': 'Please select at least one channel first',
   'channels.batchEnabledSummary': 'Batch {action} completed: updated {updated}, unchanged {unchanged}, not found {notFound}',
+  'channels.batchDeleteChannels': 'Batch Delete',
+  'channels.batchDeleteSummary': 'Batch delete completed: deleted {deleted}, not found {notFound}',
   'channels.batchRefreshProgress': 'Model {mode} refresh... ({current}/{total})',
   'channels.batchRefreshCurrent': 'Processing: {name}',
   'channels.batchRefreshCounts': '✓ Updated: {updated}　— Unchanged: {unchanged}　✗ Failed: {failed}',

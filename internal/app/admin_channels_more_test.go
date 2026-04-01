@@ -313,3 +313,90 @@ func TestHandleBatchSetEnabled(t *testing.T) {
 		}
 	})
 }
+
+func TestHandleBatchDeleteChannels(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.urlSelector = NewURLSelector()
+
+	ctx := context.Background()
+	c1, err := store.CreateConfig(ctx, &model.Config{Name: "c1", URL: "https://x", Priority: 1, ModelEntries: []model.ModelEntry{{Model: "m"}}, Enabled: true})
+	if err != nil {
+		t.Fatalf("CreateConfig c1 failed: %v", err)
+	}
+	c2, err := store.CreateConfig(ctx, &model.Config{Name: "c2", URL: "https://y", Priority: 2, ModelEntries: []model.ModelEntry{{Model: "m"}}, Enabled: true})
+	if err != nil {
+		t.Fatalf("CreateConfig c2 failed: %v", err)
+	}
+
+	server.urlSelector.RecordLatency(c1.ID, "https://x", 10*time.Millisecond)
+	server.urlSelector.RecordLatency(c2.ID, "https://y", 20*time.Millisecond)
+	server.urlSelector.CooldownURL(c1.ID, "https://x")
+
+	t.Run("invalid json", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/admin/channels/batch-delete", []byte(`{`)))
+
+		server.HandleBatchDeleteChannels(c)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("empty channel ids", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/admin/channels/batch-delete", []byte(`{"channel_ids":[]}`)))
+
+		server.HandleBatchDeleteChannels(c)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("partial success", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/batch-delete", map[string]any{
+			"channel_ids": []int64{c1.ID, c2.ID, c2.ID, 99999},
+		}))
+
+		server.HandleBatchDeleteChannels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		var resp struct {
+			Success bool `json:"success"`
+			Data    struct {
+				Deleted       int     `json:"deleted"`
+				NotFound      []int64 `json:"not_found"`
+				NotFoundCount int     `json:"not_found_count"`
+				Total         int     `json:"total"`
+			} `json:"data"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+		if !resp.Success {
+			t.Fatalf("expected success=true, body=%s", w.Body.String())
+		}
+		if resp.Data.Deleted != 2 || resp.Data.NotFoundCount != 1 || resp.Data.Total != 3 {
+			t.Fatalf("unexpected summary: %+v", resp.Data)
+		}
+		if len(resp.Data.NotFound) != 1 || resp.Data.NotFound[0] != 99999 {
+			t.Fatalf("unexpected not_found: %#v", resp.Data.NotFound)
+		}
+
+		if _, err := store.GetConfig(ctx, c1.ID); err == nil {
+			t.Fatalf("c1 should be deleted")
+		}
+		if _, err := store.GetConfig(ctx, c2.ID); err == nil {
+			t.Fatalf("c2 should be deleted")
+		}
+
+		for key := range server.urlSelector.latencies {
+			if key.channelID == c1.ID || key.channelID == c2.ID {
+				t.Fatalf("expected deleted channel latency state removed, found key=%+v", key)
+			}
+		}
+		for key := range server.urlSelector.cooldowns {
+			if key.channelID == c1.ID || key.channelID == c2.ID {
+				t.Fatalf("expected deleted channel cooldown state removed, found key=%+v", key)
+			}
+		}
+	})
+}

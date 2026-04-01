@@ -316,33 +316,60 @@ async function saveChannel(event) {
 }
 
 function deleteChannel(id, name) {
-  deletingChannelId = id;
-  document.getElementById('deleteChannelName').textContent = name;
+  deletingChannelRequest = {
+    type: 'single',
+    channelIDs: [id],
+    url: `/admin/channels/${id}`,
+    options: {
+      method: 'DELETE'
+    }
+  };
+  const messageEl = document.getElementById('deleteModalMessage');
+  if (messageEl) {
+    messageEl.textContent = window.t('channels.confirmDeleteNamed', { name });
+  }
   document.getElementById('deleteModal').classList.add('show');
 }
 
 function closeDeleteModal() {
   document.getElementById('deleteModal').classList.remove('show');
-  deletingChannelId = null;
+  deletingChannelRequest = null;
 }
 
 async function confirmDelete() {
-  if (!deletingChannelId) return;
+  if (!deletingChannelRequest) return;
 
   try {
-    const resp = await fetchAPIWithAuth(`/admin/channels/${deletingChannelId}`, {
-      method: 'DELETE'
-    });
+    const { channelIDs, options, type, url } = deletingChannelRequest;
+    const resp = await fetchAPIWithAuth(url, options);
 
     if (!resp.success) throw new Error(resp.error || window.t('common.failed'));
 
     closeDeleteModal();
+    channelIDs.forEach((channelID) => {
+      selectedChannelIds.delete(normalizeSelectedChannelID(channelID));
+    });
     clearChannelsCache();
     await loadChannels(filters.channelType);
-    if (window.showSuccess) window.showSuccess(window.t('channels.channelDeleted'));
+    if (window.showSuccess) {
+      if (type === 'batch') {
+        const data = resp.data || {};
+        window.showSuccess(window.t('channels.batchDeleteSummary', {
+          deleted: data.deleted || 0,
+          notFound: data.not_found_count || 0
+        }));
+      } else {
+        window.showSuccess(window.t('channels.channelDeleted'));
+      }
+    }
   } catch (e) {
     console.error('Delete channel failed', e);
-    if (window.showError) window.showError(window.t('channels.saveFailed', { error: e.message }));
+    if (window.showError) {
+      const errorKey = deletingChannelRequest && deletingChannelRequest.type === 'batch'
+        ? 'channels.batchOperationFailed'
+        : 'channels.saveFailed';
+      window.showError(window.t(errorKey, { error: e.message }));
+    }
   }
 }
 
@@ -459,6 +486,7 @@ function updateBatchChannelSelectionUI() {
   const actionBtnIDs = [
     'batchEnableChannelsBtn',
     'batchDisableChannelsBtn',
+    'batchDeleteChannelsBtn',
     'batchRefreshMergeBtn',
     'batchRefreshReplaceBtn'
   ];
@@ -559,6 +587,30 @@ async function batchSetSelectedChannelsEnabled(enabled) {
   }
 }
 
+function batchDeleteSelectedChannels() {
+  const channelIDs = getSelectedChannelIDs();
+  if (channelIDs.length === 0) {
+    if (window.showWarning) window.showWarning(window.t('channels.batchNoSelection'));
+    return;
+  }
+
+  deletingChannelRequest = {
+    type: 'batch',
+    channelIDs,
+    url: '/admin/channels/batch-delete',
+    options: {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel_ids: channelIDs })
+    }
+  };
+  const messageEl = document.getElementById('deleteModalMessage');
+  if (messageEl) {
+    messageEl.textContent = window.t('channels.confirmBatchDeleteMsg', { count: channelIDs.length });
+  }
+  document.getElementById('deleteModal').classList.add('show');
+}
+
 async function batchRefreshSelectedChannels(mode) {
   const channelIDs = getSelectedChannelIDs();
   if (channelIDs.length === 0) {
@@ -571,7 +623,7 @@ async function batchRefreshSelectedChannels(mode) {
   }
 
   // 禁用批量操作按钮
-  const actionBtnIDs = ['batchRefreshMergeBtn', 'batchRefreshReplaceBtn', 'batchEnableChannelsBtn', 'batchDisableChannelsBtn'];
+  const actionBtnIDs = ['batchRefreshMergeBtn', 'batchRefreshReplaceBtn', 'batchEnableChannelsBtn', 'batchDisableChannelsBtn', 'batchDeleteChannelsBtn'];
   actionBtnIDs.forEach(id => { const btn = document.getElementById(id); if (btn) btn.disabled = true; });
 
   const total = channelIDs.length;

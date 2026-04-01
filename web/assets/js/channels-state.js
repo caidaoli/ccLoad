@@ -2,7 +2,7 @@
 let channels = [];
 let channelStatsById = {};
 let editingChannelId = null;
-let deletingChannelId = null;
+let deletingChannelRequest = null;
 let testingChannelId = null;
 let currentChannelKeyCooldowns = []; // 当前编辑渠道的Key冷却信息
 let redirectTableData = []; // 模型重定向表格数据: [{from: '', to: ''}]

@@ -64,6 +64,7 @@ function initChannelsPageActions() {
         'show-add-modal': () => showAddModal(),
         'batch-enable-channels': () => batchEnableSelectedChannels(),
         'batch-disable-channels': () => batchDisableSelectedChannels(),
+        'batch-delete-channels': () => batchDeleteSelectedChannels(),
         'batch-refresh-channels-merge': () => batchRefreshSelectedChannelsMerge(),
         'batch-refresh-channels-replace': () => batchRefreshSelectedChannelsReplace(),
         'clear-selected-channels': () => clearSelectedChannels(),
