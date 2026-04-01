@@ -205,17 +205,7 @@
         return null;
       }
 
-      let generationDuration = avgDuration;
-      const avgFirstByte = Number(entry?.avg_first_byte_time_seconds);
-      if (Number.isFinite(avgFirstByte) && avgFirstByte > 0) {
-        generationDuration = avgDuration - avgFirstByte;
-      }
-
-      if (!Number.isFinite(generationDuration) || generationDuration <= 0) {
-        return null;
-      }
-
-      return outputTokens / (successCount * generationDuration);
+      return outputTokens / (successCount * avgDuration);
     }
 
     function renderStatsTable() {

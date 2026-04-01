@@ -45,7 +45,7 @@ test('stats 页平均速度单元格只显示数值不重复单位', () => {
   );
 });
 
-test('stats 页平均速度公式按成功请求数折算总生成时长', () => {
+test('stats 页平均速度按总耗时折算用户实际看到的 tok/s', () => {
   const calculateAverageSpeed = vm.runInNewContext(
     `(${extractFunction(script, 'calculateAverageSpeed')})`,
     {}
@@ -58,7 +58,7 @@ test('stats 页平均速度公式按成功请求数折算总生成时长', () =>
       avg_duration_seconds: 17.99,
       avg_first_byte_time_seconds: 3.43
     }),
-    43.919895893580104
+    35.54606360258624
   );
 
   assert.equal(
@@ -88,7 +88,17 @@ test('stats 页平均速度公式按成功请求数折算总生成时长', () =>
       avg_duration_seconds: 3,
       avg_first_byte_time_seconds: 3
     }),
-    null
+    133.33333333333334
+  );
+
+  assert.equal(
+    calculateAverageSpeed({
+      success: 1,
+      total_output_tokens: 437,
+      avg_duration_seconds: 19.980204,
+      avg_first_byte_time_seconds: 19.98
+    }),
+    21.871648557742454
   );
 });
 

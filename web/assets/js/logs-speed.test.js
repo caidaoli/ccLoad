@@ -34,7 +34,7 @@ test('日志页移动端标签与表格渲染包含速度列', () => {
   assert.match(renderActiveRequestsSource, /data-mobile-label="\$\{logMobileLabels\.speed\}"/);
 });
 
-test('日志页速度计算沿用令牌明细中的 tok/s 语义', () => {
+test('日志页速度按总耗时计算用户实际看到的 tok/s', () => {
   const calculateLogSpeed = vm.runInNewContext(
     `(${extractFunction(logsSource, 'calculateLogSpeed')})`,
     {}
@@ -47,7 +47,7 @@ test('日志页速度计算沿用令牌明细中的 tok/s 语义', () => {
       duration: 21.0,
       first_byte_time: 3.2
     }),
-    53.764044943820224
+    45.57142857142857
   );
 
   assert.equal(
@@ -67,7 +67,7 @@ test('日志页速度计算沿用令牌明细中的 tok/s 语义', () => {
       duration: 3,
       first_byte_time: 3
     }),
-    null
+    33.333333333333336
   );
 
   assert.equal(
@@ -78,6 +78,16 @@ test('日志页速度计算沿用令牌明细中的 tok/s 语义', () => {
       first_byte_time: 2
     }),
     null
+  );
+
+  assert.equal(
+    calculateLogSpeed({
+      is_streaming: true,
+      output_tokens: 437,
+      duration: 19.980204,
+      first_byte_time: 19.98
+    }),
+    21.871648557742454
   );
 });
 

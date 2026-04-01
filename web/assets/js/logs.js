@@ -132,20 +132,7 @@ function calculateLogSpeed(entry) {
   if (!Number.isFinite(outputTokens) || outputTokens <= 0 || !Number.isFinite(duration) || duration <= 0) {
     return null;
   }
-
-  let generationDuration = duration;
-  if (entry?.is_streaming) {
-    const firstByteTime = Number(entry?.first_byte_time);
-    if (Number.isFinite(firstByteTime) && firstByteTime > 0) {
-      generationDuration = duration - firstByteTime;
-    }
-  }
-
-  if (!Number.isFinite(generationDuration) || generationDuration <= 0) {
-    return null;
-  }
-
-  return outputTokens / generationDuration;
+  return outputTokens / duration;
 }
 
 // 加载默认测试内容（从系统设置）
