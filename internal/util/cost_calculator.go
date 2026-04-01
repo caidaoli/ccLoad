@@ -185,6 +185,20 @@ var basePricing = map[string]ModelPricing{
 	// ========== Mimo 模型 ==========
 	"mimo-v2-flash": {InputPrice: 0.10, OutputPrice: 0.30},
 
+	// ========== Moonshot AI / Kimi 模型 ==========
+	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=moonshotai
+	"kimi-dev-72b":                 {InputPrice: 0.29, OutputPrice: 1.15},
+	"kimi-dev-72b:free":            {InputPrice: 0.00, OutputPrice: 0.00},
+	"kimi-k2":                      {InputPrice: 0.57, OutputPrice: 2.30},
+	"kimi-k2-0905":                 {InputPrice: 0.40, OutputPrice: 2.00, CacheReadPrice: 0.15, HasCacheReadPrice: true},
+	"kimi-k2-0905:exacto":          {InputPrice: 0.60, OutputPrice: 2.50, CacheReadPrice: 0.15, HasCacheReadPrice: true},
+	"kimi-k2-thinking":             {InputPrice: 0.47, OutputPrice: 2.00, CacheReadPrice: 0.141, HasCacheReadPrice: true},
+	"kimi-k2.5":                    {InputPrice: 0.42, OutputPrice: 2.20, CacheReadPrice: 0.07, HasCacheReadPrice: true},
+	"kimi-k2:free":                 {InputPrice: 0.00, OutputPrice: 0.00},
+	"kimi-linear-48b-a3b-instruct": {InputPrice: 0.70, OutputPrice: 0.90},
+	"kimi-vl-a3b-thinking":         {InputPrice: 0.02, OutputPrice: 0.08},
+	"kimi-vl-a3b-thinking:free":    {InputPrice: 0.00, OutputPrice: 0.00},
+
 	// ========== Qwen 模型 ==========
 	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=qwen
 	"qwen-2-72b-instruct":              {InputPrice: 0.90, OutputPrice: 0.90},
@@ -808,6 +822,10 @@ func fuzzyMatchModel(model string) (ModelPricing, bool) {
 
 		// 其他厂商
 		"mimo-v2-flash",
+		"kimi-k2-0905:exacto", "kimi-k2-thinking", "kimi-k2.5", "kimi-k2-0905", "kimi-k2:free", "kimi-k2",
+		"kimi-linear-48b-a3b-instruct",
+		"kimi-vl-a3b-thinking:free", "kimi-vl-a3b-thinking",
+		"kimi-dev-72b:free", "kimi-dev-72b",
 		"qwen3.5-plus-2026-02-15", "qwen3.5-plus",
 		"qwen-plus-2025-12-01", "qwen-plus-2025-09-11", "qwen-plus-2025-07-28:thinking", "qwen-plus-2025-07-28",
 		"qwen-plus-2025-07-14", "qwen-plus-2025-04-28", "qwen-plus-2025-01-25", "qwen-plus-latest", "qwen-plus",

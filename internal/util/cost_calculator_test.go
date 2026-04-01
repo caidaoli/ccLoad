@@ -482,6 +482,80 @@ func TestCalculateCost_QwenTieredPricingFromTable(t *testing.T) {
 	}
 }
 
+func TestCalculateCost_MoonshotModelsFromPricePerToken(t *testing.T) {
+	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=moonshotai
+	testCases := []struct {
+		model        string
+		inputTokens  int
+		outputTokens int
+		cacheTokens  int
+		expected     float64
+	}{
+		{
+			model:        "kimi-k2",
+			inputTokens:  1_000_000,
+			outputTokens: 1_000_000,
+			expected:     0.57 + 2.30,
+		},
+		{
+			model:        "kimi-k2-0905",
+			inputTokens:  1_000_000,
+			outputTokens: 1_000_000,
+			cacheTokens:  1_000_000,
+			expected:     0.40 + 2.00 + 0.15,
+		},
+		{
+			model:        "kimi-k2.5",
+			inputTokens:  1_000_000,
+			outputTokens: 1_000_000,
+			cacheTokens:  1_000_000,
+			expected:     0.42 + 2.20 + 0.07,
+		},
+		{
+			model:        "kimi-dev-72b",
+			inputTokens:  1_000_000,
+			outputTokens: 1_000_000,
+			expected:     0.29 + 1.15,
+		},
+		{
+			model:        "kimi-vl-a3b-thinking",
+			inputTokens:  1_000_000,
+			outputTokens: 1_000_000,
+			expected:     0.02 + 0.08,
+		},
+	}
+
+	for _, tc := range testCases {
+		cost := CalculateCostDetailed(tc.model, tc.inputTokens, tc.outputTokens, tc.cacheTokens, 0, 0)
+		if !floatEquals(cost, tc.expected, 0.000001) {
+			t.Errorf("%s: 成本 = %.6f, 期望 %.6f", tc.model, cost, tc.expected)
+		}
+	}
+}
+
+func TestCalculateCost_MoonshotFreeVariants(t *testing.T) {
+	testCases := []string{
+		"kimi-dev-72b:free",
+		"kimi-k2:free",
+		"kimi-vl-a3b-thinking:free",
+	}
+
+	for _, model := range testCases {
+		cost := CalculateCostDetailed(model, 1_000_000, 1_000_000, 0, 0, 0)
+		if cost != 0 {
+			t.Errorf("%s: 免费模型成本应为0，实际 %.6f", model, cost)
+		}
+	}
+}
+
+func TestCalculateCost_MoonshotFuzzyMatch(t *testing.T) {
+	cost := CalculateCostDetailed("kimi-k2-0905-preview", 1_000_000, 1_000_000, 1_000_000, 0, 0)
+	expected := 0.40 + 2.00 + 0.15
+	if !floatEquals(cost, expected, 0.000001) {
+		t.Errorf("kimi-k2-0905-preview 模糊匹配: 成本 = %.6f, 期望 %.6f", cost, expected)
+	}
+}
+
 func TestCalculateCost_DeepSeekModels(t *testing.T) {
 	// deepseek-r1: Input $0.30/1M, Output $1.20/1M
 	costR1 := CalculateCostDetailed("deepseek-r1", 1_000_000, 1_000_000, 0, 0, 0)
