@@ -985,6 +985,10 @@ window.I18N_LOCALES['en'] = {
   'channels.urlStatusNormal': 'Normal',
   'channels.urlStatusCooldown': 'Cooldown',
   'channels.urlStatusUnknown': 'Unknown',
+  'channels.urlStatusDisabled': 'Disabled',
+  'channels.urlToggle': 'Toggle',
+  'channels.urlDisable': 'Disable this URL',
+  'channels.urlEnable': 'Enable this URL',
   // Key Export
   'channels.exportKeys': 'Export',
   'channels.exportKeysTitle': 'Export API Keys',

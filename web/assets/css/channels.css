@@ -1545,6 +1545,45 @@
       background: var(--neutral-400);
     }
 
+    .inline-url-status-badge--disabled {
+      background: #FEF3C7;
+      color: #D97706;
+    }
+
+    .inline-url-status-dot--disabled {
+      background: #D97706;
+    }
+
+    .inline-url-toggle-btn {
+      border: none;
+      border-radius: 4px;
+      padding: 3px 6px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: opacity 0.15s;
+    }
+
+    .inline-url-toggle-btn:hover {
+      opacity: 0.8;
+    }
+
+    .inline-url-toggle-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .inline-url-toggle-btn--enabled {
+      background: #DCFCE7;
+      color: #16A34A;
+    }
+
+    .inline-url-toggle-btn--disabled {
+      background: #FEE2E2;
+      color: #DC2626;
+    }
+
     .model-select {
       color: var(--neutral-900);
       background: rgba(255, 255, 255, 0.9);

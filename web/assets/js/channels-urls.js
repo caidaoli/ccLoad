@@ -65,6 +65,10 @@ function updateSelectAllURLsCheckbox() {
   checkbox.indeterminate = true;
 }
 
+function shouldShowURLExtras() {
+  return inlineURLTableData.length > 1;
+}
+
 function createURLRow(index) {
   const tplData = {
     index: index,
@@ -82,8 +86,8 @@ function createURLRow(index) {
     checkbox.checked = true;
   }
 
-  // 多URL时注入统计列
-  if (hasURLStats()) {
+  // 多URL已保存渠道：注入统计列和禁用按钮
+  if (shouldShowURLExtras()) {
     const url = (inlineURLTableData[index] || '').trim();
     const stat = urlStatsMap[url];
     const actionsTd = row.querySelectorAll('td');
@@ -104,9 +108,30 @@ function createURLRow(index) {
     requestsTd.setAttribute('data-mobile-label', window.t('common.requests'));
     requestsTd.innerHTML = formatURLRequests(stat);
 
+    const toggleTd = document.createElement('td');
+    toggleTd.className = 'inline-url-cell-center inline-url-col-toggle';
+    toggleTd.setAttribute('data-mobile-label', window.t('channels.urlToggle'));
+    if (url) {
+      const isDisabled = stat && stat.disabled;
+      const toggleBtn = document.createElement('button');
+      toggleBtn.type = 'button';
+      toggleBtn.className = `inline-url-toggle-btn ${isDisabled ? 'inline-url-toggle-btn--disabled' : 'inline-url-toggle-btn--enabled'}`;
+      toggleBtn.title = isDisabled ? window.t('channels.urlEnable') : window.t('channels.urlDisable');
+      toggleBtn.innerHTML = isDisabled
+        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>'
+        : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>';
+      toggleBtn.dataset.url = url;
+      toggleBtn.dataset.disabled = isDisabled ? '1' : '0';
+      toggleBtn.addEventListener('click', () => toggleURLDisabled(toggleBtn));
+      toggleTd.appendChild(toggleBtn);
+    } else {
+      toggleTd.innerHTML = '<span class="inline-url-status-placeholder">--</span>';
+    }
+
     row.insertBefore(statusTd, lastTd);
     row.insertBefore(latencyTd, lastTd);
     row.insertBefore(requestsTd, lastTd);
+    row.insertBefore(toggleTd, lastTd);
   }
 
   return row;
@@ -361,7 +386,7 @@ async function fetchURLStats(channelId) {
         urlStatsMap[s.url] = s;
       }
     }
-    if (hasURLStats()) {
+    if (hasURLStats() || shouldShowURLExtras()) {
       renderInlineURLTable();
     }
   } catch (e) {
@@ -372,6 +397,11 @@ async function fetchURLStats(channelId) {
 function formatURLStatus(stat) {
   if (!stat) {
     return '<span class="inline-url-status-placeholder">--</span>';
+  }
+  if (stat.disabled) {
+    return '<span class="inline-url-status-badge inline-url-status-badge--disabled">'
+      + '<span class="inline-url-status-dot inline-url-status-dot--disabled"></span>'
+      + `${window.t('channels.urlStatusDisabled')}</span>`;
   }
   if (stat.cooled_down) {
     const remain = humanizeMS(stat.cooldown_remain_ms);
@@ -412,7 +442,7 @@ function updateURLStatsHeader() {
   // 移除已有的统计列头
   thead.querySelectorAll('.url-stats-th').forEach(el => el.remove());
 
-  if (!hasURLStats()) return;
+  if (!shouldShowURLExtras()) return;
 
   const actionsTh = thead.querySelector('th:last-child');
 
@@ -428,7 +458,41 @@ function updateURLStatsHeader() {
   requestsTh.className = 'url-stats-th inline-url-col-requests';
   requestsTh.textContent = window.t('channels.urlRequests');
 
+  const toggleTh = document.createElement('th');
+  toggleTh.className = 'url-stats-th inline-url-col-toggle';
+  toggleTh.textContent = window.t('channels.urlToggle');
+
   thead.insertBefore(statusTh, actionsTh);
   thead.insertBefore(latencyTh, actionsTh);
   thead.insertBefore(requestsTh, actionsTh);
+  thead.insertBefore(toggleTh, actionsTh);
+}
+
+async function toggleURLDisabled(btn) {
+  if (!editingChannelId) return;
+  const url = btn.dataset.url;
+  const isCurrentlyDisabled = btn.dataset.disabled === '1';
+  const endpoint = isCurrentlyDisabled ? 'url-enable' : 'url-disable';
+
+  btn.disabled = true;
+  try {
+    await fetchDataWithAuth(`/admin/channels/${editingChannelId}/${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    });
+    // 本地更新状态，避免依赖 fetchURLStats（单URL渠道后端返回空数组）
+    const newDisabled = !isCurrentlyDisabled;
+    if (!urlStatsMap[url]) {
+      urlStatsMap[url] = { url, latency_ms: -1, cooled_down: false, cooldown_remain_ms: 0, requests: 0, failures: 0, disabled: newDisabled };
+    } else {
+      urlStatsMap[url].disabled = newDisabled;
+    }
+    renderInlineURLTable();
+  } catch (e) {
+    console.error('Toggle URL failed', e);
+    window.showNotification(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
 }

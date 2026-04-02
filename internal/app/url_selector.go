@@ -50,9 +50,10 @@ type URLSelector struct {
 	cooldowns    map[urlKey]urlCooldownState
 	requests     map[urlKey]*urlRequestCount
 	probing      map[urlKey]time.Time
-	alpha        float64       // EWMA权重因子
-	cooldownBase time.Duration // 基础冷却时间
-	cooldownMax  time.Duration // 最大冷却时间
+	disabled     map[urlKey]bool // 手动禁用的URL（纯内存，重启恢复）
+	alpha        float64         // EWMA权重因子
+	cooldownBase time.Duration   // 基础冷却时间
+	cooldownMax  time.Duration   // 最大冷却时间
 	probeTimeout time.Duration
 	probeDial    func(ctx context.Context, network, address string) (net.Conn, error)
 	// 低频清理调度，避免 map 长期只增不减。
@@ -86,6 +87,7 @@ func NewURLSelector() *URLSelector {
 		cooldowns:       make(map[urlKey]urlCooldownState),
 		requests:        make(map[urlKey]*urlRequestCount),
 		probing:         make(map[urlKey]time.Time),
+		disabled:        make(map[urlKey]bool),
 		alpha:           0.3,
 		cooldownBase:    2 * time.Minute,
 		cooldownMax:     30 * time.Minute,
@@ -209,9 +211,13 @@ func (s *URLSelector) SelectURL(channelID int64, urls []string) (string, int) {
 		cooled  bool
 	}
 
-	candidates := make([]candidate, len(urls))
+	candidates := make([]candidate, 0, len(urls))
 	for i, u := range urls {
 		key := urlKey{channelID: channelID, url: u}
+		// 跳过手动禁用的URL
+		if s.disabled[key] {
+			continue
+		}
 		c := candidate{url: u, idx: i, latency: -1}
 
 		if e, ok := s.latencies[key]; ok {
@@ -220,7 +226,12 @@ func (s *URLSelector) SelectURL(channelID int64, urls []string) (string, int) {
 		if cd, ok := s.cooldowns[key]; ok && now.Before(cd.until) {
 			c.cooled = true
 		}
-		candidates[i] = c
+		candidates = append(candidates, c)
+	}
+
+	// 所有URL都被禁用：退化到原始列表（兜底，避免死锁）
+	if len(candidates) == 0 {
+		return urls[0], 0
 	}
 
 	// 分离可用和冷却中的候选
@@ -349,6 +360,7 @@ type URLStat struct {
 	CooldownRemainMs int64   `json:"cooldown_remain_ms"` // 剩余冷却时间（毫秒）
 	Requests         int64   `json:"requests"`           // 成功调用次数
 	Failures         int64   `json:"failures"`           // 失败调用次数
+	Disabled         bool    `json:"disabled"`           // 是否被手动禁用
 }
 
 // GetURLStats 返回指定渠道各URL的运行时状态（延迟、冷却）
@@ -362,6 +374,9 @@ func (s *URLSelector) GetURLStats(channelID int64, urls []string) []URLStat {
 		key := urlKey{channelID: channelID, url: u}
 		st := URLStat{URL: u, LatencyMs: -1}
 
+		if s.disabled[key] {
+			st.Disabled = true
+		}
 		if e, ok := s.latencies[key]; ok {
 			st.LatencyMs = e.value
 		}
@@ -404,9 +419,13 @@ func (s *URLSelector) SortURLs(channelID int64, urls []string) []sortedURL {
 		cooled  bool
 	}
 
-	candidates := make([]candidate, len(urls))
+	candidates := make([]candidate, 0, len(urls))
 	for i, u := range urls {
 		key := urlKey{channelID: channelID, url: u}
+		// 跳过手动禁用的URL
+		if s.disabled[key] {
+			continue
+		}
 		c := candidate{url: u, idx: i, latency: -1}
 		if e, ok := s.latencies[key]; ok {
 			c.latency = e.value
@@ -414,7 +433,16 @@ func (s *URLSelector) SortURLs(channelID int64, urls []string) []sortedURL {
 		if cd, ok := s.cooldowns[key]; ok && now.Before(cd.until) {
 			c.cooled = true
 		}
-		candidates[i] = c
+		candidates = append(candidates, c)
+	}
+
+	// 所有URL都被禁用：退化到原始列表
+	if len(candidates) == 0 {
+		result := make([]sortedURL, len(urls))
+		for i, u := range urls {
+			result[i] = sortedURL{url: u, idx: i}
+		}
+		return result
 	}
 
 	// 先随机打乱，再稳定排序
@@ -453,6 +481,30 @@ func (s *URLSelector) SortURLs(channelID int64, urls []string) []sortedURL {
 		result[i] = sortedURL{url: c.url, idx: c.idx}
 	}
 	return result
+}
+
+// DisableURL 手动禁用指定URL，使其不再被选择
+func (s *URLSelector) DisableURL(channelID int64, url string) {
+	key := urlKey{channelID: channelID, url: url}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.disabled[key] = true
+}
+
+// EnableURL 重新启用手动禁用的URL
+func (s *URLSelector) EnableURL(channelID int64, url string) {
+	key := urlKey{channelID: channelID, url: url}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.disabled, key)
+}
+
+// IsDisabled 检查URL是否被手动禁用
+func (s *URLSelector) IsDisabled(channelID int64, url string) bool {
+	key := urlKey{channelID: channelID, url: url}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.disabled[key]
 }
 
 // extractHostPort 从URL字符串提取 host:port，用于TCP连接测试。

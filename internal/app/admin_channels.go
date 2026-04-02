@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -302,6 +303,60 @@ func (s *Server) HandleChannelURLStats(c *gin.Context) {
 
 	stats := s.urlSelector.GetURLStats(id, urls)
 	RespondJSON(c, http.StatusOK, stats)
+}
+
+// HandleURLDisable 手动禁用渠道的指定URL
+// POST /admin/channels/:id/url-disable
+func (s *Server) HandleURLDisable(c *gin.Context) {
+	s.handleURLToggle(c, true)
+}
+
+// HandleURLEnable 重新启用渠道的指定URL
+// POST /admin/channels/:id/url-enable
+func (s *Server) HandleURLEnable(c *gin.Context) {
+	s.handleURLToggle(c, false)
+}
+
+func (s *Server) handleURLToggle(c *gin.Context, disable bool) {
+	id, err := ParseInt64Param(c, "id")
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+
+	var req struct {
+		URL string `json:"url" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "url is required")
+		return
+	}
+
+	cfg, err := s.store.GetConfig(c.Request.Context(), id)
+	if err != nil {
+		RespondErrorMsg(c, http.StatusNotFound, "channel not found")
+		return
+	}
+
+	// 验证URL属于该渠道
+	urls := cfg.GetURLs()
+	if !slices.Contains(urls, req.URL) {
+		RespondErrorMsg(c, http.StatusBadRequest, "url not found in channel")
+		return
+	}
+
+	if s.urlSelector == nil {
+		RespondErrorMsg(c, http.StatusServiceUnavailable, "url selector not available")
+		return
+	}
+
+	if disable {
+		s.urlSelector.DisableURL(id, req.URL)
+	} else {
+		s.urlSelector.EnableURL(id, req.URL)
+	}
+
+	RespondJSON(c, http.StatusOK, gin.H{"ok": true})
 }
 
 // 更新渠道

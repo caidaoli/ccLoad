@@ -985,6 +985,10 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.urlStatusNormal': '正常',
   'channels.urlStatusCooldown': '冷却中',
   'channels.urlStatusUnknown': '未探测',
+  'channels.urlStatusDisabled': '已禁用',
+  'channels.urlToggle': '开关',
+  'channels.urlDisable': '禁用此URL',
+  'channels.urlEnable': '启用此URL',
   // Key导出
   'channels.exportKeys': '导出',
   'channels.exportKeysTitle': '导出 API Keys',
