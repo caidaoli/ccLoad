@@ -597,7 +597,7 @@ function populateModelSelector() {
     return;
   }
 
-  if (typedModel) {
+  if (typedModel && models.includes(typedModel)) {
     selectedModelName = typedModel;
   } else if (!selectedModelName || !models.includes(selectedModelName)) {
     selectedModelName = models[0];
