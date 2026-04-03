@@ -212,11 +212,11 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 	}
 
 	var req struct {
-		Description   *string  `json:"description"`
-		IsActive      *bool    `json:"is_active"`
-		ExpiresAt     *int64   `json:"expires_at"`
-		AllowedModels []string `json:"allowed_models"` // 允许的模型列表，空数组表示清除限制
-		CostLimitUSD  *float64 `json:"cost_limit_usd"` // 费用上限（0=无限制）
+		Description   *string   `json:"description"`
+		IsActive      *bool     `json:"is_active"`
+		ExpiresAt     *int64    `json:"expires_at"`
+		AllowedModels *[]string `json:"allowed_models"` // nil=不更新，空数组=清除限制
+		CostLimitUSD  *float64  `json:"cost_limit_usd"` // 费用上限（0=无限制）
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -248,8 +248,9 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 	if req.ExpiresAt != nil {
 		token.ExpiresAt = req.ExpiresAt
 	}
-	// allowed_models 总是更新（空数组表示清除限制）
-	token.AllowedModels = req.AllowedModels
+	if req.AllowedModels != nil {
+		token.AllowedModels = *req.AllowedModels
+	}
 	// cost_limit_usd 只有传入时才更新
 	if req.CostLimitUSD != nil {
 		token.SetCostLimitUSD(*req.CostLimitUSD)

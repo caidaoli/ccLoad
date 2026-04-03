@@ -528,23 +528,48 @@ func (s *AuthService) ReloadAuthTokens() error {
 	return nil
 }
 
-// IsModelAllowed 检查令牌是否允许访问指定模型
-// 如果令牌没有模型限制，返回 true
-func (s *AuthService) IsModelAllowed(tokenHash, model string) bool {
+func (s *AuthService) getAllowedModelSet(tokenHash string) (map[string]struct{}, bool) {
 	s.authTokensMux.RLock()
 	allowedModels, hasRestriction := s.authTokenModels[tokenHash]
 	s.authTokensMux.RUnlock()
 
+	if !hasRestriction || len(allowedModels) == 0 {
+		return nil, false
+	}
+
+	allowedSet := make(map[string]struct{}, len(allowedModels))
+	for _, model := range allowedModels {
+		allowedSet[strings.ToLower(model)] = struct{}{}
+	}
+	return allowedSet, true
+}
+
+// FilterAllowedModels 按 token 的模型限制过滤候选模型列表。
+// 无限制时原样返回，保持“模型列表可见性”和“实际请求可用性”使用同一套规则。
+func (s *AuthService) FilterAllowedModels(tokenHash string, models []string) []string {
+	allowedSet, hasRestriction := s.getAllowedModelSet(tokenHash)
+	if !hasRestriction || len(models) == 0 {
+		return models
+	}
+
+	filtered := make([]string, 0, len(models))
+	for _, model := range models {
+		if _, ok := allowedSet[strings.ToLower(model)]; ok {
+			filtered = append(filtered, model)
+		}
+	}
+	return filtered
+}
+
+// IsModelAllowed 检查令牌是否允许访问指定模型
+// 如果令牌没有模型限制，返回 true
+func (s *AuthService) IsModelAllowed(tokenHash, model string) bool {
+	allowedSet, hasRestriction := s.getAllowedModelSet(tokenHash)
 	if !hasRestriction {
 		return true // 无限制
 	}
-
-	for _, m := range allowedModels {
-		if strings.EqualFold(m, model) {
-			return true
-		}
-	}
-	return false
+	_, ok := allowedSet[strings.ToLower(model)]
+	return ok
 }
 
 // IsCostLimitExceeded 检查令牌是否超过费用限额（微美元，整数比较）

@@ -10,6 +10,20 @@ import (
 // Gemini API 特殊处理
 // ============================================================================
 
+func (s *Server) filterVisibleModelsForRequest(c *gin.Context, models []string) []string {
+	if s.authService == nil {
+		return models
+	}
+
+	tokenHash, _ := c.Get("token_hash")
+	tokenHashStr, _ := tokenHash.(string)
+	if tokenHashStr == "" {
+		return models
+	}
+
+	return s.authService.FilterAllowedModels(tokenHashStr, models)
+}
+
 // handleListGeminiModels 处理 GET /v1beta/models 请求，返回本地 Gemini 模型列表
 // 从proxy.go提取，遵循SRP原则
 func (s *Server) handleListGeminiModels(c *gin.Context) {
@@ -21,6 +35,7 @@ func (s *Server) handleListGeminiModels(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load models"})
 		return
 	}
+	models = s.filterVisibleModelsForRequest(c, models)
 
 	// 构造 Gemini API 响应格式
 	type ModelInfo struct {
@@ -51,6 +66,7 @@ func (s *Server) handleListOpenAIModels(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load models"})
 		return
 	}
+	models = s.filterVisibleModelsForRequest(c, models)
 
 	// 构造 OpenAI API 响应格式
 	type ModelInfo struct {

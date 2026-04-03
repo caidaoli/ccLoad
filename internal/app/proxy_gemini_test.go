@@ -90,4 +90,70 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 			t.Fatalf("unexpected resp: %+v", resp)
 		}
 	})
+
+	t.Run("handleListOpenAIModels filters by token allowed models", func(t *testing.T) {
+		server.authService = newTestAuthService(t)
+		tokenHash := model.HashToken("restricted-openai-token")
+		server.authService.authTokensMux.Lock()
+		server.authService.authTokenModels[tokenHash] = []string{"gpt-4o"}
+		server.authService.authTokensMux.Unlock()
+
+		_, err := store.CreateConfig(ctx, &model.Config{
+			Name:        "o2",
+			URL:         "https://example.com",
+			Priority:    2,
+			Enabled:     true,
+			ChannelType: "openai",
+			ModelEntries: []model.ModelEntry{
+				{Model: "gpt-5"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig openai extra failed: %v", err)
+		}
+
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/v1/models", nil))
+		c.Set("token_hash", tokenHash)
+
+		server.handleListOpenAIModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		var resp struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+		if len(resp.Data) != 1 || resp.Data[0].ID != "gpt-4o" {
+			t.Fatalf("unexpected filtered resp: %+v", resp)
+		}
+	})
+
+	t.Run("handleListGeminiModels filters by token allowed models", func(t *testing.T) {
+		server.authService = newTestAuthService(t)
+		tokenHash := model.HashToken("restricted-gemini-token")
+		server.authService.authTokensMux.Lock()
+		server.authService.authTokenModels[tokenHash] = []string{"gemini-1.5-pro"}
+		server.authService.authTokensMux.Unlock()
+
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/v1beta/models", nil))
+		c.Set("token_hash", tokenHash)
+
+		server.handleListGeminiModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		var resp struct {
+			Models []struct {
+				Name string `json:"name"`
+			} `json:"models"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+		if len(resp.Models) != 1 || resp.Models[0].Name != "models/gemini-1.5-pro" {
+			t.Fatalf("unexpected filtered resp: %+v", resp)
+		}
+	})
 }

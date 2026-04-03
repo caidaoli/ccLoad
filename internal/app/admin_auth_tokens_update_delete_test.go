@@ -132,6 +132,41 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 			t.Fatalf("AllowedModels=%v, want 2 items", updated.AllowedModels)
 		}
 	})
+
+	t.Run("preserve allowed models when field omitted", func(t *testing.T) {
+		token2 := &model.AuthToken{
+			Token:         model.HashToken("plain-token-2"),
+			Description:   "keep-models",
+			IsActive:      true,
+			AllowedModels: []string{"keep-a", "keep-b"},
+		}
+		if err := store.CreateAuthToken(ctx, token2); err != nil {
+			t.Fatalf("CreateAuthToken token2 failed: %v", err)
+		}
+
+		body := map[string]any{
+			"description": "keep-models-updated",
+			"is_active":   false,
+		}
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/auth-tokens/2", body))
+		c.Params = gin.Params{{Key: "id", Value: "2"}}
+
+		server.HandleUpdateAuthToken(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		updated, err := store.GetAuthToken(ctx, token2.ID)
+		if err != nil {
+			t.Fatalf("GetAuthToken token2 failed: %v", err)
+		}
+		if updated.Description != "keep-models-updated" || updated.IsActive {
+			t.Fatalf("db state mismatch: desc=%q active=%v", updated.Description, updated.IsActive)
+		}
+		if len(updated.AllowedModels) != 2 || updated.AllowedModels[0] != "keep-a" || updated.AllowedModels[1] != "keep-b" {
+			t.Fatalf("AllowedModels=%v, want preserved values", updated.AllowedModels)
+		}
+	})
 }
 
 func TestHandleDeleteAuthToken(t *testing.T) {
