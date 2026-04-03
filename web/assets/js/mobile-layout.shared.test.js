@@ -30,6 +30,13 @@ function getLastRuleBody(css, selector) {
 test('共享样式在窄屏下压缩顶部导航、时间范围、筛选栏和弹窗', () => {
   assert.match(sharedCss, /--topbar-offset:\s*var\(--topbar-height\)/);
   assert.match(sharedCss, /\.top-layout\s+\.main-content\s*\{[^}]*padding-top:\s*var\(--topbar-offset\)/s);
+  assert.match(sharedCss, /\.topnav-link\s*\{[\s\S]*?white-space:\s*nowrap;/);
+
+  const compactDesktopSection = sharedCss.match(/@media\s*\(max-width:\s*1400px\)\s*\{[\s\S]*?\n\}/);
+  assert.ok(compactDesktopSection, '缺少共享窄桌面适配规则');
+  const compactDesktopCss = compactDesktopSection[0];
+
+  assert.match(compactDesktopCss, /\.brand-text\s*\{[\s\S]*?display:\s*none;/);
 
   const mobileSection = sharedCss.match(/@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\n\}/);
   assert.ok(mobileSection, '缺少共享移动端适配规则');

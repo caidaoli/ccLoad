@@ -447,6 +447,7 @@ body {
   color: var(--topbar-fg);
   text-decoration: none;
   font-weight: var(--font-medium);
+  white-space: nowrap;
   transition: background var(--duration-fast) var(--timing-function), color var(--duration-fast);
 }
 
@@ -3879,7 +3880,14 @@ body.trend-page .chart-info {
   }
 }
 
+@media (max-width: 1400px) {
+  .brand-text {
+    display: none;
+  }
+}
+
 @media (max-width: 1024px) {
+
   .login-page {
     flex-direction: column;
     gap: var(--space-8);
