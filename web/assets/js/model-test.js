@@ -775,7 +775,26 @@ function applyTestResultToRow(row, data) {
   }
 
   row.style.background = 'rgba(239, 68, 68, 0.1)';
-  const errMsg = data.error || i18nText('modelTest.testFailed', '测试失败');
+  let errMsg = '';
+  const apiError = data.api_error;
+  if (apiError && typeof apiError === 'object') {
+    if (typeof apiError.error === 'string' && apiError.error.trim()) {
+      errMsg = apiError.error.trim();
+    } else if (apiError.error && typeof apiError.error === 'object') {
+      if (typeof apiError.error.message === 'string' && apiError.error.message.trim()) {
+        errMsg = apiError.error.message.trim();
+      } else if (typeof apiError.error.error === 'string' && apiError.error.error.trim()) {
+        errMsg = apiError.error.error.trim();
+      } else if (typeof apiError.error.type === 'string' && apiError.error.type.trim()) {
+        errMsg = apiError.error.type.trim();
+      }
+    } else if (typeof apiError.message === 'string' && apiError.message.trim()) {
+      errMsg = apiError.message.trim();
+    }
+  }
+  if (!errMsg) {
+    errMsg = data.error || i18nText('modelTest.testFailed', '测试失败');
+  }
   row.querySelector('.response').textContent = errMsg;
   row.querySelector('.response').title = errMsg;
   row.querySelector('.cost').textContent = '-';

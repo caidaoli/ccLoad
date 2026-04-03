@@ -790,6 +790,70 @@ func TestHandleChannelTest_CodexJSONFailedResponseShouldBeFailure(t *testing.T) 
 	}
 }
 
+func TestHandleChannelTest_StringAPIErrorShouldExposeUpstreamMessage(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{
+			"error":"由于负载过高，为了尽量保证用户体验，本站已开启限流，当前用户本周无法使用，请下周重试",
+			"type":"error"
+		}`))
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+
+	ctx := context.Background()
+	cfg := &model.Config{
+		Name:         "test-string-api-error",
+		URL:          upstream.URL,
+		Priority:     1,
+		ModelEntries: []model.ModelEntry{{Model: "gpt-5.4"}},
+		Enabled:      true,
+		ChannelType:  "openai",
+	}
+	created, err := srv.store.CreateConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+
+	err = srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test-key"},
+	})
+	if err != nil {
+		t.Fatalf("添加 API key 失败: %v", err)
+	}
+
+	channelID := fmt.Sprintf("%d", created.ID)
+	reqBody := map[string]any{
+		"model":        "gpt-5.4",
+		"channel_type": "openai",
+		"stream":       false,
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", reqBody))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200, 实际 %d, 响应: %s", w.Code, w.Body.String())
+	}
+
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	dataSuccess, _ := resp.Data["success"].(bool)
+	if dataSuccess {
+		t.Fatalf("data.success 应为 false, data=%+v", resp.Data)
+	}
+
+	errorMsg, _ := resp.Data["error"].(string)
+	expected := "由于负载过高，为了尽量保证用户体验，本站已开启限流，当前用户本周无法使用，请下周重试"
+	if errorMsg != expected {
+		t.Fatalf("应返回上游字符串错误信息，实际: %q, data=%+v", errorMsg, resp.Data)
+	}
+}
+
 func TestShouldFallbackToNextURL_StructuredSoftErrors(t *testing.T) {
 	t.Run("key_level_soft_error_should_not_fallback_or_cooldown_url", func(t *testing.T) {
 		result := map[string]any{

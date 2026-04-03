@@ -321,13 +321,7 @@ func (s *Server) testChannelAPIWithURL(
 		var errorMsg string
 		var apiError map[string]any
 		if err := sonic.Unmarshal(bodyBytes, &apiError); err == nil {
-			if errInfo, ok := apiError["error"].(map[string]any); ok {
-				if msg, ok := errInfo["message"].(string); ok {
-					errorMsg = msg
-				} else if typeStr, ok := errInfo["type"].(string); ok {
-					errorMsg = typeStr
-				}
-			}
+			errorMsg = extractTestAPIErrorMessage(apiError)
 			result["api_error"] = apiError
 		} else {
 			result["raw_response"] = string(bodyBytes)
@@ -464,6 +458,11 @@ func (s *Server) testChannelAPIWithURL(
 					lastErrMsg = typeStr
 				}
 				// 记录完整错误对象
+				result["api_error"] = obj
+				continue
+			}
+			if errMsg, ok := obj["error"].(string); ok && strings.TrimSpace(errMsg) != "" {
+				lastErrMsg = strings.TrimSpace(errMsg)
 				result["api_error"] = obj
 				continue
 			}
@@ -636,6 +635,35 @@ func getResultInt(v any) (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func extractTestAPIErrorMessage(apiError map[string]any) string {
+	if apiError == nil {
+		return ""
+	}
+
+	switch errValue := apiError["error"].(type) {
+	case string:
+		if msg := strings.TrimSpace(errValue); msg != "" {
+			return msg
+		}
+	case map[string]any:
+		if msg, ok := errValue["message"].(string); ok && strings.TrimSpace(msg) != "" {
+			return strings.TrimSpace(msg)
+		}
+		if nested, ok := errValue["error"].(string); ok && strings.TrimSpace(nested) != "" {
+			return strings.TrimSpace(nested)
+		}
+		if typeStr, ok := errValue["type"].(string); ok && strings.TrimSpace(typeStr) != "" {
+			return strings.TrimSpace(typeStr)
+		}
+	}
+
+	if msg, ok := apiError["message"].(string); ok && strings.TrimSpace(msg) != "" {
+		return strings.TrimSpace(msg)
+	}
+
+	return ""
 }
 
 func getResultInt64(v any) (int64, bool) {
