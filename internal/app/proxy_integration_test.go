@@ -827,8 +827,11 @@ func TestProxy_SSEErrorEvent_TriggersCooldown(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		flusher, _ := w.(http.Flusher)
 		// 先正常发几个 chunk，然后发 error
+		// 这里首个 chunk 故意做大于 SSEBufferSize，确保代理已经向客户端提交过响应，
+		// 后续 error event 才会落到“只能冷却，不能同请求重试”的路径。
+		largeContent := strings.Repeat("Hi", SSEBufferSize)
 		chunks := []string{
-			`data: {"choices":[{"delta":{"content":"Hi"}}]}`,
+			fmt.Sprintf(`data: {"choices":[{"delta":{"content":"%s"}}]}`, largeContent),
 			`event: error` + "\n" + `data: {"error":{"message":"rate limit exceeded","type":"rate_limit_error"}}`,
 		}
 		for _, chunk := range chunks {
@@ -894,5 +897,71 @@ func TestProxy_SSEErrorEvent_TriggersCooldown(t *testing.T) {
 	}
 	if time.Until(until) <= 0 {
 		t.Fatalf("expected channel cooldown until in the future, got %v", until)
+	}
+}
+
+func TestProxy_SSEErrorEventBeforeClientOutput_RetriesNextChannel(t *testing.T) {
+	t.Parallel()
+
+	var firstCalls atomic.Int32
+	upstream1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = fmt.Fprint(w, "event: error\n")
+		_, _ = fmt.Fprint(w, "data: "+`{"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later.","param":null},"sequence_number":2}`+"\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer upstream1.Close()
+
+	var secondCalls atomic.Int32
+	upstream2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		chunks := []string{
+			`data: {"choices":[{"delta":{"content":"from-ch2"}}]}`,
+			`data: [DONE]`,
+		}
+		for _, chunk := range chunks {
+			_, _ = fmt.Fprintf(w, "%s\n\n", chunk)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer upstream2.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "ch1-overloaded", models: "gpt-4", apiKey: "sk-1", priority: 100},
+		{name: "ch2-ok", models: "gpt-4", apiKey: "sk-2", priority: 50},
+	}, map[int]string{0: upstream1.URL, 1: upstream2.URL})
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-4",
+		"stream":   true,
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 after retrying next channel, got %d: %s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "from-ch2") {
+		t.Fatalf("expected response body from second channel, got: %s", body)
+	}
+	if strings.Contains(body, "server_is_overloaded") {
+		t.Fatalf("expected first channel SSE error not to leak to client, body: %s", body)
+	}
+	if firstCalls.Load() != 1 {
+		t.Fatalf("expected first channel to be tried once, got %d", firstCalls.Load())
+	}
+	if secondCalls.Load() != 1 {
+		t.Fatalf("expected second channel to be tried once, got %d", secondCalls.Load())
 	}
 }

@@ -169,11 +169,31 @@ func (s *Server) handleErrorResponse(
 
 // streamAndParseResponse 根据Content-Type选择合适的流式传输策略并解析usage
 // 返回: (usageParser, streamErr)
-func streamAndParseResponse(ctx context.Context, body io.ReadCloser, w http.ResponseWriter, contentType string, channelType string, isStreaming bool) (usageParser, error) {
+func streamAndParseResponse(
+	ctx context.Context,
+	body io.ReadCloser,
+	w http.ResponseWriter,
+	contentType string,
+	channelType string,
+	isStreaming bool,
+	beforeWrite func(usageParser) error,
+) (usageParser, error) {
+	makeFeed := func(parser usageParser) func([]byte) error {
+		return func(data []byte) error {
+			if err := parser.Feed(data); err != nil {
+				return err
+			}
+			if beforeWrite != nil {
+				return beforeWrite(parser)
+			}
+			return nil
+		}
+	}
+
 	// SSE流式响应
 	if strings.Contains(contentType, "text/event-stream") {
 		parser := newSSEUsageParser(channelType)
-		streamErr := streamCopySSE(ctx, body, w, parser.Feed)
+		streamErr := streamCopySSE(ctx, body, w, makeFeed(parser))
 		return parser, streamErr
 	}
 
@@ -184,17 +204,17 @@ func streamAndParseResponse(ctx context.Context, body io.ReadCloser, w http.Resp
 
 		if looksLikeSSE(probe) {
 			parser := newSSEUsageParser(channelType)
-			sseErr := streamCopySSE(ctx, io.NopCloser(reader), w, parser.Feed)
+			sseErr := streamCopySSE(ctx, io.NopCloser(reader), w, makeFeed(parser))
 			return parser, sseErr
 		}
 		parser := newJSONUsageParser(channelType)
-		copyErr := streamCopy(ctx, io.NopCloser(reader), w, parser.Feed)
+		copyErr := streamCopy(ctx, io.NopCloser(reader), w, makeFeed(parser))
 		return parser, copyErr
 	}
 
 	// 非SSE响应：边转发边缓存
 	parser := newJSONUsageParser(channelType)
-	copyErr := streamCopy(ctx, body, w, parser.Feed)
+	copyErr := streamCopy(ctx, body, w, makeFeed(parser))
 	return parser, copyErr
 }
 
@@ -260,22 +280,46 @@ func (s *Server) handleSuccessResponse(
 		}
 	}
 
+	streamWriter := w
+	var deferredWriter *deferredResponseWriter
+	if reqCtx.isStreaming {
+		deferredWriter = newDeferredResponseWriter(w)
+		streamWriter = deferredWriter
+	}
+
 	// 写入响应头
-	filterAndWriteResponseHeaders(w, resp.Header)
-	w.WriteHeader(resp.StatusCode)
+	filterAndWriteResponseHeaders(streamWriter, resp.Header)
+	streamWriter.WriteHeader(resp.StatusCode)
 
 	// 流式传输并解析usage
 	contentType := resp.Header.Get("Content-Type")
 	parser, streamErr := streamAndParseResponse(
-		reqCtx.ctx, resp.Body, w, contentType, channelType, reqCtx.isStreaming,
+		reqCtx.ctx, resp.Body, streamWriter, contentType, channelType, reqCtx.isStreaming,
+		func(parser usageParser) error {
+			if deferredWriter == nil || deferredWriter.Committed() {
+				return nil
+			}
+			if parser.GetLastError() != nil {
+				return errAbortStreamBeforeWrite
+			}
+			deferredWriter.Commit()
+			return nil
+		},
 	)
+	abortedBeforeCommit := errors.Is(streamErr, errAbortStreamBeforeWrite)
+	if abortedBeforeCommit {
+		streamErr = nil
+	} else if deferredWriter != nil && !deferredWriter.Committed() {
+		deferredWriter.Commit()
+	}
 
 	// 构建结果
 	result := &fwResult{
-		Status:        resp.StatusCode,
-		Header:        hdrClone,
-		FirstByteTime: *firstBodyReadTimeSec,
-		BytesReceived: readStats.totalBytes, // 记录已接收字节数，用于499诊断
+		Status:            resp.StatusCode,
+		Header:            hdrClone,
+		FirstByteTime:     *firstBodyReadTimeSec,
+		BytesReceived:     readStats.totalBytes, // 记录已接收字节数，用于499诊断
+		ResponseCommitted: deferredWriter == nil || deferredWriter.Committed(),
 	}
 
 	// 提取usage数据和错误事件
@@ -584,8 +628,12 @@ func (s *Server) forwardAttempt(
 				res.Status = util.StatusSSEError // 597 - SSE error事件
 				res.StreamDiagMsg = fmt.Sprintf("SSE error event: %s", safeBodyToString(res.SSEErrorEvent))
 			}
-			// [FIX] 流式响应已开始（响应头已发送），重试不可能
-			// 只触发冷却+记录日志，不尝试重试（避免产生 499 混乱日志）
+			if !res.ResponseCommitted {
+				return s.handleProxyErrorResponse(
+					ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown,
+				)
+			}
+			// 流式响应已开始（响应头已发送），重试不可能
 			return s.handleStreamingErrorNoRetry(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
 		}
 
@@ -598,7 +646,12 @@ func (s *Server) forwardAttempt(
 			// 这将触发渠道级冷却，因为这通常是上游服务问题（网络不稳定、负载过高等）
 			res.Body = []byte(res.StreamDiagMsg)
 			res.Status = util.StatusStreamIncomplete // 599 - 流响应不完整
-			// [FIX] 流式响应已开始（响应头已发送），重试不可能
+			if !res.ResponseCommitted {
+				return s.handleProxyErrorResponse(
+					ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown,
+				)
+			}
+			// 流式响应已开始（响应头已发送），重试不可能
 			return s.handleStreamingErrorNoRetry(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
 		}
 

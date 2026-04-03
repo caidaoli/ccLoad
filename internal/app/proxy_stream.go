@@ -2,9 +2,12 @@ package app
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 )
+
+var errAbortStreamBeforeWrite = errors.New("abort stream before first client write")
 
 // ============================================================================
 // 流式传输数据结构
@@ -66,6 +69,9 @@ func streamCopyWithBufferSize(ctx context.Context, src io.Reader, dst http.Respo
 			// 这样当上游完整返回但客户端取消时，可以正确识别为"流完整"而非 499
 			if onData != nil {
 				if hookErr := onData(buf[:n]); hookErr != nil {
+					if errors.Is(hookErr, errAbortStreamBeforeWrite) {
+						return hookErr
+					}
 					_ = hookErr // 钩子错误不中断流传输（容错设计）
 				}
 			}
@@ -89,6 +95,66 @@ func streamCopyWithBufferSize(ctx context.Context, src io.Reader, dst http.Respo
 			return err
 		}
 	}
+}
+
+// deferredResponseWriter 延迟提交响应头，允许在首个可见输出前中止本次流并切换到其他上游。
+type deferredResponseWriter struct {
+	target    http.ResponseWriter
+	header    http.Header
+	status    int
+	committed bool
+}
+
+func newDeferredResponseWriter(target http.ResponseWriter) *deferredResponseWriter {
+	return &deferredResponseWriter{
+		target: target,
+		header: make(http.Header),
+	}
+}
+
+func (w *deferredResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *deferredResponseWriter) WriteHeader(status int) {
+	if w.committed {
+		return
+	}
+	w.status = status
+}
+
+func (w *deferredResponseWriter) Write(p []byte) (int, error) {
+	w.Commit()
+	return w.target.Write(p)
+}
+
+func (w *deferredResponseWriter) Flush() {
+	if !w.committed {
+		return
+	}
+	if flusher, ok := w.target.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *deferredResponseWriter) Commit() {
+	if w.committed {
+		return
+	}
+	for key, values := range w.header {
+		dstValues := append([]string(nil), values...)
+		w.target.Header()[key] = dstValues
+	}
+	status := w.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	w.target.WriteHeader(status)
+	w.committed = true
+}
+
+func (w *deferredResponseWriter) Committed() bool {
+	return w.committed
 }
 
 // streamCopy 流式复制（支持flusher与ctx取消）

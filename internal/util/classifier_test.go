@@ -655,6 +655,12 @@ func TestClassifySSEError(t *testing.T) {
 			reason:       "overloaded_error表示上游过载，应触发渠道级冷却",
 		},
 		{
+			name:         "service_unavailable_error_server_is_overloaded",
+			responseBody: []byte(`{"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later.","param":null},"sequence_number":2}`),
+			expected:     ErrorLevelChannel,
+			reason:       "service_unavailable_error/server_is_overloaded 表示上游服务过载，应触发渠道级冷却",
+		},
+		{
 			name:         "rate_limit_error",
 			responseBody: []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"请求过于频繁"}}`),
 			expected:     ErrorLevelKey,

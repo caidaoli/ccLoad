@@ -93,6 +93,10 @@ type fwResult struct {
 	// 虽然HTTP状态码是200，但error事件表示实际上发生了错误
 	SSEErrorEvent []byte // SSE流中检测到的最后一个error事件的完整JSON
 
+	// 响应是否已经提交给客户端（头或正文已发送）
+	// false 表示本次尝试仍可在同一请求内切换到其他Key/渠道
+	ResponseCommitted bool
+
 	// OpenAI service_tier（2026-03新增）
 	// 响应中的 service_tier 字段决定计费倍率：priority=2x, flex=0.5x, default=1x
 	ServiceTier string
