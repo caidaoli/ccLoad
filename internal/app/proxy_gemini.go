@@ -56,12 +56,21 @@ func (s *Server) handleListGeminiModels(c *gin.Context) {
 	})
 }
 
-// handleListOpenAIModels 处理 GET /v1/models 请求，返回本地 OpenAI 模型列表
+// detectModelsChannelType 根据请求头判断 /v1/models 应返回哪种渠道类型的模型
+// anthropic-version 头存在 → anthropic 渠道；否则 → openai 渠道
+func detectModelsChannelType(c *gin.Context) string {
+	if c.GetHeader("anthropic-version") != "" {
+		return "anthropic"
+	}
+	return "openai"
+}
+
+// handleListOpenAIModels 处理 GET /v1/models 请求，根据请求类型返回对应渠道的模型列表
 func (s *Server) handleListOpenAIModels(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	// 获取所有 openai 渠道的去重模型列表
-	models, err := s.getModelsByChannelType(ctx, "openai")
+	channelType := detectModelsChannelType(c)
+	models, err := s.getModelsByChannelType(ctx, channelType)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load models"})
 		return
