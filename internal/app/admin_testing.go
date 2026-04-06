@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"html"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"strings"
 	"time"
@@ -294,6 +296,18 @@ func (s *Server) testChannelAPIWithURL(
 			parsed := tester.Parse(resp.StatusCode, bodyBytes)
 			for k, v := range parsed {
 				result[k] = v
+			}
+
+			if success, ok := result["success"].(bool); !ok || success {
+				if _, ok := result["api_response"]; !ok {
+					result["success"] = false
+					result["error"] = summarizeUnexpectedTestResponse(contentType, bodyBytes)
+					if _, hasRaw := result["raw_response"]; !hasRaw {
+						result["raw_response"] = string(bodyBytes)
+					}
+					delete(result, "message")
+					return result
+				}
 			}
 
 			// 补齐成本信息（与代理计费口径一致：使用归一化后的可计费inputTokens）
@@ -664,6 +678,110 @@ func extractTestAPIErrorMessage(apiError map[string]any) string {
 	}
 
 	return ""
+}
+
+func summarizeUnexpectedTestResponse(contentType string, bodyBytes []byte) string {
+	body := strings.TrimSpace(string(bodyBytes))
+	if body == "" {
+		if ct := strings.TrimSpace(contentType); ct != "" {
+			return "上游返回空响应体: " + ct
+		}
+		return "上游返回空响应体"
+	}
+
+	if looksLikeHTMLResponse(contentType, body) {
+		if heading := extractHTMLTagText(body, "h1"); heading != "" {
+			return heading
+		}
+		if title := extractHTMLTagText(body, "title"); title != "" {
+			return title
+		}
+	}
+
+	if snippet := normalizeUnexpectedResponseText(stripHTMLTags(body)); snippet != "" {
+		return snippet
+	}
+	if ct := strings.TrimSpace(contentType); ct != "" {
+		return "上游返回了非预期响应: " + ct
+	}
+	return "上游返回了非预期响应"
+}
+
+func looksLikeHTMLResponse(contentType, body string) bool {
+	if ct := strings.TrimSpace(contentType); ct != "" {
+		if mediaType, _, err := mime.ParseMediaType(ct); err == nil {
+			switch strings.ToLower(mediaType) {
+			case "text/html", "application/xhtml+xml":
+				return true
+			}
+		}
+	}
+
+	bodyLower := strings.ToLower(body)
+	return strings.Contains(bodyLower, "<!doctype html") ||
+		strings.Contains(bodyLower, "<html") ||
+		strings.Contains(bodyLower, "<body") ||
+		strings.Contains(bodyLower, "<title")
+}
+
+func extractHTMLTagText(body, tag string) string {
+	tagLower := strings.ToLower(tag)
+	bodyLower := strings.ToLower(body)
+	openIdx := strings.Index(bodyLower, "<"+tagLower)
+	if openIdx < 0 {
+		return ""
+	}
+
+	contentStart := strings.Index(bodyLower[openIdx:], ">")
+	if contentStart < 0 {
+		return ""
+	}
+	contentStart += openIdx + 1
+
+	closeIdx := strings.Index(bodyLower[contentStart:], "</"+tagLower+">")
+	if closeIdx < 0 {
+		return ""
+	}
+
+	return normalizeUnexpectedResponseText(stripHTMLTags(body[contentStart : contentStart+closeIdx]))
+}
+
+func stripHTMLTags(body string) string {
+	var builder strings.Builder
+	builder.Grow(len(body))
+
+	inTag := false
+	for _, r := range body {
+		switch r {
+		case '<':
+			inTag = true
+		case '>':
+			if inTag {
+				inTag = false
+				builder.WriteByte(' ')
+			}
+		default:
+			if !inTag {
+				builder.WriteRune(r)
+			}
+		}
+	}
+
+	return html.UnescapeString(builder.String())
+}
+
+func normalizeUnexpectedResponseText(text string) string {
+	text = strings.TrimSpace(strings.Join(strings.Fields(text), " "))
+	if text == "" {
+		return ""
+	}
+
+	const maxRunes = 200
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	return string(runes[:maxRunes]) + "..."
 }
 
 func getResultInt64(v any) (int64, bool) {

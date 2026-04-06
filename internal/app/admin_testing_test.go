@@ -854,6 +854,87 @@ func TestHandleChannelTest_StringAPIErrorShouldExposeUpstreamMessage(t *testing.
 	}
 }
 
+func TestHandleChannelTest_HTMLBlockPageShouldBeFailure(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+	<meta charset="UTF-8">
+	<title>您的IP已被封锁</title>
+</head>
+<body>
+	<div class="container">
+		<h1>当前 IP 已被封锁</h1>
+		<p>暂时无法访问本站内容。</p>
+	</div>
+</body>
+</html>`))
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+
+	ctx := context.Background()
+	cfg := &model.Config{
+		Name:         "test-html-block-page",
+		URL:          upstream.URL,
+		Priority:     1,
+		ModelEntries: []model.ModelEntry{{Model: "gpt-5.4"}},
+		Enabled:      true,
+		ChannelType:  "openai",
+	}
+	created, err := srv.store.CreateConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+
+	err = srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test-key"},
+	})
+	if err != nil {
+		t.Fatalf("添加 API key 失败: %v", err)
+	}
+
+	channelID := fmt.Sprintf("%d", created.ID)
+	reqBody := map[string]any{
+		"model":        "gpt-5.4",
+		"channel_type": "openai",
+		"stream":       false,
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", reqBody))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200, 实际 %d, 响应: %s", w.Code, w.Body.String())
+	}
+
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	dataSuccess, _ := resp.Data["success"].(bool)
+	if dataSuccess {
+		t.Fatalf("HTML 封禁页必须判定为失败, data=%+v", resp.Data)
+	}
+
+	errorMsg, _ := resp.Data["error"].(string)
+	if !strings.Contains(errorMsg, "IP") || !strings.Contains(errorMsg, "封锁") {
+		t.Fatalf("应提炼出上游封禁信息，实际: %q, data=%+v", errorMsg, resp.Data)
+	}
+
+	rawResp, _ := resp.Data["raw_response"].(string)
+	if !strings.Contains(rawResp, "<title>您的IP已被封锁</title>") {
+		t.Fatalf("应保留原始 HTML 响应，实际: %q", rawResp)
+	}
+
+	if message, _ := resp.Data["message"].(string); message != "" {
+		t.Fatalf("失败响应不应返回成功文案，实际: %q", message)
+	}
+}
+
 func TestShouldFallbackToNextURL_StructuredSoftErrors(t *testing.T) {
 	t.Run("key_level_soft_error_should_not_fallback_or_cooldown_url", func(t *testing.T) {
 		result := map[string]any{
