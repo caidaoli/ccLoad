@@ -493,6 +493,9 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		if err != nil {
 			t.Errorf("setting %q not found: %v", key, err)
 		}
+		if key == "channel_check_interval_hours" && val != "0" {
+			t.Errorf("setting %q default = %q, want 0", key, val)
+		}
 	}
 
 	// 验证 idempotent：再次 init 不应报错

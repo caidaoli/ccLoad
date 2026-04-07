@@ -4,6 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const html = fs.readFileSync(path.join(__dirname, '..', '..', 'channels.html'), 'utf8');
+const sharedCss = fs.readFileSync(path.join(__dirname, '..', 'css', 'styles.css'), 'utf8');
+const channelsCss = fs.readFileSync(path.join(__dirname, '..', 'css', 'channels.css'), 'utf8');
 const initScript = fs.readFileSync(path.join(__dirname, 'channels-init.js'), 'utf8');
 const modalsScript = fs.readFileSync(path.join(__dirname, 'channels-modals.js'), 'utf8');
 
@@ -62,6 +64,14 @@ test('channels 页 modal 壳层保留 DOM 契约且不再依赖静态 inline 样
   assert.doesNotMatch(keyExportSection, /style=/);
   assert.doesNotMatch(modelImportSection, /style=/);
   assert.doesNotMatch(sortSection, /style=/);
+});
+
+test('channels 页定时检测开关默认隐藏，由系统设置控制显示', () => {
+  assert.match(html, /id="channelScheduledCheckEnabledWrapper" class="form-label channel-editor-checkbox-label" hidden/);
+  assert.match(sharedCss, /\.settings-group-nav-section\[hidden\]\s*\{\s*display:\s*none\s*!important;/);
+  assert.match(channelsCss, /channel-editor-checkbox-label\[hidden\]\s*\{\s*display:\s*none\s*!important;/);
+  assert.match(modalsScript, /fetchDataWithAuth\('\/admin\/settings\/channel_check_interval_hours'\)/);
+  assert.match(modalsScript, /scheduledCheckWrapper\.hidden = !scheduledCheckEnabledByConfig;/);
 });
 
 test('channels-init.js 使用集中绑定处理固定控件动作', () => {

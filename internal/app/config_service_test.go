@@ -23,6 +23,9 @@ func TestConfigService_LoadDefaults_Idempotent(t *testing.T) {
 	if err := cs.LoadDefaults(ctx); err != nil {
 		t.Fatalf("LoadDefaults second call should be no-op: %v", err)
 	}
+	if got := cs.GetInt("channel_check_interval_hours", -1); got != 0 {
+		t.Fatalf("channel_check_interval_hours default = %d, want 0", got)
+	}
 }
 
 func TestConfigService_Getters_FromCache(t *testing.T) {

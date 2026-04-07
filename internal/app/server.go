@@ -290,12 +290,14 @@ func NewServer(store storage.Store) *Server {
 	s.wg.Add(1)
 	go s.stateCleanupLoop()
 
-	channelCheckIntervalHours := configService.GetInt("channel_check_interval_hours", defaultChannelCheckIntervalHours)
-	if channelCheckIntervalHours < 1 {
-		log.Printf("[WARN] 无效的 channel_check_interval_hours=%d（必须 >= 1），已使用默认值 %d", channelCheckIntervalHours, defaultChannelCheckIntervalHours)
-		channelCheckIntervalHours = defaultChannelCheckIntervalHours
+	channelCheckIntervalHours := normalizeChannelCheckIntervalHours(
+		configService.GetInt("channel_check_interval_hours", defaultChannelCheckIntervalHours),
+	)
+	if channelCheckIntervalHours == 0 {
+		log.Print("[INFO] 渠道定时检测未启用（channel_check_interval_hours=0）")
+	} else {
+		s.startScheduledChannelCheckLoop(time.Duration(channelCheckIntervalHours) * time.Hour)
 	}
-	s.startScheduledChannelCheckLoop(time.Duration(channelCheckIntervalHours) * time.Hour)
 
 	return s
 

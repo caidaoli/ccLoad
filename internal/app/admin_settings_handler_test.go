@@ -121,6 +121,57 @@ func TestAdminSettingsHandlers(t *testing.T) {
 		}
 	})
 
+	t.Run("AdminGetSetting_returns_latest_db_value_before_restart", func(t *testing.T) {
+		if err := store.UpdateSetting(context.Background(), "channel_check_interval_hours", "1"); err != nil {
+			t.Fatalf("failed to seed setting in db: %v", err)
+		}
+
+		seed, err := store.GetSetting(context.Background(), "channel_check_interval_hours")
+		if err != nil {
+			t.Fatalf("failed to read seeded setting: %v", err)
+		}
+		seed.Value = "1"
+
+		server.configService.mu.Lock()
+		server.configService.cache["channel_check_interval_hours"] = seed
+		server.configService.mu.Unlock()
+
+		updateCtx, updateW := newTestContext(t, newJSONRequestBytes(http.MethodPut, "/admin/settings/channel_check_interval_hours", []byte(`{"value":"0"}`)))
+		updateCtx.Params = gin.Params{{Key: "key", Value: "channel_check_interval_hours"}}
+
+		server.AdminUpdateSetting(updateCtx)
+
+		if updateW.Code != http.StatusOK {
+			t.Fatalf("update status=%d, want %d body=%s", updateW.Code, http.StatusOK, updateW.Body.String())
+		}
+
+		select {
+		case <-restartCh:
+		case <-time.After(1 * time.Second):
+			t.Fatal("expected restart triggered")
+		}
+
+		getCtx, getW := newTestContext(t, newRequest(http.MethodGet, "/admin/settings/channel_check_interval_hours", nil))
+		getCtx.Params = gin.Params{{Key: "key", Value: "channel_check_interval_hours"}}
+
+		server.AdminGetSetting(getCtx)
+
+		if getW.Code != http.StatusOK {
+			t.Fatalf("get status=%d, want %d body=%s", getW.Code, http.StatusOK, getW.Body.String())
+		}
+
+		resp := mustParseAPIResponse[*model.SystemSetting](t, getW.Body.Bytes())
+		if !resp.Success {
+			t.Fatalf("success=false, error=%q", resp.Error)
+		}
+		if resp.Data == nil {
+			t.Fatal("data is nil, want SystemSetting")
+		}
+		if resp.Data.Value != "0" {
+			t.Fatalf("data.value=%q, want 0", resp.Data.Value)
+		}
+	})
+
 	t.Run("AdminResetSetting_ok_triggers_restart", func(t *testing.T) {
 		// 先更新为一个不同值，再reset，最后验证数据库里变回默认值。
 		if err := store.UpdateSetting(context.Background(), "log_retention_days", "30"); err != nil {

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -43,10 +44,15 @@ func (s *Server) AdminGetSetting(c *gin.Context) {
 		return
 	}
 
-	// 从缓存读取
-	setting := s.configService.GetSetting(key)
-	if setting == nil {
+	// 管理接口必须返回持久化后的最新值，不能复用等待重启的运行时缓存。
+	setting, err := s.configService.GetSettingFresh(c.Request.Context(), key)
+	if errors.Is(err, model.ErrSettingNotFound) {
 		RespondErrorMsg(c, http.StatusNotFound, fmt.Sprintf("setting not found: %s", key))
+		return
+	}
+	if err != nil {
+		log.Printf("[ERROR] AdminGetSetting failed for key=%s: %v", key, err)
+		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
 
@@ -195,8 +201,8 @@ func validateSettingValue(key, valueType, value string) error {
 				return fmt.Errorf("max_key_retries must be >= 1")
 			}
 		case "channel_check_interval_hours":
-			if intVal < 1 {
-				return fmt.Errorf("channel_check_interval_hours must be >= 1")
+			if intVal < 0 {
+				return fmt.Errorf("channel_check_interval_hours must be >= 0")
 			}
 		case "log_retention_days":
 			if intVal != LogRetentionDaysDisabled && (intVal < LogRetentionDaysMin || intVal > LogRetentionDaysMax) {

@@ -19,8 +19,9 @@ func TestValidateSettingValue(t *testing.T) {
 
 		{name: "int_max_key_retries_reject_0", key: "max_key_retries", valueType: "int", value: "0", wantErr: true},
 		{name: "int_max_key_retries_ok_1", key: "max_key_retries", valueType: "int", value: "1", wantErr: false},
-		{name: "int_channel_check_interval_reject_0", key: "channel_check_interval_hours", valueType: "int", value: "0", wantErr: true},
+		{name: "int_channel_check_interval_ok_0", key: "channel_check_interval_hours", valueType: "int", value: "0", wantErr: false},
 		{name: "int_channel_check_interval_ok_1", key: "channel_check_interval_hours", valueType: "int", value: "1", wantErr: false},
+		{name: "int_channel_check_interval_reject_negative", key: "channel_check_interval_hours", valueType: "int", value: "-1", wantErr: true},
 
 		{name: "int_log_retention_days_ok_disabled", key: "log_retention_days", valueType: "int", value: "-1", wantErr: false},
 		{name: "int_log_retention_days_reject_0", key: "log_retention_days", valueType: "int", value: "0", wantErr: true},

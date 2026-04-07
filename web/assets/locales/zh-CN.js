@@ -817,7 +817,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'settings.desc.non_stream_timeout': '非流式请求超时(秒,0=禁用)',
   'settings.desc.model_fuzzy_match': '模型匹配失败时，使用子串模糊匹配(多匹配时选最新版本)',
   'settings.desc.channel_test_content': '渠道测试默认内容',
-  'settings.desc.channel_check_interval_hours': '渠道定时检测间隔(小时,修改后重启生效)',
+  'settings.desc.channel_check_interval_hours': '渠道定时检测间隔(小时,0=关闭,修改后重启生效)',
   'settings.desc.channel_stats_range': '渠道管理费用统计范围',
   'settings.desc.enable_health_score': '启用基于健康度的渠道动态排序',
   'settings.desc.success_rate_penalty_weight': '成功率惩罚权重(乘以失败率)',

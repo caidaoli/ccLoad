@@ -40,6 +40,28 @@ func createScheduledCheckChannel(t *testing.T, srv *Server, cfg *model.Config, k
 	return created
 }
 
+func TestNormalizeChannelCheckIntervalHours(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   int
+		want int
+	}{
+		{name: "positive_kept", in: 5, want: 5},
+		{name: "zero_disables", in: 0, want: 0},
+		{name: "negative_clamped_to_zero", in: -3, want: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeChannelCheckIntervalHours(tt.in); got != tt.want {
+				t.Fatalf("normalizeChannelCheckIntervalHours(%d) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestExecuteChannelTest_SuccessResetsCooldowns(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

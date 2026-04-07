@@ -10,7 +10,14 @@ import (
 	"ccLoad/internal/testutil"
 )
 
-const defaultChannelCheckIntervalHours = 5
+const defaultChannelCheckIntervalHours = 0
+
+func normalizeChannelCheckIntervalHours(hours int) int {
+	if hours < 0 {
+		return 0
+	}
+	return hours
+}
 
 func (s *Server) startScheduledChannelCheckLoop(interval time.Duration) {
 	if s == nil || interval <= 0 {

@@ -6,6 +6,23 @@ function setChannelModalTitle(i18nKey) {
   titleEl.textContent = window.t(i18nKey);
 }
 
+async function syncScheduledCheckVisibility() {
+  const scheduledCheckWrapper = document.getElementById('channelScheduledCheckEnabledWrapper');
+  if (!scheduledCheckWrapper) return false;
+
+  let scheduledCheckEnabledByConfig = false;
+  try {
+    const setting = await fetchDataWithAuth('/admin/settings/channel_check_interval_hours');
+    const intervalHours = Number(setting && setting.value);
+    scheduledCheckEnabledByConfig = Number.isFinite(intervalHours) && intervalHours > 0;
+  } catch (error) {
+    console.warn('Failed to load channel check interval setting', error);
+  }
+
+  scheduledCheckWrapper.hidden = !scheduledCheckEnabledByConfig;
+  return scheduledCheckEnabledByConfig;
+}
+
 async function resolveEditableChannel(id) {
   const cachedChannel = Array.isArray(channels) ? channels.find(c => c.id === id) : null;
   if (cachedChannel) {
@@ -110,9 +127,10 @@ function initChannelEditorActions() {
   }
 }
 
-function showAddModal() {
+async function showAddModal() {
   editingChannelId = null;
   currentChannelKeyCooldowns = [];
+  await syncScheduledCheckVisibility();
 
   setChannelModalTitle('channels.addChannel');
   document.getElementById('channelForm').reset();
@@ -145,6 +163,7 @@ function showAddModal() {
 async function editChannel(id) {
   const channel = await resolveEditableChannel(id);
   if (!channel) return;
+  await syncScheduledCheckVisibility();
 
   editingChannelId = id;
 
@@ -788,6 +807,7 @@ function batchRefreshSelectedChannelsReplace() {
 async function copyChannel(id, name) {
   const channel = channels.find(c => c.id === id);
   if (!channel) return;
+  await syncScheduledCheckVisibility();
 
   const copiedName = generateCopyName(name);
 

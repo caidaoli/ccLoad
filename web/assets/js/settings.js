@@ -193,40 +193,59 @@ function markChanged(input) {
   }
 }
 
+function getSettingControl(key) {
+  const input = document.getElementById(key);
+  if (input) {
+    return {
+      input,
+      row: input.closest('tr'),
+      value: input.value
+    };
+  }
+
+  const radios = document.querySelectorAll(`input[name="${key}"]`);
+  if (radios.length === 0) return null;
+
+  const checkedRadio = document.querySelector(`input[name="${key}"]:checked`);
+  return {
+    input: radios[0],
+    radios,
+    row: radios[0].closest('tr'),
+    value: checkedRadio ? checkedRadio.value : ''
+  };
+}
+
+function syncSettingState(key, value) {
+  const normalizedValue = String(value);
+  const control = getSettingControl(key);
+
+  if (control?.radios) {
+    for (const radio of control.radios) {
+      radio.checked = radio.value === normalizedValue
+        || (normalizedValue === '1' && radio.value === 'true')
+        || (normalizedValue === '0' && radio.value === 'false');
+    }
+  } else if (control?.input) {
+    control.input.value = normalizedValue;
+  }
+
+  originalSettings[key] = normalizedValue;
+  if (control?.row) {
+    control.row.style.background = '';
+  }
+}
+
 async function saveAllSettings() {
   // 收集所有变更
   const updates = {};
-  const needsRestartKeys = [];
-  const processedRadioGroups = new Set();
 
   for (const key of Object.keys(originalSettings)) {
-    // 先尝试通过 id 查找（number/text 类型）
-    let input = document.getElementById(key);
-    let currentValue;
+    const control = getSettingControl(key);
+    if (!control) continue;
 
-    if (input) {
-      currentValue = input.value;
-    } else {
-      // 尝试通过 name 查找 radio 组（bool 类型）
-      if (processedRadioGroups.has(key)) continue;
-      const radios = document.querySelectorAll(`input[name="${key}"]`);
-      if (radios.length > 0) {
-        processedRadioGroups.add(key);
-        const checkedRadio = document.querySelector(`input[name="${key}"]:checked`);
-        currentValue = checkedRadio ? checkedRadio.value : '';
-        input = radios[0]; // 用于获取 row
-      } else {
-        continue;
-      }
-    }
-
+    const currentValue = control.value;
     if (currentValue !== originalSettings[key]) {
       updates[key] = currentValue;
-      // 检查是否需要重启（从 DOM 中读取 description）
-      const row = input.closest('tr');
-      if (row?.querySelector('td')?.textContent?.includes('[需重启]')) {
-        needsRestartKeys.push(key);
-      }
     }
   }
 
@@ -237,31 +256,30 @@ async function saveAllSettings() {
 
   // 使用批量更新接口（单次请求，事务保护）
   try {
-    await fetchDataWithAuth('/admin/settings/batch', {
+    const result = await fetchDataWithAuth('/admin/settings/batch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updates)
     });
-    let msg = t('settings.msg.savedCount', { count: Object.keys(updates).length });
-    if (needsRestartKeys.length > 0) {
-      msg += `\n\n${t('settings.msg.restartRequired')}:\n${needsRestartKeys.join(', ')}`;
+
+    for (const [key, value] of Object.entries(updates)) {
+      syncSettingState(key, value);
     }
-    showSuccess(msg);
+
+    showSuccess(result?.message || t('settings.msg.savedCount', { count: Object.keys(updates).length }));
   } catch (err) {
     console.error('保存异常:', err);
     showError(t('settings.msg.saveFailed') + ': ' + err.message);
   }
-
-  loadSettings();
 }
 
 async function resetSetting(key) {
   if (!confirm(t('settings.msg.confirmReset', { key }))) return;
 
   try {
-    await fetchDataWithAuth(`/admin/settings/${key}/reset`, { method: 'POST' });
-    showSuccess(t('settings.msg.resetSuccess', { key }));
-    loadSettings();
+    const result = await fetchDataWithAuth(`/admin/settings/${key}/reset`, { method: 'POST' });
+    syncSettingState(key, result?.value ?? '');
+    showSuccess(result?.message || t('settings.msg.resetSuccess', { key }));
   } catch (err) {
     console.error('重置异常:', err);
     showError(t('settings.msg.resetFailed') + ': ' + err.message);

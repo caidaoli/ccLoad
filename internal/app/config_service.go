@@ -149,6 +149,11 @@ func (cs *ConfigService) GetSetting(key string) *model.SystemSetting {
 	return dbSetting
 }
 
+// GetSettingFresh 获取数据库中的最新配置对象（用于管理接口立即反映持久化状态）
+func (cs *ConfigService) GetSettingFresh(ctx context.Context, key string) (*model.SystemSetting, error) {
+	return cs.store.GetSetting(ctx, key)
+}
+
 // UpdateSetting 更新配置（仅写数据库，不更新缓存，因为会重启）
 func (cs *ConfigService) UpdateSetting(ctx context.Context, key, value string) error {
 	return cs.store.UpdateSetting(ctx, key, value)

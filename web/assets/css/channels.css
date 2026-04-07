@@ -291,6 +291,10 @@
       gap: 8px;
     }
 
+    .channel-editor-checkbox-label[hidden] {
+      display: none !important;
+    }
+
     .channel-editor-footer-fields {
       display: flex;
       align-items: center;
