@@ -111,12 +111,13 @@ func TestHandleCreateChannel(t *testing.T) {
 		{
 			name: "成功创建单Key渠道",
 			payload: ChannelRequest{
-				Name:     "New-Channel",
-				APIKey:   "sk-test-key",
-				URL:      "https://api.new.com",
-				Priority: 100,
-				Models:   []model.ModelEntry{{Model: "gpt-4", RedirectModel: ""}},
-				Enabled:  true,
+				Name:                  "New-Channel",
+				APIKey:                "sk-test-key",
+				URL:                   "https://api.new.com",
+				Priority:              100,
+				Models:                []model.ModelEntry{{Model: "gpt-4", RedirectModel: ""}},
+				Enabled:               true,
+				ScheduledCheckEnabled: true,
 			},
 			expectedStatus: http.StatusCreated,
 			checkSuccess:   true,
@@ -215,6 +216,9 @@ func TestHandleCreateChannel(t *testing.T) {
 				} else {
 					if resp.Data.Name != tt.payload.Name {
 						t.Errorf("期望名称%s，实际%s", tt.payload.Name, resp.Data.Name)
+					}
+					if resp.Data.ScheduledCheckEnabled != tt.payload.ScheduledCheckEnabled {
+						t.Errorf("期望 scheduled_check_enabled=%v，实际=%v", tt.payload.ScheduledCheckEnabled, resp.Data.ScheduledCheckEnabled)
 					}
 				}
 			}
@@ -367,7 +371,8 @@ func TestHandleUpdateChannel(t *testing.T) {
 					{Model: "model-1", RedirectModel: ""},
 					{Model: "model-2", RedirectModel: ""},
 				},
-				Enabled: false,
+				Enabled:               false,
+				ScheduledCheckEnabled: true,
 			},
 			expectedStatus: http.StatusOK,
 			checkSuccess:   true,
@@ -447,6 +452,9 @@ func TestHandleUpdateChannel(t *testing.T) {
 
 				if resp.Data.Priority != tt.payload.Priority {
 					t.Errorf("期望优先级%d，实际%d", tt.payload.Priority, resp.Data.Priority)
+				}
+				if resp.Data.ScheduledCheckEnabled != tt.payload.ScheduledCheckEnabled {
+					t.Errorf("期望 scheduled_check_enabled=%v，实际=%v", tt.payload.ScheduledCheckEnabled, resp.Data.ScheduledCheckEnabled)
 				}
 			}
 		})

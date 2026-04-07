@@ -35,12 +35,13 @@ func (e *ModelEntry) Validate() error {
 
 // Config 渠道配置
 type Config struct {
-	ID          int64  `json:"id"`
-	Name        string `json:"name"`
-	ChannelType string `json:"channel_type"` // 渠道类型: "anthropic" | "codex" | "openai" | "gemini"，默认anthropic
-	URL         string `json:"url"`
-	Priority    int    `json:"priority"`
-	Enabled     bool   `json:"enabled"`
+	ID                    int64  `json:"id"`
+	Name                  string `json:"name"`
+	ChannelType           string `json:"channel_type"` // 渠道类型: "anthropic" | "codex" | "openai" | "gemini"，默认anthropic
+	URL                   string `json:"url"`
+	Priority              int    `json:"priority"`
+	Enabled               bool   `json:"enabled"`
+	ScheduledCheckEnabled bool   `json:"scheduled_check_enabled"`
 
 	// 模型配置（统一管理模型和重定向）
 	ModelEntries []ModelEntry `json:"models"`

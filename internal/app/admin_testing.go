@@ -99,42 +99,45 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 		return
 	}
 
-	testResult := s.testChannelAPI(c.Request.Context(), cfg, selectedKey, &testReq)
+	testResult := s.executeChannelTest(c.Request.Context(), cfg, keyIndex, selectedKey, &testReq)
 	testResult["tested_key_index"] = keyIndex
 	testResult["total_keys"] = len(apiKeys)
 
-	if success, ok := testResult["success"].(bool); ok && success {
-		if err := s.store.ResetKeyCooldown(c.Request.Context(), id, keyIndex); err != nil {
+	RespondJSON(c, http.StatusOK, testResult)
+}
+
+func (s *Server) executeChannelTest(ctx context.Context, cfg *model.Config, keyIndex int, apiKey string, testReq *testutil.TestChannelRequest) map[string]any {
+	result := s.testChannelAPI(ctx, cfg, apiKey, testReq)
+	if success, ok := result["success"].(bool); ok && success {
+		if err := s.store.ResetKeyCooldown(ctx, cfg.ID, keyIndex); err != nil {
 			log.Printf("[WARN] 清除Key #%d冷却状态失败: %v", keyIndex, err)
 		}
-
-		_ = s.store.ResetChannelCooldown(c.Request.Context(), id)
-		s.invalidateChannelRelatedCache(id)
-	} else {
-		statusCode, errorBody, headers := buildTestFailureClassificationInput(testResult)
-
-		action := s.cooldownManager.HandleError(
-			c.Request.Context(),
-			httpErrorInputFromParts(id, keyIndex, statusCode, errorBody, headers),
-		)
-
-		s.invalidateChannelRelatedCache(id)
-
-		var actionStr string
-		switch action {
-		case cooldown.ActionRetryKey:
-			actionStr = "key_cooldown_applied"
-		case cooldown.ActionRetryChannel:
-			actionStr = "channel_cooldown_applied"
-		case cooldown.ActionReturnClient:
-			actionStr = "client_error_no_cooldown"
-		default:
-			actionStr = "unknown_action"
+		if err := s.store.ResetChannelCooldown(ctx, cfg.ID); err != nil {
+			log.Printf("[WARN] 清除渠道冷却状态失败: %v", err)
 		}
-		testResult["cooldown_action"] = actionStr
+		s.invalidateChannelRelatedCache(cfg.ID)
+		return result
 	}
 
-	RespondJSON(c, http.StatusOK, testResult)
+	statusCode, errorBody, headers := buildTestFailureClassificationInput(result)
+	action := s.cooldownManager.HandleError(
+		ctx,
+		httpErrorInputFromParts(cfg.ID, keyIndex, statusCode, errorBody, headers),
+	)
+	s.invalidateChannelRelatedCache(cfg.ID)
+
+	switch action {
+	case cooldown.ActionRetryKey:
+		result["cooldown_action"] = "key_cooldown_applied"
+	case cooldown.ActionRetryChannel:
+		result["cooldown_action"] = "channel_cooldown_applied"
+	case cooldown.ActionReturnClient:
+		result["cooldown_action"] = "client_error_no_cooldown"
+	default:
+		result["cooldown_action"] = "unknown_action"
+	}
+
+	return result
 }
 
 // 测试渠道API连通性

@@ -236,11 +236,12 @@ func TestAPIKey_ImportChannelBatch(t *testing.T) {
 	channels := []*model.ChannelWithKeys{
 		{
 			Config: &model.Config{
-				Name:        "imported-channel-1",
-				URL:         "https://api1.example.com",
-				Priority:    10,
-				Enabled:     true,
-				ChannelType: "openai",
+				Name:                  "imported-channel-1",
+				URL:                   "https://api1.example.com",
+				Priority:              10,
+				Enabled:               true,
+				ScheduledCheckEnabled: true,
+				ChannelType:           "openai",
 				ModelEntries: []model.ModelEntry{
 					{Model: "gpt-4"},
 					{Model: "gpt-3.5-turbo"},
@@ -253,11 +254,12 @@ func TestAPIKey_ImportChannelBatch(t *testing.T) {
 		},
 		{
 			Config: &model.Config{
-				Name:        "imported-channel-2",
-				URL:         "https://api2.example.com",
-				Priority:    20,
-				Enabled:     true,
-				ChannelType: "anthropic",
+				Name:                  "imported-channel-2",
+				URL:                   "https://api2.example.com",
+				Priority:              20,
+				Enabled:               true,
+				ScheduledCheckEnabled: false,
+				ChannelType:           "anthropic",
 				ModelEntries: []model.ModelEntry{
 					{Model: "claude-3"},
 				},
@@ -286,6 +288,17 @@ func TestAPIKey_ImportChannelBatch(t *testing.T) {
 	}
 	if len(configs) != 2 {
 		t.Errorf("expected 2 channels, got %d", len(configs))
+	}
+
+	configsByName := make(map[string]*model.Config, len(configs))
+	for _, cfg := range configs {
+		configsByName[cfg.Name] = cfg
+	}
+	if !configsByName["imported-channel-1"].ScheduledCheckEnabled {
+		t.Fatalf("expected imported-channel-1 scheduled check enabled")
+	}
+	if configsByName["imported-channel-2"].ScheduledCheckEnabled {
+		t.Fatalf("expected imported-channel-2 scheduled check disabled")
 	}
 
 	// 验证 API Keys 也被导入（渠道1=2个，渠道2=1个）
@@ -323,5 +336,46 @@ func TestAPIKey_ImportChannelBatch(t *testing.T) {
 	}
 	if len(keys2) != 1 {
 		t.Fatalf("expected 1 key for imported-channel-2, got %d", len(keys2))
+	}
+}
+
+func TestAPIKey_ImportChannelBatchPreservesScheduledCheckWithExplicitID(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "import-preserve-id.db")
+	ctx := context.Background()
+
+	channel := &model.ChannelWithKeys{
+		Config: &model.Config{
+			ID:                    42,
+			Name:                  "imported-channel-explicit-id",
+			URL:                   "https://api.example.com",
+			Priority:              5,
+			Enabled:               true,
+			ScheduledCheckEnabled: true,
+			ChannelType:           "openai",
+			ModelEntries: []model.ModelEntry{
+				{Model: "gpt-4o-mini"},
+			},
+		},
+		APIKeys: []model.APIKey{
+			{KeyIndex: 0, APIKey: "sk-import-key-explicit", KeyStrategy: model.KeyStrategySequential},
+		},
+	}
+
+	created, updated, err := store.ImportChannelBatch(ctx, []*model.ChannelWithKeys{channel})
+	if err != nil {
+		t.Fatalf("import channel batch with explicit id: %v", err)
+	}
+	if created != 1 || updated != 0 {
+		t.Fatalf("expected created=1 updated=0, got created=%d updated=%d", created, updated)
+	}
+
+	config, err := store.GetConfig(ctx, channel.Config.ID)
+	if err != nil {
+		t.Fatalf("get imported config: %v", err)
+	}
+	if !config.ScheduledCheckEnabled {
+		t.Fatalf("expected scheduled_check_enabled to persist for explicit id import")
 	}
 }
