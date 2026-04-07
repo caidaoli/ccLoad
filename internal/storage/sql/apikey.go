@@ -270,47 +270,51 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 		if preserveIDs {
 			if s.IsSQLite() {
 				channelUpsertSQL = `
-					INSERT INTO channels(id, name, url, priority, channel_type, enabled, created_at, updated_at)
-					VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+					INSERT INTO channels(id, name, url, priority, channel_type, enabled, scheduled_check_enabled, created_at, updated_at)
+					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
 					ON CONFLICT(id) DO UPDATE SET
 						name = excluded.name,
 						url = excluded.url,
 						priority = excluded.priority,
 						channel_type = excluded.channel_type,
 						enabled = excluded.enabled,
+						scheduled_check_enabled = excluded.scheduled_check_enabled,
 						updated_at = excluded.updated_at`
 			} else {
 				channelUpsertSQL = `
-					INSERT INTO channels(id, name, url, priority, channel_type, enabled, created_at, updated_at)
-					VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+					INSERT INTO channels(id, name, url, priority, channel_type, enabled, scheduled_check_enabled, created_at, updated_at)
+					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
 					ON DUPLICATE KEY UPDATE
 						name = VALUES(name),
 						url = VALUES(url),
 						priority = VALUES(priority),
 						channel_type = VALUES(channel_type),
 						enabled = VALUES(enabled),
+						scheduled_check_enabled = VALUES(scheduled_check_enabled),
 						updated_at = VALUES(updated_at)`
 			}
 		} else {
 			if s.IsSQLite() {
 				channelUpsertSQL = `
-					INSERT INTO channels(name, url, priority, channel_type, enabled, created_at, updated_at)
-					VALUES(?, ?, ?, ?, ?, ?, ?)
+					INSERT INTO channels(name, url, priority, channel_type, enabled, scheduled_check_enabled, created_at, updated_at)
+					VALUES(?, ?, ?, ?, ?, ?, ?, ?)
 					ON CONFLICT(name) DO UPDATE SET
 						url = excluded.url,
 						priority = excluded.priority,
 						channel_type = excluded.channel_type,
 						enabled = excluded.enabled,
+						scheduled_check_enabled = excluded.scheduled_check_enabled,
 						updated_at = excluded.updated_at`
 			} else {
 				channelUpsertSQL = `
-					INSERT INTO channels(name, url, priority, channel_type, enabled, created_at, updated_at)
-					VALUES(?, ?, ?, ?, ?, ?, ?)
+					INSERT INTO channels(name, url, priority, channel_type, enabled, scheduled_check_enabled, created_at, updated_at)
+					VALUES(?, ?, ?, ?, ?, ?, ?, ?)
 					ON DUPLICATE KEY UPDATE
 						url = VALUES(url),
 						priority = VALUES(priority),
 						channel_type = VALUES(channel_type),
 						enabled = VALUES(enabled),
+						scheduled_check_enabled = VALUES(scheduled_check_enabled),
 						updated_at = VALUES(updated_at)`
 			}
 		}
@@ -350,14 +354,14 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 				channelID = config.ID
 				_, err := channelStmt.ExecContext(ctx,
 					config.ID, config.Name, config.URL, config.Priority,
-					channelType, boolToInt(config.Enabled), nowUnix, nowUnix)
+					channelType, boolToInt(config.Enabled), boolToInt(config.ScheduledCheckEnabled), nowUnix, nowUnix)
 				if err != nil {
 					return fmt.Errorf("import channel %s: %w", config.Name, err)
 				}
 			} else {
 				_, err := channelStmt.ExecContext(ctx,
 					config.Name, config.URL, config.Priority,
-					channelType, boolToInt(config.Enabled), nowUnix, nowUnix)
+					channelType, boolToInt(config.Enabled), boolToInt(config.ScheduledCheckEnabled), nowUnix, nowUnix)
 				if err != nil {
 					return fmt.Errorf("import channel %s: %w", config.Name, err)
 				}

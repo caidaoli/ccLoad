@@ -34,17 +34,18 @@ type Server struct {
 	// ============================================================================
 	// 核心字段
 	// ============================================================================
-	store           storage.Store
-	channelCache    *storage.ChannelCache // 高性能渠道缓存层
-	keySelector     *KeySelector          // Key选择器（多Key支持）
-	cooldownManager *cooldown.Manager     // 统一冷却管理器
-	healthCache     *HealthCache          // 渠道健康度缓存
-	costCache       *CostCache            // 渠道每日成本缓存
-	statsCache      *StatsCache           // 统计结果缓存层
-	channelBalancer *SmoothWeightedRR     // 渠道负载均衡器（平滑加权轮询）
-	urlSelector     *URLSelector          // URL选择器（多URL场景的延迟追踪与冷却）
-	client          *http.Client          // HTTP客户端
-	activeRequests  *activeRequestManager // 进行中请求（内存状态，不持久化）
+	store                         storage.Store
+	channelCache                  *storage.ChannelCache // 高性能渠道缓存层
+	keySelector                   *KeySelector          // Key选择器（多Key支持）
+	cooldownManager               *cooldown.Manager     // 统一冷却管理器
+	healthCache                   *HealthCache          // 渠道健康度缓存
+	costCache                     *CostCache            // 渠道每日成本缓存
+	statsCache                    *StatsCache           // 统计结果缓存层
+	channelBalancer               *SmoothWeightedRR     // 渠道负载均衡器（平滑加权轮询）
+	urlSelector                   *URLSelector          // URL选择器（多URL场景的延迟追踪与冷却）
+	client                        *http.Client          // HTTP客户端
+	activeRequests                *activeRequestManager // 进行中请求（内存状态，不持久化）
+	scheduledChannelChecksRunning atomic.Bool
 
 	// 异步统计（有界队列，避免每请求起goroutine）
 	tokenStatsCh        chan tokenStatsUpdate
@@ -288,6 +289,13 @@ func NewServer(store storage.Store) *Server {
 	// [FIX] P1: 启动后台状态清理协程（防止内存泄漏）
 	s.wg.Add(1)
 	go s.stateCleanupLoop()
+
+	channelCheckIntervalHours := configService.GetInt("channel_check_interval_hours", defaultChannelCheckIntervalHours)
+	if channelCheckIntervalHours < 1 {
+		log.Printf("[WARN] 无效的 channel_check_interval_hours=%d（必须 >= 1），已使用默认值 %d", channelCheckIntervalHours, defaultChannelCheckIntervalHours)
+		channelCheckIntervalHours = defaultChannelCheckIntervalHours
+	}
+	s.startScheduledChannelCheckLoop(time.Duration(channelCheckIntervalHours) * time.Hour)
 
 	return s
 

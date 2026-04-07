@@ -117,6 +117,7 @@ function showAddModal() {
   setChannelModalTitle('channels.addChannel');
   document.getElementById('channelForm').reset();
   document.getElementById('channelEnabled').checked = true;
+  document.getElementById('channelScheduledCheckEnabled').checked = false;
   document.querySelector('input[name="channelType"][value="anthropic"]').checked = true;
   document.querySelector('input[name="keyStrategy"][value="sequential"]').checked = true;
 
@@ -195,6 +196,7 @@ async function editChannel(id) {
   document.getElementById('channelPriority').value = channel.priority;
   document.getElementById('channelDailyCostLimit').value = channel.daily_cost_limit || 0;
   document.getElementById('channelEnabled').checked = channel.enabled;
+  document.getElementById('channelScheduledCheckEnabled').checked = !!channel.scheduled_check_enabled;
 
   // 加载模型配置（新格式：models是 {model, redirect_model} 数组）
   redirectTableData = (channel.models || []).map(m => ({
@@ -278,7 +280,8 @@ async function saveChannel(event) {
     priority: parseInt(document.getElementById('channelPriority').value) || 0,
     daily_cost_limit: parseFloat(document.getElementById('channelDailyCostLimit').value) || 0,
     models: models,
-    enabled: document.getElementById('channelEnabled').checked
+    enabled: document.getElementById('channelEnabled').checked,
+    scheduled_check_enabled: document.getElementById('channelScheduledCheckEnabled').checked
   };
 
   if (!formData.name || !formData.url || !formData.api_key || formData.models.length === 0) {
@@ -824,6 +827,7 @@ async function copyChannel(id, name) {
   document.getElementById('channelPriority').value = channel.priority;
   document.getElementById('channelDailyCostLimit').value = channel.daily_cost_limit || 0;
   document.getElementById('channelEnabled').checked = true;
+  document.getElementById('channelScheduledCheckEnabled').checked = !!channel.scheduled_check_enabled;
 
   // 加载模型配置（新格式：models是 {model, redirect_model} 数组）
   redirectTableData = (channel.models || []).map(m => ({

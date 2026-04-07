@@ -44,7 +44,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 	writer := csv.NewWriter(buf)
 	defer writer.Flush()
 
-	header := []string{"id", "name", "api_key", "url", "priority", "models", "model_redirects", "channel_type", "key_strategy", "enabled"}
+	header := []string{"id", "name", "api_key", "url", "priority", "models", "model_redirects", "channel_type", "key_strategy", "enabled", "scheduled_check_enabled"}
 	if err := writer.Write(header); err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -96,6 +96,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 			cfg.GetChannelType(), // 使用GetChannelType确保默认值
 			keyStrategy,
 			strconv.FormatBool(cfg.Enabled),
+			strconv.FormatBool(cfg.ScheduledCheckEnabled),
 		}
 		if err := writer.Write(record); err != nil {
 			RespondError(c, http.StatusInternalServerError, err)
@@ -151,6 +152,19 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 		if _, ok := columnIndex[key]; !ok {
 			RespondErrorMsg(c, http.StatusBadRequest, fmt.Sprintf("缺少必需列: %s", key))
 			return
+		}
+	}
+
+	_, hasScheduledCheckColumn := columnIndex["scheduled_check_enabled"]
+	existingScheduledCheckByName := make(map[string]bool)
+	if !hasScheduledCheckColumn {
+		existingConfigs, err := s.store.ListConfigs(c.Request.Context())
+		if err != nil {
+			RespondError(c, http.StatusInternalServerError, err)
+			return
+		}
+		for _, cfg := range existingConfigs {
+			existingScheduledCheckByName[cfg.Name] = cfg.ScheduledCheckEnabled
 		}
 	}
 
@@ -277,6 +291,19 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			}
 		}
 
+		scheduledCheckEnabled := existingScheduledCheckByName[name]
+		if raw := fetch("scheduled_check_enabled"); raw != "" {
+			if val, ok := parseImportEnabled(raw); ok {
+				scheduledCheckEnabled = val
+			} else {
+				summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行定时检测开关格式错误: %s", lineNo, raw))
+				summary.Skipped++
+				continue
+			}
+		} else if hasScheduledCheckColumn {
+			scheduledCheckEnabled = false
+		}
+
 		// 构建模型条目（合并models和modelRedirects）
 		modelEntries := make([]model.ModelEntry, 0, len(models))
 		for _, m := range models {
@@ -289,12 +316,13 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 
 		// 构建渠道配置
 		cfg := &model.Config{
-			Name:         name,
-			URL:          url,
-			Priority:     priority,
-			ModelEntries: modelEntries,
-			ChannelType:  channelType,
-			Enabled:      enabled,
+			Name:                  name,
+			URL:                   url,
+			Priority:              priority,
+			ModelEntries:          modelEntries,
+			ChannelType:           channelType,
+			Enabled:               enabled,
+			ScheduledCheckEnabled: scheduledCheckEnabled,
 		}
 
 		// 解析并构建API Keys
@@ -385,6 +413,8 @@ func normalizeCSVHeader(name string) string {
 		return "model_redirects"
 	case "key_strategy", "key-strategy", "keystrategy", "策略", "使用策略":
 		return "key_strategy"
+	case "scheduled-check-enabled", "scheduledcheckenabled", "scheduled check enabled":
+		return "scheduled_check_enabled"
 	case "status":
 		return "enabled"
 	default:

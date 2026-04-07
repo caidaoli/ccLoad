@@ -9,6 +9,7 @@ func DefineChannelsTable() *TableBuilder {
 		Column("priority INT NOT NULL DEFAULT 0").
 		Column("channel_type VARCHAR(64) NOT NULL DEFAULT 'anthropic'").
 		Column("enabled TINYINT NOT NULL DEFAULT 1").
+		Column("scheduled_check_enabled TINYINT NOT NULL DEFAULT 0").
 		Column("cooldown_until BIGINT NOT NULL DEFAULT 0").
 		Column("cooldown_duration_ms BIGINT NOT NULL DEFAULT 0").
 		Column("daily_cost_limit DOUBLE NOT NULL DEFAULT 0").
