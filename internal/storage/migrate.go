@@ -7,8 +7,14 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"ccLoad/internal/storage/schema"
+)
+
+const (
+	channelModelsRedirectMigrationVersion = "v1_channel_models_redirect"
+	channelModelsOrderRepairVersion       = "v2_channel_models_created_at_order"
 )
 
 // Dialect 数据库方言
@@ -77,6 +83,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureChannelsDailyCostLimit(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels daily_cost_limit: %w", err)
 			}
+			if err := ensureChannelsScheduledCheckEnabled(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate channels scheduled_check_enabled: %w", err)
+			}
 			// 增量迁移：将url字段从VARCHAR(191)扩展为TEXT（支持多URL存储）
 			if err := migrateChannelsURLToText(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels url to text: %w", err)
@@ -113,6 +122,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		if tb.Name() == "channel_models" {
 			if err := migrateChannelModelsSchema(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channel_models schema: %w", err)
+			}
+			if err := repairLegacyChannelModelOrder(ctx, db, dialect); err != nil {
+				return fmt.Errorf("repair legacy channel_models order: %w", err)
 			}
 		}
 
@@ -672,6 +684,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"non_stream_timeout", "120", "duration", "非流式请求超时(秒,0=禁用)", "120"},
 		{"model_fuzzy_match", "false", "bool", "模型匹配失败时，使用子串模糊匹配(多匹配时选最新版本)", "false"},
 		{"channel_test_content", "sonnet 4.0的发布日期是什么", "string", "渠道测试默认内容", "sonnet 4.0的发布日期是什么"},
+		{"channel_check_interval_hours", "5", "int", "渠道定时检测间隔(小时,修改后重启生效)", "5"},
 		{"channel_stats_range", "today", "string", "渠道管理费用统计范围", "today"},
 		// 健康度排序配置
 		{"enable_health_score", "false", "bool", "启用基于健康度的渠道动态排序", "false"},
@@ -813,10 +826,8 @@ func ensureLogsActualModelMySQL(ctx context.Context, db *sql.DB) error {
 // 2. 从channels.models和model_redirects迁移数据到channel_models
 // 3. 放宽channels表废弃字段约束(NOT NULL → NULL)，保留兼容性以支持版本回滚
 func migrateChannelModelsSchema(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	const migrationVersion = "v1_channel_models_redirect"
-
 	// 检查迁移是否已执行（幂等性保证）
-	if applied, err := isMigrationApplied(ctx, db, migrationVersion); err != nil {
+	if applied, err := isMigrationApplied(ctx, db, channelModelsRedirectMigrationVersion); err != nil {
 		return fmt.Errorf("check migration status: %w", err)
 	} else if applied {
 		return nil // 已执行，跳过
@@ -838,8 +849,8 @@ func migrateChannelModelsSchema(ctx context.Context, db *sql.DB, dialect Dialect
 	}
 
 	// 记录迁移完成
-	if err := recordMigration(ctx, db, migrationVersion, dialect); err != nil {
-		log.Printf("[WARN] Failed to record migration %s: %v", migrationVersion, err)
+	if err := recordMigration(ctx, db, channelModelsRedirectMigrationVersion, dialect); err != nil {
+		log.Printf("[WARN] Failed to record migration %s: %v", channelModelsRedirectMigrationVersion, err)
 		// 不阻塞，迁移本身已成功
 	}
 
@@ -919,7 +930,7 @@ func migrateModelRedirectsData(ctx context.Context, db *sql.DB, dialect Dialect)
 	// 查询所有需要迁移的渠道（有models数据）
 	// 注意：必须同时查询 models 和 model_redirects
 	rows, err := db.QueryContext(ctx,
-		"SELECT id, models, model_redirects FROM channels WHERE models != '' AND models != '[]'")
+		"SELECT id, created_at, models, model_redirects FROM channels WHERE models != '' AND models != '[]'")
 	if err != nil {
 		return fmt.Errorf("query channels for migration: %w", err)
 	}
@@ -930,14 +941,16 @@ func migrateModelRedirectsData(ctx context.Context, db *sql.DB, dialect Dialect)
 		channelID     int64
 		model         string
 		redirectModel string
+		createdAt     int64
 	}
 	var entries []modelEntry
 	var channelIDs []int64
 
 	for rows.Next() {
 		var channelID int64
+		var channelCreatedAt int64
 		var modelsJSON, redirectsJSON string
-		if err := rows.Scan(&channelID, &modelsJSON, &redirectsJSON); err != nil {
+		if err := rows.Scan(&channelID, &channelCreatedAt, &modelsJSON, &redirectsJSON); err != nil {
 			return fmt.Errorf("scan channel data: %w", err)
 		}
 
@@ -959,12 +972,18 @@ func migrateModelRedirectsData(ctx context.Context, db *sql.DB, dialect Dialect)
 			redirects = make(map[string]string)
 		}
 
+		baseCreatedAt := channelCreatedAt * 1000
+		if baseCreatedAt <= 0 {
+			baseCreatedAt = time.Now().UnixMilli()
+		}
+
 		// 构建条目：每个模型一条记录
-		for _, model := range models {
+		for i, model := range models {
 			entries = append(entries, modelEntry{
 				channelID:     channelID,
 				model:         model,
 				redirectModel: redirects[model], // 如果没有重定向则为空
+				createdAt:     baseCreatedAt + int64(i),
 			})
 		}
 	}
@@ -989,20 +1008,184 @@ func migrateModelRedirectsData(ctx context.Context, db *sql.DB, dialect Dialect)
 		var upsertSQL string
 		if dialect == DialectMySQL {
 			upsertSQL = `INSERT INTO channel_models (channel_id, model, redirect_model, created_at)
-				VALUES (?, ?, ?, UNIX_TIMESTAMP())
-				ON DUPLICATE KEY UPDATE redirect_model = VALUES(redirect_model)`
+				VALUES (?, ?, ?, ?)
+				ON DUPLICATE KEY UPDATE redirect_model = VALUES(redirect_model), created_at = VALUES(created_at)`
 		} else {
 			upsertSQL = `INSERT INTO channel_models (channel_id, model, redirect_model, created_at)
-				VALUES (?, ?, ?, unixepoch())
-				ON CONFLICT(channel_id, model) DO UPDATE SET redirect_model = excluded.redirect_model`
+				VALUES (?, ?, ?, ?)
+				ON CONFLICT(channel_id, model) DO UPDATE SET redirect_model = excluded.redirect_model, created_at = excluded.created_at`
 		}
-		if _, err := tx.ExecContext(ctx, upsertSQL, e.channelID, e.model, e.redirectModel); err != nil {
+		if _, err := tx.ExecContext(ctx, upsertSQL, e.channelID, e.model, e.redirectModel, e.createdAt); err != nil {
 			return fmt.Errorf("upsert channel_model: %w", err)
 		}
 	}
 
 	// 数据迁移完成，字段约束放宽在 relaxDeprecatedChannelFields 中处理
 	return tx.Commit()
+}
+
+func repairLegacyChannelModelOrder(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if hasMigration(ctx, db, channelModelsOrderRepairVersion) {
+		return nil
+	}
+
+	appliedAt, ok, err := migrationAppliedAt(ctx, db, channelModelsRedirectMigrationVersion)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return recordMigration(ctx, db, channelModelsOrderRepairVersion, dialect)
+	}
+
+	needRepair, err := needChannelModelsMigration(ctx, db, dialect)
+	if err != nil {
+		return err
+	}
+	if !needRepair {
+		return recordMigration(ctx, db, channelModelsOrderRepairVersion, dialect)
+	}
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, created_at, models, model_redirects
+		FROM channels
+		WHERE models IS NOT NULL AND models != '' AND models != '[]' AND updated_at <= ?
+	`, appliedAt)
+	if err != nil {
+		return fmt.Errorf("query legacy channel order candidates: %w", err)
+	}
+
+	type legacyOrderCandidate struct {
+		channelID        int64
+		channelCreatedAt int64
+		modelsJSON       string
+		redirectsJSON    string
+	}
+	candidates := make([]legacyOrderCandidate, 0)
+	for rows.Next() {
+		var candidate legacyOrderCandidate
+		if err := rows.Scan(&candidate.channelID, &candidate.channelCreatedAt, &candidate.modelsJSON, &candidate.redirectsJSON); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan legacy channel order candidate: %w", err)
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate legacy channel order candidates: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close legacy channel order candidates: %w", err)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin legacy order repair tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	updateStmt, err := tx.PrepareContext(ctx, `UPDATE channel_models SET created_at = ? WHERE channel_id = ? AND model = ?`)
+	if err != nil {
+		return fmt.Errorf("prepare legacy order repair update: %w", err)
+	}
+	defer func() { _ = updateStmt.Close() }()
+
+	for _, candidate := range candidates {
+		desiredOrder, err := parseModelsForMigration(candidate.modelsJSON)
+		if err != nil {
+			return fmt.Errorf("channel %d: %w", candidate.channelID, err)
+		}
+		if len(desiredOrder) == 0 {
+			continue
+		}
+
+		desiredRedirects, err := parseModelRedirectsForMigration(candidate.redirectsJSON)
+		if err != nil {
+			return fmt.Errorf("channel %d parse model_redirects JSON: %w", candidate.channelID, err)
+		}
+		if !legacyChannelModelsNeedOrderRepair(ctx, tx, candidate.channelID, desiredOrder, desiredRedirects) {
+			continue
+		}
+
+		baseCreatedAt := candidate.channelCreatedAt * 1000
+		if baseCreatedAt <= 0 {
+			baseCreatedAt = appliedAt * 1000
+		}
+		for i, modelName := range desiredOrder {
+			if _, err := updateStmt.ExecContext(ctx, baseCreatedAt+int64(i), candidate.channelID, modelName); err != nil {
+				return fmt.Errorf("repair channel %d model order for %s: %w", candidate.channelID, modelName, err)
+			}
+		}
+	}
+
+	if err := recordMigrationTx(ctx, tx, channelModelsOrderRepairVersion, dialect); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func legacyChannelModelsNeedOrderRepair(ctx context.Context, tx *sql.Tx, channelID int64, desiredOrder []string, desiredRedirects map[string]string) bool {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT model, redirect_model
+		FROM channel_models
+		WHERE channel_id = ?
+		ORDER BY created_at ASC, model ASC
+	`, channelID)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = rows.Close() }()
+
+	currentOrder := make([]string, 0, len(desiredOrder))
+	currentRedirects := make(map[string]string, len(desiredOrder))
+	for rows.Next() {
+		var modelName, redirectModel string
+		if err := rows.Scan(&modelName, &redirectModel); err != nil {
+			return false
+		}
+		currentOrder = append(currentOrder, modelName)
+		currentRedirects[modelName] = redirectModel
+	}
+	if err := rows.Err(); err != nil || len(currentOrder) != len(desiredOrder) {
+		return false
+	}
+
+	for i, modelName := range desiredOrder {
+		currentRedirect, ok := currentRedirects[modelName]
+		if !ok {
+			return false
+		}
+		if currentRedirect != desiredRedirects[modelName] {
+			return false
+		}
+		if currentOrder[i] != modelName {
+			return true
+		}
+	}
+
+	return false
+}
+
+func migrationAppliedAt(ctx context.Context, db *sql.DB, version string) (int64, bool, error) {
+	var appliedAt int64
+	err := db.QueryRowContext(ctx, `SELECT applied_at FROM schema_migrations WHERE version = ?`, version).Scan(&appliedAt)
+	if err == nil {
+		return appliedAt, true, nil
+	}
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	return 0, false, fmt.Errorf("query migration %s applied_at: %w", version, err)
+}
+
+func recordMigrationTx(ctx context.Context, tx *sql.Tx, version string, dialect Dialect) error {
+	var insertSQL string
+	if dialect == DialectMySQL {
+		insertSQL = `INSERT IGNORE INTO schema_migrations (version, applied_at) VALUES (?, UNIX_TIMESTAMP())`
+	} else {
+		insertSQL = `INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, unixepoch())`
+	}
+	_, err := tx.ExecContext(ctx, insertSQL, version)
+	return err
 }
 
 // needChannelModelsMigration 检查是否需要迁移
@@ -1149,6 +1332,31 @@ func ensureChannelsDailyCostLimit(ctx context.Context, db *sql.DB, dialect Diale
 	// SQLite: 使用通用添加列函数
 	return ensureSQLiteColumns(ctx, db, "channels", []sqliteColumnDef{
 		{name: "daily_cost_limit", definition: "REAL NOT NULL DEFAULT 0"},
+	})
+}
+
+// ensureChannelsScheduledCheckEnabled 确保channels表有scheduled_check_enabled字段
+func ensureChannelsScheduledCheckEnabled(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if dialect == DialectMySQL {
+		var count int
+		err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channels' AND COLUMN_NAME='scheduled_check_enabled'",
+		).Scan(&count)
+		if err != nil {
+			return fmt.Errorf("check scheduled_check_enabled field: %w", err)
+		}
+		if count == 0 {
+			if _, err := db.ExecContext(ctx,
+				"ALTER TABLE channels ADD COLUMN scheduled_check_enabled TINYINT NOT NULL DEFAULT 0"); err != nil {
+				return fmt.Errorf("add scheduled_check_enabled column: %w", err)
+			}
+			log.Printf("[MIGRATE] Added channels.scheduled_check_enabled column")
+		}
+		return nil
+	}
+
+	return ensureSQLiteColumns(ctx, db, "channels", []sqliteColumnDef{
+		{name: "scheduled_check_enabled", definition: "INTEGER NOT NULL DEFAULT 0"},
 	})
 }
 

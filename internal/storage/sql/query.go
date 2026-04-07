@@ -108,18 +108,20 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 }) (*model.Config, error) {
 	var c model.Config
 	var enabledInt int
+	var scheduledCheckEnabledInt int
 	var createdAtRaw, updatedAtRaw any // 使用any接受任意类型（兼容字符串、整数或RFC3339）
 
 	// 扫描key_count字段（从JOIN查询获取）
 	// 注意：不再包含 models 和 model_redirects 字段
 	if err := scanner.Scan(&c.ID, &c.Name, &c.URL, &c.Priority,
-		&c.ChannelType, &enabledInt,
+		&c.ChannelType, &enabledInt, &scheduledCheckEnabledInt,
 		&c.CooldownUntil, &c.CooldownDurationMs, &c.DailyCostLimit, &c.KeyCount,
 		&createdAtRaw, &updatedAtRaw); err != nil {
 		return nil, err
 	}
 
 	c.Enabled = enabledInt != 0
+	c.ScheduledCheckEnabled = scheduledCheckEnabledInt != 0
 
 	// 转换时间戳（支持不同数据库）
 	now := time.Now()

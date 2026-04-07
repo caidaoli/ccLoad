@@ -107,7 +107,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		header[0] = strings.TrimPrefix(header[0], "\ufeff")
 	}
 
-	expectedHeaders := []string{"id", "name", "api_key", "url", "priority", "models", "model_redirects", "channel_type", "key_strategy", "enabled"}
+	expectedHeaders := []string{"id", "name", "api_key", "url", "priority", "models", "model_redirects", "channel_type", "key_strategy", "enabled", "scheduled_check_enabled"}
 	if len(header) != len(expectedHeaders) {
 		t.Errorf("Header字段数量不匹配: 期望 %d, 实际: %d\nHeader: %v", len(expectedHeaders), len(header), header)
 	}
@@ -118,9 +118,9 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		}
 	}
 
-	// 验证数据行（应该有10个字段）
-	if len(records[1]) < 10 {
-		t.Errorf("数据行字段不足，期望至少10个字段，实际: %d", len(records[1]))
+	// 验证数据行（应该有11个字段）
+	if len(records[1]) < 11 {
+		t.Errorf("数据行字段不足，期望至少11个字段，实际: %d", len(records[1]))
 	}
 }
 
@@ -214,6 +214,86 @@ Import-Test-2,https://import2.example.com,5,"test-model-2,test-model-3","{""old"
 		if len(keys) != 1 {
 			t.Errorf("渠道 %s 应有1个API Key，实际: %d", cfg.Name, len(keys))
 		}
+	}
+}
+
+func TestAdminAPI_ImportChannelsCSV_MissingScheduledCheckColumnPreservesExistingValue(t *testing.T) {
+	server := newInMemoryServer(t)
+	ctx := context.Background()
+
+	created, err := server.store.CreateConfig(ctx, &model.Config{
+		Name:                  "Import-Preserve-Scheduled",
+		URL:                   "https://old.example.com",
+		Priority:              10,
+		ModelEntries:          []model.ModelEntry{{Model: "old-model", RedirectModel: ""}},
+		ChannelType:           "openai",
+		Enabled:               true,
+		ScheduledCheckEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("创建现有渠道失败: %v", err)
+	}
+	if err := server.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID:   created.ID,
+		KeyIndex:    0,
+		APIKey:      "sk-old-key",
+		KeyStrategy: model.KeyStrategySequential,
+	}}); err != nil {
+		t.Fatalf("创建现有 key 失败: %v", err)
+	}
+
+	csvContent := `name,url,priority,models,model_redirects,channel_type,enabled,api_key,key_strategy
+Import-Preserve-Scheduled,https://new.example.com,20,new-model,{},openai,true,sk-new-key,sequential
+`
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", "legacy-import.csv")
+	if err != nil {
+		t.Fatalf("创建表单文件字段失败: %v", err)
+	}
+	if _, err := io.WriteString(part, csvContent); err != nil {
+		t.Fatalf("写入CSV内容失败: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("关闭writer失败: %v", err)
+	}
+
+	req := newRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	c, w := newTestContext(t, req)
+
+	server.HandleImportChannelsCSV(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望状态码 200, 实际 %d, 响应: %s", w.Code, w.Body.String())
+	}
+
+	var summary ChannelImportSummary
+	mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &summary)
+	if summary.Updated != 1 {
+		t.Fatalf("期望更新1条记录，实际 summary=%+v", summary)
+	}
+
+	updated, err := server.store.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("查询更新后的渠道失败: %v", err)
+	}
+	if !updated.ScheduledCheckEnabled {
+		t.Fatalf("缺少 scheduled_check_enabled 列时应保留旧值 true")
+	}
+	if updated.URL != "https://new.example.com" {
+		t.Fatalf("期望 URL 已更新，实际为 %s", updated.URL)
+	}
+	if len(updated.ModelEntries) != 1 || updated.ModelEntries[0].Model != "new-model" {
+		t.Fatalf("期望模型已更新，实际为 %+v", updated.ModelEntries)
+	}
+	keys, err := server.store.GetAPIKeys(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("查询更新后的 key 失败: %v", err)
+	}
+	if len(keys) != 1 || keys[0].APIKey != "sk-new-key" {
+		t.Fatalf("期望 key 已更新，实际为 %+v", keys)
 	}
 }
 

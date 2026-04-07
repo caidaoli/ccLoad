@@ -123,6 +123,9 @@ func TestEnsureChannelsDailyCostLimit_SQLite(t *testing.T) {
 	if !cols["daily_cost_limit"] {
 		t.Fatal("daily_cost_limit column not found in channels")
 	}
+	if !cols["scheduled_check_enabled"] {
+		t.Fatal("scheduled_check_enabled column not found in channels")
+	}
 }
 
 func TestEnsureAuthTokensAllowedModels_SQLite(t *testing.T) {
@@ -317,6 +320,120 @@ func TestMigrateModelRedirectsData_WithLegacyData(t *testing.T) {
 	if redirect != "" {
 		t.Errorf("gpt-4o redirect=%q, want empty", redirect)
 	}
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT model FROM channel_models
+		ORDER BY created_at ASC, model ASC
+	`)
+	if err != nil {
+		t.Fatalf("query migrated model order: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var orderedModels []string
+	for rows.Next() {
+		var modelName string
+		if err := rows.Scan(&modelName); err != nil {
+			t.Fatalf("scan migrated model order: %v", err)
+		}
+		orderedModels = append(orderedModels, modelName)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate migrated model order: %v", err)
+	}
+
+	expectedOrder := []string{"gpt-4o", "gpt-3.5-turbo"}
+	if len(orderedModels) != len(expectedOrder) {
+		t.Fatalf("migrated model order len=%d, want %d", len(orderedModels), len(expectedOrder))
+	}
+	for i, expected := range expectedOrder {
+		if orderedModels[i] != expected {
+			t.Fatalf("migrated model order[%d]=%s, want %s", i, orderedModels[i], expected)
+		}
+	}
+}
+
+func TestRepairLegacyChannelModelOrder_SQLite(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	_, err := db.ExecContext(ctx, "ALTER TABLE channels ADD COLUMN models TEXT NOT NULL DEFAULT '[]'")
+	if err != nil {
+		t.Fatalf("add models column: %v", err)
+	}
+	_, err = db.ExecContext(ctx, "ALTER TABLE channels ADD COLUMN model_redirects TEXT NOT NULL DEFAULT '{}'")
+	if err != nil {
+		t.Fatalf("add model_redirects column: %v", err)
+	}
+
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO channels (id, name, channel_type, url, priority, enabled, models, model_redirects, created_at, updated_at)
+		VALUES (1, 'repair-order', 'openai', 'https://api.example.com', 10, 1, '["z-model","a-model"]', '{}', 100, 100)
+	`)
+	if err != nil {
+		t.Fatalf("insert legacy channel: %v", err)
+	}
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO channel_models (channel_id, model, redirect_model, created_at)
+		VALUES (1, 'z-model', '', 1), (1, 'a-model', '', 1)
+	`)
+	if err != nil {
+		t.Fatalf("insert legacy channel_models: %v", err)
+	}
+	if err := recordMigration(ctx, db, channelModelsRedirectMigrationVersion, DialectSQLite); err != nil {
+		t.Fatalf("record legacy migration: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "DELETE FROM schema_migrations WHERE version = ?", channelModelsOrderRepairVersion); err != nil {
+		t.Fatalf("clear repair migration marker: %v", err)
+	}
+
+	if err := repairLegacyChannelModelOrder(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("repairLegacyChannelModelOrder: %v", err)
+	}
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT model FROM channel_models
+		WHERE channel_id = 1
+		ORDER BY created_at ASC, model ASC
+	`)
+	if err != nil {
+		t.Fatalf("query repaired model order: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var orderedModels []string
+	for rows.Next() {
+		var modelName string
+		if err := rows.Scan(&modelName); err != nil {
+			t.Fatalf("scan repaired model order: %v", err)
+		}
+		orderedModels = append(orderedModels, modelName)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate repaired model order: %v", err)
+	}
+
+	expectedOrder := []string{"z-model", "a-model"}
+	if len(orderedModels) != len(expectedOrder) {
+		t.Fatalf("repaired model order len=%d, want %d", len(orderedModels), len(expectedOrder))
+	}
+	for i, expected := range expectedOrder {
+		if orderedModels[i] != expected {
+			t.Fatalf("repaired model order[%d]=%s, want %s", i, orderedModels[i], expected)
+		}
+	}
+
+	applied, err := isMigrationApplied(ctx, db, channelModelsOrderRepairVersion)
+	if err != nil {
+		t.Fatalf("isMigrationApplied repair version: %v", err)
+	}
+	if !applied {
+		t.Fatal("expected repair migration to be recorded")
+	}
 }
 
 func TestMigrateChannelModelsSchema_SQLite(t *testing.T) {
@@ -358,6 +475,7 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		"non_stream_timeout",
 		"model_fuzzy_match",
 		"channel_test_content",
+		"channel_check_interval_hours",
 		"channel_stats_range",
 		"enable_health_score",
 		"success_rate_penalty_weight",
