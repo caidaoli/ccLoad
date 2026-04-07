@@ -379,3 +379,51 @@ func TestAPIKey_ImportChannelBatchPreservesScheduledCheckWithExplicitID(t *testi
 		t.Fatalf("expected scheduled_check_enabled to persist for explicit id import")
 	}
 }
+
+func TestAPIKey_ImportChannelBatchPreservesModelEntryOrder(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "import-preserve-model-order.db")
+	ctx := context.Background()
+
+	channel := &model.ChannelWithKeys{
+		Config: &model.Config{
+			Name:        "imported-channel-order",
+			URL:         "https://api.example.com",
+			Priority:    5,
+			Enabled:     true,
+			ChannelType: "openai",
+			ModelEntries: []model.ModelEntry{
+				{Model: "z-last"},
+				{Model: "a-first"},
+			},
+		},
+		APIKeys: []model.APIKey{
+			{KeyIndex: 0, APIKey: "sk-import-key-order", KeyStrategy: model.KeyStrategySequential},
+		},
+	}
+
+	created, updated, err := store.ImportChannelBatch(ctx, []*model.ChannelWithKeys{channel})
+	if err != nil {
+		t.Fatalf("import channel batch: %v", err)
+	}
+	if created != 1 || updated != 0 {
+		t.Fatalf("expected created=1 updated=0, got created=%d updated=%d", created, updated)
+	}
+
+	configs, err := store.ListConfigs(ctx)
+	if err != nil {
+		t.Fatalf("list configs: %v", err)
+	}
+	if len(configs) != 1 {
+		t.Fatalf("expected 1 config, got %d", len(configs))
+	}
+
+	got := configs[0].ModelEntries
+	if len(got) != 2 {
+		t.Fatalf("expected 2 model entries, got %+v", got)
+	}
+	if got[0].Model != "z-last" || got[1].Model != "a-first" {
+		t.Fatalf("expected model order [z-last a-first], got %+v", got)
+	}
+}

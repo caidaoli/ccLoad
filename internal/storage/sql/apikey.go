@@ -375,28 +375,15 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 
 			config.ID = channelID
 
-			// 删除旧的API Keys和模型索引（如果是更新）
+			// 删除旧的API Keys（模型索引统一交给 saveModelEntriesImpl 处理）
 			if isUpdate {
 				if _, err := tx.ExecContext(ctx, `DELETE FROM api_keys WHERE channel_id = ?`, channelID); err != nil {
 					return fmt.Errorf("delete old api keys for channel %d: %w", channelID, err)
 				}
-				if _, err := tx.ExecContext(ctx, `DELETE FROM channel_models WHERE channel_id = ?`, channelID); err != nil {
-					return fmt.Errorf("delete old model indices for channel %d: %w", channelID, err)
-				}
 			}
 
-			// 同步模型条目到 channel_models 表（包含 redirect_model）
-			var modelInsertSQL string
-			if s.IsSQLite() {
-				modelInsertSQL = `INSERT OR REPLACE INTO channel_models (channel_id, model, redirect_model) VALUES (?, ?, ?)`
-			} else {
-				modelInsertSQL = `INSERT INTO channel_models (channel_id, model, redirect_model) VALUES (?, ?, ?)
-					ON DUPLICATE KEY UPDATE redirect_model = VALUES(redirect_model)`
-			}
-			for _, entry := range config.ModelEntries {
-				if _, err := tx.ExecContext(ctx, modelInsertSQL, channelID, entry.Model, entry.RedirectModel); err != nil {
-					return fmt.Errorf("insert model %s for channel %d: %w", entry.Model, channelID, err)
-				}
+			if err := s.saveModelEntriesImpl(ctx, tx, channelID, config.ModelEntries); err != nil {
+				return fmt.Errorf("save model entries for channel %d: %w", channelID, err)
 			}
 
 			// 批量插入API Keys（使用预编译语句）
