@@ -80,9 +80,13 @@ test('page-filters 使用响应式宽度类代替筛选控件内联像素宽度'
   assert.match(statsLayout, /id="f_channel_type" class="filter-select filter-control--compact"/);
   assert.match(statsLayout, /id="f_hours" class="filter-select filter-control--compact"/);
   assert.match(statsLayout, /id="f_id" class="filter-input filter-control--narrow"/);
+  assert.match(logsLayout, /class="filter-group logs-filter-group logs-filter-group--range"[\s\S]*id="f_hours" class="filter-select filter-control--compact logs-filter-control--range"/);
+  assert.match(logsLayout, /class="filter-group logs-filter-group logs-filter-group--channel-id"[\s\S]*id="f_id" class="filter-input filter-control--narrow logs-filter-control--channel-id"/);
   assert.match(logsLayout, /id="f_status" class="filter-input filter-control--narrow"/);
+  assert.match(logsLayout, /class="filter-group logs-filter-group logs-filter-group--token"[\s\S]*id="f_auth_token" class="filter-select filter-control--wide logs-filter-control--token"/);
   assert.match(trendLayout, /id="f_model" class="filter-select filter-control--wide"/);
-  assert.match(logsLayout, /id="f_auth_token" class="filter-select filter-control--wide"/);
+  assert.doesNotMatch(statsLayout, /logs-filter-control--(?:range|channel-id|token)/);
+  assert.doesNotMatch(trendLayout, /logs-filter-control--(?:range|channel-id|token)/);
 });
 
 test('logs.html、stats.html 和 trend.html 通过占位节点接入共享筛选栏，并在页面脚本前加载 page-filters', () => {

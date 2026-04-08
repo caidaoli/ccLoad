@@ -517,13 +517,13 @@
             </label>
             <div class="channel-editor-footer-fields">
               <div id="channelScheduledCheckModelWrapper" class="channel-editor-inline-field channel-editor-inline-field--scheduled-model" hidden>
-                <label class="form-label channel-editor-inline-label" for="channelScheduledCheckModel"
+                <label class="form-label channel-editor-inline-label" for="channelScheduledCheckModelInput"
                   data-i18n="channels.scheduledCheckModel">检测模型</label>
-                <div class="channel-editor-scheduled-model-control">
-                  <select id="channelScheduledCheckModel" class="form-input channel-editor-select channel-editor-select--scheduled-model">
-                    <option value="" data-i18n="channels.scheduledCheckModelDefault">默认首个模型</option>
-                  </select>
-                  <span id="channelScheduledCheckModelDisplay" class="channel-editor-scheduled-model-display" aria-hidden="true"></span>
+                <div class="filter-combobox-wrapper channel-editor-scheduled-model-control">
+                  <input id="channelScheduledCheckModelInput" class="filter-select filter-combobox" type="text"
+                    autocomplete="off" spellcheck="false">
+                  <div id="channelScheduledCheckModelDropdown" class="filter-dropdown" role="listbox"></div>
+                  <input type="hidden" id="channelScheduledCheckModel" value="">
                 </div>
               </div>
               <div class="channel-editor-inline-field">

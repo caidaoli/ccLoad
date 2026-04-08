@@ -148,6 +148,29 @@ test('日志页桌面筛选组设置基准宽度避免互相挤压', () => {
   assert.match(styleBlock, /flex:\s*1\s+1\s+180px/);
 });
 
+test('日志页范围、渠道ID、令牌筛选在桌面端使用专用组宽和控件宽度', () => {
+  const rangeGroupMatch = css.match(/\.logs-filter-group--range\s*\{[^}]+\}/);
+  const channelIdGroupMatch = css.match(/\.logs-filter-group--channel-id\s*\{[^}]+\}/);
+  const tokenGroupMatch = css.match(/\.logs-filter-group--token\s*\{[^}]+\}/);
+  const rangeControlMatch = css.match(/\.logs-filter-control--range\s*\{[^}]+\}/);
+  const channelIdControlMatch = css.match(/\.logs-filter-control--channel-id\s*\{[^}]+\}/);
+  const tokenControlMatch = css.match(/\.logs-filter-control--token\s*\{[^}]+\}/);
+
+  assert.ok(rangeGroupMatch, '缺少 .logs-filter-group--range 样式');
+  assert.ok(channelIdGroupMatch, '缺少 .logs-filter-group--channel-id 样式');
+  assert.ok(tokenGroupMatch, '缺少 .logs-filter-group--token 样式');
+  assert.ok(rangeControlMatch, '缺少 .logs-filter-control--range 样式');
+  assert.ok(channelIdControlMatch, '缺少 .logs-filter-control--channel-id 样式');
+  assert.ok(tokenControlMatch, '缺少 .logs-filter-control--token 样式');
+
+  assert.match(rangeGroupMatch[0], /flex:\s*0\s+1\s+116px/);
+  assert.match(channelIdGroupMatch[0], /flex:\s*0\s+1\s+134px/);
+  assert.match(tokenGroupMatch[0], /flex:\s*0\s+1\s+134px/);
+  assert.match(rangeControlMatch[0], /max-width:\s*80px/);
+  assert.match(channelIdControlMatch[0], /max-width:\s*72px/);
+  assert.match(tokenControlMatch[0], /max-width:\s*100px/);
+});
+
 test('日志页筛选输入控件允许在 flex 布局中收缩', () => {
   const controlMatch = css.match(/\.logs-filter-group\s+\.filter-input,\s*\.logs-filter-group\s+\.filter-select\s*\{[^}]+\}/);
   assert.ok(controlMatch, '缺少日志页筛选控件收缩样式');

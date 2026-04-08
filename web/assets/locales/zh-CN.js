@@ -523,7 +523,7 @@ window.I18N_LOCALES['zh-CN'] = {
   // ============================================================
   'stats.title': '调用统计 - Claude Code & Codex Proxy',
   'stats.channelType': '渠道类型',
-  'stats.timeRange': '时间范围',
+  'stats.timeRange': '范围',
   'stats.channelId': '渠道ID',
   'stats.channelName': '渠道名',
   'stats.token': '令牌',
@@ -648,7 +648,7 @@ window.I18N_LOCALES['zh-CN'] = {
   // ============================================================
   'logs.title': '请求日志 - Claude Code & Codex Proxy',
   'logs.statusCode': '状态码',
-  'logs.logSource': '日志来源',
+  'logs.logSource': '来源',
   'logs.statusPlaceholder': '如 200 / 403',
   'logs.showPrefix': '显示',
   'logs.recordsSuffix': '条',

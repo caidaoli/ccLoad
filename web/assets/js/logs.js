@@ -739,6 +739,43 @@ function applyLogsFilterValues(filters) {
   if (channelTypeEl) channelTypeEl.value = currentChannelType;
 }
 
+function getLogSourceFilterElements() {
+  const select = document.getElementById('f_log_source');
+  if (!select) {
+    return { group: null, select: null };
+  }
+
+  let group = null;
+  if (typeof select.closest === 'function') {
+    group = select.closest('.filter-group');
+  }
+  if (!group) {
+    group = select.parentElement || null;
+  }
+
+  return { group, select };
+}
+
+async function syncLogSourceVisibility() {
+  const { group, select } = getLogSourceFilterElements();
+  if (!group || !select) return false;
+
+  let scheduledCheckEnabledByConfig = false;
+  try {
+    const setting = await fetchDataWithAuth('/admin/settings/channel_check_interval_hours');
+    const intervalHours = Number(setting && setting.value);
+    scheduledCheckEnabledByConfig = Number.isFinite(intervalHours) && intervalHours > 0;
+  } catch (error) {
+    console.warn('Failed to load channel check interval setting for logs filter', error);
+  }
+
+  group.hidden = !scheduledCheckEnabledByConfig;
+  if (!scheduledCheckEnabledByConfig) {
+    select.value = 'proxy';
+  }
+  return scheduledCheckEnabledByConfig;
+}
+
 async function initFilters(restoredFilters) {
   const range = restoredFilters.range || 'today';
   const authToken = restoredFilters.authToken || '';
@@ -758,6 +795,7 @@ async function initFilters(restoredFilters) {
   });
 
   applyLogsFilterValues(restoredFilters);
+  await syncLogSourceVisibility();
 
   authTokens = await window.initAuthTokenFilter({
     selectId: 'f_auth_token',
@@ -961,16 +999,21 @@ const LOGS_FILTER_FIELDS = [
 ];
 
 function getLogsFilters() {
+  const { group: logSourceGroup, select: logSourceSelect } = getLogSourceFilterElements();
+  const logSource = !logSourceSelect || (logSourceGroup && logSourceGroup.hidden)
+    ? 'proxy'
+    : (logSourceSelect.value || 'proxy').trim();
+
   return {
     ...window.readFilterControlValues({
       range: { id: 'f_hours', defaultValue: 'today', trim: true },
       channelId: { id: 'f_id', trim: true },
       channelName: { id: 'f_name', trim: true },
       model: { id: 'f_model', trim: true },
-      logSource: { id: 'f_log_source', defaultValue: 'proxy', trim: true },
       status: { id: 'f_status', trim: true },
       authToken: { id: 'f_auth_token', trim: true }
     }),
+    logSource,
     channelType: document.getElementById('f_channel_type')?.value || 'all',
   };
 }
@@ -1019,7 +1062,7 @@ window.initPageBootstrap({
 
   if (!hasUrlParams && savedFilters) {
     window.persistFilterState({
-      values: savedFilters,
+      values: getLogsFilters(),
       pathname: location.pathname,
       fields: LOGS_FILTER_FIELDS,
       historyMethod: 'replaceState'
@@ -1101,6 +1144,7 @@ window.addEventListener('pageshow', async function (event) {
 
       document.getElementById('f_hours').value = restoredFilters.range || 'today';
       applyLogsFilterValues(restoredFilters);
+      await syncLogSourceVisibility();
 
       // 重新加载数据
       currentLogsPage = 1;
