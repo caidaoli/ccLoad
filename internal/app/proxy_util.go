@@ -558,6 +558,7 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 	entry := &model.LogEntry{
 		Time:        model.JSONTime{Time: logTime},
 		Model:       p.RequestModel,
+		LogSource:   model.LogSourceProxy,
 		ChannelID:   p.ChannelID,
 		StatusCode:  p.StatusCode,
 		Duration:    p.Duration,

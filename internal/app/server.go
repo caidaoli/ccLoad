@@ -625,8 +625,12 @@ func (s *Server) stateCleanupLoop() {
 // AddLogAsync 异步添加日志（委托给LogService处理）
 // 在代理请求完成后调用，记录请求日志
 func (s *Server) AddLogAsync(entry *model.LogEntry) {
+	if entry != nil && entry.LogSource == "" {
+		entry.LogSource = model.LogSourceProxy
+	}
+
 	// 更新成本缓存（用于每日成本限额功能）
-	if s.costCache != nil && entry.ChannelID > 0 && entry.Cost > 0 {
+	if s.costCache != nil && entry.ChannelID > 0 && entry.Cost > 0 && entry.LogSource == model.LogSourceProxy {
 		s.costCache.Add(entry.ChannelID, entry.Cost)
 	}
 

@@ -84,6 +84,13 @@ test('logs.js、stats.js 和 trend.js 通过共享 helper 构建请求参数', (
   assert.match(trendSource, /FilterQuery\.buildRequestParams/);
 });
 
+test('logs.js 将 log_source 纳入筛选状态和请求参数定义', () => {
+  assert.match(logsSource, /key:\s*'logSource'/);
+  assert.match(logsSource, /queryKeys:\s*\['log_source'\]/);
+  assert.match(logsSource, /requestKey:\s*'log_source'/);
+  assert.match(logsSource, /defaultValue:\s*'proxy'/);
+});
+
 test('logs.html、stats.html 和 trend.html 在页面脚本前加载共享请求参数 helper', () => {
   assert.match(
     logsHtmlSource,

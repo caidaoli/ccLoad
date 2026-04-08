@@ -518,10 +518,10 @@ func (s *SQLStore) GetChannelSuccessRates(ctx context.Context, since time.Time) 
 			SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success,
 			SUM(CASE WHEN ` + eligible + ` THEN 1 ELSE 0 END) AS total
 		FROM logs
-		WHERE minute_bucket >= ? AND minute_bucket <= ? AND channel_id > 0
+		WHERE minute_bucket >= ? AND minute_bucket <= ? AND channel_id > 0 AND log_source = ?
 		GROUP BY channel_id`
 
-	rows, err := s.db.QueryContext(ctx, query, sinceBucket, untilBucket)
+	rows, err := s.db.QueryContext(ctx, query, sinceBucket, untilBucket, model.LogSourceProxy)
 	if err != nil {
 		return nil, err
 	}
@@ -552,10 +552,10 @@ func (s *SQLStore) GetTodayChannelCosts(ctx context.Context, todayStart time.Tim
 	query := `
 		SELECT channel_id, COALESCE(SUM(cost), 0) as total_cost
 		FROM logs
-		WHERE time >= ? AND channel_id > 0
+		WHERE time >= ? AND channel_id > 0 AND log_source = ?
 		GROUP BY channel_id`
 
-	rows, err := s.db.QueryContext(ctx, query, todayStartMs)
+	rows, err := s.db.QueryContext(ctx, query, todayStartMs, model.LogSourceProxy)
 	if err != nil {
 		return nil, err
 	}

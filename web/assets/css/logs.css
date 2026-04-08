@@ -257,6 +257,28 @@
       white-space: nowrap;
     }
 
+    .log-source-badge {
+      display: inline-flex;
+      align-items: center;
+      margin-right: 6px;
+      padding: 1px 6px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      line-height: 1.5;
+      vertical-align: middle;
+    }
+
+    .log-source-badge--scheduled {
+      color: var(--primary-700);
+      background: var(--primary-100);
+    }
+
+    .log-source-badge--manual {
+      color: var(--success-700);
+      background: var(--success-100);
+    }
+
     .logs-filter-summary-row {
       display: contents;
     }

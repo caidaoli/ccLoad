@@ -302,6 +302,33 @@ func TestBuildLogFilter(t *testing.T) {
 			},
 		},
 		{
+			name:  "default_log_source_proxy",
+			query: "",
+			check: func(t *testing.T, lf model.LogFilter) {
+				if lf.LogSource != model.LogSourceProxy {
+					t.Errorf("LogSource=%q, want %q", lf.LogSource, model.LogSourceProxy)
+				}
+			},
+		},
+		{
+			name:  "log_source_detection",
+			query: "log_source=detection",
+			check: func(t *testing.T, lf model.LogFilter) {
+				if lf.LogSource != model.LogSourceDetection {
+					t.Errorf("LogSource=%q, want %q", lf.LogSource, model.LogSourceDetection)
+				}
+			},
+		},
+		{
+			name:  "log_source_all",
+			query: "log_source=all",
+			check: func(t *testing.T, lf model.LogFilter) {
+				if lf.LogSource != model.LogSourceAll {
+					t.Errorf("LogSource=%q, want %q", lf.LogSource, model.LogSourceAll)
+				}
+			},
+		},
+		{
 			name:  "invalid_channel_id_ignored",
 			query: "channel_id=invalid",
 			check: func(t *testing.T, lf model.LogFilter) {

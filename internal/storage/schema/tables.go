@@ -10,6 +10,7 @@ func DefineChannelsTable() *TableBuilder {
 		Column("channel_type VARCHAR(64) NOT NULL DEFAULT 'anthropic'").
 		Column("enabled TINYINT NOT NULL DEFAULT 1").
 		Column("scheduled_check_enabled TINYINT NOT NULL DEFAULT 0").
+		Column("scheduled_check_model VARCHAR(191) NOT NULL DEFAULT ''").
 		Column("cooldown_until BIGINT NOT NULL DEFAULT 0").
 		Column("cooldown_duration_ms BIGINT NOT NULL DEFAULT 0").
 		Column("daily_cost_limit DOUBLE NOT NULL DEFAULT 0").
@@ -113,6 +114,7 @@ func DefineLogsTable() *TableBuilder {
 		Column("minute_bucket BIGINT NOT NULL DEFAULT 0"). // time/60000，用于RPM类聚合避免运行时FLOOR
 		Column("model VARCHAR(191) NOT NULL DEFAULT ''").
 		Column("actual_model VARCHAR(191) NOT NULL DEFAULT ''"). // 实际转发的模型（空表示未重定向）
+		Column("log_source VARCHAR(32) NOT NULL DEFAULT 'proxy'").
 		Column("channel_id INT NOT NULL DEFAULT 0").
 		Column("status_code INT NOT NULL").
 		Column("message TEXT NOT NULL").

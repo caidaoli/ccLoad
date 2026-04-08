@@ -24,6 +24,7 @@ type ChannelRequest struct {
 	Models                []model.ModelEntry `json:"models" binding:"required,min=1"` // 模型配置（包含重定向）
 	Enabled               bool               `json:"enabled"`
 	ScheduledCheckEnabled bool               `json:"scheduled_check_enabled"`
+	ScheduledCheckModel   string             `json:"scheduled_check_model"`
 	DailyCostLimit        float64            `json:"daily_cost_limit"` // 每日成本限额（美元），0表示无限制
 }
 
@@ -117,6 +118,13 @@ func (cr *ChannelRequest) Validate() error {
 		seenModels[modelKey] = i
 	}
 
+	cr.ScheduledCheckModel = strings.TrimSpace(cr.ScheduledCheckModel)
+	if cr.ScheduledCheckModel != "" {
+		if _, exists := seenModels[strings.ToLower(cr.ScheduledCheckModel)]; !exists {
+			return fmt.Errorf("scheduled_check_model %q must exist in models", cr.ScheduledCheckModel)
+		}
+	}
+
 	// URL 验证：支持换行分隔的多URL，逐个校验并标准化
 	normalizedURL, err := validateChannelURLs(cr.URL)
 	if err != nil {
@@ -173,6 +181,7 @@ func (cr *ChannelRequest) ToConfig() *model.Config {
 		ModelEntries:          normalizedModels,
 		Enabled:               cr.Enabled,
 		ScheduledCheckEnabled: cr.ScheduledCheckEnabled,
+		ScheduledCheckModel:   cr.ScheduledCheckModel,
 		DailyCostLimit:        cr.DailyCostLimit,
 	}
 }

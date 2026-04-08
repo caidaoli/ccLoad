@@ -79,7 +79,7 @@ func TestCSVExportImportCycle(t *testing.T) {
 
 func TestCSVExport_NoTimeFields(t *testing.T) {
 	// 验证CSV导出不包含时间字段
-	header := []string{"id", "name", "api_key", "url", "priority", "models", "model_redirects", "channel_type", "key_strategy", "enabled", "scheduled_check_enabled"}
+	header := []string{"id", "name", "api_key", "url", "priority", "models", "model_redirects", "channel_type", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model"}
 
 	hasCreatedAt := false
 	hasUpdatedAt := false
