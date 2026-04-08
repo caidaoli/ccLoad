@@ -310,6 +310,86 @@
       min-width: 0;
     }
 
+    .channel-editor-inline-field--scheduled-model {
+      flex: 0 1 auto;
+    }
+
+    .channel-editor-scheduled-model-control {
+      position: relative;
+      width: 184px;
+      min-width: 184px;
+      max-width: 184px;
+      border: 2px solid var(--neutral-200);
+      border-radius: var(--radius-lg);
+      background: rgba(255, 255, 255, 0.9);
+      backdrop-filter: blur(8px);
+      transition: all var(--duration-fast) var(--timing-function);
+      overflow: hidden;
+    }
+
+    .channel-editor-scheduled-model-control:focus-within {
+      border-color: var(--primary-500);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+      background: white;
+    }
+
+    .channel-editor-select--scheduled-model {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      border-radius: inherit;
+      appearance: none;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+      background: transparent;
+      box-shadow: none;
+      opacity: 0;
+      cursor: pointer;
+      z-index: 2;
+    }
+
+    .channel-editor-scheduled-model-control::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      right: 12px;
+      width: 8px;
+      height: 8px;
+      border-right: 2px solid var(--neutral-700);
+      border-bottom: 2px solid var(--neutral-700);
+      transform: translateY(-60%) rotate(45deg);
+      pointer-events: none;
+    }
+
+    .channel-editor-scheduled-model-display {
+      position: absolute;
+      inset: 0 20px 0 12px;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      overflow: hidden;
+      white-space: nowrap;
+      text-align: right;
+      pointer-events: none;
+      color: var(--neutral-900);
+      font-size: 16px;
+      font-weight: 500;
+      z-index: 1;
+    }
+
+    .channel-editor-select--scheduled-model:disabled + .channel-editor-scheduled-model-display {
+      color: var(--neutral-400);
+    }
+
+    .channel-editor-select--scheduled-model option {
+      color: var(--neutral-900);
+      -webkit-text-fill-color: var(--neutral-900);
+    }
+
     .channel-editor-inline-field-input {
       display: inline-flex;
       align-items: center;
@@ -510,9 +590,9 @@
     }
 
     .ch-col-duration {
-      width: 100px;
-      min-width: 100px;
-      max-width: 100px;
+      width: 184px;
+      min-width: 184px;
+      max-width: 184px;
       white-space: normal;
       text-align: right;
     }

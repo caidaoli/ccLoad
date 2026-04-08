@@ -66,6 +66,13 @@ test('日志页顶部筛选栏通过共享渲染器输出页面专用布局类',
   assert.match(filtersHtml, /<div class="filter-actions filter-actions--page logs-filter-actions">[\s\S]*id="btn_filter"/);
 });
 
+test('日志页为来源筛选和来源 badge 预留 DOM/CSS 契约', () => {
+  const filtersHtml = renderLogsFilters();
+  assert.match(filtersHtml, /id="f_log_source"/);
+  assert.match(logsSource, /log-source-badge/);
+  assert.match(css, /\.log-source-badge\s*\{/);
+});
+
 test('日志页桌面筛选摘要行摊平到共享 flex 容器，避免挤压筛选控件', () => {
   const desktopCss = css.split(/@media\s*\(max-width:\s*768px\)/)[0];
   const summaryMatch = desktopCss.match(/\.logs-filter-summary-row\s*\{[^}]+\}/);

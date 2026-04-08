@@ -44,6 +44,7 @@ func (s *Server) HandleMetrics(c *gin.Context) {
 
 	// 使用统一的筛选参数构建器（支持 channel_type、channel_id、channel_name_like、model、auth_token_id）
 	lf := BuildLogFilter(c)
+	lf.LogSource = model.LogSourceProxy
 
 	since, until := params.GetTimeRange()
 	pts, err := s.store.AggregateRangeWithFilter(c.Request.Context(), since, until, time.Duration(bucketMin)*time.Minute, &lf)
@@ -61,6 +62,7 @@ func (s *Server) HandleMetrics(c *gin.Context) {
 func (s *Server) HandleStats(c *gin.Context) {
 	params := ParsePaginationParams(c)
 	lf := BuildLogFilter(c)
+	lf.LogSource = model.LogSourceProxy
 
 	startTime, endTime := params.GetTimeRange()
 
@@ -352,7 +354,7 @@ func (s *Server) HandleGetModels(c *gin.Context) {
 	channelType := c.Query("channel_type")
 
 	// 查询模型列表
-	models, err := s.store.GetDistinctModels(c.Request.Context(), since, until, channelType)
+	models, err := s.store.GetDistinctModels(c.Request.Context(), since, until, channelType, &model.LogFilter{LogSource: model.LogSourceProxy})
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return

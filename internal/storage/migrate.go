@@ -86,6 +86,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureChannelsScheduledCheckEnabled(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels scheduled_check_enabled: %w", err)
 			}
+			if err := ensureChannelsScheduledCheckModel(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate channels scheduled_check_model: %w", err)
+			}
 			// 增量迁移：将url字段从VARCHAR(191)扩展为TEXT（支持多URL存储）
 			if err := migrateChannelsURLToText(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels url to text: %w", err)
@@ -207,7 +210,10 @@ func ensureLogsNewColumns(ctx context.Context, db *sql.DB, dialect Dialect) erro
 		if err := ensureLogsBaseURLMySQL(ctx, db); err != nil {
 			return err
 		}
-		return ensureLogsServiceTierMySQL(ctx, db)
+		if err := ensureLogsServiceTierMySQL(ctx, db); err != nil {
+			return err
+		}
+		return ensureLogsLogSourceMySQL(ctx, db)
 	}
 	// SQLite: 使用PRAGMA table_info检查列
 	return ensureLogsColumnsSQLite(ctx, db)
@@ -276,6 +282,7 @@ func ensureLogsColumnsSQLite(ctx context.Context, db *sql.DB) error {
 		{name: "cache_5m_input_tokens", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{name: "cache_1h_input_tokens", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{name: "actual_model", definition: "TEXT NOT NULL DEFAULT ''"}, // 实际转发的模型
+		{name: "log_source", definition: "TEXT NOT NULL DEFAULT 'proxy'"},
 		{name: "api_key_hash", definition: "TEXT NOT NULL DEFAULT ''"}, // API Key SHA256（用于精确定位 key_index）
 		{name: "base_url", definition: "TEXT NOT NULL DEFAULT ''"},     // 请求使用的上游URL（多URL场景）
 		{name: "service_tier", definition: "TEXT NOT NULL DEFAULT ''"}, // OpenAI service_tier: priority/flex
@@ -458,6 +465,10 @@ func ensureLogsServiceTierMySQL(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("add service_tier column: %w", err)
 	}
 	return nil
+}
+
+func ensureLogsLogSourceMySQL(ctx context.Context, db *sql.DB) error {
+	return ensureMySQLColumns(ctx, db, "logs", []mysqlColumnDef{{name: "log_source", definition: "VARCHAR(32) NOT NULL DEFAULT 'proxy'"}})
 }
 
 // ensureLogsCacheFieldsMySQL 确保logs表有缓存细分字段(MySQL增量迁移,2025-12新增)
@@ -684,7 +695,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"non_stream_timeout", "120", "duration", "非流式请求超时(秒,0=禁用)", "120"},
 		{"model_fuzzy_match", "false", "bool", "模型匹配失败时，使用子串模糊匹配(多匹配时选最新版本)", "false"},
 		{"channel_test_content", "sonnet 4.0的发布日期是什么", "string", "渠道测试默认内容", "sonnet 4.0的发布日期是什么"},
-		{"channel_check_interval_hours", "0", "int", "渠道定时检测间隔(小时,0=关闭,修改后重启生效)", "0"},
+		{"channel_check_interval_hours", "5", "int", "渠道定时检测间隔(小时,0=关闭,修改后重启生效)", "5"},
 		{"channel_stats_range", "today", "string", "渠道管理费用统计范围", "today"},
 		// 健康度排序配置
 		{"enable_health_score", "false", "bool", "启用基于健康度的渠道动态排序", "false"},
@@ -1358,6 +1369,28 @@ func ensureChannelsScheduledCheckEnabled(ctx context.Context, db *sql.DB, dialec
 	return ensureSQLiteColumns(ctx, db, "channels", []sqliteColumnDef{
 		{name: "scheduled_check_enabled", definition: "INTEGER NOT NULL DEFAULT 0"},
 	})
+}
+
+func ensureChannelsScheduledCheckModel(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if dialect == DialectMySQL {
+		var count int
+		err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channels' AND COLUMN_NAME='scheduled_check_model'",
+		).Scan(&count)
+		if err != nil {
+			return fmt.Errorf("check scheduled_check_model field: %w", err)
+		}
+		if count == 0 {
+			if _, err := db.ExecContext(ctx,
+				"ALTER TABLE channels ADD COLUMN scheduled_check_model VARCHAR(191) NOT NULL DEFAULT ''"); err != nil {
+				return fmt.Errorf("add scheduled_check_model column: %w", err)
+			}
+			log.Printf("[MIGRATE] Added channels.scheduled_check_model column")
+		}
+		return nil
+	}
+
+	return ensureSQLiteColumns(ctx, db, "channels", []sqliteColumnDef{{name: "scheduled_check_model", definition: "TEXT NOT NULL DEFAULT ''"}})
 }
 
 // ensureAPIKeysAPIKeyLength 修复 api_keys.api_key 列定义漂移（MySQL）

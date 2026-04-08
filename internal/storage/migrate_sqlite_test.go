@@ -126,6 +126,9 @@ func TestEnsureChannelsDailyCostLimit_SQLite(t *testing.T) {
 	if !cols["scheduled_check_enabled"] {
 		t.Fatal("scheduled_check_enabled column not found in channels")
 	}
+	if !cols["scheduled_check_model"] {
+		t.Fatal("scheduled_check_model column not found in channels")
+	}
 }
 
 func TestEnsureAuthTokensAllowedModels_SQLite(t *testing.T) {
@@ -493,8 +496,8 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		if err != nil {
 			t.Errorf("setting %q not found: %v", key, err)
 		}
-		if key == "channel_check_interval_hours" && val != "0" {
-			t.Errorf("setting %q default = %q, want 0", key, val)
+		if key == "channel_check_interval_hours" && val != "5" {
+			t.Errorf("setting %q default = %q, want 5", key, val)
 		}
 	}
 
@@ -703,7 +706,7 @@ func TestEnsureLogsNewColumns_SQLite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sqliteExistingColumns: %v", err)
 	}
-	for _, col := range []string{"minute_bucket", "auth_token_id", "client_ip", "actual_model"} {
+	for _, col := range []string{"minute_bucket", "auth_token_id", "client_ip", "actual_model", "log_source"} {
 		if !cols[col] {
 			t.Errorf("column %s not found in logs", col)
 		}

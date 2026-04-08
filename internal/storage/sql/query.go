@@ -54,6 +54,7 @@ func (wb *WhereBuilder) AddCondition(condition string, args ...any) *WhereBuilde
 // ApplyLogFilter 应用日志过滤器，消除重复的过滤逻辑
 func (wb *WhereBuilder) ApplyLogFilter(filter *model.LogFilter) *WhereBuilder {
 	if filter == nil {
+		wb.AddCondition("log_source = ?", model.LogSourceProxy)
 		return wb
 	}
 
@@ -73,6 +74,15 @@ func (wb *WhereBuilder) ApplyLogFilter(filter *model.LogFilter) *WhereBuilder {
 	}
 	if filter.AuthTokenID != nil {
 		wb.AddCondition("auth_token_id = ?", *filter.AuthTokenID)
+	}
+	switch filter.LogSource {
+	case model.LogSourceAll:
+	case model.LogSourceDetection:
+		wb.AddCondition("log_source IN (?, ?)", model.LogSourceScheduledCheck, model.LogSourceManualTest)
+	case "":
+		wb.AddCondition("log_source = ?", model.LogSourceProxy)
+	default:
+		wb.AddCondition("log_source = ?", filter.LogSource)
 	}
 	return wb
 }
@@ -109,12 +119,13 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	var c model.Config
 	var enabledInt int
 	var scheduledCheckEnabledInt int
+	var scheduledCheckModel string
 	var createdAtRaw, updatedAtRaw any // 使用any接受任意类型（兼容字符串、整数或RFC3339）
 
 	// 扫描key_count字段（从JOIN查询获取）
 	// 注意：不再包含 models 和 model_redirects 字段
 	if err := scanner.Scan(&c.ID, &c.Name, &c.URL, &c.Priority,
-		&c.ChannelType, &enabledInt, &scheduledCheckEnabledInt,
+		&c.ChannelType, &enabledInt, &scheduledCheckEnabledInt, &scheduledCheckModel,
 		&c.CooldownUntil, &c.CooldownDurationMs, &c.DailyCostLimit, &c.KeyCount,
 		&createdAtRaw, &updatedAtRaw); err != nil {
 		return nil, err
@@ -122,6 +133,7 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 
 	c.Enabled = enabledInt != 0
 	c.ScheduledCheckEnabled = scheduledCheckEnabledInt != 0
+	c.ScheduledCheckModel = scheduledCheckModel
 
 	// 转换时间戳（支持不同数据库）
 	now := time.Now()

@@ -270,5 +270,20 @@ func BuildLogFilter(c *gin.Context) model.LogFilter {
 		}
 	}
 
+	switch strings.TrimSpace(c.Query("log_source")) {
+	case "", model.LogSourceProxy:
+		lf.LogSource = model.LogSourceProxy
+	case model.LogSourceScheduledCheck:
+		lf.LogSource = model.LogSourceScheduledCheck
+	case model.LogSourceManualTest:
+		lf.LogSource = model.LogSourceManualTest
+	case model.LogSourceDetection:
+		lf.LogSource = model.LogSourceDetection
+	case model.LogSourceAll:
+		lf.LogSource = model.LogSourceAll
+	default:
+		lf.LogSource = model.LogSourceProxy
+	}
+
 	return lf
 }

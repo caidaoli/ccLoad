@@ -50,23 +50,24 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 	// openai: success + error + cancelled(499)
 	// anthropic: success
 	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
-		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", StatusCode: 200, Duration: 0.1, IsStreaming: true, FirstByteTime: 0.01, InputTokens: 10, OutputTokens: 20, Cost: 0.01},
-		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", StatusCode: 500, Duration: 0.2, IsStreaming: false, InputTokens: 1, OutputTokens: 2, Cost: 0.02},
-		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", StatusCode: 499, Duration: 0.3, IsStreaming: true, FirstByteTime: 0.02, InputTokens: 999, OutputTokens: 999, Cost: 9.99},
-		{Time: model.JSONTime{Time: now}, ChannelID: anthCfg.ID, Model: "claude-3-5-sonnet-latest", StatusCode: 200, Duration: 0.4, IsStreaming: false, InputTokens: 3, OutputTokens: 4, Cost: 0.03},
+		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", StatusCode: 200, Duration: 0.1, IsStreaming: true, FirstByteTime: 0.01, InputTokens: 10, OutputTokens: 20, Cost: 0.01, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", StatusCode: 500, Duration: 0.2, IsStreaming: false, InputTokens: 1, OutputTokens: 2, Cost: 0.02, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", StatusCode: 499, Duration: 0.3, IsStreaming: true, FirstByteTime: 0.02, InputTokens: 999, OutputTokens: 999, Cost: 9.99, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: anthCfg.ID, Model: "claude-3-5-sonnet-latest", StatusCode: 200, Duration: 0.4, IsStreaming: false, InputTokens: 3, OutputTokens: 4, Cost: 0.03, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", StatusCode: 200, Duration: 0.05, IsStreaming: false, InputTokens: 100, OutputTokens: 200, Cost: 1.23, LogSource: model.LogSourceManualTest},
 	}); err != nil {
 		t.Fatalf("BatchAddLogs failed: %v", err)
 	}
 
 	// GetDistinctModels：无过滤 + 按渠道类型过滤（覆盖 fetchChannelIDsByType）
-	modelsAll, err := store.GetDistinctModels(ctx, start, end, "")
+	modelsAll, err := store.GetDistinctModels(ctx, start, end, "", nil)
 	if err != nil {
 		t.Fatalf("GetDistinctModels(all) failed: %v", err)
 	}
 	if len(modelsAll) < 2 {
 		t.Fatalf("GetDistinctModels(all) got %v, want >=2", modelsAll)
 	}
-	modelsOpenAI, err := store.GetDistinctModels(ctx, start, end, "openai")
+	modelsOpenAI, err := store.GetDistinctModels(ctx, start, end, "openai", nil)
 	if err != nil {
 		t.Fatalf("GetDistinctModels(openai) failed: %v", err)
 	}
@@ -177,6 +178,14 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 	}
 	if len(filteredStats) != 1 {
 		t.Fatalf("GetStats(filtered) len=%d, want 1", len(filteredStats))
+	}
+
+	manualStats, err := store.GetStats(ctx, start, end, &model.LogFilter{LogSource: model.LogSourceManualTest}, false)
+	if err != nil {
+		t.Fatalf("GetStats(manual_test) failed: %v", err)
+	}
+	if len(manualStats) != 1 || manualStats[0].Total != 1 || manualStats[0].Success != 1 {
+		t.Fatalf("manual test stats=%+v, want one success record", manualStats)
 	}
 
 	// GetTodayChannelCosts：覆盖今日成本聚合

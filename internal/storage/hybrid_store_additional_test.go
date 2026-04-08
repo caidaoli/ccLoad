@@ -174,7 +174,7 @@ func TestHybridStore_WrapperCoverage(t *testing.T) {
 	if _, err := h.AggregateRangeWithFilter(ctx, since, until2, time.Minute, nil); err != nil {
 		t.Fatalf("AggregateRangeWithFilter failed: %v", err)
 	}
-	if _, err := h.GetDistinctModels(ctx, since, until2, ""); err != nil {
+	if _, err := h.GetDistinctModels(ctx, since, until2, "", nil); err != nil {
 		t.Fatalf("GetDistinctModels failed: %v", err)
 	}
 	if _, err := h.GetStats(ctx, since, until2, nil, true); err != nil {
