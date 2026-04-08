@@ -46,6 +46,7 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 			Time:                     model.JSONTime{Time: now},
 			Model:                    "m1",
 			ChannelID:                anth.ID,
+			LogSource:                model.LogSourceProxy,
 			StatusCode:               200,
 			Message:                  "ok",
 			Duration:                 0.1,
@@ -63,6 +64,7 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 			Time:                 model.JSONTime{Time: now},
 			Model:                "m1",
 			ChannelID:            oai.ID,
+			LogSource:            model.LogSourceProxy,
 			StatusCode:           500,
 			Message:              "fail",
 			Duration:             0.2,
@@ -71,6 +73,18 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 			OutputTokens:         8,
 			CacheReadInputTokens: 99, // openai 类型不应计入缓存统计
 			Cost:                 0.02,
+		},
+		{
+			Time:         model.JSONTime{Time: now},
+			Model:        "m1",
+			ChannelID:    anth.ID,
+			LogSource:    model.LogSourceScheduledCheck,
+			StatusCode:   200,
+			Message:      "scheduled ok",
+			Duration:     0.05,
+			InputTokens:  50,
+			OutputTokens: 60,
+			Cost:         0.5,
 		},
 	}
 	if err := store.BatchAddLogs(ctx, logs); err != nil {

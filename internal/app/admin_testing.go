@@ -99,7 +99,9 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 		return
 	}
 
+	requestedModel := testReq.Model
 	testResult := s.executeChannelTest(c.Request.Context(), cfg, keyIndex, selectedKey, &testReq)
+	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualTest, requestedModel, testReq.Model, selectedKey, c.ClientIP(), 0, testResult))
 	testResult["tested_key_index"] = keyIndex
 	testResult["total_keys"] = len(apiKeys)
 
@@ -196,6 +198,7 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 	var lastResult map[string]any
 	for idx, entry := range orderedURLs {
 		attemptResult := s.testChannelAPIWithURL(reqCtx, cfg, apiKey, testReq, tester, channelType, entry.url)
+		attemptResult["base_url"] = entry.url
 		success, _ := attemptResult["success"].(bool)
 		if success {
 			if selector != nil {

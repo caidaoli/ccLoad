@@ -126,6 +126,17 @@ function getLogMobileLabels() {
   };
 }
 
+function renderLogSourceBadge(logSource) {
+  switch (logSource) {
+    case 'scheduled_check':
+      return `<span class="log-source-badge log-source-badge--scheduled">${escapeHtml(t('logs.sourceScheduledCheckBadge'))}</span>`;
+    case 'manual_test':
+      return `<span class="log-source-badge log-source-badge--manual">${escapeHtml(t('logs.sourceManualTestBadge'))}</span>`;
+    default:
+      return '';
+  }
+}
+
 function calculateLogSpeed(entry) {
   const outputTokens = Number(entry?.output_tokens);
   const duration = Number(entry?.duration);
@@ -257,6 +268,12 @@ function filterActiveRequests(requests) {
   });
 }
 
+function shouldSkipActiveRequestsFetch(hours, status, logSource) {
+  if (hours && hours !== 'today') return true;
+  if (status) return true;
+  return logSource !== 'proxy' && logSource !== 'all';
+}
+
 // 获取进行中的请求
 async function fetchActiveRequests() {
   if (activeRequestsFetchInFlight) return;
@@ -264,8 +281,9 @@ async function fetchActiveRequests() {
   // 优化：当筛选条件不可能匹配进行中请求时，跳过请求
   const hours = (document.getElementById('f_hours')?.value || '').trim();
   const status = (document.getElementById('f_status')?.value || '').trim();
+  const logSource = (document.getElementById('f_log_source')?.value || 'proxy').trim();
   // 进行中的请求只存在于"本日"，且没有状态码
-  if ((hours && hours !== 'today') || status) {
+  if (shouldSkipActiveRequestsFetch(hours, status, logSource)) {
     clearActiveRequestsRows();
     lastActiveRequestIDs = null;
     return;
@@ -562,7 +580,9 @@ function renderLogs(data) {
     }
     const costDisplay = entry.cost ?
       `<span style="color: var(--warning-600); font-weight: 500;">${formatCost(entry.cost)}${tierBadge}</span>` : '';
+    const sourceBadge = renderLogSourceBadge(entry.log_source || 'proxy');
     const messageText = escapeHtml(entry.message || '');
+    const messageDisplay = `${sourceBadge}${messageText}`;
 
     // === 直接拼接行 HTML ===
     htmlParts[i] = `<tr class="mobile-card-row logs-table-row">
@@ -579,7 +599,7 @@ function renderLogs(data) {
           <td class="logs-col-cache-read${cacheReadDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.cacheRead}" style="text-align: right; white-space: nowrap;">${cacheReadDisplay}</td>
           <td class="logs-col-cache-write${cacheCreationDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.cacheWrite}" style="text-align: right; white-space: nowrap;">${cacheCreationDisplay}</td>
           <td class="logs-col-cost${costDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.cost}" style="text-align: right; white-space: nowrap;">${costDisplay}</td>
-          <td class="logs-col-message${messageText ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.message}" style="max-width: 300px; word-break: break-word;">${messageText}</td>
+          <td class="logs-col-message${messageDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.message}" style="max-width: 300px; word-break: break-word;">${messageDisplay}</td>
         </tr>`;
   }
 
@@ -710,6 +730,7 @@ function applyLogsFilterValues(filters) {
     channelId: 'f_id',
     channelName: 'f_name',
     model: 'f_model',
+    logSource: 'f_log_source',
     status: 'f_status'
   });
 
@@ -753,11 +774,12 @@ async function initFilters(restoredFilters) {
 
   // 事件监听
   document.getElementById('btn_filter').addEventListener('click', applyFilter);
+  document.getElementById('f_log_source')?.addEventListener('change', applyFilter);
 
   window.bindFilterApplyInputs({
     apply: applyFilter,
     debounceInputIds: ['f_id', 'f_name', 'f_model', 'f_status'],
-    enterInputIds: ['f_hours', 'f_id', 'f_name', 'f_model', 'f_status', 'f_auth_token', 'f_channel_type']
+    enterInputIds: ['f_hours', 'f_id', 'f_name', 'f_model', 'f_status', 'f_auth_token', 'f_channel_type', 'f_log_source']
   });
 }
 
@@ -922,6 +944,7 @@ const LOGS_FILTER_FIELDS = [
   { key: 'channelId', queryKeys: ['channel_id'], defaultValue: '' },
   { key: 'channelName', queryKeys: ['channel_name_like', 'channel_name'], defaultValue: '' },
   { key: 'model', queryKeys: ['model_like', 'model'], defaultValue: '' },
+  { key: 'logSource', queryKeys: ['log_source'], requestKey: 'log_source', defaultValue: 'proxy' },
   { key: 'status', queryKeys: ['status_code'], defaultValue: '' },
   { key: 'authToken', queryKeys: ['auth_token_id'], defaultValue: '' },
   {
@@ -944,6 +967,7 @@ function getLogsFilters() {
       channelId: { id: 'f_id', trim: true },
       channelName: { id: 'f_name', trim: true },
       model: { id: 'f_model', trim: true },
+      logSource: { id: 'f_log_source', defaultValue: 'proxy', trim: true },
       status: { id: 'f_status', trim: true },
       authToken: { id: 'f_auth_token', trim: true }
     }),

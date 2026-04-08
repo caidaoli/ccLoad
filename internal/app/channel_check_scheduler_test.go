@@ -159,7 +159,7 @@ var testRequestOpenAI = testutil.TestChannelRequest{
 	Content:     "hello",
 }
 
-func TestRunScheduledChannelChecks_UsesFirstModelAndAvailableKey(t *testing.T) {
+func TestRunScheduledChannelChecks_UsesScheduledCheckModelAndAvailableKey(t *testing.T) {
 	var (
 		eligibleCalls int
 		eligibleModel string
@@ -200,6 +200,7 @@ func TestRunScheduledChannelChecks_UsesFirstModelAndAvailableKey(t *testing.T) {
 		ChannelType:           "openai",
 		Enabled:               true,
 		ScheduledCheckEnabled: true,
+		ScheduledCheckModel:   "gpt-4.1",
 		ModelEntries: []model.ModelEntry{
 			{Model: "gpt-4o-mini"},
 			{Model: "gpt-4.1"},
@@ -232,11 +233,81 @@ func TestRunScheduledChannelChecks_UsesFirstModelAndAvailableKey(t *testing.T) {
 	if disabledCalls != 0 {
 		t.Fatalf("expected disabled channel skipped, got %d calls", disabledCalls)
 	}
-	if eligibleModel != "gpt-4o-mini" {
-		t.Fatalf("expected first model used, got %q", eligibleModel)
+	if eligibleModel != "gpt-4.1" {
+		t.Fatalf("expected scheduled check model used, got %q", eligibleModel)
 	}
 	if eligibleAuth != "Bearer sk-available" {
 		t.Fatalf("expected available key selected, got %q", eligibleAuth)
+	}
+}
+
+func TestRunScheduledChannelChecks_WritesScheduledCheckLogsForRunAndSkip(t *testing.T) {
+	called := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	ctx := context.Background()
+	now := time.Now().Add(-time.Minute)
+
+	createScheduledCheckChannel(t, srv, &model.Config{
+		Name:                  "scheduled-log-success",
+		URL:                   upstream.URL,
+		ChannelType:           "openai",
+		Enabled:               true,
+		ScheduledCheckEnabled: true,
+		ModelEntries:          []model.ModelEntry{{Model: "gpt-4o-mini"}},
+	}, &model.APIKey{APIKey: "sk-success", KeyStrategy: model.KeyStrategySequential})
+
+	createScheduledCheckChannel(t, srv, &model.Config{
+		Name:                  "scheduled-log-skip",
+		URL:                   upstream.URL,
+		ChannelType:           "openai",
+		Enabled:               true,
+		ScheduledCheckEnabled: true,
+		ModelEntries:          []model.ModelEntry{{Model: "gpt-4o-mini"}},
+	})
+
+	if err := srv.runScheduledChannelChecks(ctx); err != nil {
+		t.Fatalf("runScheduledChannelChecks failed: %v", err)
+	}
+
+	logs, err := srv.store.ListLogs(ctx, now, 20, 0, &model.LogFilter{LogSource: model.LogSourceScheduledCheck})
+	if err != nil {
+		t.Fatalf("ListLogs failed: %v", err)
+	}
+	if called != 1 {
+		t.Fatalf("expected one upstream call, got %d", called)
+	}
+	if len(logs) != 2 {
+		t.Fatalf("expected 2 scheduled check logs, got %d", len(logs))
+	}
+
+	var successLog, skipLog *model.LogEntry
+	for _, entry := range logs {
+		switch entry.StatusCode {
+		case http.StatusOK:
+			successLog = entry
+		case 0:
+			skipLog = entry
+		}
+	}
+	if successLog == nil {
+		t.Fatal("expected scheduled check success log")
+	}
+	if successLog.LogSource != model.LogSourceScheduledCheck {
+		t.Fatalf("success log source = %q, want %q", successLog.LogSource, model.LogSourceScheduledCheck)
+	}
+	if skipLog == nil {
+		t.Fatal("expected scheduled check skip log")
+	}
+	if skipLog.Message == "" {
+		t.Fatal("expected skip log message")
 	}
 }
 

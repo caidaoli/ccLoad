@@ -44,7 +44,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 	writer := csv.NewWriter(buf)
 	defer writer.Flush()
 
-	header := []string{"id", "name", "api_key", "url", "priority", "models", "model_redirects", "channel_type", "key_strategy", "enabled", "scheduled_check_enabled"}
+	header := []string{"id", "name", "api_key", "url", "priority", "models", "model_redirects", "channel_type", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model"}
 	if err := writer.Write(header); err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -97,6 +97,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 			keyStrategy,
 			strconv.FormatBool(cfg.Enabled),
 			strconv.FormatBool(cfg.ScheduledCheckEnabled),
+			cfg.ScheduledCheckModel,
 		}
 		if err := writer.Write(record); err != nil {
 			RespondError(c, http.StatusInternalServerError, err)
@@ -156,8 +157,10 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 	}
 
 	_, hasScheduledCheckColumn := columnIndex["scheduled_check_enabled"]
+	_, hasScheduledCheckModelColumn := columnIndex["scheduled_check_model"]
 	existingScheduledCheckByName := make(map[string]bool)
-	if !hasScheduledCheckColumn {
+	existingScheduledCheckModelByName := make(map[string]string)
+	if !hasScheduledCheckColumn || !hasScheduledCheckModelColumn {
 		existingConfigs, err := s.store.ListConfigs(c.Request.Context())
 		if err != nil {
 			RespondError(c, http.StatusInternalServerError, err)
@@ -165,6 +168,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 		}
 		for _, cfg := range existingConfigs {
 			existingScheduledCheckByName[cfg.Name] = cfg.ScheduledCheckEnabled
+			existingScheduledCheckModelByName[cfg.Name] = cfg.ScheduledCheckModel
 		}
 	}
 
@@ -201,6 +205,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 		}
 
 		name := fetch("name")
+		rawID := fetch("id")
 		apiKey := fetch("api_key")
 		url := fetch("url")
 		modelsRaw := fetch("models")
@@ -223,6 +228,13 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 		}
 		if len(missing) > 0 {
 			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行缺少必填字段: %s", lineNo, strings.Join(missing, ", ")))
+			summary.Skipped++
+			continue
+		}
+
+		channelID, err := parseImportChannelID(rawID)
+		if err != nil {
+			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行渠道ID格式错误: %v", lineNo, err))
 			summary.Skipped++
 			continue
 		}
@@ -304,6 +316,16 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			scheduledCheckEnabled = false
 		}
 
+		rawScheduledCheckModel := fetch("scheduled_check_model")
+		scheduledCheckModel := existingScheduledCheckModelByName[name]
+		shouldValidateScheduledCheckModel := false
+		if rawScheduledCheckModel != "" {
+			scheduledCheckModel = rawScheduledCheckModel
+			shouldValidateScheduledCheckModel = true
+		} else if hasScheduledCheckModelColumn {
+			scheduledCheckModel = ""
+		}
+
 		// 构建模型条目（合并models和modelRedirects）
 		modelEntries := make([]model.ModelEntry, 0, len(models))
 		for _, m := range models {
@@ -313,9 +335,27 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			}
 			modelEntries = append(modelEntries, entry)
 		}
+		if scheduledCheckModel != "" {
+			declared := false
+			for _, entry := range modelEntries {
+				if entry.Model == scheduledCheckModel {
+					declared = true
+					break
+				}
+			}
+			if !declared {
+				if shouldValidateScheduledCheckModel {
+					summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行 scheduled_check_model 无效: %s", lineNo, scheduledCheckModel))
+					summary.Skipped++
+					continue
+				}
+				scheduledCheckModel = ""
+			}
+		}
 
 		// 构建渠道配置
 		cfg := &model.Config{
+			ID:                    channelID,
 			Name:                  name,
 			URL:                   url,
 			Priority:              priority,
@@ -323,6 +363,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			ChannelType:           channelType,
 			Enabled:               enabled,
 			ScheduledCheckEnabled: scheduledCheckEnabled,
+			ScheduledCheckModel:   scheduledCheckModel,
 		}
 
 		// 解析并构建API Keys
@@ -415,6 +456,8 @@ func normalizeCSVHeader(name string) string {
 		return "key_strategy"
 	case "scheduled-check-enabled", "scheduledcheckenabled", "scheduled check enabled":
 		return "scheduled_check_enabled"
+	case "scheduled-check-model", "scheduledcheckmodel", "scheduled check model":
+		return "scheduled_check_model"
 	case "status":
 		return "enabled"
 	default:
@@ -468,4 +511,20 @@ func parseImportModels(raw string) []string {
 // parseImportEnabled 解析CSV中的启用状态
 func parseImportEnabled(raw string) (bool, bool) {
 	return util.ParseBool(raw)
+}
+
+func parseImportChannelID(raw string) (int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	if id <= 0 {
+		return 0, fmt.Errorf("must be a positive integer")
+	}
+	return id, nil
 }

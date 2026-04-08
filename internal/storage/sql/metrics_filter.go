@@ -168,7 +168,7 @@ func buildEmptyMetricPoints(since, until time.Time, bucket time.Duration) []mode
 
 // GetDistinctModels 获取指定时间范围内的去重模型列表
 // channelType 为空时返回所有模型，否则只返回指定渠道类型的模型
-func (s *SQLStore) GetDistinctModels(ctx context.Context, since, until time.Time, channelType string) ([]string, error) {
+func (s *SQLStore) GetDistinctModels(ctx context.Context, since, until time.Time, channelType string, filter *model.LogFilter) ([]string, error) {
 	args := []any{since.UnixMilli(), until.UnixMilli()}
 
 	query := `
@@ -192,6 +192,14 @@ func (s *SQLStore) GetDistinctModels(ctx context.Context, since, until time.Time
 			args = append(args, channelIDs[i])
 		}
 		query += fmt.Sprintf(" AND logs.channel_id IN (%s)", strings.Join(placeholders, ","))
+	}
+
+	wb := NewWhereBuilder()
+	wb.ApplyLogFilter(filter)
+	whereClause, whereArgs := wb.Build()
+	if whereClause != "" {
+		query += " AND " + whereClause
+		args = append(args, whereArgs...)
 	}
 
 	query += " ORDER BY logs.model"

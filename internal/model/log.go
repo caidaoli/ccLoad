@@ -2,8 +2,31 @@ package model
 
 import (
 	"strconv"
+	"strings"
 	"time"
 )
+
+const (
+	LogSourceProxy          = "proxy"
+	LogSourceScheduledCheck = "scheduled_check"
+	LogSourceManualTest     = "manual_test"
+
+	LogSourceDetection = "detection"
+	LogSourceAll       = "all"
+)
+
+func NormalizeStoredLogSource(raw string) string {
+	switch strings.TrimSpace(raw) {
+	case "", LogSourceProxy:
+		return LogSourceProxy
+	case LogSourceScheduledCheck:
+		return LogSourceScheduledCheck
+	case LogSourceManualTest:
+		return LogSourceManualTest
+	default:
+		return LogSourceProxy
+	}
+}
 
 // JSONTime 自定义时间类型，使用Unix时间戳进行JSON序列化
 // 设计原则：与数据库格式统一，减少转换复杂度（KISS原则）
@@ -39,6 +62,7 @@ type LogEntry struct {
 	Time          JSONTime `json:"time"`
 	Model         string   `json:"model"`
 	ActualModel   string   `json:"actual_model,omitempty"` // 实际转发的模型（空表示未重定向）
+	LogSource     string   `json:"log_source,omitempty"`
 	ChannelID     int64    `json:"channel_id"`
 	ChannelName   string   `json:"channel_name,omitempty"`
 	StatusCode    int      `json:"status_code"`
@@ -73,4 +97,5 @@ type LogFilter struct {
 	StatusCode      *int
 	ChannelType     string // 渠道类型过滤（anthropic/openai/gemini/codex）
 	AuthTokenID     *int64 // API令牌ID过滤
+	LogSource       string
 }

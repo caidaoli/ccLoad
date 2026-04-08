@@ -482,8 +482,8 @@ func (h *HybridStore) AggregateRangeWithFilter(ctx context.Context, since, until
 	return h.sqlite.AggregateRangeWithFilter(ctx, since, until, bucket, filter)
 }
 
-func (h *HybridStore) GetDistinctModels(ctx context.Context, since, until time.Time, channelType string) ([]string, error) {
-	return h.sqlite.GetDistinctModels(ctx, since, until, channelType)
+func (h *HybridStore) GetDistinctModels(ctx context.Context, since, until time.Time, channelType string, filter *model.LogFilter) ([]string, error) {
+	return h.sqlite.GetDistinctModels(ctx, since, until, channelType, filter)
 }
 
 func (h *HybridStore) GetStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) ([]model.StatsEntry, error) {

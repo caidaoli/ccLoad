@@ -40,6 +40,9 @@ test('page-filters 渲染 logs 布局时保留专用 class 和关键筛选控件
   assert.match(html, /id="f_id"/);
   assert.match(html, /id="f_name"/);
   assert.match(html, /id="f_model"/);
+  assert.match(html, /id="f_log_source"/);
+  assert.doesNotMatch(html, /value="scheduled_check"/);
+  assert.doesNotMatch(html, /value="manual_test"/);
   assert.match(html, /id="f_status"/);
   assert.match(html, /id="f_auth_token"/);
   assert.match(html, /id="btn_filter"/);
