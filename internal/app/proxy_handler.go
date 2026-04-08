@@ -287,6 +287,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		s.AddLogAsync(&model.LogEntry{
 			Time:        model.JSONTime{Time: time.Now()},
 			Model:       originalModel,
+			LogSource:   model.LogSourceProxy,
 			StatusCode:  503,
 			Message:     "no available upstream (all cooled or none)",
 			IsStreaming: isStreaming,
@@ -381,6 +382,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		s.AddLogAsync(&model.LogEntry{
 			Time:        model.JSONTime{Time: reqCtx.startTime},
 			Model:       originalModel,
+			LogSource:   model.LogSourceProxy,
 			StatusCode:  finalStatus,
 			Message:     msg,
 			Duration:    time.Since(reqCtx.startTime).Seconds(),

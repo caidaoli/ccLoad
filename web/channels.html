@@ -516,6 +516,16 @@
               <input type="checkbox" id="channelScheduledCheckEnabled"> <span data-i18n="channels.enableScheduledCheck">启用定时检测</span>
             </label>
             <div class="channel-editor-footer-fields">
+              <div id="channelScheduledCheckModelWrapper" class="channel-editor-inline-field channel-editor-inline-field--scheduled-model" hidden>
+                <label class="form-label channel-editor-inline-label" for="channelScheduledCheckModel"
+                  data-i18n="channels.scheduledCheckModel">检测模型</label>
+                <div class="channel-editor-scheduled-model-control">
+                  <select id="channelScheduledCheckModel" class="form-input channel-editor-select channel-editor-select--scheduled-model">
+                    <option value="" data-i18n="channels.scheduledCheckModelDefault">默认首个模型</option>
+                  </select>
+                  <span id="channelScheduledCheckModelDisplay" class="channel-editor-scheduled-model-display" aria-hidden="true"></span>
+                </div>
+              </div>
               <div class="channel-editor-inline-field">
                 <label class="form-label channel-editor-inline-label" for="channelPriority"
                   data-i18n="channels.priority">优先级</label>

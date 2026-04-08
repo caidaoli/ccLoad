@@ -231,7 +231,7 @@ func TestMySQL(t *testing.T) {
 		defer store.Close()
 
 		// 验证 logs 表的新列存在
-		expectedColumns := []string{"auth_token_id", "client_ip", "minute_bucket", "cache_read_input_tokens", "actual_model"}
+		expectedColumns := []string{"auth_token_id", "client_ip", "minute_bucket", "cache_read_input_tokens", "actual_model", "log_source"}
 		for _, col := range expectedColumns {
 			var columnName string
 			err := env.db.QueryRow(
@@ -258,16 +258,18 @@ func TestMySQL(t *testing.T) {
 			t.Logf("列 auth_tokens.%s 存在", col)
 		}
 
-		// 验证 channels 表的 daily_cost_limit 列
+		// 验证 channels 表的新增列
 		var columnName string
-		err = env.db.QueryRow(
-			"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'channels' AND COLUMN_NAME = 'daily_cost_limit'",
-			testMySQLDB,
-		).Scan(&columnName)
-		if err != nil {
-			t.Fatalf("列 channels.daily_cost_limit 不存在: %v", err)
+		for _, col := range []string{"daily_cost_limit", "scheduled_check_model"} {
+			err = env.db.QueryRow(
+				"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'channels' AND COLUMN_NAME = ?",
+				testMySQLDB, col,
+			).Scan(&columnName)
+			if err != nil {
+				t.Fatalf("列 channels.%s 不存在: %v", col, err)
+			}
+			t.Logf("列 channels.%s 存在", col)
 		}
-		t.Log("列 channels.daily_cost_limit 存在")
 	})
 
 	t.Run("EnsureColumns_AlreadyExists", func(t *testing.T) {

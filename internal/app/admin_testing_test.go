@@ -571,6 +571,73 @@ func TestHandleChannelTest_FailedAPI(t *testing.T) {
 	}
 }
 
+func TestHandleChannelTest_WritesManualTestLog(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"type":"authentication_error","message":"invalid api key"}}`))
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	ctx := context.Background()
+	now := time.Now().Add(-time.Minute)
+
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name:         "manual-test-log-channel",
+		URL:          upstream.URL,
+		Priority:     1,
+		ChannelType:  "anthropic",
+		ModelEntries: []model.ModelEntry{{Model: "claude-3-5-sonnet"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-invalid-key"}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+
+	channelID := fmt.Sprintf("%d", created.ID)
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
+		"model":        "claude-3-5-sonnet",
+		"channel_type": "anthropic",
+	}))
+	c.Request.RemoteAddr = "198.51.100.10:12345"
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	logs, err := srv.store.ListLogs(ctx, now, 10, 0, &model.LogFilter{LogSource: model.LogSourceManualTest})
+	if err != nil {
+		t.Fatalf("ListLogs failed: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("expected 1 manual test log, got %d", len(logs))
+	}
+	entry := logs[0]
+	if entry.LogSource != model.LogSourceManualTest {
+		t.Fatalf("LogSource=%q, want %q", entry.LogSource, model.LogSourceManualTest)
+	}
+	if entry.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("StatusCode=%d, want %d", entry.StatusCode, http.StatusUnauthorized)
+	}
+	if entry.ClientIP != "198.51.100.10" {
+		t.Fatalf("ClientIP=%q, want %q", entry.ClientIP, "198.51.100.10")
+	}
+	if entry.AuthTokenID != 0 {
+		t.Fatalf("AuthTokenID=%d, want 0", entry.AuthTokenID)
+	}
+	if entry.BaseURL != upstream.URL {
+		t.Fatalf("BaseURL=%q, want %q", entry.BaseURL, upstream.URL)
+	}
+}
+
 func TestHandleChannelTest_SSESoftErrorTriggersCooldown(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

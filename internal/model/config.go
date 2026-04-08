@@ -42,6 +42,7 @@ type Config struct {
 	Priority              int    `json:"priority"`
 	Enabled               bool   `json:"enabled"`
 	ScheduledCheckEnabled bool   `json:"scheduled_check_enabled"`
+	ScheduledCheckModel   string `json:"scheduled_check_model"`
 
 	// 模型配置（统一管理模型和重定向）
 	ModelEntries []ModelEntry `json:"models"`

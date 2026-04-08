@@ -8,6 +8,7 @@ function setChannelModalTitle(i18nKey) {
 
 async function syncScheduledCheckVisibility() {
   const scheduledCheckWrapper = document.getElementById('channelScheduledCheckEnabledWrapper');
+  const scheduledCheckModelWrapper = document.getElementById('channelScheduledCheckModelWrapper');
   if (!scheduledCheckWrapper) return false;
 
   let scheduledCheckEnabledByConfig = false;
@@ -20,7 +21,80 @@ async function syncScheduledCheckVisibility() {
   }
 
   scheduledCheckWrapper.hidden = !scheduledCheckEnabledByConfig;
+  if (scheduledCheckModelWrapper) {
+    scheduledCheckModelWrapper.hidden = !scheduledCheckEnabledByConfig;
+  }
+  syncScheduledCheckModelState();
   return scheduledCheckEnabledByConfig;
+}
+
+function setScheduledCheckModelHint(i18nKey) {
+  const hint = document.getElementById('channelScheduledCheckModelHint');
+  if (!hint) return;
+  hint.setAttribute('data-i18n', i18nKey);
+  hint.textContent = window.t(i18nKey);
+}
+
+const scheduledCheckModelDisplayFontMaxPx = 16;
+const scheduledCheckModelDisplayFontMinPx = 9;
+
+function getScheduledCheckModelNames() {
+  return redirectTableData
+    .map(entry => (entry && entry.model ? entry.model.trim() : ''))
+    .filter(Boolean);
+}
+
+function fitScheduledCheckModelDisplayText(display) {
+  if (!display) return;
+
+  display.style.fontSize = `${scheduledCheckModelDisplayFontMaxPx}px`;
+  const availableWidth = display.clientWidth;
+  if (!availableWidth) return;
+
+  const requiredWidth = display.scrollWidth;
+  if (!requiredWidth || requiredWidth <= availableWidth) return;
+
+  const scaledFontSize = Math.floor((availableWidth / requiredWidth) * scheduledCheckModelDisplayFontMaxPx * 10) / 10;
+  display.style.fontSize = `${Math.max(scheduledCheckModelDisplayFontMinPx, scaledFontSize)}px`;
+}
+
+function syncScheduledCheckModelDisplay(modelNames = null) {
+  const select = document.getElementById('channelScheduledCheckModel');
+  const display = document.getElementById('channelScheduledCheckModelDisplay');
+  if (!select || !display) return;
+
+  const availableModelNames = Array.isArray(modelNames) ? modelNames : getScheduledCheckModelNames();
+  const selectedOption = select.options[select.selectedIndex];
+  const selectedLabel = selectedOption ? (selectedOption.textContent || '').trim() : '';
+  const fallbackLabel = availableModelNames.length > 0 ? availableModelNames[0] : selectedLabel;
+  const label = select.value ? selectedLabel : fallbackLabel;
+
+  display.textContent = label;
+  display.title = label;
+  fitScheduledCheckModelDisplayText(display);
+}
+
+function syncScheduledCheckModelState() {
+  const wrapper = document.getElementById('channelScheduledCheckModelWrapper');
+  const select = document.getElementById('channelScheduledCheckModel');
+  const checkbox = document.getElementById('channelScheduledCheckEnabled');
+  if (!wrapper || !select || !checkbox) return;
+
+  const modelNames = getScheduledCheckModelNames();
+  const currentValue = select.value;
+  const nextOptions = [
+    `<option value="" data-i18n="channels.scheduledCheckModelDefault">${window.t('channels.scheduledCheckModelDefault')}</option>`
+  ];
+  modelNames.forEach((modelName) => {
+    nextOptions.push(`<option value="${escapeHtml(modelName).replace(/"/g, '&quot;')}">${escapeHtml(modelName)}</option>`);
+  });
+  select.innerHTML = nextOptions.join('');
+
+  const isValid = currentValue === '' || modelNames.includes(currentValue);
+  select.value = isValid ? currentValue : '';
+  setScheduledCheckModelHint(isValid ? 'channels.scheduledCheckModelHint' : 'channels.scheduledCheckModelFallback');
+  select.disabled = wrapper.hidden || !checkbox.checked;
+  syncScheduledCheckModelDisplay(modelNames);
 }
 
 async function resolveEditableChannel(id) {
@@ -125,6 +199,22 @@ function initChannelEditorActions() {
     });
     channelForm.dataset.channelFormBound = '1';
   }
+
+  const scheduledCheckCheckbox = document.getElementById('channelScheduledCheckEnabled');
+  if (scheduledCheckCheckbox && !scheduledCheckCheckbox.dataset.bound) {
+    scheduledCheckCheckbox.addEventListener('change', () => {
+      syncScheduledCheckModelState();
+    });
+    scheduledCheckCheckbox.dataset.bound = '1';
+  }
+
+  const scheduledCheckModelSelect = document.getElementById('channelScheduledCheckModel');
+  if (scheduledCheckModelSelect && !scheduledCheckModelSelect.dataset.bound) {
+    scheduledCheckModelSelect.addEventListener('change', () => {
+      syncScheduledCheckModelDisplay();
+    });
+    scheduledCheckModelSelect.dataset.bound = '1';
+  }
 }
 
 async function showAddModal() {
@@ -136,6 +226,7 @@ async function showAddModal() {
   document.getElementById('channelForm').reset();
   document.getElementById('channelEnabled').checked = true;
   document.getElementById('channelScheduledCheckEnabled').checked = false;
+  document.getElementById('channelScheduledCheckModel').value = '';
   document.querySelector('input[name="channelType"][value="anthropic"]').checked = true;
   document.querySelector('input[name="keyStrategy"][value="sequential"]').checked = true;
 
@@ -145,6 +236,7 @@ async function showAddModal() {
   const modelFilterInput = document.getElementById('modelFilterInput');
   if (modelFilterInput) modelFilterInput.value = '';
   renderRedirectTable();
+  syncScheduledCheckModelState();
 
   inlineURLTableData = [''];
   selectedURLIndices.clear();
@@ -216,6 +308,7 @@ async function editChannel(id) {
   document.getElementById('channelDailyCostLimit').value = channel.daily_cost_limit || 0;
   document.getElementById('channelEnabled').checked = channel.enabled;
   document.getElementById('channelScheduledCheckEnabled').checked = !!channel.scheduled_check_enabled;
+  document.getElementById('channelScheduledCheckModel').value = channel.scheduled_check_model || '';
 
   // 加载模型配置（新格式：models是 {model, redirect_model} 数组）
   redirectTableData = (channel.models || []).map(m => ({
@@ -227,6 +320,7 @@ async function editChannel(id) {
   const modelFilterInput = document.getElementById('modelFilterInput');
   if (modelFilterInput) modelFilterInput.value = '';
   renderRedirectTable();
+  syncScheduledCheckModelState();
 
   resetChannelFormDirty();
   document.getElementById('channelModal').classList.add('show');
@@ -300,7 +394,8 @@ async function saveChannel(event) {
     daily_cost_limit: parseFloat(document.getElementById('channelDailyCostLimit').value) || 0,
     models: models,
     enabled: document.getElementById('channelEnabled').checked,
-    scheduled_check_enabled: document.getElementById('channelScheduledCheckEnabled').checked
+    scheduled_check_enabled: document.getElementById('channelScheduledCheckEnabled').checked,
+    scheduled_check_model: document.getElementById('channelScheduledCheckModel').value.trim()
   };
 
   if (!formData.name || !formData.url || !formData.api_key || formData.models.length === 0) {
@@ -848,6 +943,7 @@ async function copyChannel(id, name) {
   document.getElementById('channelDailyCostLimit').value = channel.daily_cost_limit || 0;
   document.getElementById('channelEnabled').checked = true;
   document.getElementById('channelScheduledCheckEnabled').checked = !!channel.scheduled_check_enabled;
+  document.getElementById('channelScheduledCheckModel').value = channel.scheduled_check_model || '';
 
   // 加载模型配置（新格式：models是 {model, redirect_model} 数组）
   redirectTableData = (channel.models || []).map(m => ({
@@ -859,6 +955,7 @@ async function copyChannel(id, name) {
   const modelFilterInput = document.getElementById('modelFilterInput');
   if (modelFilterInput) modelFilterInput.value = '';
   renderRedirectTable();
+  syncScheduledCheckModelState();
 
   resetChannelFormDirty();
   document.getElementById('channelModal').classList.add('show');
@@ -1213,6 +1310,7 @@ function renderRedirectTable() {
   // 计数所有有效模型（只要有模型名称就算）
   const validCount = redirectTableData.filter(r => r.model && r.model.trim()).length;
   countSpan.textContent = validCount;
+  syncScheduledCheckModelState();
 
   // 初始化事件委托（仅一次）
   initRedirectTableEventDelegation();

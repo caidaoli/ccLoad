@@ -23,47 +23,47 @@ func TestWhereBuilder_ApplyLogFilter(t *testing.T) {
 		{
 			name:          "nil filter",
 			filter:        nil,
-			expectNoWhere: true,
+			expectArgsLen: 1,
 		},
 		{
 			name:          "empty filter",
 			filter:        &model.LogFilter{},
-			expectNoWhere: true,
+			expectArgsLen: 1,
 		},
 		{
 			name: "channel_id only",
 			filter: &model.LogFilter{
 				ChannelID: &channelID,
 			},
-			expectArgsLen: 1,
+			expectArgsLen: 2,
 		},
 		{
 			name: "model exact match",
 			filter: &model.LogFilter{
 				Model: "gpt-4o",
 			},
-			expectArgsLen: 1,
+			expectArgsLen: 2,
 		},
 		{
 			name: "model like match",
 			filter: &model.LogFilter{
 				ModelLike: "claude",
 			},
-			expectArgsLen: 1,
+			expectArgsLen: 2,
 		},
 		{
 			name: "status_code filter",
 			filter: &model.LogFilter{
 				StatusCode: &statusCode,
 			},
-			expectArgsLen: 1,
+			expectArgsLen: 2,
 		},
 		{
 			name: "auth_token_id filter",
 			filter: &model.LogFilter{
 				AuthTokenID: &authTokenID,
 			},
-			expectArgsLen: 1,
+			expectArgsLen: 2,
 		},
 		{
 			name: "all filters combined",
@@ -73,7 +73,21 @@ func TestWhereBuilder_ApplyLogFilter(t *testing.T) {
 				StatusCode:  &statusCode,
 				AuthTokenID: &authTokenID,
 			},
-			expectArgsLen: 4,
+			expectArgsLen: 5,
+		},
+		{
+			name: "scheduled_check source",
+			filter: &model.LogFilter{
+				LogSource: model.LogSourceScheduledCheck,
+			},
+			expectArgsLen: 1,
+		},
+		{
+			name: "detection source expands to two args",
+			filter: &model.LogFilter{
+				LogSource: model.LogSourceDetection,
+			},
+			expectArgsLen: 2,
 		},
 	}
 
@@ -96,6 +110,12 @@ func TestWhereBuilder_ApplyLogFilter(t *testing.T) {
 
 			if clause == "" {
 				t.Error("expected non-empty clause")
+			}
+			if tt.filter != nil && tt.filter.LogSource == model.LogSourceDetection && clause != "log_source IN (?, ?)" {
+				t.Errorf("unexpected detection clause: %q", clause)
+			}
+			if tt.filter == nil && clause != "log_source = ?" {
+				t.Errorf("unexpected nil-filter clause: %q", clause)
 			}
 		})
 	}

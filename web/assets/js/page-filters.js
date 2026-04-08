@@ -76,6 +76,15 @@
         ${buildInput('number', 'f_status', 'logs.statusPlaceholder', '如 200 / 403', 'filter-control--narrow')}`,
         groupClass
       ),
+      logSource: buildFilterGroup(
+        `${buildFilterLabel('f_log_source', 'logs.logSource', '日志来源')}
+        ${buildSelect('f_log_source', `
+                <option value="proxy" data-i18n="logs.sourceProxy">请求日志</option>
+                <option value="detection" data-i18n="logs.sourceDetection">检测日志</option>
+                <option value="all" data-i18n="logs.sourceAll">全部日志</option>
+              `, 'filter-control--compact')}`,
+        groupClass
+      ),
       logsInfo,
       statsInfo,
       hideZeroSuccess,
@@ -101,7 +110,7 @@
       groupClass: 'logs-filter-group',
       infoClass: 'filter-info logs-filter-info',
       actionsClass: 'logs-filter-actions',
-      items: ['channelType', 'timeRange', 'channelId', 'channelName', 'modelText', 'status', 'authToken', 'logsSummary']
+      items: ['channelType', 'timeRange', 'channelId', 'channelName', 'modelText', 'logSource', 'status', 'authToken', 'logsSummary']
     },
     trend: {
       barClass: 'filter-bar mt-2',

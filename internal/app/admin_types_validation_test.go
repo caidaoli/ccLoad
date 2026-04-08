@@ -260,6 +260,52 @@ func TestChannelRequestValidation_Combined(t *testing.T) {
 	}
 }
 
+func TestChannelRequestValidation_ScheduledCheckModel(t *testing.T) {
+	t.Run("empty allowed", func(t *testing.T) {
+		req := newValidChannelRequest()
+		req.ScheduledCheckModel = ""
+
+		if err := req.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v, want nil", err)
+		}
+	})
+
+	t.Run("model declared in models allowed", func(t *testing.T) {
+		req := newValidChannelRequest()
+		req.Models = []model.ModelEntry{{Model: "model-1"}, {Model: "model-2"}}
+		req.ScheduledCheckModel = "model-2"
+
+		if err := req.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v, want nil", err)
+		}
+	})
+
+	t.Run("unknown model rejected", func(t *testing.T) {
+		req := newValidChannelRequest()
+		req.Models = []model.ModelEntry{{Model: "model-1"}}
+		req.ScheduledCheckModel = "model-x"
+
+		err := req.Validate()
+		if err == nil {
+			t.Fatal("Validate() error = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "scheduled_check_model") {
+			t.Fatalf("expected scheduled_check_model error, got %v", err)
+		}
+	})
+}
+
+func TestChannelRequest_ToConfigCopiesScheduledCheckModel(t *testing.T) {
+	req := newValidChannelRequest()
+	req.ScheduledCheckEnabled = true
+	req.ScheduledCheckModel = "model-1"
+
+	got := req.ToConfig()
+	if got.ScheduledCheckModel != "model-1" {
+		t.Fatalf("ScheduledCheckModel = %q, want %q", got.ScheduledCheckModel, "model-1")
+	}
+}
+
 // TestChannelRequestValidation_DuplicateModels 测试重复模型校验（对应 channel_models 主键约束）
 func TestChannelRequestValidation_DuplicateModels(t *testing.T) {
 	tests := []struct {
