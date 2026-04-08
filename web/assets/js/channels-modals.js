@@ -35,8 +35,7 @@ function setScheduledCheckModelHint(i18nKey) {
   hint.textContent = window.t(i18nKey);
 }
 
-const scheduledCheckModelDisplayFontMaxPx = 16;
-const scheduledCheckModelDisplayFontMinPx = 9;
+let scheduledCheckModelCombobox = null;
 
 function getScheduledCheckModelNames() {
   return redirectTableData
@@ -44,57 +43,68 @@ function getScheduledCheckModelNames() {
     .filter(Boolean);
 }
 
-function fitScheduledCheckModelDisplayText(display) {
-  if (!display) return;
-
-  display.style.fontSize = `${scheduledCheckModelDisplayFontMaxPx}px`;
-  const availableWidth = display.clientWidth;
-  if (!availableWidth) return;
-
-  const requiredWidth = display.scrollWidth;
-  if (!requiredWidth || requiredWidth <= availableWidth) return;
-
-  const scaledFontSize = Math.floor((availableWidth / requiredWidth) * scheduledCheckModelDisplayFontMaxPx * 10) / 10;
-  display.style.fontSize = `${Math.max(scheduledCheckModelDisplayFontMinPx, scaledFontSize)}px`;
+function getScheduledCheckModelDefaultLabel() {
+  return window.t('channels.scheduledCheckModelDefault');
 }
 
-function syncScheduledCheckModelDisplay(modelNames = null) {
-  const select = document.getElementById('channelScheduledCheckModel');
-  const display = document.getElementById('channelScheduledCheckModelDisplay');
-  if (!select || !display) return;
+function scheduledCheckModelInputValueFromValue(value) {
+  return value || getScheduledCheckModelDefaultLabel();
+}
 
-  const availableModelNames = Array.isArray(modelNames) ? modelNames : getScheduledCheckModelNames();
-  const selectedOption = select.options[select.selectedIndex];
-  const selectedLabel = selectedOption ? (selectedOption.textContent || '').trim() : '';
-  const fallbackLabel = availableModelNames.length > 0 ? availableModelNames[0] : selectedLabel;
-  const label = select.value ? selectedLabel : fallbackLabel;
+function getScheduledCheckModelOptions() {
+  return [{ value: '', label: getScheduledCheckModelDefaultLabel() }].concat(
+    getScheduledCheckModelNames().map(modelName => ({ value: modelName, label: modelName }))
+  );
+}
 
-  display.textContent = label;
-  display.title = label;
-  fitScheduledCheckModelDisplayText(display);
+function ensureScheduledCheckModelCombobox() {
+  if (scheduledCheckModelCombobox) return scheduledCheckModelCombobox;
+
+  const hiddenInput = document.getElementById('channelScheduledCheckModel');
+  const input = document.getElementById('channelScheduledCheckModelInput');
+  const dropdown = document.getElementById('channelScheduledCheckModelDropdown');
+  if (!hiddenInput || !input || !dropdown || typeof createSearchableCombobox !== 'function') return null;
+
+  scheduledCheckModelCombobox = createSearchableCombobox({
+    attachMode: true,
+    inputId: 'channelScheduledCheckModelInput',
+    dropdownId: 'channelScheduledCheckModelDropdown',
+    initialValue: hiddenInput.value || '',
+    initialLabel: scheduledCheckModelInputValueFromValue(hiddenInput.value || ''),
+    getOptions: () => getScheduledCheckModelOptions(),
+    onSelect: (value) => {
+      hiddenInput.value = value;
+      setScheduledCheckModelHint('channels.scheduledCheckModelHint');
+    }
+  });
+
+  return scheduledCheckModelCombobox;
 }
 
 function syncScheduledCheckModelState() {
   const wrapper = document.getElementById('channelScheduledCheckModelWrapper');
-  const select = document.getElementById('channelScheduledCheckModel');
+  const hiddenInput = document.getElementById('channelScheduledCheckModel');
+  const input = document.getElementById('channelScheduledCheckModelInput');
   const checkbox = document.getElementById('channelScheduledCheckEnabled');
-  if (!wrapper || !select || !checkbox) return;
+  if (!wrapper || !hiddenInput || !input || !checkbox) return;
 
   const modelNames = getScheduledCheckModelNames();
-  const currentValue = select.value;
-  const nextOptions = [
-    `<option value="" data-i18n="channels.scheduledCheckModelDefault">${window.t('channels.scheduledCheckModelDefault')}</option>`
-  ];
-  modelNames.forEach((modelName) => {
-    nextOptions.push(`<option value="${escapeHtml(modelName).replace(/"/g, '&quot;')}">${escapeHtml(modelName)}</option>`);
-  });
-  select.innerHTML = nextOptions.join('');
-
+  const currentValue = hiddenInput.value || '';
   const isValid = currentValue === '' || modelNames.includes(currentValue);
-  select.value = isValid ? currentValue : '';
+  const nextValue = isValid ? currentValue : '';
+  hiddenInput.value = nextValue;
   setScheduledCheckModelHint(isValid ? 'channels.scheduledCheckModelHint' : 'channels.scheduledCheckModelFallback');
-  select.disabled = wrapper.hidden || !checkbox.checked;
-  syncScheduledCheckModelDisplay(modelNames);
+
+  const combobox = ensureScheduledCheckModelCombobox();
+  const nextLabel = scheduledCheckModelInputValueFromValue(nextValue);
+  if (combobox) {
+    combobox.setValue(nextValue, nextLabel);
+    combobox.refresh();
+  } else {
+    input.value = nextLabel;
+  }
+
+  input.disabled = wrapper.hidden || !checkbox.checked;
 }
 
 async function resolveEditableChannel(id) {
@@ -208,13 +218,7 @@ function initChannelEditorActions() {
     scheduledCheckCheckbox.dataset.bound = '1';
   }
 
-  const scheduledCheckModelSelect = document.getElementById('channelScheduledCheckModel');
-  if (scheduledCheckModelSelect && !scheduledCheckModelSelect.dataset.bound) {
-    scheduledCheckModelSelect.addEventListener('change', () => {
-      syncScheduledCheckModelDisplay();
-    });
-    scheduledCheckModelSelect.dataset.bound = '1';
-  }
+  ensureScheduledCheckModelCombobox();
 }
 
 async function showAddModal() {

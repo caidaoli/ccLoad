@@ -23,6 +23,12 @@
     const groupClass = config.groupClass || '';
     const infoClass = config.infoClass || 'filter-info';
     const checkboxGroupClass = config.checkboxGroupClass || groupClass;
+    const timeRangeGroupClass = joinClasses(groupClass, config.timeRangeGroupClass);
+    const timeRangeControlClass = joinClasses('filter-control--compact', config.timeRangeControlClass);
+    const channelIdGroupClass = joinClasses(groupClass, config.channelIdGroupClass);
+    const channelIdControlClass = joinClasses('filter-control--narrow', config.channelIdControlClass);
+    const authTokenGroupClass = joinClasses(groupClass, config.authTokenGroupClass);
+    const authTokenControlClass = joinClasses('filter-control--wide', config.authTokenControlClass);
     const hideZeroSuccess = `<div class="${joinClasses('filter-group', 'filter-group--checkbox', checkboxGroupClass)}">
               <label class="filter-checkbox-label">
                 <input type="checkbox" id="f_hide_zero_success" checked>
@@ -43,13 +49,13 @@
       ),
       timeRange: buildFilterGroup(
         `${buildFilterLabel('f_hours', 'stats.timeRange', '时间范围')}
-        ${buildSelect('f_hours', '\n                <!-- 动态生成选项 by date-range-selector.js -->\n              ', 'filter-control--compact')}`,
-        groupClass
+        ${buildSelect('f_hours', '\n                <!-- 动态生成选项 by date-range-selector.js -->\n              ', timeRangeControlClass)}`,
+        timeRangeGroupClass
       ),
       channelId: buildFilterGroup(
         `${buildFilterLabel('f_id', 'stats.channelId', '渠道ID')}
-        ${buildInput('number', 'f_id', 'stats.inputIdPlaceholder', '输入ID...', 'filter-control--narrow')}`,
-        groupClass
+        ${buildInput('number', 'f_id', 'stats.inputIdPlaceholder', '输入ID...', channelIdControlClass)}`,
+        channelIdGroupClass
       ),
       channelName: buildFilterGroup(
         `${buildFilterLabel('f_name', 'stats.channelName', '渠道名')}
@@ -68,8 +74,8 @@
       ),
       authToken: buildFilterGroup(
         `${buildFilterLabel('f_auth_token', 'stats.token', '令牌')}
-        ${buildSelect('f_auth_token', '\n                <option value="" data-i18n="stats.allTokens">全部令牌</option>\n                <!-- 动态加载令牌列表 -->\n              ', 'filter-control--wide')}`,
-        groupClass
+        ${buildSelect('f_auth_token', '\n                <option value="" data-i18n="stats.allTokens">全部令牌</option>\n                <!-- 动态加载令牌列表 -->\n              ', authTokenControlClass)}`,
+        authTokenGroupClass
       ),
       status: buildFilterGroup(
         `${buildFilterLabel('f_status', 'logs.statusCode', '状态码')}
@@ -108,6 +114,12 @@
       barClass: 'filter-bar logs-filter-bar mt-2',
       controlsClass: 'filter-controls logs-filter-controls',
       groupClass: 'logs-filter-group',
+      timeRangeGroupClass: 'logs-filter-group--range',
+      timeRangeControlClass: 'logs-filter-control--range',
+      channelIdGroupClass: 'logs-filter-group--channel-id',
+      channelIdControlClass: 'logs-filter-control--channel-id',
+      authTokenGroupClass: 'logs-filter-group--token',
+      authTokenControlClass: 'logs-filter-control--token',
       infoClass: 'filter-info logs-filter-info',
       actionsClass: 'logs-filter-actions',
       items: ['channelType', 'timeRange', 'channelId', 'channelName', 'modelText', 'logSource', 'status', 'authToken', 'logsSummary']

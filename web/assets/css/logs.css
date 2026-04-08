@@ -247,10 +247,38 @@
       min-width: 0;
     }
 
+    .logs-filter-group[hidden] {
+      display: none !important;
+    }
+
+    .logs-filter-group--range {
+      flex: 0 1 116px;
+    }
+
+    .logs-filter-group--channel-id {
+      flex: 0 1 134px;
+    }
+
+    .logs-filter-group--token {
+      flex: 0 1 134px;
+    }
+
     .logs-filter-group .filter-input,
     .logs-filter-group .filter-select {
       width: 100%;
       min-width: 0;
+    }
+
+    .logs-filter-control--range {
+      max-width: 80px;
+    }
+
+    .logs-filter-control--channel-id {
+      max-width: 72px;
+    }
+
+    .logs-filter-control--token {
+      max-width: 100px;
     }
 
     .logs-filter-info {

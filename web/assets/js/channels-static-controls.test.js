@@ -67,27 +67,34 @@ test('channels 页 modal 壳层保留 DOM 契约且不再依赖静态 inline 样
 });
 
 test('channels 页定时检测开关默认隐藏，由系统设置控制显示', () => {
+  const scheduledModelControlBlock = channelsCss.match(/\.channel-editor-scheduled-model-control\s*\{[^}]+\}/);
+  assert.ok(scheduledModelControlBlock, '缺少 .channel-editor-scheduled-model-control 样式');
+
   assert.match(html, /id="channelScheduledCheckEnabledWrapper" class="form-label channel-editor-checkbox-label" hidden/);
   assert.match(html, /id="channelScheduledCheckModelWrapper" class="channel-editor-inline-field channel-editor-inline-field--scheduled-model" hidden/);
-  assert.match(html, /id="channelScheduledCheckModel" class="form-input channel-editor-select channel-editor-select--scheduled-model"/);
-  assert.match(html, /id="channelScheduledCheckModelDisplay" class="channel-editor-scheduled-model-display"/);
-  assert.doesNotMatch(html, /<span id="channelScheduledCheckModelDisplay"[^>]*>默认首个模型<\/span>/);
+  assert.match(html, /id="channelScheduledCheckModelInput" class="filter-select filter-combobox"/);
+  assert.match(html, /id="channelScheduledCheckModelDropdown" class="filter-dropdown" role="listbox"/);
+  assert.match(html, /type="hidden" id="channelScheduledCheckModel" value=""/);
+  assert.doesNotMatch(html, /channelScheduledCheckModelDisplay/);
   assert.doesNotMatch(html, /id="channelScheduledCheckModelHint"/);
   assert.doesNotMatch(html, /仅用于定时检测，留空表示默认首个模型/);
-  assert.match(channelsCss, /\.channel-editor-scheduled-model-control\s*\{[\s\S]*?width:\s*184px;/);
-  assert.match(channelsCss, /\.channel-editor-scheduled-model-control\s*\{[\s\S]*?border:\s*2px solid var\(--neutral-200\);[\s\S]*?overflow:\s*hidden;/);
-  assert.match(channelsCss, /\.channel-editor-scheduled-model-control:focus-within\s*\{[\s\S]*?border-color:\s*var\(--primary-500\);/);
-  assert.match(channelsCss, /\.channel-editor-select--scheduled-model\s*\{[\s\S]*?position:\s*absolute;[\s\S]*?appearance:\s*none;[\s\S]*?opacity:\s*0;/);
-  assert.match(channelsCss, /\.channel-editor-scheduled-model-control::after\s*\{[\s\S]*?right:\s*12px;/);
-  assert.match(channelsCss, /\.channel-editor-scheduled-model-display\s*\{[\s\S]*?inset:\s*0 20px 0 12px;[\s\S]*?justify-content:\s*flex-end;[\s\S]*?pointer-events:\s*none;/);
+  assert.match(scheduledModelControlBlock[0], /width:\s*184px/);
+  assert.match(scheduledModelControlBlock[0], /min-width:\s*184px/);
+  assert.match(scheduledModelControlBlock[0], /max-width:\s*184px/);
+  assert.doesNotMatch(channelsCss, /\.channel-editor-select--scheduled-model\s*\{/);
+  assert.doesNotMatch(channelsCss, /\.channel-editor-scheduled-model-display\s*\{/);
   assert.match(sharedCss, /\.settings-group-nav-section\[hidden\]\s*\{\s*display:\s*none\s*!important;/);
   assert.match(channelsCss, /channel-editor-checkbox-label\[hidden\]\s*\{\s*display:\s*none\s*!important;/);
+  assert.match(channelsCss, /channel-editor-inline-field\[hidden\]\s*\{\s*display:\s*none\s*!important;/);
   assert.match(modalsScript, /fetchDataWithAuth\('\/admin\/settings\/channel_check_interval_hours'\)/);
   assert.match(modalsScript, /scheduledCheckWrapper\.hidden = !scheduledCheckEnabledByConfig;/);
-  assert.match(modalsScript, /function syncScheduledCheckModelDisplay\(modelNames = null\)/);
-  assert.match(modalsScript, /const scheduledCheckModelDisplayFontMaxPx = 16;/);
-  assert.match(modalsScript, /const scheduledCheckModelDisplayFontMinPx = 9;/);
-  assert.match(modalsScript, /function fitScheduledCheckModelDisplayText\(display\)/);
+  assert.match(modalsScript, /createSearchableCombobox\(\{/);
+  assert.match(modalsScript, /inputId:\s*'channelScheduledCheckModelInput'/);
+  assert.match(modalsScript, /dropdownId:\s*'channelScheduledCheckModelDropdown'/);
+  assert.doesNotMatch(modalsScript, /function syncScheduledCheckModelDisplay\(modelNames = null\)/);
+  assert.doesNotMatch(modalsScript, /const scheduledCheckModelDisplayFontMaxPx = 16;/);
+  assert.doesNotMatch(modalsScript, /const scheduledCheckModelDisplayFontMinPx = 9;/);
+  assert.doesNotMatch(modalsScript, /function fitScheduledCheckModelDisplayText\(display\)/);
   assert.match(modalsScript, /scheduled_check_model/);
 });
 
