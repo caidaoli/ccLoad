@@ -27,7 +27,6 @@ func detectionLogFromResult(cfg *model.Config, logSource, requestModel, actualMo
 		Time:          model.JSONTime{Time: time.Now()},
 		LogSource:     logSource,
 		Model:         requestModel,
-		ChannelID:     cfg.ID,
 		ClientIP:      clientIP,
 		APIKeyUsed:    apiKeyUsed,
 		AuthTokenID:   authTokenID,

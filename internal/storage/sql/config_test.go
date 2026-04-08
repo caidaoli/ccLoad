@@ -213,6 +213,61 @@ func TestConfig_DeleteConfig(t *testing.T) {
 	}
 }
 
+func TestConfig_DeleteConfig_AllowsRecreateWithSameIDAndKeyIndicesInMemoryStore(t *testing.T) {
+	t.Parallel()
+
+	store, err := storage.CreateSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("create sqlite store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name:    "to-delete-memory",
+		URL:     "https://api.example.com",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create config: %v", err)
+	}
+
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-old-0", KeyStrategy: model.KeyStrategySequential},
+		{ChannelID: created.ID, KeyIndex: 1, APIKey: "sk-old-1", KeyStrategy: model.KeyStrategySequential},
+	}); err != nil {
+		t.Fatalf("create api keys batch: %v", err)
+	}
+
+	if err := store.DeleteConfig(ctx, created.ID); err != nil {
+		t.Fatalf("delete config: %v", err)
+	}
+
+	recreated, err := store.CreateConfig(ctx, &model.Config{
+		ID:      created.ID,
+		Name:    "recreated-memory",
+		URL:     "https://api-recreated.example.com",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("recreate config with explicit id: %v", err)
+	}
+
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: recreated.ID, KeyIndex: 0, APIKey: "sk-new-0", KeyStrategy: model.KeyStrategySequential},
+	}); err != nil {
+		t.Fatalf("create api key after recreate: %v", err)
+	}
+
+	keys, err := store.GetAPIKeys(ctx, recreated.ID)
+	if err != nil {
+		t.Fatalf("get recreated api keys: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("expected 1 recreated api key, got %d", len(keys))
+	}
+}
+
 func TestConfig_GetEnabledChannelsByModel(t *testing.T) {
 	t.Parallel()
 
