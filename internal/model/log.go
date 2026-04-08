@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+// LogSource* constants define persisted log sources plus special filter aliases.
 const (
 	LogSourceProxy          = "proxy"
 	LogSourceScheduledCheck = "scheduled_check"
@@ -15,6 +16,7 @@ const (
 	LogSourceAll       = "all"
 )
 
+// NormalizeStoredLogSource maps stored or legacy log sources to supported persisted values.
 func NormalizeStoredLogSource(raw string) string {
 	switch strings.TrimSpace(raw) {
 	case "", LogSourceProxy:
