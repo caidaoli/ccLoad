@@ -1176,22 +1176,34 @@
    * @param {string} text - 要复制的文本
    * @returns {Promise<void>}
    */
-  function copyToClipboard(text) {
-    return navigator.clipboard.writeText(text).catch(() => {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.position = 'fixed';
-      ta.style.left = '-9999px';
-      document.body.appendChild(ta);
-      ta.select();
-      try {
-        document.execCommand('copy');
-      } catch {
-        document.body.removeChild(ta);
-        return Promise.reject(new Error('copy failed'));
+  function fallbackCopyToClipboard(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+
+    try {
+      const copied = typeof document.execCommand === 'function' && document.execCommand('copy');
+      if (!copied) {
+        throw new Error('copy failed');
       }
+    } catch {
       document.body.removeChild(ta);
-    });
+      return Promise.reject(new Error('copy failed'));
+    }
+
+    document.body.removeChild(ta);
+    return Promise.resolve();
+  }
+
+  function copyToClipboard(text) {
+    const clipboard = globalThis.navigator && globalThis.navigator.clipboard;
+    if (clipboard && typeof clipboard.writeText === 'function') {
+      return clipboard.writeText(text).catch(() => fallbackCopyToClipboard(text));
+    }
+    return fallbackCopyToClipboard(text);
   }
 
   /**
