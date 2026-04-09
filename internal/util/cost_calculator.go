@@ -341,6 +341,16 @@ var basePricing = map[string]ModelPricing{
 	"minimax-m2.1": {InputPrice: 0.30, OutputPrice: 1.20},
 	"minimax-m2.5": {InputPrice: 0.30, OutputPrice: 1.20},
 
+	// ========== 美团 LongCat 模型 ==========
+	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=meituan
+	"longcat-flash-chat":          {InputPrice: 0.20, OutputPrice: 0.80, CacheReadPrice: 0.20, HasCacheReadPrice: true},
+	"longcat-flash-chat:free":     {InputPrice: 0.00, OutputPrice: 0.00},
+	"longcat-flash-thinking":      {InputPrice: 0.20, OutputPrice: 0.80},
+	"longcat-flash-thinking-2601": {InputPrice: 0.20, OutputPrice: 0.80},
+	"longcat-flash-lite":          {InputPrice: 0.00, OutputPrice: 0.00}, // 公测免费
+	"longcat-flash-omni-2603":     {InputPrice: 0.20, OutputPrice: 0.80},
+	"longcat-flash-chat-2602-exp": {InputPrice: 0.20, OutputPrice: 0.80},
+
 	// ========== Meta Llama 模型 ==========
 	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=meta-llama
 	"llama-3.2-3b-instruct":         {InputPrice: 0.003, OutputPrice: 0.006},
@@ -857,6 +867,11 @@ func fuzzyMatchModel(model string) (ModelPricing, bool) {
 
 		// MiniMax模型
 		"minimax-m2.5", "minimax-m2.1", "minimax-m2", "minimax-m1", "minimax-01",
+
+		// 美团 LongCat模型（长前缀优先）
+		"longcat-flash-chat-2602-exp", "longcat-flash-chat:free", "longcat-flash-chat",
+		"longcat-flash-thinking-2601", "longcat-flash-thinking",
+		"longcat-flash-omni-2603", "longcat-flash-lite",
 
 		// Meta Llama模型（长前缀优先）
 		"llama-3.2-90b-vision-instruct", "llama-3.2-11b-vision-instruct",
