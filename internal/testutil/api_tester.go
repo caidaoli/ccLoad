@@ -361,20 +361,26 @@ func (t *AnthropicTester) Build(cfg *model.Config, apiKey string, req *TestChann
 	h.Set("Content-Type", "application/json")
 	h.Set("Authorization", "Bearer "+apiKey)
 	// Claude Code CLI headers
-	h.Set("User-Agent", "claude-cli/2.1.76 (external, cli)")
+	h.Set("User-Agent", "claude-cli/2.1.97 (external, cli)")
 	h.Set("x-app", "cli")
 	h.Set("anthropic-version", "2023-06-01")
-	h.Set("anthropic-beta", "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,effort-2025-11-24")
+	h.Set("anthropic-beta", "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24")
 	h.Set("anthropic-dangerous-direct-browser-access", "true")
 	// x-stainless-* headers
 	h.Set("x-stainless-arch", "arm64")
 	h.Set("x-stainless-lang", "js")
 	h.Set("x-stainless-os", "MacOS")
-	h.Set("x-stainless-package-version", "0.74.0")
+	h.Set("x-stainless-package-version", "0.81.0")
 	h.Set("x-stainless-retry-count", "0")
 	h.Set("x-stainless-runtime", "node")
 	h.Set("x-stainless-runtime-version", "v24.3.0")
-	h.Set("x-stainless-timeout", "600")
+	h.Set("x-stainless-timeout", "300")
+	// 生成 UUID v4 作为 session ID
+	var sid [16]byte
+	_, _ = rand.Read(sid[:])
+	sid[6] = (sid[6] & 0x0f) | 0x40
+	sid[8] = (sid[8] & 0x3f) | 0x80
+	h.Set("X-Claude-Code-Session-Id", fmt.Sprintf("%x-%x-%x-%x-%x", sid[0:4], sid[4:6], sid[6:8], sid[8:10], sid[10:16]))
 	if req.Stream {
 		h.Set("x-stainless-helper-method", "stream")
 	}
