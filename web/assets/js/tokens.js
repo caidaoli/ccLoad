@@ -629,6 +629,7 @@
       const token = allTokens.find(t => t.id === id);
       if (!token) return;
       document.getElementById('editTokenId').value = id;
+      document.getElementById('editTokenValue').value = token.token || '';
       document.getElementById('editTokenDescription').value = token.description;
       document.getElementById('editTokenActive').checked = token.is_active;
       if (!token.expires_at) {
@@ -662,6 +663,7 @@
 
     function closeEditModal() {
       document.getElementById('editModal').style.display = 'none';
+      document.getElementById('editTokenValue').value = '';
       document.getElementById('editCustomExpiryContainer').style.display = 'none';
       // 清理模型限制状态
       editAllowedModels = [];

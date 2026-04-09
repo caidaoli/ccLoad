@@ -460,6 +460,14 @@
       flex: 1 1 auto;
       min-width: 0;
     }
+    .token-edit-token-value {
+      font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+      font-size: 13px;
+    }
+    .token-edit-token-value[readonly] {
+      background: white;
+      color: var(--neutral-700);
+    }
     .token-edit-cost-row {
       display: flex;
       align-items: center;
