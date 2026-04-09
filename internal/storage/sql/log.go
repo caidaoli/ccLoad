@@ -382,6 +382,56 @@ func (s *SQLStore) CountLogsRange(ctx context.Context, since, until time.Time, f
 	return count, err
 }
 
+// GetTodayChannelURLStats 聚合当日全部渠道的 URL 级日志统计，用于启动时回填 URLSelector 内存态。
+func (s *SQLStore) GetTodayChannelURLStats(ctx context.Context, dayStart time.Time) ([]model.ChannelURLLogStat, error) {
+	sinceMs := dayStart.UnixMilli()
+
+	const query = `
+		SELECT
+			channel_id,
+			base_url,
+			SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS requests,
+			SUM(CASE WHEN status_code != 499 AND (status_code < 200 OR status_code >= 300) THEN 1 ELSE 0 END) AS failures,
+			COALESCE(AVG(
+				CASE
+					WHEN status_code >= 200 AND status_code < 300 AND first_byte_time > 0 THEN first_byte_time * 1000
+					WHEN status_code >= 200 AND status_code < 300 AND duration > 0 THEN duration * 1000
+					ELSE NULL
+				END
+			), -1) AS latency_ms,
+			MAX(time) AS last_seen_ms
+		FROM logs
+		WHERE time >= ?
+			AND channel_id > 0
+			AND base_url <> ''
+		GROUP BY channel_id, base_url
+		ORDER BY channel_id ASC, base_url ASC
+	`
+
+	rows, err := s.db.QueryContext(ctx, query, sinceMs)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	stats := make([]model.ChannelURLLogStat, 0, 4)
+	for rows.Next() {
+		var stat model.ChannelURLLogStat
+		var lastSeenMs int64
+		if err := rows.Scan(&stat.ChannelID, &stat.BaseURL, &stat.Requests, &stat.Failures, &stat.LatencyMs, &lastSeenMs); err != nil {
+			return nil, err
+		}
+		if lastSeenMs > 0 {
+			stat.LastSeen = time.UnixMilli(lastSeenMs)
+		}
+		stats = append(stats, stat)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return stats, nil
+}
+
 // ListLogsRangeWithCount 合并日志列表和计数查询，消除重复的 channel filter 解析
 // 将原来的 ListLogsRange + CountLogsRange 合并为一次调用：
 // - resolveChannelFilter 只执行一次（省 1-2 次 DB 查询）

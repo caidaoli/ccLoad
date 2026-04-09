@@ -11,6 +11,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"ccLoad/internal/model"
 )
 
 const (
@@ -309,6 +311,43 @@ func (s *URLSelector) RecordLatency(channelID int64, url string, ttfb time.Durat
 		rc.success++
 	} else {
 		s.requests[key] = &urlRequestCount{success: 1}
+	}
+}
+
+// LoadPersistedStats 将启动时聚合出的 URL 日志快照灌入内存态。
+// 仅回填成功/失败计数和延迟；冷却与禁用仍保持纯运行时语义。
+func (s *URLSelector) LoadPersistedStats(stats []model.ChannelURLLogStat) {
+	if len(stats) == 0 {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	s.maybeCleanupLocked(now)
+
+	for _, stat := range stats {
+		if stat.ChannelID <= 0 || stat.BaseURL == "" {
+			continue
+		}
+
+		key := urlKey{channelID: stat.ChannelID, url: stat.BaseURL}
+
+		if stat.LatencyMs >= 0 {
+			lastSeen := stat.LastSeen
+			if lastSeen.IsZero() {
+				lastSeen = now
+			}
+			s.latencies[key] = &ewmaValue{value: stat.LatencyMs, lastSeen: lastSeen}
+		}
+
+		if stat.Requests > 0 || stat.Failures > 0 {
+			s.requests[key] = &urlRequestCount{
+				success: stat.Requests,
+				failure: stat.Failures,
+			}
+		}
 	}
 }
 

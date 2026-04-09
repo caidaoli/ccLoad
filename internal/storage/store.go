@@ -57,6 +57,7 @@ type Store interface {
 	ListLogsRangeWithCount(ctx context.Context, since, until time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, int, error)
 	CountLogs(ctx context.Context, since time.Time, filter *model.LogFilter) (int, error)
 	CountLogsRange(ctx context.Context, since, until time.Time, filter *model.LogFilter) (int, error)
+	GetTodayChannelURLStats(ctx context.Context, dayStart time.Time) ([]model.ChannelURLLogStat, error)
 	CleanupLogsBefore(ctx context.Context, cutoff time.Time) error
 
 	// === Metrics & Statistics ===

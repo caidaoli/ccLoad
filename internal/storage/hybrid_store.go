@@ -472,6 +472,10 @@ func (h *HybridStore) CountLogsRange(ctx context.Context, since, until time.Time
 	return h.sqlite.CountLogsRange(ctx, since, until, filter)
 }
 
+func (h *HybridStore) GetTodayChannelURLStats(ctx context.Context, dayStart time.Time) ([]model.ChannelURLLogStat, error) {
+	return h.sqlite.GetTodayChannelURLStats(ctx, dayStart)
+}
+
 func (h *HybridStore) CleanupLogsBefore(ctx context.Context, cutoff time.Time) error {
 	return h.sqlite.CleanupLogsBefore(ctx, cutoff)
 }

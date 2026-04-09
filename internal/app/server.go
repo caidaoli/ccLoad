@@ -244,6 +244,18 @@ func NewServer(store storage.Store) *Server {
 		log.Printf("[INFO] 已加载今日渠道成本缓存（%d个渠道有消耗）", len(todayCosts))
 	}
 
+	urlStatsLoadCtx, urlStatsCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer urlStatsCancel()
+	todayURLStats, err := store.GetTodayChannelURLStats(urlStatsLoadCtx, s.costCache.DayStart())
+	if err != nil {
+		log.Printf("[WARN] 加载今日 URL 运行状态失败: %v（多URL状态展示可能为空）", err)
+	} else {
+		s.urlSelector.LoadPersistedStats(todayURLStats)
+		if len(todayURLStats) > 0 {
+			log.Printf("[INFO] 已从日志恢复今日 URL 运行状态（%d条URL）", len(todayURLStats))
+		}
+	}
+
 	// 初始化统计缓存层（减少重复聚合查询）
 	s.statsCache = NewStatsCache(store)
 	log.Print("[INFO] 统计缓存已启用（智能 TTL，减少数据库聚合查询）")

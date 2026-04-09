@@ -101,3 +101,14 @@ type LogFilter struct {
 	AuthTokenID     *int64 // API令牌ID过滤
 	LogSource       string
 }
+
+// ChannelURLLogStat 是基于持久化日志聚合出的 URL 启动快照。
+// 用途：程序启动时从 logs.base_url 回填 URLSelector 的当日成功/失败计数与延迟。
+type ChannelURLLogStat struct {
+	ChannelID int64
+	BaseURL   string
+	Requests  int64
+	Failures  int64
+	LatencyMs float64
+	LastSeen  time.Time
+}
