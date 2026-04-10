@@ -250,3 +250,39 @@ test('model-test 页移除关键固定高度与控件宽度硬编码', () => {
   assert.doesNotMatch(modelTestHtml, /id="concurrency"[^>]*style="[^"]*width:\s*50px/);
   assert.doesNotMatch(modelTestHtml, /id="runTestBtn"[^>]*style="[^"]*padding:\s*8px 16px/);
 });
+
+test('model-test 页在紧凑桌面宽度下将操作按钮整体下沉到第二行', () => {
+  const compactDesktopSection = sharedCss.match(/@media\s*\(max-width:\s*1680px\)\s*and\s*\(min-width:\s*1281px\)\s*\{[\s\S]*?\n\}/);
+  assert.ok(compactDesktopSection, '缺少 model-test 紧凑桌面断点');
+
+  const compactDesktopCss = compactDesktopSection[0];
+  assert.match(compactDesktopCss, /\.model-test-toolbar\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto;/);
+  assert.match(compactDesktopCss, /\.model-test-toolbar-section--filters\s*\{[\s\S]*?grid-column:\s*1;[\s\S]*?grid-row:\s*1;/);
+  assert.match(compactDesktopCss, /\.model-test-toolbar-section--meta\s*\{[\s\S]*?grid-column:\s*2;[\s\S]*?grid-row:\s*1;/);
+  assert.match(compactDesktopCss, /\.model-test-toolbar-section--actions\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1;[\s\S]*?grid-row:\s*2;[\s\S]*?justify-content:\s*flex-start;/);
+  assert.match(compactDesktopCss, /\.model-test-toolbar-section--actions\s+\.model-test-toolbar-btn\s*\{[\s\S]*?flex:\s*0\s+0\s+auto;[\s\S]*?width:\s*auto;/);
+});
+
+test('model-test 页在中等桌面宽度下将筛选独占第一行，操作和状态区落到第二行', () => {
+  const mediumDesktopSection = sharedCss.match(/@media\s*\(max-width:\s*1280px\)\s*and\s*\(min-width:\s*960px\)\s*\{[\s\S]*?\n\}/);
+  assert.ok(mediumDesktopSection, '缺少 model-test 中等桌面断点');
+
+  const mediumDesktopCss = mediumDesktopSection[0];
+  assert.match(mediumDesktopCss, /\.model-test-toolbar\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto;/);
+  assert.match(mediumDesktopCss, /\.model-test-toolbar-section--filters\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1;[\s\S]*?grid-row:\s*1;/);
+  assert.match(mediumDesktopCss, /\.model-test-toolbar-section--actions\s*\{[\s\S]*?grid-column:\s*1;[\s\S]*?grid-row:\s*2;[\s\S]*?justify-content:\s*flex-start;/);
+  assert.match(mediumDesktopCss, /\.model-test-toolbar-section--meta\s*\{[\s\S]*?grid-column:\s*2;[\s\S]*?grid-row:\s*2;[\s\S]*?justify-content:\s*flex-end;/);
+  assert.match(mediumDesktopCss, /\.model-test-toolbar-section--actions\s+\.model-test-toolbar-btn\s*\{[\s\S]*?flex:\s*0\s+0\s+auto;[\s\S]*?width:\s*auto;/);
+});
+
+test('model-test 页在窄桌面宽度下保持单列，但不再把操作按钮拉满整行', () => {
+  const narrowDesktopSection = sharedCss.match(/@media\s*\(max-width:\s*959px\)\s*and\s*\(min-width:\s*769px\)\s*\{[\s\S]*?\n\}/);
+  assert.ok(narrowDesktopSection, '缺少 model-test 窄桌面断点');
+
+  const narrowDesktopCss = narrowDesktopSection[0];
+  assert.match(narrowDesktopCss, /\.model-test-toolbar\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\);/);
+  assert.match(narrowDesktopCss, /\.model-test-toolbar-section--filters,\s*[\r\n\s]*\.model-test-toolbar-section--actions,\s*[\r\n\s]*\.model-test-toolbar-section--meta\s*\{[\s\S]*?width:\s*100%;/);
+  assert.match(narrowDesktopCss, /\.model-test-toolbar-section--actions\s*\{[\s\S]*?justify-content:\s*flex-start;/);
+  assert.match(narrowDesktopCss, /\.model-test-toolbar-section--actions\s+\.model-test-toolbar-btn\s*\{[\s\S]*?flex:\s*0\s+0\s+auto;[\s\S]*?width:\s*auto;/);
+  assert.match(narrowDesktopCss, /\.model-test-toolbar-section--meta\s*\{[\s\S]*?justify-content:\s*flex-end;/);
+});
