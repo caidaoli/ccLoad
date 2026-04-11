@@ -110,3 +110,9 @@ type HealthTimelineRow struct {
 	CacheCreationTokens int64
 	TotalCost           float64
 }
+
+// ChannelNameID 渠道ID和名称（用于筛选下拉框）
+type ChannelNameID struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}

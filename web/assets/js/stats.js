@@ -9,6 +9,10 @@
     let currentChannelType = 'all'; // 当前选中的渠道类型
     let authTokens = []; // 令牌列表
     let hideZeroSuccess = true; // 是否隐藏0成功的模型（默认开启）
+    let statsChannelNameOptions = []; // 从统计数据中提取的渠道名列表
+    let statsModelOptions = []; // 从统计数据中提取的模型列表
+    let statsChannelNameCombobox = null; // 渠道名筛选组合框实例
+    let statsModelCombobox = null; // 模型筛选组合框实例
     let sortState = {
       column: null,
       order: null // null, 'asc', 'desc'
@@ -24,6 +28,7 @@
         durationSeconds = statsData.duration_seconds || 1; // 防止除零
         rpmStats = statsData.rpm_stats || null;
         isToday = statsData.is_today !== false;
+        populateStatsComboboxOptions();
 
         // 初始化时应用默认排序(渠道类型→优先级→渠道名称→模型名称)
         applyDefaultSorting();
@@ -425,8 +430,64 @@
       loadStats();
     }
 
+    function initStatsChannelNameCombobox(initialValue) {
+      statsChannelNameCombobox = window.createSearchableCombobox({
+        inputId: 'f_name',
+        dropdownId: 'f_name_dropdown',
+        attachMode: true,
+        initialValue: initialValue || '',
+        initialLabel: initialValue || '',
+        getOptions: () => [
+          { value: '', label: t('stats.allChannels') },
+          ...statsChannelNameOptions.map(n => ({ value: n, label: n }))
+        ],
+        onSelect: () => {
+          window.persistFilterState({ key: STATS_FILTER_KEY, getValues: getStatsFilters });
+          applyFilter();
+        }
+      });
+    }
+
+    function initStatsModelCombobox(initialValue) {
+      statsModelCombobox = window.createSearchableCombobox({
+        inputId: 'f_model',
+        dropdownId: 'f_model_dropdown',
+        attachMode: true,
+        initialValue: initialValue || '',
+        initialLabel: initialValue || '',
+        getOptions: () => [
+          { value: '', label: t('trend.allModels') },
+          ...statsModelOptions.map(m => ({ value: m, label: m }))
+        ],
+        onSelect: () => {
+          window.persistFilterState({
+            key: STATS_FILTER_KEY,
+            getValues: getStatsFilters
+          });
+          applyFilter();
+        }
+      });
+    }
+
+    function populateStatsComboboxOptions() {
+      if (!statsData || !statsData.stats) return;
+      const nameSet = new Set(), modelSet = new Set();
+      statsData.stats.forEach(entry => {
+        if (entry.channel_name) nameSet.add(entry.channel_name);
+        if (entry.model) modelSet.add(entry.model);
+      });
+      // 各项：已选中具体值时保留现有选项，避免筛选后列表缩减
+      if (!statsChannelNameCombobox || !statsChannelNameCombobox.getValue()) {
+        statsChannelNameOptions = Array.from(nameSet).sort();
+        if (statsChannelNameCombobox) statsChannelNameCombobox.refresh();
+      }
+      if (!statsModelCombobox || !statsModelCombobox.getValue()) {
+        statsModelOptions = Array.from(modelSet).sort();
+        if (statsModelCombobox) statsModelCombobox.refresh();
+      }
+    }
+
     function initFilters(restoredFilters) {
-      const id = restoredFilters.channelId || '';
       const name = restoredFilters.channelName || '';
       const range = restoredFilters.range || 'today';
       const model = restoredFilters.model || '';
@@ -445,18 +506,8 @@
         }
       });
 
-      window.applyFilterControlValues(
-        {
-          channelId: id,
-          channelName: name,
-          model
-        },
-        {
-          channelId: 'f_id',
-          channelName: 'f_name',
-          model: 'f_model'
-        }
-      );
+      initStatsChannelNameCombobox(name);
+      initStatsModelCombobox(model);
 
       window.initAuthTokenFilter({
         selectId: 'f_auth_token',
@@ -478,8 +529,8 @@
 
       window.bindFilterApplyInputs({
         apply: applyFilter,
-        debounceInputIds: ['f_id', 'f_name', 'f_model'],
-        enterInputIds: ['f_hours', 'f_id', 'f_name', 'f_model', 'f_auth_token']
+        debounceInputIds: [],
+        enterInputIds: ['f_hours', 'f_auth_token']
       });
     }
 
@@ -752,11 +803,10 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
       return {
         ...window.readFilterControlValues({
           range: { id: 'f_hours', defaultValue: 'today', trim: true },
-          channelId: { id: 'f_id', trim: true },
-          channelName: { id: 'f_name', trim: true },
-          model: { id: 'f_model', trim: true },
           authToken: { id: 'f_auth_token', trim: true }
         }),
+        channelName: statsChannelNameCombobox ? statsChannelNameCombobox.getValue() : '',
+        model: statsModelCombobox ? statsModelCombobox.getValue() : '',
         channelType: currentChannelType,
         hideZeroSuccess: hideZeroSuccess
       };

@@ -490,6 +490,10 @@ func (h *HybridStore) GetDistinctModels(ctx context.Context, since, until time.T
 	return h.sqlite.GetDistinctModels(ctx, since, until, channelType, filter)
 }
 
+func (h *HybridStore) GetDistinctChannels(ctx context.Context, since, until time.Time, channelType string, filter *model.LogFilter) ([]model.ChannelNameID, error) {
+	return h.sqlite.GetDistinctChannels(ctx, since, until, channelType, filter)
+}
+
 func (h *HybridStore) GetStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) ([]model.StatsEntry, error) {
 	return h.sqlite.GetStats(ctx, startTime, endTime, filter, isToday)
 }

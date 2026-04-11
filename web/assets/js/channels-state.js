@@ -24,7 +24,6 @@ function normalizeSelectedChannelID(id) {
 // Filter state
 let filters = {
   search: '',
-  id: '',
   channelType: 'all',
   status: 'all',
   model: 'all'

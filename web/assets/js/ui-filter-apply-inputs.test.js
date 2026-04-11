@@ -176,7 +176,6 @@ test('ui.js 暴露共享的筛选字段读写 helper', () => {
 test('logs.js、stats.js 和 trend.js 使用共享筛选输入绑定 helper，logs/stats 使用共享筛选控件初始化与字段读写 helper', () => {
   assert.match(logsSource, /bindFilterApplyInputs\(\{/);
   assert.match(statsSource, /bindFilterApplyInputs\(\{/);
-  assert.match(trendSource, /bindFilterApplyInputs\(\{/);
   assert.match(logsSource, /initSavedDateRangeFilter\(\{/);
   assert.match(statsSource, /initSavedDateRangeFilter\(\{/);
   assert.match(trendSource, /initSavedDateRangeFilter\(\{/);
@@ -185,13 +184,12 @@ test('logs.js、stats.js 和 trend.js 使用共享筛选输入绑定 helper，lo
   assert.match(trendSource, /initAuthTokenFilter\(\{/);
   assert.match(logsSource, /readFilterControlValues\(/);
   assert.match(statsSource, /readFilterControlValues\(/);
-  assert.match(trendSource, /readFilterControlValues\(/);
   assert.match(logsSource, /applyFilterControlValues\(/);
-  assert.match(statsSource, /applyFilterControlValues\(/);
-  assert.match(trendSource, /applyFilterControlValues\(/);
+  // stats/trend 渠道/模型筛选已迁移至 combobox，通过 createSearchableCombobox 初始化
+  assert.match(statsSource, /createSearchableCombobox\(/);
+  assert.match(trendSource, /createSearchableCombobox\(/);
   assert.match(logsSource, /trim:\s*true/);
   assert.match(statsSource, /trim:\s*true/);
-  assert.match(trendSource, /trim:\s*true/);
   assert.match(logsSource, /getValues:\s*getLogsFilters|values:\s*getLogsFilters\(\)/);
   assert.match(statsSource, /getValues:\s*getStatsFilters|values:\s*getStatsFilters\(\)/);
 });

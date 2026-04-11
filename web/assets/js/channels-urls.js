@@ -105,7 +105,7 @@ function createURLRow(index) {
 
     const requestsTd = document.createElement('td');
     requestsTd.className = 'inline-url-cell-center inline-url-cell-metric inline-url-col-requests';
-    requestsTd.setAttribute('data-mobile-label', window.t('common.requests'));
+    requestsTd.setAttribute('data-mobile-label', window.t('channels.urlRequests'));
     requestsTd.innerHTML = formatURLRequests(stat);
 
     const toggleTd = document.createElement('td');

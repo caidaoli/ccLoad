@@ -37,9 +37,13 @@ test('page-filters 渲染 logs 布局时保留专用 class 和关键筛选控件
   assert.match(html, /class="logs-filter-summary-row"[\s\S]*id="displayedCount"[\s\S]*id="btn_filter"/);
   assert.match(html, /id="f_channel_type"/);
   assert.match(html, /id="f_hours"/);
-  assert.match(html, /id="f_id"/);
-  assert.match(html, /id="f_name"/);
-  assert.match(html, /id="f_model"/);
+  // 渠道ID已移除，渠道名与模型均改为 combobox
+  assert.doesNotMatch(html, /id="f_id"/);
+  assert.match(html, /id="f_name" class="filter-select filter-combobox"/);
+  assert.match(html, /id="f_name_dropdown" class="filter-dropdown"/);
+  assert.match(html, /id="f_model" class="filter-select filter-combobox"/);
+  assert.match(html, /id="f_model_dropdown" class="filter-dropdown"/);
+  assert.doesNotMatch(html, /data-i18n="trend\.allModels"/);
   assert.match(html, /id="f_log_source"/);
   assert.doesNotMatch(html, /value="scheduled_check"/);
   assert.doesNotMatch(html, /value="manual_test"/);
@@ -64,6 +68,16 @@ test('page-filters 渲染 stats/trend 布局时保留各自特有控件', () => 
   assert.match(trendLayout, /id="f_model" class="filter-select(?:\s+[^"]+)?"/);
   assert.match(trendLayout, /data-i18n="trend\.allModels"/);
   assert.doesNotMatch(trendLayout, /id="f_hide_zero_success"/);
+  // trend 渠道ID和渠道名改为 combobox 结构
+  assert.match(trendLayout, /id="f_id" class="filter-select filter-combobox"/);
+  assert.match(trendLayout, /id="f_id_dropdown" class="filter-dropdown"/);
+  assert.match(trendLayout, /id="f_name" class="filter-select filter-combobox"/);
+  assert.match(trendLayout, /id="f_name_dropdown" class="filter-dropdown"/);
+
+  // stats 模型筛选使用 combobox 结构
+  assert.match(statsLayout, /id="f_model" class="filter-select filter-combobox"/);
+  assert.match(statsLayout, /id="f_model_dropdown" class="filter-dropdown"/);
+  assert.doesNotMatch(statsLayout, /<input[^>]*id="f_model"[^>]*type="text"[^>]*data-i18n-placeholder/);
 });
 
 test('page-filters 使用响应式宽度类代替筛选控件内联像素宽度', () => {
@@ -78,13 +92,22 @@ test('page-filters 使用响应式宽度类代替筛选控件内联像素宽度'
   });
 
   assert.match(statsLayout, /id="f_channel_type" class="filter-select filter-control--compact"/);
-  assert.match(statsLayout, /id="f_hours" class="filter-select filter-control--compact"/);
-  assert.match(statsLayout, /id="f_id" class="filter-input filter-control--narrow"/);
-  assert.match(logsLayout, /class="filter-group logs-filter-group logs-filter-group--range"[\s\S]*id="f_hours" class="filter-select filter-control--compact logs-filter-control--range"/);
-  assert.match(logsLayout, /class="filter-group logs-filter-group logs-filter-group--channel-id"[\s\S]*id="f_id" class="filter-input filter-control--narrow logs-filter-control--channel-id"/);
+  assert.match(statsLayout, /id="f_hours" class="filter-select filter-control--compact filter-control--time-range"/);
+  // stats 渠道名改为 combobox，渠道 ID 筛选已移除
+  assert.match(statsLayout, /id="f_name" class="filter-select filter-combobox"/);
+  assert.match(statsLayout, /id="f_name_dropdown" class="filter-dropdown"/);
+  assert.doesNotMatch(statsLayout, /id="f_id"/);
+  assert.match(logsLayout, /class="filter-group logs-filter-group logs-filter-group--range"[\s\S]*id="f_hours" class="filter-select filter-control--compact filter-control--time-range logs-filter-control--range"/);
+  // 渠道ID已从日志页移除，渠道名与模型均改为 combobox
+  assert.doesNotMatch(logsLayout, /id="f_id"/);
+  assert.match(logsLayout, /id="f_name" class="filter-select filter-combobox"/);
+  assert.match(logsLayout, /id="f_name_dropdown" class="filter-dropdown"/);
+  assert.match(logsLayout, /id="f_model" class="filter-select filter-combobox"/);
+  assert.match(logsLayout, /id="f_model_dropdown" class="filter-dropdown"/);
   assert.match(logsLayout, /id="f_status" class="filter-input filter-control--narrow"/);
   assert.match(logsLayout, /class="filter-group logs-filter-group logs-filter-group--token"[\s\S]*id="f_auth_token" class="filter-select filter-control--wide logs-filter-control--token"/);
   assert.match(trendLayout, /id="f_model" class="filter-select filter-control--wide"/);
+  assert.match(trendLayout, /class="filter-controls trend-filter-controls"/);
   assert.doesNotMatch(statsLayout, /logs-filter-control--(?:range|channel-id|token)/);
   assert.doesNotMatch(trendLayout, /logs-filter-control--(?:range|channel-id|token)/);
 });

@@ -938,6 +938,15 @@
       justify-content: flex-end;
     }
 
+    .channels-filter-controls .filter-group,
+    .trend-filter-controls .filter-group {
+      flex: 0 1 auto;
+    }
+
+    .trend-filter-controls > .filter-actions--page {
+      margin-left: auto;
+    }
+
     .channel-filter-summary {
       margin-left: auto;
       display: flex;
@@ -1838,6 +1847,7 @@
         padding: 16px;
         min-height: calc(100vh - 16px);
         max-height: calc(100vh - 16px);
+        font-size: 14px;
       }
 
       .channel-editor-form {
@@ -1903,6 +1913,26 @@
       .channel-editor-section-header {
         flex-direction: column;
         align-items: stretch;
+      }
+
+      .channel-editor-section-header--inline {
+        flex-direction: row;
+        align-items: center;
+        flex-wrap: nowrap;
+        gap: 8px;
+      }
+
+      .channel-editor-section-header--inline .channel-editor-section-title {
+        width: auto;
+        flex: 1 1 auto;
+        min-width: 0;
+        flex-wrap: nowrap;
+        overflow: hidden;
+      }
+
+      .channel-editor-section-header--inline .channel-editor-section-actions {
+        flex: 0 0 auto;
+        width: auto;
       }
 
       .channel-editor-section-title,
@@ -2241,7 +2271,7 @@
       .inline-url-table tbody .mobile-inline-row {
         grid-template-columns: 36px minmax(0, 1fr) auto auto;
         align-items: center;
-        gap: 8px 12px;
+        gap: 8px 4px;
       }
 
       .inline-key-table tbody .mobile-inline-row {
@@ -2263,7 +2293,7 @@
 
       .inline-url-table tbody .mobile-inline-row td.inline-url-col-url {
         order: 2;
-        grid-column: 2 / 4;
+        grid-column: 2;
         grid-row: 1;
         display: flex;
         align-items: center;
@@ -2286,8 +2316,8 @@
         grid-row: 2;
         display: flex;
         align-items: center;
-        gap: 8px;
-        justify-content: flex-end;
+        gap: 4px;
+        justify-content: flex-start;
       }
 
       .inline-url-table tbody .mobile-inline-row td.inline-url-col-requests {
@@ -2302,7 +2332,7 @@
 
       .inline-url-table tbody .mobile-inline-row td.inline-url-col-actions {
         order: 3;
-        grid-column: 4;
+        grid-column: 3;
         grid-row: 1;
         display: flex;
         align-items: center;
@@ -2312,8 +2342,21 @@
         text-align: right !important;
       }
 
+      .inline-url-table tbody .mobile-inline-row td.inline-url-col-toggle {
+        order: 4;
+        grid-column: 4;
+        grid-row: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding-top: 0;
+        border-top: none;
+      }
+
       .inline-url-table tbody .mobile-inline-row td.inline-url-col-url::before,
-      .inline-url-table tbody .mobile-inline-row td.inline-url-col-actions::before {
+      .inline-url-table tbody .mobile-inline-row td.inline-url-col-status::before,
+      .inline-url-table tbody .mobile-inline-row td.inline-url-col-actions::before,
+      .inline-url-table tbody .mobile-inline-row td.inline-url-col-toggle::before {
         content: none;
         display: none;
       }

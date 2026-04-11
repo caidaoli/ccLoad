@@ -54,12 +54,15 @@ func TestAdminAPI_GetModels_ResponseShape_Empty(t *testing.T) {
 		t.Fatalf("Expected 200, got %d", w.Code)
 	}
 
-	resp := mustParseAPIResponse[[]string](t, w.Body.Bytes())
+	resp := mustParseAPIResponse[ModelsChannelsResponse](t, w.Body.Bytes())
 	if !resp.Success {
 		t.Fatalf("success=false, error=%q", resp.Error)
 	}
-	if resp.Data == nil {
-		t.Fatalf("data is null, want []")
+	if resp.Data.Models == nil {
+		t.Fatalf("data.models is null, want []")
+	}
+	if resp.Data.Channels == nil {
+		t.Fatalf("data.channels is null, want []")
 	}
 }
 
