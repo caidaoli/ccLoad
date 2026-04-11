@@ -98,6 +98,7 @@
                   <th class="table-col-duration" data-i18n="modelTest.totalDuration" data-sort-key="duration">总耗时</th>
                   <th class="table-col-metric" data-i18n="common.input" data-sort-key="inputTokens">输入</th>
                   <th class="table-col-metric" data-i18n="common.output" data-sort-key="outputTokens">输出</th>
+                  <th class="table-col-speed" data-i18n="modelTest.speed" data-sort-key="speed">速度(tok/s)</th>
                   <th class="table-col-metric" data-i18n="modelTest.cacheRead" data-sort-key="cacheRead">缓读</th>
                   <th class="table-col-metric" data-i18n="modelTest.cacheCreate" data-sort-key="cacheCreate">缓建</th>
                   <th class="table-col-cost" data-i18n="common.cost" data-sort-key="cost">费用</th>
@@ -105,7 +106,7 @@
                 </tr>
               </thead>
               <tbody id="model-test-tbody">
-                <tr class="model-test-empty-row"><td colspan="10" data-i18n="modelTest.selectChannelFirst">请先选择渠道</td></tr>
+                <tr class="model-test-empty-row"><td colspan="11" data-i18n="modelTest.selectChannelFirst">请先选择渠道</td></tr>
               </tbody>
             </table>
           </div>
@@ -122,6 +123,7 @@
       <td class="model-test-col-duration duration" data-mobile-label="{{mobileLabelDuration}}">-</td>
       <td class="model-test-col-input input-tokens" data-mobile-label="{{mobileLabelInput}}">-</td>
       <td class="model-test-col-output output-tokens" data-mobile-label="{{mobileLabelOutput}}">-</td>
+      <td class="model-test-col-speed speed" data-mobile-label="{{mobileLabelSpeed}}">-</td>
       <td class="model-test-col-cache-read cache-read" data-mobile-label="{{mobileLabelCacheRead}}">-</td>
       <td class="model-test-col-cache-create cache-create" data-mobile-label="{{mobileLabelCacheCreate}}">-</td>
       <td class="model-test-col-cost cost" data-mobile-label="{{mobileLabelCost}}">-</td>
@@ -140,6 +142,7 @@
       <td class="model-test-col-duration duration" data-mobile-label="{{mobileLabelDuration}}">-</td>
       <td class="model-test-col-input input-tokens" data-mobile-label="{{mobileLabelInput}}">-</td>
       <td class="model-test-col-output output-tokens" data-mobile-label="{{mobileLabelOutput}}">-</td>
+      <td class="model-test-col-speed speed" data-mobile-label="{{mobileLabelSpeed}}">-</td>
       <td class="model-test-col-cache-read cache-read" data-mobile-label="{{mobileLabelCacheRead}}">-</td>
       <td class="model-test-col-cache-create cache-create" data-mobile-label="{{mobileLabelCacheCreate}}">-</td>
       <td class="model-test-col-cost cost" data-mobile-label="{{mobileLabelCost}}">-</td>

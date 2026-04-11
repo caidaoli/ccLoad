@@ -2358,6 +2358,10 @@ body {
   width: 65px;
 }
 
+.table-col-speed {
+  width: 96px;
+}
+
 .table-col-cost {
   width: 80px;
 }
@@ -5321,6 +5325,10 @@ body.trend-page .chart-info {
 
   .model-test-table .model-test-col-duration {
     order: 11;
+  }
+
+  .model-test-table .model-test-col-speed {
+    order: 12;
   }
 
   .model-test-table .model-test-col-input {

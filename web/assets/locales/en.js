@@ -737,6 +737,7 @@ window.I18N_LOCALES['en'] = {
   'modelTest.duration': 'Duration',
   'modelTest.firstByteDuration': 'First Byte',
   'modelTest.totalDuration': 'Total Duration',
+  'modelTest.speed': 'Speed (tok/s)',
   'modelTest.filterModelPlaceholder': 'Search model name...',
   'modelTest.filterChannelPlaceholder': 'Search channel name...',
   'modelTest.sortAsc': 'Asc',

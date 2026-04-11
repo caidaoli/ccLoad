@@ -110,6 +110,7 @@ test('applyTestResultToRow 在失败时优先展示结构化上游错误而不�
     ['.duration', { textContent: '', title: '' }],
     ['.input-tokens', { textContent: '', title: '' }],
     ['.output-tokens', { textContent: '', title: '' }],
+    ['.speed', { textContent: '', title: '' }],
     ['.cache-read', { textContent: '', title: '' }],
     ['.cache-create', { textContent: '', title: '' }],
     ['.cost', { textContent: '', title: '' }],
@@ -159,5 +160,6 @@ test('applyTestResultToRow 在失败时优先展示结构化上游错误而不�
     '由于负载过高，为了尽量保证用户体验，本站已开启限流，当前用户本周无法使用，请下周重试'
   );
   assert.equal(cells.get('.duration').textContent, '1503ms');
+  assert.equal(cells.get('.speed').textContent, '-');
   assert.equal(cells.get('.cost').textContent, '-');
 });

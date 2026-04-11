@@ -31,8 +31,8 @@ const deletePreviewCloseBtn = document.getElementById('deletePreviewCloseBtn');
 const deletePreviewCancelBtn = document.getElementById('deletePreviewCancelBtn');
 const deletePreviewConfirmBtn = document.getElementById('deletePreviewConfirmBtn');
 
-const RESULT_TABLE_COLSPAN_WITH_FIRST_BYTE = 10;
-const RESULT_TABLE_COLSPAN_NO_FIRST_BYTE = 9;
+const RESULT_TABLE_COLSPAN_WITH_FIRST_BYTE = 11;
+const RESULT_TABLE_COLSPAN_NO_FIRST_BYTE = 10;
 const SORT_DIRECTION_ASC = 1;
 const SORT_DIRECTION_DESC = -1;
 const SORT_DIRECTION_NONE = 0;
@@ -46,6 +46,7 @@ const CHANNEL_MODE_HEAD = `
   <th class="table-col-duration" data-i18n="modelTest.totalDuration" data-sort-key="duration">总耗时</th>
   <th class="table-col-metric" data-i18n="common.input" data-sort-key="inputTokens">输入</th>
   <th class="table-col-metric" data-i18n="common.output" data-sort-key="outputTokens">输出</th>
+  <th class="table-col-speed" data-i18n="modelTest.speed" data-sort-key="speed">速度(tok/s)</th>
   <th class="table-col-metric" data-i18n="modelTest.cacheRead" data-sort-key="cacheRead">缓读</th>
   <th class="table-col-metric" data-i18n="modelTest.cacheCreate" data-sort-key="cacheCreate">缓建</th>
   <th class="table-col-cost" data-i18n="common.cost" data-sort-key="cost">费用</th>
@@ -59,6 +60,7 @@ const MODEL_MODE_HEAD = `
   <th class="table-col-duration" data-i18n="modelTest.totalDuration" data-sort-key="duration">总耗时</th>
   <th class="table-col-metric" data-i18n="common.input" data-sort-key="inputTokens">输入</th>
   <th class="table-col-metric" data-i18n="common.output" data-sort-key="outputTokens">输出</th>
+  <th class="table-col-speed" data-i18n="modelTest.speed" data-sort-key="speed">速度(tok/s)</th>
   <th class="table-col-metric" data-i18n="modelTest.cacheRead" data-sort-key="cacheRead">缓读</th>
   <th class="table-col-metric" data-i18n="modelTest.cacheCreate" data-sort-key="cacheCreate">缓建</th>
   <th class="table-col-cost" data-i18n="common.cost" data-sort-key="cost">费用</th>
@@ -77,6 +79,19 @@ function formatDurationMs(durationMs) {
   return (typeof durationMs === 'number' && Number.isFinite(durationMs) && durationMs > 0)
     ? `${(durationMs / 1000).toFixed(2)}s`
     : '-';
+}
+
+function calculateTestSpeed(data, usage) {
+  const outputTokens = Number(
+    usage?.output_tokens
+      ?? usage?.completion_tokens
+      ?? usage?.candidatesTokenCount
+  );
+  const durationSeconds = Number(data?.duration_ms) / 1000;
+  if (!Number.isFinite(outputTokens) || outputTokens <= 0 || !Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return null;
+  }
+  return outputTokens / durationSeconds;
 }
 
 function parseNumericCellValue(text) {
@@ -157,6 +172,7 @@ function getResultRowMobileLabels(nameKey, nameFallback) {
     mobileLabelDuration: i18nText('modelTest.totalDuration', '总耗时'),
     mobileLabelInput: i18nText('common.input', '输入'),
     mobileLabelOutput: i18nText('common.output', '输出'),
+    mobileLabelSpeed: i18nText('modelTest.speed', '速度(tok/s)'),
     mobileLabelCacheRead: i18nText('modelTest.cacheRead', '缓读'),
     mobileLabelCacheCreate: i18nText('modelTest.cacheCreate', '缓建'),
     mobileLabelCost: i18nText('common.cost', '费用'),
@@ -275,6 +291,8 @@ function getRowSortValue(row, key) {
       return parseNumericCellValue(row.querySelector('.input-tokens')?.textContent);
     case 'outputTokens':
       return parseNumericCellValue(row.querySelector('.output-tokens')?.textContent);
+    case 'speed':
+      return parseNumericCellValue(row.querySelector('.speed')?.textContent);
     case 'cacheRead':
       return parseNumericCellValue(row.querySelector('.cache-read')?.textContent);
     case 'cacheCreate':
@@ -736,6 +754,7 @@ function resetRowStatus(row) {
   row.querySelector('.duration').textContent = '-';
   row.querySelector('.input-tokens').textContent = '-';
   row.querySelector('.output-tokens').textContent = '-';
+  row.querySelector('.speed').textContent = '-';
   row.querySelector('.cache-read').textContent = '-';
   row.querySelector('.cache-create').textContent = '-';
   row.querySelector('.cost').textContent = '-';
@@ -752,8 +771,15 @@ function applyTestResultToRow(row, data) {
     row.style.background = 'rgba(16, 185, 129, 0.1)';
     const apiResp = data.api_response || {};
     const usage = apiResp.usage || apiResp.usageMetadata || data.usage || {};
-    row.querySelector('.input-tokens').textContent = usage.input_tokens || usage.prompt_tokens || usage.promptTokenCount || '-';
-    row.querySelector('.output-tokens').textContent = usage.output_tokens || usage.completion_tokens || usage.candidatesTokenCount || '-';
+    const inputTokens = usage.input_tokens || usage.prompt_tokens || usage.promptTokenCount || '-';
+    const outputTokens = usage.output_tokens || usage.completion_tokens || usage.candidatesTokenCount || '-';
+    const testSpeed = calculateTestSpeed(data, usage);
+    const speedDisplay = testSpeed === null
+      ? '-'
+      : testSpeed.toFixed(1);
+    row.querySelector('.input-tokens').textContent = inputTokens;
+    row.querySelector('.output-tokens').textContent = outputTokens;
+    row.querySelector('.speed').textContent = speedDisplay;
     row.querySelector('.cache-read').textContent = usage.cache_read_input_tokens || usage.cached_tokens || '-';
     row.querySelector('.cache-create').textContent = usage.cache_creation_input_tokens || '-';
     row.querySelector('.cost').textContent = (typeof data.cost_usd === 'number') ? formatCost(data.cost_usd) : '-';
@@ -797,6 +823,7 @@ function applyTestResultToRow(row, data) {
   }
   row.querySelector('.response').textContent = errMsg;
   row.querySelector('.response').title = errMsg;
+  row.querySelector('.speed').textContent = '-';
   row.querySelector('.cost').textContent = '-';
 }
 
@@ -826,6 +853,7 @@ async function runBatchTests(targets) {
       row.style.background = 'rgba(239, 68, 68, 0.1)';
       row.querySelector('.first-byte-duration').textContent = '-';
       row.querySelector('.duration').textContent = '-';
+      row.querySelector('.speed').textContent = '-';
       row.querySelector('.response').textContent = i18nText('modelTest.requestFailed', '请求失败');
       row.querySelector('.response').title = e.message;
       row.querySelector('.cost').textContent = '-';
