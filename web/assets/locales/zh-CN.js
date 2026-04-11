@@ -737,6 +737,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'modelTest.duration': '耗时',
   'modelTest.firstByteDuration': '首字',
   'modelTest.totalDuration': '总耗时',
+  'modelTest.speed': '速度(tok/s)',
   'modelTest.filterModelPlaceholder': '搜索模型名称...',
   'modelTest.filterChannelPlaceholder': '搜索渠道名称...',
   'modelTest.sortAsc': '升序',
