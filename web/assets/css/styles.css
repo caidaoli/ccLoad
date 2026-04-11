@@ -5163,26 +5163,20 @@ body.trend-page .chart-info {
   }
 
   .model-test-toolbar-section--filters {
-    grid-template-columns: minmax(88px, 104px) minmax(0, 1fr);
-    align-items: start;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
   }
 
   #channelSelectorLabel,
-  #modelSelectorLabel {
-    grid-column: 1 / -1;
-  }
-
-  .model-test-control--type {
-    grid-column: 1 / 2;
-  }
-
+  #modelSelectorLabel,
+  .model-test-control--type,
   .model-test-control--content {
-    grid-column: 2 / 3;
+    grid-column: 1 / -1;
   }
 
   .model-test-control--name-filter {
     display: flex;
-    flex: 1 1 auto;
+    flex: 2 1 auto;
     width: auto;
     min-width: 0;
     flex-direction: row;
@@ -5221,14 +5215,24 @@ body.trend-page .chart-info {
   }
 
   .model-test-control {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 4px;
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+  }
+
+  .model-test-control__label {
+    margin: 0;
+    white-space: nowrap;
+  }
+
+  .model-test-control > :not(.model-test-control__label) {
+    min-width: 0;
   }
 
   .model-test-control--name-filter {
     display: flex;
-    flex: 1 1 auto;
+    flex: 2 1 auto;
     width: auto;
     min-width: 0;
     flex-direction: row;
@@ -5254,7 +5258,7 @@ body.trend-page .chart-info {
 
   .model-test-progress:not(:empty) {
     display: block;
-    flex: 1 1 auto;
+    flex: 0 0 auto;
     min-width: 0;
   }
 
@@ -5312,11 +5316,53 @@ body.trend-page .chart-info {
   }
 
   .model-test-table .model-test-col-name {
+    display: flex !important;
+    align-items: flex-start;
+    justify-content: flex-start;
+    gap: 12px;
     padding-right: 30px;
+    text-align: left !important;
     white-space: normal !important;
     overflow: visible !important;
     text-overflow: unset !important;
     word-break: break-word;
+  }
+
+  .model-test-table .model-test-col-name::before {
+    width: auto !important;
+    margin-bottom: 0 !important;
+    flex: 0 0 auto;
+    white-space: nowrap;
+    text-align: left !important;
+  }
+
+  .model-test-table .model-test-col-first-byte,
+  .model-test-table .model-test-col-duration,
+  .model-test-table .model-test-col-speed,
+  .model-test-table .model-test-col-input,
+  .model-test-table .model-test-col-output,
+  .model-test-table .model-test-col-cache-read,
+  .model-test-table .model-test-col-cache-create,
+  .model-test-table .model-test-col-cost {
+    display: flex !important;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    text-align: right !important;
+  }
+
+  .model-test-table .model-test-col-first-byte::before,
+  .model-test-table .model-test-col-duration::before,
+  .model-test-table .model-test-col-speed::before,
+  .model-test-table .model-test-col-input::before,
+  .model-test-table .model-test-col-output::before,
+  .model-test-table .model-test-col-cache-read::before,
+  .model-test-table .model-test-col-cache-create::before,
+  .model-test-table .model-test-col-cost::before {
+    width: auto !important;
+    margin-bottom: 0 !important;
+    flex: 0 0 auto;
+    white-space: nowrap;
   }
 
   .model-test-table .model-test-col-first-byte {

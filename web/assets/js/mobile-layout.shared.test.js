@@ -187,10 +187,12 @@ test('settings 页为手机卡片布局补齐模板标签和分组样式', () =>
 });
 
 test('model-test 页为手机卡片布局补齐模板标签和重排样式', () => {
+  const lastControlRule = getLastRuleBody(sharedCss, '.model-test-control');
   const lastFilterRule = getLastRuleBody(sharedCss, '.model-test-toolbar-section--filters');
   const lastActionsRule = getLastRuleBody(sharedCss, '.model-test-toolbar-section--actions');
   const lastMetaRule = getLastRuleBody(sharedCss, '.model-test-toolbar-section--meta');
   const lastNameFilterRule = getLastRuleBody(sharedCss, '.model-test-control--name-filter');
+  const lastProgressRule = getLastRuleBody(sharedCss, '.model-test-progress:not(:empty)');
   const lastTogglesRule = getLastRuleBody(sharedCss, '.model-test-toolbar-toggles');
 
   assert.match(modelTestHtml, /class="model-test-toolbar-section model-test-toolbar-section--filters"/);
@@ -214,23 +216,29 @@ test('model-test 页为手机卡片布局补齐模板标签和重排样式', () 
   assert.match(modelTestScript, /getResultRowMobileLabels\('common\.model'/);
   assert.match(modelTestScript, /mobileLabelResponse:\s*i18nText\('modelTest\.responseContent'/);
   assert.match(sharedCss, /\.model-test-toolbar\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*1fr;/);
-  assert.match(sharedCss, /\.model-test-toolbar-section--filters\s*\{[\s\S]*?grid-template-columns:\s*minmax\(88px,\s*104px\)\s+minmax\(0,\s*1fr\);/);
-  assert.match(sharedCss, /#channelSelectorLabel,\s*[\r\n\s]*#modelSelectorLabel\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1;/);
-  assert.match(sharedCss, /\.model-test-control--type\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*2;/);
-  assert.match(sharedCss, /\.model-test-control--content\s*\{[\s\S]*?grid-column:\s*2\s*\/\s*3;/);
+  assert.match(sharedCss, /\.model-test-toolbar-section--filters\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\);/);
+  assert.match(sharedCss, /#channelSelectorLabel,\s*[\r\n\s]*#modelSelectorLabel,\s*[\r\n\s]*\.model-test-control--type,\s*[\r\n\s]*\.model-test-control--content\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1;/);
   assert.match(sharedCss, /\.model-test-control--name-filter\s*\{[\s\S]*?display:\s*none;/);
   assert.match(sharedCss, /\.model-test-toolbar-section--actions\s*\{[\s\S]*?display:\s*flex;[\s\S]*?flex-wrap:\s*nowrap;/);
   assert.match(sharedCss, /\.model-test-toolbar-section--meta\s*\{[\s\S]*?display:\s*flex;[\s\S]*?flex-wrap:\s*nowrap;/);
   assert.match(sharedCss, /\.model-test-toolbar-toggles\s*\{[\s\S]*?display:\s*flex;[\s\S]*?flex-wrap:\s*nowrap;/);
   assert.match(sharedCss, /\.model-test-toolbar-section--actions\s+\.model-test-toolbar-btn\s*\{[\s\S]*?flex:\s*1\s+1\s+0;/);
-  assert.match(lastFilterRule, /grid-template-columns:\s*minmax\(88px,\s*104px\)\s+minmax\(0,\s*1fr\)/);
-  assert.doesNotMatch(lastFilterRule, /grid-template-columns:\s*1fr/);
+  assert.match(lastFilterRule, /grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+  assert.doesNotMatch(lastFilterRule, /minmax\(88px,\s*104px\)\s+minmax\(0,\s*1fr\)/);
+  assert.match(lastControlRule, /display:\s*grid/);
+  assert.match(lastControlRule, /grid-template-columns:\s*max-content\s+minmax\(0,\s*1fr\)/);
+  assert.match(lastControlRule, /align-items:\s*center/);
+  assert.match(lastControlRule, /gap:\s*8px/);
+  assert.doesNotMatch(lastControlRule, /minmax\(88px,\s*104px\)/);
+  assert.doesNotMatch(lastControlRule, /flex-direction:\s*column/);
   assert.match(lastNameFilterRule, /display:\s*flex/);
-  assert.match(lastNameFilterRule, /flex:\s*1\s+1\s+auto/);
+  assert.match(lastNameFilterRule, /flex:\s*2\s+1\s+auto/);
   assert.match(lastNameFilterRule, /min-width:\s*0/);
   assert.match(lastNameFilterRule, /flex-direction:\s*row/);
   assert.match(lastNameFilterRule, /align-items:\s*center/);
   assert.doesNotMatch(lastNameFilterRule, /grid-column/);
+  assert.match(lastProgressRule, /display:\s*block/);
+  assert.match(lastProgressRule, /flex:\s*0\s+0\s+auto/);
   assert.match(lastActionsRule, /display:\s*flex/);
   assert.match(lastActionsRule, /flex-wrap:\s*nowrap/);
   assert.doesNotMatch(lastActionsRule, /grid-template-columns/);
@@ -242,6 +250,10 @@ test('model-test 页为手机卡片布局补齐模板标签和重排样式', () 
   assert.match(lastTogglesRule, /flex:\s*0\s+0\s+auto/);
   assert.doesNotMatch(lastTogglesRule, /grid-template-columns/);
   assert.match(sharedCss, /\.model-test-table\s+\.model-test-col-name,\s*[\r\n\s]*\.model-test-table\s+\.model-test-col-response\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1;/);
+  assert.match(sharedCss, /\.model-test-table\s+\.model-test-col-name\s*\{[\s\S]*?display:\s*flex\s*!important;[\s\S]*?justify-content:\s*flex-start;[\s\S]*?text-align:\s*left\s*!important;/);
+  assert.match(sharedCss, /\.model-test-table\s+\.model-test-col-name::before\s*\{[\s\S]*?width:\s*auto\s*!important;[\s\S]*?margin-bottom:\s*0\s*!important;/);
+  assert.match(sharedCss, /\.model-test-table\s+\.model-test-col-first-byte,\s*[\r\n\s]*\.model-test-table\s+\.model-test-col-duration,\s*[\r\n\s]*\.model-test-table\s+\.model-test-col-speed,\s*[\r\n\s]*\.model-test-table\s+\.model-test-col-input,\s*[\r\n\s]*\.model-test-table\s+\.model-test-col-output,\s*[\r\n\s]*\.model-test-table\s+\.model-test-col-cache-read,\s*[\r\n\s]*\.model-test-table\s+\.model-test-col-cache-create,\s*[\r\n\s]*\.model-test-table\s+\.model-test-col-cost\s*\{[\s\S]*?display:\s*flex\s*!important;[\s\S]*?justify-content:\s*space-between;/);
+  assert.match(sharedCss, /\.model-test-table\s+\.model-test-col-first-byte::before,\s*[\r\n\s]*\.model-test-table\s+\.model-test-col-duration::before,\s*[\r\n\s]*\.model-test-table\s+\.model-test-col-speed::before,\s*[\r\n\s]*\.model-test-table\s+\.model-test-col-input::before,\s*[\r\n\s]*\.model-test-table\s+\.model-test-col-output::before,\s*[\r\n\s]*\.model-test-table\s+\.model-test-col-cache-read::before,\s*[\r\n\s]*\.model-test-table\s+\.model-test-col-cache-create::before,\s*[\r\n\s]*\.model-test-table\s+\.model-test-col-cost::before\s*\{[\s\S]*?width:\s*auto\s*!important;[\s\S]*?margin-bottom:\s*0\s*!important;/);
   assert.match(sharedCss, /\.model-test-table\s+\.model-test-col-select\s*\{[\s\S]*?position:\s*absolute;/);
 });
 
