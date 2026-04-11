@@ -340,27 +340,37 @@ func (s *Server) HandlePublicVersion(c *gin.Context) {
 	})
 }
 
-// HandleGetModels 获取数据库中存在的所有模型列表（去重）
+// ModelsChannelsResponse 模型和渠道列表响应
+type ModelsChannelsResponse struct {
+	Models   []string              `json:"models"`
+	Channels []model.ChannelNameID `json:"channels"`
+}
+
+// HandleGetModels 获取数据库中有日志的模型和渠道列表（去重）
 // GET /admin/models
 // 支持参数：range（时间范围）、channel_type（渠道类型筛选）
 func (s *Server) HandleGetModels(c *gin.Context) {
-	// 获取时间范围（默认最近30天）
 	rangeParam := c.DefaultQuery("range", "this_month")
 	params := ParsePaginationParams(c)
 	params.Range = rangeParam
 	since, until := params.GetTimeRange()
 
-	// 获取渠道类型筛选（可选）
 	channelType := c.Query("channel_type")
+	logFilter := &model.LogFilter{LogSource: model.LogSourceProxy}
 
-	// 查询模型列表
-	models, err := s.store.GetDistinctModels(c.Request.Context(), since, until, channelType, &model.LogFilter{LogSource: model.LogSourceProxy})
+	models, err := s.store.GetDistinctModels(c.Request.Context(), since, until, channelType, logFilter)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
 
-	RespondJSON(c, http.StatusOK, models)
+	channels, err := s.store.GetDistinctChannels(c.Request.Context(), since, until, channelType, logFilter)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	RespondJSON(c, http.StatusOK, ModelsChannelsResponse{Models: models, Channels: channels})
 }
 
 // HandleHealth 健康检查端点(公开访问,无需认证)

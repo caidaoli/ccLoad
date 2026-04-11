@@ -12,6 +12,8 @@
     window.chartInstance = null;
     window.channels = [];
     window.visibleChannels = new Set(); // 可见渠道集合
+    let trendChannelIdCombobox = null; // 渠道ID筛选组合框
+    let trendChannelNameCombobox = null; // 渠道名筛选组合框
     window.availableModels = []; // 可用模型列表
     window.authTokens = []; // 令牌列表
 
@@ -97,14 +99,6 @@
       });
     }
 
-    function buildChannelsQueryString(channelType) {
-      if (!channelType || channelType === 'all') {
-        return '';
-      }
-
-      return `?type=${encodeURIComponent(channelType)}`;
-    }
-
     // 加载可用模型列表
     // channelType 参数：渠道类型筛选，空字符串或 'all' 表示全部
     // range 参数：时间范围，可选，默认使用当前选择的时间范围
@@ -116,10 +110,17 @@
         }, TREND_MODELS_REQUEST_FIELDS);
         const url = `/admin/models?${params.toString()}`;
 
-        const rawModels = (await fetchDataWithAuth(url)) || [];
+        const resp = await fetchDataWithAuth(url) || {};
+        const rawModels = Array.isArray(resp.models) ? resp.models : [];
+        const rawChannels = Array.isArray(resp.channels) ? resp.channels : [];
 
         // 去重：使用 Set 确保模型名称唯一
         window.availableModels = [...new Set(rawModels)];
+
+        // 更新渠道列表（仅有日志数据的渠道）
+        window.channels = rawChannels;
+        if (trendChannelIdCombobox) trendChannelIdCombobox.refresh();
+        if (trendChannelNameCombobox) trendChannelNameCombobox.refresh();
 
         // 填充模型选择器
         const modelSelect = document.getElementById('f_model');
@@ -166,13 +167,9 @@
           window.currentAuthToken = tokenSelect.value || '';
         }
 
-        // 读取渠道ID和渠道名筛选
-        const textFilters = window.readFilterControlValues({
-          channelId: { id: 'f_id', trim: true },
-          channelName: { id: 'f_name', trim: true }
-        });
-        window.currentChannelId = textFilters.channelId;
-        window.currentChannelName = textFilters.channelName;
+        // 读取渠道ID和渠道名筛选（combobox）
+        window.currentChannelId = trendChannelIdCombobox ? trendChannelIdCombobox.getValue() : '';
+        window.currentChannelName = trendChannelNameCombobox ? trendChannelNameCombobox.getValue() : '';
 
         const hours = window.getRangeHours ? getRangeHours(currentRange) : 24;
         window.currentHours = hours; // 同步到全局变量，供 renderChart 使用
@@ -183,19 +180,13 @@
             bucket_min: bucketMin
           }
         });
-        const channelsUrl = '/admin/channels';
-
-        const [metrics, channels] = await Promise.all([
-          fetchAPIWithAuthRaw('/admin/metrics?' + metricsParams.toString()),
-          fetchDataWithAuth(channelsUrl + buildChannelsQueryString(window.currentChannelType))
-        ]);
+        const metrics = await fetchAPIWithAuthRaw('/admin/metrics?' + metricsParams.toString());
 
         if (!metrics.payload.success) {
           throw new Error(metrics.payload.error || t('trend.fetchDataFailed'));
         }
 
         window.trendData = metrics.payload.data || [];
-        window.channels = channels || [];
 
         // 构建渠道数据缓存（一次遍历，供后续 hasChannelData 使用）
         buildChannelDataCache(window.trendData);
@@ -1444,6 +1435,50 @@ function shouldShowZoom(points, hours, trendType) {
       } catch (_) {}
     }
 
+    function initTrendChannelIdCombobox(initialValue) {
+      if (typeof window.createSearchableCombobox !== 'function') return;
+      if (!document.getElementById('f_id')) return;
+      trendChannelIdCombobox = window.createSearchableCombobox({
+        inputId: 'f_id',
+        dropdownId: 'f_id_dropdown',
+        attachMode: true,
+        initialValue: initialValue || '',
+        initialLabel: initialValue
+          ? (() => { const ch = (window.channels || []).find(c => String(c.id) === String(initialValue)); return ch ? ch.name : initialValue; })()
+          : t('stats.allChannels'),
+        getOptions: () => [
+          { value: '', label: t('stats.allChannels') },
+          ...(window.channels || []).map(ch => ({ value: String(ch.id), label: ch.name }))
+        ],
+        onSelect: () => {
+          window.currentChannelId = trendChannelIdCombobox.getValue();
+          persistState();
+          loadData();
+        }
+      });
+    }
+
+    function initTrendChannelNameCombobox(initialValue) {
+      if (typeof window.createSearchableCombobox !== 'function') return;
+      if (!document.getElementById('f_name')) return;
+      trendChannelNameCombobox = window.createSearchableCombobox({
+        inputId: 'f_name',
+        dropdownId: 'f_name_dropdown',
+        attachMode: true,
+        initialValue: initialValue || '',
+        initialLabel: initialValue || t('stats.allChannels'),
+        getOptions: () => [
+          { value: '', label: t('stats.allChannels') },
+          ...(window.channels || []).map(ch => ({ value: ch.name, label: ch.name }))
+        ],
+        onSelect: () => {
+          window.currentChannelName = trendChannelNameCombobox.getValue();
+          persistState();
+          loadData();
+        }
+      });
+    }
+
     // 页面初始化
     window.initPageBootstrap({
       topbarKey: 'trend',
@@ -1462,6 +1497,10 @@ function shouldShowZoom(points, hours, trendType) {
 
       bindToggles();
       bindChannelFilterControls();
+
+      // 初始化渠道ID和渠道名 combobox
+      initTrendChannelIdCombobox(window.currentChannelId);
+      initTrendChannelNameCombobox(window.currentChannelName);
 
       // 加载模型列表（传入当前渠道类型）
       await loadModels(window.currentChannelType);
@@ -1550,23 +1589,7 @@ function shouldShowZoom(points, hours, trendType) {
         });
       }
 
-      const applyTextFilters = () => {
-        const textFilters = window.readFilterControlValues({
-          channelId: { id: 'f_id', trim: true },
-          channelName: { id: 'f_name', trim: true }
-        });
-        window.currentChannelId = textFilters.channelId;
-        window.currentChannelName = textFilters.channelName;
-
-        persistState();
-        loadData();
-      };
-
-      window.bindFilterApplyInputs({
-        apply: applyTextFilters,
-        debounceInputIds: ['f_id', 'f_name'],
-        enterInputIds: ['f_id', 'f_name']
-      });
+      // 渠道ID和渠道名已改为 combobox，onSelect 回调自动触发 persistState + loadData
     }
 
     function persistState() {
@@ -1617,21 +1640,9 @@ function shouldShowZoom(points, hours, trendType) {
         // 恢复渠道类型
         window.currentChannelType = restoredFilters.channelType || 'all';
 
-        // 恢复渠道ID和渠道名
+        // 恢复渠道ID和渠道名（combobox 初始化时通过 initialValue 恢复）
         window.currentChannelId = restoredFilters.channelId || '';
         window.currentChannelName = restoredFilters.channelName || '';
-
-        // 同步到输入框
-        window.applyFilterControlValues(
-          {
-            channelId: window.currentChannelId,
-            channelName: window.currentChannelName
-          },
-          {
-            channelId: 'f_id',
-            channelName: 'f_name'
-          }
-        );
       } catch (_) {}
     }
 

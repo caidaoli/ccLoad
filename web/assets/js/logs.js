@@ -6,6 +6,10 @@ let totalLogsPages = 1;
 let totalLogs = 0;
 let currentChannelType = 'all'; // 当前选中的渠道类型
 let authTokens = []; // 令牌列表
+let logsChannelNameCombobox = null; // 渠道名筛选组合框
+let logsModelCombobox = null; // 模型筛选组合框
+window.logsChannels = []; // 渠道列表（来自 /admin/models）
+window.availableLogsModels = []; // 可用模型列表
 let logsDefaultTestContent = 'sonnet 4.0的发布日期是什么'; // 默认测试内容（从设置加载）
 
 const ACTIVE_REQUESTS_POLL_INTERVAL_MS = 2000;
@@ -232,27 +236,20 @@ async function load(skipLoading = false) {
 
 // 根据当前筛选条件过滤活跃请求
 function filterActiveRequests(requests) {
-  const channelId = (document.getElementById('f_id')?.value || '').trim();
-  const channelName = (document.getElementById('f_name')?.value || '').trim().toLowerCase();
-  const model = (document.getElementById('f_model')?.value || '').trim().toLowerCase();
+  const channelName = (logsChannelNameCombobox ? logsChannelNameCombobox.getValue() : (document.getElementById('f_name')?.value || '')).trim().toLowerCase();
+  const model = (document.getElementById('f_model')?.value || '').trim();
   const channelType = (document.getElementById('f_channel_type')?.value || '').trim();
   const tokenId = (document.getElementById('f_auth_token')?.value || '').trim();
 
   return requests.filter(req => {
-    // 渠道ID精确匹配
-    if (channelId) {
-      if (req.channel_id === undefined || req.channel_id === null) return false;
-      if (String(req.channel_id) !== channelId) return false;
-    }
-    // 渠道名称模糊匹配（包含）
+    // 渠道名称精确匹配（来自下拉框）或模糊匹配（手动输入）
     if (channelName) {
       const name = (typeof req.channel_name === 'string' ? req.channel_name : '').toLowerCase();
       if (!name.includes(channelName)) return false;
     }
-    // 模型名称模糊匹配（包含）
+    // 模型精确匹配（来自下拉框选择）
     if (model) {
-      const reqModel = (typeof req.model === 'string' ? req.model : '').toLowerCase();
-      if (!reqModel.includes(model)) return false;
+      if ((req.model || '') !== model) return false;
     }
     // 渠道类型精确匹配（'all' 表示全部，不过滤）
     if (channelType && channelType !== 'all') {
@@ -727,12 +724,19 @@ function applyFilter() {
 
 function applyLogsFilterValues(filters) {
   window.applyFilterControlValues(filters, {
-    channelId: 'f_id',
-    channelName: 'f_name',
-    model: 'f_model',
     logSource: 'f_log_source',
     status: 'f_status'
   });
+
+  // 渠道名通过 combobox 恢复
+  if (logsChannelNameCombobox && filters.channelName !== undefined) {
+    logsChannelNameCombobox.setValue(filters.channelName || '', filters.channelName || t('stats.allChannels'));
+  }
+
+  // 模型通过 combobox 恢复
+  if (logsModelCombobox && filters.model !== undefined) {
+    logsModelCombobox.setValue(filters.model || '', filters.model || t('trend.allModels'));
+  }
 
   currentChannelType = filters.channelType || 'all';
   const channelTypeEl = document.getElementById('f_channel_type');
@@ -776,6 +780,64 @@ async function syncLogSourceVisibility() {
   return scheduledCheckEnabledByConfig;
 }
 
+async function loadLogsModels(channelType, range) {
+  try {
+    const params = new URLSearchParams();
+    const ct = channelType || currentChannelType || 'all';
+    const r = range || document.getElementById('f_hours')?.value || 'today';
+    params.set('range', r);
+    if (ct && ct !== 'all') params.set('channel_type', ct);
+    const resp = await fetchDataWithAuth('/admin/models?' + params.toString()) || {};
+    const rawModels = Array.isArray(resp.models) ? resp.models : [];
+    const rawChannels = Array.isArray(resp.channels) ? resp.channels : [];
+
+    window.availableLogsModels = [...new Set(rawModels)];
+    window.logsChannels = rawChannels;
+    if (logsChannelNameCombobox) logsChannelNameCombobox.refresh();
+    if (logsModelCombobox) logsModelCombobox.refresh();
+  } catch (error) {
+    console.error('加载模型列表失败:', error);
+  }
+}
+
+function initLogsChannelNameCombobox(initialValue) {
+  if (typeof window.createSearchableCombobox !== 'function') return;
+  if (!document.getElementById('f_name')) return;
+  logsChannelNameCombobox = window.createSearchableCombobox({
+    inputId: 'f_name',
+    dropdownId: 'f_name_dropdown',
+    attachMode: true,
+    initialValue: initialValue || '',
+    initialLabel: initialValue || t('stats.allChannels'),
+    getOptions: () => [
+      { value: '', label: t('stats.allChannels') },
+      ...(window.logsChannels || []).map(ch => ({ value: ch.name, label: ch.name }))
+    ],
+    onSelect: () => {
+      applyFilter();
+    }
+  });
+}
+
+function initLogsModelCombobox(initialValue) {
+  if (typeof window.createSearchableCombobox !== 'function') return;
+  if (!document.getElementById('f_model')) return;
+  logsModelCombobox = window.createSearchableCombobox({
+    inputId: 'f_model',
+    dropdownId: 'f_model_dropdown',
+    attachMode: true,
+    initialValue: initialValue || '',
+    initialLabel: initialValue || t('trend.allModels'),
+    getOptions: () => [
+      { value: '', label: t('trend.allModels') },
+      ...(window.availableLogsModels || []).map(m => ({ value: m, label: m }))
+    ],
+    onSelect: () => {
+      applyFilter();
+    }
+  });
+}
+
 async function initFilters(restoredFilters) {
   const range = restoredFilters.range || 'today';
   const authToken = restoredFilters.authToken || '';
@@ -784,16 +846,19 @@ async function initFilters(restoredFilters) {
     selectId: 'f_hours',
     defaultValue: 'today',
     restoredValue: range,
-    onChange: () => {
+    onChange: async () => {
       window.persistFilterState({
         key: LOGS_FILTER_KEY,
         getValues: getLogsFilters
       });
       currentLogsPage = 1;
+      await loadLogsModels(currentChannelType);
       load();
     }
   });
 
+  initLogsChannelNameCombobox(restoredFilters.channelName || '');
+  initLogsModelCombobox(restoredFilters.model || '');
   applyLogsFilterValues(restoredFilters);
   await syncLogSourceVisibility();
 
@@ -810,14 +875,16 @@ async function initFilters(restoredFilters) {
     }
   });
 
+  await loadLogsModels(currentChannelType, range);
+
   // 事件监听
   document.getElementById('btn_filter').addEventListener('click', applyFilter);
   document.getElementById('f_log_source')?.addEventListener('change', applyFilter);
 
   window.bindFilterApplyInputs({
     apply: applyFilter,
-    debounceInputIds: ['f_id', 'f_name', 'f_model', 'f_status'],
-    enterInputIds: ['f_hours', 'f_id', 'f_name', 'f_model', 'f_status', 'f_auth_token', 'f_channel_type', 'f_log_source']
+    debounceInputIds: ['f_status'],
+    enterInputIds: ['f_hours', 'f_status', 'f_auth_token', 'f_channel_type', 'f_log_source']
   });
 }
 
@@ -979,9 +1046,8 @@ function updateTestKeyIndexInfo(text) {
 const LOGS_FILTER_KEY = 'logs.filters';
 const LOGS_FILTER_FIELDS = [
   { key: 'range', queryKeys: ['range'], defaultValue: 'today' },
-  { key: 'channelId', queryKeys: ['channel_id'], defaultValue: '' },
   { key: 'channelName', queryKeys: ['channel_name_like', 'channel_name'], defaultValue: '' },
-  { key: 'model', queryKeys: ['model_like', 'model'], defaultValue: '' },
+  { key: 'model', queryKeys: ['model'], defaultValue: '' },
   { key: 'logSource', queryKeys: ['log_source'], requestKey: 'log_source', defaultValue: 'proxy' },
   { key: 'status', queryKeys: ['status_code'], defaultValue: '' },
   { key: 'authToken', queryKeys: ['auth_token_id'], defaultValue: '' },
@@ -1007,12 +1073,11 @@ function getLogsFilters() {
   return {
     ...window.readFilterControlValues({
       range: { id: 'f_hours', defaultValue: 'today', trim: true },
-      channelId: { id: 'f_id', trim: true },
-      channelName: { id: 'f_name', trim: true },
-      model: { id: 'f_model', trim: true },
       status: { id: 'f_status', trim: true },
       authToken: { id: 'f_auth_token', trim: true }
     }),
+    model: logsModelCombobox ? logsModelCombobox.getValue() : (document.getElementById('f_model')?.value || '').trim(),
+    channelName: logsChannelNameCombobox ? logsChannelNameCombobox.getValue() : (document.getElementById('f_name')?.value || '').trim(),
     logSource,
     channelType: document.getElementById('f_channel_type')?.value || 'all',
   };
@@ -1046,13 +1111,14 @@ window.initPageBootstrap({
 
   // 并行初始化：渠道类型 + 默认测试内容同时加载（节省一次 RTT）
   await Promise.all([
-    window.initChannelTypeFilter('f_channel_type', currentChannelType, (value) => {
+    window.initChannelTypeFilter('f_channel_type', currentChannelType, async (value) => {
       currentChannelType = value;
       window.persistFilterState({
         key: LOGS_FILTER_KEY,
         getValues: getLogsFilters
       });
       currentLogsPage = 1;
+      await loadLogsModels(value);
       load();
     }),
     loadDefaultTestContent()
@@ -1143,6 +1209,7 @@ window.addEventListener('pageshow', async function (event) {
       }
 
       document.getElementById('f_hours').value = restoredFilters.range || 'today';
+      await loadLogsModels(restoredFilters.channelType || 'all', restoredFilters.range || 'today');
       applyLogsFilterValues(restoredFilters);
       await syncLogSourceVisibility();
 

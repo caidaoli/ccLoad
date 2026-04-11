@@ -2058,6 +2058,7 @@ body {
 }
 
 .filter-combobox {
+  width: 100%;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none'%3E%3Cpath d='M6 8l4 4 4-4' stroke='%236b7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 10px center;
@@ -2076,6 +2077,12 @@ body {
 
 .filter-control--compact {
   min-width: 120px;
+  max-width: 160px;
+}
+
+.filter-control--time-range {
+  min-width: 60px;
+  max-width: 90px;
 }
 
 .filter-control--wide {
@@ -2223,13 +2230,26 @@ body {
   padding: var(--space-2) var(--space-3);
 }
 
-/* 统计页“详细统计数据”卡片：禁用 hover 位移，避免鼠标悬停导致整体“晃动” */
+/* 统计页筛选栏：各组按内容自然宽度排列，不等比拉伸 */
+.stats-filter-controls .filter-group {
+  flex: 0 1 auto;
+}
+
+.stats-filter-controls .filter-combobox-wrapper {
+  min-width: 120px;
+}
+
+/* 统计页”详细统计数据”卡片：禁用 hover 位移，避免鼠标悬停导致整体”晃动” */
 .stats-detail-card:hover {
   transform: none;
 }
 
 .stats-filter-summary-row {
-  display: contents;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 .stats-filter-summary-row .stats-filter-info {
@@ -2237,11 +2257,39 @@ body {
 }
 
 .stats-filter-summary-row .stats-filter-actions {
-  margin-left: auto;
   flex: none;
 }
 
 .stats-filter-summary-row .stats-filter-actions .btn {
+  white-space: nowrap;
+}
+
+/* 日志页筛选栏：各组按内容自然宽度排列 */
+.logs-filter-controls .filter-group {
+  flex: 0 1 auto;
+}
+
+.logs-filter-controls .filter-combobox-wrapper {
+  min-width: 120px;
+}
+
+.logs-filter-summary-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.logs-filter-summary-row .logs-filter-info {
+  white-space: nowrap;
+}
+
+.logs-filter-summary-row .logs-filter-actions {
+  flex: none;
+}
+
+.logs-filter-summary-row .logs-filter-actions .btn {
   white-space: nowrap;
 }
 
@@ -5063,6 +5111,10 @@ body.trend-page .chart-info {
 
   .settings-group-nav-container {
     padding: 0 2px 2px;
+  }
+
+  .settings-group-nav-section {
+    display: none !important;
   }
 
   .settings-table .setting-data-row {

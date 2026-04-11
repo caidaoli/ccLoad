@@ -24,7 +24,7 @@
     const infoClass = config.infoClass || 'filter-info';
     const checkboxGroupClass = config.checkboxGroupClass || groupClass;
     const timeRangeGroupClass = joinClasses(groupClass, config.timeRangeGroupClass);
-    const timeRangeControlClass = joinClasses('filter-control--compact', config.timeRangeControlClass);
+    const timeRangeControlClass = joinClasses('filter-control--compact', 'filter-control--time-range', config.timeRangeControlClass);
     const channelIdGroupClass = joinClasses(groupClass, config.channelIdGroupClass);
     const channelIdControlClass = joinClasses('filter-control--narrow', config.channelIdControlClass);
     const authTokenGroupClass = joinClasses(groupClass, config.authTokenGroupClass);
@@ -57,6 +57,14 @@
         ${buildInput('number', 'f_id', 'stats.inputIdPlaceholder', '输入ID...', channelIdControlClass)}`,
         channelIdGroupClass
       ),
+      channelIdCombobox: buildFilterGroup(
+        `${buildFilterLabel('f_id', 'stats.channelId', '渠道ID')}
+        <div class="filter-combobox-wrapper filter-control--compact">
+          <input id="f_id" class="filter-select filter-combobox" type="text" autocomplete="off" spellcheck="false" />
+          <div id="f_id_dropdown" class="filter-dropdown" role="listbox"></div>
+        </div>`,
+        groupClass
+      ),
       channelName: buildFilterGroup(
         `${buildFilterLabel('f_name', 'stats.channelName', '渠道名')}
         ${buildInput('text', 'f_name', 'stats.containsTextPlaceholder', '包含文本...')}`,
@@ -70,6 +78,22 @@
       modelSelect: buildFilterGroup(
         `${buildFilterLabel('f_model', 'common.model', '模型')}
         ${buildSelect('f_model', '\n                <option value="" data-i18n="trend.allModels">全部模型</option>\n                <!-- 动态加载模型列表 -->\n              ', 'filter-control--wide')}`,
+        groupClass
+      ),
+      channelNameCombobox: buildFilterGroup(
+        `${buildFilterLabel('f_name', 'stats.channelName', '渠道名')}
+        <div class="filter-combobox-wrapper">
+          <input id="f_name" class="filter-select filter-combobox" type="text" autocomplete="off" spellcheck="false" />
+          <div id="f_name_dropdown" class="filter-dropdown" role="listbox"></div>
+        </div>`,
+        groupClass
+      ),
+      modelCombobox: buildFilterGroup(
+        `${buildFilterLabel('f_model', 'common.model', '模型')}
+        <div class="filter-combobox-wrapper filter-control--wide">
+          <input id="f_model" class="filter-select filter-combobox" type="text" autocomplete="off" spellcheck="false" />
+          <div id="f_model_dropdown" class="filter-dropdown" role="listbox"></div>
+        </div>`,
         groupClass
       ),
       authToken: buildFilterGroup(
@@ -108,7 +132,7 @@
       checkboxGroupClass: 'stats-filter-group stats-filter-group--checkbox',
       infoClass: 'filter-info stats-filter-info',
       actionsClass: 'stats-filter-actions',
-      items: ['channelType', 'timeRange', 'channelId', 'channelName', 'modelText', 'authToken', 'statsSummary']
+      items: ['channelType', 'timeRange', 'channelNameCombobox', 'modelCombobox', 'authToken', 'statsSummary']
     },
     logs: {
       barClass: 'filter-bar logs-filter-bar mt-2',
@@ -116,21 +140,19 @@
       groupClass: 'logs-filter-group',
       timeRangeGroupClass: 'logs-filter-group--range',
       timeRangeControlClass: 'logs-filter-control--range',
-      channelIdGroupClass: 'logs-filter-group--channel-id',
-      channelIdControlClass: 'logs-filter-control--channel-id',
       authTokenGroupClass: 'logs-filter-group--token',
       authTokenControlClass: 'logs-filter-control--token',
       infoClass: 'filter-info logs-filter-info',
       actionsClass: 'logs-filter-actions',
-      items: ['channelType', 'timeRange', 'channelId', 'channelName', 'modelText', 'logSource', 'status', 'authToken', 'logsSummary']
+      items: ['channelType', 'timeRange', 'channelNameCombobox', 'modelCombobox', 'logSource', 'status', 'authToken', 'logsSummary']
     },
     trend: {
       barClass: 'filter-bar mt-2',
-      controlsClass: 'filter-controls',
+      controlsClass: 'filter-controls trend-filter-controls',
       groupClass: '',
       infoClass: 'filter-info',
       actionsClass: '',
-      items: ['channelType', 'timeRange', 'channelId', 'channelName', 'modelSelect', 'authToken', 'filterButton']
+      items: ['channelType', 'timeRange', 'channelIdCombobox', 'channelNameCombobox', 'modelSelect', 'authToken', 'filterButton']
     }
   };
 

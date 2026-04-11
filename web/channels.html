@@ -62,19 +62,13 @@
 
         <!-- Filter Bar -->
         <div class="filter-bar">
-          <div class="filter-controls">
+          <div class="filter-controls channels-filter-controls">
             <!-- 渠道类型筛选 -->
             <div class="filter-group">
               <label class="filter-label" data-i18n="channels.filterChannelType">渠道类型</label>
               <select id="channelTypeFilter" class="filter-select filter-control--compact">
                 <!-- 动态加载渠道类型选项 -->
               </select>
-            </div>
-
-            <div class="filter-group">
-              <label class="filter-label" data-i18n="channels.filterChannelId">渠道ID</label>
-              <input type="text" id="idFilter" class="filter-input filter-control--narrow" data-i18n-placeholder="channels.filterIdPlaceholder"
-                placeholder="输入ID...">
             </div>
 
             <div class="filter-group">
@@ -96,19 +90,11 @@
               </div>
             </div>
             <div class="filter-group">
-              <label class="filter-label" data-i18n="channels.filterSearch">搜索渠道</label>
-              <div class="filter-field-wrap">
-                <input type="text" id="searchInput" class="filter-input"
-                  data-i18n-placeholder="channels.searchPlaceholder" placeholder="输入渠道名称..."
-                  style="padding-right: 36px;">
-                <button id="clearSearchBtn" type="button" class="channel-hover-clear-btn"
-                  style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--neutral-500); cursor: pointer; padding: 2px; opacity: 0; transition: opacity 0.2s; border-radius: 3px; display: inline-flex; align-items: center; justify-content: center;"
-                  data-i18n-title="common.clearSearch" title="清空搜索">
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg"
-                    aria-hidden="true" focusable="false">
-                    <path d="M4 4L10 10M10 4L4 10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
-                  </svg>
-                </button>
+              <label class="filter-label" data-i18n="channels.filterSearch">渠道名称</label>
+              <div class="filter-combobox-wrapper filter-control--compact">
+                <input id="searchInput" class="filter-select filter-combobox" type="text" autocomplete="off"
+                  spellcheck="false" />
+                <div id="searchInputDropdown" class="filter-dropdown" role="listbox" aria-label="渠道名称"></div>
               </div>
             </div>
             <div class="channel-filter-summary">
@@ -257,7 +243,7 @@
         <div class="form-group channel-editor-group">
           <!-- API URL和Key策略在第二行 -->
           <div>
-            <div class="channel-editor-section-header">
+            <div class="channel-editor-section-header channel-editor-section-header--inline">
               <label class="form-label channel-editor-section-title">
                 <span data-i18n="channels.apiUrl">API URL *</span> <span class="models-hint channel-editor-section-meta"><span data-i18n="channels.keyCountPrefix">共</span> <span
                     id="inlineUrlCount">0</span> <span data-i18n="channels.urlCountSuffix">个URL</span></span>

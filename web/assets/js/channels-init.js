@@ -38,8 +38,7 @@ function saveChannelsFilters() {
       channelType: filters.channelType,
       status: filters.status,
       model: filters.model,
-      search: filters.search,
-      id: filters.id
+      search: filters.search
     }));
   } catch (_) {}
 }
@@ -116,36 +115,25 @@ window.initPageBootstrap({
     filters.status = 'all';
     filters.model = 'all';
     filters.search = '';
-    filters.id = urlChannelId;
     document.getElementById('statusFilter').value = 'all';
-    const modelFilterEl = document.getElementById('modelFilter');
-    if (modelFilterEl) {
-      modelFilterEl.value = (typeof modelFilterInputValueFromFilterValue === 'function')
-        ? modelFilterInputValueFromFilterValue('all')
-        : window.t('channels.modelAll');
-    }
     if (typeof modelFilterCombobox !== 'undefined' && modelFilterCombobox) {
       modelFilterCombobox.setValue('all', modelFilterInputValueFromFilterValue('all'));
+    } else {
+      const modelFilterEl = document.getElementById('modelFilter');
+      if (modelFilterEl) modelFilterEl.value = modelFilterInputValueFromFilterValue('all');
     }
-    document.getElementById('searchInput').value = '';
-    document.getElementById('idFilter').value = urlChannelId;
-    const clearBtn = document.getElementById('clearSearchBtn');
-    if (clearBtn) clearBtn.style.opacity = '0';
     saveChannelsFilters();
   } else if (savedFilters) {
     filters.status = savedFilters.status || 'all';
     filters.model = savedFilters.model || 'all';
     filters.search = savedFilters.search || '';
-    filters.id = savedFilters.id || '';
     document.getElementById('statusFilter').value = filters.status;
-    const modelFilterEl = document.getElementById('modelFilter');
-    if (modelFilterEl) {
-      modelFilterEl.value = (typeof modelFilterInputValueFromFilterValue === 'function')
-        ? modelFilterInputValueFromFilterValue(filters.model)
-        : (filters.model === 'all' ? window.t('channels.modelAll') : filters.model);
+    if (typeof modelFilterCombobox !== 'undefined' && modelFilterCombobox) {
+      modelFilterCombobox.setValue(filters.model, modelFilterInputValueFromFilterValue(filters.model));
+    } else {
+      const modelFilterEl = document.getElementById('modelFilter');
+      if (modelFilterEl) modelFilterEl.value = modelFilterInputValueFromFilterValue(filters.model);
     }
-    document.getElementById('searchInput').value = filters.search;
-    document.getElementById('idFilter').value = filters.id;
   }
 
   // 初始化渠道类型筛选器（替换原Tab逻辑）
@@ -153,36 +141,25 @@ window.initPageBootstrap({
     filters.channelType = type;
     filters.model = 'all';
     filters.search = '';
-    filters.id = '';
-    // 清空搜索输入框
-    const searchInput = document.getElementById('searchInput');
-    if (searchInput) {
-      searchInput.value = '';
-      const clearBtn = document.getElementById('clearSearchBtn');
-      if (clearBtn) clearBtn.style.opacity = '0';
-    }
-    // 清空ID筛选框
-    const idFilterEl = document.getElementById('idFilter');
-    if (idFilterEl) idFilterEl.value = '';
-    // 使用通用组件更新模型筛选器
     if (typeof modelFilterCombobox !== 'undefined' && modelFilterCombobox) {
       modelFilterCombobox.setValue('all', modelFilterInputValueFromFilterValue('all'));
     } else {
       const modelFilterEl = document.getElementById('modelFilter');
-      if (modelFilterEl) {
-        modelFilterEl.value = (typeof modelFilterInputValueFromFilterValue === 'function')
-          ? modelFilterInputValueFromFilterValue('all')
-          : window.t('channels.modelAll');
-      }
+      if (modelFilterEl) modelFilterEl.value = modelFilterInputValueFromFilterValue('all');
+    }
+    if (typeof channelNameCombobox !== 'undefined' && channelNameCombobox) {
+      channelNameCombobox.setValue('', getChannelNameAllLabel());
     }
     saveChannelsFilters();
     loadChannels(type);
+    if (typeof updateChannelNameOptions === 'function') updateChannelNameOptions();
   });
 
   await loadDefaultTestContent();
   await loadChannelStatsRange();
 
   await loadChannels(initialType);
+  if (typeof updateChannelNameOptions === 'function') updateChannelNameOptions();
   await loadChannelStats();
   highlightFromHash();
   window.addEventListener('hashchange', highlightFromHash);

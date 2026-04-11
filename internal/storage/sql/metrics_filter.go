@@ -228,3 +228,64 @@ func (s *SQLStore) GetDistinctModels(ctx context.Context, since, until time.Time
 	}
 	return models, nil
 }
+
+// GetDistinctChannels 获取指定时间范围内有日志数据的渠道列表（ID+名称）
+func (s *SQLStore) GetDistinctChannels(ctx context.Context, since, until time.Time, channelType string, filter *model.LogFilter) ([]model.ChannelNameID, error) {
+	args := []any{since.UnixMilli(), until.UnixMilli()}
+
+	query := `
+		SELECT DISTINCT l.channel_id, c.name
+		FROM logs l JOIN channels c ON l.channel_id = c.id
+		WHERE l.time >= ? AND l.time <= ? AND l.channel_id > 0
+	`
+
+	if channelType != "" {
+		channelIDs, err := s.fetchChannelIDsByType(ctx, channelType)
+		if err != nil {
+			return nil, fmt.Errorf("fetch channel IDs by type: %w", err)
+		}
+		if len(channelIDs) == 0 {
+			return []model.ChannelNameID{}, nil
+		}
+		placeholders := make([]string, len(channelIDs))
+		for i := range channelIDs {
+			placeholders[i] = "?"
+			args = append(args, channelIDs[i])
+		}
+		query += fmt.Sprintf(" AND l.channel_id IN (%s)", strings.Join(placeholders, ","))
+	}
+
+	wb := NewWhereBuilder()
+	wb.ApplyLogFilter(filter)
+	whereClause, whereArgs := wb.Build()
+	if whereClause != "" {
+		query += " AND " + whereClause
+		args = append(args, whereArgs...)
+	}
+
+	query += " ORDER BY c.name"
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var channels []model.ChannelNameID
+	for rows.Next() {
+		var ch model.ChannelNameID
+		if err := rows.Scan(&ch.ID, &ch.Name); err != nil {
+			return nil, err
+		}
+		channels = append(channels, ch)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if channels == nil {
+		channels = make([]model.ChannelNameID, 0)
+	}
+	return channels, nil
+}
