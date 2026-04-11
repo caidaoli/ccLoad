@@ -1552,8 +1552,27 @@ body {
     gap: var(--space-2);
   }
 
+  .metric-item {
+    display: flex;
+    flex-direction: row-reverse;
+    justify-content: space-between;
+    align-items: center;
+    text-align: left;
+  }
+
+  .metric-value {
+    font-size: var(--text-lg);
+    margin-bottom: 0;
+  }
+
   .token-stats {
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  .token-item {
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
   }
 
   .summary-card {
@@ -1778,10 +1797,6 @@ body {
 
   .channel-metrics {
     grid-template-columns: repeat(2, 1fr);
-  }
-
-  .metric-value {
-    font-size: var(--text-xl);
   }
 
   .summary-card {
