@@ -6,6 +6,62 @@ function setChannelModalTitle(i18nKey) {
   titleEl.textContent = window.t(i18nKey);
 }
 
+const PROTOCOL_TRANSFORM_OPTIONS = ['anthropic', 'codex', 'openai', 'gemini'];
+
+function protocolTransformLabel(protocol) {
+  const labels = {
+    anthropic: 'channels.protocolTransformAnthropic',
+    codex: 'channels.protocolTransformCodex',
+    openai: 'channels.protocolTransformOpenAI',
+    gemini: 'channels.protocolTransformGemini'
+  };
+  const key = labels[protocol] || protocol;
+  return window.t ? window.t(key) : key;
+}
+
+function normalizeProtocolTransformSelection(channelType, selectedValues) {
+  const base = (channelType || '').trim().toLowerCase();
+  const seen = new Set();
+  const values = [];
+  for (const raw of selectedValues || []) {
+    const value = String(raw || '').trim().toLowerCase();
+    if (!value || value === base || seen.has(value)) continue;
+    if (!PROTOCOL_TRANSFORM_OPTIONS.includes(value)) continue;
+    seen.add(value);
+    values.push(value);
+  }
+  return values.sort();
+}
+
+function renderProtocolTransformOptions(channelType, selectedValues = []) {
+  const container = document.getElementById('protocolTransformsContainer');
+  if (!container) return;
+
+  const currentType = String(channelType || '').trim().toLowerCase() || 'anthropic';
+  const selected = new Set(normalizeProtocolTransformSelection('', selectedValues));
+  container.innerHTML = PROTOCOL_TRANSFORM_OPTIONS.map((protocol) => {
+    const disabled = protocol === currentType;
+    const checked = !disabled && selected.has(protocol);
+    return `
+      <label class="channel-editor-radio-option">
+        <input type="checkbox"
+               name="protocolTransform"
+               value="${protocol}"
+               ${checked ? 'checked' : ''}
+               ${disabled ? 'disabled' : ''}
+        >
+        <span>${protocolTransformLabel(protocol)}${disabled ? ` (${window.t ? window.t('channels.protocolTransformNative') : '原生'})` : ''}</span>
+      </label>
+    `;
+  }).join('');
+}
+
+function getSelectedProtocolTransforms(channelType) {
+  const selectedValues = Array.from(document.querySelectorAll('input[name="protocolTransform"]:checked'))
+    .map((input) => input.value);
+  return normalizeProtocolTransformSelection(channelType, selectedValues);
+}
+
 async function syncScheduledCheckVisibility() {
   const scheduledCheckWrapper = document.getElementById('channelScheduledCheckEnabledWrapper');
   const scheduledCheckModelWrapper = document.getElementById('channelScheduledCheckModelWrapper');
@@ -218,6 +274,16 @@ function initChannelEditorActions() {
     scheduledCheckCheckbox.dataset.bound = '1';
   }
 
+  const channelTypeRadios = document.getElementById('channelTypeRadios');
+  if (channelTypeRadios && !channelTypeRadios.dataset.protocolTransformsBound) {
+    channelTypeRadios.addEventListener('change', (event) => {
+      if (event.target && event.target.name === 'channelType') {
+        renderProtocolTransformOptions(event.target.value, getSelectedProtocolTransforms(''));
+      }
+    });
+    channelTypeRadios.dataset.protocolTransformsBound = '1';
+  }
+
   ensureScheduledCheckModelCombobox();
 }
 
@@ -232,6 +298,7 @@ async function showAddModal() {
   document.getElementById('channelScheduledCheckEnabled').checked = false;
   document.getElementById('channelScheduledCheckModel').value = '';
   document.querySelector('input[name="channelType"][value="anthropic"]').checked = true;
+  renderProtocolTransformOptions('anthropic', []);
   document.querySelector('input[name="keyStrategy"][value="sequential"]').checked = true;
 
   redirectTableData = [];
@@ -303,6 +370,7 @@ async function editChannel(id) {
 
   const channelType = channel.channel_type || 'anthropic';
   await window.ChannelTypeManager.renderChannelTypeRadios('channelTypeRadios', channelType);
+  renderProtocolTransformOptions(channelType, channel.protocol_transforms || []);
   const keyStrategy = channel.key_strategy || 'sequential';
   const strategyRadio = document.querySelector(`input[name="keyStrategy"][value="${keyStrategy}"]`);
   if (strategyRadio) {
@@ -393,6 +461,7 @@ async function saveChannel(event) {
     url: validURLs.join('\n'),
     api_key: validKeys.join(','),
     channel_type: channelType,
+    protocol_transforms: getSelectedProtocolTransforms(channelType),
     key_strategy: keyStrategy,
     priority: parseInt(document.getElementById('channelPriority').value) || 0,
     daily_cost_limit: parseFloat(document.getElementById('channelDailyCostLimit').value) || 0,

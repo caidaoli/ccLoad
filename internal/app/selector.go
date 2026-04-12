@@ -7,12 +7,12 @@ import (
 	"ccLoad/internal/util"
 )
 
-// selectCandidatesByChannelType 根据渠道类型选择候选渠道
+// selectCandidatesByChannelType 根据客户端协议选择候选渠道
 func (s *Server) selectCandidatesByChannelType(ctx context.Context, channelType string) ([]*modelpkg.Config, error) {
 	normalizedType := util.NormalizeChannelType(channelType)
 
 	// 优先走缓存查询
-	channels, err := s.GetEnabledChannelsByType(ctx, channelType)
+	channels, err := s.store.GetEnabledChannelsByExposedProtocol(ctx, normalizedType)
 	if err != nil {
 		return nil, err
 	}
@@ -25,7 +25,7 @@ func (s *Server) selectCandidatesByChannelType(ctx context.Context, channelType 
 		}
 		channels = make([]*modelpkg.Config, 0, len(all))
 		for _, cfg := range all {
-			if cfg != nil && cfg.Enabled && cfg.GetChannelType() == normalizedType {
+			if cfg != nil && cfg.Enabled && cfg.SupportsProtocol(normalizedType) {
 				channels = append(channels, cfg)
 			}
 		}
@@ -39,14 +39,14 @@ func (s *Server) selectCandidatesByChannelType(ctx context.Context, channelType 
 func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model string, channelType string) ([]*modelpkg.Config, error) {
 	normalizedType := util.NormalizeChannelType(channelType)
 
-	// 类型过滤辅助函数
+	// 协议过滤辅助函数
 	filterByType := func(channels []*modelpkg.Config) []*modelpkg.Config {
 		if channelType == "" {
 			return channels
 		}
 		filtered := make([]*modelpkg.Config, 0, len(channels))
 		for _, cfg := range channels {
-			if cfg.GetChannelType() == normalizedType {
+			if cfg.SupportsProtocol(normalizedType) {
 				filtered = append(filtered, cfg)
 			}
 		}
@@ -86,7 +86,7 @@ func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model strin
 			if cfg == nil || !cfg.Enabled {
 				continue
 			}
-			if channelType != "" && cfg.GetChannelType() != normalizedType {
+			if channelType != "" && !cfg.SupportsProtocol(normalizedType) {
 				continue
 			}
 			if s.configSupportsModelWithFuzzyMatch(cfg, model) {

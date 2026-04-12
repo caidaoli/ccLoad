@@ -35,14 +35,15 @@ func (e *ModelEntry) Validate() error {
 
 // Config 渠道配置
 type Config struct {
-	ID                    int64  `json:"id"`
-	Name                  string `json:"name"`
-	ChannelType           string `json:"channel_type"` // 渠道类型: "anthropic" | "codex" | "openai" | "gemini"，默认anthropic
-	URL                   string `json:"url"`
-	Priority              int    `json:"priority"`
-	Enabled               bool   `json:"enabled"`
-	ScheduledCheckEnabled bool   `json:"scheduled_check_enabled"`
-	ScheduledCheckModel   string `json:"scheduled_check_model"`
+	ID                    int64    `json:"id"`
+	Name                  string   `json:"name"`
+	ChannelType           string   `json:"channel_type"` // 渠道类型: "anthropic" | "codex" | "openai" | "gemini"，默认anthropic
+	ProtocolTransforms    []string `json:"protocol_transforms,omitempty"`
+	URL                   string   `json:"url"`
+	Priority              int      `json:"priority"`
+	Enabled               bool     `json:"enabled"`
+	ScheduledCheckEnabled bool     `json:"scheduled_check_enabled"`
+	ScheduledCheckModel   string   `json:"scheduled_check_model"`
 
 	// 模型配置（统一管理模型和重定向）
 	ModelEntries []ModelEntry `json:"models"`
@@ -72,6 +73,48 @@ func (c *Config) GetModels() []string {
 		models = append(models, e.Model)
 	}
 	return models
+}
+
+// GetProtocolTransforms 返回去重后的额外协议转换集合。
+func (c *Config) GetProtocolTransforms() []string {
+	if len(c.ProtocolTransforms) == 0 {
+		return nil
+	}
+	base := c.GetChannelType()
+	seen := make(map[string]struct{}, len(c.ProtocolTransforms))
+	transforms := make([]string, 0, len(c.ProtocolTransforms))
+	for _, protocol := range c.ProtocolTransforms {
+		protocol = strings.TrimSpace(strings.ToLower(protocol))
+		if protocol == "" || protocol == base {
+			continue
+		}
+		if _, ok := seen[protocol]; ok {
+			continue
+		}
+		seen[protocol] = struct{}{}
+		transforms = append(transforms, protocol)
+	}
+	slices.Sort(transforms)
+	return transforms
+}
+
+// SupportsProtocol 检查渠道是否暴露指定客户端协议。
+func (c *Config) SupportsProtocol(protocol string) bool {
+	protocol = strings.TrimSpace(strings.ToLower(protocol))
+	if protocol == "" {
+		return false
+	}
+	if c.GetChannelType() == protocol {
+		return true
+	}
+	return slices.Contains(c.GetProtocolTransforms(), protocol)
+}
+
+// SupportedProtocols 返回渠道对外暴露的全部客户端协议集合。
+func (c *Config) SupportedProtocols() []string {
+	protocols := append([]string{c.GetChannelType()}, c.GetProtocolTransforms()...)
+	slices.Sort(protocols)
+	return slices.Compact(protocols)
 }
 
 // GetURLs 解析URL字段，返回URL列表

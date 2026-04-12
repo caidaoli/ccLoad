@@ -419,6 +419,49 @@ func TestConfig_GetEnabledChannelsByType(t *testing.T) {
 	}
 }
 
+func TestConfig_GetEnabledChannelsByExposedProtocol(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "protocol_query.db")
+
+	ctx := context.Background()
+
+	cfg := &model.Config{
+		Name:        "gemini-openai-channel",
+		URL:         "https://generativelanguage.googleapis.com",
+		Priority:    10,
+		Enabled:     true,
+		ChannelType: "gemini",
+		// RED: 新字段尚未实现
+		ProtocolTransforms: []string{"openai"},
+		ModelEntries: []model.ModelEntry{
+			{Model: "gemini-2.5-pro"},
+		},
+	}
+	created, err := store.CreateConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("create gemini config: %v", err)
+	}
+
+	_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-gemini"},
+	})
+
+	openaiChannels, err := store.GetEnabledChannelsByExposedProtocol(ctx, "openai")
+	if err != nil {
+		t.Fatalf("get openai exposed channels: %v", err)
+	}
+	if len(openaiChannels) != 1 {
+		t.Fatalf("expected 1 openai-exposed channel, got %d", len(openaiChannels))
+	}
+	if openaiChannels[0].Name != "gemini-openai-channel" {
+		t.Fatalf("unexpected channel name: %s", openaiChannels[0].Name)
+	}
+	if len(openaiChannels[0].ProtocolTransforms) != 1 || openaiChannels[0].ProtocolTransforms[0] != "openai" {
+		t.Fatalf("unexpected protocol transforms: %#v", openaiChannels[0].ProtocolTransforms)
+	}
+}
+
 func TestConfig_BatchUpdatePriority(t *testing.T) {
 	t.Parallel()
 

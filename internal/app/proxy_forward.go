@@ -16,6 +16,7 @@ import (
 	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
 
 	"github.com/bytedance/sonic"
@@ -271,6 +272,26 @@ func (s *Server) handleSuccessResponse(
 	readStats *streamReadStats,
 	firstBodyReadTimeSec *float64,
 ) (*fwResult, float64, error) {
+	if reqCtx.isStreaming &&
+		s.protocolRegistry != nil &&
+		((reqCtx.upstreamProtocol == protocol.Gemini &&
+			(reqCtx.clientProtocol == protocol.OpenAI || reqCtx.clientProtocol == protocol.Anthropic || reqCtx.clientProtocol == protocol.Codex)) ||
+			(reqCtx.upstreamProtocol == protocol.Anthropic &&
+				(reqCtx.clientProtocol == protocol.OpenAI || reqCtx.clientProtocol == protocol.Codex))) &&
+		(strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") ||
+			strings.Contains(resp.Header.Get("Content-Type"), "text/plain")) {
+		return s.handleTranslatedStreamSuccessResponse(reqCtx, resp, hdrClone, w, channelType, readStats, firstBodyReadTimeSec)
+	}
+
+	if !reqCtx.isStreaming &&
+		s.protocolRegistry != nil &&
+		((reqCtx.upstreamProtocol == protocol.Gemini &&
+			(reqCtx.clientProtocol == protocol.OpenAI || reqCtx.clientProtocol == protocol.Anthropic || reqCtx.clientProtocol == protocol.Codex)) ||
+			(reqCtx.upstreamProtocol == protocol.Anthropic &&
+				(reqCtx.clientProtocol == protocol.OpenAI || reqCtx.clientProtocol == protocol.Codex))) {
+		return s.handleTranslatedNonStreamSuccessResponse(reqCtx, resp, hdrClone, w, channelType, readStats, firstBodyReadTimeSec)
+	}
+
 	// [FIX] 流式请求：禁用 WriteTimeout，避免长时间流被服务器自己切断
 	// Go 1.20+ http.ResponseController 支持动态调整 WriteDeadline
 	if reqCtx.isStreaming {
@@ -367,6 +388,158 @@ func (s *Server) handleSuccessResponse(
 		if readStats.totalBytes > 0 && streamErr != nil && isHTTP2StreamCloseError(streamErr) {
 			streamErr = nil
 		}
+	}
+
+	return result, reqCtx.Duration().Seconds(), streamErr
+}
+
+func (s *Server) handleTranslatedNonStreamSuccessResponse(
+	reqCtx *requestContext,
+	resp *http.Response,
+	hdrClone http.Header,
+	w http.ResponseWriter,
+	channelType string,
+	readStats *streamReadStats,
+	firstBodyReadTimeSec *float64,
+) (*fwResult, float64, error) {
+	rawBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return &fwResult{
+			Status:        resp.StatusCode,
+			Header:        hdrClone,
+			Body:          []byte(err.Error()),
+			FirstByteTime: *firstBodyReadTimeSec,
+		}, reqCtx.Duration().Seconds(), err
+	}
+
+	readStats.totalBytes = int64(len(rawBody))
+	if len(rawBody) > 0 {
+		readStats.readCount = 1
+	}
+
+	parser := newJSONUsageParser(channelType)
+	if err := parser.Feed(rawBody); err != nil {
+		return &fwResult{
+			Status:        resp.StatusCode,
+			Header:        hdrClone,
+			Body:          rawBody,
+			FirstByteTime: *firstBodyReadTimeSec,
+		}, reqCtx.Duration().Seconds(), err
+	}
+
+	translatedBody, err := s.protocolRegistry.TranslateResponseNonStream(
+		reqCtx.ctx,
+		reqCtx.upstreamProtocol,
+		reqCtx.clientProtocol,
+		reqCtx.originalModel,
+		reqCtx.originalBody,
+		reqCtx.translatedBody,
+		rawBody,
+	)
+	if err != nil {
+		return &fwResult{
+			Status:        resp.StatusCode,
+			Header:        hdrClone,
+			Body:          rawBody,
+			FirstByteTime: *firstBodyReadTimeSec,
+		}, reqCtx.Duration().Seconds(), err
+	}
+
+	filterAndWriteResponseHeaders(w, resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	_, _ = w.Write(translatedBody)
+
+	result := &fwResult{
+		Status:            resp.StatusCode,
+		Header:            hdrClone,
+		FirstByteTime:     *firstBodyReadTimeSec,
+		BytesReceived:     readStats.totalBytes,
+		ResponseCommitted: true,
+	}
+	result.InputTokens, result.OutputTokens, result.CacheReadInputTokens, result.CacheCreationInputTokens = parser.GetUsage()
+	result.Cache5mInputTokens = parser.Cache5mInputTokens
+	result.Cache1hInputTokens = parser.Cache1hInputTokens
+	result.ServiceTier = parser.ServiceTier
+
+	return result, reqCtx.Duration().Seconds(), nil
+}
+
+func (s *Server) handleTranslatedStreamSuccessResponse(
+	reqCtx *requestContext,
+	resp *http.Response,
+	hdrClone http.Header,
+	w http.ResponseWriter,
+	channelType string,
+	readStats *streamReadStats,
+	firstBodyReadTimeSec *float64,
+) (*fwResult, float64, error) {
+	rc := http.NewResponseController(w)
+	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+		log.Printf("[WARN] 无法禁用流式请求的 WriteTimeout: %v", err)
+	}
+
+	deferredWriter := newDeferredResponseWriter(w)
+	filterAndWriteResponseHeaders(deferredWriter, resp.Header)
+	deferredWriter.WriteHeader(resp.StatusCode)
+
+	parser := newSSEUsageParser(channelType)
+	var state any
+	streamErr := streamTransformSSEEvents(
+		reqCtx.ctx,
+		resp.Body,
+		deferredWriter,
+		func(rawEvent []byte) error {
+			if err := parser.Feed(rawEvent); err != nil {
+				return err
+			}
+			if !deferredWriter.Committed() && parser.GetLastError() != nil {
+				return errAbortStreamBeforeWrite
+			}
+			if !deferredWriter.Committed() {
+				deferredWriter.Commit()
+			}
+			return nil
+		},
+		func(rawEvent []byte) ([][]byte, error) {
+			return s.protocolRegistry.TranslateResponseStream(
+				reqCtx.ctx,
+				reqCtx.upstreamProtocol,
+				reqCtx.clientProtocol,
+				reqCtx.originalModel,
+				reqCtx.originalBody,
+				reqCtx.translatedBody,
+				rawEvent,
+				&state,
+			)
+		},
+	)
+
+	abortedBeforeCommit := errors.Is(streamErr, errAbortStreamBeforeWrite)
+	if abortedBeforeCommit {
+		streamErr = nil
+	} else if !deferredWriter.Committed() {
+		deferredWriter.Commit()
+	}
+
+	result := &fwResult{
+		Status:            resp.StatusCode,
+		Header:            hdrClone,
+		FirstByteTime:     *firstBodyReadTimeSec,
+		BytesReceived:     readStats.totalBytes,
+		ResponseCommitted: deferredWriter.Committed(),
+	}
+	result.InputTokens, result.OutputTokens, result.CacheReadInputTokens, result.CacheCreationInputTokens = parser.GetUsage()
+	result.Cache5mInputTokens = parser.Cache5mInputTokens
+	result.Cache1hInputTokens = parser.Cache1hInputTokens
+	result.ServiceTier = parser.ServiceTier
+	result.SSEErrorEvent = parser.GetLastError()
+	streamComplete := parser.IsStreamComplete()
+
+	if diagMsg := buildStreamDiagnostics(streamErr, readStats, streamComplete, channelType, resp.Header.Get("Content-Type")); diagMsg != "" {
+		result.StreamDiagMsg = diagMsg
+		log.Print(diagMsg)
+	} else if streamComplete && streamErr != nil {
+		streamErr = nil
 	}
 
 	return result, reqCtx.Duration().Seconds(), streamErr
@@ -513,7 +686,50 @@ func (s *Server) handleResponse(
 func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey string, method string, body []byte, hdr http.Header, rawQuery, requestPath string, baseURL string, w http.ResponseWriter, observer *ForwardObserver) (*fwResult, float64, error) {
 	// 1. 创建请求上下文（处理超时）
 	reqCtx := s.newRequestContext(ctx, requestPath, body)
+	reqCtx.clientProtocol = protocol.Protocol(util.DetectChannelTypeFromPath(requestPath))
+	reqCtx.upstreamProtocol = protocol.Protocol(cfg.GetChannelType())
+	reqCtx.originalBody = body
+	reqCtx.translatedBody = body
+	reqCtx.originalModel = extractModelFromPath(requestPath)
+	if reqCtx.originalModel == "" {
+		var reqModel struct {
+			Model string `json:"model"`
+		}
+		_ = sonic.Unmarshal(body, &reqModel)
+		reqCtx.originalModel = reqModel.Model
+	}
 	defer reqCtx.cleanup() // [INFO] 统一清理：定时器 + context（总是安全）
+
+	resolvedModel := reqCtx.originalModel
+	if resolvedModel == "" {
+		var reqModel struct {
+			Model string `json:"model"`
+		}
+		_ = sonic.Unmarshal(body, &reqModel)
+		resolvedModel = reqModel.Model
+	}
+
+	if s.protocolRegistry != nil &&
+		(reqCtx.clientProtocol == protocol.OpenAI || reqCtx.clientProtocol == protocol.Anthropic || reqCtx.clientProtocol == protocol.Codex) &&
+		reqCtx.upstreamProtocol == protocol.Gemini {
+		translatedBody, err := s.protocolRegistry.TranslateRequest(reqCtx.clientProtocol, reqCtx.upstreamProtocol, resolvedModel, body, reqCtx.isStreaming)
+		if err != nil {
+			return nil, 0, fmt.Errorf("translate request for channel %d: %w", cfg.ID, err)
+		}
+		body = translatedBody
+		reqCtx.translatedBody = translatedBody
+		requestPath = buildGeminiGeneratePath(resolvedModel, reqCtx.isStreaming)
+	} else if s.protocolRegistry != nil &&
+		(reqCtx.clientProtocol == protocol.OpenAI || reqCtx.clientProtocol == protocol.Codex) &&
+		reqCtx.upstreamProtocol == protocol.Anthropic {
+		translatedBody, err := s.protocolRegistry.TranslateRequest(reqCtx.clientProtocol, reqCtx.upstreamProtocol, resolvedModel, body, reqCtx.isStreaming)
+		if err != nil {
+			return nil, 0, fmt.Errorf("translate request for channel %d: %w", cfg.ID, err)
+		}
+		body = translatedBody
+		reqCtx.translatedBody = translatedBody
+		requestPath = buildAnthropicMessagesPath()
+	}
 
 	// 2. 构建上游请求
 	req, err := s.buildProxyRequest(reqCtx, cfg, apiKey, method, body, hdr, rawQuery, requestPath, baseURL)

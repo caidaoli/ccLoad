@@ -210,6 +210,56 @@ func TestCacheIsolation_GetEnabledChannelsByType(t *testing.T) {
 	t.Logf("✅ GetEnabledChannelsByType 深拷贝隔离性测试通过")
 }
 
+func TestCacheIsolation_GetEnabledChannelsByExposedProtocol(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "isolation_protocol.db")
+	store, err := storage.CreateSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("创建 store 失败: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	cfg := &model.Config{
+		Name:               "test-gemini-transform",
+		ChannelType:        "gemini",
+		ProtocolTransforms: []string{"openai"},
+		URL:                "https://test.example.com",
+		Priority:           10,
+		ModelEntries: []model.ModelEntry{
+			{Model: "gemini-2.5-pro", RedirectModel: ""},
+		},
+		Enabled: true,
+	}
+	_, err = store.CreateConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("创建渠道失败: %v", err)
+	}
+
+	cache := storage.NewChannelCache(store, 1*time.Minute)
+
+	channels1, err := cache.GetEnabledChannelsByExposedProtocol(ctx, "openai")
+	if err != nil {
+		t.Fatalf("GetEnabledChannelsByExposedProtocol 失败: %v", err)
+	}
+	if len(channels1) != 1 {
+		t.Fatalf("期望1个渠道，实际 %d 个", len(channels1))
+	}
+
+	channels1[0].ProtocolTransforms[0] = "polluted"
+
+	channels2, err := cache.GetEnabledChannelsByExposedProtocol(ctx, "openai")
+	if err != nil {
+		t.Fatalf("第二次 GetEnabledChannelsByExposedProtocol 失败: %v", err)
+	}
+	if len(channels2) != 1 {
+		t.Fatalf("期望1个渠道，实际 %d 个", len(channels2))
+	}
+	if len(channels2[0].ProtocolTransforms) != 1 || channels2[0].ProtocolTransforms[0] != "openai" {
+		t.Fatalf("ProtocolTransforms 被污染: %#v", channels2[0].ProtocolTransforms)
+	}
+}
+
 // TestCacheIsolation_MultipleQueries 验证多次查询的隔离性
 func TestCacheIsolation_MultipleQueries(t *testing.T) {
 	ctx := context.Background()

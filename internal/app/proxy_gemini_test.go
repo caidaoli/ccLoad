@@ -131,6 +131,47 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 		}
 	})
 
+	t.Run("handleListOpenAIModels includes transformed gemini channel", func(t *testing.T) {
+		_, err := store.CreateConfig(ctx, &model.Config{
+			Name:               "g2-oai",
+			URL:                "https://example.com",
+			Priority:           3,
+			Enabled:            true,
+			ChannelType:        "gemini",
+			ProtocolTransforms: []string{"openai"},
+			ModelEntries: []model.ModelEntry{
+				{Model: "gemini-2.5-pro"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig transformed gemini failed: %v", err)
+		}
+
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/v1/models", nil))
+
+		server.handleListOpenAIModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		var resp struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+		found := false
+		for _, item := range resp.Data {
+			if item.ID == "gemini-2.5-pro" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected transformed gemini model in openai model list, got %+v", resp.Data)
+		}
+	})
+
 	t.Run("handleListGeminiModels filters by token allowed models", func(t *testing.T) {
 		server.authService = newTestAuthService(t)
 		tokenHash := model.HashToken("restricted-gemini-token")

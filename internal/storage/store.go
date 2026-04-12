@@ -22,6 +22,7 @@ type Store interface {
 	DeleteConfig(ctx context.Context, id int64) error
 	GetEnabledChannelsByModel(ctx context.Context, modelName string) ([]*model.Config, error)
 	GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*model.Config, error)
+	GetEnabledChannelsByExposedProtocol(ctx context.Context, protocol string) ([]*model.Config, error)
 	BatchUpdatePriority(ctx context.Context, updates []struct {
 		ID       int64
 		Priority int

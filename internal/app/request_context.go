@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync/atomic"
 	"time"
+
+	"ccLoad/internal/protocol"
 )
 
 // requestContext 封装单次请求的上下文和超时控制
@@ -14,6 +16,11 @@ type requestContext struct {
 	cancel            context.CancelFunc // [INFO] 总是非 nil（即使是 noop），调用方无需检查
 	startTime         time.Time
 	isStreaming       bool
+	clientProtocol    protocol.Protocol
+	upstreamProtocol  protocol.Protocol
+	originalModel     string
+	originalBody      []byte
+	translatedBody    []byte
 	firstByteTimer    *time.Timer
 	firstByteTimedOut atomic.Bool
 }

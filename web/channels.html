@@ -232,10 +232,20 @@
 
             <div class="channel-editor-primary-field channel-editor-primary-field--type">
               <label class="channel-editor-inline-label channel-editor-inline-label--muted"
-                data-i18n="channels.channelType">渠道类型</label>
+                data-i18n="channels.modal.upstreamProtocol">上游协议</label>
               <div class="channel-editor-radio-group" id="channelTypeRadios">
                 <!-- 动态加载渠道类型 -->
               </div>
+            </div>
+          </div>
+          <div class="channel-editor-primary-row">
+            <div class="channel-editor-primary-field">
+              <label class="channel-editor-inline-label channel-editor-inline-label--muted"
+                data-i18n="channels.modal.protocolTransforms">额外协议转换</label>
+              <div class="channel-editor-radio-group" id="protocolTransformsContainer">
+                <!-- 动态渲染协议转换选项 -->
+              </div>
+              <div class="models-hint" data-i18n="channels.modal.protocolTransformsHint">仅声明额外暴露协议，不包含原生上游协议</div>
             </div>
           </div>
         </div>

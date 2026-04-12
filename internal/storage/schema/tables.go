@@ -52,6 +52,16 @@ func DefineChannelModelsTable() *TableBuilder {
 		Index("idx_channel_models_model", "model")
 }
 
+// DefineChannelProtocolTransformsTable 定义渠道协议转换表结构
+func DefineChannelProtocolTransformsTable() *TableBuilder {
+	return NewTable("channel_protocol_transforms").
+		Column("channel_id INT NOT NULL").
+		Column("protocol VARCHAR(64) NOT NULL").
+		Column("PRIMARY KEY (channel_id, protocol)").
+		Column("FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE").
+		Index("idx_channel_protocol_transforms_protocol", "protocol")
+}
+
 // DefineAuthTokensTable 定义auth_tokens表结构
 func DefineAuthTokensTable() *TableBuilder {
 	return NewTable("auth_tokens").

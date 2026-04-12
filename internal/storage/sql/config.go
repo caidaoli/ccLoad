@@ -46,6 +46,9 @@ func (s *SQLStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
 	if err := s.loadModelEntriesForConfigs(ctx, configs); err != nil {
 		return nil, err
 	}
+	if err := s.loadProtocolTransformsForConfigs(ctx, configs); err != nil {
+		return nil, err
+	}
 
 	return configs, nil
 }
@@ -79,6 +82,9 @@ func (s *SQLStore) GetConfig(ctx context.Context, id int64) (*model.Config, erro
 
 	// 加载模型数据
 	if err := s.loadModelEntriesForConfig(ctx, config); err != nil {
+		return nil, err
+	}
+	if err := s.loadProtocolTransformsForConfig(ctx, config); err != nil {
 		return nil, err
 	}
 
@@ -144,6 +150,9 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, modelName stri
 	if err := s.loadModelEntriesForConfigs(ctx, configs); err != nil {
 		return nil, err
 	}
+	if err := s.loadProtocolTransformsForConfigs(ctx, configs); err != nil {
+		return nil, err
+	}
 
 	return configs, nil
 }
@@ -183,8 +192,30 @@ func (s *SQLStore) GetEnabledChannelsByType(ctx context.Context, channelType str
 	if err := s.loadModelEntriesForConfigs(ctx, configs); err != nil {
 		return nil, err
 	}
+	if err := s.loadProtocolTransformsForConfigs(ctx, configs); err != nil {
+		return nil, err
+	}
 
 	return configs, nil
+}
+
+// GetEnabledChannelsByExposedProtocol 查询暴露指定客户端协议的启用渠道（按优先级排序）
+func (s *SQLStore) GetEnabledChannelsByExposedProtocol(ctx context.Context, protocol string) ([]*model.Config, error) {
+	configs, err := s.GetEnabledChannelsByModel(ctx, "*")
+	if err != nil {
+		return nil, err
+	}
+	protocol = strings.TrimSpace(strings.ToLower(protocol))
+	if protocol == "" {
+		return []*model.Config{}, nil
+	}
+	filtered := make([]*model.Config, 0, len(configs))
+	for _, cfg := range configs {
+		if cfg != nil && cfg.SupportsProtocol(protocol) {
+			filtered = append(filtered, cfg)
+		}
+	}
+	return filtered, nil
 }
 
 // CreateConfig 创建新的渠道配置
@@ -248,6 +279,9 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 		if err := s.saveModelEntriesTx(ctx, tx, id, c.ModelEntries); err != nil {
 			return fmt.Errorf("save model entries: %w", err)
 		}
+		if err := s.saveProtocolTransformsTx(ctx, tx, id, c.GetProtocolTransforms()); err != nil {
+			return fmt.Errorf("save protocol transforms: %w", err)
+		}
 
 		return nil
 	})
@@ -297,6 +331,9 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 		// 更新 channel_models 表（先删后插）
 		if err := s.saveModelEntriesTx(ctx, tx, id, upd.ModelEntries); err != nil {
 			return fmt.Errorf("save model entries: %w", err)
+		}
+		if err := s.saveProtocolTransformsTx(ctx, tx, id, upd.GetProtocolTransforms()); err != nil {
+			return fmt.Errorf("save protocol transforms: %w", err)
 		}
 
 		return nil
@@ -423,6 +460,33 @@ func (s *SQLStore) loadModelEntriesForConfig(ctx context.Context, config *model.
 	return nil
 }
 
+func (s *SQLStore) loadProtocolTransformsForConfig(ctx context.Context, config *model.Config) error {
+	if config == nil {
+		return nil
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT protocol FROM channel_protocol_transforms WHERE channel_id = ? ORDER BY protocol ASC`, config.ID)
+	if err != nil {
+		return fmt.Errorf("query protocol transforms: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	transforms := make([]string, 0)
+	for rows.Next() {
+		var protocol string
+		if err := rows.Scan(&protocol); err != nil {
+			return fmt.Errorf("scan protocol transform: %w", err)
+		}
+		transforms = append(transforms, protocol)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate protocol transforms: %w", err)
+	}
+
+	config.ProtocolTransforms = transforms
+	return nil
+}
+
 // loadModelEntriesForConfigs 批量加载多个渠道的模型数据
 // 设计说明：使用 IN 子句批量查询而非 JOIN，原因：
 // 1. JOIN 会导致结果集膨胀（每个渠道有 N 个模型时重复 N 次渠道数据）
@@ -470,9 +534,60 @@ func (s *SQLStore) loadModelEntriesForConfigs(ctx context.Context, configs []*mo
 	return rows.Err()
 }
 
+func (s *SQLStore) loadProtocolTransformsForConfigs(ctx context.Context, configs []*model.Config) error {
+	if len(configs) == 0 {
+		return nil
+	}
+
+	channelIDs := make([]any, len(configs))
+	placeholders := make([]string, len(configs))
+	idToConfig := make(map[int64]*model.Config, len(configs))
+	for i, cfg := range configs {
+		channelIDs[i] = cfg.ID
+		placeholders[i] = "?"
+		idToConfig[cfg.ID] = cfg
+		cfg.ProtocolTransforms = nil
+	}
+
+	query := fmt.Sprintf(
+		`SELECT channel_id, protocol FROM channel_protocol_transforms WHERE channel_id IN (%s) ORDER BY channel_id, protocol ASC`,
+		strings.Join(placeholders, ","),
+	)
+	rows, err := s.db.QueryContext(ctx, query, channelIDs...)
+	if err != nil {
+		return fmt.Errorf("query protocol transforms: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var channelID int64
+		var protocol string
+		if err := rows.Scan(&channelID, &protocol); err != nil {
+			return fmt.Errorf("scan protocol transform: %w", err)
+		}
+		if cfg, ok := idToConfig[channelID]; ok {
+			cfg.ProtocolTransforms = append(cfg.ProtocolTransforms, protocol)
+		}
+	}
+
+	return rows.Err()
+}
+
 // saveModelEntriesTx 保存渠道的模型数据（事务版本，用于 Create/Update/Replace）
 func (s *SQLStore) saveModelEntriesTx(ctx context.Context, tx *sql.Tx, channelID int64, entries []model.ModelEntry) error {
 	return s.saveModelEntriesImpl(ctx, tx, channelID, entries)
+}
+
+func (s *SQLStore) saveProtocolTransformsTx(ctx context.Context, tx *sql.Tx, channelID int64, transforms []string) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM channel_protocol_transforms WHERE channel_id = ?`, channelID); err != nil {
+		return fmt.Errorf("delete old protocol transforms: %w", err)
+	}
+	for _, protocol := range transforms {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO channel_protocol_transforms (channel_id, protocol) VALUES (?, ?)`, channelID, protocol); err != nil {
+			return fmt.Errorf("save protocol transform %s: %w", protocol, err)
+		}
+	}
+	return nil
 }
 
 // dbExecutor 数据库执行器接口，统一 *sql.DB 和 *sql.Tx

@@ -18,6 +18,7 @@ import (
 	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
 
 	"github.com/bytedance/sonic"
@@ -302,18 +303,20 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	tokenIDInt64, _ := tokenID.(int64)
 
 	reqCtx := &proxyRequestContext{
-		originalModel: originalModel,
-		requestMethod: requestMethod,
-		requestPath:   requestPath,
-		rawQuery:      c.Request.URL.RawQuery,
-		body:          all,
-		header:        c.Request.Header,
-		isStreaming:   isStreaming,
-		tokenHash:     tokenHashStr,
-		tokenID:       tokenIDInt64,
-		clientIP:      c.ClientIP(),
-		activeReqID:   activeID,
-		startTime:     startTime,
+		originalModel:  originalModel,
+		clientProtocol: protocol.Protocol(util.DetectChannelTypeFromPath(requestPath)),
+		requestMethod:  requestMethod,
+		requestPath:    requestPath,
+		rawQuery:       c.Request.URL.RawQuery,
+		body:           all,
+		translatedBody: all,
+		header:         c.Request.Header,
+		isStreaming:    isStreaming,
+		tokenHash:      tokenHashStr,
+		tokenID:        tokenIDInt64,
+		clientIP:       c.ClientIP(),
+		activeReqID:    activeID,
+		startTime:      startTime,
 	}
 	reqCtx.observer = &ForwardObserver{
 		OnBytesRead: func(n int64) {
