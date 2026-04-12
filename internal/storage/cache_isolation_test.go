@@ -260,6 +260,65 @@ func TestCacheIsolation_GetEnabledChannelsByExposedProtocol(t *testing.T) {
 	}
 }
 
+func TestCacheIsolation_GetEnabledChannelsByModelAndProtocol(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "isolation_model_protocol.db")
+	store, err := storage.CreateSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("创建 store 失败: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	cfg := &model.Config{
+		Name:               "test-gemini-openai-transform",
+		ChannelType:        "gemini",
+		ProtocolTransforms: []string{"openai"},
+		URL:                "https://test.example.com",
+		Priority:           10,
+		ModelEntries: []model.ModelEntry{
+			{Model: "gemini-2.5-pro", RedirectModel: ""},
+		},
+		Enabled: true,
+	}
+	_, err = store.CreateConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("创建渠道失败: %v", err)
+	}
+
+	cache := storage.NewChannelCache(store, 1*time.Minute)
+
+	channels1, err := cache.GetEnabledChannelsByModelAndProtocol(ctx, "gemini-2.5-pro", "openai")
+	if err != nil {
+		t.Fatalf("GetEnabledChannelsByModelAndProtocol 失败: %v", err)
+	}
+	if len(channels1) != 1 {
+		t.Fatalf("期望1个渠道，实际 %d 个", len(channels1))
+	}
+
+	channels1[0].Name = "polluted"
+	channels1[0].ProtocolTransforms[0] = "polluted"
+	channels1[0].ModelEntries[0].Model = "polluted-model"
+
+	channels2, err := cache.GetEnabledChannelsByModelAndProtocol(ctx, "gemini-2.5-pro", "openai")
+	if err != nil {
+		t.Fatalf("第二次 GetEnabledChannelsByModelAndProtocol 失败: %v", err)
+	}
+	if len(channels2) != 1 {
+		t.Fatalf("期望1个渠道，实际 %d 个", len(channels2))
+	}
+	if channels2[0].Name != "test-gemini-openai-transform" {
+		t.Fatalf("Name 被污染: %q", channels2[0].Name)
+	}
+	if got := channels2[0].ProtocolTransforms; len(got) != 1 || got[0] != "openai" {
+		t.Fatalf("ProtocolTransforms 被污染: %#v", got)
+	}
+	if got := channels2[0].ModelEntries; len(got) != 1 || got[0].Model != "gemini-2.5-pro" {
+		t.Fatalf("ModelEntries 被污染: %#v", got)
+	}
+
+}
+
 // TestCacheIsolation_MultipleQueries 验证多次查询的隔离性
 func TestCacheIsolation_MultipleQueries(t *testing.T) {
 	ctx := context.Background()

@@ -2,12 +2,15 @@ package sql_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"testing"
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
+
+	_ "modernc.org/sqlite"
 )
 
 func TestConfig_CreateAndGet(t *testing.T) {
@@ -427,12 +430,11 @@ func TestConfig_GetEnabledChannelsByExposedProtocol(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := &model.Config{
-		Name:        "gemini-openai-channel",
-		URL:         "https://generativelanguage.googleapis.com",
-		Priority:    10,
-		Enabled:     true,
-		ChannelType: "gemini",
-		// RED: 新字段尚未实现
+		Name:               "gemini-openai-channel",
+		URL:                "https://generativelanguage.googleapis.com",
+		Priority:           10,
+		Enabled:            true,
+		ChannelType:        "gemini",
 		ProtocolTransforms: []string{"openai"},
 		ModelEntries: []model.ModelEntry{
 			{Model: "gemini-2.5-pro"},
@@ -443,22 +445,226 @@ func TestConfig_GetEnabledChannelsByExposedProtocol(t *testing.T) {
 		t.Fatalf("create gemini config: %v", err)
 	}
 
-	_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{
-		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-gemini"},
+	nativeOpenAI, err := store.CreateConfig(ctx, &model.Config{
+		Name:        "native-openai-channel",
+		URL:         "https://api.openai.com",
+		Priority:    20,
+		Enabled:     true,
+		ChannelType: "openai",
+		ModelEntries: []model.ModelEntry{
+			{Model: "gpt-4.1"},
+		},
 	})
+	if err != nil {
+		t.Fatalf("create native openai config: %v", err)
+	}
+
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-gemini"},
+		{ChannelID: nativeOpenAI.ID, KeyIndex: 0, APIKey: "sk-openai"},
+	}); err != nil {
+		t.Fatalf("create api keys batch: %v", err)
+	}
 
 	openaiChannels, err := store.GetEnabledChannelsByExposedProtocol(ctx, "openai")
 	if err != nil {
 		t.Fatalf("get openai exposed channels: %v", err)
 	}
-	if len(openaiChannels) != 1 {
-		t.Fatalf("expected 1 openai-exposed channel, got %d", len(openaiChannels))
+	if len(openaiChannels) != 2 {
+		t.Fatalf("expected 2 openai-exposed channels, got %d", len(openaiChannels))
 	}
-	if openaiChannels[0].Name != "gemini-openai-channel" {
-		t.Fatalf("unexpected channel name: %s", openaiChannels[0].Name)
+	if openaiChannels[0].Name != "native-openai-channel" {
+		t.Fatalf("expected native channel first by priority, got %s", openaiChannels[0].Name)
 	}
-	if len(openaiChannels[0].ProtocolTransforms) != 1 || openaiChannels[0].ProtocolTransforms[0] != "openai" {
-		t.Fatalf("unexpected protocol transforms: %#v", openaiChannels[0].ProtocolTransforms)
+	if openaiChannels[1].Name != "gemini-openai-channel" {
+		t.Fatalf("expected transformed channel second, got %s", openaiChannels[1].Name)
+	}
+	if len(openaiChannels[1].ProtocolTransforms) != 1 || openaiChannels[1].ProtocolTransforms[0] != "openai" {
+		t.Fatalf("unexpected protocol transforms: %#v", openaiChannels[1].ProtocolTransforms)
+	}
+
+	geminiChannels, err := store.GetEnabledChannelsByExposedProtocol(ctx, "gemini")
+	if err != nil {
+		t.Fatalf("get gemini exposed channels: %v", err)
+	}
+	if len(geminiChannels) != 1 {
+		t.Fatalf("expected 1 gemini-exposed channel, got %d", len(geminiChannels))
+	}
+	if geminiChannels[0].Name != "gemini-openai-channel" {
+		t.Fatalf("unexpected gemini channel name: %s", geminiChannels[0].Name)
+	}
+}
+
+func TestConfig_GetEnabledChannelsByModelAndProtocol(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "model_protocol_query.db")
+
+	ctx := context.Background()
+
+	openAIChannel, err := store.CreateConfig(ctx, &model.Config{
+		Name:        "openai-native",
+		URL:         "https://api.openai.com",
+		Priority:    30,
+		Enabled:     true,
+		ChannelType: "openai",
+		ModelEntries: []model.ModelEntry{
+			{Model: "gpt-4o"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create openai config: %v", err)
+	}
+
+	geminiTransform, err := store.CreateConfig(ctx, &model.Config{
+		Name:               "gemini-openai-transform",
+		URL:                "https://generativelanguage.googleapis.com",
+		Priority:           20,
+		Enabled:            true,
+		ChannelType:        "gemini",
+		ProtocolTransforms: []string{"openai"},
+		ModelEntries: []model.ModelEntry{
+			{Model: "gemini-2.5-pro"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create gemini transform config: %v", err)
+	}
+
+	anthropicTransform, err := store.CreateConfig(ctx, &model.Config{
+		Name:               "gemini-anthropic-transform",
+		URL:                "https://generativelanguage.googleapis.com",
+		Priority:           10,
+		Enabled:            true,
+		ChannelType:        "gemini",
+		ProtocolTransforms: []string{"anthropic"},
+		ModelEntries: []model.ModelEntry{
+			{Model: "claude-3-5-sonnet"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create anthropic transform config: %v", err)
+	}
+
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: openAIChannel.ID, KeyIndex: 0, APIKey: "sk-openai"},
+		{ChannelID: geminiTransform.ID, KeyIndex: 0, APIKey: "sk-gemini"},
+		{ChannelID: anthropicTransform.ID, KeyIndex: 0, APIKey: "sk-anthropic"},
+	}); err != nil {
+		t.Fatalf("create api keys batch: %v", err)
+	}
+
+	queryStore, ok := store.(storage.ModelProtocolStore)
+	if !ok {
+		t.Fatalf("store does not implement ModelProtocolStore")
+	}
+
+	exact, err := queryStore.GetEnabledChannelsByModelAndProtocol(ctx, "gemini-2.5-pro", "openai")
+	if err != nil {
+		t.Fatalf("query exact model+protocol: %v", err)
+	}
+	if len(exact) != 1 || exact[0].Name != "gemini-openai-transform" {
+		t.Fatalf("unexpected exact query result: %+v", exact)
+	}
+
+	wildcard, err := queryStore.GetEnabledChannelsByModelAndProtocol(ctx, "*", "openai")
+	if err != nil {
+		t.Fatalf("query wildcard model+protocol: %v", err)
+	}
+	if len(wildcard) != 2 {
+		t.Fatalf("expected 2 openai-exposed channels, got %d", len(wildcard))
+	}
+	if wildcard[0].Name != "openai-native" || wildcard[1].Name != "gemini-openai-transform" {
+		t.Fatalf("unexpected wildcard ordering/result: %+v", wildcard)
+	}
+
+	anthropicExact, err := queryStore.GetEnabledChannelsByModelAndProtocol(ctx, "claude-3-5-sonnet", "anthropic")
+	if err != nil {
+		t.Fatalf("query anthropic transform: %v", err)
+	}
+	if len(anthropicExact) != 1 || anthropicExact[0].Name != "gemini-anthropic-transform" {
+		t.Fatalf("unexpected anthropic exact result: %+v", anthropicExact)
+	}
+
+	modelOnly, err := queryStore.GetEnabledChannelsByModelAndProtocol(ctx, "gpt-4o", "")
+	if err != nil {
+		t.Fatalf("query empty protocol fallback: %v", err)
+	}
+	if len(modelOnly) != 1 || modelOnly[0].Name != "openai-native" {
+		t.Fatalf("unexpected model-only fallback result: %+v", modelOnly)
+	}
+}
+
+func TestConfig_LegacyInvalidProtocolTransformsAreIgnored(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "legacy_invalid_protocol.db")
+	store, err := storage.CreateSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("create sqlite store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name:        "legacy-openai",
+		URL:         "https://api.openai.com",
+		Priority:    10,
+		Enabled:     true,
+		ChannelType: "openai",
+		ModelEntries: []model.ModelEntry{
+			{Model: "gpt-4o"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create config: %v", err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-openai"},
+	}); err != nil {
+		t.Fatalf("create api key: %v", err)
+	}
+
+	rawDB, err := sql.Open("sqlite", "file:"+dbPath)
+	if err != nil {
+		t.Fatalf("open raw sqlite db: %v", err)
+	}
+	t.Cleanup(func() { _ = rawDB.Close() })
+
+	if _, err := rawDB.ExecContext(ctx,
+		`INSERT INTO channel_protocol_transforms(channel_id, protocol) VALUES (?, ?)`,
+		created.ID, "gemini",
+	); err != nil {
+		t.Fatalf("insert legacy invalid transform: %v", err)
+	}
+
+	got, err := store.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get config: %v", err)
+	}
+	if len(got.ProtocolTransforms) != 0 {
+		t.Fatalf("expected invalid legacy transforms to be filtered on load, got %#v", got.ProtocolTransforms)
+	}
+
+	geminiChannels, err := store.GetEnabledChannelsByExposedProtocol(ctx, "gemini")
+	if err != nil {
+		t.Fatalf("get gemini exposed channels: %v", err)
+	}
+	if len(geminiChannels) != 0 {
+		t.Fatalf("expected no gemini-exposed channels from dirty data, got %+v", geminiChannels)
+	}
+
+	queryStore, ok := store.(storage.ModelProtocolStore)
+	if !ok {
+		t.Fatalf("store does not implement ModelProtocolStore")
+	}
+	modelAndProtocol, err := queryStore.GetEnabledChannelsByModelAndProtocol(ctx, "gpt-4o", "gemini")
+	if err != nil {
+		t.Fatalf("query model+protocol: %v", err)
+	}
+	if len(modelAndProtocol) != 0 {
+		t.Fatalf("expected dirty transform row to be ignored by model+protocol query, got %+v", modelAndProtocol)
 	}
 }
 

@@ -17,14 +17,15 @@ import (
 // ChannelCache 高性能渠道缓存层
 // 内存查询比数据库查询快 1000 倍+
 type ChannelCache struct {
-	store                     Store
-	channelsByModel           map[string][]*modelpkg.Config // model → channels
-	channelsByType            map[string][]*modelpkg.Config // type → channels
-	channelsByExposedProtocol map[string][]*modelpkg.Config // protocol → channels
-	allChannels               []*modelpkg.Config            // 所有渠道
-	lastUpdate                time.Time
-	mutex                     sync.RWMutex
-	ttl                       time.Duration
+	store                      Store
+	channelsByModel            map[string][]*modelpkg.Config            // model → channels
+	channelsByModelAndProtocol map[string]map[string][]*modelpkg.Config // model → protocol → channels
+	channelsByType             map[string][]*modelpkg.Config            // type → channels
+	channelsByExposedProtocol  map[string][]*modelpkg.Config            // protocol → channels
+	allChannels                []*modelpkg.Config                       // 所有渠道
+	lastUpdate                 time.Time
+	mutex                      sync.RWMutex
+	ttl                        time.Duration
 
 	// 扩展缓存支持更多关键查询
 	apiKeysByChannelID map[int64][]*modelpkg.APIKey // channelID → API keys
@@ -39,12 +40,13 @@ type ChannelCache struct {
 // NewChannelCache 创建渠道缓存实例
 func NewChannelCache(store Store, ttl time.Duration) *ChannelCache {
 	return &ChannelCache{
-		store:                     store,
-		channelsByModel:           make(map[string][]*modelpkg.Config),
-		channelsByType:            make(map[string][]*modelpkg.Config),
-		channelsByExposedProtocol: make(map[string][]*modelpkg.Config),
-		allChannels:               make([]*modelpkg.Config, 0),
-		ttl:                       ttl,
+		store:                      store,
+		channelsByModel:            make(map[string][]*modelpkg.Config),
+		channelsByModelAndProtocol: make(map[string]map[string][]*modelpkg.Config),
+		channelsByType:             make(map[string][]*modelpkg.Config),
+		channelsByExposedProtocol:  make(map[string][]*modelpkg.Config),
+		allChannels:                make([]*modelpkg.Config, 0),
+		ttl:                        ttl,
 
 		// 初始化扩展缓存
 		apiKeysByChannelID: make(map[int64][]*modelpkg.APIKey),
@@ -157,7 +159,10 @@ func (c *ChannelCache) GetEnabledChannelsByType(ctx context.Context, channelType
 
 // GetEnabledChannelsByExposedProtocol 缓存优先的暴露协议查询
 func (c *ChannelCache) GetEnabledChannelsByExposedProtocol(ctx context.Context, protocol string) ([]*modelpkg.Config, error) {
-	protocol = strings.TrimSpace(strings.ToLower(protocol))
+	protocol = normalizeProtocol(protocol)
+	if protocol == "" {
+		return []*modelpkg.Config{}, nil
+	}
 	if err := c.refreshIfNeeded(ctx); err != nil {
 		return c.store.GetEnabledChannelsByExposedProtocol(ctx, protocol)
 	}
@@ -171,6 +176,56 @@ func (c *ChannelCache) GetEnabledChannelsByExposedProtocol(ctx context.Context, 
 	}
 
 	return deepCopyConfigs(channels), nil
+}
+
+// GetEnabledChannelsByModelAndProtocol 缓存优先的“模型 + 暴露协议”联合查询。
+func (c *ChannelCache) GetEnabledChannelsByModelAndProtocol(ctx context.Context, modelName string, protocol string) ([]*modelpkg.Config, error) {
+	protocol = normalizeProtocol(protocol)
+	if protocol == "" {
+		return c.GetEnabledChannelsByModel(ctx, modelName)
+	}
+	if err := c.refreshIfNeeded(ctx); err != nil {
+		if store, ok := c.store.(ModelProtocolStore); ok {
+			return store.GetEnabledChannelsByModelAndProtocol(ctx, modelName, protocol)
+		}
+		channels, err := c.store.GetEnabledChannelsByModel(ctx, modelName)
+		if err != nil {
+			return nil, err
+		}
+		filtered := make([]*modelpkg.Config, 0, len(channels))
+		for _, cfg := range channels {
+			if cfg != nil && cfg.SupportsProtocol(protocol) {
+				filtered = append(filtered, cfg)
+			}
+		}
+		return deepCopyConfigs(filtered), nil
+	}
+
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	if modelName == "*" {
+		channels, exists := c.channelsByExposedProtocol[protocol]
+		if !exists {
+			return []*modelpkg.Config{}, nil
+		}
+		return deepCopyConfigs(channels), nil
+	}
+
+	byProtocol, exists := c.channelsByModelAndProtocol[modelName]
+	if !exists {
+		return []*modelpkg.Config{}, nil
+	}
+
+	channels, exists := byProtocol[protocol]
+	if !exists {
+		return []*modelpkg.Config{}, nil
+	}
+	return deepCopyConfigs(channels), nil
+}
+
+func normalizeProtocol(protocol string) string {
+	return strings.ToLower(strings.TrimSpace(protocol))
 }
 
 // GetConfig 获取指定ID的渠道配置
@@ -213,25 +268,34 @@ func (c *ChannelCache) refreshCache(ctx context.Context) error {
 
 	// 构建按类型分组的索引（内部共享指针，对外深拷贝隔离）
 	byModel := make(map[string][]*modelpkg.Config)
+	byModelAndProtocol := make(map[string]map[string][]*modelpkg.Config)
 	byType := make(map[string][]*modelpkg.Config)
 	byExposedProtocol := make(map[string][]*modelpkg.Config)
 
 	for _, channel := range allChannels {
 		channelType := channel.GetChannelType()
 		byType[channelType] = append(byType[channelType], channel) // 内部共享
-		for _, protocol := range channel.SupportedProtocols() {
+		protocols := channel.SupportedProtocols()
+		for _, protocol := range protocols {
 			byExposedProtocol[protocol] = append(byExposedProtocol[protocol], channel)
 		}
 
 		// 同时填充模型索引（使用 GetModels() 辅助方法）
 		for _, model := range channel.GetModels() {
 			byModel[model] = append(byModel[model], channel) // 内部共享
+			if _, exists := byModelAndProtocol[model]; !exists {
+				byModelAndProtocol[model] = make(map[string][]*modelpkg.Config)
+			}
+			for _, protocol := range protocols {
+				byModelAndProtocol[model][protocol] = append(byModelAndProtocol[model][protocol], channel)
+			}
 		}
 	}
 
 	// 原子性更新缓存（整体替换，不修改单个对象）
 	c.allChannels = allChannels
 	c.channelsByModel = byModel
+	c.channelsByModelAndProtocol = byModelAndProtocol
 	c.channelsByType = byType
 	c.channelsByExposedProtocol = byExposedProtocol
 	c.lastUpdate = time.Now()

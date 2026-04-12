@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -106,7 +105,7 @@ func TestTestChannelAPI_MultiURLFallbackAndSelectorFeedback(t *testing.T) {
 	failCalls := 0
 	okCalls := 0
 
-	failUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	failUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		failCalls++
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -114,7 +113,7 @@ func TestTestChannelAPI_MultiURLFallbackAndSelectorFeedback(t *testing.T) {
 	}))
 	defer failUpstream.Close()
 
-	okUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	okUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		okCalls++
 		time.Sleep(15 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
@@ -164,7 +163,7 @@ func TestTestChannelAPI_MultiURLFallbackOnPlainText502(t *testing.T) {
 	failCalls := 0
 	okCalls := 0
 
-	failUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	failUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		failCalls++
 		w.Header().Set("Content-Type", "text/plain; charset=UTF-8")
 		w.WriteHeader(http.StatusBadGateway)
@@ -172,7 +171,7 @@ func TestTestChannelAPI_MultiURLFallbackOnPlainText502(t *testing.T) {
 	}))
 	defer failUpstream.Close()
 
-	okUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	okUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		okCalls++
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -219,14 +218,14 @@ func TestTestChannelAPI_MultiURLFallbackOnPlainText502(t *testing.T) {
 
 func TestHandleChannelTest_RejectsBaseURL(t *testing.T) {
 	failCalls := 0
-	failUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	failUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		failCalls++
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	defer failUpstream.Close()
 
 	okCalls := 0
-	okUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	okUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		okCalls++
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -277,7 +276,7 @@ func TestHandleChannelTest_RejectsBaseURL(t *testing.T) {
 
 func TestHandleChannelURLTest_UsesForcedURL(t *testing.T) {
 	failCalls := 0
-	failUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	failUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		failCalls++
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -286,7 +285,7 @@ func TestHandleChannelURLTest_UsesForcedURL(t *testing.T) {
 	defer failUpstream.Close()
 
 	okCalls := 0
-	okUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	okUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		okCalls++
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -449,7 +448,7 @@ func TestHandleChannelTest_SuccessfulAPI(t *testing.T) {
 		"model": "claude-3-5-sonnet",
 		"usage": {"input_tokens": 10, "output_tokens": 5}
 	}`
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(mockResp))
@@ -510,7 +509,7 @@ func TestHandleChannelTest_SuccessfulAPI(t *testing.T) {
 // TestHandleChannelTest_FailedAPI 使用 mock server 模拟失败的 API 调用
 func TestHandleChannelTest_FailedAPI(t *testing.T) {
 	// 创建 mock 上游服务器，返回 401 错误
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":{"type":"authentication_error","message":"invalid api key"}}`))
@@ -572,7 +571,7 @@ func TestHandleChannelTest_FailedAPI(t *testing.T) {
 }
 
 func TestHandleChannelTest_WritesManualTestLog(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":{"type":"authentication_error","message":"invalid api key"}}`))
@@ -639,7 +638,7 @@ func TestHandleChannelTest_WritesManualTestLog(t *testing.T) {
 }
 
 func TestHandleChannelTest_SSESoftErrorTriggersCooldown(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, "event: \n")
@@ -707,7 +706,7 @@ func TestHandleChannelTest_SSESoftErrorTriggersCooldown(t *testing.T) {
 
 func TestHandleChannelTest_EventStreamHeaderWithJSONBodyFallback(t *testing.T) {
 	// 模拟“Content-Type=event-stream，但实际返回完整JSON”场景
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{
@@ -785,7 +784,7 @@ func TestHandleChannelTest_EventStreamHeaderWithJSONBodyFallback(t *testing.T) {
 }
 
 func TestHandleChannelTest_CodexJSONFailedResponseShouldBeFailure(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{
@@ -858,7 +857,7 @@ func TestHandleChannelTest_CodexJSONFailedResponseShouldBeFailure(t *testing.T) 
 }
 
 func TestHandleChannelTest_StringAPIErrorShouldExposeUpstreamMessage(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = w.Write([]byte(`{
@@ -922,7 +921,7 @@ func TestHandleChannelTest_StringAPIErrorShouldExposeUpstreamMessage(t *testing.
 }
 
 func TestHandleChannelTest_HTMLBlockPageShouldBeFailure(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<!DOCTYPE html>

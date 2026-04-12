@@ -42,12 +42,6 @@ type proxyTestEnv struct {
 	engine *gin.Engine
 }
 
-type roundTripperFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f(req)
-}
-
 // setupProxyTestEnv 创建指向 mockUpstream 的完整测试 Server
 // 每个渠道的 URL 使用 upstreamURLs map（channelIndex → upstreamURL）
 func setupProxyTestEnv(t testing.TB, channels []testChannel, upstreamURLs map[int]string) *proxyTestEnv {
@@ -157,7 +151,7 @@ func TestProxy_Success_NonStreaming(t *testing.T) {
 	t.Parallel()
 
 	// 模拟上游：返回 200 + JSON
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","choices":[{"message":{"content":"hello"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
@@ -401,7 +395,7 @@ func TestProxy_Success_Streaming(t *testing.T) {
 	t.Parallel()
 
 	// 模拟上游：返回 200 + SSE 流
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		flusher, _ := w.(http.Flusher)
@@ -936,6 +930,16 @@ func TestProxy_GeminiTransform_UsesResolvedActualModelInUpstreamPath(t *testing.
 	if gotPath != "/v1beta/models/gemini-2.5-pro:generateContent" {
 		t.Fatalf("expected resolved actual model path, got %s", gotPath)
 	}
+
+	var resp struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Model != "alias-model" {
+		t.Fatalf("expected client-visible response model alias-model, got %s", resp.Model)
+	}
 }
 
 func TestProxy_Success_Streaming_OpenAIToGeminiTransform_TextPlainSSE(t *testing.T) {
@@ -1121,7 +1125,7 @@ func TestProxy_ChannelRetry_On503(t *testing.T) {
 	t.Parallel()
 
 	// 渠道1：返回 503
-	upstream1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream1 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte(`{"error":"service unavailable"}`))
@@ -1129,7 +1133,7 @@ func TestProxy_ChannelRetry_On503(t *testing.T) {
 	defer upstream1.Close()
 
 	// 渠道2：返回 200
-	upstream2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream2 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"id":"from-ch2","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
@@ -1159,7 +1163,7 @@ func TestProxy_MultiURL5xx_SwitchesToNextChannel(t *testing.T) {
 	var ch2Calls atomic.Int64
 
 	// 渠道1 URL1: 固定 503
-	upstreamFail := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstreamFail := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ch1FailCalls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -1168,7 +1172,7 @@ func TestProxy_MultiURL5xx_SwitchesToNextChannel(t *testing.T) {
 	defer upstreamFail.Close()
 
 	// 渠道1 URL2: 即使可用也不应被尝试（新策略：5xx 直接切渠道）
-	upstreamShouldSkip := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstreamShouldSkip := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ch1SecondURLCalls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -1177,7 +1181,7 @@ func TestProxy_MultiURL5xx_SwitchesToNextChannel(t *testing.T) {
 	defer upstreamShouldSkip.Close()
 
 	// 渠道2: 正常返回，用于验证“切换到下一个渠道”
-	upstreamCh2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstreamCh2 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ch2Calls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -1248,7 +1252,7 @@ func TestProxy_MultiURLFallbackOn598_DoesNotChannelCooldownEarly(t *testing.T) {
 	var okCalls atomic.Int64
 
 	// URL1: 首字节超时（598）
-	upstreamTimeout := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstreamTimeout := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		failCalls.Add(1)
 		time.Sleep(120 * time.Millisecond)
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -1259,7 +1263,7 @@ func TestProxy_MultiURLFallbackOn598_DoesNotChannelCooldownEarly(t *testing.T) {
 	defer upstreamTimeout.Close()
 
 	// URL2: 正常返回
-	upstreamOK := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstreamOK := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		okCalls.Add(1)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -1324,7 +1328,7 @@ func TestProxy_MultiURLFirstAttempt_UsesWeightedRandom(t *testing.T) {
 	var fastCalls atomic.Int64
 	var slowCalls atomic.Int64
 
-	upstreamFast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstreamFast := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fastCalls.Add(1)
 		time.Sleep(5 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
@@ -1333,7 +1337,7 @@ func TestProxy_MultiURLFirstAttempt_UsesWeightedRandom(t *testing.T) {
 	}))
 	defer upstreamFast.Close()
 
-	upstreamSlow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstreamSlow := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		slowCalls.Add(1)
 		time.Sleep(30 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
@@ -1384,14 +1388,14 @@ func TestProxy_MultiURLFirstAttempt_UsesWeightedRandom(t *testing.T) {
 }
 
 func TestProxy_MultiURLProbeCanceledByShutdown_DoesNotPolluteCooldown(t *testing.T) {
-	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstreamA := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"id":"from-a","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
 	}))
 	defer upstreamA.Close()
 
-	upstreamB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstreamB := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"id":"from-b","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
@@ -1468,7 +1472,7 @@ func TestProxy_KeyRetry_On401(t *testing.T) {
 	t.Parallel()
 
 	callCount := 0
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
 		auth := r.Header.Get("Authorization")
 		if strings.Contains(auth, "sk-bad") {
@@ -1531,7 +1535,7 @@ func TestProxy_AllChannelsExhausted(t *testing.T) {
 	t.Parallel()
 
 	callCount1 := 0
-	upstream1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream1 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount1++
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -1540,7 +1544,7 @@ func TestProxy_AllChannelsExhausted(t *testing.T) {
 	defer upstream1.Close()
 
 	callCount2 := 0
-	upstream2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream2 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount2++
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -1573,7 +1577,7 @@ func TestProxy_ClientCancel_Returns499(t *testing.T) {
 
 	// 上游延迟响应
 	upstreamStarted := make(chan struct{})
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-upstreamStarted:
 			// already closed
@@ -1625,7 +1629,7 @@ func TestProxy_ClientCancel_Returns499(t *testing.T) {
 func TestProxy_ModelNotAllowed_Returns403(t *testing.T) {
 	t.Parallel()
 
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer upstream.Close()
@@ -1653,7 +1657,7 @@ func TestProxy_ModelNotAllowed_Returns403(t *testing.T) {
 func TestProxy_CostLimitExceeded_Returns429(t *testing.T) {
 	t.Parallel()
 
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer upstream.Close()
@@ -1712,7 +1716,7 @@ func TestProxy_SSEErrorEvent_TriggersCooldown(t *testing.T) {
 	t.Parallel()
 
 	// 模拟上游：返回 200 + SSE 但包含 error 事件
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		flusher, _ := w.(http.Flusher)
@@ -1794,7 +1798,7 @@ func TestProxy_SSEErrorEventBeforeClientOutput_RetriesNextChannel(t *testing.T) 
 	t.Parallel()
 
 	var firstCalls atomic.Int32
-	upstream1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream1 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		firstCalls.Add(1)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -1808,7 +1812,7 @@ func TestProxy_SSEErrorEventBeforeClientOutput_RetriesNextChannel(t *testing.T) 
 	defer upstream1.Close()
 
 	var secondCalls atomic.Int32
-	upstream2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream2 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		secondCalls.Add(1)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)

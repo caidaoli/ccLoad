@@ -16,6 +16,7 @@ type requestContext struct {
 	cancel            context.CancelFunc // [INFO] 总是非 nil（即使是 noop），调用方无需检查
 	startTime         time.Time
 	isStreaming       bool
+	transformPlan     protocol.TransformPlan
 	clientProtocol    protocol.Protocol
 	upstreamProtocol  protocol.Protocol
 	originalModel     string

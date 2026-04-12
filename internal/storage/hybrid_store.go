@@ -248,6 +248,10 @@ func (h *HybridStore) GetEnabledChannelsByExposedProtocol(ctx context.Context, p
 	return h.sqlite.GetEnabledChannelsByExposedProtocol(ctx, protocol)
 }
 
+func (h *HybridStore) GetEnabledChannelsByModelAndProtocol(ctx context.Context, modelName, protocol string) ([]*model.Config, error) {
+	return h.sqlite.GetEnabledChannelsByModelAndProtocol(ctx, modelName, protocol)
+}
+
 func (h *HybridStore) BatchUpdatePriority(ctx context.Context, updates []struct {
 	ID       int64
 	Priority int

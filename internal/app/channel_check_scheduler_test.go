@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -63,7 +62,7 @@ func TestNormalizeChannelCheckIntervalHours(t *testing.T) {
 }
 
 func TestExecuteChannelTest_SuccessResetsCooldowns(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
@@ -116,7 +115,7 @@ func TestExecuteChannelTest_SuccessResetsCooldowns(t *testing.T) {
 }
 
 func TestExecuteChannelTest_FailureAppliesCooldown(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte(`{"error":{"type":"server_error","message":"upstream failed"}}`))
@@ -167,7 +166,7 @@ func TestRunScheduledChannelChecks_UsesScheduledCheckModelAndAvailableKey(t *tes
 		disabledCalls int
 	)
 
-	eligibleUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	eligibleUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		eligibleCalls++
 		eligibleAuth = r.Header.Get("Authorization")
 
@@ -185,7 +184,7 @@ func TestRunScheduledChannelChecks_UsesScheduledCheckModelAndAvailableKey(t *tes
 	}))
 	defer eligibleUpstream.Close()
 
-	disabledUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	disabledUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		disabledCalls++
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -243,7 +242,7 @@ func TestRunScheduledChannelChecks_UsesScheduledCheckModelAndAvailableKey(t *tes
 
 func TestRunScheduledChannelChecks_WritesScheduledCheckLogsForRunAndSkip(t *testing.T) {
 	called := 0
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called++
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -313,7 +312,7 @@ func TestRunScheduledChannelChecks_WritesScheduledCheckLogsForRunAndSkip(t *test
 
 func TestRunScheduledChannelChecks_SkipsChannelsWithoutRunnableKey(t *testing.T) {
 	called := 0
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called++
 		w.WriteHeader(http.StatusOK)
 	}))

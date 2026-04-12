@@ -105,3 +105,9 @@ type Store interface {
 	Ping(ctx context.Context) error
 	Close() error
 }
+
+// ModelProtocolStore 提供“模型 + 暴露协议”联合查询能力。
+// 保持为可选扩展，避免强迫所有 Store 实现立刻同步扩接口。
+type ModelProtocolStore interface {
+	GetEnabledChannelsByModelAndProtocol(ctx context.Context, modelName, protocol string) ([]*model.Config, error)
+}

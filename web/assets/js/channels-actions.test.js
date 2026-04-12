@@ -16,6 +16,14 @@ test('渠道卡片模板包含复制操作按钮', () => {
   assert.match(template, /data-channel-name="\{\{name\}\}"/);
 });
 
+test('渠道卡片模板保留上游协议徽章并为额外协议标签预留插槽', () => {
+  const templateMatch = html.match(/<template id="tpl-channel-card">[\s\S]*?<\/template>/);
+  assert.ok(templateMatch, '缺少 tpl-channel-card 模板');
+
+  const template = templateMatch[0];
+  assert.match(template, /\{\{\{typeBadge\}\}\}<strong>\{\{name\}\}<\/strong>\{\{\{protocolTransformBadges\}\}\}/);
+});
+
 test('操作列为五个操作按钮保留足够宽度', () => {
   const actionsColumnStyle = css.match(/\.ch-col-actions\s*\{[^}]+\}/);
   assert.ok(actionsColumnStyle, '缺少 .ch-col-actions 样式');

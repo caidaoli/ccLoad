@@ -274,10 +274,7 @@ func (s *Server) handleSuccessResponse(
 ) (*fwResult, float64, error) {
 	if reqCtx.isStreaming &&
 		s.protocolRegistry != nil &&
-		((reqCtx.upstreamProtocol == protocol.Gemini &&
-			(reqCtx.clientProtocol == protocol.OpenAI || reqCtx.clientProtocol == protocol.Anthropic || reqCtx.clientProtocol == protocol.Codex)) ||
-			(reqCtx.upstreamProtocol == protocol.Anthropic &&
-				(reqCtx.clientProtocol == protocol.OpenAI || reqCtx.clientProtocol == protocol.Codex))) &&
+		reqCtx.transformPlan.NeedsTransform &&
 		(strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") ||
 			strings.Contains(resp.Header.Get("Content-Type"), "text/plain")) {
 		return s.handleTranslatedStreamSuccessResponse(reqCtx, resp, hdrClone, w, channelType, readStats, firstBodyReadTimeSec)
@@ -285,10 +282,7 @@ func (s *Server) handleSuccessResponse(
 
 	if !reqCtx.isStreaming &&
 		s.protocolRegistry != nil &&
-		((reqCtx.upstreamProtocol == protocol.Gemini &&
-			(reqCtx.clientProtocol == protocol.OpenAI || reqCtx.clientProtocol == protocol.Anthropic || reqCtx.clientProtocol == protocol.Codex)) ||
-			(reqCtx.upstreamProtocol == protocol.Anthropic &&
-				(reqCtx.clientProtocol == protocol.OpenAI || reqCtx.clientProtocol == protocol.Codex))) {
+		reqCtx.transformPlan.NeedsTransform {
 		return s.handleTranslatedNonStreamSuccessResponse(reqCtx, resp, hdrClone, w, channelType, readStats, firstBodyReadTimeSec)
 	}
 
@@ -429,11 +423,11 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 
 	translatedBody, err := s.protocolRegistry.TranslateResponseNonStream(
 		reqCtx.ctx,
-		reqCtx.upstreamProtocol,
-		reqCtx.clientProtocol,
-		reqCtx.originalModel,
-		reqCtx.originalBody,
-		reqCtx.translatedBody,
+		reqCtx.transformPlan.UpstreamProtocol,
+		reqCtx.transformPlan.ClientProtocol,
+		reqCtx.transformPlan.ResponseModel(),
+		reqCtx.transformPlan.OriginalBody,
+		reqCtx.transformPlan.TranslatedBody,
 		rawBody,
 	)
 	if err != nil {
@@ -503,11 +497,11 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 		func(rawEvent []byte) ([][]byte, error) {
 			return s.protocolRegistry.TranslateResponseStream(
 				reqCtx.ctx,
-				reqCtx.upstreamProtocol,
-				reqCtx.clientProtocol,
-				reqCtx.originalModel,
-				reqCtx.originalBody,
-				reqCtx.translatedBody,
+				reqCtx.transformPlan.UpstreamProtocol,
+				reqCtx.transformPlan.ClientProtocol,
+				reqCtx.transformPlan.ResponseModel(),
+				reqCtx.transformPlan.OriginalBody,
+				reqCtx.transformPlan.TranslatedBody,
 				rawEvent,
 				&state,
 			)
@@ -683,56 +677,35 @@ func (s *Server) handleResponse(
 // 从proxy.go提取，遵循SRP原则
 // 参数新增 apiKey 用于直接传递已选中的API Key（从KeySelector获取）
 // 参数新增 method 用于支持任意HTTP方法（GET、POST、PUT、DELETE等）
-func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey string, method string, body []byte, hdr http.Header, rawQuery, requestPath string, baseURL string, w http.ResponseWriter, observer *ForwardObserver) (*fwResult, float64, error) {
+func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey string, method string, plan protocol.TransformPlan, hdr http.Header, rawQuery string, baseURL string, w http.ResponseWriter, observer *ForwardObserver) (*fwResult, float64, error) {
 	// 1. 创建请求上下文（处理超时）
-	reqCtx := s.newRequestContext(ctx, requestPath, body)
-	reqCtx.clientProtocol = protocol.Protocol(util.DetectChannelTypeFromPath(requestPath))
-	reqCtx.upstreamProtocol = protocol.Protocol(cfg.GetChannelType())
-	reqCtx.originalBody = body
-	reqCtx.translatedBody = body
-	reqCtx.originalModel = extractModelFromPath(requestPath)
-	if reqCtx.originalModel == "" {
-		var reqModel struct {
-			Model string `json:"model"`
-		}
-		_ = sonic.Unmarshal(body, &reqModel)
-		reqCtx.originalModel = reqModel.Model
-	}
+	reqCtx := s.newRequestContext(ctx, plan.UpstreamPath, plan.TranslatedBody)
+	reqCtx.transformPlan = plan
+	reqCtx.clientProtocol = plan.ClientProtocol
+	reqCtx.upstreamProtocol = plan.UpstreamProtocol
+	reqCtx.originalBody = plan.OriginalBody
+	reqCtx.translatedBody = plan.TranslatedBody
+	reqCtx.originalModel = plan.ResponseModel()
 	defer reqCtx.cleanup() // [INFO] 统一清理：定时器 + context（总是安全）
 
-	resolvedModel := reqCtx.originalModel
-	if resolvedModel == "" {
-		var reqModel struct {
-			Model string `json:"model"`
-		}
-		_ = sonic.Unmarshal(body, &reqModel)
-		resolvedModel = reqModel.Model
-	}
-
-	if s.protocolRegistry != nil &&
-		(reqCtx.clientProtocol == protocol.OpenAI || reqCtx.clientProtocol == protocol.Anthropic || reqCtx.clientProtocol == protocol.Codex) &&
-		reqCtx.upstreamProtocol == protocol.Gemini {
-		translatedBody, err := s.protocolRegistry.TranslateRequest(reqCtx.clientProtocol, reqCtx.upstreamProtocol, resolvedModel, body, reqCtx.isStreaming)
+	if s.protocolRegistry != nil && plan.NeedsTransform {
+		translatedBody, err := s.protocolRegistry.TranslateRequest(plan.ClientProtocol, plan.UpstreamProtocol, plan.RequestModel(), plan.TranslatedBody, plan.Streaming)
 		if err != nil {
 			return nil, 0, fmt.Errorf("translate request for channel %d: %w", cfg.ID, err)
 		}
-		body = translatedBody
-		reqCtx.translatedBody = translatedBody
-		requestPath = buildGeminiGeneratePath(resolvedModel, reqCtx.isStreaming)
-	} else if s.protocolRegistry != nil &&
-		(reqCtx.clientProtocol == protocol.OpenAI || reqCtx.clientProtocol == protocol.Codex) &&
-		reqCtx.upstreamProtocol == protocol.Anthropic {
-		translatedBody, err := s.protocolRegistry.TranslateRequest(reqCtx.clientProtocol, reqCtx.upstreamProtocol, resolvedModel, body, reqCtx.isStreaming)
-		if err != nil {
-			return nil, 0, fmt.Errorf("translate request for channel %d: %w", cfg.ID, err)
+		plan.TranslatedBody = translatedBody
+		switch plan.UpstreamProtocol {
+		case protocol.Gemini:
+			plan.UpstreamPath = buildGeminiGeneratePath(plan.RequestModel(), plan.Streaming)
+		case protocol.Anthropic:
+			plan.UpstreamPath = buildAnthropicMessagesPath()
 		}
-		body = translatedBody
+		reqCtx.transformPlan = plan
 		reqCtx.translatedBody = translatedBody
-		requestPath = buildAnthropicMessagesPath()
 	}
 
 	// 2. 构建上游请求
-	req, err := s.buildProxyRequest(reqCtx, cfg, apiKey, method, body, hdr, rawQuery, requestPath, baseURL)
+	req, err := s.buildProxyRequest(reqCtx, cfg, apiKey, method, reqCtx.transformPlan.TranslatedBody, hdr, rawQuery, reqCtx.transformPlan.UpstreamPath, baseURL)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -813,8 +786,30 @@ func (s *Server) forwardAttempt(
 
 	// 转发请求（传递实际的API Key字符串和观测回调）
 	// [FIX] 2026-01: 使用传入的 requestPath（可能已替换模型名）而非 reqCtx.requestPath
+	plan, err := protocol.BuildTransformPlan(
+		reqCtx.clientProtocol,
+		protocol.Protocol(cfg.GetChannelType()),
+		reqCtx.requestPath,
+		requestPath,
+		reqCtx.body,
+		bodyToSend,
+		reqCtx.originalModel,
+		actualModel,
+		reqCtx.isStreaming,
+	)
+	if err != nil {
+		channelID := cfg.ID
+		return &proxyResult{
+			status:     http.StatusInternalServerError,
+			body:       []byte(err.Error()),
+			channelID:  &channelID,
+			succeeded:  false,
+			nextAction: cooldown.ActionRetryChannel,
+		}, cooldown.ActionRetryChannel
+	}
+
 	res, duration, err := s.forwardOnceAsync(ctx, cfg, selectedKey, reqCtx.requestMethod,
-		bodyToSend, reqCtx.header, reqCtx.rawQuery, requestPath, baseURL, w, reqCtx.observer)
+		plan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer)
 
 	// 处理网络错误或异常响应（如空响应）
 	// [INFO] 修复：handleResponse可能返回err即使StatusCode=200（例如Content-Length=0）

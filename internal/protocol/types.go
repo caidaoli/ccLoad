@@ -1,6 +1,10 @@
 package protocol
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"slices"
+)
 
 // Protocol identifies a client-facing or upstream request/response protocol.
 type Protocol string
@@ -28,6 +32,85 @@ type TransformPlan struct {
 	ActualModel      string
 	Streaming        bool
 	NeedsTransform   bool
+}
+
+var supportedTransformSourcesByUpstream = map[Protocol][]Protocol{
+	Gemini:    {Anthropic, Codex, OpenAI},
+	Anthropic: {Codex, OpenAI},
+}
+
+// SupportedClientProtocolsForUpstream returns the documented client-facing protocols
+// that can be translated into the given upstream protocol.
+func SupportedClientProtocolsForUpstream(upstream Protocol) []Protocol {
+	supported := supportedTransformSourcesByUpstream[upstream]
+	if len(supported) == 0 {
+		return nil
+	}
+	return slices.Clone(supported)
+}
+
+// SupportsTransform reports whether the runtime has a documented transform path for
+// the given client/upstream protocol pair.
+func SupportsTransform(client, upstream Protocol) bool {
+	for _, candidate := range supportedTransformSourcesByUpstream[upstream] {
+		if candidate == client {
+			return true
+		}
+	}
+	return false
+}
+
+// BuildTransformPlan turns request metadata into a concrete runtime plan that can
+// travel through request preparation, forwarding, and response translation.
+func BuildTransformPlan(client, upstream Protocol, originalPath, upstreamPath string, originalBody, preparedBody []byte, originalModel, actualModel string, streaming bool) (TransformPlan, error) {
+	plan := TransformPlan{
+		ClientProtocol:   client,
+		UpstreamProtocol: upstream,
+		OriginalPath:     originalPath,
+		UpstreamPath:     upstreamPath,
+		OriginalBody:     originalBody,
+		TranslatedBody:   preparedBody,
+		OriginalModel:    originalModel,
+		ActualModel:      actualModel,
+		Streaming:        streaming,
+	}
+
+	if plan.UpstreamPath == "" {
+		plan.UpstreamPath = plan.OriginalPath
+	}
+	if plan.TranslatedBody == nil {
+		plan.TranslatedBody = plan.OriginalBody
+	}
+	if plan.ActualModel == "" {
+		plan.ActualModel = plan.OriginalModel
+	}
+
+	if client == "" || upstream == "" || client == upstream {
+		return plan, nil
+	}
+	if !SupportsTransform(client, upstream) {
+		return TransformPlan{}, fmt.Errorf("unsupported protocol transform: %s -> %s", client, upstream)
+	}
+
+	plan.NeedsTransform = true
+	return plan, nil
+}
+
+// RequestModel returns the model name that should be sent upstream.
+func (p TransformPlan) RequestModel() string {
+	if p.ActualModel != "" {
+		return p.ActualModel
+	}
+	return p.OriginalModel
+}
+
+// ResponseModel returns the client-visible model name to use in translated
+// responses so redirects remain transparent to callers.
+func (p TransformPlan) ResponseModel() string {
+	if p.OriginalModel != "" {
+		return p.OriginalModel
+	}
+	return p.ActualModel
 }
 
 // RequestTransform rewrites one client request body into the upstream protocol shape.
