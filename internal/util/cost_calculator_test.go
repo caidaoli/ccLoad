@@ -427,8 +427,8 @@ func TestCalculateCost_QwenFreeVariants(t *testing.T) {
 }
 
 func TestCalculateCost_QwenTieredPricingFromTable(t *testing.T) {
-	// 用户提供表格（2026-02）：
-	// - qwen3.5-plus: input 0.4/1.2, output(non-thinking) 2.4/7.2（阈值256K）
+	// 官方价格表（阿里云 Model Studio，用户提供截图，2026-04-12）：
+	// - qwen3.5-plus: input 0.4/0.5, output(non-thinking) 2.4/3.0（阈值256K）
 	// - qwen-plus: input 0.4/1.2, output(non-thinking) 1.2/3.6（阈值256K）
 	//
 	// 说明：当前计费器没有“thinking mode”维度，这里按 non-thinking 列做验证。
@@ -442,14 +442,14 @@ func TestCalculateCost_QwenTieredPricingFromTable(t *testing.T) {
 
 	// qwen3.5-plus 高档（>256K）
 	high35 := CalculateCostDetailed("qwen3.5-plus", 256_001, 1_000_000, 0, 0, 0)
-	expectedHigh35 := (256_001 * 1.2 / 1_000_000) + 7.2
+	expectedHigh35 := (256_001 * 0.5 / 1_000_000) + 3.0
 	if !floatEquals(high35, expectedHigh35, 0.000001) {
 		t.Errorf("qwen3.5-plus 高档: 成本 = %.6f, 期望 %.6f", high35, expectedHigh35)
 	}
 
 	// 版本化模型同价
 	dated35 := CalculateCostDetailed("qwen3.5-plus-2026-02-15", 300_000, 1_000_000, 0, 0, 0)
-	expectedDated35 := (300_000 * 1.2 / 1_000_000) + 7.2
+	expectedDated35 := (300_000 * 0.5 / 1_000_000) + 3.0
 	if !floatEquals(dated35, expectedDated35, 0.000001) {
 		t.Errorf("qwen3.5-plus-2026-02-15: 成本 = %.6f, 期望 %.6f", dated35, expectedDated35)
 	}
@@ -479,6 +479,50 @@ func TestCalculateCost_QwenTieredPricingFromTable(t *testing.T) {
 	expectedThinkingPlus := (300_000 * 1.2 / 1_000_000) + 12.0
 	if !floatEquals(thinkingPlus, expectedThinkingPlus, 0.000001) {
 		t.Errorf("qwen-plus-2025-07-28:thinking: 成本 = %.6f, 期望 %.6f", thinkingPlus, expectedThinkingPlus)
+	}
+}
+
+func TestCalculateCost_Qwen36PlusTieredPricingFromProviderCard(t *testing.T) {
+	// 来源: 阿里云 Model Studio 官方价格页（用户提供截图，2026-04-12）
+	// - <=256K: input $0.5 / 1M, output $3 / 1M
+	// - >256K:  input $2 / 1M, output $6 / 1M
+
+	low := CalculateCostDetailed("qwen3.6-plus", 256_000, 1_000_000, 0, 0, 0)
+	expectedLow := (256_000 * 0.5 / 1_000_000) + 3.0
+	if !floatEquals(low, expectedLow, 0.000001) {
+		t.Errorf("qwen3.6-plus 低档: 成本 = %.6f, 期望 %.6f", low, expectedLow)
+	}
+
+	high := CalculateCostDetailed("qwen3.6-plus", 256_001, 1_000_000, 0, 0, 0)
+	expectedHigh := (256_001 * 2.0 / 1_000_000) + 6.0
+	if !floatEquals(high, expectedHigh, 0.000001) {
+		t.Errorf("qwen3.6-plus 高档: 成本 = %.6f, 期望 %.6f", high, expectedHigh)
+	}
+
+	// 版本化模型同价
+	dated := CalculateCostDetailed("qwen3.6-plus-2026-04-02", 300_000, 1_000_000, 0, 0, 0)
+	expectedDated := (300_000 * 2.0 / 1_000_000) + 6.0
+	if !floatEquals(dated, expectedDated, 0.000001) {
+		t.Errorf("qwen3.6-plus-2026-04-02: 成本 = %.6f, 期望 %.6f", dated, expectedDated)
+	}
+
+	alias := CalculateCostDetailed("qwen-3.6-plus", 300_000, 1_000_000, 0, 0, 0)
+	if !floatEquals(alias, expectedDated, 0.000001) {
+		t.Errorf("qwen-3.6-plus 别名: 成本 = %.6f, 期望 %.6f", alias, expectedDated)
+	}
+}
+
+func TestCalculateCost_Qwen36PlusFreeVariants(t *testing.T) {
+	testCases := []string{
+		"qwen3.6-plus:free",
+		"qwen3.6-plus-preview:free",
+	}
+
+	for _, model := range testCases {
+		cost := CalculateCostDetailed(model, 1_000_000, 1_000_000, 0, 0, 0)
+		if cost != 0 {
+			t.Errorf("%s: 免费模型成本应为0，实际 %.6f", model, cost)
+		}
 	}
 }
 

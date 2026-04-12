@@ -210,15 +210,31 @@ var basePricing = map[string]ModelPricing{
 	"qwen-2.5-vl-7b-instruct":          {InputPrice: 0.20, OutputPrice: 0.20},
 	"qwen-2.5-vl-7b-instruct:free":     {InputPrice: 0.00, OutputPrice: 0.00},
 	"qwen-max":                         {InputPrice: 1.60, OutputPrice: 6.40},
-	// qwen3.5-plus（按表格：输入分档0.4/1.2，输出分档2.4/7.2）
+	// qwen3.5-plus（阿里云 Model Studio 官方价格页，用户提供截图，2026-04-12）
+	// - <=256K: input $0.4 / 1M, output $2.4 / 1M
+	// - >256K:  input $0.5 / 1M, output $3.0 / 1M
 	"qwen3.5-plus": {
 		InputPrice: 0.40, OutputPrice: 2.40,
-		InputPriceHigh: 1.20, OutputPriceHigh: 7.20, // >256k input tokens
+		InputPriceHigh: 0.50, OutputPriceHigh: 3.00, // >256k input tokens
 	},
 	"qwen3.5-plus-2026-02-15": {
 		InputPrice: 0.40, OutputPrice: 2.40,
-		InputPriceHigh: 1.20, OutputPriceHigh: 7.20, // >256k input tokens
+		InputPriceHigh: 0.50, OutputPriceHigh: 3.00, // >256k input tokens
 	},
+	// qwen3.6-plus
+	// 来源: 阿里云 Model Studio 官方价格页，用户提供截图（2026-04-12）
+	// - <=256K: input $0.5 / 1M, output $3.0 / 1M
+	// - >256K:  input $2.0 / 1M, output $6.0 / 1M
+	"qwen3.6-plus": {
+		InputPrice: 0.50, OutputPrice: 3.00,
+		InputPriceHigh: 2.00, OutputPriceHigh: 6.00, // >256k input tokens
+	},
+	"qwen3.6-plus-2026-04-02": {
+		InputPrice: 0.50, OutputPrice: 3.00,
+		InputPriceHigh: 2.00, OutputPriceHigh: 6.00, // >256k input tokens
+	},
+	"qwen3.6-plus:free":         {InputPrice: 0.00, OutputPrice: 0.00},
+	"qwen3.6-plus-preview:free": {InputPrice: 0.00, OutputPrice: 0.00},
 	// qwen-plus（按表格 non-thinking 列）
 	"qwen-plus": {
 		InputPrice: 0.40, OutputPrice: 1.20,
@@ -445,6 +461,8 @@ var modelAliases = map[string]string{
 	// Qwen 别名（常见命名变体）
 	"qwen-3.5-plus":                  "qwen3.5-plus",
 	"qwen-3.5-plus-2026-02-15":       "qwen3.5-plus-2026-02-15",
+	"qwen-3.6-plus":                  "qwen3.6-plus",
+	"qwen-3.6-plus-2026-04-02":       "qwen3.6-plus-2026-04-02",
 	"qwen-3-32b":                     "qwen3-32b",
 	"qwen-3-4b":                      "qwen3-4b",
 	"qwen-3-8b":                      "qwen3-8b",
@@ -517,6 +535,8 @@ func getTierThresholdForModel(model string) int {
 		return gpt54TierThreshold
 	case strings.HasPrefix(lowerModel, "qwen3.5-plus"),
 		strings.HasPrefix(lowerModel, "qwen-3.5-plus"),
+		strings.HasPrefix(lowerModel, "qwen3.6-plus"),
+		strings.HasPrefix(lowerModel, "qwen-3.6-plus"),
 		strings.HasPrefix(lowerModel, "qwen-plus"):
 		return qwenPlusTierThreshold
 	default:
@@ -836,6 +856,7 @@ func fuzzyMatchModel(model string) (ModelPricing, bool) {
 		"kimi-linear-48b-a3b-instruct",
 		"kimi-vl-a3b-thinking:free", "kimi-vl-a3b-thinking",
 		"kimi-dev-72b:free", "kimi-dev-72b",
+		"qwen3.6-plus-2026-04-02", "qwen3.6-plus", "qwen3.6-plus-preview:free", "qwen3.6-plus:free",
 		"qwen3.5-plus-2026-02-15", "qwen3.5-plus",
 		"qwen-plus-2025-12-01", "qwen-plus-2025-09-11", "qwen-plus-2025-07-28:thinking", "qwen-plus-2025-07-28",
 		"qwen-plus-2025-07-14", "qwen-plus-2025-04-28", "qwen-plus-2025-01-25", "qwen-plus-latest", "qwen-plus",
