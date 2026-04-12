@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+const protocolSource = fs.readFileSync(path.join(__dirname, 'channels-protocols.js'), 'utf8');
 const source = fs.readFileSync(path.join(__dirname, 'channels-modals.js'), 'utf8');
 const zhLocaleSource = fs.readFileSync(path.join(__dirname, '..', 'locales', 'zh-CN.js'), 'utf8');
 const enLocaleSource = fs.readFileSync(path.join(__dirname, '..', 'locales', 'en.js'), 'utf8');
@@ -70,7 +71,7 @@ function loadSelectionSandbox(overrides = {}) {
   Object.assign(sandbox, overrides);
 
   vm.createContext(sandbox);
-  vm.runInContext(source, sandbox);
+  vm.runInContext(`${protocolSource}\n${source}`, sandbox);
 
   return {
     sandbox,

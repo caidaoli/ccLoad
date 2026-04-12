@@ -185,20 +185,11 @@ func (c *ChannelCache) GetEnabledChannelsByModelAndProtocol(ctx context.Context,
 		return c.GetEnabledChannelsByModel(ctx, modelName)
 	}
 	if err := c.refreshIfNeeded(ctx); err != nil {
-		if store, ok := c.store.(ModelProtocolStore); ok {
-			return store.GetEnabledChannelsByModelAndProtocol(ctx, modelName, protocol)
-		}
-		channels, err := c.store.GetEnabledChannelsByModel(ctx, modelName)
+		channels, err := c.store.GetEnabledChannelsByModelAndProtocol(ctx, modelName, protocol)
 		if err != nil {
 			return nil, err
 		}
-		filtered := make([]*modelpkg.Config, 0, len(channels))
-		for _, cfg := range channels {
-			if cfg != nil && cfg.SupportsProtocol(protocol) {
-				filtered = append(filtered, cfg)
-			}
-		}
-		return deepCopyConfigs(filtered), nil
+		return deepCopyConfigs(channels), nil
 	}
 
 	c.mutex.RLock()

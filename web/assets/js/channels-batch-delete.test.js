@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+const protocolSource = fs.readFileSync(path.join(__dirname, 'channels-protocols.js'), 'utf8');
 const modalsSource = fs.readFileSync(path.join(__dirname, 'channels-modals.js'), 'utf8');
 const html = fs.readFileSync(path.join(__dirname, '..', '..', 'channels.html'), 'utf8');
 const zhLocaleSource = fs.readFileSync(path.join(__dirname, '..', 'locales', 'zh-CN.js'), 'utf8');
@@ -97,7 +98,7 @@ function createBatchDeleteHarness() {
   };
 
   vm.createContext(sandbox);
-  vm.runInContext(modalsSource, sandbox);
+  vm.runInContext(`${protocolSource}\n${modalsSource}`, sandbox);
 
   return {
     sandbox,
