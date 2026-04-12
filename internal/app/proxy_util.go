@@ -14,6 +14,7 @@ import (
 
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
 
 	"github.com/bytedance/sonic"
@@ -111,10 +112,12 @@ type ForwardObserver struct {
 // proxyRequestContext 代理请求上下文（封装请求信息，遵循DIP原则）
 type proxyRequestContext struct {
 	originalModel    string
+	clientProtocol   protocol.Protocol
 	requestMethod    string
 	requestPath      string
 	rawQuery         string
 	body             []byte
+	translatedBody   []byte
 	header           http.Header
 	isStreaming      bool
 	tokenHash        string           // Token哈希值（用于统计）
@@ -368,6 +371,17 @@ func replaceModelInPath(path string, originalModel string, actualModel string) s
 		return path
 	}
 	return strings.Replace(path, originalModel, actualModel, 1)
+}
+
+func buildGeminiGeneratePath(model string, isStreaming bool) string {
+	if isStreaming {
+		return "/v1beta/models/" + model + ":streamGenerateContent"
+	}
+	return "/v1beta/models/" + model + ":generateContent"
+}
+
+func buildAnthropicMessagesPath() string {
+	return "/v1/messages"
 }
 
 // prepareRequestBody 准备请求体（处理模型重定向和模糊匹配）

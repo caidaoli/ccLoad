@@ -385,6 +385,9 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 			if err := s.saveModelEntriesImpl(ctx, tx, channelID, config.ModelEntries); err != nil {
 				return fmt.Errorf("save model entries for channel %d: %w", channelID, err)
 			}
+			if err := s.saveProtocolTransformsTx(ctx, tx, channelID, config.GetProtocolTransforms()); err != nil {
+				return fmt.Errorf("save protocol transforms for channel %d: %w", channelID, err)
+			}
 
 			// 批量插入API Keys（使用预编译语句）
 			for i := range cwk.APIKeys {

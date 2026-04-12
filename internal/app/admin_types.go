@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	neturl "net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -18,6 +19,7 @@ type ChannelRequest struct {
 	Name                  string             `json:"name" binding:"required"`
 	APIKey                string             `json:"api_key" binding:"required"`
 	ChannelType           string             `json:"channel_type,omitempty"` // 渠道类型:anthropic, codex, gemini
+	ProtocolTransforms    []string           `json:"protocol_transforms,omitempty"`
 	KeyStrategy           string             `json:"key_strategy,omitempty"` // Key使用策略:sequential, round_robin
 	URL                   string             `json:"url" binding:"required"`
 	Priority              int                `json:"priority"`
@@ -144,6 +146,7 @@ func (cr *ChannelRequest) Validate() error {
 		}
 		cr.ChannelType = normalized // 应用标准化结果
 	}
+	cr.ProtocolTransforms = normalizeProtocolTransforms(cr.ChannelType, cr.ProtocolTransforms)
 
 	// [FIX] key_strategy 白名单校验 + 标准化
 	// 设计：空值允许（使用默认值sequential），非空值必须合法
@@ -176,6 +179,7 @@ func (cr *ChannelRequest) ToConfig() *model.Config {
 	return &model.Config{
 		Name:                  strings.TrimSpace(cr.Name),
 		ChannelType:           strings.TrimSpace(cr.ChannelType), // 传递渠道类型
+		ProtocolTransforms:    append([]string(nil), cr.ProtocolTransforms...),
 		URL:                   strings.TrimSpace(cr.URL),
 		Priority:              cr.Priority,
 		ModelEntries:          normalizedModels,
@@ -184,6 +188,28 @@ func (cr *ChannelRequest) ToConfig() *model.Config {
 		ScheduledCheckModel:   cr.ScheduledCheckModel,
 		DailyCostLimit:        cr.DailyCostLimit,
 	}
+}
+
+func normalizeProtocolTransforms(channelType string, transforms []string) []string {
+	base := util.NormalizeChannelType(channelType)
+	seen := make(map[string]struct{}, len(transforms))
+	normalized := make([]string, 0, len(transforms))
+	for _, protocol := range transforms {
+		protocol = util.NormalizeChannelType(protocol)
+		if protocol == "" || protocol == base {
+			continue
+		}
+		if !util.IsValidChannelType(protocol) {
+			continue
+		}
+		if _, ok := seen[protocol]; ok {
+			continue
+		}
+		seen[protocol] = struct{}{}
+		normalized = append(normalized, protocol)
+	}
+	slices.Sort(normalized)
+	return normalized
 }
 
 // KeyCooldownInfo Key级别冷却信息

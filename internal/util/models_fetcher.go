@@ -101,6 +101,7 @@ func (f *AnthropicModelsFetcher) FetchModels(ctx context.Context, baseURL string
 	// 官方API使用x-api-key，第三方中转通常使用Authorization Bearer
 	req.Header.Set("x-api-key", apiKey)
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
 
 	// 使用公共HTTP请求函数 (ctx已包含在req中)
 	body, err := doHTTPRequest(req)

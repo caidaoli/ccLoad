@@ -1,6 +1,8 @@
 package app
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -171,4 +173,69 @@ func streamCopy(ctx context.Context, src io.Reader, dst http.ResponseWriter, onD
 // 设计原则：SSE事件通常200B-2KB，小缓冲区避免事件积压
 func streamCopySSE(ctx context.Context, src io.Reader, dst http.ResponseWriter, onData func([]byte) error) error {
 	return streamCopyWithBufferSize(ctx, src, dst, onData, SSEBufferSize)
+}
+
+func streamTransformSSEEvents(
+	ctx context.Context,
+	src io.Reader,
+	dst http.ResponseWriter,
+	onRawEvent func([]byte) error,
+	transform func([]byte) ([][]byte, error),
+) error {
+	reader := bufio.NewReader(src)
+	var eventBuf bytes.Buffer
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		line, err := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			eventBuf.Write(line)
+			if bytes.Equal(bytes.TrimRight(line, "\r\n"), []byte{}) {
+				rawEvent := append([]byte(nil), eventBuf.Bytes()...)
+				if len(rawEvent) > 0 {
+					if onRawEvent != nil {
+						if hookErr := onRawEvent(rawEvent); hookErr != nil {
+							if errors.Is(hookErr, errAbortStreamBeforeWrite) {
+								return hookErr
+							}
+							_ = hookErr
+						}
+					}
+					if transform != nil {
+						chunks, transformErr := transform(rawEvent)
+						if transformErr != nil {
+							return transformErr
+						}
+						for _, chunk := range chunks {
+							if len(chunk) == 0 {
+								continue
+							}
+							if _, writeErr := dst.Write(chunk); writeErr != nil {
+								return writeErr
+							}
+							if flusher, ok := dst.(http.Flusher); ok {
+								flusher.Flush()
+							}
+						}
+					}
+				}
+				eventBuf.Reset()
+			}
+		}
+
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		}
+	}
 }

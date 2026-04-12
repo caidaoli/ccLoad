@@ -226,6 +226,50 @@ func TestHandleCreateChannel(t *testing.T) {
 	}
 }
 
+func TestHandleCreateChannel_PersistsProtocolTransforms(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	payload := ChannelRequest{
+		Name:               "Transform-Channel",
+		APIKey:             "sk-transform",
+		URL:                "https://transform.example.com",
+		Priority:           42,
+		ChannelType:        "gemini",
+		ProtocolTransforms: []string{"openai", "anthropic"},
+		Models: []model.ModelEntry{
+			{Model: "gemini-2.5-pro", RedirectModel: ""},
+		},
+		Enabled: true,
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels", payload))
+	server.handleCreateChannel(c)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("期望状态码 %d，实际 %d，响应体: %s", http.StatusCreated, w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Success bool          `json:"success"`
+		Data    *model.Config `json:"data"`
+	}
+	mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+	if resp.Data == nil {
+		t.Fatalf("期望返回创建后的渠道数据")
+	}
+	if len(resp.Data.ProtocolTransforms) != 2 || resp.Data.ProtocolTransforms[0] != "anthropic" || resp.Data.ProtocolTransforms[1] != "openai" {
+		t.Fatalf("返回的 protocol transforms 不正确: %#v", resp.Data.ProtocolTransforms)
+	}
+
+	stored, err := store.GetConfig(context.Background(), resp.Data.ID)
+	if err != nil {
+		t.Fatalf("查询持久化渠道失败: %v", err)
+	}
+	if len(stored.ProtocolTransforms) != 2 || stored.ProtocolTransforms[0] != "anthropic" || stored.ProtocolTransforms[1] != "openai" {
+		t.Fatalf("持久化 protocol transforms 不正确: %#v", stored.ProtocolTransforms)
+	}
+}
+
 // TestHandleGetChannel 测试获取单个渠道
 func TestHandleGetChannel(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
@@ -458,6 +502,60 @@ func TestHandleUpdateChannel(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestHandleUpdateChannel_UpdatesProtocolTransforms(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name:               "Update-Transform-Channel",
+		URL:                "https://update-transform.example.com",
+		Priority:           10,
+		Enabled:            true,
+		ChannelType:        "gemini",
+		ProtocolTransforms: []string{"openai"},
+		ModelEntries: []model.ModelEntry{
+			{Model: "gemini-2.5-pro", RedirectModel: ""},
+		},
+	})
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-update-transform", KeyStrategy: model.KeyStrategySequential,
+	}}); err != nil {
+		t.Fatalf("创建测试 API Key 失败: %v", err)
+	}
+
+	payload := ChannelRequest{
+		Name:               "Update-Transform-Channel",
+		APIKey:             "sk-update-transform",
+		URL:                "https://update-transform.example.com",
+		Priority:           10,
+		ChannelType:        "gemini",
+		ProtocolTransforms: []string{"codex", "anthropic"},
+		Models: []model.ModelEntry{
+			{Model: "gemini-2.5-pro", RedirectModel: ""},
+		},
+		Enabled: true,
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/channels/"+strconv.FormatInt(created.ID, 10), payload))
+	c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(created.ID, 10)}}
+	server.handleUpdateChannel(c, created.ID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望状态码 %d，实际 %d，响应体: %s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	updated, err := store.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("查询更新后渠道失败: %v", err)
+	}
+	if len(updated.ProtocolTransforms) != 2 || updated.ProtocolTransforms[0] != "anthropic" || updated.ProtocolTransforms[1] != "codex" {
+		t.Fatalf("更新后的 protocol transforms 不正确: %#v", updated.ProtocolTransforms)
 	}
 }
 

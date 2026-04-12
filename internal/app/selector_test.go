@@ -84,6 +84,40 @@ func TestSelectRouteCandidates_NormalRequest(t *testing.T) {
 	}
 }
 
+func TestSelectRouteCandidates_UsesExposedProtocolInsteadOfChannelType(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	ctx := context.Background()
+
+	_, err := store.CreateConfig(ctx, &model.Config{
+		Name:               "gemini-openai-transform",
+		URL:                "https://api.example.com",
+		Priority:           100,
+		Enabled:            true,
+		ChannelType:        "gemini",
+		ProtocolTransforms: []string{"openai"},
+		ModelEntries: []model.ModelEntry{
+			{Model: "gemini-2.5-pro", RedirectModel: ""},
+		},
+	})
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+
+	candidates, err := server.selectCandidatesByModelAndType(ctx, "gemini-2.5-pro", "openai")
+	if err != nil {
+		t.Fatalf("selectCandidates失败: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("期望1个候选渠道，实际%d个", len(candidates))
+	}
+	if candidates[0].Name != "gemini-openai-transform" {
+		t.Fatalf("期望命中 transform 渠道，实际 %s", candidates[0].Name)
+	}
+}
+
 // TestSelectRouteCandidates_CooledDownChannels 测试冷却渠道过滤
 func TestSelectRouteCandidates_CooledDownChannels(t *testing.T) {
 	store, cleanup := setupTestStore(t)

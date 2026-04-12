@@ -44,7 +44,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 	writer := csv.NewWriter(buf)
 	defer writer.Flush()
 
-	header := []string{"id", "name", "api_key", "url", "priority", "models", "model_redirects", "channel_type", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model"}
+	header := []string{"id", "name", "api_key", "url", "priority", "models", "model_redirects", "channel_type", "protocol_transforms", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model"}
 	if err := writer.Write(header); err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -94,6 +94,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 			strings.Join(models, ","),
 			modelRedirectsJSON,
 			cfg.GetChannelType(), // 使用GetChannelType确保默认值
+			strings.Join(cfg.GetProtocolTransforms(), ","),
 			keyStrategy,
 			strconv.FormatBool(cfg.Enabled),
 			strconv.FormatBool(cfg.ScheduledCheckEnabled),
@@ -211,6 +212,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 		modelsRaw := fetch("models")
 		modelRedirectsRaw := fetch("model_redirects")
 		channelType := fetch("channel_type")
+		protocolTransformsRaw := fetch("protocol_transforms")
 		keyStrategy := fetch("key_strategy")
 
 		var missing []string
@@ -263,6 +265,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			summary.Skipped++
 			continue
 		}
+		protocolTransforms := normalizeProtocolTransforms(channelType, parseProtocolTransformsCSV(protocolTransformsRaw))
 
 		models := parseImportModels(modelsRaw)
 		if len(models) == 0 {
@@ -361,6 +364,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			Priority:              priority,
 			ModelEntries:          modelEntries,
 			ChannelType:           channelType,
+			ProtocolTransforms:    protocolTransforms,
 			Enabled:               enabled,
 			ScheduledCheckEnabled: scheduledCheckEnabled,
 			ScheduledCheckModel:   scheduledCheckModel,
@@ -423,6 +427,23 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 	}
 
 	RespondJSON(c, http.StatusOK, summary)
+}
+
+func parseProtocolTransformsCSV(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	transforms := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		transforms = append(transforms, part)
+	}
+	return transforms
 }
 
 // ==================== CSV辅助函数 ====================

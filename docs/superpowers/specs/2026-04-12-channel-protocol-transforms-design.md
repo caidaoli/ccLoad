@@ -453,6 +453,88 @@ go test -tags go_json ./internal/...
 
 这说明当前基线不是全绿，后续实现阶段必须把该失败视为既有问题，单独判断是否需要顺手修正。
 
+## 当前实现落地状态（2026-04-12）
+
+本设计在当前工作树中已经落地到以下范围：
+
+- `protocol_transforms` 已完成：
+  - 模型层字段
+  - 数据库存储与查询
+  - 缓存索引
+  - Admin API
+  - CSV 导入导出
+  - `web/channels.html` 编辑弹窗与保存载荷
+  - `/v1/models` / `/v1beta/models` 暴露协议筛选
+
+- 已打通的真实转换链路：
+  - `OpenAI -> Gemini` 非流式/流式
+  - `Anthropic -> Gemini` 非流式/流式
+  - `Codex -> Gemini` 非流式/流式
+  - `OpenAI -> Anthropic` 非流式/流式
+  - `Codex -> Anthropic` 非流式/流式
+
+- 已明确收口的风险：
+  - Gemini 上游路径使用 `actualModel`，不回退到 `originalModel`
+  - 流式翻译支持 `text/plain` SSE fallback
+  - 未支持的结构化请求内容（image/tool/file/非 message item）会明确返回 400，而不是静默吞掉或伪装成 502
+
+当前仍未实现的部分：
+
+- 更完整的结构化内容支持（目前是“明确拒绝”，不是“真正转换”）
+- 其余未覆盖的协议对
+- 本地最终全量验证与提交
+
+## 本地最终验收建议
+
+当前沙箱存在环境限制：
+
+- 不能创建 `.git/worktrees/.../index.lock`，因此无法在此环境中提交
+- `httptest.NewServer` 在部分测试里会因为端口绑定权限失败；当前已确认 `go test -tags go_json ./internal/... -v` 在跑完大部分包后，会卡在 `internal/util/TestAnthropicModelsFetcher` 的 `listen tcp6 [::1]:0: bind: operation not permitted`
+- Go 构建缓存默认落到 `~/Library/Caches/go-build`，当前沙箱无写权限；需要显式设置 `GOCACHE`
+- `golangci-lint` 在未重定向缓存目录时会被同样的缓存权限问题误伤；将 `GOCACHE` 和 `GOLANGCI_LINT_CACHE` 指到工作树后，`golangci-lint run ./...` 已通过
+
+因此，最终验收请在本地正常环境执行：
+
+```bash
+cd /Users/caidaoli/Share/Source/go/ccLoad/.worktrees/protocol-transforms
+
+# 1. Go 全量
+go test -tags go_json ./internal/... -v
+
+# 2. 竞态
+go test -tags go_json -race ./internal/...
+
+# 3. 前端
+make web-test
+
+# 4. Lint
+golangci-lint run ./...
+```
+
+当前沙箱内已确认的验证命令：
+
+```bash
+mkdir -p .cache/go-build .cache/golangci-lint
+GOCACHE=$(pwd)/.cache/go-build go test -tags go_json ./internal/... -run '^$'
+GOCACHE=$(pwd)/.cache/go-build go test -tags go_json ./internal/... -v
+GOCACHE=$(pwd)/.cache/go-build go test -tags go_json ./internal/protocol/... ./internal/app -run 'ProtocolTransforms|ExposedProtocol|OpenAIToGemini|AnthropicToGemini|CodexToGemini|OpenAIToAnthropic|CodexToAnthropic|UnsupportedStructured|UsesResolvedActualModel|TextPlainSSE' -v
+GOCACHE=$(pwd)/.cache/go-build go test -tags go_json -race ./internal/protocol ./internal/app -run 'ProtocolTransforms|ExposedProtocol|OpenAIToGemini|AnthropicToGemini|CodexToGemini|OpenAIToAnthropic|CodexToAnthropic|UnsupportedStructured|UsesResolvedActualModel|TextPlainSSE'
+GOCACHE=$(pwd)/.cache/go-build go test -tags go_json -race ./internal/storage/... ./internal/util -run 'GetEnabledChannelsByExposedProtocol|Classify|ChannelType' -v
+GOCACHE=$(pwd)/.cache/go-build GOLANGCI_LINT_CACHE=$(pwd)/.cache/golangci-lint golangci-lint run ./internal/protocol/... ./internal/app/... ./internal/storage/... ./internal/util/...
+GOCACHE=$(pwd)/.cache/go-build GOLANGCI_LINT_CACHE=$(pwd)/.cache/golangci-lint golangci-lint run ./...
+make web-test
+```
+
+建议额外人工烟测：
+
+1. 新建 `gemini` 上游渠道，勾选 `openai` / `anthropic` / `codex`
+2. 分别用 `/v1/chat/completions`、`/v1/messages`、`/v1/responses` 调用同一模型
+3. 确认：
+   - 模型视图可见
+   - 请求命中正确上游
+   - 非流式与流式都返回目标客户端协议格式
+   - 未支持的结构化内容返回 400
+
 ## 实施原则
 
 - 保持 `ccLoad` 现有代理、重试、冷却、URL 选择逻辑不变

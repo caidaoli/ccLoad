@@ -2,6 +2,7 @@ package app
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -62,6 +63,12 @@ func detectModelsChannelType(c *gin.Context) string {
 	if c.GetHeader("anthropic-version") != "" {
 		return "anthropic"
 	}
+	if strings.HasPrefix(strings.ToLower(c.GetHeader("User-Agent")), "claude-cli") {
+		return "anthropic"
+	}
+	if strings.Contains(strings.ToLower(c.GetHeader("User-Agent")), "codex") {
+		return "codex"
+	}
 	return "openai"
 }
 
@@ -70,7 +77,7 @@ func (s *Server) handleListOpenAIModels(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	channelType := detectModelsChannelType(c)
-	models, err := s.getModelsByChannelType(ctx, channelType)
+	models, err := s.getModelsByExposedProtocol(ctx, channelType)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load models"})
 		return
