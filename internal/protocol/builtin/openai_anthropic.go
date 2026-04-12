@@ -2,7 +2,6 @@ package builtin
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -13,31 +12,11 @@ func convertOpenAIRequestToAnthropic(model string, rawJSON []byte, stream bool) 
 	if err := sonic.Unmarshal(rawJSON, &req); err != nil {
 		return nil, err
 	}
-	out := anthropicMessagesRequest{
-		Model:    model,
-		Messages: make([]anthropicMessageContent, 0, len(req.Messages)),
-		Stream:   stream,
-	}
-	prompt, err := normalizeOpenAITextPrompt(req)
+	conv, err := normalizeOpenAIConversation(req)
 	if err != nil {
 		return nil, err
 	}
-	if prompt.System != "" {
-		out.System = []anthropicTextBlock{{Type: "text", Text: prompt.System}}
-	}
-	for _, msg := range prompt.Messages {
-		out.Messages = append(out.Messages, anthropicMessageContent{
-			Role: msg.Role,
-			Content: []anthropicTextBlock{{
-				Type: "text",
-				Text: msg.Text,
-			}},
-		})
-	}
-	if len(out.Messages) == 0 {
-		return nil, fmt.Errorf("no convertible openai messages")
-	}
-	return sonic.Marshal(out)
+	return encodeAnthropicRequest(model, conv, stream)
 }
 
 func convertAnthropicResponseToOpenAINonStream(_ context.Context, model string, _, _, rawJSON []byte) ([]byte, error) {

@@ -2,6 +2,8 @@
   const ALL_PROTOCOLS = Object.freeze(['anthropic', 'codex', 'openai', 'gemini']);
   const SUPPORTED_TRANSFORMS_BY_CHANNEL_TYPE = Object.freeze({
     anthropic: Object.freeze(['codex', 'openai']),
+    codex: Object.freeze(['openai']),
+    openai: Object.freeze(['codex']),
     gemini: Object.freeze(['anthropic', 'codex', 'openai'])
   });
 

@@ -384,6 +384,14 @@ func buildAnthropicMessagesPath() string {
 	return "/v1/messages"
 }
 
+func buildOpenAIChatPath() string {
+	return "/v1/chat/completions"
+}
+
+func buildCodexResponsesPath() string {
+	return "/v1/responses"
+}
+
 // prepareRequestBody 准备请求体（处理模型重定向和模糊匹配）
 // 遵循SRP原则：单一职责 - 负责模型名解析和请求体准备
 //

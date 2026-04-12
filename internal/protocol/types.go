@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 )
 
 // Protocol identifies a client-facing or upstream request/response protocol.
@@ -20,10 +21,26 @@ const (
 	Gemini Protocol = "gemini"
 )
 
+// RequestFamily identifies the client request surface that is being transformed.
+type RequestFamily string
+
+// RequestFamily values enumerate the supported client request surfaces.
+const (
+	RequestFamilyUnknown         RequestFamily = ""
+	RequestFamilyChatCompletions RequestFamily = "chat_completions"
+	RequestFamilyResponses       RequestFamily = "responses"
+	RequestFamilyMessages        RequestFamily = "messages"
+	RequestFamilyGenerateContent RequestFamily = "generate_content"
+	RequestFamilyCompletions     RequestFamily = "completions"
+	RequestFamilyEmbeddings      RequestFamily = "embeddings"
+	RequestFamilyImages          RequestFamily = "images"
+)
+
 // TransformPlan captures the chosen transform metadata for one proxy attempt.
 type TransformPlan struct {
 	ClientProtocol   Protocol
 	UpstreamProtocol Protocol
+	RequestFamily    RequestFamily
 	OriginalPath     string
 	UpstreamPath     string
 	OriginalBody     []byte
@@ -34,30 +51,94 @@ type TransformPlan struct {
 	NeedsTransform   bool
 }
 
-var supportedTransformSourcesByUpstream = map[Protocol][]Protocol{
-	Gemini:    {Anthropic, Codex, OpenAI},
-	Anthropic: {Codex, OpenAI},
+var supportedTransformSourcesByUpstreamAndFamily = map[Protocol]map[RequestFamily][]Protocol{
+	Gemini: {
+		RequestFamilyMessages:        {Anthropic},
+		RequestFamilyResponses:       {Codex},
+		RequestFamilyChatCompletions: {OpenAI},
+	},
+	Anthropic: {
+		RequestFamilyResponses:       {Codex},
+		RequestFamilyChatCompletions: {OpenAI},
+	},
+	Codex: {
+		RequestFamilyChatCompletions: {OpenAI},
+	},
+	OpenAI: {
+		RequestFamilyResponses: {Codex},
+	},
 }
 
 // SupportedClientProtocolsForUpstream returns the documented client-facing protocols
 // that can be translated into the given upstream protocol.
 func SupportedClientProtocolsForUpstream(upstream Protocol) []Protocol {
-	supported := supportedTransformSourcesByUpstream[upstream]
+	families := supportedTransformSourcesByUpstreamAndFamily[upstream]
+	if len(families) == 0 {
+		return nil
+	}
+	seen := make(map[Protocol]struct{}, len(families))
+	supported := make([]Protocol, 0, len(families))
+	for _, protocols := range families {
+		for _, candidate := range protocols {
+			if _, ok := seen[candidate]; ok {
+				continue
+			}
+			seen[candidate] = struct{}{}
+			supported = append(supported, candidate)
+		}
+	}
 	if len(supported) == 0 {
 		return nil
 	}
-	return slices.Clone(supported)
+	slices.Sort(supported)
+	return supported
 }
 
 // SupportsTransform reports whether the runtime has a documented transform path for
 // the given client/upstream protocol pair.
 func SupportsTransform(client, upstream Protocol) bool {
-	for _, candidate := range supportedTransformSourcesByUpstream[upstream] {
+	for _, protocols := range supportedTransformSourcesByUpstreamAndFamily[upstream] {
+		for _, candidate := range protocols {
+			if candidate == client {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// SupportsTransformFamily reports whether the runtime has a documented transform path for
+// the given client/upstream protocol pair on the current request family.
+func SupportsTransformFamily(client, upstream Protocol, family RequestFamily) bool {
+	for _, candidate := range supportedTransformSourcesByUpstreamAndFamily[upstream][family] {
 		if candidate == client {
 			return true
 		}
 	}
 	return false
+}
+
+// DetectRequestFamily infers the client request surface from the request path.
+func DetectRequestFamily(path string) RequestFamily {
+	path = strings.TrimSpace(path)
+	switch {
+	case strings.HasPrefix(path, "/v1/chat/completions"):
+		return RequestFamilyChatCompletions
+	case strings.HasPrefix(path, "/v1/responses"):
+		return RequestFamilyResponses
+	case strings.HasPrefix(path, "/v1/messages"):
+		return RequestFamilyMessages
+	case strings.Contains(path, ":generateContent"), strings.Contains(path, ":streamGenerateContent"):
+		return RequestFamilyGenerateContent
+	case strings.HasPrefix(path, "/v1/completions"):
+		return RequestFamilyCompletions
+	case strings.HasPrefix(path, "/v1/embeddings"):
+		return RequestFamilyEmbeddings
+	case strings.HasPrefix(path, "/v1/images/"):
+		return RequestFamilyImages
+	default:
+		return RequestFamilyUnknown
+	}
 }
 
 // BuildTransformPlan turns request metadata into a concrete runtime plan that can
@@ -66,6 +147,7 @@ func BuildTransformPlan(client, upstream Protocol, originalPath, upstreamPath st
 	plan := TransformPlan{
 		ClientProtocol:   client,
 		UpstreamProtocol: upstream,
+		RequestFamily:    DetectRequestFamily(originalPath),
 		OriginalPath:     originalPath,
 		UpstreamPath:     upstreamPath,
 		OriginalBody:     originalBody,
@@ -88,7 +170,7 @@ func BuildTransformPlan(client, upstream Protocol, originalPath, upstreamPath st
 	if client == "" || upstream == "" || client == upstream {
 		return plan, nil
 	}
-	if !SupportsTransform(client, upstream) {
+	if !SupportsTransformFamily(client, upstream, plan.RequestFamily) {
 		return TransformPlan{}, fmt.Errorf("unsupported protocol transform: %s -> %s", client, upstream)
 	}
 

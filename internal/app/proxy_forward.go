@@ -699,6 +699,10 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 			plan.UpstreamPath = buildGeminiGeneratePath(plan.RequestModel(), plan.Streaming)
 		case protocol.Anthropic:
 			plan.UpstreamPath = buildAnthropicMessagesPath()
+		case protocol.OpenAI:
+			plan.UpstreamPath = buildOpenAIChatPath()
+		case protocol.Codex:
+			plan.UpstreamPath = buildCodexResponsesPath()
 		}
 		reqCtx.transformPlan = plan
 		reqCtx.translatedBody = translatedBody

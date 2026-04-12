@@ -172,6 +172,90 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 		}
 	})
 
+	t.Run("handleListOpenAIModels returns codex view for openai upstream with codex transform", func(t *testing.T) {
+		_, err := store.CreateConfig(ctx, &model.Config{
+			Name:               "o2-codex",
+			URL:                "https://example.com",
+			Priority:           3,
+			Enabled:            true,
+			ChannelType:        "openai",
+			ProtocolTransforms: []string{"codex"},
+			ModelEntries: []model.ModelEntry{
+				{Model: "gpt-5-codex"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig openai->codex failed: %v", err)
+		}
+
+		req := newRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("User-Agent", "codex-cli/1.0")
+		c, w := newTestContext(t, req)
+
+		server.handleListOpenAIModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		var resp struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+		found := false
+		for _, item := range resp.Data {
+			if item.ID == "gpt-5-codex" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected codex-exposed openai model in list, got %+v", resp.Data)
+		}
+	})
+
+	t.Run("handleListOpenAIModels returns openai view for codex upstream with openai transform", func(t *testing.T) {
+		_, err := store.CreateConfig(ctx, &model.Config{
+			Name:               "c2-openai",
+			URL:                "https://example.com",
+			Priority:           3,
+			Enabled:            true,
+			ChannelType:        "codex",
+			ProtocolTransforms: []string{"openai"},
+			ModelEntries: []model.ModelEntry{
+				{Model: "gpt-4o"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig codex->openai failed: %v", err)
+		}
+
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/v1/models", nil))
+
+		server.handleListOpenAIModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		var resp struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+		found := false
+		for _, item := range resp.Data {
+			if item.ID == "gpt-4o" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected openai-exposed codex model in list, got %+v", resp.Data)
+		}
+	})
+
 	t.Run("handleListGeminiModels ignores unsupported legacy gemini transforms", func(t *testing.T) {
 		_, err := store.CreateConfig(ctx, &model.Config{
 			Name:               "o2-gemini",

@@ -546,10 +546,26 @@ func TestConfig_GetEnabledChannelsByModelAndProtocol(t *testing.T) {
 		t.Fatalf("create anthropic transform config: %v", err)
 	}
 
+	codexTransform, err := store.CreateConfig(ctx, &model.Config{
+		Name:               "openai-codex-transform",
+		URL:                "https://api.openai.com",
+		Priority:           15,
+		Enabled:            true,
+		ChannelType:        "openai",
+		ProtocolTransforms: []string{"codex"},
+		ModelEntries: []model.ModelEntry{
+			{Model: "gpt-5-codex"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create codex transform config: %v", err)
+	}
+
 	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
 		{ChannelID: openAIChannel.ID, KeyIndex: 0, APIKey: "sk-openai"},
 		{ChannelID: geminiTransform.ID, KeyIndex: 0, APIKey: "sk-gemini"},
 		{ChannelID: anthropicTransform.ID, KeyIndex: 0, APIKey: "sk-anthropic"},
+		{ChannelID: codexTransform.ID, KeyIndex: 0, APIKey: "sk-codex"},
 	}); err != nil {
 		t.Fatalf("create api keys batch: %v", err)
 	}
@@ -566,10 +582,10 @@ func TestConfig_GetEnabledChannelsByModelAndProtocol(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query wildcard model+protocol: %v", err)
 	}
-	if len(wildcard) != 2 {
-		t.Fatalf("expected 2 openai-exposed channels, got %d", len(wildcard))
+	if len(wildcard) != 3 {
+		t.Fatalf("expected 3 openai-exposed channels, got %d", len(wildcard))
 	}
-	if wildcard[0].Name != "openai-native" || wildcard[1].Name != "gemini-openai-transform" {
+	if wildcard[0].Name != "openai-native" || wildcard[1].Name != "gemini-openai-transform" || wildcard[2].Name != "openai-codex-transform" {
 		t.Fatalf("unexpected wildcard ordering/result: %+v", wildcard)
 	}
 
@@ -579,6 +595,14 @@ func TestConfig_GetEnabledChannelsByModelAndProtocol(t *testing.T) {
 	}
 	if len(anthropicExact) != 1 || anthropicExact[0].Name != "gemini-anthropic-transform" {
 		t.Fatalf("unexpected anthropic exact result: %+v", anthropicExact)
+	}
+
+	codexExact, err := store.GetEnabledChannelsByModelAndProtocol(ctx, "gpt-5-codex", "codex")
+	if err != nil {
+		t.Fatalf("query codex transform: %v", err)
+	}
+	if len(codexExact) != 1 || codexExact[0].Name != "openai-codex-transform" {
+		t.Fatalf("unexpected codex exact result: %+v", codexExact)
 	}
 
 	modelOnly, err := store.GetEnabledChannelsByModelAndProtocol(ctx, "gpt-4o", "")
