@@ -219,6 +219,56 @@ func TestRegistry_TranslateResponseStream_GeminiToCodex(t *testing.T) {
 	}
 }
 
+func TestRegistry_TranslateResponseStream_CodexToOpenAI(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	rawReq := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	translatedReq := []byte(`{"model":"gpt-4o","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}],"stream":true}`)
+
+	var state any
+	chunks, err := reg.TranslateResponseStream(context.Background(), protocol.Codex, protocol.OpenAI, "gpt-4o", rawReq, translatedReq, []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n"), &state)
+	if err != nil {
+		t.Fatalf("TranslateResponseStream failed: %v", err)
+	}
+	if len(chunks) != 1 || !strings.Contains(string(chunks[0]), `"chat.completion.chunk"`) || !strings.Contains(string(chunks[0]), `"content":"hello"`) {
+		t.Fatalf("unexpected openai stream chunk: %#v", chunks)
+	}
+
+	done, err := reg.TranslateResponseStream(context.Background(), protocol.Codex, protocol.OpenAI, "gpt-4o", rawReq, translatedReq, []byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-4o\",\"usage\":{\"input_tokens\":3,\"output_tokens\":5,\"total_tokens\":8}}}\n\n"), &state)
+	if err != nil {
+		t.Fatalf("TranslateResponseStream done failed: %v", err)
+	}
+	if len(done) != 2 || !strings.Contains(string(done[0]), `"finish_reason":"stop"`) || !strings.Contains(string(done[0]), `"prompt_tokens":3`) || string(done[1]) != "data: [DONE]\n\n" {
+		t.Fatalf("unexpected done chunks: %#v", done)
+	}
+}
+
+func TestRegistry_TranslateResponseStream_OpenAIToCodex(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	rawReq := []byte(`{"model":"gpt-5-codex","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}],"stream":true}`)
+	translatedReq := []byte(`{"model":"gpt-5-codex","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+
+	var state any
+	chunks, err := reg.TranslateResponseStream(context.Background(), protocol.OpenAI, protocol.Codex, "gpt-5-codex", rawReq, translatedReq, []byte("data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-5-codex\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n"), &state)
+	if err != nil {
+		t.Fatalf("TranslateResponseStream failed: %v", err)
+	}
+	if len(chunks) != 1 || !strings.Contains(string(chunks[0]), "event: response.output_text.delta") || !strings.Contains(string(chunks[0]), `"delta":"hello"`) {
+		t.Fatalf("unexpected codex stream chunk: %#v", chunks)
+	}
+
+	done, err := reg.TranslateResponseStream(context.Background(), protocol.OpenAI, protocol.Codex, "gpt-5-codex", rawReq, translatedReq, []byte("data: [DONE]\n\n"), &state)
+	if err != nil {
+		t.Fatalf("TranslateResponseStream done failed: %v", err)
+	}
+	if len(done) != 1 || !strings.Contains(string(done[0]), "event: response.completed") {
+		t.Fatalf("unexpected codex done chunk: %#v", done)
+	}
+}
+
 func TestRegistry_TranslateRequest_OpenAIToAnthropic(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)
@@ -228,7 +278,7 @@ func TestRegistry_TranslateRequest_OpenAIToAnthropic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TranslateRequest failed: %v", err)
 	}
-	if !strings.Contains(string(got), `"system":[{"type":"text","text":"be careful"}]`) {
+	if !strings.Contains(string(got), `"system":[{`) || !strings.Contains(string(got), `"text":"be careful"`) {
 		t.Fatalf("expected anthropic system field, got %s", got)
 	}
 	if !strings.Contains(string(got), `"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]`) {
@@ -262,7 +312,7 @@ func TestRegistry_TranslateRequest_CodexToAnthropic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TranslateRequest failed: %v", err)
 	}
-	if !strings.Contains(string(got), `"system":[{"type":"text","text":"be careful"}]`) {
+	if !strings.Contains(string(got), `"system":[{`) || !strings.Contains(string(got), `"text":"be careful"`) {
 		t.Fatalf("expected anthropic system field, got %s", got)
 	}
 	if !strings.Contains(string(got), `"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]`) {
@@ -287,33 +337,143 @@ func TestRegistry_TranslateResponseNonStream_AnthropicToCodex(t *testing.T) {
 	}
 }
 
-func TestRegistry_TranslateRequest_OpenAIToGemini_RejectsUnsupportedStructuredContent(t *testing.T) {
+func TestRegistry_TranslateRequest_OpenAIToCodex(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)
 
-	raw := []byte(`{"model":"gemini-2.5-pro","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}]}`)
+	raw := []byte(`{"model":"gpt-5-codex","messages":[{"role":"system","content":"be careful"},{"role":"user","content":[{"type":"text","text":"hello"},{"type":"image_url","image_url":{"url":"https://example.com/a.png","detail":"high"}}]}]}`)
+	got, err := reg.TranslateRequest(protocol.OpenAI, protocol.Codex, "gpt-5-codex", raw, false)
+	if err != nil {
+		t.Fatalf("TranslateRequest failed: %v", err)
+	}
+	if !strings.Contains(string(got), `"instructions":"be careful"`) {
+		t.Fatalf("expected codex instructions, got %s", got)
+	}
+	if !strings.Contains(string(got), `"type":"input_image"`) || !strings.Contains(string(got), `"image_url":"https://example.com/a.png"`) {
+		t.Fatalf("unexpected translated codex request: %s", got)
+	}
+}
+
+func TestRegistry_TranslateResponseNonStream_CodexToOpenAI(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	rawReq := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`)
+	translatedReq := []byte(`{"model":"gpt-4o","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
+	rawResp := []byte(`{"id":"resp_1","object":"response","status":"completed","model":"gpt-4o","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"world"}]}],"usage":{"input_tokens":3,"output_tokens":5,"total_tokens":8}}`)
+
+	got, err := reg.TranslateResponseNonStream(context.Background(), protocol.Codex, protocol.OpenAI, "gpt-4o", rawReq, translatedReq, rawResp)
+	if err != nil {
+		t.Fatalf("TranslateResponseNonStream failed: %v", err)
+	}
+	if !strings.Contains(string(got), `"object":"chat.completion"`) || !strings.Contains(string(got), `"content":"world"`) {
+		t.Fatalf("unexpected translated response: %s", got)
+	}
+}
+
+func TestRegistry_TranslateRequest_CodexToOpenAI(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	raw := []byte(`{"model":"gpt-4o","instructions":"be careful","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"},{"type":"input_file","file_id":"file_123","filename":"doc.pdf"}]},{"type":"function_call_output","call_id":"call_1","output":"done"}]}`)
+	got, err := reg.TranslateRequest(protocol.Codex, protocol.OpenAI, "gpt-4o", raw, false)
+	if err != nil {
+		t.Fatalf("TranslateRequest failed: %v", err)
+	}
+	if !strings.Contains(string(got), `"role":"system"`) || !strings.Contains(string(got), `"be careful"`) {
+		t.Fatalf("expected system message, got %s", got)
+	}
+	if !strings.Contains(string(got), `"type":"file"`) || !strings.Contains(string(got), `"role":"tool"`) {
+		t.Fatalf("unexpected translated openai request: %s", got)
+	}
+}
+
+func TestRegistry_TranslateResponseNonStream_OpenAIToCodex(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	rawReq := []byte(`{"model":"gpt-5-codex","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
+	translatedReq := []byte(`{"model":"gpt-5-codex","messages":[{"role":"user","content":"hello"}]}`)
+	rawResp := []byte(`{"id":"chatcmpl_1","object":"chat.completion","created":0,"model":"gpt-5-codex","choices":[{"index":0,"message":{"role":"assistant","content":"world"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`)
+
+	got, err := reg.TranslateResponseNonStream(context.Background(), protocol.OpenAI, protocol.Codex, "gpt-5-codex", rawReq, translatedReq, rawResp)
+	if err != nil {
+		t.Fatalf("TranslateResponseNonStream failed: %v", err)
+	}
+	if !strings.Contains(string(got), `"object":"response"`) || !strings.Contains(string(got), `"type":"output_text"`) || !strings.Contains(string(got), `"text":"world"`) {
+		t.Fatalf("unexpected translated response: %s", got)
+	}
+}
+
+func TestRegistry_TranslateRequest_OpenAIToGemini_SupportsStructuredContent(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	raw := []byte(`{"model":"gemini-2.5-pro","tools":[{"type":"function","function":{"name":"search","parameters":{"type":"object"}}}],"tool_choice":"required","messages":[{"role":"assistant","content":[{"type":"text","text":"calling"}],"tool_calls":[{"id":"call_1","type":"function","function":{"name":"search","arguments":"{\"query\":\"go\"}"}}]},{"role":"tool","tool_call_id":"call_1","content":"done"},{"role":"user","content":[{"type":"text","text":"hello"},{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}]}`)
+	got, err := reg.TranslateRequest(protocol.OpenAI, protocol.Gemini, "gemini-2.5-pro", raw, false)
+	if err != nil {
+		t.Fatalf("TranslateRequest failed: %v", err)
+	}
+	if !strings.Contains(string(got), `"functionDeclarations"`) || !strings.Contains(string(got), `"functionCall"`) || !strings.Contains(string(got), `"functionResponse"`) || !strings.Contains(string(got), `"fileUri":"https://example.com/a.png"`) {
+		t.Fatalf("unexpected translated gemini request: %s", got)
+	}
+}
+
+func TestRegistry_TranslateRequest_AnthropicToGemini_SupportsStructuredContent(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	raw := []byte(`{"model":"gemini-2.5-pro","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"lookup","input":{"query":"go"}}]},{"role":"user","content":[{"type":"text","text":"hello"},{"type":"image","source":{"type":"url","url":"https://example.com/a.png","media_type":"image/png"}},{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"cGRm"},"title":"doc.pdf"},{"type":"tool_result","tool_use_id":"toolu_1","content":"done"}]}]}`)
+	got, err := reg.TranslateRequest(protocol.Anthropic, protocol.Gemini, "gemini-2.5-pro", raw, false)
+	if err != nil {
+		t.Fatalf("TranslateRequest failed: %v", err)
+	}
+	if !strings.Contains(string(got), `"functionCall"`) || !strings.Contains(string(got), `"functionResponse"`) || !strings.Contains(string(got), `"inlineData"`) || !strings.Contains(string(got), `"fileUri":"https://example.com/a.png"`) {
+		t.Fatalf("unexpected translated gemini request: %s", got)
+	}
+}
+
+func TestRegistry_TranslateRequest_CodexToGemini_SupportsStructuredContent(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	raw := []byte(`{"model":"gemini-2.5-pro","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"},{"type":"input_image","image_url":"https://example.com/a.png"},{"type":"input_file","file_id":"file_123","filename":"doc.pdf"}]},{"type":"function_call","call_id":"call_1","name":"tool","arguments":{"q":"go"}},{"type":"function_call_output","call_id":"call_1","output":"done"}]}`)
+	got, err := reg.TranslateRequest(protocol.Codex, protocol.Gemini, "gemini-2.5-pro", raw, false)
+	if err != nil {
+		t.Fatalf("TranslateRequest failed: %v", err)
+	}
+	if !strings.Contains(string(got), `"functionCall"`) || !strings.Contains(string(got), `"functionResponse"`) || !strings.Contains(string(got), `"fileUri":"https://example.com/a.png"`) || !strings.Contains(string(got), `"fileUri":"file_123"`) {
+		t.Fatalf("unexpected translated gemini request: %s", got)
+	}
+}
+
+func TestRegistry_TranslateRequest_OpenAIToGemini_RejectsUnknownStructuredContent(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	raw := []byte(`{"model":"gemini-2.5-pro","messages":[{"role":"user","content":[{"type":"mystery","value":true}]}]}`)
 	_, err := reg.TranslateRequest(protocol.OpenAI, protocol.Gemini, "gemini-2.5-pro", raw, false)
 	if err == nil {
 		t.Fatal("expected unsupported structured content error")
 	}
 }
 
-func TestRegistry_TranslateRequest_AnthropicToGemini_RejectsUnsupportedStructuredContent(t *testing.T) {
+func TestRegistry_TranslateRequest_AnthropicToGemini_RejectsUnknownStructuredContent(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)
 
-	raw := []byte(`{"model":"gemini-2.5-pro","messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"abc"}}]}]}`)
+	raw := []byte(`{"model":"gemini-2.5-pro","messages":[{"role":"user","content":[{"type":"mystery","value":true}]}]}`)
 	_, err := reg.TranslateRequest(protocol.Anthropic, protocol.Gemini, "gemini-2.5-pro", raw, false)
 	if err == nil {
 		t.Fatal("expected unsupported structured content error")
 	}
 }
 
-func TestRegistry_TranslateRequest_CodexToGemini_RejectsUnsupportedStructuredContent(t *testing.T) {
+func TestRegistry_TranslateRequest_CodexToGemini_RejectsUnknownStructuredContent(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)
 
-	raw := []byte(`{"model":"gemini-2.5-pro","input":[{"type":"function_call","name":"tool","arguments":"{}"}]}`)
+	raw := []byte(`{"model":"gemini-2.5-pro","input":[{"type":"message","role":"user","content":[{"type":"mystery","value":true}]}]}`)
 	_, err := reg.TranslateRequest(protocol.Codex, protocol.Gemini, "gemini-2.5-pro", raw, false)
 	if err == nil {
 		t.Fatal("expected unsupported codex input error")
@@ -347,6 +507,9 @@ func TestBuildTransformPlan_SupportedTransformDefaults(t *testing.T) {
 	if got := plan.RequestModel(); got != "alias-model" {
 		t.Fatalf("expected request model alias-model, got %s", got)
 	}
+	if plan.RequestFamily != protocol.RequestFamilyChatCompletions {
+		t.Fatalf("expected chat_completions family, got %s", plan.RequestFamily)
+	}
 }
 
 func TestBuildTransformPlan_RejectsUnsupportedTransform(t *testing.T) {
@@ -359,6 +522,63 @@ func TestBuildTransformPlan_RejectsUnsupportedTransform(t *testing.T) {
 		[]byte(`{"model":"claude-3-5-sonnet"}`),
 		"claude-3-5-sonnet",
 		"claude-3-5-sonnet",
+		false,
+	)
+	if err == nil {
+		t.Fatal("expected unsupported transform error")
+	}
+}
+
+func TestBuildTransformPlan_SupportsOpenAIToCodex(t *testing.T) {
+	plan, err := protocol.BuildTransformPlan(
+		protocol.OpenAI,
+		protocol.Codex,
+		"/v1/chat/completions",
+		"",
+		[]byte(`{"model":"gpt-5-codex"}`),
+		nil,
+		"gpt-5-codex",
+		"",
+		false,
+	)
+	if err != nil {
+		t.Fatalf("BuildTransformPlan failed: %v", err)
+	}
+	if !plan.NeedsTransform || plan.RequestFamily != protocol.RequestFamilyChatCompletions {
+		t.Fatalf("unexpected plan: %+v", plan)
+	}
+}
+
+func TestBuildTransformPlan_SupportsCodexToOpenAI(t *testing.T) {
+	plan, err := protocol.BuildTransformPlan(
+		protocol.Codex,
+		protocol.OpenAI,
+		"/v1/responses",
+		"",
+		[]byte(`{"model":"gpt-4o"}`),
+		nil,
+		"gpt-4o",
+		"",
+		false,
+	)
+	if err != nil {
+		t.Fatalf("BuildTransformPlan failed: %v", err)
+	}
+	if !plan.NeedsTransform || plan.RequestFamily != protocol.RequestFamilyResponses {
+		t.Fatalf("unexpected plan: %+v", plan)
+	}
+}
+
+func TestBuildTransformPlan_RejectsUnsupportedFamilyForSupportedPair(t *testing.T) {
+	_, err := protocol.BuildTransformPlan(
+		protocol.OpenAI,
+		protocol.Codex,
+		"/v1/embeddings",
+		"",
+		[]byte(`{"model":"gpt-5-codex"}`),
+		nil,
+		"gpt-5-codex",
+		"",
 		false,
 	)
 	if err == nil {

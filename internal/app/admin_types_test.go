@@ -81,6 +81,18 @@ func TestChannelRequestValidate_AllowsDocumentedProtocolTransforms(t *testing.T)
 			transforms:  []string{"codex", "openai"},
 			want:        []string{"codex", "openai"},
 		},
+		{
+			name:        "openai upstream supports codex",
+			channelType: "openai",
+			transforms:  []string{"codex"},
+			want:        []string{"codex"},
+		},
+		{
+			name:        "codex upstream supports openai",
+			channelType: "codex",
+			transforms:  []string{"openai"},
+			want:        []string{"openai"},
+		},
 	}
 
 	for _, tt := range tests {

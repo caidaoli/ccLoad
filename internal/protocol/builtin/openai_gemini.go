@@ -16,14 +16,21 @@ type openAIChatRequest struct {
 	ToolChoice json.RawMessage     `json:"tool_choice,omitempty"`
 }
 
-type openAIChatMessage struct {
-	Role      string          `json:"role"`
-	Content   any             `json:"content"`
-	ToolCalls json.RawMessage `json:"tool_calls,omitempty"`
+type openAIChatToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
 }
 
-type geminiRequest struct {
-	Contents []geminiContent `json:"contents"`
+type openAIChatMessage struct {
+	Role       string               `json:"role"`
+	Content    any                  `json:"content"`
+	ToolCalls  []openAIChatToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string               `json:"tool_call_id,omitempty"`
+	Name       string               `json:"name,omitempty"`
 }
 
 type geminiContent struct {
@@ -32,7 +39,11 @@ type geminiContent struct {
 }
 
 type geminiPart struct {
-	Text string `json:"text,omitempty"`
+	Text             string                  `json:"text,omitempty"`
+	InlineData       *geminiInlineData       `json:"inlineData,omitempty"`
+	FileData         *geminiFileData         `json:"fileData,omitempty"`
+	FunctionCall     *geminiFunctionCall     `json:"functionCall,omitempty"`
+	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
 }
 
 type geminiResponse struct {
@@ -83,28 +94,11 @@ func convertOpenAIRequestToGemini(model string, rawJSON []byte, _ bool) ([]byte,
 		return nil, err
 	}
 
-	prompt, err := normalizeOpenAITextPrompt(req)
+	conv, err := normalizeOpenAIConversation(req)
 	if err != nil {
 		return nil, err
 	}
-	out := geminiRequest{Contents: make([]geminiContent, 0, len(prompt.Messages)+1)}
-	for _, msg := range prompt.Messages {
-		role := "user"
-		if msg.Role == "assistant" {
-			role = "model"
-		}
-		out.Contents = append(out.Contents, geminiContent{
-			Role:  role,
-			Parts: []geminiPart{{Text: msg.Text}},
-		})
-	}
-	payload := map[string]any{"contents": out.Contents}
-	if prompt.System != "" {
-		payload["systemInstruction"] = map[string]any{
-			"parts": []map[string]any{{"text": prompt.System}},
-		}
-	}
-	return sonic.Marshal(payload)
+	return encodeGeminiRequest(conv)
 }
 
 func convertGeminiResponseToOpenAINonStream(_ context.Context, model string, _, _, rawJSON []byte) ([]byte, error) {

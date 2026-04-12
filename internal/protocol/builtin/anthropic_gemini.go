@@ -50,28 +50,11 @@ func convertAnthropicRequestToGemini(_ string, rawJSON []byte, _ bool) ([]byte, 
 		return nil, err
 	}
 
-	prompt, err := normalizeAnthropicTextPrompt(req)
+	conv, err := normalizeAnthropicConversation(req)
 	if err != nil {
 		return nil, err
 	}
-	out := geminiRequest{Contents: make([]geminiContent, 0, len(prompt.Messages)+1)}
-	if prompt.System != "" {
-		out.Contents = append(out.Contents, geminiContent{
-			Role:  "user",
-			Parts: []geminiPart{{Text: prompt.System}},
-		})
-	}
-	for _, msg := range prompt.Messages {
-		role := "user"
-		if msg.Role == "assistant" {
-			role = "model"
-		}
-		out.Contents = append(out.Contents, geminiContent{
-			Role:  role,
-			Parts: []geminiPart{{Text: msg.Text}},
-		})
-	}
-	return sonic.Marshal(out)
+	return encodeGeminiRequest(conv)
 }
 
 func convertGeminiResponseToAnthropicNonStream(_ context.Context, model string, _, _, rawJSON []byte) ([]byte, error) {

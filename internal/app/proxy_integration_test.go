@@ -882,6 +882,243 @@ func TestProxy_Success_Streaming_CodexToAnthropicTransform(t *testing.T) {
 	}
 }
 
+func TestProxy_Success_NonStreaming_OpenAIToCodexTransform(t *testing.T) {
+	t.Parallel()
+
+	var gotPath string
+	var gotBody []byte
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "codex-ch", channelType: "codex", models: "gpt-5-codex", apiKey: "sk-codex"},
+	}, map[int]string{0: "https://codex-upstream.example.com"})
+
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			gotPath = r.URL.Path
+			gotBody, _ = io.ReadAll(r.Body)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(bytes.NewReader([]byte(
+					`{"id":"resp_1","object":"response","status":"completed","model":"gpt-5-codex","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello from codex"}]}],"usage":{"input_tokens":7,"output_tokens":4,"total_tokens":11}}`,
+				))),
+			}, nil
+		}),
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("ListConfigs failed: %v", err)
+	}
+	cfg := configs[0]
+	cfg.ProtocolTransforms = []string{"openai"}
+	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+		t.Fatalf("UpdateConfig failed: %v", err)
+	}
+	env.server.InvalidateChannelListCache()
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-5-codex",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if gotPath != "/v1/responses" {
+		t.Fatalf("expected codex responses path, got %s", gotPath)
+	}
+	if !bytes.Contains(gotBody, []byte(`"type":"input_text"`)) {
+		t.Fatalf("expected codex request body, got %s", gotBody)
+	}
+
+	var resp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(resp.Choices) != 1 || resp.Choices[0].Message.Content != "hello from codex" {
+		t.Fatalf("unexpected translated response: %s", w.Body.String())
+	}
+}
+
+func TestProxy_Success_Streaming_OpenAIToCodexTransform(t *testing.T) {
+	t.Parallel()
+
+	var gotPath string
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "codex-ch", channelType: "codex", models: "gpt-5-codex", apiKey: "sk-codex"},
+	}, map[int]string{0: "https://codex-upstream.example.com"})
+
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			gotPath = r.URL.Path
+			body := bytes.NewBufferString("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5-codex\",\"usage\":{\"input_tokens\":7,\"output_tokens\":4,\"total_tokens\":11}}}\n\n")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(body),
+			}, nil
+		}),
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("ListConfigs failed: %v", err)
+	}
+	cfg := configs[0]
+	cfg.ProtocolTransforms = []string{"openai"}
+	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+		t.Fatalf("UpdateConfig failed: %v", err)
+	}
+	env.server.InvalidateChannelListCache()
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-5-codex",
+		"stream":   true,
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if gotPath != "/v1/responses" {
+		t.Fatalf("expected codex responses path, got %s", gotPath)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"chat.completion.chunk"`) || !strings.Contains(body, `"content":"Hello"`) || !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("expected openai stream chunk, got %s", body)
+	}
+}
+
+func TestProxy_Success_NonStreaming_CodexToOpenAITransform(t *testing.T) {
+	t.Parallel()
+
+	var gotPath string
+	var gotBody []byte
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "openai-ch", channelType: "openai", models: "gpt-4o", apiKey: "sk-oai"},
+	}, map[int]string{0: "https://openai-upstream.example.com"})
+
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			gotPath = r.URL.Path
+			gotBody, _ = io.ReadAll(r.Body)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(bytes.NewReader([]byte(
+					`{"id":"chatcmpl_1","object":"chat.completion","created":0,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"hello from openai"},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":4,"total_tokens":11}}`,
+				))),
+			}, nil
+		}),
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("ListConfigs failed: %v", err)
+	}
+	cfg := configs[0]
+	cfg.ProtocolTransforms = []string{"codex"}
+	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+		t.Fatalf("UpdateConfig failed: %v", err)
+	}
+	env.server.InvalidateChannelListCache()
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+		"model": "gpt-4o",
+		"input": []map[string]any{{
+			"type":    "message",
+			"role":    "user",
+			"content": []map[string]string{{"type": "input_text", "text": "hi"}},
+		}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Fatalf("expected openai chat completions path, got %s", gotPath)
+	}
+	if !bytes.Contains(gotBody, []byte(`"role":"user"`)) || !bytes.Contains(gotBody, []byte(`"content":"hi"`)) {
+		t.Fatalf("expected openai request body, got %s", gotBody)
+	}
+
+	var resp struct {
+		Object string `json:"object"`
+		Output []struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Object != "response" || len(resp.Output) != 1 || len(resp.Output[0].Content) != 1 || resp.Output[0].Content[0].Text != "hello from openai" {
+		t.Fatalf("unexpected translated codex response: %s", w.Body.String())
+	}
+}
+
+func TestProxy_Success_Streaming_CodexToOpenAITransform(t *testing.T) {
+	t.Parallel()
+
+	var gotPath string
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "openai-ch", channelType: "openai", models: "gpt-4o", apiKey: "sk-oai"},
+	}, map[int]string{0: "https://openai-upstream.example.com"})
+
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			gotPath = r.URL.Path
+			body := bytes.NewBufferString("data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(body),
+			}, nil
+		}),
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("ListConfigs failed: %v", err)
+	}
+	cfg := configs[0]
+	cfg.ProtocolTransforms = []string{"codex"}
+	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+		t.Fatalf("UpdateConfig failed: %v", err)
+	}
+	env.server.InvalidateChannelListCache()
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+		"model":  "gpt-4o",
+		"stream": true,
+		"input": []map[string]any{{
+			"type":    "message",
+			"role":    "user",
+			"content": []map[string]string{{"type": "input_text", "text": "hi"}},
+		}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Fatalf("expected openai chat completions path, got %s", gotPath)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "event: response.output_text.delta") || !strings.Contains(body, `"delta":"Hello"`) || !strings.Contains(body, "event: response.completed") {
+		t.Fatalf("expected codex stream output, got %s", body)
+	}
+}
+
 func TestProxy_GeminiTransform_UsesResolvedActualModelInUpstreamPath(t *testing.T) {
 	t.Parallel()
 
@@ -988,6 +1225,160 @@ func TestProxy_Success_Streaming_OpenAIToGeminiTransform_TextPlainSSE(t *testing
 	}
 }
 
+func TestProxy_StructuredOpenAIImageTransformHitsUpstream(t *testing.T) {
+	t.Parallel()
+
+	var gotBody []byte
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "gemini-ch", channelType: "gemini", models: "gemini-2.5-pro", apiKey: "sk-gem"},
+	}, map[int]string{0: "https://gemini-upstream.example.com"})
+
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			gotBody, _ = io.ReadAll(r.Body)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(bytes.NewReader([]byte(
+					`{"candidates":[{"content":{"parts":[{"text":"ok"}]}}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5},"modelVersion":"gemini-2.5-pro"}`,
+				))),
+			}, nil
+		}),
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("ListConfigs failed: %v", err)
+	}
+	cfg := configs[0]
+	cfg.ProtocolTransforms = []string{"openai"}
+	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+		t.Fatalf("UpdateConfig failed: %v", err)
+	}
+	env.server.InvalidateChannelListCache()
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model": "gemini-2.5-pro",
+		"messages": []map[string]any{{
+			"role": "user",
+			"content": []map[string]any{
+				{"type": "text", "text": "hi"},
+				{"type": "image_url", "image_url": map[string]any{"url": "https://example.com/a.png"}},
+			},
+		}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(gotBody, []byte(`"fileUri":"https://example.com/a.png"`)) {
+		t.Fatalf("expected structured image request to reach upstream, got %s", gotBody)
+	}
+}
+
+func TestProxy_StructuredAnthropicBlocksTransformHitsUpstream(t *testing.T) {
+	t.Parallel()
+
+	var gotBody []byte
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "gemini-ch", channelType: "gemini", models: "gemini-2.5-pro", apiKey: "sk-gem"},
+	}, map[int]string{0: "https://gemini-upstream.example.com"})
+
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			gotBody, _ = io.ReadAll(r.Body)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(bytes.NewReader([]byte(
+					`{"candidates":[{"content":{"parts":[{"text":"ok"}]}}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5},"modelVersion":"gemini-2.5-pro"}`,
+				))),
+			}, nil
+		}),
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("ListConfigs failed: %v", err)
+	}
+	cfg := configs[0]
+	cfg.ProtocolTransforms = []string{"anthropic"}
+	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+		t.Fatalf("UpdateConfig failed: %v", err)
+	}
+	env.server.InvalidateChannelListCache()
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/messages", map[string]any{
+		"model": "gemini-2.5-pro",
+		"messages": []map[string]any{
+			{"role": "assistant", "content": []map[string]any{{"type": "tool_use", "id": "toolu_1", "name": "lookup", "input": map[string]any{"query": "go"}}}},
+			{"role": "user", "content": []map[string]any{
+				{"type": "document", "source": map[string]any{"type": "base64", "media_type": "application/pdf", "data": "cGRm"}},
+				{"type": "tool_result", "tool_use_id": "toolu_1", "content": "done"},
+			}},
+		},
+	}, map[string]string{"anthropic-version": "2023-06-01"})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(gotBody, []byte(`"functionCall"`)) || !bytes.Contains(gotBody, []byte(`"functionResponse"`)) || !bytes.Contains(gotBody, []byte(`"inlineData"`)) {
+		t.Fatalf("expected structured anthropic blocks to reach upstream, got %s", gotBody)
+	}
+}
+
+func TestProxy_StructuredCodexFunctionFamilyTransformHitsUpstream(t *testing.T) {
+	t.Parallel()
+
+	var gotBody []byte
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "gemini-ch", channelType: "gemini", models: "gemini-2.5-pro", apiKey: "sk-gem"},
+	}, map[int]string{0: "https://gemini-upstream.example.com"})
+
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			gotBody, _ = io.ReadAll(r.Body)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(bytes.NewReader([]byte(
+					`{"candidates":[{"content":{"parts":[{"text":"ok"}]}}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5},"modelVersion":"gemini-2.5-pro"}`,
+				))),
+			}, nil
+		}),
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("ListConfigs failed: %v", err)
+	}
+	cfg := configs[0]
+	cfg.ProtocolTransforms = []string{"codex"}
+	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+		t.Fatalf("UpdateConfig failed: %v", err)
+	}
+	env.server.InvalidateChannelListCache()
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+		"model": "gemini-2.5-pro",
+		"input": []map[string]any{
+			{"type": "message", "role": "user", "content": []map[string]any{
+				{"type": "input_image", "image_url": "https://example.com/a.png"},
+				{"type": "input_file", "file_id": "file_123", "filename": "doc.pdf"},
+			}},
+			{"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": map[string]any{"query": "go"}},
+			{"type": "function_call_output", "call_id": "call_1", "output": "done"},
+		},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(gotBody, []byte(`"functionCall"`)) || !bytes.Contains(gotBody, []byte(`"functionResponse"`)) || !bytes.Contains(gotBody, []byte(`"fileUri":"https://example.com/a.png"`)) {
+		t.Fatalf("expected structured codex request to reach upstream, got %s", gotBody)
+	}
+}
+
 func TestProxy_UnsupportedStructuredTransformRequestReturns400(t *testing.T) {
 	t.Parallel()
 
@@ -1019,8 +1410,8 @@ func TestProxy_UnsupportedStructuredTransformRequestReturns400(t *testing.T) {
 		"messages": []map[string]any{{
 			"role": "user",
 			"content": []map[string]any{{
-				"type":      "image_url",
-				"image_url": map[string]any{"url": "https://example.com/a.png"},
+				"type":  "mystery",
+				"value": true,
 			}},
 		}},
 	}, nil)
@@ -1064,8 +1455,8 @@ func TestProxy_UnsupportedStructuredAnthropicTransformRequestReturns400(t *testi
 		"messages": []map[string]any{{
 			"role": "user",
 			"content": []map[string]any{{
-				"type":   "image",
-				"source": map[string]any{"type": "base64", "media_type": "image/png", "data": "abc"},
+				"type":  "mystery",
+				"value": true,
 			}},
 		}},
 	}, map[string]string{"anthropic-version": "2023-06-01"})
@@ -1107,9 +1498,9 @@ func TestProxy_UnsupportedStructuredCodexTransformRequestReturns400(t *testing.T
 	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
 		"model": "gemini-2.5-pro",
 		"input": []map[string]any{{
-			"type":      "function_call",
-			"name":      "tool",
-			"arguments": "{}",
+			"type":    "message",
+			"role":    "user",
+			"content": []map[string]any{{"type": "mystery", "value": true}},
 		}},
 	}, nil)
 

@@ -9,15 +9,12 @@ import (
 )
 
 type codexRequest struct {
-	Model        string          `json:"model"`
-	Instructions string          `json:"instructions,omitempty"`
-	Tools        json.RawMessage `json:"tools,omitempty"`
-	ToolChoice   json.RawMessage `json:"tool_choice,omitempty"`
-	Input        []struct {
-		Type    string           `json:"type"`
-		Role    string           `json:"role"`
-		Content []map[string]any `json:"content"`
-	} `json:"input"`
+	Model        string            `json:"model"`
+	Instructions string            `json:"instructions,omitempty"`
+	Stream       bool              `json:"stream,omitempty"`
+	Tools        json.RawMessage   `json:"tools,omitempty"`
+	ToolChoice   json.RawMessage   `json:"tool_choice,omitempty"`
+	Input        []json.RawMessage `json:"input"`
 }
 
 type codexResponse struct {
@@ -46,28 +43,11 @@ func convertCodexRequestToGemini(_ string, rawJSON []byte, _ bool) ([]byte, erro
 		return nil, err
 	}
 
-	prompt, err := normalizeCodexTextPrompt(req)
+	conv, err := normalizeCodexConversation(req)
 	if err != nil {
 		return nil, err
 	}
-	out := geminiRequest{Contents: make([]geminiContent, 0, len(prompt.Messages)+1)}
-	if prompt.System != "" {
-		out.Contents = append(out.Contents, geminiContent{
-			Role:  "user",
-			Parts: []geminiPart{{Text: prompt.System}},
-		})
-	}
-	for _, msg := range prompt.Messages {
-		role := "user"
-		if msg.Role == "assistant" {
-			role = "model"
-		}
-		out.Contents = append(out.Contents, geminiContent{
-			Role:  role,
-			Parts: []geminiPart{{Text: msg.Text}},
-		})
-	}
-	return sonic.Marshal(out)
+	return encodeGeminiRequest(conv)
 }
 
 func convertGeminiResponseToCodexNonStream(_ context.Context, model string, _, _, rawJSON []byte) ([]byte, error) {
