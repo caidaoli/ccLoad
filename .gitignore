@@ -55,6 +55,10 @@ AGENTS.md
 dist
 *.bak
 docs
+!docs/
+docs/*
+!docs/superpowers/
+!docs/protocol-adapter-todo.md
 .worktrees/
 # 步骤1：忽略所有目录下的 claude.md
 **/claude.md
