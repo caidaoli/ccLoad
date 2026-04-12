@@ -21,6 +21,7 @@ type Store interface {
 	UpdateConfig(ctx context.Context, id int64, upd *model.Config) (*model.Config, error)
 	DeleteConfig(ctx context.Context, id int64) error
 	GetEnabledChannelsByModel(ctx context.Context, modelName string) ([]*model.Config, error)
+	GetEnabledChannelsByModelAndProtocol(ctx context.Context, modelName, protocol string) ([]*model.Config, error)
 	GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*model.Config, error)
 	GetEnabledChannelsByExposedProtocol(ctx context.Context, protocol string) ([]*model.Config, error)
 	BatchUpdatePriority(ctx context.Context, updates []struct {
@@ -104,10 +105,4 @@ type Store interface {
 	// === Infrastructure ===
 	Ping(ctx context.Context) error
 	Close() error
-}
-
-// ModelProtocolStore 提供“模型 + 暴露协议”联合查询能力。
-// 保持为可选扩展，避免强迫所有 Store 实现立刻同步扩接口。
-type ModelProtocolStore interface {
-	GetEnabledChannelsByModelAndProtocol(ctx context.Context, modelName, protocol string) ([]*model.Config, error)
 }

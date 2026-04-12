@@ -14,11 +14,9 @@ function buildPriorityRow(rowClass, valueClass, value) {
   return `<div class="ch-priority-row ${rowClass}"><span class="${valueClass}">${value}</span></div>`;
 }
 
-const SUPPORTED_PROTOCOL_TRANSFORMS = ['anthropic', 'codex', 'openai', 'gemini'];
-const SUPPORTED_PROTOCOL_TRANSFORMS_BY_CHANNEL_TYPE = {
-  anthropic: ['codex', 'openai'],
-  gemini: ['anthropic', 'codex', 'openai']
-};
+if (!window.ChannelProtocolConfig) {
+  throw new Error('ChannelProtocolConfig helper is required before channels-render.js');
+}
 
 function buildEffectivePriorityHtml(channel) {
   const basePriority = channel.priority;
@@ -139,19 +137,7 @@ function getProtocolTransformBadgeLabel(protocol) {
 }
 
 function normalizeProtocolTransformsForDisplay(channelType, protocolTransforms) {
-  const baseType = String(channelType || '').trim().toLowerCase();
-  const allowedTransforms = new Set(SUPPORTED_PROTOCOL_TRANSFORMS_BY_CHANNEL_TYPE[baseType] || []);
-  const selected = new Set();
-
-  for (const raw of protocolTransforms || []) {
-    const value = String(raw || '').trim().toLowerCase();
-    if (!value || value === baseType) continue;
-    if (!SUPPORTED_PROTOCOL_TRANSFORMS.includes(value)) continue;
-    if (!allowedTransforms.has(value)) continue;
-    selected.add(value);
-  }
-
-  return (SUPPORTED_PROTOCOL_TRANSFORMS_BY_CHANNEL_TYPE[baseType] || []).filter((protocol) => selected.has(protocol));
+  return window.ChannelProtocolConfig.normalizeProtocolTransformsForChannel(channelType, protocolTransforms);
 }
 
 function buildProtocolTransformBadges(channelType, protocolTransforms) {

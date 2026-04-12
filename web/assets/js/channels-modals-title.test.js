@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+const protocolSource = fs.readFileSync(path.join(__dirname, 'channels-protocols.js'), 'utf8');
 const source = fs.readFileSync(path.join(__dirname, 'channels-modals.js'), 'utf8');
 
 function createTitleElement() {
@@ -45,7 +46,7 @@ test('setChannelModalTitle 同步更新弹窗标题文本和国际化键', () =>
   };
 
   vm.createContext(sandbox);
-  vm.runInContext(source, sandbox);
+  vm.runInContext(`${protocolSource}\n${source}`, sandbox);
 
   assert.equal(typeof sandbox.setChannelModalTitle, 'function');
 

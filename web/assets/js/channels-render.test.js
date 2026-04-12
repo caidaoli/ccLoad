@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 function loadRenderSandbox(overrides = {}) {
+  const protocolSource = fs.readFileSync(path.join(__dirname, 'channels-protocols.js'), 'utf8');
   const source = fs.readFileSync(path.join(__dirname, 'channels-render.js'), 'utf8');
   const sandbox = {
     window: {
@@ -43,7 +44,7 @@ function loadRenderSandbox(overrides = {}) {
   Object.assign(sandbox, overrides);
 
   vm.createContext(sandbox);
-  vm.runInContext(source, sandbox);
+  vm.runInContext(`${protocolSource}\n${source}`, sandbox);
   return sandbox;
 }
 

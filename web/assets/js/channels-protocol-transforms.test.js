@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const html = fs.readFileSync(path.join(__dirname, '..', '..', 'channels.html'), 'utf8');
+const protocolSource = fs.readFileSync(path.join(__dirname, 'channels-protocols.js'), 'utf8');
 const source = fs.readFileSync(path.join(__dirname, 'channels-modals.js'), 'utf8');
 
 const CHANNEL_TYPES = ['anthropic', 'codex', 'openai', 'gemini'];
@@ -330,7 +331,7 @@ function createHarness({
   };
 
   vm.createContext(sandbox);
-  vm.runInContext(`${source}\nthis.__protocolTransformsTest = {\n  initChannelEditorActions,\n  renderProtocolTransformOptions,\n  getSelectedProtocolTransforms,\n  editChannel,\n  saveChannel\n};`, sandbox);
+  vm.runInContext(`${protocolSource}\n${source}\nthis.__protocolTransformsTest = {\n  initChannelEditorActions,\n  renderProtocolTransformOptions,\n  getSelectedProtocolTransforms,\n  editChannel,\n  saveChannel\n};`, sandbox);
 
   return {
     api: sandbox.__protocolTransformsTest,
@@ -382,10 +383,10 @@ test('切换 channel type 后会禁用并剔除原生 protocol transform，仅�
 
   assert.equal(harness.getProtocolTransformInput('openai').disabled, true);
   assert.equal(harness.getProtocolTransformInput('openai').checked, false);
-  assert.equal(harness.getProtocolTransformInput('codex').checked, true);
+  assert.equal(harness.getProtocolTransformInput('codex'), null);
   assert.deepEqual(
     JSON.parse(JSON.stringify(harness.api.getSelectedProtocolTransforms('openai'))),
-    ['codex']
+    []
   );
 });
 
@@ -395,8 +396,8 @@ test('编辑渠道时会回填 protocol_transforms，并禁用原生协议选项
       id: 7,
       name: 'edited-channel',
       url: 'https://api.example.com',
-      channel_type: 'codex',
-      protocol_transforms: ['gemini', 'anthropic'],
+      channel_type: 'gemini',
+      protocol_transforms: ['openai', 'anthropic'],
       key_strategy: 'sequential',
       priority: 9,
       daily_cost_limit: 0,
@@ -410,22 +411,22 @@ test('编辑渠道时会回填 protocol_transforms，并禁用原生协议选项
 
   await harness.api.editChannel(7);
 
-  assert.equal(harness.getRadio('channelType', 'codex').checked, true);
-  assert.equal(harness.getProtocolTransformInput('codex').disabled, true);
-  assert.equal(harness.getProtocolTransformInput('codex').checked, false);
+  assert.equal(harness.getRadio('channelType', 'gemini').checked, true);
+  assert.equal(harness.getProtocolTransformInput('gemini').disabled, true);
+  assert.equal(harness.getProtocolTransformInput('gemini').checked, false);
   assert.equal(harness.getProtocolTransformInput('anthropic').checked, true);
-  assert.equal(harness.getProtocolTransformInput('gemini').checked, true);
+  assert.equal(harness.getProtocolTransformInput('openai').checked, true);
   assert.deepEqual(
     harness.getProtocolTransformValues().filter((item) => item.checked).map((item) => item.value).sort(),
-    ['anthropic', 'gemini']
+    ['anthropic', 'openai']
   );
 });
 
 test('保存渠道时 payload 带上 protocol_transforms', async () => {
   const harness = createHarness();
   harness.api.initChannelEditorActions();
-  harness.setCheckedRadio('channelType', 'codex');
-  harness.api.renderProtocolTransformOptions('codex', ['anthropic', 'openai']);
+  harness.setCheckedRadio('channelType', 'gemini');
+  harness.api.renderProtocolTransformOptions('gemini', ['anthropic', 'openai']);
 
   await harness.submitForm();
 
@@ -436,10 +437,10 @@ test('保存渠道时 payload 带上 protocol_transforms', async () => {
 
   const payload = JSON.parse(options.body);
   assert.deepEqual(payload.protocol_transforms, ['anthropic', 'openai']);
-  assert.equal(payload.channel_type, 'codex');
+  assert.equal(payload.channel_type, 'gemini');
   assert.deepEqual(JSON.parse(JSON.stringify(harness.getAfterSavePayload())), {
     isNewChannel: true,
-    newChannelType: 'codex',
+    newChannelType: 'gemini',
     savedChannelId: null,
     response: { success: true }
   });

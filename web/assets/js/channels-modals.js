@@ -6,7 +6,9 @@ function setChannelModalTitle(i18nKey) {
   titleEl.textContent = window.t(i18nKey);
 }
 
-const PROTOCOL_TRANSFORM_OPTIONS = ['anthropic', 'codex', 'openai', 'gemini'];
+if (!window.ChannelProtocolConfig) {
+  throw new Error('ChannelProtocolConfig helper is required before channels-modals.js');
+}
 
 function protocolTransformLabel(protocol) {
   const labels = {
@@ -20,26 +22,17 @@ function protocolTransformLabel(protocol) {
 }
 
 function normalizeProtocolTransformSelection(channelType, selectedValues) {
-  const base = (channelType || '').trim().toLowerCase();
-  const seen = new Set();
-  const values = [];
-  for (const raw of selectedValues || []) {
-    const value = String(raw || '').trim().toLowerCase();
-    if (!value || value === base || seen.has(value)) continue;
-    if (!PROTOCOL_TRANSFORM_OPTIONS.includes(value)) continue;
-    seen.add(value);
-    values.push(value);
-  }
-  return values.sort();
+  return window.ChannelProtocolConfig.normalizeProtocolTransformsForChannel(channelType, selectedValues);
 }
 
 function renderProtocolTransformOptions(channelType, selectedValues = []) {
   const container = document.getElementById('protocolTransformsContainer');
   if (!container) return;
 
-  const currentType = String(channelType || '').trim().toLowerCase() || 'anthropic';
-  const selected = new Set(normalizeProtocolTransformSelection('', selectedValues));
-  container.innerHTML = PROTOCOL_TRANSFORM_OPTIONS.map((protocol) => {
+  const currentType = window.ChannelProtocolConfig.normalizeProtocol(channelType) || 'anthropic';
+  const selected = new Set(normalizeProtocolTransformSelection(currentType, selectedValues));
+  const options = window.ChannelProtocolConfig.getProtocolTransformRenderOptions(currentType);
+  container.innerHTML = options.map((protocol) => {
     const disabled = protocol === currentType;
     const checked = !disabled && selected.has(protocol);
     return `

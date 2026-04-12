@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	modelpkg "ccLoad/internal/model"
-	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 )
 
@@ -39,21 +38,7 @@ func (s *Server) getEnabledChannelsByModelAndProtocol(ctx context.Context, model
 		}
 	}
 
-	if store, ok := s.store.(storage.ModelProtocolStore); ok {
-		return store.GetEnabledChannelsByModelAndProtocol(ctx, model, normalizedType)
-	}
-
-	channels, err := s.GetEnabledChannelsByModel(ctx, model)
-	if err != nil {
-		return nil, err
-	}
-	filtered := make([]*modelpkg.Config, 0, len(channels))
-	for _, cfg := range channels {
-		if cfg != nil && cfg.SupportsProtocol(normalizedType) {
-			filtered = append(filtered, cfg)
-		}
-	}
-	return filtered, nil
+	return s.store.GetEnabledChannelsByModelAndProtocol(ctx, model, normalizedType)
 }
 
 // selectCandidatesByChannelType 根据客户端协议选择候选渠道

@@ -554,12 +554,7 @@ func TestConfig_GetEnabledChannelsByModelAndProtocol(t *testing.T) {
 		t.Fatalf("create api keys batch: %v", err)
 	}
 
-	queryStore, ok := store.(storage.ModelProtocolStore)
-	if !ok {
-		t.Fatalf("store does not implement ModelProtocolStore")
-	}
-
-	exact, err := queryStore.GetEnabledChannelsByModelAndProtocol(ctx, "gemini-2.5-pro", "openai")
+	exact, err := store.GetEnabledChannelsByModelAndProtocol(ctx, "gemini-2.5-pro", "openai")
 	if err != nil {
 		t.Fatalf("query exact model+protocol: %v", err)
 	}
@@ -567,7 +562,7 @@ func TestConfig_GetEnabledChannelsByModelAndProtocol(t *testing.T) {
 		t.Fatalf("unexpected exact query result: %+v", exact)
 	}
 
-	wildcard, err := queryStore.GetEnabledChannelsByModelAndProtocol(ctx, "*", "openai")
+	wildcard, err := store.GetEnabledChannelsByModelAndProtocol(ctx, "*", "openai")
 	if err != nil {
 		t.Fatalf("query wildcard model+protocol: %v", err)
 	}
@@ -578,7 +573,7 @@ func TestConfig_GetEnabledChannelsByModelAndProtocol(t *testing.T) {
 		t.Fatalf("unexpected wildcard ordering/result: %+v", wildcard)
 	}
 
-	anthropicExact, err := queryStore.GetEnabledChannelsByModelAndProtocol(ctx, "claude-3-5-sonnet", "anthropic")
+	anthropicExact, err := store.GetEnabledChannelsByModelAndProtocol(ctx, "claude-3-5-sonnet", "anthropic")
 	if err != nil {
 		t.Fatalf("query anthropic transform: %v", err)
 	}
@@ -586,7 +581,7 @@ func TestConfig_GetEnabledChannelsByModelAndProtocol(t *testing.T) {
 		t.Fatalf("unexpected anthropic exact result: %+v", anthropicExact)
 	}
 
-	modelOnly, err := queryStore.GetEnabledChannelsByModelAndProtocol(ctx, "gpt-4o", "")
+	modelOnly, err := store.GetEnabledChannelsByModelAndProtocol(ctx, "gpt-4o", "")
 	if err != nil {
 		t.Fatalf("query empty protocol fallback: %v", err)
 	}
@@ -655,11 +650,7 @@ func TestConfig_LegacyInvalidProtocolTransformsAreIgnored(t *testing.T) {
 		t.Fatalf("expected no gemini-exposed channels from dirty data, got %+v", geminiChannels)
 	}
 
-	queryStore, ok := store.(storage.ModelProtocolStore)
-	if !ok {
-		t.Fatalf("store does not implement ModelProtocolStore")
-	}
-	modelAndProtocol, err := queryStore.GetEnabledChannelsByModelAndProtocol(ctx, "gpt-4o", "gemini")
+	modelAndProtocol, err := store.GetEnabledChannelsByModelAndProtocol(ctx, "gpt-4o", "gemini")
 	if err != nil {
 		t.Fatalf("query model+protocol: %v", err)
 	}
