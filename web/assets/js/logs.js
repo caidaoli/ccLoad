@@ -237,7 +237,7 @@ async function load(skipLoading = false) {
 // 根据当前筛选条件过滤活跃请求
 function filterActiveRequests(requests) {
   const channelName = (logsChannelNameCombobox ? logsChannelNameCombobox.getValue() : (document.getElementById('f_name')?.value || '')).trim().toLowerCase();
-  const model = (document.getElementById('f_model')?.value || '').trim();
+  const model = (logsModelCombobox ? logsModelCombobox.getValue() : (document.getElementById('f_model')?.value || '')).trim();
   const channelType = (document.getElementById('f_channel_type')?.value || '').trim();
   const tokenId = (document.getElementById('f_auth_token')?.value || '').trim();
 
