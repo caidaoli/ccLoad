@@ -3,6 +3,7 @@ package protocol_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -185,8 +186,36 @@ func TestRegistry_TranslateResponseStream_GeminiToCodex(t *testing.T) {
 		t.Fatalf("unexpected codex done chunks: %#v", done)
 	}
 	gotDone := string(done[0])
-	if !strings.Contains(gotDone, "event: response.completed") || !strings.Contains(gotDone, `"status":"completed"`) || !strings.Contains(gotDone, `"model":"gemini-2.5-pro"`) || !strings.Contains(gotDone, `"usage":{"input_tokens":3,"output_tokens":5,"total_tokens":8}`) {
+	if !strings.Contains(gotDone, "event: response.completed") {
 		t.Fatalf("unexpected codex done chunk: %#v", done)
+	}
+	payload, ok := strings.CutPrefix(gotDone, "event: response.completed\ndata: ")
+	if !ok {
+		t.Fatalf("missing codex stream payload: %#v", done)
+	}
+	payload = strings.TrimSpace(payload)
+	var envelope struct {
+		Type     string `json:"type"`
+		Response struct {
+			Status string `json:"status"`
+			Model  string `json:"model"`
+			Usage  struct {
+				InputTokens  int64 `json:"input_tokens"`
+				OutputTokens int64 `json:"output_tokens"`
+				TotalTokens  int64 `json:"total_tokens"`
+			} `json:"usage"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal([]byte(payload), &envelope); err != nil {
+		t.Fatalf("unmarshal codex stream payload: %v", err)
+	}
+	if envelope.Type != "response.completed" ||
+		envelope.Response.Status != "completed" ||
+		envelope.Response.Model != "gemini-2.5-pro" ||
+		envelope.Response.Usage.InputTokens != 3 ||
+		envelope.Response.Usage.OutputTokens != 5 ||
+		envelope.Response.Usage.TotalTokens != 8 {
+		t.Fatalf("unexpected codex done payload: %+v", envelope)
 	}
 }
 
@@ -288,5 +317,74 @@ func TestRegistry_TranslateRequest_CodexToGemini_RejectsUnsupportedStructuredCon
 	_, err := reg.TranslateRequest(protocol.Codex, protocol.Gemini, "gemini-2.5-pro", raw, false)
 	if err == nil {
 		t.Fatal("expected unsupported codex input error")
+	}
+}
+
+func TestBuildTransformPlan_SupportedTransformDefaults(t *testing.T) {
+	plan, err := protocol.BuildTransformPlan(
+		protocol.OpenAI,
+		protocol.Gemini,
+		"/v1/chat/completions",
+		"",
+		[]byte(`{"model":"alias-model"}`),
+		nil,
+		"alias-model",
+		"",
+		true,
+	)
+	if err != nil {
+		t.Fatalf("BuildTransformPlan failed: %v", err)
+	}
+	if !plan.NeedsTransform {
+		t.Fatal("expected transform plan to require protocol translation")
+	}
+	if got := string(plan.TranslatedBody); got != `{"model":"alias-model"}` {
+		t.Fatalf("expected prepared body to default to original body, got %s", got)
+	}
+	if got := plan.UpstreamPath; got != "/v1/chat/completions" {
+		t.Fatalf("expected upstream path to default to original path, got %s", got)
+	}
+	if got := plan.RequestModel(); got != "alias-model" {
+		t.Fatalf("expected request model alias-model, got %s", got)
+	}
+}
+
+func TestBuildTransformPlan_RejectsUnsupportedTransform(t *testing.T) {
+	_, err := protocol.BuildTransformPlan(
+		protocol.Anthropic,
+		protocol.OpenAI,
+		"/v1/messages",
+		"/v1/messages",
+		[]byte(`{"model":"claude-3-5-sonnet"}`),
+		[]byte(`{"model":"claude-3-5-sonnet"}`),
+		"claude-3-5-sonnet",
+		"claude-3-5-sonnet",
+		false,
+	)
+	if err == nil {
+		t.Fatal("expected unsupported transform error")
+	}
+}
+
+func TestTransformPlan_ResponseModelPreservesClientAlias(t *testing.T) {
+	plan, err := protocol.BuildTransformPlan(
+		protocol.OpenAI,
+		protocol.Gemini,
+		"/v1/chat/completions",
+		"/v1beta/models/gemini-2.5-pro:generateContent",
+		[]byte(`{"model":"alias-model"}`),
+		[]byte(`{"model":"gemini-2.5-pro"}`),
+		"alias-model",
+		"gemini-2.5-pro",
+		false,
+	)
+	if err != nil {
+		t.Fatalf("BuildTransformPlan failed: %v", err)
+	}
+	if got := plan.RequestModel(); got != "gemini-2.5-pro" {
+		t.Fatalf("expected request model gemini-2.5-pro, got %s", got)
+	}
+	if got := plan.ResponseModel(); got != "alias-model" {
+		t.Fatalf("expected response model alias-model, got %s", got)
 	}
 }

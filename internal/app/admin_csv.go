@@ -265,7 +265,13 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			summary.Skipped++
 			continue
 		}
-		protocolTransforms := normalizeProtocolTransforms(channelType, parseProtocolTransformsCSV(protocolTransformsRaw))
+		rawProtocolTransforms := parseProtocolTransformsCSV(protocolTransformsRaw)
+		if err := validateProtocolTransforms(channelType, rawProtocolTransforms); err != nil {
+			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行 protocol_transforms 无效: %v", lineNo, err))
+			summary.Skipped++
+			continue
+		}
+		protocolTransforms := normalizeProtocolTransforms(channelType, rawProtocolTransforms)
 
 		models := parseImportModels(modelsRaw)
 		if len(models) == 0 {

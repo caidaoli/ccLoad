@@ -138,7 +138,7 @@ func TestChannelsTemplateNameLineLayout(t *testing.T) {
 	body := w.Body.String()
 	checks := []string{
 		`<div class="ch-name-main">`,
-		`{{{typeBadge}}}<strong>{{name}}</strong><span class="ch-id-text">(ID: {{id}})</span>{{{disabledBadge}}}`,
+		`{{{typeBadge}}}<strong>{{name}}</strong>{{{protocolTransformBadges}}}<span class="ch-id-text">(ID: {{id}})</span>{{{disabledBadge}}}`,
 		`<div class="ch-name-statuses">{{{cooldownBadge}}}</div>`,
 	}
 	for _, want := range checks {

@@ -47,6 +47,15 @@ var defaultModelsFetcherClient = &http.Client{
 	},
 }
 
+// SetModelsFetcherHTTPClientForTesting 覆盖默认模型抓取 HTTP client。
+// 仅供测试使用，用于在受限环境下替换掉真实网络访问。
+func SetModelsFetcherHTTPClientForTesting(client *http.Client) {
+	if client == nil {
+		return
+	}
+	defaultModelsFetcherClient = client
+}
+
 // doHTTPRequest 执行HTTP GET请求并返回响应体
 // 封装公共的HTTP请求、错误处理、超时控制逻辑
 func doHTTPRequest(client *http.Client, req *http.Request) ([]byte, error) {

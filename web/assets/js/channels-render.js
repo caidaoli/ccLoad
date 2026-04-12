@@ -14,6 +14,12 @@ function buildPriorityRow(rowClass, valueClass, value) {
   return `<div class="ch-priority-row ${rowClass}"><span class="${valueClass}">${value}</span></div>`;
 }
 
+const SUPPORTED_PROTOCOL_TRANSFORMS = ['anthropic', 'codex', 'openai', 'gemini'];
+const SUPPORTED_PROTOCOL_TRANSFORMS_BY_CHANNEL_TYPE = {
+  anthropic: ['codex', 'openai'],
+  gemini: ['anthropic', 'codex', 'openai']
+};
+
 function buildEffectivePriorityHtml(channel) {
   const basePriority = channel.priority;
   const priorityLabel = window.t('channels.table.priority');
@@ -112,6 +118,52 @@ function getChannelTypeConfig(channelType) {
 function buildChannelTypeBadge(channelType) {
   const config = getChannelTypeConfig(channelType);
   return `<span style="background: ${config.bgColor}; color: ${config.color}; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 700; border: 1px solid ${config.borderColor}; letter-spacing: 0.025em; text-transform: uppercase;">${config.text}</span>`;
+}
+
+function getProtocolTransformBadgeLabel(protocol) {
+  const labels = {
+    anthropic: ['channels.protocolTransformAnthropic', 'Anthropic'],
+    codex: ['channels.protocolTransformCodex', 'Codex'],
+    openai: ['channels.protocolTransformOpenAI', 'OpenAI'],
+    gemini: ['channels.protocolTransformGemini', 'Gemini']
+  };
+  const [translationKey, fallback] = labels[protocol] || [];
+  if (!translationKey) return protocol;
+  if (window.t) {
+    const translated = window.t(translationKey);
+    if (translated && translated !== translationKey) {
+      return translated;
+    }
+  }
+  return fallback;
+}
+
+function normalizeProtocolTransformsForDisplay(channelType, protocolTransforms) {
+  const baseType = String(channelType || '').trim().toLowerCase();
+  const allowedTransforms = new Set(SUPPORTED_PROTOCOL_TRANSFORMS_BY_CHANNEL_TYPE[baseType] || []);
+  const selected = new Set();
+
+  for (const raw of protocolTransforms || []) {
+    const value = String(raw || '').trim().toLowerCase();
+    if (!value || value === baseType) continue;
+    if (!SUPPORTED_PROTOCOL_TRANSFORMS.includes(value)) continue;
+    if (!allowedTransforms.has(value)) continue;
+    selected.add(value);
+  }
+
+  return (SUPPORTED_PROTOCOL_TRANSFORMS_BY_CHANNEL_TYPE[baseType] || []).filter((protocol) => selected.has(protocol));
+}
+
+function buildProtocolTransformBadges(channelType, protocolTransforms) {
+  const transforms = normalizeProtocolTransformsForDisplay(channelType, protocolTransforms);
+  if (transforms.length === 0) return '';
+
+  const translatedPrefix = window.t ? window.t('channels.modal.protocolTransforms') : '';
+  const titlePrefix = translatedPrefix && translatedPrefix !== 'channels.modal.protocolTransforms'
+    ? translatedPrefix
+    : 'Additional Protocol Transforms';
+
+  return `<span style="display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-left: 6px; vertical-align: middle;">${transforms.map((protocol) => `<span title="${titlePrefix}: ${getProtocolTransformBadgeLabel(protocol)}" style="display: inline-flex; align-items: center; background: #fff7ed; color: #9a3412; padding: 2px 6px; border-radius: 999px; font-size: 0.68rem; font-weight: 600; border: 1px dashed #fdba74; line-height: 1;">${getProtocolTransformBadgeLabel(protocol)}</span>`).join('')}</span>`;
 }
 
 /**
@@ -251,6 +303,7 @@ function createChannelCard(channel) {
     id: channel.id,
     name: channel.name,
     typeBadge: buildChannelTypeBadge(channelTypeRaw),
+    protocolTransformBadges: buildProtocolTransformBadges(channelTypeRaw, channel.protocol_transforms),
     url: channel.url,
     modelsText: modelsText,
     priority: channel.priority,

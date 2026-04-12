@@ -1,21 +1,256 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/testutil"
+	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
 )
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+type testHTTPServer struct {
+	URL    string
+	host   string
+	closed atomic.Bool
+}
+
+type testHTTPResponseWriter struct {
+	header         http.Header
+	headerSnapshot http.Header
+	statusCode     int
+	body           *io.PipeWriter
+	pending        bytes.Buffer
+	closedErr      error
+	bodyClosed     bool
+	ready          chan struct{}
+	readyOnce      sync.Once
+	mu             sync.Mutex
+}
+
+var (
+	testHTTPServerSeq      atomic.Uint64
+	testHTTPServerRegistry sync.Map // host -> http.Handler
+	sharedTestHTTPClient   = &http.Client{
+		Transport: roundTripperFunc(dispatchTestHTTPRequest),
+		Timeout:   0,
+	}
+)
+
+func init() {
+	util.SetModelsFetcherHTTPClientForTesting(sharedTestHTTPClient)
+}
+
+func newTestHTTPClient() *http.Client {
+	return sharedTestHTTPClient
+}
+
+func newTestHTTPServer(t testing.TB, handler http.Handler) *testHTTPServer {
+	t.Helper()
+
+	host := fmt.Sprintf("test-upstream-%d.invalid", testHTTPServerSeq.Add(1))
+	testHTTPServerRegistry.Store(host, handler)
+
+	srv := &testHTTPServer{
+		URL:  "http://" + host,
+		host: host,
+	}
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func (s *testHTTPServer) Client() *http.Client {
+	return sharedTestHTTPClient
+}
+
+func (s *testHTTPServer) Close() {
+	if s == nil {
+		return
+	}
+	if s.closed.CompareAndSwap(false, true) {
+		testHTTPServerRegistry.Delete(s.host)
+	}
+}
+
+func dispatchTestHTTPRequest(req *http.Request) (*http.Response, error) {
+	handlerValue, ok := testHTTPServerRegistry.Load(req.URL.Host)
+	if !ok {
+		return nil, fmt.Errorf("no test upstream registered for host %q", req.URL.Host)
+	}
+
+	pr, pw := io.Pipe()
+	rw := &testHTTPResponseWriter{
+		header: make(http.Header),
+		body:   pw,
+		ready:  make(chan struct{}),
+	}
+
+	go func() {
+		<-req.Context().Done()
+		rw.abort(req.Context().Err())
+	}()
+
+	go func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				rw.finish(fmt.Errorf("test upstream panic: %v", recovered))
+				return
+			}
+			rw.finish(nil)
+		}()
+
+		clone := req.Clone(req.Context())
+		if clone.Body == nil {
+			clone.Body = http.NoBody
+		}
+		clone.RequestURI = clone.URL.RequestURI()
+		if clone.Host == "" {
+			clone.Host = clone.URL.Host
+		}
+
+		handlerValue.(http.Handler).ServeHTTP(rw, clone)
+	}()
+
+	select {
+	case <-rw.ready:
+		return rw.response(req, pr), nil
+	case <-req.Context().Done():
+		_ = pw.CloseWithError(req.Context().Err())
+		return nil, req.Context().Err()
+	}
+}
+
+func (w *testHTTPResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *testHTTPResponseWriter) WriteHeader(statusCode int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.headerSnapshot != nil {
+		return
+	}
+	if statusCode == 0 {
+		statusCode = http.StatusOK
+	}
+	w.statusCode = statusCode
+	w.headerSnapshot = w.header.Clone()
+	w.readyOnce.Do(func() { close(w.ready) })
+}
+
+func (w *testHTTPResponseWriter) Write(p []byte) (int, error) {
+	w.WriteHeader(http.StatusOK)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closedErr != nil {
+		return 0, w.closedErr
+	}
+	return w.pending.Write(p)
+}
+
+func (w *testHTTPResponseWriter) Flush() {
+	w.WriteHeader(http.StatusOK)
+	w.mu.Lock()
+	if w.closedErr != nil {
+		w.mu.Unlock()
+		return
+	}
+	if w.pending.Len() == 0 {
+		w.mu.Unlock()
+		return
+	}
+	data := append([]byte(nil), w.pending.Bytes()...)
+	w.pending.Reset()
+	w.mu.Unlock()
+	if _, err := w.body.Write(data); err != nil {
+		w.mu.Lock()
+		if w.closedErr == nil {
+			w.closedErr = err
+		}
+		w.mu.Unlock()
+	}
+}
+
+func (w *testHTTPResponseWriter) response(req *http.Request, body *io.PipeReader) *http.Response {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	statusCode := w.statusCode
+	if statusCode == 0 {
+		statusCode = http.StatusOK
+	}
+	header := w.headerSnapshot
+	if header == nil {
+		header = w.header.Clone()
+	}
+
+	return &http.Response{
+		StatusCode:    statusCode,
+		Status:        fmt.Sprintf("%d %s", statusCode, http.StatusText(statusCode)),
+		Header:        header,
+		Body:          body,
+		ContentLength: -1,
+		Proto:         "HTTP/1.1",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Request:       req,
+	}
+}
+
+func (w *testHTTPResponseWriter) finish(err error) {
+	w.WriteHeader(http.StatusOK)
+	w.Flush()
+	w.mu.Lock()
+	if w.bodyClosed {
+		w.mu.Unlock()
+		return
+	}
+	w.bodyClosed = true
+	if err != nil && w.closedErr == nil {
+		w.closedErr = err
+	}
+	w.mu.Unlock()
+	if err != nil {
+		_ = w.body.CloseWithError(err)
+		return
+	}
+	_ = w.body.Close()
+}
+
+func (w *testHTTPResponseWriter) abort(err error) {
+	if err == nil {
+		err = context.Canceled
+	}
+	w.mu.Lock()
+	if w.bodyClosed {
+		w.mu.Unlock()
+		return
+	}
+	w.bodyClosed = true
+	w.closedErr = err
+	w.pending.Reset()
+	w.mu.Unlock()
+	_ = w.body.CloseWithError(err)
+}
 
 func newTestContext(t testing.TB, req *http.Request) (*gin.Context, *httptest.ResponseRecorder) {
 	t.Helper()
@@ -83,6 +318,7 @@ func newInMemoryServer(t testing.TB) *Server {
 	}
 
 	srv := NewServer(store)
+	srv.client = newTestHTTPClient()
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()

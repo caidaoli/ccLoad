@@ -4,16 +4,48 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
+
+	"github.com/bytedance/sonic"
 )
+
+func mustBuildTestTransformPlan(t testing.TB, cfg *model.Config, requestPath string, body []byte) protocol.TransformPlan {
+	t.Helper()
+
+	modelName := extractModelFromPath(requestPath)
+	if modelName == "" {
+		var reqModel struct {
+			Model string `json:"model"`
+		}
+		_ = sonic.Unmarshal(body, &reqModel)
+		modelName = reqModel.Model
+	}
+
+	plan, err := protocol.BuildTransformPlan(
+		protocol.Protocol(util.DetectChannelTypeFromPath(requestPath)),
+		protocol.Protocol(cfg.GetChannelType()),
+		requestPath,
+		requestPath,
+		body,
+		body,
+		modelName,
+		modelName,
+		isStreamingRequest(requestPath, body),
+	)
+	if err != nil {
+		t.Fatalf("BuildTransformPlan failed: %v", err)
+	}
+	return plan
+}
 
 // TestRequestContextCreation 测试请求上下文创建
 func TestRequestContextCreation(t *testing.T) {
@@ -180,7 +212,7 @@ func TestHandleRequestError(t *testing.T) {
 // TestForwardOnceAsync_Integration 集成测试
 func TestForwardOnceAsync_Integration(t *testing.T) {
 	// 创建测试服务器
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 验证认证头
 		if r.Header.Get("x-api-key") != "sk-test" {
 			w.WriteHeader(401)
@@ -212,10 +244,9 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 			cfg,
 			"sk-test", // 正确的key
 			http.MethodPost,
-			[]byte(`{"model":"claude-3"}`),
+			mustBuildTestTransformPlan(t, cfg, "/v1/messages", []byte(`{"model":"claude-3"}`)),
 			http.Header{},
 			"",
-			"/v1/messages",
 			cfg.URL,
 			recorder,
 			nil, // observer
@@ -246,10 +277,9 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 			cfg,
 			"sk-wrong", // 错误的key
 			http.MethodPost,
-			[]byte(`{"model":"claude-3"}`),
+			mustBuildTestTransformPlan(t, cfg, "/v1/messages", []byte(`{"model":"claude-3"}`)),
 			http.Header{},
 			"",
-			"/v1/messages",
 			cfg.URL,
 			recorder,
 			nil, // observer
@@ -269,6 +299,74 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 	})
 }
 
+func TestForwardOnceAsync_UsesTransformPlanUpstreamPathAndBody(t *testing.T) {
+	var gotPath string
+	var gotBody string
+
+	srv := newInMemoryServer(t)
+	srv.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			rawBody, _ := io.ReadAll(r.Body)
+			gotPath = r.URL.Path
+			gotBody = string(rawBody)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header: http.Header{
+					"Content-Type": []string{"application/json"},
+				},
+				Body: io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"parts":[{"text":"ok"}]}}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2},"modelVersion":"gemini-2.5-pro"}`)),
+			}, nil
+		}),
+	}
+	cfg := &model.Config{
+		ID:          1,
+		Name:        "gemini",
+		URL:         "https://gemini-upstream.example.com",
+		ChannelType: "gemini",
+	}
+
+	plan, err := protocol.BuildTransformPlan(
+		protocol.OpenAI,
+		protocol.Gemini,
+		"/v1/chat/completions",
+		"/v1/chat/completions",
+		[]byte(`{"model":"alias-model","messages":[{"role":"user","content":"hi"}]}`),
+		[]byte(`{"model":"gemini-2.5-pro","messages":[{"role":"user","content":"hi"}]}`),
+		"alias-model",
+		"gemini-2.5-pro",
+		false,
+	)
+	if err != nil {
+		t.Fatalf("BuildTransformPlan failed: %v", err)
+	}
+
+	recorder := newRecorder()
+	result, _, err := srv.forwardOnceAsync(
+		context.Background(),
+		cfg,
+		"sk-test",
+		http.MethodPost,
+		plan,
+		http.Header{},
+		"",
+		cfg.URL,
+		recorder,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("forwardOnceAsync error = %v", err)
+	}
+	if result.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %d", result.Status)
+	}
+	if gotPath != "/v1beta/models/gemini-2.5-pro:generateContent" {
+		t.Fatalf("expected transformed path from plan, got %s", gotPath)
+	}
+	if !strings.Contains(gotBody, `"contents"`) {
+		t.Fatalf("expected transformed request body from plan, got %s", gotBody)
+	}
+}
+
 // TestClientCancelClosesUpstream 测试客户端取消时上游连接立即关闭（方案1验证）
 // 验证：客户端499取消 → resp.Body.Close() → 上游Read被中断
 func TestClientCancelClosesUpstream(t *testing.T) {
@@ -277,7 +375,7 @@ func TestClientCancelClosesUpstream(t *testing.T) {
 	upstreamClosed := make(chan struct{})
 
 	// 创建模拟上游服务器：缓慢发送流式数据
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
 
@@ -337,10 +435,9 @@ func TestClientCancelClosesUpstream(t *testing.T) {
 			cfg,
 			"sk-test",
 			http.MethodPost,
-			[]byte(`{"stream":true}`),
+			mustBuildTestTransformPlan(t, cfg, "/v1/messages", []byte(`{"stream":true}`)),
 			http.Header{},
 			"",
-			"/v1/messages",
 			cfg.URL,
 			recorder,
 			nil, // observer
@@ -404,7 +501,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 
 	// 场景1：正常请求（30次循环，足够检测泄漏）
 	t.Run("正常请求无泄漏", func(t *testing.T) {
-		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(200)
 			_, _ = w.Write([]byte(`{"result":"ok"}`))
 		}))
@@ -419,10 +516,9 @@ func TestNoGoroutineLeak(t *testing.T) {
 				cfg,
 				"sk-test",
 				http.MethodPost,
-				[]byte(`{}`),
+				mustBuildTestTransformPlan(t, cfg, "/v1/messages", []byte(`{}`)),
 				http.Header{},
 				"",
-				"/v1/messages",
 				cfg.URL,
 				recorder,
 				nil, // observer
@@ -440,7 +536,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 
 	// 场景2：客户端取消（20次循环）
 	t.Run("客户端取消无泄漏", func(t *testing.T) {
-		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			time.Sleep(30 * time.Millisecond) // 缩短慢响应时间
 			w.WriteHeader(200)
 			_, _ = w.Write([]byte(`{"result":"ok"}`))
@@ -459,7 +555,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 				cancel()
 			}()
 
-			_, _, _ = srv.forwardOnceAsync(ctx, cfg, "sk-test", http.MethodPost, []byte(`{}`), http.Header{}, "", "/v1/messages", cfg.URL, recorder, nil)
+			_, _, _ = srv.forwardOnceAsync(ctx, cfg, "sk-test", http.MethodPost, mustBuildTestTransformPlan(t, cfg, "/v1/messages", []byte(`{}`)), http.Header{}, "", cfg.URL, recorder, nil)
 		}
 
 		after := waitForGoroutineDeltaLE(t, before, maxDelta, waitTimeout)
@@ -477,7 +573,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 
 		srv.firstByteTimeout = testTimeout
 
-		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			time.Sleep(upstreamDelay)
 			w.WriteHeader(200)
 		}))
@@ -492,10 +588,9 @@ func TestNoGoroutineLeak(t *testing.T) {
 				cfg,
 				"sk-test",
 				http.MethodPost,
-				[]byte(`{"stream":true}`), // 流式请求
+				mustBuildTestTransformPlan(t, cfg, "/v1/messages", []byte(`{"stream":true}`)), // 流式请求
 				http.Header{},
 				"",
-				"/v1/messages",
 				cfg.URL,
 				recorder,
 				nil, // observer
@@ -525,7 +620,7 @@ func TestFirstByteTimeout_StreamingResponse(t *testing.T) {
 	srv.firstByteTimeout = testTimeout
 
 	// 上游服务器：延迟发送响应头，模拟慢响应导致首字节超时
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(upstreamDelay)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -545,10 +640,9 @@ func TestFirstByteTimeout_StreamingResponse(t *testing.T) {
 		cfg,
 		"sk-test",
 		http.MethodPost,
-		[]byte(`{"stream":true}`),
+		mustBuildTestTransformPlan(t, cfg, "/v1/messages", []byte(`{"stream":true}`)),
 		http.Header{},
 		"",
-		"/v1/messages",
 		cfg.URL,
 		recorder,
 		nil, // observer
@@ -588,7 +682,7 @@ func TestFirstByteTimeout_StreamingResponseBodyDelayed(t *testing.T) {
 
 	srv.firstByteTimeout = testTimeout
 
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		if f, ok := w.(http.Flusher); ok {
@@ -611,10 +705,9 @@ func TestFirstByteTimeout_StreamingResponseBodyDelayed(t *testing.T) {
 		cfg,
 		"sk-test",
 		http.MethodPost,
-		[]byte(`{"stream":true}`),
+		mustBuildTestTransformPlan(t, cfg, "/v1/messages", []byte(`{"stream":true}`)),
 		http.Header{},
 		"",
-		"/v1/messages",
 		cfg.URL,
 		recorder,
 		nil, // observer

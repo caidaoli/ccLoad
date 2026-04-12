@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -16,7 +15,7 @@ import (
 
 func TestAdminModels_FetchModelsPreview(t *testing.T) {
 	var gotAuth string
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {
 			http.NotFound(w, r)
 			return
@@ -72,13 +71,13 @@ func TestAdminModels_FetchModelsPreview(t *testing.T) {
 		failCalls := 0
 		okCalls := 0
 
-		failUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		failUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			failCalls++
 			http.Error(w, "boom", http.StatusBadGateway)
 		}))
 		t.Cleanup(failUpstream.Close)
 
-		okUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		okUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			okCalls++
 			time.Sleep(15 * time.Millisecond)
 			if r.URL.Path != "/v1/models" {
@@ -119,7 +118,7 @@ func TestAdminModels_FetchModelsPreview(t *testing.T) {
 func TestAdminModels_HandleFetchModels(t *testing.T) {
 	// upstream: 先返回成功，再返回错误
 	var call int
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {
 			http.NotFound(w, r)
 			return
@@ -197,14 +196,14 @@ func TestAdminModels_HandleFetchModels(t *testing.T) {
 
 func TestAdminModels_HandleFetchModels_MultiURL(t *testing.T) {
 	failCalls := 0
-	failUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	failUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		failCalls++
 		http.Error(w, "boom", http.StatusBadGateway)
 	}))
 	t.Cleanup(failUpstream.Close)
 
 	okCalls := 0
-	okUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	okUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		okCalls++
 		time.Sleep(15 * time.Millisecond)
 		if r.URL.Path != "/v1/models" {
@@ -274,7 +273,7 @@ func TestAdminModels_HandleFetchModels_MultiURL(t *testing.T) {
 
 func TestAdminModels_HandleFetchModels_MultiURL_KeyErrorDoesNotCooldownURL(t *testing.T) {
 	keyErrCalls := 0
-	keyErrUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	keyErrUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		keyErrCalls++
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -283,7 +282,7 @@ func TestAdminModels_HandleFetchModels_MultiURL_KeyErrorDoesNotCooldownURL(t *te
 	t.Cleanup(keyErrUpstream.Close)
 
 	okCalls := 0
-	okUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	okUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		okCalls++
 		if r.URL.Path != "/v1/models" {
 			http.NotFound(w, r)
@@ -346,7 +345,7 @@ func TestAdminModels_HandleFetchModels_MultiURL_KeyErrorDoesNotCooldownURL(t *te
 func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 	t.Run("merge mode partial success", func(t *testing.T) {
 		// channel1: 返回 m1,m2（新增1个）
-		upstream1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstream1 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != "/v1/models" {
 				http.NotFound(w, r)
 				return
@@ -357,7 +356,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		t.Cleanup(upstream1.Close)
 
 		// channel2: 返回 x1（无变化）
-		upstream2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstream2 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != "/v1/models" {
 				http.NotFound(w, r)
 				return
@@ -455,7 +454,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 	})
 
 	t.Run("replace mode", func(t *testing.T) {
-		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != "/v1/models" {
 				http.NotFound(w, r)
 				return

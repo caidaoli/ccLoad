@@ -2,17 +2,66 @@ package app
 
 import (
 	"context"
+	"strings"
 
 	modelpkg "ccLoad/internal/model"
+	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 )
+
+func normalizeOptionalChannelType(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return util.NormalizeChannelType(value)
+}
+
+func (s *Server) getEnabledChannelsByExposedProtocol(ctx context.Context, protocol string) ([]*modelpkg.Config, error) {
+	normalizedType := util.NormalizeChannelType(protocol)
+	if cache := s.getChannelCache(); cache != nil {
+		if channels, err := cache.GetEnabledChannelsByExposedProtocol(ctx, normalizedType); err == nil {
+			return channels, nil
+		}
+	}
+	return s.store.GetEnabledChannelsByExposedProtocol(ctx, normalizedType)
+}
+
+func (s *Server) getEnabledChannelsByModelAndProtocol(ctx context.Context, model string, protocol string) ([]*modelpkg.Config, error) {
+	normalizedType := normalizeOptionalChannelType(protocol)
+	if normalizedType == "" {
+		return s.GetEnabledChannelsByModel(ctx, model)
+	}
+
+	if cache := s.getChannelCache(); cache != nil {
+		if channels, err := cache.GetEnabledChannelsByModelAndProtocol(ctx, model, normalizedType); err == nil {
+			return channels, nil
+		}
+	}
+
+	if store, ok := s.store.(storage.ModelProtocolStore); ok {
+		return store.GetEnabledChannelsByModelAndProtocol(ctx, model, normalizedType)
+	}
+
+	channels, err := s.GetEnabledChannelsByModel(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]*modelpkg.Config, 0, len(channels))
+	for _, cfg := range channels {
+		if cfg != nil && cfg.SupportsProtocol(normalizedType) {
+			filtered = append(filtered, cfg)
+		}
+	}
+	return filtered, nil
+}
 
 // selectCandidatesByChannelType 根据客户端协议选择候选渠道
 func (s *Server) selectCandidatesByChannelType(ctx context.Context, channelType string) ([]*modelpkg.Config, error) {
 	normalizedType := util.NormalizeChannelType(channelType)
 
 	// 优先走缓存查询
-	channels, err := s.store.GetEnabledChannelsByExposedProtocol(ctx, normalizedType)
+	channels, err := s.getEnabledChannelsByExposedProtocol(ctx, normalizedType)
 	if err != nil {
 		return nil, err
 	}
@@ -37,31 +86,13 @@ func (s *Server) selectCandidatesByChannelType(ctx context.Context, channelType 
 // selectCandidatesByModelAndType 根据模型和渠道类型筛选候选渠道
 // 遵循SRP：数据库负责返回满足模型的渠道，本函数仅负责类型过滤
 func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model string, channelType string) ([]*modelpkg.Config, error) {
-	normalizedType := util.NormalizeChannelType(channelType)
-
-	// 协议过滤辅助函数
-	filterByType := func(channels []*modelpkg.Config) []*modelpkg.Config {
-		if channelType == "" {
-			return channels
-		}
-		filtered := make([]*modelpkg.Config, 0, len(channels))
-		for _, cfg := range channels {
-			if cfg.SupportsProtocol(normalizedType) {
-				filtered = append(filtered, cfg)
-			}
-		}
-		return filtered
-	}
+	normalizedType := normalizeOptionalChannelType(channelType)
 
 	// 优先走索引查询
-	channels, err := s.GetEnabledChannelsByModel(ctx, model)
+	channels, err := s.getEnabledChannelsByModelAndProtocol(ctx, model, normalizedType)
 	if err != nil {
 		return nil, err
 	}
-
-	// [FIX] 在判断是否回退前，先应用 channelType 过滤
-	// 否则精确匹配到一个 openai 渠道会阻止回退到 anthropic 渠道
-	channels = filterByType(channels)
 
 	// 先做冷却/成本过滤，但不触发“全冷却兜底”，以便后续还能继续做模糊匹配回退。
 	filtered, err := s.filterCooldownChannelsStrict(ctx, channels)
@@ -77,12 +108,22 @@ func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model strin
 	// 精确候选可能存在但全部在冷却/成本限额下不可用，这时仍需尝试模糊匹配补充候选。
 	var allCandidates []*modelpkg.Config
 	if model != "*" {
-		all, err := s.store.ListConfigs(ctx)
-		if err != nil {
-			return nil, err
+		source := make([]*modelpkg.Config, 0)
+		if normalizedType != "" {
+			source, err = s.getEnabledChannelsByModelAndProtocol(ctx, "*", normalizedType)
+			if err != nil {
+				return nil, err
+			}
 		}
-		allCandidates = make([]*modelpkg.Config, 0, len(all))
-		for _, cfg := range all {
+		if len(source) == 0 {
+			source, err = s.store.ListConfigs(ctx)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		allCandidates = make([]*modelpkg.Config, 0, len(source))
+		for _, cfg := range source {
 			if cfg == nil || !cfg.Enabled {
 				continue
 			}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -13,7 +12,7 @@ import (
 )
 
 func TestTestChannelAPI_StreamIncludesUsageAndCost(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/messages" {
 			http.NotFound(w, r)
 			return
@@ -106,7 +105,7 @@ func TestTestChannelAPI_StreamIncludesUsageAndCost(t *testing.T) {
 }
 
 func TestTestChannelAPI_GeminiStreamIncludesTTFBAndText(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Gemini 流式端点: /v1beta/models/{model}:streamGenerateContent
 		if r.URL.Path != "/v1beta/models/gemini-2.5-flash-lite:streamGenerateContent" {
 			http.NotFound(w, r)

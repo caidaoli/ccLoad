@@ -591,6 +591,69 @@ Bad-Scheduled-Model,https://bad.example.com,10,test-model,{},anthropic,true,sk-i
 	}
 }
 
+func TestAdminAPI_ImportChannelsCSV_InvalidProtocolTransformsRejected(t *testing.T) {
+	server := newInMemoryServer(t)
+
+	csvContent := `name,url,priority,models,model_redirects,channel_type,protocol_transforms,enabled,api_key,key_strategy
+Bad-Transforms,https://bad.example.com,10,test-model,{},anthropic,"openai,gemini,openai",true,sk-import-key-1,sequential
+Good-Transforms,https://good.example.com,10,test-model,{},anthropic,openai,true,sk-import-key-2,sequential
+`
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", "test-import.csv")
+	if err != nil {
+		t.Fatalf("创建表单文件字段失败: %v", err)
+	}
+	if _, err := io.WriteString(part, csvContent); err != nil {
+		t.Fatalf("写入CSV内容失败: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("关闭writer失败: %v", err)
+	}
+
+	req := newRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	c, w := newTestContext(t, req)
+
+	server.HandleImportChannelsCSV(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望状态码 200, 实际 %d, 响应: %s", w.Code, w.Body.String())
+	}
+
+	var summary ChannelImportSummary
+	mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &summary)
+	if summary.Skipped != 1 || len(summary.Errors) == 0 {
+		t.Fatalf("期望非法 protocol_transforms 行被跳过并返回错误，实际 summary=%+v", summary)
+	}
+	if !strings.Contains(summary.Errors[0], "protocol_transforms") {
+		t.Fatalf("期望错误包含 protocol_transforms，实际: %v", summary.Errors)
+	}
+
+	ctx := context.Background()
+	configs, err := server.store.ListConfigs(ctx)
+	if err != nil {
+		t.Fatalf("查询渠道列表失败: %v", err)
+	}
+
+	var hasBad, hasGood bool
+	for _, cfg := range configs {
+		switch cfg.Name {
+		case "Bad-Transforms":
+			hasBad = true
+		case "Good-Transforms":
+			hasGood = true
+		}
+	}
+	if hasBad {
+		t.Fatalf("Bad-Transforms 不应被导入")
+	}
+	if !hasGood {
+		t.Fatalf("Good-Transforms 应被导入")
+	}
+}
+
 func TestAdminAPI_ImportChannelsCSV_PrunesURLSelectorStateForUpdatedChannel(t *testing.T) {
 	server := newInMemoryServer(t)
 	ctx := context.Background()

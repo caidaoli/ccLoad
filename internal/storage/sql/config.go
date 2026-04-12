@@ -199,23 +199,81 @@ func (s *SQLStore) GetEnabledChannelsByType(ctx context.Context, channelType str
 	return configs, nil
 }
 
-// GetEnabledChannelsByExposedProtocol 查询暴露指定客户端协议的启用渠道（按优先级排序）
-func (s *SQLStore) GetEnabledChannelsByExposedProtocol(ctx context.Context, protocol string) ([]*model.Config, error) {
-	configs, err := s.GetEnabledChannelsByModel(ctx, "*")
+// GetEnabledChannelsByModelAndProtocol 查询支持指定模型且暴露指定客户端协议的启用渠道（按优先级排序）
+func (s *SQLStore) GetEnabledChannelsByModelAndProtocol(ctx context.Context, modelName string, protocol string) ([]*model.Config, error) {
+	protocol = strings.TrimSpace(strings.ToLower(protocol))
+	if protocol == "" {
+		return s.GetEnabledChannelsByModel(ctx, modelName)
+	}
+
+	nowUnix := timeToUnix(time.Now())
+	args := []any{protocol, protocol, nowUnix}
+	query := `
+		SELECT c.id, c.name, c.url, c.priority,
+		       c.channel_type, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
+		       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit,
+		       COUNT(k.id) as key_count,
+		       c.created_at, c.updated_at
+		FROM channels c
+		LEFT JOIN api_keys k ON c.id = k.channel_id
+		WHERE c.enabled = 1
+		  AND (
+		      c.channel_type = ?
+		      OR EXISTS (
+		          SELECT 1
+		          FROM channel_protocol_transforms cpt
+		          WHERE cpt.channel_id = c.id AND cpt.protocol = ?
+		      )
+		  )
+		  AND (c.cooldown_until = 0 OR c.cooldown_until <= ?)
+	`
+
+	if modelName != "*" {
+		query += `
+		  AND EXISTS (
+		      SELECT 1
+		      FROM channel_models cm
+		      WHERE cm.channel_id = c.id AND cm.model = ?
+		  )
+	`
+		args = append(args, modelName)
+	}
+
+	query += `
+		GROUP BY c.id
+		ORDER BY c.priority DESC, c.id ASC
+	`
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = rows.Close() }()
+
+	scanner := NewConfigScanner()
+	configs, err := scanner.ScanConfigs(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.loadModelEntriesForConfigs(ctx, configs); err != nil {
+		return nil, err
+	}
+	if err := s.loadProtocolTransformsForConfigs(ctx, configs); err != nil {
+		return nil, err
+	}
+
+	configs = filterConfigsByProtocol(configs, protocol)
+	return configs, nil
+}
+
+// GetEnabledChannelsByExposedProtocol 查询暴露指定客户端协议的启用渠道（按优先级排序）
+func (s *SQLStore) GetEnabledChannelsByExposedProtocol(ctx context.Context, protocol string) ([]*model.Config, error) {
 	protocol = strings.TrimSpace(strings.ToLower(protocol))
 	if protocol == "" {
 		return []*model.Config{}, nil
 	}
-	filtered := make([]*model.Config, 0, len(configs))
-	for _, cfg := range configs {
-		if cfg != nil && cfg.SupportsProtocol(protocol) {
-			filtered = append(filtered, cfg)
-		}
-	}
-	return filtered, nil
+	return s.GetEnabledChannelsByModelAndProtocol(ctx, "*", protocol)
 }
 
 // CreateConfig 创建新的渠道配置
@@ -484,6 +542,7 @@ func (s *SQLStore) loadProtocolTransformsForConfig(ctx context.Context, config *
 	}
 
 	config.ProtocolTransforms = transforms
+	normalizeLoadedProtocolTransforms(config)
 	return nil
 }
 
@@ -570,7 +629,33 @@ func (s *SQLStore) loadProtocolTransformsForConfigs(ctx context.Context, configs
 		}
 	}
 
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, cfg := range configs {
+		normalizeLoadedProtocolTransforms(cfg)
+	}
+	return nil
+}
+
+func normalizeLoadedProtocolTransforms(cfg *model.Config) {
+	if cfg == nil {
+		return
+	}
+	cfg.ProtocolTransforms = cfg.GetProtocolTransforms()
+}
+
+func filterConfigsByProtocol(configs []*model.Config, protocol string) []*model.Config {
+	if protocol == "" {
+		return configs
+	}
+	filtered := make([]*model.Config, 0, len(configs))
+	for _, cfg := range configs {
+		if cfg != nil && cfg.SupportsProtocol(protocol) {
+			filtered = append(filtered, cfg)
+		}
+	}
+	return filtered
 }
 
 // saveModelEntriesTx 保存渠道的模型数据（事务版本，用于 Create/Update/Replace）

@@ -22,6 +22,21 @@ function loadRenderSandbox(overrides = {}) {
         return key;
       }
     },
+    TemplateEngine: {
+      render(_templateId, data = {}) {
+        return data;
+      }
+    },
+    channelStatsById: {},
+    formatMetricNumber(value) {
+      return String(value ?? '');
+    },
+    formatCostValue(value) {
+      return String(value ?? '');
+    },
+    humanizeMS(ms) {
+      return `${ms}ms`;
+    },
     console
   };
 
@@ -121,4 +136,37 @@ test('initChannelEventDelegation 允许表头全选 checkbox 触发可见渠道�
   listeners.change({ target: headerCheckbox });
 
   assert.equal(toggleCalls, 1);
+});
+
+test('buildProtocolTransformBadges 只渲染受支持的额外协议并去重', () => {
+  const { buildProtocolTransformBadges } = loadRenderHelpers();
+
+  const html = buildProtocolTransformBadges('anthropic', ['gemini', 'openai', 'anthropic', 'codex', 'openai', 'unknown']);
+
+  assert.match(html, />OpenAI</);
+  assert.match(html, />Codex</);
+  assert.doesNotMatch(html, />Gemini</);
+  assert.doesNotMatch(html, />Anthropic</);
+  assert.equal((html.match(/>OpenAI</g) || []).length, 1);
+  assert.match(html, /Additional Protocol Transforms: OpenAI/);
+});
+
+test('createChannelCard 会把额外协议标签传给渠道卡片模板且保留上游协议徽章', () => {
+  const { createChannelCard } = loadRenderHelpers();
+
+  const cardData = createChannelCard({
+    id: 7,
+    name: '协议转换渠道',
+    channel_type: 'gemini',
+    protocol_transforms: ['openai', 'anthropic', 'gemini'],
+    url: 'https://api.example.com',
+    models: [{ model: 'gpt-5.4' }],
+    priority: 1,
+    enabled: true
+  });
+
+  assert.match(cardData.typeBadge, />Gemini</);
+  assert.match(cardData.protocolTransformBadges, />Anthropic</);
+  assert.match(cardData.protocolTransformBadges, />OpenAI</);
+  assert.doesNotMatch(cardData.protocolTransformBadges, />Gemini</);
 });

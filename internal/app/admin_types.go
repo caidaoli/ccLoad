@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
 )
 
@@ -146,6 +147,9 @@ func (cr *ChannelRequest) Validate() error {
 		}
 		cr.ChannelType = normalized // 应用标准化结果
 	}
+	if err := validateProtocolTransforms(cr.ChannelType, cr.ProtocolTransforms); err != nil {
+		return err
+	}
 	cr.ProtocolTransforms = normalizeProtocolTransforms(cr.ChannelType, cr.ProtocolTransforms)
 
 	// [FIX] key_strategy 白名单校验 + 标准化
@@ -190,23 +194,54 @@ func (cr *ChannelRequest) ToConfig() *model.Config {
 	}
 }
 
+func validateProtocolTransforms(channelType string, transforms []string) error {
+	base := protocol.Protocol(util.NormalizeChannelType(channelType))
+	seen := make(map[string]int, len(transforms))
+	for i, rawProtocol := range transforms {
+		rawProtocol = strings.TrimSpace(rawProtocol)
+		if rawProtocol == "" {
+			return fmt.Errorf("protocol_transforms[%d]: cannot be empty", i)
+		}
+
+		normalized := util.NormalizeChannelType(rawProtocol)
+		if !util.IsValidChannelType(normalized) {
+			return fmt.Errorf("protocol_transforms[%d]: invalid protocol %q (allowed: anthropic, openai, gemini, codex)", i, rawProtocol)
+		}
+		if normalized == string(base) {
+			return fmt.Errorf("protocol_transforms[%d]: %q duplicates channel_type %q", i, normalized, base)
+		}
+		if !protocol.SupportsTransform(protocol.Protocol(normalized), base) {
+			return fmt.Errorf("protocol_transforms[%d]: unsupported protocol transform %s -> %s", i, normalized, base)
+		}
+		if firstIdx, exists := seen[normalized]; exists {
+			return fmt.Errorf("protocol_transforms[%d]: duplicate protocol %q (already defined at protocol_transforms[%d])", i, normalized, firstIdx)
+		}
+		seen[normalized] = i
+	}
+	return nil
+}
+
 func normalizeProtocolTransforms(channelType string, transforms []string) []string {
-	base := util.NormalizeChannelType(channelType)
+	base := protocol.Protocol(util.NormalizeChannelType(channelType))
 	seen := make(map[string]struct{}, len(transforms))
 	normalized := make([]string, 0, len(transforms))
-	for _, protocol := range transforms {
-		protocol = util.NormalizeChannelType(protocol)
-		if protocol == "" || protocol == base {
+	for _, protocolName := range transforms {
+		protocolName = strings.TrimSpace(protocolName)
+		if protocolName == "" {
 			continue
 		}
-		if !util.IsValidChannelType(protocol) {
+		normalizedProtocol := util.NormalizeChannelType(protocolName)
+		if !util.IsValidChannelType(normalizedProtocol) {
 			continue
 		}
-		if _, ok := seen[protocol]; ok {
+		if normalizedProtocol == string(base) || !protocol.SupportsTransform(protocol.Protocol(normalizedProtocol), base) {
 			continue
 		}
-		seen[protocol] = struct{}{}
-		normalized = append(normalized, protocol)
+		if _, ok := seen[normalizedProtocol]; ok {
+			continue
+		}
+		seen[normalizedProtocol] = struct{}{}
+		normalized = append(normalized, normalizedProtocol)
 	}
 	slices.Sort(normalized)
 	return normalized

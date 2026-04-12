@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	protocolpkg "ccLoad/internal/protocol"
 )
 
 // ModelEntry 模型配置条目
@@ -86,6 +88,9 @@ func (c *Config) GetProtocolTransforms() []string {
 	for _, protocol := range c.ProtocolTransforms {
 		protocol = strings.TrimSpace(strings.ToLower(protocol))
 		if protocol == "" || protocol == base {
+			continue
+		}
+		if !protocolpkg.SupportsTransform(protocolpkg.Protocol(protocol), protocolpkg.Protocol(base)) {
 			continue
 		}
 		if _, ok := seen[protocol]; ok {
