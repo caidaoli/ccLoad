@@ -818,6 +818,60 @@ func TestProxy_Success_NonStreaming_CodexToAnthropicTransform(t *testing.T) {
 	}
 }
 
+func TestProxy_Success_NonStreaming_CodexBareMessageToAnthropicTransform(t *testing.T) {
+	t.Parallel()
+
+	var gotPath string
+	var gotBody []byte
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "anthropic-ch", channelType: "anthropic", models: "claude-3-5-sonnet", apiKey: "sk-ant"},
+	}, map[int]string{0: "https://anthropic-upstream.example.com"})
+
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			gotPath = r.URL.Path
+			gotBody, _ = io.ReadAll(r.Body)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header: http.Header{
+					"Content-Type": []string{"application/json"},
+				},
+				Body: io.NopCloser(bytes.NewReader([]byte(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"hello from anthropic"}],"model":"claude-3-5-sonnet","stop_reason":"end_turn","usage":{"input_tokens":7,"output_tokens":4}}`))),
+			}, nil
+		}),
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("ListConfigs failed: %v", err)
+	}
+	cfg := configs[0]
+	cfg.ProtocolTransforms = []string{"codex"}
+	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+		t.Fatalf("UpdateConfig failed: %v", err)
+	}
+	env.server.InvalidateChannelListCache()
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+		"model": "claude-3-5-sonnet",
+		"input": []map[string]any{{
+			"role":    "user",
+			"content": []map[string]string{{"type": "input_text", "text": "hi"}},
+		}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if gotPath != "/v1/messages" {
+		t.Fatalf("expected anthropic messages path, got %s", gotPath)
+	}
+	if !bytes.Contains(gotBody, []byte(`"messages"`)) || !bytes.Contains(gotBody, []byte(`"text":"hi"`)) {
+		t.Fatalf("expected anthropic request body, got %s", gotBody)
+	}
+}
+
 func TestProxy_Success_Streaming_CodexToAnthropicTransform(t *testing.T) {
 	t.Parallel()
 
