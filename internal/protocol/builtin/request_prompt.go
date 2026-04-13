@@ -47,14 +47,17 @@ type conversationMedia struct {
 }
 
 type conversationTool struct {
+	Type        string
 	Name        string
 	Description string
 	InputSchema json.RawMessage
+	Options     map[string]any
 }
 
 type conversationToolChoice struct {
-	Mode string
-	Name string
+	Mode     string
+	Name     string
+	ToolType string
 }
 
 type conversationToolCall struct {
@@ -369,6 +372,9 @@ func encodeGeminiRequest(conv conversation) ([]byte, error) {
 	if len(conv.Tools) > 0 {
 		decls := make([]geminiFunctionDeclaration, 0, len(conv.Tools))
 		for _, tool := range conv.Tools {
+			if normalizeRole(tool.Type) != "" && normalizeRole(tool.Type) != "function" {
+				return nil, fmt.Errorf("%w: gemini does not support builtin tool type %q", protocol.ErrUnsupportedRequestShape, tool.Type)
+			}
 			decl := geminiFunctionDeclaration{Name: tool.Name, Description: tool.Description}
 			if anySchema, err := rawJSONToAny(tool.InputSchema); err == nil && anySchema != nil {
 				decl.Parameters = anySchema
@@ -378,7 +384,10 @@ func encodeGeminiRequest(conv conversation) ([]byte, error) {
 		payload.Tools = []geminiTool{{FunctionDeclarations: decls}}
 	}
 	if !conv.ToolChoice.IsZero() {
-		payload.ToolConfig = encodeGeminiToolConfig(conv.ToolChoice)
+		payload.ToolConfig, err = encodeGeminiToolConfig(conv.ToolChoice)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if len(payload.Contents) == 0 {
 		return nil, fmt.Errorf("%w: no convertible gemini contents", protocol.ErrUnsupportedRequestShape)
@@ -423,6 +432,9 @@ func encodeAnthropicRequest(model string, conv conversation, stream bool) ([]byt
 	if len(conv.Tools) > 0 {
 		tools := make([]map[string]any, 0, len(conv.Tools))
 		for _, tool := range conv.Tools {
+			if normalizeRole(tool.Type) != "" && normalizeRole(tool.Type) != "function" {
+				return nil, fmt.Errorf("%w: anthropic does not support builtin tool type %q", protocol.ErrUnsupportedRequestShape, tool.Type)
+			}
 			item := map[string]any{"name": tool.Name}
 			if tool.Description != "" {
 				item["description"] = tool.Description
@@ -445,6 +457,9 @@ func encodeAnthropicRequest(model string, conv conversation, stream bool) ([]byt
 		case "required":
 			choice["type"] = "any"
 		case "named":
+			if conv.ToolChoice.toolType() != "function" {
+				return nil, fmt.Errorf("%w: anthropic does not support builtin tool_choice type %q", protocol.ErrUnsupportedRequestShape, conv.ToolChoice.toolType())
+			}
 			choice["type"] = "tool"
 			choice["name"] = conv.ToolChoice.Name
 		case "none":
@@ -570,17 +585,25 @@ func encodeOpenAIRequest(model string, conv conversation, stream bool) ([]byte, 
 	if len(conv.Tools) > 0 {
 		tools := make([]map[string]any, 0, len(conv.Tools))
 		for _, tool := range conv.Tools {
-			item := map[string]any{
-				"type": "function",
-				"function": map[string]any{
-					"name": tool.Name,
-				},
+			if tool.toolType() == "function" {
+				item := map[string]any{
+					"type": "function",
+					"function": map[string]any{
+						"name": tool.Name,
+					},
+				}
+				if tool.Description != "" {
+					item["function"].(map[string]any)["description"] = tool.Description
+				}
+				if anySchema, err := rawJSONToAny(tool.InputSchema); err == nil && anySchema != nil {
+					item["function"].(map[string]any)["parameters"] = anySchema
+				}
+				tools = append(tools, item)
+				continue
 			}
-			if tool.Description != "" {
-				item["function"].(map[string]any)["description"] = tool.Description
-			}
-			if anySchema, err := rawJSONToAny(tool.InputSchema); err == nil && anySchema != nil {
-				item["function"].(map[string]any)["parameters"] = anySchema
+			item := map[string]any{"type": tool.toolType()}
+			for key, value := range tool.Options {
+				item[key] = value
 			}
 			tools = append(tools, item)
 		}
@@ -621,12 +644,20 @@ func encodeCodexRequest(model string, conv conversation, stream bool) ([]byte, e
 	if len(conv.Tools) > 0 {
 		tools := make([]map[string]any, 0, len(conv.Tools))
 		for _, tool := range conv.Tools {
-			item := map[string]any{"type": "function", "name": tool.Name}
-			if tool.Description != "" {
-				item["description"] = tool.Description
+			if tool.toolType() == "function" {
+				item := map[string]any{"type": "function", "name": tool.Name}
+				if tool.Description != "" {
+					item["description"] = tool.Description
+				}
+				if anySchema, err := rawJSONToAny(tool.InputSchema); err == nil && anySchema != nil {
+					item["parameters"] = anySchema
+				}
+				tools = append(tools, item)
+				continue
 			}
-			if anySchema, err := rawJSONToAny(tool.InputSchema); err == nil && anySchema != nil {
-				item["parameters"] = anySchema
+			item := map[string]any{"type": tool.toolType()}
+			for key, value := range tool.Options {
+				item[key] = value
 			}
 			tools = append(tools, item)
 		}
@@ -636,8 +667,12 @@ func encodeCodexRequest(model string, conv conversation, stream bool) ([]byte, e
 		choice := map[string]any{"type": conv.ToolChoice.Mode}
 		switch conv.ToolChoice.Mode {
 		case "named":
-			choice["type"] = "function"
-			choice["name"] = conv.ToolChoice.Name
+			if conv.ToolChoice.toolType() == "function" {
+				choice["type"] = "function"
+				choice["name"] = conv.ToolChoice.Name
+			} else {
+				choice["type"] = conv.ToolChoice.toolType()
+			}
 		case "required":
 			choice["type"] = "required"
 		case "auto", "none":
@@ -799,7 +834,10 @@ func encodeGeminiPart(part conversationPart) (geminiPart, error) {
 	}
 }
 
-func encodeGeminiToolConfig(choice conversationToolChoice) *geminiToolConfig {
+func encodeGeminiToolConfig(choice conversationToolChoice) (*geminiToolConfig, error) {
+	if choice.Mode == "named" && choice.toolType() != "function" {
+		return nil, fmt.Errorf("%w: gemini does not support builtin tool_choice type %q", protocol.ErrUnsupportedRequestShape, choice.toolType())
+	}
 	cfg := &geminiToolConfig{}
 	switch choice.Mode {
 	case "auto":
@@ -812,9 +850,9 @@ func encodeGeminiToolConfig(choice conversationToolChoice) *geminiToolConfig {
 		cfg.FunctionCallingConfig.Mode = "ANY"
 		cfg.FunctionCallingConfig.AllowedFunctionNames = []string{choice.Name}
 	default:
-		return nil
+		return nil, fmt.Errorf("%w: unsupported gemini tool choice %q", protocol.ErrUnsupportedRequestShape, choice.Mode)
 	}
-	return cfg
+	return cfg, nil
 }
 
 func encodeAnthropicBlocks(parts []conversationPart) ([]map[string]any, error) {
@@ -1024,6 +1062,9 @@ func encodeOpenAIToolChoice(choice conversationToolChoice) any {
 	case "required":
 		return "required"
 	case "named":
+		if choice.toolType() != "function" {
+			return map[string]any{"type": choice.toolType()}
+		}
 		return map[string]any{"type": "function", "function": map[string]any{"name": choice.Name}}
 	default:
 		return nil
@@ -1153,18 +1194,24 @@ func parseFunctionTools(raw json.RawMessage, source string) ([]conversationTool,
 	}
 	tools := make([]conversationTool, 0, len(items))
 	for i, item := range items {
-		typ := normalizeRole(stringValue(item["type"]))
-		fn := item
-		switch typ {
-		case "", "function":
-			if typ == "function" {
-				nested, ok := item["function"].(map[string]any)
-				if ok && len(nested) > 0 {
-					fn = nested
-				}
+		typ, err := normalizeConversationToolType(stringValue(item["type"]))
+		if err != nil {
+			return nil, fmt.Errorf("%w: unsupported %s tool type %q at index %d", protocol.ErrUnsupportedRequestShape, source, normalizeRole(stringValue(item["type"])), i)
+		}
+		if typ != "function" {
+			tool := conversationTool{
+				Type:    typ,
+				Options: cloneMapWithoutKeys(item, "type"),
 			}
-		default:
-			return nil, fmt.Errorf("%w: unsupported %s tool type %q at index %d", protocol.ErrUnsupportedRequestShape, source, typ, i)
+			tools = append(tools, tool)
+			continue
+		}
+		fn := item
+		if normalizeRole(stringValue(item["type"])) == "function" {
+			nested, ok := item["function"].(map[string]any)
+			if ok && len(nested) > 0 {
+				fn = nested
+			}
 		}
 		name := strings.TrimSpace(stringValue(fn["name"]))
 		if name == "" {
@@ -1175,6 +1222,7 @@ func parseFunctionTools(raw json.RawMessage, source string) ([]conversationTool,
 			return nil, err
 		}
 		tools = append(tools, conversationTool{
+			Type:        "function",
 			Name:        name,
 			Description: stringValue(fn["description"]),
 			InputSchema: schema,
@@ -1203,6 +1251,7 @@ func parseGeminiTools(tools []geminiTool) ([]conversationTool, error) {
 				schema = raw
 			}
 			out = append(out, conversationTool{
+				Type:        "function",
 				Name:        name,
 				Description: strings.TrimSpace(decl.Description),
 				InputSchema: schema,
@@ -1237,7 +1286,7 @@ func parseToolChoice(raw json.RawMessage, source string) (conversationToolChoice
 	switch typ {
 	case "auto", "":
 		if name := nestedNameField(obj, "function", "name"); name != "" {
-			return conversationToolChoice{Mode: "named", Name: name}, nil
+			return conversationToolChoice{Mode: "named", Name: name, ToolType: "function"}, nil
 		}
 		return conversationToolChoice{Mode: "auto"}, nil
 	case "none":
@@ -1252,14 +1301,17 @@ func parseToolChoice(raw json.RawMessage, source string) (conversationToolChoice
 		if name == "" {
 			return conversationToolChoice{}, fmt.Errorf("%w: named %s tool_choice missing name", protocol.ErrUnsupportedRequestShape, source)
 		}
-		return conversationToolChoice{Mode: "named", Name: name}, nil
+		return conversationToolChoice{Mode: "named", Name: name, ToolType: "function"}, nil
 	case "tool":
 		name := strings.TrimSpace(stringValue(obj["name"]))
 		if name == "" {
 			return conversationToolChoice{}, fmt.Errorf("%w: named %s tool_choice missing name", protocol.ErrUnsupportedRequestShape, source)
 		}
-		return conversationToolChoice{Mode: "named", Name: name}, nil
+		return conversationToolChoice{Mode: "named", Name: name, ToolType: "function"}, nil
 	default:
+		if isBuiltinConversationToolType(typ) {
+			return conversationToolChoice{Mode: "named", ToolType: typ}, nil
+		}
 		return conversationToolChoice{}, fmt.Errorf("%w: unsupported %s tool_choice type %q", protocol.ErrUnsupportedRequestShape, source, typ)
 	}
 }
@@ -1280,7 +1332,7 @@ func parseGeminiToolChoice(cfg *geminiToolConfig) (conversationToolChoice, error
 			if name == "" {
 				return conversationToolChoice{}, fmt.Errorf("%w: gemini named tool choice missing name", protocol.ErrUnsupportedRequestShape)
 			}
-			return conversationToolChoice{Mode: "named", Name: name}, nil
+			return conversationToolChoice{Mode: "named", Name: name, ToolType: "function"}, nil
 		}
 		return conversationToolChoice{Mode: "required"}, nil
 	default:
@@ -1984,7 +2036,62 @@ func hasJSONValue(raw json.RawMessage) bool {
 }
 
 func (c conversationToolChoice) IsZero() bool {
-	return c.Mode == "" && c.Name == ""
+	return c.Mode == "" && c.Name == "" && c.ToolType == ""
+}
+
+func (t conversationTool) toolType() string {
+	if typ := normalizeRole(t.Type); typ != "" {
+		return typ
+	}
+	return "function"
+}
+
+func (c conversationToolChoice) toolType() string {
+	if typ := normalizeRole(c.ToolType); typ != "" {
+		return typ
+	}
+	return "function"
+}
+
+func normalizeConversationToolType(value string) (string, error) {
+	switch typ := normalizeRole(value); typ {
+	case "", "function":
+		return "function", nil
+	case "web_search", "web_search_preview":
+		return typ, nil
+	default:
+		return "", fmt.Errorf("unsupported conversation tool type %q", typ)
+	}
+}
+
+func isBuiltinConversationToolType(value string) bool {
+	switch normalizeRole(value) {
+	case "web_search", "web_search_preview":
+		return true
+	default:
+		return false
+	}
+}
+
+func cloneMapWithoutKeys(src map[string]any, keys ...string) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	skip := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		skip[key] = struct{}{}
+	}
+	out := make(map[string]any, len(src))
+	for key, value := range src {
+		if _, ok := skip[key]; ok {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func normalizeRole(value string) string {

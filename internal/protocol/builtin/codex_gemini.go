@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -15,26 +16,6 @@ type codexRequest struct {
 	Tools        json.RawMessage   `json:"tools,omitempty"`
 	ToolChoice   json.RawMessage   `json:"tool_choice,omitempty"`
 	Input        []json.RawMessage `json:"input"`
-}
-
-type codexResponse struct {
-	ID     string `json:"id"`
-	Object string `json:"object"`
-	Status string `json:"status"`
-	Model  string `json:"model"`
-	Output []struct {
-		Type    string `json:"type"`
-		Role    string `json:"role"`
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-	} `json:"output"`
-	Usage struct {
-		InputTokens  int64 `json:"input_tokens"`
-		OutputTokens int64 `json:"output_tokens"`
-		TotalTokens  int64 `json:"total_tokens"`
-	} `json:"usage"`
 }
 
 type codexToGeminiStreamState struct {
@@ -73,43 +54,31 @@ func convertGeminiResponseToCodexNonStream(_ context.Context, model string, _, _
 		return nil, err
 	}
 
-	content := ""
+	output := make([]map[string]any, 0)
 	if len(resp.Candidates) > 0 {
-		for _, part := range resp.Candidates[0].Content.Parts {
-			content += part.Text
+		parts, err := conversationPartsFromGeminiParts(resp.Candidates[0].Content.Parts)
+		if err != nil {
+			return nil, err
+		}
+		output, err = codexOutputItemsFromConversationParts(parts)
+		if err != nil {
+			return nil, err
 		}
 	}
 
-	out := codexResponse{
-		ID:     "resp-proxy",
-		Object: "response",
-		Status: "completed",
-		Model:  model,
-		Output: []struct {
-			Type    string `json:"type"`
-			Role    string `json:"role"`
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-		}{
-			{
-				Type: "message",
-				Role: "assistant",
-				Content: []struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
-				}{
-					{Type: "output_text", Text: content},
-				},
-			},
-		},
+	out := map[string]any{
+		"id":     "resp-proxy",
+		"object": "response",
+		"status": "completed",
+		"model":  coalesceModel(model, resp.ModelVersion),
+		"output": output,
 	}
-	out.Usage.InputTokens = resp.UsageMetadata.PromptTokenCount
-	out.Usage.OutputTokens = resp.UsageMetadata.CandidatesTokenCount
-	out.Usage.TotalTokens = resp.UsageMetadata.TotalTokenCount
-	if out.Model == "" {
-		out.Model = resp.ModelVersion
+	if resp.UsageMetadata.PromptTokenCount != 0 || resp.UsageMetadata.CandidatesTokenCount != 0 || resp.UsageMetadata.TotalTokenCount != 0 {
+		out["usage"] = map[string]any{
+			"input_tokens":  resp.UsageMetadata.PromptTokenCount,
+			"output_tokens": resp.UsageMetadata.CandidatesTokenCount,
+			"total_tokens":  resp.UsageMetadata.TotalTokenCount,
+		}
 	}
 	return sonic.Marshal(out)
 }
@@ -201,26 +170,52 @@ func convertGeminiResponseToCodexStream(_ context.Context, model string, _, _, r
 		st.usage.totalTokens = resp.UsageMetadata.TotalTokenCount
 		st.usage.seen = true
 	}
-
-	content := ""
-	if len(resp.Candidates) > 0 {
-		for _, part := range resp.Candidates[0].Content.Parts {
-			content += part.Text
-		}
-	}
-	if content == "" {
+	if len(resp.Candidates) == 0 {
 		return nil, nil
 	}
-
-	chunk := map[string]any{
-		"type":  "response.output_text.delta",
-		"delta": content,
-	}
-	body, err := sonic.Marshal(chunk)
+	parts, err := conversationPartsFromGeminiParts(resp.Candidates[0].Content.Parts)
 	if err != nil {
 		return nil, err
 	}
-	return [][]byte{append([]byte("event: response.output_text.delta\ndata: "), append(body, []byte("\n\n")...)...)}, nil
+
+	outputs := make([][]byte, 0, len(parts))
+	for _, part := range parts {
+		switch part.Kind {
+		case partKindText:
+			if part.Text == "" {
+				continue
+			}
+			chunk := map[string]any{
+				"type":  "response.output_text.delta",
+				"delta": part.Text,
+			}
+			body, err := sonic.Marshal(chunk)
+			if err != nil {
+				return nil, err
+			}
+			outputs = append(outputs, append([]byte("event: response.output_text.delta\ndata: "), append(body, []byte("\n\n")...)...))
+		case partKindToolCall:
+			encoded, err := encodeCodexToolCall(part.ToolCall)
+			if err != nil {
+				return nil, err
+			}
+			chunk := map[string]any{
+				"type": "response.output_item.done",
+				"item": encoded,
+			}
+			body, err := sonic.Marshal(chunk)
+			if err != nil {
+				return nil, err
+			}
+			outputs = append(outputs, append([]byte("event: response.output_item.done\ndata: "), append(body, []byte("\n\n")...)...))
+		default:
+			return nil, fmt.Errorf("unsupported gemini response part kind %q", part.Kind)
+		}
+	}
+	if len(outputs) == 0 {
+		return nil, nil
+	}
+	return outputs, nil
 }
 
 func convertCodexResponseToGeminiStream(_ context.Context, model string, _, _, rawJSON []byte, param *any) ([][]byte, error) {

@@ -1,7 +1,6 @@
 package builtin
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -25,23 +24,43 @@ type anthropicMessageContent struct {
 }
 
 type anthropicMessagesResponse struct {
-	ID         string                 `json:"id"`
-	Type       string                 `json:"type"`
-	Role       string                 `json:"role"`
-	Content    []anthropicTextBlock   `json:"content"`
-	Model      string                 `json:"model"`
-	StopReason string                 `json:"stop_reason"`
-	Usage      anthropicMessagesUsage `json:"usage"`
+	ID         string                   `json:"id"`
+	Type       string                   `json:"type"`
+	Role       string                   `json:"role"`
+	Content    []anthropicResponseBlock `json:"content"`
+	Model      string                   `json:"model"`
+	StopReason string                   `json:"stop_reason"`
+	Usage      anthropicMessagesUsage   `json:"usage"`
 }
 
-type anthropicTextBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+type anthropicResponseBlock struct {
+	Type      string `json:"type"`
+	Text      string `json:"text,omitempty"`
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"`
+	Data      string `json:"data,omitempty"`
+	ID        string `json:"id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Input     any    `json:"input,omitempty"`
+	Source    any    `json:"source,omitempty"`
+	Title     string `json:"title,omitempty"`
+	Content   any    `json:"content,omitempty"`
+	ToolUseID string `json:"tool_use_id,omitempty"`
+	IsError   bool   `json:"is_error,omitempty"`
 }
 
 type anthropicMessagesUsage struct {
-	InputTokens  int64 `json:"input_tokens"`
-	OutputTokens int64 `json:"output_tokens"`
+	InputTokens              int64                   `json:"input_tokens"`
+	OutputTokens             int64                   `json:"output_tokens"`
+	CacheReadInputTokens     int64                   `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int64                   `json:"cache_creation_input_tokens,omitempty"`
+	ReasoningTokens          int64                   `json:"reasoning_tokens,omitempty"`
+	CacheCreation            *anthropicCacheCreation `json:"cache_creation,omitempty"`
+}
+
+type anthropicCacheCreation struct {
+	Ephemeral5mInputTokens int64 `json:"ephemeral_5m_input_tokens,omitempty"`
+	Ephemeral1hInputTokens int64 `json:"ephemeral_1h_input_tokens,omitempty"`
 }
 
 type anthropicToGeminiStreamState struct {
@@ -82,27 +101,35 @@ func convertGeminiResponseToAnthropicNonStream(_ context.Context, model string, 
 		return nil, err
 	}
 
-	content := ""
+	blocks := make([]anthropicResponseBlock, 0)
+	stopReason := "end_turn"
 	if len(resp.Candidates) > 0 {
-		for _, part := range resp.Candidates[0].Content.Parts {
-			content += part.Text
+		parts, err := conversationPartsFromGeminiParts(resp.Candidates[0].Content.Parts)
+		if err != nil {
+			return nil, err
 		}
+		encodedBlocks, err := encodeAnthropicBlocks(parts)
+		if err != nil {
+			return nil, err
+		}
+		blocks, err = anthropicResponseBlocksFromMaps(encodedBlocks)
+		if err != nil {
+			return nil, err
+		}
+		stopReason = mapGeminiFinishReasonToAnthropic(resp.Candidates[0].FinishReason, hasConversationToolCalls(parts))
 	}
 
 	out := anthropicMessagesResponse{
 		ID:         "msg-proxy",
 		Type:       "message",
 		Role:       "assistant",
-		Content:    []anthropicTextBlock{{Type: "text", Text: content}},
-		Model:      model,
-		StopReason: "end_turn",
+		Content:    blocks,
+		Model:      coalesceModel(model, resp.ModelVersion),
+		StopReason: stopReason,
 		Usage: anthropicMessagesUsage{
 			InputTokens:  resp.UsageMetadata.PromptTokenCount,
 			OutputTokens: resp.UsageMetadata.CandidatesTokenCount,
 		},
-	}
-	if out.Model == "" {
-		out.Model = resp.ModelVersion
 	}
 	return sonic.Marshal(out)
 }
@@ -132,14 +159,23 @@ func convertAnthropicResponseToGeminiNonStream(_ context.Context, model string, 
 }
 
 type anthropicStreamState struct {
-	started bool
+	started       bool
+	model         string
+	nextIndex     int
+	openTextIndex int
+	inputTokens   int64
+	outputTokens  int64
+	stopReason    string
 }
 
 func convertGeminiResponseToAnthropicStream(_ context.Context, model string, _, _, rawJSON []byte, param *any) ([][]byte, error) {
 	if *param == nil {
-		*param = &anthropicStreamState{}
+		*param = &anthropicStreamState{model: model, openTextIndex: -1}
 	}
 	st := (*param).(*anthropicStreamState)
+	if st.model == "" {
+		st.model = model
+	}
 
 	line := strings.TrimSpace(string(rawJSON))
 	if line == "" {
@@ -149,46 +185,224 @@ func convertGeminiResponseToAnthropicStream(_ context.Context, model string, _, 
 		line = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 	}
 	if line == "[DONE]" {
-		if !st.started {
-			return [][]byte{
-				[]byte(fmt.Sprintf("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-proxy\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":%q,\"stop_reason\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}\n\n", model)),
-				[]byte("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"),
-				[]byte("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"),
-				[]byte("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":0}}\n\n"),
-				[]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
-			}, nil
-		}
-		return [][]byte{
-			[]byte("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"),
-			[]byte("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":0}}\n\n"),
-			[]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
-		}, nil
+		return geminiAnthropicStopChunks(st, "")
 	}
 
 	var resp geminiResponse
 	if err := sonic.Unmarshal([]byte(line), &resp); err != nil {
 		return nil, err
 	}
-	content := ""
-	if len(resp.Candidates) > 0 {
-		for _, part := range resp.Candidates[0].Content.Parts {
-			content += part.Text
-		}
+	if resp.ModelVersion != "" {
+		st.model = resp.ModelVersion
 	}
-	if content == "" {
+	if resp.UsageMetadata.PromptTokenCount != 0 || resp.UsageMetadata.CandidatesTokenCount != 0 {
+		st.inputTokens = resp.UsageMetadata.PromptTokenCount
+		st.outputTokens = resp.UsageMetadata.CandidatesTokenCount
+	}
+	if len(resp.Candidates) == 0 {
 		return nil, nil
 	}
-
-	delta := []byte(fmt.Sprintf("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":%q}}\n\n", content))
-	if st.started {
-		return [][]byte{delta}, nil
+	parts, err := conversationPartsFromGeminiParts(resp.Candidates[0].Content.Parts)
+	if err != nil {
+		return nil, err
 	}
-	st.started = true
-	return [][]byte{
-		[]byte(fmt.Sprintf("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-proxy\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":%q,\"stop_reason\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n", model)),
-		[]byte("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"),
-		bytes.Clone(delta),
-	}, nil
+
+	outputs := make([][]byte, 0, len(parts)*3+3)
+	for _, part := range parts {
+		switch part.Kind {
+		case partKindText:
+			if part.Text == "" {
+				continue
+			}
+			if !st.started {
+				start, err := geminiAnthropicStartChunks(st)
+				if err != nil {
+					return nil, err
+				}
+				outputs = append(outputs, start...)
+				st.started = true
+			}
+			if st.openTextIndex < 0 {
+				blockStart, err := marshalEventSSE("content_block_start", map[string]any{
+					"type":  "content_block_start",
+					"index": st.nextIndex,
+					"content_block": map[string]any{
+						"type": "text",
+						"text": "",
+					},
+				})
+				if err != nil {
+					return nil, err
+				}
+				outputs = append(outputs, blockStart)
+				st.openTextIndex = st.nextIndex
+				st.nextIndex++
+			}
+			deltaChunk, err := marshalEventSSE("content_block_delta", map[string]any{
+				"type":  "content_block_delta",
+				"index": st.openTextIndex,
+				"delta": map[string]any{
+					"type": "text_delta",
+					"text": part.Text,
+				},
+			})
+			if err != nil {
+				return nil, err
+			}
+			outputs = append(outputs, deltaChunk)
+			st.stopReason = "end_turn"
+		case partKindToolCall:
+			if part.ToolCall == nil {
+				return nil, fmt.Errorf("missing gemini tool call content")
+			}
+			if !st.started {
+				start, err := geminiAnthropicStartChunks(st)
+				if err != nil {
+					return nil, err
+				}
+				outputs = append(outputs, start...)
+				st.started = true
+			}
+			if st.openTextIndex >= 0 {
+				textStop, err := marshalEventSSE("content_block_stop", map[string]any{
+					"type":  "content_block_stop",
+					"index": st.openTextIndex,
+				})
+				if err != nil {
+					return nil, err
+				}
+				outputs = append(outputs, textStop)
+				st.openTextIndex = -1
+			}
+			blockIndex := st.nextIndex
+			st.nextIndex++
+			startChunk, err := marshalEventSSE("content_block_start", map[string]any{
+				"type":  "content_block_start",
+				"index": blockIndex,
+				"content_block": map[string]any{
+					"type":  "tool_use",
+					"id":    part.ToolCall.ID,
+					"name":  part.ToolCall.Name,
+					"input": map[string]any{},
+				},
+			})
+			if err != nil {
+				return nil, err
+			}
+			outputs = append(outputs, startChunk)
+			arguments := strings.TrimSpace(string(part.ToolCall.Arguments))
+			if arguments != "" && arguments != "{}" {
+				deltaChunk, err := marshalEventSSE("content_block_delta", map[string]any{
+					"type":  "content_block_delta",
+					"index": blockIndex,
+					"delta": map[string]any{
+						"type":         "input_json_delta",
+						"partial_json": arguments,
+					},
+				})
+				if err != nil {
+					return nil, err
+				}
+				outputs = append(outputs, deltaChunk)
+			}
+			stopChunk, err := marshalEventSSE("content_block_stop", map[string]any{
+				"type":  "content_block_stop",
+				"index": blockIndex,
+			})
+			if err != nil {
+				return nil, err
+			}
+			outputs = append(outputs, stopChunk)
+			st.stopReason = "tool_use"
+		default:
+			return nil, fmt.Errorf("unsupported gemini response part kind %q", part.Kind)
+		}
+	}
+	if resp.Candidates[0].FinishReason != "" {
+		stopChunks, err := geminiAnthropicStopChunks(st, mapGeminiFinishReasonToAnthropic(resp.Candidates[0].FinishReason, hasConversationToolCalls(parts)))
+		if err != nil {
+			return nil, err
+		}
+		outputs = append(outputs, stopChunks...)
+	}
+	if len(outputs) == 0 {
+		return nil, nil
+	}
+	return outputs, nil
+}
+
+func geminiAnthropicStartChunks(st *anthropicStreamState) ([][]byte, error) {
+	start, err := marshalEventSSE("message_start", map[string]any{
+		"type": "message_start",
+		"message": map[string]any{
+			"id":          "msg-proxy",
+			"type":        "message",
+			"role":        "assistant",
+			"content":     []any{},
+			"model":       st.model,
+			"stop_reason": nil,
+			"usage": map[string]any{
+				"input_tokens":  st.inputTokens,
+				"output_tokens": 0,
+			},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{start}, nil
+}
+
+func geminiAnthropicStopChunks(st *anthropicStreamState, stopReason string) ([][]byte, error) {
+	if stopReason == "" {
+		stopReason = st.stopReason
+	}
+	if stopReason == "" {
+		stopReason = "end_turn"
+	}
+	outputs := make([][]byte, 0, 4)
+	if st != nil && !st.started {
+		start, err := geminiAnthropicStartChunks(st)
+		if err != nil {
+			return nil, err
+		}
+		outputs = append(outputs, start...)
+		st.started = true
+	}
+	if st != nil && st.openTextIndex >= 0 {
+		blockStop, err := marshalEventSSE("content_block_stop", map[string]any{
+			"type":  "content_block_stop",
+			"index": st.openTextIndex,
+		})
+		if err != nil {
+			return nil, err
+		}
+		outputs = append(outputs, blockStop)
+		st.openTextIndex = -1
+	}
+	messageDelta, err := marshalEventSSE("message_delta", map[string]any{
+		"type": "message_delta",
+		"delta": map[string]any{
+			"stop_reason": stopReason,
+		},
+		"usage": map[string]any{
+			"output_tokens": st.outputTokens,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	messageStop, err := marshalEventSSE("message_stop", map[string]any{"type": "message_stop"})
+	if err != nil {
+		return nil, err
+	}
+	outputs = append(outputs, messageDelta, messageStop)
+	if st != nil {
+		st.started = false
+		st.nextIndex = 0
+		st.stopReason = ""
+	}
+	return outputs, nil
 }
 
 func convertAnthropicResponseToGeminiStream(_ context.Context, model string, _, _, rawJSON []byte, param *any) ([][]byte, error) {

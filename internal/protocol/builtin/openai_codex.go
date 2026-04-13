@@ -11,20 +11,28 @@ import (
 type openAIToCodexStreamState struct {
 	model string
 	usage struct {
-		promptTokens     int64
-		completionTokens int64
-		totalTokens      int64
-		seen             bool
+		promptTokens             int64
+		completionTokens         int64
+		totalTokens              int64
+		cachedTokens             int64
+		cacheCreationInputTokens int64
+		reasoningTokens          int64
+		seen                     bool
 	}
+	reasoningText      string
+	reasoningEncrypted string
 }
 
 type codexToOpenAIStreamState struct {
 	model string
 	usage struct {
-		inputTokens  int64
-		outputTokens int64
-		totalTokens  int64
-		seen         bool
+		inputTokens              int64
+		outputTokens             int64
+		totalTokens              int64
+		cachedTokens             int64
+		cacheCreationInputTokens int64
+		reasoningTokens          int64
+		seen                     bool
 	}
 }
 
@@ -69,11 +77,14 @@ func convertOpenAIResponseToCodexNonStream(_ context.Context, model string, _, _
 		"output": output,
 	}
 	if usage := openAIUsageFromMap(resp["usage"]); usage != nil {
-		out["usage"] = map[string]any{
-			"input_tokens":  usage.promptTokens,
-			"output_tokens": usage.completionTokens,
-			"total_tokens":  usage.totalTokens,
-		}
+		out["usage"] = codexUsagePayload(&codexUsage{
+			inputTokens:              usage.promptTokens,
+			outputTokens:             usage.completionTokens,
+			totalTokens:              usage.totalTokens,
+			cachedTokens:             usage.cachedTokens,
+			cacheCreationInputTokens: usage.cacheCreationInputTokens,
+			reasoningTokens:          usage.reasoningTokens,
+		})
 	}
 	return sonic.Marshal(out)
 }
@@ -83,16 +94,9 @@ func convertCodexResponseToOpenAINonStream(_ context.Context, model string, _, _
 	if err := sonic.Unmarshal(rawJSON, &resp); err != nil {
 		return nil, err
 	}
-	message, toolCalls, err := openAIMessageFromCodexOutput(resp["output"])
+	message, err := openAIMessageFromCodexOutput(resp["output"])
 	if err != nil {
 		return nil, err
-	}
-	choiceMessage := map[string]any{
-		"role":    "assistant",
-		"content": message,
-	}
-	if len(toolCalls) > 0 {
-		choiceMessage["tool_calls"] = toolCalls
 	}
 	out := map[string]any{
 		"id":      "chatcmpl-proxy",
@@ -101,16 +105,19 @@ func convertCodexResponseToOpenAINonStream(_ context.Context, model string, _, _
 		"model":   coalesceModel(model, resp["model"]),
 		"choices": []map[string]any{{
 			"index":         0,
-			"message":       choiceMessage,
+			"message":       message,
 			"finish_reason": "stop",
 		}},
 	}
 	if usage := codexUsageFromMap(resp["usage"]); usage != nil {
-		out["usage"] = map[string]any{
-			"prompt_tokens":     usage.inputTokens,
-			"completion_tokens": usage.outputTokens,
-			"total_tokens":      usage.totalTokens,
-		}
+		out["usage"] = openAIUsagePayload(&openAIUsage{
+			promptTokens:             usage.inputTokens,
+			completionTokens:         usage.outputTokens,
+			totalTokens:              usage.totalTokens,
+			cachedTokens:             usage.cachedTokens,
+			cacheCreationInputTokens: usage.cacheCreationInputTokens,
+			reasoningTokens:          usage.reasoningTokens,
+		})
 	}
 	return sonic.Marshal(out)
 }
@@ -132,6 +139,18 @@ func convertOpenAIResponseToCodexStream(_ context.Context, model string, _, _, r
 		line = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 	}
 	if line == "[DONE]" {
+		chunks := make([][]byte, 0, 2)
+		if st.reasoningText != "" || st.reasoningEncrypted != "" {
+			item := map[string]any{
+				"type": "response.output_item.done",
+				"item": codexReasoningItem(st.reasoningText, st.reasoningEncrypted),
+			}
+			body, err := sonic.Marshal(item)
+			if err != nil {
+				return nil, err
+			}
+			chunks = append(chunks, append([]byte("event: response.output_item.done\ndata: "), append(body, []byte("\n\n")...)...))
+		}
 		response := map[string]any{
 			"id":     "resp-proxy",
 			"object": "response",
@@ -139,18 +158,22 @@ func convertOpenAIResponseToCodexStream(_ context.Context, model string, _, _, r
 			"model":  st.model,
 		}
 		if st.usage.seen {
-			response["usage"] = map[string]any{
-				"input_tokens":  st.usage.promptTokens,
-				"output_tokens": st.usage.completionTokens,
-				"total_tokens":  st.usage.totalTokens,
-			}
+			response["usage"] = codexUsagePayload(&codexUsage{
+				inputTokens:              st.usage.promptTokens,
+				outputTokens:             st.usage.completionTokens,
+				totalTokens:              st.usage.totalTokens,
+				cachedTokens:             st.usage.cachedTokens,
+				cacheCreationInputTokens: st.usage.cacheCreationInputTokens,
+				reasoningTokens:          st.usage.reasoningTokens,
+			})
 		}
 		done := map[string]any{"type": "response.completed", "response": response}
 		body, err := sonic.Marshal(done)
 		if err != nil {
 			return nil, err
 		}
-		return [][]byte{append([]byte("event: response.completed\ndata: "), append(body, []byte("\n\n")...)...)}, nil
+		chunks = append(chunks, append([]byte("event: response.completed\ndata: "), append(body, []byte("\n\n")...)...))
+		return chunks, nil
 	}
 
 	var chunk map[string]any
@@ -164,6 +187,9 @@ func convertOpenAIResponseToCodexStream(_ context.Context, model string, _, _, r
 		st.usage.promptTokens = usage.promptTokens
 		st.usage.completionTokens = usage.completionTokens
 		st.usage.totalTokens = usage.totalTokens
+		st.usage.cachedTokens = usage.cachedTokens
+		st.usage.cacheCreationInputTokens = usage.cacheCreationInputTokens
+		st.usage.reasoningTokens = usage.reasoningTokens
 		st.usage.seen = true
 	}
 	choices, _ := chunk["choices"].([]any)
@@ -173,6 +199,16 @@ func convertOpenAIResponseToCodexStream(_ context.Context, model string, _, _, r
 	choice, _ := choices[0].(map[string]any)
 	delta, _ := choice["delta"].(map[string]any)
 	content := stringValue(delta["content"])
+	if reasoning := stringValue(delta["reasoning_content"]); reasoning != "" {
+		st.reasoningText += reasoning
+		return nil, nil
+	}
+	if reasoning, _ := delta["reasoning"].(map[string]any); reasoning != nil {
+		if encrypted := stringValue(reasoning["encrypted_content"]); encrypted != "" {
+			st.reasoningEncrypted = encrypted
+		}
+		return nil, nil
+	}
 	if content == "" {
 		return nil, nil
 	}
@@ -214,6 +250,9 @@ func convertCodexResponseToOpenAIStream(_ context.Context, model string, _, _, r
 			st.usage.inputTokens = usage.inputTokens
 			st.usage.outputTokens = usage.outputTokens
 			st.usage.totalTokens = usage.totalTokens
+			st.usage.cachedTokens = usage.cachedTokens
+			st.usage.cacheCreationInputTokens = usage.cacheCreationInputTokens
+			st.usage.reasoningTokens = usage.reasoningTokens
 			st.usage.seen = true
 		}
 	}
@@ -230,11 +269,14 @@ func convertCodexResponseToOpenAIStream(_ context.Context, model string, _, _, r
 			}},
 		}
 		if st.usage.seen {
-			chunk["usage"] = map[string]any{
-				"prompt_tokens":     st.usage.inputTokens,
-				"completion_tokens": st.usage.outputTokens,
-				"total_tokens":      st.usage.totalTokens,
-			}
+			chunk["usage"] = openAIUsagePayload(&openAIUsage{
+				promptTokens:             st.usage.inputTokens,
+				completionTokens:         st.usage.outputTokens,
+				totalTokens:              st.usage.totalTokens,
+				cachedTokens:             st.usage.cachedTokens,
+				cacheCreationInputTokens: st.usage.cacheCreationInputTokens,
+				reasoningTokens:          st.usage.reasoningTokens,
+			})
 		}
 		body, err := sonic.Marshal(chunk)
 		if err != nil {
@@ -266,19 +308,50 @@ func convertCodexResponseToOpenAIStream(_ context.Context, model string, _, _, r
 		}
 		return [][]byte{append([]byte("data: "), append(body, []byte("\n\n")...)...)}, nil
 	}
+	if eventType == "response.output_item.done" || stringValue(payload["type"]) == "response.output_item.done" {
+		item, _ := payload["item"].(map[string]any)
+		if normalizeRole(stringValue(item["type"])) != "reasoning" {
+			return nil, nil
+		}
+		text := extractCodexReasoningText(item)
+		if text == "" {
+			return nil, nil
+		}
+		chunk := map[string]any{
+			"id":      "chatcmpl-proxy",
+			"object":  "chat.completion.chunk",
+			"created": 0,
+			"model":   st.model,
+			"choices": []map[string]any{{
+				"index": 0,
+				"delta": map[string]any{"reasoning_content": text},
+			}},
+		}
+		body, err := sonic.Marshal(chunk)
+		if err != nil {
+			return nil, err
+		}
+		return [][]byte{append([]byte("data: "), append(body, []byte("\n\n")...)...)}, nil
+	}
 	return nil, nil
 }
 
 type openAIUsage struct {
-	promptTokens     int64
-	completionTokens int64
-	totalTokens      int64
+	promptTokens             int64
+	completionTokens         int64
+	totalTokens              int64
+	cachedTokens             int64
+	cacheCreationInputTokens int64
+	reasoningTokens          int64
 }
 
 type codexUsage struct {
-	inputTokens  int64
-	outputTokens int64
-	totalTokens  int64
+	inputTokens              int64
+	outputTokens             int64
+	totalTokens              int64
+	cachedTokens             int64
+	cacheCreationInputTokens int64
+	reasoningTokens          int64
 }
 
 func codexOutputItemsFromOpenAIResponse(resp map[string]any) ([]map[string]any, error) {
@@ -328,45 +401,74 @@ func codexOutputItemsFromOpenAIResponse(resp map[string]any) ([]map[string]any, 
 			"arguments": arguments,
 		})
 	}
+	items = append(items, codexReasoningItemsFromOpenAIMessage(message)...)
 	return items, nil
 }
 
-func openAIMessageFromCodexOutput(output any) (any, []map[string]any, error) {
+func openAIMessageFromCodexOutput(output any) (map[string]any, error) {
 	items, _ := output.([]any)
 	contentParts := make([]map[string]any, 0)
 	toolCalls := make([]map[string]any, 0)
+	reasoning := make([]map[string]any, 0)
+	var reasoningBuilder strings.Builder
 	for i, item := range items {
 		itemMap, ok := item.(map[string]any)
 		if !ok {
-			return nil, nil, fmt.Errorf("unsupported codex output item at index %d", i)
+			return nil, fmt.Errorf("unsupported codex output item at index %d", i)
 		}
 		typ := normalizeRole(stringValue(itemMap["type"]))
 		switch typ {
 		case "message":
 			parts, err := extractCodexContentParts(itemMap["content"])
 			if err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 			for _, part := range parts {
 				encoded, err := encodeOpenAIContentPart(part)
 				if err != nil {
-					return nil, nil, err
+					return nil, err
 				}
 				contentParts = append(contentParts, encoded)
 			}
 		case "function_call":
 			call, err := decodeCodexToolCall(itemMap)
 			if err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 			encoded, err := encodeOpenAIToolCall(&call)
 			if err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 			toolCalls = append(toolCalls, encoded)
+		case "reasoning":
+			text := extractCodexReasoningText(itemMap)
+			if text != "" {
+				reasoningBuilder.WriteString(text)
+			}
+			entry := map[string]any{"type": "reasoning"}
+			if text != "" {
+				entry["text"] = text
+			}
+			if encrypted := stringValue(itemMap["encrypted_content"]); encrypted != "" {
+				entry["encrypted_content"] = encrypted
+			}
+			reasoning = append(reasoning, entry)
 		}
 	}
-	return encodeOpenAIContentValue(contentParts), toolCalls, nil
+	message := map[string]any{
+		"role":    "assistant",
+		"content": encodeOpenAIContentValue(contentParts),
+	}
+	if len(toolCalls) > 0 {
+		message["tool_calls"] = toolCalls
+	}
+	if reasoningBuilder.Len() > 0 {
+		message["reasoning_content"] = reasoningBuilder.String()
+	}
+	if len(reasoning) > 0 {
+		message["reasoning"] = reasoning
+	}
+	return message, nil
 }
 
 func encodeCodexOutputContentPart(part conversationPart) (map[string]any, error) {
@@ -380,17 +482,67 @@ func encodeCodexOutputContentPart(part conversationPart) (map[string]any, error)
 	}
 }
 
+func codexReasoningItemsFromOpenAIMessage(message map[string]any) []map[string]any {
+	items := make([]map[string]any, 0)
+	if rawReasoning, ok := message["reasoning"].([]any); ok {
+		for _, item := range rawReasoning {
+			entry, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			text := stringValue(entry["text"])
+			encrypted := stringValue(entry["encrypted_content"])
+			items = append(items, codexReasoningItem(text, encrypted))
+		}
+	}
+	if len(items) == 0 {
+		if text := stringValue(message["reasoning_content"]); text != "" {
+			items = append(items, codexReasoningItem(text, ""))
+		}
+	}
+	return items
+}
+
+func extractCodexReasoningText(item map[string]any) string {
+	for _, key := range []string{"content", "summary"} {
+		parts, _ := item[key].([]any)
+		for _, rawPart := range parts {
+			part, ok := rawPart.(map[string]any)
+			if !ok {
+				continue
+			}
+			switch normalizeRole(stringValue(part["type"])) {
+			case "reasoning_text", "summary_text":
+				if text := stringValue(part["text"]); text != "" {
+					return text
+				}
+			}
+		}
+	}
+	return ""
+}
+
 func openAIUsageFromMap(value any) *openAIUsage {
 	usageMap, ok := value.(map[string]any)
 	if !ok {
 		return nil
 	}
 	usage := &openAIUsage{
-		promptTokens:     int64Value(usageMap["prompt_tokens"]),
-		completionTokens: int64Value(usageMap["completion_tokens"]),
-		totalTokens:      int64Value(usageMap["total_tokens"]),
+		promptTokens:             int64Value(usageMap["prompt_tokens"]),
+		completionTokens:         int64Value(usageMap["completion_tokens"]),
+		totalTokens:              int64Value(usageMap["total_tokens"]),
+		cacheCreationInputTokens: int64Value(usageMap["cache_creation_input_tokens"]),
 	}
-	if usage.promptTokens == 0 && usage.completionTokens == 0 && usage.totalTokens == 0 {
+	if details, ok := usageMap["prompt_tokens_details"].(map[string]any); ok {
+		usage.cachedTokens = int64Value(details["cached_tokens"])
+	}
+	if details, ok := usageMap["completion_tokens_details"].(map[string]any); ok {
+		usage.reasoningTokens = int64Value(details["reasoning_tokens"])
+	}
+	if usage.totalTokens == 0 {
+		usage.totalTokens = usage.promptTokens + usage.completionTokens
+	}
+	if usage.promptTokens == 0 && usage.completionTokens == 0 && usage.totalTokens == 0 && usage.cachedTokens == 0 && usage.cacheCreationInputTokens == 0 && usage.reasoningTokens == 0 {
 		return nil
 	}
 	return usage
@@ -402,11 +554,23 @@ func codexUsageFromMap(value any) *codexUsage {
 		return nil
 	}
 	usage := &codexUsage{
-		inputTokens:  int64Value(usageMap["input_tokens"]),
-		outputTokens: int64Value(usageMap["output_tokens"]),
-		totalTokens:  int64Value(usageMap["total_tokens"]),
+		inputTokens:              int64Value(usageMap["input_tokens"]),
+		outputTokens:             int64Value(usageMap["output_tokens"]),
+		totalTokens:              int64Value(usageMap["total_tokens"]),
+		cacheCreationInputTokens: int64Value(usageMap["cache_creation_input_tokens"]),
 	}
-	if usage.inputTokens == 0 && usage.outputTokens == 0 && usage.totalTokens == 0 {
+	if details, ok := usageMap["input_tokens_details"].(map[string]any); ok {
+		usage.cachedTokens = int64Value(details["cached_tokens"])
+	} else {
+		usage.cachedTokens = int64Value(usageMap["cache_read_input_tokens"])
+	}
+	if details, ok := usageMap["output_tokens_details"].(map[string]any); ok {
+		usage.reasoningTokens = int64Value(details["reasoning_tokens"])
+	}
+	if usage.totalTokens == 0 {
+		usage.totalTokens = usage.inputTokens + usage.outputTokens
+	}
+	if usage.inputTokens == 0 && usage.outputTokens == 0 && usage.totalTokens == 0 && usage.cachedTokens == 0 && usage.cacheCreationInputTokens == 0 && usage.reasoningTokens == 0 {
 		return nil
 	}
 	return usage
