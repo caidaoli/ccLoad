@@ -162,10 +162,10 @@ func isStreamingRequest(path string, body []byte) bool {
 
 	// Claude/OpenAI流式请求特征：请求体中 stream=true
 	var reqModel struct {
-		Stream bool `json:"stream"`
+		Stream util.FlexibleBool `json:"stream"`
 	}
 	_ = sonic.Unmarshal(body, &reqModel)
-	return reqModel.Stream
+	return reqModel.Stream.Bool()
 }
 
 // ============================================================================

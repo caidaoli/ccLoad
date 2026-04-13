@@ -5,13 +5,15 @@ import (
 	"encoding/json"
 	"strings"
 
+	"ccLoad/internal/util"
+
 	"github.com/bytedance/sonic"
 )
 
 type openAIChatRequest struct {
 	Model      string              `json:"model"`
 	Messages   []openAIChatMessage `json:"messages"`
-	Stream     bool                `json:"stream"`
+	Stream     util.FlexibleBool   `json:"stream"`
 	Tools      json.RawMessage     `json:"tools,omitempty"`
 	ToolChoice json.RawMessage     `json:"tool_choice,omitempty"`
 }
