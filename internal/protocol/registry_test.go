@@ -390,6 +390,29 @@ func TestRegistry_TranslateRequest_CodexToAnthropic(t *testing.T) {
 	}
 }
 
+func TestRegistry_TranslateRequest_CodexBareMessageToAnthropic(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	raw := []byte(`{"model":"claude-3-5-sonnet","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
+	got, err := reg.TranslateRequest(protocol.Codex, protocol.Anthropic, "claude-3-5-sonnet", raw, false)
+	if err != nil {
+		t.Fatalf("TranslateRequest failed: %v", err)
+	}
+	var req struct {
+		Messages []struct {
+			Role    string           `json:"role"`
+			Content []map[string]any `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(got, &req); err != nil {
+		t.Fatalf("unmarshal translated request: %v", err)
+	}
+	if len(req.Messages) != 1 || req.Messages[0].Role != "user" || len(req.Messages[0].Content) != 1 || req.Messages[0].Content[0]["type"] != "text" || req.Messages[0].Content[0]["text"] != "hello" {
+		t.Fatalf("unexpected translated request: %+v", req)
+	}
+}
+
 func TestRegistry_TranslateResponseNonStream_AnthropicToCodex(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)

@@ -243,6 +243,14 @@ func normalizeCodexConversation(req codexRequest) (conversation, error) {
 			return conversation{}, fmt.Errorf("codex input %d: %w", i, err)
 		}
 		typ := normalizeRole(stringValue(item["type"]))
+		if typ == "" {
+			role := normalizeRole(stringValue(item["role"]))
+			if role != "" {
+				if _, hasContent := item["content"]; hasContent {
+					typ = "message"
+				}
+			}
+		}
 		switch typ {
 		case "message":
 			role := normalizeRole(stringValue(item["role"]))
