@@ -271,7 +271,7 @@ window.I18N_LOCALES['en'] = {
   'channels.modal.channelName': 'Channel Name',
   'channels.modal.channelType': 'Channel Type',
   'channels.modal.upstreamProtocol': 'Upstream Protocol',
-  'channels.modal.protocolTransforms': 'Additional Protocol Transforms',
+  'channels.modal.protocolTransforms': 'Protocol Transforms',
   'channels.modal.protocolTransformsHint': 'Declares extra exposed client protocols and excludes the native upstream protocol',
   'channels.modal.keyStrategy': 'Key Strategy',
   'channels.modal.keyStrategySequential': 'Sequential',

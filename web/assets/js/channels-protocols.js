@@ -1,11 +1,13 @@
 (function initChannelProtocolConfig(global) {
   const ALL_PROTOCOLS = Object.freeze(['anthropic', 'codex', 'openai', 'gemini']);
-  const SUPPORTED_TRANSFORMS_BY_CHANNEL_TYPE = Object.freeze({
-    anthropic: Object.freeze(['codex', 'openai']),
-    codex: Object.freeze(['openai']),
-    openai: Object.freeze(['codex']),
-    gemini: Object.freeze(['anthropic', 'codex', 'openai'])
-  });
+  const SUPPORTED_TRANSFORMS_BY_CHANNEL_TYPE = Object.freeze(
+    Object.fromEntries(
+      ALL_PROTOCOLS.map((protocol) => [
+        protocol,
+        Object.freeze(ALL_PROTOCOLS.filter((candidate) => candidate !== protocol))
+      ])
+    )
+  );
 
   function normalizeProtocol(value) {
     return String(value || '').trim().toLowerCase();
@@ -17,8 +19,7 @@
   }
 
   function getProtocolTransformRenderOptions(channelType) {
-    const baseType = normalizeProtocol(channelType) || 'anthropic';
-    return [baseType, ...getSupportedProtocolTransforms(baseType)];
+    return [...ALL_PROTOCOLS];
   }
 
   function normalizeProtocolTransformsForChannel(channelType, selectedValues) {

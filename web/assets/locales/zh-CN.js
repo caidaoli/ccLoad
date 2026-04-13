@@ -271,7 +271,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.modal.channelName': '渠道名称',
   'channels.modal.channelType': '渠道类型',
   'channels.modal.upstreamProtocol': '上游协议',
-  'channels.modal.protocolTransforms': '额外协议转换',
+  'channels.modal.protocolTransforms': '协议转换',
   'channels.modal.protocolTransformsHint': '仅声明额外暴露协议，不包含原生上游协议',
   'channels.modal.keyStrategy': 'Key策略',
   'channels.modal.keyStrategySequential': '顺序',

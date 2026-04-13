@@ -145,6 +145,10 @@
       align-items: center;
     }
 
+    .channel-editor-primary-row + .channel-editor-primary-row {
+      margin-top: 8px;
+    }
+
     .channel-editor-primary-field {
       display: flex;
       align-items: center;
