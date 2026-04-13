@@ -488,12 +488,11 @@
     const types = await getChannelTypes();
 
     container.innerHTML = types.map(type => `
-      <label style="margin-right: 5px; cursor: pointer; display: inline-flex; align-items: center;">
+      <label class="channel-editor-radio-option">
         <input type="radio"
                name="channelType"
                value="${escapeHtml(type.value)}"
-               ${type.value === selectedValue ? 'checked' : ''}
-               style="margin-right: 5px;">
+               ${type.value === selectedValue ? 'checked' : ''}>
         <span title="${escapeHtml(type.description)}">${escapeHtml(type.display_name)}</span>
       </label>
     `).join('');
