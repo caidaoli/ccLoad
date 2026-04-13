@@ -64,6 +64,18 @@
   - 现有测试覆盖了已实现方向的 request/response 翻译
   - 没看到 same-protocol no-op 的专门回归测试
 
+## 执行 lanes（2026-04-13）
+
+- `worker-1 / runtime`
+  - 先处理 P0/P1：能力矩阵、Gemini 入站 normalize、缺失的反向 adapter。
+  - 共享文件优先级：`internal/protocol/types.go`、`internal/protocol/builtin/request_prompt.go`、`internal/protocol/builtin/register.go` 及新增 adapter 文件。
+- `worker-2 / tests`
+  - 先补 P2：same-protocol no-op、normalize 覆盖完整性、新增协议路径的 request/response 回归。
+  - 验证基线：`internal/protocol/registry_test.go`、`internal/protocol/builtin/request_prompt_test.go`，必要时补更细的 family/matrix 断言。
+- `worker-3 / docs + audit`
+  - 对齐 `docs/protocol-adapter-todo.md` 与 `docs/superpowers/specs/2026-04-12-channel-protocol-transforms-design.md`，把“设计目标”和“当前已落地覆盖”拆开写。
+  - 固化文件级代码质量风险，避免后续继续把 `<->` 误读成“已经严格双向”。
+
 ## 是否参考 CLIProxyAPI
 
 是，但不是直接依赖，也不是原样照抄。
@@ -107,45 +119,62 @@
   - 当前仓库把 `openai <-> codex` 做成了真正双向。
   - CLIProxyAPI 能直接参考的是 `openai -> codex`；当前这份 `codex -> openai` 不是简单照搬它的目录布局就能得到的。
 
+## 文件级审计备注
+
+- `internal/protocol/types.go`
+  - `supportedTransformSourcesByUpstreamAndFamily` 同时承担“能力声明”和“请求族门禁”，方向矩阵被拆散在多层 map 里，审计时必须靠推导，不是单一事实源。
+  - `SupportsTransform` / `SupportsTransformFamily` 只回答“当前白名单里有没有”，回答不了“目标应该支持但尚未实现哪些方向”。
+- `internal/protocol/builtin/register.go`
+  - 注册表是手工枚举；只要漏掉一个 request/stream/non-stream leg，文档里的 `<->` 就会和运行时实际能力脱钩。
+  - 这里缺少“成对约束”测试：没有任何机制保证某个设计上声称双向的 pair 真的同时注册了两个方向。
+- `internal/protocol/builtin/request_prompt.go`
+  - 共享会话 IR 思路是对的，但当前只有 OpenAI / Anthropic / Codex 三个入站 normalize，Gemini 缺席导致所有 `gemini -> *` 先天不可能成立。
+  - 单文件体量过大，normalize / encode / 辅助提取都堆在一起，回归面很宽；后续继续补协议时要优先防止把“支持某协议输出”误写成“支持该协议完整入站”。
+- `internal/protocol/registry_test.go`
+  - 已覆盖已实现方向的主路径，但还没有把 same-protocol no-op、缺失反向 pair、请求族边界当成显式契约写死。
+  - 当前测试更像“已注册功能可用”，还不是“矩阵完整性可审计”。
+- `docs/superpowers/specs/2026-04-12-channel-protocol-transforms-design.md`
+  - 设计文档先前把 pair 目标和 shipped 覆盖混写，且遗漏了已经落地的 `openai <-> codex`，这就是误读来源之一。
+
 ## TODO
 
 ### P0：先修根因，不然只会继续堆单向特判
 
-- [ ] 把支持矩阵从“当前入站请求族白名单”提升为“协议对 + 请求族”的显式能力表。
-- [ ] 给 Gemini 增加入站 normalize（等价于 `normalizeGeminiConversation`）。
-- [ ] 明确 OpenAI 在本仓库里到底只代表 `chat/completions`，还是要继续承担更宽的 surface；别让 `Protocol` 和 `RequestFamily` 的职责继续糊在一起。
+- [ ] `[worker-1]` 把支持矩阵从“当前入站请求族白名单”提升为“协议对 + 请求族”的显式能力表。
+- [ ] `[worker-1]` 给 Gemini 增加入站 normalize（等价于 `normalizeGeminiConversation`）。
+- [ ] `[worker-1]` 明确 OpenAI 在本仓库里到底只代表 `chat/completions`，还是要继续承担更宽的 surface；别让 `Protocol` 和 `RequestFamily` 的职责继续糊在一起。
 
 ### P1：补齐严格双向缺口
 
-- [ ] `gemini -> openai`
+- [ ] `[worker-1]` `gemini -> openai`
   - 参考：`~/Share/Source/go/CLIProxyAPI/internal/translator/openai/gemini/init.go`
   - 需要：request transform + stream response + non-stream response + family/matrix 接入
-- [ ] `anthropic -> openai`
+- [ ] `[worker-1]` `anthropic -> openai`
   - 参考：`~/Share/Source/go/CLIProxyAPI/internal/translator/openai/claude/init.go`
   - 需要：request transform + stream response + non-stream response + family/matrix 接入
-- [ ] `gemini -> anthropic`
+- [ ] `[worker-1]` `gemini -> anthropic`
   - 参考：`~/Share/Source/go/CLIProxyAPI/internal/translator/claude/gemini/init.go`
   - 需要：request transform + stream response + non-stream response + family/matrix 接入
-- [ ] `gemini -> codex`
+- [ ] `[worker-1]` `gemini -> codex`
   - 参考：`~/Share/Source/go/CLIProxyAPI/internal/translator/codex/gemini/init.go`
   - 需要：request transform + stream response + non-stream response + family/matrix 接入
-- [ ] `anthropic -> codex`
+- [ ] `[worker-1]` `anthropic -> codex`
   - 参考：`~/Share/Source/go/CLIProxyAPI/internal/translator/codex/claude/init.go`
   - 需要：request transform + stream response + non-stream response + family/matrix 接入
 
 ### P2：补齐 no-op / normalize 的证据链
 
-- [ ] 给 same-protocol no-op 补回归测试：
+- [ ] `[worker-2]` 给 same-protocol no-op 补回归测试：
   - `BuildTransformPlan(client == upstream)`
   - `Registry.TranslateRequest(from == to)`
   - `Registry.TranslateResponseStream(from == to)`
   - `Registry.TranslateResponseNonStream(from == to)`
-- [ ] 给 normalize 层补“入站协议覆盖完整性”测试，至少显式证明为什么 Gemini 现在不支持，避免以后继续误读成“已经双向”。
+- [ ] `[worker-2]` 给 normalize 层补“入站协议覆盖完整性”测试，至少显式证明为什么 Gemini 现在不支持，避免以后继续误读成“已经双向”。
 
 ### P3：文档收口
 
-- [ ] 更新 `docs/superpowers/specs/2026-04-12-channel-protocol-transforms-design.md` 的第一版覆盖描述；那份文档现在已经落后于代码，尤其是 `openai <-> codex` 已经实现，但其余 pair 仍不是严格双向。
-- [ ] 如果最终目标真的是“六组 pair 全双向”，把这个目标写成明确矩阵，不要再用模糊的 `<->` 让实现和审计各讲各话。
+- [x] `[worker-3]` 更新 `docs/superpowers/specs/2026-04-12-channel-protocol-transforms-design.md` 的第一版覆盖描述；那份文档现在已经落后于代码，尤其是 `openai <-> codex` 已经实现，但其余 pair 仍不是严格双向。
+- [x] `[worker-3]` 把执行项显式拆成 worker lanes，并补文件级审计备注，避免继续用模糊的 `<->` 让实现和审计各讲各话。
 
 ## 审计依据
 

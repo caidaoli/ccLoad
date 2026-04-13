@@ -183,14 +183,30 @@
 - `builtin/`
   - 从 `CLIProxyAPI` 裁剪的 4 协议转换器
 
-第一版只纳入：
+第一版目标 pair：
 
 - `openai <-> gemini`
 - `openai <-> anthropic`
+- `openai <-> codex`
 - `codex <-> gemini`
 - `codex <-> anthropic`
 - `anthropic <-> gemini`
 - 必要的 no-op / normalize 适配
+
+实现校准（2026-04-13，按当前代码而不是按目标）：
+
+- 当前 runtime 实际已落地方向是：
+  - `openai -> gemini`
+  - `openai -> anthropic`
+  - `openai -> codex`
+  - `anthropic -> gemini`
+  - `codex -> gemini`
+  - `codex -> anthropic`
+  - `codex -> openai`
+  - same-protocol no-op
+- 只有 `openai <-> codex` 已经严格双向；其余 pair 仍是单向实现。
+- 根因不是少了几个 `Register`，而是当前实现仍以入站 normalize 能力为边界：`request_prompt.go` 没有 `normalizeGeminiConversation`，`types.go` 里的能力表也还是按“upstream + request family + source”白名单编码。
+- 因此本文中的 `<->` 在设计语境里表示目标 pair，不等于当前 shipped 覆盖；实现验收必须用显式方向矩阵核对。
 
 不纳入：
 
