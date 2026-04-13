@@ -14,6 +14,7 @@
 - `internal/protocol/builtin/register.go` 已注册上述 6 组**双向** `request / non-stream response / stream response` 转换，矩阵“存在”。
 - 但它们还不是 **CLIProxyAPI 水平的完整协议适配**。当前真正稳定的主要是 **文本 happy path**；结构化输出、内置工具、thinking/reasoning、缓存 token 细节、以及一半方向的端到端测试还没补齐。
 - 根因很直接：`internal/protocol/builtin/request_prompt.go` 已经把**请求侧**抽象成通用 conversation 归一化层，但 **response/stream 侧**仍然是按 pair 手写，很多实现只处理 `text` / `delta.content`，没有把结构化块做完。
+- 复查补充：**请求侧地基已经够用**。`request_prompt.go` + `request_prompt_test.go` 已锁住四种协议的结构化 message/tool/tool_result 基线路径；接下来别重写 request 入口，直接修 response/stream 的 text-only 分支。
 
 ## 当前矩阵判定
 
@@ -26,6 +27,14 @@
 | `codex <-> anthropic` | 已注册双向 request/non-stream/stream | 部分完成 | `anthropic -> codex` 只保留文本；`codex -> anthropic` stream 丢 reasoning/thinking |
 | `anthropic <-> gemini` | 已注册双向 request/non-stream/stream | 部分完成 | `gemini -> anthropic` response/stream 只处理文本，不处理 `functionCall` |
 
+## 复查补充：现有地基（别重复造轮子）
+
+- `internal/protocol/builtin/request_prompt.go` 已有 `decodeAnthropicContentBlock()`、`parseFunctionTools()`、`parseToolChoice()` 等归一化入口；新增协议块支持时，优先沿这套 conversation helper 扩展，不要再复制一套 pair-specific parser。
+- `internal/protocol/builtin/response_helpers.go` 已有 `marshalDataSSE()`、`marshalEventSSE()`、`buildGeminiPayloadFromParts()`、`geminiPartsFromAnthropicContent()`、`geminiPartsFromCodexOutput()`；Gemini/Anthropic/Codex 的 response 修复应先复用这些 helper。
+- `internal/protocol/registry_gemini_anthropic_test.go`、`internal/protocol/registry_gemini_codex_test.go` 已证明 `anthropic -> gemini`、`codex -> gemini` 的 structured response/stream 能走通。要补的是**反向不对称**，不是再把已覆盖方向重写一遍。
+- `internal/app/proxy_integration_test.go` 已覆盖 OpenAI / Anthropic / Codex 结构化请求打到 Gemini upstream；应用层剩余缺口主要是反向 response/stream 和缺失方向的集成测试。
+- 当前最容易撞车的共享文件是 `internal/protocol/builtin/response_helpers.go`、`internal/protocol/builtin/request_prompt.go`、`internal/protocol/registry_test.go`、`internal/app/proxy_integration_test.go`。并行时优先新增小测试文件或局部 helper，减少多人同时改同一大文件。
+
 ## P0：实现缺口
 
 ### 1. 补齐 Gemini 出站 structured output 到 OpenAI / Anthropic / Codex
@@ -36,6 +45,7 @@
 - `internal/protocol/builtin/codex_gemini.go` 的 `convertGeminiResponseToCodexNonStream/Stream` 只拼文本
 
 TODO：
+- 先把 `geminiResponse.candidates[].content.parts` 从 text-only 匿名结构升级为可承载 `text/functionCall/functionResponse` 的统一结构，别在三个文件各自抄一份 part union
 - 支持 Gemini `functionCall` -> OpenAI `tool_calls`
 - 支持 Gemini `functionCall` -> Anthropic `tool_use`
 - 支持 Gemini `functionCall` -> Codex `function_call`
@@ -50,7 +60,7 @@ TODO：
 - 当前 `anthropicMessagesResponse` 结构只声明 `[]anthropicTextBlock`，天然吃不下 `tool_use` / `thinking` / `redacted_thinking`
 
 TODO：
-- 改为 `map[string]any` 或完整 block union 解析，不要再用 text-only 结构偷懒
+- 改为 `map[string]any` 或完整 block union 解析，不要再用 text-only 结构偷懒；优先复用现有 `decodeAnthropicContentBlock()`，别为了一个 union 再新开包
 - 支持 `tool_use` -> OpenAI `tool_calls`
 - 支持 `tool_use` -> Codex `function_call`
 - 支持 thinking / redacted_thinking 的保留或显式降级策略
@@ -72,6 +82,7 @@ TODO：
 - Codex stream 处理 `response.output_item.done(function_call)`
 - Codex stream 处理 `response.reasoning_summary_*` / reasoning item
 - Anthropic stream 处理 `tool_use` / thinking block，不要只出 text block
+- 保持现有 SSE helper 复用：事件帧继续走 `marshalDataSSE()` / `marshalEventSSE()`，不要在各文件里重新手搓字符串
 
 ### 4. 补齐 builtin tools / non-function tools
 
@@ -172,6 +183,61 @@ TODO：
 - 补 `gemini -> codex`
 - 补 `anthropic -> openai`
 - 补 `anthropic -> codex`
+
+## 建议的三线并行落点（避免撞车）
+
+### 线 1：Gemini 出站 structured response
+
+- 目标文件：
+  - `internal/protocol/builtin/openai_gemini.go`
+  - `internal/protocol/builtin/anthropic_gemini.go`
+  - `internal/protocol/builtin/codex_gemini.go`
+  - 必要时小改 `internal/protocol/builtin/response_helpers.go`
+- 建议策略：
+  - 先统一 Gemini response part 结构，再分别输出到 OpenAI / Anthropic / Codex
+  - 优先补 `functionCall`、多 part、usage/finishReason 保真；不要顺手扩 family
+- 最小验收：
+  - `gemini -> openai/anthropic/codex` 的 non-stream + stream `functionCall` 单测
+
+### 线 2：Anthropic 出站 block union + thinking
+
+- 目标文件：
+  - `internal/protocol/builtin/openai_anthropic.go`
+  - `internal/protocol/builtin/codex_anthropic.go`
+- 建议策略：
+  - 非流式先补 `tool_use` / usage detail，再补 stream 的 `content_block_*`
+  - thinking / redacted_thinking 明确“保留/降级/报错”三选一，不要静默吞字段
+- 最小验收：
+  - `anthropic -> openai/codex` 的 non-stream + stream `tool_use`
+  - 至少一条 cached usage detail 测试
+
+### 线 3：builtin tools / tool_choice / 缺失测试
+
+- 目标文件：
+  - `internal/protocol/builtin/request_prompt.go`
+  - `internal/protocol/builtin/request_prompt_test.go`
+  - `internal/protocol/registry_test.go`（更推荐拆成新的协议测试文件）
+  - `internal/app/proxy_integration_test.go`（缺失方向补 smoke 即可）
+- 建议策略：
+  - builtin tool 先对齐最小集合（至少 `web_search`），明确透传/降级/拒绝边界
+  - `tool_choice` 与 builtin tool 一起补，避免只修 tools 不修选择器
+  - 测试优先拆新文件，别继续把 `registry_test.go` 和 `proxy_integration_test.go` 堆成垃圾场
+- 最小验收：
+  - builtin tool + `tool_choice` 单测
+  - 缺失四个方向的集成 smoke test
+
+## 完成定义（合并前必须看到）
+
+- 协议单测至少覆盖：
+  - `gemini -> openai/anthropic/codex` 的 `functionCall`
+  - `anthropic -> openai/codex` 的 `tool_use`
+  - builtin tool / `tool_choice`
+  - 至少一条 cached/reasoning usage detail
+- 应用层至少补齐当前文档列出的 4 个缺失方向中的 smoke path。
+- 最低验证命令：
+  - `go test ./internal/protocol/...`
+  - `go test ./internal/app/...`
+- 不接受“字段静默丢失但测试没覆盖”的完成定义。要么保留，要么显式降级，要么返回错误。
 
 ## 建议的收敛顺序
 
