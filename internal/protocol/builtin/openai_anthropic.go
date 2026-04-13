@@ -2,15 +2,28 @@ package builtin
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/bytedance/sonic"
 )
 
+type openAIAnthropicPendingTool struct {
+	id        string
+	name      string
+	arguments string
+}
+
 type openAIToAnthropicStreamState struct {
-	started bool
-	model   string
-	usage   struct {
+	started          bool
+	messageStartSent bool
+	textBlockStarted bool
+	model            string
+	blockIndex       int
+	reasoningStarted bool
+	reasoningText    string
+	pendingToolCalls map[int]*openAIAnthropicPendingTool
+	usage            struct {
 		promptTokens             int64
 		completionTokens         int64
 		cachedTokens             int64
@@ -126,10 +139,8 @@ func convertOpenAIResponseToAnthropicNonStream(_ context.Context, model string, 
 		out.Content = blocks
 	}
 	if usage := openAIUsageFromMap(resp["usage"]); usage != nil {
-		inputTokens := usage.promptTokens - usage.cachedTokens
-		if inputTokens < 0 {
-			inputTokens = 0
-		}
+		inputTokens := max(usage.promptTokens-usage.cachedTokens, 0)
+
 		out.Usage.InputTokens = inputTokens
 		out.Usage.OutputTokens = usage.completionTokens
 		out.Usage.CacheReadInputTokens = usage.cachedTokens
@@ -474,8 +485,8 @@ func convertOpenAIResponseToAnthropicStream(_ context.Context, model string, _, 
 	if line == "" {
 		return nil, nil
 	}
-	if strings.HasPrefix(line, "data:") {
-		line = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	if after, ok := strings.CutPrefix(line, "data:"); ok {
+		line = strings.TrimSpace(after)
 	}
 	if line == "[DONE]" {
 		return openAIAnthropicStopChunks(st, "end_turn")
@@ -506,20 +517,108 @@ func convertOpenAIResponseToAnthropicStream(_ context.Context, model string, _, 
 		return nil, nil
 	}
 
-	outputs := make([][]byte, 0, 4)
+	outputs := make([][]byte, 0, 8)
 	if delta, _ := choice["delta"].(map[string]any); delta != nil {
-		if content := stringValue(delta["content"]); content != "" {
-			if !st.started {
-				start, err := openAIAnthropicStartChunks(st)
+		// --- reasoning_content → thinking block ---
+		if rc := stringValue(delta["reasoning_content"]); rc != "" {
+			if !st.reasoningStarted {
+				// Ensure message_start is sent first.
+				if !st.messageStartSent {
+					msgStart, err := openAIAnthropicMessageStart(st)
+					if err != nil {
+						return nil, err
+					}
+					outputs = append(outputs, msgStart)
+					st.messageStartSent = true
+					st.started = true // treat as started to avoid double message_start
+				}
+				// Emit thinking block_start.
+				thinkStart, err := marshalEventSSE("content_block_start", map[string]any{
+					"type":  "content_block_start",
+					"index": st.blockIndex,
+					"content_block": map[string]any{
+						"type":     "thinking",
+						"thinking": "",
+					},
+				})
 				if err != nil {
 					return nil, err
 				}
-				outputs = append(outputs, start...)
-				st.started = true
+				outputs = append(outputs, thinkStart)
+				st.reasoningStarted = true
+			}
+			thinkDelta, err := marshalEventSSE("content_block_delta", map[string]any{
+				"type":  "content_block_delta",
+				"index": st.blockIndex,
+				"delta": map[string]any{
+					"type":     "thinking_delta",
+					"thinking": rc,
+				},
+			})
+			if err != nil {
+				return nil, err
+			}
+			outputs = append(outputs, thinkDelta)
+			st.reasoningText += rc
+		}
+
+		// --- tool_calls incremental → accumulate, flush on finish_reason ---
+		if toolCallsRaw, ok := delta["tool_calls"].([]any); ok {
+			if st.pendingToolCalls == nil {
+				st.pendingToolCalls = make(map[int]*openAIAnthropicPendingTool)
+			}
+			for _, tcRaw := range toolCallsRaw {
+				tc, _ := tcRaw.(map[string]any)
+				if tc == nil {
+					continue
+				}
+				idx := 0
+				if idxRaw, ok := tc["index"].(float64); ok {
+					idx = int(idxRaw)
+				}
+				pt, exists := st.pendingToolCalls[idx]
+				if !exists {
+					pt = &openAIAnthropicPendingTool{}
+					st.pendingToolCalls[idx] = pt
+				}
+				if id := stringValue(tc["id"]); id != "" {
+					pt.id = id
+				}
+				if fn, ok := tc["function"].(map[string]any); ok {
+					if name := stringValue(fn["name"]); name != "" {
+						pt.name = name
+					}
+					if args := stringValue(fn["arguments"]); args != "" {
+						pt.arguments += args
+					}
+				}
+			}
+		}
+
+		// --- text content → text block ---
+		if content := stringValue(delta["content"]); content != "" {
+			if !st.textBlockStarted {
+				if !st.messageStartSent {
+					// First ever content: emit message_start too.
+					msgStart, err := openAIAnthropicMessageStart(st)
+					if err != nil {
+						return nil, err
+					}
+					outputs = append(outputs, msgStart)
+					st.messageStartSent = true
+					st.started = true
+				}
+				// Open text block (may follow a thinking block, blockIndex may be > 0).
+				blockStart, err := openAIAnthropicTextBlockStart(st.blockIndex)
+				if err != nil {
+					return nil, err
+				}
+				outputs = append(outputs, blockStart)
+				st.textBlockStarted = true
 			}
 			deltaChunk, err := marshalEventSSE("content_block_delta", map[string]any{
 				"type":  "content_block_delta",
-				"index": 0,
+				"index": st.blockIndex,
 				"delta": map[string]any{
 					"type": "text_delta",
 					"text": content,
@@ -531,28 +630,110 @@ func convertOpenAIResponseToAnthropicStream(_ context.Context, model string, _, 
 			outputs = append(outputs, deltaChunk)
 		}
 	}
+
 	if finishReasonRaw, ok := choice["finish_reason"]; ok && finishReasonRaw != nil {
+		// Close thinking block if open.
+		if st.reasoningStarted {
+			thinkStop, err := marshalEventSSE("content_block_stop", map[string]any{
+				"type":  "content_block_stop",
+				"index": st.blockIndex,
+			})
+			if err != nil {
+				return nil, err
+			}
+			outputs = append(outputs, thinkStop)
+			st.blockIndex++
+			st.reasoningStarted = false
+			st.reasoningText = ""
+		}
+
+		// Flush pending tool_calls as tool_use blocks.
+		if len(st.pendingToolCalls) > 0 {
+			// Ensure message_start is sent.
+			if !st.messageStartSent {
+				msgStart, err := openAIAnthropicMessageStart(st)
+				if err != nil {
+					return nil, err
+				}
+				outputs = append(outputs, msgStart)
+				st.messageStartSent = true
+				st.started = true
+			}
+			// Iterate in insertion order by using sorted indices.
+			indices := make([]int, 0, len(st.pendingToolCalls))
+			for i := range st.pendingToolCalls {
+				indices = append(indices, i)
+			}
+			// Simple insertion sort (small slice).
+			for i := 1; i < len(indices); i++ {
+				for j := i; j > 0 && indices[j] < indices[j-1]; j-- {
+					indices[j], indices[j-1] = indices[j-1], indices[j]
+				}
+			}
+			for _, tcIdx := range indices {
+				pt := st.pendingToolCalls[tcIdx]
+				toolID := pt.id
+				if toolID == "" {
+					toolID = fmt.Sprintf("toolu_%d", tcIdx)
+				}
+				toolStart, err := marshalEventSSE("content_block_start", map[string]any{
+					"type":  "content_block_start",
+					"index": st.blockIndex,
+					"content_block": map[string]any{
+						"type":  "tool_use",
+						"id":    toolID,
+						"name":  pt.name,
+						"input": map[string]any{},
+					},
+				})
+				if err != nil {
+					return nil, err
+				}
+				toolDelta, err := marshalEventSSE("content_block_delta", map[string]any{
+					"type":  "content_block_delta",
+					"index": st.blockIndex,
+					"delta": map[string]any{
+						"type":         "input_json_delta",
+						"partial_json": pt.arguments,
+					},
+				})
+				if err != nil {
+					return nil, err
+				}
+				toolStop, err := marshalEventSSE("content_block_stop", map[string]any{
+					"type":  "content_block_stop",
+					"index": st.blockIndex,
+				})
+				if err != nil {
+					return nil, err
+				}
+				outputs = append(outputs, toolStart, toolDelta, toolStop)
+				st.blockIndex++
+			}
+			st.pendingToolCalls = nil
+			// Mark started so openAIAnthropicStopChunks knows not to re-emit message_start.
+			st.started = true
+		}
+
 		done, err := openAIAnthropicStopChunks(st, mapOpenAIFinishReasonToAnthropic(stringValue(finishReasonRaw)))
 		if err != nil {
 			return nil, err
 		}
 		outputs = append(outputs, done...)
 	}
+
 	if len(outputs) == 0 {
 		return nil, nil
 	}
 	return outputs, nil
 }
 
-func openAIAnthropicStartChunks(st *openAIToAnthropicStreamState) ([][]byte, error) {
+func openAIAnthropicMessageStart(st *openAIToAnthropicStreamState) ([]byte, error) {
 	inputTokens := int64(0)
 	cacheReadTokens := int64(0)
 	cacheCreationTokens := int64(0)
 	if st != nil && st.usage.seen {
-		inputTokens = st.usage.promptTokens - st.usage.cachedTokens
-		if inputTokens < 0 {
-			inputTokens = 0
-		}
+		inputTokens = max(st.usage.promptTokens-st.usage.cachedTokens, 0)
 		cacheReadTokens = st.usage.cachedTokens
 		cacheCreationTokens = st.usage.cacheCreationInputTokens
 	}
@@ -566,7 +747,7 @@ func openAIAnthropicStartChunks(st *openAIToAnthropicStreamState) ([][]byte, err
 	if cacheCreationTokens > 0 {
 		usage["cache_creation_input_tokens"] = cacheCreationTokens
 	}
-	start, err := marshalEventSSE("message_start", map[string]any{
+	return marshalEventSSE("message_start", map[string]any{
 		"type": "message_start",
 		"message": map[string]any{
 			"id":          "msg-proxy",
@@ -578,21 +759,29 @@ func openAIAnthropicStartChunks(st *openAIToAnthropicStreamState) ([][]byte, err
 			"usage":       usage,
 		},
 	})
-	if err != nil {
-		return nil, err
-	}
-	blockStart, err := marshalEventSSE("content_block_start", map[string]any{
+}
+
+func openAIAnthropicTextBlockStart(index int) ([]byte, error) {
+	return marshalEventSSE("content_block_start", map[string]any{
 		"type":  "content_block_start",
-		"index": 0,
+		"index": index,
 		"content_block": map[string]any{
 			"type": "text",
 			"text": "",
 		},
 	})
+}
+
+func openAIAnthropicStartChunks(st *openAIToAnthropicStreamState) ([][]byte, error) {
+	msgStart, err := openAIAnthropicMessageStart(st)
 	if err != nil {
 		return nil, err
 	}
-	return [][]byte{start, blockStart}, nil
+	blockStart, err := openAIAnthropicTextBlockStart(0)
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{msgStart, blockStart}, nil
 }
 
 func openAIAnthropicStopChunks(st *openAIToAnthropicStreamState, stopReason string) ([][]byte, error) {
@@ -601,20 +790,29 @@ func openAIAnthropicStopChunks(st *openAIToAnthropicStreamState, stopReason stri
 	}
 	outputs := make([][]byte, 0, 5)
 	if st != nil && !st.started {
+		// Nothing has been streamed yet: emit message_start + text block_start then stop it.
 		start, err := openAIAnthropicStartChunks(st)
 		if err != nil {
 			return nil, err
 		}
 		outputs = append(outputs, start...)
+		st.textBlockStarted = true
 	}
-	blockStop, err := marshalEventSSE("content_block_stop", map[string]any{
-		"type":  "content_block_stop",
-		"index": 0,
-	})
-	if err != nil {
-		return nil, err
+	// Only close the text block if it was actually opened.
+	if st == nil || st.textBlockStarted {
+		textBlockIndex := 0
+		if st != nil {
+			textBlockIndex = st.blockIndex
+		}
+		blockStop, err := marshalEventSSE("content_block_stop", map[string]any{
+			"type":  "content_block_stop",
+			"index": textBlockIndex,
+		})
+		if err != nil {
+			return nil, err
+		}
+		outputs = append(outputs, blockStop)
 	}
-	outputs = append(outputs, blockStop)
 	outputTokens := int64(0)
 	cacheReadTokens := int64(0)
 	cacheCreationTokens := int64(0)
