@@ -205,6 +205,51 @@ func TestNormalizeConversation_RejectsUnknownBlockType(t *testing.T) {
 	}
 }
 
+func TestNormalizeConversation_BuiltinToolsAndChoices(t *testing.T) {
+	t.Parallel()
+
+	openAIConv, err := normalizeOpenAIConversation(openAIChatRequest{
+		Model:      "gpt-4o",
+		Tools:      json.RawMessage(`[{"type":"web_search","search_context_size":"high"}]`),
+		ToolChoice: json.RawMessage(`{"type":"web_search"}`),
+		Messages: []openAIChatMessage{{
+			Role:    "user",
+			Content: "hello",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("normalizeOpenAIConversation failed: %v", err)
+	}
+	if len(openAIConv.Tools) != 1 || openAIConv.Tools[0].Type != "web_search" || openAIConv.Tools[0].Options["search_context_size"] != "high" {
+		t.Fatalf("unexpected openai builtin tools: %+v", openAIConv.Tools)
+	}
+	if openAIConv.ToolChoice.Mode != "named" || openAIConv.ToolChoice.ToolType != "web_search" {
+		t.Fatalf("unexpected openai builtin tool choice: %+v", openAIConv.ToolChoice)
+	}
+
+	codexConv, err := normalizeCodexConversation(codexRequest{
+		Model:      "gpt-5-codex",
+		Tools:      json.RawMessage(`[{"type":"web_search","user_location":{"type":"approximate","country":"US"}}]`),
+		ToolChoice: json.RawMessage(`{"type":"web_search"}`),
+		Input: []json.RawMessage{
+			json.RawMessage(`{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}`),
+		},
+	})
+	if err != nil {
+		t.Fatalf("normalizeCodexConversation failed: %v", err)
+	}
+	if len(codexConv.Tools) != 1 || codexConv.Tools[0].Type != "web_search" {
+		t.Fatalf("unexpected codex builtin tools: %+v", codexConv.Tools)
+	}
+	location, ok := codexConv.Tools[0].Options["user_location"].(map[string]any)
+	if !ok || location["country"] != "US" {
+		t.Fatalf("unexpected codex builtin tool options: %+v", codexConv.Tools[0].Options)
+	}
+	if codexConv.ToolChoice.Mode != "named" || codexConv.ToolChoice.ToolType != "web_search" {
+		t.Fatalf("unexpected codex builtin tool choice: %+v", codexConv.ToolChoice)
+	}
+}
+
 func TestNormalizeConversationCoverage_SupportedSources(t *testing.T) {
 	t.Parallel()
 

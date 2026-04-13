@@ -12,20 +12,78 @@
 ## 结论
 
 - `internal/protocol/builtin/register.go` 已注册上述 6 组**双向** `request / non-stream response / stream response` 转换，矩阵“存在”。
-- 但它们还不是 **CLIProxyAPI 水平的完整协议适配**。当前真正稳定的主要是 **文本 happy path**；结构化输出、内置工具、thinking/reasoning、缓存 token 细节、以及一半方向的端到端测试还没补齐。
+- 但它们还不是 **CLIProxyAPI 水平的完整协议适配**。这轮补完后，已经不再只是文本 happy path：**Gemini 出站 `functionCall`、Anthropic 出站 `tool_use/thinking`、OpenAI/Codex builtin `web_search` 请求、以及 OpenAI/Codex/Anthropic 间的 cached usage / reasoning usage 最小映射**都已经打通。
 - 根因很直接：`internal/protocol/builtin/request_prompt.go` 已经把**请求侧**抽象成通用 conversation 归一化层，但 **response/stream 侧**仍然是按 pair 手写，很多实现只处理 `text` / `delta.content`，没有把结构化块做完。
 - 复查补充：**请求侧地基已经够用**。`request_prompt.go` + `request_prompt_test.go` 已锁住四种协议的结构化 message/tool/tool_result 基线路径；接下来别重写 request 入口，直接修 response/stream 的 text-only 分支。
+
+## 2026-04-13 进展更新
+
+- 已补齐 **Gemini -> OpenAI / Anthropic / Codex** 的 structured `non-stream / stream` `functionCall` 输出。
+- 已补齐 **Anthropic -> OpenAI / Codex** 的 structured `non-stream / stream` `tool_use` 输出。
+- 已补齐 **OpenAI <-> Codex** 请求侧 builtin `web_search` / `tool_choice` 最小透传。
+- 已补齐 **Anthropic -> OpenAI / Codex** 的 `thinking / redacted_thinking / cached usage / reasoning_tokens` 最小映射。
+- 已补齐 **OpenAI <-> Codex** 非流式 reasoning / usage detail 映射，以及部分流式 reasoning/usage 帧。
+- 已新增协议层覆盖：
+  - `internal/protocol/registry_structured_response_test.go`
+  - Gemini structured outbound
+  - Anthropic structured outbound
+  - builtin tools / reasoning / usage detail
+- 已新增应用层 smoke 覆盖：
+  - `internal/app/proxy_integration_protocol_response_test.go`
+  - `gemini -> anthropic`
+  - `gemini -> codex`
+  - `anthropic -> openai`
+  - `anthropic -> codex`
+- 现在真正还没完的是：**OpenAI/Codex -> Anthropic 的剩余 stream reasoning 语义、OpenAI/Codex stream 的结构化增量事件、Gemini 侧 reasoning/cached usage 细节，以及 Anthropic/Gemini builtin tool 的明确策略**。
+
+## 本次提交后剩余问题（当前真实待办）
+
+### P0
+
+1. **OpenAI -> Codex stream 仍未补 `tool_calls` 增量**
+   - 现在补了 text / reasoning / completed usage。
+   - 还没补 OpenAI chunk 内 `delta.tool_calls` -> Codex `response.output_item.done(function_call)`。
+
+2. **Codex -> OpenAI stream 仍未补完整 `function_call` 增量语义**
+   - 现在补了 text / reasoning / completed usage。
+   - 还没补 Codex `response.output_item.done(function_call)` -> OpenAI chunk `tool_calls`。
+
+3. **Codex/OpenAI -> Anthropic stream reasoning 仍不完整**
+   - `Codex -> Anthropic` 还没有把 reasoning item / encrypted signature 正确拆成 `thinking` / `redacted_thinking` 流事件。
+   - `OpenAI -> Anthropic` 也还没有完整把 reasoning/tool delta 变成 Anthropic block 事件。
+
+4. **Gemini 侧 reasoning / cached usage 仍基本空白**
+   - 现在 Gemini 相关主要补了 `functionCall`。
+   - reasoning level、thinking block、cached token 细节还没建立统一语义。
+
+### P1
+
+1. **Anthropic / Gemini builtin tool 还只是显式拒绝，不是支持**
+   - 当前最小策略是：OpenAI/Codex `web_search` 透传；Gemini/Anthropic 不支持时直接报错。
+   - 这比静默吞字段强，但还没到完整适配。
+
+2. **OpenAI family 死枚举仍未收敛**
+   - `completions / embeddings / images` 还在 `types.go` 里，但没进入实际跨协议支持矩阵。
+
+3. **测试文件还可以继续拆**
+   - `registry_test.go` 继续堆会变垃圾场。
+   - 下一轮建议把 builtin / reasoning / usage detail 再拆成独立测试文件。
 
 ## 当前矩阵判定
 
 | 配对 | 注册情况 | 当前判定 | 最大缺口 |
 | --- | --- | --- | --- |
-| `openai <-> gemini` | 已注册双向 request/non-stream/stream | 部分完成 | 双向 response/stream 基本只处理文本，`tool_calls` / `functionCall` 没打通 |
-| `openai <-> anthropic` | 已注册双向 request/non-stream/stream | 部分完成 | `anthropic -> openai` response/stream 丢 `tool_use` / thinking / cached usage |
-| `openai <-> codex` | 已注册双向 request/non-stream/stream | 部分完成 | stream 只处理文本，不处理 `function_call` / reasoning 事件 |
-| `codex <-> gemini` | 已注册双向 request/non-stream/stream | 部分完成 | `gemini -> codex` response/stream 只处理文本，不处理 `functionCall` |
-| `codex <-> anthropic` | 已注册双向 request/non-stream/stream | 部分完成 | `anthropic -> codex` 只保留文本；`codex -> anthropic` stream 丢 reasoning/thinking |
-| `anthropic <-> gemini` | 已注册双向 request/non-stream/stream | 部分完成 | `gemini -> anthropic` response/stream 只处理文本，不处理 `functionCall` |
+| `openai <-> gemini` | 已注册双向 request/non-stream/stream | 部分完成 | `openai -> gemini` 的 structured response/stream、reasoning、cached usage 仍弱 |
+| `openai <-> anthropic` | 已注册双向 request/non-stream/stream | 部分完成 | `anthropic -> openai` 的 `tool_use/thinking/usage` 已通；剩余是 `openai -> anthropic` stream 结构化增量 |
+| `openai <-> codex` | 已注册双向 request/non-stream/stream | 部分完成 | builtin `web_search`、non-stream reasoning/usage 已通；剩余是双向 stream `tool_calls/function_call` 增量 |
+| `codex <-> gemini` | 已注册双向 request/non-stream/stream | 部分完成 | `gemini -> codex` 的 `functionCall` 已通；Gemini/Codex reasoning 与 usage detail 仍弱 |
+| `codex <-> anthropic` | 已注册双向 request/non-stream/stream | 部分完成 | `anthropic -> codex` 的 `tool_use/thinking/usage` 已通；剩余是 `codex -> anthropic` stream reasoning |
+| `anthropic <-> gemini` | 已注册双向 request/non-stream/stream | 部分完成 | `gemini -> anthropic` 的 `functionCall` 已通；reasoning/cached usage/builtin tool 仍缺 |
+
+## 下面的 P0/P1 段落是原始审计清单
+
+- 这些段落保留给后续对照，不再完全代表当前剩余工作。
+- 真实待办以 **“本次提交后剩余问题（当前真实待办）”** 为准。
 
 ## 复查补充：现有地基（别重复造轮子）
 
