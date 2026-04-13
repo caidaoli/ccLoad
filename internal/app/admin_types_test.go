@@ -17,12 +17,6 @@ func TestChannelRequestValidate_RejectsUnsupportedProtocolTransforms(t *testing.
 		wantErr     string
 	}{
 		{
-			name:        "openai upstream cannot expose anthropic",
-			channelType: "openai",
-			transforms:  []string{"anthropic"},
-			wantErr:     "unsupported protocol transform anthropic -> openai",
-		},
-		{
 			name:        "gemini upstream rejects self transform",
 			channelType: "gemini",
 			transforms:  []string{"gemini"},
@@ -76,22 +70,22 @@ func TestChannelRequestValidate_AllowsDocumentedProtocolTransforms(t *testing.T)
 			want:        []string{"anthropic", "codex", "openai"},
 		},
 		{
-			name:        "anthropic upstream supports openai and codex",
+			name:        "anthropic upstream supports all other client protocols",
 			channelType: "anthropic",
-			transforms:  []string{"codex", "openai"},
-			want:        []string{"codex", "openai"},
+			transforms:  []string{"codex", "openai", "gemini"},
+			want:        []string{"codex", "gemini", "openai"},
 		},
 		{
-			name:        "openai upstream supports codex",
+			name:        "openai upstream supports anthropic and codex",
 			channelType: "openai",
-			transforms:  []string{"codex"},
-			want:        []string{"codex"},
+			transforms:  []string{"codex", "anthropic"},
+			want:        []string{"anthropic", "codex"},
 		},
 		{
-			name:        "codex upstream supports openai",
+			name:        "codex upstream supports anthropic and openai",
 			channelType: "codex",
-			transforms:  []string{"openai"},
-			want:        []string{"openai"},
+			transforms:  []string{"openai", "anthropic"},
+			want:        []string{"anthropic", "openai"},
 		},
 	}
 

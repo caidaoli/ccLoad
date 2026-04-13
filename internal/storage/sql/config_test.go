@@ -614,7 +614,7 @@ func TestConfig_GetEnabledChannelsByModelAndProtocol(t *testing.T) {
 	}
 }
 
-func TestConfig_LegacyInvalidProtocolTransformsAreIgnored(t *testing.T) {
+func TestConfig_LegacyProtocolTransformsHonorCurrentCapabilityMatrix(t *testing.T) {
 	t.Parallel()
 
 	tmp := t.TempDir()
@@ -655,31 +655,31 @@ func TestConfig_LegacyInvalidProtocolTransformsAreIgnored(t *testing.T) {
 		`INSERT INTO channel_protocol_transforms(channel_id, protocol) VALUES (?, ?)`,
 		created.ID, "gemini",
 	); err != nil {
-		t.Fatalf("insert legacy invalid transform: %v", err)
+		t.Fatalf("insert legacy supported transform: %v", err)
 	}
 
 	got, err := store.GetConfig(ctx, created.ID)
 	if err != nil {
 		t.Fatalf("get config: %v", err)
 	}
-	if len(got.ProtocolTransforms) != 0 {
-		t.Fatalf("expected invalid legacy transforms to be filtered on load, got %#v", got.ProtocolTransforms)
+	if len(got.ProtocolTransforms) != 1 || got.ProtocolTransforms[0] != "gemini" {
+		t.Fatalf("expected legacy gemini transform to remain loadable, got %#v", got.ProtocolTransforms)
 	}
 
 	geminiChannels, err := store.GetEnabledChannelsByExposedProtocol(ctx, "gemini")
 	if err != nil {
 		t.Fatalf("get gemini exposed channels: %v", err)
 	}
-	if len(geminiChannels) != 0 {
-		t.Fatalf("expected no gemini-exposed channels from dirty data, got %+v", geminiChannels)
+	if len(geminiChannels) != 1 || geminiChannels[0].ID != created.ID {
+		t.Fatalf("expected legacy gemini transform to expose channel, got %+v", geminiChannels)
 	}
 
 	modelAndProtocol, err := store.GetEnabledChannelsByModelAndProtocol(ctx, "gpt-4o", "gemini")
 	if err != nil {
 		t.Fatalf("query model+protocol: %v", err)
 	}
-	if len(modelAndProtocol) != 0 {
-		t.Fatalf("expected dirty transform row to be ignored by model+protocol query, got %+v", modelAndProtocol)
+	if len(modelAndProtocol) != 1 || modelAndProtocol[0].ID != created.ID {
+		t.Fatalf("expected legacy gemini transform row to participate in model+protocol query, got %+v", modelAndProtocol)
 	}
 }
 

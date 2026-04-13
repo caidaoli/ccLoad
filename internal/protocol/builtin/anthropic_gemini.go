@@ -44,6 +44,13 @@ type anthropicMessagesUsage struct {
 	OutputTokens int64 `json:"output_tokens"`
 }
 
+type anthropicToGeminiStreamState struct {
+	model      string
+	toolName   string
+	toolJSON   string
+	toolActive bool
+}
+
 func convertAnthropicRequestToGemini(_ string, rawJSON []byte, _ bool) ([]byte, error) {
 	var req anthropicMessagesRequest
 	if err := sonic.Unmarshal(rawJSON, &req); err != nil {
@@ -55,6 +62,18 @@ func convertAnthropicRequestToGemini(_ string, rawJSON []byte, _ bool) ([]byte, 
 		return nil, err
 	}
 	return encodeGeminiRequest(conv)
+}
+
+func convertGeminiRequestToAnthropic(model string, rawJSON []byte, stream bool) ([]byte, error) {
+	var req geminiRequestPayload
+	if err := sonic.Unmarshal(rawJSON, &req); err != nil {
+		return nil, err
+	}
+	conv, err := normalizeGeminiConversation(req)
+	if err != nil {
+		return nil, err
+	}
+	return encodeAnthropicRequest(model, conv, stream)
 }
 
 func convertGeminiResponseToAnthropicNonStream(_ context.Context, model string, _, _, rawJSON []byte) ([]byte, error) {
@@ -86,6 +105,30 @@ func convertGeminiResponseToAnthropicNonStream(_ context.Context, model string, 
 		out.Model = resp.ModelVersion
 	}
 	return sonic.Marshal(out)
+}
+
+func convertAnthropicResponseToGeminiNonStream(_ context.Context, model string, _, _, rawJSON []byte) ([]byte, error) {
+	var resp map[string]any
+	if err := sonic.Unmarshal(rawJSON, &resp); err != nil {
+		return nil, err
+	}
+	parts, err := geminiPartsFromAnthropicContent(resp["content"])
+	if err != nil {
+		return nil, err
+	}
+	usageMap, _ := resp["usage"].(map[string]any)
+	inputTokens := int64Value(usageMap["input_tokens"])
+	outputTokens := int64Value(usageMap["output_tokens"])
+	return sonic.Marshal(buildGeminiPayloadFromParts(
+		coalesceModel(model, resp["model"]),
+		stringValue(resp["id"]),
+		parts,
+		mapAnthropicStopReasonToGemini(stringValue(resp["stop_reason"])),
+		inputTokens,
+		outputTokens,
+		inputTokens+outputTokens,
+		len(usageMap) > 0,
+	))
 }
 
 type anthropicStreamState struct {
@@ -146,4 +189,100 @@ func convertGeminiResponseToAnthropicStream(_ context.Context, model string, _, 
 		[]byte("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"),
 		bytes.Clone(delta),
 	}, nil
+}
+
+func convertAnthropicResponseToGeminiStream(_ context.Context, model string, _, _, rawJSON []byte, param *any) ([][]byte, error) {
+	if param == nil {
+		var local any
+		param = &local
+	}
+	if *param == nil {
+		*param = &anthropicToGeminiStreamState{model: model}
+	}
+	st := (*param).(*anthropicToGeminiStreamState)
+	if st.model == "" {
+		st.model = model
+	}
+
+	raw := strings.TrimSpace(string(rawJSON))
+	if raw == "" {
+		return nil, nil
+	}
+	eventType, line := parseSSEEventBlock(raw)
+	if line == "" {
+		return nil, nil
+	}
+
+	var payload map[string]any
+	if err := sonic.Unmarshal([]byte(line), &payload); err != nil {
+		return nil, err
+	}
+	if eventType == "message_start" {
+		if message, _ := payload["message"].(map[string]any); message != nil {
+			if messageModel := stringValue(message["model"]); messageModel != "" {
+				st.model = messageModel
+			}
+		}
+		return nil, nil
+	}
+	if typ := stringValue(payload["type"]); typ == "content_block_start" {
+		if block, _ := payload["content_block"].(map[string]any); block != nil && stringValue(block["type"]) == "tool_use" {
+			st.toolName = stringValue(block["name"])
+			st.toolJSON = ""
+			st.toolActive = true
+		}
+		return nil, nil
+	}
+	if typ := stringValue(payload["type"]); typ == "content_block_delta" {
+		if delta, _ := payload["delta"].(map[string]any); delta != nil {
+			if stringValue(delta["type"]) == "input_json_delta" && st.toolActive {
+				st.toolJSON += stringValue(delta["partial_json"])
+				return nil, nil
+			}
+			if text := stringValue(delta["text"]); text != "" {
+				body, err := marshalDataSSE(buildGeminiPayload(st.model, text, "", 0, 0, 0, false))
+				if err != nil {
+					return nil, err
+				}
+				return [][]byte{body}, nil
+			}
+		}
+	}
+	if typ := stringValue(payload["type"]); typ == "content_block_stop" && st.toolActive {
+		args := any(map[string]any{})
+		if strings.TrimSpace(st.toolJSON) != "" {
+			if err := sonic.Unmarshal([]byte(st.toolJSON), &args); err != nil {
+				return nil, err
+			}
+		}
+		body, err := marshalDataSSE(buildGeminiPayloadFromParts(st.model, "", []geminiPart{{
+			FunctionCall: &geminiFunctionCall{Name: st.toolName, Args: args},
+		}}, "", 0, 0, 0, false))
+		if err != nil {
+			return nil, err
+		}
+		st.toolName = ""
+		st.toolJSON = ""
+		st.toolActive = false
+		return [][]byte{body}, nil
+	}
+	if typ := stringValue(payload["type"]); typ == "message_delta" {
+		usage, _ := payload["usage"].(map[string]any)
+		outputTokens := int64Value(usage["output_tokens"])
+		inputTokens := int64Value(usage["input_tokens"])
+		totalTokens := inputTokens + outputTokens
+		if totalTokens == 0 && outputTokens > 0 {
+			totalTokens = outputTokens
+		}
+		finishReason := ""
+		if delta, _ := payload["delta"].(map[string]any); delta != nil {
+			finishReason = mapAnthropicStopReasonToGemini(stringValue(delta["stop_reason"]))
+		}
+		body, err := marshalDataSSE(buildGeminiPayloadFromParts(st.model, "", nil, finishReason, inputTokens, outputTokens, totalTokens, usage != nil))
+		if err != nil {
+			return nil, err
+		}
+		return [][]byte{body}, nil
+	}
+	return nil, nil
 }

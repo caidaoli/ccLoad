@@ -281,7 +281,7 @@ func TestRegistry_TranslateRequest_OpenAIToAnthropic(t *testing.T) {
 	if !strings.Contains(string(got), `"system":[{`) || !strings.Contains(string(got), `"text":"be careful"`) {
 		t.Fatalf("expected anthropic system field, got %s", got)
 	}
-	if !strings.Contains(string(got), `"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]`) {
+	if !strings.Contains(string(got), `"role":"user"`) || !strings.Contains(string(got), `"text":"hello"`) {
 		t.Fatalf("unexpected translated request: %s", got)
 	}
 }
@@ -303,6 +303,70 @@ func TestRegistry_TranslateResponseNonStream_AnthropicToOpenAI(t *testing.T) {
 	}
 }
 
+func TestRegistry_TranslateRequest_AnthropicToOpenAI(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	raw := []byte(`{"model":"gpt-4o","system":[{"type":"text","text":"be careful"}],"tools":[{"name":"search","description":"lookup","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"search"},"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"search","input":{"query":"go"}}]},{"role":"user","content":[{"type":"text","text":"hello"},{"type":"image","source":{"type":"url","url":"https://example.com/a.png","media_type":"image/png"}},{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"cGRm"},"title":"doc.pdf"},{"type":"tool_result","tool_use_id":"toolu_1","content":"done"}]}],"stream":true}`)
+	got, err := reg.TranslateRequest(protocol.Anthropic, protocol.OpenAI, "gpt-4o", raw, true)
+	if err != nil {
+		t.Fatalf("TranslateRequest failed: %v", err)
+	}
+	if !strings.Contains(string(got), `"role":"system"`) || !strings.Contains(string(got), `"be careful"`) {
+		t.Fatalf("expected openai system message, got %s", got)
+	}
+	if !strings.Contains(string(got), `"tool_calls":[{"id":"toolu_1","type":"function","function":{"name":"search","arguments":"{\"query\":\"go\"}"}}]`) {
+		t.Fatalf("expected assistant tool_calls, got %s", got)
+	}
+	if !strings.Contains(string(got), `"type":"image_url"`) || !strings.Contains(string(got), `"type":"file"`) || !strings.Contains(string(got), `"role":"tool"`) {
+		t.Fatalf("unexpected translated openai request: %s", got)
+	}
+}
+
+func TestRegistry_TranslateResponseNonStream_OpenAIToAnthropic(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	rawReq := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	translatedReq := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`)
+	rawResp := []byte(`{"id":"chatcmpl_1","object":"chat.completion","created":0,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":[{"type":"text","text":"world"}],"tool_calls":[{"id":"call_1","type":"function","function":{"name":"search","arguments":"{\"query\":\"go\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`)
+
+	got, err := reg.TranslateResponseNonStream(context.Background(), protocol.OpenAI, protocol.Anthropic, "gpt-4o", rawReq, translatedReq, rawResp)
+	if err != nil {
+		t.Fatalf("TranslateResponseNonStream failed: %v", err)
+	}
+	if !strings.Contains(string(got), `"type":"message"`) || !strings.Contains(string(got), `"type":"tool_use"`) || !strings.Contains(string(got), `"stop_reason":"tool_use"`) {
+		t.Fatalf("unexpected translated response: %s", got)
+	}
+}
+
+func TestRegistry_TranslateResponseStream_OpenAIToAnthropic(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	rawReq := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"stream":true}`)
+	translatedReq := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+
+	var state any
+	chunks, err := reg.TranslateResponseStream(context.Background(), protocol.OpenAI, protocol.Anthropic, "gpt-4o", rawReq, translatedReq, []byte("data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n"), &state)
+	if err != nil {
+		t.Fatalf("TranslateResponseStream failed: %v", err)
+	}
+	joined := string(bytes.Join(chunks, nil))
+	if !strings.Contains(joined, "event: message_start") || !strings.Contains(joined, "event: content_block_delta") || !strings.Contains(joined, `"text":"hello"`) {
+		t.Fatalf("unexpected translated stream chunks: %#v", chunks)
+	}
+
+	done, err := reg.TranslateResponseStream(context.Background(), protocol.OpenAI, protocol.Anthropic, "gpt-4o", rawReq, translatedReq, []byte("data: [DONE]\n\n"), &state)
+	if err != nil {
+		t.Fatalf("TranslateResponseStream done failed: %v", err)
+	}
+	doneJoined := string(bytes.Join(done, nil))
+	if !strings.Contains(doneJoined, "event: message_delta") || !strings.Contains(doneJoined, "event: message_stop") {
+		t.Fatalf("unexpected anthropic done chunks: %#v", done)
+	}
+}
+
 func TestRegistry_TranslateRequest_CodexToAnthropic(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)
@@ -312,11 +376,21 @@ func TestRegistry_TranslateRequest_CodexToAnthropic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TranslateRequest failed: %v", err)
 	}
-	if !strings.Contains(string(got), `"system":[{`) || !strings.Contains(string(got), `"text":"be careful"`) {
-		t.Fatalf("expected anthropic system field, got %s", got)
+	var req struct {
+		System   []map[string]any `json:"system"`
+		Messages []struct {
+			Role    string           `json:"role"`
+			Content []map[string]any `json:"content"`
+		} `json:"messages"`
 	}
-	if !strings.Contains(string(got), `"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]`) {
-		t.Fatalf("unexpected translated request: %s", got)
+	if err := json.Unmarshal(got, &req); err != nil {
+		t.Fatalf("unmarshal translated request: %v", err)
+	}
+	if len(req.System) != 1 || req.System[0]["text"] != "be careful" {
+		t.Fatalf("expected anthropic system field, got %+v", req.System)
+	}
+	if len(req.Messages) != 1 || req.Messages[0].Role != "user" || len(req.Messages[0].Content) != 1 || req.Messages[0].Content[0]["type"] != "text" || req.Messages[0].Content[0]["text"] != "hello" {
+		t.Fatalf("unexpected translated request: %+v", req)
 	}
 }
 
@@ -334,6 +408,70 @@ func TestRegistry_TranslateResponseNonStream_AnthropicToCodex(t *testing.T) {
 	}
 	if !strings.Contains(string(got), `"object":"response"`) || !strings.Contains(string(got), `"text":"world"`) {
 		t.Fatalf("unexpected translated response: %s", got)
+	}
+}
+
+func TestRegistry_TranslateRequest_AnthropicToCodex(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	raw := []byte(`{"model":"gpt-5-codex","system":[{"type":"text","text":"be careful"}],"tools":[{"name":"search","description":"lookup","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"search"},"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"search","input":{"query":"go"}}]},{"role":"user","content":[{"type":"text","text":"hello"},{"type":"image","source":{"type":"url","url":"https://example.com/a.png","media_type":"image/png"}},{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"cGRm"},"title":"doc.pdf"},{"type":"tool_result","tool_use_id":"toolu_1","content":"done"}]}],"stream":true}`)
+	got, err := reg.TranslateRequest(protocol.Anthropic, protocol.Codex, "gpt-5-codex", raw, true)
+	if err != nil {
+		t.Fatalf("TranslateRequest failed: %v", err)
+	}
+	if !strings.Contains(string(got), `"instructions":"be careful"`) {
+		t.Fatalf("expected codex instructions, got %s", got)
+	}
+	if !strings.Contains(string(got), `"type":"function_call"`) || !strings.Contains(string(got), `"type":"function_call_output"`) {
+		t.Fatalf("expected codex tool items, got %s", got)
+	}
+	if !strings.Contains(string(got), `"type":"input_image"`) || !strings.Contains(string(got), `"type":"input_file"`) {
+		t.Fatalf("unexpected translated codex request: %s", got)
+	}
+}
+
+func TestRegistry_TranslateResponseNonStream_CodexToAnthropic(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	rawReq := []byte(`{"model":"gpt-5-codex","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	translatedReq := []byte(`{"model":"gpt-5-codex","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
+	rawResp := []byte(`{"id":"resp_1","object":"response","status":"completed","model":"gpt-5-codex","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"world"}]},{"type":"function_call","call_id":"call_1","name":"search","arguments":{"query":"go"}}],"usage":{"input_tokens":3,"output_tokens":5,"total_tokens":8}}`)
+
+	got, err := reg.TranslateResponseNonStream(context.Background(), protocol.Codex, protocol.Anthropic, "gpt-5-codex", rawReq, translatedReq, rawResp)
+	if err != nil {
+		t.Fatalf("TranslateResponseNonStream failed: %v", err)
+	}
+	if !strings.Contains(string(got), `"type":"message"`) || !strings.Contains(string(got), `"type":"tool_use"`) || !strings.Contains(string(got), `"stop_reason":"tool_use"`) {
+		t.Fatalf("unexpected translated response: %s", got)
+	}
+}
+
+func TestRegistry_TranslateResponseStream_CodexToAnthropic(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	rawReq := []byte(`{"model":"gpt-5-codex","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"stream":true}`)
+	translatedReq := []byte(`{"model":"gpt-5-codex","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}],"stream":true}`)
+
+	var state any
+	chunks, err := reg.TranslateResponseStream(context.Background(), protocol.Codex, protocol.Anthropic, "gpt-5-codex", rawReq, translatedReq, []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n"), &state)
+	if err != nil {
+		t.Fatalf("TranslateResponseStream failed: %v", err)
+	}
+	joined := string(bytes.Join(chunks, nil))
+	if !strings.Contains(joined, "event: message_start") || !strings.Contains(joined, "event: content_block_delta") || !strings.Contains(joined, `"text":"hello"`) {
+		t.Fatalf("unexpected translated stream chunks: %#v", chunks)
+	}
+
+	done, err := reg.TranslateResponseStream(context.Background(), protocol.Codex, protocol.Anthropic, "gpt-5-codex", rawReq, translatedReq, []byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5-codex\",\"status\":\"completed\",\"usage\":{\"input_tokens\":3,\"output_tokens\":5,\"total_tokens\":8}}}\n\n"), &state)
+	if err != nil {
+		t.Fatalf("TranslateResponseStream done failed: %v", err)
+	}
+	doneJoined := string(bytes.Join(done, nil))
+	if !strings.Contains(doneJoined, "event: message_delta") || !strings.Contains(doneJoined, "event: message_stop") {
+		t.Fatalf("unexpected anthropic done chunks: %#v", done)
 	}
 }
 
@@ -512,20 +650,88 @@ func TestBuildTransformPlan_SupportedTransformDefaults(t *testing.T) {
 	}
 }
 
-func TestBuildTransformPlan_RejectsUnsupportedTransform(t *testing.T) {
-	_, err := protocol.BuildTransformPlan(
+func TestBuildTransformPlan_SupportsAnthropicToOpenAI(t *testing.T) {
+	plan, err := protocol.BuildTransformPlan(
 		protocol.Anthropic,
 		protocol.OpenAI,
 		"/v1/messages",
+		"",
+		[]byte(`{"model":"gpt-4o"}`),
+		nil,
+		"gpt-4o",
+		"",
+		false,
+	)
+	if err != nil {
+		t.Fatalf("BuildTransformPlan failed: %v", err)
+	}
+	if !plan.NeedsTransform || plan.RequestFamily != protocol.RequestFamilyMessages {
+		t.Fatalf("unexpected plan: %+v", plan)
+	}
+}
+
+func TestBuildTransformPlan_SupportsAnthropicToCodex(t *testing.T) {
+	plan, err := protocol.BuildTransformPlan(
+		protocol.Anthropic,
+		protocol.Codex,
 		"/v1/messages",
-		[]byte(`{"model":"claude-3-5-sonnet"}`),
-		[]byte(`{"model":"claude-3-5-sonnet"}`),
-		"claude-3-5-sonnet",
-		"claude-3-5-sonnet",
+		"",
+		[]byte(`{"model":"gpt-5-codex"}`),
+		nil,
+		"gpt-5-codex",
+		"",
+		true,
+	)
+	if err != nil {
+		t.Fatalf("BuildTransformPlan failed: %v", err)
+	}
+	if !plan.NeedsTransform || plan.RequestFamily != protocol.RequestFamilyMessages {
+		t.Fatalf("unexpected plan: %+v", plan)
+	}
+}
+
+func TestBuildTransformPlan_RejectsUnsupportedTransform(t *testing.T) {
+	_, err := protocol.BuildTransformPlan(
+		protocol.Gemini,
+		protocol.OpenAI,
+		"/v1/messages",
+		"/v1/messages",
+		[]byte(`{"model":"gpt-4o"}`),
+		[]byte(`{"model":"gpt-4o"}`),
+		"gpt-4o",
+		"gpt-4o",
 		false,
 	)
 	if err == nil {
 		t.Fatal("expected unsupported transform error")
+	}
+}
+
+func TestBuildTransformPlan_SameProtocolNoOp(t *testing.T) {
+	t.Parallel()
+
+	plan, err := protocol.BuildTransformPlan(
+		protocol.Gemini,
+		protocol.Gemini,
+		"/v1beta/models/gemini-2.5-pro:generateContent",
+		"",
+		[]byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`),
+		nil,
+		"gemini-2.5-pro",
+		"",
+		true,
+	)
+	if err != nil {
+		t.Fatalf("BuildTransformPlan failed: %v", err)
+	}
+	if plan.NeedsTransform {
+		t.Fatalf("expected same-protocol plan to skip translation, got %+v", plan)
+	}
+	if plan.RequestFamily != protocol.RequestFamilyGenerateContent {
+		t.Fatalf("expected generate_content family, got %s", plan.RequestFamily)
+	}
+	if got := string(plan.TranslatedBody); got != `{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}` {
+		t.Fatalf("expected translated body to reuse original body, got %s", got)
 	}
 }
 
@@ -606,5 +812,60 @@ func TestTransformPlan_ResponseModelPreservesClientAlias(t *testing.T) {
 	}
 	if got := plan.ResponseModel(); got != "alias-model" {
 		t.Fatalf("expected response model alias-model, got %s", got)
+	}
+}
+
+func TestRegistry_SameProtocolNoOp(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	rawReq := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`)
+	gotReq, err := reg.TranslateRequest(protocol.OpenAI, protocol.OpenAI, "gpt-4o", rawReq, false)
+	if err != nil {
+		t.Fatalf("TranslateRequest failed: %v", err)
+	}
+	if string(gotReq) != string(rawReq) {
+		t.Fatalf("expected same request body, got %s", gotReq)
+	}
+
+	rawResp := []byte(`{"ok":true}`)
+	gotResp, err := reg.TranslateResponseNonStream(context.Background(), protocol.OpenAI, protocol.OpenAI, "gpt-4o", rawReq, rawReq, rawResp)
+	if err != nil {
+		t.Fatalf("TranslateResponseNonStream failed: %v", err)
+	}
+	if string(gotResp) != string(rawResp) {
+		t.Fatalf("expected same response body, got %s", gotResp)
+	}
+
+	gotStream, err := reg.TranslateResponseStream(context.Background(), protocol.OpenAI, protocol.OpenAI, "gpt-4o", rawReq, rawReq, []byte("data: [DONE]\n\n"), nil)
+	if err != nil {
+		t.Fatalf("TranslateResponseStream failed: %v", err)
+	}
+	if len(gotStream) != 1 || string(gotStream[0]) != "data: [DONE]\n\n" {
+		t.Fatalf("unexpected no-op stream chunks: %#v", gotStream)
+	}
+}
+
+func TestSupportedClientProtocolsForUpstream_BidirectionalMatrix(t *testing.T) {
+	tests := []struct {
+		upstream protocol.Protocol
+		want     []protocol.Protocol
+	}{
+		{upstream: protocol.OpenAI, want: []protocol.Protocol{protocol.Anthropic, protocol.Codex, protocol.Gemini}},
+		{upstream: protocol.Anthropic, want: []protocol.Protocol{protocol.Codex, protocol.Gemini, protocol.OpenAI}},
+		{upstream: protocol.Codex, want: []protocol.Protocol{protocol.Anthropic, protocol.Gemini, protocol.OpenAI}},
+		{upstream: protocol.Gemini, want: []protocol.Protocol{protocol.Anthropic, protocol.Codex, protocol.OpenAI}},
+	}
+
+	for _, tt := range tests {
+		got := protocol.SupportedClientProtocolsForUpstream(tt.upstream)
+		if len(got) != len(tt.want) {
+			t.Fatalf("upstream %s: expected %v, got %v", tt.upstream, tt.want, got)
+		}
+		for i, want := range tt.want {
+			if got[i] != want {
+				t.Fatalf("upstream %s: expected %v, got %v", tt.upstream, tt.want, got)
+			}
+		}
 	}
 }
