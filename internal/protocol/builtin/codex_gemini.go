@@ -6,13 +6,15 @@ import (
 	"fmt"
 	"strings"
 
+	"ccLoad/internal/util"
+
 	"github.com/bytedance/sonic"
 )
 
 type codexRequest struct {
 	Model        string            `json:"model"`
 	Instructions string            `json:"instructions,omitempty"`
-	Stream       bool              `json:"stream,omitempty"`
+	Stream       util.FlexibleBool `json:"stream,omitempty"`
 	Tools        json.RawMessage   `json:"tools,omitempty"`
 	ToolChoice   json.RawMessage   `json:"tool_choice,omitempty"`
 	Input        []json.RawMessage `json:"input"`

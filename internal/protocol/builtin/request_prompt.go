@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"ccLoad/internal/protocol"
+	"ccLoad/internal/util"
 
 	"github.com/bytedance/sonic"
 )
@@ -348,6 +349,13 @@ func encodeGeminiRequest(conv conversation) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(turns) == 0 && len(systemParts) > 0 {
+		turns = []conversationTurn{{
+			Role:  "user",
+			Parts: systemParts,
+		}}
+		systemParts = nil
+	}
 	payload := geminiRequestPayload{Contents: make([]geminiContent, 0, len(turns))}
 	if len(systemParts) > 0 {
 		payload.SystemInstruction = &geminiSystemInstruction{Parts: make([]geminiPart, 0, len(systemParts))}
@@ -408,10 +416,17 @@ func encodeAnthropicRequest(model string, conv conversation, stream bool) ([]byt
 	if err != nil {
 		return nil, err
 	}
+	if len(turns) == 0 && len(systemParts) > 0 {
+		turns = []conversationTurn{{
+			Role:  "user",
+			Parts: systemParts,
+		}}
+		systemParts = nil
+	}
 	out := anthropicMessagesRequest{
 		Model:    model,
 		Messages: make([]anthropicMessageContent, 0, len(turns)),
-		Stream:   stream,
+		Stream:   util.FlexibleBool(stream),
 	}
 	if len(systemParts) > 0 {
 		blocks, err := encodeAnthropicBlocks(systemParts)
@@ -574,7 +589,7 @@ func encodeOpenAIRequest(model string, conv conversation, stream bool) ([]byte, 
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("%w: no convertible openai messages", protocol.ErrUnsupportedRequestShape)
 	}
-	payload := openAIChatRequest{Model: model, Messages: make([]openAIChatMessage, 0, len(messages)), Stream: stream}
+	payload := openAIChatRequest{Model: model, Messages: make([]openAIChatMessage, 0, len(messages)), Stream: util.FlexibleBool(stream)}
 	for _, message := range messages {
 		encoded := openAIChatMessage{Role: stringValue(message["role"]), Content: message["content"]}
 		if rawCalls, ok := message["tool_calls"]; ok {
@@ -748,7 +763,12 @@ func encodeCodexRequest(model string, conv conversation, stream bool) ([]byte, e
 	}
 	out["input"] = input
 	if len(input) == 0 {
-		return nil, fmt.Errorf("%w: no convertible codex input", protocol.ErrUnsupportedRequestShape)
+		if systemText == "" {
+			return nil, fmt.Errorf("%w: no convertible codex input", protocol.ErrUnsupportedRequestShape)
+		}
+		// Responses-style Codex requests can rely on instructions alone. In that
+		// case omit `input` entirely instead of rejecting the transform.
+		delete(out, "input")
 	}
 	return sonic.Marshal(out)
 }

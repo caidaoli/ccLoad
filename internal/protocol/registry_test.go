@@ -282,6 +282,293 @@ func TestRegistry_TranslateRequest_OpenAIToAnthropic(t *testing.T) {
 	}
 }
 
+func TestRegistry_TranslateRequest_OpenAIToAnthropic_SystemOnly(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	raw := []byte(`{"model":"claude-3-5-sonnet","messages":[{"role":"system","content":"optimize this code"}]}`)
+	got, err := reg.TranslateRequest(protocol.OpenAI, protocol.Anthropic, "claude-3-5-sonnet", raw, false)
+	if err != nil {
+		t.Fatalf("TranslateRequest failed: %v", err)
+	}
+
+	var req struct {
+		System   []map[string]any `json:"system"`
+		Messages []struct {
+			Role    string `json:"role"`
+			Content any    `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(got, &req); err != nil {
+		t.Fatalf("unmarshal translated request: %v", err)
+	}
+	if len(req.System) != 0 {
+		t.Fatalf("expected no anthropic system field for system-only prompt, got %+v", req.System)
+	}
+	if len(req.Messages) != 1 || req.Messages[0].Role != "user" {
+		t.Fatalf("unexpected anthropic messages: %+v", req.Messages)
+	}
+	content, ok := req.Messages[0].Content.([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("expected one anthropic content block, got %+v", req.Messages[0].Content)
+	}
+	block, ok := content[0].(map[string]any)
+	if !ok || block["type"] != "text" || block["text"] != "optimize this code" {
+		t.Fatalf("unexpected anthropic content block: %+v", content[0])
+	}
+}
+
+func TestRegistry_TranslateRequest_OpenAIToGemini_SystemOnly(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	raw := []byte(`{"model":"gemini-2.5-pro","messages":[{"role":"system","content":"optimize this code"}]}`)
+	got, err := reg.TranslateRequest(protocol.OpenAI, protocol.Gemini, "gemini-2.5-pro", raw, false)
+	if err != nil {
+		t.Fatalf("TranslateRequest failed: %v", err)
+	}
+
+	var req struct {
+		SystemInstruction struct {
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		} `json:"systemInstruction"`
+		Contents []struct {
+			Role  string `json:"role"`
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		} `json:"contents"`
+	}
+	if err := json.Unmarshal(got, &req); err != nil {
+		t.Fatalf("unmarshal translated request: %v", err)
+	}
+	if len(req.SystemInstruction.Parts) != 0 {
+		t.Fatalf("expected no gemini system instruction for system-only prompt, got %+v", req.SystemInstruction)
+	}
+	if len(req.Contents) != 1 || req.Contents[0].Role != "user" || len(req.Contents[0].Parts) != 1 || req.Contents[0].Parts[0].Text != "optimize this code" {
+		t.Fatalf("expected user prompt content, got %+v", req.Contents)
+	}
+}
+
+func TestRegistry_TranslateRequest_OpenAIToCodex_SystemOnly(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	raw := []byte(`{"model":"gpt-5-codex","messages":[{"role":"system","content":"optimize this code"}]}`)
+	got, err := reg.TranslateRequest(protocol.OpenAI, protocol.Codex, "gpt-5-codex", raw, false)
+	if err != nil {
+		t.Fatalf("TranslateRequest failed: %v", err)
+	}
+
+	var req map[string]any
+	if err := json.Unmarshal(got, &req); err != nil {
+		t.Fatalf("unmarshal translated request: %v", err)
+	}
+	if req["instructions"] != "optimize this code" {
+		t.Fatalf("unexpected codex instructions: %+v", req)
+	}
+	if _, ok := req["input"]; ok {
+		t.Fatalf("expected codex request without input items, got %+v", req)
+	}
+}
+
+func TestRegistry_TranslateRequest_SystemOnlySemantics_OtherSources(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	const prompt = "optimize this code"
+
+	assertAnthropicUserPrompt := func(t *testing.T, body []byte) {
+		t.Helper()
+		var req struct {
+			System   []map[string]any `json:"system"`
+			Messages []struct {
+				Role    string `json:"role"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("unmarshal anthropic request: %v", err)
+		}
+		if len(req.System) != 0 {
+			t.Fatalf("expected no anthropic system field, got %+v", req.System)
+		}
+		if len(req.Messages) != 1 || req.Messages[0].Role != "user" || len(req.Messages[0].Content) != 1 || req.Messages[0].Content[0].Type != "text" || req.Messages[0].Content[0].Text != prompt {
+			t.Fatalf("unexpected anthropic request: %+v", req)
+		}
+	}
+
+	assertGeminiUserPrompt := func(t *testing.T, body []byte) {
+		t.Helper()
+		var req struct {
+			SystemInstruction *struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"systemInstruction"`
+			Contents []struct {
+				Role  string `json:"role"`
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"contents"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("unmarshal gemini request: %v", err)
+		}
+		if req.SystemInstruction != nil && len(req.SystemInstruction.Parts) > 0 {
+			t.Fatalf("expected no gemini system instruction, got %+v", req.SystemInstruction)
+		}
+		if len(req.Contents) != 1 || req.Contents[0].Role != "user" || len(req.Contents[0].Parts) != 1 || req.Contents[0].Parts[0].Text != prompt {
+			t.Fatalf("unexpected gemini request: %+v", req)
+		}
+	}
+
+	assertOpenAISystemPrompt := func(t *testing.T, body []byte) {
+		t.Helper()
+		var req struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content any    `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("unmarshal openai request: %v", err)
+		}
+		if len(req.Messages) != 1 || req.Messages[0].Role != "system" || req.Messages[0].Content != prompt {
+			t.Fatalf("unexpected openai request: %+v", req)
+		}
+	}
+
+	assertCodexInstructionsOnly := func(t *testing.T, body []byte) {
+		t.Helper()
+		var req map[string]any
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("unmarshal codex request: %v", err)
+		}
+		if req["instructions"] != prompt {
+			t.Fatalf("unexpected codex instructions: %+v", req)
+		}
+		if _, ok := req["input"]; ok {
+			t.Fatalf("expected codex request without input, got %+v", req)
+		}
+	}
+
+	tests := []struct {
+		name   string
+		from   protocol.Protocol
+		to     protocol.Protocol
+		model  string
+		raw    []byte
+		assert func(*testing.T, []byte)
+	}{
+		{
+			name:   "anthropic_to_openai",
+			from:   protocol.Anthropic,
+			to:     protocol.OpenAI,
+			model:  "gpt-4o",
+			raw:    []byte(`{"model":"gpt-4o","system":[{"type":"text","text":"optimize this code"}],"messages":[]}`),
+			assert: assertOpenAISystemPrompt,
+		},
+		{
+			name:   "anthropic_to_gemini",
+			from:   protocol.Anthropic,
+			to:     protocol.Gemini,
+			model:  "gemini-2.5-pro",
+			raw:    []byte(`{"model":"gemini-2.5-pro","system":[{"type":"text","text":"optimize this code"}],"messages":[]}`),
+			assert: assertGeminiUserPrompt,
+		},
+		{
+			name:   "anthropic_to_codex",
+			from:   protocol.Anthropic,
+			to:     protocol.Codex,
+			model:  "gpt-5-codex",
+			raw:    []byte(`{"model":"gpt-5-codex","system":[{"type":"text","text":"optimize this code"}],"messages":[]}`),
+			assert: assertCodexInstructionsOnly,
+		},
+		{
+			name:   "codex_to_openai",
+			from:   protocol.Codex,
+			to:     protocol.OpenAI,
+			model:  "gpt-4o",
+			raw:    []byte(`{"model":"gpt-4o","instructions":"optimize this code"}`),
+			assert: assertOpenAISystemPrompt,
+		},
+		{
+			name:   "codex_to_gemini",
+			from:   protocol.Codex,
+			to:     protocol.Gemini,
+			model:  "gemini-2.5-pro",
+			raw:    []byte(`{"model":"gemini-2.5-pro","instructions":"optimize this code"}`),
+			assert: assertGeminiUserPrompt,
+		},
+		{
+			name:   "codex_to_anthropic",
+			from:   protocol.Codex,
+			to:     protocol.Anthropic,
+			model:  "claude-3-5-sonnet",
+			raw:    []byte(`{"model":"claude-3-5-sonnet","instructions":"optimize this code"}`),
+			assert: assertAnthropicUserPrompt,
+		},
+		{
+			name:   "gemini_to_openai",
+			from:   protocol.Gemini,
+			to:     protocol.OpenAI,
+			model:  "gpt-4o",
+			raw:    []byte(`{"systemInstruction":{"parts":[{"text":"optimize this code"}]}}`),
+			assert: assertOpenAISystemPrompt,
+		},
+		{
+			name:   "gemini_to_anthropic",
+			from:   protocol.Gemini,
+			to:     protocol.Anthropic,
+			model:  "claude-3-5-sonnet",
+			raw:    []byte(`{"systemInstruction":{"parts":[{"text":"optimize this code"}]}}`),
+			assert: assertAnthropicUserPrompt,
+		},
+		{
+			name:   "gemini_to_codex",
+			from:   protocol.Gemini,
+			to:     protocol.Codex,
+			model:  "gpt-5-codex",
+			raw:    []byte(`{"systemInstruction":{"parts":[{"text":"optimize this code"}]}}`),
+			assert: assertCodexInstructionsOnly,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := reg.TranslateRequest(tt.from, tt.to, tt.model, tt.raw, false)
+			if err != nil {
+				t.Fatalf("TranslateRequest failed: %v", err)
+			}
+			tt.assert(t, got)
+		})
+	}
+}
+
+func TestRegistry_TranslateRequest_OpenAIToAnthropic_StringStreamAccepted(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	raw := []byte(`{"model":"claude-3-5-sonnet","messages":[{"role":"user","content":"hello"}],"stream":"true","tools":[{"type":"function","function":{"name":"get_current_weather","description":"Get the current weather in a given location","parameters":{"type":"object","properties":{"location":{"type":"string"},"unit":{"type":"string","enum":["celsius","fahrenheit"]}},"required":["location"]}}}],"tool_choice":"auto"}`)
+	got, err := reg.TranslateRequest(protocol.OpenAI, protocol.Anthropic, "claude-3-5-sonnet", raw, true)
+	if err != nil {
+		t.Fatalf("TranslateRequest failed: %v", err)
+	}
+	if !strings.Contains(string(got), `"stream":true`) {
+		t.Fatalf("expected anthropic stream=true, got %s", got)
+	}
+	if !strings.Contains(string(got), `"name":"get_current_weather"`) || !strings.Contains(string(got), `"type":"auto"`) {
+		t.Fatalf("unexpected translated tool payload: %s", got)
+	}
+}
+
 func TestRegistry_TranslateResponseNonStream_AnthropicToOpenAI(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)

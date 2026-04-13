@@ -6,13 +6,15 @@ import (
 	"fmt"
 	"strings"
 
+	"ccLoad/internal/util"
+
 	"github.com/bytedance/sonic"
 )
 
 type anthropicMessagesRequest struct {
 	Model      string                    `json:"model"`
 	Messages   []anthropicMessageContent `json:"messages"`
-	Stream     bool                      `json:"stream,omitempty"`
+	Stream     util.FlexibleBool         `json:"stream,omitempty"`
 	System     any                       `json:"system,omitempty"`
 	Tools      json.RawMessage           `json:"tools,omitempty"`
 	ToolChoice json.RawMessage           `json:"tool_choice,omitempty"`
