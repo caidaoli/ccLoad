@@ -51,41 +51,38 @@ type TransformPlan struct {
 	NeedsTransform   bool
 }
 
-var supportedTransformSourcesByUpstreamAndFamily = map[Protocol]map[RequestFamily][]Protocol{
-	Gemini: {
-		RequestFamilyMessages:        {Anthropic},
-		RequestFamilyResponses:       {Codex},
-		RequestFamilyChatCompletions: {OpenAI},
+var supportedTransformFamiliesByClientAndUpstream = map[Protocol]map[Protocol][]RequestFamily{
+	OpenAI: {
+		Gemini:    {RequestFamilyChatCompletions},
+		Anthropic: {RequestFamilyChatCompletions},
+		Codex:     {RequestFamilyChatCompletions},
 	},
 	Anthropic: {
-		RequestFamilyResponses:       {Codex},
-		RequestFamilyChatCompletions: {OpenAI},
+		OpenAI: {RequestFamilyMessages},
+		Gemini: {RequestFamilyMessages},
+		Codex:  {RequestFamilyMessages},
 	},
 	Codex: {
-		RequestFamilyChatCompletions: {OpenAI},
+		OpenAI:    {RequestFamilyResponses},
+		Gemini:    {RequestFamilyResponses},
+		Anthropic: {RequestFamilyResponses},
 	},
-	OpenAI: {
-		RequestFamilyResponses: {Codex},
+	Gemini: {
+		OpenAI:    {RequestFamilyGenerateContent},
+		Anthropic: {RequestFamilyGenerateContent},
+		Codex:     {RequestFamilyGenerateContent},
 	},
 }
 
 // SupportedClientProtocolsForUpstream returns the documented client-facing protocols
 // that can be translated into the given upstream protocol.
 func SupportedClientProtocolsForUpstream(upstream Protocol) []Protocol {
-	families := supportedTransformSourcesByUpstreamAndFamily[upstream]
-	if len(families) == 0 {
-		return nil
-	}
-	seen := make(map[Protocol]struct{}, len(families))
-	supported := make([]Protocol, 0, len(families))
-	for _, protocols := range families {
-		for _, candidate := range protocols {
-			if _, ok := seen[candidate]; ok {
-				continue
-			}
-			seen[candidate] = struct{}{}
-			supported = append(supported, candidate)
+	supported := make([]Protocol, 0, len(supportedTransformFamiliesByClientAndUpstream))
+	for client, upstreams := range supportedTransformFamiliesByClientAndUpstream {
+		if len(upstreams[upstream]) == 0 {
+			continue
 		}
+		supported = append(supported, client)
 	}
 	if len(supported) == 0 {
 		return nil
@@ -97,21 +94,14 @@ func SupportedClientProtocolsForUpstream(upstream Protocol) []Protocol {
 // SupportsTransform reports whether the runtime has a documented transform path for
 // the given client/upstream protocol pair.
 func SupportsTransform(client, upstream Protocol) bool {
-	for _, protocols := range supportedTransformSourcesByUpstreamAndFamily[upstream] {
-		for _, candidate := range protocols {
-			if candidate == client {
-				return true
-			}
-		}
-	}
-	return false
+	return len(supportedTransformFamiliesByClientAndUpstream[client][upstream]) > 0
 }
 
 // SupportsTransformFamily reports whether the runtime has a documented transform path for
 // the given client/upstream protocol pair on the current request family.
 func SupportsTransformFamily(client, upstream Protocol, family RequestFamily) bool {
-	for _, candidate := range supportedTransformSourcesByUpstreamAndFamily[upstream][family] {
-		if candidate == client {
+	for _, supportedFamily := range supportedTransformFamiliesByClientAndUpstream[client][upstream] {
+		if supportedFamily == family {
 			return true
 		}
 	}

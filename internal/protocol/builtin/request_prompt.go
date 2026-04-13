@@ -286,6 +286,52 @@ func normalizeCodexConversation(req codexRequest) (conversation, error) {
 	return conv, nil
 }
 
+func normalizeGeminiConversation(req geminiRequestPayload) (conversation, error) {
+	conv := conversation{Turns: make([]conversationTurn, 0, len(req.Contents)+1)}
+	var err error
+	conv.Tools, err = parseGeminiTools(req.Tools)
+	if err != nil {
+		return conversation{}, err
+	}
+	conv.ToolChoice, err = parseGeminiToolChoice(req.ToolConfig)
+	if err != nil {
+		return conversation{}, err
+	}
+
+	if req.SystemInstruction != nil {
+		systemParts, err := extractGeminiParts(req.SystemInstruction.Parts, nil, nil)
+		if err != nil {
+			return conversation{}, fmt.Errorf("gemini system_instruction: %w", err)
+		}
+		if len(systemParts) > 0 {
+			conv.Turns = append(conv.Turns, conversationTurn{Role: "system", Parts: systemParts})
+		}
+	}
+
+	pendingToolCallIDs := make([]string, 0)
+	nextToolCallID := 1
+	for i, content := range req.Contents {
+		role, err := normalizeGeminiRole(content.Role)
+		if err != nil {
+			return conversation{}, fmt.Errorf("gemini content %d: %w", i, err)
+		}
+		parts, err := extractGeminiParts(content.Parts, &pendingToolCallIDs, &nextToolCallID)
+		if err != nil {
+			return conversation{}, fmt.Errorf("gemini content %d: %w", i, err)
+		}
+		if len(parts) == 0 {
+			continue
+		}
+		conv.Turns = append(conv.Turns, conversationTurn{Role: role, Parts: parts})
+	}
+
+	resolveToolResultNames(&conv)
+	if len(conv.Turns) == 0 && len(conv.Tools) == 0 {
+		return conversation{}, fmt.Errorf("%w: no convertible gemini contents", protocol.ErrUnsupportedRequestShape)
+	}
+	return conv, nil
+}
+
 func encodeGeminiRequest(conv conversation) ([]byte, error) {
 	systemParts, turns, err := splitConversationForSystem(conv)
 	if err != nil {
@@ -427,6 +473,18 @@ func encodeOpenAIRequest(model string, conv conversation, stream bool) ([]byte, 
 		case "system", "developer", "user", "assistant":
 			contentParts := make([]map[string]any, 0, len(turn.Parts))
 			toolCalls := make([]map[string]any, 0)
+			flushMessage := func() {
+				if len(contentParts) == 0 && len(toolCalls) == 0 {
+					return
+				}
+				message := map[string]any{"role": role, "content": encodeOpenAIContentValue(contentParts)}
+				if len(toolCalls) > 0 {
+					message["tool_calls"] = toolCalls
+				}
+				messages = append(messages, message)
+				contentParts = nil
+				toolCalls = nil
+			}
 			for _, part := range turn.Parts {
 				switch part.Kind {
 				case partKindText, partKindImage, partKindFile:
@@ -445,16 +503,28 @@ func encodeOpenAIRequest(model string, conv conversation, stream bool) ([]byte, 
 					}
 					toolCalls = append(toolCalls, encoded)
 				case partKindToolResult:
-					return nil, fmt.Errorf("%w: openai tool results must use tool role", protocol.ErrUnsupportedRequestShape)
+					if part.ToolResult == nil {
+						return nil, fmt.Errorf("%w: missing openai tool result content", protocol.ErrUnsupportedRequestShape)
+					}
+					flushMessage()
+					content, err := encodeOpenAIToolResultContent(part.ToolResult.Parts)
+					if err != nil {
+						return nil, fmt.Errorf("openai turn %d: %w", i, err)
+					}
+					message := map[string]any{
+						"role":         "tool",
+						"tool_call_id": part.ToolResult.CallID,
+						"content":      content,
+					}
+					if part.ToolResult.Name != "" {
+						message["name"] = part.ToolResult.Name
+					}
+					messages = append(messages, message)
 				default:
 					return nil, fmt.Errorf("%w: unsupported openai content kind %q", protocol.ErrUnsupportedRequestShape, part.Kind)
 				}
 			}
-			message := map[string]any{"role": role, "content": encodeOpenAIContentValue(contentParts)}
-			if len(toolCalls) > 0 {
-				message["tool_calls"] = toolCalls
-			}
-			messages = append(messages, message)
+			flushMessage()
 		case "tool":
 			for _, part := range turn.Parts {
 				if part.Kind != partKindToolResult || part.ToolResult == nil {
@@ -1113,6 +1183,35 @@ func parseFunctionTools(raw json.RawMessage, source string) ([]conversationTool,
 	return tools, nil
 }
 
+func parseGeminiTools(tools []geminiTool) ([]conversationTool, error) {
+	if len(tools) == 0 {
+		return nil, nil
+	}
+	out := make([]conversationTool, 0)
+	for toolIndex, tool := range tools {
+		for declIndex, decl := range tool.FunctionDeclarations {
+			name := strings.TrimSpace(decl.Name)
+			if name == "" {
+				return nil, fmt.Errorf("%w: gemini tool declaration %d.%d missing name", protocol.ErrUnsupportedRequestShape, toolIndex, declIndex)
+			}
+			var schema json.RawMessage
+			if decl.Parameters != nil {
+				raw, err := sonic.Marshal(decl.Parameters)
+				if err != nil {
+					return nil, err
+				}
+				schema = raw
+			}
+			out = append(out, conversationTool{
+				Name:        name,
+				Description: strings.TrimSpace(decl.Description),
+				InputSchema: schema,
+			})
+		}
+	}
+	return out, nil
+}
+
 func parseToolChoice(raw json.RawMessage, source string) (conversationToolChoice, error) {
 	if !hasJSONValue(raw) {
 		return conversationToolChoice{}, nil
@@ -1165,6 +1264,43 @@ func parseToolChoice(raw json.RawMessage, source string) (conversationToolChoice
 	}
 }
 
+func parseGeminiToolChoice(cfg *geminiToolConfig) (conversationToolChoice, error) {
+	if cfg == nil {
+		return conversationToolChoice{}, nil
+	}
+	mode := strings.ToUpper(strings.TrimSpace(cfg.FunctionCallingConfig.Mode))
+	switch mode {
+	case "", "AUTO":
+		return conversationToolChoice{Mode: "auto"}, nil
+	case "NONE":
+		return conversationToolChoice{Mode: "none"}, nil
+	case "ANY":
+		if len(cfg.FunctionCallingConfig.AllowedFunctionNames) == 1 {
+			name := strings.TrimSpace(cfg.FunctionCallingConfig.AllowedFunctionNames[0])
+			if name == "" {
+				return conversationToolChoice{}, fmt.Errorf("%w: gemini named tool choice missing name", protocol.ErrUnsupportedRequestShape)
+			}
+			return conversationToolChoice{Mode: "named", Name: name}, nil
+		}
+		return conversationToolChoice{Mode: "required"}, nil
+	default:
+		return conversationToolChoice{}, fmt.Errorf("%w: unsupported gemini tool choice mode %q", protocol.ErrUnsupportedRequestShape, mode)
+	}
+}
+
+func normalizeGeminiRole(role string) (string, error) {
+	switch normalizeRole(role) {
+	case "", "user":
+		return "user", nil
+	case "model", "assistant":
+		return "assistant", nil
+	case "tool", "function":
+		return "tool", nil
+	default:
+		return "", fmt.Errorf("%w: unsupported gemini content role %q", protocol.ErrUnsupportedRequestShape, role)
+	}
+}
+
 func extractOpenAIContentParts(content any) ([]conversationPart, error) {
 	switch v := content.(type) {
 	case nil:
@@ -1190,6 +1326,153 @@ func extractOpenAIContentParts(content any) ([]conversationPart, error) {
 	default:
 		return nil, fmt.Errorf("%w: unsupported openai content type %T", protocol.ErrUnsupportedRequestShape, content)
 	}
+}
+
+func extractGeminiParts(parts []geminiPart, pendingToolCallIDs *[]string, nextToolCallID *int) ([]conversationPart, error) {
+	if len(parts) == 0 {
+		return nil, nil
+	}
+	out := make([]conversationPart, 0, len(parts))
+	for i, part := range parts {
+		decoded, err := decodeGeminiPart(part, pendingToolCallIDs, nextToolCallID)
+		if err != nil {
+			return nil, fmt.Errorf("gemini part %d: %w", i, err)
+		}
+		if decoded.Kind != "" {
+			out = append(out, decoded)
+		}
+	}
+	return out, nil
+}
+
+func decodeGeminiPart(part geminiPart, pendingToolCallIDs *[]string, nextToolCallID *int) (conversationPart, error) {
+	switch {
+	case strings.TrimSpace(part.Text) != "":
+		return conversationPart{Kind: partKindText, Text: part.Text}, nil
+	case part.InlineData != nil:
+		media := conversationMedia{
+			MIMEType: strings.TrimSpace(part.InlineData.MIMEType),
+			Data:     strings.TrimSpace(part.InlineData.Data),
+		}
+		if media.Data == "" {
+			return conversationPart{}, fmt.Errorf("%w: gemini inlineData missing data", protocol.ErrUnsupportedRequestShape)
+		}
+		return conversationPart{Kind: geminiMediaPartKind(media.MIMEType), Media: &media}, nil
+	case part.FileData != nil:
+		media := conversationMedia{
+			MIMEType: strings.TrimSpace(part.FileData.MIMEType),
+			URL:      strings.TrimSpace(part.FileData.FileURI),
+		}
+		if media.URL == "" {
+			return conversationPart{}, fmt.Errorf("%w: gemini fileData missing fileUri", protocol.ErrUnsupportedRequestShape)
+		}
+		return conversationPart{Kind: geminiMediaPartKind(media.MIMEType), Media: &media}, nil
+	case part.FunctionCall != nil:
+		if strings.TrimSpace(part.FunctionCall.Name) == "" {
+			return conversationPart{}, fmt.Errorf("%w: gemini functionCall missing name", protocol.ErrUnsupportedRequestShape)
+		}
+		arguments, err := sonic.Marshal(part.FunctionCall.Args)
+		if err != nil {
+			return conversationPart{}, err
+		}
+		if !hasJSONValue(arguments) {
+			arguments = json.RawMessage(`{}`)
+		}
+		callID := nextGeminiToolCallID(pendingToolCallIDs, nextToolCallID)
+		return conversationPart{Kind: partKindToolCall, ToolCall: &conversationToolCall{
+			ID:        callID,
+			Name:      strings.TrimSpace(part.FunctionCall.Name),
+			Arguments: arguments,
+		}}, nil
+	case part.FunctionResponse != nil:
+		result, err := decodeGeminiToolResult(part.FunctionResponse, pendingToolCallIDs, nextToolCallID)
+		if err != nil {
+			return conversationPart{}, err
+		}
+		return conversationPart{Kind: partKindToolResult, ToolResult: &result}, nil
+	default:
+		return conversationPart{}, nil
+	}
+}
+
+func decodeGeminiToolResult(resp *geminiFunctionResponse, pendingToolCallIDs *[]string, nextToolCallID *int) (conversationToolResult, error) {
+	if resp == nil {
+		return conversationToolResult{}, fmt.Errorf("%w: missing gemini functionResponse", protocol.ErrUnsupportedRequestShape)
+	}
+	result := conversationToolResult{Name: strings.TrimSpace(resp.Name)}
+	var parts []conversationPart
+	switch response := resp.Response.(type) {
+	case map[string]any:
+		if callID := strings.TrimSpace(stringValue(response["call_id"])); callID != "" {
+			result.CallID = callID
+		}
+		if result.Name == "" {
+			result.Name = strings.TrimSpace(stringValue(response["name"]))
+		}
+		result.IsError = boolValue(response["is_error"])
+		switch {
+		case response["content"] != nil || response["call_id"] != nil || response["is_error"] != nil:
+			var err error
+			parts, err = decodeToolResultParts(response["content"])
+			if err != nil {
+				return conversationToolResult{}, err
+			}
+		case response["result"] != nil:
+			var err error
+			parts, err = decodeToolResultParts(response["result"])
+			if err != nil {
+				return conversationToolResult{}, err
+			}
+		default:
+			var err error
+			parts, err = decodeToolResultParts(response)
+			if err != nil {
+				return conversationToolResult{}, err
+			}
+		}
+	default:
+		var err error
+		parts, err = decodeToolResultParts(resp.Response)
+		if err != nil {
+			return conversationToolResult{}, err
+		}
+	}
+	result.Parts = parts
+	if result.CallID == "" {
+		result.CallID = consumeGeminiToolCallID(pendingToolCallIDs)
+	}
+	if result.CallID == "" {
+		result.CallID = nextGeminiToolCallID(nil, nextToolCallID)
+	}
+	return result, nil
+}
+
+func geminiMediaPartKind(mimeType string) string {
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(mimeType)), "image/") {
+		return partKindImage
+	}
+	return partKindFile
+}
+
+func nextGeminiToolCallID(pendingToolCallIDs *[]string, nextToolCallID *int) string {
+	callID := "call_1"
+	if nextToolCallID != nil {
+		callID = fmt.Sprintf("call_%d", *nextToolCallID)
+		*nextToolCallID++
+	}
+	if pendingToolCallIDs != nil {
+		*pendingToolCallIDs = append(*pendingToolCallIDs, callID)
+	}
+	return callID
+}
+
+func consumeGeminiToolCallID(pendingToolCallIDs *[]string) string {
+	if pendingToolCallIDs == nil || len(*pendingToolCallIDs) == 0 {
+		return ""
+	}
+	callID := (*pendingToolCallIDs)[0]
+	*pendingToolCallIDs = (*pendingToolCallIDs)[1:]
+	return callID
 }
 
 func decodeOpenAIContentPart(part map[string]any) (conversationPart, error) {

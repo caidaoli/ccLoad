@@ -256,7 +256,7 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 		}
 	})
 
-	t.Run("handleListGeminiModels ignores unsupported legacy gemini transforms", func(t *testing.T) {
+	t.Run("handleListGeminiModels exposes openai channels that declare gemini transform", func(t *testing.T) {
 		_, err := store.CreateConfig(ctx, &model.Config{
 			Name:               "o2-gemini",
 			URL:                "https://example.com",
@@ -285,10 +285,15 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 			} `json:"models"`
 		}
 		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+		found := false
 		for _, item := range resp.Models {
 			if item.Name == "models/gpt-4.1" {
-				t.Fatalf("unsupported legacy gemini transform should not be exposed, got %+v", resp.Models)
+				found = true
+				break
 			}
+		}
+		if !found {
+			t.Fatalf("expected transformed openai gemini model in list, got %+v", resp.Models)
 		}
 	})
 

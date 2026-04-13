@@ -37,6 +37,11 @@ type codexResponse struct {
 	} `json:"usage"`
 }
 
+type codexToGeminiStreamState struct {
+	model      string
+	responseID string
+}
+
 func convertCodexRequestToGemini(_ string, rawJSON []byte, _ bool) ([]byte, error) {
 	var req codexRequest
 	if err := sonic.Unmarshal(rawJSON, &req); err != nil {
@@ -48,6 +53,18 @@ func convertCodexRequestToGemini(_ string, rawJSON []byte, _ bool) ([]byte, erro
 		return nil, err
 	}
 	return encodeGeminiRequest(conv)
+}
+
+func convertGeminiRequestToCodex(model string, rawJSON []byte, stream bool) ([]byte, error) {
+	var req geminiRequestPayload
+	if err := sonic.Unmarshal(rawJSON, &req); err != nil {
+		return nil, err
+	}
+	conv, err := normalizeGeminiConversation(req)
+	if err != nil {
+		return nil, err
+	}
+	return encodeCodexRequest(model, conv, stream)
 }
 
 func convertGeminiResponseToCodexNonStream(_ context.Context, model string, _, _, rawJSON []byte) ([]byte, error) {
@@ -95,6 +112,26 @@ func convertGeminiResponseToCodexNonStream(_ context.Context, model string, _, _
 		out.Model = resp.ModelVersion
 	}
 	return sonic.Marshal(out)
+}
+
+func convertCodexResponseToGeminiNonStream(_ context.Context, model string, _, _, rawJSON []byte) ([]byte, error) {
+	var resp map[string]any
+	if err := sonic.Unmarshal(rawJSON, &resp); err != nil {
+		return nil, err
+	}
+	parts, err := geminiPartsFromCodexOutput(resp["output"])
+	if err != nil {
+		return nil, err
+	}
+	var promptTokens, candidateTokens, totalTokens int64
+	includeUsage := false
+	if usage := codexUsageFromMap(resp["usage"]); usage != nil {
+		promptTokens = usage.inputTokens
+		candidateTokens = usage.outputTokens
+		totalTokens = usage.totalTokens
+		includeUsage = true
+	}
+	return sonic.Marshal(buildGeminiPayloadFromParts(coalesceModel(model, resp["model"]), stringValue(resp["id"]), parts, "STOP", promptTokens, candidateTokens, totalTokens, includeUsage))
 }
 
 type codexStreamState struct {
@@ -184,4 +221,76 @@ func convertGeminiResponseToCodexStream(_ context.Context, model string, _, _, r
 		return nil, err
 	}
 	return [][]byte{append([]byte("event: response.output_text.delta\ndata: "), append(body, []byte("\n\n")...)...)}, nil
+}
+
+func convertCodexResponseToGeminiStream(_ context.Context, model string, _, _, rawJSON []byte, param *any) ([][]byte, error) {
+	if param == nil {
+		var local any
+		param = &local
+	}
+	if *param == nil {
+		*param = &codexToGeminiStreamState{model: model}
+	}
+	st := (*param).(*codexToGeminiStreamState)
+	if st.model == "" {
+		st.model = model
+	}
+
+	raw := strings.TrimSpace(string(rawJSON))
+	if raw == "" {
+		return nil, nil
+	}
+	eventType, line := parseSSEEventBlock(raw)
+	if line == "" {
+		return nil, nil
+	}
+
+	var payload map[string]any
+	if err := sonic.Unmarshal([]byte(line), &payload); err != nil {
+		return nil, err
+	}
+	if response, _ := payload["response"].(map[string]any); response != nil {
+		if responseID := stringValue(response["id"]); responseID != "" {
+			st.responseID = responseID
+		}
+		if responseModel := stringValue(response["model"]); responseModel != "" {
+			st.model = responseModel
+		}
+		if usage := codexUsageFromMap(response["usage"]); usage != nil && (eventType == "response.completed" || stringValue(payload["type"]) == "response.completed") {
+			body, err := marshalDataSSE(buildGeminiPayloadFromParts(st.model, st.responseID, nil, "STOP", usage.inputTokens, usage.outputTokens, usage.totalTokens, true))
+			if err != nil {
+				return nil, err
+			}
+			return [][]byte{body}, nil
+		}
+	}
+	if eventType == "response.output_text.delta" || stringValue(payload["type"]) == "response.output_text.delta" {
+		if content := stringValue(payload["delta"]); content != "" {
+			body, err := marshalDataSSE(buildGeminiPayload(st.model, content, "", 0, 0, 0, false))
+			if err != nil {
+				return nil, err
+			}
+			return [][]byte{body}, nil
+		}
+	}
+	if eventType == "response.output_item.done" || stringValue(payload["type"]) == "response.output_item.done" {
+		if item, _ := payload["item"].(map[string]any); item != nil && normalizeRole(stringValue(item["type"])) == "function_call" {
+			call, err := decodeCodexToolCall(item)
+			if err != nil {
+				return nil, err
+			}
+			args, err := rawJSONToAny(call.Arguments)
+			if err != nil {
+				return nil, err
+			}
+			body, err := marshalDataSSE(buildGeminiPayloadFromParts(st.model, "", []geminiPart{{
+				FunctionCall: &geminiFunctionCall{Name: call.Name, Args: args},
+			}}, "", 0, 0, 0, false))
+			if err != nil {
+				return nil, err
+			}
+			return [][]byte{body}, nil
+		}
+	}
+	return nil, nil
 }

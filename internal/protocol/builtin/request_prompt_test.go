@@ -3,6 +3,8 @@ package builtin
 import (
 	"encoding/json"
 	"testing"
+
+	"ccLoad/internal/protocol"
 )
 
 func TestNormalizeOpenAIConversation_StructuredContent(t *testing.T) {
@@ -119,6 +121,75 @@ func TestNormalizeCodexConversation_StructuredContent(t *testing.T) {
 	}
 }
 
+func TestNormalizeGeminiConversation_StructuredContent(t *testing.T) {
+	t.Parallel()
+
+	req := geminiRequestPayload{
+		SystemInstruction: &geminiSystemInstruction{
+			Parts: []geminiPart{{Text: "be careful"}},
+		},
+		Tools: []geminiTool{{
+			FunctionDeclarations: []geminiFunctionDeclaration{{
+				Name:        "search",
+				Description: "lookup",
+				Parameters:  map[string]any{"type": "object"},
+			}},
+		}},
+		ToolConfig: &geminiToolConfig{
+			FunctionCallingConfig: geminiFunctionCallingConfig{
+				Mode:                 "ANY",
+				AllowedFunctionNames: []string{"search"},
+			},
+		},
+		Contents: []geminiContent{
+			{
+				Role: "model",
+				Parts: []geminiPart{
+					{Text: "calling tool"},
+					{FunctionCall: &geminiFunctionCall{Name: "search", Args: map[string]any{"query": "go"}}},
+				},
+			},
+			{
+				Role: "user",
+				Parts: []geminiPart{
+					{Text: "hello"},
+					{FileData: &geminiFileData{MIMEType: "image/png", FileURI: "https://example.com/a.png"}},
+					{InlineData: &geminiInlineData{MIMEType: "application/pdf", Data: "cGRm"}},
+					{FunctionResponse: &geminiFunctionResponse{Name: "search", Response: map[string]any{"call_id": "call_1", "content": "done"}}},
+				},
+			},
+		},
+	}
+
+	conv, err := normalizeGeminiConversation(req)
+	if err != nil {
+		t.Fatalf("normalizeGeminiConversation failed: %v", err)
+	}
+	if len(conv.Turns) != 3 {
+		t.Fatalf("expected 3 turns, got %d", len(conv.Turns))
+	}
+	if len(conv.Tools) != 1 || conv.Tools[0].Name != "search" {
+		t.Fatalf("unexpected tools: %+v", conv.Tools)
+	}
+	if conv.ToolChoice.Mode != "named" || conv.ToolChoice.Name != "search" {
+		t.Fatalf("unexpected tool choice: %+v", conv.ToolChoice)
+	}
+	assistantParts := conv.Turns[1].Parts
+	if len(assistantParts) != 2 || assistantParts[1].Kind != partKindToolCall {
+		t.Fatalf("unexpected assistant parts: %+v", assistantParts)
+	}
+	if call := assistantParts[1].ToolCall; call == nil || call.ID != "call_1" {
+		t.Fatalf("expected matched tool call id call_1, got %+v", call)
+	}
+	userParts := conv.Turns[2].Parts
+	if len(userParts) != 4 || userParts[1].Kind != partKindImage || userParts[2].Kind != partKindFile || userParts[3].Kind != partKindToolResult {
+		t.Fatalf("unexpected user parts: %+v", userParts)
+	}
+	if toolResult := userParts[3].ToolResult; toolResult == nil || toolResult.CallID != "call_1" || toolResult.Name != "search" {
+		t.Fatalf("unexpected gemini tool result: %+v", toolResult)
+	}
+}
+
 func TestNormalizeConversation_RejectsUnknownBlockType(t *testing.T) {
 	t.Parallel()
 
@@ -131,5 +202,96 @@ func TestNormalizeConversation_RejectsUnknownBlockType(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected unsupported block error")
+	}
+}
+
+func TestNormalizeConversationCoverage_SupportedSources(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		protocol  protocol.Protocol
+		normalize func() (conversation, error)
+	}{
+		{
+			name:     "openai",
+			protocol: protocol.OpenAI,
+			normalize: func() (conversation, error) {
+				return normalizeOpenAIConversation(openAIChatRequest{
+					Model: "gpt-4o",
+					Messages: []openAIChatMessage{{
+						Role:    "user",
+						Content: "hello",
+					}},
+				})
+			},
+		},
+		{
+			name:     "anthropic",
+			protocol: protocol.Anthropic,
+			normalize: func() (conversation, error) {
+				return normalizeAnthropicConversation(anthropicMessagesRequest{
+					Model: "claude-3-5-sonnet",
+					Messages: []anthropicMessageContent{{
+						Role:    "user",
+						Content: []any{map[string]any{"type": "text", "text": "hello"}},
+					}},
+				})
+			},
+		},
+		{
+			name:     "codex",
+			protocol: protocol.Codex,
+			normalize: func() (conversation, error) {
+				return normalizeCodexConversation(codexRequest{
+					Model: "gpt-5-codex",
+					Input: []json.RawMessage{
+						json.RawMessage(`{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}`),
+					},
+				})
+			},
+		},
+	}
+
+	if len(cases) != 3 {
+		t.Fatalf("expected exactly three covered request-source normalizers, got %d", len(cases))
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			conv, err := tc.normalize()
+			if err != nil {
+				t.Fatalf("%s normalize failed: %v", tc.protocol, err)
+			}
+			if len(conv.Turns) != 1 {
+				t.Fatalf("%s normalize expected 1 turn, got %d", tc.protocol, len(conv.Turns))
+			}
+			if conv.Turns[0].Role != "user" {
+				t.Fatalf("%s normalize expected user role, got %s", tc.protocol, conv.Turns[0].Role)
+			}
+			if len(conv.Turns[0].Parts) != 1 || conv.Turns[0].Parts[0].Kind != partKindText || conv.Turns[0].Parts[0].Text != "hello" {
+				t.Fatalf("%s normalize expected one text part, got %+v", tc.protocol, conv.Turns[0].Parts)
+			}
+		})
+	}
+}
+
+func TestNormalizeConversationCoverage_GeminiSourceHasRequestTransforms(t *testing.T) {
+	t.Parallel()
+
+	if got := protocol.DetectRequestFamily("/v1beta/models/gemini-2.5-pro:generateContent"); got != protocol.RequestFamilyGenerateContent {
+		t.Fatalf("expected generate_content family for Gemini request, got %s", got)
+	}
+
+	for _, upstream := range []protocol.Protocol{protocol.OpenAI, protocol.Anthropic, protocol.Codex} {
+		if !protocol.SupportsTransform(protocol.Gemini, upstream) {
+			t.Fatalf("expected Gemini source to be supported for upstream %s", upstream)
+		}
+		if !protocol.SupportsTransformFamily(protocol.Gemini, upstream, protocol.RequestFamilyGenerateContent) {
+			t.Fatalf("expected Gemini generate_content source family to be supported for upstream %s", upstream)
+		}
 	}
 }
