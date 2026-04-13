@@ -11,6 +11,8 @@ type codexToAnthropicStreamState struct {
 	started    bool
 	blockIndex int
 	model      string
+	openBlock  bool
+	lastBlock  string
 	usage      struct {
 		inputTokens              int64
 		outputTokens             int64
@@ -374,6 +376,13 @@ func convertCodexResponseToAnthropicStream(_ context.Context, model string, _, _
 			outputs = append(outputs, msgStart)
 			st.started = true
 		}
+		if st.openBlock {
+			blockStop, err := codexAnthropicCloseOpenBlock(st)
+			if err != nil {
+				return nil, err
+			}
+			outputs = append(outputs, blockStop)
+		}
 
 		switch itemType {
 		case "reasoning":
@@ -399,6 +408,7 @@ func convertCodexResponseToAnthropicStream(_ context.Context, model string, _, _
 					return nil, err
 				}
 				outputs = append(outputs, blockStart, blockStop)
+				st.lastBlock = "redacted_thinking"
 				st.blockIndex++
 			} else {
 				// Extract summary text
@@ -445,6 +455,7 @@ func convertCodexResponseToAnthropicStream(_ context.Context, model string, _, _
 					return nil, err
 				}
 				outputs = append(outputs, blockStart, thinkingDelta, blockStop)
+				st.lastBlock = "thinking"
 				st.blockIndex++
 			}
 
@@ -489,18 +500,23 @@ func convertCodexResponseToAnthropicStream(_ context.Context, model string, _, _
 				return nil, err
 			}
 			outputs = append(outputs, blockStart, inputDelta, blockStop)
+			st.lastBlock = "tool_use"
 			st.blockIndex++
 		}
 		return outputs, nil
 	}
 	if eventType == "response.output_text.delta" || stringValue(payload["type"]) == "response.output_text.delta" {
 		if content := stringValue(payload["delta"]); content != "" {
-			outputs := make([][]byte, 0, 3)
+			outputs := make([][]byte, 0, 4)
 			if !st.started {
 				msgStart, err := codexAnthropicMessageStartChunk(st)
 				if err != nil {
 					return nil, err
 				}
+				outputs = append(outputs, msgStart)
+				st.started = true
+			}
+			if !st.openBlock {
 				textBlockStart, err := marshalEventSSE("content_block_start", map[string]any{
 					"type":  "content_block_start",
 					"index": st.blockIndex,
@@ -512,8 +528,9 @@ func convertCodexResponseToAnthropicStream(_ context.Context, model string, _, _
 				if err != nil {
 					return nil, err
 				}
-				outputs = append(outputs, msgStart, textBlockStart)
-				st.started = true
+				outputs = append(outputs, textBlockStart)
+				st.openBlock = true
+				st.lastBlock = "text"
 			}
 			deltaChunk, err := marshalEventSSE("content_block_delta", map[string]any{
 				"type":  "content_block_delta",
@@ -527,6 +544,7 @@ func convertCodexResponseToAnthropicStream(_ context.Context, model string, _, _
 				return nil, err
 			}
 			outputs = append(outputs, deltaChunk)
+			st.lastBlock = "text"
 			return outputs, nil
 		}
 	}
@@ -603,15 +621,16 @@ func codexAnthropicStopChunks(st *codexToAnthropicStreamState) ([][]byte, error)
 		}
 		outputs = append(outputs, start...)
 		st.started = true
+		st.openBlock = true
+		st.lastBlock = "text"
 	}
-	blockStop, err := marshalEventSSE("content_block_stop", map[string]any{
-		"type":  "content_block_stop",
-		"index": st.blockIndex,
-	})
-	if err != nil {
-		return nil, err
+	if st != nil && st.openBlock {
+		blockStop, err := codexAnthropicCloseOpenBlock(st)
+		if err != nil {
+			return nil, err
+		}
+		outputs = append(outputs, blockStop)
 	}
-	outputs = append(outputs, blockStop)
 	outputTokens := int64(0)
 	cacheReadTokens := int64(0)
 	cacheCreationTokens := int64(0)
@@ -637,7 +656,7 @@ func codexAnthropicStopChunks(st *codexToAnthropicStreamState) ([][]byte, error)
 	messageDelta, err := marshalEventSSE("message_delta", map[string]any{
 		"type": "message_delta",
 		"delta": map[string]any{
-			"stop_reason": "end_turn",
+			"stop_reason": codexAnthropicStopReason(st),
 		},
 		"usage": usage,
 	})
@@ -651,6 +670,28 @@ func codexAnthropicStopChunks(st *codexToAnthropicStreamState) ([][]byte, error)
 	outputs = append(outputs, messageDelta, messageStop)
 	if st != nil {
 		st.started = false
+		st.openBlock = false
+		st.lastBlock = ""
 	}
 	return outputs, nil
+}
+
+func codexAnthropicCloseOpenBlock(st *codexToAnthropicStreamState) ([]byte, error) {
+	blockStop, err := marshalEventSSE("content_block_stop", map[string]any{
+		"type":  "content_block_stop",
+		"index": st.blockIndex,
+	})
+	if err != nil {
+		return nil, err
+	}
+	st.openBlock = false
+	st.blockIndex++
+	return blockStop, nil
+}
+
+func codexAnthropicStopReason(st *codexToAnthropicStreamState) string {
+	if st != nil && st.lastBlock == "tool_use" {
+		return "tool_use"
+	}
+	return "end_turn"
 }

@@ -247,6 +247,54 @@ data: {"type":"response.completed","response":{"id":"resp_1","model":"claude-3-5
 	}
 }
 
+func TestRegistry_Stream_CodexToAnthropic_TextThenFunctionCall(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	chunks := []string{
+		`event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"thinking..."}
+
+`,
+		`event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_fc1","name":"calculator","arguments":"{\"expr\":\"1+2\"}"}}
+
+`,
+		`event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_1","model":"claude-3-5-sonnet","usage":{"input_tokens":3,"output_tokens":5,"total_tokens":8}}}
+
+`,
+	}
+
+	var state any
+	var outputs [][]byte
+	for _, chunk := range chunks {
+		out, err := reg.TranslateResponseStream(context.Background(), protocol.Codex, protocol.Anthropic, "claude-3-5-sonnet", nil, nil, []byte(chunk), &state)
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
+		outputs = append(outputs, out...)
+	}
+
+	result := string(bytes.Join(outputs, nil))
+	if strings.Count(result, `event: content_block_start`) != 2 {
+		t.Fatalf("expected separate text/tool content blocks, got:\n%s", result)
+	}
+	if !strings.Contains(result, `event: content_block_start`) || !strings.Contains(result, `"index":0`) || !strings.Contains(result, `"type":"text"`) {
+		t.Fatalf("expected text block at index 0, got:\n%s", result)
+	}
+	if !strings.Contains(result, `"index":1`) || !strings.Contains(result, `"type":"tool_use"`) || !strings.Contains(result, `"id":"call_fc1"`) || !strings.Contains(result, `"name":"calculator"`) {
+		t.Fatalf("expected tool block at index 1, got:\n%s", result)
+	}
+	if strings.Count(result, `event: content_block_stop`) != 2 {
+		t.Fatalf("expected exactly two content_block_stop events, got:\n%s", result)
+	}
+	if !strings.Contains(result, `"stop_reason":"tool_use"`) {
+		t.Fatalf("expected stop_reason=tool_use when final block is tool_use, got:\n%s", result)
+	}
+}
+
 // TestRegistry_Stream_CodexToAnthropic_Reasoning 验证 Codex stream reasoning（有 summary text）
 // 转成 Anthropic thinking 块（content_block_start + thinking_delta + content_block_stop）。
 func TestRegistry_Stream_CodexToAnthropic_Reasoning(t *testing.T) {
