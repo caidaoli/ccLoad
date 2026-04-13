@@ -121,6 +121,51 @@ func TestRegistry_TranslateResponseNonStream_AnthropicStructuredOutbound(t *test
 	})
 }
 
+func TestRegistry_TranslateResponseNonStream_OpenAIStructuredOutboundToGemini(t *testing.T) {
+	t.Parallel()
+
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	rawResp := []byte(`{"id":"chatcmpl_1","object":"chat.completion","created":0,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"query\":\"go\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`)
+
+	got, err := reg.TranslateResponseNonStream(context.Background(), protocol.OpenAI, protocol.Gemini, "gemini-2.5-pro", nil, nil, rawResp)
+	if err != nil {
+		t.Fatalf("TranslateResponseNonStream failed: %v", err)
+	}
+	body := string(got)
+	if !strings.Contains(body, `"functionCall"`) || !strings.Contains(body, `"name":"lookup"`) || !strings.Contains(body, `"query":"go"`) || !strings.Contains(body, `"finishReason":"STOP"`) {
+		t.Fatalf("unexpected Gemini response: %s", got)
+	}
+}
+
+func TestRegistry_TranslateResponseStream_OpenAIStructuredOutboundToGemini(t *testing.T) {
+	t.Parallel()
+
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	chunks := []string{
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"query\":\"go\"}"}}]}}]}` + "\n\n",
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}` + "\n\n",
+	}
+
+	var state any
+	var outputs [][]byte
+	for _, chunk := range chunks {
+		out, err := reg.TranslateResponseStream(context.Background(), protocol.OpenAI, protocol.Gemini, "gemini-2.5-pro", nil, nil, []byte(chunk), &state)
+		if err != nil {
+			t.Fatalf("TranslateResponseStream failed: %v", err)
+		}
+		outputs = append(outputs, out...)
+	}
+
+	joined := string(bytes.Join(outputs, nil))
+	if !strings.Contains(joined, `"functionCall"`) || !strings.Contains(joined, `"name":"lookup"`) || !strings.Contains(joined, `"query":"go"`) || !strings.Contains(joined, `"finishReason":"STOP"`) || !strings.Contains(joined, `"promptTokenCount":3`) {
+		t.Fatalf("unexpected Gemini stream output: %s", joined)
+	}
+}
+
 func TestRegistry_TranslateResponseStream_AnthropicStructuredOutbound(t *testing.T) {
 	t.Parallel()
 

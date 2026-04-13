@@ -41,6 +41,7 @@ type codexToOpenAIStreamState struct {
 		reasoningTokens          int64
 		seen                     bool
 	}
+	toolCallIndex int
 }
 
 func convertOpenAIRequestToCodex(model string, rawJSON []byte, stream bool) ([]byte, error) {
@@ -105,6 +106,12 @@ func convertCodexResponseToOpenAINonStream(_ context.Context, model string, _, _
 	if err != nil {
 		return nil, err
 	}
+	finishReason := "stop"
+	if rawToolCalls, ok := message["tool_calls"].([]map[string]any); ok && len(rawToolCalls) > 0 {
+		finishReason = "tool_calls"
+	} else if rawToolCalls, ok := message["tool_calls"].([]any); ok && len(rawToolCalls) > 0 {
+		finishReason = "tool_calls"
+	}
 	out := map[string]any{
 		"id":      "chatcmpl-proxy",
 		"object":  "chat.completion",
@@ -113,7 +120,7 @@ func convertCodexResponseToOpenAINonStream(_ context.Context, model string, _, _
 		"choices": []map[string]any{{
 			"index":         0,
 			"message":       message,
-			"finish_reason": "stop",
+			"finish_reason": finishReason,
 		}},
 	}
 	if usage := codexUsageFromMap(resp["usage"]); usage != nil {
@@ -371,17 +378,14 @@ func convertCodexResponseToOpenAIStream(_ context.Context, model string, _, _, r
 		switch {
 		case itemType == "function_call":
 			// Codex function_call -> OpenAI tool_calls chunk
-			callID := stringValue(item["call_id"])
-			name := stringValue(item["name"])
+			call, err := decodeCodexToolCall(item)
+			if err != nil {
+				return nil, err
+			}
 			// arguments 可能是 string 或 object，统一序列化为字符串
-			var argsStr string
-			switch v := item["arguments"].(type) {
-			case string:
-				argsStr = v
-			default:
-				if b, err := sonic.Marshal(v); err == nil {
-					argsStr = string(b)
-				}
+			argsStr := "{}"
+			if len(call.Arguments) > 0 {
+				argsStr = string(call.Arguments)
 			}
 			chunk := map[string]any{
 				"id":      "chatcmpl-proxy",
@@ -392,11 +396,11 @@ func convertCodexResponseToOpenAIStream(_ context.Context, model string, _, _, r
 					"index": 0,
 					"delta": map[string]any{
 						"tool_calls": []map[string]any{{
-							"index": 0,
-							"id":    callID,
+							"index": st.toolCallIndex,
+							"id":    call.ID,
 							"type":  "function",
 							"function": map[string]any{
-								"name":      name,
+								"name":      call.Name,
 								"arguments": argsStr,
 							},
 						}},
@@ -408,6 +412,7 @@ func convertCodexResponseToOpenAIStream(_ context.Context, model string, _, _, r
 			if err != nil {
 				return nil, err
 			}
+			st.toolCallIndex++
 			return [][]byte{append([]byte("data: "), append(body, []byte("\n\n")...)...)}, nil
 		case normalizeRole(itemType) == "reasoning":
 			text := extractCodexReasoningText(item)

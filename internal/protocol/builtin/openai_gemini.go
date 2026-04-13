@@ -192,12 +192,16 @@ func convertOpenAIResponseToGeminiNonStream(_ context.Context, model string, _, 
 	}
 
 	responseModel := coalesceModel(model, resp["model"])
-	content := ""
 	finishReason := "STOP"
+	parts := []geminiPart{}
 	if choices, _ := resp["choices"].([]any); len(choices) > 0 {
 		if choice, _ := choices[0].(map[string]any); choice != nil {
 			if message, _ := choice["message"].(map[string]any); message != nil {
-				content = stringValue(message["content"])
+				var err error
+				parts, err = geminiPartsFromOpenAIMessage(message["content"], message["tool_calls"])
+				if err != nil {
+					return nil, err
+				}
 			}
 			finishReason = mapOpenAIFinishReasonToGemini(stringValue(choice["finish_reason"]))
 			if finishReason == "" {
@@ -213,7 +217,7 @@ func convertOpenAIResponseToGeminiNonStream(_ context.Context, model string, _, 
 		completionTokens = usage.completionTokens
 		totalTokens = usage.totalTokens
 	}
-	return sonic.Marshal(buildGeminiPayload(responseModel, content, finishReason, promptTokens, completionTokens, totalTokens, includeUsage))
+	return sonic.Marshal(buildGeminiPayloadFromParts(responseModel, "", parts, finishReason, promptTokens, completionTokens, totalTokens, includeUsage))
 }
 
 func convertGeminiResponseToOpenAIStream(_ context.Context, model string, _, _, rawJSON []byte, param *any) ([][]byte, error) {
@@ -351,7 +355,7 @@ func convertOpenAIResponseToGeminiStream(_ context.Context, model string, _, _, 
 	if err := sonic.Unmarshal([]byte(line), &chunk); err != nil {
 		return nil, err
 	}
-	if chunkModel := stringValue(chunk["model"]); chunkModel != "" {
+	if chunkModel := stringValue(chunk["model"]); chunkModel != "" && st.model == "" {
 		st.model = chunkModel
 	}
 	if usage := openAIUsageFromMap(chunk["usage"]); usage != nil {
@@ -379,8 +383,12 @@ func convertOpenAIResponseToGeminiStream(_ context.Context, model string, _, _, 
 
 	outputs := make([][]byte, 0, 2)
 	if delta, _ := choice["delta"].(map[string]any); delta != nil {
-		if content := stringValue(delta["content"]); content != "" {
-			body, err := marshalDataSSE(buildGeminiPayload(st.model, content, "", 0, 0, 0, false))
+		parts, err := geminiPartsFromOpenAIMessage(delta["content"], delta["tool_calls"])
+		if err != nil {
+			return nil, err
+		}
+		if len(parts) > 0 {
+			body, err := marshalDataSSE(buildGeminiPayloadFromParts(st.model, "", parts, "", 0, 0, 0, false))
 			if err != nil {
 				return nil, err
 			}

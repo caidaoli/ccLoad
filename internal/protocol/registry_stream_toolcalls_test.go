@@ -105,6 +105,43 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","call_i
 	}
 }
 
+func TestRegistry_Stream_CodexToOpenAI_FunctionCallIndices(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	chunks := []string{
+		`event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{\"q\":\"one\"}"}}
+
+`,
+		`event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_2","name":"search","arguments":"{\"q\":\"two\"}"}}
+
+`,
+	}
+
+	var state any
+	var outputs [][]byte
+	for _, chunk := range chunks {
+		out, err := reg.TranslateResponseStream(context.Background(), protocol.Codex, protocol.OpenAI, "gpt-4o", nil, nil, []byte(chunk), &state)
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
+		outputs = append(outputs, out...)
+	}
+
+	if len(outputs) != 2 {
+		t.Fatalf("expected 2 output chunks, got %d", len(outputs))
+	}
+	if !strings.Contains(string(outputs[0]), `"index":0`) {
+		t.Fatalf("expected first tool call index 0, got:\n%s", outputs[0])
+	}
+	if !strings.Contains(string(outputs[1]), `"index":1`) {
+		t.Fatalf("expected second tool call index 1, got:\n%s", outputs[1])
+	}
+}
+
 // TestRegistry_Stream_CodexToAnthropic_FunctionCall 验证 Codex stream function_call
 // 转成 Anthropic content_block_start(type=tool_use) + input_json_delta + content_block_stop。
 func TestRegistry_Stream_CodexToAnthropic_FunctionCall(t *testing.T) {
@@ -147,6 +184,66 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","id":"t
 	}
 	if !strings.Contains(result, `event: content_block_stop`) {
 		t.Fatalf("expected content_block_stop, got:\n%s", result)
+	}
+}
+
+func TestRegistry_Stream_CodexToAnthropic_FunctionCallUsesCallID(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	codexChunk := `event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_fc1","name":"calculator","arguments":"{\"expr\":\"1+2\"}"}}
+
+`
+
+	var state any
+	out, err := reg.TranslateResponseStream(context.Background(), protocol.Codex, protocol.Anthropic, "claude-3-5-sonnet", nil, nil, []byte(codexChunk), &state)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	if len(out) == 0 {
+		t.Fatalf("expected output chunks, got none")
+	}
+
+	result := string(bytes.Join(out, nil))
+	if !strings.Contains(result, `"id":"call_fc1"`) {
+		t.Fatalf("expected tool_use id to preserve call_id, got:\n%s", result)
+	}
+}
+
+func TestRegistry_Stream_CodexToAnthropic_FunctionCallCompletion(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	chunks := []string{
+		`event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_fc1","name":"calculator","arguments":"{\"expr\":\"1+2\"}"}}
+
+`,
+		`event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_1","model":"claude-3-5-sonnet","usage":{"input_tokens":3,"output_tokens":5,"total_tokens":8}}}
+
+`,
+	}
+
+	var state any
+	var outputs [][]byte
+	for _, chunk := range chunks {
+		out, err := reg.TranslateResponseStream(context.Background(), protocol.Codex, protocol.Anthropic, "claude-3-5-sonnet", nil, nil, []byte(chunk), &state)
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
+		outputs = append(outputs, out...)
+	}
+
+	result := string(bytes.Join(outputs, nil))
+	if strings.Count(result, `event: content_block_stop`) != 1 {
+		t.Fatalf("expected exactly one content_block_stop for tool-only response, got:\n%s", result)
+	}
+	if !strings.Contains(result, `"stop_reason":"tool_use"`) {
+		t.Fatalf("expected stop_reason=tool_use for tool-only response, got:\n%s", result)
 	}
 }
 

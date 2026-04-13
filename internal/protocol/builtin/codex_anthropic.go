@@ -449,21 +449,21 @@ func convertCodexResponseToAnthropicStream(_ context.Context, model string, _, _
 			}
 
 		case "function_call":
-			toolID := stringValue(item["id"])
-			toolName := stringValue(item["name"])
-			arguments := stringValue(item["arguments"])
-			partialJSON := arguments
-			// Normalize: arguments may already be a JSON string; pass as-is
-			if partialJSON == "" {
-				partialJSON = "{}"
+			call, err := decodeCodexToolCall(item)
+			if err != nil {
+				return nil, err
+			}
+			partialJSON := "{}"
+			if len(call.Arguments) > 0 {
+				partialJSON = string(call.Arguments)
 			}
 			blockStart, err := marshalEventSSE("content_block_start", map[string]any{
 				"type":  "content_block_start",
 				"index": st.blockIndex,
 				"content_block": map[string]any{
 					"type":  "tool_use",
-					"id":    toolID,
-					"name":  toolName,
+					"id":    call.ID,
+					"name":  call.Name,
 					"input": map[string]any{},
 				},
 			})
