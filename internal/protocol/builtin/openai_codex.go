@@ -8,6 +8,12 @@ import (
 	"github.com/bytedance/sonic"
 )
 
+type pendingToolCall struct {
+	id        string
+	name      string
+	arguments string
+}
+
 type openAIToCodexStreamState struct {
 	model string
 	usage struct {
@@ -21,6 +27,7 @@ type openAIToCodexStreamState struct {
 	}
 	reasoningText      string
 	reasoningEncrypted string
+	toolCalls          map[int]*pendingToolCall
 }
 
 type codexToOpenAIStreamState struct {
@@ -135,15 +142,36 @@ func convertOpenAIResponseToCodexStream(_ context.Context, model string, _, _, r
 	if line == "" {
 		return nil, nil
 	}
-	if strings.HasPrefix(line, "data:") {
-		line = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	if after, ok := strings.CutPrefix(line, "data:"); ok {
+		line = strings.TrimSpace(after)
 	}
 	if line == "[DONE]" {
-		chunks := make([][]byte, 0, 2)
+		chunks := make([][]byte, 0, 4)
 		if st.reasoningText != "" || st.reasoningEncrypted != "" {
 			item := map[string]any{
 				"type": "response.output_item.done",
 				"item": codexReasoningItem(st.reasoningText, st.reasoningEncrypted),
+			}
+			body, err := sonic.Marshal(item)
+			if err != nil {
+				return nil, err
+			}
+			chunks = append(chunks, append([]byte("event: response.output_item.done\ndata: "), append(body, []byte("\n\n")...)...))
+		}
+		// 按 index 顺序发出所有累积的 function_call 事件
+		for idx := 0; ; idx++ {
+			tc, ok := st.toolCalls[idx]
+			if !ok {
+				break
+			}
+			item := map[string]any{
+				"type": "response.output_item.done",
+				"item": map[string]any{
+					"type":      "function_call",
+					"call_id":   tc.id,
+					"name":      tc.name,
+					"arguments": tc.arguments,
+				},
 			}
 			body, err := sonic.Marshal(item)
 			if err != nil {
@@ -206,6 +234,35 @@ func convertOpenAIResponseToCodexStream(_ context.Context, model string, _, _, r
 	if reasoning, _ := delta["reasoning"].(map[string]any); reasoning != nil {
 		if encrypted := stringValue(reasoning["encrypted_content"]); encrypted != "" {
 			st.reasoningEncrypted = encrypted
+		}
+		return nil, nil
+	}
+	// 累积增量 tool_calls（按 index 合并 id/name/arguments）
+	if rawCalls, ok := delta["tool_calls"].([]any); ok && len(rawCalls) > 0 {
+		if st.toolCalls == nil {
+			st.toolCalls = make(map[int]*pendingToolCall)
+		}
+		for _, raw := range rawCalls {
+			tc, _ := raw.(map[string]any)
+			if tc == nil {
+				continue
+			}
+			idx := int(int64Value(tc["index"]))
+			if _, exists := st.toolCalls[idx]; !exists {
+				st.toolCalls[idx] = &pendingToolCall{}
+			}
+			p := st.toolCalls[idx]
+			if id := stringValue(tc["id"]); id != "" {
+				p.id = id
+			}
+			if fn, ok := tc["function"].(map[string]any); ok {
+				if name := stringValue(fn["name"]); name != "" {
+					p.name = name
+				}
+				if args := stringValue(fn["arguments"]); args != "" {
+					p.arguments += args
+				}
+			}
 		}
 		return nil, nil
 	}
@@ -310,28 +367,71 @@ func convertCodexResponseToOpenAIStream(_ context.Context, model string, _, _, r
 	}
 	if eventType == "response.output_item.done" || stringValue(payload["type"]) == "response.output_item.done" {
 		item, _ := payload["item"].(map[string]any)
-		if normalizeRole(stringValue(item["type"])) != "reasoning" {
+		itemType := stringValue(item["type"])
+		switch {
+		case itemType == "function_call":
+			// Codex function_call -> OpenAI tool_calls chunk
+			callID := stringValue(item["call_id"])
+			name := stringValue(item["name"])
+			// arguments 可能是 string 或 object，统一序列化为字符串
+			var argsStr string
+			switch v := item["arguments"].(type) {
+			case string:
+				argsStr = v
+			default:
+				if b, err := sonic.Marshal(v); err == nil {
+					argsStr = string(b)
+				}
+			}
+			chunk := map[string]any{
+				"id":      "chatcmpl-proxy",
+				"object":  "chat.completion.chunk",
+				"created": 0,
+				"model":   st.model,
+				"choices": []map[string]any{{
+					"index": 0,
+					"delta": map[string]any{
+						"tool_calls": []map[string]any{{
+							"index": 0,
+							"id":    callID,
+							"type":  "function",
+							"function": map[string]any{
+								"name":      name,
+								"arguments": argsStr,
+							},
+						}},
+					},
+					"finish_reason": nil,
+				}},
+			}
+			body, err := sonic.Marshal(chunk)
+			if err != nil {
+				return nil, err
+			}
+			return [][]byte{append([]byte("data: "), append(body, []byte("\n\n")...)...)}, nil
+		case normalizeRole(itemType) == "reasoning":
+			text := extractCodexReasoningText(item)
+			if text == "" {
+				return nil, nil
+			}
+			chunk := map[string]any{
+				"id":      "chatcmpl-proxy",
+				"object":  "chat.completion.chunk",
+				"created": 0,
+				"model":   st.model,
+				"choices": []map[string]any{{
+					"index": 0,
+					"delta": map[string]any{"reasoning_content": text},
+				}},
+			}
+			body, err := sonic.Marshal(chunk)
+			if err != nil {
+				return nil, err
+			}
+			return [][]byte{append([]byte("data: "), append(body, []byte("\n\n")...)...)}, nil
+		default:
 			return nil, nil
 		}
-		text := extractCodexReasoningText(item)
-		if text == "" {
-			return nil, nil
-		}
-		chunk := map[string]any{
-			"id":      "chatcmpl-proxy",
-			"object":  "chat.completion.chunk",
-			"created": 0,
-			"model":   st.model,
-			"choices": []map[string]any{{
-				"index": 0,
-				"delta": map[string]any{"reasoning_content": text},
-			}},
-		}
-		body, err := sonic.Marshal(chunk)
-		if err != nil {
-			return nil, err
-		}
-		return [][]byte{append([]byte("data: "), append(body, []byte("\n\n")...)...)}, nil
 	}
 	return nil, nil
 }
