@@ -66,3 +66,4 @@ docs/*
 !/claude.md
 .omx
 .omc
+.omx/
