@@ -523,6 +523,38 @@ func decodeObjectSlice(value any) ([]map[string]any, error) {
 	return items, nil
 }
 
+func decodeOpenAIToolCalls(value any) ([]openAIChatToolCall, error) {
+	if value == nil {
+		return nil, nil
+	}
+	body, err := sonic.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var calls []openAIChatToolCall
+	if err := sonic.Unmarshal(body, &calls); err != nil {
+		return nil, err
+	}
+	return calls, nil
+}
+
+func geminiPartsFromOpenAIMessage(content any, rawToolCalls any) ([]geminiPart, error) {
+	parts, err := extractOpenAIContentParts(content)
+	if err != nil {
+		return nil, err
+	}
+	toolCalls, err := decodeOpenAIToolCalls(rawToolCalls)
+	if err != nil {
+		return nil, err
+	}
+	toolParts, err := extractOpenAIToolCallParts(toolCalls)
+	if err != nil {
+		return nil, err
+	}
+	parts = append(parts, toolParts...)
+	return geminiPartsFromConversationParts(parts)
+}
+
 func geminiPartsFromAnthropicContent(value any) ([]geminiPart, error) {
 	blocks, err := decodeObjectSlice(value)
 	if err != nil {
