@@ -238,8 +238,8 @@ func isClientDisconnectError(err error) bool {
 }
 
 // buildStreamDiagnostics 生成流诊断消息
-// 触发条件：流传输错误且未检测到流结束标志（[DONE]/message_stop）
-// streamComplete: 是否检测到流结束标志（比 hasUsage 更可靠，因为不是所有请求都有 usage）
+// 触发条件：流传输错误且未检测到流完成语义（原始结束标志或已转译终态）
+// streamComplete: 是否已确认流完成（比 hasUsage 更可靠，因为不是所有请求都有 usage）
 func buildStreamDiagnostics(streamErr error, readStats *streamReadStats, streamComplete bool, channelType string, contentType string) string {
 	if readStats == nil {
 		return ""
@@ -249,9 +249,9 @@ func buildStreamDiagnostics(streamErr error, readStats *streamReadStats, streamC
 	readCount := readStats.readCount
 
 	// 流传输异常中断(排除客户端主动断开)
-	// 关键：如果检测到流结束标志（[DONE]/message_stop），说明流已完整传输
+	// 关键：如果检测到流完成语义，说明流已完整传输
 	if streamErr != nil && !isClientDisconnectError(streamErr) {
-		// 已检测到流结束标志 = 流完整，http2关闭只是正常结束信号
+		// 已检测到流完成语义 = 流完整，http2关闭只是正常结束信号
 		if streamComplete {
 			return "" // 不触发冷却，数据已完整
 		}
@@ -260,6 +260,101 @@ func buildStreamDiagnostics(streamErr error, readStats *streamReadStats, streamC
 	}
 
 	return ""
+}
+
+func translatedStreamChunksComplete(clientProtocol protocol.Protocol, chunks [][]byte) bool {
+	for _, chunk := range chunks {
+		if translatedStreamChunkCompletes(clientProtocol, chunk) {
+			return true
+		}
+	}
+	return false
+}
+
+func translatedStreamChunkCompletes(clientProtocol protocol.Protocol, chunk []byte) bool {
+	eventType, data := parseSSEEventChunk(chunk)
+	if data == "" && eventType == "" {
+		return false
+	}
+
+	switch clientProtocol {
+	case protocol.Anthropic:
+		return eventType == "message_stop" || ssePayloadType(data) == "message_stop"
+	case protocol.Codex:
+		return eventType == "response.completed" || ssePayloadType(data) == "response.completed"
+	case protocol.OpenAI:
+		if data == "[DONE]" {
+			return true
+		}
+		payload, ok := decodeSSEPayload(data)
+		if !ok {
+			return false
+		}
+		choices, _ := payload["choices"].([]any)
+		if len(choices) == 0 {
+			return false
+		}
+		choice, _ := choices[0].(map[string]any)
+		if choice == nil {
+			return false
+		}
+		finishReason, hasFinishReason := choice["finish_reason"]
+		return hasFinishReason && finishReason != nil
+	case protocol.Gemini:
+		payload, ok := decodeSSEPayload(data)
+		if !ok {
+			return false
+		}
+		candidates, _ := payload["candidates"].([]any)
+		if len(candidates) == 0 {
+			return false
+		}
+		candidate, _ := candidates[0].(map[string]any)
+		if candidate == nil {
+			return false
+		}
+		finishReason, _ := candidate["finishReason"].(string)
+		return strings.TrimSpace(finishReason) != ""
+	default:
+		return false
+	}
+}
+
+func parseSSEEventChunk(chunk []byte) (eventType string, data string) {
+	lines := strings.Split(strings.TrimSpace(string(chunk)), "\n")
+	dataLines := make([]string, 0, 1)
+	for _, line := range lines {
+		line = strings.TrimRight(line, "\r")
+		if after, ok := strings.CutPrefix(line, "event:"); ok {
+			eventType = strings.TrimSpace(after)
+			continue
+		}
+		if after, ok := strings.CutPrefix(line, "data:"); ok {
+			dataLines = append(dataLines, strings.TrimSpace(after))
+		}
+	}
+	return eventType, strings.Join(dataLines, "")
+}
+
+func ssePayloadType(data string) string {
+	payload, ok := decodeSSEPayload(data)
+	if !ok {
+		return ""
+	}
+	typ, _ := payload["type"].(string)
+	return typ
+}
+
+func decodeSSEPayload(data string) (map[string]any, bool) {
+	if data == "" || data == "[DONE]" {
+		return nil, false
+	}
+
+	var payload map[string]any
+	if err := sonic.Unmarshal([]byte(data), &payload); err != nil {
+		return nil, false
+	}
+	return payload, true
 }
 
 // handleSuccessResponse 处理成功响应（流式传输）
@@ -477,6 +572,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	deferredWriter.WriteHeader(resp.StatusCode)
 
 	parser := newSSEUsageParser(channelType)
+	var translatedComplete bool
 	var state any
 	streamErr := streamTransformSSEEvents(
 		reqCtx.ctx,
@@ -495,7 +591,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 			return nil
 		},
 		func(rawEvent []byte) ([][]byte, error) {
-			return s.protocolRegistry.TranslateResponseStream(
+			chunks, err := s.protocolRegistry.TranslateResponseStream(
 				reqCtx.ctx,
 				reqCtx.transformPlan.UpstreamProtocol,
 				reqCtx.transformPlan.ClientProtocol,
@@ -505,6 +601,13 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 				rawEvent,
 				&state,
 			)
+			if err != nil {
+				return nil, err
+			}
+			if !translatedComplete && translatedStreamChunksComplete(reqCtx.transformPlan.ClientProtocol, chunks) {
+				translatedComplete = true
+			}
+			return chunks, nil
 		},
 	)
 
@@ -527,7 +630,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	result.Cache1hInputTokens = parser.Cache1hInputTokens
 	result.ServiceTier = parser.ServiceTier
 	result.SSEErrorEvent = parser.GetLastError()
-	streamComplete := parser.IsStreamComplete()
+	streamComplete := parser.IsStreamComplete() || translatedComplete
 
 	if diagMsg := buildStreamDiagnostics(streamErr, readStats, streamComplete, channelType, resp.Header.Get("Content-Type")); diagMsg != "" {
 		result.StreamDiagMsg = diagMsg
