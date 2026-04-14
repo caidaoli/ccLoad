@@ -1384,6 +1384,148 @@ func TestRegistry_SameProtocolNoOp(t *testing.T) {
 	}
 }
 
+func TestRegistry_TranslateRequest_OpenAIToAnthropic_ToolCalls(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	// OpenAI assistant 消息含 tool_calls，后跟 tool role 消息
+	req := `{
+		"model": "claude-3-5-sonnet",
+		"messages": [
+			{"role": "user", "content": "what is weather in Beijing?"},
+			{"role": "assistant", "content": null, "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"Beijing\"}"}}]},
+			{"role": "tool", "tool_call_id": "call_1", "content": "sunny, 25C"}
+		]
+	}`
+
+	out, err := reg.TranslateRequest(protocol.OpenAI, protocol.Anthropic, "claude-3-5-sonnet", []byte(req), false)
+	if err != nil {
+		t.Fatalf("TranslateRequest failed: %v", err)
+	}
+	result := string(out)
+	// assistant tool_calls → Anthropic tool_use block
+	if !strings.Contains(result, `"type":"tool_use"`) {
+		t.Fatalf("expected type=tool_use in anthropic request, got:\n%s", result)
+	}
+	if !strings.Contains(result, `"name":"get_weather"`) {
+		t.Fatalf("expected tool name get_weather, got:\n%s", result)
+	}
+	// tool role → Anthropic tool_result block
+	if !strings.Contains(result, `"type":"tool_result"`) {
+		t.Fatalf("expected type=tool_result in anthropic request, got:\n%s", result)
+	}
+	if !strings.Contains(result, `"tool_use_id":"call_1"`) {
+		t.Fatalf("expected tool_use_id=call_1, got:\n%s", result)
+	}
+}
+
+func TestRegistry_TranslateRequest_AnthropicToOpenAI_ToolCalls(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	// Anthropic 请求含 tool_use block + tool_result block
+	req := `{
+		"model": "gpt-4o",
+		"messages": [
+			{"role": "user", "content": [{"type": "text", "text": "search for cats"}]},
+			{"role": "assistant", "content": [{"type": "tool_use", "id": "tu_1", "name": "search", "input": {"query": "cats"}}]},
+			{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu_1", "content": "many cats found"}]}
+		]
+	}`
+
+	out, err := reg.TranslateRequest(protocol.Anthropic, protocol.OpenAI, "gpt-4o", []byte(req), false)
+	if err != nil {
+		t.Fatalf("TranslateRequest failed: %v", err)
+	}
+	result := string(out)
+	// tool_use → OpenAI tool_calls
+	if !strings.Contains(result, `"tool_calls"`) {
+		t.Fatalf("expected tool_calls in openai request, got:\n%s", result)
+	}
+	if !strings.Contains(result, `"name":"search"`) {
+		t.Fatalf("expected tool name search, got:\n%s", result)
+	}
+	// tool_result → OpenAI role=tool
+	if !strings.Contains(result, `"role":"tool"`) {
+		t.Fatalf("expected role=tool, got:\n%s", result)
+	}
+	if !strings.Contains(result, `"tool_call_id":"tu_1"`) {
+		t.Fatalf("expected tool_call_id=tu_1, got:\n%s", result)
+	}
+}
+
+func TestRegistry_TranslateResponseNonStream_OpenAIToAnthropic_ToolCalls(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	resp := `{
+		"id": "chatcmpl-tc1",
+		"object": "chat.completion",
+		"model": "gpt-4o",
+		"choices": [{
+			"index": 0,
+			"message": {
+				"role": "assistant",
+				"content": null,
+				"tool_calls": [{"id": "call_2", "type": "function", "function": {"name": "lookup", "arguments": "{\"key\":\"val\"}"}}]
+			},
+			"finish_reason": "tool_calls"
+		}],
+		"usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+	}`
+
+	out, err := reg.TranslateResponseNonStream(context.Background(), protocol.OpenAI, protocol.Anthropic, "claude-3-5-sonnet", nil, nil, []byte(resp))
+	if err != nil {
+		t.Fatalf("TranslateResponseNonStream failed: %v", err)
+	}
+	result := string(out)
+	if !strings.Contains(result, `"type":"tool_use"`) {
+		t.Fatalf("expected type=tool_use, got:\n%s", result)
+	}
+	if !strings.Contains(result, `"name":"lookup"`) {
+		t.Fatalf("expected name=lookup, got:\n%s", result)
+	}
+	if !strings.Contains(result, `"stop_reason":"tool_use"`) {
+		t.Fatalf("expected stop_reason=tool_use, got:\n%s", result)
+	}
+}
+
+func TestRegistry_TranslateResponseNonStream_AnthropicToOpenAI_ToolCalls(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	resp := `{
+		"id": "msg_tc1",
+		"type": "message",
+		"role": "assistant",
+		"model": "claude-3-5-sonnet",
+		"content": [
+			{"type": "tool_use", "id": "tu_2", "name": "calculate", "input": {"expr": "1+1"}}
+		],
+		"stop_reason": "tool_use",
+		"usage": {"input_tokens": 8, "output_tokens": 4}
+	}`
+
+	out, err := reg.TranslateResponseNonStream(context.Background(), protocol.Anthropic, protocol.OpenAI, "gpt-4o", nil, nil, []byte(resp))
+	if err != nil {
+		t.Fatalf("TranslateResponseNonStream failed: %v", err)
+	}
+	result := string(out)
+	if !strings.Contains(result, `"tool_calls"`) {
+		t.Fatalf("expected tool_calls, got:\n%s", result)
+	}
+	if !strings.Contains(result, `"name":"calculate"`) {
+		t.Fatalf("expected name=calculate, got:\n%s", result)
+	}
+	if !strings.Contains(result, `"finish_reason":"tool_calls"`) {
+		t.Fatalf("expected finish_reason=tool_calls, got:\n%s", result)
+	}
+}
+
 func TestSupportedClientProtocolsForUpstream_BidirectionalMatrix(t *testing.T) {
 	tests := []struct {
 		upstream protocol.Protocol
