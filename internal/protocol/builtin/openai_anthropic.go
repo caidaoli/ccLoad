@@ -16,6 +16,7 @@ type openAIAnthropicPendingTool struct {
 
 type openAIToAnthropicStreamState struct {
 	started          bool
+	done             bool
 	messageStartSent bool
 	textBlockStarted bool
 	model            string
@@ -489,6 +490,9 @@ func convertOpenAIResponseToAnthropicStream(_ context.Context, model string, _, 
 		line = strings.TrimSpace(after)
 	}
 	if line == "[DONE]" {
+		if st.done {
+			return nil, nil
+		}
 		return openAIAnthropicStopChunks(st, "end_turn")
 	}
 
@@ -510,6 +514,9 @@ func convertOpenAIResponseToAnthropicStream(_ context.Context, model string, _, 
 
 	choices, _ := chunk["choices"].([]any)
 	if len(choices) == 0 {
+		return nil, nil
+	}
+	if st.done {
 		return nil, nil
 	}
 	choice, _ := choices[0].(map[string]any)
@@ -852,6 +859,7 @@ func openAIAnthropicStopChunks(st *openAIToAnthropicStreamState, stopReason stri
 	outputs = append(outputs, messageDelta, messageStop)
 	if st != nil {
 		st.started = false
+		st.done = true
 	}
 	return outputs, nil
 }

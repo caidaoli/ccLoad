@@ -134,6 +134,68 @@ func TestRegistry_TranslateResponseStream_GeminiToOpenAI(t *testing.T) {
 	}
 }
 
+func TestRegistry_TranslateResponseStream_NilStatePointerSupported(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	testCases := []struct {
+		name    string
+		from    protocol.Protocol
+		to      protocol.Protocol
+		model   string
+		payload []byte
+		want    string
+	}{
+		{
+			name:    "gemini to anthropic",
+			from:    protocol.Gemini,
+			to:      protocol.Anthropic,
+			model:   "gemini-2.5-pro",
+			payload: []byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello\"}]}}]}\n\n"),
+			want:    "event: message_start",
+		},
+		{
+			name:    "gemini to codex",
+			from:    protocol.Gemini,
+			to:      protocol.Codex,
+			model:   "gemini-2.5-pro",
+			payload: []byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello\"}]}}]}\n\n"),
+			want:    "event: response.output_text.delta",
+		},
+		{
+			name:    "openai to codex",
+			from:    protocol.OpenAI,
+			to:      protocol.Codex,
+			model:   "gpt-5-codex",
+			payload: []byte("data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-5-codex\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n"),
+			want:    "event: response.output_text.delta",
+		},
+		{
+			name:    "codex to openai",
+			from:    protocol.Codex,
+			to:      protocol.OpenAI,
+			model:   "gpt-4o",
+			payload: []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n"),
+			want:    "\"chat.completion.chunk\"",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			chunks, err := reg.TranslateResponseStream(context.Background(), tc.from, tc.to, tc.model, nil, nil, tc.payload, nil)
+			if err != nil {
+				t.Fatalf("TranslateResponseStream failed: %v", err)
+			}
+			if len(chunks) == 0 {
+				t.Fatalf("expected translated stream chunks, got %#v", chunks)
+			}
+			if joined := string(bytes.Join(chunks, nil)); !strings.Contains(joined, tc.want) {
+				t.Fatalf("unexpected translated stream chunks: %s", joined)
+			}
+		})
+	}
+}
+
 func TestRegistry_TranslateResponseStream_GeminiToAnthropic(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)
@@ -152,6 +214,29 @@ func TestRegistry_TranslateResponseStream_GeminiToAnthropic(t *testing.T) {
 	joined := string(bytes.Join(chunks, nil))
 	if !strings.Contains(joined, "event: message_start") || !strings.Contains(joined, "event: content_block_delta") || !strings.Contains(joined, "\"text\":\"hello\"") {
 		t.Fatalf("unexpected anthropic stream chunks: %#v", chunks)
+	}
+}
+
+func TestRegistry_TranslateResponseStream_GeminiToAnthropic_DoneAfterFinishedChunkEmitsNothing(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	var state any
+	chunks, err := reg.TranslateResponseStream(context.Background(), protocol.Gemini, protocol.Anthropic, "claude-3-5-sonnet", nil, nil, []byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello\"}]},\"finishReason\":\"STOP\"}],\"modelVersion\":\"gemini-2.5-pro\",\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":5,\"totalTokenCount\":8}}\n\n"), &state)
+	if err != nil {
+		t.Fatalf("TranslateResponseStream finished chunk failed: %v", err)
+	}
+	joined := string(bytes.Join(chunks, nil))
+	if !strings.Contains(joined, "event: message_stop") {
+		t.Fatalf("expected finished chunk to emit message_stop, got %#v", chunks)
+	}
+
+	done, err := reg.TranslateResponseStream(context.Background(), protocol.Gemini, protocol.Anthropic, "claude-3-5-sonnet", nil, nil, []byte("data: [DONE]\n\n"), &state)
+	if err != nil {
+		t.Fatalf("TranslateResponseStream done failed: %v", err)
+	}
+	if done != nil {
+		t.Fatalf("expected DONE sentinel to emit nothing after finished chunk, got %#v", done)
 	}
 }
 
@@ -212,6 +297,42 @@ func TestRegistry_TranslateResponseStream_GeminiToCodex(t *testing.T) {
 		envelope.Response.Usage.OutputTokens != 5 ||
 		envelope.Response.Usage.TotalTokens != 8 {
 		t.Fatalf("unexpected codex done payload: %+v", envelope)
+	}
+}
+
+func TestRegistry_TranslateResponseStream_GeminiToCodex_PreservesResponseID(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	var state any
+	if _, err := reg.TranslateResponseStream(context.Background(), protocol.Gemini, protocol.Codex, "gemini-2.5-pro", nil, nil, []byte("data: {\"responseId\":\"resp_1\",\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello\"}]}}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":5,\"totalTokenCount\":8},\"modelVersion\":\"gemini-2.5-pro\"}\n\n"), &state); err != nil {
+		t.Fatalf("TranslateResponseStream failed: %v", err)
+	}
+
+	done, err := reg.TranslateResponseStream(context.Background(), protocol.Gemini, protocol.Codex, "gemini-2.5-pro", nil, nil, []byte("data: [DONE]\n\n"), &state)
+	if err != nil {
+		t.Fatalf("TranslateResponseStream done failed: %v", err)
+	}
+	if len(done) != 1 {
+		t.Fatalf("unexpected codex done chunks: %#v", done)
+	}
+
+	payload, ok := strings.CutPrefix(string(done[0]), "event: response.completed\ndata: ")
+	if !ok {
+		t.Fatalf("missing codex stream payload: %#v", done)
+	}
+	payload = strings.TrimSpace(payload)
+
+	var envelope struct {
+		Response struct {
+			ID string `json:"id"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal([]byte(payload), &envelope); err != nil {
+		t.Fatalf("unmarshal codex stream payload: %v", err)
+	}
+	if envelope.Response.ID != "resp_1" {
+		t.Fatalf("expected response id resp_1, got %+v", envelope)
 	}
 }
 
@@ -647,6 +768,29 @@ func TestRegistry_TranslateResponseStream_OpenAIToAnthropic(t *testing.T) {
 	doneJoined := string(bytes.Join(done, nil))
 	if !strings.Contains(doneJoined, "event: message_delta") || !strings.Contains(doneJoined, "event: message_stop") {
 		t.Fatalf("unexpected anthropic done chunks: %#v", done)
+	}
+}
+
+func TestRegistry_TranslateResponseStream_OpenAIToAnthropic_DoneAfterFinishedChunkEmitsNothing(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	var state any
+	chunks, err := reg.TranslateResponseStream(context.Background(), protocol.OpenAI, protocol.Anthropic, "claude-3-5-sonnet", nil, nil, []byte("data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5,\"total_tokens\":8}}\n\n"), &state)
+	if err != nil {
+		t.Fatalf("TranslateResponseStream finished chunk failed: %v", err)
+	}
+	joined := string(bytes.Join(chunks, nil))
+	if !strings.Contains(joined, "event: message_stop") {
+		t.Fatalf("expected finished chunk to emit message_stop, got %#v", chunks)
+	}
+
+	done, err := reg.TranslateResponseStream(context.Background(), protocol.OpenAI, protocol.Anthropic, "claude-3-5-sonnet", nil, nil, []byte("data: [DONE]\n\n"), &state)
+	if err != nil {
+		t.Fatalf("TranslateResponseStream done failed: %v", err)
+	}
+	if done != nil {
+		t.Fatalf("expected DONE sentinel to emit nothing after finished chunk, got %#v", done)
 	}
 }
 

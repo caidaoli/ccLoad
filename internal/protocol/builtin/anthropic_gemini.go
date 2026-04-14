@@ -162,6 +162,7 @@ func convertAnthropicResponseToGeminiNonStream(_ context.Context, model string, 
 
 type anthropicStreamState struct {
 	started       bool
+	done          bool
 	model         string
 	nextIndex     int
 	openTextIndex int
@@ -171,6 +172,10 @@ type anthropicStreamState struct {
 }
 
 func convertGeminiResponseToAnthropicStream(_ context.Context, model string, _, _, rawJSON []byte, param *any) ([][]byte, error) {
+	if param == nil {
+		var local any
+		param = &local
+	}
 	if *param == nil {
 		*param = &anthropicStreamState{model: model, openTextIndex: -1}
 	}
@@ -187,6 +192,9 @@ func convertGeminiResponseToAnthropicStream(_ context.Context, model string, _, 
 		line = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 	}
 	if line == "[DONE]" {
+		if st.done {
+			return nil, nil
+		}
 		return geminiAnthropicStopChunks(st, "")
 	}
 
@@ -202,6 +210,9 @@ func convertGeminiResponseToAnthropicStream(_ context.Context, model string, _, 
 		st.outputTokens = resp.UsageMetadata.CandidatesTokenCount
 	}
 	if len(resp.Candidates) == 0 {
+		return nil, nil
+	}
+	if st.done {
 		return nil, nil
 	}
 	parts, err := conversationPartsFromGeminiParts(resp.Candidates[0].Content.Parts)
@@ -401,6 +412,7 @@ func geminiAnthropicStopChunks(st *anthropicStreamState, stopReason string) ([][
 	outputs = append(outputs, messageDelta, messageStop)
 	if st != nil {
 		st.started = false
+		st.done = true
 		st.nextIndex = 0
 		st.stopReason = ""
 	}
