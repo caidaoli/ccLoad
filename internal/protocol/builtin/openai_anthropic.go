@@ -529,15 +529,12 @@ func convertOpenAIResponseToAnthropicStream(_ context.Context, model string, _, 
 		// --- reasoning_content → thinking block ---
 		if rc := stringValue(delta["reasoning_content"]); rc != "" {
 			if !st.reasoningStarted {
-				// Ensure message_start is sent first.
-				if !st.messageStartSent {
-					msgStart, err := openAIAnthropicMessageStart(st)
-					if err != nil {
-						return nil, err
-					}
+				msgStart, err := openAIAnthropicEnsureMessageStart(st)
+				if err != nil {
+					return nil, err
+				}
+				if len(msgStart) > 0 {
 					outputs = append(outputs, msgStart)
-					st.messageStartSent = true
-					st.started = true // treat as started to avoid double message_start
 				}
 				// Emit thinking block_start.
 				thinkStart, err := marshalEventSSE("content_block_start", map[string]any{
@@ -604,24 +601,12 @@ func convertOpenAIResponseToAnthropicStream(_ context.Context, model string, _, 
 
 		// --- text content → text block ---
 		if content := stringValue(delta["content"]); content != "" {
-			if !st.textBlockStarted {
-				if !st.messageStartSent {
-					// First ever content: emit message_start too.
-					msgStart, err := openAIAnthropicMessageStart(st)
-					if err != nil {
-						return nil, err
-					}
-					outputs = append(outputs, msgStart)
-					st.messageStartSent = true
-					st.started = true
-				}
-				// Open text block (may follow a thinking block, blockIndex may be > 0).
-				blockStart, err := openAIAnthropicTextBlockStart(st.blockIndex)
-				if err != nil {
-					return nil, err
-				}
-				outputs = append(outputs, blockStart)
-				st.textBlockStarted = true
+			openText, err := openAIAnthropicEnsureTextBlockOpen(st)
+			if err != nil {
+				return nil, err
+			}
+			if len(openText) > 0 {
+				outputs = append(outputs, openText...)
 			}
 			deltaChunk, err := marshalEventSSE("content_block_delta", map[string]any{
 				"type":  "content_block_delta",
@@ -656,15 +641,19 @@ func convertOpenAIResponseToAnthropicStream(_ context.Context, model string, _, 
 
 		// Flush pending tool_calls as tool_use blocks.
 		if len(st.pendingToolCalls) > 0 {
-			// Ensure message_start is sent.
-			if !st.messageStartSent {
-				msgStart, err := openAIAnthropicMessageStart(st)
-				if err != nil {
-					return nil, err
-				}
+			msgStart, err := openAIAnthropicEnsureMessageStart(st)
+			if err != nil {
+				return nil, err
+			}
+			if len(msgStart) > 0 {
 				outputs = append(outputs, msgStart)
-				st.messageStartSent = true
-				st.started = true
+			}
+			textStop, err := openAIAnthropicCloseTextBlock(st)
+			if err != nil {
+				return nil, err
+			}
+			if len(textStop) > 0 {
+				outputs = append(outputs, textStop)
 			}
 			// Iterate in insertion order by using sorted indices.
 			indices := make([]int, 0, len(st.pendingToolCalls))
@@ -732,6 +721,72 @@ func convertOpenAIResponseToAnthropicStream(_ context.Context, model string, _, 
 	if len(outputs) == 0 {
 		return nil, nil
 	}
+	return outputs, nil
+}
+
+func openAIAnthropicEnsureMessageStart(st *openAIToAnthropicStreamState) ([]byte, error) {
+	if st == nil || st.messageStartSent {
+		return nil, nil
+	}
+	msgStart, err := openAIAnthropicMessageStart(st)
+	if err != nil {
+		return nil, err
+	}
+	st.messageStartSent = true
+	st.started = true
+	return msgStart, nil
+}
+
+func openAIAnthropicCloseTextBlock(st *openAIToAnthropicStreamState) ([]byte, error) {
+	if st == nil || !st.textBlockStarted {
+		return nil, nil
+	}
+	blockStop, err := marshalEventSSE("content_block_stop", map[string]any{
+		"type":  "content_block_stop",
+		"index": st.blockIndex,
+	})
+	if err != nil {
+		return nil, err
+	}
+	st.textBlockStarted = false
+	st.blockIndex++
+	return blockStop, nil
+}
+
+func openAIAnthropicEnsureTextBlockOpen(st *openAIToAnthropicStreamState) ([][]byte, error) {
+	outputs := make([][]byte, 0, 3)
+	if st == nil {
+		return outputs, nil
+	}
+	msgStart, err := openAIAnthropicEnsureMessageStart(st)
+	if err != nil {
+		return nil, err
+	}
+	if len(msgStart) > 0 {
+		outputs = append(outputs, msgStart)
+	}
+	if st.reasoningStarted {
+		thinkStop, err := marshalEventSSE("content_block_stop", map[string]any{
+			"type":  "content_block_stop",
+			"index": st.blockIndex,
+		})
+		if err != nil {
+			return nil, err
+		}
+		outputs = append(outputs, thinkStop)
+		st.blockIndex++
+		st.reasoningStarted = false
+		st.reasoningText = ""
+	}
+	if st.textBlockStarted {
+		return outputs, nil
+	}
+	blockStart, err := openAIAnthropicTextBlockStart(st.blockIndex)
+	if err != nil {
+		return nil, err
+	}
+	outputs = append(outputs, blockStart)
+	st.textBlockStarted = true
 	return outputs, nil
 }
 

@@ -110,9 +110,11 @@ func convertCodexResponseToGeminiNonStream(_ context.Context, model string, rawR
 }
 
 type codexStreamState struct {
-	responseID string
-	model      string
-	usage      struct {
+	responseID         string
+	model              string
+	pendingToolCallIDs []string
+	nextToolCallID     int
+	usage              struct {
 		inputTokens  int64
 		outputTokens int64
 		totalTokens  int64
@@ -126,11 +128,14 @@ func convertGeminiResponseToCodexStream(_ context.Context, model string, _, _, r
 		param = &local
 	}
 	if *param == nil {
-		*param = &codexStreamState{responseID: "resp-proxy", model: model}
+		*param = &codexStreamState{responseID: "resp-proxy", model: model, nextToolCallID: 1}
 	}
 	st := (*param).(*codexStreamState)
 	if st.model == "" {
 		st.model = model
+	}
+	if st.nextToolCallID == 0 {
+		st.nextToolCallID = 1
 	}
 
 	line := strings.TrimSpace(string(rawJSON))
@@ -186,7 +191,7 @@ func convertGeminiResponseToCodexStream(_ context.Context, model string, _, _, r
 	if len(resp.Candidates) == 0 {
 		return nil, nil
 	}
-	parts, err := conversationPartsFromGeminiParts(resp.Candidates[0].Content.Parts)
+	parts, err := extractGeminiParts(resp.Candidates[0].Content.Parts, &st.pendingToolCallIDs, &st.nextToolCallID)
 	if err != nil {
 		return nil, err
 	}

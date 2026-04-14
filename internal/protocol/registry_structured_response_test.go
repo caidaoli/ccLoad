@@ -3,6 +3,7 @@ package protocol_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -253,6 +254,138 @@ func TestRegistry_TranslateResponseStream_OpenAIStructuredOutboundToGeminiUsageO
 	if done != nil {
 		t.Fatalf("expected DONE sentinel to emit nothing after usage-only tail, got: %#v", done)
 	}
+}
+
+func TestRegistry_TranslateResponseStream_OpenAIStructuredOutboundToGemini_FragmentedToolCalls(t *testing.T) {
+	t.Parallel()
+
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	chunks := []string{
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup","arguments":""}}]}}]}` + "\n\n",
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"query\":"}}]}}]}` + "\n\n",
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"go\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}` + "\n\n",
+	}
+
+	var state any
+	var outputs [][]byte
+	for _, chunk := range chunks {
+		out, err := reg.TranslateResponseStream(context.Background(), protocol.OpenAI, protocol.Gemini, "gemini-2.5-pro", nil, nil, []byte(chunk), &state)
+		if err != nil {
+			t.Fatalf("TranslateResponseStream failed: %v", err)
+		}
+		outputs = append(outputs, out...)
+	}
+
+	joined := string(bytes.Join(outputs, nil))
+	if !strings.Contains(joined, `"functionCall"`) || !strings.Contains(joined, `"name":"lookup"`) || !strings.Contains(joined, `"query":"go"`) {
+		t.Fatalf("expected assembled Gemini functionCall, got: %s", joined)
+	}
+	if !strings.Contains(joined, `"finishReason":"STOP"`) || !strings.Contains(joined, `"promptTokenCount":3`) {
+		t.Fatalf("expected terminal Gemini usage payload, got: %s", joined)
+	}
+}
+
+func TestRegistry_TranslateResponseStream_OpenAIStructuredOutboundToGemini_FragmentedToolCalls_AllSplitPoints(t *testing.T) {
+	t.Parallel()
+
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	arguments := `{"query":"go"}`
+	for split := 0; split <= len(arguments); split++ {
+		t.Run(fmt.Sprintf("split-%d", split), func(t *testing.T) {
+			var state any
+			var outputs [][]byte
+			chunks := []string{
+				`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup","arguments":""}}]}}]}` + "\n\n",
+				fmt.Sprintf(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":%q}}]}}]}`+"\n\n", arguments[:split]),
+				fmt.Sprintf(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":%q}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`+"\n\n", arguments[split:]),
+			}
+			for _, chunk := range chunks {
+				out, err := reg.TranslateResponseStream(context.Background(), protocol.OpenAI, protocol.Gemini, "gemini-2.5-pro", nil, nil, []byte(chunk), &state)
+				if err != nil {
+					t.Fatalf("split %d TranslateResponseStream failed: %v", split, err)
+				}
+				outputs = append(outputs, out...)
+			}
+			joined := string(bytes.Join(outputs, nil))
+			if !strings.Contains(joined, `"functionCall"`) || !strings.Contains(joined, `"query":"go"`) || !strings.Contains(joined, `"promptTokenCount":3`) {
+				t.Fatalf("split %d unexpected Gemini stream output: %s", split, joined)
+			}
+		})
+	}
+}
+
+func TestRegistry_TranslateResponseStream_GeminiStructuredOutbound_MultipleToolCallsAcrossChunks(t *testing.T) {
+	t.Parallel()
+
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	firstChunk := []byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"lookup\",\"args\":{\"query\":\"one\"}}}]}}],\"modelVersion\":\"gemini-2.5-pro\"}\n\n")
+	secondChunk := []byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"search\",\"args\":{\"query\":\"two\"}}}]},\"finishReason\":\"STOP\"}],\"modelVersion\":\"gemini-2.5-pro\"}\n\n")
+
+	t.Run("openai", func(t *testing.T) {
+		var state any
+		first, err := reg.TranslateResponseStream(context.Background(), protocol.Gemini, protocol.OpenAI, "gpt-4o", nil, nil, firstChunk, &state)
+		if err != nil {
+			t.Fatalf("first chunk failed: %v", err)
+		}
+		second, err := reg.TranslateResponseStream(context.Background(), protocol.Gemini, protocol.OpenAI, "gpt-4o", nil, nil, secondChunk, &state)
+		if err != nil {
+			t.Fatalf("second chunk failed: %v", err)
+		}
+		firstJoined := string(bytes.Join(first, nil))
+		secondJoined := string(bytes.Join(second, nil))
+		if !strings.Contains(firstJoined, `"index":0`) || !strings.Contains(firstJoined, `"id":"call_1"`) {
+			t.Fatalf("expected first tool call index/id, got %s", firstJoined)
+		}
+		if !strings.Contains(secondJoined, `"index":1`) || !strings.Contains(secondJoined, `"id":"call_2"`) {
+			t.Fatalf("expected second tool call index/id, got %s", secondJoined)
+		}
+	})
+
+	t.Run("anthropic", func(t *testing.T) {
+		var state any
+		first, err := reg.TranslateResponseStream(context.Background(), protocol.Gemini, protocol.Anthropic, "claude-3-5-sonnet", nil, nil, firstChunk, &state)
+		if err != nil {
+			t.Fatalf("first chunk failed: %v", err)
+		}
+		second, err := reg.TranslateResponseStream(context.Background(), protocol.Gemini, protocol.Anthropic, "claude-3-5-sonnet", nil, nil, secondChunk, &state)
+		if err != nil {
+			t.Fatalf("second chunk failed: %v", err)
+		}
+		firstJoined := string(bytes.Join(first, nil))
+		secondJoined := string(bytes.Join(second, nil))
+		if !strings.Contains(firstJoined, `"id":"call_1"`) {
+			t.Fatalf("expected first tool id call_1, got %s", firstJoined)
+		}
+		if !strings.Contains(secondJoined, `"id":"call_2"`) {
+			t.Fatalf("expected second tool id call_2, got %s", secondJoined)
+		}
+	})
+
+	t.Run("codex", func(t *testing.T) {
+		var state any
+		first, err := reg.TranslateResponseStream(context.Background(), protocol.Gemini, protocol.Codex, "gpt-5-codex", nil, nil, firstChunk, &state)
+		if err != nil {
+			t.Fatalf("first chunk failed: %v", err)
+		}
+		second, err := reg.TranslateResponseStream(context.Background(), protocol.Gemini, protocol.Codex, "gpt-5-codex", nil, nil, secondChunk, &state)
+		if err != nil {
+			t.Fatalf("second chunk failed: %v", err)
+		}
+		firstJoined := string(bytes.Join(first, nil))
+		secondJoined := string(bytes.Join(second, nil))
+		if !strings.Contains(firstJoined, `"call_id":"call_1"`) {
+			t.Fatalf("expected first call_id call_1, got %s", firstJoined)
+		}
+		if !strings.Contains(secondJoined, `"call_id":"call_2"`) {
+			t.Fatalf("expected second call_id call_2, got %s", secondJoined)
+		}
+	})
 }
 
 func TestRegistry_TranslateResponseStream_AnthropicStructuredOutbound(t *testing.T) {

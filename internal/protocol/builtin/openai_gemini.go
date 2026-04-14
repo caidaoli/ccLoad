@@ -108,6 +108,7 @@ type openAIToGeminiStreamState struct {
 	model            string
 	done             bool
 	doneUsageEmitted bool
+	pendingToolCalls map[int]*pendingToolCall
 	usage            struct {
 		promptTokens     int64
 		completionTokens int64
@@ -117,7 +118,10 @@ type openAIToGeminiStreamState struct {
 }
 
 type geminiToOpenAIStreamState struct {
-	model string
+	model              string
+	pendingToolCallIDs []string
+	nextToolCallID     int
+	toolCallIndex      int
 }
 
 func convertOpenAIRequestToGemini(model string, rawJSON []byte, _ bool) ([]byte, error) {
@@ -230,11 +234,14 @@ func convertGeminiResponseToOpenAIStream(_ context.Context, model string, _, _, 
 		param = &local
 	}
 	if *param == nil {
-		*param = &geminiToOpenAIStreamState{model: model}
+		*param = &geminiToOpenAIStreamState{model: model, nextToolCallID: 1}
 	}
 	st := (*param).(*geminiToOpenAIStreamState)
 	if st.model == "" {
 		st.model = model
+	}
+	if st.nextToolCallID == 0 {
+		st.nextToolCallID = 1
 	}
 
 	line := strings.TrimSpace(string(rawJSON))
@@ -258,7 +265,7 @@ func convertGeminiResponseToOpenAIStream(_ context.Context, model string, _, _, 
 	if len(resp.Candidates) == 0 {
 		return nil, nil
 	}
-	parts, err := conversationPartsFromGeminiParts(resp.Candidates[0].Content.Parts)
+	parts, err := extractGeminiParts(resp.Candidates[0].Content.Parts, &st.pendingToolCallIDs, &st.nextToolCallID)
 	if err != nil {
 		return nil, err
 	}
@@ -281,7 +288,7 @@ func convertGeminiResponseToOpenAIStream(_ context.Context, model string, _, _, 
 		chunkToolCalls := make([]map[string]any, 0, len(toolCalls))
 		for i, call := range toolCalls {
 			chunkToolCalls = append(chunkToolCalls, map[string]any{
-				"index": i,
+				"index": st.toolCallIndex + i,
 				"id":    call.ID,
 				"type":  call.Type,
 				"function": map[string]any{
@@ -291,6 +298,7 @@ func convertGeminiResponseToOpenAIStream(_ context.Context, model string, _, _, 
 			})
 		}
 		delta["tool_calls"] = chunkToolCalls
+		st.toolCallIndex += len(toolCalls)
 	}
 	finishReason := any(nil)
 	if resp.Candidates[0].FinishReason != "" || len(toolCalls) > 0 {
@@ -351,10 +359,16 @@ func convertOpenAIResponseToGeminiStream(_ context.Context, model string, _, _, 
 		if st.done {
 			return nil, nil
 		}
-		body, err := marshalDataSSE(buildGeminiPayload(st.model, "", "STOP", st.usage.promptTokens, st.usage.completionTokens, st.usage.totalTokens, st.usage.seen))
+		parts, err := st.flushPendingToolCalls()
 		if err != nil {
 			return nil, err
 		}
+		body, err := marshalDataSSE(buildGeminiPayloadFromParts(st.model, "", parts, "STOP", st.usage.promptTokens, st.usage.completionTokens, st.usage.totalTokens, st.usage.seen))
+		if err != nil {
+			return nil, err
+		}
+		st.done = true
+		st.doneUsageEmitted = st.usage.seen
 		return [][]byte{body}, nil
 	}
 
@@ -410,21 +424,28 @@ func convertOpenAIResponseToGeminiStream(_ context.Context, model string, _, _, 
 			}
 			outputs = append(outputs, body)
 		}
-		parts, err := geminiPartsFromOpenAIMessage(delta["content"], delta["tool_calls"])
+		contentParts, err := geminiPartsFromOpenAIMessage(delta["content"], nil)
 		if err != nil {
 			return nil, err
 		}
-		if len(parts) > 0 {
-			body, err := marshalDataSSE(buildGeminiPayloadFromParts(st.model, "", parts, "", 0, 0, 0, false))
+		if len(contentParts) > 0 {
+			body, err := marshalDataSSE(buildGeminiPayloadFromParts(st.model, "", contentParts, "", 0, 0, 0, false))
 			if err != nil {
 				return nil, err
 			}
 			outputs = append(outputs, body)
 		}
+		if err := st.accumulateToolCalls(delta["tool_calls"]); err != nil {
+			return nil, err
+		}
 	}
 	if finishReasonRaw, ok := choice["finish_reason"]; ok && finishReasonRaw != nil {
 		finishReason := mapOpenAIFinishReasonToGemini(stringValue(finishReasonRaw))
-		body, err := marshalDataSSE(buildGeminiPayload(st.model, "", finishReason, st.usage.promptTokens, st.usage.completionTokens, st.usage.totalTokens, st.usage.seen))
+		parts, err := st.flushPendingToolCalls()
+		if err != nil {
+			return nil, err
+		}
+		body, err := marshalDataSSE(buildGeminiPayloadFromParts(st.model, "", parts, finishReason, st.usage.promptTokens, st.usage.completionTokens, st.usage.totalTokens, st.usage.seen))
 		if err != nil {
 			return nil, err
 		}
@@ -436,4 +457,74 @@ func convertOpenAIResponseToGeminiStream(_ context.Context, model string, _, _, 
 		return nil, nil
 	}
 	return outputs, nil
+}
+
+func (st *openAIToGeminiStreamState) accumulateToolCalls(rawToolCalls any) error {
+	toolCalls, err := decodeObjectSlice(rawToolCalls)
+	if err != nil {
+		return err
+	}
+	if len(toolCalls) == 0 {
+		return nil
+	}
+	if st.pendingToolCalls == nil {
+		st.pendingToolCalls = make(map[int]*pendingToolCall)
+	}
+	for _, tc := range toolCalls {
+		idx := int(int64Value(tc["index"]))
+		pending := st.pendingToolCalls[idx]
+		if pending == nil {
+			pending = &pendingToolCall{}
+			st.pendingToolCalls[idx] = pending
+		}
+		if id := stringValue(tc["id"]); id != "" {
+			pending.id = id
+		}
+		if fn, _ := tc["function"].(map[string]any); fn != nil {
+			if name := stringValue(fn["name"]); name != "" {
+				pending.name = name
+			}
+			if args, ok := fn["arguments"]; ok {
+				pending.arguments += stringValue(args)
+			}
+		}
+	}
+	return nil
+}
+
+func (st *openAIToGeminiStreamState) flushPendingToolCalls() ([]geminiPart, error) {
+	if len(st.pendingToolCalls) == 0 {
+		return nil, nil
+	}
+	indices := make([]int, 0, len(st.pendingToolCalls))
+	for idx := range st.pendingToolCalls {
+		indices = append(indices, idx)
+	}
+	for i := 1; i < len(indices); i++ {
+		for j := i; j > 0 && indices[j] < indices[j-1]; j-- {
+			indices[j], indices[j-1] = indices[j-1], indices[j]
+		}
+	}
+	parts := make([]geminiPart, 0, len(indices))
+	for _, idx := range indices {
+		pending := st.pendingToolCalls[idx]
+		if pending == nil {
+			continue
+		}
+		args, err := rawJSONToAny(json.RawMessage(pending.arguments))
+		if err != nil {
+			return nil, err
+		}
+		if args == nil {
+			args = map[string]any{}
+		}
+		parts = append(parts, geminiPart{
+			FunctionCall: &geminiFunctionCall{
+				Name: pending.name,
+				Args: args,
+			},
+		})
+	}
+	st.pendingToolCalls = nil
+	return parts, nil
 }

@@ -71,6 +71,8 @@ type anthropicToGeminiStreamState struct {
 	toolJSON       string
 	toolActive     bool
 	thinkingActive bool
+	inputTokens    int64
+	outputTokens   int64
 	blockIgnored   bool // for redacted_thinking and future block types that should be silently ignored
 }
 
@@ -163,14 +165,16 @@ func convertAnthropicResponseToGeminiNonStream(_ context.Context, model string, 
 }
 
 type anthropicStreamState struct {
-	started       bool
-	done          bool
-	model         string
-	nextIndex     int
-	openTextIndex int
-	inputTokens   int64
-	outputTokens  int64
-	stopReason    string
+	started            bool
+	done               bool
+	model              string
+	nextIndex          int
+	openTextIndex      int
+	pendingToolCallIDs []string
+	nextToolCallID     int
+	inputTokens        int64
+	outputTokens       int64
+	stopReason         string
 }
 
 func convertGeminiResponseToAnthropicStream(_ context.Context, model string, _, _, rawJSON []byte, param *any) ([][]byte, error) {
@@ -179,11 +183,14 @@ func convertGeminiResponseToAnthropicStream(_ context.Context, model string, _, 
 		param = &local
 	}
 	if *param == nil {
-		*param = &anthropicStreamState{model: model, openTextIndex: -1}
+		*param = &anthropicStreamState{model: model, openTextIndex: -1, nextToolCallID: 1}
 	}
 	st := (*param).(*anthropicStreamState)
 	if st.model == "" {
 		st.model = model
+	}
+	if st.nextToolCallID == 0 {
+		st.nextToolCallID = 1
 	}
 
 	line := strings.TrimSpace(string(rawJSON))
@@ -217,7 +224,7 @@ func convertGeminiResponseToAnthropicStream(_ context.Context, model string, _, 
 	if st.done {
 		return nil, nil
 	}
-	parts, err := conversationPartsFromGeminiParts(resp.Candidates[0].Content.Parts)
+	parts, err := extractGeminiParts(resp.Candidates[0].Content.Parts, &st.pendingToolCallIDs, &st.nextToolCallID)
 	if err != nil {
 		return nil, err
 	}
@@ -452,6 +459,14 @@ func convertAnthropicResponseToGeminiStream(_ context.Context, model string, _, 
 			if messageModel := stringValue(message["model"]); messageModel != "" {
 				st.model = messageModel
 			}
+			if usage, _ := message["usage"].(map[string]any); usage != nil {
+				if raw, ok := usage["input_tokens"]; ok {
+					st.inputTokens = int64Value(raw)
+				}
+				if raw, ok := usage["output_tokens"]; ok {
+					st.outputTokens = int64Value(raw)
+				}
+			}
 		}
 		return nil, nil
 	}
@@ -525,17 +540,21 @@ func convertAnthropicResponseToGeminiStream(_ context.Context, model string, _, 
 	}
 	if typ := stringValue(payload["type"]); typ == "message_delta" {
 		usage, _ := payload["usage"].(map[string]any)
-		outputTokens := int64Value(usage["output_tokens"])
-		inputTokens := int64Value(usage["input_tokens"])
-		totalTokens := inputTokens + outputTokens
-		if totalTokens == 0 && outputTokens > 0 {
-			totalTokens = outputTokens
+		if usage != nil {
+			if raw, ok := usage["input_tokens"]; ok {
+				st.inputTokens = int64Value(raw)
+			}
+			if raw, ok := usage["output_tokens"]; ok {
+				st.outputTokens = int64Value(raw)
+			}
 		}
+		totalTokens := st.inputTokens + st.outputTokens
 		finishReason := ""
 		if delta, _ := payload["delta"].(map[string]any); delta != nil {
 			finishReason = mapAnthropicStopReasonToGemini(stringValue(delta["stop_reason"]))
 		}
-		body, err := marshalDataSSE(buildGeminiPayloadFromParts(st.model, "", nil, finishReason, inputTokens, outputTokens, totalTokens, usage != nil))
+		includeUsage := usage != nil || st.inputTokens != 0 || st.outputTokens != 0
+		body, err := marshalDataSSE(buildGeminiPayloadFromParts(st.model, "", nil, finishReason, st.inputTokens, st.outputTokens, totalTokens, includeUsage))
 		if err != nil {
 			return nil, err
 		}
