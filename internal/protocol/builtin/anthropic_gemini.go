@@ -189,8 +189,8 @@ func convertGeminiResponseToAnthropicStream(_ context.Context, model string, _, 
 	if line == "" {
 		return nil, nil
 	}
-	if strings.HasPrefix(line, "data:") {
-		line = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	if after, ok := strings.CutPrefix(line, "data:"); ok {
+		line = strings.TrimSpace(after)
 	}
 	if line == "[DONE]" {
 		if st.done {
