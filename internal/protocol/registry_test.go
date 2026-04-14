@@ -1491,6 +1491,9 @@ func TestRegistry_TranslateResponseNonStream_OpenAIToAnthropic_ToolCalls(t *test
 	if !strings.Contains(result, `"stop_reason":"tool_use"`) {
 		t.Fatalf("expected stop_reason=tool_use, got:\n%s", result)
 	}
+	if !strings.Contains(result, `"key"`) || !strings.Contains(result, `"val"`) {
+		t.Fatalf("expected input args key=val in tool_use block, got:\n%s", result)
+	}
 }
 
 func TestRegistry_TranslateResponseNonStream_AnthropicToOpenAI_ToolCalls(t *testing.T) {
@@ -1523,6 +1526,9 @@ func TestRegistry_TranslateResponseNonStream_AnthropicToOpenAI_ToolCalls(t *test
 	}
 	if !strings.Contains(result, `"finish_reason":"tool_calls"`) {
 		t.Fatalf("expected finish_reason=tool_calls, got:\n%s", result)
+	}
+	if !strings.Contains(result, `1+1`) {
+		t.Fatalf("expected expr=1+1 in function arguments, got:\n%s", result)
 	}
 }
 
