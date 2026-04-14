@@ -21,9 +21,6 @@ const protocolTransformContainer = document.getElementById('protocolTransformCon
 const protocolTransformOptions = document.getElementById('protocolTransformOptions');
 const modelSelect = document.getElementById('testModelSelect');
 const mobileNameFilterInput = document.getElementById('modelTestMobileNameFilter');
-const fetchModelsBtn = document.getElementById('fetchModelsBtn');
-const deleteModelsBtn = document.getElementById('deleteModelsBtn');
-const runTestBtn = document.getElementById('runTestBtn');
 
 const deletePreviewModal = document.getElementById('deletePreviewModal');
 const deletePreviewContent = document.getElementById('deletePreviewContent');
@@ -42,6 +39,33 @@ const ALL_PROTOCOLS = ['anthropic', 'codex', 'openai', 'gemini'];
 let sortState = { key: '', direction: SORT_DIRECTION_NONE };
 let nameFilterKeyword = '';
 
+function getFetchModelsBtn() {
+  return document.getElementById('fetchModelsBtn');
+}
+
+function getDeleteModelsBtn() {
+  return document.getElementById('deleteModelsBtn');
+}
+
+function getRunTestBtn() {
+  return document.getElementById('runTestBtn');
+}
+
+const RESPONSE_HEAD_HTML = `
+  <th class="table-col-response model-test-response-head" data-sort-key="response">
+    <div class="model-test-response-head-inner">
+      <div class="model-test-response-head-line">
+        <span class="model-test-response-head-label" data-i18n="modelTest.responseContent">响应内容</span>
+      </div>
+      <div class="model-test-toolbar-section model-test-toolbar-section--actions model-test-head-actions">
+        <button id="fetchModelsBtn" type="button" data-action="fetch-and-add-models" class="btn btn-secondary model-test-toolbar-btn" data-i18n="modelTest.fetchModels">获取模型</button>
+        <button id="deleteModelsBtn" type="button" data-action="delete-selected-models" class="btn btn-secondary model-test-toolbar-btn model-test-toolbar-btn--danger" data-i18n="modelTest.deleteModels">删除模型</button>
+        <button id="runTestBtn" type="button" data-action="run-model-tests" class="btn btn-primary model-test-toolbar-btn" data-i18n="modelTest.startTest">开始测试</button>
+      </div>
+    </div>
+  </th>
+`;
+
 const CHANNEL_MODE_HEAD = `
   <th class="table-col-select mobile-card-select-header"><input type="checkbox" id="selectAllCheckbox" data-change-action="toggle-all-models"></th>
   <th class="table-col-name" data-i18n="common.model" data-sort-key="name">模型</th>
@@ -53,7 +77,7 @@ const CHANNEL_MODE_HEAD = `
   <th class="table-col-metric" data-i18n="modelTest.cacheRead" data-sort-key="cacheRead">缓读</th>
   <th class="table-col-metric" data-i18n="modelTest.cacheCreate" data-sort-key="cacheCreate">缓建</th>
   <th class="table-col-cost" data-i18n="common.cost" data-sort-key="cost">费用</th>
-  <th data-i18n="modelTest.responseContent" data-sort-key="response">响应内容</th>
+  ${RESPONSE_HEAD_HTML}
 `;
 
 const MODEL_MODE_HEAD = `
@@ -67,7 +91,7 @@ const MODEL_MODE_HEAD = `
   <th class="table-col-metric" data-i18n="modelTest.cacheRead" data-sort-key="cacheRead">缓读</th>
   <th class="table-col-metric" data-i18n="modelTest.cacheCreate" data-sort-key="cacheCreate">缓建</th>
   <th class="table-col-cost" data-i18n="common.cost" data-sort-key="cost">费用</th>
-  <th data-i18n="modelTest.responseContent" data-sort-key="response">响应内容</th>
+  ${RESPONSE_HEAD_HTML}
 `;
 
 function i18nText(key, fallback, params) {
@@ -326,6 +350,7 @@ function bindSortableHeaders() {
   headRow.querySelectorAll('th[data-sort-key]').forEach(th => {
     let indicator = th.querySelector('.model-test-sort-indicator');
     const headerLine = th.querySelector('.model-test-name-head-line');
+    const responseHeadLine = th.querySelector('.model-test-response-head-line');
     const filterInput = th.querySelector('#modelTestNameFilter');
 
     if (!indicator) {
@@ -343,6 +368,10 @@ function bindSortableHeaders() {
       if (indicator.parentElement !== headerLine || indicator.nextSibling !== filterInput) {
         headerLine.insertBefore(indicator, filterInput);
       }
+    } else if (responseHeadLine) {
+      if (indicator.parentElement !== responseHeadLine) {
+        responseHeadLine.appendChild(indicator);
+      }
     } else if (indicator.parentElement !== th) {
       th.appendChild(indicator);
     }
@@ -350,7 +379,10 @@ function bindSortableHeaders() {
     th.style.cursor = 'pointer';
     th.style.whiteSpace = 'nowrap';
     th.style.verticalAlign = 'middle';
-    th.onclick = () => {
+    th.onclick = (event) => {
+      const clickTarget = event.target instanceof Element ? event.target : null;
+      if (clickTarget?.closest('.model-test-head-actions')) return;
+
       const key = th.dataset.sortKey || '';
       if (!key) return;
 
@@ -765,6 +797,8 @@ function renderRowsByMode() {
 
 function updateModeUI() {
   const isModelMode = testMode === TEST_MODE_MODEL;
+  const fetchModelsBtn = getFetchModelsBtn();
+  const deleteModelsBtn = getDeleteModelsBtn();
 
   const modeTabChannel = document.getElementById('modeTabChannel');
   const modeTabModel = document.getElementById('modeTabModel');
@@ -774,9 +808,13 @@ function updateModeUI() {
 
   channelSelectorLabel.style.display = isModelMode ? 'none' : 'flex';
   modelSelectorLabel.style.display = isModelMode ? 'flex' : 'none';
-  fetchModelsBtn.style.display = isModelMode ? 'none' : '';
-  deleteModelsBtn.disabled = false;
-  deleteModelsBtn.title = isModelMode ? i18nText('modelTest.deleteBySelectionHint', '按勾选记录删除对应渠道中的模型') : '';
+  if (fetchModelsBtn) {
+    fetchModelsBtn.style.display = isModelMode ? 'none' : '';
+  }
+  if (deleteModelsBtn) {
+    deleteModelsBtn.disabled = false;
+    deleteModelsBtn.title = isModelMode ? i18nText('modelTest.deleteBySelectionHint', '按勾选记录删除对应渠道中的模型') : '';
+  }
   renderProtocolTransformOptions();
 }
 
@@ -950,6 +988,7 @@ async function runBatchTests(targets) {
 }
 
 function setRunTestButtonDisabled(disabled) {
+  const runTestBtn = getRunTestBtn();
   if (!runTestBtn) return;
 
   runTestBtn.disabled = disabled;
@@ -1385,14 +1424,19 @@ async function deleteSelectedModels() {
   }
   let deleteResult = null;
   isDeletingModels = true;
-  deleteModelsBtn.disabled = true;
+  const deleteModelsBtn = getDeleteModelsBtn();
+  if (deleteModelsBtn) {
+    deleteModelsBtn.disabled = true;
+  }
 
   const confirmed = await showDeletePreviewModal(deletePreview, async (modalProgress) => {
     deleteResult = await executeDeletePlan(deletePlan, modalProgress);
   });
 
   isDeletingModels = false;
-  deleteModelsBtn.disabled = false;
+  if (deleteModelsBtn) {
+    deleteModelsBtn.disabled = false;
+  }
 
   if (!confirmed) {
     return;
@@ -1606,8 +1650,8 @@ function setTestMode(mode) {
   if (testMode === TEST_MODE_CHANNEL && selectedChannel) {
     selectedProtocol = getChannelType(selectedChannel);
   }
-  updateModeUI();
   updateHeadByMode();
+  updateModeUI();
 
   if (testMode === TEST_MODE_MODEL) {
     populateModelSelector();
@@ -1629,8 +1673,8 @@ async function bootstrap() {
   bindEvents();
   await loadChannels();
   await loadDefaultTestContent();
-  updateModeUI();
   updateHeadByMode();
+  updateModeUI();
   renderRowsByMode();
 }
 
