@@ -489,7 +489,7 @@ func TestHandleChannelTest_DefaultsProtocolTransformToChannelType(t *testing.T) 
 	}
 }
 
-func TestHandleChannelTest_RejectsUnsupportedProtocolTransform(t *testing.T) {
+func TestHandleChannelTest_RejectsUnknownProtocolTransform(t *testing.T) {
 	failCalls := 0
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		failCalls++
@@ -519,7 +519,7 @@ func TestHandleChannelTest_RejectsUnsupportedProtocolTransform(t *testing.T) {
 
 	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/test", created.ID), map[string]any{
 		"model":              "gpt-4.1",
-		"protocol_transform": "anthropic",
+		"protocol_transform": "unknown",
 	}))
 	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
 
@@ -573,13 +573,12 @@ func TestHandleChannelTest_UsesProtocolTransformForTranslatedRequest(t *testing.
 	ctx := context.Background()
 
 	created, err := srv.store.CreateConfig(ctx, &model.Config{
-		Name:               "anthropic-with-openai-transform",
-		URL:                upstream.URL,
-		Priority:           1,
-		ChannelType:        "anthropic",
-		ProtocolTransforms: []string{"openai"},
-		ModelEntries:       []model.ModelEntry{{Model: "claude-3-5-sonnet"}},
-		Enabled:            true,
+		Name:         "anthropic-with-runtime-openai-transform",
+		URL:          upstream.URL,
+		Priority:     1,
+		ChannelType:  "anthropic",
+		ModelEntries: []model.ModelEntry{{Model: "claude-3-5-sonnet"}},
+		Enabled:      true,
 	})
 	if err != nil {
 		t.Fatalf("CreateConfig failed: %v", err)
