@@ -103,9 +103,10 @@ type openAIChatCompletionUsage struct {
 }
 
 type openAIToGeminiStreamState struct {
-	model string
-	done  bool
-	usage struct {
+	model            string
+	done             bool
+	doneUsageEmitted bool
+	usage            struct {
 		promptTokens     int64
 		completionTokens int64
 		totalTokens      int64
@@ -362,17 +363,26 @@ func convertOpenAIResponseToGeminiStream(_ context.Context, model string, _, _, 
 	if chunkModel := stringValue(chunk["model"]); chunkModel != "" && st.model == "" {
 		st.model = chunkModel
 	}
+	chunkHasUsage := false
 	if usage := openAIUsageFromMap(chunk["usage"]); usage != nil {
 		st.usage.promptTokens = usage.promptTokens
 		st.usage.completionTokens = usage.completionTokens
 		st.usage.totalTokens = usage.totalTokens
 		st.usage.seen = true
+		chunkHasUsage = true
 	}
+	choices, _ := chunk["choices"].([]any)
 	if st.done {
+		if !st.doneUsageEmitted && chunkHasUsage && len(choices) == 0 {
+			body, err := marshalDataSSE(buildGeminiPayload(st.model, "", "", st.usage.promptTokens, st.usage.completionTokens, st.usage.totalTokens, true))
+			if err != nil {
+				return nil, err
+			}
+			st.doneUsageEmitted = true
+			return [][]byte{body}, nil
+		}
 		return nil, nil
 	}
-
-	choices, _ := chunk["choices"].([]any)
 	if len(choices) == 0 {
 		if !st.usage.seen {
 			return nil, nil
@@ -409,6 +419,7 @@ func convertOpenAIResponseToGeminiStream(_ context.Context, model string, _, _, 
 			return nil, err
 		}
 		st.done = true
+		st.doneUsageEmitted = chunkHasUsage
 		outputs = append(outputs, body)
 	}
 	if len(outputs) == 0 {

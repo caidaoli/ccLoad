@@ -220,6 +220,41 @@ func TestRegistry_TranslateResponseStream_OpenAIStructuredOutboundToGeminiUsageO
 	}
 }
 
+func TestRegistry_TranslateResponseStream_OpenAIStructuredOutboundToGeminiUsageOnlyTailCarriesUsage(t *testing.T) {
+	t.Parallel()
+
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	chunks := []string{
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"query\":\"go\"}"}}]}}]}` + "\n\n",
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n",
+	}
+
+	var state any
+	for _, chunk := range chunks {
+		if _, err := reg.TranslateResponseStream(context.Background(), protocol.OpenAI, protocol.Gemini, "gemini-2.5-pro", nil, nil, []byte(chunk), &state); err != nil {
+			t.Fatalf("TranslateResponseStream failed: %v", err)
+		}
+	}
+
+	usageOnly, err := reg.TranslateResponseStream(context.Background(), protocol.OpenAI, protocol.Gemini, "gemini-2.5-pro", nil, nil, []byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-4o","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`+"\n\n"), &state)
+	if err != nil {
+		t.Fatalf("TranslateResponseStream usage-only tail failed: %v", err)
+	}
+	if len(usageOnly) != 1 || !strings.Contains(string(usageOnly[0]), `"promptTokenCount":3`) || !strings.Contains(string(usageOnly[0]), `"candidatesTokenCount":5`) || strings.Contains(string(usageOnly[0]), `"finishReason"`) {
+		t.Fatalf("expected usage-only tail to emit usageMetadata without duplicate finishReason, got: %#v", usageOnly)
+	}
+
+	done, err := reg.TranslateResponseStream(context.Background(), protocol.OpenAI, protocol.Gemini, "gemini-2.5-pro", nil, nil, []byte("data: [DONE]\n\n"), &state)
+	if err != nil {
+		t.Fatalf("TranslateResponseStream done failed: %v", err)
+	}
+	if done != nil {
+		t.Fatalf("expected DONE sentinel to emit nothing after usage-only tail, got: %#v", done)
+	}
+}
+
 func TestRegistry_TranslateResponseStream_AnthropicStructuredOutbound(t *testing.T) {
 	t.Parallel()
 
