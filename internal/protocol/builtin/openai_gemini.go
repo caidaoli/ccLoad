@@ -104,6 +104,7 @@ type openAIChatCompletionUsage struct {
 
 type openAIToGeminiStreamState struct {
 	model string
+	done  bool
 	usage struct {
 		promptTokens     int64
 		completionTokens int64
@@ -344,6 +345,9 @@ func convertOpenAIResponseToGeminiStream(_ context.Context, model string, _, _, 
 		line = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 	}
 	if line == "[DONE]" {
+		if st.done {
+			return nil, nil
+		}
 		body, err := marshalDataSSE(buildGeminiPayload(st.model, "", "STOP", st.usage.promptTokens, st.usage.completionTokens, st.usage.totalTokens, st.usage.seen))
 		if err != nil {
 			return nil, err
@@ -401,6 +405,7 @@ func convertOpenAIResponseToGeminiStream(_ context.Context, model string, _, _, 
 		if err != nil {
 			return nil, err
 		}
+		st.done = true
 		outputs = append(outputs, body)
 	}
 	if len(outputs) == 0 {

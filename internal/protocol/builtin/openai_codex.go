@@ -42,6 +42,7 @@ type codexToOpenAIStreamState struct {
 		seen                     bool
 	}
 	toolCallIndex int
+	sawToolCall   bool
 }
 
 func convertOpenAIRequestToCodex(model string, rawJSON []byte, stream bool) ([]byte, error) {
@@ -321,6 +322,10 @@ func convertCodexResponseToOpenAIStream(_ context.Context, model string, _, _, r
 		}
 	}
 	if eventType == "response.completed" || stringValue(payload["type"]) == "response.completed" {
+		finishReason := "stop"
+		if st.sawToolCall {
+			finishReason = "tool_calls"
+		}
 		chunk := map[string]any{
 			"id":      "chatcmpl-proxy",
 			"object":  "chat.completion.chunk",
@@ -329,7 +334,7 @@ func convertCodexResponseToOpenAIStream(_ context.Context, model string, _, _, r
 			"choices": []map[string]any{{
 				"index":         0,
 				"delta":         map[string]any{},
-				"finish_reason": "stop",
+				"finish_reason": finishReason,
 			}},
 		}
 		if st.usage.seen {
@@ -412,6 +417,7 @@ func convertCodexResponseToOpenAIStream(_ context.Context, model string, _, _, r
 			if err != nil {
 				return nil, err
 			}
+			st.sawToolCall = true
 			st.toolCallIndex++
 			return [][]byte{append([]byte("data: "), append(body, []byte("\n\n")...)...)}, nil
 		case normalizeRole(itemType) == "reasoning":

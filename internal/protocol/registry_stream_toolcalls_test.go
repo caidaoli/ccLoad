@@ -142,6 +142,43 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","call_i
 	}
 }
 
+func TestRegistry_Stream_CodexToOpenAI_FunctionCallCompletion(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	chunks := []string{
+		`event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{\"q\":\"one\"}"}}
+
+`,
+		`event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-4o","usage":{"input_tokens":3,"output_tokens":5,"total_tokens":8}}}
+
+`,
+	}
+
+	var state any
+	var outputs [][]byte
+	for _, chunk := range chunks {
+		out, err := reg.TranslateResponseStream(context.Background(), protocol.Codex, protocol.OpenAI, "gpt-4o", nil, nil, []byte(chunk), &state)
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
+		outputs = append(outputs, out...)
+	}
+
+	if len(outputs) != 3 {
+		t.Fatalf("expected tool call chunk + finish chunk + [DONE], got %d", len(outputs))
+	}
+	if !strings.Contains(string(outputs[1]), `"finish_reason":"tool_calls"`) {
+		t.Fatalf("expected completion finish_reason=tool_calls, got:\n%s", outputs[1])
+	}
+	if string(outputs[2]) != "data: [DONE]\n\n" {
+		t.Fatalf("expected OpenAI DONE sentinel, got:\n%s", outputs[2])
+	}
+}
+
 // TestRegistry_Stream_CodexToAnthropic_FunctionCall 验证 Codex stream function_call
 // 转成 Anthropic content_block_start(type=tool_use) + input_json_delta + content_block_stop。
 func TestRegistry_Stream_CodexToAnthropic_FunctionCall(t *testing.T) {
