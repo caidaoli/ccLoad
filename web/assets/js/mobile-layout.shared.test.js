@@ -277,9 +277,9 @@ test('model-test 页在紧凑桌面宽度下将操作按钮整体下沉到第二
 
   const compactDesktopCss = compactDesktopSection[0];
   assert.match(compactDesktopCss, /\.model-test-toolbar\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto;/);
-  assert.match(compactDesktopCss, /\.model-test-toolbar-section--filters\s*\{[\s\S]*?grid-column:\s*1;[\s\S]*?grid-row:\s*1;/);
+  assert.match(compactDesktopCss, /\.model-test-toolbar-section--filters\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1;[\s\S]*?grid-row:\s*1;/);
   assert.match(compactDesktopCss, /\.model-test-toolbar-section--meta\s*\{[\s\S]*?grid-column:\s*1;[\s\S]*?grid-row:\s*2;/);
-  assert.match(compactDesktopCss, /\.model-test-toolbar-section--actions\s*\{[\s\S]*?grid-column:\s*2;[\s\S]*?grid-row:\s*1\s*\/\s*span\s*2;[\s\S]*?justify-content:\s*flex-end;/);
+  assert.match(compactDesktopCss, /\.model-test-toolbar-section--actions\s*\{[\s\S]*?grid-column:\s*2;[\s\S]*?grid-row:\s*2;[\s\S]*?justify-content:\s*flex-end;/);
   assert.match(compactDesktopCss, /\.model-test-toolbar-section--actions\s+\.model-test-toolbar-btn\s*\{[\s\S]*?flex:\s*0\s+0\s+auto;[\s\S]*?width:\s*auto;/);
 });
 
