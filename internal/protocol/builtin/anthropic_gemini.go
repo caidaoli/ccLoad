@@ -71,6 +71,7 @@ type anthropicToGeminiStreamState struct {
 	toolJSON       string
 	toolActive     bool
 	thinkingActive bool
+	blockIgnored   bool // for redacted_thinking and future block types that should be silently ignored
 }
 
 func convertAnthropicRequestToGemini(_ string, rawJSON []byte, _ bool) ([]byte, error) {
@@ -464,7 +465,7 @@ func convertAnthropicResponseToGeminiStream(_ context.Context, model string, _, 
 			case "thinking":
 				st.thinkingActive = true
 			case "redacted_thinking":
-				// Gemini 不支持 redacted_thinking，直接忽略
+				st.blockIgnored = true
 			}
 		}
 		return nil, nil
@@ -480,7 +481,7 @@ func convertAnthropicResponseToGeminiStream(_ context.Context, model string, _, 
 				// Gemini 不支持 thinking，静默消费，不输出
 				return nil, nil
 			}
-			if deltaType == "signature_delta" {
+			if deltaType == "signature_delta" && st.thinkingActive {
 				// thinking 签名，静默忽略
 				return nil, nil
 			}
@@ -494,6 +495,10 @@ func convertAnthropicResponseToGeminiStream(_ context.Context, model string, _, 
 		}
 	}
 	if typ := stringValue(payload["type"]); typ == "content_block_stop" {
+		if st.blockIgnored {
+			st.blockIgnored = false
+			return nil, nil
+		}
 		if st.thinkingActive {
 			st.thinkingActive = false
 			return nil, nil
@@ -516,6 +521,7 @@ func convertAnthropicResponseToGeminiStream(_ context.Context, model string, _, 
 			st.toolActive = false
 			return [][]byte{body}, nil
 		}
+		// text block stop is a no-op for Gemini; only tool and thinking blocks need flushing.
 	}
 	if typ := stringValue(payload["type"]); typ == "message_delta" {
 		usage, _ := payload["usage"].(map[string]any)
