@@ -368,6 +368,9 @@ func convertOpenAIResponseToGeminiStream(_ context.Context, model string, _, _, 
 		st.usage.totalTokens = usage.totalTokens
 		st.usage.seen = true
 	}
+	if st.done {
+		return nil, nil
+	}
 
 	choices, _ := chunk["choices"].([]any)
 	if len(choices) == 0 {
