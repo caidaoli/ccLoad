@@ -85,10 +85,11 @@ test('model-test 页渠道按钮去掉默认按钮边框和底色', () => {
   assert.match(sharedCss, /\.model-test-table\s+\.channel-link\s*\{[\s\S]*?padding:\s*0;[\s\S]*?border:\s*none;[\s\S]*?background:\s*transparent;/);
 });
 
-test('按协议过滤模型模式候选渠道和模型', () => {
+test('按协议测试时模型模式不再受渠道 protocol_transforms 配置过滤', () => {
   const sandbox = {
+    ALL_PROTOCOLS: ['anthropic', 'codex', 'openai', 'gemini'],
     channelsList: [
-      { id: 1, name: 'anthropic-with-openai-transform', channel_type: 'anthropic', protocol_transforms: ['openai'], priority: 10, models: ['claude-4'] },
+      { id: 1, name: 'native-anthropic-a', channel_type: 'anthropic', protocol_transforms: [], priority: 10, models: ['claude-4'] },
       { id: 2, name: 'native-openai', channel_type: 'openai', protocol_transforms: [], priority: 5, models: ['gpt-4.1'] },
       { id: 3, name: 'native-anthropic', channel_type: 'anthropic', protocol_transforms: [], priority: 3, models: ['claude-3.7'] }
     ]
@@ -105,11 +106,11 @@ test('按协议过滤模型模式候选渠道和模型', () => {
     ${extractFunction(script, 'getChannelsSupportingModel')}
   `, sandbox);
 
-  assert.deepEqual(Array.from(sandbox.getAllModelsForProtocol('openai')), ['claude-4', 'gpt-4.1']);
-  assert.deepEqual(Array.from(sandbox.getAllModelsForProtocol('anthropic')), ['claude-3.7', 'claude-4']);
+  assert.deepEqual(Array.from(sandbox.getAllModelsForProtocol('openai')), ['claude-3.7', 'claude-4', 'gpt-4.1']);
+  assert.deepEqual(Array.from(sandbox.getAllModelsForProtocol('anthropic')), ['claude-3.7', 'claude-4', 'gpt-4.1']);
   assert.deepEqual(
-    sandbox.getChannelsSupportingModel('openai', 'claude-4').map((channel) => channel.id),
-    [1]
+    sandbox.getChannelsSupportingModel('openai', 'claude-3.7').map((channel) => channel.id),
+    [3]
   );
 });
 
@@ -125,6 +126,7 @@ test('切换渠道后协议默认回退到渠道原生协议', () => {
 
 test('按渠道测试时重渲染不会覆盖用户已选的协议转换', () => {
   const sandbox = {
+    ALL_PROTOCOLS: ['anthropic', 'codex', 'openai', 'gemini'],
     TEST_MODE_CHANNEL: 'channel',
     TEST_MODE_MODEL: 'model',
     testMode: 'channel',
@@ -145,6 +147,36 @@ test('按渠道测试时重渲染不会覆盖用户已选的协议转换', () =>
 
   sandbox.ensureSelectedProtocolForCurrentMode();
   assert.equal(sandbox.selectedProtocol, 'openai');
+});
+
+test('按渠道测试时协议选项不再因渠道未配置 protocol_transforms 而禁用', () => {
+  const sandbox = {
+    TEST_MODE_CHANNEL: 'channel',
+    TEST_MODE_MODEL: 'model',
+    testMode: 'channel',
+    selectedProtocol: 'anthropic',
+    selectedChannel: {
+      channel_type: 'anthropic',
+      protocol_transforms: []
+    },
+    channelsList: [],
+    ALL_PROTOCOLS: ['anthropic', 'codex', 'openai', 'gemini'],
+    protocolTransformOptions: { innerHTML: '' },
+    protocolLabel(protocol) {
+      return protocol;
+    }
+  };
+
+  vm.runInNewContext(`
+    ${extractFunction(script, 'normalizeProtocol')}
+    ${extractFunction(script, 'getChannelType')}
+    ${extractFunction(script, 'getSupportedProtocols')}
+    ${extractFunction(script, 'ensureSelectedProtocolForCurrentMode')}
+    ${extractFunction(script, 'renderProtocolTransformOptions')}
+  `, sandbox);
+
+  sandbox.renderProtocolTransformOptions();
+  assert.doesNotMatch(sandbox.protocolTransformOptions.innerHTML, /\bdisabled\b/);
 });
 
 test('applyTestResultToRow 在失败时优先展示结构化上游错误而不是泛化状态文案', () => {

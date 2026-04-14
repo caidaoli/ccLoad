@@ -462,14 +462,11 @@ function getChannelType(channel) {
 }
 
 function getSupportedProtocols(channel) {
-  const protocols = [getChannelType(channel)];
-  const transforms = Array.isArray(channel?.protocol_transforms) ? channel.protocol_transforms : [];
-  transforms.forEach((protocol) => {
-    const normalized = normalizeProtocol(protocol);
-    if (!normalized || normalized === getChannelType(channel) || protocols.includes(normalized)) return;
-    protocols.push(normalized);
-  });
-  return protocols;
+  const upstreamProtocol = getChannelType(channel);
+  if (!ALL_PROTOCOLS.includes(upstreamProtocol)) {
+    return [upstreamProtocol];
+  }
+  return [...ALL_PROTOCOLS];
 }
 
 function channelSupportsProtocol(channel, protocol) {

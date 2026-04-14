@@ -96,6 +96,19 @@ func cloneHeaders(src http.Header) http.Header {
 	return dst
 }
 
+func supportsRuntimeTestProtocol(clientProtocol, upstreamProtocol string) bool {
+	if clientProtocol == "" || upstreamProtocol == "" {
+		return false
+	}
+	if !util.IsValidChannelType(clientProtocol) || !util.IsValidChannelType(upstreamProtocol) {
+		return false
+	}
+	if clientProtocol == upstreamProtocol {
+		return true
+	}
+	return protocol.SupportsTransform(protocol.Protocol(clientProtocol), protocol.Protocol(upstreamProtocol))
+}
+
 func (s *Server) buildChannelTestRequestPlan(
 	cfgForBuild *model.Config,
 	apiKey string,
@@ -450,10 +463,10 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 	}
 
 	clientProtocol := resolveClientProtocol(cfg, testReq)
-	if !cfg.SupportsProtocol(clientProtocol) {
+	if !supportsRuntimeTestProtocol(clientProtocol, cfg.GetChannelType()) {
 		return map[string]any{
 			"success": false,
-			"error":   fmt.Sprintf("渠道不支持协议转换 %s", clientProtocol),
+			"error":   fmt.Sprintf("不支持协议转换 %s -> %s", clientProtocol, cfg.GetChannelType()),
 		}
 	}
 
