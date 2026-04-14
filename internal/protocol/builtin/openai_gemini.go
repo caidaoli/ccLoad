@@ -72,7 +72,7 @@ type openAIChatCompletionResponse struct {
 	Created int64                        `json:"created"`
 	Model   string                       `json:"model"`
 	Choices []openAIChatCompletionChoice `json:"choices"`
-	Usage   openAIChatCompletionUsage    `json:"usage,omitempty"`
+	Usage   openAIChatCompletionUsage    `json:"usage"`
 }
 
 type openAIChatCompletionChoice struct {
@@ -241,8 +241,8 @@ func convertGeminiResponseToOpenAIStream(_ context.Context, model string, _, _, 
 	if line == "" {
 		return nil, nil
 	}
-	if strings.HasPrefix(line, "data:") {
-		line = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	if after, ok := strings.CutPrefix(line, "data:"); ok {
+		line = strings.TrimSpace(after)
 	}
 	if line == "[DONE]" {
 		return [][]byte{[]byte("data: [DONE]\n\n")}, nil
@@ -344,8 +344,8 @@ func convertOpenAIResponseToGeminiStream(_ context.Context, model string, _, _, 
 	if line == "" {
 		return nil, nil
 	}
-	if strings.HasPrefix(line, "data:") {
-		line = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	if after, ok := strings.CutPrefix(line, "data:"); ok {
+		line = strings.TrimSpace(after)
 	}
 	if line == "[DONE]" {
 		if st.done {
