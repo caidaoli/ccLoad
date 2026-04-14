@@ -17,6 +17,7 @@ const (
 	partKindFile       = "file"
 	partKindToolCall   = "tool_call"
 	partKindToolResult = "tool_result"
+	partKindReasoning  = "reasoning"
 )
 
 type conversation struct {
@@ -36,6 +37,7 @@ type conversationPart struct {
 	Media      *conversationMedia
 	ToolCall   *conversationToolCall
 	ToolResult *conversationToolResult
+	Reasoning  *conversationReasoning
 }
 
 type conversationMedia struct {
@@ -195,6 +197,7 @@ func normalizeAnthropicConversation(req anthropicMessagesRequest) (conversation,
 		if err != nil {
 			return conversation{}, fmt.Errorf("anthropic system: %w", err)
 		}
+		systemParts = dropReasoningParts(systemParts)
 		if len(systemParts) > 0 {
 			conv.Turns = append(conv.Turns, conversationTurn{Role: "system", Parts: systemParts})
 		}
@@ -204,6 +207,9 @@ func normalizeAnthropicConversation(req anthropicMessagesRequest) (conversation,
 		parts, err := extractAnthropicContentParts(msg.Content)
 		if err != nil {
 			return conversation{}, fmt.Errorf("anthropic message %d: %w", i, err)
+		}
+		if role != "assistant" {
+			parts = dropReasoningParts(parts)
 		}
 		switch role {
 		case "user", "assistant":
@@ -360,6 +366,9 @@ func encodeGeminiRequest(conv conversation) ([]byte, error) {
 	if len(systemParts) > 0 {
 		payload.SystemInstruction = &geminiSystemInstruction{Parts: make([]geminiPart, 0, len(systemParts))}
 		for _, part := range systemParts {
+			if part.Kind == partKindReasoning {
+				continue
+			}
 			geminiPart, err := encodeGeminiPart(part)
 			if err != nil {
 				return nil, err
@@ -374,6 +383,9 @@ func encodeGeminiRequest(conv conversation) ([]byte, error) {
 		}
 		parts := make([]geminiPart, 0, len(turn.Parts))
 		for _, part := range turn.Parts {
+			if part.Kind == partKindReasoning {
+				continue
+			}
 			geminiPart, err := encodeGeminiPart(part)
 			if err != nil {
 				return nil, fmt.Errorf("gemini turn %d: %w", i, err)
@@ -511,17 +523,29 @@ func encodeOpenAIRequest(model string, conv conversation, stream bool) ([]byte, 
 		case "system", "developer", "user", "assistant":
 			contentParts := make([]map[string]any, 0, len(turn.Parts))
 			toolCalls := make([]map[string]any, 0)
+			reasoningParts := make([]map[string]any, 0)
+			var reasoningContent strings.Builder
 			flushMessage := func() {
-				if len(contentParts) == 0 && len(toolCalls) == 0 {
+				if len(contentParts) == 0 && len(toolCalls) == 0 && reasoningContent.Len() == 0 && len(reasoningParts) == 0 {
 					return
 				}
 				message := map[string]any{"role": role, "content": encodeOpenAIContentValue(contentParts)}
 				if len(toolCalls) > 0 {
 					message["tool_calls"] = toolCalls
 				}
+				if role == "assistant" {
+					if reasoningContent.Len() > 0 {
+						message["reasoning_content"] = reasoningContent.String()
+					}
+					if len(reasoningParts) > 0 {
+						message["reasoning"] = reasoningParts
+					}
+				}
 				messages = append(messages, message)
 				contentParts = nil
 				toolCalls = nil
+				reasoningParts = nil
+				reasoningContent.Reset()
 			}
 			for _, part := range turn.Parts {
 				switch part.Kind {
@@ -558,6 +582,16 @@ func encodeOpenAIRequest(model string, conv conversation, stream bool) ([]byte, 
 						message["name"] = part.ToolResult.Name
 					}
 					messages = append(messages, message)
+				case partKindReasoning:
+					if role != "assistant" {
+						continue
+					}
+					if part.Reasoning != nil && part.Reasoning.Text != "" {
+						reasoningContent.WriteString(part.Reasoning.Text)
+					}
+					if entry := openAIReasoningEntry(part.Reasoning); entry != nil {
+						reasoningParts = append(reasoningParts, entry)
+					}
 				default:
 					return nil, fmt.Errorf("%w: unsupported openai content kind %q", protocol.ErrUnsupportedRequestShape, part.Kind)
 				}
@@ -603,6 +637,10 @@ func encodeOpenAIRequest(model string, conv conversation, stream bool) ([]byte, 
 		}
 		encoded.ToolCallID = stringValue(message["tool_call_id"])
 		encoded.Name = stringValue(message["name"])
+		encoded.ReasoningContent = stringValue(message["reasoning_content"])
+		if rawReasoning, ok := message["reasoning"]; ok {
+			encoded.Reasoning = rawReasoning
+		}
 		payload.Messages = append(payload.Messages, encoded)
 	}
 	if len(conv.Tools) > 0 {
@@ -739,6 +777,18 @@ func encodeCodexRequest(model string, conv conversation, stream bool) ([]byte, e
 						return nil, fmt.Errorf("codex turn %d: %w", i, err)
 					}
 					input = append(input, encoded)
+				case partKindReasoning:
+					if role != "assistant" {
+						continue
+					}
+					if len(messageParts) > 0 {
+						input = append(input, map[string]any{"type": "message", "role": role, "content": messageParts})
+						messageParts = nil
+					}
+					encoded := encodeCodexReasoningPart(part.Reasoning)
+					if encoded != nil {
+						input = append(input, encoded)
+					}
 				default:
 					return nil, fmt.Errorf("%w: unsupported codex content kind %q", protocol.ErrUnsupportedRequestShape, part.Kind)
 				}
@@ -1069,16 +1119,7 @@ func encodeOpenAIToolCall(call *conversationToolCall) (map[string]any, error) {
 }
 
 func encodeOpenAIToolResultContent(parts []conversationPart) (any, error) {
-	for _, part := range parts {
-		if part.Kind != partKindText {
-			return nil, fmt.Errorf("%w: openai tool results only support text content", protocol.ErrUnsupportedRequestShape)
-		}
-	}
-	var builder strings.Builder
-	for _, part := range parts {
-		builder.WriteString(part.Text)
-	}
-	return builder.String(), nil
+	return encodeToolResultContent(parts)
 }
 
 func encodeOpenAIToolChoice(choice conversationToolChoice) any {
@@ -1677,6 +1718,10 @@ func decodeAnthropicContentBlock(block map[string]any) (conversationPart, error)
 			IsError: boolValue(block["is_error"]),
 			Parts:   parts,
 		}}, nil
+	case "thinking":
+		return newReasoningPart("thinking", stringValue(block["thinking"]), stringValue(block["signature"]), ""), nil
+	case "redacted_thinking":
+		return newReasoningPart("redacted_thinking", "", "", stringValue(block["data"])), nil
 	default:
 		return conversationPart{}, fmt.Errorf("%w: unsupported anthropic content block type %q", protocol.ErrUnsupportedRequestShape, typ)
 	}
@@ -1699,7 +1744,7 @@ func extractAnthropicToolResultParts(content any) ([]conversationPart, error) {
 			if err != nil {
 				return nil, err
 			}
-			if part.Kind == partKindToolCall || part.Kind == partKindToolResult {
+			if part.Kind == partKindToolCall || part.Kind == partKindToolResult || part.Kind == partKindReasoning {
 				return nil, fmt.Errorf("%w: nested anthropic tool blocks are unsupported", protocol.ErrUnsupportedRequestShape)
 			}
 			if part.Kind != "" {
@@ -2031,6 +2076,20 @@ func appendTextPart(parts []conversationPart, text string) []conversationPart {
 		return parts
 	}
 	return append(parts, conversationPart{Kind: partKindText, Text: text})
+}
+
+func dropReasoningParts(parts []conversationPart) []conversationPart {
+	if len(parts) == 0 {
+		return nil
+	}
+	filtered := parts[:0]
+	for _, part := range parts {
+		if part.Kind == partKindReasoning {
+			continue
+		}
+		filtered = append(filtered, part)
+	}
+	return filtered
 }
 
 func resolveToolResultNames(conv *conversation) {
