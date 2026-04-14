@@ -50,6 +50,10 @@
                   <input type="number" id="concurrency" value="5" min="1" max="20" class="model-test-concurrency-input">
                 </label>
               </div>
+              <label class="model-test-control model-test-control--content">
+                <span class="model-test-control__label" data-i18n="modelTest.content">内容</span>
+                <input type="text" id="modelTestContent" value="" class="model-test-inline-input" data-i18n-placeholder="common.loading" placeholder="加载中...">
+              </label>
               <label id="modelSelectorLabel" class="model-test-control model-test-control--model hidden">
                 <span class="model-test-control__label" data-i18n="common.model">模型</span>
                 <div class="filter-combobox-wrapper model-test-model-combobox">
@@ -64,10 +68,6 @@
                   >
                   <div id="testModelSelectDropdown" class="filter-dropdown" role="listbox" aria-label="模型"></div>
                 </div>
-              </label>
-              <label class="model-test-control model-test-control--content">
-                <span class="model-test-control__label" data-i18n="modelTest.content">内容</span>
-                <input type="text" id="modelTestContent" value="" class="model-test-inline-input" data-i18n-placeholder="common.loading" placeholder="加载中...">
               </label>
             </div>
             <div class="model-test-toolbar-section model-test-toolbar-section--meta">

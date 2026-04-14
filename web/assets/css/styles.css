@@ -2472,7 +2472,10 @@ body {
 }
 
 .model-test-toolbar-section--filters {
-  flex: 1 1 720px;
+  flex: 1 1 auto;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
 }
 
 .model-test-toolbar-section--actions {
@@ -2500,7 +2503,8 @@ body {
 }
 
 .model-test-control--content {
-  flex: 1 1 200px;
+  flex: 1 1 360px;
+  min-width: 220px;
 }
 
 .model-test-control--name-filter {
@@ -2552,7 +2556,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px 12px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   flex: 0 0 auto;
 }
 
@@ -2616,6 +2620,7 @@ body {
     grid-row: 1;
     width: auto;
     min-width: 0;
+    flex-wrap: wrap;
   }
 
   .model-test-toolbar-section--meta {
@@ -2647,6 +2652,7 @@ body {
 
   .model-test-control--content {
     flex: 1 1 420px;
+    min-width: 240px;
   }
 
   .model-test-progress {
@@ -2669,6 +2675,7 @@ body {
     grid-row: 1;
     width: 100%;
     min-width: 0;
+    flex-wrap: wrap;
   }
 
   .model-test-toolbar-section--actions,
@@ -2702,6 +2709,7 @@ body {
 
   .model-test-control--content {
     flex: 1 1 360px;
+    min-width: 220px;
   }
 
   .model-test-progress {
@@ -2725,6 +2733,10 @@ body {
     width: 100%;
     min-width: 0;
     margin-left: 0;
+  }
+
+  .model-test-toolbar-section--filters {
+    flex-wrap: wrap;
   }
 
   .model-test-toolbar-section--actions {
