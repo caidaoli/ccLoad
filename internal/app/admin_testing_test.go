@@ -621,6 +621,84 @@ func TestHandleChannelTest_UsesProtocolTransformForTranslatedRequest(t *testing.
 	}
 }
 
+func TestHandleChannelTest_UsesCodexProtocolTransformWithBasePathPrefix(t *testing.T) {
+	var gotPath string
+	var gotBody string
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll failed: %v", err)
+		}
+		gotPath = r.URL.Path
+		gotBody = string(body)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"id": "msg_test",
+			"type": "message",
+			"role": "assistant",
+			"content": [{"type": "text", "text": "translated codex ok"}],
+			"model": "claude-3-5-sonnet",
+			"usage": {"input_tokens": 10, "output_tokens": 5}
+		}`))
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	ctx := context.Background()
+
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name:         "anthropic-with-prefixed-base-path",
+		URL:          upstream.URL + "/anthropic",
+		Priority:     1,
+		ChannelType:  "anthropic",
+		ModelEntries: []model.ModelEntry{{Model: "claude-3-5-sonnet"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test-key"}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/test", created.ID), map[string]any{
+		"model":              "claude-3-5-sonnet",
+		"protocol_transform": "codex",
+		"content":            "hello",
+	}))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	dataSuccess, _ := resp.Data["success"].(bool)
+	if !dataSuccess {
+		t.Fatalf("expected data.success=true, data=%+v", resp.Data)
+	}
+	if gotPath != "/anthropic/v1/messages" {
+		t.Fatalf("path=%q, want %q", gotPath, "/anthropic/v1/messages")
+	}
+	if !strings.Contains(gotBody, `"messages"`) {
+		t.Fatalf("expected anthropic request body, body=%s", gotBody)
+	}
+
+	apiResp, ok := resp.Data["api_response"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected translated api_response map, data=%+v", resp.Data)
+	}
+	if _, ok := apiResp["object"]; !ok {
+		t.Fatalf("expected codex-compatible api_response, got=%+v", apiResp)
+	}
+}
+
 // TestHandleChannelTest_SuccessfulAPI 使用 mock server 模拟成功的 API 调用
 func TestHandleChannelTest_SuccessfulAPI(t *testing.T) {
 	// 创建 mock 上游服务器，返回成功的 Anthropic 响应
