@@ -1,6 +1,7 @@
 package protocol_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"strings"
@@ -170,5 +171,45 @@ func TestRegistry_TranslateResponseStream_CodexToGemini_CompletionWithoutUsageSt
 	}
 	if strings.Contains(string(done[0]), `"usageMetadata"`) {
 		t.Fatalf("expected completion without usage metadata, got %#v", done)
+	}
+}
+
+func TestRegistry_TranslateResponseStream_CodexToGemini_ReasoningWithText(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	chunk := "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"reasoning\",\"id\":\"rs_01\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"step by step\"}]}}\n\n"
+
+	var state any
+	out, err := reg.TranslateResponseStream(context.Background(), protocol.Codex, protocol.Gemini, "gemini-2.5-pro", nil, nil, []byte(chunk), &state)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	if len(out) == 0 {
+		t.Fatalf("expected gemini text chunk for reasoning, got none")
+	}
+	result := string(bytes.Join(out, nil))
+	if !strings.Contains(result, `"step by step"`) {
+		t.Fatalf("expected reasoning text in output, got:\n%s", result)
+	}
+}
+
+func TestRegistry_TranslateResponseStream_CodexToGemini_ReasoningEmpty(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	// reasoning item 无 summary text（空 summary 数组）
+	chunk := "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"reasoning\",\"id\":\"rs_02\",\"summary\":[]}}\n\n"
+
+	var state any
+	out, err := reg.TranslateResponseStream(context.Background(), protocol.Codex, protocol.Gemini, "gemini-2.5-pro", nil, nil, []byte(chunk), &state)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	// 空 reasoning → 静默忽略，无输出
+	if len(out) != 0 {
+		t.Fatalf("expected no output for empty reasoning, got: %v", out)
 	}
 }
