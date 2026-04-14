@@ -573,7 +573,10 @@ func geminiPartsFromAnthropicContent(value any) ([]geminiPart, error) {
 	return geminiPartsFromConversationParts(parts)
 }
 
-func geminiPartsFromCodexOutput(value any) ([]geminiPart, error) {
+func geminiPartsFromCodexOutput(value any, restore func(string) string) ([]geminiPart, error) {
+	if restore == nil {
+		restore = func(name string) string { return name }
+	}
 	items, err := decodeObjectSlice(value)
 	if err != nil {
 		return nil, err
@@ -592,6 +595,7 @@ func geminiPartsFromCodexOutput(value any) ([]geminiPart, error) {
 			if err != nil {
 				return nil, err
 			}
+			call.Name = restore(call.Name)
 			parts = append(parts, conversationPart{Kind: partKindToolCall, ToolCall: &call})
 		case "function_call_output":
 			result, err := decodeCodexToolResult(item)

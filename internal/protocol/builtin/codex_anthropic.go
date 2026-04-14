@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 
+	"ccLoad/internal/protocol"
+
 	"github.com/bytedance/sonic"
 )
 
@@ -17,6 +19,7 @@ type codexToAnthropicStreamState struct {
 	thinkingBlockOpen   bool
 	thinkingStopPending bool
 	thinkingSignature   string
+	toolNameMap         map[string]string
 	usage               struct {
 		inputTokens              int64
 		outputTokens             int64
@@ -96,12 +99,13 @@ func convertAnthropicResponseToCodexNonStream(_ context.Context, model string, _
 	return sonic.Marshal(out)
 }
 
-func convertCodexResponseToAnthropicNonStream(_ context.Context, model string, _, _, rawJSON []byte) ([]byte, error) {
+func convertCodexResponseToAnthropicNonStream(_ context.Context, model string, rawReq, translatedReq, rawJSON []byte) ([]byte, error) {
 	var resp map[string]any
 	if err := sonic.Unmarshal(rawJSON, &resp); err != nil {
 		return nil, err
 	}
-	message, err := openAIMessageFromCodexOutput(resp["output"])
+	aliases := codexToolAliasesFromRequests(protocol.Anthropic, rawReq, translatedReq)
+	message, err := openAIMessageFromCodexOutput(resp["output"], aliases.restore)
 	if err != nil {
 		return nil, err
 	}
@@ -325,7 +329,7 @@ func convertAnthropicResponseToCodexStream(_ context.Context, model string, _, _
 	return nil, nil
 }
 
-func convertCodexResponseToAnthropicStream(_ context.Context, model string, _, _, rawJSON []byte, param *any) ([][]byte, error) {
+func convertCodexResponseToAnthropicStream(_ context.Context, model string, rawReq, translatedReq, rawJSON []byte, param *any) ([][]byte, error) {
 	if param == nil {
 		var local any
 		param = &local
@@ -569,6 +573,7 @@ func convertCodexResponseToAnthropicStream(_ context.Context, model string, _, _
 			if err != nil {
 				return nil, err
 			}
+			call.Name = st.restoreToolName(rawReq, translatedReq, call.Name)
 			partialJSON := "{}"
 			if len(call.Arguments) > 0 {
 				partialJSON = string(call.Arguments)
@@ -795,6 +800,16 @@ func codexAnthropicStopReason(st *codexToAnthropicStreamState) string {
 		return "tool_use"
 	}
 	return "end_turn"
+}
+
+func (st *codexToAnthropicStreamState) restoreToolName(rawReq, translatedReq []byte, name string) string {
+	if st.toolNameMap == nil {
+		st.toolNameMap = codexToolAliasesFromRequests(protocol.Anthropic, rawReq, translatedReq).ShortToOriginal
+	}
+	if original := st.toolNameMap[name]; original != "" {
+		return original
+	}
+	return name
 }
 
 func codexAnthropicEnsureTextBlockOpen(st *codexToAnthropicStreamState) ([][]byte, error) {

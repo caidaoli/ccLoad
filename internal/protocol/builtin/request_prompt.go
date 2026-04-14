@@ -692,6 +692,7 @@ func encodeCodexRequest(model string, conv conversation, stream bool) ([]byte, e
 	if err != nil {
 		return nil, err
 	}
+	toolAliases := buildCodexToolAliases(collectCodexAliasNames(conv))
 	out := map[string]any{
 		"model": model,
 		"input": make([]map[string]any, 0, len(turns)),
@@ -706,7 +707,7 @@ func encodeCodexRequest(model string, conv conversation, stream bool) ([]byte, e
 		tools := make([]map[string]any, 0, len(conv.Tools))
 		for _, tool := range conv.Tools {
 			if tool.toolType() == "function" {
-				item := map[string]any{"type": "function", "name": tool.Name}
+				item := map[string]any{"type": "function", "name": toolAliases.shorten(tool.Name)}
 				if tool.Description != "" {
 					item["description"] = tool.Description
 				}
@@ -730,7 +731,7 @@ func encodeCodexRequest(model string, conv conversation, stream bool) ([]byte, e
 		case "named":
 			if conv.ToolChoice.toolType() == "function" {
 				choice["type"] = "function"
-				choice["name"] = conv.ToolChoice.Name
+				choice["name"] = toolAliases.shorten(conv.ToolChoice.Name)
 			} else {
 				choice["type"] = conv.ToolChoice.toolType()
 			}
@@ -762,7 +763,7 @@ func encodeCodexRequest(model string, conv conversation, stream bool) ([]byte, e
 						input = append(input, map[string]any{"type": "message", "role": role, "content": messageParts})
 						messageParts = nil
 					}
-					encoded, err := encodeCodexToolCall(part.ToolCall)
+					encoded, err := encodeCodexToolCallWithAliases(part.ToolCall, toolAliases)
 					if err != nil {
 						return nil, fmt.Errorf("codex turn %d: %w", i, err)
 					}
@@ -772,7 +773,7 @@ func encodeCodexRequest(model string, conv conversation, stream bool) ([]byte, e
 						input = append(input, map[string]any{"type": "message", "role": role, "content": messageParts})
 						messageParts = nil
 					}
-					encoded, err := encodeCodexToolResult(part.ToolResult)
+					encoded, err := encodeCodexToolResultWithAliases(part.ToolResult, toolAliases)
 					if err != nil {
 						return nil, fmt.Errorf("codex turn %d: %w", i, err)
 					}
@@ -801,7 +802,7 @@ func encodeCodexRequest(model string, conv conversation, stream bool) ([]byte, e
 				if part.Kind != partKindToolResult || part.ToolResult == nil {
 					return nil, fmt.Errorf("%w: codex tool role only supports tool results", protocol.ErrUnsupportedRequestShape)
 				}
-				encoded, err := encodeCodexToolResult(part.ToolResult)
+				encoded, err := encodeCodexToolResultWithAliases(part.ToolResult, toolAliases)
 				if err != nil {
 					return nil, fmt.Errorf("codex turn %d: %w", i, err)
 				}
@@ -1192,6 +1193,10 @@ func encodeCodexContentPart(part conversationPart) (map[string]any, error) {
 }
 
 func encodeCodexToolCall(call *conversationToolCall) (map[string]any, error) {
+	return encodeCodexToolCallWithAliases(call, codexToolAliases{})
+}
+
+func encodeCodexToolCallWithAliases(call *conversationToolCall, aliases codexToolAliases) (map[string]any, error) {
 	if call == nil {
 		return nil, fmt.Errorf("%w: missing codex tool call", protocol.ErrUnsupportedRequestShape)
 	}
@@ -1202,12 +1207,12 @@ func encodeCodexToolCall(call *conversationToolCall) (map[string]any, error) {
 	return map[string]any{
 		"type":      "function_call",
 		"call_id":   call.ID,
-		"name":      call.Name,
+		"name":      aliases.shorten(call.Name),
 		"arguments": arguments,
 	}, nil
 }
 
-func encodeCodexToolResult(result *conversationToolResult) (map[string]any, error) {
+func encodeCodexToolResultWithAliases(result *conversationToolResult, aliases codexToolAliases) (map[string]any, error) {
 	if result == nil {
 		return nil, fmt.Errorf("%w: missing codex tool result", protocol.ErrUnsupportedRequestShape)
 	}
@@ -1221,7 +1226,7 @@ func encodeCodexToolResult(result *conversationToolResult) (map[string]any, erro
 		"output":  output,
 	}
 	if result.Name != "" {
-		item["name"] = result.Name
+		item["name"] = aliases.shorten(result.Name)
 	}
 	if result.IsError {
 		item["is_error"] = true

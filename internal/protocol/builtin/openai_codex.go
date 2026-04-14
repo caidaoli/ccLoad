@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"ccLoad/internal/protocol"
+
 	"github.com/bytedance/sonic"
 )
 
@@ -43,6 +45,7 @@ type codexToOpenAIStreamState struct {
 	}
 	toolCallIndex int
 	sawToolCall   bool
+	toolNameMap   map[string]string
 }
 
 func convertOpenAIRequestToCodex(model string, rawJSON []byte, stream bool) ([]byte, error) {
@@ -98,12 +101,13 @@ func convertOpenAIResponseToCodexNonStream(_ context.Context, model string, _, _
 	return sonic.Marshal(out)
 }
 
-func convertCodexResponseToOpenAINonStream(_ context.Context, model string, _, _, rawJSON []byte) ([]byte, error) {
+func convertCodexResponseToOpenAINonStream(_ context.Context, model string, rawReq, translatedReq, rawJSON []byte) ([]byte, error) {
 	var resp map[string]any
 	if err := sonic.Unmarshal(rawJSON, &resp); err != nil {
 		return nil, err
 	}
-	message, err := openAIMessageFromCodexOutput(resp["output"])
+	aliases := codexToolAliasesFromRequests(protocol.OpenAI, rawReq, translatedReq)
+	message, err := openAIMessageFromCodexOutput(resp["output"], aliases.restore)
 	if err != nil {
 		return nil, err
 	}
@@ -289,7 +293,7 @@ func convertOpenAIResponseToCodexStream(_ context.Context, model string, _, _, r
 	return [][]byte{append([]byte("event: response.output_text.delta\ndata: "), append(body, []byte("\n\n")...)...)}, nil
 }
 
-func convertCodexResponseToOpenAIStream(_ context.Context, model string, _, _, rawJSON []byte, param *any) ([][]byte, error) {
+func convertCodexResponseToOpenAIStream(_ context.Context, model string, rawReq, translatedReq, rawJSON []byte, param *any) ([][]byte, error) {
 	if param == nil {
 		var local any
 		param = &local
@@ -395,6 +399,7 @@ func convertCodexResponseToOpenAIStream(_ context.Context, model string, _, _, r
 			if err != nil {
 				return nil, err
 			}
+			call.Name = st.restoreToolName(rawReq, translatedReq, call.Name)
 			// arguments 可能是 string 或 object，统一序列化为字符串
 			argsStr := "{}"
 			if len(call.Arguments) > 0 {
@@ -524,7 +529,10 @@ func codexOutputItemsFromOpenAIResponse(resp map[string]any) ([]map[string]any, 
 	return items, nil
 }
 
-func openAIMessageFromCodexOutput(output any) (map[string]any, error) {
+func openAIMessageFromCodexOutput(output any, restore func(string) string) (map[string]any, error) {
+	if restore == nil {
+		restore = func(name string) string { return name }
+	}
 	items, _ := output.([]any)
 	contentParts := make([]map[string]any, 0)
 	toolCalls := make([]map[string]any, 0)
@@ -554,6 +562,7 @@ func openAIMessageFromCodexOutput(output any) (map[string]any, error) {
 			if err != nil {
 				return nil, err
 			}
+			call.Name = restore(call.Name)
 			encoded, err := encodeOpenAIToolCall(&call)
 			if err != nil {
 				return nil, err
@@ -588,6 +597,16 @@ func openAIMessageFromCodexOutput(output any) (map[string]any, error) {
 		message["reasoning"] = reasoning
 	}
 	return message, nil
+}
+
+func (st *codexToOpenAIStreamState) restoreToolName(rawReq, translatedReq []byte, name string) string {
+	if st.toolNameMap == nil {
+		st.toolNameMap = codexToolAliasesFromRequests(protocol.OpenAI, rawReq, translatedReq).ShortToOriginal
+	}
+	if original := st.toolNameMap[name]; original != "" {
+		return original
+	}
+	return name
 }
 
 func encodeCodexOutputContentPart(part conversationPart) (map[string]any, error) {
