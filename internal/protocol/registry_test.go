@@ -1313,6 +1313,26 @@ func TestBuildTransformPlan_SupportsCodexToOpenAI(t *testing.T) {
 	}
 }
 
+func TestBuildTransformPlan_SupportsCodexToAnthropicWithBasePathPrefix(t *testing.T) {
+	plan, err := protocol.BuildTransformPlan(
+		protocol.Codex,
+		protocol.Anthropic,
+		"/anthropic/v1/responses",
+		"/anthropic/v1/messages",
+		[]byte(`{"model":"claude-3-5-sonnet"}`),
+		nil,
+		"claude-3-5-sonnet",
+		"",
+		false,
+	)
+	if err != nil {
+		t.Fatalf("BuildTransformPlan failed: %v", err)
+	}
+	if !plan.NeedsTransform || plan.RequestFamily != protocol.RequestFamilyResponses {
+		t.Fatalf("unexpected plan: %+v", plan)
+	}
+}
+
 func TestBuildTransformPlan_RejectsUnsupportedFamilyForSupportedPair(t *testing.T) {
 	_, err := protocol.BuildTransformPlan(
 		protocol.OpenAI,

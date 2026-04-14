@@ -108,23 +108,32 @@ func SupportsTransformFamily(client, upstream Protocol, family RequestFamily) bo
 	return false
 }
 
+func matchesCanonicalEndpoint(path, endpoint string) bool {
+	idx := strings.Index(path, endpoint)
+	if idx < 0 {
+		return false
+	}
+	after := idx + len(endpoint)
+	return after == len(path) || path[after] == '?' || path[after] == '/'
+}
+
 // DetectRequestFamily infers the client request surface from the request path.
 func DetectRequestFamily(path string) RequestFamily {
 	path = strings.TrimSpace(path)
 	switch {
-	case strings.HasPrefix(path, "/v1/chat/completions"):
+	case matchesCanonicalEndpoint(path, "/v1/chat/completions"):
 		return RequestFamilyChatCompletions
-	case strings.HasPrefix(path, "/v1/responses"):
+	case matchesCanonicalEndpoint(path, "/v1/responses"):
 		return RequestFamilyResponses
-	case strings.HasPrefix(path, "/v1/messages"):
+	case matchesCanonicalEndpoint(path, "/v1/messages"):
 		return RequestFamilyMessages
 	case strings.Contains(path, ":generateContent"), strings.Contains(path, ":streamGenerateContent"):
 		return RequestFamilyGenerateContent
-	case strings.HasPrefix(path, "/v1/completions"):
+	case matchesCanonicalEndpoint(path, "/v1/completions"):
 		return RequestFamilyCompletions
-	case strings.HasPrefix(path, "/v1/embeddings"):
+	case matchesCanonicalEndpoint(path, "/v1/embeddings"):
 		return RequestFamilyEmbeddings
-	case strings.HasPrefix(path, "/v1/images/"):
+	case strings.Contains(path, "/v1/images/"):
 		return RequestFamilyImages
 	default:
 		return RequestFamilyUnknown
