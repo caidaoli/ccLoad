@@ -1,6 +1,7 @@
 package protocol_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"strings"
@@ -139,5 +140,120 @@ func TestRegistry_TranslateResponseStream_AnthropicToGemini(t *testing.T) {
 	}
 	if len(usage) != 1 || !strings.Contains(string(usage[0]), `"promptTokenCount":3`) || !strings.Contains(string(usage[0]), `"candidatesTokenCount":5`) || !strings.Contains(string(usage[0]), `"finishReason":"STOP"`) {
 		t.Fatalf("unexpected gemini usage chunk: %#v", usage)
+	}
+}
+
+func TestRegistry_TranslateResponseStream_AnthropicToGemini_ThinkingBlock(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	// Anthropic SSE: thinking block followed by text block
+	chunks := []string{
+		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude-opus-4-5\"}}\n\n",
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"step 1\"}}\n\n",
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello gemini\"}}\n\n",
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":10}}\n\n",
+	}
+
+	var state any
+	var allOutput bytes.Buffer
+	for _, chunk := range chunks {
+		out, err := reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.Gemini, "claude-opus-4-5", nil, nil, []byte(chunk), &state)
+		if err != nil {
+			t.Fatalf("stream error on chunk %q: %v", chunk, err)
+		}
+		for _, b := range out {
+			allOutput.Write(b)
+		}
+	}
+
+	result := allOutput.String()
+	// thinking 内容不应出现在 Gemini 输出中（Gemini 不支持 thinking）
+	if strings.Contains(result, "step 1") {
+		t.Fatalf("thinking content should be discarded, got:\n%s", result)
+	}
+	// 文本块应正常输出
+	if !strings.Contains(result, `"hello gemini"`) {
+		t.Fatalf("expected text content 'hello gemini', got:\n%s", result)
+	}
+	// 必须有 finishReason=STOP
+	if !strings.Contains(result, `"finishReason":"STOP"`) {
+		t.Fatalf("expected finishReason=STOP, got:\n%s", result)
+	}
+}
+
+func TestRegistry_TranslateResponseStream_AnthropicToGemini_RedactedThinking(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	chunks := []string{
+		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_2\",\"model\":\"claude-opus-4-5\"}}\n\n",
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"redacted_thinking\",\"data\":\"opaque\"}}\n\n",
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"answer\"}}\n\n",
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n",
+	}
+
+	var state any
+	var allOutput bytes.Buffer
+	for _, chunk := range chunks {
+		out, err := reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.Gemini, "claude-opus-4-5", nil, nil, []byte(chunk), &state)
+		if err != nil {
+			t.Fatalf("stream error on chunk %q: %v", chunk, err)
+		}
+		for _, b := range out {
+			allOutput.Write(b)
+		}
+	}
+
+	result := allOutput.String()
+	// redacted_thinking 不应导致错误，文本内容正常输出
+	if !strings.Contains(result, `"answer"`) {
+		t.Fatalf("expected text 'answer', got:\n%s", result)
+	}
+	if !strings.Contains(result, `"finishReason":"STOP"`) {
+		t.Fatalf("expected finishReason=STOP, got:\n%s", result)
+	}
+}
+
+func TestRegistry_TranslateResponseStream_AnthropicToGemini_SignatureDelta(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	// signature_delta 紧跟 thinking_delta，流不应挂起
+	chunks := []string{
+		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_3\",\"model\":\"claude-opus-4-5\"}}\n\n",
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"reasoning\"}}\n\n",
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"abc123\"}}\n\n",
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}\n\n",
+	}
+
+	var state any
+	var allOutput bytes.Buffer
+	for _, chunk := range chunks {
+		out, err := reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.Gemini, "claude-opus-4-5", nil, nil, []byte(chunk), &state)
+		if err != nil {
+			t.Fatalf("stream error on chunk %q: %v", chunk, err)
+		}
+		for _, b := range out {
+			allOutput.Write(b)
+		}
+	}
+
+	result := allOutput.String()
+	// 必须有 finishReason（流完整关闭）
+	if !strings.Contains(result, `"finishReason":"STOP"`) {
+		t.Fatalf("expected finishReason=STOP, stream hung: got:\n%s", result)
 	}
 }
