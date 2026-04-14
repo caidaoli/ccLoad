@@ -1,6 +1,7 @@
 package protocol_test
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -140,5 +141,77 @@ func TestBuildTransformPlan_SameProtocolPassthrough(t *testing.T) {
 	}
 	if got := plan.UpstreamPath; got != "/v1beta/models/gemini-2.5-pro:generateContent" {
 		t.Fatalf("expected upstream path passthrough, got %s", got)
+	}
+}
+
+func TestRegistry_TranslateResponseStream_OpenAIToGemini_ReasoningContent(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	chunks := []string{
+		// reasoning_content delta
+		`data: {"id":"chatcmpl-r1","object":"chat.completion.chunk","model":"o3","choices":[{"index":0,"delta":{"reasoning_content":"let me think"}}]}` + "\n\n",
+		// regular content delta
+		`data: {"id":"chatcmpl-r1","object":"chat.completion.chunk","model":"o3","choices":[{"index":0,"delta":{"content":"answer"}}]}` + "\n\n",
+		// finish
+		`data: {"id":"chatcmpl-r1","object":"chat.completion.chunk","model":"o3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n",
+		"data: [DONE]\n\n",
+	}
+
+	var state any
+	var allOutput bytes.Buffer
+	for _, chunk := range chunks {
+		out, err := reg.TranslateResponseStream(context.Background(), protocol.OpenAI, protocol.Gemini, "o3", nil, nil, []byte(chunk), &state)
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
+		for _, b := range out {
+			allOutput.Write(b)
+		}
+	}
+
+	result := allOutput.String()
+	// reasoning_content 应转为 text part
+	if !strings.Contains(result, `"let me think"`) {
+		t.Fatalf("expected reasoning_content in output, got:\n%s", result)
+	}
+	// 普通 content 也应输出
+	if !strings.Contains(result, `"answer"`) {
+		t.Fatalf("expected content 'answer', got:\n%s", result)
+	}
+	// 流应完整关闭
+	if !strings.Contains(result, `"finishReason":"STOP"`) {
+		t.Fatalf("expected finishReason=STOP, got:\n%s", result)
+	}
+}
+
+func TestRegistry_TranslateResponseStream_OpenAIToGemini_ReasoningContentOnly(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	// 只有 reasoning_content，无普通 content
+	chunks := []string{
+		`data: {"id":"chatcmpl-r2","object":"chat.completion.chunk","model":"o3","choices":[{"index":0,"delta":{"reasoning_content":"thinking..."}}]}` + "\n\n",
+		`data: {"id":"chatcmpl-r2","object":"chat.completion.chunk","model":"o3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n",
+		"data: [DONE]\n\n",
+	}
+
+	var state any
+	var allOutput bytes.Buffer
+	for _, chunk := range chunks {
+		out, err := reg.TranslateResponseStream(context.Background(), protocol.OpenAI, protocol.Gemini, "o3", nil, nil, []byte(chunk), &state)
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
+		for _, b := range out {
+			allOutput.Write(b)
+		}
+	}
+
+	result := allOutput.String()
+	if !strings.Contains(result, `"thinking..."`) {
+		t.Fatalf("expected reasoning text, got:\n%s", result)
 	}
 }
