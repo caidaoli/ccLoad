@@ -2616,7 +2616,7 @@ body {
   }
 
   .model-test-toolbar-section--filters {
-    grid-column: 1;
+    grid-column: 1 / -1;
     grid-row: 1;
     width: auto;
     min-width: 0;
@@ -2635,7 +2635,7 @@ body {
 
   .model-test-toolbar-section--actions {
     grid-column: 2;
-    grid-row: 1 / span 2;
+    grid-row: 2;
     width: auto;
     min-width: 0;
     justify-content: flex-end;
