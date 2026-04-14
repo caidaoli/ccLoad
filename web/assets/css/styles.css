@@ -5236,7 +5236,7 @@ body.trend-page .chart-info {
 
   #channelSelectorLabel,
   #modelSelectorLabel,
-  .model-test-control--type,
+  #protocolTransformContainer,
   .model-test-control--content {
     grid-column: 1 / -1;
   }

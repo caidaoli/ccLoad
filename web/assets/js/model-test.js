@@ -4,6 +4,7 @@ const TEST_MODE_MODEL = 'model';
 let channelsList = [];
 let selectedChannel = null;
 let selectedModelName = '';
+let selectedProtocol = '';
 let testMode = TEST_MODE_CHANNEL;
 let isDeletingModels = false;
 let isTestingModels = false;
@@ -16,7 +17,8 @@ const tbody = document.getElementById('model-test-tbody');
 const toolbar = document.querySelector('.model-test-toolbar');
 const channelSelectorLabel = document.getElementById('channelSelectorLabel');
 const modelSelectorLabel = document.getElementById('modelSelectorLabel');
-const typeSelect = document.getElementById('testChannelType');
+const protocolTransformContainer = document.getElementById('protocolTransformContainer');
+const protocolTransformOptions = document.getElementById('protocolTransformOptions');
 const modelSelect = document.getElementById('testModelSelect');
 const mobileNameFilterInput = document.getElementById('modelTestMobileNameFilter');
 const fetchModelsBtn = document.getElementById('fetchModelsBtn');
@@ -36,6 +38,7 @@ const RESULT_TABLE_COLSPAN_NO_FIRST_BYTE = 10;
 const SORT_DIRECTION_ASC = 1;
 const SORT_DIRECTION_DESC = -1;
 const SORT_DIRECTION_NONE = 0;
+const ALL_PROTOCOLS = ['anthropic', 'codex', 'openai', 'gemini'];
 let sortState = { key: '', direction: SORT_DIRECTION_NONE };
 let nameFilterKeyword = '';
 
@@ -73,6 +76,21 @@ function i18nText(key, fallback, params) {
     if (result && result !== key) return result;
   }
   return fallback;
+}
+
+function normalizeProtocol(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function protocolLabel(protocol) {
+  const labels = {
+    anthropic: 'channels.protocolTransformAnthropic',
+    codex: 'channels.protocolTransformCodex',
+    openai: 'channels.protocolTransformOpenAI',
+    gemini: 'channels.protocolTransformGemini'
+  };
+  const key = labels[protocol] || protocol;
+  return i18nText(key, protocol);
 }
 
 function formatDurationMs(durationMs) {
@@ -440,18 +458,29 @@ function getModelName(entry) {
 }
 
 function getChannelType(channel) {
-  return channel?.channel_type || 'anthropic';
+  return normalizeProtocol(channel?.channel_type) || 'anthropic';
 }
 
-function isModelSupported(channel, modelName) {
-  if (!channel || !modelName || !Array.isArray(channel.models)) return false;
-  return channel.models.some(entry => getModelName(entry) === modelName);
+function getSupportedProtocols(channel) {
+  const protocols = [getChannelType(channel)];
+  const transforms = Array.isArray(channel?.protocol_transforms) ? channel.protocol_transforms : [];
+  transforms.forEach((protocol) => {
+    const normalized = normalizeProtocol(protocol);
+    if (!normalized || normalized === getChannelType(channel) || protocols.includes(normalized)) return;
+    protocols.push(normalized);
+  });
+  return protocols;
 }
 
-function getAllModelsInType(channelType) {
+function channelSupportsProtocol(channel, protocol) {
+  return getSupportedProtocols(channel).includes(normalizeProtocol(protocol));
+}
+
+function getAllModelsForProtocol(protocol) {
+  const normalizedProtocol = normalizeProtocol(protocol);
   const modelSet = new Set();
   channelsList.forEach(ch => {
-    if (getChannelType(ch) !== channelType) return;
+    if (!channelSupportsProtocol(ch, normalizedProtocol)) return;
     (ch.models || []).forEach(entry => {
       const modelName = getModelName(entry);
       if (modelName) modelSet.add(modelName);
@@ -460,9 +489,54 @@ function getAllModelsInType(channelType) {
   return Array.from(modelSet).sort((a, b) => a.localeCompare(b));
 }
 
-function getChannelsSupportingModel(channelType, modelName) {
+function ensureSelectedProtocolForCurrentMode() {
+  if (testMode === TEST_MODE_CHANNEL && selectedChannel) {
+    selectedProtocol = getChannelType(selectedChannel);
+    return;
+  }
+
+  if (selectedProtocol) return;
+  selectedProtocol = channelsList[0] ? getChannelType(channelsList[0]) : 'anthropic';
+}
+
+function renderProtocolTransformOptions() {
+  if (!protocolTransformOptions) return;
+
+  ensureSelectedProtocolForCurrentMode();
+
+  const supported = testMode === TEST_MODE_CHANNEL && selectedChannel
+    ? new Set(getSupportedProtocols(selectedChannel))
+    : null;
+
+  if (supported && !supported.has(selectedProtocol)) {
+    selectedProtocol = getChannelType(selectedChannel);
+  }
+
+  protocolTransformOptions.innerHTML = ALL_PROTOCOLS.map((protocol) => {
+    const disabled = Boolean(supported) && !supported.has(protocol);
+    const checked = selectedProtocol === protocol;
+    return `
+      <label class="channel-editor-radio-option">
+        <input type="radio"
+               name="modelTestProtocolTransform"
+               value="${protocol}"
+               ${checked ? 'checked' : ''}
+               ${disabled ? 'disabled' : ''}>
+        <span>${protocolLabel(protocol)}</span>
+      </label>
+    `;
+  }).join('');
+}
+
+function isModelSupported(channel, modelName) {
+  if (!channel || !modelName || !Array.isArray(channel.models)) return false;
+  return channel.models.some(entry => getModelName(entry) === modelName);
+}
+
+function getChannelsSupportingModel(protocol, modelName) {
+  const normalizedProtocol = normalizeProtocol(protocol);
   return channelsList
-    .filter(ch => getChannelType(ch) === channelType && isModelSupported(ch, modelName))
+    .filter(ch => channelSupportsProtocol(ch, normalizedProtocol) && isModelSupported(ch, modelName))
     .sort((a, b) => b.priority - a.priority || a.name.localeCompare(b.name));
 }
 
@@ -493,8 +567,7 @@ function ensureModelSelectCombobox() {
     initialValue: selectedModelName,
     initialLabel: selectedModelName,
     getOptions: () => {
-      const channelType = typeSelect.value;
-      const models = getAllModelsInType(channelType);
+      const models = getAllModelsForProtocol(selectedProtocol);
       const options = models.map(name => ({ value: name, label: name }));
 
       const typedModel = getModelInputValue();
@@ -604,8 +677,7 @@ function renderChannelModeRows() {
 }
 
 function populateModelSelector() {
-  const channelType = typeSelect.value;
-  const models = getAllModelsInType(channelType);
+  const models = getAllModelsForProtocol(selectedProtocol);
   const typedModel = getModelInputValue();
 
   if (models.length === 0) {
@@ -626,15 +698,14 @@ function populateModelSelector() {
 }
 
 function renderModelModeRows() {
-  const channelType = typeSelect.value;
-  if (!channelType) {
-    renderEmptyRow(i18nText('modelTest.selectTypeFirst', '请先选择渠道类型'));
+  if (!selectedProtocol) {
+    renderEmptyRow(i18nText('modelTest.selectProtocolFirst', '请先选择协议转换'));
     return;
   }
 
-  const models = getAllModelsInType(channelType);
+  const models = getAllModelsForProtocol(selectedProtocol);
   if (models.length === 0) {
-    renderEmptyRow(i18nText('modelTest.noModelInType', '该类型下没有可用模型'));
+    renderEmptyRow(i18nText('modelTest.noModelForProtocol', '该协议下没有可用模型'));
     return;
   }
 
@@ -648,7 +719,7 @@ function renderModelModeRows() {
     }
   }
 
-  const channels = getChannelsSupportingModel(channelType, selectedModelName);
+  const channels = getChannelsSupportingModel(selectedProtocol, selectedModelName);
   if (channels.length === 0) {
     renderEmptyRow(i18nText('modelTest.noChannelSupportsModel', '没有渠道支持该模型'));
     return;
@@ -708,14 +779,7 @@ function updateModeUI() {
   fetchModelsBtn.style.display = isModelMode ? 'none' : '';
   deleteModelsBtn.disabled = false;
   deleteModelsBtn.title = isModelMode ? i18nText('modelTest.deleteBySelectionHint', '按勾选记录删除对应渠道中的模型') : '';
-
-  const typeValue = typeSelect.value;
-  if (!isModelMode && selectedChannel) {
-    typeSelect.value = getChannelType(selectedChannel);
-  }
-  if (isModelMode && typeValue) {
-    typeSelect.value = typeValue;
-  }
+  renderProtocolTransformOptions();
 }
 
 function getSelectedTargets() {
@@ -734,7 +798,7 @@ function getSelectedTargets() {
           row,
           model: selectedModelName,
           channelId: channel.id,
-          channelType: typeSelect.value
+          protocolTransform: selectedProtocol
         };
       }
 
@@ -743,7 +807,7 @@ function getSelectedTargets() {
         row,
         model: row.dataset.model,
         channelId: selectedChannel.id,
-        channelType: typeSelect.value
+        protocolTransform: selectedProtocol
       };
     })
     .filter(Boolean);
@@ -839,14 +903,15 @@ async function runBatchTests(targets) {
   targets.forEach(({ row }) => resetRowStatus(row));
 
   const testOne = async (target) => {
-    const { row, model, channelId, channelType } = target;
+    const { row, model, channelId, protocolTransform } = target;
+    const selectedProtocol = protocolTransform;
     row.querySelector('.response').textContent = i18nText('modelTest.testing', '测试中...');
 
     try {
       const data = await fetchDataWithAuth(`/admin/channels/${channelId}/test`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, stream: streamEnabled, content, channel_type: channelType })
+        body: JSON.stringify({ model, stream: streamEnabled, content, protocol_transform: selectedProtocol })
       });
       applyTestResultToRow(row, data);
     } catch (e) {
@@ -1255,7 +1320,7 @@ async function fetchAndAddModels() {
     return;
   }
 
-  const channelType = typeSelect.value;
+  const channelType = getChannelType(selectedChannel);
   try {
     const resp = await fetchAPIWithAuth(`/admin/channels/${selectedChannel.id}/models/fetch?channel_type=${channelType}`);
     if (!resp.success || !resp.data?.models) {
@@ -1401,16 +1466,21 @@ async function deleteSelectedModels() {
 
 async function onChannelChange() {
   if (!selectedChannel) {
+    renderProtocolTransformOptions();
     renderEmptyRow(i18nText('modelTest.selectChannelFirst', '请先选择渠道'));
     return;
   }
 
-  const channelType = getChannelType(selectedChannel);
-  await window.ChannelTypeManager.renderChannelTypeSelect('testChannelType', channelType);
+  selectedProtocol = getChannelType(selectedChannel);
+  renderProtocolTransformOptions();
+  populateModelSelector();
 
   if (testMode === TEST_MODE_CHANNEL) {
     renderChannelModeRows();
+    return;
   }
+
+  renderModelModeRows();
 }
 
 function renderSearchableChannelSelect() {
@@ -1437,10 +1507,8 @@ async function loadChannels() {
     const list = (await fetchDataWithAuth('/admin/channels')) || [];
     channelsList = list.sort((a, b) => getChannelType(a).localeCompare(getChannelType(b)) || b.priority - a.priority);
     renderSearchableChannelSelect();
-
-    const firstType = channelsList[0] ? getChannelType(channelsList[0]) : 'anthropic';
-    await window.ChannelTypeManager.renderChannelTypeSelect('testChannelType', firstType);
-
+    selectedProtocol = channelsList[0] ? getChannelType(channelsList[0]) : 'anthropic';
+    renderProtocolTransformOptions();
     populateModelSelector();
     renderRowsByMode();
   } catch (e) {
@@ -1474,13 +1542,21 @@ function bindEvents() {
     });
   }
 
-  typeSelect.addEventListener('change', async () => {
-    if (testMode === TEST_MODE_CHANNEL) {
+  protocolTransformOptions?.addEventListener('change', (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement) || target.name !== 'modelTestProtocolTransform') return;
+    if (target.disabled) return;
+
+    selectedProtocol = normalizeProtocol(target.value) || selectedProtocol;
+    clearProgress();
+
+    if (testMode === TEST_MODE_MODEL) {
+      populateModelSelector();
+      renderModelModeRows();
       return;
     }
 
-    populateModelSelector();
-    renderModelModeRows();
+    renderProtocolTransformOptions();
   });
 
   if (!modelSelectCombobox && modelSelect) {
@@ -1529,13 +1605,14 @@ function setTestMode(mode) {
 
   testMode = mode;
   clearProgress();
+  if (testMode === TEST_MODE_CHANNEL && selectedChannel) {
+    selectedProtocol = getChannelType(selectedChannel);
+  }
   updateModeUI();
   updateHeadByMode();
 
   if (testMode === TEST_MODE_MODEL) {
     populateModelSelector();
-  } else if (selectedChannel) {
-    typeSelect.value = getChannelType(selectedChannel);
   }
 
   renderRowsByMode();
