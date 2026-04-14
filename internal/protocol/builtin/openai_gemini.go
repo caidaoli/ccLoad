@@ -402,6 +402,14 @@ func convertOpenAIResponseToGeminiStream(_ context.Context, model string, _, _, 
 
 	outputs := make([][]byte, 0, 2)
 	if delta, _ := choice["delta"].(map[string]any); delta != nil {
+		// reasoning_content has no Gemini semantic; emit as a plain text part.
+		if rc := stringValue(delta["reasoning_content"]); rc != "" {
+			body, err := marshalDataSSE(buildGeminiPayload(st.model, rc, "", 0, 0, 0, false))
+			if err != nil {
+				return nil, err
+			}
+			outputs = append(outputs, body)
+		}
 		parts, err := geminiPartsFromOpenAIMessage(delta["content"], delta["tool_calls"])
 		if err != nil {
 			return nil, err
