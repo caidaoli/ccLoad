@@ -334,6 +334,16 @@ func convertCodexResponseToGeminiStream(_ context.Context, model string, rawReq,
 					return nil, err
 				}
 				return [][]byte{body}, nil
+			case "reasoning":
+				text := extractCodexReasoningText(item)
+				if text == "" {
+					return nil, nil
+				}
+				body, err := marshalDataSSE(buildGeminiPayload(st.model, text, "", 0, 0, 0, false))
+				if err != nil {
+					return nil, err
+				}
+				return [][]byte{body}, nil
 			}
 		}
 	}
