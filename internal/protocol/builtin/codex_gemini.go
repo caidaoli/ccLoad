@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
 
 	"github.com/bytedance/sonic"
@@ -24,6 +25,7 @@ type codexToGeminiStreamState struct {
 	model              string
 	responseID         string
 	hasOutputTextDelta bool
+	toolNameMap        map[string]string
 }
 
 func convertCodexRequestToGemini(_ string, rawJSON []byte, _ bool) ([]byte, error) {
@@ -86,12 +88,13 @@ func convertGeminiResponseToCodexNonStream(_ context.Context, model string, _, _
 	return sonic.Marshal(out)
 }
 
-func convertCodexResponseToGeminiNonStream(_ context.Context, model string, _, _, rawJSON []byte) ([]byte, error) {
+func convertCodexResponseToGeminiNonStream(_ context.Context, model string, rawReq, translatedReq, rawJSON []byte) ([]byte, error) {
 	var resp map[string]any
 	if err := sonic.Unmarshal(rawJSON, &resp); err != nil {
 		return nil, err
 	}
-	parts, err := geminiPartsFromCodexOutput(resp["output"])
+	aliases := codexToolAliasesFromRequests(protocol.Gemini, rawReq, translatedReq)
+	parts, err := geminiPartsFromCodexOutput(resp["output"], aliases.restore)
 	if err != nil {
 		return nil, err
 	}
@@ -228,7 +231,7 @@ func convertGeminiResponseToCodexStream(_ context.Context, model string, _, _, r
 	return outputs, nil
 }
 
-func convertCodexResponseToGeminiStream(_ context.Context, model string, _, _, rawJSON []byte, param *any) ([][]byte, error) {
+func convertCodexResponseToGeminiStream(_ context.Context, model string, rawReq, translatedReq, rawJSON []byte, param *any) ([][]byte, error) {
 	if param == nil {
 		var local any
 		param = &local
@@ -295,6 +298,7 @@ func convertCodexResponseToGeminiStream(_ context.Context, model string, _, _, r
 				if err != nil {
 					return nil, err
 				}
+				call.Name = st.restoreToolName(rawReq, translatedReq, call.Name)
 				args, err := rawJSONToAny(call.Arguments)
 				if err != nil {
 					return nil, err
@@ -334,4 +338,14 @@ func convertCodexResponseToGeminiStream(_ context.Context, model string, _, _, r
 		}
 	}
 	return nil, nil
+}
+
+func (st *codexToGeminiStreamState) restoreToolName(rawReq, translatedReq []byte, name string) string {
+	if st.toolNameMap == nil {
+		st.toolNameMap = codexToolAliasesFromRequests(protocol.Gemini, rawReq, translatedReq).ShortToOriginal
+	}
+	if original := st.toolNameMap[name]; original != "" {
+		return original
+	}
+	return name
 }
