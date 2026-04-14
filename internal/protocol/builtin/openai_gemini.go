@@ -28,11 +28,13 @@ type openAIChatToolCall struct {
 }
 
 type openAIChatMessage struct {
-	Role       string               `json:"role"`
-	Content    any                  `json:"content"`
-	ToolCalls  []openAIChatToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string               `json:"tool_call_id,omitempty"`
-	Name       string               `json:"name,omitempty"`
+	Role             string               `json:"role"`
+	Content          any                  `json:"content"`
+	ToolCalls        []openAIChatToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string               `json:"tool_call_id,omitempty"`
+	Name             string               `json:"name,omitempty"`
+	ReasoningContent string               `json:"reasoning_content,omitempty"`
+	Reasoning        any                  `json:"reasoning,omitempty"`
 }
 
 type geminiContent struct {
