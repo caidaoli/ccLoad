@@ -77,11 +77,6 @@
               </label>
               <span id="testProgress" class="model-test-progress"></span>
             </div>
-            <div class="model-test-toolbar-section model-test-toolbar-section--actions">
-              <button id="fetchModelsBtn" type="button" data-action="fetch-and-add-models" class="btn btn-secondary model-test-toolbar-btn" data-i18n="modelTest.fetchModels">获取模型</button>
-              <button id="deleteModelsBtn" type="button" data-action="delete-selected-models" class="btn btn-secondary model-test-toolbar-btn model-test-toolbar-btn--danger" data-i18n="modelTest.deleteModels">删除模型</button>
-              <button id="runTestBtn" type="button" data-action="run-model-tests" class="btn btn-primary model-test-toolbar-btn" data-i18n="modelTest.startTest">开始测试</button>
-            </div>
           </div>
 
           <!-- 模型测试表格 -->
@@ -99,7 +94,18 @@
                   <th class="table-col-metric" data-i18n="modelTest.cacheRead" data-sort-key="cacheRead">缓读</th>
                   <th class="table-col-metric" data-i18n="modelTest.cacheCreate" data-sort-key="cacheCreate">缓建</th>
                   <th class="table-col-cost" data-i18n="common.cost" data-sort-key="cost">费用</th>
-                  <th data-i18n="modelTest.responseContent" data-sort-key="response">响应内容</th>
+                  <th class="table-col-response model-test-response-head" data-sort-key="response">
+                    <div class="model-test-response-head-inner">
+                      <div class="model-test-response-head-line">
+                        <span class="model-test-response-head-label" data-i18n="modelTest.responseContent">响应内容</span>
+                      </div>
+                      <div class="model-test-toolbar-section model-test-toolbar-section--actions model-test-head-actions">
+                        <button id="fetchModelsBtn" type="button" data-action="fetch-and-add-models" class="btn btn-secondary model-test-toolbar-btn" data-i18n="modelTest.fetchModels">获取模型</button>
+                        <button id="deleteModelsBtn" type="button" data-action="delete-selected-models" class="btn btn-secondary model-test-toolbar-btn model-test-toolbar-btn--danger" data-i18n="modelTest.deleteModels">删除模型</button>
+                        <button id="runTestBtn" type="button" data-action="run-model-tests" class="btn btn-primary model-test-toolbar-btn" data-i18n="modelTest.startTest">开始测试</button>
+                      </div>
+                    </div>
+                  </th>
                 </tr>
               </thead>
               <tbody id="model-test-tbody">

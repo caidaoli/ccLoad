@@ -73,6 +73,13 @@ test('model-test.js 使用集中绑定处理页面控件和重渲染表头复选
   assert.match(script, /bootstrap\(\);/);
 });
 
+test('model-test.js 将表头操作按钮渲染进响应内容列并阻止按钮点击触发表头排序', () => {
+  assert.match(script, /const RESPONSE_HEAD_HTML = `[\s\S]*?class="table-col-response model-test-response-head"[\s\S]*?class="model-test-toolbar-section model-test-toolbar-section--actions model-test-head-actions"[\s\S]*?id="fetchModelsBtn"[\s\S]*?id="deleteModelsBtn"[\s\S]*?id="runTestBtn"[\s\S]*?`;/);
+  assert.match(script, /const CHANNEL_MODE_HEAD = `[\s\S]*?\$\{RESPONSE_HEAD_HTML\}[\s\S]*?`;/);
+  assert.match(script, /const MODEL_MODE_HEAD = `[\s\S]*?\$\{RESPONSE_HEAD_HTML\}[\s\S]*?`;/);
+  assert.match(script, /th\.onclick = \(event\) => \{[\s\S]*?closest\('\.model-test-head-actions'\)[\s\S]*?return;/);
+});
+
 test('model-test.js 在按模型测试模式下将渠道按钮点击委托到编辑弹窗', () => {
   assert.match(script, /const channelBtn = event\.target\.closest\('\.channel-link\[data-channel-id\]'\);/);
   assert.match(script, /if \(testMode !== TEST_MODE_MODEL \|\| !channelBtn\) return;/);
