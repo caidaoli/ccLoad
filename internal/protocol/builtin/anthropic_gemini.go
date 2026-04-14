@@ -66,10 +66,11 @@ type anthropicCacheCreation struct {
 }
 
 type anthropicToGeminiStreamState struct {
-	model      string
-	toolName   string
-	toolJSON   string
-	toolActive bool
+	model          string
+	toolName       string
+	toolJSON       string
+	toolActive     bool
+	thinkingActive bool
 }
 
 func convertAnthropicRequestToGemini(_ string, rawJSON []byte, _ bool) ([]byte, error) {
@@ -454,17 +455,33 @@ func convertAnthropicResponseToGeminiStream(_ context.Context, model string, _, 
 		return nil, nil
 	}
 	if typ := stringValue(payload["type"]); typ == "content_block_start" {
-		if block, _ := payload["content_block"].(map[string]any); block != nil && stringValue(block["type"]) == "tool_use" {
-			st.toolName = stringValue(block["name"])
-			st.toolJSON = ""
-			st.toolActive = true
+		if block, _ := payload["content_block"].(map[string]any); block != nil {
+			switch stringValue(block["type"]) {
+			case "tool_use":
+				st.toolName = stringValue(block["name"])
+				st.toolJSON = ""
+				st.toolActive = true
+			case "thinking":
+				st.thinkingActive = true
+			case "redacted_thinking":
+				// Gemini 不支持 redacted_thinking，直接忽略
+			}
 		}
 		return nil, nil
 	}
 	if typ := stringValue(payload["type"]); typ == "content_block_delta" {
 		if delta, _ := payload["delta"].(map[string]any); delta != nil {
-			if stringValue(delta["type"]) == "input_json_delta" && st.toolActive {
+			deltaType := stringValue(delta["type"])
+			if deltaType == "input_json_delta" && st.toolActive {
 				st.toolJSON += stringValue(delta["partial_json"])
+				return nil, nil
+			}
+			if deltaType == "thinking_delta" && st.thinkingActive {
+				// Gemini 不支持 thinking，静默消费，不输出
+				return nil, nil
+			}
+			if deltaType == "signature_delta" {
+				// thinking 签名，静默忽略
 				return nil, nil
 			}
 			if text := stringValue(delta["text"]); text != "" {
@@ -476,23 +493,29 @@ func convertAnthropicResponseToGeminiStream(_ context.Context, model string, _, 
 			}
 		}
 	}
-	if typ := stringValue(payload["type"]); typ == "content_block_stop" && st.toolActive {
-		args := any(map[string]any{})
-		if strings.TrimSpace(st.toolJSON) != "" {
-			if err := sonic.Unmarshal([]byte(st.toolJSON), &args); err != nil {
+	if typ := stringValue(payload["type"]); typ == "content_block_stop" {
+		if st.thinkingActive {
+			st.thinkingActive = false
+			return nil, nil
+		}
+		if st.toolActive {
+			args := any(map[string]any{})
+			if strings.TrimSpace(st.toolJSON) != "" {
+				if err := sonic.Unmarshal([]byte(st.toolJSON), &args); err != nil {
+					return nil, err
+				}
+			}
+			body, err := marshalDataSSE(buildGeminiPayloadFromParts(st.model, "", []geminiPart{{
+				FunctionCall: &geminiFunctionCall{Name: st.toolName, Args: args},
+			}}, "", 0, 0, 0, false))
+			if err != nil {
 				return nil, err
 			}
+			st.toolName = ""
+			st.toolJSON = ""
+			st.toolActive = false
+			return [][]byte{body}, nil
 		}
-		body, err := marshalDataSSE(buildGeminiPayloadFromParts(st.model, "", []geminiPart{{
-			FunctionCall: &geminiFunctionCall{Name: st.toolName, Args: args},
-		}}, "", 0, 0, 0, false))
-		if err != nil {
-			return nil, err
-		}
-		st.toolName = ""
-		st.toolJSON = ""
-		st.toolActive = false
-		return [][]byte{body}, nil
 	}
 	if typ := stringValue(payload["type"]); typ == "message_delta" {
 		usage, _ := payload["usage"].(map[string]any)
