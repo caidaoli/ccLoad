@@ -40,6 +40,16 @@
                 <span class="model-test-control__label" data-i18n="modelTest.protocolTransform">协议转换</span>
                 <div id="protocolTransformOptions" class="channel-editor-radio-group" role="radiogroup" aria-label="协议转换"></div>
               </div>
+              <div class="model-test-toolbar-toggles">
+                <label class="model-test-toggle">
+                  <input type="checkbox" id="streamEnabled" class="control-checkbox control-checkbox--sm">
+                  <span data-i18n="modelTest.stream">流式</span>
+                </label>
+                <label class="model-test-toggle">
+                  <span data-i18n="modelTest.concurrency">并发</span>
+                  <input type="number" id="concurrency" value="5" min="1" max="20" class="model-test-concurrency-input">
+                </label>
+              </div>
               <label id="modelSelectorLabel" class="model-test-control model-test-control--model hidden">
                 <span class="model-test-control__label" data-i18n="common.model">模型</span>
                 <div class="filter-combobox-wrapper model-test-model-combobox">
@@ -60,29 +70,17 @@
                 <input type="text" id="modelTestContent" value="" class="model-test-inline-input" data-i18n-placeholder="common.loading" placeholder="加载中...">
               </label>
             </div>
-            <div class="model-test-toolbar-section model-test-toolbar-section--actions">
-              <button type="button" data-action="select-all-models" class="btn btn-secondary model-test-toolbar-btn" data-i18n="modelTest.selectAll">全选</button>
-              <button type="button" data-action="deselect-all-models" class="btn btn-secondary model-test-toolbar-btn" data-i18n="modelTest.deselectAll">取消全选</button>
-              <button id="fetchModelsBtn" type="button" data-action="fetch-and-add-models" class="btn btn-secondary model-test-toolbar-btn" data-i18n="modelTest.fetchModels">获取模型</button>
-              <button id="deleteModelsBtn" type="button" data-action="delete-selected-models" class="btn btn-secondary model-test-toolbar-btn model-test-toolbar-btn--danger" data-i18n="modelTest.deleteModels">删除模型</button>
-              <button id="runTestBtn" type="button" data-action="run-model-tests" class="btn btn-primary model-test-toolbar-btn" data-i18n="modelTest.startTest">开始测试</button>
-            </div>
             <div class="model-test-toolbar-section model-test-toolbar-section--meta">
               <label class="model-test-control model-test-control--name-filter">
                 <span class="model-test-control__label" data-i18n="common.search">搜索</span>
                 <input type="text" id="modelTestMobileNameFilter" value="" class="model-test-inline-input" autocomplete="off" spellcheck="false" placeholder="搜索模型名称...">
               </label>
               <span id="testProgress" class="model-test-progress"></span>
-              <div class="model-test-toolbar-toggles">
-                <label class="model-test-toggle">
-                  <input type="checkbox" id="streamEnabled" class="control-checkbox control-checkbox--sm">
-                  <span data-i18n="modelTest.stream">流式</span>
-                </label>
-                <label class="model-test-toggle">
-                  <span data-i18n="modelTest.concurrency">并发</span>
-                  <input type="number" id="concurrency" value="5" min="1" max="20" class="model-test-concurrency-input">
-                </label>
-              </div>
+            </div>
+            <div class="model-test-toolbar-section model-test-toolbar-section--actions">
+              <button id="fetchModelsBtn" type="button" data-action="fetch-and-add-models" class="btn btn-secondary model-test-toolbar-btn" data-i18n="modelTest.fetchModels">获取模型</button>
+              <button id="deleteModelsBtn" type="button" data-action="delete-selected-models" class="btn btn-secondary model-test-toolbar-btn model-test-toolbar-btn--danger" data-i18n="modelTest.deleteModels">删除模型</button>
+              <button id="runTestBtn" type="button" data-action="run-model-tests" class="btn btn-primary model-test-toolbar-btn" data-i18n="modelTest.startTest">开始测试</button>
             </div>
           </div>
 

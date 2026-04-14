@@ -2472,17 +2472,19 @@ body {
 }
 
 .model-test-toolbar-section--filters {
-  flex: 1 1 620px;
+  flex: 1 1 720px;
 }
 
 .model-test-toolbar-section--actions {
-  flex: 1 1 280px;
+  flex: 0 0 auto;
+  margin-left: auto;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
 .model-test-toolbar-section--meta {
-  flex: 1 1 260px;
-  margin-left: auto;
-  justify-content: flex-end;
+  flex: 1 1 220px;
+  justify-content: flex-start;
 }
 
 .model-test-control {
@@ -2538,7 +2540,7 @@ body {
 }
 
 .model-test-toolbar-btn {
-  padding: 8px 16px;
+  padding: 8px 14px;
   font-size: 13px;
 }
 
@@ -2551,6 +2553,7 @@ body {
   align-items: center;
   gap: 8px 12px;
   flex-wrap: wrap;
+  flex: 0 0 auto;
 }
 
 .model-test-toggle {
@@ -2616,22 +2619,24 @@ body {
   }
 
   .model-test-toolbar-section--meta {
-    grid-column: 2;
-    grid-row: 1;
+    grid-column: 1;
+    grid-row: 2;
     width: auto;
     min-width: 0;
     margin-left: 0;
-    justify-content: flex-end;
+    justify-content: flex-start;
     align-items: center;
   }
 
   .model-test-toolbar-section--actions {
-    grid-column: 1 / -1;
-    grid-row: 2;
-    width: 100%;
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    width: auto;
     min-width: 0;
-    justify-content: flex-start;
-    gap: 8px;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 6px;
+    margin-left: 0;
   }
 
   .model-test-toolbar-section--actions .model-test-toolbar-btn {
@@ -2647,12 +2652,7 @@ body {
   .model-test-progress {
     flex: 1 1 auto;
     min-width: 0;
-    text-align: right;
-  }
-
-  .model-test-toolbar-toggles {
-    flex-wrap: nowrap;
-    flex: 0 0 auto;
+    text-align: left;
   }
 }
 
@@ -2677,35 +2677,27 @@ body {
   }
 
   .model-test-toolbar-section--actions {
-    grid-column: 1;
-    grid-row: 2;
-    width: auto;
-    justify-content: flex-start;
-    gap: 8px;
-  }
-
-  .model-test-toolbar-section--meta {
     grid-column: 2;
     grid-row: 2;
     width: auto;
-    margin-left: 0;
     justify-content: flex-end;
-    align-items: center;
+    gap: 6px;
+    margin-left: 0;
   }
 
-  .model-test-toolbar-section--meta,
-  .model-test-toolbar-toggles {
-    flex-wrap: wrap;
+  .model-test-toolbar-section--meta {
+    grid-column: 1;
+    grid-row: 2;
+    width: auto;
+    margin-left: 0;
+    justify-content: flex-start;
+    align-items: center;
   }
 
   .model-test-toolbar-section--actions .model-test-toolbar-btn {
     flex: 0 0 auto;
     width: auto;
     min-width: 96px;
-  }
-
-  .model-test-toolbar-section--meta {
-    justify-content: flex-end;
   }
 
   .model-test-control--content {
@@ -2715,12 +2707,7 @@ body {
   .model-test-progress {
     flex: 1 1 auto;
     min-width: 0;
-    text-align: right;
-  }
-
-  .model-test-toolbar-toggles {
-    flex-wrap: nowrap;
-    flex: 0 0 auto;
+    text-align: left;
   }
 }
 
@@ -2741,8 +2728,9 @@ body {
   }
 
   .model-test-toolbar-section--actions {
-    justify-content: flex-start;
-    gap: 8px;
+    justify-content: flex-end;
+    gap: 6px;
+    margin-left: 0;
   }
 
   .model-test-toolbar-section--actions .model-test-toolbar-btn {
@@ -2752,19 +2740,14 @@ body {
   }
 
   .model-test-toolbar-section--meta {
-    justify-content: flex-end;
+    justify-content: flex-start;
     align-items: center;
   }
 
   .model-test-progress {
     flex: 1 1 auto;
     min-width: 0;
-    text-align: right;
-  }
-
-  .model-test-toolbar-toggles {
-    flex-wrap: nowrap;
-    flex: 0 0 auto;
+    text-align: left;
   }
 }
 
@@ -5237,6 +5220,7 @@ body.trend-page .chart-info {
   #channelSelectorLabel,
   #modelSelectorLabel,
   #protocolTransformContainer,
+  .model-test-toolbar-toggles,
   .model-test-control--content {
     grid-column: 1 / -1;
   }
@@ -5253,8 +5237,10 @@ body.trend-page .chart-info {
 
   .model-test-toolbar-section--actions {
     display: flex;
-    gap: 6px;
+    gap: 4px;
     flex-wrap: nowrap;
+    justify-content: flex-end;
+    margin-left: 0;
   }
 
   .model-test-toolbar-section--meta {

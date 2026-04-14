@@ -205,8 +205,6 @@ function initModelTestActions() {
     boundKey: 'modelTestActionsBound',
     click: {
       'set-test-mode': (actionTarget) => setTestMode(actionTarget.dataset.mode || ''),
-      'select-all-models': () => selectAllModels(),
-      'deselect-all-models': () => deselectAllModels(),
       'fetch-and-add-models': () => fetchAndAddModels(),
       'delete-selected-models': () => deleteSelectedModels(),
       'run-model-tests': () => runModelTests()
