@@ -181,6 +181,35 @@ function getVisibleRowCheckboxes() {
     .filter(Boolean);
 }
 
+function getRowSelectionKey(row) {
+  const channelId = String(row?.dataset?.channelId || '');
+  const modelName = String(row?.dataset?.model || '');
+  return `${channelId}::${modelName}`;
+}
+
+function captureRowSelectionState() {
+  const selectionState = new Map();
+  Array.from(tbody.querySelectorAll('tr[data-channel-id][data-model]')).forEach((row) => {
+    const checkbox = row.querySelector('.row-checkbox');
+    if (!checkbox) return;
+    selectionState.set(getRowSelectionKey(row), checkbox.checked);
+  });
+  return selectionState;
+}
+
+function restoreRowSelectionState(row, selectionState, fallbackChecked = true) {
+  const checkbox = row?.querySelector('.row-checkbox');
+  if (!checkbox) return;
+
+  const selectionKey = getRowSelectionKey(row);
+  if (selectionState?.has(selectionKey)) {
+    checkbox.checked = Boolean(selectionState.get(selectionKey));
+    return;
+  }
+
+  checkbox.checked = Boolean(fallbackChecked);
+}
+
 function getNameFilterPlaceholder() {
   if (testMode === TEST_MODE_MODEL) {
     return i18nText('modelTest.filterChannelPlaceholder', '搜索渠道名称...');
@@ -765,6 +794,7 @@ function populateModelSelector() {
 }
 
 function renderModelModeRows() {
+  const previousSelectionState = captureRowSelectionState();
   ensureSelectedModelType();
   if (!selectedProtocol) {
     renderEmptyRow(i18nText('modelTest.selectProtocolFirst', '请先选择协议转换'));
@@ -809,7 +839,9 @@ function renderModelModeRows() {
 
     if (row) {
       const checkbox = row.querySelector('.channel-checkbox');
-      if (checkbox) checkbox.checked = isEnabled;
+      if (checkbox) {
+        restoreRowSelectionState(row, previousSelectionState, isEnabled);
+      }
 
       if (!isEnabled) {
         row.style.background = 'rgba(148, 163, 184, 0.14)';

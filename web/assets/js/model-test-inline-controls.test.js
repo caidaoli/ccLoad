@@ -95,6 +95,65 @@ test('model-test.js 在按模型测试模式下将渠道按钮点击委托到编
   assert.match(script, /openLogChannelEditor\(channelId\)/);
 });
 
+test('model-test.js 在模型模式重渲染时保留渠道勾选状态', () => {
+  assert.match(script, /function getRowSelectionKey\(row\)/);
+  assert.match(script, /function captureRowSelectionState\(\)/);
+  assert.match(script, /function restoreRowSelectionState\(row,\s*selectionState,\s*fallbackChecked = true\)/);
+  assert.match(script, /const previousSelectionState = captureRowSelectionState\(\);[\s\S]*?restoreRowSelectionState\(row,\s*previousSelectionState,\s*isEnabled\);/);
+
+  const sandbox = {
+    tbody: {
+      querySelectorAll() {
+        return [
+          {
+            dataset: { channelId: '1', model: 'gpt-4.1' },
+            querySelector(selector) {
+              if (selector === '.row-checkbox') return { checked: false };
+              return null;
+            }
+          },
+          {
+            dataset: { channelId: '2', model: 'gpt-4.1' },
+            querySelector(selector) {
+              if (selector === '.row-checkbox') return { checked: true };
+              return null;
+            }
+          }
+        ];
+      }
+    }
+  };
+
+  vm.runInNewContext(`
+    ${extractFunction(script, 'getRowSelectionKey')}
+    ${extractFunction(script, 'captureRowSelectionState')}
+    ${extractFunction(script, 'restoreRowSelectionState')}
+  `, sandbox);
+
+  const selectionState = sandbox.captureRowSelectionState();
+  const preservedRow = {
+    dataset: { channelId: '1', model: 'gpt-4.1' },
+    querySelector(selector) {
+      if (selector === '.row-checkbox') return this.checkbox;
+      return null;
+    },
+    checkbox: { checked: true }
+  };
+  sandbox.restoreRowSelectionState(preservedRow, selectionState, true);
+  assert.equal(preservedRow.checkbox.checked, false);
+
+  const newRow = {
+    dataset: { channelId: '3', model: 'gpt-4.1' },
+    querySelector(selector) {
+      if (selector === '.row-checkbox') return this.checkbox;
+      return null;
+    },
+    checkbox: { checked: false }
+  };
+  sandbox.restoreRowSelectionState(newRow, selectionState, true);
+  assert.equal(newRow.checkbox.checked, true);
+});
+
 test('model-test 页渠道按钮去掉默认按钮边框和底色', () => {
   assert.match(sharedCss, /\.model-test-table\s+\.channel-link\s*\{[\s\S]*?padding:\s*0;[\s\S]*?border:\s*none;[\s\S]*?background:\s*transparent;/);
 });
