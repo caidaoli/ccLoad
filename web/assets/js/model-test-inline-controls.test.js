@@ -123,6 +123,30 @@ test('切换渠道后协议默认回退到渠道原生协议', () => {
   assert.match(script, /selectedProtocol\s*=\s*getChannelType\(selectedChannel\)/);
 });
 
+test('按渠道测试时重渲染不会覆盖用户已选的协议转换', () => {
+  const sandbox = {
+    TEST_MODE_CHANNEL: 'channel',
+    TEST_MODE_MODEL: 'model',
+    testMode: 'channel',
+    selectedProtocol: 'openai',
+    selectedChannel: {
+      channel_type: 'anthropic',
+      protocol_transforms: ['openai']
+    },
+    channelsList: []
+  };
+
+  vm.runInNewContext(`
+    ${extractFunction(script, 'normalizeProtocol')}
+    ${extractFunction(script, 'getChannelType')}
+    ${extractFunction(script, 'getSupportedProtocols')}
+    ${extractFunction(script, 'ensureSelectedProtocolForCurrentMode')}
+  `, sandbox);
+
+  sandbox.ensureSelectedProtocolForCurrentMode();
+  assert.equal(sandbox.selectedProtocol, 'openai');
+});
+
 test('applyTestResultToRow 在失败时优先展示结构化上游错误而不是泛化状态文案', () => {
   const cells = new Map([
     ['.first-byte-duration', { textContent: '', title: '' }],
