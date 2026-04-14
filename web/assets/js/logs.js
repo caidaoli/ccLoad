@@ -583,7 +583,7 @@ function renderLogs(data) {
 
     // === 直接拼接行 HTML ===
     htmlParts[i] = `<tr class="mobile-card-row logs-table-row">
-          <td class="logs-col-time" data-mobile-label="${logMobileLabels.time}" style="white-space: nowrap;">${formatTime(entry.time)}</td>
+          <td class="logs-col-time" data-mobile-label="${logMobileLabels.time}" style="white-space: nowrap;"><span class="debug-log-link" data-log-id="${entry.id}" style="cursor: pointer; text-decoration-style: dotted; text-decoration-line: underline; text-underline-offset: 2px;">${formatTime(entry.time)}</span></td>
           <td class="logs-col-ip logs-mono-text" data-mobile-label="${logMobileLabels.ip}" style="white-space: nowrap;">${clientIPDisplay}</td>
           <td class="logs-col-api-key" data-mobile-label="${logMobileLabels.apiKey}" style="text-align: center; white-space: nowrap;">${apiKeyDisplay}</td>
           <td class="logs-col-channel" data-mobile-label="${logMobileLabels.channel}">${configDisplay}</td>
@@ -898,6 +898,7 @@ function initLogsPageActions() {
         'next-logs-page': () => nextLogsPage(),
         'last-logs-page': () => lastLogsPage(),
         'close-test-key-modal': () => closeTestKeyModal(),
+        'close-debug-log-modal': () => closeDebugLogModal(),
         'run-key-test': () => runKeyTest(),
         'toggle-response': (actionTarget) => {
           const responseTarget = actionTarget.dataset.responseTarget;
@@ -1161,6 +1162,16 @@ window.initPageBootstrap({
   const tbody = document.getElementById('tbody');
   if (tbody) {
     tbody.addEventListener('click', (e) => {
+      // Debug log 查看
+      const debugLink = e.target.closest('.debug-log-link[data-log-id]');
+      if (debugLink) {
+        const logId = parseInt(debugLink.dataset.logId, 10);
+        if (Number.isFinite(logId) && logId > 0) {
+          showDebugLogModal(logId);
+        }
+        return;
+      }
+
       const channelBtn = e.target.closest('.channel-link[data-channel-id]');
       if (channelBtn) {
         const channelId = parseInt(channelBtn.dataset.channelId, 10);
@@ -1502,5 +1513,95 @@ async function deleteKeyFromLog(channelId, channelName, maskedApiKey, apiKeyHash
   } catch (e) {
     console.error('删除Key失败', e);
     alert(e.message || '删除Key失败');
+  }
+}
+
+// ============================================================================
+// Debug Log Modal
+// ============================================================================
+
+async function showDebugLogModal(logId) {
+  const modal = document.getElementById('debugLogModal');
+  const loading = document.getElementById('debugLogLoading');
+  const error = document.getElementById('debugLogError');
+  const content = document.getElementById('debugLogContent');
+
+  loading.style.display = '';
+  error.style.display = 'none';
+  content.style.display = 'none';
+  modal.classList.add('show');
+
+  // 重置 tab 状态
+  document.querySelectorAll('.debug-tab').forEach(tab => {
+    const isReq = tab.dataset.tab === 'request';
+    tab.classList.toggle('active', isReq);
+    tab.style.borderBottomColor = isReq ? 'var(--primary-600)' : 'transparent';
+    tab.style.color = isReq ? '' : 'var(--neutral-500)';
+    tab.style.fontWeight = isReq ? '600' : '';
+  });
+  document.getElementById('debugTabRequest').style.display = '';
+  document.getElementById('debugTabResponse').style.display = 'none';
+
+  try {
+    const data = await fetchDataWithAuth(`/admin/debug-logs/${logId}`);
+    loading.style.display = 'none';
+    content.style.display = '';
+
+    // Request tab
+    document.getElementById('debugReqMethod').textContent = data.req_method || '-';
+    document.getElementById('debugReqURL').textContent = data.req_url || '-';
+    document.getElementById('debugReqHeaders').textContent = formatJsonSafe(data.req_headers);
+    document.getElementById('debugReqBody').textContent = formatBodySafe(data.req_body);
+
+    // Response tab
+    document.getElementById('debugRespStatus').textContent = data.resp_status || '-';
+    document.getElementById('debugRespHeaders').textContent = formatJsonSafe(data.resp_headers);
+    document.getElementById('debugRespBody').textContent = formatBodySafe(data.resp_body);
+
+    // Tab 切换事件
+    document.querySelectorAll('.debug-tab').forEach(tab => {
+      tab.onclick = () => {
+        document.querySelectorAll('.debug-tab').forEach(t => {
+          const active = t === tab;
+          t.classList.toggle('active', active);
+          t.style.borderBottomColor = active ? 'var(--primary-600)' : 'transparent';
+          t.style.color = active ? '' : 'var(--neutral-500)';
+          t.style.fontWeight = active ? '600' : '';
+        });
+        document.getElementById('debugTabRequest').style.display = tab.dataset.tab === 'request' ? '' : 'none';
+        document.getElementById('debugTabResponse').style.display = tab.dataset.tab === 'response' ? '' : 'none';
+      };
+    });
+  } catch (e) {
+    loading.style.display = 'none';
+    if (e.message && e.message.includes('404')) {
+      error.textContent = t('logs.debugNotFound') || 'Debug日志不存在（未启用或已过期）';
+    } else {
+      error.textContent = e.message || '加载失败';
+    }
+    error.style.display = '';
+  }
+}
+
+function closeDebugLogModal() {
+  document.getElementById('debugLogModal').classList.remove('show');
+}
+
+function formatJsonSafe(str) {
+  if (!str) return '-';
+  try {
+    return JSON.stringify(JSON.parse(str), null, 2);
+  } catch {
+    return str;
+  }
+}
+
+function formatBodySafe(body) {
+  if (!body) return '(empty)';
+  try {
+    const parsed = JSON.parse(body);
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return body;
   }
 }

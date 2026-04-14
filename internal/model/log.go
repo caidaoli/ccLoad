@@ -87,6 +87,9 @@ type LogEntry struct {
 	Cache5mInputTokens       int     `json:"cache_5m_input_tokens"`       // 5分钟缓存写入Token数（新增2025-12）
 	Cache1hInputTokens       int     `json:"cache_1h_input_tokens"`       // 1小时缓存写入Token数（新增2025-12）
 	Cost                     float64 `json:"cost"`                        // 请求成本（美元）
+
+	// 瞬态字段：不持久化到 logs 表，仅用于传递 debug 数据到写入管道
+	DebugData *DebugLogEntry `json:"-"`
 }
 
 // LogFilter 日志查询过滤条件

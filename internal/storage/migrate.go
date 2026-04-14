@@ -36,6 +36,7 @@ var sqliteMigratableTables = map[string]bool{
 	"channel_models":              true,
 	"channel_protocol_transforms": true,
 	"channels":                    true,
+	"debug_logs":                  true,
 	"schema_migrations":           true,
 }
 
@@ -62,6 +63,7 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		schema.DefineSystemSettingsTable,
 		schema.DefineAdminSessionsTable,
 		schema.DefineLogsTable,
+		schema.DefineDebugLogsTable,
 	}
 
 	// 创建表和索引
@@ -707,6 +709,9 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"health_min_confident_sample", "20", "int", "置信样本量阈值(样本量达到此值时惩罚全额生效)", "20"},
 		// 冷却兜底配置
 		{"cooldown_fallback_enabled", "true", "bool", "所有渠道冷却时选最优渠道兜底(关闭则直接拒绝请求)", "true"},
+		// Debug日志配置
+		{"debug_log_enabled", "false", "bool", "启用Debug日志(记录上游请求/响应原始数据)", "false"},
+		{"debug_log_retention_minutes", "5", "int", "Debug日志保留时长(分钟,1-1440)", "5"},
 	}
 
 	var query string

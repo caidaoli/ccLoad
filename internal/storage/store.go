@@ -62,6 +62,11 @@ type Store interface {
 	GetTodayChannelURLStats(ctx context.Context, dayStart time.Time) ([]model.ChannelURLLogStat, error)
 	CleanupLogsBefore(ctx context.Context, cutoff time.Time) error
 
+	// === Debug Log Management ===
+	AddDebugLog(ctx context.Context, e *model.DebugLogEntry) error
+	GetDebugLogByLogID(ctx context.Context, logID int64) (*model.DebugLogEntry, error)
+	CleanupDebugLogsBefore(ctx context.Context, cutoff time.Time) error
+
 	// === Metrics & Statistics ===
 	AggregateRangeWithFilter(ctx context.Context, since, until time.Time, bucket time.Duration, filter *model.LogFilter) ([]model.MetricPoint, error)
 	GetDistinctModels(ctx context.Context, since, until time.Time, channelType string, filter *model.LogFilter) ([]string, error)

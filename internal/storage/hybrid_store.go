@@ -696,6 +696,20 @@ func (h *HybridStore) SyncQueueLen() int {
 	return len(h.syncCh)
 }
 
+// === Debug Log Management (SQLite only, no MySQL sync) ===
+
+func (h *HybridStore) AddDebugLog(ctx context.Context, e *model.DebugLogEntry) error {
+	return h.sqlite.AddDebugLog(ctx, e)
+}
+
+func (h *HybridStore) GetDebugLogByLogID(ctx context.Context, logID int64) (*model.DebugLogEntry, error) {
+	return h.sqlite.GetDebugLogByLogID(ctx, logID)
+}
+
+func (h *HybridStore) CleanupDebugLogsBefore(ctx context.Context, cutoff time.Time) error {
+	return h.sqlite.CleanupDebugLogsBefore(ctx, cutoff)
+}
+
 func (h *HybridStore) Close() error {
 	var err error
 	h.closeOnce.Do(func() {

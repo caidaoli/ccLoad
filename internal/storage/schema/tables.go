@@ -151,3 +151,20 @@ func DefineLogsTable() *TableBuilder {
 		Index("idx_logs_time_auth_token", "time, auth_token_id"). // 按时间+令牌查询
 		Index("idx_logs_time_actual_model", "time, actual_model") // 按时间+实际模型查询
 }
+
+// DefineDebugLogsTable 定义debug_logs表结构（上游请求/响应原始数据）
+func DefineDebugLogsTable() *TableBuilder {
+	return NewTable("debug_logs").
+		Column("id INT PRIMARY KEY AUTO_INCREMENT").
+		Column("log_id BIGINT NOT NULL DEFAULT 0").
+		Column("created_at BIGINT NOT NULL").
+		Column("req_method VARCHAR(10) NOT NULL DEFAULT ''").
+		Column("req_url TEXT NOT NULL").
+		Column("req_headers TEXT NOT NULL").
+		Column("req_body LONGBLOB NOT NULL").
+		Column("resp_status INT NOT NULL DEFAULT 0").
+		Column("resp_headers TEXT NOT NULL").
+		Column("resp_body LONGBLOB NOT NULL").
+		Index("idx_debug_logs_log_id", "log_id").
+		Index("idx_debug_logs_created_at", "created_at")
+}

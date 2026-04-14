@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"log"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -250,6 +251,16 @@ func (s *LogService) cleanupOldLogsLoop() {
 
 				// 通过Store接口清理旧日志，忽略错误（非关键操作）
 				_ = s.store.CleanupLogsBefore(ctx, cutoff)
+
+				// 清理过期的 debug 日志（保留时长从设置中读取，默认5分钟）
+				debugRetentionMinutes := 5
+				if setting, err := s.store.GetSetting(ctx, "debug_log_retention_minutes"); err == nil && setting != nil {
+					if v, err := strconv.Atoi(setting.Value); err == nil && v > 0 {
+						debugRetentionMinutes = v
+					}
+				}
+				debugCutoff := time.Now().Add(-time.Duration(debugRetentionMinutes) * time.Minute)
+				_ = s.store.CleanupDebugLogsBefore(ctx, debugCutoff)
 			}()
 
 		case <-s.shutdownCh:
