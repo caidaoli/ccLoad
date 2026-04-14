@@ -3,6 +3,7 @@ const TEST_MODE_MODEL = 'model';
 
 let channelsList = [];
 let selectedChannel = null;
+let selectedModelType = '';
 let selectedModelName = '';
 let selectedProtocol = '';
 let testMode = TEST_MODE_CHANNEL;
@@ -16,6 +17,8 @@ const headRow = document.getElementById('model-test-head-row');
 const tbody = document.getElementById('model-test-tbody');
 const toolbar = document.querySelector('.model-test-toolbar');
 const channelSelectorLabel = document.getElementById('channelSelectorLabel');
+const modelTypeLabel = document.getElementById('modelTypeLabel');
+const modelTypeSelect = document.getElementById('testModelType');
 const modelSelectorLabel = document.getElementById('modelSelectorLabel');
 const protocolTransformContainer = document.getElementById('protocolTransformContainer');
 const protocolTransformOptions = document.getElementById('protocolTransformOptions');
@@ -491,6 +494,38 @@ function getChannelType(channel) {
   return normalizeProtocol(channel?.channel_type) || 'anthropic';
 }
 
+function channelMatchesModelType(channel, modelType = selectedModelType) {
+  const normalizedModelType = normalizeProtocol(modelType);
+  if (!normalizedModelType) return true;
+  return getChannelType(channel) === normalizedModelType;
+}
+
+function getAvailableChannelTypes() {
+  return Array.from(new Set(channelsList.map(ch => getChannelType(ch)))).sort((a, b) => a.localeCompare(b));
+}
+
+function ensureSelectedModelType() {
+  const channelTypes = getAvailableChannelTypes();
+  if (!channelTypes.length) {
+    selectedModelType = '';
+    return;
+  }
+
+  if (!selectedModelType || !channelTypes.includes(selectedModelType)) {
+    selectedModelType = channelTypes[0];
+  }
+}
+
+function populateModelTypeSelect() {
+  if (!modelTypeSelect) return;
+
+  ensureSelectedModelType();
+  const channelTypes = getAvailableChannelTypes();
+  modelTypeSelect.innerHTML = channelTypes.map((channelType) => `
+    <option value="${channelType}" ${selectedModelType === channelType ? 'selected' : ''}>${protocolLabel(channelType)}</option>
+  `).join('');
+}
+
 function getSupportedProtocols(channel) {
   const upstreamProtocol = getChannelType(channel);
   if (!ALL_PROTOCOLS.includes(upstreamProtocol)) {
@@ -507,6 +542,7 @@ function getAllModelsForProtocol(protocol) {
   const normalizedProtocol = normalizeProtocol(protocol);
   const modelSet = new Set();
   channelsList.forEach(ch => {
+    if (!channelMatchesModelType(ch)) return;
     if (!channelSupportsProtocol(ch, normalizedProtocol)) return;
     (ch.models || []).forEach(entry => {
       const modelName = getModelName(entry);
@@ -526,7 +562,7 @@ function ensureSelectedProtocolForCurrentMode() {
   }
 
   if (selectedProtocol) return;
-  selectedProtocol = channelsList[0] ? getChannelType(channelsList[0]) : 'anthropic';
+  selectedProtocol = selectedModelType || (channelsList[0] ? getChannelType(channelsList[0]) : 'anthropic');
 }
 
 function renderProtocolTransformOptions() {
@@ -566,7 +602,7 @@ function isModelSupported(channel, modelName) {
 function getChannelsSupportingModel(protocol, modelName) {
   const normalizedProtocol = normalizeProtocol(protocol);
   return channelsList
-    .filter(ch => channelSupportsProtocol(ch, normalizedProtocol) && isModelSupported(ch, modelName))
+    .filter(ch => channelMatchesModelType(ch) && channelSupportsProtocol(ch, normalizedProtocol) && isModelSupported(ch, modelName))
     .sort((a, b) => b.priority - a.priority || a.name.localeCompare(b.name));
 }
 
@@ -707,6 +743,7 @@ function renderChannelModeRows() {
 }
 
 function populateModelSelector() {
+  ensureSelectedModelType();
   const models = getAllModelsForProtocol(selectedProtocol);
   const typedModel = getModelInputValue();
 
@@ -728,6 +765,7 @@ function populateModelSelector() {
 }
 
 function renderModelModeRows() {
+  ensureSelectedModelType();
   if (!selectedProtocol) {
     renderEmptyRow(i18nText('modelTest.selectProtocolFirst', '请先选择协议转换'));
     return;
@@ -807,13 +845,23 @@ function updateModeUI() {
   toolbar?.classList.toggle('model-test-toolbar--model-mode', isModelMode);
 
   channelSelectorLabel.style.display = isModelMode ? 'none' : 'flex';
-  modelSelectorLabel.style.display = isModelMode ? 'flex' : 'none';
+  if (modelTypeLabel) {
+    modelTypeLabel.style.display = isModelMode ? 'flex' : 'none';
+    modelTypeLabel.classList.toggle('hidden', !isModelMode);
+  }
+  if (modelSelectorLabel) {
+    modelSelectorLabel.style.display = isModelMode ? 'flex' : 'none';
+    modelSelectorLabel.classList.toggle('hidden', !isModelMode);
+  }
   if (fetchModelsBtn) {
     fetchModelsBtn.style.display = isModelMode ? 'none' : '';
   }
   if (deleteModelsBtn) {
     deleteModelsBtn.disabled = false;
     deleteModelsBtn.title = isModelMode ? i18nText('modelTest.deleteBySelectionHint', '按勾选记录删除对应渠道中的模型') : '';
+  }
+  if (isModelMode) {
+    populateModelTypeSelect();
   }
   renderProtocolTransformOptions();
 }
@@ -928,13 +976,9 @@ function applyTestResultToRow(row, data) {
 }
 
 async function runBatchTests(targets) {
-  const progressEl = document.getElementById('testProgress');
   const streamEnabled = document.getElementById('streamEnabled').checked;
   const content = document.getElementById('modelTestContent').value.trim() || 'hi';
   const concurrency = parseInt(document.getElementById('concurrency').value, 10) || 5;
-
-  let completed = 0;
-  const total = targets.length;
 
   targets.forEach(({ row }) => resetRowStatus(row));
 
@@ -959,9 +1003,6 @@ async function runBatchTests(targets) {
       row.querySelector('.response').title = e.message;
       row.querySelector('.cost').textContent = '-';
     }
-
-    completed++;
-    progressEl.textContent = `${i18nText('modelTest.testingProgress', '测试中')} ${completed}/${total}`;
   };
 
   const queue = [...targets];
@@ -974,8 +1015,6 @@ async function runBatchTests(targets) {
   });
 
   await Promise.all(workers);
-
-  progressEl.textContent = `${i18nText('modelTest.completedProgress', '完成')} ${total}/${total}`;
 
   document.querySelectorAll('#model-test-tbody tr').forEach(row => {
     const checkbox = row.querySelector('.row-checkbox');
@@ -1026,6 +1065,7 @@ async function runModelTests() {
   }
 
   isTestingModels = true;
+  clearProgress();
   setRunTestButtonDisabled(true);
   try {
     await runBatchTests(targets);
@@ -1034,6 +1074,7 @@ async function runModelTests() {
     showError(i18nText('modelTest.testRunFailed', '测试执行失败'));
   } finally {
     isTestingModels = false;
+    clearProgress();
     setRunTestButtonDisabled(false);
   }
 }
@@ -1515,6 +1556,7 @@ async function onChannelChange() {
 
   selectedProtocol = getChannelType(selectedChannel);
   renderProtocolTransformOptions();
+  populateModelTypeSelect();
   populateModelSelector();
 
   if (testMode === TEST_MODE_CHANNEL) {
@@ -1549,7 +1591,9 @@ async function loadChannels() {
     const list = (await fetchDataWithAuth('/admin/channels')) || [];
     channelsList = list.sort((a, b) => getChannelType(a).localeCompare(getChannelType(b)) || b.priority - a.priority);
     renderSearchableChannelSelect();
+    ensureSelectedModelType();
     selectedProtocol = channelsList[0] ? getChannelType(channelsList[0]) : 'anthropic';
+    populateModelTypeSelect();
     renderProtocolTransformOptions();
     populateModelSelector();
     renderRowsByMode();
@@ -1611,6 +1655,17 @@ function bindEvents() {
 
     modelSelect.addEventListener('input', () => {
       selectedModelName = getModelInputValue();
+      if (testMode === TEST_MODE_MODEL) {
+        renderModelModeRows();
+      }
+    });
+  }
+
+  if (modelTypeSelect) {
+    modelTypeSelect.addEventListener('change', () => {
+      selectedModelType = normalizeProtocol(modelTypeSelect.value) || selectedModelType;
+      clearProgress();
+      populateModelSelector();
       if (testMode === TEST_MODE_MODEL) {
         renderModelModeRows();
       }

@@ -2522,6 +2522,10 @@ body {
   min-width: 280px;
 }
 
+.model-test-control--type {
+  min-width: 160px;
+}
+
 .model-test-control--content {
   flex: 1 1 360px;
   min-width: 220px;
@@ -5210,6 +5214,7 @@ body.trend-page .chart-info {
   }
 
   #channelSelectorLabel,
+  #modelTypeLabel,
   #modelSelectorLabel,
   #protocolTransformContainer,
   .model-test-toolbar-toggles,
