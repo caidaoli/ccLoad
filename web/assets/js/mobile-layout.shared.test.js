@@ -199,9 +199,9 @@ test('model-test 页为手机卡片布局补齐模板标签和重排样式', () 
   assert.match(modelTestHtml, /class="model-test-toolbar-section model-test-toolbar-section--filters"/);
   assert.match(modelTestHtml, /class="model-test-toolbar-section model-test-toolbar-section--meta"/);
   assert.match(modelTestHtml, /class="model-test-toolbar-toggles"/);
-  assert.doesNotMatch(modelTestHtml, /class="model-test-control model-test-control--type"/);
+  assert.match(modelTestHtml, /class="model-test-control model-test-control--type hidden"/);
   assert.match(modelTestHtml, /id="protocolTransformContainer"/);
-  assert.match(modelTestHtml, /id="protocolTransformContainer"[\s\S]*?class="model-test-toolbar-toggles"[\s\S]*?id="streamEnabled"[\s\S]*?id="concurrency"[\s\S]*?id="modelTestContent"/);
+  assert.match(modelTestHtml, /id="modelTypeLabel"[\s\S]*?id="modelSelectorLabel"[\s\S]*?id="protocolTransformContainer"[\s\S]*?class="model-test-toolbar-toggles"[\s\S]*?id="streamEnabled"[\s\S]*?id="concurrency"[\s\S]*?id="modelTestContent"/);
   assert.doesNotMatch(modelTestHtml, /data-action="select-all-models"/);
   assert.doesNotMatch(modelTestHtml, /data-action="deselect-all-models"/);
   assert.match(modelTestHtml, /class="model-test-toolbar-section model-test-toolbar-section--meta"[\s\S]*?id="modelTestMobileNameFilter"[\s\S]*?id="testProgress"/);
@@ -223,7 +223,7 @@ test('model-test 页为手机卡片布局补齐模板标签和重排样式', () 
   assert.match(modelTestScript, /const RESPONSE_HEAD_HTML = `[\s\S]*?model-test-response-head[\s\S]*?fetchModelsBtn[\s\S]*?runTestBtn[\s\S]*?`;/);
   assert.match(sharedCss, /\.model-test-toolbar\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*1fr;/);
   assert.match(sharedCss, /\.model-test-toolbar-section--filters\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\);/);
-  assert.match(sharedCss, /#channelSelectorLabel,\s*[\r\n\s]*#modelSelectorLabel,\s*[\r\n\s]*#protocolTransformContainer,\s*[\r\n\s]*\.model-test-toolbar-toggles,\s*[\r\n\s]*\.model-test-control--content\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1;/);
+  assert.match(sharedCss, /#channelSelectorLabel,\s*[\r\n\s]*#modelTypeLabel,\s*[\r\n\s]*#modelSelectorLabel,\s*[\r\n\s]*#protocolTransformContainer,\s*[\r\n\s]*\.model-test-toolbar-toggles,\s*[\r\n\s]*\.model-test-control--content\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1;/);
   assert.match(sharedCss, /\.model-test-control--name-filter\s*\{[\s\S]*?display:\s*none;/);
   assert.match(sharedCss, /\.model-test-toolbar-section--actions\s*\{[\s\S]*?display:\s*flex;[\s\S]*?flex-wrap:\s*nowrap;/);
   assert.match(sharedCss, /\.model-test-toolbar-section--meta\s*\{[\s\S]*?display:\s*flex;[\s\S]*?flex-wrap:\s*nowrap;/);
