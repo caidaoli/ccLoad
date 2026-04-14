@@ -150,3 +150,25 @@ func TestRegistry_TranslateResponseStream_CodexToGemini(t *testing.T) {
 		t.Fatalf("unexpected gemini done chunk: %#v", done)
 	}
 }
+
+func TestRegistry_TranslateResponseStream_CodexToGemini_CompletionWithoutUsageStillStops(t *testing.T) {
+	t.Parallel()
+
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	var state any
+	done, err := reg.TranslateResponseStream(context.Background(), protocol.Codex, protocol.Gemini, "gemini-2.5-pro", nil, nil, []byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5-codex\"}}\n\n"), &state)
+	if err != nil {
+		t.Fatalf("response.completed failed: %v", err)
+	}
+	if len(done) != 1 {
+		t.Fatalf("expected one gemini completion chunk, got %#v", done)
+	}
+	if !strings.Contains(string(done[0]), `"finishReason":"STOP"`) || !strings.Contains(string(done[0]), `"responseId":"resp_1"`) {
+		t.Fatalf("unexpected gemini done chunk: %#v", done)
+	}
+	if strings.Contains(string(done[0]), `"usageMetadata"`) {
+		t.Fatalf("expected completion without usage metadata, got %#v", done)
+	}
+}

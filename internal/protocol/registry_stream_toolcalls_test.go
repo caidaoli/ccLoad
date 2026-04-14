@@ -420,8 +420,8 @@ func TestRegistry_Stream_OpenAIToAnthropic_ToolCalls(t *testing.T) {
 	if !strings.Contains(result, `"input_json_delta"`) {
 		t.Fatalf("expected input_json_delta type, got:\n%s", result)
 	}
-	if !strings.Contains(result, `"text"`) {
-		t.Fatalf("expected text field in arguments, got:\n%s", result)
+	if !strings.Contains(result, `"partial_json":"{\"text\":\"hello\"}"`) {
+		t.Fatalf("expected tool arguments in partial_json, got:\n%s", result)
 	}
 	if !strings.Contains(result, `event: content_block_stop`) {
 		t.Fatalf("expected content_block_stop, got:\n%s", result)

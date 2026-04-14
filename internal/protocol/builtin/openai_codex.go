@@ -138,6 +138,10 @@ func convertCodexResponseToOpenAINonStream(_ context.Context, model string, _, _
 }
 
 func convertOpenAIResponseToCodexStream(_ context.Context, model string, _, _, rawJSON []byte, param *any) ([][]byte, error) {
+	if param == nil {
+		var local any
+		param = &local
+	}
 	if *param == nil {
 		*param = &openAIToCodexStreamState{model: model}
 	}
@@ -286,6 +290,10 @@ func convertOpenAIResponseToCodexStream(_ context.Context, model string, _, _, r
 }
 
 func convertCodexResponseToOpenAIStream(_ context.Context, model string, _, _, rawJSON []byte, param *any) ([][]byte, error) {
+	if param == nil {
+		var local any
+		param = &local
+	}
 	if *param == nil {
 		*param = &codexToOpenAIStreamState{model: model}
 	}

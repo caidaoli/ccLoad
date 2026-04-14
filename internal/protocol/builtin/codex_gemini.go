@@ -117,6 +117,10 @@ type codexStreamState struct {
 }
 
 func convertGeminiResponseToCodexStream(_ context.Context, model string, _, _, rawJSON []byte, param *any) ([][]byte, error) {
+	if param == nil {
+		var local any
+		param = &local
+	}
 	if *param == nil {
 		*param = &codexStreamState{responseID: "resp-proxy", model: model}
 	}
@@ -162,6 +166,9 @@ func convertGeminiResponseToCodexStream(_ context.Context, model string, _, _, r
 	var resp geminiResponse
 	if err := sonic.Unmarshal([]byte(line), &resp); err != nil {
 		return nil, err
+	}
+	if resp.ResponseID != "" {
+		st.responseID = resp.ResponseID
 	}
 	if st.model == "" {
 		st.model = resp.ModelVersion
@@ -253,8 +260,16 @@ func convertCodexResponseToGeminiStream(_ context.Context, model string, _, _, r
 		if responseModel := stringValue(response["model"]); responseModel != "" {
 			st.model = responseModel
 		}
-		if usage := codexUsageFromMap(response["usage"]); usage != nil && (eventType == "response.completed" || stringValue(payload["type"]) == "response.completed") {
-			body, err := marshalDataSSE(buildGeminiPayloadFromParts(st.model, st.responseID, nil, "STOP", usage.inputTokens, usage.outputTokens, usage.totalTokens, true))
+		if eventType == "response.completed" || stringValue(payload["type"]) == "response.completed" {
+			includeUsage := false
+			var promptTokens, candidateTokens, totalTokens int64
+			if usage := codexUsageFromMap(response["usage"]); usage != nil {
+				promptTokens = usage.inputTokens
+				candidateTokens = usage.outputTokens
+				totalTokens = usage.totalTokens
+				includeUsage = true
+			}
+			body, err := marshalDataSSE(buildGeminiPayloadFromParts(st.model, st.responseID, nil, "STOP", promptTokens, candidateTokens, totalTokens, includeUsage))
 			if err != nil {
 				return nil, err
 			}
