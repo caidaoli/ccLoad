@@ -3,6 +3,7 @@ package protocol_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -428,6 +429,109 @@ func TestRegistry_Stream_OpenAIToAnthropic_ToolCalls(t *testing.T) {
 	}
 	if !strings.Contains(result, `"stop_reason":"tool_use"`) {
 		t.Fatalf("expected stop_reason=tool_use, got:\n%s", result)
+	}
+}
+
+func TestRegistry_Stream_OpenAIToAnthropic_TextThenFragmentedToolCalls(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	chunks := []string{
+		`data: {"id":"chatcmpl-4","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"让我检查一下"}}]}` + "\n\n",
+		`data: {"id":"chatcmpl-4","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_lookup","type":"function","function":{"name":"Bash","arguments":""}}]}}]}` + "\n\n",
+		`data: {"id":"chatcmpl-4","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"command\":\"ls\""}}]}}]}` + "\n\n",
+		`data: {"id":"chatcmpl-4","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"}"}}]},"finish_reason":"tool_calls"}]}` + "\n\n",
+		"data: [DONE]\n\n",
+	}
+
+	var state any
+	var allOutput bytes.Buffer
+	for _, chunk := range chunks {
+		out, err := reg.TranslateResponseStream(context.Background(), protocol.OpenAI, protocol.Anthropic, "gpt-4o", nil, nil, []byte(chunk), &state)
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
+		for _, b := range out {
+			allOutput.Write(b)
+		}
+	}
+
+	result := allOutput.String()
+	if strings.Count(result, `event: content_block_start`) != 2 {
+		t.Fatalf("expected separate text/tool content blocks, got:\n%s", result)
+	}
+
+	textStop := `event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+`
+	textDelta := `event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"让我检查一下"}}
+
+`
+	if !strings.Contains(result, textDelta) {
+		t.Fatalf("expected text delta to stay on index 0, got:\n%s", result)
+	}
+	if !strings.Contains(result, textStop) {
+		t.Fatalf("expected text block to close on index 0 before tool call, got:\n%s", result)
+	}
+	if !strings.Contains(result, `event: content_block_start`) ||
+		!strings.Contains(result, `"index":1`) ||
+		!strings.Contains(result, `"type":"tool_use"`) ||
+		!strings.Contains(result, `"id":"call_lookup"`) ||
+		!strings.Contains(result, `"name":"Bash"`) {
+		t.Fatalf("expected tool block to open on index 1, got:\n%s", result)
+	}
+	if strings.Index(result, textStop) > strings.Index(result, `"type":"tool_use"`) {
+		t.Fatalf("expected text block to stop before tool block starts, got:\n%s", result)
+	}
+	if strings.Count(result, `event: content_block_stop`) != 2 {
+		t.Fatalf("expected exactly two content_block_stop events, got:\n%s", result)
+	}
+	if !strings.Contains(result, `"partial_json":"{\"command\":\"ls\"}"`) {
+		t.Fatalf("expected fragmented tool arguments to be reassembled, got:\n%s", result)
+	}
+	if !strings.Contains(result, `"stop_reason":"tool_use"`) {
+		t.Fatalf("expected stop_reason=tool_use, got:\n%s", result)
+	}
+}
+
+func TestRegistry_Stream_OpenAIToAnthropic_ToolCalls_AllSplitPoints(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	arguments := `{"command":"ls"}`
+	for split := 0; split <= len(arguments); split++ {
+		t.Run(fmt.Sprintf("split-%d", split), func(t *testing.T) {
+			chunks := []string{
+				`data: {"id":"chatcmpl-2","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_lookup","type":"function","function":{"name":"Bash","arguments":""}}]}}]}` + "\n\n",
+				fmt.Sprintf(`data: {"id":"chatcmpl-2","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":%q}}]}}]}`+"\n\n", arguments[:split]),
+				fmt.Sprintf(`data: {"id":"chatcmpl-2","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":%q}}]},"finish_reason":"tool_calls"}]}`+"\n\n", arguments[split:]),
+				"data: [DONE]\n\n",
+			}
+
+			var state any
+			var allOutput bytes.Buffer
+			for _, chunk := range chunks {
+				out, err := reg.TranslateResponseStream(context.Background(), protocol.OpenAI, protocol.Anthropic, "gpt-4o", nil, nil, []byte(chunk), &state)
+				if err != nil {
+					t.Fatalf("split %d stream error: %v", split, err)
+				}
+				for _, b := range out {
+					allOutput.Write(b)
+				}
+			}
+
+			result := allOutput.String()
+			if !strings.Contains(result, `"id":"call_lookup"`) || !strings.Contains(result, `"name":"Bash"`) {
+				t.Fatalf("split %d expected tool_use metadata, got:\n%s", split, result)
+			}
+			if !strings.Contains(result, `"partial_json":"{\"command\":\"ls\"}"`) || !strings.Contains(result, `"stop_reason":"tool_use"`) {
+				t.Fatalf("split %d expected reassembled anthropic tool payload, got:\n%s", split, result)
+			}
+		})
 	}
 }
 

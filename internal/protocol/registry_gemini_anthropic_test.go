@@ -257,3 +257,37 @@ func TestRegistry_TranslateResponseStream_AnthropicToGemini_SignatureDelta(t *te
 		t.Fatalf("expected finishReason=STOP, stream hung: got:\n%s", result)
 	}
 }
+
+func TestRegistry_TranslateResponseStream_AnthropicToGemini_UsesMessageStartInputTokens(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	chunks := []string{
+		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_4\",\"model\":\"claude-opus-4-5\",\"usage\":{\"input_tokens\":11,\"output_tokens\":0}}}\n\n",
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"answer\"}}\n\n",
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n",
+	}
+
+	var state any
+	var allOutput bytes.Buffer
+	for _, chunk := range chunks {
+		out, err := reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.Gemini, "gemini-2.5-pro", nil, nil, []byte(chunk), &state)
+		if err != nil {
+			t.Fatalf("stream error on chunk %q: %v", chunk, err)
+		}
+		for _, b := range out {
+			allOutput.Write(b)
+		}
+	}
+
+	result := allOutput.String()
+	if !strings.Contains(result, `"promptTokenCount":11`) {
+		t.Fatalf("expected promptTokenCount from message_start usage, got:\n%s", result)
+	}
+	if !strings.Contains(result, `"candidatesTokenCount":5`) {
+		t.Fatalf("expected candidatesTokenCount from message_delta usage, got:\n%s", result)
+	}
+}
