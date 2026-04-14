@@ -200,7 +200,8 @@ test('model-test 页为手机卡片布局补齐模板标签和重排样式', () 
   assert.match(modelTestHtml, /class="model-test-toolbar-section model-test-toolbar-section--actions"/);
   assert.match(modelTestHtml, /class="model-test-toolbar-section model-test-toolbar-section--meta"/);
   assert.match(modelTestHtml, /class="model-test-toolbar-toggles"/);
-  assert.match(modelTestHtml, /class="model-test-control model-test-control--type"/);
+  assert.doesNotMatch(modelTestHtml, /class="model-test-control model-test-control--type"/);
+  assert.match(modelTestHtml, /id="protocolTransformContainer"/);
   assert.match(modelTestHtml, /class="model-test-toolbar-section model-test-toolbar-section--actions"[\s\S]*?id="runTestBtn"/);
   assert.match(modelTestHtml, /class="model-test-toolbar-section model-test-toolbar-section--meta"[\s\S]*?class="model-test-control model-test-control--name-filter"[\s\S]*?class="model-test-toolbar-toggles"/);
   assert.match(modelTestHtml, /id="modelTestMobileNameFilter"/);
@@ -218,7 +219,7 @@ test('model-test 页为手机卡片布局补齐模板标签和重排样式', () 
   assert.match(modelTestScript, /mobileLabelResponse:\s*i18nText\('modelTest\.responseContent'/);
   assert.match(sharedCss, /\.model-test-toolbar\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*1fr;/);
   assert.match(sharedCss, /\.model-test-toolbar-section--filters\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\);/);
-  assert.match(sharedCss, /#channelSelectorLabel,\s*[\r\n\s]*#modelSelectorLabel,\s*[\r\n\s]*\.model-test-control--type,\s*[\r\n\s]*\.model-test-control--content\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1;/);
+  assert.match(sharedCss, /#channelSelectorLabel,\s*[\r\n\s]*#modelSelectorLabel,\s*[\r\n\s]*#protocolTransformContainer,\s*[\r\n\s]*\.model-test-control--content\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1;/);
   assert.match(sharedCss, /\.model-test-control--name-filter\s*\{[\s\S]*?display:\s*none;/);
   assert.match(sharedCss, /\.model-test-toolbar-section--actions\s*\{[\s\S]*?display:\s*flex;[\s\S]*?flex-wrap:\s*nowrap;/);
   assert.match(sharedCss, /\.model-test-toolbar-section--meta\s*\{[\s\S]*?display:\s*flex;[\s\S]*?flex-wrap:\s*nowrap;/);

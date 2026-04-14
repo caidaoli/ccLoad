@@ -10,11 +10,14 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"net/http/httptest"
+	neturl "net/url"
 	"strings"
 	"time"
 
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/testutil"
 	"ccLoad/internal/util"
 
@@ -33,6 +36,287 @@ func (s *Server) HandleChannelTest(c *gin.Context) {
 // HandleChannelURLTest 测试指定渠道的单个 URL。
 func (s *Server) HandleChannelURLTest(c *gin.Context) {
 	s.handleChannelTestRequest(c, true)
+}
+
+type channelTestRequestPlan struct {
+	clientProtocol   string
+	upstreamProtocol string
+	clientTester     testutil.ChannelTester
+	fullURL          string
+	headers          http.Header
+	requestBody      []byte
+	clientBody       []byte
+}
+
+func newChannelTester(protocolName string) testutil.ChannelTester {
+	switch util.NormalizeChannelType(protocolName) {
+	case "codex":
+		return &testutil.CodexTester{}
+	case "openai":
+		return &testutil.OpenAITester{}
+	case "gemini":
+		return &testutil.GeminiTester{}
+	case "anthropic":
+		return &testutil.AnthropicTester{}
+	default:
+		return &testutil.AnthropicTester{}
+	}
+}
+
+func resolveClientProtocol(cfg *model.Config, testReq *testutil.TestChannelRequest) string {
+	if protocolName := strings.TrimSpace(testReq.ProtocolTransform); protocolName != "" {
+		return strings.ToLower(protocolName)
+	}
+	if protocolName := strings.TrimSpace(testReq.ChannelType); protocolName != "" {
+		return strings.ToLower(protocolName)
+	}
+	return cfg.GetChannelType()
+}
+
+func extractRequestPath(fullURL string) string {
+	parsed, err := neturl.Parse(fullURL)
+	if err != nil {
+		return ""
+	}
+	path := parsed.EscapedPath()
+	if path == "" {
+		path = parsed.Path
+	}
+	if parsed.RawQuery != "" {
+		return path + "?" + parsed.RawQuery
+	}
+	return path
+}
+
+func cloneHeaders(src http.Header) http.Header {
+	dst := make(http.Header, len(src))
+	for key, values := range src {
+		dst[key] = append([]string(nil), values...)
+	}
+	return dst
+}
+
+func (s *Server) buildChannelTestRequestPlan(
+	cfgForBuild *model.Config,
+	apiKey string,
+	testReq *testutil.TestChannelRequest,
+	clientProtocol string,
+) (*channelTestRequestPlan, error) {
+	upstreamProtocol := cfgForBuild.GetChannelType()
+	clientTester := newChannelTester(clientProtocol)
+
+	fullURL, headers, body, err := clientTester.Build(cfgForBuild, apiKey, testReq)
+	if err != nil {
+		return nil, err
+	}
+
+	plan := &channelTestRequestPlan{
+		clientProtocol:   clientProtocol,
+		upstreamProtocol: upstreamProtocol,
+		clientTester:     clientTester,
+		fullURL:          fullURL,
+		headers:          headers,
+		requestBody:      body,
+		clientBody:       body,
+	}
+
+	if clientProtocol == upstreamProtocol {
+		return plan, nil
+	}
+	if s == nil || s.protocolRegistry == nil {
+		return nil, fmt.Errorf("protocol registry unavailable for transform %s -> %s", clientProtocol, upstreamProtocol)
+	}
+
+	upstreamTester := newChannelTester(upstreamProtocol)
+	upstreamURL, upstreamHeaders, _, err := upstreamTester.Build(cfgForBuild, apiKey, testReq)
+	if err != nil {
+		return nil, err
+	}
+
+	transformPlan, err := protocol.BuildTransformPlan(
+		protocol.Protocol(clientProtocol),
+		protocol.Protocol(upstreamProtocol),
+		extractRequestPath(fullURL),
+		extractRequestPath(upstreamURL),
+		body,
+		body,
+		testReq.Model,
+		testReq.Model,
+		testReq.Stream,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	translatedBody, err := s.protocolRegistry.TranslateRequest(
+		transformPlan.ClientProtocol,
+		transformPlan.UpstreamProtocol,
+		transformPlan.RequestModel(),
+		transformPlan.TranslatedBody,
+		transformPlan.Streaming,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	plan.fullURL = upstreamURL
+	plan.headers = cloneHeaders(upstreamHeaders)
+	plan.requestBody = translatedBody
+	return plan, nil
+}
+
+func parseTestStreamResponseBytes(
+	raw []byte,
+	parseProtocol string,
+	statusCode int,
+	result map[string]any,
+	testReq *testutil.TestChannelRequest,
+) map[string]any {
+	var rawBuilder strings.Builder
+	var textBuilder strings.Builder
+	var lastErrMsg string
+	var lastUsage map[string]any
+	dataLineCount := 0
+
+	usageParser := newSSEUsageParser(parseProtocol)
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	buf := make([]byte, 0, 1024*1024)
+	scanner.Buffer(buf, 16*1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if err := usageParser.Feed([]byte(line + "\n")); err != nil {
+			log.Printf("[WARN] SSE usage解析失败: %v", err)
+		}
+
+		rawBuilder.WriteString(line)
+		rawBuilder.WriteString("\n")
+
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		dataLineCount++
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+
+		var obj map[string]any
+		if err := sonic.Unmarshal([]byte(data), &obj); err != nil {
+			continue
+		}
+
+		if usage := extractUsage(obj); usage != nil {
+			lastUsage = usage
+		}
+		if choices, ok := obj["choices"].([]any); ok && len(choices) > 0 {
+			if choice, ok := choices[0].(map[string]any); ok {
+				if delta, ok := choice["delta"].(map[string]any); ok {
+					if content, ok := delta["content"].(string); ok && content != "" {
+						textBuilder.WriteString(content)
+						continue
+					}
+				}
+			}
+		}
+		if candidates, ok := obj["candidates"].([]any); ok && len(candidates) > 0 {
+			if candidate, ok := candidates[0].(map[string]any); ok {
+				if content, ok := candidate["content"].(map[string]any); ok {
+					if parts, ok := content["parts"].([]any); ok && len(parts) > 0 {
+						if part, ok := parts[0].(map[string]any); ok {
+							if text, ok := part["text"].(string); ok && text != "" {
+								textBuilder.WriteString(text)
+								continue
+							}
+						}
+					}
+				}
+			}
+		}
+		if typ, ok := obj["type"].(string); ok {
+			if typ == "content_block_delta" {
+				if delta, ok := obj["delta"].(map[string]any); ok {
+					if tx, ok := delta["text"].(string); ok && tx != "" {
+						textBuilder.WriteString(tx)
+						continue
+					}
+				}
+			}
+			if typ == "response.output_text.delta" {
+				if delta, ok := obj["delta"].(string); ok && delta != "" {
+					textBuilder.WriteString(delta)
+					continue
+				}
+			}
+		}
+		if errObj, ok := obj["error"].(map[string]any); ok {
+			if msg, ok := errObj["message"].(string); ok && msg != "" {
+				lastErrMsg = msg
+			} else if typeStr, ok := errObj["type"].(string); ok && typeStr != "" {
+				lastErrMsg = typeStr
+			}
+			result["api_error"] = obj
+			continue
+		}
+		if errMsg, ok := obj["error"].(string); ok && strings.TrimSpace(errMsg) != "" {
+			lastErrMsg = strings.TrimSpace(errMsg)
+			result["api_error"] = obj
+			continue
+		}
+		if msg, ok := obj["message"].(string); ok && msg != "" {
+			lastErrMsg = msg
+			result["api_error"] = obj
+			continue
+		}
+	}
+
+	result["raw_response"] = rawBuilder.String()
+	if scanner.Err() != nil {
+		result["error"] = "读取流式响应失败: " + scanner.Err().Error()
+		return result
+	}
+	if dataLineCount == 0 {
+		result["error"] = summarizeUnexpectedTestResponse("text/event-stream", raw)
+		return result
+	}
+	if textBuilder.Len() > 0 {
+		result["response_text"] = textBuilder.String()
+	}
+
+	billableInput, output, cacheRead, _ := usageParser.GetUsage()
+	if lastUsage != nil {
+		result["api_response"] = map[string]any{"usage": lastUsage}
+	} else if billableInput+output+cacheRead > 0 {
+		result["api_response"] = map[string]any{
+			"usage": map[string]any{
+				"input_tokens":                billableInput,
+				"output_tokens":               output,
+				"cache_read_input_tokens":     cacheRead,
+				"cache_creation_input_tokens": 0,
+			},
+		}
+	}
+	if billableInput+output+cacheRead > 0 {
+		result["cost_usd"] = util.CalculateCostDetailed(
+			testReq.Model,
+			billableInput,
+			output,
+			cacheRead,
+			usageParser.Cache5mInputTokens,
+			usageParser.Cache1hInputTokens,
+		)
+	}
+
+	if lastErrMsg != "" {
+		result["success"] = false
+		result["error"] = lastErrMsg
+	} else if statusCode >= 200 && statusCode < 300 {
+		result["message"] = "API测试成功（流式）"
+	} else {
+		result["error"] = "API返回错误状态: " + http.StatusText(statusCode)
+	}
+
+	return result
 }
 
 func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
@@ -165,20 +449,12 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 		log.Printf("[INFO] [测试-请求体修改] 渠道ID=%d, 修改后模型=%s", cfg.ID, actualModel)
 	}
 
-	// 选择并规范化渠道类型
-	channelType := util.NormalizeChannelType(testReq.ChannelType)
-	var tester testutil.ChannelTester
-	switch channelType {
-	case "codex":
-		tester = &testutil.CodexTester{}
-	case "openai":
-		tester = &testutil.OpenAITester{}
-	case "gemini":
-		tester = &testutil.GeminiTester{}
-	case "anthropic":
-		tester = &testutil.AnthropicTester{}
-	default:
-		tester = &testutil.AnthropicTester{}
+	clientProtocol := resolveClientProtocol(cfg, testReq)
+	if !cfg.SupportsProtocol(clientProtocol) {
+		return map[string]any{
+			"success": false,
+			"error":   fmt.Sprintf("渠道不支持协议转换 %s", clientProtocol),
+		}
 	}
 
 	urls := cfg.GetURLs()
@@ -197,7 +473,7 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 
 	var lastResult map[string]any
 	for idx, entry := range orderedURLs {
-		attemptResult := s.testChannelAPIWithURL(reqCtx, cfg, apiKey, testReq, tester, channelType, entry.url)
+		attemptResult := s.testChannelAPIWithURL(reqCtx, cfg, apiKey, testReq, clientProtocol, entry.url)
 		attemptResult["base_url"] = entry.url
 		success, _ := attemptResult["success"].(bool)
 		if success {
@@ -233,8 +509,7 @@ func (s *Server) testChannelAPIWithURL(
 	cfg *model.Config,
 	apiKey string,
 	testReq *testutil.TestChannelRequest,
-	tester testutil.ChannelTester,
-	channelType, selectedURL string,
+	clientProtocol, selectedURL string,
 ) map[string]any {
 	// 仅构造测试请求必需字段，避免复制带锁 Config 结构体。
 	cfgForBuild := &model.Config{
@@ -245,8 +520,7 @@ func (s *Server) testChannelAPIWithURL(
 		ModelEntries: append([]model.ModelEntry(nil), cfg.ModelEntries...),
 	}
 
-	// 构建请求（传递实际的API Key和重定向后的模型）
-	fullURL, baseHeaders, body, err := tester.Build(cfgForBuild, apiKey, testReq)
+	requestPlan, err := s.buildChannelTestRequestPlan(cfgForBuild, apiKey, testReq, clientProtocol)
 	if err != nil {
 		return map[string]any{"success": false, "error": "构造测试请求失败: " + err.Error()}
 	}
@@ -255,13 +529,13 @@ func (s *Server) testChannelAPIWithURL(
 	ctx, cancel := context.WithTimeout(reqCtx, 2*time.Minute)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "POST", fullURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", requestPlan.fullURL, bytes.NewReader(requestPlan.requestBody))
 	if err != nil {
 		return map[string]any{"success": false, "error": "创建HTTP请求失败: " + err.Error()}
 	}
 
 	// 设置基础请求头
-	for k, vs := range baseHeaders {
+	for k, vs := range requestPlan.headers {
 		for _, v := range vs {
 			req.Header.Add(k, v)
 		}
@@ -298,8 +572,28 @@ func (s *Server) testChannelAPIWithURL(
 		result["duration_ms"] = time.Since(start).Milliseconds()
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			// 成功：委托给 tester 解析
-			parsed := tester.Parse(resp.StatusCode, bodyBytes)
+			parseBody := bodyBytes
+			if requestPlan.clientProtocol != requestPlan.upstreamProtocol {
+				translatedBody, translateErr := s.protocolRegistry.TranslateResponseNonStream(
+					ctx,
+					protocol.Protocol(requestPlan.upstreamProtocol),
+					protocol.Protocol(requestPlan.clientProtocol),
+					testReq.Model,
+					requestPlan.clientBody,
+					requestPlan.requestBody,
+					bodyBytes,
+				)
+				if translateErr != nil {
+					result["success"] = false
+					result["error"] = "转换测试响应失败: " + translateErr.Error()
+					result["raw_response"] = string(bodyBytes)
+					return result
+				}
+				parseBody = translatedBody
+			}
+
+			// 成功：委托给客户端协议 tester 解析
+			parsed := requestPlan.clientTester.Parse(resp.StatusCode, parseBody)
 			for k, v := range parsed {
 				result[k] = v
 			}
@@ -317,7 +611,7 @@ func (s *Server) testChannelAPIWithURL(
 			}
 
 			// 补齐成本信息（与代理计费口径一致：使用归一化后的可计费inputTokens）
-			usageParser := newJSONUsageParser(channelType)
+			usageParser := newJSONUsageParser(requestPlan.upstreamProtocol)
 			_ = usageParser.Feed(bodyBytes)
 			billableInput, output, cacheRead, _ := usageParser.GetUsage()
 			if billableInput+output+cacheRead > 0 {
@@ -370,6 +664,45 @@ func (s *Server) testChannelAPIWithURL(
 	}
 
 	if isEventStream {
+		if requestPlan.clientProtocol != requestPlan.upstreamProtocol {
+			recorder := httptest.NewRecorder()
+			firstByteCaptured := false
+			var state any
+
+			streamErr := streamTransformSSEEvents(
+				ctx,
+				resp.Body,
+				recorder,
+				func(rawEvent []byte) error {
+					if !firstByteCaptured && len(rawEvent) > 0 {
+						firstByteCaptured = true
+						result["first_byte_duration_ms"] = time.Since(start).Milliseconds()
+					}
+					return nil
+				},
+				func(rawEvent []byte) ([][]byte, error) {
+					return s.protocolRegistry.TranslateResponseStream(
+						ctx,
+						protocol.Protocol(requestPlan.upstreamProtocol),
+						protocol.Protocol(requestPlan.clientProtocol),
+						testReq.Model,
+						requestPlan.clientBody,
+						requestPlan.requestBody,
+						rawEvent,
+						&state,
+					)
+				},
+			)
+			if streamErr != nil {
+				result["duration_ms"] = time.Since(start).Milliseconds()
+				result["error"] = "读取流式响应失败: " + streamErr.Error()
+				return result
+			}
+
+			result["duration_ms"] = time.Since(start).Milliseconds()
+			return parseTestStreamResponseBytes(recorder.Body.Bytes(), requestPlan.clientProtocol, resp.StatusCode, result, testReq)
+		}
+
 		// 流式解析（SSE）。无论状态码是否2xx，都尽量读取并回显上游返回内容。
 		var rawBuilder strings.Builder
 		var textBuilder strings.Builder
@@ -379,7 +712,7 @@ func (s *Server) testChannelAPIWithURL(
 		firstByteCaptured := false
 
 		// [DRY] 复用代理链路的SSE usage解析器，保证tokens/成本口径一致
-		usageParser := newSSEUsageParser(channelType)
+		usageParser := newSSEUsageParser(requestPlan.upstreamProtocol)
 
 		scanner := bufio.NewScanner(resp.Body)
 		// 提高扫描缓冲，避免长行截断

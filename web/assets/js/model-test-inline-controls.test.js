@@ -47,6 +47,14 @@ test('model-test 页接入日志页同款渠道编辑器桥接并将渠道名渲
   assert.match(html, /<button type="button" class="channel-link" data-channel-id="{{channelId}}" title="{{channelName}}">{{channelName}}<\/button>/);
 });
 
+test('model-test 页移除类型选择并新增协议转换容器', () => {
+  assert.doesNotMatch(html, /id="testChannelType"/);
+  assert.doesNotMatch(html, /class="model-test-control model-test-control--type"/);
+  assert.match(html, /id="protocolTransformContainer"/);
+  assert.match(html, /id="protocolTransformOptions"/);
+  assert.match(html, /data-i18n="modelTest\.protocolTransform"/);
+});
+
 test('model-test.js 使用集中绑定处理页面控件和重渲染表头复选框', () => {
   assert.match(script, /window\.initPageBootstrap\(\{/);
   assert.match(script, /topbarKey:\s*'model-test'/);
@@ -77,31 +85,42 @@ test('model-test 页渠道按钮去掉默认按钮边框和底色', () => {
   assert.match(sharedCss, /\.model-test-table\s+\.channel-link\s*\{[\s\S]*?padding:\s*0;[\s\S]*?border:\s*none;[\s\S]*?background:\s*transparent;/);
 });
 
-test('切换渠道类型时，模型输入框会切到新类型下的有效模型', () => {
+test('按协议过滤模型模式候选渠道和模型', () => {
   const sandbox = {
     channelsList: [
-      { channel_type: 'openai', models: ['gpt-5.4', 'gpt-4.1'] },
-      { channel_type: 'anthropic', models: ['claude-code', 'claude-sonnet-4'] }
-    ],
-    selectedModelName: 'gpt-5.4',
-    typeSelect: { value: 'anthropic' },
-    modelSelect: { value: 'gpt-5.4' },
-    modelSelectCombobox: null
+      { id: 1, name: 'anthropic-with-openai-transform', channel_type: 'anthropic', protocol_transforms: ['openai'], priority: 10, models: ['claude-4'] },
+      { id: 2, name: 'native-openai', channel_type: 'openai', protocol_transforms: [], priority: 5, models: ['gpt-4.1'] },
+      { id: 3, name: 'native-anthropic', channel_type: 'anthropic', protocol_transforms: [], priority: 3, models: ['claude-3.7'] }
+    ]
   };
 
   vm.runInNewContext(`
     ${extractFunction(script, 'getModelName')}
+    ${extractFunction(script, 'normalizeProtocol')}
     ${extractFunction(script, 'getChannelType')}
-    ${extractFunction(script, 'getAllModelsInType')}
-    ${extractFunction(script, 'getModelInputValue')}
-    ${extractFunction(script, 'setModelInputValue')}
-    ${extractFunction(script, 'populateModelSelector')}
+    ${extractFunction(script, 'getSupportedProtocols')}
+    ${extractFunction(script, 'channelSupportsProtocol')}
+    ${extractFunction(script, 'isModelSupported')}
+    ${extractFunction(script, 'getAllModelsForProtocol')}
+    ${extractFunction(script, 'getChannelsSupportingModel')}
   `, sandbox);
 
-  sandbox.populateModelSelector();
+  assert.deepEqual(Array.from(sandbox.getAllModelsForProtocol('openai')), ['claude-4', 'gpt-4.1']);
+  assert.deepEqual(Array.from(sandbox.getAllModelsForProtocol('anthropic')), ['claude-3.7', 'claude-4']);
+  assert.deepEqual(
+    sandbox.getChannelsSupportingModel('openai', 'claude-4').map((channel) => channel.id),
+    [1]
+  );
+});
 
-  assert.equal(sandbox.selectedModelName, 'claude-code');
-  assert.equal(sandbox.modelSelect.value, 'claude-code');
+test('model-test.js 开始测试时发送 protocol_transform 而不是 channel_type', () => {
+  assert.match(script, /const selectedProtocol = protocolTransform;/);
+  assert.match(script, /protocol_transform:\s*selectedProtocol/);
+  assert.doesNotMatch(script, /body:\s*JSON\.stringify\(\{[\s\S]*channel_type:\s*channelType[\s\S]*\}\)/);
+});
+
+test('切换渠道后协议默认回退到渠道原生协议', () => {
+  assert.match(script, /selectedProtocol\s*=\s*getChannelType\(selectedChannel\)/);
 });
 
 test('applyTestResultToRow 在失败时优先展示结构化上游错误而不是泛化状态文案', () => {
