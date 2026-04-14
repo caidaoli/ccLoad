@@ -817,6 +817,9 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 		return nil, 0, err
 	}
 
+	// 2.5 Debug捕获：记录发送前的请求信息
+	dc := s.captureDebugRequest(req, reqCtx.transformPlan.TranslatedBody)
+
 	// 3. 发送请求
 	resp, err := s.client.Do(req)
 
@@ -827,6 +830,9 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 	//   - HTTP/2: 发送 RST_STREAM 帧 → 取消当前 stream（不影响同连接的其他请求）
 	// 效果：避免 AI 流式生成场景下，用户点"停止"后上游仍生成数千 tokens 的浪费
 	if resp != nil {
+		// Debug捕获：在 resp.Body 被其他层包装前，用 TeeReader 旁路捕获响应体
+		dc.wrapResponseBody(resp)
+
 		// 注意：resp.Body 后续会被包装（例如 firstByteDetector）。
 		// 因此需要先把 body 封装成“稳定引用”，避免取消 goroutine 与包装赋值发生 data race。
 		body := &onceCloseReadCloser{ReadCloser: resp.Body}
@@ -842,7 +848,11 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 	}
 
 	if err != nil {
-		return s.handleRequestError(reqCtx, cfg, err)
+		errRes, errDur, errErr := s.handleRequestError(reqCtx, cfg, err)
+		if errRes != nil {
+			errRes.DebugData = dc.buildEntry(resp)
+		}
+		return errRes, errDur, errErr
 	}
 
 	// 4. 处理响应(传递channelType用于精确识别usage格式,传递渠道信息用于日志记录,传递观测回调)
@@ -862,6 +872,11 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 		err = fmt.Errorf("%s: %w", timeoutMsg, util.ErrUpstreamFirstByteTimeout)
 		res.Status = util.StatusFirstByteTimeout
 		log.Printf("[TIMEOUT] [上游首字节超时-流传输中断] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, s.firstByteTimeout, duration)
+	}
+
+	// 5. Debug捕获：构建完整的 debug 日志条目（响应体已通过 TeeReader 收集完毕）
+	if res != nil {
+		res.DebugData = dc.buildEntry(resp)
 	}
 
 	return res, duration, err
@@ -917,6 +932,11 @@ func (s *Server) forwardAttempt(
 
 	res, duration, err := s.forwardOnceAsync(ctx, cfg, selectedKey, reqCtx.requestMethod,
 		plan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer)
+
+	// 传递 debug 数据到 proxyRequestContext（用于日志记录）
+	if res != nil && res.DebugData != nil {
+		reqCtx.debugData = res.DebugData
+	}
 
 	// 处理网络错误或异常响应（如空响应）
 	// [INFO] 修复：handleResponse可能返回err即使StatusCode=200（例如Content-Length=0）

@@ -117,6 +117,7 @@ func (s *Server) logProxyResult(
 		Result:       res,
 		ErrMsg:       errMsg,
 		StartTime:    reqCtx.attemptStartTime,
+		DebugData:    reqCtx.debugData,
 	}))
 }
 
