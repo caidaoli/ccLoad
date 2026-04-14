@@ -202,7 +202,7 @@ test('model-test 页为手机卡片布局补齐模板标签和重排样式', () 
   assert.match(modelTestHtml, /class="model-test-toolbar-toggles"/);
   assert.doesNotMatch(modelTestHtml, /class="model-test-control model-test-control--type"/);
   assert.match(modelTestHtml, /id="protocolTransformContainer"/);
-  assert.match(modelTestHtml, /id="protocolTransformContainer"[\s\S]*?class="model-test-toolbar-toggles"[\s\S]*?id="streamEnabled"[\s\S]*?id="concurrency"/);
+  assert.match(modelTestHtml, /id="protocolTransformContainer"[\s\S]*?class="model-test-toolbar-toggles"[\s\S]*?id="streamEnabled"[\s\S]*?id="concurrency"[\s\S]*?id="modelTestContent"/);
   assert.doesNotMatch(modelTestHtml, /data-action="select-all-models"/);
   assert.doesNotMatch(modelTestHtml, /data-action="deselect-all-models"/);
   assert.match(modelTestHtml, /class="model-test-toolbar-section model-test-toolbar-section--meta"[\s\S]*?id="modelTestMobileNameFilter"[\s\S]*?id="testProgress"/);
@@ -281,6 +281,12 @@ test('model-test 页在紧凑桌面宽度下将操作按钮整体下沉到第二
   assert.match(compactDesktopCss, /\.model-test-toolbar-section--meta\s*\{[\s\S]*?grid-column:\s*1;[\s\S]*?grid-row:\s*2;/);
   assert.match(compactDesktopCss, /\.model-test-toolbar-section--actions\s*\{[\s\S]*?grid-column:\s*2;[\s\S]*?grid-row:\s*1\s*\/\s*span\s*2;[\s\S]*?justify-content:\s*flex-end;/);
   assert.match(compactDesktopCss, /\.model-test-toolbar-section--actions\s+\.model-test-toolbar-btn\s*\{[\s\S]*?flex:\s*0\s+0\s+auto;[\s\S]*?width:\s*auto;/);
+});
+
+test('model-test 页桌面端将内容紧贴并发右侧并保持操作按钮贴右', () => {
+  assert.match(sharedCss, /\.model-test-toolbar-section--filters\s*\{[\s\S]*?flex-wrap:\s*nowrap;/);
+  assert.match(sharedCss, /\.model-test-control--content\s*\{[\s\S]*?flex:\s*1\s+1\s+360px;/);
+  assert.match(sharedCss, /\.model-test-toolbar-section--actions\s*\{[\s\S]*?margin-left:\s*auto;[\s\S]*?justify-content:\s*flex-end;/);
 });
 
 test('model-test 页在中等桌面宽度下将筛选独占第一行，操作和状态区落到第二行', () => {
