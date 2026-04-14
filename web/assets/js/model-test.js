@@ -491,7 +491,10 @@ function getAllModelsForProtocol(protocol) {
 
 function ensureSelectedProtocolForCurrentMode() {
   if (testMode === TEST_MODE_CHANNEL && selectedChannel) {
-    selectedProtocol = getChannelType(selectedChannel);
+    const supportedProtocols = getSupportedProtocols(selectedChannel);
+    if (!selectedProtocol || !supportedProtocols.includes(selectedProtocol)) {
+      selectedProtocol = getChannelType(selectedChannel);
+    }
     return;
   }
 
