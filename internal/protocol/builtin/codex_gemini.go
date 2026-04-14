@@ -21,8 +21,9 @@ type codexRequest struct {
 }
 
 type codexToGeminiStreamState struct {
-	model      string
-	responseID string
+	model              string
+	responseID         string
+	hasOutputTextDelta bool
 }
 
 func convertCodexRequestToGemini(_ string, rawJSON []byte, _ bool) ([]byte, error) {
@@ -278,6 +279,7 @@ func convertCodexResponseToGeminiStream(_ context.Context, model string, _, _, r
 	}
 	if eventType == "response.output_text.delta" || stringValue(payload["type"]) == "response.output_text.delta" {
 		if content := stringValue(payload["delta"]); content != "" {
+			st.hasOutputTextDelta = true
 			body, err := marshalDataSSE(buildGeminiPayload(st.model, content, "", 0, 0, 0, false))
 			if err != nil {
 				return nil, err
@@ -286,22 +288,49 @@ func convertCodexResponseToGeminiStream(_ context.Context, model string, _, _, r
 		}
 	}
 	if eventType == "response.output_item.done" || stringValue(payload["type"]) == "response.output_item.done" {
-		if item, _ := payload["item"].(map[string]any); item != nil && normalizeRole(stringValue(item["type"])) == "function_call" {
-			call, err := decodeCodexToolCall(item)
-			if err != nil {
-				return nil, err
+		if item, _ := payload["item"].(map[string]any); item != nil {
+			switch normalizeRole(stringValue(item["type"])) {
+			case "function_call":
+				call, err := decodeCodexToolCall(item)
+				if err != nil {
+					return nil, err
+				}
+				args, err := rawJSONToAny(call.Arguments)
+				if err != nil {
+					return nil, err
+				}
+				body, err := marshalDataSSE(buildGeminiPayloadFromParts(st.model, "", []geminiPart{{
+					FunctionCall: &geminiFunctionCall{Name: call.Name, Args: args},
+				}}, "", 0, 0, 0, false))
+				if err != nil {
+					return nil, err
+				}
+				return [][]byte{body}, nil
+			case "message":
+				if st.hasOutputTextDelta {
+					return nil, nil
+				}
+				parts, err := extractCodexContentParts(item["content"])
+				if err != nil {
+					return nil, err
+				}
+				geminiParts := make([]geminiPart, 0, len(parts))
+				for _, part := range parts {
+					if part.Kind != partKindText || part.Text == "" {
+						continue
+					}
+					geminiParts = append(geminiParts, geminiPart{Text: part.Text})
+				}
+				if len(geminiParts) == 0 {
+					return nil, nil
+				}
+				st.hasOutputTextDelta = true
+				body, err := marshalDataSSE(buildGeminiPayloadFromParts(st.model, st.responseID, geminiParts, "", 0, 0, 0, false))
+				if err != nil {
+					return nil, err
+				}
+				return [][]byte{body}, nil
 			}
-			args, err := rawJSONToAny(call.Arguments)
-			if err != nil {
-				return nil, err
-			}
-			body, err := marshalDataSSE(buildGeminiPayloadFromParts(st.model, "", []geminiPart{{
-				FunctionCall: &geminiFunctionCall{Name: call.Name, Args: args},
-			}}, "", 0, 0, 0, false))
-			if err != nil {
-				return nil, err
-			}
-			return [][]byte{body}, nil
 		}
 	}
 	return nil, nil
