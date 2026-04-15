@@ -138,12 +138,20 @@ func TestChannelsTemplateNameLineLayout(t *testing.T) {
 	body := w.Body.String()
 	checks := []string{
 		`<div class="ch-name-main">`,
-		`{{{typeBadge}}}<strong>{{name}}</strong>{{{protocolTransformBadges}}}<span class="ch-id-text">(ID: {{id}})</span>{{{disabledBadge}}}`,
+		`{{{typeBadge}}}<strong>{{name}}</strong>{{{protocolTransformBadges}}}`,
 		`<div class="ch-name-statuses">{{{cooldownBadge}}}</div>`,
 	}
 	for _, want := range checks {
 		if !strings.Contains(body, want) {
 			t.Fatalf("channels.html missing %q", want)
+		}
+	}
+	for _, unwanted := range []string{
+		`<span class="ch-id-text">(ID: {{id}})</span>`,
+		`{{{disabledBadge}}}</div>`,
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("channels.html should not contain legacy name-line fragment %q", unwanted)
 		}
 	}
 }
