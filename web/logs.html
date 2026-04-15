@@ -194,50 +194,36 @@
 
   <!-- Debug Log 模态框 -->
   <div id="debugLogModal" class="modal">
-    <div class="modal-content" style="max-width: 900px; max-height: 85vh;">
+    <div class="modal-content upstream-detail-modal-content">
       <div class="modal-header">
         <h2 class="modal-title" data-i18n="logs.debugLogTitle">Debug Log</h2>
         <button type="button" class="close-btn" data-action="close-debug-log-modal">&times;</button>
       </div>
-      <div class="modal-body" style="overflow-y: auto; max-height: calc(85vh - 60px); padding: 0;">
-        <div id="debugLogLoading" style="text-align: center; padding: 2rem; display: none;">
-          <span data-i18n="logs.loading">加载中...</span>
+      <div id="debugLogLoading" style="text-align: center; padding: 2rem; display: none;">
+        <span data-i18n="logs.loading">加载中...</span>
+      </div>
+      <div id="debugLogError" style="text-align: center; padding: 2rem; color: var(--danger-600); display: none;"></div>
+      <div id="debugLogContent" style="display: none; flex: 1; min-height: 0; flex-direction: column;">
+        <div class="upstream-detail-tabs">
+          <button type="button" class="upstream-tab active" data-tab="request" data-i18n="logs.debugRequest">Request</button>
+          <button type="button" class="upstream-tab" data-tab="response" data-i18n="logs.debugResponse">Response</button>
         </div>
-        <div id="debugLogError" style="text-align: center; padding: 2rem; color: var(--danger-600); display: none;"></div>
-        <div id="debugLogContent" style="display: none;">
-          <!-- Tabs -->
-          <div style="display: flex; border-bottom: 1px solid var(--neutral-200); position: sticky; top: 0; background: var(--neutral-50); z-index: 1;">
-            <button class="debug-tab active" data-tab="request" style="flex: 1; padding: 0.75rem; border: none; background: none; cursor: pointer; font-weight: 600; border-bottom: 2px solid var(--primary-600);" data-i18n="logs.debugRequest">Request</button>
-            <button class="debug-tab" data-tab="response" style="flex: 1; padding: 0.75rem; border: none; background: none; cursor: pointer; color: var(--neutral-500); border-bottom: 2px solid transparent;" data-i18n="logs.debugResponse">Response</button>
+        <div id="debugTabRequest" class="upstream-tab-panel active">
+          <div class="upstream-field upstream-field--full">
+            <div class="upstream-field-header">
+              <label data-i18n="logs.debugRequest">Request</label>
+              <button type="button" class="upstream-copy-btn" data-copy-target="debugReqRaw" data-i18n="common.copy">复制</button>
+            </div>
+            <pre id="debugReqRaw" class="upstream-pre upstream-pre--full"></pre>
           </div>
-          <!-- Request Tab -->
-          <div id="debugTabRequest" class="debug-tab-content" style="padding: 1rem;">
-            <div style="margin-bottom: 0.75rem;">
-              <strong data-i18n="logs.debugMethod">Method</strong>: <code id="debugReqMethod"></code>
-              <strong style="margin-left: 1rem;">URL</strong>: <code id="debugReqURL" style="word-break: break-all;"></code>
+        </div>
+        <div id="debugTabResponse" class="upstream-tab-panel">
+          <div class="upstream-field upstream-field--full">
+            <div class="upstream-field-header">
+              <label data-i18n="logs.debugResponse">Response</label>
+              <button type="button" class="upstream-copy-btn" data-copy-target="debugRespRaw" data-i18n="common.copy">复制</button>
             </div>
-            <div style="margin-bottom: 0.75rem;">
-              <strong data-i18n="logs.debugHeaders">Headers</strong>
-              <pre id="debugReqHeaders" style="background: var(--neutral-100); padding: 0.75rem; border-radius: 6px; overflow-x: auto; font-size: 0.8rem; max-height: 200px; margin-top: 0.25rem;"></pre>
-            </div>
-            <div>
-              <strong>Body</strong>
-              <pre id="debugReqBody" style="background: var(--neutral-100); padding: 0.75rem; border-radius: 6px; overflow-x: auto; font-size: 0.8rem; max-height: 400px; margin-top: 0.25rem; white-space: pre-wrap; word-break: break-all;"></pre>
-            </div>
-          </div>
-          <!-- Response Tab -->
-          <div id="debugTabResponse" class="debug-tab-content" style="padding: 1rem; display: none;">
-            <div style="margin-bottom: 0.75rem;">
-              <strong>Status</strong>: <code id="debugRespStatus"></code>
-            </div>
-            <div style="margin-bottom: 0.75rem;">
-              <strong data-i18n="logs.debugHeaders">Headers</strong>
-              <pre id="debugRespHeaders" style="background: var(--neutral-100); padding: 0.75rem; border-radius: 6px; overflow-x: auto; font-size: 0.8rem; max-height: 200px; margin-top: 0.25rem;"></pre>
-            </div>
-            <div>
-              <strong>Body</strong>
-              <pre id="debugRespBody" style="background: var(--neutral-100); padding: 0.75rem; border-radius: 6px; overflow-x: auto; font-size: 0.8rem; max-height: 400px; margin-top: 0.25rem; white-space: pre-wrap; word-break: break-all;"></pre>
-            </div>
+            <pre id="debugRespRaw" class="upstream-pre upstream-pre--full"></pre>
           </div>
         </div>
       </div>

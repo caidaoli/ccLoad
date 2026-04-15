@@ -16,8 +16,10 @@ type anthropicMessagesRequest struct {
 	Messages   []anthropicMessageContent `json:"messages"`
 	Stream     util.FlexibleBool         `json:"stream,omitempty"`
 	System     any                       `json:"system,omitempty"`
-	Tools      json.RawMessage           `json:"tools,omitempty"`
+	Tools      json.RawMessage           `json:"tools"`
 	ToolChoice json.RawMessage           `json:"tool_choice,omitempty"`
+	MaxTokens  int                       `json:"max_tokens"`
+	Metadata   map[string]string         `json:"metadata"`
 }
 
 type anthropicMessageContent struct {

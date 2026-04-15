@@ -162,6 +162,38 @@
     <tr class="model-test-empty-row"><td colspan="{{colspan}}">{{message}}</td></tr>
   </template>
 
+  <!-- 上游请求/响应详情弹窗 -->
+  <div id="upstreamDetailModal" class="modal">
+    <div class="modal-content upstream-detail-modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title" data-i18n="channels.test.upstreamDetail">上游请求/响应详情</h2>
+        <button type="button" class="close-btn" onclick="closeUpstreamDetailModal()">&times;</button>
+      </div>
+      <div class="upstream-detail-tabs">
+        <button type="button" class="upstream-tab active" data-tab="request" data-i18n="channels.test.tabRequest">Request</button>
+        <button type="button" class="upstream-tab" data-tab="response" data-i18n="channels.test.tabResponse">Response</button>
+      </div>
+      <div id="upstreamTabRequest" class="upstream-tab-panel active">
+        <div class="upstream-field upstream-field--full">
+          <div class="upstream-field-header">
+            <label data-i18n="channels.test.tabRequest">Request</label>
+            <button type="button" class="upstream-copy-btn" data-copy-target="upstreamReqRaw" data-i18n="common.copy">复制</button>
+          </div>
+          <pre id="upstreamReqRaw" class="upstream-pre upstream-pre--full"></pre>
+        </div>
+      </div>
+      <div id="upstreamTabResponse" class="upstream-tab-panel">
+        <div class="upstream-field upstream-field--full">
+          <div class="upstream-field-header">
+            <label data-i18n="channels.test.tabResponse">Response</label>
+            <button type="button" class="upstream-copy-btn" data-copy-target="upstreamRespRaw" data-i18n="common.copy">复制</button>
+          </div>
+          <pre id="upstreamRespRaw" class="upstream-pre upstream-pre--full"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- 删除预览确认弹窗 -->
   <div id="deletePreviewModal" class="modal">
     <div class="modal-content modal-content--lg">

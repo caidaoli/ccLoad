@@ -583,7 +583,7 @@ function renderLogs(data) {
 
     // === 直接拼接行 HTML ===
     htmlParts[i] = `<tr class="mobile-card-row logs-table-row">
-          <td class="logs-col-time" data-mobile-label="${logMobileLabels.time}" style="white-space: nowrap;"><span class="debug-log-link" data-log-id="${entry.id}" style="cursor: pointer; text-decoration-style: dotted; text-decoration-line: underline; text-underline-offset: 2px;">${formatTime(entry.time)}</span></td>
+          <td class="logs-col-time" data-mobile-label="${logMobileLabels.time}" style="white-space: nowrap;">${formatTime(entry.time)}</td>
           <td class="logs-col-ip logs-mono-text" data-mobile-label="${logMobileLabels.ip}" style="white-space: nowrap;">${clientIPDisplay}</td>
           <td class="logs-col-api-key" data-mobile-label="${logMobileLabels.apiKey}" style="text-align: center; white-space: nowrap;">${apiKeyDisplay}</td>
           <td class="logs-col-channel" data-mobile-label="${logMobileLabels.channel}">${configDisplay}</td>
@@ -596,7 +596,7 @@ function renderLogs(data) {
           <td class="logs-col-cache-read${cacheReadDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.cacheRead}" style="text-align: right; white-space: nowrap;">${cacheReadDisplay}</td>
           <td class="logs-col-cache-write${cacheCreationDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.cacheWrite}" style="text-align: right; white-space: nowrap;">${cacheCreationDisplay}</td>
           <td class="logs-col-cost${costDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.cost}" style="text-align: right; white-space: nowrap;">${costDisplay}</td>
-          <td class="logs-col-message${messageDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.message}" style="max-width: 300px; word-break: break-word;">${messageDisplay}</td>
+          <td class="logs-col-message${messageDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.message}" style="max-width: 300px; word-break: break-word;"><span class="debug-log-link has-upstream-detail" data-log-id="${entry.id}">${messageDisplay}</span></td>
         </tr>`;
   }
 
@@ -1151,9 +1151,14 @@ window.initPageBootstrap({
     }
   });
 
-  // ESC键关闭测试模态框
+  // ESC键关闭模态框
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+      const debugModal = document.getElementById('debugLogModal');
+      if (debugModal && debugModal.classList.contains('show')) {
+        closeDebugLogModal();
+        return;
+      }
       closeTestKeyModal();
     }
   });
@@ -1520,6 +1525,77 @@ async function deleteKeyFromLog(channelId, channelName, maskedApiKey, apiKeyHash
 // Debug Log Modal
 // ============================================================================
 
+function escapeCodeHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function formatCodeWithLines(text) {
+  if (!text) return '';
+  const lines = text.split('\n');
+  return lines.map(line => `<span class="code-line">${escapeCodeHtml(line)}</span>`).join('');
+}
+
+function setCodeContent(elementId, text) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  el._rawText = text || '';
+  el.innerHTML = formatCodeWithLines(text || '');
+}
+
+function formatJsonSafe(str) {
+  if (!str) return '';
+  try {
+    return JSON.stringify(JSON.parse(str), null, 2);
+  } catch {
+    return str;
+  }
+}
+
+function formatHeaderLines(headers) {
+  if (!headers) return '';
+  if (typeof headers === 'string') {
+    try { headers = JSON.parse(headers); } catch { return headers; }
+  }
+  if (typeof headers !== 'object') return '';
+  const lines = [];
+  for (const [key, value] of Object.entries(headers)) {
+    if (Array.isArray(value)) {
+      value.forEach(v => lines.push(`${key}: ${v}`));
+    } else {
+      lines.push(`${key}: ${value}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+function composeDebugRawRequest(data) {
+  const parts = [];
+  const method = data.req_method || 'POST';
+  const url = data.req_url || '';
+  parts.push(`${method} ${url}`);
+  const headers = formatHeaderLines(data.req_headers);
+  if (headers) parts.push(headers);
+  const body = formatJsonSafe(data.req_body);
+  if (body) {
+    parts.push('');
+    parts.push(body);
+  }
+  return parts.join('\n');
+}
+
+function composeDebugRawResponse(data) {
+  const parts = [];
+  if (data.resp_status) parts.push('HTTP ' + data.resp_status);
+  const headers = formatHeaderLines(data.resp_headers);
+  if (headers) parts.push(headers);
+  const body = formatJsonSafe(data.resp_body);
+  if (body) {
+    parts.push('');
+    parts.push(body);
+  }
+  return parts.join('\n');
+}
+
 async function showDebugLogModal(logId) {
   const modal = document.getElementById('debugLogModal');
   const loading = document.getElementById('debugLogLoading');
@@ -1531,47 +1607,20 @@ async function showDebugLogModal(logId) {
   content.style.display = 'none';
   modal.classList.add('show');
 
-  // 重置 tab 状态
-  document.querySelectorAll('.debug-tab').forEach(tab => {
-    const isReq = tab.dataset.tab === 'request';
-    tab.classList.toggle('active', isReq);
-    tab.style.borderBottomColor = isReq ? 'var(--primary-600)' : 'transparent';
-    tab.style.color = isReq ? '' : 'var(--neutral-500)';
-    tab.style.fontWeight = isReq ? '600' : '';
+  // Reset tabs
+  modal.querySelectorAll('.upstream-tab').forEach(tab => {
+    tab.classList.toggle('active', tab.dataset.tab === 'request');
   });
-  document.getElementById('debugTabRequest').style.display = '';
-  document.getElementById('debugTabResponse').style.display = 'none';
+  document.getElementById('debugTabRequest').classList.add('active');
+  document.getElementById('debugTabResponse').classList.remove('active');
 
   try {
     const data = await fetchDataWithAuth(`/admin/debug-logs/${logId}`);
     loading.style.display = 'none';
-    content.style.display = '';
+    content.style.display = 'flex';
 
-    // Request tab
-    document.getElementById('debugReqMethod').textContent = data.req_method || '-';
-    document.getElementById('debugReqURL').textContent = data.req_url || '-';
-    document.getElementById('debugReqHeaders').textContent = formatJsonSafe(data.req_headers);
-    document.getElementById('debugReqBody').textContent = formatBodySafe(data.req_body);
-
-    // Response tab
-    document.getElementById('debugRespStatus').textContent = data.resp_status || '-';
-    document.getElementById('debugRespHeaders').textContent = formatJsonSafe(data.resp_headers);
-    document.getElementById('debugRespBody').textContent = formatBodySafe(data.resp_body);
-
-    // Tab 切换事件
-    document.querySelectorAll('.debug-tab').forEach(tab => {
-      tab.onclick = () => {
-        document.querySelectorAll('.debug-tab').forEach(t => {
-          const active = t === tab;
-          t.classList.toggle('active', active);
-          t.style.borderBottomColor = active ? 'var(--primary-600)' : 'transparent';
-          t.style.color = active ? '' : 'var(--neutral-500)';
-          t.style.fontWeight = active ? '600' : '';
-        });
-        document.getElementById('debugTabRequest').style.display = tab.dataset.tab === 'request' ? '' : 'none';
-        document.getElementById('debugTabResponse').style.display = tab.dataset.tab === 'response' ? '' : 'none';
-      };
-    });
+    setCodeContent('debugReqRaw', composeDebugRawRequest(data));
+    setCodeContent('debugRespRaw', composeDebugRawResponse(data));
   } catch (e) {
     loading.style.display = 'none';
     if (e.message && e.message.includes('404')) {
@@ -1587,21 +1636,31 @@ function closeDebugLogModal() {
   document.getElementById('debugLogModal').classList.remove('show');
 }
 
-function formatJsonSafe(str) {
-  if (!str) return '-';
-  try {
-    return JSON.stringify(JSON.parse(str), null, 2);
-  } catch {
-    return str;
-  }
-}
+// Tab switch + copy button delegation for debug log modal.
+// 部分测试桩只提供最小 document API，这里避免在脚本加载阶段就假定完整 DOM 存在。
+if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+  document.addEventListener('click', (e) => {
+    const tab = e.target.closest('#debugLogModal .upstream-tab');
+    if (tab) {
+      const target = tab.dataset.tab;
+      document.querySelectorAll('#debugLogModal .upstream-tab').forEach(t => t.classList.toggle('active', t === tab));
+      document.getElementById('debugTabRequest').classList.toggle('active', target === 'request');
+      document.getElementById('debugTabResponse').classList.toggle('active', target === 'response');
+      return;
+    }
 
-function formatBodySafe(body) {
-  if (!body) return '(empty)';
-  try {
-    const parsed = JSON.parse(body);
-    return JSON.stringify(parsed, null, 2);
-  } catch {
-    return body;
-  }
+    const copyBtn = e.target.closest('#debugLogModal .upstream-copy-btn');
+    if (copyBtn) {
+      const targetId = copyBtn.dataset.copyTarget;
+      const pre = document.getElementById(targetId);
+      if (!pre) return;
+      const text = pre._rawText || pre.textContent || '';
+      navigator.clipboard.writeText(text).then(() => {
+        const orig = copyBtn.textContent;
+        copyBtn.textContent = '\u2713';
+        copyBtn.classList.add('copied');
+        setTimeout(() => { copyBtn.textContent = orig; copyBtn.classList.remove('copied'); }, 1500);
+      });
+    }
+  });
 }
