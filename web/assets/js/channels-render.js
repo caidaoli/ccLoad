@@ -14,6 +14,11 @@ function buildPriorityRow(rowClass, valueClass, value) {
   return `<div class="ch-priority-row ${rowClass}"><span class="${valueClass}">${value}</span></div>`;
 }
 
+function buildPriorityStatusRow(content) {
+  if (!content) return '';
+  return `<div class="ch-priority-row ch-priority-row--status">${content}</div>`;
+}
+
 if (!window.ChannelProtocolConfig) {
   throw new Error('ChannelProtocolConfig helper is required before channels-render.js');
 }
@@ -22,10 +27,15 @@ function buildEffectivePriorityHtml(channel) {
   const basePriority = channel.priority;
   const priorityLabel = window.t('channels.table.priority');
   const healthLabel = window.t('channels.stats.healthScoreLabel');
+  const disabledBadge = inlineDisabledBadge(channel.enabled);
 
   if (channel.effective_priority === undefined || channel.effective_priority === null) {
     const title = `${priorityLabel}: ${basePriority}`;
-    return `<div class="ch-priority-stack" title="${title.replace(/"/g, '&quot;')}">${buildPriorityRow('ch-priority-base', 'ch-priority-value', basePriority)}</div>`;
+    const rows = [
+      buildPriorityRow('ch-priority-base', 'ch-priority-value', basePriority),
+      buildPriorityStatusRow(disabledBadge)
+    ].filter(Boolean);
+    return `<div class="ch-priority-stack" title="${title.replace(/"/g, '&quot;')}">${rows.join('')}</div>`;
   }
 
   const effPriority = formatHealthScoreDisplay(channel.effective_priority);
@@ -55,6 +65,10 @@ function buildEffectivePriorityHtml(channel) {
   const rows = [buildPriorityRow('ch-priority-base', baseValueClass, basePriority)];
   if (!isConsistent) {
     rows.push(buildPriorityRow('ch-priority-health', healthValueClass, effPriority));
+  }
+  const statusRow = buildPriorityStatusRow(disabledBadge);
+  if (statusRow) {
+    rows.push(statusRow);
   }
 
   return `<div class="ch-priority-stack" title="${title.replace(/"/g, '&quot;')}">${rows.join('')}</div>`;
@@ -294,7 +308,7 @@ function createChannelCard(channel) {
     modelsText: modelsText,
     priority: channel.priority,
     effectivePriorityHtml: buildEffectivePriorityHtml(channel),
-    disabledBadge: inlineDisabledBadge(channel.enabled),
+    disabledBadge: '',
     cooldownBadge: inlineCooldownBadge(channel),
     durationHtml: durationHtml,
     usageHtml: usageHtml,

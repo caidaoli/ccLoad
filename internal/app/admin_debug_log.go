@@ -1,13 +1,37 @@
 package app
 
 import (
+	"context"
 	"encoding/base64"
 	"net/http"
 	"strconv"
 	"unicode/utf8"
 
+	"ccLoad/internal/model"
+
 	"github.com/gin-gonic/gin"
 )
+
+type debugLogUnavailableInfo struct {
+	Reason                   string               `json:"reason"`
+	DebugLogEnabled          *model.SystemSetting `json:"debug_log_enabled,omitempty"`
+	DebugLogRetentionMinutes *model.SystemSetting `json:"debug_log_retention_minutes,omitempty"`
+}
+
+func (s *Server) buildDebugLogUnavailableInfo(ctx context.Context) debugLogUnavailableInfo {
+	info := debugLogUnavailableInfo{
+		Reason: "debug_log_not_found",
+	}
+
+	if setting, err := s.configService.GetSettingFresh(ctx, "debug_log_enabled"); err == nil {
+		info.DebugLogEnabled = setting
+	}
+	if setting, err := s.configService.GetSettingFresh(ctx, "debug_log_retention_minutes"); err == nil {
+		info.DebugLogRetentionMinutes = setting
+	}
+
+	return info
+}
 
 // HandleGetDebugLog 获取指定 log_id 对应的调试日志
 // GET /admin/debug-logs/:log_id
@@ -25,7 +49,7 @@ func (s *Server) HandleGetDebugLog(c *gin.Context) {
 		return
 	}
 	if entry == nil {
-		RespondErrorMsg(c, http.StatusNotFound, "debug log not found")
+		RespondErrorWithData(c, http.StatusNotFound, "debug log unavailable", s.buildDebugLogUnavailableInfo(c.Request.Context()))
 		return
 	}
 

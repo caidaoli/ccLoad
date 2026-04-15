@@ -141,6 +141,74 @@ function renderLogSourceBadge(logSource) {
   }
 }
 
+function canInspectDebugLog(entry) {
+  return Number(entry?.channel_id) > 0;
+}
+
+function buildLogMessageContent(entry) {
+  const sourceBadge = renderLogSourceBadge(entry.log_source || 'proxy');
+  const messageText = escapeHtml(entry.message || '');
+  const messageDisplay = `${sourceBadge}${messageText}`;
+  if (!messageDisplay) {
+    return '';
+  }
+
+  if (!canInspectDebugLog(entry)) {
+    return `<span>${messageDisplay}</span>`;
+  }
+
+  const logId = Number(entry?.id);
+  const logIdAttr = Number.isFinite(logId) && logId > 0 ? ` data-log-id="${logId}"` : '';
+  return `<span class="debug-log-link has-upstream-detail"${logIdAttr}>${messageDisplay}</span>`;
+}
+
+function formatDebugSettingValue(setting) {
+  if (!setting || setting.value === undefined || setting.value === null || setting.value === '') {
+    return '-';
+  }
+
+  const rawValue = String(setting.value).trim();
+  switch (setting.key) {
+    case 'debug_log_enabled':
+      return (rawValue === 'true' || rawValue === '1')
+        ? t('logs.debugSettingEnabledOn')
+        : t('logs.debugSettingEnabledOff');
+    case 'debug_log_retention_minutes':
+      return t('logs.debugSettingRetentionMinutes', { minutes: rawValue });
+    default:
+      return rawValue;
+  }
+}
+
+function buildDebugLogUnavailableHtml(data) {
+  const enabledSetting = data?.debug_log_enabled || null;
+  const retentionSetting = data?.debug_log_retention_minutes || null;
+  const enabledValue = String(enabledSetting?.value || '').trim().toLowerCase();
+  const isDebugEnabled = enabledValue === 'true' || enabledValue === '1';
+  const hasExplicitEnabledValue = enabledValue !== '';
+  const hintKey = hasExplicitEnabledValue
+    ? (isDebugEnabled ? 'logs.debugUnavailableHintExpired' : 'logs.debugUnavailableHintDisabled')
+    : 'logs.debugUnavailableHintGeneric';
+
+  return `
+    <div class="debug-log-unavailable">
+      <div class="debug-log-unavailable__title">${escapeHtml(t('logs.debugUnavailableTitle'))}</div>
+      <div class="debug-log-unavailable__hint">${escapeHtml(t(hintKey))}</div>
+      <div class="debug-log-unavailable__settings-title">${escapeHtml(t('logs.debugUnavailableSettingsTitle'))}</div>
+      <div class="debug-log-unavailable__settings">
+        <div class="debug-log-unavailable__row">
+          <span class="debug-log-unavailable__label">${escapeHtml(t('settings.desc.debug_log_enabled'))}</span>
+          <span class="debug-log-unavailable__value">${escapeHtml(formatDebugSettingValue(enabledSetting))}</span>
+        </div>
+        <div class="debug-log-unavailable__row">
+          <span class="debug-log-unavailable__label">${escapeHtml(t('settings.desc.debug_log_retention_minutes'))}</span>
+          <span class="debug-log-unavailable__value">${escapeHtml(formatDebugSettingValue(retentionSetting))}</span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function calculateLogSpeed(entry) {
   const outputTokens = Number(entry?.output_tokens);
   const duration = Number(entry?.duration);
@@ -577,9 +645,7 @@ function renderLogs(data) {
     }
     const costDisplay = entry.cost ?
       `<span style="color: var(--warning-600); font-weight: 500;">${formatCost(entry.cost)}${tierBadge}</span>` : '';
-    const sourceBadge = renderLogSourceBadge(entry.log_source || 'proxy');
-    const messageText = escapeHtml(entry.message || '');
-    const messageDisplay = `${sourceBadge}${messageText}`;
+    const messageContent = buildLogMessageContent(entry);
 
     // === 直接拼接行 HTML ===
     htmlParts[i] = `<tr class="mobile-card-row logs-table-row">
@@ -596,7 +662,7 @@ function renderLogs(data) {
           <td class="logs-col-cache-read${cacheReadDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.cacheRead}" style="text-align: right; white-space: nowrap;">${cacheReadDisplay}</td>
           <td class="logs-col-cache-write${cacheCreationDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.cacheWrite}" style="text-align: right; white-space: nowrap;">${cacheCreationDisplay}</td>
           <td class="logs-col-cost${costDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.cost}" style="text-align: right; white-space: nowrap;">${costDisplay}</td>
-          <td class="logs-col-message${messageDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.message}" style="max-width: 300px; word-break: break-word;"><span class="debug-log-link has-upstream-detail" data-log-id="${entry.id}">${messageDisplay}</span></td>
+          <td class="logs-col-message${messageContent ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.message}" style="max-width: 300px; word-break: break-word;">${messageContent}</td>
         </tr>`;
   }
 
@@ -1587,6 +1653,8 @@ async function showDebugLogModal(logId) {
 
   loading.style.display = '';
   error.style.display = 'none';
+  error.innerHTML = '';
+  error.textContent = '';
   content.style.display = 'none';
   modal.classList.add('show');
 
@@ -1598,7 +1666,18 @@ async function showDebugLogModal(logId) {
   document.getElementById('debugTabResponse').classList.remove('active');
 
   try {
-    const data = await fetchDataWithAuth(`/admin/debug-logs/${logId}`);
+    const { res, payload } = await fetchAPIWithAuthRaw(`/admin/debug-logs/${logId}`);
+    if (!payload.success) {
+      if (res.status === 404) {
+        loading.style.display = 'none';
+        error.innerHTML = buildDebugLogUnavailableHtml(payload.data || null);
+        error.style.display = '';
+        return;
+      }
+      throw new Error(payload.error || '加载失败');
+    }
+
+    const data = payload.data || {};
     loading.style.display = 'none';
     content.style.display = 'flex';
 
@@ -1606,11 +1685,7 @@ async function showDebugLogModal(logId) {
     window.setHighlightedCodeContent('debugRespRaw', composeDebugRawResponse(data), 'response');
   } catch (e) {
     loading.style.display = 'none';
-    if (e.message && e.message.includes('404')) {
-      error.textContent = t('logs.debugNotFound') || 'Debug日志不存在（未启用或已过期）';
-    } else {
-      error.textContent = e.message || '加载失败';
-    }
+    error.textContent = e.message || '加载失败';
     error.style.display = '';
   }
 }

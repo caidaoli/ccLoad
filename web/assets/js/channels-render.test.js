@@ -13,6 +13,7 @@ function loadRenderSandbox(overrides = {}) {
         if (key === 'channels.table.priority') return '优先级';
         if (key === 'channels.stats.healthScoreLabel') return '健康度';
         if (key === 'channels.stats.successRate') return `成功率 ${params.rate}`;
+        if (key === 'channels.statusDisabled') return '已禁用';
         if (key === 'channels.stats.firstByte') return '首字';
         if (key === 'channels.stats.calls') return '调用';
         if (key === 'stats.tooltipDuration') return '耗时';
@@ -170,4 +171,22 @@ test('createChannelCard 会把额外协议标签传给渠道卡片模板且保�
   assert.match(cardData.protocolTransformBadges, />Anthropic</);
   assert.match(cardData.protocolTransformBadges, />OpenAI</);
   assert.doesNotMatch(cardData.protocolTransformBadges, />Gemini</);
+});
+
+test('禁用渠道会把已禁用徽章渲染到优先级列而不是标题行', () => {
+  const { createChannelCard } = loadRenderHelpers();
+
+  const cardData = createChannelCard({
+    id: 11,
+    name: '禁用渠道',
+    channel_type: 'anthropic',
+    protocol_transforms: [],
+    url: 'https://disabled.example.com',
+    models: [{ model: 'claude-4' }],
+    priority: 160,
+    enabled: false
+  });
+
+  assert.equal(cardData.disabledBadge, '');
+  assert.match(cardData.effectivePriorityHtml, /已禁用/);
 });

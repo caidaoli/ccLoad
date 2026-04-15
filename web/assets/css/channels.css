@@ -499,6 +499,11 @@
       line-height: 1.15;
     }
 
+    .ch-priority-row--status {
+      justify-content: flex-end;
+      margin-top: 2px;
+    }
+
     .ch-priority-label {
       color: var(--neutral-600);
       font-size: 13px;
@@ -601,12 +606,6 @@
       white-space: nowrap;
       color: var(--neutral-900);
       font-size: 13px;
-    }
-
-    .ch-id-text {
-      color: var(--neutral-500);
-      font-size: 13px;
-      font-weight: 500;
     }
 
     .ch-url-line {
@@ -1398,7 +1397,6 @@
       font-weight: 600;
     }
 
-    .sort-item-id,
     .sort-item-priority-label {
       color: var(--neutral-500);
       font-size: 13px;
