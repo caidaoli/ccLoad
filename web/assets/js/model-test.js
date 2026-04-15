@@ -975,8 +975,21 @@ function applyTestResultToRow(row, data) {
       if (textBlock) respText = textBlock.text;
     }
     const successText = respText || i18nText('common.success', '成功');
-    row.querySelector('.response').textContent = successText;
-    row.querySelector('.response').title = successText;
+    const responseCell = row.querySelector('.response');
+    responseCell.textContent = successText;
+    responseCell.title = successText;
+
+    if (data.upstream_request_url) {
+      row._upstreamData = {
+        url: data.upstream_request_url,
+        requestHeaders: data.upstream_request_headers,
+        requestBody: data.upstream_request_body,
+        statusCode: data.status_code,
+        responseHeaders: data.response_headers,
+        responseBody: data.upstream_response_body || data.raw_response
+      };
+      responseCell.classList.add('has-upstream-detail');
+    }
     return;
   }
 
@@ -1001,10 +1014,23 @@ function applyTestResultToRow(row, data) {
   if (!errMsg) {
     errMsg = data.error || i18nText('modelTest.testFailed', '测试失败');
   }
-  row.querySelector('.response').textContent = errMsg;
-  row.querySelector('.response').title = errMsg;
+  const responseCell = row.querySelector('.response');
+  responseCell.textContent = errMsg;
+  responseCell.title = errMsg;
   row.querySelector('.speed').textContent = '-';
   row.querySelector('.cost').textContent = '-';
+
+  if (data.upstream_request_url) {
+    row._upstreamData = {
+      url: data.upstream_request_url,
+      requestHeaders: data.upstream_request_headers,
+      requestBody: data.upstream_request_body,
+      statusCode: data.status_code,
+      responseHeaders: data.response_headers,
+      responseBody: data.upstream_response_body || data.raw_response
+    };
+    responseCell.classList.add('has-upstream-detail');
+  }
 }
 
 async function runBatchTests(targets) {
@@ -1711,6 +1737,16 @@ function bindEvents() {
   }
 
   tbody.addEventListener('click', (event) => {
+    // Click on response cell to show upstream detail
+    const responseCell = event.target.closest('.response');
+    if (responseCell) {
+      const row = responseCell.closest('tr');
+      if (row && row._upstreamData) {
+        showUpstreamDetailModal(row._upstreamData);
+        return;
+      }
+    }
+
     const channelBtn = event.target.closest('.channel-link[data-channel-id]');
     if (testMode !== TEST_MODE_MODEL || !channelBtn) return;
 
@@ -1754,6 +1790,125 @@ window.toggleAllModels = toggleAllModels;
 window.runModelTests = runModelTests;
 window.fetchAndAddModels = fetchAndAddModels;
 window.deleteSelectedModels = deleteSelectedModels;
+
+function tryFormatJSON(str) {
+  if (!str) return '';
+  try {
+    return JSON.stringify(JSON.parse(str), null, 2);
+  } catch {
+    return str;
+  }
+}
+
+function escapeCodeHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function formatCodeWithLines(text) {
+  if (!text) return '';
+  const lines = text.split('\n');
+  return lines.map(line => `<span class="code-line">${escapeCodeHtml(line)}</span>`).join('');
+}
+
+function setCodeContent(elementId, text) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  el._rawText = text || '';
+  el.innerHTML = formatCodeWithLines(text || '');
+}
+
+function formatHeaderLines(headers) {
+  if (!headers || typeof headers !== 'object') return '';
+  const lines = [];
+  for (const [key, value] of Object.entries(headers)) {
+    if (Array.isArray(value)) {
+      value.forEach(v => lines.push(`${key}: ${v}`));
+    } else {
+      lines.push(`${key}: ${value}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+function composeRawRequest(data) {
+  let parts = [];
+  if (data.url) parts.push(data.url);
+  const headers = formatHeaderLines(data.requestHeaders);
+  if (headers) parts.push(headers);
+  const body = tryFormatJSON(data.requestBody);
+  if (body) {
+    parts.push('');
+    parts.push(body);
+  }
+  return parts.join('\n');
+}
+
+function composeRawResponse(data) {
+  let parts = [];
+  if (data.statusCode != null) parts.push('HTTP ' + data.statusCode);
+  const headers = formatHeaderLines(data.responseHeaders);
+  if (headers) parts.push(headers);
+  const body = tryFormatJSON(data.responseBody);
+  if (body) {
+    parts.push('');
+    parts.push(body);
+  }
+  return parts.join('\n');
+}
+
+function showUpstreamDetailModal(data) {
+  if (!data) return;
+
+  setCodeContent('upstreamReqRaw', composeRawRequest(data));
+  setCodeContent('upstreamRespRaw', composeRawResponse(data));
+
+  // Reset to Request tab
+  const modal = document.getElementById('upstreamDetailModal');
+  modal.querySelectorAll('.upstream-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'request'));
+  document.getElementById('upstreamTabRequest').classList.add('active');
+  document.getElementById('upstreamTabResponse').classList.remove('active');
+
+  modal.classList.add('show');
+}
+
+function closeUpstreamDetailModal() {
+  document.getElementById('upstreamDetailModal').classList.remove('show');
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    const modal = document.getElementById('upstreamDetailModal');
+    if (modal && modal.classList.contains('show')) {
+      closeUpstreamDetailModal();
+    }
+  }
+});
+
+// Tab switch + copy button delegation for upstream detail modal
+document.addEventListener('click', (e) => {
+  const tab = e.target.closest('#upstreamDetailModal .upstream-tab');
+  if (tab) {
+    const target = tab.dataset.tab;
+    document.querySelectorAll('#upstreamDetailModal .upstream-tab').forEach(t => t.classList.toggle('active', t === tab));
+    document.getElementById('upstreamTabRequest').classList.toggle('active', target === 'request');
+    document.getElementById('upstreamTabResponse').classList.toggle('active', target === 'response');
+    return;
+  }
+
+  const copyBtn = e.target.closest('#upstreamDetailModal .upstream-copy-btn');
+  if (copyBtn) {
+    const targetId = copyBtn.dataset.copyTarget;
+    const pre = document.getElementById(targetId);
+    if (!pre) return;
+    const text = pre._rawText || pre.textContent || '';
+    navigator.clipboard.writeText(text).then(() => {
+      const orig = copyBtn.textContent;
+      copyBtn.textContent = '\u2713';
+      copyBtn.classList.add('copied');
+      setTimeout(() => { copyBtn.textContent = orig; copyBtn.classList.remove('copied'); }, 1500);
+    });
+  }
+});
 
 async function bootstrap() {
   initModelTestActions();

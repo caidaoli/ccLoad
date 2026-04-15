@@ -350,6 +350,10 @@ function displayTestResult(result) {
       details += renderResponseSection(window.t('channels.test.rawResponse'), result.raw_response);
     }
 
+    if (result.upstream_request_url) {
+      details += `<button type="button" class="upstream-detail-btn" data-action="show-upstream-detail">${window.t('channels.test.viewUpstreamDetail')}</button>`;
+    }
+
     detailsDiv.innerHTML = details;
   } else {
     testResultDiv.classList.add('error');
@@ -374,6 +378,62 @@ function displayTestResult(result) {
       details += renderResponseSection(window.t('channels.test.responseHeaders'), JSON.stringify(result.response_headers, null, 2), 'block');
     }
 
+    if (result.upstream_request_url) {
+      details += `<button type="button" class="upstream-detail-btn" data-action="show-upstream-detail">${window.t('channels.test.viewUpstreamDetail')}</button>`;
+    }
+
     detailsDiv.innerHTML = details;
   }
+
+  // 缓存上游详情数据供 Modal 使用
+  window._lastTestUpstreamData = result.upstream_request_url ? {
+    url: result.upstream_request_url,
+    requestHeaders: result.upstream_request_headers,
+    requestBody: result.upstream_request_body,
+    statusCode: result.status_code,
+    responseHeaders: result.response_headers,
+    responseBody: result.upstream_response_body || result.raw_response
+  } : null;
 }
+
+function showUpstreamDetailModal() {
+  const data = window._lastTestUpstreamData;
+  if (!data) return;
+
+  document.getElementById('upstreamReqUrl').textContent = data.url || '';
+  document.getElementById('upstreamReqHeaders').textContent = data.requestHeaders ? JSON.stringify(data.requestHeaders, null, 2) : '';
+  document.getElementById('upstreamReqBody').textContent = tryFormatJSON(data.requestBody);
+  document.getElementById('upstreamRespStatus').textContent = data.statusCode != null ? String(data.statusCode) : '';
+  document.getElementById('upstreamRespHeaders').textContent = data.responseHeaders ? JSON.stringify(data.responseHeaders, null, 2) : '';
+  document.getElementById('upstreamRespBody').textContent = tryFormatJSON(data.responseBody);
+
+  // 重置到 Request tab
+  document.querySelectorAll('.upstream-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'request'));
+  document.getElementById('upstreamTabRequest').classList.add('active');
+  document.getElementById('upstreamTabResponse').classList.remove('active');
+
+  document.getElementById('upstreamDetailModal').classList.add('show');
+}
+
+function closeUpstreamDetailModal() {
+  document.getElementById('upstreamDetailModal').classList.remove('show');
+}
+
+function tryFormatJSON(str) {
+  if (!str) return '';
+  try {
+    return JSON.stringify(JSON.parse(str), null, 2);
+  } catch {
+    return str;
+  }
+}
+
+// Tab 切换委托
+document.addEventListener('click', (e) => {
+  const tab = e.target.closest('.upstream-tab');
+  if (!tab) return;
+  const target = tab.dataset.tab;
+  document.querySelectorAll('.upstream-tab').forEach(t => t.classList.toggle('active', t === tab));
+  document.getElementById('upstreamTabRequest').classList.toggle('active', target === 'request');
+  document.getElementById('upstreamTabResponse').classList.toggle('active', target === 'response');
+});

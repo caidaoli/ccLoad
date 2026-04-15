@@ -1108,6 +1108,48 @@
     <li class="batch-fail-item"><strong>Key #{{keyNum}}</strong> ({{keyMask}}): {{error}}</li>
   </template>
 
+  <!-- 上游详情 Modal -->
+  <div id="upstreamDetailModal" class="modal">
+    <div class="modal-content upstream-detail-modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title" data-i18n="channels.test.upstreamDetail">上游请求/响应详情</h2>
+        <button type="button" class="close-btn" data-action="close-upstream-detail">&times;</button>
+      </div>
+      <div class="upstream-detail-tabs">
+        <button type="button" class="upstream-tab active" data-tab="request" data-i18n="channels.test.tabRequest">Request</button>
+        <button type="button" class="upstream-tab" data-tab="response" data-i18n="channels.test.tabResponse">Response</button>
+      </div>
+      <div id="upstreamTabRequest" class="upstream-tab-panel active">
+        <div class="upstream-field">
+          <label data-i18n="channels.test.requestUrl">URL</label>
+          <pre id="upstreamReqUrl" class="upstream-pre"></pre>
+        </div>
+        <div class="upstream-field">
+          <label data-i18n="channels.test.requestHeaders">Headers</label>
+          <pre id="upstreamReqHeaders" class="upstream-pre"></pre>
+        </div>
+        <div class="upstream-field">
+          <label data-i18n="channels.test.requestBody">Body</label>
+          <pre id="upstreamReqBody" class="upstream-pre upstream-pre--tall"></pre>
+        </div>
+      </div>
+      <div id="upstreamTabResponse" class="upstream-tab-panel">
+        <div class="upstream-field">
+          <label data-i18n="channels.test.responseStatus">Status</label>
+          <pre id="upstreamRespStatus" class="upstream-pre"></pre>
+        </div>
+        <div class="upstream-field">
+          <label data-i18n="channels.test.responseHeaders">Headers</label>
+          <pre id="upstreamRespHeaders" class="upstream-pre"></pre>
+        </div>
+        <div class="upstream-field">
+          <label data-i18n="channels.test.responseBody">Body</label>
+          <pre id="upstreamRespBody" class="upstream-pre upstream-pre--tall"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </body>
 
 </html>

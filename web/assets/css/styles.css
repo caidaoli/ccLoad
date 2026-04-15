@@ -3032,6 +3032,201 @@ body {
   border: 1px solid rgba(0, 0, 0, 0.1);
 }
 
+/* ===== 上游详情 Modal ===== */
+.upstream-detail-modal-content {
+  width: 90vw;
+  max-width: 90vw;
+  height: 90vh;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.upstream-detail-modal-content .upstream-tab-panel.active {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.upstream-detail-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 2px solid var(--neutral-200);
+  margin-bottom: 16px;
+}
+
+.upstream-tab {
+  padding: 8px 20px;
+  border: none;
+  background: none;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--neutral-500);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.upstream-tab:hover {
+  color: var(--neutral-700);
+}
+
+.upstream-tab.active {
+  color: var(--primary-600);
+  border-bottom-color: var(--primary-600);
+}
+
+.upstream-tab-panel {
+  display: none;
+}
+
+.upstream-tab-panel.active {
+  display: block;
+}
+
+.upstream-field {
+  margin-bottom: 12px;
+}
+
+.upstream-field-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.upstream-field label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--neutral-500);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+
+.upstream-field-header label {
+  margin-bottom: 0;
+}
+
+.upstream-copy-btn {
+  padding: 2px 10px;
+  font-size: 12px;
+  color: var(--neutral-500);
+  background: transparent;
+  border: 1px solid var(--neutral-300);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.upstream-copy-btn:hover {
+  color: var(--primary-600);
+  border-color: var(--primary-600);
+}
+
+.upstream-copy-btn.copied {
+  color: #16a34a;
+  border-color: #16a34a;
+}
+
+.upstream-pre {
+  margin: 0;
+  padding: 8px 0;
+  font-size: 13px;
+  font-family: 'Monaco', 'Menlo', 'Consolas', 'Ubuntu Mono', monospace;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: var(--neutral-50);
+  color: var(--color-text);
+  border: 1px solid var(--neutral-200);
+  border-radius: 6px;
+  max-height: 200px;
+  overflow-y: auto;
+  counter-reset: line-number;
+}
+
+.upstream-pre .code-line {
+  display: block;
+  counter-increment: line-number;
+  padding: 0 12px 0 calc(3.5ch + 30px);
+  min-height: 1.6em;
+  position: relative;
+}
+
+.upstream-pre .code-line:hover {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.upstream-pre .code-line::before {
+  content: counter(line-number);
+  position: absolute;
+  left: 0;
+  width: calc(3.5ch + 8px);
+  text-align: right;
+  padding-right: 10px;
+  color: var(--neutral-400);
+  border-right: 1px solid var(--neutral-200);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.upstream-pre--tall {
+  max-height: none;
+  flex: 1;
+}
+
+.upstream-pre--full {
+  max-height: none;
+  flex: 1;
+  min-height: 0;
+}
+
+.upstream-field--full {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.upstream-detail-modal-content .upstream-tab-panel.active {
+  display: flex;
+  flex-direction: column;
+}
+
+.has-upstream-detail {
+  cursor: pointer;
+  color: var(--primary-600);
+  text-decoration: underline;
+  text-decoration-style: dashed;
+  text-underline-offset: 3px;
+}
+
+.has-upstream-detail:hover {
+  color: var(--primary-700);
+  text-decoration-style: solid;
+}
+
+.upstream-detail-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 4px 10px;
+  font-size: 0.75rem;
+  color: var(--primary-600);
+  background: none;
+  border: 1px solid var(--primary-200);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.upstream-detail-btn:hover {
+  background: var(--primary-50);
+}
+
 
 /* ===== 日志和统计页面样式 ===== */
 .status-error {

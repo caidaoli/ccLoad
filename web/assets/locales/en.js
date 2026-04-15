@@ -1079,6 +1079,15 @@ window.I18N_LOCALES['en'] = {
   'channels.test.rawErrorResponse': 'Raw Error Response',
   'channels.test.noResponseBody': '(No response body)',
   'channels.test.responseHeaders': 'Response Headers',
+  'channels.test.upstreamDetail': 'Upstream Request/Response Detail',
+  'channels.test.viewUpstreamDetail': 'View Upstream Detail',
+  'channels.test.tabRequest': 'Request',
+  'channels.test.tabResponse': 'Response',
+  'channels.test.requestUrl': 'URL',
+  'channels.test.requestHeaders': 'Request Headers',
+  'channels.test.requestBody': 'Request Body',
+  'channels.test.responseStatus': 'Status Code',
+  'channels.test.responseBody': 'Response Body',
 
   // Channel import/export
   'channels.import.exportHttpFailed': 'Export failed (HTTP {status})',

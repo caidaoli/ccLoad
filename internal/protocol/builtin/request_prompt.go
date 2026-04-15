@@ -1,6 +1,8 @@
 package builtin
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -401,7 +403,8 @@ func encodeGeminiRequest(conv conversation) ([]byte, error) {
 		decls := make([]geminiFunctionDeclaration, 0, len(conv.Tools))
 		for _, tool := range conv.Tools {
 			if normalizeRole(tool.Type) != "" && normalizeRole(tool.Type) != "function" {
-				return nil, fmt.Errorf("%w: gemini does not support builtin tool type %q", protocol.ErrUnsupportedRequestShape, tool.Type)
+				// 跳过目标协议不支持的 builtin tool（如 web_search）
+				continue
 			}
 			decl := geminiFunctionDeclaration{Name: tool.Name, Description: tool.Description}
 			if anySchema, err := rawJSONToAny(tool.InputSchema); err == nil && anySchema != nil {
@@ -409,9 +412,11 @@ func encodeGeminiRequest(conv conversation) ([]byte, error) {
 			}
 			decls = append(decls, decl)
 		}
-		payload.Tools = []geminiTool{{FunctionDeclarations: decls}}
+		if len(decls) > 0 {
+			payload.Tools = []geminiTool{{FunctionDeclarations: decls}}
+		}
 	}
-	if !conv.ToolChoice.IsZero() {
+	if !conv.ToolChoice.IsZero() && conv.ToolChoice.toolType() == "function" {
 		payload.ToolConfig, err = encodeGeminiToolConfig(conv.ToolChoice)
 		if err != nil {
 			return nil, err
@@ -421,6 +426,22 @@ func encodeGeminiRequest(conv conversation) ([]byte, error) {
 		return nil, fmt.Errorf("%w: no convertible gemini contents", protocol.ErrUnsupportedRequestShape)
 	}
 	return sonic.Marshal(payload)
+}
+
+// newClaudeMetadataUserID 生成 Claude CLI 兼容的 metadata.user_id 值。
+func newClaudeMetadataUserID() string {
+	deviceID := make([]byte, 32)
+	if _, err := rand.Read(deviceID); err != nil {
+		return `{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"","session_id":"00000000-0000-0000-0000-000000000000"}`
+	}
+	sid := make([]byte, 16)
+	if _, err := rand.Read(sid); err != nil {
+		return fmt.Sprintf(`{"device_id":"%s","account_uuid":"","session_id":"00000000-0000-0000-0000-000000000000"}`, hex.EncodeToString(deviceID))
+	}
+	sid[6] = (sid[6] & 0x0f) | 0x40 // UUID v4
+	sid[8] = (sid[8] & 0x3f) | 0x80
+	return fmt.Sprintf(`{"device_id":"%s","account_uuid":"","session_id":"%x-%x-%x-%x-%x"}`,
+		hex.EncodeToString(deviceID), sid[0:4], sid[4:6], sid[6:8], sid[8:10], sid[10:16])
 }
 
 func encodeAnthropicRequest(model string, conv conversation, stream bool) ([]byte, error) {
@@ -436,9 +457,12 @@ func encodeAnthropicRequest(model string, conv conversation, stream bool) ([]byt
 		systemParts = nil
 	}
 	out := anthropicMessagesRequest{
-		Model:    model,
-		Messages: make([]anthropicMessageContent, 0, len(turns)),
-		Stream:   util.FlexibleBool(stream),
+		Model:     model,
+		Messages:  make([]anthropicMessageContent, 0, len(turns)),
+		Stream:    util.FlexibleBool(stream),
+		MaxTokens: 32000,
+		Tools:     []byte("[]"),
+		Metadata:  map[string]string{"user_id": newClaudeMetadataUserID()},
 	}
 	if len(systemParts) > 0 {
 		blocks, err := encodeAnthropicBlocks(systemParts)
@@ -468,7 +492,8 @@ func encodeAnthropicRequest(model string, conv conversation, stream bool) ([]byt
 		tools := make([]map[string]any, 0, len(conv.Tools))
 		for _, tool := range conv.Tools {
 			if normalizeRole(tool.Type) != "" && normalizeRole(tool.Type) != "function" {
-				return nil, fmt.Errorf("%w: anthropic does not support builtin tool type %q", protocol.ErrUnsupportedRequestShape, tool.Type)
+				// 跳过目标协议不支持的 builtin tool（如 web_search）
+				continue
 			}
 			item := map[string]any{"name": tool.Name}
 			if tool.Description != "" {
@@ -479,9 +504,11 @@ func encodeAnthropicRequest(model string, conv conversation, stream bool) ([]byt
 			}
 			tools = append(tools, item)
 		}
-		out.Tools, err = sonic.Marshal(tools)
-		if err != nil {
-			return nil, err
+		if len(tools) > 0 {
+			out.Tools, err = sonic.Marshal(tools)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 	if !conv.ToolChoice.IsZero() {
@@ -493,10 +520,12 @@ func encodeAnthropicRequest(model string, conv conversation, stream bool) ([]byt
 			choice["type"] = "any"
 		case "named":
 			if conv.ToolChoice.toolType() != "function" {
-				return nil, fmt.Errorf("%w: anthropic does not support builtin tool_choice type %q", protocol.ErrUnsupportedRequestShape, conv.ToolChoice.toolType())
+				// 跳过指向 builtin tool 类型的 tool_choice
+				choice = nil
+			} else {
+				choice["type"] = "tool"
+				choice["name"] = conv.ToolChoice.Name
 			}
-			choice["type"] = "tool"
-			choice["name"] = conv.ToolChoice.Name
 		case "none":
 			choice = nil
 		default:

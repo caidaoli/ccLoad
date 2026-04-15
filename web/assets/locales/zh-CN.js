@@ -1079,6 +1079,15 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.test.rawErrorResponse': '原始错误响应',
   'channels.test.noResponseBody': '(无响应体)',
   'channels.test.responseHeaders': '响应头',
+  'channels.test.upstreamDetail': '上游请求/响应详情',
+  'channels.test.viewUpstreamDetail': '查看上游详情',
+  'channels.test.tabRequest': '请求',
+  'channels.test.tabResponse': '响应',
+  'channels.test.requestUrl': 'URL',
+  'channels.test.requestHeaders': '请求头',
+  'channels.test.requestBody': '请求体',
+  'channels.test.responseStatus': '状态码',
+  'channels.test.responseBody': '响应体',
 
   // 渠道导入导出
   'channels.import.exportHttpFailed': '导出失败 (HTTP {status})',

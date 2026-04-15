@@ -70,6 +70,8 @@ function initChannelsPageActions() {
         'close-test-modal': () => closeTestModal(),
         'run-channel-test': () => runChannelTest(),
         'run-batch-test': () => runBatchTest(),
+        'show-upstream-detail': () => showUpstreamDetailModal(),
+        'close-upstream-detail': () => closeUpstreamDetailModal(),
         'close-sort-modal': () => closeSortModal(),
         'save-sort-order': () => saveSortOrder(),
         'toggle-response': (actionTarget) => {

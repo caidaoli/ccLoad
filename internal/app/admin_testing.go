@@ -73,6 +73,14 @@ func resolveClientProtocol(cfg *model.Config, testReq *testutil.TestChannelReque
 	return cfg.GetChannelType()
 }
 
+func cloneHeaders(src http.Header) http.Header {
+	dst := make(http.Header, len(src))
+	for key, values := range src {
+		dst[key] = append([]string(nil), values...)
+	}
+	return dst
+}
+
 func extractRequestPath(fullURL string) string {
 	parsed, err := neturl.Parse(fullURL)
 	if err != nil {
@@ -88,12 +96,38 @@ func extractRequestPath(fullURL string) string {
 	return path
 }
 
-func cloneHeaders(src http.Header) http.Header {
-	dst := make(http.Header, len(src))
-	for key, values := range src {
-		dst[key] = append([]string(nil), values...)
+// patchUpstreamSystemPrompt 将协议转换后的请求体中的 system prompt
+// 替换为上游协议模板定义的 system prompt，确保发送内容匹配上游 API 预期。
+func patchUpstreamSystemPrompt(translatedBody, upstreamBody []byte, upstreamProtocol string) []byte {
+	var key string
+	switch upstreamProtocol {
+	case "anthropic":
+		key = "system"
+	case "codex":
+		key = "instructions"
+	default:
+		return translatedBody
 	}
-	return dst
+
+	var translated, upstream map[string]any
+	if err := sonic.Unmarshal(translatedBody, &translated); err != nil {
+		return translatedBody
+	}
+	if err := sonic.Unmarshal(upstreamBody, &upstream); err != nil {
+		return translatedBody
+	}
+
+	if val, ok := upstream[key]; ok {
+		translated[key] = val
+	} else {
+		delete(translated, key)
+	}
+
+	result, err := sonic.Marshal(translated)
+	if err != nil {
+		return translatedBody
+	}
+	return result
 }
 
 func supportsRuntimeTestProtocol(clientProtocol, upstreamProtocol string) bool {
@@ -141,7 +175,7 @@ func (s *Server) buildChannelTestRequestPlan(
 	}
 
 	upstreamTester := newChannelTester(upstreamProtocol)
-	upstreamURL, upstreamHeaders, _, err := upstreamTester.Build(cfgForBuild, apiKey, testReq)
+	upstreamURL, upstreamHeaders, upstreamBody, err := upstreamTester.Build(cfgForBuild, apiKey, testReq)
 	if err != nil {
 		return nil, err
 	}
@@ -171,6 +205,10 @@ func (s *Server) buildChannelTestRequestPlan(
 	if err != nil {
 		return nil, err
 	}
+
+	// system prompt 用上游协议模板的版本替换：
+	// 协议转换验证的是消息/工具的格式变换，system prompt 需匹配上游 API 预期。
+	translatedBody = patchUpstreamSystemPrompt(translatedBody, upstreamBody, upstreamProtocol)
 
 	plan.fullURL = upstreamURL
 	plan.headers = cloneHeaders(upstreamHeaders)
@@ -580,6 +618,19 @@ func (s *Server) testChannelAPIWithURL(
 		"status_code": resp.StatusCode,
 	}
 
+	// 始终返回上游请求原始数据，便于调试排查（不依赖 debug_log_enabled）
+	reqHeaders := make(map[string]string, len(req.Header))
+	for k, vs := range req.Header {
+		if len(vs) == 1 {
+			reqHeaders[k] = vs[0]
+		} else if len(vs) > 1 {
+			reqHeaders[k] = strings.Join(vs, "; ")
+		}
+	}
+	result["upstream_request_url"] = requestPlan.fullURL
+	result["upstream_request_headers"] = reqHeaders
+	result["upstream_request_body"] = string(requestPlan.requestBody)
+
 	parseNonStreamResponse := func(bodyBytes []byte) map[string]any {
 		// duration_ms 统一表示完整响应总耗时（含读取响应体）
 		result["duration_ms"] = time.Since(start).Milliseconds()
@@ -638,6 +689,9 @@ func (s *Server) testChannelAPIWithURL(
 				)
 			}
 
+			// 始终保留上游原始响应体
+			result["upstream_response_body"] = string(bodyBytes)
+
 			if success, ok := result["success"].(bool); !ok || success {
 				result["message"] = "API测试成功"
 			}
@@ -657,6 +711,7 @@ func (s *Server) testChannelAPIWithURL(
 			errorMsg = "API返回错误状态: " + resp.Status
 		}
 		result["error"] = errorMsg
+		result["upstream_response_body"] = string(bodyBytes)
 		return result
 	}
 
@@ -679,12 +734,14 @@ func (s *Server) testChannelAPIWithURL(
 	if isEventStream {
 		if requestPlan.clientProtocol != requestPlan.upstreamProtocol {
 			recorder := httptest.NewRecorder()
+			var rawUpstreamBuf bytes.Buffer
+			upstreamTee := io.TeeReader(resp.Body, &rawUpstreamBuf)
 			firstByteCaptured := false
 			var state any
 
 			streamErr := streamTransformSSEEvents(
 				ctx,
-				resp.Body,
+				upstreamTee,
 				recorder,
 				func(rawEvent []byte) error {
 					if !firstByteCaptured && len(rawEvent) > 0 {
@@ -709,10 +766,12 @@ func (s *Server) testChannelAPIWithURL(
 			if streamErr != nil {
 				result["duration_ms"] = time.Since(start).Milliseconds()
 				result["error"] = "读取流式响应失败: " + streamErr.Error()
+				result["upstream_response_body"] = rawUpstreamBuf.String()
 				return result
 			}
 
 			result["duration_ms"] = time.Since(start).Milliseconds()
+			result["upstream_response_body"] = rawUpstreamBuf.String()
 			return parseTestStreamResponseBytes(recorder.Body.Bytes(), requestPlan.clientProtocol, resp.StatusCode, result, testReq)
 		}
 
@@ -857,6 +916,7 @@ func (s *Server) testChannelAPIWithURL(
 			result["response_text"] = textBuilder.String()
 		}
 		result["raw_response"] = rawBuilder.String()
+		result["upstream_response_body"] = rawBuilder.String()
 
 		// 补齐tokens与成本信息（用于前端表格展示）
 		billableInput, output, cacheRead, _ := usageParser.GetUsage()
