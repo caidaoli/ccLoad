@@ -2,7 +2,7 @@
   "model": "{{MODEL}}",
   "stream": "{{STREAM}}",
   "store": false,
-  "instructions": "You are GPT-5.2 running in the Codex CLI, a terminal-based coding assistant. Codex CLI is an open source project led by OpenAI. You are expected to be precise, safe, and helpful.\n\n",
+  "instructions": "You are GPT-5.4 running in the Codex CLI, a terminal-based coding assistant. Codex CLI is an open source project led by OpenAI. You are expected to be precise, safe, and helpful.\n\n",
   "input": [
     {
       "type": "message",
