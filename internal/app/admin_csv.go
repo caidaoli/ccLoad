@@ -44,7 +44,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 	writer := csv.NewWriter(buf)
 	defer writer.Flush()
 
-	header := []string{"id", "name", "api_key", "url", "priority", "models", "model_redirects", "channel_type", "protocol_transforms", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model"}
+	header := []string{"id", "name", "api_key", "url", "priority", "models", "model_redirects", "channel_type", "protocol_transforms", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model"}
 	if err := writer.Write(header); err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -95,6 +95,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 			modelRedirectsJSON,
 			cfg.GetChannelType(), // 使用GetChannelType确保默认值
 			strings.Join(cfg.GetProtocolTransforms(), ","),
+			cfg.GetProtocolTransformMode(),
 			keyStrategy,
 			strconv.FormatBool(cfg.Enabled),
 			strconv.FormatBool(cfg.ScheduledCheckEnabled),
@@ -213,6 +214,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 		modelRedirectsRaw := fetch("model_redirects")
 		channelType := fetch("channel_type")
 		protocolTransformsRaw := fetch("protocol_transforms")
+		protocolTransformMode := model.NormalizeProtocolTransformMode(fetch("protocol_transform_mode"))
 		keyStrategy := fetch("key_strategy")
 
 		var missing []string
@@ -265,13 +267,18 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			summary.Skipped++
 			continue
 		}
+		if protocolTransformMode == "" {
+			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行 protocol_transform_mode 无效: %s", lineNo, fetch("protocol_transform_mode")))
+			summary.Skipped++
+			continue
+		}
 		rawProtocolTransforms := parseProtocolTransformsCSV(protocolTransformsRaw)
-		if err := validateProtocolTransforms(channelType, rawProtocolTransforms); err != nil {
+		if err := validateProtocolTransforms(channelType, protocolTransformMode, rawProtocolTransforms); err != nil {
 			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行 protocol_transforms 无效: %v", lineNo, err))
 			summary.Skipped++
 			continue
 		}
-		protocolTransforms := normalizeProtocolTransforms(channelType, rawProtocolTransforms)
+		protocolTransforms := normalizeProtocolTransforms(channelType, protocolTransformMode, rawProtocolTransforms)
 
 		models := parseImportModels(modelsRaw)
 		if len(models) == 0 {
@@ -370,6 +377,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			Priority:              priority,
 			ModelEntries:          modelEntries,
 			ChannelType:           channelType,
+			ProtocolTransformMode: protocolTransformMode,
 			ProtocolTransforms:    protocolTransforms,
 			Enabled:               enabled,
 			ScheduledCheckEnabled: scheduledCheckEnabled,

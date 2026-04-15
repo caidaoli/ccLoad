@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -268,6 +269,35 @@ func TestHandleCreateChannel_PersistsProtocolTransforms(t *testing.T) {
 	}
 	if len(stored.ProtocolTransforms) != 2 || stored.ProtocolTransforms[0] != "anthropic" || stored.ProtocolTransforms[1] != "openai" {
 		t.Fatalf("持久化 protocol transforms 不正确: %#v", stored.ProtocolTransforms)
+	}
+}
+
+func TestHandleCreateChannel_AllowsUpstreamModeForExtraProtocols(t *testing.T) {
+	server, _, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	payload := map[string]any{
+		"name":                    "Upstream-Mode-Channel",
+		"api_key":                 "sk-upstream-mode",
+		"url":                     "https://upstream-mode.example.com",
+		"priority":                23,
+		"channel_type":            "anthropic",
+		"protocol_transforms":     []string{"gemini"},
+		"protocol_transform_mode": "upstream",
+		"models": []map[string]any{
+			{"model": "claude-sonnet-4-5"},
+		},
+		"enabled": true,
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels", payload))
+	server.handleCreateChannel(c)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("期望 status=%d 允许 upstream 模式创建，实际=%d，响应体: %s", http.StatusCreated, w.Code, w.Body.String())
+	}
+
+	if !strings.Contains(w.Body.String(), `"protocol_transform_mode":"upstream"`) {
+		t.Fatalf("期望响应包含 protocol_transform_mode=upstream，实际响应: %s", w.Body.String())
 	}
 }
 

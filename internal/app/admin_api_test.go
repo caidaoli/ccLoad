@@ -108,7 +108,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		header[0] = strings.TrimPrefix(header[0], "\ufeff")
 	}
 
-	expectedHeaders := []string{"id", "name", "api_key", "url", "priority", "models", "model_redirects", "channel_type", "protocol_transforms", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model"}
+	expectedHeaders := []string{"id", "name", "api_key", "url", "priority", "models", "model_redirects", "channel_type", "protocol_transforms", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model"}
 	if len(header) != len(expectedHeaders) {
 		t.Errorf("Header字段数量不匹配: 期望 %d, 实际: %d\nHeader: %v", len(expectedHeaders), len(header), header)
 	}
@@ -119,9 +119,9 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		}
 	}
 
-	// 验证数据行（应该有13个字段）
-	if len(records[1]) < 13 {
-		t.Errorf("数据行字段不足，期望至少13个字段，实际: %d", len(records[1]))
+	// 验证数据行（应该有14个字段）
+	if len(records[1]) < 14 {
+		t.Errorf("数据行字段不足，期望至少14个字段，实际: %d", len(records[1]))
 	}
 }
 
@@ -226,6 +226,9 @@ Import-Test-2,https://import2.example.com,5,"test-model-2,test-model-3","{""old"
 		}
 		if cfg.Name == "Import-Test-2" && (len(cfg.ProtocolTransforms) != 2 || cfg.ProtocolTransforms[0] != "anthropic" || cfg.ProtocolTransforms[1] != "openai") {
 			t.Errorf("渠道 %s protocol_transforms = %#v", cfg.Name, cfg.ProtocolTransforms)
+		}
+		if cfg.GetProtocolTransformMode() != model.ProtocolTransformModeLocal {
+			t.Errorf("渠道 %s protocol_transform_mode = %q", cfg.Name, cfg.GetProtocolTransformMode())
 		}
 	}
 }

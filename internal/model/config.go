@@ -10,6 +10,25 @@ import (
 	protocolpkg "ccLoad/internal/protocol"
 )
 
+const (
+	// ProtocolTransformModeLocal keeps extra exposed protocols on the existing local-translation path.
+	ProtocolTransformModeLocal = "local"
+	// ProtocolTransformModeUpstream forwards extra exposed protocols to upstream natively.
+	ProtocolTransformModeUpstream = "upstream"
+)
+
+// NormalizeProtocolTransformMode normalizes admin or persisted values and returns an empty string for invalid modes.
+func NormalizeProtocolTransformMode(value string) string {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "", ProtocolTransformModeLocal:
+		return ProtocolTransformModeLocal
+	case ProtocolTransformModeUpstream:
+		return ProtocolTransformModeUpstream
+	default:
+		return ""
+	}
+}
+
 // ModelEntry 模型配置条目
 type ModelEntry struct {
 	Model         string `json:"model"`                    // 模型名称
@@ -40,6 +59,7 @@ type Config struct {
 	ID                    int64    `json:"id"`
 	Name                  string   `json:"name"`
 	ChannelType           string   `json:"channel_type"` // 渠道类型: "anthropic" | "codex" | "openai" | "gemini"，默认anthropic
+	ProtocolTransformMode string   `json:"protocol_transform_mode,omitempty"`
 	ProtocolTransforms    []string `json:"protocol_transforms,omitempty"`
 	URL                   string   `json:"url"`
 	Priority              int      `json:"priority"`
@@ -83,6 +103,7 @@ func (c *Config) GetProtocolTransforms() []string {
 		return nil
 	}
 	base := c.GetChannelType()
+	mode := c.GetProtocolTransformMode()
 	seen := make(map[string]struct{}, len(c.ProtocolTransforms))
 	transforms := make([]string, 0, len(c.ProtocolTransforms))
 	for _, protocol := range c.ProtocolTransforms {
@@ -90,7 +111,7 @@ func (c *Config) GetProtocolTransforms() []string {
 		if protocol == "" || protocol == base {
 			continue
 		}
-		if !protocolpkg.SupportsTransform(protocolpkg.Protocol(protocol), protocolpkg.Protocol(base)) {
+		if mode == ProtocolTransformModeLocal && !protocolpkg.SupportsTransform(protocolpkg.Protocol(protocol), protocolpkg.Protocol(base)) {
 			continue
 		}
 		if _, ok := seen[protocol]; ok {
@@ -101,6 +122,27 @@ func (c *Config) GetProtocolTransforms() []string {
 	}
 	slices.Sort(transforms)
 	return transforms
+}
+
+// GetProtocolTransformMode returns the normalized transform mode and defaults legacy rows to local mode.
+func (c *Config) GetProtocolTransformMode() string {
+	mode := NormalizeProtocolTransformMode(c.ProtocolTransformMode)
+	if mode == "" {
+		return ProtocolTransformModeLocal
+	}
+	return mode
+}
+
+// ResolveUpstreamProtocol returns the runtime upstream protocol for the current client protocol under this channel config.
+func (c *Config) ResolveUpstreamProtocol(clientProtocol string) string {
+	clientProtocol = strings.TrimSpace(strings.ToLower(clientProtocol))
+	if clientProtocol == "" {
+		return c.GetChannelType()
+	}
+	if c.GetProtocolTransformMode() == ProtocolTransformModeUpstream && c.SupportsProtocol(clientProtocol) {
+		return clientProtocol
+	}
+	return c.GetChannelType()
 }
 
 // SupportsProtocol 检查渠道是否暴露指定客户端协议。

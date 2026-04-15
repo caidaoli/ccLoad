@@ -87,6 +87,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureChannelsDailyCostLimit(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels daily_cost_limit: %w", err)
 			}
+			if err := ensureChannelsProtocolTransformMode(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate channels protocol_transform_mode: %w", err)
+			}
 			if err := ensureChannelsScheduledCheckEnabled(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels scheduled_check_enabled: %w", err)
 			}
@@ -1324,6 +1327,30 @@ func migrateChannelsURLToText(ctx context.Context, db *sql.DB, dialect Dialect) 
 	}
 	log.Printf("[MIGRATE] Modified channels.url: VARCHAR → TEXT")
 	return nil
+}
+
+func ensureChannelsProtocolTransformMode(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if dialect == DialectMySQL {
+		var count int
+		err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channels' AND COLUMN_NAME='protocol_transform_mode'",
+		).Scan(&count)
+		if err != nil {
+			return fmt.Errorf("check protocol_transform_mode field: %w", err)
+		}
+		if count == 0 {
+			if _, err := db.ExecContext(ctx,
+				"ALTER TABLE channels ADD COLUMN protocol_transform_mode VARCHAR(32) NOT NULL DEFAULT 'local'"); err != nil {
+				return fmt.Errorf("add protocol_transform_mode column: %w", err)
+			}
+			log.Printf("[MIGRATE] Added channels.protocol_transform_mode column")
+		}
+		return nil
+	}
+
+	return ensureSQLiteColumns(ctx, db, "channels", []sqliteColumnDef{
+		{name: "protocol_transform_mode", definition: "TEXT NOT NULL DEFAULT 'local'"},
+	})
 }
 
 // ensureChannelsDailyCostLimit 确保channels表有daily_cost_limit字段

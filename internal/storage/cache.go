@@ -73,19 +73,22 @@ func deepCopyConfig(src *modelpkg.Config) *modelpkg.Config {
 	}
 
 	dst := &modelpkg.Config{
-		ID:                 src.ID,
-		Name:               src.Name,
-		ChannelType:        src.ChannelType,
-		ProtocolTransforms: append([]string(nil), src.ProtocolTransforms...),
-		URL:                src.URL,
-		Priority:           src.Priority,
-		Enabled:            src.Enabled,
-		CooldownUntil:      src.CooldownUntil,
-		CooldownDurationMs: src.CooldownDurationMs,
-		DailyCostLimit:     src.DailyCostLimit,
-		CreatedAt:          src.CreatedAt,
-		UpdatedAt:          src.UpdatedAt,
-		KeyCount:           src.KeyCount,
+		ID:                    src.ID,
+		Name:                  src.Name,
+		ChannelType:           src.ChannelType,
+		ProtocolTransformMode: src.ProtocolTransformMode,
+		ProtocolTransforms:    append([]string(nil), src.ProtocolTransforms...),
+		URL:                   src.URL,
+		Priority:              src.Priority,
+		Enabled:               src.Enabled,
+		ScheduledCheckEnabled: src.ScheduledCheckEnabled,
+		ScheduledCheckModel:   src.ScheduledCheckModel,
+		CooldownUntil:         src.CooldownUntil,
+		CooldownDurationMs:    src.CooldownDurationMs,
+		DailyCostLimit:        src.DailyCostLimit,
+		CreatedAt:             src.CreatedAt,
+		UpdatedAt:             src.UpdatedAt,
+		KeyCount:              src.KeyCount,
 	}
 
 	// 深拷贝 ModelEntries slice

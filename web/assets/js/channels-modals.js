@@ -21,6 +21,15 @@ function protocolTransformLabel(protocol) {
   return window.t ? window.t(key) : key;
 }
 
+function protocolTransformModeLabel(mode) {
+  const labels = {
+    local: 'channels.protocolTransformModeLocal',
+    upstream: 'channels.protocolTransformModeUpstream'
+  };
+  const key = labels[mode] || mode;
+  return window.t ? window.t(key) : key;
+}
+
 function normalizeProtocolTransformSelection(channelType, selectedValues) {
   return window.ChannelProtocolConfig.normalizeProtocolTransformsForChannel(channelType, selectedValues);
 }
@@ -53,6 +62,28 @@ function getSelectedProtocolTransforms(channelType) {
   const selectedValues = Array.from(document.querySelectorAll('input[name="protocolTransform"]:checked'))
     .map((input) => input.value);
   return normalizeProtocolTransformSelection(channelType, selectedValues);
+}
+
+function renderProtocolTransformModeOptions(selectedValue = 'local') {
+  const container = document.getElementById('protocolTransformModeContainer');
+  if (!container) return;
+
+  const selectedMode = window.ChannelProtocolConfig.normalizeProtocolTransformMode(selectedValue);
+  container.innerHTML = window.ChannelProtocolConfig.PROTOCOL_TRANSFORM_MODES.map((mode) => `
+      <label class="channel-editor-radio-option">
+        <input type="radio"
+               name="protocolTransformMode"
+               value="${mode}"
+               ${mode === selectedMode ? 'checked' : ''}
+        >
+        <span>${protocolTransformModeLabel(mode)}</span>
+      </label>
+    `).join('');
+}
+
+function getSelectedProtocolTransformMode() {
+  const selected = document.querySelector('input[name="protocolTransformMode"]:checked')?.value;
+  return window.ChannelProtocolConfig.normalizeProtocolTransformMode(selected);
 }
 
 async function syncScheduledCheckVisibility() {
@@ -292,6 +323,7 @@ async function showAddModal() {
   document.getElementById('channelScheduledCheckModel').value = '';
   document.querySelector('input[name="channelType"][value="anthropic"]').checked = true;
   renderProtocolTransformOptions('anthropic', []);
+  renderProtocolTransformModeOptions('local');
   document.querySelector('input[name="keyStrategy"][value="sequential"]').checked = true;
 
   redirectTableData = [];
@@ -364,6 +396,7 @@ async function editChannel(id) {
   const channelType = channel.channel_type || 'anthropic';
   await window.ChannelTypeManager.renderChannelTypeRadios('channelTypeRadios', channelType);
   renderProtocolTransformOptions(channelType, channel.protocol_transforms || []);
+  renderProtocolTransformModeOptions(channel.protocol_transform_mode || 'local');
   const keyStrategy = channel.key_strategy || 'sequential';
   const strategyRadio = document.querySelector(`input[name="keyStrategy"][value="${keyStrategy}"]`);
   if (strategyRadio) {
@@ -454,6 +487,7 @@ async function saveChannel(event) {
     url: validURLs.join('\n'),
     api_key: validKeys.join(','),
     channel_type: channelType,
+    protocol_transform_mode: getSelectedProtocolTransformMode(),
     protocol_transforms: getSelectedProtocolTransforms(channelType),
     key_strategy: keyStrategy,
     priority: parseInt(document.getElementById('channelPriority').value) || 0,

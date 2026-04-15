@@ -482,41 +482,58 @@ func TestRegistry_Stream_OpenAIToAnthropic_TextThenFragmentedToolCalls(t *testin
 	}
 
 	result := allOutput.String()
-	if strings.Count(result, `event: content_block_start`) != 2 {
-		t.Fatalf("expected separate text/tool content blocks, got:\n%s", result)
+	events := parseSSEEvents(t, result)
+	expectedEvents := []string{
+		"message_start",
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop",
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop",
+		"message_delta",
+		"message_stop",
+	}
+	if len(events) != len(expectedEvents) {
+		t.Fatalf("expected %d SSE events, got %d:\n%s", len(expectedEvents), len(events), result)
+	}
+	for i, expected := range expectedEvents {
+		if events[i].Event != expected {
+			t.Fatalf("expected event[%d]=%s, got %s:\n%s", i, expected, events[i].Event, result)
+		}
 	}
 
-	textStop := `event: content_block_stop
-data: {"type":"content_block_stop","index":0}
-
-`
-	textDelta := `event: content_block_delta
-data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"让我检查一下"}}
-
-`
-	if !strings.Contains(result, textDelta) {
+	textStart := mustMap(t, events[1].Data["content_block"])
+	if mustInt(t, events[1].Data["index"]) != 0 || mustString(t, textStart["type"]) != "text" {
+		t.Fatalf("expected text block to start at index 0, got:\n%s", result)
+	}
+	textDelta := mustMap(t, events[2].Data["delta"])
+	if mustInt(t, events[2].Data["index"]) != 0 || mustString(t, textDelta["type"]) != "text_delta" || mustString(t, textDelta["text"]) != "让我检查一下" {
 		t.Fatalf("expected text delta to stay on index 0, got:\n%s", result)
 	}
-	if !strings.Contains(result, textStop) {
+	if mustInt(t, events[3].Data["index"]) != 0 {
 		t.Fatalf("expected text block to close on index 0 before tool call, got:\n%s", result)
 	}
-	if !strings.Contains(result, `event: content_block_start`) ||
-		!strings.Contains(result, `"index":1`) ||
-		!strings.Contains(result, `"type":"tool_use"`) ||
-		!strings.Contains(result, `"id":"call_lookup"`) ||
-		!strings.Contains(result, `"name":"Bash"`) {
+
+	toolStart := mustMap(t, events[4].Data["content_block"])
+	if mustInt(t, events[4].Data["index"]) != 1 ||
+		mustString(t, toolStart["type"]) != "tool_use" ||
+		mustString(t, toolStart["id"]) != "call_lookup" ||
+		mustString(t, toolStart["name"]) != "Bash" {
 		t.Fatalf("expected tool block to open on index 1, got:\n%s", result)
 	}
-	if strings.Index(result, textStop) > strings.Index(result, `"type":"tool_use"`) {
-		t.Fatalf("expected text block to stop before tool block starts, got:\n%s", result)
-	}
-	if strings.Count(result, `event: content_block_stop`) != 2 {
-		t.Fatalf("expected exactly two content_block_stop events, got:\n%s", result)
-	}
-	if !strings.Contains(result, `"partial_json":"{\"command\":\"ls\"}"`) {
+	toolDelta := mustMap(t, events[5].Data["delta"])
+	if mustInt(t, events[5].Data["index"]) != 1 ||
+		mustString(t, toolDelta["type"]) != "input_json_delta" ||
+		mustString(t, toolDelta["partial_json"]) != `{"command":"ls"}` {
 		t.Fatalf("expected fragmented tool arguments to be reassembled, got:\n%s", result)
 	}
-	if !strings.Contains(result, `"stop_reason":"tool_use"`) {
+	if mustInt(t, events[6].Data["index"]) != 1 {
+		t.Fatalf("expected tool block to close on index 1, got:\n%s", result)
+	}
+
+	messageDelta := mustMap(t, events[7].Data["delta"])
+	if mustString(t, messageDelta["stop_reason"]) != "tool_use" {
 		t.Fatalf("expected stop_reason=tool_use, got:\n%s", result)
 	}
 }

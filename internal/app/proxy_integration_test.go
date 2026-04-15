@@ -692,6 +692,105 @@ func TestProxy_Success_NonStreaming_OpenAIToAnthropicTransform(t *testing.T) {
 	}
 }
 
+func TestProxy_UpstreamMode_PassesThroughClientProtocolNatively(t *testing.T) {
+	t.Parallel()
+
+	var gotPath string
+	var gotAuth string
+	var gotAPIKey string
+	var gotBody []byte
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "anthropic-ch", channelType: "anthropic", models: "gpt-4o", apiKey: "sk-openai-upstream"},
+	}, map[int]string{0: "https://openai-upstream.example.com"})
+
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			gotPath = r.URL.Path
+			gotAuth = r.Header.Get("Authorization")
+			gotAPIKey = r.Header.Get("x-api-key")
+			gotBody, _ = io.ReadAll(r.Body)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(bytes.NewReader([]byte(
+					`{"id":"chatcmpl-upstream","object":"chat.completion","created":123,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"native upstream"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`,
+				))),
+			}, nil
+		}),
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("ListConfigs failed: %v", err)
+	}
+	cfg := configs[0]
+	cfg.ProtocolTransforms = []string{"openai"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeUpstream
+	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+		t.Fatalf("UpdateConfig failed: %v", err)
+	}
+	reloaded, err := env.store.GetConfig(context.Background(), cfg.ID)
+	if err != nil {
+		t.Fatalf("GetConfig failed: %v", err)
+	}
+	if reloaded.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream {
+		t.Fatalf("expected persisted protocol transform mode upstream, got %q", reloaded.GetProtocolTransformMode())
+	}
+	if reloaded.ResolveUpstreamProtocol("openai") != "openai" {
+		t.Fatalf("expected runtime upstream protocol openai, got %q", reloaded.ResolveUpstreamProtocol("openai"))
+	}
+	env.server.InvalidateChannelListCache()
+	candidates, err := env.server.selectCandidatesByModelAndType(context.Background(), "gpt-4o", "openai")
+	if err != nil {
+		t.Fatalf("selectCandidatesByModelAndType failed: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(candidates))
+	}
+	if candidates[0].GetProtocolTransformMode() != model.ProtocolTransformModeUpstream {
+		t.Fatalf("expected candidate protocol transform mode upstream, got %q", candidates[0].GetProtocolTransformMode())
+	}
+	if candidates[0].ResolveUpstreamProtocol("openai") != "openai" {
+		t.Fatalf("expected candidate runtime upstream protocol openai, got %q", candidates[0].ResolveUpstreamProtocol("openai"))
+	}
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-4o",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Fatalf("expected native openai upstream path, got %s", gotPath)
+	}
+	if gotAuth != "Bearer sk-openai-upstream" {
+		t.Fatalf("expected openai auth header, got %q", gotAuth)
+	}
+	if gotAPIKey != "" {
+		t.Fatalf("expected no anthropic x-api-key header, got %q", gotAPIKey)
+	}
+	if !bytes.Contains(gotBody, []byte(`"messages"`)) {
+		t.Fatalf("expected native openai request body, got %s", gotBody)
+	}
+	if bytes.Contains(gotBody, []byte(`"anthropic_version"`)) {
+		t.Fatalf("expected request body to skip anthropic transform, got %s", gotBody)
+	}
+
+	var resp struct {
+		Object string `json:"object"`
+		Model  string `json:"model"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Object != "chat.completion" || resp.Model != "gpt-4o" {
+		t.Fatalf("expected native openai response passthrough, got %+v", resp)
+	}
+}
+
 func TestProxy_Success_Streaming_OpenAIToAnthropicTransform(t *testing.T) {
 	t.Parallel()
 
