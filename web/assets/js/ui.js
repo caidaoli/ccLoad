@@ -1205,6 +1205,168 @@
     return fallbackCopyToClipboard(text);
   }
 
+  function escapeCodeHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function wrapHighlightedToken(text, modifier) {
+    return `<span class="upstream-token upstream-token--${modifier}">${escapeCodeHtml(text)}</span>`;
+  }
+
+  function classifyStatusModifier(statusCode) {
+    const code = Number.parseInt(statusCode, 10);
+    if (!Number.isFinite(code)) return 'status-unknown';
+    if (code >= 200 && code < 300) return 'status-success';
+    if (code >= 400 && code < 500) return 'status-client-error';
+    if (code >= 500) return 'status-server-error';
+    return 'status-neutral';
+  }
+
+  function renderJsonLine(line) {
+    const tokenRe = /"(?:\\.|[^"\\])*"(?=\s*:)|"(?:\\.|[^"\\])*"|true|false|null|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g;
+    let out = '';
+    let lastIndex = 0;
+
+    for (const match of line.matchAll(tokenRe)) {
+      const index = match.index || 0;
+      const token = match[0];
+      out += escapeCodeHtml(line.slice(lastIndex, index));
+
+      let modifier = 'json-string';
+      if (token === 'true' || token === 'false') {
+        modifier = 'json-boolean';
+      } else if (token === 'null') {
+        modifier = 'json-null';
+      } else if (token[0] !== '"') {
+        modifier = 'json-number';
+      } else {
+        const nextChar = line.slice(index + token.length).match(/^\s*:/);
+        modifier = nextChar ? 'json-key' : 'json-string';
+      }
+
+      out += wrapHighlightedToken(token, modifier);
+      lastIndex = index + token.length;
+    }
+
+    out += escapeCodeHtml(line.slice(lastIndex));
+    return out;
+  }
+
+  function renderHeaderLine(line) {
+    const match = line.match(/^([^:]+)(:\s*)(.*)$/);
+    if (!match) return escapeCodeHtml(line);
+
+    const [, key, separator, value] = match;
+    return `${wrapHighlightedToken(key, 'header-key')}${escapeCodeHtml(separator)}${value ? wrapHighlightedToken(value, 'header-value') : ''}`;
+  }
+
+  function renderRequestLine(line) {
+    const requestMatch = line.match(/^(\s*)([A-Z]+)(\s+)(\S.*)$/);
+    if (requestMatch && /^[a-z]+:\/\//i.test(requestMatch[4])) {
+      const [, indent, method, gap, url] = requestMatch;
+      return `${escapeCodeHtml(indent)}${wrapHighlightedToken(method, 'method')}${escapeCodeHtml(gap)}${wrapHighlightedToken(url, 'url')}`;
+    }
+
+    const urlMatch = line.match(/^(\s*)([a-z]+:\/\/\S.*)$/i);
+    if (urlMatch) {
+      const [, indent, url] = urlMatch;
+      return `${escapeCodeHtml(indent)}${wrapHighlightedToken(url, 'url')}`;
+    }
+
+    return escapeCodeHtml(line);
+  }
+
+  function renderStatusLine(line) {
+    const responseMatch = line.match(/^(\s*)(HTTP)(\s+)(\d{3})(.*)$/i);
+    if (responseMatch) {
+      const [, indent, protocol, gap, statusCode, rest] = responseMatch;
+      const modifier = classifyStatusModifier(statusCode);
+      return `${escapeCodeHtml(indent)}${wrapHighlightedToken(protocol, 'protocol')}${escapeCodeHtml(gap)}${wrapHighlightedToken(statusCode, modifier)}${escapeCodeHtml(rest)}`;
+    }
+
+    const statusMatch = line.match(/^(\s*)(\d{3})(.*)$/);
+    if (statusMatch) {
+      const [, indent, statusCode, rest] = statusMatch;
+      const modifier = classifyStatusModifier(statusCode);
+      return `${escapeCodeHtml(indent)}${wrapHighlightedToken(statusCode, modifier)}${escapeCodeHtml(rest)}`;
+    }
+
+    return escapeCodeHtml(line);
+  }
+
+  function looksLikeJSONBlock(text) {
+    const trimmed = text.trim();
+    if (!trimmed) return false;
+    const startsLikeJSON = (trimmed.startsWith('{') && trimmed.endsWith('}'))
+      || (trimmed.startsWith('[') && trimmed.endsWith(']'));
+    if (!startsLikeJSON) return false;
+
+    try {
+      JSON.parse(trimmed);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function renderCodeLines(lines) {
+    return lines.map(line => `<span class="code-line">${line || ''}</span>`).join('');
+  }
+
+  function renderUpstreamRequestOrResponse(text, mode) {
+    const lines = String(text || '').split('\n');
+    if (lines.length === 0) return '';
+
+    const separatorIndex = lines.findIndex(line => line === '');
+    const headerEnd = separatorIndex === -1 ? lines.length : separatorIndex;
+    const renderedLines = [];
+
+    renderedLines.push(mode === 'response' ? renderStatusLine(lines[0]) : renderRequestLine(lines[0]));
+
+    for (let i = 1; i < headerEnd; i++) {
+      renderedLines.push(renderHeaderLine(lines[i]));
+    }
+
+    if (separatorIndex !== -1) {
+      renderedLines.push('');
+      const bodyLines = lines.slice(separatorIndex + 1);
+      const bodyText = bodyLines.join('\n');
+      const renderBodyLine = looksLikeJSONBlock(bodyText) ? renderJsonLine : escapeCodeHtml;
+      bodyLines.forEach(line => renderedLines.push(renderBodyLine(line)));
+    }
+
+    return renderCodeLines(renderedLines);
+  }
+
+  function renderUpstreamCodeBlock(text, mode = 'text') {
+    const value = String(text || '');
+    if (!value) return '';
+
+    switch (mode) {
+      case 'request':
+      case 'response':
+        return renderUpstreamRequestOrResponse(value, mode);
+      case 'json':
+        return renderCodeLines(value.split('\n').map(renderJsonLine));
+      case 'url':
+        return renderCodeLines(value.split('\n').map(renderRequestLine));
+      case 'status':
+        return renderCodeLines(value.split('\n').map(renderStatusLine));
+      default:
+        return renderCodeLines(value.split('\n').map(escapeCodeHtml));
+    }
+  }
+
+  function setHighlightedCodeContent(target, text, mode = 'text') {
+    const el = typeof target === 'string' ? document.getElementById(target) : target;
+    if (!el) return;
+    el._rawText = text || '';
+    el.innerHTML = renderUpstreamCodeBlock(text || '', mode);
+  }
+
   /**
    * 初始化渠道类型筛选下拉框
    * @param {string} selectId - select 元素 ID
@@ -1283,6 +1445,8 @@
   }
 
   window.copyToClipboard = copyToClipboard;
+  window.renderUpstreamCodeBlock = renderUpstreamCodeBlock;
+  window.setHighlightedCodeContent = setHighlightedCodeContent;
   window.initChannelTypeFilter = initChannelTypeFilter;
   window.loadAuthTokensIntoSelect = loadAuthTokensIntoSelect;
   window.initTimeRangeSelector = initTimeRangeSelector;

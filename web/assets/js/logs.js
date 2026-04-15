@@ -1525,23 +1525,6 @@ async function deleteKeyFromLog(channelId, channelName, maskedApiKey, apiKeyHash
 // Debug Log Modal
 // ============================================================================
 
-function escapeCodeHtml(str) {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function formatCodeWithLines(text) {
-  if (!text) return '';
-  const lines = text.split('\n');
-  return lines.map(line => `<span class="code-line">${escapeCodeHtml(line)}</span>`).join('');
-}
-
-function setCodeContent(elementId, text) {
-  const el = document.getElementById(elementId);
-  if (!el) return;
-  el._rawText = text || '';
-  el.innerHTML = formatCodeWithLines(text || '');
-}
-
 function formatJsonSafe(str) {
   if (!str) return '';
   try {
@@ -1619,8 +1602,8 @@ async function showDebugLogModal(logId) {
     loading.style.display = 'none';
     content.style.display = 'flex';
 
-    setCodeContent('debugReqRaw', composeDebugRawRequest(data));
-    setCodeContent('debugRespRaw', composeDebugRawResponse(data));
+    window.setHighlightedCodeContent('debugReqRaw', composeDebugRawRequest(data), 'request');
+    window.setHighlightedCodeContent('debugRespRaw', composeDebugRawResponse(data), 'response');
   } catch (e) {
     loading.style.display = 'none';
     if (e.message && e.message.includes('404')) {

@@ -3172,6 +3172,68 @@ body {
   -webkit-user-select: none;
 }
 
+.upstream-token--method,
+.upstream-token--protocol {
+  color: var(--primary-600);
+  font-weight: 600;
+}
+
+.upstream-token--url {
+  color: var(--info-600);
+}
+
+.upstream-token--header-key {
+  color: var(--neutral-700);
+  font-weight: 600;
+}
+
+.upstream-token--header-value {
+  color: var(--neutral-500);
+}
+
+.upstream-token--status-success {
+  color: var(--success-600);
+  font-weight: 600;
+}
+
+.upstream-token--status-client-error {
+  color: var(--warning-600);
+  font-weight: 600;
+}
+
+.upstream-token--status-server-error {
+  color: var(--error-600);
+  font-weight: 600;
+}
+
+.upstream-token--status-neutral,
+.upstream-token--status-unknown {
+  color: var(--neutral-600);
+  font-weight: 600;
+}
+
+.upstream-token--json-key {
+  color: var(--primary-700);
+}
+
+.upstream-token--json-string {
+  color: var(--success-600);
+}
+
+.upstream-token--json-number {
+  color: var(--warning-600);
+}
+
+.upstream-token--json-boolean {
+  color: var(--info-600);
+  font-weight: 600;
+}
+
+.upstream-token--json-null {
+  color: var(--neutral-500);
+  font-style: italic;
+}
+
 .upstream-pre--tall {
   max-height: none;
   flex: 1;

@@ -400,12 +400,12 @@ function showUpstreamDetailModal() {
   const data = window._lastTestUpstreamData;
   if (!data) return;
 
-  document.getElementById('upstreamReqUrl').textContent = data.url || '';
-  document.getElementById('upstreamReqHeaders').textContent = data.requestHeaders ? JSON.stringify(data.requestHeaders, null, 2) : '';
-  document.getElementById('upstreamReqBody').textContent = tryFormatJSON(data.requestBody);
-  document.getElementById('upstreamRespStatus').textContent = data.statusCode != null ? String(data.statusCode) : '';
-  document.getElementById('upstreamRespHeaders').textContent = data.responseHeaders ? JSON.stringify(data.responseHeaders, null, 2) : '';
-  document.getElementById('upstreamRespBody').textContent = tryFormatJSON(data.responseBody);
+  window.setHighlightedCodeContent('upstreamReqUrl', data.url || '', 'url');
+  window.setHighlightedCodeContent('upstreamReqHeaders', data.requestHeaders ? JSON.stringify(data.requestHeaders, null, 2) : '', 'json');
+  window.setHighlightedCodeContent('upstreamReqBody', tryFormatJSON(data.requestBody), 'json');
+  window.setHighlightedCodeContent('upstreamRespStatus', data.statusCode != null ? String(data.statusCode) : '', 'status');
+  window.setHighlightedCodeContent('upstreamRespHeaders', data.responseHeaders ? JSON.stringify(data.responseHeaders, null, 2) : '', 'json');
+  window.setHighlightedCodeContent('upstreamRespBody', tryFormatJSON(data.responseBody), 'json');
 
   // 重置到 Request tab
   document.querySelectorAll('.upstream-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'request'));
