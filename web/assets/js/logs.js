@@ -242,12 +242,12 @@ function filterActiveRequests(requests) {
   const tokenId = (document.getElementById('f_auth_token')?.value || '').trim();
 
   return requests.filter(req => {
-    // 渠道名称精确匹配（来自下拉框）或模糊匹配（手动输入）
+    // 渠道名称精确匹配
     if (channelName) {
       const name = (typeof req.channel_name === 'string' ? req.channel_name : '').toLowerCase();
-      if (!name.includes(channelName)) return false;
+      if (name !== channelName) return false;
     }
-    // 模型精确匹配（来自下拉框选择）
+    // 模型精确匹配
     if (model) {
       if ((req.model || '') !== model) return false;
     }
@@ -1047,7 +1047,7 @@ function updateTestKeyIndexInfo(text) {
 const LOGS_FILTER_KEY = 'logs.filters';
 const LOGS_FILTER_FIELDS = [
   { key: 'range', queryKeys: ['range'], defaultValue: 'today' },
-  { key: 'channelName', queryKeys: ['channel_name_like', 'channel_name'], defaultValue: '' },
+  { key: 'channelName', queryKeys: ['channel_name'], defaultValue: '' },
   { key: 'model', queryKeys: ['model'], defaultValue: '' },
   { key: 'logSource', queryKeys: ['log_source'], requestKey: 'log_source', defaultValue: 'proxy' },
   { key: 'status', queryKeys: ['status_code'], defaultValue: '' },
