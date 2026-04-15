@@ -517,7 +517,10 @@ func codexOutputItemsFromOpenAIResponse(resp map[string]any) ([]map[string]any, 
 		}
 	}
 	for _, call := range toolCalls {
-		arguments := jsonStringOrObject(call.Function.Arguments)
+		arguments := strings.TrimSpace(call.Function.Arguments)
+		if arguments == "" {
+			arguments = "{}"
+		}
 		items = append(items, map[string]any{
 			"type":      "function_call",
 			"call_id":   call.ID,
@@ -734,16 +737,4 @@ func coalesceModel(model string, fallback any) string {
 		return model
 	}
 	return stringValue(fallback)
-}
-
-func jsonStringOrObject(value string) any {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return map[string]any{}
-	}
-	var decoded any
-	if err := sonic.Unmarshal([]byte(trimmed), &decoded); err == nil {
-		return decoded
-	}
-	return trimmed
 }

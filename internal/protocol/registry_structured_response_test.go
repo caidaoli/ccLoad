@@ -44,7 +44,7 @@ func TestRegistry_TranslateResponseNonStream_GeminiStructuredOutbound(t *testing
 		if err != nil {
 			t.Fatalf("TranslateResponseNonStream failed: %v", err)
 		}
-		if !strings.Contains(string(got), `"type":"message"`) || !strings.Contains(string(got), `"role":"assistant"`) || !strings.Contains(string(got), `"type":"output_text"`) || !strings.Contains(string(got), `"text":"hello"`) || !strings.Contains(string(got), `"type":"function_call"`) || !strings.Contains(string(got), `"call_id":"call_1"`) || !strings.Contains(string(got), `"name":"lookup"`) || !strings.Contains(string(got), `"arguments":{"query":"go"}`) {
+		if !strings.Contains(string(got), `"type":"message"`) || !strings.Contains(string(got), `"role":"assistant"`) || !strings.Contains(string(got), `"type":"output_text"`) || !strings.Contains(string(got), `"text":"hello"`) || !strings.Contains(string(got), `"type":"function_call"`) || !strings.Contains(string(got), `"call_id":"call_1"`) || !strings.Contains(string(got), `"name":"lookup"`) || !strings.Contains(string(got), `"arguments":"{\"query\":\"go\"}"`) {
 			t.Fatalf("unexpected Codex response: %s", got)
 		}
 	})
@@ -87,7 +87,7 @@ func TestRegistry_TranslateResponseStream_GeminiStructuredOutbound(t *testing.T)
 			t.Fatalf("TranslateResponseStream failed: %v", err)
 		}
 		joined := string(chunks[0])
-		if len(chunks) != 1 || !strings.Contains(joined, `event: response.output_item.done`) || !strings.Contains(joined, `"type":"function_call"`) || !strings.Contains(joined, `"call_id":"call_1"`) || !strings.Contains(joined, `"name":"lookup"`) || !strings.Contains(joined, `"arguments":{"query":"go"}`) {
+		if len(chunks) != 1 || !strings.Contains(joined, `event: response.output_item.done`) || !strings.Contains(joined, `"type":"function_call"`) || !strings.Contains(joined, `"call_id":"call_1"`) || !strings.Contains(joined, `"name":"lookup"`) || !strings.Contains(joined, `"arguments":"{\"query\":\"go\"}"`) {
 			t.Fatalf("unexpected Codex stream chunk: %#v", chunks)
 		}
 	})
@@ -116,7 +116,7 @@ func TestRegistry_TranslateResponseNonStream_AnthropicStructuredOutbound(t *test
 		if err != nil {
 			t.Fatalf("TranslateResponseNonStream failed: %v", err)
 		}
-		if !strings.Contains(string(got), `"type":"message"`) || !strings.Contains(string(got), `"role":"assistant"`) || !strings.Contains(string(got), `"type":"output_text"`) || !strings.Contains(string(got), `"text":"hello"`) || !strings.Contains(string(got), `"type":"function_call"`) || !strings.Contains(string(got), `"call_id":"toolu_1"`) || !strings.Contains(string(got), `"name":"lookup"`) || !strings.Contains(string(got), `"arguments":{"query":"go"}`) {
+		if !strings.Contains(string(got), `"type":"message"`) || !strings.Contains(string(got), `"role":"assistant"`) || !strings.Contains(string(got), `"type":"output_text"`) || !strings.Contains(string(got), `"text":"hello"`) || !strings.Contains(string(got), `"type":"function_call"`) || !strings.Contains(string(got), `"call_id":"toolu_1"`) || !strings.Contains(string(got), `"name":"lookup"`) || !strings.Contains(string(got), `"arguments":"{\"query\":\"go\"}"`) {
 			t.Fatalf("unexpected Codex response: %s", got)
 		}
 	})
@@ -447,7 +447,7 @@ func TestRegistry_TranslateResponseStream_AnthropicStructuredOutbound(t *testing
 			t.Fatalf("content_block_stop failed: %v", err)
 		}
 		joined := string(toolChunk[0])
-		if len(toolChunk) != 1 || !strings.Contains(joined, `event: response.output_item.done`) || !strings.Contains(joined, `"type":"function_call"`) || !strings.Contains(joined, `"call_id":"toolu_1"`) || !strings.Contains(joined, `"name":"lookup"`) || !strings.Contains(joined, `"arguments":{"query":"go"}`) {
+		if len(toolChunk) != 1 || !strings.Contains(joined, `event: response.output_item.done`) || !strings.Contains(joined, `"type":"function_call"`) || !strings.Contains(joined, `"call_id":"toolu_1"`) || !strings.Contains(joined, `"name":"lookup"`) || !strings.Contains(joined, `"arguments":"{\"query\":\"go\"}"`) {
 			t.Fatalf("unexpected Codex tool chunk: %#v", toolChunk)
 		}
 		if out, err := reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.Codex, "gpt-5-codex", nil, nil, []byte("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":5}}\n\n"), &state); err != nil || out != nil {

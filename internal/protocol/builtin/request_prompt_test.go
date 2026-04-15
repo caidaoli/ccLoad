@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"ccLoad/internal/protocol"
+
+	"github.com/bytedance/sonic"
 )
 
 func TestNormalizeOpenAIConversation_StructuredContent(t *testing.T) {
@@ -85,6 +87,107 @@ func TestNormalizeAnthropicConversation_StructuredContent(t *testing.T) {
 	}
 	if toolResult := userParts[3].ToolResult; toolResult == nil || toolResult.Name != "lookup" {
 		t.Fatalf("expected resolved tool result name, got %+v", toolResult)
+	}
+}
+
+func TestEncodeCodexRequest_DropsAnthropicToolResultIsError(t *testing.T) {
+	t.Parallel()
+
+	req := anthropicMessagesRequest{
+		Model: "gpt-5-codex",
+		Messages: []anthropicMessageContent{
+			{Role: "assistant", Content: []any{
+				map[string]any{
+					"type":  "tool_use",
+					"id":    "toolu_1",
+					"name":  "lookup",
+					"input": map[string]any{"query": "go"},
+				},
+			}},
+			{Role: "user", Content: []any{
+				map[string]any{
+					"type":        "tool_result",
+					"tool_use_id": "toolu_1",
+					"is_error":    true,
+					"content":     "quota exceeded",
+				},
+			}},
+		},
+	}
+
+	conv, err := normalizeAnthropicConversation(req)
+	if err != nil {
+		t.Fatalf("normalizeAnthropicConversation failed: %v", err)
+	}
+
+	raw, err := encodeCodexRequest("gpt-5-codex", conv, false)
+	if err != nil {
+		t.Fatalf("encodeCodexRequest failed: %v", err)
+	}
+
+	var encoded codexRequest
+	if err := sonic.Unmarshal(raw, &encoded); err != nil {
+		t.Fatalf("unmarshal codex request failed: %v", err)
+	}
+	if len(encoded.Input) != 2 {
+		t.Fatalf("expected 2 input items, got %d", len(encoded.Input))
+	}
+
+	var toolResult map[string]any
+	if err := sonic.Unmarshal(encoded.Input[1], &toolResult); err != nil {
+		t.Fatalf("unmarshal tool result item failed: %v", err)
+	}
+	if toolResult["type"] != "function_call_output" {
+		t.Fatalf("expected function_call_output, got %+v", toolResult)
+	}
+	if _, ok := toolResult["is_error"]; ok {
+		t.Fatalf("expected codex tool result without is_error, got %+v", toolResult)
+	}
+	if toolResult["output"] != "quota exceeded" {
+		t.Fatalf("unexpected tool result output: %+v", toolResult)
+	}
+}
+
+func TestEncodeCodexRequest_AssistantTextUsesOutputText(t *testing.T) {
+	t.Parallel()
+
+	conv := conversation{
+		Turns: []conversationTurn{{
+			Role: "assistant",
+			Parts: []conversationPart{{
+				Kind: partKindText,
+				Text: "hello",
+			}},
+		}},
+	}
+
+	raw, err := encodeCodexRequest("gpt-5-codex", conv, false)
+	if err != nil {
+		t.Fatalf("encodeCodexRequest failed: %v", err)
+	}
+
+	var encoded codexRequest
+	if err := sonic.Unmarshal(raw, &encoded); err != nil {
+		t.Fatalf("unmarshal codex request failed: %v", err)
+	}
+	if len(encoded.Input) != 1 {
+		t.Fatalf("expected 1 input item, got %d", len(encoded.Input))
+	}
+
+	var message map[string]any
+	if err := sonic.Unmarshal(encoded.Input[0], &message); err != nil {
+		t.Fatalf("unmarshal assistant message failed: %v", err)
+	}
+	if message["type"] != "message" || message["role"] != "assistant" {
+		t.Fatalf("unexpected assistant message: %+v", message)
+	}
+	content, ok := message["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("unexpected assistant content: %+v", message["content"])
+	}
+	part, ok := content[0].(map[string]any)
+	if !ok || part["type"] != "output_text" || part["text"] != "hello" {
+		t.Fatalf("unexpected assistant content part: %+v", content[0])
 	}
 }
 

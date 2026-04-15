@@ -106,6 +106,30 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","call_i
 	}
 }
 
+func TestRegistry_Stream_CodexToOpenAI_FunctionCallStringArgumentsStayRawJSON(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	codexChunk := `event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_skill_1","name":"Skill","arguments":"{\"args\":\"skill: \\\"superpowers:using-superpowers\\\"\",\"skill\":\"superpowers:using-superpowers\"}"}}
+
+`
+
+	var state any
+	out, err := reg.TranslateResponseStream(context.Background(), protocol.Codex, protocol.OpenAI, "gpt-4o", nil, nil, []byte(codexChunk), &state)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("expected one output chunk, got %#v", out)
+	}
+	result := string(out[0])
+	if !strings.Contains(result, `"arguments":"{\"args\":\"skill: \\\"superpowers:using-superpowers\\\"\",\"skill\":\"superpowers:using-superpowers\"}"`) {
+		t.Fatalf("expected raw JSON arguments string, got:\n%s", result)
+	}
+}
+
 func TestRegistry_Stream_CodexToOpenAI_FunctionCallIndices(t *testing.T) {
 	t.Parallel()
 	reg := protocol.NewRegistry()
