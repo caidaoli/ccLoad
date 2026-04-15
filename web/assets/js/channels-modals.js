@@ -1685,15 +1685,12 @@ async function fetchModelsFromAPI() {
 // 常用模型配置
 const COMMON_MODELS = {
   anthropic: [
-    'claude-sonnet-4-5-20250929',
     'claude-haiku-4-5-20251001',
     'claude-opus-4-6',
     'claude-sonnet-4-6',
   ],
   codex: [
-    'gpt-5.1-codex-mini',
     'gpt-5.2',
-    'gpt-5.2-codex',
     'gpt-5.3-codex',
     'gpt-5.4',
     'gpt-5.4-mini'
