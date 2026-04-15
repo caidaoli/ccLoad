@@ -1800,23 +1800,6 @@ function tryFormatJSON(str) {
   }
 }
 
-function escapeCodeHtml(str) {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function formatCodeWithLines(text) {
-  if (!text) return '';
-  const lines = text.split('\n');
-  return lines.map(line => `<span class="code-line">${escapeCodeHtml(line)}</span>`).join('');
-}
-
-function setCodeContent(elementId, text) {
-  const el = document.getElementById(elementId);
-  if (!el) return;
-  el._rawText = text || '';
-  el.innerHTML = formatCodeWithLines(text || '');
-}
-
 function formatHeaderLines(headers) {
   if (!headers || typeof headers !== 'object') return '';
   const lines = [];
@@ -1859,8 +1842,8 @@ function composeRawResponse(data) {
 function showUpstreamDetailModal(data) {
   if (!data) return;
 
-  setCodeContent('upstreamReqRaw', composeRawRequest(data));
-  setCodeContent('upstreamRespRaw', composeRawResponse(data));
+  window.setHighlightedCodeContent('upstreamReqRaw', composeRawRequest(data), 'request');
+  window.setHighlightedCodeContent('upstreamRespRaw', composeRawResponse(data), 'response');
 
   // Reset to Request tab
   const modal = document.getElementById('upstreamDetailModal');
