@@ -52,8 +52,8 @@ func TestRegistry_TranslateRequest_GeminiToCodex(t *testing.T) {
 	if req.Input[1]["type"] != "function_call" || req.Input[1]["call_id"] != "call_1" || req.Input[1]["name"] != "lookup" {
 		t.Fatalf("unexpected codex function_call: %+v", req.Input[1])
 	}
-	args, ok := req.Input[1]["arguments"].(map[string]any)
-	if !ok || args["query"] != "go" {
+	args, ok := req.Input[1]["arguments"].(string)
+	if !ok || args != `{"query":"go"}` {
 		t.Fatalf("unexpected codex function_call args: %+v", req.Input[1]["arguments"])
 	}
 	if req.Input[2]["type"] != "function_call_output" || req.Input[2]["call_id"] != "call_1" || req.Input[2]["name"] != "lookup" || req.Input[2]["output"] != "done" {
@@ -149,6 +149,35 @@ func TestRegistry_TranslateResponseStream_CodexToGemini(t *testing.T) {
 	}
 	if len(done) != 1 || !strings.Contains(string(done[0]), `"promptTokenCount":3`) || !strings.Contains(string(done[0]), `"candidatesTokenCount":5`) || !strings.Contains(string(done[0]), `"finishReason":"STOP"`) {
 		t.Fatalf("unexpected gemini done chunk: %#v", done)
+	}
+}
+
+func TestRegistry_TranslateResponseStream_CodexToGemini_StringArguments(t *testing.T) {
+	t.Parallel()
+
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	var state any
+	toolChunk, err := reg.TranslateResponseStream(context.Background(), protocol.Codex, protocol.Gemini, "gemini-2.5-pro", nil, nil, []byte("event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"call_skill_1\",\"name\":\"Skill\",\"arguments\":\"{\\\"args\\\":\\\"skill: \\\\\\\"superpowers:using-superpowers\\\\\\\"\\\",\\\"skill\\\":\\\"superpowers:using-superpowers\\\"}\"}}\n\n"), &state)
+	if err != nil {
+		t.Fatalf("response.output_item.done failed: %v", err)
+	}
+	if len(toolChunk) != 1 {
+		t.Fatalf("expected one gemini tool chunk, got %#v", toolChunk)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(bytes.TrimPrefix(bytes.TrimSpace(toolChunk[0]), []byte("data: ")), &payload); err != nil {
+		t.Fatalf("unmarshal gemini chunk: %v", err)
+	}
+	candidates := payload["candidates"].([]any)
+	content := candidates[0].(map[string]any)["content"].(map[string]any)
+	parts := content["parts"].([]any)
+	functionCall := parts[0].(map[string]any)["functionCall"].(map[string]any)
+	args := functionCall["args"].(map[string]any)
+	if functionCall["name"] != "Skill" || args["args"] != `skill: "superpowers:using-superpowers"` || args["skill"] != "superpowers:using-superpowers" {
+		t.Fatalf("expected gemini functionCall args object, got %s", toolChunk[0])
 	}
 }
 

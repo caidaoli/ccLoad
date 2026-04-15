@@ -881,6 +881,33 @@ func TestRegistry_TranslateRequest_AnthropicToCodex(t *testing.T) {
 	}
 }
 
+func TestRegistry_TranslateRequest_AnthropicToCodex_StringToolArguments(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	raw := []byte(`{"model":"gpt-5-codex","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call_skill_1","name":"Skill","input":{"skill":"superpowers:using-superpowers","args":""}}]}]}`)
+	got, err := reg.TranslateRequest(protocol.Anthropic, protocol.Codex, "gpt-5-codex", raw, true)
+	if err != nil {
+		t.Fatalf("TranslateRequest failed: %v", err)
+	}
+
+	var req struct {
+		Input []map[string]any `json:"input"`
+	}
+	if err := json.Unmarshal(got, &req); err != nil {
+		t.Fatalf("unmarshal codex request: %v", err)
+	}
+	if len(req.Input) != 1 {
+		t.Fatalf("unexpected codex input: %+v", req.Input)
+	}
+	if req.Input[0]["type"] != "function_call" || req.Input[0]["call_id"] != "call_skill_1" || req.Input[0]["name"] != "Skill" {
+		t.Fatalf("unexpected codex function_call: %+v", req.Input[0])
+	}
+	if req.Input[0]["arguments"] != `{"skill":"superpowers:using-superpowers","args":""}` && req.Input[0]["arguments"] != `{"args":"","skill":"superpowers:using-superpowers"}` {
+		t.Fatalf("expected codex string arguments, got %+v", req.Input[0]["arguments"])
+	}
+}
+
 func TestRegistry_TranslateResponseNonStream_CodexToAnthropic(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)
@@ -895,6 +922,71 @@ func TestRegistry_TranslateResponseNonStream_CodexToAnthropic(t *testing.T) {
 	}
 	if !strings.Contains(string(got), `"type":"message"`) || !strings.Contains(string(got), `"type":"tool_use"`) || !strings.Contains(string(got), `"stop_reason":"tool_use"`) {
 		t.Fatalf("unexpected translated response: %s", got)
+	}
+}
+
+func TestRegistry_TranslateResponseNonStream_CodexToAnthropic_StringArguments(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	rawReq := []byte(`{"model":"gpt-5-codex","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	translatedReq := []byte(`{"model":"gpt-5-codex","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
+	rawResp := []byte(`{"id":"resp_1","object":"response","status":"completed","model":"gpt-5-codex","output":[{"type":"function_call","call_id":"call_skill_1","name":"Skill","arguments":"{\"args\":\"skill: \\\"superpowers:using-superpowers\\\"\",\"skill\":\"superpowers:using-superpowers\"}"}],"usage":{"input_tokens":3,"output_tokens":5,"total_tokens":8}}`)
+
+	got, err := reg.TranslateResponseNonStream(context.Background(), protocol.Codex, protocol.Anthropic, "gpt-5-codex", rawReq, translatedReq, rawResp)
+	if err != nil {
+		t.Fatalf("TranslateResponseNonStream failed: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(got, &payload); err != nil {
+		t.Fatalf("unmarshal anthropic payload: %v", err)
+	}
+	content := payload["content"].([]any)
+	toolUse := content[0].(map[string]any)
+	input := toolUse["input"].(map[string]any)
+	if toolUse["type"] != "tool_use" || input["args"] != `skill: "superpowers:using-superpowers"` || input["skill"] != "superpowers:using-superpowers" {
+		t.Fatalf("expected anthropic tool_use input object, got %s", got)
+	}
+}
+
+func TestRegistry_TranslateResponseNonStream_CodexToOpenAI_StringArguments(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	rawResp := []byte(`{"id":"resp_1","object":"response","status":"completed","model":"gpt-5-codex","output":[{"type":"function_call","call_id":"call_skill_1","name":"Skill","arguments":"{\"args\":\"skill: \\\"superpowers:using-superpowers\\\"\",\"skill\":\"superpowers:using-superpowers\"}"}],"usage":{"input_tokens":3,"output_tokens":5,"total_tokens":8}}`)
+
+	got, err := reg.TranslateResponseNonStream(context.Background(), protocol.Codex, protocol.OpenAI, "gpt-4o", nil, nil, rawResp)
+	if err != nil {
+		t.Fatalf("TranslateResponseNonStream failed: %v", err)
+	}
+	if !strings.Contains(string(got), `"tool_calls":[{"id":"call_skill_1","type":"function","function":{"name":"Skill","arguments":"{\"args\":\"skill: \\\"superpowers:using-superpowers\\\"\",\"skill\":\"superpowers:using-superpowers\"}"}}]`) {
+		t.Fatalf("expected openai tool arguments raw json string, got %s", got)
+	}
+}
+
+func TestRegistry_TranslateResponseNonStream_CodexToGemini_StringArguments(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	rawResp := []byte(`{"id":"resp_1","object":"response","status":"completed","model":"gpt-5-codex","output":[{"type":"function_call","call_id":"call_skill_1","name":"Skill","arguments":"{\"args\":\"skill: \\\"superpowers:using-superpowers\\\"\",\"skill\":\"superpowers:using-superpowers\"}"}],"usage":{"input_tokens":3,"output_tokens":5,"total_tokens":8}}`)
+
+	got, err := reg.TranslateResponseNonStream(context.Background(), protocol.Codex, protocol.Gemini, "gemini-2.5-pro", nil, nil, rawResp)
+	if err != nil {
+		t.Fatalf("TranslateResponseNonStream failed: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(got, &payload); err != nil {
+		t.Fatalf("unmarshal gemini payload: %v", err)
+	}
+	candidates := payload["candidates"].([]any)
+	content := candidates[0].(map[string]any)["content"].(map[string]any)
+	parts := content["parts"].([]any)
+	functionCall := parts[0].(map[string]any)["functionCall"].(map[string]any)
+	args := functionCall["args"].(map[string]any)
+	if functionCall["name"] != "Skill" || args["args"] != `skill: "superpowers:using-superpowers"` || args["skill"] != "superpowers:using-superpowers" {
+		t.Fatalf("expected gemini functionCall args object, got %s", got)
 	}
 }
 

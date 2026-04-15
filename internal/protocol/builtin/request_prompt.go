@@ -782,7 +782,15 @@ func encodeCodexRequest(model string, conv conversation, stream bool) ([]byte, e
 			for _, part := range turn.Parts {
 				switch part.Kind {
 				case partKindText, partKindImage, partKindFile:
-					encoded, err := encodeCodexContentPart(part)
+					var (
+						encoded map[string]any
+						err     error
+					)
+					if role == "assistant" {
+						encoded, err = encodeCodexOutputContentPart(part)
+					} else {
+						encoded, err = encodeCodexContentPart(part)
+					}
 					if err != nil {
 						return nil, fmt.Errorf("codex turn %d: %w", i, err)
 					}
@@ -1229,9 +1237,9 @@ func encodeCodexToolCallWithAliases(call *conversationToolCall, aliases codexToo
 	if call == nil {
 		return nil, fmt.Errorf("%w: missing codex tool call", protocol.ErrUnsupportedRequestShape)
 	}
-	arguments, err := rawJSONToAny(call.Arguments)
-	if err != nil {
-		return nil, err
+	arguments := strings.TrimSpace(string(call.Arguments))
+	if arguments == "" {
+		arguments = "{}"
 	}
 	return map[string]any{
 		"type":      "function_call",
@@ -1256,9 +1264,6 @@ func encodeCodexToolResultWithAliases(result *conversationToolResult, aliases co
 	}
 	if result.Name != "" {
 		item["name"] = aliases.shorten(result.Name)
-	}
-	if result.IsError {
-		item["is_error"] = true
 	}
 	return item, nil
 }
@@ -2250,6 +2255,16 @@ func rawJSONFromFields(m map[string]any, keys ...string) (json.RawMessage, error
 		value, ok := m[key]
 		if !ok || value == nil {
 			continue
+		}
+		if text, ok := value.(string); ok {
+			trimmed := strings.TrimSpace(text)
+			if trimmed == "" {
+				return nil, nil
+			}
+			var decoded any
+			if err := sonic.UnmarshalString(trimmed, &decoded); err == nil {
+				return json.RawMessage(trimmed), nil
+			}
 		}
 		raw, err := sonic.Marshal(value)
 		if err != nil {

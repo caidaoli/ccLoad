@@ -34,7 +34,7 @@ func TestRegistryRequestSemantics(t *testing.T) {
 			t.Fatalf("TranslateRequest failed: %v", err)
 		}
 		body := string(out)
-		if !strings.Contains(body, `"type":"reasoning"`) || !strings.Contains(body, `"encrypted_content":"enc_1"`) || !strings.Contains(body, `"text":"hello"`) {
+		if !strings.Contains(body, `"type":"reasoning"`) || !strings.Contains(body, `"encrypted_content":"enc_1"`) || !strings.Contains(body, `"type":"output_text"`) || !strings.Contains(body, `"text":"hello"`) {
 			t.Fatalf("unexpected codex request body: %s", body)
 		}
 	})

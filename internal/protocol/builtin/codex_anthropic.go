@@ -291,7 +291,7 @@ func convertAnthropicResponseToCodexStream(_ context.Context, model string, _, _
 				"type":      "function_call",
 				"call_id":   st.toolID,
 				"name":      st.toolName,
-				"arguments": jsonStringOrObject(arguments),
+				"arguments": arguments,
 			},
 		}
 		body, err := sonic.Marshal(chunk)

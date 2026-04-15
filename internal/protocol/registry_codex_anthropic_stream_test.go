@@ -102,4 +102,25 @@ func TestRegistryCodexAnthropicStream(t *testing.T) {
 			t.Fatalf("unexpected anthropic reasoning stream: %s", body)
 		}
 	})
+
+	t.Run("function call string arguments stay raw json", func(t *testing.T) {
+		var state any
+		out, err := reg.TranslateResponseStream(
+			context.Background(),
+			protocol.Codex,
+			protocol.Anthropic,
+			"claude-3-5-sonnet",
+			nil,
+			nil,
+			[]byte("event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"call_skill_1\",\"name\":\"Skill\",\"arguments\":\"{\\\"args\\\":\\\"skill: \\\\\\\"superpowers:using-superpowers\\\\\\\"\\\",\\\"skill\\\":\\\"superpowers:using-superpowers\\\"}\"}}\n\n"),
+			&state,
+		)
+		if err != nil {
+			t.Fatalf("function_call done failed: %v", err)
+		}
+		body := string(bytes.Join(out, nil))
+		if !strings.Contains(body, `"partial_json":"{\"args\":\"skill: \\\"superpowers:using-superpowers\\\"\",\"skill\":\"superpowers:using-superpowers\"}"`) {
+			t.Fatalf("expected raw object json in partial_json, got: %s", body)
+		}
+	})
 }
