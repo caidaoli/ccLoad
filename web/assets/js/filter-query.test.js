@@ -61,7 +61,7 @@ test('共享请求参数模块支持基础参数、requestKey 和 includeInReque
           return false;
         }
       },
-      { key: 'channelName', queryKeys: ['channel_name_like'] }
+      { key: 'channelName', queryKeys: ['channel_name'] }
     ],
     {
       baseParams: {
@@ -73,7 +73,7 @@ test('共享请求参数模块支持基础参数、requestKey 和 includeInReque
   assert.equal(params.get('bucket_min'), '5');
   assert.equal(params.get('range'), 'today');
   assert.equal(params.get('auth_token_id'), '9');
-  assert.equal(params.get('channel_name_like'), 'demo');
+  assert.equal(params.get('channel_name'), 'demo');
   assert.equal(params.has('channel_type'), false);
   assert.equal(params.has('type'), false);
 });
@@ -104,4 +104,14 @@ test('logs.html、stats.html 和 trend.html 在页面脚本前加载共享请求
     trendHtmlSource,
     /filter-query\.js\?v=__VERSION__[\s\S]*trend\.js\?v=__VERSION__/
   );
+});
+
+test('logs.js 和 stats.js 的模型与渠道名筛选参数使用精确匹配键', () => {
+  assert.match(logsSource, /key:\s*'channelName',\s*queryKeys:\s*\['channel_name'\]/);
+  assert.match(logsSource, /key:\s*'model',\s*queryKeys:\s*\['model'\]/);
+  assert.doesNotMatch(logsSource, /channel_name_like/);
+
+  assert.match(statsSource, /key:\s*'channelName',\s*queryKeys:\s*\['channel_name'\]/);
+  assert.match(statsSource, /key:\s*'model',\s*queryKeys:\s*\['model'\]/);
+  assert.doesNotMatch(statsSource, /model_like/);
 });

@@ -25,3 +25,23 @@ test('stats.js 使用集中绑定处理视图切换和排序点击', () => {
   assert.match(script, /sortTable\(sortable\.dataset\.column\);/);
   assert.match(script, /bindStatsStaticControls\(\);/);
 });
+
+test('stats.js 点击渠道和模型跳转日志页时使用精确匹配参数', () => {
+  assert.match(script, /const channelLink = e\.target\.closest\('\.channel-link\[data-channel-name\]'\);/);
+  assert.match(script, /const channelName = channelLink\.dataset\.channelName;/);
+  assert.match(script, /const params = new URLSearchParams\(\);[\s\S]*params\.set\('channel_name', channelName\);/);
+  assert.match(script, /params\.set\('channel_name', channelName\);/);
+  assert.doesNotMatch(script, /logs\.html\?channel_id=/);
+
+  assert.match(script, /const modelLink = e\.target\.closest\('\.model-link\[data-model\]'\);/);
+  assert.match(script, /const channelName = modelLink\.dataset\.channelName;/);
+  assert.match(script, /if \(channelName\) params\.set\('channel_name', channelName\);/);
+  assert.match(script, /params\.set\('model', model\);/);
+  assert.doesNotMatch(script, /params\.set\('model_like', model\);/);
+});
+
+test('stats.html 和 stats.js 使用渠道名属性承载日志跳转上下文', () => {
+  assert.match(html, /class="config-name channel-link" data-channel-name="\{\{channelNameAttr\}\}"/);
+  assert.match(script, /data-channel-name="\$\{escapeHtml\(entry\.channel_name\)\}"/);
+  assert.doesNotMatch(script, /data-channel-id="\$\{entry\.channel_id \|\| ''\}"/);
+});
