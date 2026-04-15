@@ -19,7 +19,7 @@ func (s *SQLStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
 	// 使用 LEFT JOIN 支持查询有或无API Key的渠道
 	// 注意：不再从 channels 表读取 models 和 model_redirects
 	query := `
-			SELECT c.id, c.name, c.url, c.priority, c.channel_type, c.enabled,
+			SELECT c.id, c.name, c.url, c.priority, c.channel_type, c.protocol_transform_mode, c.enabled,
 			       c.scheduled_check_enabled, c.scheduled_check_model,
 			       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit,
 			       COUNT(k.id) as key_count,
@@ -58,7 +58,7 @@ func (s *SQLStore) GetConfig(ctx context.Context, id int64) (*model.Config, erro
 	// 使用 LEFT JOIN 以支持创建渠道时（尚无API Key）仍能获取配置
 	// 注意：不再从 channels 表读取 models 和 model_redirects
 	query := `
-			SELECT c.id, c.name, c.url, c.priority, c.channel_type, c.enabled,
+			SELECT c.id, c.name, c.url, c.priority, c.channel_type, c.protocol_transform_mode, c.enabled,
 			       c.scheduled_check_enabled, c.scheduled_check_model,
 			       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit,
 			       COUNT(k.id) as key_count,
@@ -102,7 +102,7 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, modelName stri
 		// 注意：不再从 channels 表读取 models 和 model_redirects
 		query = `
 	            SELECT c.id, c.name, c.url, c.priority,
-	                   c.channel_type, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
+	                   c.channel_type, c.protocol_transform_mode, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
 	                   c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit,
 	                   COUNT(k.id) as key_count,
 	                   c.created_at, c.updated_at
@@ -118,7 +118,7 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, modelName stri
 		// 精确匹配：使用 channel_models 索引表
 		query = `
 	            SELECT c.id, c.name, c.url, c.priority,
-	                   c.channel_type, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
+	                   c.channel_type, c.protocol_transform_mode, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
 	                   c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit,
 	                   COUNT(k.id) as key_count,
 	                   c.created_at, c.updated_at
@@ -163,7 +163,7 @@ func (s *SQLStore) GetEnabledChannelsByType(ctx context.Context, channelType str
 	// 注意：不再从 channels 表读取 models 和 model_redirects
 	query := `
 			SELECT c.id, c.name, c.url, c.priority,
-			       c.channel_type, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
+			       c.channel_type, c.protocol_transform_mode, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
 			       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit,
 			       COUNT(k.id) as key_count,
 			       c.created_at, c.updated_at
@@ -210,7 +210,7 @@ func (s *SQLStore) GetEnabledChannelsByModelAndProtocol(ctx context.Context, mod
 	args := []any{protocol, protocol, nowUnix}
 	query := `
 		SELECT c.id, c.name, c.url, c.priority,
-		       c.channel_type, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
+		       c.channel_type, c.protocol_transform_mode, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
 		       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit,
 		       COUNT(k.id) as key_count,
 		       c.created_at, c.updated_at
@@ -282,15 +282,16 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 
 	// 使用GetChannelType确保默认值
 	channelType := c.GetChannelType()
+	protocolTransformMode := c.GetProtocolTransformMode()
 
 	id := c.ID
 	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
 		if id == 0 {
 			// 插入渠道记录（数据库生成自增 id）
 			res, err := tx.ExecContext(ctx, `
-				INSERT INTO channels(name, url, priority, channel_type, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, created_at, updated_at)
-				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`, c.Name, c.URL, c.Priority, channelType,
+				INSERT INTO channels(name, url, priority, channel_type, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, created_at, updated_at)
+				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, c.Name, c.URL, c.Priority, channelType, protocolTransformMode,
 				boolToInt(c.Enabled), boolToInt(c.ScheduledCheckEnabled), c.ScheduledCheckModel, c.DailyCostLimit, nowUnix, nowUnix)
 			if err != nil {
 				return err
@@ -304,28 +305,29 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 			// 显式主键：用于混合存储同步/恢复，保证两端主键一致
 			if s.IsSQLite() {
 				_, err := tx.ExecContext(ctx, `
-					INSERT INTO channels(id, name, url, priority, channel_type, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, created_at, updated_at)
-					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-				`, id, c.Name, c.URL, c.Priority, channelType,
+					INSERT INTO channels(id, name, url, priority, channel_type, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, created_at, updated_at)
+					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				`, id, c.Name, c.URL, c.Priority, channelType, protocolTransformMode,
 					boolToInt(c.Enabled), boolToInt(c.ScheduledCheckEnabled), c.ScheduledCheckModel, c.DailyCostLimit, nowUnix, nowUnix)
 				if err != nil {
 					return err
 				}
 			} else {
 				_, err := tx.ExecContext(ctx, `
-					INSERT INTO channels(id, name, url, priority, channel_type, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, created_at, updated_at)
-					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					INSERT INTO channels(id, name, url, priority, channel_type, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, created_at, updated_at)
+					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 					ON DUPLICATE KEY UPDATE
 						name = VALUES(name),
 						url = VALUES(url),
 						priority = VALUES(priority),
 						channel_type = VALUES(channel_type),
+						protocol_transform_mode = VALUES(protocol_transform_mode),
 						enabled = VALUES(enabled),
 						scheduled_check_enabled = VALUES(scheduled_check_enabled),
 						scheduled_check_model = VALUES(scheduled_check_model),
 						daily_cost_limit = VALUES(daily_cost_limit),
 						updated_at = VALUES(updated_at)
-				`, id, c.Name, c.URL, c.Priority, channelType,
+				`, id, c.Name, c.URL, c.Priority, channelType, protocolTransformMode,
 					boolToInt(c.Enabled), boolToInt(c.ScheduledCheckEnabled), c.ScheduledCheckModel, c.DailyCostLimit, nowUnix, nowUnix)
 				if err != nil {
 					return err
@@ -372,15 +374,16 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 
 	// 使用GetChannelType确保默认值
 	channelType := upd.GetChannelType()
+	protocolTransformMode := upd.GetProtocolTransformMode()
 	updatedAtUnix := timeToUnix(time.Now())
 
 	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
 		// 更新渠道记录
 		_, err := tx.ExecContext(ctx, `
 			UPDATE channels
-			SET name=?, url=?, priority=?, channel_type=?, enabled=?, scheduled_check_enabled=?, scheduled_check_model=?, daily_cost_limit=?, updated_at=?
+			SET name=?, url=?, priority=?, channel_type=?, protocol_transform_mode=?, enabled=?, scheduled_check_enabled=?, scheduled_check_model=?, daily_cost_limit=?, updated_at=?
 			WHERE id=?
-		`, name, url, upd.Priority, channelType,
+		`, name, url, upd.Priority, channelType, protocolTransformMode,
 			boolToInt(upd.Enabled), boolToInt(upd.ScheduledCheckEnabled), upd.ScheduledCheckModel, upd.DailyCostLimit, updatedAtUnix, id)
 		if err != nil {
 			return err

@@ -116,3 +116,49 @@ func TestChannelRequestValidate_AllowsDocumentedProtocolTransforms(t *testing.T)
 		})
 	}
 }
+
+func TestChannelRequestValidate_DefaultsProtocolTransformModeToLocal(t *testing.T) {
+	t.Parallel()
+
+	req := ChannelRequest{
+		Name:               "test",
+		APIKey:             "sk-test",
+		URL:                "https://example.com",
+		ChannelType:        "anthropic",
+		ProtocolTransforms: []string{"openai"},
+		Models: []model.ModelEntry{
+			{Model: "test-model"},
+		},
+	}
+
+	if err := req.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if req.ProtocolTransformMode != model.ProtocolTransformModeLocal {
+		t.Fatalf("expected protocol transform mode %q, got %q", model.ProtocolTransformModeLocal, req.ProtocolTransformMode)
+	}
+}
+
+func TestChannelRequestValidate_RejectsInvalidProtocolTransformMode(t *testing.T) {
+	t.Parallel()
+
+	req := ChannelRequest{
+		Name:                  "test",
+		APIKey:                "sk-test",
+		URL:                   "https://example.com",
+		ChannelType:           "anthropic",
+		ProtocolTransformMode: "remote",
+		ProtocolTransforms:    []string{"openai"},
+		Models: []model.ModelEntry{
+			{Model: "test-model"},
+		},
+	}
+
+	err := req.Validate()
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), `invalid protocol_transform_mode`) {
+		t.Fatalf("expected invalid mode error, got %v", err)
+	}
+}

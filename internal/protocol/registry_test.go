@@ -960,7 +960,20 @@ func TestRegistry_TranslateResponseNonStream_CodexToOpenAI_StringArguments(t *te
 	if err != nil {
 		t.Fatalf("TranslateResponseNonStream failed: %v", err)
 	}
-	if !strings.Contains(string(got), `"tool_calls":[{"id":"call_skill_1","type":"function","function":{"name":"Skill","arguments":"{\"args\":\"skill: \\\"superpowers:using-superpowers\\\"\",\"skill\":\"superpowers:using-superpowers\"}"}}]`) {
+
+	payload := mustJSONMap(t, got)
+	choices := mustSlice(t, payload["choices"])
+	choice := mustMap(t, choices[0])
+	message := mustMap(t, choice["message"])
+	toolCalls := mustSlice(t, message["tool_calls"])
+	toolCall := mustMap(t, toolCalls[0])
+	function := mustMap(t, toolCall["function"])
+
+	if mustString(t, toolCall["id"]) != "call_skill_1" ||
+		mustString(t, toolCall["type"]) != "function" ||
+		mustString(t, function["name"]) != "Skill" ||
+		mustString(t, function["arguments"]) != `{"args":"skill: \"superpowers:using-superpowers\"","skill":"superpowers:using-superpowers"}` ||
+		mustString(t, choice["finish_reason"]) != "tool_calls" {
 		t.Fatalf("expected openai tool arguments raw json string, got %s", got)
 	}
 }

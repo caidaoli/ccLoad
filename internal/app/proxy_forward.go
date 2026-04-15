@@ -858,7 +858,7 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 	// 4. 处理响应(传递channelType用于精确识别usage格式,传递渠道信息用于日志记录,传递观测回调)
 	var res *fwResult
 	var duration float64
-	res, duration, err = s.handleResponse(reqCtx, resp, w, cfg.ChannelType, cfg, apiKey, observer)
+	res, duration, err = s.handleResponse(reqCtx, resp, w, string(reqCtx.upstreamProtocol), cfg, apiKey, observer)
 
 	// [FIX] 2025-12: 流式传输过程中首字节超时的错误修正
 	// 场景：响应头已收到(200 OK)，但在读取响应体时超时定时器触发
@@ -908,9 +908,10 @@ func (s *Server) forwardAttempt(
 
 	// 转发请求（传递实际的API Key字符串和观测回调）
 	// [FIX] 2026-01: 使用传入的 requestPath（可能已替换模型名）而非 reqCtx.requestPath
+	upstreamProtocol := protocol.Protocol(cfg.ResolveUpstreamProtocol(string(reqCtx.clientProtocol)))
 	plan, err := protocol.BuildTransformPlan(
 		reqCtx.clientProtocol,
-		protocol.Protocol(cfg.GetChannelType()),
+		upstreamProtocol,
 		reqCtx.requestPath,
 		requestPath,
 		reqCtx.body,

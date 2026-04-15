@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -154,6 +156,45 @@ func TestSelectRouteCandidates_UsesExposedProtocolInsteadOfChannelType(t *testin
 	}
 	if candidates[0].Name != "gemini-openai-transform" {
 		t.Fatalf("期望命中 transform 渠道，实际 %s", candidates[0].Name)
+	}
+}
+
+func TestSelectRouteCandidates_EmitsDefaultProtocolTransformMode(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	ctx := context.Background()
+
+	_, err := store.CreateConfig(ctx, &model.Config{
+		Name:               "gemini-openai-transform",
+		URL:                "https://api.example.com",
+		Priority:           100,
+		Enabled:            true,
+		ChannelType:        "gemini",
+		ProtocolTransforms: []string{"openai"},
+		ModelEntries: []model.ModelEntry{
+			{Model: "gemini-2.5-pro", RedirectModel: ""},
+		},
+	})
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+
+	candidates, err := server.selectCandidatesByModelAndType(ctx, "gemini-2.5-pro", "openai")
+	if err != nil {
+		t.Fatalf("selectCandidates失败: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("期望1个候选渠道，实际%d个", len(candidates))
+	}
+
+	body, err := json.Marshal(candidates[0])
+	if err != nil {
+		t.Fatalf("marshal candidate: %v", err)
+	}
+	if !strings.Contains(string(body), `"protocol_transform_mode":"local"`) {
+		t.Fatalf("期望候选渠道默认输出 protocol_transform_mode=local，实际 JSON: %s", body)
 	}
 }
 

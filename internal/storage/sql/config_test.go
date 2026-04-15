@@ -3,8 +3,10 @@ package sql_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"ccLoad/internal/model"
@@ -492,6 +494,40 @@ func TestConfig_GetEnabledChannelsByExposedProtocol(t *testing.T) {
 	}
 	if geminiChannels[0].Name != "gemini-openai-channel" {
 		t.Fatalf("unexpected gemini channel name: %s", geminiChannels[0].Name)
+	}
+}
+
+func TestConfig_GetConfig_EmitsDefaultProtocolTransformMode(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "protocol_transform_mode_default.db")
+	ctx := context.Background()
+
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name:        "default-transform-mode",
+		URL:         "https://api.example.com",
+		Priority:    10,
+		Enabled:     true,
+		ChannelType: "openai",
+		ModelEntries: []model.ModelEntry{
+			{Model: "gpt-4.1"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create config: %v", err)
+	}
+
+	got, err := store.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get config: %v", err)
+	}
+
+	body, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	if !strings.Contains(string(body), `"protocol_transform_mode":"local"`) {
+		t.Fatalf("期望默认输出 protocol_transform_mode=local，实际 JSON: %s", body)
 	}
 }
 

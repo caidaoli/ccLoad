@@ -85,6 +85,7 @@ function createHarness({
   channelCheckIntervalHours = 24
 } = {}) {
   let protocolTransformInputs = [];
+  let protocolTransformModeInputs = [];
   const elements = {};
   const radiosByName = new Map();
   const fetchCalls = [];
@@ -121,6 +122,8 @@ function createHarness({
     const checkedOnly = selector.endsWith(':checked');
     const pool = name === 'protocolTransform'
       ? protocolTransformInputs
+      : name === 'protocolTransformMode'
+        ? protocolTransformModeInputs
       : radiosByName.get(name) || [];
 
     return pool.filter((input) => {
@@ -146,6 +149,22 @@ function createHarness({
     protocolTransformInputs = inputs;
   }
 
+  function parseProtocolTransformModeInputs(markup) {
+    const inputs = [];
+    const regex = /<input type="radio"[\s\S]*?name="protocolTransformMode"[\s\S]*?value="([^"]+)"([\s\S]*?)>/g;
+    let match;
+    while ((match = regex.exec(markup))) {
+      inputs.push(createElement({
+        name: 'protocolTransformMode',
+        type: 'radio',
+        value: match[1],
+        checked: /\bchecked\b/.test(match[2]),
+        disabled: /\bdisabled\b/.test(match[2])
+      }));
+    }
+    protocolTransformModeInputs = inputs;
+  }
+
   elements.protocolTransformsContainer = createElement({ id: 'protocolTransformsContainer' });
   Object.defineProperty(elements.protocolTransformsContainer, 'innerHTML', {
     get() {
@@ -154,6 +173,16 @@ function createHarness({
     set(value) {
       this._innerHTML = value;
       parseProtocolTransformInputs(String(value || ''));
+    }
+  });
+  elements.protocolTransformModeContainer = createElement({ id: 'protocolTransformModeContainer' });
+  Object.defineProperty(elements.protocolTransformModeContainer, 'innerHTML', {
+    get() {
+      return this._innerHTML || '';
+    },
+    set(value) {
+      this._innerHTML = value;
+      parseProtocolTransformModeInputs(String(value || ''));
     }
   });
 
@@ -280,6 +309,8 @@ function createHarness({
           'channels.protocolTransformOpenAI': 'OpenAI',
           'channels.protocolTransformGemini': 'Gemini',
           'channels.protocolTransformNative': '原生',
+          'channels.protocolTransformModeLocal': '本地',
+          'channels.protocolTransformModeUpstream': '上游',
           'channels.duplicateModelsNotAllowed': 'duplicate models',
           'channels.fillAllRequired': 'fill required',
           'channels.channelAdded': 'added',
@@ -348,6 +379,9 @@ function createHarness({
         disabled: input.disabled
       }));
     },
+    getProtocolTransformModeInput(value) {
+      return protocolTransformModeInputs.find((input) => input.value === value) || null;
+    },
     getRadio,
     setCheckedRadio,
     async changeChannelType(nextType) {
@@ -364,8 +398,10 @@ function createHarness({
 
 test('channels 编辑弹窗包含协议转换容器和提示文案', () => {
   assert.match(html, /id="protocolTransformsContainer"/);
+  assert.match(html, /id="protocolTransformModeContainer"/);
   assert.match(html, /data-i18n="channels\.modal\.upstreamProtocol"/);
   assert.match(html, /<label class="form-label channel-editor-inline-label"[\s\S]*?data-i18n="channels\.modal\.protocolTransforms">协议转换<\/label>/);
+  assert.match(html, /data-i18n="channels\.modal\.protocolTransformMode"/);
   assert.match(html, /data-i18n="channels\.modal\.protocolTransformsHint"/);
 });
 
@@ -426,6 +462,7 @@ test('编辑渠道时会回填 protocol_transforms，并禁用原生协议选项
       name: 'edited-channel',
       url: 'https://api.example.com',
       channel_type: 'gemini',
+      protocol_transform_mode: 'upstream',
       protocol_transforms: ['openai', 'anthropic'],
       key_strategy: 'sequential',
       priority: 9,
@@ -445,6 +482,7 @@ test('编辑渠道时会回填 protocol_transforms，并禁用原生协议选项
   assert.equal(harness.getProtocolTransformInput('gemini').checked, false);
   assert.equal(harness.getProtocolTransformInput('anthropic').checked, true);
   assert.equal(harness.getProtocolTransformInput('openai').checked, true);
+  assert.equal(harness.getProtocolTransformModeInput('upstream').checked, true);
   assert.deepEqual(
     harness.getProtocolTransformValues().filter((item) => item.checked).map((item) => item.value).sort(),
     ['anthropic', 'openai']
@@ -456,6 +494,10 @@ test('保存渠道时 payload 带上 protocol_transforms', async () => {
   harness.api.initChannelEditorActions();
   harness.setCheckedRadio('channelType', 'gemini');
   harness.api.renderProtocolTransformOptions('gemini', ['anthropic', 'openai']);
+  harness.elements.protocolTransformModeContainer.innerHTML = `
+    <label><input type="radio" name="protocolTransformMode" value="local"></label>
+    <label><input type="radio" name="protocolTransformMode" value="upstream" checked></label>
+  `;
 
   await harness.submitForm();
 
@@ -466,6 +508,7 @@ test('保存渠道时 payload 带上 protocol_transforms', async () => {
 
   const payload = JSON.parse(options.body);
   assert.deepEqual(payload.protocol_transforms, ['anthropic', 'openai']);
+  assert.equal(payload.protocol_transform_mode, 'upstream');
   assert.equal(payload.channel_type, 'gemini');
   assert.deepEqual(JSON.parse(JSON.stringify(harness.getAfterSavePayload())), {
     isNewChannel: true,
