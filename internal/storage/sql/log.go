@@ -184,7 +184,7 @@ func (s *SQLStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) err
 			maskedKey = util.MaskAPIKey(maskedKey)
 		}
 
-		if _, err := stmt.ExecContext(ctx,
+		result, err := stmt.ExecContext(ctx,
 			timeMs,
 			minuteBucket,
 			e.Model,
@@ -209,8 +209,23 @@ func (s *SQLStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) err
 			e.Cache5mInputTokens,
 			e.Cache1hInputTokens,
 			e.Cost,
-		); err != nil {
+		)
+		if err != nil {
 			return err
+		}
+
+		// 如果有 debug 数据，在同一事务中写入 debug_logs
+		if e.DebugData != nil {
+			logID, _ := result.LastInsertId()
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO debug_logs (log_id, created_at, req_method, req_url, req_headers, req_body, resp_status, resp_headers, resp_body)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				logID, e.DebugData.CreatedAt, e.DebugData.ReqMethod, e.DebugData.ReqURL,
+				e.DebugData.ReqHeaders, e.DebugData.ReqBody, e.DebugData.RespStatus,
+				e.DebugData.RespHeaders, e.DebugData.RespBody,
+			); err != nil {
+				return err
+			}
 		}
 	}
 

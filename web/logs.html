@@ -192,6 +192,44 @@
     </tr>
   </template>
 
+  <!-- Debug Log 模态框 -->
+  <div id="debugLogModal" class="modal">
+    <div class="modal-content upstream-detail-modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title" data-i18n="logs.debugLogTitle">Debug Log</h2>
+        <button type="button" class="close-btn" data-action="close-debug-log-modal">&times;</button>
+      </div>
+      <div id="debugLogLoading" style="text-align: center; padding: 2rem; display: none;">
+        <span data-i18n="logs.loading">加载中...</span>
+      </div>
+      <div id="debugLogError" style="text-align: center; padding: 2rem; color: var(--danger-600); display: none;"></div>
+      <div id="debugLogContent" style="display: none; flex: 1; min-height: 0; flex-direction: column;">
+        <div class="upstream-detail-tabs">
+          <button type="button" class="upstream-tab active" data-tab="request" data-i18n="logs.debugRequest">Request</button>
+          <button type="button" class="upstream-tab" data-tab="response" data-i18n="logs.debugResponse">Response</button>
+        </div>
+        <div id="debugTabRequest" class="upstream-tab-panel active">
+          <div class="upstream-field upstream-field--full">
+            <div class="upstream-field-header">
+              <label data-i18n="logs.debugRequest">Request</label>
+              <button type="button" class="upstream-copy-btn" data-copy-target="debugReqRaw" data-i18n="common.copy">复制</button>
+            </div>
+            <pre id="debugReqRaw" class="upstream-pre upstream-pre--full"></pre>
+          </div>
+        </div>
+        <div id="debugTabResponse" class="upstream-tab-panel">
+          <div class="upstream-field upstream-field--full">
+            <div class="upstream-field-header">
+              <label data-i18n="logs.debugResponse">Response</label>
+              <button type="button" class="upstream-copy-btn" data-copy-target="debugRespRaw" data-i18n="common.copy">复制</button>
+            </div>
+            <pre id="debugRespRaw" class="upstream-pre upstream-pre--full"></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- 加载状态模板 -->
   <template id="tpl-log-loading">
     <tr>

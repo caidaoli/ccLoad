@@ -4,14 +4,15 @@ import "fmt"
 
 // TestChannelRequest 渠道测试请求结构
 type TestChannelRequest struct {
-	Model       string            `json:"model" binding:"required"`
-	MaxTokens   int               `json:"max_tokens,omitempty"`   // 可选，默认512
-	Stream      bool              `json:"stream,omitempty"`       // 可选，流式响应
-	Content     string            `json:"content,omitempty"`      // 可选，测试内容，默认"test"
-	Headers     map[string]string `json:"headers,omitempty"`      // 可选，自定义请求头
-	ChannelType string            `json:"channel_type,omitempty"` // 可选，渠道类型：anthropic(默认)、codex、gemini
-	KeyIndex    int               `json:"key_index,omitempty"`    // 可选，指定测试的Key索引，默认0（第一个）
-	BaseURL     string            `json:"base_url,omitempty"`     // 可选，仅 /test-url 使用，强制指定测试URL（必须属于该渠道）
+	Model             string            `json:"model" binding:"required"`
+	MaxTokens         int               `json:"max_tokens,omitempty"`         // 可选，默认512
+	Stream            bool              `json:"stream,omitempty"`             // 可选，流式响应
+	Content           string            `json:"content,omitempty"`            // 可选，测试内容，默认"test"
+	Headers           map[string]string `json:"headers,omitempty"`            // 可选，自定义请求头
+	ChannelType       string            `json:"channel_type,omitempty"`       // 可选，旧调用方兼容字段
+	ProtocolTransform string            `json:"protocol_transform,omitempty"` // 可选，客户端协议；默认等于渠道原生协议
+	KeyIndex          int               `json:"key_index,omitempty"`          // 可选，指定测试的Key索引，默认0（第一个）
+	BaseURL           string            `json:"base_url,omitempty"`           // 可选，仅 /test-url 使用，强制指定测试URL（必须属于该渠道）
 }
 
 // Validate 实现RequestValidator接口

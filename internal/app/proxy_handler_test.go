@@ -67,6 +67,14 @@ func TestParseIncomingRequest_ValidJSON(t *testing.T) {
 			expectError:  false,
 		},
 		{
+			name:         "流式请求-stream字符串true",
+			body:         `{"model":"gpt-4","stream":"true","messages":[]}`,
+			path:         "/v1/chat/completions",
+			expectModel:  "gpt-4",
+			expectStream: true,
+			expectError:  false,
+		},
+		{
 			name:         "空模型名-从路径提取",
 			body:         `{"messages":[{"role":"user","content":"test"}]}`,
 			path:         "/v1/models/gpt-4/completions",

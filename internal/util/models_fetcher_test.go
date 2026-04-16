@@ -4,10 +4,32 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"net/http/httptest"
+	"strings"
 	"testing"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func newTestModelsFetcherClient(fn roundTripFunc) *http.Client {
+	return &http.Client{Transport: fn}
+}
+
+func newJSONResponse(status int, body string) *http.Response {
+	resp := &http.Response{
+		StatusCode: status,
+		Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	resp.Header.Set("Content-Type", "application/json")
+	return resp
+}
 
 // ============================================================
 // 模型获取器工厂测试
@@ -47,57 +69,52 @@ func TestNewModelsFetcher(t *testing.T) {
 // ============================================================
 
 func TestAnthropicModelsFetcher(t *testing.T) {
-	// 创建Mock HTTP服务器
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/models" {
-			// 验证Anthropic特有的请求头
+	responseBody, err := json.Marshal(map[string]any{
+		"data": []map[string]any{
+			{
+				"id":           "claude-3-5-sonnet-20241022",
+				"display_name": "Claude 3.5 Sonnet",
+				"type":         "model",
+				"created_at":   "2024-10-22T00:00:00Z",
+			},
+			{
+				"id":           "claude-3-opus-20240229",
+				"display_name": "Claude 3 Opus",
+				"type":         "model",
+				"created_at":   "2024-02-29T00:00:00Z",
+			},
+			{
+				"id":           "claude-3-sonnet-20240229",
+				"display_name": "Claude 3 Sonnet",
+				"type":         "model",
+				"created_at":   "2024-02-29T00:00:00Z",
+			},
+		},
+		"has_more": false,
+		"first_id": "claude-3-5-sonnet-20241022",
+		"last_id":  "claude-3-sonnet-20240229",
+	})
+	if err != nil {
+		t.Fatalf("marshal 响应失败: %v", err)
+	}
+
+	fetcher := &AnthropicModelsFetcher{
+		client: newTestModelsFetcherClient(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path != "/v1/models" {
+				t.Fatalf("期望路径 /v1/models, 实际 %s", r.URL.Path)
+			}
 			if r.Header.Get("x-api-key") == "" {
-				http.Error(w, "Missing x-api-key header", http.StatusUnauthorized)
-				return
+				return newJSONResponse(http.StatusUnauthorized, `{"error":"missing x-api-key"}`), nil
 			}
 			if r.Header.Get("anthropic-version") == "" {
-				http.Error(w, "Missing anthropic-version header", http.StatusBadRequest)
-				return
+				return newJSONResponse(http.StatusBadRequest, `{"error":"missing anthropic-version"}`), nil
 			}
-
-			w.Header().Set("Content-Type", "application/json")
-			if err := json.NewEncoder(w).Encode(map[string]any{
-				"data": []map[string]any{
-					{
-						"id":           "claude-3-5-sonnet-20241022",
-						"display_name": "Claude 3.5 Sonnet",
-						"type":         "model",
-						"created_at":   "2024-10-22T00:00:00Z",
-					},
-					{
-						"id":           "claude-3-opus-20240229",
-						"display_name": "Claude 3 Opus",
-						"type":         "model",
-						"created_at":   "2024-02-29T00:00:00Z",
-					},
-					{
-						"id":           "claude-3-sonnet-20240229",
-						"display_name": "Claude 3 Sonnet",
-						"type":         "model",
-						"created_at":   "2024-02-29T00:00:00Z",
-					},
-				},
-				"has_more": false,
-				"first_id": "claude-3-5-sonnet-20241022",
-				"last_id":  "claude-3-sonnet-20240229",
-			}); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-			}
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer server.Close()
-
-	fetcher := &AnthropicModelsFetcher{}
+			return newJSONResponse(http.StatusOK, string(responseBody)), nil
+		}),
+	}
 	ctx := context.Background()
 
-	models, err := fetcher.FetchModels(ctx, server.URL, "test-api-key")
+	models, err := fetcher.FetchModels(ctx, "https://anthropic.test", "test-api-key")
 	if err != nil {
 		t.Fatalf("获取失败: %v", err)
 	}
@@ -136,32 +153,26 @@ func TestAnthropicModelsFetcher(t *testing.T) {
 // ============================================================
 
 func TestOpenAIModelsFetcher(t *testing.T) {
-	// 模拟OpenAI API服务器
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 验证Authorization头
-		if auth := r.Header.Get("Authorization"); auth != "Bearer test-key" {
-			t.Errorf("期望Authorization: Bearer test-key, 实际: %s", auth)
-		}
-
-		// 返回模拟响应
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write([]byte(`{
-			"data": [
-				{"id": "gpt-4o"},
-				{"id": "gpt-4-turbo"},
-				{"id": "gpt-3.5-turbo"}
-			]
-		}`)); err != nil {
-			t.Logf("写入响应失败: %v", err)
-		}
-	}))
-	defer server.Close()
-
-	fetcher := &OpenAIModelsFetcher{}
+	fetcher := &OpenAIModelsFetcher{
+		client: newTestModelsFetcherClient(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path != "/v1/models" {
+				t.Fatalf("期望路径 /v1/models, 实际 %s", r.URL.Path)
+			}
+			if auth := r.Header.Get("Authorization"); auth != "Bearer test-key" {
+				t.Fatalf("期望Authorization: Bearer test-key, 实际: %s", auth)
+			}
+			return newJSONResponse(http.StatusOK, `{
+				"data": [
+					{"id": "gpt-4o"},
+					{"id": "gpt-4-turbo"},
+					{"id": "gpt-3.5-turbo"}
+				]
+			}`), nil
+		}),
+	}
 	ctx := context.Background()
 
-	models, err := fetcher.FetchModels(ctx, server.URL, "test-key")
+	models, err := fetcher.FetchModels(ctx, "https://openai.test", "test-key")
 	if err != nil {
 		t.Fatalf("获取失败: %v", err)
 	}
@@ -186,17 +197,17 @@ func TestOpenAIModelsFetcher(t *testing.T) {
 }
 
 func TestOpenAIModelsFetcher_APIError(t *testing.T) {
-	// 模拟API错误
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"error": {"message": "Invalid API key"}}`))
-	}))
-	defer server.Close()
-
-	fetcher := &OpenAIModelsFetcher{}
+	fetcher := &OpenAIModelsFetcher{
+		client: newTestModelsFetcherClient(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path != "/v1/models" {
+				t.Fatalf("期望路径 /v1/models, 实际 %s", r.URL.Path)
+			}
+			return newJSONResponse(http.StatusUnauthorized, `{"error": {"message": "Invalid API key"}}`), nil
+		}),
+	}
 	ctx := context.Background()
 
-	_, err := fetcher.FetchModels(ctx, server.URL, "invalid-key")
+	_, err := fetcher.FetchModels(ctx, "https://openai.test", "invalid-key")
 	if err == nil {
 		t.Fatal("期望返回错误，但成功了")
 	}
@@ -212,30 +223,26 @@ func TestOpenAIModelsFetcher_APIError(t *testing.T) {
 // ============================================================
 
 func TestGeminiModelsFetcher(t *testing.T) {
-	// 模拟Gemini API服务器
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 验证URL包含API key参数
-		if !containsString(r.URL.String(), "key=test-key") {
-			t.Errorf("URL应包含API key参数")
-		}
-
-		// 返回模拟响应
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{
-			"models": [
-				{"name": "models/gemini-1.5-flash"},
-				{"name": "models/gemini-1.5-pro"},
-				{"name": "models/gemini-1.0-pro"}
-			]
-		}`))
-	}))
-	defer server.Close()
-
-	fetcher := &GeminiModelsFetcher{}
+	fetcher := &GeminiModelsFetcher{
+		client: newTestModelsFetcherClient(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path != "/v1beta/models" {
+				t.Fatalf("期望路径 /v1beta/models, 实际 %s", r.URL.Path)
+			}
+			if r.URL.Query().Get("key") != "test-key" {
+				t.Fatalf("URL应包含API key参数, 实际 query=%s", r.URL.RawQuery)
+			}
+			return newJSONResponse(http.StatusOK, `{
+				"models": [
+					{"name": "models/gemini-1.5-flash"},
+					{"name": "models/gemini-1.5-pro"},
+					{"name": "models/gemini-1.0-pro"}
+				]
+			}`), nil
+		}),
+	}
 	ctx := context.Background()
 
-	models, err := fetcher.FetchModels(ctx, server.URL, "test-key")
+	models, err := fetcher.FetchModels(ctx, "https://gemini.test", "test-key")
 	if err != nil {
 		t.Fatalf("获取失败: %v", err)
 	}
@@ -268,29 +275,28 @@ func TestGeminiModelsFetcher(t *testing.T) {
 // ============================================================
 
 func TestCodexModelsFetcher(t *testing.T) {
-	// 创建Mock HTTP服务器
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/models" {
-			w.Header().Set("Content-Type", "application/json")
-			if err := json.NewEncoder(w).Encode(map[string]any{
-				"data": []map[string]any{
-					{"id": "gpt-4"},
-					{"id": "gpt-3.5-turbo"},
-					{"id": "text-davinci-003"},
-				},
-			}); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-			}
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer server.Close()
+	responseBody, err := json.Marshal(map[string]any{
+		"data": []map[string]any{
+			{"id": "gpt-4"},
+			{"id": "gpt-3.5-turbo"},
+			{"id": "text-davinci-003"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal 响应失败: %v", err)
+	}
 
-	fetcher := &CodexModelsFetcher{}
+	fetcher := &CodexModelsFetcher{
+		client: newTestModelsFetcherClient(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path != "/v1/models" {
+				t.Fatalf("期望路径 /v1/models, 实际 %s", r.URL.Path)
+			}
+			return newJSONResponse(http.StatusOK, string(responseBody)), nil
+		}),
+	}
 	ctx := context.Background()
 
-	models, err := fetcher.FetchModels(ctx, server.URL, "dummy-key")
+	models, err := fetcher.FetchModels(ctx, "https://codex.test", "dummy-key")
 	if err != nil {
 		t.Fatalf("获取失败: %v", err)
 	}

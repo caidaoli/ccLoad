@@ -16,6 +16,8 @@ import (
 	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
+	protocolbuiltin "ccLoad/internal/protocol/builtin"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 
@@ -43,6 +45,7 @@ type Server struct {
 	statsCache                    *StatsCache           // 统计结果缓存层
 	channelBalancer               *SmoothWeightedRR     // 渠道负载均衡器（平滑加权轮询）
 	urlSelector                   *URLSelector          // URL选择器（多URL场景的延迟追踪与冷却）
+	protocolRegistry              *protocol.Registry
 	client                        *http.Client          // HTTP客户端
 	activeRequests                *activeRequestManager // 进行中请求（内存状态，不持久化）
 	scheduledChannelChecksRunning atomic.Bool
@@ -181,6 +184,10 @@ func NewServer(store storage.Store) *Server {
 		activeRequests: newActiveRequestManager(),
 	}
 
+	reg := protocol.NewRegistry()
+	protocolbuiltin.Register(reg)
+	s.protocolRegistry = reg
+
 	// 初始化高性能缓存层（60秒TTL，避免数据库性能杀手查询）
 	s.channelCache = storage.NewChannelCache(store, 60*time.Second)
 
@@ -277,10 +284,8 @@ func NewServer(store storage.Store) *Server {
 	// 启动日志 Workers
 	s.logService.StartWorkers()
 
-	// 仅当保留天数>0时启动清理协程（-1表示永久保留，不清理）
-	if logRetentionDays > 0 {
-		s.logService.StartCleanupLoop()
-	}
+	// 启动清理协程（调试日志清理始终运行，普通日志按保留天数决定）
+	s.logService.StartCleanupLoop()
 
 	// 2. AuthService（负责认证授权）
 	// 初始化时自动从数据库加载API访问令牌
@@ -546,6 +551,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 
 		// 统计分析
 		admin.GET("/logs", s.HandleErrors)
+		admin.GET("/debug-logs/:log_id", s.HandleGetDebugLog)
 		admin.GET("/active-requests", s.HandleActiveRequests) // 进行中请求（内存状态）
 		admin.GET("/metrics", s.HandleMetrics)
 		admin.GET("/stats", s.HandleStats)
@@ -654,6 +660,25 @@ func (s *Server) AddLogAsync(entry *model.LogEntry) {
 func (s *Server) getModelsByChannelType(ctx context.Context, channelType string) ([]string, error) {
 	// 直接查询数据库（KISS原则，避免过度设计）
 	channels, err := s.store.GetEnabledChannelsByType(ctx, channelType)
+	if err != nil {
+		return nil, err
+	}
+	modelSet := make(map[string]struct{})
+	for _, cfg := range channels {
+		for _, modelName := range cfg.GetModels() {
+			modelSet[modelName] = struct{}{}
+		}
+	}
+	models := make([]string, 0, len(modelSet))
+	for name := range modelSet {
+		models = append(models, name)
+	}
+	return models, nil
+}
+
+// getModelsByExposedProtocol 获取指定暴露协议的去重模型列表
+func (s *Server) getModelsByExposedProtocol(ctx context.Context, protocol string) ([]string, error) {
+	channels, err := s.store.GetEnabledChannelsByExposedProtocol(ctx, protocol)
 	if err != nil {
 		return nil, err
 	}

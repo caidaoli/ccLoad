@@ -263,7 +263,7 @@
         const successDisplay = buildSuccessDisplay(successCountText, successRateText, successRateClass);
 
         const modelDisplay = entry.model ?
-          `<a href="#" class="model-tag model-link" data-model="${escapeHtml(entry.model)}" data-channel-id="${entry.channel_id || ''}" title="${t('stats.viewLogsTitle')}">${escapeHtml(entry.model)}</a>` :
+          `<a href="#" class="model-tag model-link" data-model="${escapeHtml(entry.model)}" data-channel-name="${escapeHtml(entry.channel_name)}" title="${t('stats.viewLogsTitle')}">${escapeHtml(entry.model)}</a>` :
           `<span class="stats-value-muted">${t('stats.unknownModel')}</span>`;
 
         // 格式化平均首字响应时间/平均耗时
@@ -312,7 +312,8 @@
 
         const row = TemplateEngine.render('tpl-stats-row', {
           channelId: entry.channel_id,
-          channelName: escapeHtml(entry.channel_name),
+          channelNameAttr: entry.channel_name,
+          channelName: entry.channel_name,
           channelIdBadge: entry.channel_id ? `<span class="channel-id">(ID: ${entry.channel_id})</span>` : '',
           healthIndicator: healthIndicator,
           modelDisplay: modelDisplay,
@@ -783,8 +784,8 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
     const STATS_FILTER_FIELDS = [
       { key: 'range', queryKeys: ['range'], defaultValue: 'today' },
       { key: 'channelId', queryKeys: ['channel_id'], defaultValue: '' },
-      { key: 'channelName', queryKeys: ['channel_name_like', 'channel_name'], defaultValue: '' },
-      { key: 'model', queryKeys: ['model_like', 'model'], defaultValue: '' },
+      { key: 'channelName', queryKeys: ['channel_name'], defaultValue: '' },
+      { key: 'model', queryKeys: ['model'], defaultValue: '' },
       { key: 'authToken', queryKeys: ['auth_token_id'], defaultValue: '' },
       {
         key: 'channelType',
@@ -916,13 +917,15 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
           const currentRange = document.getElementById('f_hours')?.value || 'today';
 
           // 处理渠道名称点击
-          const channelLink = e.target.closest('.channel-link[data-channel-id]');
+          const channelLink = e.target.closest('.channel-link[data-channel-name]');
           if (channelLink) {
             e.preventDefault();
-            const channelId = channelLink.dataset.channelId;
-            if (channelId) {
-              const logsUrl = `/web/logs.html?channel_id=${channelId}&range=${encodeURIComponent(currentRange)}`;
-              window.location.href = logsUrl;
+            const channelName = channelLink.dataset.channelName;
+            if (channelName) {
+              const params = new URLSearchParams();
+              params.set('channel_name', channelName);
+              params.set('range', currentRange);
+              window.location.href = `/web/logs.html?${params.toString()}`;
             }
             return;
           }
@@ -932,11 +935,11 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
           if (modelLink) {
             e.preventDefault();
             const model = modelLink.dataset.model;
-            const channelId = modelLink.dataset.channelId;
+            const channelName = modelLink.dataset.channelName;
             if (model) {
               const params = new URLSearchParams();
-              if (channelId) params.set('channel_id', channelId);
-              params.set('model_like', model);
+              if (channelName) params.set('channel_name', channelName);
+              params.set('model', model);
               params.set('range', currentRange);
               window.location.href = `/web/logs.html?${params.toString()}`;
             }

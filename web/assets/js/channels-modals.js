@@ -6,6 +6,109 @@ function setChannelModalTitle(i18nKey) {
   titleEl.textContent = window.t(i18nKey);
 }
 
+if (!window.ChannelProtocolConfig) {
+  throw new Error('ChannelProtocolConfig helper is required before channels-modals.js');
+}
+
+function protocolTransformLabel(protocol) {
+  const labels = {
+    anthropic: 'channels.protocolTransformAnthropic',
+    codex: 'channels.protocolTransformCodex',
+    openai: 'channels.protocolTransformOpenAI',
+    gemini: 'channels.protocolTransformGemini'
+  };
+  const key = labels[protocol] || protocol;
+  return window.t ? window.t(key) : key;
+}
+
+function protocolTransformModeLabel(mode) {
+  const labels = {
+    local: 'channels.protocolTransformModeLocal',
+    upstream: 'channels.protocolTransformModeUpstream'
+  };
+  const key = labels[mode] || mode;
+  return window.t ? window.t(key) : key;
+}
+
+function i18nText(key, fallback) {
+  if (!window.t) return fallback;
+
+  const translated = window.t(key);
+  return translated && translated !== key ? translated : fallback;
+}
+
+function protocolTransformHintMarkup(protocol) {
+  if (protocol !== 'gemini') return '';
+
+  return `
+          <span class="channel-editor-radio-hint" data-i18n="channels.modal.protocolTransformsHint">
+            ${i18nText('channels.modal.protocolTransformsHint', '额外暴露协议,不含原生上游协议')}
+          </span>
+        `;
+}
+
+function normalizeProtocolTransformSelection(channelType, selectedValues) {
+  return window.ChannelProtocolConfig.normalizeProtocolTransformsForChannel(channelType, selectedValues);
+}
+
+function renderProtocolTransformOptions(channelType, selectedValues = []) {
+  const container = document.getElementById('protocolTransformsContainer');
+  if (!container) return;
+
+  const currentType = window.ChannelProtocolConfig.normalizeProtocol(channelType) || 'anthropic';
+  const selected = new Set(normalizeProtocolTransformSelection(currentType, selectedValues));
+  const options = window.ChannelProtocolConfig.getProtocolTransformRenderOptions(currentType);
+  container.innerHTML = options.map((protocol) => {
+    const disabled = protocol === currentType;
+    const checked = !disabled && selected.has(protocol);
+    const copyClass = protocol === 'gemini'
+      ? 'channel-editor-radio-option-copy channel-editor-radio-option-copy--with-hint'
+      : 'channel-editor-radio-option-copy';
+    return `
+      <label class="channel-editor-radio-option">
+        <input type="checkbox"
+               name="protocolTransform"
+               value="${protocol}"
+               ${checked ? 'checked' : ''}
+               ${disabled ? 'disabled' : ''}
+        >
+        <span class="${copyClass}">
+          <span class="channel-editor-radio-option-text">${protocolTransformLabel(protocol)}${disabled ? ` (${i18nText('channels.protocolTransformNative', '原生')})` : ''}</span>
+          ${protocolTransformHintMarkup(protocol)}
+        </span>
+      </label>
+    `;
+  }).join('');
+}
+
+function getSelectedProtocolTransforms(channelType) {
+  const selectedValues = Array.from(document.querySelectorAll('input[name="protocolTransform"]:checked'))
+    .map((input) => input.value);
+  return normalizeProtocolTransformSelection(channelType, selectedValues);
+}
+
+function renderProtocolTransformModeOptions(selectedValue = 'upstream') {
+  const container = document.getElementById('protocolTransformModeContainer');
+  if (!container) return;
+
+  const selectedMode = window.ChannelProtocolConfig.normalizeProtocolTransformMode(selectedValue);
+  container.innerHTML = window.ChannelProtocolConfig.PROTOCOL_TRANSFORM_MODES.map((mode) => `
+      <label class="channel-editor-radio-option">
+        <input type="radio"
+               name="protocolTransformMode"
+               value="${mode}"
+               ${mode === selectedMode ? 'checked' : ''}
+        >
+        <span>${protocolTransformModeLabel(mode)}</span>
+      </label>
+    `).join('');
+}
+
+function getSelectedProtocolTransformMode() {
+  const selected = document.querySelector('input[name="protocolTransformMode"]:checked')?.value;
+  return window.ChannelProtocolConfig.normalizeProtocolTransformMode(selected);
+}
+
 async function syncScheduledCheckVisibility() {
   const scheduledCheckWrapper = document.getElementById('channelScheduledCheckEnabledWrapper');
   const scheduledCheckModelWrapper = document.getElementById('channelScheduledCheckModelWrapper');
@@ -218,6 +321,16 @@ function initChannelEditorActions() {
     scheduledCheckCheckbox.dataset.bound = '1';
   }
 
+  const channelTypeRadios = document.getElementById('channelTypeRadios');
+  if (channelTypeRadios && !channelTypeRadios.dataset.protocolTransformsBound) {
+    channelTypeRadios.addEventListener('change', (event) => {
+      if (event.target && event.target.name === 'channelType') {
+        renderProtocolTransformOptions(event.target.value, getSelectedProtocolTransforms(''));
+      }
+    });
+    channelTypeRadios.dataset.protocolTransformsBound = '1';
+  }
+
   ensureScheduledCheckModelCombobox();
 }
 
@@ -232,6 +345,8 @@ async function showAddModal() {
   document.getElementById('channelScheduledCheckEnabled').checked = false;
   document.getElementById('channelScheduledCheckModel').value = '';
   document.querySelector('input[name="channelType"][value="anthropic"]').checked = true;
+  renderProtocolTransformOptions('anthropic', []);
+  renderProtocolTransformModeOptions('upstream');
   document.querySelector('input[name="keyStrategy"][value="sequential"]').checked = true;
 
   redirectTableData = [];
@@ -303,6 +418,8 @@ async function editChannel(id) {
 
   const channelType = channel.channel_type || 'anthropic';
   await window.ChannelTypeManager.renderChannelTypeRadios('channelTypeRadios', channelType);
+  renderProtocolTransformOptions(channelType, channel.protocol_transforms || []);
+  renderProtocolTransformModeOptions(channel.protocol_transform_mode || 'upstream');
   const keyStrategy = channel.key_strategy || 'sequential';
   const strategyRadio = document.querySelector(`input[name="keyStrategy"][value="${keyStrategy}"]`);
   if (strategyRadio) {
@@ -393,6 +510,8 @@ async function saveChannel(event) {
     url: validURLs.join('\n'),
     api_key: validKeys.join(','),
     channel_type: channelType,
+    protocol_transform_mode: getSelectedProtocolTransformMode(),
+    protocol_transforms: getSelectedProtocolTransforms(channelType),
     key_strategy: keyStrategy,
     priority: parseInt(document.getElementById('channelPriority').value) || 0,
     daily_cost_limit: parseFloat(document.getElementById('channelDailyCostLimit').value) || 0,
@@ -1244,39 +1363,6 @@ function initRedirectTableEventDelegation() {
       }
     }
   });
-
-  // 处理按钮悬停样式
-  tbody.addEventListener('mouseover', (e) => {
-    const deleteBtn = e.target.closest('.redirect-delete-btn');
-    if (deleteBtn) {
-      deleteBtn.style.background = 'var(--error-50)';
-      deleteBtn.style.borderColor = 'var(--error-500)';
-      return;
-    }
-
-    const lowercaseBtn = e.target.closest('.lowercase-btn');
-    if (lowercaseBtn) {
-      lowercaseBtn.style.background = 'var(--primary-50)';
-      lowercaseBtn.style.borderColor = 'var(--primary-500)';
-      lowercaseBtn.style.color = 'var(--primary-600)';
-    }
-  });
-
-  tbody.addEventListener('mouseout', (e) => {
-    const deleteBtn = e.target.closest('.redirect-delete-btn');
-    if (deleteBtn) {
-      deleteBtn.style.background = 'white';
-      deleteBtn.style.borderColor = 'var(--error-300)';
-      return;
-    }
-
-    const lowercaseBtn = e.target.closest('.lowercase-btn');
-    if (lowercaseBtn) {
-      lowercaseBtn.style.background = 'white';
-      lowercaseBtn.style.borderColor = 'var(--neutral-300)';
-      lowercaseBtn.style.color = 'var(--neutral-500)';
-    }
-  });
 }
 
 /**
@@ -1623,15 +1709,12 @@ async function fetchModelsFromAPI() {
 // 常用模型配置
 const COMMON_MODELS = {
   anthropic: [
-    'claude-sonnet-4-5-20250929',
     'claude-haiku-4-5-20251001',
     'claude-opus-4-6',
     'claude-sonnet-4-6',
   ],
   codex: [
-    'gpt-5.1-codex-mini',
     'gpt-5.2',
-    'gpt-5.2-codex',
     'gpt-5.3-codex',
     'gpt-5.4',
     'gpt-5.4-mini'

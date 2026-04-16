@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+const protocolSource = fs.readFileSync(path.join(__dirname, 'channels-protocols.js'), 'utf8');
 const modalsSource = fs.readFileSync(path.join(__dirname, 'channels-modals.js'), 'utf8');
 
 function createHarness(values) {
@@ -30,7 +31,8 @@ function createHarness(values) {
   };
 
   vm.createContext(sandbox);
-  vm.runInContext(`${modalsSource}
+  vm.runInContext(`${protocolSource}
+${modalsSource}
 this.__channelScheduledCheckTest = {
   syncScheduledCheckVisibility
 };`, sandbox);

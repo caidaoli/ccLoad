@@ -116,6 +116,8 @@ const (
 const (
 	// LogCleanupInterval 日志清理间隔
 	LogCleanupInterval = 1 * time.Hour
+	// DebugLogCleanupInterval 调试日志清理初始间隔（首次触发后按实际保留时长动态调整）
+	DebugLogCleanupInterval = 5 * time.Minute
 )
 
 // 启动超时配置（Fail-Fast：启动阶段网络问题应快速失败，避免卡死）

@@ -206,6 +206,35 @@ type RequestValidator interface {
 	Validate() error
 }
 
+// isSensitiveHeader 判断是否为需要脱敏的认证类请求头
+func isSensitiveHeader(key string) bool {
+	return strings.EqualFold(key, "Authorization") ||
+		strings.EqualFold(key, "X-Api-Key") ||
+		strings.EqualFold(key, "Api-Key") ||
+		strings.EqualFold(key, "X-Goog-Api-Key") ||
+		strings.EqualFold(key, "Proxy-Authorization")
+}
+
+func maskHeaderValue(v string) string {
+	if len(v) <= 8 {
+		return "******"
+	}
+	return v[:4] + "******" + v[len(v)-4:]
+}
+
+// maskSensitiveHeaderMap 对 map[string]string 类型的 headers 做脱敏
+func maskSensitiveHeaderMap(headers map[string]string) map[string]string {
+	out := make(map[string]string, len(headers))
+	for k, v := range headers {
+		if isSensitiveHeader(k) {
+			out[k] = maskHeaderValue(v)
+		} else {
+			out[k] = v
+		}
+	}
+	return out
+}
+
 // BindAndValidate 绑定请求数据并验证
 func BindAndValidate(c *gin.Context, obj RequestValidator) error {
 	if err := c.ShouldBindJSON(obj); err != nil {

@@ -21,7 +21,9 @@ type Store interface {
 	UpdateConfig(ctx context.Context, id int64, upd *model.Config) (*model.Config, error)
 	DeleteConfig(ctx context.Context, id int64) error
 	GetEnabledChannelsByModel(ctx context.Context, modelName string) ([]*model.Config, error)
+	GetEnabledChannelsByModelAndProtocol(ctx context.Context, modelName, protocol string) ([]*model.Config, error)
 	GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*model.Config, error)
+	GetEnabledChannelsByExposedProtocol(ctx context.Context, protocol string) ([]*model.Config, error)
 	BatchUpdatePriority(ctx context.Context, updates []struct {
 		ID       int64
 		Priority int
@@ -59,6 +61,12 @@ type Store interface {
 	CountLogsRange(ctx context.Context, since, until time.Time, filter *model.LogFilter) (int, error)
 	GetTodayChannelURLStats(ctx context.Context, dayStart time.Time) ([]model.ChannelURLLogStat, error)
 	CleanupLogsBefore(ctx context.Context, cutoff time.Time) error
+
+	// === Debug Log Management ===
+	AddDebugLog(ctx context.Context, e *model.DebugLogEntry) error
+	GetDebugLogByLogID(ctx context.Context, logID int64) (*model.DebugLogEntry, error)
+	CleanupDebugLogsBefore(ctx context.Context, cutoff time.Time) error
+	TruncateDebugLogs(ctx context.Context) error
 
 	// === Metrics & Statistics ===
 	AggregateRangeWithFilter(ctx context.Context, since, until time.Time, bucket time.Duration, filter *model.LogFilter) ([]model.MetricPoint, error)

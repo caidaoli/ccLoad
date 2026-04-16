@@ -47,10 +47,23 @@ var defaultModelsFetcherClient = &http.Client{
 	},
 }
 
+// SetModelsFetcherHTTPClientForTesting 覆盖默认模型抓取 HTTP client。
+// 仅供测试使用，用于在受限环境下替换掉真实网络访问。
+func SetModelsFetcherHTTPClientForTesting(client *http.Client) {
+	if client == nil {
+		return
+	}
+	defaultModelsFetcherClient = client
+}
+
 // doHTTPRequest 执行HTTP GET请求并返回响应体
 // 封装公共的HTTP请求、错误处理、超时控制逻辑
-func doHTTPRequest(req *http.Request) ([]byte, error) {
-	resp, err := defaultModelsFetcherClient.Do(req)
+func doHTTPRequest(client *http.Client, req *http.Request) ([]byte, error) {
+	if client == nil {
+		client = defaultModelsFetcherClient
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("请求失败: %w", err)
 	}
@@ -73,7 +86,9 @@ func doHTTPRequest(req *http.Request) ([]byte, error) {
 }
 
 // AnthropicModelsFetcher 实现 Anthropic/Claude Code 渠道的模型列表获取。
-type AnthropicModelsFetcher struct{}
+type AnthropicModelsFetcher struct {
+	client *http.Client
+}
 
 type anthropicModelsResponse struct {
 	Data []struct {
@@ -101,9 +116,10 @@ func (f *AnthropicModelsFetcher) FetchModels(ctx context.Context, baseURL string
 	// 官方API使用x-api-key，第三方中转通常使用Authorization Bearer
 	req.Header.Set("x-api-key", apiKey)
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
 
 	// 使用公共HTTP请求函数 (ctx已包含在req中)
-	body, err := doHTTPRequest(req)
+	body, err := doHTTPRequest(f.client, req)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +140,9 @@ func (f *AnthropicModelsFetcher) FetchModels(ctx context.Context, baseURL string
 }
 
 // OpenAIModelsFetcher 实现 OpenAI 渠道的模型列表获取。
-type OpenAIModelsFetcher struct{}
+type OpenAIModelsFetcher struct {
+	client *http.Client
+}
 
 type openAIModelsResponse struct {
 	Data []struct {
@@ -145,7 +163,7 @@ func (f *OpenAIModelsFetcher) FetchModels(ctx context.Context, baseURL string, a
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
 	// 使用公共HTTP请求函数 (ctx已包含在req中)
-	body, err := doHTTPRequest(req)
+	body, err := doHTTPRequest(f.client, req)
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +184,9 @@ func (f *OpenAIModelsFetcher) FetchModels(ctx context.Context, baseURL string, a
 }
 
 // GeminiModelsFetcher 实现 Google Gemini 渠道的模型列表获取。
-type GeminiModelsFetcher struct{}
+type GeminiModelsFetcher struct {
+	client *http.Client
+}
 
 type geminiModelsResponse struct {
 	Models []struct {
@@ -185,7 +205,7 @@ func (f *GeminiModelsFetcher) FetchModels(ctx context.Context, baseURL string, a
 	}
 
 	// 使用公共HTTP请求函数 (ctx已包含在req中)
-	body, err := doHTTPRequest(req)
+	body, err := doHTTPRequest(f.client, req)
 	if err != nil {
 		return nil, err
 	}
@@ -209,12 +229,14 @@ func (f *GeminiModelsFetcher) FetchModels(ctx context.Context, baseURL string, a
 }
 
 // CodexModelsFetcher 实现 Codex 渠道的模型列表获取。
-type CodexModelsFetcher struct{}
+type CodexModelsFetcher struct {
+	client *http.Client
+}
 
 // FetchModels 从 Codex API 获取可用模型列表（使用 OpenAI 兼容接口）。
 func (f *CodexModelsFetcher) FetchModels(ctx context.Context, baseURL string, apiKey string) ([]string, error) {
 	// Codex使用与OpenAI相同的标准接口 /v1/models
-	openAIFetcher := &OpenAIModelsFetcher{}
+	openAIFetcher := &OpenAIModelsFetcher{client: f.client}
 	return openAIFetcher.FetchModels(ctx, baseURL, apiKey)
 }
 

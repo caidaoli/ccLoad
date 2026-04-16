@@ -19,7 +19,7 @@ func (s *SQLStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
 	// 使用 LEFT JOIN 支持查询有或无API Key的渠道
 	// 注意：不再从 channels 表读取 models 和 model_redirects
 	query := `
-			SELECT c.id, c.name, c.url, c.priority, c.channel_type, c.enabled,
+			SELECT c.id, c.name, c.url, c.priority, c.channel_type, c.protocol_transform_mode, c.enabled,
 			       c.scheduled_check_enabled, c.scheduled_check_model,
 			       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit,
 			       COUNT(k.id) as key_count,
@@ -46,6 +46,9 @@ func (s *SQLStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
 	if err := s.loadModelEntriesForConfigs(ctx, configs); err != nil {
 		return nil, err
 	}
+	if err := s.loadProtocolTransformsForConfigs(ctx, configs); err != nil {
+		return nil, err
+	}
 
 	return configs, nil
 }
@@ -55,7 +58,7 @@ func (s *SQLStore) GetConfig(ctx context.Context, id int64) (*model.Config, erro
 	// 使用 LEFT JOIN 以支持创建渠道时（尚无API Key）仍能获取配置
 	// 注意：不再从 channels 表读取 models 和 model_redirects
 	query := `
-			SELECT c.id, c.name, c.url, c.priority, c.channel_type, c.enabled,
+			SELECT c.id, c.name, c.url, c.priority, c.channel_type, c.protocol_transform_mode, c.enabled,
 			       c.scheduled_check_enabled, c.scheduled_check_model,
 			       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit,
 			       COUNT(k.id) as key_count,
@@ -81,6 +84,9 @@ func (s *SQLStore) GetConfig(ctx context.Context, id int64) (*model.Config, erro
 	if err := s.loadModelEntriesForConfig(ctx, config); err != nil {
 		return nil, err
 	}
+	if err := s.loadProtocolTransformsForConfig(ctx, config); err != nil {
+		return nil, err
+	}
 
 	return config, nil
 }
@@ -96,7 +102,7 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, modelName stri
 		// 注意：不再从 channels 表读取 models 和 model_redirects
 		query = `
 	            SELECT c.id, c.name, c.url, c.priority,
-	                   c.channel_type, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
+	                   c.channel_type, c.protocol_transform_mode, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
 	                   c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit,
 	                   COUNT(k.id) as key_count,
 	                   c.created_at, c.updated_at
@@ -112,7 +118,7 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, modelName stri
 		// 精确匹配：使用 channel_models 索引表
 		query = `
 	            SELECT c.id, c.name, c.url, c.priority,
-	                   c.channel_type, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
+	                   c.channel_type, c.protocol_transform_mode, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
 	                   c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit,
 	                   COUNT(k.id) as key_count,
 	                   c.created_at, c.updated_at
@@ -144,6 +150,9 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, modelName stri
 	if err := s.loadModelEntriesForConfigs(ctx, configs); err != nil {
 		return nil, err
 	}
+	if err := s.loadProtocolTransformsForConfigs(ctx, configs); err != nil {
+		return nil, err
+	}
 
 	return configs, nil
 }
@@ -154,7 +163,7 @@ func (s *SQLStore) GetEnabledChannelsByType(ctx context.Context, channelType str
 	// 注意：不再从 channels 表读取 models 和 model_redirects
 	query := `
 			SELECT c.id, c.name, c.url, c.priority,
-			       c.channel_type, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
+			       c.channel_type, c.protocol_transform_mode, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
 			       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit,
 			       COUNT(k.id) as key_count,
 			       c.created_at, c.updated_at
@@ -183,8 +192,88 @@ func (s *SQLStore) GetEnabledChannelsByType(ctx context.Context, channelType str
 	if err := s.loadModelEntriesForConfigs(ctx, configs); err != nil {
 		return nil, err
 	}
+	if err := s.loadProtocolTransformsForConfigs(ctx, configs); err != nil {
+		return nil, err
+	}
 
 	return configs, nil
+}
+
+// GetEnabledChannelsByModelAndProtocol 查询支持指定模型且暴露指定客户端协议的启用渠道（按优先级排序）
+func (s *SQLStore) GetEnabledChannelsByModelAndProtocol(ctx context.Context, modelName string, protocol string) ([]*model.Config, error) {
+	protocol = strings.TrimSpace(strings.ToLower(protocol))
+	if protocol == "" {
+		return s.GetEnabledChannelsByModel(ctx, modelName)
+	}
+
+	nowUnix := timeToUnix(time.Now())
+	args := []any{protocol, protocol, nowUnix}
+	query := `
+		SELECT c.id, c.name, c.url, c.priority,
+		       c.channel_type, c.protocol_transform_mode, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
+		       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit,
+		       COUNT(k.id) as key_count,
+		       c.created_at, c.updated_at
+		FROM channels c
+		LEFT JOIN api_keys k ON c.id = k.channel_id
+		WHERE c.enabled = 1
+		  AND (
+		      c.channel_type = ?
+		      OR EXISTS (
+		          SELECT 1
+		          FROM channel_protocol_transforms cpt
+		          WHERE cpt.channel_id = c.id AND cpt.protocol = ?
+		      )
+		  )
+		  AND (c.cooldown_until = 0 OR c.cooldown_until <= ?)
+	`
+
+	if modelName != "*" {
+		query += `
+		  AND EXISTS (
+		      SELECT 1
+		      FROM channel_models cm
+		      WHERE cm.channel_id = c.id AND cm.model = ?
+		  )
+	`
+		args = append(args, modelName)
+	}
+
+	query += `
+		GROUP BY c.id
+		ORDER BY c.priority DESC, c.id ASC
+	`
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	scanner := NewConfigScanner()
+	configs, err := scanner.ScanConfigs(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.loadModelEntriesForConfigs(ctx, configs); err != nil {
+		return nil, err
+	}
+	if err := s.loadProtocolTransformsForConfigs(ctx, configs); err != nil {
+		return nil, err
+	}
+
+	configs = filterConfigsByProtocol(configs, protocol)
+	return configs, nil
+}
+
+// GetEnabledChannelsByExposedProtocol 查询暴露指定客户端协议的启用渠道（按优先级排序）
+func (s *SQLStore) GetEnabledChannelsByExposedProtocol(ctx context.Context, protocol string) ([]*model.Config, error) {
+	protocol = strings.TrimSpace(strings.ToLower(protocol))
+	if protocol == "" {
+		return []*model.Config{}, nil
+	}
+	return s.GetEnabledChannelsByModelAndProtocol(ctx, "*", protocol)
 }
 
 // CreateConfig 创建新的渠道配置
@@ -193,15 +282,16 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 
 	// 使用GetChannelType确保默认值
 	channelType := c.GetChannelType()
+	protocolTransformMode := c.GetProtocolTransformMode()
 
 	id := c.ID
 	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
 		if id == 0 {
 			// 插入渠道记录（数据库生成自增 id）
 			res, err := tx.ExecContext(ctx, `
-				INSERT INTO channels(name, url, priority, channel_type, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, created_at, updated_at)
-				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`, c.Name, c.URL, c.Priority, channelType,
+				INSERT INTO channels(name, url, priority, channel_type, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, created_at, updated_at)
+				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, c.Name, c.URL, c.Priority, channelType, protocolTransformMode,
 				boolToInt(c.Enabled), boolToInt(c.ScheduledCheckEnabled), c.ScheduledCheckModel, c.DailyCostLimit, nowUnix, nowUnix)
 			if err != nil {
 				return err
@@ -215,28 +305,29 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 			// 显式主键：用于混合存储同步/恢复，保证两端主键一致
 			if s.IsSQLite() {
 				_, err := tx.ExecContext(ctx, `
-					INSERT INTO channels(id, name, url, priority, channel_type, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, created_at, updated_at)
-					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-				`, id, c.Name, c.URL, c.Priority, channelType,
+					INSERT INTO channels(id, name, url, priority, channel_type, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, created_at, updated_at)
+					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				`, id, c.Name, c.URL, c.Priority, channelType, protocolTransformMode,
 					boolToInt(c.Enabled), boolToInt(c.ScheduledCheckEnabled), c.ScheduledCheckModel, c.DailyCostLimit, nowUnix, nowUnix)
 				if err != nil {
 					return err
 				}
 			} else {
 				_, err := tx.ExecContext(ctx, `
-					INSERT INTO channels(id, name, url, priority, channel_type, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, created_at, updated_at)
-					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					INSERT INTO channels(id, name, url, priority, channel_type, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, created_at, updated_at)
+					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 					ON DUPLICATE KEY UPDATE
 						name = VALUES(name),
 						url = VALUES(url),
 						priority = VALUES(priority),
 						channel_type = VALUES(channel_type),
+						protocol_transform_mode = VALUES(protocol_transform_mode),
 						enabled = VALUES(enabled),
 						scheduled_check_enabled = VALUES(scheduled_check_enabled),
 						scheduled_check_model = VALUES(scheduled_check_model),
 						daily_cost_limit = VALUES(daily_cost_limit),
 						updated_at = VALUES(updated_at)
-				`, id, c.Name, c.URL, c.Priority, channelType,
+				`, id, c.Name, c.URL, c.Priority, channelType, protocolTransformMode,
 					boolToInt(c.Enabled), boolToInt(c.ScheduledCheckEnabled), c.ScheduledCheckModel, c.DailyCostLimit, nowUnix, nowUnix)
 				if err != nil {
 					return err
@@ -247,6 +338,9 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 		// 保存模型数据到 channel_models 表
 		if err := s.saveModelEntriesTx(ctx, tx, id, c.ModelEntries); err != nil {
 			return fmt.Errorf("save model entries: %w", err)
+		}
+		if err := s.saveProtocolTransformsTx(ctx, tx, id, c.GetProtocolTransforms()); err != nil {
+			return fmt.Errorf("save protocol transforms: %w", err)
 		}
 
 		return nil
@@ -280,15 +374,16 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 
 	// 使用GetChannelType确保默认值
 	channelType := upd.GetChannelType()
+	protocolTransformMode := upd.GetProtocolTransformMode()
 	updatedAtUnix := timeToUnix(time.Now())
 
 	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
 		// 更新渠道记录
 		_, err := tx.ExecContext(ctx, `
 			UPDATE channels
-			SET name=?, url=?, priority=?, channel_type=?, enabled=?, scheduled_check_enabled=?, scheduled_check_model=?, daily_cost_limit=?, updated_at=?
+			SET name=?, url=?, priority=?, channel_type=?, protocol_transform_mode=?, enabled=?, scheduled_check_enabled=?, scheduled_check_model=?, daily_cost_limit=?, updated_at=?
 			WHERE id=?
-		`, name, url, upd.Priority, channelType,
+		`, name, url, upd.Priority, channelType, protocolTransformMode,
 			boolToInt(upd.Enabled), boolToInt(upd.ScheduledCheckEnabled), upd.ScheduledCheckModel, upd.DailyCostLimit, updatedAtUnix, id)
 		if err != nil {
 			return err
@@ -297,6 +392,9 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 		// 更新 channel_models 表（先删后插）
 		if err := s.saveModelEntriesTx(ctx, tx, id, upd.ModelEntries); err != nil {
 			return fmt.Errorf("save model entries: %w", err)
+		}
+		if err := s.saveProtocolTransformsTx(ctx, tx, id, upd.GetProtocolTransforms()); err != nil {
+			return fmt.Errorf("save protocol transforms: %w", err)
 		}
 
 		return nil
@@ -423,6 +521,34 @@ func (s *SQLStore) loadModelEntriesForConfig(ctx context.Context, config *model.
 	return nil
 }
 
+func (s *SQLStore) loadProtocolTransformsForConfig(ctx context.Context, config *model.Config) error {
+	if config == nil {
+		return nil
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT protocol FROM channel_protocol_transforms WHERE channel_id = ? ORDER BY protocol ASC`, config.ID)
+	if err != nil {
+		return fmt.Errorf("query protocol transforms: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	transforms := make([]string, 0)
+	for rows.Next() {
+		var protocol string
+		if err := rows.Scan(&protocol); err != nil {
+			return fmt.Errorf("scan protocol transform: %w", err)
+		}
+		transforms = append(transforms, protocol)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate protocol transforms: %w", err)
+	}
+
+	config.ProtocolTransforms = transforms
+	normalizeLoadedProtocolTransforms(config)
+	return nil
+}
+
 // loadModelEntriesForConfigs 批量加载多个渠道的模型数据
 // 设计说明：使用 IN 子句批量查询而非 JOIN，原因：
 // 1. JOIN 会导致结果集膨胀（每个渠道有 N 个模型时重复 N 次渠道数据）
@@ -470,9 +596,86 @@ func (s *SQLStore) loadModelEntriesForConfigs(ctx context.Context, configs []*mo
 	return rows.Err()
 }
 
+func (s *SQLStore) loadProtocolTransformsForConfigs(ctx context.Context, configs []*model.Config) error {
+	if len(configs) == 0 {
+		return nil
+	}
+
+	channelIDs := make([]any, len(configs))
+	placeholders := make([]string, len(configs))
+	idToConfig := make(map[int64]*model.Config, len(configs))
+	for i, cfg := range configs {
+		channelIDs[i] = cfg.ID
+		placeholders[i] = "?"
+		idToConfig[cfg.ID] = cfg
+		cfg.ProtocolTransforms = nil
+	}
+
+	query := fmt.Sprintf(
+		`SELECT channel_id, protocol FROM channel_protocol_transforms WHERE channel_id IN (%s) ORDER BY channel_id, protocol ASC`,
+		strings.Join(placeholders, ","),
+	)
+	rows, err := s.db.QueryContext(ctx, query, channelIDs...)
+	if err != nil {
+		return fmt.Errorf("query protocol transforms: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var channelID int64
+		var protocol string
+		if err := rows.Scan(&channelID, &protocol); err != nil {
+			return fmt.Errorf("scan protocol transform: %w", err)
+		}
+		if cfg, ok := idToConfig[channelID]; ok {
+			cfg.ProtocolTransforms = append(cfg.ProtocolTransforms, protocol)
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, cfg := range configs {
+		normalizeLoadedProtocolTransforms(cfg)
+	}
+	return nil
+}
+
+func normalizeLoadedProtocolTransforms(cfg *model.Config) {
+	if cfg == nil {
+		return
+	}
+	cfg.ProtocolTransforms = cfg.GetProtocolTransforms()
+}
+
+func filterConfigsByProtocol(configs []*model.Config, protocol string) []*model.Config {
+	if protocol == "" {
+		return configs
+	}
+	filtered := make([]*model.Config, 0, len(configs))
+	for _, cfg := range configs {
+		if cfg != nil && cfg.SupportsProtocol(protocol) {
+			filtered = append(filtered, cfg)
+		}
+	}
+	return filtered
+}
+
 // saveModelEntriesTx 保存渠道的模型数据（事务版本，用于 Create/Update/Replace）
 func (s *SQLStore) saveModelEntriesTx(ctx context.Context, tx *sql.Tx, channelID int64, entries []model.ModelEntry) error {
 	return s.saveModelEntriesImpl(ctx, tx, channelID, entries)
+}
+
+func (s *SQLStore) saveProtocolTransformsTx(ctx context.Context, tx *sql.Tx, channelID int64, transforms []string) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM channel_protocol_transforms WHERE channel_id = ?`, channelID); err != nil {
+		return fmt.Errorf("delete old protocol transforms: %w", err)
+	}
+	for _, protocol := range transforms {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO channel_protocol_transforms (channel_id, protocol) VALUES (?, ?)`, channelID, protocol); err != nil {
+			return fmt.Errorf("save protocol transform %s: %w", protocol, err)
+		}
+	}
+	return nil
 }
 
 // dbExecutor 数据库执行器接口，统一 *sql.DB 和 *sql.Tx
