@@ -66,6 +66,7 @@ type Store interface {
 	AddDebugLog(ctx context.Context, e *model.DebugLogEntry) error
 	GetDebugLogByLogID(ctx context.Context, logID int64) (*model.DebugLogEntry, error)
 	CleanupDebugLogsBefore(ctx context.Context, cutoff time.Time) error
+	TruncateDebugLogs(ctx context.Context) error
 
 	// === Metrics & Statistics ===
 	AggregateRangeWithFilter(ctx context.Context, since, until time.Time, bucket time.Duration, filter *model.LogFilter) ([]model.MetricPoint, error)

@@ -227,8 +227,44 @@ func (s *LogService) AddLogAsync(entry *model.LogEntry) {
 // 每小时检查一次，删除3天前的日志
 // 支持优雅关闭
 func (s *LogService) StartCleanupLoop() {
+	// 启动时立即清理调试日志：未启用则清空，已启用则删除过期条目
+	s.cleanupDebugLogsOnStartup()
+
 	s.wg.Add(1)
 	go s.cleanupOldLogsLoop()
+}
+
+// cleanupDebugLogsOnStartup 启动时清理调试日志
+func (s *LogService) cleanupDebugLogsOnStartup() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	debugEnabled := false
+	if setting, err := s.store.GetSetting(ctx, "debug_log_enabled"); err == nil && setting != nil {
+		debugEnabled = setting.Value == "true"
+	}
+
+	if !debugEnabled {
+		if err := s.store.TruncateDebugLogs(ctx); err != nil {
+			log.Printf("[WARN] 启动时清空调试日志失败: %v", err)
+		} else {
+			log.Printf("[INFO] 调试日志未启用，已清空历史调试日志")
+		}
+		return
+	}
+
+	debugRetentionMinutes := 5
+	if setting, err := s.store.GetSetting(ctx, "debug_log_retention_minutes"); err == nil && setting != nil {
+		if v, err := strconv.Atoi(setting.Value); err == nil && v > 0 {
+			debugRetentionMinutes = v
+		}
+	}
+	cutoff := time.Now().Add(-time.Duration(debugRetentionMinutes) * time.Minute)
+	if err := s.store.CleanupDebugLogsBefore(ctx, cutoff); err != nil {
+		log.Printf("[WARN] 启动时清理过期调试日志失败: %v", err)
+	} else {
+		log.Printf("[INFO] 已清理 %d 分钟前的过期调试日志", debugRetentionMinutes)
+	}
 }
 
 // cleanupOldLogsLoop 日志清理后台协程（私有方法）
@@ -244,15 +280,17 @@ func (s *LogService) cleanupOldLogsLoop() {
 	for {
 		select {
 		case <-logTicker.C:
-			// 使用带超时的context，避免日志清理阻塞关闭流程。
-			// [FIX] P0-4: WithTimeout 的 cancel 必须在每次循环内执行，不能在循环里 defer 到 goroutine 退出。
-			func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
+			if s.retentionDays > 0 {
+				// 使用带超时的context，避免日志清理阻塞关闭流程。
+				// [FIX] P0-4: WithTimeout 的 cancel 必须在每次循环内执行，不能在循环里 defer 到 goroutine 退出。
+				func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cancel()
 
-				cutoff := time.Now().AddDate(0, 0, -s.retentionDays)
-				_ = s.store.CleanupLogsBefore(ctx, cutoff)
-			}()
+					cutoff := time.Now().AddDate(0, 0, -s.retentionDays)
+					_ = s.store.CleanupLogsBefore(ctx, cutoff)
+				}()
+			}
 
 		case <-debugTicker.C:
 			func() {
