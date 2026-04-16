@@ -30,9 +30,29 @@ make dev            # 开发运行
 internal/
 ├── app/           # HTTP层+业务逻辑
 │   ├── server.go              # Server结构体、NewServer、SetupRoutes、Shutdown
-│   ├── proxy_*.go             # 代理（handler/forward/stream/gemini/sse_parser/error/util）
-│   ├── admin_*.go             # 管理API（channels/auth_tokens/stats/models/settings/cooldown/testing/csv/active_requests/types）
-│   ├── selector*.go           # 渠道选择（balancer/cooldown/model_matcher）
+│   ├── proxy_handler.go       # 代理请求主入口、并发控制、路由选择
+│   ├── proxy_forward.go       # 核心转发逻辑、请求构建、响应处理
+│   ├── proxy_stream.go        # 流式响应、首字节检测
+│   ├── proxy_error.go         # 错误处理、冷却决策、重试逻辑
+│   ├── proxy_gemini.go        # Gemini API特殊处理
+│   ├── proxy_sse_parser.go    # SSE解析器（Gemini/OpenAI缓存Token解析）
+│   ├── proxy_util.go          # 代理常量、类型定义、工具函数
+│   ├── proxy_debug.go         # 上游请求/响应调试捕获（含敏感头脱敏）
+│   ├── admin_channels.go      # 渠道CRUD
+│   ├── admin_auth_tokens.go   # API令牌CRUD（费用限额/模型限制）
+│   ├── admin_stats.go         # 统计分析API
+│   ├── admin_cooldown.go      # 冷却管理API
+│   ├── admin_csv.go           # CSV导入导出
+│   ├── admin_testing.go       # 渠道测试（支持协议转换测试）
+│   ├── admin_debug_log.go     # 调试日志API（脱敏+base64二进制）
+│   ├── admin_models.go        # 模型列表管理
+│   ├── admin_settings.go      # 系统设置管理
+│   ├── admin_active_requests.go # 活跃请求查询
+│   ├── admin_types.go         # 管理API类型定义与验证
+│   ├── selector.go            # 渠道选择入口
+│   ├── selector_balancer.go   # 平滑加权轮询
+│   ├── selector_cooldown.go   # 冷却感知选择
+│   ├── selector_model_matcher.go # 模型匹配（含日期后缀回退）
 │   ├── url_selector.go        # 多URL选择（加权随机/EWMA延迟/冷却/探索优先）
 │   ├── url_fallback.go        # URL故障转移排序（按EWMA延迟排序备选URL）
 │   ├── *_cache.go             # 缓存（cost/health/stats）
@@ -46,7 +66,24 @@ internal/
 │   ├── middleware_zstd.go     # zstd压缩中间件
 │   ├── socket_{unix,windows}.go  # 平台TCP优化（TCP_NODELAY）
 │   └── static.go              # 静态资源服务
-├── model/         # 数据模型（auth_token/config/log/stats/health/system_setting）
+├── protocol/      # 协议转换系统（Anthropic/OpenAI/Gemini/Codex互转）
+│   ├── types.go         # Protocol/RequestFamily/TransformPlan定义
+│   ├── registry.go      # 请求/响应转换器注册表
+│   ├── errors.go        # 协议转换错误类型
+│   └── builtin/         # 内置转换实现
+│       ├── register.go            # 注册所有内置转换器
+│       ├── openai_gemini.go       # OpenAI↔Gemini
+│       ├── openai_anthropic.go    # OpenAI↔Anthropic
+│       ├── openai_codex.go        # OpenAI↔Codex
+│       ├── codex_anthropic.go     # Codex↔Anthropic
+│       ├── codex_gemini.go        # Codex↔Gemini
+│       ├── anthropic_gemini.go    # Anthropic↔Gemini
+│       ├── request_prompt.go      # 请求提示词转换
+│       ├── request_reasoning.go   # 推理内容转换
+│       ├── request_codex_tool_names.go # Codex工具名转换
+│       ├── response_helpers.go    # 响应转换辅助函数
+│       └── sse.go                 # SSE流式响应转换
+├── model/         # 数据模型（auth_token/config/debug_log/log/stats/health/system_setting）
 ├── cooldown/      # 冷却决策引擎
 ├── storage/       # 存储层
 │   ├── factory.go       # 存储工厂（SQLite/MySQL/混合）
@@ -63,11 +100,11 @@ internal/
 │       ├── query.go            # 查询构建器（WhereBuilder/QueryBuilder/ConfigScanner）
 │       ├── admin_sessions.go   # Admin会话管理（创建/验证/过期清理）
 │       ├── auth_token_stats.go # Auth Token统计（时间范围查询/RPM填充）
-│       ├── log.go              # 日志读写（含service_tier）
+│       ├── log.go              # 日志读写（含service_tier/debug_log）
 │       ├── metrics*.go         # metrics聚合/过滤/终结化
 │       ├── helpers.go          # 渠道信息批量查询辅助（ChannelInfo/过滤器）
 │       └── ...                 # config/apikey/cooldown/system_settings
-├── util/          # 工具库（classifier/cost_calculator/money/rate_limiter/models_fetcher/channel_types/apikeys/parse/time）
+├── util/          # 工具库（classifier/cost_calculator/money/rate_limiter/models_fetcher/channel_types/apikeys/parse/time/flexible_bool）
 ├── version/       # 版本信息、启动banner、版本检查
 ├── config/        # 配置加载与默认常量（defaults.go定义所有可调参数）
 └── testutil/      # 测试辅助（api_tester/data/http/store/templates/types）
@@ -78,7 +115,7 @@ web/               # 前端页面
 └── assets/
     ├── locales/   # i18n本地化（zh-CN.js, en.js）
     ├── css/       # 样式（styles/channels/logs/tokens）
-    └── js/        # 模块化JS（channels-*/logs/logs-channel-editor/stats/tokens/settings/trend/model-test/i18n/ui/page-filters/filter-*/date-range-selector/template-engine/...）
+    └── js/        # 模块化JS（channels-*/channels-protocols/logs/logs-channel-editor/stats/tokens/settings/trend/model-test/i18n/ui/page-filters/filter-*/date-range-selector/template-engine/...）
 ```
 
 **故障切换策略**:
@@ -108,10 +145,29 @@ web/               # 前端页面
 - **指数退避冷却**: 失败URL独立冷却（2min→4min→8min→30min）
 - **BaseURL追踪**: 活跃请求、日志记录和UI展示均携带当前上游URL
 
+**协议转换系统**（`internal/protocol/`）:
+- **四大协议**: Anthropic / OpenAI / Gemini / Codex
+- **请求族**: chat_completions / responses / messages / generate_content / completions / embeddings / images
+- **两种模式**: `upstream`（默认，由上游原生处理）/ `local`（本地翻译请求/响应）
+- **转换注册表**: `Registry` 存储请求/流式响应/非流式响应三类转换器
+- **TransformPlan**: 捕获转换元数据（客户端协议、上游协议、请求族、路径、模型等）
+- **渠道配置**: `ProtocolTransformMode` + `ProtocolTransforms`（支持的额外协议列表）
+
+**调试日志系统**:
+- `proxy_debug.go`: 上游请求/响应原始数据捕获（`captureDebugRequest`）
+- `admin_debug_log.go`: 调试日志API（`HandleGetDebugLog`，含敏感头脱敏、base64二进制编码）
+- `model/debug_log.go`: `DebugLogEntry`（req/resp method/url/headers/body）
+- 独立清理策略: 不受普通日志保留天数限制，`DebugLogCleanupInterval=5min`
+
 **关键入口**:
 - `app.Server.HandleProxyRequest()` - 代理请求主入口
 - `app.Server.selectRouteCandidates()` - 智能路由选择（含Gemini GET特殊路由，委托给selectCandidatesByModelAndType）
 - `app.Server.selectCandidatesByModelAndType()` - 渠道候选筛选（模型匹配+日期后缀回退）
+- `protocol.BuildTransformPlan()` - 构建协议转换计划
+- `protocol.Registry.TranslateRequest()` - 请求协议转换
+- `protocol.Registry.TranslateResponseStream()` - 流式响应协议转换
+- `protocol.Registry.TranslateResponseNonStream()` - 非流式响应协议转换
+- `protocol.DetectRequestFamily()` - 从请求路径推断请求族
 - `cooldown.Manager.HandleError()` - 冷却决策引擎
 - `util.ClassifyHTTPStatus()` - HTTP错误分类器
 - `util.ClassifyHTTPResponseWithMeta()` - 带响应体的错误分类（返回完整元数据）

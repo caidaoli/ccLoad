@@ -3,7 +3,7 @@
 **[English](README_EN.md) | 简体中文**
 
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8.svg)](https://golang.org)
-[![Gin](https://img.shields.io/badge/Gin-v1.10+-blue.svg)](https://github.com/gin-gonic/gin)
+[![Gin](https://img.shields.io/badge/Gin-v1.11+-blue.svg)](https://github.com/gin-gonic/gin)
 [![Docker](https://img.shields.io/badge/Docker-Supported-2496ED.svg)](https://hub.docker.com)
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-yellow)](https://huggingface.co/spaces)
 [![GitHub Actions](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-2088FF.svg)](https://github.com/features/actions)
@@ -58,6 +58,8 @@ ccLoad 一站式解决👇
 | 🌐 **多URL负载均衡** | 单渠道多URL+加权随机 | 延迟低的URL自动多分流 |
 | 💵 **service_tier定价** | OpenAI priority/flex/default层级 | 费用倍率精准计算 |
 | 📉 **分层定价** | GPT-5.4/Qwen-Plus/Gemini长上下文 | 超量token自动降档计费 |
+| 🔄 **协议转换** | Anthropic/OpenAI/Gemini/Codex互转 | 一个渠道服务多种客户端协议 |
+| 🔍 **调试日志** | 上游请求/响应原始数据捕获 | 敏感头脱敏，排障利器 |
 
 ## 🏗️ 架构概览
 
@@ -66,6 +68,7 @@ ccLoad 一站式解决👇
 从你的应用发请求到API返回结果，中间经过这几层：
 - **认证层** - 验证你的访问权限，拒绝白嫖党
 - **路由分发** - 判断是Claude还是Gemini，分流处理
+- **协议转换** - 客户端用OpenAI格式？上游是Anthropic？自动翻译，无感切换
 - **智能调度** - 从一堆渠道里选个最靠谱的给你用
 - **故障切换** - 选中的渠道挂了？秒切备用，你根本感知不到
 
@@ -392,7 +395,7 @@ git push
 **版本锁定**（可选）:
 如果需要锁定特定版本，修改 Dockerfile：
 ```dockerfile
-FROM ghcr.io/caidaoli/ccload:v1.85.4  # 指定版本号
+FROM ghcr.io/caidaoli/ccload:v1.96.1  # 指定版本号
 ENV TZ=Asia/Shanghai
 ENV PORT=7860
 ENV SQLITE_PATH=/tmp/ccload.db
@@ -677,6 +680,7 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-opus-4-6\"]",true
   - `proxy_stream.go`：流式响应、首字节检测
   - `proxy_gemini.go`：Gemini API特殊处理
   - `proxy_sse_parser.go`：SSE解析器（防御性处理，支持 Gemini/OpenAI 缓存 Token 解析）
+  - `proxy_debug.go`：上游请求/响应调试捕获（含敏感头脱敏）
 - **admin模块拆分**（SRP原则）：
   - `admin_channels.go`：渠道CRUD操作
   - `admin_stats.go`：统计分析API
@@ -686,7 +690,14 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-opus-4-6\"]",true
   - `admin_auth_tokens.go`：API访问令牌CRUD（支持Token统计、费用限额、模型限制）
   - `admin_settings.go`：系统设置管理
   - `admin_models.go`：模型列表管理
-  - `admin_testing.go`：渠道测试功能
+  - `admin_testing.go`：渠道测试功能（支持协议转换测试）
+  - `admin_debug_log.go`：调试日志API（敏感头脱敏+base64二进制编码）
+- **协议转换系统**（2026-04新增）：
+  - `protocol/types.go`：四大协议定义（Anthropic/OpenAI/Gemini/Codex）
+  - `protocol/registry.go`：请求/响应转换器注册表
+  - `protocol/builtin/`：18个内置转换实现（支持流式与非流式）
+  - 两种模式：`upstream`（默认，由上游原生处理）/ `local`（本地翻译）
+  - 渠道配置：`ProtocolTransformMode` + `ProtocolTransforms`
 - **冷却管理器**（DRY原则）：
   - `cooldown/manager.go`：统一冷却决策引擎
   - 消除重复代码，冷却逻辑统一管理
@@ -864,8 +875,8 @@ export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
 - **镜像仓库**：`ghcr.io/caidaoli/ccload`
 - **可用标签**：
   - `latest` - 最新稳定版本
-  - `v1.85.4` - 具体版本号
-  - `v1.85` - 主要.次要版本
+  - `v1.96.1` - 具体版本号
+  - `v1.96` - 主要.次要版本
   - `v1` - 主要版本
 
 ### 镜像标签说明
@@ -875,7 +886,7 @@ export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
 docker pull ghcr.io/caidaoli/ccload:latest
 
 # 拉取指定版本
-docker pull ghcr.io/caidaoli/ccload:v1.85.4
+docker pull ghcr.io/caidaoli/ccload:v1.96.1
 
 # 指定架构（Docker 通常自动选择）
 docker pull --platform linux/amd64 ghcr.io/caidaoli/ccload:latest
@@ -917,15 +928,16 @@ storage/
 - 未设置 → 使用 SQLite（默认）
 
 **核心表结构**（SQLite 和 MySQL 共用）:
-- `channels` - 渠道配置（冷却数据内联，UNIQUE 约束 name）
+- `channels` - 渠道配置（冷却数据内联，UNIQUE 约束 name，含协议转换配置）
 - `api_keys` - API 密钥（Key 级冷却内联，支持多 Key 策略）
 - `logs` - 请求日志（含base_url上游URL追踪）
+- `debug_logs` - 调试日志（上游请求/响应原始数据，独立清理策略）
 - `key_rr` - 轮询指针（channel_id → idx）
 - `auth_tokens` - 认证令牌（支持费用限额、模型限制、首字节时间记录）
 - `admin_sessions` - 管理会话
 - `system_settings` - 系统配置（支持热重载）
 
-**架构特性** (✅ 2025-12月 ~ 2026-03月持续优化):
+**架构特性** (✅ 2025-12月 ~ 2026-04月持续优化):
 - ✅ **统一SQL层**（重构）：SQLite/MySQL共享`storage/sql/`实现，消除467行重复代码
 - ✅ **统一Schema定义**（新增）：`storage/schema/`定义表结构，支持数据库差异
 - ✅ 工厂模式统一接口（OCP 原则，易扩展新存储）
@@ -939,6 +951,8 @@ storage/
 - ✅ **service_tier 成本计量**：日志持久化 service_tier 字段，成本列展示层级提示
 - ✅ **分层定价引擎**：GPT-5.4/Qwen-Plus/Gemini 长上下文阶梯计价
 - ✅ **日志体验优化**：成本格式化精度提升（3位小数/空值空串），IP列悬停显示完整地址
+- ✅ **协议转换系统**：Anthropic/OpenAI/Gemini/Codex四协议互转，upstream/local两种模式
+- ✅ **调试日志**：上游请求/响应原始数据捕获，敏感头脱敏，独立清理策略
 
 **向后兼容迁移**:
 - 自动检测并修复重复渠道名称
