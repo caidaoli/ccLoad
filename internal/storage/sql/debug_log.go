@@ -43,3 +43,9 @@ func (s *SQLStore) CleanupDebugLogsBefore(ctx context.Context, cutoff time.Time)
 	_, err := s.db.ExecContext(ctx, `DELETE FROM debug_logs WHERE created_at < ?`, cutoff.Unix())
 	return err
 }
+
+// TruncateDebugLogs 清空所有调试日志
+func (s *SQLStore) TruncateDebugLogs(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM debug_logs`)
+	return err
+}
