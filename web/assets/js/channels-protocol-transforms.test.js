@@ -309,7 +309,7 @@ function createHarness({
           'channels.protocolTransformOpenAI': 'OpenAI',
           'channels.protocolTransformGemini': 'Gemini',
           'channels.protocolTransformNative': '原生',
-          'channels.protocolTransformModeLocal': '本地',
+          'channels.protocolTransformModeLocal': '本地(实验性)',
           'channels.protocolTransformModeUpstream': '上游',
           'channels.duplicateModelsNotAllowed': 'duplicate models',
           'channels.fillAllRequired': 'fill required',
@@ -416,7 +416,7 @@ test('Gemini 协议转换选项在标签后内联渲染实验性提示', () => {
 
   assert.match(
     harness.elements.protocolTransformsContainer.innerHTML,
-    /value="gemini"[\s\S]*?channel-editor-radio-option-copy--with-hint[\s\S]*?>Gemini<\/span>[\s\S]*?class="channel-editor-radio-hint"[\s\S]*?data-i18n="channels\.modal\.protocolTransformsHint"[\s\S]*?额外暴露协议,不含原生上游协议\(实验性\)/
+    /value="gemini"[\s\S]*?channel-editor-radio-option-copy--with-hint[\s\S]*?>Gemini<\/span>[\s\S]*?class="channel-editor-radio-hint"[\s\S]*?data-i18n="channels\.modal\.protocolTransformsHint"[\s\S]*?额外暴露协议,不含原生上游协议/
   );
 });
 

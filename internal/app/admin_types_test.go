@@ -117,7 +117,7 @@ func TestChannelRequestValidate_AllowsDocumentedProtocolTransforms(t *testing.T)
 	}
 }
 
-func TestChannelRequestValidate_DefaultsProtocolTransformModeToLocal(t *testing.T) {
+func TestChannelRequestValidate_DefaultsProtocolTransformModeToUpstream(t *testing.T) {
 	t.Parallel()
 
 	req := ChannelRequest{
@@ -134,8 +134,8 @@ func TestChannelRequestValidate_DefaultsProtocolTransformModeToLocal(t *testing.
 	if err := req.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
-	if req.ProtocolTransformMode != model.ProtocolTransformModeLocal {
-		t.Fatalf("expected protocol transform mode %q, got %q", model.ProtocolTransformModeLocal, req.ProtocolTransformMode)
+	if req.ProtocolTransformMode != model.ProtocolTransformModeUpstream {
+		t.Fatalf("expected protocol transform mode %q, got %q", model.ProtocolTransformModeUpstream, req.ProtocolTransformMode)
 	}
 }
 

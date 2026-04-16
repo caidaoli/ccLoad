@@ -1,6 +1,6 @@
 (function initChannelProtocolConfig(global) {
   const ALL_PROTOCOLS = Object.freeze(['anthropic', 'codex', 'openai', 'gemini']);
-  const PROTOCOL_TRANSFORM_MODES = Object.freeze(['local', 'upstream']);
+  const PROTOCOL_TRANSFORM_MODES = Object.freeze(['upstream', 'local']);
   const SUPPORTED_TRANSFORMS_BY_CHANNEL_TYPE = Object.freeze(
     Object.fromEntries(
       ALL_PROTOCOLS.map((protocol) => [
@@ -15,7 +15,7 @@
   }
 
   function normalizeProtocolTransformMode(value) {
-    return String(value || '').trim().toLowerCase() === 'upstream' ? 'upstream' : 'local';
+    return String(value || '').trim().toLowerCase() === 'local' ? 'local' : 'upstream';
   }
 
   function getSupportedProtocolTransforms(channelType) {

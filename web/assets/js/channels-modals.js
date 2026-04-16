@@ -42,7 +42,7 @@ function protocolTransformHintMarkup(protocol) {
 
   return `
           <span class="channel-editor-radio-hint" data-i18n="channels.modal.protocolTransformsHint">
-            ${i18nText('channels.modal.protocolTransformsHint', '额外暴露协议,不含原生上游协议(实验性)')}
+            ${i18nText('channels.modal.protocolTransformsHint', '额外暴露协议,不含原生上游协议')}
           </span>
         `;
 }
@@ -87,7 +87,7 @@ function getSelectedProtocolTransforms(channelType) {
   return normalizeProtocolTransformSelection(channelType, selectedValues);
 }
 
-function renderProtocolTransformModeOptions(selectedValue = 'local') {
+function renderProtocolTransformModeOptions(selectedValue = 'upstream') {
   const container = document.getElementById('protocolTransformModeContainer');
   if (!container) return;
 
@@ -346,7 +346,7 @@ async function showAddModal() {
   document.getElementById('channelScheduledCheckModel').value = '';
   document.querySelector('input[name="channelType"][value="anthropic"]').checked = true;
   renderProtocolTransformOptions('anthropic', []);
-  renderProtocolTransformModeOptions('local');
+  renderProtocolTransformModeOptions('upstream');
   document.querySelector('input[name="keyStrategy"][value="sequential"]').checked = true;
 
   redirectTableData = [];
@@ -419,7 +419,7 @@ async function editChannel(id) {
   const channelType = channel.channel_type || 'anthropic';
   await window.ChannelTypeManager.renderChannelTypeRadios('channelTypeRadios', channelType);
   renderProtocolTransformOptions(channelType, channel.protocol_transforms || []);
-  renderProtocolTransformModeOptions(channel.protocol_transform_mode || 'local');
+  renderProtocolTransformModeOptions(channel.protocol_transform_mode || 'upstream');
   const keyStrategy = channel.key_strategy || 'sequential';
   const strategyRadio = document.querySelector(`input[name="keyStrategy"][value="${keyStrategy}"]`);
   if (strategyRadio) {
