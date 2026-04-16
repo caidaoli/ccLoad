@@ -83,7 +83,7 @@ function inlineCooldownBadge(c) {
   const ms = c.cooldown_remaining_ms || 0;
   if (!ms || ms <= 0) return '';
   const text = humanizeMS(ms);
-  return `<span style="display: inline-flex; align-items: center; color: #dc2626; font-size: 0.75rem; font-weight: 500; background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%); padding: 1px 6px; border-radius: 4px; border: 1px solid #fca5a5; vertical-align: middle;">${window.t('channels.cooldownBadge', { time: text })}</span>`;
+  return `<span style="display: inline-flex; align-items: center; color: #dc2626; font-size: 0.68rem; font-weight: 600; line-height: 1; background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%); padding: 1px 6px; border-radius: 4px; border: 1px solid #fca5a5; vertical-align: middle;">${window.t('channels.cooldownBadge', { time: text })}</span>`;
 }
 
 /**
@@ -122,6 +122,21 @@ function getChannelTypeConfig(channelType) {
   return configs[type] || configs['anthropic'];
 }
 
+function buildInlineNameBadgeStyle({ background, color, borderColor, borderStyle = 'solid' }) {
+  return [
+    'display: inline-flex',
+    'align-items: center',
+    `background: ${background}`,
+    `color: ${color}`,
+    'padding: 2px 6px',
+    'border-radius: 999px',
+    'font-size: 0.68rem',
+    'font-weight: 600',
+    `border: 1px ${borderStyle} ${borderColor}`,
+    'line-height: 1'
+  ].join('; ');
+}
+
 /**
  * 生成渠道类型徽章HTML
  * @param {string} channelType - 渠道类型
@@ -129,7 +144,12 @@ function getChannelTypeConfig(channelType) {
  */
 function buildChannelTypeBadge(channelType) {
   const config = getChannelTypeConfig(channelType);
-  return `<span style="background: ${config.bgColor}; color: ${config.color}; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 700; border: 1px solid ${config.borderColor}; letter-spacing: 0.025em; text-transform: uppercase;">${config.text}</span>`;
+  const badgeStyle = buildInlineNameBadgeStyle({
+    background: config.bgColor,
+    color: config.color,
+    borderColor: config.borderColor
+  });
+  return `<span style="${badgeStyle}">${config.text}</span>`;
 }
 
 function getProtocolTransformBadgeLabel(protocol) {
@@ -163,7 +183,14 @@ function buildProtocolTransformBadges(channelType, protocolTransforms) {
     ? translatedPrefix
     : 'Additional Protocol Transforms';
 
-  return `<span style="display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-left: 6px; vertical-align: middle;">${transforms.map((protocol) => `<span title="${titlePrefix}: ${getProtocolTransformBadgeLabel(protocol)}" style="display: inline-flex; align-items: center; background: #fff7ed; color: #9a3412; padding: 2px 6px; border-radius: 999px; font-size: 0.68rem; font-weight: 600; border: 1px dashed #fdba74; line-height: 1;">${getProtocolTransformBadgeLabel(protocol)}</span>`).join('')}</span>`;
+  const protocolBadgeStyle = buildInlineNameBadgeStyle({
+    background: '#fff7ed',
+    color: '#9a3412',
+    borderColor: '#fdba74',
+    borderStyle: 'dashed'
+  });
+
+  return `<span style="display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-left: 6px; vertical-align: middle;">${transforms.map((protocol) => `<span title="${titlePrefix}: ${getProtocolTransformBadgeLabel(protocol)}" style="${protocolBadgeStyle}">${getProtocolTransformBadgeLabel(protocol)}</span>`).join('')}</span>`;
 }
 
 /**
