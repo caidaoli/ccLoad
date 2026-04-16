@@ -63,7 +63,7 @@ func prependToBody(resp *http.Response, prefix []byte) {
 // 从proxy.go提取，遵循SRP原则
 func (s *Server) buildProxyRequest(
 	reqCtx *requestContext,
-	_ *model.Config,
+	cfg *model.Config,
 	apiKey string,
 	method string,
 	body []byte,
@@ -85,6 +85,12 @@ func (s *Server) buildProxyRequest(
 
 	// 4. 注入认证头
 	injectAPIKeyHeaders(req, apiKey, requestPath)
+
+	// 5. anyrouter渠道：确保anthropic-beta包含context-1m
+	if cfg.GetChannelType() == util.ChannelTypeAnthropic &&
+		strings.Contains(strings.ToLower(cfg.Name), "anyrouter") {
+		injectAnthropicBetaFlag(req, "context-1m-2025-08-07")
+	}
 
 	return req, nil
 }

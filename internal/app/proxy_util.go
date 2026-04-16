@@ -311,6 +311,19 @@ func injectAPIKeyHeaders(req *http.Request, apiKey string, requestPath string) {
 	}
 }
 
+// injectAnthropicBetaFlag 确保 anthropic-beta 头包含指定 flag
+func injectAnthropicBetaFlag(req *http.Request, flag string) {
+	existing := req.Header.Get("anthropic-beta")
+	if existing == "" {
+		req.Header.Set("anthropic-beta", flag)
+		return
+	}
+	if strings.Contains(existing, flag) {
+		return
+	}
+	req.Header.Set("anthropic-beta", existing+","+flag)
+}
+
 // filterAndWriteResponseHeaders 过滤并写回响应头（DRY）
 // Go Transport 仅自动解压 gzip（当 DisableCompression=false 且请求无 Accept-Encoding 时）
 // 对于 br/deflate 等其他编码，必须保留 Content-Encoding 让客户端自行解压

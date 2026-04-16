@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"ccLoad/internal/model"
 )
 
 func TestProxy_Success_Streaming_GeminiToAnthropicTransform(t *testing.T) {
@@ -45,6 +47,7 @@ func TestProxy_Success_Streaming_GeminiToAnthropicTransform(t *testing.T) {
 	}
 	cfg := configs[0]
 	cfg.ProtocolTransforms = []string{"gemini"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
@@ -107,6 +110,7 @@ func TestProxy_Success_Streaming_GeminiToCodexTransform(t *testing.T) {
 	}
 	cfg := configs[0]
 	cfg.ProtocolTransforms = []string{"gemini"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}

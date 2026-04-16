@@ -214,6 +214,7 @@ func TestProxy_Success_NonStreaming_OpenAIToGeminiTransform(t *testing.T) {
 	}
 	cfg := configs[0]
 	cfg.ProtocolTransforms = []string{"openai"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
@@ -279,6 +280,7 @@ func TestProxy_Success_NonStreaming_AnthropicToGeminiTransform(t *testing.T) {
 	}
 	cfg := configs[0]
 	cfg.ProtocolTransforms = []string{"anthropic"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
@@ -348,6 +350,7 @@ func TestProxy_Success_NonStreaming_CodexToGeminiTransform(t *testing.T) {
 	}
 	cfg := configs[0]
 	cfg.ProtocolTransforms = []string{"codex"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
@@ -468,6 +471,7 @@ func TestProxy_Success_Streaming_OpenAIToGeminiTransform(t *testing.T) {
 	}
 	cfg := configs[0]
 	cfg.ProtocolTransforms = []string{"openai"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
@@ -531,6 +535,7 @@ func TestProxy_Success_Streaming_AnthropicToGeminiTransform(t *testing.T) {
 	}
 	cfg := configs[0]
 	cfg.ProtocolTransforms = []string{"anthropic"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
@@ -594,6 +599,7 @@ func TestProxy_Success_Streaming_CodexToGeminiTransform(t *testing.T) {
 	}
 	cfg := configs[0]
 	cfg.ProtocolTransforms = []string{"codex"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
@@ -657,6 +663,7 @@ func TestProxy_Success_NonStreaming_OpenAIToAnthropicTransform(t *testing.T) {
 	}
 	cfg := configs[0]
 	cfg.ProtocolTransforms = []string{"openai"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
@@ -822,6 +829,7 @@ func TestProxy_Success_Streaming_OpenAIToAnthropicTransform(t *testing.T) {
 	}
 	cfg := configs[0]
 	cfg.ProtocolTransforms = []string{"openai"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
@@ -878,6 +886,7 @@ func TestProxy_Success_NonStreaming_CodexToAnthropicTransform(t *testing.T) {
 	}
 	cfg := configs[0]
 	cfg.ProtocolTransforms = []string{"codex"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
@@ -947,6 +956,7 @@ func TestProxy_Success_NonStreaming_CodexBareMessageToAnthropicTransform(t *test
 	}
 	cfg := configs[0]
 	cfg.ProtocolTransforms = []string{"codex"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
@@ -1002,6 +1012,7 @@ func TestProxy_Success_Streaming_CodexToAnthropicTransform(t *testing.T) {
 	}
 	cfg := configs[0]
 	cfg.ProtocolTransforms = []string{"codex"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
@@ -1065,6 +1076,7 @@ func TestProxy_Success_NonStreaming_OpenAIToCodexTransform(t *testing.T) {
 	}
 	cfg := configs[0]
 	cfg.ProtocolTransforms = []string{"openai"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
@@ -1126,6 +1138,7 @@ func TestProxy_Success_Streaming_OpenAIToCodexTransform(t *testing.T) {
 	}
 	cfg := configs[0]
 	cfg.ProtocolTransforms = []string{"openai"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
@@ -1179,6 +1192,7 @@ func TestProxy_Success_NonStreaming_CodexToOpenAITransform(t *testing.T) {
 	}
 	cfg := configs[0]
 	cfg.ProtocolTransforms = []string{"codex"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
@@ -1245,6 +1259,7 @@ func TestProxy_Success_Streaming_CodexToOpenAITransform(t *testing.T) {
 	}
 	cfg := configs[0]
 	cfg.ProtocolTransforms = []string{"codex"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
@@ -1287,6 +1302,7 @@ func TestProxy_GeminiTransform_UsesResolvedActualModelInUpstreamPath(t *testing.
 	}
 	cfg := configs[0]
 	cfg.ProtocolTransforms = []string{"openai"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	cfg.ModelEntries = []model.ModelEntry{{
 		Model:         "alias-model",
 		RedirectModel: "gemini-2.5-pro",
@@ -1358,6 +1374,7 @@ func TestProxy_Success_Streaming_OpenAIToGeminiTransform_TextPlainSSE(t *testing
 	}
 	cfg := configs[0]
 	cfg.ProtocolTransforms = []string{"openai"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
@@ -1405,6 +1422,7 @@ func TestProxy_StructuredOpenAIImageTransformHitsUpstream(t *testing.T) {
 	}
 	cfg := configs[0]
 	cfg.ProtocolTransforms = []string{"openai"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
@@ -1456,6 +1474,7 @@ func TestProxy_StructuredAnthropicBlocksTransformHitsUpstream(t *testing.T) {
 	}
 	cfg := configs[0]
 	cfg.ProtocolTransforms = []string{"anthropic"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
@@ -1507,6 +1526,7 @@ func TestProxy_StructuredCodexFunctionFamilyTransformHitsUpstream(t *testing.T) 
 	}
 	cfg := configs[0]
 	cfg.ProtocolTransforms = []string{"codex"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
@@ -1553,6 +1573,7 @@ func TestProxy_UnsupportedStructuredTransformRequestReturns400(t *testing.T) {
 	}
 	cfg := configs[0]
 	cfg.ProtocolTransforms = []string{"openai"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
@@ -1598,6 +1619,7 @@ func TestProxy_UnsupportedStructuredAnthropicTransformRequestReturns400(t *testi
 	}
 	cfg := configs[0]
 	cfg.ProtocolTransforms = []string{"anthropic"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
@@ -1643,6 +1665,7 @@ func TestProxy_UnsupportedStructuredCodexTransformRequestReturns400(t *testing.T
 	}
 	cfg := configs[0]
 	cfg.ProtocolTransforms = []string{"codex"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
