@@ -3234,6 +3234,20 @@ body {
   font-style: italic;
 }
 
+.upstream-token--sse-field {
+  color: var(--primary-600);
+  font-weight: 600;
+}
+
+.upstream-token--sse-event-name {
+  color: var(--info-600);
+}
+
+.upstream-token--sse-comment {
+  color: var(--neutral-400);
+  font-style: italic;
+}
+
 .upstream-pre--tall {
   max-height: none;
   flex: 1;
