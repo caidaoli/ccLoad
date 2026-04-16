@@ -628,7 +628,7 @@ func (s *Server) testChannelAPIWithURL(
 		}
 	}
 	result["upstream_request_url"] = requestPlan.fullURL
-	result["upstream_request_headers"] = reqHeaders
+	result["upstream_request_headers"] = maskSensitiveHeaderMap(reqHeaders)
 	result["upstream_request_body"] = string(requestPlan.requestBody)
 
 	parseNonStreamResponse := func(bodyBytes []byte) map[string]any {

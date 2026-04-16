@@ -1444,6 +1444,27 @@
     });
   }
 
+  const SENSITIVE_HEADER_RE = /^(authorization|x-api-key|api-key|x-goog-api-key|proxy-authorization)$/i;
+
+  function maskHeaderValue(v) {
+    if (typeof v !== 'string' || v.length <= 8) return '******';
+    return v.slice(0, 4) + '******' + v.slice(-4);
+  }
+
+  function maskSensitiveHeaders(headers) {
+    if (!headers || typeof headers !== 'object') return headers;
+    const out = {};
+    for (const [key, value] of Object.entries(headers)) {
+      if (SENSITIVE_HEADER_RE.test(key)) {
+        out[key] = Array.isArray(value) ? value.map(maskHeaderValue) : maskHeaderValue(value);
+      } else {
+        out[key] = value;
+      }
+    }
+    return out;
+  }
+
+  window.maskSensitiveHeaders = maskSensitiveHeaders;
   window.copyToClipboard = copyToClipboard;
   window.renderUpstreamCodeBlock = renderUpstreamCodeBlock;
   window.setHighlightedCodeContent = setHighlightedCodeContent;
