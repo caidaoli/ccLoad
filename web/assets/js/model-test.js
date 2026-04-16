@@ -1802,6 +1802,7 @@ function tryFormatJSON(str) {
 
 function formatHeaderLines(headers) {
   if (!headers || typeof headers !== 'object') return '';
+  headers = window.maskSensitiveHeaders(headers);
   const lines = [];
   for (const [key, value] of Object.entries(headers)) {
     if (Array.isArray(value)) {

@@ -235,12 +235,15 @@ func (s *LogService) StartCleanupLoop() {
 func (s *LogService) cleanupOldLogsLoop() {
 	defer s.wg.Done()
 
-	ticker := time.NewTicker(config.LogCleanupInterval)
-	defer ticker.Stop()
+	logTicker := time.NewTicker(config.LogCleanupInterval)
+	defer logTicker.Stop()
+
+	debugTicker := time.NewTicker(config.DebugLogCleanupInterval)
+	defer debugTicker.Stop()
 
 	for {
 		select {
-		case <-ticker.C:
+		case <-logTicker.C:
 			// 使用带超时的context，避免日志清理阻塞关闭流程。
 			// [FIX] P0-4: WithTimeout 的 cancel 必须在每次循环内执行，不能在循环里 defer 到 goroutine 退出。
 			func() {
@@ -248,23 +251,28 @@ func (s *LogService) cleanupOldLogsLoop() {
 				defer cancel()
 
 				cutoff := time.Now().AddDate(0, 0, -s.retentionDays)
-
-				// 通过Store接口清理旧日志，忽略错误（非关键操作）
 				_ = s.store.CleanupLogsBefore(ctx, cutoff)
+			}()
 
-				// 清理过期的 debug 日志（保留时长从设置中读取，默认5分钟）
+		case <-debugTicker.C:
+			func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+
 				debugRetentionMinutes := 5
 				if setting, err := s.store.GetSetting(ctx, "debug_log_retention_minutes"); err == nil && setting != nil {
 					if v, err := strconv.Atoi(setting.Value); err == nil && v > 0 {
 						debugRetentionMinutes = v
 					}
 				}
+				// 清理周期跟随保留时长动态调整
+				debugTicker.Reset(time.Duration(debugRetentionMinutes) * time.Minute)
+
 				debugCutoff := time.Now().Add(-time.Duration(debugRetentionMinutes) * time.Minute)
 				_ = s.store.CleanupDebugLogsBefore(ctx, debugCutoff)
 			}()
 
 		case <-s.shutdownCh:
-			// 收到关闭信号，直接退出（不执行最后一次清理）
 			return
 		}
 	}

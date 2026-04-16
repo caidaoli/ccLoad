@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"unicode/utf8"
@@ -11,6 +12,37 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// maskSensitiveHeaderJSON 对 JSON string 格式的 headers 做脱敏
+func maskSensitiveHeaderJSON(jsonStr string) string {
+	if jsonStr == "" {
+		return jsonStr
+	}
+	var headers map[string]any
+	if err := json.Unmarshal([]byte(jsonStr), &headers); err != nil {
+		return jsonStr
+	}
+	for k, v := range headers {
+		if !isSensitiveHeader(k) {
+			continue
+		}
+		switch val := v.(type) {
+		case string:
+			headers[k] = maskHeaderValue(val)
+		case []any:
+			for i, item := range val {
+				if s, ok := item.(string); ok {
+					val[i] = maskHeaderValue(s)
+				}
+			}
+		}
+	}
+	out, err := json.Marshal(headers)
+	if err != nil {
+		return jsonStr
+	}
+	return string(out)
+}
 
 type debugLogUnavailableInfo struct {
 	Reason                   string               `json:"reason"`
@@ -60,9 +92,9 @@ func (s *Server) HandleGetDebugLog(c *gin.Context) {
 		"created_at":   entry.CreatedAt,
 		"req_method":   entry.ReqMethod,
 		"req_url":      entry.ReqURL,
-		"req_headers":  entry.ReqHeaders,
+		"req_headers":  maskSensitiveHeaderJSON(entry.ReqHeaders),
 		"resp_status":  entry.RespStatus,
-		"resp_headers": entry.RespHeaders,
+		"resp_headers": maskSensitiveHeaderJSON(entry.RespHeaders),
 	}
 
 	if utf8.Valid(entry.ReqBody) {

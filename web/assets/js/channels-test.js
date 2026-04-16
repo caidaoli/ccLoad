@@ -401,10 +401,10 @@ function showUpstreamDetailModal() {
   if (!data) return;
 
   window.setHighlightedCodeContent('upstreamReqUrl', data.url || '', 'url');
-  window.setHighlightedCodeContent('upstreamReqHeaders', data.requestHeaders ? JSON.stringify(data.requestHeaders, null, 2) : '', 'json');
+  window.setHighlightedCodeContent('upstreamReqHeaders', data.requestHeaders ? JSON.stringify(window.maskSensitiveHeaders(data.requestHeaders), null, 2) : '', 'json');
   window.setHighlightedCodeContent('upstreamReqBody', tryFormatJSON(data.requestBody), 'json');
   window.setHighlightedCodeContent('upstreamRespStatus', data.statusCode != null ? String(data.statusCode) : '', 'status');
-  window.setHighlightedCodeContent('upstreamRespHeaders', data.responseHeaders ? JSON.stringify(data.responseHeaders, null, 2) : '', 'json');
+  window.setHighlightedCodeContent('upstreamRespHeaders', data.responseHeaders ? JSON.stringify(window.maskSensitiveHeaders(data.responseHeaders), null, 2) : '', 'json');
   window.setHighlightedCodeContent('upstreamRespBody', tryFormatJSON(data.responseBody), 'json');
 
   // 重置到 Request tab
