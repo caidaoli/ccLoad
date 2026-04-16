@@ -3,7 +3,7 @@
 **English | [简体中文](README.md)**
 
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8.svg)](https://golang.org)
-[![Gin](https://img.shields.io/badge/Gin-v1.10+-blue.svg)](https://github.com/gin-gonic/gin)
+[![Gin](https://img.shields.io/badge/Gin-v1.11+-blue.svg)](https://github.com/gin-gonic/gin)
 [![Docker](https://img.shields.io/badge/Docker-Supported-2496ED.svg)](https://hub.docker.com)
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-yellow)](https://huggingface.co/spaces)
 [![GitHub Actions](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-2088FF.svg)](https://github.com/features/actions)
@@ -58,6 +58,8 @@ ccLoad solves these pain points through:
 - 🌐 **Multi-URL Load Balancing** - Multiple URLs per channel with latency-weighted random selection
 - 💵 **service_tier Pricing** - OpenAI priority/flex/default tier multipliers for accurate cost accounting
 - 📉 **Tiered Pricing** - GPT-5.4/Qwen-Plus/Gemini long-context step pricing, auto-applies lower rate at token thresholds
+- 🔄 **Protocol Transform** - Anthropic/OpenAI/Gemini/Codex cross-protocol conversion, one channel serves multiple client protocols
+- 🔍 **Debug Logs** - Upstream request/response raw data capture with sensitive header masking, essential for troubleshooting
 
 ## 🏗️ Architecture Overview
 
@@ -371,7 +373,7 @@ git push
 **Version Pinning** (Optional):
 To lock specific version, modify Dockerfile:
 ```dockerfile
-FROM ghcr.io/caidaoli/ccload:v1.85.4  # Specify version
+FROM ghcr.io/caidaoli/ccload:v1.96.1  # Specify version
 ENV TZ=Asia/Shanghai
 ENV PORT=7860
 ENV SQLITE_PATH=/tmp/ccload.db
@@ -644,6 +646,7 @@ Check out the awesome admin dashboard 👇
   - `proxy_stream.go`: Streaming responses, first byte detection
   - `proxy_gemini.go`: Gemini API special handling
   - `proxy_sse_parser.go`: SSE parser (defensive handling, Gemini/OpenAI cache token parsing)
+  - `proxy_debug.go`: Upstream request/response debug capture (with sensitive header masking)
 - **Admin Module Split** (SRP):
   - `admin_channels.go`: Channel CRUD
   - `admin_stats.go`: Stats analysis API
@@ -653,7 +656,14 @@ Check out the awesome admin dashboard 👇
   - `admin_auth_tokens.go`: API access token CRUD (with token stats, cost limits, model restrictions)
   - `admin_settings.go`: System settings management
   - `admin_models.go`: Model list management
-  - `admin_testing.go`: Channel testing
+  - `admin_testing.go`: Channel testing (with protocol transform testing)
+  - `admin_debug_log.go`: Debug log API (sensitive header masking + base64 binary encoding)
+- **Protocol Transform System** (2026-04 new):
+  - `protocol/types.go`: Four protocol definitions (Anthropic/OpenAI/Gemini/Codex)
+  - `protocol/registry.go`: Request/response transformer registry
+  - `protocol/builtin/`: 18 built-in transform implementations (streaming and non-streaming)
+  - Two modes: `upstream` (default, handled natively by upstream) / `local` (local translation)
+  - Channel config: `ProtocolTransformMode` + `ProtocolTransforms`
 - **Cooldown Manager** (DRY):
   - `cooldown/manager.go`: Unified cooldown decision engine
   - Eliminates duplicate code, unified cooldown logic
@@ -814,8 +824,8 @@ Project supports multi-arch Docker images:
 - **Image Registry**: `ghcr.io/caidaoli/ccload`
 - **Available Tags**:
   - `latest` - Latest stable version
-  - `v1.85.4` - Specific version number
-  - `v1.85` - Major.minor version
+  - `v1.96.1` - Specific version number
+  - `v1.96` - Major.minor version
   - `v1` - Major version
 
 ### Image Tag Guide
@@ -825,7 +835,7 @@ Project supports multi-arch Docker images:
 docker pull ghcr.io/caidaoli/ccload:latest
 
 # Pull specific version
-docker pull ghcr.io/caidaoli/ccload:v1.85.4
+docker pull ghcr.io/caidaoli/ccload:v1.96.1
 
 # Specify architecture (Docker usually auto-selects)
 docker pull --platform linux/amd64 ghcr.io/caidaoli/ccload:latest
@@ -865,15 +875,16 @@ storage/
 - Not set → Uses SQLite (default)
 
 **Core Table Structure** (SQLite and MySQL shared):
-- `channels` - Channel config (cooldown data inline, UNIQUE constraint on name)
+- `channels` - Channel config (cooldown data inline, UNIQUE constraint on name, with protocol transform config)
 - `api_keys` - API keys (key-level cooldown inline, multi-key strategies)
 - `logs` - Request logs (with base_url upstream URL tracking)
+- `debug_logs` - Debug logs (upstream request/response raw data, independent cleanup policy)
 - `key_rr` - Round-robin pointers (channel_id → idx)
 - `auth_tokens` - Auth tokens (with cost limits, model restrictions, first byte time tracking)
 - `admin_sessions` - Admin sessions
 - `system_settings` - System config (hot reload support)
 
-**Architecture Features** (✅ 2025-12 through 2026-03 continuous improvements):
+**Architecture Features** (✅ 2025-12 through 2026-04 continuous improvements):
 - ✅ **Unified SQL Layer** (refactor): SQLite/MySQL share `storage/sql/` implementation, eliminated 467 lines of duplicate code
 - ✅ **Unified Schema Definition** (new): `storage/schema/` defines table structures, supports database differences
 - ✅ Factory pattern unified interface (OCP, easy to extend new storage)
@@ -887,6 +898,8 @@ storage/
 - ✅ **service_tier cost tracking**: Logs persist service_tier field, cost column shows tier label
 - ✅ **Tiered pricing engine**: GPT-5.4/Qwen-Plus/Gemini long-context step billing
 - ✅ **Log UX improvements**: Cost column formats to 3 decimal places (empty for zero), IP column shows full address on hover
+- ✅ **Protocol transform system**: Anthropic/OpenAI/Gemini/Codex four-protocol cross-conversion, upstream/local modes
+- ✅ **Debug logs**: Upstream request/response raw data capture, sensitive header masking, independent cleanup policy
 
 **Backward Compatible Migration**:
 - Auto-detects and fixes duplicate channel names
