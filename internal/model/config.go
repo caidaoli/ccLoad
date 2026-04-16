@@ -20,10 +20,10 @@ const (
 // NormalizeProtocolTransformMode normalizes admin or persisted values and returns an empty string for invalid modes.
 func NormalizeProtocolTransformMode(value string) string {
 	switch strings.TrimSpace(strings.ToLower(value)) {
-	case "", ProtocolTransformModeLocal:
-		return ProtocolTransformModeLocal
-	case ProtocolTransformModeUpstream:
+	case "", ProtocolTransformModeUpstream:
 		return ProtocolTransformModeUpstream
+	case ProtocolTransformModeLocal:
+		return ProtocolTransformModeLocal
 	default:
 		return ""
 	}
@@ -124,11 +124,11 @@ func (c *Config) GetProtocolTransforms() []string {
 	return transforms
 }
 
-// GetProtocolTransformMode returns the normalized transform mode and defaults legacy rows to local mode.
+// GetProtocolTransformMode returns the normalized transform mode and defaults to upstream mode.
 func (c *Config) GetProtocolTransformMode() string {
 	mode := NormalizeProtocolTransformMode(c.ProtocolTransformMode)
 	if mode == "" {
-		return ProtocolTransformModeLocal
+		return ProtocolTransformModeUpstream
 	}
 	return mode
 }

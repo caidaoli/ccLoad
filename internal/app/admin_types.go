@@ -205,7 +205,7 @@ func validateProtocolTransforms(channelType string, protocolTransformMode string
 	base := protocol.Protocol(util.NormalizeChannelType(channelType))
 	mode := model.NormalizeProtocolTransformMode(protocolTransformMode)
 	if mode == "" {
-		mode = model.ProtocolTransformModeLocal
+		mode = model.ProtocolTransformModeUpstream
 	}
 	seen := make(map[string]int, len(transforms))
 	for i, rawProtocol := range transforms {
@@ -236,7 +236,7 @@ func normalizeProtocolTransforms(channelType string, protocolTransformMode strin
 	base := protocol.Protocol(util.NormalizeChannelType(channelType))
 	mode := model.NormalizeProtocolTransformMode(protocolTransformMode)
 	if mode == "" {
-		mode = model.ProtocolTransformModeLocal
+		mode = model.ProtocolTransformModeUpstream
 	}
 	seen := make(map[string]struct{}, len(transforms))
 	normalized := make([]string, 0, len(transforms))

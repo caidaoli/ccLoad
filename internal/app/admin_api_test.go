@@ -227,7 +227,7 @@ Import-Test-2,https://import2.example.com,5,"test-model-2,test-model-3","{""old"
 		if cfg.Name == "Import-Test-2" && (len(cfg.ProtocolTransforms) != 2 || cfg.ProtocolTransforms[0] != "anthropic" || cfg.ProtocolTransforms[1] != "openai") {
 			t.Errorf("渠道 %s protocol_transforms = %#v", cfg.Name, cfg.ProtocolTransforms)
 		}
-		if cfg.GetProtocolTransformMode() != model.ProtocolTransformModeLocal {
+		if cfg.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream {
 			t.Errorf("渠道 %s protocol_transform_mode = %q", cfg.Name, cfg.GetProtocolTransformMode())
 		}
 	}

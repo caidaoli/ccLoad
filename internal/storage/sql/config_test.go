@@ -526,8 +526,8 @@ func TestConfig_GetConfig_EmitsDefaultProtocolTransformMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal config: %v", err)
 	}
-	if !strings.Contains(string(body), `"protocol_transform_mode":"local"`) {
-		t.Fatalf("期望默认输出 protocol_transform_mode=local，实际 JSON: %s", body)
+	if !strings.Contains(string(body), `"protocol_transform_mode":"upstream"`) {
+		t.Fatalf("期望默认输出 protocol_transform_mode=upstream，实际 JSON: %s", body)
 	}
 }
 
