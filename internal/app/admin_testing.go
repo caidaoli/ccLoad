@@ -149,7 +149,7 @@ func (s *Server) buildChannelTestRequestPlan(
 	testReq *testutil.TestChannelRequest,
 	clientProtocol string,
 ) (*channelTestRequestPlan, error) {
-	upstreamProtocol := cfgForBuild.GetChannelType()
+	upstreamProtocol := cfgForBuild.ResolveUpstreamProtocol(clientProtocol)
 	clientTester := newChannelTester(clientProtocol)
 
 	fullURL, headers, body, err := clientTester.Build(cfgForBuild, apiKey, testReq)
@@ -501,10 +501,11 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 	}
 
 	clientProtocol := resolveClientProtocol(cfg, testReq)
-	if !supportsRuntimeTestProtocol(clientProtocol, cfg.GetChannelType()) {
+	upstreamProto := cfg.ResolveUpstreamProtocol(clientProtocol)
+	if !supportsRuntimeTestProtocol(clientProtocol, upstreamProto) {
 		return map[string]any{
 			"success": false,
-			"error":   fmt.Sprintf("不支持协议转换 %s -> %s", clientProtocol, cfg.GetChannelType()),
+			"error":   fmt.Sprintf("不支持协议转换 %s -> %s", clientProtocol, upstreamProto),
 		}
 	}
 
@@ -564,11 +565,13 @@ func (s *Server) testChannelAPIWithURL(
 ) map[string]any {
 	// 仅构造测试请求必需字段，避免复制带锁 Config 结构体。
 	cfgForBuild := &model.Config{
-		ID:           cfg.ID,
-		Name:         cfg.Name,
-		ChannelType:  cfg.ChannelType,
-		URL:          selectedURL,
-		ModelEntries: append([]model.ModelEntry(nil), cfg.ModelEntries...),
+		ID:                    cfg.ID,
+		Name:                  cfg.Name,
+		ChannelType:           cfg.ChannelType,
+		ProtocolTransformMode: cfg.ProtocolTransformMode,
+		ProtocolTransforms:    cfg.ProtocolTransforms,
+		URL:                   selectedURL,
+		ModelEntries:          append([]model.ModelEntry(nil), cfg.ModelEntries...),
 	}
 
 	requestPlan, err := s.buildChannelTestRequestPlan(cfgForBuild, apiKey, testReq, clientProtocol)
@@ -637,7 +640,7 @@ func (s *Server) testChannelAPIWithURL(
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			parseBody := bodyBytes
-			if requestPlan.clientProtocol != requestPlan.upstreamProtocol {
+			if requestPlan.clientProtocol != requestPlan.upstreamProtocol && len(bodyBytes) > 0 {
 				translatedBody, translateErr := s.protocolRegistry.TranslateResponseNonStream(
 					ctx,
 					protocol.Protocol(requestPlan.upstreamProtocol),
