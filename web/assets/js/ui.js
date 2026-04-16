@@ -1312,6 +1312,31 @@
     }
   }
 
+  function looksLikeSSE(text) {
+    let hits = 0;
+    for (const line of text.split('\n')) {
+      if (/^(event|data|id|retry):/.test(line) && ++hits >= 2) return true;
+    }
+    return false;
+  }
+
+  function renderSSELine(line) {
+    const fieldMatch = line.match(/^(event|data|id|retry)(:)(.*)/);
+    if (fieldMatch) {
+      const [, field, colon, value] = fieldMatch;
+      const renderedField = wrapHighlightedToken(field + colon, 'sse-field');
+      if (field === 'event') return renderedField + wrapHighlightedToken(value, 'sse-event-name');
+      if (field === 'data' && value.trim()) {
+        const trimmed = value.trim();
+        const jsonLike = (trimmed[0] === '{' || trimmed[0] === '[');
+        if (jsonLike) return renderedField + renderJsonLine(value);
+      }
+      return renderedField + escapeCodeHtml(value);
+    }
+    if (line.startsWith(':')) return wrapHighlightedToken(line, 'sse-comment');
+    return escapeCodeHtml(line);
+  }
+
   function renderCodeLines(lines) {
     return lines.map(line => `<span class="code-line">${line || ''}</span>`).join('');
   }
@@ -1334,7 +1359,9 @@
       renderedLines.push('');
       const bodyLines = lines.slice(separatorIndex + 1);
       const bodyText = bodyLines.join('\n');
-      const renderBodyLine = looksLikeJSONBlock(bodyText) ? renderJsonLine : escapeCodeHtml;
+      const renderBodyLine = looksLikeJSONBlock(bodyText) ? renderJsonLine
+        : looksLikeSSE(bodyText) ? renderSSELine
+        : escapeCodeHtml;
       bodyLines.forEach(line => renderedLines.push(renderBodyLine(line)));
     }
 

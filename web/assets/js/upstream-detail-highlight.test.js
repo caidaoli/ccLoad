@@ -100,4 +100,32 @@ test('共享样式为上游详情 token 提供颜色类', () => {
   assert.match(sharedCss, /\.upstream-token--json-number\s*\{/);
   assert.match(sharedCss, /\.upstream-token--json-boolean\s*\{/);
   assert.match(sharedCss, /\.upstream-token--json-null\s*\{/);
+  assert.match(sharedCss, /\.upstream-token--sse-field\s*\{/);
+  assert.match(sharedCss, /\.upstream-token--sse-event-name\s*\{/);
+  assert.match(sharedCss, /\.upstream-token--sse-comment\s*\{/);
+});
+
+test('ui.js 高亮 SSE 响应体中的事件名与 JSON 数据', () => {
+  const window = loadSharedHelpers();
+
+  const html = window.renderUpstreamCodeBlock(
+    [
+      'HTTP 200',
+      'Content-Type: text/event-stream;charset=UTF-8',
+      '',
+      'event:response.created',
+      'data:{"type":"response.created","id":"resp_001"}',
+      '',
+      ':keep-alive',
+      'data:[DONE]'
+    ].join('\n'),
+    'response'
+  );
+
+  assert.match(html, /upstream-token--status-success/);
+  assert.match(html, /upstream-token--sse-field/);
+  assert.match(html, /upstream-token--sse-event-name/);
+  assert.match(html, /upstream-token--json-key/);
+  assert.match(html, /upstream-token--json-string/);
+  assert.match(html, /upstream-token--sse-comment/);
 });
