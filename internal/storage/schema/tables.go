@@ -8,6 +8,7 @@ func DefineChannelsTable() *TableBuilder {
 		Column("url TEXT NOT NULL").
 		Column("priority INT NOT NULL DEFAULT 0").
 		Column("channel_type VARCHAR(64) NOT NULL DEFAULT 'anthropic'").
+		Column("protocol_transform_mode VARCHAR(32) NOT NULL DEFAULT 'local'").
 		Column("enabled TINYINT NOT NULL DEFAULT 1").
 		Column("scheduled_check_enabled TINYINT NOT NULL DEFAULT 0").
 		Column("scheduled_check_model VARCHAR(191) NOT NULL DEFAULT ''").
@@ -50,6 +51,16 @@ func DefineChannelModelsTable() *TableBuilder {
 		Column("PRIMARY KEY (channel_id, model)").
 		Column("FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE").
 		Index("idx_channel_models_model", "model")
+}
+
+// DefineChannelProtocolTransformsTable 定义渠道协议转换表结构
+func DefineChannelProtocolTransformsTable() *TableBuilder {
+	return NewTable("channel_protocol_transforms").
+		Column("channel_id INT NOT NULL").
+		Column("protocol VARCHAR(64) NOT NULL").
+		Column("PRIMARY KEY (channel_id, protocol)").
+		Column("FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE").
+		Index("idx_channel_protocol_transforms_protocol", "protocol")
 }
 
 // DefineAuthTokensTable 定义auth_tokens表结构
@@ -140,4 +151,21 @@ func DefineLogsTable() *TableBuilder {
 		Index("idx_logs_minute_channel_model", "minute_bucket, channel_id, model").
 		Index("idx_logs_time_auth_token", "time, auth_token_id"). // 按时间+令牌查询
 		Index("idx_logs_time_actual_model", "time, actual_model") // 按时间+实际模型查询
+}
+
+// DefineDebugLogsTable 定义debug_logs表结构（上游请求/响应原始数据）
+func DefineDebugLogsTable() *TableBuilder {
+	return NewTable("debug_logs").
+		Column("id INT PRIMARY KEY AUTO_INCREMENT").
+		Column("log_id BIGINT NOT NULL DEFAULT 0").
+		Column("created_at BIGINT NOT NULL").
+		Column("req_method VARCHAR(10) NOT NULL DEFAULT ''").
+		Column("req_url TEXT NOT NULL").
+		Column("req_headers TEXT NOT NULL").
+		Column("req_body LONGBLOB NOT NULL").
+		Column("resp_status INT NOT NULL DEFAULT 0").
+		Column("resp_headers TEXT NOT NULL").
+		Column("resp_body LONGBLOB NOT NULL").
+		Index("idx_debug_logs_log_id", "log_id").
+		Index("idx_debug_logs_created_at", "created_at")
 }

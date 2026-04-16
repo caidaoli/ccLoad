@@ -244,6 +244,14 @@ func (h *HybridStore) GetEnabledChannelsByType(ctx context.Context, channelType 
 	return h.sqlite.GetEnabledChannelsByType(ctx, channelType)
 }
 
+func (h *HybridStore) GetEnabledChannelsByExposedProtocol(ctx context.Context, protocol string) ([]*model.Config, error) {
+	return h.sqlite.GetEnabledChannelsByExposedProtocol(ctx, protocol)
+}
+
+func (h *HybridStore) GetEnabledChannelsByModelAndProtocol(ctx context.Context, modelName, protocol string) ([]*model.Config, error) {
+	return h.sqlite.GetEnabledChannelsByModelAndProtocol(ctx, modelName, protocol)
+}
+
 func (h *HybridStore) BatchUpdatePriority(ctx context.Context, updates []struct {
 	ID       int64
 	Priority int
@@ -686,6 +694,30 @@ func (h *HybridStore) Ping(ctx context.Context) error {
 // SyncQueueLen 返回当前同步队列中待处理的任务数量（用于监控）
 func (h *HybridStore) SyncQueueLen() int {
 	return len(h.syncCh)
+}
+
+// === Debug Log Management (SQLite only, no MySQL sync) ===
+
+func (h *HybridStore) AddDebugLog(ctx context.Context, e *model.DebugLogEntry) error {
+	return h.sqlite.AddDebugLog(ctx, e)
+}
+
+func (h *HybridStore) GetDebugLogByLogID(ctx context.Context, logID int64) (*model.DebugLogEntry, error) {
+	return h.sqlite.GetDebugLogByLogID(ctx, logID)
+}
+
+func (h *HybridStore) CleanupDebugLogsBefore(ctx context.Context, cutoff time.Time) error {
+	if err := h.sqlite.CleanupDebugLogsBefore(ctx, cutoff); err != nil {
+		return err
+	}
+	return h.mysql.CleanupDebugLogsBefore(ctx, cutoff)
+}
+
+func (h *HybridStore) TruncateDebugLogs(ctx context.Context) error {
+	if err := h.sqlite.TruncateDebugLogs(ctx); err != nil {
+		return err
+	}
+	return h.mysql.TruncateDebugLogs(ctx)
 }
 
 func (h *HybridStore) Close() error {

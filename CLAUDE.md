@@ -183,20 +183,6 @@ web/               # 前端页面
 
 ## 开发指南
 
-### Serena MCP 工具
-
-Serena 优先于内置工具。按需获取，不读整文件。
-
-**读取**: `get_symbols_overview` → `find_symbol(include_body=True)`
-- 始终传 `relative_path` 限制范围
-- 符号名不确定时先 `search_for_pattern`
-
-**符号路径**: `Struct/Method` (Go), `/pkg/func` (绝对), `Method[0]` (重载)
-
-**编辑**:
-- 整函数/方法: `replace_symbol_body`
-- 几行代码: `Edit` 工具
-- 编辑前 `find_referencing_symbols` 检查影响
 
 ### Playwright MCP 工具策略
 

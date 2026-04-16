@@ -14,14 +14,28 @@ function buildPriorityRow(rowClass, valueClass, value) {
   return `<div class="ch-priority-row ${rowClass}"><span class="${valueClass}">${value}</span></div>`;
 }
 
+function buildPriorityStatusRow(content) {
+  if (!content) return '';
+  return `<div class="ch-priority-row ch-priority-row--status">${content}</div>`;
+}
+
+if (!window.ChannelProtocolConfig) {
+  throw new Error('ChannelProtocolConfig helper is required before channels-render.js');
+}
+
 function buildEffectivePriorityHtml(channel) {
   const basePriority = channel.priority;
   const priorityLabel = window.t('channels.table.priority');
   const healthLabel = window.t('channels.stats.healthScoreLabel');
+  const disabledBadge = inlineDisabledBadge(channel.enabled);
 
   if (channel.effective_priority === undefined || channel.effective_priority === null) {
     const title = `${priorityLabel}: ${basePriority}`;
-    return `<div class="ch-priority-stack" title="${title.replace(/"/g, '&quot;')}">${buildPriorityRow('ch-priority-base', 'ch-priority-value', basePriority)}</div>`;
+    const rows = [
+      buildPriorityRow('ch-priority-base', 'ch-priority-value', basePriority),
+      buildPriorityStatusRow(disabledBadge)
+    ].filter(Boolean);
+    return `<div class="ch-priority-stack" title="${title.replace(/"/g, '&quot;')}">${rows.join('')}</div>`;
   }
 
   const effPriority = formatHealthScoreDisplay(channel.effective_priority);
@@ -51,6 +65,10 @@ function buildEffectivePriorityHtml(channel) {
   const rows = [buildPriorityRow('ch-priority-base', baseValueClass, basePriority)];
   if (!isConsistent) {
     rows.push(buildPriorityRow('ch-priority-health', healthValueClass, effPriority));
+  }
+  const statusRow = buildPriorityStatusRow(disabledBadge);
+  if (statusRow) {
+    rows.push(statusRow);
   }
 
   return `<div class="ch-priority-stack" title="${title.replace(/"/g, '&quot;')}">${rows.join('')}</div>`;
@@ -112,6 +130,40 @@ function getChannelTypeConfig(channelType) {
 function buildChannelTypeBadge(channelType) {
   const config = getChannelTypeConfig(channelType);
   return `<span style="background: ${config.bgColor}; color: ${config.color}; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 700; border: 1px solid ${config.borderColor}; letter-spacing: 0.025em; text-transform: uppercase;">${config.text}</span>`;
+}
+
+function getProtocolTransformBadgeLabel(protocol) {
+  const labels = {
+    anthropic: ['channels.protocolTransformAnthropic', 'Anthropic'],
+    codex: ['channels.protocolTransformCodex', 'Codex'],
+    openai: ['channels.protocolTransformOpenAI', 'OpenAI'],
+    gemini: ['channels.protocolTransformGemini', 'Gemini']
+  };
+  const [translationKey, fallback] = labels[protocol] || [];
+  if (!translationKey) return protocol;
+  if (window.t) {
+    const translated = window.t(translationKey);
+    if (translated && translated !== translationKey) {
+      return translated;
+    }
+  }
+  return fallback;
+}
+
+function normalizeProtocolTransformsForDisplay(channelType, protocolTransforms) {
+  return window.ChannelProtocolConfig.normalizeProtocolTransformsForChannel(channelType, protocolTransforms);
+}
+
+function buildProtocolTransformBadges(channelType, protocolTransforms) {
+  const transforms = normalizeProtocolTransformsForDisplay(channelType, protocolTransforms);
+  if (transforms.length === 0) return '';
+
+  const translatedPrefix = window.t ? window.t('channels.modal.protocolTransforms') : '';
+  const titlePrefix = translatedPrefix && translatedPrefix !== 'channels.modal.protocolTransforms'
+    ? translatedPrefix
+    : 'Additional Protocol Transforms';
+
+  return `<span style="display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-left: 6px; vertical-align: middle;">${transforms.map((protocol) => `<span title="${titlePrefix}: ${getProtocolTransformBadgeLabel(protocol)}" style="display: inline-flex; align-items: center; background: #fff7ed; color: #9a3412; padding: 2px 6px; border-radius: 999px; font-size: 0.68rem; font-weight: 600; border: 1px dashed #fdba74; line-height: 1;">${getProtocolTransformBadgeLabel(protocol)}</span>`).join('')}</span>`;
 }
 
 /**
@@ -251,11 +303,12 @@ function createChannelCard(channel) {
     id: channel.id,
     name: channel.name,
     typeBadge: buildChannelTypeBadge(channelTypeRaw),
+    protocolTransformBadges: buildProtocolTransformBadges(channelTypeRaw, channel.protocol_transforms),
     url: channel.url,
     modelsText: modelsText,
     priority: channel.priority,
     effectivePriorityHtml: buildEffectivePriorityHtml(channel),
-    disabledBadge: inlineDisabledBadge(channel.enabled),
+    disabledBadge: '',
     cooldownBadge: inlineCooldownBadge(channel),
     durationHtml: durationHtml,
     usageHtml: usageHtml,

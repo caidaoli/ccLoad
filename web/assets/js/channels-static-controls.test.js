@@ -6,6 +6,7 @@ const path = require('node:path');
 const html = fs.readFileSync(path.join(__dirname, '..', '..', 'channels.html'), 'utf8');
 const sharedCss = fs.readFileSync(path.join(__dirname, '..', 'css', 'styles.css'), 'utf8');
 const channelsCss = fs.readFileSync(path.join(__dirname, '..', 'css', 'channels.css'), 'utf8');
+const uiScript = fs.readFileSync(path.join(__dirname, 'ui.js'), 'utf8');
 const initScript = fs.readFileSync(path.join(__dirname, 'channels-init.js'), 'utf8');
 const modalsScript = fs.readFileSync(path.join(__dirname, 'channels-modals.js'), 'utf8');
 
@@ -96,6 +97,18 @@ test('channels 页定时检测开关默认隐藏，由系统设置控制显示',
   assert.doesNotMatch(modalsScript, /const scheduledCheckModelDisplayFontMinPx = 9;/);
   assert.doesNotMatch(modalsScript, /function fitScheduledCheckModelDisplayText\(display\)/);
   assert.match(modalsScript, /scheduled_check_model/);
+});
+
+test('channels 上游协议单选复用编辑器统一选项样式，避免字体和间距漂移', () => {
+  const renderRadiosSection = sliceSection(
+    uiScript,
+    'async function renderChannelTypeRadios(containerId, selectedValue = \'anthropic\') {',
+    '\n\n  /**\n   * 渲染渠道类型下拉选择框'
+  );
+
+  assert.match(renderRadiosSection, /<label class="channel-editor-radio-option">/);
+  assert.doesNotMatch(renderRadiosSection, /label style=/);
+  assert.doesNotMatch(renderRadiosSection, /input[^>]+style=/);
 });
 
 test('channels-init.js 使用集中绑定处理固定控件动作', () => {

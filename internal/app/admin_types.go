@@ -3,10 +3,12 @@ package app
 import (
 	"fmt"
 	neturl "net/url"
+	"slices"
 	"strings"
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
 )
 
@@ -18,6 +20,8 @@ type ChannelRequest struct {
 	Name                  string             `json:"name" binding:"required"`
 	APIKey                string             `json:"api_key" binding:"required"`
 	ChannelType           string             `json:"channel_type,omitempty"` // 渠道类型:anthropic, codex, gemini
+	ProtocolTransformMode string             `json:"protocol_transform_mode,omitempty"`
+	ProtocolTransforms    []string           `json:"protocol_transforms,omitempty"`
 	KeyStrategy           string             `json:"key_strategy,omitempty"` // Key使用策略:sequential, round_robin
 	URL                   string             `json:"url" binding:"required"`
 	Priority              int                `json:"priority"`
@@ -144,6 +148,15 @@ func (cr *ChannelRequest) Validate() error {
 		}
 		cr.ChannelType = normalized // 应用标准化结果
 	}
+	rawProtocolTransformMode := cr.ProtocolTransformMode
+	cr.ProtocolTransformMode = model.NormalizeProtocolTransformMode(cr.ProtocolTransformMode)
+	if cr.ProtocolTransformMode == "" {
+		return fmt.Errorf("invalid protocol_transform_mode: %q (allowed: local, upstream)", rawProtocolTransformMode)
+	}
+	if err := validateProtocolTransforms(cr.ChannelType, cr.ProtocolTransformMode, cr.ProtocolTransforms); err != nil {
+		return err
+	}
+	cr.ProtocolTransforms = normalizeProtocolTransforms(cr.ChannelType, cr.ProtocolTransformMode, cr.ProtocolTransforms)
 
 	// [FIX] key_strategy 白名单校验 + 标准化
 	// 设计：空值允许（使用默认值sequential），非空值必须合法
@@ -176,6 +189,8 @@ func (cr *ChannelRequest) ToConfig() *model.Config {
 	return &model.Config{
 		Name:                  strings.TrimSpace(cr.Name),
 		ChannelType:           strings.TrimSpace(cr.ChannelType), // 传递渠道类型
+		ProtocolTransformMode: cr.ProtocolTransformMode,
+		ProtocolTransforms:    append([]string(nil), cr.ProtocolTransforms...),
 		URL:                   strings.TrimSpace(cr.URL),
 		Priority:              cr.Priority,
 		ModelEntries:          normalizedModels,
@@ -184,6 +199,70 @@ func (cr *ChannelRequest) ToConfig() *model.Config {
 		ScheduledCheckModel:   cr.ScheduledCheckModel,
 		DailyCostLimit:        cr.DailyCostLimit,
 	}
+}
+
+func validateProtocolTransforms(channelType string, protocolTransformMode string, transforms []string) error {
+	base := protocol.Protocol(util.NormalizeChannelType(channelType))
+	mode := model.NormalizeProtocolTransformMode(protocolTransformMode)
+	if mode == "" {
+		mode = model.ProtocolTransformModeUpstream
+	}
+	seen := make(map[string]int, len(transforms))
+	for i, rawProtocol := range transforms {
+		rawProtocol = strings.TrimSpace(rawProtocol)
+		if rawProtocol == "" {
+			return fmt.Errorf("protocol_transforms[%d]: cannot be empty", i)
+		}
+
+		normalized := util.NormalizeChannelType(rawProtocol)
+		if !util.IsValidChannelType(normalized) {
+			return fmt.Errorf("protocol_transforms[%d]: invalid protocol %q (allowed: anthropic, openai, gemini, codex)", i, rawProtocol)
+		}
+		if normalized == string(base) {
+			return fmt.Errorf("protocol_transforms[%d]: %q duplicates channel_type %q", i, normalized, base)
+		}
+		if mode == model.ProtocolTransformModeLocal && !protocol.SupportsTransform(protocol.Protocol(normalized), base) {
+			return fmt.Errorf("protocol_transforms[%d]: unsupported protocol transform %s -> %s", i, normalized, base)
+		}
+		if firstIdx, exists := seen[normalized]; exists {
+			return fmt.Errorf("protocol_transforms[%d]: duplicate protocol %q (already defined at protocol_transforms[%d])", i, normalized, firstIdx)
+		}
+		seen[normalized] = i
+	}
+	return nil
+}
+
+func normalizeProtocolTransforms(channelType string, protocolTransformMode string, transforms []string) []string {
+	base := protocol.Protocol(util.NormalizeChannelType(channelType))
+	mode := model.NormalizeProtocolTransformMode(protocolTransformMode)
+	if mode == "" {
+		mode = model.ProtocolTransformModeUpstream
+	}
+	seen := make(map[string]struct{}, len(transforms))
+	normalized := make([]string, 0, len(transforms))
+	for _, protocolName := range transforms {
+		protocolName = strings.TrimSpace(protocolName)
+		if protocolName == "" {
+			continue
+		}
+		normalizedProtocol := util.NormalizeChannelType(protocolName)
+		if !util.IsValidChannelType(normalizedProtocol) {
+			continue
+		}
+		if normalizedProtocol == string(base) {
+			continue
+		}
+		if mode == model.ProtocolTransformModeLocal && !protocol.SupportsTransform(protocol.Protocol(normalizedProtocol), base) {
+			continue
+		}
+		if _, ok := seen[normalizedProtocol]; ok {
+			continue
+		}
+		seen[normalizedProtocol] = struct{}{}
+		normalized = append(normalized, normalizedProtocol)
+	}
+	slices.Sort(normalized)
+	return normalized
 }
 
 // KeyCooldownInfo Key级别冷却信息

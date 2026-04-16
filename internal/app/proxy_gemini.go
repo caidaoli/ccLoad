@@ -2,6 +2,9 @@ package app
 
 import (
 	"net/http"
+	"sort"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -29,13 +32,14 @@ func (s *Server) filterVisibleModelsForRequest(c *gin.Context, models []string) 
 func (s *Server) handleListGeminiModels(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	// 获取所有 gemini 渠道的去重模型列表
-	models, err := s.getModelsByChannelType(ctx, "gemini")
+	// 获取所有暴露 gemini 协议的去重模型列表
+	models, err := s.getModelsByExposedProtocol(ctx, "gemini")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load models"})
 		return
 	}
 	models = s.filterVisibleModelsForRequest(c, models)
+	sort.Strings(models)
 
 	// 构造 Gemini API 响应格式
 	type ModelInfo struct {
@@ -62,6 +66,12 @@ func detectModelsChannelType(c *gin.Context) string {
 	if c.GetHeader("anthropic-version") != "" {
 		return "anthropic"
 	}
+	if strings.HasPrefix(strings.ToLower(c.GetHeader("User-Agent")), "claude-cli") {
+		return "anthropic"
+	}
+	if strings.Contains(strings.ToLower(c.GetHeader("User-Agent")), "codex") {
+		return "codex"
+	}
 	return "openai"
 }
 
@@ -70,12 +80,42 @@ func (s *Server) handleListOpenAIModels(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	channelType := detectModelsChannelType(c)
-	models, err := s.getModelsByChannelType(ctx, channelType)
+	models, err := s.getModelsByExposedProtocol(ctx, channelType)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load models"})
 		return
 	}
 	models = s.filterVisibleModelsForRequest(c, models)
+	sort.Strings(models)
+
+	if channelType == "anthropic" {
+		type ModelInfo struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"display_name"`
+			Type        string `json:"type"`
+			CreatedAt   string `json:"created_at"`
+		}
+		modelList := make([]ModelInfo, 0, len(models))
+		for _, model := range models {
+			modelList = append(modelList, ModelInfo{
+				ID:          model,
+				DisplayName: formatModelDisplayName(model),
+				Type:        "model",
+				CreatedAt:   time.Unix(0, 0).UTC().Format(time.RFC3339),
+			})
+		}
+
+		resp := gin.H{
+			"data":     modelList,
+			"has_more": false,
+		}
+		if len(modelList) > 0 {
+			resp["first_id"] = modelList[0].ID
+			resp["last_id"] = modelList[len(modelList)-1].ID
+		}
+		c.JSON(http.StatusOK, resp)
+		return
+	}
 
 	// 构造 OpenAI API 响应格式
 	type ModelInfo struct {

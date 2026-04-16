@@ -141,6 +141,74 @@ function renderLogSourceBadge(logSource) {
   }
 }
 
+function canInspectDebugLog(entry) {
+  return Number(entry?.channel_id) > 0;
+}
+
+function buildLogMessageContent(entry) {
+  const sourceBadge = renderLogSourceBadge(entry.log_source || 'proxy');
+  const messageText = escapeHtml(entry.message || '');
+  const messageDisplay = `${sourceBadge}${messageText}`;
+  if (!messageDisplay) {
+    return '';
+  }
+
+  if (!canInspectDebugLog(entry)) {
+    return `<span>${messageDisplay}</span>`;
+  }
+
+  const logId = Number(entry?.id);
+  const logIdAttr = Number.isFinite(logId) && logId > 0 ? ` data-log-id="${logId}"` : '';
+  return `<span class="debug-log-link has-upstream-detail"${logIdAttr}>${messageDisplay}</span>`;
+}
+
+function formatDebugSettingValue(setting) {
+  if (!setting || setting.value === undefined || setting.value === null || setting.value === '') {
+    return '-';
+  }
+
+  const rawValue = String(setting.value).trim();
+  switch (setting.key) {
+    case 'debug_log_enabled':
+      return (rawValue === 'true' || rawValue === '1')
+        ? t('logs.debugSettingEnabledOn')
+        : t('logs.debugSettingEnabledOff');
+    case 'debug_log_retention_minutes':
+      return t('logs.debugSettingRetentionMinutes', { minutes: rawValue });
+    default:
+      return rawValue;
+  }
+}
+
+function buildDebugLogUnavailableHtml(data) {
+  const enabledSetting = data?.debug_log_enabled || null;
+  const retentionSetting = data?.debug_log_retention_minutes || null;
+  const enabledValue = String(enabledSetting?.value || '').trim().toLowerCase();
+  const isDebugEnabled = enabledValue === 'true' || enabledValue === '1';
+  const hasExplicitEnabledValue = enabledValue !== '';
+  const hintKey = hasExplicitEnabledValue
+    ? (isDebugEnabled ? 'logs.debugUnavailableHintExpired' : 'logs.debugUnavailableHintDisabled')
+    : 'logs.debugUnavailableHintGeneric';
+
+  return `
+    <div class="debug-log-unavailable">
+      <div class="debug-log-unavailable__title">${escapeHtml(t('logs.debugUnavailableTitle'))}</div>
+      <div class="debug-log-unavailable__hint">${escapeHtml(t(hintKey))}</div>
+      <div class="debug-log-unavailable__settings-title">${escapeHtml(t('logs.debugUnavailableSettingsTitle'))}</div>
+      <div class="debug-log-unavailable__settings">
+        <div class="debug-log-unavailable__row">
+          <span class="debug-log-unavailable__label">${escapeHtml(t('settings.desc.debug_log_enabled'))}</span>
+          <span class="debug-log-unavailable__value">${escapeHtml(formatDebugSettingValue(enabledSetting))}</span>
+        </div>
+        <div class="debug-log-unavailable__row">
+          <span class="debug-log-unavailable__label">${escapeHtml(t('settings.desc.debug_log_retention_minutes'))}</span>
+          <span class="debug-log-unavailable__value">${escapeHtml(formatDebugSettingValue(retentionSetting))}</span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function calculateLogSpeed(entry) {
   const outputTokens = Number(entry?.output_tokens);
   const duration = Number(entry?.duration);
@@ -242,12 +310,12 @@ function filterActiveRequests(requests) {
   const tokenId = (document.getElementById('f_auth_token')?.value || '').trim();
 
   return requests.filter(req => {
-    // 渠道名称精确匹配（来自下拉框）或模糊匹配（手动输入）
+    // 渠道名称精确匹配
     if (channelName) {
       const name = (typeof req.channel_name === 'string' ? req.channel_name : '').toLowerCase();
-      if (!name.includes(channelName)) return false;
+      if (name !== channelName) return false;
     }
-    // 模型精确匹配（来自下拉框选择）
+    // 模型精确匹配
     if (model) {
       if ((req.model || '') !== model) return false;
     }
@@ -577,9 +645,7 @@ function renderLogs(data) {
     }
     const costDisplay = entry.cost ?
       `<span style="color: var(--warning-600); font-weight: 500;">${formatCost(entry.cost)}${tierBadge}</span>` : '';
-    const sourceBadge = renderLogSourceBadge(entry.log_source || 'proxy');
-    const messageText = escapeHtml(entry.message || '');
-    const messageDisplay = `${sourceBadge}${messageText}`;
+    const messageContent = buildLogMessageContent(entry);
 
     // === 直接拼接行 HTML ===
     htmlParts[i] = `<tr class="mobile-card-row logs-table-row">
@@ -596,7 +662,7 @@ function renderLogs(data) {
           <td class="logs-col-cache-read${cacheReadDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.cacheRead}" style="text-align: right; white-space: nowrap;">${cacheReadDisplay}</td>
           <td class="logs-col-cache-write${cacheCreationDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.cacheWrite}" style="text-align: right; white-space: nowrap;">${cacheCreationDisplay}</td>
           <td class="logs-col-cost${costDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.cost}" style="text-align: right; white-space: nowrap;">${costDisplay}</td>
-          <td class="logs-col-message${messageDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.message}" style="max-width: 300px; word-break: break-word;">${messageDisplay}</td>
+          <td class="logs-col-message${messageContent ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.message}" style="max-width: 300px; word-break: break-word;">${messageContent}</td>
         </tr>`;
   }
 
@@ -898,6 +964,7 @@ function initLogsPageActions() {
         'next-logs-page': () => nextLogsPage(),
         'last-logs-page': () => lastLogsPage(),
         'close-test-key-modal': () => closeTestKeyModal(),
+        'close-debug-log-modal': () => closeDebugLogModal(),
         'run-key-test': () => runKeyTest(),
         'toggle-response': (actionTarget) => {
           const responseTarget = actionTarget.dataset.responseTarget;
@@ -1046,7 +1113,7 @@ function updateTestKeyIndexInfo(text) {
 const LOGS_FILTER_KEY = 'logs.filters';
 const LOGS_FILTER_FIELDS = [
   { key: 'range', queryKeys: ['range'], defaultValue: 'today' },
-  { key: 'channelName', queryKeys: ['channel_name_like', 'channel_name'], defaultValue: '' },
+  { key: 'channelName', queryKeys: ['channel_name'], defaultValue: '' },
   { key: 'model', queryKeys: ['model'], defaultValue: '' },
   { key: 'logSource', queryKeys: ['log_source'], requestKey: 'log_source', defaultValue: 'proxy' },
   { key: 'status', queryKeys: ['status_code'], defaultValue: '' },
@@ -1150,9 +1217,14 @@ window.initPageBootstrap({
     }
   });
 
-  // ESC键关闭测试模态框
+  // ESC键关闭模态框
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+      const debugModal = document.getElementById('debugLogModal');
+      if (debugModal && debugModal.classList.contains('show')) {
+        closeDebugLogModal();
+        return;
+      }
       closeTestKeyModal();
     }
   });
@@ -1161,6 +1233,16 @@ window.initPageBootstrap({
   const tbody = document.getElementById('tbody');
   if (tbody) {
     tbody.addEventListener('click', (e) => {
+      // Debug log 查看
+      const debugLink = e.target.closest('.debug-log-link[data-log-id]');
+      if (debugLink) {
+        const logId = parseInt(debugLink.dataset.logId, 10);
+        if (Number.isFinite(logId) && logId > 0) {
+          showDebugLogModal(logId);
+        }
+        return;
+      }
+
       const channelBtn = e.target.closest('.channel-link[data-channel-id]');
       if (channelBtn) {
         const channelId = parseInt(channelBtn.dataset.channelId, 10);
@@ -1503,4 +1585,141 @@ async function deleteKeyFromLog(channelId, channelName, maskedApiKey, apiKeyHash
     console.error('删除Key失败', e);
     alert(e.message || '删除Key失败');
   }
+}
+
+// ============================================================================
+// Debug Log Modal
+// ============================================================================
+
+function formatJsonSafe(str) {
+  if (!str) return '';
+  try {
+    return JSON.stringify(JSON.parse(str), null, 2);
+  } catch {
+    return str;
+  }
+}
+
+function formatHeaderLines(headers) {
+  if (!headers) return '';
+  if (typeof headers === 'string') {
+    try { headers = JSON.parse(headers); } catch { return headers; }
+  }
+  if (typeof headers !== 'object') return '';
+  headers = window.maskSensitiveHeaders(headers);
+  const lines = [];
+  for (const [key, value] of Object.entries(headers)) {
+    if (Array.isArray(value)) {
+      value.forEach(v => lines.push(`${key}: ${v}`));
+    } else {
+      lines.push(`${key}: ${value}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+function composeDebugRawRequest(data) {
+  const parts = [];
+  const method = data.req_method || 'POST';
+  const url = data.req_url || '';
+  parts.push(`${method} ${url}`);
+  const headers = formatHeaderLines(data.req_headers);
+  if (headers) parts.push(headers);
+  const body = formatJsonSafe(data.req_body);
+  if (body) {
+    parts.push('');
+    parts.push(body);
+  }
+  return parts.join('\n');
+}
+
+function composeDebugRawResponse(data) {
+  const parts = [];
+  if (data.resp_status) parts.push('HTTP ' + data.resp_status);
+  const headers = formatHeaderLines(data.resp_headers);
+  if (headers) parts.push(headers);
+  const body = formatJsonSafe(data.resp_body);
+  if (body) {
+    parts.push('');
+    parts.push(body);
+  }
+  return parts.join('\n');
+}
+
+async function showDebugLogModal(logId) {
+  const modal = document.getElementById('debugLogModal');
+  const loading = document.getElementById('debugLogLoading');
+  const error = document.getElementById('debugLogError');
+  const content = document.getElementById('debugLogContent');
+
+  loading.style.display = '';
+  error.style.display = 'none';
+  error.innerHTML = '';
+  error.textContent = '';
+  content.style.display = 'none';
+  modal.classList.add('show');
+
+  // Reset tabs
+  modal.querySelectorAll('.upstream-tab').forEach(tab => {
+    tab.classList.toggle('active', tab.dataset.tab === 'request');
+  });
+  document.getElementById('debugTabRequest').classList.add('active');
+  document.getElementById('debugTabResponse').classList.remove('active');
+
+  try {
+    const { res, payload } = await fetchAPIWithAuthRaw(`/admin/debug-logs/${logId}`);
+    if (!payload.success) {
+      if (res.status === 404) {
+        loading.style.display = 'none';
+        error.innerHTML = buildDebugLogUnavailableHtml(payload.data || null);
+        error.style.display = '';
+        return;
+      }
+      throw new Error(payload.error || '加载失败');
+    }
+
+    const data = payload.data || {};
+    loading.style.display = 'none';
+    content.style.display = 'flex';
+
+    window.setHighlightedCodeContent('debugReqRaw', composeDebugRawRequest(data), 'request');
+    window.setHighlightedCodeContent('debugRespRaw', composeDebugRawResponse(data), 'response');
+  } catch (e) {
+    loading.style.display = 'none';
+    error.textContent = e.message || '加载失败';
+    error.style.display = '';
+  }
+}
+
+function closeDebugLogModal() {
+  document.getElementById('debugLogModal').classList.remove('show');
+}
+
+// Tab switch + copy button delegation for debug log modal.
+// 部分测试桩只提供最小 document API，这里避免在脚本加载阶段就假定完整 DOM 存在。
+if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+  document.addEventListener('click', (e) => {
+    const tab = e.target.closest('#debugLogModal .upstream-tab');
+    if (tab) {
+      const target = tab.dataset.tab;
+      document.querySelectorAll('#debugLogModal .upstream-tab').forEach(t => t.classList.toggle('active', t === tab));
+      document.getElementById('debugTabRequest').classList.toggle('active', target === 'request');
+      document.getElementById('debugTabResponse').classList.toggle('active', target === 'response');
+      return;
+    }
+
+    const copyBtn = e.target.closest('#debugLogModal .upstream-copy-btn');
+    if (copyBtn) {
+      const targetId = copyBtn.dataset.copyTarget;
+      const pre = document.getElementById(targetId);
+      if (!pre) return;
+      const text = pre._rawText || pre.textContent || '';
+      navigator.clipboard.writeText(text).then(() => {
+        const orig = copyBtn.textContent;
+        copyBtn.textContent = '\u2713';
+        copyBtn.classList.add('copied');
+        setTimeout(() => { copyBtn.textContent = orig; copyBtn.classList.remove('copied'); }, 1500);
+      });
+    }
+  });
 }

@@ -131,6 +131,282 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 		}
 	})
 
+	t.Run("handleListOpenAIModels includes transformed gemini channel", func(t *testing.T) {
+		_, err := store.CreateConfig(ctx, &model.Config{
+			Name:               "g2-oai",
+			URL:                "https://example.com",
+			Priority:           3,
+			Enabled:            true,
+			ChannelType:        "gemini",
+			ProtocolTransforms: []string{"openai"},
+			ModelEntries: []model.ModelEntry{
+				{Model: "gemini-2.5-pro"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig transformed gemini failed: %v", err)
+		}
+
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/v1/models", nil))
+
+		server.handleListOpenAIModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		var resp struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+		found := false
+		for _, item := range resp.Data {
+			if item.ID == "gemini-2.5-pro" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected transformed gemini model in openai model list, got %+v", resp.Data)
+		}
+	})
+
+	t.Run("handleListOpenAIModels returns codex view for openai upstream with codex transform", func(t *testing.T) {
+		_, err := store.CreateConfig(ctx, &model.Config{
+			Name:               "o2-codex",
+			URL:                "https://example.com",
+			Priority:           3,
+			Enabled:            true,
+			ChannelType:        "openai",
+			ProtocolTransforms: []string{"codex"},
+			ModelEntries: []model.ModelEntry{
+				{Model: "gpt-5-codex"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig openai->codex failed: %v", err)
+		}
+
+		req := newRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("User-Agent", "codex-cli/1.0")
+		c, w := newTestContext(t, req)
+
+		server.handleListOpenAIModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		var resp struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+		found := false
+		for _, item := range resp.Data {
+			if item.ID == "gpt-5-codex" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected codex-exposed openai model in list, got %+v", resp.Data)
+		}
+	})
+
+	t.Run("handleListOpenAIModels returns openai view for codex upstream with openai transform", func(t *testing.T) {
+		_, err := store.CreateConfig(ctx, &model.Config{
+			Name:               "c2-openai",
+			URL:                "https://example.com",
+			Priority:           3,
+			Enabled:            true,
+			ChannelType:        "codex",
+			ProtocolTransforms: []string{"openai"},
+			ModelEntries: []model.ModelEntry{
+				{Model: "gpt-4o"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig codex->openai failed: %v", err)
+		}
+
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/v1/models", nil))
+
+		server.handleListOpenAIModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		var resp struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+		found := false
+		for _, item := range resp.Data {
+			if item.ID == "gpt-4o" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected openai-exposed codex model in list, got %+v", resp.Data)
+		}
+	})
+
+	t.Run("handleListGeminiModels exposes openai channels that declare gemini transform", func(t *testing.T) {
+		_, err := store.CreateConfig(ctx, &model.Config{
+			Name:               "o2-gemini",
+			URL:                "https://example.com",
+			Priority:           4,
+			Enabled:            true,
+			ChannelType:        "openai",
+			ProtocolTransforms: []string{"gemini"},
+			ModelEntries: []model.ModelEntry{
+				{Model: "gpt-4.1"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig transformed openai failed: %v", err)
+		}
+
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/v1beta/models", nil))
+
+		server.handleListGeminiModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		var resp struct {
+			Models []struct {
+				Name string `json:"name"`
+			} `json:"models"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+		found := false
+		for _, item := range resp.Models {
+			if item.Name == "models/gpt-4.1" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected transformed openai gemini model in list, got %+v", resp.Models)
+		}
+	})
+
+	t.Run("handleListOpenAIModels returns anthropic style for anthropic view", func(t *testing.T) {
+		_, err := store.CreateConfig(ctx, &model.Config{
+			Name:               "g3-anthropic",
+			URL:                "https://example.com",
+			Priority:           5,
+			Enabled:            true,
+			ChannelType:        "gemini",
+			ProtocolTransforms: []string{"anthropic"},
+			ModelEntries: []model.ModelEntry{
+				{Model: "claude-3-5-sonnet"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig transformed anthropic failed: %v", err)
+		}
+
+		req := newRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("anthropic-version", "2023-06-01")
+		c, w := newTestContext(t, req)
+
+		server.handleListOpenAIModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		var resp struct {
+			Data []struct {
+				ID          string `json:"id"`
+				DisplayName string `json:"display_name"`
+				Type        string `json:"type"`
+				CreatedAt   string `json:"created_at"`
+			} `json:"data"`
+			HasMore bool   `json:"has_more"`
+			FirstID string `json:"first_id"`
+			LastID  string `json:"last_id"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+		if resp.HasMore {
+			t.Fatalf("expected has_more=false, got true")
+		}
+		if len(resp.Data) == 0 {
+			t.Fatalf("expected anthropic models, got empty response")
+		}
+		found := false
+		for _, item := range resp.Data {
+			if item.ID == "claude-3-5-sonnet" {
+				found = true
+				if item.Type != "model" {
+					t.Fatalf("expected anthropic type=model, got %q", item.Type)
+				}
+				if item.DisplayName == "" || item.CreatedAt == "" {
+					t.Fatalf("expected anthropic display_name/created_at, got %+v", item)
+				}
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected transformed anthropic model in anthropic view, got %+v", resp.Data)
+		}
+		if resp.FirstID == "" || resp.LastID == "" {
+			t.Fatalf("expected anthropic pagination ids, got first=%q last=%q", resp.FirstID, resp.LastID)
+		}
+	})
+
+	t.Run("handleListOpenAIModels keeps openai shape for codex view", func(t *testing.T) {
+		_, err := store.CreateConfig(ctx, &model.Config{
+			Name:        "c1",
+			URL:         "https://example.com",
+			Priority:    6,
+			Enabled:     true,
+			ChannelType: "codex",
+			ModelEntries: []model.ModelEntry{
+				{Model: "gpt-5-codex"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig codex failed: %v", err)
+		}
+
+		req := newRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("User-Agent", "codex-cli/1.0")
+		c, w := newTestContext(t, req)
+
+		server.handleListOpenAIModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		var resp struct {
+			Object string `json:"object"`
+			Data   []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+		if resp.Object != "list" {
+			t.Fatalf("expected openai-style list object for codex view, got %+v", resp)
+		}
+		found := false
+		for _, item := range resp.Data {
+			if item.ID == "gpt-5-codex" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected codex model in openai-shaped view, got %+v", resp.Data)
+		}
+	})
+
 	t.Run("handleListGeminiModels filters by token allowed models", func(t *testing.T) {
 		server.authService = newTestAuthService(t)
 		tokenHash := model.HashToken("restricted-gemini-token")

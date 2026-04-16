@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
+	"ccLoad/internal/protocol/builtin"
 )
 
 func runHandleSuccessResponse(t *testing.T, body string, headers http.Header, isStreaming bool, channelType string) (*fwResult, string) {
@@ -188,6 +190,81 @@ func TestBuildStreamDiagnostics_StreamComplete(t *testing.T) {
 	}
 }
 
+func TestTranslatedStreamChunkCompletes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		clientProtocol protocol.Protocol
+		chunk          []byte
+		want           bool
+	}{
+		{
+			name:           "anthropic message_stop event",
+			clientProtocol: protocol.Anthropic,
+			chunk:          []byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
+			want:           true,
+		},
+		{
+			name:           "anthropic content delta",
+			clientProtocol: protocol.Anthropic,
+			chunk:          []byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n"),
+			want:           false,
+		},
+		{
+			name:           "codex response completed",
+			clientProtocol: protocol.Codex,
+			chunk:          []byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\n\n"),
+			want:           true,
+		},
+		{
+			name:           "codex text delta",
+			clientProtocol: protocol.Codex,
+			chunk:          []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n"),
+			want:           false,
+		},
+		{
+			name:           "openai finish reason stop",
+			clientProtocol: protocol.OpenAI,
+			chunk:          []byte("data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"),
+			want:           true,
+		},
+		{
+			name:           "openai done sentinel",
+			clientProtocol: protocol.OpenAI,
+			chunk:          []byte("data: [DONE]\n\n"),
+			want:           true,
+		},
+		{
+			name:           "openai intermediate chunk",
+			clientProtocol: protocol.OpenAI,
+			chunk:          []byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n"),
+			want:           false,
+		},
+		{
+			name:           "gemini finish reason stop",
+			clientProtocol: protocol.Gemini,
+			chunk:          []byte("data: {\"candidates\":[{\"content\":{\"parts\":[]},\"finishReason\":\"STOP\"}]}\n\n"),
+			want:           true,
+		},
+		{
+			name:           "gemini intermediate chunk",
+			clientProtocol: protocol.Gemini,
+			chunk:          []byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello\"}]}}]}\n\n"),
+			want:           false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := translatedStreamChunkCompletes(tt.clientProtocol, tt.chunk)
+			if got != tt.want {
+				t.Fatalf("translatedStreamChunkCompletes(%s) = %v, want %v", tt.clientProtocol, got, tt.want)
+			}
+		})
+	}
+}
+
 type partialErrReadCloser struct {
 	data []byte
 	err  error
@@ -204,6 +281,75 @@ func (rc *partialErrReadCloser) Read(p []byte) (int, error) {
 }
 
 func (rc *partialErrReadCloser) Close() error { return nil }
+
+type errAfterDataReadCloser struct {
+	data  []byte
+	err   error
+	stage int
+}
+
+func (rc *errAfterDataReadCloser) Read(p []byte) (int, error) {
+	switch rc.stage {
+	case 0:
+		rc.stage++
+		n := copy(p, rc.data)
+		return n, nil
+	case 1:
+		rc.stage++
+		return 0, rc.err
+	default:
+		return 0, io.EOF
+	}
+}
+
+func (rc *errAfterDataReadCloser) Close() error { return nil }
+
+func TestHandleTranslatedStreamSuccessResponse_TreatsTranslatedStopAsComplete(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	s := &Server{protocolRegistry: reg}
+	reqCtx := &requestContext{
+		ctx:         context.Background(),
+		startTime:   time.Now(),
+		isStreaming: true,
+		transformPlan: protocol.TransformPlan{
+			ClientProtocol:   protocol.Anthropic,
+			UpstreamProtocol: protocol.OpenAI,
+			OriginalModel:    "claude-3-5-sonnet",
+			ActualModel:      "gpt-4o",
+			NeedsTransform:   true,
+		},
+	}
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type": []string{"text/event-stream"},
+		},
+		Body: &errAfterDataReadCloser{
+			data: []byte("data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5,\"total_tokens\":8}}\n\n"),
+			err:  errors.New("http2: response body closed"),
+		},
+	}
+
+	rec := newRecorder()
+	readStats := &streamReadStats{}
+	firstByte := 0.0
+
+	res, _, err := s.handleTranslatedStreamSuccessResponse(reqCtx, resp, resp.Header.Clone(), rec, "openai", readStats, &firstByte)
+	if err != nil {
+		t.Fatalf("expected translated completed stream to ignore trailing close error, got %v", err)
+	}
+	if res.StreamDiagMsg != "" {
+		t.Fatalf("expected no incomplete-stream diagnostics after translated stop, got %s", res.StreamDiagMsg)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: message_stop") {
+		t.Fatalf("expected translated output to include message_stop, got %s", body)
+	}
+}
 
 func TestHandleErrorResponse_MergesBodyReadErrorIntoResult(t *testing.T) {
 	s := &Server{} // 关键：logService 为 nil，若 handleErrorResponse 仍写 DB 日志会直接 panic

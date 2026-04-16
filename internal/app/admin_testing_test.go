@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -106,7 +106,7 @@ func TestTestChannelAPI_MultiURLFallbackAndSelectorFeedback(t *testing.T) {
 	failCalls := 0
 	okCalls := 0
 
-	failUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	failUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		failCalls++
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -114,7 +114,7 @@ func TestTestChannelAPI_MultiURLFallbackAndSelectorFeedback(t *testing.T) {
 	}))
 	defer failUpstream.Close()
 
-	okUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	okUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		okCalls++
 		time.Sleep(15 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
@@ -164,7 +164,7 @@ func TestTestChannelAPI_MultiURLFallbackOnPlainText502(t *testing.T) {
 	failCalls := 0
 	okCalls := 0
 
-	failUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	failUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		failCalls++
 		w.Header().Set("Content-Type", "text/plain; charset=UTF-8")
 		w.WriteHeader(http.StatusBadGateway)
@@ -172,7 +172,7 @@ func TestTestChannelAPI_MultiURLFallbackOnPlainText502(t *testing.T) {
 	}))
 	defer failUpstream.Close()
 
-	okUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	okUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		okCalls++
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -219,14 +219,14 @@ func TestTestChannelAPI_MultiURLFallbackOnPlainText502(t *testing.T) {
 
 func TestHandleChannelTest_RejectsBaseURL(t *testing.T) {
 	failCalls := 0
-	failUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	failUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		failCalls++
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	defer failUpstream.Close()
 
 	okCalls := 0
-	okUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	okUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		okCalls++
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -277,7 +277,7 @@ func TestHandleChannelTest_RejectsBaseURL(t *testing.T) {
 
 func TestHandleChannelURLTest_UsesForcedURL(t *testing.T) {
 	failCalls := 0
-	failUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	failUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		failCalls++
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -286,7 +286,7 @@ func TestHandleChannelURLTest_UsesForcedURL(t *testing.T) {
 	defer failUpstream.Close()
 
 	okCalls := 0
-	okUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	okUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		okCalls++
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -438,6 +438,267 @@ func TestHandleChannelTest_UnsupportedModel(t *testing.T) {
 	}
 }
 
+func TestHandleChannelTest_DefaultsProtocolTransformToChannelType(t *testing.T) {
+	var gotPath string
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	ctx := context.Background()
+
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name:         "default-protocol-transform-openai",
+		URL:          upstream.URL,
+		Priority:     1,
+		ChannelType:  "openai",
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4.1"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test-key"}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/test", created.ID), map[string]any{
+		"model": "gpt-4.1",
+	}))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	dataSuccess, _ := resp.Data["success"].(bool)
+	if !dataSuccess {
+		t.Fatalf("expected data.success=true, data=%+v", resp.Data)
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Fatalf("path=%q, want %q", gotPath, "/v1/chat/completions")
+	}
+}
+
+func TestHandleChannelTest_RejectsUnknownProtocolTransform(t *testing.T) {
+	failCalls := 0
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		failCalls++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	ctx := context.Background()
+
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name:         "unsupported-protocol-transform-openai",
+		URL:          upstream.URL,
+		Priority:     1,
+		ChannelType:  "openai",
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4.1"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test-key"}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/test", created.ID), map[string]any{
+		"model":              "gpt-4.1",
+		"protocol_transform": "unknown",
+	}))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	dataSuccess, _ := resp.Data["success"].(bool)
+	if dataSuccess {
+		t.Fatalf("expected data.success=false, data=%+v", resp.Data)
+	}
+	dataError, _ := resp.Data["error"].(string)
+	if !strings.Contains(dataError, "协议") {
+		t.Fatalf("expected protocol error, got %q", dataError)
+	}
+	if failCalls != 0 {
+		t.Fatalf("expected no upstream request, failCalls=%d", failCalls)
+	}
+}
+
+func TestHandleChannelTest_UsesProtocolTransformForTranslatedRequest(t *testing.T) {
+	var gotPath string
+	var gotBody string
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll failed: %v", err)
+		}
+		gotPath = r.URL.Path
+		gotBody = string(body)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"id": "msg_test",
+			"type": "message",
+			"role": "assistant",
+			"content": [{"type": "text", "text": "translated ok"}],
+			"model": "claude-3-5-sonnet",
+			"usage": {"input_tokens": 10, "output_tokens": 5}
+		}`))
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	ctx := context.Background()
+
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name:         "anthropic-with-runtime-openai-transform",
+		URL:          upstream.URL,
+		Priority:     1,
+		ChannelType:  "anthropic",
+		ModelEntries: []model.ModelEntry{{Model: "claude-3-5-sonnet"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test-key"}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/test", created.ID), map[string]any{
+		"model":              "claude-3-5-sonnet",
+		"protocol_transform": "openai",
+		"content":            "hello",
+	}))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	dataSuccess, _ := resp.Data["success"].(bool)
+	if !dataSuccess {
+		t.Fatalf("expected data.success=true, data=%+v", resp.Data)
+	}
+	if gotPath != "/v1/messages" {
+		t.Fatalf("path=%q, want %q", gotPath, "/v1/messages")
+	}
+	if !strings.Contains(gotBody, `"messages"`) {
+		t.Fatalf("expected anthropic request body, body=%s", gotBody)
+	}
+
+	apiResp, ok := resp.Data["api_response"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected translated api_response map, data=%+v", resp.Data)
+	}
+	if _, ok := apiResp["choices"]; !ok {
+		t.Fatalf("expected openai-compatible api_response, got=%+v", apiResp)
+	}
+}
+
+func TestHandleChannelTest_UsesCodexProtocolTransformWithBasePathPrefix(t *testing.T) {
+	var gotPath string
+	var gotBody string
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll failed: %v", err)
+		}
+		gotPath = r.URL.Path
+		gotBody = string(body)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"id": "msg_test",
+			"type": "message",
+			"role": "assistant",
+			"content": [{"type": "text", "text": "translated codex ok"}],
+			"model": "claude-3-5-sonnet",
+			"usage": {"input_tokens": 10, "output_tokens": 5}
+		}`))
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	ctx := context.Background()
+
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name:         "anthropic-with-prefixed-base-path",
+		URL:          upstream.URL + "/anthropic",
+		Priority:     1,
+		ChannelType:  "anthropic",
+		ModelEntries: []model.ModelEntry{{Model: "claude-3-5-sonnet"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test-key"}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/test", created.ID), map[string]any{
+		"model":              "claude-3-5-sonnet",
+		"protocol_transform": "codex",
+		"content":            "hello",
+	}))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	dataSuccess, _ := resp.Data["success"].(bool)
+	if !dataSuccess {
+		t.Fatalf("expected data.success=true, data=%+v", resp.Data)
+	}
+	if gotPath != "/anthropic/v1/messages" {
+		t.Fatalf("path=%q, want %q", gotPath, "/anthropic/v1/messages")
+	}
+	if !strings.Contains(gotBody, `"messages"`) {
+		t.Fatalf("expected anthropic request body, body=%s", gotBody)
+	}
+
+	apiResp, ok := resp.Data["api_response"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected translated api_response map, data=%+v", resp.Data)
+	}
+	if _, ok := apiResp["object"]; !ok {
+		t.Fatalf("expected codex-compatible api_response, got=%+v", apiResp)
+	}
+}
+
 // TestHandleChannelTest_SuccessfulAPI 使用 mock server 模拟成功的 API 调用
 func TestHandleChannelTest_SuccessfulAPI(t *testing.T) {
 	// 创建 mock 上游服务器，返回成功的 Anthropic 响应
@@ -449,7 +710,7 @@ func TestHandleChannelTest_SuccessfulAPI(t *testing.T) {
 		"model": "claude-3-5-sonnet",
 		"usage": {"input_tokens": 10, "output_tokens": 5}
 	}`
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(mockResp))
@@ -510,7 +771,7 @@ func TestHandleChannelTest_SuccessfulAPI(t *testing.T) {
 // TestHandleChannelTest_FailedAPI 使用 mock server 模拟失败的 API 调用
 func TestHandleChannelTest_FailedAPI(t *testing.T) {
 	// 创建 mock 上游服务器，返回 401 错误
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":{"type":"authentication_error","message":"invalid api key"}}`))
@@ -572,7 +833,7 @@ func TestHandleChannelTest_FailedAPI(t *testing.T) {
 }
 
 func TestHandleChannelTest_WritesManualTestLog(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":{"type":"authentication_error","message":"invalid api key"}}`))
@@ -639,7 +900,7 @@ func TestHandleChannelTest_WritesManualTestLog(t *testing.T) {
 }
 
 func TestHandleChannelTest_SSESoftErrorTriggersCooldown(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, "event: \n")
@@ -707,7 +968,7 @@ func TestHandleChannelTest_SSESoftErrorTriggersCooldown(t *testing.T) {
 
 func TestHandleChannelTest_EventStreamHeaderWithJSONBodyFallback(t *testing.T) {
 	// 模拟“Content-Type=event-stream，但实际返回完整JSON”场景
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{
@@ -785,7 +1046,7 @@ func TestHandleChannelTest_EventStreamHeaderWithJSONBodyFallback(t *testing.T) {
 }
 
 func TestHandleChannelTest_CodexJSONFailedResponseShouldBeFailure(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{
@@ -858,7 +1119,7 @@ func TestHandleChannelTest_CodexJSONFailedResponseShouldBeFailure(t *testing.T) 
 }
 
 func TestHandleChannelTest_StringAPIErrorShouldExposeUpstreamMessage(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = w.Write([]byte(`{
@@ -922,7 +1183,7 @@ func TestHandleChannelTest_StringAPIErrorShouldExposeUpstreamMessage(t *testing.
 }
 
 func TestHandleChannelTest_HTMLBlockPageShouldBeFailure(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<!DOCTYPE html>

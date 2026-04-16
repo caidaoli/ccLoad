@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 function loadRenderSandbox(overrides = {}) {
+  const protocolSource = fs.readFileSync(path.join(__dirname, 'channels-protocols.js'), 'utf8');
   const source = fs.readFileSync(path.join(__dirname, 'channels-render.js'), 'utf8');
   const sandbox = {
     window: {
@@ -12,6 +13,7 @@ function loadRenderSandbox(overrides = {}) {
         if (key === 'channels.table.priority') return '优先级';
         if (key === 'channels.stats.healthScoreLabel') return '健康度';
         if (key === 'channels.stats.successRate') return `成功率 ${params.rate}`;
+        if (key === 'channels.statusDisabled') return '已禁用';
         if (key === 'channels.stats.firstByte') return '首字';
         if (key === 'channels.stats.calls') return '调用';
         if (key === 'stats.tooltipDuration') return '耗时';
@@ -22,13 +24,28 @@ function loadRenderSandbox(overrides = {}) {
         return key;
       }
     },
+    TemplateEngine: {
+      render(_templateId, data = {}) {
+        return data;
+      }
+    },
+    channelStatsById: {},
+    formatMetricNumber(value) {
+      return String(value ?? '');
+    },
+    formatCostValue(value) {
+      return String(value ?? '');
+    },
+    humanizeMS(ms) {
+      return `${ms}ms`;
+    },
     console
   };
 
   Object.assign(sandbox, overrides);
 
   vm.createContext(sandbox);
-  vm.runInContext(source, sandbox);
+  vm.runInContext(`${protocolSource}\n${source}`, sandbox);
   return sandbox;
 }
 
@@ -121,4 +138,55 @@ test('initChannelEventDelegation 允许表头全选 checkbox 触发可见渠道�
   listeners.change({ target: headerCheckbox });
 
   assert.equal(toggleCalls, 1);
+});
+
+test('buildProtocolTransformBadges 按完整协议集合渲染额外协议并去重', () => {
+  const { buildProtocolTransformBadges } = loadRenderHelpers();
+
+  const html = buildProtocolTransformBadges('anthropic', ['gemini', 'openai', 'anthropic', 'codex', 'openai', 'unknown']);
+
+  assert.match(html, />OpenAI</);
+  assert.match(html, />Codex</);
+  assert.match(html, />Gemini</);
+  assert.doesNotMatch(html, />Anthropic</);
+  assert.equal((html.match(/>OpenAI</g) || []).length, 1);
+  assert.match(html, /Protocol Transforms: OpenAI/);
+});
+
+test('createChannelCard 会把额外协议标签传给渠道卡片模板且保留上游协议徽章', () => {
+  const { createChannelCard } = loadRenderHelpers();
+
+  const cardData = createChannelCard({
+    id: 7,
+    name: '协议转换渠道',
+    channel_type: 'gemini',
+    protocol_transforms: ['openai', 'anthropic', 'gemini'],
+    url: 'https://api.example.com',
+    models: [{ model: 'gpt-5.4' }],
+    priority: 1,
+    enabled: true
+  });
+
+  assert.match(cardData.typeBadge, />Gemini</);
+  assert.match(cardData.protocolTransformBadges, />Anthropic</);
+  assert.match(cardData.protocolTransformBadges, />OpenAI</);
+  assert.doesNotMatch(cardData.protocolTransformBadges, />Gemini</);
+});
+
+test('禁用渠道会把已禁用徽章渲染到优先级列而不是标题行', () => {
+  const { createChannelCard } = loadRenderHelpers();
+
+  const cardData = createChannelCard({
+    id: 11,
+    name: '禁用渠道',
+    channel_type: 'anthropic',
+    protocol_transforms: [],
+    url: 'https://disabled.example.com',
+    models: [{ model: 'claude-4' }],
+    priority: 160,
+    enabled: false
+  });
+
+  assert.equal(cardData.disabledBadge, '');
+  assert.match(cardData.effectivePriorityHtml, /已禁用/);
 });

@@ -18,6 +18,7 @@
   <script defer src="/web/assets/js/template-engine.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/date-range-selector.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-state.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/channels-protocols.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-render.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-filters.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-data.js?v=__VERSION__"></script>
@@ -222,7 +223,7 @@
         <button type="button" class="close-btn" data-action="close-channel-modal">&times;</button>
       </div>
       <form id="channelForm" class="channel-editor-form">
-        <div class="form-group channel-editor-group">
+        <div class="form-group channel-editor-group channel-editor-group--primary">
           <div class="channel-editor-primary-row">
             <div class="channel-editor-primary-field channel-editor-primary-field--name">
               <label class="form-label channel-editor-inline-label" data-i18n="channels.channelName">渠道名称
@@ -231,10 +232,28 @@
             </div>
 
             <div class="channel-editor-primary-field channel-editor-primary-field--type">
-              <label class="channel-editor-inline-label channel-editor-inline-label--muted"
-                data-i18n="channels.channelType">渠道类型</label>
+              <label class="form-label channel-editor-inline-label channel-editor-inline-label--muted"
+                data-i18n="channels.modal.upstreamProtocol">上游协议</label>
               <div class="channel-editor-radio-group" id="channelTypeRadios">
                 <!-- 动态加载渠道类型 -->
+              </div>
+            </div>
+          </div>
+          <div class="channel-editor-primary-row">
+            <div class="channel-editor-primary-field channel-editor-primary-field--transforms">
+              <div class="channel-editor-inline-group">
+                <label class="form-label channel-editor-inline-label"
+                  data-i18n="channels.modal.protocolTransforms">协议转换</label>
+                <div class="channel-editor-radio-group" id="protocolTransformsContainer">
+                  <!-- 动态渲染协议转换选项 -->
+                </div>
+              </div>
+            </div>
+            <div class="channel-editor-primary-field channel-editor-primary-field--mode">
+              <label class="form-label channel-editor-inline-label"
+                data-i18n="channels.modal.protocolTransformMode">转换方式</label>
+              <div class="channel-editor-radio-group" id="protocolTransformModeContainer">
+                <!-- 动态渲染转换方式选项 -->
               </div>
             </div>
           </div>
@@ -968,7 +987,7 @@
       </td>
       <td class="ch-col-name">
         <div class="ch-name-line">
-          <div class="ch-name-main">{{{typeBadge}}}<strong>{{name}}</strong><span class="ch-id-text">(ID: {{id}})</span>{{{disabledBadge}}}</div>
+          <div class="ch-name-main">{{{typeBadge}}}<strong>{{name}}</strong>{{{protocolTransformBadges}}}</div>
           <div class="ch-name-statuses">{{{cooldownBadge}}}</div>
         </div>
         <div class="ch-url-line" title="{{url}}">{{url}}</div>
@@ -1062,7 +1081,6 @@
             <path d="M2 4H14M2 8H14M2 12H14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
           </svg>
           <span class="sort-item-name">{{name}}</span>
-          <span class="sort-item-id">(ID: {{id}})</span>
         </div>
         <div class="sort-item-meta">
           <span class="sort-item-priority-label" data-i18n="channels.currentPriority">当前优先级:</span>
@@ -1096,6 +1114,48 @@
   <template id="tpl-batch-fail-item">
     <li class="batch-fail-item"><strong>Key #{{keyNum}}</strong> ({{keyMask}}): {{error}}</li>
   </template>
+
+  <!-- 上游详情 Modal -->
+  <div id="upstreamDetailModal" class="modal">
+    <div class="modal-content upstream-detail-modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title" data-i18n="channels.test.upstreamDetail">上游请求/响应详情</h2>
+        <button type="button" class="close-btn" data-action="close-upstream-detail">&times;</button>
+      </div>
+      <div class="upstream-detail-tabs">
+        <button type="button" class="upstream-tab active" data-tab="request" data-i18n="channels.test.tabRequest">Request</button>
+        <button type="button" class="upstream-tab" data-tab="response" data-i18n="channels.test.tabResponse">Response</button>
+      </div>
+      <div id="upstreamTabRequest" class="upstream-tab-panel active">
+        <div class="upstream-field">
+          <label data-i18n="channels.test.requestUrl">URL</label>
+          <pre id="upstreamReqUrl" class="upstream-pre"></pre>
+        </div>
+        <div class="upstream-field">
+          <label data-i18n="channels.test.requestHeaders">Headers</label>
+          <pre id="upstreamReqHeaders" class="upstream-pre"></pre>
+        </div>
+        <div class="upstream-field">
+          <label data-i18n="channels.test.requestBody">Body</label>
+          <pre id="upstreamReqBody" class="upstream-pre upstream-pre--tall"></pre>
+        </div>
+      </div>
+      <div id="upstreamTabResponse" class="upstream-tab-panel">
+        <div class="upstream-field">
+          <label data-i18n="channels.test.responseStatus">Status</label>
+          <pre id="upstreamRespStatus" class="upstream-pre"></pre>
+        </div>
+        <div class="upstream-field">
+          <label data-i18n="channels.test.responseHeaders">Headers</label>
+          <pre id="upstreamRespHeaders" class="upstream-pre"></pre>
+        </div>
+        <div class="upstream-field">
+          <label data-i18n="channels.test.responseBody">Body</label>
+          <pre id="upstreamRespBody" class="upstream-pre upstream-pre--tall"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
 
 </body>
 

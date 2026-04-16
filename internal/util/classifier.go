@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"ccLoad/internal/protocol"
 )
 
 // HTTP状态码错误分类器
@@ -495,6 +497,11 @@ func ClassifyError(err error) (statusCode int, errorLevel ErrorLevel, shouldRetr
 	// 快速路径1：专门识别上游首字节超时，优先切换渠道
 	if errors.Is(err, ErrUpstreamFirstByteTimeout) {
 		return StatusFirstByteTimeout, ErrorLevelChannel, true
+	}
+
+	// 快速路径1.5：协议转换明确声明为客户端请求结构不支持
+	if errors.Is(err, protocol.ErrUnsupportedRequestShape) {
+		return http.StatusBadRequest, ErrorLevelClient, false
 	}
 
 	// 快速路径2：处理客户端主动取消

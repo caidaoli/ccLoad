@@ -30,11 +30,11 @@ function extractFunction(source, name) {
 }
 
 test('model-test 页静态控件不再使用内联事件', () => {
-  assert.doesNotMatch(html, /onclick="(?:setTestMode|selectAllModels|deselectAllModels|fetchAndAddModels|deleteSelectedModels|runModelTests)\([^"]*\)"/);
+  assert.doesNotMatch(html, /onclick="(?:setTestMode|fetchAndAddModels|deleteSelectedModels|runModelTests)\([^"]*\)"/);
   assert.doesNotMatch(html, /onchange="toggleAllModels\(this\.checked\)"/);
   assert.match(html, /data-action="set-test-mode"/);
-  assert.match(html, /data-action="select-all-models"/);
-  assert.match(html, /data-action="deselect-all-models"/);
+  assert.doesNotMatch(html, /data-action="select-all-models"/);
+  assert.doesNotMatch(html, /data-action="deselect-all-models"/);
   assert.match(html, /data-action="fetch-and-add-models"/);
   assert.match(html, /data-action="delete-selected-models"/);
   assert.match(html, /data-action="run-model-tests"/);
@@ -47,6 +47,17 @@ test('model-test 页接入日志页同款渠道编辑器桥接并将渠道名渲
   assert.match(html, /<button type="button" class="channel-link" data-channel-id="{{channelId}}" title="{{channelName}}">{{channelName}}<\/button>/);
 });
 
+test('model-test 页在按模型测试模式下提供类型筛选并保留协议转换容器', () => {
+  assert.match(html, /id="modelTypeLabel"/);
+  assert.match(html, /id="testModelType"/);
+  assert.match(html, /class="model-test-control model-test-control--type hidden"/);
+  assert.match(html, /data-i18n="common\.type"/);
+  assert.match(html, /id="protocolTransformContainer"/);
+  assert.match(html, /id="protocolTransformOptions"/);
+  assert.match(html, /data-i18n="modelTest\.protocolTransform"/);
+  assert.match(html, /id="modelTypeLabel"[\s\S]*?id="modelSelectorLabel"[\s\S]*?id="protocolTransformContainer"[\s\S]*?id="streamEnabled"[\s\S]*?id="concurrency"[\s\S]*?id="modelTestContent"/);
+});
+
 test('model-test.js 使用集中绑定处理页面控件和重渲染表头复选框', () => {
   assert.match(script, /window\.initPageBootstrap\(\{/);
   assert.match(script, /topbarKey:\s*'model-test'/);
@@ -54,8 +65,6 @@ test('model-test.js 使用集中绑定处理页面控件和重渲染表头复选
   assert.match(script, /window\.initDelegatedActions\(\{/);
   assert.match(script, /boundKey:\s*'modelTestActionsBound'/);
   assert.match(script, /'set-test-mode':\s*\(actionTarget\)\s*=> setTestMode\(actionTarget\.dataset\.mode \|\| ''\)/);
-  assert.match(script, /'select-all-models':\s*\(\)\s*=> selectAllModels\(\)/);
-  assert.match(script, /'deselect-all-models':\s*\(\)\s*=> deselectAllModels\(\)/);
   assert.match(script, /'fetch-and-add-models':\s*\(\)\s*=> fetchAndAddModels\(\)/);
   assert.match(script, /'delete-selected-models':\s*\(\)\s*=> deleteSelectedModels\(\)/);
   assert.match(script, /'run-model-tests':\s*\(\)\s*=> runModelTests\(\)/);
@@ -67,41 +76,225 @@ test('model-test.js 使用集中绑定处理页面控件和重渲染表头复选
   assert.match(script, /bootstrap\(\);/);
 });
 
+test('model-test.js 将表头操作按钮渲染进响应内容列并阻止按钮点击触发表头排序', () => {
+  assert.match(script, /const RESPONSE_HEAD_HTML = `[\s\S]*?class="table-col-response model-test-response-head"[\s\S]*?class="model-test-toolbar-section model-test-toolbar-section--actions model-test-head-actions"[\s\S]*?id="fetchModelsBtn"[\s\S]*?id="deleteModelsBtn"[\s\S]*?id="runTestBtn"[\s\S]*?`;/);
+  assert.match(script, /const CHANNEL_MODE_HEAD = `[\s\S]*?\$\{RESPONSE_HEAD_HTML\}[\s\S]*?`;/);
+  assert.match(script, /const MODEL_MODE_HEAD = `[\s\S]*?\$\{RESPONSE_HEAD_HTML\}[\s\S]*?`;/);
+  assert.match(script, /th\.onclick = \(event\) => \{[\s\S]*?closest\('\.model-test-head-actions'\)[\s\S]*?return;/);
+});
+
+test('model-test.js 移除测试数量进度文案，只保留按钮自身测试中状态', () => {
+  assert.doesNotMatch(script, /testingProgress/);
+  assert.doesNotMatch(script, /completedProgress/);
+  assert.match(script, /runTestBtn\.textContent = i18nText\('modelTest\.testing', '测试中\.\.\.'\)/);
+});
+
 test('model-test.js 在按模型测试模式下将渠道按钮点击委托到编辑弹窗', () => {
   assert.match(script, /const channelBtn = event\.target\.closest\('\.channel-link\[data-channel-id\]'\);/);
   assert.match(script, /if \(testMode !== TEST_MODE_MODEL \|\| !channelBtn\) return;/);
   assert.match(script, /openLogChannelEditor\(channelId\)/);
 });
 
+test('model-test.js 在模型模式重渲染时保留渠道勾选状态', () => {
+  assert.match(script, /function getRowSelectionKey\(row\)/);
+  assert.match(script, /function captureRowSelectionState\(\)/);
+  assert.match(script, /function restoreRowSelectionState\(row,\s*selectionState,\s*fallbackChecked = true\)/);
+  assert.match(script, /const previousSelectionState = captureRowSelectionState\(\);[\s\S]*?restoreRowSelectionState\(row,\s*previousSelectionState,\s*isEnabled\);/);
+
+  const sandbox = {
+    tbody: {
+      querySelectorAll() {
+        return [
+          {
+            dataset: { channelId: '1', model: 'gpt-4.1' },
+            querySelector(selector) {
+              if (selector === '.row-checkbox') return { checked: false };
+              return null;
+            }
+          },
+          {
+            dataset: { channelId: '2', model: 'gpt-4.1' },
+            querySelector(selector) {
+              if (selector === '.row-checkbox') return { checked: true };
+              return null;
+            }
+          }
+        ];
+      }
+    }
+  };
+
+  vm.runInNewContext(`
+    ${extractFunction(script, 'getRowSelectionKey')}
+    ${extractFunction(script, 'captureRowSelectionState')}
+    ${extractFunction(script, 'restoreRowSelectionState')}
+  `, sandbox);
+
+  const selectionState = sandbox.captureRowSelectionState();
+  const preservedRow = {
+    dataset: { channelId: '1', model: 'gpt-4.1' },
+    querySelector(selector) {
+      if (selector === '.row-checkbox') return this.checkbox;
+      return null;
+    },
+    checkbox: { checked: true }
+  };
+  sandbox.restoreRowSelectionState(preservedRow, selectionState, true);
+  assert.equal(preservedRow.checkbox.checked, false);
+
+  const newRow = {
+    dataset: { channelId: '3', model: 'gpt-4.1' },
+    querySelector(selector) {
+      if (selector === '.row-checkbox') return this.checkbox;
+      return null;
+    },
+    checkbox: { checked: false }
+  };
+  sandbox.restoreRowSelectionState(newRow, selectionState, true);
+  assert.equal(newRow.checkbox.checked, true);
+});
+
 test('model-test 页渠道按钮去掉默认按钮边框和底色', () => {
   assert.match(sharedCss, /\.model-test-table\s+\.channel-link\s*\{[\s\S]*?padding:\s*0;[\s\S]*?border:\s*none;[\s\S]*?background:\s*transparent;/);
 });
 
-test('切换渠道类型时，模型输入框会切到新类型下的有效模型', () => {
+test('按协议测试时模型模式按类型和协议联动模型与渠道', () => {
   const sandbox = {
+    ALL_PROTOCOLS: ['anthropic', 'codex', 'openai', 'gemini'],
+    selectedModelType: 'anthropic',
     channelsList: [
-      { channel_type: 'openai', models: ['gpt-5.4', 'gpt-4.1'] },
-      { channel_type: 'anthropic', models: ['claude-code', 'claude-sonnet-4'] }
-    ],
-    selectedModelName: 'gpt-5.4',
-    typeSelect: { value: 'anthropic' },
-    modelSelect: { value: 'gpt-5.4' },
-    modelSelectCombobox: null
+      { id: 1, name: 'native-anthropic-a', channel_type: 'anthropic', protocol_transforms: [], priority: 10, models: ['claude-4'] },
+      { id: 2, name: 'native-openai', channel_type: 'openai', protocol_transforms: [], priority: 5, models: ['gpt-4.1'] },
+      { id: 3, name: 'native-anthropic', channel_type: 'anthropic', protocol_transforms: [], priority: 3, models: ['claude-3.7'] }
+    ]
   };
 
   vm.runInNewContext(`
     ${extractFunction(script, 'getModelName')}
+    ${extractFunction(script, 'normalizeProtocol')}
     ${extractFunction(script, 'getChannelType')}
-    ${extractFunction(script, 'getAllModelsInType')}
-    ${extractFunction(script, 'getModelInputValue')}
-    ${extractFunction(script, 'setModelInputValue')}
+    ${extractFunction(script, 'getSupportedProtocols')}
+    ${extractFunction(script, 'channelSupportsProtocol')}
+    ${extractFunction(script, 'channelMatchesModelType')}
+    ${extractFunction(script, 'isModelSupported')}
+    ${extractFunction(script, 'getAllModelsForProtocol')}
+    ${extractFunction(script, 'getChannelsSupportingModel')}
+  `, sandbox);
+
+  assert.deepEqual(Array.from(sandbox.getAllModelsForProtocol('openai')), ['claude-3.7', 'claude-4']);
+  assert.deepEqual(Array.from(sandbox.getAllModelsForProtocol('anthropic')), ['claude-3.7', 'claude-4']);
+  assert.deepEqual(
+    sandbox.getChannelsSupportingModel('openai', 'claude-3.7').map((channel) => channel.id),
+    [3]
+  );
+  sandbox.selectedModelType = 'openai';
+  assert.deepEqual(Array.from(sandbox.getAllModelsForProtocol('openai')), ['gpt-4.1']);
+  assert.deepEqual(
+    sandbox.getChannelsSupportingModel('openai', 'gpt-4.1').map((channel) => channel.id),
+    [2]
+  );
+});
+
+test('切换类型后会回退到该类型下的首个可用模型', () => {
+  const sandbox = {
+    TEST_MODE_MODEL: 'model',
+    TEST_MODE_CHANNEL: 'channel',
+    testMode: 'model',
+    selectedProtocol: 'openai',
+    selectedModelType: 'openai',
+    selectedModelName: 'claude-4',
+    channelsList: [
+      { id: 1, channel_type: 'anthropic', models: ['claude-4'] },
+      { id: 2, channel_type: 'openai', models: ['gpt-4.1', 'gpt-4.1-mini'] }
+    ],
+    modelSelectCombobox: { refreshCalled: 0, refresh() { this.refreshCalled += 1; } },
+    lastModelValue: '',
+    setModelInputValue(value) { globalThis.lastModelValue = value; },
+    getModelInputValue() { return ''; },
+    ALL_PROTOCOLS: ['anthropic', 'codex', 'openai', 'gemini']
+  };
+
+  vm.runInNewContext(`
+    ${extractFunction(script, 'normalizeProtocol')}
+    ${extractFunction(script, 'getModelName')}
+    ${extractFunction(script, 'getChannelType')}
+    ${extractFunction(script, 'getSupportedProtocols')}
+    ${extractFunction(script, 'channelSupportsProtocol')}
+    ${extractFunction(script, 'channelMatchesModelType')}
+    ${extractFunction(script, 'getAvailableChannelTypes')}
+    ${extractFunction(script, 'ensureSelectedModelType')}
+    ${extractFunction(script, 'getAllModelsForProtocol')}
     ${extractFunction(script, 'populateModelSelector')}
   `, sandbox);
 
   sandbox.populateModelSelector();
+  assert.equal(sandbox.selectedModelName, 'gpt-4.1');
+  assert.equal(sandbox.modelSelectCombobox.refreshCalled, 1);
+});
 
-  assert.equal(sandbox.selectedModelName, 'claude-code');
-  assert.equal(sandbox.modelSelect.value, 'claude-code');
+test('model-test.js 开始测试时发送 protocol_transform 而不是 channel_type', () => {
+  assert.match(script, /const selectedProtocol = protocolTransform;/);
+  assert.match(script, /protocol_transform:\s*selectedProtocol/);
+  assert.doesNotMatch(script, /body:\s*JSON\.stringify\(\{[\s\S]*channel_type:\s*channelType[\s\S]*\}\)/);
+});
+
+test('切换渠道后协议默认回退到渠道原生协议', () => {
+  assert.match(script, /selectedProtocol\s*=\s*getChannelType\(selectedChannel\)/);
+});
+
+test('按渠道测试时重渲染不会覆盖用户已选的协议转换', () => {
+  const sandbox = {
+    ALL_PROTOCOLS: ['anthropic', 'codex', 'openai', 'gemini'],
+    TEST_MODE_CHANNEL: 'channel',
+    TEST_MODE_MODEL: 'model',
+    testMode: 'channel',
+    selectedProtocol: 'openai',
+    selectedChannel: {
+      channel_type: 'anthropic',
+      protocol_transforms: ['openai']
+    },
+    channelsList: []
+  };
+
+  vm.runInNewContext(`
+    ${extractFunction(script, 'normalizeProtocol')}
+    ${extractFunction(script, 'getChannelType')}
+    ${extractFunction(script, 'getSupportedProtocols')}
+    ${extractFunction(script, 'ensureSelectedProtocolForCurrentMode')}
+  `, sandbox);
+
+  sandbox.ensureSelectedProtocolForCurrentMode();
+  assert.equal(sandbox.selectedProtocol, 'openai');
+});
+
+test('按渠道测试时协议选项不再因渠道未配置 protocol_transforms 而禁用', () => {
+  const sandbox = {
+    TEST_MODE_CHANNEL: 'channel',
+    TEST_MODE_MODEL: 'model',
+    testMode: 'channel',
+    selectedProtocol: 'anthropic',
+    selectedChannel: {
+      channel_type: 'anthropic',
+      protocol_transforms: []
+    },
+    channelsList: [],
+    ALL_PROTOCOLS: ['anthropic', 'codex', 'openai', 'gemini'],
+    protocolTransformOptions: { innerHTML: '' },
+    protocolLabel(protocol) {
+      return protocol;
+    }
+  };
+
+  vm.runInNewContext(`
+    ${extractFunction(script, 'normalizeProtocol')}
+    ${extractFunction(script, 'getChannelType')}
+    ${extractFunction(script, 'getSupportedProtocols')}
+    ${extractFunction(script, 'ensureSelectedProtocolForCurrentMode')}
+    ${extractFunction(script, 'renderProtocolTransformOptions')}
+  `, sandbox);
+
+  sandbox.renderProtocolTransformOptions();
+  assert.doesNotMatch(sandbox.protocolTransformOptions.innerHTML, /\bdisabled\b/);
 });
 
 test('applyTestResultToRow 在失败时优先展示结构化上游错误而不是泛化状态文案', () => {

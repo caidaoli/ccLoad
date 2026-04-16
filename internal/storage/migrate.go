@@ -31,11 +31,13 @@ const (
 // sqliteMigratableTables 允许增量迁移的SQLite表名白名单
 // 安全设计：防止SQL注入，新增表时需在此处注册
 var sqliteMigratableTables = map[string]bool{
-	"logs":              true,
-	"auth_tokens":       true,
-	"channel_models":    true,
-	"channels":          true,
-	"schema_migrations": true,
+	"logs":                        true,
+	"auth_tokens":                 true,
+	"channel_models":              true,
+	"channel_protocol_transforms": true,
+	"channels":                    true,
+	"debug_logs":                  true,
+	"schema_migrations":           true,
 }
 
 // migrateSQLite 执行SQLite数据库迁移
@@ -56,10 +58,12 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		schema.DefineChannelsTable,
 		schema.DefineAPIKeysTable,
 		schema.DefineChannelModelsTable,
+		schema.DefineChannelProtocolTransformsTable,
 		schema.DefineAuthTokensTable,
 		schema.DefineSystemSettingsTable,
 		schema.DefineAdminSessionsTable,
 		schema.DefineLogsTable,
+		schema.DefineDebugLogsTable,
 	}
 
 	// 创建表和索引
@@ -82,6 +86,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		if tb.Name() == "channels" {
 			if err := ensureChannelsDailyCostLimit(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels daily_cost_limit: %w", err)
+			}
+			if err := ensureChannelsProtocolTransformMode(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate channels protocol_transform_mode: %w", err)
 			}
 			if err := ensureChannelsScheduledCheckEnabled(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels scheduled_check_enabled: %w", err)
@@ -705,6 +712,9 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"health_min_confident_sample", "20", "int", "置信样本量阈值(样本量达到此值时惩罚全额生效)", "20"},
 		// 冷却兜底配置
 		{"cooldown_fallback_enabled", "true", "bool", "所有渠道冷却时选最优渠道兜底(关闭则直接拒绝请求)", "true"},
+		// Debug日志配置
+		{"debug_log_enabled", "false", "bool", "启用Debug日志(记录上游请求/响应原始数据)", "false"},
+		{"debug_log_retention_minutes", "5", "int", "Debug日志保留时长(分钟,1-1440)", "5"},
 	}
 
 	var query string
@@ -1317,6 +1327,30 @@ func migrateChannelsURLToText(ctx context.Context, db *sql.DB, dialect Dialect) 
 	}
 	log.Printf("[MIGRATE] Modified channels.url: VARCHAR → TEXT")
 	return nil
+}
+
+func ensureChannelsProtocolTransformMode(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if dialect == DialectMySQL {
+		var count int
+		err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channels' AND COLUMN_NAME='protocol_transform_mode'",
+		).Scan(&count)
+		if err != nil {
+			return fmt.Errorf("check protocol_transform_mode field: %w", err)
+		}
+		if count == 0 {
+			if _, err := db.ExecContext(ctx,
+				"ALTER TABLE channels ADD COLUMN protocol_transform_mode VARCHAR(32) NOT NULL DEFAULT 'local'"); err != nil {
+				return fmt.Errorf("add protocol_transform_mode column: %w", err)
+			}
+			log.Printf("[MIGRATE] Added channels.protocol_transform_mode column")
+		}
+		return nil
+	}
+
+	return ensureSQLiteColumns(ctx, db, "channels", []sqliteColumnDef{
+		{name: "protocol_transform_mode", definition: "TEXT NOT NULL DEFAULT 'local'"},
+	})
 }
 
 // ensureChannelsDailyCostLimit 确保channels表有daily_cost_limit字段

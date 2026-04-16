@@ -14,6 +14,7 @@ import (
 
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
 
 	"github.com/bytedance/sonic"
@@ -100,6 +101,9 @@ type fwResult struct {
 	// OpenAI service_tier（2026-03新增）
 	// 响应中的 service_tier 字段决定计费倍率：priority=2x, flex=0.5x, default=1x
 	ServiceTier string
+
+	// Debug日志数据（debug开启时填充，传递到日志写入管道）
+	DebugData *model.DebugLogEntry
 }
 
 // ForwardObserver 封装转发过程中的观测回调（遵循SRP，避免函数签名膨胀）
@@ -111,20 +115,23 @@ type ForwardObserver struct {
 // proxyRequestContext 代理请求上下文（封装请求信息，遵循DIP原则）
 type proxyRequestContext struct {
 	originalModel    string
+	clientProtocol   protocol.Protocol
 	requestMethod    string
 	requestPath      string
 	rawQuery         string
 	body             []byte
+	translatedBody   []byte
 	header           http.Header
 	isStreaming      bool
-	tokenHash        string           // Token哈希值（用于统计）
-	tokenID          int64            // Token ID（用于日志记录，0表示未使用token）
-	clientIP         string           // 客户端IP地址（用于日志记录）
-	activeReqID      int64            // 活跃请求ID（用于更新渠道信息）
-	observer         *ForwardObserver // 转发观测回调（可选）
-	startTime        time.Time        // 请求开始时间（用于统计）
-	attemptStartTime time.Time        // 渠道尝试开始时间（用于日志记录）
-	baseURL          string           // 当前尝试使用的上游URL（多URL场景）
+	tokenHash        string               // Token哈希值（用于统计）
+	tokenID          int64                // Token ID（用于日志记录，0表示未使用token）
+	clientIP         string               // 客户端IP地址（用于日志记录）
+	activeReqID      int64                // 活跃请求ID（用于更新渠道信息）
+	observer         *ForwardObserver     // 转发观测回调（可选）
+	startTime        time.Time            // 请求开始时间（用于统计）
+	attemptStartTime time.Time            // 渠道尝试开始时间（用于日志记录）
+	baseURL          string               // 当前尝试使用的上游URL（多URL场景）
+	debugData        *model.DebugLogEntry // Debug日志数据（debug开启时填充）
 }
 
 // proxyResult 代理请求结果
@@ -159,10 +166,10 @@ func isStreamingRequest(path string, body []byte) bool {
 
 	// Claude/OpenAI流式请求特征：请求体中 stream=true
 	var reqModel struct {
-		Stream bool `json:"stream"`
+		Stream util.FlexibleBool `json:"stream"`
 	}
 	_ = sonic.Unmarshal(body, &reqModel)
-	return reqModel.Stream
+	return reqModel.Stream.Bool()
 }
 
 // ============================================================================
@@ -370,6 +377,25 @@ func replaceModelInPath(path string, originalModel string, actualModel string) s
 	return strings.Replace(path, originalModel, actualModel, 1)
 }
 
+func buildGeminiGeneratePath(model string, isStreaming bool) string {
+	if isStreaming {
+		return "/v1beta/models/" + model + ":streamGenerateContent"
+	}
+	return "/v1beta/models/" + model + ":generateContent"
+}
+
+func buildAnthropicMessagesPath() string {
+	return "/v1/messages"
+}
+
+func buildOpenAIChatPath() string {
+	return "/v1/chat/completions"
+}
+
+func buildCodexResponsesPath() string {
+	return "/v1/responses"
+}
+
 // prepareRequestBody 准备请求体（处理模型重定向和模糊匹配）
 // 遵循SRP原则：单一职责 - 负责模型名解析和请求体准备
 //
@@ -546,7 +572,8 @@ type logEntryParams struct {
 	BaseURL      string // 请求使用的上游URL
 	Result       *fwResult
 	ErrMsg       string
-	StartTime    time.Time // 渠道尝试开始时间（用于日志记录）
+	StartTime    time.Time            // 渠道尝试开始时间（用于日志记录）
+	DebugData    *model.DebugLogEntry // Debug日志数据
 }
 
 // buildLogEntry 构建日志条目（消除重复代码，遵循DRY原则）
@@ -650,6 +677,7 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		entry.Message = "unknown"
 	}
 
+	entry.DebugData = p.DebugData
 	return entry
 }
 
