@@ -614,8 +614,31 @@
       width: 220px;
       min-width: 220px;
       max-width: 220px;
+      position: relative;
       white-space: nowrap;
       text-align: right;
+    }
+
+    .ch-actions-stack {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      width: 100%;
+      min-height: 32px;
+    }
+
+    .ch-action-statuses {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      display: flex;
+      justify-content: flex-end;
+      width: 100%;
+      pointer-events: none;
+    }
+
+    .ch-action-statuses:empty {
+      display: none;
     }
 
     /* 渠道名称行 */
@@ -2645,6 +2668,21 @@
         justify-content: center;
         margin: 0 auto;
         max-width: 100%;
+      }
+
+      .channel-table .ch-actions-stack {
+        flex-direction: column;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 6px;
+        min-height: 0;
+        padding-top: 0;
+      }
+
+      .channel-table .ch-action-statuses {
+        position: static;
+        justify-content: center;
+        pointer-events: auto;
       }
 
       .channel-table .ch-action-group::-webkit-scrollbar {

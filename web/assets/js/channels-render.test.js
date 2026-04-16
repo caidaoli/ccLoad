@@ -153,6 +153,19 @@ test('buildProtocolTransformBadges 按完整协议集合渲染额外协议并去
   assert.match(html, /Protocol Transforms: OpenAI/);
 });
 
+test('buildChannelTypeBadge 与协议标签使用一致的字号和字重', () => {
+  const { buildChannelTypeBadge } = loadRenderHelpers();
+
+  const html = buildChannelTypeBadge('codex');
+
+  assert.match(html, /font-size:\s*0\.68rem/);
+  assert.match(html, /font-weight:\s*600/);
+  assert.match(html, /padding:\s*2px 6px/);
+  assert.match(html, /line-height:\s*1/);
+  assert.doesNotMatch(html, /text-transform:\s*uppercase/);
+  assert.doesNotMatch(html, /letter-spacing:/);
+});
+
 test('createChannelCard 会把额外协议标签传给渠道卡片模板且保留上游协议徽章', () => {
   const { createChannelCard } = loadRenderHelpers();
 
