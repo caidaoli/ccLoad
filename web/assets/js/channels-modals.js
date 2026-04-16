@@ -30,6 +30,23 @@ function protocolTransformModeLabel(mode) {
   return window.t ? window.t(key) : key;
 }
 
+function i18nText(key, fallback) {
+  if (!window.t) return fallback;
+
+  const translated = window.t(key);
+  return translated && translated !== key ? translated : fallback;
+}
+
+function protocolTransformHintMarkup(protocol) {
+  if (protocol !== 'gemini') return '';
+
+  return `
+          <span class="channel-editor-radio-hint" data-i18n="channels.modal.protocolTransformsHint">
+            ${i18nText('channels.modal.protocolTransformsHint', '额外暴露协议,不含原生上游协议(实验性)')}
+          </span>
+        `;
+}
+
 function normalizeProtocolTransformSelection(channelType, selectedValues) {
   return window.ChannelProtocolConfig.normalizeProtocolTransformsForChannel(channelType, selectedValues);
 }
@@ -44,6 +61,9 @@ function renderProtocolTransformOptions(channelType, selectedValues = []) {
   container.innerHTML = options.map((protocol) => {
     const disabled = protocol === currentType;
     const checked = !disabled && selected.has(protocol);
+    const copyClass = protocol === 'gemini'
+      ? 'channel-editor-radio-option-copy channel-editor-radio-option-copy--with-hint'
+      : 'channel-editor-radio-option-copy';
     return `
       <label class="channel-editor-radio-option">
         <input type="checkbox"
@@ -52,7 +72,10 @@ function renderProtocolTransformOptions(channelType, selectedValues = []) {
                ${checked ? 'checked' : ''}
                ${disabled ? 'disabled' : ''}
         >
-        <span>${protocolTransformLabel(protocol)}${disabled ? ` (${window.t ? window.t('channels.protocolTransformNative') : '原生'})` : ''}</span>
+        <span class="${copyClass}">
+          <span class="channel-editor-radio-option-text">${protocolTransformLabel(protocol)}${disabled ? ` (${i18nText('channels.protocolTransformNative', '原生')})` : ''}</span>
+          ${protocolTransformHintMarkup(protocol)}
+        </span>
       </label>
     `;
   }).join('');
@@ -1338,39 +1361,6 @@ function initRedirectTableEventDelegation() {
         fromInput.value = lowercased;
         updateRedirectRow(index, 'model', lowercased);
       }
-    }
-  });
-
-  // 处理按钮悬停样式
-  tbody.addEventListener('mouseover', (e) => {
-    const deleteBtn = e.target.closest('.redirect-delete-btn');
-    if (deleteBtn) {
-      deleteBtn.style.background = 'var(--error-50)';
-      deleteBtn.style.borderColor = 'var(--error-500)';
-      return;
-    }
-
-    const lowercaseBtn = e.target.closest('.lowercase-btn');
-    if (lowercaseBtn) {
-      lowercaseBtn.style.background = 'var(--primary-50)';
-      lowercaseBtn.style.borderColor = 'var(--primary-500)';
-      lowercaseBtn.style.color = 'var(--primary-600)';
-    }
-  });
-
-  tbody.addEventListener('mouseout', (e) => {
-    const deleteBtn = e.target.closest('.redirect-delete-btn');
-    if (deleteBtn) {
-      deleteBtn.style.background = 'white';
-      deleteBtn.style.borderColor = 'var(--error-300)';
-      return;
-    }
-
-    const lowercaseBtn = e.target.closest('.lowercase-btn');
-    if (lowercaseBtn) {
-      lowercaseBtn.style.background = 'white';
-      lowercaseBtn.style.borderColor = 'var(--neutral-300)';
-      lowercaseBtn.style.color = 'var(--neutral-500)';
     }
   });
 }

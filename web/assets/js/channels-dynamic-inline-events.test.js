@@ -61,3 +61,11 @@ test('channels-modals.js 在 redirect 表体委托处理模型复选框', () => 
   assert.match(channelsModalsScript, /const checkbox = e\.target\.closest\('\.model-checkbox'\);/);
   assert.match(channelsModalsScript, /toggleModelSelection\(index, checkbox\.checked\);/);
 });
+
+test('channels-modals.js 不再手工写模型行按钮 hover 样式，避免鼠标移出后残留边框', () => {
+  assert.doesNotMatch(channelsModalsScript, /tbody\.addEventListener\('mouseover', \(e\) => \{/);
+  assert.doesNotMatch(channelsModalsScript, /tbody\.addEventListener\('mouseout', \(e\) => \{/);
+  assert.doesNotMatch(channelsModalsScript, /deleteBtn\.style\.borderColor = 'var\(--error-500\)'/);
+  assert.doesNotMatch(channelsModalsScript, /deleteBtn\.style\.borderColor = 'var\(--error-300\)'/);
+  assert.doesNotMatch(channelsModalsScript, /lowercaseBtn\.style\.borderColor = 'var\(--primary-500\)'/);
+});
