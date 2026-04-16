@@ -273,7 +273,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.modal.upstreamProtocol': '上游协议',
   'channels.modal.protocolTransforms': '协议转换',
   'channels.modal.protocolTransformMode': '转换方式',
-  'channels.modal.protocolTransformsHint': '仅声明额外暴露协议，不包含原生上游协议（实验性）',
+  'channels.modal.protocolTransformsHint': '额外暴露协议,不含原生上游协议(实验性)',
   'channels.modal.keyStrategy': 'Key策略',
   'channels.modal.keyStrategySequential': '顺序',
   'channels.modal.keyStrategyRoundRobin': '轮询',

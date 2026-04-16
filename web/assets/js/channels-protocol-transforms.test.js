@@ -396,13 +396,28 @@ function createHarness({
   };
 }
 
-test('channels 编辑弹窗包含协议转换容器和提示文案', () => {
+test('channels 编辑弹窗按两行两列展示协议配置', () => {
   assert.match(html, /id="protocolTransformsContainer"/);
   assert.match(html, /id="protocolTransformModeContainer"/);
-  assert.match(html, /data-i18n="channels\.modal\.upstreamProtocol"/);
-  assert.match(html, /<label class="form-label channel-editor-inline-label"[\s\S]*?data-i18n="channels\.modal\.protocolTransforms">协议转换<\/label>/);
-  assert.match(html, /data-i18n="channels\.modal\.protocolTransformMode"/);
-  assert.match(html, /data-i18n="channels\.modal\.protocolTransformsHint"/);
+  assert.match(
+    html,
+    /class="channel-editor-primary-row"[\s\S]*?class="channel-editor-primary-field channel-editor-primary-field--name"[\s\S]*?data-i18n="channels\.channelName"[\s\S]*?class="channel-editor-primary-field channel-editor-primary-field--type"[\s\S]*?data-i18n="channels\.modal\.upstreamProtocol"[\s\S]*?id="channelTypeRadios"/
+  );
+  assert.match(
+    html,
+    /class="channel-editor-primary-row"[\s\S]*?class="channel-editor-primary-field channel-editor-primary-field--transforms"[\s\S]*?data-i18n="channels\.modal\.protocolTransforms"[\s\S]*?id="protocolTransformsContainer"[\s\S]*?class="channel-editor-primary-field channel-editor-primary-field--mode"[\s\S]*?data-i18n="channels\.modal\.protocolTransformMode"[\s\S]*?id="protocolTransformModeContainer"/
+  );
+});
+
+test('Gemini 协议转换选项在标签后内联渲染实验性提示', () => {
+  const harness = createHarness();
+
+  harness.api.renderProtocolTransformOptions('anthropic', ['gemini']);
+
+  assert.match(
+    harness.elements.protocolTransformsContainer.innerHTML,
+    /value="gemini"[\s\S]*?channel-editor-radio-option-copy--with-hint[\s\S]*?>Gemini<\/span>[\s\S]*?class="channel-editor-radio-hint"[\s\S]*?data-i18n="channels\.modal\.protocolTransformsHint"[\s\S]*?额外暴露协议,不含原生上游协议\(实验性\)/
+  );
 });
 
 test('切换 channel type 后会禁用并剔除原生 protocol transform，仅保留额外协议', async () => {
