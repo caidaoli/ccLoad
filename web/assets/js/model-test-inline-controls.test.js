@@ -165,7 +165,7 @@ test('按协议测试时模型模式按类型和协议联动模型与渠道', ()
     channelsList: [
       { id: 1, name: 'native-anthropic-a', channel_type: 'anthropic', protocol_transforms: [], priority: 10, models: ['claude-4'] },
       { id: 2, name: 'native-openai', channel_type: 'openai', protocol_transforms: [], priority: 5, models: ['gpt-4.1'] },
-      { id: 3, name: 'native-anthropic', channel_type: 'anthropic', protocol_transforms: [], priority: 3, models: ['claude-3.7'] }
+      { id: 3, name: 'anthropic-openai-transform', channel_type: 'anthropic', protocol_transforms: ['openai'], priority: 3, models: ['claude-3.7'] }
     ]
   };
 
@@ -173,7 +173,9 @@ test('按协议测试时模型模式按类型和协议联动模型与渠道', ()
     ${extractFunction(script, 'getModelName')}
     ${extractFunction(script, 'normalizeProtocol')}
     ${extractFunction(script, 'getChannelType')}
+    ${extractFunction(script, 'getExposedProtocols')}
     ${extractFunction(script, 'getSupportedProtocols')}
+    ${extractFunction(script, 'channelExposesProtocol')}
     ${extractFunction(script, 'channelSupportsProtocol')}
     ${extractFunction(script, 'channelMatchesModelType')}
     ${extractFunction(script, 'isModelSupported')}
@@ -181,7 +183,7 @@ test('按协议测试时模型模式按类型和协议联动模型与渠道', ()
     ${extractFunction(script, 'getChannelsSupportingModel')}
   `, sandbox);
 
-  assert.deepEqual(Array.from(sandbox.getAllModelsForProtocol('openai')), ['claude-3.7', 'claude-4']);
+  assert.deepEqual(Array.from(sandbox.getAllModelsForProtocol('openai')), ['claude-3.7']);
   assert.deepEqual(Array.from(sandbox.getAllModelsForProtocol('anthropic')), ['claude-3.7', 'claude-4']);
   assert.deepEqual(
     sandbox.getChannelsSupportingModel('openai', 'claude-3.7').map((channel) => channel.id),
@@ -192,6 +194,38 @@ test('按协议测试时模型模式按类型和协议联动模型与渠道', ()
   assert.deepEqual(
     sandbox.getChannelsSupportingModel('openai', 'gpt-4.1').map((channel) => channel.id),
     [2]
+  );
+});
+
+test('按模型测试时已选模型会同时显示原生和协议转换支持的渠道', () => {
+  const sandbox = {
+    ALL_PROTOCOLS: ['anthropic', 'codex', 'openai', 'gemini'],
+    selectedModelType: 'anthropic',
+    channelsList: [
+      { id: 1, name: 'openai-native', channel_type: 'openai', protocol_transforms: [], priority: 50, models: ['gpt-5.4'] },
+      { id: 2, name: 'anthropic-native', channel_type: 'anthropic', protocol_transforms: [], priority: 40, models: ['gpt-5.4'] },
+      { id: 3, name: 'codex-anthropic-transform', channel_type: 'codex', protocol_transforms: ['anthropic'], priority: 35, models: ['gpt-5.4'] },
+      { id: 4, name: 'openai-anthropic-transform', channel_type: 'openai', protocol_transforms: ['anthropic'], priority: 30, models: ['gpt-5.4'] },
+      { id: 5, name: 'openai-other-model', channel_type: 'openai', protocol_transforms: ['anthropic'], priority: 45, models: ['gpt-4.1'] }
+    ]
+  };
+
+  vm.runInNewContext(`
+    ${extractFunction(script, 'getModelName')}
+    ${extractFunction(script, 'normalizeProtocol')}
+    ${extractFunction(script, 'getChannelType')}
+    ${extractFunction(script, 'getExposedProtocols')}
+    ${extractFunction(script, 'getSupportedProtocols')}
+    ${extractFunction(script, 'channelExposesProtocol')}
+    ${extractFunction(script, 'channelSupportsProtocol')}
+    ${extractFunction(script, 'channelMatchesModelType')}
+    ${extractFunction(script, 'isModelSupported')}
+    ${extractFunction(script, 'getChannelsSupportingModel')}
+  `, sandbox);
+
+  assert.deepEqual(
+    sandbox.getChannelsSupportingModel('anthropic', 'gpt-5.4').map((channel) => channel.id),
+    [2, 3, 4]
   );
 });
 
@@ -218,7 +252,9 @@ test('切换类型后会回退到该类型下的首个可用模型', () => {
     ${extractFunction(script, 'normalizeProtocol')}
     ${extractFunction(script, 'getModelName')}
     ${extractFunction(script, 'getChannelType')}
+    ${extractFunction(script, 'getExposedProtocols')}
     ${extractFunction(script, 'getSupportedProtocols')}
+    ${extractFunction(script, 'channelExposesProtocol')}
     ${extractFunction(script, 'channelSupportsProtocol')}
     ${extractFunction(script, 'channelMatchesModelType')}
     ${extractFunction(script, 'getAvailableChannelTypes')}

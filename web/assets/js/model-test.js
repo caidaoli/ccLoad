@@ -563,6 +563,23 @@ function getSupportedProtocols(channel) {
   return [...ALL_PROTOCOLS];
 }
 
+function getExposedProtocols(channel) {
+  const upstreamProtocol = getChannelType(channel);
+  const protocols = new Set([upstreamProtocol]);
+  const transforms = Array.isArray(channel?.protocol_transforms) ? channel.protocol_transforms : [];
+  transforms.forEach((protocol) => {
+    const normalized = normalizeProtocol(protocol);
+    if (!normalized || normalized === upstreamProtocol) return;
+    if (!ALL_PROTOCOLS.includes(normalized)) return;
+    protocols.add(normalized);
+  });
+  return Array.from(protocols);
+}
+
+function channelExposesProtocol(channel, protocol) {
+  return getExposedProtocols(channel).includes(normalizeProtocol(protocol));
+}
+
 function channelSupportsProtocol(channel, protocol) {
   return getSupportedProtocols(channel).includes(normalizeProtocol(protocol));
 }
@@ -572,7 +589,7 @@ function getAllModelsForProtocol(protocol) {
   const modelSet = new Set();
   channelsList.forEach(ch => {
     if (!channelMatchesModelType(ch)) return;
-    if (!channelSupportsProtocol(ch, normalizedProtocol)) return;
+    if (!channelExposesProtocol(ch, normalizedProtocol)) return;
     (ch.models || []).forEach(entry => {
       const modelName = getModelName(entry);
       if (modelName) modelSet.add(modelName);
@@ -631,7 +648,8 @@ function isModelSupported(channel, modelName) {
 function getChannelsSupportingModel(protocol, modelName) {
   const normalizedProtocol = normalizeProtocol(protocol);
   return channelsList
-    .filter(ch => channelMatchesModelType(ch) && channelSupportsProtocol(ch, normalizedProtocol) && isModelSupported(ch, modelName))
+    // 模型类型只用于缩小模型候选，不应把同模型的转换渠道挡掉。
+    .filter(ch => channelExposesProtocol(ch, normalizedProtocol) && isModelSupported(ch, modelName))
     .sort((a, b) => b.priority - a.priority || a.name.localeCompare(b.name));
 }
 
