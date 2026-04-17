@@ -324,6 +324,37 @@ func injectAnthropicBetaFlag(req *http.Request, flag string) {
 	req.Header.Set("anthropic-beta", existing+","+flag)
 }
 
+// maybeInjectAnyrouterAdaptiveThinking 为 anyrouter 渠道的 /v1/messages 请求注入 adaptive thinking。
+// Why: anyrouter 在上游侧要求显式声明 thinking.type=adaptive 才能启用自适应思考，缺失时行为不可预期。
+// How to apply: 仅对 Anthropic 渠道、名称含 anyrouter、路径为 /v1/messages 且 body 尚未声明 thinking 时生效。
+func maybeInjectAnyrouterAdaptiveThinking(cfg *model.Config, requestPath string, body []byte) []byte {
+	if len(body) == 0 || cfg == nil {
+		return body
+	}
+	if cfg.GetChannelType() != util.ChannelTypeAnthropic {
+		return body
+	}
+	if !strings.Contains(strings.ToLower(cfg.Name), "anyrouter") {
+		return body
+	}
+	if requestPath != "/v1/messages" {
+		return body
+	}
+	var obj map[string]any
+	if err := sonic.Unmarshal(body, &obj); err != nil {
+		return body
+	}
+	if _, ok := obj["thinking"]; ok {
+		return body
+	}
+	obj["thinking"] = map[string]string{"type": "adaptive"}
+	newBody, err := sonic.Marshal(obj)
+	if err != nil {
+		return body
+	}
+	return newBody
+}
+
 // filterAndWriteResponseHeaders 过滤并写回响应头（DRY）
 // Go Transport 仅自动解压 gzip（当 DisableCompression=false 且请求无 Accept-Encoding 时）
 // 对于 br/deflate 等其他编码，必须保留 Content-Encoding 让客户端自行解压
