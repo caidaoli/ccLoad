@@ -154,10 +154,10 @@ func DefineLogsTable() *TableBuilder {
 }
 
 // DefineDebugLogsTable 定义debug_logs表结构（上游请求/响应原始数据）
+// log_id 与 logs.id 1:1 对应，直接作为主键，无需独立自增ID
 func DefineDebugLogsTable() *TableBuilder {
 	return NewTable("debug_logs").
-		Column("id INT PRIMARY KEY AUTO_INCREMENT").
-		Column("log_id BIGINT NOT NULL DEFAULT 0").
+		Column("log_id BIGINT PRIMARY KEY").
 		Column("created_at BIGINT NOT NULL").
 		Column("req_method VARCHAR(10) NOT NULL DEFAULT ''").
 		Column("req_url TEXT NOT NULL").
@@ -166,6 +166,5 @@ func DefineDebugLogsTable() *TableBuilder {
 		Column("resp_status INT NOT NULL DEFAULT 0").
 		Column("resp_headers TEXT NOT NULL").
 		Column("resp_body LONGBLOB NOT NULL").
-		Index("idx_debug_logs_log_id", "log_id").
 		Index("idx_debug_logs_created_at", "created_at")
 }

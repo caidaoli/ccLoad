@@ -87,7 +87,6 @@ func (s *Server) HandleGetDebugLog(c *gin.Context) {
 
 	// 构建响应：body 字段如果是合法 UTF-8 则返回字符串，否则 base64 编码
 	resp := gin.H{
-		"id":           entry.ID,
 		"log_id":       entry.LogID,
 		"created_at":   entry.CreatedAt,
 		"req_method":   entry.ReqMethod,

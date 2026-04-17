@@ -70,6 +70,15 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	for _, defineTable := range tables {
 		tb := defineTable()
 
+		// Pre-create hook: debug_logs 表改用 log_id 作为主键（2026-04 重构）
+		// 旧结构含 id 自增主键，新结构 log_id 为主键；由于调试日志保留期极短（默认5分钟），
+		// 直接重建表而非复杂 ALTER
+		if tb.Name() == "debug_logs" {
+			if err := rebuildDebugLogsPrimaryKey(ctx, db, dialect); err != nil {
+				return fmt.Errorf("rebuild debug_logs primary key: %w", err)
+			}
+		}
+
 		// 创建表
 		if _, err := db.ExecContext(ctx, buildDDL(tb, dialect)); err != nil {
 			return fmt.Errorf("create %s table: %w", tb.Name(), err)
@@ -714,7 +723,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"cooldown_fallback_enabled", "true", "bool", "所有渠道冷却时选最优渠道兜底(关闭则直接拒绝请求)", "true"},
 		// Debug日志配置
 		{"debug_log_enabled", "false", "bool", "启用Debug日志(记录上游请求/响应原始数据)", "false"},
-		{"debug_log_retention_minutes", "5", "int", "Debug日志保留时长(分钟,1-1440)", "5"},
+		{"debug_log_retention_minutes", "2", "int", "Debug日志保留时长(分钟,1-1440)", "2"},
 	}
 
 	var query string
@@ -746,6 +755,15 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 			"upstream_first_byte_timeout",
 		); err != nil {
 			return fmt.Errorf("refresh setting metadata upstream_first_byte_timeout: %w", err)
+		}
+		// debug_log_retention_minutes: 默认值 5 → 2（2026-04），仅刷新 default_value，不覆盖 value
+		if _, err := db.ExecContext(ctx, metaSQL,
+			"Debug日志保留时长(分钟,1-1440)",
+			"2",
+			"int",
+			"debug_log_retention_minutes",
+		); err != nil {
+			return fmt.Errorf("refresh setting metadata debug_log_retention_minutes: %w", err)
 		}
 	}
 
@@ -1549,4 +1567,49 @@ func ensureAuthTokensCostLimit(ctx context.Context, db *sql.DB, dialect Dialect)
 		{name: "cost_used_microusd", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{name: "cost_limit_microusd", definition: "INTEGER NOT NULL DEFAULT 0"},
 	})
+}
+
+// rebuildDebugLogsPrimaryKey 将 debug_logs 旧结构（id 自增主键 + log_id 列）
+// 迁移为新结构（log_id 作为主键）。因调试日志保留期极短（默认5分钟），
+// 直接 DROP 旧表由后续 CREATE TABLE IF NOT EXISTS 重建即可
+const debugLogsPKRebuildVersion = "v1_debug_logs_pk_log_id"
+
+func rebuildDebugLogsPrimaryKey(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if hasMigration(ctx, db, debugLogsPKRebuildVersion) {
+		return nil
+	}
+
+	// 检查旧表是否存在且包含 id 列（新部署首次创建时跳过 DROP）
+	hasLegacy, err := debugLogsHasLegacyIDColumn(ctx, db, dialect)
+	if err != nil {
+		return err
+	}
+	if hasLegacy {
+		if _, err := db.ExecContext(ctx, "DROP TABLE debug_logs"); err != nil {
+			return fmt.Errorf("drop legacy debug_logs: %w", err)
+		}
+		log.Printf("[MIGRATE] Dropped legacy debug_logs table (id-based PK) for rebuild")
+	}
+
+	return recordMigration(ctx, db, debugLogsPKRebuildVersion, dialect)
+}
+
+func debugLogsHasLegacyIDColumn(ctx context.Context, db *sql.DB, dialect Dialect) (bool, error) {
+	if dialect == DialectMySQL {
+		var count int
+		err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='debug_logs' AND COLUMN_NAME='id'",
+		).Scan(&count)
+		if err != nil {
+			return false, fmt.Errorf("check debug_logs.id existence: %w", err)
+		}
+		return count > 0, nil
+	}
+
+	// SQLite: 表不存在时 PRAGMA 返回空结果集，视为无旧列
+	existing, err := sqliteExistingColumns(ctx, db, "debug_logs")
+	if err != nil {
+		return false, nil
+	}
+	return existing["id"], nil
 }

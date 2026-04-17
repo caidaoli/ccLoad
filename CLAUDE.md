@@ -157,7 +157,7 @@ web/               # 前端页面
 - `proxy_debug.go`: 上游请求/响应原始数据捕获（`captureDebugRequest`）
 - `admin_debug_log.go`: 调试日志API（`HandleGetDebugLog`，含敏感头脱敏、base64二进制编码）
 - `model/debug_log.go`: `DebugLogEntry`（req/resp method/url/headers/body）
-- 独立清理策略: 不受普通日志保留天数限制，`DebugLogCleanupInterval=5min`
+- 独立清理策略: 不受普通日志保留天数限制，`DebugLogCleanupInterval=2min`
 
 **关键入口**:
 - `app.Server.HandleProxyRequest()` - 代理请求主入口
