@@ -1711,6 +1711,7 @@ const COMMON_MODELS = {
   anthropic: [
     'claude-haiku-4-5-20251001',
     'claude-opus-4-6',
+    'claude-opus-4-7',
     'claude-sonnet-4-6',
   ],
   codex: [
