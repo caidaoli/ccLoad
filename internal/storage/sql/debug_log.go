@@ -24,11 +24,11 @@ func (s *SQLStore) AddDebugLog(ctx context.Context, e *model.DebugLogEntry) erro
 // GetDebugLogByLogID 根据 log_id 查询调试日志
 func (s *SQLStore) GetDebugLogByLogID(ctx context.Context, logID int64) (*model.DebugLogEntry, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, log_id, created_at, req_method, req_url, req_headers, req_body, resp_status, resp_headers, resp_body
+		SELECT log_id, created_at, req_method, req_url, req_headers, req_body, resp_status, resp_headers, resp_body
 		FROM debug_logs WHERE log_id = ? LIMIT 1`, logID)
 
 	var e model.DebugLogEntry
-	err := row.Scan(&e.ID, &e.LogID, &e.CreatedAt, &e.ReqMethod, &e.ReqURL, &e.ReqHeaders, &e.ReqBody, &e.RespStatus, &e.RespHeaders, &e.RespBody)
+	err := row.Scan(&e.LogID, &e.CreatedAt, &e.ReqMethod, &e.ReqURL, &e.ReqHeaders, &e.ReqBody, &e.RespStatus, &e.RespHeaders, &e.RespBody)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
