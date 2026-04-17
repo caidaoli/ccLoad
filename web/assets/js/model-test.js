@@ -1740,7 +1740,11 @@ function bindEvents() {
   if (modelTypeSelect) {
     modelTypeSelect.addEventListener('change', () => {
       selectedModelType = normalizeProtocol(modelTypeSelect.value) || selectedModelType;
+      if (selectedModelType) {
+        selectedProtocol = selectedModelType;
+      }
       clearProgress();
+      renderProtocolTransformOptions();
       populateModelSelector();
       if (testMode === TEST_MODE_MODEL) {
         renderModelModeRows();
