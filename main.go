@@ -69,7 +69,7 @@ func getTrustedProxies() []string {
 		return nil
 	}
 	var proxies []string
-	for _, p := range strings.Split(v, ",") {
+	for p := range strings.SplitSeq(v, ",") {
 		if p = strings.TrimSpace(p); p != "" {
 			proxies = append(proxies, p)
 		}
