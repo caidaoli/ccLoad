@@ -437,6 +437,11 @@ func (h *HybridStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 		return err
 	}
 
+	// 启用 Debug 日志的条目只保留在 SQLite，不同步到 MySQL（避免上游原始请求/响应体膨胀 MySQL）
+	if e.DebugData != nil {
+		return nil
+	}
+
 	h.enqueueLogSync(&syncTask{
 		operation: "log",
 		data:      &syncTaskLog{entry: cloneLogEntryForSync(e)},
@@ -450,10 +455,18 @@ func (h *HybridStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) 
 		return err
 	}
 
-	if len(logs) > 0 {
+	syncable := make([]*model.LogEntry, 0, len(logs))
+	for _, entry := range logs {
+		if entry == nil || entry.DebugData != nil {
+			continue
+		}
+		syncable = append(syncable, entry)
+	}
+
+	if len(syncable) > 0 {
 		h.enqueueLogSync(&syncTask{
 			operation: "log_batch",
-			data:      &syncTaskLogBatch{entries: cloneLogEntriesForSync(logs)},
+			data:      &syncTaskLogBatch{entries: cloneLogEntriesForSync(syncable)},
 		})
 	}
 
