@@ -165,6 +165,6 @@ func DefineDebugLogsTable() *TableBuilder {
 		Column("req_body LONGBLOB NOT NULL").
 		Column("resp_status INT NOT NULL DEFAULT 0").
 		Column("resp_headers TEXT NOT NULL").
-		Column("resp_body LONGBLOB NOT NULL").
+		Column("resp_body LONGBLOB").
 		Index("idx_debug_logs_created_at", "created_at")
 }
