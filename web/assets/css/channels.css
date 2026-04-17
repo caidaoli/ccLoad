@@ -123,7 +123,7 @@
       max-width: 90vw;
       height: 90vh;
       max-height: 90vh;
-      padding: 24px;
+      padding: 20px;
       display: flex;
       flex-direction: column;
     }
@@ -131,8 +131,7 @@
     .channel-editor-form {
       display: flex;
       flex-direction: column;
-      gap: 14px;
-      min-height: 100%;
+      gap: 10px;
       flex: 1 1 auto;
     }
 
