@@ -2295,7 +2295,7 @@ body {
 
 /* ===== 内联编辑表格（Modal内的Key/模型表格） ===== */
 .inline-table-container {
-  max-height: 250px;
+  max-height: 160px;
   overflow-y: auto;
   overscroll-behavior: contain;
   border: 1px solid var(--neutral-200);
@@ -2304,8 +2304,8 @@ body {
 }
 
 .inline-table-container.tall {
-  max-height: 300px;
-  min-height: 300px;
+  max-height: 280px;
+  min-height: 280px;
 }
 
 .inline-table {
