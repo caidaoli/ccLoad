@@ -77,6 +77,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := rebuildDebugLogsPrimaryKey(ctx, db, dialect); err != nil {
 				return fmt.Errorf("rebuild debug_logs primary key: %w", err)
 			}
+			if err := relaxDebugLogsRespBodyNullable(ctx, db, dialect); err != nil {
+				return fmt.Errorf("relax debug_logs.resp_body nullability: %w", err)
+			}
 		}
 
 		// 创建表
@@ -1592,6 +1595,22 @@ func rebuildDebugLogsPrimaryKey(ctx context.Context, db *sql.DB, dialect Dialect
 	}
 
 	return recordMigration(ctx, db, debugLogsPKRebuildVersion, dialect)
+}
+
+// relaxDebugLogsRespBodyNullable 将 debug_logs.resp_body 从 NOT NULL 放宽为可空
+// （部分请求尚未拿到响应体就写入，NOT NULL 约束会导致批量写入失败）。
+// 调试日志保留期极短，直接 DROP 重建，不迁移旧数据。
+const debugLogsRespBodyNullableVersion = "v2_debug_logs_resp_body_nullable"
+
+func relaxDebugLogsRespBodyNullable(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if hasMigration(ctx, db, debugLogsRespBodyNullableVersion) {
+		return nil
+	}
+	if _, err := db.ExecContext(ctx, "DROP TABLE IF EXISTS debug_logs"); err != nil {
+		return fmt.Errorf("drop debug_logs for resp_body relax: %w", err)
+	}
+	log.Printf("[MIGRATE] Dropped debug_logs table to relax resp_body NOT NULL constraint")
+	return recordMigration(ctx, db, debugLogsRespBodyNullableVersion, dialect)
 }
 
 func debugLogsHasLegacyIDColumn(ctx context.Context, db *sql.DB, dialect Dialect) (bool, error) {
