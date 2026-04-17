@@ -136,6 +136,18 @@ window.initPageBootstrap({
       const modelFilterEl = document.getElementById('modelFilter');
       if (modelFilterEl) modelFilterEl.value = modelFilterInputValueFromFilterValue(filters.model);
     }
+    if (typeof channelNameCombobox !== 'undefined' && channelNameCombobox) {
+      const allLabel = (typeof getChannelNameAllLabel === 'function')
+        ? getChannelNameAllLabel()
+        : ((window.t && window.t('channels.channelNameAll')) || '所有渠道');
+      channelNameCombobox.setValue(filters.search, filters.search || allLabel);
+    } else {
+      const searchInputEl = document.getElementById('searchInput');
+      if (searchInputEl) {
+        const allLabel = (window.t && window.t('channels.channelNameAll')) || '所有渠道';
+        searchInputEl.value = filters.search || allLabel;
+      }
+    }
   }
 
   // 初始化渠道类型筛选器（替换原Tab逻辑）
