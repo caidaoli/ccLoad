@@ -3159,6 +3159,57 @@ body {
   background: rgba(0, 0, 0, 0.03);
 }
 
+.upstream-pre .code-line--foldable {
+  padding-left: calc(3.5ch + 30px + 18px);
+}
+
+.upstream-pre .code-fold-toggle {
+  position: absolute;
+  left: calc(3.5ch + 12px);
+  top: 0;
+  width: 18px;
+  height: 1.6em;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  color: var(--neutral-500);
+  font-size: 13px;
+  line-height: 1.6em;
+  text-align: center;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: color 0.15s, transform 0.15s;
+}
+
+.upstream-pre .code-fold-toggle:hover {
+  color: var(--primary-600);
+}
+
+.upstream-pre .code-line--collapsed .code-fold-toggle {
+  color: var(--primary-600);
+}
+
+.upstream-pre .code-fold-summary {
+  display: none;
+  margin-left: 6px;
+  padding: 0 6px;
+  background: var(--neutral-100);
+  border-radius: 3px;
+  color: var(--neutral-500);
+  font-style: italic;
+  font-size: 12px;
+}
+
+.upstream-pre .code-line--collapsed .code-fold-summary {
+  display: inline;
+}
+
+.upstream-pre .code-line--hidden {
+  display: none;
+}
+
 .upstream-pre .code-line::before {
   content: counter(line-number);
   position: absolute;

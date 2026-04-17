@@ -1337,8 +1337,92 @@
     return escapeCodeHtml(line);
   }
 
-  function renderCodeLines(lines) {
-    return lines.map(line => `<span class="code-line">${line || ''}</span>`).join('');
+  function leadingSpaceCount(line) {
+    let i = 0;
+    while (i < line.length && (line[i] === ' ' || line[i] === '\t')) i++;
+    return i;
+  }
+
+  // 基于缩进配对识别可折叠区间。
+  // rawLines: 字符串数组（折叠分析针对的"逻辑"行，索引与最终渲染行索引一一对应）
+  // 返回 Map<startIndex, { endIndex, count }>，startIndex 指向打开 { 或 [ 的行；
+  // endIndex 指向对应的 } 或 ] 行；count 为可折叠行数（不含起止行）。
+  function computeFoldRegions(rawLines) {
+    const regions = new Map();
+    const stack = [];
+    for (let i = 0; i < rawLines.length; i++) {
+      const raw = rawLines[i] || '';
+      const trimmedRight = raw.replace(/[,\s]+$/, '');
+      const lastChar = trimmedRight.slice(-1);
+      const isOpen = lastChar === '{' || lastChar === '[';
+      const trimmedLeft = raw.trimStart();
+      const firstChar = trimmedLeft[0];
+      const isClose = firstChar === '}' || firstChar === ']';
+      const indent = leadingSpaceCount(raw);
+
+      if (isClose && stack.length) {
+        // 找到匹配的同缩进 open
+        for (let s = stack.length - 1; s >= 0; s--) {
+          if (stack[s].indent === indent) {
+            const opener = stack[s];
+            const span = i - opener.index - 1;
+            if (span >= 1) {
+              regions.set(opener.index, { endIndex: i, count: span });
+            }
+            stack.length = s;
+            break;
+          }
+        }
+      }
+      if (isOpen) {
+        stack.push({ index: i, indent });
+      }
+    }
+    return regions;
+  }
+
+  let foldIdCounter = 0;
+  function nextFoldId() {
+    foldIdCounter += 1;
+    return `f${foldIdCounter}`;
+  }
+
+  function renderCodeLines(lines, foldRegions) {
+    if (!foldRegions || foldRegions.size === 0) {
+      return lines.map(line => `<span class="code-line">${line || ''}</span>`).join('');
+    }
+    // 为每个区间生成 id；保留每行的 ancestor region ids 列表（开区间 s < i < e）。
+    const startToId = new Map();
+    const regionList = []; // {id, start, end, count}
+    for (const [startIdx, info] of foldRegions.entries()) {
+      const id = nextFoldId();
+      startToId.set(startIdx, { id, count: info.count });
+      regionList.push({ id, start: startIdx, end: info.endIndex, count: info.count });
+    }
+    const ancestorIdsAt = (i) => {
+      const ids = [];
+      for (const r of regionList) {
+        if (r.start < i && i < r.end) ids.push(r.id);
+      }
+      return ids;
+    };
+
+    const out = [];
+    for (let i = 0; i < lines.length; i++) {
+      const content = lines[i] || '';
+      const ancestors = ancestorIdsAt(i);
+      const regionAttr = ancestors.length ? ` data-fold-region="${ancestors.join(' ')}"` : '';
+      const startMeta = startToId.get(i);
+      if (startMeta) {
+        const { id, count } = startMeta;
+        const summary = `<span class="code-fold-summary" data-fold-summary-for="${id}">…${count} lines</span>`;
+        const toggle = `<button type="button" class="code-fold-toggle" data-fold-toggle="${id}" aria-expanded="true" aria-label="toggle code fold">▼</button>`;
+        out.push(`<span class="code-line code-line--foldable" data-fold-id="${id}"${regionAttr}>${toggle}${content}${summary}</span>`);
+        continue;
+      }
+      out.push(`<span class="code-line"${regionAttr}>${content}</span>`);
+    }
+    return out.join('');
   }
 
   function renderUpstreamRequestOrResponse(text, mode) {
@@ -1348,24 +1432,31 @@
     const separatorIndex = lines.findIndex(line => line === '');
     const headerEnd = separatorIndex === -1 ? lines.length : separatorIndex;
     const renderedLines = [];
+    const rawForFold = []; // 与 renderedLines 同索引，仅用于折叠分析；header 区填空字符串避免参与配对
 
     renderedLines.push(mode === 'response' ? renderStatusLine(lines[0]) : renderRequestLine(lines[0]));
+    rawForFold.push('');
 
     for (let i = 1; i < headerEnd; i++) {
       renderedLines.push(renderHeaderLine(lines[i]));
+      rawForFold.push('');
     }
 
     if (separatorIndex !== -1) {
       renderedLines.push('');
+      rawForFold.push('');
       const bodyLines = lines.slice(separatorIndex + 1);
       const bodyText = bodyLines.join('\n');
       const renderBodyLine = looksLikeJSONBlock(bodyText) ? renderJsonLine
         : looksLikeSSE(bodyText) ? renderSSELine
         : escapeCodeHtml;
-      bodyLines.forEach(line => renderedLines.push(renderBodyLine(line)));
+      bodyLines.forEach(line => {
+        renderedLines.push(renderBodyLine(line));
+        rawForFold.push(line);
+      });
     }
 
-    return renderCodeLines(renderedLines);
+    return renderCodeLines(renderedLines, computeFoldRegions(rawForFold));
   }
 
   function renderUpstreamCodeBlock(text, mode = 'text') {
@@ -1376,8 +1467,10 @@
       case 'request':
       case 'response':
         return renderUpstreamRequestOrResponse(value, mode);
-      case 'json':
-        return renderCodeLines(value.split('\n').map(renderJsonLine));
+      case 'json': {
+        const rawLines = value.split('\n');
+        return renderCodeLines(rawLines.map(renderJsonLine), computeFoldRegions(rawLines));
+      }
       case 'url':
         return renderCodeLines(value.split('\n').map(renderRequestLine));
       case 'status':
@@ -1392,6 +1485,31 @@
     if (!el) return;
     el._rawText = text || '';
     el.innerHTML = renderUpstreamCodeBlock(text || '', mode);
+  }
+
+  // 全局折叠按钮事件委托（仅绑定一次）。
+  // 任何使用 setHighlightedCodeContent 渲染的 pre 都自动支持折叠。
+  if (typeof document !== 'undefined' && typeof document.addEventListener === 'function'
+      && !document.__codeFoldDelegated) {
+    document.__codeFoldDelegated = true;
+    document.addEventListener('click', (e) => {
+      const foldBtn = e.target.closest('.code-fold-toggle');
+      if (!foldBtn) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const id = foldBtn.dataset.foldToggle;
+      if (!id) return;
+      const startLine = foldBtn.closest('.code-line--foldable');
+      if (!startLine) return;
+      const collapsed = startLine.classList.toggle('code-line--collapsed');
+      foldBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      foldBtn.textContent = collapsed ? '▶' : '▼';
+      const pre = startLine.closest('pre');
+      const root = pre || document;
+      root.querySelectorAll(`[data-fold-region~="${id}"]`).forEach(el => {
+        el.classList.toggle('code-line--hidden', collapsed);
+      });
+    });
   }
 
   /**
