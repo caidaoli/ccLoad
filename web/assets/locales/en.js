@@ -282,7 +282,7 @@ window.I18N_LOCALES['en'] = {
   'channels.protocolTransformOpenAI': 'OpenAI',
   'channels.protocolTransformGemini': 'Gemini',
   'channels.protocolTransformNative': 'Native',
-  'channels.protocolTransformModeLocal': 'Local (experimental)',
+  'channels.protocolTransformModeLocal': 'ccLoad(experimental)',
   'channels.protocolTransformModeUpstream': 'Upstream',
   'channels.modal.apiUrl': 'API URL',
   'channels.modal.apiKey': 'API Key',

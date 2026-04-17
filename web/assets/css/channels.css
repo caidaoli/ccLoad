@@ -119,8 +119,10 @@
     }
 
     .channel-editor-modal {
-      width: min(1120px, calc(100vw - 32px));
-      max-width: 1120px;
+      width: 90vw;
+      max-width: 90vw;
+      height: 90vh;
+      max-height: 90vh;
       padding: 24px;
       display: flex;
       flex-direction: column;

@@ -309,7 +309,7 @@ function createHarness({
           'channels.protocolTransformOpenAI': 'OpenAI',
           'channels.protocolTransformGemini': 'Gemini',
           'channels.protocolTransformNative': '原生',
-          'channels.protocolTransformModeLocal': '本地(实验性)',
+          'channels.protocolTransformModeLocal': 'ccLoad(实验性)',
           'channels.protocolTransformModeUpstream': '上游',
           'channels.duplicateModelsNotAllowed': 'duplicate models',
           'channels.fillAllRequired': 'fill required',
