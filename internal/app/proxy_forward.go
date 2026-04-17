@@ -74,6 +74,9 @@ func (s *Server) buildProxyRequest(
 	// 1. 构建完整 URL
 	upstreamURL := buildUpstreamURL(baseURL, requestPath, rawQuery)
 
+	// 1.5 anyrouter 渠道：为 /v1/messages 自动注入 adaptive thinking
+	body = maybeInjectAnyrouterAdaptiveThinking(cfg, requestPath, body)
+
 	// 2. 创建带上下文的请求
 	req, err := buildUpstreamRequest(reqCtx.ctx, method, upstreamURL, body)
 	if err != nil {

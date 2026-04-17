@@ -579,6 +579,13 @@ func (s *Server) testChannelAPIWithURL(
 		return map[string]any{"success": false, "error": "构造测试请求失败: " + err.Error()}
 	}
 
+	// anyrouter 渠道：为 /v1/messages 自动注入 adaptive thinking（与代理链路保持一致）
+	if requestPlan.upstreamProtocol == "anthropic" {
+		if parsed, perr := neturl.Parse(requestPlan.fullURL); perr == nil && parsed.Path == "/v1/messages" {
+			requestPlan.requestBody = maybeInjectAnyrouterAdaptiveThinking(cfgForBuild, "/v1/messages", requestPlan.requestBody)
+		}
+	}
+
 	// 创建HTTP请求
 	ctx, cancel := context.WithTimeout(reqCtx, 2*time.Minute)
 	defer cancel()
