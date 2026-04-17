@@ -49,6 +49,8 @@ internal/
 │   ├── admin_settings.go      # 系统设置管理
 │   ├── admin_active_requests.go # 活跃请求查询
 │   ├── admin_types.go         # 管理API类型定义与验证
+│   ├── channel_check_scheduler.go # 渠道定时检测调度器
+│   ├── detection_log.go       # 检测日志构建（定时检测结果→LogEntry）
 │   ├── selector.go            # 渠道选择入口
 │   ├── selector_balancer.go   # 平滑加权轮询
 │   ├── selector_cooldown.go   # 冷却感知选择
@@ -83,7 +85,7 @@ internal/
 │       ├── request_codex_tool_names.go # Codex工具名转换
 │       ├── response_helpers.go    # 响应转换辅助函数
 │       └── sse.go                 # SSE流式响应转换
-├── model/         # 数据模型（auth_token/config/debug_log/log/stats/health/system_setting）
+├── model/         # 数据模型（auth_token/config/debug_log/log/stats/health/system_setting/model_test）
 ├── cooldown/      # 冷却决策引擎
 ├── storage/       # 存储层
 │   ├── factory.go       # 存储工厂（SQLite/MySQL/混合）
@@ -115,7 +117,7 @@ web/               # 前端页面
 └── assets/
     ├── locales/   # i18n本地化（zh-CN.js, en.js）
     ├── css/       # 样式（styles/channels/logs/tokens）
-    └── js/        # 模块化JS（channels-*/channels-protocols/logs/logs-channel-editor/stats/tokens/settings/trend/model-test/i18n/ui/page-filters/filter-*/date-range-selector/template-engine/...）
+    └── js/        # 模块化JS（channels-*/channels-protocols/logs/logs-channel-editor/stats/tokens/settings/trend/model-test/i18n/ui/page-filters/filter-*/date-range-selector/template-engine/index/login/...）
 ```
 
 **故障切换策略**:
@@ -158,6 +160,16 @@ web/               # 前端页面
 - `admin_debug_log.go`: 调试日志API（`HandleGetDebugLog`，含敏感头脱敏、base64二进制编码）
 - `model/debug_log.go`: `DebugLogEntry`（req/resp method/url/headers/body）
 - 独立清理策略: 不受普通日志保留天数限制，`DebugLogCleanupInterval=2min`
+
+**渠道定时检测**:
+- `channel_check_scheduler.go`: 后台定时检测调度器（`startScheduledChannelCheckLoop`）
+- `detection_log.go`: 检测结果→LogEntry构建（`detectionLogFromResult`/`selectScheduledCheckModel`）
+- 配置: `channel_check_interval_hours`（0=禁用，Web管理界面热重载）
+- 渠道级: `scheduled_check_enabled`/`scheduled_check_model`（指定检测模型）
+
+**anyrouter渠道特殊处理**:
+- 渠道名包含"anyrouter"时自动注入`anthropic-beta: context-1m-2025-08-07`头
+- 仅对Anthropic类型渠道生效（`proxy_forward.go:injectAnthropicBetaFlag`）
 
 **关键入口**:
 - `app.Server.HandleProxyRequest()` - 代理请求主入口

@@ -60,6 +60,7 @@ ccLoad solves these pain points through:
 - 📉 **Tiered Pricing** - GPT-5.4/Qwen-Plus/Gemini long-context step pricing, auto-applies lower rate at token thresholds
 - 🔄 **Protocol Transform** - Anthropic/OpenAI/Gemini/Codex cross-protocol conversion, one channel serves multiple client protocols
 - 🔍 **Debug Logs** - Upstream request/response raw data capture with sensitive header masking, essential for troubleshooting
+- 🕐 **Scheduled Checks** - Background periodic channel availability probing, auto-detect failed channels
 
 ## 🏗️ Architecture Overview
 
@@ -658,6 +659,8 @@ Check out the awesome admin dashboard 👇
   - `admin_models.go`: Model list management
   - `admin_testing.go`: Channel testing (with protocol transform testing)
   - `admin_debug_log.go`: Debug log API (sensitive header masking + base64 binary encoding)
+  - `channel_check_scheduler.go`: Scheduled channel check scheduler
+  - `detection_log.go`: Detection result to LogEntry builder
 - **Protocol Transform System** (2026-04 new):
   - `protocol/types.go`: Four protocol definitions (Anthropic/OpenAI/Gemini/Codex)
   - `protocol/registry.go`: Request/response transformer registry
@@ -727,7 +730,7 @@ Check out the awesome admin dashboard 👇
 | `SQLITE_PATH` | `data/ccload.db` | SQLite database file path (SQLite mode only) |
 | `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal mode (WAL/TRUNCATE/DELETE, recommend TRUNCATE for containers) |
 | `CCLOAD_MAX_CONCURRENCY` | `1000` | Max concurrent requests (limits simultaneous proxy requests) |
-| `CCLOAD_MAX_BODY_BYTES` | `10485760` | Max request body bytes (10MB, prevents memory overflow) |
+| `CCLOAD_MAX_BODY_BYTES` | `10485760` | Max request body bytes (10MB, Images API auto-expands to 20MB) |
 | `CCLOAD_COOLDOWN_AUTH_SEC` | `300` | Auth error (401/402/403) initial cooldown (seconds) |
 | `CCLOAD_COOLDOWN_SERVER_SEC` | `120` | Server error (5xx) initial cooldown (seconds) |
 | `CCLOAD_COOLDOWN_TIMEOUT_SEC` | `60` | Timeout error (597/598) initial cooldown (seconds) |
@@ -772,6 +775,7 @@ These settings have been migrated to database, managed via Web interface `/web/s
 | `health_score_window_minutes` | `30` | Success rate stats time window (minutes) |
 | `health_score_update_interval` | `30` | Success rate cache update interval (seconds) |
 | `health_min_confident_sample` | `20` | Confidence sample threshold (full penalty at this sample size) |
+| `channel_check_interval_hours` | `0` | Scheduled channel check interval (hours, 0=disabled) |
 
 #### Health Score Sorting
 
@@ -875,7 +879,7 @@ storage/
 - Not set → Uses SQLite (default)
 
 **Core Table Structure** (SQLite and MySQL shared):
-- `channels` - Channel config (cooldown data inline, UNIQUE constraint on name, with protocol transform config)
+- `channels` - Channel config (cooldown data inline, UNIQUE constraint on name, with protocol transform config, scheduled check config)
 - `api_keys` - API keys (key-level cooldown inline, multi-key strategies)
 - `logs` - Request logs (with base_url upstream URL tracking)
 - `debug_logs` - Debug logs (upstream request/response raw data, independent cleanup policy)
@@ -900,6 +904,7 @@ storage/
 - ✅ **Log UX improvements**: Cost column formats to 3 decimal places (empty for zero), IP column shows full address on hover
 - ✅ **Protocol transform system**: Anthropic/OpenAI/Gemini/Codex four-protocol cross-conversion, upstream/local modes
 - ✅ **Debug logs**: Upstream request/response raw data capture, sensitive header masking, independent cleanup policy
+- ✅ **Scheduled channel checks**: Background periodic channel availability probing, configurable check model per channel
 
 **Backward Compatible Migration**:
 - Auto-detects and fixes duplicate channel names
