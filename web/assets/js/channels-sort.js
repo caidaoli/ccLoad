@@ -101,18 +101,18 @@ function createSortItem(channel, index) {
   return item;
 }
 
-// 添加拖拽事件监听
+// 添加拖拽事件监听：采用 dragover 实时 DOM 重排，避免 drop 命中率低的问题
 function attachDragListeners() {
-  const items = document.querySelectorAll('.sort-item');
+  const container = document.getElementById('sortListContainer');
+  if (!container) return;
 
-  items.forEach(item => {
+  container.querySelectorAll('.sort-item').forEach(item => {
     item.addEventListener('dragstart', handleDragStart);
     item.addEventListener('dragend', handleDragEnd);
-    item.addEventListener('dragover', handleDragOver);
-    item.addEventListener('dragenter', handleDragEnter);
-    item.addEventListener('dragleave', handleDragLeave);
-    item.addEventListener('drop', handleDrop);
   });
+
+  // 容器级 dragover：无论释放在卡片还是间隙，都能捕获
+  container.addEventListener('dragover', handleContainerDragOver);
 }
 
 // 拖拽开始
@@ -120,89 +120,63 @@ function handleDragStart(e) {
   draggedItem = this;
   this.classList.add('is-dragging');
   e.dataTransfer.effectAllowed = 'move';
+  // Firefox 要求必须 setData 才会触发后续拖拽事件
+  try { e.dataTransfer.setData('text/plain', this.dataset.channelId || ''); } catch (_) { /* ignore */ }
 }
 
-// 拖拽结束
-function handleDragEnd(e) {
+// 拖拽结束：从当前 DOM 顺序同步回 sortChannels，然后重渲染刷新序号
+function handleDragEnd() {
   this.classList.remove('is-dragging');
 
-  // 移除所有拖拽样式
-  document.querySelectorAll('.sort-item').forEach(item => {
-    item.classList.remove('is-drop-before', 'is-drop-after');
-  });
+  const container = document.getElementById('sortListContainer');
+  if (container) {
+    const byId = new Map(sortChannels.map(c => [String(c.id), c]));
+    const newOrder = [];
+    container.querySelectorAll('.sort-item').forEach(el => {
+      const ch = byId.get(el.dataset.channelId);
+      if (ch) newOrder.push(ch);
+    });
+    if (newOrder.length === sortChannels.length) {
+      sortChannels = newOrder;
+    }
+  }
 
   draggedItem = null;
-}
-
-// 拖拽经过
-function handleDragOver(e) {
-  if (e.preventDefault) {
-    e.preventDefault();
-  }
-  e.dataTransfer.dropEffect = 'move';
-  return false;
-}
-
-// 拖拽进入
-function handleDragEnter(e) {
-  if (this === draggedItem) return;
-
-  // 显示插入位置提示
-  const rect = this.getBoundingClientRect();
-  const midpoint = rect.top + rect.height / 2;
-
-  this.classList.remove('is-drop-before', 'is-drop-after');
-  if (e.clientY < midpoint) {
-    this.classList.add('is-drop-before');
-  } else {
-    this.classList.add('is-drop-after');
-  }
-}
-
-// 拖拽离开
-function handleDragLeave(e) {
-  this.classList.remove('is-drop-before', 'is-drop-after');
-}
-
-// 放置
-function handleDrop(e) {
-  if (e.stopPropagation) {
-    e.stopPropagation();
-  }
-
-  if (this === draggedItem) return false;
-
-  const draggedIndex = parseInt(draggedItem.dataset.index);
-  const targetIndex = parseInt(this.dataset.index);
-
-  if (draggedIndex === targetIndex) return false;
-
-  // 计算插入位置
-  const rect = this.getBoundingClientRect();
-  const midpoint = rect.top + rect.height / 2;
-  const insertBefore = e.clientY < midpoint;
-
-  // 更新数组顺序
-  const draggedChannel = sortChannels[draggedIndex];
-  sortChannels.splice(draggedIndex, 1);
-
-  let newIndex = targetIndex;
-  if (draggedIndex < targetIndex && !insertBefore) {
-    newIndex = targetIndex;
-  } else if (draggedIndex < targetIndex && insertBefore) {
-    newIndex = targetIndex - 1;
-  } else if (draggedIndex > targetIndex && insertBefore) {
-    newIndex = targetIndex;
-  } else if (draggedIndex > targetIndex && !insertBefore) {
-    newIndex = targetIndex + 1;
-  }
-
-  sortChannels.splice(newIndex, 0, draggedChannel);
-
-  // 重新渲染
   renderSortList();
+}
 
-  return false;
+// 容器级 dragover：按鼠标 Y 坐标实时插入到最近的兄弟节点前后
+function handleContainerDragOver(e) {
+  e.preventDefault();
+  if (!draggedItem) return;
+  e.dataTransfer.dropEffect = 'move';
+
+  const container = e.currentTarget;
+  const afterElement = getDragAfterElement(container, e.clientY);
+
+  if (afterElement == null) {
+    if (container.lastElementChild !== draggedItem) {
+      container.appendChild(draggedItem);
+    }
+  } else if (afterElement !== draggedItem && afterElement !== draggedItem.nextElementSibling) {
+    container.insertBefore(draggedItem, afterElement);
+  }
+}
+
+// 找到鼠标 Y 坐标上方最接近的 sort-item，作为插入锚点
+function getDragAfterElement(container, y) {
+  const siblings = container.querySelectorAll('.sort-item:not(.is-dragging)');
+  let closest = null;
+  let closestOffset = Number.NEGATIVE_INFINITY;
+  siblings.forEach(child => {
+    const box = child.getBoundingClientRect();
+    const offset = y - box.top - box.height / 2;
+    if (offset < 0 && offset > closestOffset) {
+      closestOffset = offset;
+      closest = child;
+    }
+  });
+  return closest;
 }
 
 // 保存排序

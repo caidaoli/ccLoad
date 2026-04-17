@@ -91,6 +91,9 @@ func cloneLogEntryForSync(e *model.LogEntry) *model.LogEntry {
 		return nil
 	}
 	clone := *e
+	// 同步到 MySQL 时丢弃 DebugData：调试原始请求/响应体仅保留在 SQLite，
+	// 避免膨胀 MySQL；但 logs 表主数据仍需正常同步
+	clone.DebugData = nil
 	return &clone
 }
 
@@ -438,9 +441,7 @@ func (h *HybridStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 	}
 
 	// 启用 Debug 日志的条目只保留在 SQLite，不同步到 MySQL（避免上游原始请求/响应体膨胀 MySQL）
-	if e.DebugData != nil {
-		return nil
-	}
+	// clone 时已剔除 DebugData，logs 主数据仍需同步到 MySQL
 
 	h.enqueueLogSync(&syncTask{
 		operation: "log",
@@ -457,7 +458,7 @@ func (h *HybridStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) 
 
 	syncable := make([]*model.LogEntry, 0, len(logs))
 	for _, entry := range logs {
-		if entry == nil || entry.DebugData != nil {
+		if entry == nil {
 			continue
 		}
 		syncable = append(syncable, entry)
