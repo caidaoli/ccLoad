@@ -35,7 +35,11 @@ func applyHeaderRules(h http.Header, rules []model.CustomHeaderRule) {
 		}
 		switch rule.Action {
 		case model.RuleActionRemove:
-			h.Del(name)
+			if target := strings.TrimSpace(rule.Value); target != "" {
+				removeHeaderToken(h, name, target)
+			} else {
+				h.Del(name)
+			}
 		case model.RuleActionOverride:
 			h.Set(name, rule.Value)
 		case model.RuleActionAppend:
@@ -44,6 +48,35 @@ func applyHeaderRules(h http.Header, rules []model.CustomHeaderRule) {
 			slog.Warn("custom_request_rules: unknown header action",
 				"rule_index", idx, "action", rule.Action)
 		}
+	}
+}
+
+// removeHeaderToken 按逗号 token 精确移除。每条值按 "," 切分、trim 后等值剔除；
+// 若某条值所有 token 全部移除则该条值被丢弃；全部为空时整个头被删除。
+// 典型用例：从 Anthropic-Beta CSV 头中移除单个 flag，而保留其他 flag。
+func removeHeaderToken(h http.Header, name, target string) {
+	values := h.Values(name)
+	if len(values) == 0 {
+		return
+	}
+	newValues := make([]string, 0, len(values))
+	for _, v := range values {
+		tokens := strings.Split(v, ",")
+		kept := make([]string, 0, len(tokens))
+		for _, tok := range tokens {
+			t := strings.TrimSpace(tok)
+			if t == "" || t == target {
+				continue
+			}
+			kept = append(kept, t)
+		}
+		if len(kept) > 0 {
+			newValues = append(newValues, strings.Join(kept, ", "))
+		}
+	}
+	h.Del(name)
+	for _, v := range newValues {
+		h.Add(name, v)
 	}
 }
 

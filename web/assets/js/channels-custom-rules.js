@@ -106,7 +106,7 @@
     }
 
     headers.forEach((rule, idx) => {
-      const label = `#${idx + 1}`;
+      const label = `[${t('channels.customRules.tabHeaders', 'Headers')} #${idx + 1}]`;
       if (!rule || typeof rule !== 'object') {
         errors.push(`${label} ${t('channels.customRules.errInvalid', 'Invalid rule')}`);
         return;
@@ -141,7 +141,7 @@
     });
 
     body.forEach((rule, idx) => {
-      const label = `#${idx + 1}`;
+      const label = `[${t('channels.customRules.tabBody', 'Body')} #${idx + 1}]`;
       if (!rule || typeof rule !== 'object') {
         errors.push(`${label} ${t('channels.customRules.errInvalid', 'Invalid rule')}`);
         return;
@@ -187,7 +187,7 @@
       .map((r) => ({
         action: r.action,
         name: (r.name || '').trim(),
-        value: r.action === 'remove' ? undefined : (r.value || '')
+        value: r.value || ''
       }))
       .filter((r) => r.name);
     const body = (state.body || [])
@@ -207,8 +207,15 @@
     const payload = {};
     if (headers.length > 0) {
       payload.headers = headers.map((r) => {
-        if (r.value === undefined) return { action: r.action, name: r.name };
-        return { action: r.action, name: r.name, value: r.value };
+        const entry = { action: r.action, name: r.name };
+        if (r.action === 'remove') {
+          // remove + 空值=整头删除（省略 value）；非空值=按逗号 token 精确移除
+          if (r.value) entry.value = r.value;
+        } else {
+          // override/append 始终保留 value（允许空字符串）
+          entry.value = r.value;
+        }
+        return entry;
       });
     }
     if (body.length > 0) {
@@ -320,7 +327,7 @@
     });
     actionSelect.addEventListener('change', () => {
       rule.action = actionSelect.value;
-      updateValueDisabled(row, rule);
+      updateValueDisabled(row, rule, target);
     });
     row.appendChild(actionSelect);
 
@@ -359,17 +366,19 @@
     removeBtn.title = t('channels.customRules.deleteRule', 'Delete');
     row.appendChild(removeBtn);
 
-    updateValueDisabled(row, rule);
+    updateValueDisabled(row, rule, target);
     return row;
   }
 
-  function updateValueDisabled(row, rule) {
+  function updateValueDisabled(row, rule, target) {
     const valueInput = row.querySelector('.custom-rules-value');
     if (!valueInput) return;
     const isRemove = rule.action === 'remove';
-    valueInput.disabled = isRemove;
-    valueInput.classList.toggle('custom-rules-value-disabled', isRemove);
-    if (isRemove) {
+    // headers 的 remove：留 value 输入框，空=删整条，填值=按逗号 token 精确移除
+    const shouldDisable = isRemove && target !== 'headers';
+    valueInput.disabled = shouldDisable;
+    valueInput.classList.toggle('custom-rules-value-disabled', shouldDisable);
+    if (shouldDisable) {
       valueInput.value = '';
       rule.value = '';
     }
@@ -400,7 +409,7 @@
       headers: _draft.headers.map((r) => ({
         action: r.action,
         name: (r.name || '').trim(),
-        value: r.action === 'remove' ? '' : (r.value || '')
+        value: r.value || ''
       })),
       body: _draft.body.map((r) => ({
         action: r.action,
@@ -441,7 +450,7 @@
   }
 
   function defaultHelpHeaders() {
-    return 'Rewrite HTTP headers sent to upstream.\nActions: remove / override / append.\nAuth headers (Authorization / x-api-key / x-goog-api-key) are protected.';
+    return 'Rewrite HTTP headers sent to upstream.\nActions: remove / override / append.\nremove: empty value deletes the header; non-empty value removes only that comma-separated token (e.g. remove "context-1m-2025-08-07" from Anthropic-Beta).\nAuth headers (Authorization / x-api-key / x-goog-api-key) are protected.';
   }
   function defaultHelpBody() {
     return 'Rewrite JSON body fields.\nActions: remove / override.\nPath uses dots + integer indices (messages.0.role).\nValues are JSON literals — strings need quotes.';
