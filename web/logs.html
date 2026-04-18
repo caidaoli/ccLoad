@@ -207,24 +207,13 @@
         <div class="upstream-detail-tabs">
           <button type="button" class="upstream-tab active" data-tab="request" data-i18n="logs.debugRequest">Request</button>
           <button type="button" class="upstream-tab" data-tab="response" data-i18n="logs.debugResponse">Response</button>
+          <button type="button" class="upstream-copy-btn upstream-copy-btn--tabs" data-copy-target="debugReqRaw" data-i18n="common.copy">复制</button>
         </div>
         <div id="debugTabRequest" class="upstream-tab-panel active">
-          <div class="upstream-field upstream-field--full">
-            <div class="upstream-field-header">
-              <label data-i18n="logs.debugRequest">Request</label>
-              <button type="button" class="upstream-copy-btn" data-copy-target="debugReqRaw" data-i18n="common.copy">复制</button>
-            </div>
-            <pre id="debugReqRaw" class="upstream-pre upstream-pre--full"></pre>
-          </div>
+          <pre id="debugReqRaw" class="upstream-pre upstream-pre--full"></pre>
         </div>
         <div id="debugTabResponse" class="upstream-tab-panel">
-          <div class="upstream-field upstream-field--full">
-            <div class="upstream-field-header">
-              <label data-i18n="logs.debugResponse">Response</label>
-              <button type="button" class="upstream-copy-btn" data-copy-target="debugRespRaw" data-i18n="common.copy">复制</button>
-            </div>
-            <pre id="debugRespRaw" class="upstream-pre upstream-pre--full"></pre>
-          </div>
+          <pre id="debugRespRaw" class="upstream-pre upstream-pre--full"></pre>
         </div>
       </div>
     </div>
