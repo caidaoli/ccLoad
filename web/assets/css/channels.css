@@ -2813,3 +2813,177 @@
         padding: 12px;
       }
     }
+
+    /* ============================================================
+     * 自定义请求规则（高级）模态框
+     * ============================================================ */
+    .custom-rules-modal {
+      max-width: 760px;
+      width: 92%;
+    }
+
+    .custom-rules-tabs {
+      display: flex;
+      gap: 4px;
+      border-bottom: 1px solid var(--border-color, #e2e8f0);
+      margin-bottom: 12px;
+    }
+
+    .custom-rules-tab-button {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      padding: 8px 14px;
+      cursor: pointer;
+      color: var(--text-600, #475569);
+      font-size: 0.9rem;
+      transition: color 0.15s, border-color 0.15s;
+    }
+
+    .custom-rules-tab-button:hover {
+      color: var(--primary-600, #2563eb);
+    }
+
+    .custom-rules-tab-button.active {
+      color: var(--primary-600, #2563eb);
+      border-bottom-color: var(--primary-600, #2563eb);
+      font-weight: 600;
+    }
+
+    .custom-rules-tab-count {
+      font-size: 0.8rem;
+      color: var(--text-500, #64748b);
+    }
+
+    .custom-rules-help-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      border: 1px solid currentColor;
+      font-size: 0.72rem;
+      font-weight: 600;
+      line-height: 1;
+      cursor: help;
+      opacity: 0.6;
+      transition: opacity 0.15s;
+    }
+
+    .custom-rules-help-icon:hover {
+      opacity: 1;
+    }
+
+    .custom-rules-help-popup {
+      position: relative;
+      background: var(--info-50, #eff6ff);
+      border: 1px solid var(--info-200, #bfdbfe);
+      border-radius: 6px;
+      padding: 12px 14px;
+      margin-bottom: 12px;
+      font-size: 0.82rem;
+    }
+
+    .custom-rules-help-popup pre {
+      margin: 0 0 8px 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: inherit;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      color: var(--text-700, #334155);
+    }
+
+    .custom-rules-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .custom-rules-panel.hidden {
+      display: none;
+    }
+
+    .custom-rules-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-height: 360px;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+
+    .custom-rules-empty {
+      color: var(--text-500, #64748b);
+      font-size: 0.85rem;
+      padding: 18px 8px;
+      text-align: center;
+      border: 1px dashed var(--border-color, #e2e8f0);
+      border-radius: 6px;
+    }
+
+    .custom-rules-row {
+      display: grid;
+      grid-template-columns: 110px 1fr 1.4fr 36px;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .custom-rules-row .form-input {
+      min-width: 0;
+    }
+
+    .custom-rules-value-disabled {
+      background: var(--bg-disabled, #f1f5f9);
+      color: var(--text-400, #94a3b8);
+      cursor: not-allowed;
+    }
+
+    .custom-rules-remove-btn {
+      padding: 6px 0;
+      font-size: 1rem;
+      line-height: 1;
+      min-width: 36px;
+    }
+
+    .custom-rules-add-btn {
+      align-self: flex-start;
+      font-size: 0.85rem;
+    }
+
+    .custom-rules-error {
+      background: var(--error-50, #fef2f2);
+      color: var(--error-700, #b91c1c);
+      border: 1px solid var(--error-200, #fecaca);
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin-bottom: 10px;
+    }
+
+    .custom-rules-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    @media (max-width: 640px) {
+      .custom-rules-row {
+        grid-template-columns: 1fr 1fr;
+        grid-template-areas:
+          "action remove"
+          "primary primary"
+          "value value";
+        gap: 6px;
+      }
+      .custom-rules-row .custom-rules-action { grid-area: action; }
+      .custom-rules-row .custom-rules-primary { grid-area: primary; }
+      .custom-rules-row .custom-rules-value { grid-area: value; }
+      .custom-rules-row .custom-rules-remove-btn { grid-area: remove; justify-self: end; }
+    }

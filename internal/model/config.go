@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -54,6 +55,41 @@ func (e *ModelEntry) Validate() error {
 	return nil
 }
 
+// 自定义请求规则动作常量
+const (
+	RuleActionRemove   = "remove"
+	RuleActionOverride = "override"
+	RuleActionAppend   = "append"
+)
+
+// CustomHeaderRule 单条自定义 HTTP 请求头规则
+type CustomHeaderRule struct {
+	Action string `json:"action"`          // remove | override | append
+	Name   string `json:"name"`            // header 名，保持原大小写
+	Value  string `json:"value,omitempty"` // remove 时忽略
+}
+
+// CustomBodyRule 单条自定义 JSON 请求体规则
+type CustomBodyRule struct {
+	Action string          `json:"action"`          // remove | override
+	Path   string          `json:"path"`            // 点分路径，支持整数数组索引
+	Value  json.RawMessage `json:"value,omitempty"` // remove 时忽略；任意 JSON 字面量
+}
+
+// CustomRequestRules 渠道级自定义请求改写规则集
+type CustomRequestRules struct {
+	Headers []CustomHeaderRule `json:"headers,omitempty"`
+	Body    []CustomBodyRule   `json:"body,omitempty"`
+}
+
+// IsEmpty 当两类规则均为空时返回 true
+func (r *CustomRequestRules) IsEmpty() bool {
+	if r == nil {
+		return true
+	}
+	return len(r.Headers) == 0 && len(r.Body) == 0
+}
+
 // Config 渠道配置
 type Config struct {
 	ID                    int64    `json:"id"`
@@ -76,6 +112,9 @@ type Config struct {
 
 	// 每日成本限额
 	DailyCostLimit float64 `json:"daily_cost_limit"` // 每日成本限额（美元），0表示无限制
+
+	// 自定义请求规则（nil 表示无改写）
+	CustomRequestRules *CustomRequestRules `json:"custom_request_rules,omitempty"`
 
 	CreatedAt JSONTime `json:"created_at"` // 使用JSONTime确保序列化格式一致（RFC3339）
 	UpdatedAt JSONTime `json:"updated_at"` // 使用JSONTime确保序列化格式一致（RFC3339）
@@ -436,4 +475,20 @@ func extractVersionNumbers(model string) []int {
 	}
 
 	return nums
+}
+
+// HeaderRules 返回自定义请求头规则，nil-safe
+func (c *Config) HeaderRules() []CustomHeaderRule {
+	if c == nil || c.CustomRequestRules == nil {
+		return nil
+	}
+	return c.CustomRequestRules.Headers
+}
+
+// BodyRules 返回自定义请求体规则，nil-safe
+func (c *Config) BodyRules() []CustomBodyRule {
+	if c == nil || c.CustomRequestRules == nil {
+		return nil
+	}
+	return c.CustomRequestRules.Body
 }

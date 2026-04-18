@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	neturl "net/url"
 	"slices"
@@ -17,19 +18,20 @@ import (
 
 // ChannelRequest 渠道创建/更新请求结构
 type ChannelRequest struct {
-	Name                  string             `json:"name" binding:"required"`
-	APIKey                string             `json:"api_key" binding:"required"`
-	ChannelType           string             `json:"channel_type,omitempty"` // 渠道类型:anthropic, codex, gemini
-	ProtocolTransformMode string             `json:"protocol_transform_mode,omitempty"`
-	ProtocolTransforms    []string           `json:"protocol_transforms,omitempty"`
-	KeyStrategy           string             `json:"key_strategy,omitempty"` // Key使用策略:sequential, round_robin
-	URL                   string             `json:"url" binding:"required"`
-	Priority              int                `json:"priority"`
-	Models                []model.ModelEntry `json:"models" binding:"required,min=1"` // 模型配置（包含重定向）
-	Enabled               bool               `json:"enabled"`
-	ScheduledCheckEnabled bool               `json:"scheduled_check_enabled"`
-	ScheduledCheckModel   string             `json:"scheduled_check_model"`
-	DailyCostLimit        float64            `json:"daily_cost_limit"` // 每日成本限额（美元），0表示无限制
+	Name                  string                    `json:"name" binding:"required"`
+	APIKey                string                    `json:"api_key" binding:"required"`
+	ChannelType           string                    `json:"channel_type,omitempty"` // 渠道类型:anthropic, codex, gemini
+	ProtocolTransformMode string                    `json:"protocol_transform_mode,omitempty"`
+	ProtocolTransforms    []string                  `json:"protocol_transforms,omitempty"`
+	KeyStrategy           string                    `json:"key_strategy,omitempty"` // Key使用策略:sequential, round_robin
+	URL                   string                    `json:"url" binding:"required"`
+	Priority              int                       `json:"priority"`
+	Models                []model.ModelEntry        `json:"models" binding:"required,min=1"` // 模型配置（包含重定向）
+	Enabled               bool                      `json:"enabled"`
+	ScheduledCheckEnabled bool                      `json:"scheduled_check_enabled"`
+	ScheduledCheckModel   string                    `json:"scheduled_check_model"`
+	DailyCostLimit        float64                   `json:"daily_cost_limit"` // 每日成本限额（美元），0表示无限制
+	CustomRequestRules    *model.CustomRequestRules `json:"custom_request_rules,omitempty"`
 }
 
 func validateChannelBaseURL(raw string) (string, error) {
@@ -171,6 +173,13 @@ func (cr *ChannelRequest) Validate() error {
 		cr.KeyStrategy = normalized // 应用标准化结果
 	}
 
+	if err := validateCustomRequestRules(cr.CustomRequestRules); err != nil {
+		return err
+	}
+	if cr.CustomRequestRules != nil && cr.CustomRequestRules.IsEmpty() {
+		cr.CustomRequestRules = nil
+	}
+
 	return nil
 }
 
@@ -198,7 +207,111 @@ func (cr *ChannelRequest) ToConfig() *model.Config {
 		ScheduledCheckEnabled: cr.ScheduledCheckEnabled,
 		ScheduledCheckModel:   cr.ScheduledCheckModel,
 		DailyCostLimit:        cr.DailyCostLimit,
+		CustomRequestRules:    cr.CustomRequestRules,
 	}
+}
+
+const (
+	maxCustomRuleEntries = 32
+	maxCustomRuleValue   = 8 * 1024
+	maxCustomRuleName    = 256
+)
+
+// validateCustomRequestRules 校验渠道自定义请求规则；副作用：修剪名称/路径空白并丢弃 remove 规则的 value。
+func validateCustomRequestRules(r *model.CustomRequestRules) error {
+	if r == nil {
+		return nil
+	}
+	if len(r.Headers) > maxCustomRuleEntries {
+		return fmt.Errorf("custom_request_rules.headers: too many entries (max %d)", maxCustomRuleEntries)
+	}
+	if len(r.Body) > maxCustomRuleEntries {
+		return fmt.Errorf("custom_request_rules.body: too many entries (max %d)", maxCustomRuleEntries)
+	}
+
+	for i := range r.Headers {
+		h := &r.Headers[i]
+		action := strings.ToLower(strings.TrimSpace(h.Action))
+		if action != model.RuleActionRemove && action != model.RuleActionOverride && action != model.RuleActionAppend {
+			return fmt.Errorf("custom_request_rules.headers[%d]: invalid action %q (allowed: remove, override, append)", i, h.Action)
+		}
+		h.Action = action
+
+		name := strings.TrimSpace(h.Name)
+		if name == "" {
+			return fmt.Errorf("custom_request_rules.headers[%d]: name cannot be empty", i)
+		}
+		if len(name) > maxCustomRuleName {
+			return fmt.Errorf("custom_request_rules.headers[%d]: name too long (max %d)", i, maxCustomRuleName)
+		}
+		if strings.ContainsAny(name, "\r\n\x00") {
+			return fmt.Errorf("custom_request_rules.headers[%d]: name contains illegal characters", i)
+		}
+		h.Name = name
+
+		if action == model.RuleActionRemove {
+			h.Value = ""
+			continue
+		}
+		if len(h.Value) > maxCustomRuleValue {
+			return fmt.Errorf("custom_request_rules.headers[%d]: value too long (max %d bytes)", i, maxCustomRuleValue)
+		}
+		if strings.ContainsAny(h.Value, "\r\n\x00") {
+			return fmt.Errorf("custom_request_rules.headers[%d]: value contains illegal characters", i)
+		}
+	}
+
+	for i := range r.Body {
+		b := &r.Body[i]
+		action := strings.ToLower(strings.TrimSpace(b.Action))
+		if action != model.RuleActionRemove && action != model.RuleActionOverride {
+			return fmt.Errorf("custom_request_rules.body[%d]: invalid action %q (allowed: remove, override)", i, b.Action)
+		}
+		b.Action = action
+
+		path := strings.TrimSpace(b.Path)
+		if path == "" {
+			return fmt.Errorf("custom_request_rules.body[%d]: path cannot be empty", i)
+		}
+		if len(path) > maxCustomRuleName {
+			return fmt.Errorf("custom_request_rules.body[%d]: path too long (max %d)", i, maxCustomRuleName)
+		}
+		if !isValidCustomRulePath(path) {
+			return fmt.Errorf("custom_request_rules.body[%d]: path contains illegal characters (allowed: letters, digits, _, -, .)", i)
+		}
+		b.Path = path
+
+		if action == model.RuleActionRemove {
+			b.Value = nil
+			continue
+		}
+		if len(b.Value) == 0 {
+			return fmt.Errorf("custom_request_rules.body[%d]: override requires value", i)
+		}
+		if len(b.Value) > maxCustomRuleValue {
+			return fmt.Errorf("custom_request_rules.body[%d]: value too long (max %d bytes)", i, maxCustomRuleValue)
+		}
+		var parsed any
+		if err := json.Unmarshal(b.Value, &parsed); err != nil {
+			return fmt.Errorf("custom_request_rules.body[%d]: value is not valid JSON (%v)", i, err)
+		}
+	}
+	return nil
+}
+
+// isValidCustomRulePath 允许字符：字母、数字、下划线、连字符、点。
+func isValidCustomRulePath(p string) bool {
+	for _, r := range p {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '_' || r == '-' || r == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func validateProtocolTransforms(channelType string, protocolTransformMode string, transforms []string) error {

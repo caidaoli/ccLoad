@@ -77,6 +77,9 @@ func (s *Server) buildProxyRequest(
 	// 1.5 anyrouter 渠道：为 /v1/messages 自动注入 adaptive thinking
 	body = maybeInjectAnyrouterAdaptiveThinking(cfg, requestPath, body)
 
+	// 1.6 自定义请求体规则（仅对 JSON body 生效）
+	body = applyBodyRules(hdr.Get("Content-Type"), body, cfg.BodyRules())
+
 	// 2. 创建带上下文的请求
 	req, err := buildUpstreamRequest(reqCtx.ctx, method, upstreamURL, body)
 	if err != nil {
@@ -94,6 +97,9 @@ func (s *Server) buildProxyRequest(
 		strings.Contains(strings.ToLower(cfg.Name), "anyrouter") {
 		injectAnthropicBetaFlag(req, "context-1m-2025-08-07")
 	}
+
+	// 6. 自定义请求头规则（认证头黑名单保护）
+	applyHeaderRules(req.Header, cfg.HeaderRules())
 
 	return req, nil
 }
