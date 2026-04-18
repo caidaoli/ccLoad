@@ -304,7 +304,8 @@ function createHarness({
     window: {
       t(key) {
         const labels = {
-          'channels.protocolTransformAnthropic': 'Anthropic',
+          'channels.protocolTransformAnthropic': 'Claude Code',
+          'channels.protocolBadgeAnthropic': 'Claude',
           'channels.protocolTransformCodex': 'Codex',
           'channels.protocolTransformOpenAI': 'OpenAI',
           'channels.protocolTransformGemini': 'Gemini',

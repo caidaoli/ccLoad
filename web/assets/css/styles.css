@@ -2526,6 +2526,22 @@ body {
   min-width: 160px;
 }
 
+.model-test-control--protocol {
+  flex: 0 0 auto;
+}
+
+.model-test-control--protocol .model-test-control__label {
+  white-space: nowrap;
+}
+
+.model-test-control--protocol .channel-editor-radio-group {
+  flex-wrap: nowrap;
+}
+
+.model-test-control--protocol .channel-editor-radio-option {
+  white-space: nowrap;
+}
+
 .model-test-control--content {
   flex: 1 1 360px;
   min-width: 220px;
@@ -3050,6 +3066,7 @@ body {
 .upstream-detail-tabs {
   display: flex;
   gap: 0;
+  align-items: center;
   border-bottom: 2px solid var(--neutral-200);
   margin-bottom: 16px;
 }
@@ -3128,6 +3145,11 @@ body {
 .upstream-copy-btn.copied {
   color: #16a34a;
   border-color: #16a34a;
+}
+
+.upstream-copy-btn--tabs {
+  margin-left: auto;
+  margin-bottom: 4px;
 }
 
 .upstream-pre {

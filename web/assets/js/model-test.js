@@ -1873,6 +1873,8 @@ function showUpstreamDetailModal(data) {
   modal.querySelectorAll('.upstream-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'request'));
   document.getElementById('upstreamTabRequest').classList.add('active');
   document.getElementById('upstreamTabResponse').classList.remove('active');
+  const copyBtn = modal.querySelector('.upstream-copy-btn--tabs');
+  if (copyBtn) copyBtn.dataset.copyTarget = 'upstreamReqRaw';
 
   modal.classList.add('show');
 }
@@ -1898,6 +1900,10 @@ document.addEventListener('click', (e) => {
     document.querySelectorAll('#upstreamDetailModal .upstream-tab').forEach(t => t.classList.toggle('active', t === tab));
     document.getElementById('upstreamTabRequest').classList.toggle('active', target === 'request');
     document.getElementById('upstreamTabResponse').classList.toggle('active', target === 'response');
+    const copyBtn = document.querySelector('#upstreamDetailModal .upstream-copy-btn--tabs');
+    if (copyBtn) {
+      copyBtn.dataset.copyTarget = target === 'response' ? 'upstreamRespRaw' : 'upstreamReqRaw';
+    }
     return;
   }
 

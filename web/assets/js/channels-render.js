@@ -154,7 +154,7 @@ function buildChannelTypeBadge(channelType) {
 
 function getProtocolTransformBadgeLabel(protocol) {
   const labels = {
-    anthropic: ['channels.protocolTransformAnthropic', 'Anthropic'],
+    anthropic: ['channels.protocolBadgeAnthropic', 'Claude'],
     codex: ['channels.protocolTransformCodex', 'Codex'],
     openai: ['channels.protocolTransformOpenAI', 'OpenAI'],
     gemini: ['channels.protocolTransformGemini', 'Gemini']

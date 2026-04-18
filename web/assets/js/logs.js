@@ -1705,6 +1705,10 @@ if (typeof document !== 'undefined' && typeof document.addEventListener === 'fun
       document.querySelectorAll('#debugLogModal .upstream-tab').forEach(t => t.classList.toggle('active', t === tab));
       document.getElementById('debugTabRequest').classList.toggle('active', target === 'request');
       document.getElementById('debugTabResponse').classList.toggle('active', target === 'response');
+      const copyBtn = document.querySelector('#debugLogModal .upstream-copy-btn--tabs');
+      if (copyBtn) {
+        copyBtn.dataset.copyTarget = target === 'response' ? 'debugRespRaw' : 'debugReqRaw';
+      }
       return;
     }
 
