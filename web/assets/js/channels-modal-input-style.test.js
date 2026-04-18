@@ -102,7 +102,7 @@ test('编辑弹窗 Key 策略与 Key 数量同行展示，避免单独换行', (
 test('编辑弹窗主区块间距收紧，减少名称、URL、Key、模型配置之间的空隙', () => {
   const formBlockMatch = css.match(/\.channel-editor-form\s*\{[^}]+\}/);
   assert.ok(formBlockMatch, '缺少 .channel-editor-form 样式');
-  assert.match(formBlockMatch[0], /gap:\s*14px/);
+  assert.match(formBlockMatch[0], /gap:\s*10px/);
 
   const headerBlockMatch = css.match(/\.channel-editor-section-header\s*\{[^}]+\}/);
   assert.ok(headerBlockMatch, '缺少 .channel-editor-section-header 样式');
