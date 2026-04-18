@@ -1,7 +1,10 @@
 package sql
 
 import (
+	"database/sql"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -120,13 +123,14 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	var enabledInt int
 	var scheduledCheckEnabledInt int
 	var scheduledCheckModel string
+	var customRequestRules sql.NullString
 	var createdAtRaw, updatedAtRaw any // 使用any接受任意类型（兼容字符串、整数或RFC3339）
 
 	// 扫描key_count字段（从JOIN查询获取）
 	// 注意：不再包含 models 和 model_redirects 字段
 	if err := scanner.Scan(&c.ID, &c.Name, &c.URL, &c.Priority,
 		&c.ChannelType, &c.ProtocolTransformMode, &enabledInt, &scheduledCheckEnabledInt, &scheduledCheckModel,
-		&c.CooldownUntil, &c.CooldownDurationMs, &c.DailyCostLimit, &c.KeyCount,
+		&c.CooldownUntil, &c.CooldownDurationMs, &c.DailyCostLimit, &customRequestRules, &c.KeyCount,
 		&createdAtRaw, &updatedAtRaw); err != nil {
 		return nil, err
 	}
@@ -134,6 +138,7 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	c.Enabled = enabledInt != 0
 	c.ScheduledCheckEnabled = scheduledCheckEnabledInt != 0
 	c.ScheduledCheckModel = scheduledCheckModel
+	c.CustomRequestRules = parseCustomRequestRules(c.ID, customRequestRules)
 
 	// 转换时间戳（支持不同数据库）
 	now := time.Now()
@@ -267,4 +272,37 @@ func (qb *QueryBuilder) BuildWithSuffix(suffix string) (string, []any) {
 		query += " " + suffix
 	}
 	return query, args
+}
+
+// parseCustomRequestRules 将数据库列值解析为 CustomRequestRules，解析失败时返回 nil 并写入警告日志。
+func parseCustomRequestRules(channelID int64, raw sql.NullString) *model.CustomRequestRules {
+	if !raw.Valid {
+		return nil
+	}
+	trimmed := strings.TrimSpace(raw.String)
+	if trimmed == "" || trimmed == "null" {
+		return nil
+	}
+	var rules model.CustomRequestRules
+	if err := json.Unmarshal([]byte(trimmed), &rules); err != nil {
+		slog.Warn("custom_request_rules: unmarshal failed, treated as empty",
+			"channel_id", channelID, "error", err.Error())
+		return nil
+	}
+	if rules.IsEmpty() {
+		return nil
+	}
+	return &rules
+}
+
+// marshalCustomRequestRules 将结构体序列化为数据库存储字符串；空规则返回空字符串（NULL）。
+func marshalCustomRequestRules(rules *model.CustomRequestRules) (sql.NullString, error) {
+	if rules == nil || rules.IsEmpty() {
+		return sql.NullString{}, nil
+	}
+	data, err := json.Marshal(rules)
+	if err != nil {
+		return sql.NullString{}, fmt.Errorf("marshal custom_request_rules: %w", err)
+	}
+	return sql.NullString{String: string(data), Valid: true}, nil
 }

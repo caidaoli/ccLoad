@@ -290,7 +290,13 @@ function initChannelEditorActions() {
         'copy-export-keys': () => invokeChannelEditorAction('copyExportKeys'),
         'download-export-keys': () => invokeChannelEditorAction('downloadExportKeys'),
         'close-model-import-modal': () => invokeChannelEditorAction('closeModelImportModal'),
-        'confirm-model-import': () => invokeChannelEditorAction('confirmModelImport')
+        'confirm-model-import': () => invokeChannelEditorAction('confirmModelImport'),
+        'open-custom-rules-modal': () => invokeChannelEditorAction('openCustomRulesModal'),
+        'close-custom-rules-modal': () => invokeChannelEditorAction('closeCustomRulesModal'),
+        'apply-custom-rules': () => invokeChannelEditorAction('applyCustomRulesFromForm'),
+        'add-custom-rule': (actionTarget) => invokeChannelEditorAction('addCustomRule', actionTarget?.dataset?.customRulesTarget || ''),
+        'remove-custom-rule': (actionTarget) => invokeChannelEditorAction('removeCustomRule', actionTarget?.dataset?.customRulesTarget || '', Number(actionTarget?.dataset?.customRulesIndex || '-1')),
+        'close-custom-rules-help': () => invokeChannelEditorAction('closeCustomRulesHelp')
       },
       change: {
         'toggle-select-all-urls': (actionTarget) => invokeChannelEditorAction('toggleSelectAllURLs', actionTarget.checked),
@@ -366,6 +372,8 @@ async function showAddModal() {
   document.getElementById('inlineEyeIcon').style.display = 'none';
   document.getElementById('inlineEyeOffIcon').style.display = 'block';
   renderInlineKeyTable();
+
+  invokeChannelEditorAction('resetCustomRulesState', null);
 
   resetChannelFormDirty();
   document.getElementById('channelModal').classList.add('show');
@@ -443,6 +451,8 @@ async function editChannel(id) {
   renderRedirectTable();
   syncScheduledCheckModelState();
 
+  invokeChannelEditorAction('resetCustomRulesState', channel.custom_request_rules || null);
+
   resetChannelFormDirty();
   document.getElementById('channelModal').classList.add('show');
 }
@@ -518,7 +528,8 @@ async function saveChannel(event) {
     models: models,
     enabled: document.getElementById('channelEnabled').checked,
     scheduled_check_enabled: document.getElementById('channelScheduledCheckEnabled').checked,
-    scheduled_check_model: document.getElementById('channelScheduledCheckModel').value.trim()
+    scheduled_check_model: document.getElementById('channelScheduledCheckModel').value.trim(),
+    custom_request_rules: invokeChannelEditorAction('collectCustomRulesForSubmit') || null
   };
 
   if (!formData.name || !formData.url || !formData.api_key || formData.models.length === 0) {

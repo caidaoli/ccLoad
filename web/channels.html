@@ -26,6 +26,7 @@
   <script defer src="/web/assets/js/channels-keys.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-urls.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-modals.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/channels-custom-rules.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-test.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-sort.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-init.js?v=__VERSION__"></script>
@@ -549,6 +550,8 @@
               </div>
             </div>
             <div class="channel-editor-footer-actions">
+              <button type="button" class="btn btn-secondary" data-action="open-custom-rules-modal"
+                data-i18n="channels.customRules.advanced">高级</button>
               <button type="button" class="btn btn-secondary" data-action="close-channel-modal"
                 data-i18n="common.cancel">取消</button>
               <button type="submit" id="channelSaveBtn" class="btn btn-primary" data-i18n="common.save">保存</button>
@@ -568,6 +571,56 @@
       <div class="confirm-actions">
         <button type="button" class="btn btn-secondary" data-action="close-delete-modal" data-i18n="common.cancel">取消</button>
         <button type="button" class="btn btn-danger" data-action="confirm-delete-channel" data-i18n="common.delete">删除</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 自定义请求规则模态框 -->
+  <div id="customRulesModal" class="modal">
+    <div class="modal-content custom-rules-modal">
+      <div class="modal-header">
+        <h2 class="modal-title" data-i18n="channels.customRules.modalTitle">自定义请求规则</h2>
+        <button type="button" class="close-btn" data-action="close-custom-rules-modal">&times;</button>
+      </div>
+      <div class="custom-rules-tabs" role="tablist">
+        <button type="button" class="custom-rules-tab-button active" data-custom-rules-tab="headers"
+          role="tab" aria-selected="true">
+          <span data-i18n="channels.customRules.tabHeaders">请求头</span>
+          <span class="custom-rules-tab-count" id="customRulesHeadersCount">(0)</span>
+          <span class="custom-rules-help-icon" data-custom-rules-help="headers"
+            title="" data-i18n-title="channels.customRules.helpIconTitle" aria-label="help">?</span>
+        </button>
+        <button type="button" class="custom-rules-tab-button" data-custom-rules-tab="body"
+          role="tab" aria-selected="false">
+          <span data-i18n="channels.customRules.tabBody">请求参数</span>
+          <span class="custom-rules-tab-count" id="customRulesBodyCount">(0)</span>
+          <span class="custom-rules-help-icon" data-custom-rules-help="body"
+            title="" data-i18n-title="channels.customRules.helpIconTitle" aria-label="help">?</span>
+        </button>
+      </div>
+      <div class="custom-rules-help-popup" id="customRulesHelpPopup" hidden>
+        <pre id="customRulesHelpContent"></pre>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="close-custom-rules-help"
+          data-i18n="common.close">关闭</button>
+      </div>
+      <div class="custom-rules-panel" id="customRulesPanelHeaders">
+        <div class="custom-rules-list" id="customRulesListHeaders"></div>
+        <button type="button" class="btn btn-secondary custom-rules-add-btn"
+          data-action="add-custom-rule" data-custom-rules-target="headers"
+          data-i18n="channels.customRules.addRule">+ 添加规则</button>
+      </div>
+      <div class="custom-rules-panel hidden" id="customRulesPanelBody">
+        <div class="custom-rules-list" id="customRulesListBody"></div>
+        <button type="button" class="btn btn-secondary custom-rules-add-btn"
+          data-action="add-custom-rule" data-custom-rules-target="body"
+          data-i18n="channels.customRules.addRule">+ 添加规则</button>
+      </div>
+      <div id="customRulesError" class="custom-rules-error" hidden></div>
+      <div class="modal-footer custom-rules-footer">
+        <button type="button" class="btn btn-secondary" data-action="close-custom-rules-modal"
+          data-i18n="common.cancel">取消</button>
+        <button type="button" class="btn btn-primary" data-action="apply-custom-rules"
+          data-i18n="common.confirm">确定</button>
       </div>
     </div>
   </div>

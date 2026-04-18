@@ -108,6 +108,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureChannelsScheduledCheckModel(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels scheduled_check_model: %w", err)
 			}
+			if err := ensureChannelsCustomRequestRules(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate channels custom_request_rules: %w", err)
+			}
 			// 增量迁移：将url字段从VARCHAR(191)扩展为TEXT（支持多URL存储）
 			if err := migrateChannelsURLToText(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels url to text: %w", err)
@@ -1446,6 +1449,28 @@ func ensureChannelsScheduledCheckModel(ctx context.Context, db *sql.DB, dialect 
 	}
 
 	return ensureSQLiteColumns(ctx, db, "channels", []sqliteColumnDef{{name: "scheduled_check_model", definition: "TEXT NOT NULL DEFAULT ''"}})
+}
+
+func ensureChannelsCustomRequestRules(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if dialect == DialectMySQL {
+		var count int
+		err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channels' AND COLUMN_NAME='custom_request_rules'",
+		).Scan(&count)
+		if err != nil {
+			return fmt.Errorf("check custom_request_rules field: %w", err)
+		}
+		if count == 0 {
+			if _, err := db.ExecContext(ctx,
+				"ALTER TABLE channels ADD COLUMN custom_request_rules TEXT"); err != nil {
+				return fmt.Errorf("add custom_request_rules column: %w", err)
+			}
+			log.Printf("[MIGRATE] Added channels.custom_request_rules column")
+		}
+		return nil
+	}
+
+	return ensureSQLiteColumns(ctx, db, "channels", []sqliteColumnDef{{name: "custom_request_rules", definition: "TEXT"}})
 }
 
 // ensureAPIKeysAPIKeyLength 修复 api_keys.api_key 列定义漂移（MySQL）
