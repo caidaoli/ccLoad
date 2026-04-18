@@ -249,10 +249,7 @@ func validateCustomRequestRules(r *model.CustomRequestRules) error {
 		}
 		h.Name = name
 
-		if action == model.RuleActionRemove {
-			h.Value = ""
-			continue
-		}
+		// remove：value 为空=删整条；非空=按逗号 token 精确移除（与 override/append 同等做校验）
 		if len(h.Value) > maxCustomRuleValue {
 			return fmt.Errorf("custom_request_rules.headers[%d]: value too long (max %d bytes)", i, maxCustomRuleValue)
 		}

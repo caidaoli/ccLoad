@@ -142,3 +142,20 @@ test('collectCustomRulesForSubmit 保留 override 头值（空字符串也允许
   assert.ok(payload);
   assert.equal(payload.headers[0].value, '');
 });
+
+test('collectCustomRulesForSubmit remove 头带值表示 token 精确移除', () => {
+  resetCustomRulesState({
+    headers: [
+      { action: 'remove', name: 'Anthropic-Beta', value: 'context-1m-2025-08-07' },
+      { action: 'remove', name: 'User-Agent', value: '' }
+    ],
+    body: []
+  });
+  const payload = collectCustomRulesForSubmit();
+  assert.ok(payload);
+  assert.equal(payload.headers.length, 2);
+  assert.equal(payload.headers[0].name, 'Anthropic-Beta');
+  assert.equal(payload.headers[0].value, 'context-1m-2025-08-07');
+  assert.equal(payload.headers[1].name, 'User-Agent');
+  assert.ok(!('value' in payload.headers[1]), 'remove + 空值不应包含 value');
+});

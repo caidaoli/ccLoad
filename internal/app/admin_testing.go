@@ -572,6 +572,7 @@ func (s *Server) testChannelAPIWithURL(
 		ProtocolTransforms:    cfg.ProtocolTransforms,
 		URL:                   selectedURL,
 		ModelEntries:          append([]model.ModelEntry(nil), cfg.ModelEntries...),
+		CustomRequestRules:    cfg.CustomRequestRules,
 	}
 
 	requestPlan, err := s.buildChannelTestRequestPlan(cfgForBuild, apiKey, testReq, clientProtocol)
@@ -585,6 +586,9 @@ func (s *Server) testChannelAPIWithURL(
 			requestPlan.requestBody = maybeInjectAnyrouterAdaptiveThinking(cfgForBuild, "/v1/messages", requestPlan.requestBody)
 		}
 	}
+
+	// 渠道级自定义请求体规则（与代理链路一致，仅对 JSON body 生效）
+	requestPlan.requestBody = applyBodyRules(requestPlan.headers.Get("Content-Type"), requestPlan.requestBody, cfgForBuild.BodyRules())
 
 	// 创建HTTP请求
 	ctx, cancel := context.WithTimeout(reqCtx, 2*time.Minute)
@@ -605,6 +609,9 @@ func (s *Server) testChannelAPIWithURL(
 	for key, value := range testReq.Headers {
 		req.Header.Set(key, value)
 	}
+
+	// 渠道级自定义请求头规则（与代理链路一致，认证头黑名单保护）
+	applyHeaderRules(req.Header, cfgForBuild.HeaderRules())
 
 	// 发送请求
 	start := time.Now()

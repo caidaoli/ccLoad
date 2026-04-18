@@ -69,6 +69,75 @@ func TestApplyHeaderRules_NoOpOnNilOrEmpty(t *testing.T) {
 	}
 }
 
+func TestApplyHeaderRules_RemoveTokenFromCSV(t *testing.T) {
+	h := http.Header{}
+	h.Set("Anthropic-Beta", "claude-code-20250219, context-1m-2025-08-07, interleaved-thinking-2025-05-14")
+
+	applyHeaderRules(h, []model.CustomHeaderRule{
+		{Action: model.RuleActionRemove, Name: "Anthropic-Beta", Value: "context-1m-2025-08-07"},
+	})
+
+	got := h.Get("Anthropic-Beta")
+	want := "claude-code-20250219, interleaved-thinking-2025-05-14"
+	if got != want {
+		t.Errorf("expected %q, got %q", want, got)
+	}
+}
+
+func TestApplyHeaderRules_RemoveTokenEmptiesHeader(t *testing.T) {
+	h := http.Header{}
+	h.Set("Anthropic-Beta", "context-1m-2025-08-07")
+
+	applyHeaderRules(h, []model.CustomHeaderRule{
+		{Action: model.RuleActionRemove, Name: "Anthropic-Beta", Value: "context-1m-2025-08-07"},
+	})
+
+	if values := h.Values("Anthropic-Beta"); len(values) != 0 {
+		t.Errorf("expected header fully removed, got %v", values)
+	}
+}
+
+func TestApplyHeaderRules_RemoveTokenNoMatchKeepsHeader(t *testing.T) {
+	h := http.Header{}
+	h.Set("Anthropic-Beta", "claude-code-20250219")
+
+	applyHeaderRules(h, []model.CustomHeaderRule{
+		{Action: model.RuleActionRemove, Name: "Anthropic-Beta", Value: "context-1m-2025-08-07"},
+	})
+
+	if got := h.Get("Anthropic-Beta"); got != "claude-code-20250219" {
+		t.Errorf("expected header untouched, got %q", got)
+	}
+}
+
+func TestApplyHeaderRules_RemoveTokenAcrossMultiValues(t *testing.T) {
+	h := http.Header{}
+	h.Add("X-Multi", "a, b")
+	h.Add("X-Multi", "b, c")
+
+	applyHeaderRules(h, []model.CustomHeaderRule{
+		{Action: model.RuleActionRemove, Name: "X-Multi", Value: "b"},
+	})
+
+	values := h.Values("X-Multi")
+	if len(values) != 2 || values[0] != "a" || values[1] != "c" {
+		t.Errorf("expected [a, c], got %v", values)
+	}
+}
+
+func TestApplyHeaderRules_RemoveEmptyValueDeletesEntireHeader(t *testing.T) {
+	h := http.Header{}
+	h.Set("Anthropic-Beta", "claude-code-20250219, context-1m-2025-08-07")
+
+	applyHeaderRules(h, []model.CustomHeaderRule{
+		{Action: model.RuleActionRemove, Name: "Anthropic-Beta"},
+	})
+
+	if values := h.Values("Anthropic-Beta"); len(values) != 0 {
+		t.Errorf("expected header deleted, got %v", values)
+	}
+}
+
 func TestApplyBodyRules_NonJSONPassthrough(t *testing.T) {
 	body := []byte("raw binary bytes")
 	rules := []model.CustomBodyRule{{Action: model.RuleActionRemove, Path: "foo"}}
