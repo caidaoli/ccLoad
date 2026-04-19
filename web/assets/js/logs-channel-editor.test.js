@@ -55,6 +55,26 @@ test('日志页初始化渠道编辑器时会绑定弹窗静态动作', () => {
   assert.match(logsChannelEditorScript, /initChannelEditorActions\(\);/);
 });
 
+test('日志页动态加载渠道编辑器会注入自定义规则弹窗及脚本', () => {
+  const logsChannelEditorScript = fs.readFileSync(path.join(__dirname, 'logs-channel-editor.js'), 'utf8');
+
+  assert.match(logsChannelEditorScript, /'customRulesModal'/);
+  assert.match(logsChannelEditorScript, /\/web\/assets\/js\/channels-custom-rules\.js/);
+});
+
+test('ESC 键优先关闭自定义规则弹窗而不是编辑渠道弹窗', () => {
+  const logsChannelEditorScript = fs.readFileSync(path.join(__dirname, 'logs-channel-editor.js'), 'utf8');
+  const channelsInitScript = fs.readFileSync(path.join(__dirname, 'channels-init.js'), 'utf8');
+
+  for (const source of [logsChannelEditorScript, channelsInitScript]) {
+    const customRulesIdx = source.indexOf('closeCustomRulesModal()');
+    const channelModalIdx = source.indexOf('closeModal()');
+    assert.ok(customRulesIdx > 0, '缺少 closeCustomRulesModal 调用');
+    assert.ok(channelModalIdx > 0, '缺少 closeModal 调用');
+    assert.ok(customRulesIdx < channelModalIdx, 'ESC 判断顺序必须 customRulesModal 早于 channelModal');
+  }
+});
+
 test('日志页进行中请求列数只基于日志表自身，不受渠道弹窗额外表头影响', () => {
   const logsTable = {
     querySelectorAll(selector) {

@@ -2090,7 +2090,7 @@
 
       .channel-editor-footer {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-columns: auto minmax(0, 1fr);
         align-items: center;
         gap: 10px 12px;
         padding-top: 12px;
@@ -2102,6 +2102,8 @@
         grid-row: 1;
         width: auto;
         align-self: center;
+        white-space: nowrap;
+        flex-shrink: 0;
       }
 
       .channel-editor-footer-fields {
@@ -2974,6 +2976,35 @@
     }
 
     @media (max-width: 640px) {
+      .custom-rules-modal .modal-title {
+        font-size: 1rem;
+      }
+      .custom-rules-tab-button {
+        font-size: 0.8rem;
+        padding: 6px 10px;
+      }
+      .custom-rules-tab-count {
+        font-size: 0.72rem;
+      }
+      .custom-rules-modal .form-input {
+        font-size: 0.85rem;
+        padding: 6px 10px;
+      }
+      .custom-rules-modal select.form-input {
+        font-size: 0.85rem;
+      }
+      .custom-rules-help-popup,
+      .custom-rules-help-popup pre {
+        font-size: 0.75rem;
+      }
+      .custom-rules-empty {
+        font-size: 0.78rem;
+      }
+      .custom-rules-add-btn,
+      .custom-rules-footer .btn {
+        font-size: 0.82rem;
+        padding: 6px 14px;
+      }
       .custom-rules-row {
         grid-template-columns: 1fr 1fr;
         grid-template-areas:

@@ -210,7 +210,7 @@ window.I18N_LOCALES['en'] = {
   'channels.batchDeleteModelsTitle': 'Batch delete selected models',
   'channels.searchModelPlaceholder': 'Search model name...',
   'channels.redirectTarget': 'Redirect Target (Optional)',
-  'channels.enableChannel': 'Enable Channel',
+  'channels.enableChannel': 'Enable',
   'channels.enableScheduledCheck': 'Enable Scheduled Checks',
   'channels.priority': 'Priority',
   'channels.dailyCostLimit': 'Daily Limit',

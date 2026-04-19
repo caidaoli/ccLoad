@@ -4714,6 +4714,46 @@ body.trend-page .chart-info {
   .modern-table td {
     padding: var(--space-2) var(--space-3);
   }
+
+  .page-title {
+    font-size: var(--text-lg);
+  }
+
+  .page-subtitle {
+    font-size: var(--text-xs);
+    line-height: 1.5;
+  }
+
+  .filter-label,
+  .filter-checkbox-label,
+  .filter-checkbox-label span {
+    font-size: 0.72rem;
+  }
+
+  .filter-input,
+  .filter-select {
+    font-size: 0.8rem;
+    padding: 6px 10px;
+  }
+
+  .filter-info {
+    font-size: 0.72rem;
+  }
+
+  .filter-btn {
+    font-size: 0.82rem;
+    padding: 6px 12px;
+  }
+
+  .filter-combobox {
+    background-position: right 8px center;
+    padding-right: 26px;
+  }
+
+  .filter-dropdown-item {
+    font-size: 0.78rem;
+    padding: 8px 12px;
+  }
 }
 
 /* ===== 工具类 ===== */
@@ -5653,6 +5693,12 @@ body.trend-page .chart-info {
     min-width: 0;
   }
 
+  .model-test-control__label,
+  .model-test-toggle,
+  .model-test-progress {
+    font-size: 0.78rem;
+  }
+
   .model-test-progress {
     display: none;
   }
@@ -5668,6 +5714,7 @@ body.trend-page .chart-info {
   .model-test-toolbar-btn {
     width: 100%;
     min-width: 0;
+    font-size: 0.8rem;
   }
 
   .model-test-toolbar-section--actions .model-test-toolbar-btn {

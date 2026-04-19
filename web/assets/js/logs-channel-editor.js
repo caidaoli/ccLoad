@@ -3,7 +3,8 @@
     'channelModal',
     'keyImportModal',
     'keyExportModal',
-    'modelImportModal'
+    'modelImportModal',
+    'customRulesModal'
   ];
 
   const CHANNEL_TEMPLATE_IDS = [
@@ -23,6 +24,7 @@
     '/web/assets/js/channels-keys.js',
     '/web/assets/js/channels-urls.js',
     '/web/assets/js/channels-protocols.js',
+    '/web/assets/js/channels-custom-rules.js',
     '/web/assets/js/channels-modals.js'
   ];
 
@@ -142,12 +144,15 @@
     document.addEventListener('keydown', (event) => {
       if (event.key !== 'Escape') return;
 
+      const customRulesModal = document.getElementById('customRulesModal');
       const modelImportModal = document.getElementById('modelImportModal');
       const keyImportModal = document.getElementById('keyImportModal');
       const keyExportModal = document.getElementById('keyExportModal');
       const channelModal = document.getElementById('channelModal');
 
-      if (modelImportModal && modelImportModal.classList.contains('show')) {
+      if (customRulesModal && customRulesModal.classList.contains('show')) {
+        closeCustomRulesModal();
+      } else if (modelImportModal && modelImportModal.classList.contains('show')) {
         closeModelImportModal();
       } else if (keyImportModal && keyImportModal.classList.contains('show')) {
         closeKeyImportModal();
