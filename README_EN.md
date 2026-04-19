@@ -61,6 +61,7 @@ ccLoad solves these pain points through:
 - 🔄 **Protocol Transform** - Anthropic/OpenAI/Gemini/Codex cross-protocol conversion, one channel serves multiple client protocols
 - 🔍 **Debug Logs** - Upstream request/response raw data capture with sensitive header masking, essential for troubleshooting
 - 🕐 **Scheduled Checks** - Background periodic channel availability probing, auto-detect failed channels
+- 🧩 **Custom Request Rules** - Per-channel HTTP header & JSON body rewriting (remove/override/append), with auth header protection, CRLF guard, and capacity caps
 
 ## 🏗️ Architecture Overview
 
@@ -562,6 +563,47 @@ curl -X POST http://localhost:8080/admin/channels \
 ```
 
 > **Multi-URL Note**: The `url` field supports comma-separated multiple URLs. The system uses latency-weighted random selection for optimal URL choice, with automatic cooldown for failed URLs, enabling URL-level load balancing and failover within a single channel.
+
+### Custom Request Rules (Advanced)
+
+The "Advanced" button in the channel editor opens a secondary modal that lets you rewrite the **HTTP headers** and **JSON request body** forwarded upstream at channel granularity. Typical use cases include `User-Agent` override, forcing API version headers, or tweaking fields like `thinking` / `max_tokens`. Rules apply in configured order and take effect for all subsequent requests on that channel as soon as they are saved.
+
+**Action matrix**:
+
+| Target | `remove` | `override` | `append` |
+|---|---|---|---|
+| HTTP Header | Delete the named header (supports token-level removal on multi-value headers such as `Anthropic-Beta`) | `Header.Set` replaces all values | `Header.Add` appends a value (multi-value semantics) |
+| JSON Body | Delete a field/array element by dotted path | Set the value at a path, creating intermediate nodes as needed | Not supported (ambiguous in JSON) |
+
+**JSON path syntax**:
+- Dotted path + numeric array index: `thinking.budget_tokens`, `messages.0.role`, `generation_config.temperature`
+- Values accept any JSON literal: number `0.7`, boolean `true`, string `"claude-opus-4-6"`, object `{"type":"adaptive"}`, array `["a","b"]`
+
+**Safety constraints** (hard-enforced server-side even if the frontend is bypassed):
+- **Auth header blacklist**: any rule targeting `Authorization`, `x-api-key`, or `x-goog-api-key` (case-insensitive) is silently ignored and logged via `slog.Warn`
+- **CRLF injection guard**: header names/values must not contain `\r\n`
+- **Non-JSON body passthrough**: requests without `application/json` content type, empty bodies, or bodies that fail to deserialize are forwarded untouched without blocking
+- **Capacity caps**: ≤ 32 header rules and ≤ 32 body rules per channel, each value ≤ 8 KB; violations return HTTP 400
+
+**Typical example**:
+```jsonc
+{
+  "custom_request_rules": {
+    "headers": [
+      { "action": "override", "name": "User-Agent", "value": "claude-cli/1.0 (custom)" },
+      { "action": "remove",   "name": "Anthropic-Beta", "value": "context-1m-2025-08-07" },
+      { "action": "append",   "name": "Accept", "value": "application/json" }
+    ],
+    "body": [
+      { "action": "override", "path": "thinking", "value": {"type":"adaptive"} },
+      { "action": "override", "path": "max_tokens", "value": 4096 },
+      { "action": "remove",   "path": "stop_sequences" }
+    ]
+  }
+}
+```
+
+> **Interaction with built-in logic**: Custom rules run **after** the anyrouter `anthropic-beta` injection, so they can override or remove the beta flag. The anyrouter adaptive-thinking injection detects a user-provided `thinking` field and leaves it untouched. Authentication headers remain unmodifiable at all times.
 
 ### Batch Data Management
 
