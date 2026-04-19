@@ -2,317 +2,144 @@
 
 ## 构建与测试
 
+必须 `-tags go_json`。环境变量见 `.env`。
+
 ```bash
-# 构建(必须 -tags go_json，注入版本号用于静态资源缓存)
-go build -tags go_json -ldflags "\
-  -X ccLoad/internal/version.Version=$(git describe --tags --always) \
-  -X ccLoad/internal/version.Commit=$(git rev-parse --short HEAD) \
-  -X 'ccLoad/internal/version.BuildTime=$(date '+%Y-%m-%d %H:%M:%S %z')' \
-  -X ccLoad/internal/version.BuiltBy=$(whoami)" -o ccload .
-
-# 测试(必须 -tags go_json)
-go test -tags go_json ./internal/... -v
-go test -tags go_json -race ./internal/...  # 竞态检测
-
-# 开发运行(版本号为dev)
-go run -tags go_json .
-
-# 或使用 Makefile（含版本注入、前端测试等）
 make build          # 构建（自动注入版本号+strip）
-make web-test       # 前端 node:test 测试
+make web-test       # 前端 node:test
 make verify-web     # 前端验证（含 web-test）
 make dev            # 开发运行
+
+go build -tags go_json -o ccload .
+go test -tags go_json ./internal/... -v
+go test -tags go_json -race ./internal/...
 ```
-运行所需环境变量定义在.env文件中
-## 核心架构
+
+## 架构概览
 
 ```
 internal/
-├── app/           # HTTP层+业务逻辑
-│   ├── server.go              # Server结构体、NewServer、SetupRoutes、Shutdown
-│   ├── proxy_handler.go       # 代理请求主入口、并发控制、路由选择
-│   ├── proxy_forward.go       # 核心转发逻辑、请求构建、响应处理
-│   ├── proxy_stream.go        # 流式响应、首字节检测
-│   ├── proxy_error.go         # 错误处理、冷却决策、重试逻辑
-│   ├── proxy_gemini.go        # Gemini API特殊处理
-│   ├── proxy_sse_parser.go    # SSE解析器（Gemini/OpenAI缓存Token解析）
-│   ├── proxy_util.go          # 代理常量、类型定义、工具函数
-│   ├── proxy_debug.go         # 上游请求/响应调试捕获（含敏感头脱敏）
-│   ├── admin_channels.go      # 渠道CRUD
-│   ├── admin_auth_tokens.go   # API令牌CRUD（费用限额/模型限制）
-│   ├── admin_stats.go         # 统计分析API
-│   ├── admin_cooldown.go      # 冷却管理API
-│   ├── admin_csv.go           # CSV导入导出
-│   ├── admin_testing.go       # 渠道测试（支持协议转换测试）
-│   ├── admin_debug_log.go     # 调试日志API（脱敏+base64二进制）
-│   ├── admin_models.go        # 模型列表管理
-│   ├── admin_settings.go      # 系统设置管理
-│   ├── admin_active_requests.go # 活跃请求查询
-│   ├── admin_types.go         # 管理API类型定义与验证
-│   ├── channel_check_scheduler.go # 渠道定时检测调度器
-│   ├── detection_log.go       # 检测日志构建（定时检测结果→LogEntry）
-│   ├── custom_rules.go        # 渠道级自定义请求头/JSON 请求体规则应用
-│   ├── selector.go            # 渠道选择入口
-│   ├── selector_balancer.go   # 平滑加权轮询
-│   ├── selector_cooldown.go   # 冷却感知选择
-│   ├── selector_model_matcher.go # 模型匹配（含日期后缀回退）
-│   ├── url_selector.go        # 多URL选择（加权随机/EWMA延迟/冷却/探索优先）
-│   ├── url_fallback.go        # URL故障转移排序（按EWMA延迟排序备选URL）
-│   ├── *_cache.go             # 缓存（cost/health/stats）
-│   ├── *_service.go           # 服务层（auth/config/log）
-│   ├── key_selector.go        # Key负载均衡
-│   ├── smooth_weighted_rr.go  # 平滑加权轮询实现
-│   ├── request_context.go     # 请求上下文与超时控制
-│   ├── token_counter.go       # Token计数（Anthropic count-tokens）
-│   ├── active_requests.go     # 活跃请求追踪（含BaseURL）
-│   ├── handlers.go            # 通用处理器与响应工具
-│   ├── middleware_zstd.go     # zstd压缩中间件
-│   ├── socket_{unix,windows}.go  # 平台TCP优化（TCP_NODELAY）
-│   └── static.go              # 静态资源服务
-├── protocol/      # 协议转换系统（Anthropic/OpenAI/Gemini/Codex互转）
-│   ├── types.go         # Protocol/RequestFamily/TransformPlan定义
-│   ├── registry.go      # 请求/响应转换器注册表
-│   ├── errors.go        # 协议转换错误类型
-│   └── builtin/         # 内置转换实现
-│       ├── register.go            # 注册所有内置转换器
-│       ├── openai_gemini.go       # OpenAI↔Gemini
-│       ├── openai_anthropic.go    # OpenAI↔Anthropic
-│       ├── openai_codex.go        # OpenAI↔Codex
-│       ├── codex_anthropic.go     # Codex↔Anthropic
-│       ├── codex_gemini.go        # Codex↔Gemini
-│       ├── anthropic_gemini.go    # Anthropic↔Gemini
-│       ├── request_prompt.go      # 请求提示词转换
-│       ├── request_reasoning.go   # 推理内容转换
-│       ├── request_codex_tool_names.go # Codex工具名转换
-│       ├── response_helpers.go    # 响应转换辅助函数
-│       └── sse.go                 # SSE流式响应转换
-├── model/         # 数据模型（auth_token/config/debug_log/log/stats/health/system_setting/model_test）
+├── app/           # HTTP 层 + 业务（proxy_*、admin_*、selector_*、url_selector、*_cache、*_service）
+├── protocol/      # 协议转换（Anthropic/OpenAI/Gemini/Codex 互转，内置在 builtin/）
+├── model/         # 数据模型
 ├── cooldown/      # 冷却决策引擎
-├── storage/       # 存储层
-│   ├── factory.go       # 存储工厂（SQLite/MySQL/混合）
-│   ├── store.go         # 统一存储接口（Store interface）
-│   ├── hybrid_store.go  # 混合存储实现
-│   ├── cache.go         # 渠道/Key缓存
-│   ├── migrate.go       # Schema迁移（SQLite/MySQL增量）
-│   ├── sync_manager.go  # 启动数据恢复
-│   ├── schema/          # Schema定义与构建器
-│   ├── sqlite/          # SQLite特定实现（并发测试/冷却一致性）
-│   └── sql/             # SQL通用实现
-│       ├── store_impl.go       # SQLStore核心（NewSQLStore/Ping/Close）
-│       ├── transaction.go      # 事务处理（含SQLite busy重试+指数退避）
-│       ├── query.go            # 查询构建器（WhereBuilder/QueryBuilder/ConfigScanner）
-│       ├── admin_sessions.go   # Admin会话管理（创建/验证/过期清理）
-│       ├── auth_token_stats.go # Auth Token统计（时间范围查询/RPM填充）
-│       ├── log.go              # 日志读写（含service_tier/debug_log）
-│       ├── metrics*.go         # metrics聚合/过滤/终结化
-│       ├── helpers.go          # 渠道信息批量查询辅助（ChannelInfo/过滤器）
-│       └── ...                 # config/apikey/cooldown/system_settings
-├── util/          # 工具库（classifier/cost_calculator/money/rate_limiter/models_fetcher/channel_types/apikeys/parse/time/flexible_bool）
-├── version/       # 版本信息、启动banner、版本检查
-├── config/        # 配置加载与默认常量（defaults.go定义所有可调参数）
-└── testutil/      # 测试辅助（api_tester/data/http/store/templates/types）
-web/               # 前端页面
-├── *.html         # 页面（index/channels/logs/stats/tokens/settings/trend/model-test/login）
-├── manifest.json  # PWA清单（可安装为桌面应用）
-├── favicon*       # 多尺寸favicon（svg/ico/192png/512png）
-└── assets/
-    ├── locales/   # i18n本地化（zh-CN.js, en.js）
-    ├── css/       # 样式（styles/channels/logs/tokens）
-    └── js/        # 模块化JS（channels-*/channels-protocols/logs/logs-channel-editor/stats/tokens/settings/trend/model-test/i18n/ui/page-filters/filter-*/date-range-selector/template-engine/index/login/...）
+├── storage/       # 存储层（factory/hybrid_store/sql/sqlite/migrate）
+├── util/          # 工具（classifier/cost_calculator/money/rate_limiter/...）
+├── version/       # 版本信息
+├── config/        # 配置与默认常量（defaults.go）
+└── testutil/      # 测试辅助
+web/               # 前端（HTML + assets/{css,js,locales}）
 ```
 
-**故障切换策略**:
-- Key级错误(401/403/429) → 重试同渠道其他Key
-- 渠道级错误(5xx/520/524) → 切换到其他渠道
-- 404/405（非明确客户端语义）→ 视为渠道级错误并切换渠道（常见于BaseURL/endpoint配置问题）
-- 客户端错误（如406/413，或404且响应体明确`model_not_found`）→ 不重试,直接返回
-- **渠道每日成本限额**: 达到`daily_cost_limit`自动跳过该渠道
-- 指数退避: 2min → 4min → 8min → 30min(上限)
+## 故障切换策略
 
-**自定义状态码**（`util/classifier.go`）:
-- **499** `StatusClientClosedRequest` — 客户端取消，不计入失败统计，不冷却
-- **596** `StatusQuotaExceeded` — 1308配额超限 → Key级冷却，不计入渠道健康度
-- **597** `StatusSSEError` — SSE流中error事件（HTTP 200但响应体含错误）→ 由`classifySSEError()`按error.type动态决定级别（api_error/overloaded_error→渠道级，其他→Key级）
-- **598** `StatusFirstByteTimeout` — 上游首字节超时 → 渠道级冷却
-- **599** `StatusStreamIncomplete` — 流式响应不完整/中断 → 渠道级冷却
+- Key 级（401/403/429）→ 重试同渠道其他 Key
+- 渠道级（5xx/520/524，以及 404/405 无明确客户端语义）→ 切换渠道
+- 客户端错误（406/413，或 404 + `model_not_found`）→ 不重试直接返回
+- 每日成本限额达到 → 跳过该渠道
+- 指数退避：2min → 4min → 8min → 30min
 
-**渠道选择算法**:
-- **平滑加权轮询**: 替换加权随机，按有效Key数量分配流量，更均匀
-- **冷却感知**: 实时排除冷却中的Key，权重反映实际可用容量
-- **成本限额检查**: 优先于冷却检查，达到限额的渠道被排除
+## 自定义状态码（`util/classifier.go`）
 
-**多URL选择算法**（`URLSelector`）:
-- **探索优先**: 未被探索过的URL优先选择，确保所有URL都有延迟数据
-- **加权随机**: 权重=1/EWMA延迟，延迟越低被选中概率越高
-- **EWMA延迟追踪**: 指数加权移动平均记录每个URL的首字节时间
-- **指数退避冷却**: 失败URL独立冷却（2min→4min→8min→30min）
-- **BaseURL追踪**: 活跃请求、日志记录和UI展示均携带当前上游URL
+- **499** 客户端取消，不计失败、不冷却
+- **596** 1308 配额超限 → Key 级冷却，不计健康度
+- **597** SSE error 事件（HTTP 200 + 错误体）→ `classifySSEError()` 按 error.type 动态判定（api_error/overloaded_error → 渠道级）
+- **598** 上游首字节超时 → 渠道级
+- **599** 流式响应中断 → 渠道级
 
-**协议转换系统**（`internal/protocol/`）:
-- **四大协议**: Anthropic / OpenAI / Gemini / Codex
-- **请求族**: chat_completions / responses / messages / generate_content / completions / embeddings / images
-- **两种模式**: `upstream`（默认，由上游原生处理）/ `local`（本地翻译请求/响应）
-- **转换注册表**: `Registry` 存储请求/流式响应/非流式响应三类转换器
-- **TransformPlan**: 捕获转换元数据（客户端协议、上游协议、请求族、路径、模型等）
-- **渠道配置**: `ProtocolTransformMode` + `ProtocolTransforms`（支持的额外协议列表）
+## 渠道/Key/URL 选择
 
-**调试日志系统**:
-- `proxy_debug.go`: 上游请求/响应原始数据捕获（`captureDebugRequest`）
-- `admin_debug_log.go`: 调试日志API（`HandleGetDebugLog`，含敏感头脱敏、base64二进制编码）
-- `model/debug_log.go`: `DebugLogEntry`（req/resp method/url/headers/body）
-- 独立清理策略: 不受普通日志保留天数限制，`DebugLogCleanupInterval=2min`
+- **渠道**：平滑加权轮询（按有效 Key 数分配流量）；冷却感知；成本限额检查优先于冷却
+- **多 URL**：探索优先 → 1/EWMA 延迟加权随机；失败 URL 独立指数退避冷却；BaseURL 全链路追踪（活跃请求/日志/UI）
 
-**渠道定时检测**:
-- `channel_check_scheduler.go`: 后台定时检测调度器（`startScheduledChannelCheckLoop`）
-- `detection_log.go`: 检测结果→LogEntry构建（`detectionLogFromResult`/`selectScheduledCheckModel`）
-- 配置: `channel_check_interval_hours`（0=禁用，Web管理界面热重载）
-- 渠道级: `scheduled_check_enabled`/`scheduled_check_model`（指定检测模型）
+## 协议转换（`internal/protocol/`）
 
-**anyrouter渠道特殊处理**:
-- 渠道名包含"anyrouter"时自动注入`anthropic-beta: context-1m-2025-08-07`头
-- 仅对Anthropic类型渠道生效（`proxy_forward.go:injectAnthropicBetaFlag`）
-- `/v1/messages` 请求且 body 未显式声明 `thinking` 时注入 `thinking.type=adaptive`（`proxy_util.go:maybeInjectAnyrouterAdaptiveThinking`），代理链路与 `admin_testing.go` 测试接口同步启用
+- 四协议：Anthropic / OpenAI / Gemini / Codex
+- 请求族：chat_completions / responses / messages / generate_content / completions / embeddings / images
+- 两模式：`upstream`（默认，上游原生）/ `local`（本地翻译）
+- `Registry` 注册 请求/流式响应/非流式响应 三类转换器
+- 渠道配置：`ProtocolTransformMode` + `ProtocolTransforms`
 
-**自定义请求规则**（`custom_rules.go`）:
-- **渠道配置**：`channels.custom_request_rules` 存储 `CustomRequestRules{Headers[], Body[]}`（JSON）
-- **HTTP Header 规则**：`remove`（支持对多值头按 token 精确剔除）/ `override`（`Header.Set`）/ `append`（`Header.Add`）
-- **JSON Body 规则**：`remove`（按点分路径删除 key 或数组元素）/ `override`（按路径写值，不存在自动创建中间节点）
-- **路径语法**：点分 + 整数数组下标，如 `thinking.budget_tokens`、`messages.0.role`
-- **安全约束**（`admin_types.go:validateCustomRequestRules`）：
-  - 认证头黑名单（`Authorization`/`x-api-key`/`x-goog-api-key`）一律忽略并写 `slog.Warn`
-  - CRLF 注入防御：header 名称/值禁止 `\r\n`
-  - 非 JSON body（`Content-Type` 不含 `application/json` 或反序列化失败）静默跳过
-  - 容量上限：单渠道 header/body 规则各 ≤ 32 条，单条 value ≤ 8 KB
-- **执行顺序**（`proxy_forward.go`）：body 规则在转发前应用；header 规则在 anyrouter beta flag 注入之后应用，可覆盖或移除 beta flag
+## anyrouter 特殊处理
 
-**关键入口**:
-- `app.Server.HandleProxyRequest()` - 代理请求主入口
-- `app.Server.selectRouteCandidates()` - 智能路由选择（含Gemini GET特殊路由，委托给selectCandidatesByModelAndType）
-- `app.Server.selectCandidatesByModelAndType()` - 渠道候选筛选（模型匹配+日期后缀回退）
-- `protocol.BuildTransformPlan()` - 构建协议转换计划
-- `protocol.Registry.TranslateRequest()` - 请求协议转换
-- `protocol.Registry.TranslateResponseStream()` - 流式响应协议转换
-- `protocol.Registry.TranslateResponseNonStream()` - 非流式响应协议转换
-- `protocol.DetectRequestFamily()` - 从请求路径推断请求族
-- `cooldown.Manager.HandleError()` - 冷却决策引擎
-- `util.ClassifyHTTPStatus()` - HTTP错误分类器
-- `util.ClassifyHTTPResponseWithMeta()` - 带响应体的错误分类（返回完整元数据）
-- `app.KeySelector.SelectAvailableKey()` - Key负载均衡
-- `app.SmoothWeightedRR.SelectWithCooldown()` - 平滑加权轮询选择
-- `app.URLSelector.SelectURL()` - 多URL加权随机选择
-- `app.URLSelector.SortURLs()` - 按EWMA延迟排序（用于故障切换）
-- `app.orderURLsWithSelector()` - URL故障转移排序（结合URLSelector延迟数据）
-- `util.CalculateCostDetailed()` - 费用计算（含分层定价/缓存折扣/service_tier倍率）
-- `util.OpenAIServiceTierMultiplier()` - OpenAI service_tier价格倍率
-- `util.IsFastModeModel()` - 判断是否支持Anthropic fast mode
-- `util.CalculateFastModeCost()` - 计算fast mode独立费用
-- `app.applyHeaderRules()` / `app.applyBodyRules()` - 自定义请求规则应用
-- `app.maybeInjectAnyrouterAdaptiveThinking()` - anyrouter adaptive thinking 注入
-- `app.validateCustomRequestRules()` - 自定义规则校验（admin 侧）
+渠道名含 `anyrouter` 且是 Anthropic 类型：
+- 注入 `anthropic-beta: context-1m-2025-08-07`（`injectAnthropicBetaFlag`）
+- `/v1/messages` 且 body 无 `thinking`：注入 `thinking.type=adaptive`（`maybeInjectAnyrouterAdaptiveThinking`），代理链路与 `admin_testing.go` 测试接口同步启用
 
-**Token费用限额（Auth Token）**:
-- 存储：`auth_tokens.cost_used_microusd/cost_limit_microusd`（微美元整数），避免浮点误差
-- 语义：在请求开始处做限额检查；费用在请求结束后记账，因此允许"最多超额一个请求"的窗口
-- 计费：仅成功请求（2xx）累加费用与Token统计；失败请求只计失败次数
-- **模型限制**：`auth_tokens.allowed_models`（逗号分隔），空值表示无限制
-- **首字节时间**：`auth_tokens.first_byte_time_ms`（毫秒），记录流式请求TTFB
-- **RPM统计**：`PeakRPM/AvgRPM/RecentRPM`，支持按时间范围查询（`GetAuthTokenStatsInRange`）
+## 自定义请求规则（`custom_rules.go`）
 
-**渠道每日成本限额**:
-- 存储：`channels.daily_cost_limit`（美元），0表示无限制
-- 缓存：`CostCache`组件在内存中缓存当日成本，按天自动重置
-- 启动加载：从数据库加载当日已消耗成本
+- 存储：`channels.custom_request_rules` JSON = `CustomRequestRules{Headers[], Body[]}`
+- **Header**：`remove`（多值头按 token 精确剔除）/ `override`（`Set`）/ `append`（`Add`）
+- **JSON Body**：`remove`（点分路径删除 key/数组元素）/ `override`（按路径写值，自动创建中间节点）
+- 路径语法：`thinking.budget_tokens`、`messages.0.role`
+- **安全**（`validateCustomRequestRules`）：认证头黑名单（`Authorization`/`x-api-key`/`x-goog-api-key`）静默 + `slog.Warn`；禁 CRLF；非 JSON body 静默跳过；单渠道 header/body 各 ≤ 32 条、单条 value ≤ 8 KB
+- **顺序**（`proxy_forward.go`）：body 规则先应用；header 规则在 anyrouter beta flag 注入之后，可覆盖/移除 beta flag
 
-**混合存储模式**（HuggingFace Spaces 场景）:
-- 三种模式：纯SQLite（默认）/ 纯MySQL / 混合（MySQL主+SQLite缓存）
-- 启用：`CCLOAD_MYSQL` + `CCLOAD_ENABLE_SQLITE_REPLICA=1`
-- 日志恢复天数：`CCLOAD_SQLITE_LOG_DAYS`（默认7天，-1=全量，0=不恢复）
-- 核心组件：
-  - `HybridStore`: MySQL主存储 + SQLite本地缓存（读加速）
-  - `SyncManager`: 启动时从MySQL恢复数据到SQLite
-  - `StatsCache`: 统计结果缓存（TTL: 30秒~2小时）
-- 数据流：
-  - 写操作：先写MySQL（主），成功后同步到SQLite（缓存）
-  - 读操作：从SQLite读取（本地缓存，低延迟）
-  - 日志特殊：先写SQLite（快），再异步同步到MySQL（备份）
+## 调试日志
 
-**OpenAI service_tier 定价**:
-- 支持 `priority`/`flex`/`default` 层级，影响最终费用倍率
-- `util.OpenAIServiceTierMultiplier()` 返回层级对应的价格系数
-- `serviceTierModels` 定义支持分层定价的模型列表
-- 日志链路：`LogEntry.ServiceTier` 持久化到数据库，前端成本列显示层级提示
+- 捕获：`proxy_debug.go:captureDebugRequest`（脱敏敏感头）
+- API：`admin_debug_log.go:HandleGetDebugLog`（base64 二进制）
+- 独立清理：`DebugLogCleanupInterval=2min`，不受普通日志保留天数限制
 
-**分层定价（Tiered Pricing）**:
-- **GPT-5.4**: 超过 `gpt54TierThreshold` token后输入价格降档
-- **Qwen-Plus**: 超过 `qwenPlusTierThreshold` token后价格降档
-- **Gemini长上下文**: 超过 `geminiLongContextThreshold` token后价格翻倍
-- 缓存读取折扣：Claude系列/Opus单独乘数，OpenAI缓存50%折扣
-- 缓存写入定价：`cacheWrite5mMultiplier`(1.25x)、`cacheWrite1hMultiplier`(2.0x)，基于input价格
+## 渠道定时检测
 
-**Admin会话管理**:
-- `CreateAdminSession/GetAdminSession/DeleteAdminSession` - 会话CRUD
-- `CleanExpiredSessions` - 过期会话自动清理
-- `LoadAllSessions` - 启动时恢复所有有效会话
+- 调度：`channel_check_scheduler.go:startScheduledChannelCheckLoop`
+- 配置：全局 `channel_check_interval_hours`（0=禁用，热重载）；渠道 `scheduled_check_enabled`/`scheduled_check_model`
 
-**健康评分配置**（`HealthScoreConfig`）:
-- `Enabled` - 是否启用健康评分影响渠道选择
-- `SuccessRatePenaltyWeight` - 成功率惩罚权重
-- `WindowMinutes` - 统计窗口（分钟）
-- `MinConfidentSample` - 最小置信样本数
+## Auth Token 费用限额
 
-**批量Admin操作**:
-- `HandleBatchUpdatePriority` - 批量更新渠道优先级
-- `HandleBatchSetEnabled` - 批量启用/禁用渠道
-- `HandleBatchRefreshModels` - 批量刷新渠道上游模型列表
-- `HandleChannelURLStats` - 渠道各URL调用次数统计
+- 存 `cost_used_microusd`/`cost_limit_microusd`（微美元整数，避浮点误差）
+- 请求开始查限额、结束后记账 → 允许「最多超额一个请求」
+- 仅 2xx 累加 Token/费用；失败只计次
+- 字段：`allowed_models`（逗号分隔，空=无限制）、`first_byte_time_ms`、`PeakRPM`/`AvgRPM`/`RecentRPM`（`GetAuthTokenStatsInRange` 支持时间范围）
+
+## 渠道每日成本限额
+
+- `channels.daily_cost_limit`（美元，0=无限制）
+- `CostCache` 内存缓存当日成本，按天自动重置，启动从数据库加载
+
+## 混合存储（HuggingFace Spaces）
+
+- 模式：纯 SQLite（默认）/ 纯 MySQL / 混合（`CCLOAD_MYSQL` + `CCLOAD_ENABLE_SQLITE_REPLICA=1`）
+- 日志恢复：`CCLOAD_SQLITE_LOG_DAYS`（默认 7，-1=全量，0=不恢复）
+- 数据流：写 MySQL 主→同步 SQLite 缓存；读 SQLite（低延迟）；日志先 SQLite 后异步 MySQL
+- `StatsCache` TTL 30s~2h
+
+## 定价
+
+- **OpenAI service_tier**：`priority`/`flex`/`default` 倍率（`OpenAIServiceTierMultiplier`）；`LogEntry.ServiceTier` 持久化
+- **分层定价**：GPT-5.4（`gpt54TierThreshold`）、Qwen-Plus（`qwenPlusTierThreshold`）超阈值降档；Gemini 长上下文（`geminiLongContextThreshold`）超阈值翻倍
+- **缓存**：读折扣（Claude/Opus 单独乘数，OpenAI 50%）；写 5m×1.25 / 1h×2.0（基于 input 价格）
 
 ## 开发指南
 
-
-### Playwright MCP 工具策略
-
-- 截图**必须** JPEG: `type: "jpeg"`
-- 优先 `browser_snapshot`（文本），视觉验证才截图
-- **避免** `fullPage: true`
-
 ### 添加 Admin API
-1. `admin_types.go` - 定义类型
-2. `admin_<feature>.go` - 实现Handler
-3. `server.go:SetupRoutes()` - 注册路由
 
-### 数据库操作
-- Schema更新: `storage/migrate.go` 启动自动执行
-- 事务: `(*SQLStore).WithTransaction(ctx, func(tx) error)`
-- 缓存失效: `InvalidateChannelListCache()` / `InvalidateAPIKeysCache()`
+1. `admin_types.go` 定类型
+2. `admin_<feature>.go` 实现 Handler
+3. `server.go:SetupRoutes()` 注册路由
+
+### 数据库
+
+- Schema：`storage/migrate.go` 启动自动执行
+- 事务：`(*SQLStore).WithTransaction(ctx, func(tx) error)`
+- 缓存失效：`InvalidateChannelListCache()` / `InvalidateAPIKeysCache()`
+
+### Playwright MCP
+
+- 截图**必须** `type: "jpeg"`；优先 `browser_snapshot`（文本），视觉验证才截图
+- **避免** `fullPage: true`
 
 ## 代码规范
 
-- **必须** `-tags go_json` 构建和测试
+- **必须** `-tags go_json`
 - **必须** `any` 替代 `interface{}`
-- **禁止** 过度工程，YAGNI原则
-- **Fail-Fast**: 配置错误直接 `log.Fatal()` 退出
-- **Context**: `defer cancel()` 必须无条件调用，用 `context.AfterFunc` 监听取消
+- **禁止** 过度工程，YAGNI
+- **Fail-Fast**：配置错误 `log.Fatal()` 退出
+- **Context**：`defer cancel()` 无条件调用，用 `context.AfterFunc` 监听取消
 
-### 代码质量检查 (golangci-lint)
+### golangci-lint
 
-```bash
-# 运行 lint 检查
-golangci-lint run ./...
-
-# 仅检查指定目录
-golangci-lint run ./internal/app/...
-
-# 自动修复可修复的问题
-golangci-lint run --fix ./...
-```
-
-**启用的 Linters**:
-- `errcheck` - 检查未处理的错误返回值
-- `govet` - Go 官方静态分析工具
-- `staticcheck` - 包含 gosimple 的静态逻辑检查
-- `unused` - 检查未使用的代码
-- ~~`gosec`~~ - 安全漏洞审计（v2.11.1 + go1.26.1 下挂死，暂时禁用）
-- `revive` - 代码风格检查
-- `bodyclose` - HTTP response body 关闭检查
-
-**提交前必须**: `golangci-lint run ./...` 通过，零警告
+提交前必须 `golangci-lint run ./...` 通过零警告。
+启用：`errcheck`/`govet`/`staticcheck`/`unused`/`revive`/`bodyclose`
+（`gosec` 在 v2.11.1+go1.26.1 下挂死，已禁用）
