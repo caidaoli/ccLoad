@@ -3581,6 +3581,7 @@ a.model-tag.model-link:hover {
 .stats-table .stats-col-output,
 .stats-table .stats-col-cache-read,
 .stats-table .stats-col-cache-create,
+.stats-table .stats-col-cache-util,
 .stats-table .stats-col-cost {
   text-align: right;
 }
@@ -5210,8 +5211,12 @@ body.trend-page .chart-info {
     order: 23;
   }
 
-  .stats-table .stats-col-cost {
+  .stats-table .stats-col-cache-util {
     order: 24;
+  }
+
+  .stats-table .stats-col-cost {
+    order: 25;
   }
 
   .stats-table .stats-total-row {
@@ -5327,6 +5332,7 @@ body.trend-page .chart-info {
   .stats-table .stats-col-output,
   .stats-table .stats-col-cache-read,
   .stats-table .stats-col-cache-create,
+  .stats-table .stats-col-cache-util,
   .stats-table .stats-col-cost {
     display: flex !important;
     align-items: center;
@@ -5344,6 +5350,7 @@ body.trend-page .chart-info {
   .stats-table .stats-col-output::before,
   .stats-table .stats-col-cache-read::before,
   .stats-table .stats-col-cache-create::before,
+  .stats-table .stats-col-cache-util::before,
   .stats-table .stats-col-cost::before {
     width: auto !important;
     margin-bottom: 0 !important;

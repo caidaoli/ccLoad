@@ -105,11 +105,11 @@
                       <span class="sort-indicator" id="sort-rpm"></span>
                     </th>
                     <th class="sortable" data-column="total_input_tokens">
-                      <span data-i18n="stats.inputTokens">输入Token</span>
+                      <span data-i18n="stats.inputTokens">输入</span>
                       <span class="sort-indicator" id="sort-total_input_tokens"></span>
                     </th>
                     <th class="sortable" data-column="total_output_tokens">
-                      <span data-i18n="stats.outputTokens">输出Token</span>
+                      <span data-i18n="stats.outputTokens">输出</span>
                       <span class="sort-indicator" id="sort-total_output_tokens"></span>
                     </th>
                     <th class="sortable stats-header-accent--cache-read" data-column="total_cache_read">
@@ -120,6 +120,9 @@
                       <span data-i18n="stats.cacheCreation">缓存创建</span>
                       <span class="sort-indicator" id="sort-total_cache_creation"></span>
                     </th>
+                    <th data-column="cache_util">
+                      <span data-i18n="stats.cacheUtil">缓存命中%</span>
+                    </th>
                     <th class="sortable stats-header-accent--cost" data-column="total_cost">
                       <span data-i18n="stats.costUsd">成本($)</span>
                       <span class="sort-indicator" id="sort-total_cost"></span>
@@ -128,7 +131,7 @@
                 </thead>
                 <tbody id="stats_tbody">
                   <tr>
-                    <td colspan="12" class="loading-state">
+                    <td colspan="13" class="loading-state">
                       <div class="loading-spinner loading-spinner--block"></div>
                       <span data-i18n="stats.loading">正在加载统计数据...</span>
                     </td>
@@ -235,6 +238,7 @@
       <td class="stats-col-output {{outputCellClass}}" data-mobile-label="{{mobileLabelOutput}}">{{{outputTokens}}}</td>
       <td class="stats-col-cache-read {{cacheReadCellClass}}" data-mobile-label="{{mobileLabelCacheRead}}">{{{cacheReadTokens}}}</td>
       <td class="stats-col-cache-create {{cacheCreateCellClass}}" data-mobile-label="{{mobileLabelCacheCreate}}">{{{cacheCreationTokens}}}</td>
+      <td class="stats-col-cache-util {{cacheUtilCellClass}}" data-mobile-label="{{mobileLabelCacheUtil}}">{{{cacheUtilText}}}</td>
       <td class="stats-col-cost {{costCellClass}}" data-mobile-label="{{mobileLabelCost}}">{{{costText}}}</td>
     </tr>
   </template>
@@ -252,6 +256,7 @@
       <td class="stats-col-output" data-mobile-label="{{mobileLabelOutput}}">{{outputTokens}}</td>
       <td class="stats-col-cache-read" data-mobile-label="{{mobileLabelCacheRead}}"><span class="stats-value-success">{{cacheReadTokens}}</span></td>
       <td class="stats-col-cache-create" data-mobile-label="{{mobileLabelCacheCreate}}"><span class="stats-value-primary">{{cacheCreationTokens}}</span></td>
+      <td class="stats-col-cache-util" data-mobile-label="{{mobileLabelCacheUtil}}">{{{cacheUtilText}}}</td>
       <td class="stats-col-cost" data-mobile-label="{{mobileLabelCost}}"><span class="stats-value-warning">{{costText}}</span></td>
     </tr>
   </template>

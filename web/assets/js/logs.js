@@ -125,6 +125,7 @@ function getLogMobileLabels() {
     output: escapeHtml(t('logs.colOutput')),
     cacheRead: escapeHtml(t('logs.colCacheRead')),
     cacheWrite: escapeHtml(t('logs.colCacheWrite')),
+    cacheUtil: escapeHtml(t('logs.colCacheUtil')),
     cost: escapeHtml(t('logs.colCost')),
     message: escapeHtml(t('logs.colMessage'))
   };
@@ -463,6 +464,7 @@ function renderActiveRequests(activeRequests) {
             <td class="logs-col-output mobile-empty-cell" data-mobile-label="${logMobileLabels.output}" style="text-align: right; white-space: nowrap;"></td>
             <td class="logs-col-cache-read mobile-empty-cell" data-mobile-label="${logMobileLabels.cacheRead}" style="text-align: right; white-space: nowrap;"></td>
             <td class="logs-col-cache-write mobile-empty-cell" data-mobile-label="${logMobileLabels.cacheWrite}" style="text-align: right; white-space: nowrap;"></td>
+            <td class="logs-col-cache-util mobile-empty-cell" data-mobile-label="${logMobileLabels.cacheUtil}" style="text-align: right; white-space: nowrap;"></td>
             <td class="logs-col-cost mobile-empty-cell" data-mobile-label="${logMobileLabels.cost}" style="text-align: right; white-space: nowrap;"></td>
             <td class="logs-col-message" data-mobile-label="${logMobileLabels.message}"><span style="color: ${infoColor};">${escapeHtml(infoDisplay)}</span></td>
           `;
@@ -479,7 +481,17 @@ function getTableColspan() {
   const table = document.getElementById('tbody')?.closest('table')
     || document.querySelector('.logs-table');
   const headerCells = table ? table.querySelectorAll('thead th') : [];
-  return headerCells.length || 14; // fallback到14列（日志页默认列数）
+  return headerCells.length || 15; // fallback到15列（日志页默认列数）
+}
+
+function formatCacheUtilRate(inputTokens, cacheReadTokens, cacheCreationTokens) {
+  const i = Number(inputTokens) || 0;
+  const r = Number(cacheReadTokens) || 0;
+  const c = Number(cacheCreationTokens) || 0;
+  const denom = i + r + c;
+  if (denom <= 0 || r <= 0) return '';
+  const pct = (r / denom) * 100;
+  return `<span class="token-metric-value" style="color: var(--success-600);">${pct.toFixed(1)}%</span>`;
 }
 
 function renderLogsLoading() {
@@ -645,6 +657,11 @@ function renderLogs(data) {
     }
     const costDisplay = entry.cost ?
       `<span style="color: var(--warning-600); font-weight: 500;">${formatCost(entry.cost)}${tierBadge}</span>` : '';
+    const cacheUtilDisplay = formatCacheUtilRate(
+      entry.input_tokens,
+      entry.cache_read_input_tokens,
+      entry.cache_creation_input_tokens
+    );
     const messageContent = buildLogMessageContent(entry);
 
     // === 直接拼接行 HTML ===
@@ -661,6 +678,7 @@ function renderLogs(data) {
           <td class="logs-col-output${outputTokensDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.output}" style="text-align: right; white-space: nowrap;">${outputTokensDisplay}</td>
           <td class="logs-col-cache-read${cacheReadDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.cacheRead}" style="text-align: right; white-space: nowrap;">${cacheReadDisplay}</td>
           <td class="logs-col-cache-write${cacheCreationDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.cacheWrite}" style="text-align: right; white-space: nowrap;">${cacheCreationDisplay}</td>
+          <td class="logs-col-cache-util${cacheUtilDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.cacheUtil}" style="text-align: right; white-space: nowrap;">${cacheUtilDisplay}</td>
           <td class="logs-col-cost${costDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.cost}" style="text-align: right; white-space: nowrap;">${costDisplay}</td>
           <td class="logs-col-message${messageContent ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.message}" style="max-width: 300px; word-break: break-word;">${messageContent}</td>
         </tr>`;

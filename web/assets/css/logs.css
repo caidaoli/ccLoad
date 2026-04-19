@@ -482,8 +482,12 @@
         order: 13;
       }
 
-      .logs-table .logs-col-cost {
+      .logs-table .logs-col-cache-util {
         order: 14;
+      }
+
+      .logs-table .logs-col-cost {
+        order: 15;
       }
 
       .logs-table .logs-col-message {
@@ -504,6 +508,7 @@
       .logs-table .logs-col-output,
       .logs-table .logs-col-cache-read,
       .logs-table .logs-col-cache-write,
+      .logs-table .logs-col-cache-util,
       .logs-table .logs-col-cost,
       .logs-table .logs-col-message {
         display: flex !important;
@@ -525,6 +530,7 @@
       .logs-table .logs-col-output::before,
       .logs-table .logs-col-cache-read::before,
       .logs-table .logs-col-cache-write::before,
+      .logs-table .logs-col-cache-util::before,
       .logs-table .logs-col-cost::before,
       .logs-table .logs-col-message::before {
         width: auto !important;
