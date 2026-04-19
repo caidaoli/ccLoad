@@ -51,6 +51,7 @@ internal/
 │   ├── admin_types.go         # 管理API类型定义与验证
 │   ├── channel_check_scheduler.go # 渠道定时检测调度器
 │   ├── detection_log.go       # 检测日志构建（定时检测结果→LogEntry）
+│   ├── custom_rules.go        # 渠道级自定义请求头/JSON 请求体规则应用
 │   ├── selector.go            # 渠道选择入口
 │   ├── selector_balancer.go   # 平滑加权轮询
 │   ├── selector_cooldown.go   # 冷却感知选择
@@ -170,6 +171,19 @@ web/               # 前端页面
 **anyrouter渠道特殊处理**:
 - 渠道名包含"anyrouter"时自动注入`anthropic-beta: context-1m-2025-08-07`头
 - 仅对Anthropic类型渠道生效（`proxy_forward.go:injectAnthropicBetaFlag`）
+- `/v1/messages` 请求且 body 未显式声明 `thinking` 时注入 `thinking.type=adaptive`（`proxy_util.go:maybeInjectAnyrouterAdaptiveThinking`），代理链路与 `admin_testing.go` 测试接口同步启用
+
+**自定义请求规则**（`custom_rules.go`）:
+- **渠道配置**：`channels.custom_request_rules` 存储 `CustomRequestRules{Headers[], Body[]}`（JSON）
+- **HTTP Header 规则**：`remove`（支持对多值头按 token 精确剔除）/ `override`（`Header.Set`）/ `append`（`Header.Add`）
+- **JSON Body 规则**：`remove`（按点分路径删除 key 或数组元素）/ `override`（按路径写值，不存在自动创建中间节点）
+- **路径语法**：点分 + 整数数组下标，如 `thinking.budget_tokens`、`messages.0.role`
+- **安全约束**（`admin_types.go:validateCustomRequestRules`）：
+  - 认证头黑名单（`Authorization`/`x-api-key`/`x-goog-api-key`）一律忽略并写 `slog.Warn`
+  - CRLF 注入防御：header 名称/值禁止 `\r\n`
+  - 非 JSON body（`Content-Type` 不含 `application/json` 或反序列化失败）静默跳过
+  - 容量上限：单渠道 header/body 规则各 ≤ 32 条，单条 value ≤ 8 KB
+- **执行顺序**（`proxy_forward.go`）：body 规则在转发前应用；header 规则在 anyrouter beta flag 注入之后应用，可覆盖或移除 beta flag
 
 **关键入口**:
 - `app.Server.HandleProxyRequest()` - 代理请求主入口
@@ -192,6 +206,9 @@ web/               # 前端页面
 - `util.OpenAIServiceTierMultiplier()` - OpenAI service_tier价格倍率
 - `util.IsFastModeModel()` - 判断是否支持Anthropic fast mode
 - `util.CalculateFastModeCost()` - 计算fast mode独立费用
+- `app.applyHeaderRules()` / `app.applyBodyRules()` - 自定义请求规则应用
+- `app.maybeInjectAnyrouterAdaptiveThinking()` - anyrouter adaptive thinking 注入
+- `app.validateCustomRequestRules()` - 自定义规则校验（admin 侧）
 
 **Token费用限额（Auth Token）**:
 - 存储：`auth_tokens.cost_used_microusd/cost_limit_microusd`（微美元整数），避免浮点误差
