@@ -1,6 +1,6 @@
     // 常量定义
     const t = window.t;
-    const STATS_TABLE_COLUMNS = 12; // 统计表列数
+    const STATS_TABLE_COLUMNS = 13; // 统计表列数
 
     let statsData = null;
     let rpmStats = null; // 全局RPM统计（峰值、平均、最近一分钟）
@@ -213,6 +213,16 @@
       return outputTokens / (successCount * avgDuration);
     }
 
+    function buildCacheUtilRate(inputTokens, cacheReadTokens, cacheCreationTokens) {
+      const i = Number(inputTokens) || 0;
+      const r = Number(cacheReadTokens) || 0;
+      const c = Number(cacheCreationTokens) || 0;
+      const denom = i + r + c;
+      if (denom <= 0 || r <= 0) return '';
+      const pct = (r / denom) * 100;
+      return `<span class="stats-value-success">${pct.toFixed(1)}%</span>`;
+    }
+
     function renderStatsTable() {
       const tbody = document.getElementById('stats_tbody');
 
@@ -297,6 +307,11 @@
           `<span class="stats-value-success">${formatNumber(entry.total_cache_read_input_tokens)}</span>` : '';
         const cacheCreationTokensText = entry.total_cache_creation_input_tokens ?
           `<span class="stats-value-primary">${formatNumber(entry.total_cache_creation_input_tokens)}</span>` : '';
+        const cacheUtilText = buildCacheUtilRate(
+          entry.total_input_tokens,
+          entry.total_cache_read_input_tokens,
+          entry.total_cache_creation_input_tokens
+        );
         const costText = entry.total_cost ?
           `<span class="stats-value-warning">${formatCost(entry.total_cost)}</span>` : '';
         const timingCellClass = avgTimeText ? '' : 'mobile-empty-cell';
@@ -305,6 +320,7 @@
         const outputCellClass = outputTokensText ? '' : 'mobile-empty-cell';
         const cacheReadCellClass = cacheReadTokensText ? '' : 'mobile-empty-cell';
         const cacheCreateCellClass = cacheCreationTokensText ? '' : 'mobile-empty-cell';
+        const cacheUtilCellClass = cacheUtilText ? '' : 'mobile-empty-cell';
         const costCellClass = costText ? '' : 'mobile-empty-cell';
 
         // 构建健康状态指示器
@@ -332,6 +348,8 @@
           cacheReadCellClass: cacheReadCellClass,
           cacheCreationTokens: cacheCreationTokensText,
           cacheCreateCellClass: cacheCreateCellClass,
+          cacheUtilText: cacheUtilText,
+          cacheUtilCellClass: cacheUtilCellClass,
           costText: costText,
           costCellClass: costCellClass,
           mobileLabelChannel: t('stats.channelName'),
@@ -345,6 +363,7 @@
           mobileLabelOutput: t('stats.outputTokens'),
           mobileLabelCacheRead: t('stats.cacheRead'),
           mobileLabelCacheCreate: t('stats.cacheCreation'),
+          mobileLabelCacheUtil: t('stats.cacheUtil'),
           mobileLabelCost: t('stats.costUsd')
         });
         if (row) fragment.appendChild(row);
@@ -382,6 +401,7 @@
         outputTokens: formatNumber(totalOutputTokens),
         cacheReadTokens: formatNumber(totalCacheRead),
         cacheCreationTokens: formatNumber(totalCacheCreation),
+        cacheUtilText: buildCacheUtilRate(totalInputTokens, totalCacheRead, totalCacheCreation),
         costText: formatCost(totalCost),
         mobileLabelSummary: t('stats.total'),
         mobileLabelSuccess: t('common.success'),
@@ -393,6 +413,7 @@
         mobileLabelOutput: t('stats.outputTokens'),
         mobileLabelCacheRead: t('stats.cacheRead'),
         mobileLabelCacheCreate: t('stats.cacheCreation'),
+        mobileLabelCacheUtil: t('stats.cacheUtil'),
         mobileLabelCost: t('stats.costUsd')
       });
       if (totalRow) tbody.appendChild(totalRow);
