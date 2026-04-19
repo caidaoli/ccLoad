@@ -61,6 +61,7 @@ ccLoad 一站式解决👇
 | 🔄 **协议转换** | Anthropic/OpenAI/Gemini/Codex互转 | 一个渠道服务多种客户端协议 |
 | 🔍 **调试日志** | 上游请求/响应原始数据捕获 | 敏感头脱敏，排障利器 |
 | 🕐 **定时检测** | 渠道可用性后台定时探测 | 自动发现故障渠道 |
+| 🧩 **自定义请求规则** | 渠道级请求头/JSON 请求体改写（remove/override/append） | 认证头保护 + CRLF 防护 + 容量上限 |
 
 ## 🏗️ 架构概览
 
@@ -594,6 +595,47 @@ curl -X POST http://localhost:8080/admin/channels \
 ```
 
 > **多URL说明**：`url` 字段支持逗号分隔的多个URL。系统会按延迟加权随机选择最优URL，故障URL自动冷却，实现同渠道内的URL级负载均衡与故障切换。
+
+### 自定义请求规则（高级）
+
+渠道编辑弹窗底部「高级」按钮可打开二级模态，按渠道粒度改写转发给上游的 **HTTP 请求头** 与 **JSON 请求体**，常用于 `User-Agent` 覆写、强制版本头、微调 `thinking` / `max_tokens` 等字段。规则按配置顺序生效，保存后对该渠道后续所有请求立即生效。
+
+**动作矩阵**:
+
+| 对象 | `remove` | `override` | `append` |
+|---|---|---|---|
+| HTTP Header | 删除指定 header（支持对多值头按 token 精确剔除，如 `Anthropic-Beta`） | `Header.Set` 替换所有值 | `Header.Add` 追加一个值（多值头语义） |
+| JSON Body | 按点分路径删除 key / 数组元素 | 按路径设置值，不存在则创建中间节点 | 不支持（JSON 语义模糊） |
+
+**JSON 路径语法**:
+- 点分路径 + 数字数组下标：`thinking.budget_tokens`、`messages.0.role`、`generation_config.temperature`
+- 值支持任意 JSON 字面量：数字 `0.7`、布尔 `true`、字符串 `"claude-opus-4-6"`、对象 `{"type":"adaptive"}`、数组 `["a","b"]`
+
+**安全约束**（硬保护，前端校验被绕过也由后端兜底）:
+- **认证头黑名单**：`Authorization`、`x-api-key`、`x-goog-api-key`（大小写不敏感）任何规则一律忽略并写 `slog.Warn`
+- **CRLF 注入防御**：header 名称/值禁止包含 `\r\n`
+- **非 JSON body 静默跳过**：`Content-Type` 不含 `application/json`、body 为空、或反序列化失败时原样透传，不阻断请求
+- **容量上限**：单渠道 header 规则 ≤ 32 条、body 规则 ≤ 32 条、单条 value ≤ 8 KB；违反返回 400
+
+**典型示例**:
+```jsonc
+{
+  "custom_request_rules": {
+    "headers": [
+      { "action": "override", "name": "User-Agent", "value": "claude-cli/1.0 (custom)" },
+      { "action": "remove",   "name": "Anthropic-Beta", "value": "context-1m-2025-08-07" },
+      { "action": "append",   "name": "Accept", "value": "application/json" }
+    ],
+    "body": [
+      { "action": "override", "path": "thinking", "value": {"type":"adaptive"} },
+      { "action": "override", "path": "max_tokens", "value": 4096 },
+      { "action": "remove",   "path": "stop_sequences" }
+    ]
+  }
+}
+```
+
+> **与内置逻辑的关系**：自定义规则在 anyrouter 的 `anthropic-beta` 注入**之后**生效，可覆盖或移除 beta flag；anyrouter 的 adaptive thinking 注入会检测到用户已显式设置 `thinking` 而不再覆盖。认证头无论何时都不可改写。
 
 ### 批量数据管理
 
