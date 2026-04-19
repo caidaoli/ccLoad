@@ -189,6 +189,7 @@ window.initPageBootstrap({
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     // 按层级优先关闭最上层模态框
+    const customRulesModal = document.getElementById('customRulesModal');
     const modelImportModal = document.getElementById('modelImportModal');
     const keyImportModal = document.getElementById('keyImportModal');
     const keyExportModal = document.getElementById('keyExportModal');
@@ -197,7 +198,9 @@ document.addEventListener('keydown', (e) => {
     const testModal = document.getElementById('testModal');
     const channelModal = document.getElementById('channelModal');
 
-    if (modelImportModal && modelImportModal.classList.contains('show')) {
+    if (customRulesModal && customRulesModal.classList.contains('show')) {
+      closeCustomRulesModal();
+    } else if (modelImportModal && modelImportModal.classList.contains('show')) {
       closeModelImportModal();
     } else if (keyImportModal && keyImportModal.classList.contains('show')) {
       closeKeyImportModal();

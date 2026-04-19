@@ -210,7 +210,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.batchDeleteModelsTitle': '批量删除选中的模型',
   'channels.searchModelPlaceholder': '搜索模型名称...',
   'channels.redirectTarget': '重定向目标（可选）',
-  'channels.enableChannel': '启用渠道',
+  'channels.enableChannel': '启用',
   'channels.enableScheduledCheck': '启用定时检测',
   'channels.priority': '优先级',
   'channels.dailyCostLimit': '每日限额',
