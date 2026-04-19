@@ -94,7 +94,7 @@ function buildChannelTrigger(channelId, channelName, baseURL = '') {
   }
 
   const channelTooltip = baseURL ? ` title="${escapeHtml(baseURL)}"` : '';
-  return `<button type="button" class="channel-link" data-channel-id="${channelId}"${channelTooltip}>${escapeHtml(channelName)} <small>(#${channelId})</small></button>`;
+  return `<button type="button" class="channel-link" data-channel-id="${channelId}"${channelTooltip}>${escapeHtml(channelName)}</button>`;
 }
 
 function ensureActiveRequestsPollingStarted() {
