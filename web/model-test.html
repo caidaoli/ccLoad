@@ -123,9 +123,11 @@
   </div>
   <!-- 模型行模板 -->
   <template id="tpl-model-row">
-    <tr class="mobile-card-row model-test-row" data-model="{{model}}">
+    <tr class="mobile-card-row model-test-row" data-model="{{model}}" data-channel-id="{{channelId}}">
       <td class="model-test-col-select mobile-card-no-label" data-mobile-label="{{mobileLabelSelect}}"><input type="checkbox" class="row-checkbox model-checkbox" checked></td>
-      <td class="model-test-col-name truncate-cell" title="{{model}}" data-mobile-label="{{mobileLabelName}}">{{displayName}}</td>
+      <td class="model-test-col-name truncate-cell" title="{{model}}" data-mobile-label="{{mobileLabelName}}">
+        <button type="button" class="channel-link" data-channel-id="{{channelId}}" title="{{model}}">{{displayName}}</button>
+      </td>
       <td class="model-test-col-first-byte first-byte-duration" data-mobile-label="{{mobileLabelFirstByte}}">-</td>
       <td class="model-test-col-duration duration" data-mobile-label="{{mobileLabelDuration}}">-</td>
       <td class="model-test-col-input input-tokens" data-mobile-label="{{mobileLabelInput}}">-</td>

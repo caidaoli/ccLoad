@@ -588,8 +588,8 @@ function getAllModelsForProtocol(protocol) {
   const normalizedProtocol = normalizeProtocol(protocol);
   const modelSet = new Set();
   channelsList.forEach(ch => {
-    if (!channelMatchesModelType(ch)) return;
-    if (!channelExposesProtocol(ch, normalizedProtocol)) return;
+    const include = channelMatchesModelType(ch) || channelExposesProtocol(ch, normalizedProtocol);
+    if (!include) return;
     (ch.models || []).forEach(entry => {
       const modelName = getModelName(entry);
       if (modelName) modelSet.add(modelName);
@@ -779,6 +779,7 @@ function renderChannelModeRows() {
     const row = TemplateEngine.render('tpl-model-row', {
       model: modelName,
       displayName: modelName,
+      channelId: selectedChannel.id,
       ...getResultRowMobileLabels('common.model', '模型')
     });
     if (row) fragment.appendChild(row);
@@ -1644,12 +1645,16 @@ async function onChannelChange() {
 }
 
 function renderSearchableChannelSelect() {
+  const initialValue = selectedChannel ? String(selectedChannel.id) : '';
+  const initialLabel = selectedChannel ? `[${getChannelType(selectedChannel)}] ${selectedChannel.name}` : '';
   channelSelectCombobox = createSearchableCombobox({
     container: 'testChannelSelectContainer',
     inputId: 'testChannelSelect',
     dropdownId: 'testChannelSelectDropdown',
     placeholder: i18nText('modelTest.searchChannel', '搜索渠道...'),
     minWidth: 250,
+    initialValue,
+    initialLabel,
     getOptions: () => channelsList.map(ch => ({
       value: String(ch.id),
       label: `[${getChannelType(ch)}] ${ch.name}`
@@ -1662,13 +1667,34 @@ function renderSearchableChannelSelect() {
   });
 }
 
-async function loadChannels() {
+async function loadChannels(options = {}) {
+  const { preserveSelection = false } = options;
+  const preservedChannelId = preserveSelection ? (selectedChannel?.id ?? null) : null;
+  const preservedProtocol = preserveSelection ? selectedProtocol : '';
+  const preservedModelType = preserveSelection ? selectedModelType : '';
+  const preservedModelName = preserveSelection ? selectedModelName : '';
+
   try {
     const list = (await fetchDataWithAuth('/admin/channels')) || [];
     channelsList = list.sort((a, b) => getChannelType(a).localeCompare(getChannelType(b)) || b.priority - a.priority);
+
+    if (preserveSelection && preservedChannelId !== null) {
+      selectedChannel = channelsList.find(c => c.id === preservedChannelId) || null;
+    }
+    if (preserveSelection) {
+      if (preservedModelType) selectedModelType = preservedModelType;
+      if (preservedModelName) selectedModelName = preservedModelName;
+    }
+
     renderSearchableChannelSelect();
     ensureSelectedModelType();
-    selectedProtocol = channelsList[0] ? getChannelType(channelsList[0]) : 'anthropic';
+
+    if (preserveSelection && preservedProtocol) {
+      selectedProtocol = preservedProtocol;
+    } else {
+      selectedProtocol = channelsList[0] ? getChannelType(channelsList[0]) : 'anthropic';
+    }
+
     populateModelTypeSelect();
     renderProtocolTransformOptions();
     populateModelSelector();
@@ -1770,7 +1796,7 @@ function bindEvents() {
     }
 
     const channelBtn = event.target.closest('.channel-link[data-channel-id]');
-    if (testMode !== TEST_MODE_MODEL || !channelBtn) return;
+    if (!channelBtn) return;
 
     const channelId = parseInt(channelBtn.dataset.channelId, 10);
     if (Number.isFinite(channelId) && channelId > 0 && typeof openLogChannelEditor === 'function') {
@@ -1923,6 +1949,11 @@ document.addEventListener('click', (e) => {
 });
 
 async function bootstrap() {
+  window.ChannelModalHooks = {
+    afterSave: async () => {
+      await loadChannels({ preserveSelection: true });
+    }
+  };
   initModelTestActions();
   bindEvents();
   await loadChannels();

@@ -45,6 +45,7 @@ test('model-test 页接入日志页同款渠道编辑器桥接并将渠道名渲
   assert.match(html, /<link rel="stylesheet" href="\/web\/assets\/css\/channels\.css\?v=__VERSION__">/);
   assert.match(html, /<script defer src="\/web\/assets\/js\/logs-channel-editor\.js\?v=__VERSION__"><\/script>/);
   assert.match(html, /<button type="button" class="channel-link" data-channel-id="{{channelId}}" title="{{channelName}}">{{channelName}}<\/button>/);
+  assert.match(html, /<button type="button" class="channel-link" data-channel-id="{{channelId}}" title="{{model}}">{{displayName}}<\/button>/);
 });
 
 test('model-test 页在按模型测试模式下提供类型筛选并保留协议转换容器', () => {
@@ -89,10 +90,23 @@ test('model-test.js 移除测试数量进度文案，只保留按钮自身测试
   assert.match(script, /runTestBtn\.textContent = i18nText\('modelTest\.testing', '测试中\.\.\.'\)/);
 });
 
-test('model-test.js 在按模型测试模式下将渠道按钮点击委托到编辑弹窗', () => {
+test('model-test.js 两个模式下都把渠道按钮点击委托到编辑弹窗', () => {
   assert.match(script, /const channelBtn = event\.target\.closest\('\.channel-link\[data-channel-id\]'\);/);
-  assert.match(script, /if \(testMode !== TEST_MODE_MODEL \|\| !channelBtn\) return;/);
+  assert.match(script, /if \(!channelBtn\) return;/);
   assert.match(script, /openLogChannelEditor\(channelId\)/);
+});
+
+test('model-test.js 渠道编辑器保存后通过 preserveSelection 重新加载渠道并保留选中', () => {
+  assert.match(script, /async function loadChannels\(options = \{\}\)/);
+  assert.match(script, /const \{ preserveSelection = false \} = options;/);
+  assert.match(script, /if \(preserveSelection && preservedChannelId !== null\)/);
+  assert.match(script, /window\.ChannelModalHooks = \{[\s\S]*?afterSave:[\s\S]*?loadChannels\(\{ preserveSelection: true \}\)/);
+});
+
+test('model-test.js 渠道搜索下拉在重建时通过 initialValue/initialLabel 保持显示当前渠道', () => {
+  assert.match(script, /const initialValue = selectedChannel \? String\(selectedChannel\.id\) : '';/);
+  assert.match(script, /const initialLabel = selectedChannel \? `\[\$\{getChannelType\(selectedChannel\)\}\] \$\{selectedChannel\.name\}` : '';/);
+  assert.match(script, /initialValue,\s*\n\s*initialLabel,/);
 });
 
 test('model-test.js 在模型模式重渲染时保留渠道勾选状态', () => {
@@ -183,14 +197,14 @@ test('按协议测试时模型模式按类型和协议联动模型与渠道', ()
     ${extractFunction(script, 'getChannelsSupportingModel')}
   `, sandbox);
 
-  assert.deepEqual(Array.from(sandbox.getAllModelsForProtocol('openai')), ['claude-3.7']);
+  assert.deepEqual(Array.from(sandbox.getAllModelsForProtocol('openai')), ['claude-3.7', 'claude-4', 'gpt-4.1']);
   assert.deepEqual(Array.from(sandbox.getAllModelsForProtocol('anthropic')), ['claude-3.7', 'claude-4']);
   assert.deepEqual(
     sandbox.getChannelsSupportingModel('openai', 'claude-3.7').map((channel) => channel.id),
     [3]
   );
   sandbox.selectedModelType = 'openai';
-  assert.deepEqual(Array.from(sandbox.getAllModelsForProtocol('openai')), ['gpt-4.1']);
+  assert.deepEqual(Array.from(sandbox.getAllModelsForProtocol('openai')), ['claude-3.7', 'gpt-4.1']);
   assert.deepEqual(
     sandbox.getChannelsSupportingModel('openai', 'gpt-4.1').map((channel) => channel.id),
     [2]

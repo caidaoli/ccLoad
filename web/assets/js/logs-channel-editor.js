@@ -171,6 +171,7 @@
   }
 
   function installChannelModalHooks() {
+    if (window.ChannelModalHooks) return;
     window.ChannelModalHooks = {
       afterSave: async () => {
         if (typeof load === 'function') {
