@@ -443,3 +443,72 @@ func TestNormalizeConversationCoverage_GeminiSourceHasRequestTransforms(t *testi
 		}
 	}
 }
+
+// 覆盖 bug：OpenAI→Codex 转换时 tool_choice="auto"/"none"/"required" 必须以字符串形式传给
+// Responses API；若包装为 {"type":"auto"} 对象会被上游拒绝（Responses API 对 tool_choice.type
+// 的对象形态只接受 builtin 工具类型如 file_search）。
+func TestEncodeCodexRequest_ToolChoiceStringModes(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		mode string
+	}{
+		{"auto", "auto"},
+		{"none", "none"},
+		{"required", "required"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			conv := conversation{
+				Turns:      []conversationTurn{{Role: "user", Parts: []conversationPart{{Kind: partKindText, Text: "hi"}}}},
+				ToolChoice: conversationToolChoice{Mode: tc.mode},
+			}
+			raw, err := encodeCodexRequest("gpt-5-codex", conv, false)
+			if err != nil {
+				t.Fatalf("encodeCodexRequest failed: %v", err)
+			}
+			var out map[string]any
+			if err := sonic.Unmarshal(raw, &out); err != nil {
+				t.Fatalf("unmarshal failed: %v", err)
+			}
+			got, ok := out["tool_choice"].(string)
+			if !ok {
+				t.Fatalf("expected tool_choice to be string %q, got %#v", tc.mode, out["tool_choice"])
+			}
+			if got != tc.mode {
+				t.Fatalf("expected tool_choice %q, got %q", tc.mode, got)
+			}
+		})
+	}
+}
+
+func TestEncodeCodexRequest_ToolChoiceNamedFunctionRemainsObject(t *testing.T) {
+	t.Parallel()
+
+	conv := conversation{
+		Turns: []conversationTurn{{Role: "user", Parts: []conversationPart{{Kind: partKindText, Text: "hi"}}}},
+		Tools: []conversationTool{{Name: "get_weather", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+		ToolChoice: conversationToolChoice{
+			Mode:     "named",
+			Name:     "get_weather",
+			ToolType: "function",
+		},
+	}
+	raw, err := encodeCodexRequest("gpt-5-codex", conv, false)
+	if err != nil {
+		t.Fatalf("encodeCodexRequest failed: %v", err)
+	}
+	var out map[string]any
+	if err := sonic.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	choice, ok := out["tool_choice"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected tool_choice to be object, got %#v", out["tool_choice"])
+	}
+	if choice["type"] != "function" || choice["name"] != "get_weather" {
+		t.Fatalf("unexpected named tool_choice: %#v", choice)
+	}
+}

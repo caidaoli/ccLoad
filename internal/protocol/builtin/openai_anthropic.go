@@ -20,6 +20,7 @@ type openAIToAnthropicStreamState struct {
 	messageStartSent bool
 	textBlockStarted bool
 	model            string
+	responseID       string
 	blockIndex       int
 	reasoningStarted bool
 	reasoningText    string
@@ -503,6 +504,9 @@ func convertOpenAIResponseToAnthropicStream(_ context.Context, model string, _, 
 	if chunkModel := stringValue(chunk["model"]); chunkModel != "" {
 		st.model = chunkModel
 	}
+	if id := stringValue(chunk["id"]); id != "" && st.responseID == "" {
+		st.responseID = id
+	}
 	if usage := openAIUsageFromMap(chunk["usage"]); usage != nil {
 		st.usage.promptTokens = usage.promptTokens
 		st.usage.completionTokens = usage.completionTokens
@@ -809,16 +813,21 @@ func openAIAnthropicMessageStart(st *openAIToAnthropicStreamState) ([]byte, erro
 	if cacheCreationTokens > 0 {
 		usage["cache_creation_input_tokens"] = cacheCreationTokens
 	}
+	msgID := st.responseID
+	if msgID == "" {
+		msgID = "msg-proxy"
+	}
 	return marshalEventSSE("message_start", map[string]any{
 		"type": "message_start",
 		"message": map[string]any{
-			"id":          "msg-proxy",
-			"type":        "message",
-			"role":        "assistant",
-			"content":     []any{},
-			"model":       st.model,
-			"stop_reason": nil,
-			"usage":       usage,
+			"id":            msgID,
+			"type":          "message",
+			"role":          "assistant",
+			"content":       []any{},
+			"model":         st.model,
+			"stop_reason":   nil,
+			"stop_sequence": nil,
+			"usage":         usage,
 		},
 	})
 }
@@ -897,10 +906,16 @@ func openAIAnthropicStopChunks(st *openAIToAnthropicStreamState, stopReason stri
 	if reasoningTokens > 0 {
 		usage["reasoning_tokens"] = reasoningTokens
 	}
+	inputTokens := int64(0)
+	if st != nil && st.usage.seen {
+		inputTokens = max(st.usage.promptTokens-st.usage.cachedTokens, 0)
+	}
+	usage["input_tokens"] = inputTokens
 	messageDelta, err := marshalEventSSE("message_delta", map[string]any{
 		"type": "message_delta",
 		"delta": map[string]any{
-			"stop_reason": stopReason,
+			"stop_reason":   stopReason,
+			"stop_sequence": nil,
 		},
 		"usage": usage,
 	})
