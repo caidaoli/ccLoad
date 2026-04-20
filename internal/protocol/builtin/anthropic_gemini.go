@@ -12,14 +12,24 @@ import (
 )
 
 type anthropicMessagesRequest struct {
-	Model      string                    `json:"model"`
-	Messages   []anthropicMessageContent `json:"messages"`
-	Stream     util.FlexibleBool         `json:"stream,omitempty"`
-	System     any                       `json:"system,omitempty"`
-	Tools      json.RawMessage           `json:"tools"`
-	ToolChoice json.RawMessage           `json:"tool_choice,omitempty"`
-	MaxTokens  int                       `json:"max_tokens"`
-	Metadata   map[string]string         `json:"metadata"`
+	Model         string                    `json:"model"`
+	Messages      []anthropicMessageContent `json:"messages"`
+	Stream        util.FlexibleBool         `json:"stream,omitempty"`
+	System        any                       `json:"system,omitempty"`
+	Tools         json.RawMessage           `json:"tools"`
+	ToolChoice    json.RawMessage           `json:"tool_choice,omitempty"`
+	MaxTokens     int                       `json:"max_tokens"`
+	Metadata      map[string]string         `json:"metadata"`
+	Thinking      *anthropicThinkingConfig  `json:"thinking,omitempty"`
+	Temperature   *float64                  `json:"temperature,omitempty"`
+	TopP          *float64                  `json:"top_p,omitempty"`
+	TopK          *int                      `json:"top_k,omitempty"`
+	StopSequences []string                  `json:"stop_sequences,omitempty"`
+}
+
+type anthropicThinkingConfig struct {
+	Type         string `json:"type,omitempty"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
 type anthropicMessageContent struct {

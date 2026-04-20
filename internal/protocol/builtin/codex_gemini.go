@@ -13,12 +13,28 @@ import (
 )
 
 type codexRequest struct {
-	Model        string            `json:"model"`
-	Instructions string            `json:"instructions,omitempty"`
-	Stream       util.FlexibleBool `json:"stream,omitempty"`
-	Tools        json.RawMessage   `json:"tools,omitempty"`
-	ToolChoice   json.RawMessage   `json:"tool_choice,omitempty"`
-	Input        []json.RawMessage `json:"input"`
+	Model             string            `json:"model"`
+	Instructions      string            `json:"instructions,omitempty"`
+	Stream            util.FlexibleBool `json:"stream,omitempty"`
+	Tools             json.RawMessage   `json:"tools,omitempty"`
+	ToolChoice        json.RawMessage   `json:"tool_choice,omitempty"`
+	Input             []json.RawMessage `json:"input"`
+	Reasoning         *codexReasoning   `json:"reasoning,omitempty"`
+	ParallelToolCalls *bool             `json:"parallel_tool_calls,omitempty"`
+	Temperature       *float64          `json:"temperature,omitempty"`
+	TopP              *float64          `json:"top_p,omitempty"`
+	TopK              *int              `json:"top_k,omitempty"`
+	MaxOutputTokens   *int              `json:"max_output_tokens,omitempty"`
+	Stop              json.RawMessage   `json:"stop,omitempty"`
+	Seed              *int64            `json:"seed,omitempty"`
+	FrequencyPenalty  *float64          `json:"frequency_penalty,omitempty"`
+	PresencePenalty   *float64          `json:"presence_penalty,omitempty"`
+	User              string            `json:"user,omitempty"`
+}
+
+type codexReasoning struct {
+	Effort  string `json:"effort,omitempty"`
+	Summary string `json:"summary,omitempty"`
 }
 
 type codexToGeminiStreamState struct {
