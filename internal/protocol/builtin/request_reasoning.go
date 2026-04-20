@@ -27,29 +27,6 @@ func newReasoningPart(subtype, text, signature, encrypted string) conversationPa
 	}
 }
 
-func openAIReasoningEntry(reasoning *conversationReasoning) map[string]any {
-	if reasoning == nil {
-		return nil
-	}
-	if reasoning.EncryptedContent != "" {
-		return map[string]any{
-			"type": "redacted_thinking",
-			"data": reasoning.EncryptedContent,
-		}
-	}
-	if reasoning.Text == "" {
-		return nil
-	}
-	entry := map[string]any{
-		"type": "thinking",
-		"text": reasoning.Text,
-	}
-	if reasoning.Signature != "" {
-		entry["signature"] = reasoning.Signature
-	}
-	return entry
-}
-
 func encodeCodexReasoningPart(reasoning *conversationReasoning) map[string]any {
 	if reasoning == nil {
 		return nil

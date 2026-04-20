@@ -26,6 +26,23 @@ type conversation struct {
 	Turns      []conversationTurn
 	Tools      []conversationTool
 	ToolChoice conversationToolChoice
+	Thinking   *anthropicThinkingConfig
+	Sampling   *samplingParams
+}
+
+// samplingParams 承载客户端指定的采样/上限参数，供各目标编码器按需透传。
+// 字段为 nil 表示客户端未显式指定，目标侧走默认行为。
+type samplingParams struct {
+	Temperature      *float64
+	TopP             *float64
+	TopK             *int
+	MaxTokens        *int
+	Stop             []string
+	ReasoningEffort  string
+	Seed             *int64
+	FrequencyPenalty *float64
+	PresencePenalty  *float64
+	User             string
 }
 
 type conversationTurn struct {
@@ -60,9 +77,10 @@ type conversationTool struct {
 }
 
 type conversationToolChoice struct {
-	Mode     string
-	Name     string
-	ToolType string
+	Mode            string
+	Name            string
+	ToolType        string
+	DisableParallel bool
 }
 
 type conversationToolCall struct {
@@ -83,6 +101,22 @@ type geminiRequestPayload struct {
 	SystemInstruction *geminiSystemInstruction `json:"systemInstruction,omitempty"`
 	Tools             []geminiTool             `json:"tools,omitempty"`
 	ToolConfig        *geminiToolConfig        `json:"toolConfig,omitempty"`
+	GenerationConfig  *geminiGenerationConfig  `json:"generationConfig,omitempty"`
+}
+
+type geminiGenerationConfig struct {
+	ThinkingConfig  *geminiThinkingConfig `json:"thinkingConfig,omitempty"`
+	Temperature     *float64              `json:"temperature,omitempty"`
+	TopP            *float64              `json:"topP,omitempty"`
+	TopK            *int                  `json:"topK,omitempty"`
+	MaxOutputTokens *int                  `json:"maxOutputTokens,omitempty"`
+	StopSequences   []string              `json:"stopSequences,omitempty"`
+	Seed            *int64                `json:"seed,omitempty"`
+}
+
+type geminiThinkingConfig struct {
+	IncludeThoughts bool `json:"includeThoughts,omitempty"`
+	ThinkingBudget  *int `json:"thinkingBudget,omitempty"`
 }
 
 type geminiSystemInstruction struct {
@@ -139,6 +173,14 @@ func normalizeOpenAIConversation(req openAIChatRequest) (conversation, error) {
 	if err != nil {
 		return conversation{}, err
 	}
+	// 顶层 parallel_tool_calls=false 等价 Anthropic tool_choice.disable_parallel_tool_use。
+	if req.ParallelToolCalls != nil && !*req.ParallelToolCalls {
+		conv.ToolChoice.DisableParallel = true
+	}
+	conv.Sampling = buildOpenAISampling(req)
+	if thinking := openAIReasoningEffortToThinking(req.ReasoningEffort); thinking != nil {
+		conv.Thinking = thinking
+	}
 
 	for i, msg := range req.Messages {
 		role := normalizeRole(msg.Role)
@@ -193,6 +235,12 @@ func normalizeAnthropicConversation(req anthropicMessagesRequest) (conversation,
 	if err != nil {
 		return conversation{}, err
 	}
+	if disable, ok := extractAnthropicDisableParallel(req.ToolChoice); ok {
+		conv.ToolChoice.DisableParallel = disable
+	}
+	if req.Thinking != nil && strings.TrimSpace(req.Thinking.Type) != "" {
+		conv.Thinking = req.Thinking
+	}
 
 	if req.System != nil {
 		systemParts, err := extractAnthropicContentParts(req.System)
@@ -241,6 +289,15 @@ func normalizeCodexConversation(req codexRequest) (conversation, error) {
 	conv.ToolChoice, err = parseToolChoice(req.ToolChoice, "codex")
 	if err != nil {
 		return conversation{}, err
+	}
+	if req.ParallelToolCalls != nil && !*req.ParallelToolCalls {
+		conv.ToolChoice.DisableParallel = true
+	}
+	conv.Sampling = buildCodexSampling(req)
+	if conv.Sampling != nil {
+		if thinking := openAIReasoningEffortToThinking(conv.Sampling.ReasoningEffort); thinking != nil {
+			conv.Thinking = thinking
+		}
 	}
 	if strings.TrimSpace(req.Instructions) != "" {
 		conv.Turns = append(conv.Turns, conversationTurn{Role: "system", Parts: []conversationPart{{Kind: partKindText, Text: req.Instructions}}})
@@ -408,7 +465,7 @@ func encodeGeminiRequest(conv conversation) ([]byte, error) {
 			}
 			decl := geminiFunctionDeclaration{Name: tool.Name, Description: tool.Description}
 			if anySchema, err := rawJSONToAny(tool.InputSchema); err == nil && anySchema != nil {
-				decl.Parameters = anySchema
+				decl.Parameters = cleanGeminiSchema(anySchema)
 			}
 			decls = append(decls, decl)
 		}
@@ -422,10 +479,56 @@ func encodeGeminiRequest(conv conversation) ([]byte, error) {
 			return nil, err
 		}
 	}
+	payload.GenerationConfig = buildGeminiGenerationConfig(conv)
 	if len(payload.Contents) == 0 {
 		return nil, fmt.Errorf("%w: no convertible gemini contents", protocol.ErrUnsupportedRequestShape)
 	}
 	return sonic.Marshal(payload)
+}
+
+// buildGeminiGenerationConfig 聚合采样/上限参数与思考配置，未命中任何字段时返回 nil。
+func buildGeminiGenerationConfig(conv conversation) *geminiGenerationConfig {
+	cfg := &geminiGenerationConfig{}
+	if sp := conv.Sampling; sp != nil {
+		cfg.Temperature = sp.Temperature
+		cfg.TopP = sp.TopP
+		cfg.TopK = sp.TopK
+		if sp.MaxTokens != nil && *sp.MaxTokens > 0 {
+			cfg.MaxOutputTokens = sp.MaxTokens
+		}
+		if len(sp.Stop) > 0 {
+			cfg.StopSequences = sp.Stop
+		}
+		cfg.Seed = sp.Seed
+	}
+	cfg.ThinkingConfig = buildGeminiThinkingConfig(conv.Thinking)
+	if cfg.ThinkingConfig == nil && cfg.Temperature == nil && cfg.TopP == nil && cfg.TopK == nil &&
+		cfg.MaxOutputTokens == nil && len(cfg.StopSequences) == 0 && cfg.Seed == nil {
+		return nil
+	}
+	return cfg
+}
+
+// buildGeminiThinkingConfig 把 Anthropic 顶层 thinking 映射成 Gemini thinkingConfig；
+// disabled/未设置 → 显式 thinkingBudget=0 关闭，enabled+budget_tokens → 透传预算并请求返回思考摘要。
+func buildGeminiThinkingConfig(thinking *anthropicThinkingConfig) *geminiThinkingConfig {
+	if thinking == nil {
+		return nil
+	}
+	switch strings.ToLower(strings.TrimSpace(thinking.Type)) {
+	case "enabled":
+		cfg := &geminiThinkingConfig{IncludeThoughts: true}
+		if thinking.BudgetTokens > 0 {
+			b := thinking.BudgetTokens
+			cfg.ThinkingBudget = &b
+		}
+		return cfg
+	case "disabled":
+		zero := 0
+		return &geminiThinkingConfig{ThinkingBudget: &zero}
+	default:
+		return nil
+	}
 }
 
 // newClaudeMetadataUserID 生成 Claude CLI 兼容的 metadata.user_id 值。
@@ -463,6 +566,20 @@ func encodeAnthropicRequest(model string, conv conversation, stream bool) ([]byt
 		MaxTokens: 32000,
 		Tools:     []byte("[]"),
 		Metadata:  map[string]string{"user_id": newClaudeMetadataUserID()},
+	}
+	if sp := conv.Sampling; sp != nil {
+		if sp.MaxTokens != nil && *sp.MaxTokens > 0 {
+			out.MaxTokens = *sp.MaxTokens
+		}
+		out.Temperature = sp.Temperature
+		out.TopP = sp.TopP
+		out.TopK = sp.TopK
+		if len(sp.Stop) > 0 {
+			out.StopSequences = sp.Stop
+		}
+	}
+	if conv.Thinking != nil && strings.TrimSpace(conv.Thinking.Type) != "" {
+		out.Thinking = conv.Thinking
 	}
 	if len(systemParts) > 0 {
 		blocks, err := encodeAnthropicBlocks(systemParts)
@@ -511,6 +628,7 @@ func encodeAnthropicRequest(model string, conv conversation, stream bool) ([]byt
 			}
 		}
 	}
+	var anthropicToolChoice map[string]any
 	if !conv.ToolChoice.IsZero() {
 		choice := map[string]any{}
 		switch conv.ToolChoice.Mode {
@@ -531,11 +649,18 @@ func encodeAnthropicRequest(model string, conv conversation, stream bool) ([]byt
 		default:
 			return nil, fmt.Errorf("%w: unsupported anthropic tool choice %q", protocol.ErrUnsupportedRequestShape, conv.ToolChoice.Mode)
 		}
-		if choice != nil {
-			out.ToolChoice, err = sonic.Marshal(choice)
-			if err != nil {
-				return nil, err
-			}
+		anthropicToolChoice = choice
+	}
+	if conv.ToolChoice.DisableParallel && len(conv.Tools) > 0 {
+		if anthropicToolChoice == nil {
+			anthropicToolChoice = map[string]any{"type": "auto"}
+		}
+		anthropicToolChoice["disable_parallel_tool_use"] = true
+	}
+	if anthropicToolChoice != nil {
+		out.ToolChoice, err = sonic.Marshal(anthropicToolChoice)
+		if err != nil {
+			return nil, err
 		}
 	}
 	if len(out.Messages) == 0 {
@@ -552,30 +677,8 @@ func encodeOpenAIRequest(model string, conv conversation, stream bool) ([]byte, 
 		case "system", "developer", "user", "assistant":
 			contentParts := make([]map[string]any, 0, len(turn.Parts))
 			toolCalls := make([]map[string]any, 0)
-			reasoningParts := make([]map[string]any, 0)
-			var reasoningContent strings.Builder
-			flushMessage := func() {
-				if len(contentParts) == 0 && len(toolCalls) == 0 && reasoningContent.Len() == 0 && len(reasoningParts) == 0 {
-					return
-				}
-				message := map[string]any{"role": role, "content": encodeOpenAIContentValue(contentParts)}
-				if len(toolCalls) > 0 {
-					message["tool_calls"] = toolCalls
-				}
-				if role == "assistant" {
-					if reasoningContent.Len() > 0 {
-						message["reasoning_content"] = reasoningContent.String()
-					}
-					if len(reasoningParts) > 0 {
-						message["reasoning"] = reasoningParts
-					}
-				}
-				messages = append(messages, message)
-				contentParts = nil
-				toolCalls = nil
-				reasoningParts = nil
-				reasoningContent.Reset()
-			}
+			reasoningTexts := make([]string, 0)
+			pendingToolMessages := make([]map[string]any, 0)
 			for _, part := range turn.Parts {
 				switch part.Kind {
 				case partKindText, partKindImage, partKindFile:
@@ -597,35 +700,45 @@ func encodeOpenAIRequest(model string, conv conversation, stream bool) ([]byte, 
 					if part.ToolResult == nil {
 						return nil, fmt.Errorf("%w: missing openai tool result content", protocol.ErrUnsupportedRequestShape)
 					}
-					flushMessage()
 					content, err := encodeOpenAIToolResultContent(part.ToolResult.Parts)
 					if err != nil {
 						return nil, fmt.Errorf("openai turn %d: %w", i, err)
 					}
-					message := map[string]any{
+					toolMsg := map[string]any{
 						"role":         "tool",
 						"tool_call_id": part.ToolResult.CallID,
 						"content":      content,
 					}
 					if part.ToolResult.Name != "" {
-						message["name"] = part.ToolResult.Name
+						toolMsg["name"] = part.ToolResult.Name
 					}
-					messages = append(messages, message)
+					pendingToolMessages = append(pendingToolMessages, toolMsg)
 				case partKindReasoning:
 					if role != "assistant" {
 						continue
 					}
-					if part.Reasoning != nil && part.Reasoning.Text != "" {
-						reasoningContent.WriteString(part.Reasoning.Text)
-					}
-					if entry := openAIReasoningEntry(part.Reasoning); entry != nil {
-						reasoningParts = append(reasoningParts, entry)
+					if part.Reasoning != nil {
+						if text := strings.TrimSpace(part.Reasoning.Text); text != "" {
+							reasoningTexts = append(reasoningTexts, text)
+						}
 					}
 				default:
 					return nil, fmt.Errorf("%w: unsupported openai content kind %q", protocol.ErrUnsupportedRequestShape, part.Kind)
 				}
 			}
-			flushMessage()
+			// OpenAI: tool messages must immediately follow the previous assistant tool_calls.
+			// Emit any tool_result collected in this turn first, before the current turn's main message.
+			messages = append(messages, pendingToolMessages...)
+			if len(contentParts) > 0 || len(toolCalls) > 0 || len(reasoningTexts) > 0 {
+				message := map[string]any{"role": role, "content": encodeOpenAIContentValue(contentParts)}
+				if len(toolCalls) > 0 {
+					message["tool_calls"] = toolCalls
+				}
+				if role == "assistant" && len(reasoningTexts) > 0 {
+					message["reasoning_content"] = strings.Join(reasoningTexts, "\n\n")
+				}
+				messages = append(messages, message)
+			}
 		case "tool":
 			for _, part := range turn.Parts {
 				if part.Kind != partKindToolResult || part.ToolResult == nil {
@@ -667,9 +780,6 @@ func encodeOpenAIRequest(model string, conv conversation, stream bool) ([]byte, 
 		encoded.ToolCallID = stringValue(message["tool_call_id"])
 		encoded.Name = stringValue(message["name"])
 		encoded.ReasoningContent = stringValue(message["reasoning_content"])
-		if rawReasoning, ok := message["reasoning"]; ok {
-			encoded.Reasoning = rawReasoning
-		}
 		payload.Messages = append(payload.Messages, encoded)
 	}
 	if len(conv.Tools) > 0 {
@@ -711,6 +821,28 @@ func encodeOpenAIRequest(model string, conv conversation, stream bool) ([]byte, 
 			if err != nil {
 				return nil, err
 			}
+		}
+	}
+	if conv.ToolChoice.DisableParallel && len(conv.Tools) > 0 {
+		f := false
+		payload.ParallelToolCalls = &f
+	}
+	if sp := conv.Sampling; sp != nil {
+		payload.Temperature = sp.Temperature
+		payload.TopP = sp.TopP
+		payload.TopK = sp.TopK
+		payload.MaxTokens = sp.MaxTokens
+		payload.Seed = sp.Seed
+		payload.FrequencyPenalty = sp.FrequencyPenalty
+		payload.PresencePenalty = sp.PresencePenalty
+		payload.User = sp.User
+		payload.ReasoningEffort = sp.ReasoningEffort
+		if len(sp.Stop) > 0 {
+			raw, err := sonic.Marshal(sp.Stop)
+			if err != nil {
+				return nil, err
+			}
+			payload.Stop = raw
 		}
 	}
 	return sonic.Marshal(payload)
@@ -858,7 +990,88 @@ func encodeCodexRequest(model string, conv conversation, stream bool) ([]byte, e
 		// case omit `input` entirely instead of rejecting the transform.
 		delete(out, "input")
 	}
+	if conv.ToolChoice.DisableParallel && len(conv.Tools) > 0 {
+		out["parallel_tool_calls"] = false
+	}
+	applyCodexSampling(out, conv.Sampling)
+	if reasoning := buildCodexReasoningConfig(conv); reasoning != nil {
+		out["reasoning"] = reasoning
+		out["include"] = []string{"reasoning.encrypted_content"}
+	}
 	return sonic.Marshal(out)
+}
+
+// applyCodexSampling 把 Codex responses API 支持的采样参数写入 out map。
+// 只透传 Codex 实际接受的字段：temperature/top_p/max_output_tokens/user；其余静默丢弃。
+func applyCodexSampling(out map[string]any, sp *samplingParams) {
+	if sp == nil {
+		return
+	}
+	if sp.Temperature != nil {
+		out["temperature"] = *sp.Temperature
+	}
+	if sp.TopP != nil {
+		out["top_p"] = *sp.TopP
+	}
+	if sp.MaxTokens != nil && *sp.MaxTokens > 0 {
+		out["max_output_tokens"] = *sp.MaxTokens
+	}
+	if sp.User != "" {
+		out["user"] = sp.User
+	}
+}
+
+// buildCodexReasoningConfig 在以下情形输出 reasoning 配置：
+// 1. Anthropic 顶层 thinking.type=enabled（来自 Anthropic 客户端）
+// 2. OpenAI 顶层 reasoning_effort 非空（来自 OpenAI 客户端，优先直通枚举值）
+// 未触发返回 nil，避免给非 reasoning 模型硬塞导致上游 400。
+func buildCodexReasoningConfig(conv conversation) map[string]any {
+	if conv.Sampling != nil {
+		if effort := strings.ToLower(strings.TrimSpace(conv.Sampling.ReasoningEffort)); effort != "" && effort != "none" {
+			return map[string]any{
+				"effort":  normalizeOpenAIEffort(effort),
+				"summary": "auto",
+			}
+		}
+	}
+	thinking := conv.Thinking
+	if thinking == nil || strings.ToLower(strings.TrimSpace(thinking.Type)) != "enabled" {
+		return nil
+	}
+	return map[string]any{
+		"effort":  mapAnthropicBudgetToOpenAIEffort(thinking.BudgetTokens),
+		"summary": "auto",
+	}
+}
+
+// normalizeOpenAIEffort 把 OpenAI reasoning_effort 枚举收敛到 Codex 接受的档位
+// （low/medium/high）。minimal 归入 low，auto 归入 medium。
+func normalizeOpenAIEffort(effort string) string {
+	switch effort {
+	case "minimal", "low":
+		return "low"
+	case "high":
+		return "high"
+	case "auto", "medium":
+		return "medium"
+	default:
+		return "medium"
+	}
+}
+
+// mapAnthropicBudgetToOpenAIEffort 把 Anthropic budget_tokens 映射成 OpenAI reasoning.effort 档位。
+// 阈值参考 Anthropic 推荐范围：1024~4k=low，4k~16k=medium，16k+=high。
+func mapAnthropicBudgetToOpenAIEffort(budget int) string {
+	switch {
+	case budget >= 16384:
+		return "high"
+	case budget >= 4096:
+		return "medium"
+	case budget > 0:
+		return "low"
+	default:
+		return "medium"
+	}
 }
 
 func splitConversationForSystem(conv conversation) ([]conversationPart, []conversationTurn, error) {
@@ -936,15 +1149,19 @@ func encodeGeminiPart(part conversationPart) (geminiPart, error) {
 		if part.ToolResult == nil {
 			return geminiPart{}, fmt.Errorf("%w: missing tool result content", protocol.ErrUnsupportedRequestShape)
 		}
-		content, err := encodeToolResultEnvelope(part.ToolResult)
+		// Gemini functionResponse.response 期望承载工具的"返回值"本身，
+		// 而非 Anthropic envelope（call_id/is_error 等字段对 Gemini 无意义）。
+		// 用 {output: ...} 包一层，以便上游模型识别为函数输出。
+		content, err := encodeToolResultContent(part.ToolResult.Parts)
 		if err != nil {
 			return geminiPart{}, err
 		}
+		response := map[string]any{"output": content}
 		name := part.ToolResult.Name
 		if name == "" {
 			name = part.ToolResult.CallID
 		}
-		return geminiPart{FunctionResponse: &geminiFunctionResponse{Name: name, Response: content}}, nil
+		return geminiPart{FunctionResponse: &geminiFunctionResponse{Name: name, Response: response}}, nil
 	default:
 		return geminiPart{}, fmt.Errorf("%w: unsupported gemini content kind %q", protocol.ErrUnsupportedRequestShape, part.Kind)
 	}
@@ -1367,6 +1584,21 @@ func parseGeminiTools(tools []geminiTool) ([]conversationTool, error) {
 		}
 	}
 	return out, nil
+}
+
+func extractAnthropicDisableParallel(raw json.RawMessage) (bool, bool) {
+	if !hasJSONValue(raw) {
+		return false, false
+	}
+	var obj map[string]any
+	if err := sonic.Unmarshal(raw, &obj); err != nil {
+		return false, false
+	}
+	v, ok := obj["disable_parallel_tool_use"].(bool)
+	if !ok {
+		return false, false
+	}
+	return v, true
 }
 
 func parseToolChoice(raw json.RawMessage, source string) (conversationToolChoice, error) {
@@ -2056,21 +2288,6 @@ func decodeCodexFileMedia(part map[string]any) (conversationMedia, error) {
 		return conversationMedia{}, fmt.Errorf("%w: codex file part missing file_id/file_data", protocol.ErrUnsupportedRequestShape)
 	}
 	return media, nil
-}
-
-func encodeToolResultEnvelope(result *conversationToolResult) (map[string]any, error) {
-	content, err := encodeToolResultContent(result.Parts)
-	if err != nil {
-		return nil, err
-	}
-	payload := map[string]any{"call_id": result.CallID, "content": content}
-	if result.IsError {
-		payload["is_error"] = true
-	}
-	if result.Name != "" {
-		payload["name"] = result.Name
-	}
-	return payload, nil
 }
 
 func encodeToolResultContent(parts []conversationPart) (any, error) {

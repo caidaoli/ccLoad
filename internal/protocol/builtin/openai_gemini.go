@@ -11,11 +11,23 @@ import (
 )
 
 type openAIChatRequest struct {
-	Model      string              `json:"model"`
-	Messages   []openAIChatMessage `json:"messages"`
-	Stream     util.FlexibleBool   `json:"stream"`
-	Tools      json.RawMessage     `json:"tools,omitempty"`
-	ToolChoice json.RawMessage     `json:"tool_choice,omitempty"`
+	Model               string              `json:"model"`
+	Messages            []openAIChatMessage `json:"messages"`
+	Stream              util.FlexibleBool   `json:"stream"`
+	Tools               json.RawMessage     `json:"tools,omitempty"`
+	ToolChoice          json.RawMessage     `json:"tool_choice,omitempty"`
+	ParallelToolCalls   *bool               `json:"parallel_tool_calls,omitempty"`
+	Temperature         *float64            `json:"temperature,omitempty"`
+	TopP                *float64            `json:"top_p,omitempty"`
+	TopK                *int                `json:"top_k,omitempty"`
+	MaxTokens           *int                `json:"max_tokens,omitempty"`
+	MaxCompletionTokens *int                `json:"max_completion_tokens,omitempty"`
+	Stop                json.RawMessage     `json:"stop,omitempty"`
+	ReasoningEffort     string              `json:"reasoning_effort,omitempty"`
+	Seed                *int64              `json:"seed,omitempty"`
+	FrequencyPenalty    *float64            `json:"frequency_penalty,omitempty"`
+	PresencePenalty     *float64            `json:"presence_penalty,omitempty"`
+	User                string              `json:"user,omitempty"`
 }
 
 type openAIChatToolCall struct {
