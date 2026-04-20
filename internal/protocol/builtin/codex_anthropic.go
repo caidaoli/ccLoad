@@ -13,6 +13,7 @@ type codexToAnthropicStreamState struct {
 	started             bool
 	blockIndex          int
 	model               string
+	responseID          string
 	openBlock           bool
 	lastBlock           string
 	hasTextDelta        bool
@@ -359,6 +360,9 @@ func convertCodexResponseToAnthropicStream(_ context.Context, model string, rawR
 		if responseModel := stringValue(response["model"]); responseModel != "" {
 			st.model = responseModel
 		}
+		if id := stringValue(response["id"]); id != "" && st.responseID == "" {
+			st.responseID = id
+		}
 		if usage := codexUsageFromMap(response["usage"]); usage != nil {
 			st.usage.inputTokens = usage.inputTokens
 			st.usage.outputTokens = usage.outputTokens
@@ -678,16 +682,21 @@ func codexAnthropicMessageStartChunk(st *codexToAnthropicStreamState) ([]byte, e
 	if cacheCreationTokens > 0 {
 		usage["cache_creation_input_tokens"] = cacheCreationTokens
 	}
+	msgID := st.responseID
+	if msgID == "" {
+		msgID = "msg-proxy"
+	}
 	return marshalEventSSE("message_start", map[string]any{
 		"type": "message_start",
 		"message": map[string]any{
-			"id":          "msg-proxy",
-			"type":        "message",
-			"role":        "assistant",
-			"content":     []any{},
-			"model":       st.model,
-			"stop_reason": nil,
-			"usage":       usage,
+			"id":            msgID,
+			"type":          "message",
+			"role":          "assistant",
+			"content":       []any{},
+			"model":         st.model,
+			"stop_reason":   nil,
+			"stop_sequence": nil,
+			"usage":         usage,
 		},
 	})
 }
@@ -755,10 +764,16 @@ func codexAnthropicStopChunks(st *codexToAnthropicStreamState) ([][]byte, error)
 	if reasoningTokens > 0 {
 		usage["reasoning_tokens"] = reasoningTokens
 	}
+	inputTokens := int64(0)
+	if st != nil && st.usage.seen {
+		inputTokens = max(st.usage.inputTokens-st.usage.cachedTokens, 0)
+	}
+	usage["input_tokens"] = inputTokens
 	messageDelta, err := marshalEventSSE("message_delta", map[string]any{
 		"type": "message_delta",
 		"delta": map[string]any{
-			"stop_reason": codexAnthropicStopReason(st),
+			"stop_reason":   codexAnthropicStopReason(st),
+			"stop_sequence": nil,
 		},
 		"usage": usage,
 	})

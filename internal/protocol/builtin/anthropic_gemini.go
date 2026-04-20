@@ -180,6 +180,7 @@ type anthropicStreamState struct {
 	started            bool
 	done               bool
 	model              string
+	responseID         string
 	nextIndex          int
 	openTextIndex      int
 	pendingToolCallIDs []string
@@ -366,15 +367,20 @@ func convertGeminiResponseToAnthropicStream(_ context.Context, model string, _, 
 }
 
 func geminiAnthropicStartChunks(st *anthropicStreamState) ([][]byte, error) {
+	msgID := st.responseID
+	if msgID == "" {
+		msgID = "msg-proxy"
+	}
 	start, err := marshalEventSSE("message_start", map[string]any{
 		"type": "message_start",
 		"message": map[string]any{
-			"id":          "msg-proxy",
-			"type":        "message",
-			"role":        "assistant",
-			"content":     []any{},
-			"model":       st.model,
-			"stop_reason": nil,
+			"id":            msgID,
+			"type":          "message",
+			"role":          "assistant",
+			"content":       []any{},
+			"model":         st.model,
+			"stop_reason":   nil,
+			"stop_sequence": nil,
 			"usage": map[string]any{
 				"input_tokens":  st.inputTokens,
 				"output_tokens": 0,
@@ -417,9 +423,11 @@ func geminiAnthropicStopChunks(st *anthropicStreamState, stopReason string) ([][
 	messageDelta, err := marshalEventSSE("message_delta", map[string]any{
 		"type": "message_delta",
 		"delta": map[string]any{
-			"stop_reason": stopReason,
+			"stop_reason":   stopReason,
+			"stop_sequence": nil,
 		},
 		"usage": map[string]any{
+			"input_tokens":  st.inputTokens,
 			"output_tokens": st.outputTokens,
 		},
 	})

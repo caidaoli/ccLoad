@@ -887,22 +887,21 @@ func encodeCodexRequest(model string, conv conversation, stream bool) ([]byte, e
 		out["tools"] = tools
 	}
 	if !conv.ToolChoice.IsZero() {
-		choice := map[string]any{"type": conv.ToolChoice.Mode}
 		switch conv.ToolChoice.Mode {
+		case "auto", "none", "required":
+			out["tool_choice"] = conv.ToolChoice.Mode
 		case "named":
 			if conv.ToolChoice.toolType() == "function" {
-				choice["type"] = "function"
-				choice["name"] = toolAliases.shorten(conv.ToolChoice.Name)
+				out["tool_choice"] = map[string]any{
+					"type": "function",
+					"name": toolAliases.shorten(conv.ToolChoice.Name),
+				}
 			} else {
-				choice["type"] = conv.ToolChoice.toolType()
+				out["tool_choice"] = map[string]any{"type": conv.ToolChoice.toolType()}
 			}
-		case "required":
-			choice["type"] = "required"
-		case "auto", "none":
 		default:
 			return nil, fmt.Errorf("%w: unsupported codex tool choice %q", protocol.ErrUnsupportedRequestShape, conv.ToolChoice.Mode)
 		}
-		out["tool_choice"] = choice
 	}
 
 	input := out["input"].([]map[string]any)
