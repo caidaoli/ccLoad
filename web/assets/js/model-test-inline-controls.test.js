@@ -292,6 +292,17 @@ test('切换渠道后协议默认回退到渠道原生协议', () => {
   assert.match(script, /selectedProtocol\s*=\s*getChannelType\(selectedChannel\)/);
 });
 
+test('按模型测试切换协议转换时不重新渲染渠道表格', () => {
+  const handlerMatch = script.match(
+    /protocolTransformOptions\?\.addEventListener\('change',\s*\(event\)\s*=>\s*\{[\s\S]*?\}\);/
+  );
+  assert.ok(handlerMatch, '未定位到协议转换 change 处理器');
+  const handler = handlerMatch[0];
+  assert.match(handler, /if\s*\(testMode\s*===\s*TEST_MODE_MODEL\)\s*\{\s*return;\s*\}/);
+  assert.doesNotMatch(handler, /populateModelSelector\(\)/);
+  assert.doesNotMatch(handler, /renderModelModeRows\(\)/);
+});
+
 test('按渠道测试时重渲染不会覆盖用户已选的协议转换', () => {
   const sandbox = {
     ALL_PROTOCOLS: ['anthropic', 'codex', 'openai', 'gemini'],

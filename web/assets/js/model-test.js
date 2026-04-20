@@ -1739,8 +1739,6 @@ function bindEvents() {
     clearProgress();
 
     if (testMode === TEST_MODE_MODEL) {
-      populateModelSelector();
-      renderModelModeRows();
       return;
     }
 
