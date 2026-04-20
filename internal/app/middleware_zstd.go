@@ -22,12 +22,33 @@ type zstdResponseWriter struct {
 	encoder *zstd.Encoder
 }
 
+func (w *zstdResponseWriter) dropContentLength() {
+	w.Header().Del("Content-Length")
+}
+
 func (w *zstdResponseWriter) Write(data []byte) (int, error) {
+	w.dropContentLength()
 	return w.encoder.Write(data)
 }
 
 func (w *zstdResponseWriter) WriteString(s string) (int, error) {
+	w.dropContentLength()
 	return w.encoder.Write([]byte(s))
+}
+
+func (w *zstdResponseWriter) WriteHeader(code int) {
+	w.dropContentLength()
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *zstdResponseWriter) WriteHeaderNow() {
+	w.dropContentLength()
+	w.ResponseWriter.WriteHeaderNow()
+}
+
+func (w *zstdResponseWriter) Flush() {
+	_ = w.encoder.Flush()
+	w.ResponseWriter.Flush()
 }
 
 // skipExtensions 已压缩的文件类型，不需要再压缩
