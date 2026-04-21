@@ -152,7 +152,7 @@
       groupClass: '',
       infoClass: 'filter-info',
       actionsClass: '',
-      items: ['channelType', 'timeRange', 'channelIdCombobox', 'channelNameCombobox', 'modelSelect', 'authToken', 'filterButton']
+      items: ['channelType', 'timeRange', 'channelNameCombobox', 'modelSelect', 'authToken', 'filterButton']
     }
   };
 
