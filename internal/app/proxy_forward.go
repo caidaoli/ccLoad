@@ -80,6 +80,12 @@ func (s *Server) buildProxyRequest(
 	// 1.6 自定义请求体规则（仅对 JSON body 生效）
 	body = applyBodyRules(hdr.Get("Content-Type"), body, cfg.BodyRules())
 
+	// 1.7 Codex Responses 缓存提示：向 body 注入 prompt_cache_key
+	codexSessionID := resolveCodexSessionHint(reqCtx, body, apiKey)
+	if codexSessionID != "" {
+		body = injectCodexPromptCacheKey(body, codexSessionID)
+	}
+
 	// 2. 创建带上下文的请求
 	req, err := buildUpstreamRequest(reqCtx.ctx, method, upstreamURL, body)
 	if err != nil {
@@ -96,6 +102,11 @@ func (s *Server) buildProxyRequest(
 	if cfg.GetChannelType() == util.ChannelTypeAnthropic &&
 		strings.Contains(strings.ToLower(cfg.Name), "anyrouter") {
 		injectAnthropicBetaFlag(req, "context-1m-2025-08-07")
+	}
+
+	// 5.5 Codex Responses 缓存提示：设置 Session_id 头（仅客户端未自带时）
+	if codexSessionID != "" && req.Header.Get("Session_id") == "" && req.Header.Get("Session-Id") == "" {
+		req.Header.Set("Session_id", codexSessionID)
 	}
 
 	// 6. 自定义请求头规则（认证头黑名单保护）
