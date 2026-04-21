@@ -581,8 +581,9 @@ func (s *Server) testChannelAPIWithURL(
 	}
 
 	// anyrouter 渠道：为 /v1/messages 自动注入 adaptive thinking（与代理链路保持一致）
+	// 兼容 BaseURL 带路径前缀的场景（如 https://host/anyrouter -> /anyrouter/v1/messages）。
 	if requestPlan.upstreamProtocol == "anthropic" {
-		if parsed, perr := neturl.Parse(requestPlan.fullURL); perr == nil && parsed.Path == "/v1/messages" {
+		if parsed, perr := neturl.Parse(requestPlan.fullURL); perr == nil && strings.HasSuffix(parsed.Path, "/v1/messages") {
 			requestPlan.requestBody = maybeInjectAnyrouterAdaptiveThinking(cfgForBuild, "/v1/messages", requestPlan.requestBody)
 		}
 	}
