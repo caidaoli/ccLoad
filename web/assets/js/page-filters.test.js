@@ -68,9 +68,8 @@ test('page-filters 渲染 stats/trend 布局时保留各自特有控件', () => 
   assert.match(trendLayout, /id="f_model" class="filter-select(?:\s+[^"]+)?"/);
   assert.match(trendLayout, /data-i18n="trend\.allModels"/);
   assert.doesNotMatch(trendLayout, /id="f_hide_zero_success"/);
-  // trend 渠道ID和渠道名改为 combobox 结构
-  assert.match(trendLayout, /id="f_id" class="filter-select filter-combobox"/);
-  assert.match(trendLayout, /id="f_id_dropdown" class="filter-dropdown"/);
+  // trend 渠道ID筛选已移除；渠道名改为 combobox 结构
+  assert.doesNotMatch(trendLayout, /id="f_id"/);
   assert.match(trendLayout, /id="f_name" class="filter-select filter-combobox"/);
   assert.match(trendLayout, /id="f_name_dropdown" class="filter-dropdown"/);
 

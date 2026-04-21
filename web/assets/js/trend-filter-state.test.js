@@ -104,7 +104,6 @@ test('trend 筛选状态优先读取新的聚合存储格式', () => {
       model: 'gpt-5',
       authToken: '9',
       channelType: 'codex',
-      channelId: '12',
       channelName: 'demo'
     }),
     'trend.range': 'today',
@@ -119,7 +118,6 @@ test('trend 筛选状态优先读取新的聚合存储格式', () => {
       model: 'gpt-5',
       authToken: '9',
       channelType: 'codex',
-      channelId: '12',
       channelName: 'demo'
     }
   );
@@ -132,7 +130,6 @@ test('trend 筛选状态在聚合存储缺失时回退旧的分散 localStorage 
     'trend.model': 'gpt-5',
     'trend.authToken': '9',
     'trend.channelType': 'codex',
-    'trend.channelId': '12',
     'trend.channelName': 'demo'
   });
 
@@ -144,7 +141,6 @@ test('trend 筛选状态在聚合存储缺失时回退旧的分散 localStorage 
       model: 'gpt-5',
       authToken: '9',
       channelType: 'codex',
-      channelId: '12',
       channelName: 'demo'
     }
   );

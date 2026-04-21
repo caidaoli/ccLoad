@@ -7,12 +7,10 @@
     window.currentChannelType = 'all'; // 当前选中的渠道类型
     window.currentModel = ''; // 当前选中的模型（空字符串表示全部模型）
     window.currentAuthToken = ''; // 当前选中的令牌（空字符串表示全部令牌）
-    window.currentChannelId = ''; // 当前选中的渠道ID
     window.currentChannelName = ''; // 当前选中的渠道名称
     window.chartInstance = null;
     window.channels = [];
     window.visibleChannels = new Set(); // 可见渠道集合
-    let trendChannelIdCombobox = null; // 渠道ID筛选组合框
     let trendChannelNameCombobox = null; // 渠道名筛选组合框
     window.availableModels = []; // 可用模型列表
     window.authTokens = []; // 令牌列表
@@ -24,7 +22,6 @@
       model: 'trend.model',
       authToken: 'trend.authToken',
       channelType: 'trend.channelType',
-      channelId: 'trend.channelId',
       channelName: 'trend.channelName'
     };
     const TREND_FILTER_FIELDS = [
@@ -61,14 +58,6 @@
         }
       },
       {
-        key: 'channelId',
-        queryKeys: ['channel_id'],
-        defaultValue: '',
-        includeInQuery() {
-          return false;
-        }
-      },
-      {
         key: 'channelName',
         queryKeys: ['channel_name_like'],
         defaultValue: '',
@@ -88,7 +77,6 @@
         model: window.currentModel || '',
         authToken: window.currentAuthToken || '',
         channelType: window.currentChannelType || 'all',
-        channelId: window.currentChannelId || '',
         channelName: window.currentChannelName || ''
       };
     }
@@ -119,7 +107,6 @@
 
         // 更新渠道列表（仅有日志数据的渠道）
         window.channels = rawChannels;
-        if (trendChannelIdCombobox) trendChannelIdCombobox.refresh();
         if (trendChannelNameCombobox) trendChannelNameCombobox.refresh();
 
         // 填充模型选择器
@@ -167,8 +154,7 @@
           window.currentAuthToken = tokenSelect.value || '';
         }
 
-        // 读取渠道ID和渠道名筛选（combobox）
-        window.currentChannelId = trendChannelIdCombobox ? trendChannelIdCombobox.getValue() : '';
+        // 读取渠道名筛选（combobox）
         window.currentChannelName = trendChannelNameCombobox ? trendChannelNameCombobox.getValue() : '';
 
         const hours = window.getRangeHours ? getRangeHours(currentRange) : 24;
@@ -1435,29 +1421,6 @@ function shouldShowZoom(points, hours, trendType) {
       } catch (_) {}
     }
 
-    function initTrendChannelIdCombobox(initialValue) {
-      if (typeof window.createSearchableCombobox !== 'function') return;
-      if (!document.getElementById('f_id')) return;
-      trendChannelIdCombobox = window.createSearchableCombobox({
-        inputId: 'f_id',
-        dropdownId: 'f_id_dropdown',
-        attachMode: true,
-        initialValue: initialValue || '',
-        initialLabel: initialValue
-          ? (() => { const ch = (window.channels || []).find(c => String(c.id) === String(initialValue)); return ch ? ch.name : initialValue; })()
-          : t('stats.allChannels'),
-        getOptions: () => [
-          { value: '', label: t('stats.allChannels') },
-          ...(window.channels || []).map(ch => ({ value: String(ch.id), label: ch.name }))
-        ],
-        onSelect: () => {
-          window.currentChannelId = trendChannelIdCombobox.getValue();
-          persistState();
-          loadData();
-        }
-      });
-    }
-
     function initTrendChannelNameCombobox(initialValue) {
       if (typeof window.createSearchableCombobox !== 'function') return;
       if (!document.getElementById('f_name')) return;
@@ -1498,8 +1461,7 @@ function shouldShowZoom(points, hours, trendType) {
       bindToggles();
       bindChannelFilterControls();
 
-      // 初始化渠道ID和渠道名 combobox
-      initTrendChannelIdCombobox(window.currentChannelId);
+      // 初始化渠道名 combobox
       initTrendChannelNameCombobox(window.currentChannelName);
 
       // 加载模型列表（传入当前渠道类型）
@@ -1640,8 +1602,7 @@ function shouldShowZoom(points, hours, trendType) {
         // 恢复渠道类型
         window.currentChannelType = restoredFilters.channelType || 'all';
 
-        // 恢复渠道ID和渠道名（combobox 初始化时通过 initialValue 恢复）
-        window.currentChannelId = restoredFilters.channelId || '';
+        // 恢复渠道名（combobox 初始化时通过 initialValue 恢复）
         window.currentChannelName = restoredFilters.channelName || '';
       } catch (_) {}
     }
