@@ -28,12 +28,12 @@ func TestResolveCodexSessionHint_AnthropicWithUserID(t *testing.T) {
 		originalModel:    "gpt-5-codex",
 		originalBody:     []byte(`{"metadata":{"user_id":"abc123"}}`),
 	}
-	id1 := resolveCodexSessionHint(rc, nil, "")
+	id1 := resolveCodexSessionHint(rc, nil, "", nil)
 	if !uuidPattern.MatchString(id1) {
 		t.Fatalf("expected UUID, got %q", id1)
 	}
 	// 相同 user_id 再次调用应返回同一 UUID（命中缓存）
-	id2 := resolveCodexSessionHint(rc, nil, "")
+	id2 := resolveCodexSessionHint(rc, nil, "", nil)
 	if id1 != id2 {
 		t.Fatalf("expected cached session id, got %q vs %q", id1, id2)
 	}
@@ -50,9 +50,9 @@ func TestResolveCodexSessionHint_AnthropicDifferentModelsOrUsers(t *testing.T) {
 			originalBody:     []byte(`{"metadata":{"user_id":"` + userID + `"}}`),
 		}
 	}
-	idA := resolveCodexSessionHint(mkCtx("m1", "u1"), nil, "")
-	idB := resolveCodexSessionHint(mkCtx("m1", "u2"), nil, "")
-	idC := resolveCodexSessionHint(mkCtx("m2", "u1"), nil, "")
+	idA := resolveCodexSessionHint(mkCtx("m1", "u1"), nil, "", nil)
+	idB := resolveCodexSessionHint(mkCtx("m1", "u2"), nil, "", nil)
+	idC := resolveCodexSessionHint(mkCtx("m2", "u1"), nil, "", nil)
 	if idA == idB || idA == idC || idB == idC {
 		t.Fatalf("expected distinct UUIDs for distinct buckets; got %s %s %s", idA, idB, idC)
 	}
@@ -66,8 +66,38 @@ func TestResolveCodexSessionHint_AnthropicMissingUserID(t *testing.T) {
 		upstreamProtocol: protocol.Codex,
 		originalBody:     []byte(`{}`),
 	}
-	if got := resolveCodexSessionHint(rc, nil, ""); got != "" {
-		t.Fatalf("expected empty when metadata.user_id missing, got %q", got)
+	if got := resolveCodexSessionHint(rc, nil, "", nil); got != "" {
+		t.Fatalf("expected empty when metadata.user_id, session header and apiKey all missing, got %q", got)
+	}
+
+	// 头 X-Claude-Code-Session-Id 存在时优先于 apiKey
+	h := http.Header{}
+	h.Set("X-Claude-Code-Session-Id", "sid-1")
+	s1 := resolveCodexSessionHint(rc, nil, "sk-abc", h)
+	s2 := resolveCodexSessionHint(rc, nil, "sk-xyz", h)
+	s3 := resolveCodexSessionHint(rc, nil, "sk-abc", nil)
+	if !uuidPattern.MatchString(s1) {
+		t.Fatalf("expected UUID from session header, got %q", s1)
+	}
+	if s1 != s2 {
+		t.Fatalf("expected session-id to dominate apiKey, got %q vs %q", s1, s2)
+	}
+	if s1 == s3 {
+		t.Fatalf("session-id UUID should differ from apiKey UUID")
+	}
+
+	// Claude Code 客户端无 user_id 且无 session 头时 fallback 到 apiKey 稳定 UUID
+	a1 := resolveCodexSessionHint(rc, nil, "sk-abc", nil)
+	a2 := resolveCodexSessionHint(rc, nil, "sk-abc", nil)
+	b := resolveCodexSessionHint(rc, nil, "sk-xyz", nil)
+	if !uuidPattern.MatchString(a1) {
+		t.Fatalf("expected UUID fallback, got %q", a1)
+	}
+	if a1 != a2 {
+		t.Fatalf("expected deterministic fallback UUID, got %q vs %q", a1, a2)
+	}
+	if a1 == b {
+		t.Fatalf("expected different UUIDs for different apiKeys")
 	}
 }
 
@@ -77,11 +107,11 @@ func TestResolveCodexSessionHint_CodexPassthrough(t *testing.T) {
 		upstreamProtocol: protocol.Codex,
 	}
 	body := []byte(`{"prompt_cache_key":"existing-uuid","model":"gpt-5-codex"}`)
-	if got := resolveCodexSessionHint(rc, body, ""); got != "existing-uuid" {
+	if got := resolveCodexSessionHint(rc, body, "", nil); got != "existing-uuid" {
 		t.Fatalf("expected passthrough prompt_cache_key, got %q", got)
 	}
 
-	if got := resolveCodexSessionHint(rc, []byte(`{"model":"x"}`), ""); got != "" {
+	if got := resolveCodexSessionHint(rc, []byte(`{"model":"x"}`), "", nil); got != "" {
 		t.Fatalf("expected empty when codex body has no prompt_cache_key, got %q", got)
 	}
 }
@@ -91,9 +121,9 @@ func TestResolveCodexSessionHint_OpenAIDeterministic(t *testing.T) {
 		clientProtocol:   protocol.OpenAI,
 		upstreamProtocol: protocol.Codex,
 	}
-	a1 := resolveCodexSessionHint(rc, nil, "sk-abc")
-	a2 := resolveCodexSessionHint(rc, nil, "sk-abc")
-	b := resolveCodexSessionHint(rc, nil, "sk-xyz")
+	a1 := resolveCodexSessionHint(rc, nil, "sk-abc", nil)
+	a2 := resolveCodexSessionHint(rc, nil, "sk-abc", nil)
+	b := resolveCodexSessionHint(rc, nil, "sk-xyz", nil)
 	if a1 == "" || !uuidPattern.MatchString(a1) {
 		t.Fatalf("expected UUID for openai key, got %q", a1)
 	}
@@ -103,7 +133,7 @@ func TestResolveCodexSessionHint_OpenAIDeterministic(t *testing.T) {
 	if a1 == b {
 		t.Fatalf("expected different UUIDs for different keys")
 	}
-	if got := resolveCodexSessionHint(rc, nil, ""); got != "" {
+	if got := resolveCodexSessionHint(rc, nil, "", nil); got != "" {
 		t.Fatalf("expected empty for empty apiKey, got %q", got)
 	}
 }
@@ -114,7 +144,7 @@ func TestResolveCodexSessionHint_NonCodexUpstream(t *testing.T) {
 		upstreamProtocol: protocol.Anthropic,
 		originalBody:     []byte(`{"metadata":{"user_id":"abc"}}`),
 	}
-	if got := resolveCodexSessionHint(rc, nil, ""); got != "" {
+	if got := resolveCodexSessionHint(rc, nil, "", nil); got != "" {
 		t.Fatalf("expected empty when upstream is not Codex, got %q", got)
 	}
 }

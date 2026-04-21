@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha1" //nolint:gosec // UUIDv5 per RFC 4122 requires SHA-1，与安全无关
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -64,25 +65,27 @@ func codexSessionIDForOpenAIKey(apiKey string) string {
 }
 
 // resolveCodexSessionHint 仅在 Codex 上游场景下返回稳定的会话 ID；否则返回空。
-//   - Anthropic 客户端：读原始 body 的 metadata.user_id，cache key = model-userID
+//   - Anthropic 客户端：优先 metadata.user_id（model-userID 内存缓存）→ X-Claude-Code-Session-Id 头 → apiKey 确定性 UUID
 //   - Codex 客户端：读 body 内已有的 prompt_cache_key（不主动创建）
 //   - OpenAI 客户端：基于 apiKey 生成确定性 UUID
 //   - 其他协议：返回空
-func resolveCodexSessionHint(reqCtx *requestContext, translatedBody []byte, apiKey string) string {
+func resolveCodexSessionHint(reqCtx *requestContext, translatedBody []byte, apiKey string, header http.Header) string {
 	if reqCtx == nil || reqCtx.upstreamProtocol != protocol.Codex {
 		return ""
 	}
 	switch reqCtx.clientProtocol {
 	case protocol.Anthropic:
-		userID := extractAnthropicUserID(reqCtx.originalBody)
-		if userID == "" {
-			return ""
+		if userID := extractAnthropicUserID(reqCtx.originalBody); userID != "" {
+			model := strings.TrimSpace(reqCtx.originalModel)
+			if model == "" {
+				model = "unknown"
+			}
+			return getOrCreateCodexSessionID(model + "-" + userID)
 		}
-		model := strings.TrimSpace(reqCtx.originalModel)
-		if model == "" {
-			model = "unknown"
+		if sid := strings.TrimSpace(header.Get("X-Claude-Code-Session-Id")); sid != "" {
+			return newCodexUUIDv5(uuidNameSpaceOID, "ccload:codex:prompt-cache:session:"+sid)
 		}
-		return getOrCreateCodexSessionID(model + "-" + userID)
+		return codexSessionIDForOpenAIKey(apiKey)
 	case protocol.Codex:
 		return readCodexPromptCacheKey(translatedBody)
 	case protocol.OpenAI:

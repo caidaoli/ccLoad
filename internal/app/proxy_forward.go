@@ -81,7 +81,7 @@ func (s *Server) buildProxyRequest(
 	body = applyBodyRules(hdr.Get("Content-Type"), body, cfg.BodyRules())
 
 	// 1.7 Codex Responses 缓存提示：向 body 注入 prompt_cache_key
-	codexSessionID := resolveCodexSessionHint(reqCtx, body, apiKey)
+	codexSessionID := resolveCodexSessionHint(reqCtx, body, apiKey, hdr)
 	if codexSessionID != "" {
 		body = injectCodexPromptCacheKey(body, codexSessionID)
 	}
