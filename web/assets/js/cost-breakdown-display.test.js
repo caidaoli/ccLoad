@@ -78,6 +78,22 @@ test('共享成本 helper 生成倍率角标和两行成本 DOM', () => {
   assert.match(badgeHtml, /class="cell-multiplier-badge">0\.85x<\/sup>/);
 });
 
+test('共享成本 helper 在免费渠道上保留 0x 和 $0 的倍率后成本', () => {
+  const sandbox = createHelperSandbox();
+  vm.runInNewContext(
+    extractBlock(uiSource, 'formatCost', 'formatNumber'),
+    sandbox
+  );
+
+  const costHtml = sandbox.buildCostStackHtml(0.02, 0, { tone: 'warning' });
+  const badgeHtml = sandbox.buildCornerMultiplierBadge(0);
+
+  assert.match(costHtml, /class="cost-stack cost-stack--warning cost-stack--with-multiplier"/);
+  assert.match(costHtml, /class="cost-stack-standard">\$0\.020<\/span>/);
+  assert.match(costHtml, /class="cost-stack-effective">\$0<\/span>/);
+  assert.match(badgeHtml, /class="cell-multiplier-badge">0x<\/sup>/);
+});
+
 test('stats 页模型单元格右上角显示倍率，成本列输出结构化两行成本', () => {
   const sandbox = createHelperSandbox();
   vm.runInNewContext(

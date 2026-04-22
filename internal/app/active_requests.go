@@ -25,7 +25,7 @@ type ActiveRequest struct {
 	BaseURL             string  `json:"base_url,omitempty"`               // 当前使用的上游URL
 	BytesReceived       int64   `json:"bytes_received,omitempty"`         // 上游已返回的字节数（快照）
 	ClientFirstByteTime float64 `json:"client_first_byte_time,omitempty"` // 客户端侧首字节响应时间（秒），流式请求有效
-	CostMultiplier      float64 `json:"cost_multiplier,omitempty"`        // 渠道成本倍率
+	CostMultiplier      float64 `json:"cost_multiplier"`                  // 渠道成本倍率
 }
 
 type activeRequest struct {

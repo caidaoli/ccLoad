@@ -95,7 +95,7 @@ func scanAggregatedMetricsRows(rows *sql.Rows) (map[int64]*model.MetricPoint, ma
 			*chCost = totalCost
 		}
 		var chEffective *float64
-		if effectiveCost > 0 {
+		if effectiveCost > 0 || totalCost > 0 {
 			chEffective = new(float64)
 			*chEffective = effectiveCost
 		}

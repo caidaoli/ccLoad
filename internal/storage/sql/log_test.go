@@ -212,3 +212,43 @@ func TestLog_Pagination(t *testing.T) {
 		}
 	}
 }
+
+func TestLog_ListRangeWithCount_PreservesZeroCostMultiplier(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "logs_zero_multiplier.db")
+	ctx := context.Background()
+	channelID := createTestChannel(t, ctx, store, "free-log-channel")
+
+	now := time.Now()
+	if err := store.AddLog(ctx, &model.LogEntry{
+		Time:           newJSONTime(now),
+		Model:          "gpt-5.4-mini",
+		ChannelID:      channelID,
+		StatusCode:     200,
+		Message:        "success",
+		Duration:       1.2,
+		APIKeyUsed:     "key...key",
+		Cost:           0.019,
+		CostMultiplier: 0,
+	}); err != nil {
+		t.Fatalf("add log: %v", err)
+	}
+
+	startTime := now.Add(-1 * time.Minute)
+	endTime := now.Add(1 * time.Minute)
+
+	logs, total, err := store.ListLogsRangeWithCount(ctx, startTime, endTime, 10, 0, nil)
+	if err != nil {
+		t.Fatalf("ListLogsRangeWithCount failed: %v", err)
+	}
+	if total != 1 {
+		t.Fatalf("total=%d, want 1", total)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("len(logs)=%d, want 1", len(logs))
+	}
+	if logs[0].CostMultiplier != 0 {
+		t.Fatalf("cost_multiplier=%v, want 0", logs[0].CostMultiplier)
+	}
+}

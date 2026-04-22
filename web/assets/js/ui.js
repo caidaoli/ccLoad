@@ -760,8 +760,10 @@
    * @returns {string} 格式化后的字符串
    */
   function formatCost(cost) {
-    if (!cost) return '';
-    return '$' + cost.toFixed(3);
+    const value = Number(cost);
+    if (!Number.isFinite(value)) return '';
+    if (value === 0) return '$0';
+    return '$' + value.toFixed(3);
   }
 
   /**
@@ -808,10 +810,9 @@
       };
     }
 
-    const effectiveValue = (effective === undefined || effective === null)
-      ? standardCost
-      : (Number(effective) || 0);
-    const effectiveCost = effectiveValue > 0 ? effectiveValue : standardCost;
+    const hasExplicitEffectiveCost = effective !== undefined && effective !== null;
+    const effectiveValue = hasExplicitEffectiveCost ? (Number(effective) || 0) : standardCost;
+    const effectiveCost = hasExplicitEffectiveCost ? effectiveValue : standardCost;
     const hasMultiplier = Math.abs(effectiveCost - standardCost) >= 1e-9;
     const multiplier = hasMultiplier ? (effectiveCost / standardCost) : 1;
 
