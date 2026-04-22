@@ -18,8 +18,8 @@ function extractFunction(source, name) {
 
 test('日志页表头新增速度列并补齐中英文本地化', () => {
   assert.match(html, /<th data-i18n="logs\.colSpeed">速度\(tok\/s\)<\/th>/);
-  assert.match(zhLocale, /'logs\.colSpeed': '速度\(tok\/s\)'/);
-  assert.match(enLocale, /'logs\.colSpeed': 'Speed \(tok\/s\)'/);
+  assert.match(zhLocale, /'logs\.colSpeed': 'Tok\/s'/);
+  assert.match(enLocale, /'logs\.colSpeed': 'Tok\/s'/);
 });
 
 test('日志页移动端标签与表格渲染包含速度列', () => {
