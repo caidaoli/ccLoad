@@ -48,6 +48,13 @@ test('tokens 页手机卡片将 token 用量压成紧凑二维指标块', () => 
   assert.match(tokensCss, /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.tokens-table\s+\.tokens-col-token-usage\s+>\s+\.token-usage-metrics\s*\{[\s\S]*?justify-content:\s*flex-end;[\s\S]*?grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*max-content\)\);/);
 });
 
+test('tokens 页总费用使用调用统计同款 warning 两行成本组件', () => {
+  assert.match(tokensScript, /function\s+buildCostHtml[\s\S]*?buildCostStackHtml\(totalCostUsd,\s*effectiveCostUsd,\s*\{\s*tone:\s*'warning'\s*\}\)/);
+  assert.match(tokensCss, /\.token-cost\s*\{[\s\S]*?display:\s*flex;[\s\S]*?flex-direction:\s*column;/);
+  assert.match(tokensCss, /\.token-cost\s+\.cost-stack\s*\{[\s\S]*?align-items:\s*center;[\s\S]*?text-align:\s*center;/);
+  assert.doesNotMatch(tokensCss, /\.token-cost-value\s*\{[^}]*color:\s*var\(--success-700\);/);
+});
+
 test('tokens 页调用次数和 token 用量指标退化为纯文字样式', () => {
   assert.doesNotMatch(tokensCss, /\.token-call-badge\s*\{[^}]*\bborder\s*:/);
   assert.doesNotMatch(tokensCss, /\.token-call-badge--success\s*\{[^}]*\bborder-color\s*:/);

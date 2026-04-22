@@ -86,6 +86,8 @@ func deepCopyConfig(src *modelpkg.Config) *modelpkg.Config {
 		CooldownUntil:         src.CooldownUntil,
 		CooldownDurationMs:    src.CooldownDurationMs,
 		DailyCostLimit:        src.DailyCostLimit,
+		CostMultiplier:        src.CostMultiplier,
+		CustomRequestRules:    src.CustomRequestRules,
 		CreatedAt:             src.CreatedAt,
 		UpdatedAt:             src.UpdatedAt,
 		KeyCount:              src.KeyCount,

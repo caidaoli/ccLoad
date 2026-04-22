@@ -282,3 +282,55 @@ func TestChannelCache_CooldownCacheAndInvalidation(t *testing.T) {
 		t.Fatalf("expected refreshed key cooldown=%v, got %v", keyUntil2, got)
 	}
 }
+
+// TestChannelCache_DeepCopyPreservesCostMultiplier 锁定 deepCopyConfig 必须保留成本倍率与自定义规则，
+// 否则代理链路从缓存读出的 cfg.CostMultiplier=0，日志与倍率后成本展示被降级为 1。
+func TestChannelCache_DeepCopyPreservesCostMultiplier(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cache_costmult.db")
+	store, err := storage.CreateSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("CreateSQLiteStore failed: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name:           "multi",
+		URL:            "https://api.example.com",
+		Priority:       1,
+		ModelEntries:   []model.ModelEntry{{Model: "m1"}},
+		Enabled:        true,
+		CostMultiplier: 0.85,
+		CustomRequestRules: &model.CustomRequestRules{
+			Headers: []model.CustomHeaderRule{{Action: model.RuleActionOverride, Name: "X-Test", Value: "v"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	cache := storage.NewChannelCache(store, 10*time.Minute)
+
+	byID, err := cache.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetConfig failed: %v", err)
+	}
+	if byID.CostMultiplier != 0.85 {
+		t.Fatalf("GetConfig CostMultiplier=%v, want 0.85", byID.CostMultiplier)
+	}
+	if byID.CustomRequestRules == nil || len(byID.CustomRequestRules.Headers) != 1 {
+		t.Fatalf("GetConfig CustomRequestRules not preserved: %+v", byID.CustomRequestRules)
+	}
+
+	byModel, err := cache.GetEnabledChannelsByModel(ctx, "m1")
+	if err != nil || len(byModel) != 1 {
+		t.Fatalf("GetEnabledChannelsByModel failed: err=%v len=%d", err, len(byModel))
+	}
+	if byModel[0].CostMultiplier != 0.85 {
+		t.Fatalf("GetEnabledChannelsByModel CostMultiplier=%v, want 0.85", byModel[0].CostMultiplier)
+	}
+	if byModel[0].CustomRequestRules == nil {
+		t.Fatalf("GetEnabledChannelsByModel CustomRequestRules is nil")
+	}
+}

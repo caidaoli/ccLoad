@@ -130,7 +130,7 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	// 注意：不再包含 models 和 model_redirects 字段
 	if err := scanner.Scan(&c.ID, &c.Name, &c.URL, &c.Priority,
 		&c.ChannelType, &c.ProtocolTransformMode, &enabledInt, &scheduledCheckEnabledInt, &scheduledCheckModel,
-		&c.CooldownUntil, &c.CooldownDurationMs, &c.DailyCostLimit, &customRequestRules, &c.KeyCount,
+		&c.CooldownUntil, &c.CooldownDurationMs, &c.DailyCostLimit, &c.CostMultiplier, &customRequestRules, &c.KeyCount,
 		&createdAtRaw, &updatedAtRaw); err != nil {
 		return nil, err
 	}
@@ -139,6 +139,9 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	c.ScheduledCheckEnabled = scheduledCheckEnabledInt != 0
 	c.ScheduledCheckModel = scheduledCheckModel
 	c.CustomRequestRules = parseCustomRequestRules(c.ID, customRequestRules)
+	if c.CostMultiplier <= 0 {
+		c.CostMultiplier = 1
+	}
 
 	// 转换时间戳（支持不同数据库）
 	now := time.Now()

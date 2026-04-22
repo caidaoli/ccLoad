@@ -97,6 +97,27 @@ function buildChannelTrigger(channelId, channelName, baseURL = '') {
   return `<button type="button" class="channel-link" data-channel-id="${channelId}"${channelTooltip}>${escapeHtml(channelName)}</button>`;
 }
 
+function buildLogChannelDisplay(entry) {
+  const configInfo = entry.channel_name ||
+    (entry.channel_id ? `渠道 #${entry.channel_id}` :
+      (entry.message === 'exhausted backends' ? '系统（所有渠道失败）' :
+        entry.message === 'no available upstream (all cooled or none)' ? '系统（无可用渠道）' : '系统'));
+  const channelTooltip = entry.base_url ? ` title="${escapeHtml(entry.base_url)}"` : '';
+
+  if (!entry.channel_id) {
+    return `<span style="color: var(--neutral-500);"${channelTooltip}>${escapeHtml(configInfo)}</span>`;
+  }
+
+  const channelHtml = buildChannelTrigger(entry.channel_id, entry.channel_name || '', entry.base_url || '');
+  const multiplier = Number(entry.cost_multiplier);
+  if (!(multiplier > 0) || Math.abs(multiplier - 1) < 1e-9) {
+    return channelHtml;
+  }
+
+  const multiplierText = `${Number(multiplier.toFixed(2)).toString()}x`;
+  return `<span class="log-channel-cell">${channelHtml}<sup class="log-channel-multiplier-badge">${multiplierText}</sup></span>`;
+}
+
 function ensureActiveRequestsPollingStarted() {
   if (activeRequestsPollTimer) return;
   activeRequestsPollTimer = setInterval(async () => {
@@ -161,6 +182,41 @@ function buildLogMessageContent(entry) {
   const logId = Number(entry?.id);
   const logIdAttr = Number.isFinite(logId) && logId > 0 ? ` data-log-id="${logId}"` : '';
   return `<span class="debug-log-link has-upstream-detail"${logIdAttr}>${messageDisplay}</span>`;
+}
+
+function buildLogCostDisplay(entry) {
+  const standardCost = Number(entry?.cost) || 0;
+  if (standardCost <= 0) return '';
+
+  const rawMultiplier = Number(entry?.cost_multiplier);
+  const multiplier = rawMultiplier > 0 ? rawMultiplier : 1;
+  const effectiveCost = standardCost * multiplier;
+  const hasMultiplier = Math.abs(effectiveCost - standardCost) >= 1e-9;
+  const badgeParts = [];
+
+  switch (entry?.service_tier) {
+    case 'priority':
+      badgeParts.push('<sup class="log-cost-badge log-cost-badge--priority">2x</sup>');
+      break;
+    case 'flex':
+      badgeParts.push('<sup class="log-cost-badge log-cost-badge--flex">0.5x</sup>');
+      break;
+    case 'fast':
+      badgeParts.push('<sup class="log-cost-badge log-cost-badge--fast">\u26A16x</sup>');
+      break;
+  }
+
+  const badgesHtml = badgeParts.length
+    ? `<span class="log-cost-badges">${badgeParts.join('')}</span>`
+    : '';
+  const costClasses = `log-cost${hasMultiplier ? ' log-cost--with-multiplier' : ''}${badgeParts.length ? ' log-cost--with-badges' : ''}`;
+  const openingTag = `<span class="${costClasses}">`;
+
+  if (!hasMultiplier) {
+    return `${openingTag}${badgesHtml}<span class="log-cost-effective">${formatCost(standardCost)}</span></span>`;
+  }
+
+  return `${openingTag}${badgesHtml}<span class="log-cost-standard">${formatCost(standardCost)}</span><span class="log-cost-effective">${formatCost(effectiveCost)}</span></span>`;
 }
 
 function formatDebugSettingValue(setting) {
@@ -535,14 +591,7 @@ function renderLogs(data) {
       '<span style="color: var(--neutral-400);">-</span>';
 
     // 1. 渠道信息显示（鼠标移上去时显示URL）
-    const configInfo = entry.channel_name ||
-      (entry.channel_id ? `渠道 #${entry.channel_id}` :
-        (entry.message === 'exhausted backends' ? '系统（所有渠道失败）' :
-          entry.message === 'no available upstream (all cooled or none)' ? '系统（无可用渠道）' : '系统'));
-    const channelTooltip = entry.base_url ? ` title="${escapeHtml(entry.base_url)}"` : '';
-    const configDisplay = entry.channel_id ?
-      buildChannelTrigger(entry.channel_id, entry.channel_name || '', entry.base_url || '') :
-      `<span style="color: var(--neutral-500);"${channelTooltip}>${escapeHtml(configInfo)}</span>`;
+    const configDisplay = buildLogChannelDisplay(entry);
 
     // 2. 状态码样式
     const statusClass = (entry.status_code >= 200 && entry.status_code < 300) ?
@@ -647,16 +696,7 @@ function renderLogs(data) {
     }
 
     // 7. 成本显示
-    let tierBadge = '';
-    if (entry.service_tier === 'priority') {
-      tierBadge = ' <sup style="color: var(--error-600); font-size: 0.7em; font-weight: 600;">2x</sup>';
-    } else if (entry.service_tier === 'flex') {
-      tierBadge = ' <sup style="color: var(--success-600); font-size: 0.7em; font-weight: 600;">0.5x</sup>';
-    } else if (entry.service_tier === 'fast') {
-      tierBadge = ' <sup style="color: var(--error-600); font-size: 0.7em; font-weight: 600;">\u26A16x</sup>';
-    }
-    const costDisplay = entry.cost ?
-      `<span style="color: var(--warning-600); font-weight: 500;">${formatCost(entry.cost)}${tierBadge}</span>` : '';
+    const costDisplay = buildLogCostDisplay(entry);
     const cacheUtilDisplay = formatCacheUtilRate(
       entry.input_tokens,
       entry.cache_read_input_tokens,

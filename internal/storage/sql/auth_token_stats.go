@@ -26,6 +26,7 @@ func (s *SQLStore) GetAuthTokenStatsInRange(ctx context.Context, startTime, endT
 			SUM(cache_read_input_tokens) AS cache_read_tokens,
 			SUM(cache_creation_input_tokens) AS cache_creation_tokens,
 			SUM(cost) AS total_cost,
+			SUM(COALESCE(cost, 0.0) * COALESCE(NULLIF(cost_multiplier, 0), 1)) AS effective_cost,
 			AVG(CASE WHEN is_streaming = 1 THEN first_byte_time ELSE NULL END) AS stream_avg_ttfb,
 			AVG(CASE WHEN is_streaming = 0 THEN duration ELSE NULL END) AS non_stream_avg_rt,
 			SUM(CASE WHEN is_streaming = 1 AND status_code != 499 THEN 1 ELSE 0 END) AS stream_count,
@@ -50,7 +51,7 @@ func (s *SQLStore) GetAuthTokenStatsInRange(ctx context.Context, startTime, endT
 		if err := rows.Scan(&tokenID, &stat.SuccessCount, &stat.FailureCount,
 			&stat.PromptTokens, &stat.CompletionTokens,
 			&stat.CacheReadTokens, &stat.CacheCreationTokens,
-			&stat.TotalCost,
+			&stat.TotalCost, &stat.EffectiveCost,
 			&streamAvgTTFB, &nonStreamAvgRT,
 			&stat.StreamCount, &stat.NonStreamCount); err != nil {
 			return nil, err

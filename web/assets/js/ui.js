@@ -764,6 +764,100 @@
     return '$' + cost.toFixed(3);
   }
 
+  /**
+   * 格式化标准成本/倍率后成本对
+   * 倍率为 1 或两值相等时仅显示标准成本，否则显示 "标准/倍率后"
+   * @param {number} standard - 标准成本
+   * @param {number|null|undefined} effective - 倍率后成本
+   * @returns {string}
+   */
+  function formatCostPair(standard, effective) {
+    const s = Number(standard) || 0;
+    const e = (effective === undefined || effective === null) ? s : (Number(effective) || 0);
+    if (Math.abs(e - s) < 1e-9) return formatCost(s);
+    return formatCost(s) + '/' + formatCost(e);
+  }
+
+  /**
+   * 格式化倍率文本
+   * @param {number} multiplier - 倍率
+   * @returns {string}
+   */
+  function formatCostMultiplier(multiplier) {
+    const value = Number(multiplier);
+    if (!Number.isFinite(value) || value <= 0 || Math.abs(value - 1) < 1e-9) return '';
+    return `${Number(value.toFixed(2)).toString()}x`;
+  }
+
+  /**
+   * 解析标准成本/倍率后成本显示信息
+   * @param {number} standard - 标准成本
+   * @param {number|null|undefined} effective - 倍率后成本
+   * @returns {{standardCost:number,effectiveCost:number,hasMultiplier:boolean,multiplier:number,multiplierText:string}}
+   */
+  function getCostDisplayInfo(standard, effective) {
+    const standardCost = Number(standard) || 0;
+    if (!(standardCost > 0)) {
+      return {
+        standardCost: 0,
+        effectiveCost: 0,
+        hasMultiplier: false,
+        multiplier: 1,
+        multiplierText: ''
+      };
+    }
+
+    const effectiveValue = (effective === undefined || effective === null)
+      ? standardCost
+      : (Number(effective) || 0);
+    const effectiveCost = effectiveValue > 0 ? effectiveValue : standardCost;
+    const hasMultiplier = Math.abs(effectiveCost - standardCost) >= 1e-9;
+    const multiplier = hasMultiplier ? (effectiveCost / standardCost) : 1;
+
+    return {
+      standardCost,
+      effectiveCost,
+      hasMultiplier,
+      multiplier,
+      multiplierText: formatCostMultiplier(multiplier)
+    };
+  }
+
+  /**
+   * 构建两行成本显示HTML
+   * @param {number} standard - 标准成本
+   * @param {number|null|undefined} effective - 倍率后成本
+   * @param {{tone?: 'warning'|'success'}} options - 样式配置
+   * @returns {string}
+   */
+  function buildCostStackHtml(standard, effective, options = {}) {
+    const info = getCostDisplayInfo(standard, effective);
+    if (!(info.standardCost > 0)) return '';
+
+    const tone = options.tone === 'success' ? 'success' : 'warning';
+    const classes = ['cost-stack', `cost-stack--${tone}`];
+    if (info.hasMultiplier) {
+      classes.push('cost-stack--with-multiplier');
+    }
+
+    if (!info.hasMultiplier) {
+      return `<span class="${classes.join(' ')}"><span class="cost-stack-effective">${formatCost(info.effectiveCost)}</span></span>`;
+    }
+
+    return `<span class="${classes.join(' ')}"><span class="cost-stack-standard">${formatCost(info.standardCost)}</span><span class="cost-stack-effective">${formatCost(info.effectiveCost)}</span></span>`;
+  }
+
+  /**
+   * 构建单元格右上角倍率角标
+   * @param {number} multiplier - 倍率
+   * @returns {string}
+   */
+  function buildCornerMultiplierBadge(multiplier) {
+    const text = formatCostMultiplier(multiplier);
+    if (!text) return '';
+    return `<sup class="cell-multiplier-badge">${text}</sup>`;
+  }
+
   // 格式化数字显示（通用：K/M缩写）
   function formatNumber(num) {
     const n = Number(num);
@@ -815,6 +909,11 @@
   window.initSavedDateRangeFilter = initSavedDateRangeFilter;
   window.initAuthTokenFilter = initAuthTokenFilter;
   window.formatCost = formatCost;
+  window.formatCostPair = formatCostPair;
+  window.formatCostMultiplier = formatCostMultiplier;
+  window.getCostDisplayInfo = getCostDisplayInfo;
+  window.buildCostStackHtml = buildCostStackHtml;
+  window.buildCornerMultiplierBadge = buildCornerMultiplierBadge;
   window.formatNumber = formatNumber;
   window.getRpmColor = getRpmColor;
   window.escapeHtml = escapeHtml;

@@ -113,6 +113,9 @@ type Config struct {
 	// 每日成本限额
 	DailyCostLimit float64 `json:"daily_cost_limit"` // 每日成本限额（美元），0表示无限制
 
+	// 成本倍率：标准成本×倍率=实际计费成本，默认1
+	CostMultiplier float64 `json:"cost_multiplier"`
+
 	// 自定义请求规则（nil 表示无改写）
 	CustomRequestRules *CustomRequestRules `json:"custom_request_rules,omitempty"`
 

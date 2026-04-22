@@ -648,8 +648,13 @@ func (s *Server) AddLogAsync(entry *model.LogEntry) {
 	}
 
 	// 更新成本缓存（用于每日成本限额功能）
+	// 语义：缓存累加倍率后成本（effective），与 daily_cost_limit 直接比较
 	if s.costCache != nil && entry.ChannelID > 0 && entry.Cost > 0 && entry.LogSource == model.LogSourceProxy {
-		s.costCache.Add(entry.ChannelID, entry.Cost)
+		multiplier := entry.CostMultiplier
+		if multiplier <= 0 {
+			multiplier = 1
+		}
+		s.costCache.Add(entry.ChannelID, entry.Cost*multiplier)
 	}
 
 	// 委托给 LogService 处理日志写入

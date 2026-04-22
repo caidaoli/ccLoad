@@ -17,11 +17,12 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 
 	// 两个渠道：用于覆盖 type/name 过滤与交集逻辑
 	openaiCfg, err := store.CreateConfig(ctx, &model.Config{
-		Name:        "openai-main",
-		URL:         "https://example.com",
-		Priority:    10,
-		Enabled:     true,
-		ChannelType: "openai",
+		Name:           "openai-main",
+		URL:            "https://example.com",
+		Priority:       10,
+		Enabled:        true,
+		ChannelType:    "openai",
+		CostMultiplier: 0.85,
 		ModelEntries: []model.ModelEntry{
 			{Model: "gpt-4o"},
 		},
@@ -103,6 +104,9 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 			if e.ChannelName == "" || e.ChannelPriority == nil {
 				t.Fatalf("expected channel info filled, got %+v", e)
 			}
+			if e.CostMultiplier == nil || *e.CostMultiplier != 0.85 {
+				t.Fatalf("expected cost_multiplier=0.85 in stats entry, got %+v", e)
+			}
 
 			encoded, err := json.Marshal(e)
 			if err != nil {
@@ -114,6 +118,9 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 			}
 			if got, ok := payload["channel_type"].(string); !ok || got != "openai" {
 				t.Fatalf("expected channel_type=openai in stats payload, got %+v", payload)
+			}
+			if got, ok := payload["cost_multiplier"].(float64); !ok || got != 0.85 {
+				t.Fatalf("expected cost_multiplier=0.85 in stats payload, got %+v", payload)
 			}
 		}
 	}

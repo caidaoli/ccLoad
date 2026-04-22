@@ -36,7 +36,8 @@ func (s *SQLStore) GetHealthTimeline(ctx context.Context, params model.HealthTim
 			SUM(COALESCE(logs.output_tokens, 0)) AS output_tokens,
 			SUM(COALESCE(logs.cache_read_input_tokens, 0)) AS cache_read_tokens,
 			SUM(COALESCE(logs.cache_creation_input_tokens, 0)) AS cache_creation_tokens,
-			SUM(COALESCE(logs.cost, 0.0)) AS total_cost
+			SUM(COALESCE(logs.cost, 0.0)) AS total_cost,
+			SUM(COALESCE(logs.cost, 0.0) * COALESCE(NULLIF(logs.cost_multiplier, 0), 1)) AS effective_cost
 		FROM logs
 		WHERE logs.time >= ? AND logs.time <= ?
 			AND logs.status_code != 499
@@ -66,7 +67,7 @@ func (s *SQLStore) GetHealthTimeline(ctx context.Context, params model.HealthTim
 		var r model.HealthTimelineRow
 		if err := rows.Scan(&r.BucketTs, &r.ChannelID, &r.Model, &r.Success, &r.ErrorCount,
 			&r.AvgFirstByteTime, &r.AvgDuration, &r.InputTokens, &r.OutputTokens,
-			&r.CacheReadTokens, &r.CacheCreationTokens, &r.TotalCost); err != nil {
+			&r.CacheReadTokens, &r.CacheCreationTokens, &r.TotalCost, &r.EffectiveCost); err != nil {
 			continue
 		}
 		result = append(result, r)

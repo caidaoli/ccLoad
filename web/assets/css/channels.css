@@ -643,6 +643,14 @@
     }
 
     /* 渠道名称行 */
+    .ch-name-cell {
+      position: relative;
+      display: block;
+      width: 100%;
+      min-width: 0;
+      padding-right: 52px;
+    }
+
     .ch-name-line {
       display: flex;
       align-items: center;
@@ -2317,7 +2325,7 @@
       }
 
       .channel-table .ch-col-name {
-        padding-right: 28px;
+        padding-right: 0;
       }
 
       .channel-table .ch-col-priority,
@@ -2345,7 +2353,7 @@
       }
 
       .channel-table .ch-col-priority .ch-priority-stack,
-      .channel-table .ch-col-cost strong {
+      .channel-table .ch-col-cost .cost-stack {
         margin-left: auto;
       }
 

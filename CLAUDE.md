@@ -96,6 +96,7 @@ web/               # 前端（HTML + assets/{css,js,locales}）
 ## 渠道每日成本限额
 
 - `channels.daily_cost_limit`（美元，0=无限制）
+- `channels.cost_multiplier`（默认 1，≤0 回退 1）：渠道级倍率，限额按 **倍率后成本**（`cost × multiplier`）累加
 - `CostCache` 内存缓存当日成本，按天自动重置，启动从数据库加载
 
 ## 混合存储（HuggingFace Spaces）
@@ -107,6 +108,7 @@ web/               # 前端（HTML + assets/{css,js,locales}）
 
 ## 定价
 
+- **渠道倍率**：`channels.cost_multiplier` × 标准成本 = `effective_cost`；写日志时快照到 `logs.cost_multiplier`，避免渠道倍率变更污染历史；统计查询同时返回 `total_cost`（标准）与 `effective_cost`（倍率后）；`normalizeCostMultiplier` 兜底 ≤0→1
 - **OpenAI service_tier**：`priority`/`flex`/`default` 倍率（`OpenAIServiceTierMultiplier`）；`LogEntry.ServiceTier` 持久化
 - **分层定价**：GPT-5.4（`gpt54TierThreshold`）、Qwen-Plus（`qwenPlusTierThreshold`）超阈值降档；Gemini 长上下文（`geminiLongContextThreshold`）超阈值翻倍
 - **缓存**：读折扣（Claude/Opus 单独乘数，OpenAI 50%）；写 5m×1.25 / 1h×2.0（基于 input 价格）

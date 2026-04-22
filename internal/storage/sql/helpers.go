@@ -11,9 +11,10 @@ import (
 
 // ChannelInfo 渠道基本信息（用于批量查询）
 type ChannelInfo struct {
-	Name     string
-	Priority int
-	Type     string
+	Name           string
+	Priority       int
+	Type           string
+	CostMultiplier float64
 }
 
 // fetchChannelInfoBatch 批量查询渠道信息（名称+优先级+类型）
@@ -33,7 +34,8 @@ func (s *SQLStore) fetchChannelInfoBatch(ctx context.Context, channelIDs map[int
 			id,
 			name,
 			priority,
-			LOWER(COALESCE(NULLIF(TRIM(channel_type), ''), 'anthropic'))
+			LOWER(COALESCE(NULLIF(TRIM(channel_type), ''), 'anthropic')),
+			COALESCE(NULLIF(cost_multiplier, 0), 1)
 		FROM channels
 	`)
 	if err != nil {
@@ -48,13 +50,19 @@ func (s *SQLStore) fetchChannelInfoBatch(ctx context.Context, channelIDs map[int
 		var name string
 		var priority int
 		var channelType string
-		if err := rows.Scan(&id, &name, &priority, &channelType); err != nil {
+		var costMultiplier float64
+		if err := rows.Scan(&id, &name, &priority, &channelType, &costMultiplier); err != nil {
 			log.Printf("[WARN]  scan channel info: %v", err)
 			continue // 跳过扫描错误的行
 		}
 		// 只保留需要的渠道
 		if channelIDs[id] {
-			channelInfos[id] = ChannelInfo{Name: name, Priority: priority, Type: channelType}
+			channelInfos[id] = ChannelInfo{
+				Name:           name,
+				Priority:       priority,
+				Type:           channelType,
+				CostMultiplier: normalizeCostMultiplier(costMultiplier),
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -199,4 +207,13 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// normalizeCostMultiplier 规范化成本倍率：零值/负数退化为 1（默认不做折算）
+// 用于写库前兜底，避免旧数据或未经校验的入口污染计算
+func normalizeCostMultiplier(m float64) float64 {
+	if m <= 0 {
+		return 1
+	}
+	return m
 }

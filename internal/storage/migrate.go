@@ -92,6 +92,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureLogsNewColumns(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate logs new columns: %w", err)
 			}
+			if err := ensureLogsCostMultiplier(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate logs cost_multiplier: %w", err)
+			}
 		}
 
 		// 增量迁移：确保channels表有daily_cost_limit字段（2026-01新增）
@@ -110,6 +113,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			}
 			if err := ensureChannelsCustomRequestRules(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels custom_request_rules: %w", err)
+			}
+			if err := ensureChannelsCostMultiplier(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate channels cost_multiplier: %w", err)
 			}
 			// 增量迁移：将url字段从VARCHAR(191)扩展为TEXT（支持多URL存储）
 			if err := migrateChannelsURLToText(ctx, db, dialect); err != nil {
@@ -1401,6 +1407,56 @@ func ensureChannelsDailyCostLimit(ctx context.Context, db *sql.DB, dialect Diale
 	// SQLite: 使用通用添加列函数
 	return ensureSQLiteColumns(ctx, db, "channels", []sqliteColumnDef{
 		{name: "daily_cost_limit", definition: "REAL NOT NULL DEFAULT 0"},
+	})
+}
+
+// ensureChannelsCostMultiplier 确保channels表有cost_multiplier字段（2026-04新增，渠道成本倍率）
+func ensureChannelsCostMultiplier(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if dialect == DialectMySQL {
+		var count int
+		err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channels' AND COLUMN_NAME='cost_multiplier'",
+		).Scan(&count)
+		if err != nil {
+			return fmt.Errorf("check cost_multiplier field: %w", err)
+		}
+		if count == 0 {
+			if _, err := db.ExecContext(ctx,
+				"ALTER TABLE channels ADD COLUMN cost_multiplier DOUBLE NOT NULL DEFAULT 1"); err != nil {
+				return fmt.Errorf("add cost_multiplier column: %w", err)
+			}
+			log.Printf("[MIGRATE] Added channels.cost_multiplier column")
+		}
+		return nil
+	}
+
+	return ensureSQLiteColumns(ctx, db, "channels", []sqliteColumnDef{
+		{name: "cost_multiplier", definition: "REAL NOT NULL DEFAULT 1"},
+	})
+}
+
+// ensureLogsCostMultiplier 确保logs表有cost_multiplier字段（2026-04新增，写日志时快照渠道倍率）
+func ensureLogsCostMultiplier(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if dialect == DialectMySQL {
+		var count int
+		err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='logs' AND COLUMN_NAME='cost_multiplier'",
+		).Scan(&count)
+		if err != nil {
+			return fmt.Errorf("check logs.cost_multiplier field: %w", err)
+		}
+		if count == 0 {
+			if _, err := db.ExecContext(ctx,
+				"ALTER TABLE logs ADD COLUMN cost_multiplier DOUBLE NOT NULL DEFAULT 1"); err != nil {
+				return fmt.Errorf("add logs.cost_multiplier column: %w", err)
+			}
+			log.Printf("[MIGRATE] Added logs.cost_multiplier column")
+		}
+		return nil
+	}
+
+	return ensureSQLiteColumns(ctx, db, "logs", []sqliteColumnDef{
+		{name: "cost_multiplier", definition: "REAL NOT NULL DEFAULT 1"},
 	})
 }
 

@@ -66,6 +66,7 @@ function aggregateChannelStats(statsEntries = [], channelHealth = null) {
         totalCacheReadInputTokens: 0,
         totalCacheCreationInputTokens: 0,
         totalCost: 0,
+        effectiveCost: 0,
         _firstByteWeightedSum: 0,
         _firstByteWeight: 0,
         _durationWeightedSum: 0,
@@ -100,6 +101,9 @@ function aggregateChannelStats(statsEntries = [], channelHealth = null) {
     stats.totalCacheReadInputTokens += toSafeNumber(entry.total_cache_read_input_tokens);
     stats.totalCacheCreationInputTokens += toSafeNumber(entry.total_cache_creation_input_tokens);
     stats.totalCost += toSafeNumber(entry.total_cost);
+    stats.effectiveCost += (entry.effective_cost !== undefined && entry.effective_cost !== null)
+      ? toSafeNumber(entry.effective_cost)
+      : toSafeNumber(entry.total_cost);
   }
 
   for (const id of Object.keys(result)) {

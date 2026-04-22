@@ -93,11 +93,11 @@
                       <span class="sort-indicator" id="sort-error"></span>
                     </th>
                     <th class="sortable" data-column="avg_first_byte_time">
-                      <span data-i18n="stats.avgFirstByte">平均首字/耗时(秒)</span>
+                      <span data-i18n="stats.avgFirstByte">首字/耗时(秒)</span>
                       <span class="sort-indicator" id="sort-avg_first_byte_time"></span>
                     </th>
                     <th class="sortable" data-column="avg_speed">
-                      <span data-i18n="stats.avgSpeed">平均速度(tok/s)</span>
+                      <span data-i18n="stats.avgSpeed">速度(tok/s)</span>
                       <span class="sort-indicator" id="sort-avg_speed"></span>
                     </th>
                     <th class="sortable" data-column="rpm" data-i18n-title="stats.rpmTitle" title="每分钟请求数(峰值/平均/最近)">
@@ -257,7 +257,7 @@
       <td class="stats-col-cache-read" data-mobile-label="{{mobileLabelCacheRead}}"><span class="stats-value-success">{{cacheReadTokens}}</span></td>
       <td class="stats-col-cache-create" data-mobile-label="{{mobileLabelCacheCreate}}"><span class="stats-value-primary">{{cacheCreationTokens}}</span></td>
       <td class="stats-col-cache-util" data-mobile-label="{{mobileLabelCacheUtil}}">{{{cacheUtilText}}}</td>
-      <td class="stats-col-cost" data-mobile-label="{{mobileLabelCost}}"><span class="stats-value-warning">{{costText}}</span></td>
+      <td class="stats-col-cost" data-mobile-label="{{mobileLabelCost}}">{{{costText}}}</td>
     </tr>
   </template>
 

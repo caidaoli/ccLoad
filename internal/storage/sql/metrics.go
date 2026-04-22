@@ -35,7 +35,8 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 			SUM(COALESCE(output_tokens, 0)) as total_output_tokens,
 			SUM(COALESCE(cache_read_input_tokens, 0)) as total_cache_read_input_tokens,
 			SUM(COALESCE(cache_creation_input_tokens, 0)) as total_cache_creation_input_tokens,
-			SUM(COALESCE(cost, 0.0)) as total_cost
+			SUM(COALESCE(cost, 0.0)) as total_cost,
+			SUM(COALESCE(cost, 0.0) * COALESCE(NULLIF(cost_multiplier, 0), 1)) as effective_cost
 		FROM logs`
 
 	// time字段现在是BIGINT毫秒时间戳
@@ -75,11 +76,11 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 		var entry model.StatsEntry
 		var avgFirstByteTime, avgDuration sql.NullFloat64
 		var totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheCreationTokens sql.NullInt64
-		var totalCost sql.NullFloat64
+		var totalCost, effectiveCost sql.NullFloat64
 
 		err := rows.Scan(&entry.ChannelID, &entry.Model,
 			&entry.Success, &entry.Error, &entry.Total, &avgFirstByteTime, &avgDuration,
-			&totalInputTokens, &totalOutputTokens, &totalCacheReadTokens, &totalCacheCreationTokens, &totalCost)
+			&totalInputTokens, &totalOutputTokens, &totalCacheReadTokens, &totalCacheCreationTokens, &totalCost, &effectiveCost)
 		if err != nil {
 			return nil, err
 		}
@@ -107,6 +108,9 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 		if totalCost.Valid && totalCost.Float64 > 0 {
 			entry.TotalCost = &totalCost.Float64
 		}
+		if effectiveCost.Valid && effectiveCost.Float64 > 0 {
+			entry.EffectiveCost = &effectiveCost.Float64
+		}
 
 		if entry.ChannelID != nil {
 			channelIDsToFetch[int64(*entry.ChannelID)] = true
@@ -133,6 +137,10 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 					stats[i].ChannelName = info.Name
 					stats[i].ChannelPriority = &info.Priority
 					stats[i].ChannelType = info.Type
+					if info.CostMultiplier != 1 {
+						costMultiplier := info.CostMultiplier
+						stats[i].CostMultiplier = &costMultiplier
+					}
 				} else {
 					// 如果查询不到渠道信息,使用默认值
 					stats[i].ChannelName = "未知渠道"
@@ -174,7 +182,8 @@ func (s *SQLStore) GetStatsLite(ctx context.Context, startTime, endTime time.Tim
 			SUM(COALESCE(output_tokens, 0)) as total_output_tokens,
 			SUM(COALESCE(cache_read_input_tokens, 0)) as total_cache_read_input_tokens,
 			SUM(COALESCE(cache_creation_input_tokens, 0)) as total_cache_creation_input_tokens,
-			SUM(COALESCE(cost, 0.0)) as total_cost
+			SUM(COALESCE(cost, 0.0)) as total_cost,
+			SUM(COALESCE(cost, 0.0) * COALESCE(NULLIF(cost_multiplier, 0), 1)) as effective_cost
 		FROM logs`
 
 	startMs := startTime.UnixMilli()
@@ -210,11 +219,11 @@ func (s *SQLStore) GetStatsLite(ctx context.Context, startTime, endTime time.Tim
 		var entry model.StatsEntry
 		var avgFirstByteTime, avgDuration sql.NullFloat64
 		var totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheCreationTokens sql.NullInt64
-		var totalCost sql.NullFloat64
+		var totalCost, effectiveCost sql.NullFloat64
 
 		err := rows.Scan(&entry.ChannelID, &entry.Model,
 			&entry.Success, &entry.Error, &entry.Total, &avgFirstByteTime, &avgDuration,
-			&totalInputTokens, &totalOutputTokens, &totalCacheReadTokens, &totalCacheCreationTokens, &totalCost)
+			&totalInputTokens, &totalOutputTokens, &totalCacheReadTokens, &totalCacheCreationTokens, &totalCost, &effectiveCost)
 		if err != nil {
 			return nil, err
 		}
@@ -239,6 +248,9 @@ func (s *SQLStore) GetStatsLite(ctx context.Context, startTime, endTime time.Tim
 		}
 		if totalCost.Valid && totalCost.Float64 > 0 {
 			entry.TotalCost = &totalCost.Float64
+		}
+		if effectiveCost.Valid && effectiveCost.Float64 > 0 {
+			entry.EffectiveCost = &effectiveCost.Float64
 		}
 
 		stats = append(stats, entry)
@@ -545,12 +557,13 @@ func (s *SQLStore) GetChannelSuccessRates(ctx context.Context, since time.Time) 
 	return result, rows.Err()
 }
 
-// GetTodayChannelCosts 获取今日各渠道成本（启动时加载缓存用）
+// GetTodayChannelCosts 获取今日各渠道倍率后成本（effective）
+// 语义：与 CostCache 保持一致——累加 cost * cost_multiplier，用于每日限额检查
 func (s *SQLStore) GetTodayChannelCosts(ctx context.Context, todayStart time.Time) (map[int64]float64, error) {
 	todayStartMs := todayStart.UnixMilli()
 
 	query := `
-		SELECT channel_id, COALESCE(SUM(cost), 0) as total_cost
+		SELECT channel_id, COALESCE(SUM(COALESCE(cost, 0.0) * COALESCE(NULLIF(cost_multiplier, 0), 1)), 0) as total_cost
 		FROM logs
 		WHERE time >= ? AND channel_id > 0 AND log_source = ?
 		GROUP BY channel_id`

@@ -213,6 +213,11 @@ func (s *Server) HandlePublicSummary(c *gin.Context) {
 		if stat.TotalCost != nil {
 			ts.TotalCost += *stat.TotalCost
 		}
+		if stat.EffectiveCost != nil {
+			ts.EffectiveCost += *stat.EffectiveCost
+		} else if stat.TotalCost != nil {
+			ts.EffectiveCost += *stat.TotalCost
+		}
 
 		// Claude和Codex类型额外统计缓存（其他类型不支持prompt caching）
 		if channelType == "anthropic" || channelType == "codex" {
@@ -249,7 +254,8 @@ type TypeSummary struct {
 	TotalOutputTokens        int64   `json:"total_output_tokens,omitempty"`         // 所有类型
 	TotalCacheReadTokens     int64   `json:"total_cache_read_tokens,omitempty"`     // Claude/Codex专用（prompt caching）
 	TotalCacheCreationTokens int64   `json:"total_cache_creation_tokens,omitempty"` // Claude/Codex专用（prompt caching）
-	TotalCost                float64 `json:"total_cost,omitempty"`                  // 所有类型
+	TotalCost                float64 `json:"total_cost,omitempty"`                  // 标准成本
+	EffectiveCost            float64 `json:"effective_cost,omitempty"`              // 倍率后成本
 }
 
 // fetchChannelTypesMap 查询所有渠道的类型映射
@@ -514,6 +520,7 @@ func (s *Server) fillHealthTimeline(ctx context.Context, stats []model.StatsEntr
 		p.TotalCacheReadTokens = row.CacheReadTokens
 		p.TotalCacheCreationTokens = row.CacheCreationTokens
 		p.TotalCost = row.TotalCost
+		p.EffectiveCost = row.EffectiveCost
 	}
 
 	// 填充到 stats 中（per-model，供 stats 页面使用）
@@ -564,6 +571,7 @@ func (s *Server) fillHealthTimeline(ctx context.Context, stats []model.StatsEntr
 			ch[i].TotalCacheReadTokens += pt.TotalCacheReadTokens
 			ch[i].TotalCacheCreationTokens += pt.TotalCacheCreationTokens
 			ch[i].TotalCost += pt.TotalCost
+			ch[i].EffectiveCost += pt.EffectiveCost
 		}
 	}
 	return channelHealth

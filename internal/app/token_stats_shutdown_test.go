@@ -55,7 +55,7 @@ func TestUpdateTokenStatsDuringShutdown(t *testing.T) {
 	}
 
 	// 模拟：shutdown开始后，一个在途请求完成并尝试写入计费/用量统计
-	srv.updateTokenStatsAsync(tokenHash, true, 1.23, false, &fwResult{
+	srv.updateTokenStatsAsync(tokenHash, 1.0, true, 1.23, false, &fwResult{
 		FirstByteTime:            0.2,
 		InputTokens:              10,
 		OutputTokens:             20,

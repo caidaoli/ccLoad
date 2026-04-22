@@ -31,6 +31,7 @@ type ChannelRequest struct {
 	ScheduledCheckEnabled bool                      `json:"scheduled_check_enabled"`
 	ScheduledCheckModel   string                    `json:"scheduled_check_model"`
 	DailyCostLimit        float64                   `json:"daily_cost_limit"` // 每日成本限额（美元），0表示无限制
+	CostMultiplier        float64                   `json:"cost_multiplier"`  // 成本倍率（默认1，>0）
 	CustomRequestRules    *model.CustomRequestRules `json:"custom_request_rules,omitempty"`
 }
 
@@ -180,6 +181,14 @@ func (cr *ChannelRequest) Validate() error {
 		cr.CustomRequestRules = nil
 	}
 
+	// CostMultiplier: 未传或 0 视为默认 1；负数拒绝
+	if cr.CostMultiplier == 0 {
+		cr.CostMultiplier = 1
+	}
+	if cr.CostMultiplier < 0 {
+		return fmt.Errorf("cost_multiplier must be > 0 (got %v)", cr.CostMultiplier)
+	}
+
 	return nil
 }
 
@@ -207,6 +216,7 @@ func (cr *ChannelRequest) ToConfig() *model.Config {
 		ScheduledCheckEnabled: cr.ScheduledCheckEnabled,
 		ScheduledCheckModel:   cr.ScheduledCheckModel,
 		DailyCostLimit:        cr.DailyCostLimit,
+		CostMultiplier:        cr.CostMultiplier,
 		CustomRequestRules:    cr.CustomRequestRules,
 	}
 }

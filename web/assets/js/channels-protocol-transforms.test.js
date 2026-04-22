@@ -193,6 +193,7 @@ function createHarness({
   elements.channelApiKey = createElement({ id: 'channelApiKey', value: '' });
   elements.channelPriority = createElement({ id: 'channelPriority', value: channel ? String(channel.priority || 0) : '0' });
   elements.channelDailyCostLimit = createElement({ id: 'channelDailyCostLimit', value: channel ? String(channel.daily_cost_limit || 0) : '0' });
+  elements.channelCostMultiplier = createElement({ id: 'channelCostMultiplier', value: channel && channel.cost_multiplier ? String(channel.cost_multiplier) : '1' });
   elements.channelEnabled = createElement({ id: 'channelEnabled', type: 'checkbox', checked: channel ? channel.enabled !== false : true });
   elements.channelScheduledCheckEnabled = createElement({ id: 'channelScheduledCheckEnabled', type: 'checkbox', checked: !!(channel && channel.scheduled_check_enabled), dataset: {} });
   elements.channelScheduledCheckModel = createElement({ id: 'channelScheduledCheckModel', value: channel ? channel.scheduled_check_model || '' : '' });

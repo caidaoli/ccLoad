@@ -223,6 +223,19 @@
       return `<span class="stats-value-success">${pct.toFixed(1)}%</span>`;
     }
 
+    function buildStatsModelDisplay(entry) {
+      if (!entry.model) {
+        return `<span class="stats-value-muted">${t('stats.unknownModel')}</span>`;
+      }
+
+      const modelLink = `<a href="#" class="model-tag model-link" data-model="${escapeHtml(entry.model)}" data-channel-name="${escapeHtml(entry.channel_name)}" title="${t('stats.viewLogsTitle')}">${escapeHtml(entry.model)}</a>`;
+      return `<span class="stats-model-cell">${modelLink}${buildCornerMultiplierBadge(entry.cost_multiplier)}</span>`;
+    }
+
+    function buildStatsCostDisplay(standardCost, effectiveCost) {
+      return buildCostStackHtml(standardCost, effectiveCost, { tone: 'warning' });
+    }
+
     function renderStatsTable() {
       const tbody = document.getElementById('stats_tbody');
 
@@ -256,6 +269,7 @@
       let totalCacheRead = 0;
       let totalCacheCreation = 0;
       let totalCost = 0;
+      let totalEffectiveCost = 0;
 
       const fragment = document.createDocumentFragment();
 
@@ -272,9 +286,7 @@
         const successRateClass = getSuccessRateClass(successRate);
         const successDisplay = buildSuccessDisplay(successCountText, successRateText, successRateClass);
 
-        const modelDisplay = entry.model ?
-          `<a href="#" class="model-tag model-link" data-model="${escapeHtml(entry.model)}" data-channel-name="${escapeHtml(entry.channel_name)}" title="${t('stats.viewLogsTitle')}">${escapeHtml(entry.model)}</a>` :
-          `<span class="stats-value-muted">${t('stats.unknownModel')}</span>`;
+        const modelDisplay = buildStatsModelDisplay(entry);
 
         // 格式化平均首字响应时间/平均耗时
         const avgFirstByteTime = entry.avg_first_byte_time_seconds || 0;
@@ -312,8 +324,7 @@
           entry.total_cache_read_input_tokens,
           entry.total_cache_creation_input_tokens
         );
-        const costText = entry.total_cost ?
-          `<span class="stats-value-warning">${formatCost(entry.total_cost)}</span>` : '';
+        const costText = buildStatsCostDisplay(entry.total_cost, entry.effective_cost);
         const timingCellClass = avgTimeText ? '' : 'mobile-empty-cell';
         const speedCellClass = avgSpeedText ? '' : 'mobile-empty-cell';
         const inputCellClass = inputTokensText ? '' : 'mobile-empty-cell';
@@ -377,6 +388,9 @@
         totalCacheRead += entry.total_cache_read_input_tokens || 0;
         totalCacheCreation += entry.total_cache_creation_input_tokens || 0;
         totalCost += entry.total_cost || 0;
+        totalEffectiveCost += (entry.effective_cost !== undefined && entry.effective_cost !== null)
+          ? Number(entry.effective_cost) || 0
+          : (entry.total_cost || 0);
       }
 
       tbody.appendChild(fragment);
@@ -402,7 +416,7 @@
         cacheReadTokens: formatNumber(totalCacheRead),
         cacheCreationTokens: formatNumber(totalCacheCreation),
         cacheUtilText: buildCacheUtilRate(totalInputTokens, totalCacheRead, totalCacheCreation),
-        costText: formatCost(totalCost),
+        costText: buildStatsCostDisplay(totalCost, totalEffectiveCost),
         mobileLabelSummary: t('stats.total'),
         mobileLabelSuccess: t('common.success'),
         mobileLabelError: t('common.failed'),
@@ -1052,9 +1066,16 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
 
         // 成本聚合（不依赖 successCount，因为成本可能来自失败请求的部分消耗）
         const cost = entry.total_cost || 0;
-        if (cost > 0) {
-          channelCostMap[channelName] = (channelCostMap[channelName] || 0) + cost;
-          modelCostMap[modelName] = (modelCostMap[modelName] || 0) + cost;
+        const effectiveCost = (entry.effective_cost !== undefined && entry.effective_cost !== null)
+          ? Number(entry.effective_cost) || 0
+          : cost;
+        if (cost > 0 || effectiveCost > 0) {
+          if (!channelCostMap[channelName]) channelCostMap[channelName] = { standard: 0, effective: 0 };
+          channelCostMap[channelName].standard += cost;
+          channelCostMap[channelName].effective += effectiveCost;
+          if (!modelCostMap[modelName]) modelCostMap[modelName] = { standard: 0, effective: 0 };
+          modelCostMap[modelName].standard += cost;
+          modelCostMap[modelName].effective += effectiveCost;
         }
       }
 
@@ -1079,9 +1100,16 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
       }
       const chart = chartInstances[containerId];
 
-      // 转换数据格式并排序
+      // 转换数据格式并排序（成本场景的值为 {standard, effective}，其他场景为数字）
       const data = Object.entries(dataMap)
-        .map(([name, value]) => ({ name, value }))
+        .map(([name, value]) => {
+          if (value && typeof value === 'object') {
+            const eff = Number(value.effective) || 0;
+            const std = Number(value.standard) || 0;
+            return { name, value: eff || std, standard: std };
+          }
+          return { name, value };
+        })
         .sort((a, b) => b.value - a.value);
 
       // 如果没有数据，显示空状态
@@ -1121,7 +1149,8 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
             let formattedValue;
             // 成本特殊处理
             if (unit === '$') {
-              formattedValue = formatCost(value);
+              const std = params.data && typeof params.data.standard === 'number' ? params.data.standard : value;
+              formattedValue = formatCostPair(std, value);
               return `${params.name}<br/>${formattedValue} (${params.percent}%)`;
             }
             // 原有逻辑：大数值缩写
