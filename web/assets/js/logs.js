@@ -97,6 +97,21 @@ function buildChannelTrigger(channelId, channelName, baseURL = '') {
   return `<button type="button" class="channel-link" data-channel-id="${channelId}"${channelTooltip}>${escapeHtml(channelName)}</button>`;
 }
 
+function buildActiveRequestChannelDisplay(req) {
+  if (!req.channel_id || !req.channel_name) {
+    return '<span style="color: var(--neutral-500);">选择中...</span>';
+  }
+
+  const channelHtml = buildChannelTrigger(req.channel_id, req.channel_name, req.base_url || '');
+  const multiplier = Number(req.cost_multiplier);
+  if (!(multiplier > 0) || Math.abs(multiplier - 1) < 1e-9) {
+    return channelHtml;
+  }
+
+  const multiplierText = `${Number(multiplier.toFixed(2)).toString()}x`;
+  return `<span class="log-channel-cell">${channelHtml}<sup class="log-channel-multiplier-badge">${multiplierText}</sup></span>`;
+}
+
 function buildLogChannelDisplay(entry) {
   const configInfo = entry.channel_name ||
     (entry.channel_id ? `渠道 #${entry.channel_id}` :
@@ -475,10 +490,7 @@ function renderActiveRequests(activeRequests) {
       durationDisplay = `${req.client_first_byte_time.toFixed(2)}s/${elapsed}s...`;
     }
 
-    let channelDisplay = '<span style="color: var(--neutral-500);">选择中...</span>';
-    if (req.channel_id && req.channel_name) {
-      channelDisplay = buildChannelTrigger(req.channel_id, req.channel_name, req.base_url || '');
-    }
+    const channelDisplay = buildActiveRequestChannelDisplay(req);
 
     // Key显示
     let keyDisplay = '<span style="color: var(--neutral-500);">-</span>';

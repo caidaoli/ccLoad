@@ -11,7 +11,7 @@ func TestHandleActiveRequests(t *testing.T) {
 
 	m := newActiveRequestManager()
 	id := m.Register(time.Now(), "m1", "1.2.3.4", true)
-	m.Update(id, 10, "ch", "openai", "sk-test", 7) //nolint:gosec // 测试用假凭证
+	m.Update(id, 10, "ch", "openai", "sk-test", 7, 1.5) //nolint:gosec // 测试用假凭证
 	m.AddBytes(id, 123)
 	m.SetClientFirstByteTime(id, 50*time.Millisecond)
 
@@ -39,5 +39,8 @@ func TestHandleActiveRequests(t *testing.T) {
 	}
 	if resp.Data[0].ClientFirstByteTime <= 0 {
 		t.Fatalf("client_first_byte_time=%v, want >0", resp.Data[0].ClientFirstByteTime)
+	}
+	if resp.Data[0].CostMultiplier != 1.5 {
+		t.Fatalf("cost_multiplier=%v, want 1.5", resp.Data[0].CostMultiplier)
 	}
 }
