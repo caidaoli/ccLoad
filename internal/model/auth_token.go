@@ -35,7 +35,8 @@ type AuthToken struct {
 	CompletionTokensTotal    int64   `json:"completion_tokens_total"`     // 累计输出Token数
 	CacheReadTokensTotal     int64   `json:"cache_read_tokens_total"`     // 累计缓存读Token数
 	CacheCreationTokensTotal int64   `json:"cache_creation_tokens_total"` // 累计缓存写Token数
-	TotalCostUSD             float64 `json:"total_cost_usd"`              // 累计成本(美元)
+	TotalCostUSD             float64 `json:"total_cost_usd"`              // 累计标准成本(美元)
+	EffectiveCostUSD         float64 `json:"effective_cost_usd"`          // 累计倍率后成本(美元)
 
 	// 费用限额（2026-01新增）
 	// 使用微美元整数存储，避免浮点误差。JSON序列化时自动转换为USD浮点数。
@@ -60,7 +61,8 @@ type AuthTokenRangeStats struct {
 	CompletionTokens    int64   `json:"completion_tokens"`     // 输出Token总数
 	CacheReadTokens     int64   `json:"cache_read_tokens"`     // 缓存读Token总数
 	CacheCreationTokens int64   `json:"cache_creation_tokens"` // 缓存写Token总数
-	TotalCost           float64 `json:"total_cost"`            // 总费用(美元)
+	TotalCost           float64 `json:"total_cost"`            // 标准成本(美元)
+	EffectiveCost       float64 `json:"effective_cost"`        // 倍率后成本(美元)
 	StreamAvgTTFB       float64 `json:"stream_avg_ttfb"`       // 流式请求平均首字节时间
 	NonStreamAvgRT      float64 `json:"non_stream_avg_rt"`     // 非流式请求平均响应时间
 	StreamCount         int64   `json:"stream_count"`          // 流式请求计数
@@ -162,6 +164,7 @@ type authTokenJSON struct {
 	CacheReadTokensTotal     int64     `json:"cache_read_tokens_total"`
 	CacheCreationTokensTotal int64     `json:"cache_creation_tokens_total"`
 	TotalCostUSD             float64   `json:"total_cost_usd"`
+	EffectiveCostUSD         float64   `json:"effective_cost_usd"`
 	CostUsedUSD              float64   `json:"cost_used_usd"`
 	CostLimitUSD             float64   `json:"cost_limit_usd"`
 	PeakRPM                  float64   `json:"peak_rpm,omitempty"`
@@ -191,6 +194,7 @@ func (t AuthToken) MarshalJSON() ([]byte, error) {
 		CacheReadTokensTotal:     t.CacheReadTokensTotal,
 		CacheCreationTokensTotal: t.CacheCreationTokensTotal,
 		TotalCostUSD:             t.TotalCostUSD,
+		EffectiveCostUSD:         t.EffectiveCostUSD,
 		CostUsedUSD:              t.CostUsedUSD(),
 		CostLimitUSD:             t.CostLimitUSD(),
 		PeakRPM:                  t.PeakRPM,

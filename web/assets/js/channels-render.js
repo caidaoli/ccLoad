@@ -281,7 +281,7 @@ function createChannelCard(channel) {
     cacheReadText: formatMetricNumber(stats.totalCacheReadInputTokens),
     cacheCreationTokens: stats.totalCacheCreationInputTokens || 0,
     cacheCreationText: formatMetricNumber(stats.totalCacheCreationInputTokens),
-    costDisplay: formatCostValue(stats.totalCost)
+    costInfo: getCostDisplayInfo(stats.totalCost, stats.effectiveCost)
   } : null;
 
   // 模型文本
@@ -310,7 +310,7 @@ function createChannelCard(channel) {
   // 成本HTML
   let costHtml = '';
   if (stats && statsCache) {
-    costHtml = `<strong style="color: var(--success-600);">${statsCache.costDisplay}</strong>`;
+    costHtml = buildCostStackHtml(stats.totalCost, stats.effectiveCost, { tone: 'success' });
   }
 
   // 健康指示器
@@ -329,6 +329,7 @@ function createChannelCard(channel) {
     rowClasses: rowClasses.join(' '),
     id: channel.id,
     name: channel.name,
+    nameMultiplierBadge: buildCornerMultiplierBadge(channel.cost_multiplier),
     typeBadge: buildChannelTypeBadge(channelTypeRaw),
     protocolTransformBadges: buildProtocolTransformBadges(channelTypeRaw, channel.protocol_transforms),
     url: channel.url,

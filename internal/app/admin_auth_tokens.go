@@ -93,6 +93,7 @@ func (s *Server) HandleListAuthTokens(c *gin.Context) {
 					t.CacheReadTokensTotal = stat.CacheReadTokens
 					t.CacheCreationTokensTotal = stat.CacheCreationTokens
 					t.TotalCostUSD = stat.TotalCost
+					t.EffectiveCostUSD = stat.EffectiveCost
 					t.StreamAvgTTFB = stat.StreamAvgTTFB
 					t.NonStreamAvgRT = stat.NonStreamAvgRT
 					t.StreamCount = stat.StreamCount
@@ -110,6 +111,7 @@ func (s *Server) HandleListAuthTokens(c *gin.Context) {
 					t.CacheReadTokensTotal = 0
 					t.CacheCreationTokensTotal = 0
 					t.TotalCostUSD = 0
+					t.EffectiveCostUSD = 0
 					t.StreamAvgTTFB = 0
 					t.NonStreamAvgRT = 0
 					t.StreamCount = 0

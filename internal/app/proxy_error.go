@@ -104,31 +104,33 @@ func (s *Server) logProxyResult(
 	errMsg string,
 ) {
 	s.AddLogAsync(buildLogEntry(logEntryParams{
-		RequestModel: reqCtx.originalModel,
-		ActualModel:  actualModel,
-		ChannelID:    cfg.ID,
-		StatusCode:   statusCode,
-		Duration:     duration,
-		IsStreaming:  reqCtx.isStreaming,
-		APIKeyUsed:   selectedKey,
-		AuthTokenID:  reqCtx.tokenID,
-		ClientIP:     reqCtx.clientIP,
-		BaseURL:      reqCtx.baseURL,
-		Result:       res,
-		ErrMsg:       errMsg,
-		StartTime:    reqCtx.attemptStartTime,
-		DebugData:    reqCtx.debugData,
+		RequestModel:   reqCtx.originalModel,
+		ActualModel:    actualModel,
+		ChannelID:      cfg.ID,
+		StatusCode:     statusCode,
+		Duration:       duration,
+		IsStreaming:    reqCtx.isStreaming,
+		APIKeyUsed:     selectedKey,
+		AuthTokenID:    reqCtx.tokenID,
+		ClientIP:       reqCtx.clientIP,
+		BaseURL:        reqCtx.baseURL,
+		Result:         res,
+		ErrMsg:         errMsg,
+		StartTime:      reqCtx.attemptStartTime,
+		DebugData:      reqCtx.debugData,
+		CostMultiplier: cfg.CostMultiplier,
 	}))
 }
 
 func (s *Server) updateTokenStatsForProxy(
 	reqCtx *proxyRequestContext,
+	cfg *model.Config,
 	isSuccess bool,
 	duration float64,
 	res *fwResult,
 	actualModel string,
 ) {
-	s.updateTokenStatsAsync(reqCtx.tokenHash, isSuccess, duration, reqCtx.isStreaming, res, actualModel)
+	s.updateTokenStatsAsync(reqCtx.tokenHash, cfg.CostMultiplier, isSuccess, duration, reqCtx.isStreaming, res, actualModel)
 }
 
 // handleNetworkError 处理网络错误
@@ -171,7 +173,7 @@ func (s *Server) handleNetworkError(
 	// [FIX] 2026-01: 499（客户端取消）不计入 failure_count，与 logs 表聚合逻辑保持一致
 	if statusCode != 499 && res != nil && hasConsumedTokens(res) {
 		// isSuccess=false 表示请求失败，但仍记录已消耗的 token
-		s.updateTokenStatsForProxy(reqCtx, false, duration, res, actualModel)
+		s.updateTokenStatsForProxy(reqCtx, cfg, false, duration, res, actualModel)
 	}
 
 	if !shouldRetry {
@@ -213,7 +215,8 @@ type tokenStatsUpdate struct {
 	completionTokens    int64
 	cacheReadTokens     int64
 	cacheCreationTokens int64
-	costUSD             float64
+	costUSD             float64 // 标准成本
+	costMultiplier      float64 // 渠道倍率（≤0 视为 1）
 }
 
 func (s *Server) tokenStatsWorker() {
@@ -260,19 +263,24 @@ func (s *Server) applyTokenStatsUpdate(upd tokenStatsUpdate) {
 
 	// 数据库更新成功后，同步更新费用缓存（用于限额检查，2026-01新增）
 	if upd.isSuccess && upd.costUSD > 0 {
-		s.authService.AddCostToCache(upd.tokenHash, util.USDToMicroUSD(upd.costUSD))
+		multiplier := upd.costMultiplier
+		if multiplier <= 0 {
+			multiplier = 1
+		}
+		s.authService.AddCostToCache(upd.tokenHash, util.USDToMicroUSD(upd.costUSD*multiplier))
 	}
 }
 
 // updateTokenStatsAsync 异步更新Token统计（DRY原则：消除重复代码）
 // 参数:
 //   - tokenHash: Token哈希值
+//   - costMultiplier: 渠道成本倍率（≤0 视为 1），影响 AddCostToCache 的累加口径
 //   - isSuccess: 请求是否成功
 //   - duration: 请求耗时
 //   - isStreaming: 是否流式请求
 //   - res: 转发结果（成功时用于提取token数量，失败时传nil）
 //   - actualModel: 实际模型名称（用于计费）
-func (s *Server) updateTokenStatsAsync(tokenHash string, isSuccess bool, duration float64, isStreaming bool, res *fwResult, actualModel string) {
+func (s *Server) updateTokenStatsAsync(tokenHash string, costMultiplier float64, isSuccess bool, duration float64, isStreaming bool, res *fwResult, actualModel string) {
 	if tokenHash == "" || s.tokenStatsCh == nil {
 		return
 	}
@@ -324,6 +332,7 @@ func (s *Server) updateTokenStatsAsync(tokenHash string, isSuccess bool, duratio
 		cacheReadTokens:     cacheReadTokens,
 		cacheCreationTokens: cacheCreationTokens,
 		costUSD:             costUSD,
+		costMultiplier:      costMultiplier,
 	}
 
 	// ✅ shutdown期间仍需保证在途请求的计费/用量落库：
@@ -403,7 +412,7 @@ func (s *Server) handleProxySuccess(
 	s.logProxyResult(reqCtx, cfg, actualModel, selectedKey, res.Status, duration, res, "")
 
 	// 异步更新Token统计
-	s.updateTokenStatsForProxy(reqCtx, true, duration, res, actualModel)
+	s.updateTokenStatsForProxy(reqCtx, cfg, true, duration, res, actualModel)
 
 	return &proxyResult{
 		status:        res.Status,
@@ -471,7 +480,7 @@ func (s *Server) handleProxyErrorResponse(
 	// [FIX] 2026-01: 499（客户端取消）不计入成功/失败统计，与 logs 表聚合逻辑保持一致
 	if res.Status != 499 {
 		// 异步更新Token统计（失败请求不计费）
-		s.updateTokenStatsForProxy(reqCtx, false, duration, res, actualModel)
+		s.updateTokenStatsForProxy(reqCtx, cfg, false, duration, res, actualModel)
 	}
 
 	failure := &proxyResult{

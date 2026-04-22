@@ -102,12 +102,15 @@ function formatAvgFirstByte(value) {
   return num.toFixed(2) + window.t('common.seconds');
 }
 
-function formatCostValue(cost) {
+function formatCostValue(cost, effectiveCost) {
   if (cost === null || cost === undefined) return '--';
   const num = Number(cost);
   if (!Number.isFinite(num)) return '--';
   if (num === 0) return '$0.00';
   if (num < 0) return '--';
+  if (effectiveCost !== undefined && effectiveCost !== null) {
+    return formatCostPair(num, effectiveCost);
+  }
   return formatCost(num);
 }
 

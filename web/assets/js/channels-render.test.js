@@ -33,8 +33,22 @@ function loadRenderSandbox(overrides = {}) {
     formatMetricNumber(value) {
       return String(value ?? '');
     },
-    formatCostValue(value) {
-      return String(value ?? '');
+    buildCostStackHtml(standard, effective) {
+      return `${standard ?? ''}/${effective ?? ''}`;
+    },
+    buildCornerMultiplierBadge(multiplier) {
+      if (!multiplier || Math.abs(Number(multiplier) - 1) < 1e-9) return '';
+      return `<sup class="cell-multiplier-badge">${multiplier}x</sup>`;
+    },
+    getCostDisplayInfo(standard, effective) {
+      const standardCost = Number(standard) || 0;
+      const effectiveCost = effective === undefined || effective === null ? standardCost : (Number(effective) || 0);
+      return {
+        standardCost,
+        effectiveCost,
+        hasMultiplier: Math.abs(effectiveCost - standardCost) >= 1e-9,
+        multiplier: standardCost > 0 ? effectiveCost / standardCost : 1
+      };
     },
     humanizeMS(ms) {
       return `${ms}ms`;

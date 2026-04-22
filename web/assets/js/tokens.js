@@ -288,7 +288,7 @@
       const successRateHtml = buildSuccessRateHtml(successRate, totalCount);
       const rpmHtml = buildRpmHtml(token);
       const tokensHtml = buildTokensHtml(token);
-      const costHtml = buildCostHtml(token.total_cost_usd);
+      const costHtml = buildCostHtml(token.total_cost_usd, token.effective_cost_usd);
       const streamAvgHtml = buildResponseTimeHtml(token.stream_avg_ttfb, token.stream_count);
       const nonStreamAvgHtml = buildResponseTimeHtml(token.non_stream_avg_rt, token.non_stream_count);
       const costCellClass = token.total_cost_usd > 0 ? '' : 'mobile-empty-cell';
@@ -443,16 +443,15 @@
     /**
      * 构建总费用HTML
      */
-    function buildCostHtml(totalCostUsd) {
+    function buildCostHtml(totalCostUsd, effectiveCostUsd) {
       if (!totalCostUsd || totalCostUsd <= 0) {
         return '<span class="token-value-muted">-</span>';
       }
 
+      const costStack = buildCostStackHtml(totalCostUsd, effectiveCostUsd, { tone: 'warning' });
       return `
         <div class="token-cost">
-          <span class="metric-value token-cost-value">
-            $${totalCostUsd.toFixed(4)}
-          </span>
+          ${costStack}
         </div>
       `;
     }
@@ -502,7 +501,7 @@
       const successRateHtml = buildSuccessRateHtml(successRate, totalCount);
       const rpmHtml = buildRpmHtml(token);
       const tokensHtml = buildTokensHtml(token);
-      const costHtml = buildCostHtml(token.total_cost_usd);
+      const costHtml = buildCostHtml(token.total_cost_usd, token.effective_cost_usd);
       const streamAvgHtml = buildResponseTimeHtml(token.stream_avg_ttfb, token.stream_count);
       const nonStreamAvgHtml = buildResponseTimeHtml(token.non_stream_avg_rt, token.non_stream_count);
       const costCellClass = token.total_cost_usd > 0 ? '' : ' mobile-empty-cell';

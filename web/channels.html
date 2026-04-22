@@ -519,7 +519,7 @@
               <input type="checkbox" id="channelEnabled" checked> <span data-i18n="channels.enableChannel">启用</span>
             </label>
             <label id="channelScheduledCheckEnabledWrapper" class="form-label channel-editor-checkbox-label" hidden>
-              <input type="checkbox" id="channelScheduledCheckEnabled"> <span data-i18n="channels.enableScheduledCheck">启用定时检测</span>
+              <input type="checkbox" id="channelScheduledCheckEnabled"> <span data-i18n="channels.enableScheduledCheck">定时检测</span>
             </label>
             <div class="channel-editor-footer-fields">
               <div id="channelScheduledCheckModelWrapper" class="channel-editor-inline-field channel-editor-inline-field--scheduled-model" hidden>
@@ -535,18 +535,24 @@
               <div class="channel-editor-inline-field">
                 <label class="form-label channel-editor-inline-label" for="channelPriority"
                   data-i18n="channels.priority">优先级</label>
-                <input type="number" id="channelPriority" class="form-input" value="0" min="-99999" max="99999"
-                  style="width: 100px; min-width: 100px;">
+                <input type="number" id="channelPriority" class="form-input" value="0" min="-99999" max="99999" step="1"
+                  style="width: 80px; min-width: 80px;">
               </div>
               <div class="channel-editor-inline-field channel-editor-inline-field--currency">
                 <label class="form-label channel-editor-inline-label" for="channelDailyCostLimit"
                   data-i18n="channels.dailyCostLimit">每日限额</label>
                 <div class="channel-editor-inline-field-input">
-                  <input type="number" id="channelDailyCostLimit" class="form-input" value="0" min="0" step="0.01"
-                    style="width: 100px; min-width: 100px;" data-i18n-placeholder="channels.dailyCostLimitPlaceholder"
+                  <input type="number" id="channelDailyCostLimit" class="form-input" value="0" min="0" step="1"
+                    style="width:80px; min-width: 80px;" data-i18n-placeholder="channels.dailyCostLimitPlaceholder"
                     placeholder="0=无限制">
-                  <span style="color: var(--neutral-500); font-size: 12px;">$</span>
                 </div>
+              </div>
+              <div class="channel-editor-inline-field">
+                <label class="form-label channel-editor-inline-label" for="channelCostMultiplier"
+                  data-i18n="channels.costMultiplier">成本倍率</label>
+                <input type="number" id="channelCostMultiplier" class="form-input" value="1" min="0.1" step="0.1"
+                  style="width: 80px; min-width: 80px;" data-i18n-placeholder="channels.costMultiplierPlaceholder"
+                  placeholder="默认1">
               </div>
             </div>
             <div class="channel-editor-footer-actions">
@@ -1039,11 +1045,14 @@
           data-i18n-title="channels.selectChannel" title="选择渠道">
       </td>
       <td class="ch-col-name">
-        <div class="ch-name-line">
-          <div class="ch-name-main">{{{typeBadge}}}<strong>{{name}}</strong>{{{protocolTransformBadges}}}</div>
+        <div class="ch-name-cell">
+          <div class="ch-name-line">
+            <div class="ch-name-main">{{{typeBadge}}}<strong>{{name}}</strong>{{{protocolTransformBadges}}}</div>
+          </div>
+          <div class="ch-url-line" title="{{url}}">{{url}}</div>
+          {{{healthHtml}}}
+          {{{nameMultiplierBadge}}}
         </div>
-        <div class="ch-url-line" title="{{url}}">{{url}}</div>
-        {{{healthHtml}}}
       </td>
       <td class="ch-col-models" data-mobile-label="{{mobileLabelModels}}">
         <span class="ch-models-text" title="{{modelsText}}">{{modelsText}}</span>

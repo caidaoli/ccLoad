@@ -9,7 +9,8 @@ type MetricPoint struct {
 	Error                   int                      `json:"error"`
 	AvgFirstByteTimeSeconds *float64                 `json:"avg_first_byte_time_seconds,omitempty"` // 平均首字节响应时间(秒)
 	AvgDurationSeconds      *float64                 `json:"avg_duration_seconds,omitempty"`        // 平均总耗时(秒)
-	TotalCost               *float64                 `json:"total_cost,omitempty"`                  // 总费用（美元）
+	TotalCost               *float64                 `json:"total_cost,omitempty"`                  // 标准成本（美元）
+	EffectiveCost           *float64                 `json:"effective_cost,omitempty"`              // 倍率后成本（美元）
 	FirstByteSampleCount    int                      `json:"first_byte_count,omitempty"`            // 首字节样本数（流式成功且有首字节时间）
 	DurationSampleCount     int                      `json:"duration_count,omitempty"`              // 总耗时样本数（成功且有耗时）
 	InputTokens             int64                    `json:"input_tokens,omitempty"`                // 输入Token
@@ -25,7 +26,8 @@ type ChannelMetric struct {
 	Error                   int      `json:"error"`
 	AvgFirstByteTimeSeconds *float64 `json:"avg_first_byte_time_seconds,omitempty"` // 平均上游首块响应体时间(秒)
 	AvgDurationSeconds      *float64 `json:"avg_duration_seconds,omitempty"`        // 平均总耗时(秒)
-	TotalCost               *float64 `json:"total_cost,omitempty"`                  // 总费用（美元）
+	TotalCost               *float64 `json:"total_cost,omitempty"`                  // 标准成本（美元）
+	EffectiveCost           *float64 `json:"effective_cost,omitempty"`              // 倍率后成本（美元）
 	InputTokens             int64    `json:"input_tokens,omitempty"`                // 输入Token
 	OutputTokens            int64    `json:"output_tokens,omitempty"`               // 输出Token
 	CacheReadTokens         int64    `json:"cache_read_tokens,omitempty"`           // 缓存读取Token
@@ -44,7 +46,8 @@ type HealthPoint struct {
 	TotalOutputTokens        int64     `json:"output_tokens"`         // 输出Token
 	TotalCacheReadTokens     int64     `json:"cache_read_tokens"`     // 缓存读取Token
 	TotalCacheCreationTokens int64     `json:"cache_creation_tokens"` // 缓存创建Token
-	TotalCost                float64   `json:"cost"`                  // 成本(美元)
+	TotalCost                float64   `json:"cost"`                  // 标准成本(美元)
+	EffectiveCost            float64   `json:"effective_cost"`        // 倍率后成本(美元)
 }
 
 // StatsEntry 统计数据条目
@@ -53,6 +56,7 @@ type StatsEntry struct {
 	ChannelName             string   `json:"channel_name"`
 	ChannelPriority         *int     `json:"channel_priority,omitempty"` // 渠道优先级（用于前端排序）
 	ChannelType             string   `json:"channel_type,omitempty"`     // 渠道类型（用于前端筛选/排序）
+	CostMultiplier          *float64 `json:"cost_multiplier,omitempty"`  // 渠道配置倍率（默认1，前端角标仅显示该值）
 	Model                   string   `json:"model"`
 	Success                 int      `json:"success"`
 	Error                   int      `json:"error"`
@@ -70,7 +74,8 @@ type StatsEntry struct {
 	TotalOutputTokens             *int64   `json:"total_output_tokens,omitempty"`               // 总输出Token
 	TotalCacheReadInputTokens     *int64   `json:"total_cache_read_input_tokens,omitempty"`     // 总缓存读取Token
 	TotalCacheCreationInputTokens *int64   `json:"total_cache_creation_input_tokens,omitempty"` // 总缓存创建Token
-	TotalCost                     *float64 `json:"total_cost,omitempty"`                        // 总成本（美元）
+	TotalCost                     *float64 `json:"total_cost,omitempty"`                        // 标准成本（美元）
+	EffectiveCost                 *float64 `json:"effective_cost,omitempty"`                    // 倍率后成本（美元）
 
 	// 健康状态时间线（2025-12新增）
 	HealthTimeline []HealthPoint `json:"health_timeline,omitempty"` // 固定24个时间点的健康状态
@@ -109,6 +114,7 @@ type HealthTimelineRow struct {
 	CacheReadTokens     int64
 	CacheCreationTokens int64
 	TotalCost           float64
+	EffectiveCost       float64
 }
 
 // ChannelNameID 渠道ID和名称（用于筛选下拉框）

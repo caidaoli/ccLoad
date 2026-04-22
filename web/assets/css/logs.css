@@ -41,6 +41,36 @@
       display: inline;
     }
 
+    .log-channel-cell {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      width: 100%;
+      min-width: 0;
+      padding-right: 28px;
+      vertical-align: middle;
+    }
+
+    .log-channel-multiplier-badge {
+      position: absolute;
+      top: -6px;
+      right: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1px 5px;
+      border-radius: 999px;
+      font-size: 0.68em;
+      line-height: 1;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      color: var(--warning-700);
+      background: var(--warning-100);
+      box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.04);
+      pointer-events: none;
+    }
+
     /* 测试模态框样式 */
     .test-modal-content {
       max-width: 700px;
@@ -419,6 +449,72 @@
       justify-content: flex-end;
       gap: 4px;
       white-space: nowrap;
+    }
+
+    .log-cost {
+      position: relative;
+      display: inline-flex;
+      align-items: baseline;
+      justify-content: flex-end;
+      gap: 6px;
+      max-width: 100%;
+      font-variant-numeric: tabular-nums;
+      font-feature-settings: "tnum";
+      vertical-align: middle;
+    }
+
+    .log-cost--with-badges {
+      padding-top: 10px;
+    }
+
+    .log-cost-standard {
+      color: var(--neutral-500);
+      text-decoration: line-through;
+      text-decoration-thickness: 1px;
+      text-decoration-color: var(--neutral-400);
+    }
+
+    .log-cost-effective {
+      color: var(--warning-600);
+      font-weight: 600;
+    }
+
+    .log-cost-badges {
+      position: absolute;
+      top: 0;
+      right: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transform: translateY(-35%);
+      transform-origin: top right;
+      pointer-events: none;
+    }
+
+    .log-cost-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1px 5px;
+      border-radius: 999px;
+      font-size: 0.68em;
+      line-height: 1;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      background: var(--neutral-100);
+      color: var(--neutral-700);
+      box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.04);
+    }
+
+    .log-cost-badge--priority,
+    .log-cost-badge--fast {
+      background: var(--error-100);
+      color: var(--error-700);
+    }
+
+    .log-cost-badge--flex {
+      background: var(--success-100);
+      color: var(--success-700);
     }
 
     @media (max-width: 768px) {

@@ -124,10 +124,13 @@
       const inputTokens = data ? (data.total_input_tokens || 0) : 0;
       const outputTokens = data ? (data.total_output_tokens || 0) : 0;
       const totalCost = data ? (data.total_cost || 0) : 0;
+      const effectiveCost = data && data.effective_cost !== undefined && data.effective_cost !== null
+        ? Number(data.effective_cost) || 0
+        : totalCost;
 
       document.getElementById(`type-${type}-input`).textContent = formatNumber(inputTokens);
       document.getElementById(`type-${type}-output`).textContent = formatNumber(outputTokens);
-      document.getElementById(`type-${type}-cost`).textContent = formatCost(totalCost);
+      document.getElementById(`type-${type}-cost`).textContent = formatCostPair(totalCost, effectiveCost);
 
       // Claude和Codex类型的缓存统计（缓存读+缓存创建）
       if (type === 'anthropic' || type === 'codex') {

@@ -15,6 +15,7 @@ func DefineChannelsTable() *TableBuilder {
 		Column("cooldown_until BIGINT NOT NULL DEFAULT 0").
 		Column("cooldown_duration_ms BIGINT NOT NULL DEFAULT 0").
 		Column("daily_cost_limit DOUBLE NOT NULL DEFAULT 0").
+		Column("cost_multiplier DOUBLE NOT NULL DEFAULT 1").
 		Column("custom_request_rules TEXT").
 		Column("created_at BIGINT NOT NULL").
 		Column("updated_at BIGINT NOT NULL").
@@ -146,6 +147,7 @@ func DefineLogsTable() *TableBuilder {
 		Column("cache_5m_input_tokens INT NOT NULL DEFAULT 0").       // 5分钟缓存写入Token数（新增2025-12）
 		Column("cache_1h_input_tokens INT NOT NULL DEFAULT 0").       // 1小时缓存写入Token数（新增2025-12）
 		Column("cost DOUBLE NOT NULL DEFAULT 0.0").
+		Column("cost_multiplier DOUBLE NOT NULL DEFAULT 1").
 		Index("idx_logs_time_model", "time, model").
 		Index("idx_logs_time_status", "time, status_code").
 		Index("idx_logs_time_channel_model", "time, channel_id, model").

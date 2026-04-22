@@ -21,10 +21,10 @@ func scanAggregatedMetricsRows(rows *sql.Rows) (map[int64]*model.MetricPoint, ma
 		var avgDuration sql.NullFloat64
 		var streamSuccessFirstByteCount int
 		var durationSuccessCount int
-		var totalCost float64
+		var totalCost, effectiveCost float64
 		var inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int64
 
-		if err := rows.Scan(&bucketTsFloat, &channelID, &success, &errorCount, &avgFirstByteTime, &avgDuration, &streamSuccessFirstByteCount, &durationSuccessCount, &totalCost, &inputTokens, &outputTokens, &cacheReadTokens, &cacheCreationTokens); err != nil {
+		if err := rows.Scan(&bucketTsFloat, &channelID, &success, &errorCount, &avgFirstByteTime, &avgDuration, &streamSuccessFirstByteCount, &durationSuccessCount, &totalCost, &effectiveCost, &inputTokens, &outputTokens, &cacheReadTokens, &cacheCreationTokens); err != nil {
 			return nil, nil, nil, err
 		}
 		bucketTs := int64(bucketTsFloat)
@@ -51,6 +51,11 @@ func scanAggregatedMetricsRows(rows *sql.Rows) (map[int64]*model.MetricPoint, ma
 			mp.TotalCost = new(float64)
 		}
 		*mp.TotalCost += totalCost
+
+		if mp.EffectiveCost == nil {
+			mp.EffectiveCost = new(float64)
+		}
+		*mp.EffectiveCost += effectiveCost
 
 		// 累加 token 统计
 		mp.InputTokens += inputTokens
@@ -89,6 +94,11 @@ func scanAggregatedMetricsRows(rows *sql.Rows) (map[int64]*model.MetricPoint, ma
 			chCost = new(float64)
 			*chCost = totalCost
 		}
+		var chEffective *float64
+		if effectiveCost > 0 {
+			chEffective = new(float64)
+			*chEffective = effectiveCost
+		}
 
 		mp.Channels[channelKey] = model.ChannelMetric{
 			Success:                 success,
@@ -96,6 +106,7 @@ func scanAggregatedMetricsRows(rows *sql.Rows) (map[int64]*model.MetricPoint, ma
 			AvgFirstByteTimeSeconds: avgFBT,
 			AvgDurationSeconds:      avgDur,
 			TotalCost:               chCost,
+			EffectiveCost:           chEffective,
 			InputTokens:             inputTokens,
 			OutputTokens:            outputTokens,
 			CacheReadTokens:         cacheReadTokens,

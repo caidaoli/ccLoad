@@ -3615,6 +3615,68 @@ a.model-tag.model-link:hover {
   font-weight: 500;
 }
 
+.cost-stack {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  line-height: 1.15;
+  text-align: right;
+}
+
+.cost-stack-standard {
+  color: var(--neutral-500);
+  font-size: 12px;
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.cost-stack-effective {
+  font-weight: 600;
+}
+
+.cost-stack--warning .cost-stack-effective {
+  color: var(--warning-600);
+}
+
+.cost-stack--success .cost-stack-effective {
+  color: var(--success-600);
+}
+
+.cell-multiplier-badge {
+  position: absolute;
+  top: -6px;
+  right: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 5px;
+  border-radius: 999px;
+  font-size: 0.68em;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--warning-700);
+  background: var(--warning-100);
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.04);
+  pointer-events: none;
+}
+
+.stats-model-cell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  flex: 1 1 auto;
+  padding-right: 42px;
+}
+
+.stats-model-cell .model-tag {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .stats-value-dynamic {
   color: var(--stats-accent, currentColor);
 }
@@ -5361,6 +5423,11 @@ body.trend-page .chart-info {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .stats-table .stats-model-cell {
+    flex: 1 1 auto;
+    min-width: 0;
   }
 
   .stats-table .stats-col-success,
