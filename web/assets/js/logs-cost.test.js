@@ -97,10 +97,11 @@ test('日志页普通成本保持单值显示且不追加原价删除线', () =>
   assert.doesNotMatch(html, /log-cost-badge--multiplier/);
 });
 
-test('日志页倍率成本样式把原价变灰删除线并把角标放到右上角', () => {
+test('日志页倍率成本样式把原价变灰但不显示删除线，角标放到右上角', () => {
   assert.match(logsCss, /\.log-channel-cell\s*\{[\s\S]*?position:\s*relative;[\s\S]*?display:\s*flex;[\s\S]*?width:\s*100%;/);
   assert.match(logsCss, /\.log-channel-multiplier-badge\s*\{[\s\S]*?position:\s*absolute;[\s\S]*?top:\s*[^;]+;[\s\S]*?right:\s*[^;]+;/);
-  assert.match(logsCss, /\.log-cost-standard\s*\{[\s\S]*?color:\s*var\(--neutral-500\);[\s\S]*?text-decoration:\s*line-through;/);
+  assert.match(logsCss, /\.log-cost-standard\s*\{[\s\S]*?color:\s*var\(--neutral-500\);/);
+  assert.doesNotMatch(logsCss, /\.log-cost-standard\s*\{[\s\S]*?text-decoration:\s*line-through;/, '日志页标准成本不应有删除线');
 });
 
 test('日志页表格渲染实际使用倍率成本 helper', () => {
