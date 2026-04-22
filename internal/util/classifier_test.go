@@ -691,6 +691,18 @@ func TestClassifySSEError(t *testing.T) {
 			reason:       "使用code字段的1308错误（非Anthropic格式）应触发Key级冷却",
 		},
 		{
+			name:         "1305_overloaded",
+			responseBody: []byte(`{"error":{"code":"1305","message":"The service may be temporarily overloaded"},"request_id":"..."}`),
+			expected:     ErrorLevelChannel,
+			reason:       "1305错误表示上游过载，应触发渠道级冷却",
+		},
+		{
+			name:         "1310_limit_exhausted",
+			responseBody: []byte(`{"error":{"code":"1310","message":"Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-04-20 15:24:20"},"request_id":"..."}`),
+			expected:     ErrorLevelKey,
+			reason:       "1310错误是Key配额问题，应触发Key级冷却",
+		},
+		{
 			name:         "unknown_error_type",
 			responseBody: []byte(`{"type":"error","error":{"type":"unknown_type","message":"未知错误"}}`),
 			expected:     ErrorLevelKey,
