@@ -25,6 +25,7 @@ type ActiveRequest struct {
 	BaseURL             string  `json:"base_url,omitempty"`               // 当前使用的上游URL
 	BytesReceived       int64   `json:"bytes_received,omitempty"`         // 上游已返回的字节数（快照）
 	ClientFirstByteTime float64 `json:"client_first_byte_time,omitempty"` // 客户端侧首字节响应时间（秒），流式请求有效
+	CostMultiplier      float64 `json:"cost_multiplier,omitempty"`        // 渠道成本倍率
 }
 
 type activeRequest struct {
@@ -39,6 +40,8 @@ type activeRequest struct {
 	APIKeyUsed  string
 	TokenID     int64
 	BaseURL     string
+
+	CostMultiplier float64 // 渠道成本倍率
 
 	bytesCounter            atomic.Int64 // 上游已返回的字节数（原子累加）
 	clientFirstByteTimeUsec atomic.Int64 // 客户端侧首字节响应时间（微秒），CAS保证只写一次，0表示未设置
@@ -75,7 +78,7 @@ func (m *activeRequestManager) Register(startTime time.Time, model, clientIP str
 
 // Update 更新活跃请求的渠道信息（在选择渠道/key后调用）
 // 每次切换渠道/Key 时重置首字节计时和已接收字节，避免前次失败尝试的残留数据误导前端显示
-func (m *activeRequestManager) Update(id int64, channelID int64, channelName, channelType, apiKey string, tokenID int64) {
+func (m *activeRequestManager) Update(id int64, channelID int64, channelName, channelType, apiKey string, tokenID int64, costMultiplier float64) {
 	m.mu.Lock()
 	if req, ok := m.requests[id]; ok {
 		req.ChannelID = channelID
@@ -83,6 +86,7 @@ func (m *activeRequestManager) Update(id int64, channelID int64, channelName, ch
 		req.ChannelType = channelType
 		req.APIKeyUsed = util.MaskAPIKey(apiKey)
 		req.TokenID = tokenID
+		req.CostMultiplier = costMultiplier
 		req.StartTime = time.Now().UnixMilli()
 		req.clientFirstByteTimeUsec.Store(0)
 		req.bytesCounter.Store(0)
@@ -143,18 +147,19 @@ func (m *activeRequestManager) List() []*ActiveRequest {
 	result := make([]*ActiveRequest, 0, len(m.requests))
 	for _, req := range m.requests {
 		view := &ActiveRequest{
-			ID:            req.ID,
-			Model:         req.Model,
-			ClientIP:      req.ClientIP,
-			StartTime:     req.StartTime,
-			Streaming:     req.Streaming,
-			ChannelID:     req.ChannelID,
-			ChannelName:   req.ChannelName,
-			ChannelType:   req.ChannelType,
-			APIKeyUsed:    req.APIKeyUsed,
-			TokenID:       req.TokenID,
-			BaseURL:       req.BaseURL,
-			BytesReceived: req.bytesCounter.Load(),
+			ID:             req.ID,
+			Model:          req.Model,
+			ClientIP:       req.ClientIP,
+			StartTime:      req.StartTime,
+			Streaming:      req.Streaming,
+			ChannelID:      req.ChannelID,
+			ChannelName:    req.ChannelName,
+			ChannelType:    req.ChannelType,
+			APIKeyUsed:     req.APIKeyUsed,
+			TokenID:        req.TokenID,
+			BaseURL:        req.BaseURL,
+			BytesReceived:  req.bytesCounter.Load(),
+			CostMultiplier: req.CostMultiplier,
 		}
 		if usec := req.clientFirstByteTimeUsec.Load(); usec > 0 {
 			view.ClientFirstByteTime = float64(usec) / 1e6
