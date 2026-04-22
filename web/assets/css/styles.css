@@ -3624,15 +3624,15 @@ a.model-tag.model-link:hover {
   text-align: right;
 }
 
+.cost-stack--inline {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 4px;
+}
+
 .cost-stack-standard {
   color: var(--neutral-500);
   font-size: 12px;
-}
-
-/* 仅在首页显示标准成本删除线 */
-body.page-index .cost-stack-standard {
-  text-decoration: line-through;
-  text-decoration-thickness: 1px;
 }
 
 .cost-stack-effective {
