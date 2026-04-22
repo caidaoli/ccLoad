@@ -130,7 +130,7 @@
 
       document.getElementById(`type-${type}-input`).textContent = formatNumber(inputTokens);
       document.getElementById(`type-${type}-output`).textContent = formatNumber(outputTokens);
-      document.getElementById(`type-${type}-cost`).textContent = formatCostPair(totalCost, effectiveCost);
+      document.getElementById(`type-${type}-cost`).innerHTML = buildCostStackHtml(totalCost, effectiveCost, { tone: 'warning' });
 
       // Claude和Codex类型的缓存统计（缓存读+缓存创建）
       if (type === 'anthropic' || type === 'codex') {

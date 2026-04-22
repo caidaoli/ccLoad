@@ -469,9 +469,6 @@
 
     .log-cost-standard {
       color: var(--neutral-500);
-      text-decoration: line-through;
-      text-decoration-thickness: 1px;
-      text-decoration-color: var(--neutral-400);
     }
 
     .log-cost-effective {
