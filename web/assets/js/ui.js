@@ -785,7 +785,8 @@
    */
   function formatCostMultiplier(multiplier) {
     const value = Number(multiplier);
-    if (!Number.isFinite(value) || value <= 0 || Math.abs(value - 1) < 1e-9) return '';
+    if (!Number.isFinite(value) || value < 0 || Math.abs(value - 1) < 1e-9) return '';
+    // 0 倍率（免费渠道）显示为 "0x"
     return `${Number(value.toFixed(2)).toString()}x`;
   }
 

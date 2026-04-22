@@ -618,7 +618,7 @@ type logEntryParams struct {
 	ErrMsg         string
 	StartTime      time.Time            // 渠道尝试开始时间（用于日志记录）
 	DebugData      *model.DebugLogEntry // Debug日志数据
-	CostMultiplier float64              // 渠道成本倍率快照（≤0 视为 1）
+	CostMultiplier float64              // 渠道成本倍率快照（0=免费，<0 视为 1）
 }
 
 // buildLogEntry 构建日志条目（消除重复代码，遵循DRY原则）
@@ -641,8 +641,8 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		BaseURL:     p.BaseURL,
 	}
 
-	// 成本倍率快照：≤0 视为 1（保护存量数据）
-	if p.CostMultiplier > 0 {
+	// 成本倍率快照：0 表示免费渠道；负数兜底为 1（保护存量数据）
+	if p.CostMultiplier >= 0 {
 		entry.CostMultiplier = p.CostMultiplier
 	} else {
 		entry.CostMultiplier = 1

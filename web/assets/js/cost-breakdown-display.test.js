@@ -172,6 +172,55 @@ ${extractFunction(channelsSource, 'createChannelCard')}`,
   assert.equal(card.nameMultiplierBadge, '<sup class="cell-multiplier-badge">0.85x</sup>');
 });
 
+test('渠道卡片倍率角标：0 倍率（免费渠道）显示 0x', () => {
+  const uiSource = fs.readFileSync('web/assets/js/ui.js', 'utf8');
+  const channelsSource = fs.readFileSync('web/assets/js/channels-render.js', 'utf8');
+
+  const context = createHelperSandbox();
+  context.channelStatsById = {};
+  context.parseCostInfo = (standardCost, effectiveCost) => {
+    return {
+      standardCost,
+      effectiveCost,
+      hasMultiplier: Math.abs(effectiveCost - standardCost) >= 1e-9,
+      multiplier: standardCost > 0 ? effectiveCost / standardCost : 1
+    };
+  };
+  context.buildChannelTimingHtml = () => '';
+  context.buildChannelHealthIndicator = () => '';
+  context.buildChannelTypeBadge = () => '';
+  context.buildProtocolTransformBadges = () => '';
+  context.buildEffectivePriorityHtml = () => '';
+  context.inlineCooldownBadge = () => '';
+  context.TemplateEngine = {
+    render(_id, data) {
+      return data;
+    }
+  };
+  context.window = {
+    t(key) {
+      return key;
+    }
+  };
+
+  vm.runInNewContext(
+    `${extractBlock(uiSource, 'formatCost', 'formatNumber')}
+${extractFunction(channelsSource, 'createChannelCard')}`,
+    context
+  );
+
+  const card = context.createChannelCard({
+    id: 8,
+    name: 'free-channel',
+    channel_type: 'anthropic',
+    cost_multiplier: 0,
+    models: ['claude-3-5-sonnet-20241022'],
+    protocol_transforms: []
+  });
+
+  assert.equal(card.nameMultiplierBadge, '<sup class="cell-multiplier-badge">0x</sup>');
+});
+
 test('tokens 页总费用改为调用统计同款 warning 两行成本', () => {
   const sandbox = createHelperSandbox();
   vm.runInNewContext(

@@ -435,7 +435,7 @@ async function editChannel(id) {
   }
   document.getElementById('channelPriority').value = channel.priority;
   document.getElementById('channelDailyCostLimit').value = channel.daily_cost_limit || 0;
-  document.getElementById('channelCostMultiplier').value = (Number(channel.cost_multiplier) > 0 ? Number(channel.cost_multiplier) : 1);
+  document.getElementById('channelCostMultiplier').value = (Number(channel.cost_multiplier) >= 0 ? Number(channel.cost_multiplier) : 1);
   document.getElementById('channelEnabled').checked = channel.enabled;
   document.getElementById('channelScheduledCheckEnabled').checked = !!channel.scheduled_check_enabled;
   document.getElementById('channelScheduledCheckModel').value = channel.scheduled_check_model || '';
@@ -528,7 +528,7 @@ async function saveChannel(event) {
     daily_cost_limit: parseFloat(document.getElementById('channelDailyCostLimit').value) || 0,
     cost_multiplier: (function () {
       const v = parseFloat(document.getElementById('channelCostMultiplier').value);
-      return Number.isFinite(v) && v > 0 ? v : 1;
+      return Number.isFinite(v) && v >= 0 ? v : 1;
     })(),
     models: models,
     enabled: document.getElementById('channelEnabled').checked,
@@ -1080,7 +1080,7 @@ async function copyChannel(id, name) {
   }
   document.getElementById('channelPriority').value = channel.priority;
   document.getElementById('channelDailyCostLimit').value = channel.daily_cost_limit || 0;
-  document.getElementById('channelCostMultiplier').value = (Number(channel.cost_multiplier) > 0 ? Number(channel.cost_multiplier) : 1);
+  document.getElementById('channelCostMultiplier').value = (Number(channel.cost_multiplier) >= 0 ? Number(channel.cost_multiplier) : 1);
   document.getElementById('channelEnabled').checked = true;
   document.getElementById('channelScheduledCheckEnabled').checked = !!channel.scheduled_check_enabled;
   document.getElementById('channelScheduledCheckModel').value = channel.scheduled_check_model || '';
