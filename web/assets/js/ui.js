@@ -835,13 +835,21 @@
     if (!(info.standardCost > 0)) return '';
 
     const tone = options.tone === 'success' ? 'success' : 'warning';
+    const inline = options.inline === true;
     const classes = ['cost-stack', `cost-stack--${tone}`];
     if (info.hasMultiplier) {
       classes.push('cost-stack--with-multiplier');
     }
+    if (inline) {
+      classes.push('cost-stack--inline');
+    }
 
     if (!info.hasMultiplier) {
       return `<span class="${classes.join(' ')}"><span class="cost-stack-effective">${formatCost(info.effectiveCost)}</span></span>`;
+    }
+
+    if (inline) {
+      return `<span class="${classes.join(' ')}"><span class="cost-stack-standard">${formatCost(info.standardCost)}</span><span class="cost-stack-effective">${formatCost(info.effectiveCost)}</span></span>`;
     }
 
     return `<span class="${classes.join(' ')}"><span class="cost-stack-standard">${formatCost(info.standardCost)}</span><span class="cost-stack-effective">${formatCost(info.effectiveCost)}</span></span>`;

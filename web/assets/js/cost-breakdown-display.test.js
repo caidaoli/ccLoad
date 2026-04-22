@@ -190,9 +190,9 @@ ${extractBlock(tokensSource, 'buildCostHtml', 'buildResponseTimeHtml')}`,
   assert.match(tokensCss, /\.token-cost\s+\.cost-stack\s*\{[\s\S]*?align-items:\s*center;[\s\S]*?text-align:\s*center;/);
 });
 
-test('共享成本样式把标准成本置灰删除线，并按页面语义区分现价颜色', () => {
+test('共享成本样式把标准成本置灰，并按页面语义区分现价颜色', () => {
   assert.match(stylesCss, /\.cost-stack\s*\{[\s\S]*?display:\s*inline-flex;[\s\S]*?flex-direction:\s*column;/);
-  assert.match(stylesCss, /\.cost-stack-standard\s*\{[\s\S]*?color:\s*var\(--neutral-500\);[\s\S]*?text-decoration:\s*line-through;/);
+  assert.match(stylesCss, /\.cost-stack-standard\s*\{[\s\S]*?color:\s*var\(--neutral-500\);/);
   assert.match(stylesCss, /\.cost-stack--warning\s+\.cost-stack-effective\s*\{[\s\S]*?color:\s*var\(--warning-600\);/);
   assert.match(stylesCss, /\.cost-stack--success\s+\.cost-stack-effective\s*\{[\s\S]*?color:\s*var\(--success-600\);/);
 });
