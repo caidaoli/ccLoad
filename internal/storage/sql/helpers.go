@@ -209,10 +209,9 @@ func boolToInt(b bool) int {
 	return 0
 }
 
-// normalizeCostMultiplier 规范化成本倍率：零值/负数退化为 1（默认不做折算）
-// 用于写库前兜底，避免旧数据或未经校验的入口污染计算
+// normalizeCostMultiplier 规范化成本倍率：负数退化为 1；0 表示免费渠道，保持不变
 func normalizeCostMultiplier(m float64) float64 {
-	if m <= 0 {
+	if m < 0 {
 		return 1
 	}
 	return m

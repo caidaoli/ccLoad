@@ -216,7 +216,7 @@ type tokenStatsUpdate struct {
 	cacheReadTokens     int64
 	cacheCreationTokens int64
 	costUSD             float64 // 标准成本
-	costMultiplier      float64 // 渠道倍率（≤0 视为 1）
+	costMultiplier      float64 // 渠道倍率（0=免费，<0 视为 1）
 }
 
 func (s *Server) tokenStatsWorker() {
@@ -264,9 +264,10 @@ func (s *Server) applyTokenStatsUpdate(upd tokenStatsUpdate) {
 	// 数据库更新成功后，同步更新费用缓存（用于限额检查，2026-01新增）
 	if upd.isSuccess && upd.costUSD > 0 {
 		multiplier := upd.costMultiplier
-		if multiplier <= 0 {
+		if multiplier < 0 {
 			multiplier = 1
 		}
+		// multiplier == 0 时成本为 0（免费渠道）
 		s.authService.AddCostToCache(upd.tokenHash, util.USDToMicroUSD(upd.costUSD*multiplier))
 	}
 }
@@ -274,7 +275,7 @@ func (s *Server) applyTokenStatsUpdate(upd tokenStatsUpdate) {
 // updateTokenStatsAsync 异步更新Token统计（DRY原则：消除重复代码）
 // 参数:
 //   - tokenHash: Token哈希值
-//   - costMultiplier: 渠道成本倍率（≤0 视为 1），影响 AddCostToCache 的累加口径
+//   - costMultiplier: 渠道成本倍率（0=免费，<0 视为 1），影响 AddCostToCache 的累加口径
 //   - isSuccess: 请求是否成功
 //   - duration: 请求耗时
 //   - isStreaming: 是否流式请求

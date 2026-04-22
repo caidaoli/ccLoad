@@ -96,7 +96,7 @@ web/               # 前端（HTML + assets/{css,js,locales}）
 ## 渠道每日成本限额
 
 - `channels.daily_cost_limit`（美元，0=无限制）
-- `channels.cost_multiplier`（默认 1，≤0 回退 1）：渠道级倍率，限额按 **倍率后成本**（`cost × multiplier`）累加
+- `channels.cost_multiplier`（默认 1，0=免费，负数回退 1）：渠道级倍率，限额按 **倍率后成本**（`cost × multiplier`）累加
 - `CostCache` 内存缓存当日成本，按天自动重置，启动从数据库加载
 
 ## 混合存储（HuggingFace Spaces）

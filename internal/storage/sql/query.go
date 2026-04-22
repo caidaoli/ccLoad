@@ -139,7 +139,7 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	c.ScheduledCheckEnabled = scheduledCheckEnabledInt != 0
 	c.ScheduledCheckModel = scheduledCheckModel
 	c.CustomRequestRules = parseCustomRequestRules(c.ID, customRequestRules)
-	if c.CostMultiplier <= 0 {
+	if c.CostMultiplier < 0 {
 		c.CostMultiplier = 1
 	}
 
