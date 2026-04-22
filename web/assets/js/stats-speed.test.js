@@ -33,8 +33,8 @@ function extractFunction(source, name) {
 test('stats 页表头和模板新增平均速度列并补齐文案', () => {
   assert.match(html, /data-column="avg_speed"[\s\S]*data-i18n="stats\.avgSpeed"/);
   assert.match(html, /class="stats-col-speed [^"]*" data-mobile-label="\{\{mobileLabelSpeed\}\}"/);
-  assert.match(zhLocale, /'stats\.avgSpeed': '[^']+\(tok\/s\)'/);
-  assert.match(enLocale, /'stats\.avgSpeed': '[^']+ \(tok\/s\)'/);
+  assert.match(zhLocale, /'stats\.avgSpeed': 'Tok\/s'/);
+  assert.match(enLocale, /'stats\.avgSpeed': 'Tok\/s'/);
 });
 
 test('stats 页平均速度单元格只显示数值不重复单位', () => {
