@@ -523,7 +523,7 @@ function renderActiveRequests(activeRequests) {
             <td class="logs-col-time" data-mobile-label="${logMobileLabels.time}" style="white-space: nowrap;">${formatTime(req.start_time)}</td>
             <td class="logs-col-ip logs-mono-text" data-mobile-label="${logMobileLabels.ip}" style="white-space: nowrap;" title="${escapeHtml(req.client_ip || '')}">${escapeHtml(maskIP(req.client_ip) || '-')}</td>
             <td class="logs-col-api-key" data-mobile-label="${logMobileLabels.apiKey}" style="text-align: center; white-space: nowrap;">${keyDisplay}</td>
-            <td class="logs-col-channel" data-mobile-label="${logMobileLabels.channel}">${channelDisplay}</td>
+            <td class="logs-col-channel" data-mobile-label="${logMobileLabels.channel}" style="text-align: left;">${channelDisplay}</td>
             <td class="logs-col-model" data-mobile-label="${logMobileLabels.model}"><span class="model-tag">${escapeHtml(req.model || '-')}</span></td>
             <td class="logs-col-status" data-mobile-label="${logMobileLabels.status}"><span class="status-pending">进行中</span></td>
             <td class="logs-col-timing" data-mobile-label="${logMobileLabels.timing}" style="text-align: right; white-space: nowrap;">${durationDisplay} ${streamFlag}</td>
@@ -721,7 +721,7 @@ function renderLogs(data) {
           <td class="logs-col-time" data-mobile-label="${logMobileLabels.time}" style="white-space: nowrap;">${formatTime(entry.time)}</td>
           <td class="logs-col-ip logs-mono-text" data-mobile-label="${logMobileLabels.ip}" style="white-space: nowrap;">${clientIPDisplay}</td>
           <td class="logs-col-api-key" data-mobile-label="${logMobileLabels.apiKey}" style="text-align: center; white-space: nowrap;">${apiKeyDisplay}</td>
-          <td class="logs-col-channel" data-mobile-label="${logMobileLabels.channel}">${configDisplay}</td>
+          <td class="logs-col-channel" data-mobile-label="${logMobileLabels.channel}" style="text-align: left;">${configDisplay}</td>
           <td class="logs-col-model" data-mobile-label="${logMobileLabels.model}">${modelDisplay}</td>
           <td class="logs-col-status" data-mobile-label="${logMobileLabels.status}"><span class="${statusClass}">${statusCode}</span></td>
           <td class="logs-col-timing" data-mobile-label="${logMobileLabels.timing}" style="text-align: right; white-space: nowrap;">${responseTimingDisplay}</td>
