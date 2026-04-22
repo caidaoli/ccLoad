@@ -104,7 +104,7 @@ function buildActiveRequestChannelDisplay(req) {
 
   const channelHtml = buildChannelTrigger(req.channel_id, req.channel_name, req.base_url || '');
   const multiplier = Number(req.cost_multiplier);
-  if (!(multiplier > 0) || Math.abs(multiplier - 1) < 1e-9) {
+  if (!Number.isFinite(multiplier) || multiplier < 0 || Math.abs(multiplier - 1) < 1e-9) {
     return channelHtml;
   }
 
@@ -125,7 +125,7 @@ function buildLogChannelDisplay(entry) {
 
   const channelHtml = buildChannelTrigger(entry.channel_id, entry.channel_name || '', entry.base_url || '');
   const multiplier = Number(entry.cost_multiplier);
-  if (!(multiplier > 0) || Math.abs(multiplier - 1) < 1e-9) {
+  if (!Number.isFinite(multiplier) || multiplier < 0 || Math.abs(multiplier - 1) < 1e-9) {
     return channelHtml;
   }
 
@@ -204,7 +204,7 @@ function buildLogCostDisplay(entry) {
   if (standardCost <= 0) return '';
 
   const rawMultiplier = Number(entry?.cost_multiplier);
-  const multiplier = rawMultiplier > 0 ? rawMultiplier : 1;
+  const multiplier = (Number.isFinite(rawMultiplier) && rawMultiplier >= 0) ? rawMultiplier : 1;
   const effectiveCost = standardCost * multiplier;
   const hasMultiplier = Math.abs(effectiveCost - standardCost) >= 1e-9;
   const badgeParts = [];

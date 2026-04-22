@@ -39,7 +39,7 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 			SUM(CASE WHEN logs.is_streaming = 1 AND logs.first_byte_time > 0 AND logs.status_code >= 200 AND logs.status_code < 300 THEN 1 ELSE 0 END) as stream_success_first_byte_count,
 			SUM(CASE WHEN logs.duration > 0 AND logs.status_code >= 200 AND logs.status_code < 300 THEN 1 ELSE 0 END) as duration_success_count,
 			SUM(COALESCE(logs.cost, 0.0)) as total_cost,
-			SUM(COALESCE(logs.cost, 0.0) * COALESCE(NULLIF(logs.cost_multiplier, 0), 1)) as effective_cost,
+			SUM(COALESCE(logs.cost, 0.0) * COALESCE(logs.cost_multiplier, 1)) as effective_cost,
 			SUM(COALESCE(logs.input_tokens, 0)) as input_tokens,
 			SUM(COALESCE(logs.output_tokens, 0)) as output_tokens,
 			SUM(COALESCE(logs.cache_read_input_tokens, 0)) as cache_read_tokens,

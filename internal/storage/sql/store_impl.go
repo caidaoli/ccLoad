@@ -37,7 +37,7 @@ func (s *SQLStore) GetHealthTimeline(ctx context.Context, params model.HealthTim
 			SUM(COALESCE(logs.cache_read_input_tokens, 0)) AS cache_read_tokens,
 			SUM(COALESCE(logs.cache_creation_input_tokens, 0)) AS cache_creation_tokens,
 			SUM(COALESCE(logs.cost, 0.0)) AS total_cost,
-			SUM(COALESCE(logs.cost, 0.0) * COALESCE(NULLIF(logs.cost_multiplier, 0), 1)) AS effective_cost
+			SUM(COALESCE(logs.cost, 0.0) * COALESCE(logs.cost_multiplier, 1)) AS effective_cost
 		FROM logs
 		WHERE logs.time >= ? AND logs.time <= ?
 			AND logs.status_code != 499

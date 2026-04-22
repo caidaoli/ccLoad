@@ -87,7 +87,7 @@ func scanLogEntry(scanner interface {
 	if cost.Valid {
 		e.Cost = cost.Float64
 	}
-	if costMultiplier.Valid && costMultiplier.Float64 > 0 {
+	if costMultiplier.Valid && costMultiplier.Float64 >= 0 {
 		e.CostMultiplier = costMultiplier.Float64
 	} else {
 		e.CostMultiplier = 1

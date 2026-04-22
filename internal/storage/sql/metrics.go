@@ -36,7 +36,7 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 			SUM(COALESCE(cache_read_input_tokens, 0)) as total_cache_read_input_tokens,
 			SUM(COALESCE(cache_creation_input_tokens, 0)) as total_cache_creation_input_tokens,
 			SUM(COALESCE(cost, 0.0)) as total_cost,
-			SUM(COALESCE(cost, 0.0) * COALESCE(NULLIF(cost_multiplier, 0), 1)) as effective_cost
+			SUM(COALESCE(cost, 0.0) * COALESCE(cost_multiplier, 1)) as effective_cost
 		FROM logs`
 
 	// time字段现在是BIGINT毫秒时间戳
@@ -108,7 +108,7 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 		if totalCost.Valid && totalCost.Float64 > 0 {
 			entry.TotalCost = &totalCost.Float64
 		}
-		if effectiveCost.Valid && effectiveCost.Float64 > 0 {
+		if effectiveCost.Valid && (effectiveCost.Float64 > 0 || (totalCost.Valid && totalCost.Float64 > 0)) {
 			entry.EffectiveCost = &effectiveCost.Float64
 		}
 
@@ -183,7 +183,7 @@ func (s *SQLStore) GetStatsLite(ctx context.Context, startTime, endTime time.Tim
 			SUM(COALESCE(cache_read_input_tokens, 0)) as total_cache_read_input_tokens,
 			SUM(COALESCE(cache_creation_input_tokens, 0)) as total_cache_creation_input_tokens,
 			SUM(COALESCE(cost, 0.0)) as total_cost,
-			SUM(COALESCE(cost, 0.0) * COALESCE(NULLIF(cost_multiplier, 0), 1)) as effective_cost
+			SUM(COALESCE(cost, 0.0) * COALESCE(cost_multiplier, 1)) as effective_cost
 		FROM logs`
 
 	startMs := startTime.UnixMilli()
@@ -249,7 +249,7 @@ func (s *SQLStore) GetStatsLite(ctx context.Context, startTime, endTime time.Tim
 		if totalCost.Valid && totalCost.Float64 > 0 {
 			entry.TotalCost = &totalCost.Float64
 		}
-		if effectiveCost.Valid && effectiveCost.Float64 > 0 {
+		if effectiveCost.Valid && (effectiveCost.Float64 > 0 || (totalCost.Valid && totalCost.Float64 > 0)) {
 			entry.EffectiveCost = &effectiveCost.Float64
 		}
 
@@ -563,7 +563,7 @@ func (s *SQLStore) GetTodayChannelCosts(ctx context.Context, todayStart time.Tim
 	todayStartMs := todayStart.UnixMilli()
 
 	query := `
-		SELECT channel_id, COALESCE(SUM(COALESCE(cost, 0.0) * COALESCE(NULLIF(cost_multiplier, 0), 1)), 0) as total_cost
+		SELECT channel_id, COALESCE(SUM(COALESCE(cost, 0.0) * COALESCE(cost_multiplier, 1)), 0) as total_cost
 		FROM logs
 		WHERE time >= ? AND channel_id > 0 AND log_source = ?
 		GROUP BY channel_id`

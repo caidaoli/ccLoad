@@ -35,7 +35,7 @@ func (s *SQLStore) fetchChannelInfoBatch(ctx context.Context, channelIDs map[int
 			name,
 			priority,
 			LOWER(COALESCE(NULLIF(TRIM(channel_type), ''), 'anthropic')),
-			COALESCE(NULLIF(cost_multiplier, 0), 1)
+			COALESCE(cost_multiplier, 1)
 		FROM channels
 	`)
 	if err != nil {

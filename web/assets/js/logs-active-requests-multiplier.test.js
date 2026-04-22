@@ -15,12 +15,18 @@ test('活跃请求渠道显示在无渠道时返回选择中提示', () => {
 
 test('活跃请求渠道显示在倍率为1时不显示角标', () => {
   assert.match(logsSource, /const multiplier = Number\(req\.cost_multiplier\);/);
-  assert.match(logsSource, /if \(!\(multiplier > 0\) \|\| Math\.abs\(multiplier - 1\) < 1e-9\) \{[\s\S]*?return channelHtml;/);
+  assert.match(logsSource, /if \(!Number\.isFinite\(multiplier\) \|\| multiplier < 0 \|\| Math\.abs\(multiplier - 1\) < 1e-9\) \{[\s\S]*?return channelHtml;/);
 });
 
 test('活跃请求渠道显示在倍率非1时显示角标', () => {
   assert.match(logsSource, /const multiplierText = `\$\{Number\(multiplier\.toFixed\(2\)\)\.toString\(\)\}x`;/);
   assert.match(logsSource, /return `<span class="log-channel-cell">\$\{channelHtml\}<sup class="log-channel-multiplier-badge">\$\{multiplierText\}<\/sup><\/span>`;/);
+});
+
+test('活跃请求渠道显示在倍率为0时保留 0x 角标', () => {
+  assert.match(logsSource, /const multiplier = Number\(req\.cost_multiplier\);/);
+  assert.doesNotMatch(logsSource, /if \(!\(multiplier > 0\) \|\| Math\.abs\(multiplier - 1\) < 1e-9\) \{/);
+  assert.match(logsSource, /const multiplierText = `\$\{Number\(multiplier\.toFixed\(2\)\)\.toString\(\)\}x`;/);
 });
 
 test('renderActiveRequests 使用 buildActiveRequestChannelDisplay 构建渠道显示', () => {

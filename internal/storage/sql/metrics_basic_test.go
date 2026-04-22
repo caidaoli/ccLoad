@@ -240,3 +240,58 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 		t.Fatalf("CleanupLogsBefore failed: %v", err)
 	}
 }
+
+func TestGetStats_PreservesZeroCostMultiplierForFreeChannels(t *testing.T) {
+	store := newTestStore(t, "metrics_zero_multiplier.db")
+	ctx := context.Background()
+
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:           "free-channel",
+		URL:            "https://example.com",
+		Priority:       1,
+		Enabled:        true,
+		ChannelType:    "openai",
+		CostMultiplier: 0,
+		ModelEntries: []model.ModelEntry{
+			{Model: "gpt-5.4"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	now := time.Now()
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
+		{
+			Time:       model.JSONTime{Time: now},
+			ChannelID:  cfg.ID,
+			Model:      "gpt-5.4",
+			StatusCode: 200,
+			Duration:   0.1,
+			Cost:       0.02,
+			LogSource:  model.LogSourceProxy,
+		},
+	}); err != nil {
+		t.Fatalf("BatchAddLogs failed: %v", err)
+	}
+
+	stats, err := store.GetStats(ctx, now.Add(-time.Minute), now.Add(time.Minute), nil, false)
+	if err != nil {
+		t.Fatalf("GetStats failed: %v", err)
+	}
+	if len(stats) != 1 {
+		t.Fatalf("GetStats len=%d, want 1", len(stats))
+	}
+	if stats[0].CostMultiplier == nil {
+		t.Fatalf("expected cost_multiplier=0, got nil")
+	}
+	if *stats[0].CostMultiplier != 0 {
+		t.Fatalf("expected cost_multiplier=0, got %v", *stats[0].CostMultiplier)
+	}
+	if stats[0].EffectiveCost == nil {
+		t.Fatalf("expected effective_cost=0, got nil")
+	}
+	if *stats[0].EffectiveCost != 0 {
+		t.Fatalf("expected effective_cost=0, got %v", *stats[0].EffectiveCost)
+	}
+}
