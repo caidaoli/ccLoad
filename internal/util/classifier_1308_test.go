@@ -44,6 +44,17 @@ func TestParseResetTimeFrom1308Error(t *testing.T) {
 			expectSuccess: true,
 			expectTime:    "2025-12-21 15:00:05",
 		},
+		{
+			name:          "1310周/月度限额耗尽",
+			responseBody:  `{"error":{"code":"1310","message":"Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-04-20 15:24:20"},"request_id":"..."}`,
+			expectSuccess: true,
+			expectTime:    "2026-04-20 15:24:20",
+		},
+		{
+			name:          "1310错误无时间",
+			responseBody:  `{"error":{"code":"1310","message":"Weekly/Monthly Limit Exhausted"}}`,
+			expectSuccess: false,
+		},
 	}
 
 	for _, tt := range tests {
