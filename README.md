@@ -1,3 +1,5 @@
+![ccLoad说明](images/ccload.jpg)
+
 # ccLoad - Claude Code & Codex & Gemini & OpenAI 兼容 API 代理服务
 
 **[English](README_EN.md) | 简体中文**
