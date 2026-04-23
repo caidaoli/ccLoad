@@ -193,6 +193,8 @@ func TestCalculateCost_OpenAIModels(t *testing.T) {
 		// GPT-5 系列（Standard层级 - 官方定价）
 		// inputTokens已归一化: 原始10309-缓存6016=4293
 		// 2025-12更新: OpenAI缓存改为90%折扣（0.1倍，不是50%折扣）
+		{"gpt-5.5", 1000, 1000, 0, 0.035},                   // $5.00/1M input, $30/1M output (<=272K); 2× gpt-5.4
+		{"gpt-5.5", 300000, 1000, 0, 3.045},                 // $10.00/1M input, $45/1M output (>272K); 2× gpt-5.4
 		{"gpt-5.4", 1000, 1000, 0, 0.0175},                  // $2.50/1M input, $15/1M output (<=272K)
 		{"gpt-5.4", 300000, 1000, 0, 1.5225},                // $5.00/1M input, $22.50/1M output (>272K)
 		{"gpt-5.4-pro", 1000, 1000, 0, 0.21},                // $30/1M input, $180/1M output (<=272K)
@@ -248,6 +250,9 @@ func TestOpenAIServiceTierMultiplier(t *testing.T) {
 		tier       string
 		multiplier float64
 	}{
+		{"gpt-5.5", "priority", 2.0},
+		{"gpt-5.5", "fast", 2.5},
+		{"gpt-5.5", "flex", 0.5},
 		{"gpt-5", "priority", 2.0},
 		{"gpt-5", "flex", 0.5},
 		{"gpt-5", "default", 1.0},
@@ -258,7 +263,9 @@ func TestOpenAIServiceTierMultiplier(t *testing.T) {
 		{"o3", "priority", 2.0},
 		{"o4-mini", "flex", 0.5},
 		// 日期后缀变体
+		{"gpt-5.5-2026-04-01", "fast", 2.5},
 		{"gpt-5.4-2026-03-01", "priority", 2.0},
+		{"gpt-5.4-2026-03-01", "fast", 2.0},
 		{"gpt-5.4-mini", "priority", 2.0},
 		{"gpt-5.4-nano", "flex", 0.5},
 		{"gpt-4o-2024-05-13", "priority", 2.0},

@@ -64,6 +64,10 @@ var basePricing = map[string]ModelPricing{
 	"claude-haiku":  {InputPrice: 1.00, OutputPrice: 5.00},
 
 	// ========== OpenAI GPT-5系列 ==========
+	"gpt-5.5": {
+		InputPrice: 5.00, OutputPrice: 30.00,
+		InputPriceHigh: 10.00, OutputPriceHigh: 45.00, // >272K context; 2× gpt-5.4
+	},
 	"gpt-5.4": {
 		InputPrice: 2.50, OutputPrice: 15.00,
 		InputPriceHigh: 5.00, OutputPriceHigh: 22.50, // >272K context
@@ -532,7 +536,8 @@ const (
 func getTierThresholdForModel(model string) int {
 	lowerModel := strings.ToLower(model)
 	switch {
-	case strings.HasPrefix(lowerModel, "gpt-5.4"):
+	case strings.HasPrefix(lowerModel, "gpt-5.5"),
+		strings.HasPrefix(lowerModel, "gpt-5.4"):
 		return gpt54TierThreshold
 	case strings.HasPrefix(lowerModel, "qwen3.5-plus"),
 		strings.HasPrefix(lowerModel, "qwen-3.5-plus"),
@@ -661,6 +666,7 @@ func isOpenAIModel(model string) bool {
 // 来源：OpenAI 官方 Pricing 页 Priority 表（2026-03-06）。
 // 注意：gpt-5.4-pro 虽在表中出现但价格列为空，不算支持。
 var serviceTierModels = map[string]bool{
+	"gpt-5.5":           true,
 	"gpt-5.4":           true,
 	"gpt-5.4-mini":      true,
 	"gpt-5.4-nano":      true,
@@ -710,7 +716,7 @@ func modelSupportsTier(model string) bool {
 }
 
 // OpenAIServiceTierMultiplier 返回 OpenAI service_tier 的费用倍率。
-// priority=2x（加钱降延迟）, flex=0.5x（便宜但慢）, default/""=1x（标准）。
+// priority=2x（加钱降延迟）, flex=0.5x（便宜但慢）, fast=2.5x(gpt-5.5)/2x(gpt-5.4), default/""=1x（标准）。
 // 仅当响应中携带 service_tier 字段时才生效。
 func OpenAIServiceTierMultiplier(model, serviceTier string) float64 {
 	if serviceTier == "" || serviceTier == "default" {
@@ -724,6 +730,16 @@ func OpenAIServiceTierMultiplier(model, serviceTier string) float64 {
 		return 2.0
 	case "flex":
 		return 0.5
+	case "fast":
+		// gpt-5.5 fast = 2.5× base, gpt-5.4 fast = 2× base
+		lm := strings.ToLower(model)
+		if strings.HasPrefix(lm, "gpt-5.5") {
+			return 2.5
+		}
+		if strings.HasPrefix(lm, "gpt-5.4") {
+			return 2.0
+		}
+		return 1.0
 	default:
 		return 1.0
 	}
