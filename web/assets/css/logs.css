@@ -39,6 +39,8 @@
       font: inherit;
       cursor: pointer;
       display: inline;
+      min-width: 0;
+      text-align: left;
     }
 
     .log-channel-cell {

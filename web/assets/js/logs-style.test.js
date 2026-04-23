@@ -190,6 +190,15 @@ test('日志页为 IP 和 API Key 提供共享等宽文本样式类', () => {
   assert.match(styleBlock, /color:\s*var\(--neutral-600\)/);
 });
 
+test('日志页渠道按钮在表格内必须左对齐并允许 flex 收缩', () => {
+  const channelLinkMatch = css.match(/\.logs-table\s+\.channel-link\s*\{[^}]+\}/);
+  assert.ok(channelLinkMatch, '缺少日志页渠道按钮样式');
+
+  const styleBlock = channelLinkMatch[0];
+  assert.match(styleBlock, /text-align:\s*left/);
+  assert.match(styleBlock, /min-width:\s*0/);
+});
+
 test('进行中请求复用日志表格列类名和共享字体类', () => {
   const activeMatch = logsSource.match(/function renderActiveRequests\(activeRequests\)\s*\{[\s\S]*?\n\}/);
   assert.ok(activeMatch, '缺少 renderActiveRequests');
