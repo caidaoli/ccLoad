@@ -154,6 +154,8 @@ window.I18N_LOCALES['en'] = {
   'channels.channelCount': 'channels',
   'channels.sortBtn': 'Sort',
   'channels.filterBtn': 'Filter',
+  'channels.pageSize': 'Per page',
+  'channels.pageSizeUnit': 'items',
   'channels.batchSelectedCount': '{count} selected',
   'channels.batchSelectVisible': 'Select All',
   'channels.batchDeselectVisible': 'Deselect All',

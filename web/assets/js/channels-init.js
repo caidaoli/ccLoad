@@ -175,6 +175,23 @@ function initChannelsPageActions() {
     });
     jumpPageInput.dataset.bound = '1';
   }
+
+  // 每页显示数量选择器
+  const pageSizeSelect = document.getElementById('channels_page_size');
+  if (pageSizeSelect && !pageSizeSelect.dataset.bound) {
+    pageSizeSelect.value = String(channelsPageSize);
+    pageSizeSelect.addEventListener('change', (event) => {
+      const newSize = parseInt(event.target.value, 10);
+      if (newSize > 0) {
+        channelsPageSize = newSize;
+        localStorage.setItem('channels.pageSize', String(newSize));
+        channelsCurrentPage = 1;
+        saveChannelsFilters();
+        loadChannels(filters.channelType);
+      }
+    });
+    pageSizeSelect.dataset.bound = '1';
+  }
 }
 
 window.initPageBootstrap({

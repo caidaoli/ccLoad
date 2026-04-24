@@ -154,6 +154,8 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.channelCount': '个渠道',
   'channels.sortBtn': '排序',
   'channels.filterBtn': '筛选',
+  'channels.pageSize': '每页',
+  'channels.pageSizeUnit': '条',
   'channels.batchSelectedCount': '{count} 渠道已选择',
   'channels.batchSelectVisible': '全选',
   'channels.batchDeselectVisible': '取消全选',
