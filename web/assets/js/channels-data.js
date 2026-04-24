@@ -30,6 +30,10 @@ async function loadChannels(type = 'all') {
     channelsTotalCount = Number.isFinite(resp.count) ? resp.count : channels.length;
     channelsTotalPages = Math.max(1, Math.ceil(channelsTotalCount / channelsPageSize));
 
+    if (Array.isArray(resp.available_models)) {
+      allAvailableModels = resp.available_models;
+    }
+
     if (channelsCurrentPage > channelsTotalPages) {
       channelsCurrentPage = channelsTotalPages;
       return loadChannels(type);

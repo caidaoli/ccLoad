@@ -57,23 +57,7 @@ function updateFilterInfo(filtered, total) {
 
 // Update model filter options
 function updateModelOptions() {
-  const modelSet = new Set();
-  const typeFilter = (filters && filters.channelType) ? filters.channelType : 'all';
-  channels.forEach(channel => {
-    if (typeFilter !== 'all') {
-      const channelType = channel.channel_type || 'anthropic';
-      if (channelType !== typeFilter) return;
-    }
-    if (Array.isArray(channel.models)) {
-      // 新格式：models 是 {model, redirect_model} 对象数组
-      channel.models.forEach(m => {
-        const modelName = m.model || m;
-        if (modelName) modelSet.add(modelName);
-      });
-    }
-  });
-
-  modelFilterOptions = Array.from(modelSet).sort();
+  modelFilterOptions = allAvailableModels.slice().sort();
 
   normalizeModelFilterOption();
 

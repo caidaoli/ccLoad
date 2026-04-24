@@ -22,7 +22,8 @@ test('日志页接入渠道编辑器桥接脚本', () => {
 test('日志页渠道列渲染为编辑按钮而不是跳转链接', () => {
   assert.match(logsScript, /function buildChannelTrigger\(channelId,\s*channelName,\s*baseURL = ''\)/);
   assert.match(logsScript, /<button type="button" class="channel-link" data-channel-id="\$\{channelId\}"/);
-  assert.doesNotMatch(logsScript, /\/web\/channels\.html\?id=/);
+  assert.match(logsScript, /logChannelClickAction\s*===\s*'navigate'/);
+  assert.match(logsScript, /openLogChannelEditor\(channelId\)/);
 });
 
 test('日志页渠道按钮点击事件委托到编辑渠道弹窗', () => {

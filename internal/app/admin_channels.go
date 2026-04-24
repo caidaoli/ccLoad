@@ -150,17 +150,44 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	// 健康度模式检查
 	healthEnabled := s.healthCache != nil && s.healthCache.Config().Enabled
 
-	// 健康度模式：按有效优先级降序排序（与请求路由一致）
+	// 健康度模式：预计算有效优先级和成功率，避免排序+输出循环中重复计算
+	priorityMap := make(map[int64]float64, len(cfgs))
+	successRateMap := make(map[int64]float64, len(cfgs))
 	if healthEnabled {
+		hcfg := s.healthCache.Config()
+		for _, cfg := range cfgs {
+			stats := s.healthCache.GetHealthStats(cfg.ID)
+			priorityMap[cfg.ID] = s.calculateEffectivePriority(cfg, stats, hcfg)
+			if stats.SampleCount > 0 {
+				successRateMap[cfg.ID] = stats.SuccessRate
+			}
+		}
 		sort.Slice(cfgs, func(i, j int) bool {
-			pi := s.calculateEffectivePriority(cfgs[i], s.healthCache.GetHealthStats(cfgs[i].ID), s.healthCache.Config())
-			pj := s.calculateEffectivePriority(cfgs[j], s.healthCache.GetHealthStats(cfgs[j].ID), s.healthCache.Config())
-			return pi > pj
+			return priorityMap[cfgs[i].ID] > priorityMap[cfgs[j].ID]
 		})
 	}
 
 	hasPagination := c.Query("limit") != "" || c.Query("offset") != ""
 	totalCount := len(cfgs)
+
+	// 分页模式下，从完整筛选集收集所有模型名称供前端下拉框使用
+	var availableModels []string
+	if hasPagination {
+		modelSet := make(map[string]struct{})
+		for _, cfg := range cfgs {
+			for _, entry := range cfg.ModelEntries {
+				if entry.Model != "" {
+					modelSet[entry.Model] = struct{}{}
+				}
+			}
+		}
+		availableModels = make([]string, 0, len(modelSet))
+		for m := range modelSet {
+			availableModels = append(availableModels, m)
+		}
+		sort.Strings(availableModels)
+	}
+
 	if hasPagination {
 		limit := 20
 		offset := 0
@@ -190,13 +217,12 @@ func (s *Server) handleListChannels(c *gin.Context) {
 			oc.CooldownRemainingMS = cooldownRemainingMS
 		}
 
-		// 健康度模式：计算有效优先级和成功率
+		// 健康度模式：使用预计算的有效优先级和成功率
 		if healthEnabled {
-			stats := s.healthCache.GetHealthStats(cfg.ID)
-			if stats.SampleCount > 0 {
-				oc.SuccessRate = &stats.SuccessRate
+			if rate, ok := successRateMap[cfg.ID]; ok {
+				oc.SuccessRate = &rate
 			}
-			effPriority := s.calculateEffectivePriority(cfg, stats, s.healthCache.Config())
+			effPriority := priorityMap[cfg.ID]
 			oc.EffectivePriority = &effPriority
 		}
 
@@ -238,7 +264,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	}
 
 	if hasPagination {
-		RespondJSONWithCount(c, http.StatusOK, out, totalCount)
+		RespondPaginated(c, http.StatusOK, out, totalCount, availableModels)
 		return
 	}
 	RespondJSON(c, http.StatusOK, out)

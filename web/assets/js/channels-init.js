@@ -222,7 +222,7 @@ window.initPageBootstrap({
     } else if (savedFilters) {
       filters.status = savedFilters.status || 'all';
       filters.model = savedFilters.model || 'all';
-      filters.search = '';
+      filters.search = savedFilters.search || '';
       document.getElementById('statusFilter').value = filters.status;
       if (typeof modelFilterCombobox !== 'undefined' && modelFilterCombobox) {
         modelFilterCombobox.setValue(filters.model, modelFilterInputValueFromFilterValue(filters.model));
@@ -234,12 +234,12 @@ window.initPageBootstrap({
         const allLabel = (typeof getChannelNameAllLabel === 'function')
           ? getChannelNameAllLabel()
           : ((window.t && window.t('channels.channelNameAll')) || '所有渠道');
-        channelNameCombobox.setValue('', allLabel);
+        channelNameCombobox.setValue(filters.search, filters.search || allLabel);
       } else {
         const searchInputEl = document.getElementById('searchInput');
         if (searchInputEl) {
           const allLabel = (window.t && window.t('channels.channelNameAll')) || '所有渠道';
-          searchInputEl.value = allLabel;
+          searchInputEl.value = filters.search || allLabel;
         }
       }
       saveChannelsFilters();
