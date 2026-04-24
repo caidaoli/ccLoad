@@ -1,26 +1,49 @@
+function buildChannelsListParams(type = 'all') {
+  const params = new URLSearchParams();
+  if (type && type !== 'all') {
+    params.set('type', type);
+  }
+  if (filters.search) {
+    params.set('search', filters.search);
+  }
+  if (filters.status && filters.status !== 'all') {
+    params.set('status', filters.status);
+  }
+  if (filters.model && filters.model !== 'all') {
+    params.set('model', filters.model);
+  }
+  params.set('limit', String(channelsPageSize));
+  params.set('offset', String((channelsCurrentPage - 1) * channelsPageSize));
+  return params;
+}
+
 async function loadChannels(type = 'all') {
   try {
-    if (channelsCache[type]) {
-      channels = channelsCache[type];
-      if (typeof syncSelectedChannelsWithLoadedChannels === 'function') {
-        syncSelectedChannelsWithLoadedChannels();
-      }
-      updateModelOptions();
-      filterChannels();
-      return;
+    const params = buildChannelsListParams(type);
+    const url = '/admin/channels?' + params.toString();
+    const resp = await fetchAPIWithAuth(url);
+    if (!resp.success) {
+      throw new Error(resp.error || window.t('channels.loadChannelsFailed'));
     }
 
-    const url = type === 'all' ? '/admin/channels' : `/admin/channels?type=${encodeURIComponent(type)}`;
-    const data = await fetchDataWithAuth(url);
+    channels = Array.isArray(resp.data) ? resp.data : [];
+    channelsTotalCount = Number.isFinite(resp.count) ? resp.count : channels.length;
+    channelsTotalPages = Math.max(1, Math.ceil(channelsTotalCount / channelsPageSize));
 
-    channelsCache[type] = data || [];
-    channels = channelsCache[type];
+    if (channelsCurrentPage > channelsTotalPages) {
+      channelsCurrentPage = channelsTotalPages;
+      return loadChannels(type);
+    }
+
     if (typeof syncSelectedChannelsWithLoadedChannels === 'function') {
       syncSelectedChannelsWithLoadedChannels();
     }
 
     updateModelOptions();
     filterChannels();
+    if (typeof updateChannelsPagination === 'function') {
+      updateChannelsPagination();
+    }
   } catch (e) {
     console.error('Failed to load channels', e);
     if (window.showError) window.showError(window.t('channels.loadChannelsFailed'));

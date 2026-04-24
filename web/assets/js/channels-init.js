@@ -14,22 +14,19 @@ function highlightFromHash() {
   }, 1600);
 }
 
-// 从URL参数获取目标渠道ID，查询其类型并返回
-async function getTargetChannelType() {
+async function getTargetChannel() {
   const params = new URLSearchParams(location.search);
   const channelId = params.get('id');
   if (!channelId) return null;
 
   try {
-    const channel = await fetchDataWithAuth(`/admin/channels/${channelId}`);
-    return channel.channel_type || 'anthropic';
+    return await fetchDataWithAuth(`/admin/channels/${channelId}`);
   } catch (e) {
-    console.error('Failed to get channel type:', e);
+    console.error('Failed to get target channel:', e);
     return null;
   }
 }
 
-// localStorage key for channels page filters
 const CHANNELS_FILTER_KEY = 'channels.filters';
 
 function saveChannelsFilters() {
@@ -38,7 +35,8 @@ function saveChannelsFilters() {
       channelType: filters.channelType,
       status: filters.status,
       model: filters.model,
-      search: filters.search
+      search: filters.search,
+      page: channelsCurrentPage
     }));
   } catch (_) {}
 }
@@ -51,6 +49,83 @@ function loadChannelsFilters() {
   return null;
 }
 
+function resetChannelSearchFilter() {
+  filters.search = '';
+  channelsCurrentPage = 1;
+  if (typeof channelNameCombobox !== 'undefined' && channelNameCombobox) {
+    channelNameCombobox.setValue('', getChannelNameAllLabel());
+  } else {
+    const searchInputEl = document.getElementById('searchInput');
+    if (searchInputEl) {
+      const allLabel = (window.t && window.t('channels.channelNameAll')) || '所有渠道';
+      searchInputEl.value = allLabel;
+    }
+  }
+}
+
+function updateChannelsPagination() {
+  const currentPageEl = document.getElementById('channels_current_page');
+  const totalPagesEl = document.getElementById('channels_total_pages');
+  const firstBtn = document.getElementById('channels_first_page');
+  const prevBtn = document.getElementById('channels_prev_page');
+  const nextBtn = document.getElementById('channels_next_page');
+  const lastBtn = document.getElementById('channels_last_page');
+
+  if (currentPageEl) currentPageEl.textContent = String(channelsCurrentPage);
+  if (totalPagesEl) totalPagesEl.textContent = String(channelsTotalPages);
+
+  const disablePrev = channelsCurrentPage <= 1;
+  const disableNext = channelsCurrentPage >= channelsTotalPages;
+  if (firstBtn) firstBtn.disabled = disablePrev;
+  if (prevBtn) prevBtn.disabled = disablePrev;
+  if (nextBtn) nextBtn.disabled = disableNext;
+  if (lastBtn) lastBtn.disabled = disableNext;
+}
+
+function firstChannelsPage() {
+  if (channelsCurrentPage <= 1) return;
+  channelsCurrentPage = 1;
+  saveChannelsFilters();
+  loadChannels(filters.channelType);
+}
+
+function prevChannelsPage() {
+  if (channelsCurrentPage <= 1) return;
+  channelsCurrentPage--;
+  saveChannelsFilters();
+  loadChannels(filters.channelType);
+}
+
+function nextChannelsPage() {
+  if (channelsCurrentPage >= channelsTotalPages) return;
+  channelsCurrentPage++;
+  saveChannelsFilters();
+  loadChannels(filters.channelType);
+}
+
+function lastChannelsPage() {
+  if (channelsCurrentPage >= channelsTotalPages) return;
+  channelsCurrentPage = channelsTotalPages;
+  saveChannelsFilters();
+  loadChannels(filters.channelType);
+}
+
+function jumpChannelsPage() {
+  const input = document.getElementById('channels_jump_page');
+  if (!input) return;
+  const page = parseInt(input.value, 10);
+  if (!Number.isFinite(page) || page < 1 || page > channelsTotalPages) {
+    input.value = '';
+    return;
+  }
+  if (page !== channelsCurrentPage) {
+    channelsCurrentPage = page;
+    saveChannelsFilters();
+    loadChannels(filters.channelType);
+  }
+  input.value = '';
+}
+
 function initChannelsPageActions() {
   if (typeof initChannelEditorActions === 'function') {
     initChannelEditorActions();
@@ -61,6 +136,10 @@ function initChannelsPageActions() {
       boundKey: 'channelsPageActionsBound',
       click: {
         'show-add-modal': () => showAddModal(),
+        'first-channels-page': () => firstChannelsPage(),
+        'prev-channels-page': () => prevChannelsPage(),
+        'next-channels-page': () => nextChannelsPage(),
+        'last-channels-page': () => lastChannelsPage(),
         'batch-enable-channels': () => batchEnableSelectedChannels(),
         'batch-disable-channels': () => batchDisableSelectedChannels(),
         'batch-delete-channels': () => batchDeleteSelectedChannels(),
@@ -86,109 +165,124 @@ function initChannelsPageActions() {
       }
     });
   }
+
+  const jumpPageInput = document.getElementById('channels_jump_page');
+  if (jumpPageInput && !jumpPageInput.dataset.bound) {
+    jumpPageInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        jumpChannelsPage();
+      }
+    });
+    jumpPageInput.dataset.bound = '1';
+  }
 }
 
 window.initPageBootstrap({
   topbarKey: 'channels',
   run: async () => {
-  initChannelsPageActions();
-  setupFilterListeners();
-  setupImportExport();
-  setupKeyImportPreview();
-  setupModelImportPreview();
-  if (typeof initChannelFormDirtyTracking === 'function') {
-    initChannelFormDirtyTracking();
-  }
-  if (typeof updateBatchChannelSelectionUI === 'function') {
-    updateBatchChannelSelectionUI();
-  }
-
-  await window.ChannelTypeManager.renderChannelTypeRadios('channelTypeRadios');
-
-  // 优先从 localStorage 恢复，其次检查 URL 参数，最后默认 all
-  const savedFilters = loadChannelsFilters();
-  const targetChannelType = await getTargetChannelType();
-  const initialType = targetChannelType || (savedFilters?.channelType) || 'all';
-
-  filters.channelType = initialType;
-  const urlChannelId = new URLSearchParams(location.search).get('id');
-  if (urlChannelId) {
-    // 从日志等页面跳转过来时，仅按渠道ID过滤，清除其他条件
-    filters.status = 'all';
-    filters.model = 'all';
-    filters.search = '';
-    document.getElementById('statusFilter').value = 'all';
-    if (typeof modelFilterCombobox !== 'undefined' && modelFilterCombobox) {
-      modelFilterCombobox.setValue('all', modelFilterInputValueFromFilterValue('all'));
-    } else {
-      const modelFilterEl = document.getElementById('modelFilter');
-      if (modelFilterEl) modelFilterEl.value = modelFilterInputValueFromFilterValue('all');
+    initChannelsPageActions();
+    setupFilterListeners();
+    setupImportExport();
+    setupKeyImportPreview();
+    setupModelImportPreview();
+    if (typeof initChannelFormDirtyTracking === 'function') {
+      initChannelFormDirtyTracking();
     }
-    saveChannelsFilters();
-  } else if (savedFilters) {
-    filters.status = savedFilters.status || 'all';
-    filters.model = savedFilters.model || 'all';
-    filters.search = savedFilters.search || '';
-    document.getElementById('statusFilter').value = filters.status;
-    if (typeof modelFilterCombobox !== 'undefined' && modelFilterCombobox) {
-      modelFilterCombobox.setValue(filters.model, modelFilterInputValueFromFilterValue(filters.model));
-    } else {
-      const modelFilterEl = document.getElementById('modelFilter');
-      if (modelFilterEl) modelFilterEl.value = modelFilterInputValueFromFilterValue(filters.model);
+    if (typeof updateBatchChannelSelectionUI === 'function') {
+      updateBatchChannelSelectionUI();
     }
-    if (typeof channelNameCombobox !== 'undefined' && channelNameCombobox) {
-      const allLabel = (typeof getChannelNameAllLabel === 'function')
-        ? getChannelNameAllLabel()
-        : ((window.t && window.t('channels.channelNameAll')) || '所有渠道');
-      channelNameCombobox.setValue(filters.search, filters.search || allLabel);
-    } else {
+
+    await window.ChannelTypeManager.renderChannelTypeRadios('channelTypeRadios');
+
+    const savedFilters = loadChannelsFilters();
+    channelsCurrentPage = Math.max(1, parseInt(savedFilters?.page, 10) || 1);
+    const targetChannel = await getTargetChannel();
+    const targetChannelType = targetChannel?.channel_type || null;
+    const initialType = targetChannelType || (savedFilters?.channelType) || 'all';
+
+    filters.channelType = initialType;
+    const urlChannelId = new URLSearchParams(location.search).get('id');
+    if (urlChannelId) {
+      filters.status = 'all';
+      filters.model = 'all';
+      filters.search = targetChannel?.name || '';
+      channelsCurrentPage = 1;
+      document.getElementById('statusFilter').value = 'all';
+      if (typeof modelFilterCombobox !== 'undefined' && modelFilterCombobox) {
+        modelFilterCombobox.setValue('all', modelFilterInputValueFromFilterValue('all'));
+      } else {
+        const modelFilterEl = document.getElementById('modelFilter');
+        if (modelFilterEl) modelFilterEl.value = modelFilterInputValueFromFilterValue('all');
+      }
       const searchInputEl = document.getElementById('searchInput');
       if (searchInputEl) {
         const allLabel = (window.t && window.t('channels.channelNameAll')) || '所有渠道';
         searchInputEl.value = filters.search || allLabel;
       }
+    } else if (savedFilters) {
+      filters.status = savedFilters.status || 'all';
+      filters.model = savedFilters.model || 'all';
+      filters.search = '';
+      document.getElementById('statusFilter').value = filters.status;
+      if (typeof modelFilterCombobox !== 'undefined' && modelFilterCombobox) {
+        modelFilterCombobox.setValue(filters.model, modelFilterInputValueFromFilterValue(filters.model));
+      } else {
+        const modelFilterEl = document.getElementById('modelFilter');
+        if (modelFilterEl) modelFilterEl.value = modelFilterInputValueFromFilterValue(filters.model);
+      }
+      if (typeof channelNameCombobox !== 'undefined' && channelNameCombobox) {
+        const allLabel = (typeof getChannelNameAllLabel === 'function')
+          ? getChannelNameAllLabel()
+          : ((window.t && window.t('channels.channelNameAll')) || '所有渠道');
+        channelNameCombobox.setValue('', allLabel);
+      } else {
+        const searchInputEl = document.getElementById('searchInput');
+        if (searchInputEl) {
+          const allLabel = (window.t && window.t('channels.channelNameAll')) || '所有渠道';
+          searchInputEl.value = allLabel;
+        }
+      }
+      saveChannelsFilters();
     }
-  }
 
-  // 初始化渠道类型筛选器（替换原Tab逻辑）
-  await window.initChannelTypeFilter('channelTypeFilter', initialType, (type) => {
-    filters.channelType = type;
-    filters.model = 'all';
-    filters.search = '';
-    if (typeof modelFilterCombobox !== 'undefined' && modelFilterCombobox) {
-      modelFilterCombobox.setValue('all', modelFilterInputValueFromFilterValue('all'));
-    } else {
-      const modelFilterEl = document.getElementById('modelFilter');
-      if (modelFilterEl) modelFilterEl.value = modelFilterInputValueFromFilterValue('all');
-    }
-    if (typeof channelNameCombobox !== 'undefined' && channelNameCombobox) {
-      channelNameCombobox.setValue('', getChannelNameAllLabel());
-    }
-    saveChannelsFilters();
-    loadChannels(type);
+    await window.initChannelTypeFilter('channelTypeFilter', initialType, (type) => {
+      filters.channelType = type;
+      filters.model = 'all';
+      filters.search = '';
+      channelsCurrentPage = 1;
+      if (typeof modelFilterCombobox !== 'undefined' && modelFilterCombobox) {
+        modelFilterCombobox.setValue('all', modelFilterInputValueFromFilterValue('all'));
+      } else {
+        const modelFilterEl = document.getElementById('modelFilter');
+        if (modelFilterEl) modelFilterEl.value = modelFilterInputValueFromFilterValue('all');
+      }
+      if (typeof channelNameCombobox !== 'undefined' && channelNameCombobox) {
+        channelNameCombobox.setValue('', getChannelNameAllLabel());
+      }
+      saveChannelsFilters();
+      loadChannels(type);
+      if (typeof updateChannelNameOptions === 'function') updateChannelNameOptions();
+    });
+
+    await loadDefaultTestContent();
+    await loadChannelStatsRange();
+
+    await loadChannels(initialType);
     if (typeof updateChannelNameOptions === 'function') updateChannelNameOptions();
-  });
+    await loadChannelStats();
+    highlightFromHash();
+    window.addEventListener('hashchange', highlightFromHash);
 
-  await loadDefaultTestContent();
-  await loadChannelStatsRange();
-
-  await loadChannels(initialType);
-  if (typeof updateChannelNameOptions === 'function') updateChannelNameOptions();
-  await loadChannelStats();
-  highlightFromHash();
-  window.addEventListener('hashchange', highlightFromHash);
-
-  // 监听语言切换事件，重新渲染渠道列表
-  window.i18n.onLocaleChange(() => {
-    renderChannels();
-    updateModelOptions();
-  });
+    window.i18n.onLocaleChange(() => {
+      renderChannels();
+      updateModelOptions();
+      updateChannelsPagination();
+    });
   }
 });
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
-    // 按层级优先关闭最上层模态框
     const customRulesModal = document.getElementById('customRulesModal');
     const modelImportModal = document.getElementById('modelImportModal');
     const keyImportModal = document.getElementById('keyImportModal');
@@ -216,4 +310,13 @@ document.addEventListener('keydown', (e) => {
       closeModal();
     }
   }
+});
+
+window.addEventListener('pageshow', async (event) => {
+  const urlChannelId = new URLSearchParams(location.search).get('id');
+  if (!event.persisted || urlChannelId) return;
+
+  resetChannelSearchFilter();
+  if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
+  await loadChannels(filters.channelType || 'all');
 });

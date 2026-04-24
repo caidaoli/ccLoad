@@ -12,6 +12,11 @@ let defaultTestContent = 'When was Claude 3.5 Sonnet released?'; // Default test
 let channelStatsRange = 'today'; // 渠道统计时间范围（从设置加载）
 let channelsCache = {}; // 按类型缓存渠道数据: {type: channels[]}
 let selectedChannelIds = new Set(); // 选中的渠道ID（字符串，避免数字/字符串混用）
+let channelsCurrentPage = 1;
+let channelsPageSize = 20;
+let channelsTotalPages = 1;
+let channelsTotalCount = 0;
+let channelsFiltersInitialized = false;
 
 function normalizeSelectedChannelID(id) {
   const numericID = Number(id);
