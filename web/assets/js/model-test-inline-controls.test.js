@@ -10,7 +10,10 @@ const sharedCss = fs.readFileSync(path.join(__dirname, '..', 'css', 'styles.css'
 
 function extractFunction(source, name) {
   const signature = `function ${name}`;
-  const start = source.indexOf(signature);
+  let start = source.indexOf(`async ${signature}`);
+  if (start < 0) {
+    start = source.indexOf(signature);
+  }
   assert.ok(start >= 0, `缺少函数 ${name}`);
 
   const braceStart = source.indexOf('{', start);
@@ -36,9 +39,40 @@ test('model-test 页静态控件不再使用内联事件', () => {
   assert.doesNotMatch(html, /data-action="select-all-models"/);
   assert.doesNotMatch(html, /data-action="deselect-all-models"/);
   assert.match(html, /data-action="fetch-and-add-models"/);
+  assert.match(html, /data-action="open-add-models-modal"/);
   assert.match(html, /data-action="delete-selected-models"/);
   assert.match(html, /data-action="run-model-tests"/);
   assert.match(html, /data-change-action="toggle-all-models"/);
+});
+
+test('model-test 页在按模型测试表头提供批量添加模型按钮和弹窗', () => {
+  assert.match(html, /id="fetchModelsBtn"[\s\S]*?id="addModelsBtn"[\s\S]*?id="deleteModelsBtn"[\s\S]*?id="runTestBtn"/);
+  assert.match(html, /<div id="addModelsModal" class="modal">/);
+  assert.match(html, /<textarea[\s\S]*id="addModelsTextarea"[\s\S]*data-i18n-placeholder="modelTest\.addModelsPlaceholder"/);
+  assert.match(html, /id="addModelsConfirmBtn"[\s\S]*data-i18n="modelTest\.addModelsConfirm"/);
+});
+
+test('model-test.js i18nText 对动态删除文案执行插值兜底', () => {
+  const sandbox = {
+    window: {
+      t() {
+        return '删除完成：成功 {success_channels} 个渠道，失败 {failed_channels} 个渠道';
+      }
+    }
+  };
+
+  vm.runInNewContext(`
+    ${extractFunction(script, 'i18nText')}
+  `, sandbox);
+
+  assert.equal(
+    sandbox.i18nText(
+      'modelTest.deleteSuccessSummary',
+      'fallback',
+      { success_channels: 2, failed_channels: 0 }
+    ),
+    '删除完成：成功 2 个渠道，失败 0 个渠道'
+  );
 });
 
 test('model-test 页接入日志页同款渠道编辑器桥接并将渠道名渲染为可点击按钮', () => {
@@ -67,6 +101,7 @@ test('model-test.js 使用集中绑定处理页面控件和重渲染表头复选
   assert.match(script, /boundKey:\s*'modelTestActionsBound'/);
   assert.match(script, /'set-test-mode':\s*\(actionTarget\)\s*=> setTestMode\(actionTarget\.dataset\.mode \|\| ''\)/);
   assert.match(script, /'fetch-and-add-models':\s*\(\)\s*=> fetchAndAddModels\(\)/);
+  assert.match(script, /'open-add-models-modal':\s*\(\)\s*=> openAddModelsModal\(\)/);
   assert.match(script, /'delete-selected-models':\s*\(\)\s*=> deleteSelectedModels\(\)/);
   assert.match(script, /'run-model-tests':\s*\(\)\s*=> runModelTests\(\)/);
   assert.match(script, /'toggle-all-models':\s*\(actionTarget\)\s*=> toggleAllModels\(actionTarget\.checked\)/);
@@ -78,10 +113,106 @@ test('model-test.js 使用集中绑定处理页面控件和重渲染表头复选
 });
 
 test('model-test.js 将表头操作按钮渲染进响应内容列并阻止按钮点击触发表头排序', () => {
-  assert.match(script, /const RESPONSE_HEAD_HTML = `[\s\S]*?class="table-col-response model-test-response-head"[\s\S]*?class="model-test-toolbar-section model-test-toolbar-section--actions model-test-head-actions"[\s\S]*?id="fetchModelsBtn"[\s\S]*?id="deleteModelsBtn"[\s\S]*?id="runTestBtn"[\s\S]*?`;/);
+  assert.match(script, /const RESPONSE_HEAD_HTML = `[\s\S]*?class="table-col-response model-test-response-head"[\s\S]*?class="model-test-toolbar-section model-test-toolbar-section--actions model-test-head-actions"[\s\S]*?id="fetchModelsBtn"[\s\S]*?id="addModelsBtn"[\s\S]*?id="deleteModelsBtn"[\s\S]*?id="runTestBtn"[\s\S]*?`;/);
   assert.match(script, /const CHANNEL_MODE_HEAD = `[\s\S]*?\$\{RESPONSE_HEAD_HTML\}[\s\S]*?`;/);
   assert.match(script, /const MODEL_MODE_HEAD = `[\s\S]*?\$\{RESPONSE_HEAD_HTML\}[\s\S]*?`;/);
   assert.match(script, /th\.onclick = \(event\) => \{[\s\S]*?closest\('\.model-test-head-actions'\)[\s\S]*?return;/);
+});
+
+test('model-test.js 批量添加模型输入支持逗号换行去空和大小写去重', () => {
+  const sandbox = {};
+  vm.runInNewContext(`
+    ${extractFunction(script, 'parseBatchModelInput')}
+  `, sandbox);
+
+  assert.deepEqual(
+    Array.from(sandbox.parseBatchModelInput(' gpt-4o,gpt-4o-mini\nGPT-4O\n\n claude-3-5-sonnet ')),
+    ['gpt-4o', 'gpt-4o-mini', 'claude-3-5-sonnet']
+  );
+});
+
+test('model-test.js 批量添加模型只收集当前勾选渠道', () => {
+  const rows = [
+    { dataset: { channelId: '10' }, checkbox: { checked: true }, hidden: false },
+    { dataset: { channelId: '20' }, checkbox: { checked: false }, hidden: false },
+    { dataset: { channelId: '30' }, checkbox: { checked: true }, hidden: true }
+  ];
+  rows.forEach((row) => {
+    row.querySelector = (selector) => selector === '.row-checkbox' ? row.checkbox : null;
+  });
+
+  const sandbox = {
+    TEST_MODE_MODEL: 'model',
+    testMode: 'model',
+    channelsList: [
+      { id: 10, models: [] },
+      { id: 20, models: [] },
+      { id: 30, models: [] }
+    ],
+    document: {
+      querySelectorAll(selector) {
+        assert.equal(selector, '#model-test-tbody tr[data-channel-id][data-model]');
+        return rows;
+      }
+    },
+    isDataRowVisible(row) {
+      return !row.hidden;
+    }
+  };
+
+  vm.runInNewContext(`
+    ${extractFunction(script, 'getVisibleChannelTargetsForAdd')}
+  `, sandbox);
+
+  assert.deepEqual(
+    Array.from(sandbox.getVisibleChannelTargetsForAdd().map(target => target.channelId)),
+    [10]
+  );
+});
+
+test('model-test.js 批量添加模型会对当前渠道表格目标逐个保存并更新本地缓存', async () => {
+  const calls = [];
+  const sandbox = {
+    fetchAPIWithAuth: async (url, options) => {
+      calls.push({ url, options });
+      return { success: true, total: 3 };
+    }
+  };
+
+  vm.runInNewContext(`
+    ${extractFunction(script, 'getModelName')}
+    ${extractFunction(script, 'buildModelEntriesFromNames')}
+    ${extractFunction(script, 'appendModelsToChannelCache')}
+    ${extractFunction(script, 'executeAddModelsToChannels')}
+  `, sandbox);
+
+  const channels = [
+    { id: 10, models: [{ model: 'existing', redirect_model: '' }] },
+    { id: 20, models: ['legacy'] }
+  ];
+
+  const result = await sandbox.executeAddModelsToChannels(
+    ['gpt-4o', 'existing'],
+    [
+      { channelId: 10, channel: channels[0] },
+      { channelId: 20, channel: channels[1] }
+    ]
+  );
+
+  assert.deepEqual(
+    calls.map(call => call.url),
+    ['/admin/channels/10/models', '/admin/channels/20/models']
+  );
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    models: [
+      { model: 'gpt-4o', redirect_model: '' },
+      { model: 'existing', redirect_model: '' }
+    ]
+  });
+  assert.equal(result.successCount, 2);
+  assert.deepEqual(Array.from(result.failed), []);
+  assert.deepEqual(channels[0].models.map(entry => entry.model || entry), ['existing', 'gpt-4o']);
+  assert.deepEqual(channels[1].models.map(entry => entry.model || entry), ['legacy', 'gpt-4o', 'existing']);
 });
 
 test('model-test.js 移除测试数量进度文案，只保留按钮自身测试中状态', () => {
