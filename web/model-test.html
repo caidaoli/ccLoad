@@ -105,6 +105,7 @@
                       </div>
                       <div class="model-test-toolbar-section model-test-toolbar-section--actions model-test-head-actions">
                         <button id="fetchModelsBtn" type="button" data-action="fetch-and-add-models" class="btn btn-secondary model-test-toolbar-btn" data-i18n="modelTest.fetchModels">获取模型</button>
+                        <button id="addModelsBtn" type="button" data-action="open-add-models-modal" class="btn btn-secondary model-test-toolbar-btn hidden" data-i18n="modelTest.addModels">添加模型</button>
                         <button id="deleteModelsBtn" type="button" data-action="delete-selected-models" class="btn btn-secondary model-test-toolbar-btn model-test-toolbar-btn--danger" data-i18n="modelTest.deleteModels">删除模型</button>
                         <button id="runTestBtn" type="button" data-action="run-model-tests" class="btn btn-primary model-test-toolbar-btn" data-i18n="modelTest.startTest">开始测试</button>
                       </div>
@@ -185,6 +186,41 @@
         <div class="upstream-field upstream-field--full">
           <pre id="upstreamRespRaw" class="upstream-pre upstream-pre--full"></pre>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 批量添加模型弹窗 -->
+  <div id="addModelsModal" class="modal">
+    <div class="modal-content modal-content--lg">
+      <div class="modal-header modal-header--compact">
+        <h2 class="modal-title" data-i18n="modelTest.addModelsTitle">批量添加模型</h2>
+        <button id="addModelsCloseBtn" class="close-btn" aria-label="Close">&times;</button>
+      </div>
+      <label class="model-test-add-field">
+        <span class="model-test-add-label" data-i18n="modelTest.addModelsInputLabel">输入模型名称（支持逗号或换行分隔）</span>
+        <textarea
+          id="addModelsTextarea"
+          class="model-test-batch-textarea"
+          spellcheck="false"
+          data-i18n-placeholder="modelTest.addModelsPlaceholder"
+          placeholder="gpt-4o,gpt-4o-mini&#10;claude-3-5-sonnet-20241022&#10;claude-3-5-haiku-latest"
+        ></textarea>
+      </label>
+      <div class="model-test-add-help">
+        <div class="model-test-add-help-title">
+          <span class="model-test-add-help-icon" aria-hidden="true">!</span>
+          <strong data-i18n="modelTest.addModelsHelpTitle">使用说明：</strong>
+        </div>
+        <ul>
+          <li><span data-i18n="modelTest.addModelsHelpComma">支持逗号分隔：</span> <code>model1,model2,model3</code></li>
+          <li data-i18n="modelTest.addModelsHelpLine">支持换行分隔：每行一个模型</li>
+          <li data-i18n="modelTest.addModelsHelpDedupe">自动去除空格、空行和重复模型</li>
+        </ul>
+      </div>
+      <div class="confirm-actions confirm-actions--end">
+        <button id="addModelsCancelBtn" class="btn btn-secondary" data-i18n="common.cancel">取消</button>
+        <button id="addModelsConfirmBtn" class="btn btn-primary" data-i18n="modelTest.addModelsConfirm">确认添加</button>
       </div>
     </div>
   </div>

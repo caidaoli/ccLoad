@@ -8,6 +8,7 @@ let selectedModelName = '';
 let selectedProtocol = '';
 let testMode = TEST_MODE_CHANNEL;
 let isDeletingModels = false;
+let isAddingModels = false;
 let isTestingModels = false;
 
 let channelSelectCombobox = null;
@@ -24,6 +25,12 @@ const protocolTransformContainer = document.getElementById('protocolTransformCon
 const protocolTransformOptions = document.getElementById('protocolTransformOptions');
 const modelSelect = document.getElementById('testModelSelect');
 const mobileNameFilterInput = document.getElementById('modelTestMobileNameFilter');
+
+const addModelsModal = document.getElementById('addModelsModal');
+const addModelsTextarea = document.getElementById('addModelsTextarea');
+const addModelsCloseBtn = document.getElementById('addModelsCloseBtn');
+const addModelsCancelBtn = document.getElementById('addModelsCancelBtn');
+const addModelsConfirmBtn = document.getElementById('addModelsConfirmBtn');
 
 const deletePreviewModal = document.getElementById('deletePreviewModal');
 const deletePreviewContent = document.getElementById('deletePreviewContent');
@@ -46,6 +53,10 @@ function getFetchModelsBtn() {
   return document.getElementById('fetchModelsBtn');
 }
 
+function getAddModelsBtn() {
+  return document.getElementById('addModelsBtn');
+}
+
 function getDeleteModelsBtn() {
   return document.getElementById('deleteModelsBtn');
 }
@@ -62,6 +73,7 @@ const RESPONSE_HEAD_HTML = `
       </div>
       <div class="model-test-toolbar-section model-test-toolbar-section--actions model-test-head-actions">
         <button id="fetchModelsBtn" type="button" data-action="fetch-and-add-models" class="btn btn-secondary model-test-toolbar-btn" data-i18n="modelTest.fetchModels">获取模型</button>
+        <button id="addModelsBtn" type="button" data-action="open-add-models-modal" class="btn btn-secondary model-test-toolbar-btn hidden" data-i18n="modelTest.addModels">添加模型</button>
         <button id="deleteModelsBtn" type="button" data-action="delete-selected-models" class="btn btn-secondary model-test-toolbar-btn model-test-toolbar-btn--danger" data-i18n="modelTest.deleteModels">删除模型</button>
         <button id="runTestBtn" type="button" data-action="run-model-tests" class="btn btn-primary model-test-toolbar-btn" data-i18n="modelTest.startTest">开始测试</button>
       </div>
@@ -98,11 +110,21 @@ const MODEL_MODE_HEAD = `
 `;
 
 function i18nText(key, fallback, params) {
+  const interpolate = (text) => {
+    if (!params || typeof text !== 'string') return text;
+    let result = text;
+    Object.keys(params).forEach((paramKey) => {
+      const safeKey = paramKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      result = result.replace(new RegExp(`\\{${safeKey}\\}`, 'g'), String(params[paramKey]));
+    });
+    return result;
+  };
+
   if (typeof window.t === 'function') {
     const result = window.t(key, params);
-    if (result && result !== key) return result;
+    if (result && result !== key) return interpolate(result);
   }
-  return fallback;
+  return interpolate(fallback);
 }
 
 function normalizeProtocol(value) {
@@ -262,6 +284,7 @@ function initModelTestActions() {
     click: {
       'set-test-mode': (actionTarget) => setTestMode(actionTarget.dataset.mode || ''),
       'fetch-and-add-models': () => fetchAndAddModels(),
+      'open-add-models-modal': () => openAddModelsModal(),
       'delete-selected-models': () => deleteSelectedModels(),
       'run-model-tests': () => runModelTests()
     },
@@ -887,6 +910,7 @@ function renderRowsByMode() {
 function updateModeUI() {
   const isModelMode = testMode === TEST_MODE_MODEL;
   const fetchModelsBtn = getFetchModelsBtn();
+  const addModelsBtn = getAddModelsBtn();
   const deleteModelsBtn = getDeleteModelsBtn();
 
   const modeTabChannel = document.getElementById('modeTabChannel');
@@ -906,6 +930,10 @@ function updateModeUI() {
   }
   if (fetchModelsBtn) {
     fetchModelsBtn.style.display = isModelMode ? 'none' : '';
+  }
+  if (addModelsBtn) {
+    addModelsBtn.classList.toggle('hidden', !isModelMode);
+    addModelsBtn.disabled = false;
   }
   if (deleteModelsBtn) {
     deleteModelsBtn.disabled = false;
@@ -1469,6 +1497,232 @@ async function executeDeletePlan(deletePlan, progress = null) {
   return { failed, successCount, totalChannelCount };
 }
 
+function parseBatchModelInput(value) {
+  const seen = new Set();
+  return String(value || '')
+    .split(/[,\n]+/)
+    .map(item => item.trim())
+    .filter(Boolean)
+    .filter((modelName) => {
+      const key = modelName.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function buildModelEntriesFromNames(modelNames) {
+  return modelNames.map(modelName => ({
+    model: modelName,
+    redirect_model: ''
+  }));
+}
+
+function appendModelsToChannelCache(channel, modelNames) {
+  if (!channel) return 0;
+  if (!Array.isArray(channel.models)) {
+    channel.models = [];
+  }
+
+  const existing = new Set(
+    channel.models
+      .map(entry => getModelName(entry))
+      .filter(Boolean)
+      .map(modelName => modelName.toLowerCase())
+  );
+
+  let addedCount = 0;
+  modelNames.forEach((modelName) => {
+    const key = modelName.toLowerCase();
+    if (existing.has(key)) return;
+
+    channel.models.push({
+      model: modelName,
+      redirect_model: ''
+    });
+    existing.add(key);
+    addedCount++;
+  });
+
+  return addedCount;
+}
+
+function getVisibleChannelTargetsForAdd() {
+  if (testMode !== TEST_MODE_MODEL) return [];
+
+  return Array.from(document.querySelectorAll('#model-test-tbody tr[data-channel-id][data-model]'))
+    .filter(row => isDataRowVisible(row))
+    .map(row => {
+      const checkbox = row.querySelector('.row-checkbox');
+      if (!checkbox || !checkbox.checked) return null;
+
+      const channelId = parseInt(row.dataset.channelId, 10);
+      if (!Number.isFinite(channelId)) return null;
+
+      const channel = channelsList.find(ch => ch.id === channelId);
+      if (!channel) return null;
+
+      return { channelId, channel, row };
+    })
+    .filter(Boolean);
+}
+
+function formatAddFailDetails(failed, maxItems = 5) {
+  return formatDeleteFailDetails(failed, maxItems);
+}
+
+async function executeAddModelsToChannels(modelNames, targets) {
+  const failed = [];
+  let successCount = 0;
+  let addedModelCount = 0;
+  const modelEntries = buildModelEntriesFromNames(modelNames);
+
+  for (const target of targets) {
+    try {
+      const resp = await fetchAPIWithAuth(`/admin/channels/${target.channelId}/models`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ models: modelEntries })
+      });
+
+      if (!resp.success) {
+        failed.push({
+          channelId: target.channelId,
+          error: resp.error || i18nText('modelTest.saveModelsFailed', '保存模型失败')
+        });
+        continue;
+      }
+
+      successCount++;
+      addedModelCount += appendModelsToChannelCache(target.channel, modelNames);
+    } catch (error) {
+      failed.push({
+        channelId: target.channelId,
+        error: error?.message || i18nText('modelTest.saveModelsFailed', '保存模型失败')
+      });
+    }
+  }
+
+  return {
+    failed,
+    successCount,
+    addedModelCount,
+    totalChannelCount: targets.length
+  };
+}
+
+function setAddModelsModalBusy(value) {
+  isAddingModels = value;
+  if (addModelsTextarea) {
+    addModelsTextarea.disabled = value;
+  }
+  if (addModelsConfirmBtn) {
+    if (!addModelsConfirmBtn.dataset.originalText) {
+      addModelsConfirmBtn.dataset.originalText = addModelsConfirmBtn.textContent || i18nText('modelTest.addModelsConfirm', '确认添加');
+    }
+    addModelsConfirmBtn.disabled = value;
+    addModelsConfirmBtn.textContent = value
+      ? i18nText('modelTest.addModelsProcessing', '添加中...')
+      : addModelsConfirmBtn.dataset.originalText;
+  }
+  if (addModelsCancelBtn) {
+    addModelsCancelBtn.disabled = value;
+  }
+  if (addModelsCloseBtn) {
+    addModelsCloseBtn.disabled = value;
+  }
+}
+
+function closeAddModelsModal() {
+  if (isAddingModels) return;
+  addModelsModal?.classList.remove('show');
+}
+
+function openAddModelsModal() {
+  if (testMode !== TEST_MODE_MODEL) return;
+
+  const targets = getVisibleChannelTargetsForAdd();
+  if (targets.length === 0) {
+    showError(i18nText('modelTest.addModelsNoChannels', '当前表格没有可添加模型的渠道'));
+    return;
+  }
+
+  if (addModelsTextarea) {
+    addModelsTextarea.value = '';
+  }
+  addModelsModal?.classList.add('show');
+  setTimeout(() => addModelsTextarea?.focus(), 0);
+}
+
+async function confirmAddModelsFromModal() {
+  if (isAddingModels) return;
+
+  const modelNames = parseBatchModelInput(addModelsTextarea?.value || '');
+  if (modelNames.length === 0) {
+    showError(i18nText('modelTest.addModelsEmpty', '请输入要添加的模型'));
+    return;
+  }
+
+  const targets = getVisibleChannelTargetsForAdd();
+  if (targets.length === 0) {
+    showError(i18nText('modelTest.addModelsNoChannels', '当前表格没有可添加模型的渠道'));
+    return;
+  }
+
+  setAddModelsModalBusy(true);
+  try {
+    const result = await executeAddModelsToChannels(modelNames, targets);
+    setAddModelsModalBusy(false);
+
+    populateModelSelector();
+    renderModelModeRows();
+    closeAddModelsModal();
+
+    if (result.failed.length === 0) {
+      showSuccess(i18nText(
+        'modelTest.addSuccessSummary',
+        `添加完成：成功 ${result.successCount} 个渠道，失败 0 个渠道`,
+        {
+          success_channels: result.successCount,
+          failed_channels: 0,
+          total_channels: result.totalChannelCount,
+          added_models: result.addedModelCount
+        }
+      ));
+      return;
+    }
+
+    const failDetails = formatAddFailDetails(result.failed);
+    if (result.successCount > 0) {
+      showError(i18nText(
+        'modelTest.addPartialFailed',
+        `添加完成：成功 ${result.successCount} 个渠道，失败 ${result.failed.length} 个渠道。失败详情：${failDetails}`,
+        {
+          success_channels: result.successCount,
+          failed_channels: result.failed.length,
+          total_channels: result.totalChannelCount,
+          added_models: result.addedModelCount,
+          details: failDetails
+        }
+      ));
+      return;
+    }
+
+    showError(i18nText(
+      'modelTest.addAllFailed',
+      `添加失败：共 ${result.totalChannelCount} 个渠道，全部失败。失败详情：${failDetails}`,
+      {
+        failed_channels: result.failed.length,
+        total_channels: result.totalChannelCount,
+        details: failDetails
+      }
+    ));
+  } catch (error) {
+    setAddModelsModalBusy(false);
+    showError(error?.message || i18nText('modelTest.saveModelsFailed', '保存模型失败'));
+  }
+}
+
 async function fetchAndAddModels() {
   if (!selectedChannel) {
     showError(i18nText('modelTest.selectChannelFirst', '请先选择渠道'));
@@ -1782,6 +2036,26 @@ function bindEvents() {
     });
   }
 
+  addModelsConfirmBtn?.addEventListener('click', () => {
+    confirmAddModelsFromModal();
+  });
+  addModelsCancelBtn?.addEventListener('click', () => {
+    closeAddModelsModal();
+  });
+  addModelsCloseBtn?.addEventListener('click', () => {
+    closeAddModelsModal();
+  });
+  addModelsModal?.addEventListener('click', (event) => {
+    if (event.target === addModelsModal) {
+      closeAddModelsModal();
+    }
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && addModelsModal?.classList.contains('show')) {
+      closeAddModelsModal();
+    }
+  });
+
   tbody.addEventListener('click', (event) => {
     // Click on response cell to show upstream detail
     const responseCell = event.target.closest('.response');
@@ -1835,6 +2109,7 @@ window.deselectAllModels = deselectAllModels;
 window.toggleAllModels = toggleAllModels;
 window.runModelTests = runModelTests;
 window.fetchAndAddModels = fetchAndAddModels;
+window.openAddModelsModal = openAddModelsModal;
 window.deleteSelectedModels = deleteSelectedModels;
 
 function tryFormatJSON(str) {
