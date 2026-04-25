@@ -351,6 +351,10 @@ function createHarness({
       showSuccess() {},
       showError(message) {
         throw new Error(message);
+      },
+      i18nText(key, fallback) {
+        const result = sandbox.window.t(key);
+        return result && result !== key ? result : fallback;
       }
     },
     TemplateEngine: {

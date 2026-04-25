@@ -109,23 +109,7 @@ const MODEL_MODE_HEAD = `
   ${RESPONSE_HEAD_HTML}
 `;
 
-function i18nText(key, fallback, params) {
-  const interpolate = (text) => {
-    if (!params || typeof text !== 'string') return text;
-    let result = text;
-    Object.keys(params).forEach((paramKey) => {
-      const safeKey = paramKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      result = result.replace(new RegExp(`\\{${safeKey}\\}`, 'g'), String(params[paramKey]));
-    });
-    return result;
-  };
-
-  if (typeof window.t === 'function') {
-    const result = window.t(key, params);
-    if (result && result !== key) return interpolate(result);
-  }
-  return interpolate(fallback);
-}
+const i18nText = window.i18nText;
 
 function normalizeProtocol(value) {
   return String(value || '').trim().toLowerCase();
