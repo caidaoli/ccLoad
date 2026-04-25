@@ -1,6 +1,5 @@
 // Filter channels based on current filters
 let filteredChannels = []; // 存储筛选后的渠道列表
-let modelFilterOptions = [];
 let modelFilterCombobox = null; // 通用组件实例
 let channelNameCombobox = null; // 渠道名筛选组合框实例
 
@@ -15,15 +14,6 @@ function getChannelNameAllLabel() {
 function modelFilterInputValueFromFilterValue(filterValue) {
   if (!filterValue || filterValue === 'all') return getModelAllLabel();
   return filterValue;
-}
-
-function normalizeModelFilterOption() {
-  if (!filters || !filters.model || filters.model === 'all') return false;
-  if (modelFilterOptions.includes(filters.model)) return false;
-
-  filters.model = 'all';
-  if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
-  return true;
 }
 
 function filterChannels() {
@@ -55,44 +45,22 @@ function updateFilterInfo(filtered, total) {
   document.getElementById('totalCount').textContent = total;
 }
 
-// Update model filter options
+// 刷新模型筛选下拉显示（选项由 getOptions 从 allAvailableModels 动态读取）
 function updateModelOptions() {
-  modelFilterOptions = allAvailableModels.slice().sort();
-
-  normalizeModelFilterOption();
-
-  // 使用通用组件刷新下拉框
   if (modelFilterCombobox) {
     modelFilterCombobox.setValue(filters.model, modelFilterInputValueFromFilterValue(filters.model));
     modelFilterCombobox.refresh();
-  } else {
-    const modelFilterInput = document.getElementById('modelFilter');
-    if (modelFilterInput) {
-      modelFilterInput.value = modelFilterInputValueFromFilterValue(filters.model);
-    }
+    return;
+  }
+  const modelFilterInput = document.getElementById('modelFilter');
+  if (modelFilterInput) {
+    modelFilterInput.value = modelFilterInputValueFromFilterValue(filters.model);
   }
 }
 
-// 更新渠道名称下拉选项（getOptions 回调动态读取，refresh 触发重算）
+// 刷新渠道名称下拉显示（选项由 getOptions 从 allAvailableChannelNames 动态读取）
 function updateChannelNameOptions() {
-  if (!channelNameCombobox) return;
-
-  // 检查当前选值是否仍合法
-  const currentVal = channelNameCombobox.getValue();
-  if (currentVal) {
-    const typeFilter = (filters && filters.channelType) ? filters.channelType : 'all';
-    const stillExists = channels.some(ch => {
-      if (typeFilter !== 'all' && (ch.channel_type || 'anthropic') !== typeFilter) return false;
-      return ch.name === currentVal;
-    });
-    if (!stillExists) {
-      channelNameCombobox.setValue('', getChannelNameAllLabel());
-      filters.search = '';
-      if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
-    }
-  }
-
-  channelNameCombobox.refresh();
+  if (channelNameCombobox) channelNameCombobox.refresh();
 }
 
 // Setup filter event listeners
@@ -101,6 +69,9 @@ function setupFilterListeners() {
     filters.status = e.target.value;
     channelsCurrentPage = 1;
     if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
+    if (typeof loadChannelsFilterOptions === 'function') {
+      loadChannelsFilterOptions(filters.channelType, filters.status);
+    }
     loadChannels(filters.channelType);
   });
 
@@ -113,10 +84,12 @@ function setupFilterListeners() {
       dropdownId: 'modelFilterDropdown',
       initialValue: filters.model,
       initialLabel: modelFilterInputValueFromFilterValue(filters.model),
+      commitEmptyAsFirst: true,
       getOptions: () => {
         const allLabel = getModelAllLabel();
+        const models = Array.isArray(allAvailableModels) ? allAvailableModels : [];
         return [{ value: 'all', label: allLabel }].concat(
-          modelFilterOptions.map(m => ({ value: m, label: m }))
+          models.map(m => ({ value: m, label: m }))
         );
       },
       onSelect: (value) => {
@@ -139,15 +112,12 @@ function setupFilterListeners() {
       initialValue: filters.search,
       initialLabel: filters.search || allLabel,
       allowCustomInput: true,
+      commitEmptyAsFirst: true,
       getOptions: () => {
-        const nameSet = new Set();
-        const typeFilter = (filters && filters.channelType) ? filters.channelType : 'all';
-        channels.forEach(ch => {
-          if (typeFilter !== 'all' && (ch.channel_type || 'anthropic') !== typeFilter) return;
-          if (ch.name) nameSet.add(ch.name);
-        });
+        // 使用服务端在 search 过滤前冻结的全集，避免选中某渠道名后下拉收敛为单一项
+        const names = Array.isArray(allAvailableChannelNames) ? allAvailableChannelNames : [];
         return [{ value: '', label: allLabel }].concat(
-          Array.from(nameSet).sort().map(name => ({ value: name, label: name }))
+          names.map(name => ({ value: name, label: name }))
         );
       },
       onSelect: (value) => {

@@ -93,7 +93,7 @@ async function handleImportCSV(event, importBtn) {
     }
 
     clearChannelsCache();
-    await loadChannels(filters.channelType);
+    await reloadChannelsList();
   } catch (err) {
     console.error('Import CSV failed', err);
     if (window.showError) window.showError(err.message || window.t('channels.msg.importFailed'));

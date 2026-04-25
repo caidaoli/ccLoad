@@ -84,6 +84,9 @@ function createBatchDeleteHarness() {
     loadChannels: async (type) => {
       loadChannelsCalls.push(type);
     },
+    reloadChannelsList: async (type) => {
+      loadChannelsCalls.push(type ?? 'all');
+    },
     clearChannelsCache() {
       clearCacheCalls += 1;
     },

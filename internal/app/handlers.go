@@ -162,21 +162,19 @@ func RespondJSONWithCount[T any](c *gin.Context, code int, data T, count int) {
 	})
 }
 
-// PaginatedResponse 分页响应结构，扩展 APIResponse 支持额外元数据
+// PaginatedResponse 分页响应结构
 type PaginatedResponse[T any] struct {
-	Success         bool     `json:"success"`
-	Data            T        `json:"data"`
-	Count           int      `json:"count"`
-	AvailableModels []string `json:"available_models,omitempty"`
+	Success bool `json:"success"`
+	Data    T    `json:"data"`
+	Count   int  `json:"count"`
 }
 
-// RespondPaginated 发送分页 JSON 响应，可附带筛选元数据
-func RespondPaginated[T any](c *gin.Context, code int, data T, count int, availableModels []string) {
+// RespondPaginated 发送分页 JSON 响应
+func RespondPaginated[T any](c *gin.Context, code int, data T, count int) {
 	c.JSON(code, PaginatedResponse[T]{
-		Success:         true,
-		Data:            data,
-		Count:           count,
-		AvailableModels: availableModels,
+		Success: true,
+		Data:    data,
+		Count:   count,
 	})
 }
 

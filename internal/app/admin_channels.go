@@ -80,6 +80,8 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	}
 
 	// 支持按名称、状态、模型过滤（供分页场景使用）
+	// 注意：筛选下拉的全集走独立接口 /admin/channels/filter-options，
+	// 这里只负责按所有筛选条件返回当前页，避免列表数据与下拉选项耦合。
 	search := strings.TrimSpace(c.Query("search"))
 	if search != "" {
 		searchLower := strings.ToLower(search)
@@ -115,25 +117,6 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	}
 
 	hasPagination := c.Query("limit") != "" || c.Query("offset") != ""
-
-	// 分页模式下，在应用 model 过滤前冻结模型下拉集合，
-	// 避免选中某模型后下拉收敛为单一选项。
-	var availableModels []string
-	if hasPagination {
-		modelSet := make(map[string]struct{})
-		for _, cfg := range cfgs {
-			for _, entry := range cfg.ModelEntries {
-				if entry.Model != "" {
-					modelSet[entry.Model] = struct{}{}
-				}
-			}
-		}
-		availableModels = make([]string, 0, len(modelSet))
-		for m := range modelSet {
-			availableModels = append(availableModels, m)
-		}
-		sort.Strings(availableModels)
-	}
 
 	modelName := strings.TrimSpace(c.Query("model"))
 	if modelName != "" && modelName != "all" {
@@ -274,10 +257,89 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	}
 
 	if hasPagination {
-		RespondPaginated(c, http.StatusOK, out, totalCount, availableModels)
+		RespondPaginated(c, http.StatusOK, out, totalCount)
 		return
 	}
 	RespondJSON(c, http.StatusOK, out)
+}
+
+// HandleChannelsFilterOptions 返回渠道筛选下拉的全集（渠道名/模型），
+// 仅按 type/status 联动，与列表分页/搜索/模型筛选解耦。
+// GET /admin/channels/filter-options?type=&status=
+func (s *Server) HandleChannelsFilterOptions(c *gin.Context) {
+	cfgs, err := s.store.ListConfigs(c.Request.Context())
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	if t := c.Query("type"); t != "" && t != "all" {
+		normalizedQueryType := util.NormalizeChannelType(t)
+		filtered := make([]*model.Config, 0, len(cfgs))
+		for _, cfg := range cfgs {
+			if util.NormalizeChannelType(cfg.ChannelType) == normalizedQueryType {
+				filtered = append(filtered, cfg)
+			}
+		}
+		cfgs = filtered
+	}
+
+	if status := strings.TrimSpace(c.Query("status")); status != "" && status != "all" {
+		now := time.Now()
+		allChannelCooldowns, err := s.getAllChannelCooldowns(c.Request.Context())
+		if err != nil {
+			log.Printf("[WARN] 批量查询渠道冷却状态失败: %v", err)
+			allChannelCooldowns = make(map[int64]time.Time)
+		}
+		filtered := make([]*model.Config, 0, len(cfgs))
+		for _, cfg := range cfgs {
+			switch status {
+			case "enabled":
+				if cfg.Enabled {
+					filtered = append(filtered, cfg)
+				}
+			case "disabled":
+				if !cfg.Enabled {
+					filtered = append(filtered, cfg)
+				}
+			case "cooldown":
+				if until, cooled := allChannelCooldowns[cfg.ID]; cooled && until.After(now) {
+					filtered = append(filtered, cfg)
+				}
+			}
+		}
+		cfgs = filtered
+	}
+
+	nameSet := make(map[string]struct{}, len(cfgs))
+	modelSet := make(map[string]struct{})
+	for _, cfg := range cfgs {
+		if name := strings.TrimSpace(cfg.Name); name != "" {
+			nameSet[name] = struct{}{}
+		}
+		for _, entry := range cfg.ModelEntries {
+			if entry.Model != "" {
+				modelSet[entry.Model] = struct{}{}
+			}
+		}
+	}
+
+	channelNames := make([]string, 0, len(nameSet))
+	for n := range nameSet {
+		channelNames = append(channelNames, n)
+	}
+	sort.Strings(channelNames)
+
+	models := make([]string, 0, len(modelSet))
+	for m := range modelSet {
+		models = append(models, m)
+	}
+	sort.Strings(models)
+
+	RespondJSON(c, http.StatusOK, gin.H{
+		"channel_names": channelNames,
+		"models":        models,
+	})
 }
 
 // 创建新渠道

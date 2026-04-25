@@ -1056,32 +1056,86 @@
     .pagination-page-size-control {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
+      gap: var(--space-1);
       white-space: nowrap;
-      font-weight: var(--font-medium);
-      color: var(--neutral-800);
+      font-size: var(--text-sm);
+      font-weight: var(--font-normal);
+      color: var(--neutral-700);
+      font-variant-numeric: tabular-nums;
     }
 
-    .pagination-page-size-control select {
+    .pagination-page-size-control select.logs-jump-input {
+      width: 64px;
+      padding-right: 4px;
+      cursor: pointer;
+    }
+
+    .logs-pagination-card .logs-pagination-controls {
+      gap: var(--space-1);
+      flex-wrap: wrap;
+    }
+
+    .logs-pagination-card .logs-pagination-controls .btn-sm {
+      padding: 2px;
+      gap: 4px;
+      font-size: var(--text-sm);
+    }
+
+    .logs-pagination-card .logs-pagination-controls svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    .logs-pagination-card .logs-pagination-info {
+      margin: 0 var(--space-2);
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-1);
+      flex-wrap: wrap;
+      justify-content: center;
+      font-size: var(--text-sm);
+      font-weight: var(--font-normal);
+      color: var(--neutral-700);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .logs-pagination-card .logs-pagination-info #channels_current_page,
+    .logs-pagination-card .logs-pagination-info #channels_total_pages {
+      display: inline-block;
+      min-width: 3ch;
+      text-align: center;
+      font-weight: var(--font-semibold);
+      color: var(--neutral-900);
+    }
+
+    .logs-pagination-card .logs-pagination-separator {
+      margin-left: var(--space-1);
+      color: var(--neutral-400);
+    }
+
+    .logs-pagination-card .logs-jump-input {
+      width: 84px;
       padding: 4px 8px;
       border: 1px solid var(--neutral-300);
-      border-radius: 6px;
-      background: white;
+      border-radius: 4px;
+      text-align: center;
+      font-size: var(--text-sm);
       color: var(--neutral-900);
-      font-size: 13px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: border-color 0.2s;
+      background: rgba(255, 255, 255, 0.9);
+      color-scheme: light;
+      -webkit-text-fill-color: var(--neutral-900);
+      transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
     }
 
-    .pagination-page-size-control select:hover {
-      border-color: var(--primary-500);
-    }
-
-    .pagination-page-size-control select:focus {
+    .logs-pagination-card .logs-jump-input:focus {
       outline: none;
       border-color: var(--primary-500);
       box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+      background: white;
+    }
+
+    .logs-pagination-card .logs-jump-input::placeholder {
+      color: var(--neutral-400);
     }
 
     .channel-selection-toggle {

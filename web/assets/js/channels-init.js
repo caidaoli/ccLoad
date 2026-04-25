@@ -277,15 +277,17 @@ window.initPageBootstrap({
         channelNameCombobox.setValue('', getChannelNameAllLabel());
       }
       saveChannelsFilters();
+      loadChannelsFilterOptions(type, filters.status);
       loadChannels(type);
-      if (typeof updateChannelNameOptions === 'function') updateChannelNameOptions();
     });
 
     await loadDefaultTestContent();
     await loadChannelStatsRange();
 
-    await loadChannels(initialType);
-    if (typeof updateChannelNameOptions === 'function') updateChannelNameOptions();
+    await Promise.all([
+      loadChannelsFilterOptions(initialType, filters.status),
+      loadChannels(initialType)
+    ]);
     await loadChannelStats();
     highlightFromHash();
     window.addEventListener('hashchange', highlightFromHash);

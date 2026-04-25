@@ -526,6 +526,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		// 渠道管理
 		admin.GET("/channels", s.HandleChannels)
 		admin.POST("/channels", s.HandleChannels)
+		admin.GET("/channels/filter-options", s.HandleChannelsFilterOptions)
 		admin.GET("/channels/export", s.HandleExportChannelsCSV)
 		admin.POST("/channels/import", s.HandleImportChannelsCSV)
 		admin.POST("/channels/batch-priority", s.HandleBatchUpdatePriority) // 批量更新渠道优先级

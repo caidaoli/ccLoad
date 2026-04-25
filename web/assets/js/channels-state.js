@@ -17,6 +17,7 @@ let channelsPageSize = parseInt(localStorage.getItem('channels.pageSize'), 10) |
 let channelsTotalPages = 1;
 let channelsTotalCount = 0;
 let allAvailableModels = [];
+let allAvailableChannelNames = [];
 
 function normalizeSelectedChannelID(id) {
   const numericID = Number(id);
