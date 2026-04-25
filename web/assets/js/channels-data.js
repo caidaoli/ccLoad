@@ -30,10 +30,6 @@ async function loadChannels(type = 'all') {
     channelsTotalCount = Number.isFinite(resp.count) ? resp.count : channels.length;
     channelsTotalPages = Math.max(1, Math.ceil(channelsTotalCount / channelsPageSize));
 
-    if (Array.isArray(resp.available_models)) {
-      allAvailableModels = resp.available_models;
-    }
-
     if (channelsCurrentPage > channelsTotalPages) {
       channelsCurrentPage = channelsTotalPages;
       return loadChannels(type);
@@ -43,7 +39,6 @@ async function loadChannels(type = 'all') {
       syncSelectedChannelsWithLoadedChannels();
     }
 
-    updateModelOptions();
     filterChannels();
     if (typeof updateChannelsPagination === 'function') {
       updateChannelsPagination();
@@ -52,6 +47,33 @@ async function loadChannels(type = 'all') {
     console.error('Failed to load channels', e);
     if (window.showError) window.showError(window.t('channels.loadChannelsFailed'));
   }
+}
+
+// CRUD 操作后同时刷新列表分页与筛选下拉全集
+async function reloadChannelsList(type = filters.channelType, status = filters.status) {
+  await Promise.all([
+    loadChannelsFilterOptions(type, status),
+    loadChannels(type)
+  ]);
+}
+
+// 加载渠道筛选下拉的全集（按 type/status 联动），与列表分页/搜索/模型筛选解耦
+async function loadChannelsFilterOptions(type = 'all', status = 'all') {
+  try {
+    const params = new URLSearchParams();
+    if (type && type !== 'all') params.set('type', type);
+    if (status && status !== 'all') params.set('status', status);
+    const url = '/admin/channels/filter-options' + (params.toString() ? '?' + params.toString() : '');
+    const data = await fetchDataWithAuth(url);
+    allAvailableChannelNames = Array.isArray(data && data.channel_names) ? data.channel_names : [];
+    allAvailableModels = Array.isArray(data && data.models) ? data.models : [];
+  } catch (e) {
+    console.error('Failed to load filter options', e);
+    allAvailableChannelNames = [];
+    allAvailableModels = [];
+  }
+  if (typeof updateModelOptions === 'function') updateModelOptions();
+  if (typeof updateChannelNameOptions === 'function') updateChannelNameOptions();
 }
 
 async function loadChannelStatsRange() {

@@ -949,6 +949,7 @@
    * @param {number} [config.minWidth] - 最小宽度 (px)
    * @param {boolean} [config.attachMode] - 附着模式，使用已存在的 HTML 元素
    * @param {boolean} [config.allowCustomInput] - 允许提交非下拉选项的自定义输入
+   * @param {boolean} [config.commitEmptyAsFirst] - 输入为空回车/失焦时提交第一项（通常为“全部”），覆盖默认的取消/恢复行为
    * @returns {Object} 组件实例
    */
   function createSearchableCombobox(config) {
@@ -964,7 +965,8 @@
       initialLabel = '',
       minWidth = 150,
       attachMode = false,
-      allowCustomInput = false
+      allowCustomInput = false,
+      commitEmptyAsFirst = false
     } = config;
 
     let input, dropdown, wrapper, dropdownHome, container = null;
@@ -1046,9 +1048,26 @@
       input.dataset.pickActive = '1';
       input.dataset.prevInputValue = input.value;
       input.dataset.prevValue = currentValue;
-      // 非自定义输入模式始终清空；自定义输入模式仅在“全量态(空值)”时清空展示文案
-      // 避免把“所有渠道”这类标签文本当成过滤关键字，同时保留已有搜索词可编辑。
-      if (!allowCustomInput || !String(currentValue || '').trim()) {
+      // 非自定义输入模式始终清空；自定义输入模式下：
+      // - 当前值为空（全量态）→ 清空，避免把“所有渠道”这类占位标签当成过滤关键字
+      // - 当前值精确命中下拉选项（用户已从下拉选中而非输入自定义词）→ 清空，便于再次浏览全部选项
+      // - 其余情况（自定义搜索词）→ 保留以便继续编辑
+      let shouldClear = !allowCustomInput;
+      if (allowCustomInput) {
+        const trimmedCurrent = String(currentValue || '').trim();
+        if (!trimmedCurrent) {
+          shouldClear = true;
+        } else {
+          const trimmedLower = trimmedCurrent.toLowerCase();
+          const matchesOption = getOptions().some((opt) => {
+            const v = String(opt.value || '').trim().toLowerCase();
+            const l = String(opt.label || '').trim().toLowerCase();
+            return v === trimmedLower || l === trimmedLower;
+          });
+          if (matchesOption) shouldClear = true;
+        }
+      }
+      if (shouldClear) {
         input.value = '';
       }
       activeIndex = -1;
@@ -1089,7 +1108,23 @@
     function commitFirstMatchedOrCancel() {
       const keyword = input.value.trim();
       if (!keyword) {
+        if (commitEmptyAsFirst) {
+          // 空输入回车/失焦时提交第一项（约定为“全部”），无论之前是否有选中值。
+          const opts = getOptions();
+          if (opts.length > 0) {
+            commitValue(opts[0].value, opts[0].label);
+            return;
+          }
+        }
         if (allowCustomInput) {
+          // 自定义输入模式下，若打开下拉前已存在选中值（即本次仅是浏览/清空显示），
+          // 视为取消并恢复之前的选择；只有从空态主动确认空值时才清除筛选。
+          const prevInputValue = String(input.dataset.prevInputValue ?? '').trim();
+          const prevValue = String(input.dataset.prevValue ?? '').trim();
+          if (prevInputValue || prevValue) {
+            cancelPick();
+            return;
+          }
           commitValue('', '');
           return;
         }

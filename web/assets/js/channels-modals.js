@@ -253,7 +253,9 @@ async function handleChannelSaveSuccess({ isNewChannel, newChannelType, savedCha
   }
   if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
 
-  if (typeof loadChannels === 'function') {
+  if (typeof reloadChannelsList === 'function') {
+    await reloadChannelsList(nextType, filters.status);
+  } else if (typeof loadChannels === 'function') {
     await loadChannels(nextType);
   }
 }
@@ -613,7 +615,7 @@ async function confirmDelete() {
     }
     if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
     clearChannelsCache();
-    await loadChannels(filters.channelType);
+    await reloadChannelsList();
     if (window.showSuccess) {
       if (type === 'batch') {
         const data = resp.data || {};
@@ -645,7 +647,7 @@ async function toggleChannel(id, enabled) {
     });
     if (!resp.success) throw new Error(resp.error || window.t('common.failed'));
     clearChannelsCache();
-    await loadChannels(filters.channelType);
+    await reloadChannelsList();
     if (window.showSuccess) window.showSuccess(enabled ? window.t('channels.channelEnabled') : window.t('channels.channelDisabled'));
   } catch (e) {
     console.error('Toggle failed', e);
@@ -835,7 +837,7 @@ async function batchSetSelectedChannelsEnabled(enabled) {
     selectedChannelIds.clear();
     if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
     clearChannelsCache();
-    await loadChannels(filters.channelType);
+    await reloadChannelsList();
 
     if (window.showSuccess) {
       window.showSuccess(window.t('channels.batchEnabledSummary', {
@@ -1027,7 +1029,7 @@ async function batchRefreshSelectedChannels(mode) {
   selectedChannelIds.clear();
   if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
   clearChannelsCache();
-  await loadChannels(filters.channelType);
+  await reloadChannelsList();
   updateBatchChannelSelectionUI();
 }
 
