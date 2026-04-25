@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha1" //nolint:gosec // UUIDv5 per RFC 4122 requires SHA-1，与安全无关
 	"fmt"
@@ -70,7 +71,7 @@ func codexSessionIDForOpenAIKey(apiKey string) string {
 //   - OpenAI 客户端：基于 apiKey 生成确定性 UUID
 //   - 其他协议：返回空
 func resolveCodexSessionHint(reqCtx *requestContext, translatedBody []byte, apiKey string, header http.Header) string {
-	if reqCtx == nil || reqCtx.upstreamProtocol != protocol.Codex {
+	if reqCtx == nil || runtimeUpstreamProtocol(reqCtx, nil) != string(protocol.Codex) {
 		return ""
 	}
 	switch reqCtx.clientProtocol {
@@ -100,18 +101,58 @@ func injectCodexPromptCacheKey(body []byte, id string) []byte {
 	if len(body) == 0 || id == "" {
 		return body
 	}
+	if readCodexPromptCacheKey(body) != "" {
+		return body
+	}
 	var payload map[string]any
 	if err := sonic.Unmarshal(body, &payload); err != nil || payload == nil {
 		return body
 	}
-	if existing, ok := payload["prompt_cache_key"].(string); ok && strings.TrimSpace(existing) != "" {
-		return body
-	}
-	payload["prompt_cache_key"] = id
-	out, err := sonic.Marshal(payload)
+
+	encodedID, err := sonic.Marshal(id)
 	if err != nil {
 		return body
 	}
+	end := len(body)
+	for end > 0 {
+		switch body[end-1] {
+		case ' ', '\n', '\r', '\t':
+			end--
+		default:
+			goto foundEnd
+		}
+	}
+foundEnd:
+	if end == 0 || body[end-1] != '}' {
+		return body
+	}
+	start := 0
+	for start < end {
+		switch body[start] {
+		case ' ', '\n', '\r', '\t':
+			start++
+		default:
+			goto foundStart
+		}
+	}
+foundStart:
+	if start >= end || body[start] != '{' {
+		return body
+	}
+
+	hasFields := len(bytes.TrimSpace(body[start+1:end-1])) > 0
+	insertLen := len(`"prompt_cache_key":`) + len(encodedID)
+	if hasFields {
+		insertLen++
+	}
+	out := make([]byte, 0, len(body)+insertLen)
+	out = append(out, body[:end-1]...)
+	if hasFields {
+		out = append(out, ',')
+	}
+	out = append(out, `"prompt_cache_key":`...)
+	out = append(out, encodedID...)
+	out = append(out, body[end-1:]...)
 	return out
 }
 

@@ -728,3 +728,47 @@ func TestReplaceModelInPath_GeminiAPI(t *testing.T) {
 		})
 	}
 }
+
+func TestStripAnthropicProtocolHeaders(t *testing.T) {
+	t.Parallel()
+
+	anthropicHeaders := []string{"anthropic-version", "anthropic-beta", "anthropic-dangerous-direct-browser-access"}
+
+	tests := []struct {
+		name        string
+		channelType string
+		shouldStrip bool
+	}{
+		{"anthropic upstream keeps headers", "anthropic", false},
+		{"openai upstream strips headers", "openai", true},
+		{"gemini upstream strips headers", "gemini", true},
+		{"codex upstream strips headers", "codex", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			req, _ := http.NewRequest("POST", "http://example.com/v1/chat/completions", nil)
+			req.Header.Set("anthropic-version", "2023-06-01")
+			req.Header.Set("anthropic-beta", "context-1m-2025-08-07")
+			req.Header.Set("anthropic-dangerous-direct-browser-access", "true")
+			req.Header.Set("Content-Type", "application/json") // 非 Anthropic 头应保留
+
+			stripAnthropicProtocolHeaders(req, tt.channelType)
+
+			for _, h := range anthropicHeaders {
+				got := req.Header.Get(h)
+				if tt.shouldStrip && got != "" {
+					t.Errorf("header %q should be stripped for %s upstream, got %q", h, tt.channelType, got)
+				}
+				if !tt.shouldStrip && got == "" {
+					t.Errorf("header %q should be kept for %s upstream", h, tt.channelType)
+				}
+			}
+			// 非 Anthropic 头始终保留
+			if req.Header.Get("Content-Type") != "application/json" {
+				t.Error("non-anthropic header Content-Type was incorrectly removed")
+			}
+		})
+	}
+}

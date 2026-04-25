@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,21 @@ import (
 )
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+func assertFieldOrder(t *testing.T, body string, fields ...string) {
+	t.Helper()
+	prev := -1
+	for _, field := range fields {
+		idx := strings.Index(body, field)
+		if idx < 0 {
+			t.Fatalf("field %s missing in %s", field, body)
+		}
+		if idx <= prev {
+			t.Fatalf("field order broken at %s in %s", field, body)
+		}
+		prev = idx
+	}
+}
 
 func resetCodexSessionCache() {
 	codexSessionMu.Lock()
@@ -173,6 +189,23 @@ func TestInjectCodexPromptCacheKey(t *testing.T) {
 	raw := []byte(`not json`)
 	if got := injectCodexPromptCacheKey(raw, "x"); string(got) != string(raw) {
 		t.Fatalf("expected non-json body unchanged")
+	}
+}
+
+func TestInjectCodexPromptCacheKey_PreservesExistingFieldOrder(t *testing.T) {
+	body := []byte(`{"model":"gpt-5-codex","instructions":"keep this prefix","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`)
+
+	out := injectCodexPromptCacheKey(body, "stable-session")
+	got := string(out)
+
+	for _, want := range []string{`"model"`, `"instructions"`, `"input"`, `"stream"`, `"prompt_cache_key"`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %s in injected body: %s", want, got)
+		}
+	}
+	assertFieldOrder(t, got, `"model"`, `"instructions"`, `"input"`, `"stream"`, `"prompt_cache_key"`)
+	if !strings.HasPrefix(got, `{"model":"gpt-5-codex","instructions":"keep this prefix","input":`) {
+		t.Fatalf("prompt_cache_key injection reordered cache-sensitive prefix: %s", got)
 	}
 }
 

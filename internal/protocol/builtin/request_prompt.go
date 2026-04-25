@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -104,6 +105,22 @@ type geminiRequestPayload struct {
 	GenerationConfig  *geminiGenerationConfig  `json:"generationConfig,omitempty"`
 }
 
+type codexRequestPayload struct {
+	Model             string            `json:"model"`
+	Instructions      string            `json:"instructions,omitempty"`
+	Input             []map[string]any  `json:"input,omitempty"`
+	Tools             []map[string]any  `json:"tools,omitempty"`
+	ToolChoice        any               `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool             `json:"parallel_tool_calls,omitempty"`
+	Stream            util.FlexibleBool `json:"stream,omitempty"`
+	Temperature       *float64          `json:"temperature,omitempty"`
+	TopP              *float64          `json:"top_p,omitempty"`
+	MaxOutputTokens   *int              `json:"max_output_tokens,omitempty"`
+	User              string            `json:"user,omitempty"`
+	Reasoning         map[string]any    `json:"reasoning,omitempty"`
+	Include           []string          `json:"include,omitempty"`
+}
+
 type geminiGenerationConfig struct {
 	ThinkingConfig  *geminiThinkingConfig `json:"thinkingConfig,omitempty"`
 	Temperature     *float64              `json:"temperature,omitempty"`
@@ -117,6 +134,16 @@ type geminiGenerationConfig struct {
 type geminiThinkingConfig struct {
 	IncludeThoughts bool `json:"includeThoughts,omitempty"`
 	ThinkingBudget  *int `json:"thinkingBudget,omitempty"`
+}
+
+func marshalStableJSON(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte{'\n'}), nil
 }
 
 type geminiSystemInstruction struct {
@@ -483,7 +510,7 @@ func encodeGeminiRequest(conv conversation) ([]byte, error) {
 	if len(payload.Contents) == 0 {
 		return nil, fmt.Errorf("%w: no convertible gemini contents", protocol.ErrUnsupportedRequestShape)
 	}
-	return sonic.Marshal(payload)
+	return marshalStableJSON(payload)
 }
 
 // buildGeminiGenerationConfig 聚合采样/上限参数与思考配置，未命中任何字段时返回 nil。
@@ -622,7 +649,7 @@ func encodeAnthropicRequest(model string, conv conversation, stream bool) ([]byt
 			tools = append(tools, item)
 		}
 		if len(tools) > 0 {
-			out.Tools, err = sonic.Marshal(tools)
+			out.Tools, err = marshalStableJSON(tools)
 			if err != nil {
 				return nil, err
 			}
@@ -658,7 +685,7 @@ func encodeAnthropicRequest(model string, conv conversation, stream bool) ([]byt
 		anthropicToolChoice["disable_parallel_tool_use"] = true
 	}
 	if anthropicToolChoice != nil {
-		out.ToolChoice, err = sonic.Marshal(anthropicToolChoice)
+		out.ToolChoice, err = marshalStableJSON(anthropicToolChoice)
 		if err != nil {
 			return nil, err
 		}
@@ -666,7 +693,7 @@ func encodeAnthropicRequest(model string, conv conversation, stream bool) ([]byt
 	if len(out.Messages) == 0 {
 		return nil, fmt.Errorf("%w: no convertible anthropic messages", protocol.ErrUnsupportedRequestShape)
 	}
-	return sonic.Marshal(out)
+	return marshalStableJSON(out)
 }
 
 func encodeOpenAIRequest(model string, conv conversation, stream bool) ([]byte, error) {
@@ -769,7 +796,7 @@ func encodeOpenAIRequest(model string, conv conversation, stream bool) ([]byte, 
 	for _, message := range messages {
 		encoded := openAIChatMessage{Role: stringValue(message["role"]), Content: message["content"]}
 		if rawCalls, ok := message["tool_calls"]; ok {
-			callBytes, err := sonic.Marshal(rawCalls)
+			callBytes, err := marshalStableJSON(rawCalls)
 			if err != nil {
 				return nil, err
 			}
@@ -808,7 +835,7 @@ func encodeOpenAIRequest(model string, conv conversation, stream bool) ([]byte, 
 			tools = append(tools, item)
 		}
 		var err error
-		payload.Tools, err = sonic.Marshal(tools)
+		payload.Tools, err = marshalStableJSON(tools)
 		if err != nil {
 			return nil, err
 		}
@@ -817,7 +844,7 @@ func encodeOpenAIRequest(model string, conv conversation, stream bool) ([]byte, 
 		choice := encodeOpenAIToolChoice(conv.ToolChoice)
 		if choice != nil {
 			var err error
-			payload.ToolChoice, err = sonic.Marshal(choice)
+			payload.ToolChoice, err = marshalStableJSON(choice)
 			if err != nil {
 				return nil, err
 			}
@@ -838,14 +865,14 @@ func encodeOpenAIRequest(model string, conv conversation, stream bool) ([]byte, 
 		payload.User = sp.User
 		payload.ReasoningEffort = sp.ReasoningEffort
 		if len(sp.Stop) > 0 {
-			raw, err := sonic.Marshal(sp.Stop)
+			raw, err := marshalStableJSON(sp.Stop)
 			if err != nil {
 				return nil, err
 			}
 			payload.Stop = raw
 		}
 	}
-	return sonic.Marshal(payload)
+	return marshalStableJSON(payload)
 }
 
 func encodeCodexRequest(model string, conv conversation, stream bool) ([]byte, error) {
@@ -854,15 +881,15 @@ func encodeCodexRequest(model string, conv conversation, stream bool) ([]byte, e
 		return nil, err
 	}
 	toolAliases := buildCodexToolAliases(collectCodexAliasNames(conv))
-	out := map[string]any{
-		"model": model,
-		"input": make([]map[string]any, 0, len(turns)),
+	out := codexRequestPayload{
+		Model: model,
+		Input: make([]map[string]any, 0, len(turns)),
 	}
 	if stream {
-		out["stream"] = true
+		out.Stream = util.FlexibleBool(true)
 	}
 	if systemText != "" {
-		out["instructions"] = systemText
+		out.Instructions = systemText
 	}
 	if len(conv.Tools) > 0 {
 		tools := make([]map[string]any, 0, len(conv.Tools))
@@ -884,27 +911,27 @@ func encodeCodexRequest(model string, conv conversation, stream bool) ([]byte, e
 			}
 			tools = append(tools, item)
 		}
-		out["tools"] = tools
+		out.Tools = tools
 	}
 	if !conv.ToolChoice.IsZero() {
 		switch conv.ToolChoice.Mode {
 		case "auto", "none", "required":
-			out["tool_choice"] = conv.ToolChoice.Mode
+			out.ToolChoice = conv.ToolChoice.Mode
 		case "named":
 			if conv.ToolChoice.toolType() == "function" {
-				out["tool_choice"] = map[string]any{
+				out.ToolChoice = map[string]any{
 					"type": "function",
 					"name": toolAliases.shorten(conv.ToolChoice.Name),
 				}
 			} else {
-				out["tool_choice"] = map[string]any{"type": conv.ToolChoice.toolType()}
+				out.ToolChoice = map[string]any{"type": conv.ToolChoice.toolType()}
 			}
 		default:
 			return nil, fmt.Errorf("%w: unsupported codex tool choice %q", protocol.ErrUnsupportedRequestShape, conv.ToolChoice.Mode)
 		}
 	}
 
-	input := out["input"].([]map[string]any)
+	input := out.Input
 	for i, turn := range turns {
 		role := normalizeRole(turn.Role)
 		switch role {
@@ -980,43 +1007,44 @@ func encodeCodexRequest(model string, conv conversation, stream bool) ([]byte, e
 			return nil, fmt.Errorf("%w: unsupported codex role %q", protocol.ErrUnsupportedRequestShape, turn.Role)
 		}
 	}
-	out["input"] = input
+	out.Input = input
 	if len(input) == 0 {
 		if systemText == "" {
 			return nil, fmt.Errorf("%w: no convertible codex input", protocol.ErrUnsupportedRequestShape)
 		}
 		// Responses-style Codex requests can rely on instructions alone. In that
 		// case omit `input` entirely instead of rejecting the transform.
-		delete(out, "input")
+		out.Input = nil
 	}
 	if conv.ToolChoice.DisableParallel && len(conv.Tools) > 0 {
-		out["parallel_tool_calls"] = false
+		f := false
+		out.ParallelToolCalls = &f
 	}
-	applyCodexSampling(out, conv.Sampling)
+	applyCodexSampling(&out, conv.Sampling)
 	if reasoning := buildCodexReasoningConfig(conv); reasoning != nil {
-		out["reasoning"] = reasoning
-		out["include"] = []string{"reasoning.encrypted_content"}
+		out.Reasoning = reasoning
+		out.Include = []string{"reasoning.encrypted_content"}
 	}
-	return sonic.Marshal(out)
+	return marshalStableJSON(out)
 }
 
 // applyCodexSampling 把 Codex responses API 支持的采样参数写入 out map。
 // 只透传 Codex 实际接受的字段：temperature/top_p/max_output_tokens/user；其余静默丢弃。
-func applyCodexSampling(out map[string]any, sp *samplingParams) {
+func applyCodexSampling(out *codexRequestPayload, sp *samplingParams) {
 	if sp == nil {
 		return
 	}
 	if sp.Temperature != nil {
-		out["temperature"] = *sp.Temperature
+		out.Temperature = sp.Temperature
 	}
 	if sp.TopP != nil {
-		out["top_p"] = *sp.TopP
+		out.TopP = sp.TopP
 	}
 	if sp.MaxTokens != nil && *sp.MaxTokens > 0 {
-		out["max_output_tokens"] = *sp.MaxTokens
+		out.MaxOutputTokens = sp.MaxTokens
 	}
 	if sp.User != "" {
-		out["user"] = sp.User
+		out.User = sp.User
 	}
 }
 

@@ -112,7 +112,30 @@ func (s *Server) buildProxyRequest(
 	// 6. 自定义请求头规则（认证头黑名单保护）
 	applyHeaderRules(req.Header, cfg.HeaderRules())
 
+	// 7. 非 Anthropic 上游：移除 Anthropic 协议专属头（anthropic-version/anthropic-beta 等）
+	stripAnthropicProtocolHeaders(req, runtimeUpstreamProtocol(reqCtx, cfg))
+
+	if reqCtx != nil {
+		reqCtx.translatedBody = body
+		reqCtx.transformPlan.TranslatedBody = body
+	}
+
 	return req, nil
+}
+
+func runtimeUpstreamProtocol(reqCtx *requestContext, cfg *model.Config) string {
+	if reqCtx != nil {
+		if reqCtx.transformPlan.UpstreamProtocol != "" {
+			return string(reqCtx.transformPlan.UpstreamProtocol)
+		}
+		if reqCtx.upstreamProtocol != "" {
+			return string(reqCtx.upstreamProtocol)
+		}
+	}
+	if cfg == nil {
+		return ""
+	}
+	return cfg.GetChannelType()
 }
 
 // ============================================================================
