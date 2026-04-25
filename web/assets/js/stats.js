@@ -564,22 +564,28 @@
       });
     }
 
+    async function loadStatsFilterOptions() {
+      try {
+        const params = new URLSearchParams();
+        const range = document.getElementById('f_hours')?.value || 'today';
+        params.set('range', range);
+        if (currentChannelType && currentChannelType !== 'all') {
+          params.set('channel_type', currentChannelType);
+        }
+        const data = await fetchDataWithAuth('/admin/stats/filter-options?' + params.toString());
+        if (data) {
+          statsChannelNameOptions = data.channel_names || [];
+          statsModelOptions = data.models || [];
+          if (statsChannelNameCombobox) statsChannelNameCombobox.refresh();
+          if (statsModelCombobox) statsModelCombobox.refresh();
+        }
+      } catch (error) {
+        console.error('[Stats] 加载筛选选项失败:', error);
+      }
+    }
+
     function populateStatsComboboxOptions() {
-      if (!statsData || !statsData.stats) return;
-      const nameSet = new Set(), modelSet = new Set();
-      statsData.stats.forEach(entry => {
-        if (entry.channel_name) nameSet.add(entry.channel_name);
-        if (entry.model) modelSet.add(entry.model);
-      });
-      // 各项：已选中具体值时保留现有选项，避免筛选后列表缩减
-      if (!statsChannelNameCombobox || !statsChannelNameCombobox.getValue()) {
-        statsChannelNameOptions = Array.from(nameSet).sort();
-        if (statsChannelNameCombobox) statsChannelNameCombobox.refresh();
-      }
-      if (!statsModelCombobox || !statsModelCombobox.getValue()) {
-        statsModelOptions = Array.from(modelSet).sort();
-        if (statsModelCombobox) statsModelCombobox.refresh();
-      }
+      loadStatsFilterOptions();
     }
 
     function initFilters(restoredFilters) {
@@ -597,6 +603,7 @@
             key: STATS_FILTER_KEY,
             getValues: getStatsFilters
           });
+          loadStatsFilterOptions();
           applyFilter();
         }
       });
@@ -995,6 +1002,7 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
           key: STATS_FILTER_KEY,
           getValues: getStatsFilters
         });
+        loadStatsFilterOptions();
         loadStats();
       });
 

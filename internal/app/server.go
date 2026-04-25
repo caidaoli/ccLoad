@@ -556,6 +556,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/active-requests", s.HandleActiveRequests) // 进行中请求（内存状态）
 		admin.GET("/metrics", s.HandleMetrics)
 		admin.GET("/stats", s.HandleStats)
+		admin.GET("/stats/filter-options", s.HandleStatsFilterOptions)
 		admin.GET("/cooldown/stats", s.HandleCooldownStats)
 		admin.GET("/models", s.HandleGetModels)
 
