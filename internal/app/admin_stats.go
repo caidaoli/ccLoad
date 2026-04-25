@@ -582,3 +582,43 @@ func (s *Server) fillHealthTimeline(ctx context.Context, stats []model.StatsEntr
 	}
 	return channelHealth
 }
+
+// HandleStatsFilterOptions 返回统计页筛选下拉的全集（渠道名/模型），
+// 从指定时间范围内的日志记录中提取，与表格数据解耦。
+// GET /admin/stats/filter-options?range=today&channel_type=
+func (s *Server) HandleStatsFilterOptions(c *gin.Context) {
+	params := ParsePaginationParams(c)
+	startTime, endTime := params.GetTimeRange()
+
+	lf := BuildLogFilter(c)
+	lf.LogSource = model.LogSourceProxy
+
+	channelType := c.Query("channel_type")
+	if channelType == "all" {
+		channelType = ""
+	}
+
+	channels, err := s.store.GetDistinctChannels(c.Request.Context(), startTime, endTime, channelType, &lf)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	models, err := s.store.GetDistinctModels(c.Request.Context(), startTime, endTime, channelType, &lf)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	channelNames := make([]string, 0, len(channels))
+	for _, ch := range channels {
+		if ch.Name != "" {
+			channelNames = append(channelNames, ch.Name)
+		}
+	}
+
+	RespondJSON(c, http.StatusOK, gin.H{
+		"channel_names": channelNames,
+		"models":        models,
+	})
+}
