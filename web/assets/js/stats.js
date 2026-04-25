@@ -577,11 +577,11 @@
           statsChannelNameOptions = data.channel_names || [];
           statsModelOptions = data.models || [];
           if (statsChannelNameCombobox) {
-            if (clearValues) statsChannelNameCombobox.setValue('');
+            if (clearValues) statsChannelNameCombobox.setValue('', t('stats.allChannels'));
             statsChannelNameCombobox.refresh();
           }
           if (statsModelCombobox) {
-            if (clearValues) statsModelCombobox.setValue('');
+            if (clearValues) statsModelCombobox.setValue('', t('trend.allModels'));
             statsModelCombobox.refresh();
           }
         }
