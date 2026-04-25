@@ -10,6 +10,8 @@ let logsChannelNameCombobox = null; // 渠道名筛选组合框
 let logsModelCombobox = null; // 模型筛选组合框
 window.logsChannels = []; // 渠道列表（来自 /admin/models）
 window.availableLogsModels = []; // 可用模型列表
+let logsExactChannelNameValue = '';
+let logsExactModelValue = '';
 let logsDefaultTestContent = 'sonnet 4.0的发布日期是什么'; // 默认测试内容（从设置加载）
 let logChannelClickAction = 'edit'; // 日志页渠道名点击行为：edit|navigate
 
@@ -20,6 +22,60 @@ let lastActiveRequestIDs = null; // 上次活跃请求ID集合（后端原始数
 let logsLoadInFlight = false;
 let logsLoadPending = false;
 let logsLoadScheduled = false;
+
+function normalizeLogsFilterValue(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function logsFilterMatchesOption(value, options) {
+  const normalizedValue = normalizeLogsFilterValue(value);
+  if (!normalizedValue) return false;
+
+  return (Array.isArray(options) ? options : []).some((option) => {
+    const candidates = option && typeof option === 'object'
+      ? [option.value, option.label]
+      : [option];
+    return candidates.some((candidate) => normalizeLogsFilterValue(candidate) === normalizedValue);
+  });
+}
+
+function logsFilterMatchesExactValue(value, exactValue) {
+  const normalizedValue = normalizeLogsFilterValue(value);
+  return Boolean(normalizedValue) && normalizedValue === normalizeLogsFilterValue(exactValue);
+}
+
+function isExactLogsChannelNameFilter(value) {
+  const channelNameOptions = (window.logsChannels || []).map(ch => ch && ch.name);
+  return logsFilterMatchesOption(value, channelNameOptions) ||
+    logsFilterMatchesExactValue(value, logsExactChannelNameValue);
+}
+
+function isExactLogsModelFilter(value) {
+  return logsFilterMatchesOption(value, window.availableLogsModels || []) ||
+    logsFilterMatchesExactValue(value, logsExactModelValue);
+}
+
+function getLogsChannelNameFilterKey(value, values) {
+  return (values && values.channelNameExact) || isExactLogsChannelNameFilter(value)
+    ? 'channel_name'
+    : 'channel_name_like';
+}
+
+function getLogsModelFilterKey(value, values) {
+  return (values && values.modelExact) || isExactLogsModelFilter(value) ? 'model' : 'model_like';
+}
+
+function rememberExactLogsFilters(filters = {}, urlParams = null) {
+  const hasExactChannelName = urlParams
+    ? urlParams.has('channel_name')
+    : filters.channelNameExact === true;
+  const hasExactModel = urlParams
+    ? urlParams.has('model')
+    : filters.modelExact === true;
+
+  logsExactChannelNameValue = hasExactChannelName ? (filters.channelName || '') : '';
+  logsExactModelValue = hasExactModel ? (filters.model || '') : '';
+}
 
 function scheduleLoad() {
   if (logsLoadScheduled) return;
@@ -387,20 +443,22 @@ async function load(skipLoading = false) {
 
 // 根据当前筛选条件过滤活跃请求
 function filterActiveRequests(requests) {
-  const channelName = (logsChannelNameCombobox ? logsChannelNameCombobox.getValue() : (document.getElementById('f_name')?.value || '')).trim().toLowerCase();
-  const model = (logsModelCombobox ? logsModelCombobox.getValue() : (document.getElementById('f_model')?.value || '')).trim();
+  const filters = getLogsFilters();
+  const channelName = normalizeLogsFilterValue(filters.channelName);
+  const model = normalizeLogsFilterValue(filters.model);
+  const channelNameExact = filters.channelNameExact;
+  const modelExact = filters.modelExact;
   const channelType = (document.getElementById('f_channel_type')?.value || '').trim();
   const tokenId = (document.getElementById('f_auth_token')?.value || '').trim();
 
   return requests.filter(req => {
-    // 渠道名称精确匹配
     if (channelName) {
-      const name = (typeof req.channel_name === 'string' ? req.channel_name : '').toLowerCase();
-      if (name !== channelName) return false;
+      const name = normalizeLogsFilterValue(typeof req.channel_name === 'string' ? req.channel_name : '');
+      if (channelNameExact ? name !== channelName : !name.includes(channelName)) return false;
     }
-    // 模型精确匹配
     if (model) {
-      if ((req.model || '') !== model) return false;
+      const reqModel = normalizeLogsFilterValue(req.model || '');
+      if (modelExact ? reqModel !== model : !reqModel.includes(model)) return false;
     }
     // 渠道类型精确匹配（'all' 表示全部，不过滤）
     if (channelType && channelType !== 'all') {
@@ -956,6 +1014,8 @@ function initLogsChannelNameCombobox(initialValue) {
     attachMode: true,
     initialValue: initialValue || '',
     initialLabel: initialValue || t('stats.allChannels'),
+    allowCustomInput: true,
+    commitEmptyAsFirst: true,
     getOptions: () => [
       { value: '', label: t('stats.allChannels') },
       ...(window.logsChannels || []).map(ch => ({ value: ch.name, label: ch.name }))
@@ -975,6 +1035,8 @@ function initLogsModelCombobox(initialValue) {
     attachMode: true,
     initialValue: initialValue || '',
     initialLabel: initialValue || t('trend.allModels'),
+    allowCustomInput: true,
+    commitEmptyAsFirst: true,
     getOptions: () => [
       { value: '', label: t('trend.allModels') },
       ...(window.availableLogsModels || []).map(m => ({ value: m, label: m }))
@@ -1194,8 +1256,20 @@ function updateTestKeyIndexInfo(text) {
 const LOGS_FILTER_KEY = 'logs.filters';
 const LOGS_FILTER_FIELDS = [
   { key: 'range', queryKeys: ['range'], defaultValue: 'today' },
-  { key: 'channelName', queryKeys: ['channel_name'], defaultValue: '' },
-  { key: 'model', queryKeys: ['model'], defaultValue: '' },
+  {
+    key: 'channelName',
+    queryKeys: ['channel_name', 'channel_name_like'],
+    paramKey: getLogsChannelNameFilterKey,
+    requestKey: getLogsChannelNameFilterKey,
+    defaultValue: ''
+  },
+  {
+    key: 'model',
+    queryKeys: ['model', 'model_like'],
+    paramKey: getLogsModelFilterKey,
+    requestKey: getLogsModelFilterKey,
+    defaultValue: ''
+  },
   { key: 'logSource', queryKeys: ['log_source'], requestKey: 'log_source', defaultValue: 'proxy' },
   { key: 'status', queryKeys: ['status_code'], defaultValue: '' },
   { key: 'authToken', queryKeys: ['auth_token_id'], defaultValue: '' },
@@ -1217,6 +1291,8 @@ function getLogsFilters() {
   const logSource = !logSourceSelect || (logSourceGroup && logSourceGroup.hidden)
     ? 'proxy'
     : (logSourceSelect.value || 'proxy').trim();
+  const model = logsModelCombobox ? logsModelCombobox.getValue() : (document.getElementById('f_model')?.value || '').trim();
+  const channelName = logsChannelNameCombobox ? logsChannelNameCombobox.getValue() : (document.getElementById('f_name')?.value || '').trim();
 
   return {
     ...window.readFilterControlValues({
@@ -1224,8 +1300,10 @@ function getLogsFilters() {
       status: { id: 'f_status', trim: true },
       authToken: { id: 'f_auth_token', trim: true }
     }),
-    model: logsModelCombobox ? logsModelCombobox.getValue() : (document.getElementById('f_model')?.value || '').trim(),
-    channelName: logsChannelNameCombobox ? logsChannelNameCombobox.getValue() : (document.getElementById('f_name')?.value || '').trim(),
+    model,
+    modelExact: isExactLogsModelFilter(model),
+    channelName,
+    channelNameExact: isExactLogsChannelNameFilter(channelName),
     logSource,
     channelType: document.getElementById('f_channel_type')?.value || 'all',
   };
@@ -1255,6 +1333,11 @@ window.initPageBootstrap({
     savedFilters,
     fields: LOGS_FILTER_FIELDS
   });
+  rememberExactLogsFilters({
+    ...restoredFilters,
+    channelNameExact: !hasUrlParams && savedFilters?.channelNameExact === true,
+    modelExact: !hasUrlParams && savedFilters?.modelExact === true
+  }, hasUrlParams ? u : null);
   currentChannelType = restoredFilters.channelType || 'all';
 
   // 并行初始化：渠道类型 + 默认测试内容同时加载（节省一次 RTT）
@@ -1368,6 +1451,11 @@ window.addEventListener('pageshow', async function (event) {
         search: '',
         savedFilters,
         fields: LOGS_FILTER_FIELDS
+      });
+      rememberExactLogsFilters({
+        ...restoredFilters,
+        channelNameExact: savedFilters.channelNameExact === true,
+        modelExact: savedFilters.modelExact === true
       });
 
       // 重新加载令牌列表并设置值

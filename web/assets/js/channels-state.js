@@ -30,9 +30,11 @@ function normalizeSelectedChannelID(id) {
 // Filter state
 let filters = {
   search: '',
+  searchExact: false,
   channelType: 'all',
   status: 'all',
-  model: 'all'
+  model: 'all',
+  modelExact: false
 };
 
 // 内联Key表格状态

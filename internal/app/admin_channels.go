@@ -82,8 +82,16 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	// 支持按名称、状态、模型过滤（供分页场景使用）
 	// 注意：筛选下拉的全集走独立接口 /admin/channels/filter-options，
 	// 这里只负责按所有筛选条件返回当前页，避免列表数据与下拉选项耦合。
-	search := strings.TrimSpace(c.Query("search"))
-	if search != "" {
+	channelName := strings.TrimSpace(c.Query("channel_name"))
+	if channelName != "" {
+		filtered := make([]*model.Config, 0, len(cfgs))
+		for _, cfg := range cfgs {
+			if strings.TrimSpace(cfg.Name) == channelName {
+				filtered = append(filtered, cfg)
+			}
+		}
+		cfgs = filtered
+	} else if search := strings.TrimSpace(c.Query("search")); search != "" {
 		searchLower := strings.ToLower(search)
 		filtered := make([]*model.Config, 0, len(cfgs))
 		for _, cfg := range cfgs {
@@ -119,12 +127,29 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	hasPagination := c.Query("limit") != "" || c.Query("offset") != ""
 
 	modelName := strings.TrimSpace(c.Query("model"))
+	modelLike := strings.TrimSpace(c.Query("model_like"))
 	if modelName != "" && modelName != "all" {
 		filtered := make([]*model.Config, 0, len(cfgs))
 		for _, cfg := range cfgs {
 			matched := false
 			for _, entry := range cfg.ModelEntries {
 				if entry.Model == modelName {
+					matched = true
+					break
+				}
+			}
+			if matched {
+				filtered = append(filtered, cfg)
+			}
+		}
+		cfgs = filtered
+	} else if modelLike != "" && modelLike != "all" {
+		modelLikeLower := strings.ToLower(modelLike)
+		filtered := make([]*model.Config, 0, len(cfgs))
+		for _, cfg := range cfgs {
+			matched := false
+			for _, entry := range cfg.ModelEntries {
+				if strings.Contains(strings.ToLower(strings.TrimSpace(entry.Model)), modelLikeLower) {
 					matched = true
 					break
 				}

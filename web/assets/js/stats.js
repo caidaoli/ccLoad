@@ -13,10 +13,65 @@
     let statsModelOptions = []; // 从统计数据中提取的模型列表
     let statsChannelNameCombobox = null; // 渠道名筛选组合框实例
     let statsModelCombobox = null; // 模型筛选组合框实例
+    let statsExactChannelNameValue = '';
+    let statsExactModelValue = '';
     let sortState = {
       column: null,
       order: null // null, 'asc', 'desc'
     };
+
+    function normalizeStatsFilterValue(value) {
+      return String(value || '').trim().toLowerCase();
+    }
+
+    function statsFilterMatchesOption(value, options) {
+      const normalizedValue = normalizeStatsFilterValue(value);
+      if (!normalizedValue) return false;
+
+      return (Array.isArray(options) ? options : []).some((option) => {
+        const candidates = option && typeof option === 'object'
+          ? [option.value, option.label]
+          : [option];
+        return candidates.some((candidate) => normalizeStatsFilterValue(candidate) === normalizedValue);
+      });
+    }
+
+    function statsFilterMatchesExactValue(value, exactValue) {
+      const normalizedValue = normalizeStatsFilterValue(value);
+      return Boolean(normalizedValue) && normalizedValue === normalizeStatsFilterValue(exactValue);
+    }
+
+    function isExactStatsChannelNameFilter(value) {
+      return statsFilterMatchesOption(value, statsChannelNameOptions) ||
+        statsFilterMatchesExactValue(value, statsExactChannelNameValue);
+    }
+
+    function isExactStatsModelFilter(value) {
+      return statsFilterMatchesOption(value, statsModelOptions) ||
+        statsFilterMatchesExactValue(value, statsExactModelValue);
+    }
+
+    function getStatsChannelNameFilterKey(value, values) {
+      return (values && values.channelNameExact) || isExactStatsChannelNameFilter(value)
+        ? 'channel_name'
+        : 'channel_name_like';
+    }
+
+    function getStatsModelFilterKey(value, values) {
+      return (values && values.modelExact) || isExactStatsModelFilter(value) ? 'model' : 'model_like';
+    }
+
+    function rememberExactStatsFilters(filters = {}, urlParams = null) {
+      const hasExactChannelName = urlParams
+        ? urlParams.has('channel_name')
+        : filters.channelNameExact === true;
+      const hasExactModel = urlParams
+        ? urlParams.has('model')
+        : filters.modelExact === true;
+
+      statsExactChannelNameValue = hasExactChannelName ? (filters.channelName || '') : '';
+      statsExactModelValue = hasExactModel ? (filters.model || '') : '';
+    }
 
     async function loadStats() {
       try {
@@ -471,8 +526,10 @@
         inputId: 'f_name',
         dropdownId: 'f_name_dropdown',
         attachMode: true,
+        allowCustomInput: true,
+        commitEmptyAsFirst: true,
         initialValue: initialValue || '',
-        initialLabel: initialValue || '',
+        initialLabel: initialValue || t('stats.allChannels'),
         getOptions: () => [
           { value: '', label: t('stats.allChannels') },
           ...statsChannelNameOptions.map(n => ({ value: n, label: n }))
@@ -489,8 +546,10 @@
         inputId: 'f_model',
         dropdownId: 'f_model_dropdown',
         attachMode: true,
+        allowCustomInput: true,
+        commitEmptyAsFirst: true,
         initialValue: initialValue || '',
-        initialLabel: initialValue || '',
+        initialLabel: initialValue || t('trend.allModels'),
         getOptions: () => [
           { value: '', label: t('trend.allModels') },
           ...statsModelOptions.map(m => ({ value: m, label: m }))
@@ -819,8 +878,20 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
     const STATS_FILTER_FIELDS = [
       { key: 'range', queryKeys: ['range'], defaultValue: 'today' },
       { key: 'channelId', queryKeys: ['channel_id'], defaultValue: '' },
-      { key: 'channelName', queryKeys: ['channel_name'], defaultValue: '' },
-      { key: 'model', queryKeys: ['model'], defaultValue: '' },
+      {
+        key: 'channelName',
+        queryKeys: ['channel_name', 'channel_name_like'],
+        paramKey: getStatsChannelNameFilterKey,
+        requestKey: getStatsChannelNameFilterKey,
+        defaultValue: ''
+      },
+      {
+        key: 'model',
+        queryKeys: ['model', 'model_like'],
+        paramKey: getStatsModelFilterKey,
+        requestKey: getStatsModelFilterKey,
+        defaultValue: ''
+      },
       { key: 'authToken', queryKeys: ['auth_token_id'], defaultValue: '' },
       {
         key: 'channelType',
@@ -836,13 +907,17 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
     ];
 
     function getStatsFilters() {
+      const channelName = statsChannelNameCombobox ? statsChannelNameCombobox.getValue() : '';
+      const model = statsModelCombobox ? statsModelCombobox.getValue() : '';
       return {
         ...window.readFilterControlValues({
           range: { id: 'f_hours', defaultValue: 'today', trim: true },
           authToken: { id: 'f_auth_token', trim: true }
         }),
-        channelName: statsChannelNameCombobox ? statsChannelNameCombobox.getValue() : '',
-        model: statsModelCombobox ? statsModelCombobox.getValue() : '',
+        channelName,
+        channelNameExact: isExactStatsChannelNameFilter(channelName),
+        model,
+        modelExact: isExactStatsModelFilter(model),
         channelType: currentChannelType,
         hideZeroSuccess: hideZeroSuccess
       };
@@ -891,6 +966,11 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
         savedFilters,
         fields: STATS_FILTER_FIELDS
       });
+      rememberExactStatsFilters({
+        ...restoredFilters,
+        channelNameExact: !hasUrlParams && savedFilters?.channelNameExact === true,
+        modelExact: !hasUrlParams && savedFilters?.modelExact === true
+      }, hasUrlParams ? u : null);
       currentChannelType = restoredFilters.channelType || 'all';
 
       // 恢复隐藏0成功选项状态（从 localStorage 读取，默认 true）

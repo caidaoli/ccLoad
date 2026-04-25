@@ -16,6 +16,27 @@ function modelFilterInputValueFromFilterValue(filterValue) {
   return filterValue;
 }
 
+function normalizeChannelFilterValue(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function isExactChannelFilterValue(value, options) {
+  const normalizedValue = normalizeChannelFilterValue(value);
+  if (!normalizedValue) return false;
+  return (Array.isArray(options) ? options : []).some((option) =>
+    normalizeChannelFilterValue(option) === normalizedValue
+  );
+}
+
+function isExactChannelModelFilter(value) {
+  if (!value || value === 'all') return false;
+  return isExactChannelFilterValue(value, allAvailableModels);
+}
+
+function isExactChannelNameFilter(value) {
+  return isExactChannelFilterValue(value, allAvailableChannelNames);
+}
+
 function filterChannels() {
   const filtered = channels.slice();
 
@@ -84,6 +105,7 @@ function setupFilterListeners() {
       dropdownId: 'modelFilterDropdown',
       initialValue: filters.model,
       initialLabel: modelFilterInputValueFromFilterValue(filters.model),
+      allowCustomInput: true,
       commitEmptyAsFirst: true,
       getOptions: () => {
         const allLabel = getModelAllLabel();
@@ -93,7 +115,9 @@ function setupFilterListeners() {
         );
       },
       onSelect: (value) => {
-        filters.model = value;
+        const raw = String(value || '').trim();
+        filters.model = raw || 'all';
+        filters.modelExact = isExactChannelModelFilter(value);
         channelsCurrentPage = 1;
         if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
         loadChannels(filters.channelType);
@@ -130,6 +154,7 @@ function setupFilterListeners() {
           normalized === 'all channels';
 
         filters.search = isAllToken ? '' : raw;
+        filters.searchExact = !isAllToken && isExactChannelNameFilter(raw);
         if (isAllToken && channelNameCombobox) {
           channelNameCombobox.setValue('', getChannelNameAllLabel());
         }
@@ -151,6 +176,7 @@ function setupFilterListeners() {
   if (clearSearchBtn) {
     clearSearchBtn.addEventListener('click', () => {
       filters.search = '';
+      filters.searchExact = false;
       channelsCurrentPage = 1;
       if (channelNameCombobox) {
         channelNameCombobox.setValue('', getChannelNameAllLabel());

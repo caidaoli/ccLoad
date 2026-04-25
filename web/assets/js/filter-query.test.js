@@ -78,6 +78,39 @@ test('共享请求参数模块支持基础参数、requestKey 和 includeInReque
   assert.equal(params.has('type'), false);
 });
 
+test('共享请求参数模块支持按当前值动态选择 requestKey', () => {
+  const window = loadFilterQueryModule();
+  const params = window.FilterQuery.buildRequestParams(
+    {
+      model: 'gpt-5.4',
+      modelExact: true,
+      channelName: '88',
+      channelNameExact: false
+    },
+    [
+      {
+        key: 'model',
+        queryKeys: ['model', 'model_like'],
+        requestKey(value, values) {
+          return values.modelExact ? 'model' : 'model_like';
+        }
+      },
+      {
+        key: 'channelName',
+        queryKeys: ['channel_name', 'channel_name_like'],
+        requestKey(value, values) {
+          return values.channelNameExact ? 'channel_name' : 'channel_name_like';
+        }
+      }
+    ]
+  );
+
+  assert.equal(params.get('model'), 'gpt-5.4');
+  assert.equal(params.has('model_like'), false);
+  assert.equal(params.get('channel_name_like'), '88');
+  assert.equal(params.has('channel_name'), false);
+});
+
 test('logs.js、stats.js 和 trend.js 通过共享 helper 构建请求参数', () => {
   assert.match(logsSource, /FilterQuery\.buildRequestParams/);
   assert.match(statsSource, /FilterQuery\.buildRequestParams/);
@@ -106,12 +139,24 @@ test('logs.html、stats.html 和 trend.html 在页面脚本前加载共享请求
   );
 });
 
-test('logs.js 和 stats.js 的模型与渠道名筛选参数使用精确匹配键', () => {
-  assert.match(logsSource, /key:\s*'channelName',\s*queryKeys:\s*\['channel_name'\]/);
-  assert.match(logsSource, /key:\s*'model',\s*queryKeys:\s*\['model'\]/);
-  assert.doesNotMatch(logsSource, /channel_name_like/);
+test('logs.js 的模型与渠道名筛选按选项命中动态选择精确或模糊参数', () => {
+  assert.match(logsSource, /function logsFilterMatchesOption\(/);
+  assert.match(logsSource, /function rememberExactLogsFilters\(/);
+  assert.match(logsSource, /function getLogsChannelNameFilterKey\(/);
+  assert.match(logsSource, /function getLogsModelFilterKey\(/);
+  assert.match(logsSource, /channelNameExact:\s*isExactLogsChannelNameFilter\(channelName\)/);
+  assert.match(logsSource, /modelExact:\s*isExactLogsModelFilter\(model\)/);
+  assert.match(logsSource, /key:\s*'channelName',\s*queryKeys:\s*\['channel_name',\s*'channel_name_like'\][\s\S]*?paramKey:\s*getLogsChannelNameFilterKey[\s\S]*?requestKey:\s*getLogsChannelNameFilterKey/);
+  assert.match(logsSource, /key:\s*'model',\s*queryKeys:\s*\['model',\s*'model_like'\][\s\S]*?paramKey:\s*getLogsModelFilterKey[\s\S]*?requestKey:\s*getLogsModelFilterKey/);
+});
 
-  assert.match(statsSource, /key:\s*'channelName',\s*queryKeys:\s*\['channel_name'\]/);
-  assert.match(statsSource, /key:\s*'model',\s*queryKeys:\s*\['model'\]/);
-  assert.doesNotMatch(statsSource, /model_like/);
+test('stats.js 的模型与渠道名筛选按选项命中动态选择精确或模糊参数', () => {
+  assert.match(statsSource, /function statsFilterMatchesOption\(/);
+  assert.match(statsSource, /function rememberExactStatsFilters\(/);
+  assert.match(statsSource, /function getStatsChannelNameFilterKey\(/);
+  assert.match(statsSource, /function getStatsModelFilterKey\(/);
+  assert.match(statsSource, /channelNameExact:\s*isExactStatsChannelNameFilter\(channelName\)/);
+  assert.match(statsSource, /modelExact:\s*isExactStatsModelFilter\(model\)/);
+  assert.match(statsSource, /key:\s*'channelName',\s*queryKeys:\s*\['channel_name',\s*'channel_name_like'\][\s\S]*?paramKey:\s*getStatsChannelNameFilterKey[\s\S]*?requestKey:\s*getStatsChannelNameFilterKey/);
+  assert.match(statsSource, /key:\s*'model',\s*queryKeys:\s*\['model',\s*'model_like'\][\s\S]*?paramKey:\s*getStatsModelFilterKey[\s\S]*?requestKey:\s*getStatsModelFilterKey/);
 });
