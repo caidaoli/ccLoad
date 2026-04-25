@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -96,6 +98,92 @@ func TestHandleListChannels(t *testing.T) {
 		if resp.Data[0].Priority < resp.Data[1].Priority {
 			t.Error("渠道应该按优先级降序排序")
 		}
+	}
+}
+
+func TestHandleListChannelsExactAndFuzzyFilters(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	fixtures := []struct {
+		name  string
+		model string
+	}{
+		{name: "gpt-5.4", model: "gpt-5.4"},
+		{name: "gpt-5.4-mini", model: "gpt-5.4-mini"},
+		{name: "claude", model: "claude-3-7-sonnet"},
+	}
+
+	for _, fixture := range fixtures {
+		_, err := store.CreateConfig(ctx, &model.Config{
+			Name:     fixture.name,
+			URL:      "https://api.example.com",
+			Priority: 1,
+			ModelEntries: []model.ModelEntry{
+				{Model: fixture.model},
+			},
+			Enabled: true,
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig(%s) failed: %v", fixture.name, err)
+		}
+	}
+
+	tests := []struct {
+		name      string
+		query     string
+		wantNames []string
+	}{
+		{
+			name:      "exact channel name",
+			query:     "channel_name=gpt-5.4",
+			wantNames: []string{"gpt-5.4"},
+		},
+		{
+			name:      "fuzzy channel name",
+			query:     "search=gpt-5.4",
+			wantNames: []string{"gpt-5.4", "gpt-5.4-mini"},
+		},
+		{
+			name:      "exact model",
+			query:     "model=gpt-5.4",
+			wantNames: []string{"gpt-5.4"},
+		},
+		{
+			name:      "fuzzy model",
+			query:     "model_like=gpt-5.4",
+			wantNames: []string{"gpt-5.4", "gpt-5.4-mini"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels?"+tt.query+"&limit=20&offset=0", nil))
+
+			server.handleListChannels(c)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+			}
+
+			resp := mustParseAPIResponse[[]ChannelWithCooldown](t, w.Body.Bytes())
+			if resp.Count != len(tt.wantNames) {
+				t.Fatalf("count=%d, want %d body=%s", resp.Count, len(tt.wantNames), w.Body.String())
+			}
+			if len(resp.Data) != len(tt.wantNames) {
+				t.Fatalf("len(data)=%d, want %d body=%s", len(resp.Data), len(tt.wantNames), w.Body.String())
+			}
+
+			gotNames := make([]string, 0, len(resp.Data))
+			for _, item := range resp.Data {
+				gotNames = append(gotNames, item.Name)
+			}
+			sort.Strings(gotNames)
+			if !slices.Equal(gotNames, tt.wantNames) {
+				t.Fatalf("names=%v, want %v", gotNames, tt.wantNames)
+			}
+		})
 	}
 }
 

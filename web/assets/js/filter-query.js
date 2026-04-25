@@ -9,7 +9,13 @@
     return [];
   }
 
-  function getRequestKey(field) {
+  function getRequestKey(field, value, values) {
+    if (typeof field.requestKey === 'function') {
+      const requestKey = field.requestKey(value, values);
+      if (typeof requestKey === 'string' && requestKey) {
+        return requestKey;
+      }
+    }
     if (typeof field.requestKey === 'string' && field.requestKey) {
       return field.requestKey;
     }
@@ -43,7 +49,7 @@
         return;
       }
 
-      const requestKey = getRequestKey(field);
+      const requestKey = getRequestKey(field, value, values);
       if (!requestKey) {
         return;
       }

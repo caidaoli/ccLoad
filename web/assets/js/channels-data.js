@@ -4,13 +4,13 @@ function buildChannelsListParams(type = 'all') {
     params.set('type', type);
   }
   if (filters.search) {
-    params.set('search', filters.search);
+    params.set(filters.searchExact ? 'channel_name' : 'search', filters.search);
   }
   if (filters.status && filters.status !== 'all') {
     params.set('status', filters.status);
   }
   if (filters.model && filters.model !== 'all') {
-    params.set('model', filters.model);
+    params.set(filters.modelExact ? 'model' : 'model_like', filters.model);
   }
   params.set('limit', String(channelsPageSize));
   params.set('offset', String((channelsCurrentPage - 1) * channelsPageSize));

@@ -162,6 +162,41 @@ test('共享筛选状态模块可以按字段定义构建查询参数', () => {
   assert.equal(params.has('channel_type'), false);
 });
 
+test('共享筛选状态模块支持按当前值动态选择 URL 参数名并清理别名', () => {
+  const { window } = loadFilterStateModule();
+  const fields = [
+    {
+      key: 'model',
+      queryKeys: ['model', 'model_like'],
+      paramKey(value, values) {
+        return values.modelExact ? 'model' : 'model_like';
+      }
+    }
+  ];
+
+  const exactParams = window.FilterState.buildParams(
+    {
+      model: 'gpt-5.4',
+      modelExact: true
+    },
+    fields
+  );
+  assert.equal(exactParams.get('model'), 'gpt-5.4');
+  assert.equal(exactParams.has('model_like'), false);
+
+  const fuzzyParams = window.FilterState.mergeParams(
+    '?model=old-exact&model_like=old-like&keep=1',
+    {
+      model: 'gpt-5',
+      modelExact: false
+    },
+    fields
+  );
+  assert.equal(fuzzyParams.get('keep'), '1');
+  assert.equal(fuzzyParams.get('model_like'), 'gpt-5');
+  assert.equal(fuzzyParams.has('model'), false);
+});
+
 test('共享筛选状态模块可以在保留无关参数的同时合并并清理筛选别名参数', () => {
   const { window } = loadFilterStateModule();
   const fields = [
@@ -378,9 +413,10 @@ test('logs.html、stats.html 和 trend.html 在页面脚本前加载共享筛选
   );
 });
 
-test('logs.js 的活跃请求筛选对渠道名和模型使用精确匹配', () => {
-  assert.match(logsSource, /const name = \(typeof req\.channel_name === 'string' \? req\.channel_name : ''\)\.toLowerCase\(\);/);
-  assert.match(logsSource, /if \(name !== channelName\) return false;/);
-  assert.match(logsSource, /if \(\(req\.model \|\| ''\) !== model\) return false;/);
-  assert.doesNotMatch(logsSource, /name\.includes\(channelName\)/);
+test('logs.js 的活跃请求筛选按选项命中区分精确与模糊匹配', () => {
+  assert.match(logsSource, /const filters = getLogsFilters\(\);/);
+  assert.match(logsSource, /const channelNameExact = filters\.channelNameExact;/);
+  assert.match(logsSource, /const modelExact = filters\.modelExact;/);
+  assert.match(logsSource, /channelNameExact\s*\?\s*name !== channelName\s*:\s*!name\.includes\(channelName\)/);
+  assert.match(logsSource, /modelExact\s*\?\s*reqModel !== model\s*:\s*!reqModel\.includes\(model\)/);
 });

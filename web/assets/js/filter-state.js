@@ -9,8 +9,17 @@
     return [];
   }
 
-  function getPrimaryQueryKey(field) {
-    return field.paramKey || getQueryKeys(field)[0] || '';
+  function getPrimaryQueryKey(field, value, values) {
+    if (typeof field.paramKey === 'function') {
+      const queryKey = field.paramKey(value, values);
+      if (typeof queryKey === 'string' && queryKey) {
+        return queryKey;
+      }
+    }
+    if (typeof field.paramKey === 'string' && field.paramKey) {
+      return field.paramKey;
+    }
+    return getQueryKeys(field)[0] || '';
   }
 
   function load(storageKey, storage = window.localStorage, options = {}) {
@@ -98,7 +107,7 @@
         return;
       }
 
-      const queryKey = getPrimaryQueryKey(field);
+      const queryKey = getPrimaryQueryKey(field, value, values);
       if (!queryKey) {
         return;
       }

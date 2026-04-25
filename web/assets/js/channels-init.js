@@ -35,7 +35,9 @@ function saveChannelsFilters() {
       channelType: filters.channelType,
       status: filters.status,
       model: filters.model,
+      modelExact: filters.modelExact,
       search: filters.search,
+      searchExact: filters.searchExact,
       page: channelsCurrentPage
     }));
   } catch (_) {}
@@ -51,6 +53,7 @@ function loadChannelsFilters() {
 
 function resetChannelSearchFilter() {
   filters.search = '';
+  filters.searchExact = false;
   channelsCurrentPage = 1;
   if (typeof channelNameCombobox !== 'undefined' && channelNameCombobox) {
     channelNameCombobox.setValue('', getChannelNameAllLabel());
@@ -222,7 +225,9 @@ window.initPageBootstrap({
     if (urlChannelId) {
       filters.status = 'all';
       filters.model = 'all';
+      filters.modelExact = false;
       filters.search = targetChannel?.name || '';
+      filters.searchExact = Boolean(filters.search);
       channelsCurrentPage = 1;
       document.getElementById('statusFilter').value = 'all';
       if (typeof modelFilterCombobox !== 'undefined' && modelFilterCombobox) {
@@ -239,7 +244,9 @@ window.initPageBootstrap({
     } else if (savedFilters) {
       filters.status = savedFilters.status || 'all';
       filters.model = savedFilters.model || 'all';
+      filters.modelExact = filters.model !== 'all' && savedFilters.modelExact !== false;
       filters.search = savedFilters.search || '';
+      filters.searchExact = savedFilters.searchExact === true;
       document.getElementById('statusFilter').value = filters.status;
       if (typeof modelFilterCombobox !== 'undefined' && modelFilterCombobox) {
         modelFilterCombobox.setValue(filters.model, modelFilterInputValueFromFilterValue(filters.model));
@@ -265,7 +272,9 @@ window.initPageBootstrap({
     await window.initChannelTypeFilter('channelTypeFilter', initialType, (type) => {
       filters.channelType = type;
       filters.model = 'all';
+      filters.modelExact = false;
       filters.search = '';
+      filters.searchExact = false;
       channelsCurrentPage = 1;
       if (typeof modelFilterCombobox !== 'undefined' && modelFilterCombobox) {
         modelFilterCombobox.setValue('all', modelFilterInputValueFromFilterValue('all'));
