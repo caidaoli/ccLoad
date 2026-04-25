@@ -145,6 +145,54 @@ func TestBuildProxyRequest(t *testing.T) {
 	}
 }
 
+func TestBuildProxyRequest_KeepsAnthropicHeadersForRuntimeAnthropicUpstream(t *testing.T) {
+	srv := newInMemoryServer(t)
+
+	cfg := &model.Config{
+		ID:          1,
+		Name:        "openai-compatible-anthropic",
+		URL:         "https://api.example.com",
+		ChannelType: "openai",
+	}
+
+	reqCtx := &requestContext{
+		ctx:              context.Background(),
+		startTime:        time.Now(),
+		clientProtocol:   protocol.Anthropic,
+		upstreamProtocol: protocol.Anthropic,
+		transformPlan: protocol.TransformPlan{
+			ClientProtocol:   protocol.Anthropic,
+			UpstreamProtocol: protocol.Anthropic,
+			UpstreamPath:     "/v1/messages",
+		},
+	}
+
+	req, err := srv.buildProxyRequest(
+		reqCtx,
+		cfg,
+		"sk-test-key",
+		http.MethodPost,
+		[]byte(`{"model":"claude-3"}`),
+		http.Header{
+			"anthropic-version": []string{"2023-06-01"},
+			"anthropic-beta":    []string{"messages-2023-12-15"},
+		},
+		"",
+		"/v1/messages",
+		cfg.URL,
+	)
+	if err != nil {
+		t.Fatalf("buildProxyRequest failed: %v", err)
+	}
+
+	if got := req.Header.Get("anthropic-version"); got != "2023-06-01" {
+		t.Fatalf("anthropic-version = %q, want preserved runtime Anthropic upstream header", got)
+	}
+	if got := req.Header.Get("anthropic-beta"); got != "messages-2023-12-15" {
+		t.Fatalf("anthropic-beta = %q, want preserved runtime Anthropic upstream header", got)
+	}
+}
+
 // TestHandleRequestError 测试错误处理
 func TestHandleRequestError(t *testing.T) {
 	srv := newInMemoryServer(t)
@@ -364,6 +412,81 @@ func TestForwardOnceAsync_UsesTransformPlanUpstreamPathAndBody(t *testing.T) {
 	}
 	if !strings.Contains(gotBody, `"contents"`) {
 		t.Fatalf("expected transformed request body from plan, got %s", gotBody)
+	}
+}
+
+func TestForwardOnceAsync_CodexSessionInjectionUsesFinalBodyForDebug(t *testing.T) {
+	resetCodexSessionCache()
+
+	var gotSessionID string
+	var gotBody []byte
+
+	srv := newInMemoryServer(t)
+	srv.configService.mu.Lock()
+	srv.configService.cache["debug_log_enabled"] = &model.SystemSetting{Key: "debug_log_enabled", Value: "true"}
+	srv.configService.mu.Unlock()
+	srv.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			gotSessionID = r.Header.Get("Session_id")
+			gotBody, _ = io.ReadAll(r.Body)
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"error":"boom"}`)),
+			}, nil
+		}),
+	}
+
+	cfg := &model.Config{
+		ID:          1,
+		Name:        "codex-upstream",
+		URL:         "https://codex-upstream.example.com",
+		ChannelType: "codex",
+	}
+	originalBody := []byte(`{"model":"claude-3-5-sonnet","metadata":{"user_id":"claude-code-user-42"},"system":[{"type":"text","text":"be careful"}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+	plan, err := protocol.BuildTransformPlan(
+		protocol.Anthropic,
+		protocol.Codex,
+		"/v1/messages",
+		"/v1/messages",
+		originalBody,
+		originalBody,
+		"claude-3-5-sonnet",
+		"gpt-5-codex",
+		false,
+	)
+	if err != nil {
+		t.Fatalf("BuildTransformPlan failed: %v", err)
+	}
+
+	recorder := newRecorder()
+	result, _, err := srv.forwardOnceAsync(
+		context.Background(),
+		cfg,
+		"sk-test",
+		http.MethodPost,
+		plan,
+		http.Header{"Content-Type": []string{"application/json"}},
+		"",
+		cfg.URL,
+		recorder,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("forwardOnceAsync error = %v", err)
+	}
+	if gotSessionID == "" || !uuidPattern.MatchString(gotSessionID) {
+		t.Fatalf("Session_id header missing or invalid: %q", gotSessionID)
+	}
+	if key := readCodexPromptCacheKey(gotBody); key != gotSessionID {
+		t.Fatalf("prompt_cache_key = %q, want Session_id %q; body=%s", key, gotSessionID, gotBody)
+	}
+	assertFieldOrder(t, string(gotBody), `"model"`, `"instructions"`, `"input"`, `"prompt_cache_key"`)
+	if result.DebugData == nil {
+		t.Fatal("expected debug data")
+	}
+	if string(result.DebugData.ReqBody) != string(gotBody) {
+		t.Fatalf("debug body does not match final upstream body:\ndebug=%s\nsent=%s", result.DebugData.ReqBody, gotBody)
 	}
 }
 

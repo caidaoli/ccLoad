@@ -311,6 +311,24 @@ func injectAPIKeyHeaders(req *http.Request, apiKey string, requestPath string) {
 	}
 }
 
+// anthropicProtocolHeaders 是 Anthropic 协议独有的请求头，
+// 转发到非 Anthropic 上游（OpenAI/Gemini/Codex）时必须移除。
+var anthropicProtocolHeaders = []string{
+	"anthropic-version",
+	"anthropic-beta",
+	"anthropic-dangerous-direct-browser-access",
+}
+
+// stripAnthropicProtocolHeaders 当上游非 Anthropic 时，移除客户端携带的 Anthropic 专属头。
+func stripAnthropicProtocolHeaders(req *http.Request, upstreamType string) {
+	if upstreamType == util.ChannelTypeAnthropic {
+		return
+	}
+	for _, h := range anthropicProtocolHeaders {
+		req.Header.Del(h)
+	}
+}
+
 // injectAnthropicBetaFlag 确保 anthropic-beta 头包含指定 flag
 func injectAnthropicBetaFlag(req *http.Request, flag string) {
 	existing := req.Header.Get("anthropic-beta")
