@@ -11,6 +11,7 @@ let logsModelCombobox = null; // 模型筛选组合框
 window.logsChannels = []; // 渠道列表（来自 /admin/models）
 window.availableLogsModels = []; // 可用模型列表
 let logsDefaultTestContent = 'sonnet 4.0的发布日期是什么'; // 默认测试内容（从设置加载）
+let logChannelClickAction = 'edit'; // 日志页渠道名点击行为：edit|navigate
 
 const ACTIVE_REQUESTS_POLL_INTERVAL_MS = 2000;
 let activeRequestsPollTimer = null;
@@ -299,6 +300,16 @@ async function loadDefaultTestContent() {
     }
   } catch (e) {
     console.warn('加载默认测试内容失败，使用内置默认值', e);
+  }
+}
+
+async function loadLogChannelClickAction() {
+  try {
+    const setting = await fetchDataWithAuth('/admin/settings/log_channel_click_action');
+    const value = String(setting?.value || '').trim().toLowerCase();
+    logChannelClickAction = value === 'navigate' ? 'navigate' : 'edit';
+  } catch (e) {
+    logChannelClickAction = 'edit';
   }
 }
 
@@ -1258,7 +1269,8 @@ window.initPageBootstrap({
       await loadLogsModels(value);
       load();
     }),
-    loadDefaultTestContent()
+    loadDefaultTestContent(),
+    loadLogChannelClickAction()
   ]);
 
   await initFilters(restoredFilters);
@@ -1316,8 +1328,12 @@ window.initPageBootstrap({
       const channelBtn = e.target.closest('.channel-link[data-channel-id]');
       if (channelBtn) {
         const channelId = parseInt(channelBtn.dataset.channelId, 10);
-        if (Number.isFinite(channelId) && channelId > 0 && typeof openLogChannelEditor === 'function') {
-          openLogChannelEditor(channelId);
+        if (Number.isFinite(channelId) && channelId > 0) {
+          if (logChannelClickAction === 'navigate') {
+            window.location.href = `/web/channels.html?id=${channelId}#channel-${channelId}`;
+          } else if (typeof openLogChannelEditor === 'function') {
+            openLogChannelEditor(channelId);
+          }
         }
         return;
       }

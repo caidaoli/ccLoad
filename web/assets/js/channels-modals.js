@@ -247,8 +247,11 @@ async function handleChannelSaveSuccess({ isNewChannel, newChannelType, savedCha
     nextType = newChannelType;
     const typeFilter = document.getElementById('channelTypeFilter');
     if (typeFilter) typeFilter.value = newChannelType;
-    if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
   }
+  if (isNewChannel) {
+    channelsCurrentPage = 1;
+  }
+  if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
 
   if (typeof loadChannels === 'function') {
     await loadChannels(nextType);
@@ -605,6 +608,10 @@ async function confirmDelete() {
     channelIDs.forEach((channelID) => {
       selectedChannelIds.delete(normalizeSelectedChannelID(channelID));
     });
+    if (type === 'single') {
+      channelsCurrentPage = 1;
+    }
+    if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
     clearChannelsCache();
     await loadChannels(filters.channelType);
     if (window.showSuccess) {
@@ -826,6 +833,7 @@ async function batchSetSelectedChannelsEnabled(enabled) {
 
     const data = resp.data || {};
     selectedChannelIds.clear();
+    if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
     clearChannelsCache();
     await loadChannels(filters.channelType);
 
@@ -1017,6 +1025,7 @@ async function batchRefreshSelectedChannels(mode) {
   }
 
   selectedChannelIds.clear();
+  if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
   clearChannelsCache();
   await loadChannels(filters.channelType);
   updateBatchChannelSelectionUI();
