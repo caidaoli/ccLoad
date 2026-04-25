@@ -154,6 +154,8 @@ window.I18N_LOCALES['en'] = {
   'channels.channelCount': 'channels',
   'channels.sortBtn': 'Sort',
   'channels.filterBtn': 'Filter',
+  'channels.pageSize': 'Per page',
+  'channels.pageSizeUnit': 'items',
   'channels.batchSelectedCount': '{count} selected',
   'channels.batchSelectVisible': 'Select All',
   'channels.batchDeselectVisible': 'Deselect All',
@@ -885,6 +887,7 @@ window.I18N_LOCALES['en'] = {
   'settings.desc.health_score_update_interval': 'Success rate cache update interval (seconds)',
   'settings.desc.health_min_confident_sample': 'Confidence sample threshold (penalty fully applied when sample count reaches this)',
   'settings.desc.cooldown_fallback_enabled': 'Use best cooldown channel as fallback when all channels in cooldown (otherwise reject request)',
+  'settings.desc.log_channel_click_action': 'Log page channel click action (edit=open editor, navigate=jump to channel list position)',
   'settings.desc.debug_log_enabled': 'Enable debug logging (record raw upstream request/response data)',
   'settings.desc.debug_log_retention_minutes': 'Debug log retention duration (minutes, 1-1440)',
   // Messages

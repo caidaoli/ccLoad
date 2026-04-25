@@ -154,6 +154,8 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.channelCount': '个渠道',
   'channels.sortBtn': '排序',
   'channels.filterBtn': '筛选',
+  'channels.pageSize': '每页',
+  'channels.pageSizeUnit': '条',
   'channels.batchSelectedCount': '{count} 渠道已选择',
   'channels.batchSelectVisible': '全选',
   'channels.batchDeselectVisible': '取消全选',
@@ -885,6 +887,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'settings.desc.health_score_update_interval': '成功率缓存更新间隔(秒)',
   'settings.desc.health_min_confident_sample': '置信样本量阈值(样本量达到此值时惩罚全额生效)',
   'settings.desc.cooldown_fallback_enabled': '所有渠道冷却时选最优渠道兜底(关闭则直接拒绝请求)',
+  'settings.desc.log_channel_click_action': '日志页点击渠道名行为(edit=打开编辑器,navigate=跳转到渠道管理定位)',
   'settings.desc.debug_log_enabled': '启用Debug日志(记录上游请求/响应原始数据)',
   'settings.desc.debug_log_retention_minutes': 'Debug日志保留时长(分钟,1-1440)',
   // 消息

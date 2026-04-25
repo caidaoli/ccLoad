@@ -68,7 +68,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		cfgs = filtered
 	}
 
-	// 附带冷却状态
+	// 附带冷却状态（同时用于 status=cooldown 过滤）
 	now := time.Now()
 
 	// 批量获取冷却状态（缓存优先）
@@ -77,6 +77,59 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		// 渠道冷却查询失败不影响主流程，仅记录错误
 		log.Printf("[WARN] 批量查询渠道冷却状态失败: %v", err)
 		allChannelCooldowns = make(map[int64]time.Time)
+	}
+
+	// 支持按名称、状态、模型过滤（供分页场景使用）
+	search := strings.TrimSpace(c.Query("search"))
+	if search != "" {
+		searchLower := strings.ToLower(search)
+		filtered := make([]*model.Config, 0, len(cfgs))
+		for _, cfg := range cfgs {
+			if strings.Contains(strings.ToLower(strings.TrimSpace(cfg.Name)), searchLower) {
+				filtered = append(filtered, cfg)
+			}
+		}
+		cfgs = filtered
+	}
+
+	status := strings.TrimSpace(c.Query("status"))
+	if status != "" && status != "all" {
+		filtered := make([]*model.Config, 0, len(cfgs))
+		for _, cfg := range cfgs {
+			switch status {
+			case "enabled":
+				if cfg.Enabled {
+					filtered = append(filtered, cfg)
+				}
+			case "disabled":
+				if !cfg.Enabled {
+					filtered = append(filtered, cfg)
+				}
+			case "cooldown":
+				if until, cooled := allChannelCooldowns[cfg.ID]; cooled && until.After(now) {
+					filtered = append(filtered, cfg)
+				}
+			}
+		}
+		cfgs = filtered
+	}
+
+	modelName := strings.TrimSpace(c.Query("model"))
+	if modelName != "" && modelName != "all" {
+		filtered := make([]*model.Config, 0, len(cfgs))
+		for _, cfg := range cfgs {
+			matched := false
+			for _, entry := range cfg.ModelEntries {
+				if entry.Model == modelName {
+					matched = true
+					break
+				}
+			}
+			if matched {
+				filtered = append(filtered, cfg)
+			}
+		}
+		cfgs = filtered
 	}
 
 	// 批量查询所有Key冷却状态（缓存优先）
@@ -97,6 +150,62 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	// 健康度模式检查
 	healthEnabled := s.healthCache != nil && s.healthCache.Config().Enabled
 
+	// 健康度模式：预计算有效优先级和成功率，避免排序+输出循环中重复计算
+	priorityMap := make(map[int64]float64, len(cfgs))
+	successRateMap := make(map[int64]float64, len(cfgs))
+	if healthEnabled {
+		hcfg := s.healthCache.Config()
+		for _, cfg := range cfgs {
+			stats := s.healthCache.GetHealthStats(cfg.ID)
+			priorityMap[cfg.ID] = s.calculateEffectivePriority(cfg, stats, hcfg)
+			if stats.SampleCount > 0 {
+				successRateMap[cfg.ID] = stats.SuccessRate
+			}
+		}
+		sort.Slice(cfgs, func(i, j int) bool {
+			return priorityMap[cfgs[i].ID] > priorityMap[cfgs[j].ID]
+		})
+	}
+
+	hasPagination := c.Query("limit") != "" || c.Query("offset") != ""
+	totalCount := len(cfgs)
+
+	// 分页模式下，从完整筛选集收集所有模型名称供前端下拉框使用
+	var availableModels []string
+	if hasPagination {
+		modelSet := make(map[string]struct{})
+		for _, cfg := range cfgs {
+			for _, entry := range cfg.ModelEntries {
+				if entry.Model != "" {
+					modelSet[entry.Model] = struct{}{}
+				}
+			}
+		}
+		availableModels = make([]string, 0, len(modelSet))
+		for m := range modelSet {
+			availableModels = append(availableModels, m)
+		}
+		sort.Strings(availableModels)
+	}
+
+	if hasPagination {
+		limit := 20
+		offset := 0
+		if v, err := strconv.Atoi(strings.TrimSpace(c.DefaultQuery("limit", "20"))); err == nil && v > 0 {
+			limit = min(v, 1000)
+		}
+		if v, err := strconv.Atoi(strings.TrimSpace(c.DefaultQuery("offset", "0"))); err == nil && v >= 0 {
+			offset = v
+		}
+
+		if offset >= totalCount {
+			cfgs = []*model.Config{}
+		} else {
+			end := min(offset+limit, totalCount)
+			cfgs = cfgs[offset:end]
+		}
+	}
+
 	out := make([]ChannelWithCooldown, 0, len(cfgs))
 	for _, cfg := range cfgs {
 		oc := ChannelWithCooldown{Config: cfg}
@@ -108,13 +217,12 @@ func (s *Server) handleListChannels(c *gin.Context) {
 			oc.CooldownRemainingMS = cooldownRemainingMS
 		}
 
-		// 健康度模式：计算有效优先级和成功率
+		// 健康度模式：使用预计算的有效优先级和成功率
 		if healthEnabled {
-			stats := s.healthCache.GetHealthStats(cfg.ID)
-			if stats.SampleCount > 0 {
-				oc.SuccessRate = &stats.SuccessRate
+			if rate, ok := successRateMap[cfg.ID]; ok {
+				oc.SuccessRate = &rate
 			}
-			effPriority := s.calculateEffectivePriority(cfg, stats, s.healthCache.Config())
+			effPriority := priorityMap[cfg.ID]
 			oc.EffectivePriority = &effPriority
 		}
 
@@ -146,20 +254,6 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		out = append(out, oc)
 	}
 
-	// 健康度模式：按有效优先级降序排序（与请求路由一致）
-	if healthEnabled {
-		sort.Slice(out, func(i, j int) bool {
-			pi, pj := float64(0), float64(0)
-			if out[i].EffectivePriority != nil {
-				pi = *out[i].EffectivePriority
-			}
-			if out[j].EffectivePriority != nil {
-				pj = *out[j].EffectivePriority
-			}
-			return pi > pj
-		})
-	}
-
 	// 填充空的重定向模型为请求模型（方便前端编辑时显示）
 	for i := range out {
 		for j := range out[i].ModelEntries {
@@ -169,6 +263,10 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		}
 	}
 
+	if hasPagination {
+		RespondPaginated(c, http.StatusOK, out, totalCount, availableModels)
+		return
+	}
 	RespondJSON(c, http.StatusOK, out)
 }
 

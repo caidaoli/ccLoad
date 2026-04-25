@@ -948,6 +948,7 @@
    * @param {string} [config.initialLabel] - 初始显示文本
    * @param {number} [config.minWidth] - 最小宽度 (px)
    * @param {boolean} [config.attachMode] - 附着模式，使用已存在的 HTML 元素
+   * @param {boolean} [config.allowCustomInput] - 允许提交非下拉选项的自定义输入
    * @returns {Object} 组件实例
    */
   function createSearchableCombobox(config) {
@@ -962,7 +963,8 @@
       initialValue = '',
       initialLabel = '',
       minWidth = 150,
-      attachMode = false
+      attachMode = false,
+      allowCustomInput = false
     } = config;
 
     let input, dropdown, wrapper, dropdownHome, container = null;
@@ -1044,7 +1046,11 @@
       input.dataset.pickActive = '1';
       input.dataset.prevInputValue = input.value;
       input.dataset.prevValue = currentValue;
-      input.value = '';
+      // 非自定义输入模式始终清空；自定义输入模式仅在“全量态(空值)”时清空展示文案
+      // 避免把“所有渠道”这类标签文本当成过滤关键字，同时保留已有搜索词可编辑。
+      if (!allowCustomInput || !String(currentValue || '').trim()) {
+        input.value = '';
+      }
       activeIndex = -1;
     }
 
@@ -1078,6 +1084,38 @@
 
       closeDropdown();
       if (onSelect) onSelect(value, label);
+    }
+
+    function commitFirstMatchedOrCancel() {
+      const keyword = input.value.trim();
+      if (!keyword) {
+        if (allowCustomInput) {
+          commitValue('', '');
+          return;
+        }
+        cancelPick();
+        return;
+      }
+      if (allowCustomInput) {
+        const normalizedKeyword = keyword.toLowerCase();
+        const exactOption = getOptions().find((opt) => {
+          const label = String(opt.label || '').trim().toLowerCase();
+          const value = String(opt.value || '').trim().toLowerCase();
+          return label === normalizedKeyword || value === normalizedKeyword;
+        });
+        if (exactOption) {
+          commitValue(exactOption.value, exactOption.label);
+          return;
+        }
+        commitValue(keyword, keyword);
+        return;
+      }
+      const items = getDropdownItems();
+      if (items.length > 0) {
+        commitValue(items[0].value, items[0].label);
+        return;
+      }
+      cancelPick();
     }
 
     function getDropdownItems() {
@@ -1148,7 +1186,7 @@
       clearOutsideHandler();
       outsideHandler = (e) => {
         if (!wrapper.contains(e.target) && !dropdown.contains(e.target)) {
-          cancelPick();
+          commitFirstMatchedOrCancel();
         }
       };
       document.addEventListener('mousedown', outsideHandler, true);
@@ -1224,26 +1262,18 @@
             commitValue(items[activeIndex].value, items[activeIndex].label);
             return;
           }
+          commitFirstMatchedOrCancel();
+          return;
         }
-        // 没有选中项时，取消编辑
-        if (input.dataset.pickActive === '1' && !input.value.trim()) {
-          cancelPick();
+        if (input.dataset.pickActive === '1') {
+          commitFirstMatchedOrCancel();
         }
       }
     });
 
     input.addEventListener('blur', () => {
       if (dropdown.dataset.open !== '1') return;
-
-      // 如果用户输入了内容，自动选择第一个匹配项
-      if (input.value.trim()) {
-        const items = getDropdownItems();
-        if (items.length > 0) {
-          commitValue(items[0].value, items[0].label);
-          return;
-        }
-      }
-      cancelPick();
+      commitFirstMatchedOrCancel();
     });
 
     // 返回组件实例，提供外部控制接口

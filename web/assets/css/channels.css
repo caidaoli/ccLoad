@@ -1042,6 +1042,48 @@
       margin-left: 0;
     }
 
+    /* 分页控件居中 */
+    .logs-pagination-card .pagination-container {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .logs-pagination-card .pagination-controls {
+      justify-content: center;
+    }
+
+    .pagination-page-size-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+      font-weight: var(--font-medium);
+      color: var(--neutral-800);
+    }
+
+    .pagination-page-size-control select {
+      padding: 4px 8px;
+      border: 1px solid var(--neutral-300);
+      border-radius: 6px;
+      background: white;
+      color: var(--neutral-900);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: border-color 0.2s;
+    }
+
+    .pagination-page-size-control select:hover {
+      border-color: var(--primary-500);
+    }
+
+    .pagination-page-size-control select:focus {
+      outline: none;
+      border-color: var(--primary-500);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    }
+
     .channel-selection-toggle {
       display: inline-flex;
       align-items: center;
@@ -2746,6 +2788,19 @@
       .channel-selection-toggle {
         width: auto;
         justify-content: flex-start;
+      }
+
+      /* 移动端分页控件样式 */
+      .logs-pagination-card .pagination-controls {
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .pagination-page-size-control {
+        order: 10;
+        width: 100%;
+        justify-content: center;
+        margin-top: 4px;
       }
 
       .channel-batch-float {

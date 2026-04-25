@@ -229,7 +229,12 @@ func validateSettingValue(key, valueType, value string) error {
 		}
 
 	case "string":
-		// 字符串无需额外验证
+		switch key {
+		case "log_channel_click_action":
+			if value != "edit" && value != "navigate" {
+				return fmt.Errorf("log_channel_click_action must be edit or navigate")
+			}
+		}
 
 	default:
 		return fmt.Errorf("unknown value type: %s", valueType)

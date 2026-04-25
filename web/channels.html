@@ -93,10 +93,16 @@
             </div>
             <div class="filter-group">
               <label class="filter-label" data-i18n="channels.filterSearch">渠道名称</label>
-              <div class="filter-combobox-wrapper filter-control--compact">
-                <input id="searchInput" class="filter-select filter-combobox" type="text" autocomplete="off"
-                  spellcheck="false" />
-                <div id="searchInputDropdown" class="filter-dropdown" role="listbox" aria-label="渠道名称"></div>
+              <div class="channel-search-control" style="display:flex;align-items:center;gap:8px;">
+                <div class="filter-combobox-wrapper filter-control--compact" style="flex:1;">
+                  <input id="searchInput" class="filter-select filter-combobox" type="text" autocomplete="off"
+                    spellcheck="false" />
+                  <div id="searchInputDropdown" class="filter-dropdown" role="listbox" aria-label="渠道名称"></div>
+                </div>
+                <button id="clearSearchBtn" type="button" class="btn btn-secondary btn-sm"
+                  data-i18n="common.clear" data-i18n-title="common.clearSearch" title="清空搜索">
+                  清空
+                </button>
               </div>
             </div>
             <div class="channel-filter-summary">
@@ -117,6 +123,49 @@
         <section>
           <div id="channels-container" class="grid grid-cols-1 gap-6"></div>
         </section>
+
+        <div class="glass-card logs-pagination-card">
+          <div class="pagination-container">
+            <div class="pagination-controls logs-pagination-controls">
+              <button id="channels_first_page" class="btn btn-secondary btn-sm" type="button" data-action="first-channels-page">
+                <span data-i18n="common.firstPage">首页</span>
+              </button>
+              <button id="channels_prev_page" class="btn btn-secondary btn-sm" type="button" data-action="prev-channels-page">
+                <span data-i18n="common.prevPage">上一页</span>
+              </button>
+              <span class="pagination-info logs-pagination-info">
+                <span data-i18n="logs.pagePrefix">第</span> <span id="channels_current_page">1</span> <span data-i18n="logs.pageMid">页，共</span> <span id="channels_total_pages">1</span> <span data-i18n="logs.pageSuffix">页</span>
+                <span class="logs-pagination-separator">|</span>
+                <span data-i18n="logs.jumpTo">跳转到</span>
+                <input
+                  id="channels_jump_page"
+                  class="logs-jump-input"
+                  type="number"
+                  min="1"
+                  data-i18n-placeholder="logs.pagePlaceholder"
+                  placeholder="页码">
+                <span data-i18n="logs.pageUnit">页</span>
+              </span>
+              <button id="channels_next_page" class="btn btn-secondary btn-sm" type="button" data-action="next-channels-page">
+                <span data-i18n="common.nextPage">下一页</span>
+              </button>
+              <button id="channels_last_page" class="btn btn-secondary btn-sm" type="button" data-action="last-channels-page">
+                <span data-i18n="common.lastPage">尾页</span>
+              </button>
+              <span class="logs-pagination-separator">|</span>
+              <span class="pagination-page-size-control">
+                <span data-i18n="channels.pageSize">每页</span>
+                <select id="channels_page_size" class="logs-jump-input" style="width: 70px;">
+                  <option value="10">10</option>
+                  <option value="20" selected>20</option>
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                </select>
+                <span data-i18n="channels.pageSizeUnit">条</span>
+              </span>
+            </div>
+          </div>
+        </div>
 
         <div id="batchFloatingMenu" class="channel-batch-float" aria-hidden="true">
           <div class="channel-batch-float__content">

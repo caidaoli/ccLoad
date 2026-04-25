@@ -27,36 +27,7 @@ function normalizeModelFilterOption() {
 }
 
 function filterChannels() {
-  const filtered = channels.filter(channel => {
-    if (filters.search && channel.name !== filters.search) {
-      return false;
-    }
-
-    if (filters.channelType !== 'all') {
-      const channelType = channel.channel_type || 'anthropic';
-      if (channelType !== filters.channelType) {
-        return false;
-      }
-    }
-
-    if (filters.status !== 'all') {
-      if (filters.status === 'enabled' && !channel.enabled) return false;
-      if (filters.status === 'disabled' && channel.enabled) return false;
-      if (filters.status === 'cooldown' && !(channel.cooldown_remaining_ms > 0)) return false;
-    }
-
-    if (filters.model !== 'all') {
-      // 新格式：models 是 {model, redirect_model} 对象数组
-      const modelNames = Array.isArray(channel.models)
-        ? channel.models.map(m => m.model || m)
-        : [];
-      if (!modelNames.includes(filters.model)) {
-        return false;
-      }
-    }
-
-    return true;
-  });
+  const filtered = channels.slice();
 
   // 排序：优先使用 effective_priority（健康度模式），否则使用 priority
   filtered.sort((a, b) => {
@@ -73,9 +44,9 @@ function filterChannels() {
     return a.name.localeCompare(b.name);
   });
 
-  filteredChannels = filtered; // 保存筛选后的列表供其他模块使用
+  filteredChannels = filtered; // 当前页筛选结果（服务端已过滤）
   renderChannels(filtered);
-  updateFilterInfo(filtered.length, channels.length);
+  updateFilterInfo(filtered.length, channelsTotalCount);
 }
 
 // Update filter info display
@@ -86,23 +57,7 @@ function updateFilterInfo(filtered, total) {
 
 // Update model filter options
 function updateModelOptions() {
-  const modelSet = new Set();
-  const typeFilter = (filters && filters.channelType) ? filters.channelType : 'all';
-  channels.forEach(channel => {
-    if (typeFilter !== 'all') {
-      const channelType = channel.channel_type || 'anthropic';
-      if (channelType !== typeFilter) return;
-    }
-    if (Array.isArray(channel.models)) {
-      // 新格式：models 是 {model, redirect_model} 对象数组
-      channel.models.forEach(m => {
-        const modelName = m.model || m;
-        if (modelName) modelSet.add(modelName);
-      });
-    }
-  });
-
-  modelFilterOptions = Array.from(modelSet).sort();
+  modelFilterOptions = allAvailableModels.slice().sort();
 
   normalizeModelFilterOption();
 
@@ -144,8 +99,9 @@ function updateChannelNameOptions() {
 function setupFilterListeners() {
   document.getElementById('statusFilter').addEventListener('change', (e) => {
     filters.status = e.target.value;
+    channelsCurrentPage = 1;
     if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
-    filterChannels();
+    loadChannels(filters.channelType);
   });
 
   // 模型筛选 combobox
@@ -165,8 +121,9 @@ function setupFilterListeners() {
       },
       onSelect: (value) => {
         filters.model = value;
+        channelsCurrentPage = 1;
         if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
-        filterChannels();
+        loadChannels(filters.channelType);
       }
     });
   }
@@ -181,6 +138,7 @@ function setupFilterListeners() {
       dropdownId: 'searchInputDropdown',
       initialValue: filters.search,
       initialLabel: filters.search || allLabel,
+      allowCustomInput: true,
       getOptions: () => {
         const nameSet = new Set();
         const typeFilter = (filters && filters.channelType) ? filters.channelType : 'all';
@@ -193,16 +151,45 @@ function setupFilterListeners() {
         );
       },
       onSelect: (value) => {
-        filters.search = value;
+        const raw = String(value || '').trim();
+        const allLabel = String(getChannelNameAllLabel() || '').trim().toLowerCase();
+        const normalized = raw.toLowerCase();
+        const isAllToken = !raw ||
+          normalized === allLabel ||
+          normalized === '所有渠道' ||
+          normalized === 'all channels';
+
+        filters.search = isAllToken ? '' : raw;
+        if (isAllToken && channelNameCombobox) {
+          channelNameCombobox.setValue('', getChannelNameAllLabel());
+        }
+        channelsCurrentPage = 1;
         if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
-        filterChannels();
+        loadChannels(filters.channelType);
       }
     });
   }
 
   // 筛选按钮：手动触发筛选
   document.getElementById('btn_filter').addEventListener('click', () => {
+    channelsCurrentPage = 1;
     if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
-    filterChannels();
+    loadChannels(filters.channelType);
   });
+
+  const clearSearchBtn = document.getElementById('clearSearchBtn');
+  if (clearSearchBtn) {
+    clearSearchBtn.addEventListener('click', () => {
+      filters.search = '';
+      channelsCurrentPage = 1;
+      if (channelNameCombobox) {
+        channelNameCombobox.setValue('', getChannelNameAllLabel());
+      } else {
+        const searchInputEl = document.getElementById('searchInput');
+        if (searchInputEl) searchInputEl.value = getChannelNameAllLabel();
+      }
+      if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
+      loadChannels(filters.channelType);
+    });
+  }
 }
