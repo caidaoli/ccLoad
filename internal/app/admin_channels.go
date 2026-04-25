@@ -114,6 +114,27 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		cfgs = filtered
 	}
 
+	hasPagination := c.Query("limit") != "" || c.Query("offset") != ""
+
+	// 分页模式下，在应用 model 过滤前冻结模型下拉集合，
+	// 避免选中某模型后下拉收敛为单一选项。
+	var availableModels []string
+	if hasPagination {
+		modelSet := make(map[string]struct{})
+		for _, cfg := range cfgs {
+			for _, entry := range cfg.ModelEntries {
+				if entry.Model != "" {
+					modelSet[entry.Model] = struct{}{}
+				}
+			}
+		}
+		availableModels = make([]string, 0, len(modelSet))
+		for m := range modelSet {
+			availableModels = append(availableModels, m)
+		}
+		sort.Strings(availableModels)
+	}
+
 	modelName := strings.TrimSpace(c.Query("model"))
 	if modelName != "" && modelName != "all" {
 		filtered := make([]*model.Config, 0, len(cfgs))
@@ -150,7 +171,8 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	// 健康度模式检查
 	healthEnabled := s.healthCache != nil && s.healthCache.Config().Enabled
 
-	// 健康度模式：预计算有效优先级和成功率，避免排序+输出循环中重复计算
+	// 排序：健康度开启按 effective_priority 降序；关闭按 priority DESC, name ASC，
+	// 与前端 filterChannels 的排序键对齐，保证分页跨页顺序稳定。
 	priorityMap := make(map[int64]float64, len(cfgs))
 	successRateMap := make(map[int64]float64, len(cfgs))
 	if healthEnabled {
@@ -165,28 +187,16 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		sort.Slice(cfgs, func(i, j int) bool {
 			return priorityMap[cfgs[i].ID] > priorityMap[cfgs[j].ID]
 		})
-	}
-
-	hasPagination := c.Query("limit") != "" || c.Query("offset") != ""
-	totalCount := len(cfgs)
-
-	// 分页模式下，从完整筛选集收集所有模型名称供前端下拉框使用
-	var availableModels []string
-	if hasPagination {
-		modelSet := make(map[string]struct{})
-		for _, cfg := range cfgs {
-			for _, entry := range cfg.ModelEntries {
-				if entry.Model != "" {
-					modelSet[entry.Model] = struct{}{}
-				}
+	} else {
+		sort.Slice(cfgs, func(i, j int) bool {
+			if cfgs[i].Priority != cfgs[j].Priority {
+				return cfgs[i].Priority > cfgs[j].Priority
 			}
-		}
-		availableModels = make([]string, 0, len(modelSet))
-		for m := range modelSet {
-			availableModels = append(availableModels, m)
-		}
-		sort.Strings(availableModels)
+			return cfgs[i].Name < cfgs[j].Name
+		})
 	}
+
+	totalCount := len(cfgs)
 
 	if hasPagination {
 		limit := 20
