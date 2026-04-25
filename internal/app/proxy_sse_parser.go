@@ -34,8 +34,9 @@ type sseUsageParser struct {
 	bufferSize  int          // 当前缓冲区大小
 	eventType   string       // 当前正在解析的事件类型（跨Feed保存）
 	dataLines   []string     // 当前事件的data行（跨Feed保存）
-	oversized   bool         // 标记是否超出大小限制（停止解析但不中断流传输）
+	oversized   bool         // 当前事件超出大小限制，丢弃到事件边界后恢复解析
 	channelType string       // 渠道类型(anthropic/openai/codex/gemini),用于精确平台判断
+	discardTail string       // 丢弃超大事件时保留少量尾部，用于识别跨chunk的空行边界
 
 	// [INFO] 新增：存储SSE流中检测到的error事件（用于1308等错误的延迟处理）
 	lastError []byte // 最后一个error事件的完整JSON（data字段内容）
@@ -51,6 +52,21 @@ type jsonUsageParser struct {
 	buffer      bytes.Buffer
 	truncated   bool
 	channelType string // 渠道类型(anthropic/openai/codex/gemini),用于精确平台判断
+
+	scanInString       bool
+	scanEscape         bool
+	scanStringBuf      []byte
+	scanStringTooLong  bool
+	scanHaveToken      bool
+	scanStringToken    string
+	scanPendingKey     string
+	scanExpectValue    bool
+	scanCaptureKey     string
+	scanCaptureBuf     []byte
+	scanCaptureDepth   int
+	scanCaptureString  bool
+	scanCaptureEscape  bool
+	scanCaptureDiscard bool
 }
 
 type usageParser interface {
@@ -66,6 +82,9 @@ const (
 
 	// maxUsageBodySize 用于普通JSON响应 usage 提取时的最大缓存（防止内存过大）
 	maxUsageBodySize = 1 << 20 // 1MB
+
+	maxJSONUsageFragmentSize = 64 << 10
+	maxJSONKeySize           = 128
 )
 
 // newSSEUsageParser 创建SSE usage解析器
@@ -85,21 +104,113 @@ func newJSONUsageParser(channelType string) *jsonUsageParser {
 // Feed 喂入数据进行解析（供streamCopySSE调用）
 // 采用增量解析，避免重复扫描已处理数据
 func (p *sseUsageParser) Feed(data []byte) error {
-	// 如果已标记为超限,不再解析usage但继续传输流
-	if p.oversized {
+	for len(data) > 0 {
+		if p.oversized {
+			data = p.discardUntilEventBoundary(data)
+			continue
+		}
+
+		available := maxSSEEventSize - p.bufferSize
+		if available <= 0 {
+			p.enterOversizedEventMode()
+			continue
+		}
+
+		n := min(len(data), available)
+
+		p.buffer.Write(data[:n])
+		p.bufferSize += n
+		data = data[n:]
+
+		if err := p.parseBuffer(); err != nil {
+			return err
+		}
+
+		if p.bufferSize >= maxSSEEventSize && len(data) > 0 {
+			p.enterOversizedEventMode()
+		}
+	}
+
+	return nil
+}
+
+func (p *sseUsageParser) enterOversizedEventMode() {
+	log.Printf("WARN: SSE usage event exceeds max size (%d bytes), skipping this event for usage extraction", maxSSEEventSize)
+	p.oversized = true
+	p.buffer.Reset()
+	p.bufferSize = 0
+	p.eventType = ""
+	p.dataLines = nil
+	p.discardTail = ""
+}
+
+func (p *sseUsageParser) discardUntilEventBoundary(data []byte) []byte {
+	if len(data) == 0 {
 		return nil
 	}
 
-	// 防御性检查:限制缓冲区大小
-	if p.bufferSize+len(data) > maxSSEEventSize {
-		log.Printf("WARN: SSE usage buffer exceeds max size (%d bytes), stopping usage extraction for this request", maxSSEEventSize)
-		p.oversized = true
-		return nil // 不返回错误,让流传输继续
+	if len(p.discardTail) > 0 {
+		prefixLen := min(len(data), 3)
+		combined := make([]byte, 0, len(p.discardTail)+prefixLen)
+		combined = append(combined, p.discardTail...)
+		combined = append(combined, data[:prefixLen]...)
+		if end, ok := findSSEEventBoundary(combined); ok {
+			return p.leaveOversizedEventMode(data, end-len(p.discardTail))
+		}
 	}
 
-	p.buffer.Write(data)
-	p.bufferSize += len(data)
-	return p.parseBuffer()
+	if end, ok := findSSEEventBoundary(data); ok {
+		return p.leaveOversizedEventMode(data, end)
+	}
+
+	p.discardTail = trailingSSEBoundaryTail(p.discardTail, data)
+	return nil
+}
+
+func (p *sseUsageParser) leaveOversizedEventMode(data []byte, consume int) []byte {
+	if consume < 0 {
+		consume = 0
+	}
+	if consume > len(data) {
+		consume = len(data)
+	}
+	p.oversized = false
+	p.discardTail = ""
+	return data[consume:]
+}
+
+func trailingSSEBoundaryTail(tail string, data []byte) string {
+	if len(data) >= 3 {
+		return string(data[len(data)-3:])
+	}
+	combined := append([]byte(tail), data...)
+	if len(combined) > 3 {
+		combined = combined[len(combined)-3:]
+	}
+	return string(combined)
+}
+
+func findSSEEventBoundary(data []byte) (int, bool) {
+	patterns := [][]byte{
+		[]byte("\n\n"),
+		[]byte("\n\r\n"),
+		[]byte("\r\n\r\n"),
+	}
+	bestStart := -1
+	bestEnd := -1
+	for _, pattern := range patterns {
+		if idx := bytes.Index(data, pattern); idx >= 0 {
+			end := idx + len(pattern)
+			if bestStart == -1 || idx < bestStart || (idx == bestStart && end > bestEnd) {
+				bestStart = idx
+				bestEnd = end
+			}
+		}
+	}
+	if bestEnd == -1 {
+		return 0, false
+	}
+	return bestEnd, true
 }
 
 // parseBuffer 解析缓冲区中的SSE事件（增量解析）
@@ -225,20 +336,24 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 // - Gemini: promptTokenCount包含cachedContentTokenCount，已自动扣除
 // - Claude: input_tokens本身就是非缓存部分，无需处理
 func (p *sseUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cacheCreation int) {
-	billableInput := p.InputTokens
+	return p.normalizedUsage(p.channelType)
+}
+
+func (u *usageAccumulator) normalizedUsage(channelType string) (inputTokens, outputTokens, cacheRead, cacheCreation int) {
+	billableInput := u.InputTokens
 
 	// OpenAI/Codex/Gemini语义归一化: prompt_tokens包含cached_tokens，需扣除
 	// 设计原则: 平台差异在解析层处理，计费层无需关心
-	if (p.channelType == "openai" || p.channelType == "codex" || p.channelType == "gemini") && p.CacheReadInputTokens > 0 {
-		billableInput = p.InputTokens - p.CacheReadInputTokens
+	if (channelType == "openai" || channelType == "codex" || channelType == "gemini") && u.CacheReadInputTokens > 0 {
+		billableInput = u.InputTokens - u.CacheReadInputTokens
 		if billableInput < 0 {
 			log.Printf("WARN: %s model has cacheReadTokens(%d) > inputTokens(%d), clamped to 0",
-				p.channelType, p.CacheReadInputTokens, p.InputTokens)
+				channelType, u.CacheReadInputTokens, u.InputTokens)
 			billableInput = 0
 		}
 	}
 
-	return billableInput, p.OutputTokens, p.CacheReadInputTokens, p.CacheCreationInputTokens
+	return billableInput, u.OutputTokens, u.CacheReadInputTokens, u.CacheCreationInputTokens
 }
 
 // [INFO] GetLastError 返回SSE流中检测到的最后一个error事件
@@ -252,27 +367,213 @@ func (p *sseUsageParser) IsStreamComplete() bool {
 }
 
 func (p *jsonUsageParser) Feed(data []byte) error {
+	p.scanJSONUsage(data)
+
 	if p.truncated {
 		return nil
 	}
 	if p.buffer.Len()+len(data) > maxUsageBodySize {
 		p.truncated = true
-		log.Printf("WARN: usage body exceeds max size (%d bytes), skip usage extraction", maxUsageBodySize)
+		p.buffer = bytes.Buffer{}
+		log.Printf("WARN: usage body exceeds max size (%d bytes), switching to streaming usage extraction", maxUsageBodySize)
 		return nil
 	}
 	_, err := p.buffer.Write(data)
 	return err
 }
 
+func (p *jsonUsageParser) scanJSONUsage(data []byte) {
+	for _, b := range data {
+		if p.scanCaptureKey != "" {
+			p.scanJSONCaptureByte(b)
+			continue
+		}
+		if p.scanInString {
+			p.scanJSONStringByte(b)
+			continue
+		}
+		if p.scanExpectValue {
+			if isJSONWhitespace(b) {
+				continue
+			}
+			switch p.scanPendingKey {
+			case "usage", "usageMetadata":
+				if b == '{' {
+					p.startJSONValueCapture(b)
+					continue
+				}
+			case "service_tier":
+				if b == '"' {
+					p.startJSONValueCapture(b)
+					continue
+				}
+			}
+			p.clearJSONPendingKey()
+		}
+		if p.scanHaveToken {
+			if isJSONWhitespace(b) {
+				continue
+			}
+			if b == ':' {
+				p.scanPendingKey = p.scanStringToken
+				p.scanExpectValue = true
+				p.scanHaveToken = false
+				p.scanStringToken = ""
+				continue
+			}
+			p.scanHaveToken = false
+			p.scanStringToken = ""
+		}
+		if b == '"' {
+			p.scanInString = true
+			p.scanEscape = false
+			p.scanStringBuf = p.scanStringBuf[:0]
+			p.scanStringTooLong = false
+		}
+	}
+}
+
+func (p *jsonUsageParser) scanJSONStringByte(b byte) {
+	if p.scanEscape {
+		p.scanEscape = false
+		p.appendJSONKeyByte(b)
+		return
+	}
+	switch b {
+	case '\\':
+		p.scanEscape = true
+	case '"':
+		p.scanInString = false
+		if !p.scanStringTooLong {
+			p.scanHaveToken = true
+			p.scanStringToken = string(p.scanStringBuf)
+		}
+	default:
+		p.appendJSONKeyByte(b)
+	}
+}
+
+func (p *jsonUsageParser) appendJSONKeyByte(b byte) {
+	if p.scanStringTooLong {
+		return
+	}
+	if len(p.scanStringBuf) >= maxJSONKeySize {
+		p.scanStringTooLong = true
+		p.scanStringBuf = p.scanStringBuf[:0]
+		return
+	}
+	p.scanStringBuf = append(p.scanStringBuf, b)
+}
+
+func (p *jsonUsageParser) startJSONValueCapture(first byte) {
+	p.scanCaptureKey = p.scanPendingKey
+	p.scanCaptureBuf = p.scanCaptureBuf[:0]
+	p.scanCaptureDepth = 0
+	p.scanCaptureString = false
+	p.scanCaptureEscape = false
+	p.scanCaptureDiscard = false
+	p.clearJSONPendingKey()
+	p.scanJSONCaptureByte(first)
+}
+
+func (p *jsonUsageParser) scanJSONCaptureByte(b byte) {
+	if !p.scanCaptureDiscard {
+		if len(p.scanCaptureBuf) >= maxJSONUsageFragmentSize {
+			p.scanCaptureDiscard = true
+			p.scanCaptureBuf = p.scanCaptureBuf[:0]
+		} else {
+			p.scanCaptureBuf = append(p.scanCaptureBuf, b)
+		}
+	}
+
+	if p.scanCaptureString {
+		if p.scanCaptureEscape {
+			p.scanCaptureEscape = false
+			return
+		}
+		switch b {
+		case '\\':
+			p.scanCaptureEscape = true
+		case '"':
+			p.scanCaptureString = false
+			if p.scanCaptureDepth == 0 {
+				p.finishJSONValueCapture()
+			}
+		}
+		return
+	}
+
+	switch b {
+	case '"':
+		p.scanCaptureString = true
+	case '{':
+		p.scanCaptureDepth++
+	case '}':
+		if p.scanCaptureDepth > 0 {
+			p.scanCaptureDepth--
+		}
+		if p.scanCaptureDepth == 0 {
+			p.finishJSONValueCapture()
+		}
+	}
+}
+
+func (p *jsonUsageParser) finishJSONValueCapture() {
+	key := p.scanCaptureKey
+	discard := p.scanCaptureDiscard
+	if !discard && len(p.scanCaptureBuf) > 0 {
+		switch key {
+		case "usage", "usageMetadata":
+			var usage map[string]any
+			if err := json.Unmarshal(p.scanCaptureBuf, &usage); err == nil {
+				p.applyUsageMap(usage)
+			}
+		case "service_tier":
+			var tier string
+			if err := json.Unmarshal(p.scanCaptureBuf, &tier); err == nil && tier != "" {
+				p.ServiceTier = tier
+			}
+		}
+	}
+	p.scanCaptureKey = ""
+	p.scanCaptureBuf = p.scanCaptureBuf[:0]
+	p.scanCaptureDepth = 0
+	p.scanCaptureString = false
+	p.scanCaptureEscape = false
+	p.scanCaptureDiscard = false
+}
+
+func (p *jsonUsageParser) applyUsageMap(usage map[string]any) {
+	if usage == nil {
+		return
+	}
+	if speed, ok := usage["speed"].(string); ok && speed == "fast" {
+		p.ServiceTier = "fast"
+	}
+	p.applyUsage(usage, p.channelType)
+}
+
+func (p *jsonUsageParser) clearJSONPendingKey() {
+	p.scanPendingKey = ""
+	p.scanExpectValue = false
+}
+
+func isJSONWhitespace(b byte) bool {
+	return b == ' ' || b == '\n' || b == '\r' || b == '\t'
+}
+
 func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cacheCreation int) {
-	if p.truncated || p.buffer.Len() == 0 {
-		return 0, 0, 0, 0
+	if p.truncated {
+		return p.normalizedUsage(p.channelType)
+	}
+	if p.buffer.Len() == 0 {
+		return p.normalizedUsage(p.channelType)
 	}
 
 	data := p.buffer.Bytes()
 
 	// 兼容 text/plain SSE 回退：上游偶尔用 text/plain 发送 SSE 事件
-	if bytes.Contains(data, []byte("event:")) {
+	if looksLikeSSE(data) {
 		sseParser := &sseUsageParser{channelType: p.channelType}
 		if err := sseParser.Feed(data); err != nil {
 			log.Printf("WARN: usage sse-like parse failed: %v", err)
@@ -290,12 +591,7 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 
 	usage := extractUsage(payload)
 	// Anthropic fast mode: 从 usage.speed 推断计费层级
-	if usage != nil {
-		if speed, ok := usage["speed"].(string); ok && speed == "fast" {
-			p.ServiceTier = "fast"
-		}
-	}
-	p.applyUsage(usage, p.channelType)
+	p.applyUsageMap(usage)
 
 	// 提取 service_tier（OpenAI Chat/Responses API 顶层字段）
 	if tier, ok := payload["service_tier"].(string); ok && tier != "" {
@@ -306,18 +602,7 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 		}
 	}
 
-	// OpenAI/Codex/Gemini语义归一化: 与sseUsageParser保持一致
-	billableInput := p.InputTokens
-	if (p.channelType == "openai" || p.channelType == "codex" || p.channelType == "gemini") && p.CacheReadInputTokens > 0 {
-		billableInput = p.InputTokens - p.CacheReadInputTokens
-		if billableInput < 0 {
-			log.Printf("WARN: %s model has cacheReadTokens(%d) > inputTokens(%d), clamped to 0",
-				p.channelType, p.CacheReadInputTokens, p.InputTokens)
-			billableInput = 0
-		}
-	}
-
-	return billableInput, p.OutputTokens, p.CacheReadInputTokens, p.CacheCreationInputTokens
+	return p.normalizedUsage(p.channelType)
 }
 
 // [INFO] GetLastError 返回nil（jsonUsageParser不处理SSE error事件）

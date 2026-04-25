@@ -704,8 +704,31 @@ func isHTTP2StreamCloseError(err error) bool {
 
 // looksLikeSSE 粗略判断文本内容是否包含 SSE 事件结构
 func looksLikeSSE(data []byte) bool {
-	// 同时包含 event: 与 data: 行的简单特征，可匹配大多数 SSE 片段
-	return bytes.Contains(data, []byte("event:")) && bytes.Contains(data, []byte("data:"))
+	// 同时包含 event: 与 data: 行。必须是行前缀，避免普通JSON字符串里的
+	// "event:" 文本把非流响应误判成SSE。
+	hasEvent := false
+	hasData := false
+	for len(data) > 0 {
+		line := data
+		if idx := bytes.IndexByte(data, '\n'); idx >= 0 {
+			line = data[:idx]
+			data = data[idx+1:]
+		} else {
+			data = nil
+		}
+
+		line = bytes.TrimLeft(line, " \t\r")
+		if bytes.HasPrefix(line, []byte("event:")) {
+			hasEvent = true
+		}
+		if bytes.HasPrefix(line, []byte("data:")) {
+			hasData = true
+		}
+		if hasEvent && hasData {
+			return true
+		}
+	}
+	return false
 }
 
 // handleResponse 处理 HTTP 响应（错误或成功）
