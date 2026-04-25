@@ -564,7 +564,7 @@
       });
     }
 
-    async function loadStatsFilterOptions() {
+    async function loadStatsFilterOptions(clearValues = false) {
       try {
         const params = new URLSearchParams();
         const range = document.getElementById('f_hours')?.value || 'today';
@@ -576,8 +576,14 @@
         if (data) {
           statsChannelNameOptions = data.channel_names || [];
           statsModelOptions = data.models || [];
-          if (statsChannelNameCombobox) statsChannelNameCombobox.refresh();
-          if (statsModelCombobox) statsModelCombobox.refresh();
+          if (statsChannelNameCombobox) {
+            if (clearValues) statsChannelNameCombobox.setValue('');
+            statsChannelNameCombobox.refresh();
+          }
+          if (statsModelCombobox) {
+            if (clearValues) statsModelCombobox.setValue('');
+            statsModelCombobox.refresh();
+          }
         }
       } catch (error) {
         console.error('[Stats] 加载筛选选项失败:', error);
@@ -603,7 +609,7 @@
             key: STATS_FILTER_KEY,
             getValues: getStatsFilters
           });
-          loadStatsFilterOptions();
+          loadStatsFilterOptions(true);
           applyFilter();
         }
       });
@@ -1002,7 +1008,7 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
           key: STATS_FILTER_KEY,
           getValues: getStatsFilters
         });
-        loadStatsFilterOptions();
+        loadStatsFilterOptions(true);
         loadStats();
       });
 
