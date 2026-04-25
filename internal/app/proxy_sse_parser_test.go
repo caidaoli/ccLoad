@@ -239,7 +239,7 @@ data: {"message":{"usage":{"input_tokens":INVALID}}}
 }
 
 func TestSSEUsageParser_OversizedEvent(t *testing.T) {
-	// 超大事件应触发保护机制但不中断流传输
+	// 超大事件应触发保护机制但不中断流传输，也不能影响后续事件解析
 	parser := newSSEUsageParser("anthropic") // 测试使用默认平台
 
 	// 构造1MB+的数据
@@ -249,14 +249,18 @@ func TestSSEUsageParser_OversizedEvent(t *testing.T) {
 	if err != nil {
 		t.Errorf("不应返回错误以保证流传输继续，实际返回: %v", err)
 	}
-	if !parser.oversized {
-		t.Error("应设置oversized标志以停止后续usage解析")
+	if parser.oversized {
+		t.Error("超大事件结束后应恢复usage解析")
 	}
 
-	// 验证后续Feed不再处理
-	err2 := parser.Feed([]byte("event: test\n\n"))
+	// 验证后续Feed继续处理
+	err2 := parser.Feed([]byte("event: message_delta\ndata: {\"usage\":{\"input_tokens\":12,\"output_tokens\":73}}\n\n"))
 	if err2 != nil {
 		t.Errorf("oversized后的Feed应返回nil: %v", err2)
+	}
+	input, output, _, _ := parser.GetUsage()
+	if input != 12 || output != 73 {
+		t.Fatalf("oversized后应继续解析usage，实际 input=%d output=%d", input, output)
 	}
 }
 
@@ -300,6 +304,30 @@ data: {"type":"response.completed","sequence_number":28,"response":{"id":"resp_0
 	`
 
 	feedAndAssertUsage(t, newSSEUsageParser("codex"), sseData, 4293, 17, 6016, 0)
+}
+
+func TestSSEUsageParser_RecoversAfterOversizedEvent(t *testing.T) {
+	parser := newSSEUsageParser("codex")
+	chunks := []string{
+		"event: response.image_generation_call.partial_image\n",
+		`data: {"type":"response.image_generation_call.partial_image","partial_image_b64":"`,
+		strings.Repeat("a", maxSSEEventSize+1),
+		`"}` + "\n\n",
+		"event: response.completed\n",
+		`data: {"type":"response.completed","response":{"usage":{"input_tokens":7765,"input_tokens_details":{"cached_tokens":0},"output_tokens":379,"total_tokens":8144}}}` + "\n\n",
+	}
+
+	for i, chunk := range chunks {
+		if err := parser.Feed([]byte(chunk)); err != nil {
+			t.Fatalf("Feed第%d块失败: %v", i+1, err)
+		}
+	}
+
+	input, output, cacheRead, cacheCreation := parser.GetUsage()
+	if input != 7765 || output != 379 || cacheRead != 0 || cacheCreation != 0 {
+		t.Fatalf("oversized event后未提取最终usage: input=%d output=%d cacheRead=%d cacheCreation=%d",
+			input, output, cacheRead, cacheCreation)
+	}
 }
 
 func TestSSEUsageParser_StreamComplete(t *testing.T) {
@@ -718,6 +746,20 @@ func TestJSONUsageParser_ServiceTierResponsesAPI(t *testing.T) {
 	parser.GetUsage()
 	if parser.ServiceTier != "flex" {
 		t.Errorf("ServiceTier = %q, 期望 %q", parser.ServiceTier, "flex")
+	}
+}
+
+func TestJSONUsageParser_DoesNotTreatEventTextAsSSE(t *testing.T) {
+	body := `{"object":"response","output":[{"type":"message","content":[{"type":"output_text","text":"jsonUsageParser.GetUsage() detects event: text in this string"}]}],"usage":{"input_tokens":20070,"input_tokens_details":{"cached_tokens":11008},"output_tokens":544,"total_tokens":20614}}`
+	parser := newJSONUsageParser("codex")
+	if err := parser.Feed([]byte(body)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+
+	input, output, cacheRead, cacheCreation := parser.GetUsage()
+	if input != 9062 || output != 544 || cacheRead != 11008 || cacheCreation != 0 {
+		t.Fatalf("JSON字符串里的event:不应触发SSE解析: input=%d output=%d cacheRead=%d cacheCreation=%d",
+			input, output, cacheRead, cacheCreation)
 	}
 }
 

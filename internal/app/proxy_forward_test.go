@@ -60,6 +60,31 @@ func TestHandleSuccessResponse_ExtractsUsageFromJSON(t *testing.T) {
 	}
 }
 
+func TestHandleSuccessResponse_ExtractsUsageFromLargeCodexJSON(t *testing.T) {
+	body := `{"id":"resp_1","object":"response","status":"completed","model":"gpt-5-codex","output":[{"type":"image_generation_call","result":"` +
+		strings.Repeat("a", maxUsageBodySize+1) +
+		`"}],"service_tier":"flex","usage":{"input_tokens":7765,"input_tokens_details":{"cached_tokens":0},"output_tokens":379,"total_tokens":8144}}`
+
+	res, forwardedBody := runHandleSuccessResponse(
+		t,
+		body,
+		http.Header{"Content-Type": []string{"application/json"}},
+		false,
+		"codex",
+	)
+
+	if res.InputTokens != 7765 || res.OutputTokens != 379 || res.CacheReadInputTokens != 0 || res.CacheCreationInputTokens != 0 {
+		t.Fatalf("unexpected usage extracted from large JSON: %+v", res)
+	}
+	if res.ServiceTier != "flex" {
+		t.Fatalf("unexpected service tier from large JSON: %q", res.ServiceTier)
+	}
+
+	if forwardedBody != body {
+		t.Fatalf("large JSON response body was not forwarded unchanged")
+	}
+}
+
 func TestHandleSuccessResponse_ExtractsUsageFromTextPlainSSE(t *testing.T) {
 	body := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":4,\"cache_read_input_tokens\":1,\"cache_creation_input_tokens\":2}}}\n\n"
 	res, forwardedBody := runHandleSuccessResponse(
