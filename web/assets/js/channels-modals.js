@@ -30,12 +30,7 @@ function protocolTransformModeLabel(mode) {
   return window.t ? window.t(key) : key;
 }
 
-function i18nText(key, fallback) {
-  if (!window.t) return fallback;
-
-  const translated = window.t(key);
-  return translated && translated !== key ? translated : fallback;
-}
+const i18nText = window.i18nText;
 
 function protocolTransformHintMarkup(protocol) {
   if (protocol !== 'gemini') return '';

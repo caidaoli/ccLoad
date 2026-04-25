@@ -52,26 +52,38 @@ test('model-test 页在按模型测试表头提供批量添加模型按钮和弹
   assert.match(html, /id="addModelsConfirmBtn"[\s\S]*data-i18n="modelTest\.addModelsConfirm"/);
 });
 
-test('model-test.js i18nText 对动态删除文案执行插值兜底', () => {
+test('i18n.js 暴露的 window.i18nText 对动态删除文案执行插值兜底', () => {
+  const i18nScript = fs.readFileSync(path.join(__dirname, 'i18n.js'), 'utf8');
   const sandbox = {
     window: {
-      t() {
-        return '删除完成：成功 {success_channels} 个渠道，失败 {failed_channels} 个渠道';
+      I18N_LOCALES: {
+        'zh-CN': {
+          'modelTest.deleteSuccessSummary': '删除完成：成功 {success_channels} 个渠道，失败 {failed_channels} 个渠道'
+        }
       }
-    }
+    },
+    document: { documentElement: {} },
+    navigator: {},
+    localStorage: { getItem() { return null; }, setItem() {} },
+    console
   };
 
-  vm.runInNewContext(`
-    ${extractFunction(script, 'i18nText')}
-  `, sandbox);
+  vm.runInNewContext(i18nScript, sandbox);
 
+  assert.equal(typeof sandbox.window.i18nText, 'function', 'i18n.js 应当暴露 window.i18nText');
   assert.equal(
-    sandbox.i18nText(
+    sandbox.window.i18nText(
       'modelTest.deleteSuccessSummary',
       'fallback',
       { success_channels: 2, failed_channels: 0 }
     ),
     '删除完成：成功 2 个渠道，失败 0 个渠道'
+  );
+
+  assert.equal(
+    sandbox.window.i18nText('missing.key', '回退 {count} 项', { count: 5 }),
+    '回退 5 项',
+    'i18nText 在 key 缺失时应使用 fallback 并完成插值'
   );
 });
 

@@ -94,6 +94,24 @@
   }
 
   /**
+   * 占位符替换：{name} -> params.name
+   * @param {string} text
+   * @param {Object} [params]
+   * @returns {string}
+   */
+  function interpolate(text, params) {
+    if (!params || typeof text !== 'string') return text;
+    let result = text;
+    for (const k in params) {
+      if (Object.prototype.hasOwnProperty.call(params, k)) {
+        const safeKey = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        result = result.replace(new RegExp('\\{' + safeKey + '\\}', 'g'), params[k]);
+      }
+    }
+    return result;
+  }
+
+  /**
    * 翻译函数
    * @param {string} key - 翻译键，如 'nav.overview'
    * @param {Object} [params] - 插值参数，如 { count: 5 }
@@ -117,16 +135,26 @@
       }
     }
 
-    // 处理插值 {name} -> value
-    if (params) {
-      for (const k in params) {
-        if (Object.prototype.hasOwnProperty.call(params, k)) {
-          text = text.replace(new RegExp('\\{' + k + '\\}', 'g'), params[k]);
-        }
-      }
-    }
+    return interpolate(text, params);
+  }
 
-    return text;
+  /**
+   * 翻译函数（带 fallback）
+   * 与 t() 的差异：找不到 key 时返回 fallback（也会做插值）而非 key 本身，且不打 warn。
+   * @param {string} key - 翻译键
+   * @param {string} fallback - 找不到 key 时的回退文本
+   * @param {Object} [params] - 插值参数
+   * @returns {string}
+   */
+  function i18nText(key, fallback, params) {
+    if (!key) return interpolate(fallback, params);
+
+    const localeData = window.I18N_LOCALES[currentLocale] || {};
+    let text = localeData[key];
+    if (text === undefined) text = (window.I18N_LOCALES['zh-CN'] || {})[key];
+    if (text === undefined) text = fallback;
+
+    return interpolate(text, params);
   }
 
   /**
@@ -263,6 +291,7 @@
     onLocaleChange
   };
 
-  // 简写形式 - 保证 t() 永远可用
+  // 简写形式 - 保证 t() 和 i18nText() 永远可用
   window.t = t;
+  window.i18nText = i18nText;
 })();
