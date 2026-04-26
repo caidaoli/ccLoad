@@ -312,7 +312,7 @@ function initChannelEditorActions() {
   const channelForm = document.getElementById('channelForm');
   if (channelForm && !channelForm.dataset.channelFormBound) {
     channelForm.addEventListener('submit', (event) => {
-      saveChannel(event);
+      return saveChannel(event);
     });
     channelForm.dataset.channelFormBound = '1';
   }
@@ -465,6 +465,29 @@ function closeModal() {
   resetChannelFormDirty();
 }
 
+async function checkChannelDuplicate(channelType, urls) {
+  try {
+    const resp = await fetchAPIWithAuth('/admin/channels/check-duplicate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel_type: channelType, urls })
+    });
+    if (!resp.success) return [];
+    return Array.isArray(resp.data?.duplicates) ? resp.data.duplicates : [];
+  } catch (e) {
+    console.warn('渠道重复检测失败，已放行:', e);
+    return [];
+  }
+}
+
+function confirmDuplicateChannel(dupes) {
+  const list = dupes.map(d => {
+    const urls = d.url.split('\n').filter(u => u.trim());
+    return `• ${d.name}（${d.channel_type}）\n  ${urls.join('\n  ')}`;
+  }).join('\n\n');
+  return confirm(window.t('channels.duplicateChannelFound', { list }));
+}
+
 async function saveChannel(event) {
   event.preventDefault();
 
@@ -538,6 +561,11 @@ async function saveChannel(event) {
   if (!formData.name || !formData.url || !formData.api_key || formData.models.length === 0) {
     if (window.showError) window.showError(window.t('channels.fillAllRequired'));
     return;
+  }
+
+  if (!editingChannelId) {
+    const dupes = await checkChannelDuplicate(channelType, validURLs);
+    if (dupes.length > 0 && !confirmDuplicateChannel(dupes)) return;
   }
 
   try {

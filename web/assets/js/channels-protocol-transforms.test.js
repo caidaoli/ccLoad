@@ -522,8 +522,9 @@ test('保存渠道时 payload 带上 protocol_transforms', async () => {
 
   await harness.submitForm();
 
-  assert.equal(harness.fetchCalls.length, 1);
-  const [{ path: requestPath, options }] = harness.fetchCalls;
+  assert.equal(harness.fetchCalls.length, 2);
+  assert.equal(harness.fetchCalls[0].path, '/admin/channels/check-duplicate');
+  const { path: requestPath, options } = harness.fetchCalls[1];
   assert.equal(requestPath, '/admin/channels');
   assert.equal(options.method, 'POST');
 
