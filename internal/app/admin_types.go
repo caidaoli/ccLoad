@@ -420,3 +420,22 @@ type CooldownRequest struct {
 type SettingUpdateRequest struct {
 	Value string `json:"value" binding:"required"`
 }
+
+// CheckDuplicateRequest 渠道重复检测请求
+type CheckDuplicateRequest struct {
+	ChannelType string   `json:"channel_type" binding:"required"`
+	URLs        []string `json:"urls"         binding:"required,min=1"`
+}
+
+// DuplicateChannelInfo 重复渠道信息
+type DuplicateChannelInfo struct {
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	ChannelType string `json:"channel_type"`
+	URL         string `json:"url"`
+}
+
+// CheckDuplicateResponse 重复检测响应
+type CheckDuplicateResponse struct {
+	Duplicates []DuplicateChannelInfo `json:"duplicates"`
+}
