@@ -1007,6 +1007,8 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.saveFailed': '保存失败: {error}',
   'channels.fillAllRequired': '请填写所有必填字段（至少添加一个模型）',
   'channels.duplicateModelsNotAllowed': '存在重复模型：{models}（同一渠道内模型名必须唯一）',
+  'channels.duplicateChannelFound': '以下渠道已存在相同协议和 URL：\n\n{list}\n\n是否仍要继续添加？',
+  'channels.duplicateChannelFound': '以下渠道已存在相同协议和 URL：\n\n{list}\n\n是否仍要继续添加？',
   'channels.atLeastOneKey': '请至少添加一个有效的API Key',
   'channels.batchNoSelection': '请先选择至少一个渠道',
   'channels.batchEnabledSummary': '批量{action}完成：更新 {updated}，未变化 {unchanged}，不存在 {notFound}',
