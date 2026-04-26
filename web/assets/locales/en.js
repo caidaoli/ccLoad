@@ -1007,6 +1007,7 @@ window.I18N_LOCALES['en'] = {
   'channels.saveFailed': 'Save failed: {error}',
   'channels.fillAllRequired': 'Please fill all required fields (at least one model)',
   'channels.duplicateModelsNotAllowed': 'Duplicate models found: {models} (model names must be unique within one channel)',
+  'channels.duplicateChannelFound': 'The following channels already have the same protocol and URL:\n\n{list}\n\nContinue adding anyway?',
   'channels.atLeastOneKey': 'Please add at least one valid API Key',
   'channels.batchNoSelection': 'Please select at least one channel first',
   'channels.batchEnabledSummary': 'Batch {action} completed: updated {updated}, unchanged {unchanged}, not found {notFound}',
