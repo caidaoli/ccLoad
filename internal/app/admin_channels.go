@@ -367,6 +367,62 @@ func (s *Server) HandleChannelsFilterOptions(c *gin.Context) {
 	})
 }
 
+// HandleCheckDuplicateChannel 检测渠道是否与已有渠道重复
+// POST /admin/channels/check-duplicate
+// 判断条件：channel_type 相同 且 任意 URL 行与已有渠道任意 URL 行相交
+func (s *Server) HandleCheckDuplicateChannel(c *gin.Context) {
+	var req CheckDuplicateRequest
+	if err := BindAndValidate(c, &req); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid request: "+err.Error())
+		return
+	}
+
+	normalizedType := util.NormalizeChannelType(req.ChannelType)
+
+	// 构建新渠道 URL 集合（去除空行）
+	newURLSet := make(map[string]struct{}, len(req.URLs))
+	for _, u := range req.URLs {
+		u = strings.TrimSpace(u)
+		if u != "" {
+			newURLSet[u] = struct{}{}
+		}
+	}
+
+	cfgs, err := s.store.ListConfigs(c.Request.Context())
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	var duplicates []DuplicateChannelInfo
+	for _, cfg := range cfgs {
+		if util.NormalizeChannelType(cfg.ChannelType) != normalizedType {
+			continue
+		}
+		// 遍历已有渠道的 URL 行，检查是否与新渠道 URL 有交集
+		for line := range strings.SplitSeq(cfg.URL, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			if _, ok := newURLSet[line]; ok {
+				duplicates = append(duplicates, DuplicateChannelInfo{
+					ID:          cfg.ID,
+					Name:        cfg.Name,
+					ChannelType: cfg.ChannelType,
+					URL:         cfg.URL,
+				})
+				break // 同一渠道只报告一次
+			}
+		}
+	}
+
+	if duplicates == nil {
+		duplicates = []DuplicateChannelInfo{}
+	}
+	RespondJSON(c, http.StatusOK, CheckDuplicateResponse{Duplicates: duplicates})
+}
+
 // 创建新渠道
 func (s *Server) handleCreateChannel(c *gin.Context) {
 	var req ChannelRequest

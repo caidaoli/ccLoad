@@ -427,6 +427,9 @@ type CheckDuplicateRequest struct {
 	URLs        []string `json:"urls"         binding:"required,min=1"`
 }
 
+// Validate 实现 RequestValidator 接口，无额外业务约束
+func (r *CheckDuplicateRequest) Validate() error { return nil }
+
 // DuplicateChannelInfo 重复渠道信息
 type DuplicateChannelInfo struct {
 	ID          int64  `json:"id"`
