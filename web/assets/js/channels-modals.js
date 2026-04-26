@@ -30,14 +30,12 @@ function protocolTransformModeLabel(mode) {
   return window.t ? window.t(key) : key;
 }
 
-const i18nText = window.i18nText;
-
 function protocolTransformHintMarkup(protocol) {
   if (protocol !== 'gemini') return '';
 
   return `
           <span class="channel-editor-radio-hint" data-i18n="channels.modal.protocolTransformsHint">
-            ${i18nText('channels.modal.protocolTransformsHint', '额外暴露协议,不含原生上游协议')}
+            ${window.i18nText('channels.modal.protocolTransformsHint', '额外暴露协议,不含原生上游协议')}
           </span>
         `;
 }
@@ -68,7 +66,7 @@ function renderProtocolTransformOptions(channelType, selectedValues = []) {
                ${disabled ? 'disabled' : ''}
         >
         <span class="${copyClass}">
-          <span class="channel-editor-radio-option-text">${protocolTransformLabel(protocol)}${disabled ? ` (${i18nText('channels.protocolTransformNative', '原生')})` : ''}</span>
+          <span class="channel-editor-radio-option-text">${protocolTransformLabel(protocol)}${disabled ? ` (${window.i18nText('channels.protocolTransformNative', '原生')})` : ''}</span>
           ${protocolTransformHintMarkup(protocol)}
         </span>
       </label>
