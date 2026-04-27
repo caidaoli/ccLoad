@@ -332,9 +332,18 @@
       <td class="tokens-col-last-used" data-mobile-label="{{mobileLabelLastUsed}}">{{lastUsed}}</td>
       <td class="tokens-col-actions" data-mobile-label="{{mobileLabelActions}}">
         <div class="token-row-actions">
-          <button class="btn-copy-token btn btn-secondary token-row-action-btn" data-token="{{token}}" data-i18n="common.copy">复制</button>
-          <button class="btn btn-secondary btn-edit token-row-action-btn" data-i18n="common.edit">编辑</button>
-          <button class="btn btn-danger btn-delete token-row-action-btn" data-i18n="common.delete">删除</button>
+          <button type="button" class="btn-copy-token btn-icon token-row-action-btn" data-token="{{token}}"
+            data-i18n-title="common.copy" title="复制" aria-label="复制">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><rect x="9" y="9" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4C2.9 15 2 14.1 2 13V4C2 2.9 2.9 2 4 2H13C14.1 2 15 2.9 15 4V5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          </button>
+          <button type="button" class="btn-icon btn-edit token-row-action-btn"
+            data-i18n-title="common.edit" title="编辑" aria-label="编辑">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M3 17.25V21H6.75L17.81 9.94L14.06 6.19L3 17.25Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M20.71 7.04C21.1 6.65 21.1 6.02 20.71 5.63L18.37 3.29C17.98 2.9 17.35 2.9 16.96 3.29L15.13 5.12L18.88 8.87L20.71 7.04Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button type="button" class="btn-icon btn-danger btn-delete token-row-action-btn"
+            data-i18n-title="common.delete" title="删除" aria-label="删除">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M3 6H21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M8 6V4H16V6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M19 6L18 20H6L5 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11V17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M14 11V17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          </button>
         </div>
       </td>
     </tr>

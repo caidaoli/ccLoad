@@ -147,7 +147,8 @@ function markChannelFormDirty() {
   if (saveBtn && !saveBtn.classList.contains('btn-warning')) {
     saveBtn.classList.remove('btn-primary');
     saveBtn.classList.add('btn-warning');
-    saveBtn.textContent = window.t('common.save') + ' *';
+    const saveLabel = saveBtn.querySelector('[data-i18n="common.save"]');
+    if (saveLabel) saveLabel.textContent = window.t('common.save') + ' *';
   }
 }
 
@@ -158,7 +159,8 @@ function resetChannelFormDirty() {
   if (saveBtn) {
     saveBtn.classList.remove('btn-warning');
     saveBtn.classList.add('btn-primary');
-    saveBtn.textContent = window.t('common.save');
+    const saveLabel = saveBtn.querySelector('[data-i18n="common.save"]');
+    if (saveLabel) saveLabel.textContent = window.t('common.save');
   }
 }
 

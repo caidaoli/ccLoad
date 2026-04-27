@@ -126,13 +126,62 @@
       padding: 14px 20px;
       display: flex;
       flex-direction: column;
+      overflow: hidden;
     }
 
     .channel-editor-form {
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 4px;
       flex: 1 1 auto;
+      min-height: 0;
+      overflow: visible;
+    }
+
+    .channel-editor-body {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      overflow-x: hidden;
+      scrollbar-gutter: auto;
+    }
+
+    #channelModal .channel-editor-body,
+    #channelModal .inline-table-container {
+      scrollbar-width: thin;
+      scrollbar-color: rgba(100, 116, 139, 0.45) transparent;
+    }
+
+    #channelModal .channel-editor-body::-webkit-scrollbar,
+    #channelModal .inline-table-container::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+
+    #channelModal .channel-editor-body::-webkit-scrollbar-track,
+    #channelModal .inline-table-container::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    #channelModal .channel-editor-body::-webkit-scrollbar-thumb,
+    #channelModal .inline-table-container::-webkit-scrollbar-thumb {
+      background: rgba(100, 116, 139, 0.35);
+      border-radius: 999px;
+    }
+
+    #channelModal .channel-editor-body::-webkit-scrollbar-thumb:hover,
+    #channelModal .inline-table-container::-webkit-scrollbar-thumb:hover {
+      background: rgba(100, 116, 139, 0.55);
+    }
+
+    #channelModal .channel-editor-body::-webkit-scrollbar-button,
+    #channelModal .inline-table-container::-webkit-scrollbar-button {
+      display: none;
+      width: 0;
+      height: 0;
     }
 
     .channel-editor-group {
@@ -143,7 +192,7 @@
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(320px, max-content);
       column-gap: 20px;
-      row-gap: 4px;
+      row-gap: 2px;
       align-items: start;
     }
 
@@ -154,7 +203,7 @@
     .channel-editor-primary-field {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
       min-width: 0;
     }
 
@@ -171,13 +220,13 @@
     .channel-editor-primary-field--transforms {
       flex-direction: column;
       align-items: flex-start;
-      gap: 6px;
+      gap: 4px;
     }
 
     .channel-editor-inline-group {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
       min-width: 0;
     }
 
@@ -202,7 +251,7 @@
     .channel-editor-radio-group {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 5px;
       flex-wrap: wrap;
       min-width: 0;
     }
@@ -241,7 +290,7 @@
     .channel-editor-section-stack {
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 4px;
       min-width: 0;
       flex: 1 1 360px;
     }
@@ -250,9 +299,9 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      gap: 6px 16px;
+      gap: 4px 12px;
       flex-wrap: wrap;
-      margin-bottom: 2px;
+      margin-bottom: 0;
     }
 
     .channel-editor-section-title {
@@ -260,7 +309,7 @@
       display: flex;
       align-items: center;
       flex-wrap: wrap;
-      gap: 8px;
+      gap: 6px;
       min-width: 0;
     }
 
@@ -273,7 +322,7 @@
     .channel-editor-strategy-row {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 8px;
       flex-wrap: wrap;
       min-width: 0;
     }
@@ -291,7 +340,7 @@
     .channel-editor-inline-strategy {
       display: inline-flex;
       align-items: center;
-      gap: 10px;
+      gap: 8px;
       min-width: 0;
       flex: 0 0 auto;
     }
@@ -300,7 +349,7 @@
       display: flex;
       align-items: center;
       justify-content: flex-end;
-      gap: 6px;
+      gap: 4px;
       flex-wrap: wrap;
       min-width: 0;
       flex: 0 1 auto;
@@ -308,13 +357,13 @@
 
     .channel-editor-section-actions--keys,
     .channel-editor-section-actions--models {
-      gap: 8px;
+      gap: 6px;
     }
 
     .channel-editor-action-row {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 4px;
       flex-wrap: wrap;
       min-width: 0;
     }
@@ -332,7 +381,7 @@
     .channel-editor-footer {
       display: flex;
       align-items: center;
-      gap: 16px;
+      gap: 12px;
       flex-wrap: wrap;
       margin-top: auto;
     }
@@ -351,7 +400,7 @@
     .channel-editor-footer-fields {
       display: flex;
       align-items: center;
-      gap: 16px;
+      gap: 12px;
       flex-wrap: wrap;
       min-width: 0;
     }
@@ -359,7 +408,7 @@
     .channel-editor-inline-field {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
       min-width: 0;
     }
 
@@ -388,15 +437,54 @@
     .channel-editor-inline-field-input {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
     }
 
     .channel-editor-footer-actions {
       margin-left: auto;
       display: flex;
       justify-content: flex-end;
-      gap: 12px;
+      gap: 10px;
       min-width: 0;
+    }
+
+    .channel-editor-group--footer {
+      flex: 0 0 auto;
+      padding: 8px 0 2px;
+      margin: 0;
+      border-top: 1px solid var(--neutral-200);
+    }
+
+    #channelModal .channel-editor-input {
+      padding: 6px 8px;
+      border-width: 1px;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+
+    #channelModal .inline-table-container.tall {
+      min-height: 0;
+      max-height: 260px;
+    }
+
+    #channelModal .inline-table th {
+      padding: 4px 8px;
+      line-height: 1.2;
+    }
+
+    #channelModal .inline-table td {
+      padding: 3px 6px;
+    }
+
+    .channel-editor-footer-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+
+    .channel-editor-footer-btn svg {
+      flex: 0 0 auto;
     }
 
     .filter-label {
@@ -612,9 +700,9 @@
     }
 
     .ch-col-actions {
-      width: 220px;
-      min-width: 220px;
-      max-width: 220px;
+      width: 168px;
+      min-width: 168px;
+      max-width: 168px;
       position: relative;
       white-space: nowrap;
       text-align: right;
@@ -769,14 +857,29 @@
     .ch-action-group {
       display: inline-flex;
       flex-wrap: nowrap;
-      gap: 2px;
+      gap: 4px;
       align-items: center;
     }
 
     .ch-action-group .btn-icon {
-      font-size: 13px;
-      padding: 2px 6px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      line-height: 0;
       white-space: nowrap;
+    }
+
+    .ch-action-group .btn-icon.btn-danger {
+      color: var(--error-600);
+    }
+
+    .ch-action-group .btn-icon.btn-danger:hover {
+      color: var(--error-700);
+      border-color: var(--error-400);
+      background: var(--error-50);
     }
 
     .channel-table-selection-toggle {
@@ -1486,7 +1589,7 @@
     .redirect-model-field .modal-inline-input,
     .redirect-col-target .modal-inline-input {
       width: 100%;
-      padding: 5px 8px;
+      padding: 3px 6px;
       border: 1px solid var(--neutral-300);
       border-radius: 6px;
       font-size: 13px;
@@ -1511,16 +1614,16 @@
     }
 
     .redirect-lowercase-btn {
-      width: 24px;
-      height: 24px;
+      width: 22px;
+      height: 22px;
       flex-shrink: 0;
       border: 1px solid var(--neutral-300);
       border-radius: 4px;
     }
 
     .redirect-delete-btn {
-      width: 28px;
-      height: 28px;
+      width: 24px;
+      height: 24px;
       border: 1px solid var(--neutral-200);
       border-radius: 6px;
     }
@@ -2043,6 +2146,14 @@
         gap: 12px;
       }
 
+      .channel-editor-body {
+        gap: 12px;
+        flex: none;
+        min-height: auto;
+        overflow: visible;
+        scrollbar-gutter: auto;
+      }
+
       .channel-editor-group--primary {
         display: block;
       }
@@ -2265,11 +2376,13 @@
 
       #channelModal .channel-editor-modal {
         overflow-x: hidden;
+        overflow-y: auto;
       }
 
       #channelForm.channel-editor-form {
         min-height: 0;
         padding-bottom: 220px;
+        overflow: visible;
       }
 
       #channelModal .channel-editor-footer {
@@ -2284,6 +2397,17 @@
         border-radius: 18px;
         background: rgba(255, 255, 255, 0.98);
         box-shadow: 0 -8px 20px rgba(15, 23, 42, 0.08);
+      }
+
+      #channelModal .channel-editor-group--footer {
+        position: static;
+        margin: 0;
+        padding: 0;
+        background: transparent;
+        box-shadow: none;
+        border-top: none;
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
       }
 
       .channel-editor-footer-actions .btn {
@@ -2798,8 +2922,9 @@
 
       .channel-table .ch-action-group .btn-icon {
         flex: 0 0 auto;
-        padding: 5px 8px;
-        font-size: 12px;
+        width: 32px;
+        height: 32px;
+        padding: 0;
       }
 
       .channel-table .health-indicator {

@@ -155,7 +155,8 @@
       if (!container) return;
 
       container.addEventListener('click', (e) => {
-        const target = e.target;
+        const target = e.target.closest('.btn-copy-token, .btn-edit, .btn-delete');
+        if (!target) return;
 
         // 处理复制令牌按钮
         if (target.classList.contains('btn-copy-token')) {
