@@ -175,15 +175,39 @@ function setupFilterListeners() {
   const clearSearchBtn = document.getElementById('clearSearchBtn');
   if (clearSearchBtn) {
     clearSearchBtn.addEventListener('click', () => {
+      // 重置所有筛选条件
       filters.search = '';
       filters.searchExact = false;
+      filters.status = 'all';
+      filters.model = 'all';
+      filters.modelExact = false;
+      filters.channelType = 'all';
       channelsCurrentPage = 1;
+
+      // 重置渠道名称 combobox
       if (channelNameCombobox) {
         channelNameCombobox.setValue('', getChannelNameAllLabel());
       } else {
         const searchInputEl = document.getElementById('searchInput');
         if (searchInputEl) searchInputEl.value = getChannelNameAllLabel();
       }
+
+      // 重置模型 combobox
+      if (modelFilterCombobox) {
+        modelFilterCombobox.setValue('all', getModelAllLabel());
+      } else {
+        const modelFilterEl = document.getElementById('modelFilter');
+        if (modelFilterEl) modelFilterEl.value = getModelAllLabel();
+      }
+
+      // 重置状态下拉框
+      const statusFilterEl = document.getElementById('statusFilter');
+      if (statusFilterEl) statusFilterEl.value = 'all';
+
+      // 重置渠道类型下拉框
+      const channelTypeFilterEl = document.getElementById('channelTypeFilter');
+      if (channelTypeFilterEl) channelTypeFilterEl.value = 'all';
+
       if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
       loadChannels(filters.channelType);
     });
