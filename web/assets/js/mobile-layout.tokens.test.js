@@ -132,7 +132,7 @@ test('tokens 模型选择和导入弹窗把热点内联样式迁到 tokens.css',
   assert.match(tokensCss, /\.model-import-textarea\s*\{[\s\S]*?min-height:\s*160px;[\s\S]*?font-family:/);
   assert.match(tokensCss, /\.token-model-import-preview\s*\{[\s\S]*?background:\s*var\(--success-50\);/);
   assert.match(tokensCss, /\.token-row-meta\s*\{[\s\S]*?font-size:\s*12px;[\s\S]*?color:\s*var\(--neutral-500\);/);
-  assert.match(tokensCss, /\.token-row-actions\s+\.btn,\s*[\r\n\s]*\.token-row-action-btn\s*\{[\s\S]*?padding:\s*4px 12px;[\s\S]*?font-size:\s*13px;/);
+  assert.match(tokensCss, /\.token-row-action-btn\s*\{[\s\S]*?width:\s*28px;[\s\S]*?height:\s*28px;[\s\S]*?padding:\s*0;/);
 });
 
 test('tokens 页移除关键固定高度与控件宽度硬编码', () => {

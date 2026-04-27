@@ -2303,9 +2303,14 @@ body {
   background: white;
 }
 
+/* URL 表格：固定为 2 行可见高度 */
+.inline-table-container:has(.inline-url-table) {
+  max-height: 120px;
+}
+
 .inline-table-container.tall {
-  max-height: 280px;
-  min-height: 280px;
+  max-height: 320px;
+  min-height: 320px;
 }
 
 .inline-table {

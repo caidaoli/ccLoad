@@ -123,8 +123,9 @@
     .token-row-actions {
       display: flex;
       align-items: center;
+      justify-content: center;
       gap: 4px;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
     }
     .tokens-col-description {
       font-weight: 500;
@@ -149,10 +150,24 @@
     .tokens-col-actions {
       white-space: nowrap;
     }
-    .token-row-actions .btn,
     .token-row-action-btn {
-      padding: 4px 12px;
-      font-size: 13px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      line-height: 0;
+      white-space: nowrap;
+      flex: 0 0 auto;
+    }
+    .token-row-action-btn.btn-danger {
+      color: var(--error-600);
+    }
+    .token-row-action-btn.btn-danger:hover {
+      color: var(--error-700);
+      border-color: var(--error-400);
+      background: var(--error-50);
     }
     .token-display {
       font-family: monospace;

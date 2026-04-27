@@ -67,9 +67,9 @@ test('操作列为五个操作按钮保留足够宽度', () => {
   assert.ok(actionsColumnStyle, '缺少 .ch-col-actions 样式');
 
   const styleBlock = actionsColumnStyle[0];
-  assert.match(styleBlock, /width:\s*220px/);
-  assert.match(styleBlock, /min-width:\s*220px/);
-  assert.match(styleBlock, /max-width:\s*220px/);
+  assert.match(styleBlock, /width:\s*168px/);
+  assert.match(styleBlock, /min-width:\s*168px/);
+  assert.match(styleBlock, /max-width:\s*168px/);
 });
 
 test('排序卡片模板保留 data-channel-id 但不再显示渠道 ID 文案', () => {

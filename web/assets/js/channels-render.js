@@ -345,6 +345,9 @@ function createChannelCard(channel) {
     enabled: channel.enabled,
     toggleText: channel.enabled ? window.t('common.disable') : window.t('common.enable'),
     toggleTitle: channel.enabled ? window.t('channels.toggleDisable') : window.t('channels.toggleEnable'),
+    toggleIconHtml: channel.enabled
+      ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M12 2V12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M6.34 7.34C4.89 8.79 4 10.79 4 13C4 17.42 7.58 21 12 21C16.42 21 20 17.42 20 13C20 10.79 19.11 8.79 17.66 7.34" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>'
+      : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M8 5V19L19 12L8 5Z" fill="currentColor"/></svg>',
     durationCellClass: durationHtml ? '' : 'ch-mobile-empty',
     usageCellClass: usageHtml ? '' : 'ch-mobile-empty',
     costCellClass: costHtml ? '' : 'ch-mobile-empty',
