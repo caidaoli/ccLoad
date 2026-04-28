@@ -379,6 +379,7 @@ function initChannelEditorActions() {
     channelTypeRadios.addEventListener('change', (event) => {
       if (event.target && event.target.name === 'channelType') {
         renderProtocolTransformOptions(event.target.value, getSelectedProtocolTransforms(''));
+        scheduleChannelDuplicateHintCheck();
       }
     });
     channelTypeRadios.dataset.protocolTransformsBound = '1';
@@ -413,6 +414,7 @@ async function showAddModal() {
   inlineURLTableData = [''];
   selectedURLIndices.clear();
   renderInlineURLTable();
+  clearChannelDuplicateHint();
 
   inlineKeyTableData = [''];
   inlineKeyVisible = true;
@@ -432,6 +434,7 @@ async function editChannel(id) {
   await syncScheduledCheckVisibility();
 
   editingChannelId = id;
+  clearChannelDuplicateHint();
 
   setChannelModalTitle('channels.editChannel');
   document.getElementById('channelName').value = channel.name;
@@ -511,10 +514,14 @@ function closeModal() {
   }
   document.getElementById('channelModal').classList.remove('show');
   editingChannelId = null;
+  clearChannelDuplicateHint();
   resetChannelFormDirty();
 }
 
-async function checkChannelDuplicate(channelType, urls) {
+let channelDuplicateHintTimer = null;
+let channelDuplicateHintRequestSeq = 0;
+
+async function checkChannelDuplicate(channelType, urls, options = {}) {
   try {
     const resp = await fetchAPIWithAuth('/admin/channels/check-duplicate', {
       method: 'POST',
@@ -524,8 +531,103 @@ async function checkChannelDuplicate(channelType, urls) {
     if (!resp.success) return [];
     return Array.isArray(resp.data?.duplicates) ? resp.data.duplicates : [];
   } catch (e) {
-    console.warn('渠道重复检测失败，已放行:', e);
+    if (!options.silent) {
+      console.warn('渠道重复检测失败，已放行:', e);
+    }
     return [];
+  }
+}
+
+function clearChannelDuplicateHint() {
+  channelDuplicateHintRequestSeq++;
+  const hint = document.getElementById('channelDuplicateHint');
+  if (!hint) return;
+  hint.hidden = true;
+  hint.textContent = '';
+}
+
+function renderChannelDuplicateHint(dupes) {
+  const hint = document.getElementById('channelDuplicateHint');
+  if (!hint) return;
+
+  const names = dupes
+    .map(d => (d && d.name ? d.name.trim() : ''))
+    .filter(Boolean);
+  if (names.length === 0) {
+    clearChannelDuplicateHint();
+    return;
+  }
+
+  const visibleNames = names.slice(0, 3);
+  const separator = window.t('channels.duplicateChannelHintSeparator');
+  const extraCount = names.length - visibleNames.length;
+  const extra = extraCount > 0
+    ? window.t('channels.duplicateChannelHintMore', { count: extraCount })
+    : '';
+
+  hint.textContent = window.t('channels.duplicateChannelHint', {
+    list: visibleNames.join(separator),
+    extra
+  });
+  hint.hidden = false;
+}
+
+async function refreshChannelDuplicateHint() {
+  if (!document.getElementById('channelDuplicateHint')) return;
+
+  if (editingChannelId) {
+    clearChannelDuplicateHint();
+    return;
+  }
+
+  const validURLs = typeof getValidInlineURLs === 'function' ? getValidInlineURLs() : [];
+  if (validURLs.length === 0) {
+    clearChannelDuplicateHint();
+    return;
+  }
+
+  const requestSeq = ++channelDuplicateHintRequestSeq;
+  const channelType = document.querySelector('input[name="channelType"]:checked')?.value || 'anthropic';
+  const dupes = await checkChannelDuplicate(channelType, validURLs, { silent: true });
+  if (requestSeq !== channelDuplicateHintRequestSeq) return;
+  if (dupes.length > 0) {
+    renderChannelDuplicateHint(dupes);
+  } else {
+    clearChannelDuplicateHint();
+  }
+}
+
+function scheduleChannelDuplicateHintCheck() {
+  channelDuplicateHintRequestSeq++;
+  if (channelDuplicateHintTimer && typeof clearTimeout === 'function') {
+    clearTimeout(channelDuplicateHintTimer);
+  }
+  channelDuplicateHintTimer = null;
+
+  const hint = document.getElementById('channelDuplicateHint');
+  if (!hint) return;
+  hint.hidden = true;
+  hint.textContent = '';
+
+  if (editingChannelId) {
+    clearChannelDuplicateHint();
+    return;
+  }
+
+  const validURLs = typeof getValidInlineURLs === 'function' ? getValidInlineURLs() : [];
+  if (validURLs.length === 0) {
+    clearChannelDuplicateHint();
+    return;
+  }
+
+  const run = () => {
+    channelDuplicateHintTimer = null;
+    void refreshChannelDuplicateHint();
+  };
+  if (typeof setTimeout === 'function') {
+    channelDuplicateHintTimer = setTimeout(run, 350);
+  } else {
+    run();
   }
 }
 
@@ -1127,6 +1229,7 @@ async function copyChannel(id, name) {
   const copiedName = generateCopyName(name);
 
   editingChannelId = null;
+  clearChannelDuplicateHint();
   currentChannelKeyCooldowns = [];
   setChannelModalTitle('channels.copyChannel');
   document.getElementById('channelName').value = copiedName;
@@ -1154,6 +1257,7 @@ async function copyChannel(id, name) {
   if (radioButton) {
     radioButton.checked = true;
   }
+  scheduleChannelDuplicateHintCheck();
   const keyStrategy = channel.key_strategy || 'sequential';
   const strategyRadio = document.querySelector(`input[name="keyStrategy"][value="${keyStrategy}"]`);
   if (strategyRadio) {
