@@ -116,6 +116,12 @@ function aggregateChannelStats(statsEntries = [], channelHealth = null) {
         totalCacheCreationInputTokens: 0,
         totalCost: 0,
         effectiveCost: 0,
+        lastSuccessAt: 0,
+        lastSuccessID: 0,
+        lastRequestAt: 0,
+        lastRequestID: 0,
+        lastRequestStatus: null,
+        lastRequestMessage: '',
         _firstByteWeightedSum: 0,
         _firstByteWeight: 0,
         _durationWeightedSum: 0,
@@ -153,6 +159,26 @@ function aggregateChannelStats(statsEntries = [], channelHealth = null) {
     stats.effectiveCost += (entry.effective_cost !== undefined && entry.effective_cost !== null)
       ? toSafeNumber(entry.effective_cost)
       : toSafeNumber(entry.total_cost);
+
+    const lastSuccessAt = toTimestampMs(entry.last_success_at ?? entry.lastSuccessAt);
+    const lastSuccessID = toPositiveNumber(entry.last_success_id ?? entry.lastSuccessId);
+    if (lastSuccessAt > stats.lastSuccessAt
+      || (lastSuccessAt > 0 && lastSuccessAt === stats.lastSuccessAt && lastSuccessID > stats.lastSuccessID)) {
+      stats.lastSuccessAt = lastSuccessAt;
+      stats.lastSuccessID = lastSuccessID;
+    }
+
+    const lastRequestAt = toTimestampMs(entry.last_request_at ?? entry.lastRequestAt);
+    const lastRequestID = toPositiveNumber(entry.last_request_id ?? entry.lastRequestId);
+    if (lastRequestAt > stats.lastRequestAt
+      || (lastRequestAt > 0 && lastRequestAt === stats.lastRequestAt && lastRequestID > stats.lastRequestID)) {
+      stats.lastRequestAt = lastRequestAt;
+      stats.lastRequestID = lastRequestID;
+      stats.lastRequestStatus = Number.isFinite(Number(entry.last_request_status ?? entry.lastRequestStatus))
+        ? Number(entry.last_request_status ?? entry.lastRequestStatus)
+        : null;
+      stats.lastRequestMessage = entry.last_request_message || entry.lastRequestMessage || '';
+    }
   }
 
   for (const id of Object.keys(result)) {
@@ -182,6 +208,18 @@ function aggregateChannelStats(statsEntries = [], channelHealth = null) {
 function toSafeNumber(value) {
   const num = Number(value);
   return Number.isFinite(num) ? num : 0;
+}
+
+function toTimestampMs(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) return 0;
+  return num < 1e12 ? num * 1000 : num;
+}
+
+function toPositiveNumber(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) return 0;
+  return num;
 }
 
 // 加载默认测试内容（从系统设置）

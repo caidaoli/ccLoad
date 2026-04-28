@@ -1123,6 +1123,7 @@
           </div>
           <div class="ch-url-line" title="{{url}}">{{url}}</div>
           {{{healthHtml}}}
+          <div class="ch-last-request-slot">{{{lastRequestFailureHtml}}}</div>
           {{{nameMultiplierBadge}}}
         </div>
       </td>
@@ -1135,6 +1136,7 @@
       <td class="ch-col-duration {{durationCellClass}}" data-mobile-label="{{mobileLabelDuration}}">{{{durationHtml}}}</td>
       <td class="ch-col-usage {{usageCellClass}}" data-mobile-label="{{mobileLabelUsage}}">{{{usageHtml}}}</td>
       <td class="ch-col-cost {{costCellClass}}" data-mobile-label="{{mobileLabelCost}}">{{{costHtml}}}</td>
+      <td class="ch-col-last-success" data-mobile-label="{{mobileLabelLastSuccess}}">{{{lastSuccessHtml}}}</td>
       <td class="ch-col-actions" data-mobile-label="{{mobileLabelActions}}">
         <div class="ch-actions-stack">
           <div class="ch-action-statuses">{{{cooldownBadge}}}</div>

@@ -16,10 +16,23 @@ function loadRenderSandbox(overrides = {}) {
         if (key === 'channels.statusDisabled') return '已禁用';
         if (key === 'channels.stats.firstByte') return '首字';
         if (key === 'channels.stats.calls') return '调用';
+        if (key === 'channels.table.lastSuccess') return '最后成功';
+        if (key === 'channels.lastSuccess.noRequests') return '暂无请求';
+        if (key === 'channels.lastSuccess.never') return '从未成功';
+        if (key === 'channels.lastSuccess.secondsAgo') return `${params.count}秒前`;
+        if (key === 'channels.lastSuccess.minutesAgo') return `${params.count}分钟前`;
+        if (key === 'channels.lastSuccess.hoursAgo') return `${params.count}小时前`;
+        if (key === 'channels.lastSuccess.daysAgo') return `${params.count}天前`;
+        if (key === 'channels.lastSuccess.failedStatus') return `失败代码:${params.status}`;
+        if (key === 'channels.lastSuccess.failedAt') return `失败于:${params.time}`;
+        if (key === 'channels.lastSuccess.failedNoMessage') return '无失败日志';
+        if (key === 'channels.lastSuccess.lastSuccessPrefix') return `最后成功 ${params.time}`;
+        if (key === 'channels.lastSuccess.detail') return '详情';
         if (key === 'stats.tooltipDuration') return '耗时';
         if (key === 'stats.unitTimes') return '次';
         if (key === 'common.success') return '成功';
         if (key === 'common.failed') return '失败';
+        if (key === 'common.copy') return '复制';
         if (key === 'common.seconds') return '秒';
         return key;
       }
@@ -114,6 +127,113 @@ test('buildChannelTimingHtml 渲染耗时和带单位的调用汇总', () => {
   assert.doesNotMatch(html, />失败</);
 });
 
+test('buildChannelLastSuccessHtml 显示最近成功的相对时间', () => {
+  const { buildChannelLastSuccessHtml } = loadRenderHelpers();
+  const now = Date.now();
+
+  const html = buildChannelLastSuccessHtml({
+    lastSuccessAt: now - 3 * 60 * 1000,
+    lastRequestAt: now - 3 * 60 * 1000,
+    lastRequestStatus: 200
+  });
+
+  assert.match(html, /ch-last-status--ok/);
+  assert.match(html, />3分钟前</);
+});
+
+test('buildChannelLastRequestFailureHtml 在最后一次请求失败时生成紧凑详情并转义内容', () => {
+  const { buildChannelLastRequestFailureHtml } = loadRenderHelpers();
+  const now = Date.now();
+
+  const html = buildChannelLastRequestFailureHtml({
+    lastSuccessAt: now - 2 * 60 * 60 * 1000,
+    lastRequestAt: now - 45 * 1000,
+    lastRequestStatus: 429,
+    lastRequestMessage: '第一行\n<script>alert(1)</script>'
+  });
+
+  assert.match(html, /ch-last-request/);
+  assert.match(html, /失败代码:429/);
+  assert.match(html, /失败于:45秒前/);
+  assert.match(html, /<summary>详情<\/summary>/);
+  assert.match(html, /ch-last-request__panel/);
+  assert.match(html, /data-action="copy-last-request-failure"/);
+  assert.match(html, />复制<\/button>/);
+  assert.doesNotMatch(html, /ch-last-request__message/);
+  assert.doesNotMatch(html, /ch-last-request__main/);
+  assert.doesNotMatch(html, /ch-last-request__actions/);
+  assert.doesNotMatch(html, /最后成功 2小时前/);
+  assert.doesNotMatch(html, /从未成功/);
+  assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.doesNotMatch(html, /<script>/);
+});
+
+test('copyChannelLastRequestFailure 复制详情里的完整失败日志', async () => {
+  let copiedText = '';
+  const { copyChannelLastRequestFailure } = loadRenderSandbox({
+    window: {
+      t(key) {
+        if (key === 'channels.batchRefreshCopied') return '已复制';
+        if (key === 'channels.keyCopyFailed') return '复制失败';
+        return key;
+      },
+      copyToClipboard(text) {
+        copiedText = text;
+        return Promise.resolve();
+      }
+    },
+    setTimeout(fn) {
+      fn();
+    }
+  });
+  const pre = { textContent: '第一行\n第二行完整日志' };
+  const lastRequest = {
+    querySelector(selector) {
+      return selector === '.ch-last-request__detail pre' ? pre : null;
+    }
+  };
+  const btn = {
+    textContent: '复制',
+    closest(selector) {
+      return selector === '.ch-last-request' ? lastRequest : null;
+    }
+  };
+
+  await copyChannelLastRequestFailure(btn);
+
+  assert.equal(copiedText, '第一行\n第二行完整日志');
+  assert.equal(btn.textContent, '复制');
+});
+
+test('buildChannelLastSuccessHtml 在没有成功时间时显示占位文字', () => {
+  const { buildChannelLastSuccessHtml } = loadRenderHelpers();
+
+  const html = buildChannelLastSuccessHtml({
+    lastSuccessAt: 0,
+    lastRequestAt: Date.now() - 45 * 1000,
+    lastRequestStatus: 429,
+    lastRequestMessage: 'rate limit'
+  });
+
+  assert.match(html, /ch-last-status--empty/);
+  assert.match(html, />从未成功</);
+  assert.doesNotMatch(html, /rate limit/);
+  assert.doesNotMatch(html, /失败 429/);
+});
+
+test('buildChannelLastSuccessHtml 在没有任何请求时显示暂无请求', () => {
+  const { buildChannelLastSuccessHtml } = loadRenderHelpers();
+
+  const html = buildChannelLastSuccessHtml({
+    lastSuccessAt: 0,
+    lastRequestAt: 0,
+    lastRequestStatus: null
+  });
+
+  assert.match(html, /ch-last-status--empty/);
+  assert.match(html, />暂无请求</);
+});
+
 test('initChannelEventDelegation 允许表头全选 checkbox 触发可见渠道批量选择', () => {
   const listeners = {};
   const container = {
@@ -198,6 +318,72 @@ test('createChannelCard 会把额外协议标签传给渠道卡片模板且保�
   assert.match(cardData.protocolTransformBadges, />Claude</);
   assert.match(cardData.protocolTransformBadges, />OpenAI</);
   assert.doesNotMatch(cardData.protocolTransformBadges, />Gemini</);
+});
+
+test('createChannelCard 会把最后成功状态传给渠道行模板', () => {
+  const now = Date.now();
+  const { createChannelCard } = loadRenderSandbox({
+    channelStatsById: {
+      17: {
+        success: 1,
+        error: 0,
+        total: 1,
+        lastSuccessAt: now - 60 * 1000,
+        lastRequestAt: now - 60 * 1000,
+        lastRequestStatus: 200
+      }
+    }
+  });
+
+  const cardData = createChannelCard({
+    id: 17,
+    name: '成功渠道',
+    channel_type: 'openai',
+    protocol_transforms: [],
+    url: 'https://success.example.com',
+    models: [{ model: 'gpt-4o' }],
+    priority: 100,
+    enabled: true
+  });
+
+  assert.match(cardData.lastSuccessHtml, /1分钟前/);
+  assert.equal(cardData.mobileLabelLastSuccess, '最后成功');
+});
+
+test('createChannelCard 会把失败详情放到渠道行内', () => {
+  const now = Date.now();
+  const { createChannelCard } = loadRenderSandbox({
+    channelStatsById: {
+      18: {
+        success: 1,
+        error: 1,
+        total: 2,
+        lastSuccessAt: now - 2 * 60 * 1000,
+        lastRequestAt: now - 30 * 1000,
+        lastRequestStatus: 500,
+        lastRequestMessage: 'upstream failed'
+      }
+    }
+  });
+
+  const channel = {
+    id: 18,
+    name: '失败渠道',
+    channel_type: 'openai',
+    protocol_transforms: [],
+    url: 'https://failed.example.com',
+    models: [{ model: 'gpt-4o' }],
+    priority: 100,
+    enabled: true
+  };
+
+  const cardData = createChannelCard(channel);
+
+  assert.doesNotMatch(cardData.rowClasses, /channel-row-has-last-request/);
+  assert.doesNotMatch(cardData.lastSuccessHtml, /upstream failed/);
+  assert.match(cardData.lastRequestFailureHtml, /ch-last-request/);
+  assert.match(cardData.lastRequestFailureHtml, /失败代码:500/);
+  assert.match(cardData.lastRequestFailureHtml, /upstream failed/);
 });
 
 test('禁用渠道会把已禁用徽章渲染到优先级列而不是标题行', () => {
