@@ -11,10 +11,11 @@ import (
 
 // ModelPricing AI模型定价（单位：美元/百万tokens）
 type ModelPricing struct {
-	InputPrice        float64 // 基础输入token价格（$/1M tokens, ≤200k context for Gemini）
-	OutputPrice       float64 // 输出token价格（$/1M tokens, ≤200k context for Gemini）
-	CacheReadPrice    float64 // 显式缓存读取价格（$/1M tokens）
-	HasCacheReadPrice bool    // 是否使用显式缓存读取价格；false 时按模型系列倍率回退计算
+	InputPrice         float64 // 基础输入token价格（$/1M tokens, ≤200k context for Gemini）
+	OutputPrice        float64 // 输出token价格（$/1M tokens, ≤200k context for Gemini）
+	CacheReadPrice     float64 // 显式缓存读取价格（$/1M tokens）
+	CacheReadPriceHigh float64 // 高上下文显式缓存读取价格（$/1M tokens）
+	HasCacheReadPrice  bool    // 是否使用显式缓存读取价格；false 时按模型系列倍率回退计算
 
 	// 长上下文定价（>200k tokens，Claude/Gemini）
 	// 如果为0，表示无分段定价，使用InputPrice/OutputPrice
@@ -188,7 +189,22 @@ var basePricing = map[string]ModelPricing{
 	"glm-4-32b-0414-128k": {InputPrice: 0.10, OutputPrice: 0.10, CacheReadPrice: 0.00, HasCacheReadPrice: true},
 
 	// ========== Mimo 模型 ==========
-	"mimo-v2-flash": {InputPrice: 0.10, OutputPrice: 0.30},
+	// 来源：用户提供的价格表截图（2026-04-29）
+	"mimo-v2.5-pro": {
+		InputPrice: 1.00, OutputPrice: 3.00, CacheReadPrice: 0.20, HasCacheReadPrice: true,
+		InputPriceHigh: 2.00, OutputPriceHigh: 6.00, CacheReadPriceHigh: 0.40, // >256k input tokens
+	},
+	"mimo-v2-pro": {
+		InputPrice: 1.00, OutputPrice: 3.00, CacheReadPrice: 0.20, HasCacheReadPrice: true,
+		InputPriceHigh: 2.00, OutputPriceHigh: 6.00, CacheReadPriceHigh: 0.40, // >256k input tokens
+	},
+	"mimo-v2.5": {
+		InputPrice: 0.40, OutputPrice: 2.00, CacheReadPrice: 0.08, HasCacheReadPrice: true,
+		InputPriceHigh: 0.80, OutputPriceHigh: 4.00, CacheReadPriceHigh: 0.16, // >256k input tokens
+	},
+	"mimo-v2-omni":    {InputPrice: 0.40, OutputPrice: 2.00, CacheReadPrice: 0.08, HasCacheReadPrice: true},
+	"mimo-v2.5-flash": {InputPrice: 0.10, OutputPrice: 0.30, CacheReadPrice: 0.01, HasCacheReadPrice: true},
+	"mimo-v2-flash":   {InputPrice: 0.10, OutputPrice: 0.30, CacheReadPrice: 0.01, HasCacheReadPrice: true},
 
 	// ========== Moonshot AI / Kimi 模型 ==========
 	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=moonshotai
@@ -543,7 +559,8 @@ func getTierThresholdForModel(model string) int {
 		strings.HasPrefix(lowerModel, "qwen-3.5-plus"),
 		strings.HasPrefix(lowerModel, "qwen3.6-plus"),
 		strings.HasPrefix(lowerModel, "qwen-3.6-plus"),
-		strings.HasPrefix(lowerModel, "qwen-plus"):
+		strings.HasPrefix(lowerModel, "qwen-plus"),
+		strings.HasPrefix(lowerModel, "mimo-"):
 		return qwenPlusTierThreshold
 	default:
 		return geminiLongContextThreshold
@@ -587,10 +604,14 @@ func CalculateCostDetailed(model string, inputTokens, outputTokens, cacheReadTok
 	// 注意:价格是per 1M tokens,需要除以1,000,000
 	cost := 0.0
 
-	// 分段定价逻辑（当前用于 Gemini / Qwen Plus 系列）
-	// 阈值判断: 仅针对输入侧非缓存token(不包括输出,不包括缓存)
+	// 分段定价逻辑（当前用于 Gemini / Qwen Plus / MiMo 系列）
+	// 默认仅按非缓存输入判断；MiMo 这类提供高档缓存命中价的模型把缓存读取也计入输入分档。
 	tierThreshold := getTierThresholdForModel(model)
-	useHighPricing := pricing.InputPriceHigh > 0 && inputTokens > tierThreshold
+	tierInputTokens := inputTokens
+	if pricing.CacheReadPriceHigh > 0 {
+		tierInputTokens += cacheReadTokens
+	}
+	useHighPricing := pricing.InputPriceHigh > 0 && tierInputTokens > tierThreshold
 
 	// 选择适用的价格
 	inputPricePerM := pricing.InputPrice
@@ -622,6 +643,8 @@ func CalculateCostDetailed(model string, inputTokens, outputTokens, cacheReadTok
 				cacheMultiplier = cacheReadMultiplierOpus // Opus: 10%折扣
 			}
 			cacheReadPrice = inputPricePerM * cacheMultiplier
+		} else if useHighPricing && pricing.CacheReadPriceHigh > 0 {
+			cacheReadPrice = pricing.CacheReadPriceHigh
 		}
 		cost += float64(cacheReadTokens) * cacheReadPrice / 1_000_000
 	}
@@ -868,7 +891,7 @@ func fuzzyMatchModel(model string) (ModelPricing, bool) {
 		"davinci-002", "babbage-002",
 
 		// 其他厂商
-		"mimo-v2-flash",
+		"mimo-v2.5-flash", "mimo-v2.5-pro", "mimo-v2-omni", "mimo-v2-pro", "mimo-v2.5", "mimo-v2-flash",
 		"kimi-k2-0905:exacto", "kimi-k2-thinking", "kimi-k2.5", "kimi-k2-0905", "kimi-k2:free", "kimi-k2",
 		"kimi-linear-48b-a3b-instruct",
 		"kimi-vl-a3b-thinking:free", "kimi-vl-a3b-thinking",
