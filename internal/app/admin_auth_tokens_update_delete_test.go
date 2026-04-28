@@ -145,6 +145,7 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 		token2 := &model.AuthToken{
 			Token:             model.HashToken("plain-token-2"),
 			Description:       "keep-models",
+			ExpiresAt:         &expiresAt,
 			IsActive:          true,
 			AllowedModels:     []string{"keep-a", "keep-b"},
 			AllowedChannelIDs: []int64{101, 202},
@@ -172,11 +173,53 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 		if updated.Description != "keep-models-updated" || updated.IsActive {
 			t.Fatalf("db state mismatch: desc=%q active=%v", updated.Description, updated.IsActive)
 		}
+		if updated.ExpiresAt == nil || *updated.ExpiresAt != expiresAt {
+			t.Fatalf("ExpiresAt=%v, want preserved %d", updated.ExpiresAt, expiresAt)
+		}
 		if len(updated.AllowedModels) != 2 || updated.AllowedModels[0] != "keep-a" || updated.AllowedModels[1] != "keep-b" {
 			t.Fatalf("AllowedModels=%v, want preserved values", updated.AllowedModels)
 		}
 		if len(updated.AllowedChannelIDs) != 2 || updated.AllowedChannelIDs[0] != 101 || updated.AllowedChannelIDs[1] != 202 {
 			t.Fatalf("AllowedChannelIDs=%v, want preserved values", updated.AllowedChannelIDs)
+		}
+	})
+
+	t.Run("clear expires at when null", func(t *testing.T) {
+		token3 := &model.AuthToken{
+			Token:       model.HashToken("plain-token-3"),
+			Description: "expires-to-never",
+			ExpiresAt:   &expiresAt,
+			IsActive:    true,
+		}
+		if err := store.CreateAuthToken(ctx, token3); err != nil {
+			t.Fatalf("CreateAuthToken token3 failed: %v", err)
+		}
+
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPut, "/admin/auth-tokens/3", []byte(`{"expires_at":null}`)))
+		c.Params = gin.Params{{Key: "id", Value: "3"}}
+
+		server.HandleUpdateAuthToken(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		type respData struct {
+			ExpiresAt *int64 `json:"expires_at"`
+		}
+		resp := mustParseAPIResponse[respData](t, w.Body.Bytes())
+		if !resp.Success {
+			t.Fatalf("success=false, error=%q", resp.Error)
+		}
+		if resp.Data.ExpiresAt != nil {
+			t.Fatalf("response ExpiresAt=%v, want nil", resp.Data.ExpiresAt)
+		}
+
+		updated, err := store.GetAuthToken(ctx, token3.ID)
+		if err != nil {
+			t.Fatalf("GetAuthToken token3 failed: %v", err)
+		}
+		if updated.ExpiresAt != nil {
+			t.Fatalf("ExpiresAt=%v, want nil", updated.ExpiresAt)
 		}
 	})
 }

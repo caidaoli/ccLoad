@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"log"
 	"net/http"
 	"strings"
@@ -17,6 +18,26 @@ import (
 // ============================================================================
 // API访问令牌管理 (Admin API)
 // ============================================================================
+
+type optionalInt64JSON struct {
+	set   bool
+	value *int64
+}
+
+func (v *optionalInt64JSON) UnmarshalJSON(data []byte) error {
+	v.set = true
+	if string(data) == "null" {
+		v.value = nil
+		return nil
+	}
+
+	var n int64
+	if err := json.Unmarshal(data, &n); err != nil {
+		return err
+	}
+	v.value = &n
+	return nil
+}
 
 // HandleListAuthTokens 列出所有API访问令牌（支持时间范围统计，2025-12扩展）
 // GET /admin/auth-tokens?range=today
@@ -217,12 +238,12 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 	}
 
 	var req struct {
-		Description       *string   `json:"description"`
-		IsActive          *bool     `json:"is_active"`
-		ExpiresAt         *int64    `json:"expires_at"`
-		AllowedModels     *[]string `json:"allowed_models"`      // nil=不更新，空数组=清除限制
-		AllowedChannelIDs *[]int64  `json:"allowed_channel_ids"` // nil=不更新，空数组=清除限制
-		CostLimitUSD      *float64  `json:"cost_limit_usd"`      // 费用上限（0=无限制）
+		Description       *string           `json:"description"`
+		IsActive          *bool             `json:"is_active"`
+		ExpiresAt         optionalInt64JSON `json:"expires_at"`
+		AllowedModels     *[]string         `json:"allowed_models"`      // nil=不更新，空数组=清除限制
+		AllowedChannelIDs *[]int64          `json:"allowed_channel_ids"` // nil=不更新，空数组=清除限制
+		CostLimitUSD      *float64          `json:"cost_limit_usd"`      // 费用上限（0=无限制）
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -251,8 +272,8 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 	if req.IsActive != nil {
 		token.IsActive = *req.IsActive
 	}
-	if req.ExpiresAt != nil {
-		token.ExpiresAt = req.ExpiresAt
+	if req.ExpiresAt.set {
+		token.ExpiresAt = req.ExpiresAt.value
 	}
 	if req.AllowedModels != nil {
 		token.AllowedModels = *req.AllowedModels
