@@ -785,6 +785,15 @@
     .channel-select-all-checkbox {
       margin-right: 8px;
     }
+    .channel-select-filter-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 150px;
+      gap: 8px;
+    }
+    .channel-type-filter-select {
+      min-width: 0;
+      width: 100%;
+    }
     #visibleModelsCount {
       margin-left: 8px;
       color: var(--neutral-500);
@@ -824,6 +833,44 @@
       padding: 24px;
       text-align: center;
       color: var(--neutral-500);
+    }
+    .channel-type-group {
+      border-bottom: 1px solid var(--neutral-200);
+    }
+    .channel-type-group:last-child {
+      border-bottom: none;
+    }
+    .channel-type-group-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 9px 12px;
+      background: var(--neutral-50);
+      border-bottom: 1px solid var(--neutral-100);
+    }
+    .channel-type-group-title {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      color: var(--neutral-800);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .channel-type-group-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .channel-type-group-count {
+      color: var(--neutral-500);
+      font-size: 12px;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+    .channel-type-group-list {
+      background: #fff;
     }
     .model-option-item {
       display: flex;
@@ -1226,6 +1273,9 @@
       }
       .token-edit-cost-row .field-grow {
         min-width: 120px;
+      }
+      .channel-select-filter-row {
+        grid-template-columns: 1fr;
       }
       .token-edit-models-header {
         align-items: flex-start;
