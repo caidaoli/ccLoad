@@ -14,11 +14,6 @@ function buildPriorityRow(rowClass, valueClass, value) {
   return `<div class="ch-priority-row ${rowClass}"><span class="${valueClass}">${value}</span></div>`;
 }
 
-function buildPriorityStatusRow(content) {
-  if (!content) return '';
-  return `<div class="ch-priority-row ch-priority-row--status">${content}</div>`;
-}
-
 if (!window.ChannelProtocolConfig) {
   throw new Error('ChannelProtocolConfig helper is required before channels-render.js');
 }
@@ -27,14 +22,12 @@ function buildEffectivePriorityHtml(channel) {
   const basePriority = channel.priority;
   const priorityLabel = window.t('channels.table.priority');
   const healthLabel = window.t('channels.stats.healthScoreLabel');
-  const disabledBadge = inlineDisabledBadge(channel.enabled);
 
   if (channel.effective_priority === undefined || channel.effective_priority === null) {
     const title = `${priorityLabel}: ${basePriority}`;
     const rows = [
-      buildPriorityRow('ch-priority-base', 'ch-priority-value', basePriority),
-      buildPriorityStatusRow(disabledBadge)
-    ].filter(Boolean);
+      buildPriorityRow('ch-priority-base', 'ch-priority-value', basePriority)
+    ];
     return `<div class="ch-priority-stack" title="${title.replace(/"/g, '&quot;')}">${rows.join('')}</div>`;
   }
 
@@ -66,17 +59,7 @@ function buildEffectivePriorityHtml(channel) {
   if (!isConsistent) {
     rows.push(buildPriorityRow('ch-priority-health', healthValueClass, effPriority));
   }
-  const statusRow = buildPriorityStatusRow(disabledBadge);
-  if (statusRow) {
-    rows.push(statusRow);
-  }
-
   return `<div class="ch-priority-stack" title="${title.replace(/"/g, '&quot;')}">${rows.join('')}</div>`;
-}
-
-function inlineDisabledBadge(enabled) {
-  if (enabled !== false) return '';
-  return `<span style="display: inline-flex; align-items: center; color: #dc2626; font-size: 0.75rem; font-weight: 600; background: #eef2f7; padding: 1px 6px; border-radius: 4px; border: 1px solid #cbd5e1; vertical-align: middle;">${window.t('channels.statusDisabled')}</span>`;
 }
 
 function inlineCooldownBadge(c) {
@@ -336,18 +319,14 @@ function createChannelCard(channel) {
     modelsText: modelsText,
     priority: channel.priority,
     effectivePriorityHtml: buildEffectivePriorityHtml(channel),
-    disabledBadge: '',
     cooldownBadge: inlineCooldownBadge(channel),
     durationHtml: durationHtml,
     usageHtml: usageHtml,
     costHtml: costHtml,
     healthHtml: healthHtml,
     enabled: channel.enabled,
-    toggleText: channel.enabled ? window.t('common.disable') : window.t('common.enable'),
     toggleTitle: channel.enabled ? window.t('channels.toggleDisable') : window.t('channels.toggleEnable'),
-    toggleIconHtml: channel.enabled
-      ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M12 2V12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M6.34 7.34C4.89 8.79 4 10.79 4 13C4 17.42 7.58 21 12 21C16.42 21 20 17.42 20 13C20 10.79 19.11 8.79 17.66 7.34" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>'
-      : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M8 5V19L19 12L8 5Z" fill="currentColor"/></svg>',
+    toggleSwitchClass: channel.enabled ? 'channel-enable-switch--on' : 'channel-enable-switch--off',
     durationCellClass: durationHtml ? '' : 'ch-mobile-empty',
     usageCellClass: usageHtml ? '' : 'ch-mobile-empty',
     costCellClass: costHtml ? '' : 'ch-mobile-empty',
@@ -356,6 +335,7 @@ function createChannelCard(channel) {
     mobileLabelDuration: window.t('channels.table.duration'),
     mobileLabelUsage: window.t('channels.table.usage'),
     mobileLabelCost: window.t('channels.stats.cost'),
+    mobileLabelEnabled: window.t('channels.table.enabled'),
     mobileLabelActions: window.t('channels.table.actions')
   };
 
@@ -451,6 +431,7 @@ function renderChannels(channelsToRender = channels) {
       <th class="ch-col-duration">${window.t('channels.table.duration')}</th>
       <th class="ch-col-usage">${window.t('channels.table.usage')}</th>
       <th class="ch-col-cost">${window.t('channels.stats.cost')}</th>
+      <th class="ch-col-enabled">${window.t('channels.table.enabled')}</th>
       <th class="ch-col-actions">${window.t('channels.table.actions')}</th>
     </tr>
   </thead>`;
