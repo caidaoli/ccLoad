@@ -241,6 +241,294 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 	}
 }
 
+func TestMetrics_LastSuccessAndLastFailedRequest(t *testing.T) {
+	store := newTestStore(t, "metrics_last_success.db")
+	ctx := context.Background()
+
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:        "last-success-channel",
+		URL:         "https://example.com",
+		Priority:    10,
+		Enabled:     true,
+		ChannelType: "openai",
+		ModelEntries: []model.ModelEntry{
+			{Model: "gpt-4o"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	now := time.Now().Truncate(time.Millisecond)
+	successAt := now.Add(-30 * time.Second)
+	failedAt := now.Add(-10 * time.Second)
+	cancelledAt := now.Add(-5 * time.Second)
+
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
+		{Time: model.JSONTime{Time: successAt}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 200, Message: "ok", LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: failedAt}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 429, Message: "rate limit exceeded", LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: failedAt}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 500, Message: "upstream failed later", LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: cancelledAt}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 499, Message: "client cancelled", LogSource: model.LogSourceProxy},
+	}); err != nil {
+		t.Fatalf("BatchAddLogs failed: %v", err)
+	}
+
+	stats, err := store.GetStats(ctx, now.Add(-time.Minute), now.Add(time.Minute), nil, false)
+	if err != nil {
+		t.Fatalf("GetStats failed: %v", err)
+	}
+
+	for _, e := range stats {
+		if e.ChannelID == nil || int64(*e.ChannelID) != cfg.ID || e.Model != "gpt-4o" {
+			continue
+		}
+		if e.LastSuccessAt == nil || *e.LastSuccessAt != successAt.UnixMilli() {
+			t.Fatalf("LastSuccessAt=%v, want %d", e.LastSuccessAt, successAt.UnixMilli())
+		}
+		if e.LastSuccessID == nil || *e.LastSuccessID <= 0 {
+			t.Fatalf("LastSuccessID=%v, want positive id", e.LastSuccessID)
+		}
+		wantLastRequestAt := failedAt.UnixMilli()
+		if e.LastRequestAt == nil || *e.LastRequestAt != wantLastRequestAt {
+			t.Fatalf("LastRequestAt=%v, want %d", e.LastRequestAt, wantLastRequestAt)
+		}
+		if e.LastRequestID == nil || *e.LastRequestID <= 0 {
+			t.Fatalf("LastRequestID=%v, want positive id", e.LastRequestID)
+		}
+		if e.LastRequestStatus == nil || *e.LastRequestStatus != 500 {
+			t.Fatalf("LastRequestStatus=%v, want 500", e.LastRequestStatus)
+		}
+		if e.LastRequestMessage != "upstream failed later" {
+			t.Fatalf("LastRequestMessage=%q, want upstream failed later", e.LastRequestMessage)
+		}
+		return
+	}
+
+	t.Fatalf("stats missing channel %d model gpt-4o: %+v", cfg.ID, stats)
+}
+
+func TestMetrics_LastRequestIDsExposeTieBreakForFrontEndAggregation(t *testing.T) {
+	store := newTestStore(t, "metrics_last_request_ids.db")
+	ctx := context.Background()
+
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:        "multi-model-channel",
+		URL:         "https://example.com",
+		Priority:    10,
+		Enabled:     true,
+		ChannelType: "openai",
+		ModelEntries: []model.ModelEntry{
+			{Model: "gpt-4o"},
+			{Model: "gpt-4.1"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	now := time.Now().Truncate(time.Millisecond)
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
+		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 200, Message: "ok-a", LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-4.1", StatusCode: 500, Message: "fail-b", LogSource: model.LogSourceProxy},
+	}); err != nil {
+		t.Fatalf("BatchAddLogs failed: %v", err)
+	}
+
+	stats, err := store.GetStats(ctx, now.Add(-time.Minute), now.Add(time.Minute), nil, false)
+	if err != nil {
+		t.Fatalf("GetStats failed: %v", err)
+	}
+
+	idsByModel := make(map[string]int64, 2)
+	for _, e := range stats {
+		if e.ChannelID == nil || int64(*e.ChannelID) != cfg.ID {
+			continue
+		}
+		if e.LastRequestID == nil || *e.LastRequestID <= 0 {
+			t.Fatalf("model %s LastRequestID=%v, want positive id", e.Model, e.LastRequestID)
+		}
+		idsByModel[e.Model] = *e.LastRequestID
+	}
+
+	if len(idsByModel) != 2 {
+		t.Fatalf("idsByModel=%v, want 2 models", idsByModel)
+	}
+	if idsByModel["gpt-4.1"] <= idsByModel["gpt-4o"] {
+		t.Fatalf("want gpt-4.1 id > gpt-4o id for same-millisecond tie-break, got %+v", idsByModel)
+	}
+}
+
+func TestMetrics_LastSuccessAtIgnoresCurrentRange(t *testing.T) {
+	store := newTestStore(t, "metrics_last_success_all_time.db")
+	ctx := context.Background()
+
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:        "history-success-channel",
+		URL:         "https://example.com",
+		Priority:    10,
+		Enabled:     true,
+		ChannelType: "openai",
+		ModelEntries: []model.ModelEntry{
+			{Model: "gpt-4o"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	now := time.Now().Truncate(time.Millisecond)
+	oldSuccessAt := now.Add(-48 * time.Hour)
+	recentFailedAt := now.Add(-10 * time.Second)
+
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
+		{Time: model.JSONTime{Time: oldSuccessAt}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 200, Message: "historic ok", LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: recentFailedAt}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 500, Message: "recent failed", LogSource: model.LogSourceProxy},
+	}); err != nil {
+		t.Fatalf("BatchAddLogs failed: %v", err)
+	}
+
+	stats, err := store.GetStats(ctx, now.Add(-time.Minute), now.Add(time.Minute), nil, false)
+	if err != nil {
+		t.Fatalf("GetStats failed: %v", err)
+	}
+
+	for _, e := range stats {
+		if e.ChannelID == nil || int64(*e.ChannelID) != cfg.ID || e.Model != "gpt-4o" {
+			continue
+		}
+		if e.LastSuccessAt == nil || *e.LastSuccessAt != oldSuccessAt.UnixMilli() {
+			t.Fatalf("LastSuccessAt=%v, want %d", e.LastSuccessAt, oldSuccessAt.UnixMilli())
+		}
+		if e.LastRequestAt == nil || *e.LastRequestAt != recentFailedAt.UnixMilli() {
+			t.Fatalf("LastRequestAt=%v, want %d", e.LastRequestAt, recentFailedAt.UnixMilli())
+		}
+		return
+	}
+
+	t.Fatalf("stats missing channel %d model gpt-4o: %+v", cfg.ID, stats)
+}
+
+func TestMetrics_LastRequestAtIgnoresCurrentRange(t *testing.T) {
+	store := newTestStore(t, "metrics_last_request_all_time.db")
+	ctx := context.Background()
+
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:        "history-request-channel",
+		URL:         "https://example.com",
+		Priority:    10,
+		Enabled:     true,
+		ChannelType: "openai",
+		ModelEntries: []model.ModelEntry{
+			{Model: "gpt-4o"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	now := time.Now().Truncate(time.Millisecond)
+	inRangeSuccessAt := now.Add(-30 * time.Second)
+	latestFailedAt := now.Add(2 * time.Hour)
+
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
+		{Time: model.JSONTime{Time: inRangeSuccessAt}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 200, Message: "in-range ok", LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: latestFailedAt}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 502, Message: "latest failed outside range", LogSource: model.LogSourceProxy},
+	}); err != nil {
+		t.Fatalf("BatchAddLogs failed: %v", err)
+	}
+
+	stats, err := store.GetStats(ctx, now.Add(-time.Minute), now.Add(time.Minute), nil, false)
+	if err != nil {
+		t.Fatalf("GetStats failed: %v", err)
+	}
+
+	for _, e := range stats {
+		if e.ChannelID == nil || int64(*e.ChannelID) != cfg.ID || e.Model != "gpt-4o" {
+			continue
+		}
+		if e.LastSuccessAt == nil || *e.LastSuccessAt != inRangeSuccessAt.UnixMilli() {
+			t.Fatalf("LastSuccessAt=%v, want %d", e.LastSuccessAt, inRangeSuccessAt.UnixMilli())
+		}
+		if e.LastRequestAt == nil || *e.LastRequestAt != latestFailedAt.UnixMilli() {
+			t.Fatalf("LastRequestAt=%v, want %d", e.LastRequestAt, latestFailedAt.UnixMilli())
+		}
+		if e.LastRequestStatus == nil || *e.LastRequestStatus != 502 {
+			t.Fatalf("LastRequestStatus=%v, want 502", e.LastRequestStatus)
+		}
+		if e.LastRequestMessage != "latest failed outside range" {
+			t.Fatalf("LastRequestMessage=%q, want latest failed outside range", e.LastRequestMessage)
+		}
+		return
+	}
+
+	t.Fatalf("stats missing channel %d model gpt-4o: %+v", cfg.ID, stats)
+}
+
+func TestMetrics_LastStateIgnoresStatusCodeFilter(t *testing.T) {
+	store := newTestStore(t, "metrics_last_state_status_filter.db")
+	ctx := context.Background()
+
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:        "status-filter-channel",
+		URL:         "https://example.com",
+		Priority:    10,
+		Enabled:     true,
+		ChannelType: "openai",
+		ModelEntries: []model.ModelEntry{
+			{Model: "gpt-4o"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	now := time.Now().Truncate(time.Millisecond)
+	successAt := now.Add(-30 * time.Second)
+	failed500At := now.Add(-20 * time.Second)
+	failed429At := now.Add(-10 * time.Second)
+
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
+		{Time: model.JSONTime{Time: successAt}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 200, Message: "historic ok", LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: failed500At}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 500, Message: "old failed", LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: failed429At}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 429, Message: "latest failed", LogSource: model.LogSourceProxy},
+	}); err != nil {
+		t.Fatalf("BatchAddLogs failed: %v", err)
+	}
+
+	statusCode := 500
+	stats, err := store.GetStats(ctx, now.Add(-time.Minute), now.Add(time.Minute), &model.LogFilter{
+		StatusCode: &statusCode,
+		LogSource:  model.LogSourceProxy,
+	}, false)
+	if err != nil {
+		t.Fatalf("GetStats failed: %v", err)
+	}
+
+	for _, e := range stats {
+		if e.ChannelID == nil || int64(*e.ChannelID) != cfg.ID || e.Model != "gpt-4o" {
+			continue
+		}
+		if e.Success != 0 || e.Error != 1 || e.Total != 1 {
+			t.Fatalf("filtered stats mismatch: success=%d error=%d total=%d", e.Success, e.Error, e.Total)
+		}
+		if e.LastSuccessAt == nil || *e.LastSuccessAt != successAt.UnixMilli() {
+			t.Fatalf("LastSuccessAt=%v, want %d", e.LastSuccessAt, successAt.UnixMilli())
+		}
+		if e.LastRequestAt == nil || *e.LastRequestAt != failed429At.UnixMilli() {
+			t.Fatalf("LastRequestAt=%v, want %d", e.LastRequestAt, failed429At.UnixMilli())
+		}
+		if e.LastRequestStatus == nil || *e.LastRequestStatus != 429 {
+			t.Fatalf("LastRequestStatus=%v, want 429", e.LastRequestStatus)
+		}
+		if e.LastRequestMessage != "latest failed" {
+			t.Fatalf("LastRequestMessage=%q, want latest failed", e.LastRequestMessage)
+		}
+		return
+	}
+
+	t.Fatalf("stats missing channel %d model gpt-4o: %+v", cfg.ID, stats)
+}
+
 func TestGetStats_PreservesZeroCostMultiplierForFreeChannels(t *testing.T) {
 	store := newTestStore(t, "metrics_zero_multiplier.db")
 	ctx := context.Background()

@@ -150,6 +150,29 @@ function clearAllBatchRefreshResults() {
     renderChannelBatchRefreshResult(key);
   });
 }
+
+async function copyChannelLastRequestFailure(btn) {
+  const lastRequest = btn && btn.closest ? btn.closest('.ch-last-request') : null;
+  const pre = lastRequest && lastRequest.querySelector ? lastRequest.querySelector('.ch-last-request__detail pre') : null;
+  const text = pre ? pre.textContent : '';
+  if (!text) return;
+
+  try {
+    if (window.copyToClipboard) {
+      await window.copyToClipboard(text);
+    } else if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      throw new Error('copy failed');
+    }
+    const originalText = btn.textContent;
+    btn.textContent = window.t('channels.batchRefreshCopied');
+    setTimeout(() => { btn.textContent = originalText; }, 1500);
+  } catch (error) {
+    console.error('Copy last request failure failed', error);
+    if (window.showError) window.showError(window.t('channels.keyCopyFailed'));
+  }
+}
 if (!window.ChannelProtocolConfig) {
   throw new Error('ChannelProtocolConfig helper is required before channels-render.js');
 }
@@ -383,6 +406,78 @@ function buildChannelTimingHtml(stats) {
   return rows.length > 0 ? `<div class="ch-timing">${rows.join('')}</div>` : '';
 }
 
+function formatChannelRelativeTime(timestampMs, nowMs = Date.now()) {
+  const ts = Number(timestampMs);
+  if (!Number.isFinite(ts) || ts <= 0) return '';
+
+  const seconds = Math.max(1, Math.floor((nowMs - ts) / 1000));
+  if (seconds < 60) {
+    return window.t('channels.lastSuccess.secondsAgo', { count: seconds });
+  }
+
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    return window.t('channels.lastSuccess.minutesAgo', { count: minutes });
+  }
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return window.t('channels.lastSuccess.hoursAgo', { count: hours });
+  }
+
+  const days = Math.floor(hours / 24);
+  return window.t('channels.lastSuccess.daysAgo', { count: days });
+}
+
+function buildChannelLastSuccessHtml(stats) {
+  if (!stats) {
+    return `<div class="ch-last-status ch-last-status--empty">${escapeChannelRefreshText(window.t('channels.lastSuccess.noRequests'))}</div>`;
+  }
+
+  const lastSuccessAt = Number(stats.lastSuccessAt || 0);
+  const lastRequestAt = Number(stats.lastRequestAt || 0);
+  const status = Number(stats.lastRequestStatus);
+  const hasRequest = lastRequestAt > 0 && Number.isFinite(status) && status > 0;
+
+  if (lastSuccessAt > 0) {
+    return `<div class="ch-last-status ch-last-status--ok">${escapeChannelRefreshText(formatChannelRelativeTime(lastSuccessAt))}</div>`;
+  }
+
+  if (hasRequest) {
+    return `<div class="ch-last-status ch-last-status--empty">${escapeChannelRefreshText(window.t('channels.lastSuccess.never'))}</div>`;
+  }
+
+  return `<div class="ch-last-status ch-last-status--empty">${escapeChannelRefreshText(window.t('channels.lastSuccess.noRequests'))}</div>`;
+}
+
+function buildChannelLastRequestFailureHtml(stats) {
+  if (!stats) return '';
+
+  const lastSuccessAt = Number(stats.lastSuccessAt || 0);
+  const lastRequestAt = Number(stats.lastRequestAt || 0);
+  const status = Number(stats.lastRequestStatus);
+  const hasRequest = lastRequestAt > 0 && Number.isFinite(status) && status > 0;
+  const requestFailed = hasRequest && (status < 200 || status >= 300) && status !== 499;
+  if (!requestFailed) return '';
+
+  const statusText = escapeChannelRefreshText(window.t('channels.lastSuccess.failedStatus', { status }));
+  const relativeTime = formatChannelRelativeTime(lastRequestAt);
+  const timeText = escapeChannelRefreshText(window.t('channels.lastSuccess.failedAt', { time: relativeTime }));
+  const message = String(stats.lastRequestMessage || window.t('channels.lastSuccess.failedNoMessage'));
+  const escapedMessage = escapeChannelRefreshText(message);
+  return `<div class="ch-last-request">
+    <span class="ch-last-request__state">${statusText}</span>
+    <span class="ch-last-request__time">${timeText}</span>
+    <details class="ch-last-request__detail">
+      <summary>${escapeChannelRefreshText(window.t('channels.lastSuccess.detail'))}</summary>
+      <div class="ch-last-request__panel">
+        <pre>${escapedMessage}</pre>
+        <button type="button" class="ch-last-request__copy" data-action="copy-last-request-failure">${escapeChannelRefreshText(window.t('common.copy'))}</button>
+      </div>
+    </details>
+  </div>`;
+}
+
 /**
  * 使用模板引擎创建渠道表格行
  * @param {Object} channel - 渠道数据
@@ -410,6 +505,7 @@ function createChannelCard(channel) {
     : '';
 
   const durationHtml = buildChannelTimingHtml(stats);
+  const lastSuccessHtml = buildChannelLastSuccessHtml(stats);
 
   // 消耗HTML：仅保留 token 相关消耗项
   let usageHtml = '';
@@ -443,6 +539,7 @@ function createChannelCard(channel) {
   // 行class
   const rowClasses = ['channel-table-row'];
   if (isCooldown) rowClasses.push('channel-card-cooldown');
+  const lastRequestFailureHtml = buildChannelLastRequestFailureHtml(stats);
   if (batchRefreshResult && batchRefreshResult.status) {
     rowClasses.push(`channel-row-refresh-${batchRefreshResult.status}`);
   }
@@ -464,6 +561,8 @@ function createChannelCard(channel) {
     durationHtml: durationHtml,
     usageHtml: usageHtml,
     costHtml: costHtml,
+    lastSuccessHtml: lastSuccessHtml,
+    lastRequestFailureHtml: lastRequestFailureHtml,
     healthHtml: healthHtml,
     enabled: channel.enabled,
     toggleTitle: channel.enabled ? window.t('channels.toggleDisable') : window.t('channels.toggleEnable'),
@@ -476,6 +575,7 @@ function createChannelCard(channel) {
     mobileLabelDuration: window.t('channels.table.duration'),
     mobileLabelUsage: window.t('channels.table.usage'),
     mobileLabelCost: window.t('channels.stats.cost'),
+    mobileLabelLastSuccess: window.t('channels.table.lastSuccess'),
     mobileLabelEnabled: window.t('channels.table.enabled'),
     mobileLabelActions: window.t('channels.table.actions')
   };
@@ -521,6 +621,12 @@ function initChannelEventDelegation() {
 
   // 事件委托：处理所有渠道操作按钮
   container.addEventListener('click', (e) => {
+    const lastRequestCopyBtn = e.target.closest('.ch-last-request__copy');
+    if (lastRequestCopyBtn) {
+      copyChannelLastRequestFailure(lastRequestCopyBtn);
+      return;
+    }
+
     const refreshResultBtn = e.target.closest('.channel-refresh-result-action');
     if (refreshResultBtn) {
       const channelId = parseInt(refreshResultBtn.dataset.channelId, 10);
@@ -583,6 +689,7 @@ function renderChannels(channelsToRender = channels) {
       <th class="ch-col-duration">${window.t('channels.table.duration')}</th>
       <th class="ch-col-usage">${window.t('channels.table.usage')}</th>
       <th class="ch-col-cost">${window.t('channels.stats.cost')}</th>
+      <th class="ch-col-last-success">${window.t('channels.table.lastSuccess')}</th>
       <th class="ch-col-enabled">${window.t('channels.table.enabled')}</th>
       <th class="ch-col-actions">${window.t('channels.table.actions')}</th>
     </tr>

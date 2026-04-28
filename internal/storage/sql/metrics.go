@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"sort"
+	"strings"
 	"time"
 
 	"ccLoad/internal/model"
@@ -31,6 +33,7 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 				AVG(CASE WHEN duration > 0 THEN duration ELSE NULL END),
 				3
 			) as avg_duration,
+			MAX(CASE WHEN status_code >= 200 AND status_code < 300 THEN time ELSE NULL END) AS last_success_at,
 			SUM(COALESCE(input_tokens, 0)) as total_input_tokens,
 			SUM(COALESCE(output_tokens, 0)) as total_output_tokens,
 			SUM(COALESCE(cache_read_input_tokens, 0)) as total_cache_read_input_tokens,
@@ -75,11 +78,13 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 	for rows.Next() {
 		var entry model.StatsEntry
 		var avgFirstByteTime, avgDuration sql.NullFloat64
+		var lastSuccessAt sql.NullInt64
 		var totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheCreationTokens sql.NullInt64
 		var totalCost, effectiveCost sql.NullFloat64
 
 		err := rows.Scan(&entry.ChannelID, &entry.Model,
 			&entry.Success, &entry.Error, &entry.Total, &avgFirstByteTime, &avgDuration,
+			&lastSuccessAt,
 			&totalInputTokens, &totalOutputTokens, &totalCacheReadTokens, &totalCacheCreationTokens, &totalCost, &effectiveCost)
 		if err != nil {
 			return nil, err
@@ -90,6 +95,9 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 		}
 		if avgDuration.Valid {
 			entry.AvgDurationSeconds = &avgDuration.Float64
+		}
+		if lastSuccessAt.Valid && lastSuccessAt.Int64 > 0 {
+			entry.LastSuccessAt = &lastSuccessAt.Int64
 		}
 
 		// 填充token统计字段（仅当有值时）
@@ -149,6 +157,15 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 		}
 	}
 
+	if len(stats) > 0 {
+		if err := s.fillStatsLastSuccesses(ctx, stats, filter); err != nil {
+			log.Printf("[WARN] 查询渠道最后成功时间失败: %v", err)
+		}
+		if err := s.fillStatsLastRequests(ctx, stats, filter); err != nil {
+			log.Printf("[WARN] 查询渠道最近请求失败: %v", err)
+		}
+	}
+
 	// 计算每个channel_id+model的RPM统计
 	if len(stats) > 0 {
 		if err := s.fillStatsRPM(ctx, stats, startTime, endTime, filter, isToday); err != nil {
@@ -158,6 +175,233 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 	}
 
 	return stats, nil
+}
+
+type statsRequestKey struct {
+	channelID int
+	model     string
+}
+
+func cloneLogFilterWithoutStatusCode(filter *model.LogFilter) *model.LogFilter {
+	if filter == nil {
+		return nil
+	}
+
+	cloned := *filter
+	cloned.StatusCode = nil
+	return &cloned
+}
+
+func (s *SQLStore) fillStatsLastSuccesses(ctx context.Context, stats []model.StatsEntry, filter *model.LogFilter) error {
+	entryIndexes := make(map[statsRequestKey]int, len(stats))
+	for i := range stats {
+		if stats[i].ChannelID == nil {
+			continue
+		}
+		key := statsRequestKey{channelID: *stats[i].ChannelID, model: stats[i].Model}
+		entryIndexes[key] = i
+	}
+	if len(entryIndexes) == 0 {
+		return nil
+	}
+
+	baseQuery := `
+		SELECT
+			channel_id,
+			model,
+			time,
+			id
+		FROM (
+			SELECT
+				channel_id,
+				COALESCE(model, '') AS model,
+				time,
+				id,
+				ROW_NUMBER() OVER (
+					PARTITION BY channel_id, COALESCE(model, '')
+					ORDER BY time DESC, id DESC
+				) AS rn
+			FROM logs`
+
+	qb := NewQueryBuilder(baseQuery).
+		Where("channel_id > 0").
+		Where("status_code >= 200").
+		Where("status_code < 300")
+	applyStatsEntryScope(qb, entryIndexes)
+
+	lastStateFilter := cloneLogFilterWithoutStatusCode(filter)
+
+	_, isEmpty, err := s.applyChannelFilter(ctx, qb, lastStateFilter)
+	if err != nil {
+		return err
+	}
+	if isEmpty {
+		return nil
+	}
+	qb.ApplyFilter(lastStateFilter)
+
+	query, args := qb.BuildWithSuffix(") ranked WHERE rn = 1")
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var channelID int
+		var modelName string
+		var successAt int64
+		var successID int64
+		if err := rows.Scan(&channelID, &modelName, &successAt, &successID); err != nil {
+			return err
+		}
+		if successAt <= 0 {
+			continue
+		}
+		key := statsRequestKey{channelID: channelID, model: modelName}
+		idx, ok := entryIndexes[key]
+		if !ok {
+			continue
+		}
+		stats[idx].LastSuccessAt = &successAt
+		if successID > 0 {
+			stats[idx].LastSuccessID = &successID
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *SQLStore) fillStatsLastRequests(ctx context.Context, stats []model.StatsEntry, filter *model.LogFilter) error {
+	entryIndexes := make(map[statsRequestKey]int, len(stats))
+	for i := range stats {
+		if stats[i].ChannelID == nil {
+			continue
+		}
+		key := statsRequestKey{channelID: *stats[i].ChannelID, model: stats[i].Model}
+		entryIndexes[key] = i
+	}
+	if len(entryIndexes) == 0 {
+		return nil
+	}
+
+	baseQuery := `
+		SELECT
+			channel_id,
+			model,
+			time,
+			id,
+			status_code,
+			message
+		FROM (
+			SELECT
+				channel_id,
+				COALESCE(model, '') AS model,
+				time,
+				id,
+				status_code,
+				message,
+				ROW_NUMBER() OVER (
+					PARTITION BY channel_id, COALESCE(model, '')
+					ORDER BY time DESC, id DESC
+				) AS rn
+			FROM logs`
+
+	qb := NewQueryBuilder(baseQuery).
+		Where("channel_id > 0").
+		Where("status_code != 499")
+	applyStatsEntryScope(qb, entryIndexes)
+
+	lastStateFilter := cloneLogFilterWithoutStatusCode(filter)
+
+	_, isEmpty, err := s.applyChannelFilter(ctx, qb, lastStateFilter)
+	if err != nil {
+		return err
+	}
+	if isEmpty {
+		return nil
+	}
+	qb.ApplyFilter(lastStateFilter)
+
+	query, args := qb.BuildWithSuffix(") ranked WHERE rn = 1")
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var channelID int
+		var modelName string
+		var requestAt int64
+		var requestID int64
+		var status int
+		var message string
+		if err := rows.Scan(&channelID, &modelName, &requestAt, &requestID, &status, &message); err != nil {
+			return err
+		}
+		if requestAt <= 0 {
+			continue
+		}
+		key := statsRequestKey{channelID: channelID, model: modelName}
+		idx, ok := entryIndexes[key]
+		if !ok {
+			continue
+		}
+		stats[idx].LastRequestAt = &requestAt
+		if requestID > 0 {
+			stats[idx].LastRequestID = &requestID
+		}
+		stats[idx].LastRequestStatus = &status
+		stats[idx].LastRequestMessage = message
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func applyStatsEntryScope(qb *QueryBuilder, entryIndexes map[statsRequestKey]int) {
+	if len(entryIndexes) == 0 {
+		return
+	}
+
+	modelsByChannel := make(map[int]map[string]struct{}, len(entryIndexes))
+	channelIDs := make([]int, 0, len(entryIndexes))
+	for key := range entryIndexes {
+		if _, exists := modelsByChannel[key.channelID]; !exists {
+			modelsByChannel[key.channelID] = make(map[string]struct{})
+			channelIDs = append(channelIDs, key.channelID)
+		}
+		modelsByChannel[key.channelID][key.model] = struct{}{}
+	}
+	sort.Ints(channelIDs)
+
+	var groups []string
+	args := make([]any, 0, len(entryIndexes)*2)
+	for _, channelID := range channelIDs {
+		modelSet := modelsByChannel[channelID]
+		models := make([]string, 0, len(modelSet))
+		for modelName := range modelSet {
+			models = append(models, modelName)
+		}
+		sort.Strings(models)
+		placeholders := make([]string, len(models))
+		for i := range models {
+			placeholders[i] = "?"
+		}
+		groups = append(groups, fmt.Sprintf("(channel_id = ? AND COALESCE(model, '') IN (%s))", strings.Join(placeholders, ",")))
+		args = append(args, channelID)
+		for _, modelName := range models {
+			args = append(args, modelName)
+		}
+	}
+
+	qb.Where("("+strings.Join(groups, " OR ")+")", args...)
 }
 
 // GetStatsLite 轻量版统计查询，跳过RPM计算和渠道名称填充
