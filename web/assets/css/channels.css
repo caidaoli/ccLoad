@@ -463,8 +463,11 @@
     }
 
     #channelModal .inline-table-container.tall {
+      --channel-model-visible-rows: 8;
+      --channel-editor-table-row-height: 36px;
+      --channel-editor-table-header-height: 38px;
       min-height: 0;
-      max-height: 260px;
+      max-height: calc(var(--channel-editor-table-header-height) + (var(--channel-model-visible-rows) * var(--channel-editor-table-row-height)));
     }
 
     #channelModal .inline-table th {
