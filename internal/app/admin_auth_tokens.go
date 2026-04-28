@@ -132,11 +132,12 @@ func (s *Server) HandleListAuthTokens(c *gin.Context) {
 // POST /admin/auth-tokens
 func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 	var req struct {
-		Description   string   `json:"description" binding:"required"`
-		ExpiresAt     *int64   `json:"expires_at"`     // Unix毫秒时间戳，nil表示永不过期
-		IsActive      *bool    `json:"is_active"`      // nil表示默认启用
-		AllowedModels []string `json:"allowed_models"` // 允许的模型列表，空表示无限制
-		CostLimitUSD  *float64 `json:"cost_limit_usd"` // 费用上限（0=无限制）
+		Description       string   `json:"description" binding:"required"`
+		ExpiresAt         *int64   `json:"expires_at"`          // Unix毫秒时间戳，nil表示永不过期
+		IsActive          *bool    `json:"is_active"`           // nil表示默认启用
+		AllowedModels     []string `json:"allowed_models"`      // 允许的模型列表，空表示无限制
+		AllowedChannelIDs []int64  `json:"allowed_channel_ids"` // 允许的渠道ID列表，空表示无限制
+		CostLimitUSD      *float64 `json:"cost_limit_usd"`      // 费用上限（0=无限制）
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -166,11 +167,12 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 	}
 
 	authToken := &model.AuthToken{
-		Token:         tokenHash,
-		Description:   req.Description,
-		ExpiresAt:     req.ExpiresAt,
-		IsActive:      isActive,
-		AllowedModels: req.AllowedModels,
+		Token:             tokenHash,
+		Description:       req.Description,
+		ExpiresAt:         req.ExpiresAt,
+		IsActive:          isActive,
+		AllowedModels:     req.AllowedModels,
+		AllowedChannelIDs: req.AllowedChannelIDs,
 	}
 	if req.CostLimitUSD != nil {
 		authToken.SetCostLimitUSD(*req.CostLimitUSD)
@@ -194,13 +196,14 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 
 	// 返回明文令牌（仅此一次机会）
 	RespondJSON(c, http.StatusOK, gin.H{
-		"id":             authToken.ID,
-		"token":          tokenPlain, // 明文令牌，仅创建时返回
-		"description":    authToken.Description,
-		"created_at":     authToken.CreatedAt,
-		"expires_at":     authToken.ExpiresAt,
-		"is_active":      authToken.IsActive,
-		"allowed_models": authToken.AllowedModels,
+		"id":                  authToken.ID,
+		"token":               tokenPlain, // 明文令牌，仅创建时返回
+		"description":         authToken.Description,
+		"created_at":          authToken.CreatedAt,
+		"expires_at":          authToken.ExpiresAt,
+		"is_active":           authToken.IsActive,
+		"allowed_models":      authToken.AllowedModels,
+		"allowed_channel_ids": authToken.AllowedChannelIDs,
 	})
 }
 
@@ -214,11 +217,12 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 	}
 
 	var req struct {
-		Description   *string   `json:"description"`
-		IsActive      *bool     `json:"is_active"`
-		ExpiresAt     *int64    `json:"expires_at"`
-		AllowedModels *[]string `json:"allowed_models"` // nil=不更新，空数组=清除限制
-		CostLimitUSD  *float64  `json:"cost_limit_usd"` // 费用上限（0=无限制）
+		Description       *string   `json:"description"`
+		IsActive          *bool     `json:"is_active"`
+		ExpiresAt         *int64    `json:"expires_at"`
+		AllowedModels     *[]string `json:"allowed_models"`      // nil=不更新，空数组=清除限制
+		AllowedChannelIDs *[]int64  `json:"allowed_channel_ids"` // nil=不更新，空数组=清除限制
+		CostLimitUSD      *float64  `json:"cost_limit_usd"`      // 费用上限（0=无限制）
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -252,6 +256,9 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 	}
 	if req.AllowedModels != nil {
 		token.AllowedModels = *req.AllowedModels
+	}
+	if req.AllowedChannelIDs != nil {
+		token.AllowedChannelIDs = *req.AllowedChannelIDs
 	}
 	// cost_limit_usd 只有传入时才更新
 	if req.CostLimitUSD != nil {

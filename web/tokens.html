@@ -142,101 +142,173 @@
 
   <!-- 编辑令牌对话框 -->
   <div id="editModal" class="modal">
-    <div class="modal-content modal-content--md modal-content--tall token-edit-modal">
+    <div class="modal-content modal-content--wide token-edit-modal">
       <div class="modal-header">
         <h2 class="modal-title" data-i18n="tokens.editModalTitle">编辑令牌</h2>
         <button type="button" class="close-btn" aria-label="Close" data-action="close-edit-modal">&times;</button>
       </div>
-      <div class="modal-body token-edit-body">
+      <div class="modal-body token-edit-body token-edit-layout">
         <input type="hidden" id="editTokenId">
 
-        <section class="token-edit-section token-edit-section--basic" data-token-edit-section="basic">
-          <h3 class="token-edit-section-title">基础信息</h3>
+        <div class="token-edit-sidebar">
+          <section class="token-edit-section token-edit-section--basic" data-token-edit-section="basic">
+            <h3 class="token-edit-section-title">基础信息</h3>
 
-          <div class="form-group form-row-inline token-edit-field token-edit-field--token">
-            <label class="form-label form-row-inline__label" data-i18n="tokens.table.token">令牌</label>
-            <input type="text" id="editTokenValue" class="form-input field-grow token-edit-token-value" readonly spellcheck="false">
-          </div>
-
-          <div class="form-group form-row-inline token-edit-field token-edit-field--description">
-            <label class="form-label form-row-inline__label" data-i18n="tokens.editDescLabel">描述</label>
-            <input type="text" id="editTokenDescription" class="form-input field-grow">
-          </div>
-
-          <div class="form-group form-row-inline token-edit-field token-edit-field--expiry">
-            <label class="form-label form-row-inline__label" data-i18n="tokens.expiryLabel">过期时间</label>
-            <select id="editTokenExpiry" class="form-input field-grow" data-expiry-select data-change-action="toggle-edit-custom-expiry"></select>
-          </div>
-
-          <div id="editCustomExpiryContainer" class="form-group token-edit-custom-expiry">
-            <div class="form-row-inline token-edit-field token-edit-field--custom-expiry">
-              <label class="form-label form-row-inline__label" data-i18n="tokens.customLabel">自定义</label>
-              <input type="datetime-local" id="editCustomExpiry" class="form-input field-grow">
+            <div class="form-group form-row-inline token-edit-field token-edit-field--token">
+              <label class="form-label form-row-inline__label" data-i18n="tokens.table.token">令牌</label>
+              <input type="text" id="editTokenValue" class="form-input field-grow token-edit-token-value" readonly spellcheck="false">
             </div>
-          </div>
-        </section>
 
-        <section class="token-edit-section token-edit-section--quota" data-token-edit-section="quota">
-          <h3 class="token-edit-section-title">配额信息</h3>
-
-          <div class="form-group form-row-inline token-edit-field token-edit-field--cost">
-            <label class="form-label form-row-inline__label" data-i18n="tokens.costLimitLabel">费用上限</label>
-            <div class="form-row-inline__content token-edit-cost-row">
-              <span class="token-edit-cost-prefix">$</span>
-              <input type="number" id="editCostLimitUSD" class="form-input field-grow" min="0" step="0.01" data-i18n-placeholder="tokens.costLimitPlaceholder" placeholder="0 表示无限制">
-              <span id="editCostUsedDisplay" class="token-edit-cost-used"></span>
+            <div class="form-group form-row-inline token-edit-field token-edit-field--description">
+              <label class="form-label form-row-inline__label" data-i18n="tokens.editDescLabel">描述</label>
+              <input type="text" id="editTokenDescription" class="form-input field-grow">
             </div>
-          </div>
 
-          <div class="form-group token-edit-active-row">
-            <label class="token-edit-active-label">
-              <input type="checkbox" id="editTokenActive" class="control-checkbox">
-              <span data-i18n="tokens.enableToken">启用令牌</span>
-            </label>
-          </div>
-        </section>
-
-        <!-- 模型限制区域 -->
-        <section class="token-edit-section token-edit-section--models token-edit-models-section" data-token-edit-section="models">
-          <div class="token-edit-section-header token-edit-models-header">
-            <h3 class="token-edit-section-title token-edit-models-title">
-              <span data-i18n="tokens.modelRestriction">模型限制</span>
-              <span class="token-edit-models-meta"><span data-i18n="tokens.modelCountPrefix">共</span> <span id="editAllowedModelsCount">0</span> <span data-i18n="tokens.modelCountSuffix">个模型（空表示允许所有）</span></span>
-            </h3>
-            <div class="token-edit-models-actions">
-              <button type="button" class="btn btn-secondary btn-sm token-edit-models-btn" data-action="show-model-select-modal" data-i18n-title="tokens.selectFromListTitle" title="从渠道模型列表中选择" data-i18n="tokens.selectFromList">
-                + 从列表选择
-              </button>
-              <button type="button" class="btn btn-secondary btn-sm token-edit-models-btn" data-action="show-model-import-modal" data-i18n-title="tokens.manualInputTitle" title="手动输入模型名称" data-i18n="tokens.manualInput">
-                + 手动输入
-              </button>
-              <button type="button" id="batchDeleteAllowedModelsBtn" data-action="batch-delete-allowed-models" disabled
-                class="btn btn-secondary btn-sm token-edit-models-btn token-edit-models-btn--batch" data-i18n="tokens.deleteSelected">
-                删除选中
-              </button>
+            <div class="form-group form-row-inline token-edit-field token-edit-field--expiry">
+              <label class="form-label form-row-inline__label" data-i18n="tokens.expiryLabel">过期时间</label>
+              <select id="editTokenExpiry" class="form-input field-grow" data-expiry-select data-change-action="toggle-edit-custom-expiry"></select>
             </div>
-          </div>
-          <div class="inline-table-container mobile-inline-table-container token-edit-models-table">
-            <table class="inline-table mobile-inline-table allowed-models-table">
-              <thead>
-                <tr class="allowed-models-table-head">
-                  <th class="allowed-model-col-select-head">
-                    <input type="checkbox" id="selectAllAllowedModels" data-change-action="toggle-select-all-allowed-models">
-                  </th>
-                  <th class="allowed-model-col-name-head" data-i18n="tokens.modelName">模型名称</th>
-                  <th class="allowed-model-col-actions-head"></th>
-                </tr>
-              </thead>
-              <tbody id="allowedModelsTableBody">
-                <!-- 动态渲染 -->
-              </tbody>
-            </table>
-          </div>
-        </section>
+
+            <div id="editCustomExpiryContainer" class="form-group token-edit-custom-expiry">
+              <div class="form-row-inline token-edit-field token-edit-field--custom-expiry">
+                <label class="form-label form-row-inline__label" data-i18n="tokens.customLabel">自定义</label>
+                <input type="datetime-local" id="editCustomExpiry" class="form-input field-grow">
+              </div>
+            </div>
+          </section>
+
+          <section class="token-edit-section token-edit-section--quota" data-token-edit-section="quota">
+            <h3 class="token-edit-section-title">配额信息</h3>
+
+            <div class="form-group form-row-inline token-edit-field token-edit-field--cost">
+              <label class="form-label form-row-inline__label" data-i18n="tokens.costLimitLabel">费用上限</label>
+              <div class="form-row-inline__content token-edit-cost-row">
+                <span class="token-edit-cost-prefix">$</span>
+                <input type="number" id="editCostLimitUSD" class="form-input field-grow" min="0" step="0.01" data-i18n-placeholder="tokens.costLimitPlaceholder" placeholder="0 表示无限制">
+                <span id="editCostUsedDisplay" class="token-edit-cost-used"></span>
+              </div>
+            </div>
+
+            <div class="form-group token-edit-active-row">
+              <label class="token-edit-active-label">
+                <input type="checkbox" id="editTokenActive" class="control-checkbox">
+                <span data-i18n="tokens.enableToken">启用令牌</span>
+              </label>
+            </div>
+          </section>
+        </div>
+
+        <div class="token-edit-main">
+          <!-- 渠道限制区域 -->
+          <section class="token-edit-section token-edit-section--channels token-edit-channels-section" data-token-edit-section="channels">
+            <div class="token-edit-section-header token-edit-channels-header">
+              <h3 class="token-edit-section-title token-edit-channels-title">
+                <span data-i18n="tokens.channelRestriction">渠道限制</span>
+                <span class="token-edit-channels-meta"><span data-i18n="tokens.channelCountPrefix">共</span> <span id="editAllowedChannelsCount">0</span> <span data-i18n="tokens.channelCountSuffix">个渠道（空表示允许所有）</span></span>
+              </h3>
+              <div class="token-edit-channels-actions">
+                <button type="button" class="btn btn-secondary btn-sm token-edit-channels-btn" data-action="show-channel-select-modal" data-i18n-title="tokens.selectChannelTitle" title="从渠道列表中选择" data-i18n="tokens.selectChannel">
+                  + 选择渠道
+                </button>
+                <button type="button" id="batchDeleteAllowedChannelsBtn" data-action="batch-delete-allowed-channels" disabled
+                  class="btn btn-secondary btn-sm token-edit-channels-btn token-edit-channels-btn--batch" data-i18n="tokens.deleteSelected">
+                  删除选中
+                </button>
+              </div>
+            </div>
+            <div class="inline-table-container mobile-inline-table-container token-edit-channels-table">
+              <table class="inline-table mobile-inline-table allowed-channels-table">
+                <thead>
+                  <tr class="allowed-channels-table-head">
+                    <th class="allowed-channel-col-select-head">
+                      <input type="checkbox" id="selectAllAllowedChannels" data-change-action="toggle-select-all-allowed-channels">
+                    </th>
+                    <th class="allowed-channel-col-name-head" data-i18n="tokens.channelName">渠道</th>
+                    <th class="allowed-channel-col-type-head" data-i18n="tokens.channelType">类型</th>
+                    <th class="allowed-channel-col-actions-head"></th>
+                  </tr>
+                </thead>
+                <tbody id="allowedChannelsTableBody">
+                  <!-- 动态渲染 -->
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <!-- 模型限制区域 -->
+          <section class="token-edit-section token-edit-section--models token-edit-models-section" data-token-edit-section="models">
+            <div class="token-edit-section-header token-edit-models-header">
+              <h3 class="token-edit-section-title token-edit-models-title">
+                <span data-i18n="tokens.modelRestriction">模型限制</span>
+                <span class="token-edit-models-meta"><span data-i18n="tokens.modelCountPrefix">共</span> <span id="editAllowedModelsCount">0</span> <span data-i18n="tokens.modelCountSuffix">个模型（空表示允许所有）</span></span>
+              </h3>
+              <div class="token-edit-models-actions">
+                <button type="button" class="btn btn-secondary btn-sm token-edit-models-btn" data-action="show-model-select-modal" data-i18n-title="tokens.selectFromListTitle" title="从渠道模型列表中选择" data-i18n="tokens.selectFromList">
+                  + 从列表选择
+                </button>
+                <button type="button" class="btn btn-secondary btn-sm token-edit-models-btn" data-action="show-model-import-modal" data-i18n-title="tokens.manualInputTitle" title="手动输入模型名称" data-i18n="tokens.manualInput">
+                  + 手动输入
+                </button>
+                <button type="button" id="batchDeleteAllowedModelsBtn" data-action="batch-delete-allowed-models" disabled
+                  class="btn btn-secondary btn-sm token-edit-models-btn token-edit-models-btn--batch" data-i18n="tokens.deleteSelected">
+                  删除选中
+                </button>
+              </div>
+            </div>
+            <div class="inline-table-container mobile-inline-table-container token-edit-models-table">
+              <table class="inline-table mobile-inline-table allowed-models-table">
+                <thead>
+                  <tr class="allowed-models-table-head">
+                    <th class="allowed-model-col-select-head">
+                      <input type="checkbox" id="selectAllAllowedModels" data-change-action="toggle-select-all-allowed-models">
+                    </th>
+                    <th class="allowed-model-col-name-head" data-i18n="tokens.modelName">模型名称</th>
+                    <th class="allowed-model-col-actions-head"></th>
+                  </tr>
+                </thead>
+                <tbody id="allowedModelsTableBody">
+                  <!-- 动态渲染 -->
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
       </div>
       <div class="modal-footer">
         <button type="button" data-action="close-edit-modal" class="btn btn-secondary" data-i18n="common.cancel">取消</button>
         <button type="button" data-action="update-token" class="btn btn-primary" data-i18n="common.save">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 渠道选择对话框 -->
+  <div id="channelSelectModal" class="modal">
+    <div class="modal-content modal-content--sm">
+      <div class="modal-header">
+        <h2 class="modal-title" data-i18n="tokens.selectChannelTitle">选择渠道</h2>
+        <button type="button" class="close-btn" aria-label="Close" data-action="close-channel-select-modal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <input type="text" id="channelSearchInput" class="form-input" data-i18n-placeholder="tokens.searchChannelPlaceholder" placeholder="搜索渠道..." data-input-action="filter-available-channels">
+        </div>
+        <div id="selectAllChannelsContainer">
+          <label class="channel-select-all-label">
+            <input type="checkbox" id="selectAllChannelsCheckbox" class="channel-select-all-checkbox" data-change-action="toggle-select-all-channels">
+            <span data-i18n="tokens.selectAllCurrent">全选当前列表</span>
+            <span id="visibleChannelsCount"></span>
+          </label>
+        </div>
+        <div id="availableChannelsContainer" class="scroll-pane scroll-pane--sm">
+          <!-- 动态渲染可选渠道列表 -->
+        </div>
+        <div class="channel-select-summary">
+          <span data-i18n="tokens.selectedPrefix">已选择</span> <span id="selectedChannelsCount">0</span> <span data-i18n="tokens.selectedChannelSuffix">个渠道</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" data-action="close-channel-select-modal" class="btn btn-secondary" data-i18n="common.cancel">取消</button>
+        <button type="button" data-action="confirm-channel-selection" class="btn btn-primary" data-i18n="tokens.confirmAdd">确定添加</button>
       </div>
     </div>
   </div>

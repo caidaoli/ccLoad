@@ -30,6 +30,31 @@ func TestAuthToken_IsModelAllowed(t *testing.T) {
 	}
 }
 
+func TestAuthToken_IsChannelAllowed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		allowed      []int64
+		channelID    int64
+		expectedBool bool
+	}{
+		{name: "nil_allowed_channels_allows_any", allowed: nil, channelID: 42, expectedBool: true},
+		{name: "empty_allowed_channels_allows_any", allowed: []int64{}, channelID: 42, expectedBool: true},
+		{name: "listed_channel_is_allowed", allowed: []int64{2, 42}, channelID: 42, expectedBool: true},
+		{name: "missing_channel_is_rejected", allowed: []int64{2, 7}, channelID: 42, expectedBool: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			token := &AuthToken{AllowedChannelIDs: tt.allowed}
+			if got := token.IsChannelAllowed(tt.channelID); got != tt.expectedBool {
+				t.Fatalf("IsChannelAllowed(%d) = %v, want %v", tt.channelID, got, tt.expectedBool)
+			}
+		})
+	}
+}
+
 func TestAuthToken_CostConversions(t *testing.T) {
 	t.Parallel()
 
@@ -65,6 +90,7 @@ func TestAuthToken_MarshalJSON_ExposesCostFields(t *testing.T) {
 		CostUsedMicroUSD:  250_000, // $0.25
 		CostLimitMicroUSD: 2_000_000,
 		AllowedModels:     []string{"gpt-4"},
+		AllowedChannelIDs: []int64{11, 22},
 	}
 
 	b, err := json.Marshal(token)
@@ -73,8 +99,9 @@ func TestAuthToken_MarshalJSON_ExposesCostFields(t *testing.T) {
 	}
 
 	var got struct {
-		CostUsedUSD  float64 `json:"cost_used_usd"`
-		CostLimitUSD float64 `json:"cost_limit_usd"`
+		CostUsedUSD      float64 `json:"cost_used_usd"`
+		CostLimitUSD     float64 `json:"cost_limit_usd"`
+		AllowedChannelID []int64 `json:"allowed_channel_ids"`
 	}
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatalf("Unmarshal failed: %v", err)
@@ -85,5 +112,8 @@ func TestAuthToken_MarshalJSON_ExposesCostFields(t *testing.T) {
 	}
 	if math.Abs(got.CostLimitUSD-2.0) > 1e-9 {
 		t.Fatalf("cost_limit_usd = %#v, want 2.0", got.CostLimitUSD)
+	}
+	if len(got.AllowedChannelID) != 2 || got.AllowedChannelID[0] != 11 || got.AllowedChannelID[1] != 22 {
+		t.Fatalf("allowed_channel_ids = %#v, want [11 22]", got.AllowedChannelID)
 	}
 }

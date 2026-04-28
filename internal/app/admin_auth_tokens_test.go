@@ -42,7 +42,8 @@ func TestAdminAPI_CreateAuthToken_Basic(t *testing.T) {
 	server := newInMemoryServer(t)
 
 	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/auth-tokens", map[string]any{
-		"description": "Test Token",
+		"description":         "Test Token",
+		"allowed_channel_ids": []int64{3, 5},
 	}))
 
 	server.HandleCreateAuthToken(c)
@@ -54,14 +55,18 @@ func TestAdminAPI_CreateAuthToken_Basic(t *testing.T) {
 	var response struct {
 		Success bool `json:"success"`
 		Data    struct {
-			ID    int64  `json:"id"`
-			Token string `json:"token"`
+			ID                int64   `json:"id"`
+			Token             string  `json:"token"`
+			AllowedChannelIDs []int64 `json:"allowed_channel_ids"`
 		} `json:"data"`
 	}
 	mustUnmarshalJSON(t, w.Body.Bytes(), &response)
 
 	if !response.Success || len(response.Data.Token) == 0 {
 		t.Error("Token creation failed")
+	}
+	if len(response.Data.AllowedChannelIDs) != 2 || response.Data.AllowedChannelIDs[0] != 3 || response.Data.AllowedChannelIDs[1] != 5 {
+		t.Fatalf("allowed_channel_ids=%v, want [3 5]", response.Data.AllowedChannelIDs)
 	}
 
 	ctx := context.Background()
@@ -73,6 +78,9 @@ func TestAdminAPI_CreateAuthToken_Basic(t *testing.T) {
 	expectedHash := model.HashToken(response.Data.Token)
 	if stored.Token != expectedHash {
 		t.Error("Hash mismatch")
+	}
+	if len(stored.AllowedChannelIDs) != 2 || stored.AllowedChannelIDs[0] != 3 || stored.AllowedChannelIDs[1] != 5 {
+		t.Fatalf("stored allowed_channel_ids=%v, want [3 5]", stored.AllowedChannelIDs)
 	}
 }
 

@@ -25,6 +25,7 @@ func TestAuthToken_CreateAndGet(t *testing.T) {
 		IsActive:          true,
 		CostLimitMicroUSD: 1000000, // $1
 		AllowedModels:     []string{"gpt-4", "claude-3"},
+		AllowedChannelIDs: []int64{11, 22},
 		CreatedAt:         time.Now(),
 	}
 	if err := store.CreateAuthToken(ctx, token); err != nil {
@@ -42,6 +43,9 @@ func TestAuthToken_CreateAndGet(t *testing.T) {
 	if !got.IsActive {
 		t.Error("expected is_active=true")
 	}
+	if len(got.AllowedChannelIDs) != 2 || got.AllowedChannelIDs[0] != 11 || got.AllowedChannelIDs[1] != 22 {
+		t.Fatalf("allowed_channel_ids: got %+v, want [11 22]", got.AllowedChannelIDs)
+	}
 
 	// 通过 Token 值获取
 	gotByValue, err := store.GetAuthTokenByValue(ctx, "test-token-hash")
@@ -56,6 +60,51 @@ func TestAuthToken_CreateAndGet(t *testing.T) {
 	_, err = store.GetAuthToken(ctx, 99999)
 	if err == nil {
 		t.Error("expected error for non-existent token")
+	}
+}
+
+func TestAuthToken_InvalidAllowedChannelIDsJSON_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "invalid_allowed_channel_ids.db")
+
+	store, err := storage.CreateSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("create sqlite store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	token := &model.AuthToken{
+		Token:             "bad-channel-json-token",
+		Description:       "Bad Channel JSON Token",
+		IsActive:          true,
+		AllowedChannelIDs: []int64{1},
+		CreatedAt:         time.Now(),
+	}
+	if err := store.CreateAuthToken(ctx, token); err != nil {
+		t.Fatalf("create auth token: %v", err)
+	}
+
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", "file:"+dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite db: %v", err)
+	}
+	_, err = db.ExecContext(ctx, `UPDATE auth_tokens SET allowed_channel_ids = ? WHERE id = ?`, `{not-json`, token.ID)
+	_ = db.Close()
+	if err != nil {
+		t.Fatalf("tamper allowed_channel_ids: %v", err)
+	}
+
+	store2, err := storage.CreateSQLiteStore(dbPath)
+	if err == nil {
+		_ = store2.Close()
+		t.Fatal("expected reopen sqlite store to fail due to invalid allowed_channel_ids json")
 	}
 }
 
@@ -169,6 +218,7 @@ func TestAuthToken_Update(t *testing.T) {
 	token.Description = "Updated Description"
 	token.IsActive = false
 	token.CostLimitMicroUSD = 5000000 // $5
+	token.AllowedChannelIDs = []int64{33}
 
 	if err := store.UpdateAuthToken(ctx, token); err != nil {
 		t.Fatalf("update auth token: %v", err)
@@ -187,6 +237,9 @@ func TestAuthToken_Update(t *testing.T) {
 	}
 	if got.CostLimitMicroUSD != 5000000 {
 		t.Errorf("cost limit: got %d, want %d", got.CostLimitMicroUSD, 5000000)
+	}
+	if len(got.AllowedChannelIDs) != 1 || got.AllowedChannelIDs[0] != 33 {
+		t.Fatalf("allowed_channel_ids: got %+v, want [33]", got.AllowedChannelIDs)
 	}
 }
 

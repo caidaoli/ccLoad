@@ -17,18 +17,26 @@ const authTokenSelectColumns = `
 	id, token, description, created_at, expires_at, last_used_at, is_active,
 	success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
 	prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd,
-	cost_used_microusd, cost_limit_microusd, allowed_models
+	cost_used_microusd, cost_limit_microusd, allowed_models, allowed_channel_ids
 `
 
-func marshalAllowedModels(models []string) (string, error) {
-	if len(models) == 0 {
+func marshalJSONList[T any](field string, values []T) (string, error) {
+	if len(values) == 0 {
 		return "", nil
 	}
-	data, err := json.Marshal(models)
+	data, err := json.Marshal(values)
 	if err != nil {
-		return "", fmt.Errorf("marshal allowed_models: %w", err)
+		return "", fmt.Errorf("marshal %s: %w", field, err)
 	}
 	return string(data), nil
+}
+
+func marshalAllowedModels(models []string) (string, error) {
+	return marshalJSONList("allowed_models", models)
+}
+
+func marshalAllowedChannelIDs(channelIDs []int64) (string, error) {
+	return marshalJSONList("allowed_channel_ids", channelIDs)
 }
 
 //nolint:gosec // SQL查询模板包含"token"字段名，并非硬编码凭据
@@ -70,6 +78,7 @@ func scanAuthToken(scanner interface {
 	var expiresAt, lastUsedAt sql.NullInt64
 	var isActive int
 	var allowedModelsJSON string
+	var allowedChannelIDsJSON string
 	var costUsedMicroUSD int64
 	var costLimitMicroUSD int64
 
@@ -95,6 +104,7 @@ func scanAuthToken(scanner interface {
 		&costUsedMicroUSD,
 		&costLimitMicroUSD,
 		&allowedModelsJSON,
+		&allowedChannelIDsJSON,
 	); err != nil {
 		return nil, err
 	}
@@ -122,6 +132,11 @@ func scanAuthToken(scanner interface {
 	if allowedModelsJSON != "" {
 		if err := json.Unmarshal([]byte(allowedModelsJSON), &token.AllowedModels); err != nil {
 			return nil, fmt.Errorf("invalid allowed_models json: %w", err)
+		}
+	}
+	if allowedChannelIDsJSON != "" {
+		if err := json.Unmarshal([]byte(allowedChannelIDsJSON), &token.AllowedChannelIDs); err != nil {
+			return nil, fmt.Errorf("invalid allowed_channel_ids json: %w", err)
 		}
 	}
 
@@ -154,6 +169,10 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 	if err != nil {
 		return err
 	}
+	allowedChannelIDsJSON, err := marshalAllowedChannelIDs(token.AllowedChannelIDs)
+	if err != nil {
+		return err
+	}
 
 	if s.IsSQLite() {
 		_, err := s.db.ExecContext(ctx, `
@@ -161,9 +180,9 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 				id, token, description, created_at, expires_at, last_used_at, is_active,
 				success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
 				prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd,
-				cost_used_microusd, cost_limit_microusd, allowed_models
+				cost_used_microusd, cost_limit_microusd, allowed_models, allowed_channel_ids
 			)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
 				token = excluded.token,
 				description = excluded.description,
@@ -184,7 +203,8 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 				total_cost_usd = excluded.total_cost_usd,
 				cost_used_microusd = excluded.cost_used_microusd,
 				cost_limit_microusd = excluded.cost_limit_microusd,
-				allowed_models = excluded.allowed_models
+				allowed_models = excluded.allowed_models,
+				allowed_channel_ids = excluded.allowed_channel_ids
 		`,
 			token.ID,
 			token.Token,
@@ -207,6 +227,7 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 			token.CostUsedMicroUSD,
 			token.CostLimitMicroUSD,
 			allowedModelsJSON,
+			allowedChannelIDsJSON,
 		)
 		if err != nil {
 			return fmt.Errorf("upsert auth token all fields: %w", err)
@@ -219,9 +240,9 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 			id, token, description, created_at, expires_at, last_used_at, is_active,
 			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
 			prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd,
-			cost_used_microusd, cost_limit_microusd, allowed_models
+			cost_used_microusd, cost_limit_microusd, allowed_models, allowed_channel_ids
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 			token = VALUES(token),
 			description = VALUES(description),
@@ -242,7 +263,8 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 			total_cost_usd = VALUES(total_cost_usd),
 			cost_used_microusd = VALUES(cost_used_microusd),
 			cost_limit_microusd = VALUES(cost_limit_microusd),
-			allowed_models = VALUES(allowed_models)
+			allowed_models = VALUES(allowed_models),
+			allowed_channel_ids = VALUES(allowed_channel_ids)
 	`,
 		token.ID,
 		token.Token,
@@ -265,6 +287,7 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 		token.CostUsedMicroUSD,
 		token.CostLimitMicroUSD,
 		allowedModelsJSON,
+		allowedChannelIDsJSON,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert auth token all fields: %w", err)
@@ -298,6 +321,10 @@ func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) 
 	if err != nil {
 		return err
 	}
+	allowedChannelIDsJSON, err := marshalAllowedChannelIDs(token.AllowedChannelIDs)
+	if err != nil {
+		return err
+	}
 
 	if token.ID != 0 {
 		if s.IsSQLite() {
@@ -306,11 +333,11 @@ func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) 
 					id,
 					token, description, created_at, expires_at, last_used_at, is_active,
 					success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
-					prompt_tokens_total, completion_tokens_total, total_cost_usd, allowed_models,
+					prompt_tokens_total, completion_tokens_total, total_cost_usd, allowed_models, allowed_channel_ids,
 					cost_used_microusd, cost_limit_microusd
 				)
-				VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, ?, 0, ?)
-			`, token.ID, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, boolToInt(token.IsActive), allowedModelsJSON, token.CostLimitMicroUSD)
+				VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, ?, ?, 0, ?)
+			`, token.ID, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, boolToInt(token.IsActive), allowedModelsJSON, allowedChannelIDsJSON, token.CostLimitMicroUSD)
 			if err != nil {
 				return fmt.Errorf("create auth token: %w", err)
 			}
@@ -322,12 +349,12 @@ func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) 
 				id,
 				token, description, created_at, expires_at, last_used_at, is_active,
 				success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
-				prompt_tokens_total, completion_tokens_total, total_cost_usd, allowed_models,
+				prompt_tokens_total, completion_tokens_total, total_cost_usd, allowed_models, allowed_channel_ids,
 				cost_used_microusd, cost_limit_microusd
 			)
-			VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, ?, 0, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, ?, ?, 0, ?)
 			ON DUPLICATE KEY UPDATE id = id
-		`, token.ID, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, boolToInt(token.IsActive), allowedModelsJSON, token.CostLimitMicroUSD)
+		`, token.ID, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, boolToInt(token.IsActive), allowedModelsJSON, allowedChannelIDsJSON, token.CostLimitMicroUSD)
 		if err != nil {
 			return fmt.Errorf("create auth token: %w", err)
 		}
@@ -338,11 +365,11 @@ func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) 
 		INSERT INTO auth_tokens (
 			token, description, created_at, expires_at, last_used_at, is_active,
 			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
-			prompt_tokens_total, completion_tokens_total, total_cost_usd, allowed_models,
+			prompt_tokens_total, completion_tokens_total, total_cost_usd, allowed_models, allowed_channel_ids,
 			cost_used_microusd, cost_limit_microusd
 		)
-		VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, ?, 0, ?)
-	`, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, boolToInt(token.IsActive), allowedModelsJSON, token.CostLimitMicroUSD)
+		VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, ?, ?, 0, ?)
+	`, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, boolToInt(token.IsActive), allowedModelsJSON, allowedChannelIDsJSON, token.CostLimitMicroUSD)
 
 	if err != nil {
 		return fmt.Errorf("create auth token: %w", err)
@@ -462,6 +489,10 @@ func (s *SQLStore) UpdateAuthToken(ctx context.Context, token *model.AuthToken) 
 	if err != nil {
 		return err
 	}
+	allowedChannelIDsJSON, err := marshalAllowedChannelIDs(token.AllowedChannelIDs)
+	if err != nil {
+		return err
+	}
 
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE auth_tokens
@@ -470,9 +501,10 @@ func (s *SQLStore) UpdateAuthToken(ctx context.Context, token *model.AuthToken) 
 		    last_used_at = ?,
 		    is_active = ?,
 		    cost_limit_microusd = ?,
-		    allowed_models = ?
+		    allowed_models = ?,
+		    allowed_channel_ids = ?
 		WHERE id = ?
-	`, token.Description, expiresAt, lastUsedAt, boolToInt(token.IsActive), token.CostLimitMicroUSD, allowedModelsJSON, token.ID)
+	`, token.Description, expiresAt, lastUsedAt, boolToInt(token.IsActive), token.CostLimitMicroUSD, allowedModelsJSON, allowedChannelIDsJSON, token.ID)
 
 	if err != nil {
 		return fmt.Errorf("update auth token: %w", err)

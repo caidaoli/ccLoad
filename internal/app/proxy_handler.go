@@ -298,6 +298,19 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		return
 	}
 
+	if tokenHashStr != "" {
+		filtered, restricted := s.authService.FilterAllowedChannels(tokenHashStr, cands)
+		if restricted {
+			cands = filtered
+			if len(cands) == 0 {
+				c.JSON(http.StatusForbidden, gin.H{
+					"error": "no allowed upstream channel for this token",
+				})
+				return
+			}
+		}
+	}
+
 	// 从context提取tokenID（用于统计和日志，2025-12新增tokenID）
 	tokenID, _ := c.Get("token_id")
 	tokenIDInt64, _ := tokenID.(int64)

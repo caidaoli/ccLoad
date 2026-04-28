@@ -2221,6 +2221,139 @@ func TestProxy_ModelNotAllowed_Returns403(t *testing.T) {
 	}
 }
 
+func TestProxy_ChannelRestriction_UsesOnlyAllowedChannel(t *testing.T) {
+	t.Parallel()
+
+	var disallowedHits atomic.Int32
+	disallowedUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		disallowedHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"disallowed"}`))
+	}))
+	defer disallowedUpstream.Close()
+
+	var allowedHits atomic.Int32
+	allowedUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		allowedHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"allowed","choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer allowedUpstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "disallowed-high-priority", models: "gpt-4", apiKey: "sk-disallowed", priority: 100},
+		{name: "allowed-low-priority", models: "gpt-4", apiKey: "sk-allowed", priority: 10},
+	}, map[int]string{0: disallowedUpstream.URL, 1: allowedUpstream.URL})
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("ListConfigs failed: %v", err)
+	}
+	var allowedID int64
+	for _, cfg := range configs {
+		if cfg.Name == "allowed-low-priority" {
+			allowedID = cfg.ID
+			break
+		}
+	}
+	if allowedID == 0 {
+		t.Fatal("allowed channel id not found")
+	}
+
+	tokenHash := model.HashToken("test-api-key")
+	env.server.authService.authTokensMux.Lock()
+	env.server.authService.authTokenChannels[tokenHash] = []int64{allowedID}
+	env.server.authService.authTokensMux.Unlock()
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-4",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := allowedHits.Load(); got != 1 {
+		t.Fatalf("allowed upstream hits=%d, want 1", got)
+	}
+	if got := disallowedHits.Load(); got != 0 {
+		t.Fatalf("disallowed upstream hits=%d, want 0", got)
+	}
+}
+
+func TestProxy_ChannelRestriction_Returns403WhenNoAllowedCandidate(t *testing.T) {
+	t.Parallel()
+
+	var upstreamHits atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "only-channel", models: "gpt-4", apiKey: "sk-1"},
+	}, map[int]string{0: upstream.URL})
+
+	tokenHash := model.HashToken("test-api-key")
+	env.server.authService.authTokensMux.Lock()
+	env.server.authService.authTokenChannels[tokenHash] = []int64{999999}
+	env.server.authService.authTokensMux.Unlock()
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-4",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := upstreamHits.Load(); got != 0 {
+		t.Fatalf("upstream hits=%d, want 0", got)
+	}
+}
+
+func TestProxy_ChannelRestriction_PreservesNoCandidateResponse(t *testing.T) {
+	t.Parallel()
+
+	var upstreamHits atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "only-channel", models: "gpt-3.5-turbo", apiKey: "sk-1"},
+	}, map[int]string{0: upstream.URL})
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("ListConfigs failed: %v", err)
+	}
+	if len(configs) != 1 {
+		t.Fatalf("expected 1 config, got %d", len(configs))
+	}
+
+	tokenHash := model.HashToken("test-api-key")
+	env.server.authService.authTokensMux.Lock()
+	env.server.authService.authTokenChannels[tokenHash] = []int64{configs[0].ID}
+	env.server.authService.authTokensMux.Unlock()
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-4",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := upstreamHits.Load(); got != 0 {
+		t.Fatalf("upstream hits=%d, want 0", got)
+	}
+}
+
 func TestProxy_CostLimitExceeded_Returns429(t *testing.T) {
 	t.Parallel()
 
