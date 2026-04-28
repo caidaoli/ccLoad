@@ -63,6 +63,12 @@ type StatsEntry struct {
 	Total                   int      `json:"total"`
 	AvgFirstByteTimeSeconds *float64 `json:"avg_first_byte_time_seconds,omitempty"` // 流式请求平均上游首块响应体时间(秒)
 	AvgDurationSeconds      *float64 `json:"avg_duration_seconds,omitempty"`        // 平均总耗时(秒)
+	LastSuccessAt           *int64   `json:"last_success_at,omitempty"`             // 最近一次成功请求时间(毫秒)
+	LastSuccessID           *int64   `json:"last_success_id,omitempty"`             // 最近一次成功请求日志ID
+	LastRequestAt           *int64   `json:"last_request_at,omitempty"`             // 最近一次非499请求时间(毫秒)
+	LastRequestID           *int64   `json:"last_request_id,omitempty"`             // 最近一次非499请求日志ID
+	LastRequestStatus       *int     `json:"last_request_status,omitempty"`         // 最近一次非499请求状态码
+	LastRequestMessage      string   `json:"last_request_message,omitempty"`        // 最近一次非499请求日志
 
 	// RPM/QPS统计（基于分钟级数据）
 	PeakRPM   *float64 `json:"peak_rpm,omitempty"`   // 峰值RPM（该渠道+模型的最大每分钟请求数）
