@@ -353,6 +353,9 @@ function renderInlineKeyTable() {
 
   const hiddenInput = document.getElementById('channelApiKey');
   hiddenInput.value = inlineKeyTableData.join(',');
+  if (typeof syncChannelModelTableRows === 'function') {
+    syncChannelModelTableRows();
+  }
 
   // 初始化事件委托
   initKeyTableEventDelegation();

@@ -195,6 +195,9 @@ function renderInlineURLTable() {
 
   updateSelectAllURLsCheckbox();
   updateURLBatchDeleteButton();
+  if (typeof syncChannelModelTableRows === 'function') {
+    syncChannelModelTableRows();
+  }
 }
 
 function setInlineURLTableData(rawURL) {

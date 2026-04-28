@@ -102,6 +102,55 @@ function getSelectedProtocolTransformMode() {
   return window.ChannelProtocolConfig.normalizeProtocolTransformMode(selected);
 }
 
+const MODEL_TABLE_ROW_LIMITS = Object.freeze({
+  totalBudget: 14,
+  maxUrlRows: 3,
+  maxKeyRows: 4,
+  minModelRows: 7,
+  maxModelRows: 12
+});
+
+function normalizeOccupiedTableRows(count, maxRows) {
+  const rows = Number(count);
+  if (!Number.isFinite(rows) || rows <= 0) return 1;
+  return Math.min(Math.ceil(rows), maxRows);
+}
+
+function calculateModelTableVisibleRows(urlCount, keyCount) {
+  const urlRows = normalizeOccupiedTableRows(urlCount, MODEL_TABLE_ROW_LIMITS.maxUrlRows);
+  const keyRows = normalizeOccupiedTableRows(keyCount, MODEL_TABLE_ROW_LIMITS.maxKeyRows);
+  const availableRows = MODEL_TABLE_ROW_LIMITS.totalBudget - urlRows - keyRows;
+
+  return Math.max(
+    MODEL_TABLE_ROW_LIMITS.minModelRows,
+    Math.min(MODEL_TABLE_ROW_LIMITS.maxModelRows, availableRows)
+  );
+}
+
+function getCurrentVisibleKeyRowCount() {
+  if (typeof getVisibleKeyIndices === 'function') {
+    return getVisibleKeyIndices().length;
+  }
+  if (typeof inlineKeyTableData !== 'undefined' && Array.isArray(inlineKeyTableData)) {
+    return inlineKeyTableData.length;
+  }
+  return 1;
+}
+
+function syncChannelModelTableRows() {
+  const container = document.querySelector('#redirectTableBody')?.closest('.inline-table-container');
+  if (!container) return;
+
+  const urlCount = typeof inlineURLTableData !== 'undefined' && Array.isArray(inlineURLTableData)
+    ? inlineURLTableData.length
+    : 1;
+  const keyCount = getCurrentVisibleKeyRowCount();
+  const rows = calculateModelTableVisibleRows(urlCount, keyCount);
+
+  container.style.setProperty('--channel-model-visible-rows', String(rows));
+  container.dataset.visibleRows = String(rows);
+}
+
 async function syncScheduledCheckVisibility() {
   const scheduledCheckWrapper = document.getElementById('channelScheduledCheckEnabledWrapper');
   const scheduledCheckModelWrapper = document.getElementById('channelScheduledCheckModelWrapper');
@@ -1449,6 +1498,7 @@ function renderRedirectTable() {
   // 计数所有有效模型（只要有模型名称就算）
   const validCount = redirectTableData.filter(r => r.model && r.model.trim()).length;
   countSpan.textContent = validCount;
+  syncChannelModelTableRows();
   syncScheduledCheckModelState();
 
   // 初始化事件委托（仅一次）
