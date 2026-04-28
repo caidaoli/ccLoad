@@ -43,6 +43,26 @@ test('tokens.js 保存并渲染 allowed_channel_ids', () => {
   assert.match(script, /'toggle-allowed-channel':\s*\(actionTarget\)\s*=>/);
 });
 
+test('tokens 渠道选择弹窗按渠道类型分组并支持下拉筛选分组', () => {
+  assert.match(html, /id="channelTypeFilterSelect" class="form-input channel-type-filter-select"[^>]*data-change-action="filter-available-channel-type"/);
+  assert.match(script, /function groupChannelsByType\(channels\)/);
+  assert.match(script, /function getChannelTypeGroupKey\(channel\)/);
+  assert.match(script, /function updateChannelTypeFilterOptions\(channels\)/);
+  assert.match(script, /'filter-available-channel-type':\s*\(\)\s*=> filterAvailableChannels\(document\.getElementById\('channelSearchInput'\)\?\.value \|\| ''\)/);
+  assert.match(script, /const channelGroups = groupChannelsByType\(channels\);/);
+  assert.match(script, /const selectedTypeKey = updateChannelTypeFilterOptions\(availableChannels\);/);
+  assert.match(script, /channels = channels\.filter\(ch => getChannelTypeGroupKey\(ch\) === selectedTypeKey\);/);
+  assert.match(script, /class="channel-type-group"/);
+  assert.doesNotMatch(html, /channelTypeQuickSelect/);
+  assert.doesNotMatch(script, /toggle-channel-type-group/);
+  assert.doesNotMatch(script, /toggleChannelTypeGroup/);
+  assert.doesNotMatch(script, /channel-type-group-checkbox/);
+  assert.doesNotMatch(script, /tokens\.selectGroupChannels/);
+  assert.doesNotMatch(css, /\.channel-type-quick-select/);
+  assert.match(css, /\.channel-select-filter-row\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\) 150px;/);
+  assert.match(css, /\.channel-type-group-header\s*\{[\s\S]*?display:\s*flex;[\s\S]*?justify-content:\s*space-between;/);
+});
+
 test('tokens 模型选择按当前渠道限制聚合可选模型', () => {
   assert.match(script, /function getAvailableModelsForCurrentChannelRestriction\(\)/);
   assert.match(script, /if \(editAllowedChannelIDs\.length === 0\) \{[\s\S]*?return availableModelsCache;/);
@@ -57,6 +77,9 @@ test('tokens 渠道限制文案已本地化', () => {
     assert.match(locale, /'tokens\.channelRestriction':/);
     assert.match(locale, /'tokens\.channelCountSuffix':/);
     assert.match(locale, /'tokens\.selectChannelTitle':/);
+    assert.match(locale, /'tokens\.channelTypeAll':/);
+    assert.match(locale, /'tokens\.channelTypeFilterTitle':/);
+    assert.match(locale, /'tokens\.channelTypeOther':/);
     assert.match(locale, /'tokens\.noChannelRestriction':/);
     assert.match(locale, /'tokens\.msg\.selectAtLeastOneChannel':/);
   }

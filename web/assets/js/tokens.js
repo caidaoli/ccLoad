@@ -148,6 +148,7 @@
           },
           'toggle-select-all-allowed-channels': (actionTarget) => toggleSelectAllAllowedChannels(actionTarget.checked),
           'toggle-select-all-channels': (actionTarget) => toggleSelectAllChannels(actionTarget.checked),
+          'filter-available-channel-type': () => filterAvailableChannels(document.getElementById('channelSearchInput')?.value || ''),
           'toggle-select-all-allowed-models': (actionTarget) => toggleSelectAllAllowedModels(actionTarget.checked),
           'toggle-select-all-models': (actionTarget) => toggleSelectAllModels(actionTarget.checked),
           'toggle-allowed-channel': (actionTarget) => {
@@ -976,6 +977,8 @@
       }
       selectedChannelsForAdd.clear();
       document.getElementById('channelSearchInput').value = '';
+      const channelTypeFilter = document.getElementById('channelTypeFilterSelect');
+      if (channelTypeFilter) channelTypeFilter.value = '';
       renderAvailableChannels('');
       document.getElementById('channelSelectModal').style.display = 'block';
       pushModal(closeChannelSelectModal);
@@ -991,6 +994,67 @@
       renderAvailableChannels(searchText);
     }
 
+    function getChannelTypeGroupKey(channel) {
+      const type = String(channel?.channel_type || '').trim().toLowerCase();
+      return type || '__other__';
+    }
+
+    function getChannelTypeGroupLabel(typeKey) {
+      const labels = {
+        anthropic: 'Claude',
+        codex: 'Codex',
+        openai: 'OpenAI',
+        gemini: 'Gemini',
+        __other__: t('tokens.channelTypeOther')
+      };
+      return labels[typeKey] || typeKey;
+    }
+
+    function sortChannelTypeGroups(groups) {
+      const order = ['anthropic', 'codex', 'openai', 'gemini', '__other__'];
+      return groups.sort((a, b) => {
+        const indexA = order.includes(a.typeKey) ? order.indexOf(a.typeKey) : order.length;
+        const indexB = order.includes(b.typeKey) ? order.indexOf(b.typeKey) : order.length;
+        if (indexA !== indexB) return indexA - indexB;
+        return a.label.localeCompare(b.label);
+      });
+    }
+
+    function groupChannelsByType(channels) {
+      const groupMap = new Map();
+      channels.forEach((channel) => {
+        const typeKey = getChannelTypeGroupKey(channel);
+        if (!groupMap.has(typeKey)) {
+          groupMap.set(typeKey, {
+            typeKey,
+            label: getChannelTypeGroupLabel(typeKey),
+            channels: []
+          });
+        }
+        groupMap.get(typeKey).channels.push(channel);
+      });
+      return sortChannelTypeGroups(Array.from(groupMap.values()));
+    }
+
+    function updateChannelTypeFilterOptions(channels) {
+      const select = document.getElementById('channelTypeFilterSelect');
+      if (!select) return '';
+
+      const currentValue = select.value;
+      const channelGroups = groupChannelsByType(channels);
+      select.innerHTML = [
+        `<option value="">${escapeHtml(t('tokens.channelTypeAll'))}</option>`,
+        ...channelGroups.map(group => `<option value="${escapeHtml(group.typeKey)}">${escapeHtml(group.label)}</option>`)
+      ].join('');
+
+      if (channelGroups.some(group => group.typeKey === currentValue)) {
+        select.value = currentValue;
+      } else {
+        select.value = '';
+      }
+      return select.value;
+    }
+
     function renderAvailableChannels(searchText) {
       const container = document.getElementById('availableChannelsContainer');
       const countSpan = document.getElementById('selectedChannelsCount');
@@ -1000,7 +1064,9 @@
       if (!container) return;
 
       const existingChannelIDs = new Set(editAllowedChannelIDs);
-      let channels = allChannels.filter(ch => !existingChannelIDs.has(normalizeChannelID(ch.id)));
+      const availableChannels = allChannels.filter(ch => !existingChannelIDs.has(normalizeChannelID(ch.id)));
+      const selectedTypeKey = updateChannelTypeFilterOptions(availableChannels);
+      let channels = availableChannels;
 
       if (searchText) {
         const search = searchText.toLowerCase();
@@ -1011,12 +1077,16 @@
           return name.includes(search) || type.includes(search) || id.includes(search);
         });
       }
+      if (selectedTypeKey) {
+        channels = channels.filter(ch => getChannelTypeGroupKey(ch) === selectedTypeKey);
+      }
 
       currentVisibleChannels = channels;
       if (countSpan) countSpan.textContent = selectedChannelsForAdd.size;
 
       if (channels.length === 0) {
-        const message = searchText
+        const hasFilter = Boolean(searchText || selectedTypeKey);
+        const message = hasFilter
           ? t('tokens.noMatchingChannel')
           : allChannels.length === 0
             ? t('tokens.noChannelsConfigured')
@@ -1043,17 +1113,30 @@
         visibleChannelsCount.textContent = t('tokens.visibleChannelsCount', { count: channels.length });
       }
 
-      container.innerHTML = channels.map(ch => {
-        const channelID = normalizeChannelID(ch.id);
-        return `
-          <label class="channel-option-item" data-channel-id="${channelID}">
-            <input type="checkbox" class="channel-option-checkbox" data-channel-id="${channelID}"
-              ${selectedChannelsForAdd.has(channelID) ? 'checked' : ''}>
-            <span class="channel-option-label">${escapeHtml(ch.name || t('common.unknown'))}</span>
-            <span class="channel-option-meta">#${channelID} · ${escapeHtml(ch.channel_type || '-')}</span>
-          </label>
-        `;
-      }).join('');
+      const channelGroups = groupChannelsByType(channels);
+      container.innerHTML = channelGroups.map(group => `
+        <section class="channel-type-group" data-channel-type-key="${escapeHtml(group.typeKey)}">
+          <div class="channel-type-group-header">
+            <div class="channel-type-group-title">
+              <span class="channel-type-group-name">${escapeHtml(group.label)}</span>
+              <span class="channel-type-group-count">${t('tokens.visibleChannelsCount', { count: group.channels.length })}</span>
+            </div>
+          </div>
+          <div class="channel-type-group-list">
+            ${group.channels.map(ch => {
+              const channelID = normalizeChannelID(ch.id);
+              return `
+                <label class="channel-option-item" data-channel-id="${channelID}">
+                  <input type="checkbox" class="channel-option-checkbox" data-channel-id="${channelID}"
+                    ${selectedChannelsForAdd.has(channelID) ? 'checked' : ''}>
+                  <span class="channel-option-label">${escapeHtml(ch.name || t('common.unknown'))}</span>
+                  <span class="channel-option-meta">#${channelID} · ${escapeHtml(ch.channel_type || '-')}</span>
+                </label>
+              `;
+            }).join('')}
+          </div>
+        </section>
+      `).join('');
 
       if (!container.dataset.delegated) {
         container.addEventListener('change', (e) => {
