@@ -318,10 +318,55 @@ func TestOpenAIServiceTierMultiplier(t *testing.T) {
 }
 
 func TestCalculateCost_MimoModels(t *testing.T) {
-	cost := CalculateCostDetailed("mimo-v2-flash", 1_000_000, 1_000_000, 0, 0, 0)
-	expected := 0.10 + 0.30
-	if !floatEquals(cost, expected, 0.000001) {
-		t.Errorf("mimo-v2-flash: 成本 = %.6f, 期望 %.6f", cost, expected)
+	testCases := []struct {
+		model          string
+		inputPrice     float64
+		outputPrice    float64
+		cacheReadPrice float64
+	}{
+		{"mimo-v2.5-pro", 1.00, 3.00, 0.20},
+		{"mimo-v2-pro", 1.00, 3.00, 0.20},
+		{"mimo-v2.5", 0.40, 2.00, 0.08},
+		{"mimo-v2-omni", 0.40, 2.00, 0.08},
+		{"mimo-v2.5-flash", 0.10, 0.30, 0.01},
+	}
+
+	for _, tc := range testCases {
+		fullCost := CalculateCostDetailed(tc.model, 256_000, 1_000_000, 0, 0, 0)
+		expectedFullCost := 256_000*tc.inputPrice/1_000_000 + tc.outputPrice
+		if !floatEquals(fullCost, expectedFullCost, 0.000001) {
+			t.Errorf("%s 输入+输出成本 = %.6f, 期望 %.6f", tc.model, fullCost, expectedFullCost)
+		}
+
+		cacheCost := CalculateCostDetailed(tc.model, 0, 0, 256_000, 0, 0)
+		expectedCacheCost := 256_000 * tc.cacheReadPrice / 1_000_000
+		if !floatEquals(cacheCost, expectedCacheCost, 0.000001) {
+			t.Errorf("%s 缓存读取成本 = %.6f, 期望 %.6f", tc.model, cacheCost, expectedCacheCost)
+		}
+	}
+
+	highCost := CalculateCostDetailed("mimo-v2.5-pro", 256_001, 1_000_000, 0, 0, 0)
+	expectedHighCost := 256_001*2.00/1_000_000 + 6.00
+	if !floatEquals(highCost, expectedHighCost, 0.000001) {
+		t.Errorf("mimo-v2.5-pro 高档: 成本 = %.6f, 期望 %.6f", highCost, expectedHighCost)
+	}
+
+	highCacheCost := CalculateCostDetailed("mimo-v2.5", 0, 0, 256_001, 0, 0)
+	expectedHighCacheCost := 256_001 * 0.16 / 1_000_000
+	if !floatEquals(highCacheCost, expectedHighCacheCost, 0.000001) {
+		t.Errorf("mimo-v2.5 高档缓存读取: 成本 = %.6f, 期望 %.6f", highCacheCost, expectedHighCacheCost)
+	}
+
+	highCachedOutputCost := CalculateCostDetailed("mimo-v2.5-pro", 0, 1_000_000, 256_001, 0, 0)
+	expectedHighCachedOutputCost := 256_001*0.40/1_000_000 + 6.00
+	if !floatEquals(highCachedOutputCost, expectedHighCachedOutputCost, 0.000001) {
+		t.Errorf("mimo-v2.5-pro 高档缓存输入+输出: 成本 = %.6f, 期望 %.6f", highCachedOutputCost, expectedHighCachedOutputCost)
+	}
+
+	fuzzyCost := CalculateCostDetailed("mimo-v2.5-pro-20260429", 300_000, 1_000_000, 0, 0, 0)
+	expectedFuzzyCost := 300_000*2.00/1_000_000 + 6.00
+	if !floatEquals(fuzzyCost, expectedFuzzyCost, 0.000001) {
+		t.Errorf("mimo-v2.5-pro 模糊匹配: 成本 = %.6f, 期望 %.6f", fuzzyCost, expectedFuzzyCost)
 	}
 }
 
