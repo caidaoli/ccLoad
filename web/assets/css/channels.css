@@ -569,6 +569,10 @@
       text-align: right;
     }
 
+    .channel-table td.ch-col-enabled {
+      text-align: center;
+    }
+
 
     .channel-table tbody tr,
     .channel-table tbody td {
@@ -639,11 +643,6 @@
       line-height: 1.15;
     }
 
-    .ch-priority-row--status {
-      justify-content: flex-end;
-      margin-top: 2px;
-    }
-
     .ch-priority-label {
       color: var(--neutral-600);
       font-size: 13px;
@@ -702,10 +701,18 @@
       text-align: right;
     }
 
+    .ch-col-enabled {
+      width: 76px;
+      min-width: 76px;
+      max-width: 76px;
+      white-space: nowrap;
+      text-align: center;
+    }
+
     .ch-col-actions {
-      width: 168px;
-      min-width: 168px;
-      max-width: 168px;
+      width: 136px;
+      min-width: 136px;
+      max-width: 136px;
       position: relative;
       white-space: nowrap;
       text-align: right;
@@ -731,6 +738,50 @@
 
     .ch-action-statuses:empty {
       display: none;
+    }
+
+    .channel-enable-switch {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      width: 42px;
+      height: 24px;
+      padding: 0;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: background-color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+    }
+
+    .channel-enable-switch:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.22);
+    }
+
+    .channel-enable-switch__knob {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      background: #ffffff;
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.24);
+      transition: transform 0.18s ease;
+    }
+
+    .channel-enable-switch--on {
+      background: #22c55e;
+      border-color: #16a34a;
+    }
+
+    .channel-enable-switch--on .channel-enable-switch__knob {
+      transform: translateX(18px);
+    }
+
+    .channel-enable-switch--off {
+      background: #cbd5e1;
+      border-color: #94a3b8;
     }
 
     /* 渠道名称行 */
@@ -794,7 +845,9 @@
       display: flex;
       flex-direction: column;
       align-items: stretch;
-      width: 100%;
+      width: max-content;
+      max-width: 100%;
+      margin-left: auto;
       gap: 2px;
       line-height: 1.15;
     }
@@ -804,8 +857,8 @@
       display: flex;
       align-items: center;
       justify-content: flex-start;
-      width: 100%;
-      gap: 4px;
+      width: auto;
+      gap: 6px;
       min-width: 0;
       line-height: 1.15;
     }
@@ -822,7 +875,7 @@
 
     .ch-timing-value,
     .ch-usage-value {
-      margin-left: auto;
+      margin-left: 0;
       text-align: right;
       font-size: 13px;
       font-weight: 600;
@@ -838,7 +891,9 @@
       display: flex;
       flex-direction: column;
       align-items: stretch;
-      width: 100%;
+      width: max-content;
+      max-width: 100%;
+      margin-left: auto;
       gap: 2px;
     }
 
@@ -2523,6 +2578,7 @@
 
       .channel-table .ch-col-name,
       .channel-table .ch-col-models,
+      .channel-table .ch-col-enabled,
       .channel-table .ch-col-actions {
         grid-column: 1 / -1;
       }
@@ -2543,6 +2599,10 @@
         order: 21;
       }
 
+      .channel-table .ch-col-enabled {
+        order: 22;
+      }
+
       .channel-table .ch-col-actions {
         order: 30;
       }
@@ -2554,7 +2614,8 @@
       .channel-table .ch-col-priority,
       .channel-table .ch-col-duration,
       .channel-table .ch-col-usage,
-      .channel-table .ch-col-cost {
+      .channel-table .ch-col-cost,
+      .channel-table .ch-col-enabled {
         background: rgba(248, 250, 252, 0.9);
         border: 1px solid var(--neutral-200);
         border-radius: 12px;
@@ -2562,7 +2623,8 @@
       }
 
       .channel-table .ch-col-priority,
-      .channel-table .ch-col-cost {
+      .channel-table .ch-col-cost,
+      .channel-table .ch-col-enabled {
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -2570,7 +2632,8 @@
       }
 
       .channel-table .ch-col-priority::before,
-      .channel-table .ch-col-cost::before {
+      .channel-table .ch-col-cost::before,
+      .channel-table .ch-col-enabled::before {
         margin-bottom: 0;
         flex: 0 0 auto;
       }

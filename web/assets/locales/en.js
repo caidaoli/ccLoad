@@ -1007,6 +1007,7 @@ window.I18N_LOCALES['en'] = {
   'channels.table.priority': 'Priority',
   'channels.table.duration': 'Duration',
   'channels.table.usage': 'Usage',
+  'channels.table.enabled': 'Enabled',
   'channels.table.actions': 'Actions',
   // Copy Naming
   'channels.copySuffix': 'Copy',

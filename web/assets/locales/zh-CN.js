@@ -1007,6 +1007,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.table.priority': '优先级',
   'channels.table.duration': '耗时',
   'channels.table.usage': '消耗',
+  'channels.table.enabled': '启用',
   'channels.table.actions': '操作',
   // 复制命名
   'channels.copySuffix': '复制',
