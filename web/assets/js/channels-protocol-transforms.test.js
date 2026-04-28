@@ -79,17 +79,31 @@ function createElement(props = {}) {
   return element;
 }
 
+function createDeferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 function createHarness({
   channel = null,
   apiKeys = [{ api_key: 'sk-test' }],
-  channelCheckIntervalHours = 24
+  channelCheckIntervalHours = 24,
+  duplicateResponses = null
 } = {}) {
   let protocolTransformInputs = [];
   let protocolTransformModeInputs = [];
   const elements = {};
   const radiosByName = new Map();
   const fetchCalls = [];
+  const duplicateResponseQueue = Array.isArray(duplicateResponses) ? duplicateResponses.slice() : null;
   let afterSavePayload = null;
+  let nextTimerId = 1;
+  const timers = new Map();
 
   function registerRadio(name, value, checked = false) {
     const radio = createElement({ name, value, type: 'radio', checked });
@@ -202,6 +216,7 @@ function createHarness({
   elements.channelScheduledCheckModelWrapper = createElement({ id: 'channelScheduledCheckModelWrapper', hidden: false });
   elements.channelScheduledCheckEnabledWrapper = createElement({ id: 'channelScheduledCheckEnabledWrapper', hidden: false });
   elements.channelScheduledCheckModelHint = createElement({ id: 'channelScheduledCheckModelHint', textContent: '' });
+  elements.channelDuplicateHint = createElement({ id: 'channelDuplicateHint', hidden: true, textContent: '' });
   elements.channelModal = createElement({ id: 'channelModal' });
   elements.inlineEyeIcon = createElement({ id: 'inlineEyeIcon', style: {} });
   elements.inlineEyeOffIcon = createElement({ id: 'inlineEyeOffIcon', style: {} });
@@ -280,7 +295,19 @@ function createHarness({
     },
     fetchAPIWithAuth: async (requestPath, options) => {
       fetchCalls.push({ path: requestPath, options });
+      if (requestPath === '/admin/channels/check-duplicate' && duplicateResponseQueue && duplicateResponseQueue.length > 0) {
+        const nextResponse = duplicateResponseQueue.shift();
+        return typeof nextResponse === 'function' ? nextResponse(requestPath, options) : nextResponse;
+      }
       return { success: true };
+    },
+    setTimeout(callback) {
+      const timerId = nextTimerId++;
+      timers.set(timerId, callback);
+      return timerId;
+    },
+    clearTimeout(timerId) {
+      timers.delete(timerId);
     },
     document: {
       body: {},
@@ -314,9 +341,13 @@ function createHarness({
           'channels.protocolTransformModeLocal': 'ccLoad(实验性)',
           'channels.protocolTransformModeUpstream': '上游',
           'channels.duplicateModelsNotAllowed': 'duplicate models',
+          'channels.duplicateChannelHint': 'duplicate channels: {list}{extra}',
+          'channels.duplicateChannelHintMore': ' and {count} more',
+          'channels.duplicateChannelHintSeparator': ', ',
           'channels.fillAllRequired': 'fill required',
           'channels.channelAdded': 'added',
           'channels.channelUpdated': 'updated',
+          'channels.copySuffix': 'Copy',
           'channels.scheduledCheckModelDefault': '默认首个模型',
           'channels.scheduledCheckModelHint': '仅用于定时检测，留空表示默认首个模型',
           'channels.scheduledCheckModelFallback': '当前检测模型已失效，已回退为默认首个模型',
@@ -327,7 +358,12 @@ function createHarness({
           'channels.noPresetModels': 'no preset models',
           'channels.unsavedChanges': 'unsaved changes'
         };
-        return labels[key] || key;
+        let text = labels[key] || key;
+        const params = arguments[1] || {};
+        Object.entries(params).forEach(([paramKey, value]) => {
+          text = text.replaceAll(`{${paramKey}}`, String(value));
+        });
+        return text;
       },
       initDelegatedActions() {},
       ChannelTypeManager: {
@@ -368,7 +404,7 @@ function createHarness({
   };
 
   vm.createContext(sandbox);
-  vm.runInContext(`${protocolSource}\n${source}\nthis.__protocolTransformsTest = {\n  initChannelEditorActions,\n  renderProtocolTransformOptions,\n  getSelectedProtocolTransforms,\n  editChannel,\n  saveChannel\n};`, sandbox);
+  vm.runInContext(`${protocolSource}\n${source}\nthis.__protocolTransformsTest = {\n  initChannelEditorActions,\n  renderProtocolTransformOptions,\n  getSelectedProtocolTransforms,\n  editChannel,\n  copyChannel,\n  saveChannel,\n  refreshChannelDuplicateHint,\n  scheduleChannelDuplicateHintCheck\n};`, sandbox);
 
   return {
     api: sandbox.__protocolTransformsTest,
@@ -390,6 +426,14 @@ function createHarness({
     },
     getRadio,
     setCheckedRadio,
+    setInlineURLs(urls) {
+      sandbox.inlineURLTableData = Array.isArray(urls) ? urls.slice() : [];
+    },
+    runTimers() {
+      const callbacks = Array.from(timers.values());
+      timers.clear();
+      callbacks.forEach((callback) => callback());
+    },
     async changeChannelType(nextType) {
       const target = getRadio('channelType', nextType);
       assert.ok(target, `missing channelType radio: ${nextType}`);
@@ -508,6 +552,82 @@ test('编辑渠道时会回填 protocol_transforms，并禁用原生协议选项
     harness.getProtocolTransformValues().filter((item) => item.checked).map((item) => item.value).sort(),
     ['anthropic', 'openai']
   );
+});
+
+test('重复渠道提前提示会忽略调度前未完成的旧检测结果', async () => {
+  const staleResult = createDeferred();
+  const currentResult = createDeferred();
+  const harness = createHarness({
+    duplicateResponses: [staleResult.promise, currentResult.promise]
+  });
+
+  harness.setInlineURLs(['https://stale.example.com']);
+  const staleRefresh = harness.api.refreshChannelDuplicateHint();
+  assert.equal(harness.fetchCalls.length, 1);
+
+  harness.setInlineURLs(['https://current.example.com']);
+  harness.api.scheduleChannelDuplicateHintCheck();
+  assert.equal(harness.fetchCalls.length, 1);
+
+  staleResult.resolve({
+    success: true,
+    data: {
+      duplicates: [{ name: 'stale-channel', channel_type: 'anthropic', url: 'https://stale.example.com' }]
+    }
+  });
+  await staleRefresh;
+
+  assert.equal(harness.elements.channelDuplicateHint.hidden, true);
+  assert.equal(harness.elements.channelDuplicateHint.textContent, '');
+
+  harness.runTimers();
+  assert.equal(harness.fetchCalls.length, 2);
+
+  currentResult.resolve({
+    success: true,
+    data: {
+      duplicates: [{ name: 'current-channel', channel_type: 'anthropic', url: 'https://current.example.com' }]
+    }
+  });
+  for (let i = 0; i < 4; i++) {
+    await Promise.resolve();
+  }
+
+  assert.equal(harness.elements.channelDuplicateHint.hidden, false);
+  assert.match(harness.elements.channelDuplicateHint.textContent, /current-channel/);
+  assert.doesNotMatch(harness.elements.channelDuplicateHint.textContent, /stale-channel/);
+});
+
+test('复制渠道会按复制后的 URL 触发重复渠道提前检测', async () => {
+  const harness = createHarness({
+    channel: {
+      id: 7,
+      name: 'source-channel',
+      url: 'https://api.example.com',
+      channel_type: 'anthropic',
+      protocol_transform_mode: 'upstream',
+      protocol_transforms: [],
+      key_strategy: 'sequential',
+      priority: 9,
+      daily_cost_limit: 0,
+      enabled: true,
+      scheduled_check_enabled: false,
+      scheduled_check_model: '',
+      models: [{ model: 'claude-3-7-sonnet', redirect_model: '' }]
+    },
+    apiKeys: [{ api_key: 'sk-live' }],
+    duplicateResponses: [{ success: true, data: { duplicates: [] } }]
+  });
+
+  await harness.api.copyChannel(7, 'source-channel');
+  harness.runTimers();
+
+  const duplicateCall = harness.fetchCalls.find((call) => call.path === '/admin/channels/check-duplicate');
+  assert.ok(duplicateCall);
+  assert.deepEqual(JSON.parse(duplicateCall.options.body), {
+    channel_type: 'anthropic',
+    urls: ['https://api.example.com']
+  });
 });
 
 test('保存渠道时 payload 带上 protocol_transforms', async () => {

@@ -1807,6 +1807,21 @@
       line-height: 1.35;
     }
 
+    .channel-duplicate-hint {
+      margin-top: 6px;
+      padding: 7px 10px;
+      border: 1px solid var(--warning-400);
+      border-radius: 6px;
+      background: var(--warning-50);
+      color: var(--warning-600);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .channel-duplicate-hint[hidden] {
+      display: none !important;
+    }
+
     .inline-url-cell-center {
       padding: 6px 6px !important;
       text-align: center;
