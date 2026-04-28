@@ -79,6 +79,26 @@ func TestAuthService_IsModelAllowed(t *testing.T) {
 	}
 }
 
+func TestAuthService_IsChannelAllowed(t *testing.T) {
+	t.Parallel()
+
+	s := &AuthService{
+		authTokenChannels: map[string][]int64{
+			"t1": {2, 42},
+		},
+	}
+
+	if !s.IsChannelAllowed("no_restriction", 99) {
+		t.Fatal("expected allow when no channel restriction")
+	}
+	if !s.IsChannelAllowed("t1", 42) {
+		t.Fatal("expected listed channel to be allowed")
+	}
+	if s.IsChannelAllowed("t1", 7) {
+		t.Fatal("expected non-listed channel to be rejected")
+	}
+}
+
 func TestAuthService_CostLimit(t *testing.T) {
 	t.Parallel()
 

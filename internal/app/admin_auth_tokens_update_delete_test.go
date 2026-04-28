@@ -73,12 +73,13 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 
 	t.Run("success", func(t *testing.T) {
 		body := map[string]any{
-			"description":     "new-desc",
-			"is_active":       false,
-			"expires_at":      expiresAt,
-			"allowed_models":  []string{"m1", "m2"},
-			"cost_limit_usd":  1.5,
-			"unknown_ignored": "x",
+			"description":         "new-desc",
+			"is_active":           false,
+			"expires_at":          expiresAt,
+			"allowed_models":      []string{"m1", "m2"},
+			"allowed_channel_ids": []int64{11, 22},
+			"cost_limit_usd":      1.5,
+			"unknown_ignored":     "x",
 		}
 		c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/auth-tokens/1", body))
 		c.Params = gin.Params{{Key: "id", Value: "1"}}
@@ -89,11 +90,12 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 		}
 
 		type respData struct {
-			Description  string  `json:"description"`
-			IsActive     bool    `json:"is_active"`
-			Token        string  `json:"token"`
-			ExpiresAt    *int64  `json:"expires_at,omitempty"`
-			CostLimitUSD float64 `json:"cost_limit_usd"`
+			Description       string  `json:"description"`
+			IsActive          bool    `json:"is_active"`
+			Token             string  `json:"token"`
+			ExpiresAt         *int64  `json:"expires_at,omitempty"`
+			CostLimitUSD      float64 `json:"cost_limit_usd"`
+			AllowedChannelIDs []int64 `json:"allowed_channel_ids"`
 		}
 		resp := mustParseAPIResponse[respData](t, w.Body.Bytes())
 		if !resp.Success {
@@ -114,6 +116,9 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 		if resp.Data.CostLimitUSD < 1.49 || resp.Data.CostLimitUSD > 1.51 {
 			t.Fatalf("cost_limit_usd=%v, want ~1.5", resp.Data.CostLimitUSD)
 		}
+		if len(resp.Data.AllowedChannelIDs) != 2 || resp.Data.AllowedChannelIDs[0] != 11 || resp.Data.AllowedChannelIDs[1] != 22 {
+			t.Fatalf("allowed_channel_ids=%v, want [11 22]", resp.Data.AllowedChannelIDs)
+		}
 
 		updated, err := store.GetAuthToken(ctx, token.ID)
 		if err != nil {
@@ -131,14 +136,18 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 		if len(updated.AllowedModels) != 2 {
 			t.Fatalf("AllowedModels=%v, want 2 items", updated.AllowedModels)
 		}
+		if len(updated.AllowedChannelIDs) != 2 || updated.AllowedChannelIDs[0] != 11 || updated.AllowedChannelIDs[1] != 22 {
+			t.Fatalf("AllowedChannelIDs=%v, want [11 22]", updated.AllowedChannelIDs)
+		}
 	})
 
-	t.Run("preserve allowed models when field omitted", func(t *testing.T) {
+	t.Run("preserve allowed models and channels when fields omitted", func(t *testing.T) {
 		token2 := &model.AuthToken{
-			Token:         model.HashToken("plain-token-2"),
-			Description:   "keep-models",
-			IsActive:      true,
-			AllowedModels: []string{"keep-a", "keep-b"},
+			Token:             model.HashToken("plain-token-2"),
+			Description:       "keep-models",
+			IsActive:          true,
+			AllowedModels:     []string{"keep-a", "keep-b"},
+			AllowedChannelIDs: []int64{101, 202},
 		}
 		if err := store.CreateAuthToken(ctx, token2); err != nil {
 			t.Fatalf("CreateAuthToken token2 failed: %v", err)
@@ -165,6 +174,9 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 		}
 		if len(updated.AllowedModels) != 2 || updated.AllowedModels[0] != "keep-a" || updated.AllowedModels[1] != "keep-b" {
 			t.Fatalf("AllowedModels=%v, want preserved values", updated.AllowedModels)
+		}
+		if len(updated.AllowedChannelIDs) != 2 || updated.AllowedChannelIDs[0] != 101 || updated.AllowedChannelIDs[1] != 202 {
+			t.Fatalf("AllowedChannelIDs=%v, want preserved values", updated.AllowedChannelIDs)
 		}
 	})
 }

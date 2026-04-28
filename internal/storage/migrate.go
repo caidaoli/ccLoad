@@ -143,6 +143,14 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := validateAuthTokensAllowedModelsJSON(ctx, db); err != nil {
 				return fmt.Errorf("validate auth_tokens allowed_models: %w", err)
 			}
+			// 增量迁移：确保auth_tokens表有allowed_channel_ids字段（2026-04新增）
+			if err := ensureAuthTokensAllowedChannelIDs(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate auth_tokens allowed_channel_ids: %w", err)
+			}
+			// 启动期校验：拒绝脏数据静默放权
+			if err := validateAuthTokensAllowedChannelIDsJSON(ctx, db); err != nil {
+				return fmt.Errorf("validate auth_tokens allowed_channel_ids: %w", err)
+			}
 			// 增量迁移：确保auth_tokens表有费用限额字段（2026-01新增）
 			if err := ensureAuthTokensCostLimit(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate auth_tokens cost_limit: %w", err)
@@ -1634,6 +1642,62 @@ func validateAuthTokensAllowedModelsJSON(ctx context.Context, db *sql.DB) error 
 
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate auth_tokens.allowed_models: %w", err)
+	}
+	return nil
+}
+
+// ensureAuthTokensAllowedChannelIDs 确保auth_tokens表有allowed_channel_ids字段
+func ensureAuthTokensAllowedChannelIDs(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if dialect == DialectMySQL {
+		var count int
+		err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='auth_tokens' AND COLUMN_NAME='allowed_channel_ids'",
+		).Scan(&count)
+		if err != nil {
+			return fmt.Errorf("check allowed_channel_ids field: %w", err)
+		}
+		if count == 0 {
+			if _, err := db.ExecContext(ctx,
+				"ALTER TABLE auth_tokens ADD COLUMN allowed_channel_ids VARCHAR(2000) NOT NULL DEFAULT ''"); err != nil {
+				return fmt.Errorf("add allowed_channel_ids column: %w", err)
+			}
+			log.Printf("[MIGRATE] Added auth_tokens.allowed_channel_ids column")
+		}
+		return nil
+	}
+
+	return ensureSQLiteColumns(ctx, db, "auth_tokens", []sqliteColumnDef{
+		{name: "allowed_channel_ids", definition: "TEXT NOT NULL DEFAULT ''"},
+	})
+}
+
+func validateAuthTokensAllowedChannelIDsJSON(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, "SELECT id, allowed_channel_ids FROM auth_tokens WHERE allowed_channel_ids <> ''")
+	if err != nil {
+		return fmt.Errorf("query auth_tokens.allowed_channel_ids: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var id int64
+		var raw string
+		if err := rows.Scan(&id, &raw); err != nil {
+			return fmt.Errorf("scan auth_tokens.allowed_channel_ids: %w", err)
+		}
+		if raw == "" {
+			continue
+		}
+		var channelIDs []int64
+		if err := json.Unmarshal([]byte(raw), &channelIDs); err != nil {
+			return fmt.Errorf(
+				"auth_tokens.allowed_channel_ids invalid json: id=%d allowed_channel_ids=%q: %w (fix: UPDATE auth_tokens SET allowed_channel_ids='' WHERE id=%d)",
+				id, raw, err, id,
+			)
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate auth_tokens.allowed_channel_ids: %w", err)
 	}
 	return nil
 }

@@ -51,6 +51,9 @@ type AuthToken struct {
 
 	// 模型限制（2026-01新增）
 	AllowedModels []string `json:"allowed_models,omitempty"` // 允许的模型列表，空表示无限制
+
+	// 渠道限制（2026-04新增）
+	AllowedChannelIDs []int64 `json:"allowed_channel_ids,omitempty"` // 允许的渠道ID列表，空表示无限制
 }
 
 // AuthTokenRangeStats 某个时间范围内的token统计（从logs表聚合，2025-12新增）
@@ -125,6 +128,20 @@ func (t *AuthToken) IsModelAllowed(model string) bool {
 	return false
 }
 
+// IsChannelAllowed 检查渠道是否被令牌允许访问
+// 如果 AllowedChannelIDs 为空，表示无限制，允许所有渠道
+func (t *AuthToken) IsChannelAllowed(channelID int64) bool {
+	if len(t.AllowedChannelIDs) == 0 {
+		return true
+	}
+	for _, id := range t.AllowedChannelIDs {
+		if id == channelID {
+			return true
+		}
+	}
+	return false
+}
+
 // CostUsedUSD 返回已消耗费用（美元）
 func (t *AuthToken) CostUsedUSD() float64 {
 	return float64(t.CostUsedMicroUSD) / microUSDScale
@@ -171,6 +188,7 @@ type authTokenJSON struct {
 	AvgRPM                   float64   `json:"avg_rpm,omitempty"`
 	RecentRPM                float64   `json:"recent_rpm,omitempty"`
 	AllowedModels            []string  `json:"allowed_models,omitempty"`
+	AllowedChannelIDs        []int64   `json:"allowed_channel_ids,omitempty"`
 }
 
 // MarshalJSON 自定义JSON序列化，将MicroUSD转换为USD浮点数
@@ -201,5 +219,6 @@ func (t AuthToken) MarshalJSON() ([]byte, error) {
 		AvgRPM:                   t.AvgRPM,
 		RecentRPM:                t.RecentRPM,
 		AllowedModels:            t.AllowedModels,
+		AllowedChannelIDs:        t.AllowedChannelIDs,
 	})
 }

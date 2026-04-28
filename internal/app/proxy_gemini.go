@@ -13,7 +13,7 @@ import (
 // Gemini API 特殊处理
 // ============================================================================
 
-func (s *Server) filterVisibleModelsForRequest(c *gin.Context, models []string) []string {
+func (s *Server) filterVisibleModelsForRequest(c *gin.Context, protocol string, models []string) []string {
 	if s.authService == nil {
 		return models
 	}
@@ -22,6 +22,29 @@ func (s *Server) filterVisibleModelsForRequest(c *gin.Context, models []string) 
 	tokenHashStr, _ := tokenHash.(string)
 	if tokenHashStr == "" {
 		return models
+	}
+
+	if allowedChannelSet, hasRestriction := s.authService.getAllowedChannelSet(tokenHashStr); hasRestriction {
+		channels, err := s.getEnabledChannelsByExposedProtocol(c.Request.Context(), protocol)
+		if err != nil {
+			return nil
+		}
+		modelSet := make(map[string]struct{})
+		for _, cfg := range channels {
+			if cfg == nil {
+				continue
+			}
+			if _, ok := allowedChannelSet[cfg.ID]; !ok {
+				continue
+			}
+			for _, model := range cfg.GetModels() {
+				modelSet[model] = struct{}{}
+			}
+		}
+		models = make([]string, 0, len(modelSet))
+		for model := range modelSet {
+			models = append(models, model)
+		}
 	}
 
 	return s.authService.FilterAllowedModels(tokenHashStr, models)
@@ -38,7 +61,7 @@ func (s *Server) handleListGeminiModels(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load models"})
 		return
 	}
-	models = s.filterVisibleModelsForRequest(c, models)
+	models = s.filterVisibleModelsForRequest(c, "gemini", models)
 	sort.Strings(models)
 
 	// 构造 Gemini API 响应格式
@@ -85,7 +108,7 @@ func (s *Server) handleListOpenAIModels(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load models"})
 		return
 	}
-	models = s.filterVisibleModelsForRequest(c, models)
+	models = s.filterVisibleModelsForRequest(c, channelType, models)
 	sort.Strings(models)
 
 	if channelType == "anthropic" {

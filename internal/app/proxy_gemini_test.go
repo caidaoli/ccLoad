@@ -131,6 +131,60 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 		}
 	})
 
+	t.Run("handleListOpenAIModels filters by token allowed channels", func(t *testing.T) {
+		server.authService = newTestAuthService(t)
+
+		allowed, err := store.CreateConfig(ctx, &model.Config{
+			Name:        "allowed-model-list-channel",
+			URL:         "https://example.com",
+			Priority:    3,
+			Enabled:     true,
+			ChannelType: "openai",
+			ModelEntries: []model.ModelEntry{
+				{Model: "gpt-allowed-channel"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig allowed channel failed: %v", err)
+		}
+		_, err = store.CreateConfig(ctx, &model.Config{
+			Name:        "disallowed-model-list-channel",
+			URL:         "https://example.com",
+			Priority:    4,
+			Enabled:     true,
+			ChannelType: "openai",
+			ModelEntries: []model.ModelEntry{
+				{Model: "gpt-disallowed-channel"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig disallowed channel failed: %v", err)
+		}
+
+		tokenHash := model.HashToken("channel-restricted-openai-token")
+		server.authService.authTokensMux.Lock()
+		server.authService.authTokenChannels[tokenHash] = []int64{allowed.ID}
+		server.authService.authTokensMux.Unlock()
+
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/v1/models", nil))
+		c.Set("token_hash", tokenHash)
+
+		server.handleListOpenAIModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		var resp struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+		if len(resp.Data) != 1 || resp.Data[0].ID != "gpt-allowed-channel" {
+			t.Fatalf("unexpected channel-filtered resp: %+v", resp)
+		}
+	})
+
 	t.Run("handleListOpenAIModels includes transformed gemini channel", func(t *testing.T) {
 		_, err := store.CreateConfig(ctx, &model.Config{
 			Name:               "g2-oai",

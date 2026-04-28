@@ -40,6 +40,7 @@ type AuthService struct {
 	authTokens          map[string]int64          // Token哈希 → 过期时间(Unix毫秒，0=永不过期)
 	authTokenIDs        map[string]int64          // Token哈希 → Token ID 映射（用于日志记录，2025-12新增）
 	authTokenModels     map[string][]string       // Token哈希 → 允许的模型列表（2026-01新增）
+	authTokenChannels   map[string][]int64        // Token哈希 → 允许的渠道ID列表（2026-04新增）
 	authTokenCostLimits map[string]tokenCostLimit // Token哈希 → 费用限额状态（仅限额>0的令牌）
 	authTokensMux       sync.RWMutex              // 并发保护（支持热更新）
 
@@ -80,6 +81,8 @@ func NewAuthService(
 		validTokens:         make(map[string]time.Time),
 		authTokens:          make(map[string]int64),
 		authTokenIDs:        make(map[string]int64),
+		authTokenModels:     make(map[string][]string),
+		authTokenChannels:   make(map[string][]int64),
 		authTokenCostLimits: make(map[string]tokenCostLimit),
 		loginRateLimiter:    loginRateLimiter,
 		store:               store,
@@ -341,6 +344,9 @@ func (s *AuthService) RequireAPIAuth() gin.HandlerFunc {
 			s.authTokensMux.Lock()
 			delete(s.authTokens, tokenHash)
 			delete(s.authTokenIDs, tokenHash)
+			delete(s.authTokenModels, tokenHash)
+			delete(s.authTokenChannels, tokenHash)
+			delete(s.authTokenCostLimits, tokenHash)
 			s.authTokensMux.Unlock()
 
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "token expired"})
@@ -494,6 +500,7 @@ func (s *AuthService) ReloadAuthTokens() error {
 	newTokens := make(map[string]int64, len(tokens))
 	newTokenIDs := make(map[string]int64, len(tokens))
 	newTokenModels := make(map[string][]string, len(tokens))
+	newTokenChannels := make(map[string][]int64, len(tokens))
 	newTokenCostLimits := make(map[string]tokenCostLimit, len(tokens))
 	for _, t := range tokens {
 		// ExpiresAt: nil → 0 (永不过期), *int64 → Unix毫秒
@@ -506,6 +513,9 @@ func (s *AuthService) ReloadAuthTokens() error {
 		// 只有有限制时才存储（节省内存）
 		if len(t.AllowedModels) > 0 {
 			newTokenModels[t.Token] = t.AllowedModels
+		}
+		if len(t.AllowedChannelIDs) > 0 {
+			newTokenChannels[t.Token] = t.AllowedChannelIDs
 		}
 		// 费用限额：只为“有限额”的令牌维护状态（避免无谓内存占用）
 		limitMicro := t.CostLimitMicroUSD
@@ -522,6 +532,7 @@ func (s *AuthService) ReloadAuthTokens() error {
 	s.authTokens = newTokens
 	s.authTokenIDs = newTokenIDs
 	s.authTokenModels = newTokenModels
+	s.authTokenChannels = newTokenChannels
 	s.authTokenCostLimits = newTokenCostLimits
 	s.authTokensMux.Unlock()
 
@@ -569,6 +580,53 @@ func (s *AuthService) IsModelAllowed(tokenHash, model string) bool {
 		return true // 无限制
 	}
 	_, ok := allowedSet[strings.ToLower(model)]
+	return ok
+}
+
+func (s *AuthService) getAllowedChannelSet(tokenHash string) (map[int64]struct{}, bool) {
+	s.authTokensMux.RLock()
+	allowedChannels, hasRestriction := s.authTokenChannels[tokenHash]
+	s.authTokensMux.RUnlock()
+
+	if !hasRestriction || len(allowedChannels) == 0 {
+		return nil, false
+	}
+
+	allowedSet := make(map[int64]struct{}, len(allowedChannels))
+	for _, channelID := range allowedChannels {
+		allowedSet[channelID] = struct{}{}
+	}
+	return allowedSet, true
+}
+
+// FilterAllowedChannels 按 token 的渠道限制过滤候选渠道。
+// 返回值 restricted 表示该 token 是否启用了渠道限制。
+func (s *AuthService) FilterAllowedChannels(tokenHash string, channels []*model.Config) ([]*model.Config, bool) {
+	allowedSet, hasRestriction := s.getAllowedChannelSet(tokenHash)
+	if !hasRestriction || len(channels) == 0 {
+		return channels, hasRestriction
+	}
+
+	filtered := make([]*model.Config, 0, len(channels))
+	for _, cfg := range channels {
+		if cfg == nil {
+			continue
+		}
+		if _, ok := allowedSet[cfg.ID]; ok {
+			filtered = append(filtered, cfg)
+		}
+	}
+	return filtered, true
+}
+
+// IsChannelAllowed 检查令牌是否允许访问指定渠道
+// 如果令牌没有渠道限制，返回 true
+func (s *AuthService) IsChannelAllowed(tokenHash string, channelID int64) bool {
+	allowedSet, hasRestriction := s.getAllowedChannelSet(tokenHash)
+	if !hasRestriction {
+		return true
+	}
+	_, ok := allowedSet[channelID]
 	return ok
 }
 
