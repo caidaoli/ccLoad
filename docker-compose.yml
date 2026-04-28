@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   ccload:
-    image: ghcr.io/caidaoli/ccload:latest
+    image: ghcr.io/kongkongyo/ccload:latest
     container_name: ccload
     user: root
     restart: unless-stopped
