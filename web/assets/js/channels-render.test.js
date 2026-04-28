@@ -20,6 +20,18 @@ function loadRenderSandbox(overrides = {}) {
         if (key === 'common.success') return '成功';
         if (key === 'common.failed') return '失败';
         if (key === 'common.seconds') return '秒';
+        if (key === 'channels.batchRefreshStatus.processing') return '刷新中';
+        if (key === 'channels.batchRefreshStatus.updated') return '已更新';
+        if (key === 'channels.batchRefreshStatus.unchanged') return '未变化';
+        if (key === 'channels.batchRefreshStatus.failed') return '失败';
+        if (key === 'channels.batchRefreshRowProcessing') return '模型刷新中...';
+        if (key === 'channels.batchRefreshRowUpdatedMerge') return `已更新：获取 ${params.fetched}，新增 ${params.added}，总计 ${params.total}`;
+        if (key === 'channels.batchRefreshRowUpdatedReplace') return `已更新：获取 ${params.fetched}，移除 ${params.removed}，总计 ${params.total}`;
+        if (key === 'channels.batchRefreshRowUnchanged') return `未变化：获取 ${params.fetched}，总计 ${params.total}`;
+        if (key === 'channels.batchRefreshRowFailed') return `失败：${params.error}`;
+        if (key === 'channels.batchRefreshDetail') return '展开详情';
+        if (key === 'channels.batchRefreshClear') return '清除';
+        if (key === 'channels.batchRefreshCopied') return '已复制';
         return key;
       }
     },
@@ -215,4 +227,73 @@ test('禁用渠道不再把已禁用徽章渲染到优先级列', () => {
 
   assert.doesNotMatch(cardData.effectivePriorityHtml, /已禁用/);
   assert.equal(cardData.toggleSwitchClass, 'channel-enable-switch--off');
+});
+
+test('createChannelCard 会把批量模型刷新结果渲染到渠道行状态槽', () => {
+  const { createChannelCard } = loadRenderSandbox({
+    batchRefreshResultsByChannelId: new Map([
+      ['23', {
+        channelID: '23',
+        status: 'updated',
+        mode: 'replace',
+        fetched: 12,
+        removed: 3,
+        total: 12
+      }]
+    ])
+  });
+
+  const cardData = createChannelCard({
+    id: 23,
+    name: '刷新渠道',
+    channel_type: 'openai',
+    protocol_transforms: [],
+    url: 'https://refresh.example.com',
+    models: [{ model: 'gpt-5.4' }],
+    priority: 100,
+    enabled: true
+  });
+
+  assert.match(cardData.rowClasses, /channel-row-refresh-updated/);
+  assert.match(cardData.batchRefreshStatusHtml, /channel-refresh-result--updated/);
+  assert.match(cardData.batchRefreshStatusHtml, /已更新：获取 12，移除 3，总计 12/);
+});
+
+test('setBatchRefreshResult 不再为批量模型刷新结果启动自动清理', () => {
+  const resultMap = new Map();
+  const { setBatchRefreshResult } = loadRenderSandbox({
+    batchRefreshResultsByChannelId: resultMap,
+    document: {
+      getElementById() {
+        return null;
+      }
+    },
+    setTimeout() {
+      throw new Error('不应启动自动清理定时器');
+    }
+  });
+
+  setBatchRefreshResult(23, { status: 'updated', mode: 'merge' }, { autoClear: true });
+
+  assert.equal(resultMap.get('23').status, 'updated');
+});
+
+test('失败的批量模型刷新结果行内显示摘要并折叠完整错误', () => {
+  const { buildBatchRefreshStatusHtml } = loadRenderHelpers();
+
+  const html = buildBatchRefreshStatusHtml({
+    channelID: '7',
+    status: 'failed',
+    summary: 'HTTP 401 <bad>',
+    detail: '完整错误 <script>alert(1)</script>'
+  });
+
+  assert.match(html, /channel-refresh-result--failed/);
+  assert.match(html, /失败：HTTP 401 &lt;bad&gt;/);
+  assert.match(html, /<summary>展开详情<\/summary>/);
+  assert.match(html, /完整错误 &lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.doesNotMatch(html, /data-action="copy-batch-refresh-error"/);
+  assert.doesNotMatch(html, /复制错误/);
+  assert.match(html, /data-action="clear-batch-refresh-result"/);
+  assert.doesNotMatch(html, /<script>/);
 });

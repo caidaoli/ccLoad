@@ -60,6 +60,8 @@ test('channels 页为手机卡片式表格预留移动端标签与样式', () =>
   assert.match(channelsCss, /\.channel-table\s+\.ch-action-group\s*\{[\s\S]*?justify-content:\s*center;/);
   assert.match(channelsCss, /\.channel-table\s+\.ch-action-group\s*\{[\s\S]*?flex-wrap:\s*nowrap;/);
   assert.match(channelsCss, /\.channel-table\s+\.ch-action-group\s*\{[\s\S]*?overflow-x:\s*auto;/);
+  assert.match(channelsCss, /\.channel-table\s+\.channel-refresh-result\s*\{[\s\S]*?width:\s*100%;/);
+  assert.match(channelsCss, /\.channel-table\s+\.channel-refresh-result__summary\s*\{[\s\S]*?white-space:\s*normal;/);
 });
 
 test('channels 页手机卡片对空统计块做折叠', () => {

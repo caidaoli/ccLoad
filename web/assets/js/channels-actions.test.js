@@ -56,6 +56,14 @@ test('渠道卡片模板把冷却标记放到操作列上方而不是名称列',
   assert.match(template, /<td class="ch-col-actions"[^>]*>\s*<div class="ch-actions-stack">\s*<div class="ch-action-statuses">\s*\{\{\{cooldownBadge\}\}\}\s*<\/div>\s*<div class="ch-action-group">/);
 });
 
+test('渠道卡片模板为批量模型刷新结果预留行内状态槽', () => {
+  const templateMatch = html.match(/<template id="tpl-channel-card">[\s\S]*?<\/template>/);
+  assert.ok(templateMatch, '缺少 tpl-channel-card 模板');
+
+  const template = templateMatch[0];
+  assert.match(template, /<div class="ch-refresh-result-slot">\s*\{\{\{batchRefreshStatusHtml\}\}\}\s*<\/div>/);
+});
+
 test('操作列把冷却标记固定到右上角，移动端再退回普通流式布局', () => {
   const actionsColumnStyle = css.match(/\.ch-col-actions\s*\{[^}]+\}/);
   assert.ok(actionsColumnStyle, '缺少 .ch-col-actions 样式');
@@ -101,6 +109,13 @@ test('启用列使用绿色和灰色开关样式', () => {
   const offStyle = css.match(/\.channel-enable-switch--off\s*\{[^}]+\}/);
   assert.ok(offStyle, '缺少开关关闭样式');
   assert.match(offStyle[0], /background:\s*#cbd5e1/);
+});
+
+test('批量模型刷新结果支持行内状态、失败详情和操作按钮样式', () => {
+  assert.match(css, /\.ch-refresh-result-slot\s*\{[\s\S]*?margin-top:\s*5px;/);
+  assert.match(css, /\.channel-refresh-result--failed\s*\{[\s\S]*?display:\s*block;[\s\S]*?width:\s*min\(100%,\s*420px\);/);
+  assert.match(css, /\.channel-refresh-result__detail\s+pre\s*\{[\s\S]*?max-height:\s*240px;[\s\S]*?overflow:\s*auto;/);
+  assert.match(css, /\.channel-refresh-result-action\s*\{[\s\S]*?white-space:\s*nowrap;/);
 });
 
 test('排序卡片模板保留 data-channel-id 但不再显示渠道 ID 文案', () => {
