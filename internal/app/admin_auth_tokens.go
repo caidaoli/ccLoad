@@ -138,6 +138,7 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 		AllowedModels     []string `json:"allowed_models"`      // 允许的模型列表，空表示无限制
 		AllowedChannelIDs []int64  `json:"allowed_channel_ids"` // 允许的渠道ID列表，空表示无限制
 		CostLimitUSD      *float64 `json:"cost_limit_usd"`      // 费用上限（0=无限制）
+		MaxConcurrency    *int     `json:"max_concurrency"`     // 最大并发请求数（0=无限制）
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -146,6 +147,10 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 	}
 	if req.CostLimitUSD != nil && *req.CostLimitUSD < 0 {
 		RespondErrorMsg(c, http.StatusBadRequest, "cost_limit_usd must be >= 0")
+		return
+	}
+	if req.MaxConcurrency != nil && *req.MaxConcurrency < 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "max_concurrency must be >= 0")
 		return
 	}
 
@@ -177,6 +182,9 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 	if req.CostLimitUSD != nil {
 		authToken.SetCostLimitUSD(*req.CostLimitUSD)
 	}
+	if req.MaxConcurrency != nil {
+		authToken.MaxConcurrency = *req.MaxConcurrency
+	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
@@ -204,6 +212,7 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 		"is_active":           authToken.IsActive,
 		"allowed_models":      authToken.AllowedModels,
 		"allowed_channel_ids": authToken.AllowedChannelIDs,
+		"max_concurrency":     authToken.MaxConcurrency,
 	})
 }
 
@@ -223,6 +232,7 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 		AllowedModels     *[]string `json:"allowed_models"`      // nil=不更新，空数组=清除限制
 		AllowedChannelIDs *[]int64  `json:"allowed_channel_ids"` // nil=不更新，空数组=清除限制
 		CostLimitUSD      *float64  `json:"cost_limit_usd"`      // 费用上限（0=无限制）
+		MaxConcurrency    *int      `json:"max_concurrency"`     // 最大并发请求数（0=无限制）
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -231,6 +241,10 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 	}
 	if req.CostLimitUSD != nil && *req.CostLimitUSD < 0 {
 		RespondErrorMsg(c, http.StatusBadRequest, "cost_limit_usd must be >= 0")
+		return
+	}
+	if req.MaxConcurrency != nil && *req.MaxConcurrency < 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "max_concurrency must be >= 0")
 		return
 	}
 
@@ -263,6 +277,9 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 	// cost_limit_usd 只有传入时才更新
 	if req.CostLimitUSD != nil {
 		token.SetCostLimitUSD(*req.CostLimitUSD)
+	}
+	if req.MaxConcurrency != nil {
+		token.MaxConcurrency = *req.MaxConcurrency
 	}
 
 	if err := s.store.UpdateAuthToken(ctx, token); err != nil {

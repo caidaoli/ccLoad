@@ -252,6 +252,7 @@
             <th class="tokens-table-head-center" title="${t('tokens.table.rpmTitle')}">${t('tokens.table.rpm')}</th>
             <th class="tokens-table-head-center">${t('tokens.table.tokenUsage')}</th>
             <th class="tokens-table-head-center">${t('tokens.table.totalCost')}</th>
+            <th class="tokens-table-head-center">${t('tokens.table.concurrency')}</th>
             <th class="tokens-table-head-center">${t('tokens.table.streamAvg')}</th>
             <th class="tokens-table-head-center">${t('tokens.table.nonStreamAvg')}</th>
             <th>${t('tokens.table.lastUsed')}</th>
@@ -314,6 +315,7 @@
       const rpmHtml = buildRpmHtml(token);
       const tokensHtml = buildTokensHtml(token);
       const costHtml = buildCostHtml(token.total_cost_usd, token.effective_cost_usd);
+      const concurrencyHtml = buildConcurrencyHtml(token.max_concurrency);
       const streamAvgHtml = buildResponseTimeHtml(token.stream_avg_ttfb, token.stream_count);
       const nonStreamAvgHtml = buildResponseTimeHtml(token.non_stream_avg_rt, token.non_stream_count);
       const costCellClass = token.total_cost_usd > 0 ? '' : 'mobile-empty-cell';
@@ -340,6 +342,7 @@
         tokensHtml: tokensHtml,
         costHtml: costHtml,
         costCellClass: costCellClass,
+        concurrencyHtml: concurrencyHtml,
         streamAvgHtml: streamAvgHtml,
         streamCellClass: streamCellClass,
         nonStreamAvgHtml: nonStreamAvgHtml,
@@ -352,6 +355,7 @@
         mobileLabelRpm: t('tokens.table.rpm'),
         mobileLabelTokenUsage: t('tokens.table.tokenUsage'),
         mobileLabelCost: t('tokens.table.totalCost'),
+        mobileLabelConcurrency: t('tokens.table.concurrency'),
         mobileLabelStream: t('tokens.table.streamAvg'),
         mobileLabelNonStream: t('tokens.table.nonStreamAvg'),
         mobileLabelLastUsed: t('tokens.table.lastUsed'),
@@ -481,6 +485,14 @@
       `;
     }
 
+    function buildConcurrencyHtml(maxConcurrency) {
+      const limit = Number(maxConcurrency) || 0;
+      if (limit <= 0) {
+        return '<span class="token-value-muted">∞</span>';
+      }
+      return `<span class="metric-value">${limit.toLocaleString()}</span>`;
+    }
+
     /**
      * 构建响应时间HTML
      */
@@ -527,6 +539,7 @@
       const rpmHtml = buildRpmHtml(token);
       const tokensHtml = buildTokensHtml(token);
       const costHtml = buildCostHtml(token.total_cost_usd, token.effective_cost_usd);
+      const concurrencyHtml = buildConcurrencyHtml(token.max_concurrency);
       const streamAvgHtml = buildResponseTimeHtml(token.stream_avg_ttfb, token.stream_count);
       const nonStreamAvgHtml = buildResponseTimeHtml(token.non_stream_avg_rt, token.non_stream_count);
       const costCellClass = token.total_cost_usd > 0 ? '' : ' mobile-empty-cell';
@@ -549,6 +562,7 @@
           <td class="tokens-col-rpm" data-mobile-label="${t('tokens.table.rpm')}">${rpmHtml}</td>
           <td class="tokens-col-token-usage" data-mobile-label="${t('tokens.table.tokenUsage')}">${tokensHtml}</td>
           <td class="tokens-col-cost${costCellClass}" data-mobile-label="${t('tokens.table.totalCost')}">${costHtml}</td>
+          <td class="tokens-col-concurrency" data-mobile-label="${t('tokens.table.concurrency')}">${concurrencyHtml}</td>
           <td class="tokens-col-stream${streamCellClass}" data-mobile-label="${t('tokens.table.streamAvg')}">${streamAvgHtml}</td>
           <td class="tokens-col-non-stream${nonStreamCellClass}" data-mobile-label="${t('tokens.table.nonStreamAvg')}">${nonStreamAvgHtml}</td>
           <td class="tokens-col-last-used" data-mobile-label="${t('tokens.table.lastUsed')}">${lastUsed}</td>
@@ -574,6 +588,7 @@
       document.getElementById('tokenDescription').value = '';
       document.getElementById('tokenExpiry').value = 'never';
       document.getElementById('tokenCostLimitUSD').value = 0;
+      document.getElementById('tokenMaxConcurrency').value = 0;
       document.getElementById('tokenActive').checked = true;
       document.getElementById('customExpiryContainer').style.display = 'none';
       document.getElementById('createModal').style.display = 'block';
@@ -607,8 +622,13 @@
       }
       const isActive = document.getElementById('tokenActive').checked;
       const costLimitUSD = parseFloat(document.getElementById('tokenCostLimitUSD').value) || 0;
+      const maxConcurrency = parseInt(document.getElementById('tokenMaxConcurrency').value, 10) || 0;
       if (costLimitUSD < 0) {
         window.showNotification(t('tokens.msg.costLimitNegative'), 'error');
+        return;
+      }
+      if (maxConcurrency < 0) {
+        window.showNotification(t('tokens.msg.maxConcurrencyNegative'), 'error');
         return;
       }
       try {
@@ -617,7 +637,7 @@
           headers: {
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify({ description, expires_at: expiresAt, is_active: isActive, cost_limit_usd: costLimitUSD })
+          body: JSON.stringify({ description, expires_at: expiresAt, is_active: isActive, cost_limit_usd: costLimitUSD, max_concurrency: maxConcurrency })
         });
 
         closeCreateModal();
@@ -676,6 +696,9 @@
       
       costUsedDisplay.textContent = costUsed > 0 ? `${t('tokens.costUsedPrefix')}: $${costUsed.toFixed(4)}` : '';
 
+      const maxConcurrencyInput = document.getElementById('editMaxConcurrency');
+      maxConcurrencyInput.value = token.max_concurrency || 0;
+
       // 初始化模型限制状态（2026-01新增）
       editAllowedModels = (token.allowed_models || []).slice();
       selectedAllowedModelIndices.clear();
@@ -712,6 +735,15 @@
       const isActive = document.getElementById('editTokenActive').checked;
       const expiryType = document.getElementById('editTokenExpiry').value;
       const costLimitUSD = parseFloat(document.getElementById('editCostLimitUSD').value) || 0;
+      const maxConcurrency = parseInt(document.getElementById('editMaxConcurrency').value, 10) || 0;
+      if (costLimitUSD < 0) {
+        window.showNotification(t('tokens.msg.costLimitNegative'), 'error');
+        return;
+      }
+      if (maxConcurrency < 0) {
+        window.showNotification(t('tokens.msg.maxConcurrencyNegative'), 'error');
+        return;
+      }
       let expiresAt = null;
       if (expiryType !== 'never') {
         if (expiryType === 'custom') {
@@ -738,7 +770,8 @@
             expires_at: expiresAt,
             allowed_channel_ids: editAllowedChannelIDs,
             allowed_models: editAllowedModels,  // 2026-01新增：模型限制
-            cost_limit_usd: costLimitUSD         // 2026-01新增：费用上限
+            cost_limit_usd: costLimitUSD,        // 2026-01新增：费用上限
+            max_concurrency: maxConcurrency      // 2026-04新增：并发上限
           })
         });
         closeEditModal();

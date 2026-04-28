@@ -42,6 +42,8 @@ type AuthService struct {
 	authTokenModels     map[string][]string       // Token哈希 → 允许的模型列表（2026-01新增）
 	authTokenChannels   map[string][]int64        // Token哈希 → 允许的渠道ID列表（2026-04新增）
 	authTokenCostLimits map[string]tokenCostLimit // Token哈希 → 费用限额状态（仅限额>0的令牌）
+	authTokenMaxConns   map[string]int            // Token哈希 → 最大并发请求数（0=无限制）
+	authTokenActiveReqs map[string]int            // Token哈希 → 当前进行中请求数
 	authTokensMux       sync.RWMutex              // 并发保护（支持热更新）
 
 	// 数据库依赖（用于热更新令牌）
@@ -84,6 +86,8 @@ func NewAuthService(
 		authTokenModels:     make(map[string][]string),
 		authTokenChannels:   make(map[string][]int64),
 		authTokenCostLimits: make(map[string]tokenCostLimit),
+		authTokenMaxConns:   make(map[string]int),
+		authTokenActiveReqs: make(map[string]int),
 		loginRateLimiter:    loginRateLimiter,
 		store:               store,
 		lastUsedCh:          make(chan string, 256), // 带缓冲，避免阻塞请求
@@ -347,12 +351,27 @@ func (s *AuthService) RequireAPIAuth() gin.HandlerFunc {
 			delete(s.authTokenModels, tokenHash)
 			delete(s.authTokenChannels, tokenHash)
 			delete(s.authTokenCostLimits, tokenHash)
+			delete(s.authTokenMaxConns, tokenHash)
 			s.authTokensMux.Unlock()
 
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "token expired"})
 			c.Abort()
 			return
 		}
+
+		releaseTokenSlot, activeConns, maxConns, acquired := s.acquireTokenConcurrencySlot(tokenHash)
+		if !acquired {
+			c.JSON(http.StatusTooManyRequests, gin.H{
+				"error": gin.H{
+					"message": fmt.Sprintf("Token concurrency limit exceeded: %d active of %d limit", activeConns, maxConns),
+					"type":    "rate_limit_error",
+					"code":    "token_concurrency_exceeded",
+				},
+			})
+			c.Abort()
+			return
+		}
+		defer releaseTokenSlot()
 
 		// 将tokenHash和tokenID存储到context，供后续统计使用（2025-11新增tokenHash, 2025-12新增tokenID）
 		c.Set("token_hash", tokenHash)
@@ -502,6 +521,7 @@ func (s *AuthService) ReloadAuthTokens() error {
 	newTokenModels := make(map[string][]string, len(tokens))
 	newTokenChannels := make(map[string][]int64, len(tokens))
 	newTokenCostLimits := make(map[string]tokenCostLimit, len(tokens))
+	newTokenMaxConns := make(map[string]int, len(tokens))
 	for _, t := range tokens {
 		// ExpiresAt: nil → 0 (永不过期), *int64 → Unix毫秒
 		var expiresAt int64
@@ -525,6 +545,9 @@ func (s *AuthService) ReloadAuthTokens() error {
 				limitMicroUSD: limitMicro,
 			}
 		}
+		if t.MaxConcurrency > 0 {
+			newTokenMaxConns[t.Token] = t.MaxConcurrency
+		}
 	}
 
 	// 原子替换（避免读写竞争）
@@ -534,6 +557,7 @@ func (s *AuthService) ReloadAuthTokens() error {
 	s.authTokenModels = newTokenModels
 	s.authTokenChannels = newTokenChannels
 	s.authTokenCostLimits = newTokenCostLimits
+	s.authTokenMaxConns = newTokenMaxConns
 	s.authTokensMux.Unlock()
 
 	return nil
@@ -628,6 +652,42 @@ func (s *AuthService) IsChannelAllowed(tokenHash string, channelID int64) bool {
 	}
 	_, ok := allowedSet[channelID]
 	return ok
+}
+
+func (s *AuthService) acquireTokenConcurrencySlot(tokenHash string) (release func(), active, limit int, ok bool) {
+	if tokenHash == "" {
+		return func() {}, 0, 0, true
+	}
+
+	s.authTokensMux.Lock()
+	limit = s.authTokenMaxConns[tokenHash]
+	if limit <= 0 {
+		s.authTokensMux.Unlock()
+		return func() {}, 0, 0, true
+	}
+
+	active = s.authTokenActiveReqs[tokenHash]
+	if active >= limit {
+		s.authTokensMux.Unlock()
+		return nil, active, limit, false
+	}
+
+	if s.authTokenActiveReqs == nil {
+		s.authTokenActiveReqs = make(map[string]int)
+	}
+	s.authTokenActiveReqs[tokenHash] = active + 1
+	s.authTokensMux.Unlock()
+
+	return func() {
+		s.authTokensMux.Lock()
+		current := s.authTokenActiveReqs[tokenHash]
+		if current <= 1 {
+			delete(s.authTokenActiveReqs, tokenHash)
+		} else {
+			s.authTokenActiveReqs[tokenHash] = current - 1
+		}
+		s.authTokensMux.Unlock()
+	}, active + 1, limit, true
 }
 
 // IsCostLimitExceeded 检查令牌是否超过费用限额（微美元，整数比较）

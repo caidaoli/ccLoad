@@ -155,6 +155,10 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureAuthTokensCostLimit(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate auth_tokens cost_limit: %w", err)
 			}
+			// 增量迁移：确保auth_tokens表有并发限制字段（2026-04新增）
+			if err := ensureAuthTokensMaxConcurrency(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate auth_tokens max_concurrency: %w", err)
+			}
 		}
 
 		// 增量迁移：channel_models表添加redirect_model字段，迁移数据后删除channels冗余字段
@@ -1715,6 +1719,19 @@ func ensureAuthTokensCostLimit(ctx context.Context, db *sql.DB, dialect Dialect)
 	return ensureSQLiteColumns(ctx, db, "auth_tokens", []sqliteColumnDef{
 		{name: "cost_used_microusd", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{name: "cost_limit_microusd", definition: "INTEGER NOT NULL DEFAULT 0"},
+	})
+}
+
+// ensureAuthTokensMaxConcurrency 确保auth_tokens表有令牌并发限制字段（2026-04新增）
+func ensureAuthTokensMaxConcurrency(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if dialect == DialectMySQL {
+		return ensureMySQLColumns(ctx, db, "auth_tokens", []mysqlColumnDef{
+			{name: "max_concurrency", definition: "INT NOT NULL DEFAULT 0"},
+		})
+	}
+
+	return ensureSQLiteColumns(ctx, db, "auth_tokens", []sqliteColumnDef{
+		{name: "max_concurrency", definition: "INTEGER NOT NULL DEFAULT 0"},
 	})
 }
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -197,6 +198,44 @@ func TestRequireAPIAuth_LastUsedUpdate(t *testing.T) {
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("expected tokenHash to be sent to lastUsedCh")
+	}
+}
+
+func TestRequireAPIAuth_TokenConcurrencyLimit(t *testing.T) {
+	t.Parallel()
+	svc := newTestAuthService(t)
+	injectAPIToken(svc, "limited-token", 0, 11)
+	injectAPIToken(svc, "other-token", 0, 12)
+
+	limitedHash := model.HashToken("limited-token")
+	otherHash := model.HashToken("other-token")
+	svc.authTokensMux.Lock()
+	svc.authTokenMaxConns[limitedHash] = 1
+	svc.authTokenMaxConns[otherHash] = 1
+	svc.authTokensMux.Unlock()
+
+	release, _, _, ok := svc.acquireTokenConcurrencySlot(limitedHash)
+	if !ok {
+		t.Fatal("expected manual slot acquisition to succeed")
+	}
+	defer release()
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Authorization", "Bearer limited-token")
+
+	w := runMiddleware(t, svc.RequireAPIAuth(), req)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "token_concurrency_exceeded") {
+		t.Fatalf("expected token_concurrency_exceeded in response: %s", w.Body.String())
+	}
+
+	otherReq := httptest.NewRequest(http.MethodGet, "/test", nil)
+	otherReq.Header.Set("Authorization", "Bearer other-token")
+	otherW := runMiddleware(t, svc.RequireAPIAuth(), otherReq)
+	if otherW.Code != http.StatusOK {
+		t.Fatalf("expected other token to pass, got %d: %s", otherW.Code, otherW.Body.String())
 	}
 }
 

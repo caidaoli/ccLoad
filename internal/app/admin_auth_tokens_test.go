@@ -44,6 +44,7 @@ func TestAdminAPI_CreateAuthToken_Basic(t *testing.T) {
 	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/auth-tokens", map[string]any{
 		"description":         "Test Token",
 		"allowed_channel_ids": []int64{3, 5},
+		"max_concurrency":     4,
 	}))
 
 	server.HandleCreateAuthToken(c)
@@ -58,6 +59,7 @@ func TestAdminAPI_CreateAuthToken_Basic(t *testing.T) {
 			ID                int64   `json:"id"`
 			Token             string  `json:"token"`
 			AllowedChannelIDs []int64 `json:"allowed_channel_ids"`
+			MaxConcurrency    int     `json:"max_concurrency"`
 		} `json:"data"`
 	}
 	mustUnmarshalJSON(t, w.Body.Bytes(), &response)
@@ -67,6 +69,9 @@ func TestAdminAPI_CreateAuthToken_Basic(t *testing.T) {
 	}
 	if len(response.Data.AllowedChannelIDs) != 2 || response.Data.AllowedChannelIDs[0] != 3 || response.Data.AllowedChannelIDs[1] != 5 {
 		t.Fatalf("allowed_channel_ids=%v, want [3 5]", response.Data.AllowedChannelIDs)
+	}
+	if response.Data.MaxConcurrency != 4 {
+		t.Fatalf("max_concurrency=%d, want 4", response.Data.MaxConcurrency)
 	}
 
 	ctx := context.Background()
@@ -81,6 +86,24 @@ func TestAdminAPI_CreateAuthToken_Basic(t *testing.T) {
 	}
 	if len(stored.AllowedChannelIDs) != 2 || stored.AllowedChannelIDs[0] != 3 || stored.AllowedChannelIDs[1] != 5 {
 		t.Fatalf("stored allowed_channel_ids=%v, want [3 5]", stored.AllowedChannelIDs)
+	}
+	if stored.MaxConcurrency != 4 {
+		t.Fatalf("stored max_concurrency=%d, want 4", stored.MaxConcurrency)
+	}
+}
+
+func TestAdminAPI_CreateAuthToken_NegativeMaxConcurrency(t *testing.T) {
+	server := newInMemoryServer(t)
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/auth-tokens", map[string]any{
+		"description":     "Test Token",
+		"max_concurrency": -1,
+	}))
+
+	server.HandleCreateAuthToken(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("Expected 400, got %d", w.Code)
 	}
 }
 

@@ -26,6 +26,7 @@ func TestAuthToken_CreateAndGet(t *testing.T) {
 		CostLimitMicroUSD: 1000000, // $1
 		AllowedModels:     []string{"gpt-4", "claude-3"},
 		AllowedChannelIDs: []int64{11, 22},
+		MaxConcurrency:    3,
 		CreatedAt:         time.Now(),
 	}
 	if err := store.CreateAuthToken(ctx, token); err != nil {
@@ -45,6 +46,9 @@ func TestAuthToken_CreateAndGet(t *testing.T) {
 	}
 	if len(got.AllowedChannelIDs) != 2 || got.AllowedChannelIDs[0] != 11 || got.AllowedChannelIDs[1] != 22 {
 		t.Fatalf("allowed_channel_ids: got %+v, want [11 22]", got.AllowedChannelIDs)
+	}
+	if got.MaxConcurrency != 3 {
+		t.Fatalf("max_concurrency: got %d, want 3", got.MaxConcurrency)
 	}
 
 	// 通过 Token 值获取
@@ -219,6 +223,7 @@ func TestAuthToken_Update(t *testing.T) {
 	token.IsActive = false
 	token.CostLimitMicroUSD = 5000000 // $5
 	token.AllowedChannelIDs = []int64{33}
+	token.MaxConcurrency = 2
 
 	if err := store.UpdateAuthToken(ctx, token); err != nil {
 		t.Fatalf("update auth token: %v", err)
@@ -240,6 +245,9 @@ func TestAuthToken_Update(t *testing.T) {
 	}
 	if len(got.AllowedChannelIDs) != 1 || got.AllowedChannelIDs[0] != 33 {
 		t.Fatalf("allowed_channel_ids: got %+v, want [33]", got.AllowedChannelIDs)
+	}
+	if got.MaxConcurrency != 2 {
+		t.Fatalf("max_concurrency: got %d, want 2", got.MaxConcurrency)
 	}
 }
 

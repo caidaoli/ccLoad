@@ -5,6 +5,7 @@ const path = require('node:path');
 
 const html = fs.readFileSync(path.join(__dirname, '..', '..', 'tokens.html'), 'utf8');
 const script = fs.readFileSync(path.join(__dirname, 'tokens.js'), 'utf8');
+const css = fs.readFileSync(path.join(__dirname, '..', 'css', 'tokens.css'), 'utf8');
 test('tokens 页静态控件不再使用 HTML 内联事件', () => {
   assert.doesNotMatch(html, /\s(?:onclick|onchange|oninput)=/);
 });
@@ -30,6 +31,24 @@ test('tokens 页静态控件改为 data-action/data-change-action/data-input-act
   assert.match(html, /data-action="close-model-import-modal"/);
   assert.match(html, /data-input-action="update-model-import-preview"/);
   assert.match(html, /data-action="confirm-model-import"/);
+});
+
+test('tokens 页费用和并发上限常驻说明 0 表示无限制', () => {
+  assert.match(html, /data-i18n="tokens\.zeroUnlimitedHint">0 表示无限制<\/span>/);
+  assert.equal((html.match(/data-i18n="tokens\.zeroUnlimitedHint"/g) || []).length, 4);
+  assert.match(html, /id="tokenCostLimitUSD"[\s\S]*?class="token-limit-hint token-limit-hint--inline"[\s\S]*?id="tokenMaxConcurrency"[\s\S]*?class="token-limit-hint token-limit-hint--inline"/);
+  assert.match(html, /id="editCostLimitUSD"[\s\S]*?class="token-limit-hint token-limit-hint--inline"[\s\S]*?id="editMaxConcurrency"[\s\S]*?class="token-limit-hint token-limit-hint--inline"/);
+});
+
+test('tokens 页费用和并发上限输入框使用一致前缀槽位保持对齐', () => {
+  assert.equal((html.match(/class="token-limit-prefix-slot token-limit-prefix-slot--empty"/g) || []).length, 2);
+  assert.match(html, /id="tokenCostLimitUSD"[\s\S]*?id="tokenMaxConcurrency"/);
+  assert.match(html, /token-cost-prefix token-limit-prefix-slot/);
+  assert.match(html, /token-edit-cost-prefix token-limit-prefix-slot/);
+  assert.match(css, /\.form-row-inline:has\(>\s*\.token-limit-control\)\s*\{[\s\S]*?align-items:\s*flex-start;/);
+  assert.match(css, /\.form-row-inline:has\(>\s*\.token-limit-control\)\s*>\s*\.form-row-inline__label\s*\{[\s\S]*?min-height:\s*36px;/);
+  assert.match(css, /\.token-limit-input-line\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*14px\s+minmax\(0,\s*1fr\)\s+max-content;/);
+  assert.match(css, /\.token-limit-hint--inline\s*\{[\s\S]*?flex:\s*0\s+0\s+auto;/);
 });
 
 test('tokens.js 通过委托处理页面控件和动态 allowed-model 行', () => {

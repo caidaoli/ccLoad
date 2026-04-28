@@ -134,3 +134,38 @@ func TestAuthService_CostLimit(t *testing.T) {
 		t.Fatalf("t1 after add: got (%d,%d,%v), want (110,100,true)", used, limit, exceeded)
 	}
 }
+
+func TestAuthService_AcquireTokenConcurrencySlot(t *testing.T) {
+	t.Parallel()
+
+	s := &AuthService{
+		authTokenMaxConns: map[string]int{
+			"limited": 1,
+		},
+		authTokenActiveReqs: make(map[string]int),
+	}
+
+	release, active, limit, ok := s.acquireTokenConcurrencySlot("unlimited")
+	if !ok || active != 0 || limit != 0 {
+		t.Fatalf("unlimited got active=%d limit=%d ok=%v, want 0,0,true", active, limit, ok)
+	}
+	release()
+
+	release, active, limit, ok = s.acquireTokenConcurrencySlot("limited")
+	if !ok || active != 1 || limit != 1 {
+		t.Fatalf("first acquire got active=%d limit=%d ok=%v, want 1,1,true", active, limit, ok)
+	}
+
+	_, active, limit, ok = s.acquireTokenConcurrencySlot("limited")
+	if ok || active != 1 || limit != 1 {
+		t.Fatalf("second acquire got active=%d limit=%d ok=%v, want 1,1,false", active, limit, ok)
+	}
+
+	release()
+
+	release, active, limit, ok = s.acquireTokenConcurrencySlot("limited")
+	if !ok || active != 1 || limit != 1 {
+		t.Fatalf("after release got active=%d limit=%d ok=%v, want 1,1,true", active, limit, ok)
+	}
+	release()
+}
