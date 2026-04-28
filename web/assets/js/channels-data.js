@@ -116,6 +116,10 @@ function aggregateChannelStats(statsEntries = [], channelHealth = null) {
         totalCacheCreationInputTokens: 0,
         totalCost: 0,
         effectiveCost: 0,
+        lastSuccessAt: 0,
+        lastRequestAt: 0,
+        lastRequestStatus: null,
+        lastRequestMessage: '',
         _firstByteWeightedSum: 0,
         _firstByteWeight: 0,
         _durationWeightedSum: 0,
@@ -153,6 +157,20 @@ function aggregateChannelStats(statsEntries = [], channelHealth = null) {
     stats.effectiveCost += (entry.effective_cost !== undefined && entry.effective_cost !== null)
       ? toSafeNumber(entry.effective_cost)
       : toSafeNumber(entry.total_cost);
+
+    const lastSuccessAt = toTimestampMs(entry.last_success_at ?? entry.lastSuccessAt);
+    if (lastSuccessAt > stats.lastSuccessAt) {
+      stats.lastSuccessAt = lastSuccessAt;
+    }
+
+    const lastRequestAt = toTimestampMs(entry.last_request_at ?? entry.lastRequestAt);
+    if (lastRequestAt > stats.lastRequestAt) {
+      stats.lastRequestAt = lastRequestAt;
+      stats.lastRequestStatus = Number.isFinite(Number(entry.last_request_status ?? entry.lastRequestStatus))
+        ? Number(entry.last_request_status ?? entry.lastRequestStatus)
+        : null;
+      stats.lastRequestMessage = entry.last_request_message || entry.lastRequestMessage || '';
+    }
   }
 
   for (const id of Object.keys(result)) {
@@ -182,6 +200,12 @@ function aggregateChannelStats(statsEntries = [], channelHealth = null) {
 function toSafeNumber(value) {
   const num = Number(value);
   return Number.isFinite(num) ? num : 0;
+}
+
+function toTimestampMs(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) return 0;
+  return num < 1e12 ? num * 1000 : num;
 }
 
 // 加载默认测试内容（从系统设置）

@@ -59,3 +59,40 @@ test('channels 筛选下拉记录渠道名和模型是否精确命中选项', ()
   assert.match(channelsFiltersSource, /filters\.modelExact\s*=\s*isExactChannelModelFilter\(value\);/);
   assert.match(channelsFiltersSource, /filters\.searchExact\s*=\s*!isAllToken && isExactChannelNameFilter\(raw\);/);
 });
+
+test('渠道统计聚合会按渠道取最新成功和最新请求信息', () => {
+  const { aggregateChannelStats } = loadChannelsDataHarness({
+    search: '',
+    searchExact: false,
+    status: 'all',
+    model: 'all',
+    modelExact: false
+  });
+
+  const result = aggregateChannelStats([
+    {
+      channel_id: 7,
+      model: 'gpt-4o',
+      success: 1,
+      total: 1,
+      last_success_at: 1700000000000,
+      last_request_at: 1700000000000,
+      last_request_status: 200,
+      last_request_message: 'ok'
+    },
+    {
+      channel_id: 7,
+      model: 'gpt-4.1',
+      error: 1,
+      total: 1,
+      last_request_at: 1700000060000,
+      last_request_status: 429,
+      last_request_message: 'rate limit'
+    }
+  ]);
+
+  assert.equal(result[7].lastSuccessAt, 1700000000000);
+  assert.equal(result[7].lastRequestAt, 1700000060000);
+  assert.equal(result[7].lastRequestStatus, 429);
+  assert.equal(result[7].lastRequestMessage, 'rate limit');
+});

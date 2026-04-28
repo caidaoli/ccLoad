@@ -31,6 +31,7 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 				AVG(CASE WHEN duration > 0 THEN duration ELSE NULL END),
 				3
 			) as avg_duration,
+			MAX(CASE WHEN status_code >= 200 AND status_code < 300 THEN time ELSE NULL END) AS last_success_at,
 			SUM(COALESCE(input_tokens, 0)) as total_input_tokens,
 			SUM(COALESCE(output_tokens, 0)) as total_output_tokens,
 			SUM(COALESCE(cache_read_input_tokens, 0)) as total_cache_read_input_tokens,
@@ -75,11 +76,13 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 	for rows.Next() {
 		var entry model.StatsEntry
 		var avgFirstByteTime, avgDuration sql.NullFloat64
+		var lastSuccessAt sql.NullInt64
 		var totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheCreationTokens sql.NullInt64
 		var totalCost, effectiveCost sql.NullFloat64
 
 		err := rows.Scan(&entry.ChannelID, &entry.Model,
 			&entry.Success, &entry.Error, &entry.Total, &avgFirstByteTime, &avgDuration,
+			&lastSuccessAt,
 			&totalInputTokens, &totalOutputTokens, &totalCacheReadTokens, &totalCacheCreationTokens, &totalCost, &effectiveCost)
 		if err != nil {
 			return nil, err
@@ -90,6 +93,9 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 		}
 		if avgDuration.Valid {
 			entry.AvgDurationSeconds = &avgDuration.Float64
+		}
+		if lastSuccessAt.Valid && lastSuccessAt.Int64 > 0 {
+			entry.LastSuccessAt = &lastSuccessAt.Int64
 		}
 
 		// 填充token统计字段（仅当有值时）
@@ -149,6 +155,12 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 		}
 	}
 
+	if len(stats) > 0 {
+		if err := s.fillStatsLastRequests(ctx, stats, startTime, endTime, filter); err != nil {
+			log.Printf("[WARN] 查询渠道最近请求失败: %v", err)
+		}
+	}
+
 	// 计算每个channel_id+model的RPM统计
 	if len(stats) > 0 {
 		if err := s.fillStatsRPM(ctx, stats, startTime, endTime, filter, isToday); err != nil {
@@ -158,6 +170,94 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 	}
 
 	return stats, nil
+}
+
+type statsRequestKey struct {
+	channelID int
+	model     string
+}
+
+func (s *SQLStore) fillStatsLastRequests(ctx context.Context, stats []model.StatsEntry, startTime, endTime time.Time, filter *model.LogFilter) error {
+	entryIndexes := make(map[statsRequestKey]int, len(stats))
+	for i := range stats {
+		if stats[i].ChannelID == nil {
+			continue
+		}
+		key := statsRequestKey{channelID: *stats[i].ChannelID, model: stats[i].Model}
+		entryIndexes[key] = i
+	}
+	if len(entryIndexes) == 0 {
+		return nil
+	}
+
+	baseQuery := `
+		SELECT
+			channel_id,
+			model,
+			time,
+			status_code,
+			message
+		FROM (
+			SELECT
+				channel_id,
+				COALESCE(model, '') AS model,
+				time,
+				status_code,
+				message,
+				ROW_NUMBER() OVER (
+					PARTITION BY channel_id, COALESCE(model, '')
+					ORDER BY time DESC, id DESC
+				) AS rn
+			FROM logs`
+
+	qb := NewQueryBuilder(baseQuery).
+		Where("time >= ?", startTime.UnixMilli()).
+		Where("time <= ?", endTime.UnixMilli()).
+		Where("channel_id > 0").
+		Where("status_code != 499")
+
+	_, isEmpty, err := s.applyChannelFilter(ctx, qb, filter)
+	if err != nil {
+		return err
+	}
+	if isEmpty {
+		return nil
+	}
+	qb.ApplyFilter(filter)
+
+	query, args := qb.BuildWithSuffix(") ranked WHERE rn = 1")
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var channelID int
+		var modelName string
+		var requestAt int64
+		var status int
+		var message string
+		if err := rows.Scan(&channelID, &modelName, &requestAt, &status, &message); err != nil {
+			return err
+		}
+		if requestAt <= 0 {
+			continue
+		}
+		key := statsRequestKey{channelID: channelID, model: modelName}
+		idx, ok := entryIndexes[key]
+		if !ok {
+			continue
+		}
+		stats[idx].LastRequestAt = &requestAt
+		stats[idx].LastRequestStatus = &status
+		stats[idx].LastRequestMessage = message
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // GetStatsLite 轻量版统计查询，跳过RPM计算和渠道名称填充
