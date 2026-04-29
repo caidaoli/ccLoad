@@ -431,7 +431,7 @@ function formatChannelRelativeTime(timestampMs, nowMs = Date.now()) {
 
 function buildChannelLastSuccessHtml(stats) {
   if (!stats) {
-    return `<div class="ch-last-status ch-last-status--empty">${escapeChannelRefreshText(window.t('channels.lastSuccess.noRequests'))}</div>`;
+    return '';
   }
 
   const lastSuccessAt = Number(stats.lastSuccessAt || 0);
@@ -447,7 +447,7 @@ function buildChannelLastSuccessHtml(stats) {
     return `<div class="ch-last-status ch-last-status--empty">${escapeChannelRefreshText(window.t('channels.lastSuccess.never'))}</div>`;
   }
 
-  return `<div class="ch-last-status ch-last-status--empty">${escapeChannelRefreshText(window.t('channels.lastSuccess.noRequests'))}</div>`;
+  return '';
 }
 
 function buildChannelLastRequestFailureHtml(stats) {
