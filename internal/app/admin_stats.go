@@ -443,14 +443,7 @@ func (s *Server) fillHealthTimeline(ctx context.Context, stats []model.StatsEntr
 		SinceMs:  sinceMs,
 		UntilMs:  untilMs,
 		BucketMs: bucketMs,
-	}
-	if filter != nil {
-		if filter.ChannelID != nil && *filter.ChannelID > 0 {
-			params.ChannelID = filter.ChannelID
-		}
-		if filter.Model != "" {
-			params.Model = filter.Model
-		}
+		Filter:   filter,
 	}
 
 	rows, err := s.store.GetHealthTimeline(ctx, params)

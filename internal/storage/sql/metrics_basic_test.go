@@ -229,6 +229,7 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 	_ = tx.Rollback()
 	hlRows, err := ss.GetHealthTimeline(ctx, model.HealthTimelineParams{
 		SinceMs: 0, UntilMs: time.Now().UnixMilli(), BucketMs: 60000,
+		Filter: &model.LogFilter{LogSource: model.LogSourceAll},
 	})
 	if err != nil {
 		t.Fatalf("GetHealthTimeline failed: %v", err)
@@ -238,6 +239,84 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 	// CleanupLogsBefore：删除所有日志
 	if err := store.CleanupLogsBefore(ctx, time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("CleanupLogsBefore failed: %v", err)
+	}
+}
+
+func TestGetHealthTimeline_AppliesFullStatsFilter(t *testing.T) {
+	store := newTestStore(t, "health_timeline_full_filter.db")
+	ctx := context.Background()
+
+	openaiCfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:        "openai-main",
+		URL:         "https://example.com",
+		Priority:    10,
+		Enabled:     true,
+		ChannelType: "openai",
+		ModelEntries: []model.ModelEntry{
+			{Model: "gpt-4o"},
+			{Model: "gpt-4.1"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig openai failed: %v", err)
+	}
+	anthCfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:        "anthropic-main",
+		URL:         "https://example.com",
+		Priority:    20,
+		Enabled:     true,
+		ChannelType: "anthropic",
+		ModelEntries: []model.ModelEntry{
+			{Model: "claude-3-5-sonnet"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig anthropic failed: %v", err)
+	}
+
+	now := time.Now().Truncate(time.Millisecond)
+	authTokenID := int64(77)
+	otherAuthTokenID := int64(88)
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
+		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", StatusCode: 200, AuthTokenID: authTokenID, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4.1", StatusCode: 200, AuthTokenID: authTokenID, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", StatusCode: 200, AuthTokenID: otherAuthTokenID, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: anthCfg.ID, Model: "gpt-4o", StatusCode: 200, AuthTokenID: authTokenID, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", StatusCode: 200, AuthTokenID: authTokenID, LogSource: model.LogSourceManualTest},
+	}); err != nil {
+		t.Fatalf("BatchAddLogs failed: %v", err)
+	}
+
+	ss := store.(*sqlstore.SQLStore)
+	rows, err := ss.GetHealthTimeline(ctx, model.HealthTimelineParams{
+		SinceMs:  now.Add(-time.Minute).UnixMilli(),
+		UntilMs:  now.Add(time.Minute).UnixMilli(),
+		BucketMs: 60_000,
+		Filter: &model.LogFilter{
+			ChannelType:     "openai",
+			ChannelNameLike: "main",
+			ModelLike:       "gpt-4",
+			AuthTokenID:     &authTokenID,
+			LogSource:       model.LogSourceProxy,
+		},
+	})
+	if err != nil {
+		t.Fatalf("GetHealthTimeline failed: %v", err)
+	}
+
+	if len(rows) != 2 {
+		t.Fatalf("GetHealthTimeline rows=%+v, want exactly two filtered openai/gpt-4 proxy rows for token %d", rows, authTokenID)
+	}
+	for _, row := range rows {
+		if int64(row.ChannelID) != openaiCfg.ID {
+			t.Fatalf("row channel_id=%d, want %d", row.ChannelID, openaiCfg.ID)
+		}
+		if row.Model != "gpt-4o" && row.Model != "gpt-4.1" {
+			t.Fatalf("row model=%q, want gpt-4o or gpt-4.1", row.Model)
+		}
+		if row.Success != 1 || row.ErrorCount != 0 {
+			t.Fatalf("row counts=%+v, want one success and no errors", row)
+		}
 	}
 }
 

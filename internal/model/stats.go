@@ -99,11 +99,10 @@ type RPMStats struct {
 
 // HealthTimelineParams 健康时间线查询参数
 type HealthTimelineParams struct {
-	SinceMs   int64  // 起始时间（毫秒）
-	UntilMs   int64  // 结束时间（毫秒）
-	BucketMs  int64  // 时间桶大小（毫秒）
-	ChannelID *int64 // 可选：按渠道ID过滤
-	Model     string // 可选：按模型名称过滤
+	SinceMs  int64      // 起始时间（毫秒）
+	UntilMs  int64      // 结束时间（毫秒）
+	BucketMs int64      // 时间桶大小（毫秒）
+	Filter   *LogFilter // 复用日志筛选条件，避免 stats 页和时间线查询口径漂移
 }
 
 // HealthTimelineRow 健康时间线数据行

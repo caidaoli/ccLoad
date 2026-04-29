@@ -155,6 +155,7 @@ func DefineLogsTable() *TableBuilder {
 		Index("idx_logs_time_status", "time, status_code").
 		Index("idx_logs_time_channel_model", "time, channel_id, model").
 		Index("idx_logs_minute_channel_model", "minute_bucket, channel_id, model").
+		Index("idx_logs_minute_auth_token_status", "minute_bucket, auth_token_id, status_code").
 		Index("idx_logs_channel_time_id", "channel_id, time, id").
 		Index("idx_logs_channel_model_time_id", "channel_id, model, time, id").
 		Index("idx_logs_time_auth_token", "time, auth_token_id"). // 按时间+令牌查询
