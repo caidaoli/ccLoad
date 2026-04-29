@@ -409,7 +409,12 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 	}
 
 	apiKeys, err := s.store.GetAPIKeys(c.Request.Context(), id)
-	if err != nil || len(apiKeys) == 0 {
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	requestAPIKey := strings.TrimSpace(testReq.APIKey)
+	if len(apiKeys) == 0 && requestAPIKey == "" {
 		RespondJSON(c, http.StatusOK, gin.H{
 			"success": false,
 			"error":   "渠道未配置有效的 API Key",
@@ -418,11 +423,17 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 	}
 
 	keyIndex := testReq.KeyIndex
-	if keyIndex < 0 || keyIndex >= len(apiKeys) {
-		keyIndex = 0
+	selectedKey := requestAPIKey
+	updatePersistedCooldown := false
+	if selectedKey != "" {
+		updatePersistedCooldown = keyIndex >= 0 && keyIndex < len(apiKeys) && apiKeys[keyIndex].APIKey == selectedKey
+	} else {
+		if keyIndex < 0 || keyIndex >= len(apiKeys) {
+			keyIndex = 0
+		}
+		selectedKey = apiKeys[keyIndex].APIKey
+		updatePersistedCooldown = true
 	}
-
-	selectedKey := apiKeys[keyIndex].APIKey
 
 	if !cfg.SupportsModel(testReq.Model) {
 		RespondJSON(c, http.StatusOK, gin.H{
@@ -435,7 +446,7 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 	}
 
 	requestedModel := testReq.Model
-	testResult := s.executeChannelTest(c.Request.Context(), cfg, keyIndex, selectedKey, &testReq)
+	testResult := s.executeChannelTestWithCooldown(c.Request.Context(), cfg, keyIndex, selectedKey, &testReq, updatePersistedCooldown)
 	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualTest, requestedModel, testReq.Model, selectedKey, c.ClientIP(), 0, testResult))
 	testResult["tested_key_index"] = keyIndex
 	testResult["total_keys"] = len(apiKeys)
@@ -444,15 +455,26 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 }
 
 func (s *Server) executeChannelTest(ctx context.Context, cfg *model.Config, keyIndex int, apiKey string, testReq *testutil.TestChannelRequest) map[string]any {
+	return s.executeChannelTestWithCooldown(ctx, cfg, keyIndex, apiKey, testReq, true)
+}
+
+func (s *Server) executeChannelTestWithCooldown(ctx context.Context, cfg *model.Config, keyIndex int, apiKey string, testReq *testutil.TestChannelRequest, updatePersistedCooldown bool) map[string]any {
 	result := s.testChannelAPI(ctx, cfg, apiKey, testReq)
 	if success, ok := result["success"].(bool); ok && success {
-		if err := s.store.ResetKeyCooldown(ctx, cfg.ID, keyIndex); err != nil {
-			log.Printf("[WARN] 清除Key #%d冷却状态失败: %v", keyIndex, err)
+		if updatePersistedCooldown {
+			if err := s.store.ResetKeyCooldown(ctx, cfg.ID, keyIndex); err != nil {
+				log.Printf("[WARN] 清除Key #%d冷却状态失败: %v", keyIndex, err)
+			}
+			if err := s.store.ResetChannelCooldown(ctx, cfg.ID); err != nil {
+				log.Printf("[WARN] 清除渠道冷却状态失败: %v", err)
+			}
+			s.invalidateChannelRelatedCache(cfg.ID)
 		}
-		if err := s.store.ResetChannelCooldown(ctx, cfg.ID); err != nil {
-			log.Printf("[WARN] 清除渠道冷却状态失败: %v", err)
-		}
-		s.invalidateChannelRelatedCache(cfg.ID)
+		return result
+	}
+
+	if !updatePersistedCooldown {
+		result["cooldown_action"] = "request_key_no_cooldown"
 		return result
 	}
 
