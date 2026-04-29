@@ -191,6 +191,7 @@ func TestHybridStore_WrapperCoverage(t *testing.T) {
 	}
 	rows, err := h.GetHealthTimeline(ctx, model.HealthTimelineParams{
 		SinceMs: 0, UntilMs: now.UnixMilli(), BucketMs: 60000,
+		Filter: &model.LogFilter{LogSource: model.LogSourceAll},
 	})
 	if err != nil {
 		t.Fatalf("GetHealthTimeline failed: %v", err)

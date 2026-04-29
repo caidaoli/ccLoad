@@ -209,40 +209,9 @@ func (s *SQLStore) fillStatsLastSuccesses(ctx context.Context, stats []model.Sta
 		return nil
 	}
 
-	baseQuery := `
-		SELECT
-			channel_id,
-			time,
-			id
-		FROM (
-			SELECT
-				channel_id,
-				time,
-				id,
-				ROW_NUMBER() OVER (
-					PARTITION BY channel_id
-					ORDER BY time DESC, id DESC
-				) AS rn
-			FROM logs`
-
-	qb := NewQueryBuilder(baseQuery).
-		Where("channel_id > 0").
-		Where("status_code >= 200").
-		Where("status_code < 300")
-	applyStatsChannelScope(qb, entryIndexesByChannel)
-
 	lastStateFilter := cloneLogFilterWithoutStatusCode(filter)
 
-	_, isEmpty, err := s.applyChannelFilter(ctx, qb, lastStateFilter)
-	if err != nil {
-		return err
-	}
-	if isEmpty {
-		return nil
-	}
-	qb.ApplyFilter(lastStateFilter)
-
-	query, args := qb.BuildWithSuffix(") ranked WHERE rn = 1")
+	query, args := buildLatestChannelSuccessQuery(entryIndexesByChannel, lastStateFilter)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return err
@@ -288,42 +257,9 @@ func (s *SQLStore) fillStatsLastSuccessesByEntry(ctx context.Context, stats []mo
 		return nil
 	}
 
-	baseQuery := `
-		SELECT
-			channel_id,
-			model,
-			time,
-			id
-		FROM (
-			SELECT
-				channel_id,
-				COALESCE(model, '') AS model,
-				time,
-				id,
-				ROW_NUMBER() OVER (
-					PARTITION BY channel_id, COALESCE(model, '')
-					ORDER BY time DESC, id DESC
-				) AS rn
-			FROM logs`
-
-	qb := NewQueryBuilder(baseQuery).
-		Where("channel_id > 0").
-		Where("status_code >= 200").
-		Where("status_code < 300")
-	applyStatsEntryScope(qb, entryIndexes)
-
 	lastStateFilter := cloneLogFilterWithoutStatusCode(filter)
 
-	_, isEmpty, err := s.applyChannelFilter(ctx, qb, lastStateFilter)
-	if err != nil {
-		return err
-	}
-	if isEmpty {
-		return nil
-	}
-	qb.ApplyFilter(lastStateFilter)
-
-	query, args := qb.BuildWithSuffix(") ranked WHERE rn = 1")
+	query, args := buildLatestEntrySuccessQuery(entryIndexes, lastStateFilter)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return err
@@ -375,43 +311,9 @@ func (s *SQLStore) fillStatsLastRequests(ctx context.Context, stats []model.Stat
 		return nil
 	}
 
-	baseQuery := `
-		SELECT
-			channel_id,
-			time,
-			id,
-			status_code,
-			message
-		FROM (
-			SELECT
-				channel_id,
-				time,
-				id,
-				status_code,
-				message,
-				ROW_NUMBER() OVER (
-					PARTITION BY channel_id
-					ORDER BY time DESC, id DESC
-				) AS rn
-			FROM logs`
-
-	qb := NewQueryBuilder(baseQuery).
-		Where("channel_id > 0").
-		Where("status_code != 499")
-	applyStatsChannelScope(qb, entryIndexesByChannel)
-
 	lastStateFilter := cloneLogFilterWithoutStatusCode(filter)
 
-	_, isEmpty, err := s.applyChannelFilter(ctx, qb, lastStateFilter)
-	if err != nil {
-		return err
-	}
-	if isEmpty {
-		return nil
-	}
-	qb.ApplyFilter(lastStateFilter)
-
-	query, args := qb.BuildWithSuffix(") ranked WHERE rn = 1")
+	query, args := buildLatestChannelRequestQuery(entryIndexesByChannel, lastStateFilter)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return err
@@ -462,45 +364,9 @@ func (s *SQLStore) fillStatsLastRequestsByEntry(ctx context.Context, stats []mod
 		return nil
 	}
 
-	baseQuery := `
-		SELECT
-			channel_id,
-			model,
-			time,
-			id,
-			status_code,
-			message
-		FROM (
-			SELECT
-				channel_id,
-				COALESCE(model, '') AS model,
-				time,
-				id,
-				status_code,
-				message,
-				ROW_NUMBER() OVER (
-					PARTITION BY channel_id, COALESCE(model, '')
-					ORDER BY time DESC, id DESC
-				) AS rn
-			FROM logs`
-
-	qb := NewQueryBuilder(baseQuery).
-		Where("channel_id > 0").
-		Where("status_code != 499")
-	applyStatsEntryScope(qb, entryIndexes)
-
 	lastStateFilter := cloneLogFilterWithoutStatusCode(filter)
 
-	_, isEmpty, err := s.applyChannelFilter(ctx, qb, lastStateFilter)
-	if err != nil {
-		return err
-	}
-	if isEmpty {
-		return nil
-	}
-	qb.ApplyFilter(lastStateFilter)
-
-	query, args := qb.BuildWithSuffix(") ranked WHERE rn = 1")
+	query, args := buildLatestEntryRequestQuery(entryIndexes, lastStateFilter)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return err
@@ -543,61 +409,118 @@ func hasStatsModelFilter(filter *model.LogFilter) bool {
 	return filter != nil && (filter.Model != "" || filter.ModelLike != "")
 }
 
-func applyStatsChannelScope(qb *QueryBuilder, entryIndexesByChannel map[int][]int) {
-	if len(entryIndexesByChannel) == 0 {
-		return
-	}
+func buildLatestChannelSuccessQuery(entryIndexesByChannel map[int][]int, filter *model.LogFilter) (string, []any) {
+	return buildLatestChannelLogQuery(entryIndexesByChannel, filter, []string{"l.time", "l.id"}, func(qb *QueryBuilder) {
+		qb.Where("status_code >= 200").
+			Where("status_code < 300")
+	})
+}
 
+func buildLatestChannelRequestQuery(entryIndexesByChannel map[int][]int, filter *model.LogFilter) (string, []any) {
+	return buildLatestChannelLogQuery(entryIndexesByChannel, filter, []string{"l.time", "l.id", "l.status_code", "l.message"}, func(qb *QueryBuilder) {
+		qb.Where("status_code != 499")
+	})
+}
+
+func buildLatestEntrySuccessQuery(entryIndexes map[statsRequestKey]int, filter *model.LogFilter) (string, []any) {
+	return buildLatestEntryLogQuery(entryIndexes, filter, []string{"l.time", "l.id"}, func(qb *QueryBuilder) {
+		qb.Where("status_code >= 200").
+			Where("status_code < 300")
+	})
+}
+
+func buildLatestEntryRequestQuery(entryIndexes map[statsRequestKey]int, filter *model.LogFilter) (string, []any) {
+	return buildLatestEntryLogQuery(entryIndexes, filter, []string{"l.time", "l.id", "l.status_code", "l.message"}, func(qb *QueryBuilder) {
+		qb.Where("status_code != 499")
+	})
+}
+
+func buildLatestChannelLogQuery(entryIndexesByChannel map[int][]int, filter *model.LogFilter, selectColumns []string, applyStatePredicate func(*QueryBuilder)) (string, []any) {
+	scopeSQL, scopeArgs := buildChannelScope(entryIndexesByChannel)
+
+	subQB := NewQueryBuilder("SELECT id FROM logs").
+		Where("channel_id = scope.channel_id").
+		Where("channel_id > 0")
+	applyStatePredicate(subQB)
+	subQB.ApplyFilter(filter)
+	subQuery, subArgs := subQB.BuildWithSuffix("ORDER BY time DESC, id DESC LIMIT 1")
+
+	query := fmt.Sprintf(`
+		SELECT scope.channel_id, %s
+		FROM (%s) scope
+		JOIN logs l ON l.id = (%s)`, strings.Join(selectColumns, ", "), scopeSQL, subQuery)
+
+	args := make([]any, 0, len(scopeArgs)+len(subArgs))
+	args = append(args, scopeArgs...)
+	args = append(args, subArgs...)
+	return query, args
+}
+
+func buildLatestEntryLogQuery(entryIndexes map[statsRequestKey]int, filter *model.LogFilter, selectColumns []string, applyStatePredicate func(*QueryBuilder)) (string, []any) {
+	scopeSQL, scopeArgs := buildEntryScope(entryIndexes)
+
+	subQB := NewQueryBuilder("SELECT id FROM logs").
+		Where("channel_id = scope.channel_id").
+		Where("COALESCE(model, '') = scope.model").
+		Where("channel_id > 0")
+	applyStatePredicate(subQB)
+	subQB.ApplyFilter(filter)
+	subQuery, subArgs := subQB.BuildWithSuffix("ORDER BY time DESC, id DESC LIMIT 1")
+
+	query := fmt.Sprintf(`
+		SELECT scope.channel_id, scope.model, %s
+		FROM (%s) scope
+		JOIN logs l ON l.id = (%s)`, strings.Join(selectColumns, ", "), scopeSQL, subQuery)
+
+	args := make([]any, 0, len(scopeArgs)+len(subArgs))
+	args = append(args, scopeArgs...)
+	args = append(args, subArgs...)
+	return query, args
+}
+
+func buildChannelScope(entryIndexesByChannel map[int][]int) (string, []any) {
 	channelIDs := make([]int, 0, len(entryIndexesByChannel))
 	for channelID := range entryIndexesByChannel {
 		channelIDs = append(channelIDs, channelID)
 	}
 	sort.Ints(channelIDs)
 
+	selects := make([]string, 0, len(channelIDs))
 	args := make([]any, 0, len(channelIDs))
-	for _, channelID := range channelIDs {
+	for i, channelID := range channelIDs {
+		if i == 0 {
+			selects = append(selects, "SELECT ? AS channel_id")
+		} else {
+			selects = append(selects, "SELECT ?")
+		}
 		args = append(args, channelID)
 	}
-	qb.WhereIn("channel_id", args)
+	return strings.Join(selects, " UNION ALL "), args
 }
 
-func applyStatsEntryScope(qb *QueryBuilder, entryIndexes map[statsRequestKey]int) {
-	if len(entryIndexes) == 0 {
-		return
-	}
-
-	modelsByChannel := make(map[int]map[string]struct{}, len(entryIndexes))
-	channelIDs := make([]int, 0, len(entryIndexes))
+func buildEntryScope(entryIndexes map[statsRequestKey]int) (string, []any) {
+	keys := make([]statsRequestKey, 0, len(entryIndexes))
 	for key := range entryIndexes {
-		if _, exists := modelsByChannel[key.channelID]; !exists {
-			modelsByChannel[key.channelID] = make(map[string]struct{})
-			channelIDs = append(channelIDs, key.channelID)
-		}
-		modelsByChannel[key.channelID][key.model] = struct{}{}
+		keys = append(keys, key)
 	}
-	sort.Ints(channelIDs)
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].channelID != keys[j].channelID {
+			return keys[i].channelID < keys[j].channelID
+		}
+		return keys[i].model < keys[j].model
+	})
 
-	var groups []string
+	selects := make([]string, 0, len(keys))
 	args := make([]any, 0, len(entryIndexes)*2)
-	for _, channelID := range channelIDs {
-		modelSet := modelsByChannel[channelID]
-		models := make([]string, 0, len(modelSet))
-		for modelName := range modelSet {
-			models = append(models, modelName)
+	for i, key := range keys {
+		if i == 0 {
+			selects = append(selects, "SELECT ? AS channel_id, ? AS model")
+		} else {
+			selects = append(selects, "SELECT ?, ?")
 		}
-		sort.Strings(models)
-		placeholders := make([]string, len(models))
-		for i := range models {
-			placeholders[i] = "?"
-		}
-		groups = append(groups, fmt.Sprintf("(channel_id = ? AND COALESCE(model, '') IN (%s))", strings.Join(placeholders, ",")))
-		args = append(args, channelID)
-		for _, modelName := range models {
-			args = append(args, modelName)
-		}
+		args = append(args, key.channelID, key.model)
 	}
-
-	qb.Where("("+strings.Join(groups, " OR ")+")", args...)
+	return strings.Join(selects, " UNION ALL "), args
 }
 
 // GetStatsLite 轻量版统计查询，跳过RPM计算和渠道名称填充

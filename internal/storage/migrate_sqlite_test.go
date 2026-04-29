@@ -713,7 +713,7 @@ func TestEnsureLogsNewColumns_SQLite(t *testing.T) {
 	}
 }
 
-func TestMigrate_SQLite_LogsLatestStateIndexes(t *testing.T) {
+func TestMigrate_SQLite_LogsHotPathIndexes(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 
@@ -721,7 +721,7 @@ func TestMigrate_SQLite_LogsLatestStateIndexes(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	for _, idx := range []string{"idx_logs_channel_time_id", "idx_logs_channel_model_time_id"} {
+	for _, idx := range []string{"idx_logs_channel_time_id", "idx_logs_channel_model_time_id", "idx_logs_minute_auth_token_status"} {
 		var name string
 		if err := db.QueryRowContext(ctx,
 			"SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='logs' AND name=?", idx,

@@ -23,38 +23,41 @@ type SQLStore struct {
 // GetHealthTimeline 查询健康时间线数据
 // SQL 构建封装在存储层内部，业务层只传结构化参数
 func (s *SQLStore) GetHealthTimeline(ctx context.Context, params model.HealthTimelineParams) ([]model.HealthTimelineRow, error) {
-	query := `
+	baseQuery := `
 		SELECT
-			FLOOR(logs.time / ?) * ? AS bucket_ts,
-			logs.channel_id,
-			COALESCE(logs.model, '') AS model,
-			SUM(CASE WHEN logs.status_code >= 200 AND logs.status_code < 300 THEN 1 ELSE 0 END) AS success,
-			SUM(CASE WHEN (logs.status_code < 200 OR logs.status_code >= 300) AND logs.status_code != 499 THEN 1 ELSE 0 END) AS error,
-			COALESCE(AVG(CASE WHEN logs.first_byte_time > 0 AND logs.status_code >= 200 AND logs.status_code < 300 THEN logs.first_byte_time ELSE NULL END), 0) AS avg_first_byte_time,
-			COALESCE(AVG(CASE WHEN logs.duration > 0 AND logs.status_code >= 200 AND logs.status_code < 300 THEN logs.duration ELSE NULL END), 0) AS avg_duration,
-			SUM(COALESCE(logs.input_tokens, 0)) AS input_tokens,
-			SUM(COALESCE(logs.output_tokens, 0)) AS output_tokens,
-			SUM(COALESCE(logs.cache_read_input_tokens, 0)) AS cache_read_tokens,
-			SUM(COALESCE(logs.cache_creation_input_tokens, 0)) AS cache_creation_tokens,
-			SUM(COALESCE(logs.cost, 0.0)) AS total_cost,
-			SUM(COALESCE(logs.cost, 0.0) * COALESCE(logs.cost_multiplier, 1)) AS effective_cost
+			FLOOR(time / ?) * ? AS bucket_ts,
+			channel_id,
+			COALESCE(model, '') AS model,
+			SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success,
+			SUM(CASE WHEN (status_code < 200 OR status_code >= 300) AND status_code != 499 THEN 1 ELSE 0 END) AS error,
+			COALESCE(AVG(CASE WHEN first_byte_time > 0 AND status_code >= 200 AND status_code < 300 THEN first_byte_time ELSE NULL END), 0) AS avg_first_byte_time,
+			COALESCE(AVG(CASE WHEN duration > 0 AND status_code >= 200 AND status_code < 300 THEN duration ELSE NULL END), 0) AS avg_duration,
+			SUM(COALESCE(input_tokens, 0)) AS input_tokens,
+			SUM(COALESCE(output_tokens, 0)) AS output_tokens,
+			SUM(COALESCE(cache_read_input_tokens, 0)) AS cache_read_tokens,
+			SUM(COALESCE(cache_creation_input_tokens, 0)) AS cache_creation_tokens,
+			SUM(COALESCE(cost, 0.0)) AS total_cost,
+			SUM(COALESCE(cost, 0.0) * COALESCE(cost_multiplier, 1)) AS effective_cost
 		FROM logs
-		WHERE logs.time >= ? AND logs.time <= ?
-			AND logs.status_code != 499
-			AND logs.channel_id > 0
 	`
-	args := []any{params.BucketMs, params.BucketMs, params.SinceMs, params.UntilMs}
 
-	if params.ChannelID != nil && *params.ChannelID > 0 {
-		query += " AND logs.channel_id = ?"
-		args = append(args, *params.ChannelID)
-	}
-	if params.Model != "" {
-		query += " AND logs.model = ?"
-		args = append(args, params.Model)
-	}
+	qb := NewQueryBuilder(baseQuery).
+		Where("time >= ?", params.SinceMs).
+		Where("time <= ?", params.UntilMs).
+		Where("status_code != 499").
+		Where("channel_id > 0")
 
-	query += " GROUP BY bucket_ts, logs.channel_id, logs.model ORDER BY bucket_ts ASC"
+	_, isEmpty, err := s.applyChannelFilter(ctx, qb, params.Filter)
+	if err != nil {
+		return nil, fmt.Errorf("resolve health timeline channel filter: %w", err)
+	}
+	if isEmpty {
+		return []model.HealthTimelineRow{}, nil
+	}
+	qb.ApplyFilter(params.Filter)
+
+	query, args := qb.BuildWithSuffix("GROUP BY bucket_ts, channel_id, model ORDER BY bucket_ts ASC")
+	args = append([]any{params.BucketMs, params.BucketMs}, args...)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
