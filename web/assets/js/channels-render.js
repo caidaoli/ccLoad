@@ -664,6 +664,17 @@ function initChannelEventDelegation() {
         break;
     }
   });
+
+  // 点击 details 外部时自动关闭（仅注册一次）
+  if (!document._chLastRequestDetailListener) {
+    document._chLastRequestDetailListener = true;
+    document.addEventListener('click', (e) => {
+      if (e.target.closest('.ch-last-request__detail')) return;
+      document.querySelectorAll('.ch-last-request__detail[open]').forEach((d) => {
+        d.removeAttribute('open');
+      });
+    }, true);
+  }
 }
 
 function renderChannels(channelsToRender = channels) {
