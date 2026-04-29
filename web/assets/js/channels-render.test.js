@@ -232,7 +232,7 @@ test('buildChannelLastSuccessHtml 在没有成功时间时显示占位文字', (
   assert.doesNotMatch(html, /失败 429/);
 });
 
-test('buildChannelLastSuccessHtml 在没有任何请求时显示暂无请求', () => {
+test('buildChannelLastSuccessHtml 在没有任何请求时返回空字符串', () => {
   const { buildChannelLastSuccessHtml } = loadRenderHelpers();
 
   const html = buildChannelLastSuccessHtml({
@@ -241,8 +241,7 @@ test('buildChannelLastSuccessHtml 在没有任何请求时显示暂无请求', (
     lastRequestStatus: null
   });
 
-  assert.match(html, /ch-last-status--empty/);
-  assert.match(html, />暂无请求</);
+  assert.strictEqual(html, '');
 });
 
 test('initChannelEventDelegation 允许表头全选 checkbox 触发可见渠道批量选择', () => {
@@ -445,6 +444,18 @@ test('createChannelCard 会把批量模型刷新结果渲染到渠道行状态�
   assert.match(cardData.batchRefreshStatusHtml, /已更新/);
   assert.match(cardData.batchRefreshStatusHtml, /获取 12，移除 3，总计 12/);
   assert.doesNotMatch(cardData.batchRefreshStatusHtml, /已更新：获取 12，移除 3，总计 12/);
+});
+
+test('未知批量模型刷新状态不会中断行内渲染', () => {
+  const { buildBatchRefreshStatusHtml } = loadRenderHelpers();
+
+  const html = buildBatchRefreshStatusHtml({
+    channelID: '23',
+    status: 'queued'
+  });
+
+  assert.match(html, /channel-refresh-result--queued/);
+  assert.match(html, /<span class="channel-refresh-result__summary" title=""><\/span>/);
 });
 
 test('clearAllBatchRefreshResults 会清空所有批量模型刷新结果并同步移除行内展示', () => {
