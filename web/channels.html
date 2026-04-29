@@ -382,6 +382,7 @@
                 </tbody>
               </table>
             </div>
+            <div id="channelDuplicateHint" class="channel-duplicate-hint" hidden role="status" aria-live="polite"></div>
           </div>
         </div>
 
@@ -1122,7 +1123,9 @@
             <div class="ch-name-main">{{{typeBadge}}}<strong>{{name}}</strong>{{{protocolTransformBadges}}}</div>
           </div>
           <div class="ch-url-line" title="{{url}}">{{url}}</div>
+          <div class="ch-refresh-result-slot">{{{batchRefreshStatusHtml}}}</div>
           {{{healthHtml}}}
+          <div class="ch-last-request-slot">{{{lastRequestFailureHtml}}}</div>
           {{{nameMultiplierBadge}}}
         </div>
       </td>
@@ -1135,6 +1138,14 @@
       <td class="ch-col-duration {{durationCellClass}}" data-mobile-label="{{mobileLabelDuration}}">{{{durationHtml}}}</td>
       <td class="ch-col-usage {{usageCellClass}}" data-mobile-label="{{mobileLabelUsage}}">{{{usageHtml}}}</td>
       <td class="ch-col-cost {{costCellClass}}" data-mobile-label="{{mobileLabelCost}}">{{{costHtml}}}</td>
+      <td class="ch-col-last-success" data-mobile-label="{{mobileLabelLastSuccess}}">{{{lastSuccessHtml}}}</td>
+      <td class="ch-col-enabled" data-mobile-label="{{mobileLabelEnabled}}">
+        <button class="channel-enable-switch channel-action-btn {{toggleSwitchClass}}" data-action="toggle"
+          data-channel-id="{{id}}" data-enabled="{{enabled}}" role="switch" aria-checked="{{enabled}}"
+          title="{{toggleTitle}}" aria-label="{{toggleTitle}}">
+          <span class="channel-enable-switch__knob" aria-hidden="true"></span>
+        </button>
+      </td>
       <td class="ch-col-actions" data-mobile-label="{{mobileLabelActions}}">
         <div class="ch-actions-stack">
           <div class="ch-action-statuses">{{{cooldownBadge}}}</div>
@@ -1147,8 +1158,6 @@
               data-channel-name="{{name}}" data-i18n-title="channels.testApiKey" title="测试API Key" aria-label="测试API Key">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M13 2L4 14H11L9 22L20 10H13L13 2Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
-            <button class="btn-icon channel-action-btn" data-action="toggle" data-channel-id="{{id}}"
-              data-enabled="{{enabled}}" title="{{toggleTitle}}" aria-label="{{toggleTitle}}">{{{toggleIconHtml}}}</button>
             <button class="btn-icon channel-action-btn" data-action="copy" data-channel-id="{{id}}"
               data-channel-name="{{name}}" data-i18n-title="channels.copyChannelTitle" title="复制渠道" aria-label="复制渠道">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><rect x="9" y="9" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4C2.9 15 2 14.1 2 13V4C2 2.9 2.9 2 4 2H13C14.1 2 15 2.9 15 4V5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
