@@ -713,6 +713,24 @@ func TestEnsureLogsNewColumns_SQLite(t *testing.T) {
 	}
 }
 
+func TestMigrate_SQLite_LogsLatestStateIndexes(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	for _, idx := range []string{"idx_logs_channel_time_id", "idx_logs_channel_model_time_id"} {
+		var name string
+		if err := db.QueryRowContext(ctx,
+			"SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='logs' AND name=?", idx,
+		).Scan(&name); err != nil {
+			t.Fatalf("logs index %s not found: %v", idx, err)
+		}
+	}
+}
+
 func TestEnsureAuthTokensCacheFields_SQLite(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
