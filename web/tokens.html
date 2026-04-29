@@ -89,9 +89,23 @@
 
         <div class="form-group form-row-inline">
           <label class="form-label form-row-inline__label" data-i18n="tokens.costLimitLabel">费用上限</label>
-          <div class="form-row-inline__content">
-            <span class="token-cost-prefix">$</span>
-            <input type="number" id="tokenCostLimitUSD" class="form-input field-grow" min="0" step="0.01" data-i18n-placeholder="tokens.costLimitPlaceholder" placeholder="0 表示无限制">
+          <div class="form-row-inline__content token-limit-control">
+            <div class="token-limit-input-line">
+              <span class="token-cost-prefix token-limit-prefix-slot">$</span>
+              <input type="number" id="tokenCostLimitUSD" class="form-input field-grow" min="0" step="0.01" data-i18n-placeholder="tokens.costLimitPlaceholder" placeholder="0 表示无限制">
+              <span class="token-limit-hint token-limit-hint--inline" data-i18n="tokens.zeroUnlimitedHint">0 表示无限制</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-group form-row-inline">
+          <label class="form-label form-row-inline__label" data-i18n="tokens.maxConcurrencyLabel">并发上限</label>
+          <div class="form-row-inline__content token-limit-control">
+            <div class="token-limit-input-line">
+              <span class="token-limit-prefix-slot token-limit-prefix-slot--empty" aria-hidden="true"></span>
+              <input type="number" id="tokenMaxConcurrency" class="form-input field-grow" min="0" step="1" data-i18n-placeholder="tokens.maxConcurrencyPlaceholder" placeholder="0 表示无限制">
+              <span class="token-limit-hint token-limit-hint--inline" data-i18n="tokens.zeroUnlimitedHint">0 表示无限制</span>
+            </div>
           </div>
         </div>
 
@@ -182,10 +196,27 @@
 
             <div class="form-group form-row-inline token-edit-field token-edit-field--cost">
               <label class="form-label form-row-inline__label" data-i18n="tokens.costLimitLabel">费用上限</label>
-              <div class="form-row-inline__content token-edit-cost-row">
-                <span class="token-edit-cost-prefix">$</span>
-                <input type="number" id="editCostLimitUSD" class="form-input field-grow" min="0" step="0.01" data-i18n-placeholder="tokens.costLimitPlaceholder" placeholder="0 表示无限制">
-                <span id="editCostUsedDisplay" class="token-edit-cost-used"></span>
+              <div class="form-row-inline__content token-limit-control token-edit-cost-control">
+                <div class="token-limit-input-line token-edit-cost-row">
+                  <span class="token-edit-cost-prefix token-limit-prefix-slot">$</span>
+                  <input type="number" id="editCostLimitUSD" class="form-input field-grow" min="0" step="0.01" data-i18n-placeholder="tokens.costLimitPlaceholder" placeholder="0 表示无限制">
+                  <span class="token-limit-hint token-limit-hint--inline" data-i18n="tokens.zeroUnlimitedHint">0 表示无限制</span>
+                </div>
+                <div class="token-limit-meta token-edit-cost-meta">
+                  <span class="token-limit-prefix-slot token-limit-prefix-slot--empty" aria-hidden="true"></span>
+                  <span id="editCostUsedDisplay" class="token-edit-cost-used"></span>
+                </div>
+              </div>
+            </div>
+
+            <div class="form-group form-row-inline token-edit-field token-edit-field--concurrency">
+              <label class="form-label form-row-inline__label" data-i18n="tokens.maxConcurrencyLabel">并发上限</label>
+              <div class="form-row-inline__content token-limit-control">
+                <div class="token-limit-input-line">
+                  <span class="token-limit-prefix-slot token-limit-prefix-slot--empty" aria-hidden="true"></span>
+                  <input type="number" id="editMaxConcurrency" class="form-input field-grow" min="0" step="1" data-i18n-placeholder="tokens.maxConcurrencyPlaceholder" placeholder="0 表示无限制">
+                  <span class="token-limit-hint token-limit-hint--inline" data-i18n="tokens.zeroUnlimitedHint">0 表示无限制</span>
+                </div>
               </div>
             </div>
 
@@ -399,6 +430,7 @@
       <td class="tokens-col-rpm" data-mobile-label="{{mobileLabelRpm}}">{{{rpmHtml}}}</td>
       <td class="tokens-col-token-usage" data-mobile-label="{{mobileLabelTokenUsage}}">{{{tokensHtml}}}</td>
       <td class="tokens-col-cost {{costCellClass}}" data-mobile-label="{{mobileLabelCost}}">{{{costHtml}}}</td>
+      <td class="tokens-col-concurrency" data-mobile-label="{{mobileLabelConcurrency}}">{{{concurrencyHtml}}}</td>
       <td class="tokens-col-stream {{streamCellClass}}" data-mobile-label="{{mobileLabelStream}}">{{{streamAvgHtml}}}</td>
       <td class="tokens-col-non-stream {{nonStreamCellClass}}" data-mobile-label="{{mobileLabelNonStream}}">{{{nonStreamAvgHtml}}}</td>
       <td class="tokens-col-last-used" data-mobile-label="{{mobileLabelLastUsed}}">{{lastUsed}}</td>

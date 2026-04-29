@@ -155,6 +155,14 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureAuthTokensCostLimit(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate auth_tokens cost_limit: %w", err)
 			}
+			// 增量迁移：确保auth_tokens表有并发限制字段（2026-04新增）
+			if err := ensureAuthTokensMaxConcurrency(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate auth_tokens max_concurrency: %w", err)
+			}
+			// 启动期校验：拒绝脏数据静默放宽为无限并发
+			if err := validateAuthTokensMaxConcurrency(ctx, db); err != nil {
+				return fmt.Errorf("validate auth_tokens max_concurrency: %w", err)
+			}
 		}
 
 		// 增量迁移：channel_models表添加redirect_model字段，迁移数据后删除channels冗余字段
@@ -1716,6 +1724,44 @@ func ensureAuthTokensCostLimit(ctx context.Context, db *sql.DB, dialect Dialect)
 		{name: "cost_used_microusd", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{name: "cost_limit_microusd", definition: "INTEGER NOT NULL DEFAULT 0"},
 	})
+}
+
+// ensureAuthTokensMaxConcurrency 确保auth_tokens表有令牌并发限制字段（2026-04新增）
+func ensureAuthTokensMaxConcurrency(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if dialect == DialectMySQL {
+		return ensureMySQLColumns(ctx, db, "auth_tokens", []mysqlColumnDef{
+			{name: "max_concurrency", definition: "INT NOT NULL DEFAULT 0"},
+		})
+	}
+
+	return ensureSQLiteColumns(ctx, db, "auth_tokens", []sqliteColumnDef{
+		{name: "max_concurrency", definition: "INTEGER NOT NULL DEFAULT 0"},
+	})
+}
+
+func validateAuthTokensMaxConcurrency(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, "SELECT id, max_concurrency FROM auth_tokens WHERE max_concurrency < 0")
+	if err != nil {
+		return fmt.Errorf("query auth_tokens.max_concurrency: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var id int64
+		var maxConcurrency int64
+		if err := rows.Scan(&id, &maxConcurrency); err != nil {
+			return fmt.Errorf("scan auth_tokens.max_concurrency: %w", err)
+		}
+		return fmt.Errorf(
+			"auth_tokens.max_concurrency must be >= 0: id=%d max_concurrency=%d (fix: UPDATE auth_tokens SET max_concurrency=0 WHERE id=%d)",
+			id, maxConcurrency, id,
+		)
+	}
+
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate auth_tokens.max_concurrency: %w", err)
+	}
+	return nil
 }
 
 // rebuildDebugLogsPrimaryKey 将 debug_logs 旧结构（id 自增主键 + log_id 列）

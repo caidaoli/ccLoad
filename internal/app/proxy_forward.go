@@ -760,6 +760,9 @@ func (s *Server) handleResponse(
 			}
 			if firstBodyReadTimeSec == 0 {
 				firstBodyReadTimeSec = reqCtx.Duration().Seconds()
+				if firstBodyReadTimeSec == 0 {
+					firstBodyReadTimeSec = time.Nanosecond.Seconds()
+				}
 			}
 			if reqCtx.isStreaming && observer != nil && observer.OnFirstByteRead != nil {
 				observer.OnFirstByteRead()

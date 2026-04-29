@@ -91,6 +91,7 @@ func TestAuthToken_MarshalJSON_ExposesCostFields(t *testing.T) {
 		CostLimitMicroUSD: 2_000_000,
 		AllowedModels:     []string{"gpt-4"},
 		AllowedChannelIDs: []int64{11, 22},
+		MaxConcurrency:    3,
 	}
 
 	b, err := json.Marshal(token)
@@ -102,6 +103,7 @@ func TestAuthToken_MarshalJSON_ExposesCostFields(t *testing.T) {
 		CostUsedUSD      float64 `json:"cost_used_usd"`
 		CostLimitUSD     float64 `json:"cost_limit_usd"`
 		AllowedChannelID []int64 `json:"allowed_channel_ids"`
+		MaxConcurrency   int     `json:"max_concurrency"`
 	}
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatalf("Unmarshal failed: %v", err)
@@ -115,5 +117,8 @@ func TestAuthToken_MarshalJSON_ExposesCostFields(t *testing.T) {
 	}
 	if len(got.AllowedChannelID) != 2 || got.AllowedChannelID[0] != 11 || got.AllowedChannelID[1] != 22 {
 		t.Fatalf("allowed_channel_ids = %#v, want [11 22]", got.AllowedChannelID)
+	}
+	if got.MaxConcurrency != 3 {
+		t.Fatalf("max_concurrency = %#v, want 3", got.MaxConcurrency)
 	}
 }

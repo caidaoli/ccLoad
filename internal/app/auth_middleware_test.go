@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"ccLoad/internal/model"
+
+	"github.com/gin-gonic/gin"
 )
 
 // ============================================================================
@@ -198,6 +201,92 @@ func TestRequireAPIAuth_LastUsedUpdate(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("expected tokenHash to be sent to lastUsedCh")
 	}
+}
+
+func TestRequireAPIAuth_TokenConcurrencyLimit(t *testing.T) {
+	t.Parallel()
+	svc := newTestAuthService(t)
+	injectAPIToken(svc, "limited-token", 0, 11)
+	injectAPIToken(svc, "other-token", 0, 12)
+
+	limitedHash := model.HashToken("limited-token")
+	otherHash := model.HashToken("other-token")
+	svc.authTokensMux.Lock()
+	svc.authTokenMaxConns[limitedHash] = 1
+	svc.authTokenMaxConns[otherHash] = 1
+	svc.authTokensMux.Unlock()
+
+	release, _, _, ok := svc.acquireTokenConcurrencySlot(limitedHash)
+	if !ok {
+		t.Fatal("expected manual slot acquisition to succeed")
+	}
+	defer release()
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Authorization", "Bearer limited-token")
+
+	w := runMiddleware(t, svc.RequireAPIAuth(), req)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "token_concurrency_exceeded") {
+		t.Fatalf("expected token_concurrency_exceeded in response: %s", w.Body.String())
+	}
+
+	otherReq := httptest.NewRequest(http.MethodGet, "/test", nil)
+	otherReq.Header.Set("Authorization", "Bearer other-token")
+	otherW := runMiddleware(t, svc.RequireAPIAuth(), otherReq)
+	if otherW.Code != http.StatusOK {
+		t.Fatalf("expected other token to pass, got %d: %s", otherW.Code, otherW.Body.String())
+	}
+}
+
+func TestRequireAPIAuth_TokenConcurrencyLimit_AppliesImmediatelyAfterUpdate(t *testing.T) {
+	t.Parallel()
+
+	svc := newTestAuthService(t)
+	injectAPIToken(svc, "dynamic-token", 0, 21)
+	tokenHash := model.HashToken("dynamic-token")
+
+	gin.SetMode(gin.TestMode)
+	started := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	firstDone := make(chan struct{})
+	firstW := httptest.NewRecorder()
+	_, engine := gin.CreateTestContext(firstW)
+	engine.Any("/test", svc.RequireAPIAuth(), func(c *gin.Context) {
+		close(started)
+		<-releaseHandler
+		c.JSON(http.StatusOK, gin.H{"passed": true})
+	})
+
+	firstReq := httptest.NewRequest(http.MethodGet, "/test", nil)
+	firstReq.Header.Set("Authorization", "Bearer dynamic-token")
+	go func() {
+		defer close(firstDone)
+		engine.ServeHTTP(firstW, firstReq)
+	}()
+
+	<-started
+
+	svc.authTokensMux.Lock()
+	svc.authTokenMaxConns[tokenHash] = 1
+	svc.authTokensMux.Unlock()
+
+	secondReq := httptest.NewRequest(http.MethodGet, "/test", nil)
+	secondReq.Header.Set("Authorization", "Bearer dynamic-token")
+	secondW := httptest.NewRecorder()
+	engine.ServeHTTP(secondW, secondReq)
+
+	if secondW.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 after enabling limit, got %d: %s", secondW.Code, secondW.Body.String())
+	}
+	if !strings.Contains(secondW.Body.String(), "token_concurrency_exceeded") {
+		t.Fatalf("expected token_concurrency_exceeded in response: %s", secondW.Body.String())
+	}
+
+	close(releaseHandler)
+	<-firstDone
 }
 
 // ============================================================================
