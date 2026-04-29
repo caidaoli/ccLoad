@@ -429,10 +429,10 @@ function createHarness({
     setInlineURLs(urls) {
       sandbox.inlineURLTableData = Array.isArray(urls) ? urls.slice() : [];
     },
-    runTimers() {
+    async runTimers() {
       const callbacks = Array.from(timers.values());
       timers.clear();
-      callbacks.forEach((callback) => callback());
+      await Promise.all(callbacks.map((callback) => callback()));
     },
     async changeChannelType(nextType) {
       const target = getRadio('channelType', nextType);
@@ -580,7 +580,7 @@ test('重复渠道提前提示会忽略调度前未完成的旧检测结果', as
   assert.equal(harness.elements.channelDuplicateHint.hidden, true);
   assert.equal(harness.elements.channelDuplicateHint.textContent, '');
 
-  harness.runTimers();
+  const currentRefresh = harness.runTimers();
   assert.equal(harness.fetchCalls.length, 2);
 
   currentResult.resolve({
@@ -589,9 +589,7 @@ test('重复渠道提前提示会忽略调度前未完成的旧检测结果', as
       duplicates: [{ name: 'current-channel', channel_type: 'anthropic', url: 'https://current.example.com' }]
     }
   });
-  for (let i = 0; i < 4; i++) {
-    await Promise.resolve();
-  }
+  await currentRefresh;
 
   assert.equal(harness.elements.channelDuplicateHint.hidden, false);
   assert.match(harness.elements.channelDuplicateHint.textContent, /current-channel/);
@@ -620,7 +618,7 @@ test('复制渠道会按复制后的 URL 触发重复渠道提前检测', async 
   });
 
   await harness.api.copyChannel(7, 'source-channel');
-  harness.runTimers();
+  await harness.runTimers();
 
   const duplicateCall = harness.fetchCalls.find((call) => call.path === '/admin/channels/check-duplicate');
   assert.ok(duplicateCall);

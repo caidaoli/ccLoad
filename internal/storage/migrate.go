@@ -1746,7 +1746,7 @@ func validateAuthTokensMaxConcurrency(ctx context.Context, db *sql.DB) error {
 	}
 	defer func() { _ = rows.Close() }()
 
-	for rows.Next() {
+	if rows.Next() {
 		var id int64
 		var maxConcurrency int64
 		if err := rows.Scan(&id, &maxConcurrency); err != nil {
