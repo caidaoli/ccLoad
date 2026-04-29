@@ -307,7 +307,7 @@ func TestMetrics_LastSuccessAndLastFailedRequest(t *testing.T) {
 	t.Fatalf("stats missing channel %d model gpt-4o: %+v", cfg.ID, stats)
 }
 
-func TestMetrics_LastRequestIDsExposeTieBreakForFrontEndAggregation(t *testing.T) {
+func TestMetrics_ChannelLevelLastRequestIDsExposeTieBreakForFrontEndAggregation(t *testing.T) {
 	store := newTestStore(t, "metrics_last_request_ids.db")
 	ctx := context.Background()
 
@@ -347,14 +347,20 @@ func TestMetrics_LastRequestIDsExposeTieBreakForFrontEndAggregation(t *testing.T
 		if e.LastRequestID == nil || *e.LastRequestID <= 0 {
 			t.Fatalf("model %s LastRequestID=%v, want positive id", e.Model, e.LastRequestID)
 		}
+		if e.LastRequestStatus == nil || *e.LastRequestStatus != 500 {
+			t.Fatalf("model %s LastRequestStatus=%v, want channel latest status 500", e.Model, e.LastRequestStatus)
+		}
+		if e.LastRequestMessage != "fail-b" {
+			t.Fatalf("model %s LastRequestMessage=%q, want channel latest message fail-b", e.Model, e.LastRequestMessage)
+		}
 		idsByModel[e.Model] = *e.LastRequestID
 	}
 
 	if len(idsByModel) != 2 {
 		t.Fatalf("idsByModel=%v, want 2 models", idsByModel)
 	}
-	if idsByModel["gpt-4.1"] <= idsByModel["gpt-4o"] {
-		t.Fatalf("want gpt-4.1 id > gpt-4o id for same-millisecond tie-break, got %+v", idsByModel)
+	if idsByModel["gpt-4.1"] != idsByModel["gpt-4o"] {
+		t.Fatalf("want channel-level latest request id shared across entries, got %+v", idsByModel)
 	}
 }
 
@@ -462,6 +468,120 @@ func TestMetrics_LastRequestAtIgnoresCurrentRange(t *testing.T) {
 	}
 
 	t.Fatalf("stats missing channel %d model gpt-4o: %+v", cfg.ID, stats)
+}
+
+func TestMetrics_LastStateIsChannelLevelWithoutModelFilter(t *testing.T) {
+	store := newTestStore(t, "metrics_last_state_channel_level.db")
+	ctx := context.Background()
+
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:        "channel-level-state",
+		URL:         "https://example.com",
+		Priority:    10,
+		Enabled:     true,
+		ChannelType: "openai",
+		ModelEntries: []model.ModelEntry{
+			{Model: "model-a"},
+			{Model: "model-b"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	now := time.Now().Truncate(time.Millisecond)
+	inRangeFailedAt := now.Add(-3 * time.Hour)
+	latestSuccessAt := now.Add(-1 * time.Hour)
+
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
+		{Time: model.JSONTime{Time: inRangeFailedAt}, ChannelID: cfg.ID, Model: "model-b", StatusCode: 500, Message: "model b failed in range", LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: latestSuccessAt}, ChannelID: cfg.ID, Model: "model-a", StatusCode: 200, Message: "model a recovered after range", LogSource: model.LogSourceProxy},
+	}); err != nil {
+		t.Fatalf("BatchAddLogs failed: %v", err)
+	}
+
+	stats, err := store.GetStats(ctx, now.Add(-4*time.Hour), now.Add(-2*time.Hour), nil, false)
+	if err != nil {
+		t.Fatalf("GetStats failed: %v", err)
+	}
+
+	for _, e := range stats {
+		if e.ChannelID == nil || int64(*e.ChannelID) != cfg.ID || e.Model != "model-b" {
+			continue
+		}
+		if e.LastSuccessAt == nil || *e.LastSuccessAt != latestSuccessAt.UnixMilli() {
+			t.Fatalf("LastSuccessAt=%v, want channel latest success %d", e.LastSuccessAt, latestSuccessAt.UnixMilli())
+		}
+		if e.LastRequestAt == nil || *e.LastRequestAt != latestSuccessAt.UnixMilli() {
+			t.Fatalf("LastRequestAt=%v, want channel latest request %d", e.LastRequestAt, latestSuccessAt.UnixMilli())
+		}
+		if e.LastRequestStatus == nil || *e.LastRequestStatus != 200 {
+			t.Fatalf("LastRequestStatus=%v, want 200", e.LastRequestStatus)
+		}
+		if e.LastRequestMessage != "model a recovered after range" {
+			t.Fatalf("LastRequestMessage=%q, want model a recovered after range", e.LastRequestMessage)
+		}
+		return
+	}
+
+	t.Fatalf("stats missing channel %d model model-b: %+v", cfg.ID, stats)
+}
+
+func TestMetrics_LastStateRespectsModelFilter(t *testing.T) {
+	store := newTestStore(t, "metrics_last_state_model_filter.db")
+	ctx := context.Background()
+
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:        "model-filter-state",
+		URL:         "https://example.com",
+		Priority:    10,
+		Enabled:     true,
+		ChannelType: "openai",
+		ModelEntries: []model.ModelEntry{
+			{Model: "model-a"},
+			{Model: "model-b"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	now := time.Now().Truncate(time.Millisecond)
+	inRangeFailedAt := now.Add(-3 * time.Hour)
+	latestSuccessAt := now.Add(-1 * time.Hour)
+
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
+		{Time: model.JSONTime{Time: inRangeFailedAt}, ChannelID: cfg.ID, Model: "model-b", StatusCode: 500, Message: "model b failed in range", LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: latestSuccessAt}, ChannelID: cfg.ID, Model: "model-a", StatusCode: 200, Message: "model a recovered after range", LogSource: model.LogSourceProxy},
+	}); err != nil {
+		t.Fatalf("BatchAddLogs failed: %v", err)
+	}
+
+	stats, err := store.GetStats(ctx, now.Add(-4*time.Hour), now.Add(-2*time.Hour), &model.LogFilter{
+		Model:     "model-b",
+		LogSource: model.LogSourceProxy,
+	}, false)
+	if err != nil {
+		t.Fatalf("GetStats failed: %v", err)
+	}
+
+	for _, e := range stats {
+		if e.ChannelID == nil || int64(*e.ChannelID) != cfg.ID || e.Model != "model-b" {
+			continue
+		}
+		if e.LastSuccessAt != nil {
+			t.Fatalf("LastSuccessAt=%v, want nil for model-b", e.LastSuccessAt)
+		}
+		if e.LastRequestAt == nil || *e.LastRequestAt != inRangeFailedAt.UnixMilli() {
+			t.Fatalf("LastRequestAt=%v, want model latest request %d", e.LastRequestAt, inRangeFailedAt.UnixMilli())
+		}
+		if e.LastRequestStatus == nil || *e.LastRequestStatus != 500 {
+			t.Fatalf("LastRequestStatus=%v, want 500", e.LastRequestStatus)
+		}
+		return
+	}
+
+	t.Fatalf("stats missing channel %d model model-b: %+v", cfg.ID, stats)
 }
 
 func TestMetrics_LastStateIgnoresStatusCodeFilter(t *testing.T) {

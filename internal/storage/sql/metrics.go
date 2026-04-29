@@ -193,6 +193,89 @@ func cloneLogFilterWithoutStatusCode(filter *model.LogFilter) *model.LogFilter {
 }
 
 func (s *SQLStore) fillStatsLastSuccesses(ctx context.Context, stats []model.StatsEntry, filter *model.LogFilter) error {
+	if hasStatsModelFilter(filter) {
+		return s.fillStatsLastSuccessesByEntry(ctx, stats, filter)
+	}
+
+	entryIndexesByChannel := make(map[int][]int, len(stats))
+	for i := range stats {
+		if stats[i].ChannelID == nil {
+			continue
+		}
+		channelID := *stats[i].ChannelID
+		entryIndexesByChannel[channelID] = append(entryIndexesByChannel[channelID], i)
+	}
+	if len(entryIndexesByChannel) == 0 {
+		return nil
+	}
+
+	baseQuery := `
+		SELECT
+			channel_id,
+			time,
+			id
+		FROM (
+			SELECT
+				channel_id,
+				time,
+				id,
+				ROW_NUMBER() OVER (
+					PARTITION BY channel_id
+					ORDER BY time DESC, id DESC
+				) AS rn
+			FROM logs`
+
+	qb := NewQueryBuilder(baseQuery).
+		Where("channel_id > 0").
+		Where("status_code >= 200").
+		Where("status_code < 300")
+	applyStatsChannelScope(qb, entryIndexesByChannel)
+
+	lastStateFilter := cloneLogFilterWithoutStatusCode(filter)
+
+	_, isEmpty, err := s.applyChannelFilter(ctx, qb, lastStateFilter)
+	if err != nil {
+		return err
+	}
+	if isEmpty {
+		return nil
+	}
+	qb.ApplyFilter(lastStateFilter)
+
+	query, args := qb.BuildWithSuffix(") ranked WHERE rn = 1")
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var channelID int
+		var successAt int64
+		var successID int64
+		if err := rows.Scan(&channelID, &successAt, &successID); err != nil {
+			return err
+		}
+		if successAt <= 0 {
+			continue
+		}
+		for _, idx := range entryIndexesByChannel[channelID] {
+			successAtValue := successAt
+			stats[idx].LastSuccessAt = &successAtValue
+			if successID > 0 {
+				successIDValue := successID
+				stats[idx].LastSuccessID = &successIDValue
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *SQLStore) fillStatsLastSuccessesByEntry(ctx context.Context, stats []model.StatsEntry, filter *model.LogFilter) error {
 	entryIndexes := make(map[statsRequestKey]int, len(stats))
 	for i := range stats {
 		if stats[i].ChannelID == nil {
@@ -276,6 +359,97 @@ func (s *SQLStore) fillStatsLastSuccesses(ctx context.Context, stats []model.Sta
 }
 
 func (s *SQLStore) fillStatsLastRequests(ctx context.Context, stats []model.StatsEntry, filter *model.LogFilter) error {
+	if hasStatsModelFilter(filter) {
+		return s.fillStatsLastRequestsByEntry(ctx, stats, filter)
+	}
+
+	entryIndexesByChannel := make(map[int][]int, len(stats))
+	for i := range stats {
+		if stats[i].ChannelID == nil {
+			continue
+		}
+		channelID := *stats[i].ChannelID
+		entryIndexesByChannel[channelID] = append(entryIndexesByChannel[channelID], i)
+	}
+	if len(entryIndexesByChannel) == 0 {
+		return nil
+	}
+
+	baseQuery := `
+		SELECT
+			channel_id,
+			time,
+			id,
+			status_code,
+			message
+		FROM (
+			SELECT
+				channel_id,
+				time,
+				id,
+				status_code,
+				message,
+				ROW_NUMBER() OVER (
+					PARTITION BY channel_id
+					ORDER BY time DESC, id DESC
+				) AS rn
+			FROM logs`
+
+	qb := NewQueryBuilder(baseQuery).
+		Where("channel_id > 0").
+		Where("status_code != 499")
+	applyStatsChannelScope(qb, entryIndexesByChannel)
+
+	lastStateFilter := cloneLogFilterWithoutStatusCode(filter)
+
+	_, isEmpty, err := s.applyChannelFilter(ctx, qb, lastStateFilter)
+	if err != nil {
+		return err
+	}
+	if isEmpty {
+		return nil
+	}
+	qb.ApplyFilter(lastStateFilter)
+
+	query, args := qb.BuildWithSuffix(") ranked WHERE rn = 1")
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var channelID int
+		var requestAt int64
+		var requestID int64
+		var status int
+		var message string
+		if err := rows.Scan(&channelID, &requestAt, &requestID, &status, &message); err != nil {
+			return err
+		}
+		if requestAt <= 0 {
+			continue
+		}
+		for _, idx := range entryIndexesByChannel[channelID] {
+			requestAtValue := requestAt
+			stats[idx].LastRequestAt = &requestAtValue
+			if requestID > 0 {
+				requestIDValue := requestID
+				stats[idx].LastRequestID = &requestIDValue
+			}
+			statusValue := status
+			stats[idx].LastRequestStatus = &statusValue
+			stats[idx].LastRequestMessage = message
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *SQLStore) fillStatsLastRequestsByEntry(ctx context.Context, stats []model.StatsEntry, filter *model.LogFilter) error {
 	entryIndexes := make(map[statsRequestKey]int, len(stats))
 	for i := range stats {
 		if stats[i].ChannelID == nil {
@@ -363,6 +537,28 @@ func (s *SQLStore) fillStatsLastRequests(ctx context.Context, stats []model.Stat
 	}
 
 	return nil
+}
+
+func hasStatsModelFilter(filter *model.LogFilter) bool {
+	return filter != nil && (filter.Model != "" || filter.ModelLike != "")
+}
+
+func applyStatsChannelScope(qb *QueryBuilder, entryIndexesByChannel map[int][]int) {
+	if len(entryIndexesByChannel) == 0 {
+		return
+	}
+
+	channelIDs := make([]int, 0, len(entryIndexesByChannel))
+	for channelID := range entryIndexesByChannel {
+		channelIDs = append(channelIDs, channelID)
+	}
+	sort.Ints(channelIDs)
+
+	args := make([]any, 0, len(channelIDs))
+	for _, channelID := range channelIDs {
+		args = append(args, channelID)
+	}
+	qb.WhereIn("channel_id", args)
 }
 
 func applyStatsEntryScope(qb *QueryBuilder, entryIndexes map[statsRequestKey]int) {
