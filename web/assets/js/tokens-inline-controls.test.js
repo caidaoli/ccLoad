@@ -63,7 +63,7 @@ test('tokens 页费用和并发上限常驻说明 0 表示无限制', () => {
 });
 
 test('tokens 页费用和并发上限输入框使用一致前缀槽位保持对齐', () => {
-  assert.equal((html.match(/class="token-limit-prefix-slot token-limit-prefix-slot--empty"/g) || []).length, 2);
+  assert.equal((html.match(/class="token-limit-prefix-slot token-limit-prefix-slot--empty"/g) || []).length, 3);
   assert.match(html, /id="tokenCostLimitUSD"[\s\S]*?id="tokenMaxConcurrency"/);
   assert.match(html, /token-cost-prefix token-limit-prefix-slot/);
   assert.match(html, /token-edit-cost-prefix token-limit-prefix-slot/);
@@ -104,14 +104,15 @@ test('tokens.js 并发上限输入只接受非负整数且创建更新共用同�
     }
   };
   vm.runInNewContext(extractFunction(script, 'parseMaxConcurrencyInput'), sandbox);
+  const normalize = (value) => JSON.parse(JSON.stringify(value));
 
-  assert.deepEqual(sandbox.parseMaxConcurrencyInput(''), { value: 0 });
-  assert.deepEqual(sandbox.parseMaxConcurrencyInput('0'), { value: 0 });
-  assert.deepEqual(sandbox.parseMaxConcurrencyInput(' 1e2 '), { value: 100 });
-  assert.deepEqual(sandbox.parseMaxConcurrencyInput('3'), { value: 3 });
-  assert.deepEqual(sandbox.parseMaxConcurrencyInput('1.9'), { error: 'tokens.msg.maxConcurrencyInteger' });
-  assert.deepEqual(sandbox.parseMaxConcurrencyInput('-0.5'), { error: 'tokens.msg.maxConcurrencyInteger' });
-  assert.deepEqual(sandbox.parseMaxConcurrencyInput('-1'), { error: 'tokens.msg.maxConcurrencyInteger' });
+  assert.deepEqual(normalize(sandbox.parseMaxConcurrencyInput('')), { value: 0 });
+  assert.deepEqual(normalize(sandbox.parseMaxConcurrencyInput('0')), { value: 0 });
+  assert.deepEqual(normalize(sandbox.parseMaxConcurrencyInput(' 1e2 ')), { value: 100 });
+  assert.deepEqual(normalize(sandbox.parseMaxConcurrencyInput('3')), { value: 3 });
+  assert.deepEqual(normalize(sandbox.parseMaxConcurrencyInput('1.9')), { error: 'tokens.msg.maxConcurrencyInteger' });
+  assert.deepEqual(normalize(sandbox.parseMaxConcurrencyInput('-0.5')), { error: 'tokens.msg.maxConcurrencyInteger' });
+  assert.deepEqual(normalize(sandbox.parseMaxConcurrencyInput('-1')), { error: 'tokens.msg.maxConcurrencyInteger' });
   assert.match(script, /const maxConcurrencyResult = parseMaxConcurrencyInput\(document\.getElementById\('tokenMaxConcurrency'\)\.value\);/);
   assert.match(script, /const maxConcurrencyResult = parseMaxConcurrencyInput\(document\.getElementById\('editMaxConcurrency'\)\.value\);/);
   assert.doesNotMatch(script, /parseInt\(document\.getElementById\('tokenMaxConcurrency'\)\.value,\s*10\)\s*\|\|\s*0/);
