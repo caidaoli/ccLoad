@@ -24,6 +24,7 @@ type usageAccumulator struct {
 	Cache5mInputTokens       int
 	Cache1hInputTokens       int
 	ServiceTier              string // OpenAI service_tier: "priority"/"flex"/"default"
+	usageVersion             int
 }
 
 type sseUsageParser struct {
@@ -37,6 +38,8 @@ type sseUsageParser struct {
 	oversized   bool         // 当前事件超出大小限制，丢弃到事件边界后恢复解析
 	channelType string       // 渠道类型(anthropic/openai/codex/gemini),用于精确平台判断
 	discardTail string       // 丢弃超大事件时保留少量尾部，用于识别跨chunk的空行边界
+	scanner     jsonUsageParser
+	scanVersion int
 
 	// [INFO] 新增：存储SSE流中检测到的error事件（用于1308等错误的延迟处理）
 	lastError []byte // 最后一个error事件的完整JSON（data字段内容）
@@ -90,9 +93,11 @@ const (
 // newSSEUsageParser 创建SSE usage解析器
 // channelType: 渠道类型(anthropic/openai/codex/gemini),用于精确识别平台usage格式
 func newSSEUsageParser(channelType string) *sseUsageParser {
-	return &sseUsageParser{
+	p := &sseUsageParser{
 		channelType: channelType,
 	}
+	p.scanner.channelType = channelType
+	return p
 }
 
 // newJSONUsageParser 创建JSON响应的usage解析器
@@ -104,6 +109,8 @@ func newJSONUsageParser(channelType string) *jsonUsageParser {
 // Feed 喂入数据进行解析（供streamCopySSE调用）
 // 采用增量解析，避免重复扫描已处理数据
 func (p *sseUsageParser) Feed(data []byte) error {
+	p.scanUsageFragments(data)
+
 	for len(data) > 0 {
 		if p.oversized {
 			data = p.discardUntilEventBoundary(data)
@@ -132,6 +139,22 @@ func (p *sseUsageParser) Feed(data []byte) error {
 	}
 
 	return nil
+}
+
+func (p *sseUsageParser) scanUsageFragments(data []byte) {
+	p.scanner.scanJSONUsage(data)
+	if p.scanner.usageVersion > p.scanVersion {
+		p.InputTokens = p.scanner.InputTokens
+		p.OutputTokens = p.scanner.OutputTokens
+		p.CacheReadInputTokens = p.scanner.CacheReadInputTokens
+		p.CacheCreationInputTokens = p.scanner.CacheCreationInputTokens
+		p.Cache5mInputTokens = p.scanner.Cache5mInputTokens
+		p.Cache1hInputTokens = p.scanner.Cache1hInputTokens
+		p.scanVersion = p.scanner.usageVersion
+	}
+	if p.scanner.ServiceTier != "" {
+		p.ServiceTier = p.scanner.ServiceTier
+	}
 }
 
 func (p *sseUsageParser) enterOversizedEventMode() {
@@ -574,7 +597,7 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 
 	// 兼容 text/plain SSE 回退：上游偶尔用 text/plain 发送 SSE 事件
 	if looksLikeSSE(data) {
-		sseParser := &sseUsageParser{channelType: p.channelType}
+		sseParser := newSSEUsageParser(p.channelType)
 		if err := sseParser.Feed(data); err != nil {
 			log.Printf("WARN: usage sse-like parse failed: %v", err)
 		} else {
@@ -619,6 +642,7 @@ func (u *usageAccumulator) applyUsage(usage map[string]any, channelType string) 
 	if usage == nil {
 		return
 	}
+	u.usageVersion++
 
 	// 平台判断:优先使用channelType(配置明确),fallback到字段特征检测
 	// 设计原则:Trust Configuration > Guess from Data

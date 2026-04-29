@@ -330,6 +330,28 @@ func TestSSEUsageParser_RecoversAfterOversizedEvent(t *testing.T) {
 	}
 }
 
+func TestSSEUsageParser_ExtractsUsageFromOversizedCompletedEvent(t *testing.T) {
+	parser := newSSEUsageParser("codex")
+	chunks := []string{
+		"event: response.completed\n",
+		`data: {"type":"response.completed","response":{"id":"resp_1","output":[{"type":"image_generation_call","result":"`,
+		strings.Repeat("a", maxSSEEventSize+1),
+		`"}],"tool_usage":{"image_gen":{"input_tokens":54,"output_tokens":1372,"total_tokens":1426}},"usage":{"input_tokens":2269,"input_tokens_details":{"cached_tokens":0},"output_tokens":67,"total_tokens":2336}}}` + "\n\n",
+	}
+
+	for i, chunk := range chunks {
+		if err := parser.Feed([]byte(chunk)); err != nil {
+			t.Fatalf("Feed第%d块失败: %v", i+1, err)
+		}
+	}
+
+	input, output, cacheRead, cacheCreation := parser.GetUsage()
+	if input != 2269 || output != 67 || cacheRead != 0 || cacheCreation != 0 {
+		t.Fatalf("oversized response.completed未提取usage: input=%d output=%d cacheRead=%d cacheCreation=%d",
+			input, output, cacheRead, cacheCreation)
+	}
+}
+
 func TestSSEUsageParser_StreamComplete(t *testing.T) {
 	// 测试各种流结束标志是否正确设置 streamComplete
 	// [FIX] 2026-01: 添加 response.completed 检测，修复客户端取消时费用丢失问题
