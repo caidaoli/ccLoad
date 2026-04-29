@@ -228,6 +228,9 @@ function updateInlineURL(index, value) {
 
   inlineURLTableData[index] = nextValue;
   syncInlineURLInput();
+  if (typeof scheduleChannelDuplicateHintCheck === 'function') {
+    scheduleChannelDuplicateHintCheck();
+  }
   markChannelFormDirty();
 }
 
@@ -259,6 +262,9 @@ function deleteInlineURL(index) {
     inlineURLTableData[0] = '';
     selectedURLIndices.clear();
     renderInlineURLTable();
+    if (typeof scheduleChannelDuplicateHintCheck === 'function') {
+      scheduleChannelDuplicateHintCheck();
+    }
     markChannelFormDirty();
     return;
   }
@@ -276,6 +282,9 @@ function deleteInlineURL(index) {
   selectedURLIndices = nextSelected;
 
   renderInlineURLTable();
+  if (typeof scheduleChannelDuplicateHintCheck === 'function') {
+    scheduleChannelDuplicateHintCheck();
+  }
   markChannelFormDirty();
 }
 
@@ -298,6 +307,9 @@ function batchDeleteSelectedURLs() {
 
   selectedURLIndices.clear();
   renderInlineURLTable();
+  if (typeof scheduleChannelDuplicateHintCheck === 'function') {
+    scheduleChannelDuplicateHintCheck();
+  }
   markChannelFormDirty();
 }
 

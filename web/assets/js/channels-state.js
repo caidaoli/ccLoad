@@ -18,6 +18,7 @@ let channelsTotalPages = 1;
 let channelsTotalCount = 0;
 let allAvailableModels = [];
 let allAvailableChannelNames = [];
+let batchRefreshResultsByChannelId = new Map();
 
 function normalizeSelectedChannelID(id) {
   const numericID = Number(id);

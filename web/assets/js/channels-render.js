@@ -14,11 +14,165 @@ function buildPriorityRow(rowClass, valueClass, value) {
   return `<div class="ch-priority-row ${rowClass}"><span class="${valueClass}">${value}</span></div>`;
 }
 
-function buildPriorityStatusRow(content) {
-  if (!content) return '';
-  return `<div class="ch-priority-row ch-priority-row--status">${content}</div>`;
+function escapeChannelRefreshText(value) {
+  if (value === null || value === undefined) return '';
+  return String(value).replace(/[&<>"']/g, c => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }[c]));
 }
 
+function normalizeBatchRefreshChannelID(channelID) {
+  if (typeof normalizeSelectedChannelID === 'function') {
+    return normalizeSelectedChannelID(channelID);
+  }
+  const numericID = Number(channelID);
+  if (!Number.isFinite(numericID) || numericID <= 0) return '';
+  return String(Math.trunc(numericID));
+}
+
+function getBatchRefreshResult(channelID) {
+  if (typeof batchRefreshResultsByChannelId === 'undefined' || !batchRefreshResultsByChannelId) return null;
+  const key = normalizeBatchRefreshChannelID(channelID);
+  if (!key) return null;
+  return batchRefreshResultsByChannelId.get(key) || null;
+}
+
+function buildBatchRefreshResultSummary(result) {
+  const fetched = Number.isFinite(Number(result.fetched)) ? Number(result.fetched) : 0;
+  const added = Number.isFinite(Number(result.added)) ? Number(result.added) : 0;
+  const removed = Number.isFinite(Number(result.removed)) ? Number(result.removed) : 0;
+  const total = Number.isFinite(Number(result.total)) ? Number(result.total) : 0;
+
+  switch (result.status) {
+    case 'processing':
+      return window.t('channels.batchRefreshRowProcessing');
+    case 'updated':
+      if (result.mode === 'replace') {
+        return window.t('channels.batchRefreshRowUpdatedReplace', { fetched, removed, total });
+      }
+      return window.t('channels.batchRefreshRowUpdatedMerge', { fetched, added, total });
+    case 'unchanged':
+      return window.t('channels.batchRefreshRowUnchanged', { fetched, total });
+    case 'failed':
+      return window.t('channels.batchRefreshRowFailed', { error: result.summary || window.t('common.failed') });
+    default:
+      return '';
+  }
+}
+
+function buildBatchRefreshStatusHtml(result) {
+  if (!result || !result.status) return '';
+
+  const status = result.status;
+  const statusLabel = window.t(`channels.batchRefreshStatus.${status}`);
+  const summary = buildBatchRefreshResultSummary(result);
+  const escapedSummary = escapeChannelRefreshText(summary);
+  const escapedTitle = escapeChannelRefreshText(result.detail || summary);
+  const channelID = escapeChannelRefreshText(result.channelID || '');
+
+  const statusHtml = `<span class="channel-refresh-result__status">${escapeChannelRefreshText(statusLabel)}</span>`;
+  const summaryHtml = `<span class="channel-refresh-result__summary" title="${escapedTitle}">${escapedSummary}</span>`;
+
+  if (status !== 'failed') {
+    return `<div class="channel-refresh-result channel-refresh-result--${status}">${statusHtml}${summaryHtml}</div>`;
+  }
+
+  const detail = escapeChannelRefreshText(result.detail || result.summary || window.t('common.failed'));
+  return `<div class="channel-refresh-result channel-refresh-result--failed">
+    <div class="channel-refresh-result__line">
+      ${statusHtml}${summaryHtml}
+      <details class="channel-refresh-result__detail">
+        <summary>${escapeChannelRefreshText(window.t('channels.batchRefreshDetail'))}</summary>
+        <pre>${detail}</pre>
+      </details>
+      <button type="button" class="channel-refresh-result-action" data-action="clear-batch-refresh-result" data-channel-id="${channelID}">${escapeChannelRefreshText(window.t('channels.batchRefreshClear'))}</button>
+    </div>
+  </div>`;
+}
+
+function applyBatchRefreshResultClass(row, result) {
+  if (!row) return;
+  row.classList.remove(
+    'channel-row-refresh-processing',
+    'channel-row-refresh-updated',
+    'channel-row-refresh-unchanged',
+    'channel-row-refresh-failed'
+  );
+  if (result && result.status) {
+    row.classList.add(`channel-row-refresh-${result.status}`);
+  }
+}
+
+function renderChannelBatchRefreshResult(channelID) {
+  const key = normalizeBatchRefreshChannelID(channelID);
+  if (!key) return;
+  const row = document.getElementById(`channel-${key}`);
+  if (!row) return;
+  const result = getBatchRefreshResult(key);
+  applyBatchRefreshResultClass(row, result);
+  const slot = row.querySelector('.ch-refresh-result-slot');
+  if (slot) {
+    slot.innerHTML = buildBatchRefreshStatusHtml(result);
+  }
+}
+
+function setBatchRefreshResult(channelID, result) {
+  if (typeof batchRefreshResultsByChannelId === 'undefined' || !batchRefreshResultsByChannelId) return;
+  const key = normalizeBatchRefreshChannelID(channelID);
+  if (!key) return;
+  const nextResult = Object.assign({}, result, {
+    channelID: key,
+    stamp: Date.now()
+  });
+  batchRefreshResultsByChannelId.set(key, nextResult);
+  renderChannelBatchRefreshResult(key);
+}
+
+function clearBatchRefreshResult(channelID) {
+  if (typeof batchRefreshResultsByChannelId === 'undefined' || !batchRefreshResultsByChannelId) return;
+  const key = normalizeBatchRefreshChannelID(channelID);
+  if (!key) return;
+  batchRefreshResultsByChannelId.delete(key);
+  renderChannelBatchRefreshResult(key);
+}
+
+function clearAllBatchRefreshResults() {
+  if (typeof batchRefreshResultsByChannelId === 'undefined' || !batchRefreshResultsByChannelId || batchRefreshResultsByChannelId.size === 0) {
+    return;
+  }
+  const keys = Array.from(batchRefreshResultsByChannelId.keys());
+  batchRefreshResultsByChannelId.clear();
+  keys.forEach((key) => {
+    renderChannelBatchRefreshResult(key);
+  });
+}
+
+async function copyChannelLastRequestFailure(btn) {
+  const lastRequest = btn && btn.closest ? btn.closest('.ch-last-request') : null;
+  const pre = lastRequest && lastRequest.querySelector ? lastRequest.querySelector('.ch-last-request__detail pre') : null;
+  const text = pre ? pre.textContent : '';
+  if (!text) return;
+
+  try {
+    if (window.copyToClipboard) {
+      await window.copyToClipboard(text);
+    } else if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      throw new Error('copy failed');
+    }
+    const originalText = btn.textContent;
+    btn.textContent = window.t('channels.batchRefreshCopied');
+    setTimeout(() => { btn.textContent = originalText; }, 1500);
+  } catch (error) {
+    console.error('Copy last request failure failed', error);
+    if (window.showError) window.showError(window.t('channels.keyCopyFailed'));
+  }
+}
 if (!window.ChannelProtocolConfig) {
   throw new Error('ChannelProtocolConfig helper is required before channels-render.js');
 }
@@ -27,14 +181,12 @@ function buildEffectivePriorityHtml(channel) {
   const basePriority = channel.priority;
   const priorityLabel = window.t('channels.table.priority');
   const healthLabel = window.t('channels.stats.healthScoreLabel');
-  const disabledBadge = inlineDisabledBadge(channel.enabled);
 
   if (channel.effective_priority === undefined || channel.effective_priority === null) {
     const title = `${priorityLabel}: ${basePriority}`;
     const rows = [
-      buildPriorityRow('ch-priority-base', 'ch-priority-value', basePriority),
-      buildPriorityStatusRow(disabledBadge)
-    ].filter(Boolean);
+      buildPriorityRow('ch-priority-base', 'ch-priority-value', basePriority)
+    ];
     return `<div class="ch-priority-stack" title="${title.replace(/"/g, '&quot;')}">${rows.join('')}</div>`;
   }
 
@@ -66,17 +218,7 @@ function buildEffectivePriorityHtml(channel) {
   if (!isConsistent) {
     rows.push(buildPriorityRow('ch-priority-health', healthValueClass, effPriority));
   }
-  const statusRow = buildPriorityStatusRow(disabledBadge);
-  if (statusRow) {
-    rows.push(statusRow);
-  }
-
   return `<div class="ch-priority-stack" title="${title.replace(/"/g, '&quot;')}">${rows.join('')}</div>`;
-}
-
-function inlineDisabledBadge(enabled) {
-  if (enabled !== false) return '';
-  return `<span style="display: inline-flex; align-items: center; color: #dc2626; font-size: 0.75rem; font-weight: 600; background: #eef2f7; padding: 1px 6px; border-radius: 4px; border: 1px solid #cbd5e1; vertical-align: middle;">${window.t('channels.statusDisabled')}</span>`;
 }
 
 function inlineCooldownBadge(c) {
@@ -264,6 +406,78 @@ function buildChannelTimingHtml(stats) {
   return rows.length > 0 ? `<div class="ch-timing">${rows.join('')}</div>` : '';
 }
 
+function formatChannelRelativeTime(timestampMs, nowMs = Date.now()) {
+  const ts = Number(timestampMs);
+  if (!Number.isFinite(ts) || ts <= 0) return '';
+
+  const seconds = Math.max(1, Math.floor((nowMs - ts) / 1000));
+  if (seconds < 60) {
+    return window.t('channels.lastSuccess.secondsAgo', { count: seconds });
+  }
+
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    return window.t('channels.lastSuccess.minutesAgo', { count: minutes });
+  }
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return window.t('channels.lastSuccess.hoursAgo', { count: hours });
+  }
+
+  const days = Math.floor(hours / 24);
+  return window.t('channels.lastSuccess.daysAgo', { count: days });
+}
+
+function buildChannelLastSuccessHtml(stats) {
+  if (!stats) {
+    return `<div class="ch-last-status ch-last-status--empty">${escapeChannelRefreshText(window.t('channels.lastSuccess.noRequests'))}</div>`;
+  }
+
+  const lastSuccessAt = Number(stats.lastSuccessAt || 0);
+  const lastRequestAt = Number(stats.lastRequestAt || 0);
+  const status = Number(stats.lastRequestStatus);
+  const hasRequest = lastRequestAt > 0 && Number.isFinite(status) && status > 0;
+
+  if (lastSuccessAt > 0) {
+    return `<div class="ch-last-status ch-last-status--ok">${escapeChannelRefreshText(formatChannelRelativeTime(lastSuccessAt))}</div>`;
+  }
+
+  if (hasRequest) {
+    return `<div class="ch-last-status ch-last-status--empty">${escapeChannelRefreshText(window.t('channels.lastSuccess.never'))}</div>`;
+  }
+
+  return `<div class="ch-last-status ch-last-status--empty">${escapeChannelRefreshText(window.t('channels.lastSuccess.noRequests'))}</div>`;
+}
+
+function buildChannelLastRequestFailureHtml(stats) {
+  if (!stats) return '';
+
+  const lastSuccessAt = Number(stats.lastSuccessAt || 0);
+  const lastRequestAt = Number(stats.lastRequestAt || 0);
+  const status = Number(stats.lastRequestStatus);
+  const hasRequest = lastRequestAt > 0 && Number.isFinite(status) && status > 0;
+  const requestFailed = hasRequest && (status < 200 || status >= 300) && status !== 499;
+  if (!requestFailed) return '';
+
+  const statusText = escapeChannelRefreshText(window.t('channels.lastSuccess.failedStatus', { status }));
+  const relativeTime = formatChannelRelativeTime(lastRequestAt);
+  const timeText = escapeChannelRefreshText(window.t('channels.lastSuccess.failedAt', { time: relativeTime }));
+  const message = String(stats.lastRequestMessage || window.t('channels.lastSuccess.failedNoMessage'));
+  const escapedMessage = escapeChannelRefreshText(message);
+  return `<div class="ch-last-request">
+    <span class="ch-last-request__state">${statusText}</span>
+    <span class="ch-last-request__time">${timeText}</span>
+    <details class="ch-last-request__detail">
+      <summary>${escapeChannelRefreshText(window.t('channels.lastSuccess.detail'))}</summary>
+      <div class="ch-last-request__panel">
+        <pre>${escapedMessage}</pre>
+        <button type="button" class="ch-last-request__copy" data-action="copy-last-request-failure">${escapeChannelRefreshText(window.t('common.copy'))}</button>
+      </div>
+    </details>
+  </div>`;
+}
+
 /**
  * 使用模板引擎创建渠道表格行
  * @param {Object} channel - 渠道数据
@@ -273,6 +487,7 @@ function createChannelCard(channel) {
   const isCooldown = channel.cooldown_remaining_ms > 0;
   const channelTypeRaw = (channel.channel_type || '').toLowerCase();
   const stats = channelStatsById[channel.id] || null;
+  const batchRefreshResult = getBatchRefreshResult(channel.id);
 
   // 预计算统计数据
   const statsCache = stats ? {
@@ -290,6 +505,7 @@ function createChannelCard(channel) {
     : '';
 
   const durationHtml = buildChannelTimingHtml(stats);
+  const lastSuccessHtml = buildChannelLastSuccessHtml(stats);
 
   // 消耗HTML：仅保留 token 相关消耗项
   let usageHtml = '';
@@ -323,6 +539,10 @@ function createChannelCard(channel) {
   // 行class
   const rowClasses = ['channel-table-row'];
   if (isCooldown) rowClasses.push('channel-card-cooldown');
+  const lastRequestFailureHtml = buildChannelLastRequestFailureHtml(stats);
+  if (batchRefreshResult && batchRefreshResult.status) {
+    rowClasses.push(`channel-row-refresh-${batchRefreshResult.status}`);
+  }
 
   // 准备模板数据
   const cardData = {
@@ -333,21 +553,20 @@ function createChannelCard(channel) {
     typeBadge: buildChannelTypeBadge(channelTypeRaw),
     protocolTransformBadges: buildProtocolTransformBadges(channelTypeRaw, channel.protocol_transforms),
     url: channel.url,
+    batchRefreshStatusHtml: buildBatchRefreshStatusHtml(batchRefreshResult),
     modelsText: modelsText,
     priority: channel.priority,
     effectivePriorityHtml: buildEffectivePriorityHtml(channel),
-    disabledBadge: '',
     cooldownBadge: inlineCooldownBadge(channel),
     durationHtml: durationHtml,
     usageHtml: usageHtml,
     costHtml: costHtml,
+    lastSuccessHtml: lastSuccessHtml,
+    lastRequestFailureHtml: lastRequestFailureHtml,
     healthHtml: healthHtml,
     enabled: channel.enabled,
-    toggleText: channel.enabled ? window.t('common.disable') : window.t('common.enable'),
     toggleTitle: channel.enabled ? window.t('channels.toggleDisable') : window.t('channels.toggleEnable'),
-    toggleIconHtml: channel.enabled
-      ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M12 2V12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M6.34 7.34C4.89 8.79 4 10.79 4 13C4 17.42 7.58 21 12 21C16.42 21 20 17.42 20 13C20 10.79 19.11 8.79 17.66 7.34" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>'
-      : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M8 5V19L19 12L8 5Z" fill="currentColor"/></svg>',
+    toggleSwitchClass: channel.enabled ? 'channel-enable-switch--on' : 'channel-enable-switch--off',
     durationCellClass: durationHtml ? '' : 'ch-mobile-empty',
     usageCellClass: usageHtml ? '' : 'ch-mobile-empty',
     costCellClass: costHtml ? '' : 'ch-mobile-empty',
@@ -356,6 +575,8 @@ function createChannelCard(channel) {
     mobileLabelDuration: window.t('channels.table.duration'),
     mobileLabelUsage: window.t('channels.table.usage'),
     mobileLabelCost: window.t('channels.stats.cost'),
+    mobileLabelLastSuccess: window.t('channels.table.lastSuccess'),
+    mobileLabelEnabled: window.t('channels.table.enabled'),
     mobileLabelActions: window.t('channels.table.actions')
   };
 
@@ -400,6 +621,23 @@ function initChannelEventDelegation() {
 
   // 事件委托：处理所有渠道操作按钮
   container.addEventListener('click', (e) => {
+    const lastRequestCopyBtn = e.target.closest('.ch-last-request__copy');
+    if (lastRequestCopyBtn) {
+      copyChannelLastRequestFailure(lastRequestCopyBtn);
+      return;
+    }
+
+    const refreshResultBtn = e.target.closest('.channel-refresh-result-action');
+    if (refreshResultBtn) {
+      const channelId = parseInt(refreshResultBtn.dataset.channelId, 10);
+      switch (refreshResultBtn.dataset.action) {
+        case 'clear-batch-refresh-result':
+          clearBatchRefreshResult(channelId);
+          break;
+      }
+      return;
+    }
+
     const btn = e.target.closest('.channel-action-btn');
     if (!btn) return;
 
@@ -451,6 +689,8 @@ function renderChannels(channelsToRender = channels) {
       <th class="ch-col-duration">${window.t('channels.table.duration')}</th>
       <th class="ch-col-usage">${window.t('channels.table.usage')}</th>
       <th class="ch-col-cost">${window.t('channels.stats.cost')}</th>
+      <th class="ch-col-last-success">${window.t('channels.table.lastSuccess')}</th>
+      <th class="ch-col-enabled">${window.t('channels.table.enabled')}</th>
       <th class="ch-col-actions">${window.t('channels.table.actions')}</th>
     </tr>
   </thead>`;

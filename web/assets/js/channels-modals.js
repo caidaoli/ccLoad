@@ -379,6 +379,7 @@ function initChannelEditorActions() {
     channelTypeRadios.addEventListener('change', (event) => {
       if (event.target && event.target.name === 'channelType') {
         renderProtocolTransformOptions(event.target.value, getSelectedProtocolTransforms(''));
+        scheduleChannelDuplicateHintCheck();
       }
     });
     channelTypeRadios.dataset.protocolTransformsBound = '1';
@@ -413,6 +414,7 @@ async function showAddModal() {
   inlineURLTableData = [''];
   selectedURLIndices.clear();
   renderInlineURLTable();
+  clearChannelDuplicateHint();
 
   inlineKeyTableData = [''];
   inlineKeyVisible = true;
@@ -432,6 +434,7 @@ async function editChannel(id) {
   await syncScheduledCheckVisibility();
 
   editingChannelId = id;
+  clearChannelDuplicateHint();
 
   setChannelModalTitle('channels.editChannel');
   document.getElementById('channelName').value = channel.name;
@@ -511,10 +514,14 @@ function closeModal() {
   }
   document.getElementById('channelModal').classList.remove('show');
   editingChannelId = null;
+  clearChannelDuplicateHint();
   resetChannelFormDirty();
 }
 
-async function checkChannelDuplicate(channelType, urls) {
+let channelDuplicateHintTimer = null;
+let channelDuplicateHintRequestSeq = 0;
+
+async function checkChannelDuplicate(channelType, urls, options = {}) {
   try {
     const resp = await fetchAPIWithAuth('/admin/channels/check-duplicate', {
       method: 'POST',
@@ -524,8 +531,103 @@ async function checkChannelDuplicate(channelType, urls) {
     if (!resp.success) return [];
     return Array.isArray(resp.data?.duplicates) ? resp.data.duplicates : [];
   } catch (e) {
-    console.warn('渠道重复检测失败，已放行:', e);
+    if (!options.silent) {
+      console.warn('渠道重复检测失败，已放行:', e);
+    }
     return [];
+  }
+}
+
+function clearChannelDuplicateHint() {
+  channelDuplicateHintRequestSeq++;
+  const hint = document.getElementById('channelDuplicateHint');
+  if (!hint) return;
+  hint.hidden = true;
+  hint.textContent = '';
+}
+
+function renderChannelDuplicateHint(dupes) {
+  const hint = document.getElementById('channelDuplicateHint');
+  if (!hint) return;
+
+  const names = dupes
+    .map(d => (d && d.name ? d.name.trim() : ''))
+    .filter(Boolean);
+  if (names.length === 0) {
+    clearChannelDuplicateHint();
+    return;
+  }
+
+  const visibleNames = names.slice(0, 3);
+  const separator = window.t('channels.duplicateChannelHintSeparator');
+  const extraCount = names.length - visibleNames.length;
+  const extra = extraCount > 0
+    ? window.t('channels.duplicateChannelHintMore', { count: extraCount })
+    : '';
+
+  hint.textContent = window.t('channels.duplicateChannelHint', {
+    list: visibleNames.join(separator),
+    extra
+  });
+  hint.hidden = false;
+}
+
+async function refreshChannelDuplicateHint() {
+  if (!document.getElementById('channelDuplicateHint')) return;
+
+  if (editingChannelId) {
+    clearChannelDuplicateHint();
+    return;
+  }
+
+  const validURLs = typeof getValidInlineURLs === 'function' ? getValidInlineURLs() : [];
+  if (validURLs.length === 0) {
+    clearChannelDuplicateHint();
+    return;
+  }
+
+  const requestSeq = ++channelDuplicateHintRequestSeq;
+  const channelType = document.querySelector('input[name="channelType"]:checked')?.value || 'anthropic';
+  const dupes = await checkChannelDuplicate(channelType, validURLs, { silent: true });
+  if (requestSeq !== channelDuplicateHintRequestSeq) return;
+  if (dupes.length > 0) {
+    renderChannelDuplicateHint(dupes);
+  } else {
+    clearChannelDuplicateHint();
+  }
+}
+
+function scheduleChannelDuplicateHintCheck() {
+  channelDuplicateHintRequestSeq++;
+  if (channelDuplicateHintTimer && typeof clearTimeout === 'function') {
+    clearTimeout(channelDuplicateHintTimer);
+  }
+  channelDuplicateHintTimer = null;
+
+  const hint = document.getElementById('channelDuplicateHint');
+  if (!hint) return;
+  hint.hidden = true;
+  hint.textContent = '';
+
+  if (editingChannelId) {
+    clearChannelDuplicateHint();
+    return;
+  }
+
+  const validURLs = typeof getValidInlineURLs === 'function' ? getValidInlineURLs() : [];
+  if (validURLs.length === 0) {
+    clearChannelDuplicateHint();
+    return;
+  }
+
+  const run = () => {
+    channelDuplicateHintTimer = null;
+    return refreshChannelDuplicateHint();
+  };
+  if (typeof setTimeout === 'function') {
+    channelDuplicateHintTimer = setTimeout(run, 350);
+  } else {
+    run();
   }
 }
 
@@ -947,6 +1049,53 @@ function batchDeleteSelectedChannels() {
   document.getElementById('deleteModal').classList.add('show');
 }
 
+function summarizeBatchRefreshError(error) {
+  const fallback = window.t('common.failed');
+  const text = String(error || fallback).replace(/\s+/g, ' ').trim() || fallback;
+  return text.length > 120 ? `${text.slice(0, 117)}...` : text;
+}
+
+function buildBatchRefreshFailureDetail(name, error) {
+  const errorText = String(error || window.t('common.failed'));
+  return [
+    `${window.t('common.name')}: ${name}`,
+    `${window.t('common.status')}: ${window.t('channels.batchRefreshStatus.failed')}`,
+    `${window.t('channels.batchRefreshErrorReason')}:`,
+    errorText
+  ].join('\n');
+}
+
+function buildBatchRefreshResultForItem(channelID, name, item, mode) {
+  const status = item && (item.status === 'updated' || item.status === 'unchanged')
+    ? item.status
+    : 'failed';
+
+  if (status === 'failed') {
+    const error = item && item.error ? item.error : window.t('common.failed');
+    return {
+      status,
+      mode,
+      summary: summarizeBatchRefreshError(error),
+      detail: buildBatchRefreshFailureDetail(name, error)
+    };
+  }
+
+  return {
+    status,
+    mode,
+    fetched: Number(item.fetched) || 0,
+    added: Number(item.added) || 0,
+    removed: Number(item.removed) || 0,
+    total: Number(item.total) || 0
+  };
+}
+
+function setBatchRefreshRowResult(channelID, result) {
+  if (typeof setBatchRefreshResult === 'function') {
+    setBatchRefreshResult(channelID, result);
+  }
+}
+
 async function batchRefreshSelectedChannels(mode) {
   const channelIDs = getSelectedChannelIDs();
   if (channelIDs.length === 0) {
@@ -956,6 +1105,10 @@ async function batchRefreshSelectedChannels(mode) {
 
   if (mode === 'replace' && !confirm(window.t('channels.batchRefreshReplaceConfirm', { count: channelIDs.length }))) {
     return;
+  }
+
+  if (typeof clearAllBatchRefreshResults === 'function') {
+    clearAllBatchRefreshResults();
   }
 
   // 禁用批量操作按钮
@@ -1000,7 +1153,6 @@ async function batchRefreshSelectedChannels(mode) {
   requestAnimationFrame(() => { progressEl.style.opacity = '1'; progressEl.style.transform = 'translateX(0)'; });
 
   let updated = 0, unchanged = 0, failed = 0;
-  const failedItems = [];
 
   for (let i = 0; i < channelIDs.length; i++) {
     const channelID = channelIDs[i];
@@ -1010,6 +1162,7 @@ async function batchRefreshSelectedChannels(mode) {
     titleSpan.textContent = window.t('channels.batchRefreshProgress', { current: i, total, mode: modeLabel });
     detailSpan.textContent = window.t('channels.batchRefreshCurrent', { name });
     barInner.style.width = `${(i / total * 100).toFixed(0)}%`;
+    setBatchRefreshRowResult(channelID, { status: 'processing', mode });
 
     try {
       const resp = await fetchAPIWithAuth('/admin/channels/models/refresh-batch', {
@@ -1021,17 +1174,24 @@ async function batchRefreshSelectedChannels(mode) {
       if (!resp.success) throw new Error(resp.error || window.t('common.failed'));
 
       const item = ((resp.data || {}).results || [])[0] || {};
+      const rowResult = buildBatchRefreshResultForItem(channelID, name, item, mode);
       if (item.status === 'updated') {
         updated++;
       } else if (item.status === 'unchanged') {
         unchanged++;
       } else {
         failed++;
-        failedItems.push({ name, error: item.error || window.t('common.failed') });
       }
+      setBatchRefreshRowResult(channelID, rowResult);
     } catch (e) {
       failed++;
-      failedItems.push({ name, error: e.message });
+      const errorMessage = e && e.message ? e.message : window.t('common.failed');
+      setBatchRefreshRowResult(channelID, {
+        status: 'failed',
+        mode,
+        summary: summarizeBatchRefreshError(errorMessage),
+        detail: buildBatchRefreshFailureDetail(name, errorMessage)
+      });
     }
 
     detailSpan.textContent = window.t('channels.batchRefreshCounts', { updated, unchanged, failed });
@@ -1041,23 +1201,13 @@ async function batchRefreshSelectedChannels(mode) {
   barInner.style.width = '100%';
   titleSpan.textContent = window.t('channels.batchRefreshSummary', { mode: modeLabel, updated, unchanged, failed });
 
-  // 构建可复制的纯文本摘要
-  let copyText = titleSpan.textContent;
-
-  // 显示失败详情
-  if (failedItems.length > 0) {
+  if (failed > 0) {
     progressEl.style.borderColor = 'var(--error-300)';
-    const failDetail = document.createElement('div');
-    failDetail.style.cssText = 'font-size:0.82em;color:var(--error-600);margin-top:var(--space-2);max-height:200px;overflow-y:auto;white-space:pre-wrap';
-    const failText = failedItems.map(f => `${f.name}: ${f.error}`).join('\n');
-    failDetail.textContent = failText;
-    progressEl.appendChild(failDetail);
-    copyText += '\n' + failText;
+    detailSpan.textContent = window.t('channels.batchRefreshInlineFailedHint', { failed });
   } else {
     progressEl.style.borderColor = 'var(--success-400)';
+    detailSpan.textContent = '';
   }
-
-  detailSpan.textContent = '';
 
   // 关闭动画辅助函数
   function dismissProgress() {
@@ -1070,19 +1220,6 @@ async function batchRefreshSelectedChannels(mode) {
   const actionBar = document.createElement('div');
   actionBar.style.cssText = 'display:flex;justify-content:flex-end;gap:var(--space-2);margin-top:var(--space-3)';
 
-  if (failedItems.length > 0) {
-    const copyBtn = document.createElement('button');
-    copyBtn.textContent = window.t('channels.batchRefreshCopy');
-    copyBtn.style.cssText = 'padding:2px 10px;font-size:0.82em;border:1px solid var(--neutral-300);border-radius:var(--radius-md);background:var(--neutral-50);color:var(--neutral-700);cursor:pointer';
-    copyBtn.onclick = () => {
-      navigator.clipboard.writeText(copyText).then(() => {
-        copyBtn.textContent = window.t('channels.batchRefreshCopied');
-        setTimeout(() => { copyBtn.textContent = window.t('channels.batchRefreshCopy'); }, 1500);
-      });
-    };
-    actionBar.appendChild(copyBtn);
-  }
-
   const closeBtn = document.createElement('button');
   closeBtn.textContent = '✕';
   closeBtn.style.cssText = 'padding:2px 8px;font-size:0.9em;border:1px solid var(--neutral-300);border-radius:var(--radius-md);background:var(--neutral-50);color:var(--neutral-700);cursor:pointer;font-weight:bold';
@@ -1091,10 +1228,7 @@ async function batchRefreshSelectedChannels(mode) {
 
   progressEl.appendChild(actionBar);
 
-  // 无失败时10秒自动关闭，有失败则保持直到手动关闭
-  if (failedItems.length === 0) {
-    setTimeout(dismissProgress, 10000);
-  }
+  setTimeout(dismissProgress, 10000);
 
   selectedChannelIds.clear();
   if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
@@ -1127,6 +1261,7 @@ async function copyChannel(id, name) {
   const copiedName = generateCopyName(name);
 
   editingChannelId = null;
+  clearChannelDuplicateHint();
   currentChannelKeyCooldowns = [];
   setChannelModalTitle('channels.copyChannel');
   document.getElementById('channelName').value = copiedName;
@@ -1154,6 +1289,7 @@ async function copyChannel(id, name) {
   if (radioButton) {
     radioButton.checked = true;
   }
+  scheduleChannelDuplicateHintCheck();
   const keyStrategy = channel.key_strategy || 'sequential';
   const strategyRadio = document.querySelector(`input[name="keyStrategy"][value="${keyStrategy}"]`);
   if (strategyRadio) {

@@ -320,8 +320,11 @@
         <button type="button" class="close-btn" aria-label="Close" data-action="close-channel-select-modal">&times;</button>
       </div>
       <div class="modal-body">
-        <div class="form-group">
+        <div class="form-group channel-select-filter-row">
           <input type="text" id="channelSearchInput" class="form-input" data-i18n-placeholder="tokens.searchChannelPlaceholder" placeholder="搜索渠道..." data-input-action="filter-available-channels">
+          <select id="channelTypeFilterSelect" class="form-input channel-type-filter-select" data-change-action="filter-available-channel-type" data-i18n-title="tokens.channelTypeFilterTitle" title="按分组筛选渠道">
+            <option value="" data-i18n="tokens.channelTypeAll">全部分组</option>
+          </select>
         </div>
         <div id="selectAllChannelsContainer">
           <label class="channel-select-all-label">
