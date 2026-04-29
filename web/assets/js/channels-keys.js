@@ -523,7 +523,8 @@ async function testSingleKey(keyIndex, testButton) {
         stream: true,
         content: 'test',
         channel_type: channelType,
-        key_index: keyIndex
+        key_index: keyIndex,
+        api_key: apiKey.trim()
       })
     });
 
@@ -550,18 +551,28 @@ async function refreshKeyCooldownStatus() {
   try {
     const apiKeys = (await fetchDataWithAuth(`/admin/channels/${editingChannelId}/keys`)) || [];
 
-    inlineKeyTableData = apiKeys.map(k => k.api_key || k);
     if (inlineKeyTableData.length === 0) {
       inlineKeyTableData = [''];
     }
 
     const now = Date.now();
-    currentChannelKeyCooldowns = apiKeys.map((apiKey, index) => {
-      const cooldownUntilMs = (apiKey.cooldown_until || 0) * 1000;
+    const cooldownByKey = new Map();
+    apiKeys.forEach(apiKey => {
+      const key = typeof apiKey === 'string' ? apiKey : (apiKey && apiKey.api_key) || '';
+      if (!key) return;
+      const cooldownUntilSeconds = apiKey && typeof apiKey === 'object'
+        ? Number(apiKey.cooldown_until || 0)
+        : 0;
+      const cooldownUntilMs = Number.isFinite(cooldownUntilSeconds) ? cooldownUntilSeconds * 1000 : 0;
       const remainingMs = Math.max(0, cooldownUntilMs - now);
+      cooldownByKey.set(key, remainingMs);
+    });
+
+    // 只刷新服务器元数据，不能覆盖编辑器中的未保存 Key。
+    currentChannelKeyCooldowns = inlineKeyTableData.map((key, index) => {
       return {
         key_index: index,
-        cooldown_remaining_ms: remainingMs
+        cooldown_remaining_ms: cooldownByKey.get(key) || 0
       };
     });
 

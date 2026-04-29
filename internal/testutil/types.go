@@ -12,6 +12,7 @@ type TestChannelRequest struct {
 	ChannelType       string            `json:"channel_type,omitempty"`       // 可选，旧调用方兼容字段
 	ProtocolTransform string            `json:"protocol_transform,omitempty"` // 可选，客户端协议；默认等于渠道原生协议
 	KeyIndex          int               `json:"key_index,omitempty"`          // 可选，指定测试的Key索引，默认0（第一个）
+	APIKey            string            `json:"api_key,omitempty"`            // 可选，测试当前编辑器中的未保存Key
 	BaseURL           string            `json:"base_url,omitempty"`           // 可选，仅 /test-url 使用，强制指定测试URL（必须属于该渠道）
 }
 

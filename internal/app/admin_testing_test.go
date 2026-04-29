@@ -832,6 +832,83 @@ func TestHandleChannelTest_FailedAPI(t *testing.T) {
 	}
 }
 
+func TestHandleChannelTest_UsesRequestAPIKeyWithoutTouchingSavedCooldown(t *testing.T) {
+	mockResp := `{
+		"id": "msg_test",
+		"type": "message",
+		"role": "assistant",
+		"content": [{"type": "text", "text": "Hello"}],
+		"model": "claude-3-5-sonnet",
+		"usage": {"input_tokens": 10, "output_tokens": 5}
+	}`
+	var gotAuth string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(mockResp))
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	ctx := context.Background()
+
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name:         "test-request-key-channel",
+		URL:          upstream.URL,
+		Priority:     1,
+		ChannelType:  "anthropic",
+		ModelEntries: []model.ModelEntry{{Model: "claude-3-5-sonnet"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-saved-key"},
+	}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+	coolUntil := time.Now().Add(10 * time.Minute)
+	if err := srv.store.SetKeyCooldown(ctx, created.ID, 0, coolUntil); err != nil {
+		t.Fatalf("SetKeyCooldown failed: %v", err)
+	}
+
+	channelID := fmt.Sprintf("%d", created.ID)
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
+		"model":        "claude-3-5-sonnet",
+		"channel_type": "anthropic",
+		"key_index":    1,
+		"api_key":      "sk-unsaved-key",
+	}))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if dataSuccess, _ := resp.Data["success"].(bool); !dataSuccess {
+		t.Fatalf("data.success=false, data=%+v", resp.Data)
+	}
+	if gotAuth != "Bearer sk-unsaved-key" {
+		t.Fatalf("Authorization=%q, want request api key", gotAuth)
+	}
+
+	keys, err := srv.store.GetAPIKeys(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetAPIKeys failed: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("keys len=%d, want 1", len(keys))
+	}
+	if keys[0].CooldownUntil == 0 {
+		t.Fatalf("saved key cooldown was reset for an unsaved request key")
+	}
+}
+
 func TestHandleChannelTest_WritesManualTestLog(t *testing.T) {
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

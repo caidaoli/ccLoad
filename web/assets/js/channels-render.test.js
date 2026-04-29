@@ -258,6 +258,8 @@ test('initChannelEventDelegation 允许表头全选 checkbox 触发可见渠道�
     document: {
       getElementById(id) {
         return id === 'channels-container' ? container : null;
+      },
+      addEventListener() {
       }
     },
     toggleVisibleChannelsSelection() {
