@@ -194,9 +194,23 @@ func (sc *StatsCache) GetRPMStats(ctx context.Context, startTime, endTime time.T
 
 // buildCacheKey 生成缓存键
 func buildCacheKey(typ string, startTime, endTime time.Time, filter *model.LogFilter) string {
-	// 使用时间戳（秒）+ filter 哈希作为键
+	// 使用时间戳（秒）+ filter 哈希作为键。实时范围的 endTime 会随 time.Now()
+	// 每秒变化，必须按 TTL 分桶，否则 30 秒缓存永远打不着。
 	filterHash := hashFilter(filter)
-	return fmt.Sprintf("%s:%d:%d:%s", typ, startTime.Unix(), endTime.Unix(), filterHash)
+	return fmt.Sprintf("%s:%d:%d:%s", typ, startTime.Unix(), cacheKeyEndUnix(endTime), filterHash)
+}
+
+func cacheKeyEndUnix(endTime time.Time) int64 {
+	ttl := calculateTTL(endTime)
+	if ttl <= 0 || ttl > 30*time.Second {
+		return endTime.Unix()
+	}
+
+	bucketSeconds := int64(ttl / time.Second)
+	if bucketSeconds <= 0 {
+		return endTime.Unix()
+	}
+	return (endTime.Unix() / bucketSeconds) * bucketSeconds
 }
 
 // hashFilter 对 filter 进行哈希
@@ -213,6 +227,9 @@ func hashFilter(filter *model.LogFilter) string {
 	if filter.ChannelType != "" {
 		parts = append(parts, fmt.Sprintf("type:%s", filter.ChannelType))
 	}
+	if filter.ChannelName != "" {
+		parts = append(parts, fmt.Sprintf("name_exact:%s", filter.ChannelName))
+	}
 	if filter.Model != "" {
 		parts = append(parts, fmt.Sprintf("model:%s", filter.Model))
 	}
@@ -224,6 +241,12 @@ func hashFilter(filter *model.LogFilter) string {
 	}
 	if filter.AuthTokenID != nil {
 		parts = append(parts, fmt.Sprintf("auth:%d", *filter.AuthTokenID))
+	}
+	if filter.StatusCode != nil {
+		parts = append(parts, fmt.Sprintf("status:%d", *filter.StatusCode))
+	}
+	if filter.LogSource != "" {
+		parts = append(parts, fmt.Sprintf("source:%s", filter.LogSource))
 	}
 
 	// 排序确保顺序一致性

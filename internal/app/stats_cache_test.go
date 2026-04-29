@@ -76,6 +76,18 @@ func TestStatsCache_HashFilter(t *testing.T) {
 	if hash1 == hash2 {
 		t.Error("不同 filter 应该产生不同的 hash")
 	}
+
+	statusCode := 200
+	filterWithName := &model.LogFilter{ChannelName: "primary"}
+	filterWithStatus := &model.LogFilter{StatusCode: &statusCode}
+	filterWithSource := &model.LogFilter{LogSource: model.LogSourceManualTest}
+	seen := map[string]bool{hash1: true}
+	for _, h := range []string{hashFilter(filterWithName), hashFilter(filterWithStatus), hashFilter(filterWithSource)} {
+		if seen[h] {
+			t.Fatalf("影响统计结果的 filter 字段未进入 hash: %s", h)
+		}
+		seen[h] = true
+	}
 }
 
 func TestStatsCache_BuildCacheKey(t *testing.T) {
@@ -94,6 +106,19 @@ func TestStatsCache_BuildCacheKey(t *testing.T) {
 	key3 := buildCacheKey("stats", startTime, endTime, nil)
 	if key1 != key3 {
 		t.Error("相同参数应产生相同的 key")
+	}
+}
+
+func TestStatsCache_BuildCacheKey_BucketsLiveEndTime(t *testing.T) {
+	now := time.Now()
+	startTime := beginningOfDay(now)
+	endTime := now.Truncate(time.Minute).Add(5 * time.Second)
+
+	key1 := buildCacheKey("stats", startTime, endTime, nil)
+	key2 := buildCacheKey("stats", startTime, endTime.Add(10*time.Second), nil)
+
+	if key1 != key2 {
+		t.Fatalf("实时统计缓存键未按 TTL 分桶: %q != %q", key1, key2)
 	}
 }
 
