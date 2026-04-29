@@ -570,7 +570,11 @@
       text-align: center;
     }
 
-    .channel-table td.ch-col-enabled {
+    .channel-table .ch-col-enabled {
+      width: 76px;
+      min-width: 76px;
+      max-width: 76px;
+      white-space: nowrap;
       text-align: center;
     }
 
@@ -831,14 +835,6 @@
     .ch-last-request__copy:hover {
       border-color: var(--error-300);
       color: var(--error-800);
-    }
-
-    .ch-col-enabled {
-      width: 76px;
-      min-width: 76px;
-      max-width: 76px;
-      white-space: nowrap;
-      text-align: center;
     }
 
     .ch-col-actions {

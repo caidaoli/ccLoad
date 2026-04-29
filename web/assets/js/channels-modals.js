@@ -622,7 +622,7 @@ function scheduleChannelDuplicateHintCheck() {
 
   const run = () => {
     channelDuplicateHintTimer = null;
-    void refreshChannelDuplicateHint();
+    return refreshChannelDuplicateHint();
   };
   if (typeof setTimeout === 'function') {
     channelDuplicateHintTimer = setTimeout(run, 350);
