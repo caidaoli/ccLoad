@@ -17,7 +17,7 @@ const authTokenSelectColumns = `
 	id, token, description, created_at, expires_at, last_used_at, is_active,
 	success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
 	prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd,
-	cost_used_microusd, cost_limit_microusd, allowed_models, allowed_channel_ids
+	cost_used_microusd, cost_limit_microusd, allowed_models, allowed_channel_ids, max_concurrency
 `
 
 func marshalJSONList[T any](field string, values []T) (string, error) {
@@ -105,6 +105,7 @@ func scanAuthToken(scanner interface {
 		&costLimitMicroUSD,
 		&allowedModelsJSON,
 		&allowedChannelIDsJSON,
+		&token.MaxConcurrency,
 	); err != nil {
 		return nil, err
 	}
@@ -180,9 +181,9 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 				id, token, description, created_at, expires_at, last_used_at, is_active,
 				success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
 				prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd,
-				cost_used_microusd, cost_limit_microusd, allowed_models, allowed_channel_ids
+				cost_used_microusd, cost_limit_microusd, allowed_models, allowed_channel_ids, max_concurrency
 			)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
 				token = excluded.token,
 				description = excluded.description,
@@ -204,7 +205,8 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 				cost_used_microusd = excluded.cost_used_microusd,
 				cost_limit_microusd = excluded.cost_limit_microusd,
 				allowed_models = excluded.allowed_models,
-				allowed_channel_ids = excluded.allowed_channel_ids
+				allowed_channel_ids = excluded.allowed_channel_ids,
+				max_concurrency = excluded.max_concurrency
 		`,
 			token.ID,
 			token.Token,
@@ -228,6 +230,7 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 			token.CostLimitMicroUSD,
 			allowedModelsJSON,
 			allowedChannelIDsJSON,
+			token.MaxConcurrency,
 		)
 		if err != nil {
 			return fmt.Errorf("upsert auth token all fields: %w", err)
@@ -240,9 +243,9 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 			id, token, description, created_at, expires_at, last_used_at, is_active,
 			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
 			prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd,
-			cost_used_microusd, cost_limit_microusd, allowed_models, allowed_channel_ids
+			cost_used_microusd, cost_limit_microusd, allowed_models, allowed_channel_ids, max_concurrency
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 			token = VALUES(token),
 			description = VALUES(description),
@@ -264,7 +267,8 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 			cost_used_microusd = VALUES(cost_used_microusd),
 			cost_limit_microusd = VALUES(cost_limit_microusd),
 			allowed_models = VALUES(allowed_models),
-			allowed_channel_ids = VALUES(allowed_channel_ids)
+			allowed_channel_ids = VALUES(allowed_channel_ids),
+			max_concurrency = VALUES(max_concurrency)
 	`,
 		token.ID,
 		token.Token,
@@ -288,6 +292,7 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 		token.CostLimitMicroUSD,
 		allowedModelsJSON,
 		allowedChannelIDsJSON,
+		token.MaxConcurrency,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert auth token all fields: %w", err)
@@ -331,13 +336,13 @@ func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) 
 			_, err := s.db.ExecContext(ctx, `
 				INSERT INTO auth_tokens (
 					id,
-					token, description, created_at, expires_at, last_used_at, is_active,
-					success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
-					prompt_tokens_total, completion_tokens_total, total_cost_usd, allowed_models, allowed_channel_ids,
-					cost_used_microusd, cost_limit_microusd
-				)
-				VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, ?, ?, 0, ?)
-			`, token.ID, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, boolToInt(token.IsActive), allowedModelsJSON, allowedChannelIDsJSON, token.CostLimitMicroUSD)
+				token, description, created_at, expires_at, last_used_at, is_active,
+				success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
+				prompt_tokens_total, completion_tokens_total, total_cost_usd, allowed_models, allowed_channel_ids,
+				cost_used_microusd, cost_limit_microusd, max_concurrency
+			)
+			VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, ?, ?, 0, ?, ?)
+		`, token.ID, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, boolToInt(token.IsActive), allowedModelsJSON, allowedChannelIDsJSON, token.CostLimitMicroUSD, token.MaxConcurrency)
 			if err != nil {
 				return fmt.Errorf("create auth token: %w", err)
 			}
@@ -350,11 +355,11 @@ func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) 
 				token, description, created_at, expires_at, last_used_at, is_active,
 				success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
 				prompt_tokens_total, completion_tokens_total, total_cost_usd, allowed_models, allowed_channel_ids,
-				cost_used_microusd, cost_limit_microusd
+				cost_used_microusd, cost_limit_microusd, max_concurrency
 			)
-			VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, ?, ?, 0, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, ?, ?, 0, ?, ?)
 			ON DUPLICATE KEY UPDATE id = id
-		`, token.ID, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, boolToInt(token.IsActive), allowedModelsJSON, allowedChannelIDsJSON, token.CostLimitMicroUSD)
+		`, token.ID, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, boolToInt(token.IsActive), allowedModelsJSON, allowedChannelIDsJSON, token.CostLimitMicroUSD, token.MaxConcurrency)
 		if err != nil {
 			return fmt.Errorf("create auth token: %w", err)
 		}
@@ -366,10 +371,10 @@ func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) 
 			token, description, created_at, expires_at, last_used_at, is_active,
 			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
 			prompt_tokens_total, completion_tokens_total, total_cost_usd, allowed_models, allowed_channel_ids,
-			cost_used_microusd, cost_limit_microusd
+			cost_used_microusd, cost_limit_microusd, max_concurrency
 		)
-		VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, ?, ?, 0, ?)
-	`, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, boolToInt(token.IsActive), allowedModelsJSON, allowedChannelIDsJSON, token.CostLimitMicroUSD)
+		VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, ?, ?, 0, ?, ?)
+	`, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, boolToInt(token.IsActive), allowedModelsJSON, allowedChannelIDsJSON, token.CostLimitMicroUSD, token.MaxConcurrency)
 
 	if err != nil {
 		return fmt.Errorf("create auth token: %w", err)
@@ -502,9 +507,10 @@ func (s *SQLStore) UpdateAuthToken(ctx context.Context, token *model.AuthToken) 
 		    is_active = ?,
 		    cost_limit_microusd = ?,
 		    allowed_models = ?,
-		    allowed_channel_ids = ?
+		    allowed_channel_ids = ?,
+		    max_concurrency = ?
 		WHERE id = ?
-	`, token.Description, expiresAt, lastUsedAt, boolToInt(token.IsActive), token.CostLimitMicroUSD, allowedModelsJSON, allowedChannelIDsJSON, token.ID)
+	`, token.Description, expiresAt, lastUsedAt, boolToInt(token.IsActive), token.CostLimitMicroUSD, allowedModelsJSON, allowedChannelIDsJSON, token.MaxConcurrency, token.ID)
 
 	if err != nil {
 		return fmt.Errorf("update auth token: %w", err)

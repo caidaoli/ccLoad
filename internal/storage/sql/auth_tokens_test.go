@@ -26,6 +26,7 @@ func TestAuthToken_CreateAndGet(t *testing.T) {
 		CostLimitMicroUSD: 1000000, // $1
 		AllowedModels:     []string{"gpt-4", "claude-3"},
 		AllowedChannelIDs: []int64{11, 22},
+		MaxConcurrency:    3,
 		CreatedAt:         time.Now(),
 	}
 	if err := store.CreateAuthToken(ctx, token); err != nil {
@@ -45,6 +46,9 @@ func TestAuthToken_CreateAndGet(t *testing.T) {
 	}
 	if len(got.AllowedChannelIDs) != 2 || got.AllowedChannelIDs[0] != 11 || got.AllowedChannelIDs[1] != 22 {
 		t.Fatalf("allowed_channel_ids: got %+v, want [11 22]", got.AllowedChannelIDs)
+	}
+	if got.MaxConcurrency != 3 {
+		t.Fatalf("max_concurrency: got %d, want 3", got.MaxConcurrency)
 	}
 
 	// 通过 Token 值获取
@@ -153,6 +157,51 @@ func TestAuthToken_InvalidAllowedModelsJSON_ReturnsError(t *testing.T) {
 	}
 }
 
+func TestAuthToken_NegativeMaxConcurrency_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "negative_max_concurrency.db")
+
+	store, err := storage.CreateSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("create sqlite store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	token := &model.AuthToken{
+		Token:          "negative-max-concurrency-token",
+		Description:    "Negative Max Concurrency Token",
+		IsActive:       true,
+		MaxConcurrency: 1,
+		CreatedAt:      time.Now(),
+	}
+	if err := store.CreateAuthToken(ctx, token); err != nil {
+		t.Fatalf("create auth token: %v", err)
+	}
+
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", "file:"+dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite db: %v", err)
+	}
+	_, err = db.ExecContext(ctx, `UPDATE auth_tokens SET max_concurrency = ? WHERE id = ?`, -1, token.ID)
+	_ = db.Close()
+	if err != nil {
+		t.Fatalf("tamper max_concurrency: %v", err)
+	}
+
+	store2, err := storage.CreateSQLiteStore(dbPath)
+	if err == nil {
+		_ = store2.Close()
+		t.Fatal("expected reopen sqlite store to fail due to negative max_concurrency")
+	}
+}
+
 func TestAuthToken_List(t *testing.T) {
 	t.Parallel()
 
@@ -219,6 +268,7 @@ func TestAuthToken_Update(t *testing.T) {
 	token.IsActive = false
 	token.CostLimitMicroUSD = 5000000 // $5
 	token.AllowedChannelIDs = []int64{33}
+	token.MaxConcurrency = 2
 
 	if err := store.UpdateAuthToken(ctx, token); err != nil {
 		t.Fatalf("update auth token: %v", err)
@@ -240,6 +290,9 @@ func TestAuthToken_Update(t *testing.T) {
 	}
 	if len(got.AllowedChannelIDs) != 1 || got.AllowedChannelIDs[0] != 33 {
 		t.Fatalf("allowed_channel_ids: got %+v, want [33]", got.AllowedChannelIDs)
+	}
+	if got.MaxConcurrency != 2 {
+		t.Fatalf("max_concurrency: got %d, want 2", got.MaxConcurrency)
 	}
 }
 

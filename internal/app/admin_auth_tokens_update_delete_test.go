@@ -61,6 +61,16 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 		}
 	})
 
+	t.Run("negative max concurrency", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPut, "/admin/auth-tokens/1", []byte(`{"max_concurrency":-1}`)))
+		c.Params = gin.Params{{Key: "id", Value: "1"}}
+
+		server.HandleUpdateAuthToken(c)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+
 	t.Run("not found", func(t *testing.T) {
 		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPut, "/admin/auth-tokens/999", []byte(`{"allowed_models":[]}`)))
 		c.Params = gin.Params{{Key: "id", Value: "999"}}
@@ -79,6 +89,7 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 			"allowed_models":      []string{"m1", "m2"},
 			"allowed_channel_ids": []int64{11, 22},
 			"cost_limit_usd":      1.5,
+			"max_concurrency":     3,
 			"unknown_ignored":     "x",
 		}
 		c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/auth-tokens/1", body))
@@ -96,6 +107,7 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 			ExpiresAt         *int64  `json:"expires_at,omitempty"`
 			CostLimitUSD      float64 `json:"cost_limit_usd"`
 			AllowedChannelIDs []int64 `json:"allowed_channel_ids"`
+			MaxConcurrency    int     `json:"max_concurrency"`
 		}
 		resp := mustParseAPIResponse[respData](t, w.Body.Bytes())
 		if !resp.Success {
@@ -119,6 +131,9 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 		if len(resp.Data.AllowedChannelIDs) != 2 || resp.Data.AllowedChannelIDs[0] != 11 || resp.Data.AllowedChannelIDs[1] != 22 {
 			t.Fatalf("allowed_channel_ids=%v, want [11 22]", resp.Data.AllowedChannelIDs)
 		}
+		if resp.Data.MaxConcurrency != 3 {
+			t.Fatalf("max_concurrency=%d, want 3", resp.Data.MaxConcurrency)
+		}
 
 		updated, err := store.GetAuthToken(ctx, token.ID)
 		if err != nil {
@@ -138,6 +153,9 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 		}
 		if len(updated.AllowedChannelIDs) != 2 || updated.AllowedChannelIDs[0] != 11 || updated.AllowedChannelIDs[1] != 22 {
 			t.Fatalf("AllowedChannelIDs=%v, want [11 22]", updated.AllowedChannelIDs)
+		}
+		if updated.MaxConcurrency != 3 {
+			t.Fatalf("MaxConcurrency=%d, want 3", updated.MaxConcurrency)
 		}
 	})
 

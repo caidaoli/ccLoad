@@ -54,6 +54,9 @@ type AuthToken struct {
 
 	// 渠道限制（2026-04新增）
 	AllowedChannelIDs []int64 `json:"allowed_channel_ids,omitempty"` // 允许的渠道ID列表，空表示无限制
+
+	// 并发限制（2026-04新增）
+	MaxConcurrency int `json:"max_concurrency"` // 最大并发请求数，0表示无限制
 }
 
 // AuthTokenRangeStats 某个时间范围内的token统计（从logs表聚合，2025-12新增）
@@ -189,6 +192,7 @@ type authTokenJSON struct {
 	RecentRPM                float64   `json:"recent_rpm,omitempty"`
 	AllowedModels            []string  `json:"allowed_models,omitempty"`
 	AllowedChannelIDs        []int64   `json:"allowed_channel_ids,omitempty"`
+	MaxConcurrency           int       `json:"max_concurrency"`
 }
 
 // MarshalJSON 自定义JSON序列化，将MicroUSD转换为USD浮点数
@@ -220,5 +224,6 @@ func (t AuthToken) MarshalJSON() ([]byte, error) {
 		RecentRPM:                t.RecentRPM,
 		AllowedModels:            t.AllowedModels,
 		AllowedChannelIDs:        t.AllowedChannelIDs,
+		MaxConcurrency:           t.MaxConcurrency,
 	})
 }
