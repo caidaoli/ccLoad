@@ -125,6 +125,9 @@ type Config struct {
 	// 缓存Key数量，避免冷却判断时的N+1查询
 	KeyCount int `json:"key_count"` // API Key数量（查询时JOIN计算）
 
+	// 运行时路由标记：该候选来自“所有渠道冷却”兜底，不持久化、不序列化。
+	CooldownFallback bool `json:"-"`
+
 	// 模型查找索引（懒加载，不序列化）
 	modelIndex map[string]*ModelEntry `json:"-"`
 	indexMu    sync.RWMutex           `json:"-"` // 保护索引的并发访问

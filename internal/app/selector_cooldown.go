@@ -82,7 +82,7 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 		best, readyIn := s.pickBestChannelWhenAllCooled(channels, channelCooldowns, keyCooldowns, now)
 		if best != nil {
 			log.Printf("[INFO] All channels cooled, fallback to channel %d (ready in %.1fs)", best.ID, readyIn.Seconds())
-			return []*modelpkg.Config{best}, nil
+			return []*modelpkg.Config{cooldownFallbackCandidate(best)}, nil
 		}
 		return nil, nil
 	}
@@ -94,6 +94,38 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 
 	// healthCache 关闭时：按优先级分组，使用平滑加权轮询
 	return s.balanceSamePriorityChannels(filtered, keyCooldowns, now), nil
+}
+
+func cooldownFallbackCandidate(cfg *modelpkg.Config) *modelpkg.Config {
+	if cfg == nil {
+		return nil
+	}
+	clone := &modelpkg.Config{
+		ID:                    cfg.ID,
+		Name:                  cfg.Name,
+		ChannelType:           cfg.ChannelType,
+		ProtocolTransformMode: cfg.ProtocolTransformMode,
+		ProtocolTransforms:    append([]string(nil), cfg.ProtocolTransforms...),
+		URL:                   cfg.URL,
+		Priority:              cfg.Priority,
+		Enabled:               cfg.Enabled,
+		ScheduledCheckEnabled: cfg.ScheduledCheckEnabled,
+		ScheduledCheckModel:   cfg.ScheduledCheckModel,
+		CooldownUntil:         cfg.CooldownUntil,
+		CooldownDurationMs:    cfg.CooldownDurationMs,
+		DailyCostLimit:        cfg.DailyCostLimit,
+		CostMultiplier:        cfg.CostMultiplier,
+		CustomRequestRules:    cfg.CustomRequestRules,
+		CreatedAt:             cfg.CreatedAt,
+		UpdatedAt:             cfg.UpdatedAt,
+		KeyCount:              cfg.KeyCount,
+		CooldownFallback:      true,
+	}
+	if cfg.ModelEntries != nil {
+		clone.ModelEntries = make([]modelpkg.ModelEntry, len(cfg.ModelEntries))
+		copy(clone.ModelEntries, cfg.ModelEntries)
+	}
+	return clone
 }
 
 // pickBestChannelWhenAllCooled 全冷却时选择最佳渠道。
