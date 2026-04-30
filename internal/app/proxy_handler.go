@@ -150,17 +150,15 @@ func extractModelFromMultipart(body []byte, boundary string) string {
 
 // selectRouteCandidates 根据请求选择路由候选
 // 从proxy.go提取，遵循SRP原则
-func (s *Server) selectRouteCandidates(ctx context.Context, c *gin.Context, originalModel string) ([]*model.Config, error) {
-	requestPath := c.Request.URL.Path
+func (s *Server) selectRouteCandidates(ctx context.Context, c *gin.Context, originalModel string, channelType string) ([]*model.Config, error) {
 	requestMethod := c.Request.Method
 
 	// 智能路由选择：根据请求类型选择不同的路由策略
-	if requestMethod == http.MethodGet && util.DetectChannelTypeFromPath(requestPath) == util.ChannelTypeGemini {
+	if requestMethod == http.MethodGet && channelType == util.ChannelTypeGemini {
 		// 按渠道类型筛选Gemini渠道
 		return s.selectCandidatesByChannelType(ctx, util.ChannelTypeGemini)
 	}
 
-	channelType := util.DetectChannelTypeFromPath(requestPath)
 	if channelType == "" {
 		return nil, errUnknownChannelType
 	}
@@ -208,7 +206,6 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		return
 	}
 
-	requestPath := c.Request.URL.Path
 	requestMethod := c.Request.Method
 
 	originalModel, all, isStreaming, err := parseIncomingRequest(c)
@@ -221,8 +218,14 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		return
 	}
 
+	clientProtocol, effectiveRequestPath := clientRequestMetadata(c)
+	if err := validateClientBodyMatchesProtocol(clientProtocol, all); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	// 清理 Anthropic 请求中注入的 billing header 元数据
-	if util.DetectChannelTypeFromPath(requestPath) == util.ChannelTypeAnthropic {
+	if clientProtocol == protocol.Anthropic {
 		all = stripAnthropicBillingHeaders(all)
 	}
 
@@ -274,7 +277,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		defer cancel()
 	}
 
-	cands, err := s.selectRouteCandidates(ctx, c, originalModel)
+	cands, err := s.selectRouteCandidates(ctx, c, originalModel, string(clientProtocol))
 	if err != nil {
 		if errors.Is(err, errUnknownChannelType) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "unsupported path"})
@@ -317,9 +320,9 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 
 	reqCtx := &proxyRequestContext{
 		originalModel:  originalModel,
-		clientProtocol: protocol.Protocol(util.DetectChannelTypeFromPath(requestPath)),
+		clientProtocol: clientProtocol,
 		requestMethod:  requestMethod,
-		requestPath:    requestPath,
+		requestPath:    effectiveRequestPath,
 		rawQuery:       c.Request.URL.RawQuery,
 		body:           all,
 		translatedBody: all,

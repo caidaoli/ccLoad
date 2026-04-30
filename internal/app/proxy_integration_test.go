@@ -744,6 +744,117 @@ func TestProxy_Success_NonStreaming_OpenAIToAnthropicTransform(t *testing.T) {
 	}
 }
 
+func TestProxy_OpenAIShapedBodyOnAnthropicPathIsRejected(t *testing.T) {
+	t.Parallel()
+
+	called := false
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "anthropic-ch", channelType: "anthropic", models: "mimo-v2.5", apiKey: "sk-ant"},
+	}, map[int]string{0: "https://token-plan-cn.example.com/anthropic"})
+
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			called = true
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(bytes.NewReader([]byte(
+					`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"mimo-v2.5","stop_reason":"end_turn","usage":{"input_tokens":7,"output_tokens":4}}`,
+				))),
+			}, nil
+		}),
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("ListConfigs failed: %v", err)
+	}
+	cfg := configs[0]
+	cfg.ProtocolTransforms = []string{"openai"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
+	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+		t.Fatalf("UpdateConfig failed: %v", err)
+	}
+	env.server.InvalidateChannelListCache()
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/messages?beta=true", map[string]any{
+		"model": "mimo-v2.5",
+		"messages": []map[string]string{
+			{"role": "user", "content": "hello"},
+		},
+		"max_tokens":       4096,
+		"response_format":  map[string]string{"type": "json_object"},
+		"stream_options":   map[string]bool{"include_usage": true},
+		"prompt_cache_key": "cache-key-1",
+	}, nil)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if called {
+		t.Fatal("upstream should not be called for mismatched client protocol body")
+	}
+	if !strings.Contains(w.Body.String(), "OpenAI chat completions") {
+		t.Fatalf("expected protocol mismatch error, got %s", w.Body.String())
+	}
+}
+
+func TestProxy_OpenAIShapedBodyOnGeminiPathIsRejected(t *testing.T) {
+	t.Parallel()
+
+	called := false
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "gemini-ch", channelType: "gemini", models: "gemini-2.5-pro", apiKey: "sk-gem"},
+	}, map[int]string{0: "https://gemini-upstream.example.com"})
+
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			called = true
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(bytes.NewReader([]byte(
+					`{"candidates":[{"content":{"parts":[{"text":"ok"}]}}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":4,"totalTokenCount":11},"modelVersion":"gemini-2.5-pro"}`,
+				))),
+			}, nil
+		}),
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("ListConfigs failed: %v", err)
+	}
+	cfg := configs[0]
+	cfg.ProtocolTransforms = []string{"openai"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
+	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+		t.Fatalf("UpdateConfig failed: %v", err)
+	}
+	env.server.InvalidateChannelListCache()
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1beta/models/gemini-2.5-pro:generateContent", map[string]any{
+		"model": "gemini-2.5-pro",
+		"messages": []map[string]string{
+			{"role": "user", "content": "hello"},
+		},
+		"response_format":  map[string]string{"type": "json_object"},
+		"stream_options":   map[string]bool{"include_usage": true},
+		"prompt_cache_key": "cache-key-1",
+	}, nil)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if called {
+		t.Fatal("upstream should not be called for mismatched client protocol body")
+	}
+	if !strings.Contains(w.Body.String(), "OpenAI chat completions") {
+		t.Fatalf("expected protocol mismatch error, got %s", w.Body.String())
+	}
+}
+
 func TestProxy_UpstreamMode_PassesThroughClientProtocolNatively(t *testing.T) {
 	t.Parallel()
 
