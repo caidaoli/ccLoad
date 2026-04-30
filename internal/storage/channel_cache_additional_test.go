@@ -244,11 +244,7 @@ func TestChannelCache_CooldownCacheAndInvalidation(t *testing.T) {
 		t.Fatalf("expected refreshed cooldown=%v, got %v", until2, got)
 	}
 
-	// Key cooldown：同样验证缓存+失效
-	// 注意：ChannelCache 的 channel/key 冷却共用 lastUpdate（单缓存域）。
-	// 如果不先失效，GetAllKeyCooldowns 可能会“命中”刚刚填充的 channel 冷却缓存，从而返回空的 keys。
-	cache.InvalidateCooldownCache()
-
+	// Key cooldown：同样验证缓存+失效。渠道冷却缓存刚刚填充过，Key 冷却必须仍然独立加载。
 	keyUntil1 := now.Add(3 * time.Minute)
 	keyUntil2 := now.Add(4 * time.Minute)
 	if err := store.SetKeyCooldown(ctx, created.ID, 0, keyUntil1); err != nil {

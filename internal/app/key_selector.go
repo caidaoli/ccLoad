@@ -75,6 +75,39 @@ func (ks *KeySelector) SelectAvailableKey(channelID int64, apiKeys []*model.APIK
 	}
 }
 
+// SelectCooldownFallbackKey 在“全冷却兜底”路径中选择最早恢复的冷却Key。
+// 只给兜底候选使用；普通请求仍必须走 SelectAvailableKey 的严格冷却过滤。
+func (ks *KeySelector) SelectCooldownFallbackKey(channelID int64, apiKeys []*model.APIKey, excludeKeys map[int]bool) (int, string, error) {
+	if len(apiKeys) == 0 {
+		return -1, "", fmt.Errorf("no API keys configured for channel %d", channelID)
+	}
+
+	now := time.Now()
+	var best *model.APIKey
+	for _, apiKey := range apiKeys {
+		if apiKey == nil {
+			continue
+		}
+		keyIndex := apiKey.KeyIndex
+		if excludeKeys != nil && excludeKeys[keyIndex] {
+			continue
+		}
+		if !apiKey.IsCoolingDown(now) {
+			return keyIndex, apiKey.APIKey, nil
+		}
+		if best == nil ||
+			apiKey.CooldownUntil < best.CooldownUntil ||
+			(apiKey.CooldownUntil == best.CooldownUntil && keyIndex < best.KeyIndex) {
+			best = apiKey
+		}
+	}
+
+	if best != nil {
+		return best.KeyIndex, best.APIKey, nil
+	}
+	return -1, "", fmt.Errorf("all API keys are already tried")
+}
+
 func (ks *KeySelector) selectSequential(apiKeys []*model.APIKey, excludeKeys map[int]bool) (int, string, error) {
 	now := time.Now()
 

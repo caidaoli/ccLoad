@@ -181,6 +181,51 @@ func TestProxy_Success_NonStreaming(t *testing.T) {
 	}
 }
 
+func TestProxy_AllCooledFallback_UsesCooledKey(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-cooled" {
+			t.Fatalf("expected cooled key to be used, got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-fallback","choices":[{"message":{"content":"fallback"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "cooled-key-channel", models: "gpt-4", apiKey: "sk-cooled"},
+	}, map[int]string{0: upstream.URL})
+
+	ctx := context.Background()
+	configs, err := env.store.ListConfigs(ctx)
+	if err != nil {
+		t.Fatalf("ListConfigs failed: %v", err)
+	}
+	if len(configs) != 1 {
+		t.Fatalf("expected 1 config, got %d", len(configs))
+	}
+	if err := env.store.SetKeyCooldown(ctx, configs[0].ID, 0, time.Now().Add(time.Minute)); err != nil {
+		t.Fatalf("SetKeyCooldown failed: %v", err)
+	}
+	env.server.invalidateChannelRelatedCache(configs[0].ID)
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-4",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 from all-cooled fallback, got %d: %s", w.Code, w.Body.String())
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("expected upstream to be called once, got %d", calls.Load())
+	}
+}
+
 func TestProxy_Success_NonStreaming_OpenAIToGeminiTransform(t *testing.T) {
 	t.Parallel()
 

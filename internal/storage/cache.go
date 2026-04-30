@@ -30,10 +30,11 @@ type ChannelCache struct {
 	// 扩展缓存支持更多关键查询
 	apiKeysByChannelID map[int64][]*modelpkg.APIKey // channelID → API keys
 	cooldownCache      struct {
-		channels   map[int64]time.Time         // channelID → cooldown until
-		keys       map[int64]map[int]time.Time // channelID→keyIndex→cooldown until
-		lastUpdate time.Time
-		ttl        time.Duration
+		channels          map[int64]time.Time         // channelID → cooldown until
+		keys              map[int64]map[int]time.Time // channelID→keyIndex→cooldown until
+		channelLastUpdate time.Time
+		keyLastUpdate     time.Time
+		ttl               time.Duration
 	}
 }
 
@@ -51,10 +52,11 @@ func NewChannelCache(store Store, ttl time.Duration) *ChannelCache {
 		// 初始化扩展缓存
 		apiKeysByChannelID: make(map[int64][]*modelpkg.APIKey),
 		cooldownCache: struct {
-			channels   map[int64]time.Time
-			keys       map[int64]map[int]time.Time
-			lastUpdate time.Time
-			ttl        time.Duration
+			channels          map[int64]time.Time
+			keys              map[int64]map[int]time.Time
+			channelLastUpdate time.Time
+			keyLastUpdate     time.Time
+			ttl               time.Duration
 		}{
 			channels: make(map[int64]time.Time),
 			keys:     make(map[int64]map[int]time.Time),
@@ -352,7 +354,7 @@ func (c *ChannelCache) GetAPIKeys(ctx context.Context, channelID int64) ([]*mode
 func (c *ChannelCache) GetAllChannelCooldowns(ctx context.Context) (map[int64]time.Time, error) {
 	// 检查冷却缓存是否有效
 	c.mutex.RLock()
-	if time.Since(c.cooldownCache.lastUpdate) <= c.cooldownCache.ttl {
+	if time.Since(c.cooldownCache.channelLastUpdate) <= c.cooldownCache.ttl {
 		// 有效缓存，返回副本
 		result := make(map[int64]time.Time, len(c.cooldownCache.channels))
 		maps.Copy(result, c.cooldownCache.channels)
@@ -370,7 +372,7 @@ func (c *ChannelCache) GetAllChannelCooldowns(ctx context.Context) (map[int64]ti
 	// 存到缓存；对外总是返回副本，避免调用方修改污染缓存。
 	c.mutex.Lock()
 	c.cooldownCache.channels = cooldowns
-	c.cooldownCache.lastUpdate = time.Now()
+	c.cooldownCache.channelLastUpdate = time.Now()
 	c.mutex.Unlock()
 
 	result := make(map[int64]time.Time, len(cooldowns))
@@ -382,7 +384,7 @@ func (c *ChannelCache) GetAllChannelCooldowns(ctx context.Context) (map[int64]ti
 func (c *ChannelCache) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int]time.Time, error) {
 	// 检查冷却缓存是否有效
 	c.mutex.RLock()
-	if time.Since(c.cooldownCache.lastUpdate) <= c.cooldownCache.ttl {
+	if time.Since(c.cooldownCache.keyLastUpdate) <= c.cooldownCache.ttl {
 		// 有效缓存，返回副本
 		result := make(map[int64]map[int]time.Time)
 		for k, v := range c.cooldownCache.keys {
@@ -404,7 +406,7 @@ func (c *ChannelCache) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[in
 	// 存到缓存；对外总是返回深拷贝，避免调用方修改污染缓存。
 	c.mutex.Lock()
 	c.cooldownCache.keys = cooldowns
-	c.cooldownCache.lastUpdate = time.Now()
+	c.cooldownCache.keyLastUpdate = time.Now()
 	c.mutex.Unlock()
 
 	result := make(map[int64]map[int]time.Time, len(cooldowns))
@@ -434,5 +436,6 @@ func (c *ChannelCache) InvalidateAllAPIKeysCache() {
 func (c *ChannelCache) InvalidateCooldownCache() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-	c.cooldownCache.lastUpdate = time.Time{}
+	c.cooldownCache.channelLastUpdate = time.Time{}
+	c.cooldownCache.keyLastUpdate = time.Time{}
 }
