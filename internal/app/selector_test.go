@@ -1031,6 +1031,64 @@ func TestSelectRouteCandidates_ModelFuzzyMatch_AfterCooldownFiltering(t *testing
 	}
 }
 
+func TestSelectRouteCandidates_CacheKeepsCooledEnabledChannelAfterCooldownClears(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	target, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "target-cooled",
+		URL:          "https://target.example.com",
+		Priority:     100,
+		ChannelType:  "anthropic",
+		ModelEntries: []model.ModelEntry{{Model: "claude-opus-4-7"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("create target config: %v", err)
+	}
+	if err := store.SetChannelCooldown(ctx, target.ID, time.Now().Add(2*time.Minute)); err != nil {
+		t.Fatalf("set target cooldown: %v", err)
+	}
+
+	if _, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "same-protocol-other-model",
+		URL:          "https://other.example.com",
+		Priority:     90,
+		ChannelType:  "anthropic",
+		ModelEntries: []model.ModelEntry{{Model: "claude-haiku"}},
+		Enabled:      true,
+	}); err != nil {
+		t.Fatalf("create other config: %v", err)
+	}
+
+	server := &Server{
+		store:           store,
+		channelCache:    storage.NewChannelCache(store, time.Hour),
+		channelBalancer: NewSmoothWeightedRR(),
+	}
+	if _, err := server.channelCache.GetEnabledChannelsByModel(ctx, "*"); err != nil {
+		t.Fatalf("warm channel cache: %v", err)
+	}
+
+	if err := store.ResetChannelCooldown(ctx, target.ID); err != nil {
+		t.Fatalf("reset target cooldown: %v", err)
+	}
+	server.invalidateChannelRelatedCache(target.ID)
+
+	candidates, err := server.selectCandidatesByModelAndType(ctx, "claude-opus-4-7", "anthropic")
+	if err != nil {
+		t.Fatalf("selectCandidatesByModelAndType: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("expected target candidate after cooldown clears, got %d: %+v", len(candidates), candidates)
+	}
+	if candidates[0].ID != target.ID {
+		t.Fatalf("expected target channel %d, got %+v", target.ID, candidates[0])
+	}
+}
+
 // TestSelectRouteCandidates_ModelFuzzyMatch_SubstringMatch 测试子串模糊匹配
 // 场景：请求简短模型名如 "sonnet"，匹配到完整模型名
 func TestSelectRouteCandidates_ModelFuzzyMatch_SubstringMatch(t *testing.T) {
@@ -1333,17 +1391,16 @@ func TestSelectCandidatesByChannelType_CacheHit(t *testing.T) {
 	}
 }
 
-// TestSelectCandidatesByChannelType_FallbackToFullQuery 测试缓存为空时的全量查询兜底
-// 当 GetEnabledChannelsByType 返回空结果时（如所有匹配渠道冷却后缓存为空），
-// 应走 ListConfigs → 类型过滤兜底路径 (selector.go 第 21-32 行)
-func TestSelectCandidatesByChannelType_FallbackToFullQuery(t *testing.T) {
+// TestSelectCandidatesByChannelType_AllCooledFallback 测试类型候选全冷却时的兜底选择。
+// GetEnabledChannels* 只表达配置态 enabled；冷却过滤和全冷却兜底由 selector 层完成。
+func TestSelectCandidatesByChannelType_AllCooledFallback(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
 	ctx := context.Background()
 	now := time.Now()
 
-	// 创建 gemini 渠道，使其全部冷却（缓存层过滤后返回空）
+	// 创建 gemini 渠道，使 selector 层进入全冷却兜底
 	geminiCfg := &model.Config{
 		Name: "gemini-cooled", URL: "https://g.com", Priority: 100,
 		ChannelType: "gemini", ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true,
@@ -1369,7 +1426,6 @@ func TestSelectCandidatesByChannelType_FallbackToFullQuery(t *testing.T) {
 
 	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
 
-	// selectCandidatesByChannelType 应走兜底路径
 	// 全冷却场景下，兜底返回最早恢复的 gemini 渠道
 	candidates, err := server.selectCandidatesByChannelType(ctx, "gemini")
 	if err != nil {
