@@ -573,12 +573,13 @@ func TestHandleChannelTest_UsesProtocolTransformForTranslatedRequest(t *testing.
 	ctx := context.Background()
 
 	created, err := srv.store.CreateConfig(ctx, &model.Config{
-		Name:         "anthropic-with-runtime-openai-transform",
-		URL:          upstream.URL,
-		Priority:     1,
-		ChannelType:  "anthropic",
-		ModelEntries: []model.ModelEntry{{Model: "claude-3-5-sonnet"}},
-		Enabled:      true,
+		Name:                  "anthropic-with-runtime-openai-transform",
+		URL:                   upstream.URL,
+		Priority:              1,
+		ChannelType:           "anthropic",
+		ProtocolTransformMode: model.ProtocolTransformModeLocal,
+		ModelEntries:          []model.ModelEntry{{Model: "claude-3-5-sonnet"}},
+		Enabled:               true,
 	})
 	if err != nil {
 		t.Fatalf("CreateConfig failed: %v", err)
@@ -651,12 +652,13 @@ func TestHandleChannelTest_UsesCodexProtocolTransformWithBasePathPrefix(t *testi
 	ctx := context.Background()
 
 	created, err := srv.store.CreateConfig(ctx, &model.Config{
-		Name:         "anthropic-with-prefixed-base-path",
-		URL:          upstream.URL + "/anthropic",
-		Priority:     1,
-		ChannelType:  "anthropic",
-		ModelEntries: []model.ModelEntry{{Model: "claude-3-5-sonnet"}},
-		Enabled:      true,
+		Name:                  "anthropic-with-prefixed-base-path",
+		URL:                   upstream.URL + "/anthropic",
+		Priority:              1,
+		ChannelType:           "anthropic",
+		ProtocolTransformMode: model.ProtocolTransformModeLocal,
+		ModelEntries:          []model.ModelEntry{{Model: "claude-3-5-sonnet"}},
+		Enabled:               true,
 	})
 	if err != nil {
 		t.Fatalf("CreateConfig failed: %v", err)
@@ -696,6 +698,89 @@ func TestHandleChannelTest_UsesCodexProtocolTransformWithBasePathPrefix(t *testi
 	}
 	if _, ok := apiResp["object"]; !ok {
 		t.Fatalf("expected codex-compatible api_response, got=%+v", apiResp)
+	}
+}
+
+// TestHandleChannelTest_UpstreamModeBypassesLocalTransform 验证 mode=upstream 时
+// 即使客户端选择的协议与渠道原生协议不同，也直接以客户端协议构造上游请求，不触发本地翻译。
+func TestHandleChannelTest_UpstreamModeBypassesLocalTransform(t *testing.T) {
+	var gotPath string
+	var gotBody string
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll failed: %v", err)
+		}
+		gotPath = r.URL.Path
+		gotBody = string(body)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"id": "chatcmpl_test",
+			"object": "chat.completion",
+			"model": "claude-3-5-sonnet",
+			"choices": [{"index": 0, "message": {"role": "assistant", "content": "hello"}, "finish_reason": "stop"}],
+			"usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+		}`))
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	ctx := context.Background()
+
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name:                  "anthropic-upstream-passthrough",
+		URL:                   upstream.URL,
+		Priority:              1,
+		ChannelType:           "anthropic",
+		ProtocolTransformMode: model.ProtocolTransformModeUpstream,
+		ModelEntries:          []model.ModelEntry{{Model: "claude-3-5-sonnet"}},
+		Enabled:               true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test-key"}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/test", created.ID), map[string]any{
+		"model":              "claude-3-5-sonnet",
+		"protocol_transform": "openai",
+		"content":            "hello",
+	}))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	dataSuccess, _ := resp.Data["success"].(bool)
+	if !dataSuccess {
+		t.Fatalf("expected data.success=true, data=%+v", resp.Data)
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Fatalf("path=%q, want %q (mode=upstream 应直通 client 协议)", gotPath, "/v1/chat/completions")
+	}
+	if !strings.Contains(gotBody, `"messages"`) {
+		t.Fatalf("expected openai chat request body, body=%s", gotBody)
+	}
+	if strings.Contains(gotBody, `"max_tokens"`) {
+		t.Fatalf("body should be openai shape (no anthropic max_tokens), body=%s", gotBody)
+	}
+
+	apiResp, ok := resp.Data["api_response"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected raw api_response map, data=%+v", resp.Data)
+	}
+	if _, ok := apiResp["choices"]; !ok {
+		t.Fatalf("expected openai-style api_response (choices), got=%+v", apiResp)
 	}
 }
 

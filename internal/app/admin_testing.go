@@ -73,6 +73,20 @@ func resolveClientProtocol(cfg *model.Config, testReq *testutil.TestChannelReque
 	return cfg.GetChannelType()
 }
 
+// resolveTestUpstreamProtocol 测试链路专用：跳过 ProtocolTransforms 白名单，
+// 仅按 ProtocolTransformMode 决定上游协议（upstream→client 直通；local→渠道原生触发翻译）。
+// 让测试者无需先把协议加入 ProtocolTransforms 列表即可验证任意 client 协议下的渠道行为。
+func resolveTestUpstreamProtocol(cfg *model.Config, clientProtocol string) string {
+	clientProtocol = strings.ToLower(strings.TrimSpace(clientProtocol))
+	if clientProtocol == "" || !util.IsValidChannelType(clientProtocol) {
+		return cfg.GetChannelType()
+	}
+	if cfg.GetProtocolTransformMode() == model.ProtocolTransformModeUpstream {
+		return clientProtocol
+	}
+	return cfg.GetChannelType()
+}
+
 func cloneHeaders(src http.Header) http.Header {
 	dst := make(http.Header, len(src))
 	for key, values := range src {
@@ -149,7 +163,7 @@ func (s *Server) buildChannelTestRequestPlan(
 	testReq *testutil.TestChannelRequest,
 	clientProtocol string,
 ) (*channelTestRequestPlan, error) {
-	upstreamProtocol := cfgForBuild.ResolveUpstreamProtocol(clientProtocol)
+	upstreamProtocol := resolveTestUpstreamProtocol(cfgForBuild, clientProtocol)
 	clientTester := newChannelTester(clientProtocol)
 
 	fullURL, headers, body, err := clientTester.Build(cfgForBuild, apiKey, testReq)
@@ -523,7 +537,7 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 	}
 
 	clientProtocol := resolveClientProtocol(cfg, testReq)
-	upstreamProto := cfg.ResolveUpstreamProtocol(clientProtocol)
+	upstreamProto := resolveTestUpstreamProtocol(cfg, clientProtocol)
 	if !supportsRuntimeTestProtocol(clientProtocol, upstreamProto) {
 		return map[string]any{
 			"success": false,
