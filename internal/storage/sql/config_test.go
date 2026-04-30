@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
@@ -357,6 +358,90 @@ func TestConfig_GetEnabledChannelsByModel(t *testing.T) {
 	if len(allConfigs) != 2 {
 		t.Errorf("expected 2 enabled channels, got %d", len(allConfigs))
 	}
+}
+
+func TestConfig_GetEnabledChannelsIncludesCooledEnabledChannels(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "enabled_includes_cooled.db")
+	ctx := context.Background()
+
+	cooled, err := store.CreateConfig(ctx, &model.Config{
+		Name:        "cooled-enabled",
+		URL:         "https://api.example.com",
+		Priority:    100,
+		Enabled:     true,
+		ChannelType: "openai",
+		ModelEntries: []model.ModelEntry{
+			{Model: "gpt-4o"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create cooled config: %v", err)
+	}
+	if err := store.SetChannelCooldown(ctx, cooled.ID, time.Now().Add(2*time.Minute)); err != nil {
+		t.Fatalf("set channel cooldown: %v", err)
+	}
+
+	disabled, err := store.CreateConfig(ctx, &model.Config{
+		Name:        "disabled",
+		URL:         "https://disabled.example.com",
+		Priority:    90,
+		Enabled:     false,
+		ChannelType: "openai",
+		ModelEntries: []model.ModelEntry{
+			{Model: "gpt-4o"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create disabled config: %v", err)
+	}
+
+	assertHasOnlyCooled := func(name string, configs []*model.Config) {
+		t.Helper()
+		foundCooled := false
+		for _, cfg := range configs {
+			switch cfg.ID {
+			case cooled.ID:
+				foundCooled = true
+			case disabled.ID:
+				t.Fatalf("%s returned disabled channel: %+v", name, cfg)
+			}
+		}
+		if !foundCooled {
+			t.Fatalf("%s did not return cooled enabled channel; got %+v", name, configs)
+		}
+	}
+
+	byModel, err := store.GetEnabledChannelsByModel(ctx, "gpt-4o")
+	if err != nil {
+		t.Fatalf("GetEnabledChannelsByModel: %v", err)
+	}
+	assertHasOnlyCooled("GetEnabledChannelsByModel", byModel)
+
+	allByModel, err := store.GetEnabledChannelsByModel(ctx, "*")
+	if err != nil {
+		t.Fatalf("GetEnabledChannelsByModel(*): %v", err)
+	}
+	assertHasOnlyCooled("GetEnabledChannelsByModel(*)", allByModel)
+
+	byType, err := store.GetEnabledChannelsByType(ctx, "openai")
+	if err != nil {
+		t.Fatalf("GetEnabledChannelsByType: %v", err)
+	}
+	assertHasOnlyCooled("GetEnabledChannelsByType", byType)
+
+	byProtocol, err := store.GetEnabledChannelsByExposedProtocol(ctx, "openai")
+	if err != nil {
+		t.Fatalf("GetEnabledChannelsByExposedProtocol: %v", err)
+	}
+	assertHasOnlyCooled("GetEnabledChannelsByExposedProtocol", byProtocol)
+
+	byModelAndProtocol, err := store.GetEnabledChannelsByModelAndProtocol(ctx, "gpt-4o", "openai")
+	if err != nil {
+		t.Fatalf("GetEnabledChannelsByModelAndProtocol: %v", err)
+	}
+	assertHasOnlyCooled("GetEnabledChannelsByModelAndProtocol", byModelAndProtocol)
 }
 
 func TestConfig_GetEnabledChannelsByType(t *testing.T) {
