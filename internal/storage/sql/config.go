@@ -626,10 +626,22 @@ func (s *SQLStore) saveProtocolTransformsTx(ctx context.Context, tx *sql.Tx, cha
 	if _, err := tx.ExecContext(ctx, `DELETE FROM channel_protocol_transforms WHERE channel_id = ?`, channelID); err != nil {
 		return fmt.Errorf("delete old protocol transforms: %w", err)
 	}
-	for _, protocol := range transforms {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO channel_protocol_transforms (channel_id, protocol) VALUES (?, ?)`, channelID, protocol); err != nil {
-			return fmt.Errorf("save protocol transform %s: %w", protocol, err)
+	if len(transforms) == 0 {
+		return nil
+	}
+
+	var b strings.Builder
+	b.WriteString(`INSERT INTO channel_protocol_transforms (channel_id, protocol) VALUES `)
+	args := make([]any, 0, len(transforms)*2)
+	for i, protocol := range transforms {
+		if i > 0 {
+			b.WriteByte(',')
 		}
+		b.WriteString("(?, ?)")
+		args = append(args, channelID, protocol)
+	}
+	if _, err := tx.ExecContext(ctx, b.String(), args...); err != nil {
+		return fmt.Errorf("save protocol transforms: %w", err)
 	}
 	return nil
 }
@@ -637,7 +649,6 @@ func (s *SQLStore) saveProtocolTransformsTx(ctx context.Context, tx *sql.Tx, cha
 // dbExecutor 数据库执行器接口，统一 *sql.DB 和 *sql.Tx
 type dbExecutor interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-	PrepareContext(ctx context.Context, query string) (*sql.Stmt, error)
 }
 
 // saveModelEntriesImpl 保存渠道模型数据的统一实现
@@ -652,20 +663,27 @@ func (s *SQLStore) saveModelEntriesImpl(ctx context.Context, exec dbExecutor, ch
 		return nil
 	}
 
-	// 插入新记录（不使用 IGNORE，让错误暴露）
+	// 多值 INSERT 分块提交：单批最多 200 行（800 占位符），兼容 SQLite 默认上限。
 	// created_at 使用递增值保留用户输入顺序，避免同秒写入时被 model 字典序打乱。
-	insertSQL := `INSERT INTO channel_models (channel_id, model, redirect_model, created_at) VALUES (?, ?, ?, ?)`
-
-	stmt, err := exec.PrepareContext(ctx, insertSQL)
-	if err != nil {
-		return fmt.Errorf("prepare insert statement: %w", err)
-	}
-	defer func() { _ = stmt.Close() }()
-
+	const batchSize = 200
 	baseCreatedAt := time.Now().UnixMilli()
-	for i, entry := range entries {
-		if _, err := stmt.ExecContext(ctx, channelID, entry.Model, entry.RedirectModel, baseCreatedAt+int64(i)); err != nil {
-			return fmt.Errorf("save model entry %s: %w", entry.Model, err)
+
+	for offset := 0; offset < len(entries); offset += batchSize {
+		end := min(offset+batchSize, len(entries))
+		chunk := entries[offset:end]
+
+		var b strings.Builder
+		b.WriteString(`INSERT INTO channel_models (channel_id, model, redirect_model, created_at) VALUES `)
+		args := make([]any, 0, len(chunk)*4)
+		for i, entry := range chunk {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString("(?, ?, ?, ?)")
+			args = append(args, channelID, entry.Model, entry.RedirectModel, baseCreatedAt+int64(offset+i))
+		}
+		if _, err := exec.ExecContext(ctx, b.String(), args...); err != nil {
+			return fmt.Errorf("save model entries (offset %d): %w", offset, err)
 		}
 	}
 
