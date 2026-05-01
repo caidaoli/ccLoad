@@ -3,11 +3,8 @@ package storage
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
-	"time"
 
 	"ccLoad/internal/storage/schema"
 )
@@ -27,18 +24,6 @@ const (
 	// DialectMySQL MySQL数据库方言
 	DialectMySQL
 )
-
-// sqliteMigratableTables 允许增量迁移的SQLite表名白名单
-// 安全设计：防止SQL注入，新增表时需在此处注册
-var sqliteMigratableTables = map[string]bool{
-	"logs":                        true,
-	"auth_tokens":                 true,
-	"channel_models":              true,
-	"channel_protocol_transforms": true,
-	"channels":                    true,
-	"debug_logs":                  true,
-	"schema_migrations":           true,
-}
 
 // migrateSQLite 执行SQLite数据库迁移
 func migrateSQLite(ctx context.Context, db *sql.DB) error {
@@ -67,8 +52,6 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	}
 
 	// 一次性预查全库索引，避免每张表单独 SELECT 网络往返
-	// 远程 MySQL（HF Spaces 等）首次启动时 10 次 SELECT 也不便宜，合并为 1 次。
-	// 注意：pre-create hook 若 DROP 表，必须 invalidate 缓存中对应条目。
 	allIndexes, err := loadAllExistingIndexes(ctx, db, dialect)
 	if err != nil {
 		return fmt.Errorf("load all existing indexes: %w", err)
@@ -79,8 +62,6 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		tb := defineTable()
 
 		// Pre-create hook: debug_logs 表改用 log_id 作为主键（2026-04 重构）
-		// 旧结构含 id 自增主键，新结构 log_id 为主键；由于调试日志保留期极短（默认5分钟），
-		// 直接重建表而非复杂 ALTER
 		if tb.Name() == "debug_logs" {
 			if err := rebuildDebugLogsPrimaryKey(ctx, db, dialect); err != nil {
 				return fmt.Errorf("rebuild debug_logs primary key: %w", err)
@@ -88,9 +69,6 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := relaxDebugLogsRespBodyNullable(ctx, db, dialect); err != nil {
 				return fmt.Errorf("relax debug_logs.resp_body nullability: %w", err)
 			}
-			// 这两个 hook 在首次升级时会 DROP 表，缓存中的旧索引条目失效。
-			// 重启路径下 hooks 是 no-op，但失效操作只会让该表所有索引重新走一次"已存在则忽略"
-			// 容错路径，开销 = 表的索引数 × 1 次 DDL（debug_logs 仅 1 个索引），可忽略。
 			delete(allIndexes, "debug_logs")
 		}
 
@@ -147,31 +125,24 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureAuthTokensCacheFields(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate auth_tokens cache fields: %w", err)
 			}
-			// 增量迁移：确保auth_tokens表有allowed_models字段（2026-01新增）
 			if err := ensureAuthTokensAllowedModels(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate auth_tokens allowed_models: %w", err)
 			}
-			// 启动期校验：拒绝脏数据静默放权（allowed_models 解析失败就直接失败）
 			if err := validateAuthTokensAllowedModelsJSON(ctx, db); err != nil {
 				return fmt.Errorf("validate auth_tokens allowed_models: %w", err)
 			}
-			// 增量迁移：确保auth_tokens表有allowed_channel_ids字段（2026-04新增）
 			if err := ensureAuthTokensAllowedChannelIDs(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate auth_tokens allowed_channel_ids: %w", err)
 			}
-			// 启动期校验：拒绝脏数据静默放权
 			if err := validateAuthTokensAllowedChannelIDsJSON(ctx, db); err != nil {
 				return fmt.Errorf("validate auth_tokens allowed_channel_ids: %w", err)
 			}
-			// 增量迁移：确保auth_tokens表有费用限额字段（2026-01新增）
 			if err := ensureAuthTokensCostLimit(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate auth_tokens cost_limit: %w", err)
 			}
-			// 增量迁移：确保auth_tokens表有并发限制字段（2026-04新增）
 			if err := ensureAuthTokensMaxConcurrency(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate auth_tokens max_concurrency: %w", err)
 			}
-			// 启动期校验：拒绝脏数据静默放宽为无限并发
 			if err := validateAuthTokensMaxConcurrency(ctx, db); err != nil {
 				return fmt.Errorf("validate auth_tokens max_concurrency: %w", err)
 			}
@@ -188,10 +159,6 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		}
 
 		// 创建索引
-		// 优化：先批量查询表上已有索引，跳过已存在的 DDL，避免远程数据库每次启动 N 次往返。
-		// 旧实现依赖 MySQL 错误码 1061 / "Duplicate key name" 容错，每次启动仍发送一次 CREATE INDEX
-		// 并等待错误响应。在 HuggingFace Spaces + 远程 MySQL 这类高 RTT 环境下，30+ 索引累计
-		// 往返时间常突破启动迁移超时。改为外层 1 次全库 SELECT 拿索引清单，仅对缺失项执行 DDL。
 		existingIdx := allIndexes[tb.Name()]
 		for _, idx := range buildIndexes(tb, dialect) {
 			if existingIdx[idx.Name] {
@@ -250,481 +217,7 @@ func hasSystemSetting(ctx context.Context, db *sql.DB, dialect Dialect, key stri
 	return err == nil
 }
 
-// ensureLogsNewColumns 确保logs表有新增字段(2025-12新增,支持MySQL和SQLite)
-func ensureLogsNewColumns(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	if dialect == DialectMySQL {
-		if err := ensureLogsMinuteBucketMySQL(ctx, db); err != nil {
-			return err
-		}
-		if err := ensureLogsAuthTokenIDMySQL(ctx, db); err != nil {
-			return err
-		}
-		if err := ensureLogsClientIPMySQL(ctx, db); err != nil {
-			return err
-		}
-		if err := ensureLogsCacheFieldsMySQL(ctx, db); err != nil {
-			return err
-		}
-		if err := ensureLogsAPIKeyHashMySQL(ctx, db); err != nil {
-			return err
-		}
-		if err := ensureLogsActualModelMySQL(ctx, db); err != nil {
-			return err
-		}
-		if err := ensureLogsBaseURLMySQL(ctx, db); err != nil {
-			return err
-		}
-		if err := ensureLogsServiceTierMySQL(ctx, db); err != nil {
-			return err
-		}
-		return ensureLogsLogSourceMySQL(ctx, db)
-	}
-	// SQLite: 使用PRAGMA table_info检查列
-	return ensureLogsColumnsSQLite(ctx, db)
-}
-
-type sqliteColumnDef struct {
-	name       string
-	definition string
-}
-
-func ensureSQLiteColumns(ctx context.Context, db *sql.DB, table string, cols []sqliteColumnDef) error {
-	existingCols, err := sqliteExistingColumns(ctx, db, table)
-	if err != nil {
-		return err
-	}
-
-	for _, col := range cols {
-		if existingCols[col.name] {
-			continue
-		}
-		if _, err := db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, col.name, col.definition)); err != nil {
-			return fmt.Errorf("add %s: %w", col.name, err)
-		}
-	}
-
-	return nil
-}
-
-// mysqlColumnDef MySQL列定义
-type mysqlColumnDef struct {
-	name       string
-	definition string
-}
-
-// ensureMySQLColumns 通用MySQL添加列函数（幂等操作）
-func ensureMySQLColumns(ctx context.Context, db *sql.DB, table string, cols []mysqlColumnDef) error {
-	added := false
-	for _, col := range cols {
-		var count int
-		if err := db.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME=?",
-			table, col.name,
-		).Scan(&count); err != nil {
-			return fmt.Errorf("check %s field: %w", col.name, err)
-		}
-		if count == 0 {
-			if _, err := db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, col.name, col.definition)); err != nil {
-				return fmt.Errorf("add %s column: %w", col.name, err)
-			}
-			added = true
-		}
-	}
-	if added {
-		log.Printf("[MIGRATE] Added columns to %s", table)
-	}
-	return nil
-}
-
-// ensureLogsColumnsSQLite SQLite增量迁移logs表新字段
-func ensureLogsColumnsSQLite(ctx context.Context, db *sql.DB) error {
-	// 第一步：添加基础字段（幂等操作）
-	if err := ensureSQLiteColumns(ctx, db, "logs", []sqliteColumnDef{
-		{name: "minute_bucket", definition: "INTEGER NOT NULL DEFAULT 0"}, // time/60000，用于RPM类聚合
-		{name: "auth_token_id", definition: "INTEGER NOT NULL DEFAULT 0"},
-		{name: "client_ip", definition: "TEXT NOT NULL DEFAULT ''"},
-		{name: "cache_5m_input_tokens", definition: "INTEGER NOT NULL DEFAULT 0"},
-		{name: "cache_1h_input_tokens", definition: "INTEGER NOT NULL DEFAULT 0"},
-		{name: "actual_model", definition: "TEXT NOT NULL DEFAULT ''"}, // 实际转发的模型
-		{name: "log_source", definition: "TEXT NOT NULL DEFAULT 'proxy'"},
-		{name: "api_key_hash", definition: "TEXT NOT NULL DEFAULT ''"}, // API Key SHA256（用于精确定位 key_index）
-		{name: "base_url", definition: "TEXT NOT NULL DEFAULT ''"},     // 请求使用的上游URL（多URL场景）
-		{name: "service_tier", definition: "TEXT NOT NULL DEFAULT ''"}, // OpenAI service_tier: priority/flex
-	}); err != nil {
-		return err
-	}
-
-	// 第二步：迁移历史数据，将cache_creation_input_tokens复制到cache_5m_input_tokens（一次性）
-	const cache5mBackfillMarker = "cache_5m_backfill_done"
-	if !hasMigration(ctx, db, cache5mBackfillMarker) {
-		_, err := db.ExecContext(ctx,
-			"UPDATE logs SET cache_5m_input_tokens = cache_creation_input_tokens WHERE cache_5m_input_tokens = 0 AND cache_1h_input_tokens = 0 AND cache_creation_input_tokens > 0",
-		)
-		if err != nil {
-			return fmt.Errorf("migrate cache_5m data: %w", err)
-		}
-		// 修复已损坏的数据：之前的迁移对1h缓存行错误地设置了cache_5m
-		_, err = db.ExecContext(ctx,
-			"UPDATE logs SET cache_5m_input_tokens = cache_creation_input_tokens - cache_1h_input_tokens WHERE cache_1h_input_tokens > 0 AND cache_5m_input_tokens = cache_creation_input_tokens",
-		)
-		if err != nil {
-			return fmt.Errorf("repair cache_5m data: %w", err)
-		}
-		if err := recordMigration(ctx, db, cache5mBackfillMarker, DialectSQLite); err != nil {
-			return fmt.Errorf("record cache_5m migration marker: %w", err)
-		}
-	}
-
-	// 第三步：回填 minute_bucket（基于标记机制，支持崩溃恢复）
-	const backfillMarker = "minute_bucket_backfill_done"
-	if !hasMigration(ctx, db, backfillMarker) {
-		log.Println("[migrate] backfilling minute_bucket for SQLite...")
-		if err := backfillLogsMinuteBucketSQLite(ctx, db, 5_000); err != nil {
-			return fmt.Errorf("backfill minute_bucket: %w", err)
-		}
-		if err := recordMigration(ctx, db, backfillMarker, DialectSQLite); err != nil {
-			return fmt.Errorf("record migration marker: %w", err)
-		}
-		log.Println("[migrate] minute_bucket backfill completed")
-	}
-
-	return nil
-}
-
-func backfillLogsMinuteBucketSQLite(ctx context.Context, db *sql.DB, batchSize int) error {
-	if batchSize <= 0 {
-		batchSize = 5_000
-	}
-
-	for {
-		res, err := db.ExecContext(ctx,
-			"UPDATE logs SET minute_bucket = (time / 60000) WHERE id IN (SELECT id FROM logs WHERE minute_bucket = 0 AND time > 0 LIMIT ?)",
-			batchSize,
-		)
-		if err != nil {
-			return err
-		}
-		affected, err := res.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if affected == 0 {
-			return nil
-		}
-	}
-}
-
-// ensureLogsAuthTokenIDMySQL 确保logs表有auth_token_id字段(MySQL增量迁移,2025-12新增)
-func ensureLogsAuthTokenIDMySQL(ctx context.Context, db *sql.DB) error {
-	// 检查字段是否存在
-	var count int
-	err := db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='logs' AND COLUMN_NAME='auth_token_id'",
-	).Scan(&count)
-	if err != nil {
-		return fmt.Errorf("check column existence: %w", err)
-	}
-
-	// 字段已存在,跳过
-	if count > 0 {
-		return nil
-	}
-
-	// 添加auth_token_id字段
-	_, err = db.ExecContext(ctx,
-		"ALTER TABLE logs ADD COLUMN auth_token_id BIGINT NOT NULL DEFAULT 0 COMMENT '客户端使用的API令牌ID(新增2025-12)'",
-	)
-	if err != nil {
-		return fmt.Errorf("add auth_token_id column: %w", err)
-	}
-
-	return nil
-}
-
-// ensureLogsClientIPMySQL 确保logs表有client_ip字段(MySQL增量迁移,2025-12新增)
-func ensureLogsClientIPMySQL(ctx context.Context, db *sql.DB) error {
-	var count int
-	err := db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='logs' AND COLUMN_NAME='client_ip'",
-	).Scan(&count)
-	if err != nil {
-		return fmt.Errorf("check column existence: %w", err)
-	}
-
-	if count > 0 {
-		return nil
-	}
-
-	_, err = db.ExecContext(ctx,
-		"ALTER TABLE logs ADD COLUMN client_ip VARCHAR(45) NOT NULL DEFAULT '' COMMENT '客户端IP地址(新增2025-12)'",
-	)
-	if err != nil {
-		return fmt.Errorf("add client_ip column: %w", err)
-	}
-
-	return nil
-}
-
-func ensureLogsAPIKeyHashMySQL(ctx context.Context, db *sql.DB) error {
-	var count int
-	err := db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='logs' AND COLUMN_NAME='api_key_hash'",
-	).Scan(&count)
-	if err != nil {
-		return fmt.Errorf("check api_key_hash existence: %w", err)
-	}
-
-	if count > 0 {
-		return nil
-	}
-
-	_, err = db.ExecContext(ctx,
-		"ALTER TABLE logs ADD COLUMN api_key_hash VARCHAR(64) NOT NULL DEFAULT '' COMMENT 'API Key SHA256(新增2026-02)'",
-	)
-	if err != nil {
-		return fmt.Errorf("add api_key_hash column: %w", err)
-	}
-
-	return nil
-}
-
-func ensureLogsBaseURLMySQL(ctx context.Context, db *sql.DB) error {
-	var count int
-	err := db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='logs' AND COLUMN_NAME='base_url'",
-	).Scan(&count)
-	if err != nil {
-		return fmt.Errorf("check base_url existence: %w", err)
-	}
-
-	if count > 0 {
-		return nil
-	}
-
-	_, err = db.ExecContext(ctx,
-		"ALTER TABLE logs ADD COLUMN base_url VARCHAR(500) NOT NULL DEFAULT '' COMMENT '请求使用的上游URL(新增2026-03)'",
-	)
-	if err != nil {
-		return fmt.Errorf("add base_url column: %w", err)
-	}
-
-	return nil
-}
-
-func ensureLogsServiceTierMySQL(ctx context.Context, db *sql.DB) error {
-	var count int
-	err := db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='logs' AND COLUMN_NAME='service_tier'",
-	).Scan(&count)
-	if err != nil {
-		return fmt.Errorf("check service_tier existence: %w", err)
-	}
-	if count > 0 {
-		return nil
-	}
-	_, err = db.ExecContext(ctx,
-		"ALTER TABLE logs ADD COLUMN service_tier VARCHAR(20) NOT NULL DEFAULT '' COMMENT 'OpenAI service_tier: priority/flex(新增2026-03)'",
-	)
-	if err != nil {
-		return fmt.Errorf("add service_tier column: %w", err)
-	}
-	return nil
-}
-
-func ensureLogsLogSourceMySQL(ctx context.Context, db *sql.DB) error {
-	return ensureMySQLColumns(ctx, db, "logs", []mysqlColumnDef{{name: "log_source", definition: "VARCHAR(32) NOT NULL DEFAULT 'proxy'"}})
-}
-
-// ensureLogsCacheFieldsMySQL 确保logs表有缓存细分字段(MySQL增量迁移,2025-12新增)
-func ensureLogsCacheFieldsMySQL(ctx context.Context, db *sql.DB) error {
-	// 检查cache_5m_input_tokens字段是否存在
-	var count int
-	err := db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='logs' AND COLUMN_NAME='cache_5m_input_tokens'",
-	).Scan(&count)
-	if err != nil {
-		return fmt.Errorf("check cache_5m_input_tokens existence: %w", err)
-	}
-
-	// 字段已存在,跳过
-	if count > 0 {
-		return nil
-	}
-
-	// 添加cache_5m_input_tokens字段
-	_, err = db.ExecContext(ctx,
-		"ALTER TABLE logs ADD COLUMN cache_5m_input_tokens INT NOT NULL DEFAULT 0 COMMENT '5分钟缓存写入Token数(新增2025-12)'",
-	)
-	if err != nil {
-		return fmt.Errorf("add cache_5m_input_tokens column: %w", err)
-	}
-
-	// 添加cache_1h_input_tokens字段
-	_, err = db.ExecContext(ctx,
-		"ALTER TABLE logs ADD COLUMN cache_1h_input_tokens INT NOT NULL DEFAULT 0 COMMENT '1小时缓存写入Token数(新增2025-12)'",
-	)
-	if err != nil {
-		return fmt.Errorf("add cache_1h_input_tokens column: %w", err)
-	}
-
-	// 迁移历史数据，将cache_creation_input_tokens复制到cache_5m_input_tokens
-	_, err = db.ExecContext(ctx,
-		"UPDATE logs SET cache_5m_input_tokens = cache_creation_input_tokens WHERE cache_5m_input_tokens = 0 AND cache_creation_input_tokens > 0",
-	)
-	if err != nil {
-		return fmt.Errorf("migrate cache_5m data: %w", err)
-	}
-
-	return nil
-}
-
-func ensureLogsMinuteBucketMySQL(ctx context.Context, db *sql.DB) error {
-	// 第一步：添加列（幂等操作）
-	var count int
-	err := db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='logs' AND COLUMN_NAME='minute_bucket'",
-	).Scan(&count)
-	if err != nil {
-		return fmt.Errorf("check minute_bucket existence: %w", err)
-	}
-	if count == 0 {
-		_, err = db.ExecContext(ctx,
-			"ALTER TABLE logs ADD COLUMN minute_bucket BIGINT NOT NULL DEFAULT 0 COMMENT 'time/60000，用于RPM类聚合(新增2026-01)'",
-		)
-		if err != nil {
-			return fmt.Errorf("add minute_bucket column: %w", err)
-		}
-	}
-
-	// 第二步：回填历史数据（基于标记机制，支持崩溃恢复）
-	const backfillMarker = "minute_bucket_backfill_done"
-	if !hasMigration(ctx, db, backfillMarker) {
-		log.Println("[migrate] backfilling minute_bucket for MySQL...")
-		if err := backfillLogsMinuteBucketMySQL(ctx, db, 10_000); err != nil {
-			return err
-		}
-		if err := recordMigration(ctx, db, backfillMarker, DialectMySQL); err != nil {
-			return fmt.Errorf("record migration marker: %w", err)
-		}
-		log.Println("[migrate] minute_bucket backfill completed")
-	}
-	return nil
-}
-
-func backfillLogsMinuteBucketMySQL(ctx context.Context, db *sql.DB, batchSize int) error {
-	if batchSize <= 0 {
-		batchSize = 10_000
-	}
-
-	for {
-		res, err := db.ExecContext(ctx,
-			"UPDATE logs SET minute_bucket = FLOOR(time / 60000) WHERE minute_bucket = 0 AND time > 0 LIMIT ?",
-			batchSize,
-		)
-		if err != nil {
-			return fmt.Errorf("backfill minute_bucket: %w", err)
-		}
-		affected, err := res.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if affected == 0 {
-			return nil
-		}
-	}
-}
-
-// ensureAuthTokensCacheFields 确保auth_tokens表有缓存token字段(2025-12新增,支持MySQL和SQLite)
-func ensureAuthTokensCacheFields(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	if dialect == DialectMySQL {
-		return ensureAuthTokensCacheFieldsMySQL(ctx, db)
-	}
-	return ensureAuthTokensCacheFieldsSQLite(ctx, db)
-}
-
-// ensureAuthTokensCacheFieldsSQLite SQLite增量迁移auth_tokens缓存字段
-func ensureAuthTokensCacheFieldsSQLite(ctx context.Context, db *sql.DB) error {
-	return ensureSQLiteColumns(ctx, db, "auth_tokens", []sqliteColumnDef{
-		{name: "cache_read_tokens_total", definition: "INTEGER NOT NULL DEFAULT 0"},
-		{name: "cache_creation_tokens_total", definition: "INTEGER NOT NULL DEFAULT 0"},
-	})
-}
-
-// ensureAuthTokensCacheFieldsMySQL MySQL增量迁移auth_tokens缓存字段
-func ensureAuthTokensCacheFieldsMySQL(ctx context.Context, db *sql.DB) error {
-	// 检查cache_read_tokens_total字段是否存在
-	var count int
-	err := db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='auth_tokens' AND COLUMN_NAME='cache_read_tokens_total'",
-	).Scan(&count)
-	if err != nil {
-		return fmt.Errorf("check cache_read_tokens_total existence: %w", err)
-	}
-
-	// 字段已存在,跳过
-	if count > 0 {
-		return nil
-	}
-
-	// 添加cache_read_tokens_total字段
-	_, err = db.ExecContext(ctx,
-		"ALTER TABLE auth_tokens ADD COLUMN cache_read_tokens_total BIGINT NOT NULL DEFAULT 0 COMMENT '累计缓存读Token数'",
-	)
-	if err != nil {
-		return fmt.Errorf("add cache_read_tokens_total column: %w", err)
-	}
-
-	// 添加cache_creation_tokens_total字段
-	_, err = db.ExecContext(ctx,
-		"ALTER TABLE auth_tokens ADD COLUMN cache_creation_tokens_total BIGINT NOT NULL DEFAULT 0 COMMENT '累计缓存写Token数'",
-	)
-	if err != nil {
-		return fmt.Errorf("add cache_creation_tokens_total column: %w", err)
-	}
-
-	return nil
-}
-
-func sqliteExistingColumns(ctx context.Context, db *sql.DB, table string) (map[string]bool, error) {
-	if !sqliteMigratableTables[table] {
-		return nil, fmt.Errorf("invalid table name: %s", table)
-	}
-
-	rows, err := db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
-	if err != nil {
-		return nil, fmt.Errorf("get table info: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	existingCols := make(map[string]bool)
-	for rows.Next() {
-		var cid int
-		var name, colType string
-		var notNull, pk int
-		var dfltValue any
-		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
-			return nil, fmt.Errorf("scan column info: %w", err)
-		}
-		existingCols[name] = true
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate columns: %w", err)
-	}
-
-	return existingCols, nil
-}
-
 // loadAllExistingIndexes 一次性查询整个数据库下所有表的现有索引集合
-//
-// 设计意图：
-//   - 远程数据库（HF Spaces + 远程 MySQL）每条 SQL 都有可观 RTT；用 1 次全库 SELECT
-//     替代 N 次 CREATE INDEX-报错-忽略 或 N 次单表 SELECT，启动阶段时间从 O(N×RTT) 降到 O(1×RTT)
-//   - 返回 map[tableName]map[indexName]bool；不存在的表/索引读取得到 nil/false，不需要 ok 判断
-//
-// MySQL：information_schema.STATISTICS 每个复合索引列一行，DISTINCT 去重
-// SQLite：sqlite_master 每个索引一行
-//
-// 注意：调用方若执行 DROP TABLE 之类的破坏性操作，需主动 delete(result, tableName) 失效缓存
 func loadAllExistingIndexes(ctx context.Context, db *sql.DB, dialect Dialect) (map[string]map[string]bool, error) {
 	var query string
 	if dialect == DialectMySQL {
@@ -776,7 +269,6 @@ func createIndex(ctx context.Context, db *sql.DB, idx schema.IndexDef, dialect D
 	}
 
 	// MySQL 5.6不支持IF NOT EXISTS，忽略重复索引错误(1061)
-	// 不同版本消息不同: "Duplicate key name" 或 "index already exist"
 	if dialect == DialectMySQL {
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "1061") ||
@@ -786,7 +278,6 @@ func createIndex(ctx context.Context, db *sql.DB, idx schema.IndexDef, dialect D
 		}
 	}
 
-	// SQLite的IF NOT EXISTS应该不会报错，但如果报错则返回
 	return fmt.Errorf("create index: %w", err)
 }
 
@@ -829,8 +320,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		}
 	}
 
-	// 刷新部分配置项的元信息（description/default/value_type），避免“代码语义已变但DB描述仍旧”。
-	// 不更新 updated_at：这不是用户配置变更，只是元数据对齐。
+	// 刷新部分配置项的元信息（description/default/value_type），避免"代码语义已变但DB描述仍旧"。
 	{
 		keyCol := "key"
 		if dialect == DialectMySQL {
@@ -846,7 +336,6 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		); err != nil {
 			return fmt.Errorf("refresh setting metadata upstream_first_byte_timeout: %w", err)
 		}
-		// debug_log_retention_minutes: 默认值 5 → 2（2026-04），仅刷新 default_value，不覆盖 value
 		if _, err := db.ExecContext(ctx, metaSQL,
 			"Debug日志保留时长(分钟,1-1440)",
 			"2",
@@ -870,12 +359,12 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		}
 	}
 
-	// 清理已废弃的配置项（先执行，避免被后续逻辑的 return 跳过）
+	// 清理已废弃的配置项
 	obsoleteKeys := []string{
 		"88code_free_only", // 2026-01移除：88code免费订阅限制功能已删除
 	}
 	for _, key := range obsoleteKeys {
-		_ = deleteSystemSetting(ctx, db, dialect, key) // 忽略错误（可能不存在）
+		_ = deleteSystemSetting(ctx, db, dialect, key)
 	}
 
 	// 迁移旧 migration marker 从 system_settings 到 schema_migrations
@@ -884,14 +373,12 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 	}
 	for _, marker := range legacyMigrationMarkers {
 		if hasSystemSetting(ctx, db, dialect, marker) {
-			// 先迁移到 schema_migrations，再删除旧记录
 			_ = recordMigration(ctx, db, marker, dialect)
 			_ = deleteSystemSetting(ctx, db, dialect, marker)
 		}
 	}
 
 	// 迁移旧键名 cooldown_fallback_threshold → cooldown_fallback_enabled
-	// 同时处理 int→bool 的类型迁移
 	if hasSystemSetting(ctx, db, dialect, "cooldown_fallback_threshold") {
 		const oldKey = "cooldown_fallback_threshold"
 		const newKey = "cooldown_fallback_enabled"
@@ -901,14 +388,12 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 			keyCol = "`key`"
 		}
 
-		// 1. 先将旧的 int 值(0/非0)迁移为 bool 值(false/true)
 		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
 		valueMigrateSQL := fmt.Sprintf(`UPDATE system_settings SET value = CASE WHEN value = '0' THEN 'false' ELSE 'true' END WHERE %s = ? AND value_type = 'int'`, keyCol)
 		if _, err := db.ExecContext(ctx, valueMigrateSQL, oldKey); err != nil {
 			return fmt.Errorf("migrate setting value %s: %w", oldKey, err)
 		}
 
-		// 2. 如果新键已存在，直接删除旧键；否则重命名
 		if hasSystemSetting(ctx, db, dialect, newKey) {
 			if err := deleteSystemSetting(ctx, db, dialect, oldKey); err != nil {
 				return err
@@ -920,67 +405,6 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 				return fmt.Errorf("rename setting %s to %s: %w", oldKey, newKey, err)
 			}
 		}
-	}
-
-	return nil
-}
-
-// ensureLogsActualModelMySQL 确保logs表有actual_model字段(MySQL增量迁移)
-func ensureLogsActualModelMySQL(ctx context.Context, db *sql.DB) error {
-	var count int
-	err := db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='logs' AND COLUMN_NAME='actual_model'",
-	).Scan(&count)
-	if err != nil {
-		return fmt.Errorf("check actual_model existence: %w", err)
-	}
-
-	if count > 0 {
-		return nil
-	}
-
-	_, err = db.ExecContext(ctx,
-		"ALTER TABLE logs ADD COLUMN actual_model VARCHAR(191) NOT NULL DEFAULT '' COMMENT '实际转发的模型(空表示未重定向)'",
-	)
-	if err != nil {
-		return fmt.Errorf("add actual_model column: %w", err)
-	}
-
-	return nil
-}
-
-// migrateChannelModelsSchema 迁移channel_models表结构
-// 版本控制：使用 schema_migrations 表记录已执行的迁移，确保幂等性
-// 1. 添加redirect_model字段
-// 2. 从channels.models和model_redirects迁移数据到channel_models
-// 3. 放宽channels表废弃字段约束(NOT NULL → NULL)，保留兼容性以支持版本回滚
-func migrateChannelModelsSchema(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	// 检查迁移是否已执行（幂等性保证）
-	if applied, err := isMigrationApplied(ctx, db, channelModelsRedirectMigrationVersion); err != nil {
-		return fmt.Errorf("check migration status: %w", err)
-	} else if applied {
-		return nil // 已执行，跳过
-	}
-
-	// 第一步：添加redirect_model字段
-	if err := ensureChannelModelsRedirectField(ctx, db, dialect); err != nil {
-		return err
-	}
-
-	// 第二步：从channels.model_redirects迁移数据到channel_models
-	if err := migrateModelRedirectsData(ctx, db, dialect); err != nil {
-		return err
-	}
-
-	// 第三步：放宽channels表废弃字段约束（NOT NULL → NULL）
-	if err := relaxDeprecatedChannelFields(ctx, db, dialect); err != nil {
-		return err
-	}
-
-	// 记录迁移完成
-	if err := recordMigration(ctx, db, channelModelsRedirectMigrationVersion, dialect); err != nil {
-		log.Printf("[WARN] Failed to record migration %s: %v", channelModelsRedirectMigrationVersion, err)
-		// 不阻塞，迁移本身已成功
 	}
 
 	return nil
@@ -1017,283 +441,6 @@ func recordMigration(ctx context.Context, db *sql.DB, version string, dialect Di
 	return err
 }
 
-// ensureChannelModelsRedirectField 确保channel_models表有redirect_model字段
-func ensureChannelModelsRedirectField(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	if dialect == DialectMySQL {
-		var count int
-		err := db.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channel_models' AND COLUMN_NAME='redirect_model'",
-		).Scan(&count)
-		if err != nil {
-			return fmt.Errorf("check redirect_model existence: %w", err)
-		}
-		if count > 0 {
-			return nil
-		}
-		_, err = db.ExecContext(ctx,
-			"ALTER TABLE channel_models ADD COLUMN redirect_model VARCHAR(191) NOT NULL DEFAULT '' COMMENT '重定向目标模型(空表示不重定向)'",
-		)
-		if err != nil {
-			return fmt.Errorf("add redirect_model column: %w", err)
-		}
-		return nil
-	}
-
-	// SQLite
-	return ensureSQLiteColumns(ctx, db, "channel_models", []sqliteColumnDef{
-		{name: "redirect_model", definition: "TEXT NOT NULL DEFAULT ''"},
-	})
-}
-
-// migrateModelRedirectsData 从channels.models和model_redirects迁移数据到channel_models
-func migrateModelRedirectsData(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	// 检查是否需要迁移
-	needMigration, err := needChannelModelsMigration(ctx, db, dialect)
-	if err != nil {
-		return err
-	}
-	if !needMigration {
-		return nil
-	}
-
-	// 查询所有需要迁移的渠道（有models数据）
-	// 注意：必须同时查询 models 和 model_redirects
-	rows, err := db.QueryContext(ctx,
-		"SELECT id, created_at, models, model_redirects FROM channels WHERE models != '' AND models != '[]'")
-	if err != nil {
-		return fmt.Errorf("query channels for migration: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	// 收集所有待迁移的数据
-	type modelEntry struct {
-		channelID     int64
-		model         string
-		redirectModel string
-		createdAt     int64
-	}
-	var entries []modelEntry
-	var channelIDs []int64
-
-	for rows.Next() {
-		var channelID int64
-		var channelCreatedAt int64
-		var modelsJSON, redirectsJSON string
-		if err := rows.Scan(&channelID, &channelCreatedAt, &modelsJSON, &redirectsJSON); err != nil {
-			return fmt.Errorf("scan channel data: %w", err)
-		}
-
-		// [FIX] P2: 解析 models JSON 数组，失败时中断迁移（Fail-Fast）
-		models, err := parseModelsForMigration(modelsJSON)
-		if err != nil {
-			return fmt.Errorf("channel %d: %w", channelID, err)
-		}
-		if len(models) == 0 {
-			continue
-		}
-
-		// 只有解析成功才记录 channelID（避免解析失败的渠道被重命名字段后丢失数据）
-		channelIDs = append(channelIDs, channelID)
-
-		// 解析 model_redirects JSON 对象
-		redirects, _ := parseModelRedirectsForMigration(redirectsJSON)
-		if redirects == nil {
-			redirects = make(map[string]string)
-		}
-
-		baseCreatedAt := channelCreatedAt * 1000
-		if baseCreatedAt <= 0 {
-			baseCreatedAt = time.Now().UnixMilli()
-		}
-
-		// 构建条目：每个模型一条记录
-		for i, model := range models {
-			entries = append(entries, modelEntry{
-				channelID:     channelID,
-				model:         model,
-				redirectModel: redirects[model], // 如果没有重定向则为空
-				createdAt:     baseCreatedAt + int64(i),
-			})
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-
-	// 无数据需要迁移
-	if len(channelIDs) == 0 {
-		return nil
-	}
-
-	// 使用事务批量执行
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin migration tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	// 插入或更新 channel_models
-	for _, e := range entries {
-		var upsertSQL string
-		if dialect == DialectMySQL {
-			upsertSQL = `INSERT INTO channel_models (channel_id, model, redirect_model, created_at)
-				VALUES (?, ?, ?, ?)
-				ON DUPLICATE KEY UPDATE redirect_model = VALUES(redirect_model), created_at = VALUES(created_at)`
-		} else {
-			upsertSQL = `INSERT INTO channel_models (channel_id, model, redirect_model, created_at)
-				VALUES (?, ?, ?, ?)
-				ON CONFLICT(channel_id, model) DO UPDATE SET redirect_model = excluded.redirect_model, created_at = excluded.created_at`
-		}
-		if _, err := tx.ExecContext(ctx, upsertSQL, e.channelID, e.model, e.redirectModel, e.createdAt); err != nil {
-			return fmt.Errorf("upsert channel_model: %w", err)
-		}
-	}
-
-	// 数据迁移完成，字段约束放宽在 relaxDeprecatedChannelFields 中处理
-	return tx.Commit()
-}
-
-func repairLegacyChannelModelOrder(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	if hasMigration(ctx, db, channelModelsOrderRepairVersion) {
-		return nil
-	}
-
-	appliedAt, ok, err := migrationAppliedAt(ctx, db, channelModelsRedirectMigrationVersion)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return recordMigration(ctx, db, channelModelsOrderRepairVersion, dialect)
-	}
-
-	needRepair, err := needChannelModelsMigration(ctx, db, dialect)
-	if err != nil {
-		return err
-	}
-	if !needRepair {
-		return recordMigration(ctx, db, channelModelsOrderRepairVersion, dialect)
-	}
-
-	rows, err := db.QueryContext(ctx, `
-		SELECT id, created_at, models, model_redirects
-		FROM channels
-		WHERE models IS NOT NULL AND models != '' AND models != '[]' AND updated_at <= ?
-	`, appliedAt)
-	if err != nil {
-		return fmt.Errorf("query legacy channel order candidates: %w", err)
-	}
-
-	type legacyOrderCandidate struct {
-		channelID        int64
-		channelCreatedAt int64
-		modelsJSON       string
-		redirectsJSON    string
-	}
-	candidates := make([]legacyOrderCandidate, 0)
-	for rows.Next() {
-		var candidate legacyOrderCandidate
-		if err := rows.Scan(&candidate.channelID, &candidate.channelCreatedAt, &candidate.modelsJSON, &candidate.redirectsJSON); err != nil {
-			_ = rows.Close()
-			return fmt.Errorf("scan legacy channel order candidate: %w", err)
-		}
-		candidates = append(candidates, candidate)
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return fmt.Errorf("iterate legacy channel order candidates: %w", err)
-	}
-	if err := rows.Close(); err != nil {
-		return fmt.Errorf("close legacy channel order candidates: %w", err)
-	}
-
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin legacy order repair tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	updateStmt, err := tx.PrepareContext(ctx, `UPDATE channel_models SET created_at = ? WHERE channel_id = ? AND model = ?`)
-	if err != nil {
-		return fmt.Errorf("prepare legacy order repair update: %w", err)
-	}
-	defer func() { _ = updateStmt.Close() }()
-
-	for _, candidate := range candidates {
-		desiredOrder, err := parseModelsForMigration(candidate.modelsJSON)
-		if err != nil {
-			return fmt.Errorf("channel %d: %w", candidate.channelID, err)
-		}
-		if len(desiredOrder) == 0 {
-			continue
-		}
-
-		desiredRedirects, err := parseModelRedirectsForMigration(candidate.redirectsJSON)
-		if err != nil {
-			return fmt.Errorf("channel %d parse model_redirects JSON: %w", candidate.channelID, err)
-		}
-		if !legacyChannelModelsNeedOrderRepair(ctx, tx, candidate.channelID, desiredOrder, desiredRedirects) {
-			continue
-		}
-
-		baseCreatedAt := candidate.channelCreatedAt * 1000
-		if baseCreatedAt <= 0 {
-			baseCreatedAt = appliedAt * 1000
-		}
-		for i, modelName := range desiredOrder {
-			if _, err := updateStmt.ExecContext(ctx, baseCreatedAt+int64(i), candidate.channelID, modelName); err != nil {
-				return fmt.Errorf("repair channel %d model order for %s: %w", candidate.channelID, modelName, err)
-			}
-		}
-	}
-
-	if err := recordMigrationTx(ctx, tx, channelModelsOrderRepairVersion, dialect); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-func legacyChannelModelsNeedOrderRepair(ctx context.Context, tx *sql.Tx, channelID int64, desiredOrder []string, desiredRedirects map[string]string) bool {
-	rows, err := tx.QueryContext(ctx, `
-		SELECT model, redirect_model
-		FROM channel_models
-		WHERE channel_id = ?
-		ORDER BY created_at ASC, model ASC
-	`, channelID)
-	if err != nil {
-		return false
-	}
-	defer func() { _ = rows.Close() }()
-
-	currentOrder := make([]string, 0, len(desiredOrder))
-	currentRedirects := make(map[string]string, len(desiredOrder))
-	for rows.Next() {
-		var modelName, redirectModel string
-		if err := rows.Scan(&modelName, &redirectModel); err != nil {
-			return false
-		}
-		currentOrder = append(currentOrder, modelName)
-		currentRedirects[modelName] = redirectModel
-	}
-	if err := rows.Err(); err != nil || len(currentOrder) != len(desiredOrder) {
-		return false
-	}
-
-	for i, modelName := range desiredOrder {
-		currentRedirect, ok := currentRedirects[modelName]
-		if !ok {
-			return false
-		}
-		if currentRedirect != desiredRedirects[modelName] {
-			return false
-		}
-		if currentOrder[i] != modelName {
-			return true
-		}
-	}
-
-	return false
-}
-
 func migrationAppliedAt(ctx context.Context, db *sql.DB, version string) (int64, bool, error) {
 	var appliedAt int64
 	err := db.QueryRowContext(ctx, `SELECT applied_at FROM schema_migrations WHERE version = ?`, version).Scan(&appliedAt)
@@ -1315,573 +462,4 @@ func recordMigrationTx(ctx context.Context, tx *sql.Tx, version string, dialect 
 	}
 	_, err := tx.ExecContext(ctx, insertSQL, version)
 	return err
-}
-
-// needChannelModelsMigration 检查是否需要迁移
-// 检查 channels.models 字段是否存在（未被重命名为 _deprecated_models）
-func needChannelModelsMigration(ctx context.Context, db *sql.DB, dialect Dialect) (bool, error) {
-	if dialect == DialectMySQL {
-		// MySQL: 检查 models 字段是否存在
-		var count int
-		err := db.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channels' AND COLUMN_NAME='models'",
-		).Scan(&count)
-		if err != nil {
-			return false, fmt.Errorf("check models column: %w", err)
-		}
-		return count > 0, nil
-	}
-
-	// SQLite: 检查 models 字段是否存在
-	existingCols, err := sqliteExistingColumns(ctx, db, "channels")
-	if err != nil {
-		return false, nil // 表不存在或其他错误，视为无需迁移
-	}
-	return existingCols["models"], nil
-}
-
-// parseModelsForMigration 解析 models JSON 数组用于迁移
-// [FIX] P2: 解析失败返回错误而非静默忽略，避免数据丢失
-func parseModelsForMigration(jsonStr string) ([]string, error) {
-	if jsonStr == "" || jsonStr == "[]" {
-		return nil, nil
-	}
-	var models []string
-	if err := json.Unmarshal([]byte(jsonStr), &models); err != nil {
-		return nil, fmt.Errorf("parse models JSON %q: %w", jsonStr, err)
-	}
-	return models, nil
-}
-
-// parseModelRedirectsForMigration 解析model_redirects JSON用于迁移
-func parseModelRedirectsForMigration(jsonStr string) (map[string]string, error) {
-	if jsonStr == "" || jsonStr == "{}" {
-		return nil, nil
-	}
-	var redirects map[string]string
-	if err := json.Unmarshal([]byte(jsonStr), &redirects); err != nil {
-		return nil, fmt.Errorf("parse model_redirects JSON: %w", err)
-	}
-	return redirects, nil
-}
-
-// relaxDeprecatedChannelFields 放宽channels表废弃字段的约束
-// 将 models 和 model_redirects 从 NOT NULL 改为允许 NULL
-// 这样新版程序 INSERT 时不提供这些字段也不会报错，同时保留字段名以支持版本回滚
-func relaxDeprecatedChannelFields(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	if dialect == DialectMySQL {
-		// MySQL: 使用 MODIFY COLUMN 去除 NOT NULL
-		var count int
-		err := db.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channels' AND COLUMN_NAME='models'",
-		).Scan(&count)
-		if err != nil {
-			return fmt.Errorf("check models field: %w", err)
-		}
-		if count > 0 {
-			if _, err := db.ExecContext(ctx,
-				"ALTER TABLE channels MODIFY COLUMN models TEXT NULL"); err != nil {
-				return fmt.Errorf("modify models column: %w", err)
-			}
-			log.Printf("[MIGRATE] Modified channels.models: NOT NULL → NULL")
-		}
-
-		err = db.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channels' AND COLUMN_NAME='model_redirects'",
-		).Scan(&count)
-		if err != nil {
-			return fmt.Errorf("check model_redirects field: %w", err)
-		}
-		if count > 0 {
-			if _, err := db.ExecContext(ctx,
-				"ALTER TABLE channels MODIFY COLUMN model_redirects TEXT NULL"); err != nil {
-				return fmt.Errorf("modify model_redirects column: %w", err)
-			}
-			log.Printf("[MIGRATE] Modified channels.model_redirects: NOT NULL → NULL")
-		}
-		return nil
-	}
-
-	// SQLite: 不支持直接修改列约束，但 TEXT 类型天然允许 NULL
-	// SQLite 的 NOT NULL 约束只在显式 INSERT 该列时检查
-	// 新版程序 INSERT 语句不包含这些列，SQLite 会使用默认值（NULL）
-	return nil
-}
-
-// migrateChannelsURLToText 将channels.url从VARCHAR(191)扩展为TEXT
-// 支持多URL存储（换行分隔）
-func migrateChannelsURLToText(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	if dialect != DialectMySQL {
-		// SQLite: VARCHAR(191) 本质上就是 TEXT，无需变更
-		return nil
-	}
-
-	// MySQL: 检查当前列类型
-	var dataType string
-	err := db.QueryRowContext(ctx,
-		"SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channels' AND COLUMN_NAME='url'",
-	).Scan(&dataType)
-	if err != nil {
-		return fmt.Errorf("check url column type: %w", err)
-	}
-
-	if strings.EqualFold(dataType, "text") {
-		return nil // 已经是 TEXT
-	}
-
-	if _, err := db.ExecContext(ctx,
-		"ALTER TABLE channels MODIFY COLUMN url TEXT NOT NULL"); err != nil {
-		return fmt.Errorf("modify url column to TEXT: %w", err)
-	}
-	log.Printf("[MIGRATE] Modified channels.url: VARCHAR → TEXT")
-	return nil
-}
-
-func ensureChannelsProtocolTransformMode(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	if dialect == DialectMySQL {
-		var count int
-		err := db.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channels' AND COLUMN_NAME='protocol_transform_mode'",
-		).Scan(&count)
-		if err != nil {
-			return fmt.Errorf("check protocol_transform_mode field: %w", err)
-		}
-		if count == 0 {
-			if _, err := db.ExecContext(ctx,
-				"ALTER TABLE channels ADD COLUMN protocol_transform_mode VARCHAR(32) NOT NULL DEFAULT 'local'"); err != nil {
-				return fmt.Errorf("add protocol_transform_mode column: %w", err)
-			}
-			log.Printf("[MIGRATE] Added channels.protocol_transform_mode column")
-		}
-		return nil
-	}
-
-	return ensureSQLiteColumns(ctx, db, "channels", []sqliteColumnDef{
-		{name: "protocol_transform_mode", definition: "TEXT NOT NULL DEFAULT 'local'"},
-	})
-}
-
-// ensureChannelsDailyCostLimit 确保channels表有daily_cost_limit字段
-func ensureChannelsDailyCostLimit(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	if dialect == DialectMySQL {
-		// MySQL: 检查字段是否存在
-		var count int
-		err := db.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channels' AND COLUMN_NAME='daily_cost_limit'",
-		).Scan(&count)
-		if err != nil {
-			return fmt.Errorf("check daily_cost_limit field: %w", err)
-		}
-		if count == 0 {
-			if _, err := db.ExecContext(ctx,
-				"ALTER TABLE channels ADD COLUMN daily_cost_limit DOUBLE NOT NULL DEFAULT 0"); err != nil {
-				return fmt.Errorf("add daily_cost_limit column: %w", err)
-			}
-			log.Printf("[MIGRATE] Added channels.daily_cost_limit column")
-		}
-		return nil
-	}
-
-	// SQLite: 使用通用添加列函数
-	return ensureSQLiteColumns(ctx, db, "channels", []sqliteColumnDef{
-		{name: "daily_cost_limit", definition: "REAL NOT NULL DEFAULT 0"},
-	})
-}
-
-// ensureChannelsCostMultiplier 确保channels表有cost_multiplier字段（2026-04新增，渠道成本倍率）
-func ensureChannelsCostMultiplier(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	if dialect == DialectMySQL {
-		var count int
-		err := db.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channels' AND COLUMN_NAME='cost_multiplier'",
-		).Scan(&count)
-		if err != nil {
-			return fmt.Errorf("check cost_multiplier field: %w", err)
-		}
-		if count == 0 {
-			if _, err := db.ExecContext(ctx,
-				"ALTER TABLE channels ADD COLUMN cost_multiplier DOUBLE NOT NULL DEFAULT 1"); err != nil {
-				return fmt.Errorf("add cost_multiplier column: %w", err)
-			}
-			log.Printf("[MIGRATE] Added channels.cost_multiplier column")
-		}
-		return nil
-	}
-
-	return ensureSQLiteColumns(ctx, db, "channels", []sqliteColumnDef{
-		{name: "cost_multiplier", definition: "REAL NOT NULL DEFAULT 1"},
-	})
-}
-
-// ensureLogsCostMultiplier 确保logs表有cost_multiplier字段（2026-04新增，写日志时快照渠道倍率）
-func ensureLogsCostMultiplier(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	if dialect == DialectMySQL {
-		var count int
-		err := db.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='logs' AND COLUMN_NAME='cost_multiplier'",
-		).Scan(&count)
-		if err != nil {
-			return fmt.Errorf("check logs.cost_multiplier field: %w", err)
-		}
-		if count == 0 {
-			if _, err := db.ExecContext(ctx,
-				"ALTER TABLE logs ADD COLUMN cost_multiplier DOUBLE NOT NULL DEFAULT 1"); err != nil {
-				return fmt.Errorf("add logs.cost_multiplier column: %w", err)
-			}
-			log.Printf("[MIGRATE] Added logs.cost_multiplier column")
-		}
-		return nil
-	}
-
-	return ensureSQLiteColumns(ctx, db, "logs", []sqliteColumnDef{
-		{name: "cost_multiplier", definition: "REAL NOT NULL DEFAULT 1"},
-	})
-}
-
-// ensureChannelsScheduledCheckEnabled 确保channels表有scheduled_check_enabled字段
-func ensureChannelsScheduledCheckEnabled(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	if dialect == DialectMySQL {
-		var count int
-		err := db.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channels' AND COLUMN_NAME='scheduled_check_enabled'",
-		).Scan(&count)
-		if err != nil {
-			return fmt.Errorf("check scheduled_check_enabled field: %w", err)
-		}
-		if count == 0 {
-			if _, err := db.ExecContext(ctx,
-				"ALTER TABLE channels ADD COLUMN scheduled_check_enabled TINYINT NOT NULL DEFAULT 0"); err != nil {
-				return fmt.Errorf("add scheduled_check_enabled column: %w", err)
-			}
-			log.Printf("[MIGRATE] Added channels.scheduled_check_enabled column")
-		}
-		return nil
-	}
-
-	return ensureSQLiteColumns(ctx, db, "channels", []sqliteColumnDef{
-		{name: "scheduled_check_enabled", definition: "INTEGER NOT NULL DEFAULT 0"},
-	})
-}
-
-func ensureChannelsScheduledCheckModel(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	if dialect == DialectMySQL {
-		var count int
-		err := db.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channels' AND COLUMN_NAME='scheduled_check_model'",
-		).Scan(&count)
-		if err != nil {
-			return fmt.Errorf("check scheduled_check_model field: %w", err)
-		}
-		if count == 0 {
-			if _, err := db.ExecContext(ctx,
-				"ALTER TABLE channels ADD COLUMN scheduled_check_model VARCHAR(191) NOT NULL DEFAULT ''"); err != nil {
-				return fmt.Errorf("add scheduled_check_model column: %w", err)
-			}
-			log.Printf("[MIGRATE] Added channels.scheduled_check_model column")
-		}
-		return nil
-	}
-
-	return ensureSQLiteColumns(ctx, db, "channels", []sqliteColumnDef{{name: "scheduled_check_model", definition: "TEXT NOT NULL DEFAULT ''"}})
-}
-
-func ensureChannelsCustomRequestRules(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	if dialect == DialectMySQL {
-		var count int
-		err := db.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channels' AND COLUMN_NAME='custom_request_rules'",
-		).Scan(&count)
-		if err != nil {
-			return fmt.Errorf("check custom_request_rules field: %w", err)
-		}
-		if count == 0 {
-			if _, err := db.ExecContext(ctx,
-				"ALTER TABLE channels ADD COLUMN custom_request_rules TEXT"); err != nil {
-				return fmt.Errorf("add custom_request_rules column: %w", err)
-			}
-			log.Printf("[MIGRATE] Added channels.custom_request_rules column")
-		}
-		return nil
-	}
-
-	return ensureSQLiteColumns(ctx, db, "channels", []sqliteColumnDef{{name: "custom_request_rules", definition: "TEXT"}})
-}
-
-// ensureAPIKeysAPIKeyLength 修复 api_keys.api_key 列定义漂移（MySQL）
-func ensureAPIKeysAPIKeyLength(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	if dialect != DialectMySQL {
-		return nil
-	}
-
-	var (
-		dataType   string
-		charMaxLen sql.NullInt64
-		isNullable string
-	)
-	err := db.QueryRowContext(ctx, `
-		SELECT DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE
-		FROM INFORMATION_SCHEMA.COLUMNS
-		WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='api_keys' AND COLUMN_NAME='api_key'
-	`).Scan(&dataType, &charMaxLen, &isNullable)
-	if err != nil {
-		return fmt.Errorf("query api_keys.api_key column info: %w", err)
-	}
-
-	const targetLen = 255
-
-	needModify := !strings.EqualFold(dataType, "varchar") ||
-		!charMaxLen.Valid ||
-		charMaxLen.Int64 < targetLen ||
-		!strings.EqualFold(isNullable, "NO")
-	if !needModify {
-		return nil
-	}
-
-	if _, err := db.ExecContext(ctx, "ALTER TABLE api_keys MODIFY COLUMN api_key VARCHAR(255) NOT NULL"); err != nil {
-		return fmt.Errorf("modify api_keys.api_key column: %w", err)
-	}
-
-	currentLen := int64(0)
-	if charMaxLen.Valid {
-		currentLen = charMaxLen.Int64
-	}
-	log.Printf(
-		"[MIGRATE] Modified api_keys.api_key column: type=%s len=%d nullable=%s -> VARCHAR(255) NOT NULL",
-		dataType,
-		currentLen,
-		isNullable,
-	)
-
-	return nil
-}
-
-// ensureAuthTokensAllowedModels 确保auth_tokens表有allowed_models字段
-func ensureAuthTokensAllowedModels(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	if dialect == DialectMySQL {
-		// MySQL: 检查字段是否存在
-		var count int
-		err := db.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='auth_tokens' AND COLUMN_NAME='allowed_models'",
-		).Scan(&count)
-		if err != nil {
-			return fmt.Errorf("check allowed_models field: %w", err)
-		}
-		if count == 0 {
-			if _, err := db.ExecContext(ctx,
-				"ALTER TABLE auth_tokens ADD COLUMN allowed_models VARCHAR(2000) NOT NULL DEFAULT ''"); err != nil {
-				return fmt.Errorf("add allowed_models column: %w", err)
-			}
-			log.Printf("[MIGRATE] Added auth_tokens.allowed_models column")
-		}
-		return nil
-	}
-
-	// SQLite: 使用通用添加列函数
-	return ensureSQLiteColumns(ctx, db, "auth_tokens", []sqliteColumnDef{
-		{name: "allowed_models", definition: "TEXT NOT NULL DEFAULT ''"},
-	})
-}
-
-func validateAuthTokensAllowedModelsJSON(ctx context.Context, db *sql.DB) error {
-	rows, err := db.QueryContext(ctx, "SELECT id, allowed_models FROM auth_tokens WHERE allowed_models <> ''")
-	if err != nil {
-		return fmt.Errorf("query auth_tokens.allowed_models: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	for rows.Next() {
-		var id int64
-		var raw string
-		if err := rows.Scan(&id, &raw); err != nil {
-			return fmt.Errorf("scan auth_tokens.allowed_models: %w", err)
-		}
-
-		// SQLite BLOB 类型亲和性可能导致 WHERE <> '' 过滤失效，显式跳过空字符串
-		if raw == "" {
-			continue
-		}
-		var models []string
-		if err := json.Unmarshal([]byte(raw), &models); err != nil {
-			return fmt.Errorf(
-				"auth_tokens.allowed_models invalid json: id=%d allowed_models=%q: %w (fix: UPDATE auth_tokens SET allowed_models='' WHERE id=%d)",
-				id, raw, err, id,
-			)
-		}
-	}
-
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate auth_tokens.allowed_models: %w", err)
-	}
-	return nil
-}
-
-// ensureAuthTokensAllowedChannelIDs 确保auth_tokens表有allowed_channel_ids字段
-func ensureAuthTokensAllowedChannelIDs(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	if dialect == DialectMySQL {
-		var count int
-		err := db.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='auth_tokens' AND COLUMN_NAME='allowed_channel_ids'",
-		).Scan(&count)
-		if err != nil {
-			return fmt.Errorf("check allowed_channel_ids field: %w", err)
-		}
-		if count == 0 {
-			if _, err := db.ExecContext(ctx,
-				"ALTER TABLE auth_tokens ADD COLUMN allowed_channel_ids VARCHAR(2000) NOT NULL DEFAULT ''"); err != nil {
-				return fmt.Errorf("add allowed_channel_ids column: %w", err)
-			}
-			log.Printf("[MIGRATE] Added auth_tokens.allowed_channel_ids column")
-		}
-		return nil
-	}
-
-	return ensureSQLiteColumns(ctx, db, "auth_tokens", []sqliteColumnDef{
-		{name: "allowed_channel_ids", definition: "TEXT NOT NULL DEFAULT ''"},
-	})
-}
-
-func validateAuthTokensAllowedChannelIDsJSON(ctx context.Context, db *sql.DB) error {
-	rows, err := db.QueryContext(ctx, "SELECT id, allowed_channel_ids FROM auth_tokens WHERE allowed_channel_ids <> ''")
-	if err != nil {
-		return fmt.Errorf("query auth_tokens.allowed_channel_ids: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	for rows.Next() {
-		var id int64
-		var raw string
-		if err := rows.Scan(&id, &raw); err != nil {
-			return fmt.Errorf("scan auth_tokens.allowed_channel_ids: %w", err)
-		}
-		if raw == "" {
-			continue
-		}
-		var channelIDs []int64
-		if err := json.Unmarshal([]byte(raw), &channelIDs); err != nil {
-			return fmt.Errorf(
-				"auth_tokens.allowed_channel_ids invalid json: id=%d allowed_channel_ids=%q: %w (fix: UPDATE auth_tokens SET allowed_channel_ids='' WHERE id=%d)",
-				id, raw, err, id,
-			)
-		}
-	}
-
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate auth_tokens.allowed_channel_ids: %w", err)
-	}
-	return nil
-}
-
-// ensureAuthTokensCostLimit 确保auth_tokens表有费用限额字段（2026-01新增）
-func ensureAuthTokensCostLimit(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	if dialect == DialectMySQL {
-		return ensureMySQLColumns(ctx, db, "auth_tokens", []mysqlColumnDef{
-			{name: "cost_used_microusd", definition: "BIGINT NOT NULL DEFAULT 0"},
-			{name: "cost_limit_microusd", definition: "BIGINT NOT NULL DEFAULT 0"},
-		})
-	}
-
-	// SQLite: 使用通用添加列函数
-	return ensureSQLiteColumns(ctx, db, "auth_tokens", []sqliteColumnDef{
-		{name: "cost_used_microusd", definition: "INTEGER NOT NULL DEFAULT 0"},
-		{name: "cost_limit_microusd", definition: "INTEGER NOT NULL DEFAULT 0"},
-	})
-}
-
-// ensureAuthTokensMaxConcurrency 确保auth_tokens表有令牌并发限制字段（2026-04新增）
-func ensureAuthTokensMaxConcurrency(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	if dialect == DialectMySQL {
-		return ensureMySQLColumns(ctx, db, "auth_tokens", []mysqlColumnDef{
-			{name: "max_concurrency", definition: "INT NOT NULL DEFAULT 0"},
-		})
-	}
-
-	return ensureSQLiteColumns(ctx, db, "auth_tokens", []sqliteColumnDef{
-		{name: "max_concurrency", definition: "INTEGER NOT NULL DEFAULT 0"},
-	})
-}
-
-func validateAuthTokensMaxConcurrency(ctx context.Context, db *sql.DB) error {
-	rows, err := db.QueryContext(ctx, "SELECT id, max_concurrency FROM auth_tokens WHERE max_concurrency < 0")
-	if err != nil {
-		return fmt.Errorf("query auth_tokens.max_concurrency: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	if rows.Next() {
-		var id int64
-		var maxConcurrency int64
-		if err := rows.Scan(&id, &maxConcurrency); err != nil {
-			return fmt.Errorf("scan auth_tokens.max_concurrency: %w", err)
-		}
-		return fmt.Errorf(
-			"auth_tokens.max_concurrency must be >= 0: id=%d max_concurrency=%d (fix: UPDATE auth_tokens SET max_concurrency=0 WHERE id=%d)",
-			id, maxConcurrency, id,
-		)
-	}
-
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate auth_tokens.max_concurrency: %w", err)
-	}
-	return nil
-}
-
-// rebuildDebugLogsPrimaryKey 将 debug_logs 旧结构（id 自增主键 + log_id 列）
-// 迁移为新结构（log_id 作为主键）。因调试日志保留期极短（默认5分钟），
-// 直接 DROP 旧表由后续 CREATE TABLE IF NOT EXISTS 重建即可
-const debugLogsPKRebuildVersion = "v1_debug_logs_pk_log_id"
-
-func rebuildDebugLogsPrimaryKey(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	if hasMigration(ctx, db, debugLogsPKRebuildVersion) {
-		return nil
-	}
-
-	// 检查旧表是否存在且包含 id 列（新部署首次创建时跳过 DROP）
-	hasLegacy, err := debugLogsHasLegacyIDColumn(ctx, db, dialect)
-	if err != nil {
-		return err
-	}
-	if hasLegacy {
-		if _, err := db.ExecContext(ctx, "DROP TABLE debug_logs"); err != nil {
-			return fmt.Errorf("drop legacy debug_logs: %w", err)
-		}
-		log.Printf("[MIGRATE] Dropped legacy debug_logs table (id-based PK) for rebuild")
-	}
-
-	return recordMigration(ctx, db, debugLogsPKRebuildVersion, dialect)
-}
-
-// relaxDebugLogsRespBodyNullable 将 debug_logs.resp_body 从 NOT NULL 放宽为可空
-// （部分请求尚未拿到响应体就写入，NOT NULL 约束会导致批量写入失败）。
-// 调试日志保留期极短，直接 DROP 重建，不迁移旧数据。
-const debugLogsRespBodyNullableVersion = "v2_debug_logs_resp_body_nullable"
-
-func relaxDebugLogsRespBodyNullable(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	if hasMigration(ctx, db, debugLogsRespBodyNullableVersion) {
-		return nil
-	}
-	if _, err := db.ExecContext(ctx, "DROP TABLE IF EXISTS debug_logs"); err != nil {
-		return fmt.Errorf("drop debug_logs for resp_body relax: %w", err)
-	}
-	log.Printf("[MIGRATE] Dropped debug_logs table to relax resp_body NOT NULL constraint")
-	return recordMigration(ctx, db, debugLogsRespBodyNullableVersion, dialect)
-}
-
-func debugLogsHasLegacyIDColumn(ctx context.Context, db *sql.DB, dialect Dialect) (bool, error) {
-	if dialect == DialectMySQL {
-		var count int
-		err := db.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='debug_logs' AND COLUMN_NAME='id'",
-		).Scan(&count)
-		if err != nil {
-			return false, fmt.Errorf("check debug_logs.id existence: %w", err)
-		}
-		return count > 0, nil
-	}
-
-	// SQLite: 表不存在时 PRAGMA 返回空结果集，视为无旧列
-	existing, err := sqliteExistingColumns(ctx, db, "debug_logs")
-	if err != nil {
-		return false, nil
-	}
-	return existing["id"], nil
 }
