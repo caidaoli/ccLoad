@@ -1100,6 +1100,19 @@ func buildCtxDoneResult(cfg *model.Config, ctxErr error) *proxyResult {
 	}
 }
 
+// selectKeyWithFallback 在 triedKeys 之外选 Key：先 SelectAvailableKey，
+// 启用 cooldown fallback 时再 SelectCooldownFallbackKey；全部失败包装 ErrAllKeysUnavailable。
+func (s *Server) selectKeyWithFallback(cfg *model.Config, apiKeys []*model.APIKey, triedKeys map[int]bool) (int, string, error) {
+	keyIndex, selectedKey, selectErr := s.keySelector.SelectAvailableKey(cfg.ID, apiKeys, triedKeys)
+	if selectErr != nil && cfg.CooldownFallback {
+		keyIndex, selectedKey, selectErr = s.keySelector.SelectCooldownFallbackKey(cfg.ID, apiKeys, triedKeys)
+	}
+	if selectErr != nil {
+		return 0, "", fmt.Errorf("%w: %v", ErrAllKeysUnavailable, selectErr)
+	}
+	return keyIndex, selectedKey, nil
+}
+
 func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqCtx *proxyRequestContext, w http.ResponseWriter) (*proxyResult, error) {
 	reqCtx.channelStartTime = time.Now()
 
@@ -1158,13 +1171,9 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		}
 
 		// 选择可用的API Key（直接传入apiKeys，避免重复查询）
-		keyIndex, selectedKey, selectErr := s.keySelector.SelectAvailableKey(cfg.ID, apiKeys, triedKeys)
-		if selectErr != nil && cfg.CooldownFallback {
-			keyIndex, selectedKey, selectErr = s.keySelector.SelectCooldownFallbackKey(cfg.ID, apiKeys, triedKeys)
-		}
+		keyIndex, selectedKey, selectErr := s.selectKeyWithFallback(cfg, apiKeys, triedKeys)
 		if selectErr != nil {
-			// 所有Key都在冷却中，返回特殊错误标识（使用sentinel error而非魔法字符串）
-			return nil, fmt.Errorf("%w: %v", ErrAllKeysUnavailable, selectErr)
+			return nil, selectErr
 		}
 
 		// 标记Key为已尝试
