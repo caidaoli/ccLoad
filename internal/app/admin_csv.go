@@ -193,213 +193,25 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			continue
 		}
 
-		if isCSVRecordEmpty(record) {
+		channel, errMsg, skip := s.parseChannelImportRow(
+			record,
+			columnIndex,
+			lineNo,
+			hasScheduledCheckColumn,
+			hasScheduledCheckModelColumn,
+			existingScheduledCheckByName,
+			existingScheduledCheckModelByName,
+		)
+		if skip {
+			if errMsg != "" {
+				summary.Errors = append(summary.Errors, errMsg)
+			}
 			summary.Skipped++
 			continue
-		}
-
-		fetch := func(key string) string {
-			idx, ok := columnIndex[key]
-			if !ok || idx >= len(record) {
-				return ""
-			}
-			return strings.TrimSpace(record[idx])
-		}
-
-		name := fetch("name")
-		rawID := fetch("id")
-		apiKey := fetch("api_key")
-		url := fetch("url")
-		modelsRaw := fetch("models")
-		modelRedirectsRaw := fetch("model_redirects")
-		channelType := fetch("channel_type")
-		protocolTransformsRaw := fetch("protocol_transforms")
-		protocolTransformMode := model.NormalizeProtocolTransformMode(fetch("protocol_transform_mode"))
-		keyStrategy := fetch("key_strategy")
-
-		var missing []string
-		if name == "" {
-			missing = append(missing, "name")
-		}
-		if apiKey == "" {
-			missing = append(missing, "api_key")
-		}
-		if url == "" {
-			missing = append(missing, "url")
-		}
-		if modelsRaw == "" {
-			missing = append(missing, "models")
-		}
-		if len(missing) > 0 {
-			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行缺少必填字段: %s", lineNo, strings.Join(missing, ", ")))
-			summary.Skipped++
-			continue
-		}
-
-		channelID, err := parseImportChannelID(rawID)
-		if err != nil {
-			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行渠道ID格式错误: %v", lineNo, err))
-			summary.Skipped++
-			continue
-		}
-
-		normalizedURL, err := validateChannelURLs(url)
-		if err != nil {
-			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行URL无效: %v", lineNo, err))
-			summary.Skipped++
-			continue
-		}
-		url = normalizedURL
-
-		// 渠道类型规范化与校验(openai → codex,空值 → anthropic)
-		channelType = util.NormalizeChannelType(channelType)
-		if !util.IsValidChannelType(channelType) {
-			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行渠道类型无效: %s(仅支持anthropic/codex/gemini)", lineNo, channelType))
-			summary.Skipped++
-			continue
-		}
-
-		// 验证Key使用策略(可选字段,默认sequential)
-		if keyStrategy == "" {
-			keyStrategy = model.KeyStrategySequential // 默认值
-		} else if !model.IsValidKeyStrategy(keyStrategy) {
-			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行Key使用策略无效: %s(仅支持sequential/round_robin)", lineNo, keyStrategy))
-			summary.Skipped++
-			continue
-		}
-		if protocolTransformMode == "" {
-			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行 protocol_transform_mode 无效: %s", lineNo, fetch("protocol_transform_mode")))
-			summary.Skipped++
-			continue
-		}
-		rawProtocolTransforms := parseProtocolTransformsCSV(protocolTransformsRaw)
-		if err := validateProtocolTransforms(channelType, protocolTransformMode, rawProtocolTransforms); err != nil {
-			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行 protocol_transforms 无效: %v", lineNo, err))
-			summary.Skipped++
-			continue
-		}
-		protocolTransforms := normalizeProtocolTransforms(channelType, protocolTransformMode, rawProtocolTransforms)
-
-		models := parseImportModels(modelsRaw)
-		if len(models) == 0 {
-			summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行模型格式无效", lineNo))
-			summary.Skipped++
-			continue
-		}
-
-		// 解析模型重定向(可选字段)
-		var modelRedirects map[string]string
-		if modelRedirectsRaw != "" && modelRedirectsRaw != "{}" {
-			if err := sonic.Unmarshal([]byte(modelRedirectsRaw), &modelRedirects); err != nil {
-				summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行模型重定向格式错误: %v", lineNo, err))
-				summary.Skipped++
-				continue
-			}
-		}
-
-		priority := 0
-		if pRaw := fetch("priority"); pRaw != "" {
-			p, err := strconv.Atoi(pRaw)
-			if err != nil {
-				summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行优先级格式错误: %v", lineNo, err))
-				summary.Skipped++
-				continue
-			}
-			priority = p
-		}
-
-		enabled := true
-		if eRaw := fetch("enabled"); eRaw != "" {
-			if val, ok := parseImportEnabled(eRaw); ok {
-				enabled = val
-			} else {
-				summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行启用状态格式错误: %s", lineNo, eRaw))
-				summary.Skipped++
-				continue
-			}
-		}
-
-		scheduledCheckEnabled := existingScheduledCheckByName[name]
-		if raw := fetch("scheduled_check_enabled"); raw != "" {
-			if val, ok := parseImportEnabled(raw); ok {
-				scheduledCheckEnabled = val
-			} else {
-				summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行定时检测开关格式错误: %s", lineNo, raw))
-				summary.Skipped++
-				continue
-			}
-		} else if hasScheduledCheckColumn {
-			scheduledCheckEnabled = false
-		}
-
-		rawScheduledCheckModel := fetch("scheduled_check_model")
-		scheduledCheckModel := existingScheduledCheckModelByName[name]
-		shouldValidateScheduledCheckModel := false
-		if rawScheduledCheckModel != "" {
-			scheduledCheckModel = rawScheduledCheckModel
-			shouldValidateScheduledCheckModel = true
-		} else if hasScheduledCheckModelColumn {
-			scheduledCheckModel = ""
-		}
-
-		// 构建模型条目（合并models和modelRedirects）
-		modelEntries := make([]model.ModelEntry, 0, len(models))
-		for _, m := range models {
-			entry := model.ModelEntry{Model: m}
-			if redirect, ok := modelRedirects[m]; ok {
-				entry.RedirectModel = redirect
-			}
-			modelEntries = append(modelEntries, entry)
-		}
-		if scheduledCheckModel != "" {
-			declared := false
-			for _, entry := range modelEntries {
-				if entry.Model == scheduledCheckModel {
-					declared = true
-					break
-				}
-			}
-			if !declared {
-				if shouldValidateScheduledCheckModel {
-					summary.Errors = append(summary.Errors, fmt.Sprintf("第%d行 scheduled_check_model 无效: %s", lineNo, scheduledCheckModel))
-					summary.Skipped++
-					continue
-				}
-				scheduledCheckModel = ""
-			}
-		}
-
-		// 构建渠道配置
-		cfg := &model.Config{
-			ID:                    channelID,
-			Name:                  name,
-			URL:                   url,
-			Priority:              priority,
-			ModelEntries:          modelEntries,
-			ChannelType:           channelType,
-			ProtocolTransformMode: protocolTransformMode,
-			ProtocolTransforms:    protocolTransforms,
-			Enabled:               enabled,
-			ScheduledCheckEnabled: scheduledCheckEnabled,
-			ScheduledCheckModel:   scheduledCheckModel,
-		}
-
-		// 解析并构建API Keys
-		apiKeyList := util.ParseAPIKeys(apiKey)
-		apiKeys := make([]model.APIKey, len(apiKeyList))
-		for i, key := range apiKeyList {
-			apiKeys[i] = model.APIKey{
-				KeyIndex:    i,
-				APIKey:      key,
-				KeyStrategy: keyStrategy,
-			}
 		}
 
 		// 收集有效记录
-		validChannels = append(validChannels, &model.ChannelWithKeys{
-			Config:  cfg,
-			APIKeys: apiKeys,
-		})
+		validChannels = append(validChannels, channel)
 	}
 
 	// 批量导入所有有效记录(单事务 + 预编译语句)
@@ -441,6 +253,201 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 	}
 
 	RespondJSON(c, http.StatusOK, summary)
+}
+
+// parseChannelImportRow 解析单行 CSV 记录为渠道配置。
+// 返回三态：
+//   - skip=true,  errMsg=="": 空行,调用方仅累加 Skipped
+//   - skip=true,  errMsg!="": 解析错误,调用方追加 errors 并 Skipped++
+//   - skip=false, channel!=nil: 解析成功,调用方追加 validChannels
+func (s *Server) parseChannelImportRow(
+	record []string,
+	columnIndex map[string]int,
+	lineNo int,
+	hasScheduledCheckColumn bool,
+	hasScheduledCheckModelColumn bool,
+	existingScheduledCheckByName map[string]bool,
+	existingScheduledCheckModelByName map[string]string,
+) (channel *model.ChannelWithKeys, errMsg string, skip bool) {
+	if isCSVRecordEmpty(record) {
+		return nil, "", true
+	}
+
+	fetch := func(key string) string {
+		idx, ok := columnIndex[key]
+		if !ok || idx >= len(record) {
+			return ""
+		}
+		return strings.TrimSpace(record[idx])
+	}
+
+	name := fetch("name")
+	rawID := fetch("id")
+	apiKey := fetch("api_key")
+	url := fetch("url")
+	modelsRaw := fetch("models")
+	modelRedirectsRaw := fetch("model_redirects")
+	channelType := fetch("channel_type")
+	protocolTransformsRaw := fetch("protocol_transforms")
+	protocolTransformMode := model.NormalizeProtocolTransformMode(fetch("protocol_transform_mode"))
+	keyStrategy := fetch("key_strategy")
+
+	var missing []string
+	if name == "" {
+		missing = append(missing, "name")
+	}
+	if apiKey == "" {
+		missing = append(missing, "api_key")
+	}
+	if url == "" {
+		missing = append(missing, "url")
+	}
+	if modelsRaw == "" {
+		missing = append(missing, "models")
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Sprintf("第%d行缺少必填字段: %s", lineNo, strings.Join(missing, ", ")), true
+	}
+
+	channelID, err := parseImportChannelID(rawID)
+	if err != nil {
+		return nil, fmt.Sprintf("第%d行渠道ID格式错误: %v", lineNo, err), true
+	}
+
+	normalizedURL, err := validateChannelURLs(url)
+	if err != nil {
+		return nil, fmt.Sprintf("第%d行URL无效: %v", lineNo, err), true
+	}
+	url = normalizedURL
+
+	// 渠道类型规范化与校验(openai → codex,空值 → anthropic)
+	channelType = util.NormalizeChannelType(channelType)
+	if !util.IsValidChannelType(channelType) {
+		return nil, fmt.Sprintf("第%d行渠道类型无效: %s(仅支持anthropic/codex/gemini)", lineNo, channelType), true
+	}
+
+	// 验证Key使用策略(可选字段,默认sequential)
+	if keyStrategy == "" {
+		keyStrategy = model.KeyStrategySequential // 默认值
+	} else if !model.IsValidKeyStrategy(keyStrategy) {
+		return nil, fmt.Sprintf("第%d行Key使用策略无效: %s(仅支持sequential/round_robin)", lineNo, keyStrategy), true
+	}
+	if protocolTransformMode == "" {
+		return nil, fmt.Sprintf("第%d行 protocol_transform_mode 无效: %s", lineNo, fetch("protocol_transform_mode")), true
+	}
+	rawProtocolTransforms := parseProtocolTransformsCSV(protocolTransformsRaw)
+	if err := validateProtocolTransforms(channelType, protocolTransformMode, rawProtocolTransforms); err != nil {
+		return nil, fmt.Sprintf("第%d行 protocol_transforms 无效: %v", lineNo, err), true
+	}
+	protocolTransforms := normalizeProtocolTransforms(channelType, protocolTransformMode, rawProtocolTransforms)
+
+	models := parseImportModels(modelsRaw)
+	if len(models) == 0 {
+		return nil, fmt.Sprintf("第%d行模型格式无效", lineNo), true
+	}
+
+	// 解析模型重定向(可选字段)
+	var modelRedirects map[string]string
+	if modelRedirectsRaw != "" && modelRedirectsRaw != "{}" {
+		if err := sonic.Unmarshal([]byte(modelRedirectsRaw), &modelRedirects); err != nil {
+			return nil, fmt.Sprintf("第%d行模型重定向格式错误: %v", lineNo, err), true
+		}
+	}
+
+	priority := 0
+	if pRaw := fetch("priority"); pRaw != "" {
+		p, err := strconv.Atoi(pRaw)
+		if err != nil {
+			return nil, fmt.Sprintf("第%d行优先级格式错误: %v", lineNo, err), true
+		}
+		priority = p
+	}
+
+	enabled := true
+	if eRaw := fetch("enabled"); eRaw != "" {
+		if val, ok := parseImportEnabled(eRaw); ok {
+			enabled = val
+		} else {
+			return nil, fmt.Sprintf("第%d行启用状态格式错误: %s", lineNo, eRaw), true
+		}
+	}
+
+	scheduledCheckEnabled := existingScheduledCheckByName[name]
+	if raw := fetch("scheduled_check_enabled"); raw != "" {
+		if val, ok := parseImportEnabled(raw); ok {
+			scheduledCheckEnabled = val
+		} else {
+			return nil, fmt.Sprintf("第%d行定时检测开关格式错误: %s", lineNo, raw), true
+		}
+	} else if hasScheduledCheckColumn {
+		scheduledCheckEnabled = false
+	}
+
+	rawScheduledCheckModel := fetch("scheduled_check_model")
+	scheduledCheckModel := existingScheduledCheckModelByName[name]
+	shouldValidateScheduledCheckModel := false
+	if rawScheduledCheckModel != "" {
+		scheduledCheckModel = rawScheduledCheckModel
+		shouldValidateScheduledCheckModel = true
+	} else if hasScheduledCheckModelColumn {
+		scheduledCheckModel = ""
+	}
+
+	// 构建模型条目（合并models和modelRedirects）
+	modelEntries := make([]model.ModelEntry, 0, len(models))
+	for _, m := range models {
+		entry := model.ModelEntry{Model: m}
+		if redirect, ok := modelRedirects[m]; ok {
+			entry.RedirectModel = redirect
+		}
+		modelEntries = append(modelEntries, entry)
+	}
+	if scheduledCheckModel != "" {
+		declared := false
+		for _, entry := range modelEntries {
+			if entry.Model == scheduledCheckModel {
+				declared = true
+				break
+			}
+		}
+		if !declared {
+			if shouldValidateScheduledCheckModel {
+				return nil, fmt.Sprintf("第%d行 scheduled_check_model 无效: %s", lineNo, scheduledCheckModel), true
+			}
+			scheduledCheckModel = ""
+		}
+	}
+
+	// 构建渠道配置
+	cfg := &model.Config{
+		ID:                    channelID,
+		Name:                  name,
+		URL:                   url,
+		Priority:              priority,
+		ModelEntries:          modelEntries,
+		ChannelType:           channelType,
+		ProtocolTransformMode: protocolTransformMode,
+		ProtocolTransforms:    protocolTransforms,
+		Enabled:               enabled,
+		ScheduledCheckEnabled: scheduledCheckEnabled,
+		ScheduledCheckModel:   scheduledCheckModel,
+	}
+
+	// 解析并构建API Keys
+	apiKeyList := util.ParseAPIKeys(apiKey)
+	apiKeys := make([]model.APIKey, len(apiKeyList))
+	for i, key := range apiKeyList {
+		apiKeys[i] = model.APIKey{
+			KeyIndex:    i,
+			APIKey:      key,
+			KeyStrategy: keyStrategy,
+		}
+	}
+
+	return &model.ChannelWithKeys{
+		Config:  cfg,
+		APIKeys: apiKeys,
+	}, "", false
 }
 
 func parseProtocolTransformsCSV(raw string) []string {
