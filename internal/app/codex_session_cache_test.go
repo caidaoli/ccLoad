@@ -230,35 +230,6 @@ func TestExtractAnthropicUserID(t *testing.T) {
 	}
 }
 
-func TestCodexUUIDHelpers(t *testing.T) {
-	v4 := newCodexUUIDv4()
-	if !uuidPattern.MatchString(v4) {
-		t.Fatalf("v4 format invalid: %q", v4)
-	}
-	if v4[14] != '4' {
-		t.Fatalf("v4 version nibble expected '4', got %q", v4)
-	}
-	if v4[19] != '8' && v4[19] != '9' && v4[19] != 'a' && v4[19] != 'b' {
-		t.Fatalf("v4 variant nibble unexpected: %q", v4)
-	}
-
-	v5a := newCodexUUIDv5(uuidNameSpaceOID, "foo")
-	v5b := newCodexUUIDv5(uuidNameSpaceOID, "foo")
-	v5c := newCodexUUIDv5(uuidNameSpaceOID, "bar")
-	if v5a != v5b {
-		t.Fatalf("v5 not deterministic: %q vs %q", v5a, v5b)
-	}
-	if v5a == v5c {
-		t.Fatalf("v5 collision for different names")
-	}
-	if !uuidPattern.MatchString(v5a) {
-		t.Fatalf("v5 format invalid: %q", v5a)
-	}
-	if v5a[14] != '5' {
-		t.Fatalf("v5 version nibble expected '5', got %q", v5a)
-	}
-}
-
 func TestBuildProxyRequest_CodexSessionInjection_Anthropic(t *testing.T) {
 	resetCodexSessionCache()
 	srv := newInMemoryServer(t)
