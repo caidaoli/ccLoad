@@ -403,7 +403,7 @@ func TestHybridStore_EnqueueLogSync_QueueFull(t *testing.T) {
 
 	h := NewHybridStore(sqlite, mysql)
 	// 先停止 worker，让队列积压
-	h.stopOnce.Do(func() { close(h.stopCh) })
+	close(h.stopCh)
 	h.syncWg.Wait()
 
 	// 填满队列
@@ -435,7 +435,7 @@ func TestHybridStore_DrainSyncQueue_EmptyQueue(t *testing.T) {
 
 	h := NewHybridStore(sqlite, mysql)
 	// 停止 worker
-	h.stopOnce.Do(func() { close(h.stopCh) })
+	close(h.stopCh)
 	h.syncWg.Wait()
 
 	// 空队列时 drainSyncQueue 应该立即返回
