@@ -1113,6 +1113,24 @@ func (s *Server) selectKeyWithFallback(cfg *model.Config, apiKeys []*model.APIKe
 	return keyIndex, selectedKey, nil
 }
 
+// recordSuccessTTFBToSelector 在多URL场景的2xx响应里把TTFB回报给URLSelector，
+// 单URL/非2xx/无延迟数据直接跳过。优先用 firstByteTime，缺失时回退到 duration。
+func recordSuccessTTFBToSelector(selector *URLSelector, channelID int64, urlsCount int, urlStr string, result *proxyResult) {
+	if urlsCount <= 1 || selector == nil || result == nil {
+		return
+	}
+	if result.status < 200 || result.status >= 300 {
+		return
+	}
+	ttfb := time.Duration(result.firstByteTime * float64(time.Second))
+	if ttfb <= 0 {
+		ttfb = time.Duration(result.duration * float64(time.Second))
+	}
+	if ttfb > 0 {
+		selector.RecordLatency(channelID, urlStr, ttfb)
+	}
+}
+
 func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqCtx *proxyRequestContext, w http.ResponseWriter) (*proxyResult, error) {
 	reqCtx.channelStartTime = time.Now()
 
@@ -1203,15 +1221,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 
 			if result != nil && result.succeeded {
 				// 成功：记录TTFB到URLSelector（仅多URL场景）
-				if len(urls) > 1 && selector != nil && result.status >= 200 && result.status < 300 {
-					ttfb := time.Duration(result.firstByteTime * float64(time.Second))
-					if ttfb <= 0 {
-						ttfb = time.Duration(result.duration * float64(time.Second))
-					}
-					if ttfb > 0 {
-						selector.RecordLatency(cfg.ID, urlEntry.url, ttfb)
-					}
-				}
+				recordSuccessTTFBToSelector(selector, cfg.ID, len(urls), urlEntry.url, result)
 				return result, nil
 			}
 
