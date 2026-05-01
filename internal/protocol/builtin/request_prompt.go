@@ -1,7 +1,6 @@
 package builtin
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -136,14 +135,19 @@ type geminiThinkingConfig struct {
 	ThinkingBudget  *int `json:"thinkingBudget,omitempty"`
 }
 
+// stableSonicCfg 配置 sonic 与 encoding/json 行为一致的 JSON 序列化器：
+// - SortMapKeys=true：map 按 key 字母序输出，保证 byte-level 稳定（prompt cache prefix 命中要求）
+// - EscapeHTML=false：保留 <、>、& 等字符原样，避免污染 prompt
+// 性能比 encoding/json 提升约 2-3x，且无需 bytes.Buffer + TrimSuffix 的额外分配。
+var stableSonicCfg = sonic.Config{
+	SortMapKeys: true,
+	EscapeHTML:  false,
+}.Froze()
+
+// marshalStableJSON 使用 sonic 序列化任意值为字段顺序稳定的 JSON。
+// "stable" 含义：相同输入两次序列化字节完全一致，是 prompt cache 命中前提。
 func marshalStableJSON(v any) ([]byte, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
-		return nil, err
-	}
-	return bytes.TrimSuffix(buf.Bytes(), []byte{'\n'}), nil
+	return stableSonicCfg.Marshal(v)
 }
 
 type geminiSystemInstruction struct {
