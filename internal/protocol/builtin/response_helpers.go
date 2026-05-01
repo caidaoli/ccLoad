@@ -416,6 +416,11 @@ func codexReasoningItem(text, encrypted string) map[string]any {
 }
 
 func mustMap(value any) map[string]any {
+	// 热路径：上游解出的 JSON object 已是 map[string]any，直接断言无需序列化往返。
+	if m, ok := value.(map[string]any); ok {
+		return m
+	}
+	// 冷路径：value 是结构体或其他类型，回退到 marshal/unmarshal。
 	body, err := sonic.Marshal(value)
 	if err != nil {
 		return map[string]any{}
@@ -512,6 +517,28 @@ func decodeObjectSlice(value any) ([]map[string]any, error) {
 	if value == nil {
 		return nil, nil
 	}
+	// 热路径 1：[]map[string]any 直接返回。
+	if items, ok := value.([]map[string]any); ok {
+		return items, nil
+	}
+	// 热路径 2：[]any 中每项已是 map[string]any（sonic 解析出的 JSON 数组的常见形态）。
+	if arr, ok := value.([]any); ok {
+		items := make([]map[string]any, 0, len(arr))
+		for _, item := range arr {
+			m, ok := item.(map[string]any)
+			if !ok {
+				// 数组里混入非对象元素，回退到完整 marshal/unmarshal 走序列化语义。
+				return decodeObjectSliceFallback(value)
+			}
+			items = append(items, m)
+		}
+		return items, nil
+	}
+	// 冷路径：结构体或其他类型，回退完整序列化往返。
+	return decodeObjectSliceFallback(value)
+}
+
+func decodeObjectSliceFallback(value any) ([]map[string]any, error) {
 	body, err := sonic.Marshal(value)
 	if err != nil {
 		return nil, err
