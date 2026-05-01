@@ -156,28 +156,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 
 	// 排序：健康度开启按 effective_priority 降序；关闭按 priority DESC, name ASC，
 	// 与前端 filterChannels 的排序键对齐，保证分页跨页顺序稳定。
-	priorityMap := make(map[int64]float64, len(cfgs))
-	successRateMap := make(map[int64]float64, len(cfgs))
-	if healthEnabled {
-		hcfg := s.healthCache.Config()
-		for _, cfg := range cfgs {
-			stats := s.healthCache.GetHealthStats(cfg.ID)
-			priorityMap[cfg.ID] = s.calculateEffectivePriority(cfg, stats, hcfg)
-			if stats.SampleCount > 0 {
-				successRateMap[cfg.ID] = stats.SuccessRate
-			}
-		}
-		sort.Slice(cfgs, func(i, j int) bool {
-			return priorityMap[cfgs[i].ID] > priorityMap[cfgs[j].ID]
-		})
-	} else {
-		sort.Slice(cfgs, func(i, j int) bool {
-			if cfgs[i].Priority != cfgs[j].Priority {
-				return cfgs[i].Priority > cfgs[j].Priority
-			}
-			return cfgs[i].Name < cfgs[j].Name
-		})
-	}
+	priorityMap, successRateMap := s.sortChannelsByEffectivePriority(cfgs, healthEnabled)
 
 	totalCount := len(cfgs)
 
@@ -213,6 +192,36 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		return
 	}
 	RespondJSON(c, http.StatusOK, out)
+}
+
+// sortChannelsByEffectivePriority 原地排序 cfgs。
+// 健康度开启时：用 healthCache 计算 effectivePriority 与 successRate（仅 SampleCount>0），
+// 按 effective 降序；关闭时按 priority DESC, name ASC（与前端 filterChannels 排序键对齐）。
+// 返回的两个 map 供 enrichChannel 复用，避免重复计算。
+func (s *Server) sortChannelsByEffectivePriority(cfgs []*model.Config, healthEnabled bool) (priorityMap, successRateMap map[int64]float64) {
+	priorityMap = make(map[int64]float64, len(cfgs))
+	successRateMap = make(map[int64]float64, len(cfgs))
+	if healthEnabled {
+		hcfg := s.healthCache.Config()
+		for _, cfg := range cfgs {
+			stats := s.healthCache.GetHealthStats(cfg.ID)
+			priorityMap[cfg.ID] = s.calculateEffectivePriority(cfg, stats, hcfg)
+			if stats.SampleCount > 0 {
+				successRateMap[cfg.ID] = stats.SuccessRate
+			}
+		}
+		sort.Slice(cfgs, func(i, j int) bool {
+			return priorityMap[cfgs[i].ID] > priorityMap[cfgs[j].ID]
+		})
+	} else {
+		sort.Slice(cfgs, func(i, j int) bool {
+			if cfgs[i].Priority != cfgs[j].Priority {
+				return cfgs[i].Priority > cfgs[j].Priority
+			}
+			return cfgs[i].Name < cfgs[j].Name
+		})
+	}
+	return priorityMap, successRateMap
 }
 
 // paginateChannels 按 query 中的 limit/offset 截取 cfgs。
