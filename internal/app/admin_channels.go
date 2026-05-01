@@ -182,21 +182,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	totalCount := len(cfgs)
 
 	if hasPagination {
-		limit := 20
-		offset := 0
-		if v, err := strconv.Atoi(strings.TrimSpace(c.DefaultQuery("limit", "20"))); err == nil && v > 0 {
-			limit = min(v, 1000)
-		}
-		if v, err := strconv.Atoi(strings.TrimSpace(c.DefaultQuery("offset", "0"))); err == nil && v >= 0 {
-			offset = v
-		}
-
-		if offset >= totalCount {
-			cfgs = []*model.Config{}
-		} else {
-			end := min(offset+limit, totalCount)
-			cfgs = cfgs[offset:end]
-		}
+		cfgs = paginateChannels(cfgs, c)
 	}
 
 	out := make([]ChannelWithCooldown, 0, len(cfgs))
@@ -261,6 +247,25 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		return
 	}
 	RespondJSON(c, http.StatusOK, out)
+}
+
+// paginateChannels 按 query 中的 limit/offset 截取 cfgs。
+// limit: [1, 1000]，默认 20；offset: [0, +∞)，默认 0。offset 越界返回空切片。
+func paginateChannels(cfgs []*model.Config, c *gin.Context) []*model.Config {
+	limit := 20
+	offset := 0
+	if v, err := strconv.Atoi(strings.TrimSpace(c.DefaultQuery("limit", "20"))); err == nil && v > 0 {
+		limit = min(v, 1000)
+	}
+	if v, err := strconv.Atoi(strings.TrimSpace(c.DefaultQuery("offset", "0"))); err == nil && v >= 0 {
+		offset = v
+	}
+	totalCount := len(cfgs)
+	if offset >= totalCount {
+		return []*model.Config{}
+	}
+	end := min(offset+limit, totalCount)
+	return cfgs[offset:end]
 }
 
 // HandleChannelsFilterOptions 返回渠道筛选下拉的全集（渠道名/模型），
