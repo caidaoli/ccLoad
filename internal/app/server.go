@@ -104,30 +104,7 @@ func NewServer(store storage.Store) *Server {
 	log.Print("[INFO] API访问令牌将从数据库动态加载（支持Web界面管理）")
 
 	// 从ConfigService读取运行时配置（启动时加载一次，修改后重启生效）
-	maxKeyRetries := configService.GetInt("max_key_retries", config.DefaultMaxKeyRetries)
-	if maxKeyRetries < 1 {
-		log.Printf("[WARN] 无效的 max_key_retries=%d（必须 >= 1），已使用默认值 %d", maxKeyRetries, config.DefaultMaxKeyRetries)
-		maxKeyRetries = config.DefaultMaxKeyRetries
-	}
-
-	firstByteTimeout := configService.GetDuration("upstream_first_byte_timeout", 0)
-	if firstByteTimeout < 0 {
-		log.Printf("[WARN] 无效的 upstream_first_byte_timeout=%v（必须 >= 0），已设为 0（禁用首字节超时，仅流式生效）", firstByteTimeout)
-		firstByteTimeout = 0
-	}
-
-	nonStreamTimeout := configService.GetDuration("non_stream_timeout", 120*time.Second)
-	if nonStreamTimeout < 0 {
-		log.Printf("[WARN] 无效的 non_stream_timeout=%v（必须 >= 0，0=禁用），已使用默认值 %v", nonStreamTimeout, 120*time.Second)
-		nonStreamTimeout = 120 * time.Second
-	}
-
-	logRetentionDays := configService.GetInt("log_retention_days", 7)
-
-	modelFuzzyMatch := configService.GetBool("model_fuzzy_match", false)
-	if modelFuzzyMatch {
-		log.Print("[INFO] 已启用模型模糊匹配：未命中时进行子串匹配并按版本排序选择最新模型")
-	}
+	runtimeCfg := loadServerRuntimeConfig(configService)
 
 	// 最大并发数保留环境变量读取（启动参数，不支持Web管理）
 	maxConcurrency := config.DefaultMaxConcurrency
@@ -156,11 +133,11 @@ func NewServer(store storage.Store) *Server {
 		loginRateLimiter: util.NewLoginRateLimiter(),
 
 		// 运行时配置（启动时加载，修改后重启生效）
-		maxKeyRetries:    maxKeyRetries,
-		firstByteTimeout: firstByteTimeout,
-		nonStreamTimeout: nonStreamTimeout,
+		maxKeyRetries:    runtimeCfg.MaxKeyRetries,
+		firstByteTimeout: runtimeCfg.FirstByteTimeout,
+		nonStreamTimeout: runtimeCfg.NonStreamTimeout,
 		// 模型匹配配置（启动时加载，修改后重启生效）
-		modelFuzzyMatch: modelFuzzyMatch,
+		modelFuzzyMatch: runtimeCfg.ModelFuzzyMatch,
 
 		// HTTP客户端
 		client: &http.Client{
@@ -205,34 +182,7 @@ func NewServer(store storage.Store) *Server {
 	s.urlSelector = NewURLSelector()
 
 	// 初始化健康度缓存（启动时读取配置，修改后重启生效）
-	defaultHealthCfg := model.DefaultHealthScoreConfig()
-	successRatePenaltyWeight := configService.GetInt("success_rate_penalty_weight", defaultHealthCfg.SuccessRatePenaltyWeight)
-	if successRatePenaltyWeight < 0 {
-		log.Printf("[WARN] 无效的 success_rate_penalty_weight=%d（必须 >= 0），已使用默认值 %d", successRatePenaltyWeight, defaultHealthCfg.SuccessRatePenaltyWeight)
-		successRatePenaltyWeight = defaultHealthCfg.SuccessRatePenaltyWeight
-	}
-	windowMinutes := configService.GetInt("health_score_window_minutes", 30)
-	if windowMinutes < 1 {
-		log.Printf("[WARN] 无效的 health_score_window_minutes=%d（必须 >= 1），已使用默认值 30", windowMinutes)
-		windowMinutes = 30
-	}
-	updateInterval := configService.GetInt("health_score_update_interval", 30)
-	if updateInterval < 1 {
-		log.Printf("[WARN] 无效的 health_score_update_interval=%d（必须 >= 1），已使用默认值 30", updateInterval)
-		updateInterval = 30
-	}
-	minConfidentSample := configService.GetInt("health_min_confident_sample", defaultHealthCfg.MinConfidentSample)
-	if minConfidentSample < 1 {
-		log.Printf("[WARN] 无效的 health_min_confident_sample=%d（必须 >= 1），已使用默认值 %d", minConfidentSample, defaultHealthCfg.MinConfidentSample)
-		minConfidentSample = defaultHealthCfg.MinConfidentSample
-	}
-	healthConfig := model.HealthScoreConfig{
-		Enabled:                  configService.GetBool("enable_health_score", defaultHealthCfg.Enabled),
-		SuccessRatePenaltyWeight: successRatePenaltyWeight,
-		WindowMinutes:            windowMinutes,
-		UpdateIntervalSeconds:    updateInterval,
-		MinConfidentSample:       minConfidentSample,
-	}
+	healthConfig := loadHealthScoreConfig(configService)
 	s.healthCache = NewHealthCache(store, healthConfig, s.shutdownCh, &s.isShuttingDown, &s.wg)
 	if healthConfig.Enabled {
 		s.healthCache.Start()
@@ -241,27 +191,7 @@ func NewServer(store storage.Store) *Server {
 
 	// 初始化成本缓存（启动时从数据库加载当日成本）
 	s.costCache = NewCostCache()
-	costLoadCtx, costCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer costCancel()
-	todayCosts, err := store.GetTodayChannelCosts(costLoadCtx, s.costCache.DayStart())
-	if err != nil {
-		log.Printf("[WARN] 加载今日渠道成本失败: %v（成本限额功能可能不准确）", err)
-	} else {
-		s.costCache.Load(todayCosts)
-		log.Printf("[INFO] 已加载今日渠道成本缓存（%d个渠道有消耗）", len(todayCosts))
-	}
-
-	urlStatsLoadCtx, urlStatsCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer urlStatsCancel()
-	todayURLStats, err := store.GetTodayChannelURLStats(urlStatsLoadCtx, s.costCache.DayStart())
-	if err != nil {
-		log.Printf("[WARN] 加载今日 URL 运行状态失败: %v（多URL状态展示可能为空）", err)
-	} else {
-		s.urlSelector.LoadPersistedStats(todayURLStats)
-		if len(todayURLStats) > 0 {
-			log.Printf("[INFO] 已从日志恢复今日 URL 运行状态（%d条URL）", len(todayURLStats))
-		}
-	}
+	bootstrapCostAndURLStats(store, s.costCache, s.urlSelector)
 
 	// 初始化统计缓存层（减少重复聚合查询）
 	s.statsCache = NewStatsCache(store)
@@ -276,7 +206,7 @@ func NewServer(store storage.Store) *Server {
 		store,
 		config.DefaultLogBufferSize,
 		config.DefaultLogWorkers,
-		logRetentionDays, // 启动时读取，修改后重启生效
+		runtimeCfg.LogRetentionDays, // 启动时读取，修改后重启生效
 		s.shutdownCh,
 		&s.isShuttingDown,
 		&s.wg,
@@ -295,17 +225,8 @@ func NewServer(store storage.Store) *Server {
 		store, // 传入store用于热更新令牌
 	)
 
-	// 启动Token统计Worker（有界队列：性能可控，Shutdown可等待）
-	s.wg.Add(1)
-	go s.tokenStatsWorker()
-
-	// 启动后台清理协程（Token 认证）
-	s.wg.Add(1)
-	go s.tokenCleanupLoop() // 定期清理过期Token
-
-	// [FIX] P1: 启动后台状态清理协程（防止内存泄漏）
-	s.wg.Add(1)
-	go s.stateCleanupLoop()
+	// 启动后台 worker（Token 统计 / Token 清理 / 状态清理）
+	s.startBackgroundWorkers()
 
 	channelCheckIntervalHours := normalizeChannelCheckIntervalHours(
 		configService.GetInt("channel_check_interval_hours", defaultChannelCheckIntervalHours),
@@ -318,6 +239,125 @@ func NewServer(store storage.Store) *Server {
 
 	return s
 
+}
+
+// serverRuntimeConfig 启动期从数据库读取的运行时配置（修改后重启生效）
+type serverRuntimeConfig struct {
+	MaxKeyRetries    int
+	FirstByteTimeout time.Duration
+	NonStreamTimeout time.Duration
+	LogRetentionDays int
+	ModelFuzzyMatch  bool
+}
+
+// loadServerRuntimeConfig 从 ConfigService 加载运行时配置并校验，无效值兜底为默认值
+func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
+	maxKeyRetries := cs.GetInt("max_key_retries", config.DefaultMaxKeyRetries)
+	if maxKeyRetries < 1 {
+		log.Printf("[WARN] 无效的 max_key_retries=%d（必须 >= 1），已使用默认值 %d", maxKeyRetries, config.DefaultMaxKeyRetries)
+		maxKeyRetries = config.DefaultMaxKeyRetries
+	}
+
+	firstByteTimeout := cs.GetDuration("upstream_first_byte_timeout", 0)
+	if firstByteTimeout < 0 {
+		log.Printf("[WARN] 无效的 upstream_first_byte_timeout=%v（必须 >= 0），已设为 0（禁用首字节超时，仅流式生效）", firstByteTimeout)
+		firstByteTimeout = 0
+	}
+
+	nonStreamTimeout := cs.GetDuration("non_stream_timeout", 120*time.Second)
+	if nonStreamTimeout < 0 {
+		log.Printf("[WARN] 无效的 non_stream_timeout=%v（必须 >= 0，0=禁用），已使用默认值 %v", nonStreamTimeout, 120*time.Second)
+		nonStreamTimeout = 120 * time.Second
+	}
+
+	logRetentionDays := cs.GetInt("log_retention_days", 7)
+
+	modelFuzzyMatch := cs.GetBool("model_fuzzy_match", false)
+	if modelFuzzyMatch {
+		log.Print("[INFO] 已启用模型模糊匹配：未命中时进行子串匹配并按版本排序选择最新模型")
+	}
+
+	return serverRuntimeConfig{
+		MaxKeyRetries:    maxKeyRetries,
+		FirstByteTimeout: firstByteTimeout,
+		NonStreamTimeout: nonStreamTimeout,
+		LogRetentionDays: logRetentionDays,
+		ModelFuzzyMatch:  modelFuzzyMatch,
+	}
+}
+
+// loadHealthScoreConfig 从 ConfigService 加载健康度配置，无效值兜底为默认值
+func loadHealthScoreConfig(cs *ConfigService) model.HealthScoreConfig {
+	defaultHealthCfg := model.DefaultHealthScoreConfig()
+	successRatePenaltyWeight := cs.GetInt("success_rate_penalty_weight", defaultHealthCfg.SuccessRatePenaltyWeight)
+	if successRatePenaltyWeight < 0 {
+		log.Printf("[WARN] 无效的 success_rate_penalty_weight=%d（必须 >= 0），已使用默认值 %d", successRatePenaltyWeight, defaultHealthCfg.SuccessRatePenaltyWeight)
+		successRatePenaltyWeight = defaultHealthCfg.SuccessRatePenaltyWeight
+	}
+	windowMinutes := cs.GetInt("health_score_window_minutes", 30)
+	if windowMinutes < 1 {
+		log.Printf("[WARN] 无效的 health_score_window_minutes=%d（必须 >= 1），已使用默认值 30", windowMinutes)
+		windowMinutes = 30
+	}
+	updateInterval := cs.GetInt("health_score_update_interval", 30)
+	if updateInterval < 1 {
+		log.Printf("[WARN] 无效的 health_score_update_interval=%d（必须 >= 1），已使用默认值 30", updateInterval)
+		updateInterval = 30
+	}
+	minConfidentSample := cs.GetInt("health_min_confident_sample", defaultHealthCfg.MinConfidentSample)
+	if minConfidentSample < 1 {
+		log.Printf("[WARN] 无效的 health_min_confident_sample=%d（必须 >= 1），已使用默认值 %d", minConfidentSample, defaultHealthCfg.MinConfidentSample)
+		minConfidentSample = defaultHealthCfg.MinConfidentSample
+	}
+	return model.HealthScoreConfig{
+		Enabled:                  cs.GetBool("enable_health_score", defaultHealthCfg.Enabled),
+		SuccessRatePenaltyWeight: successRatePenaltyWeight,
+		WindowMinutes:            windowMinutes,
+		UpdateIntervalSeconds:    updateInterval,
+		MinConfidentSample:       minConfidentSample,
+	}
+}
+
+// bootstrapCostAndURLStats 启动时从数据库恢复当日渠道成本与多URL运行状态。
+// 失败仅记录 WARN（不影响启动），保留两段独立 10s 超时 context（defer cancel 无条件调用）。
+func bootstrapCostAndURLStats(store storage.Store, costCache *CostCache, urlSelector *URLSelector) {
+	costLoadCtx, costCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer costCancel()
+	todayCosts, err := store.GetTodayChannelCosts(costLoadCtx, costCache.DayStart())
+	if err != nil {
+		log.Printf("[WARN] 加载今日渠道成本失败: %v（成本限额功能可能不准确）", err)
+	} else {
+		costCache.Load(todayCosts)
+		log.Printf("[INFO] 已加载今日渠道成本缓存（%d个渠道有消耗）", len(todayCosts))
+	}
+
+	urlStatsLoadCtx, urlStatsCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer urlStatsCancel()
+	todayURLStats, err := store.GetTodayChannelURLStats(urlStatsLoadCtx, costCache.DayStart())
+	if err != nil {
+		log.Printf("[WARN] 加载今日 URL 运行状态失败: %v（多URL状态展示可能为空）", err)
+	} else {
+		urlSelector.LoadPersistedStats(todayURLStats)
+		if len(todayURLStats) > 0 {
+			log.Printf("[INFO] 已从日志恢复今日 URL 运行状态（%d条URL）", len(todayURLStats))
+		}
+	}
+}
+
+// startBackgroundWorkers 启动 Token 统计 / Token 清理 / 状态清理三个后台协程。
+// 全部纳入 s.wg，Shutdown 时通过 shutdownCh 协调退出。
+func (s *Server) startBackgroundWorkers() {
+	// 启动Token统计Worker（有界队列：性能可控，Shutdown可等待）
+	s.wg.Add(1)
+	go s.tokenStatsWorker()
+
+	// 启动后台清理协程（Token 认证）
+	s.wg.Add(1)
+	go s.tokenCleanupLoop() // 定期清理过期Token
+
+	// [FIX] P1: 启动后台状态清理协程（防止内存泄漏）
+	s.wg.Add(1)
+	go s.stateCleanupLoop()
 }
 
 // ================== 缓存辅助函数 ==================
