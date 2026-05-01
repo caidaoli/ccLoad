@@ -1131,6 +1131,83 @@ func recordSuccessTTFBToSelector(selector *URLSelector, channelID int64, urlsCou
 	}
 }
 
+// attemptKeyAcrossURLs 在选定 Key 上按 URL 顺序尝试上游：
+//   - immediate != nil 表示调用方需立即 `return immediate, nil`（成功 / ActionReturnClient / ctx 取消）
+//   - immediate == nil 时 urlLastFailure 给 Key 重试循环用于决定 continue/break
+//
+// 多URL场景下：失败URL会被 selector 冷却；明确 5xx（除 598 首字节超时）会立即跳出 URL 循环切换渠道，
+// 并在该URL处于 deferChannelCooldown 时补做一次渠道级冷却。
+func (s *Server) attemptKeyAcrossURLs(
+	ctx context.Context,
+	cfg *model.Config,
+	urls []string,
+	selector *URLSelector,
+	keyIndex int,
+	selectedKey string,
+	reqCtx *proxyRequestContext,
+	actualModel string,
+	bodyToSend []byte,
+	requestPath string,
+	w http.ResponseWriter,
+) (immediate *proxyResult, urlLastFailure *proxyResult) {
+	sortedURLs := orderURLsWithSelector(selector, cfg.ID, urls)
+	urlsCount := len(urls)
+	for urlIdx, urlEntry := range sortedURLs {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return buildCtxDoneResult(cfg, ctxErr), nil
+		}
+
+		// 更新活跃请求的当前URL（用于前端显示）
+		if reqCtx.activeReqID > 0 {
+			s.activeRequests.SetBaseURL(reqCtx.activeReqID, urlEntry.url)
+		}
+
+		shouldDeferChannelCooldown := urlsCount > 1 && urlIdx < len(sortedURLs)-1
+		result, nextAction := s.forwardAttempt(
+			ctx, cfg, keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, requestPath, urlEntry.url, w, shouldDeferChannelCooldown)
+
+		if result != nil && result.succeeded {
+			// 成功：记录TTFB到URLSelector（仅多URL场景）
+			recordSuccessTTFBToSelector(selector, cfg.ID, urlsCount, urlEntry.url, result)
+			return result, nil
+		}
+
+		if result != nil {
+			urlLastFailure = result
+		}
+
+		// Key级错误：换URL无意义，跳出URL循环
+		if nextAction == cooldown.ActionRetryKey {
+			break
+		}
+		// 客户端错误：直接返回
+		if nextAction == cooldown.ActionReturnClient {
+			return urlLastFailure, nil
+		}
+		// 渠道级错误 (ActionRetryChannel) 或网络错误：
+		// 在多URL场景下，默认先尝试下一个URL
+		if urlsCount > 1 {
+			if selector != nil {
+				selector.CooldownURL(cfg.ID, urlEntry.url)
+			}
+
+			// 新策略：上游明确返回 5xx（598 首字节超时除外）时，直接切换下一个渠道。
+			// 该分支命中时，当前URL若使用了 deferChannelCooldown，需要补做一次渠道级冷却写入。
+			if shouldSwitchChannelImmediatelyOnHTTP5xx(result) {
+				if shouldDeferChannelCooldown && result != nil {
+					input := httpErrorInputFromParts(cfg.ID, keyIndex, result.status, result.body, result.header)
+					s.applyCooldownDecision(ctx, cfg, input)
+				}
+				break
+			}
+			continue // 下一个URL
+		}
+		// 单URL：保持原有行为
+		break
+	}
+	return nil, urlLastFailure
+}
+
 func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqCtx *proxyRequestContext, w http.ResponseWriter) (*proxyResult, error) {
 	reqCtx.channelStartTime = time.Now()
 
@@ -1203,60 +1280,11 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		}
 
 		// URL循环（单URL时退化为单次迭代）
-		sortedURLs := orderURLsWithSelector(selector, cfg.ID, urls)
-		var urlLastFailure *proxyResult
-		for urlIdx, urlEntry := range sortedURLs {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return buildCtxDoneResult(cfg, ctxErr), nil
-			}
-
-			// 更新活跃请求的当前URL（用于前端显示）
-			if reqCtx.activeReqID > 0 {
-				s.activeRequests.SetBaseURL(reqCtx.activeReqID, urlEntry.url)
-			}
-
-			shouldDeferChannelCooldown := len(urls) > 1 && urlIdx < len(sortedURLs)-1
-			result, nextAction := s.forwardAttempt(
-				ctx, cfg, keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, requestPath, urlEntry.url, w, shouldDeferChannelCooldown)
-
-			if result != nil && result.succeeded {
-				// 成功：记录TTFB到URLSelector（仅多URL场景）
-				recordSuccessTTFBToSelector(selector, cfg.ID, len(urls), urlEntry.url, result)
-				return result, nil
-			}
-
-			if result != nil {
-				urlLastFailure = result
-			}
-
-			// Key级错误：换URL无意义，跳出URL循环
-			if nextAction == cooldown.ActionRetryKey {
-				break
-			}
-			// 客户端错误：直接返回
-			if nextAction == cooldown.ActionReturnClient {
-				return urlLastFailure, nil
-			}
-			// 渠道级错误 (ActionRetryChannel) 或网络错误：
-			// 在多URL场景下，默认先尝试下一个URL
-			if len(urls) > 1 {
-				if selector != nil {
-					selector.CooldownURL(cfg.ID, urlEntry.url)
-				}
-
-				// 新策略：上游明确返回 5xx（598 首字节超时除外）时，直接切换下一个渠道。
-				// 该分支命中时，当前URL若使用了 deferChannelCooldown，需要补做一次渠道级冷却写入。
-				if shouldSwitchChannelImmediatelyOnHTTP5xx(result) {
-					if shouldDeferChannelCooldown && result != nil {
-						input := httpErrorInputFromParts(cfg.ID, keyIndex, result.status, result.body, result.header)
-						s.applyCooldownDecision(ctx, cfg, input)
-					}
-					break
-				}
-				continue // 下一个URL
-			}
-			// 单URL：保持原有行为
-			break
+		immediate, urlLastFailure := s.attemptKeyAcrossURLs(
+			ctx, cfg, urls, selector,
+			keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, requestPath, w)
+		if immediate != nil {
+			return immediate, nil
 		}
 
 		// URL循环结束后的Key级决策
