@@ -42,6 +42,18 @@ func channelKeyStrategy(apiKeys []*model.APIKey) string {
 
 // 获取渠道列表
 // 使用批量查询优化N+1问题
+// filterConfigs 用谓词筛选 *model.Config 切片，消除 handleListChannels 中重复的
+// "make/for/append/cfgs=filtered" 五行片段。空容量预分配避免短切片再次扩容。
+func filterConfigs(cfgs []*model.Config, keep func(*model.Config) bool) []*model.Config {
+	out := make([]*model.Config, 0, len(cfgs))
+	for _, cfg := range cfgs {
+		if keep(cfg) {
+			out = append(out, cfg)
+		}
+	}
+	return out
+}
+
 func (s *Server) handleListChannels(c *gin.Context) {
 	cfgs, err := s.store.ListConfigs(c.Request.Context())
 	if err != nil {
@@ -53,19 +65,10 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	// [FIX] P2-7: 标准化类型比较，避免"同一概念多种写法"
 	channelType := c.Query("type")
 	if channelType != "" && channelType != "all" {
-		// 标准化查询参数（统一转小写）
 		normalizedQueryType := util.NormalizeChannelType(channelType)
-
-		filtered := make([]*model.Config, 0, len(cfgs))
-		for _, cfg := range cfgs {
-			// 标准化 Config 中的类型（统一转小写）
-			normalizedCfgType := util.NormalizeChannelType(cfg.ChannelType)
-
-			if normalizedCfgType == normalizedQueryType {
-				filtered = append(filtered, cfg)
-			}
-		}
-		cfgs = filtered
+		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
+			return util.NormalizeChannelType(cfg.ChannelType) == normalizedQueryType
+		})
 	}
 
 	// 附带冷却状态（同时用于 status=cooldown 过滤）
@@ -82,46 +85,30 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	// 支持按名称、状态、模型过滤（供分页场景使用）
 	// 注意：筛选下拉的全集走独立接口 /admin/channels/filter-options，
 	// 这里只负责按所有筛选条件返回当前页，避免列表数据与下拉选项耦合。
-	channelName := strings.TrimSpace(c.Query("channel_name"))
-	if channelName != "" {
-		filtered := make([]*model.Config, 0, len(cfgs))
-		for _, cfg := range cfgs {
-			if strings.TrimSpace(cfg.Name) == channelName {
-				filtered = append(filtered, cfg)
-			}
-		}
-		cfgs = filtered
+	if channelName := strings.TrimSpace(c.Query("channel_name")); channelName != "" {
+		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
+			return strings.TrimSpace(cfg.Name) == channelName
+		})
 	} else if search := strings.TrimSpace(c.Query("search")); search != "" {
 		searchLower := strings.ToLower(search)
-		filtered := make([]*model.Config, 0, len(cfgs))
-		for _, cfg := range cfgs {
-			if strings.Contains(strings.ToLower(strings.TrimSpace(cfg.Name)), searchLower) {
-				filtered = append(filtered, cfg)
-			}
-		}
-		cfgs = filtered
+		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
+			return strings.Contains(strings.ToLower(strings.TrimSpace(cfg.Name)), searchLower)
+		})
 	}
 
-	status := strings.TrimSpace(c.Query("status"))
-	if status != "" && status != "all" {
-		filtered := make([]*model.Config, 0, len(cfgs))
-		for _, cfg := range cfgs {
+	if status := strings.TrimSpace(c.Query("status")); status != "" && status != "all" {
+		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
 			switch status {
 			case "enabled":
-				if cfg.Enabled {
-					filtered = append(filtered, cfg)
-				}
+				return cfg.Enabled
 			case "disabled":
-				if !cfg.Enabled {
-					filtered = append(filtered, cfg)
-				}
+				return !cfg.Enabled
 			case "cooldown":
-				if until, cooled := allChannelCooldowns[cfg.ID]; cooled && until.After(now) {
-					filtered = append(filtered, cfg)
-				}
+				until, cooled := allChannelCooldowns[cfg.ID]
+				return cooled && until.After(now)
 			}
-		}
-		cfgs = filtered
+			return false
+		})
 	}
 
 	hasPagination := c.Query("limit") != "" || c.Query("offset") != ""
@@ -129,36 +116,24 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	modelName := strings.TrimSpace(c.Query("model"))
 	modelLike := strings.TrimSpace(c.Query("model_like"))
 	if modelName != "" && modelName != "all" {
-		filtered := make([]*model.Config, 0, len(cfgs))
-		for _, cfg := range cfgs {
-			matched := false
+		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
 			for _, entry := range cfg.ModelEntries {
 				if entry.Model == modelName {
-					matched = true
-					break
+					return true
 				}
 			}
-			if matched {
-				filtered = append(filtered, cfg)
-			}
-		}
-		cfgs = filtered
+			return false
+		})
 	} else if modelLike != "" && modelLike != "all" {
 		modelLikeLower := strings.ToLower(modelLike)
-		filtered := make([]*model.Config, 0, len(cfgs))
-		for _, cfg := range cfgs {
-			matched := false
+		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
 			for _, entry := range cfg.ModelEntries {
 				if strings.Contains(strings.ToLower(strings.TrimSpace(entry.Model)), modelLikeLower) {
-					matched = true
-					break
+					return true
 				}
 			}
-			if matched {
-				filtered = append(filtered, cfg)
-			}
-		}
-		cfgs = filtered
+			return false
+		})
 	}
 
 	// 批量查询所有Key冷却状态（缓存优先）
