@@ -768,6 +768,9 @@ func (s *Server) handleDeleteChannel(c *gin.Context, id int64) {
 	}
 
 	s.InvalidateChannelListCache()
+	// 删除渠道后必须同步失效该渠道的 API Keys 缓存，
+	// 否则若后续以同 ID 重新创建渠道（显式主键路径，例如混合存储恢复），可能读到旧 keys。
+	s.InvalidateAPIKeysCache(id)
 	RespondJSON(c, http.StatusOK, gin.H{"id": id})
 }
 
@@ -1088,6 +1091,9 @@ func (s *Server) HandleBatchDeleteChannels(c *gin.Context) {
 
 	if deleted > 0 {
 		s.InvalidateChannelListCache()
+		// 同步失效所有 API Keys 缓存：批量删除涉及多个渠道，
+		// 全量清空比逐个 InvalidateAPIKeysCache(id) 更便宜，且不会造成残留。
+		s.InvalidateAllAPIKeysCache()
 	}
 
 	RespondJSON(c, http.StatusOK, gin.H{
