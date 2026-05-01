@@ -234,35 +234,8 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		tokenHashStr, _ = v.(string)
 	}
 
-	// 检查令牌模型限制（2026-01新增）
-	if tokenHashStr != "" && originalModel != "" {
-		if !s.authService.IsModelAllowed(tokenHashStr, originalModel) {
-			c.JSON(http.StatusForbidden, gin.H{
-				"error": fmt.Sprintf("model '%s' is not allowed for this token", originalModel),
-			})
-			return
-		}
-	}
-
-	// 检查令牌费用限额（2026-01新增）
-	// 设计决策：在请求开始时检查，费用在请求完成后记账。
-	// 这是有意的设计——允许"最多超额一个请求"的窗口。
-	// 原因：费用只有在请求完成后才能精确计算（token数量由上游返回），
-	// 而此处只能做预检查。如果严格要求"先扣费后请求"，需要复杂的预估+退款机制。
-	if tokenHashStr != "" {
-		usedMicro, limitMicro, exceeded := s.authService.IsCostLimitExceeded(tokenHashStr)
-		if exceeded {
-			used := util.MicroUSDToUSD(usedMicro)
-			limit := util.MicroUSDToUSD(limitMicro)
-			c.JSON(http.StatusTooManyRequests, gin.H{
-				"error": gin.H{
-					"message": fmt.Sprintf("Cost limit exceeded: $%.2f used of $%.2f limit", used, limit),
-					"type":    "insufficient_quota",
-					"code":    "cost_limit_exceeded",
-				},
-			})
-			return
-		}
+	if !s.enforceTokenLimits(c, tokenHashStr, originalModel) {
+		return
 	}
 
 	// 注册活跃请求（内存状态，用于前端实时显示）
@@ -343,10 +316,92 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		},
 	}
 
-	// 按优先级遍历候选渠道，尝试转发
-	var lastResult *proxyResult
+	lastResult, succeeded := s.runProxyAttemptLoop(ctx, cands, reqCtx, c.Writer)
+	if succeeded {
+		return
+	}
+
+	s.writeFinalProxyResponse(c, reqCtx, originalModel, isStreaming, lastResult)
+}
+
+func determineFinalClientStatus(lastResult *proxyResult) int {
+	if lastResult == nil || lastResult.status == 0 {
+		return http.StatusServiceUnavailable
+	}
+
+	status := lastResult.status
+
+	// 499处理：区分客户端取消 vs 上游返回的499
+	if status == util.StatusClientClosedRequest {
+		if lastResult.isClientCanceled {
+			return status // 真正的客户端取消，透传499
+		}
+		return http.StatusBadGateway // 上游499，映射为502
+	}
+
+	// 仅映射内部状态码（596-599），其他全部透传
+	return util.ClientStatusFor(status)
+}
+
+func shouldStopTryingChannels(result *proxyResult) bool {
+	if result == nil {
+		return true
+	}
+	// 客户端取消：立即停止
+	if result.isClientCanceled {
+		return true
+	}
+	return result.nextAction == cooldown.ActionReturnClient
+}
+
+// enforceTokenLimits 检查 token 的模型限制与费用限额。
+// 违规时已写响应并返回 false，调用方应直接 return。
+func (s *Server) enforceTokenLimits(c *gin.Context, tokenHash, originalModel string) bool {
+	// 检查令牌模型限制（2026-01新增）
+	if tokenHash != "" && originalModel != "" {
+		if !s.authService.IsModelAllowed(tokenHash, originalModel) {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": fmt.Sprintf("model '%s' is not allowed for this token", originalModel),
+			})
+			return false
+		}
+	}
+
+	// 检查令牌费用限额（2026-01新增）
+	// 设计决策：在请求开始时检查，费用在请求完成后记账。
+	// 这是有意的设计——允许"最多超额一个请求"的窗口。
+	// 原因：费用只有在请求完成后才能精确计算（token数量由上游返回），
+	// 而此处只能做预检查。如果严格要求"先扣费后请求"，需要复杂的预估+退款机制。
+	if tokenHash != "" {
+		usedMicro, limitMicro, exceeded := s.authService.IsCostLimitExceeded(tokenHash)
+		if exceeded {
+			used := util.MicroUSDToUSD(usedMicro)
+			limit := util.MicroUSDToUSD(limitMicro)
+			c.JSON(http.StatusTooManyRequests, gin.H{
+				"error": gin.H{
+					"message": fmt.Sprintf("Cost limit exceeded: $%.2f used of $%.2f limit", used, limit),
+					"type":    "insufficient_quota",
+					"code":    "cost_limit_exceeded",
+				},
+			})
+			return false
+		}
+	}
+
+	return true
+}
+
+// runProxyAttemptLoop 按优先级遍历候选渠道。
+// 返回最后一次结果（可能 nil），调用方据此决定是否兜底响应。
+// succeeded 时内部已写响应，调用方应停止后续 writeFinal 步骤。
+func (s *Server) runProxyAttemptLoop(
+	ctx context.Context,
+	cands []*model.Config,
+	reqCtx *proxyRequestContext,
+	w gin.ResponseWriter,
+) (lastResult *proxyResult, succeeded bool) {
 	for _, cfg := range cands {
-		result, err := s.tryChannelWithKeys(ctx, cfg, reqCtx, c.Writer)
+		result, err := s.tryChannelWithKeys(ctx, cfg, reqCtx, w)
 
 		// 所有Key冷却：触发渠道级冷却(503)，防止后续请求重复尝试
 		// 使用 cooldownManager.HandleError 统一处理（DRY原则）
@@ -364,7 +419,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 
 		if result != nil {
 			if result.succeeded {
-				return
+				return nil, true
 			}
 
 			lastResult = result
@@ -380,6 +435,18 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		}
 	}
 
+	return lastResult, false
+}
+
+// writeFinalProxyResponse 所有渠道失败时写最终响应：
+// 计算 finalStatus、决定 skipLog、透传 body 或 JSON 错误。
+func (s *Server) writeFinalProxyResponse(
+	c *gin.Context,
+	reqCtx *proxyRequestContext,
+	originalModel string,
+	isStreaming bool,
+	lastResult *proxyResult,
+) {
 	// 所有渠道都失败：返回“最后一次实际失败”的状态码（并映射内部状态码），避免一律伪装成503。
 	finalStatus := determineFinalClientStatus(lastResult)
 
@@ -417,34 +484,4 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	}
 
 	c.JSON(finalStatus, gin.H{"error": "no upstream available"})
-}
-
-func determineFinalClientStatus(lastResult *proxyResult) int {
-	if lastResult == nil || lastResult.status == 0 {
-		return http.StatusServiceUnavailable
-	}
-
-	status := lastResult.status
-
-	// 499处理：区分客户端取消 vs 上游返回的499
-	if status == util.StatusClientClosedRequest {
-		if lastResult.isClientCanceled {
-			return status // 真正的客户端取消，透传499
-		}
-		return http.StatusBadGateway // 上游499，映射为502
-	}
-
-	// 仅映射内部状态码（596-599），其他全部透传
-	return util.ClientStatusFor(status)
-}
-
-func shouldStopTryingChannels(result *proxyResult) bool {
-	if result == nil {
-		return true
-	}
-	// 客户端取消：立即停止
-	if result.isClientCanceled {
-		return true
-	}
-	return result.nextAction == cooldown.ActionReturnClient
 }
