@@ -95,6 +95,22 @@ func cloneHeaders(src http.Header) http.Header {
 	return dst
 }
 
+// flattenHeader 将 http.Header 扁平化为字符串 map（多值用 "; " 拼接，空值跳过）。
+func flattenHeader(h http.Header) map[string]string {
+	out := make(map[string]string, len(h))
+	for k, vs := range h {
+		switch len(vs) {
+		case 0:
+			continue
+		case 1:
+			out[k] = vs[0]
+		default:
+			out[k] = strings.Join(vs, "; ")
+		}
+	}
+	return out
+}
+
 func extractRequestPath(fullURL string) string {
 	parsed, err := neturl.Parse(fullURL)
 	if err != nil {
@@ -629,29 +645,13 @@ func (s *Server) testChannelAPIWithURL(
 	}
 
 	// 始终返回上游请求原始数据，便于调试排查（不依赖 debug_log_enabled）
-	reqHeaders := make(map[string]string, len(req.Header))
-	for k, vs := range req.Header {
-		if len(vs) == 1 {
-			reqHeaders[k] = vs[0]
-		} else if len(vs) > 1 {
-			reqHeaders[k] = strings.Join(vs, "; ")
-		}
-	}
 	result["upstream_request_url"] = requestPlan.fullURL
-	result["upstream_request_headers"] = maskSensitiveHeaderMap(reqHeaders)
+	result["upstream_request_headers"] = maskSensitiveHeaderMap(flattenHeader(req.Header))
 	result["upstream_request_body"] = string(requestPlan.requestBody)
 
 	// 附带响应头与类型，便于排查（不含请求头以避免泄露）
 	if len(resp.Header) > 0 {
-		hdr := make(map[string]string, len(resp.Header))
-		for k, vs := range resp.Header {
-			if len(vs) == 1 {
-				hdr[k] = vs[0]
-			} else if len(vs) > 1 {
-				hdr[k] = strings.Join(vs, "; ")
-			}
-		}
-		result["response_headers"] = hdr
+		result["response_headers"] = flattenHeader(resp.Header)
 	}
 	if contentType != "" {
 		result["content_type"] = contentType
