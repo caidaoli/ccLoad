@@ -1,9 +1,9 @@
 # ccLoad 代码审查 - 未修复项清单
 
-> **生成日期**：2026-05-01
+> **生成日期**：2026-05-01（10:30 修订）
 > **审查范围**：全代码库性能/冗余审查
 > **作者**：Linus 式审查协调
-> **本批已修复**：见 git log（commits `5aa1c57` ~ `d7b9a04`，共 6 项）
+> **本批已修复**：见 git log（早批 commits `5aa1c57` ~ `d7b9a04`，共 6 项；二轮修订新增 NEW-1 / NEW-2 两项，见本文 D 节）
 
 本文档记录本轮代码审查中**已识别但未修改**的所有项，按"为什么没改"分三类：
 
@@ -26,6 +26,8 @@
 
 **结论**：当前实现就是最优。don't fix what isn't broken.
 
+> **二轮修订补充**：原 A1 仅评估"是否下推 SQL"，漏掉了同函数内 6 段重复 filter 循环的 DRY 问题。该缺口已在二轮修订作为 **NEW-2** 修复（抽取 `filterConfigs` 高阶函数），见 D 节。
+
 ---
 
 ### A2. `proxy_util.go::ForwardObserver` 回调内联
@@ -33,9 +35,9 @@
 **审查发现**：`ForwardObserver` 仅有 `OnFirstByteRead` / `OnBytesRead` 两个回调，看似可直接把字段嵌入 `proxyRequestContext`。
 
 **为什么拒绝**：
-- `proxyRequestContext` 已有 ~18 个字段，再加 2 个 func 字段会让结构体职责发散
+- `proxyRequestContext` 已有 19 个字段（实测），再加 2 个 func 字段会让结构体职责发散
 - `ForwardObserver` 是经典 Parameter Object 模式，调用方只需传 `nil` 即可禁用观察
-- 内联后 `forwardRequest` 函数参数会从 11 增到 13，签名臃肿
+- 内联后 `forwardOnceAsync` 函数参数会从 11 增到 13，签名臃肿
 
 **结论**：这是**反向重构**，会让 API 变差。保留现状。
 
@@ -67,54 +69,52 @@
 
 ---
 
-### A5. `util/uuid.go` 不替换为 `google/uuid`
+### A5. ~~`util/uuid.go` 不替换为 `google/uuid`~~（**条目已重写**）
 
-**审查发现**：项目内有自定义 UUID 生成（已 `nolint` 标记），看似可用 `google/uuid` 替代。
+**原描述错误**：项目内并无 `util/uuid.go`。真实代码在 `internal/app/codex_session_cache.go::newCodexUUIDv4/v5` 与 `internal/protocol/builtin/request_prompt.go::newClaudeMetadataUserID`。
 
-**为什么拒绝**：
-- 已显式 `nolint` 标注，是**有意识**的选择，不是遗漏
-- 当前实现仅用于内部请求追踪 ID，无强 RFC 4122 合规性需求
-- 引入 `google/uuid` 多一个依赖，编译产物变大
+**重新评估**：
+- "不引入 google/uuid" 的判断仍然成立（无 RFC 4122 强需求 + 避免外部依赖）
+- 真正的味道是**两份独立手写 UUID v4 实现**（DRY 违反），与"是否换库"无关
 
-**结论**：保留现状。审查时若再发现此项，跳过即可。
+**处理**：二轮修订已修复（**NEW-1**：抽取 `internal/util/uuid_local.go`，两处调用统一），见 D 节。
 
 ---
 
 ## B. 暂缓（需基准测试再决定）
 
-### B1. SSE 流式解析进一步优化（避免 `bytes.Split`）
+### B1. SSE 流式解析 `bytes.Split` 优化（**位置已修正**）
 
-**位置**：`proxy_sse_parser.go::parseSSEEventChunk`
+**正确位置**：`proxy_forward.go:381 parseSSEEventChunk`（原文档误写为 `proxy_sse_parser.go::parseSSEEventChunk`；实际 SSE 主解析器 `proxy_sse_parser.go::parseBuffer` **已使用 `bytes.IndexByte`**，零切片分配，无需再优化）
 
-**现状**：本轮已重构为 `[]byte` 视角，消除 `string` 分配。但 `bytes.Split(chunk, []byte{'\n'})` 仍会分配 `[][]byte` 切片。
+**现状**：`parseSSEEventChunk` 用 `bytes.Split(chunk, []byte{'\n'})` 切分单事件块。
 
 **进一步优化方案**：
 - 使用 `bytes.IndexByte` 手动状态机扫描，零切片分配
-- 复用 `lines` slab buffer（`sync.Pool`）
+- 或复用 `lines` slab buffer（`sync.Pool`）
 
 **为什么暂缓**：
-- 当前实现已足够：每个 SSE chunk 通常 ≤ 5 行，分配开销 < 1μs
-- 进一步优化代码可读性会显著下降（手写状态机 vs `bytes.Split` 一行）
-- **决策门槛**：必须先用 `pprof` 证明 SSE 解析占据 CPU > 5%，否则不动
+- 单事件块通常 ≤ 5 行，每次仅产生一个 `[][]byte` 小分配
+- 该函数仅在事件边界已切好后调用，调用频率受 `parseBuffer` 节流
+- **决策门槛**：必须先用 `pprof` 证明 `parseSSEEventChunk` 占据 SSE 路径 CPU > 5%，否则不动
 
-**重启条件**：跑 1000 RPS 流式负载，profile 显示 `parseSSEEventChunk` 占 CPU > 5%。
+**重启条件**：1000 RPS 流式负载下 profile 显示 `parseSSEEventChunk` 占 CPU > 5%。
 
 ---
 
 ### B2. `ChannelCache.refreshCache` 完全无锁化（CAS）
 
-**位置**：`internal/storage/cache.go`
+**位置**：`internal/storage/cache.go`（仍为 `sync.RWMutex`，line 27）
 
-**现状**：本轮已实现"DB 加载在锁外，仅指针交换在写锁内"，临界区从 ~50ms 降到 < 100ns。
+**现状**：本轮已实现"DB 加载在锁外，仅指针交换在写锁内"，临界区显著缩短。
 
 **进一步优化方案**：
 - 用 `atomic.Pointer[cacheData]` 替代 `mutex + 字段集合`
 - 完全消除锁，读路径走 `atomic.Load`
 
 **为什么暂缓**：
-- 当前临界区已 < 100ns，再优化的实测收益 < 1%
+- 没有 profile 数据证明锁是瓶颈，不能"用直觉反对直觉"
 - `atomic.Pointer` 改造需把所有缓存字段打包成 struct，影响 5+ 个调用点
-- **决策门槛**：实测高并发（>10k QPS）下锁竞争是瓶颈，再做
 
 **重启条件**：火焰图显示 `ChannelCache.GetEnabled` 锁等待占 > 1%。
 
@@ -225,41 +225,66 @@
 **为什么低优**：
 - 不影响 CI/CD
 - 开发者已习惯当前命令
-- 改 Makefile 需通知所有协作者
 
 **建议**：下次 Makefile 大改时一并处理。
 
 ---
 
-## D. 审查方法论沉淀
+## D. 二轮修订（2026-05-01 10:30）—— 已修复
 
-本轮审查的关键判断标准（Linus 式）：
+### NEW-1（已修复）：UUID 实现重复 → 抽取 `internal/util/uuid_local.go`
 
-1. **"看起来重复"≠"应该合并"**：合并的前提是**抽象成本 < 重复成本**
+**问题**：两处独立手写 UUID v4：
+- `internal/app/codex_session_cache.go:212-237` `newCodexUUIDv4` / `newCodexUUIDv5` / `formatUUIDBytes` / `uuidNameSpaceOID`
+- `internal/protocol/builtin/request_prompt.go:566-579` `newClaudeMetadataUserID` 内嵌 UUID v4 byte 操作
+
+**修复**：
+- 新增 `internal/util/uuid_local.go`：导出 `NewUUIDv4()` / `NewUUIDv5(ns [16]byte, name string)` / `NameSpaceOID`
+- `codex_session_cache.go` 删除 ~35 行本地实现，改调 `util.NewUUIDv4 / NewUUIDv5 / NameSpaceOID`
+- `request_prompt.go::newClaudeMetadataUserID` session_id 部分改调 `util.NewUUIDv4()`，函数从 14 行降至 9 行
+- 新增 `internal/util/uuid_local_test.go` 4 个测试（v4 形态/v4 唯一性/v5 确定性/v5 已知向量）
+- 删除 `codex_session_cache_test.go` 中重复的 `TestCodexUUIDHelpers`
+
+**验证**：`go test -race ./internal/...` 全绿；`golangci-lint run` 0 issues。
+
+**坚持的原则**：仍**不**引入 `google/uuid`，零外部依赖（A5 原结论"不换库"成立）。
+
+---
+
+### NEW-2（已修复）：`handleListChannels` 6 段重复 filter → 抽取 `filterConfigs`
+
+**问题**：`admin_channels.go::handleListChannels` 内有 6 段几乎相同的过滤模式（type / channel_name / search / status / model / model_like）：
+```go
+filtered := make([]*model.Config, 0, len(cfgs))
+for _, cfg := range cfgs {
+    if <condition> { filtered = append(filtered, cfg) }
+}
+cfgs = filtered
+```
+
+**修复**：
+- 新增 `filterConfigs(cfgs, keep func(*model.Config) bool) []*model.Config` 高阶函数（admin_channels.go 内私有）
+- 6 处过滤改写为 `cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool { ... })`
+- 文件总行数 1149 → 1124（净减 25 行；重复模式从 6 处降至 1 处）
+
+**验证**：`go test ./internal/app/ -run Channel` 全绿。
+
+---
+
+## E. 审查方法论沉淀
+
+本轮（含修订）的关键判断标准：
+
+1. **"看起来重复"≠"应该合并"**：合并的前提是**抽象成本 < 重复成本**（NEW-1/NEW-2 都验证了"成本 < 重复"）
 2. **微秒级操作不优化**：内存中 `for...range` 几百个元素，下推 SQL 反而更慢
 3. **Parameter Object 不要内联**：函数签名超过 7 个参数时，结构体打包是正确的
 4. **方言差异保留分离**：SQLite/MySQL/Postgres 这种语法分歧大的，分文件比模板更可读
 5. **加 nolint 是有意识的选择**：审查时不再质疑（除非有新证据）
+6. **再审查会发现新东西**：本次二轮修订找到了 A5 文件名错位、B1 位置错位、A1 漏项 —— 不存在"审过即终结"的清单
+7. **没有 profile 不谈"已经够快"**：B2 二轮修订删除了"< 100ns"这种估算式辩护，只保留 profile 重启条件
 
 ---
 
-## E. 不再审查的清单
-
-以下文件/模块本轮已审查过，**短期内不需要再次审查**（除非有 bug 修复）：
-
-- `internal/app/proxy_forward.go` ✅
-- `internal/app/proxy_sse_parser.go` ✅
-- `internal/app/selector_cooldown.go` ✅
-- `internal/app/url_selector.go` ✅
-- `internal/storage/cache.go` ✅
-- `internal/storage/sql/auth_tokens.go` ✅
-- `internal/storage/sql/metrics.go` ✅
-- `internal/model/config.go` ✅
-- `internal/protocol/registry.go` ✅
-- `internal/cooldown/decision.go` ✅
-
----
-
-**结论**：本轮审查已榨干所有"高ROI"改动。剩余项要么是负值（A 类），要么需要实测数据驱动（B 类），要么是琐碎清理（C 类）。
+**结论**：本轮（含 NEW-1/NEW-2 修复）已榨干所有"高 ROI"改动。剩余项要么是负值（A 类），要么需要实测数据驱动（B 类），要么是琐碎清理（C 类）。
 
 进一步改动应**等真实负载暴露瓶颈**后，针对性优化，而非凭直觉做。
