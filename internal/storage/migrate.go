@@ -66,6 +66,14 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		schema.DefineDebugLogsTable,
 	}
 
+	// 一次性预查全库索引，避免每张表单独 SELECT 网络往返
+	// 远程 MySQL（HF Spaces 等）首次启动时 10 次 SELECT 也不便宜，合并为 1 次。
+	// 注意：pre-create hook 若 DROP 表，必须 invalidate 缓存中对应条目。
+	allIndexes, err := loadAllExistingIndexes(ctx, db, dialect)
+	if err != nil {
+		return fmt.Errorf("load all existing indexes: %w", err)
+	}
+
 	// 创建表和索引
 	for _, defineTable := range tables {
 		tb := defineTable()
@@ -80,6 +88,10 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := relaxDebugLogsRespBodyNullable(ctx, db, dialect); err != nil {
 				return fmt.Errorf("relax debug_logs.resp_body nullability: %w", err)
 			}
+			// 这两个 hook 在首次升级时会 DROP 表，缓存中的旧索引条目失效。
+			// 重启路径下 hooks 是 no-op，但失效操作只会让该表所有索引重新走一次"已存在则忽略"
+			// 容错路径，开销 = 表的索引数 × 1 次 DDL（debug_logs 仅 1 个索引），可忽略。
+			delete(allIndexes, "debug_logs")
 		}
 
 		// 创建表
@@ -176,7 +188,15 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		}
 
 		// 创建索引
+		// 优化：先批量查询表上已有索引，跳过已存在的 DDL，避免远程数据库每次启动 N 次往返。
+		// 旧实现依赖 MySQL 错误码 1061 / "Duplicate key name" 容错，每次启动仍发送一次 CREATE INDEX
+		// 并等待错误响应。在 HuggingFace Spaces + 远程 MySQL 这类高 RTT 环境下，30+ 索引累计
+		// 往返时间常突破启动迁移超时。改为外层 1 次全库 SELECT 拿索引清单，仅对缺失项执行 DDL。
+		existingIdx := allIndexes[tb.Name()]
 		for _, idx := range buildIndexes(tb, dialect) {
+			if existingIdx[idx.Name] {
+				continue
+			}
 			if err := createIndex(ctx, db, idx, dialect); err != nil {
 				return err
 			}
@@ -692,6 +712,47 @@ func sqliteExistingColumns(ctx context.Context, db *sql.DB, table string) (map[s
 	}
 
 	return existingCols, nil
+}
+
+// loadAllExistingIndexes 一次性查询整个数据库下所有表的现有索引集合
+//
+// 设计意图：
+//   - 远程数据库（HF Spaces + 远程 MySQL）每条 SQL 都有可观 RTT；用 1 次全库 SELECT
+//     替代 N 次 CREATE INDEX-报错-忽略 或 N 次单表 SELECT，启动阶段时间从 O(N×RTT) 降到 O(1×RTT)
+//   - 返回 map[tableName]map[indexName]bool；不存在的表/索引读取得到 nil/false，不需要 ok 判断
+//
+// MySQL：information_schema.STATISTICS 每个复合索引列一行，DISTINCT 去重
+// SQLite：sqlite_master 每个索引一行
+//
+// 注意：调用方若执行 DROP TABLE 之类的破坏性操作，需主动 delete(result, tableName) 失效缓存
+func loadAllExistingIndexes(ctx context.Context, db *sql.DB, dialect Dialect) (map[string]map[string]bool, error) {
+	var query string
+	if dialect == DialectMySQL {
+		query = "SELECT DISTINCT TABLE_NAME, INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE()"
+	} else {
+		query = "SELECT tbl_name, name FROM sqlite_master WHERE type='index' AND tbl_name IS NOT NULL"
+	}
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("query all indexes: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	result := make(map[string]map[string]bool)
+	for rows.Next() {
+		var tbl, idx string
+		if err := rows.Scan(&tbl, &idx); err != nil {
+			return nil, fmt.Errorf("scan index row: %w", err)
+		}
+		if result[tbl] == nil {
+			result[tbl] = make(map[string]bool)
+		}
+		result[tbl][idx] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate indexes: %w", err)
+	}
+	return result, nil
 }
 
 func buildDDL(tb *schema.TableBuilder, dialect Dialect) string {

@@ -731,6 +731,104 @@ func TestMigrate_SQLite_LogsHotPathIndexes(t *testing.T) {
 	}
 }
 
+// TestLoadAllExistingIndexes_SQLite 验证 loadAllExistingIndexes 在 SQLite 下能正确返回索引集合
+//
+// 防御目标：迁移热路径优化（启动时跳过已存在索引）依赖此函数返回正确结果。
+// 若返回为空或漏掉索引，会退化为重复执行 CREATE INDEX —— 此时旧的容错路径仍兜底，
+// 但远程数据库的网络往返成本会重新出现，违背优化初衷。
+func TestLoadAllExistingIndexes_SQLite(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	// 首次迁移前：所有索引尚不存在
+	emptyBefore, err := loadAllExistingIndexes(ctx, db, DialectSQLite)
+	if err != nil {
+		t.Fatalf("loadAllExistingIndexes(empty): %v", err)
+	}
+	if len(emptyBefore) != 0 {
+		t.Fatalf("expected no indexes before migrate, got %v", emptyBefore)
+	}
+
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	// 迁移后应能查到所有表的索引
+	afterMigrate, err := loadAllExistingIndexes(ctx, db, DialectSQLite)
+	if err != nil {
+		t.Fatalf("loadAllExistingIndexes(after): %v", err)
+	}
+
+	logsIdx := afterMigrate["logs"]
+	if logsIdx == nil {
+		t.Fatal("logs table missing from index map")
+	}
+	mustHaveLogs := []string{
+		"idx_logs_time_model",
+		"idx_logs_time_status",
+		"idx_logs_time_channel_model",
+		"idx_logs_minute_channel_model",
+		"idx_logs_minute_auth_token_status",
+		"idx_logs_channel_time_id",
+		"idx_logs_channel_model_time_id",
+		"idx_logs_time_auth_token",
+		"idx_logs_time_actual_model",
+	}
+	for _, name := range mustHaveLogs {
+		if !logsIdx[name] {
+			t.Errorf("logs index %s missing after migrate", name)
+		}
+	}
+
+	// debug_logs 表的索引也应该被包含
+	if !afterMigrate["debug_logs"]["idx_debug_logs_created_at"] {
+		t.Errorf("debug_logs index idx_debug_logs_created_at missing after migrate")
+	}
+
+	// 不存在的表读取得到 nil map（map[nil][key] 安全返回零值）
+	if afterMigrate["no_such_table_xyz"] != nil {
+		t.Errorf("expected nil for missing table, got %v", afterMigrate["no_such_table_xyz"])
+	}
+}
+
+// TestMigrate_SQLite_IdempotentSkipsCreateIndex 验证幂等迁移路径不会再次执行 CREATE INDEX
+//
+// 实现原理：第二次迁移前，预先 DROP 一个索引；如果 migrate 真的跳过了"已存在"的索引而仅
+// 重建缺失项，那被 DROP 的索引会被重建，其它索引集合保持不变。
+// 这是性能优化的功能等价性证明。
+func TestMigrate_SQLite_IdempotentSkipsCreateIndex(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("first migrate: %v", err)
+	}
+
+	// 故意删除一个索引，模拟"部分缺失"场景
+	if _, err := db.ExecContext(ctx, "DROP INDEX idx_logs_time_model"); err != nil {
+		t.Fatalf("drop index: %v", err)
+	}
+	before, err := loadAllExistingIndexes(ctx, db, DialectSQLite)
+	if err != nil {
+		t.Fatalf("loadAllExistingIndexes(before): %v", err)
+	}
+	if before["logs"]["idx_logs_time_model"] {
+		t.Fatalf("idx_logs_time_model should be dropped before second migrate")
+	}
+
+	// 第二次迁移：应当只重建缺失的索引
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("second migrate: %v", err)
+	}
+	after, err := loadAllExistingIndexes(ctx, db, DialectSQLite)
+	if err != nil {
+		t.Fatalf("loadAllExistingIndexes(after): %v", err)
+	}
+	if !after["logs"]["idx_logs_time_model"] {
+		t.Errorf("dropped index idx_logs_time_model should be recreated by second migrate")
+	}
+}
+
 func TestEnsureAuthTokensCacheFields_SQLite(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
