@@ -172,6 +172,13 @@ func isStreamingRequest(path string, body []byte) bool {
 		return true
 	}
 
+	// 快速短路：body 不含 "stream" 字段时直接返回 false，
+	// 避免 Gemini :generateContent 等非 chat 请求的全量 Unmarshal。
+	// 误判（user content 含 "stream" 子串）只会进入慢路径，最终结果仍正确。
+	if !bytes.Contains(body, []byte(`"stream"`)) {
+		return false
+	}
+
 	// Claude/OpenAI流式请求特征：请求体中 stream=true
 	var reqModel struct {
 		Stream util.FlexibleBool `json:"stream"`
