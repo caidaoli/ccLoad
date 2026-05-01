@@ -66,45 +66,6 @@ func NewChannelCache(store Store, ttl time.Duration) *ChannelCache {
 	}
 }
 
-// deepCopyConfig 深拷贝 Config 对象（包括 slice）
-// 防止调用方修改污染缓存
-// 设计：拷贝所有可变字段（ModelEntries），重置索引缓存（modelIndex + indexOnce）
-// [FIX] P0: 重置索引缓存，避免复制 sync.Once 和指向旧 slice 的 map
-func deepCopyConfig(src *modelpkg.Config) *modelpkg.Config {
-	if src == nil {
-		return nil
-	}
-
-	dst := &modelpkg.Config{
-		ID:                    src.ID,
-		Name:                  src.Name,
-		ChannelType:           src.ChannelType,
-		ProtocolTransformMode: src.ProtocolTransformMode,
-		ProtocolTransforms:    append([]string(nil), src.ProtocolTransforms...),
-		URL:                   src.URL,
-		Priority:              src.Priority,
-		Enabled:               src.Enabled,
-		ScheduledCheckEnabled: src.ScheduledCheckEnabled,
-		ScheduledCheckModel:   src.ScheduledCheckModel,
-		CooldownUntil:         src.CooldownUntil,
-		CooldownDurationMs:    src.CooldownDurationMs,
-		DailyCostLimit:        src.DailyCostLimit,
-		CostMultiplier:        src.CostMultiplier,
-		CustomRequestRules:    src.CustomRequestRules,
-		CreatedAt:             src.CreatedAt,
-		UpdatedAt:             src.UpdatedAt,
-		KeyCount:              src.KeyCount,
-	}
-
-	// 深拷贝 ModelEntries slice
-	if src.ModelEntries != nil {
-		dst.ModelEntries = make([]modelpkg.ModelEntry, len(src.ModelEntries))
-		copy(dst.ModelEntries, src.ModelEntries)
-	}
-
-	return dst
-}
-
 // deepCopyConfigs 批量深拷贝 Config 对象
 // 缓存边界隔离，避免共享指针污染
 func deepCopyConfigs(src []*modelpkg.Config) []*modelpkg.Config {
@@ -114,7 +75,7 @@ func deepCopyConfigs(src []*modelpkg.Config) []*modelpkg.Config {
 
 	result := make([]*modelpkg.Config, len(src))
 	for i, cfg := range src {
-		result[i] = deepCopyConfig(cfg)
+		result[i] = cfg.Clone()
 	}
 	return result
 }

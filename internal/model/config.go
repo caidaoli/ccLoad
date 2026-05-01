@@ -133,6 +133,41 @@ type Config struct {
 	indexMu    sync.RWMutex           `json:"-"` // 保护索引的并发访问
 }
 
+// Clone 返回 Config 的深拷贝。
+// 拷贝所有可变字段（ModelEntries / ProtocolTransforms slice），
+// 重置懒加载索引（modelIndex + indexMu），避免共享 sync.RWMutex 与指向旧 slice 的 map。
+func (c *Config) Clone() *Config {
+	if c == nil {
+		return nil
+	}
+	dst := &Config{
+		ID:                    c.ID,
+		Name:                  c.Name,
+		ChannelType:           c.ChannelType,
+		ProtocolTransformMode: c.ProtocolTransformMode,
+		ProtocolTransforms:    append([]string(nil), c.ProtocolTransforms...),
+		URL:                   c.URL,
+		Priority:              c.Priority,
+		Enabled:               c.Enabled,
+		ScheduledCheckEnabled: c.ScheduledCheckEnabled,
+		ScheduledCheckModel:   c.ScheduledCheckModel,
+		CooldownUntil:         c.CooldownUntil,
+		CooldownDurationMs:    c.CooldownDurationMs,
+		DailyCostLimit:        c.DailyCostLimit,
+		CostMultiplier:        c.CostMultiplier,
+		CustomRequestRules:    c.CustomRequestRules,
+		CreatedAt:             c.CreatedAt,
+		UpdatedAt:             c.UpdatedAt,
+		KeyCount:              c.KeyCount,
+		CooldownFallback:      c.CooldownFallback,
+	}
+	if c.ModelEntries != nil {
+		dst.ModelEntries = make([]ModelEntry, len(c.ModelEntries))
+		copy(dst.ModelEntries, c.ModelEntries)
+	}
+	return dst
+}
+
 // GetModels 获取所有支持的模型名称列表
 func (c *Config) GetModels() []string {
 	models := make([]string, 0, len(c.ModelEntries))

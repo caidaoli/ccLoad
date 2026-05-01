@@ -97,34 +97,11 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 }
 
 func cooldownFallbackCandidate(cfg *modelpkg.Config) *modelpkg.Config {
-	if cfg == nil {
+	clone := cfg.Clone()
+	if clone == nil {
 		return nil
 	}
-	clone := &modelpkg.Config{
-		ID:                    cfg.ID,
-		Name:                  cfg.Name,
-		ChannelType:           cfg.ChannelType,
-		ProtocolTransformMode: cfg.ProtocolTransformMode,
-		ProtocolTransforms:    append([]string(nil), cfg.ProtocolTransforms...),
-		URL:                   cfg.URL,
-		Priority:              cfg.Priority,
-		Enabled:               cfg.Enabled,
-		ScheduledCheckEnabled: cfg.ScheduledCheckEnabled,
-		ScheduledCheckModel:   cfg.ScheduledCheckModel,
-		CooldownUntil:         cfg.CooldownUntil,
-		CooldownDurationMs:    cfg.CooldownDurationMs,
-		DailyCostLimit:        cfg.DailyCostLimit,
-		CostMultiplier:        cfg.CostMultiplier,
-		CustomRequestRules:    cfg.CustomRequestRules,
-		CreatedAt:             cfg.CreatedAt,
-		UpdatedAt:             cfg.UpdatedAt,
-		KeyCount:              cfg.KeyCount,
-		CooldownFallback:      true,
-	}
-	if cfg.ModelEntries != nil {
-		clone.ModelEntries = make([]modelpkg.ModelEntry, len(cfg.ModelEntries))
-		copy(clone.ModelEntries, cfg.ModelEntries)
-	}
+	clone.CooldownFallback = true
 	return clone
 }
 
