@@ -1083,29 +1083,29 @@ func (s *Server) forwardAttempt(
 
 // tryChannelWithKeys 在单个渠道内尝试多个Key（Key级重试）
 // 从proxy.go提取，遵循SRP原则
+// buildCtxDoneResult 构造 ctx 取消/超时时的 proxyResult，统一 fail-fast 路径。
+func buildCtxDoneResult(cfg *model.Config, ctxErr error) *proxyResult {
+	status := util.StatusClientClosedRequest
+	isClientCanceled := errors.Is(ctxErr, context.Canceled)
+	if errors.Is(ctxErr, context.DeadlineExceeded) {
+		status = http.StatusGatewayTimeout
+	}
+	return &proxyResult{
+		status:           status,
+		body:             []byte(`{"error":"` + ctxErr.Error() + `"}`),
+		channelID:        &cfg.ID,
+		succeeded:        false,
+		isClientCanceled: isClientCanceled,
+		nextAction:       cooldown.ActionReturnClient,
+	}
+}
+
 func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqCtx *proxyRequestContext, w http.ResponseWriter) (*proxyResult, error) {
 	reqCtx.channelStartTime = time.Now()
 
-	makeCtxDoneResult := func(ctxErr error) *proxyResult {
-		status := util.StatusClientClosedRequest
-		isClientCanceled := errors.Is(ctxErr, context.Canceled)
-		if errors.Is(ctxErr, context.DeadlineExceeded) {
-			status = http.StatusGatewayTimeout
-		}
-
-		return &proxyResult{
-			status:           status,
-			body:             []byte(`{"error":"` + ctxErr.Error() + `"}`),
-			channelID:        &cfg.ID,
-			succeeded:        false,
-			isClientCanceled: isClientCanceled,
-			nextAction:       cooldown.ActionReturnClient,
-		}
-	}
-
 	// Fail-fast：ctx 已结束（客户端断开/请求超时）时不要再做任何 I/O（查库、选Key、发请求）。
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return makeCtxDoneResult(ctxErr), nil
+		return buildCtxDoneResult(cfg, ctxErr), nil
 	}
 
 	// 查询渠道的API Keys（缓存优先，缓存不可用自动降级到数据库查询）
@@ -1154,7 +1154,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	for range maxKeyRetries {
 		// 检查context是否已取消/超时
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return makeCtxDoneResult(ctxErr), nil
+			return buildCtxDoneResult(cfg, ctxErr), nil
 		}
 
 		// 选择可用的API Key（直接传入apiKeys，避免重复查询）
@@ -1180,7 +1180,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		var urlLastFailure *proxyResult
 		for urlIdx, urlEntry := range sortedURLs {
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				return makeCtxDoneResult(ctxErr), nil
+				return buildCtxDoneResult(cfg, ctxErr), nil
 			}
 
 			// 更新活跃请求的当前URL（用于前端显示）
