@@ -55,12 +55,20 @@ func writeResponseWithHeaders(w http.ResponseWriter, status int, hdr http.Header
 	}
 }
 
+// looksLikeJSON 仅扫描首部空白后的第一个非空字符判定 JSON 形状，
+// 避免 bytes.TrimSpace 对长 body 的全量扫描+切片分配。
 func looksLikeJSON(body []byte) bool {
-	trimmed := bytes.TrimSpace(body)
-	if len(trimmed) == 0 {
-		return false
+	for i := range body {
+		switch body[i] {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '{', '[':
+			return true
+		default:
+			return false
+		}
 	}
-	return trimmed[0] == '{' || trimmed[0] == '['
+	return false
 }
 
 // ============================================================================
