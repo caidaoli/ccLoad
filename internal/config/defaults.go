@@ -125,8 +125,8 @@ const (
 	// StartupDBPingTimeout 数据库连接测试超时
 	StartupDBPingTimeout = 10 * time.Second
 	// StartupMigrationTimeout 数据库迁移超时
-	// 60s 选取理由：远程 MySQL（HF Spaces 等）启动场景下，9 张表 + 30+ 索引的
-	// 首次 DDL 累计往返时间可能突破 30s。迁移逻辑已通过 loadExistingIndexes
-	// 跳过已存在索引，正常重启路径耗时 < 1s，60s 足以覆盖首次部署 + 网络抖动。
-	StartupMigrationTimeout = 60 * time.Second
+	// 5min 选取理由：跨版本升级时，多次 ALTER TABLE ADD COLUMN（每次远程 RTT 可达数秒）
+	// 加上 CREATE INDEX 会轻易耗尽 60s。正常重启路径因 loadAllExistingIndexes 跳过
+	// 已存在索引仍 < 1s，5min 只是安全上限，覆盖首次部署 + 跨版本升级 + 网络抖动。
+	StartupMigrationTimeout = 5 * time.Minute
 )
