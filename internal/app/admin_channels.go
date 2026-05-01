@@ -185,52 +185,18 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		cfgs = paginateChannels(cfgs, c)
 	}
 
+	ectx := &channelEnrichmentContext{
+		now:                 now,
+		healthEnabled:       healthEnabled,
+		priorityMap:         priorityMap,
+		successRateMap:      successRateMap,
+		channelCooldownsMap: allChannelCooldowns,
+		keyCooldownsMap:     allKeyCooldowns,
+		apiKeysMap:          allAPIKeys,
+	}
 	out := make([]ChannelWithCooldown, 0, len(cfgs))
 	for _, cfg := range cfgs {
-		oc := ChannelWithCooldown{Config: cfg}
-
-		// 渠道级别冷却：使用批量查询结果（性能提升：N -> 1 次查询）
-		if until, cooled := allChannelCooldowns[cfg.ID]; cooled && until.After(now) {
-			oc.CooldownUntil = &until
-			cooldownRemainingMS := int64(until.Sub(now) / time.Millisecond)
-			oc.CooldownRemainingMS = cooldownRemainingMS
-		}
-
-		// 健康度模式：使用预计算的有效优先级和成功率
-		if healthEnabled {
-			if rate, ok := successRateMap[cfg.ID]; ok {
-				oc.SuccessRate = &rate
-			}
-			effPriority := priorityMap[cfg.ID]
-			oc.EffectivePriority = &effPriority
-		}
-
-		// 从预加载的map中获取API Keys（O(1)查找）
-		apiKeys := allAPIKeys[cfg.ID]
-
-		// Key 策略属于渠道行为，详情和列表都必须返回同一语义。
-		oc.KeyStrategy = channelKeyStrategy(apiKeys)
-
-		keyCooldowns := make([]KeyCooldownInfo, 0, len(apiKeys))
-
-		// 从批量查询结果中获取该渠道的所有Key冷却状态
-		channelKeyCooldowns := allKeyCooldowns[cfg.ID]
-
-		for _, apiKey := range apiKeys {
-			keyInfo := KeyCooldownInfo{KeyIndex: apiKey.KeyIndex}
-
-			// 检查是否在冷却中
-			if until, cooled := channelKeyCooldowns[apiKey.KeyIndex]; cooled && until.After(now) {
-				u := until
-				keyInfo.CooldownUntil = &u
-				keyInfo.CooldownRemainingMS = int64(until.Sub(now) / time.Millisecond)
-			}
-
-			keyCooldowns = append(keyCooldowns, keyInfo)
-		}
-		oc.KeyCooldowns = keyCooldowns
-
-		out = append(out, oc)
+		out = append(out, ectx.enrichChannel(cfg))
 	}
 
 	// 填充空的重定向模型为请求模型（方便前端编辑时显示）
@@ -266,6 +232,58 @@ func paginateChannels(cfgs []*model.Config, c *gin.Context) []*model.Config {
 	}
 	end := min(offset+limit, totalCount)
 	return cfgs[offset:end]
+}
+
+// channelEnrichmentContext 聚合 enrichChannel 所需的批量预计算数据，避免长参数列表。
+type channelEnrichmentContext struct {
+	now                 time.Time
+	healthEnabled       bool
+	priorityMap         map[int64]float64
+	successRateMap      map[int64]float64
+	channelCooldownsMap map[int64]time.Time
+	keyCooldownsMap     map[int64]map[int]time.Time
+	apiKeysMap          map[int64][]*model.APIKey
+}
+
+// enrichChannel 把单个 cfg 拼装为 ChannelWithCooldown：
+// 渠道冷却剩余时间、健康度模式下的有效优先级与成功率、Key 策略与各 Key 冷却详情。
+func (ectx *channelEnrichmentContext) enrichChannel(cfg *model.Config) ChannelWithCooldown {
+	oc := ChannelWithCooldown{Config: cfg}
+
+	// 渠道级别冷却：使用批量查询结果（性能提升：N -> 1 次查询）
+	if until, cooled := ectx.channelCooldownsMap[cfg.ID]; cooled && until.After(ectx.now) {
+		oc.CooldownUntil = &until
+		oc.CooldownRemainingMS = int64(until.Sub(ectx.now) / time.Millisecond)
+	}
+
+	// 健康度模式：使用预计算的有效优先级和成功率
+	if ectx.healthEnabled {
+		if rate, ok := ectx.successRateMap[cfg.ID]; ok {
+			oc.SuccessRate = &rate
+		}
+		effPriority := ectx.priorityMap[cfg.ID]
+		oc.EffectivePriority = &effPriority
+	}
+
+	// 从预加载的map中获取API Keys（O(1)查找）
+	apiKeys := ectx.apiKeysMap[cfg.ID]
+
+	// Key 策略属于渠道行为，详情和列表都必须返回同一语义。
+	oc.KeyStrategy = channelKeyStrategy(apiKeys)
+
+	keyCooldowns := make([]KeyCooldownInfo, 0, len(apiKeys))
+	channelKeyCooldowns := ectx.keyCooldownsMap[cfg.ID]
+	for _, apiKey := range apiKeys {
+		keyInfo := KeyCooldownInfo{KeyIndex: apiKey.KeyIndex}
+		if until, cooled := channelKeyCooldowns[apiKey.KeyIndex]; cooled && until.After(ectx.now) {
+			u := until
+			keyInfo.CooldownUntil = &u
+			keyInfo.CooldownRemainingMS = int64(until.Sub(ectx.now) / time.Millisecond)
+		}
+		keyCooldowns = append(keyCooldowns, keyInfo)
+	}
+	oc.KeyCooldowns = keyCooldowns
+	return oc
 }
 
 // HandleChannelsFilterOptions 返回渠道筛选下拉的全集（渠道名/模型），
