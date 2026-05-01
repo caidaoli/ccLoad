@@ -23,8 +23,8 @@ internal/
 ├── protocol/      # 协议转换（Anthropic/OpenAI/Gemini/Codex 互转，内置在 builtin/）
 ├── model/         # 数据模型
 ├── cooldown/      # 冷却决策引擎
-├── storage/       # 存储层（factory/hybrid_store/sql/sqlite/migrate）
-├── util/          # 工具（classifier/cost_calculator/money/rate_limiter/...）
+├── storage/       # 存储层（factory/hybrid_store/schema/sql/sqlite/migrate）
+├── util/          # 工具（classifier/cost_calculator/money/rate_limiter/uuid_local/...）
 ├── version/       # 版本信息
 ├── config/        # 配置与默认常量（defaults.go）
 └── testutil/      # 测试辅助
