@@ -253,12 +253,7 @@ func parseTestStreamResponseBytes(
 	result map[string]any,
 	testReq *testutil.TestChannelRequest,
 ) map[string]any {
-	var rawBuilder strings.Builder
-	var textBuilder strings.Builder
-	var lastErrMsg string
-	var lastUsage map[string]any
-	dataLineCount := 0
-
+	collector := newTestSSECollector()
 	usageParser := newSSEUsageParser(parseProtocol)
 	scanner := bufio.NewScanner(bytes.NewReader(raw))
 	buf := make([]byte, 0, 1024*1024)
@@ -266,131 +261,24 @@ func parseTestStreamResponseBytes(
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		if err := usageParser.Feed([]byte(line + "\n")); err != nil {
-			log.Printf("[WARN] SSE usage解析失败: %v", err)
-		}
-
-		rawBuilder.WriteString(line)
-		rawBuilder.WriteString("\n")
-
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		dataLineCount++
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "" || data == "[DONE]" {
-			continue
-		}
-
-		var obj map[string]any
-		if err := sonic.Unmarshal([]byte(data), &obj); err != nil {
-			continue
-		}
-
-		if usage := extractUsage(obj); usage != nil {
-			lastUsage = usage
-		}
-		if choices, ok := obj["choices"].([]any); ok && len(choices) > 0 {
-			if choice, ok := choices[0].(map[string]any); ok {
-				if delta, ok := choice["delta"].(map[string]any); ok {
-					if content, ok := delta["content"].(string); ok && content != "" {
-						textBuilder.WriteString(content)
-						continue
-					}
-				}
-			}
-		}
-		if candidates, ok := obj["candidates"].([]any); ok && len(candidates) > 0 {
-			if candidate, ok := candidates[0].(map[string]any); ok {
-				if content, ok := candidate["content"].(map[string]any); ok {
-					if parts, ok := content["parts"].([]any); ok && len(parts) > 0 {
-						if part, ok := parts[0].(map[string]any); ok {
-							if text, ok := part["text"].(string); ok && text != "" {
-								textBuilder.WriteString(text)
-								continue
-							}
-						}
-					}
-				}
-			}
-		}
-		if typ, ok := obj["type"].(string); ok {
-			if typ == "content_block_delta" {
-				if delta, ok := obj["delta"].(map[string]any); ok {
-					if tx, ok := delta["text"].(string); ok && tx != "" {
-						textBuilder.WriteString(tx)
-						continue
-					}
-				}
-			}
-			if typ == "response.output_text.delta" {
-				if delta, ok := obj["delta"].(string); ok && delta != "" {
-					textBuilder.WriteString(delta)
-					continue
-				}
-			}
-		}
-		if errObj, ok := obj["error"].(map[string]any); ok {
-			if msg, ok := errObj["message"].(string); ok && msg != "" {
-				lastErrMsg = msg
-			} else if typeStr, ok := errObj["type"].(string); ok && typeStr != "" {
-				lastErrMsg = typeStr
-			}
-			result["api_error"] = obj
-			continue
-		}
-		if errMsg, ok := obj["error"].(string); ok && strings.TrimSpace(errMsg) != "" {
-			lastErrMsg = strings.TrimSpace(errMsg)
-			result["api_error"] = obj
-			continue
-		}
-		if msg, ok := obj["message"].(string); ok && msg != "" {
-			lastErrMsg = msg
-			result["api_error"] = obj
-			continue
-		}
+		collector.consumeLine(line, usageParser)
 	}
 
-	result["raw_response"] = rawBuilder.String()
+	result["raw_response"] = collector.rawResponse()
 	if scanner.Err() != nil {
 		result["error"] = "读取流式响应失败: " + scanner.Err().Error()
 		return result
 	}
-	if dataLineCount == 0 {
+	if collector.dataLineCount == 0 {
 		result["error"] = summarizeUnexpectedTestResponse("text/event-stream", raw)
 		return result
 	}
-	if textBuilder.Len() > 0 {
-		result["response_text"] = textBuilder.String()
-	}
+	collector.applyResult(result)
+	populateTestSSEUsageAndCost(result, testReq, usageParser, collector.lastUsage)
 
-	billableInput, output, cacheRead, _ := usageParser.GetUsage()
-	if lastUsage != nil {
-		result["api_response"] = map[string]any{"usage": lastUsage}
-	} else if billableInput+output+cacheRead > 0 {
-		result["api_response"] = map[string]any{
-			"usage": map[string]any{
-				"input_tokens":                billableInput,
-				"output_tokens":               output,
-				"cache_read_input_tokens":     cacheRead,
-				"cache_creation_input_tokens": 0,
-			},
-		}
-	}
-	if billableInput+output+cacheRead > 0 {
-		result["cost_usd"] = util.CalculateCostDetailed(
-			testReq.Model,
-			billableInput,
-			output,
-			cacheRead,
-			usageParser.Cache5mInputTokens,
-			usageParser.Cache1hInputTokens,
-		)
-	}
-
-	if lastErrMsg != "" {
+	if collector.lastErrMsg != "" {
 		result["success"] = false
-		result["error"] = lastErrMsg
+		result["error"] = collector.lastErrMsg
 	} else if statusCode >= 200 && statusCode < 300 {
 		result["message"] = "API测试成功（流式）"
 	} else {
@@ -940,6 +828,101 @@ func extractSSEErrorMessage(obj map[string]any) (msg string, raw map[string]any,
 	return "", nil, false
 }
 
+type testSSECollector struct {
+	rawBuilder    strings.Builder
+	textBuilder   strings.Builder
+	lastErrMsg    string
+	lastUsage     map[string]any
+	lastAPIError  map[string]any
+	dataLineCount int
+}
+
+func newTestSSECollector() *testSSECollector {
+	return &testSSECollector{}
+}
+
+func (c *testSSECollector) consumeLine(line string, usageParser *sseUsageParser) {
+	if err := usageParser.Feed([]byte(line + "\n")); err != nil {
+		log.Printf("[WARN] SSE usage解析失败: %v", err)
+	}
+
+	c.rawBuilder.WriteString(line)
+	c.rawBuilder.WriteString("\n")
+
+	if !strings.HasPrefix(line, "data:") {
+		return
+	}
+
+	c.dataLineCount++
+	data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	if data == "" || data == "[DONE]" {
+		return
+	}
+
+	var obj map[string]any
+	if err := sonic.Unmarshal([]byte(data), &obj); err != nil {
+		return
+	}
+
+	if usage := extractUsage(obj); usage != nil {
+		c.lastUsage = usage
+	}
+	if text := extractSSEDeltaText(obj); text != "" {
+		c.textBuilder.WriteString(text)
+		return
+	}
+	if msg, raw, matched := extractSSEErrorMessage(obj); matched {
+		if msg != "" {
+			c.lastErrMsg = msg
+		}
+		c.lastAPIError = raw
+	}
+}
+
+func (c *testSSECollector) applyResult(result map[string]any) {
+	if c.textBuilder.Len() > 0 {
+		result["response_text"] = c.textBuilder.String()
+	}
+	if c.lastAPIError != nil {
+		result["api_error"] = c.lastAPIError
+	}
+}
+
+func (c *testSSECollector) rawResponse() string {
+	return c.rawBuilder.String()
+}
+
+func populateTestSSEUsageAndCost(
+	result map[string]any,
+	testReq *testutil.TestChannelRequest,
+	usageParser *sseUsageParser,
+	lastUsage map[string]any,
+) {
+	billableInput, output, cacheRead, _ := usageParser.GetUsage()
+	if lastUsage != nil {
+		result["api_response"] = map[string]any{"usage": lastUsage}
+	} else if billableInput+output+cacheRead > 0 {
+		result["api_response"] = map[string]any{
+			"usage": map[string]any{
+				"input_tokens":                billableInput,
+				"output_tokens":               output,
+				"cache_read_input_tokens":     cacheRead,
+				"cache_creation_input_tokens": 0,
+			},
+		}
+	}
+	if billableInput+output+cacheRead > 0 {
+		result["cost_usd"] = util.CalculateCostDetailed(
+			testReq.Model,
+			billableInput,
+			output,
+			cacheRead,
+			usageParser.Cache5mInputTokens,
+			usageParser.Cache1hInputTokens,
+		)
+	}
+}
+
 // parseTestNativeSSEResponse 处理客户端协议与上游协议一致时的原生 SSE 解析。
 func (s *Server) parseTestNativeSSEResponse(
 	ctx context.Context,
@@ -950,11 +933,7 @@ func (s *Server) parseTestNativeSSEResponse(
 	start time.Time,
 	result map[string]any,
 ) map[string]any {
-	var rawBuilder strings.Builder
-	var textBuilder strings.Builder
-	var lastErrMsg string
-	var lastUsage map[string]any
-	dataLineCount := 0
+	collector := newTestSSECollector()
 	firstByteCaptured := false
 
 	// [DRY] 复用代理链路的SSE usage解析器，保证tokens/成本口径一致
@@ -971,102 +950,35 @@ func (s *Server) parseTestNativeSSEResponse(
 		}
 
 		line := scanner.Text()
-		// 给usage解析器喂原始行（补回换行符），它依赖空行判断事件结束
-		if err := usageParser.Feed([]byte(line + "\n")); err != nil {
-			log.Printf("[WARN] SSE usage解析失败: %v", err)
-		}
-
-		rawBuilder.WriteString(line)
-		rawBuilder.WriteString("\n")
-
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		dataLineCount++
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "" || data == "[DONE]" {
-			continue
-		}
-
-		var obj map[string]any
-		if err := sonic.Unmarshal([]byte(data), &obj); err != nil {
-			continue
-		}
-
-		if usage := extractUsage(obj); usage != nil {
-			lastUsage = usage
-		}
-
-		if text := extractSSEDeltaText(obj); text != "" {
-			textBuilder.WriteString(text)
-			continue
-		}
-
-		if msg, raw, matched := extractSSEErrorMessage(obj); matched {
-			if msg != "" {
-				lastErrMsg = msg
-			}
-			result["api_error"] = raw
-			continue
-		}
+		collector.consumeLine(line, usageParser)
 	}
 
 	if err := scanner.Err(); err != nil {
 		result["duration_ms"] = time.Since(start).Milliseconds()
 		result["error"] = "读取流式响应失败: " + err.Error()
-		result["raw_response"] = rawBuilder.String()
+		result["raw_response"] = collector.rawResponse()
 		return result
 	}
 	// 容错：部分上游错误地返回 text/event-stream 但实际是完整 JSON。
 	// 若未发现任何 SSE data 行，按非流式响应解析。
-	if dataLineCount == 0 {
-		return s.parseTestNonStreamResponse(ctx, requestPlan, testReq, resp, contentType, start, []byte(rawBuilder.String()), result)
+	if collector.dataLineCount == 0 {
+		return s.parseTestNonStreamResponse(ctx, requestPlan, testReq, resp, contentType, start, []byte(collector.rawResponse()), result)
 	}
 
 	result["duration_ms"] = time.Since(start).Milliseconds()
+	collector.applyResult(result)
+	result["raw_response"] = collector.rawResponse()
+	result["upstream_response_body"] = collector.rawResponse()
+	populateTestSSEUsageAndCost(result, testReq, usageParser, collector.lastUsage)
 
-	if textBuilder.Len() > 0 {
-		result["response_text"] = textBuilder.String()
-	}
-	result["raw_response"] = rawBuilder.String()
-	result["upstream_response_body"] = rawBuilder.String()
-
-	billableInput, output, cacheRead, _ := usageParser.GetUsage()
-	if lastUsage != nil {
-		result["api_response"] = map[string]any{"usage": lastUsage}
-	} else if billableInput+output+cacheRead > 0 {
-		result["api_response"] = map[string]any{
-			"usage": map[string]any{
-				"input_tokens":                billableInput,
-				"output_tokens":               output,
-				"cache_read_input_tokens":     cacheRead,
-				"cache_creation_input_tokens": 0,
-			},
-		}
-	}
-
-	if billableInput+output+cacheRead > 0 {
-		result["cost_usd"] = util.CalculateCostDetailed(
-			testReq.Model,
-			billableInput,
-			output,
-			cacheRead,
-			usageParser.Cache5mInputTokens,
-			usageParser.Cache1hInputTokens,
-		)
-	}
-
-	if lastErrMsg != "" {
+	if collector.lastErrMsg != "" {
 		// 软错误：HTTP 200 但 SSE 流携带错误事件（余额不足、配额耗尽等）
 		result["success"] = false
-		result["error"] = lastErrMsg
+		result["error"] = collector.lastErrMsg
 	} else if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		result["message"] = "API测试成功（流式）"
 	} else {
-		if lastErrMsg == "" {
-			lastErrMsg = "API返回错误状态: " + resp.Status
-		}
-		result["error"] = lastErrMsg
+		result["error"] = "API返回错误状态: " + resp.Status
 	}
 	return result
 }

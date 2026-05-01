@@ -25,6 +25,8 @@ import (
 const (
 	// SSEProbeSize 用于探测 text/plain 内容是否包含 SSE 事件的前缀长度（2KB 足够覆盖小事件）
 	SSEProbeSize = 2 * 1024
+	// softErrorProbeSize 用于探测 HTTP 200 非流响应里的结构化错误。
+	softErrorProbeSize = 512
 )
 
 // prependedBody 将已读取的前缀数据与原始Body合并，保留原Closer
@@ -730,6 +732,102 @@ func looksLikeSSE(data []byte) bool {
 	return false
 }
 
+func attachFirstByteDetector(
+	reqCtx *requestContext,
+	resp *http.Response,
+	readStats *streamReadStats,
+	firstBodyReadTimeSec *float64,
+	observer *ForwardObserver,
+) {
+	resp.Body = &firstByteDetector{
+		ReadCloser: resp.Body,
+		stats:      readStats,
+		onFirstRead: func() {
+			if reqCtx.isStreaming {
+				reqCtx.stopFirstByteTimer()
+			}
+			if *firstBodyReadTimeSec == 0 {
+				*firstBodyReadTimeSec = reqCtx.Duration().Seconds()
+				if *firstBodyReadTimeSec == 0 {
+					*firstBodyReadTimeSec = time.Nanosecond.Seconds()
+				}
+			}
+			if reqCtx.isStreaming && observer != nil && observer.OnFirstByteRead != nil {
+				observer.OnFirstByteRead()
+			}
+		},
+		onBytesRead: func(n int64) {
+			if observer != nil && observer.OnBytesRead != nil {
+				observer.OnBytesRead(n)
+			}
+		},
+	}
+}
+
+func shouldProbeSoftError(reqCtx *requestContext, resp *http.Response, channelType string) bool {
+	if resp.StatusCode != http.StatusOK || reqCtx.isStreaming {
+		return false
+	}
+	if !shouldCheckSoftErrorForChannelType(channelType) {
+		return false
+	}
+	ct := resp.Header.Get("Content-Type")
+	return strings.Contains(ct, "text/plain") || strings.Contains(ct, "application/json")
+}
+
+func markSoftErrorStatus(resp *http.Response, data []byte) {
+	if _, is1308 := util.ParseResetTimeFrom1308Error(data); is1308 {
+		resp.StatusCode = util.StatusQuotaExceeded
+		return
+	}
+	resp.StatusCode = util.StatusSSEError
+}
+
+func (s *Server) probeSoftErrorResponse(
+	reqCtx *requestContext,
+	resp *http.Response,
+	hdrClone http.Header,
+	cfg *model.Config,
+	channelType string,
+	firstBodyReadTimeSec *float64,
+) (*fwResult, float64, error, bool) {
+	if !shouldProbeSoftError(reqCtx, resp, channelType) {
+		return nil, 0, nil, false
+	}
+
+	ct := resp.Header.Get("Content-Type")
+	buf := make([]byte, softErrorProbeSize)
+	n, err := resp.Body.Read(buf)
+	if err != nil && err != io.EOF {
+		log.Printf("[WARN] 软错误检测读取失败: %v", err)
+	}
+
+	validData := buf[:n]
+	if n > 0 && checkSoftError(validData, ct) {
+		log.Printf("[WARN] [软错误检测] 渠道ID=%d, 响应200但疑似错误响应: %s", cfg.ID, truncateErr(safeBodyToString(validData)))
+		markSoftErrorStatus(resp, validData)
+		prependToBody(resp, validData)
+		res, duration, handleErr := s.handleErrorResponse(reqCtx, resp, hdrClone, firstBodyReadTimeSec)
+		return res, duration, handleErr, true
+	}
+
+	if n > 0 {
+		prependToBody(resp, validData)
+	}
+	return nil, 0, nil, false
+}
+
+func emptyOKResponseResult(reqCtx *requestContext, resp *http.Response, hdrClone http.Header, firstBodyReadTimeSec float64) (*fwResult, float64, error) {
+	duration := reqCtx.Duration().Seconds()
+	err := fmt.Errorf("upstream returned empty response (200 OK with Content-Length: 0)")
+	return &fwResult{
+		Status:        resp.StatusCode,
+		Header:        hdrClone,
+		Body:          []byte(err.Error()),
+		FirstByteTime: firstBodyReadTimeSec,
+	}, duration, err
+}
+
 // handleResponse 处理 HTTP 响应（错误或成功）
 // 从proxy.go提取，遵循SRP原则
 // channelType: 渠道类型,用于精确识别usage格式
@@ -745,104 +843,23 @@ func (s *Server) handleResponse(
 	observer *ForwardObserver,
 ) (*fwResult, float64, error) {
 	hdrClone := resp.Header.Clone()
-
-	// 首字节响应时间（秒）：以第一次从 resp.Body 读到 n>0 的时刻为准。
-	// 流式请求：该时刻同时用于停止 firstByteTimeout。
 	firstBodyReadTimeSec := 0.0
 	readStats := &streamReadStats{}
-	resp.Body = &firstByteDetector{
-		ReadCloser: resp.Body,
-		stats:      readStats,
-		onFirstRead: func() {
-			if reqCtx.isStreaming {
-				reqCtx.stopFirstByteTimer()
-			}
-			if firstBodyReadTimeSec == 0 {
-				firstBodyReadTimeSec = reqCtx.Duration().Seconds()
-				if firstBodyReadTimeSec == 0 {
-					firstBodyReadTimeSec = time.Nanosecond.Seconds()
-				}
-			}
-			if reqCtx.isStreaming && observer != nil && observer.OnFirstByteRead != nil {
-				observer.OnFirstByteRead()
-			}
-		},
-		onBytesRead: func(n int64) {
-			if observer != nil && observer.OnBytesRead != nil {
-				observer.OnBytesRead(n)
-			}
-		},
+
+	attachFirstByteDetector(reqCtx, resp, readStats, &firstBodyReadTimeSec, observer)
+
+	if res, duration, err, handled := s.probeSoftErrorResponse(reqCtx, resp, hdrClone, cfg, channelType, &firstBodyReadTimeSec); handled {
+		return res, duration, err
 	}
 
-	// [INFO] 软错误检测：200状态码但响应体包含明确错误信息（如"当前模型负载过高"）
-	// 检测条件：Content-Type为text/plain或application/json
-	// 针对渠道17等上游返回200但实际内容为错误信息的情况
-	ct := resp.Header.Get("Content-Type")
-	if resp.StatusCode == 200 &&
-		!reqCtx.isStreaming &&
-		shouldCheckSoftErrorForChannelType(channelType) &&
-		(strings.Contains(ct, "text/plain") || strings.Contains(ct, "application/json")) {
-		// 预读 512 字节进行检测
-		peekSize := 512
-		buf := make([]byte, peekSize)
-		// 使用 Read 读取一次（非阻塞等待填满），避免流式响应强制等待 512 字节导致首字延迟
-		// 之前的 io.ReadFull 会导致 stream 必须积累 2-3 秒数据才返回，这是不可接受的
-		n, err := resp.Body.Read(buf)
-		if err != nil && err != io.EOF {
-			// 读取错误，记录日志但不中断流程
-			log.Printf("[WARN] 软错误检测读取失败: %v", err)
-		}
-
-		validData := buf[:n]
-		if n > 0 && checkSoftError(validData, ct) {
-			// 检测到软错误！
-			log.Printf("[WARN] [软错误检测] 渠道ID=%d, 响应200但疑似错误响应: %s", cfg.ID, truncateErr(safeBodyToString(validData)))
-
-			// [FIX] 使用 StatusSSEError (597) 而非 503，让 ClassifyHTTPResponse 能正确分析 error.type
-			// 原因：简单改为503会导致所有软错误都被误判为渠道级故障（如429限流被当作渠道过载）
-			// 现在：利用现有的 classifySSEError 逻辑，根据 error.type 精确分类为 Key级/渠道级
-			// [FIX] 区分 1308 错误与其他 SSE 错误
-			// 1308 错误 (StatusQuotaExceeded) 不计入成功率统计
-			if _, is1308 := util.ParseResetTimeFrom1308Error(validData); is1308 {
-				resp.StatusCode = util.StatusQuotaExceeded // 596
-			} else {
-				// 其他软错误使用 597
-				resp.StatusCode = util.StatusSSEError // 597
-			}
-
-			// 恢复 Body 以便 handleErrorResponse 读取完整信息
-			prependToBody(resp, validData)
-
-			// 转交给错误处理流程
-			return s.handleErrorResponse(reqCtx, resp, hdrClone, &firstBodyReadTimeSec)
-		}
-
-		// 未检测到错误，必须恢复 Body 供后续流程使用
-		if n > 0 {
-			prependToBody(resp, validData)
-		}
-	}
-
-	// 错误状态：读取完整响应体
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return s.handleErrorResponse(reqCtx, resp, hdrClone, &firstBodyReadTimeSec)
 	}
 
-	// [INFO] 空响应检测：200状态码但Content-Length=0视为上游故障
-	// 常见于CDN/代理错误、认证失败等异常场景，应触发渠道级重试
 	if contentLen := resp.Header.Get("Content-Length"); contentLen == "0" {
-		duration := reqCtx.Duration().Seconds()
-		err := fmt.Errorf("upstream returned empty response (200 OK with Content-Length: 0)")
-
-		return &fwResult{
-			Status:        resp.StatusCode,
-			Header:        hdrClone,
-			Body:          []byte(err.Error()),
-			FirstByteTime: firstBodyReadTimeSec,
-		}, duration, err
+		return emptyOKResponseResult(reqCtx, resp, hdrClone, firstBodyReadTimeSec)
 	}
 
-	// 成功状态：流式转发（传递渠道信息用于日志记录，传递观测回调）
 	return s.handleSuccessResponse(reqCtx, resp, hdrClone, w, channelType, readStats, &firstBodyReadTimeSec)
 }
 
@@ -960,6 +977,73 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 // 单次转发尝试
 // ============================================================================
 
+func markSSEErrorForwardResult(res *fwResult) {
+	res.Body = res.SSEErrorEvent
+	if _, is1308 := util.ParseResetTimeFrom1308Error(res.SSEErrorEvent); is1308 {
+		res.Status = util.StatusQuotaExceeded
+		res.StreamDiagMsg = fmt.Sprintf("Quota Exceeded (1308): %s", safeBodyToString(res.SSEErrorEvent))
+		return
+	}
+	res.Status = util.StatusSSEError
+	res.StreamDiagMsg = fmt.Sprintf("SSE error event: %s", safeBodyToString(res.SSEErrorEvent))
+}
+
+func markIncompleteStreamForwardResult(res *fwResult) {
+	res.Body = []byte(res.StreamDiagMsg)
+	res.Status = util.StatusStreamIncomplete
+}
+
+func (s *Server) handleCommittedAwareProxyError(
+	ctx context.Context,
+	cfg *model.Config,
+	keyIndex int,
+	actualModel string,
+	selectedKey string,
+	res *fwResult,
+	duration float64,
+	reqCtx *proxyRequestContext,
+	deferChannelCooldown bool,
+) (*proxyResult, cooldown.Action) {
+	if !res.ResponseCommitted {
+		return s.handleProxyErrorResponse(
+			ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown,
+		)
+	}
+	return s.handleStreamingErrorNoRetry(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
+}
+
+func (s *Server) handleSuccessfulForwardAnomaly(
+	ctx context.Context,
+	cfg *model.Config,
+	keyIndex int,
+	actualModel string,
+	selectedKey string,
+	res *fwResult,
+	duration float64,
+	reqCtx *proxyRequestContext,
+	deferChannelCooldown bool,
+) (*proxyResult, cooldown.Action, bool) {
+	if res.SSEErrorEvent != nil {
+		log.Printf("[WARN]  [SSE错误处理] HTTP状态码200但检测到SSE error事件，触发冷却逻辑")
+		markSSEErrorForwardResult(res)
+		result, action := s.handleCommittedAwareProxyError(
+			ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown,
+		)
+		return result, action, true
+	}
+
+	if res.StreamDiagMsg != "" {
+		log.Printf("[WARN]  [流响应不完整] HTTP状态码200但检测到流响应不完整，触发冷却逻辑: %s", res.StreamDiagMsg)
+		markIncompleteStreamForwardResult(res)
+		result, action := s.handleCommittedAwareProxyError(
+			ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown,
+		)
+		return result, action, true
+	}
+
+	return nil, cooldown.ActionReturnClient, false
+}
+
 // forwardAttempt 单次转发尝试（包含错误处理和日志记录）
 // 从proxy.go提取，遵循SRP原则
 // 返回：(proxyResult, nextAction)
@@ -1025,47 +1109,10 @@ func (s *Server) forwardAttempt(
 
 	// 处理成功响应（仅当err==nil且状态码2xx时）
 	if res.Status >= 200 && res.Status < 300 {
-		// [INFO] 检查SSE流中是否有error事件（如1308错误）
-		// 虽然HTTP状态码是200，但error事件表示实际上发生了错误，需要触发冷却逻辑
-		if res.SSEErrorEvent != nil {
-			// 将SSE error事件当作HTTP错误处理
-			// 使用内部状态码 StatusSSEError 标识，便于日志筛选和统计
-			log.Printf("[WARN]  [SSE错误处理] HTTP状态码200但检测到SSE error事件，触发冷却逻辑")
-			res.Body = res.SSEErrorEvent
-			// [FIX] 区分 1308 错误
-			// 如果是 1308 错误，使用 596 状态码，避免影响渠道成功率
-			if _, is1308 := util.ParseResetTimeFrom1308Error(res.SSEErrorEvent); is1308 {
-				res.Status = util.StatusQuotaExceeded // 596
-				res.StreamDiagMsg = fmt.Sprintf("Quota Exceeded (1308): %s", safeBodyToString(res.SSEErrorEvent))
-			} else {
-				res.Status = util.StatusSSEError // 597 - SSE error事件
-				res.StreamDiagMsg = fmt.Sprintf("SSE error event: %s", safeBodyToString(res.SSEErrorEvent))
-			}
-			if !res.ResponseCommitted {
-				return s.handleProxyErrorResponse(
-					ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown,
-				)
-			}
-			// 流式响应已开始（响应头已发送），重试不可能
-			return s.handleStreamingErrorNoRetry(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
-		}
-
-		// [INFO] 检查流响应是否不完整（2025-12新增）
-		// 虽然HTTP状态码是200且流传输结束，但检测到流响应不完整或流传输中断，需要触发冷却逻辑
-		// 触发条件：(1) 流传输错误  (2) 流式请求但没有usage数据（疑似不完整响应）
-		if res.StreamDiagMsg != "" {
-			log.Printf("[WARN]  [流响应不完整] HTTP状态码200但检测到流响应不完整，触发冷却逻辑: %s", res.StreamDiagMsg)
-			// 使用内部状态码 StatusStreamIncomplete 标识流响应不完整
-			// 这将触发渠道级冷却，因为这通常是上游服务问题（网络不稳定、负载过高等）
-			res.Body = []byte(res.StreamDiagMsg)
-			res.Status = util.StatusStreamIncomplete // 599 - 流响应不完整
-			if !res.ResponseCommitted {
-				return s.handleProxyErrorResponse(
-					ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown,
-				)
-			}
-			// 流式响应已开始（响应头已发送），重试不可能
-			return s.handleStreamingErrorNoRetry(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
+		if result, action, handled := s.handleSuccessfulForwardAnomaly(
+			ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown,
+		); handled {
+			return result, action
 		}
 
 		return s.handleProxySuccess(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
