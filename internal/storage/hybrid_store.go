@@ -36,7 +36,6 @@ type HybridStore struct {
 	syncCh    chan *syncTask
 	syncWg    sync.WaitGroup
 	stopCh    chan struct{}
-	stopOnce  sync.Once
 	closeOnce sync.Once
 }
 
@@ -737,9 +736,7 @@ func (h *HybridStore) TruncateDebugLogs(ctx context.Context) error {
 func (h *HybridStore) Close() error {
 	var err error
 	h.closeOnce.Do(func() {
-		h.stopOnce.Do(func() {
-			close(h.stopCh)
-		})
+		close(h.stopCh)
 		h.syncWg.Wait()
 
 		if closeErr := h.sqlite.Close(); closeErr != nil {
