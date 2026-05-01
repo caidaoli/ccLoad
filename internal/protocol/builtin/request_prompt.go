@@ -568,14 +568,9 @@ func newClaudeMetadataUserID() string {
 	if _, err := rand.Read(deviceID); err != nil {
 		return `{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"","session_id":"00000000-0000-0000-0000-000000000000"}`
 	}
-	sid := make([]byte, 16)
-	if _, err := rand.Read(sid); err != nil {
-		return fmt.Sprintf(`{"device_id":"%s","account_uuid":"","session_id":"00000000-0000-0000-0000-000000000000"}`, hex.EncodeToString(deviceID))
-	}
-	sid[6] = (sid[6] & 0x0f) | 0x40 // UUID v4
-	sid[8] = (sid[8] & 0x3f) | 0x80
-	return fmt.Sprintf(`{"device_id":"%s","account_uuid":"","session_id":"%x-%x-%x-%x-%x"}`,
-		hex.EncodeToString(deviceID), sid[0:4], sid[4:6], sid[6:8], sid[8:10], sid[10:16])
+	// session_id 使用统一 UUIDv4 实现（util.NewUUIDv4 在 rand 失败时返回 nil-v4 占位符）。
+	return fmt.Sprintf(`{"device_id":"%s","account_uuid":"","session_id":"%s"}`,
+		hex.EncodeToString(deviceID), util.NewUUIDv4())
 }
 
 func encodeAnthropicRequest(model string, conv conversation, stream bool) ([]byte, error) {

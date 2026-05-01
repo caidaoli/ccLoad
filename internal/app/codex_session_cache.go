@@ -2,15 +2,13 @@ package app
 
 import (
 	"bytes"
-	"crypto/rand"
-	"crypto/sha1" //nolint:gosec // UUIDv5 per RFC 4122 requires SHA-1，与安全无关
-	"fmt"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"ccLoad/internal/protocol"
+	"ccLoad/internal/util"
 
 	"github.com/bytedance/sonic"
 )
@@ -50,7 +48,7 @@ func getOrCreateCodexSessionID(cacheKey string) string {
 		codexSessionMap[cacheKey] = entry
 		return entry.id
 	}
-	id := newCodexUUIDv4()
+	id := util.NewUUIDv4()
 	codexSessionMap[cacheKey] = codexSessionEntry{id: id, expire: now.Add(codexSessionTTL)}
 	return id
 }
@@ -62,7 +60,7 @@ func codexSessionIDForOpenAIKey(apiKey string) string {
 	if apiKey == "" {
 		return ""
 	}
-	return newCodexUUIDv5(uuidNameSpaceOID, "ccload:codex:prompt-cache:"+apiKey)
+	return util.NewUUIDv5(util.NameSpaceOID, "ccload:codex:prompt-cache:"+apiKey)
 }
 
 // resolveCodexSessionHint 仅在 Codex 上游场景下返回稳定的会话 ID；否则返回空。
@@ -84,7 +82,7 @@ func resolveCodexSessionHint(reqCtx *requestContext, translatedBody []byte, apiK
 			return getOrCreateCodexSessionID(model + "-" + userID)
 		}
 		if sid := strings.TrimSpace(header.Get("X-Claude-Code-Session-Id")); sid != "" {
-			return newCodexUUIDv5(uuidNameSpaceOID, "ccload:codex:prompt-cache:session:"+sid)
+			return util.NewUUIDv5(util.NameSpaceOID, "ccload:codex:prompt-cache:session:"+sid)
 		}
 		return codexSessionIDForOpenAIKey(apiKey)
 	case protocol.Codex:
@@ -201,37 +199,4 @@ func startCodexSessionCleanup() {
 	}()
 }
 
-// ---- 手写 UUID v4/v5（与 internal/protocol/builtin/request_prompt.go:newClaudeMetadataUserID 风格一致，零外部依赖）
-
-// uuidNameSpaceOID 为 RFC 4122 定义的 OID namespace UUID。
-var uuidNameSpaceOID = [16]byte{
-	0x6b, 0xa7, 0xb8, 0x12, 0x9d, 0xad, 0x11, 0xd1,
-	0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8,
-}
-
-func newCodexUUIDv4() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "00000000-0000-4000-8000-000000000000"
-	}
-	b[6] = (b[6] & 0x0f) | 0x40
-	b[8] = (b[8] & 0x3f) | 0x80
-	return formatUUIDBytes(b)
-}
-
-func newCodexUUIDv5(namespace [16]byte, name string) string {
-	h := sha1.New() //nolint:gosec
-	h.Write(namespace[:])
-	h.Write([]byte(name))
-	sum := h.Sum(nil)
-	var b [16]byte
-	copy(b[:], sum[:16])
-	b[6] = (b[6] & 0x0f) | 0x50
-	b[8] = (b[8] & 0x3f) | 0x80
-	return formatUUIDBytes(b)
-}
-
-func formatUUIDBytes(b [16]byte) string {
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
-}
+// UUID v4/v5 已统一到 internal/util/uuid_local.go（util.NewUUIDv4 / util.NewUUIDv5 / util.NameSpaceOID）。
