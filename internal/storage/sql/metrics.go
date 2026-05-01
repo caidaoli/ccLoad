@@ -12,12 +12,14 @@ import (
 	"ccLoad/internal/model"
 )
 
-// GetStats 实现统计功能，按渠道和模型统计成功/失败次数
-// 消除 N+1：渠道过滤/名称解析用一次批量查询完成
-// [FIX] 2025-12: 排除499（客户端取消）避免污染成功率和调用次数统计
-func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) ([]model.StatsEntry, error) {
-	// 使用查询构建器构建统计查询
-	// 排除499：客户端取消不应计入成功/失败统计
+// executeStatsQuery 构建并执行统计 SQL，返回行结果与渠道 ID 集合（供后续批量补全）。
+// withLastSuccess=true 时额外 SELECT/扫描 last_success_at 列；isEmpty 表示渠道过滤后无候选。
+func (s *SQLStore) executeStatsQuery(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, withLastSuccess bool) (stats []model.StatsEntry, channelIDsToFetch map[int64]bool, err error) {
+	lastSuccessCol := ""
+	if withLastSuccess {
+		lastSuccessCol = `MAX(CASE WHEN status_code >= 200 AND status_code < 300 THEN time ELSE NULL END) AS last_success_at,
+			`
+	}
 	baseQuery := `
 		SELECT
 			channel_id,
@@ -33,8 +35,7 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 				AVG(CASE WHEN duration > 0 THEN duration ELSE NULL END),
 				3
 			) as avg_duration,
-			MAX(CASE WHEN status_code >= 200 AND status_code < 300 THEN time ELSE NULL END) AS last_success_at,
-			SUM(COALESCE(input_tokens, 0)) as total_input_tokens,
+			` + lastSuccessCol + `SUM(COALESCE(input_tokens, 0)) as total_input_tokens,
 			SUM(COALESCE(output_tokens, 0)) as total_output_tokens,
 			SUM(COALESCE(cache_read_input_tokens, 0)) as total_cache_read_input_tokens,
 			SUM(COALESCE(cache_creation_input_tokens, 0)) as total_cache_creation_input_tokens,
@@ -42,25 +43,22 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 			SUM(COALESCE(cost, 0.0) * COALESCE(cost_multiplier, 1)) as effective_cost
 		FROM logs`
 
-	// time字段现在是BIGINT毫秒时间戳
 	startMs := startTime.UnixMilli()
 	endMs := endTime.UnixMilli()
 
 	qb := NewQueryBuilder(baseQuery).
 		Where("time >= ?", startMs).
 		Where("time <= ?", endMs).
-		Where("channel_id > 0") // [TARGET] 核心修改:排除channel_id=0的无效记录
+		Where("channel_id > 0")
 
-	// 应用渠道类型或名称过滤
 	_, isEmpty, err := s.applyChannelFilter(ctx, qb, filter)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if isEmpty {
-		return []model.StatsEntry{}, nil
+		return []model.StatsEntry{}, map[int64]bool{}, nil
 	}
 
-	// 应用其余过滤器（模型/状态码等）
 	qb.ApplyFilter(filter)
 
 	suffix := "GROUP BY channel_id, model ORDER BY channel_id ASC, model ASC"
@@ -68,12 +66,12 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = rows.Close() }()
 
-	stats := make([]model.StatsEntry, 0)
-	channelIDsToFetch := make(map[int64]bool)
+	stats = make([]model.StatsEntry, 0)
+	channelIDsToFetch = make(map[int64]bool)
 
 	for rows.Next() {
 		var entry model.StatsEntry
@@ -82,12 +80,21 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 		var totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheCreationTokens sql.NullInt64
 		var totalCost, effectiveCost sql.NullFloat64
 
-		err := rows.Scan(&entry.ChannelID, &entry.Model,
-			&entry.Success, &entry.Error, &entry.Total, &avgFirstByteTime, &avgDuration,
-			&lastSuccessAt,
-			&totalInputTokens, &totalOutputTokens, &totalCacheReadTokens, &totalCacheCreationTokens, &totalCost, &effectiveCost)
-		if err != nil {
-			return nil, err
+		scanArgs := []any{
+			&entry.ChannelID, &entry.Model,
+			&entry.Success, &entry.Error, &entry.Total,
+			&avgFirstByteTime, &avgDuration,
+		}
+		if withLastSuccess {
+			scanArgs = append(scanArgs, &lastSuccessAt)
+		}
+		scanArgs = append(scanArgs,
+			&totalInputTokens, &totalOutputTokens, &totalCacheReadTokens, &totalCacheCreationTokens,
+			&totalCost, &effectiveCost,
+		)
+
+		if err := rows.Scan(scanArgs...); err != nil {
+			return nil, nil, err
 		}
 
 		if avgFirstByteTime.Valid {
@@ -96,11 +103,10 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 		if avgDuration.Valid {
 			entry.AvgDurationSeconds = &avgDuration.Float64
 		}
-		if lastSuccessAt.Valid && lastSuccessAt.Int64 > 0 {
+		if withLastSuccess && lastSuccessAt.Valid && lastSuccessAt.Int64 > 0 {
 			entry.LastSuccessAt = &lastSuccessAt.Int64
 		}
 
-		// 填充token统计字段（仅当有值时）
 		if totalInputTokens.Valid && totalInputTokens.Int64 > 0 {
 			entry.TotalInputTokens = &totalInputTokens.Int64
 		}
@@ -127,7 +133,21 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 	}
 
 	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	return stats, channelIDsToFetch, nil
+}
+
+// GetStats 实现统计功能，按渠道和模型统计成功/失败次数
+// 消除 N+1：渠道过滤/名称解析用一次批量查询完成
+// [FIX] 2025-12: 排除499（客户端取消）避免污染成功率和调用次数统计
+func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) ([]model.StatsEntry, error) {
+	stats, channelIDsToFetch, err := s.executeStatsQuery(ctx, startTime, endTime, filter, true)
+	if err != nil {
 		return nil, err
+	}
+	if len(stats) == 0 {
+		return stats, nil
 	}
 
 	if len(channelIDsToFetch) > 0 {
@@ -526,104 +546,8 @@ func buildEntryScope(entryIndexes map[statsRequestKey]int) (string, []any) {
 // GetStatsLite 轻量版统计查询，跳过RPM计算和渠道名称填充
 // 适用于 /public/summary 等只需要基础聚合数据的场景
 func (s *SQLStore) GetStatsLite(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.StatsEntry, error) {
-	baseQuery := `
-		SELECT
-			channel_id,
-			COALESCE(model, '') AS model,
-			SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success,
-			SUM(CASE WHEN (status_code < 200 OR status_code >= 300) AND status_code != 499 THEN 1 ELSE 0 END) AS error,
-			SUM(CASE WHEN status_code != 499 THEN 1 ELSE 0 END) AS total,
-			ROUND(
-				AVG(CASE WHEN is_streaming = 1 AND first_byte_time > 0 AND status_code >= 200 AND status_code < 300 THEN first_byte_time ELSE NULL END),
-				3
-			) as avg_first_byte_time,
-			ROUND(
-				AVG(CASE WHEN duration > 0 THEN duration ELSE NULL END),
-				3
-			) as avg_duration,
-			SUM(COALESCE(input_tokens, 0)) as total_input_tokens,
-			SUM(COALESCE(output_tokens, 0)) as total_output_tokens,
-			SUM(COALESCE(cache_read_input_tokens, 0)) as total_cache_read_input_tokens,
-			SUM(COALESCE(cache_creation_input_tokens, 0)) as total_cache_creation_input_tokens,
-			SUM(COALESCE(cost, 0.0)) as total_cost,
-			SUM(COALESCE(cost, 0.0) * COALESCE(cost_multiplier, 1)) as effective_cost
-		FROM logs`
-
-	startMs := startTime.UnixMilli()
-	endMs := endTime.UnixMilli()
-
-	qb := NewQueryBuilder(baseQuery).
-		Where("time >= ?", startMs).
-		Where("time <= ?", endMs).
-		Where("channel_id > 0")
-
-	_, isEmpty, err := s.applyChannelFilter(ctx, qb, filter)
-	if err != nil {
-		return nil, err
-	}
-	if isEmpty {
-		return []model.StatsEntry{}, nil
-	}
-
-	qb.ApplyFilter(filter)
-
-	suffix := "GROUP BY channel_id, model ORDER BY channel_id ASC, model ASC"
-	query, args := qb.BuildWithSuffix(suffix)
-
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	stats := make([]model.StatsEntry, 0)
-
-	for rows.Next() {
-		var entry model.StatsEntry
-		var avgFirstByteTime, avgDuration sql.NullFloat64
-		var totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheCreationTokens sql.NullInt64
-		var totalCost, effectiveCost sql.NullFloat64
-
-		err := rows.Scan(&entry.ChannelID, &entry.Model,
-			&entry.Success, &entry.Error, &entry.Total, &avgFirstByteTime, &avgDuration,
-			&totalInputTokens, &totalOutputTokens, &totalCacheReadTokens, &totalCacheCreationTokens, &totalCost, &effectiveCost)
-		if err != nil {
-			return nil, err
-		}
-
-		if avgFirstByteTime.Valid {
-			entry.AvgFirstByteTimeSeconds = &avgFirstByteTime.Float64
-		}
-		if avgDuration.Valid {
-			entry.AvgDurationSeconds = &avgDuration.Float64
-		}
-		if totalInputTokens.Valid && totalInputTokens.Int64 > 0 {
-			entry.TotalInputTokens = &totalInputTokens.Int64
-		}
-		if totalOutputTokens.Valid && totalOutputTokens.Int64 > 0 {
-			entry.TotalOutputTokens = &totalOutputTokens.Int64
-		}
-		if totalCacheReadTokens.Valid && totalCacheReadTokens.Int64 > 0 {
-			entry.TotalCacheReadInputTokens = &totalCacheReadTokens.Int64
-		}
-		if totalCacheCreationTokens.Valid && totalCacheCreationTokens.Int64 > 0 {
-			entry.TotalCacheCreationInputTokens = &totalCacheCreationTokens.Int64
-		}
-		if totalCost.Valid && totalCost.Float64 > 0 {
-			entry.TotalCost = &totalCost.Float64
-		}
-		if effectiveCost.Valid && (effectiveCost.Float64 > 0 || (totalCost.Valid && totalCost.Float64 > 0)) {
-			entry.EffectiveCost = &effectiveCost.Float64
-		}
-
-		stats = append(stats, entry)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	return stats, nil
+	stats, _, err := s.executeStatsQuery(ctx, startTime, endTime, filter, false)
+	return stats, err
 }
 
 // GetRPMStats 获取RPM/QPS统计数据（峰值、平均、最近一分钟）
