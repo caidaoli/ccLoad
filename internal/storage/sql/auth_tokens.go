@@ -304,8 +304,18 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 // Auth Tokens Management - API访问令牌管理
 // ============================================================================
 
-// CreateAuthToken 创建新的API访问令牌
-// 注意: token字段存储的是SHA256哈希值，而非明文
+// authTokenInsertCommonCols / authTokenInsertCommonValues 描述了 INSERT auth_tokens 时
+// 的公共字段集合（除自增主键 id）。统计/成本字段以零值初始化，由后续 UpdateTokenStats 累计。
+const (
+	authTokenInsertCommonCols = `token, description, created_at, expires_at, last_used_at, is_active,
+		success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
+		prompt_tokens_total, completion_tokens_total, total_cost_usd, allowed_models, allowed_channel_ids,
+		cost_used_microusd, cost_limit_microusd, max_concurrency`
+
+	authTokenInsertCommonValues = `?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, ?, ?, 0, ?, ?`
+)
+
+// CreateAuthToken 创建新的API访问令牌（token字段存储SHA256哈希值）
 func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) error {
 	if token.CreatedAt.IsZero() {
 		token.CreatedAt = time.Now()
@@ -331,51 +341,30 @@ func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) 
 		return err
 	}
 
-	if token.ID != 0 {
-		if s.IsSQLite() {
-			_, err := s.db.ExecContext(ctx, `
-				INSERT INTO auth_tokens (
-					id,
-				token, description, created_at, expires_at, last_used_at, is_active,
-				success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
-				prompt_tokens_total, completion_tokens_total, total_cost_usd, allowed_models, allowed_channel_ids,
-				cost_used_microusd, cost_limit_microusd, max_concurrency
-			)
-			VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, ?, ?, 0, ?, ?)
-		`, token.ID, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, boolToInt(token.IsActive), allowedModelsJSON, allowedChannelIDsJSON, token.CostLimitMicroUSD, token.MaxConcurrency)
-			if err != nil {
-				return fmt.Errorf("create auth token: %w", err)
-			}
-			return nil
-		}
+	commonArgs := []any{
+		token.Token, token.Description, token.CreatedAt.UnixMilli(),
+		expiresAt, lastUsedAt, boolToInt(token.IsActive),
+		allowedModelsJSON, allowedChannelIDsJSON,
+		token.CostLimitMicroUSD, token.MaxConcurrency,
+	}
 
-		_, err := s.db.ExecContext(ctx, `
-			INSERT INTO auth_tokens (
-				id,
-				token, description, created_at, expires_at, last_used_at, is_active,
-				success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
-				prompt_tokens_total, completion_tokens_total, total_cost_usd, allowed_models, allowed_channel_ids,
-				cost_used_microusd, cost_limit_microusd, max_concurrency
-			)
-			VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, ?, ?, 0, ?, ?)
-			ON DUPLICATE KEY UPDATE id = id
-		`, token.ID, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, boolToInt(token.IsActive), allowedModelsJSON, allowedChannelIDsJSON, token.CostLimitMicroUSD, token.MaxConcurrency)
-		if err != nil {
+	if token.ID != 0 {
+		query := `INSERT INTO auth_tokens (id, ` + authTokenInsertCommonCols + `)
+			VALUES (?, ` + authTokenInsertCommonValues + `)`
+		if !s.IsSQLite() {
+			query += " ON DUPLICATE KEY UPDATE id = id"
+		}
+		args := append([]any{token.ID}, commonArgs...)
+		if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
 			return fmt.Errorf("create auth token: %w", err)
 		}
 		return nil
 	}
 
-	result, err := s.db.ExecContext(ctx, `
-		INSERT INTO auth_tokens (
-			token, description, created_at, expires_at, last_used_at, is_active,
-			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
-			prompt_tokens_total, completion_tokens_total, total_cost_usd, allowed_models, allowed_channel_ids,
-			cost_used_microusd, cost_limit_microusd, max_concurrency
-		)
-		VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, ?, ?, 0, ?, ?)
-	`, token.Token, token.Description, token.CreatedAt.UnixMilli(), expiresAt, lastUsedAt, boolToInt(token.IsActive), allowedModelsJSON, allowedChannelIDsJSON, token.CostLimitMicroUSD, token.MaxConcurrency)
-
+	result, err := s.db.ExecContext(ctx,
+		`INSERT INTO auth_tokens (`+authTokenInsertCommonCols+`)
+			VALUES (`+authTokenInsertCommonValues+`)`,
+		commonArgs...)
 	if err != nil {
 		return fmt.Errorf("create auth token: %w", err)
 	}
@@ -384,9 +373,7 @@ func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) 
 	if err != nil {
 		return fmt.Errorf("get last insert id: %w", err)
 	}
-
 	token.ID = id
-
 	return nil
 }
 
