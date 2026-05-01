@@ -660,6 +660,32 @@ function getChannelsSupportingModel(protocol, modelName) {
     .sort((a, b) => b.priority - a.priority || a.name.localeCompare(b.name));
 }
 
+function isExactModelInProtocol(protocol, modelName) {
+  if (!modelName) return false;
+  const target = String(modelName).trim().toLowerCase();
+  if (!target) return false;
+  return getAllModelsForProtocol(protocol).some(m => m.toLowerCase() === target);
+}
+
+function getChannelModelPairsMatching(protocol, keyword) {
+  const trimmed = String(keyword || '').trim().toLowerCase();
+  if (!trimmed) return [];
+  const normalizedProtocol = normalizeProtocol(protocol);
+  const pairs = [];
+  channelsList
+    .filter(ch => channelExposesProtocol(ch, normalizedProtocol))
+    .sort((a, b) => b.priority - a.priority || a.name.localeCompare(b.name))
+    .forEach(ch => {
+      (ch.models || []).forEach(entry => {
+        const name = getModelName(entry);
+        if (name && name.toLowerCase().includes(trimmed)) {
+          pairs.push({ channel: ch, model: name });
+        }
+      });
+    });
+  return pairs;
+}
+
 function getModelInputValue() {
   return (modelSelect?.value || '').trim();
 }
@@ -686,6 +712,7 @@ function ensureModelSelectCombobox() {
     dropdownId: 'testModelSelectDropdown',
     initialValue: selectedModelName,
     initialLabel: selectedModelName,
+    allowCustomInput: true,
     getOptions: () => {
       const models = getAllModelsForProtocol(selectedProtocol);
       const options = models.map(name => ({ value: name, label: name }));
@@ -809,7 +836,8 @@ function populateModelSelector() {
     return;
   }
 
-  if (typedModel && models.includes(typedModel)) {
+  // 输入框有用户输入（含模糊关键字）→ 保留；否则当前选择不在新协议下时回退到首项。
+  if (typedModel) {
     selectedModelName = typedModel;
   } else if (!selectedModelName || !models.includes(selectedModelName)) {
     selectedModelName = models[0];
@@ -833,7 +861,7 @@ function renderModelModeRows() {
     return;
   }
 
-  if (!selectedModelName || !models.includes(selectedModelName)) {
+  if (!selectedModelName) {
     const typedModel = getModelInputValue();
     if (typedModel) {
       selectedModelName = typedModel;
@@ -843,23 +871,29 @@ function renderModelModeRows() {
     }
   }
 
-  const channels = getChannelsSupportingModel(selectedProtocol, selectedModelName);
-  if (channels.length === 0) {
+  const isExact = isExactModelInProtocol(selectedProtocol, selectedModelName);
+  const pairs = isExact
+    ? getChannelsSupportingModel(selectedProtocol, selectedModelName)
+        .map(ch => ({ channel: ch, model: selectedModelName }))
+    : getChannelModelPairsMatching(selectedProtocol, selectedModelName);
+
+  if (pairs.length === 0) {
     renderEmptyRow(i18nText('modelTest.noChannelSupportsModel', '没有渠道支持该模型'));
     return;
   }
 
   const fragment = document.createDocumentFragment();
-  channels.forEach(ch => {
+  pairs.forEach(({ channel: ch, model }) => {
     const isEnabled = ch.enabled !== false;
+    const baseName = isExact ? ch.name : `${ch.name} · ${model}`;
     const channelName = isEnabled
-      ? ch.name
-      : `${ch.name} [${i18nText('common.disabled', '已禁用')}]`;
+      ? baseName
+      : `${baseName} [${i18nText('common.disabled', '已禁用')}]`;
 
     const row = TemplateEngine.render('tpl-channel-row-by-model', {
       channelId: String(ch.id),
       channelName,
-      model: selectedModelName,
+      model,
       ...getResultRowMobileLabels('modelTest.channel', '渠道')
     });
 
@@ -943,7 +977,7 @@ function getSelectedTargets() {
         if (!channel) return null;
         return {
           row,
-          model: selectedModelName,
+          model: row.dataset.model || selectedModelName,
           channelId: channel.id,
           protocolTransform: selectedProtocol
         };
