@@ -61,17 +61,6 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		return
 	}
 
-	// 支持按渠道类型过滤（减少后续批量查询的数据量）
-	// [FIX] P2-7: 标准化类型比较，避免"同一概念多种写法"
-	channelType := c.Query("type")
-	if channelType != "" && channelType != "all" {
-		normalizedQueryType := util.NormalizeChannelType(channelType)
-		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
-			return util.NormalizeChannelType(cfg.ChannelType) == normalizedQueryType
-		})
-	}
-
-	// 附带冷却状态（同时用于 status=cooldown 过滤）
 	now := time.Now()
 
 	// 批量获取冷却状态（缓存优先）
@@ -82,59 +71,12 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		allChannelCooldowns = make(map[int64]time.Time)
 	}
 
-	// 支持按名称、状态、模型过滤（供分页场景使用）
+	// 应用所有列表过滤（type / channel_name|search / status / model|model_like）
 	// 注意：筛选下拉的全集走独立接口 /admin/channels/filter-options，
 	// 这里只负责按所有筛选条件返回当前页，避免列表数据与下拉选项耦合。
-	if channelName := strings.TrimSpace(c.Query("channel_name")); channelName != "" {
-		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
-			return strings.TrimSpace(cfg.Name) == channelName
-		})
-	} else if search := strings.TrimSpace(c.Query("search")); search != "" {
-		searchLower := strings.ToLower(search)
-		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
-			return strings.Contains(strings.ToLower(strings.TrimSpace(cfg.Name)), searchLower)
-		})
-	}
-
-	if status := strings.TrimSpace(c.Query("status")); status != "" && status != "all" {
-		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
-			switch status {
-			case "enabled":
-				return cfg.Enabled
-			case "disabled":
-				return !cfg.Enabled
-			case "cooldown":
-				until, cooled := allChannelCooldowns[cfg.ID]
-				return cooled && until.After(now)
-			}
-			return false
-		})
-	}
+	cfgs = applyChannelListFilters(cfgs, c, allChannelCooldowns, now)
 
 	hasPagination := c.Query("limit") != "" || c.Query("offset") != ""
-
-	modelName := strings.TrimSpace(c.Query("model"))
-	modelLike := strings.TrimSpace(c.Query("model_like"))
-	if modelName != "" && modelName != "all" {
-		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
-			for _, entry := range cfg.ModelEntries {
-				if entry.Model == modelName {
-					return true
-				}
-			}
-			return false
-		})
-	} else if modelLike != "" && modelLike != "all" {
-		modelLikeLower := strings.ToLower(modelLike)
-		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
-			for _, entry := range cfg.ModelEntries {
-				if strings.Contains(strings.ToLower(strings.TrimSpace(entry.Model)), modelLikeLower) {
-					return true
-				}
-			}
-			return false
-		})
-	}
 
 	// 批量查询所有Key冷却状态（缓存优先）
 	allKeyCooldowns, err := s.getAllKeyCooldowns(c.Request.Context())
@@ -192,6 +134,75 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		return
 	}
 	RespondJSON(c, http.StatusOK, out)
+}
+
+// applyChannelListFilters 串联应用所有列表过滤条件：
+//   - type: 渠道类型（标准化比较）
+//   - channel_name | search: 名称精确/模糊（互斥，channel_name 优先）
+//   - status: enabled / disabled / cooldown（cooldown 依赖 channelCooldownsMap）
+//   - model | model_like: 模型精确/模糊（互斥，model 优先）
+//
+// 空字符串或 "all" 视为不过滤。
+func applyChannelListFilters(cfgs []*model.Config, c *gin.Context, channelCooldownsMap map[int64]time.Time, now time.Time) []*model.Config {
+	// type
+	if t := c.Query("type"); t != "" && t != "all" {
+		normalized := util.NormalizeChannelType(t)
+		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
+			return util.NormalizeChannelType(cfg.ChannelType) == normalized
+		})
+	}
+
+	// channel_name | search（互斥）
+	if name := strings.TrimSpace(c.Query("channel_name")); name != "" {
+		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
+			return strings.TrimSpace(cfg.Name) == name
+		})
+	} else if search := strings.TrimSpace(c.Query("search")); search != "" {
+		searchLower := strings.ToLower(search)
+		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
+			return strings.Contains(strings.ToLower(strings.TrimSpace(cfg.Name)), searchLower)
+		})
+	}
+
+	// status
+	if status := strings.TrimSpace(c.Query("status")); status != "" && status != "all" {
+		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
+			switch status {
+			case "enabled":
+				return cfg.Enabled
+			case "disabled":
+				return !cfg.Enabled
+			case "cooldown":
+				until, cooled := channelCooldownsMap[cfg.ID]
+				return cooled && until.After(now)
+			}
+			return false
+		})
+	}
+
+	// model | model_like（互斥）
+	if modelName := strings.TrimSpace(c.Query("model")); modelName != "" && modelName != "all" {
+		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
+			for _, entry := range cfg.ModelEntries {
+				if entry.Model == modelName {
+					return true
+				}
+			}
+			return false
+		})
+	} else if modelLike := strings.TrimSpace(c.Query("model_like")); modelLike != "" && modelLike != "all" {
+		modelLikeLower := strings.ToLower(modelLike)
+		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
+			for _, entry := range cfg.ModelEntries {
+				if strings.Contains(strings.ToLower(strings.TrimSpace(entry.Model)), modelLikeLower) {
+					return true
+				}
+			}
+			return false
+		})
+	}
+
+	return cfgs
 }
 
 // sortChannelsByEffectivePriority 原地排序 cfgs。
