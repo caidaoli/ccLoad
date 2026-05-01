@@ -25,6 +25,7 @@ type ChannelCache struct {
 	allChannels                []*modelpkg.Config                       // 所有渠道
 	lastUpdate                 time.Time
 	mutex                      sync.RWMutex
+	refreshMutex               sync.Mutex // 串行化刷新动作，避免数据库 IO 在 mutex 锁内阻塞读者
 	ttl                        time.Duration
 
 	// 扩展缓存支持更多关键查询
@@ -233,6 +234,8 @@ func (c *ChannelCache) GetConfig(ctx context.Context, channelID int64) (*modelpk
 }
 
 // refreshIfNeeded 智能缓存刷新
+// 锁策略：refreshMutex 串行化刷新动作，c.mutex 仅在指针互换瞬间持有写锁，
+// DB IO 与索引构建均发生在锁外，读者可继续访问旧数据。
 func (c *ChannelCache) refreshIfNeeded(ctx context.Context) error {
 	c.mutex.RLock()
 	needsRefresh := time.Since(c.lastUpdate) > c.ttl
@@ -242,12 +245,15 @@ func (c *ChannelCache) refreshIfNeeded(ctx context.Context) error {
 		return nil
 	}
 
-	// 使用写锁保护刷新操作
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	// 串行化刷新（避免重复 DB 查询），但不阻塞读者
+	c.refreshMutex.Lock()
+	defer c.refreshMutex.Unlock()
 
-	// 双重检查，防止并发刷新
-	if time.Since(c.lastUpdate) <= c.ttl {
+	// 双重检查：可能已被并发刷新者完成
+	c.mutex.RLock()
+	stale := time.Since(c.lastUpdate) > c.ttl
+	c.mutex.RUnlock()
+	if !stale {
 		return nil
 	}
 
@@ -255,7 +261,9 @@ func (c *ChannelCache) refreshIfNeeded(ctx context.Context) error {
 }
 
 // refreshCache 刷新缓存数据
-// 说明：缓存内部索引共享指针；对外统一返回深拷贝，避免调用方污染缓存。
+// 说明：DB 加载与索引构建在 c.mutex 之外完成，仅在指针互换瞬间持写锁。
+// 缓存内部索引共享指针；对外统一返回深拷贝，避免调用方污染缓存。
+// 调用方必须已持有 refreshMutex 以串行化刷新动作。
 func (c *ChannelCache) refreshCache(ctx context.Context) error {
 	start := time.Now()
 
@@ -290,13 +298,15 @@ func (c *ChannelCache) refreshCache(ctx context.Context) error {
 		}
 	}
 
-	// 原子性更新缓存（整体替换，不修改单个对象）
+	// 原子性更新缓存（整体替换指针，临界区只覆盖赋值瞬间）
+	c.mutex.Lock()
 	c.allChannels = allChannels
 	c.channelsByModel = byModel
 	c.channelsByModelAndProtocol = byModelAndProtocol
 	c.channelsByType = byType
 	c.channelsByExposedProtocol = byExposedProtocol
 	c.lastUpdate = time.Now()
+	c.mutex.Unlock()
 
 	refreshDuration := time.Since(start)
 	if refreshDuration > 5*time.Second {
