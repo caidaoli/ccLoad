@@ -75,8 +75,14 @@ type jsonUsageParser struct {
 type usageParser interface {
 	Feed([]byte) error
 	GetUsage() (inputTokens, outputTokens, cacheRead, cacheCreation int)
-	GetLastError() []byte   // [INFO] 返回SSE流中检测到的最后一个error事件（用于1308等错误的延迟处理）
-	IsStreamComplete() bool // [INFO] 返回是否检测到流结束标志（[DONE]/message_stop）
+	GetCacheBreakdown() (cache5m, cache1h int, serviceTier string) // 返回缓存分桶与 OpenAI service_tier
+	GetLastError() []byte                                          // [INFO] 返回SSE流中检测到的最后一个error事件（用于1308等错误的延迟处理）
+	IsStreamComplete() bool                                        // [INFO] 返回是否检测到流结束标志（[DONE]/message_stop）
+}
+
+// GetCacheBreakdown 由 sseUsageParser/jsonUsageParser 通过嵌入共享。
+func (u *usageAccumulator) GetCacheBreakdown() (cache5m, cache1h int, serviceTier string) {
+	return u.Cache5mInputTokens, u.Cache1hInputTokens, u.ServiceTier
 }
 
 const (
