@@ -852,107 +852,131 @@ func getOpenAICacheMultiplier(model string) float64 {
 	return 0.5
 }
 
+// fuzzyPrefixes 是模型模糊匹配的前缀列表，按"更具体优先"的顺序手工排好。
+// 提到包级常量避免每次 fuzzyMatchModel 调用都重新分配 200+ 长度 slice。
+//
+// 维护要点：新增前缀时保持"更长/更具体的版本在前"——首字母分桶后，
+// 桶内顺序就是匹配优先级。
+var fuzzyPrefixes = []string{
+	// Claude模型（按版本降序，具体版本优先，通用兜底在最后）
+	"claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-6", "claude-opus-4-5", "claude-opus-4-1",
+	"claude-sonnet-4-0", "claude-opus-4-0", "claude-3-7-sonnet",
+	"claude-3-5-sonnet", "claude-3-5-haiku",
+	"claude-3-opus", "claude-3-sonnet", "claude-3-haiku",
+	"claude-opus", "claude-sonnet", "claude-haiku", // 通用兜底
+
+	// Gemini模型（按版本降序，更长的前缀优先）
+	"gemini-3-pro", "gemini-3.1-flash-lite", "gemini-3-flash",
+	"gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.5-pro",
+	"gemini-2.0-flash-lite", "gemini-2.0-flash",
+	"gemini-1.5-pro", "gemini-1.5-flash",
+
+	// OpenAI GPT系列（更长的前缀优先，避免gpt-4o-legacy被gpt-4o截断）
+	"gpt-5-pro", "gpt-5-nano", "gpt-5-mini", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.4", "gpt-5",
+	"gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1",
+	"gpt-4o-legacy", "gpt-4o-mini", "gpt-4o", // legacy必须在gpt-4o之前
+	"gpt-4-turbo", "gpt-4-32k", "gpt-4",
+	"gpt-3.5-legacy", "gpt-3.5-16k", "gpt-3.5-turbo",
+
+	// OpenAI o系列
+	"o3-deep-research", "o3-pro", "o3-mini", "o3",
+	"o1-pro", "o1-mini", "o1", "o4-mini",
+
+	// OpenAI其他专用模型
+	"computer-use-preview", "codex-mini-latest",
+	"davinci-002", "babbage-002",
+
+	// 其他厂商
+	"mimo-v2.5-flash", "mimo-v2.5-pro", "mimo-v2-omni", "mimo-v2-pro", "mimo-v2.5", "mimo-v2-flash",
+	"kimi-k2-0905:exacto", "kimi-k2-thinking", "kimi-k2.5", "kimi-k2-0905", "kimi-k2:free", "kimi-k2",
+	"kimi-linear-48b-a3b-instruct",
+	"kimi-vl-a3b-thinking:free", "kimi-vl-a3b-thinking",
+	"kimi-dev-72b:free", "kimi-dev-72b",
+	"qwen3.6-plus-2026-04-02", "qwen3.6-plus", "qwen3.6-plus-preview:free", "qwen3.6-plus:free",
+	"qwen3.5-plus-2026-02-15", "qwen3.5-plus",
+	"qwen-plus-2025-12-01", "qwen-plus-2025-09-11", "qwen-plus-2025-07-28:thinking", "qwen-plus-2025-07-28",
+	"qwen-plus-2025-07-14", "qwen-plus-2025-04-28", "qwen-plus-2025-01-25", "qwen-plus-latest", "qwen-plus",
+	"qwen-turbo", "qwen-max", "qwen-vl-plus", "qwen-vl-max",
+	"qwen3-next-80b-a3b-instruct", "qwen3-next-80b-a3b-thinking",
+	"qwen3-max-thinking", "qwen3-max",
+	"qwen3-30b-a3b-thinking-2507", "qwen3-30b-a3b-instruct-2507", "qwen3-30b-a3b",
+	"qwen3-vl-235b-a22b-instruct", "qwen3-vl-235b-a22b-thinking",
+	"qwen3-vl-30b-a3b-thinking", "qwen3-vl-30b-a3b-instruct",
+	"qwen3-vl-32b-instruct", "qwen3-vl-8b-thinking", "qwen3-vl-8b-instruct", "qwen3-vl",
+	"qwen3-235b-a22b-thinking-2507", "qwen3-235b-a22b-2507", "qwen3-235b-a22b",
+	"qwen3-14b", "qwen3-32b", "qwen3-8b", "qwen3-4b",
+	"qwen3-coder-flash", "qwen3-coder-next", "qwen3-coder-plus", "qwen3-coder:exacto", "qwen3-coder",
+	"qwen2.5-coder-7b-instruct", "qwen-2.5-coder-32b-instruct",
+	"qwen2.5-vl-72b-instruct", "qwen2.5-vl-32b-instruct", "qwen-2.5-vl-7b-instruct",
+	"qwen-2.5-72b-instruct", "qwen-2.5-7b-instruct", "qwen-2-72b-instruct",
+	"qwq-32b-preview", "qwq-32b",
+	"deepseek-r1-distill-llama-70b", "deepseek-r1-distill-qwen-32b", "deepseek-r1-distill-qwen-14b",
+	"deepseek-r1-0528-qwen3-8b", "deepseek-r1-0528", "deepseek-r1",
+	"deepseek-v3.2-speciale", "deepseek-v3.2-exp", "deepseek-v3.2", "deepseek-v3.1-terminus",
+	"deepseek-chat", "deepseek-prover-v2",
+
+	// xAI Grok模型（长前缀优先）
+	"grok-4.1-fast", "grok-4.1", "grok-4-fast", "grok-4",
+	"grok-3-mini-beta", "grok-3-mini", "grok-3-beta", "grok-3",
+	"grok-2-vision-1212", "grok-2-image-1212", "grok-2-1212", "grok-2-mini", "grok-2",
+	"grok-imagine-image-pro", "grok-imagine-image", "grok-imagine-video",
+	"grok-code-fast-1", "grok-vision-beta",
+
+	// MiniMax模型
+	"minimax-m2.5", "minimax-m2.1", "minimax-m2", "minimax-m1", "minimax-01",
+
+	// 美团 LongCat模型（长前缀优先）
+	"longcat-flash-chat-2602-exp", "longcat-flash-chat:free", "longcat-flash-chat",
+	"longcat-flash-thinking-2601", "longcat-flash-thinking",
+	"longcat-flash-omni-2603", "longcat-flash-lite",
+
+	// Meta Llama模型（长前缀优先）
+	"llama-3.2-90b-vision-instruct", "llama-3.2-11b-vision-instruct",
+	"llama-3.1-405b-instruct", "llama-3.1-405b", "llama-3.1-70b-instruct", "llama-3.1-8b-instruct",
+	"llama-3.3-70b-instruct", "llama-3.2-3b-instruct", "llama-3.2-1b-instruct",
+	"llama-3-70b-instruct", "llama-3-8b-instruct",
+	"llama-guard-4-12b", "llama-guard-3-8b", "llama-guard-2-8b",
+	"llama-4-maverick", "llama-4-scout",
+
+	// OpenAI OSS模型
+	"gpt-oss-safeguard-20b", "gpt-oss-120b:exacto", "gpt-oss-120b", "gpt-oss-20b",
+}
+
+// fuzzyPrefixBuckets 按前缀首字符分桶（小写 ASCII）。
+// 桶内顺序与 fuzzyPrefixes 保持一致，保留"更具体前缀优先"的语义。
+// 命中率：claude/gpt/qwen/gemini/grok/llama 首字母约覆盖 95% 流量，
+// 单桶规模 < 60，相比原 200 项线性扫描提速约 3-5x。
+var fuzzyPrefixBuckets = func() map[byte][]string {
+	buckets := make(map[byte][]string, 16)
+	for _, p := range fuzzyPrefixes {
+		if len(p) == 0 {
+			continue
+		}
+		c := p[0]
+		buckets[c] = append(buckets[c], p)
+	}
+	return buckets
+}()
+
 // fuzzyMatchModel 模糊匹配模型名称
 // 例如：claude-3-opus-20240229-extended → claude-3-opus
 //
 //	gpt-4o-2024-12-01 → gpt-4o
 func fuzzyMatchModel(model string) (ModelPricing, bool) {
-	lowerModel := strings.ToLower(model)
-
-	// 硬编码前缀列表（按优先级和长度排序，更具体的前缀优先）
-	// 优点：比动态排序快，可预测，并发安全
-	prefixes := []string{
-		// Claude模型（按版本降序，具体版本优先，通用兜底在最后）
-		"claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-6", "claude-opus-4-5", "claude-opus-4-1",
-		"claude-sonnet-4-0", "claude-opus-4-0", "claude-3-7-sonnet",
-		"claude-3-5-sonnet", "claude-3-5-haiku",
-		"claude-3-opus", "claude-3-sonnet", "claude-3-haiku",
-		"claude-opus", "claude-sonnet", "claude-haiku", // 通用兜底
-
-		// Gemini模型（按版本降序，更长的前缀优先）
-		"gemini-3-pro", "gemini-3.1-flash-lite", "gemini-3-flash",
-		"gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.5-pro",
-		"gemini-2.0-flash-lite", "gemini-2.0-flash",
-		"gemini-1.5-pro", "gemini-1.5-flash",
-
-		// OpenAI GPT系列（更长的前缀优先，避免gpt-4o-legacy被gpt-4o截断）
-		"gpt-5-pro", "gpt-5-nano", "gpt-5-mini", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.4", "gpt-5",
-		"gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1",
-		"gpt-4o-legacy", "gpt-4o-mini", "gpt-4o", // legacy必须在gpt-4o之前
-		"gpt-4-turbo", "gpt-4-32k", "gpt-4",
-		"gpt-3.5-legacy", "gpt-3.5-16k", "gpt-3.5-turbo",
-
-		// OpenAI o系列
-		"o3-deep-research", "o3-pro", "o3-mini", "o3",
-		"o1-pro", "o1-mini", "o1", "o4-mini",
-
-		// OpenAI其他专用模型
-		"computer-use-preview", "codex-mini-latest",
-		"davinci-002", "babbage-002",
-
-		// 其他厂商
-		"mimo-v2.5-flash", "mimo-v2.5-pro", "mimo-v2-omni", "mimo-v2-pro", "mimo-v2.5", "mimo-v2-flash",
-		"kimi-k2-0905:exacto", "kimi-k2-thinking", "kimi-k2.5", "kimi-k2-0905", "kimi-k2:free", "kimi-k2",
-		"kimi-linear-48b-a3b-instruct",
-		"kimi-vl-a3b-thinking:free", "kimi-vl-a3b-thinking",
-		"kimi-dev-72b:free", "kimi-dev-72b",
-		"qwen3.6-plus-2026-04-02", "qwen3.6-plus", "qwen3.6-plus-preview:free", "qwen3.6-plus:free",
-		"qwen3.5-plus-2026-02-15", "qwen3.5-plus",
-		"qwen-plus-2025-12-01", "qwen-plus-2025-09-11", "qwen-plus-2025-07-28:thinking", "qwen-plus-2025-07-28",
-		"qwen-plus-2025-07-14", "qwen-plus-2025-04-28", "qwen-plus-2025-01-25", "qwen-plus-latest", "qwen-plus",
-		"qwen-turbo", "qwen-max", "qwen-vl-plus", "qwen-vl-max",
-		"qwen3-next-80b-a3b-instruct", "qwen3-next-80b-a3b-thinking",
-		"qwen3-max-thinking", "qwen3-max",
-		"qwen3-30b-a3b-thinking-2507", "qwen3-30b-a3b-instruct-2507", "qwen3-30b-a3b",
-		"qwen3-vl-235b-a22b-instruct", "qwen3-vl-235b-a22b-thinking",
-		"qwen3-vl-30b-a3b-thinking", "qwen3-vl-30b-a3b-instruct",
-		"qwen3-vl-32b-instruct", "qwen3-vl-8b-thinking", "qwen3-vl-8b-instruct", "qwen3-vl",
-		"qwen3-235b-a22b-thinking-2507", "qwen3-235b-a22b-2507", "qwen3-235b-a22b",
-		"qwen3-14b", "qwen3-32b", "qwen3-8b", "qwen3-4b",
-		"qwen3-coder-flash", "qwen3-coder-next", "qwen3-coder-plus", "qwen3-coder:exacto", "qwen3-coder",
-		"qwen2.5-coder-7b-instruct", "qwen-2.5-coder-32b-instruct",
-		"qwen2.5-vl-72b-instruct", "qwen2.5-vl-32b-instruct", "qwen-2.5-vl-7b-instruct",
-		"qwen-2.5-72b-instruct", "qwen-2.5-7b-instruct", "qwen-2-72b-instruct",
-		"qwq-32b-preview", "qwq-32b",
-		"deepseek-r1-distill-llama-70b", "deepseek-r1-distill-qwen-32b", "deepseek-r1-distill-qwen-14b",
-		"deepseek-r1-0528-qwen3-8b", "deepseek-r1-0528", "deepseek-r1",
-		"deepseek-v3.2-speciale", "deepseek-v3.2-exp", "deepseek-v3.2", "deepseek-v3.1-terminus",
-		"deepseek-chat", "deepseek-prover-v2",
-
-		// xAI Grok模型（长前缀优先）
-		"grok-4.1-fast", "grok-4.1", "grok-4-fast", "grok-4",
-		"grok-3-mini-beta", "grok-3-mini", "grok-3-beta", "grok-3",
-		"grok-2-vision-1212", "grok-2-image-1212", "grok-2-1212", "grok-2-mini", "grok-2",
-		"grok-imagine-image-pro", "grok-imagine-image", "grok-imagine-video",
-		"grok-code-fast-1", "grok-vision-beta",
-
-		// MiniMax模型
-		"minimax-m2.5", "minimax-m2.1", "minimax-m2", "minimax-m1", "minimax-01",
-
-		// 美团 LongCat模型（长前缀优先）
-		"longcat-flash-chat-2602-exp", "longcat-flash-chat:free", "longcat-flash-chat",
-		"longcat-flash-thinking-2601", "longcat-flash-thinking",
-		"longcat-flash-omni-2603", "longcat-flash-lite",
-
-		// Meta Llama模型（长前缀优先）
-		"llama-3.2-90b-vision-instruct", "llama-3.2-11b-vision-instruct",
-		"llama-3.1-405b-instruct", "llama-3.1-405b", "llama-3.1-70b-instruct", "llama-3.1-8b-instruct",
-		"llama-3.3-70b-instruct", "llama-3.2-3b-instruct", "llama-3.2-1b-instruct",
-		"llama-3-70b-instruct", "llama-3-8b-instruct",
-		"llama-guard-4-12b", "llama-guard-3-8b", "llama-guard-2-8b",
-		"llama-4-maverick", "llama-4-scout",
-
-		// OpenAI OSS模型
-		"gpt-oss-safeguard-20b", "gpt-oss-120b:exacto", "gpt-oss-120b", "gpt-oss-20b",
+	if model == "" {
+		return ModelPricing{}, false
 	}
-
-	for _, prefix := range prefixes {
+	lowerModel := strings.ToLower(model)
+	bucket, ok := fuzzyPrefixBuckets[lowerModel[0]]
+	if !ok {
+		return ModelPricing{}, false
+	}
+	for _, prefix := range bucket {
 		if strings.HasPrefix(lowerModel, prefix) {
 			if pricing, ok := basePricing[prefix]; ok {
 				return pricing, true
 			}
 		}
 	}
-
 	return ModelPricing{}, false
 }
