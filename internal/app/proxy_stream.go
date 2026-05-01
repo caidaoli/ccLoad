@@ -17,8 +17,9 @@ var errAbortStreamBeforeWrite = errors.New("abort stream before first client wri
 
 // streamReadStats 流式传输统计信息
 type streamReadStats struct {
-	readCount  int
-	totalBytes int64
+	readCount    int
+	totalBytes   int64
+	firstByteSec float64 // 首字节读取耗时（秒），attachFirstByteDetector 写入
 }
 
 // firstByteDetector 检测首字节读取时间和传输统计的Reader包装器

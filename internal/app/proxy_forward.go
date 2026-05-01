@@ -199,7 +199,7 @@ func (s *Server) handleErrorResponse(
 	reqCtx *requestContext,
 	resp *http.Response,
 	hdrClone http.Header,
-	firstBodyReadTimeSec *float64,
+	readStats *streamReadStats,
 ) (*fwResult, float64, error) {
 	rb, readErr := io.ReadAll(io.LimitReader(resp.Body, int64(config.DefaultMaxBodyBytes)))
 	diagMsg := ""
@@ -214,7 +214,7 @@ func (s *Server) handleErrorResponse(
 		Status:        resp.StatusCode,
 		Header:        hdrClone,
 		Body:          rb,
-		FirstByteTime: *firstBodyReadTimeSec,
+		FirstByteTime: readStats.firstByteSec,
 		StreamDiagMsg: diagMsg,
 	}, duration, nil
 }
@@ -427,20 +427,19 @@ func (s *Server) handleSuccessResponse(
 	w http.ResponseWriter,
 	channelType string,
 	readStats *streamReadStats,
-	firstBodyReadTimeSec *float64,
 ) (*fwResult, float64, error) {
 	if reqCtx.isStreaming &&
 		s.protocolRegistry != nil &&
 		reqCtx.transformPlan.NeedsTransform &&
 		(strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") ||
 			strings.Contains(resp.Header.Get("Content-Type"), "text/plain")) {
-		return s.handleTranslatedStreamSuccessResponse(reqCtx, resp, hdrClone, w, channelType, readStats, firstBodyReadTimeSec)
+		return s.handleTranslatedStreamSuccessResponse(reqCtx, resp, hdrClone, w, channelType, readStats)
 	}
 
 	if !reqCtx.isStreaming &&
 		s.protocolRegistry != nil &&
 		reqCtx.transformPlan.NeedsTransform {
-		return s.handleTranslatedNonStreamSuccessResponse(reqCtx, resp, hdrClone, w, channelType, readStats, firstBodyReadTimeSec)
+		return s.handleTranslatedNonStreamSuccessResponse(reqCtx, resp, hdrClone, w, channelType, readStats)
 	}
 
 	// [FIX] 流式请求：禁用 WriteTimeout，避免长时间流被服务器自己切断
@@ -489,7 +488,7 @@ func (s *Server) handleSuccessResponse(
 	result := &fwResult{
 		Status:            resp.StatusCode,
 		Header:            hdrClone,
-		FirstByteTime:     *firstBodyReadTimeSec,
+		FirstByteTime:     readStats.firstByteSec,
 		BytesReceived:     readStats.totalBytes, // 记录已接收字节数，用于499诊断
 		ResponseCommitted: deferredWriter == nil || deferredWriter.Committed(),
 	}
@@ -539,7 +538,6 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 	w http.ResponseWriter,
 	channelType string,
 	readStats *streamReadStats,
-	firstBodyReadTimeSec *float64,
 ) (*fwResult, float64, error) {
 	rawBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -547,7 +545,7 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 			Status:        resp.StatusCode,
 			Header:        hdrClone,
 			Body:          []byte(err.Error()),
-			FirstByteTime: *firstBodyReadTimeSec,
+			FirstByteTime: readStats.firstByteSec,
 		}, reqCtx.Duration().Seconds(), err
 	}
 
@@ -562,7 +560,7 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 			Status:        resp.StatusCode,
 			Header:        hdrClone,
 			Body:          rawBody,
-			FirstByteTime: *firstBodyReadTimeSec,
+			FirstByteTime: readStats.firstByteSec,
 		}, reqCtx.Duration().Seconds(), err
 	}
 
@@ -580,7 +578,7 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 			Status:        resp.StatusCode,
 			Header:        hdrClone,
 			Body:          rawBody,
-			FirstByteTime: *firstBodyReadTimeSec,
+			FirstByteTime: readStats.firstByteSec,
 		}, reqCtx.Duration().Seconds(), err
 	}
 
@@ -591,7 +589,7 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 	result := &fwResult{
 		Status:            resp.StatusCode,
 		Header:            hdrClone,
-		FirstByteTime:     *firstBodyReadTimeSec,
+		FirstByteTime:     readStats.firstByteSec,
 		BytesReceived:     readStats.totalBytes,
 		ResponseCommitted: true,
 	}
@@ -610,7 +608,6 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	w http.ResponseWriter,
 	channelType string,
 	readStats *streamReadStats,
-	firstBodyReadTimeSec *float64,
 ) (*fwResult, float64, error) {
 	rc := http.NewResponseController(w)
 	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
@@ -671,7 +668,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	result := &fwResult{
 		Status:            resp.StatusCode,
 		Header:            hdrClone,
-		FirstByteTime:     *firstBodyReadTimeSec,
+		FirstByteTime:     readStats.firstByteSec,
 		BytesReceived:     readStats.totalBytes,
 		ResponseCommitted: deferredWriter.Committed(),
 	}
@@ -736,7 +733,6 @@ func attachFirstByteDetector(
 	reqCtx *requestContext,
 	resp *http.Response,
 	readStats *streamReadStats,
-	firstBodyReadTimeSec *float64,
 	observer *ForwardObserver,
 ) {
 	resp.Body = &firstByteDetector{
@@ -746,10 +742,10 @@ func attachFirstByteDetector(
 			if reqCtx.isStreaming {
 				reqCtx.stopFirstByteTimer()
 			}
-			if *firstBodyReadTimeSec == 0 {
-				*firstBodyReadTimeSec = reqCtx.Duration().Seconds()
-				if *firstBodyReadTimeSec == 0 {
-					*firstBodyReadTimeSec = time.Nanosecond.Seconds()
+			if readStats.firstByteSec == 0 {
+				readStats.firstByteSec = reqCtx.Duration().Seconds()
+				if readStats.firstByteSec == 0 {
+					readStats.firstByteSec = time.Nanosecond.Seconds()
 				}
 			}
 			if reqCtx.isStreaming && observer != nil && observer.OnFirstByteRead != nil {
@@ -775,12 +771,13 @@ func shouldProbeSoftError(reqCtx *requestContext, resp *http.Response, channelTy
 	return strings.Contains(ct, "text/plain") || strings.Contains(ct, "application/json")
 }
 
-func markSoftErrorStatus(resp *http.Response, data []byte) {
-	if _, is1308 := util.ParseResetTimeFrom1308Error(data); is1308 {
-		resp.StatusCode = util.StatusQuotaExceeded
-		return
+// classifySSEErrorStatus 根据响应体内容判定 SSE 错误的内部状态码：
+// 1308 配额超限 → 596（StatusQuotaExceeded，Key 级冷却）；其他 → 597（StatusSSEError）。
+func classifySSEErrorStatus(body []byte) int {
+	if _, is1308 := util.ParseResetTimeFrom1308Error(body); is1308 {
+		return util.StatusQuotaExceeded
 	}
-	resp.StatusCode = util.StatusSSEError
+	return util.StatusSSEError
 }
 
 func (s *Server) probeSoftErrorResponse(
@@ -789,42 +786,42 @@ func (s *Server) probeSoftErrorResponse(
 	hdrClone http.Header,
 	cfg *model.Config,
 	channelType string,
-	firstBodyReadTimeSec *float64,
-) (*fwResult, float64, error, bool) {
+	readStats *streamReadStats,
+) (handled bool, res *fwResult, duration float64, err error) {
 	if !shouldProbeSoftError(reqCtx, resp, channelType) {
-		return nil, 0, nil, false
+		return false, nil, 0, nil
 	}
 
 	ct := resp.Header.Get("Content-Type")
 	buf := make([]byte, softErrorProbeSize)
-	n, err := resp.Body.Read(buf)
-	if err != nil && err != io.EOF {
-		log.Printf("[WARN] 软错误检测读取失败: %v", err)
+	n, readErr := resp.Body.Read(buf)
+	if readErr != nil && readErr != io.EOF {
+		log.Printf("[WARN] 软错误检测读取失败: %v", readErr)
 	}
 
 	validData := buf[:n]
 	if n > 0 && checkSoftError(validData, ct) {
 		log.Printf("[WARN] [软错误检测] 渠道ID=%d, 响应200但疑似错误响应: %s", cfg.ID, truncateErr(safeBodyToString(validData)))
-		markSoftErrorStatus(resp, validData)
+		resp.StatusCode = classifySSEErrorStatus(validData)
 		prependToBody(resp, validData)
-		res, duration, handleErr := s.handleErrorResponse(reqCtx, resp, hdrClone, firstBodyReadTimeSec)
-		return res, duration, handleErr, true
+		res, duration, err = s.handleErrorResponse(reqCtx, resp, hdrClone, readStats)
+		return true, res, duration, err
 	}
 
 	if n > 0 {
 		prependToBody(resp, validData)
 	}
-	return nil, 0, nil, false
+	return false, nil, 0, nil
 }
 
-func emptyOKResponseResult(reqCtx *requestContext, resp *http.Response, hdrClone http.Header, firstBodyReadTimeSec float64) (*fwResult, float64, error) {
+func emptyOKResponseResult(reqCtx *requestContext, resp *http.Response, hdrClone http.Header, readStats *streamReadStats) (*fwResult, float64, error) {
 	duration := reqCtx.Duration().Seconds()
 	err := fmt.Errorf("upstream returned empty response (200 OK with Content-Length: 0)")
 	return &fwResult{
 		Status:        resp.StatusCode,
 		Header:        hdrClone,
 		Body:          []byte(err.Error()),
-		FirstByteTime: firstBodyReadTimeSec,
+		FirstByteTime: readStats.firstByteSec,
 	}, duration, err
 }
 
@@ -843,24 +840,23 @@ func (s *Server) handleResponse(
 	observer *ForwardObserver,
 ) (*fwResult, float64, error) {
 	hdrClone := resp.Header.Clone()
-	firstBodyReadTimeSec := 0.0
 	readStats := &streamReadStats{}
 
-	attachFirstByteDetector(reqCtx, resp, readStats, &firstBodyReadTimeSec, observer)
+	attachFirstByteDetector(reqCtx, resp, readStats, observer)
 
-	if res, duration, err, handled := s.probeSoftErrorResponse(reqCtx, resp, hdrClone, cfg, channelType, &firstBodyReadTimeSec); handled {
+	if handled, res, duration, err := s.probeSoftErrorResponse(reqCtx, resp, hdrClone, cfg, channelType, readStats); handled {
 		return res, duration, err
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return s.handleErrorResponse(reqCtx, resp, hdrClone, &firstBodyReadTimeSec)
+		return s.handleErrorResponse(reqCtx, resp, hdrClone, readStats)
 	}
 
 	if contentLen := resp.Header.Get("Content-Length"); contentLen == "0" {
-		return emptyOKResponseResult(reqCtx, resp, hdrClone, firstBodyReadTimeSec)
+		return emptyOKResponseResult(reqCtx, resp, hdrClone, readStats)
 	}
 
-	return s.handleSuccessResponse(reqCtx, resp, hdrClone, w, channelType, readStats, &firstBodyReadTimeSec)
+	return s.handleSuccessResponse(reqCtx, resp, hdrClone, w, channelType, readStats)
 }
 
 // ============================================================================
@@ -979,12 +975,11 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 
 func markSSEErrorForwardResult(res *fwResult) {
 	res.Body = res.SSEErrorEvent
-	if _, is1308 := util.ParseResetTimeFrom1308Error(res.SSEErrorEvent); is1308 {
-		res.Status = util.StatusQuotaExceeded
+	res.Status = classifySSEErrorStatus(res.SSEErrorEvent)
+	if res.Status == util.StatusQuotaExceeded {
 		res.StreamDiagMsg = fmt.Sprintf("Quota Exceeded (1308): %s", safeBodyToString(res.SSEErrorEvent))
 		return
 	}
-	res.Status = util.StatusSSEError
 	res.StreamDiagMsg = fmt.Sprintf("SSE error event: %s", safeBodyToString(res.SSEErrorEvent))
 }
 

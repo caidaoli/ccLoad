@@ -360,9 +360,8 @@ func TestHandleTranslatedStreamSuccessResponse_TreatsTranslatedStopAsComplete(t 
 
 	rec := newRecorder()
 	readStats := &streamReadStats{}
-	firstByte := 0.0
 
-	res, _, err := s.handleTranslatedStreamSuccessResponse(reqCtx, resp, resp.Header.Clone(), rec, "openai", readStats, &firstByte)
+	res, _, err := s.handleTranslatedStreamSuccessResponse(reqCtx, resp, resp.Header.Clone(), rec, "openai", readStats)
 	if err != nil {
 		t.Fatalf("expected translated completed stream to ignore trailing close error, got %v", err)
 	}
@@ -391,8 +390,8 @@ func TestHandleErrorResponse_MergesBodyReadErrorIntoResult(t *testing.T) {
 		},
 	}
 
-	firstByte := 1.234
-	res, _, err := s.handleErrorResponse(reqCtx, resp, http.Header{}, &firstByte)
+	readStats := &streamReadStats{firstByteSec: 1.234}
+	res, _, err := s.handleErrorResponse(reqCtx, resp, http.Header{}, readStats)
 	if err != nil {
 		t.Fatalf("expected err=nil, got %v", err)
 	}
@@ -402,8 +401,8 @@ func TestHandleErrorResponse_MergesBodyReadErrorIntoResult(t *testing.T) {
 	if got := string(res.Body); got != `{"error":"余额不足"}` {
 		t.Fatalf("expected Body preserved, got %q", got)
 	}
-	if res.FirstByteTime != firstByte {
-		t.Fatalf("expected FirstByteTime=%.3f, got %.3f", firstByte, res.FirstByteTime)
+	if res.FirstByteTime != readStats.firstByteSec {
+		t.Fatalf("expected FirstByteTime=%.3f, got %.3f", readStats.firstByteSec, res.FirstByteTime)
 	}
 	if res.StreamDiagMsg == "" {
 		t.Fatalf("expected StreamDiagMsg not empty")
