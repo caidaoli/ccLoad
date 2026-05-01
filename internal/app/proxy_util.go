@@ -137,7 +137,8 @@ type proxyRequestContext struct {
 	activeReqID      int64                // 活跃请求ID（用于更新渠道信息）
 	observer         *ForwardObserver     // 转发观测回调（可选）
 	startTime        time.Time            // 请求开始时间（用于统计）
-	attemptStartTime time.Time            // 渠道尝试开始时间（用于日志记录）
+	channelStartTime time.Time            // 当前渠道尝试开始时间（每次切换渠道时重置）
+	attemptStartTime time.Time            // 渠道内单次 Key/URL 尝试开始时间
 	baseURL          string               // 当前尝试使用的上游URL（多URL场景）
 	debugData        *model.DebugLogEntry // Debug日志数据（debug开启时填充）
 }

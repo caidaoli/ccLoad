@@ -154,9 +154,9 @@ func (s *Server) handleNetworkError(
 	statusCode, _, shouldRetry := util.ClassifyError(err)
 
 	// 记录日志：requestModel=原始请求模型，actualModel=实际转发模型
-	// [FIX] Duration 使用从请求开始到现在的总耗时（而非单次URL尝试耗时）
-	// 多URL场景下，客户端实际等待时间 = 所有URL尝试的累计耗时
-	s.logProxyResult(reqCtx, cfg, actualModel, selectedKey, statusCode, time.Since(reqCtx.startTime).Seconds(), res, err.Error())
+	// Duration 使用「当前渠道开始到现在」的累计耗时：覆盖渠道内多 Key/多 URL 的累计等待时间，
+	// 但不跨越渠道边界，避免把先前渠道耗时算到本渠道日志上。
+	s.logProxyResult(reqCtx, cfg, actualModel, selectedKey, statusCode, time.Since(reqCtx.channelStartTime).Seconds(), res, err.Error())
 
 	failure := &proxyResult{
 		status:           statusCode,
@@ -461,8 +461,8 @@ func (s *Server) handleProxyErrorResponse(
 		errMsg = "upstream returned 499 (not client cancel)"
 	}
 
-	// [FIX] Duration 使用从请求开始到现在的总耗时（多URL场景下反映客户端实际等待时间）
-	s.logProxyResult(reqCtx, cfg, actualModel, selectedKey, res.Status, time.Since(reqCtx.startTime).Seconds(), res, errMsg)
+	// Duration 使用「当前渠道开始到现在」的累计耗时（覆盖同渠道多URL尝试，不跨渠道）
+	s.logProxyResult(reqCtx, cfg, actualModel, selectedKey, res.Status, time.Since(reqCtx.channelStartTime).Seconds(), res, errMsg)
 
 	// [FIX] 2026-01: 499（客户端取消）不计入成功/失败统计，与 logs 表聚合逻辑保持一致
 	if res.Status != 499 {

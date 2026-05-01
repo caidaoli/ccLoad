@@ -1084,6 +1084,8 @@ func (s *Server) forwardAttempt(
 // tryChannelWithKeys 在单个渠道内尝试多个Key（Key级重试）
 // 从proxy.go提取，遵循SRP原则
 func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqCtx *proxyRequestContext, w http.ResponseWriter) (*proxyResult, error) {
+	reqCtx.channelStartTime = time.Now()
+
 	makeCtxDoneResult := func(ctxErr error) *proxyResult {
 		status := util.StatusClientClosedRequest
 		isClientCanceled := errors.Is(ctxErr, context.Canceled)
