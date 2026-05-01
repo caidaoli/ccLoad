@@ -37,6 +37,11 @@ const (
 )
 
 // TransformPlan captures the chosen transform metadata for one proxy attempt.
+//
+// TODO(perf): OriginalBody 与 TranslatedBody 同时持有完整请求体，长流式请求或大上下文场景下
+// 会让 plan 的内存峰值翻倍。后续可以分阶段释放：请求阶段结束后清空 OriginalBody，仅保留
+// TranslatedBody 给响应阶段使用，或反之。当前调用链跨多个 goroutine（forward / writer / debug 捕获）
+// 共享 plan 指针，简单清空可能引入悬挂引用，需先收敛所有读点再做改造。
 type TransformPlan struct {
 	ClientProtocol   Protocol
 	UpstreamProtocol Protocol
