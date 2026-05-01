@@ -720,35 +720,42 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		entry.Cache1hInputTokens = res.Cache1hInputTokens
 		entry.ServiceTier = res.ServiceTier
 
-		// 成本计算（2025-11新增，基于token统计）
-		// 2025-12更新：使用CalculateCostDetailed支持5m和1h缓存分别计费
-		// 使用实际转发的模型来计算成本（重定向时价格可能不同）
-		// 注意：始终调用，支持按次计费的图像模型（tokens为0时返回固定成本）
+		// 使用实际转发的模型计算成本（重定向时价格可能不同）；
+		// 始终调用以支持按次计费图像模型（tokens=0 时返回固定成本）。
 		costModel := p.ActualModel
 		if costModel == "" {
 			costModel = p.RequestModel
 		}
-		if res.ServiceTier == "fast" && util.IsFastModeModel(costModel) {
-			entry.Cost = util.CalculateFastModeCost(
-				res.InputTokens, res.OutputTokens,
-				res.CacheReadInputTokens, res.Cache5mInputTokens, res.Cache1hInputTokens,
-			)
-		} else {
-			entry.Cost = util.CalculateCostDetailed(
-				costModel,
-				res.InputTokens,
-				res.OutputTokens,
-				res.CacheReadInputTokens,
-				res.Cache5mInputTokens,
-				res.Cache1hInputTokens,
-			) * util.OpenAIServiceTierMultiplier(costModel, res.ServiceTier)
-		}
+		entry.Cost = computeRequestCost(costModel, res.ServiceTier, res)
 	} else {
 		entry.Message = "unknown"
 	}
 
 	entry.DebugData = p.DebugData
 	return entry
+}
+
+// computeRequestCost 集中两处计费分支（buildLogEntry / logFailedAttempt 旁路）。
+// fast 模式专用模型走 CalculateFastModeCost（已含 fast 倍率），其余走标准 detailed 计算
+// 并叠加 OpenAI service_tier 乘数（priority/flex/default）。
+func computeRequestCost(model string, serviceTier string, res *fwResult) float64 {
+	if res == nil {
+		return 0
+	}
+	if serviceTier == "fast" && util.IsFastModeModel(model) {
+		return util.CalculateFastModeCost(
+			res.InputTokens, res.OutputTokens,
+			res.CacheReadInputTokens, res.Cache5mInputTokens, res.Cache1hInputTokens,
+		)
+	}
+	return util.CalculateCostDetailed(
+		model,
+		res.InputTokens,
+		res.OutputTokens,
+		res.CacheReadInputTokens,
+		res.Cache5mInputTokens,
+		res.Cache1hInputTokens,
+	) * util.OpenAIServiceTierMultiplier(model, serviceTier)
 }
 
 // truncateErr 截断错误信息到512字符（防止日志过长）
