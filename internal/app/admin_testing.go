@@ -659,46 +659,7 @@ func (s *Server) testChannelAPIWithURL(
 
 	if isEventStream {
 		if requestPlan.clientProtocol != requestPlan.upstreamProtocol {
-			recorder := httptest.NewRecorder()
-			var rawUpstreamBuf bytes.Buffer
-			upstreamTee := io.TeeReader(resp.Body, &rawUpstreamBuf)
-			firstByteCaptured := false
-			var state any
-
-			streamErr := streamTransformSSEEvents(
-				ctx,
-				upstreamTee,
-				recorder,
-				func(rawEvent []byte) error {
-					if !firstByteCaptured && len(rawEvent) > 0 {
-						firstByteCaptured = true
-						result["first_byte_duration_ms"] = time.Since(start).Milliseconds()
-					}
-					return nil
-				},
-				func(rawEvent []byte) ([][]byte, error) {
-					return s.protocolRegistry.TranslateResponseStream(
-						ctx,
-						protocol.Protocol(requestPlan.upstreamProtocol),
-						protocol.Protocol(requestPlan.clientProtocol),
-						testReq.Model,
-						requestPlan.clientBody,
-						requestPlan.requestBody,
-						rawEvent,
-						&state,
-					)
-				},
-			)
-			if streamErr != nil {
-				result["duration_ms"] = time.Since(start).Milliseconds()
-				result["error"] = "读取流式响应失败: " + streamErr.Error()
-				result["upstream_response_body"] = rawUpstreamBuf.String()
-				return result
-			}
-
-			result["duration_ms"] = time.Since(start).Milliseconds()
-			result["upstream_response_body"] = rawUpstreamBuf.String()
-			return parseTestStreamResponseBytes(recorder.Body.Bytes(), requestPlan.clientProtocol, resp.StatusCode, result, testReq)
+			return s.parseTestTranslatedSSEResponse(ctx, requestPlan, testReq, resp, start, result)
 		}
 
 		// 流式解析（SSE）。无论状态码是否2xx，都尽量读取并回显上游返回内容。
@@ -1042,6 +1003,57 @@ func (s *Server) buildTestUpstreamRequest(
 	applyHeaderRules(req.Header, cfgForBuild.HeaderRules())
 
 	return req, requestPlan, cancel, nil
+}
+
+// parseTestTranslatedSSEResponse 处理需要跨协议翻译的 SSE 响应分支。
+func (s *Server) parseTestTranslatedSSEResponse(
+	ctx context.Context,
+	requestPlan *channelTestRequestPlan,
+	testReq *testutil.TestChannelRequest,
+	resp *http.Response,
+	start time.Time,
+	result map[string]any,
+) map[string]any {
+	recorder := httptest.NewRecorder()
+	var rawUpstreamBuf bytes.Buffer
+	upstreamTee := io.TeeReader(resp.Body, &rawUpstreamBuf)
+	firstByteCaptured := false
+	var state any
+
+	streamErr := streamTransformSSEEvents(
+		ctx,
+		upstreamTee,
+		recorder,
+		func(rawEvent []byte) error {
+			if !firstByteCaptured && len(rawEvent) > 0 {
+				firstByteCaptured = true
+				result["first_byte_duration_ms"] = time.Since(start).Milliseconds()
+			}
+			return nil
+		},
+		func(rawEvent []byte) ([][]byte, error) {
+			return s.protocolRegistry.TranslateResponseStream(
+				ctx,
+				protocol.Protocol(requestPlan.upstreamProtocol),
+				protocol.Protocol(requestPlan.clientProtocol),
+				testReq.Model,
+				requestPlan.clientBody,
+				requestPlan.requestBody,
+				rawEvent,
+				&state,
+			)
+		},
+	)
+	if streamErr != nil {
+		result["duration_ms"] = time.Since(start).Milliseconds()
+		result["error"] = "读取流式响应失败: " + streamErr.Error()
+		result["upstream_response_body"] = rawUpstreamBuf.String()
+		return result
+	}
+
+	result["duration_ms"] = time.Since(start).Milliseconds()
+	result["upstream_response_body"] = rawUpstreamBuf.String()
+	return parseTestStreamResponseBytes(recorder.Body.Bytes(), requestPlan.clientProtocol, resp.StatusCode, result, testReq)
 }
 
 func buildTestFailureClassificationInput(result map[string]any) (statusCode int, errorBody []byte, headers map[string][]string) {
