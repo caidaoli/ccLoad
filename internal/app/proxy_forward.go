@@ -320,9 +320,11 @@ func translatedStreamChunksComplete(clientProtocol protocol.Protocol, chunks [][
 	return false
 }
 
+var sseDoneMarker = []byte("[DONE]")
+
 func translatedStreamChunkCompletes(clientProtocol protocol.Protocol, chunk []byte) bool {
 	eventType, data := parseSSEEventChunk(chunk)
-	if data == "" && eventType == "" {
+	if len(data) == 0 && eventType == "" {
 		return false
 	}
 
@@ -332,7 +334,7 @@ func translatedStreamChunkCompletes(clientProtocol protocol.Protocol, chunk []by
 	case protocol.Codex:
 		return eventType == "response.completed" || ssePayloadType(data) == "response.completed"
 	case protocol.OpenAI:
-		if data == "[DONE]" {
+		if bytes.Equal(data, sseDoneMarker) {
 			return true
 		}
 		payload, ok := decodeSSEPayload(data)
@@ -369,23 +371,32 @@ func translatedStreamChunkCompletes(clientProtocol protocol.Protocol, chunk []by
 	}
 }
 
-func parseSSEEventChunk(chunk []byte) (eventType string, data string) {
-	lines := strings.Split(strings.TrimSpace(string(chunk)), "\n")
-	dataLines := make([]string, 0, 1)
+// parseSSEEventChunk 在 []byte 视图上解析 SSE 事件块，避免 string(chunk) 与 []byte(data) 来回拷贝。
+// 返回的 data 是 chunk 的字节副本（拼接多行时已分配新切片），调用方可安全持有。
+func parseSSEEventChunk(chunk []byte) (eventType string, data []byte) {
+	chunk = bytes.TrimSpace(chunk)
+	if len(chunk) == 0 {
+		return "", nil
+	}
+	lines := bytes.Split(chunk, []byte{'\n'})
+	dataLines := make([][]byte, 0, 1)
 	for _, line := range lines {
-		line = strings.TrimRight(line, "\r")
-		if after, ok := strings.CutPrefix(line, "event:"); ok {
-			eventType = strings.TrimSpace(after)
+		line = bytes.TrimRight(line, "\r")
+		if after, ok := bytes.CutPrefix(line, []byte("event:")); ok {
+			eventType = string(bytes.TrimSpace(after))
 			continue
 		}
-		if after, ok := strings.CutPrefix(line, "data:"); ok {
-			dataLines = append(dataLines, strings.TrimSpace(after))
+		if after, ok := bytes.CutPrefix(line, []byte("data:")); ok {
+			dataLines = append(dataLines, bytes.TrimSpace(after))
 		}
 	}
-	return eventType, strings.Join(dataLines, "")
+	if len(dataLines) == 0 {
+		return eventType, nil
+	}
+	return eventType, bytes.Join(dataLines, nil)
 }
 
-func ssePayloadType(data string) string {
+func ssePayloadType(data []byte) string {
 	payload, ok := decodeSSEPayload(data)
 	if !ok {
 		return ""
@@ -394,13 +405,13 @@ func ssePayloadType(data string) string {
 	return typ
 }
 
-func decodeSSEPayload(data string) (map[string]any, bool) {
-	if data == "" || data == "[DONE]" {
+func decodeSSEPayload(data []byte) (map[string]any, bool) {
+	if len(data) == 0 || bytes.Equal(data, sseDoneMarker) {
 		return nil, false
 	}
 
 	var payload map[string]any
-	if err := sonic.Unmarshal([]byte(data), &payload); err != nil {
+	if err := sonic.Unmarshal(data, &payload); err != nil {
 		return nil, false
 	}
 	return payload, true
