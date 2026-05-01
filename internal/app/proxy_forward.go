@@ -496,19 +496,7 @@ func (s *Server) handleSuccessResponse(
 	var streamComplete bool
 	if parser != nil {
 		result.InputTokens, result.OutputTokens, result.CacheReadInputTokens, result.CacheCreationInputTokens = parser.GetUsage()
-
-		// 提取5m和1h缓存细分字段（通过类型断言访问底层实现）
-		// 设计原则：不修改接口避免破坏现有测试，通过类型断言优雅扩展
-		switch p := parser.(type) {
-		case *sseUsageParser:
-			result.Cache5mInputTokens = p.Cache5mInputTokens
-			result.Cache1hInputTokens = p.Cache1hInputTokens
-			result.ServiceTier = p.ServiceTier
-		case *jsonUsageParser:
-			result.Cache5mInputTokens = p.Cache5mInputTokens
-			result.Cache1hInputTokens = p.Cache1hInputTokens
-			result.ServiceTier = p.ServiceTier
-		}
+		result.Cache5mInputTokens, result.Cache1hInputTokens, result.ServiceTier = parser.GetCacheBreakdown()
 
 		if errorEvent := parser.GetLastError(); errorEvent != nil {
 			result.SSEErrorEvent = errorEvent
