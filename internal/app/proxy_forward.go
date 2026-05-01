@@ -1283,7 +1283,7 @@ func shouldCheckSoftErrorForChannelType(channelType string) bool {
 // 原则：宁可漏判也不要误判（避免把正常响应当错误导致重试/冷却）
 //
 // 规则：
-// - JSON：先解析，只看顶层结构（顶层 error 字段 或 顶层 type=="error"）
+// - JSON：先用 bytes.Contains 短路，仅含可能错误标记时才完整 Unmarshal；只看顶层结构
 // - text/plain：只接受“前缀匹配 + 短消息”，禁止 Contains 误判用户内容
 // - SSE：若看起来像 SSE（data:/event:），直接跳过
 func checkSoftError(data []byte, contentType string) bool {
@@ -1305,21 +1305,30 @@ func checkSoftError(data []byte, contentType string) bool {
 
 	// JSON：仅看顶层结构
 	if isJSONCT || trimmed[0] == '{' {
-		var obj map[string]any
-		if err := sonic.Unmarshal(trimmed, &obj); err == nil {
-			if v, ok := obj["error"]; ok && v != nil {
-				return true
+		// 快速短路：99% 成功响应顶层不含错误标记，跳过 sonic.Unmarshal
+		// 同时覆盖紧凑/带空格两种格式；"error" 带引号避免误匹配 "api_error" 等子串
+		if !maybeContainsTopLevelError(trimmed) {
+			if trimmed[0] == '{' {
+				return false // 形态确实是 JSON 对象 → 已确认无错误
 			}
-			if t, ok := obj["type"].(string); ok && strings.EqualFold(t, "error") {
-				return true
+			// CT=JSON 但内容不像 JSON 对象（如纯文本错误消息）→ 走兜底
+		} else {
+			var obj map[string]any
+			if err := sonic.Unmarshal(trimmed, &obj); err == nil {
+				if v, ok := obj["error"]; ok && v != nil {
+					return true
+				}
+				if t, ok := obj["type"].(string); ok && strings.EqualFold(t, "error") {
+					return true
+				}
+				return false
 			}
-			return false
+			// 形态像 JSON（以 '{' 开头）但解析失败：不猜，避免误判
+			if trimmed[0] == '{' {
+				return false
+			}
+			// Content-Type 标注为 JSON 但内容不是 JSON：允许继续走 text/plain 的“前缀+短消息”兜底
 		}
-		// 形态像 JSON（以 '{' 开头）但解析失败：不猜，避免误判
-		if trimmed[0] == '{' {
-			return false
-		}
-		// Content-Type 标注为 JSON 但内容不是 JSON：允许继续走 text/plain 的“前缀+短消息”兜底
 	}
 
 	// text/plain：仅前缀 + 短消息
@@ -1335,4 +1344,12 @@ func checkSoftError(data []byte, contentType string) bool {
 	}
 
 	return false
+}
+
+// maybeContainsTopLevelError 字节级扫描快速判断响应体是否可能含顶层 error 标记。
+// 假阳性（如 {"errors":[...]} 含 "error" 子串）会进入慢路径精确判定，结果仍正确。
+func maybeContainsTopLevelError(data []byte) bool {
+	return bytes.Contains(data, []byte(`"error"`)) ||
+		bytes.Contains(data, []byte(`"type":"error"`)) ||
+		bytes.Contains(data, []byte(`"type": "error"`))
 }
