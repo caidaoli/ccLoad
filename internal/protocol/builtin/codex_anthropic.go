@@ -331,17 +331,7 @@ func convertAnthropicResponseToCodexStream(_ context.Context, model string, _, _
 }
 
 func convertCodexResponseToAnthropicStream(_ context.Context, model string, rawReq, translatedReq, rawJSON []byte, param *any) ([][]byte, error) {
-	if param == nil {
-		var local any
-		param = &local
-	}
-	if *param == nil {
-		*param = &codexToAnthropicStreamState{model: model}
-	}
-	st := (*param).(*codexToAnthropicStreamState)
-	if st.model == "" {
-		st.model = model
-	}
+	st := initCodexToAnthropicStreamState(param, model)
 
 	raw := strings.TrimSpace(string(rawJSON))
 	if raw == "" {
@@ -356,308 +346,366 @@ func convertCodexResponseToAnthropicStream(_ context.Context, model string, rawR
 	if err := sonic.Unmarshal([]byte(line), &payload); err != nil {
 		return nil, err
 	}
-	if response, _ := payload["response"].(map[string]any); response != nil {
-		if responseModel := stringValue(response["model"]); responseModel != "" {
-			st.model = responseModel
-		}
-		if id := stringValue(response["id"]); id != "" && st.responseID == "" {
-			st.responseID = id
-		}
-		if usage := codexUsageFromMap(response["usage"]); usage != nil {
-			st.usage.inputTokens = usage.inputTokens
-			st.usage.outputTokens = usage.outputTokens
-			st.usage.cachedTokens = usage.cachedTokens
-			st.usage.cacheCreationInputTokens = usage.cacheCreationInputTokens
-			st.usage.reasoningTokens = usage.reasoningTokens
-			st.usage.seen = true
+	applyCodexResponsePayload(st, payload)
+
+	matches := func(want string) bool {
+		return eventType == want || stringValue(payload["type"]) == want
+	}
+	switch {
+	case matches("response.output_item.added"):
+		return handleCodexOutputItemAdded(st, payload)
+	case matches("response.reasoning_summary_part.added"):
+		return codexAnthropicStartThinkingBlock(st)
+	case matches("response.reasoning_summary_text.delta"):
+		return handleCodexReasoningSummaryDelta(st, payload)
+	case matches("response.reasoning_summary_part.done"):
+		st.thinkingStopPending = true
+		return nil, nil
+	case matches("response.output_item.done"):
+		return handleCodexOutputItemDone(st, payload, rawReq, translatedReq)
+	case matches("response.output_text.delta"):
+		return handleCodexOutputTextDelta(st, payload)
+	case matches("response.completed"):
+		return handleCodexResponseCompleted(st)
+	}
+	return nil, nil
+}
+
+func initCodexToAnthropicStreamState(param *any, model string) *codexToAnthropicStreamState {
+	if param == nil {
+		var local any
+		param = &local
+	}
+	if *param == nil {
+		*param = &codexToAnthropicStreamState{model: model}
+	}
+	st := (*param).(*codexToAnthropicStreamState)
+	if st.model == "" {
+		st.model = model
+	}
+	return st
+}
+
+func applyCodexResponsePayload(st *codexToAnthropicStreamState, payload map[string]any) {
+	response, _ := payload["response"].(map[string]any)
+	if response == nil {
+		return
+	}
+	if responseModel := stringValue(response["model"]); responseModel != "" {
+		st.model = responseModel
+	}
+	if id := stringValue(response["id"]); id != "" && st.responseID == "" {
+		st.responseID = id
+	}
+	if usage := codexUsageFromMap(response["usage"]); usage != nil {
+		st.usage.inputTokens = usage.inputTokens
+		st.usage.outputTokens = usage.outputTokens
+		st.usage.cachedTokens = usage.cachedTokens
+		st.usage.cacheCreationInputTokens = usage.cacheCreationInputTokens
+		st.usage.reasoningTokens = usage.reasoningTokens
+		st.usage.seen = true
+	}
+}
+
+func handleCodexOutputItemAdded(st *codexToAnthropicStreamState, payload map[string]any) ([][]byte, error) {
+	if item, _ := payload["item"].(map[string]any); item != nil && stringValue(item["type"]) == "reasoning" {
+		if signature := firstNonEmptyString(item, "encrypted_content", "signature"); signature != "" {
+			st.thinkingSignature = signature
 		}
 	}
-	if eventType == "response.output_item.added" || stringValue(payload["type"]) == "response.output_item.added" {
-		if item, _ := payload["item"].(map[string]any); item != nil && stringValue(item["type"]) == "reasoning" {
-			if signature := firstNonEmptyString(item, "encrypted_content", "signature"); signature != "" {
-				st.thinkingSignature = signature
-			}
-		}
+	return nil, nil
+}
+
+func handleCodexReasoningSummaryDelta(st *codexToAnthropicStreamState, payload map[string]any) ([][]byte, error) {
+	deltaText := stringValue(payload["delta"])
+	if deltaText == "" {
 		return nil, nil
 	}
-	if eventType == "response.reasoning_summary_part.added" || stringValue(payload["type"]) == "response.reasoning_summary_part.added" {
-		return codexAnthropicStartThinkingBlock(st)
+	outputs, err := codexAnthropicStartThinkingBlock(st)
+	if err != nil {
+		return nil, err
 	}
-	if eventType == "response.reasoning_summary_text.delta" || stringValue(payload["type"]) == "response.reasoning_summary_text.delta" {
-		deltaText := stringValue(payload["delta"])
-		if deltaText == "" {
-			return nil, nil
+	thinkingDelta, err := marshalEventSSE("content_block_delta", map[string]any{
+		"type":  "content_block_delta",
+		"index": st.blockIndex,
+		"delta": map[string]any{
+			"type":     "thinking_delta",
+			"thinking": deltaText,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	outputs = append(outputs, thinkingDelta)
+	st.lastBlock = "thinking"
+	return outputs, nil
+}
+
+func handleCodexOutputItemDone(st *codexToAnthropicStreamState, payload map[string]any, rawReq, translatedReq []byte) ([][]byte, error) {
+	item, _ := payload["item"].(map[string]any)
+	if item == nil {
+		return nil, nil
+	}
+	switch stringValue(item["type"]) {
+	case "message":
+		return handleCodexMessageItem(st, item)
+	case "reasoning":
+		return handleCodexReasoningItem(st, item)
+	case "function_call":
+		return handleCodexFunctionCallItem(st, item, rawReq, translatedReq)
+	default:
+		return nil, nil
+	}
+}
+
+func handleCodexMessageItem(st *codexToAnthropicStreamState, item map[string]any) ([][]byte, error) {
+	if st.hasTextDelta {
+		return nil, nil
+	}
+	parts, err := extractCodexContentParts(item["content"])
+	if err != nil {
+		return nil, err
+	}
+	texts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part.Kind == partKindText && part.Text != "" {
+			texts = append(texts, part.Text)
 		}
-		outputs, err := codexAnthropicStartThinkingBlock(st)
-		if err != nil {
-			return nil, err
-		}
-		thinkingDelta, err := marshalEventSSE("content_block_delta", map[string]any{
+	}
+	if len(texts) == 0 {
+		return nil, nil
+	}
+	outputs, err := codexAnthropicEnsureTextBlockOpen(st)
+	if err != nil {
+		return nil, err
+	}
+	for _, text := range texts {
+		deltaChunk, err := marshalEventSSE("content_block_delta", map[string]any{
 			"type":  "content_block_delta",
 			"index": st.blockIndex,
 			"delta": map[string]any{
-				"type":     "thinking_delta",
-				"thinking": deltaText,
+				"type": "text_delta",
+				"text": text,
 			},
 		})
 		if err != nil {
 			return nil, err
 		}
-		outputs = append(outputs, thinkingDelta)
-		st.lastBlock = "thinking"
-		return outputs, nil
+		outputs = append(outputs, deltaChunk)
 	}
-	if eventType == "response.reasoning_summary_part.done" || stringValue(payload["type"]) == "response.reasoning_summary_part.done" {
-		st.thinkingStopPending = true
-		return nil, nil
-	}
-	if eventType == "response.output_item.done" || stringValue(payload["type"]) == "response.output_item.done" {
-		item, _ := payload["item"].(map[string]any)
-		if item == nil {
-			return nil, nil
-		}
-		itemType := stringValue(item["type"])
+	st.hasTextDelta = true
+	st.lastBlock = "text"
+	return outputs, nil
+}
 
-		switch itemType {
-		case "message":
-			if st.hasTextDelta {
-				return nil, nil
-			}
-			parts, err := extractCodexContentParts(item["content"])
-			if err != nil {
-				return nil, err
-			}
-			texts := make([]string, 0, len(parts))
-			for _, part := range parts {
-				if part.Kind == partKindText && part.Text != "" {
-					texts = append(texts, part.Text)
-				}
-			}
-			if len(texts) == 0 {
-				return nil, nil
-			}
-			outputs, err := codexAnthropicEnsureTextBlockOpen(st)
-			if err != nil {
-				return nil, err
-			}
-			for _, text := range texts {
-				deltaChunk, err := marshalEventSSE("content_block_delta", map[string]any{
-					"type":  "content_block_delta",
-					"index": st.blockIndex,
-					"delta": map[string]any{
-						"type": "text_delta",
-						"text": text,
-					},
-				})
-				if err != nil {
-					return nil, err
-				}
-				outputs = append(outputs, deltaChunk)
-			}
-			st.hasTextDelta = true
-			st.lastBlock = "text"
-			return outputs, nil
-		case "reasoning":
-			if st.thinkingBlockOpen || st.thinkingStopPending {
-				return codexAnthropicFinalizeThinking(st)
-			}
-			outputs := make([][]byte, 0, 6)
-			if !st.started {
-				msgStart, err := codexAnthropicMessageStartChunk(st)
-				if err != nil {
-					return nil, err
-				}
-				outputs = append(outputs, msgStart)
-				st.started = true
-			}
-			if st.openBlock {
-				blockStop, err := codexAnthropicCloseOpenBlock(st)
-				if err != nil {
-					return nil, err
-				}
-				outputs = append(outputs, blockStop)
-			}
-			encContent := stringValue(item["encrypted_content"])
-			if encContent != "" {
-				// redacted_thinking block: start + stop, no delta
-				blockStart, err := marshalEventSSE("content_block_start", map[string]any{
-					"type":  "content_block_start",
-					"index": st.blockIndex,
-					"content_block": map[string]any{
-						"type": "redacted_thinking",
-						"data": "",
-					},
-				})
-				if err != nil {
-					return nil, err
-				}
-				blockStop, err := marshalEventSSE("content_block_stop", map[string]any{
-					"type":  "content_block_stop",
-					"index": st.blockIndex,
-				})
-				if err != nil {
-					return nil, err
-				}
-				outputs = append(outputs, blockStart, blockStop)
-				st.lastBlock = "redacted_thinking"
-				st.blockIndex++
-			} else {
-				// Extract summary text
-				summaryText := ""
-				if summaries, ok := item["summary"].([]any); ok {
-					for _, s := range summaries {
-						if sm, ok := s.(map[string]any); ok {
-							if stringValue(sm["type"]) == "summary_text" {
-								summaryText += stringValue(sm["text"])
-							}
-						}
-					}
-				}
-				if summaryText == "" {
-					return outputs, nil
-				}
-				blockStart, err := marshalEventSSE("content_block_start", map[string]any{
-					"type":  "content_block_start",
-					"index": st.blockIndex,
-					"content_block": map[string]any{
-						"type":     "thinking",
-						"thinking": "",
-					},
-				})
-				if err != nil {
-					return nil, err
-				}
-				thinkingDelta, err := marshalEventSSE("content_block_delta", map[string]any{
-					"type":  "content_block_delta",
-					"index": st.blockIndex,
-					"delta": map[string]any{
-						"type":     "thinking_delta",
-						"thinking": summaryText,
-					},
-				})
-				if err != nil {
-					return nil, err
-				}
-				blockStop, err := marshalEventSSE("content_block_stop", map[string]any{
-					"type":  "content_block_stop",
-					"index": st.blockIndex,
-				})
-				if err != nil {
-					return nil, err
-				}
-				outputs = append(outputs, blockStart, thinkingDelta, blockStop)
-				st.lastBlock = "thinking"
-				st.blockIndex++
-			}
-			return outputs, nil
-
-		case "function_call":
-			outputs := make([][]byte, 0, 6)
-			if !st.started {
-				msgStart, err := codexAnthropicMessageStartChunk(st)
-				if err != nil {
-					return nil, err
-				}
-				outputs = append(outputs, msgStart)
-				st.started = true
-			}
-			if thinkingOutputs, err := codexAnthropicFinalizeThinking(st); err != nil {
-				return nil, err
-			} else if len(thinkingOutputs) > 0 {
-				outputs = append(outputs, thinkingOutputs...)
-			}
-			if st.openBlock {
-				blockStop, err := codexAnthropicCloseOpenBlock(st)
-				if err != nil {
-					return nil, err
-				}
-				outputs = append(outputs, blockStop)
-			}
-			call, err := decodeCodexToolCall(item)
-			if err != nil {
-				return nil, err
-			}
-			call.Name = st.restoreToolName(rawReq, translatedReq, call.Name)
-			partialJSON := "{}"
-			if len(call.Arguments) > 0 {
-				partialJSON = string(call.Arguments)
-			}
-			blockStart, err := marshalEventSSE("content_block_start", map[string]any{
-				"type":  "content_block_start",
-				"index": st.blockIndex,
-				"content_block": map[string]any{
-					"type":  "tool_use",
-					"id":    call.ID,
-					"name":  call.Name,
-					"input": map[string]any{},
-				},
-			})
-			if err != nil {
-				return nil, err
-			}
-			inputDelta, err := marshalEventSSE("content_block_delta", map[string]any{
-				"type":  "content_block_delta",
-				"index": st.blockIndex,
-				"delta": map[string]any{
-					"type":         "input_json_delta",
-					"partial_json": partialJSON,
-				},
-			})
-			if err != nil {
-				return nil, err
-			}
-			blockStop, err := marshalEventSSE("content_block_stop", map[string]any{
-				"type":  "content_block_stop",
-				"index": st.blockIndex,
-			})
-			if err != nil {
-				return nil, err
-			}
-			outputs = append(outputs, blockStart, inputDelta, blockStop)
-			st.lastBlock = "tool_use"
-			st.blockIndex++
-			return outputs, nil
-		default:
-			return nil, nil
-		}
+func handleCodexReasoningItem(st *codexToAnthropicStreamState, item map[string]any) ([][]byte, error) {
+	if st.thinkingBlockOpen || st.thinkingStopPending {
+		return codexAnthropicFinalizeThinking(st)
 	}
-	if eventType == "response.output_text.delta" || stringValue(payload["type"]) == "response.output_text.delta" {
-		if content := stringValue(payload["delta"]); content != "" {
-			outputs, err := codexAnthropicEnsureTextBlockOpen(st)
-			if err != nil {
-				return nil, err
-			}
-			deltaChunk, err := marshalEventSSE("content_block_delta", map[string]any{
-				"type":  "content_block_delta",
-				"index": st.blockIndex,
-				"delta": map[string]any{
-					"type": "text_delta",
-					"text": content,
-				},
-			})
-			if err != nil {
-				return nil, err
-			}
-			outputs = append(outputs, deltaChunk)
-			st.hasTextDelta = true
-			st.lastBlock = "text"
-			return outputs, nil
-		}
-	}
-	if eventType == "response.completed" || stringValue(payload["type"]) == "response.completed" {
-		outputs := make([][]byte, 0, 6)
-		if thinkingOutputs, err := codexAnthropicFinalizeThinking(st); err != nil {
-			return nil, err
-		} else if len(thinkingOutputs) > 0 {
-			outputs = append(outputs, thinkingOutputs...)
-		}
-		stopOutputs, err := codexAnthropicStopChunks(st)
+	outputs := make([][]byte, 0, 6)
+	if !st.started {
+		msgStart, err := codexAnthropicMessageStartChunk(st)
 		if err != nil {
 			return nil, err
 		}
-		return append(outputs, stopOutputs...), nil
+		outputs = append(outputs, msgStart)
+		st.started = true
 	}
-	return nil, nil
+	if st.openBlock {
+		blockStop, err := codexAnthropicCloseOpenBlock(st)
+		if err != nil {
+			return nil, err
+		}
+		outputs = append(outputs, blockStop)
+	}
+	if encContent := stringValue(item["encrypted_content"]); encContent != "" {
+		// redacted_thinking 块只发 start+stop，无 delta
+		blockStart, err := marshalEventSSE("content_block_start", map[string]any{
+			"type":  "content_block_start",
+			"index": st.blockIndex,
+			"content_block": map[string]any{
+				"type": "redacted_thinking",
+				"data": "",
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		blockStop, err := marshalEventSSE("content_block_stop", map[string]any{
+			"type":  "content_block_stop",
+			"index": st.blockIndex,
+		})
+		if err != nil {
+			return nil, err
+		}
+		outputs = append(outputs, blockStart, blockStop)
+		st.lastBlock = "redacted_thinking"
+		st.blockIndex++
+		return outputs, nil
+	}
+	summaryText := codexExtractSummaryText(item["summary"])
+	if summaryText == "" {
+		return outputs, nil
+	}
+	blockStart, err := marshalEventSSE("content_block_start", map[string]any{
+		"type":  "content_block_start",
+		"index": st.blockIndex,
+		"content_block": map[string]any{
+			"type":     "thinking",
+			"thinking": "",
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	thinkingDelta, err := marshalEventSSE("content_block_delta", map[string]any{
+		"type":  "content_block_delta",
+		"index": st.blockIndex,
+		"delta": map[string]any{
+			"type":     "thinking_delta",
+			"thinking": summaryText,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	blockStop, err := marshalEventSSE("content_block_stop", map[string]any{
+		"type":  "content_block_stop",
+		"index": st.blockIndex,
+	})
+	if err != nil {
+		return nil, err
+	}
+	outputs = append(outputs, blockStart, thinkingDelta, blockStop)
+	st.lastBlock = "thinking"
+	st.blockIndex++
+	return outputs, nil
+}
+
+func codexExtractSummaryText(raw any) string {
+	summaries, ok := raw.([]any)
+	if !ok {
+		return ""
+	}
+	out := ""
+	for _, s := range summaries {
+		sm, ok := s.(map[string]any)
+		if !ok {
+			continue
+		}
+		if stringValue(sm["type"]) == "summary_text" {
+			out += stringValue(sm["text"])
+		}
+	}
+	return out
+}
+
+func handleCodexFunctionCallItem(st *codexToAnthropicStreamState, item map[string]any, rawReq, translatedReq []byte) ([][]byte, error) {
+	outputs := make([][]byte, 0, 6)
+	if !st.started {
+		msgStart, err := codexAnthropicMessageStartChunk(st)
+		if err != nil {
+			return nil, err
+		}
+		outputs = append(outputs, msgStart)
+		st.started = true
+	}
+	if thinkingOutputs, err := codexAnthropicFinalizeThinking(st); err != nil {
+		return nil, err
+	} else if len(thinkingOutputs) > 0 {
+		outputs = append(outputs, thinkingOutputs...)
+	}
+	if st.openBlock {
+		blockStop, err := codexAnthropicCloseOpenBlock(st)
+		if err != nil {
+			return nil, err
+		}
+		outputs = append(outputs, blockStop)
+	}
+	call, err := decodeCodexToolCall(item)
+	if err != nil {
+		return nil, err
+	}
+	call.Name = st.restoreToolName(rawReq, translatedReq, call.Name)
+	partialJSON := "{}"
+	if len(call.Arguments) > 0 {
+		partialJSON = string(call.Arguments)
+	}
+	blockStart, err := marshalEventSSE("content_block_start", map[string]any{
+		"type":  "content_block_start",
+		"index": st.blockIndex,
+		"content_block": map[string]any{
+			"type":  "tool_use",
+			"id":    call.ID,
+			"name":  call.Name,
+			"input": map[string]any{},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	inputDelta, err := marshalEventSSE("content_block_delta", map[string]any{
+		"type":  "content_block_delta",
+		"index": st.blockIndex,
+		"delta": map[string]any{
+			"type":         "input_json_delta",
+			"partial_json": partialJSON,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	blockStop, err := marshalEventSSE("content_block_stop", map[string]any{
+		"type":  "content_block_stop",
+		"index": st.blockIndex,
+	})
+	if err != nil {
+		return nil, err
+	}
+	outputs = append(outputs, blockStart, inputDelta, blockStop)
+	st.lastBlock = "tool_use"
+	st.blockIndex++
+	return outputs, nil
+}
+
+func handleCodexOutputTextDelta(st *codexToAnthropicStreamState, payload map[string]any) ([][]byte, error) {
+	content := stringValue(payload["delta"])
+	if content == "" {
+		return nil, nil
+	}
+	outputs, err := codexAnthropicEnsureTextBlockOpen(st)
+	if err != nil {
+		return nil, err
+	}
+	deltaChunk, err := marshalEventSSE("content_block_delta", map[string]any{
+		"type":  "content_block_delta",
+		"index": st.blockIndex,
+		"delta": map[string]any{
+			"type": "text_delta",
+			"text": content,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	outputs = append(outputs, deltaChunk)
+	st.hasTextDelta = true
+	st.lastBlock = "text"
+	return outputs, nil
+}
+
+func handleCodexResponseCompleted(st *codexToAnthropicStreamState) ([][]byte, error) {
+	outputs := make([][]byte, 0, 6)
+	if thinkingOutputs, err := codexAnthropicFinalizeThinking(st); err != nil {
+		return nil, err
+	} else if len(thinkingOutputs) > 0 {
+		outputs = append(outputs, thinkingOutputs...)
+	}
+	stopOutputs, err := codexAnthropicStopChunks(st)
+	if err != nil {
+		return nil, err
+	}
+	return append(outputs, stopOutputs...), nil
 }
 
 // codexAnthropicMessageStartChunk emits only the message_start SSE frame.
