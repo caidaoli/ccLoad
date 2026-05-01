@@ -685,90 +685,6 @@ func (s *Server) testChannelAPIWithURL(
 	result["upstream_request_headers"] = maskSensitiveHeaderMap(reqHeaders)
 	result["upstream_request_body"] = string(requestPlan.requestBody)
 
-	parseNonStreamResponse := func(bodyBytes []byte) map[string]any {
-		// duration_ms 统一表示完整响应总耗时（含读取响应体）
-		result["duration_ms"] = time.Since(start).Milliseconds()
-
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			parseBody := bodyBytes
-			if requestPlan.clientProtocol != requestPlan.upstreamProtocol && len(bodyBytes) > 0 {
-				translatedBody, translateErr := s.protocolRegistry.TranslateResponseNonStream(
-					ctx,
-					protocol.Protocol(requestPlan.upstreamProtocol),
-					protocol.Protocol(requestPlan.clientProtocol),
-					testReq.Model,
-					requestPlan.clientBody,
-					requestPlan.requestBody,
-					bodyBytes,
-				)
-				if translateErr != nil {
-					result["success"] = false
-					result["error"] = "转换测试响应失败: " + translateErr.Error()
-					result["raw_response"] = string(bodyBytes)
-					return result
-				}
-				parseBody = translatedBody
-			}
-
-			// 成功：委托给客户端协议 tester 解析
-			parsed := requestPlan.clientTester.Parse(resp.StatusCode, parseBody)
-			for k, v := range parsed {
-				result[k] = v
-			}
-
-			if success, ok := result["success"].(bool); !ok || success {
-				if _, ok := result["api_response"]; !ok {
-					result["success"] = false
-					result["error"] = summarizeUnexpectedTestResponse(contentType, bodyBytes)
-					if _, hasRaw := result["raw_response"]; !hasRaw {
-						result["raw_response"] = string(bodyBytes)
-					}
-					delete(result, "message")
-					return result
-				}
-			}
-
-			// 补齐成本信息（与代理计费口径一致：使用归一化后的可计费inputTokens）
-			usageParser := newJSONUsageParser(requestPlan.upstreamProtocol)
-			_ = usageParser.Feed(bodyBytes)
-			billableInput, output, cacheRead, _ := usageParser.GetUsage()
-			if billableInput+output+cacheRead > 0 {
-				result["cost_usd"] = util.CalculateCostDetailed(
-					testReq.Model,
-					billableInput,
-					output,
-					cacheRead,
-					usageParser.Cache5mInputTokens,
-					usageParser.Cache1hInputTokens,
-				)
-			}
-
-			// 始终保留上游原始响应体
-			result["upstream_response_body"] = string(bodyBytes)
-
-			if success, ok := result["success"].(bool); !ok || success {
-				result["message"] = "API测试成功"
-			}
-			return result
-		}
-
-		// 错误：统一解析
-		var errorMsg string
-		var apiError map[string]any
-		if err := sonic.Unmarshal(bodyBytes, &apiError); err == nil {
-			errorMsg = extractTestAPIErrorMessage(apiError)
-			result["api_error"] = apiError
-		} else {
-			result["raw_response"] = string(bodyBytes)
-		}
-		if errorMsg == "" {
-			errorMsg = "API返回错误状态: " + resp.Status
-		}
-		result["error"] = errorMsg
-		result["upstream_response_body"] = string(bodyBytes)
-		return result
-	}
-
 	// 附带响应头与类型，便于排查（不含请求头以避免泄露）
 	if len(resp.Header) > 0 {
 		hdr := make(map[string]string, len(resp.Header))
@@ -961,7 +877,7 @@ func (s *Server) testChannelAPIWithURL(
 		// 容错：部分上游错误地返回 text/event-stream 但实际是完整 JSON。
 		// 若未发现任何 SSE data 行，按非流式响应解析，避免“测试成功但无 response_text”。
 		if dataLineCount == 0 {
-			return parseNonStreamResponse([]byte(rawBuilder.String()))
+			return s.parseTestNonStreamResponse(ctx, requestPlan, testReq, resp, contentType, start, []byte(rawBuilder.String()), result)
 		}
 
 		result["duration_ms"] = time.Since(start).Milliseconds()
@@ -1024,7 +940,97 @@ func (s *Server) testChannelAPIWithURL(
 			"status_code": resp.StatusCode,
 		}
 	}
-	return parseNonStreamResponse(respBody)
+	return s.parseTestNonStreamResponse(ctx, requestPlan, testReq, resp, contentType, start, respBody, result)
+}
+
+// parseTestNonStreamResponse 解析非流式响应（成功/失败两路），写入 result 并返回。
+// 提取自 testChannelAPIWithURL 内嵌闭包，行为保持不变。
+func (s *Server) parseTestNonStreamResponse(
+	ctx context.Context,
+	requestPlan *channelTestRequestPlan,
+	testReq *testutil.TestChannelRequest,
+	resp *http.Response,
+	contentType string,
+	start time.Time,
+	bodyBytes []byte,
+	result map[string]any,
+) map[string]any {
+	result["duration_ms"] = time.Since(start).Milliseconds()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		parseBody := bodyBytes
+		if requestPlan.clientProtocol != requestPlan.upstreamProtocol && len(bodyBytes) > 0 {
+			translatedBody, translateErr := s.protocolRegistry.TranslateResponseNonStream(
+				ctx,
+				protocol.Protocol(requestPlan.upstreamProtocol),
+				protocol.Protocol(requestPlan.clientProtocol),
+				testReq.Model,
+				requestPlan.clientBody,
+				requestPlan.requestBody,
+				bodyBytes,
+			)
+			if translateErr != nil {
+				result["success"] = false
+				result["error"] = "转换测试响应失败: " + translateErr.Error()
+				result["raw_response"] = string(bodyBytes)
+				return result
+			}
+			parseBody = translatedBody
+		}
+
+		parsed := requestPlan.clientTester.Parse(resp.StatusCode, parseBody)
+		for k, v := range parsed {
+			result[k] = v
+		}
+
+		if success, ok := result["success"].(bool); !ok || success {
+			if _, ok := result["api_response"]; !ok {
+				result["success"] = false
+				result["error"] = summarizeUnexpectedTestResponse(contentType, bodyBytes)
+				if _, hasRaw := result["raw_response"]; !hasRaw {
+					result["raw_response"] = string(bodyBytes)
+				}
+				delete(result, "message")
+				return result
+			}
+		}
+
+		usageParser := newJSONUsageParser(requestPlan.upstreamProtocol)
+		_ = usageParser.Feed(bodyBytes)
+		billableInput, output, cacheRead, _ := usageParser.GetUsage()
+		if billableInput+output+cacheRead > 0 {
+			result["cost_usd"] = util.CalculateCostDetailed(
+				testReq.Model,
+				billableInput,
+				output,
+				cacheRead,
+				usageParser.Cache5mInputTokens,
+				usageParser.Cache1hInputTokens,
+			)
+		}
+
+		result["upstream_response_body"] = string(bodyBytes)
+
+		if success, ok := result["success"].(bool); !ok || success {
+			result["message"] = "API测试成功"
+		}
+		return result
+	}
+
+	var errorMsg string
+	var apiError map[string]any
+	if err := sonic.Unmarshal(bodyBytes, &apiError); err == nil {
+		errorMsg = extractTestAPIErrorMessage(apiError)
+		result["api_error"] = apiError
+	} else {
+		result["raw_response"] = string(bodyBytes)
+	}
+	if errorMsg == "" {
+		errorMsg = "API返回错误状态: " + resp.Status
+	}
+	result["error"] = errorMsg
+	result["upstream_response_body"] = string(bodyBytes)
+	return result
 }
 
 func buildTestFailureClassificationInput(result map[string]any) (statusCode int, errorBody []byte, headers map[string][]string) {
