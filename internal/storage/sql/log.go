@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -152,8 +153,19 @@ func (s *SQLStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 	return err
 }
 
-// BatchAddLogs 批量写入日志（单事务+预编译语句，提升刷盘性能）
-// OCP：作为扩展方法提供，调用方可通过类型断言优先使用
+const logsInsertColumns = `INSERT INTO logs(time, minute_bucket, model, actual_model, log_source, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used, api_key_hash, auth_token_id, client_ip, base_url, service_tier,
+			input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost, cost_multiplier) VALUES `
+
+const logRowPlaceholders = `(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+const logRowParams = 25
+
+// BatchAddLogs 批量写入日志（单事务，多值 INSERT 提升刷盘吞吐）
+// 设计：
+//   - 无 debug 数据：单条多值 INSERT 一次提交，节省 N-1 个 RTT
+//   - 含 debug 数据：单独走逐条 prepared 路径，因为需要 LastInsertId 关联 debug_logs
+//
+// 两路径仍处于同一事务内，保持原子性。
 func (s *SQLStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) error {
 	if len(logs) == 0 {
 		return nil
@@ -165,78 +177,109 @@ func (s *SQLStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	stmt, err := tx.PrepareContext(ctx, `
-	        INSERT INTO logs(time, minute_bucket, model, actual_model, log_source, channel_id, status_code, message, duration, is_streaming, first_byte_time, api_key_used, api_key_hash, auth_token_id, client_ip, base_url, service_tier,
-			input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost, cost_multiplier)
-	        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
+	plain := make([]*model.LogEntry, 0, len(logs))
+	var withDebug []*model.LogEntry
+	for _, e := range logs {
+		if e.DebugData != nil {
+			withDebug = append(withDebug, e)
+			continue
+		}
+		plain = append(plain, e)
+	}
+
+	if len(plain) > 0 {
+		if err := batchInsertPlainLogs(ctx, tx, plain); err != nil {
+			return err
+		}
+	}
+
+	if len(withDebug) > 0 {
+		if err := insertLogsWithDebug(ctx, tx, withDebug); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+// batchInsertPlainLogs 多值 INSERT 写入无 debug 数据的日志，按 batchSize 分块。
+func batchInsertPlainLogs(ctx context.Context, tx *sql.Tx, logs []*model.LogEntry) error {
+	// 单批最多 100 行（2500 占位符），兼容 SQLite 32766/MySQL 65535 上限。
+	const batchSize = 100
+	for offset := 0; offset < len(logs); offset += batchSize {
+		end := min(offset+batchSize, len(logs))
+		chunk := logs[offset:end]
+
+		var b strings.Builder
+		b.Grow(len(logsInsertColumns) + len(chunk)*(len(logRowPlaceholders)+1))
+		b.WriteString(logsInsertColumns)
+		args := make([]any, 0, len(chunk)*logRowParams)
+		for i, e := range chunk {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(logRowPlaceholders)
+			args = append(args, logRowArgs(e)...)
+		}
+		if _, err := tx.ExecContext(ctx, b.String(), args...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// insertLogsWithDebug 逐条插入需要 LastInsertId 关联 debug_logs 的日志。
+func insertLogsWithDebug(ctx context.Context, tx *sql.Tx, logs []*model.LogEntry) error {
+	stmt, err := tx.PrepareContext(ctx, logsInsertColumns+logRowPlaceholders)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = stmt.Close() }()
 
 	for _, e := range logs {
-		t := e.Time.Time
-		if t.IsZero() {
-			t = time.Now()
-		}
-		cleanTime := t.Round(0)
-		timeMs := cleanTime.UnixMilli()
-		minuteBucket := timeMs / minuteMs
-
-		maskedKey := e.APIKeyUsed
-		apiKeyHash := util.HashAPIKey(e.APIKeyUsed)
-		if maskedKey != "" {
-			maskedKey = util.MaskAPIKey(maskedKey)
-		}
-
-		result, err := stmt.ExecContext(ctx,
-			timeMs,
-			minuteBucket,
-			e.Model,
-			e.ActualModel,
-			model.NormalizeStoredLogSource(e.LogSource),
-			e.ChannelID,
-			e.StatusCode,
-			e.Message,
-			e.Duration,
-			e.IsStreaming,
-			e.FirstByteTime,
-			maskedKey,
-			apiKeyHash,
-			e.AuthTokenID,
-			e.ClientIP,
-			e.BaseURL,
-			e.ServiceTier,
-			e.InputTokens,
-			e.OutputTokens,
-			e.CacheReadInputTokens,
-			e.CacheCreationInputTokens,
-			e.Cache5mInputTokens,
-			e.Cache1hInputTokens,
-			e.Cost,
-			normalizeCostMultiplier(e.CostMultiplier),
-		)
+		result, err := stmt.ExecContext(ctx, logRowArgs(e)...)
 		if err != nil {
 			return err
 		}
-
-		// 如果有 debug 数据，在同一事务中写入 debug_logs
-		if e.DebugData != nil {
-			logID, _ := result.LastInsertId()
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO debug_logs (log_id, created_at, req_method, req_url, req_headers, req_body, resp_status, resp_headers, resp_body)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				logID, e.DebugData.CreatedAt, e.DebugData.ReqMethod, e.DebugData.ReqURL,
-				e.DebugData.ReqHeaders, e.DebugData.ReqBody, e.DebugData.RespStatus,
-				e.DebugData.RespHeaders, e.DebugData.RespBody,
-			); err != nil {
-				return err
-			}
+		logID, _ := result.LastInsertId()
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO debug_logs (log_id, created_at, req_method, req_url, req_headers, req_body, resp_status, resp_headers, resp_body)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			logID, e.DebugData.CreatedAt, e.DebugData.ReqMethod, e.DebugData.ReqURL,
+			e.DebugData.ReqHeaders, e.DebugData.ReqBody, e.DebugData.RespStatus,
+			e.DebugData.RespHeaders, e.DebugData.RespBody,
+		); err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
-	return tx.Commit()
+// logRowArgs 构造单条日志的 INSERT 参数列表（顺序与 logRowPlaceholders 严格对齐）。
+func logRowArgs(e *model.LogEntry) []any {
+	t := e.Time.Time
+	if t.IsZero() {
+		t = time.Now()
+	}
+	timeMs := t.Round(0).UnixMilli()
+	minuteBucket := timeMs / minuteMs
+
+	maskedKey := e.APIKeyUsed
+	apiKeyHash := util.HashAPIKey(e.APIKeyUsed)
+	if maskedKey != "" {
+		maskedKey = util.MaskAPIKey(maskedKey)
+	}
+
+	return []any{
+		timeMs, minuteBucket, e.Model, e.ActualModel,
+		model.NormalizeStoredLogSource(e.LogSource),
+		e.ChannelID, e.StatusCode, e.Message, e.Duration,
+		e.IsStreaming, e.FirstByteTime, maskedKey, apiKeyHash,
+		e.AuthTokenID, e.ClientIP, e.BaseURL, e.ServiceTier,
+		e.InputTokens, e.OutputTokens, e.CacheReadInputTokens, e.CacheCreationInputTokens,
+		e.Cache5mInputTokens, e.Cache1hInputTokens, e.Cost,
+		normalizeCostMultiplier(e.CostMultiplier),
+	}
 }
 
 // ListLogs 查询日志列表
