@@ -599,56 +599,12 @@ func (s *Server) testChannelAPIWithURL(
 	testReq *testutil.TestChannelRequest,
 	clientProtocol, selectedURL string,
 ) map[string]any {
-	// 仅构造测试请求必需字段，避免复制带锁 Config 结构体。
-	cfgForBuild := &model.Config{
-		ID:                    cfg.ID,
-		Name:                  cfg.Name,
-		ChannelType:           cfg.ChannelType,
-		ProtocolTransformMode: cfg.ProtocolTransformMode,
-		ProtocolTransforms:    cfg.ProtocolTransforms,
-		URL:                   selectedURL,
-		ModelEntries:          append([]model.ModelEntry(nil), cfg.ModelEntries...),
-		CustomRequestRules:    cfg.CustomRequestRules,
-	}
-
-	requestPlan, err := s.buildChannelTestRequestPlan(cfgForBuild, apiKey, testReq, clientProtocol)
+	req, requestPlan, cancel, err := s.buildTestUpstreamRequest(reqCtx, cfg, apiKey, testReq, clientProtocol, selectedURL)
 	if err != nil {
-		return map[string]any{"success": false, "error": "构造测试请求失败: " + err.Error()}
+		return map[string]any{"success": false, "error": err.Error()}
 	}
-
-	// anyrouter 渠道：为 /v1/messages 自动注入 adaptive thinking（与代理链路保持一致）
-	// 兼容 BaseURL 带路径前缀的场景（如 https://host/anyrouter -> /anyrouter/v1/messages）。
-	if requestPlan.upstreamProtocol == "anthropic" {
-		if parsed, perr := neturl.Parse(requestPlan.fullURL); perr == nil && strings.HasSuffix(parsed.Path, "/v1/messages") {
-			requestPlan.requestBody = maybeInjectAnyrouterAdaptiveThinking(cfgForBuild, "/v1/messages", requestPlan.requestBody)
-		}
-	}
-
-	// 渠道级自定义请求体规则（与代理链路一致，仅对 JSON body 生效）
-	requestPlan.requestBody = applyBodyRules(requestPlan.headers.Get("Content-Type"), requestPlan.requestBody, cfgForBuild.BodyRules())
-
-	// 创建HTTP请求
-	ctx, cancel := context.WithTimeout(reqCtx, 2*time.Minute)
 	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, "POST", requestPlan.fullURL, bytes.NewReader(requestPlan.requestBody))
-	if err != nil {
-		return map[string]any{"success": false, "error": "创建HTTP请求失败: " + err.Error()}
-	}
-
-	// 设置基础请求头
-	for k, vs := range requestPlan.headers {
-		for _, v := range vs {
-			req.Header.Add(k, v)
-		}
-	}
-	// 添加/覆盖自定义请求头
-	for key, value := range testReq.Headers {
-		req.Header.Set(key, value)
-	}
-
-	// 渠道级自定义请求头规则（与代理链路一致，认证头黑名单保护）
-	applyHeaderRules(req.Header, cfgForBuild.HeaderRules())
+	ctx := req.Context()
 
 	// 发送请求
 	start := time.Now()
@@ -1031,6 +987,61 @@ func (s *Server) parseTestNonStreamResponse(
 	result["error"] = errorMsg
 	result["upstream_response_body"] = string(bodyBytes)
 	return result
+}
+
+// buildTestUpstreamRequest 构造测试用上游 HTTP 请求（含 plan 构造、anyrouter 注入、body/header 规则）。
+// 返回的 cancel 必须由调用者 defer。
+func (s *Server) buildTestUpstreamRequest(
+	reqCtx context.Context,
+	cfg *model.Config,
+	apiKey string,
+	testReq *testutil.TestChannelRequest,
+	clientProtocol, selectedURL string,
+) (*http.Request, *channelTestRequestPlan, context.CancelFunc, error) {
+	cfgForBuild := &model.Config{
+		ID:                    cfg.ID,
+		Name:                  cfg.Name,
+		ChannelType:           cfg.ChannelType,
+		ProtocolTransformMode: cfg.ProtocolTransformMode,
+		ProtocolTransforms:    cfg.ProtocolTransforms,
+		URL:                   selectedURL,
+		ModelEntries:          append([]model.ModelEntry(nil), cfg.ModelEntries...),
+		CustomRequestRules:    cfg.CustomRequestRules,
+	}
+
+	requestPlan, err := s.buildChannelTestRequestPlan(cfgForBuild, apiKey, testReq, clientProtocol)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("构造测试请求失败: %w", err)
+	}
+
+	// anyrouter 渠道：为 /v1/messages 自动注入 adaptive thinking（与代理链路保持一致）
+	if requestPlan.upstreamProtocol == "anthropic" {
+		if parsed, perr := neturl.Parse(requestPlan.fullURL); perr == nil && strings.HasSuffix(parsed.Path, "/v1/messages") {
+			requestPlan.requestBody = maybeInjectAnyrouterAdaptiveThinking(cfgForBuild, "/v1/messages", requestPlan.requestBody)
+		}
+	}
+
+	// 渠道级自定义请求体规则（与代理链路一致，仅对 JSON body 生效）
+	requestPlan.requestBody = applyBodyRules(requestPlan.headers.Get("Content-Type"), requestPlan.requestBody, cfgForBuild.BodyRules())
+
+	ctx, cancel := context.WithTimeout(reqCtx, 2*time.Minute)
+	req, err := http.NewRequestWithContext(ctx, "POST", requestPlan.fullURL, bytes.NewReader(requestPlan.requestBody))
+	if err != nil {
+		cancel()
+		return nil, nil, nil, fmt.Errorf("创建HTTP请求失败: %w", err)
+	}
+
+	for k, vs := range requestPlan.headers {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+	for key, value := range testReq.Headers {
+		req.Header.Set(key, value)
+	}
+	applyHeaderRules(req.Header, cfgForBuild.HeaderRules())
+
+	return req, requestPlan, cancel, nil
 }
 
 func buildTestFailureClassificationInput(result map[string]any) (statusCode int, errorBody []byte, headers map[string][]string) {
