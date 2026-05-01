@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"ccLoad/internal/model"
@@ -42,11 +43,7 @@ func (s *SQLStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
 		return nil, err
 	}
 
-	// 批量加载所有渠道的模型数据
-	if err := s.loadModelEntriesForConfigs(ctx, configs); err != nil {
-		return nil, err
-	}
-	if err := s.loadProtocolTransformsForConfigs(ctx, configs); err != nil {
+	if err := s.loadConfigsAuxConcurrent(ctx, configs); err != nil {
 		return nil, err
 	}
 
@@ -80,11 +77,7 @@ func (s *SQLStore) GetConfig(ctx context.Context, id int64) (*model.Config, erro
 		return nil, err
 	}
 
-	// 加载模型数据
-	if err := s.loadModelEntriesForConfig(ctx, config); err != nil {
-		return nil, err
-	}
-	if err := s.loadProtocolTransformsForConfig(ctx, config); err != nil {
+	if err := s.loadConfigsAuxConcurrent(ctx, []*model.Config{config}); err != nil {
 		return nil, err
 	}
 
@@ -143,10 +136,7 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, modelName stri
 	}
 
 	// 批量加载所有渠道的模型数据
-	if err := s.loadModelEntriesForConfigs(ctx, configs); err != nil {
-		return nil, err
-	}
-	if err := s.loadProtocolTransformsForConfigs(ctx, configs); err != nil {
+	if err := s.loadConfigsAuxConcurrent(ctx, configs); err != nil {
 		return nil, err
 	}
 
@@ -183,10 +173,7 @@ func (s *SQLStore) GetEnabledChannelsByType(ctx context.Context, channelType str
 	}
 
 	// 批量加载所有渠道的模型数据
-	if err := s.loadModelEntriesForConfigs(ctx, configs); err != nil {
-		return nil, err
-	}
-	if err := s.loadProtocolTransformsForConfigs(ctx, configs); err != nil {
+	if err := s.loadConfigsAuxConcurrent(ctx, configs); err != nil {
 		return nil, err
 	}
 
@@ -248,10 +235,7 @@ func (s *SQLStore) GetEnabledChannelsByModelAndProtocol(ctx context.Context, mod
 		return nil, err
 	}
 
-	if err := s.loadModelEntriesForConfigs(ctx, configs); err != nil {
-		return nil, err
-	}
-	if err := s.loadProtocolTransformsForConfigs(ctx, configs); err != nil {
+	if err := s.loadConfigsAuxConcurrent(ctx, configs); err != nil {
 		return nil, err
 	}
 
@@ -494,63 +478,6 @@ func (s *SQLStore) BatchUpdatePriority(ctx context.Context, updates []struct {
 
 // ==================== ModelEntries 辅助方法 ====================
 
-// loadModelEntriesForConfig 加载单个渠道的模型数据
-func (s *SQLStore) loadModelEntriesForConfig(ctx context.Context, config *model.Config) error {
-	if config == nil {
-		return nil
-	}
-
-	query := `SELECT model, redirect_model FROM channel_models WHERE channel_id = ? ORDER BY created_at ASC, model ASC`
-	rows, err := s.db.QueryContext(ctx, query, config.ID)
-	if err != nil {
-		return fmt.Errorf("query model entries: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var entries []model.ModelEntry
-	for rows.Next() {
-		var entry model.ModelEntry
-		if err := rows.Scan(&entry.Model, &entry.RedirectModel); err != nil {
-			return fmt.Errorf("scan model entry: %w", err)
-		}
-		entries = append(entries, entry)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate model entries: %w", err)
-	}
-
-	config.ModelEntries = entries
-	return nil
-}
-
-func (s *SQLStore) loadProtocolTransformsForConfig(ctx context.Context, config *model.Config) error {
-	if config == nil {
-		return nil
-	}
-
-	rows, err := s.db.QueryContext(ctx, `SELECT protocol FROM channel_protocol_transforms WHERE channel_id = ? ORDER BY protocol ASC`, config.ID)
-	if err != nil {
-		return fmt.Errorf("query protocol transforms: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	transforms := make([]string, 0)
-	for rows.Next() {
-		var protocol string
-		if err := rows.Scan(&protocol); err != nil {
-			return fmt.Errorf("scan protocol transform: %w", err)
-		}
-		transforms = append(transforms, protocol)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate protocol transforms: %w", err)
-	}
-
-	config.ProtocolTransforms = transforms
-	normalizeLoadedProtocolTransforms(config)
-	return nil
-}
-
 // loadModelEntriesForConfigs 批量加载多个渠道的模型数据
 // 设计说明：使用 IN 子句批量查询而非 JOIN，原因：
 // 1. JOIN 会导致结果集膨胀（每个渠道有 N 个模型时重复 N 次渠道数据）
@@ -641,6 +568,33 @@ func (s *SQLStore) loadProtocolTransformsForConfigs(ctx context.Context, configs
 		normalizeLoadedProtocolTransforms(cfg)
 	}
 	return nil
+}
+
+// loadConfigsAuxConcurrent 并发加载多渠道的模型与协议转换附属数据。
+// 两次 IN 查询互不依赖，并行可省去一次 RTT；DB 资源池足够时无额外开销。
+func (s *SQLStore) loadConfigsAuxConcurrent(ctx context.Context, configs []*model.Config) error {
+	if len(configs) == 0 {
+		return nil
+	}
+	var (
+		wg          sync.WaitGroup
+		modelErr    error
+		protocolErr error
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		modelErr = s.loadModelEntriesForConfigs(ctx, configs)
+	}()
+	go func() {
+		defer wg.Done()
+		protocolErr = s.loadProtocolTransformsForConfigs(ctx, configs)
+	}()
+	wg.Wait()
+	if modelErr != nil {
+		return modelErr
+	}
+	return protocolErr
 }
 
 func normalizeLoadedProtocolTransforms(cfg *model.Config) {
