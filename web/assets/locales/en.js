@@ -1036,6 +1036,8 @@ window.I18N_LOCALES['en'] = {
   'channels.sortSaveSuccess': 'Sort order saved',
   'channels.sortNoChanges': 'No changes to save',
   'channels.sortSaveFailed': 'Failed to save sort order',
+  'channels.priorityUpdateSuccess': 'Priority updated',
+  'channels.priorityUpdateFailed': 'Failed to update priority',
   'channels.loadChannelsFailed': 'Unable to load channel list',
   'channels.channelAdded': 'Channel added',
   'channels.channelUpdated': 'Channel updated',
