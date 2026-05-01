@@ -715,72 +715,16 @@ func (s *Server) testChannelAPIWithURL(
 				lastUsage = usage
 			}
 
-			// OpenAI: choices[0].delta.content
-			if choices, ok := obj["choices"].([]any); ok && len(choices) > 0 {
-				if choice, ok := choices[0].(map[string]any); ok {
-					if delta, ok := choice["delta"].(map[string]any); ok {
-						if content, ok := delta["content"].(string); ok && content != "" {
-							textBuilder.WriteString(content)
-							continue
-						}
-					}
-				}
+			if text := extractSSEDeltaText(obj); text != "" {
+				textBuilder.WriteString(text)
+				continue
 			}
 
-			// Gemini: candidates[0].content.parts[0].text
-			if candidates, ok := obj["candidates"].([]any); ok && len(candidates) > 0 {
-				if candidate, ok := candidates[0].(map[string]any); ok {
-					if content, ok := candidate["content"].(map[string]any); ok {
-						if parts, ok := content["parts"].([]any); ok && len(parts) > 0 {
-							if part, ok := parts[0].(map[string]any); ok {
-								if text, ok := part["text"].(string); ok && text != "" {
-									textBuilder.WriteString(text)
-									continue
-								}
-							}
-						}
-					}
-				}
-			}
-
-			// Anthropic: type == content_block_delta 且 delta.text 为增量
-			if typ, ok := obj["type"].(string); ok {
-				if typ == "content_block_delta" {
-					if delta, ok := obj["delta"].(map[string]any); ok {
-						if tx, ok := delta["text"].(string); ok && tx != "" {
-							textBuilder.WriteString(tx)
-							continue
-						}
-					}
-				}
-				// Codex: type == response.output_text.delta 且 delta 直接是文本
-				if typ == "response.output_text.delta" {
-					if delta, ok := obj["delta"].(string); ok && delta != "" {
-						textBuilder.WriteString(delta)
-						continue
-					}
-				}
-			}
-
-			// 错误事件通用: data 中包含 error 字段或 message
-			if errObj, ok := obj["error"].(map[string]any); ok {
-				if msg, ok := errObj["message"].(string); ok && msg != "" {
+			if msg, raw, matched := extractSSEErrorMessage(obj); matched {
+				if msg != "" {
 					lastErrMsg = msg
-				} else if typeStr, ok := errObj["type"].(string); ok && typeStr != "" {
-					lastErrMsg = typeStr
 				}
-				// 记录完整错误对象
-				result["api_error"] = obj
-				continue
-			}
-			if errMsg, ok := obj["error"].(string); ok && strings.TrimSpace(errMsg) != "" {
-				lastErrMsg = strings.TrimSpace(errMsg)
-				result["api_error"] = obj
-				continue
-			}
-			if msg, ok := obj["message"].(string); ok && msg != "" {
-				lastErrMsg = msg
-				result["api_error"] = obj
+				result["api_error"] = raw
 				continue
 			}
 		}
@@ -1054,6 +998,73 @@ func (s *Server) parseTestTranslatedSSEResponse(
 	result["duration_ms"] = time.Since(start).Milliseconds()
 	result["upstream_response_body"] = rawUpstreamBuf.String()
 	return parseTestStreamResponseBytes(recorder.Body.Bytes(), requestPlan.clientProtocol, resp.StatusCode, result, testReq)
+}
+
+// extractSSEDeltaText 从 SSE 单事件 JSON 对象提取增量文本（覆盖 OpenAI/Gemini/Anthropic/Codex）。
+// 返回空字符串表示该事件无文本增量。
+func extractSSEDeltaText(obj map[string]any) string {
+	// OpenAI: choices[0].delta.content
+	if choices, ok := obj["choices"].([]any); ok && len(choices) > 0 {
+		if choice, ok := choices[0].(map[string]any); ok {
+			if delta, ok := choice["delta"].(map[string]any); ok {
+				if content, ok := delta["content"].(string); ok && content != "" {
+					return content
+				}
+			}
+		}
+	}
+	// Gemini: candidates[0].content.parts[0].text
+	if candidates, ok := obj["candidates"].([]any); ok && len(candidates) > 0 {
+		if candidate, ok := candidates[0].(map[string]any); ok {
+			if content, ok := candidate["content"].(map[string]any); ok {
+				if parts, ok := content["parts"].([]any); ok && len(parts) > 0 {
+					if part, ok := parts[0].(map[string]any); ok {
+						if text, ok := part["text"].(string); ok && text != "" {
+							return text
+						}
+					}
+				}
+			}
+		}
+	}
+	// Anthropic / Codex by event type
+	typ, _ := obj["type"].(string)
+	switch typ {
+	case "content_block_delta":
+		if delta, ok := obj["delta"].(map[string]any); ok {
+			if tx, ok := delta["text"].(string); ok && tx != "" {
+				return tx
+			}
+		}
+	case "response.output_text.delta":
+		if delta, ok := obj["delta"].(string); ok && delta != "" {
+			return delta
+		}
+	}
+	return ""
+}
+
+// extractSSEErrorMessage 从事件对象识别错误。
+// matched=true 表示当前事件携带错误对象，msg 为人类可读消息（可能为空），raw 用于 api_error 字段。
+func extractSSEErrorMessage(obj map[string]any) (msg string, raw map[string]any, matched bool) {
+	if errObj, ok := obj["error"].(map[string]any); ok {
+		if m, ok := errObj["message"].(string); ok && m != "" {
+			return m, obj, true
+		}
+		if t, ok := errObj["type"].(string); ok && t != "" {
+			return t, obj, true
+		}
+		return "", obj, true
+	}
+	if errStr, ok := obj["error"].(string); ok {
+		if trimmed := strings.TrimSpace(errStr); trimmed != "" {
+			return trimmed, obj, true
+		}
+	}
+	if m, ok := obj["message"].(string); ok && m != "" {
+		return m, obj, true
+	}
+	return "", nil, false
 }
 
 func buildTestFailureClassificationInput(result map[string]any) (statusCode int, errorBody []byte, headers map[string][]string) {
