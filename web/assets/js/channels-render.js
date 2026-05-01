@@ -14,6 +14,10 @@ function buildPriorityRow(rowClass, valueClass, value) {
   return `<div class="ch-priority-row ${rowClass}"><span class="${valueClass}">${value}</span></div>`;
 }
 
+const CHANNEL_PRIORITY_MIN = -99999;
+const CHANNEL_PRIORITY_MAX = 99999;
+let channelPrioritySaveTimers = new Map();
+
 function escapeChannelRefreshText(value) {
   if (value === null || value === undefined) return '';
   return String(value).replace(/[&<>"']/g, c => ({
@@ -181,12 +185,14 @@ function buildEffectivePriorityHtml(channel) {
   const basePriority = channel.priority;
   const priorityLabel = window.t('channels.table.priority');
   const healthLabel = window.t('channels.stats.healthScoreLabel');
+  const channelId = Number(channel.id) || 0;
+  const escapedPriorityLabel = escapeChannelRefreshText(priorityLabel);
+  const basePriorityValue = normalizeInlinePriorityValue(basePriority, 0);
+  const baseRow = buildPriorityEditorRow(channelId, basePriorityValue, escapedPriorityLabel);
 
   if (channel.effective_priority === undefined || channel.effective_priority === null) {
     const title = `${priorityLabel}: ${basePriority}`;
-    const rows = [
-      buildPriorityRow('ch-priority-base', 'ch-priority-value', basePriority)
-    ];
+    const rows = [baseRow];
     return `<div class="ch-priority-stack" title="${title.replace(/"/g, '&quot;')}">${rows.join('')}</div>`;
   }
 
@@ -214,11 +220,123 @@ function buildEffectivePriorityHtml(channel) {
     ? 'ch-priority-value ch-priority-health-good'
     : 'ch-priority-value ch-priority-health-bad';
 
-  const rows = [buildPriorityRow('ch-priority-base', baseValueClass, basePriority)];
+  const rows = [baseRow];
   if (!isConsistent) {
     rows.push(buildPriorityRow('ch-priority-health', healthValueClass, effPriority));
   }
   return `<div class="ch-priority-stack" title="${title.replace(/"/g, '&quot;')}">${rows.join('')}</div>`;
+}
+
+function normalizeInlinePriorityValue(value, fallback) {
+  const fallbackValue = Number.isFinite(Number(fallback)) ? Number(fallback) : 0;
+  const num = Number(value);
+  if (!Number.isFinite(num)) return Math.trunc(fallbackValue);
+  return Math.max(CHANNEL_PRIORITY_MIN, Math.min(CHANNEL_PRIORITY_MAX, Math.trunc(num)));
+}
+
+function buildPriorityEditorRow(channelId, priority, priorityLabel) {
+  const disabledAttr = channelId > 0 ? '' : ' disabled';
+  return `<div class="ch-priority-row ch-priority-base">
+    <div class="ch-priority-editor-wrap" data-channel-id="${channelId}">
+      <div class="ch-priority-editor">
+        <input class="ch-priority-input" type="number" min="${CHANNEL_PRIORITY_MIN}" max="${CHANNEL_PRIORITY_MAX}" step="1" value="${priority}" data-channel-id="${channelId}" data-original-priority="${priority}" aria-label="${priorityLabel}"${disabledAttr}>
+      </div>
+    </div>
+  </div>`;
+}
+
+function setInlinePrioritySaving(input, saving) {
+  const editorWrap = input && input.closest ? input.closest('.ch-priority-editor-wrap') : null;
+  if (!editorWrap) return;
+  editorWrap.classList.toggle('is-saving', saving);
+  editorWrap.querySelectorAll('button, input').forEach((el) => {
+    el.disabled = saving;
+  });
+}
+
+function updateLocalChannelPriority(channelId, priority) {
+  const updateList = (list) => {
+    if (!Array.isArray(list)) return;
+    list.forEach((channel) => {
+      if (Number(channel && channel.id) !== channelId) return;
+      const oldPriority = normalizeInlinePriorityValue(channel.priority, 0);
+      if (channel.effective_priority !== undefined && channel.effective_priority !== null) {
+        const effectiveOffset = Number(channel.effective_priority) - oldPriority;
+        if (Number.isFinite(effectiveOffset)) {
+          channel.effective_priority = priority + effectiveOffset;
+        }
+      }
+      channel.priority = priority;
+    });
+  };
+  if (typeof channels !== 'undefined') updateList(channels);
+  if (typeof filteredChannels !== 'undefined') updateList(filteredChannels);
+}
+
+async function saveInlineChannelPriority(input) {
+  if (!input) return;
+  const channelId = Number(input.dataset.channelId);
+  if (!Number.isFinite(channelId) || channelId <= 0) return;
+
+  const originalPriority = normalizeInlinePriorityValue(input.dataset.originalPriority, 0);
+  const nextPriority = normalizeInlinePriorityValue(input.value, originalPriority);
+  input.value = String(nextPriority);
+  if (nextPriority === originalPriority) {
+    input.classList.remove('is-dirty');
+    return;
+  }
+
+  try {
+    setInlinePrioritySaving(input, true);
+    await fetchDataWithAuth('/admin/channels/batch-priority', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ updates: [{ id: channelId, priority: nextPriority }] })
+    });
+
+    input.dataset.originalPriority = String(nextPriority);
+    input.classList.remove('is-dirty');
+    updateLocalChannelPriority(channelId, nextPriority);
+    if (typeof clearChannelsCache === 'function') clearChannelsCache();
+    if (typeof filterChannels === 'function') filterChannels();
+    if (window.showSuccess) window.showSuccess(window.t('channels.priorityUpdateSuccess'));
+  } catch (error) {
+    console.error('Update channel priority failed:', error);
+    input.value = String(originalPriority);
+    input.classList.remove('is-dirty');
+    if (window.showError) {
+      window.showError(error.message || window.t('channels.priorityUpdateFailed'));
+    }
+  } finally {
+    setInlinePrioritySaving(input, false);
+  }
+}
+
+function queueInlineChannelPrioritySave(input, delay = 500) {
+  if (!input) return;
+  const channelId = Number(input.dataset.channelId);
+  if (!Number.isFinite(channelId) || channelId <= 0) return;
+  input.classList.add('is-dirty');
+  const existingTimer = channelPrioritySaveTimers.get(channelId);
+  if (existingTimer) clearTimeout(existingTimer);
+  const timer = setTimeout(() => {
+    channelPrioritySaveTimers.delete(channelId);
+    saveInlineChannelPriority(input);
+  }, delay);
+  channelPrioritySaveTimers.set(channelId, timer);
+}
+
+function flushInlineChannelPrioritySave(input) {
+  if (!input) return;
+  const channelId = Number(input.dataset.channelId);
+  const existingTimer = channelPrioritySaveTimers.get(channelId);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+    channelPrioritySaveTimers.delete(channelId);
+  }
+  return saveInlineChannelPriority(input);
 }
 
 function inlineCooldownBadge(c) {
@@ -617,6 +735,31 @@ function initChannelEventDelegation() {
     if (typeof updateBatchChannelSelectionUI === 'function') {
       updateBatchChannelSelectionUI();
     }
+  });
+
+  container.addEventListener('input', (e) => {
+    const input = e.target.closest('.ch-priority-input');
+    if (!input) return;
+    queueInlineChannelPrioritySave(input);
+  });
+
+  container.addEventListener('keydown', (e) => {
+    const input = e.target.closest('.ch-priority-input');
+    if (!input) return;
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      flushInlineChannelPrioritySave(input);
+    } else if (e.key === 'Escape') {
+      const originalPriority = normalizeInlinePriorityValue(input.dataset.originalPriority, 0);
+      input.value = String(originalPriority);
+      input.classList.remove('is-dirty');
+    }
+  });
+
+  container.addEventListener('focusout', (e) => {
+    const input = e.target.closest('.ch-priority-input');
+    if (!input) return;
+    flushInlineChannelPrioritySave(input);
   });
 
   // 事件委托：处理所有渠道操作按钮

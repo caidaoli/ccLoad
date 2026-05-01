@@ -643,11 +643,63 @@
     .ch-priority-row {
       display: flex;
       align-items: center;
-      justify-content: flex-start;
+      justify-content: center;
       width: 100%;
       gap: 4px;
       min-width: 0;
       line-height: 1.15;
+    }
+
+    .ch-priority-editor-wrap {
+      display: inline-block;
+      max-width: 100%;
+    }
+
+    .ch-priority-editor {
+      display: inline-flex;
+      align-items: center;
+      width: 56px;
+      height: 30px;
+      border: 1px solid var(--neutral-300);
+      border-radius: 8px;
+      background: #ffffff;
+      overflow: hidden;
+      box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+
+    .ch-priority-editor-wrap.is-saving {
+      opacity: 0.65;
+      pointer-events: none;
+    }
+
+    .ch-priority-input {
+      width: 56px;
+      height: 30px;
+      border: 0;
+      background: #ffffff;
+      color: var(--neutral-900);
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 30px;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+      appearance: textfield;
+      -moz-appearance: textfield;
+    }
+
+    .ch-priority-input::-webkit-outer-spin-button,
+    .ch-priority-input::-webkit-inner-spin-button {
+      margin: 0;
+      -webkit-appearance: none;
+    }
+
+    .ch-priority-input:focus {
+      outline: 2px solid rgba(59, 130, 246, 0.22);
+      outline-offset: -2px;
+    }
+
+    .ch-priority-input.is-dirty {
+      background: #fffbeb;
     }
 
     .ch-priority-label {
@@ -2927,6 +2979,10 @@
       .channel-table .ch-col-priority .ch-priority-stack,
       .channel-table .ch-col-cost .cost-stack {
         margin-left: auto;
+      }
+
+      .channel-table .ch-col-priority .ch-priority-editor-wrap {
+        flex: 0 0 auto;
       }
 
       .channel-table .ch-col-last-success .ch-last-status {

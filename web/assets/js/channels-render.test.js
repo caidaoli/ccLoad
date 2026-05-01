@@ -13,6 +13,8 @@ function loadRenderSandbox(overrides = {}) {
         if (key === 'channels.table.priority') return '优先级';
         if (key === 'channels.stats.healthScoreLabel') return '健康度';
         if (key === 'channels.stats.successRate') return `成功率 ${params.rate}`;
+        if (key === 'channels.priorityUpdateSuccess') return '优先级已更新';
+        if (key === 'channels.priorityUpdateFailed') return '优先级更新失败';
         if (key === 'channels.stats.firstByte') return '首字';
         if (key === 'channels.stats.calls') return '调用';
         if (key === 'channels.table.lastSuccess') return '最后成功';
@@ -77,6 +79,11 @@ function loadRenderSandbox(overrides = {}) {
     humanizeMS(ms) {
       return `${ms}ms`;
     },
+    setTimeout(fn) {
+      fn();
+      return 1;
+    },
+    clearTimeout() {},
     console
   };
 
@@ -101,7 +108,7 @@ test('buildEffectivePriorityHtml 不渲染优先级和健康度标签', () => {
   });
 
   assert.ok(!html.includes('ch-priority-label'));
-  assert.ok(html.includes('>110<'));
+  assert.match(html, /class="ch-priority-input"[^>]*value="110"/);
   assert.ok(html.includes('>105<'));
 });
 
@@ -114,8 +121,23 @@ test('buildEffectivePriorityHtml 在健康度等于优先级时只显示一次�
   });
 
   assert.equal((html.match(/ch-priority-row/g) || []).length, 1);
-  assert.equal((html.match(/>100</g) || []).length, 1);
+  assert.match(html, /class="ch-priority-input"[^>]*value="100"/);
   assert.ok(!html.includes('ch-priority-health'));
+});
+
+test('buildEffectivePriorityHtml 渲染可直接编辑的优先级控件', () => {
+  const { buildEffectivePriorityHtml } = loadRenderHelpers();
+
+  const html = buildEffectivePriorityHtml({
+    id: 42,
+    priority: 7
+  });
+
+  assert.match(html, /ch-priority-editor-wrap/);
+  assert.match(html, /ch-priority-editor/);
+  assert.match(html, /class="ch-priority-input"[^>]*data-channel-id="42"[^>]*data-original-priority="7"/);
+  assert.doesNotMatch(html, /ch-priority-controls/);
+  assert.doesNotMatch(html, /data-action="priority-step"/);
 });
 
 test('buildChannelTimingHtml 渲染耗时和带单位的调用汇总', () => {
@@ -284,6 +306,46 @@ test('initChannelEventDelegation 允许表头全选 checkbox 触发可见渠道�
   listeners.change({ target: headerCheckbox });
 
   assert.equal(toggleCalls, 1);
+});
+
+test('initChannelEventDelegation 不会在 change 事件里保存行内优先级', () => {
+  const listeners = {};
+  const container = {
+    dataset: {},
+    addEventListener(type, handler) {
+      listeners[type] = handler;
+    }
+  };
+  let flushCalls = 0;
+  const input = {
+    closest(selector) {
+      return selector === '.ch-priority-input' ? this : null;
+    }
+  };
+
+  const { initChannelEventDelegation } = loadRenderSandbox({
+    document: {
+      getElementById(id) {
+        return id === 'channels-container' ? container : null;
+      },
+      addEventListener() {
+      }
+    },
+    toggleVisibleChannelsSelection() {
+    },
+    selectedChannelIds: new Set(),
+    normalizeSelectedChannelID(value) {
+      return value;
+    },
+    flushInlineChannelPrioritySave() {
+      flushCalls += 1;
+    }
+  });
+
+  initChannelEventDelegation();
+  listeners.change({ target: input });
+
+  assert.equal(flushCalls, 0);
 });
 
 test('buildProtocolTransformBadges 按完整协议集合渲染额外协议并去重', () => {

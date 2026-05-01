@@ -1036,6 +1036,8 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.sortSaveSuccess': '排序已保存',
   'channels.sortNoChanges': '没有需要保存的排序',
   'channels.sortSaveFailed': '保存排序失败',
+  'channels.priorityUpdateSuccess': '优先级已更新',
+  'channels.priorityUpdateFailed': '优先级更新失败',
   'channels.loadChannelsFailed': '无法加载渠道列表',
   'channels.channelAdded': '渠道已添加',
   'channels.channelUpdated': '渠道已更新',

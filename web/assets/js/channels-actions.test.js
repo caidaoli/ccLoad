@@ -36,6 +36,19 @@ test('渠道卡片模板不再渲染已禁用文字徽章', () => {
   assert.doesNotMatch(template, /channels\.statusDisabled/);
 });
 
+test('渠道优先级列只保留行内数字输入', () => {
+  const renderSource = fs.readFileSync(path.join(__dirname, 'channels-render.js'), 'utf8');
+
+  assert.match(renderSource, /ch-priority-editor-wrap/);
+  assert.match(renderSource, /class="ch-priority-input"/);
+  assert.match(renderSource, /\/admin\/channels\/batch-priority/);
+  assert.match(css, /\.ch-priority-editor-wrap\s*\{/);
+  assert.match(css, /\.ch-priority-editor\s*\{/);
+  assert.doesNotMatch(renderSource, /data-action="priority-step"/);
+  assert.doesNotMatch(css, /\.ch-priority-controls\s*\{/);
+  assert.doesNotMatch(css, /\.ch-priority-step\s*\{/);
+});
+
 test('渠道卡片模板把启用开关放在独立列，操作列不再包含 toggle 按钮', () => {
   const templateMatch = html.match(/<template id="tpl-channel-card">[\s\S]*?<\/template>/);
   assert.ok(templateMatch, '缺少 tpl-channel-card 模板');
