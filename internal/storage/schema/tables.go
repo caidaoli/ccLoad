@@ -66,13 +66,16 @@ func DefineChannelProtocolTransformsTable() *TableBuilder {
 }
 
 // DefineChannelURLStatesTable 定义渠道URL运行状态持久化表（当前仅记录手动禁用URL）
+// 注意：url_hash 为 url 的 SHA-256 十六进制摘要（CHAR(64)），用作主键以规避 MySQL utf8mb4
+// InnoDB 索引列 767 字节上限（VARCHAR(500) × 4 = 2000 字节 > 767）。
 func DefineChannelURLStatesTable() *TableBuilder {
 	return NewTable("channel_url_states").
 		Column("channel_id INT NOT NULL").
+		Column("url_hash CHAR(64) NOT NULL").
 		Column("url VARCHAR(500) NOT NULL").
 		Column("disabled TINYINT NOT NULL DEFAULT 0").
 		Column("updated_at BIGINT NOT NULL").
-		Column("PRIMARY KEY (channel_id, url)").
+		Column("PRIMARY KEY (channel_id, url_hash)").
 		Column("FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE")
 }
 
