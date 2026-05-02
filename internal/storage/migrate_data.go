@@ -570,3 +570,61 @@ func debugLogsHasLegacyIDColumn(ctx context.Context, db *sql.DB, dialect Dialect
 	}
 	return existing["id"], nil
 }
+
+// rebuildChannelURLStatesPrimaryKey 将 channel_url_states 旧结构
+// （PRIMARY KEY (channel_id, url) — 在 MySQL utf8mb4 下因 url VARCHAR(500)*4=2000 字节
+// 超过 InnoDB 索引列 767 字节上限会建表失败；SQLite 已建出的旧结构需重建为新主键
+// (channel_id, url_hash)）替换为新结构。该表仅记录用户手动禁用的 URL，重启后由
+// URLSelector.LoadDisabled 回填，丢失即视为全部启用，可由用户重新禁用。
+const channelURLStatesPKRebuildVersion = "v1_channel_url_states_pk_url_hash"
+
+func rebuildChannelURLStatesPrimaryKey(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if hasMigration(ctx, db, channelURLStatesPKRebuildVersion) {
+		return nil
+	}
+
+	hasLegacy, err := channelURLStatesHasLegacySchema(ctx, db, dialect)
+	if err != nil {
+		return err
+	}
+	if hasLegacy {
+		if _, err := db.ExecContext(ctx, "DROP TABLE channel_url_states"); err != nil {
+			return fmt.Errorf("drop legacy channel_url_states: %w", err)
+		}
+		log.Printf("[MIGRATE] Dropped legacy channel_url_states table (PK on raw url) for rebuild")
+	}
+
+	return recordMigration(ctx, db, channelURLStatesPKRebuildVersion, dialect)
+}
+
+// channelURLStatesHasLegacySchema 判定旧表是否存在：
+// 表已存在 AND 没有 url_hash 列（说明是 v2.7.0 早期 SQLite 部署的旧 schema）。
+func channelURLStatesHasLegacySchema(ctx context.Context, db *sql.DB, dialect Dialect) (bool, error) {
+	if dialect == DialectMySQL {
+		var tableCount int
+		if err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channel_url_states'",
+		).Scan(&tableCount); err != nil {
+			return false, fmt.Errorf("check channel_url_states existence: %w", err)
+		}
+		if tableCount == 0 {
+			return false, nil
+		}
+		var hashCount int
+		if err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channel_url_states' AND COLUMN_NAME='url_hash'",
+		).Scan(&hashCount); err != nil {
+			return false, fmt.Errorf("check channel_url_states.url_hash: %w", err)
+		}
+		return hashCount == 0, nil
+	}
+
+	existing, err := sqliteExistingColumns(ctx, db, "channel_url_states")
+	if err != nil {
+		return false, nil
+	}
+	if len(existing) == 0 {
+		return false, nil // 表不存在
+	}
+	return !existing["url_hash"], nil
+}

@@ -2,9 +2,17 @@ package sql
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"time"
 )
+
+// urlHash 计算 URL 的 SHA-256 十六进制摘要（用作 channel_url_states 主键的一部分）。
+func urlHash(url string) string {
+	sum := sha256.Sum256([]byte(url))
+	return hex.EncodeToString(sum[:])
+}
 
 // LoadDisabledURLs 加载所有渠道的手动禁用URL列表（启动时回填URLSelector）
 func (s *SQLStore) LoadDisabledURLs(ctx context.Context) (map[int64][]string, error) {
@@ -36,27 +44,30 @@ func (s *SQLStore) SetURLDisabled(ctx context.Context, channelID int64, url stri
 	if disabled {
 		disabledInt = 1
 	}
+	hash := urlHash(url)
 
 	var query string
 	if s.IsSQLite() {
 		query = `
-			INSERT INTO channel_url_states (channel_id, url, disabled, updated_at)
-			VALUES (?, ?, ?, ?)
-			ON CONFLICT(channel_id, url) DO UPDATE SET
+			INSERT INTO channel_url_states (channel_id, url_hash, url, disabled, updated_at)
+			VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT(channel_id, url_hash) DO UPDATE SET
+				url = excluded.url,
 				disabled = excluded.disabled,
 				updated_at = excluded.updated_at
 		`
 	} else {
 		query = `
-			INSERT INTO channel_url_states (channel_id, url, disabled, updated_at)
-			VALUES (?, ?, ?, ?)
+			INSERT INTO channel_url_states (channel_id, url_hash, url, disabled, updated_at)
+			VALUES (?, ?, ?, ?, ?)
 			ON DUPLICATE KEY UPDATE
+				url = VALUES(url),
 				disabled = VALUES(disabled),
 				updated_at = VALUES(updated_at)
 		`
 	}
 
-	if _, err := s.db.ExecContext(ctx, query, channelID, url, disabledInt, now); err != nil {
+	if _, err := s.db.ExecContext(ctx, query, channelID, hash, url, disabledInt, now); err != nil {
 		return fmt.Errorf("upsert channel_url_states: %w", err)
 	}
 	return nil

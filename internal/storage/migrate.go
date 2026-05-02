@@ -73,6 +73,15 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			delete(allIndexes, "debug_logs")
 		}
 
+		// Pre-create hook: channel_url_states 主键从 (channel_id, url) 重建为 (channel_id, url_hash)
+		// （MySQL utf8mb4 下 VARCHAR(500) 超过 InnoDB 索引列 767 字节上限）
+		if tb.Name() == "channel_url_states" {
+			if err := rebuildChannelURLStatesPrimaryKey(ctx, db, dialect); err != nil {
+				return fmt.Errorf("rebuild channel_url_states primary key: %w", err)
+			}
+			delete(allIndexes, "channel_url_states")
+		}
+
 		// 创建表
 		if _, err := db.ExecContext(ctx, buildDDL(tb, dialect)); err != nil {
 			return fmt.Errorf("create %s table: %w", tb.Name(), err)
