@@ -16,7 +16,19 @@ const (
 	ProtocolTransformModeLocal = "local"
 	// ProtocolTransformModeUpstream forwards extra exposed protocols to upstream natively.
 	ProtocolTransformModeUpstream = "upstream"
+	// ExactUpstreamURLMarker marks a configured channel URL as the exact upstream request URL.
+	ExactUpstreamURLMarker = "#"
 )
+
+// HasExactUpstreamURLMarker reports whether raw ends with the exact upstream URL marker.
+func HasExactUpstreamURLMarker(raw string) bool {
+	return strings.HasSuffix(strings.TrimSpace(raw), ExactUpstreamURLMarker)
+}
+
+// StripExactUpstreamURLMarker trims spaces and removes the exact upstream URL marker when present.
+func StripExactUpstreamURLMarker(raw string) string {
+	return strings.TrimSuffix(strings.TrimSpace(raw), ExactUpstreamURLMarker)
+}
 
 // NormalizeProtocolTransformMode normalizes admin or persisted values and returns an empty string for invalid modes.
 func NormalizeProtocolTransformMode(value string) string {

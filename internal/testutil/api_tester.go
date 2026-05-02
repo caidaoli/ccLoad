@@ -106,6 +106,13 @@ func parseAPIResponse(respBody []byte, extractText func(map[string]any) (string,
 	return out
 }
 
+func buildTesterURL(baseURL, endpointSuffix string) string {
+	if model.HasExactUpstreamURLMarker(baseURL) {
+		return model.StripExactUpstreamURLMarker(baseURL)
+	}
+	return strings.TrimRight(strings.TrimSpace(baseURL), "/") + endpointSuffix
+}
+
 // CodexTester 兼容 Codex 风格（渠道类型: codex）
 type CodexTester struct{}
 
@@ -125,8 +132,7 @@ func (t *CodexTester) Build(cfg *model.Config, apiKey string, req *TestChannelRe
 		return "", nil, nil, err
 	}
 
-	baseURL := strings.TrimRight(cfg.GetURLs()[0], "/")
-	fullURL := baseURL + "/v1/responses"
+	fullURL := buildTesterURL(cfg.GetURLs()[0], "/v1/responses")
 
 	h := make(http.Header)
 	h.Set("Content-Type", "application/json")
@@ -201,8 +207,7 @@ func (t *OpenAITester) Build(cfg *model.Config, apiKey string, req *TestChannelR
 		return "", nil, nil, err
 	}
 
-	baseURL := strings.TrimRight(cfg.GetURLs()[0], "/")
-	fullURL := baseURL + "/v1/chat/completions"
+	fullURL := buildTesterURL(cfg.GetURLs()[0], "/v1/chat/completions")
 
 	h := make(http.Header)
 	h.Set("Content-Type", "application/json")
@@ -258,13 +263,12 @@ func (t *GeminiTester) Build(cfg *model.Config, apiKey string, req *TestChannelR
 		return "", nil, nil, err
 	}
 
-	baseURL := strings.TrimRight(cfg.GetURLs()[0], "/")
 	// Gemini API: 流式用 :streamGenerateContent?alt=sse，非流式用 :generateContent
 	action := ":generateContent"
 	if req.Stream {
 		action = ":streamGenerateContent?alt=sse"
 	}
-	fullURL := baseURL + "/v1beta/models/" + req.Model + action
+	fullURL := buildTesterURL(cfg.GetURLs()[0], "/v1beta/models/"+req.Model+action)
 
 	h := make(http.Header)
 	h.Set("Content-Type", "application/json")
@@ -353,8 +357,7 @@ func (t *AnthropicTester) Build(cfg *model.Config, apiKey string, req *TestChann
 		return "", nil, nil, err
 	}
 
-	baseURL := strings.TrimRight(cfg.GetURLs()[0], "/")
-	fullURL := baseURL + "/v1/messages?beta=true"
+	fullURL := buildTesterURL(cfg.GetURLs()[0], "/v1/messages?beta=true")
 
 	h := make(http.Header)
 	h.Set("Accept", "application/json")

@@ -180,6 +180,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.apiUrl': 'API URL *',
   'channels.apiKey': 'API Key *',
   'channels.urlCountSuffix': '个URL',
+  'channels.exactUrlMarkerHint': 'URL 末尾 # 表示完整上游请求地址，不自动追加协议路径',
   'channels.keyCountPrefix': '共',
   'channels.keyCountSuffix': '个Key',
   'channels.addUrlTitle': '添加URL',

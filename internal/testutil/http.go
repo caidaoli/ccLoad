@@ -39,7 +39,7 @@ func normalizeReader(r io.Reader) io.Reader {
 	}
 	v := reflect.ValueOf(r)
 	switch v.Kind() {
-	case reflect.Ptr, reflect.Interface, reflect.Slice, reflect.Map, reflect.Func, reflect.Chan:
+	case reflect.Pointer, reflect.Interface, reflect.Slice, reflect.Map, reflect.Func, reflect.Chan:
 		if v.IsNil() {
 			return nil
 		}

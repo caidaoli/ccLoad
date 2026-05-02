@@ -1113,6 +1113,19 @@ func TestChannelRequestValidate(t *testing.T) {
 			errorMsg:  "url must not contain query or fragment",
 		},
 		{
+			name: "URL以#结尾保留完整地址标记",
+			req: ChannelRequest{
+				Name:                  "Test",
+				APIKey:                "sk-test",
+				URL:                   "https://api.com#",
+				ProtocolTransformMode: "local",
+				Priority:              100,
+				Models:                []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
+			},
+			wantError:       false,
+			expectNormalize: "https://api.com#",
+		},
+		{
 			name: "URL包含/v1路径（禁止）",
 			req: ChannelRequest{
 				Name:     "Test",
@@ -1135,6 +1148,32 @@ func TestChannelRequestValidate(t *testing.T) {
 			},
 			wantError: true,
 			errorMsg:  "url should not contain API endpoint path like /v1 (current path: \"/v1/messages\")",
+		},
+		{
+			name: "URL以#结尾允许显式/v1完整地址",
+			req: ChannelRequest{
+				Name:                  "Test",
+				APIKey:                "sk-test",
+				URL:                   "https://api.com/v1/messages#",
+				ProtocolTransformMode: "local",
+				Priority:              100,
+				Models:                []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
+			},
+			wantError:       false,
+			expectNormalize: "https://api.com/v1/messages#",
+		},
+		{
+			name: "URL以#结尾禁止上游转换方式",
+			req: ChannelRequest{
+				Name:                  "Test",
+				APIKey:                "sk-test",
+				URL:                   "https://api.com/v1/messages#",
+				ProtocolTransformMode: "upstream",
+				Priority:              100,
+				Models:                []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
+			},
+			wantError: true,
+			errorMsg:  "protocol_transform_mode upstream is not allowed when url uses exact upstream marker #",
 		},
 		{
 			name: "URL包含/api路径（允许）",
