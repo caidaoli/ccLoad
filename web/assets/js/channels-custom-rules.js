@@ -233,8 +233,17 @@
     renderRuleList('body');
     switchTab('headers');
     hideError();
+    updateAnyrouterHint();
     const modal = document.getElementById('customRulesModal');
     if (modal) modal.classList.add('show');
+  }
+
+  function updateAnyrouterHint() {
+    const hint = document.getElementById('customRulesAnyrouterHint');
+    if (!hint) return;
+    const name = (document.getElementById('channelName')?.value || '').toLowerCase();
+    const type = document.querySelector('input[name="channelType"]:checked')?.value || '';
+    hint.hidden = !(name.includes('anyrouter') && type === 'anthropic');
   }
 
   function closeCustomRulesModal() {
