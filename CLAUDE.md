@@ -50,7 +50,8 @@ web/               # 前端（HTML + assets/{css,js,locales}）
 ## 渠道/Key/URL 选择
 
 - **渠道**：平滑加权轮询（按有效 Key 数分配流量）；冷却感知；成本限额检查优先于冷却
-- **多 URL**：探索优先 → 1/EWMA 延迟加权随机；失败 URL 独立指数退避冷却；BaseURL 全链路追踪（活跃请求/日志/UI）
+- **多 URL**：探索优先 → 1/EWMA 延迟加权随机；失败 URL 独立指数退避冷却；BaseURL 全链路追踪（活跃请求/日志/UI）；手动禁用状态持久化（`channel_url_states` 表，`storage/sql/url_state.go`，启动时通过 `URLSelector.LoadDisabled` 回填）
+- **精确上游 URL**：渠道 URL 末尾 `#` 标记（`model.ExactUpstreamURLMarker`）→ `proxy_util.go` 不自动追加 `/v1/chat/completions`、`/v1/messages`、`/v1beta/...` 等路径，按配置原样转发
 
 ## 协议转换（`internal/protocol/`）
 
@@ -104,6 +105,7 @@ web/               # 前端（HTML + assets/{css,js,locales}）
 - 模式：纯 SQLite（默认）/ 纯 MySQL / 混合（`CCLOAD_MYSQL` + `CCLOAD_ENABLE_SQLITE_REPLICA=1`）
 - 日志恢复：`CCLOAD_SQLITE_LOG_DAYS`（默认 7，-1=全量，0=不恢复）
 - 数据流：写 MySQL 主→同步 SQLite 缓存；读 SQLite（低延迟）；日志先 SQLite 后异步 MySQL
+- URL 禁用状态：`channel_url_states` 表 HybridStore 双写 MySQL+SQLite，重启自动恢复
 - `StatsCache` TTL 30s~2h
 
 ## 定价
