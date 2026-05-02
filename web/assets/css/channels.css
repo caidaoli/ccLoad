@@ -3632,6 +3632,31 @@
       margin-bottom: 10px;
     }
 
+    .custom-rules-anyrouter-hint {
+      background: var(--info-50, #eff6ff);
+      color: var(--info-700, #1d4ed8);
+      border: 1px solid var(--info-200, #bfdbfe);
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin-bottom: 10px;
+    }
+
+    .custom-rules-anyrouter-hint-title {
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .custom-rules-anyrouter-hint-list {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .custom-rules-anyrouter-hint-list li {
+      margin-bottom: 2px;
+    }
+
     .custom-rules-footer {
       display: flex;
       justify-content: flex-end;
