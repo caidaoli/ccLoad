@@ -319,6 +319,12 @@
       white-space: nowrap;
     }
 
+    .channel-editor-exact-url-hint {
+      font-weight: 400;
+      line-height: 1.35;
+      white-space: normal;
+    }
+
     .channel-editor-strategy-row {
       display: flex;
       align-items: center;

@@ -404,7 +404,7 @@ function createHarness({
   };
 
   vm.createContext(sandbox);
-  vm.runInContext(`${protocolSource}\n${source}\nthis.__protocolTransformsTest = {\n  initChannelEditorActions,\n  renderProtocolTransformOptions,\n  getSelectedProtocolTransforms,\n  editChannel,\n  copyChannel,\n  saveChannel,\n  refreshChannelDuplicateHint,\n  scheduleChannelDuplicateHintCheck\n};`, sandbox);
+  vm.runInContext(`${protocolSource}\n${source}\nthis.__protocolTransformsTest = {\n  initChannelEditorActions,\n  renderProtocolTransformOptions,\n  renderProtocolTransformModeOptions,\n  getSelectedProtocolTransforms,\n  getSelectedProtocolTransformMode,\n  syncProtocolTransformModeForURLs,\n  editChannel,\n  copyChannel,\n  saveChannel,\n  refreshChannelDuplicateHint,\n  scheduleChannelDuplicateHintCheck\n};`, sandbox);
 
   return {
     api: sandbox.__protocolTransformsTest,
@@ -552,6 +552,35 @@ test('编辑渠道时会回填 protocol_transforms，并禁用原生协议选项
     harness.getProtocolTransformValues().filter((item) => item.checked).map((item) => item.value).sort(),
     ['anthropic', 'openai']
   );
+});
+
+test('URL 含 # 时转换方式禁用上游并强制选择 ccLoad', () => {
+  const harness = createHarness();
+  harness.setInlineURLs(['https://api.example.com/v1/chat/completions#']);
+
+  harness.api.renderProtocolTransformModeOptions('upstream');
+
+  assert.equal(harness.getProtocolTransformModeInput('upstream').disabled, true);
+  assert.equal(harness.getProtocolTransformModeInput('upstream').checked, false);
+  assert.equal(harness.getProtocolTransformModeInput('local').checked, true);
+  assert.equal(harness.api.getSelectedProtocolTransformMode(), 'local');
+});
+
+test('保存含 # URL 的渠道时 payload 不能提交 upstream 转换方式', async () => {
+  const harness = createHarness();
+  harness.api.initChannelEditorActions();
+  harness.setInlineURLs(['https://api.example.com/v1/chat/completions#']);
+  harness.setCheckedRadio('channelType', 'openai');
+  harness.api.renderProtocolTransformOptions('openai', ['anthropic']);
+  harness.elements.protocolTransformModeContainer.innerHTML = `
+    <label><input type="radio" name="protocolTransformMode" value="local"></label>
+    <label><input type="radio" name="protocolTransformMode" value="upstream" checked></label>
+  `;
+
+  await harness.submitForm();
+
+  const payload = JSON.parse(harness.fetchCalls[1].options.body);
+  assert.equal(payload.protocol_transform_mode, 'local');
 });
 
 test('重复渠道提前提示会忽略调度前未完成的旧检测结果', async () => {

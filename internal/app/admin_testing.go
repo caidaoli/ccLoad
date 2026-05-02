@@ -340,17 +340,14 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 		return
 	}
 
-	keyIndex := testReq.KeyIndex
-	selectedKey := requestAPIKey
-	updatePersistedCooldown := false
-	if selectedKey != "" {
-		updatePersistedCooldown = keyIndex >= 0 && keyIndex < len(apiKeys) && apiKeys[keyIndex].APIKey == selectedKey
-	} else {
-		if keyIndex < 0 || keyIndex >= len(apiKeys) {
-			keyIndex = 0
-		}
-		selectedKey = apiKeys[keyIndex].APIKey
-		updatePersistedCooldown = true
+	keySelection, err := s.selectChannelTestKey(cfg, apiKeys, testReq.KeyIndex, requestAPIKey)
+	if err != nil {
+		RespondJSON(c, http.StatusOK, gin.H{
+			"success":    false,
+			"error":      err.Error(),
+			"total_keys": len(apiKeys),
+		})
+		return
 	}
 
 	if !cfg.SupportsModel(testReq.Model) {
@@ -364,12 +361,57 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 	}
 
 	requestedModel := testReq.Model
-	testResult := s.executeChannelTestWithCooldown(c.Request.Context(), cfg, keyIndex, selectedKey, &testReq, updatePersistedCooldown)
-	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualTest, requestedModel, testReq.Model, selectedKey, c.ClientIP(), 0, testResult))
-	testResult["tested_key_index"] = keyIndex
+	testResult := s.executeChannelTestWithCooldown(c.Request.Context(), cfg, keySelection.keyIndex, keySelection.apiKey, &testReq, keySelection.updatePersistedCooldown)
+	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualTest, requestedModel, testReq.Model, keySelection.apiKey, c.ClientIP(), 0, testResult))
+	testResult["tested_key_index"] = keySelection.keyIndex
 	testResult["total_keys"] = len(apiKeys)
 
 	RespondJSON(c, http.StatusOK, testResult)
+}
+
+type channelTestKeySelection struct {
+	keyIndex                int
+	apiKey                  string
+	updatePersistedCooldown bool
+}
+
+func (s *Server) selectChannelTestKey(cfg *model.Config, apiKeys []*model.APIKey, requestedKeyIndex int, requestAPIKey string) (channelTestKeySelection, error) {
+	if requestAPIKey != "" {
+		matchedKey, ok := findAPIKeyByIndex(apiKeys, requestedKeyIndex)
+		return channelTestKeySelection{
+			keyIndex:                requestedKeyIndex,
+			apiKey:                  requestAPIKey,
+			updatePersistedCooldown: ok && matchedKey.APIKey == requestAPIKey,
+		}, nil
+	}
+
+	now := time.Now()
+	if requestedKey, ok := findAPIKeyByIndex(apiKeys, requestedKeyIndex); ok && !requestedKey.IsCoolingDown(now) {
+		return channelTestKeySelection{
+			keyIndex:                requestedKey.KeyIndex,
+			apiKey:                  requestedKey.APIKey,
+			updatePersistedCooldown: true,
+		}, nil
+	}
+
+	keyIndex, apiKey, err := s.keySelector.SelectAvailableKey(cfg.ID, apiKeys, nil)
+	if err != nil {
+		return channelTestKeySelection{}, fmt.Errorf("无可用 API Key（全部处于冷却中）")
+	}
+	return channelTestKeySelection{
+		keyIndex:                keyIndex,
+		apiKey:                  apiKey,
+		updatePersistedCooldown: true,
+	}, nil
+}
+
+func findAPIKeyByIndex(apiKeys []*model.APIKey, keyIndex int) (*model.APIKey, bool) {
+	for _, apiKey := range apiKeys {
+		if apiKey != nil && apiKey.KeyIndex == keyIndex {
+			return apiKey, true
+		}
+	}
+	return nil, false
 }
 
 func (s *Server) executeChannelTest(ctx context.Context, cfg *model.Config, keyIndex int, apiKey string, testReq *testutil.TestChannelRequest) map[string]any {

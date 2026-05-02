@@ -145,6 +145,41 @@ func TestBuildProxyRequest(t *testing.T) {
 	}
 }
 
+func TestBuildProxyRequest_ExactURLMarkerSkipsEndpointPath(t *testing.T) {
+	srv := newInMemoryServer(t)
+
+	cfg := &model.Config{
+		ID:          1,
+		Name:        "test",
+		URL:         "https://api.example.com/custom/messages#",
+		ChannelType: "anthropic",
+	}
+
+	reqCtx := &requestContext{
+		ctx:       context.Background(),
+		startTime: time.Now(),
+	}
+
+	req, err := srv.buildProxyRequest(
+		reqCtx,
+		cfg,
+		"sk-test-key",
+		http.MethodPost,
+		[]byte(`{"model":"claude-3"}`),
+		http.Header{"User-Agent": []string{"test"}},
+		"beta=true&key=should-not-leak",
+		"/v1/messages",
+		cfg.URL,
+	)
+	if err != nil {
+		t.Fatalf("buildProxyRequest failed: %v", err)
+	}
+
+	if req.URL.String() != "https://api.example.com/custom/messages?beta=true" {
+		t.Fatalf("URL = %s, want https://api.example.com/custom/messages?beta=true", req.URL.String())
+	}
+}
+
 func TestBuildProxyRequest_KeepsAnthropicHeadersForRuntimeAnthropicUpstream(t *testing.T) {
 	srv := newInMemoryServer(t)
 

@@ -65,6 +65,12 @@ test('channels 添加弹窗在 URL 区域内提前提示重复渠道', () => {
   assert.match(channelsModalsScript, /channelTypeRadios\.addEventListener\('change', \(event\) => \{[\s\S]*scheduleChannelDuplicateHintCheck\(\);/);
 });
 
+test('URL 输入变更会同步 exact URL 对转换方式的限制', () => {
+  assert.match(channelsModalsScript, /function syncProtocolTransformModeForURLs\(\)/);
+  assert.match(channelsUrlsScript, /function updateInlineURL\(index, value\)[\s\S]*syncProtocolTransformModeForURLs\(\);/);
+  assert.match(channelsUrlsScript, /function renderInlineURLTable\(\)[\s\S]*syncProtocolTransformModeForURLs\(\);/);
+});
+
 test('channels-modals.js 在 redirect 表体委托处理模型复选框', () => {
   assert.match(channelsModalsScript, /const checkbox = e\.target\.closest\('\.model-checkbox'\);/);
   assert.match(channelsModalsScript, /toggleModelSelection\(index, checkbox\.checked\);/);

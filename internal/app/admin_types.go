@@ -41,7 +41,13 @@ func validateChannelBaseURL(raw string) (string, error) {
 		return "", fmt.Errorf("url cannot be empty")
 	}
 
-	u, err := neturl.Parse(raw)
+	exactURL := model.HasExactUpstreamURLMarker(raw)
+	parseRaw := raw
+	if exactURL {
+		parseRaw = model.StripExactUpstreamURLMarker(raw)
+	}
+
+	u, err := neturl.Parse(parseRaw)
 	if err != nil || u == nil || u.Scheme == "" || u.Host == "" {
 		return "", fmt.Errorf("invalid url: %q", raw)
 	}
@@ -57,14 +63,18 @@ func validateChannelBaseURL(raw string) (string, error) {
 
 	// [FIX] 只禁止包含 /v1 的 path（防止误填 API endpoint 如 /v1/messages）
 	// 允许其他 path（如 /api, /openai 等用于反向代理或 API gateway）
-	if strings.Contains(u.Path, "/v1") {
+	if !exactURL && strings.Contains(u.Path, "/v1") {
 		return "", fmt.Errorf("url should not contain API endpoint path like /v1 (current path: %q)", u.Path)
 	}
 
 	// 强制返回标准化格式（scheme://host+path，移除 trailing slash）
 	// 例如: "https://example.com/api/" → "https://example.com/api"
 	normalizedPath := strings.TrimSuffix(u.Path, "/")
-	return u.Scheme + "://" + u.Host + normalizedPath, nil
+	normalized := u.Scheme + "://" + u.Host + normalizedPath
+	if exactURL {
+		normalized += model.ExactUpstreamURLMarker
+	}
+	return normalized, nil
 }
 
 // validateChannelURLs 校验换行分隔的多URL字段，逐个验证并标准化
@@ -155,6 +165,9 @@ func (cr *ChannelRequest) Validate() error {
 	cr.ProtocolTransformMode = model.NormalizeProtocolTransformMode(cr.ProtocolTransformMode)
 	if cr.ProtocolTransformMode == "" {
 		return fmt.Errorf("invalid protocol_transform_mode: %q (allowed: local, upstream)", rawProtocolTransformMode)
+	}
+	if model.HasExactUpstreamURLMarker(cr.URL) && cr.ProtocolTransformMode == model.ProtocolTransformModeUpstream {
+		return fmt.Errorf("protocol_transform_mode upstream is not allowed when url uses exact upstream marker #")
 	}
 	if err := validateProtocolTransforms(cr.ChannelType, cr.ProtocolTransformMode, cr.ProtocolTransforms); err != nil {
 		return err

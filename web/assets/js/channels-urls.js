@@ -185,6 +185,9 @@ function renderInlineURLTable() {
   initInlineURLTableEventDelegation();
   updateInlineURLCount();
   syncInlineURLInput();
+  if (typeof syncProtocolTransformModeForURLs === 'function') {
+    syncProtocolTransformModeForURLs();
+  }
   updateURLStatsHeader();
 
   tbody.innerHTML = '';
@@ -228,6 +231,9 @@ function updateInlineURL(index, value) {
 
   inlineURLTableData[index] = nextValue;
   syncInlineURLInput();
+  if (typeof syncProtocolTransformModeForURLs === 'function') {
+    syncProtocolTransformModeForURLs();
+  }
   if (typeof scheduleChannelDuplicateHintCheck === 'function') {
     scheduleChannelDuplicateHintCheck();
   }

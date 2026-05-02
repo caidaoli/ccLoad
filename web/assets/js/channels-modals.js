@@ -30,6 +30,17 @@ function protocolTransformModeLabel(mode) {
   return window.t ? window.t(key) : key;
 }
 
+function hasExactURLMarker(url) {
+  return String(url || '').includes('#');
+}
+
+function hasExactURLInEditor() {
+  if (typeof getValidInlineURLs === 'function') {
+    return getValidInlineURLs().some(hasExactURLMarker);
+  }
+  return Array.isArray(inlineURLTableData) && inlineURLTableData.some(hasExactURLMarker);
+}
+
 function protocolTransformHintMarkup(protocol) {
   if (protocol !== 'gemini') return '';
 
@@ -84,12 +95,16 @@ function renderProtocolTransformModeOptions(selectedValue = 'upstream') {
   const container = document.getElementById('protocolTransformModeContainer');
   if (!container) return;
 
-  const selectedMode = window.ChannelProtocolConfig.normalizeProtocolTransformMode(selectedValue);
+  const exactURL = hasExactURLInEditor();
+  const selectedMode = exactURL
+    ? 'local'
+    : window.ChannelProtocolConfig.normalizeProtocolTransformMode(selectedValue);
   container.innerHTML = window.ChannelProtocolConfig.PROTOCOL_TRANSFORM_MODES.map((mode) => `
       <label class="channel-editor-radio-option">
         <input type="radio"
                name="protocolTransformMode"
                value="${mode}"
+               ${exactURL && mode === 'upstream' ? 'disabled' : ''}
                ${mode === selectedMode ? 'checked' : ''}
         >
         <span>${protocolTransformModeLabel(mode)}</span>
@@ -97,7 +112,26 @@ function renderProtocolTransformModeOptions(selectedValue = 'upstream') {
     `).join('');
 }
 
+function syncProtocolTransformModeForURLs() {
+  const exactURL = hasExactURLInEditor();
+  const localInput = document.querySelector('input[name="protocolTransformMode"][value="local"]');
+  const upstreamInput = document.querySelector('input[name="protocolTransformMode"][value="upstream"]');
+
+  if (upstreamInput) {
+    upstreamInput.disabled = exactURL;
+  }
+  if (exactURL && upstreamInput && upstreamInput.checked) {
+    upstreamInput.checked = false;
+  }
+  if (exactURL && localInput) {
+    localInput.checked = true;
+  }
+}
+
 function getSelectedProtocolTransformMode() {
+  if (hasExactURLInEditor()) {
+    return 'local';
+  }
   const selected = document.querySelector('input[name="protocolTransformMode"]:checked')?.value;
   return window.ChannelProtocolConfig.normalizeProtocolTransformMode(selected);
 }

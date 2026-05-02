@@ -180,6 +180,7 @@ window.I18N_LOCALES['en'] = {
   'channels.apiUrl': 'API URL *',
   'channels.apiKey': 'API Key *',
   'channels.urlCountSuffix': 'URLs',
+  'channels.exactUrlMarkerHint': 'Trailing # means exact upstream request URL; protocol paths are not appended',
   'channels.keyCountPrefix': '',
   'channels.keyCountSuffix': 'Keys',
   'channels.addUrlTitle': 'Add URL',
