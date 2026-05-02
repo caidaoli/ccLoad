@@ -342,6 +342,20 @@ func bootstrapCostAndURLStats(store storage.Store, costCache *CostCache, urlSele
 			log.Printf("[INFO] 已从日志恢复今日 URL 运行状态（%d条URL）", len(todayURLStats))
 		}
 	}
+
+	disabledLoadCtx, disabledCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer disabledCancel()
+	disabledURLs, err := store.LoadDisabledURLs(disabledLoadCtx)
+	if err != nil {
+		log.Printf("[WARN] 加载手动禁用URL状态失败: %v（重启后禁用状态可能丢失）", err)
+	} else if len(disabledURLs) > 0 {
+		urlSelector.LoadDisabled(disabledURLs)
+		count := 0
+		for _, urls := range disabledURLs {
+			count += len(urls)
+		}
+		log.Printf("[INFO] 已恢复手动禁用URL状态（%d条）", count)
+	}
 }
 
 // startBackgroundWorkers 启动 Token 统计 / Token 清理 / 状态清理三个后台协程。

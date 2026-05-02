@@ -271,6 +271,22 @@ func (h *HybridStore) BatchUpdatePriority(ctx context.Context, updates []struct 
 	return affected, nil
 }
 
+// === Channel URL Runtime State ===
+
+func (h *HybridStore) LoadDisabledURLs(ctx context.Context) (map[int64][]string, error) {
+	return h.sqlite.LoadDisabledURLs(ctx)
+}
+
+func (h *HybridStore) SetURLDisabled(ctx context.Context, channelID int64, url string, disabled bool) error {
+	if err := h.mysql.SetURLDisabled(ctx, channelID, url, disabled); err != nil {
+		return err
+	}
+	h.syncToSQLite("SetURLDisabled", func() error {
+		return h.sqlite.SetURLDisabled(ctx, channelID, url, disabled)
+	})
+	return nil
+}
+
 // === API Key Management ===
 
 func (h *HybridStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error) {

@@ -52,7 +52,7 @@ type URLSelector struct {
 	cooldowns    map[urlKey]urlCooldownState
 	requests     map[urlKey]*urlRequestCount
 	probing      map[urlKey]time.Time
-	disabled     map[urlKey]bool // 手动禁用的URL（纯内存，重启恢复）
+	disabled     map[urlKey]bool // 手动禁用的URL（启动时从 channel_url_states 回填）
 	alpha        float64         // EWMA权重因子
 	cooldownBase time.Duration   // 基础冷却时间
 	cooldownMax  time.Duration   // 最大冷却时间
@@ -536,6 +536,20 @@ func (s *URLSelector) EnableURL(channelID int64, url string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.disabled, key)
+}
+
+// LoadDisabled 启动时从持久化存储回填手动禁用URL集合
+func (s *URLSelector) LoadDisabled(disabled map[int64][]string) {
+	if len(disabled) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for channelID, urls := range disabled {
+		for _, u := range urls {
+			s.disabled[urlKey{channelID: channelID, url: u}] = true
+		}
+	}
 }
 
 // IsDisabled 检查URL是否被手动禁用

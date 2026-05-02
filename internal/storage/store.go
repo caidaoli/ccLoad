@@ -29,6 +29,11 @@ type Store interface {
 		Priority int
 	}) (int64, error)
 
+	// === Channel URL Runtime State ===
+	// 持久化URL级运行态（当前仅记录手动禁用），重启后由URLSelector回填
+	LoadDisabledURLs(ctx context.Context) (map[int64][]string, error)
+	SetURLDisabled(ctx context.Context, channelID int64, url string, disabled bool) error
+
 	// === API Key Management ===
 	GetAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error)
 	GetAPIKey(ctx context.Context, channelID int64, keyIndex int) (*model.APIKey, error)
