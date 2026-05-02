@@ -4,6 +4,10 @@
     {
       "role": "user",
       "content": [
+         {
+          "type": "text",
+          "text": "<system-reminder>\nSessionStart:startup hook success: {\"continue\":true,\"suppressOutput\":true,\"status\":\"ready\"}\n{\"continue\":true,\"suppressOutput\":true}\n</system-reminder>"
+        },
         {
           "type": "text",
           "text": "{{CONTENT}}"
