@@ -286,6 +286,8 @@ async function saveInlineChannelPriority(input) {
     return;
   }
 
+  input.dataset.originalPriority = String(nextPriority);
+
   try {
     setInlinePrioritySaving(input, true);
     await fetchDataWithAuth('/admin/channels/batch-priority', {
@@ -296,7 +298,6 @@ async function saveInlineChannelPriority(input) {
       body: JSON.stringify({ updates: [{ id: channelId, priority: nextPriority }] })
     });
 
-    input.dataset.originalPriority = String(nextPriority);
     input.classList.remove('is-dirty');
     updateLocalChannelPriority(channelId, nextPriority);
     if (typeof clearChannelsCache === 'function') clearChannelsCache();
@@ -304,6 +305,7 @@ async function saveInlineChannelPriority(input) {
     if (window.showSuccess) window.showSuccess(window.t('channels.priorityUpdateSuccess'));
   } catch (error) {
     console.error('Update channel priority failed:', error);
+    input.dataset.originalPriority = String(originalPriority);
     input.value = String(originalPriority);
     input.classList.remove('is-dirty');
     if (window.showError) {
