@@ -65,6 +65,17 @@ func DefineChannelProtocolTransformsTable() *TableBuilder {
 		Index("idx_channel_protocol_transforms_protocol", "protocol")
 }
 
+// DefineChannelURLStatesTable 定义渠道URL运行状态持久化表（当前仅记录手动禁用URL）
+func DefineChannelURLStatesTable() *TableBuilder {
+	return NewTable("channel_url_states").
+		Column("channel_id INT NOT NULL").
+		Column("url VARCHAR(500) NOT NULL").
+		Column("disabled TINYINT NOT NULL DEFAULT 0").
+		Column("updated_at BIGINT NOT NULL").
+		Column("PRIMARY KEY (channel_id, url)").
+		Column("FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE")
+}
+
 // DefineAuthTokensTable 定义auth_tokens表结构
 func DefineAuthTokensTable() *TableBuilder {
 	return NewTable("auth_tokens").

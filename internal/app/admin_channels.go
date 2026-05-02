@@ -619,6 +619,11 @@ func (s *Server) handleURLToggle(c *gin.Context, disable bool) {
 		return
 	}
 
+	if err := s.store.SetURLDisabled(c.Request.Context(), id, req.URL, disable); err != nil {
+		RespondErrorMsg(c, http.StatusInternalServerError, "persist url state failed")
+		return
+	}
+
 	if disable {
 		s.urlSelector.DisableURL(id, req.URL)
 	} else {
