@@ -28,6 +28,13 @@ type Store interface {
 		ID       int64
 		Priority int
 	}) (int64, error)
+	ListGroups(ctx context.Context) ([]*model.Group, error)
+	GetGroup(ctx context.Context, id int64) (*model.Group, error)
+	GetGroupByName(ctx context.Context, name string) (*model.Group, error)
+	CreateGroup(ctx context.Context, group *model.Group) (*model.Group, error)
+	UpdateGroup(ctx context.Context, id int64, req *model.GroupUpdateRequest) (*model.Group, error)
+	DeleteGroup(ctx context.Context, id int64) error
+	ListGroupModelOptions(ctx context.Context) ([]model.GroupModelOption, error)
 
 	// === Channel URL Runtime State ===
 	// 持久化URL级运行态（当前仅记录手动禁用），重启后由URLSelector回填
@@ -55,6 +62,10 @@ type Store interface {
 	BumpKeyCooldown(ctx context.Context, channelID int64, keyIndex int, now time.Time, statusCode int) (time.Duration, error)
 	ResetKeyCooldown(ctx context.Context, channelID int64, keyIndex int) error
 	SetKeyCooldown(ctx context.Context, channelID int64, keyIndex int, until time.Time) error
+	GetAllModelCooldowns(ctx context.Context) (map[int64]map[string]time.Time, error)
+	BumpModelCooldown(ctx context.Context, channelID int64, modelName string, now time.Time, statusCode int) (time.Duration, error)
+	ResetModelCooldown(ctx context.Context, channelID int64, modelName string) error
+	SetModelCooldown(ctx context.Context, channelID int64, modelName string, until time.Time) error
 
 	// === Log Management ===
 	AddLog(ctx context.Context, e *model.LogEntry) error

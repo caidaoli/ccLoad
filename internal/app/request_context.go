@@ -16,6 +16,7 @@ type requestContext struct {
 	cancel            context.CancelFunc // [INFO] 总是非 nil（即使是 noop），调用方无需检查
 	startTime         time.Time
 	isStreaming       bool
+	firstByteTimeout  time.Duration
 	transformPlan     protocol.TransformPlan
 	clientProtocol    protocol.Protocol
 	upstreamProtocol  protocol.Protocol
@@ -33,6 +34,12 @@ type requestContext struct {
 // [INFO] Go 1.21+ 改进：总是返回非 nil 的 cancel，调用方无需检查（符合 Go 惯用法）
 func (s *Server) newRequestContext(parentCtx context.Context, requestPath string, body []byte) *requestContext {
 	isStreaming := isStreamingRequest(requestPath, body)
+	firstByteTimeout := s.firstByteTimeout
+	forceFirstByteTimeout := false
+	if override := groupFirstByteTimeoutFromContext(parentCtx); override > 0 {
+		firstByteTimeout = override
+		forceFirstByteTimeout = true
+	}
 
 	// [INFO] 关键改动：总是使用 WithCancel 包裹（即使无超时配置也能正常取消）
 	ctx, cancel := context.WithCancel(parentCtx)
@@ -50,15 +57,16 @@ func (s *Server) newRequestContext(parentCtx context.Context, requestPath string
 	}
 
 	reqCtx := &requestContext{
-		ctx:         ctx,
-		cancel:      cancel, // [INFO] 总是非 nil，无需检查
-		startTime:   time.Now(),
-		isStreaming: isStreaming,
+		ctx:              ctx,
+		cancel:           cancel, // [INFO] 总是非 nil，无需检查
+		startTime:        time.Now(),
+		isStreaming:      isStreaming,
+		firstByteTimeout: firstByteTimeout,
 	}
 
 	// 流式请求的首字节超时定时器
-	if isStreaming && s.firstByteTimeout > 0 {
-		reqCtx.firstByteTimer = time.AfterFunc(s.firstByteTimeout, func() {
+	if firstByteTimeout > 0 && (isStreaming || forceFirstByteTimeout) {
+		reqCtx.firstByteTimer = time.AfterFunc(firstByteTimeout, func() {
 			reqCtx.firstByteTimedOut.Store(true)
 			cancel() // [INFO] 直接调用，无需检查
 		})
@@ -79,7 +87,11 @@ func (rc *requestContext) firstByteTimeoutTriggered() bool {
 
 // Duration 返回从请求开始到现在的时间
 func (rc *requestContext) Duration() time.Duration {
-	return time.Since(rc.startTime)
+	duration := time.Since(rc.startTime)
+	if duration <= 0 && !rc.startTime.IsZero() {
+		return time.Nanosecond
+	}
+	return duration
 }
 
 // cleanup 统一清理请求上下文资源（定时器 + context）

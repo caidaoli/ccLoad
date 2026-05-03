@@ -374,6 +374,43 @@ func TestClearKeyCooldown(t *testing.T) {
 	}
 }
 
+func TestHandleModelErrorCoolsOnlyActualModel(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	manager := NewManager(store, nil)
+	ctx := context.Background()
+
+	cfg := createTestChannel(t, store, "test-model-cooldown")
+	action := manager.HandleModelError(ctx, ErrorInput{
+		ChannelID:      cfg.ID,
+		KeyIndex:       NoKeyIndex,
+		StatusCode:     503,
+		ErrorBody:      []byte(`{"error":"service unavailable"}`),
+		IsNetworkError: false,
+		Headers:        nil,
+	}, "gpt-5.5")
+
+	if action != ActionRetryChannel {
+		t.Fatalf("expected ActionRetryChannel, got %v", action)
+	}
+
+	modelCooldowns, err := store.GetAllModelCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("GetAllModelCooldowns failed: %v", err)
+	}
+	if until := modelCooldowns[cfg.ID]["gpt-5.5"]; until.IsZero() || until.Before(time.Now()) {
+		t.Fatalf("expected model cooldown for gpt-5.5, got %+v", modelCooldowns)
+	}
+
+	channelCfg, err := store.GetConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("GetConfig failed: %v", err)
+	}
+	if channelCfg.CooldownUntil > time.Now().Unix() {
+		t.Fatalf("channel cooldown should remain clear, got %d", channelCfg.CooldownUntil)
+	}
+}
+
 // TestHandleError_EdgeCases 测试边界条件
 func TestHandleError_EdgeCases(t *testing.T) {
 	store, cleanup := setupTestStore(t)

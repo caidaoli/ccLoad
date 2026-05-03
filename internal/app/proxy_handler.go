@@ -250,7 +250,35 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		defer cancel()
 	}
 
-	cands, err := s.selectRouteCandidates(ctx, c, originalModel, string(clientProtocol))
+	var group *model.Group
+	useGroupRoute := false
+	if s.store != nil {
+		groupResult, groupErr := s.store.GetGroupByName(ctx, originalModel)
+		if groupErr != nil && !strings.Contains(groupErr.Error(), "not found") {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+			return
+		}
+		group = groupResult
+		useGroupRoute = groupErr == nil && group != nil
+	}
+
+	groupRouteCtx := ctx
+	if useGroupRoute {
+		groupRouteCtx = withGroupRouteSession(groupRouteCtx, tokenHashStr, originalModel)
+		if group.FirstTokenTimeOut > 0 {
+			groupRouteCtx = withGroupFirstByteTimeout(groupRouteCtx, time.Duration(group.FirstTokenTimeOut)*time.Second)
+		}
+	}
+
+	var (
+		cands      []*model.Config
+		groupCands []groupRouteCandidate
+	)
+	if useGroupRoute {
+		groupCands, err = s.selectGroupRouteCandidates(groupRouteCtx, group, string(clientProtocol))
+	} else {
+		cands, err = s.selectRouteCandidates(ctx, c, originalModel, string(clientProtocol))
+	}
 	if err != nil {
 		if errors.Is(err, errUnknownChannelType) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "unsupported path"})
@@ -260,7 +288,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		return
 	}
 
-	if len(cands) == 0 {
+	if (!useGroupRoute && len(cands) == 0) || (useGroupRoute && len(groupCands) == 0) {
 		s.AddLogAsync(&model.LogEntry{
 			Time:        model.JSONTime{Time: time.Now()},
 			Model:       originalModel,
@@ -275,14 +303,31 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	}
 
 	if tokenHashStr != "" {
-		filtered, restricted := s.authService.FilterAllowedChannels(tokenHashStr, cands)
-		if restricted {
-			cands = filtered
-			if len(cands) == 0 {
-				c.JSON(http.StatusForbidden, gin.H{
-					"error": "no allowed upstream channel for this token",
-				})
-				return
+		if useGroupRoute {
+			configs := make([]*model.Config, 0, len(groupCands))
+			for _, candidate := range groupCands {
+				configs = append(configs, candidate.Config)
+			}
+			filtered, restricted := s.authService.FilterAllowedChannels(tokenHashStr, configs)
+			if restricted {
+				groupCands = filterGroupRouteCandidatesByAllowedChannels(groupCands, filtered)
+				if len(groupCands) == 0 {
+					c.JSON(http.StatusForbidden, gin.H{
+						"error": "no allowed upstream channel for this token",
+					})
+					return
+				}
+			}
+		} else {
+			filtered, restricted := s.authService.FilterAllowedChannels(tokenHashStr, cands)
+			if restricted {
+				cands = filtered
+				if len(cands) == 0 {
+					c.JSON(http.StatusForbidden, gin.H{
+						"error": "no allowed upstream channel for this token",
+					})
+					return
+				}
 			}
 		}
 	}
@@ -306,6 +351,12 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		clientIP:       c.ClientIP(),
 		activeReqID:    activeID,
 		startTime:      startTime,
+		groupSessionKeepTime: func() int {
+			if useGroupRoute && group != nil {
+				return group.SessionKeepTime
+			}
+			return 0
+		}(),
 	}
 	reqCtx.observer = &ForwardObserver{
 		OnBytesRead: func(n int64) {
@@ -316,7 +367,11 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		},
 	}
 
-	lastResult, succeeded := s.runProxyAttemptLoop(ctx, cands, reqCtx, c.Writer)
+	attemptCtx := ctx
+	if useGroupRoute {
+		attemptCtx = groupRouteCtx
+	}
+	lastResult, succeeded := s.runProxyAttemptLoop(attemptCtx, cands, groupCands, reqCtx, c.Writer, useGroupRoute)
 	if succeeded {
 		return
 	}
@@ -397,49 +452,79 @@ func (s *Server) enforceTokenLimits(c *gin.Context, tokenHash, originalModel str
 func (s *Server) runProxyAttemptLoop(
 	ctx context.Context,
 	cands []*model.Config,
+	groupCands []groupRouteCandidate,
 	reqCtx *proxyRequestContext,
 	w gin.ResponseWriter,
+	useGroupRoute bool,
 ) (lastResult *proxyResult, succeeded bool) {
-	for _, cfg := range cands {
-		result, err := s.tryChannelWithKeys(ctx, cfg, reqCtx, w)
+	if useGroupRoute {
+		for _, candidate := range groupCands {
+			reqCtx.groupActualModel = candidate.Item.ModelName
+			cfg := candidate.Config
+			result, err := s.tryChannelWithKeys(ctx, cfg, reqCtx, w)
 
-		// 所有Key冷却：触发渠道级冷却(503)，防止后续请求重复尝试
-		// 使用 cooldownManager.HandleError 统一处理（DRY原则）
-		if err != nil && errors.Is(err, ErrAllKeysUnavailable) {
-			// 统一走 applyCooldownDecision：断开取消链+按决策执行缓存失效
-			s.applyCooldownDecision(ctx, cfg, httpErrorInputFromParts(cfg.ID, cooldown.NoKeyIndex, 503, nil, nil))
-			continue
-		}
-
-		// [WARN] 所有Key验证失败，尝试下一个渠道
-		if err != nil && errors.Is(err, ErrAllKeysExhausted) {
-			log.Printf("[WARN] 渠道 %s (ID=%d) 所有Key验证失败，跳过该渠道", cfg.Name, cfg.ID)
-			continue
-		}
-
-		if result != nil {
-			if result.succeeded {
-				return nil, true
+			if err != nil && errors.Is(err, ErrAllKeysUnavailable) {
+				continue
+			}
+			if err != nil && errors.Is(err, ErrAllKeysExhausted) {
+				log.Printf("[WARN] 分组渠道 %s (ID=%d) 所有Key验证失败，跳过该分组成员", cfg.Name, cfg.ID)
+				continue
 			}
 
-			lastResult = result
+			if result != nil {
+				if result.succeeded {
+					return nil, true
+				}
 
-			// 客户端已取消：别再浪费资源“重试”了。
-			if result.isClientCanceled {
-				break
+				lastResult = result
+				if result.isClientCanceled {
+					break
+				}
+				if shouldStopTryingChannels(result) {
+					break
+				}
+			}
+		}
+	} else {
+		for _, cfg := range cands {
+			reqCtx.groupActualModel = ""
+			result, err := s.tryChannelWithKeys(ctx, cfg, reqCtx, w)
+
+			// 所有Key冷却：触发渠道级冷却(503)，防止后续请求重复尝试
+			// 使用 cooldownManager.HandleError 统一处理（DRY原则）
+			if err != nil && errors.Is(err, ErrAllKeysUnavailable) {
+				// 统一走 applyCooldownDecision：断开取消链+按决策执行缓存失效
+				s.applyCooldownDecision(ctx, cfg, httpErrorInputFromParts(cfg.ID, cooldown.NoKeyIndex, 503, nil, nil))
+				continue
 			}
 
-			if shouldStopTryingChannels(result) {
-				break
+			// [WARN] 所有Key验证失败，尝试下一个渠道
+			if err != nil && errors.Is(err, ErrAllKeysExhausted) {
+				log.Printf("[WARN] 渠道 %s (ID=%d) 所有Key验证失败，跳过该渠道", cfg.Name, cfg.ID)
+				continue
+			}
+
+			if result != nil {
+				if result.succeeded {
+					return nil, true
+				}
+
+				lastResult = result
+
+				// 客户端已取消：别再浪费资源"重试"了。
+				if result.isClientCanceled {
+					break
+				}
+
+				if shouldStopTryingChannels(result) {
+					break
+				}
 			}
 		}
 	}
 
 	return lastResult, false
 }
-
-// writeFinalProxyResponse 所有渠道失败时写最终响应：
-// 计算 finalStatus、决定 skipLog、透传 body 或 JSON 错误。
 func (s *Server) writeFinalProxyResponse(
 	c *gin.Context,
 	reqCtx *proxyRequestContext,

@@ -58,6 +58,7 @@ ccLoad solves these pain points through:
 - 🌐 **Multi-URL Load Balancing** - Multiple URLs per channel with latency-weighted random selection
 - 💵 **service_tier Pricing** - OpenAI priority/flex/default tier multipliers for accurate cost accounting
 - 📉 **Tiered Pricing** - GPT-5.4/Qwen-Plus/Gemini long-context step pricing, auto-applies lower rate at token thresholds
+- 🧩 **Model Groups** - Expose multiple real models behind one group name, with cooldown isolated per channel + model
 - 🔄 **Protocol Transform** - Anthropic/OpenAI/Gemini/Codex cross-protocol conversion, one channel serves multiple client protocols
 - 🔍 **Debug Logs** - Upstream request/response raw data capture with sensitive header masking, essential for troubleshooting
 - 🕐 **Scheduled Checks** - Background periodic channel availability probing, auto-detect failed channels
@@ -563,6 +564,67 @@ curl -X POST http://localhost:8080/admin/channels \
 ```
 
 > **Multi-URL Note**: The `url` field supports comma-separated multiple URLs. The system uses latency-weighted random selection for optimal URL choice, with automatic cooldown for failed URLs, enabling URL-level load balancing and failover within a single channel.
+
+### Group Management (Model-Level Cooldown)
+
+Use groups when multiple real models share one channel but fail independently. For example, if `gpt-5.5` keeps failing while `gpt-5.4` is still healthy, you can expose both behind one group instead of letting one bad model freeze the whole channel path.
+
+- Web entry: `/web/groups.html`
+- Group name: use the exact model name you want clients to send, for example `gpt-5`
+- Group members: pick concrete channel/model pairs such as `gpt-5.5` and `gpt-5.4`
+- Route modes: round robin, random, failover, weighted
+
+**What this changes**:
+
+- Clients send the group name, not the underlying member model names
+- When request `model` matches a group name, routing happens only inside that group
+- In group routing, cooldown is applied at **channel + model** level instead of freezing the whole channel
+- A failing model is cooled independently, while sibling models on the same channel can continue serving traffic
+- If request `model` does not match any group name, ccLoad keeps using the original channel routing behavior
+
+**Create group example**:
+
+```bash
+curl -X POST http://localhost:8080/admin/groups \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "gpt-5",
+    "mode": 3,
+    "items": [
+      {
+        "channel_id": 1,
+        "model_name": "gpt-5.5",
+        "priority": 100,
+        "weight": 1
+      },
+      {
+        "channel_id": 1,
+        "model_name": "gpt-5.4",
+        "priority": 90,
+        "weight": 1
+      }
+    ]
+  }'
+```
+
+> `mode` values: `1=round robin`, `2=random`, `3=failover`, `4=weighted`. Each group member must reference an existing channel and a model that channel already declares.
+
+**Request example**:
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-api-token" \
+  -d '{
+    "model": "gpt-5",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Hello!"
+      }
+    ]
+  }'
+```
 
 ### Custom Request Rules (Advanced)
 

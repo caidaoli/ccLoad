@@ -287,6 +287,65 @@ func (h *HybridStore) SetURLDisabled(ctx context.Context, channelID int64, url s
 	return nil
 }
 
+func (h *HybridStore) ListGroups(ctx context.Context) ([]*model.Group, error) {
+	return h.sqlite.ListGroups(ctx)
+}
+
+func (h *HybridStore) GetGroup(ctx context.Context, id int64) (*model.Group, error) {
+	return h.sqlite.GetGroup(ctx, id)
+}
+
+func (h *HybridStore) GetGroupByName(ctx context.Context, name string) (*model.Group, error) {
+	return h.sqlite.GetGroupByName(ctx, name)
+}
+
+func (h *HybridStore) CreateGroup(ctx context.Context, group *model.Group) (*model.Group, error) {
+	result, err := h.mysql.CreateGroup(ctx, group)
+	if err != nil {
+		return nil, err
+	}
+
+	h.syncToSQLite("CreateGroup", func() error {
+		_, err := h.sqlite.CreateGroup(ctx, result)
+		return err
+	})
+
+	return result, nil
+}
+
+func (h *HybridStore) UpdateGroup(ctx context.Context, id int64, req *model.GroupUpdateRequest) (*model.Group, error) {
+	result, err := h.mysql.UpdateGroup(ctx, id, req)
+	if err != nil {
+		return nil, err
+	}
+
+	h.syncToSQLite("UpdateGroup", func() error {
+		if err := h.sqlite.DeleteGroup(ctx, id); err != nil {
+			return err
+		}
+		_, err := h.sqlite.CreateGroup(ctx, result)
+		return err
+	})
+
+	return result, nil
+}
+
+func (h *HybridStore) DeleteGroup(ctx context.Context, id int64) error {
+	if err := h.mysql.DeleteGroup(ctx, id); err != nil {
+		return err
+	}
+
+	h.syncToSQLite("DeleteGroup", func() error {
+		return h.sqlite.DeleteGroup(ctx, id)
+	})
+
+	return nil
+}
+
+func (h *HybridStore) ListGroupModelOptions(ctx context.Context) ([]model.GroupModelOption, error) {
+	return h.sqlite.ListGroupModelOptions(ctx)
+}
+
 // === API Key Management ===
 
 func (h *HybridStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error) {
@@ -442,6 +501,48 @@ func (h *HybridStore) SetKeyCooldown(ctx context.Context, channelID int64, keyIn
 
 	h.syncToSQLite("SetKeyCooldown", func() error {
 		return h.sqlite.SetKeyCooldown(ctx, channelID, keyIndex, until)
+	})
+
+	return nil
+}
+
+func (h *HybridStore) GetAllModelCooldowns(ctx context.Context) (map[int64]map[string]time.Time, error) {
+	return h.sqlite.GetAllModelCooldowns(ctx)
+}
+
+func (h *HybridStore) BumpModelCooldown(ctx context.Context, channelID int64, modelName string, now time.Time, statusCode int) (time.Duration, error) {
+	duration, err := h.mysql.BumpModelCooldown(ctx, channelID, modelName, now, statusCode)
+	if err != nil {
+		return 0, err
+	}
+
+	h.syncToSQLite("BumpModelCooldown", func() error {
+		_, err := h.sqlite.BumpModelCooldown(ctx, channelID, modelName, now, statusCode)
+		return err
+	})
+
+	return duration, nil
+}
+
+func (h *HybridStore) ResetModelCooldown(ctx context.Context, channelID int64, modelName string) error {
+	if err := h.mysql.ResetModelCooldown(ctx, channelID, modelName); err != nil {
+		return err
+	}
+
+	h.syncToSQLite("ResetModelCooldown", func() error {
+		return h.sqlite.ResetModelCooldown(ctx, channelID, modelName)
+	})
+
+	return nil
+}
+
+func (h *HybridStore) SetModelCooldown(ctx context.Context, channelID int64, modelName string, until time.Time) error {
+	if err := h.mysql.SetModelCooldown(ctx, channelID, modelName, until); err != nil {
+		return err
+	}
+
+	h.syncToSQLite("SetModelCooldown", func() error {
+		return h.sqlite.SetModelCooldown(ctx, channelID, modelName, until)
 	})
 
 	return nil

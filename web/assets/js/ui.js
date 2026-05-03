@@ -127,6 +127,7 @@
   const NAVS = [
     { key: 'index', labelKey: 'nav.overview', href: '/web/index.html', icon: iconHome },
     { key: 'channels', labelKey: 'nav.channels', href: '/web/channels.html', icon: iconSettings },
+    { key: 'groups', labelKey: 'nav.groups', href: '/web/groups.html', icon: iconBars },
     { key: 'tokens', labelKey: 'nav.tokens', href: '/web/tokens.html', icon: iconKey },
     { key: 'stats', labelKey: 'nav.stats', href: '/web/stats.html', icon: iconBars },
     { key: 'trend', labelKey: 'nav.trend', href: '/web/trend.html', icon: iconTrend },

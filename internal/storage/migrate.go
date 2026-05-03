@@ -45,6 +45,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		schema.DefineChannelModelsTable,
 		schema.DefineChannelProtocolTransformsTable,
 		schema.DefineChannelURLStatesTable,
+			schema.DefineGroupsTable,
+			schema.DefineGroupItemsTable,
+			schema.DefineModelCooldownsTable,
 		schema.DefineAuthTokensTable,
 		schema.DefineSystemSettingsTable,
 		schema.DefineAdminSessionsTable,
@@ -127,6 +130,13 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		if tb.Name() == "api_keys" {
 			if err := ensureAPIKeysAPIKeyLength(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate api_keys api_key column: %w", err)
+			}
+		}
+
+		// 增量迁移：确保groups表有高级字段（match_regex, first_token_time_out, session_keep_time）
+		if tb.Name() == "groups" {
+			if err := ensureGroupsAdvancedColumns(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate groups advanced columns: %w", err)
 			}
 		}
 

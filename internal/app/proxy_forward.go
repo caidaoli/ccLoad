@@ -161,7 +161,7 @@ func (s *Server) handleRequestError(
 		// 流式请求首字节超时（定时器触发）
 		statusCode = util.StatusFirstByteTimeout
 		timeoutMsg := fmt.Sprintf("upstream first byte timeout after %.2fs", durationSec)
-		timeout := s.firstByteTimeout
+		timeout := reqCtx.firstByteTimeout
 		if timeout > 0 {
 			timeoutMsg = fmt.Sprintf("%s (threshold=%v)", timeoutMsg, timeout)
 		}
@@ -953,12 +953,12 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 	// 需要将错误包装为 ErrUpstreamFirstByteTimeout，确保正确分类和日志记录
 	if err != nil && reqCtx.firstByteTimeoutTriggered() {
 		timeoutMsg := fmt.Sprintf("upstream first byte timeout after %.2fs", duration)
-		if s.firstByteTimeout > 0 {
-			timeoutMsg = fmt.Sprintf("%s (threshold=%v)", timeoutMsg, s.firstByteTimeout)
+		if reqCtx.firstByteTimeout > 0 {
+			timeoutMsg = fmt.Sprintf("%s (threshold=%v)", timeoutMsg, reqCtx.firstByteTimeout)
 		}
 		err = fmt.Errorf("%s: %w", timeoutMsg, util.ErrUpstreamFirstByteTimeout)
 		res.Status = util.StatusFirstByteTimeout
-		log.Printf("[TIMEOUT] [上游首字节超时-流传输中断] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, s.firstByteTimeout, duration)
+		log.Printf("[TIMEOUT] [上游首字节超时-流传输中断] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, reqCtx.firstByteTimeout, duration)
 	}
 
 	// 5. Debug捕获：构建完整的 debug 日志条目（响应体已通过 TeeReader 收集完毕）
@@ -1322,11 +1322,11 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		}
 
 		// URL循环（单URL时退化为单次迭代）
-		immediate, urlLastFailure := s.attemptKeyAcrossURLs(
-			ctx, cfg, urls, selector,
-			keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, requestPath, w)
-		if immediate != nil {
-			return immediate, nil
+			immediate, urlLastFailure := s.attemptKeyAcrossURLs(
+				ctx, cfg, urls, selector,
+				keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, requestPath, w)
+			if immediate != nil {
+				return immediate, nil
 		}
 
 		// URL循环结束后的Key级决策

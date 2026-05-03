@@ -60,6 +60,7 @@ ccLoad 一站式解决👇
 | 🌐 **多URL负载均衡** | 单渠道多URL+加权随机 | 延迟低的URL自动多分流 |
 | 💵 **service_tier定价** | OpenAI priority/flex/default层级 | 费用倍率精准计算 |
 | 📉 **分层定价** | GPT-5.4/Qwen-Plus/Gemini长上下文 | 超量token自动降档计费 |
+| 🧩 **模型分组** | 用分组名对外暴露多个真实模型 | 单模型失败只冷却自己，不拖垮同渠道兄弟模型 |
 | 🔄 **协议转换** | Anthropic/OpenAI/Gemini/Codex互转 | 一个渠道服务多种客户端协议 |
 | 🔍 **调试日志** | 上游请求/响应原始数据捕获 | 敏感头脱敏，排障利器 |
 | 🕐 **定时检测** | 渠道可用性后台定时探测 | 自动发现故障渠道 |
@@ -597,6 +598,67 @@ curl -X POST http://localhost:8080/admin/channels \
 ```
 
 > **多URL说明**：`url` 字段支持逗号分隔的多个URL。系统会按延迟加权随机选择最优URL，故障URL自动冷却，实现同渠道内的URL级负载均衡与故障切换。
+
+### 分组管理（模型级冷却）
+
+如果你有这种场景：同一个渠道里 `gpt-5.5` 经常失败，但 `gpt-5.4` 其实正常，那就别再直接把它们当普通渠道模型用了，改成“分组”更合适。
+
+- Web 入口：`/web/groups.html`
+- 分组名：直接写成你想让客户端传入的模型名，比如 `gpt-5`
+- 分组成员：从已有渠道里挑具体模型，比如 `gpt-5.5`、`gpt-5.4`
+- 路由模式：支持轮询、随机、故障转移、加权
+
+**实际效果**：
+
+- 客户端以后直接传分组名，而不是传真实成员模型名
+- 请求 `model` 命中分组名时，系统只在这个分组里挑成员模型转发
+- 分组路由下，失败冷却按 **渠道 + 模型** 生效，不再因为某个模型失败把整个渠道一起冻住
+- 同一渠道里的坏模型会被单独冷却，正常模型还能继续接请求
+- 如果请求的 `model` 没命中任何分组名，系统还是走原来的普通渠道路由，兼容旧用法
+
+**创建分组示例**：
+
+```bash
+curl -X POST http://localhost:8080/admin/groups \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "gpt-5",
+    "mode": 3,
+    "items": [
+      {
+        "channel_id": 1,
+        "model_name": "gpt-5.5",
+        "priority": 100,
+        "weight": 1
+      },
+      {
+        "channel_id": 1,
+        "model_name": "gpt-5.4",
+        "priority": 90,
+        "weight": 1
+      }
+    ]
+  }'
+```
+
+> `mode` 取值：`1=轮询`，`2=随机`，`3=故障转移`，`4=加权`。分组成员必须引用“已经存在的渠道 + 该渠道已声明支持的模型”。
+
+**调用示例**：
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-api-token" \
+  -d '{
+    "model": "gpt-5",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Hello!"
+      }
+    ]
+  }'
+```
 
 ### 自定义请求规则（高级）
 

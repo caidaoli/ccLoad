@@ -79,6 +79,50 @@ func DefineChannelURLStatesTable() *TableBuilder {
 		Column("FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE")
 }
 
+// DefineGroupsTable 定义模型分组表结构
+func DefineGroupsTable() *TableBuilder {
+	return NewTable("groups").
+		Column("id INT PRIMARY KEY AUTO_INCREMENT").
+		Column("name VARCHAR(191) NOT NULL UNIQUE").
+		Column("mode INT NOT NULL DEFAULT 3").
+		Column("match_regex TEXT NOT NULL DEFAULT ''").
+		Column("first_token_time_out INT NOT NULL DEFAULT 0").
+		Column("session_keep_time INT NOT NULL DEFAULT 0").
+		Column("created_at BIGINT NOT NULL").
+		Column("updated_at BIGINT NOT NULL")
+}
+
+// DefineGroupItemsTable 定义模型分组成员表结构
+func DefineGroupItemsTable() *TableBuilder {
+	return NewTable("group_items").
+		Column("id INT PRIMARY KEY AUTO_INCREMENT").
+		Column("group_id INT NOT NULL").
+		Column("channel_id INT NOT NULL").
+		Column("model_name VARCHAR(191) NOT NULL").
+		Column("priority INT NOT NULL DEFAULT 0").
+		Column("weight INT NOT NULL DEFAULT 1").
+		Column("created_at BIGINT NOT NULL").
+		Column("updated_at BIGINT NOT NULL").
+		Column("UNIQUE KEY uk_group_channel_model (group_id, channel_id, model_name)").
+		Column("FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE").
+		Column("FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE").
+		Index("idx_group_items_group_priority", "group_id, priority").
+		Index("idx_group_items_channel_model", "channel_id, model_name")
+}
+
+// DefineModelCooldownsTable 定义模型级冷却表结构
+func DefineModelCooldownsTable() *TableBuilder {
+	return NewTable("model_cooldowns").
+		Column("channel_id INT NOT NULL").
+		Column("model_name VARCHAR(191) NOT NULL").
+		Column("cooldown_until BIGINT NOT NULL DEFAULT 0").
+		Column("cooldown_duration_ms BIGINT NOT NULL DEFAULT 0").
+		Column("updated_at BIGINT NOT NULL").
+		Column("PRIMARY KEY (channel_id, model_name)").
+		Column("FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE").
+		Index("idx_model_cooldowns_until", "cooldown_until")
+}
+
 // DefineAuthTokensTable 定义auth_tokens表结构
 func DefineAuthTokensTable() *TableBuilder {
 	return NewTable("auth_tokens").

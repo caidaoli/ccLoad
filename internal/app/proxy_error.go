@@ -21,6 +21,7 @@ const cooldownWriteTimeout = 3 * time.Second
 
 var cooldownClearChannelFailCount atomic.Uint64
 var cooldownClearKeyFailCount atomic.Uint64
+var cooldownClearModelFailCount atomic.Uint64
 
 func cooldownWriteContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	// 断开请求取消链，但保留 ctx.Value（例如 trace ID）。
@@ -46,6 +47,44 @@ func (s *Server) applyCooldownDecision(
 	}
 
 	return action
+}
+
+func (s *Server) applyModelCooldownDecision(
+	ctx context.Context,
+	cfg *model.Config,
+	modelName string,
+	in cooldown.ErrorInput,
+) cooldown.Action {
+	if modelName == "" {
+		return s.applyCooldownDecision(ctx, cfg, in)
+	}
+
+	cooldownCtx, cancel := cooldownWriteContext(ctx)
+	defer cancel()
+
+	in.ChannelType = cfg.ChannelType
+	action := s.cooldownManager.HandleModelError(cooldownCtx, in, modelName)
+
+	switch action {
+	case cooldown.ActionRetryKey:
+		s.invalidateChannelRelatedCache(cfg.ID)
+	case cooldown.ActionRetryChannel:
+		s.invalidateModelCooldownCache()
+	}
+
+	return action
+}
+
+func (s *Server) applyProxyCooldownDecision(
+	ctx context.Context,
+	cfg *model.Config,
+	reqCtx *proxyRequestContext,
+	in cooldown.ErrorInput,
+) cooldown.Action {
+	if reqCtx != nil && reqCtx.groupActualModel != "" {
+		return s.applyModelCooldownDecision(ctx, cfg, reqCtx.groupActualModel, in)
+	}
+	return s.applyCooldownDecision(ctx, cfg, in)
 }
 
 func (s *Server) decideCooldownAction(
@@ -190,7 +229,7 @@ func (s *Server) handleNetworkError(
 		}
 	}
 
-	action := s.applyCooldownDecision(ctx, cfg, input)
+	action := s.applyProxyCooldownDecision(ctx, cfg, reqCtx, input)
 	failure.nextAction = action
 	return failure, action
 }
@@ -379,10 +418,20 @@ func (s *Server) handleProxySuccess(
 
 	// 使用 cooldownManager 清除冷却状态
 	// 设计原则: 清除失败不应影响用户请求成功
-	if err := s.cooldownManager.ClearChannelCooldown(cooldownCtx, cfg.ID); err != nil {
-		count := cooldownClearChannelFailCount.Add(1)
-		if count%100 == 1 {
-			log.Printf("[WARN] ClearChannelCooldown 失败 (累计: %d): channel_id=%d err=%v", count, cfg.ID, err)
+	if reqCtx.groupActualModel != "" {
+		if err := s.cooldownManager.ClearModelCooldown(cooldownCtx, cfg.ID, reqCtx.groupActualModel); err != nil {
+			count := cooldownClearModelFailCount.Add(1)
+			if count%100 == 1 {
+				log.Printf("[WARN] ClearModelCooldown 失败 (累计: %d): channel_id=%d model=%s err=%v",
+					count, cfg.ID, reqCtx.groupActualModel, err)
+			}
+		}
+	} else {
+		if err := s.cooldownManager.ClearChannelCooldown(cooldownCtx, cfg.ID); err != nil {
+			count := cooldownClearChannelFailCount.Add(1)
+			if count%100 == 1 {
+				log.Printf("[WARN] ClearChannelCooldown 失败 (累计: %d): channel_id=%d err=%v", count, cfg.ID, err)
+			}
 		}
 	}
 	if err := s.cooldownManager.ClearKeyCooldown(cooldownCtx, cfg.ID, keyIndex); err != nil {
@@ -394,6 +443,12 @@ func (s *Server) handleProxySuccess(
 
 	// 冷却状态已恢复，刷新相关缓存避免下次命中过期数据
 	s.invalidateChannelRelatedCache(cfg.ID)
+	if reqCtx.groupActualModel != "" {
+		s.invalidateModelCooldownCache()
+		if reqCtx.groupSessionKeepTime > 0 {
+			setGroupStickySession(reqCtx.tokenHash, reqCtx.originalModel, cfg.ID)
+		}
+	}
 
 	// 记录成功日志
 	s.logProxyResult(reqCtx, cfg, actualModel, selectedKey, res.Status, duration, res, "")
@@ -429,7 +484,7 @@ func (s *Server) handleStreamingErrorNoRetry(
 	s.logProxyResult(reqCtx, cfg, actualModel, selectedKey, res.Status, duration, res, res.StreamDiagMsg)
 
 	// 触发冷却（保护后续请求）
-	_ = s.applyCooldownDecision(ctx, cfg, httpErrorInput(cfg.ID, keyIndex, res))
+	_ = s.applyProxyCooldownDecision(ctx, cfg, reqCtx, httpErrorInput(cfg.ID, keyIndex, res))
 
 	// 返回"成功"：数据已发送给客户端，不触发重试
 	return &proxyResult{
@@ -488,7 +543,7 @@ func (s *Server) handleProxyErrorResponse(
 		}
 	}
 
-	action := s.applyCooldownDecision(ctx, cfg, input)
+	action := s.applyProxyCooldownDecision(ctx, cfg, reqCtx, input)
 	failure.nextAction = action
 	return failure, action
 }

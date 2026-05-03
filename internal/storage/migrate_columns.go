@@ -17,6 +17,9 @@ var sqliteMigratableTables = map[string]bool{
 	"channel_protocol_transforms": true,
 	"channels":                    true,
 	"debug_logs":                  true,
+	"groups":                      true,
+	"group_items":                 true,
+	"model_cooldowns":             true,
 	"schema_migrations":           true,
 }
 
@@ -489,4 +492,20 @@ func ensureChannelModelsRedirectField(ctx context.Context, db *sql.DB, dialect D
 	return ensureColumn(ctx, db, dialect, "channel_models", "redirect_model",
 		"VARCHAR(191) NOT NULL DEFAULT '' COMMENT '重定向目标模型(空表示不重定向)'",
 		"TEXT NOT NULL DEFAULT ''")
+}
+
+// ensureGroupsAdvancedColumns 确保groups表有高级字段（match_regex, first_token_time_out, session_keep_time）
+func ensureGroupsAdvancedColumns(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if dialect == DialectMySQL {
+		return ensureMySQLColumns(ctx, db, "groups", []mysqlColumnDef{
+			{name: "match_regex", definition: "TEXT NOT NULL DEFAULT ''"},
+			{name: "first_token_time_out", definition: "INT NOT NULL DEFAULT 0"},
+			{name: "session_keep_time", definition: "INT NOT NULL DEFAULT 0"},
+		})
+	}
+	return ensureSQLiteColumns(ctx, db, "groups", []sqliteColumnDef{
+		{name: "match_regex", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "first_token_time_out", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{name: "session_keep_time", definition: "INTEGER NOT NULL DEFAULT 0"},
+	})
 }

@@ -123,6 +123,8 @@ type ForwardObserver struct {
 // proxyRequestContext 代理请求上下文（封装请求信息，遵循DIP原则）
 type proxyRequestContext struct {
 	originalModel    string
+	groupActualModel string
+	groupSessionKeepTime int
 	clientProtocol   protocol.Protocol
 	requestMethod    string
 	requestPath      string
@@ -458,6 +460,29 @@ func replaceModelInPath(path string, originalModel string, actualModel string) s
 	return strings.Replace(path, originalModel, actualModel, 1)
 }
 
+func replaceModelInBody(body []byte, actualModel string) []byte {
+	if len(body) == 0 || actualModel == "" {
+		return body
+	}
+
+	var reqData map[string]json.RawMessage
+	if err := sonic.Unmarshal(body, &reqData); err != nil {
+		return body
+	}
+
+	modelRaw, err := sonic.Marshal(actualModel)
+	if err != nil {
+		return body
+	}
+	reqData["model"] = modelRaw
+
+	modifiedBody, err := sonic.Marshal(reqData)
+	if err != nil {
+		return body
+	}
+	return modifiedBody
+}
+
 func buildGeminiGeneratePath(model string, isStreaming bool) string {
 	if isStreaming {
 		return "/v1beta/models/" + model + ":streamGenerateContent"
@@ -485,6 +510,10 @@ func buildCodexResponsesPath() string {
 // 2. 模糊匹配（启用 model_fuzzy_match 时）
 // 3. [FIX] 2026-01: 模糊匹配结果的重定向（链式解析）
 func (s *Server) prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestContext) (actualModel string, bodyToSend []byte) {
+	if reqCtx.groupActualModel != "" {
+		return reqCtx.groupActualModel, replaceModelInBody(reqCtx.body, reqCtx.groupActualModel)
+	}
+
 	actualModel = reqCtx.originalModel
 
 	// 1. 检查模型重定向（精确匹配优先）
@@ -512,20 +541,8 @@ func (s *Server) prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestConte
 	}
 
 	bodyToSend = reqCtx.body
-
-	// 如果模型发生变更，修改请求体
 	if actualModel != reqCtx.originalModel {
-		var reqData map[string]json.RawMessage
-		if err := sonic.Unmarshal(reqCtx.body, &reqData); err == nil {
-			modelRaw, err := sonic.Marshal(actualModel)
-			if err != nil {
-				return actualModel, bodyToSend
-			}
-			reqData["model"] = modelRaw
-			if modifiedBody, err := sonic.Marshal(reqData); err == nil {
-				bodyToSend = modifiedBody
-			}
-		}
+		bodyToSend = replaceModelInBody(reqCtx.body, actualModel)
 	}
 
 	return actualModel, bodyToSend

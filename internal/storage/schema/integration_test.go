@@ -29,6 +29,9 @@ func setupIntegrationTest(t *testing.T) *TestSuiteIntegration {
 			DefineChannelsTable,
 			DefineAPIKeysTable,
 			DefineChannelModelsTable,
+			DefineGroupsTable,
+			DefineGroupItemsTable,
+			DefineModelCooldownsTable,
 			DefineAuthTokensTable,
 			DefineSystemSettingsTable,
 			DefineAdminSessionsTable,
@@ -38,6 +41,9 @@ func setupIntegrationTest(t *testing.T) *TestSuiteIntegration {
 			"channels",
 			"api_keys",
 			"channel_models",
+			"groups",
+			"group_items",
+			"model_cooldowns",
 			"auth_tokens",
 			"system_settings",
 			"admin_sessions",
@@ -471,5 +477,27 @@ func TestBuilderChain(t *testing.T) {
 	sqliteDDL := builder.BuildSQLite()
 	if !strings.Contains(sqliteDDL, "CREATE TABLE IF NOT EXISTS test") {
 		t.Errorf("SQLite DDL should contain table creation statement")
+	}
+}
+
+func TestGroupSchemaIncludesModelCooldownTables(t *testing.T) {
+	tables := []string{
+		DefineGroupsTable().BuildMySQL(),
+		DefineGroupItemsTable().BuildMySQL(),
+		DefineModelCooldownsTable().BuildMySQL(),
+	}
+	joined := strings.Join(tables, "\n")
+
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS groups",
+		"name VARCHAR(191) NOT NULL UNIQUE",
+		"CREATE TABLE IF NOT EXISTS group_items",
+		"UNIQUE KEY uk_group_channel_model",
+		"CREATE TABLE IF NOT EXISTS model_cooldowns",
+		"PRIMARY KEY (channel_id, model_name)",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("schema missing %q in:\n%s", want, joined)
+		}
 	}
 }

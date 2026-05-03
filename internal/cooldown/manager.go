@@ -209,6 +209,32 @@ func (m *Manager) HandleError(ctx context.Context, in ErrorInput) Action {
 	}
 }
 
+// HandleModelError 处理分组路由下的模型级错误冷却。
+// 仅当错误会触发“切渠道”时，才把冷却写到 channel_id + model_name 维度；
+// Key 级错误仍复用既有 Key 冷却逻辑，客户端错误仍直接返回。
+func (m *Manager) HandleModelError(ctx context.Context, in ErrorInput, modelName string) Action {
+	decision := m.classifyDecision(ctx, in)
+	if decision.action == ActionReturnClient {
+		return ActionReturnClient
+	}
+	if decision.action == ActionRetryKey {
+		return m.HandleError(ctx, in)
+	}
+
+	if decision.hasReset1308 {
+		if err := m.store.SetModelCooldown(ctx, in.ChannelID, modelName, decision.reset1308At); err != nil {
+			log.Printf("[WARN] Failed to set model cooldown to reset time (channel=%d, model=%s, until=%v): %v",
+				in.ChannelID, modelName, decision.reset1308At, err)
+		}
+		return ActionRetryChannel
+	}
+
+	if _, err := m.store.BumpModelCooldown(ctx, in.ChannelID, modelName, time.Now(), in.StatusCode); err != nil {
+		log.Printf("[WARN] Failed to update model cooldown (channel=%d, model=%s): %v", in.ChannelID, modelName, err)
+	}
+	return ActionRetryChannel
+}
+
 // ClearChannelCooldown 清除渠道冷却状态
 // 简化成功后的冷却清除逻辑
 func (m *Manager) ClearChannelCooldown(ctx context.Context, channelID int64) error {
@@ -219,4 +245,9 @@ func (m *Manager) ClearChannelCooldown(ctx context.Context, channelID int64) err
 // 简化成功后的冷却清除逻辑
 func (m *Manager) ClearKeyCooldown(ctx context.Context, channelID int64, keyIndex int) error {
 	return m.store.ResetKeyCooldown(ctx, channelID, keyIndex)
+}
+
+// ClearModelCooldown 清除模型级冷却状态。
+func (m *Manager) ClearModelCooldown(ctx context.Context, channelID int64, modelName string) error {
+	return m.store.ResetModelCooldown(ctx, channelID, modelName)
 }

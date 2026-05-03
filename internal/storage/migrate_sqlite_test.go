@@ -131,6 +131,25 @@ func TestEnsureChannelsDailyCostLimit_SQLite(t *testing.T) {
 	}
 }
 
+func TestEnsureGroupsAdvancedColumns_SQLite(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	cols, err := sqliteExistingColumns(ctx, db, "groups")
+	if err != nil {
+		t.Fatalf("sqliteExistingColumns(groups): %v", err)
+	}
+	for _, col := range []string{"match_regex", "first_token_time_out", "session_keep_time"} {
+		if !cols[col] {
+			t.Fatalf("column %s not found in groups", col)
+		}
+	}
+}
+
 func TestEnsureAuthTokensAllowedModels_SQLite(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
