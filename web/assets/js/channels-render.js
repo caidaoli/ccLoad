@@ -316,7 +316,7 @@ async function saveInlineChannelPriority(input) {
   }
 }
 
-function queueInlineChannelPrioritySave(input, delay = 500) {
+function queueInlineChannelPrioritySave(input, delay = 1000) {
   if (!input) return;
   const channelId = Number(input.dataset.channelId);
   if (!Number.isFinite(channelId) || channelId <= 0) return;
