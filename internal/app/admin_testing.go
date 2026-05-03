@@ -340,7 +340,7 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 		return
 	}
 
-	keySelection, err := s.selectChannelTestKey(cfg, apiKeys, testReq.KeyIndex, requestAPIKey)
+	keySelection, err := s.selectChannelTestKey(apiKeys, testReq.KeyIndex, requestAPIKey)
 	if err != nil {
 		RespondJSON(c, http.StatusOK, gin.H{
 			"success":    false,
@@ -375,7 +375,7 @@ type channelTestKeySelection struct {
 	updatePersistedCooldown bool
 }
 
-func (s *Server) selectChannelTestKey(cfg *model.Config, apiKeys []*model.APIKey, requestedKeyIndex int, requestAPIKey string) (channelTestKeySelection, error) {
+func (s *Server) selectChannelTestKey(apiKeys []*model.APIKey, requestedKeyIndex int, requestAPIKey string) (channelTestKeySelection, error) {
 	if requestAPIKey != "" {
 		matchedKey, ok := findAPIKeyByIndex(apiKeys, requestedKeyIndex)
 		return channelTestKeySelection{
@@ -385,22 +385,16 @@ func (s *Server) selectChannelTestKey(cfg *model.Config, apiKeys []*model.APIKey
 		}, nil
 	}
 
-	now := time.Now()
-	if requestedKey, ok := findAPIKeyByIndex(apiKeys, requestedKeyIndex); ok && !requestedKey.IsCoolingDown(now) {
-		return channelTestKeySelection{
-			keyIndex:                requestedKey.KeyIndex,
-			apiKey:                  requestedKey.APIKey,
-			updatePersistedCooldown: true,
-		}, nil
-	}
-
-	keyIndex, apiKey, err := s.keySelector.SelectAvailableKey(cfg.ID, apiKeys, nil)
-	if err != nil {
-		return channelTestKeySelection{}, fmt.Errorf("无可用 API Key（全部处于冷却中）")
+	// 显式优于隐式：调用方指定了 key_index 就严格使用该 Key（无视冷却状态）。
+	// 既往的"冷却时静默回退到其他可用 Key"会导致 tested_key_index 与请求不一致，
+	// 让用户困惑（点了 key 0 却测了 key 4）。要测全部冷却中的渠道，请显式指定 key_index 或调用方自行选择。
+	requestedKey, ok := findAPIKeyByIndex(apiKeys, requestedKeyIndex)
+	if !ok {
+		return channelTestKeySelection{}, fmt.Errorf("未找到 Key #%d", requestedKeyIndex)
 	}
 	return channelTestKeySelection{
-		keyIndex:                keyIndex,
-		apiKey:                  apiKey,
+		keyIndex:                requestedKey.KeyIndex,
+		apiKey:                  requestedKey.APIKey,
 		updatePersistedCooldown: true,
 	}, nil
 }

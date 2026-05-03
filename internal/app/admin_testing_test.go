@@ -917,7 +917,7 @@ func TestHandleChannelTest_FailedAPI(t *testing.T) {
 	}
 }
 
-func TestHandleChannelTest_SkipsCooledPersistedKey(t *testing.T) {
+func TestHandleChannelTest_HonorsRequestedKeyIndexEvenIfCooled(t *testing.T) {
 	mockResp := `{
 		"id": "msg_test",
 		"type": "message",
@@ -940,7 +940,7 @@ func TestHandleChannelTest_SkipsCooledPersistedKey(t *testing.T) {
 	ctx := context.Background()
 
 	created, err := srv.store.CreateConfig(ctx, &model.Config{
-		Name:         "test-skip-cooled-key-channel",
+		Name:         "test-honor-cooled-key-channel",
 		URL:          upstream.URL,
 		Priority:     1,
 		ChannelType:  "anthropic",
@@ -977,11 +977,59 @@ func TestHandleChannelTest_SkipsCooledPersistedKey(t *testing.T) {
 	if dataSuccess, _ := resp.Data["success"].(bool); !dataSuccess {
 		t.Fatalf("data.success=false, data=%+v", resp.Data)
 	}
-	if gotAuth != "Bearer sk-fresh" {
-		t.Fatalf("Authorization=%q, want fresh key", gotAuth)
+	if gotAuth != "Bearer sk-cooled" {
+		t.Fatalf("Authorization=%q, want Bearer sk-cooled (requested key must be honored even if cooled)", gotAuth)
 	}
-	if gotIndex, _ := resp.Data["tested_key_index"].(float64); gotIndex != 1 {
-		t.Fatalf("tested_key_index=%v, want 1", resp.Data["tested_key_index"])
+	if gotIndex, _ := resp.Data["tested_key_index"].(float64); gotIndex != 0 {
+		t.Fatalf("tested_key_index=%v, want 0", resp.Data["tested_key_index"])
+	}
+}
+
+// TestHandleChannelTest_RejectsUnknownKeyIndex 验证：请求一个不存在的 key_index 时直接报错，
+// 不再静默回退到其他可用 Key（既往会调用 SelectAvailableKey）。配合 HonorsRequestedKeyIndexEvenIfCooled
+// 共同保证"显式 key_index 即真"语义。
+func TestHandleChannelTest_RejectsUnknownKeyIndex(t *testing.T) {
+	srv := newInMemoryServer(t)
+	ctx := context.Background()
+
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name:         "test-reject-unknown-key-channel",
+		URL:          "http://test.example.com",
+		Priority:     1,
+		ChannelType:  "anthropic",
+		ModelEntries: []model.ModelEntry{{Model: "claude-3-5-sonnet"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-only"},
+	}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+
+	channelID := fmt.Sprintf("%d", created.ID)
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
+		"model":        "claude-3-5-sonnet",
+		"channel_type": "anthropic",
+		"key_index":    99, // 不存在
+	}))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	dataSuccess, _ := resp.Data["success"].(bool)
+	if dataSuccess {
+		t.Fatalf("data.success=true, want false; data=%+v", resp.Data)
+	}
+	dataError, _ := resp.Data["error"].(string)
+	if !strings.Contains(dataError, "Key #99") {
+		t.Fatalf("data.error=%q, want mention of Key #99", dataError)
 	}
 }
 
