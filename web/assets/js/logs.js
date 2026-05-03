@@ -18,7 +18,7 @@ let logChannelClickAction = 'edit'; // 日志页渠道名点击行为：edit|nav
 const ACTIVE_REQUESTS_POLL_INTERVAL_MS = 2000;
 let activeRequestsPollTimer = null;
 let activeRequestsFetchInFlight = false;
-let lastActiveRequestIDs = null; // 上次活跃请求ID集合（后端原始数据，用于检测完成）
+let lastActiveRequestStates = null; // Map<id, fingerprint>：上次活跃请求状态，用于检测请求结束/渠道切换
 let logsLoadInFlight = false;
 let logsLoadPending = false;
 let logsLoadScheduled = false;
@@ -143,6 +143,11 @@ function maskIP(ip) {
 
 function clearActiveRequestsRows() {
   document.querySelectorAll('tr.pending-row').forEach(el => el.remove());
+}
+
+function activeRequestFingerprint(req) {
+  if (!req || !req.channel_id) return ''; // 渠道未选中阶段不参与切换检测，避免初始化触发误刷新
+  return `${req.channel_id}|${req.base_url || ''}|${req.api_key_used || ''}`;
 }
 
 function buildChannelTrigger(channelId, channelName, baseURL = '') {
@@ -424,7 +429,7 @@ async function load(skipLoading = false) {
       ensureActiveRequestsPollingStarted();
       await fetchActiveRequests();
     } else {
-      lastActiveRequestIDs = null;
+      lastActiveRequestStates = null;
       clearActiveRequestsRows();
     }
 
@@ -491,7 +496,7 @@ async function fetchActiveRequests() {
   // 进行中的请求只存在于"本日"，且没有状态码
   if (shouldSkipActiveRequestsFetch(hours, status, logSource)) {
     clearActiveRequestsRows();
-    lastActiveRequestIDs = null;
+    lastActiveRequestStates = null;
     return;
   }
 
@@ -500,26 +505,31 @@ async function fetchActiveRequests() {
     const response = await fetchAPIWithAuth('/admin/active-requests');
     const rawActiveRequests = (response.success && Array.isArray(response.data)) ? response.data : [];
 
-    // 检测请求完成：用后端原始ID集合判断“消失的ID”，避免筛选条件变化导致误判
-    const currentIDs = new Set();
+    // 检测"需要刷新日志"：ID 消失（请求结束）或 fingerprint 变化（渠道/Key/URL 切换 → 上次尝试已失败并写入日志）
+    const currentStates = new Map();
     for (const req of rawActiveRequests) {
       if (req && (req.id !== undefined && req.id !== null)) {
-        currentIDs.add(String(req.id));
+        currentStates.set(String(req.id), activeRequestFingerprint(req));
       }
     }
-    if (lastActiveRequestIDs !== null) {
-      let hasCompleted = false;
-      for (const id of lastActiveRequestIDs) {
-        if (!currentIDs.has(id)) {
-          hasCompleted = true;
+    if (lastActiveRequestStates !== null) {
+      let needRefresh = false;
+      for (const [id, lastFp] of lastActiveRequestStates) {
+        const currentFp = currentStates.get(id);
+        if (currentFp === undefined) {
+          needRefresh = true; // 请求消失 = 已结束
+          break;
+        }
+        if (lastFp && currentFp && lastFp !== currentFp) {
+          needRefresh = true; // 同 ID 切换了渠道/Key/URL = 上次尝试已写日志
           break;
         }
       }
-      if (hasCompleted && currentLogsPage === 1) {
+      if (needRefresh && currentLogsPage === 1) {
         scheduleLoad();
       }
     }
-    lastActiveRequestIDs = currentIDs;
+    lastActiveRequestStates = currentStates;
 
     // 根据当前筛选条件过滤（只影响展示，不影响完成检测）
     const activeRequests = filterActiveRequests(rawActiveRequests);
