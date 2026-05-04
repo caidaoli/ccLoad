@@ -177,6 +177,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.keyStrategy': 'Key 策略',
   'channels.keyStrategySequential': '顺序',
   'channels.keyStrategyRoundRobin': '轮询',
+  'channels.keyDragSortHint': '拖动API Key可排序',
   'channels.apiUrl': 'API URL *',
   'channels.apiKey': 'API Key *',
   'channels.urlCountSuffix': '个URL',

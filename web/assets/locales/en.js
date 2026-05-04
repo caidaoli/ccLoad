@@ -177,6 +177,7 @@ window.I18N_LOCALES['en'] = {
   'channels.keyStrategy': 'Strategy',
   'channels.keyStrategySequential': 'Sequential',
   'channels.keyStrategyRoundRobin': 'Round Robin',
+  'channels.keyDragSortHint': 'Drag API Key to reorder',
   'channels.apiUrl': 'API URL *',
   'channels.apiKey': 'API Key *',
   'channels.urlCountSuffix': 'URLs',
