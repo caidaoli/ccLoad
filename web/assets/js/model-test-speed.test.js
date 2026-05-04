@@ -6,6 +6,7 @@ const vm = require('node:vm');
 
 const html = fs.readFileSync(path.join(__dirname, '..', '..', 'model-test.html'), 'utf8');
 const script = fs.readFileSync(path.join(__dirname, 'model-test.js'), 'utf8');
+const uiSource = fs.readFileSync(path.join(__dirname, 'ui.js'), 'utf8');
 const zhLocale = fs.readFileSync(path.join(__dirname, '..', 'locales', 'zh-CN.js'), 'utf8');
 const enLocale = fs.readFileSync(path.join(__dirname, '..', 'locales', 'en.js'), 'utf8');
 
@@ -44,19 +45,24 @@ test('model-test 页速度列使用专用列宽，避免标题挤到缓读列', 
   assert.match(styles, /\.table-col-speed\s*\{\s*width:\s*96px;\s*\}/);
 });
 
-test('model-test 页速度按总耗时折算用户实际看到的 tok/s', () => {
+test('model-test 页流式速度优先按首字后的生成阶段计算 tok/s', () => {
+  const calculateTokenSpeed = vm.runInNewContext(
+    `(${extractFunction(uiSource, 'calculateTokenSpeed')})`,
+    {}
+  );
   const calculateTestSpeed = vm.runInNewContext(
     `(${extractFunction(script, 'calculateTestSpeed')})`,
-    {}
+    { calculateTokenSpeed }
   );
 
   assert.equal(
     calculateTestSpeed({
-      duration_ms: 21000
+      duration_ms: 5900,
+      first_byte_duration_ms: 4100
     }, {
-      output_tokens: 957
+      output_tokens: 111
     }),
-    45.57142857142857
+    61.66666666666664
   );
 
   assert.equal(
@@ -70,7 +76,28 @@ test('model-test 页速度按总耗时折算用户实际看到的 tok/s', () => 
 
   assert.equal(
     calculateTestSpeed({
-      duration_ms: 3000
+      duration_ms: 21000,
+      first_byte_duration_ms: 3200
+    }, {
+      output_tokens: 957
+    }),
+    53.764044943820224
+  );
+
+  assert.equal(
+    calculateTestSpeed({
+      duration_ms: 3000,
+      first_byte_duration_ms: 3000
+    }, {
+      candidatesTokenCount: 100
+    }),
+    33.333333333333336
+  );
+
+  assert.equal(
+    calculateTestSpeed({
+      duration_ms: 3000,
+      first_byte_duration_ms: 2200
     }, {
       candidatesTokenCount: 100
     }),
@@ -88,11 +115,19 @@ test('model-test 页速度按总耗时折算用户实际看到的 tok/s', () => 
 
   assert.equal(
     calculateTestSpeed({
-      duration_ms: 19980.204
+      duration_ms: 19980,
+      first_byte_duration_ms: 0
     }, {
       output_tokens: 437
     }),
-    21.871648557742454
+    21.87187187187187
+  );
+});
+
+test('model-test 页速度计算委托给共享 token speed helper', () => {
+  assert.match(
+    extractFunction(script, 'calculateTestSpeed'),
+    /return calculateTokenSpeed\(/
   );
 });
 

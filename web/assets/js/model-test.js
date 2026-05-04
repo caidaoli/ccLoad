@@ -138,11 +138,11 @@ function calculateTestSpeed(data, usage) {
       ?? usage?.completion_tokens
       ?? usage?.candidatesTokenCount
   );
-  const durationSeconds = Number(data?.duration_ms) / 1000;
-  if (!Number.isFinite(outputTokens) || outputTokens <= 0 || !Number.isFinite(durationSeconds) || durationSeconds <= 0) {
-    return null;
-  }
-  return outputTokens / durationSeconds;
+  return calculateTokenSpeed(
+    outputTokens,
+    Number(data?.duration_ms) / 1000,
+    Number(data?.first_byte_duration_ms) / 1000
+  );
 }
 
 function parseNumericCellValue(text) {

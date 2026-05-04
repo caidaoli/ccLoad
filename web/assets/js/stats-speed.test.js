@@ -6,6 +6,7 @@ const vm = require('node:vm');
 
 const html = fs.readFileSync(path.join(__dirname, '..', '..', 'stats.html'), 'utf8');
 const script = fs.readFileSync(path.join(__dirname, 'stats.js'), 'utf8');
+const uiSource = fs.readFileSync(path.join(__dirname, 'ui.js'), 'utf8');
 const zhLocale = fs.readFileSync(path.join(__dirname, '..', 'locales', 'zh-CN.js'), 'utf8');
 const enLocale = fs.readFileSync(path.join(__dirname, '..', 'locales', 'en.js'), 'utf8');
 
@@ -45,10 +46,14 @@ test('stats 页平均速度单元格只显示数值不重复单位', () => {
   );
 });
 
-test('stats 页平均速度按总耗时折算用户实际看到的 tok/s', () => {
+test('stats 页平均速度优先按首字后的平均生成阶段计算 tok/s', () => {
+  const calculateTokenSpeed = vm.runInNewContext(
+    `(${extractFunction(uiSource, 'calculateTokenSpeed')})`,
+    {}
+  );
   const calculateAverageSpeed = vm.runInNewContext(
     `(${extractFunction(script, 'calculateAverageSpeed')})`,
-    {}
+    { calculateTokenSpeed }
   );
 
   assert.equal(
@@ -58,7 +63,7 @@ test('stats 页平均速度按总耗时折算用户实际看到的 tok/s', () =>
       avg_duration_seconds: 17.99,
       avg_first_byte_time_seconds: 3.43
     }),
-    35.54606360258624
+    43.91989589358011
   );
 
   assert.equal(
@@ -94,11 +99,28 @@ test('stats 页平均速度按总耗时折算用户实际看到的 tok/s', () =>
   assert.equal(
     calculateAverageSpeed({
       success: 1,
+      total_output_tokens: 90,
+      avg_duration_seconds: 3,
+      avg_first_byte_time_seconds: 2.2
+    }),
+    30
+  );
+
+  assert.equal(
+    calculateAverageSpeed({
+      success: 1,
       total_output_tokens: 437,
       avg_duration_seconds: 19.980204,
       avg_first_byte_time_seconds: 19.98
     }),
     21.871648557742454
+  );
+});
+
+test('stats 页速度计算委托给共享 token speed helper', () => {
+  assert.match(
+    extractFunction(script, 'calculateAverageSpeed'),
+    /return calculateTokenSpeed\(/
   );
 });
 
@@ -134,6 +156,11 @@ test('stats 页支持按平均速度排序', () => {
       order: 'desc'
     }
   };
+
+  context.calculateTokenSpeed = vm.runInNewContext(
+    `(${extractFunction(uiSource, 'calculateTokenSpeed')})`,
+    {}
+  );
 
   vm.runInNewContext(`
     ${extractFunction(script, 'calculateAverageSpeed')}

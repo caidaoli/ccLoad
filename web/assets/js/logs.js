@@ -344,12 +344,11 @@ function buildDebugLogUnavailableHtml(data) {
 }
 
 function calculateLogSpeed(entry) {
-  const outputTokens = Number(entry?.output_tokens);
-  const duration = Number(entry?.duration);
-  if (!Number.isFinite(outputTokens) || outputTokens <= 0 || !Number.isFinite(duration) || duration <= 0) {
-    return null;
-  }
-  return outputTokens / duration;
+  return calculateTokenSpeed(
+    Number(entry?.output_tokens),
+    Number(entry?.duration),
+    entry?.is_streaming ? Number(entry?.first_byte_time) : 0
+  );
 }
 
 // 加载默认测试内容（从系统设置）
