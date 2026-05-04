@@ -770,10 +770,12 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		s.InvalidateAPIKeysCache(id)
 	}
 
-	// URL 更新后立即清理失效的 URLSelector 状态，避免旧URL状态长期残留。
+	// URL 更新后立即清理失效的 URL 状态（内存+数据库同步）
 	if s.urlSelector != nil {
 		s.urlSelector.PruneChannel(id, upd.GetURLs())
 	}
+	// 同步清理数据库中已移除URL的禁用状态记录
+	s.cleanupOrphanedURLStates(c.Request.Context(), id, upd.GetURLs())
 
 	RespondJSON(c, http.StatusOK, upd)
 }
@@ -795,6 +797,17 @@ func (s *Server) handleDeleteChannel(c *gin.Context, id int64) {
 	// 否则若后续以同 ID 重新创建渠道（显式主键路径，例如混合存储恢复），可能读到旧 keys。
 	s.InvalidateAPIKeysCache(id)
 	RespondJSON(c, http.StatusOK, gin.H{"id": id})
+}
+
+// cleanupOrphanedURLStates 清理数据库中已移除URL的禁用状态记录，失败仅警告不影响主流程
+func (s *Server) cleanupOrphanedURLStates(ctx context.Context, channelID int64, keepURLs []string) {
+	if s.store == nil {
+		return
+	}
+
+	if err := s.store.CleanupOrphanedURLStates(ctx, channelID, keepURLs); err != nil {
+		log.Printf("[WARN] 清理孤立URL状态失败 (channel=%d, urls=%d): %v", channelID, len(keepURLs), err)
+	}
 }
 
 // HandleDeleteAPIKey 删除渠道下的单个Key，并保持key_index连续

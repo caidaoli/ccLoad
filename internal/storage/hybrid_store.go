@@ -287,6 +287,20 @@ func (h *HybridStore) SetURLDisabled(ctx context.Context, channelID int64, url s
 	return nil
 }
 
+func (h *HybridStore) CleanupOrphanedURLStates(ctx context.Context, channelID int64, keepURLs []string) error {
+	// 先清理MySQL（主存储）
+	if err := h.mysql.CleanupOrphanedURLStates(ctx, channelID, keepURLs); err != nil {
+		return err
+	}
+
+	// 同步清理SQLite缓存（失败仅警告）
+	h.syncToSQLite("CleanupOrphanedURLStates", func() error {
+		return h.sqlite.CleanupOrphanedURLStates(ctx, channelID, keepURLs)
+	})
+
+	return nil
+}
+
 // === API Key Management ===
 
 func (h *HybridStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error) {

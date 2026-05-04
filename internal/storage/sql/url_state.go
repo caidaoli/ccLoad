@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -69,6 +70,40 @@ func (s *SQLStore) SetURLDisabled(ctx context.Context, channelID int64, url stri
 
 	if _, err := s.db.ExecContext(ctx, query, channelID, hash, url, disabledInt, now); err != nil {
 		return fmt.Errorf("upsert channel_url_states: %w", err)
+	}
+	return nil
+}
+
+// CleanupOrphanedURLStates 清理指定渠道中不再存在的URL的禁用状态记录
+func (s *SQLStore) CleanupOrphanedURLStates(ctx context.Context, channelID int64, keepURLs []string) error {
+	// 空 keepURLs 列表：删除该渠道的全部URL状态记录（渠道无URL场景）
+	if len(keepURLs) == 0 {
+		_, err := s.db.ExecContext(ctx,
+			`DELETE FROM channel_url_states WHERE channel_id = ?`,
+			channelID)
+		if err != nil {
+			return fmt.Errorf("delete all url states for channel %d: %w", channelID, err)
+		}
+		return nil
+	}
+
+	// 构建参数化查询：DELETE WHERE channel_id = ? AND url NOT IN (?,?,...)
+	args := make([]any, 0, len(keepURLs)+1)
+	args = append(args, channelID)
+
+	placeholders := make([]string, 0, len(keepURLs))
+	for _, url := range keepURLs {
+		placeholders = append(placeholders, "?")
+		args = append(args, url)
+	}
+
+	query := fmt.Sprintf(
+		`DELETE FROM channel_url_states WHERE channel_id = ? AND url NOT IN (%s)`,
+		strings.Join(placeholders, ", "))
+
+	_, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("cleanup orphaned url states for channel %d: %w", channelID, err)
 	}
 	return nil
 }
