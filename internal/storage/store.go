@@ -33,6 +33,7 @@ type Store interface {
 	// 持久化URL级运行态（当前仅记录手动禁用），重启后由URLSelector回填
 	LoadDisabledURLs(ctx context.Context) (map[int64][]string, error)
 	SetURLDisabled(ctx context.Context, channelID int64, url string, disabled bool) error
+	CleanupOrphanedURLStates(ctx context.Context, channelID int64, keepURLs []string) error
 
 	// === API Key Management ===
 	GetAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error)

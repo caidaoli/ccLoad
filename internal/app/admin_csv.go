@@ -240,6 +240,8 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 					continue
 				}
 				s.urlSelector.PruneChannel(channelID, cfg.GetURLs())
+				// 同步清理数据库中已移除URL的禁用状态记录
+				s.cleanupOrphanedURLStates(c.Request.Context(), channelID, cfg.GetURLs())
 			}
 		}
 	}
