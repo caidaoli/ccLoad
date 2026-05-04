@@ -185,6 +185,14 @@ func (s *URLSelector) PruneChannel(channelID int64, keepURLs []string) {
 			delete(s.requests, key)
 		}
 	}
+	for key := range s.disabled {
+		if key.channelID != channelID {
+			continue
+		}
+		if _, ok := keep[key.url]; !ok {
+			delete(s.disabled, key)
+		}
+	}
 }
 
 // RemoveChannel 移除指定渠道的全部 URL 状态。
