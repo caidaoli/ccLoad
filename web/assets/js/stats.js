@@ -1076,6 +1076,11 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
           }
         });
       }
+
+      // 自动刷新（system_settings.auto_refresh_interval_seconds，0=禁用）
+      if (typeof window.createAutoRefresh === 'function') {
+        window.createAutoRefresh({ load: loadStats }).init();
+      }
       }
     });
 

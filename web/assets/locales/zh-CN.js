@@ -917,6 +917,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'settings.desc.log_channel_click_action': '日志页点击渠道名行为(edit=打开编辑器,navigate=跳转到渠道管理定位)',
   'settings.desc.debug_log_enabled': '启用Debug日志(记录上游请求/响应原始数据)',
   'settings.desc.debug_log_retention_minutes': 'Debug日志保留时长(分钟,1-1440)',
+  'settings.desc.auto_refresh_interval_seconds': '页面自动刷新间隔(秒,0=禁用,建议≥30;有对话框打开时跳过本次刷新)',
   // 消息
   'settings.msg.saveSuccess': '设置保存成功',
   'settings.msg.saveFailed': '设置保存失败',

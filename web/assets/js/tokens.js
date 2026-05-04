@@ -100,6 +100,11 @@
         renderAllowedChannelsTable();
         renderTokens();
       });
+
+      // 自动刷新（system_settings.auto_refresh_interval_seconds，0=禁用）
+      if (typeof window.createAutoRefresh === 'function') {
+        window.createAutoRefresh({ load: loadTokens }).init();
+      }
       }
     });
 
