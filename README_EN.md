@@ -178,13 +178,13 @@ git clone https://github.com/caidaoli/ccLoad.git
 cd ccLoad
 
 # Build project (uses high-performance JSON library by default)
-go build -tags go_json -o ccload .
+go build -tags sonic -o ccload .
 
 # Or use Makefile
 make build
 
 # Run in development mode
-go run -tags go_json .
+go run -tags sonic .
 # Or
 make dev
 ```

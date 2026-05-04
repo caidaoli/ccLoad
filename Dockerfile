@@ -49,7 +49,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     BUILD_COMMIT=$(echo "${COMMIT}" | cut -c1-7) && \
     BUILD_TIME=$(date '+%Y-%m-%d %H:%M:%S %z') && \
     xx-go build \
-    -tags go_json \
+    -tags sonic \
     -buildvcs=false \
     -trimpath \
     -ldflags="-s -w \

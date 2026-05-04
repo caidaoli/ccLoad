@@ -73,7 +73,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
         run: |
-          go build -tags go_json -trimpath \
+          go build -tags sonic -trimpath \
             -ldflags "-s -w \
               -X ccLoad/internal/version.Version=${{ steps.version.outputs.version }} \
               -X ccLoad/internal/version.Commit=${{ steps.version.outputs.commit }} \

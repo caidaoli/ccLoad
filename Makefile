@@ -9,7 +9,7 @@ TARGET_PLIST = $(LAUNCH_AGENTS_DIR)/$(PLIST_FILE)
 BINARY_NAME = ccload
 LOG_DIR = logs
 PROJECT_DIR = $(shell pwd)
-GOTAGS ?= go_json
+GOTAGS ?= sonic
 
 # 版本信息
 VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo "dev")

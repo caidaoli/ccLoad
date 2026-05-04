@@ -21,7 +21,7 @@ import (
 //   - 混合模式（读 SQLite + 写 MySQL）的性能表现
 //
 // 运行方式：
-//   go test -tags go_json -bench=BenchmarkHybrid -benchtime=3s ./internal/storage/...
+//   go test -tags sonic -bench=BenchmarkHybrid -benchtime=3s ./internal/storage/...
 //
 // 环境变量（从 .env 读取）：
 //   - CCLOAD_MYSQL: MySQL DSN（必需）
@@ -76,7 +76,7 @@ func BenchmarkHybrid_ListConfigs_SQLite(b *testing.B) {
 	ctx := context.Background()
 
 	// 准备测试数据
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		_, err := store.CreateConfig(ctx, &model.Config{
 			Name:        fmt.Sprintf("bench-channel-%d", i),
 			ChannelType: "openai",
@@ -92,7 +92,7 @@ func BenchmarkHybrid_ListConfigs_SQLite(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, err := store.ListConfigs(ctx)
 		if err != nil {
 			b.Fatalf("ListConfigs 失败: %v", err)
@@ -111,7 +111,7 @@ func BenchmarkHybrid_ListConfigs_MySQL(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, err := store.ListConfigs(ctx)
 		if err != nil {
 			b.Fatalf("ListConfigs 失败: %v", err)
@@ -130,7 +130,7 @@ func BenchmarkHybrid_AddLog_SQLite(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		err := store.AddLog(ctx, &model.LogEntry{
 			Time:       model.JSONTime{Time: time.Now()},
 			ChannelID:  1,
@@ -152,7 +152,7 @@ func BenchmarkHybrid_AddLog_MySQL(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		err := store.AddLog(ctx, &model.LogEntry{
 			Time:       model.JSONTime{Time: time.Now()},
 			ChannelID:  1,
@@ -176,7 +176,7 @@ func BenchmarkHybrid_ListLogs_SQLite(b *testing.B) {
 	ctx := context.Background()
 
 	// 准备测试数据
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		_ = store.AddLog(ctx, &model.LogEntry{
 			Time:       model.JSONTime{Time: time.Now().Add(-time.Duration(i) * time.Minute)},
 			ChannelID:  int64(i % 5),
@@ -191,7 +191,7 @@ func BenchmarkHybrid_ListLogs_SQLite(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, err := store.ListLogs(ctx, since, 50, 0, nil)
 		if err != nil {
 			b.Fatalf("ListLogs 失败: %v", err)
@@ -209,7 +209,7 @@ func BenchmarkHybrid_ListLogs_MySQL(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, err := store.ListLogs(ctx, since, 50, 0, nil)
 		if err != nil {
 			b.Fatalf("ListLogs 失败: %v", err)
@@ -226,7 +226,7 @@ func BenchmarkHybrid_GetStats_SQLite(b *testing.B) {
 	ctx := context.Background()
 
 	// 准备测试数据
-	for i := 0; i < 200; i++ {
+	for i := range 200 {
 		_ = store.AddLog(ctx, &model.LogEntry{
 			Time:         model.JSONTime{Time: time.Now().Add(-time.Duration(i) * time.Minute)},
 			ChannelID:    int64(i % 5),
@@ -245,7 +245,7 @@ func BenchmarkHybrid_GetStats_SQLite(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, err := store.GetStats(ctx, startTime, now, nil, true)
 		if err != nil {
 			b.Fatalf("GetStats 失败: %v", err)
@@ -264,7 +264,7 @@ func BenchmarkHybrid_GetStats_MySQL(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, err := store.GetStats(ctx, startTime, now, nil, true)
 		if err != nil {
 			b.Fatalf("GetStats 失败: %v", err)
@@ -281,7 +281,7 @@ func BenchmarkHybrid_ListConfigs_SQLite_Parallel(b *testing.B) {
 	ctx := context.Background()
 
 	// 准备测试数据
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		_, _ = store.CreateConfig(ctx, &model.Config{
 			Name:        fmt.Sprintf("bench-parallel-%d", i),
 			ChannelType: "openai",

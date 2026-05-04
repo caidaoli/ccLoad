@@ -2,7 +2,7 @@
 
 ## 构建与测试
 
-必须 `-tags go_json`。环境变量见 `.env`。
+必须 `-tags sonic`。环境变量见 `.env`。
 
 ```bash
 make build          # 构建（自动注入版本号+strip）
@@ -10,9 +10,9 @@ make web-test       # 前端 node:test
 make verify-web     # 前端验证（含 web-test）
 make dev            # 开发运行
 
-go build -tags go_json -o ccload .
-go test -tags go_json ./internal/... -v
-go test -tags go_json -race ./internal/...
+go build -tags sonic -o ccload .
+go test -tags sonic ./internal/... -v
+go test -tags sonic -race ./internal/...
 ```
 
 ## 架构概览
@@ -136,7 +136,7 @@ web/               # 前端（HTML + assets/{css,js,locales}）
 
 ## 代码规范
 
-- **必须** `-tags go_json`
+- **必须** `-tags sonic`
 - **必须** `any` 替代 `interface{}`
 - **禁止** 过度工程，YAGNI
 - **Fail-Fast**：配置错误 `log.Fatal()` 退出

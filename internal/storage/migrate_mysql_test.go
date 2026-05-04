@@ -19,7 +19,7 @@ import (
 
 // ============================================================================
 // MySQL 迁移条件化测试
-// 运行条件：go test -tags "go_json mysql_integration" ./internal/storage/... -v -run TestMySQL
+// 运行条件：go test -tags "sonic mysql_integration" ./internal/storage/... -v -run TestMySQL
 //
 // 依赖环境：
 // - Docker 已安装
@@ -28,10 +28,10 @@ import (
 // 示例：
 //   # 使用现有 MySQL
 //   CCLOAD_TEST_MYSQL_DSN="root:test@tcp(127.0.0.1:3306)/ccload_test?parseTime=true" \
-//       go test -tags "go_json mysql_integration" ./internal/storage/... -v -run TestMySQL
+//       go test -tags "sonic mysql_integration" ./internal/storage/... -v -run TestMySQL
 //
 //   # 自动使用 Docker（无 DSN 环境变量时）
-//   go test -tags "go_json mysql_integration" ./internal/storage/... -v -run TestMySQL
+//   go test -tags "sonic mysql_integration" ./internal/storage/... -v -run TestMySQL
 // ============================================================================
 
 const (

@@ -2,7 +2,7 @@ version: "2"
 
 run:
   build-tags:
-    - go_json
+    - sonic
   timeout: 5m
 
 linters:

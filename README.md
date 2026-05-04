@@ -197,13 +197,13 @@ git clone https://github.com/caidaoli/ccLoad.git
 cd ccLoad
 
 # 构建项目（默认使用高性能 JSON 库）
-go build -tags go_json -o ccload .
+go build -tags sonic -o ccload .
 
 # 或使用 Makefile
 make build
 
 # 直接运行开发模式
-go run -tags go_json .
+go run -tags sonic .
 # 或
 make dev
 ```
