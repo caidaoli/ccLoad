@@ -825,6 +825,82 @@ func TestHandleUpdateChannel_PrunesURLSelectorState(t *testing.T) {
 	}
 }
 
+func TestHandleUpdateChannel_CleansOrphanedURLDisabledState(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.urlSelector = NewURLSelector()
+
+	ctx := context.Background()
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "update-url-state",
+		URL:          "https://old-state.example.com\nhttps://keep-state.example.com",
+		Priority:     10,
+		ModelEntries: []model.ModelEntry{{Model: "m1", RedirectModel: ""}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID:   cfg.ID,
+		KeyIndex:    0,
+		APIKey:      "sk-update-url-state",
+		KeyStrategy: model.KeyStrategySequential,
+	}}); err != nil {
+		t.Fatalf("创建测试 key 失败: %v", err)
+	}
+
+	otherCfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "other-url-state",
+		URL:          "https://other-state.example.com",
+		Priority:     10,
+		ModelEntries: []model.ModelEntry{{Model: "m1", RedirectModel: ""}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建其他渠道失败: %v", err)
+	}
+
+	if err := store.SetURLDisabled(ctx, cfg.ID, "https://old-state.example.com", true); err != nil {
+		t.Fatalf("禁用旧 URL 失败: %v", err)
+	}
+	if err := store.SetURLDisabled(ctx, cfg.ID, "https://keep-state.example.com", true); err != nil {
+		t.Fatalf("禁用保留 URL 失败: %v", err)
+	}
+	if err := store.SetURLDisabled(ctx, otherCfg.ID, "https://other-state.example.com", true); err != nil {
+		t.Fatalf("禁用其他渠道 URL 失败: %v", err)
+	}
+
+	payload := ChannelRequest{
+		Name:     "update-url-state",
+		APIKey:   "sk-update-url-state",
+		URL:      "https://keep-state.example.com\nhttps://new-state.example.com",
+		Priority: 11,
+		Models:   []model.ModelEntry{{Model: "m1", RedirectModel: ""}},
+		Enabled:  true,
+	}
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/channels/"+strconv.FormatInt(cfg.ID, 10), payload))
+	c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(cfg.ID, 10)}}
+	server.handleUpdateChannel(c, cfg.ID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	disabledURLs, err := store.LoadDisabledURLs(ctx)
+	if err != nil {
+		t.Fatalf("加载禁用 URL 状态失败: %v", err)
+	}
+	if slices.Contains(disabledURLs[cfg.ID], "https://old-state.example.com") {
+		t.Fatalf("期望渠道更新后旧 URL 禁用状态被清理")
+	}
+	if !slices.Contains(disabledURLs[cfg.ID], "https://keep-state.example.com") {
+		t.Fatalf("期望保留 URL 的禁用状态仍存在")
+	}
+	if !slices.Contains(disabledURLs[otherCfg.ID], "https://other-state.example.com") {
+		t.Fatalf("期望其他渠道禁用状态不受影响")
+	}
+}
+
 // TestHandleDeleteChannel 测试删除渠道
 func TestHandleDeleteChannel(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
