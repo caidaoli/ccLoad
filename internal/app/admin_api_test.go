@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -742,6 +743,100 @@ Import-Prune-Target,https://keep-import.example.com,10,m1,{},anthropic,true,sk-t
 	}
 	if _, ok := server.urlSelector.latencies[urlKey{channelID: otherCfg.ID, url: "https://other-import.example.com"}]; !ok {
 		t.Fatalf("期望其他渠道状态不受影响")
+	}
+}
+
+func TestAdminAPI_ImportChannelsCSV_CleansOrphanedURLDisabledStateForNameUpdate(t *testing.T) {
+	server := newInMemoryServer(t)
+	ctx := context.Background()
+
+	targetCfg, err := server.store.CreateConfig(ctx, &model.Config{
+		Name:         "Import-URL-State",
+		URL:          "https://old-import-state.example.com\nhttps://keep-import-state.example.com",
+		Priority:     10,
+		ModelEntries: []model.ModelEntry{{Model: "m1", RedirectModel: ""}},
+		ChannelType:  "anthropic",
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建目标渠道失败: %v", err)
+	}
+	if err := server.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID:   targetCfg.ID,
+		KeyIndex:    0,
+		APIKey:      "sk-import-state",
+		KeyStrategy: model.KeyStrategySequential,
+	}}); err != nil {
+		t.Fatalf("创建目标渠道 key 失败: %v", err)
+	}
+
+	otherCfg, err := server.store.CreateConfig(ctx, &model.Config{
+		Name:         "Import-URL-State-Other",
+		URL:          "https://other-import-state.example.com",
+		Priority:     10,
+		ModelEntries: []model.ModelEntry{{Model: "m1", RedirectModel: ""}},
+		ChannelType:  "anthropic",
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建其他渠道失败: %v", err)
+	}
+
+	if err := server.store.SetURLDisabled(ctx, targetCfg.ID, "https://old-import-state.example.com", true); err != nil {
+		t.Fatalf("禁用旧 URL 失败: %v", err)
+	}
+	if err := server.store.SetURLDisabled(ctx, targetCfg.ID, "https://keep-import-state.example.com", true); err != nil {
+		t.Fatalf("禁用保留 URL 失败: %v", err)
+	}
+	if err := server.store.SetURLDisabled(ctx, otherCfg.ID, "https://other-import-state.example.com", true); err != nil {
+		t.Fatalf("禁用其他渠道 URL 失败: %v", err)
+	}
+
+	csvContent := `name,url,priority,models,model_redirects,channel_type,enabled,api_key,key_strategy
+Import-URL-State,https://keep-import-state.example.com,10,m1,{},anthropic,true,sk-import-state,sequential
+`
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", "import-url-state.csv")
+	if err != nil {
+		t.Fatalf("创建表单文件字段失败: %v", err)
+	}
+	if _, err := io.WriteString(part, csvContent); err != nil {
+		t.Fatalf("写入CSV内容失败: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("关闭writer失败: %v", err)
+	}
+
+	req := newRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	c, w := newTestContext(t, req)
+
+	server.HandleImportChannelsCSV(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望状态码 200, 实际 %d, 响应: %s", w.Code, w.Body.String())
+	}
+
+	var summary ChannelImportSummary
+	mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &summary)
+	if summary.Updated < 1 {
+		t.Fatalf("期望按名称更新已有渠道，实际 summary=%+v", summary)
+	}
+
+	disabledURLs, err := server.store.LoadDisabledURLs(ctx)
+	if err != nil {
+		t.Fatalf("加载禁用 URL 状态失败: %v", err)
+	}
+	if slices.Contains(disabledURLs[targetCfg.ID], "https://old-import-state.example.com") {
+		t.Fatalf("期望 CSV 更新后旧 URL 禁用状态被清理")
+	}
+	if !slices.Contains(disabledURLs[targetCfg.ID], "https://keep-import-state.example.com") {
+		t.Fatalf("期望保留 URL 的禁用状态仍存在")
+	}
+	if !slices.Contains(disabledURLs[otherCfg.ID], "https://other-import-state.example.com") {
+		t.Fatalf("期望其他渠道禁用状态不受影响")
 	}
 }
 
