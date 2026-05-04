@@ -1,4 +1,4 @@
-//go:build go_json
+//go:build sonic
 
 package storage
 
