@@ -721,7 +721,13 @@ func TestMigrate_SQLite_LogsHotPathIndexes(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	for _, idx := range []string{"idx_logs_channel_time_id", "idx_logs_channel_model_time_id", "idx_logs_minute_auth_token_status"} {
+	for _, idx := range []string{
+		"idx_logs_channel_time_id",
+		"idx_logs_channel_model_time_id",
+		"idx_logs_minute_auth_token_status",
+		"idx_logs_source_time",
+		"idx_logs_source_minute",
+	} {
 		var name string
 		if err := db.QueryRowContext(ctx,
 			"SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='logs' AND name=?", idx,
@@ -773,6 +779,8 @@ func TestLoadAllExistingIndexes_SQLite(t *testing.T) {
 		"idx_logs_channel_model_time_id",
 		"idx_logs_time_auth_token",
 		"idx_logs_time_actual_model",
+		"idx_logs_source_time",
+		"idx_logs_source_minute",
 	}
 	for _, name := range mustHaveLogs {
 		if !logsIdx[name] {
