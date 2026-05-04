@@ -754,6 +754,25 @@
     return tokens;
   }
 
+  function calculateTokenSpeed(outputTokens, durationSeconds, firstByteSeconds) {
+    const output = Number(outputTokens);
+    const duration = Number(durationSeconds);
+    if (!Number.isFinite(output) || output <= 0 || !Number.isFinite(duration) || duration <= 0) {
+      return null;
+    }
+
+    let tokenDuration = duration;
+    const firstByte = Number(firstByteSeconds);
+    if (Number.isFinite(firstByte) && firstByte > 0 && firstByte < duration) {
+      const generationDuration = duration - firstByte;
+      if (generationDuration >= 1) {
+        tokenDuration = generationDuration;
+      }
+    }
+
+    return output / tokenDuration;
+  }
+
   /**
    * 格式化成本（美元）
    * @param {number} cost - 成本值
@@ -918,6 +937,7 @@
   window.persistFilterState = persistFilterState;
   window.initSavedDateRangeFilter = initSavedDateRangeFilter;
   window.initAuthTokenFilter = initAuthTokenFilter;
+  window.calculateTokenSpeed = calculateTokenSpeed;
   window.formatCost = formatCost;
   window.formatCostPair = formatCostPair;
   window.formatCostMultiplier = formatCostMultiplier;
