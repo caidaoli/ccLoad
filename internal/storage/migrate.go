@@ -315,6 +315,8 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		// Debug日志配置
 		{"debug_log_enabled", "false", "bool", "启用Debug日志(记录上游请求/响应原始数据)", "false"},
 		{"debug_log_retention_minutes", "2", "int", "Debug日志保留时长(分钟,1-1440)", "2"},
+		// 前端自动刷新
+		{"auto_refresh_interval_seconds", "0", "int", "页面自动刷新间隔(秒,0=禁用,建议≥30;有对话框打开时跳过本次刷新)", "0"},
 	}
 
 	var query string

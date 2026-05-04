@@ -917,6 +917,7 @@ window.I18N_LOCALES['en'] = {
   'settings.desc.log_channel_click_action': 'Log page channel click action (edit=open editor, navigate=jump to channel list position)',
   'settings.desc.debug_log_enabled': 'Enable debug logging (record raw upstream request/response data)',
   'settings.desc.debug_log_retention_minutes': 'Debug log retention duration (minutes, 1-1440)',
+  'settings.desc.auto_refresh_interval_seconds': 'Page auto-refresh interval (seconds, 0 = disabled, recommended ≥30; skipped while a modal is open)',
   // Messages
   'settings.msg.saveSuccess': 'Settings saved successfully',
   'settings.msg.saveFailed': 'Settings save failed',

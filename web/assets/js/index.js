@@ -151,32 +151,7 @@
 
     // 注销功能（已由 ui.js 的 onLogout 统一处理）
 
-    // 轮询控制（性能优化：页面不可见时暂停）
-    let statsInterval = null;
-
-    function startStatsPolling() {
-      if (statsInterval) return; // 防止重复启动
-      statsInterval = setInterval(loadStats, 30000);
-    }
-
-    function stopStatsPolling() {
-      if (statsInterval) {
-        clearInterval(statsInterval);
-        statsInterval = null;
-      }
-    }
-
-    // 页面可见性监听（后台标签页暂停轮询，节省CPU）
-    document.addEventListener('visibilitychange', function() {
-      if (document.hidden) {
-        stopStatsPolling();
-        console.log('[性能优化] 页面不可见，已暂停数据轮询');
-      } else {
-        loadStats(); // 页面重新可见时立即刷新一次
-        startStatsPolling();
-        console.log('[性能优化] 页面可见，已恢复数据轮询');
-      }
-    });
+    // 自动刷新由 createAutoRefresh 统一管理（system_settings.auto_refresh_interval_seconds）
 
     // 页面初始化
     window.initPageBootstrap({
@@ -212,8 +187,10 @@
       // 加载统计数据
       loadStats();
 
-      // 设置自动刷新（每30秒，仅在页面可见时）
-      startStatsPolling();
+      // 自动刷新（system_settings.auto_refresh_interval_seconds，0=禁用）
+      if (typeof window.createAutoRefresh === 'function') {
+        window.createAutoRefresh({ load: loadStats }).init();
+      }
 
       // 添加页面动画
       document.querySelectorAll('.animate-slide-up').forEach((el, index) => {
