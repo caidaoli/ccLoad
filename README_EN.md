@@ -45,7 +45,7 @@ ccLoad solves these pain points through:
 - 🛡️ **Failover** - Automatic failure detection with exponential backoff cooldown (1s → 2s → 4s → ... → 30min)
 - 🔒 **Race-Safe** - Key selector race condition protection, startup config validation, automatic resource cleanup
 - 📊 **Real-time Monitoring** - Built-in trend analysis, logging, and stats dashboard, **Token usage stats** with time range selection and per-token classification
-- 🎯 **Transparent Proxy** - Supports Claude, Gemini, and OpenAI compatible APIs with smart auth detection
+- 🎯 **Transparent Proxy** - Supports Claude Code, Codex, Gemini, and OpenAI compatible APIs with smart auth detection
 - 📦 **Single Binary Deployment** - No external dependencies, embedded SQLite included
 - 🔒 **Secure Authentication** - Token-based admin interface and API access control
 - 🏷️ **Build Tags** - GOTAGS support, high-performance JSON library enabled by default
@@ -375,7 +375,7 @@ git push
 **Version Pinning** (Optional):
 To lock specific version, modify Dockerfile:
 ```dockerfile
-FROM ghcr.io/caidaoli/ccload:v1.96.1  # Specify version
+FROM ghcr.io/caidaoli/ccload:2.8.3  # Specify version
 ENV TZ=Asia/Shanghai
 ENV PORT=7860
 ENV SQLITE_PATH=/tmp/ccload.db
@@ -870,9 +870,9 @@ Project supports multi-arch Docker images:
 - **Image Registry**: `ghcr.io/caidaoli/ccload`
 - **Available Tags**:
   - `latest` - Latest stable version
-  - `v1.96.1` - Specific version number
-  - `v1.96` - Major.minor version
-  - `v1` - Major version
+  - `2.8.3` - Specific version number
+  - `2.8` - Major.minor version
+  - `2` - Major version
 
 ### Image Tag Guide
 
@@ -881,7 +881,7 @@ Project supports multi-arch Docker images:
 docker pull ghcr.io/caidaoli/ccload:latest
 
 # Pull specific version
-docker pull ghcr.io/caidaoli/ccload:v1.96.1
+docker pull ghcr.io/caidaoli/ccload:2.8.3
 
 # Specify architecture (Docker usually auto-selects)
 docker pull --platform linux/amd64 ghcr.io/caidaoli/ccload:latest
