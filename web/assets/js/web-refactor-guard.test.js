@@ -9,6 +9,8 @@ const statsSource = fs.readFileSync(path.join(__dirname, 'stats.js'), 'utf8');
 const trendSource = fs.readFileSync(path.join(__dirname, 'trend.js'), 'utf8');
 const channelsKeysSource = fs.readFileSync(path.join(__dirname, 'channels-keys.js'), 'utf8');
 const channelsModalsSource = fs.readFileSync(path.join(__dirname, 'channels-modals.js'), 'utf8');
+const indexSource = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
+const tokensSource = fs.readFileSync(path.join(__dirname, 'tokens.js'), 'utf8');
 
 const sharedCss = fs.readFileSync(path.join(__dirname, '..', 'css', 'styles.css'), 'utf8');
 const indexHtml = fs.readFileSync(path.join(__dirname, '..', '..', 'index.html'), 'utf8');
@@ -32,6 +34,18 @@ test('channels 页面脚本复用统一通知入口，不再引用不存在的 s
   assert.match(channelsModalsSource, /window\.showWarning\(/);
   assert.match(channelsModalsSource, /window\.ensureNotifyHost\(\)/);
   assert.doesNotMatch(channelsModalsSource, /host\.id\s*=\s*['"]notify-host['"]/);
+});
+
+test('index、tokens 通过 bindTimeRangeSelector 复用日期按钮重渲染', () => {
+  assert.match(uiSource, /window\.bindTimeRangeSelector\s*=\s*bindTimeRangeSelector/);
+  assert.match(indexSource, /window\.bindTimeRangeSelector\(/);
+  assert.match(tokensSource, /window\.bindTimeRangeSelector\(/);
+  // 不再保留旧的 renderTimeRangeSelector 闭包
+  assert.doesNotMatch(indexSource, /const\s+renderTimeRangeSelector\s*=/);
+  assert.doesNotMatch(tokensSource, /const\s+renderTimeRangeSelector\s*=/);
+  // 不再在页面层重复注册 initTimeRangeSelector
+  assert.doesNotMatch(indexSource, /window\.initTimeRangeSelector\(/);
+  assert.doesNotMatch(tokensSource, /window\.initTimeRangeSelector\(/);
 });
 
 test('logs、stats、trend 通过共享 helper 持久化筛选状态', () => {

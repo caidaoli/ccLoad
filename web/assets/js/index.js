@@ -157,32 +157,15 @@
     window.initPageBootstrap({
       topbarKey: 'index',
       run: () => {
-      const renderTimeRangeSelector = () => {
-        if (typeof window.renderDateRangeButtons === 'function') {
-          window.renderDateRangeButtons('index-time-range', {
-            values: ['today', 'yesterday', 'day_before_yesterday', 'this_week', 'last_week', 'this_month', 'last_month'],
-            activeValue: currentTimeRange
-          });
+      window.bindTimeRangeSelector({
+        containerId: 'index-time-range',
+        values: ['today', 'yesterday', 'day_before_yesterday', 'this_week', 'last_week', 'this_month', 'last_month'],
+        initialValue: currentTimeRange,
+        onChange: (range) => {
+          currentTimeRange = range;
+          loadStats();
         }
-      };
-
-      renderTimeRangeSelector();
-
-      // 初始化时间范围选择器
-      window.initTimeRangeSelector((range) => {
-        currentTimeRange = range;
-        loadStats();
       });
-
-      if (window.i18n && typeof window.i18n.onLocaleChange === 'function') {
-        window.i18n.onLocaleChange(() => {
-          renderTimeRangeSelector();
-          window.initTimeRangeSelector((range) => {
-            currentTimeRange = range;
-            loadStats();
-          });
-        });
-      }
 
       // 加载统计数据
       loadStats();

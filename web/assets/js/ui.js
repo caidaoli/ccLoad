@@ -940,7 +940,6 @@
   window.calculateTokenSpeed = calculateTokenSpeed;
   window.formatCost = formatCost;
   window.formatCostPair = formatCostPair;
-  window.formatCostMultiplier = formatCostMultiplier;
   window.getCostDisplayInfo = getCostDisplayInfo;
   window.buildCostStackHtml = buildCostStackHtml;
   window.buildCornerMultiplierBadge = buildCornerMultiplierBadge;
@@ -1891,6 +1890,36 @@
     });
   }
 
+  // 渲染日期按钮 + 绑定切换回调 + 监听 i18n 重渲染
+  function bindTimeRangeSelector(options = {}) {
+    const { containerId, values, includeAll = false, initialValue, onChange } = options;
+    let currentValue = initialValue;
+
+    const render = () => {
+      if (typeof window.renderDateRangeButtons !== 'function') return;
+      const cfg = { values, activeValue: currentValue };
+      if (includeAll) cfg.includeAll = true;
+      window.renderDateRangeButtons(containerId, cfg);
+    };
+
+    const bind = () => {
+      initTimeRangeSelector(range => {
+        currentValue = range;
+        if (typeof onChange === 'function') onChange(range);
+      });
+    };
+
+    render();
+    bind();
+
+    if (window.i18n && typeof window.i18n.onLocaleChange === 'function') {
+      window.i18n.onLocaleChange(() => {
+        render();
+        bind();
+      });
+    }
+  }
+
   const SENSITIVE_HEADER_RE = /^(authorization|x-api-key|api-key|x-goog-api-key|proxy-authorization)$/i;
 
   function maskHeaderValue(v) {
@@ -1918,4 +1947,5 @@
   window.initChannelTypeFilter = initChannelTypeFilter;
   window.loadAuthTokensIntoSelect = loadAuthTokensIntoSelect;
   window.initTimeRangeSelector = initTimeRangeSelector;
+  window.bindTimeRangeSelector = bindTimeRangeSelector;
 })();
