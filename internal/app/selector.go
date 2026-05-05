@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	modelpkg "ccLoad/internal/model"
+	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 )
 
@@ -18,12 +19,15 @@ func normalizeOptionalChannelType(value string) string {
 
 func (s *Server) getEnabledChannelsByExposedProtocol(ctx context.Context, protocol string) ([]*modelpkg.Config, error) {
 	normalizedType := util.NormalizeChannelType(protocol)
-	if cache := s.getChannelCache(); cache != nil {
-		if channels, err := cache.GetEnabledChannelsByExposedProtocol(ctx, normalizedType); err == nil {
-			return channels, nil
-		}
-	}
-	return s.store.GetEnabledChannelsByExposedProtocol(ctx, normalizedType)
+	return readThroughChannelCache(
+		s,
+		func(cache *storage.ChannelCache) ([]*modelpkg.Config, error) {
+			return cache.GetEnabledChannelsByExposedProtocol(ctx, normalizedType)
+		},
+		func() ([]*modelpkg.Config, error) {
+			return s.store.GetEnabledChannelsByExposedProtocol(ctx, normalizedType)
+		},
+	)
 }
 
 func (s *Server) getEnabledChannelsByModelAndProtocol(ctx context.Context, model string, protocol string) ([]*modelpkg.Config, error) {
@@ -32,13 +36,15 @@ func (s *Server) getEnabledChannelsByModelAndProtocol(ctx context.Context, model
 		return s.GetEnabledChannelsByModel(ctx, model)
 	}
 
-	if cache := s.getChannelCache(); cache != nil {
-		if channels, err := cache.GetEnabledChannelsByModelAndProtocol(ctx, model, normalizedType); err == nil {
-			return channels, nil
-		}
-	}
-
-	return s.store.GetEnabledChannelsByModelAndProtocol(ctx, model, normalizedType)
+	return readThroughChannelCache(
+		s,
+		func(cache *storage.ChannelCache) ([]*modelpkg.Config, error) {
+			return cache.GetEnabledChannelsByModelAndProtocol(ctx, model, normalizedType)
+		},
+		func() ([]*modelpkg.Config, error) {
+			return s.store.GetEnabledChannelsByModelAndProtocol(ctx, model, normalizedType)
+		},
+	)
 }
 
 // selectCandidatesByChannelType 根据客户端协议选择候选渠道

@@ -383,6 +383,19 @@ func (s *Server) getChannelCache() *storage.ChannelCache {
 	return s.channelCache
 }
 
+func readThroughChannelCache[T any](
+	s *Server,
+	readCache func(*storage.ChannelCache) (T, error),
+	readStore func() (T, error),
+) (T, error) {
+	if cache := s.getChannelCache(); cache != nil {
+		if value, err := readCache(cache); err == nil {
+			return value, nil
+		}
+	}
+	return readStore()
+}
+
 // buildHTTPTransport 构建HTTP Transport（DRY：统一配置逻辑）
 // 参数:
 //   - skipTLSVerify: 是否跳过TLS证书验证
@@ -418,9 +431,6 @@ func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
 	return transport // HTTP/2 已通过 ForceAttemptHTTP2 启用
 }
 
-// NOTE: 这些缓存fallback函数存在重复逻辑，可使用泛型重构（Go 1.18+）
-// 当前设计选择：保持简单直接，避免过度抽象（YAGNI）
-
 // GetConfig 获取渠道配置（实现cooldown.ConfigGetter接口）
 func (s *Server) GetConfig(ctx context.Context, channelID int64) (*model.Config, error) {
 	if cache := s.getChannelCache(); cache != nil {
@@ -430,50 +440,65 @@ func (s *Server) GetConfig(ctx context.Context, channelID int64) (*model.Config,
 }
 
 // GetEnabledChannelsByModel 根据模型名称获取所有启用的渠道配置
-func (s *Server) GetEnabledChannelsByModel(ctx context.Context, model string) ([]*model.Config, error) {
-	if cache := s.getChannelCache(); cache != nil {
-		if channels, err := cache.GetEnabledChannelsByModel(ctx, model); err == nil {
-			return channels, nil
-		}
-	}
-	return s.store.GetEnabledChannelsByModel(ctx, model)
+func (s *Server) GetEnabledChannelsByModel(ctx context.Context, modelName string) ([]*model.Config, error) {
+	return readThroughChannelCache(
+		s,
+		func(cache *storage.ChannelCache) ([]*model.Config, error) {
+			return cache.GetEnabledChannelsByModel(ctx, modelName)
+		},
+		func() ([]*model.Config, error) {
+			return s.store.GetEnabledChannelsByModel(ctx, modelName)
+		},
+	)
 }
 
 // GetEnabledChannelsByType 根据渠道类型获取所有启用的渠道配置
 func (s *Server) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*model.Config, error) {
-	if cache := s.getChannelCache(); cache != nil {
-		if channels, err := cache.GetEnabledChannelsByType(ctx, channelType); err == nil {
-			return channels, nil
-		}
-	}
-	return s.store.GetEnabledChannelsByType(ctx, channelType)
+	return readThroughChannelCache(
+		s,
+		func(cache *storage.ChannelCache) ([]*model.Config, error) {
+			return cache.GetEnabledChannelsByType(ctx, channelType)
+		},
+		func() ([]*model.Config, error) {
+			return s.store.GetEnabledChannelsByType(ctx, channelType)
+		},
+	)
 }
 
 func (s *Server) getAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error) {
-	if cache := s.getChannelCache(); cache != nil {
-		if keys, err := cache.GetAPIKeys(ctx, channelID); err == nil {
-			return keys, nil
-		}
-	}
-	return s.store.GetAPIKeys(ctx, channelID)
+	return readThroughChannelCache(
+		s,
+		func(cache *storage.ChannelCache) ([]*model.APIKey, error) {
+			return cache.GetAPIKeys(ctx, channelID)
+		},
+		func() ([]*model.APIKey, error) {
+			return s.store.GetAPIKeys(ctx, channelID)
+		},
+	)
 }
 
 func (s *Server) getAllChannelCooldowns(ctx context.Context) (map[int64]time.Time, error) {
-	if cache := s.getChannelCache(); cache != nil {
-		if cooldowns, err := cache.GetAllChannelCooldowns(ctx); err == nil {
-			return cooldowns, nil
-		}
-	}
-	return s.store.GetAllChannelCooldowns(ctx)
+	return readThroughChannelCache(
+		s,
+		func(cache *storage.ChannelCache) (map[int64]time.Time, error) {
+			return cache.GetAllChannelCooldowns(ctx)
+		},
+		func() (map[int64]time.Time, error) {
+			return s.store.GetAllChannelCooldowns(ctx)
+		},
+	)
 }
 
 func (s *Server) getAllKeyCooldowns(ctx context.Context) (map[int64]map[int]time.Time, error) {
-	if cache := s.getChannelCache(); cache != nil {
-		if cooldowns, err := cache.GetAllKeyCooldowns(ctx); err == nil {
-			return cooldowns, nil
-		}
-	}
-	return s.store.GetAllKeyCooldowns(ctx)
+	return readThroughChannelCache(
+		s,
+		func(cache *storage.ChannelCache) (map[int64]map[int]time.Time, error) {
+			return cache.GetAllKeyCooldowns(ctx)
+		},
+		func() (map[int64]map[int]time.Time, error) {
+			return s.store.GetAllKeyCooldowns(ctx)
+		},
+	)
 }
 
 // InvalidateChannelListCache 使渠道列表缓存失效
@@ -728,17 +753,7 @@ func (s *Server) getModelsByChannelType(ctx context.Context, channelType string)
 	if err != nil {
 		return nil, err
 	}
-	modelSet := make(map[string]struct{})
-	for _, cfg := range channels {
-		for _, modelName := range cfg.GetModels() {
-			modelSet[modelName] = struct{}{}
-		}
-	}
-	models := make([]string, 0, len(modelSet))
-	for name := range modelSet {
-		models = append(models, name)
-	}
-	return models, nil
+	return modelNamesFromChannels(channels), nil
 }
 
 // getModelsByExposedProtocol 获取指定暴露协议的去重模型列表
@@ -747,6 +762,10 @@ func (s *Server) getModelsByExposedProtocol(ctx context.Context, protocol string
 	if err != nil {
 		return nil, err
 	}
+	return modelNamesFromChannels(channels), nil
+}
+
+func modelNamesFromChannels(channels []*model.Config) []string {
 	modelSet := make(map[string]struct{})
 	for _, cfg := range channels {
 		for _, modelName := range cfg.GetModels() {
@@ -757,7 +776,7 @@ func (s *Server) getModelsByExposedProtocol(ctx context.Context, protocol string
 	for name := range modelSet {
 		models = append(models, name)
 	}
-	return models, nil
+	return models
 }
 
 // HandleChannelKeys 获取渠道的所有API Keys
