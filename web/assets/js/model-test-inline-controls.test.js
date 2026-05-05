@@ -32,6 +32,108 @@ function extractFunction(source, name) {
   assert.fail(`函数 ${name} 大括号未闭合`);
 }
 
+function createDomElement(tagName, attrs = {}) {
+  const element = {
+    tagName: String(tagName || '').toUpperCase(),
+    children: [],
+    parentElement: null,
+    attributes: new Map(),
+    style: {},
+    _textContent: '',
+    className: '',
+    id: '',
+    value: '',
+    placeholder: '',
+    addEventListener() {},
+    appendChild(child) {
+      child.parentElement = this;
+      this.children.push(child);
+      return child;
+    },
+    insertBefore(child, reference) {
+      child.parentElement = this;
+      const index = this.children.indexOf(reference);
+      if (index < 0) {
+        this.children.push(child);
+      } else {
+        this.children.splice(index, 0, child);
+      }
+      return child;
+    },
+    setAttribute(name, value) {
+      this.attributes.set(name, String(value));
+      if (name === 'id') this.id = String(value);
+      if (name === 'class') this.className = String(value);
+    },
+    getAttribute(name) {
+      return this.attributes.has(name) ? this.attributes.get(name) : null;
+    },
+    removeAttribute(name) {
+      this.attributes.delete(name);
+    },
+    querySelector(selector) {
+      return queryTree(this, selector)[0] || null;
+    },
+    querySelectorAll(selector) {
+      return queryTree(this, selector);
+    }
+  };
+
+  Object.defineProperty(element, 'textContent', {
+    get() {
+      return this._textContent + this.children.map(child => child.textContent).join('');
+    },
+    set(value) {
+      this._textContent = String(value || '');
+      this.children = [];
+    }
+  });
+
+  Object.entries(attrs).forEach(([key, value]) => {
+    if (key === 'textContent') {
+      element.textContent = value;
+      return;
+    }
+    element.setAttribute(key, value);
+  });
+
+  return element;
+}
+
+function matchesSelector(element, selector) {
+  if (selector === '[data-i18n]') {
+    return element.getAttribute('data-i18n') !== null;
+  }
+  if (selector.startsWith('#')) {
+    return element.id === selector.slice(1);
+  }
+  if (selector.startsWith('.')) {
+    return String(element.className || '').split(/\s+/).includes(selector.slice(1));
+  }
+  const attrMatch = selector.match(/^([a-z]+)\[([^=]+)="([^"]+)"\]$/i);
+  if (attrMatch) {
+    const [, tag, attr, value] = attrMatch;
+    return element.tagName === tag.toUpperCase() && element.getAttribute(attr) === value;
+  }
+  return element.tagName === selector.toUpperCase();
+}
+
+function queryTree(root, selector) {
+  const result = [];
+  const visit = (element) => {
+    if (matchesSelector(element, selector)) {
+      result.push(element);
+    }
+    element.children.forEach(visit);
+  };
+  root.children.forEach(visit);
+  return result;
+}
+
+function findElementById(root, id) {
+  return queryTree(root, `#${id}`)[0] || null;
+}
+
 test('model-test 页静态控件不再使用内联事件', () => {
   assert.doesNotMatch(html, /onclick="(?:setTestMode|fetchAndAddModels|deleteSelectedModels|runModelTests)\([^"]*\)"/);
   assert.doesNotMatch(html, /onchange="toggleAllModels\(this\.checked\)"/);
@@ -237,6 +339,55 @@ test('model-test.js 两个模式下都把渠道按钮点击委托到编辑弹窗
   assert.match(script, /const channelBtn = event\.target\.closest\('\.channel-link\[data-channel-id\]'\);/);
   assert.match(script, /if \(!channelBtn\) return;/);
   assert.match(script, /openLogChannelEditor\(channelId\)/);
+});
+
+test('model-test.js 表头模型过滤输入框不被后续全页翻译清掉', () => {
+  const root = createDomElement('div');
+  const headRow = createDomElement('tr');
+  const nameTh = createDomElement('th', {
+    'data-sort-key': 'name',
+    'data-i18n': 'common.model',
+    textContent: '模型'
+  });
+  headRow.appendChild(nameTh);
+  root.appendChild(headRow);
+
+  const sandbox = {
+    TEST_MODE_MODEL: 'model',
+    testMode: 'channel',
+    nameFilterKeyword: '',
+    headRow,
+    mobileNameFilterInput: null,
+    i18nText(key, fallback) {
+      return `${key}:${fallback}`;
+    },
+    document: {
+      createElement(tagName) {
+        return createDomElement(tagName);
+      },
+      getElementById(id) {
+        return findElementById(root, id);
+      }
+    }
+  };
+
+  vm.runInNewContext(`
+    ${extractFunction(script, 'getNameFilterPlaceholder')}
+    ${extractFunction(script, 'syncNameFilterInputs')}
+    ${extractFunction(script, 'renderNameFilterInHeader')}
+  `, sandbox);
+
+  sandbox.renderNameFilterInHeader();
+  assert.ok(findElementById(root, 'modelTestNameFilter'), '首次渲染后应存在表头过滤输入框');
+
+  root.querySelectorAll('[data-i18n]').forEach((element) => {
+    element.textContent = `translated:${element.getAttribute('data-i18n')}`;
+  });
+
+  assert.ok(
+    findElementById(root, 'modelTestNameFilter'),
+    '渠道编辑器触发 translatePage 后不应删除表头过滤输入框'
+  );
 });
 
 test('model-test.js 渠道编辑器保存后通过 preserveSelection 重新加载渠道并保留选中', () => {

@@ -282,6 +282,7 @@ function renderNameFilterInHeader() {
   const nameTh = headRow.querySelector('th[data-sort-key="name"]');
   if (!nameTh) return;
   const filterWidth = testMode === TEST_MODE_MODEL ? '160px' : '130px';
+  const labelI18nKey = nameTh.getAttribute('data-i18n') || '';
 
   let headerLine = nameTh.querySelector('.model-test-name-head-line');
   let label = nameTh.querySelector('.model-test-name-label');
@@ -303,6 +304,9 @@ function renderNameFilterInHeader() {
     label = document.createElement('span');
     label.className = 'model-test-name-label';
     label.textContent = baseLabel;
+    if (labelI18nKey) {
+      label.setAttribute('data-i18n', labelI18nKey);
+    }
     label.style.flex = '0 0 auto';
     headerLine.appendChild(label);
 
@@ -329,6 +333,12 @@ function renderNameFilterInHeader() {
 
     headerLine.appendChild(input);
     nameTh.appendChild(headerLine);
+  } else if (labelI18nKey && label && !label.getAttribute('data-i18n')) {
+    label.setAttribute('data-i18n', labelI18nKey);
+  }
+
+  if (labelI18nKey) {
+    nameTh.removeAttribute('data-i18n');
   }
 
   const indicator = nameTh.querySelector('.model-test-sort-indicator');
