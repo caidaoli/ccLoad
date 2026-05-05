@@ -48,6 +48,10 @@ type sseUsageParser struct {
 	// OpenAI: data: [DONE]
 	// Anthropic: event: message_stop
 	streamComplete bool
+
+	// hasStreamOutput 表示已经看到应转发给客户端的非心跳流事件。
+	// ping 只是上游保活，不能让 200 空流被误判为成功。
+	hasStreamOutput bool
 }
 
 type jsonUsageParser struct {
@@ -55,6 +59,7 @@ type jsonUsageParser struct {
 	buffer      bytes.Buffer
 	truncated   bool
 	channelType string // 渠道类型(anthropic/openai/codex/gemini),用于精确平台判断
+	hasBody     bool
 
 	scanInString       bool
 	scanEscape         bool
@@ -78,6 +83,7 @@ type usageParser interface {
 	GetCacheBreakdown() (cache5m, cache1h int, serviceTier string) // 返回缓存分桶与 OpenAI service_tier
 	GetLastError() []byte                                          // [INFO] 返回SSE流中检测到的最后一个error事件（用于1308等错误的延迟处理）
 	IsStreamComplete() bool                                        // [INFO] 返回是否检测到流结束标志（[DONE]/message_stop）
+	HasStreamOutput() bool                                         // 返回是否已经看到非心跳的可见响应内容
 }
 
 // GetCacheBreakdown 由 sseUsageParser/jsonUsageParser 通过嵌入共享。
@@ -278,6 +284,7 @@ func (p *sseUsageParser) parseBuffer() error {
 			// [INFO] OpenAI 流结束标志: data: [DONE]
 			if dataLine == "[DONE]" {
 				p.streamComplete = true
+				p.hasStreamOutput = true
 				continue // [DONE]不是JSON，跳过追加
 			}
 			p.dataLines = append(p.dataLines, dataLine)
@@ -317,9 +324,14 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		return nil // 不解析usage，避免误判
 	}
 
+	if isHeartbeatEvent(eventType, data) {
+		return nil
+	}
+
+	p.hasStreamOutput = true
+
 	// 已知无用事件（不包含usage）
 	ignoredEvents := []string{
-		"ping",                // 心跳事件
 		"content_block_start", // Claude内容块开始（无usage）
 		"content_block_delta", // Claude增量内容（无usage）
 	}
@@ -395,7 +407,27 @@ func (p *sseUsageParser) IsStreamComplete() bool {
 	return p.streamComplete
 }
 
+func (p *sseUsageParser) HasStreamOutput() bool {
+	return p.hasStreamOutput
+}
+
+func isHeartbeatEvent(eventType, data string) bool {
+	if eventType == "ping" {
+		return true
+	}
+	if data == "" {
+		return false
+	}
+	var event struct {
+		Type string `json:"type"`
+	}
+	return json.Unmarshal([]byte(data), &event) == nil && event.Type == "ping"
+}
+
 func (p *jsonUsageParser) Feed(data []byte) error {
+	if len(data) > 0 {
+		p.hasBody = true
+	}
 	p.scanJSONUsage(data)
 
 	if p.truncated {
@@ -642,6 +674,10 @@ func (p *jsonUsageParser) GetLastError() []byte {
 // [INFO] IsStreamComplete 返回false（非流式请求无结束标志概念）
 func (p *jsonUsageParser) IsStreamComplete() bool {
 	return false // JSON解析器不处理流结束标志
+}
+
+func (p *jsonUsageParser) HasStreamOutput() bool {
+	return p.hasBody
 }
 
 func (u *usageAccumulator) applyUsage(usage map[string]any, channelType string) {

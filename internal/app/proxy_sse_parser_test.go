@@ -113,6 +113,23 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
 	}
 }
 
+func TestSSEUsageParser_StreamOutputIgnoresHeartbeat(t *testing.T) {
+	parser := newSSEUsageParser("anthropic")
+	if err := parser.Feed([]byte("event: ping\ndata: {\"type\":\"ping\"}\n\n")); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	if parser.HasStreamOutput() {
+		t.Fatalf("ping heartbeat must not count as stream output")
+	}
+
+	if err := parser.Feed([]byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n")); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	if !parser.HasStreamOutput() {
+		t.Fatalf("content delta must count as stream output")
+	}
+}
+
 // ============================================================================
 // 边界测试：分块读取（真实SSE流场景）
 // ============================================================================

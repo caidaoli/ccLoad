@@ -313,6 +313,14 @@ func TestClassifyError_EmptyResponse(t *testing.T) {
 			expectedRetry:  true,
 			reason:         "大小写不敏感匹配",
 		},
+		{
+			name:           "empty_response_sentinel_without_content_length",
+			err:            fmt.Errorf("response probe failed: %w", ErrUpstreamEmptyResponse),
+			expectedStatus: 502,
+			expectedLevel:  ErrorLevelChannel,
+			expectedRetry:  true,
+			reason:         "无Content-Length的200空体也应视为上游故障，不能依赖错误文案",
+		},
 	}
 
 	for _, tt := range tests {
