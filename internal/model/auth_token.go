@@ -7,9 +7,9 @@ import (
 	"encoding/json"
 	"strings"
 	"time"
-)
 
-const microUSDScale = 1_000_000
+	"ccLoad/internal/util"
+)
 
 // AuthToken 表示一个API访问令牌
 // 用于代理API (/v1/*) 的认证授权
@@ -147,12 +147,12 @@ func (t *AuthToken) IsChannelAllowed(channelID int64) bool {
 
 // CostUsedUSD 返回已消耗费用（美元）
 func (t *AuthToken) CostUsedUSD() float64 {
-	return float64(t.CostUsedMicroUSD) / microUSDScale
+	return util.MicroUSDToUSD(t.CostUsedMicroUSD)
 }
 
 // CostLimitUSD 返回费用上限（美元）
 func (t *AuthToken) CostLimitUSD() float64 {
-	return float64(t.CostLimitMicroUSD) / microUSDScale
+	return util.MicroUSDToUSD(t.CostLimitMicroUSD)
 }
 
 // SetCostLimitUSD 设置费用上限（从美元转换为微美元）
@@ -161,7 +161,7 @@ func (t *AuthToken) SetCostLimitUSD(usd float64) {
 		t.CostLimitMicroUSD = 0
 		return
 	}
-	t.CostLimitMicroUSD = int64(usd * microUSDScale)
+	t.CostLimitMicroUSD = util.USDToMicroUSD(usd)
 }
 
 // authTokenJSON 是用于JSON序列化的内部结构
