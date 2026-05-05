@@ -473,15 +473,23 @@ func (s *Server) handleSuccessResponse(
 			if parser.GetLastError() != nil {
 				return errAbortStreamBeforeWrite
 			}
-			deferredWriter.Commit()
+			if parser.HasStreamOutput() {
+				return deferredWriter.Commit()
+			}
 			return nil
 		},
 	)
 	abortedBeforeCommit := errors.Is(streamErr, errAbortStreamBeforeWrite)
 	if abortedBeforeCommit {
 		streamErr = nil
+	} else if deferredWriter != nil && !deferredWriter.Committed() && isEmptyStreamOutput(parser, readStats) {
+		if streamErr == nil {
+			return emptyOKResponseResult(reqCtx, resp, hdrClone, readStats, emptyStreamDetail(readStats))
+		}
 	} else if deferredWriter != nil && !deferredWriter.Committed() {
-		deferredWriter.Commit()
+		if commitErr := deferredWriter.Commit(); commitErr != nil && streamErr == nil {
+			streamErr = commitErr
+		}
 	}
 
 	// 构建结果
@@ -632,8 +640,8 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 			if !deferredWriter.Committed() && parser.GetLastError() != nil {
 				return errAbortStreamBeforeWrite
 			}
-			if !deferredWriter.Committed() {
-				deferredWriter.Commit()
+			if !deferredWriter.Committed() && parser.HasStreamOutput() {
+				return deferredWriter.Commit()
 			}
 			return nil
 		},
@@ -661,8 +669,14 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	abortedBeforeCommit := errors.Is(streamErr, errAbortStreamBeforeWrite)
 	if abortedBeforeCommit {
 		streamErr = nil
+	} else if !deferredWriter.Committed() && isEmptyStreamOutput(parser, readStats) {
+		if streamErr == nil {
+			return emptyOKResponseResult(reqCtx, resp, hdrClone, readStats, emptyStreamDetail(readStats))
+		}
 	} else if !deferredWriter.Committed() {
-		deferredWriter.Commit()
+		if commitErr := deferredWriter.Commit(); commitErr != nil && streamErr == nil {
+			streamErr = commitErr
+		}
 	}
 
 	result := &fwResult{
@@ -814,15 +828,57 @@ func (s *Server) probeSoftErrorResponse(
 	return false, nil, 0, nil
 }
 
-func emptyOKResponseResult(reqCtx *requestContext, resp *http.Response, hdrClone http.Header, readStats *streamReadStats) (*fwResult, float64, error) {
+func emptyOKResponseResult(reqCtx *requestContext, resp *http.Response, hdrClone http.Header, readStats *streamReadStats, detail string) (*fwResult, float64, error) {
 	duration := reqCtx.Duration().Seconds()
-	err := fmt.Errorf("upstream returned empty response (200 OK with Content-Length: 0)")
+	err := fmt.Errorf("%w (200 OK %s)", util.ErrUpstreamEmptyResponse, detail)
 	return &fwResult{
 		Status:        resp.StatusCode,
 		Header:        hdrClone,
 		Body:          []byte(err.Error()),
 		FirstByteTime: readStats.firstByteSec,
 	}, duration, err
+}
+
+func isEmptyStreamOutput(parser usageParser, readStats *streamReadStats) bool {
+	if readStats == nil || readStats.totalBytes == 0 {
+		return true
+	}
+	return parser != nil && !parser.HasStreamOutput()
+}
+
+func emptyStreamDetail(readStats *streamReadStats) string {
+	if readStats == nil || readStats.totalBytes == 0 {
+		return "without response body"
+	}
+	return "without response content"
+}
+
+func probeEmptyOKResponse(reqCtx *requestContext, resp *http.Response, hdrClone http.Header, readStats *streamReadStats) (bool, *fwResult, float64, error) {
+	if reqCtx.isStreaming || resp.StatusCode != http.StatusOK {
+		return false, nil, 0, nil
+	}
+
+	if resp.Body == nil {
+		res, duration, err := emptyOKResponseResult(reqCtx, resp, hdrClone, readStats, "with nil body")
+		return true, res, duration, err
+	}
+
+	if resp.Header.Get("Content-Length") == "0" {
+		res, duration, err := emptyOKResponseResult(reqCtx, resp, hdrClone, readStats, "with Content-Length: 0")
+		return true, res, duration, err
+	}
+
+	var firstByte [1]byte
+	n, readErr := resp.Body.Read(firstByte[:])
+	if n > 0 {
+		prependToBody(resp, firstByte[:n])
+		return false, nil, 0, nil
+	}
+	if readErr == io.EOF {
+		res, duration, err := emptyOKResponseResult(reqCtx, resp, hdrClone, readStats, "without response body")
+		return true, res, duration, err
+	}
+	return false, nil, 0, nil
 }
 
 // handleResponse 处理 HTTP 响应（错误或成功）
@@ -844,16 +900,16 @@ func (s *Server) handleResponse(
 
 	attachFirstByteDetector(reqCtx, resp, readStats, observer)
 
-	if handled, res, duration, err := s.probeSoftErrorResponse(reqCtx, resp, hdrClone, cfg, channelType, readStats); handled {
-		return res, duration, err
-	}
-
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return s.handleErrorResponse(reqCtx, resp, hdrClone, readStats)
 	}
 
-	if contentLen := resp.Header.Get("Content-Length"); contentLen == "0" {
-		return emptyOKResponseResult(reqCtx, resp, hdrClone, readStats)
+	if handled, res, duration, err := probeEmptyOKResponse(reqCtx, resp, hdrClone, readStats); handled {
+		return res, duration, err
+	}
+
+	if handled, res, duration, err := s.probeSoftErrorResponse(reqCtx, resp, hdrClone, cfg, channelType, readStats); handled {
+		return res, duration, err
 	}
 
 	return s.handleSuccessResponse(reqCtx, resp, hdrClone, w, channelType, readStats)

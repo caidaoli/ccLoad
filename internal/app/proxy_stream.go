@@ -106,6 +106,7 @@ type deferredResponseWriter struct {
 	header    http.Header
 	status    int
 	committed bool
+	buffer    bytes.Buffer
 }
 
 func newDeferredResponseWriter(target http.ResponseWriter) *deferredResponseWriter {
@@ -127,7 +128,9 @@ func (w *deferredResponseWriter) WriteHeader(status int) {
 }
 
 func (w *deferredResponseWriter) Write(p []byte) (int, error) {
-	w.Commit()
+	if !w.committed {
+		return w.buffer.Write(p)
+	}
 	return w.target.Write(p)
 }
 
@@ -140,9 +143,9 @@ func (w *deferredResponseWriter) Flush() {
 	}
 }
 
-func (w *deferredResponseWriter) Commit() {
+func (w *deferredResponseWriter) Commit() error {
 	if w.committed {
-		return
+		return nil
 	}
 	for key, values := range w.header {
 		dstValues := append([]string(nil), values...)
@@ -154,6 +157,13 @@ func (w *deferredResponseWriter) Commit() {
 	}
 	w.target.WriteHeader(status)
 	w.committed = true
+	if w.buffer.Len() > 0 {
+		if _, err := w.target.Write(w.buffer.Bytes()); err != nil {
+			return err
+		}
+		w.buffer.Reset()
+	}
+	return nil
 }
 
 func (w *deferredResponseWriter) Committed() bool {

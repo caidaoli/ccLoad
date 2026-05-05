@@ -1878,6 +1878,168 @@ func TestProxy_ChannelRetry_On503(t *testing.T) {
 	}
 }
 
+func TestProxy_NonStreamingEmpty200RetriesNextChannel(t *testing.T) {
+	t.Parallel()
+
+	var emptyCalls atomic.Int32
+	upstreamEmpty := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		emptyCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstreamEmpty.Close()
+
+	var okCalls atomic.Int32
+	upstreamOK := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		okCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"from-ch2","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstreamOK.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "ch-empty", models: "gpt-4", apiKey: "sk-empty", priority: 100},
+		{name: "ch-ok", models: "gpt-4", apiKey: "sk-ok", priority: 50},
+	}, map[int]string{
+		0: upstreamEmpty.URL,
+		1: upstreamOK.URL,
+	})
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-4",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 after retrying next channel, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "from-ch2") {
+		t.Fatalf("expected response from second channel, got body: %s", w.Body.String())
+	}
+	if got := emptyCalls.Load(); got != 1 {
+		t.Fatalf("empty upstream calls=%d, want 1", got)
+	}
+	if got := okCalls.Load(); got != 1 {
+		t.Fatalf("ok upstream calls=%d, want 1", got)
+	}
+}
+
+func TestProxy_StreamingEmpty200RetriesNextChannel(t *testing.T) {
+	t.Parallel()
+
+	var emptyCalls atomic.Int32
+	upstreamEmpty := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		emptyCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstreamEmpty.Close()
+
+	var okCalls atomic.Int32
+	upstreamOK := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		okCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = fmt.Fprint(w, "data: {\"id\":\"from-ch2\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer upstreamOK.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "ch-empty-stream", models: "gpt-4", apiKey: "sk-empty", priority: 100},
+		{name: "ch-ok-stream", models: "gpt-4", apiKey: "sk-ok", priority: 50},
+	}, map[int]string{
+		0: upstreamEmpty.URL,
+		1: upstreamOK.URL,
+	})
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-4",
+		"stream":   true,
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 after retrying next streaming channel, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "from-ch2") {
+		t.Fatalf("expected stream response from second channel, got body: %s", w.Body.String())
+	}
+	if got := emptyCalls.Load(); got != 1 {
+		t.Fatalf("empty upstream calls=%d, want 1", got)
+	}
+	if got := okCalls.Load(); got != 1 {
+		t.Fatalf("ok upstream calls=%d, want 1", got)
+	}
+}
+
+func TestProxy_StreamingPingOnly200RetriesNextChannel(t *testing.T) {
+	t.Parallel()
+
+	var pingCalls atomic.Int32
+	upstreamPing := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pingCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = fmt.Fprint(w, "event: ping\n")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"ping\"}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer upstreamPing.Close()
+
+	var okCalls atomic.Int32
+	upstreamOK := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		okCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = fmt.Fprint(w, "data: {\"id\":\"from-ch2\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer upstreamOK.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "ch-ping-stream", models: "gpt-4", apiKey: "sk-ping", priority: 100},
+		{name: "ch-ok-stream", models: "gpt-4", apiKey: "sk-ok", priority: 50},
+	}, map[int]string{
+		0: upstreamPing.URL,
+		1: upstreamOK.URL,
+	})
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-4",
+		"stream":   true,
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 after retrying next streaming channel, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "from-ch2") {
+		t.Fatalf("expected stream response from second channel, got body: %s", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), `"type":"ping"`) {
+		t.Fatalf("expected ping-only response not to leak to client, got body: %s", w.Body.String())
+	}
+	if got := pingCalls.Load(); got != 1 {
+		t.Fatalf("ping upstream calls=%d, want 1", got)
+	}
+	if got := okCalls.Load(); got != 1 {
+		t.Fatalf("ok upstream calls=%d, want 1", got)
+	}
+}
+
 func TestProxy_MultiURL5xx_SwitchesToNextChannel(t *testing.T) {
 	t.Parallel()
 
