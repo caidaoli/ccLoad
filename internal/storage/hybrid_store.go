@@ -226,6 +226,20 @@ func (h *HybridStore) UpdateConfig(ctx context.Context, id int64, upd *model.Con
 	return result, nil
 }
 
+func (h *HybridStore) UpdateChannelEnabled(ctx context.Context, id int64, enabled bool) (*model.Config, error) {
+	result, err := h.mysql.UpdateChannelEnabled(ctx, id, enabled)
+	if err != nil {
+		return nil, err
+	}
+
+	h.syncToSQLite("UpdateChannelEnabled", func() error {
+		_, err := h.sqlite.UpdateChannelEnabled(ctx, id, enabled)
+		return err
+	})
+
+	return result, nil
+}
+
 func (h *HybridStore) DeleteConfig(ctx context.Context, id int64) error {
 	if err := h.mysql.DeleteConfig(ctx, id); err != nil {
 		return err

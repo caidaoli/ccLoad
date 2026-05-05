@@ -93,6 +93,9 @@ function createHarness({
   channel = null,
   apiKeys = [{ api_key: 'sk-test' }],
   channelCheckIntervalHours = 24,
+  channelCheckIntervalResponse = null,
+  apiKeysResponse = null,
+  saveResponse = null,
   duplicateResponses = null
 } = {}) {
   let protocolTransformInputs = [];
@@ -100,6 +103,7 @@ function createHarness({
   const elements = {};
   const radiosByName = new Map();
   const fetchCalls = [];
+  const dataFetchCalls = [];
   const duplicateResponseQueue = Array.isArray(duplicateResponses) ? duplicateResponses.slice() : null;
   let afterSavePayload = null;
   let nextTimerId = 1;
@@ -218,6 +222,7 @@ function createHarness({
   elements.channelScheduledCheckModelHint = createElement({ id: 'channelScheduledCheckModelHint', textContent: '' });
   elements.channelDuplicateHint = createElement({ id: 'channelDuplicateHint', hidden: true, textContent: '' });
   elements.channelModal = createElement({ id: 'channelModal' });
+  elements.channelSaveBtn = createElement({ id: 'channelSaveBtn', disabled: false });
   elements.inlineEyeIcon = createElement({ id: 'inlineEyeIcon', style: {} });
   elements.inlineEyeOffIcon = createElement({ id: 'inlineEyeOffIcon', style: {} });
   elements.modelFilterInput = createElement({ id: 'modelFilterInput', value: '' });
@@ -285,10 +290,17 @@ function createHarness({
       };
     },
     fetchDataWithAuth: async (requestPath) => {
+      dataFetchCalls.push(requestPath);
       if (requestPath === '/admin/settings/channel_check_interval_hours') {
+        if (channelCheckIntervalResponse) {
+          return await channelCheckIntervalResponse;
+        }
         return { value: channelCheckIntervalHours };
       }
       if (channel && requestPath === `/admin/channels/${channel.id}/keys`) {
+        if (apiKeysResponse) {
+          return await apiKeysResponse;
+        }
         return apiKeys;
       }
       throw new Error(`unexpected fetchDataWithAuth: ${requestPath}`);
@@ -298,6 +310,9 @@ function createHarness({
       if (requestPath === '/admin/channels/check-duplicate' && duplicateResponseQueue && duplicateResponseQueue.length > 0) {
         const nextResponse = duplicateResponseQueue.shift();
         return typeof nextResponse === 'function' ? nextResponse(requestPath, options) : nextResponse;
+      }
+      if ((requestPath === '/admin/channels' || requestPath === `/admin/channels/${channel?.id}`) && saveResponse) {
+        return await saveResponse;
       }
       return { success: true };
     },
@@ -410,6 +425,7 @@ function createHarness({
     api: sandbox.__protocolTransformsTest,
     elements,
     fetchCalls,
+    dataFetchCalls,
     getAfterSavePayload: () => afterSavePayload,
     getProtocolTransformInput(value) {
       return protocolTransformInputs.find((input) => input.value === value) || null;
@@ -426,6 +442,9 @@ function createHarness({
     },
     getRadio,
     setCheckedRadio,
+    setEditingChannelId(value) {
+      sandbox.editingChannelId = value;
+    },
     setInlineURLs(urls) {
       sandbox.inlineURLTableData = Array.isArray(urls) ? urls.slice() : [];
     },
@@ -552,6 +571,43 @@ test('编辑渠道时会回填 protocol_transforms，并禁用原生协议选项
     harness.getProtocolTransformValues().filter((item) => item.checked).map((item) => item.value).sort(),
     ['anthropic', 'openai']
   );
+});
+
+test('编辑渠道会并行读取定时检测配置和 API Keys，避免串行等待', async () => {
+  const setting = createDeferred();
+  const keys = createDeferred();
+  const harness = createHarness({
+    channel: {
+      id: 7,
+      name: 'edited-channel',
+      url: 'https://api.example.com',
+      channel_type: 'gemini',
+      protocol_transform_mode: 'upstream',
+      protocol_transforms: ['openai'],
+      key_strategy: 'sequential',
+      priority: 9,
+      daily_cost_limit: 0,
+      enabled: true,
+      scheduled_check_enabled: false,
+      scheduled_check_model: '',
+      models: [{ model: 'gpt-5.4', redirect_model: '' }]
+    },
+    channelCheckIntervalResponse: setting.promise,
+    apiKeysResponse: keys.promise
+  });
+
+  const editPromise = harness.api.editChannel(7);
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.deepEqual(harness.dataFetchCalls, [
+    '/admin/settings/channel_check_interval_hours',
+    '/admin/channels/7/keys'
+  ]);
+
+  setting.resolve({ value: 24 });
+  keys.resolve([{ api_key: 'sk-live' }]);
+  await editPromise;
 });
 
 test('URL 含 # 时转换方式禁用上游并强制选择 ccLoad', () => {
@@ -685,4 +741,39 @@ test('保存渠道时 payload 带上 protocol_transforms', async () => {
     savedChannelId: null,
     response: { success: true }
   });
+});
+
+test('保存渠道提交后立即禁用保存按钮，避免慢请求期间没有反馈', async () => {
+  const save = createDeferred();
+  const harness = createHarness({
+    channel: {
+      id: 7,
+      name: 'edited-channel',
+      url: 'https://api.example.com',
+      channel_type: 'anthropic',
+      protocol_transform_mode: 'upstream',
+      protocol_transforms: [],
+      key_strategy: 'sequential',
+      priority: 9,
+      daily_cost_limit: 0,
+      enabled: true,
+      scheduled_check_enabled: false,
+      scheduled_check_model: '',
+      models: [{ model: 'claude-3-7-sonnet', redirect_model: '' }]
+    },
+    saveResponse: save.promise
+  });
+  harness.api.initChannelEditorActions();
+  harness.setEditingChannelId(7);
+  harness.api.renderProtocolTransformOptions('anthropic', []);
+  harness.api.renderProtocolTransformModeOptions('upstream');
+
+  const submitPromise = harness.submitForm();
+  await Promise.resolve();
+
+  assert.equal(harness.elements.channelSaveBtn.disabled, true);
+
+  save.resolve({ success: true });
+  await submitPromise;
+  assert.equal(harness.elements.channelSaveBtn.disabled, false);
 });
