@@ -465,7 +465,11 @@ async function showAddModal() {
 async function editChannel(id) {
   const channel = await resolveEditableChannel(id);
   if (!channel) return;
-  await syncScheduledCheckVisibility();
+
+  const scheduledVisibilityPromise = syncScheduledCheckVisibility();
+  const apiKeysPromise = fetchEditableChannelKeys(id);
+  const channelType = channel.channel_type || 'anthropic';
+  const channelTypeRenderPromise = window.ChannelTypeManager.renderChannelTypeRadios('channelTypeRadios', channelType);
 
   editingChannelId = id;
   clearChannelDuplicateHint();
@@ -480,12 +484,11 @@ async function editChannel(id) {
     fetchURLStats(id);
   }
 
-  let apiKeys = [];
-  try {
-    apiKeys = (await fetchDataWithAuth(`/admin/channels/${id}/keys`)) || [];
-  } catch (e) {
-    console.error('Failed to fetch API Keys', e);
-  }
+  const [apiKeys] = await Promise.all([
+    apiKeysPromise,
+    scheduledVisibilityPromise,
+    channelTypeRenderPromise
+  ]);
 
   const now = Date.now();
   currentChannelKeyCooldowns = apiKeys.map((apiKey, index) => {
@@ -508,8 +511,6 @@ async function editChannel(id) {
   document.getElementById('inlineEyeOffIcon').style.display = 'block';
   renderInlineKeyTable();
 
-  const channelType = channel.channel_type || 'anthropic';
-  await window.ChannelTypeManager.renderChannelTypeRadios('channelTypeRadios', channelType);
   renderProtocolTransformOptions(channelType, channel.protocol_transforms || []);
   renderProtocolTransformModeOptions(channel.protocol_transform_mode || 'upstream');
   const keyStrategy = channel.key_strategy || 'sequential';
@@ -540,6 +541,15 @@ async function editChannel(id) {
 
   resetChannelFormDirty();
   document.getElementById('channelModal').classList.add('show');
+}
+
+async function fetchEditableChannelKeys(id) {
+  try {
+    return (await fetchDataWithAuth(`/admin/channels/${id}/keys`)) || [];
+  } catch (e) {
+    console.error('Failed to fetch API Keys', e);
+    return [];
+  }
 }
 
 function closeModal() {
@@ -673,6 +683,12 @@ function confirmDuplicateChannel(dupes) {
   return confirm(window.t('channels.duplicateChannelFound', { list }));
 }
 
+function setChannelSavePending(pending) {
+  const saveBtn = document.getElementById('channelSaveBtn');
+  if (!saveBtn) return;
+  saveBtn.disabled = Boolean(pending);
+}
+
 async function saveChannel(event) {
   event.preventDefault();
 
@@ -748,12 +764,13 @@ async function saveChannel(event) {
     return;
   }
 
-  if (!editingChannelId) {
-    const dupes = await checkChannelDuplicate(channelType, validURLs);
-    if (dupes.length > 0 && !confirmDuplicateChannel(dupes)) return;
-  }
-
+  setChannelSavePending(true);
   try {
+    if (!editingChannelId) {
+      const dupes = await checkChannelDuplicate(channelType, validURLs);
+      if (dupes.length > 0 && !confirmDuplicateChannel(dupes)) return;
+    }
+
     const resp = editingChannelId
       ? await fetchAPIWithAuth(`/admin/channels/${editingChannelId}`, {
           method: 'PUT',
@@ -779,6 +796,8 @@ async function saveChannel(event) {
   } catch (e) {
     console.error('Save channel failed', e);
     if (window.showError) window.showError(window.t('channels.saveFailed', { error: e.message }));
+  } finally {
+    setChannelSavePending(false);
   }
 }
 
@@ -844,7 +863,91 @@ async function confirmDelete() {
   }
 }
 
+function setLocalChannelEnabled(id, enabled) {
+  const channelId = Number(id);
+  const previous = [];
+  const seenState = new Set();
+  const removedEntries = [];
+  const shouldRemoveFromCurrentList = !channelEnabledMatchesCurrentStatus(enabled);
+  const previousTotalCount = typeof channelsTotalCount !== 'undefined' ? channelsTotalCount : null;
+  let removedFromChannels = false;
+
+  const updateList = (list) => {
+    if (!Array.isArray(list)) return;
+    for (let index = list.length - 1; index >= 0; index--) {
+      const channel = list[index];
+      if (Number(channel && channel.id) !== channelId) continue;
+      if (!seenState.has(channel)) {
+        seenState.add(channel);
+        previous.push({ channel, enabled: channel.enabled });
+      }
+      channel.enabled = enabled;
+      if (shouldRemoveFromCurrentList) {
+        removedEntries.push({ list, index, channel });
+        if (typeof channels !== 'undefined' && list === channels) {
+          removedFromChannels = true;
+        }
+        list.splice(index, 1);
+      }
+    }
+  };
+
+  if (typeof channels !== 'undefined') updateList(channels);
+  if (typeof filteredChannels !== 'undefined') updateList(filteredChannels);
+  syncLocalChannelPaginationAfterEnabledChange(removedFromChannels ? -1 : 0);
+
+  return () => {
+    previous.forEach((entry) => {
+      entry.channel.enabled = entry.enabled;
+    });
+    removedEntries.slice().reverse().forEach((entry) => {
+      if (entry.list.includes(entry.channel)) return;
+      entry.list.splice(Math.min(entry.index, entry.list.length), 0, entry.channel);
+    });
+    if (previousTotalCount !== null) {
+      channelsTotalCount = previousTotalCount;
+      if (typeof channelsPageSize !== 'undefined') {
+        channelsTotalPages = Math.max(1, Math.ceil(channelsTotalCount / channelsPageSize));
+      }
+    }
+  };
+}
+
+function channelEnabledMatchesCurrentStatus(enabled) {
+  if (typeof filters === 'undefined' || !filters || !filters.status || filters.status === 'all') {
+    return true;
+  }
+  if (filters.status === 'enabled') return enabled === true;
+  if (filters.status === 'disabled') return enabled === false;
+  return true;
+}
+
+function syncLocalChannelPaginationAfterEnabledChange(delta) {
+  if (!delta || typeof channelsTotalCount === 'undefined') return;
+  channelsTotalCount = Math.max(0, channelsTotalCount + delta);
+  if (typeof channelsPageSize !== 'undefined') {
+    channelsTotalPages = Math.max(1, Math.ceil(channelsTotalCount / channelsPageSize));
+    if (typeof channelsCurrentPage !== 'undefined' && channelsCurrentPage > channelsTotalPages) {
+      channelsCurrentPage = channelsTotalPages;
+    }
+  }
+}
+
+function renderLocalChannelsAfterEnabledChange() {
+  if (typeof filterChannels === 'function') {
+    filterChannels();
+  } else if (typeof renderChannels === 'function') {
+    renderChannels();
+  }
+  if (typeof updateChannelsPagination === 'function') {
+    updateChannelsPagination();
+  }
+}
+
 async function toggleChannel(id, enabled) {
+  const rollbackLocalChange = setLocalChannelEnabled(id, enabled);
+  renderLocalChannelsAfterEnabledChange();
+
   try {
     const resp = await fetchAPIWithAuth(`/admin/channels/${id}`, {
       method: 'PUT',
@@ -853,9 +956,10 @@ async function toggleChannel(id, enabled) {
     });
     if (!resp.success) throw new Error(resp.error || window.t('common.failed'));
     clearChannelsCache();
-    await reloadChannelsList();
     if (window.showSuccess) window.showSuccess(enabled ? window.t('channels.channelEnabled') : window.t('channels.channelDisabled'));
   } catch (e) {
+    rollbackLocalChange();
+    renderLocalChannelsAfterEnabledChange();
     console.error('Toggle failed', e);
     if (window.showError) window.showError(window.t('common.failed'));
   }

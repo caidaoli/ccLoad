@@ -19,6 +19,7 @@ type Store interface {
 	GetConfig(ctx context.Context, id int64) (*model.Config, error)
 	CreateConfig(ctx context.Context, c *model.Config) (*model.Config, error)
 	UpdateConfig(ctx context.Context, id int64, upd *model.Config) (*model.Config, error)
+	UpdateChannelEnabled(ctx context.Context, id int64, enabled bool) (*model.Config, error)
 	DeleteConfig(ctx context.Context, id int64) error
 	GetEnabledChannelsByModel(ctx context.Context, modelName string) ([]*model.Config, error)
 	GetEnabledChannelsByModelAndProtocol(ctx context.Context, modelName, protocol string) ([]*model.Config, error)

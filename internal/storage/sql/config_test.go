@@ -120,6 +120,74 @@ func TestConfig_ListConfigs(t *testing.T) {
 	}
 }
 
+func TestConfig_UpdateChannelEnabledOnlyTouchesEnabled(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "update-enabled.db")
+	ctx := context.Background()
+
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name:                  "toggle-only",
+		URL:                   "https://api.example.com",
+		Priority:              42,
+		Enabled:               true,
+		ChannelType:           "gemini",
+		ProtocolTransformMode: model.ProtocolTransformModeUpstream,
+		ProtocolTransforms:    []string{"openai", "anthropic"},
+		ModelEntries: []model.ModelEntry{
+			{Model: "gemini-2.5-pro", RedirectModel: "gemini-2.5-pro"},
+			{Model: "gemini-2.5-flash", RedirectModel: "flash-upstream"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create config: %v", err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID:   created.ID,
+		KeyIndex:    0,
+		APIKey:      "sk-toggle",
+		KeyStrategy: model.KeyStrategyRoundRobin,
+	}}); err != nil {
+		t.Fatalf("create api key: %v", err)
+	}
+
+	updated, err := store.UpdateChannelEnabled(ctx, created.ID, false)
+	if err != nil {
+		t.Fatalf("update enabled: %v", err)
+	}
+	if updated.Enabled {
+		t.Fatalf("updated response should be disabled")
+	}
+
+	got, err := store.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get config: %v", err)
+	}
+	if got.Enabled {
+		t.Fatalf("stored channel should be disabled")
+	}
+	if got.Name != created.Name || got.URL != created.URL || got.Priority != created.Priority || got.ChannelType != created.ChannelType {
+		t.Fatalf("non-enabled fields changed: got=%+v want=%+v", got, created)
+	}
+	if got.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream {
+		t.Fatalf("protocol transform mode changed: %q", got.GetProtocolTransformMode())
+	}
+	if strings.Join(got.ProtocolTransforms, ",") != "anthropic,openai" {
+		t.Fatalf("protocol transforms changed: %#v", got.ProtocolTransforms)
+	}
+	if len(got.ModelEntries) != 2 || got.ModelEntries[1].RedirectModel != "flash-upstream" {
+		t.Fatalf("model entries changed: %#v", got.ModelEntries)
+	}
+
+	keys, err := store.GetAPIKeys(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get api keys: %v", err)
+	}
+	if len(keys) != 1 || keys[0].APIKey != "sk-toggle" || keys[0].KeyStrategy != model.KeyStrategyRoundRobin {
+		t.Fatalf("api keys changed: %#v", keys)
+	}
+}
+
 func TestConfig_UpdateConfig(t *testing.T) {
 	t.Parallel()
 

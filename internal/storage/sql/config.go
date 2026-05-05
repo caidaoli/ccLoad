@@ -398,6 +398,36 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 	return config, nil
 }
 
+// UpdateChannelEnabled updates only the enabled flag.
+// The full UpdateConfig path rewrites models/protocol transforms and reloads the
+// config before writing. A switch click must not pay that cost.
+func (s *SQLStore) UpdateChannelEnabled(ctx context.Context, id int64, enabled bool) (*model.Config, error) {
+	updatedAtUnix := timeToUnix(time.Now())
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE channels
+		SET enabled = ?, updated_at = ?
+		WHERE id = ?
+	`, boolToInt(enabled), updatedAtUnix, id)
+	if err != nil {
+		return nil, fmt.Errorf("update channel enabled: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err == nil && rowsAffected == 0 {
+		cfg, getErr := s.GetConfig(ctx, id)
+		if getErr != nil {
+			return nil, getErr
+		}
+		return cfg, nil
+	}
+
+	config, err := s.GetConfig(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return config, nil
+}
+
 // DeleteConfig 删除渠道配置
 func (s *SQLStore) DeleteConfig(ctx context.Context, id int64) error {
 	// 检查记录是否存在（幂等性）

@@ -635,13 +635,6 @@ func (s *Server) handleURLToggle(c *gin.Context, disable bool) {
 
 // 更新渠道
 func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
-	// 先获取现有配置
-	existing, err := s.store.GetConfig(c.Request.Context(), id)
-	if err != nil {
-		RespondError(c, http.StatusNotFound, fmt.Errorf("channel not found"))
-		return
-	}
-
 	// 解析请求为通用map以支持部分更新
 	var rawReq map[string]any
 	if err := c.ShouldBindJSON(&rawReq); err != nil {
@@ -652,10 +645,13 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	// 检查是否为简单的enabled字段更新
 	if len(rawReq) == 1 {
 		if enabled, ok := rawReq["enabled"].(bool); ok {
-			existing.Enabled = enabled
-			upd, err := s.store.UpdateConfig(c.Request.Context(), id, existing)
+			upd, err := s.store.UpdateChannelEnabled(c.Request.Context(), id, enabled)
 			if err != nil {
-				RespondError(c, http.StatusInternalServerError, err)
+				if strings.Contains(err.Error(), "not found") {
+					RespondError(c, http.StatusNotFound, fmt.Errorf("channel not found"))
+				} else {
+					RespondError(c, http.StatusInternalServerError, err)
+				}
 				return
 			}
 			// enabled 状态变更影响渠道选择，必须立即失效缓存
@@ -1068,7 +1064,7 @@ func (s *Server) HandleBatchSetEnabled(c *gin.Context) {
 		}
 
 		cfg.Enabled = *req.Enabled
-		if _, err := s.store.UpdateConfig(ctx, channelID, cfg); err != nil {
+		if _, err := s.store.UpdateChannelEnabled(ctx, channelID, *req.Enabled); err != nil {
 			log.Printf("batch-enabled: update channel %d failed: %v", channelID, err)
 			RespondError(c, http.StatusInternalServerError, err)
 			return
