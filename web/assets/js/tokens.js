@@ -60,22 +60,15 @@
       run: () => {
       initExpirySelects();
 
-      const renderTimeRangeSelector = () => {
-        if (typeof window.renderDateRangeButtons === 'function') {
-          window.renderDateRangeButtons('tokens-time-range', {
-            values: ['today', 'yesterday', 'day_before_yesterday', 'this_week', 'this_month', 'last_month', 'all'],
-            includeAll: true,
-            activeValue: currentTimeRange
-          });
+      window.bindTimeRangeSelector({
+        containerId: 'tokens-time-range',
+        values: ['today', 'yesterday', 'day_before_yesterday', 'this_week', 'this_month', 'last_month', 'all'],
+        includeAll: true,
+        initialValue: currentTimeRange,
+        onChange: (range) => {
+          currentTimeRange = range;
+          loadTokens();
         }
-      };
-
-      renderTimeRangeSelector();
-
-      // 初始化时间范围选择器
-      window.initTimeRangeSelector((range) => {
-        currentTimeRange = range;
-        loadTokens();
       });
 
       // 加载令牌列表(默认显示本日统计)
@@ -90,13 +83,8 @@
       // 初始化事件委托
       initEventDelegation();
 
-      // 监听语言切换事件，重新渲染令牌列表
+      // 监听语言切换事件，重新渲染令牌相关动态内容
       window.i18n.onLocaleChange(() => {
-        renderTimeRangeSelector();
-        window.initTimeRangeSelector((range) => {
-          currentTimeRange = range;
-          loadTokens();
-        });
         renderAllowedChannelsTable();
         renderTokens();
       });
