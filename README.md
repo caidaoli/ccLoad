@@ -50,7 +50,7 @@ ccLoad 一站式解决👇
 | 🔀 **智能调度** | 优先级+平滑加权轮询+健康度排序 | 烂渠道自动靠边站 |
 | 🛡️ **故障秒切** | 指数退避冷却机制 | 2min→4min→8min→30min |
 | 📊 **数据大屏** | 趋势图+日志+Token统计 | 一眼看清用量情况 |
-| 🎯 **多API兼容** | Claude/Gemini/OpenAI | 一套配置走天下 |
+| 🎯 **多API兼容** | Claude Code/Codex/Gemini/OpenAI | 一套配置走天下 |
 | 📦 **开箱即用** | 单文件+嵌入式SQLite | 零依赖，下载就能跑 |
 | 🐳 **云原生** | 多架构镜像+CI/CD | amd64/arm64都支持 |
 | 🤗 **白嫖福利** | Hugging Face免费托管 | 个人用完全够了 |
@@ -71,7 +71,7 @@ ccLoad 一站式解决👇
 
 从你的应用发请求到API返回结果，中间经过这几层：
 - **认证层** - 验证你的访问权限，拒绝白嫖党
-- **路由分发** - 判断是Claude还是Gemini，分流处理
+- **路由分发** - 判断请求协议与路径，按 Claude Code、Codex、Gemini、OpenAI 分流处理
 - **协议转换** - 客户端用OpenAI格式？上游是Anthropic？自动翻译，无感切换
 - **智能调度** - 从一堆渠道里选个最靠谱的给你用
 - **故障切换** - 选中的渠道挂了？秒切备用，你根本感知不到
@@ -399,7 +399,7 @@ git push
 **版本锁定**（可选）:
 如果需要锁定特定版本，修改 Dockerfile：
 ```dockerfile
-FROM ghcr.io/caidaoli/ccload:v1.96.1  # 指定版本号
+FROM ghcr.io/caidaoli/ccload:2.8.3  # 指定版本号
 ENV TZ=Asia/Shanghai
 ENV PORT=7860
 ENV SQLITE_PATH=/tmp/ccload.db
@@ -923,9 +923,9 @@ export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
 - **镜像仓库**：`ghcr.io/caidaoli/ccload`
 - **可用标签**：
   - `latest` - 最新稳定版本
-  - `v1.96.1` - 具体版本号
-  - `v1.96` - 主要.次要版本
-  - `v1` - 主要版本
+  - `2.8.3` - 具体版本号
+  - `2.8` - 主要.次要版本
+  - `2` - 主要版本
 
 ### 镜像标签说明
 
@@ -934,7 +934,7 @@ export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
 docker pull ghcr.io/caidaoli/ccload:latest
 
 # 拉取指定版本
-docker pull ghcr.io/caidaoli/ccload:v1.96.1
+docker pull ghcr.io/caidaoli/ccload:2.8.3
 
 # 指定架构（Docker 通常自动选择）
 docker pull --platform linux/amd64 ghcr.io/caidaoli/ccload:latest
