@@ -207,6 +207,68 @@ test('model-test 页在按模型测试模式下提供类型筛选并保留协议
   assert.match(html, /id="modelTypeLabel"[\s\S]*?id="modelSelectorLabel"[\s\S]*?id="protocolTransformContainer"[\s\S]*?id="streamEnabled"[\s\S]*?id="concurrency"[\s\S]*?id="modelTestContent"/);
 });
 
+test('model-test 页按模型测试渠道表在渠道名称后显示优先级', () => {
+  assert.match(
+    script,
+    /const MODEL_MODE_HEAD = `[\s\S]*?data-i18n="modelTest\.channelName"[\s\S]*?data-i18n="channels\.table\.priority" data-sort-key="priority">优先级<\/th>[\s\S]*?\$\{RESPONSE_HEAD_HTML\}/
+  );
+  assert.doesNotMatch(
+    script.match(/const CHANNEL_MODE_HEAD = `[\s\S]*?`;/)[0],
+    /data-sort-key="priority"/
+  );
+  assert.match(
+    html,
+    /tpl-channel-row-by-model[\s\S]*?class="channel-link"[\s\S]*?{{channelName}}<\/button>[\s\S]*?<td class="model-test-col-priority channel-priority" data-mobile-label="{{mobileLabelPriority}}">{{channelPriority}}<\/td>/
+  );
+  assert.match(
+    script,
+    /channelPriority:\s*formatChannelPriority\(ch\.priority\)/
+  );
+
+  const getResultRowMobileLabels = vm.runInNewContext(
+    `(${extractFunction(script, 'getResultRowMobileLabels')})`,
+    {
+      i18nText(key, fallback) {
+        return `${key}:${fallback}`;
+      }
+    }
+  );
+  assert.equal(
+    getResultRowMobileLabels('modelTest.channel', '渠道').mobileLabelPriority,
+    'channels.table.priority:优先级'
+  );
+
+  const getResultTableColspan = vm.runInNewContext(`
+    const TEST_MODE_MODEL = 'model';
+    const RESULT_TABLE_COLSPAN_WITH_FIRST_BYTE = 11;
+    const RESULT_TABLE_COLSPAN_NO_FIRST_BYTE = 10;
+    const MODEL_MODE_EXTRA_COLSPAN = 1;
+    let testMode = TEST_MODE_MODEL;
+    function isFirstByteColumnVisible() { return true; }
+    (${extractFunction(script, 'getResultTableColspan')})
+  `, {});
+  assert.equal(getResultTableColspan(), '12');
+
+  const getRowSortValue = vm.runInNewContext(
+    `(${extractFunction(script, 'getRowSortValue')})`,
+    {
+      parseNumericCellValue(text) {
+        return Number.parseFloat(String(text));
+      }
+    }
+  );
+  const row = {
+    children: [],
+    querySelector(selector) {
+      if (selector === '.channel-priority') {
+        return { textContent: '120' };
+      }
+      return null;
+    }
+  };
+  assert.equal(getRowSortValue(row, 'priority'), 120);
+});
+
 test('model-test.js 使用集中绑定处理页面控件和重渲染表头复选框', () => {
   assert.match(script, /window\.initPageBootstrap\(\{/);
   assert.match(script, /topbarKey:\s*'model-test'/);
