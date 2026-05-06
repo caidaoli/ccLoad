@@ -42,6 +42,7 @@ const deletePreviewConfirmBtn = document.getElementById('deletePreviewConfirmBtn
 
 const RESULT_TABLE_COLSPAN_WITH_FIRST_BYTE = 11;
 const RESULT_TABLE_COLSPAN_NO_FIRST_BYTE = 10;
+const MODEL_MODE_EXTRA_COLSPAN = 1;
 const SORT_DIRECTION_ASC = 1;
 const SORT_DIRECTION_DESC = -1;
 const SORT_DIRECTION_NONE = 0;
@@ -98,6 +99,7 @@ const CHANNEL_MODE_HEAD = `
 const MODEL_MODE_HEAD = `
   <th class="table-col-select mobile-card-select-header"><input type="checkbox" id="selectAllCheckbox" data-change-action="toggle-all-models"></th>
   <th class="table-col-channel" data-i18n="modelTest.channelName" data-sort-key="name">渠道</th>
+  <th class="table-col-priority" data-i18n="channels.table.priority" data-sort-key="priority">优先级</th>
   <th class="first-byte-col table-col-duration" data-i18n="modelTest.firstByteDuration" data-sort-key="firstByteDuration">首字</th>
   <th class="table-col-duration" data-i18n="modelTest.totalDuration" data-sort-key="duration">总耗时</th>
   <th class="table-col-metric" data-i18n="common.input" data-sort-key="inputTokens">输入</th>
@@ -130,6 +132,14 @@ function formatDurationMs(durationMs) {
   return (typeof durationMs === 'number' && Number.isFinite(durationMs) && durationMs > 0)
     ? `${(durationMs / 1000).toFixed(2)}s`
     : '-';
+}
+
+function formatChannelPriority(priority) {
+  if (priority === null || priority === undefined) return '-';
+  const text = String(priority).trim();
+  if (!text) return '-';
+  const value = Number(text);
+  return Number.isFinite(value) ? String(value) : '-';
 }
 
 function calculateTestSpeed(data, usage) {
@@ -173,7 +183,9 @@ function isFirstByteColumnVisible() {
 }
 
 function getResultTableColspan() {
-  return String(isFirstByteColumnVisible() ? RESULT_TABLE_COLSPAN_WITH_FIRST_BYTE : RESULT_TABLE_COLSPAN_NO_FIRST_BYTE);
+  const baseColspan = isFirstByteColumnVisible() ? RESULT_TABLE_COLSPAN_WITH_FIRST_BYTE : RESULT_TABLE_COLSPAN_NO_FIRST_BYTE;
+  const modeColspan = testMode === TEST_MODE_MODEL ? MODEL_MODE_EXTRA_COLSPAN : 0;
+  return String(baseColspan + modeColspan);
 }
 
 function isDataRowVisible(row) {
@@ -248,6 +260,7 @@ function getResultRowMobileLabels(nameKey, nameFallback) {
   return {
     mobileLabelSelect: '',
     mobileLabelName: i18nText(nameKey, nameFallback),
+    mobileLabelPriority: i18nText('channels.table.priority', '优先级'),
     mobileLabelFirstByte: i18nText('modelTest.firstByteDuration', '首字'),
     mobileLabelDuration: i18nText('modelTest.totalDuration', '总耗时'),
     mobileLabelInput: i18nText('common.input', '输入'),
@@ -372,6 +385,8 @@ function getRowSortValue(row, key) {
   switch (key) {
     case 'name':
       return row.children[1]?.textContent?.trim() || '';
+    case 'priority':
+      return parseNumericCellValue(row.querySelector('.channel-priority')?.textContent);
     case 'firstByteDuration':
       return parseNumericCellValue(row.querySelector('.first-byte-duration')?.textContent);
     case 'duration':
@@ -903,6 +918,7 @@ function renderModelModeRows() {
     const row = TemplateEngine.render('tpl-channel-row-by-model', {
       channelId: String(ch.id),
       channelName,
+      channelPriority: formatChannelPriority(ch.priority),
       model,
       ...getResultRowMobileLabels('modelTest.channel', '渠道')
     });
