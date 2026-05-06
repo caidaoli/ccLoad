@@ -361,7 +361,7 @@ func TestHandleTranslatedStreamSuccessResponse_TreatsTranslatedStopAsComplete(t 
 	rec := newRecorder()
 	readStats := &streamReadStats{}
 
-	res, _, err := s.handleTranslatedStreamSuccessResponse(reqCtx, resp, resp.Header.Clone(), rec, "openai", readStats)
+	res, _, err := s.handleTranslatedStreamSuccessResponse(reqCtx, resp, resp.Header.Clone(), rec, "openai", readStats, nil)
 	if err != nil {
 		t.Fatalf("expected translated completed stream to ignore trailing close error, got %v", err)
 	}

@@ -849,7 +849,7 @@ export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
 |--------|--------|------|
 | `log_retention_days` | `7` | 日志保留天数（-1永久保留，1-365天） |
 | `max_key_retries` | `3` | 单个渠道内最大Key重试次数 |
-| `upstream_first_byte_timeout` | `0` | 上游首字节超时（秒，0=禁用） |
+| `upstream_first_byte_timeout` | `0` | 上游首个有效流内容超时（秒，0=禁用，仅流式） |
 | `enable_health_score` | `false` | 启用基于健康度的渠道动态排序 |
 | `success_rate_penalty_weight` | `100` | 成功率惩罚权重（见下方说明） |
 | `health_score_window_minutes` | `30` | 成功率统计时间窗口（分钟） |
