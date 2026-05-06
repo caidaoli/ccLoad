@@ -389,6 +389,46 @@
       margin: 0;
     }
 
+    .debug-log-status {
+      display: inline-flex;
+      align-items: center;
+      margin-left: var(--space-2);
+      padding: 2px 8px;
+      font-size: 0.75rem;
+      font-weight: var(--font-medium);
+      border-radius: 999px;
+      line-height: 1.4;
+      vertical-align: middle;
+    }
+
+    .debug-log-status--refreshing {
+      color: var(--info-700, #1d4ed8);
+      background: var(--info-50, #eff6ff);
+      border: 1px solid var(--info-200, #bfdbfe);
+    }
+
+    .debug-log-status--refreshing::before {
+      content: '';
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      margin-right: 6px;
+      border-radius: 50%;
+      background: var(--info-500, #3b82f6);
+      animation: debug-log-status-pulse 1.2s ease-in-out infinite;
+    }
+
+    .debug-log-status--finished {
+      color: var(--neutral-700);
+      background: var(--neutral-100);
+      border: 1px solid var(--neutral-200);
+    }
+
+    @keyframes debug-log-status-pulse {
+      0%, 100% { opacity: 0.4; transform: scale(0.8); }
+      50% { opacity: 1; transform: scale(1.1); }
+    }
+
     .debug-log-unavailable {
       padding: var(--space-4);
       border: 1px solid var(--neutral-200);
