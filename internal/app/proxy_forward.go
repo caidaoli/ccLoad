@@ -962,6 +962,9 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 
 	// 2.5 Debug捕获：记录发送前的请求信息
 	dc := s.captureDebugRequest(req, reqCtx.transformPlan.TranslatedBody)
+	if observer != nil && observer.OnDebugCapture != nil {
+		observer.OnDebugCapture(dc)
+	}
 
 	// 3. 发送请求
 	resp, err := s.client.Do(req)
