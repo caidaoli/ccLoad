@@ -727,6 +727,8 @@ window.I18N_LOCALES['en'] = {
   'logs.debugLogTitle': 'Debug Log',
   'logs.debugRequest': 'Request',
   'logs.debugResponse': 'Response',
+  'logs.debugRefreshing': 'Refreshing…',
+  'logs.debugRequestFinished': 'Request finished',
   'logs.debugMethod': 'Method',
   'logs.debugHeaders': 'Headers',
   'logs.debugNotFound': 'Debug log not found (not enabled or already expired)',

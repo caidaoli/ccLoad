@@ -1849,25 +1849,36 @@ function composeDebugRawResponse(data) {
   return parts.join('\n');
 }
 
+const ACTIVE_DEBUG_LOG_REFRESH_INTERVAL_MS = 1500;
+let activeDebugLogRefreshTimer = null;
+let activeDebugLogRefreshInFlight = false;
+
 async function showDebugLogModal(logId) {
-  return showDebugLogModalFromUrl(`/admin/debug-logs/${logId}`);
+  return showDebugLogModalFromUrl(`/admin/debug-logs/${logId}`, { activeRequestId: 0 });
 }
 
 async function showActiveDebugLogModal(activeRequestId) {
-  return showDebugLogModalFromUrl(`/admin/active-requests/${activeRequestId}/debug-log`);
+  return showDebugLogModalFromUrl(
+    `/admin/active-requests/${activeRequestId}/debug-log`,
+    { activeRequestId }
+  );
 }
 
-async function showDebugLogModalFromUrl(url) {
+async function showDebugLogModalFromUrl(url, opts = {}) {
   const modal = document.getElementById('debugLogModal');
   const loading = document.getElementById('debugLogLoading');
   const error = document.getElementById('debugLogError');
   const content = document.getElementById('debugLogContent');
+
+  // 若上一次模态框未清理，先停掉旧的轮询
+  stopActiveDebugLogPolling();
 
   loading.style.display = '';
   error.style.display = 'none';
   error.innerHTML = '';
   error.textContent = '';
   content.style.display = 'none';
+  setDebugLogStatus(null);
   modal.classList.add('show');
 
   // Reset tabs
@@ -1895,6 +1906,12 @@ async function showDebugLogModalFromUrl(url) {
 
     window.setHighlightedCodeContent('debugReqRaw', composeDebugRawRequest(data), 'request');
     window.setHighlightedCodeContent('debugRespRaw', composeDebugRawResponse(data), 'response');
+
+    // 如果是实时活跃请求，启动轮询
+    const activeRequestId = Number(opts.activeRequestId);
+    if (Number.isFinite(activeRequestId) && activeRequestId > 0) {
+      startActiveDebugLogPolling(activeRequestId);
+    }
   } catch (e) {
     loading.style.display = 'none';
     error.textContent = e.message || '加载失败';
@@ -1902,7 +1919,105 @@ async function showDebugLogModalFromUrl(url) {
   }
 }
 
+function setDebugLogStatus(kind) {
+  const el = document.getElementById('debugLogStatus');
+  if (!el) return;
+  el.classList.remove('debug-log-status--refreshing', 'debug-log-status--finished');
+  if (!kind) {
+    el.hidden = true;
+    el.textContent = '';
+    return;
+  }
+  if (kind === 'refreshing') {
+    el.classList.add('debug-log-status--refreshing');
+    el.textContent = (typeof t === 'function' ? t('logs.debugRefreshing') : '正在更新…') || '正在更新…';
+  } else if (kind === 'finished') {
+    el.classList.add('debug-log-status--finished');
+    el.textContent = (typeof t === 'function' ? t('logs.debugRequestFinished') : '请求已结束') || '请求已结束';
+  }
+  el.hidden = false;
+}
+
+function startActiveDebugLogPolling(activeRequestId) {
+  stopActiveDebugLogPolling();
+  setDebugLogStatus('refreshing');
+  activeDebugLogRefreshTimer = setInterval(() => {
+    refreshActiveDebugLogOnce(activeRequestId);
+  }, ACTIVE_DEBUG_LOG_REFRESH_INTERVAL_MS);
+}
+
+function stopActiveDebugLogPolling() {
+  if (activeDebugLogRefreshTimer) {
+    clearInterval(activeDebugLogRefreshTimer);
+    activeDebugLogRefreshTimer = null;
+  }
+  activeDebugLogRefreshInFlight = false;
+}
+
+async function refreshActiveDebugLogOnce(activeRequestId) {
+  if (activeDebugLogRefreshInFlight) return;
+  // 模态框已关闭则停止
+  const modal = document.getElementById('debugLogModal');
+  if (!modal || !modal.classList.contains('show')) {
+    stopActiveDebugLogPolling();
+    return;
+  }
+  activeDebugLogRefreshInFlight = true;
+  try {
+    const url = `/admin/active-requests/${activeRequestId}/debug-log`;
+    const { res, payload } = await fetchAPIWithAuthRaw(url);
+    if (!payload.success) {
+      if (res.status === 404) {
+        // 请求已结束，停止轮询并提示，保留最后一次成功拉到的快照
+        stopActiveDebugLogPolling();
+        setDebugLogStatus('finished');
+        return;
+      }
+      // 其他错误：保持现状，下个 tick 再试
+      return;
+    }
+    const data = payload.data || {};
+    updateDebugLogContentPreserveScroll(data);
+  } catch (_) {
+    // 网络抖动：忽略，下个 tick 继续
+  } finally {
+    activeDebugLogRefreshInFlight = false;
+  }
+}
+
+function updateDebugLogContentPreserveScroll(data) {
+  updateDebugPanePreserveScroll('debugReqRaw', composeDebugRawRequest(data), 'request');
+  updateDebugPanePreserveScroll('debugRespRaw', composeDebugRawResponse(data), 'response');
+}
+
+function updateDebugPanePreserveScroll(targetId, text, mode) {
+  const pre = document.getElementById(targetId);
+  if (!pre) return;
+  // 内容未变化则跳过，避免破坏选区与滚动
+  const prevText = pre._rawText || '';
+  if (prevText === (text || '')) return;
+
+  const stickToBottom = isScrolledToBottom(pre);
+  const prevScrollTop = pre.scrollTop;
+
+  window.setHighlightedCodeContent(targetId, text || '', mode);
+
+  if (stickToBottom) {
+    pre.scrollTop = pre.scrollHeight;
+  } else {
+    pre.scrollTop = prevScrollTop;
+  }
+}
+
+function isScrolledToBottom(el) {
+  if (!el) return false;
+  const threshold = 8; // 像素容差
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
+}
+
 function closeDebugLogModal() {
+  stopActiveDebugLogPolling();
+  setDebugLogStatus(null);
   document.getElementById('debugLogModal').classList.remove('show');
 }
 

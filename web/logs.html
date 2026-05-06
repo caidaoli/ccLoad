@@ -197,7 +197,10 @@
   <div id="debugLogModal" class="modal">
     <div class="modal-content upstream-detail-modal-content">
       <div class="modal-header">
-        <h2 class="modal-title" data-i18n="logs.debugLogTitle">Debug Log</h2>
+        <h2 class="modal-title">
+          <span data-i18n="logs.debugLogTitle">Debug Log</span>
+          <span id="debugLogStatus" class="debug-log-status" hidden></span>
+        </h2>
         <button type="button" class="close-btn" data-action="close-debug-log-modal">&times;</button>
       </div>
       <div id="debugLogLoading" style="text-align: center; padding: 2rem; display: none;">
