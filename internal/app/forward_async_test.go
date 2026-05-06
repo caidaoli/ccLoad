@@ -881,3 +881,70 @@ func TestFirstByteTimeout_StreamingResponseBodyDelayed(t *testing.T) {
 		t.Fatalf("期望状态码 %d，实际: %d", util.StatusFirstByteTimeout, res.Status)
 	}
 }
+
+// TestFirstByteTimeout_StreamingHeartbeatBeforeContent 测试上游只发送心跳/注释但没有有效流内容时仍触发首块超时。
+// 场景：上游响应头已到，并持续发送 SSE 注释保活，真正 data 内容超过阈值才到。
+// 期望：心跳不能解除首块响应体超时，应返回 598 和 ErrUpstreamFirstByteTimeout。
+func TestFirstByteTimeout_StreamingHeartbeatBeforeContent(t *testing.T) {
+	srv := newInMemoryServer(t)
+
+	const testTimeout = 20 * time.Millisecond
+	const heartbeatInterval = 5 * time.Millisecond
+	const contentDelay = testTimeout * 6
+
+	srv.firstByteTimeout = testTimeout
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		if flusher != nil {
+			flusher.Flush()
+		}
+
+		deadline := time.Now().Add(contentDelay)
+		for time.Now().Before(deadline) {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(heartbeatInterval):
+				_, _ = w.Write([]byte(": keep-alive\n\n"))
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+		}
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"late\"}}]}\n\n"))
+	}))
+	defer upstream.Close()
+
+	cfg := &model.Config{
+		ID:   1,
+		URL:  upstream.URL,
+		Name: "test-timeout-heartbeat-before-content",
+	}
+
+	recorder := newRecorder()
+	res, _, err := srv.forwardOnceAsync(
+		context.Background(),
+		cfg,
+		"sk-test",
+		http.MethodPost,
+		mustBuildTestTransformPlan(t, cfg, "/v1/messages", []byte(`{"stream":true}`)),
+		http.Header{},
+		"",
+		cfg.URL,
+		recorder,
+		nil,
+	)
+
+	if err == nil {
+		t.Fatalf("期望返回错误，但 err 为 nil（res.Status=%d, body=%q）", res.Status, recorder.Body.String())
+	}
+	if !errors.Is(err, util.ErrUpstreamFirstByteTimeout) {
+		t.Fatalf("期望错误为 ErrUpstreamFirstByteTimeout，实际: %v", err)
+	}
+	if res.Status != util.StatusFirstByteTimeout {
+		t.Fatalf("期望状态码 %d，实际: %d", util.StatusFirstByteTimeout, res.Status)
+	}
+}

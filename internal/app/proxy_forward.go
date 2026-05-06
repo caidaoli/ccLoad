@@ -427,13 +427,14 @@ func (s *Server) handleSuccessResponse(
 	w http.ResponseWriter,
 	channelType string,
 	readStats *streamReadStats,
+	observer *ForwardObserver,
 ) (*fwResult, float64, error) {
 	if reqCtx.isStreaming &&
 		s.protocolRegistry != nil &&
 		reqCtx.transformPlan.NeedsTransform &&
 		(strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") ||
 			strings.Contains(resp.Header.Get("Content-Type"), "text/plain")) {
-		return s.handleTranslatedStreamSuccessResponse(reqCtx, resp, hdrClone, w, channelType, readStats)
+		return s.handleTranslatedStreamSuccessResponse(reqCtx, resp, hdrClone, w, channelType, readStats, observer)
 	}
 
 	if !reqCtx.isStreaming &&
@@ -469,6 +470,9 @@ func (s *Server) handleSuccessResponse(
 		func(parser usageParser) error {
 			if deferredWriter == nil || deferredWriter.Committed() {
 				return nil
+			}
+			if parser.GetLastError() != nil || parser.HasStreamOutput() || parser.IsStreamComplete() {
+				markFirstStreamResponse(reqCtx, readStats, observer)
 			}
 			if parser.GetLastError() != nil {
 				return errAbortStreamBeforeWrite
@@ -616,6 +620,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	w http.ResponseWriter,
 	channelType string,
 	readStats *streamReadStats,
+	observer *ForwardObserver,
 ) (*fwResult, float64, error) {
 	rc := http.NewResponseController(w)
 	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
@@ -636,6 +641,9 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 		func(rawEvent []byte) error {
 			if err := parser.Feed(rawEvent); err != nil {
 				return err
+			}
+			if parser.GetLastError() != nil || parser.HasStreamOutput() || parser.IsStreamComplete() {
+				markFirstStreamResponse(reqCtx, readStats, observer)
 			}
 			if !deferredWriter.Committed() && parser.GetLastError() != nil {
 				return errAbortStreamBeforeWrite
@@ -753,6 +761,9 @@ func attachFirstByteDetector(
 		ReadCloser: resp.Body,
 		stats:      readStats,
 		onFirstRead: func() {
+			if reqCtx.isStreaming && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				return
+			}
 			if reqCtx.isStreaming {
 				reqCtx.stopFirstByteTimer()
 			}
@@ -771,6 +782,21 @@ func attachFirstByteDetector(
 				observer.OnBytesRead(n)
 			}
 		},
+	}
+}
+
+func markFirstStreamResponse(reqCtx *requestContext, readStats *streamReadStats, observer *ForwardObserver) {
+	if !reqCtx.isStreaming || readStats.firstByteSec > 0 {
+		return
+	}
+
+	reqCtx.stopFirstByteTimer()
+	readStats.firstByteSec = reqCtx.Duration().Seconds()
+	if readStats.firstByteSec == 0 {
+		readStats.firstByteSec = time.Nanosecond.Seconds()
+	}
+	if observer != nil && observer.OnFirstByteRead != nil {
+		observer.OnFirstByteRead()
 	}
 }
 
@@ -912,7 +938,7 @@ func (s *Server) handleResponse(
 		return res, duration, err
 	}
 
-	return s.handleSuccessResponse(reqCtx, resp, hdrClone, w, channelType, readStats)
+	return s.handleSuccessResponse(reqCtx, resp, hdrClone, w, channelType, readStats, observer)
 }
 
 // ============================================================================

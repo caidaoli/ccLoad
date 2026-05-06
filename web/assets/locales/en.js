@@ -898,7 +898,7 @@ window.I18N_LOCALES['en'] = {
   // Setting descriptions (mapped to backend keys)
   'settings.desc.log_retention_days': 'Log retention days (-1 = permanent, 1-365 days)',
   'settings.desc.max_key_retries': 'Max key retries per channel',
-  'settings.desc.upstream_first_byte_timeout': 'Upstream first byte timeout (seconds, 0 = disabled, stream only)',
+  'settings.desc.upstream_first_byte_timeout': 'Upstream first valid stream content timeout (seconds, 0 = disabled, stream only)',
   'settings.desc.non_stream_timeout': 'Non-stream request timeout (seconds, 0 = disabled)',
   'settings.desc.model_fuzzy_match': 'Use substring fuzzy match when model matching fails (latest version selected for multiple matches)',
   'settings.desc.channel_test_content': 'Default content for channel testing',

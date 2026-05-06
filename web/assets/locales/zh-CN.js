@@ -898,7 +898,7 @@ window.I18N_LOCALES['zh-CN'] = {
   // 设置项描述（与后端 key 对应）
   'settings.desc.log_retention_days': '日志保留天数(-1永久保留,1-365天)',
   'settings.desc.max_key_retries': '单渠道最大Key重试次数',
-  'settings.desc.upstream_first_byte_timeout': '上游首块响应体超时(秒,0=禁用，仅流式)',
+  'settings.desc.upstream_first_byte_timeout': '上游首个有效流内容超时(秒,0=禁用，仅流式)',
   'settings.desc.non_stream_timeout': '非流式请求超时(秒,0=禁用)',
   'settings.desc.model_fuzzy_match': '模型匹配失败时，使用子串模糊匹配(多匹配时选最新版本)',
   'settings.desc.channel_test_content': '渠道测试默认内容',
