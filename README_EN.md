@@ -375,7 +375,7 @@ git push
 **Version Pinning** (Optional):
 To lock specific version, modify Dockerfile:
 ```dockerfile
-FROM ghcr.io/caidaoli/ccload:2.8.3  # Specify version
+FROM ghcr.io/caidaoli/ccload:2.9.0  # Specify version
 ENV TZ=Asia/Shanghai
 ENV PORT=7860
 ENV SQLITE_PATH=/tmp/ccload.db
@@ -870,7 +870,7 @@ Project supports multi-arch Docker images:
 - **Image Registry**: `ghcr.io/caidaoli/ccload`
 - **Available Tags**:
   - `latest` - Latest stable version
-  - `2.8.3` - Specific version number
+  - `2.9.0` - Specific version number
   - `2.8` - Major.minor version
   - `2` - Major version
 
@@ -881,7 +881,7 @@ Project supports multi-arch Docker images:
 docker pull ghcr.io/caidaoli/ccload:latest
 
 # Pull specific version
-docker pull ghcr.io/caidaoli/ccload:2.8.3
+docker pull ghcr.io/caidaoli/ccload:2.9.0
 
 # Specify architecture (Docker usually auto-selects)
 docker pull --platform linux/amd64 ghcr.io/caidaoli/ccload:latest

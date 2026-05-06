@@ -78,8 +78,9 @@ web/               # 前端（HTML + assets/{css,js,locales}）
 
 ## 调试日志
 
-- 捕获：`proxy_debug.go:captureDebugRequest`（脱敏敏感头）
-- API：`admin_debug_log.go:HandleGetDebugLog`（base64 二进制）
+- 捕获：`proxy_debug.go:captureDebugRequest`（脱敏敏感头，`debugBuffer` 加锁支持并发读取）
+- 历史日志 API：`admin_debug_log.go:HandleGetDebugLog`（base64 二进制）
+- 实时日志 API：`admin_active_requests.go:HandleGetActiveRequestDebugLog` → `activeRequestManager.GetDebugLogSnapshot(id)`，请求未结束即可拉取当前快照
 - 独立清理：`DebugLogCleanupInterval=2min`，不受普通日志保留天数限制
 
 ## 渠道定时检测
