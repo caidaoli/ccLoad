@@ -119,6 +119,21 @@ function formatBytes(bytes) {
   return value.toFixed(i > 0 ? 1 : 0) + ' ' + UNITS[i];
 }
 
+function buildActiveRequestInfoContent(req) {
+  const bytesInfo = formatBytes(req?.bytes_received);
+  const hasBytes = !!bytesInfo;
+  const infoDisplay = hasBytes ? `已接收 ${bytesInfo}` : '请求处理中...';
+  const infoColor = hasBytes ? 'var(--success-600)' : 'var(--neutral-500)';
+  const infoHtml = `<span style="color: ${infoColor};">${escapeHtml(infoDisplay)}</span>`;
+  const activeRequestId = Number(req?.id);
+
+  if (!req?.debug_log_available || !Number.isFinite(activeRequestId) || activeRequestId <= 0) {
+    return infoHtml;
+  }
+
+  return `<span class="debug-log-link has-upstream-detail" data-active-request-id="${activeRequestId}" title="${escapeHtml(t('logs.debugLogTitle'))}">${infoHtml}</span>`;
+}
+
 // IP 地址掩码处理（隐藏最后两段）
 function maskIP(ip) {
   if (!ip) return '';
@@ -576,12 +591,7 @@ function renderActiveRequests(activeRequests) {
       keyDisplay = `<span class="logs-api-key-text logs-mono-text">${escapeHtml(req.api_key_used)}</span>`;
     }
 
-    const bytesInfo = formatBytes(req.bytes_received);
-    const hasBytes = !!bytesInfo;
-    const infoDisplay = hasBytes ? `已接收 ${bytesInfo}` : '请求处理中...';
-    const infoColor = hasBytes ? 'var(--success-600)' : 'var(--neutral-500)';
-
-
+    const infoContent = buildActiveRequestInfoContent(req);
 
     const row = document.createElement('tr');
     row.className = 'pending-row';
@@ -593,7 +603,7 @@ function renderActiveRequests(activeRequests) {
               <span class="logs-mono-text" style="margin-left: 8px;" title="${escapeHtml(req.client_ip || '')}">${escapeHtml(maskIP(req.client_ip) || '-')}</span>
               <span style="margin-left: 8px;">${escapeHtml(req.model || '-')}</span>
               <span style="margin-left: 8px;">${durationDisplay} ${streamFlag}</span>
-              <span style="margin-left: 8px; color: ${infoColor};">${escapeHtml(infoDisplay)}</span>
+              <span style="margin-left: 8px;">${infoContent}</span>
             </td>
           `;
     } else {
@@ -612,7 +622,7 @@ function renderActiveRequests(activeRequests) {
             <td class="logs-col-cache-write mobile-empty-cell" data-mobile-label="${logMobileLabels.cacheWrite}" style="text-align: right; white-space: nowrap;"></td>
             <td class="logs-col-cache-util mobile-empty-cell" data-mobile-label="${logMobileLabels.cacheUtil}" style="text-align: right; white-space: nowrap;"></td>
             <td class="logs-col-cost mobile-empty-cell" data-mobile-label="${logMobileLabels.cost}" style="text-align: right; white-space: nowrap;"></td>
-            <td class="logs-col-message" data-mobile-label="${logMobileLabels.message}"><span style="color: ${infoColor};">${escapeHtml(infoDisplay)}</span></td>
+            <td class="logs-col-message" data-mobile-label="${logMobileLabels.message}">${infoContent}</td>
           `;
     }
     fragment.appendChild(row);
@@ -1407,6 +1417,16 @@ window.initPageBootstrap({
   const tbody = document.getElementById('tbody');
   if (tbody) {
     tbody.addEventListener('click', (e) => {
+      // 运行中请求 Debug log 查看
+      const activeDebugLink = e.target.closest('.debug-log-link[data-active-request-id]');
+      if (activeDebugLink) {
+        const activeRequestId = parseInt(activeDebugLink.dataset.activeRequestId, 10);
+        if (Number.isFinite(activeRequestId) && activeRequestId > 0) {
+          showActiveDebugLogModal(activeRequestId);
+        }
+        return;
+      }
+
       // Debug log 查看
       const debugLink = e.target.closest('.debug-log-link[data-log-id]');
       if (debugLink) {
@@ -1830,6 +1850,14 @@ function composeDebugRawResponse(data) {
 }
 
 async function showDebugLogModal(logId) {
+  return showDebugLogModalFromUrl(`/admin/debug-logs/${logId}`);
+}
+
+async function showActiveDebugLogModal(activeRequestId) {
+  return showDebugLogModalFromUrl(`/admin/active-requests/${activeRequestId}/debug-log`);
+}
+
+async function showDebugLogModalFromUrl(url) {
   const modal = document.getElementById('debugLogModal');
   const loading = document.getElementById('debugLogLoading');
   const error = document.getElementById('debugLogError');
@@ -1850,7 +1878,7 @@ async function showDebugLogModal(logId) {
   document.getElementById('debugTabResponse').classList.remove('active');
 
   try {
-    const { res, payload } = await fetchAPIWithAuthRaw(`/admin/debug-logs/${logId}`);
+    const { res, payload } = await fetchAPIWithAuthRaw(url);
     if (!payload.success) {
       if (res.status === 404) {
         loading.style.display = 'none';

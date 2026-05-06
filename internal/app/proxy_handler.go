@@ -314,6 +314,9 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		OnFirstByteRead: func() {
 			s.activeRequests.SetClientFirstByteTime(activeID, time.Since(reqCtx.attemptStartTime))
 		},
+		OnDebugCapture: func(dc *debugCapture) {
+			s.activeRequests.SetDebugCapture(activeID, dc)
+		},
 	}
 
 	lastResult, succeeded := s.runProxyAttemptLoop(ctx, cands, reqCtx, c.Writer)

@@ -118,6 +118,7 @@ type fwResult struct {
 type ForwardObserver struct {
 	OnBytesRead     func(int64) // 字节读取回调（可选）
 	OnFirstByteRead func()      // 首字节读取回调（可选）
+	OnDebugCapture  func(*debugCapture)
 }
 
 // proxyRequestContext 代理请求上下文（封装请求信息，遵循DIP原则）
