@@ -399,7 +399,7 @@ git push
 **版本锁定**（可选）:
 如果需要锁定特定版本，修改 Dockerfile：
 ```dockerfile
-FROM ghcr.io/caidaoli/ccload:2.8.3  # 指定版本号
+FROM ghcr.io/caidaoli/ccload:2.9.0  # 指定版本号
 ENV TZ=Asia/Shanghai
 ENV PORT=7860
 ENV SQLITE_PATH=/tmp/ccload.db
@@ -923,7 +923,7 @@ export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
 - **镜像仓库**：`ghcr.io/caidaoli/ccload`
 - **可用标签**：
   - `latest` - 最新稳定版本
-  - `2.8.3` - 具体版本号
+  - `2.9.0` - 具体版本号
   - `2.8` - 主要.次要版本
   - `2` - 主要版本
 
@@ -934,7 +934,7 @@ export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
 docker pull ghcr.io/caidaoli/ccload:latest
 
 # 拉取指定版本
-docker pull ghcr.io/caidaoli/ccload:2.8.3
+docker pull ghcr.io/caidaoli/ccload:2.9.0
 
 # 指定架构（Docker 通常自动选择）
 docker pull --platform linux/amd64 ghcr.io/caidaoli/ccload:latest
