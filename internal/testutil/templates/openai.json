@@ -6,5 +6,7 @@
       "content": "{{CONTENT}}"
     }
   ],
-  "stream": "{{STREAM}}"
+  "stream": "{{STREAM}}",
+  "prompt_cache_key": "{{SESSION_ID}}",
+  "user": "{{SESSION_ID}}"
 }
