@@ -853,6 +853,79 @@ func TestHandleChannelTest_SuccessfulAPI(t *testing.T) {
 	}
 }
 
+func TestHandleChannelTest_OpenAIRequestIncludesSessionID(t *testing.T) {
+	var gotSessionID string
+	var gotBody []byte
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSessionID = r.Header.Get("Session_id")
+		if got := r.Header.Get("Session-Id"); got != "" {
+			t.Fatalf("Session-Id header should be omitted, got %q", got)
+		}
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"id": "chatcmpl_test",
+			"object": "chat.completion",
+			"model": "gpt-test",
+			"choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+			"usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+		}`))
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	ctx := context.Background()
+
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name:         "openai-test-session-id",
+		URL:          upstream.URL,
+		Priority:     1,
+		ChannelType:  "openai",
+		ModelEntries: []model.ModelEntry{{Model: "gpt-test"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test-key"}}); err != nil {
+		t.Fatalf("添加 API key 失败: %v", err)
+	}
+
+	channelID := fmt.Sprintf("%d", created.ID)
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
+		"model":        "gpt-test",
+		"channel_type": "openai",
+	}))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200, 实际 %d, 响应: %s", w.Code, w.Body.String())
+	}
+	if !uuidPattern.MatchString(gotSessionID) {
+		t.Fatalf("Session_id header missing or invalid: %q", gotSessionID)
+	}
+	var upstreamBody map[string]any
+	if err := json.Unmarshal(gotBody, &upstreamBody); err != nil {
+		t.Fatalf("unmarshal upstream body failed: %v; body=%s", err, gotBody)
+	}
+	if got, _ := upstreamBody["user"].(string); got != gotSessionID {
+		t.Fatalf("body user = %q, want session id %q; body=%s", got, gotSessionID, gotBody)
+	}
+	if got, _ := upstreamBody["prompt_cache_key"].(string); got != gotSessionID {
+		t.Fatalf("body prompt_cache_key = %q, want session id %q; body=%s", got, gotSessionID, gotBody)
+	}
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	dataSuccess, _ := resp.Data["success"].(bool)
+	if !dataSuccess {
+		t.Fatalf("data.success 应为 true, data=%+v", resp.Data)
+	}
+}
+
 // TestHandleChannelTest_FailedAPI 使用 mock server 模拟失败的 API 调用
 func TestHandleChannelTest_FailedAPI(t *testing.T) {
 	// 创建 mock 上游服务器，返回 401 错误
