@@ -101,7 +101,16 @@ func NewServer(store storage.Store) *Server {
 	}
 
 	log.Printf("[INFO] 管理员密码已从环境变量加载（长度: %d 字符）", len(password))
-	log.Print("[INFO] API访问令牌将从数据库动态加载（支持Web界面管理）")
+	provisionCtx, provisionCancel := context.WithTimeout(context.Background(), authTokenProvisionTimeout)
+	provisionResult, err := ProvisionAuthTokensFromEnv(provisionCtx, store)
+	provisionCancel()
+	if err != nil {
+		log.Fatalf("[FATAL] API令牌预置失败: %v", err)
+	}
+	if provisionResult.Configured > 0 {
+		log.Printf("[INFO] API令牌预置完成（配置: %d, 新增: %d）", provisionResult.Configured, provisionResult.Created)
+	}
+	log.Print("[INFO] API访问令牌将从数据库动态加载（支持Web界面管理与环境变量预置）")
 
 	// 从ConfigService读取运行时配置（启动时加载一次，修改后重启生效）
 	runtimeCfg := loadServerRuntimeConfig(configService)

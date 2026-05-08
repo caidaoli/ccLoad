@@ -287,9 +287,10 @@ chmod +x ccload-linux-amd64
    | 变量名 | 值 | 必填 | 说明 |
    |--------|-----|------|------|
    | `CCLOAD_PASS` | `your_admin_password` | ✅ **必填** | 管理界面密码 |
+   | `CCLOAD_API_TOKENS` | `token1\|生产,token2\|开发` | 可选 | 启动时预置 API 访问令牌 |
 
    **注意**:
-   - API 访问令牌通过 Web 管理界面 `/web/tokens.html` 配置
+   - API 访问令牌可通过 `CCLOAD_API_TOKENS` 预置，也可在 Web 管理界面 `/web/tokens.html` 配置
    - `PORT` 和 `SQLITE_PATH` 已在 Dockerfile 中设置，无需配置
    - Hugging Face Spaces 重启后 `/tmp` 目录会清空
 
@@ -800,6 +801,8 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-opus-4-6\"]",true
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
 | `CCLOAD_PASS` | 无 | 管理界面密码（**必填**，未设置将退出） |
+| `CCLOAD_API_TOKENS` | 无 | 启动时预置 API 访问令牌，格式：`token1,token2` 或 `token1\|生产,token2\|开发`；已存在的 token 不会被覆盖 |
+| `API_TOKENS` | 无 | `CCLOAD_API_TOKENS` 的兼容别名；两个变量同时设置且值不一致时启动失败 |
 | `CCLOAD_MYSQL` | 无 | MySQL DSN（可选，格式: `user:pass@tcp(host:port)/db?charset=utf8mb4`）<br/>**设置后使用 MySQL，否则使用 SQLite** |
 | `CCLOAD_ENABLE_SQLITE_REPLICA` | `0` | 混合存储模式开关（`1`=启用，见下方说明） |
 | `CCLOAD_SQLITE_LOG_DAYS` | `7` | 混合模式启动时从 MySQL 恢复日志的天数（-1=全量，0=不恢复日志） |
@@ -895,12 +898,20 @@ export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
 
 #### API 访问令牌配置
 
-**划重点**：API令牌现在在Web界面管理，不用改环境变量了👇
+**划重点**：API令牌默认在Web界面管理；Docker/CI 迁移场景可用环境变量预置👇
 
 - 访问 `http://localhost:8080/web/tokens.html` 进行令牌管理
+- 启动时可设置 `CCLOAD_API_TOKENS=token1|生产,token2|开发` 自动创建缺失令牌
+- 预置逻辑是幂等的：已存在的 token 保留原描述、限额、模型/渠道限制和统计数据
 - 支持添加、删除、查看令牌
 - 所有令牌存储在数据库中，支持持久化
 - 未配置任何令牌时，所有 `/v1/*` 与 `/v1beta/*` API 返回 `401 Unauthorized`
+
+⚠️ **安全提示**：
+- 生产环境优先使用 Docker Secrets、Kubernetes Secrets 或平台加密 Secrets，避免把 token 明文写进普通环境变量
+- CI/CD 中不要打印完整环境变量，避免日志泄露
+- 预置完成后如不再需要自动恢复，可从部署配置中移除 `CCLOAD_API_TOKENS`
+- 限制容器 inspect、编排平台控制台和部署配置的访问权限
 
 **令牌高级功能**（2026-01新增）：
 - **费用限额**：为每个令牌设置费用上限（美元），超限后拒绝请求返回 429
