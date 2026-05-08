@@ -597,6 +597,20 @@ func (h *HybridStore) CreateAuthToken(ctx context.Context, token *model.AuthToke
 	return nil
 }
 
+// EnsureAuthToken creates a missing auth token in the primary store and mirrors it to SQLite.
+func (h *HybridStore) EnsureAuthToken(ctx context.Context, token *model.AuthToken) (bool, error) {
+	created, err := h.mysql.EnsureAuthToken(ctx, token)
+	if err != nil {
+		return false, err
+	}
+
+	h.syncToSQLite("EnsureAuthToken", func() error {
+		return h.sqlite.UpsertAuthTokenAllFields(ctx, token)
+	})
+
+	return created, nil
+}
+
 func (h *HybridStore) GetAuthToken(ctx context.Context, id int64) (*model.AuthToken, error) {
 	return h.sqlite.GetAuthToken(ctx, id)
 }

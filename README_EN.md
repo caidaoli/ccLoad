@@ -266,8 +266,9 @@ Hugging Face Spaces provides free container hosting with Docker support, ideal f
    | Variable | Value | Required | Description |
    |----------|-------|----------|-------------|
    | `CCLOAD_PASS` | `your_admin_password` | ✅ **Required** | Admin interface password |
+   | `CCLOAD_API_TOKENS` | `token1\|production,token2\|development` | Optional | Pre-seed API access tokens on startup |
 
-   **Note**: API access tokens are now configured via Web admin interface `/web/tokens.html`, not environment variables.
+   **Note**: API access tokens can be pre-seeded with `CCLOAD_API_TOKENS` or managed in the Web admin interface `/web/tokens.html`.
 
 5. **Wait for Build and Startup**
 
@@ -762,6 +763,8 @@ Check out the awesome admin dashboard 👇
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CCLOAD_PASS` | None | Admin password (**Required**, exits if not set) |
+| `CCLOAD_API_TOKENS` | None | Pre-seed API access tokens on startup. Format: `token1,token2` or `token1\|production,token2\|development`; existing tokens are not overwritten |
+| `API_TOKENS` | None | Compatibility alias for `CCLOAD_API_TOKENS`; startup fails if both variables are set with different values |
 | `CCLOAD_MYSQL` | None | MySQL DSN (optional, format: `user:pass@tcp(host:port)/db?charset=utf8mb4`)<br/>**If set uses MySQL, otherwise SQLite** |
 | `CCLOAD_ENABLE_SQLITE_REPLICA` | `0` | Hybrid storage mode switch (`1`=enable, see below) |
 | `CCLOAD_SQLITE_LOG_DAYS` | `7` | Days of logs to restore from MySQL on startup in hybrid mode (-1=all, 0=no logs) |
@@ -844,12 +847,21 @@ Base priority order: A > B > C > D
 
 #### API Access Token Configuration
 
-**Important**: API access tokens are now configured via Web admin interface, not environment variables.
+**Important**: API access tokens are normally managed in the Web admin interface; Docker and CI deployments can pre-seed them with an environment variable.
 
 - Visit `http://localhost:8080/web/tokens.html` for token management
+- Set `CCLOAD_API_TOKENS=token1|production,token2|development` to create missing tokens on startup
+- Provisioning is idempotent: existing tokens keep their description, limits, model/channel restrictions, and statistics
+- Only missing tokens are created; existing tokens are never modified
 - Supports add, delete, view tokens
 - All tokens stored in database with persistence
 - Without any tokens configured, all `/v1/*` and `/v1beta/*` APIs return `401 Unauthorized`
+
+⚠️ **Security notes**:
+- In production, prefer Docker Secrets, Kubernetes Secrets, or platform encrypted Secrets over plain environment variables
+- In CI/CD, do not print full environment variables to logs
+- After provisioning, remove `CCLOAD_API_TOKENS` from deployment config if automatic recovery is no longer needed
+- Restrict access to container inspect output, orchestration dashboards, and deployment configuration
 
 **Advanced Token Features** (2026-01 New):
 - **Cost Limits**: Set cost limits per token (USD), requests rejected with 429 when exceeded

@@ -88,6 +88,7 @@ type Store interface {
 
 	// === Auth Token Management ===
 	CreateAuthToken(ctx context.Context, token *model.AuthToken) error
+	EnsureAuthToken(ctx context.Context, token *model.AuthToken) (bool, error)
 	GetAuthToken(ctx context.Context, id int64) (*model.AuthToken, error)
 	GetAuthTokenByValue(ctx context.Context, tokenHash string) (*model.AuthToken, error)
 	ListAuthTokens(ctx context.Context) ([]*model.AuthToken, error)

@@ -14,8 +14,10 @@ services:
       - GIN_MODE=release
       # 必填：未设置将无法启动
       - CCLOAD_PASS=your_admin_password
+      # 可选：启动时预置 API 访问令牌，格式 token 或 token|描述，逗号分隔
+      # - CCLOAD_API_TOKENS=token1|production,token2|development
       - TZ=Asia/Shanghai
-      # API访问令牌通过Web界面管理: http://localhost:8080/web/tokens.html
+      # API访问令牌也可通过Web界面管理: http://localhost:8080/web/tokens.html
     volumes:
       - ./data:/app/data
     healthcheck:
@@ -24,5 +26,4 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-
 
