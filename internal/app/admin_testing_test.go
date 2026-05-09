@@ -12,6 +12,7 @@ import (
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/testutil"
+	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
 )
@@ -214,6 +215,119 @@ func TestTestChannelAPI_MultiURLFallbackOnPlainText502(t *testing.T) {
 	}
 	if got, ok := result["response_text"].(string); !ok || got != "ok" {
 		t.Fatalf("expected second URL success response_text=ok, got=%+v", result)
+	}
+}
+
+func TestTestChannelAPI_NonStreamUsesConfiguredTimeout(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(160 * time.Millisecond):
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[{"message":{"content":"late"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.nonStreamTimeout = 25 * time.Millisecond
+
+	cfg := &model.Config{
+		ID:           9530,
+		Name:         "non-stream-timeout-test",
+		URL:          upstream.URL,
+		Priority:     1,
+		ChannelType:  "openai",
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
+		Enabled:      true,
+	}
+	req := &testutil.TestChannelRequest{
+		Model:       "gpt-4o-mini",
+		ChannelType: "openai",
+		Content:     "hello",
+		Stream:      false,
+	}
+
+	start := time.Now()
+	result := srv.testChannelAPI(context.Background(), cfg, "sk-test", req)
+	elapsed := time.Since(start)
+
+	if success, _ := result["success"].(bool); success {
+		t.Fatalf("expected timeout failure, got result=%+v", result)
+	}
+	if elapsed >= 120*time.Millisecond {
+		t.Fatalf("expected configured timeout before delayed upstream response, elapsed=%v result=%+v", elapsed, result)
+	}
+	if statusCode, _ := getResultInt(result["status_code"]); statusCode != http.StatusGatewayTimeout {
+		t.Fatalf("status_code=%d, want %d, result=%+v", statusCode, http.StatusGatewayTimeout, result)
+	}
+}
+
+func TestTestChannelAPI_StreamFirstValidContentTimeoutIgnoresHeartbeats(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		flusher, _ := w.(http.Flusher)
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		lateContent := time.NewTimer(160 * time.Millisecond)
+		defer lateContent.Stop()
+
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+				_, _ = w.Write([]byte(": keep-alive\n\n"))
+				flusher.Flush()
+			case <-lateContent.C:
+				_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"late\"}}]}\n\n"))
+				_, _ = w.Write([]byte("data: [DONE]\n\n"))
+				flusher.Flush()
+				return
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.firstByteTimeout = 30 * time.Millisecond
+
+	cfg := &model.Config{
+		ID:           9531,
+		Name:         "stream-first-content-timeout-test",
+		URL:          upstream.URL,
+		Priority:     1,
+		ChannelType:  "openai",
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
+		Enabled:      true,
+	}
+	req := &testutil.TestChannelRequest{
+		Model:       "gpt-4o-mini",
+		ChannelType: "openai",
+		Content:     "hello",
+		Stream:      true,
+	}
+
+	start := time.Now()
+	result := srv.testChannelAPI(context.Background(), cfg, "sk-test", req)
+	elapsed := time.Since(start)
+
+	if success, _ := result["success"].(bool); success {
+		t.Fatalf("expected first valid stream content timeout, got result=%+v", result)
+	}
+	if elapsed >= 120*time.Millisecond {
+		t.Fatalf("expected timeout before late content, elapsed=%v result=%+v", elapsed, result)
+	}
+	if statusCode, _ := getResultInt(result["status_code"]); statusCode != util.StatusFirstByteTimeout {
+		t.Fatalf("status_code=%d, want %d, result=%+v", statusCode, util.StatusFirstByteTimeout, result)
+	}
+	if _, ok := result["first_byte_duration_ms"]; ok {
+		t.Fatalf("heartbeat must not set first_byte_duration_ms, result=%+v", result)
 	}
 }
 
