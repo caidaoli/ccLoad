@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"net/http/httptest"
 	neturl "net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"ccLoad/internal/cooldown"
@@ -46,6 +48,36 @@ type channelTestRequestPlan struct {
 	headers          http.Header
 	requestBody      []byte
 	clientBody       []byte
+	timeout          *channelTestTimeout
+}
+
+type channelTestTimeout struct {
+	cancel                     context.CancelFunc
+	firstStreamContentTimer    *time.Timer
+	firstStreamContentTimedOut atomic.Bool
+}
+
+func (t *channelTestTimeout) cancelAll() {
+	if t == nil {
+		return
+	}
+	if t.firstStreamContentTimer != nil {
+		t.firstStreamContentTimer.Stop()
+	}
+	if t.cancel != nil {
+		t.cancel()
+	}
+}
+
+func (t *channelTestTimeout) markFirstStreamContent() {
+	if t == nil || t.firstStreamContentTimer == nil {
+		return
+	}
+	t.firstStreamContentTimer.Stop()
+}
+
+func (t *channelTestTimeout) firstStreamContentTimeoutTriggered() bool {
+	return t != nil && t.firstStreamContentTimedOut.Load()
 }
 
 func newChannelTester(protocolName string) testutil.ChannelTester {
@@ -124,6 +156,61 @@ func extractRequestPath(fullURL string) string {
 		return path + "?" + parsed.RawQuery
 	}
 	return path
+}
+
+func (s *Server) newChannelTestTimeoutContext(parent context.Context, stream bool) (context.Context, *channelTestTimeout) {
+	ctx, cancel := context.WithCancel(parent)
+	timeout := &channelTestTimeout{cancel: cancel}
+
+	if stream {
+		if s.firstByteTimeout > 0 {
+			timeout.firstStreamContentTimer = time.AfterFunc(s.firstByteTimeout, func() {
+				timeout.firstStreamContentTimedOut.Store(true)
+				cancel()
+			})
+		}
+		return ctx, timeout
+	}
+
+	if s.nonStreamTimeout > 0 {
+		timeoutCtx, timeoutCancel := context.WithTimeout(ctx, s.nonStreamTimeout)
+		timeout.cancel = func() {
+			timeoutCancel()
+			cancel()
+		}
+		return timeoutCtx, timeout
+	}
+
+	return ctx, timeout
+}
+
+func (s *Server) describeChannelTestTimeoutError(start time.Time, testReq *testutil.TestChannelRequest, timeout *channelTestTimeout, err error) (int, string, bool) {
+	durationSec := time.Since(start).Seconds()
+	if timeout.firstStreamContentTimeoutTriggered() {
+		return util.StatusFirstByteTimeout,
+			fmt.Sprintf("上游首个有效流内容超时: upstream first valid stream content timeout after %.2fs (threshold=%v): %v", durationSec, s.firstByteTimeout, err),
+			true
+	}
+	if !testReq.Stream && s.nonStreamTimeout > 0 && errors.Is(err, context.DeadlineExceeded) {
+		return http.StatusGatewayTimeout,
+			fmt.Sprintf("非流式请求超时: upstream timeout after %.2fs (threshold=%v): %v", durationSec, s.nonStreamTimeout, err),
+			true
+	}
+	return 0, "", false
+}
+
+func testStreamParserHasFirstContent(parser usageParser) bool {
+	return parser != nil && (parser.GetLastError() != nil || parser.HasStreamOutput() || parser.IsStreamComplete())
+}
+
+func markTestFirstStreamContent(requestPlan *channelTestRequestPlan, result map[string]any, start time.Time) {
+	if requestPlan == nil {
+		return
+	}
+	if _, exists := result["first_byte_duration_ms"]; !exists {
+		result["first_byte_duration_ms"] = time.Since(start).Milliseconds()
+	}
+	requestPlan.timeout.markFirstStreamContent()
 }
 
 // patchUpstreamSystemPrompt 将协议转换后的请求体中的 system prompt
@@ -550,11 +637,21 @@ func (s *Server) testChannelAPIWithURL(
 	start := time.Now()
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return map[string]any{
+		errorMsg := "网络请求失败: " + err.Error()
+		statusCode := 0
+		if timeoutStatus, timeoutMsg, ok := s.describeChannelTestTimeoutError(start, testReq, requestPlan.timeout, err); ok {
+			errorMsg = timeoutMsg
+			statusCode = timeoutStatus
+		}
+		result := map[string]any{
 			"success":     false,
-			"error":       "网络请求失败: " + err.Error(),
+			"error":       errorMsg,
 			"duration_ms": time.Since(start).Milliseconds(),
 		}
+		if statusCode > 0 {
+			result["status_code"] = statusCode
+		}
+		return result
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -591,11 +688,17 @@ func (s *Server) testChannelAPIWithURL(
 	// 非流式或非SSE响应：按原逻辑读取完整响应（即便前端请求了流式，但上游未返回SSE，也按普通响应处理，确保能展示完整错误体）
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		errorMsg := "读取响应失败: " + err.Error()
+		statusCode := resp.StatusCode
+		if timeoutStatus, timeoutMsg, ok := s.describeChannelTestTimeoutError(start, testReq, requestPlan.timeout, err); ok {
+			errorMsg = timeoutMsg
+			statusCode = timeoutStatus
+		}
 		return map[string]any{
 			"success":     false,
-			"error":       "读取响应失败: " + err.Error(),
+			"error":       errorMsg,
 			"duration_ms": time.Since(start).Milliseconds(),
-			"status_code": resp.StatusCode,
+			"status_code": statusCode,
 		}
 	}
 	return s.parseTestNonStreamResponse(ctx, requestPlan, testReq, resp, contentType, start, respBody, result)
@@ -726,10 +829,11 @@ func (s *Server) buildTestUpstreamRequest(
 	// 渠道级自定义请求体规则（与代理链路一致，仅对 JSON body 生效）
 	requestPlan.requestBody = applyBodyRules(requestPlan.headers.Get("Content-Type"), requestPlan.requestBody, cfgForBuild.BodyRules())
 
-	ctx, cancel := context.WithTimeout(reqCtx, 2*time.Minute)
+	ctx, timeout := s.newChannelTestTimeoutContext(reqCtx, testReq.Stream)
+	requestPlan.timeout = timeout
 	req, err := http.NewRequestWithContext(ctx, "POST", requestPlan.fullURL, bytes.NewReader(requestPlan.requestBody))
 	if err != nil {
-		cancel()
+		timeout.cancelAll()
 		return nil, nil, nil, fmt.Errorf("创建HTTP请求失败: %w", err)
 	}
 
@@ -743,7 +847,7 @@ func (s *Server) buildTestUpstreamRequest(
 	}
 	applyHeaderRules(req.Header, cfgForBuild.HeaderRules())
 
-	return req, requestPlan, cancel, nil
+	return req, requestPlan, timeout.cancelAll, nil
 }
 
 // parseTestTranslatedSSEResponse 处理需要跨协议翻译的 SSE 响应分支。
@@ -758,7 +862,8 @@ func (s *Server) parseTestTranslatedSSEResponse(
 	recorder := httptest.NewRecorder()
 	var rawUpstreamBuf bytes.Buffer
 	upstreamTee := io.TeeReader(resp.Body, &rawUpstreamBuf)
-	firstByteCaptured := false
+	firstContentCaptured := false
+	firstContentParser := newSSEUsageParser(requestPlan.upstreamProtocol)
 	var state any
 
 	streamErr := streamTransformSSEEvents(
@@ -766,9 +871,14 @@ func (s *Server) parseTestTranslatedSSEResponse(
 		upstreamTee,
 		recorder,
 		func(rawEvent []byte) error {
-			if !firstByteCaptured && len(rawEvent) > 0 {
-				firstByteCaptured = true
-				result["first_byte_duration_ms"] = time.Since(start).Milliseconds()
+			if !firstContentCaptured && len(rawEvent) > 0 {
+				if err := firstContentParser.Feed(rawEvent); err != nil {
+					log.Printf("[WARN] SSE first content parse failed: %v", err)
+				}
+				if testStreamParserHasFirstContent(firstContentParser) {
+					firstContentCaptured = true
+					markTestFirstStreamContent(requestPlan, result, start)
+				}
 			}
 			return nil
 		},
@@ -786,8 +896,16 @@ func (s *Server) parseTestTranslatedSSEResponse(
 		},
 	)
 	if streamErr != nil {
+		errorMsg := "读取流式响应失败: " + streamErr.Error()
+		statusCode := resp.StatusCode
+		if timeoutStatus, timeoutMsg, ok := s.describeChannelTestTimeoutError(start, testReq, requestPlan.timeout, streamErr); ok {
+			errorMsg = timeoutMsg
+			statusCode = timeoutStatus
+		}
+		result["success"] = false
+		result["status_code"] = statusCode
 		result["duration_ms"] = time.Since(start).Milliseconds()
-		result["error"] = "读取流式响应失败: " + streamErr.Error()
+		result["error"] = errorMsg
 		result["upstream_response_body"] = rawUpstreamBuf.String()
 		return result
 	}
@@ -970,7 +1088,7 @@ func (s *Server) parseTestNativeSSEResponse(
 	result map[string]any,
 ) map[string]any {
 	collector := newTestSSECollector()
-	firstByteCaptured := false
+	firstContentCaptured := false
 
 	// [DRY] 复用代理链路的SSE usage解析器，保证tokens/成本口径一致
 	usageParser := newSSEUsageParser(requestPlan.upstreamProtocol)
@@ -980,18 +1098,25 @@ func (s *Server) parseTestNativeSSEResponse(
 	scanner.Buffer(buf, 16*1024*1024)
 
 	for scanner.Scan() {
-		if !firstByteCaptured {
-			firstByteCaptured = true
-			result["first_byte_duration_ms"] = time.Since(start).Milliseconds()
-		}
-
 		line := scanner.Text()
 		collector.consumeLine(line, usageParser)
+		if !firstContentCaptured && testStreamParserHasFirstContent(usageParser) {
+			firstContentCaptured = true
+			markTestFirstStreamContent(requestPlan, result, start)
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
+		errorMsg := "读取流式响应失败: " + err.Error()
+		statusCode := resp.StatusCode
+		if timeoutStatus, timeoutMsg, ok := s.describeChannelTestTimeoutError(start, testReq, requestPlan.timeout, err); ok {
+			errorMsg = timeoutMsg
+			statusCode = timeoutStatus
+		}
+		result["success"] = false
+		result["status_code"] = statusCode
 		result["duration_ms"] = time.Since(start).Milliseconds()
-		result["error"] = "读取流式响应失败: " + err.Error()
+		result["error"] = errorMsg
 		result["raw_response"] = collector.rawResponse()
 		return result
 	}
