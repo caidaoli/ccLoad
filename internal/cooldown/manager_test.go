@@ -613,7 +613,192 @@ func TestHandleError_RateLimitClassification(t *testing.T) {
 	}
 }
 
+func TestHandleError_Structured429QuotaCooldown(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	manager := NewManager(store, nil)
+	ctx := context.Background()
+
+	cfg := createTestChannel(t, store, "test-structured-429-quota")
+	keys := make([]*model.APIKey, 2)
+	for i := 0; i < 2; i++ {
+		keys[i] = &model.APIKey{
+			ChannelID:   cfg.ID,
+			KeyIndex:    i,
+			APIKey:      "sk-quota-" + string(rune('0'+i)),
+			KeyStrategy: model.KeyStrategySequential,
+		}
+	}
+	_ = store.CreateAPIKeysBatch(ctx, keys)
+
+	t.Run("DAILY_LIMIT_EXCEEDED cools key until next local day", func(t *testing.T) {
+		before := time.Now()
+		action := manager.HandleError(ctx, ErrorInput{
+			ChannelID:      cfg.ID,
+			KeyIndex:       0,
+			StatusCode:     429,
+			ErrorBody:      []byte(`{"code":"USAGE_LIMIT_EXCEEDED","message":"error: code=429 reason=\"DAILY_LIMIT_EXCEEDED\" message=\"daily usage limit exceeded\" metadata=map[]"}`),
+			IsNetworkError: false,
+			Headers:        nil,
+		})
+		after := time.Now()
+
+		if action != ActionRetryKey {
+			t.Fatalf("expected ActionRetryKey, got %v", action)
+		}
+
+		cooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0)
+		if !exists {
+			t.Fatal("expected key cooldown")
+		}
+
+		if !sameTimeSecond(cooldownUntil, nextLocalMidnight(before)) &&
+			!sameTimeSecond(cooldownUntil, nextLocalMidnight(after)) {
+			t.Fatalf("cooldownUntil=%s, want next local midnight from %s or %s",
+				cooldownUntil.Format(time.RFC3339),
+				before.Format(time.RFC3339),
+				after.Format(time.RFC3339))
+		}
+	})
+
+	t.Run("API_KEY_QUOTA_EXHAUSTED cools key for thirty minutes", func(t *testing.T) {
+		before := time.Now()
+		action := manager.HandleError(ctx, ErrorInput{
+			ChannelID:      cfg.ID,
+			KeyIndex:       1,
+			StatusCode:     429,
+			ErrorBody:      []byte(`{"code":"API_KEY_QUOTA_EXHAUSTED","message":"API key 额度已用完"}`),
+			IsNetworkError: false,
+			Headers:        nil,
+		})
+
+		if action != ActionRetryKey {
+			t.Fatalf("expected ActionRetryKey, got %v", action)
+		}
+
+		cooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 1)
+		if !exists {
+			t.Fatal("expected key cooldown")
+		}
+
+		duration := cooldownUntil.Sub(before)
+		if duration < 29*time.Minute+55*time.Second || duration > 30*time.Minute+5*time.Second {
+			t.Fatalf("cooldown duration=%v, want about 30m", duration)
+		}
+	})
+}
+
+func TestHandleError_Structured429QuotaSingleKeyStaysKeyCooldown(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	manager := NewManager(store, nil)
+	ctx := context.Background()
+
+	cfg := createTestChannel(t, store, "test-single-key-structured-429-quota")
+	_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID:   cfg.ID,
+		KeyIndex:    0,
+		APIKey:      "sk-single-quota",
+		KeyStrategy: model.KeyStrategySequential,
+	}})
+
+	action := manager.HandleError(ctx, ErrorInput{
+		ChannelID:      cfg.ID,
+		KeyIndex:       0,
+		StatusCode:     429,
+		ErrorBody:      []byte(`{"code":"API_KEY_QUOTA_EXHAUSTED","message":"API key 额度已用完"}`),
+		IsNetworkError: false,
+		Headers:        nil,
+	})
+
+	if action != ActionRetryKey {
+		t.Fatalf("expected ActionRetryKey, got %v", action)
+	}
+
+	cooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0)
+	if !exists || cooldownUntil.Before(time.Now()) {
+		t.Fatal("expected key cooldown")
+	}
+
+	channelCfg, err := store.GetConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("get config: %v", err)
+	}
+	if channelCfg.CooldownUntil > 0 && time.Unix(channelCfg.CooldownUntil, 0).After(time.Now()) {
+		t.Fatalf("channel should not be cooled for structured key quota error")
+	}
+}
+
+func TestHandleError_ChineseRelativeQuotaCooldown(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	manager := NewManager(store, nil)
+	ctx := context.Background()
+
+	cfg := createTestChannel(t, store, "test-chinese-relative-quota")
+	_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{
+			ChannelID:   cfg.ID,
+			KeyIndex:    0,
+			APIKey:      "sk-relative-quota-0",
+			KeyStrategy: model.KeyStrategySequential,
+		},
+		{
+			ChannelID:   cfg.ID,
+			KeyIndex:    1,
+			APIKey:      "sk-relative-quota-1",
+			KeyStrategy: model.KeyStrategySequential,
+		},
+	})
+
+	before := time.Now()
+	action := manager.HandleError(ctx, ErrorInput{
+		ChannelID:      cfg.ID,
+		KeyIndex:       0,
+		StatusCode:     402,
+		ErrorBody:      []byte(`{"error":"已达到用量上限，将在明天凌晨3点13分（北京时间）恢复"}`),
+		IsNetworkError: false,
+		Headers:        nil,
+	})
+	after := time.Now()
+
+	if action != ActionRetryKey {
+		t.Fatalf("expected ActionRetryKey, got %v", action)
+	}
+
+	cooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0)
+	if !exists {
+		t.Fatal("expected key cooldown")
+	}
+
+	beforeExpected := nextBeijingTime(before, 1, 3, 13)
+	afterExpected := nextBeijingTime(after, 1, 3, 13)
+	if !sameTimeSecond(cooldownUntil, beforeExpected) &&
+		!sameTimeSecond(cooldownUntil, afterExpected) {
+		t.Fatalf("cooldownUntil=%s, want %s or %s",
+			cooldownUntil.Format(time.RFC3339),
+			beforeExpected.Format(time.RFC3339),
+			afterExpected.Format(time.RFC3339))
+	}
+}
+
 // ========== 辅助函数 ==========
+
+func nextLocalMidnight(now time.Time) time.Time {
+	y, m, d := now.In(time.Local).Date()
+	return time.Date(y, m, d+1, 0, 0, 0, 0, time.Local)
+}
+
+func nextBeijingTime(now time.Time, days int, hour int, minute int) time.Time {
+	loc := time.FixedZone("Asia/Shanghai", 8*60*60)
+	local := now.In(loc)
+	y, m, d := local.Date()
+	return time.Date(y, m, d+days, hour, minute, 0, 0, loc)
+}
+
+func sameTimeSecond(a, b time.Time) bool {
+	return a.Sub(b).Abs() <= 2*time.Second
+}
 
 // getKeyCooldownUntil 获取指定Key的冷却时间（测试辅助函数）
 func getKeyCooldownUntil(ctx context.Context, store storage.Store, channelID int64, keyIndex int) (time.Time, bool) {
