@@ -1849,9 +1849,212 @@ function composeDebugRawResponse(data) {
   return parts.join('\n');
 }
 
+function appendMergedText(bucket, value) {
+  if (!bucket || value == null) return;
+  if (Array.isArray(value)) {
+    value.forEach(item => appendMergedText(bucket, item));
+    return;
+  }
+  if (typeof value === 'object') {
+    if (typeof value.text === 'string') {
+      appendMergedText(bucket, value.text);
+      return;
+    }
+    if (typeof value.content === 'string') {
+      appendMergedText(bucket, value.content);
+      return;
+    }
+    try {
+      bucket.push(JSON.stringify(value));
+    } catch {
+      // ignore values that cannot be rendered
+    }
+    return;
+  }
+  const text = String(value);
+  if (text) bucket.push(text);
+}
+
+function collectMergedResponsePayload(payload, state) {
+  if (!payload || typeof payload !== 'object' || !state) return;
+
+  const collectContentParts = (content) => {
+    if (!Array.isArray(content)) {
+      appendMergedText(state.text, content);
+      return;
+    }
+    content.forEach(part => {
+      if (!part || typeof part !== 'object') {
+        appendMergedText(state.text, part);
+        return;
+      }
+      appendMergedText(state.text, part.text ?? part.content);
+    });
+  };
+
+  const collectMessage = (message) => {
+    if (!message || typeof message !== 'object') return;
+    appendMergedText(state.reasoning, message.reasoning_content);
+    appendMergedText(state.reasoning, message.reasoning);
+    appendMergedText(state.text, message.content);
+    appendMergedText(state.text, message.refusal);
+  };
+
+  const collectOutputItem = (item) => {
+    if (!item || typeof item !== 'object') return;
+    if (item.type === 'message') {
+      if (state.hasTextDelta) return;
+      collectContentParts(item.content);
+      return;
+    }
+    if (item.type === 'function_call') {
+      if (state.hasFunctionCallDelta) return;
+      if (state.functionCalls.length > 0) state.functionCalls.push('\n\n');
+      appendMergedText(state.functionCalls, item.arguments);
+      return;
+    }
+    if (item.type === 'reasoning') {
+      if (state.hasReasoningDelta) return;
+      appendMergedText(state.reasoning, item.summary || item.content);
+    }
+  };
+
+  if (Array.isArray(payload.choices)) {
+    payload.choices.forEach(choice => {
+      if (!choice || typeof choice !== 'object') return;
+      const delta = choice.delta || null;
+      if (delta && typeof delta === 'object') {
+        appendMergedText(state.reasoning, delta.reasoning_content);
+        appendMergedText(state.reasoning, delta.reasoning);
+        appendMergedText(state.text, delta.content);
+        if (delta.reasoning_content != null || delta.reasoning != null) state.hasReasoningDelta = true;
+        if (delta.content != null) state.hasTextDelta = true;
+      }
+      collectMessage(choice.message);
+    });
+  }
+
+  switch (payload.type) {
+    case 'response.output_text.delta':
+    case 'response.refusal.delta':
+      appendMergedText(state.text, payload.delta);
+      state.hasTextDelta = true;
+      break;
+    case 'response.reasoning_text.delta':
+    case 'response.reasoning_summary_text.delta':
+    case 'response.reasoning.delta':
+      appendMergedText(state.reasoning, payload.delta);
+      state.hasReasoningDelta = true;
+      break;
+    case 'response.function_call_arguments.delta':
+      if (
+        payload.output_index != null
+        && state.lastFunctionCallIndex != null
+        && state.lastFunctionCallIndex !== payload.output_index
+      ) {
+        state.functionCalls.push('\n\n');
+      }
+      if (payload.output_index != null) state.lastFunctionCallIndex = payload.output_index;
+      appendMergedText(state.functionCalls, payload.delta);
+      state.hasFunctionCallDelta = true;
+      break;
+    default:
+      break;
+  }
+
+  if (Array.isArray(payload.output)) {
+    payload.output.forEach(collectOutputItem);
+  }
+  if (payload.response && Array.isArray(payload.response.output)) {
+    payload.response.output.forEach(collectOutputItem);
+  }
+}
+
+function parseSSEDataPayloads(body) {
+  const payloads = [];
+  let dataLines = [];
+
+  const flush = () => {
+    if (dataLines.length === 0) return;
+    const raw = dataLines.join('\n').trim();
+    dataLines = [];
+    if (!raw || raw === '[DONE]') return;
+    try {
+      payloads.push(JSON.parse(raw));
+    } catch {
+      // Non-JSON SSE data is not useful for merged LLM content.
+    }
+  };
+
+  String(body || '').replace(/\r\n/g, '\n').split('\n').forEach(line => {
+    if (line.startsWith('data:')) {
+      const value = line.slice(5);
+      dataLines.push(value.startsWith(' ') ? value.slice(1) : value);
+      return;
+    }
+    if (line === '') flush();
+  });
+  flush();
+
+  return payloads;
+}
+
+function composeDebugMergedResponse(data) {
+  let raw = String(data?.resp_body || '').replace(/\r\n/g, '\n');
+  if (!raw) return '';
+  const headerBreak = raw.indexOf('\n\n');
+  const firstLine = raw.split('\n', 1)[0] || '';
+  if (headerBreak !== -1 && /^HTTP\s+\d{3}\b/i.test(firstLine)) {
+    raw = raw.slice(headerBreak + 2).trimStart();
+  }
+
+  const state = {
+    reasoning: [],
+    text: [],
+    functionCalls: [],
+    hasReasoningDelta: false,
+    hasTextDelta: false,
+    hasFunctionCallDelta: false,
+    lastFunctionCallIndex: null
+  };
+  const ssePayloads = parseSSEDataPayloads(raw);
+  if (ssePayloads.length > 0) {
+    ssePayloads.forEach(payload => collectMergedResponsePayload(payload, state));
+  } else {
+    try {
+      collectMergedResponsePayload(JSON.parse(raw), state);
+    } catch {
+      return formatJsonSafe(raw);
+    }
+  }
+
+  const sections = [];
+  [state.reasoning, state.text, state.functionCalls].forEach(bucket => {
+    const text = bucket.join('').trim();
+    if (text) sections.push(formatJsonSafe(text));
+  });
+
+  return sections.join('\n\n') || formatJsonSafe(raw);
+}
+
+function getDebugMergedRenderMode(text) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return 'text';
+  const isJson = (trimmed.startsWith('{') && trimmed.endsWith('}'))
+    || (trimmed.startsWith('[') && trimmed.endsWith(']'));
+  if (!isJson) return 'text';
+  try {
+    JSON.parse(trimmed);
+    return 'json';
+  } catch {
+    return 'text';
+  }
+}
+
 const ACTIVE_DEBUG_LOG_REFRESH_INTERVAL_MS = 1500;
 let activeDebugLogRefreshTimer = null;
 let activeDebugLogRefreshInFlight = false;
+let debugResponseMergedVisible = false;
 
 async function showDebugLogModal(logId) {
   return showDebugLogModalFromUrl(`/admin/debug-logs/${logId}`, { activeRequestId: 0 });
@@ -1887,6 +2090,8 @@ async function showDebugLogModalFromUrl(url, opts = {}) {
   });
   document.getElementById('debugTabRequest').classList.add('active');
   document.getElementById('debugTabResponse').classList.remove('active');
+  setDebugResponseMergedVisible(false);
+  updateDebugResponseActionButtons();
 
   try {
     const { res, payload } = await fetchAPIWithAuthRaw(url);
@@ -1906,6 +2111,8 @@ async function showDebugLogModalFromUrl(url, opts = {}) {
 
     window.setHighlightedCodeContent('debugReqRaw', composeDebugRawRequest(data), 'request');
     window.setHighlightedCodeContent('debugRespRaw', composeDebugRawResponse(data), 'response');
+    const mergedResponse = composeDebugMergedResponse(data);
+    window.setHighlightedCodeContent('debugRespMerged', mergedResponse, getDebugMergedRenderMode(mergedResponse));
 
     // 如果是实时活跃请求，启动轮询
     const activeRequestId = Number(opts.activeRequestId);
@@ -1988,6 +2195,8 @@ async function refreshActiveDebugLogOnce(activeRequestId) {
 function updateDebugLogContentPreserveScroll(data) {
   updateDebugPanePreserveScroll('debugReqRaw', composeDebugRawRequest(data), 'request');
   updateDebugPanePreserveScroll('debugRespRaw', composeDebugRawResponse(data), 'response');
+  const mergedResponse = composeDebugMergedResponse(data);
+  updateDebugPanePreserveScroll('debugRespMerged', mergedResponse, getDebugMergedRenderMode(mergedResponse));
 }
 
 function updateDebugPanePreserveScroll(targetId, text, mode) {
@@ -2021,6 +2230,41 @@ function closeDebugLogModal() {
   document.getElementById('debugLogModal').classList.remove('show');
 }
 
+function updateDebugResponseActionButtons() {
+  const responseActive = !!document.getElementById('debugTabResponse')?.classList.contains('active');
+  const copyBtn = document.querySelector('#debugLogModal .upstream-copy-btn--tabs');
+  if (copyBtn) {
+    copyBtn.dataset.copyTarget = responseActive
+      ? (debugResponseMergedVisible ? 'debugRespMerged' : 'debugRespRaw')
+      : 'debugReqRaw';
+  }
+
+  const mergeBtn = document.getElementById('debugMergeBtn');
+  if (mergeBtn) {
+    mergeBtn.hidden = !responseActive;
+  }
+}
+
+function setDebugResponseMergedVisible(visible) {
+  debugResponseMergedVisible = !!visible;
+
+  const raw = document.getElementById('debugRespRaw');
+  const merged = document.getElementById('debugRespMerged');
+  if (raw) raw.hidden = debugResponseMergedVisible;
+  if (merged) merged.hidden = !debugResponseMergedVisible;
+
+  const mergeBtn = document.getElementById('debugMergeBtn');
+  if (mergeBtn) {
+    const key = debugResponseMergedVisible ? 'logs.debugRaw' : 'logs.debugMerge';
+    mergeBtn.classList.toggle('active', debugResponseMergedVisible);
+    mergeBtn.setAttribute('aria-pressed', debugResponseMergedVisible ? 'true' : 'false');
+    mergeBtn.dataset.i18n = key;
+    mergeBtn.textContent = (typeof t === 'function' ? t(key) : '') || (debugResponseMergedVisible ? '原始' : '合并');
+  }
+
+  updateDebugResponseActionButtons();
+}
+
 // Tab switch + copy button delegation for debug log modal.
 // 部分测试桩只提供最小 document API，这里避免在脚本加载阶段就假定完整 DOM 存在。
 if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
@@ -2031,10 +2275,13 @@ if (typeof document !== 'undefined' && typeof document.addEventListener === 'fun
       document.querySelectorAll('#debugLogModal .upstream-tab').forEach(t => t.classList.toggle('active', t === tab));
       document.getElementById('debugTabRequest').classList.toggle('active', target === 'request');
       document.getElementById('debugTabResponse').classList.toggle('active', target === 'response');
-      const copyBtn = document.querySelector('#debugLogModal .upstream-copy-btn--tabs');
-      if (copyBtn) {
-        copyBtn.dataset.copyTarget = target === 'response' ? 'debugRespRaw' : 'debugReqRaw';
-      }
+      updateDebugResponseActionButtons();
+      return;
+    }
+
+    const mergeBtn = e.target.closest('#debugLogModal [data-action="merge-debug-response"]');
+    if (mergeBtn) {
+      setDebugResponseMergedVisible(!debugResponseMergedVisible);
       return;
     }
 

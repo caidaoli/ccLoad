@@ -1,0 +1,175 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+
+const logsSource = fs.readFileSync(path.join(__dirname, 'logs.js'), 'utf8');
+const logsHtml = fs.readFileSync(path.join(__dirname, '..', '..', 'logs.html'), 'utf8');
+
+function extractFunction(source, name) {
+  const signature = `function ${name}(`;
+  const start = source.indexOf(signature);
+  assert.notEqual(start, -1, `缺少函数 ${name}`);
+
+  const bodyStart = source.indexOf('{', start);
+  assert.notEqual(bodyStart, -1, `函数 ${name} 缺少起始大括号`);
+
+  let depth = 0;
+  for (let i = bodyStart; i < source.length; i++) {
+    const ch = source[i];
+    if (ch === '{') depth++;
+    if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        return source.slice(start, i + 1);
+      }
+    }
+  }
+
+  assert.fail(`函数 ${name} 大括号未闭合`);
+}
+
+function createHelpers() {
+  const sandbox = { window: {} };
+  vm.createContext(sandbox);
+  vm.runInContext(`
+${extractFunction(logsSource, 'formatJsonSafe')}
+${extractFunction(logsSource, 'appendMergedText')}
+${extractFunction(logsSource, 'collectMergedResponsePayload')}
+${extractFunction(logsSource, 'parseSSEDataPayloads')}
+${extractFunction(logsSource, 'composeDebugMergedResponse')}
+this.__logsDebugMergeTest = {
+  composeDebugMergedResponse
+};
+`, sandbox);
+
+  return sandbox.__logsDebugMergeTest;
+}
+
+test('debug 响应合并按钮和合并内容容器存在于复制按钮旁边', () => {
+  assert.match(logsHtml, /id="debugMergeBtn"/);
+  assert.match(logsHtml, /data-action="merge-debug-response"/);
+  assert.match(logsHtml, /id="debugRespMerged"/);
+  assert.ok(
+    logsHtml.indexOf('debugMergeBtn') > logsHtml.indexOf('upstream-copy-btn--tabs'),
+    '合并按钮应放在复制按钮之后'
+  );
+});
+
+test('debug 合并按钮事件会切换合并视图并同步复制目标', () => {
+  assert.match(logsSource, /merge-debug-response/);
+  assert.match(logsSource, /setDebugResponseMergedVisible\(!debugResponseMergedVisible\)/);
+  assert.match(logsSource, /debugResponseMergedVisible \? 'debugRespMerged' : 'debugRespRaw'/);
+});
+
+test('合并 SSE responses 输出文本 delta', () => {
+  const helpers = createHelpers();
+  const merged = helpers.composeDebugMergedResponse({
+    resp_body: [
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","delta":"Release","output_index":1,"content_index":0}',
+      '',
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","delta":" 工作流","output_index":1,"content_index":0}',
+      '',
+      'event: response.completed',
+      'data: {"type":"response.completed","response":{"status":"completed"}}'
+    ].join('\n')
+  });
+
+  assert.equal(merged, 'Release 工作流');
+});
+
+test('合并 SSE responses 时 completed 完整 output 不应重复已拼接的 delta', () => {
+  const helpers = createHelpers();
+  const merged = helpers.composeDebugMergedResponse({
+    resp_body: [
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","delta":"Release","output_index":1,"content_index":0}',
+      '',
+      'event: response.completed',
+      'data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Release"}]}]}}'
+    ].join('\n')
+  });
+
+  assert.equal(merged, 'Release');
+});
+
+test('合并 SSE responses 时多个 function call 参数应分段显示', () => {
+  const helpers = createHelpers();
+  const merged = helpers.composeDebugMergedResponse({
+    resp_body: [
+      'data: {"type":"response.function_call_arguments.delta","delta":"{\\"a\\":1}","output_index":2}',
+      '',
+      'data: {"type":"response.function_call_arguments.delta","delta":"{\\"b\\":2}","output_index":3}'
+    ].join('\n')
+  });
+
+  assert.equal(merged, '{\"a\":1}\n\n{\"b\":2}');
+});
+
+test('合并普通 chat completion 时抽取 message.content 并格式化内层 JSON 字符串', () => {
+  const helpers = createHelpers();
+  const merged = helpers.composeDebugMergedResponse({
+    resp_body: JSON.stringify({
+      choices: [
+        {
+          message: {
+            role: 'assistant',
+            content: '{"type":"change","title":"v2.11.5发布构建成功完成"}',
+            reasoning_content: null
+          }
+        }
+      ]
+    })
+  });
+
+  assert.match(merged, /"type": "change"/);
+  assert.match(merged, /"title": "v2\.11\.5发布构建成功完成"/);
+  assert.doesNotMatch(merged, /"choices"/);
+});
+
+test('合并普通 chat completion 可处理带状态行和响应头的完整原始响应', () => {
+  const helpers = createHelpers();
+  const merged = helpers.composeDebugMergedResponse({
+    resp_body: [
+      'HTTP 200',
+      'Content-Type: application/json',
+      'X-Mife-Upstream-Status: 200',
+      '',
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              role: 'assistant',
+              content: '{"title":"完整原始响应"}'
+            }
+          }
+        ]
+      })
+    ].join('\n')
+  });
+
+  assert.equal(merged, '{\n  "title": "完整原始响应"\n}');
+});
+
+test('合并普通 chat completion 时保留 reasoning_content 和 content', () => {
+  const helpers = createHelpers();
+  const merged = helpers.composeDebugMergedResponse({
+    resp_body: JSON.stringify({
+      choices: [
+        {
+          message: {
+            role: 'assistant',
+            content: '{}',
+            reasoning_content: 'The user aborted the Docker image build watch process.'
+          }
+        }
+      ]
+    })
+  });
+
+  assert.match(merged, /^The user aborted/);
+  assert.match(merged, /\n\n\{\}/);
+});

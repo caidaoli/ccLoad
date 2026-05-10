@@ -727,6 +727,8 @@ window.I18N_LOCALES['en'] = {
   'logs.debugLogTitle': 'Debug Log',
   'logs.debugRequest': 'Request',
   'logs.debugResponse': 'Response',
+  'logs.debugMerge': 'Merge',
+  'logs.debugRaw': 'Raw',
   'logs.debugRefreshing': 'Refreshing…',
   'logs.debugRequestFinished': 'Request finished',
   'logs.debugMethod': 'Method',
