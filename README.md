@@ -59,6 +59,7 @@ ccLoad 一站式解决👇
 | ⏱️ **首字节监控** | 流式请求TTFB记录 | 便于诊断上游延迟 |
 | 🌐 **多URL负载均衡** | 单渠道多URL+加权随机 | 延迟低的URL自动多分流 |
 | 💵 **service_tier定价** | OpenAI priority/flex/default层级 | 费用倍率精准计算 |
+| 🖼️ **图像工具计费** | Responses image_generation/gpt-image-2 | 图像生成成本不漏算 |
 | 📉 **分层定价** | GPT-5.4/Qwen-Plus/Gemini长上下文 | 超量token自动降档计费 |
 | 🔄 **协议转换** | Anthropic/OpenAI/Gemini/Codex互转 | 一个渠道服务多种客户端协议 |
 | 🔍 **调试日志** | 上游请求/响应原始数据捕获 | 敏感头脱敏，排障利器 |
@@ -400,7 +401,7 @@ git push
 **版本锁定**（可选）:
 如果需要锁定特定版本，修改 Dockerfile：
 ```dockerfile
-FROM ghcr.io/caidaoli/ccload:2.9.0  # 指定版本号
+FROM ghcr.io/caidaoli/ccload:2.11.2  # 指定版本号
 ENV TZ=Asia/Shanghai
 ENV PORT=7860
 ENV SQLITE_PATH=/tmp/ccload.db
@@ -766,6 +767,10 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-opus-4-6\"]",true
   - `util.OpenAIServiceTierMultiplier()`：返回 priority/flex/default 层级对应倍率
   - `LogEntry.ServiceTier`：持久化到数据库，日志成本列显示层级标注
   - 支持 GPT-5.4、GPT-5.4-pro 等最新模型定价
+- **Responses image_generation 工具计费**（2026-05新增）：
+  - 解析 Responses API 的 `tool_usage.image_gen` 与 `image_generation` 工具模型
+  - `gpt-image-2` 按文本输入、图像输入、图像输出 token 分项计费
+  - 流式/非流式代理链路与渠道测试共用同一 usage 解析器，避免费用口径漂移
 - **分层定价（Tiered Pricing）**：
   - GPT-5.4：超过阈值 token 后输入价格自动降档
   - Qwen-Plus：超过阈值后触发低价区间
@@ -934,8 +939,8 @@ export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
 - **镜像仓库**：`ghcr.io/caidaoli/ccload`
 - **可用标签**：
   - `latest` - 最新稳定版本
-  - `2.9.0` - 具体版本号
-  - `2.8` - 主要.次要版本
+  - `2.11.2` - 具体版本号
+  - `2.11` - 主要.次要版本
   - `2` - 主要版本
 
 ### 镜像标签说明
@@ -945,7 +950,7 @@ export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
 docker pull ghcr.io/caidaoli/ccload:latest
 
 # 拉取指定版本
-docker pull ghcr.io/caidaoli/ccload:2.9.0
+docker pull ghcr.io/caidaoli/ccload:2.11.2
 
 # 指定架构（Docker 通常自动选择）
 docker pull --platform linux/amd64 ghcr.io/caidaoli/ccload:latest
@@ -1008,6 +1013,7 @@ storage/
 - ✅ 自动迁移（启动时自动创建/更新表结构）
 - ✅ Token统计增强（支持时间范围选择、按令牌ID分类、缓存优化）
 - ✅ **service_tier 成本计量**：日志持久化 service_tier 字段，成本列展示层级提示
+- ✅ **Responses 图像工具成本计量**：`image_generation` 工具调用费用并入日志、统计和限额口径
 - ✅ **分层定价引擎**：GPT-5.4/Qwen-Plus/Gemini 长上下文阶梯计价
 - ✅ **日志体验优化**：成本格式化精度提升（3位小数/空值空串），IP列悬停显示完整地址
 - ✅ **协议转换系统**：Anthropic/OpenAI/Gemini/Codex四协议互转，upstream/local两种模式
