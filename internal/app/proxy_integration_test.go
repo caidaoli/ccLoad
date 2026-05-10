@@ -2812,6 +2812,78 @@ func TestProxy_SSEErrorEvent_TriggersCooldown(t *testing.T) {
 	}
 }
 
+func TestProxy_SSEFreeTierBudgetExceededCoolsKeyThirtyMinutes(t *testing.T) {
+	t.Parallel()
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		largeContent := strings.Repeat("Hi", SSEBufferSize)
+		chunks := []string{
+			fmt.Sprintf(`data: {"choices":[{"delta":{"content":"%s"}}]}`, largeContent),
+			`event: error` + "\n" + `data: {"type":"error","error":{"type":"api_error","message":"403 {\"error\":{\"code\":\"FREE_TIER_BUDGET_EXCEEDED\",\"message\":\"Free tier monthly spend limit exceeded. Please upgrade to a paid plan to continue using this service.\"}}"}}`,
+		}
+		for _, chunk := range chunks {
+			_, _ = fmt.Fprintf(w, "%s\n\n", chunk)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "ch-free-tier-sse", models: "gpt-4", apiKey: "sk-free-tier"},
+	}, map[int]string{0: upstream.URL})
+
+	ctx := context.Background()
+	configs, err := env.store.ListConfigs(ctx)
+	if err != nil {
+		t.Fatalf("ListConfigs: %v", err)
+	}
+	if len(configs) != 1 {
+		t.Fatalf("expected 1 config, got %d", len(configs))
+	}
+	channelID := configs[0].ID
+
+	before := time.Now()
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-4",
+		"stream":   true,
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (header already sent), got %d: %s", w.Code, w.Body.String())
+	}
+
+	keyCooldowns, err := env.store.GetAllKeyCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("GetAllKeyCooldowns: %v", err)
+	}
+	channelKeyCooldowns := keyCooldowns[channelID]
+	if channelKeyCooldowns == nil {
+		t.Fatalf("expected key cooldown for channel_id=%d", channelID)
+	}
+	cooldownUntil, exists := channelKeyCooldowns[0]
+	if !exists {
+		t.Fatalf("expected key 0 cooldown for channel_id=%d", channelID)
+	}
+	duration := cooldownUntil.Sub(before)
+	if duration < 29*time.Minute+55*time.Second || duration > 30*time.Minute+5*time.Second {
+		t.Fatalf("key cooldown duration=%v, want about 30m", duration)
+	}
+
+	channelCooldowns, err := env.store.GetAllChannelCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("GetAllChannelCooldowns: %v", err)
+	}
+	if until, exists := channelCooldowns[channelID]; exists && until.After(time.Now()) {
+		t.Fatalf("channel should not be cooled for SSE free tier quota error")
+	}
+}
+
 func TestProxy_SSEErrorEventBeforeClientOutput_RetriesNextChannel(t *testing.T) {
 	t.Parallel()
 

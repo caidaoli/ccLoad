@@ -8,6 +8,7 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/testutil"
+	"ccLoad/internal/util"
 )
 
 // TestNewManager 测试管理器创建
@@ -686,6 +687,112 @@ func TestHandleError_Structured429QuotaCooldown(t *testing.T) {
 			t.Fatalf("cooldown duration=%v, want about 30m", duration)
 		}
 	})
+}
+
+func TestHandleError_FreeTierBudgetExceededWrappedIn500CoolsKeyThirtyMinutes(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	manager := NewManager(store, nil)
+	ctx := context.Background()
+
+	cfg := createTestChannel(t, store, "test-free-tier-budget-exceeded")
+	_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{
+			ChannelID:   cfg.ID,
+			KeyIndex:    0,
+			APIKey:      "sk-free-tier-0",
+			KeyStrategy: model.KeyStrategySequential,
+		},
+		{
+			ChannelID:   cfg.ID,
+			KeyIndex:    1,
+			APIKey:      "sk-free-tier-1",
+			KeyStrategy: model.KeyStrategySequential,
+		},
+	})
+
+	before := time.Now()
+	action := manager.HandleError(ctx, ErrorInput{
+		ChannelID:  cfg.ID,
+		KeyIndex:   0,
+		StatusCode: 500,
+		ErrorBody:  []byte(`{"type":"error","error":{"type":"api_error","message":"403 {\"error\":{\"code\":\"FREE_TIER_BUDGET_EXCEEDED\",\"message\":\"Free tier monthly spend limit exceeded. Please upgrade to a paid plan to continue using this service.\"}}"}}`),
+	})
+
+	if action != ActionRetryKey {
+		t.Fatalf("expected ActionRetryKey, got %v", action)
+	}
+
+	cooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0)
+	if !exists {
+		t.Fatal("expected key cooldown")
+	}
+
+	duration := cooldownUntil.Sub(before)
+	if duration < 29*time.Minute+55*time.Second || duration > 30*time.Minute+5*time.Second {
+		t.Fatalf("cooldown duration=%v, want about 30m", duration)
+	}
+
+	channelCfg, err := store.GetConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("get config: %v", err)
+	}
+	if channelCfg.CooldownUntil > 0 && time.Unix(channelCfg.CooldownUntil, 0).After(time.Now()) {
+		t.Fatalf("channel should not be cooled for wrapped free tier quota error")
+	}
+}
+
+func TestHandleError_FreeTierBudgetExceededSSEErrorCoolsKeyThirtyMinutes(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	manager := NewManager(store, nil)
+	ctx := context.Background()
+
+	cfg := createTestChannel(t, store, "test-free-tier-budget-exceeded-sse")
+	_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{
+			ChannelID:   cfg.ID,
+			KeyIndex:    0,
+			APIKey:      "sk-free-tier-sse-0",
+			KeyStrategy: model.KeyStrategySequential,
+		},
+		{
+			ChannelID:   cfg.ID,
+			KeyIndex:    1,
+			APIKey:      "sk-free-tier-sse-1",
+			KeyStrategy: model.KeyStrategySequential,
+		},
+	})
+
+	before := time.Now()
+	action := manager.HandleError(ctx, ErrorInput{
+		ChannelID:  cfg.ID,
+		KeyIndex:   0,
+		StatusCode: util.StatusSSEError,
+		ErrorBody:  []byte(`{"type":"error","error":{"type":"api_error","message":"403 {\"error\":{\"code\":\"FREE_TIER_BUDGET_EXCEEDED\",\"message\":\"Free tier monthly spend limit exceeded. Please upgrade to a paid plan to continue using this service.\"}}"}}`),
+	})
+
+	if action != ActionRetryKey {
+		t.Fatalf("expected ActionRetryKey, got %v", action)
+	}
+
+	cooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0)
+	if !exists {
+		t.Fatal("expected key cooldown")
+	}
+
+	duration := cooldownUntil.Sub(before)
+	if duration < 29*time.Minute+55*time.Second || duration > 30*time.Minute+5*time.Second {
+		t.Fatalf("cooldown duration=%v, want about 30m", duration)
+	}
+
+	channelCfg, err := store.GetConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("get config: %v", err)
+	}
+	if channelCfg.CooldownUntil > 0 && time.Unix(channelCfg.CooldownUntil, 0).After(time.Now()) {
+		t.Fatalf("channel should not be cooled for SSE free tier quota error")
+	}
 }
 
 func TestHandleError_Structured429QuotaSingleKeyStaysKeyCooldown(t *testing.T) {
