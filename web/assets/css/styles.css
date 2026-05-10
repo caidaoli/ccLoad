@@ -3240,6 +3240,17 @@ body {
   margin-bottom: 4px;
 }
 
+.upstream-merge-btn {
+  margin-left: 6px;
+  margin-bottom: 4px;
+}
+
+.upstream-merge-btn.active {
+  color: var(--primary-600);
+  border-color: var(--primary-600);
+  background: var(--primary-50);
+}
+
 .upstream-pre {
   margin: 0;
   padding: 8px 0;
