@@ -167,7 +167,7 @@ func TestBillingPipeline_NegativeTokens(t *testing.T) {
 func TestBillingPipeline_OpenAI_CacheExceedsInput(t *testing.T) {
 	// 场景：cached_tokens > prompt_tokens (理论上不应发生，但需防御)
 	// 例如: prompt_tokens=500, cached_tokens=800
-	// [INFO] 重构后：边界检查在解析层(GetUsage)执行，而非计费层
+	// 这类上游通常把prompt_tokens当非缓存输入上报，不能扣成0
 	mockSSE := `data: {"usage":{"prompt_tokens":500,"prompt_tokens_details":{"cached_tokens":800},"completion_tokens":100}}` + "\n\n"
 
 	parser := newSSEUsageParser("openai")
@@ -176,9 +176,8 @@ func TestBillingPipeline_OpenAI_CacheExceedsInput(t *testing.T) {
 	}
 	inputTokens, outputTokens, cacheReadTokens, _ := parser.GetUsage()
 
-	// 验证解析层边界检查：inputTokens被clamp到0
-	if inputTokens != 0 {
-		t.Errorf("解析层边界检查失败: 期望inputTokens=0(clamped), 实际%d", inputTokens)
+	if inputTokens != 500 {
+		t.Errorf("解析层边界检查失败: 期望inputTokens=500, 实际%d", inputTokens)
 	}
 	if cacheReadTokens != 800 {
 		t.Errorf("cacheReadTokens应保持800, 实际%d", cacheReadTokens)
@@ -187,11 +186,11 @@ func TestBillingPipeline_OpenAI_CacheExceedsInput(t *testing.T) {
 	// 计费验证
 	cost := util.CalculateCostDetailed("gpt-4o", inputTokens, outputTokens, cacheReadTokens, 0, 0)
 
-	// 预期：inputTokens=0(clamped)，只计算输出和缓存
-	// 公式: 0×$2.5/1M + 100×$10/1M + 800×($2.5×0.5)/1M
-	//     = 0 + 0.001 + 0.001
-	//     = 0.002
-	expected := 0.002
+	// 预期：保留prompt_tokens，同时计算输出和缓存
+	// 公式: 500×$2.5/1M + 100×$10/1M + 800×($2.5×0.5)/1M
+	//     = 0.00125 + 0.001 + 0.001
+	//     = 0.00325
+	expected := 0.00325
 	if !floatEquals(cost, expected, 0.000001) {
 		t.Errorf("OpenAI缓存超限计费错误: 期望%.6f, 实际%.6f", expected, cost)
 	}

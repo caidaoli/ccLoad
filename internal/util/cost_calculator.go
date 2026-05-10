@@ -31,6 +31,33 @@ type ModelPricing struct {
 	CostPerSecond float64
 }
 
+// ImageGenerationToolUsage 是 Responses image_generation 工具返回的 token 用量。
+type ImageGenerationToolUsage struct {
+	InputTokens       int
+	OutputTokens      int
+	TextInputTokens   int
+	TextCachedTokens  int
+	ImageInputTokens  int
+	ImageCachedTokens int
+	ImageOutputTokens int
+}
+
+type imageGenerationToolPricing struct {
+	TextInputPrice   float64
+	TextCachedPrice  float64
+	ImageInputPrice  float64
+	ImageCachedPrice float64
+	ImageOutputPrice float64
+}
+
+var imageGenerationToolPricingByModel = map[string]imageGenerationToolPricing{
+	// 来源: https://openai.com/api/pricing/ (GPT Image 2, per 1M tokens)
+	"gpt-image-2": {
+		TextInputPrice: 5.00, TextCachedPrice: 1.25,
+		ImageInputPrice: 8.00, ImageCachedPrice: 2.00, ImageOutputPrice: 30.00,
+	},
+}
+
 // basePricing 基础定价表（无重复，每个模型只定义一次）
 // 数据来源：
 // - Claude: https://docs.claude.com/en/docs/about-claude/pricing
@@ -668,6 +695,46 @@ func CalculateCostDetailed(model string, inputTokens, outputTokens, cacheReadTok
 	}
 
 	return cost
+}
+
+// CalculateImageGenerationToolCost 计算 Responses image_generation 工具费用。
+func CalculateImageGenerationToolCost(model string, usage ImageGenerationToolUsage) float64 {
+	if usage.InputTokens < 0 || usage.OutputTokens < 0 ||
+		usage.TextInputTokens < 0 || usage.TextCachedTokens < 0 ||
+		usage.ImageInputTokens < 0 || usage.ImageCachedTokens < 0 || usage.ImageOutputTokens < 0 {
+		return 0
+	}
+
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
+		model = "gpt-image-2"
+	}
+	pricing, ok := imageGenerationToolPricingByModel[model]
+	if !ok {
+		return 0
+	}
+
+	textInput := usage.TextInputTokens
+	textCached := usage.TextCachedTokens
+	imageInput := usage.ImageInputTokens
+	imageCached := usage.ImageCachedTokens
+	imageOutput := usage.ImageOutputTokens
+
+	knownInput := textInput + textCached + imageInput + imageCached
+	if usage.InputTokens > knownInput {
+		imageInput += usage.InputTokens - knownInput
+	}
+	if imageOutput == 0 && usage.OutputTokens > 0 {
+		imageOutput = usage.OutputTokens
+	} else if usage.OutputTokens > imageOutput {
+		imageOutput += usage.OutputTokens - imageOutput
+	}
+
+	return (float64(textInput)*pricing.TextInputPrice +
+		float64(textCached)*pricing.TextCachedPrice +
+		float64(imageInput)*pricing.ImageInputPrice +
+		float64(imageCached)*pricing.ImageCachedPrice +
+		float64(imageOutput)*pricing.ImageOutputPrice) / 1_000_000
 }
 
 // isOpenAIModel 判断是否为OpenAI模型

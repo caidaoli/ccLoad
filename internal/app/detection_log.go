@@ -42,7 +42,11 @@ func detectionLogFromResult(cfg *model.Config, logSource, requestModel, actualMo
 	if actualModel != "" && actualModel != requestModel {
 		entry.ActualModel = actualModel
 	}
-	populateDetectionUsage(entry, result)
+	channelType := ""
+	if cfg != nil {
+		channelType = cfg.GetChannelType()
+	}
+	populateDetectionUsage(entry, result, channelType)
 	entry.Message = detectionMessage(result)
 	return entry
 }
@@ -67,11 +71,42 @@ func (s *Server) persistDetectionLog(ctx context.Context, entry *model.LogEntry)
 	}
 }
 
-func populateDetectionUsage(entry *model.LogEntry, result map[string]any) {
+func populateDetectionUsage(entry *model.LogEntry, result map[string]any, channelType string) {
+	if usage, ok := getResultMap(result, "usage"); ok {
+		populateLogEntryUsage(entry, usage)
+		return
+	}
+
 	usage, ok := getNestedMap(result, "api_response", "usage")
 	if !ok {
 		return
 	}
+	if normalized, ok := normalizeDetectionUsage(usage, channelType); ok {
+		populateLogEntryUsage(entry, normalized)
+		return
+	}
+	populateLogEntryUsage(entry, usage)
+}
+
+func normalizeDetectionUsage(usage map[string]any, channelType string) (map[string]any, bool) {
+	var accumulator usageAccumulator
+	accumulator.applyUsage(usage, channelType)
+	if accumulator.usageVersion == 0 {
+		return nil, false
+	}
+
+	input, output, cacheRead, cacheCreation := accumulator.normalizedUsage(channelType)
+	return map[string]any{
+		"input_tokens":                input,
+		"output_tokens":               output,
+		"cache_read_input_tokens":     cacheRead,
+		"cache_creation_input_tokens": cacheCreation,
+		"cache_5m_input_tokens":       accumulator.Cache5mInputTokens,
+		"cache_1h_input_tokens":       accumulator.Cache1hInputTokens,
+	}, true
+}
+
+func populateLogEntryUsage(entry *model.LogEntry, usage map[string]any) {
 	entry.InputTokens = getMapIntOrDefault(usage, "input_tokens", 0)
 	entry.OutputTokens = getMapIntOrDefault(usage, "output_tokens", 0)
 	entry.CacheReadInputTokens = getMapIntOrDefault(usage, "cache_read_input_tokens", 0)
@@ -146,6 +181,14 @@ func getNestedMap(result map[string]any, outerKey, innerKey string) (map[string]
 	}
 	inner, ok := outer[innerKey].(map[string]any)
 	return inner, ok
+}
+
+func getResultMap(result map[string]any, key string) (map[string]any, bool) {
+	if result == nil {
+		return nil, false
+	}
+	value, ok := result[key].(map[string]any)
+	return value, ok
 }
 
 func getMapIntOrDefault(m map[string]any, key string, fallback int) int {

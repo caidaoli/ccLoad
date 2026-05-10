@@ -71,6 +71,27 @@ func TestBuildLogEntry_StreamDiagMsg(t *testing.T) {
 		}
 	})
 
+	t.Run("成本包含工具调用费用", func(t *testing.T) {
+		res := &fwResult{
+			Status:       200,
+			InputTokens:  100,
+			OutputTokens: 10,
+			ToolCostUSD:  0.041592,
+		}
+		entry := buildLogEntry(logEntryParams{
+			RequestModel: "gpt-5.4",
+			ChannelID:    channelID,
+			StatusCode:   200,
+			Duration:     1.5,
+			Result:       res,
+		})
+
+		expected := (100*2.50+10*15.00)/1_000_000 + 0.041592
+		if !floatEquals(entry.Cost, expected, 0.000001) {
+			t.Fatalf("entry cost = %.6f, 期望 %.6f", entry.Cost, expected)
+		}
+	})
+
 	t.Run("流传输中断诊断", func(t *testing.T) {
 		res := &fwResult{
 			Status:        200,

@@ -369,6 +369,39 @@ func TestSSEUsageParser_ExtractsUsageFromOversizedCompletedEvent(t *testing.T) {
 	}
 }
 
+func TestJSONUsageParser_ExtractsImageGenerationToolCost(t *testing.T) {
+	body := `{"type":"response.completed","response":{"tools":[{"type":"image_generation","model":"gpt-image-2"}],"tool_usage":{"image_gen":{"input_tokens":30,"input_tokens_details":{"text_tokens":10,"image_tokens":20},"output_tokens":30,"output_tokens_details":{"image_tokens":30},"total_tokens":60}},"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":0},"output_tokens":20,"total_tokens":120}}}`
+
+	parser := newJSONUsageParser("codex")
+	if err := parser.Feed([]byte(body)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	parser.GetUsage()
+
+	expected := (10*5.00 + 20*8.00 + 30*30.00) / 1_000_000
+	if got := parser.GetToolCostUSD(); !floatEquals(got, expected, 0.000001) {
+		t.Fatalf("image generation tool cost = %.6f, 期望 %.6f", got, expected)
+	}
+}
+
+func TestSSEUsageParser_ExtractsImageGenerationToolCost(t *testing.T) {
+	sseData := `event: response.completed
+data: {"type":"response.completed","response":{"tools":[{"type":"image_generation","model":"gpt-image-2"}],"tool_usage":{"image_gen":{"input_tokens":54,"output_tokens":1372,"total_tokens":1426}},"usage":{"input_tokens":2269,"input_tokens_details":{"cached_tokens":0},"output_tokens":67,"total_tokens":2336}}}
+
+`
+
+	parser := newSSEUsageParser("codex")
+	if err := parser.Feed([]byte(sseData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	parser.GetUsage()
+
+	expected := (54*8.00 + 1372*30.00) / 1_000_000
+	if got := parser.GetToolCostUSD(); !floatEquals(got, expected, 0.000001) {
+		t.Fatalf("image generation tool cost = %.6f, 期望 %.6f", got, expected)
+	}
+}
+
 func TestSSEUsageParser_StreamComplete(t *testing.T) {
 	// 测试各种流结束标志是否正确设置 streamComplete
 	// [FIX] 2026-01: 添加 response.completed 检测，修复客户端取消时费用丢失问题
@@ -524,6 +557,20 @@ func TestJSONUsageParser_OpenAIChatCompletionsWithCacheFormat(t *testing.T) {
 	jsonData := `{"id":"chatcmpl-abc","object":"chat.completion","created":1677652288,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"测试响应"},"finish_reason":"stop"}],"usage":{"prompt_tokens":500,"completion_tokens":200,"total_tokens":700,"prompt_tokens_details":{"cached_tokens":350,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":0,"audio_tokens":0}}}`
 
 	feedAndAssertUsage(t, newJSONUsageParser("openai"), jsonData, 150, 200, 350, 0)
+}
+
+func TestJSONUsageParser_OpenAIChatMixedZeroAliases(t *testing.T) {
+	jsonData := `{"id":"chatcmpl-windhub","object":"chat.completion","model":"mimo-v2.5","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1340,"completion_tokens":357,"total_tokens":1697,"prompt_tokens_details":{"cached_tokens":24576},"completion_tokens_details":{"reasoning_tokens":0},"input_tokens":0,"output_tokens":0,"input_tokens_details":null}}`
+
+	feedAndAssertUsage(t, newJSONUsageParser("openai"), jsonData, 1340, 357, 24576, 0)
+}
+
+func TestSSEUsageParser_OpenAIChatMixedZeroAliases(t *testing.T) {
+	sseData := `data: {"id":"chatcmpl-windhub","object":"chat.completion","model":"mimo-v2.5","usage":{"prompt_tokens":75,"completion_tokens":379,"total_tokens":454,"prompt_tokens_details":{"cached_tokens":192},"input_tokens":0,"output_tokens":0}}
+
+`
+
+	feedAndAssertUsage(t, newSSEUsageParser("openai"), sseData, 75, 379, 192, 0)
 }
 
 func TestSSEUsageParser_GeminiThoughtsTokenCount(t *testing.T) {

@@ -89,6 +89,7 @@ type fwResult struct {
 	CacheCreationInputTokens int // 5m+1h缓存总和（兼容字段）
 	Cache5mInputTokens       int // 5分钟缓存写入Token数（新增2025-12）
 	Cache1hInputTokens       int // 1小时缓存写入Token数（新增2025-12）
+	ToolCostUSD              float64
 
 	// 转发诊断信息（2025-12新增）
 	StreamDiagMsg string // 诊断消息（例如：流中断/不完整、上游响应体读取失败），合并到日志的 Message 字段
@@ -746,7 +747,7 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		if costModel == "" {
 			costModel = p.RequestModel
 		}
-		entry.Cost = computeRequestCost(costModel, res.ServiceTier, res)
+		entry.Cost = computeRequestCost(costModel, res.ServiceTier, res) + res.ToolCostUSD
 	} else {
 		entry.Message = "unknown"
 	}

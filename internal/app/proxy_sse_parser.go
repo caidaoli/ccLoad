@@ -7,6 +7,8 @@ import (
 	"log"
 	"slices"
 	"strings"
+
+	"ccLoad/internal/util"
 )
 
 // ============================================================================
@@ -23,6 +25,7 @@ type usageAccumulator struct {
 	CacheCreationInputTokens int
 	Cache5mInputTokens       int
 	Cache1hInputTokens       int
+	ToolCostUSD              float64
 	ServiceTier              string // OpenAI service_tier: "priority"/"flex"/"default"
 	usageVersion             int
 }
@@ -81,6 +84,7 @@ type usageParser interface {
 	Feed([]byte) error
 	GetUsage() (inputTokens, outputTokens, cacheRead, cacheCreation int)
 	GetCacheBreakdown() (cache5m, cache1h int, serviceTier string) // 返回缓存分桶与 OpenAI service_tier
+	GetToolCostUSD() float64                                       // 返回 Responses 工具调用的额外费用
 	GetLastError() []byte                                          // [INFO] 返回SSE流中检测到的最后一个error事件（用于1308等错误的延迟处理）
 	IsStreamComplete() bool                                        // [INFO] 返回是否检测到流结束标志（[DONE]/message_stop）
 	HasStreamOutput() bool                                         // 返回是否已经看到非心跳的可见响应内容
@@ -89,6 +93,10 @@ type usageParser interface {
 // GetCacheBreakdown 由 sseUsageParser/jsonUsageParser 通过嵌入共享。
 func (u *usageAccumulator) GetCacheBreakdown() (cache5m, cache1h int, serviceTier string) {
 	return u.Cache5mInputTokens, u.Cache1hInputTokens, u.ServiceTier
+}
+
+func (u *usageAccumulator) GetToolCostUSD() float64 {
+	return u.ToolCostUSD
 }
 
 const (
@@ -162,10 +170,14 @@ func (p *sseUsageParser) scanUsageFragments(data []byte) {
 		p.CacheCreationInputTokens = p.scanner.CacheCreationInputTokens
 		p.Cache5mInputTokens = p.scanner.Cache5mInputTokens
 		p.Cache1hInputTokens = p.scanner.Cache1hInputTokens
+		p.ToolCostUSD = p.scanner.ToolCostUSD
 		p.scanVersion = p.scanner.usageVersion
 	}
 	if p.scanner.ServiceTier != "" {
 		p.ServiceTier = p.scanner.ServiceTier
+	}
+	if p.scanner.ToolCostUSD > 0 {
+		p.ToolCostUSD = p.scanner.ToolCostUSD
 	}
 }
 
@@ -358,6 +370,7 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	usage := extractUsage(event)
 
 	if usage == nil {
+		p.applyToolUsageFromPayload(event)
 		return nil
 	}
 
@@ -367,6 +380,7 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	}
 
 	p.applyUsage(usage, p.channelType)
+	p.applyToolUsageFromPayload(event)
 
 	return nil
 }
@@ -386,11 +400,11 @@ func (u *usageAccumulator) normalizedUsage(channelType string) (inputTokens, out
 	// OpenAI/Codex/Gemini语义归一化: prompt_tokens包含cached_tokens，需扣除
 	// 设计原则: 平台差异在解析层处理，计费层无需关心
 	if (channelType == "openai" || channelType == "codex" || channelType == "gemini") && u.CacheReadInputTokens > 0 {
-		billableInput = u.InputTokens - u.CacheReadInputTokens
-		if billableInput < 0 {
-			log.Printf("WARN: %s model has cacheReadTokens(%d) > inputTokens(%d), clamped to 0",
+		if u.CacheReadInputTokens <= u.InputTokens {
+			billableInput = u.InputTokens - u.CacheReadInputTokens
+		} else {
+			log.Printf("WARN: %s usage has cacheReadTokens(%d) > inputTokens(%d); treating inputTokens as non-cache tokens",
 				channelType, u.CacheReadInputTokens, u.InputTokens)
-			billableInput = 0
 		}
 	}
 
@@ -458,7 +472,7 @@ func (p *jsonUsageParser) scanJSONUsage(data []byte) {
 				continue
 			}
 			switch p.scanPendingKey {
-			case "usage", "usageMetadata":
+			case "usage", "usageMetadata", "tool_usage":
 				if b == '{' {
 					p.startJSONValueCapture(b)
 					continue
@@ -589,6 +603,11 @@ func (p *jsonUsageParser) finishJSONValueCapture() {
 			if err := json.Unmarshal(p.scanCaptureBuf, &usage); err == nil {
 				p.applyUsageMap(usage)
 			}
+		case "tool_usage":
+			var toolUsage map[string]any
+			if err := json.Unmarshal(p.scanCaptureBuf, &toolUsage); err == nil {
+				p.applyToolUsageMap(toolUsage, "")
+			}
 		case "service_tier":
 			var tier string
 			if err := json.Unmarshal(p.scanCaptureBuf, &tier); err == nil && tier != "" {
@@ -640,6 +659,7 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 			log.Printf("WARN: usage sse-like parse failed: %v", err)
 		} else {
 			p.ServiceTier = sseParser.ServiceTier
+			p.ToolCostUSD = sseParser.GetToolCostUSD()
 			return sseParser.GetUsage()
 		}
 	}
@@ -653,6 +673,7 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 	usage := extractUsage(payload)
 	// Anthropic fast mode: 从 usage.speed 推断计费层级
 	p.applyUsageMap(usage)
+	p.applyToolUsageFromPayload(payload)
 
 	// 提取 service_tier（OpenAI Chat/Responses API 顶层字段）
 	if tier, ok := payload["service_tier"].(string); ok && tier != "" {
@@ -678,6 +699,84 @@ func (p *jsonUsageParser) IsStreamComplete() bool {
 
 func (p *jsonUsageParser) HasStreamOutput() bool {
 	return p.hasBody
+}
+
+func (u *usageAccumulator) applyToolUsageFromPayload(payload map[string]any) {
+	toolUsage, model := extractToolUsageAndImageModel(payload)
+	u.applyToolUsageMap(toolUsage, model)
+}
+
+func (u *usageAccumulator) applyToolUsageMap(toolUsage map[string]any, imageModel string) {
+	if toolUsage == nil {
+		return
+	}
+	imageUsage, ok := toolUsage["image_gen"].(map[string]any)
+	if !ok {
+		return
+	}
+	u.ToolCostUSD = util.CalculateImageGenerationToolCost(imageModel, imageGenerationToolUsageFromMap(imageUsage))
+}
+
+func extractToolUsageAndImageModel(payload map[string]any) (map[string]any, string) {
+	if payload == nil {
+		return nil, ""
+	}
+	if resp, ok := payload["response"].(map[string]any); ok {
+		toolUsage, _ := resp["tool_usage"].(map[string]any)
+		return toolUsage, extractImageGenerationModel(resp["tools"])
+	}
+	toolUsage, _ := payload["tool_usage"].(map[string]any)
+	return toolUsage, extractImageGenerationModel(payload["tools"])
+}
+
+func extractImageGenerationModel(rawTools any) string {
+	tools, ok := rawTools.([]any)
+	if !ok {
+		return ""
+	}
+	for _, rawTool := range tools {
+		tool, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		toolType, _ := tool["type"].(string)
+		if toolType != "image_generation" {
+			continue
+		}
+		model, _ := tool["model"].(string)
+		return strings.TrimSpace(model)
+	}
+	return ""
+}
+
+func imageGenerationToolUsageFromMap(usage map[string]any) util.ImageGenerationToolUsage {
+	inputDetails, _ := usage["input_tokens_details"].(map[string]any)
+	outputDetails, _ := usage["output_tokens_details"].(map[string]any)
+	return util.ImageGenerationToolUsage{
+		InputTokens:       usageInt(usage, "input_tokens"),
+		OutputTokens:      usageInt(usage, "output_tokens"),
+		TextInputTokens:   usageInt(inputDetails, "text_tokens"),
+		TextCachedTokens:  usageInt(inputDetails, "cached_text_tokens"),
+		ImageInputTokens:  usageInt(inputDetails, "image_tokens"),
+		ImageCachedTokens: usageInt(inputDetails, "cached_image_tokens"),
+		ImageOutputTokens: usageInt(outputDetails, "image_tokens"),
+	}
+}
+
+func usageInt(m map[string]any, key string) int {
+	if m == nil {
+		return 0
+	}
+	switch value := m[key].(type) {
+	case float64:
+		return int(value)
+	case int:
+		return value
+	case int64:
+		return int(value)
+	default:
+		return 0
+	}
 }
 
 func (u *usageAccumulator) applyUsage(usage map[string]any, channelType string) {
