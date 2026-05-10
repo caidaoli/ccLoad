@@ -435,6 +435,8 @@ func parseStructuredQuotaCooldown(responseBody []byte, now time.Time) (time.Time
 	switch {
 	case code == "API_KEY_QUOTA_EXHAUSTED":
 		return now.Add(30 * time.Minute), "API_KEY_QUOTA_EXHAUSTED", true
+	case code == "FREE_TIER_BUDGET_EXCEEDED" || strings.Contains(messageUpper, "FREE_TIER_BUDGET_EXCEEDED"):
+		return now.Add(30 * time.Minute), "FREE_TIER_BUDGET_EXCEEDED", true
 	case code == "DAILY_LIMIT_EXCEEDED" ||
 		(code == "USAGE_LIMIT_EXCEEDED" && strings.Contains(messageUpper, "DAILY_LIMIT_EXCEEDED")):
 		return nextLocalMidnight(now), "DAILY_LIMIT_EXCEEDED", true
