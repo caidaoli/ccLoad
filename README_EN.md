@@ -57,6 +57,7 @@ ccLoad solves these pain points through:
 - ⏱️ **TTFB Monitoring** - Streaming request first byte time tracking for upstream latency diagnosis
 - 🌐 **Multi-URL Load Balancing** - Multiple URLs per channel with latency-weighted random selection
 - 💵 **service_tier Pricing** - OpenAI priority/flex/default tier multipliers for accurate cost accounting
+- 🖼️ **Image Tool Billing** - Responses image_generation/gpt-image-2 cost accounting
 - 📉 **Tiered Pricing** - GPT-5.4/Qwen-Plus/Gemini long-context step pricing, auto-applies lower rate at token thresholds
 - 🔄 **Protocol Transform** - Anthropic/OpenAI/Gemini/Codex cross-protocol conversion, one channel serves multiple client protocols
 - 🔍 **Debug Logs** - Upstream request/response raw data capture with sensitive header masking, essential for troubleshooting
@@ -376,7 +377,7 @@ git push
 **Version Pinning** (Optional):
 To lock specific version, modify Dockerfile:
 ```dockerfile
-FROM ghcr.io/caidaoli/ccload:2.9.0  # Specify version
+FROM ghcr.io/caidaoli/ccload:2.11.2  # Specify version
 ENV TZ=Asia/Shanghai
 ENV PORT=7860
 ENV SQLITE_PATH=/tmp/ccload.db
@@ -730,6 +731,10 @@ Check out the awesome admin dashboard 👇
   - `util.OpenAIServiceTierMultiplier()`: Returns multiplier for priority/flex/default tiers
   - `LogEntry.ServiceTier`: Persisted to database, log cost column shows tier annotation
   - Supports GPT-5.4, GPT-5.4-pro, and other latest model pricing
+- **Responses image_generation Tool Billing** (2026-05 new):
+  - Parses Responses API `tool_usage.image_gen` and the `image_generation` tool model
+  - Bills `gpt-image-2` by text input, image input, and image output tokens
+  - Streaming/non-streaming proxy paths and channel tests share the same usage parser to keep cost accounting consistent
 - **Tiered Pricing**:
   - GPT-5.4: Input price auto-steps down after token threshold
   - Qwen-Plus: Lower price tier kicks in after threshold
@@ -882,8 +887,8 @@ Project supports multi-arch Docker images:
 - **Image Registry**: `ghcr.io/caidaoli/ccload`
 - **Available Tags**:
   - `latest` - Latest stable version
-  - `2.9.0` - Specific version number
-  - `2.8` - Major.minor version
+  - `2.11.2` - Specific version number
+  - `2.11` - Major.minor version
   - `2` - Major version
 
 ### Image Tag Guide
@@ -893,7 +898,7 @@ Project supports multi-arch Docker images:
 docker pull ghcr.io/caidaoli/ccload:latest
 
 # Pull specific version
-docker pull ghcr.io/caidaoli/ccload:2.9.0
+docker pull ghcr.io/caidaoli/ccload:2.11.2
 
 # Specify architecture (Docker usually auto-selects)
 docker pull --platform linux/amd64 ghcr.io/caidaoli/ccload:latest
@@ -954,6 +959,7 @@ storage/
 - ✅ Auto migration (auto creates/updates table structure on startup)
 - ✅ Token stats enhancement (time range selection, per-token ID classification, cache optimization)
 - ✅ **service_tier cost tracking**: Logs persist service_tier field, cost column shows tier label
+- ✅ **Responses image tool cost tracking**: `image_generation` tool costs are included in logs, stats, and cost limit accounting
 - ✅ **Tiered pricing engine**: GPT-5.4/Qwen-Plus/Gemini long-context step billing
 - ✅ **Log UX improvements**: Cost column formats to 3 decimal places (empty for zero), IP column shows full address on hover
 - ✅ **Protocol transform system**: Anthropic/OpenAI/Gemini/Codex four-protocol cross-conversion, upstream/local modes
