@@ -142,6 +142,41 @@ function formatChannelPriority(priority) {
   return Number.isFinite(value) ? String(value) : '-';
 }
 
+function normalizeModelTestCostMultiplier(multiplier) {
+  const value = Number(multiplier);
+  return Number.isFinite(value) && value >= 0 ? value : 1;
+}
+
+function buildModelTestCostDisplay(standardCost, multiplier) {
+  const cost = Number(standardCost);
+  if (!Number.isFinite(cost) || cost <= 0) return null;
+
+  const effectiveCost = cost * normalizeModelTestCostMultiplier(multiplier);
+  if (typeof buildCostStackHtml === 'function') {
+    return {
+      html: buildCostStackHtml(cost, effectiveCost, { tone: 'warning' }),
+      effectiveCost
+    };
+  }
+
+  const hasMultiplier = Math.abs(effectiveCost - cost) >= 1e-9;
+  return {
+    html: hasMultiplier ? `${formatCost(cost)}/${formatCost(effectiveCost)}` : formatCost(cost),
+    effectiveCost
+  };
+}
+
+function getRowCostMultiplier(row) {
+  const rowMultiplier = row?.dataset?.costMultiplier;
+  if (rowMultiplier !== undefined && rowMultiplier !== '') {
+    return normalizeModelTestCostMultiplier(rowMultiplier);
+  }
+
+  const channelId = String(row?.dataset?.channelId || '');
+  const channel = channelsList.find(ch => String(ch.id) === channelId);
+  return normalizeModelTestCostMultiplier(channel?.cost_multiplier);
+}
+
 function pickPositiveTokenCount(...values) {
   for (const value of values) {
     const tokenCount = Number(value);
@@ -412,7 +447,11 @@ function getRowSortValue(row, key) {
     case 'cacheCreate':
       return parseNumericCellValue(row.querySelector('.cache-create')?.textContent);
     case 'cost':
-      return parseNumericCellValue(row.querySelector('.cost')?.textContent);
+      {
+        const costCell = row.querySelector('.cost');
+        const sortValue = parseNumericCellValue(costCell?.dataset?.sortValue);
+        return sortValue ?? parseNumericCellValue(costCell?.textContent);
+      }
     case 'response':
       return row.querySelector('.response')?.textContent?.trim() || '';
     default:
@@ -849,6 +888,7 @@ function renderChannelModeRows() {
       model: modelName,
       displayName: modelName,
       channelId: selectedChannel.id,
+      costMultiplier: normalizeModelTestCostMultiplier(selectedChannel.cost_multiplier),
       ...getResultRowMobileLabels('common.model', '模型')
     });
     if (row) fragment.appendChild(row);
@@ -929,6 +969,7 @@ function renderModelModeRows() {
       channelId: String(ch.id),
       channelName,
       channelPriority: formatChannelPriority(ch.priority),
+      costMultiplier: normalizeModelTestCostMultiplier(ch.cost_multiplier),
       model,
       ...getResultRowMobileLabels('modelTest.channel', '渠道')
     });
@@ -1038,7 +1079,9 @@ function resetRowStatus(row) {
   row.querySelector('.speed').textContent = '-';
   row.querySelector('.cache-read').textContent = '-';
   row.querySelector('.cache-create').textContent = '-';
-  row.querySelector('.cost').textContent = '-';
+  const costCell = row.querySelector('.cost');
+  costCell.textContent = '-';
+  if (costCell.dataset) delete costCell.dataset.sortValue;
   row.querySelector('.response').textContent = i18nText('modelTest.waiting', '等待中...');
   row.querySelector('.response').title = '';
   row.style.background = '';
@@ -1063,7 +1106,15 @@ function applyTestResultToRow(row, data) {
     row.querySelector('.speed').textContent = speedDisplay;
     row.querySelector('.cache-read').textContent = usage.cache_read_input_tokens || usage.cached_tokens || '-';
     row.querySelector('.cache-create').textContent = usage.cache_creation_input_tokens || '-';
-    row.querySelector('.cost').textContent = (typeof data.cost_usd === 'number') ? formatCost(data.cost_usd) : '-';
+    const costCell = row.querySelector('.cost');
+    const costDisplay = buildModelTestCostDisplay(data.cost_usd, getRowCostMultiplier(row));
+    if (costDisplay) {
+      costCell.innerHTML = costDisplay.html;
+      if (costCell.dataset) costCell.dataset.sortValue = String(costDisplay.effectiveCost);
+    } else {
+      costCell.textContent = '-';
+      if (costCell.dataset) delete costCell.dataset.sortValue;
+    }
 
     let respText = data.response_text;
     if (!respText && data.api_response?.choices?.[0]?.message) {
@@ -1119,7 +1170,9 @@ function applyTestResultToRow(row, data) {
   responseCell.textContent = errMsg;
   responseCell.title = errMsg;
   row.querySelector('.speed').textContent = '-';
-  row.querySelector('.cost').textContent = '-';
+  const costCell = row.querySelector('.cost');
+  costCell.textContent = '-';
+  if (costCell.dataset) delete costCell.dataset.sortValue;
 
   if (data.upstream_request_url) {
     row._upstreamData = {
@@ -1160,7 +1213,9 @@ async function runBatchTests(targets) {
       row.querySelector('.speed').textContent = '-';
       row.querySelector('.response').textContent = i18nText('modelTest.requestFailed', '请求失败');
       row.querySelector('.response').title = e.message;
-      row.querySelector('.cost').textContent = '-';
+      const costCell = row.querySelector('.cost');
+      costCell.textContent = '-';
+      if (costCell.dataset) delete costCell.dataset.sortValue;
     }
   };
 
