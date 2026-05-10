@@ -50,9 +50,13 @@ test('model-test 页流式速度优先按首字后的生成阶段计算 tok/s', 
     `(${extractFunction(uiSource, 'calculateTokenSpeed')})`,
     {}
   );
+  const pickPositiveTokenCount = vm.runInNewContext(
+    `(${extractFunction(script, 'pickPositiveTokenCount')})`,
+    {}
+  );
   const calculateTestSpeed = vm.runInNewContext(
     `(${extractFunction(script, 'calculateTestSpeed')})`,
-    { calculateTokenSpeed }
+    { calculateTokenSpeed, pickPositiveTokenCount }
   );
 
   assert.equal(
@@ -72,6 +76,16 @@ test('model-test 页流式速度优先按首字后的生成阶段计算 tok/s', 
       completion_tokens: 736
     }),
     43.294117647058826
+  );
+
+  assert.equal(
+    calculateTestSpeed({
+      duration_ms: 5780
+    }, {
+      output_tokens: 0,
+      completion_tokens: 357
+    }),
+    61.76470588235294
   );
 
   assert.equal(

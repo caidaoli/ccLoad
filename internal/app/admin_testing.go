@@ -758,17 +758,7 @@ func (s *Server) parseTestNonStreamResponse(
 
 		usageParser := newJSONUsageParser(requestPlan.upstreamProtocol)
 		_ = usageParser.Feed(bodyBytes)
-		billableInput, output, cacheRead, _ := usageParser.GetUsage()
-		if billableInput+output+cacheRead > 0 {
-			result["cost_usd"] = util.CalculateCostDetailed(
-				testReq.Model,
-				billableInput,
-				output,
-				cacheRead,
-				usageParser.Cache5mInputTokens,
-				usageParser.Cache1hInputTokens,
-			)
-		}
+		populateTestNormalizedUsageAndCost(result, testReq, usageParser)
 
 		result["upstream_response_body"] = string(bodyBytes)
 
@@ -1052,28 +1042,54 @@ func populateTestSSEUsageAndCost(
 	usageParser *sseUsageParser,
 	lastUsage map[string]any,
 ) {
-	billableInput, output, cacheRead, _ := usageParser.GetUsage()
 	if lastUsage != nil {
 		result["api_response"] = map[string]any{"usage": lastUsage}
-	} else if billableInput+output+cacheRead > 0 {
-		result["api_response"] = map[string]any{
-			"usage": map[string]any{
-				"input_tokens":                billableInput,
-				"output_tokens":               output,
-				"cache_read_input_tokens":     cacheRead,
-				"cache_creation_input_tokens": 0,
-			},
+	}
+	usage, ok := normalizedTestUsage(usageParser)
+	if ok {
+		result["usage"] = usage
+		if lastUsage == nil {
+			result["api_response"] = map[string]any{"usage": usage}
 		}
 	}
+	populateTestNormalizedUsageAndCost(result, testReq, usageParser)
+}
+
+func normalizedTestUsage(parser usageParser) (map[string]any, bool) {
+	input, output, cacheRead, cacheCreation := parser.GetUsage()
+	cache5m, cache1h, _ := parser.GetCacheBreakdown()
+	if input+output+cacheRead+cacheCreation+cache5m+cache1h == 0 {
+		return nil, false
+	}
+	return map[string]any{
+		"input_tokens":                input,
+		"output_tokens":               output,
+		"cache_read_input_tokens":     cacheRead,
+		"cache_creation_input_tokens": cacheCreation,
+		"cache_5m_input_tokens":       cache5m,
+		"cache_1h_input_tokens":       cache1h,
+	}, true
+}
+
+func populateTestNormalizedUsageAndCost(result map[string]any, testReq *testutil.TestChannelRequest, parser usageParser) {
+	usage, ok := normalizedTestUsage(parser)
+	if ok {
+		result["usage"] = usage
+	}
+
+	billableInput, output, cacheRead, _ := parser.GetUsage()
+	cache5m, cache1h, _ := parser.GetCacheBreakdown()
 	if billableInput+output+cacheRead > 0 {
 		result["cost_usd"] = util.CalculateCostDetailed(
 			testReq.Model,
 			billableInput,
 			output,
 			cacheRead,
-			usageParser.Cache5mInputTokens,
-			usageParser.Cache1hInputTokens,
-		)
+			cache5m,
+			cache1h,
+		) + parser.GetToolCostUSD()
+	} else if toolCost := parser.GetToolCostUSD(); toolCost > 0 {
+		result["cost_usd"] = toolCost
 	}
 }
 

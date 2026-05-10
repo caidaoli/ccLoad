@@ -142,11 +142,21 @@ function formatChannelPriority(priority) {
   return Number.isFinite(value) ? String(value) : '-';
 }
 
+function pickPositiveTokenCount(...values) {
+  for (const value of values) {
+    const tokenCount = Number(value);
+    if (Number.isFinite(tokenCount) && tokenCount > 0) {
+      return tokenCount;
+    }
+  }
+  return null;
+}
+
 function calculateTestSpeed(data, usage) {
-  const outputTokens = Number(
-    usage?.output_tokens
-      ?? usage?.completion_tokens
-      ?? usage?.candidatesTokenCount
+  const outputTokens = pickPositiveTokenCount(
+    usage?.completion_tokens,
+    usage?.output_tokens,
+    usage?.candidatesTokenCount
   );
   return calculateTokenSpeed(
     outputTokens,
@@ -1041,9 +1051,9 @@ function applyTestResultToRow(row, data) {
   if (data.success) {
     row.style.background = 'rgba(16, 185, 129, 0.1)';
     const apiResp = data.api_response || {};
-    const usage = apiResp.usage || apiResp.usageMetadata || data.usage || {};
-    const inputTokens = usage.input_tokens || usage.prompt_tokens || usage.promptTokenCount || '-';
-    const outputTokens = usage.output_tokens || usage.completion_tokens || usage.candidatesTokenCount || '-';
+    const usage = data.usage || apiResp.usage || apiResp.usageMetadata || {};
+    const inputTokens = pickPositiveTokenCount(usage.prompt_tokens, usage.input_tokens, usage.promptTokenCount) ?? '-';
+    const outputTokens = pickPositiveTokenCount(usage.completion_tokens, usage.output_tokens, usage.candidatesTokenCount) ?? '-';
     const testSpeed = calculateTestSpeed(data, usage);
     const speedDisplay = testSpeed === null
       ? '-'
