@@ -124,7 +124,7 @@
   </div>
   <!-- 模型行模板 -->
   <template id="tpl-model-row">
-    <tr class="mobile-card-row model-test-row" data-model="{{model}}" data-channel-id="{{channelId}}">
+    <tr class="mobile-card-row model-test-row" data-model="{{model}}" data-channel-id="{{channelId}}" data-cost-multiplier="{{costMultiplier}}">
       <td class="model-test-col-select mobile-card-no-label" data-mobile-label="{{mobileLabelSelect}}"><input type="checkbox" class="row-checkbox model-checkbox" checked></td>
       <td class="model-test-col-name truncate-cell" title="{{model}}" data-mobile-label="{{mobileLabelName}}">
         <button type="button" class="channel-link" data-channel-id="{{channelId}}" title="{{model}}">{{displayName}}</button>
@@ -143,7 +143,7 @@
 
   <!-- 按模型测试时的渠道行模板 -->
   <template id="tpl-channel-row-by-model">
-    <tr class="mobile-card-row model-test-row" data-channel-id="{{channelId}}" data-model="{{model}}">
+    <tr class="mobile-card-row model-test-row" data-channel-id="{{channelId}}" data-model="{{model}}" data-cost-multiplier="{{costMultiplier}}">
       <td class="model-test-col-select mobile-card-no-label" data-mobile-label="{{mobileLabelSelect}}"><input type="checkbox" class="row-checkbox channel-checkbox" checked></td>
       <td class="model-test-col-name truncate-cell" data-mobile-label="{{mobileLabelName}}">
         <button type="button" class="channel-link" data-channel-id="{{channelId}}" title="{{channelName}}">{{channelName}}</button>
