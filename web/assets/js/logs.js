@@ -2058,7 +2058,7 @@ function composeDebugMergedResponse(data) {
   const sections = [];
   [state.reasoning, state.text, state.functionCalls].forEach(bucket => {
     const text = bucket.join('').trim();
-    if (text) sections.push(formatJsonSafe(text));
+    if (text) sections.push(text);
   });
 
   return sections.join('\n\n') || formatJsonSafe(raw);
