@@ -1900,6 +1900,30 @@ function collectMergedResponsePayload(payload, state) {
     appendMergedText(state.text, message.refusal);
   };
 
+  const collectAnthropicDelta = (payload) => {
+    const delta = payload.delta;
+    if (!delta || typeof delta !== 'object') return;
+
+    appendMergedText(state.reasoning, delta.thinking);
+    appendMergedText(state.text, delta.text);
+
+    if (delta.partial_json != null) {
+      if (
+        payload.index != null
+        && state.lastFunctionCallIndex != null
+        && state.lastFunctionCallIndex !== payload.index
+      ) {
+        state.functionCalls.push('\n\n');
+      }
+      if (payload.index != null) state.lastFunctionCallIndex = payload.index;
+      appendMergedText(state.functionCalls, delta.partial_json);
+      state.hasFunctionCallDelta = true;
+    }
+
+    if (delta.thinking != null) state.hasReasoningDelta = true;
+    if (delta.text != null) state.hasTextDelta = true;
+  };
+
   const collectOutputItem = (item) => {
     if (!item || typeof item !== 'object') return;
     if (item.type === 'message') {
@@ -1935,6 +1959,9 @@ function collectMergedResponsePayload(payload, state) {
   }
 
   switch (payload.type) {
+    case 'content_block_delta':
+      collectAnthropicDelta(payload);
+      break;
     case 'response.output_text.delta':
     case 'response.refusal.delta':
       appendMergedText(state.text, payload.delta);
