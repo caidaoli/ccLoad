@@ -121,7 +121,7 @@ test('合并 Anthropic SSE 时拼接 thinking 和 text delta', () => {
     ].join('\n')
   });
 
-  assert.equal(merged, '先分析原因\n\n{\n  "title": "修复合并"\n}');
+  assert.equal(merged, '先分析原因\n\n{"title":"修复合并"}');
 });
 
 test('合并 SSE responses 时 completed 完整 output 不应重复已拼接的 delta', () => {
@@ -152,15 +152,16 @@ test('合并 SSE responses 时多个 function call 参数应分段显示', () =>
   assert.equal(merged, '{\"a\":1}\n\n{\"b\":2}');
 });
 
-test('合并普通 chat completion 时抽取 message.content 并格式化内层 JSON 字符串', () => {
+test('合并普通 chat completion 时抽取 message.content 并按字面输出紧凑 JSON', () => {
   const helpers = createHelpers();
+  const content = '{"type":"change","title":"v2.11.5发布构建成功完成"}';
   const merged = helpers.composeDebugMergedResponse({
     resp_body: JSON.stringify({
       choices: [
         {
           message: {
             role: 'assistant',
-            content: '{"type":"change","title":"v2.11.5发布构建成功完成"}',
+            content,
             reasoning_content: null
           }
         }
@@ -168,8 +169,7 @@ test('合并普通 chat completion 时抽取 message.content 并格式化内层 
     })
   });
 
-  assert.match(merged, /"type": "change"/);
-  assert.match(merged, /"title": "v2\.11\.5发布构建成功完成"/);
+  assert.equal(merged, content);
   assert.doesNotMatch(merged, /"choices"/);
 });
 
@@ -194,7 +194,27 @@ test('合并普通 chat completion 可处理带状态行和响应头的完整原
     ].join('\n')
   });
 
-  assert.equal(merged, '{\n  "title": "完整原始响应"\n}');
+  assert.equal(merged, '{"title":"完整原始响应"}');
+});
+
+test('合并普通 chat completion 时按字面输出 content，不二次美化', () => {
+  const helpers = createHelpers();
+  const content = '{\n  "type": "discovery",\n  "facts": ["a", "b"]\n}';
+  const merged = helpers.composeDebugMergedResponse({
+    resp_body: JSON.stringify({
+      choices: [
+        {
+          message: {
+            role: 'assistant',
+            content,
+            reasoning_content: null
+          }
+        }
+      ]
+    })
+  });
+
+  assert.equal(merged, content);
 });
 
 test('合并普通 chat completion 时保留 reasoning_content 和 content', () => {
