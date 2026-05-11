@@ -81,6 +81,49 @@ test('合并 SSE responses 输出文本 delta', () => {
   assert.equal(merged, 'Release 工作流');
 });
 
+test('合并 Anthropic SSE 时拼接 thinking 和 text delta', () => {
+  const helpers = createHelpers();
+  const merged = helpers.composeDebugMergedResponse({
+    resp_body: [
+      'HTTP 200',
+      'Content-Type: text/event-stream',
+      '',
+      'event: content_block_delta',
+      `data: ${JSON.stringify({
+        type: 'content_block_delta',
+        delta: { type: 'thinking_delta', thinking: '先分析' },
+        index: 0
+      })}`,
+      '',
+      'event: content_block_delta',
+      `data: ${JSON.stringify({
+        type: 'content_block_delta',
+        delta: { type: 'thinking_delta', thinking: '原因' },
+        index: 0
+      })}`,
+      '',
+      'event: content_block_delta',
+      `data: ${JSON.stringify({
+        type: 'content_block_delta',
+        delta: { type: 'text_delta', text: '{"title"' },
+        index: 1
+      })}`,
+      '',
+      'event: content_block_delta',
+      `data: ${JSON.stringify({
+        type: 'content_block_delta',
+        delta: { type: 'text_delta', text: ':"修复合并"}' },
+        index: 1
+      })}`,
+      '',
+      'event: message_stop',
+      'data: {"type":"message_stop"}'
+    ].join('\n')
+  });
+
+  assert.equal(merged, '先分析原因\n\n{\n  "title": "修复合并"\n}');
+});
+
 test('合并 SSE responses 时 completed 完整 output 不应重复已拼接的 delta', () => {
   const helpers = createHelpers();
   const merged = helpers.composeDebugMergedResponse({
