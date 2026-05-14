@@ -28,6 +28,9 @@ type usageAccumulator struct {
 	ToolCostUSD              float64
 	ServiceTier              string // OpenAI service_tier: "priority"/"flex"/"default"
 	usageVersion             int
+	imageGenerationToolModel string
+	toolUsageSeen            bool
+	imageFallbackItemCosts   map[string]float64
 }
 
 type sseUsageParser struct {
@@ -43,6 +46,7 @@ type sseUsageParser struct {
 	discardTail string       // 丢弃超大事件时保留少量尾部，用于识别跨chunk的空行边界
 	scanner     jsonUsageParser
 	scanVersion int
+	sanitizer   sseLargeFieldSanitizer
 
 	// [INFO] 新增：存储SSE流中检测到的error事件（用于1308等错误的延迟处理）
 	lastError []byte // 最后一个error事件的完整JSON（data字段内容）
@@ -78,6 +82,19 @@ type jsonUsageParser struct {
 	scanCaptureString  bool
 	scanCaptureEscape  bool
 	scanCaptureDiscard bool
+}
+
+type sseLargeFieldSanitizer struct {
+	inString      bool
+	escape        bool
+	stringBuf     []byte
+	stringTooLong bool
+	haveToken     bool
+	stringToken   string
+	pendingKey    string
+	expectValue   bool
+	dropping      bool
+	dropEscape    bool
 }
 
 type usageParser interface {
@@ -130,6 +147,7 @@ func newJSONUsageParser(channelType string) *jsonUsageParser {
 // 采用增量解析，避免重复扫描已处理数据
 func (p *sseUsageParser) Feed(data []byte) error {
 	p.scanUsageFragments(data)
+	data = p.sanitizer.sanitize(data)
 
 	for len(data) > 0 {
 		if p.oversized {
@@ -170,7 +188,6 @@ func (p *sseUsageParser) scanUsageFragments(data []byte) {
 		p.CacheCreationInputTokens = p.scanner.CacheCreationInputTokens
 		p.Cache5mInputTokens = p.scanner.Cache5mInputTokens
 		p.Cache1hInputTokens = p.scanner.Cache1hInputTokens
-		p.ToolCostUSD = p.scanner.ToolCostUSD
 		p.scanVersion = p.scanner.usageVersion
 	}
 	if p.scanner.ServiceTier != "" {
@@ -178,6 +195,7 @@ func (p *sseUsageParser) scanUsageFragments(data []byte) {
 	}
 	if p.scanner.ToolCostUSD > 0 {
 		p.ToolCostUSD = p.scanner.ToolCostUSD
+		p.toolUsageSeen = true
 	}
 }
 
@@ -258,6 +276,117 @@ func findSSEEventBoundary(data []byte) (int, bool) {
 		return 0, false
 	}
 	return bestEnd, true
+}
+
+func (s *sseLargeFieldSanitizer) sanitize(data []byte) []byte {
+	if len(data) == 0 {
+		return nil
+	}
+
+	out := make([]byte, 0, min(len(data), maxSSEEventSize))
+	for _, b := range data {
+		if s.dropping {
+			s.consumeDroppedStringByte(b)
+			continue
+		}
+
+		if s.expectValue && isLargeJSONStringField(s.pendingKey) {
+			if isJSONWhitespace(b) {
+				out = append(out, b)
+				continue
+			}
+			if b == '"' {
+				out = append(out, '"', '<', 'o', 'm', 'i', 't', 't', 'e', 'd', '>', '"')
+				s.dropping = true
+				s.dropEscape = false
+				s.clearPending()
+				continue
+			}
+			s.clearPending()
+		}
+
+		out = append(out, b)
+
+		if s.inString {
+			s.scanStringByte(b)
+			continue
+		}
+		if s.haveToken {
+			if isJSONWhitespace(b) {
+				continue
+			}
+			if b == ':' {
+				s.pendingKey = s.stringToken
+				s.expectValue = true
+				s.haveToken = false
+				s.stringToken = ""
+				continue
+			}
+			s.haveToken = false
+			s.stringToken = ""
+		}
+		if b == '"' {
+			s.inString = true
+			s.escape = false
+			s.stringBuf = s.stringBuf[:0]
+			s.stringTooLong = false
+		}
+	}
+	return out
+}
+
+func (s *sseLargeFieldSanitizer) consumeDroppedStringByte(b byte) {
+	if s.dropEscape {
+		s.dropEscape = false
+		return
+	}
+	switch b {
+	case '\\':
+		s.dropEscape = true
+	case '"':
+		s.dropping = false
+	}
+}
+
+func (s *sseLargeFieldSanitizer) scanStringByte(b byte) {
+	if s.escape {
+		s.escape = false
+		s.appendStringByte(b)
+		return
+	}
+	switch b {
+	case '\\':
+		s.escape = true
+	case '"':
+		s.inString = false
+		if !s.stringTooLong {
+			s.haveToken = true
+			s.stringToken = string(s.stringBuf)
+		}
+	default:
+		s.appendStringByte(b)
+	}
+}
+
+func (s *sseLargeFieldSanitizer) appendStringByte(b byte) {
+	if s.stringTooLong {
+		return
+	}
+	if len(s.stringBuf) >= maxJSONKeySize {
+		s.stringTooLong = true
+		s.stringBuf = s.stringBuf[:0]
+		return
+	}
+	s.stringBuf = append(s.stringBuf, b)
+}
+
+func (s *sseLargeFieldSanitizer) clearPending() {
+	s.pendingKey = ""
+	s.expectValue = false
+}
+
+func isLargeJSONStringField(key string) bool {
+	return key == "result" || key == "partial_image_b64"
 }
 
 // parseBuffer 解析缓冲区中的SSE事件（增量解析）
@@ -703,18 +832,57 @@ func (p *jsonUsageParser) HasStreamOutput() bool {
 
 func (u *usageAccumulator) applyToolUsageFromPayload(payload map[string]any) {
 	toolUsage, model := extractToolUsageAndImageModel(payload)
-	u.applyToolUsageMap(toolUsage, model)
+	if model != "" {
+		u.imageGenerationToolModel = model
+	}
+	if u.applyToolUsageMap(toolUsage, model) {
+		return
+	}
+	u.applyImageGenerationFallbackFromPayload(payload, model)
 }
 
-func (u *usageAccumulator) applyToolUsageMap(toolUsage map[string]any, imageModel string) {
+func (u *usageAccumulator) applyToolUsageMap(toolUsage map[string]any, imageModel string) bool {
 	if toolUsage == nil {
-		return
+		return false
 	}
 	imageUsage, ok := toolUsage["image_gen"].(map[string]any)
 	if !ok {
+		return false
+	}
+	cost := util.CalculateImageGenerationToolCost(imageModel, imageGenerationToolUsageFromMap(imageUsage))
+	if cost <= 0 {
+		return false
+	}
+	u.ToolCostUSD = cost
+	u.toolUsageSeen = true
+	return true
+}
+
+func (u *usageAccumulator) applyImageGenerationFallbackFromPayload(payload map[string]any, imageModel string) {
+	if u.toolUsageSeen || payload == nil {
 		return
 	}
-	u.ToolCostUSD = util.CalculateImageGenerationToolCost(imageModel, imageGenerationToolUsageFromMap(imageUsage))
+	if imageModel == "" {
+		imageModel = u.imageGenerationToolModel
+	}
+	for _, item := range extractCompletedImageGenerationItems(payload) {
+		cost := util.CalculateImageGenerationToolFallbackCost(imageModel, item.quality, item.size)
+		if cost <= 0 {
+			continue
+		}
+		if u.imageFallbackItemCosts == nil {
+			u.imageFallbackItemCosts = make(map[string]float64)
+		}
+		if prev, ok := u.imageFallbackItemCosts[item.key]; ok {
+			if prev != cost {
+				u.ToolCostUSD += cost - prev
+				u.imageFallbackItemCosts[item.key] = cost
+			}
+			continue
+		}
+		u.imageFallbackItemCosts[item.key] = cost
+		u.ToolCostUSD += cost
+	}
 }
 
 func extractToolUsageAndImageModel(payload map[string]any) (map[string]any, string) {
@@ -727,6 +895,60 @@ func extractToolUsageAndImageModel(payload map[string]any) (map[string]any, stri
 	}
 	toolUsage, _ := payload["tool_usage"].(map[string]any)
 	return toolUsage, extractImageGenerationModel(payload["tools"])
+}
+
+type completedImageGenerationItem struct {
+	key     string
+	quality string
+	size    string
+}
+
+func extractCompletedImageGenerationItems(payload map[string]any) []completedImageGenerationItem {
+	items := make([]completedImageGenerationItem, 0, 1)
+	if item, ok := payload["item"].(map[string]any); ok {
+		if parsed, ok := completedImageGenerationItemFromMap(item, "item"); ok {
+			items = append(items, parsed)
+		}
+	}
+	if resp, ok := payload["response"].(map[string]any); ok {
+		if output, ok := resp["output"].([]any); ok {
+			for i, rawItem := range output {
+				item, ok := rawItem.(map[string]any)
+				if !ok {
+					continue
+				}
+				if parsed, ok := completedImageGenerationItemFromMap(item, fmt.Sprintf("response.output.%d", i)); ok {
+					items = append(items, parsed)
+				}
+			}
+		}
+	}
+	return items
+}
+
+func completedImageGenerationItemFromMap(item map[string]any, fallbackKey string) (completedImageGenerationItem, bool) {
+	itemType, _ := item["type"].(string)
+	if itemType != "image_generation_call" {
+		return completedImageGenerationItem{}, false
+	}
+	result, _ := item["result"].(string)
+	if result == "" {
+		return completedImageGenerationItem{}, false
+	}
+	quality, _ := item["quality"].(string)
+	size, _ := item["size"].(string)
+	if quality == "" || size == "" {
+		return completedImageGenerationItem{}, false
+	}
+	key, _ := item["id"].(string)
+	if strings.TrimSpace(key) == "" {
+		key = fallbackKey
+	}
+	return completedImageGenerationItem{
+		key:     key,
+		quality: quality,
+		size:    size,
+	}, true
 }
 
 func extractImageGenerationModel(rawTools any) string {

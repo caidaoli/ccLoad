@@ -400,6 +400,13 @@ func TestCalculateImageGenerationToolCost_DefaultsUnknownInputToImageTokens(t *t
 	}
 }
 
+func TestCalculateImageGenerationToolFallbackCost_GPTImage2(t *testing.T) {
+	cost := CalculateImageGenerationToolFallbackCost("gpt-image-2", "high", "1024x1536")
+	if !floatEquals(cost, 0.165, 0.000001) {
+		t.Errorf("gpt-image-2 fallback成本 = %.6f, 期望 %.6f", cost, 0.165)
+	}
+}
+
 func TestCalculateCost_GLMModelsFromUserTable(t *testing.T) {
 	testCases := []struct {
 		model          string

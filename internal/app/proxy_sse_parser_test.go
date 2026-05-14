@@ -402,6 +402,75 @@ data: {"type":"response.completed","response":{"tools":[{"type":"image_generatio
 	}
 }
 
+func TestSSEUsageParser_ChargesCompletedImageGenerationWithoutUsage(t *testing.T) {
+	parser := newSSEUsageParser("codex")
+	largeImage := strings.Repeat("a", 3*maxSSEEventSize+1)
+	chunks := []string{
+		"event: response.created\n",
+		`data: {"type":"response.created","response":{"tools":[{"type":"image_generation","model":"gpt-image-2"}],"tool_usage":{"image_gen":{"input_tokens":0,"output_tokens":0,"total_tokens":0}},"usage":null}}` + "\n\n",
+		"event: response.output_item.done\n",
+		`data: {"type":"response.output_item.done","item":{"id":"ig_1","type":"image_generation_call","status":"generating","quality":"high","size":"1024x1536","result":"`,
+		largeImage,
+		`"},"output_index":0}` + "\n\n",
+		"event: response.completed\n",
+		`data: {"type":"response.completed","response":{"output":[{"id":"ig_1","type":"image_generation_call","status":"generating","quality":"high","size":"1024x1536","result":"`,
+		largeImage,
+		`"}],"usage":null}}` + "\n\n",
+	}
+
+	for i, chunk := range chunks {
+		if err := parser.Feed([]byte(chunk)); err != nil {
+			t.Fatalf("Feed第%d块失败: %v", i+1, err)
+		}
+	}
+
+	const expected = 0.165
+	if got := parser.GetToolCostUSD(); !floatEquals(got, expected, 0.000001) {
+		t.Fatalf("image generation fallback cost = %.6f, 期望 %.6f", got, expected)
+	}
+}
+
+func TestSSEUsageParser_PreservesImageFallbackWhenLaterUsageArrives(t *testing.T) {
+	parser := newSSEUsageParser("codex")
+	chunks := []string{
+		"event: response.created\n",
+		`data: {"type":"response.created","response":{"tools":[{"type":"image_generation","model":"gpt-image-2"}],"usage":null}}` + "\n\n",
+		"event: response.output_item.done\n",
+		`data: {"type":"response.output_item.done","item":{"id":"ig_1","type":"image_generation_call","quality":"high","size":"1024x1536","result":"image-data"},"output_index":0}` + "\n\n",
+		"event: response.completed\n",
+		`data: {"type":"response.completed","response":{"usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120}}}` + "\n\n",
+	}
+
+	for i, chunk := range chunks {
+		if err := parser.Feed([]byte(chunk)); err != nil {
+			t.Fatalf("Feed第%d块失败: %v", i+1, err)
+		}
+	}
+
+	const expected = 0.165
+	if got := parser.GetToolCostUSD(); !floatEquals(got, expected, 0.000001) {
+		t.Fatalf("later usage覆盖了图片兜底成本: got=%.6f, 期望 %.6f", got, expected)
+	}
+}
+
+func TestSSEUsageParser_PrefersImageToolUsageOverFallback(t *testing.T) {
+	sseData := `event: response.completed
+data: {"type":"response.completed","response":{"tools":[{"type":"image_generation","model":"gpt-image-2"}],"tool_usage":{"image_gen":{"input_tokens":54,"output_tokens":1372,"total_tokens":1426}},"output":[{"id":"ig_1","type":"image_generation_call","quality":"high","size":"1024x1536","result":"image-data"}],"usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120}}}
+
+`
+
+	parser := newSSEUsageParser("codex")
+	if err := parser.Feed([]byte(sseData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	parser.GetUsage()
+
+	expected := (54*8.00 + 1372*30.00) / 1_000_000
+	if got := parser.GetToolCostUSD(); !floatEquals(got, expected, 0.000001) {
+		t.Fatalf("tool_usage成本未优先: got=%.6f, 期望 %.6f", got, expected)
+	}
+}
+
 func TestSSEUsageParser_StreamComplete(t *testing.T) {
 	// 测试各种流结束标志是否正确设置 streamComplete
 	// [FIX] 2026-01: 添加 response.completed 检测，修复客户端取消时费用丢失问题

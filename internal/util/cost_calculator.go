@@ -50,11 +50,34 @@ type imageGenerationToolPricing struct {
 	ImageOutputPrice float64
 }
 
+type imageGenerationFallbackPricing map[string]map[string]float64
+
 var imageGenerationToolPricingByModel = map[string]imageGenerationToolPricing{
 	// 来源: https://openai.com/api/pricing/ (GPT Image 2, per 1M tokens)
 	"gpt-image-2": {
 		TextInputPrice: 5.00, TextCachedPrice: 1.25,
 		ImageInputPrice: 8.00, ImageCachedPrice: 2.00, ImageOutputPrice: 30.00,
+	},
+}
+
+var imageGenerationFallbackCostByModel = map[string]imageGenerationFallbackPricing{
+	// 来源: https://developers.openai.com/api/docs/guides/image-generation#calculating-costs
+	"gpt-image-2": {
+		"low": {
+			"1024x1024": 0.006,
+			"1024x1536": 0.005,
+			"1536x1024": 0.005,
+		},
+		"medium": {
+			"1024x1024": 0.053,
+			"1024x1536": 0.041,
+			"1536x1024": 0.041,
+		},
+		"high": {
+			"1024x1024": 0.211,
+			"1024x1536": 0.165,
+			"1536x1024": 0.165,
+		},
 	},
 }
 
@@ -735,6 +758,27 @@ func CalculateImageGenerationToolCost(model string, usage ImageGenerationToolUsa
 		float64(imageInput)*pricing.ImageInputPrice +
 		float64(imageCached)*pricing.ImageCachedPrice +
 		float64(imageOutput)*pricing.ImageOutputPrice) / 1_000_000
+}
+
+// CalculateImageGenerationToolFallbackCost returns the fixed image output cost
+// when OpenAI Responses image_generation succeeds but omits tool_usage.
+func CalculateImageGenerationToolFallbackCost(model, quality, size string) float64 {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
+		model = "gpt-image-2"
+	}
+	quality = strings.ToLower(strings.TrimSpace(quality))
+	size = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(size), " ", ""))
+
+	byQuality, ok := imageGenerationFallbackCostByModel[model]
+	if !ok {
+		return 0
+	}
+	bySize, ok := byQuality[quality]
+	if !ok {
+		return 0
+	}
+	return bySize[size]
 }
 
 // isOpenAIModel 判断是否为OpenAI模型
