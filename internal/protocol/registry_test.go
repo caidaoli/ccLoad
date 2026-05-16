@@ -403,6 +403,36 @@ func TestRegistry_TranslateRequest_OpenAIToAnthropic(t *testing.T) {
 	}
 }
 
+func TestRegistry_TranslateRequest_OpenAIToAnthropic_TextOnlyAssistantUsesStringContent(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	raw := []byte(`{"model":"mimo-v2.5","messages":[{"role":"user","content":"first"},{"role":"assistant","content":"previous answer"},{"role":"user","content":"next"}]}`)
+	got, err := reg.TranslateRequest(protocol.OpenAI, protocol.Anthropic, "mimo-v2.5", raw, false)
+	if err != nil {
+		t.Fatalf("TranslateRequest failed: %v", err)
+	}
+
+	var req struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content any    `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(got, &req); err != nil {
+		t.Fatalf("unmarshal translated request: %v", err)
+	}
+	if len(req.Messages) != 3 {
+		t.Fatalf("messages length = %d, want 3; body=%s", len(req.Messages), got)
+	}
+	if req.Messages[1].Role != "assistant" {
+		t.Fatalf("message[1].role = %q, want assistant", req.Messages[1].Role)
+	}
+	if content, ok := req.Messages[1].Content.(string); !ok || content != "previous answer" {
+		t.Fatalf("assistant content = %#v, want string previous answer; body=%s", req.Messages[1].Content, got)
+	}
+}
+
 func TestRegistry_TranslateRequest_OpenAIToAnthropic_SystemOnly(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)

@@ -106,6 +106,10 @@ func (s *Server) buildProxyRequest(
 		injectAnthropicBetaFlag(req, "context-1m-2025-08-07")
 	}
 
+	// 5.1 本地协议转换到 Anthropic 上游时，OpenAI/Codex/Gemini 客户端不会携带
+	// anthropic-version。缺失该头会让部分 Claude Code 兼容上游按 OpenAI body 解析。
+	ensureAnthropicVersionHeader(req, runtimeUpstreamProtocol(reqCtx, cfg))
+
 	// 5.5 Codex Responses 缓存提示：设置 Session_id 头（仅客户端未自带时）
 	if codexSessionID != "" && req.Header.Get("Session_id") == "" && req.Header.Get("Session-Id") == "" {
 		req.Header.Set("Session_id", codexSessionID)
