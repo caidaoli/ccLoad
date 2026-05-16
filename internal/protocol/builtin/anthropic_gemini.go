@@ -14,7 +14,7 @@ import (
 type anthropicMessagesRequest struct {
 	Model         string                    `json:"model"`
 	Messages      []anthropicMessageContent `json:"messages"`
-	Stream        util.FlexibleBool         `json:"stream,omitempty"`
+	Stream        util.FlexibleBool         `json:"stream"`
 	System        any                       `json:"system,omitempty"`
 	Tools         json.RawMessage           `json:"tools"`
 	ToolChoice    json.RawMessage           `json:"tool_choice,omitempty"`

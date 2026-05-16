@@ -290,6 +290,31 @@ func TestTranslatedStreamChunkCompletes(t *testing.T) {
 	}
 }
 
+func TestDetectProtocolFromSSEPrefix_SkipsUndecisiveEvents(t *testing.T) {
+	t.Parallel()
+
+	prefix := []byte(
+		"event: ping\n" +
+			"data: {\"type\":\"ping\"}\n\n" +
+			"event: message_start\n" +
+			"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\",\"content\":[]}}\n\n",
+	)
+
+	if got := detectProtocolFromSSEPrefix(prefix); got != protocol.Anthropic {
+		t.Fatalf("detectProtocolFromSSEPrefix() = %s, want %s", got, protocol.Anthropic)
+	}
+}
+
+func TestDetectProtocolFromSSEPrefix_AnthropicPing(t *testing.T) {
+	t.Parallel()
+
+	prefix := []byte("event: ping\ndata: {\"type\":\"ping\"}\n\n")
+
+	if got := detectProtocolFromSSEPrefix(prefix); got != protocol.Anthropic {
+		t.Fatalf("detectProtocolFromSSEPrefix() = %s, want %s", got, protocol.Anthropic)
+	}
+}
+
 type partialErrReadCloser struct {
 	data []byte
 	err  error
