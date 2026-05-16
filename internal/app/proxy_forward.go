@@ -423,6 +423,215 @@ func decodeSSEPayload(data []byte) (map[string]any, bool) {
 	return payload, true
 }
 
+func maybePrepareDynamicStreamTransform(reqCtx *requestContext, resp *http.Response) (protocol.Protocol, bool, error) {
+	if reqCtx == nil || resp == nil || resp.Body == nil {
+		return "", false, nil
+	}
+	if !reqCtx.isStreaming {
+		return "", false, nil
+	}
+	if !strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+		return "", false, nil
+	}
+
+	prefix, err := readSSEPrefixThroughFirstEvent(resp.Body)
+	if len(prefix) > 0 {
+		prependToBody(resp, prefix)
+	}
+	if err != nil {
+		return "", false, err
+	}
+
+	return applyDetectedResponseProtocol(reqCtx, detectProtocolFromSSEPrefix(prefix))
+}
+
+func maybePrepareDynamicNonStreamTransform(reqCtx *requestContext, resp *http.Response) (protocol.Protocol, bool, error) {
+	if reqCtx == nil || resp == nil || resp.Body == nil || reqCtx.isStreaming {
+		return "", false, nil
+	}
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if !strings.Contains(contentType, "application/json") && !strings.Contains(contentType, "text/plain") {
+		return "", false, nil
+	}
+
+	rawBody, err := io.ReadAll(resp.Body)
+	if len(rawBody) > 0 {
+		prependToBody(resp, rawBody)
+	}
+	if err != nil {
+		return "", false, err
+	}
+
+	detected := detectProtocolFromJSONBody(rawBody)
+	return applyDetectedResponseProtocol(reqCtx, detected)
+}
+
+func applyDetectedResponseProtocol(reqCtx *requestContext, detected protocol.Protocol) (protocol.Protocol, bool, error) {
+	if detected == "" {
+		return "", false, nil
+	}
+	clientProtocol := reqCtx.transformPlan.ClientProtocol
+	if clientProtocol == "" {
+		clientProtocol = reqCtx.clientProtocol
+	}
+	if clientProtocol == "" {
+		return detected, false, nil
+	}
+	if detected == clientProtocol {
+		plan := reqCtx.transformPlan
+		plan.ClientProtocol = clientProtocol
+		plan.UpstreamProtocol = detected
+		plan.NeedsTransform = false
+		reqCtx.transformPlan = plan
+		reqCtx.clientProtocol = clientProtocol
+		reqCtx.upstreamProtocol = detected
+		return detected, false, nil
+	}
+	if !protocol.SupportsTransform(detected, clientProtocol) {
+		return detected, false, fmt.Errorf("no response transform for detected protocol mismatch: %s -> %s", detected, clientProtocol)
+	}
+
+	plan := reqCtx.transformPlan
+	plan.ClientProtocol = clientProtocol
+	plan.UpstreamProtocol = detected
+	plan.NeedsTransform = true
+	reqCtx.transformPlan = plan
+	reqCtx.clientProtocol = clientProtocol
+	reqCtx.upstreamProtocol = detected
+
+	return detected, true, nil
+}
+
+func readSSEPrefixThroughFirstEvent(r io.Reader) ([]byte, error) {
+	var buf bytes.Buffer
+	tmp := make([]byte, SSEBufferSize)
+	for buf.Len() < maxSSEEventSize {
+		remaining := maxSSEEventSize - buf.Len()
+		if remaining < len(tmp) {
+			tmp = tmp[:remaining]
+		}
+		n, err := r.Read(tmp)
+		if n > 0 {
+			buf.Write(tmp[:n])
+			if firstSSEEventEnd(buf.Bytes()) >= 0 {
+				return append([]byte(nil), buf.Bytes()...), nil
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				return append([]byte(nil), buf.Bytes()...), nil
+			}
+			return append([]byte(nil), buf.Bytes()...), err
+		}
+	}
+	return append([]byte(nil), buf.Bytes()...), fmt.Errorf("SSE first event exceeds max size (%d bytes)", maxSSEEventSize)
+}
+
+func detectProtocolFromSSEPrefix(prefix []byte) protocol.Protocol {
+	for len(prefix) > 0 {
+		eventEnd := firstSSEEventEnd(prefix)
+		if eventEnd < 0 {
+			eventEnd = len(prefix)
+		}
+		if detected := detectProtocolFromSSEEvent(prefix[:eventEnd]); detected != "" {
+			return detected
+		}
+		if eventEnd >= len(prefix) {
+			break
+		}
+		prefix = prefix[eventEnd:]
+	}
+	return ""
+}
+
+func detectProtocolFromSSEEvent(event []byte) protocol.Protocol {
+	eventType, data := parseSSEEventChunk(event)
+	if isAnthropicSSEEventType(eventType) {
+		return protocol.Anthropic
+	}
+	if isCodexSSEEventType(eventType) {
+		return protocol.Codex
+	}
+	payload, ok := decodeSSEPayload(data)
+	if !ok {
+		return ""
+	}
+	return detectProtocolFromJSONPayload(payload)
+}
+
+func detectProtocolFromJSONBody(raw []byte) protocol.Protocol {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return ""
+	}
+	var payload map[string]any
+	if err := sonic.Unmarshal(raw, &payload); err != nil {
+		return ""
+	}
+	return detectProtocolFromJSONPayload(payload)
+}
+
+func detectProtocolFromJSONPayload(payload map[string]any) protocol.Protocol {
+	payloadType, _ := payload["type"].(string)
+	if isCodexSSEEventType(payloadType) {
+		return protocol.Codex
+	}
+	if object, _ := payload["object"].(string); object == "response" {
+		return protocol.Codex
+	}
+	if _, ok := payload["choices"].([]any); ok {
+		return protocol.OpenAI
+	}
+	if object, _ := payload["object"].(string); strings.HasPrefix(object, "chat.completion") {
+		return protocol.OpenAI
+	}
+	if _, ok := payload["candidates"].([]any); ok {
+		return protocol.Gemini
+	}
+	if _, ok := payload["usageMetadata"].(map[string]any); ok {
+		return protocol.Gemini
+	}
+	if isAnthropicSSEEventType(payloadType) || (payloadType == "message" && payload["role"] != nil && payload["content"] != nil) {
+		return protocol.Anthropic
+	}
+	return ""
+}
+
+func firstSSEEventEnd(data []byte) int {
+	pos := 0
+	for pos < len(data) {
+		idx := bytes.IndexByte(data[pos:], '\n')
+		if idx < 0 {
+			return -1
+		}
+		lineEnd := pos + idx
+		if len(bytes.TrimRight(data[pos:lineEnd], "\r")) == 0 {
+			return lineEnd + 1
+		}
+		pos = lineEnd + 1
+	}
+	return -1
+}
+
+func isAnthropicSSEEventType(value string) bool {
+	switch value {
+	case "message_start",
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop",
+		"message_delta",
+		"message_stop",
+		"ping":
+		return true
+	default:
+		return false
+	}
+}
+
+func isCodexSSEEventType(value string) bool {
+	return strings.HasPrefix(value, "response.")
+}
+
 // handleSuccessResponse 处理成功响应（流式传输）
 func (s *Server) handleSuccessResponse(
 	reqCtx *requestContext,
@@ -433,6 +642,42 @@ func (s *Server) handleSuccessResponse(
 	readStats *streamReadStats,
 	observer *ForwardObserver,
 ) (*fwResult, float64, error) {
+	if reqCtx.isStreaming && s.protocolRegistry != nil {
+		detectedProtocol, transform, err := maybePrepareDynamicStreamTransform(reqCtx, resp)
+		if detectedProtocol != "" {
+			channelType = string(detectedProtocol)
+		}
+		if err != nil {
+			return &fwResult{
+				Status:        resp.StatusCode,
+				Header:        hdrClone,
+				FirstByteTime: readStats.firstByteSec,
+				BytesReceived: readStats.totalBytes,
+			}, reqCtx.Duration().Seconds(), err
+		}
+		if transform {
+			return s.handleTranslatedStreamSuccessResponse(reqCtx, resp, hdrClone, w, string(detectedProtocol), readStats, observer)
+		}
+	}
+
+	if !reqCtx.isStreaming && s.protocolRegistry != nil {
+		detectedProtocol, transform, err := maybePrepareDynamicNonStreamTransform(reqCtx, resp)
+		if detectedProtocol != "" {
+			channelType = string(detectedProtocol)
+		}
+		if err != nil {
+			return &fwResult{
+				Status:        resp.StatusCode,
+				Header:        hdrClone,
+				FirstByteTime: readStats.firstByteSec,
+				BytesReceived: readStats.totalBytes,
+			}, reqCtx.Duration().Seconds(), err
+		}
+		if transform {
+			return s.handleTranslatedNonStreamSuccessResponse(reqCtx, resp, hdrClone, w, string(detectedProtocol), readStats)
+		}
+	}
+
 	if reqCtx.isStreaming &&
 		s.protocolRegistry != nil &&
 		reqCtx.transformPlan.NeedsTransform &&
@@ -599,7 +844,10 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 		}, reqCtx.Duration().Seconds(), err
 	}
 
-	filterAndWriteResponseHeaders(w, resp.Header)
+	translatedHeader := resp.Header.Clone()
+	translatedHeader.Set("Content-Type", "application/json")
+	translatedHeader.Del("Content-Encoding")
+	filterAndWriteResponseHeaders(w, translatedHeader)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(translatedBody)
 

@@ -84,8 +84,16 @@ func convertAnthropicRequestToOpenAI(model string, rawJSON []byte, stream bool) 
 
 func convertAnthropicResponseToOpenAINonStream(_ context.Context, model string, _, _, rawJSON []byte) ([]byte, error) {
 	var resp anthropicMessagesResponse
-	if err := sonic.Unmarshal(rawJSON, &resp); err != nil {
-		return nil, err
+	if looksLikeSSEDocument(rawJSON) {
+		parsed, err := anthropicResponseFromSSE(rawJSON, model)
+		if err != nil {
+			return nil, err
+		}
+		resp = parsed
+	} else {
+		if err := sonic.Unmarshal(rawJSON, &resp); err != nil {
+			return nil, err
+		}
 	}
 	message, err := openAIMessageFromAnthropicBlocks(resp.Content)
 	if err != nil {
@@ -104,6 +112,188 @@ func convertAnthropicResponseToOpenAINonStream(_ context.Context, model string, 
 		Usage: openAIUsageFromAnthropicUsage(resp.Usage),
 	}
 	return sonic.Marshal(out)
+}
+
+func looksLikeSSEDocument(raw []byte) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return strings.HasPrefix(trimmed, "event:") || strings.HasPrefix(trimmed, "data:")
+}
+
+type anthropicSSEBlock struct {
+	block       anthropicResponseBlock
+	partialJSON strings.Builder
+}
+
+func anthropicResponseFromSSE(raw []byte, fallbackModel string) (anthropicMessagesResponse, error) {
+	resp := anthropicMessagesResponse{
+		Type:    "message",
+		Role:    "assistant",
+		Model:   fallbackModel,
+		Content: []anthropicResponseBlock{},
+	}
+	blocks := make(map[int]*anthropicSSEBlock)
+	order := make([]int, 0)
+
+	normalized := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	for _, event := range strings.Split(normalized, "\n\n") {
+		event = strings.TrimSpace(event)
+		if event == "" {
+			continue
+		}
+		eventType, line := parseSSEEventBlock(event)
+		if line == "" || line == "[DONE]" {
+			continue
+		}
+		var payload map[string]any
+		if err := sonic.Unmarshal([]byte(line), &payload); err != nil {
+			return anthropicMessagesResponse{}, err
+		}
+		switch {
+		case eventType == "message_start" || stringValue(payload["type"]) == "message_start":
+			applyAnthropicSSEMessageStart(&resp, payload)
+		case stringValue(payload["type"]) == "content_block_start":
+			applyAnthropicSSEContentBlockStart(blocks, &order, payload)
+		case stringValue(payload["type"]) == "content_block_delta":
+			applyAnthropicSSEContentBlockDelta(blocks, &order, payload)
+		case stringValue(payload["type"]) == "content_block_stop":
+			if err := applyAnthropicSSEContentBlockStop(blocks, payload); err != nil {
+				return anthropicMessagesResponse{}, err
+			}
+		case stringValue(payload["type"]) == "message_delta":
+			applyAnthropicSSEMessageDelta(&resp, payload)
+		}
+	}
+
+	for _, index := range order {
+		if block := blocks[index]; block != nil && block.block.Type != "" {
+			resp.Content = append(resp.Content, block.block)
+		}
+	}
+	return resp, nil
+}
+
+func applyAnthropicSSEMessageStart(resp *anthropicMessagesResponse, payload map[string]any) {
+	message, _ := payload["message"].(map[string]any)
+	if message == nil {
+		return
+	}
+	if id := stringValue(message["id"]); id != "" {
+		resp.ID = id
+	}
+	if typ := stringValue(message["type"]); typ != "" {
+		resp.Type = typ
+	}
+	if role := stringValue(message["role"]); role != "" {
+		resp.Role = role
+	}
+	if model := stringValue(message["model"]); model != "" {
+		resp.Model = model
+	}
+	if usage, _ := message["usage"].(map[string]any); usage != nil {
+		applyAnthropicSSEUsage(&resp.Usage, usage)
+	}
+}
+
+func applyAnthropicSSEMessageDelta(resp *anthropicMessagesResponse, payload map[string]any) {
+	if delta, _ := payload["delta"].(map[string]any); delta != nil {
+		if stopReason := stringValue(delta["stop_reason"]); stopReason != "" {
+			resp.StopReason = stopReason
+		}
+	}
+	if usage, _ := payload["usage"].(map[string]any); usage != nil {
+		applyAnthropicSSEUsage(&resp.Usage, usage)
+	}
+}
+
+func applyAnthropicSSEUsage(usage *anthropicMessagesUsage, raw map[string]any) {
+	if val := int64Value(raw["input_tokens"]); val != 0 {
+		usage.InputTokens = val
+	}
+	if val := int64Value(raw["output_tokens"]); val != 0 {
+		usage.OutputTokens = val
+	}
+	if val := int64Value(raw["cache_read_input_tokens"]); val != 0 {
+		usage.CacheReadInputTokens = val
+	}
+	if val := int64Value(raw["cache_creation_input_tokens"]); val != 0 {
+		usage.CacheCreationInputTokens = val
+	}
+	if val := int64Value(raw["reasoning_tokens"]); val != 0 {
+		usage.ReasoningTokens = val
+	}
+}
+
+func applyAnthropicSSEContentBlockStart(blocks map[int]*anthropicSSEBlock, order *[]int, payload map[string]any) {
+	index := int(int64Value(payload["index"]))
+	acc := ensureAnthropicSSEBlock(blocks, order, index)
+	block, _ := payload["content_block"].(map[string]any)
+	if block == nil {
+		return
+	}
+	acc.block.Type = stringValue(block["type"])
+	acc.block.Text = stringValue(block["text"])
+	acc.block.Thinking = stringValue(block["thinking"])
+	acc.block.Signature = stringValue(block["signature"])
+	acc.block.Data = stringValue(block["data"])
+	acc.block.ID = stringValue(block["id"])
+	acc.block.Name = stringValue(block["name"])
+	if input, ok := block["input"]; ok {
+		acc.block.Input = input
+	}
+}
+
+func applyAnthropicSSEContentBlockDelta(blocks map[int]*anthropicSSEBlock, order *[]int, payload map[string]any) {
+	index := int(int64Value(payload["index"]))
+	acc := ensureAnthropicSSEBlock(blocks, order, index)
+	delta, _ := payload["delta"].(map[string]any)
+	if delta == nil {
+		return
+	}
+	switch stringValue(delta["type"]) {
+	case "thinking_delta":
+		if acc.block.Type == "" {
+			acc.block.Type = "thinking"
+		}
+		acc.block.Thinking += stringValue(delta["thinking"])
+	case "signature_delta":
+		acc.block.Signature += stringValue(delta["signature"])
+	case "input_json_delta":
+		if acc.block.Type == "" {
+			acc.block.Type = "tool_use"
+		}
+		acc.partialJSON.WriteString(stringValue(delta["partial_json"]))
+	default:
+		if text := stringValue(delta["text"]); text != "" {
+			if acc.block.Type == "" {
+				acc.block.Type = "text"
+			}
+			acc.block.Text += text
+		}
+	}
+}
+
+func applyAnthropicSSEContentBlockStop(blocks map[int]*anthropicSSEBlock, payload map[string]any) error {
+	index := int(int64Value(payload["index"]))
+	acc := blocks[index]
+	if acc == nil || acc.partialJSON.Len() == 0 {
+		return nil
+	}
+	var input any
+	if err := sonic.Unmarshal([]byte(acc.partialJSON.String()), &input); err != nil {
+		return err
+	}
+	acc.block.Input = input
+	return nil
+}
+
+func ensureAnthropicSSEBlock(blocks map[int]*anthropicSSEBlock, order *[]int, index int) *anthropicSSEBlock {
+	if block := blocks[index]; block != nil {
+		return block
+	}
+	block := &anthropicSSEBlock{}
+	blocks[index] = block
+	*order = append(*order, index)
+	return block
 }
 
 func convertOpenAIResponseToAnthropicNonStream(_ context.Context, model string, _, _, rawJSON []byte) ([]byte, error) {
