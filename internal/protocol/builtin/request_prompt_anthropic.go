@@ -73,6 +73,12 @@ func encodeAnthropicRequest(model string, conv conversation, stream bool) ([]byt
 		if role != "user" && role != "assistant" {
 			return nil, fmt.Errorf("%w: unsupported anthropic role %q", protocol.ErrUnsupportedRequestShape, turn.Role)
 		}
+		if role == "assistant" {
+			if text, ok := singleAnthropicTextContent(turn.Parts); ok {
+				out.Messages = append(out.Messages, anthropicMessageContent{Role: role, Content: text})
+				continue
+			}
+		}
 		blocks, err := encodeAnthropicBlocks(turn.Parts)
 		if err != nil {
 			return nil, fmt.Errorf("anthropic turn %d: %w", i, err)
@@ -144,6 +150,13 @@ func encodeAnthropicRequest(model string, conv conversation, stream bool) ([]byt
 		return nil, fmt.Errorf("%w: no convertible anthropic messages", protocol.ErrUnsupportedRequestShape)
 	}
 	return marshalStableJSON(out)
+}
+
+func singleAnthropicTextContent(parts []conversationPart) (string, bool) {
+	if len(parts) != 1 || parts[0].Kind != partKindText {
+		return "", false
+	}
+	return parts[0].Text, true
 }
 
 func encodeAnthropicBlocks(parts []conversationPart) ([]map[string]any, error) {

@@ -363,6 +363,15 @@ func injectAnthropicBetaFlag(req *http.Request, flag string) {
 	req.Header.Set("anthropic-beta", existing+","+flag)
 }
 
+func ensureAnthropicVersionHeader(req *http.Request, upstreamType string) {
+	if upstreamType != util.ChannelTypeAnthropic {
+		return
+	}
+	if req.Header.Get("anthropic-version") == "" {
+		req.Header.Set("anthropic-version", "2023-06-01")
+	}
+}
+
 // maybeInjectAnyrouterAdaptiveThinking 为 anyrouter 渠道的 /v1/messages 请求注入 adaptive thinking。
 // Why: anyrouter 在上游侧要求显式声明 thinking.type=adaptive 才能启用自适应思考，缺失时行为不可预期。
 // How to apply: 仅对 Anthropic 渠道、名称含 anyrouter、路径为 /v1/messages 且 body 尚未声明 thinking 时生效。

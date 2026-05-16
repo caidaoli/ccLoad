@@ -228,6 +228,52 @@ func TestBuildProxyRequest_KeepsAnthropicHeadersForRuntimeAnthropicUpstream(t *t
 	}
 }
 
+func TestBuildProxyRequest_AddsAnthropicVersionForRuntimeAnthropicUpstream(t *testing.T) {
+	srv := newInMemoryServer(t)
+
+	cfg := &model.Config{
+		ID:          1,
+		Name:        "openai-to-anthropic",
+		URL:         "https://api.example.com",
+		ChannelType: "anthropic",
+	}
+
+	reqCtx := &requestContext{
+		ctx:              context.Background(),
+		startTime:        time.Now(),
+		clientProtocol:   protocol.OpenAI,
+		upstreamProtocol: protocol.Anthropic,
+		transformPlan: protocol.TransformPlan{
+			ClientProtocol:   protocol.OpenAI,
+			UpstreamProtocol: protocol.Anthropic,
+			UpstreamPath:     "/v1/messages",
+		},
+	}
+
+	req, err := srv.buildProxyRequest(
+		reqCtx,
+		cfg,
+		"sk-test-key",
+		http.MethodPost,
+		[]byte(`{"model":"claude-3","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`),
+		http.Header{
+			"Accept":       []string{"*/*"},
+			"Content-Type": []string{"application/json"},
+			"User-Agent":   []string{"Bun/1.3.14"},
+		},
+		"",
+		"/v1/messages",
+		cfg.URL,
+	)
+	if err != nil {
+		t.Fatalf("buildProxyRequest failed: %v", err)
+	}
+
+	if got := req.Header.Get("anthropic-version"); got != "2023-06-01" {
+		t.Fatalf("anthropic-version = %q, want %q", got, "2023-06-01")
+	}
+}
+
 // TestHandleRequestError 测试错误处理
 func TestHandleRequestError(t *testing.T) {
 	srv := newInMemoryServer(t)
