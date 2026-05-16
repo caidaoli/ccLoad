@@ -215,6 +215,8 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.priority': '优先级',
   'channels.dailyCostLimit': '每日限额',
   'channels.dailyCostLimitPlaceholder': '0=无限制',
+  'channels.rpmLimit': 'RPM限制',
+  'channels.rpmLimitPlaceholder': '0=无限制',
   'channels.costMultiplier': '成本倍率',
   'channels.costMultiplierPlaceholder': '默认1',
 
@@ -860,6 +862,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'modelTest.inputPlaceholder': '输入测试内容...',
   'modelTest.enableStream': '启用流式输出',
   'modelTest.runTest': '运行测试',
+  'modelTest.waitingRpmLimit': 'RPM限制，等待 {seconds}s 后重试',
   'modelTest.result': '测试结果',
   'modelTest.responseTime': '响应时间',
   'modelTest.tokensUsed': '使用Token',

@@ -26,6 +26,7 @@ type ChannelRequest struct {
 	KeyStrategy           string                    `json:"key_strategy,omitempty"` // Key使用策略:sequential, round_robin
 	URL                   string                    `json:"url" binding:"required"`
 	Priority              int                       `json:"priority"`
+	RPMLimit              int                       `json:"rpm_limit"`                       // 每分钟请求数限制，0表示无限制
 	Models                []model.ModelEntry        `json:"models" binding:"required,min=1"` // 模型配置（包含重定向）
 	Enabled               bool                      `json:"enabled"`
 	ScheduledCheckEnabled bool                      `json:"scheduled_check_enabled"`
@@ -194,6 +195,10 @@ func (cr *ChannelRequest) Validate() error {
 		cr.CustomRequestRules = nil
 	}
 
+	if cr.RPMLimit < 0 {
+		return fmt.Errorf("rpm_limit must be >= 0 (got %d)", cr.RPMLimit)
+	}
+
 	// CostMultiplier: 未传视为默认 1；0 表示免费渠道；负数拒绝
 	if cr.CostMultiplier == 0 {
 		// 0 是合法值（免费渠道），保持不变
@@ -223,6 +228,7 @@ func (cr *ChannelRequest) ToConfig() *model.Config {
 		ProtocolTransforms:    append([]string(nil), cr.ProtocolTransforms...),
 		URL:                   strings.TrimSpace(cr.URL),
 		Priority:              cr.Priority,
+		RPMLimit:              cr.RPMLimit,
 		ModelEntries:          normalizedModels,
 		Enabled:               cr.Enabled,
 		ScheduledCheckEnabled: cr.ScheduledCheckEnabled,

@@ -210,6 +210,7 @@ function createHarness({
   elements.channelUrl = createElement({ id: 'channelUrl', value: '' });
   elements.channelApiKey = createElement({ id: 'channelApiKey', value: '' });
   elements.channelPriority = createElement({ id: 'channelPriority', value: channel ? String(channel.priority || 0) : '0' });
+  elements.channelRPMLimit = createElement({ id: 'channelRPMLimit', value: channel ? String(channel.rpm_limit || 0) : '0' });
   elements.channelDailyCostLimit = createElement({ id: 'channelDailyCostLimit', value: channel ? String(channel.daily_cost_limit || 0) : '0' });
   elements.channelCostMultiplier = createElement({ id: 'channelCostMultiplier', value: channel && channel.cost_multiplier ? String(channel.cost_multiplier) : '1' });
   elements.channelEnabled = createElement({ id: 'channelEnabled', type: 'checkbox', checked: channel ? channel.enabled !== false : true });

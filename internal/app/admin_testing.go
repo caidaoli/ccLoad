@@ -514,6 +514,11 @@ func (s *Server) executeChannelTestWithCooldown(ctx context.Context, cfg *model.
 		return result
 	}
 
+	if limited, _ := result["rpm_limited"].(bool); limited {
+		result["cooldown_action"] = "rpm_limited_no_cooldown"
+		return result
+	}
+
 	if !updatePersistedCooldown {
 		result["cooldown_action"] = "request_key_no_cooldown"
 		return result
@@ -538,6 +543,21 @@ func (s *Server) executeChannelTestWithCooldown(ctx context.Context, cfg *model.
 	}
 
 	return result
+}
+
+func channelRPMExceededTestResult(start time.Time, retryAfter time.Duration) map[string]any {
+	retryAfterMs := int64(retryAfter / time.Millisecond)
+	if retryAfter > 0 && retryAfterMs == 0 {
+		retryAfterMs = 1
+	}
+	return map[string]any{
+		"success":        false,
+		"error":          "渠道已达到RPM限制",
+		"status_code":    http.StatusTooManyRequests,
+		"duration_ms":    time.Since(start).Milliseconds(),
+		"rpm_limited":    true,
+		"retry_after_ms": retryAfterMs,
+	}
 }
 
 // 测试渠道API连通性
@@ -635,8 +655,11 @@ func (s *Server) testChannelAPIWithURL(
 
 	// 发送请求
 	start := time.Now()
-	resp, err := s.client.Do(req)
+	resp, err := s.doUpstreamRequest(cfg, req)
 	if err != nil {
+		if errors.Is(err, ErrChannelRPMExceeded) {
+			return channelRPMExceededTestResult(start, channelRPMRetryAfter(err))
+		}
 		errorMsg := "网络请求失败: " + err.Error()
 		statusCode := 0
 		if timeoutStatus, timeoutMsg, ok := s.describeChannelTestTimeoutError(start, testReq, requestPlan.timeout, err); ok {

@@ -111,6 +111,7 @@ type Config struct {
 	ProtocolTransforms    []string `json:"protocol_transforms,omitempty"`
 	URL                   string   `json:"url"`
 	Priority              int      `json:"priority"`
+	RPMLimit              int      `json:"rpm_limit"` // 每分钟请求数限制，0表示无限制
 	Enabled               bool     `json:"enabled"`
 	ScheduledCheckEnabled bool     `json:"scheduled_check_enabled"`
 	ScheduledCheckModel   string   `json:"scheduled_check_model"`
@@ -160,6 +161,7 @@ func (c *Config) Clone() *Config {
 		ProtocolTransforms:    append([]string(nil), c.ProtocolTransforms...),
 		URL:                   c.URL,
 		Priority:              c.Priority,
+		RPMLimit:              c.RPMLimit,
 		Enabled:               c.Enabled,
 		ScheduledCheckEnabled: c.ScheduledCheckEnabled,
 		ScheduledCheckModel:   c.ScheduledCheckModel,

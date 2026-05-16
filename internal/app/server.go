@@ -42,6 +42,7 @@ type Server struct {
 	cooldownManager               *cooldown.Manager     // 统一冷却管理器
 	healthCache                   *HealthCache          // 渠道健康度缓存
 	costCache                     *CostCache            // 渠道每日成本缓存
+	channelRPMLimiter             *channelRPMLimiter    // 渠道RPM限制器（内存滑动窗口）
 	statsCache                    *StatsCache           // 统计结果缓存层
 	channelBalancer               *SmoothWeightedRR     // 渠道负载均衡器（平滑加权轮询）
 	urlSelector                   *URLSelector          // URL选择器（多URL场景的延迟追踪与冷却）
@@ -167,7 +168,8 @@ func NewServer(store storage.Store) *Server {
 		// Token统计队列（避免每请求起goroutine）
 		tokenStatsCh: make(chan tokenStatsUpdate, config.DefaultTokenStatsBufferSize),
 
-		activeRequests: newActiveRequestManager(),
+		activeRequests:    newActiveRequestManager(),
+		channelRPMLimiter: newChannelRPMLimiter(time.Now),
 	}
 
 	reg := protocol.NewRegistry()

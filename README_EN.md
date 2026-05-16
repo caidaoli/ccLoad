@@ -53,6 +53,7 @@ ccLoad solves these pain points through:
 - ☁️ **Cloud Native** - Container deployment support, GitHub Actions auto-build
 - 🤗 **Hugging Face** - One-click deployment to Hugging Face Spaces, free hosting
 - 💰 **Cost Limits** - Per-channel daily cost limits, per-token cost limits
+- 🚦 **Channel RPM Limits** - Per-channel rolling 60-second request caps, 0=unlimited
 - 🔐 **Token Restrictions** - API token cost limits + model restrictions for fine-grained access control
 - ⏱️ **TTFB Monitoring** - Streaming request first byte time tracking for upstream latency diagnosis
 - 🌐 **Multi-URL Load Balancing** - Multiple URLs per channel with latency-weighted random selection
@@ -559,12 +560,15 @@ curl -X POST http://localhost:8080/admin/channels \
     "api_key": "sk-ant-api03-xxx",
     "url": "https://api.anthropic.com,https://api2.anthropic.com",
     "priority": 10,
+    "rpm_limit": 0,
     "models": ["claude-sonnet-4-6", "claude-opus-4-6"],
     "enabled": true
   }'
 ```
 
 > **Multi-URL Note**: The `url` field supports comma-separated multiple URLs. The system uses latency-weighted random selection for optimal URL choice, with automatic cooldown for failed URLs, enabling URL-level load balancing and failover within a single channel.
+
+> **RPM Limit Note**: `rpm_limit` is a per-channel request cap over a rolling 60-second window; `0` means unlimited. Proxy forwarding, manual tests, single-URL tests, and scheduled checks all count toward the cap. Multi-URL failover counts each actual upstream HTTP request. The counter is in-memory: restart clears it, and multiple instances count independently.
 
 ### Custom Request Rules (Advanced)
 
@@ -938,7 +942,7 @@ storage/
 - Not set → Uses SQLite (default)
 
 **Core Table Structure** (SQLite and MySQL shared):
-- `channels` - Channel config (cooldown data inline, UNIQUE constraint on name, with protocol transform config, scheduled check config)
+- `channels` - Channel config (cooldown data inline, UNIQUE constraint on name, with protocol transform config, scheduled check config, RPM limit config)
 - `api_keys` - API keys (key-level cooldown inline, multi-key strategies)
 - `logs` - Request logs (with base_url upstream URL tracking)
 - `debug_logs` - Debug logs (upstream request/response raw data, independent cleanup policy)
@@ -965,6 +969,7 @@ storage/
 - ✅ **Protocol transform system**: Anthropic/OpenAI/Gemini/Codex four-protocol cross-conversion, upstream/local modes
 - ✅ **Debug logs**: Upstream request/response raw data capture, sensitive header masking, independent cleanup policy
 - ✅ **Scheduled channel checks**: Background periodic channel availability probing, configurable check model per channel
+- ✅ **Channel RPM limits**: Per-channel rolling 60-second request caps, `0` means unlimited, over-limit channels are skipped
 
 **Backward Compatible Migration**:
 - Auto-detects and fixes duplicate channel names

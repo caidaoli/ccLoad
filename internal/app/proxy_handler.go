@@ -34,6 +34,9 @@ var ErrAllKeysUnavailable = errors.New("all channel keys unavailable")
 // ErrAllKeysExhausted 表示所有密钥都已耗尽
 var ErrAllKeysExhausted = errors.New("all keys exhausted")
 
+// ErrChannelRPMExceeded 表示渠道RPM限制已达到
+var ErrChannelRPMExceeded = errors.New("channel rpm limit exceeded")
+
 // ============================================================================
 // 并发控制
 // ============================================================================
@@ -417,6 +420,11 @@ func (s *Server) runProxyAttemptLoop(
 		// [WARN] 所有Key验证失败，尝试下一个渠道
 		if err != nil && errors.Is(err, ErrAllKeysExhausted) {
 			log.Printf("[WARN] 渠道 %s (ID=%d) 所有Key验证失败，跳过该渠道", cfg.Name, cfg.ID)
+			continue
+		}
+
+		if err != nil && errors.Is(err, ErrChannelRPMExceeded) {
+			log.Printf("[INFO] 渠道 %s (ID=%d) 已达到RPM限制，跳过该渠道", cfg.Name, cfg.ID)
 			continue
 		}
 

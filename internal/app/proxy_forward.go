@@ -996,7 +996,10 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 	}
 
 	// 3. 发送请求
-	resp, err := s.client.Do(req)
+	resp, err := s.doUpstreamRequest(cfg, req)
+	if err != nil && errors.Is(err, ErrChannelRPMExceeded) {
+		return nil, reqCtx.Duration().Seconds(), err
+	}
 
 	// [INFO] 修复（2025-12）：客户端取消时主动关闭 response body，立即中断上游传输
 	// 问题：streamCopy 中的 Read 阻塞时，无法立即响应 context 取消，上游继续生成完整响应
@@ -1142,7 +1145,7 @@ func (s *Server) forwardAttempt(
 	baseURL string, // 显式传入的URL（多URL场景）
 	w http.ResponseWriter,
 	deferChannelCooldown bool, // 多URL场景下，非最后一个URL不应触发渠道级冷却
-) (*proxyResult, cooldown.Action) {
+) (*proxyResult, cooldown.Action, error) {
 	// 记录渠道尝试开始时间（用于日志记录，每次渠道/Key切换时更新）
 	reqCtx.attemptStartTime = time.Now()
 	reqCtx.baseURL = baseURL
@@ -1169,7 +1172,7 @@ func (s *Server) forwardAttempt(
 			channelID:  &channelID,
 			succeeded:  false,
 			nextAction: cooldown.ActionRetryChannel,
-		}, cooldown.ActionRetryChannel
+		}, cooldown.ActionRetryChannel, nil
 	}
 
 	res, duration, err := s.forwardOnceAsync(ctx, cfg, selectedKey, reqCtx.requestMethod,
@@ -1184,10 +1187,14 @@ func (s *Server) forwardAttempt(
 	// [INFO] 修复：handleResponse可能返回err即使StatusCode=200（例如Content-Length=0）
 	// [FIX] 2025-12: 传递 res 和 reqCtx，用于保留 499 场景下已消耗的 token 统计
 	if err != nil {
-		return s.handleNetworkError(
+		if errors.Is(err, ErrChannelRPMExceeded) {
+			return nil, cooldown.ActionRetryChannel, err
+		}
+		result, action := s.handleNetworkError(
 			ctx, cfg, keyIndex, actualModel, selectedKey, reqCtx.tokenID, reqCtx.clientIP,
 			duration, err, res, reqCtx, deferChannelCooldown,
 		)
+		return result, action, nil
 	}
 
 	// 处理成功响应（仅当err==nil且状态码2xx时）
@@ -1195,16 +1202,18 @@ func (s *Server) forwardAttempt(
 		if result, action, handled := s.handleSuccessfulForwardAnomaly(
 			ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown,
 		); handled {
-			return result, action
+			return result, action, nil
 		}
 
-		return s.handleProxySuccess(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
+		result, action := s.handleProxySuccess(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
+		return result, action, nil
 	}
 
 	// 处理错误响应
-	return s.handleProxyErrorResponse(
+	result, action := s.handleProxyErrorResponse(
 		ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown,
 	)
+	return result, action, nil
 }
 
 // ============================================================================
@@ -1279,12 +1288,12 @@ func (s *Server) attemptKeyAcrossURLs(
 	bodyToSend []byte,
 	requestPath string,
 	w http.ResponseWriter,
-) (immediate *proxyResult, urlLastFailure *proxyResult) {
+) (immediate *proxyResult, urlLastFailure *proxyResult, err error) {
 	sortedURLs := orderURLsWithSelector(selector, cfg.ID, urls)
 	urlsCount := len(urls)
 	for urlIdx, urlEntry := range sortedURLs {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return buildCtxDoneResult(cfg, ctxErr), nil
+			return buildCtxDoneResult(cfg, ctxErr), nil, nil
 		}
 
 		// 更新活跃请求的当前URL（用于前端显示）
@@ -1293,13 +1302,16 @@ func (s *Server) attemptKeyAcrossURLs(
 		}
 
 		shouldDeferChannelCooldown := urlsCount > 1 && urlIdx < len(sortedURLs)-1
-		result, nextAction := s.forwardAttempt(
+		result, nextAction, attemptErr := s.forwardAttempt(
 			ctx, cfg, keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, requestPath, urlEntry.url, w, shouldDeferChannelCooldown)
+		if attemptErr != nil {
+			return nil, nil, attemptErr
+		}
 
 		if result != nil && result.succeeded {
 			// 成功：记录TTFB到URLSelector（仅多URL场景）
 			recordSuccessTTFBToSelector(selector, cfg.ID, urlsCount, urlEntry.url, result)
-			return result, nil
+			return result, nil, nil
 		}
 
 		if result != nil {
@@ -1312,7 +1324,7 @@ func (s *Server) attemptKeyAcrossURLs(
 		}
 		// 客户端错误：直接返回
 		if nextAction == cooldown.ActionReturnClient {
-			return urlLastFailure, nil
+			return urlLastFailure, nil, nil
 		}
 		// 渠道级错误 (ActionRetryChannel) 或网络错误：
 		// 在多URL场景下，默认先尝试下一个URL
@@ -1335,7 +1347,7 @@ func (s *Server) attemptKeyAcrossURLs(
 		// 单URL：保持原有行为
 		break
 	}
-	return nil, urlLastFailure
+	return nil, urlLastFailure, nil
 }
 
 func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqCtx *proxyRequestContext, w http.ResponseWriter) (*proxyResult, error) {
@@ -1410,9 +1422,12 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		}
 
 		// URL循环（单URL时退化为单次迭代）
-		immediate, urlLastFailure := s.attemptKeyAcrossURLs(
+		immediate, urlLastFailure, attemptErr := s.attemptKeyAcrossURLs(
 			ctx, cfg, urls, selector,
 			keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, requestPath, w)
+		if attemptErr != nil {
+			return nil, attemptErr
+		}
 		if immediate != nil {
 			return immediate, nil
 		}

@@ -102,6 +102,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureChannelsDailyCostLimit(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels daily_cost_limit: %w", err)
 			}
+			if err := ensureChannelsRPMLimit(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate channels rpm_limit: %w", err)
+			}
 			if err := ensureChannelsProtocolTransformMode(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels protocol_transform_mode: %w", err)
 			}

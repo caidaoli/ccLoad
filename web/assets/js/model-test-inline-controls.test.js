@@ -452,11 +452,11 @@ test('model-test.js 表头模型过滤输入框不被后续全页翻译清掉', 
   );
 });
 
-test('model-test.js 渠道编辑器保存后通过 preserveSelection 重新加载渠道并保留选中', () => {
+test('model-test.js 渠道编辑器保存后重新加载渠道并保留测试表格状态', () => {
   assert.match(script, /async function loadChannels\(options = \{\}\)/);
-  assert.match(script, /const \{ preserveSelection = false \} = options;/);
+  assert.match(script, /const \{ preserveSelection = false,\s*preserveTableState = false \} = options;/);
   assert.match(script, /if \(preserveSelection && preservedChannelId !== null\)/);
-  assert.match(script, /window\.ChannelModalHooks = \{[\s\S]*?afterSave:[\s\S]*?loadChannels\(\{ preserveSelection: true \}\)/);
+  assert.match(script, /window\.ChannelModalHooks = \{[\s\S]*?afterSave:[\s\S]*?loadChannels\(\{ preserveSelection: true,\s*preserveTableState: true \}\)/);
 });
 
 test('model-test.js 渠道搜索下拉在重建时通过 initialValue/initialLabel 保持显示当前渠道', () => {
@@ -522,6 +522,81 @@ test('model-test.js 在模型模式重渲染时保留渠道勾选状态', () => 
   };
   sandbox.restoreRowSelectionState(newRow, selectionState, true);
   assert.equal(newRow.checkbox.checked, true);
+});
+
+test('model-test.js 重载渠道后按行键恢复已有测试结果', () => {
+  function createCell(value = '') {
+    return {
+      textContent: value,
+      innerHTML: value,
+      title: '',
+      dataset: {},
+      classList: {
+        added: [],
+        add(name) { this.added.push(name); },
+        remove() {}
+      }
+    };
+  }
+
+  function createRow(channelId, model, responseText) {
+    const cells = new Map([
+      ['.row-checkbox', { checked: true }],
+      ['.first-byte-duration', createCell('1.20s')],
+      ['.duration', createCell('2.30s')],
+      ['.input-tokens', createCell('10')],
+      ['.output-tokens', createCell('5')],
+      ['.speed', createCell('4.2')],
+      ['.cache-read', createCell('1')],
+      ['.cache-create', createCell('2')],
+      ['.cost', createCell('$0.001')],
+      ['.response', createCell(responseText)]
+    ]);
+    cells.get('.cost').dataset.sortValue = '0.001';
+    cells.get('.response').title = responseText;
+    return {
+      dataset: { channelId, model },
+      style: { background: 'rgba(16, 185, 129, 0.1)', color: '' },
+      _upstreamData: { url: 'https://upstream.test' },
+      querySelector(selector) {
+        return cells.get(selector) || null;
+      },
+      cells
+    };
+  }
+
+  let currentRows = [createRow('7', 'gpt-4.1', 'old result')];
+  const sandbox = {
+    tbody: {
+      querySelectorAll(selector) {
+        if (selector === 'tr[data-channel-id][data-model]') return currentRows;
+        return [];
+      }
+    }
+  };
+
+  vm.runInNewContext(`
+    ${extractFunction(script, 'getRowSelectionKey')}
+    ${extractFunction(script, 'getModelTestResultCellSelectors')}
+    ${extractFunction(script, 'captureModelTestTableState')}
+    ${extractFunction(script, 'restoreModelTestTableState')}
+  `, sandbox);
+
+  const state = sandbox.captureModelTestTableState();
+  const newRow = createRow('7', 'gpt-4.1', '-');
+  newRow.cells.get('.row-checkbox').checked = false;
+  newRow.style.background = '';
+  newRow._upstreamData = null;
+
+  sandbox.restoreModelTestTableState(new Map([['7::gpt-4.1', newRow]]), state);
+
+  assert.equal(newRow.cells.get('.row-checkbox').checked, true);
+  assert.equal(newRow.cells.get('.response').textContent, 'old result');
+  assert.equal(newRow.cells.get('.response').title, 'old result');
+  assert.equal(newRow.cells.get('.duration').textContent, '2.30s');
+  assert.equal(newRow.cells.get('.cost').dataset.sortValue, '0.001');
+  assert.equal(newRow._upstreamData.url, 'https://upstream.test');
+  assert.deepEqual(newRow.cells.get('.response').classList.added, ['has-upstream-detail']);
 });
 
 test('model-test 页渠道按钮去掉默认按钮边框和底色', () => {
@@ -772,4 +847,67 @@ test('applyTestResultToRow 在失败时优先展示结构化上游错误而不�
   assert.equal(cells.get('.duration').textContent, '1503ms');
   assert.equal(cells.get('.speed').textContent, '-');
   assert.equal(cells.get('.cost').textContent, '-');
+});
+
+test('模型测试遇到 RPM 限制时按秒更新等待提示后重试同一行', async () => {
+  const responseHistory = [];
+  const responseCell = {
+    title: '',
+    get textContent() {
+      return responseHistory[responseHistory.length - 1] || '';
+    },
+    set textContent(value) {
+      responseHistory.push(String(value || ''));
+    }
+  };
+  const row = {
+    style: {},
+    querySelector(selector) {
+      assert.equal(selector, '.response');
+      return responseCell;
+    }
+  };
+
+  const fetchCalls = [];
+  const sleepCalls = [];
+  const sandbox = {
+    fetchDataWithAuth: async (url, options) => {
+      fetchCalls.push({ url, options });
+      if (fetchCalls.length === 1) {
+        return { success: false, rpm_limited: true, retry_after_ms: 3234, error: '渠道已达到RPM限制' };
+      }
+      return { success: true, response_text: 'ok' };
+    },
+    i18nText(_key, fallback, vars) {
+      return String(fallback).replace('{seconds}', String(vars?.seconds ?? ''));
+    }
+  };
+
+  vm.runInNewContext(`
+    ${extractFunction(script, 'isRPMLimitedTestResult')}
+    ${extractFunction(script, 'getRPMRetryDelayMs')}
+    ${extractFunction(script, 'markModelTestRPMWait')}
+    ${extractFunction(script, 'sleepModelTest')}
+    ${extractFunction(script, 'waitModelTestRPMRetry')}
+    ${extractFunction(script, 'fetchModelTestWithRPMWait')}
+  `, sandbox);
+  sandbox.sleepModelTest = async (delayMs) => {
+    sleepCalls.push(delayMs);
+  };
+
+  const result = await sandbox.fetchModelTestWithRPMWait(
+    { row, channelId: 154 },
+    { model: 'qwen3-vl-plus', stream: false, content: 'hi', protocol_transform: 'anthropic' }
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(fetchCalls.length, 2);
+  assert.equal(fetchCalls[0].url, '/admin/channels/154/test');
+  assert.equal(fetchCalls[1].url, '/admin/channels/154/test');
+  assert.deepEqual(sleepCalls, [1000, 1000, 1000, 234]);
+  assert.ok(responseHistory.includes('RPM限制，等待 4s 后重试'));
+  assert.ok(responseHistory.includes('RPM限制，等待 3s 后重试'));
+  assert.ok(responseHistory.includes('RPM限制，等待 2s 后重试'));
+  assert.ok(responseHistory.includes('RPM限制，等待 1s 后重试'));
+  assert.equal(responseHistory[responseHistory.length - 1], '测试中...');
 });

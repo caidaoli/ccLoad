@@ -215,6 +215,8 @@ window.I18N_LOCALES['en'] = {
   'channels.priority': 'Priority',
   'channels.dailyCostLimit': 'Daily Limit',
   'channels.dailyCostLimitPlaceholder': '0=No limit',
+  'channels.rpmLimit': 'RPM Limit',
+  'channels.rpmLimitPlaceholder': '0=No limit',
   'channels.costMultiplier': 'Cost Multiplier',
   'channels.costMultiplierPlaceholder': 'Default 1',
 
@@ -860,6 +862,7 @@ window.I18N_LOCALES['en'] = {
   'modelTest.inputPlaceholder': 'Enter test content...',
   'modelTest.enableStream': 'Enable Stream Output',
   'modelTest.runTest': 'Run Test',
+  'modelTest.waitingRpmLimit': 'RPM limited, retrying in {seconds}s',
   'modelTest.result': 'Test Result',
   'modelTest.responseTime': 'Response Time',
   'modelTest.tokensUsed': 'Tokens Used',

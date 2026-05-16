@@ -161,6 +161,57 @@ func TestTestChannelAPI_MultiURLFallbackAndSelectorFeedback(t *testing.T) {
 	}
 }
 
+func TestExecuteChannelTestWithCooldown_RespectsRPMLimitWithoutCooldown(t *testing.T) {
+	hits := 0
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+
+	cfg := &model.Config{
+		ID:           9528,
+		Name:         "rpm-limited-test",
+		URL:          upstream.URL,
+		Priority:     1,
+		RPMLimit:     1,
+		ChannelType:  "openai",
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
+		Enabled:      true,
+	}
+	req := &testutil.TestChannelRequest{
+		Model:       "gpt-4o-mini",
+		ChannelType: "openai",
+		Content:     "hello",
+	}
+
+	first := srv.executeChannelTestWithCooldown(context.Background(), cfg, 0, "sk-test", req, true)
+	if success, _ := first["success"].(bool); !success {
+		t.Fatalf("first test should succeed, got result=%+v", first)
+	}
+
+	second := srv.executeChannelTestWithCooldown(context.Background(), cfg, 0, "sk-test", req, true)
+	if success, _ := second["success"].(bool); success {
+		t.Fatalf("second test should be RPM limited, got result=%+v", second)
+	}
+	if limited, _ := second["rpm_limited"].(bool); !limited {
+		t.Fatalf("expected rpm_limited marker, got result=%+v", second)
+	}
+	if action, _ := second["cooldown_action"].(string); action != "rpm_limited_no_cooldown" {
+		t.Fatalf("cooldown_action=%q, want rpm_limited_no_cooldown, result=%+v", action, second)
+	}
+	if retryAfterMs, _ := getResultInt(second["retry_after_ms"]); retryAfterMs <= 0 {
+		t.Fatalf("retry_after_ms=%d, want positive value, result=%+v", retryAfterMs, second)
+	}
+	if hits != 1 {
+		t.Fatalf("upstream hits=%d, want 1", hits)
+	}
+}
+
 func TestTestChannelAPI_MultiURLFallbackOnPlainText502(t *testing.T) {
 	failCalls := 0
 	okCalls := 0

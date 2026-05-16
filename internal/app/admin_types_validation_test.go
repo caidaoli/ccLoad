@@ -299,11 +299,48 @@ func TestChannelRequest_ToConfigCopiesScheduledCheckModel(t *testing.T) {
 	req := newValidChannelRequest()
 	req.ScheduledCheckEnabled = true
 	req.ScheduledCheckModel = "model-1"
+	req.RPMLimit = 60
 
 	got := req.ToConfig()
 	if got.ScheduledCheckModel != "model-1" {
 		t.Fatalf("ScheduledCheckModel = %q, want %q", got.ScheduledCheckModel, "model-1")
 	}
+	if got.RPMLimit != 60 {
+		t.Fatalf("RPMLimit = %d, want 60", got.RPMLimit)
+	}
+}
+
+func TestChannelRequestValidation_RPMLimit(t *testing.T) {
+	t.Run("zero means unlimited", func(t *testing.T) {
+		req := newValidChannelRequest()
+		req.RPMLimit = 0
+
+		if err := req.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v, want nil", err)
+		}
+	})
+
+	t.Run("positive limit allowed", func(t *testing.T) {
+		req := newValidChannelRequest()
+		req.RPMLimit = 120
+
+		if err := req.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v, want nil", err)
+		}
+	})
+
+	t.Run("negative limit rejected", func(t *testing.T) {
+		req := newValidChannelRequest()
+		req.RPMLimit = -1
+
+		err := req.Validate()
+		if err == nil {
+			t.Fatal("Validate() error = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "rpm_limit") {
+			t.Fatalf("expected rpm_limit error, got %v", err)
+		}
+	})
 }
 
 // TestChannelRequestValidation_DuplicateModels 测试重复模型校验（对应 channel_models 主键约束）
