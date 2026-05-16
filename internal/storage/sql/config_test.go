@@ -35,6 +35,7 @@ func TestConfig_CreateAndGet(t *testing.T) {
 		Priority:    10,
 		Enabled:     true,
 		ChannelType: "openai",
+		RPMLimit:    60,
 		ModelEntries: []model.ModelEntry{
 			{Model: "gpt-4"},
 			{Model: "gpt-3.5-turbo"},
@@ -67,6 +68,9 @@ func TestConfig_CreateAndGet(t *testing.T) {
 	}
 	if got.ChannelType != "openai" {
 		t.Errorf("channel_type: got %q, want %q", got.ChannelType, "openai")
+	}
+	if got.RPMLimit != 60 {
+		t.Errorf("rpm_limit: got %d, want 60", got.RPMLimit)
 	}
 	if len(got.ModelEntries) != 2 {
 		t.Errorf("model entries count: got %d, want 2", len(got.ModelEntries))

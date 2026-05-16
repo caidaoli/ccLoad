@@ -273,6 +273,117 @@ function restoreRowSelectionState(row, selectionState, fallbackChecked = true) {
   checkbox.checked = Boolean(fallbackChecked);
 }
 
+function getModelTestResultCellSelectors() {
+  return [
+    '.first-byte-duration',
+    '.duration',
+    '.input-tokens',
+    '.output-tokens',
+    '.speed',
+    '.cache-read',
+    '.cache-create',
+    '.cost',
+    '.response'
+  ];
+}
+
+function captureModelTestTableState() {
+  const tableState = new Map();
+  Array.from(tbody.querySelectorAll('tr[data-channel-id][data-model]')).forEach((row) => {
+    const selectionKey = getRowSelectionKey(row);
+    if (!selectionKey || selectionKey === '::') return;
+
+    const cells = {};
+    getModelTestResultCellSelectors().forEach((selector) => {
+      const cell = row.querySelector(selector);
+      if (!cell) return;
+
+      cells[selector] = {
+        textContent: cell.textContent || '',
+        innerHTML: cell.innerHTML || '',
+        title: cell.title || '',
+        sortValue: selector === '.cost' ? cell.dataset?.sortValue : undefined
+      };
+    });
+
+    const checkbox = row.querySelector('.row-checkbox');
+    tableState.set(selectionKey, {
+      checked: checkbox ? Boolean(checkbox.checked) : undefined,
+      background: row.style?.background || '',
+      color: row.style?.color || '',
+      cells,
+      upstreamData: row._upstreamData ? { ...row._upstreamData } : null
+    });
+  });
+  return tableState;
+}
+
+function collectModelTestRowsByKey() {
+  const rowsByKey = new Map();
+  Array.from(tbody.querySelectorAll('tr[data-channel-id][data-model]')).forEach((row) => {
+    const selectionKey = getRowSelectionKey(row);
+    if (!selectionKey || selectionKey === '::') return;
+    rowsByKey.set(selectionKey, row);
+  });
+  return rowsByKey;
+}
+
+function restoreModelTestTableState(rowsByKey, tableState) {
+  if (!tableState || typeof tableState.get !== 'function') return;
+
+  const rows = rowsByKey && typeof rowsByKey.forEach === 'function'
+    ? rowsByKey
+    : collectModelTestRowsByKey();
+
+  rows.forEach((row, selectionKey) => {
+    const savedState = tableState.get(selectionKey);
+    if (!savedState) return;
+
+    const checkbox = row.querySelector('.row-checkbox');
+    if (checkbox && typeof savedState.checked === 'boolean') {
+      checkbox.checked = savedState.checked;
+    }
+
+    if (row.style) {
+      row.style.background = savedState.background || '';
+      row.style.color = savedState.color || '';
+    }
+
+    Object.entries(savedState.cells || {}).forEach(([selector, cellState]) => {
+      const cell = row.querySelector(selector);
+      if (!cell) return;
+
+      if (selector === '.cost') {
+        cell.innerHTML = cellState.innerHTML || cellState.textContent || '';
+        if (cell.dataset) {
+          if (cellState.sortValue !== undefined && cellState.sortValue !== null && cellState.sortValue !== '') {
+            cell.dataset.sortValue = String(cellState.sortValue);
+          } else {
+            delete cell.dataset.sortValue;
+          }
+        }
+      } else {
+        cell.textContent = cellState.textContent || '';
+      }
+
+      cell.title = cellState.title || '';
+    });
+
+    const responseCell = row.querySelector('.response');
+    if (savedState.upstreamData) {
+      row._upstreamData = { ...savedState.upstreamData };
+      responseCell?.classList?.add('has-upstream-detail');
+    } else {
+      row._upstreamData = null;
+      responseCell?.classList?.remove('has-upstream-detail');
+    }
+  });
+
+  if (typeof syncSelectAllCheckbox === 'function') {
+    syncSelectAllCheckbox();
+  }
+}
+
 function getNameFilterPlaceholder() {
   if (testMode === TEST_MODE_MODEL) {
     return i18nText('modelTest.filterChannelPlaceholder', '搜索渠道名称...');
@@ -1187,6 +1298,65 @@ function applyTestResultToRow(row, data) {
   }
 }
 
+function isRPMLimitedTestResult(data) {
+  return !!data && data.rpm_limited === true;
+}
+
+function getRPMRetryDelayMs(data) {
+  const delayMs = Number(data?.retry_after_ms);
+  if (Number.isFinite(delayMs) && delayMs > 0) {
+    return Math.ceil(delayMs);
+  }
+  return 60 * 1000;
+}
+
+function sleepModelTest(delayMs) {
+  return new Promise(resolve => setTimeout(resolve, delayMs));
+}
+
+function markModelTestRPMWait(row, delayMs) {
+  const seconds = Math.max(1, Math.ceil(delayMs / 1000));
+  const message = i18nText('modelTest.waitingRpmLimit', 'RPM限制，等待 {seconds}s 后重试', { seconds });
+  row.style.background = 'rgba(250, 204, 21, 0.14)';
+  const responseCell = row.querySelector('.response');
+  responseCell.textContent = message;
+  responseCell.title = message;
+}
+
+async function waitModelTestRPMRetry(row, delayMs) {
+  let remainingMs = Math.max(0, Math.ceil(delayMs));
+  if (remainingMs <= 0) return;
+
+  markModelTestRPMWait(row, remainingMs);
+  while (remainingMs > 0) {
+    const stepMs = Math.min(1000, remainingMs);
+    await sleepModelTest(stepMs);
+    remainingMs -= stepMs;
+    if (remainingMs > 0) {
+      markModelTestRPMWait(row, remainingMs);
+    }
+  }
+}
+
+async function fetchModelTestWithRPMWait(target, payload) {
+  const { row, channelId } = target;
+
+  for (;;) {
+    const data = await fetchDataWithAuth(`/admin/channels/${channelId}/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!isRPMLimitedTestResult(data)) {
+      return data;
+    }
+
+    const delayMs = getRPMRetryDelayMs(data);
+    await waitModelTestRPMRetry(row, delayMs);
+    row.querySelector('.response').textContent = i18nText('modelTest.testing', '测试中...');
+  }
+}
+
 async function runBatchTests(targets) {
   const streamEnabled = document.getElementById('streamEnabled').checked;
   const content = document.getElementById('modelTestContent').value.trim() || 'hi';
@@ -1200,11 +1370,7 @@ async function runBatchTests(targets) {
     row.querySelector('.response').textContent = i18nText('modelTest.testing', '测试中...');
 
     try {
-      const data = await fetchDataWithAuth(`/admin/channels/${channelId}/test`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, stream: streamEnabled, content, protocol_transform: selectedProtocol })
-      });
+      const data = await fetchModelTestWithRPMWait(target, { model, stream: streamEnabled, content, protocol_transform: selectedProtocol });
       applyTestResultToRow(row, data);
     } catch (e) {
       row.style.background = 'rgba(239, 68, 68, 0.1)';
@@ -2031,11 +2197,12 @@ function renderSearchableChannelSelect() {
 }
 
 async function loadChannels(options = {}) {
-  const { preserveSelection = false } = options;
+  const { preserveSelection = false, preserveTableState = false } = options;
   const preservedChannelId = preserveSelection ? (selectedChannel?.id ?? null) : null;
   const preservedProtocol = preserveSelection ? selectedProtocol : '';
   const preservedModelType = preserveSelection ? selectedModelType : '';
   const preservedModelName = preserveSelection ? selectedModelName : '';
+  const preservedTableState = preserveTableState ? captureModelTestTableState() : null;
 
   try {
     const list = (await fetchDataWithAuth('/admin/channels')) || [];
@@ -2062,6 +2229,13 @@ async function loadChannels(options = {}) {
     renderProtocolTransformOptions();
     populateModelSelector();
     renderRowsByMode();
+
+    if (preserveTableState) {
+      restoreModelTestTableState(collectModelTestRowsByKey(), preservedTableState);
+      applyCurrentSort();
+      applyNameFilter();
+      applyFirstByteVisibility();
+    }
   } catch (e) {
     console.error('加载渠道列表失败:', e);
     showError(i18nText('modelTest.loadChannelsFailed', '加载渠道列表失败'));
@@ -2333,7 +2507,7 @@ document.addEventListener('click', (e) => {
 async function bootstrap() {
   window.ChannelModalHooks = {
     afterSave: async () => {
-      await loadChannels({ preserveSelection: true });
+      await loadChannels({ preserveSelection: true, preserveTableState: true });
     }
   };
   initModelTestActions();

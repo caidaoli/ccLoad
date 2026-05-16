@@ -383,6 +383,13 @@ func ensureChannelsDailyCostLimit(ctx context.Context, db *sql.DB, dialect Diale
 		"REAL NOT NULL DEFAULT 0")
 }
 
+// ensureChannelsRPMLimit 确保channels表有rpm_limit字段（0=无限制）。
+func ensureChannelsRPMLimit(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	return ensureColumn(ctx, db, dialect, "channels", "rpm_limit",
+		"INT NOT NULL DEFAULT 0",
+		"INTEGER NOT NULL DEFAULT 0")
+}
+
 // ensureChannelsCostMultiplier 确保channels表有cost_multiplier字段（2026-04新增，渠道成本倍率）
 func ensureChannelsCostMultiplier(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	return ensureColumn(ctx, db, dialect, "channels", "cost_multiplier",

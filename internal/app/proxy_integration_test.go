@@ -181,6 +181,73 @@ func TestProxy_Success_NonStreaming(t *testing.T) {
 	}
 }
 
+func TestProxy_SkipsChannelAfterRPMLimitExceeded(t *testing.T) {
+	t.Parallel()
+
+	var firstHits atomic.Int64
+	firstUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"from-limited","choices":[{"message":{"content":"limited"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer firstUpstream.Close()
+
+	var fallbackHits atomic.Int64
+	fallbackUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"from-fallback","choices":[{"message":{"content":"fallback"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer fallbackUpstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "limited", models: "gpt-4", apiKey: "sk-limited", priority: 100},
+		{name: "fallback", models: "gpt-4", apiKey: "sk-fallback", priority: 90},
+	}, map[int]string{0: firstUpstream.URL, 1: fallbackUpstream.URL})
+
+	ctx := context.Background()
+	cfgs, err := env.store.ListConfigs(ctx)
+	if err != nil {
+		t.Fatalf("ListConfigs failed: %v", err)
+	}
+	for _, cfg := range cfgs {
+		if cfg.Name != "limited" {
+			continue
+		}
+		cfg.RPMLimit = 1
+		if _, err := env.store.UpdateConfig(ctx, cfg.ID, cfg); err != nil {
+			t.Fatalf("UpdateConfig failed: %v", err)
+		}
+	}
+	env.server.InvalidateChannelListCache()
+
+	requestBody := map[string]any{
+		"model":    "gpt-4",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}
+
+	first := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", requestBody, nil)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first request status=%d body=%s", first.Code, first.Body.String())
+	}
+
+	second := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", requestBody, nil)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second request status=%d body=%s", second.Code, second.Body.String())
+	}
+	if firstHits.Load() != 1 {
+		t.Fatalf("limited upstream hits=%d, want 1", firstHits.Load())
+	}
+	if fallbackHits.Load() != 1 {
+		t.Fatalf("fallback upstream hits=%d, want 1", fallbackHits.Load())
+	}
+	if !strings.Contains(second.Body.String(), "from-fallback") {
+		t.Fatalf("second response should come from fallback, got %s", second.Body.String())
+	}
+}
+
 func TestProxy_AllCooledFallback_UsesCooledKey(t *testing.T) {
 	t.Parallel()
 
