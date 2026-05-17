@@ -2908,6 +2908,67 @@ func TestProxy_AllChannelsExhausted(t *testing.T) {
 	}
 }
 
+// TestProxy_SingleChannel5xx_SkipsSummaryLog 验证：模型仅有 1 个渠道时，
+// 渠道级失败日志已完整反映失败原因，不再写"系统/exhausted backends"汇总日志。
+func TestProxy_SingleChannel5xx_SkipsSummaryLog(t *testing.T) {
+	t.Parallel()
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"internal server error"}`))
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "only-ch", models: "gpt-4", apiKey: "sk-1", priority: 100},
+	}, map[int]string{0: upstream.URL})
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-4",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 等待异步日志落盘：至少要看到 1 条渠道级失败日志（ChannelID 非零）
+	ctx := context.Background()
+	since := time.Now().Add(-time.Minute)
+	deadline := time.Now().Add(2 * time.Second)
+	var logs []*model.LogEntry
+	for time.Now().Before(deadline) {
+		got, err := env.store.ListLogs(ctx, since, 20, 0, &model.LogFilter{LogSource: model.LogSourceProxy})
+		if err != nil {
+			t.Fatalf("ListLogs failed: %v", err)
+		}
+		hasChannelLog := false
+		for _, e := range got {
+			if e.ChannelID != 0 {
+				hasChannelLog = true
+				break
+			}
+		}
+		if hasChannelLog {
+			logs = got
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if logs == nil {
+		t.Fatalf("expected at least one channel-level proxy log within deadline")
+	}
+
+	// 关键断言：不能出现"汇总日志"（ChannelID=0 的 Proxy 日志）
+	for _, e := range logs {
+		if e.ChannelID == 0 {
+			t.Fatalf("unexpected summary log (ChannelID=0, message=%q, status=%d) for single-channel failure",
+				e.Message, e.StatusCode)
+		}
+	}
+}
+
 func TestProxy_ClientCancel_Returns499(t *testing.T) {
 	t.Parallel()
 
