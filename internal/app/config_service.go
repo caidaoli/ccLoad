@@ -49,7 +49,7 @@ func (cs *ConfigService) LoadDefaults(ctx context.Context) error {
 	}
 	cs.loaded = true
 
-	log.Printf("[INFO] ConfigService loaded %d settings", len(settings))
+	log.Printf("[INFO] ConfigService 已加载 %d 项配置", len(settings))
 	return nil
 }
 
@@ -127,7 +127,7 @@ func (cs *ConfigService) GetSetting(key string) *model.SystemSetting {
 	ctx := context.Background()
 	dbSetting, err := cs.store.GetSetting(ctx, key)
 	if err != nil {
-		log.Printf("[WARN] GetSetting(%s) cache miss, db query failed: %v", key, err)
+		log.Printf("[WARN] GetSetting(%s) 缓存未命中且数据库查询失败: %v", key, err)
 		return nil
 	}
 
@@ -143,7 +143,7 @@ func (cs *ConfigService) GetSetting(key string) *model.SystemSetting {
 	// 更新缓存（避免重复查询）
 	if dbSetting != nil {
 		cs.cache[key] = dbSetting
-		log.Printf("[INFO] GetSetting(%s) lazy loaded from db", key)
+		log.Printf("[INFO] GetSetting(%s) 已从数据库懒加载", key)
 	}
 
 	return dbSetting

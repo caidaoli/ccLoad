@@ -52,7 +52,7 @@ func (s *SQLStore) fetchChannelInfoBatch(ctx context.Context, channelIDs map[int
 		var channelType string
 		var costMultiplier float64
 		if err := rows.Scan(&id, &name, &priority, &channelType, &costMultiplier); err != nil {
-			log.Printf("[WARN]  scan channel info: %v", err)
+			log.Printf("[WARN] 扫描渠道信息失败: %v", err)
 			continue // 跳过扫描错误的行
 		}
 		// 只保留需要的渠道

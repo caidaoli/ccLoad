@@ -886,7 +886,7 @@ func (s *Server) parseTestTranslatedSSEResponse(
 		func(rawEvent []byte) error {
 			if !firstContentCaptured && len(rawEvent) > 0 {
 				if err := firstContentParser.Feed(rawEvent); err != nil {
-					log.Printf("[WARN] SSE first content parse failed: %v", err)
+					log.Printf("[WARN] SSE 首段内容解析失败: %v", err)
 				}
 				if testStreamParserHasFirstContent(firstContentParser) {
 					firstContentCaptured = true

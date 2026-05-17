@@ -1009,7 +1009,7 @@ func (s *Server) HandleBatchUpdatePriority(c *gin.Context) {
 	// 调用storage层批量更新方法
 	rowsAffected, err := s.store.BatchUpdatePriority(ctx, updates)
 	if err != nil {
-		log.Printf("batch-priority: failed: %v", err)
+		log.Printf("批量优先级更新失败: %v", err)
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
@@ -1065,7 +1065,7 @@ func (s *Server) HandleBatchSetEnabled(c *gin.Context) {
 
 		cfg.Enabled = *req.Enabled
 		if _, err := s.store.UpdateChannelEnabled(ctx, channelID, *req.Enabled); err != nil {
-			log.Printf("batch-enabled: update channel %d failed: %v", channelID, err)
+			log.Printf("批量启用更新渠道 %d 失败: %v", channelID, err)
 			RespondError(c, http.StatusInternalServerError, err)
 			return
 		}
@@ -1110,7 +1110,7 @@ func (s *Server) HandleBatchDeleteChannels(c *gin.Context) {
 	for _, channelID := range channelIDs {
 		wasDeleted, err := s.deleteChannelByID(ctx, channelID)
 		if err != nil {
-			log.Printf("batch-delete: delete channel %d failed: %v", channelID, err)
+			log.Printf("批量删除渠道 %d 失败: %v", channelID, err)
 			RespondError(c, http.StatusInternalServerError, err)
 			return
 		}

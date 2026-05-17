@@ -75,7 +75,7 @@ func NewAuthService(
 	// 密码bcrypt哈希（安全存储）
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
-		log.Fatalf("FATAL: failed to hash password: %v", err)
+		log.Fatalf("[FATAL] 密码哈希失败: %v", err)
 	}
 
 	s := &AuthService{
@@ -435,7 +435,7 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 	// 生成Token
 	token, err := s.generateToken()
 	if err != nil {
-		log.Printf("ERROR: token generation failed: %v", err)
+		log.Printf("[ERROR] 令牌生成失败: %v", err)
 		RespondErrorMsg(c, http.StatusInternalServerError, "internal error")
 		return
 	}

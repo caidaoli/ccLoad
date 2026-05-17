@@ -68,7 +68,7 @@ func ensureMySQLColumns(ctx context.Context, db *sql.DB, table string, cols []my
 		}
 	}
 	if added {
-		log.Printf("[MIGRATE] Added columns to %s", table)
+		log.Printf("[MIGRATE] 已向 %s 添加列", table)
 	}
 	return nil
 }
@@ -187,14 +187,14 @@ func ensureLogsColumnsSQLite(ctx context.Context, db *sql.DB) error {
 	// 第三步：回填 minute_bucket（基于标记机制，支持崩溃恢复）
 	const backfillMarker = "minute_bucket_backfill_done"
 	if !hasMigration(ctx, db, backfillMarker) {
-		log.Println("[migrate] backfilling minute_bucket for SQLite...")
+		log.Println("[migrate] 正在为 SQLite 回填 minute_bucket...")
 		if err := backfillLogsMinuteBucketSQLite(ctx, db, 5_000); err != nil {
 			return fmt.Errorf("backfill minute_bucket: %w", err)
 		}
 		if err := recordMigration(ctx, db, backfillMarker, DialectSQLite); err != nil {
 			return fmt.Errorf("record migration marker: %w", err)
 		}
-		log.Println("[migrate] minute_bucket backfill completed")
+		log.Println("[migrate] minute_bucket 回填完成")
 	}
 
 	return nil
@@ -277,14 +277,14 @@ func ensureLogsMinuteBucketMySQL(ctx context.Context, db *sql.DB) error {
 	// 第二步：回填历史数据（基于标记机制，支持崩溃恢复）
 	const backfillMarker = "minute_bucket_backfill_done"
 	if !hasMigration(ctx, db, backfillMarker) {
-		log.Println("[migrate] backfilling minute_bucket for MySQL...")
+		log.Println("[migrate] 正在为 MySQL 回填 minute_bucket...")
 		if err := backfillLogsMinuteBucketMySQL(ctx, db, 10_000); err != nil {
 			return err
 		}
 		if err := recordMigration(ctx, db, backfillMarker, DialectMySQL); err != nil {
 			return fmt.Errorf("record migration marker: %w", err)
 		}
-		log.Println("[migrate] minute_bucket backfill completed")
+		log.Println("[migrate] minute_bucket 回填完成")
 	}
 	return nil
 }
@@ -439,7 +439,7 @@ func migrateChannelsURLToText(ctx context.Context, db *sql.DB, dialect Dialect) 
 		"ALTER TABLE channels MODIFY COLUMN url TEXT NOT NULL"); err != nil {
 		return fmt.Errorf("modify url column to TEXT: %w", err)
 	}
-	log.Printf("[MIGRATE] Modified channels.url: VARCHAR → TEXT")
+	log.Printf("[MIGRATE] 已修改 channels.url: VARCHAR → TEXT")
 	return nil
 }
 

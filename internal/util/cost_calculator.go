@@ -768,7 +768,7 @@ func selectTokenPricingTier(tiers []TokenPricingTier, inputTokens int) TokenPric
 func CalculateCostDetailed(model string, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int) float64 {
 	// 防御性检查:拒绝负数token
 	if inputTokens < 0 || outputTokens < 0 || cacheReadTokens < 0 || cache5mTokens < 0 || cache1hTokens < 0 {
-		log.Printf("ERROR: negative tokens detected (model=%s): input=%d output=%d cache_read=%d cache_5m=%d cache_1h=%d",
+		log.Printf("[ERROR] 检测到负数 token（model=%s）: input=%d output=%d cache_read=%d cache_5m=%d cache_1h=%d",
 			model, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens)
 		return 0.0
 	}

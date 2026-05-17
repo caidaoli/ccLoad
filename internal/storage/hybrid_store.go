@@ -80,7 +80,7 @@ func NewHybridStore(sqlite, mysql *sqlstore.SQLStore) *HybridStore {
 // 但磁盘空间不足等极端情况仍可能导致写入失败，记录日志以便排查
 func (h *HybridStore) syncToSQLite(op string, fn func() error) {
 	if err := fn(); err != nil {
-		log.Printf("[WARN]  SQLite sync failed (%s): %v", op, err)
+		log.Printf("[WARN] SQLite 同步失败 (%s): %v", op, err)
 	}
 }
 
@@ -542,7 +542,10 @@ func (h *HybridStore) GetTodayChannelURLStats(ctx context.Context, dayStart time
 }
 
 func (h *HybridStore) CleanupLogsBefore(ctx context.Context, cutoff time.Time) error {
-	return h.sqlite.CleanupLogsBefore(ctx, cutoff)
+	if err := h.sqlite.CleanupLogsBefore(ctx, cutoff); err != nil {
+		return err
+	}
+	return h.mysql.CleanupLogsBefore(ctx, cutoff)
 }
 
 // === Metrics & Statistics ===
@@ -778,17 +781,11 @@ func (h *HybridStore) GetDebugLogByLogID(ctx context.Context, logID int64) (*mod
 }
 
 func (h *HybridStore) CleanupDebugLogsBefore(ctx context.Context, cutoff time.Time) error {
-	if err := h.sqlite.CleanupDebugLogsBefore(ctx, cutoff); err != nil {
-		return err
-	}
-	return h.mysql.CleanupDebugLogsBefore(ctx, cutoff)
+	return h.sqlite.CleanupDebugLogsBefore(ctx, cutoff)
 }
 
 func (h *HybridStore) TruncateDebugLogs(ctx context.Context) error {
-	if err := h.sqlite.TruncateDebugLogs(ctx); err != nil {
-		return err
-	}
-	return h.mysql.TruncateDebugLogs(ctx)
+	return h.sqlite.TruncateDebugLogs(ctx)
 }
 
 func (h *HybridStore) Close() error {

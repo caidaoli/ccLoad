@@ -200,7 +200,7 @@ func (p *sseUsageParser) scanUsageFragments(data []byte) {
 }
 
 func (p *sseUsageParser) enterOversizedEventMode() {
-	log.Printf("WARN: SSE usage event exceeds max size (%d bytes), skipping this event for usage extraction", maxSSEEventSize)
+	log.Printf("[WARN] SSE usage 事件超出最大长度（%d 字节），跳过此事件的 usage 提取", maxSSEEventSize)
 	p.oversized = true
 	p.buffer.Reset()
 	p.bufferSize = 0
@@ -433,7 +433,7 @@ func (p *sseUsageParser) parseBuffer() error {
 			// 事件结束，解析数据
 			if err := p.parseEvent(p.eventType, strings.Join(p.dataLines, "")); err != nil {
 				// 记录错误但继续处理（容错设计）
-				log.Printf("WARN: SSE event parse failed (type=%s): %v", p.eventType, err)
+				log.Printf("[WARN] SSE 事件解析失败 (type=%s): %v", p.eventType, err)
 			}
 			p.eventType = ""
 			p.dataLines = nil
@@ -532,7 +532,7 @@ func (u *usageAccumulator) normalizedUsage(channelType string) (inputTokens, out
 		if u.CacheReadInputTokens <= u.InputTokens {
 			billableInput = u.InputTokens - u.CacheReadInputTokens
 		} else {
-			log.Printf("WARN: %s usage has cacheReadTokens(%d) > inputTokens(%d); treating inputTokens as non-cache tokens",
+			log.Printf("[WARN] %s usage 中 cacheReadTokens(%d) > inputTokens(%d)，将 inputTokens 视为非缓存 token",
 				channelType, u.CacheReadInputTokens, u.InputTokens)
 		}
 	}
@@ -579,7 +579,7 @@ func (p *jsonUsageParser) Feed(data []byte) error {
 	if p.buffer.Len()+len(data) > maxUsageBodySize {
 		p.truncated = true
 		p.buffer = bytes.Buffer{}
-		log.Printf("WARN: usage body exceeds max size (%d bytes), switching to streaming usage extraction", maxUsageBodySize)
+		log.Printf("[WARN] usage 响应体超过最大长度（%d 字节），切换到流式 usage 提取", maxUsageBodySize)
 		return nil
 	}
 	_, err := p.buffer.Write(data)
@@ -785,7 +785,7 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 	if looksLikeSSE(data) {
 		sseParser := newSSEUsageParser(p.channelType)
 		if err := sseParser.Feed(data); err != nil {
-			log.Printf("WARN: usage sse-like parse failed: %v", err)
+			log.Printf("[WARN] 类 SSE 格式的 usage 解析失败: %v", err)
 		} else {
 			p.ServiceTier = sseParser.ServiceTier
 			p.ToolCostUSD = sseParser.GetToolCostUSD()
@@ -795,7 +795,7 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 
 	var payload map[string]any
 	if err := json.Unmarshal(data, &payload); err != nil {
-		log.Printf("WARN: usage json parse failed: %v", err)
+		log.Printf("[WARN] usage JSON 解析失败: %v", err)
 		return 0, 0, 0, 0
 	}
 
@@ -1024,7 +1024,7 @@ func (u *usageAccumulator) applyUsage(usage map[string]any, channelType string) 
 			// OpenAI Responses API使用类似Anthropic的字段
 			u.applyAnthropicOrResponsesUsage(usage)
 		} else {
-			log.Printf("WARN: OpenAI channel with unknown usage format, keys: %v", getUsageKeys(usage))
+			log.Printf("[WARN] OpenAI 渠道返回未知的 usage 格式，keys: %v", getUsageKeys(usage))
 		}
 
 	case "anthropic":
@@ -1033,7 +1033,7 @@ func (u *usageAccumulator) applyUsage(usage map[string]any, channelType string) 
 
 	default:
 		// 未知channelType,fallback到字段特征检测(向后兼容)
-		log.Printf("WARN: unknown channel_type '%s', fallback to field detection", channelType)
+		log.Printf("[WARN] 未知 channel_type '%s'，回退到字段探测", channelType)
 		switch {
 		case hasGeminiUsageFields(usage):
 			u.applyGeminiUsage(usage)
@@ -1042,7 +1042,7 @@ func (u *usageAccumulator) applyUsage(usage map[string]any, channelType string) 
 		case hasAnthropicUsageFields(usage):
 			u.applyAnthropicOrResponsesUsage(usage)
 		default:
-			log.Printf("ERROR: cannot detect usage format for channel_type '%s', keys: %v", channelType, getUsageKeys(usage))
+			log.Printf("[ERROR] 无法识别 channel_type '%s' 的 usage 格式，keys: %v", channelType, getUsageKeys(usage))
 		}
 	}
 }
