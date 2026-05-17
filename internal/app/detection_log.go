@@ -67,7 +67,7 @@ func (s *Server) persistDetectionLog(ctx context.Context, entry *model.LogEntry)
 		return
 	}
 	if err := s.store.AddLog(ctx, entry); err != nil {
-		log.Printf("[WARN] detection log write failed: %v", err)
+		log.Printf("[WARN] 检测日志写入失败: %v", err)
 	}
 }
 

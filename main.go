@@ -89,7 +89,7 @@ func main() {
 
 	// 优先读取.env文件
 	if err := godotenv.Load(); err != nil {
-		log.Printf("No .env file found: %v", err)
+		log.Printf("未找到 .env 文件: %v", err)
 	}
 
 	// 设置Gin运行模式
@@ -117,11 +117,11 @@ func main() {
 
 		p, err := os.FindProcess(os.Getpid())
 		if err != nil {
-			log.Printf("[ERROR] Failed to find process: %v", err)
+			log.Printf("[ERROR] 查找进程失败: %v", err)
 			return
 		}
 		if err := p.Signal(syscall.SIGTERM); err != nil {
-			log.Printf("[ERROR] Failed to send SIGTERM: %v", err)
+			log.Printf("[ERROR] 发送 SIGTERM 失败: %v", err)
 		}
 	}
 
@@ -183,7 +183,7 @@ func main() {
 
 	// 启动HTTP服务器（在goroutine中）
 	go func() {
-		log.Printf("listening on %s", addr)
+		log.Printf("[INFO] HTTP 监听地址: %s", addr)
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("HTTP服务器启动失败: %v", err)
 		}

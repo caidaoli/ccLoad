@@ -24,7 +24,7 @@ const (
 func (s *Server) AdminListSettings(c *gin.Context) {
 	settings, err := s.configService.ListAllSettings(c.Request.Context())
 	if err != nil {
-		log.Printf("[ERROR] AdminListSettings failed: %v", err)
+		log.Printf("[ERROR] AdminListSettings 失败: %v", err)
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
@@ -51,7 +51,7 @@ func (s *Server) AdminGetSetting(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		log.Printf("[ERROR] AdminGetSetting failed for key=%s: %v", key, err)
+		log.Printf("[ERROR] AdminGetSetting key=%s 失败: %v", key, err)
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
@@ -88,7 +88,7 @@ func (s *Server) AdminUpdateSetting(c *gin.Context) {
 
 	// 更新配置
 	if err := s.configService.UpdateSetting(c.Request.Context(), key, req.Value); err != nil {
-		log.Printf("[ERROR] AdminUpdateSetting failed for key=%s: %v", key, err)
+		log.Printf("[ERROR] AdminUpdateSetting key=%s 失败: %v", key, err)
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
@@ -124,7 +124,7 @@ func (s *Server) AdminResetSetting(c *gin.Context) {
 
 	// 重置为默认值
 	if err := s.configService.UpdateSetting(c.Request.Context(), key, setting.DefaultValue); err != nil {
-		log.Printf("[ERROR] AdminResetSetting failed for key=%s: %v", key, err)
+		log.Printf("[ERROR] AdminResetSetting key=%s 失败: %v", key, err)
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
@@ -171,12 +171,12 @@ func (s *Server) AdminBatchUpdateSettings(c *gin.Context) {
 
 	// 批量更新(事务保护)
 	if err := s.configService.BatchUpdateSettings(c.Request.Context(), req); err != nil {
-		log.Printf("[ERROR] AdminBatchUpdateSettings failed: %v", err)
+		log.Printf("[ERROR] AdminBatchUpdateSettings 失败: %v", err)
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
 
-	log.Printf("[INFO] Batch updated %d settings (restart required)", len(req))
+	log.Printf("[INFO] 已批量更新 %d 项配置（需重启）", len(req))
 
 	RespondJSON(c, http.StatusOK, gin.H{
 		"message": fmt.Sprintf("已保存 %d 项配置，程序将在2秒后重启", len(req)),
@@ -249,10 +249,10 @@ var RestartFunc func()
 // triggerRestart 触发程序重启
 // 依赖优雅关闭语义：触发 SIGTERM 后，HTTP 服务器应完成当前请求再退出。
 func triggerRestart() {
-	log.Print("[INFO] Triggering restart due to settings change...")
+	log.Print("[INFO] 配置变更触发重启...")
 
 	if RestartFunc == nil {
-		log.Printf("[ERROR] RestartFunc is nil, restart skipped")
+		log.Printf("[ERROR] RestartFunc 为空，重启已跳过")
 		return
 	}
 	RestartFunc()

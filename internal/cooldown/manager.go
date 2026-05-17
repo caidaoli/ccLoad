@@ -160,7 +160,7 @@ func (m *Manager) HandleError(ctx context.Context, in ErrorInput) Action {
 			if decision.hasKeyCooldownUntil {
 				// 直接设置冷却时间到指定时刻
 				if err := m.store.SetKeyCooldown(ctx, channelID, keyIndex, decision.keyCooldownUntil); err != nil {
-					log.Printf("[WARN] Failed to set key cooldown to reset time (channel=%d, key=%d, until=%v): %v",
+					log.Printf("[WARN] 按重置时间设置 Key 冷却失败 (channel=%d, key=%d, until=%v): %v",
 						channelID, keyIndex, decision.keyCooldownUntil, err)
 				} else {
 					duration := time.Until(decision.keyCooldownUntil)
@@ -176,7 +176,7 @@ func (m *Manager) HandleError(ctx context.Context, in ErrorInput) Action {
 			if err != nil {
 				// 冷却更新失败是非致命错误
 				// 记录日志但不中断请求处理,避免因数据库BUSY导致无限重试
-				log.Printf("[WARN] Failed to update key cooldown (channel=%d, key=%d): %v", channelID, keyIndex, err)
+				log.Printf("[WARN] 更新 Key 冷却失败 (channel=%d, key=%d): %v", channelID, keyIndex, err)
 			}
 		}
 		return ActionRetryKey
@@ -189,7 +189,7 @@ func (m *Manager) HandleError(ctx context.Context, in ErrorInput) Action {
 			// 冷却更新失败是非致命错误
 			// 设计原则: 数据库故障不应阻塞用户请求,系统应降级服务
 			// 影响: 可能导致短暂的冷却状态不一致,但总比拒绝服务更好
-			log.Printf("[WARN] Failed to update channel cooldown (channel=%d): %v", channelID, err)
+			log.Printf("[WARN] 更新渠道冷却失败 (channel=%d): %v", channelID, err)
 		}
 		return ActionRetryChannel
 

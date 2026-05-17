@@ -43,7 +43,7 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 	// === 成本限额过滤（在冷却过滤之前）===
 	channels = s.filterCostLimitExceededChannels(channels)
 	if len(channels) == 0 {
-		log.Print("[INFO] All channels exceeded daily cost limit")
+		log.Print("[INFO] 所有渠道均已达每日成本上限")
 		return nil, nil
 	}
 
@@ -51,14 +51,14 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 	channelCooldowns, err := s.getAllChannelCooldowns(ctx)
 	if err != nil {
 		// 降级策略：无法获取冷却数据时，跳过冷却过滤；仍保留后续健康度/负载均衡逻辑，避免直接返回未排序列表。
-		log.Printf("[ERROR] Failed to get channel cooldowns, skipping cooldown filtering (degraded mode): %v", err)
+		log.Printf("[ERROR] 获取渠道冷却状态失败，跳过冷却过滤（降级模式）: %v", err)
 		channelCooldowns = make(map[int64]time.Time)
 	}
 
 	keyCooldowns, err := s.getAllKeyCooldowns(ctx)
 	if err != nil {
 		// 降级策略：同上。
-		log.Printf("[ERROR] Failed to get key cooldowns, skipping cooldown filtering (degraded mode): %v", err)
+		log.Printf("[ERROR] 获取 Key 冷却状态失败，跳过冷却过滤（降级模式）: %v", err)
 		keyCooldowns = make(map[int64]map[int]time.Time)
 	}
 
@@ -75,13 +75,13 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 			fallbackEnabled = s.configService.GetBool("cooldown_fallback_enabled", true)
 		}
 		if !fallbackEnabled {
-			log.Printf("[INFO] All channels cooled, fallback disabled (cooldown_fallback_enabled=false)")
+			log.Printf("[INFO] 所有渠道冷却中，兜底已禁用（cooldown_fallback_enabled=false）")
 			return nil, nil
 		}
 
 		best, readyIn := s.pickBestChannelWhenAllCooled(channels, channelCooldowns, keyCooldowns, now)
 		if best != nil {
-			log.Printf("[INFO] All channels cooled, fallback to channel %d (ready in %.1fs)", best.ID, readyIn.Seconds())
+			log.Printf("[INFO] 所有渠道冷却中，兜底使用渠道 %d（%.1fs 后就绪）", best.ID, readyIn.Seconds())
 			return []*modelpkg.Config{cooldownFallbackCandidate(best)}, nil
 		}
 		return nil, nil
