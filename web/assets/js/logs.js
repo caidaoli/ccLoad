@@ -262,18 +262,19 @@ function canInspectDebugLog(entry) {
 function buildLogMessageContent(entry) {
   const sourceBadge = renderLogSourceBadge(entry.log_source || 'proxy');
   const messageText = escapeHtml(entry.message || '');
-  const messageDisplay = `${sourceBadge}${messageText}`;
-  if (!messageDisplay) {
+  if (!sourceBadge && !messageText) {
     return '';
   }
 
+  let inner;
   if (!canInspectDebugLog(entry)) {
-    return `<span>${messageDisplay}</span>`;
+    inner = `<span>${messageText}</span>`;
+  } else {
+    const logId = Number(entry?.id);
+    const logIdAttr = Number.isFinite(logId) && logId > 0 ? ` data-log-id="${logId}"` : '';
+    inner = `<span class="debug-log-link has-upstream-detail"${logIdAttr}>${messageText}</span>`;
   }
-
-  const logId = Number(entry?.id);
-  const logIdAttr = Number.isFinite(logId) && logId > 0 ? ` data-log-id="${logId}"` : '';
-  return `<span class="debug-log-link has-upstream-detail"${logIdAttr}>${messageDisplay}</span>`;
+  return `${sourceBadge}${inner}`;
 }
 
 function buildLogCostDisplay(entry) {
