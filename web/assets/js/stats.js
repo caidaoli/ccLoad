@@ -327,6 +327,14 @@
       let totalCacheCreation = 0;
       let totalCost = 0;
       let totalEffectiveCost = 0;
+      // 首字/耗时按成功数加权
+      let firstByteTimeWeighted = 0;
+      let firstByteSuccessSum = 0;
+      let durationWeighted = 0;
+      let durationSuccessSum = 0;
+      // Tok/s 用 总输出 / 总生成秒数
+      let speedOutputTokensSum = 0;
+      let speedGenerationSecondsSum = 0;
 
       const fragment = document.createDocumentFragment();
 
@@ -448,6 +456,29 @@
         totalEffectiveCost += (entry.effective_cost !== undefined && entry.effective_cost !== null)
           ? Number(entry.effective_cost) || 0
           : (entry.total_cost || 0);
+
+        const entrySuccess = Number(entry.success) || 0;
+        if (entrySuccess > 0) {
+          if (avgFirstByteTime > 0) {
+            firstByteTimeWeighted += avgFirstByteTime * entrySuccess;
+            firstByteSuccessSum += entrySuccess;
+          }
+          if (avgDuration > 0) {
+            durationWeighted += avgDuration * entrySuccess;
+            durationSuccessSum += entrySuccess;
+
+            const entryOutput = Number(entry.total_output_tokens) || 0;
+            if (entryOutput > 0) {
+              let perReqGen = avgDuration;
+              if (avgFirstByteTime > 0 && avgFirstByteTime < avgDuration) {
+                const gen = avgDuration - avgFirstByteTime;
+                if (gen >= 1) perReqGen = gen;
+              }
+              speedOutputTokensSum += entryOutput;
+              speedGenerationSecondsSum += perReqGen * entrySuccess;
+            }
+          }
+        }
       }
 
       tbody.appendChild(fragment);
@@ -464,10 +495,36 @@
       // 使用全局rpm_stats格式化RPM
       const totalRpmHtml = formatGlobalRpm(rpmStats, isToday);
 
+      // 合计行首字/耗时(秒)
+      const totalAvgFirstByte = firstByteSuccessSum > 0 ? firstByteTimeWeighted / firstByteSuccessSum : 0;
+      const totalAvgDuration = durationSuccessSum > 0 ? durationWeighted / durationSuccessSum : 0;
+      let totalTimingText = '';
+      if (totalAvgFirstByte > 0 && totalAvgDuration > 0) {
+        const c = getDurationColor(totalAvgDuration);
+        totalTimingText = `<span class="stats-value-dynamic" style="--stats-accent:${c};">${totalAvgFirstByte.toFixed(2)}/${totalAvgDuration.toFixed(2)}</span>`;
+      } else if (totalAvgDuration > 0) {
+        const c = getDurationColor(totalAvgDuration);
+        totalTimingText = `<span class="stats-value-dynamic" style="--stats-accent:${c};">${totalAvgDuration.toFixed(2)}</span>`;
+      } else if (totalAvgFirstByte > 0) {
+        const c = getDurationColor(totalAvgFirstByte);
+        totalTimingText = `<span class="stats-value-dynamic" style="--stats-accent:${c};">${totalAvgFirstByte.toFixed(2)}</span>`;
+      }
+
+      // 合计行 Tok/s
+      let totalSpeedText = '';
+      if (speedOutputTokensSum > 0 && speedGenerationSecondsSum > 0) {
+        const speed = speedOutputTokensSum / speedGenerationSecondsSum;
+        totalSpeedText = `<span class="stats-value-dynamic" style="--stats-accent:var(--neutral-700);">${speed >= 100 ? speed.toFixed(0) : speed.toFixed(1)}</span>`;
+      }
+
       const totalRow = TemplateEngine.render('tpl-stats-total', {
         successDisplay: totalSuccessDisplay,
         errorCount: formatNumber(totalError),
         rpm: totalRpmHtml,
+        avgFirstByteTime: totalTimingText,
+        timingCellClass: totalTimingText ? '' : 'mobile-empty-cell',
+        avgSpeed: totalSpeedText,
+        speedCellClass: totalSpeedText ? '' : 'mobile-empty-cell',
         inputTokens: formatNumber(totalInputTokens),
         outputTokens: formatNumber(totalOutputTokens),
         cacheReadTokens: formatNumber(totalCacheRead),

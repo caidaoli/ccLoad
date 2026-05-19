@@ -249,8 +249,8 @@
       <td colspan="2" class="stats-col-total-label" data-mobile-label="{{mobileLabelSummary}}" data-i18n="stats.total">合计</td>
       <td class="stats-col-success" data-mobile-label="{{mobileLabelSuccess}}">{{{successDisplay}}}</td>
       <td class="stats-col-error" data-mobile-label="{{mobileLabelError}}"><span class="error-count">{{errorCount}}</span></td>
-      <td class="stats-col-timing mobile-empty-cell" data-mobile-label="{{mobileLabelTiming}}"></td>
-      <td class="stats-col-speed mobile-empty-cell" data-mobile-label="{{mobileLabelSpeed}}"></td>
+      <td class="stats-col-timing {{timingCellClass}}" data-mobile-label="{{mobileLabelTiming}}">{{{avgFirstByteTime}}}</td>
+      <td class="stats-col-speed {{speedCellClass}}" data-mobile-label="{{mobileLabelSpeed}}">{{{avgSpeed}}}</td>
       <td class="stats-col-rpm" data-mobile-label="{{mobileLabelRpm}}">{{{rpm}}}</td>
       <td class="stats-col-input" data-mobile-label="{{mobileLabelInput}}">{{inputTokens}}</td>
       <td class="stats-col-output" data-mobile-label="{{mobileLabelOutput}}">{{outputTokens}}</td>
