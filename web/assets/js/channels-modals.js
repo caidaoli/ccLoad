@@ -1995,6 +1995,54 @@ function batchDeleteSelectedModels() {
   }, 50);
 }
 
+function replaceModelRowsWithFetchedModels(currentRows, fetchedModels) {
+  const previousRowsByModelKey = new Map();
+  (currentRows || []).forEach(row => {
+    const model = (row?.model || '').trim();
+    if (!model) return;
+    const modelKey = model.toLowerCase();
+    if (!previousRowsByModelKey.has(modelKey)) {
+      previousRowsByModelKey.set(modelKey, row);
+    }
+  });
+
+  const seen = new Set();
+  const rows = [];
+  for (const entry of fetchedModels || []) {
+    const modelName = (typeof entry === 'string' ? entry : entry?.model || '').trim();
+    if (!modelName) continue;
+
+    const modelKey = modelName.toLowerCase();
+    if (seen.has(modelKey)) continue;
+    seen.add(modelKey);
+
+    const existingRow = previousRowsByModelKey.get(modelKey);
+    const fetchedRedirect = (typeof entry === 'object' && entry?.redirect_model)
+      ? String(entry.redirect_model).trim()
+      : modelName;
+    rows.push({
+      model: modelName,
+      redirect_model: existingRow ? (existingRow.redirect_model || '') : fetchedRedirect
+    });
+  }
+
+  let removed = 0;
+  previousRowsByModelKey.forEach((_, modelKey) => {
+    if (!seen.has(modelKey)) removed++;
+  });
+
+  return { rows, removed };
+}
+
+function areModelRowsEqual(left, right) {
+  if ((left || []).length !== (right || []).length) return false;
+  return (left || []).every((row, index) => {
+    const other = right[index] || {};
+    return (row.model || '') === (other.model || '') &&
+      (row.redirect_model || '') === (other.redirect_model || '');
+  });
+}
+
 async function fetchModelsFromAPI() {
   const channelUrl = getValidInlineURLs()[0] || '';
   const channelType = document.querySelector('input[name="channelType"]:checked')?.value || 'anthropic';
@@ -2040,35 +2088,27 @@ async function fetchModelsFromAPI() {
       throw new Error(window.t('channels.noModelsFromApi'));
     }
 
-    // 获取现有模型名称集合
-    const existingModels = new Set(
-      redirectTableData
-        .map(r => (r.model || '').trim().toLowerCase())
-        .filter(Boolean)
-    );
-
-    // 添加新模型（不重复）- data.models 现在是 ModelEntry 数组
-    let addedCount = 0;
-    for (const entry of data.models) {
-      const modelName = typeof entry === 'string' ? entry : entry.model;
-      const modelKey = (modelName || '').trim().toLowerCase();
-      if (modelName && !existingModels.has(modelKey)) {
-        // 使用返回的 redirect_model，如果没有则使用 model
-        const redirectModel = (typeof entry === 'object' && entry.redirect_model) ? entry.redirect_model : modelName;
-        redirectTableData.push({ model: modelName, redirect_model: redirectModel });
-        existingModels.add(modelKey);
-        addedCount++;
-      }
+    const previousRows = redirectTableData.map(row => ({
+      model: row.model || '',
+      redirect_model: row.redirect_model || ''
+    }));
+    const replacement = replaceModelRowsWithFetchedModels(redirectTableData, data.models);
+    if (replacement.rows.length === 0) {
+      throw new Error(window.t('channels.noModelsFromApi'));
     }
 
+    redirectTableData = replacement.rows;
+    selectedModelIndices.clear();
+    updateModelBatchDeleteButton();
+
     renderRedirectTable();
-    if (addedCount > 0) markChannelFormDirty();
+    if (!areModelRowsEqual(previousRows, redirectTableData)) markChannelFormDirty();
 
     const source = data.source === 'api' ? window.t('channels.fetchModelsSource.api') : window.t('channels.fetchModelsSource.predefined');
     if (window.showSuccess) {
-      window.showSuccess(window.t('channels.fetchModelsSuccess', { added: addedCount, source, total: data.models.length }));
+      window.showSuccess(window.t('channels.fetchModelsSuccess', { source, total: redirectTableData.length, removed: replacement.removed }));
     } else {
-      alert(window.t('channels.fetchModelsSuccess', { added: addedCount, source, total: data.models.length }));
+      alert(window.t('channels.fetchModelsSuccess', { source, total: redirectTableData.length, removed: replacement.removed }));
     }
 
   } catch (error) {
