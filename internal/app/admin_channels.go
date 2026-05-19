@@ -635,13 +635,6 @@ func (s *Server) handleURLToggle(c *gin.Context, disable bool) {
 
 // 更新渠道
 func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
-	// 先获取现有配置
-	existing, err := s.store.GetConfig(c.Request.Context(), id)
-	if err != nil {
-		RespondError(c, http.StatusNotFound, fmt.Errorf("channel not found"))
-		return
-	}
-
 	// 解析请求为通用map以支持部分更新
 	var rawReq map[string]any
 	if err := c.ShouldBindJSON(&rawReq); err != nil {
@@ -652,10 +645,13 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	// 检查是否为简单的enabled字段更新
 	if len(rawReq) == 1 {
 		if enabled, ok := rawReq["enabled"].(bool); ok {
-			existing.Enabled = enabled
-			upd, err := s.store.UpdateConfig(c.Request.Context(), id, existing)
+			upd, err := s.store.UpdateChannelEnabled(c.Request.Context(), id, enabled)
 			if err != nil {
-				RespondError(c, http.StatusInternalServerError, err)
+				if strings.Contains(err.Error(), "not found") {
+					RespondError(c, http.StatusNotFound, fmt.Errorf("channel not found"))
+				} else {
+					RespondError(c, http.StatusInternalServerError, err)
+				}
 				return
 			}
 			// enabled 状态变更影响渠道选择，必须立即失效缓存
@@ -770,10 +766,12 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		s.InvalidateAPIKeysCache(id)
 	}
 
-	// URL 更新后立即清理失效的 URLSelector 状态，避免旧URL状态长期残留。
+	// URL 更新后立即清理失效的 URL 状态（内存+数据库同步）
 	if s.urlSelector != nil {
 		s.urlSelector.PruneChannel(id, upd.GetURLs())
 	}
+	// 同步清理数据库中已移除URL的禁用状态记录
+	s.cleanupOrphanedURLStates(c.Request.Context(), id, upd.GetURLs())
 
 	RespondJSON(c, http.StatusOK, upd)
 }
@@ -795,6 +793,17 @@ func (s *Server) handleDeleteChannel(c *gin.Context, id int64) {
 	// 否则若后续以同 ID 重新创建渠道（显式主键路径，例如混合存储恢复），可能读到旧 keys。
 	s.InvalidateAPIKeysCache(id)
 	RespondJSON(c, http.StatusOK, gin.H{"id": id})
+}
+
+// cleanupOrphanedURLStates 清理数据库中已移除URL的禁用状态记录，失败仅警告不影响主流程
+func (s *Server) cleanupOrphanedURLStates(ctx context.Context, channelID int64, keepURLs []string) {
+	if s.store == nil {
+		return
+	}
+
+	if err := s.store.CleanupOrphanedURLStates(ctx, channelID, keepURLs); err != nil {
+		log.Printf("[WARN] 清理孤立URL状态失败 (channel=%d, urls=%d): %v", channelID, len(keepURLs), err)
+	}
 }
 
 // HandleDeleteAPIKey 删除渠道下的单个Key，并保持key_index连续
@@ -1000,7 +1009,7 @@ func (s *Server) HandleBatchUpdatePriority(c *gin.Context) {
 	// 调用storage层批量更新方法
 	rowsAffected, err := s.store.BatchUpdatePriority(ctx, updates)
 	if err != nil {
-		log.Printf("batch-priority: failed: %v", err)
+		log.Printf("批量优先级更新失败: %v", err)
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
@@ -1055,8 +1064,8 @@ func (s *Server) HandleBatchSetEnabled(c *gin.Context) {
 		}
 
 		cfg.Enabled = *req.Enabled
-		if _, err := s.store.UpdateConfig(ctx, channelID, cfg); err != nil {
-			log.Printf("batch-enabled: update channel %d failed: %v", channelID, err)
+		if _, err := s.store.UpdateChannelEnabled(ctx, channelID, *req.Enabled); err != nil {
+			log.Printf("批量启用更新渠道 %d 失败: %v", channelID, err)
 			RespondError(c, http.StatusInternalServerError, err)
 			return
 		}
@@ -1101,7 +1110,7 @@ func (s *Server) HandleBatchDeleteChannels(c *gin.Context) {
 	for _, channelID := range channelIDs {
 		wasDeleted, err := s.deleteChannelByID(ctx, channelID)
 		if err != nil {
-			log.Printf("batch-delete: delete channel %d failed: %v", channelID, err)
+			log.Printf("批量删除渠道 %d 失败: %v", channelID, err)
 			RespondError(c, http.StatusInternalServerError, err)
 			return
 		}

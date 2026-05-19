@@ -20,9 +20,15 @@ import (
 // ErrUpstreamFirstByteTimeout 是上游首字节超时的统一错误标识，避免依赖具体报错文案。
 var ErrUpstreamFirstByteTimeout = errors.New("upstream first byte timeout")
 
+// ErrUpstreamEmptyResponse 是上游 200 但无响应体的统一错误标识。
+var ErrUpstreamEmptyResponse = errors.New("upstream returned empty response")
+
 // resetTime1308Regex 匹配1308错误 message 中的重置时间（不依赖具体语言文案）
 // 格式示例: 2025-12-09 18:08:11
 var resetTime1308Regex = regexp.MustCompile(`\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}`)
+
+// beijingTomorrowResetRegex 匹配类似“明天凌晨3点13分（北京时间）恢复”的相对重置时间。
+var beijingTomorrowResetRegex = regexp.MustCompile(`明天\s*(?:凌晨|早上|上午)?\s*(\d{1,2})\s*点\s*(?:(\d{1,2})\s*分)?`)
 
 // HTTP 状态码常量（统一定义，避免魔法数字）
 const (
@@ -80,9 +86,10 @@ type StatusCodeMeta struct {
 
 // HTTPResponseClassification 包含 HTTP 响应分类的结果。
 type HTTPResponseClassification struct {
-	Level            ErrorLevel
-	ResetTime1308    time.Time
-	HasResetTime1308 bool
+	Level               ErrorLevel
+	KeyCooldownUntil    time.Time
+	HasKeyCooldownUntil bool
+	KeyCooldownReason   string
 }
 
 // sseErrorResponse SSE error事件的JSON结构（Anthropic API / 88code API）
@@ -94,6 +101,18 @@ type sseErrorResponse struct {
 		Code    string `json:"code"` // 其他渠道使用
 		Message string `json:"message"`
 	} `json:"error"`
+}
+
+type structuredQuotaErrorResponse struct {
+	Code    string          `json:"code"`
+	Message string          `json:"message"`
+	Error   json.RawMessage `json:"error"`
+}
+
+type structuredQuotaErrorObject struct {
+	Type    string `json:"type"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 // ErrorType 返回错误类型（优先使用type字段，如果为空则使用code字段）
@@ -205,7 +224,7 @@ func ClassifyHTTPStatus(statusCode int) ErrorLevel {
 }
 
 // ClassifyHTTPResponseWithMeta 基于状态码 + headers + 响应体智能分类错误级别
-// 返回 HTTPResponseClassification，包含错误级别和1308重置时间（如果存在）
+// 返回 HTTPResponseClassification，包含错误级别和固定Key冷却截止时间（如果存在）
 //
 // 分类策略：
 //   - 401/403 做语义分析：默认 Key 级，只在明确账户级不可逆错误时升级为 Channel 级
@@ -217,9 +236,19 @@ func ClassifyHTTPResponseWithMeta(statusCode int, headers map[string][]string, r
 	// 1308错误表示达到使用上限，应该触发Key级冷却
 	if resetTime, has1308 := ParseResetTimeFrom1308Error(responseBody); has1308 {
 		return HTTPResponseClassification{
-			Level:            ErrorLevelKey,
-			ResetTime1308:    resetTime,
-			HasResetTime1308: true,
+			Level:               ErrorLevelKey,
+			KeyCooldownUntil:    resetTime,
+			HasKeyCooldownUntil: true,
+			KeyCooldownReason:   "1308",
+		}
+	}
+
+	if cooldownUntil, reason, ok := parseStructuredQuotaCooldown(responseBody, time.Now()); ok {
+		return HTTPResponseClassification{
+			Level:               ErrorLevelKey,
+			KeyCooldownUntil:    cooldownUntil,
+			HasKeyCooldownUntil: true,
+			KeyCooldownReason:   reason,
 		}
 	}
 
@@ -391,6 +420,105 @@ func classifySSEError(responseBody []byte) ErrorLevel {
 	}
 }
 
+func parseStructuredQuotaCooldown(responseBody []byte, now time.Time) (time.Time, string, bool) {
+	if len(responseBody) == 0 {
+		return time.Time{}, "", false
+	}
+
+	code, message, ok := parseStructuredQuotaError(responseBody)
+	if !ok {
+		return time.Time{}, "", false
+	}
+
+	messageUpper := strings.ToUpper(message)
+
+	switch {
+	case code == "API_KEY_QUOTA_EXHAUSTED":
+		return now.Add(30 * time.Minute), "API_KEY_QUOTA_EXHAUSTED", true
+	case code == "FREE_TIER_BUDGET_EXCEEDED" || strings.Contains(messageUpper, "FREE_TIER_BUDGET_EXCEEDED"):
+		return now.Add(30 * time.Minute), "FREE_TIER_BUDGET_EXCEEDED", true
+	case code == "DAILY_LIMIT_EXCEEDED" ||
+		(code == "USAGE_LIMIT_EXCEEDED" && strings.Contains(messageUpper, "DAILY_LIMIT_EXCEEDED")):
+		return nextLocalMidnight(now), "DAILY_LIMIT_EXCEEDED", true
+	case strings.Contains(message, "用量上限"):
+		if until, ok := parseBeijingTomorrowResetTime(message, now); ok {
+			return until, "BEIJING_RELATIVE_QUOTA_RESET", true
+		}
+		return time.Time{}, "", false
+	default:
+		return time.Time{}, "", false
+	}
+}
+
+func parseStructuredQuotaError(responseBody []byte) (string, string, bool) {
+	var errResp structuredQuotaErrorResponse
+	if err := json.Unmarshal(responseBody, &errResp); err != nil {
+		return "", "", false
+	}
+
+	code := strings.ToUpper(strings.TrimSpace(errResp.Code))
+	message := errResp.Message
+
+	if len(errResp.Error) > 0 {
+		var errorText string
+		if err := json.Unmarshal(errResp.Error, &errorText); err == nil {
+			if message == "" {
+				message = errorText
+			}
+		} else {
+			var errorObj structuredQuotaErrorObject
+			if err := json.Unmarshal(errResp.Error, &errorObj); err == nil {
+				if code == "" {
+					code = strings.ToUpper(strings.TrimSpace(errorObj.Code))
+				}
+				if code == "" {
+					code = strings.ToUpper(strings.TrimSpace(errorObj.Type))
+				}
+				if message == "" {
+					message = errorObj.Message
+				}
+			}
+		}
+	}
+
+	return code, message, code != "" || message != ""
+}
+
+func nextLocalMidnight(now time.Time) time.Time {
+	local := now.In(time.Local)
+	y, m, d := local.Date()
+	return time.Date(y, m, d+1, 0, 0, 0, 0, time.Local)
+}
+
+func parseBeijingTomorrowResetTime(message string, now time.Time) (time.Time, bool) {
+	if !strings.Contains(message, "北京时间") {
+		return time.Time{}, false
+	}
+
+	matches := beijingTomorrowResetRegex.FindStringSubmatch(message)
+	if matches == nil {
+		return time.Time{}, false
+	}
+
+	hour, err := strconv.Atoi(matches[1])
+	if err != nil || hour < 0 || hour > 23 {
+		return time.Time{}, false
+	}
+
+	minute := 0
+	if len(matches) > 2 && matches[2] != "" {
+		minute, err = strconv.Atoi(matches[2])
+		if err != nil || minute < 0 || minute > 59 {
+			return time.Time{}, false
+		}
+	}
+
+	loc := time.FixedZone("Asia/Shanghai", 8*60*60)
+	local := now.In(loc)
+	y, mon, d := local.Date()
+	return time.Date(y, mon, d+1, hour, minute, 0, 0, loc), true
+}
+
 // classify400Error 根据响应体内容智能分类 400 错误
 // 设计原则：代理场景下 400 通常是上游服务异常，应触发渠道冷却并切换
 func classify400Error(responseBody []byte) ErrorLevel {
@@ -498,6 +626,11 @@ func ClassifyError(err error) (statusCode int, errorLevel ErrorLevel, shouldRetr
 	// 快速路径1：专门识别上游首字节超时，优先切换渠道
 	if errors.Is(err, ErrUpstreamFirstByteTimeout) {
 		return StatusFirstByteTimeout, ErrorLevelChannel, true
+	}
+
+	// 快速路径1.2：上游 200 空体是坏网关，不是成功响应。
+	if errors.Is(err, ErrUpstreamEmptyResponse) {
+		return http.StatusBadGateway, ErrorLevelChannel, true
 	}
 
 	// 快速路径1.5：协议转换明确声明为客户端请求结构不支持

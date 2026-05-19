@@ -65,27 +65,7 @@ func (s *Server) buildDebugLogUnavailableInfo(ctx context.Context) debugLogUnava
 	return info
 }
 
-// HandleGetDebugLog 获取指定 log_id 对应的调试日志
-// GET /admin/debug-logs/:log_id
-func (s *Server) HandleGetDebugLog(c *gin.Context) {
-	logIDStr := c.Param("log_id")
-	logID, err := strconv.ParseInt(logIDStr, 10, 64)
-	if err != nil || logID <= 0 {
-		RespondErrorMsg(c, http.StatusBadRequest, "invalid log_id")
-		return
-	}
-
-	entry, err := s.store.GetDebugLogByLogID(c.Request.Context(), logID)
-	if err != nil {
-		RespondError(c, http.StatusInternalServerError, err)
-		return
-	}
-	if entry == nil {
-		RespondErrorWithData(c, http.StatusNotFound, "debug log unavailable", s.buildDebugLogUnavailableInfo(c.Request.Context()))
-		return
-	}
-
-	// 构建响应：body 字段如果是合法 UTF-8 则返回字符串，否则 base64 编码
+func debugLogResponse(entry *model.DebugLogEntry) gin.H {
 	resp := gin.H{
 		"log_id":       entry.LogID,
 		"created_at":   entry.CreatedAt,
@@ -110,5 +90,28 @@ func (s *Server) HandleGetDebugLog(c *gin.Context) {
 		resp["resp_body_encoding"] = "base64"
 	}
 
-	RespondJSON(c, http.StatusOK, resp)
+	return resp
+}
+
+// HandleGetDebugLog 获取指定 log_id 对应的调试日志
+// GET /admin/debug-logs/:log_id
+func (s *Server) HandleGetDebugLog(c *gin.Context) {
+	logIDStr := c.Param("log_id")
+	logID, err := strconv.ParseInt(logIDStr, 10, 64)
+	if err != nil || logID <= 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid log_id")
+		return
+	}
+
+	entry, err := s.store.GetDebugLogByLogID(c.Request.Context(), logID)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	if entry == nil {
+		RespondErrorWithData(c, http.StatusNotFound, "debug log unavailable", s.buildDebugLogUnavailableInfo(c.Request.Context()))
+		return
+	}
+
+	RespondJSON(c, http.StatusOK, debugLogResponse(entry))
 }

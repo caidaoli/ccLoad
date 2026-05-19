@@ -6,14 +6,29 @@ const vm = require('node:vm');
 
 const html = fs.readFileSync(path.join(__dirname, '..', '..', 'logs.html'), 'utf8');
 const logsSource = fs.readFileSync(path.join(__dirname, 'logs.js'), 'utf8');
+const uiSource = fs.readFileSync(path.join(__dirname, 'ui.js'), 'utf8');
 const zhLocale = fs.readFileSync(path.join(__dirname, '..', 'locales', 'zh-CN.js'), 'utf8');
 const enLocale = fs.readFileSync(path.join(__dirname, '..', 'locales', 'en.js'), 'utf8');
 
 function extractFunction(source, name) {
-  const pattern = new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`, 'm');
-  const match = source.match(pattern);
-  assert.ok(match, `缺少函数 ${name}`);
-  return match[0];
+  const signature = `function ${name}(`;
+  const start = source.indexOf(signature);
+  assert.ok(start >= 0, `缺少函数 ${name}`);
+
+  const braceStart = source.indexOf('{', start);
+  assert.ok(braceStart >= 0, `函数 ${name} 缺少起始大括号`);
+
+  let depth = 0;
+  for (let i = braceStart; i < source.length; i++) {
+    const char = source[i];
+    if (char === '{') depth++;
+    if (char === '}') depth--;
+    if (depth === 0) {
+      return source.slice(start, i + 1);
+    }
+  }
+
+  assert.fail(`函数 ${name} 大括号未闭合`);
 }
 
 test('日志页表头新增速度列并补齐中英文本地化', () => {
@@ -34,20 +49,24 @@ test('日志页移动端标签与表格渲染包含速度列', () => {
   assert.match(renderActiveRequestsSource, /data-mobile-label="\$\{logMobileLabels\.speed\}"/);
 });
 
-test('日志页速度按总耗时计算用户实际看到的 tok/s', () => {
+test('日志页流式速度优先按首字后的生成阶段计算 tok/s', () => {
+  const calculateTokenSpeed = vm.runInNewContext(
+    `(${extractFunction(uiSource, 'calculateTokenSpeed')})`,
+    {}
+  );
   const calculateLogSpeed = vm.runInNewContext(
     `(${extractFunction(logsSource, 'calculateLogSpeed')})`,
-    {}
+    { calculateTokenSpeed }
   );
 
   assert.equal(
     calculateLogSpeed({
       is_streaming: true,
-      output_tokens: 957,
-      duration: 21.0,
-      first_byte_time: 3.2
+      output_tokens: 111,
+      duration: 5.9,
+      first_byte_time: 4.1
     }),
-    45.57142857142857
+    61.66666666666664
   );
 
   assert.equal(
@@ -63,9 +82,29 @@ test('日志页速度按总耗时计算用户实际看到的 tok/s', () => {
   assert.equal(
     calculateLogSpeed({
       is_streaming: true,
+      output_tokens: 957,
+      duration: 21.0,
+      first_byte_time: 3.2
+    }),
+    53.764044943820224
+  );
+
+  assert.equal(
+    calculateLogSpeed({
+      is_streaming: true,
       output_tokens: 100,
       duration: 3,
       first_byte_time: 3
+    }),
+    33.333333333333336
+  );
+
+  assert.equal(
+    calculateLogSpeed({
+      is_streaming: true,
+      output_tokens: 100,
+      duration: 3,
+      first_byte_time: 2.2
     }),
     33.333333333333336
   );
@@ -84,10 +123,17 @@ test('日志页速度按总耗时计算用户实际看到的 tok/s', () => {
     calculateLogSpeed({
       is_streaming: true,
       output_tokens: 437,
-      duration: 19.980204,
-      first_byte_time: 19.98
+      duration: 19.98,
+      first_byte_time: 0
     }),
-    21.871648557742454
+    21.87187187187187
+  );
+});
+
+test('日志页速度计算委托给共享 token speed helper', () => {
+  assert.match(
+    extractFunction(logsSource, 'calculateLogSpeed'),
+    /return calculateTokenSpeed\(/
   );
 });
 

@@ -42,6 +42,7 @@ const deletePreviewConfirmBtn = document.getElementById('deletePreviewConfirmBtn
 
 const RESULT_TABLE_COLSPAN_WITH_FIRST_BYTE = 11;
 const RESULT_TABLE_COLSPAN_NO_FIRST_BYTE = 10;
+const MODEL_MODE_EXTRA_COLSPAN = 1;
 const SORT_DIRECTION_ASC = 1;
 const SORT_DIRECTION_DESC = -1;
 const SORT_DIRECTION_NONE = 0;
@@ -98,6 +99,7 @@ const CHANNEL_MODE_HEAD = `
 const MODEL_MODE_HEAD = `
   <th class="table-col-select mobile-card-select-header"><input type="checkbox" id="selectAllCheckbox" data-change-action="toggle-all-models"></th>
   <th class="table-col-channel" data-i18n="modelTest.channelName" data-sort-key="name">渠道</th>
+  <th class="table-col-priority" data-i18n="channels.table.priority" data-sort-key="priority">优先级</th>
   <th class="first-byte-col table-col-duration" data-i18n="modelTest.firstByteDuration" data-sort-key="firstByteDuration">首字</th>
   <th class="table-col-duration" data-i18n="modelTest.totalDuration" data-sort-key="duration">总耗时</th>
   <th class="table-col-metric" data-i18n="common.input" data-sort-key="inputTokens">输入</th>
@@ -132,17 +134,70 @@ function formatDurationMs(durationMs) {
     : '-';
 }
 
-function calculateTestSpeed(data, usage) {
-  const outputTokens = Number(
-    usage?.output_tokens
-      ?? usage?.completion_tokens
-      ?? usage?.candidatesTokenCount
-  );
-  const durationSeconds = Number(data?.duration_ms) / 1000;
-  if (!Number.isFinite(outputTokens) || outputTokens <= 0 || !Number.isFinite(durationSeconds) || durationSeconds <= 0) {
-    return null;
+function formatChannelPriority(priority) {
+  if (priority === null || priority === undefined) return '-';
+  const text = String(priority).trim();
+  if (!text) return '-';
+  const value = Number(text);
+  return Number.isFinite(value) ? String(value) : '-';
+}
+
+function normalizeModelTestCostMultiplier(multiplier) {
+  const value = Number(multiplier);
+  return Number.isFinite(value) && value >= 0 ? value : 1;
+}
+
+function buildModelTestCostDisplay(standardCost, multiplier) {
+  const cost = Number(standardCost);
+  if (!Number.isFinite(cost) || cost <= 0) return null;
+
+  const effectiveCost = cost * normalizeModelTestCostMultiplier(multiplier);
+  if (typeof buildCostStackHtml === 'function') {
+    return {
+      html: buildCostStackHtml(cost, effectiveCost, { tone: 'warning' }),
+      effectiveCost
+    };
   }
-  return outputTokens / durationSeconds;
+
+  const hasMultiplier = Math.abs(effectiveCost - cost) >= 1e-9;
+  return {
+    html: hasMultiplier ? `${formatCost(cost)}/${formatCost(effectiveCost)}` : formatCost(cost),
+    effectiveCost
+  };
+}
+
+function getRowCostMultiplier(row) {
+  const rowMultiplier = row?.dataset?.costMultiplier;
+  if (rowMultiplier !== undefined && rowMultiplier !== '') {
+    return normalizeModelTestCostMultiplier(rowMultiplier);
+  }
+
+  const channelId = String(row?.dataset?.channelId || '');
+  const channel = channelsList.find(ch => String(ch.id) === channelId);
+  return normalizeModelTestCostMultiplier(channel?.cost_multiplier);
+}
+
+function pickPositiveTokenCount(...values) {
+  for (const value of values) {
+    const tokenCount = Number(value);
+    if (Number.isFinite(tokenCount) && tokenCount > 0) {
+      return tokenCount;
+    }
+  }
+  return null;
+}
+
+function calculateTestSpeed(data, usage) {
+  const outputTokens = pickPositiveTokenCount(
+    usage?.completion_tokens,
+    usage?.output_tokens,
+    usage?.candidatesTokenCount
+  );
+  return calculateTokenSpeed(
+    outputTokens,
+    Number(data?.duration_ms) / 1000,
+    Number(data?.first_byte_duration_ms) / 1000
+  );
 }
 
 function parseNumericCellValue(text) {
@@ -173,7 +228,9 @@ function isFirstByteColumnVisible() {
 }
 
 function getResultTableColspan() {
-  return String(isFirstByteColumnVisible() ? RESULT_TABLE_COLSPAN_WITH_FIRST_BYTE : RESULT_TABLE_COLSPAN_NO_FIRST_BYTE);
+  const baseColspan = isFirstByteColumnVisible() ? RESULT_TABLE_COLSPAN_WITH_FIRST_BYTE : RESULT_TABLE_COLSPAN_NO_FIRST_BYTE;
+  const modeColspan = testMode === TEST_MODE_MODEL ? MODEL_MODE_EXTRA_COLSPAN : 0;
+  return String(baseColspan + modeColspan);
 }
 
 function isDataRowVisible(row) {
@@ -216,6 +273,117 @@ function restoreRowSelectionState(row, selectionState, fallbackChecked = true) {
   checkbox.checked = Boolean(fallbackChecked);
 }
 
+function getModelTestResultCellSelectors() {
+  return [
+    '.first-byte-duration',
+    '.duration',
+    '.input-tokens',
+    '.output-tokens',
+    '.speed',
+    '.cache-read',
+    '.cache-create',
+    '.cost',
+    '.response'
+  ];
+}
+
+function captureModelTestTableState() {
+  const tableState = new Map();
+  Array.from(tbody.querySelectorAll('tr[data-channel-id][data-model]')).forEach((row) => {
+    const selectionKey = getRowSelectionKey(row);
+    if (!selectionKey || selectionKey === '::') return;
+
+    const cells = {};
+    getModelTestResultCellSelectors().forEach((selector) => {
+      const cell = row.querySelector(selector);
+      if (!cell) return;
+
+      cells[selector] = {
+        textContent: cell.textContent || '',
+        innerHTML: cell.innerHTML || '',
+        title: cell.title || '',
+        sortValue: selector === '.cost' ? cell.dataset?.sortValue : undefined
+      };
+    });
+
+    const checkbox = row.querySelector('.row-checkbox');
+    tableState.set(selectionKey, {
+      checked: checkbox ? Boolean(checkbox.checked) : undefined,
+      background: row.style?.background || '',
+      color: row.style?.color || '',
+      cells,
+      upstreamData: row._upstreamData ? { ...row._upstreamData } : null
+    });
+  });
+  return tableState;
+}
+
+function collectModelTestRowsByKey() {
+  const rowsByKey = new Map();
+  Array.from(tbody.querySelectorAll('tr[data-channel-id][data-model]')).forEach((row) => {
+    const selectionKey = getRowSelectionKey(row);
+    if (!selectionKey || selectionKey === '::') return;
+    rowsByKey.set(selectionKey, row);
+  });
+  return rowsByKey;
+}
+
+function restoreModelTestTableState(rowsByKey, tableState) {
+  if (!tableState || typeof tableState.get !== 'function') return;
+
+  const rows = rowsByKey && typeof rowsByKey.forEach === 'function'
+    ? rowsByKey
+    : collectModelTestRowsByKey();
+
+  rows.forEach((row, selectionKey) => {
+    const savedState = tableState.get(selectionKey);
+    if (!savedState) return;
+
+    const checkbox = row.querySelector('.row-checkbox');
+    if (checkbox && typeof savedState.checked === 'boolean') {
+      checkbox.checked = savedState.checked;
+    }
+
+    if (row.style) {
+      row.style.background = savedState.background || '';
+      row.style.color = savedState.color || '';
+    }
+
+    Object.entries(savedState.cells || {}).forEach(([selector, cellState]) => {
+      const cell = row.querySelector(selector);
+      if (!cell) return;
+
+      if (selector === '.cost') {
+        cell.innerHTML = cellState.innerHTML || cellState.textContent || '';
+        if (cell.dataset) {
+          if (cellState.sortValue !== undefined && cellState.sortValue !== null && cellState.sortValue !== '') {
+            cell.dataset.sortValue = String(cellState.sortValue);
+          } else {
+            delete cell.dataset.sortValue;
+          }
+        }
+      } else {
+        cell.textContent = cellState.textContent || '';
+      }
+
+      cell.title = cellState.title || '';
+    });
+
+    const responseCell = row.querySelector('.response');
+    if (savedState.upstreamData) {
+      row._upstreamData = { ...savedState.upstreamData };
+      responseCell?.classList?.add('has-upstream-detail');
+    } else {
+      row._upstreamData = null;
+      responseCell?.classList?.remove('has-upstream-detail');
+    }
+  });
+
+  if (typeof syncSelectAllCheckbox === 'function') {
+    syncSelectAllCheckbox();
+  }
+}
+
 function getNameFilterPlaceholder() {
   if (testMode === TEST_MODE_MODEL) {
     return i18nText('modelTest.filterChannelPlaceholder', '搜索渠道名称...');
@@ -248,6 +416,7 @@ function getResultRowMobileLabels(nameKey, nameFallback) {
   return {
     mobileLabelSelect: '',
     mobileLabelName: i18nText(nameKey, nameFallback),
+    mobileLabelPriority: i18nText('channels.table.priority', '优先级'),
     mobileLabelFirstByte: i18nText('modelTest.firstByteDuration', '首字'),
     mobileLabelDuration: i18nText('modelTest.totalDuration', '总耗时'),
     mobileLabelInput: i18nText('common.input', '输入'),
@@ -282,6 +451,7 @@ function renderNameFilterInHeader() {
   const nameTh = headRow.querySelector('th[data-sort-key="name"]');
   if (!nameTh) return;
   const filterWidth = testMode === TEST_MODE_MODEL ? '160px' : '130px';
+  const labelI18nKey = nameTh.getAttribute('data-i18n') || '';
 
   let headerLine = nameTh.querySelector('.model-test-name-head-line');
   let label = nameTh.querySelector('.model-test-name-label');
@@ -303,6 +473,9 @@ function renderNameFilterInHeader() {
     label = document.createElement('span');
     label.className = 'model-test-name-label';
     label.textContent = baseLabel;
+    if (labelI18nKey) {
+      label.setAttribute('data-i18n', labelI18nKey);
+    }
     label.style.flex = '0 0 auto';
     headerLine.appendChild(label);
 
@@ -329,6 +502,12 @@ function renderNameFilterInHeader() {
 
     headerLine.appendChild(input);
     nameTh.appendChild(headerLine);
+  } else if (labelI18nKey && label && !label.getAttribute('data-i18n')) {
+    label.setAttribute('data-i18n', labelI18nKey);
+  }
+
+  if (labelI18nKey) {
+    nameTh.removeAttribute('data-i18n');
   }
 
   const indicator = nameTh.querySelector('.model-test-sort-indicator');
@@ -362,6 +541,8 @@ function getRowSortValue(row, key) {
   switch (key) {
     case 'name':
       return row.children[1]?.textContent?.trim() || '';
+    case 'priority':
+      return parseNumericCellValue(row.querySelector('.channel-priority')?.textContent);
     case 'firstByteDuration':
       return parseNumericCellValue(row.querySelector('.first-byte-duration')?.textContent);
     case 'duration':
@@ -377,7 +558,11 @@ function getRowSortValue(row, key) {
     case 'cacheCreate':
       return parseNumericCellValue(row.querySelector('.cache-create')?.textContent);
     case 'cost':
-      return parseNumericCellValue(row.querySelector('.cost')?.textContent);
+      {
+        const costCell = row.querySelector('.cost');
+        const sortValue = parseNumericCellValue(costCell?.dataset?.sortValue);
+        return sortValue ?? parseNumericCellValue(costCell?.textContent);
+      }
     case 'response':
       return row.querySelector('.response')?.textContent?.trim() || '';
     default:
@@ -814,6 +999,7 @@ function renderChannelModeRows() {
       model: modelName,
       displayName: modelName,
       channelId: selectedChannel.id,
+      costMultiplier: normalizeModelTestCostMultiplier(selectedChannel.cost_multiplier),
       ...getResultRowMobileLabels('common.model', '模型')
     });
     if (row) fragment.appendChild(row);
@@ -893,6 +1079,8 @@ function renderModelModeRows() {
     const row = TemplateEngine.render('tpl-channel-row-by-model', {
       channelId: String(ch.id),
       channelName,
+      channelPriority: formatChannelPriority(ch.priority),
+      costMultiplier: normalizeModelTestCostMultiplier(ch.cost_multiplier),
       model,
       ...getResultRowMobileLabels('modelTest.channel', '渠道')
     });
@@ -1002,7 +1190,9 @@ function resetRowStatus(row) {
   row.querySelector('.speed').textContent = '-';
   row.querySelector('.cache-read').textContent = '-';
   row.querySelector('.cache-create').textContent = '-';
-  row.querySelector('.cost').textContent = '-';
+  const costCell = row.querySelector('.cost');
+  costCell.textContent = '-';
+  if (costCell.dataset) delete costCell.dataset.sortValue;
   row.querySelector('.response').textContent = i18nText('modelTest.waiting', '等待中...');
   row.querySelector('.response').title = '';
   row.style.background = '';
@@ -1015,9 +1205,9 @@ function applyTestResultToRow(row, data) {
   if (data.success) {
     row.style.background = 'rgba(16, 185, 129, 0.1)';
     const apiResp = data.api_response || {};
-    const usage = apiResp.usage || apiResp.usageMetadata || data.usage || {};
-    const inputTokens = usage.input_tokens || usage.prompt_tokens || usage.promptTokenCount || '-';
-    const outputTokens = usage.output_tokens || usage.completion_tokens || usage.candidatesTokenCount || '-';
+    const usage = data.usage || apiResp.usage || apiResp.usageMetadata || {};
+    const inputTokens = pickPositiveTokenCount(usage.prompt_tokens, usage.input_tokens, usage.promptTokenCount) ?? '-';
+    const outputTokens = pickPositiveTokenCount(usage.completion_tokens, usage.output_tokens, usage.candidatesTokenCount) ?? '-';
     const testSpeed = calculateTestSpeed(data, usage);
     const speedDisplay = testSpeed === null
       ? '-'
@@ -1027,7 +1217,15 @@ function applyTestResultToRow(row, data) {
     row.querySelector('.speed').textContent = speedDisplay;
     row.querySelector('.cache-read').textContent = usage.cache_read_input_tokens || usage.cached_tokens || '-';
     row.querySelector('.cache-create').textContent = usage.cache_creation_input_tokens || '-';
-    row.querySelector('.cost').textContent = (typeof data.cost_usd === 'number') ? formatCost(data.cost_usd) : '-';
+    const costCell = row.querySelector('.cost');
+    const costDisplay = buildModelTestCostDisplay(data.cost_usd, getRowCostMultiplier(row));
+    if (costDisplay) {
+      costCell.innerHTML = costDisplay.html;
+      if (costCell.dataset) costCell.dataset.sortValue = String(costDisplay.effectiveCost);
+    } else {
+      costCell.textContent = '-';
+      if (costCell.dataset) delete costCell.dataset.sortValue;
+    }
 
     let respText = data.response_text;
     if (!respText && data.api_response?.choices?.[0]?.message) {
@@ -1083,7 +1281,9 @@ function applyTestResultToRow(row, data) {
   responseCell.textContent = errMsg;
   responseCell.title = errMsg;
   row.querySelector('.speed').textContent = '-';
-  row.querySelector('.cost').textContent = '-';
+  const costCell = row.querySelector('.cost');
+  costCell.textContent = '-';
+  if (costCell.dataset) delete costCell.dataset.sortValue;
 
   if (data.upstream_request_url) {
     row._upstreamData = {
@@ -1095,6 +1295,65 @@ function applyTestResultToRow(row, data) {
       responseBody: data.upstream_response_body || data.raw_response
     };
     responseCell.classList.add('has-upstream-detail');
+  }
+}
+
+function isRPMLimitedTestResult(data) {
+  return !!data && data.rpm_limited === true;
+}
+
+function getRPMRetryDelayMs(data) {
+  const delayMs = Number(data?.retry_after_ms);
+  if (Number.isFinite(delayMs) && delayMs > 0) {
+    return Math.ceil(delayMs);
+  }
+  return 60 * 1000;
+}
+
+function sleepModelTest(delayMs) {
+  return new Promise(resolve => setTimeout(resolve, delayMs));
+}
+
+function markModelTestRPMWait(row, delayMs) {
+  const seconds = Math.max(1, Math.ceil(delayMs / 1000));
+  const message = i18nText('modelTest.waitingRpmLimit', 'RPM限制，等待 {seconds}s 后重试', { seconds });
+  row.style.background = 'rgba(250, 204, 21, 0.14)';
+  const responseCell = row.querySelector('.response');
+  responseCell.textContent = message;
+  responseCell.title = message;
+}
+
+async function waitModelTestRPMRetry(row, delayMs) {
+  let remainingMs = Math.max(0, Math.ceil(delayMs));
+  if (remainingMs <= 0) return;
+
+  markModelTestRPMWait(row, remainingMs);
+  while (remainingMs > 0) {
+    const stepMs = Math.min(1000, remainingMs);
+    await sleepModelTest(stepMs);
+    remainingMs -= stepMs;
+    if (remainingMs > 0) {
+      markModelTestRPMWait(row, remainingMs);
+    }
+  }
+}
+
+async function fetchModelTestWithRPMWait(target, payload) {
+  const { row, channelId } = target;
+
+  for (;;) {
+    const data = await fetchDataWithAuth(`/admin/channels/${channelId}/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!isRPMLimitedTestResult(data)) {
+      return data;
+    }
+
+    const delayMs = getRPMRetryDelayMs(data);
+    await waitModelTestRPMRetry(row, delayMs);
+    row.querySelector('.response').textContent = i18nText('modelTest.testing', '测试中...');
   }
 }
 
@@ -1111,11 +1370,7 @@ async function runBatchTests(targets) {
     row.querySelector('.response').textContent = i18nText('modelTest.testing', '测试中...');
 
     try {
-      const data = await fetchDataWithAuth(`/admin/channels/${channelId}/test`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, stream: streamEnabled, content, protocol_transform: selectedProtocol })
-      });
+      const data = await fetchModelTestWithRPMWait(target, { model, stream: streamEnabled, content, protocol_transform: selectedProtocol });
       applyTestResultToRow(row, data);
     } catch (e) {
       row.style.background = 'rgba(239, 68, 68, 0.1)';
@@ -1124,7 +1379,9 @@ async function runBatchTests(targets) {
       row.querySelector('.speed').textContent = '-';
       row.querySelector('.response').textContent = i18nText('modelTest.requestFailed', '请求失败');
       row.querySelector('.response').title = e.message;
-      row.querySelector('.cost').textContent = '-';
+      const costCell = row.querySelector('.cost');
+      costCell.textContent = '-';
+      if (costCell.dataset) delete costCell.dataset.sortValue;
     }
   };
 
@@ -1940,11 +2197,12 @@ function renderSearchableChannelSelect() {
 }
 
 async function loadChannels(options = {}) {
-  const { preserveSelection = false } = options;
+  const { preserveSelection = false, preserveTableState = false } = options;
   const preservedChannelId = preserveSelection ? (selectedChannel?.id ?? null) : null;
   const preservedProtocol = preserveSelection ? selectedProtocol : '';
   const preservedModelType = preserveSelection ? selectedModelType : '';
   const preservedModelName = preserveSelection ? selectedModelName : '';
+  const preservedTableState = preserveTableState ? captureModelTestTableState() : null;
 
   try {
     const list = (await fetchDataWithAuth('/admin/channels')) || [];
@@ -1971,6 +2229,13 @@ async function loadChannels(options = {}) {
     renderProtocolTransformOptions();
     populateModelSelector();
     renderRowsByMode();
+
+    if (preserveTableState) {
+      restoreModelTestTableState(collectModelTestRowsByKey(), preservedTableState);
+      applyCurrentSort();
+      applyNameFilter();
+      applyFirstByteVisibility();
+    }
   } catch (e) {
     console.error('加载渠道列表失败:', e);
     showError(i18nText('modelTest.loadChannelsFailed', '加载渠道列表失败'));
@@ -2242,7 +2507,7 @@ document.addEventListener('click', (e) => {
 async function bootstrap() {
   window.ChannelModalHooks = {
     afterSave: async () => {
-      await loadChannels({ preserveSelection: true });
+      await loadChannels({ preserveSelection: true, preserveTableState: true });
     }
   };
   initModelTestActions();

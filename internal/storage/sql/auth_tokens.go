@@ -8,9 +8,13 @@ import (
 	"fmt"
 	"time"
 
+	mysql "github.com/go-sql-driver/mysql"
+
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 )
+
+const mysqlDuplicateEntryCode uint16 = 1062
 
 //nolint:gosec // SQL列清单包含“token”字段名，并非硬编码凭据
 const authTokenSelectColumns = `
@@ -315,8 +319,15 @@ const (
 	authTokenInsertCommonValues = `?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, ?, ?, 0, ?, ?`
 )
 
-// CreateAuthToken 创建新的API访问令牌（token字段存储SHA256哈希值）
-func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) error {
+// authTokenInsertCommonArgs builds auth_tokens INSERT arguments.
+// It returns nil args with an error; callers must check err before using args.
+func authTokenInsertCommonArgs(token *model.AuthToken) ([]any, error) {
+	if token == nil {
+		return nil, errors.New("token cannot be nil")
+	}
+	if token.Token == "" {
+		return nil, errors.New("token hash cannot be empty")
+	}
 	if token.CreatedAt.IsZero() {
 		token.CreatedAt = time.Now()
 	}
@@ -334,18 +345,26 @@ func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) 
 
 	allowedModelsJSON, err := marshalAllowedModels(token.AllowedModels)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	allowedChannelIDsJSON, err := marshalAllowedChannelIDs(token.AllowedChannelIDs)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	commonArgs := []any{
+	return []any{
 		token.Token, token.Description, token.CreatedAt.UnixMilli(),
 		expiresAt, lastUsedAt, boolToInt(token.IsActive),
 		allowedModelsJSON, allowedChannelIDsJSON,
 		token.CostLimitMicroUSD, token.MaxConcurrency,
+	}, nil
+}
+
+// CreateAuthToken 创建新的API访问令牌（token字段存储SHA256哈希值）
+func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) error {
+	commonArgs, err := authTokenInsertCommonArgs(token)
+	if err != nil {
+		return err
 	}
 
 	if token.ID != 0 {
@@ -375,6 +394,83 @@ func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) 
 	}
 	token.ID = id
 	return nil
+}
+
+// EnsureAuthToken 幂等创建API访问令牌，已存在同一 token hash 时不修改任何字段。
+func (s *SQLStore) EnsureAuthToken(ctx context.Context, token *model.AuthToken) (bool, error) {
+	commonArgs, err := authTokenInsertCommonArgs(token)
+	if err != nil {
+		return false, err
+	}
+
+	if !s.IsSQLite() {
+		return s.ensureAuthTokenMySQL(ctx, token, commonArgs)
+	}
+
+	query := `INSERT INTO auth_tokens (` + authTokenInsertCommonCols + `)
+		VALUES (` + authTokenInsertCommonValues + `)`
+	query += " ON CONFLICT(token) DO NOTHING"
+
+	result, err := s.db.ExecContext(ctx, query, commonArgs...)
+	if err != nil {
+		return false, fmt.Errorf("ensure auth token: %w", err)
+	}
+
+	created := false
+	if rows, err := result.RowsAffected(); err == nil {
+		created = rows > 0
+	}
+	if created {
+		if id, err := result.LastInsertId(); err == nil && id > 0 {
+			token.ID = id
+		}
+	}
+
+	if !created || token.ID == 0 {
+		existing, err := s.GetAuthTokenByValue(ctx, token.Token)
+		if err != nil {
+			return created, fmt.Errorf("get ensured auth token: %w", err)
+		}
+		*token = *existing
+	}
+
+	return created, nil
+}
+
+func (s *SQLStore) ensureAuthTokenMySQL(ctx context.Context, token *model.AuthToken, commonArgs []any) (bool, error) {
+	result, err := s.db.ExecContext(ctx,
+		`INSERT INTO auth_tokens (`+authTokenInsertCommonCols+`)
+			VALUES (`+authTokenInsertCommonValues+`)`,
+		commonArgs...)
+	if err != nil {
+		if isMySQLDuplicateEntryError(err) {
+			existing, getErr := s.GetAuthTokenByValue(ctx, token.Token)
+			if getErr != nil {
+				return false, fmt.Errorf("get ensured auth token: %w", getErr)
+			}
+			*token = *existing
+			return false, nil
+		}
+		return false, fmt.Errorf("ensure auth token: %w", err)
+	}
+
+	if id, err := result.LastInsertId(); err == nil && id > 0 {
+		token.ID = id
+	}
+	if token.ID == 0 {
+		existing, err := s.GetAuthTokenByValue(ctx, token.Token)
+		if err != nil {
+			return true, fmt.Errorf("get ensured auth token: %w", err)
+		}
+		*token = *existing
+	}
+
+	return true, nil
+}
+
+func isMySQLDuplicateEntryError(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	return errors.As(err, &mysqlErr) && mysqlErr.Number == mysqlDuplicateEntryCode
 }
 
 // GetAuthToken 根据ID获取令牌

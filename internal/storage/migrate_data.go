@@ -87,7 +87,7 @@ func migrateChannelModelsSchema(ctx context.Context, db *sql.DB, dialect Dialect
 
 	// 记录迁移完成
 	if err := recordMigration(ctx, db, channelModelsRedirectMigrationVersion, dialect); err != nil {
-		log.Printf("[WARN] Failed to record migration %s: %v", channelModelsRedirectMigrationVersion, err)
+		log.Printf("[WARN] 记录迁移 %s 失败: %v", channelModelsRedirectMigrationVersion, err)
 		// 不阻塞，迁移本身已成功
 	}
 
@@ -409,7 +409,7 @@ func relaxDeprecatedChannelFields(ctx context.Context, db *sql.DB, dialect Diale
 				"ALTER TABLE channels MODIFY COLUMN models TEXT NULL"); err != nil {
 				return fmt.Errorf("modify models column: %w", err)
 			}
-			log.Printf("[MIGRATE] Modified channels.models: NOT NULL → NULL")
+			log.Printf("[MIGRATE] 已修改 channels.models: NOT NULL → NULL")
 		}
 
 		err = db.QueryRowContext(ctx,
@@ -423,7 +423,7 @@ func relaxDeprecatedChannelFields(ctx context.Context, db *sql.DB, dialect Diale
 				"ALTER TABLE channels MODIFY COLUMN model_redirects TEXT NULL"); err != nil {
 				return fmt.Errorf("modify model_redirects column: %w", err)
 			}
-			log.Printf("[MIGRATE] Modified channels.model_redirects: NOT NULL → NULL")
+			log.Printf("[MIGRATE] 已修改 channels.model_redirects: NOT NULL → NULL")
 		}
 		return nil
 	}
@@ -529,7 +529,7 @@ func rebuildDebugLogsPrimaryKey(ctx context.Context, db *sql.DB, dialect Dialect
 		if _, err := db.ExecContext(ctx, "DROP TABLE debug_logs"); err != nil {
 			return fmt.Errorf("drop legacy debug_logs: %w", err)
 		}
-		log.Printf("[MIGRATE] Dropped legacy debug_logs table (id-based PK) for rebuild")
+		log.Printf("[MIGRATE] 已删除旧版 debug_logs 表（id 主键），等待重建")
 	}
 
 	return recordMigration(ctx, db, debugLogsPKRebuildVersion, dialect)
@@ -547,7 +547,7 @@ func relaxDebugLogsRespBodyNullable(ctx context.Context, db *sql.DB, dialect Dia
 	if _, err := db.ExecContext(ctx, "DROP TABLE IF EXISTS debug_logs"); err != nil {
 		return fmt.Errorf("drop debug_logs for resp_body relax: %w", err)
 	}
-	log.Printf("[MIGRATE] Dropped debug_logs table to relax resp_body NOT NULL constraint")
+	log.Printf("[MIGRATE] 已删除 debug_logs 表以放宽 resp_body NOT NULL 约束")
 	return recordMigration(ctx, db, debugLogsRespBodyNullableVersion, dialect)
 }
 
@@ -591,7 +591,7 @@ func rebuildChannelURLStatesPrimaryKey(ctx context.Context, db *sql.DB, dialect 
 		if _, err := db.ExecContext(ctx, "DROP TABLE channel_url_states"); err != nil {
 			return fmt.Errorf("drop legacy channel_url_states: %w", err)
 		}
-		log.Printf("[MIGRATE] Dropped legacy channel_url_states table (PK on raw url) for rebuild")
+		log.Printf("[MIGRATE] 已删除旧版 channel_url_states 表（PK 为原始 url），等待重建")
 	}
 
 	return recordMigration(ctx, db, channelURLStatesPKRebuildVersion, dialect)

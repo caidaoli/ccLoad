@@ -9,6 +9,10 @@ const statsSource = fs.readFileSync(path.join(__dirname, 'stats.js'), 'utf8');
 const trendSource = fs.readFileSync(path.join(__dirname, 'trend.js'), 'utf8');
 const channelsKeysSource = fs.readFileSync(path.join(__dirname, 'channels-keys.js'), 'utf8');
 const channelsModalsSource = fs.readFileSync(path.join(__dirname, 'channels-modals.js'), 'utf8');
+const indexSource = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
+const tokensSource = fs.readFileSync(path.join(__dirname, 'tokens.js'), 'utf8');
+const zhLocaleSource = fs.readFileSync(path.join(__dirname, '..', 'locales', 'zh-CN.js'), 'utf8');
+const enLocaleSource = fs.readFileSync(path.join(__dirname, '..', 'locales', 'en.js'), 'utf8');
 
 const sharedCss = fs.readFileSync(path.join(__dirname, '..', 'css', 'styles.css'), 'utf8');
 const indexHtml = fs.readFileSync(path.join(__dirname, '..', '..', 'index.html'), 'utf8');
@@ -19,10 +23,25 @@ const trendHtml = fs.readFileSync(path.join(__dirname, '..', '..', 'trend.html')
 const settingsHtml = fs.readFileSync(path.join(__dirname, '..', '..', 'settings.html'), 'utf8');
 const modelTestHtml = fs.readFileSync(path.join(__dirname, '..', '..', 'model-test.html'), 'utf8');
 
+function duplicateLocaleKeys(source) {
+  const counts = new Map();
+  for (const match of source.matchAll(/^\s*'([^']+)'\s*:/gm)) {
+    counts.set(match[1], (counts.get(match[1]) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([key]) => key);
+}
+
 test('ui.js 暴露统一通知和筛选状态持久化 helper', () => {
   assert.match(uiSource, /window\.ensureNotifyHost\s*=\s*ensureNotifyHost/);
   assert.match(uiSource, /window\.showWarning\s*=\s*\(msg\)\s*=>\s*window\.showNotification\(msg,\s*'warning'\)/);
   assert.match(uiSource, /window\.persistFilterState\s*=\s*persistFilterState/);
+});
+
+test('locale 文件不能重复定义同一个 key', () => {
+  assert.deepEqual(duplicateLocaleKeys(zhLocaleSource), []);
+  assert.deepEqual(duplicateLocaleKeys(enLocaleSource), []);
 });
 
 test('channels 页面脚本复用统一通知入口，不再引用不存在的 showToast', () => {
@@ -32,6 +51,18 @@ test('channels 页面脚本复用统一通知入口，不再引用不存在的 s
   assert.match(channelsModalsSource, /window\.showWarning\(/);
   assert.match(channelsModalsSource, /window\.ensureNotifyHost\(\)/);
   assert.doesNotMatch(channelsModalsSource, /host\.id\s*=\s*['"]notify-host['"]/);
+});
+
+test('index、tokens 通过 bindTimeRangeSelector 复用日期按钮重渲染', () => {
+  assert.match(uiSource, /window\.bindTimeRangeSelector\s*=\s*bindTimeRangeSelector/);
+  assert.match(indexSource, /window\.bindTimeRangeSelector\(/);
+  assert.match(tokensSource, /window\.bindTimeRangeSelector\(/);
+  // 不再保留旧的 renderTimeRangeSelector 闭包
+  assert.doesNotMatch(indexSource, /const\s+renderTimeRangeSelector\s*=/);
+  assert.doesNotMatch(tokensSource, /const\s+renderTimeRangeSelector\s*=/);
+  // 不再在页面层重复注册 initTimeRangeSelector
+  assert.doesNotMatch(indexSource, /window\.initTimeRangeSelector\(/);
+  assert.doesNotMatch(tokensSource, /window\.initTimeRangeSelector\(/);
 });
 
 test('logs、stats、trend 通过共享 helper 持久化筛选状态', () => {

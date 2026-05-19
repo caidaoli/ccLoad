@@ -13,6 +13,7 @@ import (
 type ModelPricing struct {
 	InputPrice         float64 // 基础输入token价格（$/1M tokens, ≤200k context for Gemini）
 	OutputPrice        float64 // 输出token价格（$/1M tokens, ≤200k context for Gemini）
+	TokenPricingTiers  []TokenPricingTier
 	CacheReadPrice     float64 // 显式缓存读取价格（$/1M tokens）
 	CacheReadPriceHigh float64 // 高上下文显式缓存读取价格（$/1M tokens）
 	HasCacheReadPrice  bool    // 是否使用显式缓存读取价格；false 时按模型系列倍率回退计算
@@ -29,6 +30,113 @@ type ModelPricing struct {
 	// 按秒计费（视频生成模型），需配合响应中的duration使用
 	// 如果 > 0 且 FixedCostPerRequest == 0，表示按秒计费模型
 	CostPerSecond float64
+}
+
+// TokenPricingTier 按输入 token 数选择整次请求的 token 单价。
+// MaxInputTokens 为该档的闭区间上限；0 表示无上限。
+type TokenPricingTier struct {
+	MaxInputTokens int
+	InputPrice     float64
+	OutputPrice    float64
+}
+
+var (
+	qwen3MaxTiers = []TokenPricingTier{
+		{MaxInputTokens: 32_000, InputPrice: 1.20, OutputPrice: 6.00},
+		{MaxInputTokens: 128_000, InputPrice: 2.40, OutputPrice: 12.00},
+		{MaxInputTokens: 252_000, InputPrice: 3.00, OutputPrice: 15.00},
+	}
+	qwenFlashTiers = []TokenPricingTier{
+		{MaxInputTokens: 256_000, InputPrice: 0.05, OutputPrice: 0.40},
+		{MaxInputTokens: 1_000_000, InputPrice: 0.25, OutputPrice: 2.00},
+	}
+	qwen3VLPlusTiers = []TokenPricingTier{
+		{MaxInputTokens: 32_000, InputPrice: 0.20, OutputPrice: 1.60},
+		{MaxInputTokens: 128_000, InputPrice: 0.30, OutputPrice: 2.40},
+		{MaxInputTokens: 256_000, InputPrice: 0.60, OutputPrice: 4.80},
+	}
+	qwen3VLFlashTiers = []TokenPricingTier{
+		{MaxInputTokens: 32_000, InputPrice: 0.05, OutputPrice: 0.40},
+		{MaxInputTokens: 128_000, InputPrice: 0.075, OutputPrice: 0.60},
+		{MaxInputTokens: 256_000, InputPrice: 0.12, OutputPrice: 0.96},
+	}
+	qwen3CoderPlusTiers = []TokenPricingTier{
+		{MaxInputTokens: 32_000, InputPrice: 1.00, OutputPrice: 5.00},
+		{MaxInputTokens: 128_000, InputPrice: 1.80, OutputPrice: 9.00},
+		{MaxInputTokens: 256_000, InputPrice: 3.00, OutputPrice: 15.00},
+		{MaxInputTokens: 1_000_000, InputPrice: 6.00, OutputPrice: 60.00},
+	}
+	qwen3CoderFlashTiers = []TokenPricingTier{
+		{MaxInputTokens: 32_000, InputPrice: 0.30, OutputPrice: 1.50},
+		{MaxInputTokens: 128_000, InputPrice: 0.50, OutputPrice: 2.50},
+		{MaxInputTokens: 256_000, InputPrice: 0.80, OutputPrice: 4.00},
+		{MaxInputTokens: 1_000_000, InputPrice: 1.60, OutputPrice: 9.60},
+	}
+	qwen3CoderNextTiers = []TokenPricingTier{
+		{MaxInputTokens: 32_000, InputPrice: 0.30, OutputPrice: 1.50},
+		{MaxInputTokens: 128_000, InputPrice: 0.50, OutputPrice: 2.50},
+		{MaxInputTokens: 256_000, InputPrice: 0.80, OutputPrice: 4.00},
+	}
+	qwen3Coder480BTiers = []TokenPricingTier{
+		{MaxInputTokens: 32_000, InputPrice: 1.50, OutputPrice: 7.50},
+		{MaxInputTokens: 128_000, InputPrice: 2.70, OutputPrice: 13.50},
+		{MaxInputTokens: 200_000, InputPrice: 4.50, OutputPrice: 22.50},
+	}
+	qwen3Coder30BTiers = []TokenPricingTier{
+		{MaxInputTokens: 32_000, InputPrice: 0.45, OutputPrice: 2.25},
+		{MaxInputTokens: 128_000, InputPrice: 0.75, OutputPrice: 3.75},
+		{MaxInputTokens: 200_000, InputPrice: 1.20, OutputPrice: 6.00},
+	}
+)
+
+// ImageGenerationToolUsage 是 Responses image_generation 工具返回的 token 用量。
+type ImageGenerationToolUsage struct {
+	InputTokens       int
+	OutputTokens      int
+	TextInputTokens   int
+	TextCachedTokens  int
+	ImageInputTokens  int
+	ImageCachedTokens int
+	ImageOutputTokens int
+}
+
+type imageGenerationToolPricing struct {
+	TextInputPrice   float64
+	TextCachedPrice  float64
+	ImageInputPrice  float64
+	ImageCachedPrice float64
+	ImageOutputPrice float64
+}
+
+type imageGenerationFallbackPricing map[string]map[string]float64
+
+var imageGenerationToolPricingByModel = map[string]imageGenerationToolPricing{
+	// 来源: https://openai.com/api/pricing/ (GPT Image 2, per 1M tokens)
+	"gpt-image-2": {
+		TextInputPrice: 5.00, TextCachedPrice: 1.25,
+		ImageInputPrice: 8.00, ImageCachedPrice: 2.00, ImageOutputPrice: 30.00,
+	},
+}
+
+var imageGenerationFallbackCostByModel = map[string]imageGenerationFallbackPricing{
+	// 来源: https://developers.openai.com/api/docs/guides/image-generation#calculating-costs
+	"gpt-image-2": {
+		"low": {
+			"1024x1024": 0.006,
+			"1024x1536": 0.005,
+			"1536x1024": 0.005,
+		},
+		"medium": {
+			"1024x1024": 0.053,
+			"1024x1536": 0.041,
+			"1536x1024": 0.041,
+		},
+		"high": {
+			"1024x1024": 0.211,
+			"1024x1536": 0.165,
+			"1536x1024": 0.165,
+		},
+	},
 }
 
 // basePricing 基础定价表（无重复，每个模型只定义一次）
@@ -221,19 +329,15 @@ var basePricing = map[string]ModelPricing{
 	"kimi-vl-a3b-thinking:free":    {InputPrice: 0.00, OutputPrice: 0.00},
 
 	// ========== Qwen 模型 ==========
-	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=qwen
-	"qwen-2-72b-instruct":              {InputPrice: 0.90, OutputPrice: 0.90},
-	"qwen-2.5-72b-instruct":            {InputPrice: 0.12, OutputPrice: 0.39},
-	"qwen-2.5-72b-instruct:free":       {InputPrice: 0.00, OutputPrice: 0.00},
-	"qwen-2.5-7b-instruct":             {InputPrice: 0.04, OutputPrice: 0.10},
-	"qwen-2.5-coder-32b-instruct":      {InputPrice: 0.03, OutputPrice: 0.11},
-	"qwen-2.5-coder-32b-instruct:free": {InputPrice: 0.00, OutputPrice: 0.00},
-	"qwen-2.5-vl-7b-instruct":          {InputPrice: 0.20, OutputPrice: 0.20},
-	"qwen-2.5-vl-7b-instruct:free":     {InputPrice: 0.00, OutputPrice: 0.00},
-	"qwen-max":                         {InputPrice: 1.60, OutputPrice: 6.40},
-	// qwen3.5-plus（阿里云 Model Studio 官方价格页，用户提供截图，2026-04-12）
-	// - <=256K: input $0.4 / 1M, output $2.4 / 1M
-	// - >256K:  input $0.5 / 1M, output $3.0 / 1M
+	// 来源: 阿里云 Model Studio 官方价格页 International 部分
+	// https://www.alibabacloud.com/help/en/model-studio/model-pricing
+	"qwen3-max":            {TokenPricingTiers: qwen3MaxTiers},
+	"qwen3-max-2026-01-23": {TokenPricingTiers: qwen3MaxTiers},
+	"qwen3-max-2025-09-23": {TokenPricingTiers: qwen3MaxTiers},
+	"qwen3-max-preview":    {TokenPricingTiers: qwen3MaxTiers},
+	"qwen-max":             {InputPrice: 1.60, OutputPrice: 6.40},
+	"qwen-max-latest":      {InputPrice: 1.60, OutputPrice: 6.40},
+	"qwen-max-2025-01-25":  {InputPrice: 1.60, OutputPrice: 6.40},
 	"qwen3.5-plus": {
 		InputPrice: 0.40, OutputPrice: 2.40,
 		InputPriceHigh: 0.50, OutputPriceHigh: 3.00, // >256k input tokens
@@ -242,21 +346,6 @@ var basePricing = map[string]ModelPricing{
 		InputPrice: 0.40, OutputPrice: 2.40,
 		InputPriceHigh: 0.50, OutputPriceHigh: 3.00, // >256k input tokens
 	},
-	// qwen3.6-plus
-	// 来源: 阿里云 Model Studio 官方价格页，用户提供截图（2026-04-12）
-	// - <=256K: input $0.5 / 1M, output $3.0 / 1M
-	// - >256K:  input $2.0 / 1M, output $6.0 / 1M
-	"qwen3.6-plus": {
-		InputPrice: 0.50, OutputPrice: 3.00,
-		InputPriceHigh: 2.00, OutputPriceHigh: 6.00, // >256k input tokens
-	},
-	"qwen3.6-plus-2026-04-02": {
-		InputPrice: 0.50, OutputPrice: 3.00,
-		InputPriceHigh: 2.00, OutputPriceHigh: 6.00, // >256k input tokens
-	},
-	"qwen3.6-plus:free":         {InputPrice: 0.00, OutputPrice: 0.00},
-	"qwen3.6-plus-preview:free": {InputPrice: 0.00, OutputPrice: 0.00},
-	// qwen-plus（按表格 non-thinking 列）
 	"qwen-plus": {
 		InputPrice: 0.40, OutputPrice: 1.20,
 		InputPriceHigh: 1.20, OutputPriceHigh: 3.60, // >256k input tokens
@@ -277,61 +366,139 @@ var basePricing = map[string]ModelPricing{
 		InputPrice: 0.40, OutputPrice: 1.20,
 		InputPriceHigh: 1.20, OutputPriceHigh: 3.60, // >256k input tokens
 	},
-	// thinking 版本按表格 thinking 列计费
+	"qwen-plus:thinking": {
+		InputPrice: 0.40, OutputPrice: 4.00,
+		InputPriceHigh: 1.20, OutputPriceHigh: 12.00, // >256k input tokens
+	},
+	"qwen-plus-latest:thinking": {
+		InputPrice: 0.40, OutputPrice: 4.00,
+		InputPriceHigh: 1.20, OutputPriceHigh: 12.00, // >256k input tokens
+	},
+	"qwen-plus-2025-12-01:thinking": {
+		InputPrice: 0.40, OutputPrice: 4.00,
+		InputPriceHigh: 1.20, OutputPriceHigh: 12.00, // >256k input tokens
+	},
+	"qwen-plus-2025-09-11:thinking": {
+		InputPrice: 0.40, OutputPrice: 4.00,
+		InputPriceHigh: 1.20, OutputPriceHigh: 12.00, // >256k input tokens
+	},
 	"qwen-plus-2025-07-28:thinking": {
 		InputPrice: 0.40, OutputPrice: 4.00,
 		InputPriceHigh: 1.20, OutputPriceHigh: 12.00, // >256k input tokens
 	},
-	// 历史无分档版本
-	"qwen-plus-2025-07-14":             {InputPrice: 0.40, OutputPrice: 1.20},
-	"qwen-plus-2025-04-28":             {InputPrice: 0.40, OutputPrice: 1.20},
-	"qwen-plus-2025-01-25":             {InputPrice: 0.40, OutputPrice: 1.20},
-	"qwen-turbo":                       {InputPrice: 0.05, OutputPrice: 0.20},
-	"qwen-vl-max":                      {InputPrice: 0.80, OutputPrice: 3.20},
-	"qwen-vl-plus":                     {InputPrice: 0.21, OutputPrice: 0.63},
+	"qwen-plus-2025-07-14":          {InputPrice: 0.40, OutputPrice: 1.20},
+	"qwen-plus-2025-07-14:thinking": {InputPrice: 0.40, OutputPrice: 4.00},
+	"qwen-plus-2025-04-28":          {InputPrice: 0.40, OutputPrice: 1.20},
+	"qwen-plus-2025-04-28:thinking": {InputPrice: 0.40, OutputPrice: 4.00},
+	"qwen-plus-2025-01-25":          {InputPrice: 0.40, OutputPrice: 1.20},
+	"qwen3.5-flash":                 {InputPrice: 0.10, OutputPrice: 0.40},
+	"qwen3.5-flash-2026-02-23":      {InputPrice: 0.10, OutputPrice: 0.40},
+	"qwen-flash":                    {TokenPricingTiers: qwenFlashTiers},
+	"qwen-flash-2025-07-28":         {TokenPricingTiers: qwenFlashTiers},
+	"qwen-turbo":                    {InputPrice: 0.05, OutputPrice: 0.20},
+	"qwen-turbo-latest":             {InputPrice: 0.05, OutputPrice: 0.20},
+	"qwen-turbo-2025-04-28":         {InputPrice: 0.05, OutputPrice: 0.20},
+	"qwen-turbo-2024-11-01":         {InputPrice: 0.05, OutputPrice: 0.20},
+	"qwen-vl-max":                   {InputPrice: 0.80, OutputPrice: 3.20},
+	"qwen-vl-max-latest":            {InputPrice: 0.80, OutputPrice: 3.20},
+	"qwen-vl-max-2025-08-13":        {InputPrice: 0.80, OutputPrice: 3.20},
+	"qwen-vl-max-2025-04-08":        {InputPrice: 0.80, OutputPrice: 3.20},
+	"qwen-vl-plus":                  {InputPrice: 0.21, OutputPrice: 0.63},
+	"qwen-vl-plus-latest":           {InputPrice: 0.21, OutputPrice: 0.63},
+	"qwen-vl-plus-2025-08-15":       {InputPrice: 0.21, OutputPrice: 0.63},
+	"qwen-vl-plus-2025-05-07":       {InputPrice: 0.21, OutputPrice: 0.63},
+	"qwen-vl-plus-2025-01-25":       {InputPrice: 0.21, OutputPrice: 0.63},
+	"qwen3-vl-plus":                 {TokenPricingTiers: qwen3VLPlusTiers},
+	"qwen3-vl-plus-2025-12-19":      {TokenPricingTiers: qwen3VLPlusTiers},
+	"qwen3-vl-plus-2025-09-23":      {TokenPricingTiers: qwen3VLPlusTiers},
+	"qwen3-vl-flash":                {TokenPricingTiers: qwen3VLFlashTiers},
+	"qwen3-vl-flash-2026-01-22":     {TokenPricingTiers: qwen3VLFlashTiers},
+	"qwen3-vl-flash-2025-10-15":     {TokenPricingTiers: qwen3VLFlashTiers},
+	"qwen3-coder-plus":              {TokenPricingTiers: qwen3CoderPlusTiers},
+	"qwen3-coder-plus-2025-09-23":   {TokenPricingTiers: qwen3CoderPlusTiers},
+	"qwen3-coder-plus-2025-07-22":   {TokenPricingTiers: qwen3CoderPlusTiers},
+	"qwen3-coder-flash":             {TokenPricingTiers: qwen3CoderFlashTiers},
+	"qwen3-coder-flash-2025-07-28":  {TokenPricingTiers: qwen3CoderFlashTiers},
+	"qwen3-coder-next":              {TokenPricingTiers: qwen3CoderNextTiers},
+	"qwen3-coder-480b-a35b-instruct": {
+		TokenPricingTiers: qwen3Coder480BTiers,
+	},
+	"qwen3-coder-30b-a3b-instruct": {
+		TokenPricingTiers: qwen3Coder30BTiers,
+	},
+	"qwen3-next-80b-a3b-thinking":   {InputPrice: 0.15, OutputPrice: 1.20},
+	"qwen3-next-80b-a3b-instruct":   {InputPrice: 0.15, OutputPrice: 1.20},
+	"qwen3-235b-a22b-thinking-2507": {InputPrice: 0.23, OutputPrice: 2.30},
+	"qwen3-235b-a22b-instruct-2507": {InputPrice: 0.23, OutputPrice: 0.92},
+	"qwen3-235b-a22b-2507":          {InputPrice: 0.23, OutputPrice: 0.92},
+	"qwen3-30b-a3b-thinking-2507":   {InputPrice: 0.20, OutputPrice: 2.40},
+	"qwen3-30b-a3b-instruct-2507":   {InputPrice: 0.20, OutputPrice: 0.80},
+	"qwen3-235b-a22b":               {InputPrice: 0.70, OutputPrice: 2.80},
+	"qwen3-235b-a22b:thinking":      {InputPrice: 0.70, OutputPrice: 8.40},
+	"qwen3-32b":                     {InputPrice: 0.16, OutputPrice: 0.64},
+	"qwen3-30b-a3b":                 {InputPrice: 0.20, OutputPrice: 0.80},
+	"qwen3-30b-a3b:thinking":        {InputPrice: 0.20, OutputPrice: 2.40},
+	"qwen3-14b":                     {InputPrice: 0.35, OutputPrice: 1.40},
+	"qwen3-8b":                      {InputPrice: 0.18, OutputPrice: 0.70},
+	"qwen3-4b":                      {InputPrice: 0.11, OutputPrice: 0.42},
+	"qwen3-1.7b":                    {InputPrice: 0.11, OutputPrice: 0.42},
+	"qwen3-0.6b":                    {InputPrice: 0.11, OutputPrice: 0.42},
+	"qwen3.5-397b-a17b":             {InputPrice: 0.60, OutputPrice: 3.60},
+	"qwen3.5-122b-a10b":             {InputPrice: 0.40, OutputPrice: 3.20},
+	"qwen3.5-27b":                   {InputPrice: 0.30, OutputPrice: 2.40},
+	"qwen3.5-35b-a3b":               {InputPrice: 0.25, OutputPrice: 2.00},
+	"qwen2.5-14b-instruct-1m":       {InputPrice: 0.805, OutputPrice: 3.22},
+	"qwen2.5-7b-instruct-1m":        {InputPrice: 0.368, OutputPrice: 1.47},
+	"qwen2.5-72b-instruct":          {InputPrice: 1.40, OutputPrice: 5.60},
+	"qwen2.5-32b-instruct":          {InputPrice: 0.70, OutputPrice: 2.80},
+	"qwen2.5-14b-instruct":          {InputPrice: 0.35, OutputPrice: 1.40},
+	"qwen2.5-7b-instruct":           {InputPrice: 0.175, OutputPrice: 0.70},
+	"qwen3-vl-235b-a22b-thinking":   {InputPrice: 0.40, OutputPrice: 4.00},
+	"qwen3-vl-235b-a22b-instruct":   {InputPrice: 0.40, OutputPrice: 1.60},
+	"qwen3-vl-32b-thinking":         {InputPrice: 0.16, OutputPrice: 0.64},
+	"qwen3-vl-32b-instruct":         {InputPrice: 0.16, OutputPrice: 0.64},
+	"qwen3-vl-30b-a3b-thinking":     {InputPrice: 0.20, OutputPrice: 2.40},
+	"qwen3-vl-30b-a3b-instruct":     {InputPrice: 0.20, OutputPrice: 0.80},
+	"qwen3-vl-8b-thinking":          {InputPrice: 0.18, OutputPrice: 2.10},
+	"qwen3-vl-8b-instruct":          {InputPrice: 0.18, OutputPrice: 0.70},
+	"qwen2.5-vl-72b-instruct":       {InputPrice: 2.80, OutputPrice: 8.40},
+	"qwen2.5-vl-32b-instruct":       {InputPrice: 1.40, OutputPrice: 4.20},
+	"qwen2.5-vl-7b-instruct":        {InputPrice: 0.35, OutputPrice: 1.05},
+	"qwen2.5-vl-3b-instruct":        {InputPrice: 0.21, OutputPrice: 0.63},
+
+	// 第三方/历史变体：官方 International 表无对应条目，保留现有兜底。
+	"qwen-2-72b-instruct":              {InputPrice: 0.90, OutputPrice: 0.90},
+	"qwen-2.5-72b-instruct:free":       {InputPrice: 0.00, OutputPrice: 0.00},
+	"qwen-2.5-coder-32b-instruct":      {InputPrice: 0.03, OutputPrice: 0.11},
+	"qwen-2.5-coder-32b-instruct:free": {InputPrice: 0.00, OutputPrice: 0.00},
+	"qwen-2.5-vl-7b-instruct:free":     {InputPrice: 0.00, OutputPrice: 0.00},
 	"qwen2.5-coder-7b-instruct":        {InputPrice: 0.03, OutputPrice: 0.09},
-	"qwen2.5-vl-32b-instruct":          {InputPrice: 0.05, OutputPrice: 0.22},
 	"qwen2.5-vl-32b-instruct:free":     {InputPrice: 0.00, OutputPrice: 0.00},
-	"qwen2.5-vl-72b-instruct":          {InputPrice: 0.15, OutputPrice: 0.60},
 	"qwen2.5-vl-72b-instruct:free":     {InputPrice: 0.00, OutputPrice: 0.00},
-	"qwen3-14b":                        {InputPrice: 0.05, OutputPrice: 0.22},
 	"qwen3-14b:free":                   {InputPrice: 0.00, OutputPrice: 0.00},
-	"qwen3-235b-a22b":                  {InputPrice: 0.30, OutputPrice: 1.20},
-	"qwen3-235b-a22b-2507":             {InputPrice: 0.071, OutputPrice: 0.10},
 	"qwen3-235b-a22b-2507:free":        {InputPrice: 0.00, OutputPrice: 0.00},
-	"qwen3-235b-a22b-thinking-2507":    {InputPrice: 0.00, OutputPrice: 0.00},
 	"qwen3-235b-a22b:free":             {InputPrice: 0.00, OutputPrice: 0.00},
-	"qwen3-30b-a3b":                    {InputPrice: 0.06, OutputPrice: 0.22},
-	"qwen3-30b-a3b-instruct-2507":      {InputPrice: 0.08, OutputPrice: 0.30},
-	"qwen3-30b-a3b-thinking-2507":      {InputPrice: 0.051, OutputPrice: 0.30},
 	"qwen3-30b-a3b:free":               {InputPrice: 0.00, OutputPrice: 0.00},
-	"qwen3-32b":                        {InputPrice: 0.08, OutputPrice: 0.24},
-	"qwen3-4b":                         {InputPrice: 0.0715, OutputPrice: 0.273},
 	"qwen3-4b:free":                    {InputPrice: 0.00, OutputPrice: 0.00},
-	"qwen3-8b":                         {InputPrice: 0.05, OutputPrice: 0.40},
 	"qwen3-8b:free":                    {InputPrice: 0.00, OutputPrice: 0.00},
 	"qwen3-coder":                      {InputPrice: 0.22, OutputPrice: 1.00},
-	"qwen3-coder-30b-a3b-instruct":     {InputPrice: 0.07, OutputPrice: 0.27},
-	"qwen3-coder-flash":                {InputPrice: 0.30, OutputPrice: 1.50},
-	"qwen3-coder-next":                 {InputPrice: 0.07, OutputPrice: 0.30},
-	"qwen3-coder-plus":                 {InputPrice: 1.00, OutputPrice: 5.00},
 	"qwen3-coder:exacto":               {InputPrice: 0.22, OutputPrice: 1.80},
 	"qwen3-coder:free":                 {InputPrice: 0.00, OutputPrice: 0.00},
-	"qwen3-max":                        {InputPrice: 1.20, OutputPrice: 6.00},
-	"qwen3-max-thinking":               {InputPrice: 1.20, OutputPrice: 6.00},
-	"qwen3-next-80b-a3b-instruct":      {InputPrice: 0.09, OutputPrice: 0.78},
 	"qwen3-next-80b-a3b-instruct:free": {InputPrice: 0.00, OutputPrice: 0.00},
-	"qwen3-next-80b-a3b-thinking":      {InputPrice: 0.15, OutputPrice: 0.30},
-	"qwen3-vl-235b-a22b-instruct":      {InputPrice: 0.20, OutputPrice: 0.88},
-	"qwen3-vl-235b-a22b-thinking":      {InputPrice: 0.00, OutputPrice: 0.00},
-	"qwen3-vl-30b-a3b-instruct":        {InputPrice: 0.13, OutputPrice: 0.52},
-	"qwen3-vl-30b-a3b-thinking":        {InputPrice: 0.00, OutputPrice: 0.00},
-	"qwen3-vl-32b-instruct":            {InputPrice: 0.104, OutputPrice: 0.416},
-	"qwen3-vl-8b-instruct":             {InputPrice: 0.08, OutputPrice: 0.455},
-	"qwen3-vl-8b-thinking":             {InputPrice: 0.117, OutputPrice: 1.365},
-	"qwq-32b":                          {InputPrice: 0.15, OutputPrice: 0.25},
-	"qwq-32b-preview":                  {InputPrice: 0.20, OutputPrice: 0.20},
-	"qwq-32b:free":                     {InputPrice: 0.00, OutputPrice: 0.00},
+	"qwen3.6-plus": {
+		InputPrice: 0.50, OutputPrice: 3.00,
+		InputPriceHigh: 2.00, OutputPriceHigh: 6.00, // legacy >256k input tokens
+	},
+	"qwen3.6-plus-2026-04-02": {
+		InputPrice: 0.50, OutputPrice: 3.00,
+		InputPriceHigh: 2.00, OutputPriceHigh: 6.00, // legacy >256k input tokens
+	},
+	"qwen3.6-plus:free":         {InputPrice: 0.00, OutputPrice: 0.00},
+	"qwen3.6-plus-preview:free": {InputPrice: 0.00, OutputPrice: 0.00},
+	"qwen3-max-thinking":        {TokenPricingTiers: qwen3MaxTiers},
+	"qwq-32b":                   {InputPrice: 0.15, OutputPrice: 0.25},
+	"qwq-32b-preview":           {InputPrice: 0.20, OutputPrice: 0.20},
+	"qwq-32b:free":              {InputPrice: 0.00, OutputPrice: 0.00},
 
 	// ========== DeepSeek 模型 ==========
 	"deepseek-r1-distill-llama-70b": {InputPrice: 0.03, OutputPrice: 0.11},
@@ -488,7 +655,10 @@ var modelAliases = map[string]string{
 	"qwen-3-4b":                      "qwen3-4b",
 	"qwen-3-8b":                      "qwen3-8b",
 	"qwen-3-14b":                     "qwen3-14b",
-	"qwen-3-235b-a22b-instruct-2507": "qwen3-235b-a22b-2507",
+	"qwen-3-235b-a22b-instruct-2507": "qwen3-235b-a22b-instruct-2507",
+	"qwen-2.5-72b-instruct":          "qwen2.5-72b-instruct",
+	"qwen-2.5-7b-instruct":           "qwen2.5-7b-instruct",
+	"qwen-2.5-vl-7b-instruct":        "qwen2.5-vl-7b-instruct",
 
 	// GLM 别名
 	"zai-glm-4.6": "glm-4.6",
@@ -567,6 +737,18 @@ func getTierThresholdForModel(model string) int {
 	}
 }
 
+func selectTokenPricingTier(tiers []TokenPricingTier, inputTokens int) TokenPricingTier {
+	if len(tiers) == 0 {
+		return TokenPricingTier{}
+	}
+	for _, tier := range tiers {
+		if tier.MaxInputTokens == 0 || inputTokens <= tier.MaxInputTokens {
+			return tier
+		}
+	}
+	return tiers[len(tiers)-1]
+}
+
 // CalculateCostDetailed 计算单次请求的成本（美元）- 详细版本，支持5m和1h缓存分别计费
 // 参数：
 //   - model: 模型名称（如"claude-sonnet-4-5-20250929"或"gpt-5.1-codex"）
@@ -586,7 +768,7 @@ func getTierThresholdForModel(model string) int {
 func CalculateCostDetailed(model string, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int) float64 {
 	// 防御性检查:拒绝负数token
 	if inputTokens < 0 || outputTokens < 0 || cacheReadTokens < 0 || cache5mTokens < 0 || cache1hTokens < 0 {
-		log.Printf("ERROR: negative tokens detected (model=%s): input=%d output=%d cache_read=%d cache_5m=%d cache_1h=%d",
+		log.Printf("[ERROR] 检测到负数 token（model=%s）: input=%d output=%d cache_read=%d cache_5m=%d cache_1h=%d",
 			model, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens)
 		return 0.0
 	}
@@ -604,19 +786,24 @@ func CalculateCostDetailed(model string, inputTokens, outputTokens, cacheReadTok
 	// 注意:价格是per 1M tokens,需要除以1,000,000
 	cost := 0.0
 
-	// 分段定价逻辑（当前用于 Gemini / Qwen Plus / MiMo 系列）
+	// 分段定价逻辑（当前用于 Gemini / Qwen / MiMo 系列）
 	// 默认仅按非缓存输入判断；MiMo 这类提供高档缓存命中价的模型把缓存读取也计入输入分档。
 	tierThreshold := getTierThresholdForModel(model)
 	tierInputTokens := inputTokens
 	if pricing.CacheReadPriceHigh > 0 {
 		tierInputTokens += cacheReadTokens
 	}
-	useHighPricing := pricing.InputPriceHigh > 0 && tierInputTokens > tierThreshold
 
 	// 选择适用的价格
 	inputPricePerM := pricing.InputPrice
 	outputPricePerM := pricing.OutputPrice
-	if useHighPricing {
+	useHighPricing := false
+	if len(pricing.TokenPricingTiers) > 0 {
+		tier := selectTokenPricingTier(pricing.TokenPricingTiers, tierInputTokens)
+		inputPricePerM = tier.InputPrice
+		outputPricePerM = tier.OutputPrice
+	} else if pricing.InputPriceHigh > 0 && tierInputTokens > tierThreshold {
+		useHighPricing = true
 		inputPricePerM = pricing.InputPriceHigh
 		outputPricePerM = pricing.OutputPriceHigh // 分段定价同时影响输入和输出
 	}
@@ -668,6 +855,67 @@ func CalculateCostDetailed(model string, inputTokens, outputTokens, cacheReadTok
 	}
 
 	return cost
+}
+
+// CalculateImageGenerationToolCost 计算 Responses image_generation 工具费用。
+func CalculateImageGenerationToolCost(model string, usage ImageGenerationToolUsage) float64 {
+	if usage.InputTokens < 0 || usage.OutputTokens < 0 ||
+		usage.TextInputTokens < 0 || usage.TextCachedTokens < 0 ||
+		usage.ImageInputTokens < 0 || usage.ImageCachedTokens < 0 || usage.ImageOutputTokens < 0 {
+		return 0
+	}
+
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
+		model = "gpt-image-2"
+	}
+	pricing, ok := imageGenerationToolPricingByModel[model]
+	if !ok {
+		return 0
+	}
+
+	textInput := usage.TextInputTokens
+	textCached := usage.TextCachedTokens
+	imageInput := usage.ImageInputTokens
+	imageCached := usage.ImageCachedTokens
+	imageOutput := usage.ImageOutputTokens
+
+	knownInput := textInput + textCached + imageInput + imageCached
+	if usage.InputTokens > knownInput {
+		imageInput += usage.InputTokens - knownInput
+	}
+	if imageOutput == 0 && usage.OutputTokens > 0 {
+		imageOutput = usage.OutputTokens
+	} else if usage.OutputTokens > imageOutput {
+		imageOutput += usage.OutputTokens - imageOutput
+	}
+
+	return (float64(textInput)*pricing.TextInputPrice +
+		float64(textCached)*pricing.TextCachedPrice +
+		float64(imageInput)*pricing.ImageInputPrice +
+		float64(imageCached)*pricing.ImageCachedPrice +
+		float64(imageOutput)*pricing.ImageOutputPrice) / 1_000_000
+}
+
+// CalculateImageGenerationToolFallbackCost returns the fixed image output cost
+// when OpenAI Responses image_generation succeeds but omits tool_usage.
+func CalculateImageGenerationToolFallbackCost(model, quality, size string) float64 {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
+		model = "gpt-image-2"
+	}
+	quality = strings.ToLower(strings.TrimSpace(quality))
+	size = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(size), " ", ""))
+
+	byQuality, ok := imageGenerationFallbackCostByModel[model]
+	if !ok {
+		return 0
+	}
+	bySize, ok := byQuality[quality]
+	if !ok {
+		return 0
+	}
+	return bySize[size]
 }
 
 // isOpenAIModel 判断是否为OpenAI模型
@@ -892,22 +1140,38 @@ var fuzzyPrefixes = []string{
 	"kimi-linear-48b-a3b-instruct",
 	"kimi-vl-a3b-thinking:free", "kimi-vl-a3b-thinking",
 	"kimi-dev-72b:free", "kimi-dev-72b",
-	"qwen3.6-plus-2026-04-02", "qwen3.6-plus", "qwen3.6-plus-preview:free", "qwen3.6-plus:free",
+	"qwen3.6-plus-2026-04-02", "qwen3.6-plus-preview:free", "qwen3.6-plus:free", "qwen3.6-plus",
 	"qwen3.5-plus-2026-02-15", "qwen3.5-plus",
-	"qwen-plus-2025-12-01", "qwen-plus-2025-09-11", "qwen-plus-2025-07-28:thinking", "qwen-plus-2025-07-28",
-	"qwen-plus-2025-07-14", "qwen-plus-2025-04-28", "qwen-plus-2025-01-25", "qwen-plus-latest", "qwen-plus",
-	"qwen-turbo", "qwen-max", "qwen-vl-plus", "qwen-vl-max",
-	"qwen3-next-80b-a3b-instruct", "qwen3-next-80b-a3b-thinking",
-	"qwen3-max-thinking", "qwen3-max",
-	"qwen3-30b-a3b-thinking-2507", "qwen3-30b-a3b-instruct-2507", "qwen3-30b-a3b",
+	"qwen3.5-flash-2026-02-23", "qwen3.5-flash",
+	"qwen-plus-2025-12-01:thinking", "qwen-plus-2025-12-01",
+	"qwen-plus-2025-09-11:thinking", "qwen-plus-2025-09-11",
+	"qwen-plus-2025-07-28:thinking", "qwen-plus-2025-07-28",
+	"qwen-plus-2025-07-14:thinking", "qwen-plus-2025-07-14",
+	"qwen-plus-2025-04-28:thinking", "qwen-plus-2025-04-28",
+	"qwen-plus-2025-01-25", "qwen-plus-latest:thinking", "qwen-plus-latest", "qwen-plus:thinking", "qwen-plus",
+	"qwen-flash-2025-07-28", "qwen-flash",
+	"qwen-turbo-2025-04-28", "qwen-turbo-2024-11-01", "qwen-turbo-latest", "qwen-turbo",
+	"qwen-max-2025-01-25", "qwen-max-latest", "qwen-max",
+	"qwen-vl-plus-2025-08-15", "qwen-vl-plus-2025-05-07", "qwen-vl-plus-2025-01-25", "qwen-vl-plus-latest", "qwen-vl-plus",
+	"qwen-vl-max-2025-08-13", "qwen-vl-max-2025-04-08", "qwen-vl-max-latest", "qwen-vl-max",
+	"qwen3-next-80b-a3b-instruct:free", "qwen3-next-80b-a3b-instruct", "qwen3-next-80b-a3b-thinking",
+	"qwen3-max-2026-01-23", "qwen3-max-2025-09-23", "qwen3-max-preview", "qwen3-max-thinking", "qwen3-max",
+	"qwen3-30b-a3b-thinking-2507", "qwen3-30b-a3b-instruct-2507", "qwen3-30b-a3b:thinking", "qwen3-30b-a3b",
+	"qwen3-vl-plus-2025-12-19", "qwen3-vl-plus-2025-09-23", "qwen3-vl-plus",
+	"qwen3-vl-flash-2026-01-22", "qwen3-vl-flash-2025-10-15", "qwen3-vl-flash",
 	"qwen3-vl-235b-a22b-instruct", "qwen3-vl-235b-a22b-thinking",
 	"qwen3-vl-30b-a3b-thinking", "qwen3-vl-30b-a3b-instruct",
-	"qwen3-vl-32b-instruct", "qwen3-vl-8b-thinking", "qwen3-vl-8b-instruct", "qwen3-vl",
-	"qwen3-235b-a22b-thinking-2507", "qwen3-235b-a22b-2507", "qwen3-235b-a22b",
-	"qwen3-14b", "qwen3-32b", "qwen3-8b", "qwen3-4b",
-	"qwen3-coder-flash", "qwen3-coder-next", "qwen3-coder-plus", "qwen3-coder:exacto", "qwen3-coder",
+	"qwen3-vl-32b-thinking", "qwen3-vl-32b-instruct", "qwen3-vl-8b-thinking", "qwen3-vl-8b-instruct", "qwen3-vl",
+	"qwen3-235b-a22b-thinking-2507", "qwen3-235b-a22b-instruct-2507", "qwen3-235b-a22b-2507", "qwen3-235b-a22b:thinking", "qwen3-235b-a22b",
+	"qwen3-14b", "qwen3-32b", "qwen3-8b", "qwen3-4b", "qwen3-1.7b", "qwen3-0.6b",
+	"qwen3.5-397b-a17b", "qwen3.5-122b-a10b", "qwen3.5-35b-a3b", "qwen3.5-27b",
+	"qwen3-coder-480b-a35b-instruct", "qwen3-coder-30b-a3b-instruct",
+	"qwen3-coder-flash-2025-07-28", "qwen3-coder-flash", "qwen3-coder-next",
+	"qwen3-coder-plus-2025-09-23", "qwen3-coder-plus-2025-07-22", "qwen3-coder-plus",
+	"qwen3-coder:exacto", "qwen3-coder",
 	"qwen2.5-coder-7b-instruct", "qwen-2.5-coder-32b-instruct",
-	"qwen2.5-vl-72b-instruct", "qwen2.5-vl-32b-instruct", "qwen-2.5-vl-7b-instruct",
+	"qwen2.5-vl-72b-instruct", "qwen2.5-vl-32b-instruct", "qwen2.5-vl-7b-instruct", "qwen2.5-vl-3b-instruct", "qwen-2.5-vl-7b-instruct",
+	"qwen2.5-14b-instruct-1m", "qwen2.5-7b-instruct-1m", "qwen2.5-72b-instruct", "qwen2.5-32b-instruct", "qwen2.5-14b-instruct", "qwen2.5-7b-instruct",
 	"qwen-2.5-72b-instruct", "qwen-2.5-7b-instruct", "qwen-2-72b-instruct",
 	"qwq-32b-preview", "qwq-32b",
 	"deepseek-r1-distill-llama-70b", "deepseek-r1-distill-qwen-32b", "deepseek-r1-distill-qwen-14b",

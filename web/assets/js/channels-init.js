@@ -306,6 +306,17 @@ window.initPageBootstrap({
       updateModelOptions();
       updateChannelsPagination();
     });
+
+    // 自动刷新（system_settings.auto_refresh_interval_seconds，0=禁用）
+    // 通过 .modal.show 检测跳过编辑/批量/排序等对话框打开期间的刷新，避免丢失未保存内容
+    if (typeof window.createAutoRefresh === 'function') {
+      window.createAutoRefresh({
+        load: () => Promise.all([
+          loadChannels(filters.channelType || 'all'),
+          loadChannelStats()
+        ])
+      }).init();
+    }
   }
 });
 

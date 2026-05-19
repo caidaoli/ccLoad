@@ -71,7 +71,7 @@ func ensureMySQLColumns(ctx context.Context, db *sql.DB, table string, cols []my
 		}
 	}
 	if added {
-		log.Printf("[MIGRATE] Added columns to %s", table)
+		log.Printf("[MIGRATE] 已向 %s 添加列", table)
 	}
 	return nil
 }
@@ -190,14 +190,14 @@ func ensureLogsColumnsSQLite(ctx context.Context, db *sql.DB) error {
 	// 第三步：回填 minute_bucket（基于标记机制，支持崩溃恢复）
 	const backfillMarker = "minute_bucket_backfill_done"
 	if !hasMigration(ctx, db, backfillMarker) {
-		log.Println("[migrate] backfilling minute_bucket for SQLite...")
+		log.Println("[migrate] 正在为 SQLite 回填 minute_bucket...")
 		if err := backfillLogsMinuteBucketSQLite(ctx, db, 5_000); err != nil {
 			return fmt.Errorf("backfill minute_bucket: %w", err)
 		}
 		if err := recordMigration(ctx, db, backfillMarker, DialectSQLite); err != nil {
 			return fmt.Errorf("record migration marker: %w", err)
 		}
-		log.Println("[migrate] minute_bucket backfill completed")
+		log.Println("[migrate] minute_bucket 回填完成")
 	}
 
 	return nil
@@ -280,14 +280,14 @@ func ensureLogsMinuteBucketMySQL(ctx context.Context, db *sql.DB) error {
 	// 第二步：回填历史数据（基于标记机制，支持崩溃恢复）
 	const backfillMarker = "minute_bucket_backfill_done"
 	if !hasMigration(ctx, db, backfillMarker) {
-		log.Println("[migrate] backfilling minute_bucket for MySQL...")
+		log.Println("[migrate] 正在为 MySQL 回填 minute_bucket...")
 		if err := backfillLogsMinuteBucketMySQL(ctx, db, 10_000); err != nil {
 			return err
 		}
 		if err := recordMigration(ctx, db, backfillMarker, DialectMySQL); err != nil {
 			return fmt.Errorf("record migration marker: %w", err)
 		}
-		log.Println("[migrate] minute_bucket backfill completed")
+		log.Println("[migrate] minute_bucket 回填完成")
 	}
 	return nil
 }
@@ -386,6 +386,13 @@ func ensureChannelsDailyCostLimit(ctx context.Context, db *sql.DB, dialect Diale
 		"REAL NOT NULL DEFAULT 0")
 }
 
+// ensureChannelsRPMLimit 确保channels表有rpm_limit字段（0=无限制）。
+func ensureChannelsRPMLimit(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	return ensureColumn(ctx, db, dialect, "channels", "rpm_limit",
+		"INT NOT NULL DEFAULT 0",
+		"INTEGER NOT NULL DEFAULT 0")
+}
+
 // ensureChannelsCostMultiplier 确保channels表有cost_multiplier字段（2026-04新增，渠道成本倍率）
 func ensureChannelsCostMultiplier(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	return ensureColumn(ctx, db, dialect, "channels", "cost_multiplier",
@@ -435,7 +442,7 @@ func migrateChannelsURLToText(ctx context.Context, db *sql.DB, dialect Dialect) 
 		"ALTER TABLE channels MODIFY COLUMN url TEXT NOT NULL"); err != nil {
 		return fmt.Errorf("modify url column to TEXT: %w", err)
 	}
-	log.Printf("[MIGRATE] Modified channels.url: VARCHAR → TEXT")
+	log.Printf("[MIGRATE] 已修改 channels.url: VARCHAR → TEXT")
 	return nil
 }
 

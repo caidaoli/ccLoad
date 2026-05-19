@@ -113,6 +113,23 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
 	}
 }
 
+func TestSSEUsageParser_StreamOutputIgnoresHeartbeat(t *testing.T) {
+	parser := newSSEUsageParser("anthropic")
+	if err := parser.Feed([]byte("event: ping\ndata: {\"type\":\"ping\"}\n\n")); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	if parser.HasStreamOutput() {
+		t.Fatalf("ping heartbeat must not count as stream output")
+	}
+
+	if err := parser.Feed([]byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n")); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	if !parser.HasStreamOutput() {
+		t.Fatalf("content delta must count as stream output")
+	}
+}
+
 // ============================================================================
 // 边界测试：分块读取（真实SSE流场景）
 // ============================================================================
@@ -352,6 +369,108 @@ func TestSSEUsageParser_ExtractsUsageFromOversizedCompletedEvent(t *testing.T) {
 	}
 }
 
+func TestJSONUsageParser_ExtractsImageGenerationToolCost(t *testing.T) {
+	body := `{"type":"response.completed","response":{"tools":[{"type":"image_generation","model":"gpt-image-2"}],"tool_usage":{"image_gen":{"input_tokens":30,"input_tokens_details":{"text_tokens":10,"image_tokens":20},"output_tokens":30,"output_tokens_details":{"image_tokens":30},"total_tokens":60}},"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":0},"output_tokens":20,"total_tokens":120}}}`
+
+	parser := newJSONUsageParser("codex")
+	if err := parser.Feed([]byte(body)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	parser.GetUsage()
+
+	expected := (10*5.00 + 20*8.00 + 30*30.00) / 1_000_000
+	if got := parser.GetToolCostUSD(); !floatEquals(got, expected, 0.000001) {
+		t.Fatalf("image generation tool cost = %.6f, 期望 %.6f", got, expected)
+	}
+}
+
+func TestSSEUsageParser_ExtractsImageGenerationToolCost(t *testing.T) {
+	sseData := `event: response.completed
+data: {"type":"response.completed","response":{"tools":[{"type":"image_generation","model":"gpt-image-2"}],"tool_usage":{"image_gen":{"input_tokens":54,"output_tokens":1372,"total_tokens":1426}},"usage":{"input_tokens":2269,"input_tokens_details":{"cached_tokens":0},"output_tokens":67,"total_tokens":2336}}}
+
+`
+
+	parser := newSSEUsageParser("codex")
+	if err := parser.Feed([]byte(sseData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	parser.GetUsage()
+
+	expected := (54*8.00 + 1372*30.00) / 1_000_000
+	if got := parser.GetToolCostUSD(); !floatEquals(got, expected, 0.000001) {
+		t.Fatalf("image generation tool cost = %.6f, 期望 %.6f", got, expected)
+	}
+}
+
+func TestSSEUsageParser_ChargesCompletedImageGenerationWithoutUsage(t *testing.T) {
+	parser := newSSEUsageParser("codex")
+	largeImage := strings.Repeat("a", 3*maxSSEEventSize+1)
+	chunks := []string{
+		"event: response.created\n",
+		`data: {"type":"response.created","response":{"tools":[{"type":"image_generation","model":"gpt-image-2"}],"tool_usage":{"image_gen":{"input_tokens":0,"output_tokens":0,"total_tokens":0}},"usage":null}}` + "\n\n",
+		"event: response.output_item.done\n",
+		`data: {"type":"response.output_item.done","item":{"id":"ig_1","type":"image_generation_call","status":"generating","quality":"high","size":"1024x1536","result":"`,
+		largeImage,
+		`"},"output_index":0}` + "\n\n",
+		"event: response.completed\n",
+		`data: {"type":"response.completed","response":{"output":[{"id":"ig_1","type":"image_generation_call","status":"generating","quality":"high","size":"1024x1536","result":"`,
+		largeImage,
+		`"}],"usage":null}}` + "\n\n",
+	}
+
+	for i, chunk := range chunks {
+		if err := parser.Feed([]byte(chunk)); err != nil {
+			t.Fatalf("Feed第%d块失败: %v", i+1, err)
+		}
+	}
+
+	const expected = 0.165
+	if got := parser.GetToolCostUSD(); !floatEquals(got, expected, 0.000001) {
+		t.Fatalf("image generation fallback cost = %.6f, 期望 %.6f", got, expected)
+	}
+}
+
+func TestSSEUsageParser_PreservesImageFallbackWhenLaterUsageArrives(t *testing.T) {
+	parser := newSSEUsageParser("codex")
+	chunks := []string{
+		"event: response.created\n",
+		`data: {"type":"response.created","response":{"tools":[{"type":"image_generation","model":"gpt-image-2"}],"usage":null}}` + "\n\n",
+		"event: response.output_item.done\n",
+		`data: {"type":"response.output_item.done","item":{"id":"ig_1","type":"image_generation_call","quality":"high","size":"1024x1536","result":"image-data"},"output_index":0}` + "\n\n",
+		"event: response.completed\n",
+		`data: {"type":"response.completed","response":{"usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120}}}` + "\n\n",
+	}
+
+	for i, chunk := range chunks {
+		if err := parser.Feed([]byte(chunk)); err != nil {
+			t.Fatalf("Feed第%d块失败: %v", i+1, err)
+		}
+	}
+
+	const expected = 0.165
+	if got := parser.GetToolCostUSD(); !floatEquals(got, expected, 0.000001) {
+		t.Fatalf("later usage覆盖了图片兜底成本: got=%.6f, 期望 %.6f", got, expected)
+	}
+}
+
+func TestSSEUsageParser_PrefersImageToolUsageOverFallback(t *testing.T) {
+	sseData := `event: response.completed
+data: {"type":"response.completed","response":{"tools":[{"type":"image_generation","model":"gpt-image-2"}],"tool_usage":{"image_gen":{"input_tokens":54,"output_tokens":1372,"total_tokens":1426}},"output":[{"id":"ig_1","type":"image_generation_call","quality":"high","size":"1024x1536","result":"image-data"}],"usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120}}}
+
+`
+
+	parser := newSSEUsageParser("codex")
+	if err := parser.Feed([]byte(sseData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	parser.GetUsage()
+
+	expected := (54*8.00 + 1372*30.00) / 1_000_000
+	if got := parser.GetToolCostUSD(); !floatEquals(got, expected, 0.000001) {
+		t.Fatalf("tool_usage成本未优先: got=%.6f, 期望 %.6f", got, expected)
+	}
+}
+
 func TestSSEUsageParser_StreamComplete(t *testing.T) {
 	// 测试各种流结束标志是否正确设置 streamComplete
 	// [FIX] 2026-01: 添加 response.completed 检测，修复客户端取消时费用丢失问题
@@ -507,6 +626,20 @@ func TestJSONUsageParser_OpenAIChatCompletionsWithCacheFormat(t *testing.T) {
 	jsonData := `{"id":"chatcmpl-abc","object":"chat.completion","created":1677652288,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"测试响应"},"finish_reason":"stop"}],"usage":{"prompt_tokens":500,"completion_tokens":200,"total_tokens":700,"prompt_tokens_details":{"cached_tokens":350,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":0,"audio_tokens":0}}}`
 
 	feedAndAssertUsage(t, newJSONUsageParser("openai"), jsonData, 150, 200, 350, 0)
+}
+
+func TestJSONUsageParser_OpenAIChatMixedZeroAliases(t *testing.T) {
+	jsonData := `{"id":"chatcmpl-windhub","object":"chat.completion","model":"mimo-v2.5","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1340,"completion_tokens":357,"total_tokens":1697,"prompt_tokens_details":{"cached_tokens":24576},"completion_tokens_details":{"reasoning_tokens":0},"input_tokens":0,"output_tokens":0,"input_tokens_details":null}}`
+
+	feedAndAssertUsage(t, newJSONUsageParser("openai"), jsonData, 1340, 357, 24576, 0)
+}
+
+func TestSSEUsageParser_OpenAIChatMixedZeroAliases(t *testing.T) {
+	sseData := `data: {"id":"chatcmpl-windhub","object":"chat.completion","model":"mimo-v2.5","usage":{"prompt_tokens":75,"completion_tokens":379,"total_tokens":454,"prompt_tokens_details":{"cached_tokens":192},"input_tokens":0,"output_tokens":0}}
+
+`
+
+	feedAndAssertUsage(t, newSSEUsageParser("openai"), sseData, 75, 379, 192, 0)
 }
 
 func TestSSEUsageParser_GeminiThoughtsTokenCount(t *testing.T) {

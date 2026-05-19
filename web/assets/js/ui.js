@@ -755,6 +755,25 @@
     return tokens;
   }
 
+  function calculateTokenSpeed(outputTokens, durationSeconds, firstByteSeconds) {
+    const output = Number(outputTokens);
+    const duration = Number(durationSeconds);
+    if (!Number.isFinite(output) || output <= 0 || !Number.isFinite(duration) || duration <= 0) {
+      return null;
+    }
+
+    let tokenDuration = duration;
+    const firstByte = Number(firstByteSeconds);
+    if (Number.isFinite(firstByte) && firstByte > 0 && firstByte < duration) {
+      const generationDuration = duration - firstByte;
+      if (generationDuration >= 1) {
+        tokenDuration = generationDuration;
+      }
+    }
+
+    return output / tokenDuration;
+  }
+
   /**
    * 格式化成本（美元）
    * @param {number} cost - 成本值
@@ -919,9 +938,9 @@
   window.persistFilterState = persistFilterState;
   window.initSavedDateRangeFilter = initSavedDateRangeFilter;
   window.initAuthTokenFilter = initAuthTokenFilter;
+  window.calculateTokenSpeed = calculateTokenSpeed;
   window.formatCost = formatCost;
   window.formatCostPair = formatCostPair;
-  window.formatCostMultiplier = formatCostMultiplier;
   window.getCostDisplayInfo = getCostDisplayInfo;
   window.buildCostStackHtml = buildCostStackHtml;
   window.buildCornerMultiplierBadge = buildCornerMultiplierBadge;
@@ -929,6 +948,114 @@
   window.getRpmColor = getRpmColor;
   window.escapeHtml = escapeHtml;
   window.toggleResponse = toggleResponse;
+
+  // 页面自动刷新（基于 system_settings.auto_refresh_interval_seconds）
+  // 用法：const ar = window.createAutoRefresh({ load: () => loadStats() }); ar.init();
+  // 行为：间隔>0 启动 setInterval；tick 时若 document.hidden 或 .modal.show 存在则跳过；
+  //       visibilitychange 隐藏时 stop，恢复时立即刷新一次并重启。
+  const AUTO_REFRESH_CACHE_KEY = '__autoRefreshIntervalSec';
+  const AUTO_REFRESH_CACHE_TTL_MS = 60 * 1000;
+
+  async function fetchAutoRefreshIntervalSec() {
+    try {
+      const cached = window.sessionStorage?.getItem(AUTO_REFRESH_CACHE_KEY);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed && typeof parsed.value === 'number' && Date.now() - parsed.ts < AUTO_REFRESH_CACHE_TTL_MS) {
+          return parsed.value;
+        }
+      }
+    } catch (_) { /* 忽略 sessionStorage 异常 */ }
+
+    let seconds = 0;
+    try {
+      const fetcher = window.fetchDataWithAuth || window.fetchData;
+      if (typeof fetcher !== 'function') return 0;
+      const data = await fetcher('/admin/settings');
+      if (Array.isArray(data)) {
+        const item = data.find(s => s && s.key === 'auto_refresh_interval_seconds');
+        const n = item ? Number(item.value) : 0;
+        if (Number.isFinite(n) && n > 0) seconds = Math.floor(n);
+      }
+    } catch (_) { /* 拉取失败：不刷新 */ }
+
+    try {
+      window.sessionStorage?.setItem(AUTO_REFRESH_CACHE_KEY, JSON.stringify({ value: seconds, ts: Date.now() }));
+    } catch (_) { /* 忽略 */ }
+    return seconds;
+  }
+
+  function createAutoRefresh(options = {}) {
+    const load = typeof options.load === 'function' ? options.load : null;
+    if (!load) {
+      return { init: async () => {}, stop: () => {} };
+    }
+
+    let intervalId = null;
+    let intervalMs = 0;
+    let visibilityHandler = null;
+
+    function shouldSkip() {
+      if (typeof document === 'undefined') return true;
+      if (document.hidden) return true;
+      if (document.querySelector('.modal.show')) return true;
+      return false;
+    }
+
+    function tick() {
+      if (shouldSkip()) return;
+      try {
+        const result = load();
+        if (result && typeof result.catch === 'function') {
+          result.catch(() => { /* 单次失败不影响后续轮询 */ });
+        }
+      } catch (_) { /* 同步异常吞掉 */ }
+    }
+
+    function startTimer() {
+      if (intervalId !== null || intervalMs <= 0) return;
+      intervalId = setInterval(tick, intervalMs);
+    }
+
+    function stopTimer() {
+      if (intervalId !== null) {
+        clearInterval(intervalId);
+        intervalId = null;
+      }
+    }
+
+    function onVisibilityChange() {
+      if (intervalMs <= 0) return;
+      if (document.hidden) {
+        stopTimer();
+      } else {
+        tick();
+        startTimer();
+      }
+    }
+
+    async function init() {
+      const seconds = await fetchAutoRefreshIntervalSec();
+      if (!seconds || seconds <= 0) return;
+      intervalMs = seconds * 1000;
+      visibilityHandler = onVisibilityChange;
+      document.addEventListener('visibilitychange', visibilityHandler);
+      startTimer();
+    }
+
+    function stop() {
+      stopTimer();
+      if (visibilityHandler) {
+        document.removeEventListener('visibilitychange', visibilityHandler);
+        visibilityHandler = null;
+      }
+      intervalMs = 0;
+    }
+
+    return { init, stop };
+  }
+
+  window.createAutoRefresh = createAutoRefresh;
 })();
 
 // ============================================================
@@ -1764,6 +1891,36 @@
     });
   }
 
+  // 渲染日期按钮 + 绑定切换回调 + 监听 i18n 重渲染
+  function bindTimeRangeSelector(options = {}) {
+    const { containerId, values, includeAll = false, initialValue, onChange } = options;
+    let currentValue = initialValue;
+
+    const render = () => {
+      if (typeof window.renderDateRangeButtons !== 'function') return;
+      const cfg = { values, activeValue: currentValue };
+      if (includeAll) cfg.includeAll = true;
+      window.renderDateRangeButtons(containerId, cfg);
+    };
+
+    const bind = () => {
+      initTimeRangeSelector(range => {
+        currentValue = range;
+        if (typeof onChange === 'function') onChange(range);
+      });
+    };
+
+    render();
+    bind();
+
+    if (window.i18n && typeof window.i18n.onLocaleChange === 'function') {
+      window.i18n.onLocaleChange(() => {
+        render();
+        bind();
+      });
+    }
+  }
+
   const SENSITIVE_HEADER_RE = /^(authorization|x-api-key|api-key|x-goog-api-key|proxy-authorization)$/i;
 
   function maskHeaderValue(v) {
@@ -1791,4 +1948,5 @@
   window.initChannelTypeFilter = initChannelTypeFilter;
   window.loadAuthTokensIntoSelect = loadAuthTokensIntoSelect;
   window.initTimeRangeSelector = initTimeRangeSelector;
+  window.bindTimeRangeSelector = bindTimeRangeSelector;
 })();

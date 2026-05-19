@@ -19,6 +19,7 @@ type Store interface {
 	GetConfig(ctx context.Context, id int64) (*model.Config, error)
 	CreateConfig(ctx context.Context, c *model.Config) (*model.Config, error)
 	UpdateConfig(ctx context.Context, id int64, upd *model.Config) (*model.Config, error)
+	UpdateChannelEnabled(ctx context.Context, id int64, enabled bool) (*model.Config, error)
 	DeleteConfig(ctx context.Context, id int64) error
 	GetEnabledChannelsByModel(ctx context.Context, modelName string) ([]*model.Config, error)
 	GetEnabledChannelsByModelAndProtocol(ctx context.Context, modelName, protocol string) ([]*model.Config, error)
@@ -40,6 +41,7 @@ type Store interface {
 	// 持久化URL级运行态（当前仅记录手动禁用），重启后由URLSelector回填
 	LoadDisabledURLs(ctx context.Context) (map[int64][]string, error)
 	SetURLDisabled(ctx context.Context, channelID int64, url string, disabled bool) error
+	CleanupOrphanedURLStates(ctx context.Context, channelID int64, keepURLs []string) error
 
 	// === API Key Management ===
 	GetAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error)
@@ -97,6 +99,7 @@ type Store interface {
 
 	// === Auth Token Management ===
 	CreateAuthToken(ctx context.Context, token *model.AuthToken) error
+	EnsureAuthToken(ctx context.Context, token *model.AuthToken) (bool, error)
 	GetAuthToken(ctx context.Context, id int64) (*model.AuthToken, error)
 	GetAuthTokenByValue(ctx context.Context, tokenHash string) (*model.AuthToken, error)
 	ListAuthTokens(ctx context.Context) ([]*model.AuthToken, error)

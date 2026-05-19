@@ -409,6 +409,7 @@
                     <span data-i18n="channels.keyStrategyRoundRobin">轮询</span>
                   </label>
                 </div>
+                <span class="models-hint" data-i18n="channels.keyDragSortHint">拖动API Key可排序</span>
               </div>
             </div>
             <div class="channel-editor-section-actions channel-editor-section-actions--keys">
@@ -605,6 +606,13 @@
                   data-i18n="channels.priority">优先级</label>
                 <input type="number" id="channelPriority" class="form-input" value="0" min="-99999" max="99999" step="1"
                   style="width: 80px; min-width: 80px;">
+              </div>
+              <div class="channel-editor-inline-field">
+                <label class="form-label channel-editor-inline-label" for="channelRPMLimit"
+                  data-i18n="channels.rpmLimit">RPM限制</label>
+                <input type="number" id="channelRPMLimit" class="form-input" value="0" min="0" step="1"
+                  style="width: 74px; min-width: 74px;" data-i18n-placeholder="channels.rpmLimitPlaceholder"
+                  placeholder="0=无限制">
               </div>
               <div class="channel-editor-inline-field channel-editor-inline-field--currency">
                 <label class="form-label channel-editor-inline-label" for="channelDailyCostLimit"

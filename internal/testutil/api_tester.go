@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/util"
 
 	"github.com/bytedance/sonic"
 )
@@ -197,11 +198,13 @@ func (t *OpenAITester) Build(cfg *model.Config, apiKey string, req *TestChannelR
 	if strings.TrimSpace(testContent) == "" {
 		testContent = "test"
 	}
+	sessionID := newTestSessionID()
 
 	body, err := buildRequestFromTemplate("openai", map[string]any{
-		"MODEL":   req.Model,
-		"STREAM":  req.Stream,
-		"CONTENT": testContent,
+		"MODEL":      req.Model,
+		"STREAM":     req.Stream,
+		"CONTENT":    testContent,
+		"SESSION_ID": sessionID,
 	})
 	if err != nil {
 		return "", nil, nil, err
@@ -212,6 +215,7 @@ func (t *OpenAITester) Build(cfg *model.Config, apiKey string, req *TestChannelR
 	h := make(http.Header)
 	h.Set("Content-Type", "application/json")
 	h.Set("Authorization", "Bearer "+apiKey)
+	h.Set("Session_id", sessionID)
 	if req.Stream {
 		h.Set("Accept", "text/event-stream")
 	}
@@ -313,6 +317,10 @@ func (t *GeminiTester) Parse(_ int, respBody []byte) map[string]any {
 	return parseAPIResponse(respBody, extractGeminiResponseText, "usageMetadata")
 }
 
+func newTestSessionID() string {
+	return util.NewUUIDv4()
+}
+
 // AnthropicTester 实现 Anthropic 测试协议
 type AnthropicTester struct{}
 
@@ -325,17 +333,7 @@ func newClaudeCLIUserID() string {
 		return `{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"","session_id":"00000000-0000-0000-0000-000000000000"}`
 	}
 
-	uuidBytes := make([]byte, 16)
-	if _, err := rand.Read(uuidBytes); err != nil {
-		return fmt.Sprintf(`{"device_id":"%s","account_uuid":"","session_id":"00000000-0000-0000-0000-000000000000"}`, hex.EncodeToString(deviceID))
-	}
-
-	// RFC 4122 UUID v4
-	uuidBytes[6] = (uuidBytes[6] & 0x0f) | 0x40
-	uuidBytes[8] = (uuidBytes[8] & 0x3f) | 0x80
-	sessionID := fmt.Sprintf("%x-%x-%x-%x-%x", uuidBytes[0:4], uuidBytes[4:6], uuidBytes[6:8], uuidBytes[8:10], uuidBytes[10:16])
-
-	return fmt.Sprintf(`{"device_id":"%s","account_uuid":"","session_id":"%s"}`, hex.EncodeToString(deviceID), sessionID)
+	return fmt.Sprintf(`{"device_id":"%s","account_uuid":"","session_id":"%s"}`, hex.EncodeToString(deviceID), newTestSessionID())
 }
 
 // Build 构建 Anthropic 格式的 API 请求
@@ -378,12 +376,7 @@ func (t *AnthropicTester) Build(cfg *model.Config, apiKey string, req *TestChann
 	h.Set("x-stainless-runtime", "node")
 	h.Set("x-stainless-runtime-version", "v24.3.0")
 	h.Set("x-stainless-timeout", "300")
-	// 生成 UUID v4 作为 session ID
-	var sid [16]byte
-	_, _ = rand.Read(sid[:])
-	sid[6] = (sid[6] & 0x0f) | 0x40
-	sid[8] = (sid[8] & 0x3f) | 0x80
-	h.Set("X-Claude-Code-Session-Id", fmt.Sprintf("%x-%x-%x-%x-%x", sid[0:4], sid[4:6], sid[6:8], sid[8:10], sid[10:16]))
+	h.Set("X-Claude-Code-Session-Id", newTestSessionID())
 	if req.Stream {
 		h.Set("x-stainless-helper-method", "stream")
 	}

@@ -45,7 +45,7 @@ ccLoad solves these pain points through:
 - 🛡️ **Failover** - Automatic failure detection with exponential backoff cooldown (1s → 2s → 4s → ... → 30min)
 - 🔒 **Race-Safe** - Key selector race condition protection, startup config validation, automatic resource cleanup
 - 📊 **Real-time Monitoring** - Built-in trend analysis, logging, and stats dashboard, **Token usage stats** with time range selection and per-token classification
-- 🎯 **Transparent Proxy** - Supports Claude, Gemini, and OpenAI compatible APIs with smart auth detection
+- 🎯 **Transparent Proxy** - Supports Claude Code, Codex, Gemini, and OpenAI compatible APIs with smart auth detection
 - 📦 **Single Binary Deployment** - No external dependencies, embedded SQLite included
 - 🔒 **Secure Authentication** - Token-based admin interface and API access control
 - 🏷️ **Build Tags** - GOTAGS support, high-performance JSON library enabled by default
@@ -53,10 +53,12 @@ ccLoad solves these pain points through:
 - ☁️ **Cloud Native** - Container deployment support, GitHub Actions auto-build
 - 🤗 **Hugging Face** - One-click deployment to Hugging Face Spaces, free hosting
 - 💰 **Cost Limits** - Per-channel daily cost limits, per-token cost limits
+- 🚦 **Channel RPM Limits** - Per-channel rolling 60-second request caps, 0=unlimited
 - 🔐 **Token Restrictions** - API token cost limits + model restrictions for fine-grained access control
 - ⏱️ **TTFB Monitoring** - Streaming request first byte time tracking for upstream latency diagnosis
 - 🌐 **Multi-URL Load Balancing** - Multiple URLs per channel with latency-weighted random selection
 - 💵 **service_tier Pricing** - OpenAI priority/flex/default tier multipliers for accurate cost accounting
+- 🖼️ **Image Tool Billing** - Responses image_generation/gpt-image-2 cost accounting
 - 📉 **Tiered Pricing** - GPT-5.4/Qwen-Plus/Gemini long-context step pricing, auto-applies lower rate at token thresholds
 - 🧩 **Model Groups** - Expose multiple real models behind one group name, with cooldown isolated per channel + model
 - 🔄 **Protocol Transform** - Anthropic/OpenAI/Gemini/Codex cross-protocol conversion, one channel serves multiple client protocols
@@ -179,13 +181,13 @@ git clone https://github.com/caidaoli/ccLoad.git
 cd ccLoad
 
 # Build project (uses high-performance JSON library by default)
-go build -tags go_json -o ccload .
+go build -tags sonic -o ccload .
 
 # Or use Makefile
 make build
 
 # Run in development mode
-go run -tags go_json .
+go run -tags sonic .
 # Or
 make dev
 ```
@@ -267,8 +269,9 @@ Hugging Face Spaces provides free container hosting with Docker support, ideal f
    | Variable | Value | Required | Description |
    |----------|-------|----------|-------------|
    | `CCLOAD_PASS` | `your_admin_password` | ✅ **Required** | Admin interface password |
+   | `CCLOAD_API_TOKENS` | `token1\|production,token2\|development` | Optional | Pre-seed API access tokens on startup |
 
-   **Note**: API access tokens are now configured via Web admin interface `/web/tokens.html`, not environment variables.
+   **Note**: API access tokens can be pre-seeded with `CCLOAD_API_TOKENS` or managed in the Web admin interface `/web/tokens.html`.
 
 5. **Wait for Build and Startup**
 
@@ -376,7 +379,7 @@ git push
 **Version Pinning** (Optional):
 To lock specific version, modify Dockerfile:
 ```dockerfile
-FROM ghcr.io/caidaoli/ccload:v1.96.1  # Specify version
+FROM ghcr.io/caidaoli/ccload:2.11.2  # Specify version
 ENV TZ=Asia/Shanghai
 ENV PORT=7860
 ENV SQLITE_PATH=/tmp/ccload.db
@@ -558,12 +561,15 @@ curl -X POST http://localhost:8080/admin/channels \
     "api_key": "sk-ant-api03-xxx",
     "url": "https://api.anthropic.com,https://api2.anthropic.com",
     "priority": 10,
+    "rpm_limit": 0,
     "models": ["claude-sonnet-4-6", "claude-opus-4-6"],
     "enabled": true
   }'
 ```
 
 > **Multi-URL Note**: The `url` field supports comma-separated multiple URLs. The system uses latency-weighted random selection for optimal URL choice, with automatic cooldown for failed URLs, enabling URL-level load balancing and failover within a single channel.
+
+> **RPM Limit Note**: `rpm_limit` is a per-channel request cap over a rolling 60-second window; `0` means unlimited. Proxy forwarding, manual tests, single-URL tests, and scheduled checks all count toward the cap. Multi-URL failover counts each actual upstream HTTP request. The counter is in-memory: restart clears it, and multiple instances count independently.
 
 ### Group Management (Model-Level Cooldown)
 
@@ -791,6 +797,10 @@ Check out the awesome admin dashboard 👇
   - `util.OpenAIServiceTierMultiplier()`: Returns multiplier for priority/flex/default tiers
   - `LogEntry.ServiceTier`: Persisted to database, log cost column shows tier annotation
   - Supports GPT-5.4, GPT-5.4-pro, and other latest model pricing
+- **Responses image_generation Tool Billing** (2026-05 new):
+  - Parses Responses API `tool_usage.image_gen` and the `image_generation` tool model
+  - Bills `gpt-image-2` by text input, image input, and image output tokens
+  - Streaming/non-streaming proxy paths and channel tests share the same usage parser to keep cost accounting consistent
 - **Tiered Pricing**:
   - GPT-5.4: Input price auto-steps down after token threshold
   - Qwen-Plus: Lower price tier kicks in after threshold
@@ -824,6 +834,8 @@ Check out the awesome admin dashboard 👇
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CCLOAD_PASS` | None | Admin password (**Required**, exits if not set) |
+| `CCLOAD_API_TOKENS` | None | Pre-seed API access tokens on startup. Format: `token1,token2` or `token1\|production,token2\|development`; existing tokens are not overwritten |
+| `API_TOKENS` | None | Compatibility alias for `CCLOAD_API_TOKENS`; startup fails if both variables are set with different values |
 | `CCLOAD_MYSQL` | None | MySQL DSN (optional, format: `user:pass@tcp(host:port)/db?charset=utf8mb4`)<br/>**If set uses MySQL, otherwise SQLite** |
 | `CCLOAD_ENABLE_SQLITE_REPLICA` | `0` | Hybrid storage mode switch (`1`=enable, see below) |
 | `CCLOAD_SQLITE_LOG_DAYS` | `7` | Days of logs to restore from MySQL on startup in hybrid mode (-1=all, 0=no logs) |
@@ -873,7 +885,7 @@ These settings have been migrated to database, managed via Web interface `/web/s
 |---------|---------|-------------|
 | `log_retention_days` | `7` | Log retention days (-1 for permanent, 1-365 days) |
 | `max_key_retries` | `3` | Max key retries within single channel |
-| `upstream_first_byte_timeout` | `0` | Upstream first byte timeout (seconds, 0=disabled) |
+| `upstream_first_byte_timeout` | `0` | Upstream first valid stream content timeout (seconds, 0=disabled, stream only) |
 | `enable_health_score` | `false` | Enable health-based dynamic channel sorting |
 | `success_rate_penalty_weight` | `100` | Success rate penalty weight (see below) |
 | `health_score_window_minutes` | `30` | Success rate stats time window (minutes) |
@@ -906,12 +918,21 @@ Base priority order: A > B > C > D
 
 #### API Access Token Configuration
 
-**Important**: API access tokens are now configured via Web admin interface, not environment variables.
+**Important**: API access tokens are normally managed in the Web admin interface; Docker and CI deployments can pre-seed them with an environment variable.
 
 - Visit `http://localhost:8080/web/tokens.html` for token management
+- Set `CCLOAD_API_TOKENS=token1|production,token2|development` to create missing tokens on startup
+- Provisioning is idempotent: existing tokens keep their description, limits, model/channel restrictions, and statistics
+- Only missing tokens are created; existing tokens are never modified
 - Supports add, delete, view tokens
 - All tokens stored in database with persistence
 - Without any tokens configured, all `/v1/*` and `/v1beta/*` APIs return `401 Unauthorized`
+
+⚠️ **Security notes**:
+- In production, prefer Docker Secrets, Kubernetes Secrets, or platform encrypted Secrets over plain environment variables
+- In CI/CD, do not print full environment variables to logs
+- After provisioning, remove `CCLOAD_API_TOKENS` from deployment config if automatic recovery is no longer needed
+- Restrict access to container inspect output, orchestration dashboards, and deployment configuration
 
 **Advanced Token Features** (2026-01 New):
 - **Cost Limits**: Set cost limits per token (USD), requests rejected with 429 when exceeded
@@ -932,9 +953,9 @@ Project supports multi-arch Docker images:
 - **Image Registry**: `ghcr.io/caidaoli/ccload`
 - **Available Tags**:
   - `latest` - Latest stable version
-  - `v1.96.1` - Specific version number
-  - `v1.96` - Major.minor version
-  - `v1` - Major version
+  - `2.11.2` - Specific version number
+  - `2.11` - Major.minor version
+  - `2` - Major version
 
 ### Image Tag Guide
 
@@ -943,7 +964,7 @@ Project supports multi-arch Docker images:
 docker pull ghcr.io/caidaoli/ccload:latest
 
 # Pull specific version
-docker pull ghcr.io/caidaoli/ccload:v1.96.1
+docker pull ghcr.io/caidaoli/ccload:2.11.2
 
 # Specify architecture (Docker usually auto-selects)
 docker pull --platform linux/amd64 ghcr.io/caidaoli/ccload:latest
@@ -983,7 +1004,7 @@ storage/
 - Not set → Uses SQLite (default)
 
 **Core Table Structure** (SQLite and MySQL shared):
-- `channels` - Channel config (cooldown data inline, UNIQUE constraint on name, with protocol transform config, scheduled check config)
+- `channels` - Channel config (cooldown data inline, UNIQUE constraint on name, with protocol transform config, scheduled check config, RPM limit config)
 - `api_keys` - API keys (key-level cooldown inline, multi-key strategies)
 - `logs` - Request logs (with base_url upstream URL tracking)
 - `debug_logs` - Debug logs (upstream request/response raw data, independent cleanup policy)
@@ -1004,11 +1025,13 @@ storage/
 - ✅ Auto migration (auto creates/updates table structure on startup)
 - ✅ Token stats enhancement (time range selection, per-token ID classification, cache optimization)
 - ✅ **service_tier cost tracking**: Logs persist service_tier field, cost column shows tier label
+- ✅ **Responses image tool cost tracking**: `image_generation` tool costs are included in logs, stats, and cost limit accounting
 - ✅ **Tiered pricing engine**: GPT-5.4/Qwen-Plus/Gemini long-context step billing
 - ✅ **Log UX improvements**: Cost column formats to 3 decimal places (empty for zero), IP column shows full address on hover
 - ✅ **Protocol transform system**: Anthropic/OpenAI/Gemini/Codex four-protocol cross-conversion, upstream/local modes
 - ✅ **Debug logs**: Upstream request/response raw data capture, sensitive header masking, independent cleanup policy
 - ✅ **Scheduled channel checks**: Background periodic channel availability probing, configurable check model per channel
+- ✅ **Channel RPM limits**: Per-channel rolling 60-second request caps, `0` means unlimited, over-limit channels are skipped
 
 **Backward Compatible Migration**:
 - Auto-detects and fixes duplicate channel names

@@ -44,7 +44,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 	writer := csv.NewWriter(buf)
 	defer writer.Flush()
 
-	header := []string{"id", "name", "api_key", "url", "priority", "models", "model_redirects", "channel_type", "protocol_transforms", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model"}
+	header := []string{"id", "name", "api_key", "url", "priority", "rpm_limit", "models", "model_redirects", "channel_type", "protocol_transforms", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model"}
 	if err := writer.Write(header); err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -91,6 +91,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 			apiKeyStr,
 			cfg.URL,
 			strconv.Itoa(cfg.Priority),
+			strconv.Itoa(cfg.RPMLimit),
 			strings.Join(models, ","),
 			modelRedirectsJSON,
 			cfg.GetChannelType(), // 使用GetChannelType确保默认值
@@ -240,6 +241,8 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 					continue
 				}
 				s.urlSelector.PruneChannel(channelID, cfg.GetURLs())
+				// 同步清理数据库中已移除URL的禁用状态记录
+				s.cleanupOrphanedURLStates(c.Request.Context(), channelID, cfg.GetURLs())
 			}
 		}
 	}
@@ -363,6 +366,15 @@ func (s *Server) parseChannelImportRow(
 		priority = p
 	}
 
+	rpmLimit := 0
+	if rpmRaw := fetch("rpm_limit"); rpmRaw != "" {
+		parsed, err := strconv.Atoi(rpmRaw)
+		if err != nil || parsed < 0 {
+			return nil, fmt.Sprintf("第%d行RPM限制格式错误: %s", lineNo, rpmRaw), true
+		}
+		rpmLimit = parsed
+	}
+
 	enabled := true
 	if eRaw := fetch("enabled"); eRaw != "" {
 		if val, ok := parseImportEnabled(eRaw); ok {
@@ -424,6 +436,7 @@ func (s *Server) parseChannelImportRow(
 		Name:                  name,
 		URL:                   url,
 		Priority:              priority,
+		RPMLimit:              rpmLimit,
 		ModelEntries:          modelEntries,
 		ChannelType:           channelType,
 		ProtocolTransformMode: protocolTransformMode,
@@ -496,6 +509,8 @@ func normalizeCSVHeader(name string) string {
 		return "model_redirects"
 	case "key_strategy", "key-strategy", "keystrategy", "策略", "使用策略":
 		return "key_strategy"
+	case "rpm-limit", "rpmlimit", "rpm limit":
+		return "rpm_limit"
 	case "scheduled-check-enabled", "scheduledcheckenabled", "scheduled check enabled":
 		return "scheduled_check_enabled"
 	case "scheduled-check-model", "scheduledcheckmodel", "scheduled check model":

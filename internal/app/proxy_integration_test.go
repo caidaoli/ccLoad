@@ -181,6 +181,73 @@ func TestProxy_Success_NonStreaming(t *testing.T) {
 	}
 }
 
+func TestProxy_SkipsChannelAfterRPMLimitExceeded(t *testing.T) {
+	t.Parallel()
+
+	var firstHits atomic.Int64
+	firstUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"from-limited","choices":[{"message":{"content":"limited"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer firstUpstream.Close()
+
+	var fallbackHits atomic.Int64
+	fallbackUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"from-fallback","choices":[{"message":{"content":"fallback"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer fallbackUpstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "limited", models: "gpt-4", apiKey: "sk-limited", priority: 100},
+		{name: "fallback", models: "gpt-4", apiKey: "sk-fallback", priority: 90},
+	}, map[int]string{0: firstUpstream.URL, 1: fallbackUpstream.URL})
+
+	ctx := context.Background()
+	cfgs, err := env.store.ListConfigs(ctx)
+	if err != nil {
+		t.Fatalf("ListConfigs failed: %v", err)
+	}
+	for _, cfg := range cfgs {
+		if cfg.Name != "limited" {
+			continue
+		}
+		cfg.RPMLimit = 1
+		if _, err := env.store.UpdateConfig(ctx, cfg.ID, cfg); err != nil {
+			t.Fatalf("UpdateConfig failed: %v", err)
+		}
+	}
+	env.server.InvalidateChannelListCache()
+
+	requestBody := map[string]any{
+		"model":    "gpt-4",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}
+
+	first := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", requestBody, nil)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first request status=%d body=%s", first.Code, first.Body.String())
+	}
+
+	second := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", requestBody, nil)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second request status=%d body=%s", second.Code, second.Body.String())
+	}
+	if firstHits.Load() != 1 {
+		t.Fatalf("limited upstream hits=%d, want 1", firstHits.Load())
+	}
+	if fallbackHits.Load() != 1 {
+		t.Fatalf("fallback upstream hits=%d, want 1", fallbackHits.Load())
+	}
+	if !strings.Contains(second.Body.String(), "from-fallback") {
+		t.Fatalf("second response should come from fallback, got %s", second.Body.String())
+	}
+}
+
 func TestProxy_AllCooledFallback_UsesCooledKey(t *testing.T) {
 	t.Parallel()
 
@@ -744,6 +811,208 @@ func TestProxy_Success_NonStreaming_OpenAIToAnthropicTransform(t *testing.T) {
 	}
 }
 
+func TestProxy_NonStreamingOpenAIToAnthropic_TranslatesUnexpectedSSE(t *testing.T) {
+	t.Parallel()
+
+	var gotPath string
+	var gotBody []byte
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "anthropic-ch", channelType: "anthropic", models: "mimo-v2.5", apiKey: "sk-ant"},
+	}, map[int]string{0: "https://anthropic-upstream.example.com"})
+
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			gotPath = r.URL.Path
+			gotBody, _ = io.ReadAll(r.Body)
+			body := bytes.NewBufferString(
+				"event: message_start\n" +
+					"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"mimo-v2.5\",\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n" +
+					"event: content_block_start\n" +
+					"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n" +
+					"event: content_block_delta\n" +
+					"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"think\"}}\n\n" +
+					"event: content_block_stop\n" +
+					"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+					"event: content_block_start\n" +
+					"data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+					"event: content_block_delta\n" +
+					"data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n" +
+					"event: message_delta\n" +
+					"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n" +
+					"event: message_stop\n" +
+					"data: {\"type\":\"message_stop\"}\n\n",
+			)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(body),
+			}, nil
+		}),
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("ListConfigs failed: %v", err)
+	}
+	cfg := configs[0]
+	cfg.ProtocolTransforms = []string{"openai"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
+	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+		t.Fatalf("UpdateConfig failed: %v", err)
+	}
+	env.server.InvalidateChannelListCache()
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":    "mimo-v2.5",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if gotPath != "/v1/messages" {
+		t.Fatalf("expected anthropic messages path, got %s", gotPath)
+	}
+	if !bytes.Contains(gotBody, []byte(`"stream":false`)) {
+		t.Fatalf("expected upstream request to preserve stream=false, got %s", gotBody)
+	}
+	if strings.Contains(w.Body.String(), "event:") {
+		t.Fatalf("expected OpenAI JSON response, got raw SSE: %s", w.Body.String())
+	}
+	if got := w.Header().Get("Content-Type"); !strings.Contains(got, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+
+	var resp struct {
+		Object  string `json:"object"`
+		Choices []struct {
+			Message struct {
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Object != "chat.completion" || len(resp.Choices) != 1 {
+		t.Fatalf("unexpected translated response: %s", w.Body.String())
+	}
+	if resp.Choices[0].Message.Content != "hello" || resp.Choices[0].Message.ReasoningContent != "think" {
+		t.Fatalf("unexpected translated message: %s", w.Body.String())
+	}
+}
+
+func TestProxy_NonStreamingOpenAIClientNormalizesAnthropicJSONFromUpstreamMode(t *testing.T) {
+	t.Parallel()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "anthropic-upstream-mode", channelType: "anthropic", models: "mimo-v2.5", apiKey: "sk-ant"},
+	}, map[int]string{0: "https://anthropic-upstream.example.com"})
+
+	var gotPath string
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			gotPath = r.URL.Path
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(bytes.NewReader([]byte(
+					`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"think"},{"type":"text","text":"hello"}],"model":"mimo-v2.5","stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":5}}`,
+				))),
+			}, nil
+		}),
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("ListConfigs failed: %v", err)
+	}
+	cfg := configs[0]
+	cfg.ProtocolTransforms = []string{"openai"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeUpstream
+	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+		t.Fatalf("UpdateConfig failed: %v", err)
+	}
+	env.server.InvalidateChannelListCache()
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":    "mimo-v2.5",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Fatalf("expected upstream mode to keep OpenAI path, got %s", gotPath)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, `"type":"message"`) || strings.Contains(body, `"stop_reason"`) {
+		t.Fatalf("expected OpenAI JSON, got raw Anthropic JSON: %s", body)
+	}
+	if !strings.Contains(body, `"object":"chat.completion"`) || !strings.Contains(body, `"content":"hello"`) || !strings.Contains(body, `"reasoning_content":"think"`) {
+		t.Fatalf("unexpected normalized OpenAI JSON: %s", body)
+	}
+}
+
+func TestProxy_NonStreamingAnthropicClientNormalizesOpenAIJSONFromUpstreamMode(t *testing.T) {
+	t.Parallel()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "openai-upstream-mode", channelType: "openai", models: "gpt-4o", apiKey: "sk-oai"},
+	}, map[int]string{0: "https://openai-upstream.example.com"})
+
+	var gotPath string
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			gotPath = r.URL.Path
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(bytes.NewReader([]byte(
+					`{"id":"chatcmpl_1","object":"chat.completion","created":0,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`,
+				))),
+			}, nil
+		}),
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("ListConfigs failed: %v", err)
+	}
+	cfg := configs[0]
+	cfg.ProtocolTransforms = []string{"anthropic"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeUpstream
+	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+		t.Fatalf("UpdateConfig failed: %v", err)
+	}
+	env.server.InvalidateChannelListCache()
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/messages", map[string]any{
+		"model": "gpt-4o",
+		"messages": []map[string]any{{
+			"role":    "user",
+			"content": []map[string]string{{"type": "text", "text": "hi"}},
+		}},
+	}, map[string]string{"anthropic-version": "2023-06-01"})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if gotPath != "/v1/messages" {
+		t.Fatalf("expected upstream mode to keep Anthropic path, got %s", gotPath)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, `"chat.completion"`) || strings.Contains(body, `"choices"`) {
+		t.Fatalf("expected Anthropic JSON, got raw OpenAI JSON: %s", body)
+	}
+	if !strings.Contains(body, `"type":"message"`) || !strings.Contains(body, `"text":"hello"`) || !strings.Contains(body, `"stop_reason":"end_turn"`) {
+		t.Fatalf("unexpected normalized Anthropic JSON: %s", body)
+	}
+}
+
 func TestProxy_OpenAIShapedBodyOnAnthropicPathIsRejected(t *testing.T) {
 	t.Parallel()
 
@@ -1009,6 +1278,188 @@ func TestProxy_Success_Streaming_OpenAIToAnthropicTransform(t *testing.T) {
 	body := w.Body.String()
 	if !strings.Contains(body, `"chat.completion.chunk"`) || !strings.Contains(body, `"content":"Hello"`) || !strings.Contains(body, "data: [DONE]") {
 		t.Fatalf("unexpected translated stream: %s", body)
+	}
+}
+
+func TestProxy_StreamingOpenAIClientNormalizesAnthropicSSEFromUpstreamMode(t *testing.T) {
+	t.Parallel()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "anthropic-upstream-mode", channelType: "anthropic", models: "mimo-v2.5", apiKey: "sk-ant"},
+	}, map[int]string{0: "https://anthropic-upstream.example.com"})
+
+	var gotPath string
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			gotPath = r.URL.Path
+			body := bytes.NewBufferString(
+				"event: message_start\n" +
+					"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"mimo-v2.5\",\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n" +
+					"event: content_block_start\n" +
+					"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n" +
+					"event: content_block_delta\n" +
+					"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"think\"}}\n\n" +
+					"event: content_block_stop\n" +
+					"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+					"event: message_delta\n" +
+					"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n" +
+					"event: message_stop\n" +
+					"data: {\"type\":\"message_stop\"}\n\n",
+			)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(body),
+			}, nil
+		}),
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("ListConfigs failed: %v", err)
+	}
+	cfg := configs[0]
+	cfg.ProtocolTransforms = []string{"openai"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeUpstream
+	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+		t.Fatalf("UpdateConfig failed: %v", err)
+	}
+	env.server.InvalidateChannelListCache()
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":    "mimo-v2.5",
+		"stream":   true,
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Fatalf("expected upstream mode to keep OpenAI path, got %s", gotPath)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "event: content_block_delta") || strings.Contains(body, `"type":"thinking_delta"`) {
+		t.Fatalf("expected OpenAI SSE, got raw Anthropic SSE: %s", body)
+	}
+	if !strings.Contains(body, `"object":"chat.completion.chunk"`) || !strings.Contains(body, `"reasoning_content":"think"`) || !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("unexpected normalized OpenAI SSE: %s", body)
+	}
+}
+
+func TestProxy_StreamingAnthropicClientNormalizesOpenAISSEFromUpstreamMode(t *testing.T) {
+	t.Parallel()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "openai-upstream-mode", channelType: "openai", models: "gpt-4o", apiKey: "sk-oai"},
+	}, map[int]string{0: "https://openai-upstream.example.com"})
+
+	var gotPath string
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			gotPath = r.URL.Path
+			body := bytes.NewBufferString(
+				"data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n" +
+					"data: [DONE]\n\n",
+			)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(body),
+			}, nil
+		}),
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("ListConfigs failed: %v", err)
+	}
+	cfg := configs[0]
+	cfg.ProtocolTransforms = []string{"anthropic"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeUpstream
+	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+		t.Fatalf("UpdateConfig failed: %v", err)
+	}
+	env.server.InvalidateChannelListCache()
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/messages", map[string]any{
+		"model":  "gpt-4o",
+		"stream": true,
+		"messages": []map[string]any{{
+			"role":    "user",
+			"content": []map[string]string{{"type": "text", "text": "hi"}},
+		}},
+	}, map[string]string{"anthropic-version": "2023-06-01"})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if gotPath != "/v1/messages" {
+		t.Fatalf("expected upstream mode to keep Anthropic path, got %s", gotPath)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, `"chat.completion.chunk"`) || strings.Contains(body, `"choices"`) {
+		t.Fatalf("expected Anthropic SSE, got raw OpenAI SSE: %s", body)
+	}
+	if !strings.Contains(body, "event: message_start") || !strings.Contains(body, `"type":"text_delta","text":"Hello"`) || !strings.Contains(body, "event: message_stop") {
+		t.Fatalf("unexpected normalized Anthropic SSE: %s", body)
+	}
+}
+
+func TestProxy_StreamingGeminiClientNormalizesOpenAISSEFromUpstreamMode(t *testing.T) {
+	t.Parallel()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "openai-upstream-mode", channelType: "openai", models: "gpt-4o", apiKey: "sk-oai"},
+	}, map[int]string{0: "https://openai-upstream.example.com"})
+
+	var gotPath string
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			gotPath = r.URL.Path
+			body := bytes.NewBufferString(
+				"data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n" +
+					"data: [DONE]\n\n",
+			)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(body),
+			}, nil
+		}),
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("ListConfigs failed: %v", err)
+	}
+	cfg := configs[0]
+	cfg.ProtocolTransforms = []string{"gemini"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeUpstream
+	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+		t.Fatalf("UpdateConfig failed: %v", err)
+	}
+	env.server.InvalidateChannelListCache()
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1beta/models/gpt-4o:streamGenerateContent", map[string]any{
+		"contents": []map[string]any{{
+			"role":  "user",
+			"parts": []map[string]any{{"text": "hi"}},
+		}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if gotPath != "/v1beta/models/gpt-4o:streamGenerateContent" {
+		t.Fatalf("expected upstream mode to keep Gemini path, got %s", gotPath)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, `"chat.completion.chunk"`) || strings.Contains(body, `"choices"`) {
+		t.Fatalf("expected Gemini SSE, got raw OpenAI SSE: %s", body)
+	}
+	if !strings.Contains(body, `"text":"Hello"`) || !strings.Contains(body, `"finishReason":"STOP"`) {
+		t.Fatalf("unexpected normalized Gemini SSE: %s", body)
 	}
 }
 
@@ -1878,6 +2329,168 @@ func TestProxy_ChannelRetry_On503(t *testing.T) {
 	}
 }
 
+func TestProxy_NonStreamingEmpty200RetriesNextChannel(t *testing.T) {
+	t.Parallel()
+
+	var emptyCalls atomic.Int32
+	upstreamEmpty := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		emptyCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstreamEmpty.Close()
+
+	var okCalls atomic.Int32
+	upstreamOK := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		okCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"from-ch2","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstreamOK.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "ch-empty", models: "gpt-4", apiKey: "sk-empty", priority: 100},
+		{name: "ch-ok", models: "gpt-4", apiKey: "sk-ok", priority: 50},
+	}, map[int]string{
+		0: upstreamEmpty.URL,
+		1: upstreamOK.URL,
+	})
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-4",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 after retrying next channel, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "from-ch2") {
+		t.Fatalf("expected response from second channel, got body: %s", w.Body.String())
+	}
+	if got := emptyCalls.Load(); got != 1 {
+		t.Fatalf("empty upstream calls=%d, want 1", got)
+	}
+	if got := okCalls.Load(); got != 1 {
+		t.Fatalf("ok upstream calls=%d, want 1", got)
+	}
+}
+
+func TestProxy_StreamingEmpty200RetriesNextChannel(t *testing.T) {
+	t.Parallel()
+
+	var emptyCalls atomic.Int32
+	upstreamEmpty := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		emptyCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstreamEmpty.Close()
+
+	var okCalls atomic.Int32
+	upstreamOK := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		okCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = fmt.Fprint(w, "data: {\"id\":\"from-ch2\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer upstreamOK.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "ch-empty-stream", models: "gpt-4", apiKey: "sk-empty", priority: 100},
+		{name: "ch-ok-stream", models: "gpt-4", apiKey: "sk-ok", priority: 50},
+	}, map[int]string{
+		0: upstreamEmpty.URL,
+		1: upstreamOK.URL,
+	})
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-4",
+		"stream":   true,
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 after retrying next streaming channel, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "from-ch2") {
+		t.Fatalf("expected stream response from second channel, got body: %s", w.Body.String())
+	}
+	if got := emptyCalls.Load(); got != 1 {
+		t.Fatalf("empty upstream calls=%d, want 1", got)
+	}
+	if got := okCalls.Load(); got != 1 {
+		t.Fatalf("ok upstream calls=%d, want 1", got)
+	}
+}
+
+func TestProxy_StreamingPingOnly200RetriesNextChannel(t *testing.T) {
+	t.Parallel()
+
+	var pingCalls atomic.Int32
+	upstreamPing := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pingCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = fmt.Fprint(w, "event: ping\n")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"ping\"}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer upstreamPing.Close()
+
+	var okCalls atomic.Int32
+	upstreamOK := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		okCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = fmt.Fprint(w, "data: {\"id\":\"from-ch2\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer upstreamOK.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "ch-ping-stream", models: "gpt-4", apiKey: "sk-ping", priority: 100},
+		{name: "ch-ok-stream", models: "gpt-4", apiKey: "sk-ok", priority: 50},
+	}, map[int]string{
+		0: upstreamPing.URL,
+		1: upstreamOK.URL,
+	})
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-4",
+		"stream":   true,
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 after retrying next streaming channel, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "from-ch2") {
+		t.Fatalf("expected stream response from second channel, got body: %s", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), `"type":"ping"`) {
+		t.Fatalf("expected ping-only response not to leak to client, got body: %s", w.Body.String())
+	}
+	if got := pingCalls.Load(); got != 1 {
+		t.Fatalf("ping upstream calls=%d, want 1", got)
+	}
+	if got := okCalls.Load(); got != 1 {
+		t.Fatalf("ok upstream calls=%d, want 1", got)
+	}
+}
+
 func TestProxy_MultiURL5xx_SwitchesToNextChannel(t *testing.T) {
 	t.Parallel()
 
@@ -2295,6 +2908,67 @@ func TestProxy_AllChannelsExhausted(t *testing.T) {
 	}
 }
 
+// TestProxy_SingleChannel5xx_SkipsSummaryLog 验证：模型仅有 1 个渠道时，
+// 渠道级失败日志已完整反映失败原因，不再写"系统/exhausted backends"汇总日志。
+func TestProxy_SingleChannel5xx_SkipsSummaryLog(t *testing.T) {
+	t.Parallel()
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"internal server error"}`))
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "only-ch", models: "gpt-4", apiKey: "sk-1", priority: 100},
+	}, map[int]string{0: upstream.URL})
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-4",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 等待异步日志落盘：至少要看到 1 条渠道级失败日志（ChannelID 非零）
+	ctx := context.Background()
+	since := time.Now().Add(-time.Minute)
+	deadline := time.Now().Add(2 * time.Second)
+	var logs []*model.LogEntry
+	for time.Now().Before(deadline) {
+		got, err := env.store.ListLogs(ctx, since, 20, 0, &model.LogFilter{LogSource: model.LogSourceProxy})
+		if err != nil {
+			t.Fatalf("ListLogs failed: %v", err)
+		}
+		hasChannelLog := false
+		for _, e := range got {
+			if e.ChannelID != 0 {
+				hasChannelLog = true
+				break
+			}
+		}
+		if hasChannelLog {
+			logs = got
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if logs == nil {
+		t.Fatalf("expected at least one channel-level proxy log within deadline")
+	}
+
+	// 关键断言：不能出现"汇总日志"（ChannelID=0 的 Proxy 日志）
+	for _, e := range logs {
+		if e.ChannelID == 0 {
+			t.Fatalf("unexpected summary log (ChannelID=0, message=%q, status=%d) for single-channel failure",
+				e.Message, e.StatusCode)
+		}
+	}
+}
+
 func TestProxy_ClientCancel_Returns499(t *testing.T) {
 	t.Parallel()
 
@@ -2647,6 +3321,78 @@ func TestProxy_SSEErrorEvent_TriggersCooldown(t *testing.T) {
 	}
 	if time.Until(until) <= 0 {
 		t.Fatalf("expected channel cooldown until in the future, got %v", until)
+	}
+}
+
+func TestProxy_SSEFreeTierBudgetExceededCoolsKeyThirtyMinutes(t *testing.T) {
+	t.Parallel()
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		largeContent := strings.Repeat("Hi", SSEBufferSize)
+		chunks := []string{
+			fmt.Sprintf(`data: {"choices":[{"delta":{"content":"%s"}}]}`, largeContent),
+			`event: error` + "\n" + `data: {"type":"error","error":{"type":"api_error","message":"403 {\"error\":{\"code\":\"FREE_TIER_BUDGET_EXCEEDED\",\"message\":\"Free tier monthly spend limit exceeded. Please upgrade to a paid plan to continue using this service.\"}}"}}`,
+		}
+		for _, chunk := range chunks {
+			_, _ = fmt.Fprintf(w, "%s\n\n", chunk)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "ch-free-tier-sse", models: "gpt-4", apiKey: "sk-free-tier"},
+	}, map[int]string{0: upstream.URL})
+
+	ctx := context.Background()
+	configs, err := env.store.ListConfigs(ctx)
+	if err != nil {
+		t.Fatalf("ListConfigs: %v", err)
+	}
+	if len(configs) != 1 {
+		t.Fatalf("expected 1 config, got %d", len(configs))
+	}
+	channelID := configs[0].ID
+
+	before := time.Now()
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-4",
+		"stream":   true,
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (header already sent), got %d: %s", w.Code, w.Body.String())
+	}
+
+	keyCooldowns, err := env.store.GetAllKeyCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("GetAllKeyCooldowns: %v", err)
+	}
+	channelKeyCooldowns := keyCooldowns[channelID]
+	if channelKeyCooldowns == nil {
+		t.Fatalf("expected key cooldown for channel_id=%d", channelID)
+	}
+	cooldownUntil, exists := channelKeyCooldowns[0]
+	if !exists {
+		t.Fatalf("expected key 0 cooldown for channel_id=%d", channelID)
+	}
+	duration := cooldownUntil.Sub(before)
+	if duration < 29*time.Minute+55*time.Second || duration > 30*time.Minute+5*time.Second {
+		t.Fatalf("key cooldown duration=%v, want about 30m", duration)
+	}
+
+	channelCooldowns, err := env.store.GetAllChannelCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("GetAllChannelCooldowns: %v", err)
+	}
+	if until, exists := channelCooldowns[channelID]; exists && until.After(time.Now()) {
+		t.Fatalf("channel should not be cooled for SSE free tier quota error")
 	}
 }
 

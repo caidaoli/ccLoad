@@ -51,9 +51,10 @@ type Manager struct {
 }
 
 type cooldownDecision struct {
-	action       Action
-	reset1308At  time.Time
-	hasReset1308 bool
+	action              Action
+	keyCooldownUntil    time.Time
+	hasKeyCooldownUntil bool
+	keyCooldownReason   string
 }
 
 // NewManager 创建冷却管理器实例
@@ -85,14 +86,15 @@ func (m *Manager) classifyDecision(ctx context.Context, in ErrorInput) cooldownD
 		// HTTP错误: 使用智能分类器(结合响应体内容和headers)
 		classification := util.ClassifyHTTPResponseWithMeta(statusCode, in.Headers, errorBody)
 		errLevel = classification.Level
-		decision.reset1308At = classification.ResetTime1308
-		decision.hasReset1308 = classification.HasResetTime1308
+		decision.keyCooldownUntil = classification.KeyCooldownUntil
+		decision.hasKeyCooldownUntil = classification.HasKeyCooldownUntil
+		decision.keyCooldownReason = classification.KeyCooldownReason
 	}
 
 	// 2. [TARGET] 动态调整:单Key渠道的Key级错误应该直接冷却渠道
 	// 设计原则:如果没有其他Key可以重试,Key级错误等同于渠道级错误
-	// [WARN] 例外：1308错误保持Key级（因为它有精确时间，后续会特殊处理）
-	if errLevel == util.ErrorLevelKey && !decision.hasReset1308 {
+	// [WARN] 例外：带固定Key冷却截止时间的错误保持Key级（例如1308、每日限额、Key配额耗尽）。
+	if errLevel == util.ErrorLevelKey && !decision.hasKeyCooldownUntil {
 		var config *model.Config
 		var err error
 
@@ -154,16 +156,17 @@ func (m *Manager) HandleError(ctx context.Context, in ErrorInput) Action {
 	case ActionRetryKey:
 		// Key级错误:冷却当前Key,继续尝试其他Key
 		if keyIndex != NoKeyIndex {
-			// [INFO] 特殊处理: 1308错误自动禁用到指定时间
-			if decision.hasReset1308 {
+			// [INFO] 特殊处理: 已知Key配额错误自动禁用到指定时间
+			if decision.hasKeyCooldownUntil {
 				// 直接设置冷却时间到指定时刻
-				if err := m.store.SetKeyCooldown(ctx, channelID, keyIndex, decision.reset1308At); err != nil {
-					log.Printf("[WARN] Failed to set key cooldown to reset time (channel=%d, key=%d, until=%v): %v",
-						channelID, keyIndex, decision.reset1308At, err)
+				if err := m.store.SetKeyCooldown(ctx, channelID, keyIndex, decision.keyCooldownUntil); err != nil {
+					log.Printf("[WARN] 按重置时间设置 Key 冷却失败 (channel=%d, key=%d, until=%v): %v",
+						channelID, keyIndex, decision.keyCooldownUntil, err)
 				} else {
-					duration := time.Until(decision.reset1308At)
-					log.Printf("[COOLDOWN] Key冷却(1308): 渠道=%d Key=%d 禁用至 %s (%.1f分钟)",
-						channelID, keyIndex, decision.reset1308At.Format("2006-01-02 15:04:05"), duration.Minutes())
+					duration := time.Until(decision.keyCooldownUntil)
+					log.Printf("[COOLDOWN] Key冷却(%s): 渠道=%d Key=%d 禁用至 %s (%.1f分钟)",
+						decision.keyCooldownReason, channelID, keyIndex,
+						decision.keyCooldownUntil.Format("2006-01-02 15:04:05"), duration.Minutes())
 				}
 				return ActionRetryKey
 			}
@@ -173,33 +176,20 @@ func (m *Manager) HandleError(ctx context.Context, in ErrorInput) Action {
 			if err != nil {
 				// 冷却更新失败是非致命错误
 				// 记录日志但不中断请求处理,避免因数据库BUSY导致无限重试
-				log.Printf("[WARN] Failed to update key cooldown (channel=%d, key=%d): %v", channelID, keyIndex, err)
+				log.Printf("[WARN] 更新 Key 冷却失败 (channel=%d, key=%d): %v", channelID, keyIndex, err)
 			}
 		}
 		return ActionRetryKey
 
 	case ActionRetryChannel:
 		// 渠道级错误:冷却整个渠道,切换到其他渠道
-		// [INFO] 特殊处理: 如果有1308精确时间，直接设置（单Key渠道的1308错误会走到这里）
-		if decision.hasReset1308 {
-			if err := m.store.SetChannelCooldown(ctx, channelID, decision.reset1308At); err != nil {
-				log.Printf("[WARN] Failed to set channel cooldown to reset time (channel=%d, until=%v): %v",
-					channelID, decision.reset1308At, err)
-			} else {
-				duration := time.Until(decision.reset1308At)
-				log.Printf("[COOLDOWN] Channel冷却(1308): 渠道=%d 禁用至 %s (%.1f分钟)",
-					channelID, decision.reset1308At.Format("2006-01-02 15:04:05"), duration.Minutes())
-			}
-			return ActionRetryChannel
-		}
-
 		// 默认逻辑: 使用指数退避策略
 		_, err := m.store.BumpChannelCooldown(ctx, channelID, time.Now(), statusCode)
 		if err != nil {
 			// 冷却更新失败是非致命错误
 			// 设计原则: 数据库故障不应阻塞用户请求,系统应降级服务
 			// 影响: 可能导致短暂的冷却状态不一致,但总比拒绝服务更好
-			log.Printf("[WARN] Failed to update channel cooldown (channel=%d): %v", channelID, err)
+			log.Printf("[WARN] 更新渠道冷却失败 (channel=%d): %v", channelID, err)
 		}
 		return ActionRetryChannel
 
@@ -219,14 +209,6 @@ func (m *Manager) HandleModelError(ctx context.Context, in ErrorInput, modelName
 	}
 	if decision.action == ActionRetryKey {
 		return m.HandleError(ctx, in)
-	}
-
-	if decision.hasReset1308 {
-		if err := m.store.SetModelCooldown(ctx, in.ChannelID, modelName, decision.reset1308At); err != nil {
-			log.Printf("[WARN] Failed to set model cooldown to reset time (channel=%d, model=%s, until=%v): %v",
-				in.ChannelID, modelName, decision.reset1308At, err)
-		}
-		return ActionRetryChannel
 	}
 
 	if _, err := m.store.BumpModelCooldown(ctx, in.ChannelID, modelName, time.Now(), in.StatusCode); err != nil {

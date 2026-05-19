@@ -80,7 +80,7 @@ func NewHybridStore(sqlite, mysql *sqlstore.SQLStore) *HybridStore {
 // 但磁盘空间不足等极端情况仍可能导致写入失败，记录日志以便排查
 func (h *HybridStore) syncToSQLite(op string, fn func() error) {
 	if err := fn(); err != nil {
-		log.Printf("[WARN]  SQLite sync failed (%s): %v", op, err)
+		log.Printf("[WARN] SQLite 同步失败 (%s): %v", op, err)
 	}
 }
 
@@ -226,6 +226,20 @@ func (h *HybridStore) UpdateConfig(ctx context.Context, id int64, upd *model.Con
 	return result, nil
 }
 
+func (h *HybridStore) UpdateChannelEnabled(ctx context.Context, id int64, enabled bool) (*model.Config, error) {
+	result, err := h.mysql.UpdateChannelEnabled(ctx, id, enabled)
+	if err != nil {
+		return nil, err
+	}
+
+	h.syncToSQLite("UpdateChannelEnabled", func() error {
+		_, err := h.sqlite.UpdateChannelEnabled(ctx, id, enabled)
+		return err
+	})
+
+	return result, nil
+}
+
 func (h *HybridStore) DeleteConfig(ctx context.Context, id int64) error {
 	if err := h.mysql.DeleteConfig(ctx, id); err != nil {
 		return err
@@ -344,6 +358,20 @@ func (h *HybridStore) DeleteGroup(ctx context.Context, id int64) error {
 
 func (h *HybridStore) ListGroupModelOptions(ctx context.Context) ([]model.GroupModelOption, error) {
 	return h.sqlite.ListGroupModelOptions(ctx)
+}
+
+func (h *HybridStore) CleanupOrphanedURLStates(ctx context.Context, channelID int64, keepURLs []string) error {
+	// 先清理MySQL（主存储）
+	if err := h.mysql.CleanupOrphanedURLStates(ctx, channelID, keepURLs); err != nil {
+		return err
+	}
+
+	// 同步清理SQLite缓存（失败仅警告）
+	h.syncToSQLite("CleanupOrphanedURLStates", func() error {
+		return h.sqlite.CleanupOrphanedURLStates(ctx, channelID, keepURLs)
+	})
+
+	return nil
 }
 
 // === API Key Management ===
@@ -615,7 +643,10 @@ func (h *HybridStore) GetTodayChannelURLStats(ctx context.Context, dayStart time
 }
 
 func (h *HybridStore) CleanupLogsBefore(ctx context.Context, cutoff time.Time) error {
-	return h.sqlite.CleanupLogsBefore(ctx, cutoff)
+	if err := h.sqlite.CleanupLogsBefore(ctx, cutoff); err != nil {
+		return err
+	}
+	return h.mysql.CleanupLogsBefore(ctx, cutoff)
 }
 
 // === Metrics & Statistics ===
@@ -668,6 +699,20 @@ func (h *HybridStore) CreateAuthToken(ctx context.Context, token *model.AuthToke
 	})
 
 	return nil
+}
+
+// EnsureAuthToken creates a missing auth token in the primary store and mirrors it to SQLite.
+func (h *HybridStore) EnsureAuthToken(ctx context.Context, token *model.AuthToken) (bool, error) {
+	created, err := h.mysql.EnsureAuthToken(ctx, token)
+	if err != nil {
+		return false, err
+	}
+
+	h.syncToSQLite("EnsureAuthToken", func() error {
+		return h.sqlite.UpsertAuthTokenAllFields(ctx, token)
+	})
+
+	return created, nil
 }
 
 func (h *HybridStore) GetAuthToken(ctx context.Context, id int64) (*model.AuthToken, error) {
@@ -837,17 +882,11 @@ func (h *HybridStore) GetDebugLogByLogID(ctx context.Context, logID int64) (*mod
 }
 
 func (h *HybridStore) CleanupDebugLogsBefore(ctx context.Context, cutoff time.Time) error {
-	if err := h.sqlite.CleanupDebugLogsBefore(ctx, cutoff); err != nil {
-		return err
-	}
-	return h.mysql.CleanupDebugLogsBefore(ctx, cutoff)
+	return h.sqlite.CleanupDebugLogsBefore(ctx, cutoff)
 }
 
 func (h *HybridStore) TruncateDebugLogs(ctx context.Context) error {
-	if err := h.sqlite.TruncateDebugLogs(ctx); err != nil {
-		return err
-	}
-	return h.mysql.TruncateDebugLogs(ctx)
+	return h.sqlite.TruncateDebugLogs(ctx)
 }
 
 func (h *HybridStore) Close() error {

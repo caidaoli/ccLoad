@@ -401,6 +401,39 @@ func TestRegistry_TranslateRequest_OpenAIToAnthropic(t *testing.T) {
 	if !strings.Contains(string(got), `"role":"user"`) || !strings.Contains(string(got), `"text":"hello"`) {
 		t.Fatalf("unexpected translated request: %s", got)
 	}
+	if !strings.Contains(string(got), `"stream":false`) {
+		t.Fatalf("expected anthropic stream=false to preserve non-stream request, got %s", got)
+	}
+}
+
+func TestRegistry_TranslateRequest_OpenAIToAnthropic_TextOnlyAssistantUsesStringContent(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	raw := []byte(`{"model":"mimo-v2.5","messages":[{"role":"user","content":"first"},{"role":"assistant","content":"previous answer"},{"role":"user","content":"next"}]}`)
+	got, err := reg.TranslateRequest(protocol.OpenAI, protocol.Anthropic, "mimo-v2.5", raw, false)
+	if err != nil {
+		t.Fatalf("TranslateRequest failed: %v", err)
+	}
+
+	var req struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content any    `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(got, &req); err != nil {
+		t.Fatalf("unmarshal translated request: %v", err)
+	}
+	if len(req.Messages) != 3 {
+		t.Fatalf("messages length = %d, want 3; body=%s", len(req.Messages), got)
+	}
+	if req.Messages[1].Role != "assistant" {
+		t.Fatalf("message[1].role = %q, want assistant", req.Messages[1].Role)
+	}
+	if content, ok := req.Messages[1].Content.(string); !ok || content != "previous answer" {
+		t.Fatalf("assistant content = %#v, want string previous answer; body=%s", req.Messages[1].Content, got)
+	}
 }
 
 func TestRegistry_TranslateRequest_OpenAIToAnthropic_SystemOnly(t *testing.T) {
@@ -704,6 +737,50 @@ func TestRegistry_TranslateResponseNonStream_AnthropicToOpenAI(t *testing.T) {
 	}
 	if !strings.Contains(string(got), `"object":"chat.completion"`) || !strings.Contains(string(got), `"content":"world"`) {
 		t.Fatalf("unexpected translated response: %s", got)
+	}
+}
+
+func TestRegistry_TranslateResponseNonStream_AnthropicSSEToOpenAI(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	rawReq := []byte(`{"model":"mimo-v2.5","messages":[{"role":"user","content":"hello"}]}`)
+	translatedReq := []byte(`{"model":"mimo-v2.5","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"stream":false}`)
+	rawResp := []byte(
+		"event: message_start\n" +
+			"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"mimo-v2.5\",\"usage\":{\"input_tokens\":3,\"cache_read_input_tokens\":2,\"cache_creation_input_tokens\":1,\"output_tokens\":0}}}\n\n" +
+			"event: content_block_start\n" +
+			"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n" +
+			"event: content_block_delta\n" +
+			"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"think\"}}\n\n" +
+			"event: content_block_stop\n" +
+			"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+			"event: content_block_start\n" +
+			"data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+			"event: content_block_delta\n" +
+			"data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n" +
+			"event: message_delta\n" +
+			"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n" +
+			"event: message_stop\n" +
+			"data: {\"type\":\"message_stop\"}\n\n",
+	)
+
+	got, err := reg.TranslateResponseNonStream(context.Background(), protocol.Anthropic, protocol.OpenAI, "mimo-v2.5", rawReq, translatedReq, rawResp)
+	if err != nil {
+		t.Fatalf("TranslateResponseNonStream failed: %v", err)
+	}
+	body := string(got)
+	if strings.Contains(body, "event:") {
+		t.Fatalf("expected OpenAI JSON, got raw SSE: %s", body)
+	}
+	if !strings.Contains(body, `"object":"chat.completion"`) || !strings.Contains(body, `"content":"hello"`) {
+		t.Fatalf("unexpected translated response: %s", got)
+	}
+	if !strings.Contains(body, `"reasoning_content":"think"`) {
+		t.Fatalf("expected reasoning_content from thinking SSE, got %s", got)
+	}
+	if !strings.Contains(body, `"prompt_tokens":6`) || !strings.Contains(body, `"completion_tokens":5`) {
+		t.Fatalf("unexpected usage payload: %s", got)
 	}
 }
 

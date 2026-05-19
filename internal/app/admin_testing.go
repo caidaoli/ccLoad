@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"net/http/httptest"
 	neturl "net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"ccLoad/internal/cooldown"
@@ -46,6 +48,36 @@ type channelTestRequestPlan struct {
 	headers          http.Header
 	requestBody      []byte
 	clientBody       []byte
+	timeout          *channelTestTimeout
+}
+
+type channelTestTimeout struct {
+	cancel                     context.CancelFunc
+	firstStreamContentTimer    *time.Timer
+	firstStreamContentTimedOut atomic.Bool
+}
+
+func (t *channelTestTimeout) cancelAll() {
+	if t == nil {
+		return
+	}
+	if t.firstStreamContentTimer != nil {
+		t.firstStreamContentTimer.Stop()
+	}
+	if t.cancel != nil {
+		t.cancel()
+	}
+}
+
+func (t *channelTestTimeout) markFirstStreamContent() {
+	if t == nil || t.firstStreamContentTimer == nil {
+		return
+	}
+	t.firstStreamContentTimer.Stop()
+}
+
+func (t *channelTestTimeout) firstStreamContentTimeoutTriggered() bool {
+	return t != nil && t.firstStreamContentTimedOut.Load()
 }
 
 func newChannelTester(protocolName string) testutil.ChannelTester {
@@ -124,6 +156,61 @@ func extractRequestPath(fullURL string) string {
 		return path + "?" + parsed.RawQuery
 	}
 	return path
+}
+
+func (s *Server) newChannelTestTimeoutContext(parent context.Context, stream bool) (context.Context, *channelTestTimeout) {
+	ctx, cancel := context.WithCancel(parent)
+	timeout := &channelTestTimeout{cancel: cancel}
+
+	if stream {
+		if s.firstByteTimeout > 0 {
+			timeout.firstStreamContentTimer = time.AfterFunc(s.firstByteTimeout, func() {
+				timeout.firstStreamContentTimedOut.Store(true)
+				cancel()
+			})
+		}
+		return ctx, timeout
+	}
+
+	if s.nonStreamTimeout > 0 {
+		timeoutCtx, timeoutCancel := context.WithTimeout(ctx, s.nonStreamTimeout)
+		timeout.cancel = func() {
+			timeoutCancel()
+			cancel()
+		}
+		return timeoutCtx, timeout
+	}
+
+	return ctx, timeout
+}
+
+func (s *Server) describeChannelTestTimeoutError(start time.Time, testReq *testutil.TestChannelRequest, timeout *channelTestTimeout, err error) (int, string, bool) {
+	durationSec := time.Since(start).Seconds()
+	if timeout.firstStreamContentTimeoutTriggered() {
+		return util.StatusFirstByteTimeout,
+			fmt.Sprintf("上游首个有效流内容超时: upstream first valid stream content timeout after %.2fs (threshold=%v): %v", durationSec, s.firstByteTimeout, err),
+			true
+	}
+	if !testReq.Stream && s.nonStreamTimeout > 0 && errors.Is(err, context.DeadlineExceeded) {
+		return http.StatusGatewayTimeout,
+			fmt.Sprintf("非流式请求超时: upstream timeout after %.2fs (threshold=%v): %v", durationSec, s.nonStreamTimeout, err),
+			true
+	}
+	return 0, "", false
+}
+
+func testStreamParserHasFirstContent(parser usageParser) bool {
+	return parser != nil && (parser.GetLastError() != nil || parser.HasStreamOutput() || parser.IsStreamComplete())
+}
+
+func markTestFirstStreamContent(requestPlan *channelTestRequestPlan, result map[string]any, start time.Time) {
+	if requestPlan == nil {
+		return
+	}
+	if _, exists := result["first_byte_duration_ms"]; !exists {
+		result["first_byte_duration_ms"] = time.Since(start).Milliseconds()
+	}
+	requestPlan.timeout.markFirstStreamContent()
 }
 
 // patchUpstreamSystemPrompt 将协议转换后的请求体中的 system prompt
@@ -340,7 +427,7 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 		return
 	}
 
-	keySelection, err := s.selectChannelTestKey(cfg, apiKeys, testReq.KeyIndex, requestAPIKey)
+	keySelection, err := s.selectChannelTestKey(apiKeys, testReq.KeyIndex, requestAPIKey)
 	if err != nil {
 		RespondJSON(c, http.StatusOK, gin.H{
 			"success":    false,
@@ -375,7 +462,7 @@ type channelTestKeySelection struct {
 	updatePersistedCooldown bool
 }
 
-func (s *Server) selectChannelTestKey(cfg *model.Config, apiKeys []*model.APIKey, requestedKeyIndex int, requestAPIKey string) (channelTestKeySelection, error) {
+func (s *Server) selectChannelTestKey(apiKeys []*model.APIKey, requestedKeyIndex int, requestAPIKey string) (channelTestKeySelection, error) {
 	if requestAPIKey != "" {
 		matchedKey, ok := findAPIKeyByIndex(apiKeys, requestedKeyIndex)
 		return channelTestKeySelection{
@@ -385,22 +472,16 @@ func (s *Server) selectChannelTestKey(cfg *model.Config, apiKeys []*model.APIKey
 		}, nil
 	}
 
-	now := time.Now()
-	if requestedKey, ok := findAPIKeyByIndex(apiKeys, requestedKeyIndex); ok && !requestedKey.IsCoolingDown(now) {
-		return channelTestKeySelection{
-			keyIndex:                requestedKey.KeyIndex,
-			apiKey:                  requestedKey.APIKey,
-			updatePersistedCooldown: true,
-		}, nil
-	}
-
-	keyIndex, apiKey, err := s.keySelector.SelectAvailableKey(cfg.ID, apiKeys, nil)
-	if err != nil {
-		return channelTestKeySelection{}, fmt.Errorf("无可用 API Key（全部处于冷却中）")
+	// 显式优于隐式：调用方指定了 key_index 就严格使用该 Key（无视冷却状态）。
+	// 既往的"冷却时静默回退到其他可用 Key"会导致 tested_key_index 与请求不一致，
+	// 让用户困惑（点了 key 0 却测了 key 4）。要测全部冷却中的渠道，请显式指定 key_index 或调用方自行选择。
+	requestedKey, ok := findAPIKeyByIndex(apiKeys, requestedKeyIndex)
+	if !ok {
+		return channelTestKeySelection{}, fmt.Errorf("未找到 Key #%d", requestedKeyIndex)
 	}
 	return channelTestKeySelection{
-		keyIndex:                keyIndex,
-		apiKey:                  apiKey,
+		keyIndex:                requestedKey.KeyIndex,
+		apiKey:                  requestedKey.APIKey,
 		updatePersistedCooldown: true,
 	}, nil
 }
@@ -433,6 +514,11 @@ func (s *Server) executeChannelTestWithCooldown(ctx context.Context, cfg *model.
 		return result
 	}
 
+	if limited, _ := result["rpm_limited"].(bool); limited {
+		result["cooldown_action"] = "rpm_limited_no_cooldown"
+		return result
+	}
+
 	if !updatePersistedCooldown {
 		result["cooldown_action"] = "request_key_no_cooldown"
 		return result
@@ -457,6 +543,21 @@ func (s *Server) executeChannelTestWithCooldown(ctx context.Context, cfg *model.
 	}
 
 	return result
+}
+
+func channelRPMExceededTestResult(start time.Time, retryAfter time.Duration) map[string]any {
+	retryAfterMs := int64(retryAfter / time.Millisecond)
+	if retryAfter > 0 && retryAfterMs == 0 {
+		retryAfterMs = 1
+	}
+	return map[string]any{
+		"success":        false,
+		"error":          "渠道已达到RPM限制",
+		"status_code":    http.StatusTooManyRequests,
+		"duration_ms":    time.Since(start).Milliseconds(),
+		"rpm_limited":    true,
+		"retry_after_ms": retryAfterMs,
+	}
 }
 
 // 测试渠道API连通性
@@ -554,13 +655,26 @@ func (s *Server) testChannelAPIWithURL(
 
 	// 发送请求
 	start := time.Now()
-	resp, err := s.client.Do(req)
+	resp, err := s.doUpstreamRequest(cfg, req)
 	if err != nil {
-		return map[string]any{
+		if errors.Is(err, ErrChannelRPMExceeded) {
+			return channelRPMExceededTestResult(start, channelRPMRetryAfter(err))
+		}
+		errorMsg := "网络请求失败: " + err.Error()
+		statusCode := 0
+		if timeoutStatus, timeoutMsg, ok := s.describeChannelTestTimeoutError(start, testReq, requestPlan.timeout, err); ok {
+			errorMsg = timeoutMsg
+			statusCode = timeoutStatus
+		}
+		result := map[string]any{
 			"success":     false,
-			"error":       "网络请求失败: " + err.Error(),
+			"error":       errorMsg,
 			"duration_ms": time.Since(start).Milliseconds(),
 		}
+		if statusCode > 0 {
+			result["status_code"] = statusCode
+		}
+		return result
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -597,11 +711,17 @@ func (s *Server) testChannelAPIWithURL(
 	// 非流式或非SSE响应：按原逻辑读取完整响应（即便前端请求了流式，但上游未返回SSE，也按普通响应处理，确保能展示完整错误体）
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		errorMsg := "读取响应失败: " + err.Error()
+		statusCode := resp.StatusCode
+		if timeoutStatus, timeoutMsg, ok := s.describeChannelTestTimeoutError(start, testReq, requestPlan.timeout, err); ok {
+			errorMsg = timeoutMsg
+			statusCode = timeoutStatus
+		}
 		return map[string]any{
 			"success":     false,
-			"error":       "读取响应失败: " + err.Error(),
+			"error":       errorMsg,
 			"duration_ms": time.Since(start).Milliseconds(),
-			"status_code": resp.StatusCode,
+			"status_code": statusCode,
 		}
 	}
 	return s.parseTestNonStreamResponse(ctx, requestPlan, testReq, resp, contentType, start, respBody, result)
@@ -661,17 +781,7 @@ func (s *Server) parseTestNonStreamResponse(
 
 		usageParser := newJSONUsageParser(requestPlan.upstreamProtocol)
 		_ = usageParser.Feed(bodyBytes)
-		billableInput, output, cacheRead, _ := usageParser.GetUsage()
-		if billableInput+output+cacheRead > 0 {
-			result["cost_usd"] = util.CalculateCostDetailed(
-				testReq.Model,
-				billableInput,
-				output,
-				cacheRead,
-				usageParser.Cache5mInputTokens,
-				usageParser.Cache1hInputTokens,
-			)
-		}
+		populateTestNormalizedUsageAndCost(result, testReq, usageParser)
 
 		result["upstream_response_body"] = string(bodyBytes)
 
@@ -732,10 +842,11 @@ func (s *Server) buildTestUpstreamRequest(
 	// 渠道级自定义请求体规则（与代理链路一致，仅对 JSON body 生效）
 	requestPlan.requestBody = applyBodyRules(requestPlan.headers.Get("Content-Type"), requestPlan.requestBody, cfgForBuild.BodyRules())
 
-	ctx, cancel := context.WithTimeout(reqCtx, 2*time.Minute)
+	ctx, timeout := s.newChannelTestTimeoutContext(reqCtx, testReq.Stream)
+	requestPlan.timeout = timeout
 	req, err := http.NewRequestWithContext(ctx, "POST", requestPlan.fullURL, bytes.NewReader(requestPlan.requestBody))
 	if err != nil {
-		cancel()
+		timeout.cancelAll()
 		return nil, nil, nil, fmt.Errorf("创建HTTP请求失败: %w", err)
 	}
 
@@ -749,7 +860,7 @@ func (s *Server) buildTestUpstreamRequest(
 	}
 	applyHeaderRules(req.Header, cfgForBuild.HeaderRules())
 
-	return req, requestPlan, cancel, nil
+	return req, requestPlan, timeout.cancelAll, nil
 }
 
 // parseTestTranslatedSSEResponse 处理需要跨协议翻译的 SSE 响应分支。
@@ -764,7 +875,8 @@ func (s *Server) parseTestTranslatedSSEResponse(
 	recorder := httptest.NewRecorder()
 	var rawUpstreamBuf bytes.Buffer
 	upstreamTee := io.TeeReader(resp.Body, &rawUpstreamBuf)
-	firstByteCaptured := false
+	firstContentCaptured := false
+	firstContentParser := newSSEUsageParser(requestPlan.upstreamProtocol)
 	var state any
 
 	streamErr := streamTransformSSEEvents(
@@ -772,9 +884,14 @@ func (s *Server) parseTestTranslatedSSEResponse(
 		upstreamTee,
 		recorder,
 		func(rawEvent []byte) error {
-			if !firstByteCaptured && len(rawEvent) > 0 {
-				firstByteCaptured = true
-				result["first_byte_duration_ms"] = time.Since(start).Milliseconds()
+			if !firstContentCaptured && len(rawEvent) > 0 {
+				if err := firstContentParser.Feed(rawEvent); err != nil {
+					log.Printf("[WARN] SSE 首段内容解析失败: %v", err)
+				}
+				if testStreamParserHasFirstContent(firstContentParser) {
+					firstContentCaptured = true
+					markTestFirstStreamContent(requestPlan, result, start)
+				}
 			}
 			return nil
 		},
@@ -792,8 +909,16 @@ func (s *Server) parseTestTranslatedSSEResponse(
 		},
 	)
 	if streamErr != nil {
+		errorMsg := "读取流式响应失败: " + streamErr.Error()
+		statusCode := resp.StatusCode
+		if timeoutStatus, timeoutMsg, ok := s.describeChannelTestTimeoutError(start, testReq, requestPlan.timeout, streamErr); ok {
+			errorMsg = timeoutMsg
+			statusCode = timeoutStatus
+		}
+		result["success"] = false
+		result["status_code"] = statusCode
 		result["duration_ms"] = time.Since(start).Milliseconds()
-		result["error"] = "读取流式响应失败: " + streamErr.Error()
+		result["error"] = errorMsg
 		result["upstream_response_body"] = rawUpstreamBuf.String()
 		return result
 	}
@@ -940,28 +1065,54 @@ func populateTestSSEUsageAndCost(
 	usageParser *sseUsageParser,
 	lastUsage map[string]any,
 ) {
-	billableInput, output, cacheRead, _ := usageParser.GetUsage()
 	if lastUsage != nil {
 		result["api_response"] = map[string]any{"usage": lastUsage}
-	} else if billableInput+output+cacheRead > 0 {
-		result["api_response"] = map[string]any{
-			"usage": map[string]any{
-				"input_tokens":                billableInput,
-				"output_tokens":               output,
-				"cache_read_input_tokens":     cacheRead,
-				"cache_creation_input_tokens": 0,
-			},
+	}
+	usage, ok := normalizedTestUsage(usageParser)
+	if ok {
+		result["usage"] = usage
+		if lastUsage == nil {
+			result["api_response"] = map[string]any{"usage": usage}
 		}
 	}
+	populateTestNormalizedUsageAndCost(result, testReq, usageParser)
+}
+
+func normalizedTestUsage(parser usageParser) (map[string]any, bool) {
+	input, output, cacheRead, cacheCreation := parser.GetUsage()
+	cache5m, cache1h, _ := parser.GetCacheBreakdown()
+	if input+output+cacheRead+cacheCreation+cache5m+cache1h == 0 {
+		return nil, false
+	}
+	return map[string]any{
+		"input_tokens":                input,
+		"output_tokens":               output,
+		"cache_read_input_tokens":     cacheRead,
+		"cache_creation_input_tokens": cacheCreation,
+		"cache_5m_input_tokens":       cache5m,
+		"cache_1h_input_tokens":       cache1h,
+	}, true
+}
+
+func populateTestNormalizedUsageAndCost(result map[string]any, testReq *testutil.TestChannelRequest, parser usageParser) {
+	usage, ok := normalizedTestUsage(parser)
+	if ok {
+		result["usage"] = usage
+	}
+
+	billableInput, output, cacheRead, _ := parser.GetUsage()
+	cache5m, cache1h, _ := parser.GetCacheBreakdown()
 	if billableInput+output+cacheRead > 0 {
 		result["cost_usd"] = util.CalculateCostDetailed(
 			testReq.Model,
 			billableInput,
 			output,
 			cacheRead,
-			usageParser.Cache5mInputTokens,
-			usageParser.Cache1hInputTokens,
-		)
+			cache5m,
+			cache1h,
+		) + parser.GetToolCostUSD()
+	} else if toolCost := parser.GetToolCostUSD(); toolCost > 0 {
+		result["cost_usd"] = toolCost
 	}
 }
 
@@ -976,7 +1127,7 @@ func (s *Server) parseTestNativeSSEResponse(
 	result map[string]any,
 ) map[string]any {
 	collector := newTestSSECollector()
-	firstByteCaptured := false
+	firstContentCaptured := false
 
 	// [DRY] 复用代理链路的SSE usage解析器，保证tokens/成本口径一致
 	usageParser := newSSEUsageParser(requestPlan.upstreamProtocol)
@@ -986,18 +1137,25 @@ func (s *Server) parseTestNativeSSEResponse(
 	scanner.Buffer(buf, 16*1024*1024)
 
 	for scanner.Scan() {
-		if !firstByteCaptured {
-			firstByteCaptured = true
-			result["first_byte_duration_ms"] = time.Since(start).Milliseconds()
-		}
-
 		line := scanner.Text()
 		collector.consumeLine(line, usageParser)
+		if !firstContentCaptured && testStreamParserHasFirstContent(usageParser) {
+			firstContentCaptured = true
+			markTestFirstStreamContent(requestPlan, result, start)
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
+		errorMsg := "读取流式响应失败: " + err.Error()
+		statusCode := resp.StatusCode
+		if timeoutStatus, timeoutMsg, ok := s.describeChannelTestTimeoutError(start, testReq, requestPlan.timeout, err); ok {
+			errorMsg = timeoutMsg
+			statusCode = timeoutStatus
+		}
+		result["success"] = false
+		result["status_code"] = statusCode
 		result["duration_ms"] = time.Since(start).Milliseconds()
-		result["error"] = "读取流式响应失败: " + err.Error()
+		result["error"] = errorMsg
 		result["raw_response"] = collector.rawResponse()
 		return result
 	}

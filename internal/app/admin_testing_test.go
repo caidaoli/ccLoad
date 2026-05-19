@@ -12,6 +12,7 @@ import (
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/testutil"
+	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
 )
@@ -160,6 +161,57 @@ func TestTestChannelAPI_MultiURLFallbackAndSelectorFeedback(t *testing.T) {
 	}
 }
 
+func TestExecuteChannelTestWithCooldown_RespectsRPMLimitWithoutCooldown(t *testing.T) {
+	hits := 0
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+
+	cfg := &model.Config{
+		ID:           9528,
+		Name:         "rpm-limited-test",
+		URL:          upstream.URL,
+		Priority:     1,
+		RPMLimit:     1,
+		ChannelType:  "openai",
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
+		Enabled:      true,
+	}
+	req := &testutil.TestChannelRequest{
+		Model:       "gpt-4o-mini",
+		ChannelType: "openai",
+		Content:     "hello",
+	}
+
+	first := srv.executeChannelTestWithCooldown(context.Background(), cfg, 0, "sk-test", req, true)
+	if success, _ := first["success"].(bool); !success {
+		t.Fatalf("first test should succeed, got result=%+v", first)
+	}
+
+	second := srv.executeChannelTestWithCooldown(context.Background(), cfg, 0, "sk-test", req, true)
+	if success, _ := second["success"].(bool); success {
+		t.Fatalf("second test should be RPM limited, got result=%+v", second)
+	}
+	if limited, _ := second["rpm_limited"].(bool); !limited {
+		t.Fatalf("expected rpm_limited marker, got result=%+v", second)
+	}
+	if action, _ := second["cooldown_action"].(string); action != "rpm_limited_no_cooldown" {
+		t.Fatalf("cooldown_action=%q, want rpm_limited_no_cooldown, result=%+v", action, second)
+	}
+	if retryAfterMs, _ := getResultInt(second["retry_after_ms"]); retryAfterMs <= 0 {
+		t.Fatalf("retry_after_ms=%d, want positive value, result=%+v", retryAfterMs, second)
+	}
+	if hits != 1 {
+		t.Fatalf("upstream hits=%d, want 1", hits)
+	}
+}
+
 func TestTestChannelAPI_MultiURLFallbackOnPlainText502(t *testing.T) {
 	failCalls := 0
 	okCalls := 0
@@ -214,6 +266,119 @@ func TestTestChannelAPI_MultiURLFallbackOnPlainText502(t *testing.T) {
 	}
 	if got, ok := result["response_text"].(string); !ok || got != "ok" {
 		t.Fatalf("expected second URL success response_text=ok, got=%+v", result)
+	}
+}
+
+func TestTestChannelAPI_NonStreamUsesConfiguredTimeout(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(160 * time.Millisecond):
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[{"message":{"content":"late"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.nonStreamTimeout = 25 * time.Millisecond
+
+	cfg := &model.Config{
+		ID:           9530,
+		Name:         "non-stream-timeout-test",
+		URL:          upstream.URL,
+		Priority:     1,
+		ChannelType:  "openai",
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
+		Enabled:      true,
+	}
+	req := &testutil.TestChannelRequest{
+		Model:       "gpt-4o-mini",
+		ChannelType: "openai",
+		Content:     "hello",
+		Stream:      false,
+	}
+
+	start := time.Now()
+	result := srv.testChannelAPI(context.Background(), cfg, "sk-test", req)
+	elapsed := time.Since(start)
+
+	if success, _ := result["success"].(bool); success {
+		t.Fatalf("expected timeout failure, got result=%+v", result)
+	}
+	if elapsed >= 120*time.Millisecond {
+		t.Fatalf("expected configured timeout before delayed upstream response, elapsed=%v result=%+v", elapsed, result)
+	}
+	if statusCode, _ := getResultInt(result["status_code"]); statusCode != http.StatusGatewayTimeout {
+		t.Fatalf("status_code=%d, want %d, result=%+v", statusCode, http.StatusGatewayTimeout, result)
+	}
+}
+
+func TestTestChannelAPI_StreamFirstValidContentTimeoutIgnoresHeartbeats(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		flusher, _ := w.(http.Flusher)
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		lateContent := time.NewTimer(160 * time.Millisecond)
+		defer lateContent.Stop()
+
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+				_, _ = w.Write([]byte(": keep-alive\n\n"))
+				flusher.Flush()
+			case <-lateContent.C:
+				_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"late\"}}]}\n\n"))
+				_, _ = w.Write([]byte("data: [DONE]\n\n"))
+				flusher.Flush()
+				return
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.firstByteTimeout = 30 * time.Millisecond
+
+	cfg := &model.Config{
+		ID:           9531,
+		Name:         "stream-first-content-timeout-test",
+		URL:          upstream.URL,
+		Priority:     1,
+		ChannelType:  "openai",
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
+		Enabled:      true,
+	}
+	req := &testutil.TestChannelRequest{
+		Model:       "gpt-4o-mini",
+		ChannelType: "openai",
+		Content:     "hello",
+		Stream:      true,
+	}
+
+	start := time.Now()
+	result := srv.testChannelAPI(context.Background(), cfg, "sk-test", req)
+	elapsed := time.Since(start)
+
+	if success, _ := result["success"].(bool); success {
+		t.Fatalf("expected first valid stream content timeout, got result=%+v", result)
+	}
+	if elapsed >= 120*time.Millisecond {
+		t.Fatalf("expected timeout before late content, elapsed=%v result=%+v", elapsed, result)
+	}
+	if statusCode, _ := getResultInt(result["status_code"]); statusCode != util.StatusFirstByteTimeout {
+		t.Fatalf("status_code=%d, want %d, result=%+v", statusCode, util.StatusFirstByteTimeout, result)
+	}
+	if _, ok := result["first_byte_duration_ms"]; ok {
+		t.Fatalf("heartbeat must not set first_byte_duration_ms, result=%+v", result)
 	}
 }
 
@@ -853,6 +1018,79 @@ func TestHandleChannelTest_SuccessfulAPI(t *testing.T) {
 	}
 }
 
+func TestHandleChannelTest_OpenAIRequestIncludesSessionID(t *testing.T) {
+	var gotSessionID string
+	var gotBody []byte
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSessionID = r.Header.Get("Session_id")
+		if got := r.Header.Get("Session-Id"); got != "" {
+			t.Fatalf("Session-Id header should be omitted, got %q", got)
+		}
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"id": "chatcmpl_test",
+			"object": "chat.completion",
+			"model": "gpt-test",
+			"choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+			"usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+		}`))
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	ctx := context.Background()
+
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name:         "openai-test-session-id",
+		URL:          upstream.URL,
+		Priority:     1,
+		ChannelType:  "openai",
+		ModelEntries: []model.ModelEntry{{Model: "gpt-test"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test-key"}}); err != nil {
+		t.Fatalf("添加 API key 失败: %v", err)
+	}
+
+	channelID := fmt.Sprintf("%d", created.ID)
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
+		"model":        "gpt-test",
+		"channel_type": "openai",
+	}))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200, 实际 %d, 响应: %s", w.Code, w.Body.String())
+	}
+	if !uuidPattern.MatchString(gotSessionID) {
+		t.Fatalf("Session_id header missing or invalid: %q", gotSessionID)
+	}
+	var upstreamBody map[string]any
+	if err := json.Unmarshal(gotBody, &upstreamBody); err != nil {
+		t.Fatalf("unmarshal upstream body failed: %v; body=%s", err, gotBody)
+	}
+	if got, _ := upstreamBody["user"].(string); got != gotSessionID {
+		t.Fatalf("body user = %q, want session id %q; body=%s", got, gotSessionID, gotBody)
+	}
+	if got, _ := upstreamBody["prompt_cache_key"].(string); got != gotSessionID {
+		t.Fatalf("body prompt_cache_key = %q, want session id %q; body=%s", got, gotSessionID, gotBody)
+	}
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	dataSuccess, _ := resp.Data["success"].(bool)
+	if !dataSuccess {
+		t.Fatalf("data.success 应为 true, data=%+v", resp.Data)
+	}
+}
+
 // TestHandleChannelTest_FailedAPI 使用 mock server 模拟失败的 API 调用
 func TestHandleChannelTest_FailedAPI(t *testing.T) {
 	// 创建 mock 上游服务器，返回 401 错误
@@ -917,7 +1155,7 @@ func TestHandleChannelTest_FailedAPI(t *testing.T) {
 	}
 }
 
-func TestHandleChannelTest_SkipsCooledPersistedKey(t *testing.T) {
+func TestHandleChannelTest_HonorsRequestedKeyIndexEvenIfCooled(t *testing.T) {
 	mockResp := `{
 		"id": "msg_test",
 		"type": "message",
@@ -940,7 +1178,7 @@ func TestHandleChannelTest_SkipsCooledPersistedKey(t *testing.T) {
 	ctx := context.Background()
 
 	created, err := srv.store.CreateConfig(ctx, &model.Config{
-		Name:         "test-skip-cooled-key-channel",
+		Name:         "test-honor-cooled-key-channel",
 		URL:          upstream.URL,
 		Priority:     1,
 		ChannelType:  "anthropic",
@@ -977,11 +1215,59 @@ func TestHandleChannelTest_SkipsCooledPersistedKey(t *testing.T) {
 	if dataSuccess, _ := resp.Data["success"].(bool); !dataSuccess {
 		t.Fatalf("data.success=false, data=%+v", resp.Data)
 	}
-	if gotAuth != "Bearer sk-fresh" {
-		t.Fatalf("Authorization=%q, want fresh key", gotAuth)
+	if gotAuth != "Bearer sk-cooled" {
+		t.Fatalf("Authorization=%q, want Bearer sk-cooled (requested key must be honored even if cooled)", gotAuth)
 	}
-	if gotIndex, _ := resp.Data["tested_key_index"].(float64); gotIndex != 1 {
-		t.Fatalf("tested_key_index=%v, want 1", resp.Data["tested_key_index"])
+	if gotIndex, _ := resp.Data["tested_key_index"].(float64); gotIndex != 0 {
+		t.Fatalf("tested_key_index=%v, want 0", resp.Data["tested_key_index"])
+	}
+}
+
+// TestHandleChannelTest_RejectsUnknownKeyIndex 验证：请求一个不存在的 key_index 时直接报错，
+// 不再静默回退到其他可用 Key（既往会调用 SelectAvailableKey）。配合 HonorsRequestedKeyIndexEvenIfCooled
+// 共同保证"显式 key_index 即真"语义。
+func TestHandleChannelTest_RejectsUnknownKeyIndex(t *testing.T) {
+	srv := newInMemoryServer(t)
+	ctx := context.Background()
+
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name:         "test-reject-unknown-key-channel",
+		URL:          "http://test.example.com",
+		Priority:     1,
+		ChannelType:  "anthropic",
+		ModelEntries: []model.ModelEntry{{Model: "claude-3-5-sonnet"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-only"},
+	}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+
+	channelID := fmt.Sprintf("%d", created.ID)
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
+		"model":        "claude-3-5-sonnet",
+		"channel_type": "anthropic",
+		"key_index":    99, // 不存在
+	}))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	dataSuccess, _ := resp.Data["success"].(bool)
+	if dataSuccess {
+		t.Fatalf("data.success=true, want false; data=%+v", resp.Data)
+	}
+	dataError, _ := resp.Data["error"].(string)
+	if !strings.Contains(dataError, "Key #99") {
+		t.Fatalf("data.error=%q, want mention of Key #99", dataError)
 	}
 }
 

@@ -296,7 +296,7 @@ func (s *Server) applyTokenStatsUpdate(upd tokenStatsUpdate) {
 		if strings.Contains(err.Error(), "token not found") {
 			return
 		}
-		log.Printf("ERROR: failed to update token stats for hash=%s: %v", upd.tokenHash, err)
+		log.Printf("[ERROR] 更新令牌统计失败 hash=%s: %v", upd.tokenHash, err)
 		return // 数据库更新失败，不更新内存缓存，保持一致性
 	}
 
@@ -341,7 +341,7 @@ func (s *Server) updateTokenStatsAsync(tokenHash string, costMultiplier float64,
 
 		// 财务安全检查：费用为0但有token消耗时告警（可能是定价缺失）
 		if costUSD == 0.0 && (res.InputTokens > 0 || res.OutputTokens > 0) {
-			log.Printf("WARN: billing cost=0 for model=%s with tokens (in=%d, out=%d, cache_r=%d, cache_5m=%d, cache_1h=%d), pricing missing?",
+			log.Printf("[WARN] 计费 cost=0 但有 token 消耗（可能定价缺失） model=%s in=%d out=%d cache_r=%d cache_5m=%d cache_1h=%d",
 				actualModel, res.InputTokens, res.OutputTokens, res.CacheReadInputTokens, res.Cache5mInputTokens, res.Cache1hInputTokens)
 		}
 		// 注意：费用缓存更新已移至 applyTokenStatsUpdate，确保数据库先写成功

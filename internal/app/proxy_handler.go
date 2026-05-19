@@ -34,6 +34,9 @@ var ErrAllKeysUnavailable = errors.New("all channel keys unavailable")
 // ErrAllKeysExhausted 表示所有密钥都已耗尽
 var ErrAllKeysExhausted = errors.New("all keys exhausted")
 
+// ErrChannelRPMExceeded 表示渠道RPM限制已达到
+var ErrChannelRPMExceeded = errors.New("channel rpm limit exceeded")
+
 // ============================================================================
 // 并发控制
 // ============================================================================
@@ -365,6 +368,9 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		OnFirstByteRead: func() {
 			s.activeRequests.SetClientFirstByteTime(activeID, time.Since(reqCtx.attemptStartTime))
 		},
+		OnDebugCapture: func(dc *debugCapture) {
+			s.activeRequests.SetDebugCapture(activeID, dc)
+		},
 	}
 
 	attemptCtx := ctx
@@ -376,7 +382,11 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		return
 	}
 
-	s.writeFinalProxyResponse(c, reqCtx, originalModel, isStreaming, lastResult)
+	candidateCount := len(cands)
+	if useGroupRoute {
+		candidateCount = len(groupCands)
+	}
+	s.writeFinalProxyResponse(c, reqCtx, originalModel, isStreaming, lastResult, candidateCount)
 }
 
 func determineFinalClientStatus(lastResult *proxyResult) int {
@@ -464,10 +474,15 @@ func (s *Server) runProxyAttemptLoop(
 			result, err := s.tryChannelWithKeys(ctx, cfg, reqCtx, w)
 
 			if err != nil && errors.Is(err, ErrAllKeysUnavailable) {
+				s.applyProxyCooldownDecision(ctx, cfg, reqCtx, httpErrorInputFromParts(cfg.ID, cooldown.NoKeyIndex, 503, nil, nil))
 				continue
 			}
 			if err != nil && errors.Is(err, ErrAllKeysExhausted) {
 				log.Printf("[WARN] 分组渠道 %s (ID=%d) 所有Key验证失败，跳过该分组成员", cfg.Name, cfg.ID)
+				continue
+			}
+			if err != nil && errors.Is(err, ErrChannelRPMExceeded) {
+				log.Printf("[INFO] 分组渠道 %s (ID=%d) 已达到RPM限制，跳过该分组成员", cfg.Name, cfg.ID)
 				continue
 			}
 
@@ -504,6 +519,11 @@ func (s *Server) runProxyAttemptLoop(
 				continue
 			}
 
+			if err != nil && errors.Is(err, ErrChannelRPMExceeded) {
+				log.Printf("[INFO] 渠道 %s (ID=%d) 已达到RPM限制，跳过该渠道", cfg.Name, cfg.ID)
+				continue
+			}
+
 			if result != nil {
 				if result.succeeded {
 					return nil, true
@@ -531,6 +551,7 @@ func (s *Server) writeFinalProxyResponse(
 	originalModel string,
 	isStreaming bool,
 	lastResult *proxyResult,
+	candidateCount int,
 ) {
 	// 所有渠道都失败：返回“最后一次实际失败”的状态码（并映射内部状态码），避免一律伪装成503。
 	finalStatus := determineFinalClientStatus(lastResult)
@@ -545,10 +566,12 @@ func (s *Server) writeFinalProxyResponse(
 		msg = fmt.Sprintf("upstream status %d", finalStatus)
 	}
 
-	// [FIX] 2025-12: 过滤不需要汇总日志的场景
+	// 过滤不需要汇总日志的场景
 	// - 客户端取消（499）：已在 handleNetworkError 中记录渠道级日志
 	// - 客户端错误（400）：已在渠道级日志记录，汇总日志冗余
+	// - 候选池 ≤1：实际只尝试了 1 个渠道，渠道级日志已完整反映失败原因，汇总日志冗余
 	skipLog := lastResult != nil && (lastResult.isClientCanceled || finalStatus == http.StatusBadRequest)
+	skipLog = skipLog || candidateCount <= 1
 	if !skipLog {
 		s.AddLogAsync(&model.LogEntry{
 			Time:        model.JSONTime{Time: reqCtx.startTime},

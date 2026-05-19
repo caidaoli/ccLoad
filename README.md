@@ -50,15 +50,17 @@ ccLoad 一站式解决👇
 | 🔀 **智能调度** | 优先级+平滑加权轮询+健康度排序 | 烂渠道自动靠边站 |
 | 🛡️ **故障秒切** | 指数退避冷却机制 | 2min→4min→8min→30min |
 | 📊 **数据大屏** | 趋势图+日志+Token统计 | 一眼看清用量情况 |
-| 🎯 **多API兼容** | Claude/Gemini/OpenAI | 一套配置走天下 |
+| 🎯 **多API兼容** | Claude Code/Codex/Gemini/OpenAI | 一套配置走天下 |
 | 📦 **开箱即用** | 单文件+嵌入式SQLite | 零依赖，下载就能跑 |
 | 🐳 **云原生** | 多架构镜像+CI/CD | amd64/arm64都支持 |
 | 🤗 **白嫖福利** | Hugging Face免费托管 | 个人用完全够了 |
 | 💰 **成本限额** | 渠道每日成本上限 | 达到限额自动跳过 |
+| 🚦 **渠道RPM限制** | 每渠道滚动60秒请求上限 | 0=不限，超限自动跳过 |
 | 🔐 **令牌限额** | API令牌费用上限+模型限制 | 精细化访问控制 |
 | ⏱️ **首字节监控** | 流式请求TTFB记录 | 便于诊断上游延迟 |
 | 🌐 **多URL负载均衡** | 单渠道多URL+加权随机 | 延迟低的URL自动多分流 |
 | 💵 **service_tier定价** | OpenAI priority/flex/default层级 | 费用倍率精准计算 |
+| 🖼️ **图像工具计费** | Responses image_generation/gpt-image-2 | 图像生成成本不漏算 |
 | 📉 **分层定价** | GPT-5.4/Qwen-Plus/Gemini长上下文 | 超量token自动降档计费 |
 | 🧩 **模型分组** | 用分组名对外暴露多个真实模型 | 单模型失败只冷却自己，不拖垮同渠道兄弟模型 |
 | 🔄 **协议转换** | Anthropic/OpenAI/Gemini/Codex互转 | 一个渠道服务多种客户端协议 |
@@ -72,7 +74,7 @@ ccLoad 一站式解决👇
 
 从你的应用发请求到API返回结果，中间经过这几层：
 - **认证层** - 验证你的访问权限，拒绝白嫖党
-- **路由分发** - 判断是Claude还是Gemini，分流处理
+- **路由分发** - 判断请求协议与路径，按 Claude Code、Codex、Gemini、OpenAI 分流处理
 - **协议转换** - 客户端用OpenAI格式？上游是Anthropic？自动翻译，无感切换
 - **智能调度** - 从一堆渠道里选个最靠谱的给你用
 - **故障切换** - 选中的渠道挂了？秒切备用，你根本感知不到
@@ -198,13 +200,13 @@ git clone https://github.com/caidaoli/ccLoad.git
 cd ccLoad
 
 # 构建项目（默认使用高性能 JSON 库）
-go build -tags go_json -o ccload .
+go build -tags sonic -o ccload .
 
 # 或使用 Makefile
 make build
 
 # 直接运行开发模式
-go run -tags go_json .
+go run -tags sonic .
 # 或
 make dev
 ```
@@ -288,9 +290,10 @@ chmod +x ccload-linux-amd64
    | 变量名 | 值 | 必填 | 说明 |
    |--------|-----|------|------|
    | `CCLOAD_PASS` | `your_admin_password` | ✅ **必填** | 管理界面密码 |
+   | `CCLOAD_API_TOKENS` | `token1\|生产,token2\|开发` | 可选 | 启动时预置 API 访问令牌 |
 
    **注意**:
-   - API 访问令牌通过 Web 管理界面 `/web/tokens.html` 配置
+   - API 访问令牌可通过 `CCLOAD_API_TOKENS` 预置，也可在 Web 管理界面 `/web/tokens.html` 配置
    - `PORT` 和 `SQLITE_PATH` 已在 Dockerfile 中设置，无需配置
    - Hugging Face Spaces 重启后 `/tmp` 目录会清空
 
@@ -400,7 +403,7 @@ git push
 **版本锁定**（可选）:
 如果需要锁定特定版本，修改 Dockerfile：
 ```dockerfile
-FROM ghcr.io/caidaoli/ccload:v1.96.1  # 指定版本号
+FROM ghcr.io/caidaoli/ccload:2.11.2  # 指定版本号
 ENV TZ=Asia/Shanghai
 ENV PORT=7860
 ENV SQLITE_PATH=/tmp/ccload.db
@@ -592,12 +595,15 @@ curl -X POST http://localhost:8080/admin/channels \
     "api_key": "sk-ant-api03-xxx",
     "url": "https://api.anthropic.com,https://api2.anthropic.com",
     "priority": 10,
+    "rpm_limit": 0,
     "models": ["claude-sonnet-4-6", "claude-opus-4-6"],
     "enabled": true
   }'
 ```
 
 > **多URL说明**：`url` 字段支持逗号分隔的多个URL。系统会按延迟加权随机选择最优URL，故障URL自动冷却，实现同渠道内的URL级负载均衡与故障切换。
+
+> **RPM限制说明**：`rpm_limit` 是渠道级请求数上限，按滚动 60 秒窗口统计；`0` 表示不限制。代理转发、手动测试、单 URL 测试和定时检测都会计入，达到上限后该渠道会被跳过；多 URL 故障重试按实际发出的上游 HTTP 请求计数。计数保存在当前进程内，服务重启会清空，多实例部署时各实例独立统计。
 
 ### 分组管理（模型级冷却）
 
@@ -827,6 +833,10 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-opus-4-6\"]",true
   - `util.OpenAIServiceTierMultiplier()`：返回 priority/flex/default 层级对应倍率
   - `LogEntry.ServiceTier`：持久化到数据库，日志成本列显示层级标注
   - 支持 GPT-5.4、GPT-5.4-pro 等最新模型定价
+- **Responses image_generation 工具计费**（2026-05新增）：
+  - 解析 Responses API 的 `tool_usage.image_gen` 与 `image_generation` 工具模型
+  - `gpt-image-2` 按文本输入、图像输入、图像输出 token 分项计费
+  - 流式/非流式代理链路与渠道测试共用同一 usage 解析器，避免费用口径漂移
 - **分层定价（Tiered Pricing）**：
   - GPT-5.4：超过阈值 token 后输入价格自动降档
   - Qwen-Plus：超过阈值后触发低价区间
@@ -862,6 +872,8 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-opus-4-6\"]",true
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
 | `CCLOAD_PASS` | 无 | 管理界面密码（**必填**，未设置将退出） |
+| `CCLOAD_API_TOKENS` | 无 | 启动时预置 API 访问令牌，格式：`token1,token2` 或 `token1\|生产,token2\|开发`；已存在的 token 不会被覆盖 |
+| `API_TOKENS` | 无 | `CCLOAD_API_TOKENS` 的兼容别名；两个变量同时设置且值不一致时启动失败 |
 | `CCLOAD_MYSQL` | 无 | MySQL DSN（可选，格式: `user:pass@tcp(host:port)/db?charset=utf8mb4`）<br/>**设置后使用 MySQL，否则使用 SQLite** |
 | `CCLOAD_ENABLE_SQLITE_REPLICA` | `0` | 混合存储模式开关（`1`=启用，见下方说明） |
 | `CCLOAD_SQLITE_LOG_DAYS` | `7` | 混合模式启动时从 MySQL 恢复日志的天数（-1=全量，0=不恢复日志） |
@@ -911,7 +923,7 @@ export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
 |--------|--------|------|
 | `log_retention_days` | `7` | 日志保留天数（-1永久保留，1-365天） |
 | `max_key_retries` | `3` | 单个渠道内最大Key重试次数 |
-| `upstream_first_byte_timeout` | `0` | 上游首字节超时（秒，0=禁用） |
+| `upstream_first_byte_timeout` | `0` | 上游首个有效流内容超时（秒，0=禁用，仅流式） |
 | `enable_health_score` | `false` | 启用基于健康度的渠道动态排序 |
 | `success_rate_penalty_weight` | `100` | 成功率惩罚权重（见下方说明） |
 | `health_score_window_minutes` | `30` | 成功率统计时间窗口（分钟） |
@@ -957,12 +969,20 @@ export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
 
 #### API 访问令牌配置
 
-**划重点**：API令牌现在在Web界面管理，不用改环境变量了👇
+**划重点**：API令牌默认在Web界面管理；Docker/CI 迁移场景可用环境变量预置👇
 
 - 访问 `http://localhost:8080/web/tokens.html` 进行令牌管理
+- 启动时可设置 `CCLOAD_API_TOKENS=token1|生产,token2|开发` 自动创建缺失令牌
+- 预置逻辑是幂等的：已存在的 token 保留原描述、限额、模型/渠道限制和统计数据
 - 支持添加、删除、查看令牌
 - 所有令牌存储在数据库中，支持持久化
 - 未配置任何令牌时，所有 `/v1/*` 与 `/v1beta/*` API 返回 `401 Unauthorized`
+
+⚠️ **安全提示**：
+- 生产环境优先使用 Docker Secrets、Kubernetes Secrets 或平台加密 Secrets，避免把 token 明文写进普通环境变量
+- CI/CD 中不要打印完整环境变量，避免日志泄露
+- 预置完成后如不再需要自动恢复，可从部署配置中移除 `CCLOAD_API_TOKENS`
+- 限制容器 inspect、编排平台控制台和部署配置的访问权限
 
 **令牌高级功能**（2026-01新增）：
 - **费用限额**：为每个令牌设置费用上限（美元），超限后拒绝请求返回 429
@@ -985,9 +1005,9 @@ export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
 - **镜像仓库**：`ghcr.io/caidaoli/ccload`
 - **可用标签**：
   - `latest` - 最新稳定版本
-  - `v1.96.1` - 具体版本号
-  - `v1.96` - 主要.次要版本
-  - `v1` - 主要版本
+  - `2.11.2` - 具体版本号
+  - `2.11` - 主要.次要版本
+  - `2` - 主要版本
 
 ### 镜像标签说明
 
@@ -996,7 +1016,7 @@ export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
 docker pull ghcr.io/caidaoli/ccload:latest
 
 # 拉取指定版本
-docker pull ghcr.io/caidaoli/ccload:v1.96.1
+docker pull ghcr.io/caidaoli/ccload:2.11.2
 
 # 指定架构（Docker 通常自动选择）
 docker pull --platform linux/amd64 ghcr.io/caidaoli/ccload:latest
@@ -1038,7 +1058,7 @@ storage/
 - 未设置 → 使用 SQLite（默认）
 
 **核心表结构**（SQLite 和 MySQL 共用）:
-- `channels` - 渠道配置（冷却数据内联，UNIQUE 约束 name，含协议转换配置、定时检测配置）
+- `channels` - 渠道配置（冷却数据内联，UNIQUE 约束 name，含协议转换配置、定时检测配置、RPM限制配置）
 - `api_keys` - API 密钥（Key 级冷却内联，支持多 Key 策略）
 - `logs` - 请求日志（含base_url上游URL追踪）
 - `debug_logs` - 调试日志（上游请求/响应原始数据，独立清理策略）
@@ -1059,11 +1079,13 @@ storage/
 - ✅ 自动迁移（启动时自动创建/更新表结构）
 - ✅ Token统计增强（支持时间范围选择、按令牌ID分类、缓存优化）
 - ✅ **service_tier 成本计量**：日志持久化 service_tier 字段，成本列展示层级提示
+- ✅ **Responses 图像工具成本计量**：`image_generation` 工具调用费用并入日志、统计和限额口径
 - ✅ **分层定价引擎**：GPT-5.4/Qwen-Plus/Gemini 长上下文阶梯计价
 - ✅ **日志体验优化**：成本格式化精度提升（3位小数/空值空串），IP列悬停显示完整地址
 - ✅ **协议转换系统**：Anthropic/OpenAI/Gemini/Codex四协议互转，upstream/local两种模式
 - ✅ **调试日志**：上游请求/响应原始数据捕获，敏感头脱敏，独立清理策略
 - ✅ **渠道定时检测**：后台定时探测渠道可用性，支持指定检测模型
+- ✅ **渠道RPM限制**：每渠道滚动60秒请求数上限，`0` 表示无限制，超限自动跳过该渠道
 
 **向后兼容迁移**:
 - 自动检测并修复重复渠道名称

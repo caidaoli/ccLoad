@@ -259,13 +259,15 @@
 
     function calculateAverageSpeed(entry) {
       const successCount = Number(entry?.success);
-      const outputTokens = Number(entry?.total_output_tokens);
-      const avgDuration = Number(entry?.avg_duration_seconds);
-      if (!Number.isFinite(successCount) || successCount <= 0 || !Number.isFinite(outputTokens) || outputTokens <= 0 || !Number.isFinite(avgDuration) || avgDuration <= 0) {
+      if (!Number.isFinite(successCount) || successCount <= 0) {
         return null;
       }
 
-      return outputTokens / (successCount * avgDuration);
+      return calculateTokenSpeed(
+        Number(entry?.total_output_tokens) / successCount,
+        Number(entry?.avg_duration_seconds),
+        Number(entry?.avg_first_byte_time_seconds)
+      );
     }
 
     function buildCacheUtilRate(inputTokens, cacheReadTokens, cacheCreationTokens) {
@@ -1075,6 +1077,11 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
             return;
           }
         });
+      }
+
+      // 自动刷新（system_settings.auto_refresh_interval_seconds，0=禁用）
+      if (typeof window.createAutoRefresh === 'function') {
+        window.createAutoRefresh({ load: loadStats }).init();
       }
       }
     });

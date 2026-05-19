@@ -105,6 +105,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureChannelsDailyCostLimit(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels daily_cost_limit: %w", err)
 			}
+			if err := ensureChannelsRPMLimit(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate channels rpm_limit: %w", err)
+			}
 			if err := ensureChannelsProtocolTransformMode(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels protocol_transform_mode: %w", err)
 			}
@@ -307,7 +310,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 	}{
 		{"log_retention_days", "7", "int", "日志保留天数(-1永久保留,1-365天)", "7"},
 		{"max_key_retries", "3", "int", "单渠道最大Key重试次数", "3"},
-		{"upstream_first_byte_timeout", "0", "duration", "上游首块响应体超时(秒,0=禁用，仅流式)", "0"},
+		{"upstream_first_byte_timeout", "0", "duration", "上游首个有效流内容超时(秒,0=禁用，仅流式)", "0"},
 		{"non_stream_timeout", "120", "duration", "非流式请求超时(秒,0=禁用)", "120"},
 		{"model_fuzzy_match", "false", "bool", "模型匹配失败时，使用子串模糊匹配(多匹配时选最新版本)", "false"},
 		{"channel_test_content", "sonnet 4.0的发布日期是什么", "string", "渠道测试默认内容", "sonnet 4.0的发布日期是什么"},
@@ -325,6 +328,8 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		// Debug日志配置
 		{"debug_log_enabled", "false", "bool", "启用Debug日志(记录上游请求/响应原始数据)", "false"},
 		{"debug_log_retention_minutes", "2", "int", "Debug日志保留时长(分钟,1-1440)", "2"},
+		// 前端自动刷新
+		{"auto_refresh_interval_seconds", "0", "int", "页面自动刷新间隔(秒,0=禁用,建议≥30;有对话框打开时跳过本次刷新)", "0"},
 	}
 
 	var query string
@@ -349,7 +354,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
 		metaSQL := fmt.Sprintf("UPDATE system_settings SET description = ?, default_value = ?, value_type = ? WHERE %s = ?", keyCol)
 		if _, err := db.ExecContext(ctx, metaSQL,
-			"上游首块响应体超时(秒,0=禁用，仅流式)",
+			"上游首个有效流内容超时(秒,0=禁用，仅流式)",
 			"0",
 			"duration",
 			"upstream_first_byte_timeout",

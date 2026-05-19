@@ -7,6 +7,7 @@ func DefineChannelsTable() *TableBuilder {
 		Column("name VARCHAR(191) NOT NULL UNIQUE").
 		Column("url TEXT NOT NULL").
 		Column("priority INT NOT NULL DEFAULT 0").
+		Column("rpm_limit INT NOT NULL DEFAULT 0").
 		Column("channel_type VARCHAR(64) NOT NULL DEFAULT 'anthropic'").
 		Column("protocol_transform_mode VARCHAR(32) NOT NULL DEFAULT 'local'").
 		Column("enabled TINYINT NOT NULL DEFAULT 1").
@@ -216,8 +217,10 @@ func DefineLogsTable() *TableBuilder {
 		Index("idx_logs_minute_auth_token_status", "minute_bucket, auth_token_id, status_code").
 		Index("idx_logs_channel_time_id", "channel_id, time, id").
 		Index("idx_logs_channel_model_time_id", "channel_id, model, time, id").
-		Index("idx_logs_time_auth_token", "time, auth_token_id"). // 按时间+令牌查询
-		Index("idx_logs_time_actual_model", "time, actual_model") // 按时间+实际模型查询
+		Index("idx_logs_time_auth_token", "time, auth_token_id").  // 按时间+令牌查询
+		Index("idx_logs_time_actual_model", "time, actual_model"). // 按时间+实际模型查询
+		Index("idx_logs_source_time", "log_source, time").
+		Index("idx_logs_source_minute", "log_source, minute_bucket")
 }
 
 // DefineDebugLogsTable 定义debug_logs表结构（上游请求/响应原始数据）

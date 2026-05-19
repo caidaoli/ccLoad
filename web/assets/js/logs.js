@@ -18,7 +18,7 @@ let logChannelClickAction = 'edit'; // 日志页渠道名点击行为：edit|nav
 const ACTIVE_REQUESTS_POLL_INTERVAL_MS = 2000;
 let activeRequestsPollTimer = null;
 let activeRequestsFetchInFlight = false;
-let lastActiveRequestIDs = null; // 上次活跃请求ID集合（后端原始数据，用于检测完成）
+let lastActiveRequestStates = null; // Map<id, fingerprint>：上次活跃请求状态，用于检测请求结束/渠道切换
 let logsLoadInFlight = false;
 let logsLoadPending = false;
 let logsLoadScheduled = false;
@@ -119,6 +119,21 @@ function formatBytes(bytes) {
   return value.toFixed(i > 0 ? 1 : 0) + ' ' + UNITS[i];
 }
 
+function buildActiveRequestInfoContent(req) {
+  const bytesInfo = formatBytes(req?.bytes_received);
+  const hasBytes = !!bytesInfo;
+  const infoDisplay = hasBytes ? `已接收 ${bytesInfo}` : '请求处理中...';
+  const infoColor = hasBytes ? 'var(--success-600)' : 'var(--neutral-500)';
+  const infoHtml = `<span style="color: ${infoColor};">${escapeHtml(infoDisplay)}</span>`;
+  const activeRequestId = Number(req?.id);
+
+  if (!req?.debug_log_available || !Number.isFinite(activeRequestId) || activeRequestId <= 0) {
+    return infoHtml;
+  }
+
+  return `<span class="debug-log-link has-upstream-detail" data-active-request-id="${activeRequestId}" title="${escapeHtml(t('logs.debugLogTitle'))}">${infoHtml}</span>`;
+}
+
 // IP 地址掩码处理（隐藏最后两段）
 function maskIP(ip) {
   if (!ip) return '';
@@ -143,6 +158,11 @@ function maskIP(ip) {
 
 function clearActiveRequestsRows() {
   document.querySelectorAll('tr.pending-row').forEach(el => el.remove());
+}
+
+function activeRequestFingerprint(req) {
+  if (!req || !req.channel_id) return ''; // 渠道未选中阶段不参与切换检测，避免初始化触发误刷新
+  return `${req.channel_id}|${req.base_url || ''}|${req.api_key_used || ''}`;
 }
 
 function buildChannelTrigger(channelId, channelName, baseURL = '') {
@@ -242,18 +262,19 @@ function canInspectDebugLog(entry) {
 function buildLogMessageContent(entry) {
   const sourceBadge = renderLogSourceBadge(entry.log_source || 'proxy');
   const messageText = escapeHtml(entry.message || '');
-  const messageDisplay = `${sourceBadge}${messageText}`;
-  if (!messageDisplay) {
+  if (!sourceBadge && !messageText) {
     return '';
   }
 
+  let inner;
   if (!canInspectDebugLog(entry)) {
-    return `<span>${messageDisplay}</span>`;
+    inner = `<span>${messageText}</span>`;
+  } else {
+    const logId = Number(entry?.id);
+    const logIdAttr = Number.isFinite(logId) && logId > 0 ? ` data-log-id="${logId}"` : '';
+    inner = `<span class="debug-log-link has-upstream-detail"${logIdAttr}>${messageText}</span>`;
   }
-
-  const logId = Number(entry?.id);
-  const logIdAttr = Number.isFinite(logId) && logId > 0 ? ` data-log-id="${logId}"` : '';
-  return `<span class="debug-log-link has-upstream-detail"${logIdAttr}>${messageDisplay}</span>`;
+  return `${sourceBadge}${inner}`;
 }
 
 function buildLogCostDisplay(entry) {
@@ -339,12 +360,11 @@ function buildDebugLogUnavailableHtml(data) {
 }
 
 function calculateLogSpeed(entry) {
-  const outputTokens = Number(entry?.output_tokens);
-  const duration = Number(entry?.duration);
-  if (!Number.isFinite(outputTokens) || outputTokens <= 0 || !Number.isFinite(duration) || duration <= 0) {
-    return null;
-  }
-  return outputTokens / duration;
+  return calculateTokenSpeed(
+    Number(entry?.output_tokens),
+    Number(entry?.duration),
+    entry?.is_streaming ? Number(entry?.first_byte_time) : 0
+  );
 }
 
 // 加载默认测试内容（从系统设置）
@@ -424,7 +444,7 @@ async function load(skipLoading = false) {
       ensureActiveRequestsPollingStarted();
       await fetchActiveRequests();
     } else {
-      lastActiveRequestIDs = null;
+      lastActiveRequestStates = null;
       clearActiveRequestsRows();
     }
 
@@ -491,7 +511,7 @@ async function fetchActiveRequests() {
   // 进行中的请求只存在于"本日"，且没有状态码
   if (shouldSkipActiveRequestsFetch(hours, status, logSource)) {
     clearActiveRequestsRows();
-    lastActiveRequestIDs = null;
+    lastActiveRequestStates = null;
     return;
   }
 
@@ -500,26 +520,31 @@ async function fetchActiveRequests() {
     const response = await fetchAPIWithAuth('/admin/active-requests');
     const rawActiveRequests = (response.success && Array.isArray(response.data)) ? response.data : [];
 
-    // 检测请求完成：用后端原始ID集合判断“消失的ID”，避免筛选条件变化导致误判
-    const currentIDs = new Set();
+    // 检测"需要刷新日志"：ID 消失（请求结束）或 fingerprint 变化（渠道/Key/URL 切换 → 上次尝试已失败并写入日志）
+    const currentStates = new Map();
     for (const req of rawActiveRequests) {
       if (req && (req.id !== undefined && req.id !== null)) {
-        currentIDs.add(String(req.id));
+        currentStates.set(String(req.id), activeRequestFingerprint(req));
       }
     }
-    if (lastActiveRequestIDs !== null) {
-      let hasCompleted = false;
-      for (const id of lastActiveRequestIDs) {
-        if (!currentIDs.has(id)) {
-          hasCompleted = true;
+    if (lastActiveRequestStates !== null) {
+      let needRefresh = false;
+      for (const [id, lastFp] of lastActiveRequestStates) {
+        const currentFp = currentStates.get(id);
+        if (currentFp === undefined) {
+          needRefresh = true; // 请求消失 = 已结束
+          break;
+        }
+        if (lastFp && currentFp && lastFp !== currentFp) {
+          needRefresh = true; // 同 ID 切换了渠道/Key/URL = 上次尝试已写日志
           break;
         }
       }
-      if (hasCompleted && currentLogsPage === 1) {
+      if (needRefresh && currentLogsPage === 1) {
         scheduleLoad();
       }
     }
-    lastActiveRequestIDs = currentIDs;
+    lastActiveRequestStates = currentStates;
 
     // 根据当前筛选条件过滤（只影响展示，不影响完成检测）
     const activeRequests = filterActiveRequests(rawActiveRequests);
@@ -567,12 +592,7 @@ function renderActiveRequests(activeRequests) {
       keyDisplay = `<span class="logs-api-key-text logs-mono-text">${escapeHtml(req.api_key_used)}</span>`;
     }
 
-    const bytesInfo = formatBytes(req.bytes_received);
-    const hasBytes = !!bytesInfo;
-    const infoDisplay = hasBytes ? `已接收 ${bytesInfo}` : '请求处理中...';
-    const infoColor = hasBytes ? 'var(--success-600)' : 'var(--neutral-500)';
-
-
+    const infoContent = buildActiveRequestInfoContent(req);
 
     const row = document.createElement('tr');
     row.className = 'pending-row';
@@ -584,7 +604,7 @@ function renderActiveRequests(activeRequests) {
               <span class="logs-mono-text" style="margin-left: 8px;" title="${escapeHtml(req.client_ip || '')}">${escapeHtml(maskIP(req.client_ip) || '-')}</span>
               <span style="margin-left: 8px;">${escapeHtml(req.model || '-')}</span>
               <span style="margin-left: 8px;">${durationDisplay} ${streamFlag}</span>
-              <span style="margin-left: 8px; color: ${infoColor};">${escapeHtml(infoDisplay)}</span>
+              <span style="margin-left: 8px;">${infoContent}</span>
             </td>
           `;
     } else {
@@ -603,7 +623,7 @@ function renderActiveRequests(activeRequests) {
             <td class="logs-col-cache-write mobile-empty-cell" data-mobile-label="${logMobileLabels.cacheWrite}" style="text-align: right; white-space: nowrap;"></td>
             <td class="logs-col-cache-util mobile-empty-cell" data-mobile-label="${logMobileLabels.cacheUtil}" style="text-align: right; white-space: nowrap;"></td>
             <td class="logs-col-cost mobile-empty-cell" data-mobile-label="${logMobileLabels.cost}" style="text-align: right; white-space: nowrap;"></td>
-            <td class="logs-col-message" data-mobile-label="${logMobileLabels.message}"><span style="color: ${infoColor};">${escapeHtml(infoDisplay)}</span></td>
+            <td class="logs-col-message" data-mobile-label="${logMobileLabels.message}">${infoContent}</td>
           `;
     }
     fragment.appendChild(row);
@@ -1398,6 +1418,16 @@ window.initPageBootstrap({
   const tbody = document.getElementById('tbody');
   if (tbody) {
     tbody.addEventListener('click', (e) => {
+      // 运行中请求 Debug log 查看
+      const activeDebugLink = e.target.closest('.debug-log-link[data-active-request-id]');
+      if (activeDebugLink) {
+        const activeRequestId = parseInt(activeDebugLink.dataset.activeRequestId, 10);
+        if (Number.isFinite(activeRequestId) && activeRequestId > 0) {
+          showActiveDebugLogModal(activeRequestId);
+        }
+        return;
+      }
+
       // Debug log 查看
       const debugLink = e.target.closest('.debug-log-link[data-log-id]');
       if (debugLink) {
@@ -1820,17 +1850,266 @@ function composeDebugRawResponse(data) {
   return parts.join('\n');
 }
 
+function appendMergedText(bucket, value) {
+  if (!bucket || value == null) return;
+  if (Array.isArray(value)) {
+    value.forEach(item => appendMergedText(bucket, item));
+    return;
+  }
+  if (typeof value === 'object') {
+    if (typeof value.text === 'string') {
+      appendMergedText(bucket, value.text);
+      return;
+    }
+    if (typeof value.content === 'string') {
+      appendMergedText(bucket, value.content);
+      return;
+    }
+    try {
+      bucket.push(JSON.stringify(value));
+    } catch {
+      // ignore values that cannot be rendered
+    }
+    return;
+  }
+  const text = String(value);
+  if (text) bucket.push(text);
+}
+
+function collectMergedResponsePayload(payload, state) {
+  if (!payload || typeof payload !== 'object' || !state) return;
+
+  const collectContentParts = (content) => {
+    if (!Array.isArray(content)) {
+      appendMergedText(state.text, content);
+      return;
+    }
+    content.forEach(part => {
+      if (!part || typeof part !== 'object') {
+        appendMergedText(state.text, part);
+        return;
+      }
+      appendMergedText(state.text, part.text ?? part.content);
+    });
+  };
+
+  const collectMessage = (message) => {
+    if (!message || typeof message !== 'object') return;
+    appendMergedText(state.reasoning, message.reasoning_content);
+    appendMergedText(state.reasoning, message.reasoning);
+    appendMergedText(state.text, message.content);
+    appendMergedText(state.text, message.refusal);
+  };
+
+  const collectAnthropicDelta = (payload) => {
+    const delta = payload.delta;
+    if (!delta || typeof delta !== 'object') return;
+
+    appendMergedText(state.reasoning, delta.thinking);
+    appendMergedText(state.text, delta.text);
+
+    if (delta.partial_json != null) {
+      if (
+        payload.index != null
+        && state.lastFunctionCallIndex != null
+        && state.lastFunctionCallIndex !== payload.index
+      ) {
+        state.functionCalls.push('\n\n');
+      }
+      if (payload.index != null) state.lastFunctionCallIndex = payload.index;
+      appendMergedText(state.functionCalls, delta.partial_json);
+      state.hasFunctionCallDelta = true;
+    }
+
+    if (delta.thinking != null) state.hasReasoningDelta = true;
+    if (delta.text != null) state.hasTextDelta = true;
+  };
+
+  const collectOutputItem = (item) => {
+    if (!item || typeof item !== 'object') return;
+    if (item.type === 'message') {
+      if (state.hasTextDelta) return;
+      collectContentParts(item.content);
+      return;
+    }
+    if (item.type === 'function_call') {
+      if (state.hasFunctionCallDelta) return;
+      if (state.functionCalls.length > 0) state.functionCalls.push('\n\n');
+      appendMergedText(state.functionCalls, item.arguments);
+      return;
+    }
+    if (item.type === 'reasoning') {
+      if (state.hasReasoningDelta) return;
+      appendMergedText(state.reasoning, item.summary || item.content);
+    }
+  };
+
+  if (Array.isArray(payload.choices)) {
+    payload.choices.forEach(choice => {
+      if (!choice || typeof choice !== 'object') return;
+      const delta = choice.delta || null;
+      if (delta && typeof delta === 'object') {
+        appendMergedText(state.reasoning, delta.reasoning_content);
+        appendMergedText(state.reasoning, delta.reasoning);
+        appendMergedText(state.text, delta.content);
+        if (delta.reasoning_content != null || delta.reasoning != null) state.hasReasoningDelta = true;
+        if (delta.content != null) state.hasTextDelta = true;
+      }
+      collectMessage(choice.message);
+    });
+  }
+
+  switch (payload.type) {
+    case 'content_block_delta':
+      collectAnthropicDelta(payload);
+      break;
+    case 'response.output_text.delta':
+    case 'response.refusal.delta':
+      appendMergedText(state.text, payload.delta);
+      state.hasTextDelta = true;
+      break;
+    case 'response.reasoning_text.delta':
+    case 'response.reasoning_summary_text.delta':
+    case 'response.reasoning.delta':
+      appendMergedText(state.reasoning, payload.delta);
+      state.hasReasoningDelta = true;
+      break;
+    case 'response.function_call_arguments.delta':
+      if (
+        payload.output_index != null
+        && state.lastFunctionCallIndex != null
+        && state.lastFunctionCallIndex !== payload.output_index
+      ) {
+        state.functionCalls.push('\n\n');
+      }
+      if (payload.output_index != null) state.lastFunctionCallIndex = payload.output_index;
+      appendMergedText(state.functionCalls, payload.delta);
+      state.hasFunctionCallDelta = true;
+      break;
+    default:
+      break;
+  }
+
+  if (Array.isArray(payload.output)) {
+    payload.output.forEach(collectOutputItem);
+  }
+  if (payload.response && Array.isArray(payload.response.output)) {
+    payload.response.output.forEach(collectOutputItem);
+  }
+}
+
+function parseSSEDataPayloads(body) {
+  const payloads = [];
+  let dataLines = [];
+
+  const flush = () => {
+    if (dataLines.length === 0) return;
+    const raw = dataLines.join('\n').trim();
+    dataLines = [];
+    if (!raw || raw === '[DONE]') return;
+    try {
+      payloads.push(JSON.parse(raw));
+    } catch {
+      // Non-JSON SSE data is not useful for merged LLM content.
+    }
+  };
+
+  String(body || '').replace(/\r\n/g, '\n').split('\n').forEach(line => {
+    if (line.startsWith('data:')) {
+      const value = line.slice(5);
+      dataLines.push(value.startsWith(' ') ? value.slice(1) : value);
+      return;
+    }
+    if (line === '') flush();
+  });
+  flush();
+
+  return payloads;
+}
+
+function composeDebugMergedResponse(data) {
+  let raw = String(data?.resp_body || '').replace(/\r\n/g, '\n');
+  if (!raw) return '';
+  const headerBreak = raw.indexOf('\n\n');
+  const firstLine = raw.split('\n', 1)[0] || '';
+  if (headerBreak !== -1 && /^HTTP\s+\d{3}\b/i.test(firstLine)) {
+    raw = raw.slice(headerBreak + 2).trimStart();
+  }
+
+  const state = {
+    reasoning: [],
+    text: [],
+    functionCalls: [],
+    hasReasoningDelta: false,
+    hasTextDelta: false,
+    hasFunctionCallDelta: false,
+    lastFunctionCallIndex: null
+  };
+  const ssePayloads = parseSSEDataPayloads(raw);
+  if (ssePayloads.length > 0) {
+    ssePayloads.forEach(payload => collectMergedResponsePayload(payload, state));
+  } else {
+    try {
+      collectMergedResponsePayload(JSON.parse(raw), state);
+    } catch {
+      return formatJsonSafe(raw);
+    }
+  }
+
+  const sections = [];
+  [state.reasoning, state.text, state.functionCalls].forEach(bucket => {
+    const text = bucket.join('').trim();
+    if (text) sections.push(text);
+  });
+
+  return sections.join('\n\n') || formatJsonSafe(raw);
+}
+
+function getDebugMergedRenderMode(text) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return 'text';
+  const isJson = (trimmed.startsWith('{') && trimmed.endsWith('}'))
+    || (trimmed.startsWith('[') && trimmed.endsWith(']'));
+  if (!isJson) return 'text';
+  try {
+    JSON.parse(trimmed);
+    return 'json';
+  } catch {
+    return 'text';
+  }
+}
+
+const ACTIVE_DEBUG_LOG_REFRESH_INTERVAL_MS = 1500;
+let activeDebugLogRefreshTimer = null;
+let activeDebugLogRefreshInFlight = false;
+let debugResponseMergedVisible = false;
+
 async function showDebugLogModal(logId) {
+  return showDebugLogModalFromUrl(`/admin/debug-logs/${logId}`, { activeRequestId: 0 });
+}
+
+async function showActiveDebugLogModal(activeRequestId) {
+  return showDebugLogModalFromUrl(
+    `/admin/active-requests/${activeRequestId}/debug-log`,
+    { activeRequestId }
+  );
+}
+
+async function showDebugLogModalFromUrl(url, opts = {}) {
   const modal = document.getElementById('debugLogModal');
   const loading = document.getElementById('debugLogLoading');
   const error = document.getElementById('debugLogError');
   const content = document.getElementById('debugLogContent');
+
+  // 若上一次模态框未清理，先停掉旧的轮询
+  stopActiveDebugLogPolling();
 
   loading.style.display = '';
   error.style.display = 'none';
   error.innerHTML = '';
   error.textContent = '';
   content.style.display = 'none';
+  setDebugLogStatus(null);
   modal.classList.add('show');
 
   // Reset tabs
@@ -1839,9 +2118,11 @@ async function showDebugLogModal(logId) {
   });
   document.getElementById('debugTabRequest').classList.add('active');
   document.getElementById('debugTabResponse').classList.remove('active');
+  setDebugResponseMergedVisible(false);
+  updateDebugResponseActionButtons();
 
   try {
-    const { res, payload } = await fetchAPIWithAuthRaw(`/admin/debug-logs/${logId}`);
+    const { res, payload } = await fetchAPIWithAuthRaw(url);
     if (!payload.success) {
       if (res.status === 404) {
         loading.style.display = 'none';
@@ -1858,6 +2139,14 @@ async function showDebugLogModal(logId) {
 
     window.setHighlightedCodeContent('debugReqRaw', composeDebugRawRequest(data), 'request');
     window.setHighlightedCodeContent('debugRespRaw', composeDebugRawResponse(data), 'response');
+    const mergedResponse = composeDebugMergedResponse(data);
+    window.setHighlightedCodeContent('debugRespMerged', mergedResponse, getDebugMergedRenderMode(mergedResponse));
+
+    // 如果是实时活跃请求，启动轮询
+    const activeRequestId = Number(opts.activeRequestId);
+    if (Number.isFinite(activeRequestId) && activeRequestId > 0) {
+      startActiveDebugLogPolling(activeRequestId);
+    }
   } catch (e) {
     loading.style.display = 'none';
     error.textContent = e.message || '加载失败';
@@ -1865,8 +2154,143 @@ async function showDebugLogModal(logId) {
   }
 }
 
+function setDebugLogStatus(kind) {
+  const el = document.getElementById('debugLogStatus');
+  if (!el) return;
+  el.classList.remove('debug-log-status--refreshing', 'debug-log-status--finished');
+  if (!kind) {
+    el.hidden = true;
+    el.textContent = '';
+    return;
+  }
+  if (kind === 'refreshing') {
+    el.classList.add('debug-log-status--refreshing');
+    el.textContent = (typeof t === 'function' ? t('logs.debugRefreshing') : '正在更新…') || '正在更新…';
+  } else if (kind === 'finished') {
+    el.classList.add('debug-log-status--finished');
+    el.textContent = (typeof t === 'function' ? t('logs.debugRequestFinished') : '请求已结束') || '请求已结束';
+  }
+  el.hidden = false;
+}
+
+function startActiveDebugLogPolling(activeRequestId) {
+  stopActiveDebugLogPolling();
+  setDebugLogStatus('refreshing');
+  activeDebugLogRefreshTimer = setInterval(() => {
+    refreshActiveDebugLogOnce(activeRequestId);
+  }, ACTIVE_DEBUG_LOG_REFRESH_INTERVAL_MS);
+}
+
+function stopActiveDebugLogPolling() {
+  if (activeDebugLogRefreshTimer) {
+    clearInterval(activeDebugLogRefreshTimer);
+    activeDebugLogRefreshTimer = null;
+  }
+  activeDebugLogRefreshInFlight = false;
+}
+
+async function refreshActiveDebugLogOnce(activeRequestId) {
+  if (activeDebugLogRefreshInFlight) return;
+  // 模态框已关闭则停止
+  const modal = document.getElementById('debugLogModal');
+  if (!modal || !modal.classList.contains('show')) {
+    stopActiveDebugLogPolling();
+    return;
+  }
+  activeDebugLogRefreshInFlight = true;
+  try {
+    const url = `/admin/active-requests/${activeRequestId}/debug-log`;
+    const { res, payload } = await fetchAPIWithAuthRaw(url);
+    if (!payload.success) {
+      if (res.status === 404) {
+        // 请求已结束，停止轮询并提示，保留最后一次成功拉到的快照
+        stopActiveDebugLogPolling();
+        setDebugLogStatus('finished');
+        return;
+      }
+      // 其他错误：保持现状，下个 tick 再试
+      return;
+    }
+    const data = payload.data || {};
+    updateDebugLogContentPreserveScroll(data);
+  } catch (_) {
+    // 网络抖动：忽略，下个 tick 继续
+  } finally {
+    activeDebugLogRefreshInFlight = false;
+  }
+}
+
+function updateDebugLogContentPreserveScroll(data) {
+  updateDebugPanePreserveScroll('debugReqRaw', composeDebugRawRequest(data), 'request');
+  updateDebugPanePreserveScroll('debugRespRaw', composeDebugRawResponse(data), 'response');
+  const mergedResponse = composeDebugMergedResponse(data);
+  updateDebugPanePreserveScroll('debugRespMerged', mergedResponse, getDebugMergedRenderMode(mergedResponse));
+}
+
+function updateDebugPanePreserveScroll(targetId, text, mode) {
+  const pre = document.getElementById(targetId);
+  if (!pre) return;
+  // 内容未变化则跳过，避免破坏选区与滚动
+  const prevText = pre._rawText || '';
+  if (prevText === (text || '')) return;
+
+  const stickToBottom = isScrolledToBottom(pre);
+  const prevScrollTop = pre.scrollTop;
+
+  window.setHighlightedCodeContent(targetId, text || '', mode);
+
+  if (stickToBottom) {
+    pre.scrollTop = pre.scrollHeight;
+  } else {
+    pre.scrollTop = prevScrollTop;
+  }
+}
+
+function isScrolledToBottom(el) {
+  if (!el) return false;
+  const threshold = 8; // 像素容差
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
+}
+
 function closeDebugLogModal() {
+  stopActiveDebugLogPolling();
+  setDebugLogStatus(null);
   document.getElementById('debugLogModal').classList.remove('show');
+}
+
+function updateDebugResponseActionButtons() {
+  const responseActive = !!document.getElementById('debugTabResponse')?.classList.contains('active');
+  const copyBtn = document.querySelector('#debugLogModal .upstream-copy-btn--tabs');
+  if (copyBtn) {
+    copyBtn.dataset.copyTarget = responseActive
+      ? (debugResponseMergedVisible ? 'debugRespMerged' : 'debugRespRaw')
+      : 'debugReqRaw';
+  }
+
+  const mergeBtn = document.getElementById('debugMergeBtn');
+  if (mergeBtn) {
+    mergeBtn.hidden = !responseActive;
+  }
+}
+
+function setDebugResponseMergedVisible(visible) {
+  debugResponseMergedVisible = !!visible;
+
+  const raw = document.getElementById('debugRespRaw');
+  const merged = document.getElementById('debugRespMerged');
+  if (raw) raw.hidden = debugResponseMergedVisible;
+  if (merged) merged.hidden = !debugResponseMergedVisible;
+
+  const mergeBtn = document.getElementById('debugMergeBtn');
+  if (mergeBtn) {
+    const key = debugResponseMergedVisible ? 'logs.debugRaw' : 'logs.debugMerge';
+    mergeBtn.classList.toggle('active', debugResponseMergedVisible);
+    mergeBtn.setAttribute('aria-pressed', debugResponseMergedVisible ? 'true' : 'false');
+    mergeBtn.dataset.i18n = key;
+    mergeBtn.textContent = (typeof t === 'function' ? t(key) : '') || (debugResponseMergedVisible ? '原始' : '合并');
+  }
+
+  updateDebugResponseActionButtons();
 }
 
 // Tab switch + copy button delegation for debug log modal.
@@ -1879,10 +2303,13 @@ if (typeof document !== 'undefined' && typeof document.addEventListener === 'fun
       document.querySelectorAll('#debugLogModal .upstream-tab').forEach(t => t.classList.toggle('active', t === tab));
       document.getElementById('debugTabRequest').classList.toggle('active', target === 'request');
       document.getElementById('debugTabResponse').classList.toggle('active', target === 'response');
-      const copyBtn = document.querySelector('#debugLogModal .upstream-copy-btn--tabs');
-      if (copyBtn) {
-        copyBtn.dataset.copyTarget = target === 'response' ? 'debugRespRaw' : 'debugReqRaw';
-      }
+      updateDebugResponseActionButtons();
+      return;
+    }
+
+    const mergeBtn = e.target.closest('#debugLogModal [data-action="merge-debug-response"]');
+    if (mergeBtn) {
+      setDebugResponseMergedVisible(!debugResponseMergedVisible);
       return;
     }
 

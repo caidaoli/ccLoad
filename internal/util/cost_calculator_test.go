@@ -370,6 +370,43 @@ func TestCalculateCost_MimoModels(t *testing.T) {
 	}
 }
 
+func TestCalculateImageGenerationToolCost_GPTImage2(t *testing.T) {
+	cost := CalculateImageGenerationToolCost("gpt-image-2", ImageGenerationToolUsage{
+		TextInputTokens:   10,
+		TextCachedTokens:  4,
+		ImageInputTokens:  20,
+		ImageCachedTokens: 6,
+		ImageOutputTokens: 30,
+	})
+
+	// gpt-image-2:
+	// text input $5/M, text cached $1.25/M,
+	// image input $8/M, image cached $2/M, image output $30/M.
+	expected := (10*5.00 + 4*1.25 + 20*8.00 + 6*2.00 + 30*30.00) / 1_000_000
+	if !floatEquals(cost, expected, 0.000001) {
+		t.Errorf("gpt-image-2 tool成本 = %.6f, 期望 %.6f", cost, expected)
+	}
+}
+
+func TestCalculateImageGenerationToolCost_DefaultsUnknownInputToImageTokens(t *testing.T) {
+	cost := CalculateImageGenerationToolCost("gpt-image-2", ImageGenerationToolUsage{
+		InputTokens:  54,
+		OutputTokens: 1372,
+	})
+
+	expected := (54*8.00 + 1372*30.00) / 1_000_000
+	if !floatEquals(cost, expected, 0.000001) {
+		t.Errorf("gpt-image-2 unknown-detail tool成本 = %.6f, 期望 %.6f", cost, expected)
+	}
+}
+
+func TestCalculateImageGenerationToolFallbackCost_GPTImage2(t *testing.T) {
+	cost := CalculateImageGenerationToolFallbackCost("gpt-image-2", "high", "1024x1536")
+	if !floatEquals(cost, 0.165, 0.000001) {
+		t.Errorf("gpt-image-2 fallback成本 = %.6f, 期望 %.6f", cost, 0.165)
+	}
+}
+
 func TestCalculateCost_GLMModelsFromUserTable(t *testing.T) {
 	testCases := []struct {
 		model          string
@@ -406,9 +443,9 @@ func TestCalculateCost_GLMModelsFromUserTable(t *testing.T) {
 }
 
 func TestCalculateCost_QwenModels(t *testing.T) {
-	// qwen3-32b: Input $0.08/1M, Output $0.24/1M
+	// qwen3-32b: Input $0.16/1M, Output $0.64/1M
 	cost := CalculateCostDetailed("qwen3-32b", 1_000_000, 1_000_000, 0, 0, 0)
-	expected := 0.08 + 0.24
+	expected := 0.16 + 0.64
 	if !floatEquals(cost, expected, 0.000001) {
 		t.Errorf("qwen3-32b: 成本 = %.6f, 期望 %.6f", cost, expected)
 	}
@@ -433,21 +470,21 @@ func TestCalculateCost_QwenModels(t *testing.T) {
 	}
 }
 
-func TestCalculateCost_QwenModelsFromPricePerToken(t *testing.T) {
-	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=qwen
-	// 取该接口最新历史点（按模型聚合）的$/1M token价格
+func TestCalculateCost_QwenModelsFromAlibabaCloudInternational(t *testing.T) {
+	// 来源: 阿里云 Model Studio 官方价格页 International 部分
+	// https://www.alibabacloud.com/help/en/model-studio/model-pricing
 	testCases := []struct {
 		model       string
 		expectedSum float64
 	}{
 		{"qwen-plus-2025-07-14", 0.40 + 1.20},
-		{"qwen3-4b", 0.0715 + 0.273},
-		{"qwen3-vl-32b-instruct", 0.104 + 0.416},
-		{"qwen3-coder-flash", 0.30 + 1.50},
-		{"qwen3-coder-next", 0.07 + 0.30},
-		{"qwen3-max", 1.20 + 6.00},
-		{"qwen3-max-thinking", 1.20 + 6.00},
-		{"qwen3-next-80b-a3b-thinking", 0.15 + 0.30},
+		{"qwen3-4b", 0.11 + 0.42},
+		{"qwen3-vl-32b-instruct", 0.16 + 0.64},
+		{"qwen3-coder-flash", 1.60 + 9.60},
+		{"qwen3-coder-next", 0.80 + 4.00},
+		{"qwen3-max", 3.00 + 15.00},
+		{"qwen3-max-thinking", 3.00 + 15.00},
+		{"qwen3-next-80b-a3b-thinking", 0.15 + 1.20},
 		{"qwq-32b-preview", 0.20 + 0.20},
 		{"qwen3-coder:exacto", 0.22 + 1.80},
 	}
@@ -457,6 +494,77 @@ func TestCalculateCost_QwenModelsFromPricePerToken(t *testing.T) {
 		if !floatEquals(cost, tc.expectedSum, 0.000001) {
 			t.Errorf("%s: 成本 = %.6f, 期望 %.6f", tc.model, cost, tc.expectedSum)
 		}
+	}
+}
+
+func TestCalculateCost_QwenInternationalOfficialPricing(t *testing.T) {
+	// 来源: 阿里云 Model Studio 官方价格页 International 部分
+	// https://www.alibabacloud.com/help/en/model-studio/model-pricing
+	testCases := []struct {
+		name         string
+		model        string
+		inputTokens  int
+		outputTokens int
+		expected     float64
+	}{
+		{
+			name:         "qwen3-max low tier",
+			model:        "qwen3-max",
+			inputTokens:  32_000,
+			outputTokens: 1_000_000,
+			expected:     (32_000 * 1.2 / 1_000_000) + 6.0,
+		},
+		{
+			name:         "qwen3-max middle tier",
+			model:        "qwen3-max",
+			inputTokens:  32_001,
+			outputTokens: 1_000_000,
+			expected:     (32_001 * 2.4 / 1_000_000) + 12.0,
+		},
+		{
+			name:         "qwen3-max high tier",
+			model:        "qwen3-max-2026-01-23",
+			inputTokens:  128_001,
+			outputTokens: 1_000_000,
+			expected:     (128_001 * 3.0 / 1_000_000) + 15.0,
+		},
+		{
+			name:         "qwen3-coder-next middle tier",
+			model:        "qwen3-coder-next",
+			inputTokens:  32_001,
+			outputTokens: 1_000_000,
+			expected:     (32_001 * 0.5 / 1_000_000) + 2.5,
+		},
+		{
+			name:         "qwen3-vl-plus high tier",
+			model:        "qwen3-vl-plus",
+			inputTokens:  128_001,
+			outputTokens: 1_000_000,
+			expected:     (128_001 * 0.6 / 1_000_000) + 4.8,
+		},
+		{
+			name:         "qwen3-235b instruct 2507",
+			model:        "qwen3-235b-a22b-instruct-2507",
+			inputTokens:  1_000_000,
+			outputTokens: 1_000_000,
+			expected:     0.23 + 0.92,
+		},
+		{
+			name:         "qwen2.5 vl 72b",
+			model:        "qwen2.5-vl-72b-instruct",
+			inputTokens:  1_000_000,
+			outputTokens: 1_000_000,
+			expected:     2.8 + 8.4,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cost := CalculateCostDetailed(tc.model, tc.inputTokens, tc.outputTokens, 0, 0, 0)
+			if !floatEquals(cost, tc.expected, 0.000001) {
+				t.Errorf("%s: 成本 = %.6f, 期望 %.6f", tc.model, cost, tc.expected)
+			}
+		})
 	}
 }
 

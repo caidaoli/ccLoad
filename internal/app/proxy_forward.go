@@ -106,6 +106,10 @@ func (s *Server) buildProxyRequest(
 		injectAnthropicBetaFlag(req, "context-1m-2025-08-07")
 	}
 
+	// 5.1 本地协议转换到 Anthropic 上游时，OpenAI/Codex/Gemini 客户端不会携带
+	// anthropic-version。缺失该头会让部分 Claude Code 兼容上游按 OpenAI body 解析。
+	ensureAnthropicVersionHeader(req, runtimeUpstreamProtocol(reqCtx, cfg))
+
 	// 5.5 Codex Responses 缓存提示：设置 Session_id 头（仅客户端未自带时）
 	if codexSessionID != "" && req.Header.Get("Session_id") == "" && req.Header.Get("Session-Id") == "" {
 		req.Header.Set("Session_id", codexSessionID)
@@ -419,6 +423,215 @@ func decodeSSEPayload(data []byte) (map[string]any, bool) {
 	return payload, true
 }
 
+func maybePrepareDynamicStreamTransform(reqCtx *requestContext, resp *http.Response) (protocol.Protocol, bool, error) {
+	if reqCtx == nil || resp == nil || resp.Body == nil {
+		return "", false, nil
+	}
+	if !reqCtx.isStreaming {
+		return "", false, nil
+	}
+	if !strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+		return "", false, nil
+	}
+
+	prefix, err := readSSEPrefixThroughFirstEvent(resp.Body)
+	if len(prefix) > 0 {
+		prependToBody(resp, prefix)
+	}
+	if err != nil {
+		return "", false, err
+	}
+
+	return applyDetectedResponseProtocol(reqCtx, detectProtocolFromSSEPrefix(prefix))
+}
+
+func maybePrepareDynamicNonStreamTransform(reqCtx *requestContext, resp *http.Response) (protocol.Protocol, bool, error) {
+	if reqCtx == nil || resp == nil || resp.Body == nil || reqCtx.isStreaming {
+		return "", false, nil
+	}
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if !strings.Contains(contentType, "application/json") && !strings.Contains(contentType, "text/plain") {
+		return "", false, nil
+	}
+
+	rawBody, err := io.ReadAll(resp.Body)
+	if len(rawBody) > 0 {
+		prependToBody(resp, rawBody)
+	}
+	if err != nil {
+		return "", false, err
+	}
+
+	detected := detectProtocolFromJSONBody(rawBody)
+	return applyDetectedResponseProtocol(reqCtx, detected)
+}
+
+func applyDetectedResponseProtocol(reqCtx *requestContext, detected protocol.Protocol) (protocol.Protocol, bool, error) {
+	if detected == "" {
+		return "", false, nil
+	}
+	clientProtocol := reqCtx.transformPlan.ClientProtocol
+	if clientProtocol == "" {
+		clientProtocol = reqCtx.clientProtocol
+	}
+	if clientProtocol == "" {
+		return detected, false, nil
+	}
+	if detected == clientProtocol {
+		plan := reqCtx.transformPlan
+		plan.ClientProtocol = clientProtocol
+		plan.UpstreamProtocol = detected
+		plan.NeedsTransform = false
+		reqCtx.transformPlan = plan
+		reqCtx.clientProtocol = clientProtocol
+		reqCtx.upstreamProtocol = detected
+		return detected, false, nil
+	}
+	if !protocol.SupportsTransform(detected, clientProtocol) {
+		return detected, false, fmt.Errorf("no response transform for detected protocol mismatch: %s -> %s", detected, clientProtocol)
+	}
+
+	plan := reqCtx.transformPlan
+	plan.ClientProtocol = clientProtocol
+	plan.UpstreamProtocol = detected
+	plan.NeedsTransform = true
+	reqCtx.transformPlan = plan
+	reqCtx.clientProtocol = clientProtocol
+	reqCtx.upstreamProtocol = detected
+
+	return detected, true, nil
+}
+
+func readSSEPrefixThroughFirstEvent(r io.Reader) ([]byte, error) {
+	var buf bytes.Buffer
+	tmp := make([]byte, SSEBufferSize)
+	for buf.Len() < maxSSEEventSize {
+		remaining := maxSSEEventSize - buf.Len()
+		if remaining < len(tmp) {
+			tmp = tmp[:remaining]
+		}
+		n, err := r.Read(tmp)
+		if n > 0 {
+			buf.Write(tmp[:n])
+			if firstSSEEventEnd(buf.Bytes()) >= 0 {
+				return append([]byte(nil), buf.Bytes()...), nil
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				return append([]byte(nil), buf.Bytes()...), nil
+			}
+			return append([]byte(nil), buf.Bytes()...), err
+		}
+	}
+	return append([]byte(nil), buf.Bytes()...), fmt.Errorf("SSE first event exceeds max size (%d bytes)", maxSSEEventSize)
+}
+
+func detectProtocolFromSSEPrefix(prefix []byte) protocol.Protocol {
+	for len(prefix) > 0 {
+		eventEnd := firstSSEEventEnd(prefix)
+		if eventEnd < 0 {
+			eventEnd = len(prefix)
+		}
+		if detected := detectProtocolFromSSEEvent(prefix[:eventEnd]); detected != "" {
+			return detected
+		}
+		if eventEnd >= len(prefix) {
+			break
+		}
+		prefix = prefix[eventEnd:]
+	}
+	return ""
+}
+
+func detectProtocolFromSSEEvent(event []byte) protocol.Protocol {
+	eventType, data := parseSSEEventChunk(event)
+	if isAnthropicSSEEventType(eventType) {
+		return protocol.Anthropic
+	}
+	if isCodexSSEEventType(eventType) {
+		return protocol.Codex
+	}
+	payload, ok := decodeSSEPayload(data)
+	if !ok {
+		return ""
+	}
+	return detectProtocolFromJSONPayload(payload)
+}
+
+func detectProtocolFromJSONBody(raw []byte) protocol.Protocol {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return ""
+	}
+	var payload map[string]any
+	if err := sonic.Unmarshal(raw, &payload); err != nil {
+		return ""
+	}
+	return detectProtocolFromJSONPayload(payload)
+}
+
+func detectProtocolFromJSONPayload(payload map[string]any) protocol.Protocol {
+	payloadType, _ := payload["type"].(string)
+	if isCodexSSEEventType(payloadType) {
+		return protocol.Codex
+	}
+	if object, _ := payload["object"].(string); object == "response" {
+		return protocol.Codex
+	}
+	if _, ok := payload["choices"].([]any); ok {
+		return protocol.OpenAI
+	}
+	if object, _ := payload["object"].(string); strings.HasPrefix(object, "chat.completion") {
+		return protocol.OpenAI
+	}
+	if _, ok := payload["candidates"].([]any); ok {
+		return protocol.Gemini
+	}
+	if _, ok := payload["usageMetadata"].(map[string]any); ok {
+		return protocol.Gemini
+	}
+	if isAnthropicSSEEventType(payloadType) || (payloadType == "message" && payload["role"] != nil && payload["content"] != nil) {
+		return protocol.Anthropic
+	}
+	return ""
+}
+
+func firstSSEEventEnd(data []byte) int {
+	pos := 0
+	for pos < len(data) {
+		idx := bytes.IndexByte(data[pos:], '\n')
+		if idx < 0 {
+			return -1
+		}
+		lineEnd := pos + idx
+		if len(bytes.TrimRight(data[pos:lineEnd], "\r")) == 0 {
+			return lineEnd + 1
+		}
+		pos = lineEnd + 1
+	}
+	return -1
+}
+
+func isAnthropicSSEEventType(value string) bool {
+	switch value {
+	case "message_start",
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop",
+		"message_delta",
+		"message_stop",
+		"ping":
+		return true
+	default:
+		return false
+	}
+}
+
+func isCodexSSEEventType(value string) bool {
+	return strings.HasPrefix(value, "response.")
+}
+
 // handleSuccessResponse 处理成功响应（流式传输）
 func (s *Server) handleSuccessResponse(
 	reqCtx *requestContext,
@@ -427,13 +640,50 @@ func (s *Server) handleSuccessResponse(
 	w http.ResponseWriter,
 	channelType string,
 	readStats *streamReadStats,
+	observer *ForwardObserver,
 ) (*fwResult, float64, error) {
+	if reqCtx.isStreaming && s.protocolRegistry != nil {
+		detectedProtocol, transform, err := maybePrepareDynamicStreamTransform(reqCtx, resp)
+		if detectedProtocol != "" {
+			channelType = string(detectedProtocol)
+		}
+		if err != nil {
+			return &fwResult{
+				Status:        resp.StatusCode,
+				Header:        hdrClone,
+				FirstByteTime: readStats.firstByteSec,
+				BytesReceived: readStats.totalBytes,
+			}, reqCtx.Duration().Seconds(), err
+		}
+		if transform {
+			return s.handleTranslatedStreamSuccessResponse(reqCtx, resp, hdrClone, w, string(detectedProtocol), readStats, observer)
+		}
+	}
+
+	if !reqCtx.isStreaming && s.protocolRegistry != nil {
+		detectedProtocol, transform, err := maybePrepareDynamicNonStreamTransform(reqCtx, resp)
+		if detectedProtocol != "" {
+			channelType = string(detectedProtocol)
+		}
+		if err != nil {
+			return &fwResult{
+				Status:        resp.StatusCode,
+				Header:        hdrClone,
+				FirstByteTime: readStats.firstByteSec,
+				BytesReceived: readStats.totalBytes,
+			}, reqCtx.Duration().Seconds(), err
+		}
+		if transform {
+			return s.handleTranslatedNonStreamSuccessResponse(reqCtx, resp, hdrClone, w, string(detectedProtocol), readStats)
+		}
+	}
+
 	if reqCtx.isStreaming &&
 		s.protocolRegistry != nil &&
 		reqCtx.transformPlan.NeedsTransform &&
 		(strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") ||
 			strings.Contains(resp.Header.Get("Content-Type"), "text/plain")) {
-		return s.handleTranslatedStreamSuccessResponse(reqCtx, resp, hdrClone, w, channelType, readStats)
+		return s.handleTranslatedStreamSuccessResponse(reqCtx, resp, hdrClone, w, channelType, readStats, observer)
 	}
 
 	if !reqCtx.isStreaming &&
@@ -470,18 +720,29 @@ func (s *Server) handleSuccessResponse(
 			if deferredWriter == nil || deferredWriter.Committed() {
 				return nil
 			}
+			if parser.GetLastError() != nil || parser.HasStreamOutput() || parser.IsStreamComplete() {
+				markFirstStreamResponse(reqCtx, readStats, observer)
+			}
 			if parser.GetLastError() != nil {
 				return errAbortStreamBeforeWrite
 			}
-			deferredWriter.Commit()
+			if parser.HasStreamOutput() {
+				return deferredWriter.Commit()
+			}
 			return nil
 		},
 	)
 	abortedBeforeCommit := errors.Is(streamErr, errAbortStreamBeforeWrite)
 	if abortedBeforeCommit {
 		streamErr = nil
+	} else if deferredWriter != nil && !deferredWriter.Committed() && isEmptyStreamOutput(parser, readStats) {
+		if streamErr == nil {
+			return emptyOKResponseResult(reqCtx, resp, hdrClone, readStats, emptyStreamDetail(readStats))
+		}
 	} else if deferredWriter != nil && !deferredWriter.Committed() {
-		deferredWriter.Commit()
+		if commitErr := deferredWriter.Commit(); commitErr != nil && streamErr == nil {
+			streamErr = commitErr
+		}
 	}
 
 	// 构建结果
@@ -498,6 +759,7 @@ func (s *Server) handleSuccessResponse(
 	if parser != nil {
 		result.InputTokens, result.OutputTokens, result.CacheReadInputTokens, result.CacheCreationInputTokens = parser.GetUsage()
 		result.Cache5mInputTokens, result.Cache1hInputTokens, result.ServiceTier = parser.GetCacheBreakdown()
+		result.ToolCostUSD = parser.GetToolCostUSD()
 
 		if errorEvent := parser.GetLastError(); errorEvent != nil {
 			result.SSEErrorEvent = errorEvent
@@ -582,7 +844,10 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 		}, reqCtx.Duration().Seconds(), err
 	}
 
-	filterAndWriteResponseHeaders(w, resp.Header)
+	translatedHeader := resp.Header.Clone()
+	translatedHeader.Set("Content-Type", "application/json")
+	translatedHeader.Del("Content-Encoding")
+	filterAndWriteResponseHeaders(w, translatedHeader)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(translatedBody)
 
@@ -597,6 +862,7 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 	result.Cache5mInputTokens = parser.Cache5mInputTokens
 	result.Cache1hInputTokens = parser.Cache1hInputTokens
 	result.ServiceTier = parser.ServiceTier
+	result.ToolCostUSD = parser.GetToolCostUSD()
 
 	return result, reqCtx.Duration().Seconds(), nil
 }
@@ -608,6 +874,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	w http.ResponseWriter,
 	channelType string,
 	readStats *streamReadStats,
+	observer *ForwardObserver,
 ) (*fwResult, float64, error) {
 	rc := http.NewResponseController(w)
 	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
@@ -629,11 +896,14 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 			if err := parser.Feed(rawEvent); err != nil {
 				return err
 			}
+			if parser.GetLastError() != nil || parser.HasStreamOutput() || parser.IsStreamComplete() {
+				markFirstStreamResponse(reqCtx, readStats, observer)
+			}
 			if !deferredWriter.Committed() && parser.GetLastError() != nil {
 				return errAbortStreamBeforeWrite
 			}
-			if !deferredWriter.Committed() {
-				deferredWriter.Commit()
+			if !deferredWriter.Committed() && parser.HasStreamOutput() {
+				return deferredWriter.Commit()
 			}
 			return nil
 		},
@@ -661,8 +931,14 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	abortedBeforeCommit := errors.Is(streamErr, errAbortStreamBeforeWrite)
 	if abortedBeforeCommit {
 		streamErr = nil
+	} else if !deferredWriter.Committed() && isEmptyStreamOutput(parser, readStats) {
+		if streamErr == nil {
+			return emptyOKResponseResult(reqCtx, resp, hdrClone, readStats, emptyStreamDetail(readStats))
+		}
 	} else if !deferredWriter.Committed() {
-		deferredWriter.Commit()
+		if commitErr := deferredWriter.Commit(); commitErr != nil && streamErr == nil {
+			streamErr = commitErr
+		}
 	}
 
 	result := &fwResult{
@@ -676,6 +952,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	result.Cache5mInputTokens = parser.Cache5mInputTokens
 	result.Cache1hInputTokens = parser.Cache1hInputTokens
 	result.ServiceTier = parser.ServiceTier
+	result.ToolCostUSD = parser.GetToolCostUSD()
 	result.SSEErrorEvent = parser.GetLastError()
 	streamComplete := parser.IsStreamComplete() || translatedComplete
 
@@ -739,6 +1016,9 @@ func attachFirstByteDetector(
 		ReadCloser: resp.Body,
 		stats:      readStats,
 		onFirstRead: func() {
+			if reqCtx.isStreaming && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				return
+			}
 			if reqCtx.isStreaming {
 				reqCtx.stopFirstByteTimer()
 			}
@@ -757,6 +1037,21 @@ func attachFirstByteDetector(
 				observer.OnBytesRead(n)
 			}
 		},
+	}
+}
+
+func markFirstStreamResponse(reqCtx *requestContext, readStats *streamReadStats, observer *ForwardObserver) {
+	if !reqCtx.isStreaming || readStats.firstByteSec > 0 {
+		return
+	}
+
+	reqCtx.stopFirstByteTimer()
+	readStats.firstByteSec = reqCtx.Duration().Seconds()
+	if readStats.firstByteSec == 0 {
+		readStats.firstByteSec = time.Nanosecond.Seconds()
+	}
+	if observer != nil && observer.OnFirstByteRead != nil {
+		observer.OnFirstByteRead()
 	}
 }
 
@@ -814,15 +1109,57 @@ func (s *Server) probeSoftErrorResponse(
 	return false, nil, 0, nil
 }
 
-func emptyOKResponseResult(reqCtx *requestContext, resp *http.Response, hdrClone http.Header, readStats *streamReadStats) (*fwResult, float64, error) {
+func emptyOKResponseResult(reqCtx *requestContext, resp *http.Response, hdrClone http.Header, readStats *streamReadStats, detail string) (*fwResult, float64, error) {
 	duration := reqCtx.Duration().Seconds()
-	err := fmt.Errorf("upstream returned empty response (200 OK with Content-Length: 0)")
+	err := fmt.Errorf("%w (200 OK %s)", util.ErrUpstreamEmptyResponse, detail)
 	return &fwResult{
 		Status:        resp.StatusCode,
 		Header:        hdrClone,
 		Body:          []byte(err.Error()),
 		FirstByteTime: readStats.firstByteSec,
 	}, duration, err
+}
+
+func isEmptyStreamOutput(parser usageParser, readStats *streamReadStats) bool {
+	if readStats == nil || readStats.totalBytes == 0 {
+		return true
+	}
+	return parser != nil && !parser.HasStreamOutput()
+}
+
+func emptyStreamDetail(readStats *streamReadStats) string {
+	if readStats == nil || readStats.totalBytes == 0 {
+		return "without response body"
+	}
+	return "without response content"
+}
+
+func probeEmptyOKResponse(reqCtx *requestContext, resp *http.Response, hdrClone http.Header, readStats *streamReadStats) (bool, *fwResult, float64, error) {
+	if reqCtx.isStreaming || resp.StatusCode != http.StatusOK {
+		return false, nil, 0, nil
+	}
+
+	if resp.Body == nil {
+		res, duration, err := emptyOKResponseResult(reqCtx, resp, hdrClone, readStats, "with nil body")
+		return true, res, duration, err
+	}
+
+	if resp.Header.Get("Content-Length") == "0" {
+		res, duration, err := emptyOKResponseResult(reqCtx, resp, hdrClone, readStats, "with Content-Length: 0")
+		return true, res, duration, err
+	}
+
+	var firstByte [1]byte
+	n, readErr := resp.Body.Read(firstByte[:])
+	if n > 0 {
+		prependToBody(resp, firstByte[:n])
+		return false, nil, 0, nil
+	}
+	if readErr == io.EOF {
+		res, duration, err := emptyOKResponseResult(reqCtx, resp, hdrClone, readStats, "without response body")
+		return true, res, duration, err
+	}
+	return false, nil, 0, nil
 }
 
 // handleResponse 处理 HTTP 响应（错误或成功）
@@ -844,19 +1181,19 @@ func (s *Server) handleResponse(
 
 	attachFirstByteDetector(reqCtx, resp, readStats, observer)
 
-	if handled, res, duration, err := s.probeSoftErrorResponse(reqCtx, resp, hdrClone, cfg, channelType, readStats); handled {
-		return res, duration, err
-	}
-
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return s.handleErrorResponse(reqCtx, resp, hdrClone, readStats)
 	}
 
-	if contentLen := resp.Header.Get("Content-Length"); contentLen == "0" {
-		return emptyOKResponseResult(reqCtx, resp, hdrClone, readStats)
+	if handled, res, duration, err := probeEmptyOKResponse(reqCtx, resp, hdrClone, readStats); handled {
+		return res, duration, err
 	}
 
-	return s.handleSuccessResponse(reqCtx, resp, hdrClone, w, channelType, readStats)
+	if handled, res, duration, err := s.probeSoftErrorResponse(reqCtx, resp, hdrClone, cfg, channelType, readStats); handled {
+		return res, duration, err
+	}
+
+	return s.handleSuccessResponse(reqCtx, resp, hdrClone, w, channelType, readStats, observer)
 }
 
 // ============================================================================
@@ -906,9 +1243,15 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 
 	// 2.5 Debug捕获：记录发送前的请求信息
 	dc := s.captureDebugRequest(req, reqCtx.transformPlan.TranslatedBody)
+	if observer != nil && observer.OnDebugCapture != nil {
+		observer.OnDebugCapture(dc)
+	}
 
 	// 3. 发送请求
-	resp, err := s.client.Do(req)
+	resp, err := s.doUpstreamRequest(cfg, req)
+	if err != nil && errors.Is(err, ErrChannelRPMExceeded) {
+		return nil, reqCtx.Duration().Seconds(), err
+	}
 
 	// [INFO] 修复（2025-12）：客户端取消时主动关闭 response body，立即中断上游传输
 	// 问题：streamCopy 中的 Read 阻塞时，无法立即响应 context 取消，上游继续生成完整响应
@@ -1041,7 +1384,7 @@ func (s *Server) handleSuccessfulForwardAnomaly(
 
 // forwardAttempt 单次转发尝试（包含错误处理和日志记录）
 // 从proxy.go提取，遵循SRP原则
-// 返回：(proxyResult, nextAction)
+// 返回：(proxyResult, nextAction, error)
 func (s *Server) forwardAttempt(
 	ctx context.Context,
 	cfg *model.Config,
@@ -1054,7 +1397,7 @@ func (s *Server) forwardAttempt(
 	baseURL string, // 显式传入的URL（多URL场景）
 	w http.ResponseWriter,
 	deferChannelCooldown bool, // 多URL场景下，非最后一个URL不应触发渠道级冷却
-) (*proxyResult, cooldown.Action) {
+) (*proxyResult, cooldown.Action, error) {
 	// 记录渠道尝试开始时间（用于日志记录，每次渠道/Key切换时更新）
 	reqCtx.attemptStartTime = time.Now()
 	reqCtx.baseURL = baseURL
@@ -1081,7 +1424,7 @@ func (s *Server) forwardAttempt(
 			channelID:  &channelID,
 			succeeded:  false,
 			nextAction: cooldown.ActionRetryChannel,
-		}, cooldown.ActionRetryChannel
+		}, cooldown.ActionRetryChannel, nil
 	}
 
 	res, duration, err := s.forwardOnceAsync(ctx, cfg, selectedKey, reqCtx.requestMethod,
@@ -1096,10 +1439,14 @@ func (s *Server) forwardAttempt(
 	// [INFO] 修复：handleResponse可能返回err即使StatusCode=200（例如Content-Length=0）
 	// [FIX] 2025-12: 传递 res 和 reqCtx，用于保留 499 场景下已消耗的 token 统计
 	if err != nil {
-		return s.handleNetworkError(
+		if errors.Is(err, ErrChannelRPMExceeded) {
+			return nil, cooldown.ActionRetryChannel, err
+		}
+		result, action := s.handleNetworkError(
 			ctx, cfg, keyIndex, actualModel, selectedKey, reqCtx.tokenID, reqCtx.clientIP,
 			duration, err, res, reqCtx, deferChannelCooldown,
 		)
+		return result, action, nil
 	}
 
 	// 处理成功响应（仅当err==nil且状态码2xx时）
@@ -1107,16 +1454,18 @@ func (s *Server) forwardAttempt(
 		if result, action, handled := s.handleSuccessfulForwardAnomaly(
 			ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown,
 		); handled {
-			return result, action
+			return result, action, nil
 		}
 
-		return s.handleProxySuccess(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
+		result, action := s.handleProxySuccess(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
+		return result, action, nil
 	}
 
 	// 处理错误响应
-	return s.handleProxyErrorResponse(
+	result, action := s.handleProxyErrorResponse(
 		ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown,
 	)
+	return result, action, nil
 }
 
 // ============================================================================
@@ -1176,6 +1525,7 @@ func recordSuccessTTFBToSelector(selector *URLSelector, channelID int64, urlsCou
 // attemptKeyAcrossURLs 在选定 Key 上按 URL 顺序尝试上游：
 //   - immediate != nil 表示调用方需立即 `return immediate, nil`（成功 / ActionReturnClient / ctx 取消）
 //   - immediate == nil 时 urlLastFailure 给 Key 重试循环用于决定 continue/break
+//   - err != nil 表示转发前置条件失败，调用方应切换候选渠道
 //
 // 多URL场景下：失败URL会被 selector 冷却；明确 5xx（除 598 首字节超时）会立即跳出 URL 循环切换渠道，
 // 并在该URL处于 deferChannelCooldown 时补做一次渠道级冷却。
@@ -1191,12 +1541,12 @@ func (s *Server) attemptKeyAcrossURLs(
 	bodyToSend []byte,
 	requestPath string,
 	w http.ResponseWriter,
-) (immediate *proxyResult, urlLastFailure *proxyResult) {
+) (immediate *proxyResult, urlLastFailure *proxyResult, err error) {
 	sortedURLs := orderURLsWithSelector(selector, cfg.ID, urls)
 	urlsCount := len(urls)
 	for urlIdx, urlEntry := range sortedURLs {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return buildCtxDoneResult(cfg, ctxErr), nil
+			return buildCtxDoneResult(cfg, ctxErr), nil, nil
 		}
 
 		// 更新活跃请求的当前URL（用于前端显示）
@@ -1205,13 +1555,16 @@ func (s *Server) attemptKeyAcrossURLs(
 		}
 
 		shouldDeferChannelCooldown := urlsCount > 1 && urlIdx < len(sortedURLs)-1
-		result, nextAction := s.forwardAttempt(
+		result, nextAction, attemptErr := s.forwardAttempt(
 			ctx, cfg, keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, requestPath, urlEntry.url, w, shouldDeferChannelCooldown)
+		if attemptErr != nil {
+			return nil, nil, attemptErr
+		}
 
 		if result != nil && result.succeeded {
 			// 成功：记录TTFB到URLSelector（仅多URL场景）
 			recordSuccessTTFBToSelector(selector, cfg.ID, urlsCount, urlEntry.url, result)
-			return result, nil
+			return result, nil, nil
 		}
 
 		if result != nil {
@@ -1224,7 +1577,7 @@ func (s *Server) attemptKeyAcrossURLs(
 		}
 		// 客户端错误：直接返回
 		if nextAction == cooldown.ActionReturnClient {
-			return urlLastFailure, nil
+			return urlLastFailure, nil, nil
 		}
 		// 渠道级错误 (ActionRetryChannel) 或网络错误：
 		// 在多URL场景下，默认先尝试下一个URL
@@ -1247,7 +1600,7 @@ func (s *Server) attemptKeyAcrossURLs(
 		// 单URL：保持原有行为
 		break
 	}
-	return nil, urlLastFailure
+	return nil, urlLastFailure, nil
 }
 
 func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqCtx *proxyRequestContext, w http.ResponseWriter) (*proxyResult, error) {
@@ -1322,11 +1675,14 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		}
 
 		// URL循环（单URL时退化为单次迭代）
-			immediate, urlLastFailure := s.attemptKeyAcrossURLs(
-				ctx, cfg, urls, selector,
-				keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, requestPath, w)
-			if immediate != nil {
-				return immediate, nil
+		immediate, urlLastFailure, attemptErr := s.attemptKeyAcrossURLs(
+			ctx, cfg, urls, selector,
+			keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, requestPath, w)
+		if attemptErr != nil {
+			return nil, attemptErr
+		}
+		if immediate != nil {
+			return immediate, nil
 		}
 
 		// URL循环结束后的Key级决策

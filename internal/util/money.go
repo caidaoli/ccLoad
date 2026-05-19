@@ -15,11 +15,11 @@ const microUSDScale = 1_000_000
 // - 零或极小正数（四舍五入后为0）：返回 0
 func USDToMicroUSD(usd float64) int64 {
 	if math.IsNaN(usd) || math.IsInf(usd, 0) {
-		log.Printf("[ERROR] USDToMicroUSD: invalid float value (NaN or Inf), treating as 0")
+		log.Printf("[ERROR] USDToMicroUSD: 非法浮点数（NaN 或 Inf），按 0 处理")
 		return 0
 	}
 	if usd < 0 {
-		log.Printf("[ERROR] USDToMicroUSD: negative USD value %v is not allowed, treating as 0", usd)
+		log.Printf("[ERROR] USDToMicroUSD: 不允许负数 %v，按 0 处理", usd)
 		return 0
 	}
 	if usd == 0 {

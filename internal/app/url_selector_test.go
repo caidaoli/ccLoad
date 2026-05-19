@@ -533,3 +533,27 @@ func TestURLSelector_ProbeURLs_DeduplicatesInFlightRequests(t *testing.T) {
 	closeRelease()
 	<-done1
 }
+
+func TestPruneChannel_DisabledMap(t *testing.T) {
+	sel := NewURLSelector()
+	channelID := int64(1)
+
+	// 禁用 url1
+	sel.DisableURL(channelID, "https://url1.com")
+	if !sel.IsDisabled(channelID, "https://url1.com") {
+		t.Fatalf("expected url1 to be disabled")
+	}
+
+	// 调用 PruneChannel 清理渠道，保留 url2（url1 应被清理）
+	sel.PruneChannel(channelID, []string{"https://url2.com"})
+
+	// 验证 url1 的禁用状态已被清理
+	if sel.IsDisabled(channelID, "https://url1.com") {
+		t.Fatalf("expected url1 disabled state to be pruned")
+	}
+
+	// 验证 url2 未被禁用
+	if sel.IsDisabled(channelID, "https://url2.com") {
+		t.Fatalf("expected url2 to not be disabled")
+	}
+}

@@ -89,6 +89,7 @@ type fwResult struct {
 	CacheCreationInputTokens int // 5m+1h缓存总和（兼容字段）
 	Cache5mInputTokens       int // 5分钟缓存写入Token数（新增2025-12）
 	Cache1hInputTokens       int // 1小时缓存写入Token数（新增2025-12）
+	ToolCostUSD              float64
 
 	// 转发诊断信息（2025-12新增）
 	StreamDiagMsg string // 诊断消息（例如：流中断/不完整、上游响应体读取失败），合并到日志的 Message 字段
@@ -118,6 +119,7 @@ type fwResult struct {
 type ForwardObserver struct {
 	OnBytesRead     func(int64) // 字节读取回调（可选）
 	OnFirstByteRead func()      // 首字节读取回调（可选）
+	OnDebugCapture  func(*debugCapture)
 }
 
 // proxyRequestContext 代理请求上下文（封装请求信息，遵循DIP原则）
@@ -361,6 +363,15 @@ func injectAnthropicBetaFlag(req *http.Request, flag string) {
 		return
 	}
 	req.Header.Set("anthropic-beta", existing+","+flag)
+}
+
+func ensureAnthropicVersionHeader(req *http.Request, upstreamType string) {
+	if upstreamType != util.ChannelTypeAnthropic {
+		return
+	}
+	if req.Header.Get("anthropic-version") == "" {
+		req.Header.Set("anthropic-version", "2023-06-01")
+	}
 }
 
 // maybeInjectAnyrouterAdaptiveThinking 为 anyrouter 渠道的 /v1/messages 请求注入 adaptive thinking。
@@ -762,7 +773,7 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		if costModel == "" {
 			costModel = p.RequestModel
 		}
-		entry.Cost = computeRequestCost(costModel, res.ServiceTier, res)
+		entry.Cost = computeRequestCost(costModel, res.ServiceTier, res) + res.ToolCostUSD
 	} else {
 		entry.Message = "unknown"
 	}

@@ -2426,6 +2426,10 @@ body {
   width: 65px;
 }
 
+.table-col-priority {
+  width: 76px;
+}
+
 .table-col-speed {
   width: 96px;
 }
@@ -3234,6 +3238,17 @@ body {
 .upstream-copy-btn--tabs {
   margin-left: auto;
   margin-bottom: 4px;
+}
+
+.upstream-merge-btn {
+  margin-left: 6px;
+  margin-bottom: 4px;
+}
+
+.upstream-merge-btn.active {
+  color: var(--primary-600);
+  border-color: var(--primary-600);
+  background: var(--primary-50);
 }
 
 .upstream-pre {
@@ -5974,6 +5989,7 @@ body.trend-page .chart-info {
 
   .model-test-table .model-test-col-first-byte,
   .model-test-table .model-test-col-duration,
+  .model-test-table .model-test-col-priority,
   .model-test-table .model-test-col-speed,
   .model-test-table .model-test-col-input,
   .model-test-table .model-test-col-output,
@@ -5989,6 +6005,7 @@ body.trend-page .chart-info {
 
   .model-test-table .model-test-col-first-byte::before,
   .model-test-table .model-test-col-duration::before,
+  .model-test-table .model-test-col-priority::before,
   .model-test-table .model-test-col-speed::before,
   .model-test-table .model-test-col-input::before,
   .model-test-table .model-test-col-output::before,
@@ -6009,8 +6026,12 @@ body.trend-page .chart-info {
     order: 11;
   }
 
-  .model-test-table .model-test-col-speed {
+  .model-test-table .model-test-col-priority {
     order: 12;
+  }
+
+  .model-test-table .model-test-col-speed {
+    order: 13;
   }
 
   .model-test-table .model-test-col-input {

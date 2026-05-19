@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 )
 
@@ -26,6 +27,7 @@ type ActiveRequest struct {
 	BytesReceived       int64   `json:"bytes_received,omitempty"`         // 上游已返回的字节数（快照）
 	ClientFirstByteTime float64 `json:"client_first_byte_time,omitempty"` // 客户端侧首字节响应时间（秒），流式请求有效
 	CostMultiplier      float64 `json:"cost_multiplier"`                  // 渠道成本倍率
+	DebugLogAvailable   bool    `json:"debug_log_available,omitempty"`    // 运行中请求是否已有可读取的调试快照
 }
 
 type activeRequest struct {
@@ -42,6 +44,7 @@ type activeRequest struct {
 	BaseURL     string
 
 	CostMultiplier float64 // 渠道成本倍率
+	debugCapture   *debugCapture
 
 	bytesCounter            atomic.Int64 // 上游已返回的字节数（原子累加）
 	clientFirstByteTimeUsec atomic.Int64 // 客户端侧首字节响应时间（微秒），CAS保证只写一次，0表示未设置
@@ -103,6 +106,32 @@ func (m *activeRequestManager) SetBaseURL(id int64, baseURL string) {
 	m.mu.Unlock()
 }
 
+// SetDebugCapture 绑定运行中请求的调试捕获器。
+// 调试日志关闭时 dc 为 nil；列表只暴露 bool，正文按需通过独立接口读取。
+func (m *activeRequestManager) SetDebugCapture(id int64, dc *debugCapture) {
+	m.mu.Lock()
+	if req, ok := m.requests[id]; ok {
+		req.debugCapture = dc
+	}
+	m.mu.Unlock()
+}
+
+// GetDebugLogSnapshot 返回运行中请求当前调试快照。
+func (m *activeRequestManager) GetDebugLogSnapshot(id int64) (*model.DebugLogEntry, bool) {
+	m.mu.RLock()
+	req := m.requests[id]
+	var dc *debugCapture
+	if req != nil {
+		dc = req.debugCapture
+	}
+	m.mu.RUnlock()
+
+	if dc == nil {
+		return nil, false
+	}
+	return dc.buildEntry(nil), true
+}
+
 // Remove 移除一个活跃请求
 func (m *activeRequestManager) Remove(id int64) {
 	m.mu.Lock()
@@ -147,19 +176,20 @@ func (m *activeRequestManager) List() []*ActiveRequest {
 	result := make([]*ActiveRequest, 0, len(m.requests))
 	for _, req := range m.requests {
 		view := &ActiveRequest{
-			ID:             req.ID,
-			Model:          req.Model,
-			ClientIP:       req.ClientIP,
-			StartTime:      req.StartTime,
-			Streaming:      req.Streaming,
-			ChannelID:      req.ChannelID,
-			ChannelName:    req.ChannelName,
-			ChannelType:    req.ChannelType,
-			APIKeyUsed:     req.APIKeyUsed,
-			TokenID:        req.TokenID,
-			BaseURL:        req.BaseURL,
-			BytesReceived:  req.bytesCounter.Load(),
-			CostMultiplier: req.CostMultiplier,
+			ID:                req.ID,
+			Model:             req.Model,
+			ClientIP:          req.ClientIP,
+			StartTime:         req.StartTime,
+			Streaming:         req.Streaming,
+			ChannelID:         req.ChannelID,
+			ChannelName:       req.ChannelName,
+			ChannelType:       req.ChannelType,
+			APIKeyUsed:        req.APIKeyUsed,
+			TokenID:           req.TokenID,
+			BaseURL:           req.BaseURL,
+			BytesReceived:     req.bytesCounter.Load(),
+			CostMultiplier:    req.CostMultiplier,
+			DebugLogAvailable: req.debugCapture != nil,
 		}
 		if usec := req.clientFirstByteTimeUsec.Load(); usec > 0 {
 			view.ClientFirstByteTime = float64(usec) / 1e6

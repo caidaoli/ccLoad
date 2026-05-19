@@ -7,6 +7,8 @@ import (
 	"log"
 	"slices"
 	"strings"
+
+	"ccLoad/internal/util"
 )
 
 // ============================================================================
@@ -23,8 +25,12 @@ type usageAccumulator struct {
 	CacheCreationInputTokens int
 	Cache5mInputTokens       int
 	Cache1hInputTokens       int
+	ToolCostUSD              float64
 	ServiceTier              string // OpenAI service_tier: "priority"/"flex"/"default"
 	usageVersion             int
+	imageGenerationToolModel string
+	toolUsageSeen            bool
+	imageFallbackItemCosts   map[string]float64
 }
 
 type sseUsageParser struct {
@@ -40,6 +46,7 @@ type sseUsageParser struct {
 	discardTail string       // 丢弃超大事件时保留少量尾部，用于识别跨chunk的空行边界
 	scanner     jsonUsageParser
 	scanVersion int
+	sanitizer   sseLargeFieldSanitizer
 
 	// [INFO] 新增：存储SSE流中检测到的error事件（用于1308等错误的延迟处理）
 	lastError []byte // 最后一个error事件的完整JSON（data字段内容）
@@ -48,6 +55,10 @@ type sseUsageParser struct {
 	// OpenAI: data: [DONE]
 	// Anthropic: event: message_stop
 	streamComplete bool
+
+	// hasStreamOutput 表示已经看到应转发给客户端的非心跳流事件。
+	// ping 只是上游保活，不能让 200 空流被误判为成功。
+	hasStreamOutput bool
 }
 
 type jsonUsageParser struct {
@@ -55,6 +66,7 @@ type jsonUsageParser struct {
 	buffer      bytes.Buffer
 	truncated   bool
 	channelType string // 渠道类型(anthropic/openai/codex/gemini),用于精确平台判断
+	hasBody     bool
 
 	scanInString       bool
 	scanEscape         bool
@@ -72,17 +84,36 @@ type jsonUsageParser struct {
 	scanCaptureDiscard bool
 }
 
+type sseLargeFieldSanitizer struct {
+	inString      bool
+	escape        bool
+	stringBuf     []byte
+	stringTooLong bool
+	haveToken     bool
+	stringToken   string
+	pendingKey    string
+	expectValue   bool
+	dropping      bool
+	dropEscape    bool
+}
+
 type usageParser interface {
 	Feed([]byte) error
 	GetUsage() (inputTokens, outputTokens, cacheRead, cacheCreation int)
 	GetCacheBreakdown() (cache5m, cache1h int, serviceTier string) // 返回缓存分桶与 OpenAI service_tier
+	GetToolCostUSD() float64                                       // 返回 Responses 工具调用的额外费用
 	GetLastError() []byte                                          // [INFO] 返回SSE流中检测到的最后一个error事件（用于1308等错误的延迟处理）
 	IsStreamComplete() bool                                        // [INFO] 返回是否检测到流结束标志（[DONE]/message_stop）
+	HasStreamOutput() bool                                         // 返回是否已经看到非心跳的可见响应内容
 }
 
 // GetCacheBreakdown 由 sseUsageParser/jsonUsageParser 通过嵌入共享。
 func (u *usageAccumulator) GetCacheBreakdown() (cache5m, cache1h int, serviceTier string) {
 	return u.Cache5mInputTokens, u.Cache1hInputTokens, u.ServiceTier
+}
+
+func (u *usageAccumulator) GetToolCostUSD() float64 {
+	return u.ToolCostUSD
 }
 
 const (
@@ -116,6 +147,7 @@ func newJSONUsageParser(channelType string) *jsonUsageParser {
 // 采用增量解析，避免重复扫描已处理数据
 func (p *sseUsageParser) Feed(data []byte) error {
 	p.scanUsageFragments(data)
+	data = p.sanitizer.sanitize(data)
 
 	for len(data) > 0 {
 		if p.oversized {
@@ -161,10 +193,14 @@ func (p *sseUsageParser) scanUsageFragments(data []byte) {
 	if p.scanner.ServiceTier != "" {
 		p.ServiceTier = p.scanner.ServiceTier
 	}
+	if p.scanner.ToolCostUSD > 0 {
+		p.ToolCostUSD = p.scanner.ToolCostUSD
+		p.toolUsageSeen = true
+	}
 }
 
 func (p *sseUsageParser) enterOversizedEventMode() {
-	log.Printf("WARN: SSE usage event exceeds max size (%d bytes), skipping this event for usage extraction", maxSSEEventSize)
+	log.Printf("[WARN] SSE usage 事件超出最大长度（%d 字节），跳过此事件的 usage 提取", maxSSEEventSize)
 	p.oversized = true
 	p.buffer.Reset()
 	p.bufferSize = 0
@@ -242,6 +278,117 @@ func findSSEEventBoundary(data []byte) (int, bool) {
 	return bestEnd, true
 }
 
+func (s *sseLargeFieldSanitizer) sanitize(data []byte) []byte {
+	if len(data) == 0 {
+		return nil
+	}
+
+	out := make([]byte, 0, min(len(data), maxSSEEventSize))
+	for _, b := range data {
+		if s.dropping {
+			s.consumeDroppedStringByte(b)
+			continue
+		}
+
+		if s.expectValue && isLargeJSONStringField(s.pendingKey) {
+			if isJSONWhitespace(b) {
+				out = append(out, b)
+				continue
+			}
+			if b == '"' {
+				out = append(out, '"', '<', 'o', 'm', 'i', 't', 't', 'e', 'd', '>', '"')
+				s.dropping = true
+				s.dropEscape = false
+				s.clearPending()
+				continue
+			}
+			s.clearPending()
+		}
+
+		out = append(out, b)
+
+		if s.inString {
+			s.scanStringByte(b)
+			continue
+		}
+		if s.haveToken {
+			if isJSONWhitespace(b) {
+				continue
+			}
+			if b == ':' {
+				s.pendingKey = s.stringToken
+				s.expectValue = true
+				s.haveToken = false
+				s.stringToken = ""
+				continue
+			}
+			s.haveToken = false
+			s.stringToken = ""
+		}
+		if b == '"' {
+			s.inString = true
+			s.escape = false
+			s.stringBuf = s.stringBuf[:0]
+			s.stringTooLong = false
+		}
+	}
+	return out
+}
+
+func (s *sseLargeFieldSanitizer) consumeDroppedStringByte(b byte) {
+	if s.dropEscape {
+		s.dropEscape = false
+		return
+	}
+	switch b {
+	case '\\':
+		s.dropEscape = true
+	case '"':
+		s.dropping = false
+	}
+}
+
+func (s *sseLargeFieldSanitizer) scanStringByte(b byte) {
+	if s.escape {
+		s.escape = false
+		s.appendStringByte(b)
+		return
+	}
+	switch b {
+	case '\\':
+		s.escape = true
+	case '"':
+		s.inString = false
+		if !s.stringTooLong {
+			s.haveToken = true
+			s.stringToken = string(s.stringBuf)
+		}
+	default:
+		s.appendStringByte(b)
+	}
+}
+
+func (s *sseLargeFieldSanitizer) appendStringByte(b byte) {
+	if s.stringTooLong {
+		return
+	}
+	if len(s.stringBuf) >= maxJSONKeySize {
+		s.stringTooLong = true
+		s.stringBuf = s.stringBuf[:0]
+		return
+	}
+	s.stringBuf = append(s.stringBuf, b)
+}
+
+func (s *sseLargeFieldSanitizer) clearPending() {
+	s.pendingKey = ""
+	s.expectValue = false
+}
+
+func isLargeJSONStringField(key string) bool {
+	return key == "result" || key == "partial_image_b64"
+}
+
 // parseBuffer 解析缓冲区中的SSE事件（增量解析）
 func (p *sseUsageParser) parseBuffer() error {
 	bufData := p.buffer.Bytes()
@@ -278,6 +425,7 @@ func (p *sseUsageParser) parseBuffer() error {
 			// [INFO] OpenAI 流结束标志: data: [DONE]
 			if dataLine == "[DONE]" {
 				p.streamComplete = true
+				p.hasStreamOutput = true
 				continue // [DONE]不是JSON，跳过追加
 			}
 			p.dataLines = append(p.dataLines, dataLine)
@@ -285,7 +433,7 @@ func (p *sseUsageParser) parseBuffer() error {
 			// 事件结束，解析数据
 			if err := p.parseEvent(p.eventType, strings.Join(p.dataLines, "")); err != nil {
 				// 记录错误但继续处理（容错设计）
-				log.Printf("WARN: SSE event parse failed (type=%s): %v", p.eventType, err)
+				log.Printf("[WARN] SSE 事件解析失败 (type=%s): %v", p.eventType, err)
 			}
 			p.eventType = ""
 			p.dataLines = nil
@@ -317,9 +465,14 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		return nil // 不解析usage，避免误判
 	}
 
+	if isHeartbeatEvent(eventType, data) {
+		return nil
+	}
+
+	p.hasStreamOutput = true
+
 	// 已知无用事件（不包含usage）
 	ignoredEvents := []string{
-		"ping",                // 心跳事件
 		"content_block_start", // Claude内容块开始（无usage）
 		"content_block_delta", // Claude增量内容（无usage）
 	}
@@ -346,6 +499,7 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	usage := extractUsage(event)
 
 	if usage == nil {
+		p.applyToolUsageFromPayload(event)
 		return nil
 	}
 
@@ -355,6 +509,7 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	}
 
 	p.applyUsage(usage, p.channelType)
+	p.applyToolUsageFromPayload(event)
 
 	return nil
 }
@@ -374,11 +529,11 @@ func (u *usageAccumulator) normalizedUsage(channelType string) (inputTokens, out
 	// OpenAI/Codex/Gemini语义归一化: prompt_tokens包含cached_tokens，需扣除
 	// 设计原则: 平台差异在解析层处理，计费层无需关心
 	if (channelType == "openai" || channelType == "codex" || channelType == "gemini") && u.CacheReadInputTokens > 0 {
-		billableInput = u.InputTokens - u.CacheReadInputTokens
-		if billableInput < 0 {
-			log.Printf("WARN: %s model has cacheReadTokens(%d) > inputTokens(%d), clamped to 0",
+		if u.CacheReadInputTokens <= u.InputTokens {
+			billableInput = u.InputTokens - u.CacheReadInputTokens
+		} else {
+			log.Printf("[WARN] %s usage 中 cacheReadTokens(%d) > inputTokens(%d)，将 inputTokens 视为非缓存 token",
 				channelType, u.CacheReadInputTokens, u.InputTokens)
-			billableInput = 0
 		}
 	}
 
@@ -395,7 +550,27 @@ func (p *sseUsageParser) IsStreamComplete() bool {
 	return p.streamComplete
 }
 
+func (p *sseUsageParser) HasStreamOutput() bool {
+	return p.hasStreamOutput
+}
+
+func isHeartbeatEvent(eventType, data string) bool {
+	if eventType == "ping" {
+		return true
+	}
+	if data == "" {
+		return false
+	}
+	var event struct {
+		Type string `json:"type"`
+	}
+	return json.Unmarshal([]byte(data), &event) == nil && event.Type == "ping"
+}
+
 func (p *jsonUsageParser) Feed(data []byte) error {
+	if len(data) > 0 {
+		p.hasBody = true
+	}
 	p.scanJSONUsage(data)
 
 	if p.truncated {
@@ -404,7 +579,7 @@ func (p *jsonUsageParser) Feed(data []byte) error {
 	if p.buffer.Len()+len(data) > maxUsageBodySize {
 		p.truncated = true
 		p.buffer = bytes.Buffer{}
-		log.Printf("WARN: usage body exceeds max size (%d bytes), switching to streaming usage extraction", maxUsageBodySize)
+		log.Printf("[WARN] usage 响应体超过最大长度（%d 字节），切换到流式 usage 提取", maxUsageBodySize)
 		return nil
 	}
 	_, err := p.buffer.Write(data)
@@ -426,7 +601,7 @@ func (p *jsonUsageParser) scanJSONUsage(data []byte) {
 				continue
 			}
 			switch p.scanPendingKey {
-			case "usage", "usageMetadata":
+			case "usage", "usageMetadata", "tool_usage":
 				if b == '{' {
 					p.startJSONValueCapture(b)
 					continue
@@ -557,6 +732,11 @@ func (p *jsonUsageParser) finishJSONValueCapture() {
 			if err := json.Unmarshal(p.scanCaptureBuf, &usage); err == nil {
 				p.applyUsageMap(usage)
 			}
+		case "tool_usage":
+			var toolUsage map[string]any
+			if err := json.Unmarshal(p.scanCaptureBuf, &toolUsage); err == nil {
+				p.applyToolUsageMap(toolUsage, "")
+			}
 		case "service_tier":
 			var tier string
 			if err := json.Unmarshal(p.scanCaptureBuf, &tier); err == nil && tier != "" {
@@ -605,22 +785,24 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 	if looksLikeSSE(data) {
 		sseParser := newSSEUsageParser(p.channelType)
 		if err := sseParser.Feed(data); err != nil {
-			log.Printf("WARN: usage sse-like parse failed: %v", err)
+			log.Printf("[WARN] 类 SSE 格式的 usage 解析失败: %v", err)
 		} else {
 			p.ServiceTier = sseParser.ServiceTier
+			p.ToolCostUSD = sseParser.GetToolCostUSD()
 			return sseParser.GetUsage()
 		}
 	}
 
 	var payload map[string]any
 	if err := json.Unmarshal(data, &payload); err != nil {
-		log.Printf("WARN: usage json parse failed: %v", err)
+		log.Printf("[WARN] usage JSON 解析失败: %v", err)
 		return 0, 0, 0, 0
 	}
 
 	usage := extractUsage(payload)
 	// Anthropic fast mode: 从 usage.speed 推断计费层级
 	p.applyUsageMap(usage)
+	p.applyToolUsageFromPayload(payload)
 
 	// 提取 service_tier（OpenAI Chat/Responses API 顶层字段）
 	if tier, ok := payload["service_tier"].(string); ok && tier != "" {
@@ -642,6 +824,181 @@ func (p *jsonUsageParser) GetLastError() []byte {
 // [INFO] IsStreamComplete 返回false（非流式请求无结束标志概念）
 func (p *jsonUsageParser) IsStreamComplete() bool {
 	return false // JSON解析器不处理流结束标志
+}
+
+func (p *jsonUsageParser) HasStreamOutput() bool {
+	return p.hasBody
+}
+
+func (u *usageAccumulator) applyToolUsageFromPayload(payload map[string]any) {
+	toolUsage, model := extractToolUsageAndImageModel(payload)
+	if model != "" {
+		u.imageGenerationToolModel = model
+	}
+	if u.applyToolUsageMap(toolUsage, model) {
+		return
+	}
+	u.applyImageGenerationFallbackFromPayload(payload, model)
+}
+
+func (u *usageAccumulator) applyToolUsageMap(toolUsage map[string]any, imageModel string) bool {
+	if toolUsage == nil {
+		return false
+	}
+	imageUsage, ok := toolUsage["image_gen"].(map[string]any)
+	if !ok {
+		return false
+	}
+	cost := util.CalculateImageGenerationToolCost(imageModel, imageGenerationToolUsageFromMap(imageUsage))
+	if cost <= 0 {
+		return false
+	}
+	u.ToolCostUSD = cost
+	u.toolUsageSeen = true
+	return true
+}
+
+func (u *usageAccumulator) applyImageGenerationFallbackFromPayload(payload map[string]any, imageModel string) {
+	if u.toolUsageSeen || payload == nil {
+		return
+	}
+	if imageModel == "" {
+		imageModel = u.imageGenerationToolModel
+	}
+	for _, item := range extractCompletedImageGenerationItems(payload) {
+		cost := util.CalculateImageGenerationToolFallbackCost(imageModel, item.quality, item.size)
+		if cost <= 0 {
+			continue
+		}
+		if u.imageFallbackItemCosts == nil {
+			u.imageFallbackItemCosts = make(map[string]float64)
+		}
+		if prev, ok := u.imageFallbackItemCosts[item.key]; ok {
+			if prev != cost {
+				u.ToolCostUSD += cost - prev
+				u.imageFallbackItemCosts[item.key] = cost
+			}
+			continue
+		}
+		u.imageFallbackItemCosts[item.key] = cost
+		u.ToolCostUSD += cost
+	}
+}
+
+func extractToolUsageAndImageModel(payload map[string]any) (map[string]any, string) {
+	if payload == nil {
+		return nil, ""
+	}
+	if resp, ok := payload["response"].(map[string]any); ok {
+		toolUsage, _ := resp["tool_usage"].(map[string]any)
+		return toolUsage, extractImageGenerationModel(resp["tools"])
+	}
+	toolUsage, _ := payload["tool_usage"].(map[string]any)
+	return toolUsage, extractImageGenerationModel(payload["tools"])
+}
+
+type completedImageGenerationItem struct {
+	key     string
+	quality string
+	size    string
+}
+
+func extractCompletedImageGenerationItems(payload map[string]any) []completedImageGenerationItem {
+	items := make([]completedImageGenerationItem, 0, 1)
+	if item, ok := payload["item"].(map[string]any); ok {
+		if parsed, ok := completedImageGenerationItemFromMap(item, "item"); ok {
+			items = append(items, parsed)
+		}
+	}
+	if resp, ok := payload["response"].(map[string]any); ok {
+		if output, ok := resp["output"].([]any); ok {
+			for i, rawItem := range output {
+				item, ok := rawItem.(map[string]any)
+				if !ok {
+					continue
+				}
+				if parsed, ok := completedImageGenerationItemFromMap(item, fmt.Sprintf("response.output.%d", i)); ok {
+					items = append(items, parsed)
+				}
+			}
+		}
+	}
+	return items
+}
+
+func completedImageGenerationItemFromMap(item map[string]any, fallbackKey string) (completedImageGenerationItem, bool) {
+	itemType, _ := item["type"].(string)
+	if itemType != "image_generation_call" {
+		return completedImageGenerationItem{}, false
+	}
+	result, _ := item["result"].(string)
+	if result == "" {
+		return completedImageGenerationItem{}, false
+	}
+	quality, _ := item["quality"].(string)
+	size, _ := item["size"].(string)
+	if quality == "" || size == "" {
+		return completedImageGenerationItem{}, false
+	}
+	key, _ := item["id"].(string)
+	if strings.TrimSpace(key) == "" {
+		key = fallbackKey
+	}
+	return completedImageGenerationItem{
+		key:     key,
+		quality: quality,
+		size:    size,
+	}, true
+}
+
+func extractImageGenerationModel(rawTools any) string {
+	tools, ok := rawTools.([]any)
+	if !ok {
+		return ""
+	}
+	for _, rawTool := range tools {
+		tool, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		toolType, _ := tool["type"].(string)
+		if toolType != "image_generation" {
+			continue
+		}
+		model, _ := tool["model"].(string)
+		return strings.TrimSpace(model)
+	}
+	return ""
+}
+
+func imageGenerationToolUsageFromMap(usage map[string]any) util.ImageGenerationToolUsage {
+	inputDetails, _ := usage["input_tokens_details"].(map[string]any)
+	outputDetails, _ := usage["output_tokens_details"].(map[string]any)
+	return util.ImageGenerationToolUsage{
+		InputTokens:       usageInt(usage, "input_tokens"),
+		OutputTokens:      usageInt(usage, "output_tokens"),
+		TextInputTokens:   usageInt(inputDetails, "text_tokens"),
+		TextCachedTokens:  usageInt(inputDetails, "cached_text_tokens"),
+		ImageInputTokens:  usageInt(inputDetails, "image_tokens"),
+		ImageCachedTokens: usageInt(inputDetails, "cached_image_tokens"),
+		ImageOutputTokens: usageInt(outputDetails, "image_tokens"),
+	}
+}
+
+func usageInt(m map[string]any, key string) int {
+	if m == nil {
+		return 0
+	}
+	switch value := m[key].(type) {
+	case float64:
+		return int(value)
+	case int:
+		return value
+	case int64:
+		return int(value)
+	default:
+		return 0
+	}
 }
 
 func (u *usageAccumulator) applyUsage(usage map[string]any, channelType string) {
@@ -667,7 +1024,7 @@ func (u *usageAccumulator) applyUsage(usage map[string]any, channelType string) 
 			// OpenAI Responses API使用类似Anthropic的字段
 			u.applyAnthropicOrResponsesUsage(usage)
 		} else {
-			log.Printf("WARN: OpenAI channel with unknown usage format, keys: %v", getUsageKeys(usage))
+			log.Printf("[WARN] OpenAI 渠道返回未知的 usage 格式，keys: %v", getUsageKeys(usage))
 		}
 
 	case "anthropic":
@@ -676,7 +1033,7 @@ func (u *usageAccumulator) applyUsage(usage map[string]any, channelType string) 
 
 	default:
 		// 未知channelType,fallback到字段特征检测(向后兼容)
-		log.Printf("WARN: unknown channel_type '%s', fallback to field detection", channelType)
+		log.Printf("[WARN] 未知 channel_type '%s'，回退到字段探测", channelType)
 		switch {
 		case hasGeminiUsageFields(usage):
 			u.applyGeminiUsage(usage)
@@ -685,7 +1042,7 @@ func (u *usageAccumulator) applyUsage(usage map[string]any, channelType string) 
 		case hasAnthropicUsageFields(usage):
 			u.applyAnthropicOrResponsesUsage(usage)
 		default:
-			log.Printf("ERROR: cannot detect usage format for channel_type '%s', keys: %v", channelType, getUsageKeys(usage))
+			log.Printf("[ERROR] 无法识别 channel_type '%s' 的 usage 格式，keys: %v", channelType, getUsageKeys(usage))
 		}
 	}
 }

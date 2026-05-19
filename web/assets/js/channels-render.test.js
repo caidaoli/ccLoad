@@ -140,6 +140,65 @@ test('buildEffectivePriorityHtml 渲染可直接编辑的优先级控件', () =>
   assert.doesNotMatch(html, /data-action="priority-step"/);
 });
 
+test('saveInlineChannelPriority 只调用优先级接口并更新本地状态，不重新拉 channels 或 filter-options', async () => {
+  const fetchCalls = [];
+  let filterCalls = 0;
+  let reloadCalls = 0;
+  const channels = [{ id: 7, priority: 10, effective_priority: 11 }];
+  const filteredChannels = [{ id: 7, priority: 10, effective_priority: 11 }];
+  const { saveInlineChannelPriority } = loadRenderSandbox({
+    channels,
+    filteredChannels,
+    fetchDataWithAuth: async (url, options = {}) => {
+      fetchCalls.push({ url, body: JSON.parse(options.body) });
+      return {};
+    },
+    clearChannelsCache() {},
+    filterChannels() {
+      filterCalls += 1;
+    },
+    reloadChannelsList() {
+      reloadCalls += 1;
+      throw new Error('priority update must not reload channel list');
+    },
+    window: {
+      t(key) {
+        if (key === 'channels.priorityUpdateSuccess') return '优先级已更新';
+        if (key === 'channels.priorityUpdateFailed') return '优先级更新失败';
+        return key;
+      },
+      showSuccess() {},
+      showError(error) {
+        throw new Error(error);
+      }
+    }
+  });
+  const input = {
+    value: '20',
+    dataset: { channelId: '7', originalPriority: '10' },
+    classList: { remove() {} },
+    closest() {
+      return {
+        classList: { toggle() {} },
+        querySelectorAll() { return []; }
+      };
+    }
+  };
+
+  await saveInlineChannelPriority(input);
+
+  assert.deepEqual(fetchCalls, [{
+    url: '/admin/channels/batch-priority',
+    body: { updates: [{ id: 7, priority: 20 }] }
+  }]);
+  assert.equal(channels[0].priority, 20);
+  assert.equal(channels[0].effective_priority, 21);
+  assert.equal(filteredChannels[0].priority, 20);
+  assert.equal(filteredChannels[0].effective_priority, 21);
+  assert.equal(filterCalls, 1);
+  assert.equal(reloadCalls, 0);
+});
+
 test('buildChannelTimingHtml 渲染耗时和带单位的调用汇总', () => {
   const { buildChannelTimingHtml } = loadRenderHelpers();
 
