@@ -257,6 +257,11 @@ var basePricing = map[string]ModelPricing{
 	"babbage-002":          {InputPrice: 0.40, OutputPrice: 0.40},
 
 	// ========== Gemini 模型 ==========
+	"gemini-3.5-flash": {InputPrice: 1.50, OutputPrice: 9.00, CacheReadPrice: 0.15, HasCacheReadPrice: true},
+	"gemini-3.1-pro": {
+		InputPrice: 2.00, OutputPrice: 12.00, CacheReadPrice: 0.20, HasCacheReadPrice: true,
+		InputPriceHigh: 4.00, OutputPriceHigh: 18.00, CacheReadPriceHigh: 0.40,
+	},
 	"gemini-3-pro": {
 		InputPrice: 2.00, OutputPrice: 12.00,
 		InputPriceHigh: 4.00, OutputPriceHigh: 18.00,
@@ -1114,7 +1119,7 @@ var fuzzyPrefixes = []string{
 	"claude-opus", "claude-sonnet", "claude-haiku", // 通用兜底
 
 	// Gemini模型（按版本降序，更长的前缀优先）
-	"gemini-3-pro", "gemini-3.1-flash-lite", "gemini-3-flash",
+	"gemini-3.5-flash", "gemini-3.1-pro", "gemini-3.1-flash-lite", "gemini-3-pro", "gemini-3-flash",
 	"gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.5-pro",
 	"gemini-2.0-flash-lite", "gemini-2.0-flash",
 	"gemini-1.5-pro", "gemini-1.5-flash",
