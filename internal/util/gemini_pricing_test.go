@@ -39,6 +39,30 @@ func runGeminiCostTests(t *testing.T, tests []geminiCostTestCase) {
 func TestCalculateCost_Gemini(t *testing.T) {
 	tests := []geminiCostTestCase{
 		{
+			name:            "gemini-3.1-pro标准上下文",
+			model:           "gemini-3.1-pro",
+			inputTokens:     150_000,
+			outputTokens:    50_000,
+			expectedCostUSD: 2.00*0.15 + 12.00*0.05,
+			description:     "验证gemini-3.1-pro标准定价：150k input + 50k output = $0.90",
+		},
+		{
+			name:            "gemini-3.1-pro长上下文",
+			model:           "gemini-3.1-pro",
+			inputTokens:     250_000,
+			outputTokens:    50_000,
+			expectedCostUSD: 4.00*0.25 + 18.00*0.05,
+			description:     "验证gemini-3.1-pro长上下文定价：250k input + 50k output = $1.90",
+		},
+		{
+			name:            "gemini-3.5-flash标准模型",
+			model:           "gemini-3.5-flash",
+			inputTokens:     1_000_000,
+			outputTokens:    1_000_000,
+			expectedCostUSD: 1.50 + 9.00,
+			description:     "验证gemini-3.5-flash标准定价：1M input + 1M output = $10.50",
+		},
+		{
 			name:            "gemini-2.5-flash基础用量",
 			model:           "gemini-2.5-flash",
 			inputTokens:     1_000_000,   // 1M tokens
@@ -158,6 +182,30 @@ func TestCalculateCost_GeminiFuzzyMatch(t *testing.T) {
 	// 测试Gemini模型模糊匹配（带日期后缀的版本）
 	tests := []geminiCostTestCase{
 		{
+			name:            "gemini-3.1-pro官方preview模型名",
+			model:           "gemini-3.1-pro-preview",
+			inputTokens:     150_000,
+			outputTokens:    50_000,
+			expectedCostUSD: 2.00*0.15 + 12.00*0.05,
+			description:     "gemini-3.1-pro-preview 应匹配 gemini-3.1-pro 定价",
+		},
+		{
+			name:            "gemini-3.1-pro官方customtools模型名",
+			model:           "gemini-3.1-pro-preview-customtools",
+			inputTokens:     150_000,
+			outputTokens:    50_000,
+			expectedCostUSD: 2.00*0.15 + 12.00*0.05,
+			description:     "gemini-3.1-pro-preview-customtools 应匹配 gemini-3.1-pro 定价",
+		},
+		{
+			name:            "gemini-3.5-flash带latest标记",
+			model:           "gemini-3.5-flash-latest",
+			inputTokens:     1_000_000,
+			outputTokens:    1_000_000,
+			expectedCostUSD: 1.50 + 9.00,
+			description:     "gemini-3.5-flash-latest 应匹配 gemini-3.5-flash 定价",
+		},
+		{
 			name:            "gemini-2.5-flash带版本后缀",
 			model:           "gemini-2.5-flash-preview-05-20",
 			inputTokens:     1_000_000,
@@ -200,6 +248,46 @@ func TestCalculateCost_GeminiFuzzyMatch(t *testing.T) {
 	}
 
 	runGeminiCostTests(t, tests)
+}
+
+func TestCalculateCost_Gemini31ProCacheRead(t *testing.T) {
+	tests := []struct {
+		name            string
+		inputTokens     int
+		cacheReadTokens int
+		expectedCostUSD float64
+	}{
+		{
+			name:            "标准缓存价",
+			inputTokens:     100_000,
+			cacheReadTokens: 100_000,
+			expectedCostUSD: 2.00*0.1 + 0.20*0.1,
+		},
+		{
+			name:            "长上下文缓存价",
+			inputTokens:     250_000,
+			cacheReadTokens: 100_000,
+			expectedCostUSD: 4.00*0.25 + 0.40*0.1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cost := CalculateCostDetailed("gemini-3.1-pro", tt.inputTokens, 0, tt.cacheReadTokens, 0, 0)
+			if abs(cost-tt.expectedCostUSD) > 0.0001 {
+				t.Fatalf("gemini-3.1-pro cache read cost = $%.4f, 期望 $%.4f", cost, tt.expectedCostUSD)
+			}
+		})
+	}
+}
+
+func TestCalculateCost_Gemini35FlashCacheRead(t *testing.T) {
+	cost := CalculateCostDetailed("gemini-3.5-flash", 0, 0, 1_000_000, 0, 0)
+	expected := 0.15
+
+	if abs(cost-expected) > 0.0001 {
+		t.Fatalf("gemini-3.5-flash cache read cost = $%.4f, 期望 $%.4f", cost, expected)
+	}
 }
 
 func TestCalculateCost_GeminiUnknownModel(t *testing.T) {
