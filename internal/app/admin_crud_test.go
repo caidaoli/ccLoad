@@ -187,6 +187,128 @@ func TestHandleListChannelsExactAndFuzzyFilters(t *testing.T) {
 	}
 }
 
+func TestHandleListChannelsTypeFilterIncludesProtocolTransforms(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	fixtures := []*model.Config{
+		{
+			Name:         "native-openai",
+			URL:          "https://openai.example.com",
+			Priority:     10,
+			ChannelType:  "openai",
+			ModelEntries: []model.ModelEntry{{Model: "native-model"}},
+			Enabled:      true,
+		},
+		{
+			Name:               "anthropic-openai-transform",
+			URL:                "https://anthropic.example.com",
+			Priority:           20,
+			ChannelType:        "anthropic",
+			ProtocolTransforms: []string{"openai"},
+			ModelEntries:       []model.ModelEntry{{Model: "bridge-model"}},
+			Enabled:            true,
+		},
+		{
+			Name:               "codex-gemini-transform",
+			URL:                "https://codex.example.com",
+			Priority:           30,
+			ChannelType:        "codex",
+			ProtocolTransforms: []string{"gemini"},
+			ModelEntries:       []model.ModelEntry{{Model: "skip-model"}},
+			Enabled:            true,
+		},
+	}
+	for _, fixture := range fixtures {
+		if _, err := store.CreateConfig(ctx, fixture); err != nil {
+			t.Fatalf("CreateConfig(%s) failed: %v", fixture.Name, err)
+		}
+	}
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels?type=openai&limit=20&offset=0", nil))
+
+	server.handleListChannels(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	resp := mustParseAPIResponse[[]ChannelWithCooldown](t, w.Body.Bytes())
+	if resp.Count != 2 {
+		t.Fatalf("count=%d, want 2 body=%s", resp.Count, w.Body.String())
+	}
+	gotNames := make([]string, 0, len(resp.Data))
+	for _, item := range resp.Data {
+		gotNames = append(gotNames, item.Name)
+	}
+	sort.Strings(gotNames)
+	wantNames := []string{"anthropic-openai-transform", "native-openai"}
+	if !slices.Equal(gotNames, wantNames) {
+		t.Fatalf("names=%v, want %v", gotNames, wantNames)
+	}
+}
+
+func TestHandleChannelsFilterOptionsTypeFilterIncludesProtocolTransforms(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	fixtures := []*model.Config{
+		{
+			Name:         "native-openai",
+			URL:          "https://openai.example.com",
+			Priority:     10,
+			ChannelType:  "openai",
+			ModelEntries: []model.ModelEntry{{Model: "native-model"}},
+			Enabled:      true,
+		},
+		{
+			Name:               "anthropic-openai-transform",
+			URL:                "https://anthropic.example.com",
+			Priority:           20,
+			ChannelType:        "anthropic",
+			ProtocolTransforms: []string{"openai"},
+			ModelEntries:       []model.ModelEntry{{Model: "bridge-model"}},
+			Enabled:            true,
+		},
+		{
+			Name:               "codex-gemini-transform",
+			URL:                "https://codex.example.com",
+			Priority:           30,
+			ChannelType:        "codex",
+			ProtocolTransforms: []string{"gemini"},
+			ModelEntries:       []model.ModelEntry{{Model: "skip-model"}},
+			Enabled:            true,
+		},
+	}
+	for _, fixture := range fixtures {
+		if _, err := store.CreateConfig(ctx, fixture); err != nil {
+			t.Fatalf("CreateConfig(%s) failed: %v", fixture.Name, err)
+		}
+	}
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/filter-options?type=openai", nil))
+
+	server.HandleChannelsFilterOptions(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var data struct {
+		ChannelNames []string `json:"channel_names"`
+		Models       []string `json:"models"`
+	}
+	mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &data)
+	wantNames := []string{"anthropic-openai-transform", "native-openai"}
+	if !slices.Equal(data.ChannelNames, wantNames) {
+		t.Fatalf("channel_names=%v, want %v", data.ChannelNames, wantNames)
+	}
+	wantModels := []string{"bridge-model", "native-model"}
+	if !slices.Equal(data.Models, wantModels) {
+		t.Fatalf("models=%v, want %v", data.Models, wantModels)
+	}
+}
+
 // TestHandleCreateChannel 测试创建渠道
 func TestHandleCreateChannel(t *testing.T) {
 	server, _, cleanup := setupAdminTestServer(t)
