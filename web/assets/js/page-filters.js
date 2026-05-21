@@ -49,7 +49,9 @@
       ),
       timeRange: buildFilterGroup(
         `${buildFilterLabel('f_hours', 'stats.timeRange', '时间范围')}
-        ${buildSelect('f_hours', '\n                <!-- 动态生成选项 by date-range-selector.js -->\n              ', timeRangeControlClass)}`,
+        <div id="f_hours_custom_range_host" class="filter-custom-range-host">
+          ${buildSelect('f_hours', '\n                <!-- 动态生成选项 by date-range-selector.js -->\n              ', timeRangeControlClass)}
+        </div>`,
         timeRangeGroupClass
       ),
       channelId: buildFilterGroup(

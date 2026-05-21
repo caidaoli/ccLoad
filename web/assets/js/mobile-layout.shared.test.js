@@ -27,6 +27,19 @@ function getLastRuleBody(css, selector) {
   return lastBody;
 }
 
+function getLastExactRuleBody(css, selector) {
+  const escapedSelector = selector
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/\s+/g, '\\s+');
+  const pattern = new RegExp(`(?:^|\\n)\\s*${escapedSelector}\\s*\\{([\\s\\S]*?)\\}`, 'g');
+  let match = null;
+  let lastBody = '';
+  while ((match = pattern.exec(css)) !== null) {
+    lastBody = match[1];
+  }
+  return lastBody;
+}
+
 test('共享样式在窄屏下压缩顶部导航、时间范围、筛选栏和弹窗', () => {
   assert.match(sharedCss, /--topbar-offset:\s*var\(--topbar-height\)/);
   assert.match(sharedCss, /\.top-layout\s+\.main-content\s*\{[^}]*padding-top:\s*var\(--topbar-offset\)/s);
@@ -54,6 +67,19 @@ test('共享样式在窄屏下压缩顶部导航、时间范围、筛选栏和�
   assert.match(mobileCss, /\.filter-group\s*\{[\s\S]*?grid-template-columns:\s*88px\s+minmax\(0,\s*1fr\);[\s\S]*?width:\s*100%;[\s\S]*?min-width:\s*0;/);
   assert.match(mobileCss, /\.filter-controls\s*>\s*\.channel-filter-summary,\s*[\r\n\s]*\.filter-controls\s*>\s*\.logs-filter-summary-row,\s*[\r\n\s]*\.filter-controls\s*>\s*\.stats-filter-summary-row,\s*[\r\n\s]*\.filter-controls\s*>\s*\.filter-actions--page\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1;/);
   assert.match(mobileCss, /\.modal-content\s*\{[\s\S]*?max-height:\s*calc\(100vh - 24px\);/);
+});
+
+test('自定义时间弹层在手机端按视口定位而不是被筛选控件宽度压缩', () => {
+  const pickerRule = getLastExactRuleBody(sharedCss, '.custom-range-picker');
+  const hostPickerRule = getLastExactRuleBody(sharedCss, '.filter-custom-range-host .custom-range-picker');
+
+  assert.match(pickerRule, /position:\s*fixed/);
+  assert.match(pickerRule, /left:\s*50%/);
+  assert.match(pickerRule, /transform:\s*translateX\(-50%\)/);
+  assert.match(pickerRule, /width:\s*calc\(100vw - 24px\)/);
+  assert.match(hostPickerRule, /left:\s*50%/);
+  assert.match(hostPickerRule, /top:\s*8px/);
+  assert.doesNotMatch(pickerRule, /min\(100%,\s*calc\(100vw - 32px\)\)/);
 });
 
 test('共享样式提供可复用的手机卡片表格骨架', () => {

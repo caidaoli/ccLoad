@@ -12,9 +12,11 @@ import (
 
 // PaginationParams 通用分页参数结构
 type PaginationParams struct {
-	Range  string // 时间范围: today/yesterday/this_week等
-	Limit  int    // 上限 1000，见 ParsePaginationParams
-	Offset int
+	Range     string // 时间范围: today/yesterday/this_week/custom等
+	StartTime time.Time
+	EndTime   time.Time
+	Limit     int // 上限 1000，见 ParsePaginationParams
+	Offset    int
 }
 
 // SetDefaults 设置默认值
@@ -28,7 +30,7 @@ func (p *PaginationParams) SetDefaults() {
 }
 
 // GetTimeRange 根据Range参数计算时间范围(开始时间和结束时间)（用于统计API）
-// 支持的范围: today(本日), yesterday(昨日), day_before_yesterday(前日),
+// 支持的范围: today(本日), yesterday(昨日), day_before_yesterday(前日), custom(自定义),
 //
 //	this_week(本周), last_week(上周), this_month(本月), last_month(上月)
 func (p *PaginationParams) GetTimeRange() (startTime, endTime time.Time) {
@@ -39,6 +41,17 @@ func (p *PaginationParams) GetTimeRange() (startTime, endTime time.Time) {
 func (p *PaginationParams) GetTimeRangeAt(now time.Time) (startTime, endTime time.Time) {
 
 	switch p.Range {
+	case "custom":
+		if !p.StartTime.IsZero() && !p.EndTime.IsZero() && p.StartTime.Before(now) && p.EndTime.After(p.StartTime) {
+			startTime = p.StartTime
+			endTime = p.EndTime
+			if endTime.After(now) {
+				endTime = now
+			}
+			break
+		}
+		startTime = beginningOfDay(now)
+		endTime = now
 	case "today":
 		// 本日：今天0:00到现在
 		startTime = beginningOfDay(now)
@@ -125,6 +138,10 @@ func ParsePaginationParams(c *gin.Context) *PaginationParams {
 	var params PaginationParams
 
 	params.Range = strings.TrimSpace(c.Query("range"))
+	if params.Range == "custom" {
+		params.StartTime = parseUnixMillisQuery(c.Query("start_time"))
+		params.EndTime = parseUnixMillisQuery(c.Query("end_time"))
+	}
 
 	if limit, err := strconv.Atoi(c.DefaultQuery("limit", "200")); err == nil && limit > 0 {
 		params.Limit = min(limit, 1000) // 防止超大 limit 拖垮查询
@@ -135,6 +152,19 @@ func ParsePaginationParams(c *gin.Context) *PaginationParams {
 
 	params.SetDefaults()
 	return &params
+}
+
+func parseUnixMillisQuery(value string) time.Time {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}
+	}
+
+	ms, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return time.Time{}
+	}
+	return time.UnixMilli(ms)
 }
 
 // APIResponse 标准API响应结构

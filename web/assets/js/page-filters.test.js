@@ -91,6 +91,7 @@ test('page-filters 使用响应式宽度类代替筛选控件内联像素宽度'
   });
 
   assert.match(statsLayout, /id="f_channel_type" class="filter-select filter-control--compact"/);
+  assert.match(statsLayout, /id="f_hours_custom_range_host" class="filter-custom-range-host"/);
   assert.match(statsLayout, /id="f_hours" class="filter-select filter-control--compact filter-control--time-range"/);
   // stats 渠道名改为 combobox，渠道 ID 筛选已移除
   assert.match(statsLayout, /id="f_name" class="filter-select filter-combobox"/);

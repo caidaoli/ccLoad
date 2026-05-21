@@ -87,8 +87,8 @@ test('ui.js 暴露共享的日期范围/令牌筛选初始化 helper', async () 
   let rangeChangeCount = 0;
   let tokenChangeCount = 0;
 
-  window.initDateRangeSelector = (selectId, defaultValue, onChange) => {
-    rangeCalls.push({ selectId, defaultValue });
+  window.initDateRangeSelector = (selectId, defaultValue, onChange, opts = {}) => {
+    rangeCalls.push({ selectId, defaultValue, opts });
     elements.get(selectId).listeners.set('change', onChange);
   };
   window.loadAuthTokensIntoSelect = async (selectId, opts) => {
@@ -117,7 +117,11 @@ test('ui.js 暴露共享的日期范围/令牌筛选初始化 helper', async () 
     }
   });
 
-  assert.deepEqual(rangeCalls, [{ selectId: 'f_hours', defaultValue: 'today' }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(rangeCalls)), [{
+    selectId: 'f_hours',
+    defaultValue: 'today',
+    opts: { restoredValue: '7d' }
+  }]);
   assert.equal(elements.get('f_hours').value, '7d');
   elements.get('f_hours').listeners.get('change')();
   assert.equal(rangeChangeCount, 1);
@@ -127,6 +131,47 @@ test('ui.js 暴露共享的日期范围/令牌筛选初始化 helper', async () 
   assert.equal(elements.get('f_auth_token').value, '13');
   elements.get('f_auth_token').listeners.get('change')();
   assert.equal(tokenChangeCount, 1);
+});
+
+test('ui.js 日期筛选 helper 支持自定义区间选择', () => {
+  const { window, elements } = loadUiCommonHelpers(['f_hours']);
+  const rangeCalls = [];
+  let changedRange = null;
+  let changedCustomRange = null;
+
+  window.initDateRangeSelector = (selectId, defaultValue, onChange, opts = {}) => {
+    rangeCalls.push({ selectId, defaultValue, opts });
+    elements.get(selectId).listeners.set('change', onChange);
+  };
+
+  window.initSavedDateRangeFilter({
+    selectId: 'f_hours',
+    defaultValue: 'today',
+    restoredValue: 'custom',
+    includeCustom: true,
+    customRange: { startMs: 1, endMs: 2 },
+    customPickerContainerId: 'f_hours_custom_range_host',
+    onChange(range, customRange) {
+      changedRange = range;
+      changedCustomRange = customRange;
+    }
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(rangeCalls)), [{
+    selectId: 'f_hours',
+    defaultValue: 'today',
+    opts: {
+      includeCustom: true,
+      restoredValue: 'custom',
+      customRange: { startMs: 1, endMs: 2 },
+      customPickerContainerId: 'f_hours_custom_range_host'
+    }
+  }]);
+  assert.equal(elements.get('f_hours').value, 'custom');
+
+  elements.get('f_hours').listeners.get('change')('custom', { startMs: 3, endMs: 4 });
+  assert.equal(changedRange, 'custom');
+  assert.deepEqual(changedCustomRange, { startMs: 3, endMs: 4 });
 });
 
 test('ui.js 暴露共享的筛选字段读写 helper', () => {

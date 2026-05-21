@@ -65,6 +65,13 @@ test('index、tokens 通过 bindTimeRangeSelector 复用日期按钮重渲染', 
   assert.doesNotMatch(tokensSource, /window\.initTimeRangeSelector\(/);
 });
 
+test('tokens 页时间范围支持自定义区间查询参数', () => {
+  assert.match(tokensSource, /let\s+currentCustomTimeRange\s*=\s*null;/);
+  assert.match(tokensSource, /values:\s*\[[^\]]*'custom'[^\]]*\]/);
+  assert.match(tokensSource, /window\.buildDateRangeQuery\(currentTimeRange,\s*currentCustomTimeRange\)/);
+  assert.doesNotMatch(tokensSource, /url\s*\+=\s*`\?range=\$\{currentTimeRange\}`/);
+});
+
 test('logs、stats、trend 通过共享 helper 持久化筛选状态', () => {
   [logsSource, statsSource, trendSource].forEach((source) => {
     assert.match(source, /window\.persistFilterState\(/);

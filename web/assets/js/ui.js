@@ -726,8 +726,27 @@
       ? options.restoredValue
       : defaultValue;
     const onChange = typeof options.onChange === 'function' ? options.onChange : () => {};
+    const selectorOptions = {};
+    if (options.includeCustom === true) {
+      selectorOptions.includeCustom = true;
+    }
+    if (options.includeAll === true) {
+      selectorOptions.includeAll = true;
+    }
+    if (Array.isArray(options.values)) {
+      selectorOptions.values = options.values;
+    }
+    if (typeof options.restoredValue === 'string' && options.restoredValue) {
+      selectorOptions.restoredValue = restoredValue;
+    }
+    if (options.customRange) {
+      selectorOptions.customRange = options.customRange;
+    }
+    if (options.customPickerContainerId) {
+      selectorOptions.customPickerContainerId = options.customPickerContainerId;
+    }
 
-    window.initDateRangeSelector(selectId, defaultValue, onChange);
+    window.initDateRangeSelector(selectId, defaultValue, onChange, selectorOptions);
 
     const el = document.getElementById(selectId);
     if (el) {
@@ -1880,9 +1899,11 @@
       }
 
       const handleClick = function () {
+        const result = onRangeChange(this.dataset.range, this);
+        if (result === false) return;
+
         buttons.forEach(b => b.classList.remove('active'));
         this.classList.add('active');
-        onRangeChange(this.dataset.range);
       };
 
       btn.__timeRangeClickHandler = handleClick;
@@ -1892,8 +1913,9 @@
 
   // 渲染日期按钮 + 绑定切换回调 + 监听 i18n 重渲染
   function bindTimeRangeSelector(options = {}) {
-    const { containerId, values, includeAll = false, initialValue, onChange } = options;
+    const { containerId, values, includeAll = false, initialValue, customRange, onChange } = options;
     let currentValue = initialValue;
+    let currentCustomRange = customRange || null;
 
     const render = () => {
       if (typeof window.renderDateRangeButtons !== 'function') return;
@@ -1903,7 +1925,23 @@
     };
 
     const bind = () => {
-      initTimeRangeSelector(range => {
+      initTimeRangeSelector((range, button) => {
+        if (range === 'custom' && typeof window.openCustomDateRangePicker === 'function') {
+          window.openCustomDateRangePicker({
+            containerId,
+            range: currentCustomRange,
+            onConfirm: (confirmedRange) => {
+              currentValue = 'custom';
+              currentCustomRange = confirmedRange;
+              document.querySelectorAll('.time-range-btn').forEach(b => b.classList.remove('active'));
+              if (button) button.classList.add('active');
+              if (button && confirmedRange.label) button.title = confirmedRange.label;
+              if (typeof onChange === 'function') onChange('custom', confirmedRange);
+            }
+          });
+          return false;
+        }
+
         currentValue = range;
         if (typeof onChange === 'function') onChange(range);
       });

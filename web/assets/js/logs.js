@@ -5,6 +5,7 @@ let logsPageSize = 15;
 let totalLogsPages = 1;
 let totalLogs = 0;
 let currentChannelType = 'all'; // 当前选中的渠道类型
+let currentLogsCustomTimeRange = null;
 let authTokens = []; // 令牌列表
 let logsChannelNameCombobox = null; // 渠道名筛选组合框
 let logsModelCombobox = null; // 模型筛选组合框
@@ -75,6 +76,32 @@ function rememberExactLogsFilters(filters = {}, urlParams = null) {
 
   logsExactChannelNameValue = hasExactChannelName ? (filters.channelName || '') : '';
   logsExactModelValue = hasExactModel ? (filters.model || '') : '';
+}
+
+function normalizeLogsCustomTimeRange(range) {
+  if (!range || typeof range !== 'object') return null;
+
+  const startMs = Number(range.startMs ?? range.customStartTime);
+  const endMs = Number(range.endMs ?? range.customEndTime);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+    return null;
+  }
+  return {
+    startMs: Math.trunc(startMs),
+    endMs: Math.trunc(endMs),
+    label: range.label || ''
+  };
+}
+
+function appendLogsTimeRangeParams(params, filters) {
+  const range = filters?.range || 'today';
+  const query = typeof window.buildDateRangeQuery === 'function'
+    ? window.buildDateRangeQuery(range, currentLogsCustomTimeRange)
+    : `range=${encodeURIComponent(range)}`;
+  new URLSearchParams(query).forEach((value, key) => {
+    params.set(key, value);
+  });
+  return params;
 }
 
 function scheduleLoad() {
@@ -1010,7 +1037,7 @@ async function loadLogsModels(channelType, range) {
     const params = new URLSearchParams();
     const ct = channelType || currentChannelType || 'all';
     const r = range || document.getElementById('f_hours')?.value || 'today';
-    params.set('range', r);
+    appendLogsTimeRangeParams(params, { range: r });
     if (ct && ct !== 'all') params.set('channel_type', ct);
     const resp = await fetchDataWithAuth('/admin/models?' + params.toString()) || {};
     const rawModels = Array.isArray(resp.models) ? resp.models : [];
@@ -1075,14 +1102,19 @@ async function initFilters(restoredFilters) {
     selectId: 'f_hours',
     defaultValue: 'today',
     restoredValue: range,
-    onChange: async () => {
-      window.persistFilterState({
-        key: LOGS_FILTER_KEY,
-        getValues: getLogsFilters
-      });
+    includeCustom: true,
+    customRange: currentLogsCustomTimeRange,
+    customPickerContainerId: 'f_hours_custom_range_host',
+    onChange: async (nextRange, customRange) => {
+      if (nextRange === 'custom') {
+        currentLogsCustomTimeRange = normalizeLogsCustomTimeRange(customRange);
+      } else {
+        currentLogsCustomTimeRange = null;
+      }
       currentLogsPage = 1;
-      await loadLogsModels(currentChannelType);
-      load();
+      totalLogsPages = 1;
+      await loadLogsModels(currentChannelType, nextRange);
+      applyFilter();
     }
   });
 
@@ -1277,6 +1309,28 @@ const LOGS_FILTER_KEY = 'logs.filters';
 const LOGS_FILTER_FIELDS = [
   { key: 'range', queryKeys: ['range'], defaultValue: 'today' },
   {
+    key: 'customStartTime',
+    queryKeys: ['start_time'],
+    defaultValue: '',
+    includeInQuery(value, values) {
+      return values?.range === 'custom' && Boolean(value);
+    },
+    includeInRequest() {
+      return false;
+    }
+  },
+  {
+    key: 'customEndTime',
+    queryKeys: ['end_time'],
+    defaultValue: '',
+    includeInQuery(value, values) {
+      return values?.range === 'custom' && Boolean(value);
+    },
+    includeInRequest() {
+      return false;
+    }
+  },
+  {
     key: 'channelName',
     queryKeys: ['channel_name', 'channel_name_like'],
     paramKey: getLogsChannelNameFilterKey,
@@ -1313,13 +1367,17 @@ function getLogsFilters() {
     : (logSourceSelect.value || 'proxy').trim();
   const model = logsModelCombobox ? logsModelCombobox.getValue() : (document.getElementById('f_model')?.value || '').trim();
   const channelName = logsChannelNameCombobox ? logsChannelNameCombobox.getValue() : (document.getElementById('f_name')?.value || '').trim();
+  const baseValues = window.readFilterControlValues({
+    range: { id: 'f_hours', defaultValue: 'today', trim: true },
+    status: { id: 'f_status', trim: true },
+    authToken: { id: 'f_auth_token', trim: true }
+  });
+  const hasCustomRange = baseValues.range === 'custom' && currentLogsCustomTimeRange;
 
   return {
-    ...window.readFilterControlValues({
-      range: { id: 'f_hours', defaultValue: 'today', trim: true },
-      status: { id: 'f_status', trim: true },
-      authToken: { id: 'f_auth_token', trim: true }
-    }),
+    ...baseValues,
+    customStartTime: hasCustomRange ? String(currentLogsCustomTimeRange.startMs) : '',
+    customEndTime: hasCustomRange ? String(currentLogsCustomTimeRange.endMs) : '',
     model,
     modelExact: isExactLogsModelFilter(model),
     channelName,
@@ -1330,12 +1388,14 @@ function getLogsFilters() {
 }
 
 function buildLogsRequestParams() {
-  return window.FilterQuery.buildRequestParams(getLogsFilters(), LOGS_FILTER_FIELDS, {
+  const params = window.FilterQuery.buildRequestParams(getLogsFilters(), LOGS_FILTER_FIELDS, {
     baseParams: {
       limit: logsPageSize.toString(),
       offset: ((currentLogsPage - 1) * logsPageSize).toString()
     }
   });
+  appendLogsTimeRangeParams(params, getLogsFilters());
+  return params;
 }
 
 // 页面初始化
@@ -1353,6 +1413,12 @@ window.initPageBootstrap({
     savedFilters,
     fields: LOGS_FILTER_FIELDS
   });
+  currentLogsCustomTimeRange = restoredFilters.range === 'custom'
+    ? normalizeLogsCustomTimeRange(restoredFilters)
+    : null;
+  if (restoredFilters.range === 'custom' && !currentLogsCustomTimeRange) {
+    restoredFilters.range = 'today';
+  }
   rememberExactLogsFilters({
     ...restoredFilters,
     channelNameExact: !hasUrlParams && savedFilters?.channelNameExact === true,
@@ -1482,6 +1548,12 @@ window.addEventListener('pageshow', async function (event) {
         savedFilters,
         fields: LOGS_FILTER_FIELDS
       });
+      currentLogsCustomTimeRange = restoredFilters.range === 'custom'
+        ? normalizeLogsCustomTimeRange(restoredFilters)
+        : null;
+      if (restoredFilters.range === 'custom' && !currentLogsCustomTimeRange) {
+        restoredFilters.range = 'today';
+      }
       rememberExactLogsFilters({
         ...restoredFilters,
         channelNameExact: savedFilters.channelNameExact === true,
