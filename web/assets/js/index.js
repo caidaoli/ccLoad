@@ -12,6 +12,14 @@
 
     // 当前选中的时间范围
     let currentTimeRange = 'today';
+    let currentCustomTimeRange = null;
+
+    function buildSummaryURL() {
+      const query = typeof window.buildDateRangeQuery === 'function'
+        ? window.buildDateRangeQuery(currentTimeRange, currentCustomTimeRange)
+        : `range=${encodeURIComponent(currentTimeRange)}`;
+      return `/public/summary?${query}`;
+    }
 
     // 加载统计数据
     async function loadStats() {
@@ -32,7 +40,7 @@
         }
         // 预取失败或后续轮询走正常路径
         if (!data) {
-          data = await fetchData(`/public/summary?range=${currentTimeRange}`);
+          data = await fetchData(buildSummaryURL());
         }
         statsData = data || statsData;
         updateStatsDisplay();
@@ -159,10 +167,12 @@
       run: () => {
       window.bindTimeRangeSelector({
         containerId: 'index-time-range',
-        values: ['today', 'yesterday', 'day_before_yesterday', 'this_week', 'last_week', 'this_month', 'last_month'],
+        values: ['today', 'yesterday', 'day_before_yesterday', 'this_week', 'last_week', 'this_month', 'last_month', 'custom'],
         initialValue: currentTimeRange,
-        onChange: (range) => {
+        customRange: currentCustomTimeRange,
+        onChange: (range, customRange) => {
           currentTimeRange = range;
+          if (range === 'custom') currentCustomTimeRange = customRange;
           loadStats();
         }
       });

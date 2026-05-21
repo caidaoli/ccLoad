@@ -8,6 +8,7 @@
     window.currentModel = ''; // 当前选中的模型（空字符串表示全部模型）
     window.currentAuthToken = ''; // 当前选中的令牌（空字符串表示全部令牌）
     window.currentChannelName = ''; // 当前选中的渠道名称
+    let currentTrendCustomTimeRange = null;
     window.chartInstance = null;
     window.channels = [];
     window.visibleChannels = new Set(); // 可见渠道集合
@@ -31,6 +32,28 @@
         defaultValue: 'today',
         includeInQuery(value) {
           return Boolean(value) && value !== 'today';
+        }
+      },
+      {
+        key: 'customStartTime',
+        queryKeys: ['start_time'],
+        defaultValue: '',
+        includeInQuery(value, values) {
+          return values?.range === 'custom' && Boolean(value);
+        },
+        includeInRequest() {
+          return false;
+        }
+      },
+      {
+        key: 'customEndTime',
+        queryKeys: ['end_time'],
+        defaultValue: '',
+        includeInQuery(value, values) {
+          return values?.range === 'custom' && Boolean(value);
+        },
+        includeInRequest() {
+          return false;
         }
       },
       {
@@ -71,8 +94,12 @@
     );
 
     function getTrendFilters() {
+      const range = window.currentRange || 'today';
+      const hasCustomRange = range === 'custom' && currentTrendCustomTimeRange;
       return {
-        range: window.currentRange || 'today',
+        range,
+        customStartTime: hasCustomRange ? String(currentTrendCustomTimeRange.startMs) : '',
+        customEndTime: hasCustomRange ? String(currentTrendCustomTimeRange.endMs) : '',
         trendType: window.currentTrendType || 'first_byte',
         model: window.currentModel || '',
         authToken: window.currentAuthToken || '',
@@ -87,15 +114,59 @@
       });
     }
 
+    function normalizeTrendCustomTimeRange(range) {
+      if (!range || typeof range !== 'object') return null;
+
+      const startMs = Number(range.startMs ?? range.customStartTime);
+      const endMs = Number(range.endMs ?? range.customEndTime);
+      if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+        return null;
+      }
+      return {
+        startMs: Math.trunc(startMs),
+        endMs: Math.trunc(endMs),
+        label: range.label || ''
+      };
+    }
+
+    function appendTrendTimeRangeParams(params, filters) {
+      const range = filters?.range || 'today';
+      const query = typeof window.buildDateRangeQuery === 'function'
+        ? window.buildDateRangeQuery(range, currentTrendCustomTimeRange)
+        : `range=${encodeURIComponent(range)}`;
+      new URLSearchParams(query).forEach((value, key) => {
+        params.set(key, value);
+      });
+      return params;
+    }
+
+    function getTrendRangeHours(range) {
+      if (range === 'custom' && currentTrendCustomTimeRange) {
+        return Math.max((currentTrendCustomTimeRange.endMs - currentTrendCustomTimeRange.startMs) / 3600000, 1 / 60);
+      }
+      return window.getRangeHours ? getRangeHours(range) : 24;
+    }
+
+    function buildTrendRequestParams(baseParams = {}) {
+      const params = window.FilterQuery.buildRequestParams(getTrendFilters(), TREND_FILTER_FIELDS, {
+        baseParams
+      });
+      appendTrendTimeRangeParams(params, getTrendFilters());
+      return params;
+    }
+
     // 加载可用模型列表
     // channelType 参数：渠道类型筛选，空字符串或 'all' 表示全部
     // range 参数：时间范围，可选，默认使用当前选择的时间范围
     async function loadModels(channelType, range) {
       try {
-        const params = window.FilterQuery.buildRequestParams({
+        const filters = {
+          ...getTrendFilters(),
           range: range || window.currentRange || 'today',
           channelType: channelType || window.currentChannelType || 'all'
-        }, TREND_MODELS_REQUEST_FIELDS);
+        };
+        const params = window.FilterQuery.buildRequestParams(filters, TREND_MODELS_REQUEST_FIELDS);
+        appendTrendTimeRangeParams(params, filters);
         const url = `/admin/models?${params.toString()}`;
 
         const resp = await fetchDataWithAuth(url) || {};
@@ -143,6 +214,9 @@
         const rangeSelect = document.getElementById('f_hours');
         const currentRange = rangeSelect ? rangeSelect.value : (window.currentRange || 'today');
         window.currentRange = currentRange; // 同步到全局变量
+        if (currentRange !== 'custom') {
+          currentTrendCustomTimeRange = null;
+        }
 
         const modelSelect = document.getElementById('f_model');
         if (modelSelect) {
@@ -157,14 +231,12 @@
         // 读取渠道名筛选（combobox）
         window.currentChannelName = trendChannelNameCombobox ? trendChannelNameCombobox.getValue() : '';
 
-        const hours = window.getRangeHours ? getRangeHours(currentRange) : 24;
+        const hours = getTrendRangeHours(currentRange);
         window.currentHours = hours; // 同步到全局变量，供 renderChart 使用
         const bucketMin = computeBucketMin(hours);
 
-        const metricsParams = window.FilterQuery.buildRequestParams(getTrendFilters(), TREND_FILTER_FIELDS, {
-          baseParams: {
-            bucket_min: bucketMin
-          }
+        const metricsParams = buildTrendRequestParams({
+          bucket_min: bucketMin
         });
         const metrics = await fetchAPIWithAuthRaw('/admin/metrics?' + metricsParams.toString());
 
@@ -1505,24 +1577,6 @@ function shouldShowZoom(points, hours, trendType) {
         renderChart();
       });
 
-      // 时间范围选择 - 使用 f_hours 元素
-      const rangeSelect = document.getElementById('f_hours');
-      if (rangeSelect) {
-        rangeSelect.addEventListener('change', async (e) => {
-          const range = e.target.value;
-          window.currentRange = range;
-          const label = document.getElementById('data-timerange');
-          if (label) {
-            const rangeLabel = window.getRangeLabel ? getRangeLabel(range) : range;
-            label.textContent = t('trend.dataDisplay', { range: rangeLabel });
-          }
-          persistState();
-          // 时间范围变更时重新加载模型列表，等待完成后再加载数据
-          await loadModels(window.currentChannelType, range);
-          loadData();
-        });
-      }
-
       // 模型选择器
       const modelSelect = document.getElementById('f_model');
       if (modelSelect) {
@@ -1554,6 +1608,24 @@ function shouldShowZoom(points, hours, trendType) {
       // 渠道ID和渠道名已改为 combobox，onSelect 回调自动触发 persistState + loadData
     }
 
+    async function handleTrendRangeChange(nextRange, customRange) {
+      const range = nextRange || 'today';
+      window.currentRange = range;
+      if (range === 'custom') {
+        currentTrendCustomTimeRange = normalizeTrendCustomTimeRange(customRange);
+      } else {
+        currentTrendCustomTimeRange = null;
+      }
+      const label = document.getElementById('data-timerange');
+      if (label) {
+        const rangeLabel = window.getRangeLabel ? getRangeLabel(range) : range;
+        label.textContent = t('trend.dataDisplay', { range: rangeLabel });
+      }
+      persistState();
+      await loadModels(window.currentChannelType, range);
+      loadData();
+    }
+
     function persistState() {
       try {
         window.persistFilterState({
@@ -1577,9 +1649,15 @@ function shouldShowZoom(points, hours, trendType) {
 
         // 恢复时间范围 (默认"本日")
         const validRanges = window.getDateRangePresets
-          ? window.getDateRangePresets().map((range) => range.value)
+          ? window.getDateRangePresets({ includeCustom: true }).map((range) => range.value)
           : ['today'];
         window.currentRange = validRanges.includes(restoredFilters.range) ? restoredFilters.range : 'today';
+        currentTrendCustomTimeRange = window.currentRange === 'custom'
+          ? normalizeTrendCustomTimeRange(restoredFilters)
+          : null;
+        if (window.currentRange === 'custom' && !currentTrendCustomTimeRange) {
+          window.currentRange = 'today';
+        }
 
         const label = document.getElementById('data-timerange');
         if (label) {
@@ -1611,7 +1689,11 @@ function shouldShowZoom(points, hours, trendType) {
       window.initSavedDateRangeFilter({
         selectId: 'f_hours',
         defaultValue: 'today',
-        restoredValue: window.currentRange
+        restoredValue: window.currentRange,
+        includeCustom: true,
+        customRange: currentTrendCustomTimeRange,
+        customPickerContainerId: 'f_hours_custom_range_host',
+        onChange: handleTrendRangeChange
       });
 
       // 应用趋势类型UI

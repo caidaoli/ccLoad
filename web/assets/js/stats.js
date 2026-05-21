@@ -7,6 +7,7 @@
     let isToday = true;  // 是否为本日（本日才显示最近一分钟）
     let durationSeconds = 0; // 时间跨度（秒），用于计算RPM
     let currentChannelType = 'all'; // 当前选中的渠道类型
+    let currentStatsCustomTimeRange = null;
     let authTokens = []; // 令牌列表
     let hideZeroSuccess = true; // 是否隐藏0成功的模型（默认开启）
     let statsChannelNameOptions = []; // 从统计数据中提取的渠道名列表
@@ -71,6 +72,42 @@
 
       statsExactChannelNameValue = hasExactChannelName ? (filters.channelName || '') : '';
       statsExactModelValue = hasExactModel ? (filters.model || '') : '';
+    }
+
+    function normalizeStatsCustomTimeRange(range) {
+      if (!range || typeof range !== 'object') return null;
+
+      const startMs = Number(range.startMs ?? range.customStartTime);
+      const endMs = Number(range.endMs ?? range.customEndTime);
+      if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+        return null;
+      }
+      return {
+        startMs: Math.trunc(startMs),
+        endMs: Math.trunc(endMs),
+        label: range.label || ''
+      };
+    }
+
+    function appendStatsTimeRangeParams(params, filters) {
+      const range = filters?.range || 'today';
+      const query = typeof window.buildDateRangeQuery === 'function'
+        ? window.buildDateRangeQuery(range, currentStatsCustomTimeRange)
+        : `range=${encodeURIComponent(range)}`;
+      new URLSearchParams(query).forEach((value, key) => {
+        params.set(key, value);
+      });
+      return params;
+    }
+
+    function buildStatsLogLinkParams(baseParams = {}) {
+      const params = new URLSearchParams();
+      Object.entries(baseParams).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') {
+          params.set(key, value);
+        }
+      });
+      return appendStatsTimeRangeParams(params, getStatsFilters());
     }
 
     async function loadStats() {
@@ -626,8 +663,7 @@
     async function loadStatsFilterOptions(clearValues = false) {
       try {
         const params = new URLSearchParams();
-        const range = document.getElementById('f_hours')?.value || 'today';
-        params.set('range', range);
+        appendStatsTimeRangeParams(params, getStatsFilters());
         if (currentChannelType && currentChannelType !== 'all') {
           params.set('channel_type', currentChannelType);
         }
@@ -663,7 +699,13 @@
         selectId: 'f_hours',
         defaultValue: 'today',
         restoredValue: range,
-        onChange: () => {
+        includeCustom: true,
+        customRange: currentStatsCustomTimeRange,
+        customPickerContainerId: 'f_hours_custom_range_host',
+        onChange: (nextRange, customRange) => {
+          if (nextRange === 'custom') {
+            currentStatsCustomTimeRange = normalizeStatsCustomTimeRange(customRange);
+          }
           window.persistFilterState({
             key: STATS_FILTER_KEY,
             getValues: getStatsFilters
@@ -949,6 +991,28 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
     const STATS_FILTER_KEY = 'stats.filters';
     const STATS_FILTER_FIELDS = [
       { key: 'range', queryKeys: ['range'], defaultValue: 'today' },
+      {
+        key: 'customStartTime',
+        queryKeys: ['start_time'],
+        defaultValue: '',
+        includeInQuery(value, values) {
+          return values?.range === 'custom' && Boolean(value);
+        },
+        includeInRequest() {
+          return false;
+        }
+      },
+      {
+        key: 'customEndTime',
+        queryKeys: ['end_time'],
+        defaultValue: '',
+        includeInQuery(value, values) {
+          return values?.range === 'custom' && Boolean(value);
+        },
+        includeInRequest() {
+          return false;
+        }
+      },
       { key: 'channelId', queryKeys: ['channel_id'], defaultValue: '' },
       {
         key: 'channelName',
@@ -981,11 +1045,15 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
     function getStatsFilters() {
       const channelName = statsChannelNameCombobox ? statsChannelNameCombobox.getValue() : '';
       const model = statsModelCombobox ? statsModelCombobox.getValue() : '';
+      const baseValues = window.readFilterControlValues({
+        range: { id: 'f_hours', defaultValue: 'today', trim: true },
+        authToken: { id: 'f_auth_token', trim: true }
+      });
+      const hasCustomRange = baseValues.range === 'custom' && currentStatsCustomTimeRange;
       return {
-        ...window.readFilterControlValues({
-          range: { id: 'f_hours', defaultValue: 'today', trim: true },
-          authToken: { id: 'f_auth_token', trim: true }
-        }),
+        ...baseValues,
+        customStartTime: hasCustomRange ? String(currentStatsCustomTimeRange.startMs) : '',
+        customEndTime: hasCustomRange ? String(currentStatsCustomTimeRange.endMs) : '',
         channelName,
         channelNameExact: isExactStatsChannelNameFilter(channelName),
         model,
@@ -996,7 +1064,9 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
     }
 
     function buildStatsRequestParams() {
-      return window.FilterQuery.buildRequestParams(getStatsFilters(), STATS_FILTER_FIELDS);
+      const params = window.FilterQuery.buildRequestParams(getStatsFilters(), STATS_FILTER_FIELDS);
+      appendStatsTimeRangeParams(params, getStatsFilters());
+      return params;
     }
 
     function bindStatsStaticControls() {
@@ -1038,6 +1108,12 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
         savedFilters,
         fields: STATS_FILTER_FIELDS
       });
+      currentStatsCustomTimeRange = restoredFilters.range === 'custom'
+        ? normalizeStatsCustomTimeRange(restoredFilters)
+        : null;
+      if (restoredFilters.range === 'custom' && !currentStatsCustomTimeRange) {
+        restoredFilters.range = 'today';
+      }
       rememberExactStatsFilters({
         ...restoredFilters,
         channelNameExact: !hasUrlParams && savedFilters?.channelNameExact === true,
@@ -1101,18 +1177,13 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
       const statsTableBody = document.getElementById('stats_tbody');
       if (statsTableBody) {
         statsTableBody.addEventListener('click', (e) => {
-          // 获取当前时间范围参数
-          const currentRange = document.getElementById('f_hours')?.value || 'today';
-
           // 处理渠道名称点击
           const channelLink = e.target.closest('.channel-link[data-channel-name]');
           if (channelLink) {
             e.preventDefault();
             const channelName = channelLink.dataset.channelName;
             if (channelName) {
-              const params = new URLSearchParams();
-              params.set('channel_name', channelName);
-              params.set('range', currentRange);
+              const params = buildStatsLogLinkParams({ channel_name: channelName });
               window.location.href = `/web/logs.html?${params.toString()}`;
             }
             return;
@@ -1125,10 +1196,10 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
             const model = modelLink.dataset.model;
             const channelName = modelLink.dataset.channelName;
             if (model) {
-              const params = new URLSearchParams();
-              if (channelName) params.set('channel_name', channelName);
-              params.set('model', model);
-              params.set('range', currentRange);
+              const params = buildStatsLogLinkParams({
+                channel_name: channelName,
+                model
+              });
               window.location.href = `/web/logs.html?${params.toString()}`;
             }
             return;

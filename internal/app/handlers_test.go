@@ -2,6 +2,7 @@ package app
 
 import (
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 
@@ -82,11 +83,15 @@ func TestGetTimeRange_AllBranches(t *testing.T) {
 
 	loc := time.FixedZone("UTC", 0)
 	now := time.Date(2026, 1, 15, 12, 34, 56, 0, loc) // 固定时间，避免跨午夜/DST导致用例抖动
+	customStart := time.Date(2026, 1, 10, 8, 30, 0, 0, loc)
+	customEnd := time.Date(2026, 1, 12, 19, 45, 30, 0, loc)
 
 	cases := []struct {
-		name  string
-		rng   string
-		check func(t *testing.T, start, end time.Time)
+		name      string
+		rng       string
+		startTime time.Time
+		endTime   time.Time
+		check     func(t *testing.T, start, end time.Time)
 	}{
 		{
 			name: "today",
@@ -175,6 +180,20 @@ func TestGetTimeRange_AllBranches(t *testing.T) {
 			},
 		},
 		{
+			name:      "custom",
+			rng:       "custom",
+			startTime: customStart,
+			endTime:   customEnd,
+			check: func(t *testing.T, start, end time.Time) {
+				if !start.Equal(customStart) {
+					t.Fatalf("start=%v, want %v", start, customStart)
+				}
+				if !end.Equal(customEnd) {
+					t.Fatalf("end=%v, want %v", end, customEnd)
+				}
+			},
+		},
+		{
 			name: "unknown_defaults_to_today",
 			rng:  "invalid_range",
 			check: func(t *testing.T, start, end time.Time) {
@@ -190,10 +209,32 @@ func TestGetTimeRange_AllBranches(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			p := &PaginationParams{Range: tc.rng}
+			p := &PaginationParams{Range: tc.rng, StartTime: tc.startTime, EndTime: tc.endTime}
 			start, end := p.GetTimeRangeAt(now)
 			tc.check(t, start, end)
 		})
+	}
+}
+
+func TestParsePaginationParams_CustomTimeRange(t *testing.T) {
+	t.Parallel()
+
+	loc := time.FixedZone("UTC", 0)
+	start := time.Date(2026, 5, 21, 0, 0, 0, 0, loc)
+	end := time.Date(2026, 5, 21, 23, 59, 59, 0, loc)
+	req := newRequest(http.MethodGet, "/?range=custom&start_time="+strconv.FormatInt(start.UnixMilli(), 10)+"&end_time="+strconv.FormatInt(end.UnixMilli(), 10), nil)
+	c, _ := newTestContext(t, req)
+
+	params := ParsePaginationParams(c)
+
+	if params.Range != "custom" {
+		t.Fatalf("Range=%q, want custom", params.Range)
+	}
+	if !params.StartTime.Equal(start) {
+		t.Fatalf("StartTime=%v, want %v", params.StartTime, start)
+	}
+	if !params.EndTime.Equal(end) {
+		t.Fatalf("EndTime=%v, want %v", params.EndTime, end)
 	}
 }
 

@@ -5,6 +5,7 @@
 
     // 当前选中的时间范围(默认为本日)
     let currentTimeRange = 'today';
+    let currentCustomTimeRange = null;
 
     // 模型限制相关状态（2026-01新增）
     let editAllowedModels = [];              // 编辑模态框中当前的模型限制列表
@@ -62,11 +63,13 @@
 
       window.bindTimeRangeSelector({
         containerId: 'tokens-time-range',
-        values: ['today', 'yesterday', 'day_before_yesterday', 'this_week', 'this_month', 'last_month', 'all'],
+        values: ['today', 'yesterday', 'day_before_yesterday', 'this_week', 'this_month', 'last_month', 'custom', 'all'],
         includeAll: true,
         initialValue: currentTimeRange,
-        onChange: (range) => {
+        customRange: currentCustomTimeRange,
+        onChange: (range, customRange) => {
           currentTimeRange = range;
+          if (range === 'custom') currentCustomTimeRange = customRange;
           loadTokens();
         }
       });
@@ -209,7 +212,10 @@
         // 根据currentTimeRange决定是否添加range参数
         let url = `${API_BASE}/auth-tokens`;
         if (currentTimeRange !== 'all') {
-          url += `?range=${currentTimeRange}`;
+          const query = typeof window.buildDateRangeQuery === 'function'
+            ? window.buildDateRangeQuery(currentTimeRange, currentCustomTimeRange)
+            : `range=${encodeURIComponent(currentTimeRange)}`;
+          url += `?${query}`;
         }
 
         const data = await fetchDataWithAuth(url);

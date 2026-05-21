@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 
@@ -414,6 +415,52 @@ func TestHandleListAuthTokens_StatsAggregation(t *testing.T) {
 	} else {
 		t.Error("tokenB not found in response")
 	}
+}
+
+func TestHandleListAuthTokens_CustomFutureRangeFallsBackToCurrentDayStats(t *testing.T) {
+	server := newInMemoryServer(t)
+	token := createTestToken(t, server, "custom-future")
+
+	ctx := context.Background()
+	logEntry := &model.LogEntry{
+		Time:         model.JSONTime{Time: time.Now()},
+		Model:        "test-model",
+		ChannelID:    1,
+		StatusCode:   200,
+		Duration:     0.5,
+		AuthTokenID:  token.ID,
+		InputTokens:  100,
+		OutputTokens: 50,
+		Cost:         0.01,
+	}
+	if err := server.store.AddLog(ctx, logEntry); err != nil {
+		t.Fatalf("AddLog failed: %v", err)
+	}
+
+	start := time.Now().AddDate(0, 1, 0)
+	end := start.Add(5 * 24 * time.Hour)
+	req := newRequest(http.MethodGet, "/admin/auth-tokens?range=custom&start_time="+strconv.FormatInt(start.UnixMilli(), 10)+"&end_time="+strconv.FormatInt(end.UnixMilli(), 10), nil)
+	c, w := newTestContext(t, req)
+	server.HandleListAuthTokens(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+
+	resp := mustParseAPIResponse[authTokenListResponse](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("success=false, error=%q", resp.Error)
+	}
+
+	for _, tk := range resp.Data.Tokens {
+		if tk.ID == token.ID {
+			if tk.SuccessCount != 1 {
+				t.Fatalf("SuccessCount=%d, want 1", tk.SuccessCount)
+			}
+			return
+		}
+	}
+	t.Fatalf("token ID=%d not found in response", token.ID)
 }
 
 func TestHandleListAuthTokens_StatsZeroForNoData(t *testing.T) {
