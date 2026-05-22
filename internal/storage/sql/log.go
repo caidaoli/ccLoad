@@ -118,6 +118,31 @@ func (s *SQLStore) fillLogChannelNames(ctx context.Context, entries []*model.Log
 	}
 }
 
+// fillLogAuthTokenDescriptions 批量查询API令牌描述信息
+func (s *SQLStore) fillLogAuthTokenDescriptions(ctx context.Context, entries []*model.LogEntry) {
+	tokenIDs := make(map[int64]bool)
+	for _, e := range entries {
+		if e.AuthTokenID > 0 {
+			tokenIDs[e.AuthTokenID] = true
+		}
+	}
+	if len(tokenIDs) == 0 {
+		return
+	}
+
+	descriptions, err := s.fetchAuthTokenDescriptionsBatch(ctx, tokenIDs)
+	if err != nil {
+		log.Printf("[WARN]  批量查询令牌描述失败: %v", err)
+		return
+	}
+
+	for _, e := range entries {
+		if e.AuthTokenID > 0 {
+			e.AuthTokenDescription = descriptions[e.AuthTokenID]
+		}
+	}
+}
+
 // AddLog 添加日志记录
 func (s *SQLStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 	if e.Time.IsZero() {
@@ -337,6 +362,7 @@ func (s *SQLStore) ListLogs(ctx context.Context, since time.Time, limit, offset 
 	}
 
 	s.fillLogChannelNames(ctx, out, channelIDsToFetch)
+	s.fillLogAuthTokenDescriptions(ctx, out)
 
 	return out, nil
 }
@@ -418,6 +444,7 @@ func (s *SQLStore) ListLogsRange(ctx context.Context, since, until time.Time, li
 	}
 
 	s.fillLogChannelNames(ctx, out, channelIDsToFetch)
+	s.fillLogAuthTokenDescriptions(ctx, out)
 
 	return out, nil
 }
@@ -593,6 +620,7 @@ func (s *SQLStore) ListLogsRangeWithCount(ctx context.Context, since, until time
 		}
 	}
 	s.fillLogChannelNames(ctx, logs, channelIDsToFetch)
+	s.fillLogAuthTokenDescriptions(ctx, logs)
 
 	return logs, total, nil
 }
