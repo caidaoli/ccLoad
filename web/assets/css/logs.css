@@ -549,16 +549,20 @@
         order: 5;
       }
 
-      .logs-table .logs-col-ip {
+      .logs-table .logs-col-token-desc {
         order: 6;
       }
 
-      .logs-table .logs-col-timing {
+      .logs-table .logs-col-ip {
         order: 7;
       }
 
-      .logs-table .logs-col-speed {
+      .logs-table .logs-col-timing {
         order: 8;
+      }
+
+      .logs-table .logs-col-speed {
+        order: 9;
       }
 
       .logs-table .logs-col-input {
@@ -596,6 +600,7 @@
       .logs-table .logs-col-channel,
       .logs-table .logs-col-model,
       .logs-table .logs-col-api-key,
+      .logs-table .logs-col-token-desc,
       .logs-table .logs-col-ip,
       .logs-table .logs-col-timing,
       .logs-table .logs-col-speed,
@@ -618,6 +623,7 @@
       .logs-table .logs-col-channel::before,
       .logs-table .logs-col-model::before,
       .logs-table .logs-col-api-key::before,
+      .logs-table .logs-col-token-desc::before,
       .logs-table .logs-col-ip::before,
       .logs-table .logs-col-timing::before,
       .logs-table .logs-col-speed::before,
@@ -657,6 +663,10 @@
 
       .logs-table .logs-col-api-key code {
         word-break: break-all;
+      }
+
+      .logs-table .logs-col-token-desc.mobile-empty-cell {
+        display: none !important;
       }
 
       .logs-table .logs-col-timing .log-timing-pair {
@@ -769,12 +779,19 @@
     .logs-table th:nth-child(3),
     .logs-table td:nth-child(3) {
       width: 120px;
+      /* API令牌描述 */
+      min-width: 120px;
+    }
+
+    .logs-table th:nth-child(4),
+    .logs-table td:nth-child(4) {
+      width: 120px;
       /* API Key: xxxx...xxxx */
       min-width: 120px;
     }
 
-    .logs-table th:nth-child(6),
-    .logs-table td:nth-child(6) {
+    .logs-table th:nth-child(7),
+    .logs-table td:nth-child(7) {
       width: 60px;
       /* 状态码: 200/403/500 */
       min-width: 60px;
@@ -782,8 +799,8 @@
       text-align: center;
     }
 
-    .logs-table th:nth-child(12),
-    .logs-table td:nth-child(12) {
+    .logs-table th:nth-child(15),
+    .logs-table td:nth-child(15) {
       width: 70px;
       /* 成本 */
       min-width: 70px;
