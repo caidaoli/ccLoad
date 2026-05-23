@@ -706,14 +706,14 @@ func TestCalculateCost_MoonshotModelsFromPricePerToken(t *testing.T) {
 			inputTokens:  1_000_000,
 			outputTokens: 1_000_000,
 			cacheTokens:  1_000_000,
-			expected:     0.40 + 2.00 + 0.15,
+			expected:     0.60 + 2.50 + 0.50,
 		},
 		{
 			model:        "kimi-k2.5",
 			inputTokens:  1_000_000,
 			outputTokens: 1_000_000,
 			cacheTokens:  1_000_000,
-			expected:     0.42 + 2.20 + 0.07,
+			expected:     0.40 + 1.90 + 0.07,
 		},
 		{
 			model:        "kimi-dev-72b",
@@ -754,35 +754,36 @@ func TestCalculateCost_MoonshotFreeVariants(t *testing.T) {
 
 func TestCalculateCost_MoonshotFuzzyMatch(t *testing.T) {
 	cost := CalculateCostDetailed("kimi-k2-0905-preview", 1_000_000, 1_000_000, 1_000_000, 0, 0)
-	expected := 0.40 + 2.00 + 0.15
+	expected := 0.60 + 2.50 + 0.50
 	if !floatEquals(cost, expected, 0.000001) {
 		t.Errorf("kimi-k2-0905-preview 模糊匹配: 成本 = %.6f, 期望 %.6f", cost, expected)
 	}
 }
 
 func TestCalculateCost_DeepSeekModels(t *testing.T) {
-	// deepseek-r1: Input $0.30/1M, Output $1.20/1M
+	// deepseek-r1: Input $0.70/1M, Output $2.50/1M
 	costR1 := CalculateCostDetailed("deepseek-r1", 1_000_000, 1_000_000, 0, 0, 0)
-	expectedR1 := 0.30 + 1.20
+	expectedR1 := 0.70 + 2.50
 	if !floatEquals(costR1, expectedR1, 0.000001) {
 		t.Errorf("deepseek-r1: 成本 = %.6f, 期望 %.6f", costR1, expectedR1)
 	}
 
-	// deepseek-chat (v3): Input $0.30/1M, Output $1.20/1M
+	// deepseek-chat: Input $0.32/1M, Output $0.89/1M
 	costChat := CalculateCostDetailed("deepseek-chat", 1_000_000, 1_000_000, 0, 0, 0)
-	if !floatEquals(costChat, expectedR1, 0.000001) {
-		t.Errorf("deepseek-chat: 成本 = %.6f, 期望 %.6f", costChat, expectedR1)
+	expectedChat := 0.32 + 0.89
+	if !floatEquals(costChat, expectedChat, 0.000001) {
+		t.Errorf("deepseek-chat: 成本 = %.6f, 期望 %.6f", costChat, expectedChat)
 	}
 
-	// 别名测试
+	// 别名测试：deepseek-v3 → deepseek-chat
 	costV3 := CalculateCostDetailed("deepseek-v3", 1_000_000, 1_000_000, 0, 0, 0)
-	if !floatEquals(costV3, expectedR1, 0.000001) {
-		t.Errorf("deepseek-v3 别名: 成本 = %.6f, 期望 %.6f", costV3, expectedR1)
+	if !floatEquals(costV3, expectedChat, 0.000001) {
+		t.Errorf("deepseek-v3 别名: 成本 = %.6f, 期望 %.6f", costV3, expectedChat)
 	}
 
-	// 蒸馏模型测试
+	// 蒸馏模型测试：deepseek-r1-distill-llama-70b Input $0.70/1M, Output $0.80/1M
 	costDistill := CalculateCostDetailed("deepseek-r1-distill-llama-70b", 1_000_000, 1_000_000, 0, 0, 0)
-	expectedDistill := 0.03 + 0.11
+	expectedDistill := 0.70 + 0.80
 	if !floatEquals(costDistill, expectedDistill, 0.000001) {
 		t.Errorf("deepseek-distill-llama-70b: 成本 = %.6f, 期望 %.6f", costDistill, expectedDistill)
 	}
@@ -901,9 +902,9 @@ func TestCalculateCost_MiniMaxModels(t *testing.T) {
 		output float64
 	}{
 		{"minimax-01", 0.20, 1.10},
-		{"minimax-m1", 0.30, 1.65},
-		{"minimax-m2", 0.15, 0.45},
-		{"minimax-m2.1", 0.30, 1.20},
+		{"minimax-m1", 0.40, 2.20},
+		{"minimax-m2", 0.255, 1.00},
+		{"minimax-m2.1", 0.29, 0.95},
 	}
 
 	for _, tc := range testCases {
@@ -916,7 +917,7 @@ func TestCalculateCost_MiniMaxModels(t *testing.T) {
 
 	// 模糊匹配测试
 	cost := CalculateCostDetailed("minimax-m2-20260101", 1_000_000, 1_000_000, 0, 0, 0)
-	expected := 0.15 + 0.45
+	expected := 0.255 + 1.00
 	if !floatEquals(cost, expected, 0.000001) {
 		t.Errorf("minimax-m2 模糊匹配: 成本 = %.6f, 期望 %.6f", cost, expected)
 	}
