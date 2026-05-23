@@ -258,6 +258,7 @@ var basePricing = map[string]ModelPricing{
 
 	// ========== Gemini 模型 ==========
 	"gemini-3.5-flash": {InputPrice: 1.50, OutputPrice: 9.00, CacheReadPrice: 0.15, HasCacheReadPrice: true},
+	"gemini-3-5-flash": {InputPrice: 1.50, OutputPrice: 9.00, CacheReadPrice: 0.15, HasCacheReadPrice: true},
 	"gemini-3.1-pro": {
 		InputPrice: 2.00, OutputPrice: 12.00, CacheReadPrice: 0.20, HasCacheReadPrice: true,
 		InputPriceHigh: 4.00, OutputPriceHigh: 18.00, CacheReadPriceHigh: 0.40,
@@ -324,10 +325,11 @@ var basePricing = map[string]ModelPricing{
 	"kimi-dev-72b":                 {InputPrice: 0.29, OutputPrice: 1.15},
 	"kimi-dev-72b:free":            {InputPrice: 0.00, OutputPrice: 0.00},
 	"kimi-k2":                      {InputPrice: 0.57, OutputPrice: 2.30},
-	"kimi-k2-0905":                 {InputPrice: 0.40, OutputPrice: 2.00, CacheReadPrice: 0.15, HasCacheReadPrice: true},
+	"kimi-k2-0905":                 {InputPrice: 0.60, OutputPrice: 2.50, CacheReadPrice: 0.50, HasCacheReadPrice: true},
 	"kimi-k2-0905:exacto":          {InputPrice: 0.60, OutputPrice: 2.50, CacheReadPrice: 0.15, HasCacheReadPrice: true},
-	"kimi-k2-thinking":             {InputPrice: 0.47, OutputPrice: 2.00, CacheReadPrice: 0.141, HasCacheReadPrice: true},
-	"kimi-k2.5":                    {InputPrice: 0.42, OutputPrice: 2.20, CacheReadPrice: 0.07, HasCacheReadPrice: true},
+	"kimi-k2-thinking":             {InputPrice: 0.60, OutputPrice: 2.50, CacheReadPrice: 0.15, HasCacheReadPrice: true},
+	"kimi-k2.5":                    {InputPrice: 0.40, OutputPrice: 1.90, CacheReadPrice: 0.07, HasCacheReadPrice: true},
+	"kimi-k2.6":                    {InputPrice: 0.73, OutputPrice: 3.40, CacheReadPrice: 0.15, HasCacheReadPrice: true},
 	"kimi-k2:free":                 {InputPrice: 0.00, OutputPrice: 0.00},
 	"kimi-linear-48b-a3b-instruct": {InputPrice: 0.70, OutputPrice: 0.90},
 	"kimi-vl-a3b-thinking":         {InputPrice: 0.02, OutputPrice: 0.08},
@@ -506,34 +508,49 @@ var basePricing = map[string]ModelPricing{
 	"qwq-32b:free":              {InputPrice: 0.00, OutputPrice: 0.00},
 
 	// ========== DeepSeek 模型 ==========
-	"deepseek-r1-distill-llama-70b": {InputPrice: 0.03, OutputPrice: 0.11},
-	"deepseek-r1-0528-qwen3-8b":     {InputPrice: 0.048, OutputPrice: 0.072},
-	"deepseek-r1-distill-qwen-14b":  {InputPrice: 0.12, OutputPrice: 0.12},
-	"deepseek-r1":                   {InputPrice: 0.30, OutputPrice: 1.20},
-	"deepseek-chat":                 {InputPrice: 0.30, OutputPrice: 1.20},
-	"deepseek-v3.2-exp":             {InputPrice: 0.25, OutputPrice: 0.38},
-	"deepseek-v3.1-terminus":        {InputPrice: 0.21, OutputPrice: 0.79},
-	"deepseek-r1-distill-qwen-32b":  {InputPrice: 0.24, OutputPrice: 0.24},
-	"deepseek-v3.2":                 {InputPrice: 0.25, OutputPrice: 0.38},
-	"deepseek-v3.2-speciale":        {InputPrice: 0.27, OutputPrice: 0.41},
-	"deepseek-r1-0528":              {InputPrice: 0.40, OutputPrice: 1.75},
+	"deepseek-r1-distill-llama-70b": {InputPrice: 0.70, OutputPrice: 0.80},
+	"deepseek-r1-distill-llama-8b":  {InputPrice: 0.04, OutputPrice: 0.04},
+	"deepseek-r1-0528-qwen3-8b":     {InputPrice: 0.06, OutputPrice: 0.09},
+	"deepseek-r1-distill-qwen-14b":  {InputPrice: 0.15, OutputPrice: 0.15},
+	"deepseek-r1-distill-qwen-32b":  {InputPrice: 0.29, OutputPrice: 0.29},
+	"deepseek-r1-distill-qwen-7b":   {InputPrice: 0.10, OutputPrice: 0.20},
+	"deepseek-r1-distill-qwen-1.5b": {InputPrice: 0.18, OutputPrice: 0.18},
+	"deepseek-r1":                   {InputPrice: 0.70, OutputPrice: 2.50},
+	"deepseek-r1-0528":              {InputPrice: 0.50, OutputPrice: 2.15, CacheReadPrice: 0.35, HasCacheReadPrice: true},
+	"deepseek-chat":                 {InputPrice: 0.32, OutputPrice: 0.89},
+	"deepseek-chat-v3-0324":         {InputPrice: 0.20, OutputPrice: 0.77, CacheReadPrice: 0.11, HasCacheReadPrice: true},
+	"deepseek-chat-v3.1":            {InputPrice: 0.21, OutputPrice: 0.79, CacheReadPrice: 0.13, HasCacheReadPrice: true},
+	"deepseek-v3-base":              {InputPrice: 0.20, OutputPrice: 0.80},
+	"deepseek-v3.1-base":            {InputPrice: 0.25, OutputPrice: 1.00},
+	"deepseek-v3.1-terminus":        {InputPrice: 0.27, OutputPrice: 0.95, CacheReadPrice: 0.13, HasCacheReadPrice: true},
+	"deepseek-v3.2":                 {InputPrice: 0.252, OutputPrice: 0.378, CacheReadPrice: 0.0252, HasCacheReadPrice: true},
+	"deepseek-v3.2-exp":             {InputPrice: 0.27, OutputPrice: 0.41, CacheReadPrice: 0.27, HasCacheReadPrice: true},
+	"deepseek-v3.2-speciale":        {InputPrice: 0.287, OutputPrice: 0.431, CacheReadPrice: 0.058, HasCacheReadPrice: true},
+	"deepseek-v4-flash":             {InputPrice: 0.112, OutputPrice: 0.224, CacheReadPrice: 0.0028, HasCacheReadPrice: true},
+	"deepseek-v4-pro":               {InputPrice: 0.435, OutputPrice: 0.87, CacheReadPrice: 0.0036, HasCacheReadPrice: true},
 	"deepseek-prover-v2":            {InputPrice: 0.50, OutputPrice: 2.18},
 
 	// ========== xAI Grok 模型 ==========
 	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=xai
-	"grok-4.1-fast":      {InputPrice: 0.50, OutputPrice: 1.50},
-	"grok-4":             {InputPrice: 3.00, OutputPrice: 15.00},
-	"grok-4-fast":        {InputPrice: 0.20, OutputPrice: 0.50},
-	"grok-3":             {InputPrice: 3.00, OutputPrice: 15.00},
-	"grok-3-beta":        {InputPrice: 3.00, OutputPrice: 15.00},
-	"grok-3-mini":        {InputPrice: 0.30, OutputPrice: 0.50},
-	"grok-3-mini-beta":   {InputPrice: 0.30, OutputPrice: 0.50},
-	"grok-2":             {InputPrice: 2.00, OutputPrice: 10.00},
-	"grok-2-1212":        {InputPrice: 2.00, OutputPrice: 10.00},
-	"grok-2-vision-1212": {InputPrice: 2.00, OutputPrice: 10.00},
-	"grok-2-mini":        {InputPrice: 0.20, OutputPrice: 0.50},
-	"grok-code-fast-1":   {InputPrice: 0.20, OutputPrice: 1.50},
-	"grok-vision-beta":   {InputPrice: 5.00, OutputPrice: 15.00},
+	"grok-4.3":                   {InputPrice: 1.25, OutputPrice: 2.50, CacheReadPrice: 0.20, HasCacheReadPrice: true},
+	"grok-4.20":                  {InputPrice: 1.25, OutputPrice: 2.50, CacheReadPrice: 0.20, HasCacheReadPrice: true},
+	"grok-4.20-beta":             {InputPrice: 2.00, OutputPrice: 6.00, CacheReadPrice: 0.20, HasCacheReadPrice: true},
+	"grok-4.20-multi-agent":      {InputPrice: 2.00, OutputPrice: 6.00, CacheReadPrice: 0.20, HasCacheReadPrice: true},
+	"grok-4.20-multi-agent-beta": {InputPrice: 2.00, OutputPrice: 6.00, CacheReadPrice: 0.20, HasCacheReadPrice: true},
+	"grok-4.1-fast":              {InputPrice: 0.20, OutputPrice: 0.50, CacheReadPrice: 0.05, HasCacheReadPrice: true},
+	"grok-4":                     {InputPrice: 3.00, OutputPrice: 15.00, CacheReadPrice: 0.75, HasCacheReadPrice: true},
+	"grok-4-fast":                {InputPrice: 0.20, OutputPrice: 0.50, CacheReadPrice: 0.05, HasCacheReadPrice: true},
+	"grok-build-0.1":             {InputPrice: 1.00, OutputPrice: 2.00, CacheReadPrice: 0.20, HasCacheReadPrice: true},
+	"grok-3":                     {InputPrice: 3.00, OutputPrice: 15.00, CacheReadPrice: 0.75, HasCacheReadPrice: true},
+	"grok-3-beta":                {InputPrice: 3.00, OutputPrice: 15.00, CacheReadPrice: 0.75, HasCacheReadPrice: true},
+	"grok-3-mini":                {InputPrice: 0.30, OutputPrice: 0.50, CacheReadPrice: 0.075, HasCacheReadPrice: true},
+	"grok-3-mini-beta":           {InputPrice: 0.30, OutputPrice: 0.50, CacheReadPrice: 0.075, HasCacheReadPrice: true},
+	"grok-2":                     {InputPrice: 2.00, OutputPrice: 10.00},
+	"grok-2-1212":                {InputPrice: 2.00, OutputPrice: 10.00},
+	"grok-2-vision-1212":         {InputPrice: 2.00, OutputPrice: 10.00},
+	"grok-2-mini":                {InputPrice: 0.20, OutputPrice: 0.50},
+	"grok-code-fast-1":           {InputPrice: 0.20, OutputPrice: 1.50, CacheReadPrice: 0.02, HasCacheReadPrice: true},
+	"grok-vision-beta":           {InputPrice: 5.00, OutputPrice: 15.00},
 
 	// xAI Grok 图像生成模型（按张计费，非token计费）
 	// 来源: https://docs.x.ai/developers/models
@@ -544,11 +561,13 @@ var basePricing = map[string]ModelPricing{
 
 	// ========== MiniMax 模型 ==========
 	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=minimax
-	"minimax-01":   {InputPrice: 0.20, OutputPrice: 1.10},
-	"minimax-m1":   {InputPrice: 0.30, OutputPrice: 1.65},
-	"minimax-m2":   {InputPrice: 0.15, OutputPrice: 0.45},
-	"minimax-m2.1": {InputPrice: 0.30, OutputPrice: 1.20},
-	"minimax-m2.5": {InputPrice: 0.30, OutputPrice: 1.20},
+	"minimax-01":     {InputPrice: 0.20, OutputPrice: 1.10},
+	"minimax-m1":     {InputPrice: 0.40, OutputPrice: 2.20},
+	"minimax-m2":     {InputPrice: 0.255, OutputPrice: 1.00, CacheReadPrice: 0.03, HasCacheReadPrice: true},
+	"minimax-m2-her": {InputPrice: 0.30, OutputPrice: 1.20, CacheReadPrice: 0.03, HasCacheReadPrice: true},
+	"minimax-m2.1":   {InputPrice: 0.29, OutputPrice: 0.95, CacheReadPrice: 0.03, HasCacheReadPrice: true},
+	"minimax-m2.5":   {InputPrice: 0.15, OutputPrice: 0.90, CacheReadPrice: 0.027, HasCacheReadPrice: true},
+	"minimax-m2.7":   {InputPrice: 0.279, OutputPrice: 1.20, CacheReadPrice: 0.059, HasCacheReadPrice: true},
 
 	// ========== 美团 LongCat 模型 ==========
 	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=meituan
@@ -562,29 +581,29 @@ var basePricing = map[string]ModelPricing{
 
 	// ========== Meta Llama 模型 ==========
 	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=meta-llama
-	"llama-3.2-3b-instruct":         {InputPrice: 0.003, OutputPrice: 0.006},
-	"llama-3.2-1b-instruct":         {InputPrice: 0.005, OutputPrice: 0.01},
-	"llama-3.1-8b-instruct":         {InputPrice: 0.015, OutputPrice: 0.02},
-	"llama-guard-3-8b":              {InputPrice: 0.02, OutputPrice: 0.03},
-	"llama-3-8b-instruct":           {InputPrice: 0.03, OutputPrice: 0.04},
-	"llama-3.3-70b-instruct":        {InputPrice: 0.038, OutputPrice: 0.12},
-	"llama-3.2-11b-vision-instruct": {InputPrice: 0.049, OutputPrice: 0.049},
-	"llama-guard-4-12b":             {InputPrice: 0.05, OutputPrice: 0.05},
+	"llama-3.2-3b-instruct":         {InputPrice: 0.0509, OutputPrice: 0.335},
+	"llama-3.2-1b-instruct":         {InputPrice: 0.027, OutputPrice: 0.201},
+	"llama-3.1-8b-instruct":         {InputPrice: 0.02, OutputPrice: 0.05, CacheReadPrice: 0.025, HasCacheReadPrice: true},
+	"llama-guard-3-8b":              {InputPrice: 0.484, OutputPrice: 0.03},
+	"llama-3-8b-instruct":           {InputPrice: 0.04, OutputPrice: 0.04},
+	"llama-3.3-70b-instruct":        {InputPrice: 0.10, OutputPrice: 0.32, CacheReadPrice: 0.11, HasCacheReadPrice: true},
+	"llama-3.2-11b-vision-instruct": {InputPrice: 0.245, OutputPrice: 0.245},
+	"llama-guard-4-12b":             {InputPrice: 0.18, OutputPrice: 0.18},
 	"llama-4-scout":                 {InputPrice: 0.08, OutputPrice: 0.30},
-	"llama-3.1-70b-instruct":        {InputPrice: 0.10, OutputPrice: 0.28},
-	"llama-4-maverick":              {InputPrice: 0.15, OutputPrice: 0.50},
+	"llama-3.1-70b-instruct":        {InputPrice: 0.40, OutputPrice: 0.40, CacheReadPrice: 0.80, HasCacheReadPrice: true},
+	"llama-4-maverick":              {InputPrice: 0.15, OutputPrice: 0.60, CacheReadPrice: 0.17, HasCacheReadPrice: true},
 	"llama-guard-2-8b":              {InputPrice: 0.20, OutputPrice: 0.20},
-	"llama-3-70b-instruct":          {InputPrice: 0.30, OutputPrice: 0.40},
+	"llama-3-70b-instruct":          {InputPrice: 0.51, OutputPrice: 0.74},
 	"llama-3.2-90b-vision-instruct": {InputPrice: 0.35, OutputPrice: 0.40},
-	"llama-3.1-405b-instruct":       {InputPrice: 0.80, OutputPrice: 0.80},
-	"llama-3.1-405b":                {InputPrice: 2.00, OutputPrice: 2.00},
+	"llama-3.1-405b-instruct":       {InputPrice: 4.00, OutputPrice: 4.00},
+	"llama-3.1-405b":                {InputPrice: 4.00, OutputPrice: 4.00},
 
 	// ========== OpenAI OSS 模型 ==========
 	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=openai
-	"gpt-oss-20b":           {InputPrice: 0.05, OutputPrice: 0.20},
-	"gpt-oss-120b:exacto":   {InputPrice: 0.05, OutputPrice: 0.24},
-	"gpt-oss-safeguard-20b": {InputPrice: 0.075, OutputPrice: 0.30},
-	"gpt-oss-120b":          {InputPrice: 0.10, OutputPrice: 0.50},
+	"gpt-oss-20b":           {InputPrice: 0.03, OutputPrice: 0.14, CacheReadPrice: 0.02, HasCacheReadPrice: true},
+	"gpt-oss-120b":          {InputPrice: 0.039, OutputPrice: 0.18, CacheReadPrice: 0.055, HasCacheReadPrice: true},
+	"gpt-oss-120b:exacto":   {InputPrice: 0.039, OutputPrice: 0.19, CacheReadPrice: 0.04, HasCacheReadPrice: true},
+	"gpt-oss-safeguard-20b": {InputPrice: 0.075, OutputPrice: 0.30, CacheReadPrice: 0.037, HasCacheReadPrice: true},
 }
 
 // modelAliases 模型别名映射（多对一）
@@ -1119,7 +1138,7 @@ var fuzzyPrefixes = []string{
 	"claude-opus", "claude-sonnet", "claude-haiku", // 通用兜底
 
 	// Gemini模型（按版本降序，更长的前缀优先）
-	"gemini-3.5-flash", "gemini-3.1-pro", "gemini-3.1-flash-lite", "gemini-3-pro", "gemini-3-flash",
+	"gemini-3.5-flash", "gemini-3-5-flash", "gemini-3.1-pro", "gemini-3.1-flash-lite", "gemini-3-pro", "gemini-3-flash",
 	"gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.5-pro",
 	"gemini-2.0-flash-lite", "gemini-2.0-flash",
 	"gemini-1.5-pro", "gemini-1.5-flash",
@@ -1141,7 +1160,7 @@ var fuzzyPrefixes = []string{
 
 	// 其他厂商
 	"mimo-v2.5-flash", "mimo-v2.5-pro", "mimo-v2-omni", "mimo-v2-pro", "mimo-v2.5", "mimo-v2-flash",
-	"kimi-k2-0905:exacto", "kimi-k2-thinking", "kimi-k2.5", "kimi-k2-0905", "kimi-k2:free", "kimi-k2",
+	"kimi-k2-0905:exacto", "kimi-k2-thinking", "kimi-k2.6", "kimi-k2.5", "kimi-k2-0905", "kimi-k2:free", "kimi-k2",
 	"kimi-linear-48b-a3b-instruct",
 	"kimi-vl-a3b-thinking:free", "kimi-vl-a3b-thinking",
 	"kimi-dev-72b:free", "kimi-dev-72b",
@@ -1179,20 +1198,27 @@ var fuzzyPrefixes = []string{
 	"qwen2.5-14b-instruct-1m", "qwen2.5-7b-instruct-1m", "qwen2.5-72b-instruct", "qwen2.5-32b-instruct", "qwen2.5-14b-instruct", "qwen2.5-7b-instruct",
 	"qwen-2.5-72b-instruct", "qwen-2.5-7b-instruct", "qwen-2-72b-instruct",
 	"qwq-32b-preview", "qwq-32b",
-	"deepseek-r1-distill-llama-70b", "deepseek-r1-distill-qwen-32b", "deepseek-r1-distill-qwen-14b",
+	"deepseek-r1-distill-llama-70b", "deepseek-r1-distill-llama-8b",
+	"deepseek-r1-distill-qwen-32b", "deepseek-r1-distill-qwen-14b",
+	"deepseek-r1-distill-qwen-7b", "deepseek-r1-distill-qwen-1.5b",
 	"deepseek-r1-0528-qwen3-8b", "deepseek-r1-0528", "deepseek-r1",
-	"deepseek-v3.2-speciale", "deepseek-v3.2-exp", "deepseek-v3.2", "deepseek-v3.1-terminus",
-	"deepseek-chat", "deepseek-prover-v2",
+	"deepseek-v4-flash", "deepseek-v4-pro",
+	"deepseek-v3.2-speciale", "deepseek-v3.2-exp", "deepseek-v3.2",
+	"deepseek-v3.1-terminus", "deepseek-v3.1-base", "deepseek-v3-base",
+	"deepseek-chat-v3.1", "deepseek-chat-v3-0324", "deepseek-chat",
+	"deepseek-prover-v2",
 
 	// xAI Grok模型（长前缀优先）
-	"grok-4.1-fast", "grok-4.1", "grok-4-fast", "grok-4",
+	"grok-4.20-multi-agent-beta", "grok-4.20-multi-agent", "grok-4.20-beta", "grok-4.20",
+	"grok-4.3", "grok-4.1-fast", "grok-4.1", "grok-4-fast", "grok-4",
+	"grok-build-0.1",
 	"grok-3-mini-beta", "grok-3-mini", "grok-3-beta", "grok-3",
 	"grok-2-vision-1212", "grok-2-image-1212", "grok-2-1212", "grok-2-mini", "grok-2",
 	"grok-imagine-image-pro", "grok-imagine-image", "grok-imagine-video",
 	"grok-code-fast-1", "grok-vision-beta",
 
 	// MiniMax模型
-	"minimax-m2.5", "minimax-m2.1", "minimax-m2", "minimax-m1", "minimax-01",
+	"minimax-m2.7", "minimax-m2.5", "minimax-m2.1", "minimax-m2-her", "minimax-m2", "minimax-m1", "minimax-01",
 
 	// 美团 LongCat模型（长前缀优先）
 	"longcat-flash-chat-2602-exp", "longcat-flash-chat:free", "longcat-flash-chat",
