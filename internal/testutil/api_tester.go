@@ -10,6 +10,7 @@ import (
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
+	"ccLoad/internal/version"
 
 	"github.com/bytedance/sonic"
 )
@@ -216,6 +217,7 @@ func (t *OpenAITester) Build(cfg *model.Config, apiKey string, req *TestChannelR
 	h.Set("Content-Type", "application/json")
 	h.Set("Authorization", "Bearer "+apiKey)
 	h.Set("Session_id", sessionID)
+	h.Set("User-Agent", version.OutboundUserAgent())
 	if req.Stream {
 		h.Set("Accept", "text/event-stream")
 	}
@@ -277,6 +279,7 @@ func (t *GeminiTester) Build(cfg *model.Config, apiKey string, req *TestChannelR
 	h := make(http.Header)
 	h.Set("Content-Type", "application/json")
 	h.Set("x-goog-api-key", apiKey)
+	h.Set("User-Agent", version.OutboundUserAgent())
 
 	return fullURL, h, body, nil
 }
