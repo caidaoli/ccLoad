@@ -15,3 +15,9 @@ var (
 	BuildTime = "unknown"
 	BuiltBy   = "unknown"
 )
+
+// OutboundUserAgent 返回 ccLoad 自身发出请求时使用的默认 User-Agent。
+// 用于版本检查、渠道健康检测（仅当 Tester 未显式伪装客户端时）等出站请求。
+func OutboundUserAgent() string {
+	return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) ccLoad/" + Version + " Chrome/146.0.7680.188 Electron/41.2.1 Safari/537.36"
+}
