@@ -660,7 +660,7 @@
       });
     }
 
-    async function loadStatsFilterOptions(clearValues = false) {
+    async function loadStatsFilterOptions() {
       try {
         const params = new URLSearchParams();
         appendStatsTimeRangeParams(params, getStatsFilters());
@@ -672,11 +672,9 @@
           statsChannelNameOptions = data.channel_names || [];
           statsModelOptions = data.models || [];
           if (statsChannelNameCombobox) {
-            if (clearValues) statsChannelNameCombobox.setValue('', t('stats.allChannels'));
             statsChannelNameCombobox.refresh();
           }
           if (statsModelCombobox) {
-            if (clearValues) statsModelCombobox.setValue('', t('trend.allModels'));
             statsModelCombobox.refresh();
           }
         }
@@ -710,7 +708,7 @@
             key: STATS_FILTER_KEY,
             getValues: getStatsFilters
           });
-          loadStatsFilterOptions(true);
+          loadStatsFilterOptions();
           applyFilter();
         }
       });
@@ -1143,7 +1141,7 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
           key: STATS_FILTER_KEY,
           getValues: getStatsFilters
         });
-        loadStatsFilterOptions(true);
+        loadStatsFilterOptions();
         loadStats();
       });
 
