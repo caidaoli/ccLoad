@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"ccLoad/internal/model"
@@ -85,6 +86,43 @@ func (s *SQLStore) fetchChannelNamesBatch(ctx context.Context, channelIDs map[in
 		names[id] = info.Name
 	}
 	return names, nil
+}
+
+// fetchAuthTokenDescriptionsBatch 批量查询API令牌描述
+func (s *SQLStore) fetchAuthTokenDescriptionsBatch(ctx context.Context, tokenIDs map[int64]bool) (map[int64]string, error) {
+	if len(tokenIDs) == 0 {
+		return make(map[int64]string), nil
+	}
+
+	ids := make([]any, 0, len(tokenIDs))
+	placeholders := make([]string, 0, len(tokenIDs))
+	for id := range tokenIDs {
+		ids = append(ids, id)
+		placeholders = append(placeholders, "?")
+	}
+
+	query := "SELECT id, description FROM auth_tokens WHERE id IN (" +
+		strings.Join(placeholders, ",") + ")"
+
+	rows, err := s.db.QueryContext(ctx, query, ids...)
+	if err != nil {
+		return nil, fmt.Errorf("query auth token descriptions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	descriptions := make(map[int64]string, len(tokenIDs))
+	for rows.Next() {
+		var id int64
+		var desc string
+		if err := rows.Scan(&id, &desc); err != nil {
+			return nil, fmt.Errorf("scan auth token description: %w", err)
+		}
+		descriptions[id] = desc
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate auth token descriptions: %w", err)
+	}
+	return descriptions, nil
 }
 
 // fetchChannelIDsByNameFilter 根据精确/模糊名称获取渠道ID集合

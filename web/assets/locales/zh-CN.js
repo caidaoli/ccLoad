@@ -701,6 +701,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'logs.recordsSuffix': '条',
   'logs.colTime': '时间',
   'logs.colIP': 'IP',
+  'logs.colTokenDesc': 'API令牌',
   'logs.colApiKey': 'API Key',
   'logs.colChannel': '渠道',
   'logs.colTiming': '首字/耗时(秒)',

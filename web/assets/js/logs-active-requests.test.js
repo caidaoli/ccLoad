@@ -25,3 +25,28 @@ test('全部日志视图仍会保留进行中请求轮询', () => {
   assert.equal(shouldSkipActiveRequestsFetch('yesterday', '', 'all'), true);
   assert.equal(shouldSkipActiveRequestsFetch('today', '500', 'all'), true);
 });
+
+test('进行中请求令牌列按 token_id 显示令牌描述', () => {
+  const buildActiveRequestTokenDescDisplay = vm.runInNewContext(
+    `(${extractFunction(logsSource, 'buildActiveRequestTokenDescDisplay')})`,
+    {
+      authTokens: [{ id: 7, description: 'Ops <Main>' }],
+      escapeHtml: (value) => String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+    }
+  );
+
+  assert.equal(
+    buildActiveRequestTokenDescDisplay({ token_id: 7 }),
+    '<span title="Ops &lt;Main&gt;">Ops &lt;Main&gt;</span>'
+  );
+  assert.equal(
+    buildActiveRequestTokenDescDisplay({ token_id: 8 }),
+    '<span title="Token #8">Token #8</span>'
+  );
+  assert.equal(buildActiveRequestTokenDescDisplay({ token_id: 0 }), '');
+});

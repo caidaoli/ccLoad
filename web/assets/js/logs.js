@@ -255,6 +255,7 @@ function getLogMobileLabels() {
   return {
     time: escapeHtml(t('logs.colTime')),
     ip: escapeHtml(t('logs.colIP')),
+    tokenDesc: escapeHtml(t('logs.colTokenDesc')),
     apiKey: escapeHtml(t('logs.colApiKey')),
     channel: escapeHtml(t('logs.colChannel')),
     model: escapeHtml(t('common.model')),
@@ -269,6 +270,16 @@ function getLogMobileLabels() {
     cost: escapeHtml(t('logs.colCost')),
     message: escapeHtml(t('logs.colMessage'))
   };
+}
+
+function buildActiveRequestTokenDescDisplay(req) {
+  const tokenId = Number(req?.token_id);
+  if (!Number.isFinite(tokenId) || tokenId <= 0) return '';
+
+  const token = (Array.isArray(authTokens) ? authTokens : [])
+    .find(item => Number(item?.id) === tokenId);
+  const label = token?.description || `Token #${tokenId}`;
+  return `<span title="${escapeHtml(label)}">${escapeHtml(label)}</span>`;
 }
 
 function renderLogSourceBadge(logSource) {
@@ -612,6 +623,8 @@ function renderActiveRequests(activeRequests) {
     }
 
     const channelDisplay = buildActiveRequestChannelDisplay(req);
+    const tokenDescDisplay = buildActiveRequestTokenDescDisplay(req);
+    const tokenDescCellClass = `logs-col-token-desc${tokenDescDisplay ? '' : ' mobile-empty-cell'}`;
 
     // Key显示
     let keyDisplay = '<span style="color: var(--neutral-500);">-</span>';
@@ -638,6 +651,7 @@ function renderActiveRequests(activeRequests) {
       row.innerHTML = `
             <td class="logs-col-time" data-mobile-label="${logMobileLabels.time}" style="white-space: nowrap;">${formatTime(req.start_time)}</td>
             <td class="logs-col-ip logs-mono-text" data-mobile-label="${logMobileLabels.ip}" style="white-space: nowrap;" title="${escapeHtml(req.client_ip || '')}">${escapeHtml(maskIP(req.client_ip) || '-')}</td>
+            <td class="${tokenDescCellClass}" data-mobile-label="${logMobileLabels.tokenDesc}" style="white-space: nowrap;">${tokenDescDisplay}</td>
             <td class="logs-col-api-key" data-mobile-label="${logMobileLabels.apiKey}" style="text-align: center; white-space: nowrap;">${keyDisplay}</td>
             <td class="logs-col-channel" data-mobile-label="${logMobileLabels.channel}" style="text-align: left;">${channelDisplay}</td>
             <td class="logs-col-model" data-mobile-label="${logMobileLabels.model}"><span class="model-tag">${escapeHtml(req.model || '-')}</span></td>
@@ -665,7 +679,7 @@ function getTableColspan() {
   const table = document.getElementById('tbody')?.closest('table')
     || document.querySelector('.logs-table');
   const headerCells = table ? table.querySelectorAll('thead th') : [];
-  return headerCells.length || 15; // fallback到15列（日志页默认列数）
+  return headerCells.length || 16; // fallback到16列（日志页默认列数）
 }
 
 function formatCacheUtilRate(inputTokens, cacheReadTokens, cacheCreationTokens) {
@@ -717,6 +731,11 @@ function renderLogs(data) {
     const clientIPDisplay = entry.client_ip ?
       `<span title="${escapeHtml(entry.client_ip)}">${escapeHtml(maskIP(entry.client_ip))}</span>` :
       '<span style="color: var(--neutral-400);">-</span>';
+
+    // 0.5. API访问令牌描述
+    const tokenDescDisplay = entry.auth_token_description
+      ? `<span title="${escapeHtml(entry.auth_token_description)}">${escapeHtml(entry.auth_token_description)}</span>`
+      : '<span style="color: var(--neutral-500);">-</span>';
 
     // 1. 渠道信息显示（鼠标移上去时显示URL）
     const configDisplay = buildLogChannelDisplay(entry);
@@ -836,6 +855,7 @@ function renderLogs(data) {
     htmlParts[i] = `<tr class="mobile-card-row logs-table-row">
           <td class="logs-col-time" data-mobile-label="${logMobileLabels.time}" style="white-space: nowrap;">${formatTime(entry.time)}</td>
           <td class="logs-col-ip logs-mono-text" data-mobile-label="${logMobileLabels.ip}" style="white-space: nowrap;">${clientIPDisplay}</td>
+          <td class="logs-col-token-desc" data-mobile-label="${logMobileLabels.tokenDesc}" style="white-space: nowrap;">${tokenDescDisplay}</td>
           <td class="logs-col-api-key" data-mobile-label="${logMobileLabels.apiKey}" style="text-align: center; white-space: nowrap;">${apiKeyDisplay}</td>
           <td class="logs-col-channel" data-mobile-label="${logMobileLabels.channel}" style="text-align: left;">${configDisplay}</td>
           <td class="logs-col-model" data-mobile-label="${logMobileLabels.model}">${modelDisplay}</td>
