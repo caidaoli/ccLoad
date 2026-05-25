@@ -51,6 +51,13 @@ test('日志页分页信息区收紧按钮间距', () => {
   assert.match(infoMatch[0], /margin:\s*0\s+var\(--space-2\)/);
 });
 
+test('日志表固定宽度列号与当前表头顺序一致', () => {
+  assert.match(html, /data-i18n="logs\.colTokenDesc"[\s\S]*data-i18n="logs\.colApiKey"/);
+  assert.match(css, /\.logs-table th:nth-child\(4\),\s*[\r\n\s]*\.logs-table td:nth-child\(4\)\s*\{[\s\S]*?API Key:/);
+  assert.match(css, /\.logs-table th:nth-child\(7\),\s*[\r\n\s]*\.logs-table td:nth-child\(7\)\s*\{[\s\S]*?状态码:/);
+  assert.match(css, /\.logs-table th:nth-child\(15\),\s*[\r\n\s]*\.logs-table td:nth-child\(15\)\s*\{[\s\S]*?成本/);
+});
+
 test('日志页窄屏分页覆盖全局纵向堆叠规则', () => {
   const mobileMatch = css.match(/@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.logs-pagination-controls\s*\{[\s\S]*?flex-direction:\s*row;[\s\S]*?\.logs-pagination-info\s*\{[\s\S]*?width:\s*100%;[\s\S]*?margin:\s*0;[\s\S]*?\.logs-pagination-separator\s*\{[\s\S]*?display:\s*none;/);
   assert.ok(mobileMatch, '缺少日志页窄屏分页覆盖样式');
@@ -204,8 +211,13 @@ test('进行中请求复用日志表格列类名和共享字体类', () => {
   assert.ok(activeMatch, '缺少 renderActiveRequests');
 
   const activeSource = activeMatch[0];
+  assert.match(logsSource, /function buildActiveRequestTokenDescDisplay\(req\)/);
+  assert.match(activeSource, /const tokenDescDisplay = buildActiveRequestTokenDescDisplay\(req\);/);
+  assert.match(activeSource, /const tokenDescCellClass = `logs-col-token-desc/);
   assert.match(activeSource, /class="logs-col-time"/);
   assert.match(activeSource, /class="logs-col-ip logs-mono-text"/);
+  assert.match(activeSource, /class="\$\{tokenDescCellClass\}"/);
+  assert.doesNotMatch(logsSource, /logs-col-token-desc logs-mono-text/);
   assert.match(activeSource, /class="logs-col-api-key"/);
   assert.match(activeSource, /class="logs-col-channel"/);
   assert.match(activeSource, /class="logs-col-model"/);
