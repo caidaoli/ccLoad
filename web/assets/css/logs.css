@@ -826,21 +826,6 @@
       text-align: center;
     }
 
-    .logs-table th:nth-child(3),
-    .logs-table td:nth-child(3) {
-      width: 100px;
-      /* 令牌描述 */
-      min-width: 100px;
-      max-width: 100px;
-    }
-
-    .logs-table th:nth-child(4),
-    .logs-table td:nth-child(4) {
-      width: 120px;
-      /* 渠道Key: xxxx...xxxx */
-      min-width: 120px;
-    }
-
     .logs-table th:nth-child(7),
     .logs-table td:nth-child(7) {
       width: 60px;
@@ -852,10 +837,10 @@
 
     .logs-table th:nth-child(14),
     .logs-table td:nth-child(14) {
-      width: 82px;
+      width: 70px;
       /* 缓存命中 */
-      min-width: 82px;
-      max-width: 82px;
+      min-width: 70px;
+      max-width: 70px;
       padding-right: var(--space-2);
     }
 

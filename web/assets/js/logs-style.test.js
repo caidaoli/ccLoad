@@ -27,6 +27,15 @@ function renderLogsFilters() {
   return sandbox.window.PageFilters.renderLayout('logs');
 }
 
+function logColumnHasWidthConstraint(columnIndex) {
+  const columnSelector = new RegExp(`\\.logs-table\\s+(?:th|td):nth-child\\(${columnIndex}\\)`);
+  const widthConstraint = /\b(?:width|min-width|max-width)\s*:/;
+
+  return Array.from(css.matchAll(/([^{}]+)\{([^{}]*)\}/g)).some(([, selector, body]) => {
+    return columnSelector.test(selector) && widthConstraint.test(body);
+  });
+}
+
 test('日志页底部分页使用专用紧凑样式类', () => {
   assert.match(html, /class="pagination-controls\s+logs-pagination-controls"/);
   assert.match(html, /class="pagination-info\s+logs-pagination-info"/);
@@ -55,14 +64,17 @@ test('日志页分页信息区收紧按钮间距', () => {
 
 test('日志表固定宽度列号与当前表头顺序一致', () => {
   assert.match(html, /data-i18n="logs\.colTokenDesc"[\s\S]*data-i18n="logs\.colApiKey"/);
-  assert.match(css, /\.logs-table th:nth-child\(3\),\s*[\r\n\s]*\.logs-table td:nth-child\(3\)\s*\{[\s\S]*?width:\s*100px;[\s\S]*?令牌描述[\s\S]*?min-width:\s*100px;[\s\S]*?max-width:\s*100px;/);
-  assert.match(css, /\.logs-table th:nth-child\(4\),\s*[\r\n\s]*\.logs-table td:nth-child\(4\)\s*\{[\s\S]*?渠道Key:/);
   assert.match(css, /\.logs-table th:nth-child\(7\),\s*[\r\n\s]*\.logs-table td:nth-child\(7\)\s*\{[\s\S]*?状态码:/);
   assert.match(css, /\.logs-table th:nth-child\(15\),\s*[\r\n\s]*\.logs-table td:nth-child\(15\)\s*\{[\s\S]*?成本/);
 });
 
+test('日志表令牌和渠道 Key 列不设置固定宽度', () => {
+  assert.equal(logColumnHasWidthConstraint(3), false, '令牌列不应设置 width/min-width/max-width');
+  assert.equal(logColumnHasWidthConstraint(4), false, '渠道 Key 列不应设置 width/min-width/max-width');
+});
+
 test('日志表缓存命中与成本列保留独立宽度和间隔', () => {
-  assert.match(css, /\.logs-table th:nth-child\(14\),\s*[\r\n\s]*\.logs-table td:nth-child\(14\)\s*\{[\s\S]*?width:\s*82px;[\s\S]*?缓存命中[\s\S]*?min-width:\s*82px;[\s\S]*?max-width:\s*82px;[\s\S]*?padding-right:\s*var\(--space-2\);/);
+  assert.match(css, /\.logs-table th:nth-child\(14\),\s*[\r\n\s]*\.logs-table td:nth-child\(14\)\s*\{[\s\S]*?width:\s*70px;[\s\S]*?缓存命中[\s\S]*?min-width:\s*70px;[\s\S]*?max-width:\s*70px;[\s\S]*?padding-right:\s*var\(--space-2\);/);
   assert.match(css, /\.logs-table th:nth-child\(15\),\s*[\r\n\s]*\.logs-table td:nth-child\(15\)\s*\{[\s\S]*?width:\s*96px;[\s\S]*?成本[\s\S]*?min-width:\s*96px;[\s\S]*?max-width:\s*96px;[\s\S]*?padding-left:\s*var\(--space-2\);/);
 });
 
