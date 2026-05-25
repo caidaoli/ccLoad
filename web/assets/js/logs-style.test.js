@@ -8,6 +8,8 @@ const html = fs.readFileSync(path.join(__dirname, '..', '..', 'logs.html'), 'utf
 const css = fs.readFileSync(path.join(__dirname, '..', 'css', 'logs.css'), 'utf8');
 const logsSource = fs.readFileSync(path.join(__dirname, 'logs.js'), 'utf8');
 const pageFiltersSource = fs.readFileSync(path.join(__dirname, 'page-filters.js'), 'utf8');
+const zhLocale = fs.readFileSync(path.join(__dirname, '..', 'locales', 'zh-CN.js'), 'utf8');
+const enLocale = fs.readFileSync(path.join(__dirname, '..', 'locales', 'en.js'), 'utf8');
 
 function renderLogsFilters() {
   const sandbox = {
@@ -53,9 +55,24 @@ test('日志页分页信息区收紧按钮间距', () => {
 
 test('日志表固定宽度列号与当前表头顺序一致', () => {
   assert.match(html, /data-i18n="logs\.colTokenDesc"[\s\S]*data-i18n="logs\.colApiKey"/);
-  assert.match(css, /\.logs-table th:nth-child\(4\),\s*[\r\n\s]*\.logs-table td:nth-child\(4\)\s*\{[\s\S]*?API Key:/);
+  assert.match(css, /\.logs-table th:nth-child\(3\),\s*[\r\n\s]*\.logs-table td:nth-child\(3\)\s*\{[\s\S]*?width:\s*100px;[\s\S]*?令牌描述[\s\S]*?min-width:\s*100px;[\s\S]*?max-width:\s*100px;/);
+  assert.match(css, /\.logs-table th:nth-child\(4\),\s*[\r\n\s]*\.logs-table td:nth-child\(4\)\s*\{[\s\S]*?渠道Key:/);
   assert.match(css, /\.logs-table th:nth-child\(7\),\s*[\r\n\s]*\.logs-table td:nth-child\(7\)\s*\{[\s\S]*?状态码:/);
   assert.match(css, /\.logs-table th:nth-child\(15\),\s*[\r\n\s]*\.logs-table td:nth-child\(15\)\s*\{[\s\S]*?成本/);
+});
+
+test('日志表缓存命中与成本列保留独立宽度和间隔', () => {
+  assert.match(css, /\.logs-table th:nth-child\(14\),\s*[\r\n\s]*\.logs-table td:nth-child\(14\)\s*\{[\s\S]*?width:\s*82px;[\s\S]*?缓存命中[\s\S]*?min-width:\s*82px;[\s\S]*?max-width:\s*82px;[\s\S]*?padding-right:\s*var\(--space-2\);/);
+  assert.match(css, /\.logs-table th:nth-child\(15\),\s*[\r\n\s]*\.logs-table td:nth-child\(15\)\s*\{[\s\S]*?width:\s*96px;[\s\S]*?成本[\s\S]*?min-width:\s*96px;[\s\S]*?max-width:\s*96px;[\s\S]*?padding-left:\s*var\(--space-2\);/);
+});
+
+test('日志表令牌和渠道 Key 表头文案使用业务命名', () => {
+  assert.match(html, /<th data-i18n="logs\.colTokenDesc">令牌<\/th>/);
+  assert.match(html, /<th data-i18n="logs\.colApiKey">渠道Key<\/th>/);
+  assert.match(zhLocale, /'logs\.colTokenDesc': '令牌'/);
+  assert.match(zhLocale, /'logs\.colApiKey': '渠道Key'/);
+  assert.match(enLocale, /'logs\.colTokenDesc': 'Token'/);
+  assert.match(enLocale, /'logs\.colApiKey': 'Channel Key'/);
 });
 
 test('日志页窄屏分页覆盖全局纵向堆叠规则', () => {

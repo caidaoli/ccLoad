@@ -828,15 +828,16 @@
 
     .logs-table th:nth-child(3),
     .logs-table td:nth-child(3) {
-      width: 120px;
-      /* API令牌描述 */
-      min-width: 120px;
+      width: 100px;
+      /* 令牌描述 */
+      min-width: 100px;
+      max-width: 100px;
     }
 
     .logs-table th:nth-child(4),
     .logs-table td:nth-child(4) {
       width: 120px;
-      /* API Key: xxxx...xxxx */
+      /* 渠道Key: xxxx...xxxx */
       min-width: 120px;
     }
 
@@ -849,12 +850,22 @@
       text-align: center;
     }
 
+    .logs-table th:nth-child(14),
+    .logs-table td:nth-child(14) {
+      width: 82px;
+      /* 缓存命中 */
+      min-width: 82px;
+      max-width: 82px;
+      padding-right: var(--space-2);
+    }
+
     .logs-table th:nth-child(15),
     .logs-table td:nth-child(15) {
-      width: 70px;
+      width: 96px;
       /* 成本 */
-      min-width: 70px;
-      max-width: 70px;
+      min-width: 96px;
+      max-width: 96px;
+      padding-left: var(--space-2);
     }
 
     /* 模型标签样式 */
