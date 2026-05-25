@@ -1401,7 +1401,10 @@ func TestProxy_StreamingAnthropicClientNormalizesOpenAISSEFromUpstreamMode(t *te
 	if strings.Contains(body, `"chat.completion.chunk"`) || strings.Contains(body, `"choices"`) {
 		t.Fatalf("expected Anthropic SSE, got raw OpenAI SSE: %s", body)
 	}
-	if !strings.Contains(body, "event: message_start") || !strings.Contains(body, `"type":"text_delta","text":"Hello"`) || !strings.Contains(body, "event: message_stop") {
+	if !strings.Contains(body, "event: message_start") ||
+		!strings.Contains(body, `"type":"text_delta"`) ||
+		!strings.Contains(body, `"text":"Hello"`) ||
+		!strings.Contains(body, "event: message_stop") {
 		t.Fatalf("unexpected normalized Anthropic SSE: %s", body)
 	}
 }
