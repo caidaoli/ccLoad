@@ -42,20 +42,20 @@ test('channels 页为手机卡片式表格预留移动端标签与样式', () =>
   const template = templateMatch[0];
 
   assert.match(template, /class="ch-col-models"[^>]*data-mobile-label="\{\{mobileLabelModels\}\}"/);
-  assert.match(template, /class="ch-col-priority"[^>]*data-mobile-label="\{\{mobileLabelPriority\}\}"/);
+  assert.match(template, /class="ch-col-priority[^"]*"[^>]*data-mobile-label="\{\{mobileLabelPriority\}\}"/);
   assert.match(template, /class="ch-col-duration[^"]*"[^>]*data-mobile-label="\{\{mobileLabelDuration\}\}"/);
   assert.match(template, /class="ch-col-usage[^"]*"[^>]*data-mobile-label="\{\{mobileLabelUsage\}\}"/);
   assert.match(template, /class="ch-col-cost[^"]*"[^>]*data-mobile-label="\{\{mobileLabelCost\}\}"/);
-  assert.match(template, /class="ch-col-last-success"[^>]*data-mobile-label="\{\{mobileLabelLastSuccess\}\}"/);
+  assert.match(template, /class="ch-col-last-success[^"]*"[^>]*data-mobile-label="\{\{mobileLabelLastSuccess\}\}"/);
   assert.match(template, /class="ch-col-enabled"[^>]*data-mobile-label="\{\{mobileLabelEnabled\}\}"/);
 
   const mobileCssMatch = channelsCss.match(/@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.channel-table-container\s*\{[\s\S]*?overflow-x:\s*visible;[\s\S]*?\.channel-table\s+thead\s+th:not\(\.ch-col-checkbox\)\s*\{[\s\S]*?display:\s*none;[\s\S]*?\.channel-table\s+tbody\s+tr\s*\{[\s\S]*?display:\s*grid;[\s\S]*?\.channel-table\s+td\[data-mobile-label\]::before\s*\{/);
   assert.ok(mobileCssMatch, '缺少渠道表格手机卡片布局样式');
 
   assert.match(channelsCss, /\.channel-table\s+\.ch-col-priority\s*\{[^}]*order:\s*10;/);
-  assert.match(channelsCss, /\.channel-table\s+\.ch-col-cost\s*\{[^}]*order:\s*11;/);
-  assert.match(channelsCss, /\.channel-table\s+\.ch-col-last-success\s*\{[^}]*order:\s*12;/);
-  assert.match(channelsCss, /\.channel-table\s+\.ch-col-enabled\s*\{[^}]*order:\s*22;/);
+  assert.match(channelsCss, /\.channel-table\s+\.ch-col-enabled\s*\{[^}]*order:\s*11;/);
+  assert.match(channelsCss, /\.channel-table\s+\.ch-col-cost\s*\{[^}]*order:\s*12;/);
+  assert.match(channelsCss, /\.channel-table\s+\.ch-col-last-success\s*\{[^}]*order:\s*13;/);
   assert.match(channelsCss, /\.channel-table\s+\.ch-col-priority,\s*[\r\n\s]*\.channel-table\s+\.ch-col-cost,\s*[\r\n\s]*\.channel-table\s+\.ch-col-last-success,\s*[\r\n\s]*\.channel-table\s+\.ch-col-enabled\s*\{[\s\S]*?display:\s*flex;[\s\S]*?justify-content:\s*space-between;/);
   assert.match(channelsCss, /\.channel-table\s+\.ch-col-actions\s*\{[\s\S]*?order:\s*30;[\s\S]*?align-items:\s*center;/);
   assert.match(channelsCss, /\.channel-table\s+td\.ch-col-actions::before\s*\{[\s\S]*?content:\s*none;/);
@@ -64,7 +64,7 @@ test('channels 页为手机卡片式表格预留移动端标签与样式', () =>
   assert.match(channelsCss, /\.channel-table\s+\.ch-action-group\s*\{[\s\S]*?overflow-x:\s*auto;/);
   assert.match(channelsCss, /\.channel-table\s+\.channel-refresh-result\s*\{[\s\S]*?width:\s*100%;/);
   assert.match(channelsCss, /\.channel-table\s+\.channel-refresh-result__summary\s*\{[\s\S]*?white-space:\s*normal;/);
-  assert.match(template, /class="ch-last-request-slot">\s*\{\{\{lastRequestFailureHtml\}\}\}/);
+  assert.match(template, /class="ch-col-last-success \{\{lastSuccessCellClass\}\}"[\s\S]*?\{\{\{lastSuccessHtml\}\}\}\s*<div class="ch-last-request-slot">\s*\{\{\{lastRequestFailureHtml\}\}\}\s*<\/div>/);
   assert.doesNotMatch(channelsHtml, /tpl-channel-last-request-row/);
   assert.doesNotMatch(channelsCss, /channel-last-request-row/);
   assert.doesNotMatch(channelsCss, /\.channel-table\s+\.ch-last-request__message\s*\{/);
@@ -75,11 +75,28 @@ test('channels 页手机卡片对空统计块做折叠', () => {
   assert.ok(templateMatch, '缺少渠道行模板');
   const template = templateMatch[0];
 
+  assert.match(template, /class="ch-col-priority"/);
+  assert.doesNotMatch(template, /priorityCellClass/);
   assert.match(template, /class="ch-col-duration \{\{durationCellClass\}\}"/);
   assert.match(template, /class="ch-col-usage \{\{usageCellClass\}\}"/);
   assert.match(template, /class="ch-col-cost \{\{costCellClass\}\}"/);
+  assert.match(template, /class="ch-col-last-success \{\{lastSuccessCellClass\}\}"/);
 
   assert.match(channelsCss, /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.channel-table\s+td\.ch-mobile-empty\s*\{[\s\S]*?display:\s*none;/);
+  assert.doesNotMatch(channelsCss, /ch-mobile-span-full/);
+});
+
+test('channels 页手机卡片按用户要求重排关键状态行', () => {
+  const templateMatch = channelsHtml.match(/<template id="tpl-channel-card">[\s\S]*?<\/template>/);
+  assert.ok(templateMatch, '缺少渠道行模板');
+  const template = templateMatch[0];
+
+  assert.match(template, /class="ch-col-last-success \{\{lastSuccessCellClass\}\}"[\s\S]*?\{\{\{lastSuccessHtml\}\}\}\s*<div class="ch-last-request-slot">\s*\{\{\{lastRequestFailureHtml\}\}\}\s*<\/div>/);
+  assert.match(channelsCss, /\.channel-table\s+\.ch-col-priority\s*\{[^}]*order:\s*10;/);
+  assert.match(channelsCss, /\.channel-table\s+\.ch-col-enabled\s*\{[^}]*order:\s*11;/);
+  assert.match(channelsCss, /\.channel-table\s+\.ch-col-cost\s*\{[^}]*order:\s*12;[\s\S]*?grid-column:\s*1\s*\/\s*-1;/);
+  assert.match(channelsCss, /\.channel-table\s+\.ch-col-last-success\s*\{[^}]*order:\s*13;[\s\S]*?grid-column:\s*1\s*\/\s*-1;/);
+  assert.match(channelsCss, /\.channel-table\s+\.ch-col-last-success\s+\.ch-last-request-slot\s*\{[\s\S]*?margin-top:\s*0;[\s\S]*?margin-left:\s*auto;/);
 });
 
 test('channels 页耗时和消耗列内部指标保持紧凑', () => {
