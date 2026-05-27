@@ -83,7 +83,7 @@
               </select>
             </div>
 
-            <div class="filter-group">
+            <div class="filter-group channel-model-filter-group">
               <label class="filter-label" data-i18n="channels.filterModel">模型</label>
               <div class="filter-combobox-wrapper filter-control--compact">
                 <input id="modelFilter" class="filter-select filter-combobox" type="text" autocomplete="off"
@@ -91,18 +91,14 @@
                 <div id="modelFilterDropdown" class="filter-dropdown" role="listbox" aria-label="模型"></div>
               </div>
             </div>
-            <div class="filter-group">
+            <div class="filter-group channel-search-filter-group">
               <label class="filter-label" data-i18n="channels.filterSearch">渠道名称</label>
-              <div class="channel-search-control" style="display:flex;align-items:center;gap:8px;">
-                <div class="filter-combobox-wrapper filter-control--compact" style="flex:1;">
+              <div class="channel-search-control">
+                <div class="filter-combobox-wrapper filter-control--compact">
                   <input id="searchInput" class="filter-select filter-combobox" type="text" autocomplete="off"
                     spellcheck="false" />
                   <div id="searchInputDropdown" class="filter-dropdown" role="listbox" aria-label="渠道名称"></div>
                 </div>
-                <button id="clearSearchBtn" type="button" class="btn btn-secondary btn-sm"
-                  data-i18n="common.clear" data-i18n-title="common.clearSearch" title="清空搜索">
-                  清空
-                </button>
               </div>
             </div>
             <div class="channel-filter-summary">
@@ -111,9 +107,13 @@
               </div>
 
               <div class="channel-toolbar-actions">
-                <button id="btn_sort" type="button" class="btn btn-secondary" style="padding: 8px 16px; font-size: 14px;"
+                <button id="clearSearchBtn" type="button" class="btn btn-secondary btn-sm"
+                  data-i18n="common.clear" data-i18n-title="common.clearSearch" title="清空搜索">
+                  清空
+                </button>
+                <button id="btn_sort" type="button" class="btn btn-secondary channel-filter-action-btn"
                   data-i18n="channels.sortBtn">排序</button>
-                <button id="btn_filter" type="button" class="btn btn-primary" style="padding: 8px 16px; font-size: 14px;"
+                <button id="btn_filter" type="button" class="btn btn-primary channel-filter-action-btn"
                   data-i18n="channels.filterBtn">筛选</button>
               </div>
             </div>

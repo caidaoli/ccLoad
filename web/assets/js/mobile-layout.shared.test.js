@@ -179,13 +179,16 @@ test('trend 页手机端堆叠头部工具栏并释放图表高度', () => {
   assert.match(trendHtml, /class="flex justify-between items-center mb-6 trend-chart-header"/);
   assert.match(trendHtml, /class="text-xl font-semibold trend-chart-title"/);
   assert.match(trendHtml, /class="[^"]*trend-chart-toolbar[^"]*"/);
+  assert.match(trendHtml, /id="chart"\s+class="w-full h-full hidden"/);
   assert.match(trendScript, /const trendTypeGroup = document\.getElementById\('trend-type-group'\)/);
   assert.match(sharedCss, /body\.trend-page\s+\.main-content\s*\{[\s\S]*?height:\s*auto;/);
-  assert.match(sharedCss, /\.trend-chart-header\s*\{[\s\S]*?flex-direction:\s*column;[\s\S]*?align-items:\s*stretch;/);
-  assert.match(sharedCss, /\.trend-chart-toolbar\s*\{[\s\S]*?flex-direction:\s*column;[\s\S]*?align-items:\s*stretch\s*!important;[\s\S]*?width:\s*100%;/);
-  assert.match(sharedCss, /\.trend-chart-toolbar\s+\.channel-filter-container\s*\{[\s\S]*?width:\s*100%;/);
-  assert.match(sharedCss, /\.trend-chart-toolbar\s+#btn-channel-filter-toggle\s*\{[\s\S]*?width:\s*100%;/);
-  assert.match(sharedCss, /body\.trend-page\s+\.chart-container\s*\{[\s\S]*?min-height:\s*320px;/);
+  assert.match(sharedCss, /\.trend-chart-header\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto;[\s\S]*?align-items:\s*center;/);
+  assert.match(sharedCss, /\.trend-chart-title\s*\{[\s\S]*?font-size:\s*var\(--text-base\);[\s\S]*?line-height:\s*1\.3;/);
+  assert.match(sharedCss, /\.trend-chart-toolbar\s*\{[\s\S]*?display:\s*contents;/);
+  assert.match(sharedCss, /\.trend-chart-toolbar\s+\.toggle-group\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1;[\s\S]*?grid-row:\s*2;/);
+  assert.match(sharedCss, /\.trend-chart-toolbar\s+\.channel-filter-container\s*\{[\s\S]*?grid-column:\s*2;[\s\S]*?grid-row:\s*1;[\s\S]*?justify-self:\s*end;[\s\S]*?width:\s*auto;/);
+  assert.match(sharedCss, /\.trend-chart-toolbar\s+#btn-channel-filter-toggle\s*\{[\s\S]*?width:\s*auto;/);
+  assert.match(sharedCss, /body\.trend-page\s+\.chart-container\s*\{[\s\S]*?height:\s*clamp\(320px,\s*54vh,\s*420px\);[\s\S]*?min-height:\s*320px;/);
 });
 
 test('settings 页为手机卡片布局补齐模板标签和分组样式', () => {

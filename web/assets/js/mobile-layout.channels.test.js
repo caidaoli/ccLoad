@@ -13,11 +13,39 @@ test('channels 页顶部筛选控件不再写死桌面宽度', () => {
   assert.doesNotMatch(channelsHtml, /id="idFilter"[^>]*style="[^"]*max-width:\s*100px/);
   assert.doesNotMatch(channelsHtml, /id="statusFilter"[^>]*style="[^"]*min-width:\s*100px/);
   assert.doesNotMatch(channelsHtml, /id="modelFilter"[\s\S]*?filter-combobox-wrapper" style="[^"]*min-width:\s*100px/);
+  assert.doesNotMatch(channelsHtml, /class="channel-search-control"[^>]*style=/);
+  assert.doesNotMatch(channelsHtml, /id="searchInput"[\s\S]*?filter-combobox-wrapper[^"]*" style=/);
+  assert.doesNotMatch(channelsHtml, /id="btn_sort"[^>]*style=/);
+  assert.doesNotMatch(channelsHtml, /id="btn_filter"[^>]*style=/);
   assert.match(channelsHtml, /class="channel-page-hero"[\s\S]*class="channel-page-actions"/);
   assert.match(channelsHtml, /id="exportCsvBtn"[^>]*class="btn btn-secondary channel-page-action-btn"/);
   assert.match(channelsHtml, /id="importCsvBtn"[^>]*class="btn btn-secondary channel-page-action-btn"/);
   assert.match(channelsHtml, /data-action="show-add-modal"[^>]*class="btn btn-primary channel-page-action-btn"/);
+  assert.match(channelsHtml, /class="filter-group channel-model-filter-group"[\s\S]*id="modelFilter"/);
+  assert.match(channelsHtml, /id="btn_sort"[^>]*class="btn btn-secondary channel-filter-action-btn"/);
+  assert.match(channelsHtml, /id="btn_filter"[^>]*class="btn btn-primary channel-filter-action-btn"/);
   assert.match(channelsCss, /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.channel-page-actions\s*\{[\s\S]*?grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\);[\s\S]*?\.channel-page-action-btn\s*\{[\s\S]*?width:\s*100%;[\s\S]*?white-space:\s*nowrap;/);
+});
+
+test('channels 页手机端将渠道名称和模型放在同一行并把清空归入操作区', () => {
+  assert.match(channelsHtml, /class="filter-group channel-search-filter-group"[\s\S]*class="channel-search-control"[\s\S]*id="searchInput"/);
+  assert.match(channelsHtml, /class="channel-filter-summary"[\s\S]*id="filterInfo"[\s\S]*id="clearSearchBtn"[\s\S]*id="btn_sort"[\s\S]*id="btn_filter"/);
+  assert.match(channelsCss, /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.channels-filter-controls\s+\.filter-label\s*\{[\s\S]*?font-size:\s*0\.72rem;[\s\S]*?font-weight:\s*500;/);
+  assert.match(channelsCss, /\.channels-filter-controls\s+\.filter-select\s*\{[\s\S]*?font-size:\s*0\.8rem;[\s\S]*?padding:\s*6px\s+10px;/);
+  assert.match(channelsCss, /\.channels-filter-controls\s+\.channel-search-filter-group\s*\{[\s\S]*?order:\s*3;[\s\S]*?grid-column:\s*auto;/);
+  assert.match(channelsCss, /\.channels-filter-controls\s+\.channel-model-filter-group\s*\{[\s\S]*?order:\s*4;/);
+  assert.match(channelsCss, /\.channel-filter-summary\s*\{[\s\S]*?order:\s*5;/);
+  assert.match(channelsCss, /\.channel-search-control\s*\{[\s\S]*?display:\s*flex;[\s\S]*?width:\s*100%;[\s\S]*?min-width:\s*0;/);
+  assert.match(channelsCss, /\.channel-search-control\s+\.filter-combobox-wrapper\s*\{[\s\S]*?width:\s*100%;[\s\S]*?min-width:\s*0;[\s\S]*?max-width:\s*none;/);
+  assert.doesNotMatch(channelsCss, /\.channel-search-control\s+#clearSearchBtn\s*\{/);
+  assert.match(channelsCss, /\.channel-filter-summary\s+#clearSearchBtn\s*\{[\s\S]*?width:\s*auto;[\s\S]*?font-size:\s*0\.8rem;[\s\S]*?padding:\s*6px\s+10px;/);
+  assert.match(channelsCss, /\.channel-filter-summary\s+\.channel-filter-action-btn\s*\{[\s\S]*?font-size:\s*0\.8rem;[\s\S]*?padding:\s*6px\s+10px;/);
+});
+
+test('channels 页手机端顶部说明和导入导出操作降低字号', () => {
+  assert.match(channelsCss, /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.channel-page-hero\s+\.page-subtitle\s*\{[\s\S]*?font-size:\s*var\(--text-sm\);[\s\S]*?line-height:\s*1\.5;/);
+  assert.match(channelsCss, /\.channel-page-action-btn\s*\{[\s\S]*?font-size:\s*var\(--text-xs\);/);
+  assert.match(channelsCss, /\.channel-page-action-btn\s*\{[\s\S]*?padding:\s*6px\s+8px;/);
 });
 
 test('channels 页将数量、排序和筛选归到同一个移动端摘要行', () => {
