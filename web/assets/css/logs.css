@@ -690,6 +690,10 @@
         white-space: nowrap;
       }
 
+      .logs-table td.mobile-empty-cell {
+        display: none !important;
+      }
+
       .logs-table .logs-col-channel,
       .logs-table .logs-col-model,
       .logs-table .logs-col-message {

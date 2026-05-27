@@ -240,6 +240,7 @@ test('进行中请求复用日志表格列类名和共享字体类', () => {
   assert.ok(activeMatch, '缺少 renderActiveRequests');
 
   const activeSource = activeMatch[0];
+  assert.match(activeSource, /row\.className\s*=\s*'mobile-card-row pending-row'/);
   assert.match(logsSource, /function buildActiveRequestTokenDescDisplay\(req\)/);
   assert.match(activeSource, /const tokenDescDisplay = buildActiveRequestTokenDescDisplay\(req\);/);
   assert.match(activeSource, /const tokenDescCellClass = `logs-col-token-desc/);
@@ -255,6 +256,11 @@ test('进行中请求复用日志表格列类名和共享字体类', () => {
   assert.match(activeSource, /class="logs-col-message"/);
   assert.match(activeSource, /data-mobile-label="\$\{logMobileLabels\.ip\}"/);
   assert.doesNotMatch(activeSource, /font-family:\s*monospace/);
+});
+
+test('日志页窄屏隐藏空指标列时优先级高于列布局规则', () => {
+  const mobileMatch = css.match(/@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.logs-table\s+td\.mobile-empty-cell\s*\{[\s\S]*?display:\s*none\s*!important;/);
+  assert.ok(mobileMatch, '缺少日志页窄屏空指标列隐藏覆盖样式');
 });
 
 test('普通日志渲染也使用共享等宽字体类而不是内联 monospace', () => {
