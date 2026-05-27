@@ -714,6 +714,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'logs.colCacheUtil': '缓存命中',
   'logs.colCost': '成本',
   'logs.colMessage': '信息',
+  'logs.colSettings': '列显隐设置',
   'logs.sourceProxy': '请求日志',
   'logs.sourceDetection': '检测日志',
   'logs.sourceScheduledCheck': '定时检测',

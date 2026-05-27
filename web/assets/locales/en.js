@@ -715,6 +715,7 @@ window.I18N_LOCALES['en'] = {
   'logs.colCacheUtil': 'Cache Hit',
   'logs.colCost': 'Cost',
   'logs.colMessage': 'Message',
+  'logs.colSettings': 'Column visibility settings',
   'logs.sourceProxy': 'Request Logs',
   'logs.sourceDetection': 'Detection Logs',
   'logs.sourceScheduledCheck': 'Scheduled Checks',

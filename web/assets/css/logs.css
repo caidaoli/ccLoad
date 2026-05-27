@@ -1,4 +1,93 @@
     /* API Key 测试按钮样式 */
+
+    /* 列显隐切换按钮 */
+    .logs-col-toggle-btn {
+      padding: 0;
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      color: var(--neutral-400);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 18px;
+      height: 18px;
+      border-radius: 3px;
+      transition: color 0.15s, background 0.15s;
+      vertical-align: middle;
+      margin-right: 2px;
+      flex-shrink: 0;
+    }
+
+    .logs-col-toggle-btn:hover {
+      color: var(--primary-600);
+      background: var(--primary-50);
+    }
+
+    /* 列显隐下拉面板 */
+    .logs-col-toggle-menu {
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 100;
+      background: white;
+      border: 1px solid var(--neutral-200);
+      border-radius: 8px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+      padding: 6px 0;
+      min-width: 150px;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    .logs-col-toggle-menu[hidden] {
+      display: none !important;
+    }
+
+    .logs-col-toggle-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      cursor: pointer;
+      font-size: 0.9em;
+      white-space: nowrap;
+      transition: background 0.1s;
+      user-select: none;
+    }
+
+    .logs-col-toggle-item:hover {
+      background: var(--neutral-50);
+    }
+
+    .logs-col-toggle-check {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 18px;
+      height: 18px;
+      border-radius: 4px;
+      border: 2px solid var(--neutral-300);
+      background: white;
+      flex-shrink: 0;
+      transition: border-color 0.15s, background 0.15s;
+    }
+
+    .logs-col-toggle-item[data-visible="true"] .logs-col-toggle-check {
+      border-color: var(--primary-500);
+      background: var(--primary-500);
+    }
+
+    .logs-col-toggle-check svg {
+      width: 12px;
+      height: 12px;
+      color: white;
+    }
+
+    .logs-col-toggle-item[data-visible="false"] .logs-col-toggle-check svg {
+      display: none;
+    }
+
     .test-key-btn {
       padding: 0;
       border: none;
