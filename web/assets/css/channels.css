@@ -118,6 +118,24 @@
       font-size: 14px;
     }
 
+    .channel-filter-action-btn {
+      padding: 8px 16px;
+      font-size: 14px;
+    }
+
+    .channel-search-control {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      min-width: 0;
+    }
+
+    .channel-search-control .filter-combobox-wrapper {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
     .channel-editor-modal {
       width: 90vw;
       max-width: 90vw;
@@ -2510,7 +2528,16 @@
 
     @media (max-width: 768px) {
       .channel-page-hero {
-        gap: 12px;
+        gap: 10px;
+      }
+
+      .content-area > header .glass-card {
+        padding: var(--space-4) !important;
+      }
+
+      .channel-page-hero .page-subtitle {
+        font-size: var(--text-sm);
+        line-height: 1.5;
       }
 
       .channel-page-actions {
@@ -2522,8 +2549,57 @@
 
       .channel-page-action-btn {
         width: 100%;
-        padding: 8px 10px;
+        padding: 6px 8px;
+        font-size: var(--text-xs);
+        min-height: 36px;
         white-space: nowrap;
+      }
+
+      .channels-filter-controls .filter-label {
+        font-size: 0.72rem;
+        font-weight: 500;
+        color: var(--neutral-600);
+      }
+
+      .channels-filter-controls .filter-select {
+        font-size: 0.8rem;
+        padding: 6px 10px;
+      }
+
+      .channels-filter-controls .channel-search-filter-group {
+        order: 3;
+        grid-column: auto;
+      }
+
+      .channels-filter-controls .channel-model-filter-group {
+        order: 4;
+      }
+
+      .channel-search-control {
+        display: flex;
+        align-items: center;
+        width: 100%;
+        min-width: 0;
+      }
+
+      .channel-search-control .filter-combobox-wrapper {
+        width: 100%;
+        min-width: 0;
+        max-width: none;
+      }
+
+      .channel-filter-summary #clearSearchBtn {
+        width: auto;
+        min-width: 0;
+        flex: 0 0 auto;
+        font-size: 0.8rem;
+        padding: 6px 10px;
+        white-space: nowrap;
+      }
+
+      .channel-filter-summary .channel-filter-action-btn {
+        font-size: 0.8rem;
+        padding: 6px 10px;
       }
 
       .channel-editor-modal {
@@ -3386,6 +3462,7 @@
       }
 
       .channel-filter-summary {
+        order: 5;
         width: 100%;
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;

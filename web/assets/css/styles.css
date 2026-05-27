@@ -5849,8 +5849,9 @@ body.trend-page .chart-info {
   }
 
   .trend-chart-header {
-    flex-direction: column;
-    align-items: stretch;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
     gap: 12px;
   }
 
@@ -5859,7 +5860,8 @@ body.trend-page .chart-info {
     align-items: center;
     gap: 8px;
     min-width: 0;
-    line-height: 1.4;
+    font-size: var(--text-base);
+    line-height: 1.3;
   }
 
   .trend-chart-title svg {
@@ -5867,14 +5869,12 @@ body.trend-page .chart-info {
   }
 
   .trend-chart-toolbar {
-    flex-direction: column;
-    align-items: stretch !important;
-    gap: 10px !important;
-    width: 100%;
-    min-width: 0;
+    display: contents;
   }
 
   .trend-chart-toolbar .toggle-group {
+    grid-column: 1 / -1;
+    grid-row: 2;
     width: 100%;
     max-width: 100%;
     padding-bottom: 2px;
@@ -5886,12 +5886,16 @@ body.trend-page .chart-info {
   }
 
   .trend-chart-toolbar .channel-filter-container {
-    width: 100%;
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+    width: auto;
   }
 
   .trend-chart-toolbar #btn-channel-filter-toggle {
-    width: 100%;
+    width: auto;
     justify-content: center;
+    white-space: nowrap;
   }
 
   .trend-chart-toolbar .channel-filter-dropdown {
@@ -5902,7 +5906,9 @@ body.trend-page .chart-info {
   }
 
   body.trend-page .chart-container {
+    height: clamp(320px, 54vh, 420px);
     min-height: 320px;
+    flex: 0 0 auto;
   }
 
   .settings-group-nav-container {
