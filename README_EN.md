@@ -64,6 +64,7 @@ ccLoad solves these pain points through:
 - 🔍 **Debug Logs** - Upstream request/response raw data capture with sensitive header masking, essential for troubleshooting
 - 🕐 **Scheduled Checks** - Background periodic channel availability probing, auto-detect failed channels
 - 🧩 **Custom Request Rules** - Per-channel HTTP header & JSON body rewriting (remove/override/append), with auth header protection, CRLF guard, and capacity caps
+- 🎛️ **Log Column Customization** - Show/hide table columns per preference, settings persist in browser localStorage
 
 ## 🏗️ Architecture Overview
 
@@ -378,7 +379,7 @@ git push
 **Version Pinning** (Optional):
 To lock specific version, modify Dockerfile:
 ```dockerfile
-FROM ghcr.io/caidaoli/ccload:2.11.2  # Specify version
+FROM ghcr.io/caidaoli/ccload:2.19.0  # Specify version
 ENV TZ=Asia/Shanghai
 ENV PORT=7860
 ENV SQLITE_PATH=/tmp/ccload.db
@@ -663,6 +664,8 @@ Check out the awesome admin dashboard 👇
   - Per API token ID classification for multi-tenant billing
   - Supports Gemini/OpenAI cache token visualization
 
+- 🎛️ **Log Column Customization** - Click the gear icon to show/hide columns, settings auto-saved to browser
+
 **UI Highlights**:
 - 🎨 Modern gradient purple theme for comfortable viewing
 - 📱 Responsive design works great on mobile and desktop
@@ -891,8 +894,8 @@ Project supports multi-arch Docker images:
 - **Image Registry**: `ghcr.io/caidaoli/ccload`
 - **Available Tags**:
   - `latest` - Latest stable version
-  - `2.11.2` - Specific version number
-  - `2.11` - Major.minor version
+  - `2.19.0` - Specific version number
+  - `2.19` - Major.minor version
   - `2` - Major version
 
 ### Image Tag Guide
@@ -902,7 +905,7 @@ Project supports multi-arch Docker images:
 docker pull ghcr.io/caidaoli/ccload:latest
 
 # Pull specific version
-docker pull ghcr.io/caidaoli/ccload:2.11.2
+docker pull ghcr.io/caidaoli/ccload:2.19.0
 
 # Specify architecture (Docker usually auto-selects)
 docker pull --platform linux/amd64 ghcr.io/caidaoli/ccload:latest

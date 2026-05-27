@@ -66,6 +66,7 @@ ccLoad 一站式解决👇
 | 🔍 **调试日志** | 上游请求/响应原始数据捕获 | 敏感头脱敏，排障利器 |
 | 🕐 **定时检测** | 渠道可用性后台定时探测 | 自动发现故障渠道 |
 | 🧩 **自定义请求规则** | 渠道级请求头/JSON 请求体改写（remove/override/append） | 认证头保护 + CRLF 防护 + 容量上限 |
+| 🎛️ **日志列自定义** | 表格列显隐可配置，设置持久化到浏览器 | 按需查看，减少信息噪音 |
 
 ## 🏗️ 架构概览
 
@@ -402,7 +403,7 @@ git push
 **版本锁定**（可选）:
 如果需要锁定特定版本，修改 Dockerfile：
 ```dockerfile
-FROM ghcr.io/caidaoli/ccload:2.11.2  # 指定版本号
+FROM ghcr.io/caidaoli/ccload:2.19.0  # 指定版本号
 ENV TZ=Asia/Shanghai
 ENV PORT=7860
 ENV SQLITE_PATH=/tmp/ccload.db
@@ -697,6 +698,8 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-opus-4-6\"]",true
   - 按API令牌分类，多租户也能分账
   - 支持Gemini/OpenAI缓存Token展示
 
+- 🎛️ **日志列显隐自定义** - 点击齿轮图标按需显示/隐藏列，设置自动保存到浏览器
+
 **界面亮点**：
 - 🎨 渐变紫色主题，看着舒服
 - 📱 响应式设计，手机电脑都好用
@@ -943,8 +946,8 @@ export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
 - **镜像仓库**：`ghcr.io/caidaoli/ccload`
 - **可用标签**：
   - `latest` - 最新稳定版本
-  - `2.11.2` - 具体版本号
-  - `2.11` - 主要.次要版本
+  - `2.19.0` - 具体版本号
+  - `2.19` - 主要.次要版本
   - `2` - 主要版本
 
 ### 镜像标签说明
@@ -954,7 +957,7 @@ export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
 docker pull ghcr.io/caidaoli/ccload:latest
 
 # 拉取指定版本
-docker pull ghcr.io/caidaoli/ccload:2.11.2
+docker pull ghcr.io/caidaoli/ccload:2.19.0
 
 # 指定架构（Docker 通常自动选择）
 docker pull --platform linux/amd64 ghcr.io/caidaoli/ccload:latest
