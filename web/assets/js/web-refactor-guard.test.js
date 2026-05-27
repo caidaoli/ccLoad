@@ -44,6 +44,10 @@ test('locale 文件不能重复定义同一个 key', () => {
   assert.deepEqual(duplicateLocaleKeys(enLocaleSource), []);
 });
 
+test('英文渠道模型数量后缀不能回退到中文', () => {
+  assert.match(enLocaleSource, /'channels\.modelCountSuffix':\s*'models'/);
+});
+
 test('channels 页面脚本复用统一通知入口，不再引用不存在的 showToast', () => {
   assert.doesNotMatch(channelsKeysSource, /\bshowToast\(/);
   assert.match(channelsKeysSource, /window\.showSuccess\(/);

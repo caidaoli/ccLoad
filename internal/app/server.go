@@ -632,6 +632,8 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/channels/:id/url-stats", s.HandleChannelURLStats)
 		admin.POST("/channels/:id/url-disable", s.HandleURLDisable)
 		admin.POST("/channels/:id/url-enable", s.HandleURLEnable)
+		admin.POST("/channels/:id/key-disable", s.HandleAPIKeyDisable)
+		admin.POST("/channels/:id/key-enable", s.HandleAPIKeyEnable)
 		admin.POST("/channels/models/fetch", s.HandleFetchModelsPreview) // 临时渠道配置获取模型列表
 		admin.POST("/channels/models/refresh-batch", s.HandleBatchRefreshModels)
 		admin.GET("/channels/:id/models/fetch", s.HandleFetchModels) // 获取渠道可用模型列表(新增)

@@ -137,6 +137,70 @@ this.__singleKeyTest = {
   };
 }
 
+function createToggleKeyDisabledHarness() {
+  const fetchCalls = [];
+  const notifications = [];
+
+  const sandbox = {
+    alert() {},
+    console,
+    document: {
+      querySelectorAll() {
+        return [];
+      }
+    },
+    fetchDataWithAuth: async (url, options = {}) => {
+      fetchCalls.push({
+        url,
+        body: options.body ? JSON.parse(options.body) : null
+      });
+      return { success: true };
+    },
+    localStorage: {
+      getItem() {
+        return null;
+      }
+    },
+    window: {
+      showNotification(message, type) {
+        notifications.push({ message, type });
+      },
+      t(key, params = {}) {
+        return `${key}:${JSON.stringify(params)}`;
+      }
+    }
+  };
+
+  vm.createContext(sandbox);
+  vm.runInContext(`${stateSource}
+${keysSource}
+let __refreshCalls = 0;
+refreshKeyCooldownStatus = async () => {
+  __refreshCalls += 1;
+};
+this.__toggleKeyDisabledTest = {
+  setEditingChannelId(value) {
+    editingChannelId = value;
+  },
+  setDirty(value) {
+    channelFormDirty = value;
+  },
+  setCooldowns(value) {
+    currentChannelKeyCooldowns = value;
+  },
+  getRefreshCalls() {
+    return __refreshCalls;
+  },
+  toggleKeyDisabled
+};`, sandbox);
+
+  return {
+    api: sandbox.__toggleKeyDisabledTest,
+    fetchCalls,
+    notifications
+  };
+}
+
 test('refreshKeyCooldownStatus 只刷新冷却元数据，不丢弃未保存的新 Key', async () => {
   const { api, fetchCalls } = createHarness([
     { api_key: 'sk-old', cooldown_until: 4102444800 }
@@ -173,4 +237,20 @@ test('testSingleKey 使用当前行输入的 API Key 发起测试请求', async 
   assert.equal(api.getRefreshCalls(), 1);
   assert.equal(testButton.disabled, false);
   assert.equal(testButton.innerHTML, 'test');
+});
+
+test('toggleKeyDisabled 拒绝在未保存 Key 变更上执行持久化索引切换', async () => {
+  const { api, fetchCalls, notifications } = createToggleKeyDisabledHarness();
+
+  api.setEditingChannelId(7);
+  api.setDirty(true);
+  api.setCooldowns([{ key_index: 1, cooldown_remaining_ms: 0, disabled: false }]);
+
+  await api.toggleKeyDisabled(1);
+
+  assert.deepEqual(fetchCalls, []);
+  assert.equal(api.getRefreshCalls(), 0);
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0].type, 'error');
+  assert.match(notifications[0].message, /channels\.saveBeforeToggleKeyDisabled/);
 });

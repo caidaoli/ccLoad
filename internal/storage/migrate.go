@@ -131,6 +131,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureAPIKeysAPIKeyLength(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate api_keys api_key column: %w", err)
 			}
+			if err := ensureAPIKeysDisabled(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate api_keys disabled: %w", err)
+			}
 		}
 
 		// 增量迁移：确保auth_tokens表有缓存token字段（2025-12新增）
