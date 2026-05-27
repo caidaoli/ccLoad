@@ -43,7 +43,7 @@ func TestActiveRequestManager_UpdateMasksKey(t *testing.T) {
 	if got[0].APIKeyUsed == rawKey {
 		t.Fatalf("expected masked key, got raw")
 	}
-	if got[0].APIKeyUsed != "****" && !strings.Contains(got[0].APIKeyUsed, "...") {
+	if got[0].APIKeyUsed != "****" && !strings.Contains(got[0].APIKeyUsed, ".") {
 		t.Fatalf("expected masked key format, got %q", got[0].APIKeyUsed)
 	}
 }

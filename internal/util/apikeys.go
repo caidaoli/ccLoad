@@ -24,12 +24,12 @@ func ParseAPIKeys(apiKey string) []string {
 	return keys
 }
 
-// MaskAPIKey 将API Key脱敏为 "abcd...klmn" 格式（前4位 + ... + 后4位）
+// MaskAPIKey 将API Key脱敏为 "abc.xyz" 格式（前3位 + . + 后3位）
 func MaskAPIKey(key string) string {
-	if len(key) <= 8 {
+	if len(key) <= 6 {
 		return "****"
 	}
-	return key[:4] + "..." + key[len(key)-4:]
+	return key[:3] + "." + key[len(key)-3:]
 }
 
 // HashAPIKey 计算API Key的SHA256哈希（十六进制字符串）

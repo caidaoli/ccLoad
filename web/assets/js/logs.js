@@ -1229,8 +1229,8 @@ const apiKeyHashCache = new Map();
 
 function maskKeyForCompare(key) {
   if (!key) return '';
-  if (key.length <= 8) return '****';
-  return `${key.slice(0, 4)}...${key.slice(-4)}`;
+  if (key.length <= 6) return '****';
+  return `${key.slice(0, 3)}.${key.slice(-3)}`;
 }
 
 function findKeyIndexCandidatesByMaskedKey(apiKeys, maskedKey) {
