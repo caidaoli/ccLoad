@@ -690,6 +690,7 @@ function createChannelCard(channel) {
     durationCellClass: durationHtml ? '' : 'ch-mobile-empty',
     usageCellClass: usageHtml ? '' : 'ch-mobile-empty',
     costCellClass: costHtml ? '' : 'ch-mobile-empty',
+    lastSuccessCellClass: lastSuccessHtml ? '' : 'ch-mobile-empty',
     mobileLabelModels: window.t('channels.table.models'),
     mobileLabelPriority: window.t('channels.table.priority'),
     mobileLabelDuration: window.t('channels.table.duration'),

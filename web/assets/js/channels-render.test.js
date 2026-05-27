@@ -483,6 +483,27 @@ test('createChannelCard 会把最后成功状态传给渠道行模板', () => {
   assert.equal(cardData.mobileLabelLastSuccess, '最后成功');
 });
 
+test('createChannelCard 在手机端折叠空统计块但保留优先级常规列', () => {
+  const { createChannelCard } = loadRenderHelpers();
+
+  const cardData = createChannelCard({
+    id: 9,
+    name: 'No Stats',
+    channel_type: 'anthropic',
+    protocol_transforms: [],
+    url: 'https://example.com',
+    models: [],
+    priority: 300,
+    enabled: true
+  });
+
+  assert.equal(cardData.durationCellClass, 'ch-mobile-empty');
+  assert.equal(cardData.usageCellClass, 'ch-mobile-empty');
+  assert.equal(cardData.costCellClass, 'ch-mobile-empty');
+  assert.equal(cardData.lastSuccessCellClass, 'ch-mobile-empty');
+  assert.equal(Object.hasOwn(cardData, 'priorityCellClass'), false);
+});
+
 test('createChannelCard 会把失败详情放到渠道行内', () => {
   const now = Date.now();
   const { createChannelCard } = loadRenderSandbox({

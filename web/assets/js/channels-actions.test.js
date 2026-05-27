@@ -32,7 +32,7 @@ test('渠道卡片模板不再渲染已禁用文字徽章', () => {
 
   const template = templateMatch[0];
   assert.doesNotMatch(template, /disabledBadge/);
-  assert.match(template, /<td class="ch-col-priority"[^>]*>\s*\{\{\{effectivePriorityHtml\}\}\}\s*<\/td>/);
+  assert.match(template, /<td class="ch-col-priority[^"]*"[^>]*>\s*\{\{\{effectivePriorityHtml\}\}\}\s*<\/td>/);
   assert.doesNotMatch(template, /channels\.statusDisabled/);
 });
 
@@ -66,8 +66,7 @@ test('渠道卡片模板包含最后成功列和行内失败日志插槽', () =>
   assert.ok(templateMatch, '缺少 tpl-channel-card 模板');
 
   const template = templateMatch[0];
-  assert.match(template, /<td class="ch-col-last-success"[^>]*data-mobile-label="\{\{mobileLabelLastSuccess\}\}"[^>]*>\s*\{\{\{lastSuccessHtml\}\}\}\s*<\/td>/);
-  assert.match(template, /<div class="ch-last-request-slot">\s*\{\{\{lastRequestFailureHtml\}\}\}\s*<\/div>/);
+  assert.match(template, /<td class="ch-col-last-success[^"]*"[^>]*data-mobile-label="\{\{mobileLabelLastSuccess\}\}"[^>]*>\s*\{\{\{lastSuccessHtml\}\}\}\s*<div class="ch-last-request-slot">\s*\{\{\{lastRequestFailureHtml\}\}\}\s*<\/div>\s*<\/td>/);
   assert.match(css, /\.channel-table td\.ch-col-priority,\s*[\r\n\s]*\.channel-table td\.ch-col-duration,\s*[\r\n\s]*\.channel-table td\.ch-col-usage,\s*[\r\n\s]*\.channel-table td\.ch-col-cost,\s*[\r\n\s]*\.channel-table td\.ch-col-last-success\s*\{[\s\S]*?text-align:\s*center;/);
   assert.match(css, /\.ch-col-last-success\s*\{[\s\S]*?width:\s*156px;[\s\S]*?white-space:\s*normal;[\s\S]*?text-align:\s*center;/);
   assert.match(css, /\.ch-last-status\s*\{[\s\S]*?align-items:\s*center;/);

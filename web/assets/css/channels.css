@@ -2863,11 +2863,16 @@
         gap: 12px;
       }
 
+      .channel-table tbody tr,
+      .channel-table tbody tr.channel-table-row,
+      .channel-table tbody tr.channel-table-row > td {
+        height: auto;
+      }
+
       .channel-table tbody tr {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 10px 12px;
-        height: auto;
         padding: 14px;
         border: 1px solid rgba(148, 163, 184, 0.22);
         border-radius: 16px;
@@ -2914,8 +2919,6 @@
 
       .channel-table .ch-col-name,
       .channel-table .ch-col-models,
-      .channel-table .ch-col-last-success,
-      .channel-table .ch-col-enabled,
       .channel-table .ch-col-actions {
         grid-column: 1 / -1;
       }
@@ -2925,11 +2928,13 @@
       }
 
       .channel-table .ch-col-cost {
-        order: 11;
+        order: 12;
+        grid-column: 1 / -1;
       }
 
       .channel-table .ch-col-last-success {
-        order: 12;
+        order: 13;
+        grid-column: 1 / -1;
       }
 
       .channel-table .ch-col-duration {
@@ -2941,7 +2946,7 @@
       }
 
       .channel-table .ch-col-enabled {
-        order: 22;
+        order: 11;
       }
 
       .channel-table .ch-col-actions {
@@ -2992,9 +2997,23 @@
       }
 
       .channel-table .ch-col-last-success .ch-last-status {
-        margin-left: auto;
+        margin-left: 0;
         align-items: flex-end;
         max-width: min(100%, 420px);
+      }
+
+      .channel-table .ch-col-last-success .ch-last-request-slot {
+        display: flex;
+        justify-content: flex-end;
+        min-width: 0;
+        max-width: min(65%, 420px);
+        margin-top: 0;
+        margin-left: auto;
+      }
+
+      .channel-table .ch-col-last-success .ch-last-request {
+        max-width: 100%;
+        min-width: 0;
       }
 
       .channel-table .ch-col-priority .ch-priority-stack {
@@ -3399,12 +3418,25 @@
 
       /* 移动端分页控件样式 */
       .logs-pagination-card .pagination-controls {
+        flex-direction: row;
         flex-wrap: wrap;
+        justify-content: center;
         gap: 6px;
       }
 
+      .logs-pagination-card .logs-pagination-info {
+        width: 100%;
+        margin: 0;
+        order: 3;
+        justify-content: center;
+      }
+
+      .logs-pagination-card .logs-pagination-separator {
+        display: none;
+      }
+
       .pagination-page-size-control {
-        order: 10;
+        order: 4;
         width: 100%;
         justify-content: center;
         margin-top: 4px;
