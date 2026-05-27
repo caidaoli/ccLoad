@@ -45,6 +45,9 @@ func (ks *KeySelector) SelectAvailableKey(channelID int64, apiKeys []*model.APIK
 	// 单Key场景:检查排除和冷却状态
 	if len(apiKeys) == 1 {
 		keyIndex := apiKeys[0].KeyIndex
+		if apiKeys[0].Disabled {
+			return -1, "", fmt.Errorf("single key (index=%d) is disabled", keyIndex)
+		}
 		// [FIX] 使用真实 KeyIndex 检查排除集合，而非硬编码0
 		if excludeKeys != nil && excludeKeys[keyIndex] {
 			return -1, "", fmt.Errorf("single key (index=%d) already tried in this request", keyIndex)
@@ -88,6 +91,9 @@ func (ks *KeySelector) SelectCooldownFallbackKey(channelID int64, apiKeys []*mod
 		if apiKey == nil {
 			continue
 		}
+		if apiKey.Disabled {
+			continue
+		}
 		keyIndex := apiKey.KeyIndex
 		if excludeKeys != nil && excludeKeys[keyIndex] {
 			continue
@@ -113,6 +119,10 @@ func (ks *KeySelector) selectSequential(apiKeys []*model.APIKey, excludeKeys map
 
 	for _, apiKey := range apiKeys {
 		keyIndex := apiKey.KeyIndex
+
+		if apiKey.Disabled {
+			continue
+		}
 
 		if excludeKeys != nil && excludeKeys[keyIndex] {
 			continue
@@ -196,6 +206,10 @@ func (ks *KeySelector) selectRoundRobin(channelID int64, apiKeys []*model.APIKey
 		sliceIdx := (startIdx + i) % keyCount
 		selectedKey := apiKeys[sliceIdx]
 		if selectedKey == nil {
+			continue
+		}
+
+		if selectedKey.Disabled {
 			continue
 		}
 

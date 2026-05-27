@@ -62,6 +62,10 @@ function renderVirtualRows(tbody, visibleStart, visibleEnd, filteredIndices) {
  */
 function buildCooldownHtml(index) {
   const keyCooldown = currentChannelKeyCooldowns.find(kc => kc.key_index === index);
+  if (keyCooldown && keyCooldown.disabled) {
+    return `<span style="color: #9333ea; font-size: 12px; font-weight: 500; background: linear-gradient(135deg, #f3e8ff 0%, #e9d5ff 100%); padding: 2px 8px; border-radius: 4px; border: 1px solid #c084fc; white-space: nowrap;"
+      data-i18n="channels.statusDisabled">⏸ ${window.t('channels.statusDisabled')}</span>`;
+  }
   if (keyCooldown && keyCooldown.cooldown_remaining_ms > 0) {
     const cooldownText = humanizeMS(keyCooldown.cooldown_remaining_ms);
     const tpl = document.getElementById('tpl-cooldown-badge');
@@ -77,13 +81,23 @@ function buildCooldownHtml(index) {
  * @returns {string} 操作按钮HTML
  */
 function buildActionsHtml(index) {
+  const keyCooldown = currentChannelKeyCooldowns.find(kc => kc.key_index === index);
+  const isDisabled = keyCooldown && keyCooldown.disabled;
+  const toggleTitle = isDisabled ? window.t('channels.enableThisKey') : window.t('channels.disableThisKey');
+  const toggleIcon = isDisabled
+    ? '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 8L7 11L12 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+    : '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3 8h10M8 3v10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="3" y1="3" x2="13" y2="13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+  const toggleColor = isDisabled ? 'color: #16a34a;' : 'color: #9333ea;';
+  const toggleBtn = `<button type="button" class="key-action-btn" data-action="toggle-disabled" data-index="${index}"
+    title="${toggleTitle}"
+    style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--neutral-200); background: white; ${toggleColor} cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;">${toggleIcon}</button>`;
+
   const tpl = document.getElementById('tpl-key-actions');
   if (tpl) {
-    return tpl.innerHTML.replace(/\{\{index\}\}/g, String(index));
+    const tplHtml = tpl.innerHTML.replace(/\{\{index\}\}/g, String(index));
+    return tplHtml.replace('</div>', toggleBtn + '</div>');
   }
-  // 降级：无模板时返回简单按钮
-  return `<button type="button" data-action="test" data-index="${index}">${window.t('common.test')}</button>
-          <button type="button" data-action="delete" data-index="${index}">${window.t('common.delete')}</button>`;
+  return toggleBtn;
 }
 
 /**
@@ -111,6 +125,14 @@ function createKeyRow(index) {
   // 使用模板引擎渲染
   const row = TemplateEngine.render('tpl-key-row', rowData);
   if (!row) return null;
+
+  // 禁用状态：半透明 + 输入框只读
+  const keyCooldown = currentChannelKeyCooldowns.find(kc => kc.key_index === index);
+  if (keyCooldown && keyCooldown.disabled) {
+    row.style.opacity = '0.5';
+    const input = row.querySelector('.inline-key-input');
+    if (input) input.readOnly = true;
+  }
 
   // 设置选中状态
   const checkbox = row.querySelector('.key-checkbox');
@@ -272,6 +294,7 @@ function initKeyTableEventDelegation() {
       if (action === 'test') testSingleKey(index, actionBtn);
       else if (action === 'copy') copyKeyToClipboard(index);
       else if (action === 'delete') deleteInlineKey(index);
+      else if (action === 'toggle-disabled') toggleKeyDisabled(index);
       return;
     }
 
@@ -374,9 +397,10 @@ function renderInlineKeyTable() {
   const visibleIndices = getVisibleKeyIndices();
 
   if (visibleIndices.length === 0) {
-    const filterMessage = currentKeyStatusFilter === 'normal'
-      ? window.t('channels.noNormalKeys')
-      : window.t('channels.noCooldownKeys');
+    let filterMessage;
+    if (currentKeyStatusFilter === 'normal') filterMessage = window.t('channels.noNormalKeys');
+    else if (currentKeyStatusFilter === 'disabled') filterMessage = window.t('channels.noDisabledKeys');
+    else filterMessage = window.t('channels.noCooldownKeys');
     const emptyRow = TemplateEngine.render('tpl-key-empty', { message: filterMessage });
     if (emptyRow) tbody.appendChild(emptyRow);
     cleanupVirtualScroll();
@@ -556,7 +580,7 @@ async function refreshKeyCooldownStatus() {
     }
 
     const now = Date.now();
-    const cooldownByKey = new Map();
+    const metaByKey = new Map();
     apiKeys.forEach(apiKey => {
       const key = typeof apiKey === 'string' ? apiKey : (apiKey && apiKey.api_key) || '';
       if (!key) return;
@@ -565,14 +589,16 @@ async function refreshKeyCooldownStatus() {
         : 0;
       const cooldownUntilMs = Number.isFinite(cooldownUntilSeconds) ? cooldownUntilSeconds * 1000 : 0;
       const remainingMs = Math.max(0, cooldownUntilMs - now);
-      cooldownByKey.set(key, remainingMs);
+      const disabled = apiKey && typeof apiKey === 'object' ? Boolean(apiKey.disabled) : false;
+      metaByKey.set(key, { remainingMs, disabled });
     });
 
-    // 只刷新服务器元数据，不能覆盖编辑器中的未保存 Key。
     currentChannelKeyCooldowns = inlineKeyTableData.map((key, index) => {
+      const meta = metaByKey.get(key);
       return {
         key_index: index,
-        cooldown_remaining_ms: cooldownByKey.get(key) || 0
+        cooldown_remaining_ms: meta ? meta.remainingMs : 0,
+        disabled: meta ? meta.disabled : false
       };
     });
 
@@ -756,11 +782,15 @@ function getVisibleKeyIndices() {
     .map((_, index) => {
       const keyCooldown = currentChannelKeyCooldowns.find(kc => kc.key_index === index);
       const isCoolingDown = keyCooldown && keyCooldown.cooldown_remaining_ms > 0;
+      const isDisabled = keyCooldown && keyCooldown.disabled;
 
-      if (currentKeyStatusFilter === 'normal' && !isCoolingDown) {
+      if (currentKeyStatusFilter === 'normal' && !isCoolingDown && !isDisabled) {
         return index;
       }
       if (currentKeyStatusFilter === 'cooldown' && isCoolingDown) {
+        return index;
+      }
+      if (currentKeyStatusFilter === 'disabled' && isDisabled) {
         return index;
       }
       return null;
@@ -930,4 +960,32 @@ function downloadExportKeys() {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
   closeKeyExportModal();
+}
+
+async function toggleKeyDisabled(index) {
+  if (!editingChannelId) return;
+  if (channelFormDirty) {
+    window.showNotification(window.t('channels.saveBeforeToggleKeyDisabled'), 'error');
+    return;
+  }
+
+  const keyCooldown = currentChannelKeyCooldowns.find(kc => kc.key_index === index);
+  const isCurrentlyDisabled = keyCooldown && keyCooldown.disabled;
+  const endpoint = isCurrentlyDisabled ? 'key-enable' : 'key-disable';
+
+  try {
+    await fetchDataWithAuth(`/admin/channels/${editingChannelId}/${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key_index: index })
+    });
+
+    await refreshKeyCooldownStatus();
+
+    const action = isCurrentlyDisabled ? window.t('common.enabled') : window.t('common.disabled');
+    window.showNotification(`Key #${index + 1} ${action}`, 'success');
+  } catch (e) {
+    console.error('Toggle key disabled failed', e);
+    window.showNotification(window.t('common.operationFailed') + ': ' + e.message, 'error');
+  }
 }

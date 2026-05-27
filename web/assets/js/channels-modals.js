@@ -495,8 +495,9 @@ async function editChannel(id) {
     const cooldownUntilMs = (apiKey.cooldown_until || 0) * 1000;
     const remainingMs = Math.max(0, cooldownUntilMs - now);
     return {
-      key_index: index,
-      cooldown_remaining_ms: remainingMs
+      key_index: Number.isInteger(apiKey.key_index) ? apiKey.key_index : index,
+      cooldown_remaining_ms: remainingMs,
+      disabled: Boolean(apiKey.disabled)
     };
   });
 

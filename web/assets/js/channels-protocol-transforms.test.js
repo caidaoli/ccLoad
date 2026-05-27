@@ -446,6 +446,9 @@ function createHarness({
     setEditingChannelId(value) {
       sandbox.editingChannelId = value;
     },
+    getCurrentKeyCooldowns() {
+      return sandbox.currentChannelKeyCooldowns.map((item) => ({ ...item }));
+    },
     setInlineURLs(urls) {
       sandbox.inlineURLTableData = Array.isArray(urls) ? urls.slice() : [];
     },
@@ -572,6 +575,37 @@ test('编辑渠道时会回填 protocol_transforms，并禁用原生协议选项
     harness.getProtocolTransformValues().filter((item) => item.checked).map((item) => item.value).sort(),
     ['anthropic', 'openai']
   );
+});
+
+test('编辑渠道时会回填 API Key 禁用状态', async () => {
+  const harness = createHarness({
+    channel: {
+      id: 7,
+      name: 'edited-channel',
+      url: 'https://api.example.com',
+      channel_type: 'anthropic',
+      protocol_transform_mode: 'upstream',
+      protocol_transforms: [],
+      key_strategy: 'sequential',
+      priority: 9,
+      daily_cost_limit: 0,
+      enabled: true,
+      scheduled_check_enabled: false,
+      scheduled_check_model: '',
+      models: [{ model: 'gpt-5.4', redirect_model: '' }]
+    },
+    apiKeys: [
+      { key_index: 0, api_key: 'sk-live', cooldown_until: 0, disabled: false },
+      { key_index: 1, api_key: 'sk-disabled', cooldown_until: 0, disabled: true }
+    ]
+  });
+
+  await harness.api.editChannel(7);
+
+  assert.deepEqual(harness.getCurrentKeyCooldowns(), [
+    { key_index: 0, cooldown_remaining_ms: 0, disabled: false },
+    { key_index: 1, cooldown_remaining_ms: 0, disabled: true }
+  ]);
 });
 
 test('编辑渠道会并行读取定时检测配置和 API Keys，避免串行等待', async () => {

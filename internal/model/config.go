@@ -363,6 +363,7 @@ type APIKey struct {
 	APIKey    string `json:"api_key"`
 
 	KeyStrategy string `json:"key_strategy"` // "sequential" | "round_robin"
+	Disabled    bool   `json:"disabled"`
 
 	// Key级冷却（从key_cooldowns表迁移）
 	CooldownUntil      int64 `json:"cooldown_until"`

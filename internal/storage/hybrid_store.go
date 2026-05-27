@@ -301,6 +301,16 @@ func (h *HybridStore) SetURLDisabled(ctx context.Context, channelID int64, url s
 	return nil
 }
 
+func (h *HybridStore) SetAPIKeyDisabled(ctx context.Context, channelID int64, keyIndex int, disabled bool) error {
+	if err := h.mysql.SetAPIKeyDisabled(ctx, channelID, keyIndex, disabled); err != nil {
+		return err
+	}
+	h.syncToSQLite("SetAPIKeyDisabled", func() error {
+		return h.sqlite.SetAPIKeyDisabled(ctx, channelID, keyIndex, disabled)
+	})
+	return nil
+}
+
 func (h *HybridStore) CleanupOrphanedURLStates(ctx context.Context, channelID int64, keepURLs []string) error {
 	// 先清理MySQL（主存储）
 	if err := h.mysql.CleanupOrphanedURLStates(ctx, channelID, keepURLs); err != nil {

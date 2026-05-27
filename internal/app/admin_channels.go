@@ -648,6 +648,55 @@ func (s *Server) handleURLToggle(c *gin.Context, disable bool) {
 	RespondJSON(c, http.StatusOK, gin.H{"ok": true})
 }
 
+// HandleAPIKeyDisable 手动禁用渠道的指定 API Key
+// POST /admin/channels/:id/key-disable
+func (s *Server) HandleAPIKeyDisable(c *gin.Context) {
+	s.handleAPIKeyToggle(c, true)
+}
+
+// HandleAPIKeyEnable 重新启用渠道的指定 API Key
+// POST /admin/channels/:id/key-enable
+func (s *Server) HandleAPIKeyEnable(c *gin.Context) {
+	s.handleAPIKeyToggle(c, false)
+}
+
+func (s *Server) handleAPIKeyToggle(c *gin.Context, disable bool) {
+	id, err := ParseInt64Param(c, "id")
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+
+	var req struct {
+		KeyIndex *int `json:"key_index"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "key_index is required")
+		return
+	}
+	if req.KeyIndex == nil || *req.KeyIndex < 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid key_index")
+		return
+	}
+	keyIndex := *req.KeyIndex
+
+	if _, err := s.store.GetAPIKey(c.Request.Context(), id, keyIndex); err != nil {
+		RespondErrorMsg(c, http.StatusNotFound, "api key not found")
+		return
+	}
+
+	if err := s.store.SetAPIKeyDisabled(c.Request.Context(), id, keyIndex, disable); err != nil {
+		RespondErrorMsg(c, http.StatusInternalServerError, "persist key disabled state failed")
+		return
+	}
+
+	s.InvalidateAPIKeysCache(id)
+	s.invalidateCooldownCache()
+	s.InvalidateChannelListCache()
+
+	RespondJSON(c, http.StatusOK, gin.H{"ok": true})
+}
+
 // 更新渠道
 func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	// 解析请求为通用map以支持部分更新
@@ -737,6 +786,13 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 
 	// Key或策略变化时更新API Keys
 	if keyChanged {
+		disabledByAPIKey := make(map[string]bool, len(oldKeys))
+		for _, oldKey := range oldKeys {
+			if oldKey.Disabled {
+				disabledByAPIKey[oldKey.APIKey] = true
+			}
+		}
+
 		// Key内容/数量变化：删除旧Key并重建
 		_ = s.store.DeleteAllAPIKeys(c.Request.Context(), id)
 
@@ -749,6 +805,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 				KeyIndex:    i,
 				APIKey:      key,
 				KeyStrategy: keyStrategy,
+				Disabled:    disabledByAPIKey[key],
 				CreatedAt:   model.JSONTime{Time: now},
 				UpdatedAt:   model.JSONTime{Time: now},
 			})

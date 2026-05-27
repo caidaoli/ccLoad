@@ -876,6 +876,171 @@ func TestHandleUpdateChannel_ClearCooldownShouldTakeEffectImmediately(t *testing
 	}
 }
 
+func TestHandleAPIKeyToggleRejectsMissingOrNegativeKeyIndex(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "toggle-validation",
+		URL:          "https://api.example.com",
+		Priority:     10,
+		ModelEntries: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID:   created.ID,
+		KeyIndex:    0,
+		APIKey:      "sk-validation",
+		KeyStrategy: model.KeyStrategySequential,
+	}}); err != nil {
+		t.Fatalf("创建测试 key 失败: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		body map[string]any
+	}{
+		{name: "缺失 key_index", body: map[string]any{}},
+		{name: "负数 key_index", body: map[string]any{"key_index": -1}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/1/key-disable", tt.body))
+			c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(created.ID, 10)}}
+
+			server.HandleAPIKeyDisable(c)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("期望状态码 %d，实际 %d，响应体: %s", http.StatusBadRequest, w.Code, w.Body.String())
+			}
+
+			key, err := store.GetAPIKey(ctx, created.ID, 0)
+			if err != nil {
+				t.Fatalf("查询 key 失败: %v", err)
+			}
+			if key.Disabled {
+				t.Fatalf("非法请求不应禁用 key_index=0")
+			}
+		})
+	}
+}
+
+func TestHandleAPIKeyToggleInvalidatesKeyCooldownCache(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.channelCache = storage.NewChannelCache(store, time.Minute)
+
+	ctx := context.Background()
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "toggle-cache",
+		URL:          "https://api.example.com",
+		Priority:     10,
+		ModelEntries: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-cooling", KeyStrategy: model.KeyStrategySequential},
+		{ChannelID: created.ID, KeyIndex: 1, APIKey: "sk-healthy", KeyStrategy: model.KeyStrategySequential},
+	}); err != nil {
+		t.Fatalf("创建测试 keys 失败: %v", err)
+	}
+	if err := store.SetKeyCooldown(ctx, created.ID, 0, time.Now().Add(2*time.Minute)); err != nil {
+		t.Fatalf("设置 key 冷却失败: %v", err)
+	}
+
+	cached, err := server.getAllKeyCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("预热 key 冷却缓存失败: %v", err)
+	}
+	if _, ok := cached[created.ID][0]; !ok {
+		t.Fatalf("预期 key_index=0 冷却被缓存，实际: %#v", cached)
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/1/key-disable", map[string]any{"key_index": 0}))
+	c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(created.ID, 10)}}
+	server.HandleAPIKeyDisable(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("禁用 key 失败: %d body=%s", w.Code, w.Body.String())
+	}
+
+	fresh, err := server.getAllKeyCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("重新读取 key 冷却失败: %v", err)
+	}
+	if keyMap := fresh[created.ID]; keyMap != nil {
+		if _, ok := keyMap[0]; ok {
+			t.Fatalf("禁用 key 后冷却缓存仍包含 key_index=0: %#v", fresh)
+		}
+	}
+}
+
+func TestHandleUpdateChannelPreservesDisabledKeysWhenRebuilding(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "preserve-disabled",
+		URL:          "https://api.example.com",
+		Priority:     10,
+		ModelEntries: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-disabled", KeyStrategy: model.KeyStrategySequential},
+		{ChannelID: created.ID, KeyIndex: 1, APIKey: "sk-live", KeyStrategy: model.KeyStrategySequential},
+	}); err != nil {
+		t.Fatalf("创建测试 keys 失败: %v", err)
+	}
+	if err := store.SetAPIKeyDisabled(ctx, created.ID, 0, true); err != nil {
+		t.Fatalf("禁用测试 key 失败: %v", err)
+	}
+
+	payload := ChannelRequest{
+		Name:     "preserve-disabled",
+		APIKey:   "sk-live,sk-disabled,sk-new",
+		URL:      "https://api.example.com",
+		Priority: 10,
+		Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
+		Enabled:  true,
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/channels/"+strconv.FormatInt(created.ID, 10), payload))
+	c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(created.ID, 10)}}
+	server.handleUpdateChannel(c, created.ID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("更新渠道失败: %d body=%s", w.Code, w.Body.String())
+	}
+
+	keys, err := store.GetAPIKeys(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("查询更新后 keys 失败: %v", err)
+	}
+	if len(keys) != 3 {
+		t.Fatalf("期望 3 个 key，实际 %d", len(keys))
+	}
+	assertKey := func(pos int, value string, disabled bool) {
+		t.Helper()
+		if keys[pos].KeyIndex != pos || keys[pos].APIKey != value || keys[pos].Disabled != disabled {
+			t.Fatalf("keys[%d] = {index:%d api_key:%q disabled:%v}, want {index:%d api_key:%q disabled:%v}",
+				pos, keys[pos].KeyIndex, keys[pos].APIKey, keys[pos].Disabled, pos, value, disabled)
+		}
+	}
+	assertKey(0, "sk-live", false)
+	assertKey(1, "sk-disabled", true)
+	assertKey(2, "sk-new", false)
+}
+
 func TestHandleUpdateChannel_PrunesURLSelectorState(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()

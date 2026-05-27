@@ -147,7 +147,7 @@ func (s *SQLStore) GetKeyCooldownUntil(ctx context.Context, configID int64, keyI
 // 返回: map[channelID]map[keyIndex]cooldownUntil
 func (s *SQLStore) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int]time.Time, error) {
 	now := timeToUnix(time.Now())
-	query := `SELECT channel_id, key_index, cooldown_until FROM api_keys WHERE cooldown_until > ?`
+	query := `SELECT channel_id, key_index, cooldown_until FROM api_keys WHERE cooldown_until > ? AND disabled = 0`
 
 	rows, err := s.db.QueryContext(ctx, query, now)
 	if err != nil {

@@ -23,7 +23,7 @@ func (s *SQLStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
 			SELECT c.id, c.name, c.url, c.priority, c.rpm_limit, c.channel_type, c.protocol_transform_mode, c.enabled,
 			       c.scheduled_check_enabled, c.scheduled_check_model,
 			       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit, c.cost_multiplier, c.custom_request_rules,
-			       COUNT(k.id) as key_count,
+			       SUM(CASE WHEN k.id IS NOT NULL AND k.disabled = 0 THEN 1 ELSE 0 END) as key_count,
 			       c.created_at, c.updated_at
 			FROM channels c
 			LEFT JOIN api_keys k ON c.id = k.channel_id
@@ -58,7 +58,7 @@ func (s *SQLStore) GetConfig(ctx context.Context, id int64) (*model.Config, erro
 			SELECT c.id, c.name, c.url, c.priority, c.rpm_limit, c.channel_type, c.protocol_transform_mode, c.enabled,
 			       c.scheduled_check_enabled, c.scheduled_check_model,
 			       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit, c.cost_multiplier, c.custom_request_rules,
-			       COUNT(k.id) as key_count,
+			       SUM(CASE WHEN k.id IS NOT NULL AND k.disabled = 0 THEN 1 ELSE 0 END) as key_count,
 			       c.created_at, c.updated_at
 			FROM channels c
 			LEFT JOIN api_keys k ON c.id = k.channel_id
@@ -96,7 +96,7 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, modelName stri
 	            SELECT c.id, c.name, c.url, c.priority, c.rpm_limit,
 	                   c.channel_type, c.protocol_transform_mode, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
 	                   c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit, c.cost_multiplier, c.custom_request_rules,
-	                   COUNT(k.id) as key_count,
+	                   SUM(CASE WHEN k.id IS NOT NULL AND k.disabled = 0 THEN 1 ELSE 0 END) as key_count,
 	                   c.created_at, c.updated_at
 	            FROM channels c
 	            LEFT JOIN api_keys k ON c.id = k.channel_id
@@ -110,7 +110,7 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, modelName stri
 	            SELECT c.id, c.name, c.url, c.priority, c.rpm_limit,
 	                   c.channel_type, c.protocol_transform_mode, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
 	                   c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit, c.cost_multiplier, c.custom_request_rules,
-	                   COUNT(k.id) as key_count,
+	                   SUM(CASE WHEN k.id IS NOT NULL AND k.disabled = 0 THEN 1 ELSE 0 END) as key_count,
 	                   c.created_at, c.updated_at
 	            FROM channels c
 	            INNER JOIN channel_models cm ON c.id = cm.channel_id
@@ -150,7 +150,7 @@ func (s *SQLStore) GetEnabledChannelsByType(ctx context.Context, channelType str
 			SELECT c.id, c.name, c.url, c.priority, c.rpm_limit,
 			       c.channel_type, c.protocol_transform_mode, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
 			       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit, c.cost_multiplier, c.custom_request_rules,
-			       COUNT(k.id) as key_count,
+			       SUM(CASE WHEN k.id IS NOT NULL AND k.disabled = 0 THEN 1 ELSE 0 END) as key_count,
 			       c.created_at, c.updated_at
 			FROM channels c
 			LEFT JOIN api_keys k ON c.id = k.channel_id
@@ -192,7 +192,7 @@ func (s *SQLStore) GetEnabledChannelsByModelAndProtocol(ctx context.Context, mod
 		SELECT c.id, c.name, c.url, c.priority, c.rpm_limit,
 		       c.channel_type, c.protocol_transform_mode, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
 		       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit, c.cost_multiplier, c.custom_request_rules,
-		       COUNT(k.id) as key_count,
+		       SUM(CASE WHEN k.id IS NOT NULL AND k.disabled = 0 THEN 1 ELSE 0 END) as key_count,
 		       c.created_at, c.updated_at
 		FROM channels c
 		LEFT JOIN api_keys k ON c.id = k.channel_id
