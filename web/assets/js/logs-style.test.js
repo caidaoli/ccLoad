@@ -79,8 +79,8 @@ test('日志表缓存命中与成本列保留独立宽度和间隔', () => {
 });
 
 test('日志表令牌和渠道 Key 表头文案使用业务命名', () => {
-  assert.match(html, /<th data-i18n="logs\.colTokenDesc">令牌<\/th>/);
-  assert.match(html, /<th data-i18n="logs\.colApiKey">渠道Key<\/th>/);
+  assert.match(html, /<th class="logs-col-token-desc" data-i18n="logs\.colTokenDesc">令牌<\/th>/);
+  assert.match(html, /<th class="logs-col-api-key" data-i18n="logs\.colApiKey">渠道Key<\/th>/);
   assert.match(zhLocale, /'logs\.colTokenDesc': '令牌'/);
   assert.match(zhLocale, /'logs\.colApiKey': '渠道Key'/);
   assert.match(enLocale, /'logs\.colTokenDesc': 'Token'/);

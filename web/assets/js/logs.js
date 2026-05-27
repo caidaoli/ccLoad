@@ -24,6 +24,128 @@ let logsLoadInFlight = false;
 let logsLoadPending = false;
 let logsLoadScheduled = false;
 
+// === 列显隐 ===
+const LOGS_COL_STORAGE_KEY = 'ccload_logs_columns';
+
+const LOG_COLUMNS = [
+  { key: 'time',        cls: 'logs-col-time',        i18n: 'logs.colTime' },
+  { key: 'ip',          cls: 'logs-col-ip',          i18n: 'logs.colIP' },
+  { key: 'tokenDesc',   cls: 'logs-col-token-desc',  i18n: 'logs.colTokenDesc' },
+  { key: 'apiKey',      cls: 'logs-col-api-key',     i18n: 'logs.colApiKey' },
+  { key: 'channel',     cls: 'logs-col-channel',     i18n: 'logs.colChannel' },
+  { key: 'model',       cls: 'logs-col-model',       i18n: 'common.model' },
+  { key: 'status',      cls: 'logs-col-status',      i18n: 'logs.statusCode' },
+  { key: 'timing',      cls: 'logs-col-timing',      i18n: 'logs.colTiming' },
+  { key: 'speed',       cls: 'logs-col-speed',       i18n: 'logs.colSpeed' },
+  { key: 'input',       cls: 'logs-col-input',       i18n: 'logs.colInput' },
+  { key: 'output',      cls: 'logs-col-output',      i18n: 'logs.colOutput' },
+  { key: 'cacheRead',   cls: 'logs-col-cache-read',  i18n: 'logs.colCacheRead' },
+  { key: 'cacheWrite',  cls: 'logs-col-cache-write', i18n: 'logs.colCacheWrite' },
+  { key: 'cacheUtil',   cls: 'logs-col-cache-util',  i18n: 'logs.colCacheUtil' },
+  { key: 'cost',        cls: 'logs-col-cost',        i18n: 'logs.colCost' },
+  { key: 'message',     cls: 'logs-col-message',     i18n: 'logs.colMessage' },
+];
+
+let colVisibility = {};
+let colStyleEl = null;
+
+function loadColVisibility() {
+  try {
+    const saved = localStorage.getItem(LOGS_COL_STORAGE_KEY);
+    if (saved) {
+      colVisibility = JSON.parse(saved);
+      return;
+    }
+  } catch (_) { /* ignore */ }
+  colVisibility = {};
+}
+
+function saveColVisibility() {
+  const toSave = {};
+  for (const col of LOG_COLUMNS) {
+    if (colVisibility[col.key] === false) toSave[col.key] = false;
+  }
+  if (Object.keys(toSave).length === 0) {
+    localStorage.removeItem(LOGS_COL_STORAGE_KEY);
+  } else {
+    localStorage.setItem(LOGS_COL_STORAGE_KEY, JSON.stringify(toSave));
+  }
+}
+
+function isColVisible(key) {
+  return colVisibility[key] !== false;
+}
+
+function applyColVisibility() {
+  if (!colStyleEl) {
+    colStyleEl = document.createElement('style');
+    colStyleEl.id = 'logs-col-visibility';
+    document.head.appendChild(colStyleEl);
+  }
+  const rules = [];
+  for (const col of LOG_COLUMNS) {
+    if (!isColVisible(col.key)) {
+      rules.push(`.logs-table .${col.cls} { display: none !important; }`);
+    }
+  }
+  colStyleEl.textContent = rules.join('\n');
+}
+
+function renderColToggleMenu() {
+  const list = document.getElementById('colToggleList');
+  if (!list) return;
+  list.innerHTML = '';
+  for (const col of LOG_COLUMNS) {
+    const visible = isColVisible(col.key);
+    const item = document.createElement('label');
+    item.className = 'logs-col-toggle-item';
+    item.dataset.colKey = col.key;
+    item.dataset.visible = String(visible);
+    item.innerHTML = `<span class="logs-col-toggle-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span><span>${t(col.i18n)}</span>`;
+    item.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const newVisible = !isColVisible(col.key);
+      colVisibility[col.key] = newVisible;
+      item.dataset.visible = String(newVisible);
+      saveColVisibility();
+      applyColVisibility();
+    });
+    list.appendChild(item);
+  }
+}
+
+function toggleColMenu() {
+  const menu = document.getElementById('colToggleMenu');
+  if (!menu) return;
+  const isOpen = !menu.hidden;
+  if (isOpen) {
+    menu.hidden = true;
+    return;
+  }
+  renderColToggleMenu();
+  menu.hidden = false;
+
+  const btn = document.querySelector('.logs-col-toggle-btn');
+  if (btn) {
+    const btnRect = btn.getBoundingClientRect();
+    const container = menu.parentElement;
+    const containerRect = container.getBoundingClientRect();
+    menu.style.top = (btnRect.bottom - containerRect.top + 4) + 'px';
+    menu.style.left = (btnRect.left - containerRect.left) + 'px';
+  }
+}
+
+function closeColMenuOnClickOutside(e) {
+  const menu = document.getElementById('colToggleMenu');
+  if (!menu || menu.hidden) return;
+  if (menu.contains(e.target)) return;
+  if (e.target.closest('.logs-col-toggle-btn')) return;
+  menu.hidden = true;
+}
+
+loadColVisibility();
+
 function normalizeLogsFilterValue(value) {
   return String(value || '').trim().toLowerCase();
 }
@@ -1181,6 +1303,7 @@ function initLogsPageActions() {
         'close-test-key-modal': () => closeTestKeyModal(),
         'close-debug-log-modal': () => closeDebugLogModal(),
         'run-key-test': () => runKeyTest(),
+        'toggle-col-menu': () => toggleColMenu(),
         'toggle-response': (actionTarget) => {
           const responseTarget = actionTarget.dataset.responseTarget;
           if (responseTarget && typeof window.toggleResponse === 'function') {
@@ -1423,6 +1546,8 @@ window.initPageBootstrap({
   topbarKey: 'logs',
   run: async () => {
   initLogsPageActions();
+  applyColVisibility();
+  document.addEventListener('click', closeColMenuOnClickOutside);
 
   // 优先从 URL 读取，其次从 localStorage 恢复，默认 all
   const u = new URLSearchParams(location.search);
