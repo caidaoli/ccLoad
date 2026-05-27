@@ -815,10 +815,10 @@
     /* 固定宽度列 */
     .logs-table th:nth-child(1),
     .logs-table td:nth-child(1) {
-      width: 120px;
+      width: 110px;
       /* 时间: MM-DD HH:mm:ss */
-      min-width: 120px;
-      max-width: 120px;
+      min-width: 110px;
+      max-width: 110px;
     }
 
     .logs-table th:nth-child(2),
@@ -855,6 +855,11 @@
       min-width: 96px;
       max-width: 96px;
       padding-left: var(--space-2);
+    }
+
+    .logs-table th:nth-child(16),
+    .logs-table td:nth-child(16) {
+      min-width: 120px;
     }
 
     /* 模型标签样式 */

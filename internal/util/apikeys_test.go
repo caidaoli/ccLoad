@@ -68,9 +68,9 @@ func TestMaskAPIKey(t *testing.T) {
 		expected string
 	}{
 		{name: "短Key", input: "short", expected: "****"},
-		{name: "长度8", input: "12345678", expected: "****"},
-		{name: "长度9", input: "123456789", expected: "1234...6789"},
-		{name: "普通Key", input: "sk-test-key", expected: "sk-t...-key"},
+		{name: "长度6", input: "123456", expected: "****"},
+		{name: "长度7", input: "1234567", expected: "123.567"},
+		{name: "普通Key", input: "sk-test-key", expected: "sk-.key"},
 	}
 
 	for _, tt := range tests {
