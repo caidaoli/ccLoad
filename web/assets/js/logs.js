@@ -635,7 +635,7 @@ function renderActiveRequests(activeRequests) {
     const infoContent = buildActiveRequestInfoContent(req);
 
     const row = document.createElement('tr');
-    row.className = 'pending-row';
+    row.className = 'mobile-card-row pending-row';
     if (totalCols < 8) {
       row.innerHTML = `
             <td colspan="${totalCols}">
