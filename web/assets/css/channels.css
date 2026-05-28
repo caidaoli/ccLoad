@@ -1063,6 +1063,19 @@
       display: none;
     }
 
+    .ch-last-request-slot--desktop {
+      display: block;
+    }
+
+    .ch-last-request-slot--mobile {
+      display: none;
+    }
+
+    .ch-name-cell .ch-last-request-slot--desktop .ch-last-request {
+      width: fit-content;
+      max-width: 100%;
+    }
+
     .channel-refresh-result {
       display: inline-flex;
       align-items: center;
@@ -3085,6 +3098,14 @@
         max-width: min(65%, 420px);
         margin-top: 0;
         margin-left: auto;
+      }
+
+      .channel-table .ch-last-request-slot--desktop {
+        display: none;
+      }
+
+      .channel-table .ch-last-request-slot--mobile {
+        display: flex;
       }
 
       .channel-table .ch-col-last-success .ch-last-request {
