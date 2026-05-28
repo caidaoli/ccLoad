@@ -66,12 +66,16 @@ test('渠道卡片模板包含最后成功列和行内失败日志插槽', () =>
   assert.ok(templateMatch, '缺少 tpl-channel-card 模板');
 
   const template = templateMatch[0];
-  assert.match(template, /<td class="ch-col-last-success[^"]*"[^>]*data-mobile-label="\{\{mobileLabelLastSuccess\}\}"[^>]*>\s*\{\{\{lastSuccessHtml\}\}\}\s*<div class="ch-last-request-slot">\s*\{\{\{lastRequestFailureHtml\}\}\}\s*<\/div>\s*<\/td>/);
+  assert.match(template, /\{\{\{healthHtml\}\}\}\s*<div class="ch-last-request-slot ch-last-request-slot--desktop">\s*\{\{\{lastRequestFailureHtml\}\}\}\s*<\/div>/);
+  assert.match(template, /<td class="ch-col-last-success[^"]*"[^>]*data-mobile-label="\{\{mobileLabelLastSuccess\}\}"[^>]*>\s*\{\{\{lastSuccessHtml\}\}\}\s*<div class="ch-last-request-slot ch-last-request-slot--mobile">\s*\{\{\{lastRequestFailureHtml\}\}\}\s*<\/div>\s*<\/td>/);
   assert.match(css, /\.channel-table td\.ch-col-priority,\s*[\r\n\s]*\.channel-table td\.ch-col-duration,\s*[\r\n\s]*\.channel-table td\.ch-col-usage,\s*[\r\n\s]*\.channel-table td\.ch-col-cost,\s*[\r\n\s]*\.channel-table td\.ch-col-last-success\s*\{[\s\S]*?text-align:\s*center;/);
   assert.match(css, /\.ch-col-last-success\s*\{[\s\S]*?width:\s*156px;[\s\S]*?white-space:\s*normal;[\s\S]*?text-align:\s*center;/);
   assert.match(css, /\.ch-last-status\s*\{[\s\S]*?align-items:\s*center;/);
   assert.doesNotMatch(html, /tpl-channel-last-request-row/);
   assert.match(css, /\.ch-last-request-slot\s*\{[\s\S]*?margin-top:\s*5px;[\s\S]*?max-width:\s*100%;/);
+  assert.match(css, /\.ch-last-request-slot--desktop\s*\{[\s\S]*?display:\s*block;/);
+  assert.match(css, /\.ch-last-request-slot--mobile\s*\{[\s\S]*?display:\s*none;/);
+  assert.match(css, /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.channel-table\s+\.ch-last-request-slot--desktop\s*\{[\s\S]*?display:\s*none;[\s\S]*?\.channel-table\s+\.ch-last-request-slot--mobile\s*\{[\s\S]*?display:\s*flex;/);
   assert.match(css, /\.channel-table tbody tr\.channel-table-row,\s*[\r\n\s]*\.channel-table tbody tr\.channel-table-row\s*>\s*td\s*\{[\s\S]*?height:\s*90px;/);
   assert.doesNotMatch(css, /\.channel-table tbody tr,\s*[\r\n\s]*\.channel-table tbody td\s*\{[\s\S]*?height:\s*90px;/);
   assert.match(css, /\.ch-last-request\s*\{[\s\S]*?display:\s*flex;[\s\S]*?align-items:\s*center;[\s\S]*?flex-wrap:\s*nowrap;[\s\S]*?position:\s*relative;[\s\S]*?padding:\s*4px 8px;/);
