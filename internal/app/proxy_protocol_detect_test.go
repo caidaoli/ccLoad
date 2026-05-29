@@ -57,3 +57,33 @@ func TestClientRequestMetadataUsesCapturedIngressValues(t *testing.T) {
 		t.Fatalf("status = %d, want %d: %s", w.Code, http.StatusNoContent, w.Body.String())
 	}
 }
+
+func TestValidateClientBodyMatchesProtocol_AllowsClaudeMessagesWithSystemRole(t *testing.T) {
+	body := []byte(`{
+		"model":"kiro-opus",
+		"messages":[
+			{
+				"role":"user",
+				"content":[
+					{"type":"text","text":"list file","cache_control":{"type":"ephemeral"}}
+				]
+			},
+			{
+				"role":"system",
+				"content":"SessionStart:startup hook success"
+			}
+		],
+		"system":[
+			{"type":"text","text":"You are Claude Code","cache_control":{"type":"ephemeral"}}
+		],
+		"max_tokens":32000,
+		"thinking":{"type":"adaptive","display":"summarized"},
+		"context_management":{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]},
+		"output_config":{"effort":"high"},
+		"stream":true
+	}`)
+
+	if err := validateClientBodyMatchesProtocol(protocol.Anthropic, body); err != nil {
+		t.Fatalf("expected Claude Messages body to pass validation, got %v", err)
+	}
+}

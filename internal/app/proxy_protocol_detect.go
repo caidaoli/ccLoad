@@ -115,7 +115,7 @@ func hasOpenAIMessageOnlyFields(raw json.RawMessage) bool {
 	}
 	for _, message := range messages {
 		switch rawStringValue(message["role"]) {
-		case "system", "developer", "tool":
+		case "developer", "tool":
 			return true
 		}
 		for _, key := range []string{"tool_calls", "tool_call_id", "reasoning_content"} {
