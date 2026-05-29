@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/storage"
+	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
 )
@@ -116,6 +118,87 @@ func TestServer_GetWriteTimeout(t *testing.T) {
 	}
 }
 
+func TestServer_GetWriteTimeout_IncludesChannelTypeNonStreamTimeout(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{
+		nonStreamTimeout: 10 * time.Second,
+		channelTypeTimeouts: map[string]channelTypeTimeoutConfig{
+			util.ChannelTypeOpenAI: {NonStreamTimeout: 300 * time.Second},
+		},
+	}
+
+	if got := s.GetWriteTimeout(); got != 300*time.Second {
+		t.Fatalf("GetWriteTimeout()=%v, want 300s", got)
+	}
+}
+
+func TestServer_ResolveProtocolTimeouts(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{
+		firstByteTimeout: 90 * time.Second,
+		nonStreamTimeout: 120 * time.Second,
+		channelTypeTimeouts: map[string]channelTypeTimeoutConfig{
+			util.ChannelTypeAnthropic: {
+				FirstByteTimeout: 11 * time.Second,
+				NonStreamTimeout: 12 * time.Second,
+			},
+			util.ChannelTypeOpenAI: {
+				FirstByteTimeout: 21 * time.Second,
+				NonStreamTimeout: 22 * time.Second,
+			},
+		},
+	}
+
+	localCfg := &model.Config{
+		ChannelType:           util.ChannelTypeAnthropic,
+		ProtocolTransformMode: model.ProtocolTransformModeLocal,
+		ProtocolTransforms:    []string{util.ChannelTypeOpenAI},
+	}
+	localPlan := protocol.TransformPlan{
+		ClientProtocol:   protocol.OpenAI,
+		UpstreamProtocol: protocol.Anthropic,
+	}
+	localTimeouts := s.resolveProtocolTimeouts(localCfg, localPlan)
+	if localTimeouts.FirstByteTimeout != 11*time.Second || localTimeouts.NonStreamTimeout != 12*time.Second {
+		t.Fatalf("local timeouts=%+v, want anthropic bucket", localTimeouts)
+	}
+
+	upstreamCfg := &model.Config{
+		ChannelType:           util.ChannelTypeAnthropic,
+		ProtocolTransformMode: model.ProtocolTransformModeUpstream,
+		ProtocolTransforms:    []string{util.ChannelTypeOpenAI},
+	}
+	upstreamPlan := protocol.TransformPlan{
+		ClientProtocol:   protocol.OpenAI,
+		UpstreamProtocol: protocol.OpenAI,
+	}
+	upstreamTimeouts := s.resolveProtocolTimeouts(upstreamCfg, upstreamPlan)
+	if upstreamTimeouts.FirstByteTimeout != 21*time.Second || upstreamTimeouts.NonStreamTimeout != 22*time.Second {
+		t.Fatalf("upstream timeouts=%+v, want openai bucket", upstreamTimeouts)
+	}
+}
+
+func TestServer_ResolveProtocolTimeouts_ZeroChannelTypeFallsBackToGlobal(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{
+		firstByteTimeout: 90 * time.Second,
+		nonStreamTimeout: 120 * time.Second,
+		channelTypeTimeouts: map[string]channelTypeTimeoutConfig{
+			util.ChannelTypeCodex: {},
+		},
+	}
+	cfg := &model.Config{ChannelType: util.ChannelTypeCodex}
+	plan := protocol.TransformPlan{UpstreamProtocol: protocol.Codex}
+
+	timeouts := s.resolveProtocolTimeouts(cfg, plan)
+	if timeouts.FirstByteTimeout != 90*time.Second || timeouts.NonStreamTimeout != 120*time.Second {
+		t.Fatalf("timeouts=%+v, want global fallback", timeouts)
+	}
+}
+
 func TestNewServer_ZeroNonStreamTimeoutDisablesTimeout(t *testing.T) {
 	t.Parallel()
 
@@ -142,6 +225,40 @@ func TestNewServer_ZeroNonStreamTimeoutDisablesTimeout(t *testing.T) {
 
 	if srv.nonStreamTimeout != 0 {
 		t.Fatalf("nonStreamTimeout=%v, want 0", srv.nonStreamTimeout)
+	}
+}
+
+func TestNewServer_LoadsChannelTypeTimeoutOverrides(t *testing.T) {
+	t.Parallel()
+
+	store, err := storage.CreateSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("CreateSQLiteStore failed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := store.UpdateSetting(ctx, "openai_first_byte_timeout", "9"); err != nil {
+		_ = store.Close()
+		t.Fatalf("UpdateSetting openai_first_byte_timeout failed: %v", err)
+	}
+	if err := store.UpdateSetting(ctx, "openai_non_stream_timeout", "33"); err != nil {
+		_ = store.Close()
+		t.Fatalf("UpdateSetting openai_non_stream_timeout failed: %v", err)
+	}
+
+	srv := NewServer(store)
+	t.Cleanup(func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer shutdownCancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			t.Errorf("Server.Shutdown failed: %v", err)
+		}
+	})
+
+	got := srv.channelTypeTimeouts[util.ChannelTypeOpenAI]
+	if got.FirstByteTimeout != 9*time.Second || got.NonStreamTimeout != 33*time.Second {
+		t.Fatalf("openai timeouts=%+v, want 9s/33s", got)
 	}
 }
 

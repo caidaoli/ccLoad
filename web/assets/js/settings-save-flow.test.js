@@ -103,6 +103,7 @@ function createSettingsHarness() {
   vm.createContext(sandbox);
   vm.runInContext(`${settingsSource}
 this.__settingsTest = {
+  groupSettings,
   saveAllSettings,
   resetSetting,
   setOriginalSettings(value) {
@@ -123,6 +124,37 @@ this.__settingsTest = {
     settingsTest: sandbox.__settingsTest
   };
 }
+
+test('settings 超时组按全局项和渠道类型成对排序', () => {
+  const harness = createSettingsHarness();
+  const settings = [
+    'openai_non_stream_timeout',
+    'gemini_first_byte_timeout',
+    'anthropic_non_stream_timeout',
+    'non_stream_timeout',
+    'codex_first_byte_timeout',
+    'upstream_first_byte_timeout',
+    'openai_first_byte_timeout',
+    'gemini_non_stream_timeout',
+    'anthropic_first_byte_timeout',
+    'codex_non_stream_timeout'
+  ].map(key => ({ key, value: '0', value_type: 'duration', description: key }));
+
+  const timeoutGroup = harness.settingsTest.groupSettings(settings).find(group => group.id === 'timeout');
+
+  assert.deepEqual(Array.from(timeoutGroup.settings, setting => setting.key), [
+    'upstream_first_byte_timeout',
+    'non_stream_timeout',
+    'anthropic_first_byte_timeout',
+    'anthropic_non_stream_timeout',
+    'codex_first_byte_timeout',
+    'codex_non_stream_timeout',
+    'openai_first_byte_timeout',
+    'openai_non_stream_timeout',
+    'gemini_first_byte_timeout',
+    'gemini_non_stream_timeout'
+  ]);
+});
 
 test('saveAllSettings 在保存成功后不应因服务重启再触发一次 loadSettings', async () => {
   const harness = createSettingsHarness();

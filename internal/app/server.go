@@ -56,9 +56,10 @@ type Server struct {
 	tokenStatsDropCount atomic.Int64
 
 	// 运行时配置（启动时从数据库加载，修改后重启生效）
-	maxKeyRetries    int           // 单个渠道内最大Key重试次数
-	firstByteTimeout time.Duration // 上游首字节超时（流式请求）
-	nonStreamTimeout time.Duration // 非流式请求超时
+	maxKeyRetries       int                                 // 单个渠道内最大Key重试次数
+	firstByteTimeout    time.Duration                       // 上游首字节超时（流式请求）
+	nonStreamTimeout    time.Duration                       // 非流式请求超时
+	channelTypeTimeouts map[string]channelTypeTimeoutConfig // 按运行时上游协议覆盖超时，0=回退全局
 	// 模型匹配配置（启动时从数据库加载，修改后重启生效）
 	modelFuzzyMatch bool // 未命中时启用模糊匹配（子串匹配+版本排序）
 
@@ -143,9 +144,10 @@ func NewServer(store storage.Store) *Server {
 		loginRateLimiter: util.NewLoginRateLimiter(),
 
 		// 运行时配置（启动时加载，修改后重启生效）
-		maxKeyRetries:    runtimeCfg.MaxKeyRetries,
-		firstByteTimeout: runtimeCfg.FirstByteTimeout,
-		nonStreamTimeout: runtimeCfg.NonStreamTimeout,
+		maxKeyRetries:       runtimeCfg.MaxKeyRetries,
+		firstByteTimeout:    runtimeCfg.FirstByteTimeout,
+		nonStreamTimeout:    runtimeCfg.NonStreamTimeout,
+		channelTypeTimeouts: runtimeCfg.ChannelTypeTimeouts,
 		// 模型匹配配置（启动时加载，修改后重启生效）
 		modelFuzzyMatch: runtimeCfg.ModelFuzzyMatch,
 
@@ -252,13 +254,19 @@ func NewServer(store storage.Store) *Server {
 
 }
 
-// serverRuntimeConfig 启动期从数据库读取的运行时配置（修改后重启生效）
-type serverRuntimeConfig struct {
-	MaxKeyRetries    int
+type channelTypeTimeoutConfig struct {
 	FirstByteTimeout time.Duration
 	NonStreamTimeout time.Duration
-	LogRetentionDays int
-	ModelFuzzyMatch  bool
+}
+
+// serverRuntimeConfig 启动期从数据库读取的运行时配置（修改后重启生效）
+type serverRuntimeConfig struct {
+	MaxKeyRetries       int
+	FirstByteTimeout    time.Duration
+	NonStreamTimeout    time.Duration
+	ChannelTypeTimeouts map[string]channelTypeTimeoutConfig
+	LogRetentionDays    int
+	ModelFuzzyMatch     bool
 }
 
 // loadServerRuntimeConfig 从 ConfigService 加载运行时配置并校验，无效值兜底为默认值
@@ -281,6 +289,8 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 		nonStreamTimeout = 120 * time.Second
 	}
 
+	channelTypeTimeouts := loadChannelTypeTimeouts(cs)
+
 	logRetentionDays := cs.GetInt("log_retention_days", 7)
 
 	modelFuzzyMatch := cs.GetBool("model_fuzzy_match", false)
@@ -289,12 +299,46 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 	}
 
 	return serverRuntimeConfig{
-		MaxKeyRetries:    maxKeyRetries,
-		FirstByteTimeout: firstByteTimeout,
-		NonStreamTimeout: nonStreamTimeout,
-		LogRetentionDays: logRetentionDays,
-		ModelFuzzyMatch:  modelFuzzyMatch,
+		MaxKeyRetries:       maxKeyRetries,
+		FirstByteTimeout:    firstByteTimeout,
+		NonStreamTimeout:    nonStreamTimeout,
+		ChannelTypeTimeouts: channelTypeTimeouts,
+		LogRetentionDays:    logRetentionDays,
+		ModelFuzzyMatch:     modelFuzzyMatch,
 	}
+}
+
+func loadChannelTypeTimeouts(cs *ConfigService) map[string]channelTypeTimeoutConfig {
+	timeouts := make(map[string]channelTypeTimeoutConfig, len(util.ChannelTypes))
+	for _, channelType := range util.ChannelTypes {
+		firstByteTimeout := cs.GetDuration(channelTypeFirstByteTimeoutSettingKey(channelType.Value), 0)
+		if firstByteTimeout < 0 {
+			log.Printf("[WARN] 无效的 %s=%v（必须 >= 0），已设为 0（回退全局首字超时）",
+				channelTypeFirstByteTimeoutSettingKey(channelType.Value), firstByteTimeout)
+			firstByteTimeout = 0
+		}
+
+		nonStreamTimeout := cs.GetDuration(channelTypeNonStreamTimeoutSettingKey(channelType.Value), 0)
+		if nonStreamTimeout < 0 {
+			log.Printf("[WARN] 无效的 %s=%v（必须 >= 0），已设为 0（回退全局非流超时）",
+				channelTypeNonStreamTimeoutSettingKey(channelType.Value), nonStreamTimeout)
+			nonStreamTimeout = 0
+		}
+
+		timeouts[channelType.Value] = channelTypeTimeoutConfig{
+			FirstByteTimeout: firstByteTimeout,
+			NonStreamTimeout: nonStreamTimeout,
+		}
+	}
+	return timeouts
+}
+
+func channelTypeFirstByteTimeoutSettingKey(channelType string) string {
+	return util.NormalizeChannelType(channelType) + "_first_byte_timeout"
+}
+
+func channelTypeNonStreamTimeoutSettingKey(channelType string) string {
+	return util.NormalizeChannelType(channelType) + "_non_stream_timeout"
 }
 
 // loadHealthScoreConfig 从 ConfigService 加载健康度配置，无效值兜底为默认值
@@ -560,10 +604,43 @@ func (s *Server) invalidateChannelRelatedCache(channelID int64) {
 // 基于 nonStreamTimeout 动态计算，确保传输层超时 >= 业务层超时
 func (s *Server) GetWriteTimeout() time.Duration {
 	const minWriteTimeout = 120 * time.Second
-	if s.nonStreamTimeout > minWriteTimeout {
-		return s.nonStreamTimeout
+	maxTimeout := s.nonStreamTimeout
+	for _, timeouts := range s.channelTypeTimeouts {
+		if timeouts.NonStreamTimeout > maxTimeout {
+			maxTimeout = timeouts.NonStreamTimeout
+		}
+	}
+	if maxTimeout > minWriteTimeout {
+		return maxTimeout
 	}
 	return minWriteTimeout
+}
+
+func (s *Server) resolveProtocolTimeouts(cfg *model.Config, plan protocol.TransformPlan) channelTypeTimeoutConfig {
+	timeouts := channelTypeTimeoutConfig{
+		FirstByteTimeout: s.firstByteTimeout,
+		NonStreamTimeout: s.nonStreamTimeout,
+	}
+
+	protocolKey := string(plan.UpstreamProtocol)
+	if protocolKey == "" && cfg != nil {
+		protocolKey = cfg.GetChannelType()
+	}
+	if protocolKey == "" {
+		return timeouts
+	}
+
+	override, ok := s.channelTypeTimeouts[util.NormalizeChannelType(protocolKey)]
+	if !ok {
+		return timeouts
+	}
+	if override.FirstByteTimeout > 0 {
+		timeouts.FirstByteTimeout = override.FirstByteTimeout
+	}
+	if override.NonStreamTimeout > 0 {
+		timeouts.NonStreamTimeout = override.NonStreamTimeout
+	}
+	return timeouts
 }
 
 // SetupRoutes - 新的路由设置函数，适配Gin
