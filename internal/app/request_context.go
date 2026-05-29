@@ -22,6 +22,8 @@ type requestContext struct {
 	originalModel     string
 	originalBody      []byte
 	translatedBody    []byte
+	firstByteTimeout  time.Duration
+	nonStreamTimeout  time.Duration
 	firstByteTimer    *time.Timer
 	firstByteTimedOut atomic.Bool
 }
@@ -32,15 +34,22 @@ type requestContext struct {
 // - 非流式请求：使用 nonStreamTimeout（整体超时），超时主动关闭上游连接
 // [INFO] Go 1.21+ 改进：总是返回非 nil 的 cancel，调用方无需检查（符合 Go 惯用法）
 func (s *Server) newRequestContext(parentCtx context.Context, requestPath string, body []byte) *requestContext {
+	return s.newRequestContextWithTimeouts(parentCtx, requestPath, body, channelTypeTimeoutConfig{
+		FirstByteTimeout: s.firstByteTimeout,
+		NonStreamTimeout: s.nonStreamTimeout,
+	})
+}
+
+func (s *Server) newRequestContextWithTimeouts(parentCtx context.Context, requestPath string, body []byte, timeouts channelTypeTimeoutConfig) *requestContext {
 	isStreaming := isStreamingRequest(requestPath, body)
 
 	// [INFO] 关键改动：总是使用 WithCancel 包裹（即使无超时配置也能正常取消）
 	ctx, cancel := context.WithCancel(parentCtx)
 
 	// 非流式请求：在基础 cancel 之上叠加整体超时
-	if !isStreaming && s.nonStreamTimeout > 0 {
+	if !isStreaming && timeouts.NonStreamTimeout > 0 {
 		var timeoutCancel context.CancelFunc
-		ctx, timeoutCancel = context.WithTimeout(ctx, s.nonStreamTimeout)
+		ctx, timeoutCancel = context.WithTimeout(ctx, timeouts.NonStreamTimeout)
 		// 链式 cancel：timeout 触发时也会取消父 context
 		originalCancel := cancel
 		cancel = func() {
@@ -50,15 +59,17 @@ func (s *Server) newRequestContext(parentCtx context.Context, requestPath string
 	}
 
 	reqCtx := &requestContext{
-		ctx:         ctx,
-		cancel:      cancel, // [INFO] 总是非 nil，无需检查
-		startTime:   time.Now(),
-		isStreaming: isStreaming,
+		ctx:              ctx,
+		cancel:           cancel, // [INFO] 总是非 nil，无需检查
+		startTime:        time.Now(),
+		isStreaming:      isStreaming,
+		firstByteTimeout: timeouts.FirstByteTimeout,
+		nonStreamTimeout: timeouts.NonStreamTimeout,
 	}
 
 	// 流式请求的首字节超时定时器
-	if isStreaming && s.firstByteTimeout > 0 {
-		reqCtx.firstByteTimer = time.AfterFunc(s.firstByteTimeout, func() {
+	if isStreaming && timeouts.FirstByteTimeout > 0 {
+		reqCtx.firstByteTimer = time.AfterFunc(timeouts.FirstByteTimeout, func() {
 			reqCtx.firstByteTimedOut.Store(true)
 			cancel() // [INFO] 直接调用，无需检查
 		})

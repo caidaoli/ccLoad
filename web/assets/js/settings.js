@@ -32,6 +32,23 @@ function getSettingGroupInfo(key) {
   return { id: 'other', nameKey: 'settings.group.other', name: t('settings.group.other'), order: 999 };
 }
 
+function getSettingOrder(key) {
+  const orders = {
+    upstream_first_byte_timeout: 100,
+    non_stream_timeout: 101,
+    anthropic_first_byte_timeout: 110,
+    anthropic_non_stream_timeout: 111,
+    codex_first_byte_timeout: 120,
+    codex_non_stream_timeout: 121,
+    openai_first_byte_timeout: 130,
+    openai_non_stream_timeout: 131,
+    gemini_first_byte_timeout: 140,
+    gemini_non_stream_timeout: 141
+  };
+  const normalizedKey = String(key || '').toLowerCase();
+  return orders[normalizedKey] ?? 1000;
+}
+
 function groupSettings(settings) {
   const groupsById = new Map();
 
@@ -47,7 +64,11 @@ function groupSettings(settings) {
     .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
 
   for (const g of groups) {
-    g.settings.sort((a, b) => String(a.key).localeCompare(String(b.key)));
+    g.settings.sort((a, b) => {
+      const orderDiff = getSettingOrder(a.key) - getSettingOrder(b.key);
+      if (orderDiff !== 0) return orderDiff;
+      return String(a.key).localeCompare(String(b.key));
+    });
   }
 
   return groups;

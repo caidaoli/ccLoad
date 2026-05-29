@@ -53,6 +53,8 @@ type channelTestRequestPlan struct {
 
 type channelTestTimeout struct {
 	cancel                     context.CancelFunc
+	firstByteTimeout           time.Duration
+	nonStreamTimeout           time.Duration
 	firstStreamContentTimer    *time.Timer
 	firstStreamContentTimedOut atomic.Bool
 }
@@ -158,13 +160,17 @@ func extractRequestPath(fullURL string) string {
 	return path
 }
 
-func (s *Server) newChannelTestTimeoutContext(parent context.Context, stream bool) (context.Context, *channelTestTimeout) {
+func (s *Server) newChannelTestTimeoutContextWithTimeouts(parent context.Context, stream bool, timeouts channelTypeTimeoutConfig) (context.Context, *channelTestTimeout) {
 	ctx, cancel := context.WithCancel(parent)
-	timeout := &channelTestTimeout{cancel: cancel}
+	timeout := &channelTestTimeout{
+		cancel:           cancel,
+		firstByteTimeout: timeouts.FirstByteTimeout,
+		nonStreamTimeout: timeouts.NonStreamTimeout,
+	}
 
 	if stream {
-		if s.firstByteTimeout > 0 {
-			timeout.firstStreamContentTimer = time.AfterFunc(s.firstByteTimeout, func() {
+		if timeouts.FirstByteTimeout > 0 {
+			timeout.firstStreamContentTimer = time.AfterFunc(timeouts.FirstByteTimeout, func() {
 				timeout.firstStreamContentTimedOut.Store(true)
 				cancel()
 			})
@@ -172,8 +178,8 @@ func (s *Server) newChannelTestTimeoutContext(parent context.Context, stream boo
 		return ctx, timeout
 	}
 
-	if s.nonStreamTimeout > 0 {
-		timeoutCtx, timeoutCancel := context.WithTimeout(ctx, s.nonStreamTimeout)
+	if timeouts.NonStreamTimeout > 0 {
+		timeoutCtx, timeoutCancel := context.WithTimeout(ctx, timeouts.NonStreamTimeout)
 		timeout.cancel = func() {
 			timeoutCancel()
 			cancel()
@@ -187,13 +193,21 @@ func (s *Server) newChannelTestTimeoutContext(parent context.Context, stream boo
 func (s *Server) describeChannelTestTimeoutError(start time.Time, testReq *testutil.TestChannelRequest, timeout *channelTestTimeout, err error) (int, string, bool) {
 	durationSec := time.Since(start).Seconds()
 	if timeout.firstStreamContentTimeoutTriggered() {
+		threshold := timeout.firstByteTimeout
+		if threshold == 0 {
+			threshold = s.firstByteTimeout
+		}
 		return util.StatusFirstByteTimeout,
-			fmt.Sprintf("上游首个有效流内容超时: upstream first valid stream content timeout after %.2fs (threshold=%v): %v", durationSec, s.firstByteTimeout, err),
+			fmt.Sprintf("上游首个有效流内容超时: upstream first valid stream content timeout after %.2fs (threshold=%v): %v", durationSec, threshold, err),
 			true
 	}
-	if !testReq.Stream && s.nonStreamTimeout > 0 && errors.Is(err, context.DeadlineExceeded) {
+	if !testReq.Stream && timeout != nil && timeout.nonStreamTimeout > 0 && errors.Is(err, context.DeadlineExceeded) {
+		threshold := timeout.nonStreamTimeout
+		if threshold == 0 {
+			threshold = s.nonStreamTimeout
+		}
 		return http.StatusGatewayTimeout,
-			fmt.Sprintf("非流式请求超时: upstream timeout after %.2fs (threshold=%v): %v", durationSec, s.nonStreamTimeout, err),
+			fmt.Sprintf("非流式请求超时: upstream timeout after %.2fs (threshold=%v): %v", durationSec, threshold, err),
 			true
 	}
 	return 0, "", false
@@ -842,7 +856,9 @@ func (s *Server) buildTestUpstreamRequest(
 	// 渠道级自定义请求体规则（与代理链路一致，仅对 JSON body 生效）
 	requestPlan.requestBody = applyBodyRules(requestPlan.headers.Get("Content-Type"), requestPlan.requestBody, cfgForBuild.BodyRules())
 
-	ctx, timeout := s.newChannelTestTimeoutContext(reqCtx, testReq.Stream)
+	ctx, timeout := s.newChannelTestTimeoutContextWithTimeouts(reqCtx, testReq.Stream, s.resolveProtocolTimeouts(cfgForBuild, protocol.TransformPlan{
+		UpstreamProtocol: protocol.Protocol(requestPlan.upstreamProtocol),
+	}))
 	requestPlan.timeout = timeout
 	req, err := http.NewRequestWithContext(ctx, "POST", requestPlan.fullURL, bytes.NewReader(requestPlan.requestBody))
 	if err != nil {
