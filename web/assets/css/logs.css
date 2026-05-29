@@ -290,6 +290,18 @@
       padding: var(--space-2) var(--space-1);
     }
 
+    @media (min-width: 769px) {
+      .logs-table .logs-col-cost {
+        width: 1%;
+        padding-left: var(--space-3);
+        white-space: nowrap;
+      }
+
+      .logs-table .logs-col-cost .log-cost {
+        min-width: max-content;
+      }
+    }
+
     .logs-pagination-controls {
       gap: var(--space-1);
       flex-wrap: wrap;
@@ -935,15 +947,6 @@
       min-width: 70px;
       max-width: 70px;
       padding-right: var(--space-2);
-    }
-
-    .logs-table th:nth-child(15),
-    .logs-table td:nth-child(15) {
-      width: 96px;
-      /* 成本 */
-      min-width: 96px;
-      max-width: 96px;
-      padding-left: var(--space-2);
     }
 
     .logs-table th:nth-child(16),
