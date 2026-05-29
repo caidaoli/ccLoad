@@ -917,8 +917,10 @@ function ensureModelSelectCombobox() {
       return options;
     },
     onSelect: (value) => {
-      selectedModelName = String(value || '').trim();
-      if (testMode === TEST_MODE_MODEL) {
+      const nextModelName = String(value || '').trim();
+      const modelChanged = nextModelName !== selectedModelName;
+      selectedModelName = nextModelName;
+      if (modelChanged && testMode === TEST_MODE_MODEL) {
         renderModelModeRows();
       }
     },
@@ -1023,7 +1025,7 @@ function populateModelSelector() {
   }
 
   // 输入框有用户输入（含模糊关键字）→ 保留；否则当前选择不在新协议下时回退到首项。
-  if (typedModel) {
+  if (typedModel && models.includes(typedModel)) {
     selectedModelName = typedModel;
   } else if (!selectedModelName || !models.includes(selectedModelName)) {
     selectedModelName = models[0];

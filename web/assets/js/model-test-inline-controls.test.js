@@ -734,6 +734,39 @@ test('按模型测试切换协议转换时不重新渲染渠道表格', () => {
   assert.doesNotMatch(handler, /renderModelModeRows\(\)/);
 });
 
+test('按模型测试协议切换导致模型输入框失焦时，同模型提交不重新渲染渠道表格', () => {
+  const sandbox = {
+    window: {
+      createSearchableCombobox(config) {
+        sandbox.capturedComboboxConfig = config;
+        return { setValue() {}, refresh() {} };
+      }
+    },
+    capturedComboboxConfig: null
+  };
+
+  vm.runInNewContext(`
+    const TEST_MODE_MODEL = 'model';
+    let testMode = TEST_MODE_MODEL;
+    let selectedModelName = 'claude-4';
+    let selectedProtocol = 'anthropic';
+    let modelSelectCombobox = null;
+    const modelSelect = {};
+    let renderCalls = 0;
+    function getAllModelsForProtocol() { return ['claude-4']; }
+    function getModelInputValue() { return 'claude-4'; }
+    function renderModelModeRows() { renderCalls += 1; }
+    ${extractFunction(script, 'ensureModelSelectCombobox')}
+
+    ensureModelSelectCombobox();
+    capturedComboboxConfig.onSelect('claude-4');
+    globalThis.result = { renderCalls, selectedModelName };
+  `, sandbox);
+
+  assert.equal(sandbox.result.selectedModelName, 'claude-4');
+  assert.equal(sandbox.result.renderCalls, 0);
+});
+
 test('按渠道测试时重渲染不会覆盖用户已选的协议转换', () => {
   const sandbox = {
     ALL_PROTOCOLS: ['anthropic', 'codex', 'openai', 'gemini'],
