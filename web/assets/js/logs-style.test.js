@@ -36,6 +36,15 @@ function logColumnHasWidthConstraint(columnIndex) {
   });
 }
 
+function logColumnHasFixedPixelWidthConstraint(columnIndex) {
+  const columnSelector = new RegExp(`\\.logs-table\\s+(?:th|td):nth-child\\(${columnIndex}\\)`);
+  const fixedPixelWidth = /\b(?:width|min-width|max-width)\s*:\s*\d+px\b/;
+
+  return Array.from(css.matchAll(/([^{}]+)\{([^{}]*)\}/g)).some(([, selector, body]) => {
+    return columnSelector.test(selector) && fixedPixelWidth.test(body);
+  });
+}
+
 test('日志页底部分页使用专用紧凑样式类', () => {
   assert.match(html, /class="pagination-controls\s+logs-pagination-controls"/);
   assert.match(html, /class="pagination-info\s+logs-pagination-info"/);
@@ -65,7 +74,6 @@ test('日志页分页信息区收紧按钮间距', () => {
 test('日志表固定宽度列号与当前表头顺序一致', () => {
   assert.match(html, /data-i18n="logs\.colTokenDesc"[\s\S]*data-i18n="logs\.colApiKey"/);
   assert.match(css, /\.logs-table th:nth-child\(7\),\s*[\r\n\s]*\.logs-table td:nth-child\(7\)\s*\{[\s\S]*?状态码:/);
-  assert.match(css, /\.logs-table th:nth-child\(15\),\s*[\r\n\s]*\.logs-table td:nth-child\(15\)\s*\{[\s\S]*?成本/);
 });
 
 test('日志表令牌和渠道 Key 列不设置固定宽度', () => {
@@ -73,9 +81,11 @@ test('日志表令牌和渠道 Key 列不设置固定宽度', () => {
   assert.equal(logColumnHasWidthConstraint(4), false, '渠道 Key 列不应设置 width/min-width/max-width');
 });
 
-test('日志表缓存命中与成本列保留独立宽度和间隔', () => {
+test('日志表缓存命中与成本列通过内容驱动布局保留间隔', () => {
   assert.match(css, /\.logs-table th:nth-child\(14\),\s*[\r\n\s]*\.logs-table td:nth-child\(14\)\s*\{[\s\S]*?width:\s*70px;[\s\S]*?缓存命中[\s\S]*?min-width:\s*70px;[\s\S]*?max-width:\s*70px;[\s\S]*?padding-right:\s*var\(--space-2\);/);
-  assert.match(css, /\.logs-table th:nth-child\(15\),\s*[\r\n\s]*\.logs-table td:nth-child\(15\)\s*\{[\s\S]*?width:\s*96px;[\s\S]*?成本[\s\S]*?min-width:\s*96px;[\s\S]*?max-width:\s*96px;[\s\S]*?padding-left:\s*var\(--space-2\);/);
+  assert.equal(logColumnHasFixedPixelWidthConstraint(15), false, '成本列不应设置固定像素宽度');
+  assert.match(css, /\.logs-table\s+\.logs-col-cost\s*\{[\s\S]*?width:\s*1%;[\s\S]*?padding-left:\s*var\(--space-3\);[\s\S]*?white-space:\s*nowrap;/);
+  assert.match(css, /\.logs-table\s+\.logs-col-cost\s+\.log-cost\s*\{[\s\S]*?min-width:\s*max-content;/);
 });
 
 test('日志表令牌和渠道 Key 表头文案使用业务命名', () => {
