@@ -784,6 +784,7 @@ Check out the awesome admin dashboard 👇
 | `PORT` | `8080` | Service port |
 | `GIN_MODE` | `release` | Run mode (`debug`/`release`) |
 | `GIN_LOG` | `true` | Gin access log switch (`false`/`0`/`no`/`off` to disable) |
+| `TRUSTED_PROXIES` | Private ranges + Loopback + `100.64.0.0/10` | Trusted proxy CIDRs (comma-separated); `none` = trust no proxies |
 | `SQLITE_PATH` | `data/ccload.db` | SQLite database file path (SQLite mode only) |
 | `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal mode (WAL/TRUNCATE/DELETE, recommend TRUNCATE for containers) |
 | `CCLOAD_MAX_CONCURRENCY` | `1000` | Max concurrent requests (limits simultaneous proxy requests) |
@@ -794,6 +795,8 @@ Check out the awesome admin dashboard 👇
 | `CCLOAD_COOLDOWN_RATE_LIMIT_SEC` | `60` | Rate limit error (429) initial cooldown (seconds) |
 | `CCLOAD_COOLDOWN_MAX_SEC` | `1800` | Exponential backoff cooldown max (seconds, 30 minutes) |
 | `CCLOAD_COOLDOWN_MIN_SEC` | `10` | Exponential backoff cooldown min (seconds) |
+
+> If the service sits behind a reverse proxy or load balancer, set `TRUSTED_PROXIES` explicitly so spoofed `X-Forwarded-For` values cannot affect client IP detection or login rate limiting.
 
 #### Hybrid Storage Mode (MySQL Primary + SQLite Cache)
 
@@ -828,14 +831,22 @@ These settings have been migrated to database, managed via Web interface `/web/s
 | `max_key_retries` | `3` | Max key retries within single channel |
 | `upstream_first_byte_timeout` | `0` | Upstream first valid stream content timeout (seconds, 0=disabled, stream only) |
 | `non_stream_timeout` | `120` | Non-stream request timeout (seconds, 0=disabled) |
-| `{anthropic,codex,openai,gemini}_first_byte_timeout` | `0` | Override first valid stream content timeout by runtime upstream protocol (seconds, 0=use global `upstream_first_byte_timeout`) |
-| `{anthropic,codex,openai,gemini}_non_stream_timeout` | `0` | Override non-stream timeout by runtime upstream protocol (seconds, 0=use global `non_stream_timeout`) |
+| `anthropic_first_byte_timeout` | `0` | Anthropic first valid stream content timeout (seconds, 0=use global `upstream_first_byte_timeout`) |
+| `anthropic_non_stream_timeout` | `0` | Anthropic non-stream request timeout (seconds, 0=use global `non_stream_timeout`) |
+| `codex_first_byte_timeout` | `0` | Codex first valid stream content timeout (seconds, 0=use global `upstream_first_byte_timeout`) |
+| `codex_non_stream_timeout` | `0` | Codex non-stream request timeout (seconds, 0=use global `non_stream_timeout`) |
+| `openai_first_byte_timeout` | `0` | OpenAI first valid stream content timeout (seconds, 0=use global `upstream_first_byte_timeout`) |
+| `openai_non_stream_timeout` | `0` | OpenAI non-stream request timeout (seconds, 0=use global `non_stream_timeout`) |
+| `gemini_first_byte_timeout` | `0` | Gemini first valid stream content timeout (seconds, 0=use global `upstream_first_byte_timeout`) |
+| `gemini_non_stream_timeout` | `0` | Gemini non-stream request timeout (seconds, 0=use global `non_stream_timeout`) |
 | `enable_health_score` | `false` | Enable health-based dynamic channel sorting |
 | `success_rate_penalty_weight` | `100` | Success rate penalty weight (see below) |
 | `health_score_window_minutes` | `30` | Success rate stats time window (minutes) |
 | `health_score_update_interval` | `30` | Success rate cache update interval (seconds) |
 | `health_min_confident_sample` | `20` | Confidence sample threshold (full penalty at this sample size) |
 | `channel_check_interval_hours` | `0` | Scheduled channel check interval (hours, 0=disabled) |
+
+Per-protocol timeouts apply to the runtime upstream protocol: if a transformed request is forwarded to OpenAI, ccLoad reads `openai_*_timeout`; when that value is `0`, it falls back to the global timeout.
 
 #### Health Score Sorting
 
