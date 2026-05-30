@@ -47,6 +47,12 @@ web/               # 前端（HTML + assets/{css,js,locales}）
 - **598** 上游首字节超时 → 渠道级
 - **599** 流式响应中断 → 渠道级
 
+## 上游超时（`server.go:loadChannelTypeTimeouts`）
+
+- 全局：`upstream_first_byte_timeout`（默认 0=禁用，**仅流式生效**）、`non_stream_timeout`（默认 120s）
+- 按渠道类型覆盖：`{type}_first_byte_timeout` / `{type}_non_stream_timeout`（type ∈ anthropic/codex/openai/gemini），**0=回退全局**；按运行时上游协议匹配
+- 首字节超时触发 → 598（渠道级，见自定义状态码）
+
 ## 渠道/Key/URL 选择
 
 - **渠道**：平滑加权轮询（按有效 Key 数分配流量）；冷却感知；成本限额检查优先于冷却
@@ -94,6 +100,7 @@ web/               # 前端（HTML + assets/{css,js,locales}）
 - 请求开始查限额、结束后记账 → 允许「最多超额一个请求」
 - 仅 2xx 累加 Token/费用；失败只计次
 - 字段：`allowed_models`（逗号分隔，空=无限制）、`first_byte_time_ms`、`PeakRPM`/`AvgRPM`/`RecentRPM`（`GetAuthTokenStatsInRange` 支持时间范围）
+- 启动预置：`CCLOAD_API_TOKENS`（别名 `API_TOKENS`，逗号分隔明文 token）→ `ProvisionAuthTokensFromEnv` 启动时创建缺失 token，已存在则跳过（`auth_token_provisioning.go`）
 
 ## 渠道每日成本限额
 
