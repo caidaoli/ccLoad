@@ -81,6 +81,67 @@ test('合并 SSE responses 输出文本 delta', () => {
   assert.equal(merged, 'Release 工作流');
 });
 
+test('合并 Gemini SSE 时拼接 candidates content parts text', () => {
+  const helpers = createHelpers();
+  const merged = helpers.composeDebugMergedResponse({
+    resp_body: [
+      'HTTP 200',
+      'Content-Type: text/event-stream',
+      '',
+      `data: ${JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [{ text: '{"type":"discovery","title":"' }],
+              role: 'model'
+            },
+            index: 0
+          }
+        ]
+      })}`,
+      '',
+      `data: ${JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [{ text: '确认 ProcessManager.ts 文件结束范围","facts":[' }],
+              role: 'model'
+            },
+            index: 0
+          }
+        ]
+      })}`,
+      '',
+      `data: ${JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [{ text: '"560行之后返回空内容"]}' }],
+              role: 'model'
+            },
+            index: 0
+          }
+        ]
+      })}`,
+      '',
+      `data: ${JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [{ text: '', thoughtSignature: 'sig' }],
+              role: 'model'
+            },
+            finishReason: 'STOP',
+            index: 0
+          }
+        ]
+      })}`
+    ].join('\n')
+  });
+
+  assert.equal(merged, '{"type":"discovery","title":"确认 ProcessManager.ts 文件结束范围","facts":["560行之后返回空内容"]}');
+});
+
 test('合并 Anthropic SSE 时拼接 thinking 和 text delta', () => {
   const helpers = createHelpers();
   const merged = helpers.composeDebugMergedResponse({
