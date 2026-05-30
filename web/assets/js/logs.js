@@ -2161,6 +2161,23 @@ function collectMergedResponsePayload(payload, state) {
     }
   };
 
+  const collectGeminiCandidate = (candidate) => {
+    if (!candidate || typeof candidate !== 'object') return;
+    const parts = candidate.content?.parts;
+    if (!Array.isArray(parts)) {
+      appendMergedText(state.text, candidate.content?.text ?? candidate.content);
+      return;
+    }
+    parts.forEach(part => {
+      if (!part || typeof part !== 'object') {
+        appendMergedText(state.text, part);
+        return;
+      }
+      const target = part.thought === true ? state.reasoning : state.text;
+      appendMergedText(target, part.text ?? part.content);
+    });
+  };
+
   if (Array.isArray(payload.choices)) {
     payload.choices.forEach(choice => {
       if (!choice || typeof choice !== 'object') return;
@@ -2174,6 +2191,10 @@ function collectMergedResponsePayload(payload, state) {
       }
       collectMessage(choice.message);
     });
+  }
+
+  if (Array.isArray(payload.candidates)) {
+    payload.candidates.forEach(collectGeminiCandidate);
   }
 
   switch (payload.type) {
