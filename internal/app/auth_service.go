@@ -523,6 +523,9 @@ func (s *AuthService) ReloadAuthTokens() error {
 	newTokenCostLimits := make(map[string]tokenCostLimit, len(tokens))
 	newTokenMaxConns := make(map[string]int, len(tokens))
 	for _, t := range tokens {
+		if err := t.ValidateUsageLimits(); err != nil {
+			return fmt.Errorf("invalid auth token %d: %w", t.ID, err)
+		}
 		// ExpiresAt: nil → 0 (永不过期), *int64 → Unix毫秒
 		var expiresAt int64
 		if t.ExpiresAt != nil {

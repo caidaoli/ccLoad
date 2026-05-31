@@ -688,7 +688,7 @@ func handleAnthropicOpenAIMessageDelta(st *anthropicToOpenAIStreamState, payload
 	finishReason := any(nil)
 	if delta, _ := payload["delta"].(map[string]any); delta != nil {
 		if reason := stringValue(delta["stop_reason"]); reason != "" {
-			finishReason = mapAnthropicStopReasonToOpenAI(reason, reason == "tool_use")
+			finishReason = mapAnthropicStopReasonToOpenAI(reason, st.toolCallIndex > 0 || st.toolActive)
 		}
 	}
 	if finishReason == nil && !st.usage.seen {

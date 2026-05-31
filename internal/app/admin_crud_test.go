@@ -1591,12 +1591,12 @@ func TestChannelRequestValidate(t *testing.T) {
 			req: ChannelRequest{
 				Name:     "Test",
 				APIKey:   "sk-test",
-				URL:      "http://localhost:8080/",
+				URL:      "http://api.example.com:8080/",
 				Priority: 100,
 				Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 			},
 			wantError:       false,
-			expectNormalize: "http://localhost:8080",
+			expectNormalize: "http://api.example.com:8080",
 		},
 		{
 			name: "缺少name",

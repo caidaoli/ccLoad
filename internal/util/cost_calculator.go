@@ -18,6 +18,11 @@ type ModelPricing struct {
 	CacheReadPriceHigh float64 // 高上下文显式缓存读取价格（$/1M tokens）
 	HasCacheReadPrice  bool    // 是否使用显式缓存读取价格；false 时按模型系列倍率回退计算
 
+	// 缓存读取 token 是否参与高/低档选择。
+	// MiMo 系列按「input + cache_read」总量分档（缓存读也走高档价），需置 true；
+	// Gemini 长上下文分档只看非缓存 prompt size，缓存读不得推高分档，保持 false。
+	CacheReadCountsTowardTier bool
+
 	// 长上下文定价（>200k tokens，Claude/Gemini）
 	// 如果为0，表示无分段定价，使用InputPrice/OutputPrice
 	InputPriceHigh  float64 // 高上下文输入价格（$/1M tokens, >200k context）
@@ -308,14 +313,17 @@ var basePricing = map[string]ModelPricing{
 	"mimo-v2.5-pro": {
 		InputPrice: 1.00, OutputPrice: 3.00, CacheReadPrice: 0.20, HasCacheReadPrice: true,
 		InputPriceHigh: 2.00, OutputPriceHigh: 6.00, CacheReadPriceHigh: 0.40, // >256k input tokens
+		CacheReadCountsTowardTier: true,
 	},
 	"mimo-v2-pro": {
 		InputPrice: 1.00, OutputPrice: 3.00, CacheReadPrice: 0.20, HasCacheReadPrice: true,
 		InputPriceHigh: 2.00, OutputPriceHigh: 6.00, CacheReadPriceHigh: 0.40, // >256k input tokens
+		CacheReadCountsTowardTier: true,
 	},
 	"mimo-v2.5": {
 		InputPrice: 0.40, OutputPrice: 2.00, CacheReadPrice: 0.08, HasCacheReadPrice: true,
 		InputPriceHigh: 0.80, OutputPriceHigh: 4.00, CacheReadPriceHigh: 0.16, // >256k input tokens
+		CacheReadCountsTowardTier: true,
 	},
 	"mimo-v2-omni":    {InputPrice: 0.40, OutputPrice: 2.00, CacheReadPrice: 0.08, HasCacheReadPrice: true},
 	"mimo-v2.5-flash": {InputPrice: 0.10, OutputPrice: 0.30, CacheReadPrice: 0.01, HasCacheReadPrice: true},
@@ -812,10 +820,12 @@ func CalculateCostDetailed(model string, inputTokens, outputTokens, cacheReadTok
 	cost := 0.0
 
 	// 分段定价逻辑（当前用于 Gemini / Qwen / MiMo 系列）
-	// 默认仅按非缓存输入判断；MiMo 这类提供高档缓存命中价的模型把缓存读取也计入输入分档。
+	// 默认仅按非缓存输入判断；仅 MiMo 这类「input + cache_read 总量分档」的模型
+	// （CacheReadCountsTowardTier=true）才把缓存读计入分档。Gemini 长上下文只看
+	// 非缓存 prompt size，缓存读不得推高分档（否则 256K 缓存读会误触高档 input 价）。
 	tierThreshold := getTierThresholdForModel(model)
 	tierInputTokens := inputTokens
-	if pricing.CacheReadPriceHigh > 0 {
+	if pricing.CacheReadCountsTowardTier {
 		tierInputTokens += cacheReadTokens
 	}
 

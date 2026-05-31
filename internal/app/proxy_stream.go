@@ -57,6 +57,9 @@ func (r *firstByteDetector) Read(p []byte) (n int, err error) {
 // ============================================================================
 
 func streamCopyWithBufferSize(ctx context.Context, src io.Reader, dst http.ResponseWriter, onData func([]byte) error, bufSize int) error {
+	stopCloseOnCancel := closeReaderOnContextCancel(ctx, src)
+	defer stopCloseOnCancel()
+
 	buf := make([]byte, bufSize)
 	for {
 		select {
@@ -97,6 +100,19 @@ func streamCopyWithBufferSize(ctx context.Context, src io.Reader, dst http.Respo
 			}
 			return err
 		}
+	}
+}
+
+func closeReaderOnContextCancel(ctx context.Context, src io.Reader) func() {
+	closer, ok := src.(io.Closer)
+	if !ok {
+		return func() {}
+	}
+	stop := context.AfterFunc(ctx, func() {
+		_ = closer.Close()
+	})
+	return func() {
+		_ = stop()
 	}
 }
 
@@ -193,6 +209,9 @@ func streamTransformSSEEvents(
 	onRawEvent func([]byte) error,
 	transform func([]byte) ([][]byte, error),
 ) error {
+	stopCloseOnCancel := closeReaderOnContextCancel(ctx, src)
+	defer stopCloseOnCancel()
+
 	reader := bufio.NewReader(src)
 	var eventBuf bytes.Buffer
 

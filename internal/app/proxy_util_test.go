@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/util"
 )
 
 func TestWriteResponseWithHeaders_PreservesContentType(t *testing.T) {
@@ -179,6 +180,24 @@ func TestBuildLogEntry_StreamDiagMsg(t *testing.T) {
 			t.Errorf("expected Message to include diag, got %q", entry.Message)
 		}
 	})
+}
+
+func TestComputeRequestCost_ServiceTierAppliesOnlyAsOpenAIPriceMultiplier(t *testing.T) {
+	t.Parallel()
+
+	gpt54LongContext := &fwResult{InputTokens: 300_000, OutputTokens: 1_000}
+	got := computeRequestCost("gpt-5.4", "priority", gpt54LongContext)
+	want := util.CalculateCostDetailed("gpt-5.4", 300_000, 1_000, 0, 0, 0) * 2
+	if !floatEquals(got, want, 0.000001) {
+		t.Fatalf("gpt-5.4 priority cost=%.6f, want %.6f", got, want)
+	}
+
+	qwenLongContext := &fwResult{InputTokens: 300_000, OutputTokens: 1_000_000}
+	got = computeRequestCost("qwen3.5-plus", "priority", qwenLongContext)
+	want = util.CalculateCostDetailed("qwen3.5-plus", 300_000, 1_000_000, 0, 0, 0)
+	if !floatEquals(got, want, 0.000001) {
+		t.Fatalf("qwen priority cost=%.6f, want service_tier ignored cost %.6f", got, want)
+	}
 }
 
 func TestCopyRequestHeaders_StripsHopByHopAndAuth(t *testing.T) {

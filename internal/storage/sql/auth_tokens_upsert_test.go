@@ -33,6 +33,7 @@ func TestUpsertAuthTokenAllFields_SQLite(t *testing.T) {
 		AllowedChannelIDs: []int64{7, 9},
 		CostUsedMicroUSD:  10,
 		CostLimitMicroUSD: 100,
+		MaxConcurrency:    1,
 		SuccessCount:      1,
 		FailureCount:      2,
 	}

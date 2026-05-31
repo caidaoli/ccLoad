@@ -53,28 +53,19 @@ func (c *CostCache) Add(channelID int64, cost float64) {
 
 // Get 获取渠道今日成本
 func (c *CostCache) Get(channelID int64) float64 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	// 读锁下检查跨天（只读检查，不重置）
-	today := todayStart(time.Now())
-	if !today.Equal(c.dayStart) {
-		return 0 // 跨天了，返回0，下次Add时会重置
-	}
-
+	c.checkAndResetIfNewDay(time.Now())
 	return c.costs[channelID]
 }
 
 // GetAll 批量获取所有渠道今日成本（供过滤器使用）
 func (c *CostCache) GetAll() map[int64]float64 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	// 读锁下检查跨天
-	today := todayStart(time.Now())
-	if !today.Equal(c.dayStart) {
-		return make(map[int64]float64) // 跨天了，返回空map
-	}
+	c.checkAndResetIfNewDay(time.Now())
 
 	// 返回副本，避免并发问题
 	result := make(map[int64]float64, len(c.costs))
@@ -99,7 +90,9 @@ func (c *CostCache) Load(costs map[int64]float64) {
 
 // DayStart 返回当前统计周期的0点时间（用于查询数据库）
 func (c *CostCache) DayStart() time.Time {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.checkAndResetIfNewDay(time.Now())
+
 	return c.dayStart
 }

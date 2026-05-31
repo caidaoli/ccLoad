@@ -487,6 +487,71 @@ func TestConfig_DeleteConfig_PurgesOrphanLogsWhenChannelMissing(t *testing.T) {
 	}
 }
 
+func TestConfig_DeleteConfig_ImportBatchWithSameIDAcceptsLogs(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	store, err := storage.CreateSQLiteStore(filepath.Join(tmp, "restore-deleted-channel.db"))
+	if err != nil {
+		t.Fatalf("create sqlite store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name:    "deleted-before-restore",
+		URL:     "https://api.example.com",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create config: %v", err)
+	}
+	if err := store.DeleteConfig(ctx, created.ID); err != nil {
+		t.Fatalf("delete config: %v", err)
+	}
+
+	imported := &model.ChannelWithKeys{
+		Config: &model.Config{
+			ID:      created.ID,
+			Name:    "restored-channel",
+			URL:     "https://api-restored.example.com",
+			Enabled: true,
+			ModelEntries: []model.ModelEntry{
+				{Model: "restored-model"},
+			},
+		},
+		APIKeys: []model.APIKey{
+			{KeyIndex: 0, APIKey: "sk-restored", KeyStrategy: model.KeyStrategySequential},
+		},
+	}
+	createdCount, updatedCount, err := store.ImportChannelBatch(ctx, []*model.ChannelWithKeys{imported})
+	if err != nil {
+		t.Fatalf("import restored channel: %v", err)
+	}
+	if createdCount != 1 || updatedCount != 0 {
+		t.Fatalf("import counts = (%d,%d), want (1,0)", createdCount, updatedCount)
+	}
+
+	now := time.Now()
+	if err := store.AddLog(ctx, &model.LogEntry{
+		Time:       model.JSONTime{Time: now},
+		Model:      "restored-model",
+		ChannelID:  created.ID,
+		StatusCode: 200,
+	}); err != nil {
+		t.Fatalf("add restored channel log: %v", err)
+	}
+
+	channelID := created.ID
+	count, err := store.CountLogsRange(ctx, now.Add(-time.Minute), now.Add(time.Minute), &model.LogFilter{ChannelID: &channelID})
+	if err != nil {
+		t.Fatalf("count restored channel logs: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("restored channel log count=%d, want 1", count)
+	}
+}
+
 func TestConfig_DeleteConfig_AllowsRecreateWithSameIDAndKeyIndicesInMemoryStore(t *testing.T) {
 	t.Parallel()
 

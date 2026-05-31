@@ -12,6 +12,13 @@ import (
 
 // ==================== 渠道级冷却方法（操作 channels 表内联字段）====================
 
+func (s *SQLStore) cooldownSelectLockClause() string {
+	if s.driverName == "mysql" {
+		return " FOR UPDATE"
+	}
+	return ""
+}
+
 // BumpChannelCooldown 渠道级冷却：指数退避策略（认证错误5分钟起，其他1秒起，最大30分钟）
 func (s *SQLStore) BumpChannelCooldown(ctx context.Context, channelID int64, now time.Time, statusCode int) (time.Duration, error) {
 	// 使用事务保护Read-Modify-Write操作,防止并发竞态
@@ -20,13 +27,13 @@ func (s *SQLStore) BumpChannelCooldown(ctx context.Context, channelID int64, now
 	var nextDuration time.Duration
 
 	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
-		// 1. 读取当前冷却状态(事务内,隐式锁定行)
+		// 1. 读取当前冷却状态。MySQL 必须显式 FOR UPDATE 锁行，否则两个事务可读到同一旧值。
 		var cooldownUntil, cooldownDurationMs int64
 		err := tx.QueryRowContext(ctx, `
 			SELECT cooldown_until, cooldown_duration_ms
 			FROM channels
 			WHERE id = ?
-		`, channelID).Scan(&cooldownUntil, &cooldownDurationMs)
+		`+s.cooldownSelectLockClause(), channelID).Scan(&cooldownUntil, &cooldownDurationMs)
 
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -193,13 +200,13 @@ func (s *SQLStore) BumpKeyCooldown(ctx context.Context, configID int64, keyIndex
 	var nextDuration time.Duration
 
 	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
-		// 1. 读取当前冷却状态(事务内,隐式锁定行)
+		// 1. 读取当前冷却状态。MySQL 必须显式 FOR UPDATE 锁行，否则两个事务可读到同一旧值。
 		var cooldownUntil, cooldownDurationMs int64
 		err := tx.QueryRowContext(ctx, `
 			SELECT cooldown_until, cooldown_duration_ms
 			FROM api_keys
 			WHERE channel_id = ? AND key_index = ?
-		`, configID, keyIndex).Scan(&cooldownUntil, &cooldownDurationMs)
+		`+s.cooldownSelectLockClause(), configID, keyIndex).Scan(&cooldownUntil, &cooldownDurationMs)
 
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {

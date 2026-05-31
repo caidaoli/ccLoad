@@ -108,6 +108,21 @@ func TestAdminAPI_CreateAuthToken_NegativeMaxConcurrency(t *testing.T) {
 	}
 }
 
+func TestAdminAPI_CreateAuthToken_CostLimitRequiresMaxConcurrency(t *testing.T) {
+	server := newInMemoryServer(t)
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/auth-tokens", map[string]any{
+		"description":    "limited token",
+		"cost_limit_usd": 1.0,
+	}))
+
+	server.HandleCreateAuthToken(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+}
+
 func TestAdminAPI_ListAuthTokens_ResponseShape(t *testing.T) {
 	server := newInMemoryServer(t)
 

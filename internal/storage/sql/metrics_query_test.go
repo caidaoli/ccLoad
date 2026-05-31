@@ -17,6 +17,9 @@ func TestBuildLatestChannelSuccessQuery_UsesIndexedSeek(t *testing.T) {
 	if strings.Contains(upperQuery, "ROW_NUMBER()") || strings.Contains(upperQuery, "OVER (") {
 		t.Fatalf("latest success query must not rank all historical rows:\n%s", query)
 	}
+	if strings.Contains(upperQuery, "UNION ALL") {
+		t.Fatalf("latest success query must not build linear UNION ALL scope:\n%s", query)
+	}
 	if !strings.Contains(upperQuery, "ORDER BY TIME DESC, ID DESC LIMIT 1") {
 		t.Fatalf("latest success query must seek the latest indexed row per channel:\n%s", query)
 	}
@@ -37,6 +40,9 @@ func TestBuildLatestEntrySuccessQuery_UsesIndexedSeek(t *testing.T) {
 	upperQuery := strings.ToUpper(query)
 	if strings.Contains(upperQuery, "ROW_NUMBER()") || strings.Contains(upperQuery, "OVER (") {
 		t.Fatalf("latest entry success query must not rank all historical rows:\n%s", query)
+	}
+	if strings.Contains(upperQuery, "UNION ALL") {
+		t.Fatalf("latest entry success query must not build linear UNION ALL scope:\n%s", query)
 	}
 	if !strings.Contains(upperQuery, "ORDER BY TIME DESC, ID DESC LIMIT 1") {
 		t.Fatalf("latest entry success query must seek the latest indexed row per channel/model:\n%s", query)

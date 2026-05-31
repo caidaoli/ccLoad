@@ -60,7 +60,7 @@ func mapAnthropicStopReasonToGemini(reason string) string {
 }
 
 func mapAnthropicStopReasonToOpenAI(reason string, hasToolCalls bool) string {
-	if hasToolCalls || reason == "tool_use" {
+	if hasToolCalls {
 		return "tool_calls"
 	}
 	switch reason {

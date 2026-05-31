@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
@@ -162,6 +163,20 @@ func (t *AuthToken) SetCostLimitUSD(usd float64) {
 		return
 	}
 	t.CostLimitMicroUSD = util.USDToMicroUSD(usd)
+}
+
+// ValidateUsageLimits enforces invariants that keep limit checks bounded.
+func (t *AuthToken) ValidateUsageLimits() error {
+	if t.CostLimitMicroUSD < 0 {
+		return errors.New("cost_limit_usd must be >= 0")
+	}
+	if t.MaxConcurrency < 0 {
+		return errors.New("max_concurrency must be >= 0")
+	}
+	if t.CostLimitMicroUSD > 0 && t.MaxConcurrency <= 0 {
+		return errors.New("cost-limited auth token requires max_concurrency > 0")
+	}
+	return nil
 }
 
 // authTokenJSON 是用于JSON序列化的内部结构

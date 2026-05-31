@@ -317,6 +317,33 @@ func TestOpenAIServiceTierMultiplier(t *testing.T) {
 	}
 }
 
+// P1-2 回归：Gemini 长上下文分档只看非缓存 prompt size，缓存读 token 不得推高分档。
+// 修复前 cacheRead 被无条件加进 tierInputTokens（条件 CacheReadPriceHigh>0 过宽），
+// 256K 纯缓存读会误触 200K 高档，把 0.20 低档缓存价算成 0.40 高档价。
+func TestCalculateCost_GeminiCacheReadNotInTier(t *testing.T) {
+	// 纯 256K 缓存读、零 input：不得触发高档，缓存价应为低档 0.20。
+	cacheOnly := CalculateCostDetailed("gemini-3.1-pro", 0, 0, 256_000, 0, 0)
+	expectedCacheOnly := 256_000 * 0.20 / 1_000_000
+	if !floatEquals(cacheOnly, expectedCacheOnly, 0.000001) {
+		t.Errorf("gemini-3.1-pro 纯缓存读成本 = %.6f, 期望低档 %.6f（缓存读不应推高分档）", cacheOnly, expectedCacheOnly)
+	}
+
+	// 真正的大 input（>200K）仍触发高档：input 走 4.00，此时缓存读才走高档缓存价 0.40。
+	highInput := CalculateCostDetailed("gemini-3.1-pro", 256_000, 0, 100_000, 0, 0)
+	expectedHighInput := 256_000*4.00/1_000_000 + 100_000*0.40/1_000_000
+	if !floatEquals(highInput, expectedHighInput, 0.000001) {
+		t.Errorf("gemini-3.1-pro 大 input 高档成本 = %.6f, 期望 %.6f", highInput, expectedHighInput)
+	}
+
+	// 对照：MiMo 系列按 input+cache_read 总量分档（CacheReadCountsTowardTier=true），
+	// 纯缓存读超 256K 仍应推高分档，缓存价走高档 0.40——此语义需保留。
+	mimoCacheHigh := CalculateCostDetailed("mimo-v2.5-pro", 0, 0, 256_001, 0, 0)
+	expectedMimoHigh := 256_001 * 0.40 / 1_000_000
+	if !floatEquals(mimoCacheHigh, expectedMimoHigh, 0.000001) {
+		t.Errorf("mimo-v2.5-pro 纯缓存读成本 = %.6f, 期望高档 %.6f（缓存读应推高分档）", mimoCacheHigh, expectedMimoHigh)
+	}
+}
+
 func TestCalculateCost_MimoModels(t *testing.T) {
 	testCases := []struct {
 		model          string

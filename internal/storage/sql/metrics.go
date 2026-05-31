@@ -505,42 +505,60 @@ func buildChannelScope(entryIndexesByChannel map[int][]int) (string, []any) {
 	}
 	sort.Ints(channelIDs)
 
-	selects := make([]string, 0, len(channelIDs))
+	placeholders := make([]string, len(channelIDs))
 	args := make([]any, 0, len(channelIDs))
 	for i, channelID := range channelIDs {
-		if i == 0 {
-			selects = append(selects, "SELECT ? AS channel_id")
-		} else {
-			selects = append(selects, "SELECT ?")
-		}
+		placeholders[i] = "?"
 		args = append(args, channelID)
 	}
-	return strings.Join(selects, " UNION ALL "), args
+	if len(placeholders) == 0 {
+		return "SELECT channel_id FROM logs WHERE 1=0", args
+	}
+	return fmt.Sprintf(
+		"SELECT DISTINCT channel_id FROM logs WHERE channel_id IN (%s)",
+		strings.Join(placeholders, ","),
+	), args
 }
 
 func buildEntryScope(entryIndexes map[statsRequestKey]int) (string, []any) {
-	keys := make([]statsRequestKey, 0, len(entryIndexes))
+	channelSet := make(map[int]struct{}, len(entryIndexes))
+	modelSet := make(map[string]struct{}, len(entryIndexes))
 	for key := range entryIndexes {
-		keys = append(keys, key)
+		channelSet[key.channelID] = struct{}{}
+		modelSet[key.model] = struct{}{}
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		if keys[i].channelID != keys[j].channelID {
-			return keys[i].channelID < keys[j].channelID
-		}
-		return keys[i].model < keys[j].model
-	})
 
-	selects := make([]string, 0, len(keys))
-	args := make([]any, 0, len(entryIndexes)*2)
-	for i, key := range keys {
-		if i == 0 {
-			selects = append(selects, "SELECT ? AS channel_id, ? AS model")
-		} else {
-			selects = append(selects, "SELECT ?, ?")
-		}
-		args = append(args, key.channelID, key.model)
+	channelIDs := make([]int, 0, len(channelSet))
+	for channelID := range channelSet {
+		channelIDs = append(channelIDs, channelID)
 	}
-	return strings.Join(selects, " UNION ALL "), args
+	sort.Ints(channelIDs)
+
+	models := make([]string, 0, len(modelSet))
+	for modelName := range modelSet {
+		models = append(models, modelName)
+	}
+	sort.Strings(models)
+
+	channelPlaceholders := make([]string, len(channelIDs))
+	modelPlaceholders := make([]string, len(models))
+	args := make([]any, 0, len(channelIDs)+len(models))
+	for i, channelID := range channelIDs {
+		channelPlaceholders[i] = "?"
+		args = append(args, channelID)
+	}
+	for i, modelName := range models {
+		modelPlaceholders[i] = "?"
+		args = append(args, modelName)
+	}
+	if len(channelPlaceholders) == 0 || len(modelPlaceholders) == 0 {
+		return "SELECT channel_id, COALESCE(model, '') AS model FROM logs WHERE 1=0", args
+	}
+	return fmt.Sprintf(
+		"SELECT DISTINCT channel_id, COALESCE(model, '') AS model FROM logs WHERE channel_id IN (%s) AND COALESCE(model, '') IN (%s)",
+		strings.Join(channelPlaceholders, ","),
+		strings.Join(modelPlaceholders, ","),
+	), args
 }
 
 // GetStatsLite 轻量版统计查询，跳过RPM计算和渠道名称填充

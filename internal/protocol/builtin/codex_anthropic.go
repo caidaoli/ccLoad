@@ -348,24 +348,25 @@ func convertCodexResponseToAnthropicStream(_ context.Context, model string, rawR
 	}
 	applyCodexResponsePayload(st, payload)
 
-	matches := func(want string) bool {
-		return eventType == want || stringValue(payload["type"]) == want
+	eventName := eventType
+	if eventName == "" {
+		eventName = stringValue(payload["type"])
 	}
-	switch {
-	case matches("response.output_item.added"):
+	switch eventName {
+	case "response.output_item.added":
 		return handleCodexOutputItemAdded(st, payload)
-	case matches("response.reasoning_summary_part.added"):
+	case "response.reasoning_summary_part.added":
 		return codexAnthropicStartThinkingBlock(st)
-	case matches("response.reasoning_summary_text.delta"):
+	case "response.reasoning_summary_text.delta":
 		return handleCodexReasoningSummaryDelta(st, payload)
-	case matches("response.reasoning_summary_part.done"):
+	case "response.reasoning_summary_part.done":
 		st.thinkingStopPending = true
 		return nil, nil
-	case matches("response.output_item.done"):
+	case "response.output_item.done":
 		return handleCodexOutputItemDone(st, payload, rawReq, translatedReq)
-	case matches("response.output_text.delta"):
+	case "response.output_text.delta":
 		return handleCodexOutputTextDelta(st, payload)
-	case matches("response.completed"):
+	case "response.completed":
 		return handleCodexResponseCompleted(st)
 	}
 	return nil, nil

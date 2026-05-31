@@ -232,7 +232,7 @@ func (s *SQLStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) err
 }
 
 func (s *SQLStore) filterDeletedChannelLogs(logs []*model.LogEntry) []*model.LogEntry {
-	out := logs[:0]
+	out := make([]*model.LogEntry, 0, len(logs))
 	for _, e := range logs {
 		if e == nil || s.isChannelDeleted(e.ChannelID) {
 			continue

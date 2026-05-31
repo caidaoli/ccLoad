@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 
@@ -78,6 +79,16 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 		server.HandleUpdateAuthToken(c)
 		if w.Code != http.StatusNotFound {
 			t.Fatalf("status=%d, want %d", w.Code, http.StatusNotFound)
+		}
+	})
+
+	t.Run("cost limit requires max concurrency", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPut, "/admin/auth-tokens/1", []byte(`{"cost_limit_usd":1.5}`)))
+		c.Params = gin.Params{{Key: "id", Value: "1"}}
+
+		server.HandleUpdateAuthToken(c)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusBadRequest, w.Body.String())
 		}
 	})
 
@@ -159,6 +170,27 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 		}
 	})
 
+	t.Run("cannot clear max concurrency while cost limited", func(t *testing.T) {
+		tokenLimited := &model.AuthToken{
+			Token:             model.HashToken("plain-token-limited"),
+			Description:       "limited",
+			IsActive:          true,
+			CostLimitMicroUSD: 1_000_000,
+			MaxConcurrency:    2,
+		}
+		if err := store.CreateAuthToken(ctx, tokenLimited); err != nil {
+			t.Fatalf("CreateAuthToken tokenLimited failed: %v", err)
+		}
+
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPut, "/admin/auth-tokens/limited", []byte(`{"max_concurrency":0}`)))
+		c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(tokenLimited.ID, 10)}}
+
+		server.HandleUpdateAuthToken(c)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+		}
+	})
+
 	t.Run("preserve allowed models and channels when fields omitted", func(t *testing.T) {
 		token2 := &model.AuthToken{
 			Token:             model.HashToken("plain-token-2"),
@@ -176,8 +208,8 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 			"description": "keep-models-updated",
 			"is_active":   false,
 		}
-		c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/auth-tokens/2", body))
-		c.Params = gin.Params{{Key: "id", Value: "2"}}
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/auth-tokens/preserve", body))
+		c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(token2.ID, 10)}}
 
 		server.HandleUpdateAuthToken(c)
 		if w.Code != http.StatusOK {
@@ -213,8 +245,8 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 			t.Fatalf("CreateAuthToken token3 failed: %v", err)
 		}
 
-		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPut, "/admin/auth-tokens/3", []byte(`{"expires_at":null}`)))
-		c.Params = gin.Params{{Key: "id", Value: "3"}}
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPut, "/admin/auth-tokens/clear-expires", []byte(`{"expires_at":null}`)))
+		c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(token3.ID, 10)}}
 
 		server.HandleUpdateAuthToken(c)
 		if w.Code != http.StatusOK {

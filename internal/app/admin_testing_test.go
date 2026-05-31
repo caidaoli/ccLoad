@@ -382,6 +382,26 @@ func TestTestChannelAPI_StreamFirstValidContentTimeoutIgnoresHeartbeats(t *testi
 	}
 }
 
+func TestHandleChannelTest_InvalidRequestDoesNotLeakDecoderError(t *testing.T) {
+	srv := newInMemoryServer(t)
+
+	c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/admin/channels/1/test", []byte(`{"model":123,"channel_type":"anthropic"}`)))
+	c.Params = gin.Params{{Key: "id", Value: "1"}}
+
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	resp := mustParseAPIResponse[json.RawMessage](t, w.Body.Bytes())
+	if resp.Error != "invalid request" {
+		t.Fatalf("error=%q, want generic invalid request", resp.Error)
+	}
+	if strings.Contains(resp.Error, "unmarshal") || strings.Contains(resp.Error, "TestChannelRequest") {
+		t.Fatalf("decoder detail leaked in response: %q", resp.Error)
+	}
+}
+
 func TestHandleChannelTest_RejectsBaseURL(t *testing.T) {
 	failCalls := 0
 	failUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
