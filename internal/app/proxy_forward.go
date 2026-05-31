@@ -1075,12 +1075,37 @@ func shouldProbeSoftError(reqCtx *requestContext, resp *http.Response, channelTy
 }
 
 // classifySSEErrorStatus 根据响应体内容判定 SSE 错误的内部状态码：
-// 1308 配额超限 → 596（StatusQuotaExceeded，Key 级冷却）；其他 → 597（StatusSSEError）。
+// 1308 配额超限 → 596；明确限流 → 429；其他 → 597。
 func classifySSEErrorStatus(body []byte) int {
 	if _, is1308 := util.ParseResetTimeFrom1308Error(body); is1308 {
 		return util.StatusQuotaExceeded
 	}
+	if isSSERateLimitError(body) {
+		return http.StatusTooManyRequests
+	}
 	return util.StatusSSEError
+}
+
+func isSSERateLimitError(body []byte) bool {
+	var payload struct {
+		Error struct {
+			Type string `json:"type"`
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := sonic.Unmarshal(body, &payload); err != nil {
+		return false
+	}
+	return isRateLimitErrorType(payload.Error.Type) || isRateLimitErrorType(payload.Error.Code)
+}
+
+func isRateLimitErrorType(value string) bool {
+	switch strings.ToLower(value) {
+	case "rate_limit_error", "rate_limit_exceeded", "too_many_requests":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) probeSoftErrorResponse(
