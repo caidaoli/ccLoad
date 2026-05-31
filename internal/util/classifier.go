@@ -30,6 +30,9 @@ var resetTime1308Regex = regexp.MustCompile(`\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}
 // beijingTomorrowResetRegex 匹配类似“明天凌晨3点13分（北京时间）恢复”的相对重置时间。
 var beijingTomorrowResetRegex = regexp.MustCompile(`明天\s*(?:凌晨|早上|上午)?\s*(\d{1,2})\s*点\s*(?:(\d{1,2})\s*分)?`)
 
+// retryInDurationRegex 匹配 Gemini RESOURCE_EXHAUSTED 中的 “Please retry in 59.409754061s”。
+var retryInDurationRegex = regexp.MustCompile(`(?i)\bretry\s+in\s+([0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h)(?:[0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h))*)`)
+
 // HTTP 状态码常量（统一定义，避免魔法数字）
 const (
 	// StatusClientClosedRequest 客户端取消请求（Nginx扩展状态码）
@@ -104,15 +107,29 @@ type sseErrorResponse struct {
 }
 
 type structuredQuotaErrorResponse struct {
-	Code    string          `json:"code"`
-	Message string          `json:"message"`
-	Error   json.RawMessage `json:"error"`
+	Code         any             `json:"code"`
+	Message      string          `json:"message"`
+	ResetSeconds int64           `json:"reset_seconds"`
+	ResetTime    string          `json:"reset_time"`
+	Status       string          `json:"status"`
+	Error        json.RawMessage `json:"error"`
 }
 
 type structuredQuotaErrorObject struct {
-	Type    string `json:"type"`
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Type         any    `json:"type"`
+	Code         any    `json:"code"`
+	Message      string `json:"message"`
+	ResetSeconds int64  `json:"reset_seconds"`
+	ResetTime    string `json:"reset_time"`
+	Status       string `json:"status"`
+}
+
+type structuredQuotaError struct {
+	code         string
+	message      string
+	resetSeconds int64
+	resetTime    string
+	status       string
 }
 
 // ErrorType 返回错误类型（优先使用type字段，如果为空则使用code字段）
@@ -425,14 +442,26 @@ func parseStructuredQuotaCooldown(responseBody []byte, now time.Time) (time.Time
 		return time.Time{}, "", false
 	}
 
-	code, message, ok := parseStructuredQuotaError(responseBody)
+	quotaErr, ok := parseStructuredQuotaError(responseBody)
 	if !ok {
 		return time.Time{}, "", false
 	}
 
+	code := quotaErr.code
+	message := quotaErr.message
 	messageUpper := strings.ToUpper(message)
 
 	switch {
+	case code == "MODEL_COOLDOWN":
+		if until, ok := parseStructuredCooldownUntil(quotaErr, now); ok {
+			return until, "model_cooldown", true
+		}
+		return time.Time{}, "", false
+	case quotaErr.status == "RESOURCE_EXHAUSTED" || strings.Contains(messageUpper, "RESOURCE_EXHAUSTED"):
+		if until, ok := parseRetryInCooldownUntil(message, now); ok {
+			return until, "RESOURCE_EXHAUSTED_RETRY_IN", true
+		}
+		return time.Time{}, "", false
 	case code == "API_KEY_QUOTA_EXHAUSTED":
 		return now.Add(30 * time.Minute), "API_KEY_QUOTA_EXHAUSTED", true
 	case code == "FREE_TIER_BUDGET_EXCEEDED" || strings.Contains(messageUpper, "FREE_TIER_BUDGET_EXCEEDED"):
@@ -450,38 +479,102 @@ func parseStructuredQuotaCooldown(responseBody []byte, now time.Time) (time.Time
 	}
 }
 
-func parseStructuredQuotaError(responseBody []byte) (string, string, bool) {
+func parseStructuredQuotaError(responseBody []byte) (structuredQuotaError, bool) {
 	var errResp structuredQuotaErrorResponse
 	if err := json.Unmarshal(responseBody, &errResp); err != nil {
-		return "", "", false
+		return structuredQuotaError{}, false
 	}
 
-	code := strings.ToUpper(strings.TrimSpace(errResp.Code))
-	message := errResp.Message
+	parsed := structuredQuotaError{
+		code:         normalizeStructuredScalar(errResp.Code),
+		message:      errResp.Message,
+		resetSeconds: errResp.ResetSeconds,
+		resetTime:    errResp.ResetTime,
+		status:       strings.ToUpper(strings.TrimSpace(errResp.Status)),
+	}
 
 	if len(errResp.Error) > 0 {
 		var errorText string
 		if err := json.Unmarshal(errResp.Error, &errorText); err == nil {
-			if message == "" {
-				message = errorText
+			if parsed.message == "" {
+				parsed.message = errorText
 			}
 		} else {
 			var errorObj structuredQuotaErrorObject
 			if err := json.Unmarshal(errResp.Error, &errorObj); err == nil {
-				if code == "" {
-					code = strings.ToUpper(strings.TrimSpace(errorObj.Code))
+				if parsed.code == "" {
+					parsed.code = normalizeStructuredScalar(errorObj.Code)
 				}
-				if code == "" {
-					code = strings.ToUpper(strings.TrimSpace(errorObj.Type))
+				if parsed.code == "" {
+					parsed.code = normalizeStructuredScalar(errorObj.Type)
 				}
-				if message == "" {
-					message = errorObj.Message
+				if parsed.message == "" {
+					parsed.message = errorObj.Message
+				}
+				if parsed.resetSeconds == 0 {
+					parsed.resetSeconds = errorObj.ResetSeconds
+				}
+				if parsed.resetTime == "" {
+					parsed.resetTime = errorObj.ResetTime
+				}
+				if parsed.status == "" {
+					parsed.status = strings.ToUpper(strings.TrimSpace(errorObj.Status))
 				}
 			}
 		}
 	}
 
-	return code, message, code != "" || message != ""
+	return parsed, parsed.code != "" || parsed.message != "" || parsed.status != ""
+}
+
+func normalizeStructuredScalar(value any) string {
+	return strings.ToUpper(strings.TrimSpace(structuredScalarString(value)))
+}
+
+func structuredScalarString(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case json.Number:
+		return v.String()
+	case bool:
+		return strconv.FormatBool(v)
+	default:
+		return ""
+	}
+}
+
+func parseStructuredCooldownUntil(quotaErr structuredQuotaError, now time.Time) (time.Time, bool) {
+	if quotaErr.resetSeconds > 0 {
+		return now.Add(time.Duration(quotaErr.resetSeconds) * time.Second), true
+	}
+
+	if quotaErr.resetTime == "" {
+		return time.Time{}, false
+	}
+
+	duration, err := time.ParseDuration(quotaErr.resetTime)
+	if err != nil || duration <= 0 {
+		return time.Time{}, false
+	}
+	return now.Add(duration), true
+}
+
+func parseRetryInCooldownUntil(message string, now time.Time) (time.Time, bool) {
+	matches := retryInDurationRegex.FindStringSubmatch(message)
+	if matches == nil {
+		return time.Time{}, false
+	}
+
+	duration, err := time.ParseDuration(matches[1])
+	if err != nil || duration <= 0 {
+		return time.Time{}, false
+	}
+	return now.Add(duration), true
 }
 
 func nextLocalMidnight(now time.Time) time.Time {
