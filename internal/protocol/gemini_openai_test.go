@@ -27,6 +27,23 @@ func TestRegistry_TranslateRequest_GeminiToOpenAI(t *testing.T) {
 	}
 }
 
+func TestRegistry_TranslateRequest_GeminiToOpenAI_PreservesThinkingLevel(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	raw := []byte(`{
+		"contents":[{"role":"user","parts":[{"text":"think hard"}]}],
+		"generationConfig":{"thinkingConfig":{"thinkingLevel":"high"}}
+	}`)
+	got, err := reg.TranslateRequest(protocol.Gemini, protocol.OpenAI, "gpt-5", raw, false)
+	if err != nil {
+		t.Fatalf("TranslateRequest failed: %v", err)
+	}
+	if !strings.Contains(string(got), `"reasoning_effort":"high"`) {
+		t.Fatalf("expected OpenAI reasoning_effort from Gemini thinkingLevel, got %s", got)
+	}
+}
+
 func TestRegistry_TranslateResponseNonStream_OpenAIToGemini(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)

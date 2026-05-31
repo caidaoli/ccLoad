@@ -57,6 +57,34 @@ func TestRegistry_TranslateRequest_GeminiToAnthropic(t *testing.T) {
 	}
 }
 
+func TestRegistry_TranslateRequest_GeminiToAnthropic_PreservesThinkingLevel(t *testing.T) {
+	t.Parallel()
+
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	raw := []byte(`{
+		"contents":[{"role":"user","parts":[{"text":"think hard"}]}],
+		"generationConfig":{"thinkingConfig":{"thinkingLevel":"high"}}
+	}`)
+	got, err := reg.TranslateRequest(protocol.Gemini, protocol.Anthropic, "claude-3-5-sonnet", raw, false)
+	if err != nil {
+		t.Fatalf("TranslateRequest failed: %v", err)
+	}
+	var req struct {
+		Thinking struct {
+			Type         string `json:"type"`
+			BudgetTokens int    `json:"budget_tokens"`
+		} `json:"thinking"`
+	}
+	if err := json.Unmarshal(got, &req); err != nil {
+		t.Fatalf("unmarshal anthropic request: %v", err)
+	}
+	if req.Thinking.Type != "enabled" || req.Thinking.BudgetTokens != 16384 {
+		t.Fatalf("expected high thinking config, got %s", got)
+	}
+}
+
 func TestRegistry_TranslateResponseNonStream_AnthropicToGemini(t *testing.T) {
 	t.Parallel()
 
