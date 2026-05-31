@@ -18,6 +18,30 @@ type SQLStore struct {
 
 	// [FIX] 2025-12：保证 Close 幂等性，防止重复关闭导致 panic
 	closeOnce sync.Once
+
+	// 删除渠道后，异步日志队列里可能还有旧渠道日志等待刷盘。
+	// tombstone 让迟到日志在存储层被丢弃，避免删除后又被插回。
+	deletedChannels sync.Map // map[int64]struct{}
+}
+
+func (s *SQLStore) markChannelDeleted(id int64) {
+	if id > 0 {
+		s.deletedChannels.Store(id, struct{}{})
+	}
+}
+
+func (s *SQLStore) unmarkChannelDeleted(id int64) {
+	if id > 0 {
+		s.deletedChannels.Delete(id)
+	}
+}
+
+func (s *SQLStore) isChannelDeleted(id int64) bool {
+	if id <= 0 {
+		return false
+	}
+	_, ok := s.deletedChannels.Load(id)
+	return ok
 }
 
 // GetHealthTimeline 查询健康时间线数据

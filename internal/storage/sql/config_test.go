@@ -291,6 +291,202 @@ func TestConfig_DeleteConfig(t *testing.T) {
 	}
 }
 
+func TestConfig_DeleteConfig_RemovesLogsAndDebugLogs(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	store, err := storage.CreateSQLiteStore(filepath.Join(tmp, "delete-logs.db"))
+	if err != nil {
+		t.Fatalf("create sqlite store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name:    "delete-with-logs",
+		URL:     "https://api.example.com",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create config: %v", err)
+	}
+
+	now := time.Now()
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{{
+		Time:       model.JSONTime{Time: now},
+		Model:      "model-1",
+		ChannelID:  created.ID,
+		StatusCode: 200,
+		DebugData: &model.DebugLogEntry{
+			CreatedAt:   now.Unix(),
+			ReqMethod:   "POST",
+			ReqURL:      "https://api.example.com/v1/messages",
+			ReqHeaders:  "{}",
+			ReqBody:     []byte(`{"model":"model-1"}`),
+			RespStatus:  200,
+			RespHeaders: "{}",
+			RespBody:    []byte(`{"ok":true}`),
+		},
+	}}); err != nil {
+		t.Fatalf("add log with debug data: %v", err)
+	}
+
+	logs, err := store.ListLogsRange(ctx, now.Add(-time.Minute), now.Add(time.Minute), 10, 0, nil)
+	if err != nil {
+		t.Fatalf("list logs before delete: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("expected 1 log before delete, got %d", len(logs))
+	}
+	logID := logs[0].ID
+	debugLog, err := store.GetDebugLogByLogID(ctx, logID)
+	if err != nil {
+		t.Fatalf("get debug log before delete: %v", err)
+	}
+	if debugLog == nil {
+		t.Fatalf("expected debug log before delete")
+	}
+
+	if err := store.DeleteConfig(ctx, created.ID); err != nil {
+		t.Fatalf("delete config: %v", err)
+	}
+
+	channelID := created.ID
+	count, err := store.CountLogsRange(ctx, now.Add(-time.Minute), now.Add(time.Minute), &model.LogFilter{ChannelID: &channelID})
+	if err != nil {
+		t.Fatalf("count logs after delete: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected channel logs removed, got %d", count)
+	}
+	debugLog, err = store.GetDebugLogByLogID(ctx, logID)
+	if err != nil {
+		t.Fatalf("get debug log after delete: %v", err)
+	}
+	if debugLog != nil {
+		t.Fatalf("expected debug log removed after deleting channel")
+	}
+}
+
+func TestLog_AddLogAndBatchAddLogs_IgnoreDeletedChannel(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	store, err := storage.CreateSQLiteStore(filepath.Join(tmp, "deleted-channel-log.db"))
+	if err != nil {
+		t.Fatalf("create sqlite store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name:    "deleted-channel",
+		URL:     "https://api.example.com",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create config: %v", err)
+	}
+	if err := store.DeleteConfig(ctx, created.ID); err != nil {
+		t.Fatalf("delete config: %v", err)
+	}
+
+	now := time.Now()
+	if err := store.AddLog(ctx, &model.LogEntry{
+		Time:       model.JSONTime{Time: now},
+		Model:      "stale-single-log",
+		ChannelID:  created.ID,
+		StatusCode: 200,
+	}); err != nil {
+		t.Fatalf("add stale single log: %v", err)
+	}
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
+		{
+			Time:       model.JSONTime{Time: now},
+			Model:      "stale-channel-log",
+			ChannelID:  created.ID,
+			StatusCode: 200,
+		},
+		{
+			Time:       model.JSONTime{Time: now},
+			Model:      "system-log",
+			ChannelID:  0,
+			StatusCode: 503,
+		},
+	}); err != nil {
+		t.Fatalf("batch add logs: %v", err)
+	}
+
+	deletedChannelID := created.ID
+	deletedCount, err := store.CountLogsRange(ctx, now.Add(-time.Minute), now.Add(time.Minute), &model.LogFilter{ChannelID: &deletedChannelID})
+	if err != nil {
+		t.Fatalf("count deleted-channel logs: %v", err)
+	}
+	if deletedCount != 0 {
+		t.Fatalf("deleted channel log was inserted after channel deletion: count=%d", deletedCount)
+	}
+
+	allLogs, err := store.ListLogsRange(ctx, now.Add(-time.Minute), now.Add(time.Minute), 10, 0, nil)
+	if err != nil {
+		t.Fatalf("list all logs: %v", err)
+	}
+	if len(allLogs) != 1 || allLogs[0].ChannelID != 0 {
+		t.Fatalf("expected only channel_id=0 log to remain, got %+v", allLogs)
+	}
+}
+
+func TestConfig_DeleteConfig_PurgesOrphanLogsWhenChannelMissing(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	store, err := storage.CreateSQLiteStore(filepath.Join(tmp, "orphan-channel-log.db"))
+	if err != nil {
+		t.Fatalf("create sqlite store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	const orphanChannelID int64 = 194
+	now := time.Now()
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
+		{
+			Time:       model.JSONTime{Time: now},
+			Model:      "orphan-channel-log",
+			ChannelID:  orphanChannelID,
+			StatusCode: 200,
+		},
+		{
+			Time:       model.JSONTime{Time: now},
+			Model:      "system-log",
+			ChannelID:  0,
+			StatusCode: 503,
+		},
+	}); err != nil {
+		t.Fatalf("batch add orphan logs: %v", err)
+	}
+
+	if err := store.DeleteConfig(ctx, orphanChannelID); err != nil {
+		t.Fatalf("delete missing config: %v", err)
+	}
+
+	channelID := orphanChannelID
+	count, err := store.CountLogsRange(ctx, now.Add(-time.Minute), now.Add(time.Minute), &model.LogFilter{ChannelID: &channelID})
+	if err != nil {
+		t.Fatalf("count orphan-channel logs: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected orphan channel logs purged, got %d", count)
+	}
+
+	allLogs, err := store.ListLogsRange(ctx, now.Add(-time.Minute), now.Add(time.Minute), 10, 0, nil)
+	if err != nil {
+		t.Fatalf("list all logs: %v", err)
+	}
+	if len(allLogs) != 1 || allLogs[0].ChannelID != 0 {
+		t.Fatalf("expected only channel_id=0 log to remain, got %+v", allLogs)
+	}
+}
+
 func TestConfig_DeleteConfig_AllowsRecreateWithSameIDAndKeyIndicesInMemoryStore(t *testing.T) {
 	t.Parallel()
 
