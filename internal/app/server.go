@@ -37,15 +37,16 @@ type Server struct {
 	// 核心字段
 	// ============================================================================
 	store                         storage.Store
-	channelCache                  *storage.ChannelCache // 高性能渠道缓存层
-	keySelector                   *KeySelector          // Key选择器（多Key支持）
-	cooldownManager               *cooldown.Manager     // 统一冷却管理器
-	healthCache                   *HealthCache          // 渠道健康度缓存
-	costCache                     *CostCache            // 渠道每日成本缓存
-	channelRPMLimiter             *channelRPMLimiter    // 渠道RPM限制器（内存滑动窗口）
-	statsCache                    *StatsCache           // 统计结果缓存层
-	channelBalancer               *SmoothWeightedRR     // 渠道负载均衡器（平滑加权轮询）
-	urlSelector                   *URLSelector          // URL选择器（多URL场景的延迟追踪与冷却）
+	channelCache                  *storage.ChannelCache      // 高性能渠道缓存层
+	keySelector                   *KeySelector               // Key选择器（多Key支持）
+	cooldownManager               *cooldown.Manager          // 统一冷却管理器
+	healthCache                   *HealthCache               // 渠道健康度缓存
+	costCache                     *CostCache                 // 渠道每日成本缓存
+	channelRPMLimiter             *channelRPMLimiter         // 渠道RPM限制器（内存滑动窗口）
+	channelConcurrencyLimiter     *channelConcurrencyLimiter // 渠道并发限制器（内存计数）
+	statsCache                    *StatsCache                // 统计结果缓存层
+	channelBalancer               *SmoothWeightedRR          // 渠道负载均衡器（平滑加权轮询）
+	urlSelector                   *URLSelector               // URL选择器（多URL场景的延迟追踪与冷却）
 	protocolRegistry              *protocol.Registry
 	client                        *http.Client          // HTTP客户端
 	activeRequests                *activeRequestManager // 进行中请求（内存状态，不持久化）
@@ -170,8 +171,9 @@ func NewServer(store storage.Store) *Server {
 		// Token统计队列（避免每请求起goroutine）
 		tokenStatsCh: make(chan tokenStatsUpdate, config.DefaultTokenStatsBufferSize),
 
-		activeRequests:    newActiveRequestManager(),
-		channelRPMLimiter: newChannelRPMLimiter(time.Now),
+		activeRequests:            newActiveRequestManager(),
+		channelRPMLimiter:         newChannelRPMLimiter(time.Now),
+		channelConcurrencyLimiter: newChannelConcurrencyLimiter(),
 	}
 
 	reg := protocol.NewRegistry()

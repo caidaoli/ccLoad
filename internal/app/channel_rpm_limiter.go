@@ -97,12 +97,18 @@ func (s *Server) reserveChannelRPM(cfg *model.Config) channelRPMReservation {
 	return s.channelRPMLimiter.reserve(cfg.ID, cfg.RPMLimit)
 }
 
-func (s *Server) reserveUpstreamRequest(cfg *model.Config) error {
+func (s *Server) reserveUpstreamRequest(cfg *model.Config) (release func(), err error) {
+	release, err = s.acquireChannelConcurrencySlot(cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	reservation := s.reserveChannelRPM(cfg)
 	if reservation.allowed {
-		return nil
+		return release, nil
 	}
-	return &channelRPMExceededError{retryAfter: reservation.retryAfter}
+	release()
+	return nil, &channelRPMExceededError{retryAfter: reservation.retryAfter}
 }
 
 func channelRPMRetryAfter(err error) time.Duration {
@@ -114,8 +120,19 @@ func channelRPMRetryAfter(err error) time.Duration {
 }
 
 func (s *Server) doUpstreamRequest(cfg *model.Config, req *http.Request) (*http.Response, error) {
-	if err := s.reserveUpstreamRequest(cfg); err != nil {
+	release, err := s.reserveUpstreamRequest(cfg)
+	if err != nil {
 		return nil, err
 	}
-	return s.client.Do(req)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		release()
+		return nil, err
+	}
+	if resp == nil || resp.Body == nil {
+		release()
+		return resp, nil
+	}
+	resp.Body = &releaseOnCloseReadCloser{ReadCloser: resp.Body, release: release}
+	return resp, nil
 }

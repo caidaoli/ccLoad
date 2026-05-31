@@ -521,6 +521,7 @@ async function editChannel(id) {
   }
   document.getElementById('channelPriority').value = channel.priority;
   document.getElementById('channelRPMLimit').value = channel.rpm_limit || 0;
+  document.getElementById('channelMaxConcurrency').value = String(channel.max_concurrency || 0);
   document.getElementById('channelDailyCostLimit').value = channel.daily_cost_limit || 0;
   document.getElementById('channelCostMultiplier').value = (Number(channel.cost_multiplier) >= 0 ? Number(channel.cost_multiplier) : 1);
   document.getElementById('channelEnabled').checked = channel.enabled;
@@ -750,6 +751,7 @@ async function saveChannel(event) {
     key_strategy: keyStrategy,
     priority: parseInt(document.getElementById('channelPriority').value) || 0,
     rpm_limit: parseInt(document.getElementById('channelRPMLimit').value) || 0,
+    max_concurrency: parseInt(document.getElementById('channelMaxConcurrency').value) || 0,
     daily_cost_limit: parseFloat(document.getElementById('channelDailyCostLimit').value) || 0,
     cost_multiplier: (function () {
       const v = parseFloat(document.getElementById('channelCostMultiplier').value);
@@ -1438,6 +1440,7 @@ async function copyChannel(id, name) {
   }
   document.getElementById('channelPriority').value = channel.priority;
   document.getElementById('channelRPMLimit').value = channel.rpm_limit || 0;
+  document.getElementById('channelMaxConcurrency').value = String(channel.max_concurrency || 0);
   document.getElementById('channelDailyCostLimit').value = channel.daily_cost_limit || 0;
   document.getElementById('channelCostMultiplier').value = (Number(channel.cost_multiplier) >= 0 ? Number(channel.cost_multiplier) : 1);
   document.getElementById('channelEnabled').checked = true;

@@ -1257,7 +1257,7 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 
 	// 3. 发送请求
 	resp, err := s.doUpstreamRequest(cfg, req)
-	if err != nil && errors.Is(err, ErrChannelRPMExceeded) {
+	if err != nil && (errors.Is(err, ErrChannelRPMExceeded) || errors.Is(err, ErrChannelConcurrencyExceeded)) {
 		return nil, reqCtx.Duration().Seconds(), err
 	}
 
@@ -1451,7 +1451,7 @@ func (s *Server) forwardAttempt(
 	// [INFO] 修复：handleResponse可能返回err即使StatusCode=200（例如Content-Length=0）
 	// [FIX] 2025-12: 传递 res 和 reqCtx，用于保留 499 场景下已消耗的 token 统计
 	if err != nil {
-		if errors.Is(err, ErrChannelRPMExceeded) {
+		if errors.Is(err, ErrChannelRPMExceeded) || errors.Is(err, ErrChannelConcurrencyExceeded) {
 			return nil, cooldown.ActionRetryChannel, err
 		}
 		result, action := s.handleNetworkError(

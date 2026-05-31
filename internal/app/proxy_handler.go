@@ -37,6 +37,9 @@ var ErrAllKeysExhausted = errors.New("all keys exhausted")
 // ErrChannelRPMExceeded 表示渠道RPM限制已达到
 var ErrChannelRPMExceeded = errors.New("channel rpm limit exceeded")
 
+// ErrChannelConcurrencyExceeded 表示渠道并发限制已达到
+var ErrChannelConcurrencyExceeded = errors.New("channel concurrency limit exceeded")
+
 // ============================================================================
 // 并发控制
 // ============================================================================
@@ -427,6 +430,11 @@ func (s *Server) runProxyAttemptLoop(
 
 		if err != nil && errors.Is(err, ErrChannelRPMExceeded) {
 			log.Printf("[INFO] 渠道 %s (ID=%d) 已达到RPM限制，跳过该渠道", cfg.Name, cfg.ID)
+			continue
+		}
+
+		if err != nil && errors.Is(err, ErrChannelConcurrencyExceeded) {
+			log.Printf("[INFO] 渠道 %s (ID=%d) 已达到并发限制，跳过该渠道", cfg.Name, cfg.ID)
 			continue
 		}
 

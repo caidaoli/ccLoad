@@ -30,12 +30,13 @@ func TestConfig_CreateAndGet(t *testing.T) {
 
 	// 创建渠道
 	cfg := &model.Config{
-		Name:        "test-channel",
-		URL:         "https://api.openai.com",
-		Priority:    10,
-		Enabled:     true,
-		ChannelType: "openai",
-		RPMLimit:    60,
+		Name:           "test-channel",
+		URL:            "https://api.openai.com",
+		Priority:       10,
+		Enabled:        true,
+		ChannelType:    "openai",
+		RPMLimit:       60,
+		MaxConcurrency: 3,
 		ModelEntries: []model.ModelEntry{
 			{Model: "gpt-4"},
 			{Model: "gpt-3.5-turbo"},
@@ -71,6 +72,9 @@ func TestConfig_CreateAndGet(t *testing.T) {
 	}
 	if got.RPMLimit != 60 {
 		t.Errorf("rpm_limit: got %d, want 60", got.RPMLimit)
+	}
+	if got.MaxConcurrency != 3 {
+		t.Errorf("max_concurrency: got %d, want 3", got.MaxConcurrency)
 	}
 	if len(got.ModelEntries) != 2 {
 		t.Errorf("model entries count: got %d, want 2", len(got.ModelEntries))
