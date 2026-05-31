@@ -533,6 +533,10 @@ func (s *Server) executeChannelTestWithCooldown(ctx context.Context, cfg *model.
 		result["cooldown_action"] = "rpm_limited_no_cooldown"
 		return result
 	}
+	if limited, _ := result["concurrency_limited"].(bool); limited {
+		result["cooldown_action"] = "concurrency_limited_no_cooldown"
+		return result
+	}
 
 	if !updatePersistedCooldown {
 		result["cooldown_action"] = "request_key_no_cooldown"
@@ -572,6 +576,19 @@ func channelRPMExceededTestResult(start time.Time, retryAfter time.Duration) map
 		"duration_ms":    time.Since(start).Milliseconds(),
 		"rpm_limited":    true,
 		"retry_after_ms": retryAfterMs,
+	}
+}
+
+func channelConcurrencyExceededTestResult(start time.Time, err error) map[string]any {
+	active, limit, _ := channelConcurrencyLimit(err)
+	return map[string]any{
+		"success":             false,
+		"error":               "渠道已达到并发限制",
+		"status_code":         http.StatusTooManyRequests,
+		"duration_ms":         time.Since(start).Milliseconds(),
+		"concurrency_limited": true,
+		"active_concurrency":  active,
+		"max_concurrency":     limit,
 	}
 }
 
@@ -674,6 +691,9 @@ func (s *Server) testChannelAPIWithURL(
 	if err != nil {
 		if errors.Is(err, ErrChannelRPMExceeded) {
 			return channelRPMExceededTestResult(start, channelRPMRetryAfter(err))
+		}
+		if errors.Is(err, ErrChannelConcurrencyExceeded) {
+			return channelConcurrencyExceededTestResult(start, err)
 		}
 		errorMsg := "网络请求失败: " + err.Error()
 		statusCode := 0

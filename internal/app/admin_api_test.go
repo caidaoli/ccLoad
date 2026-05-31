@@ -109,7 +109,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		header[0] = strings.TrimPrefix(header[0], "\ufeff")
 	}
 
-	expectedHeaders := []string{"id", "name", "api_key", "url", "priority", "rpm_limit", "models", "model_redirects", "channel_type", "protocol_transforms", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model"}
+	expectedHeaders := []string{"id", "name", "api_key", "url", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "channel_type", "protocol_transforms", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model"}
 	if len(header) != len(expectedHeaders) {
 		t.Errorf("Header字段数量不匹配: 期望 %d, 实际: %d\nHeader: %v", len(expectedHeaders), len(header), header)
 	}
@@ -120,9 +120,9 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		}
 	}
 
-	// 验证数据行（应该有15个字段）
-	if len(records[1]) < 15 {
-		t.Errorf("数据行字段不足，期望至少15个字段，实际: %d", len(records[1]))
+	// 验证数据行（应该有16个字段）
+	if len(records[1]) < 16 {
+		t.Errorf("数据行字段不足，期望至少16个字段，实际: %d", len(records[1]))
 	}
 }
 
@@ -131,9 +131,9 @@ func TestAdminAPI_ImportChannelsCSV(t *testing.T) {
 	server := newInMemoryServer(t)
 
 	// 创建测试CSV文件（注意：列名是api_key而不是api_keys）
-	csvContent := `name,url,priority,models,model_redirects,channel_type,protocol_transforms,enabled,api_key,key_strategy,scheduled_check_model
-Import-Test-1,https://import1.example.com,10,test-model-1,{},anthropic,openai,true,sk-import-key-1,sequential,test-model-1
-Import-Test-2,https://import2.example.com,5,"test-model-2,test-model-3","{""old"":""new""}",gemini,"openai,anthropic",false,sk-import-key-2,round_robin,test-model-3
+	csvContent := `name,url,priority,rpm_limit,max_concurrency,models,model_redirects,channel_type,protocol_transforms,enabled,api_key,key_strategy,scheduled_check_model
+Import-Test-1,https://import1.example.com,10,0,3,test-model-1,{},anthropic,openai,true,sk-import-key-1,sequential,test-model-1
+Import-Test-2,https://import2.example.com,5,0,0,"test-model-2,test-model-3","{""old"":""new""}",gemini,"openai,anthropic",false,sk-import-key-2,round_robin,test-model-3
 `
 
 	// 创建multipart表单
@@ -218,6 +218,12 @@ Import-Test-2,https://import2.example.com,5,"test-model-2,test-model-3","{""old"
 		}
 		if cfg.Name == "Import-Test-1" && cfg.ScheduledCheckModel != "test-model-1" {
 			t.Errorf("渠道 %s scheduled_check_model = %q", cfg.Name, cfg.ScheduledCheckModel)
+		}
+		if cfg.Name == "Import-Test-1" && cfg.MaxConcurrency != 3 {
+			t.Errorf("渠道 %s max_concurrency = %d, want 3", cfg.Name, cfg.MaxConcurrency)
+		}
+		if cfg.Name == "Import-Test-2" && cfg.MaxConcurrency != 0 {
+			t.Errorf("渠道 %s max_concurrency = %d, want 0", cfg.Name, cfg.MaxConcurrency)
 		}
 		if cfg.Name == "Import-Test-2" && cfg.ScheduledCheckModel != "test-model-3" {
 			t.Errorf("渠道 %s scheduled_check_model = %q", cfg.Name, cfg.ScheduledCheckModel)

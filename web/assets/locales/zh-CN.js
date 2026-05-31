@@ -223,6 +223,8 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.dailyCostLimitPlaceholder': '0=无限制',
   'channels.rpmLimit': 'RPM限制',
   'channels.rpmLimitPlaceholder': '0=无限制',
+  'channels.maxConcurrency': '并发限制',
+  'channels.maxConcurrencyPlaceholder': '0=无限制',
   'channels.costMultiplier': '成本倍率',
   'channels.costMultiplierPlaceholder': '默认1',
 

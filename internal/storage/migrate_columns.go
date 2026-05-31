@@ -391,6 +391,13 @@ func ensureChannelsRPMLimit(ctx context.Context, db *sql.DB, dialect Dialect) er
 		"INTEGER NOT NULL DEFAULT 0")
 }
 
+// ensureChannelsMaxConcurrency 确保channels表有max_concurrency字段（0=无限制）。
+func ensureChannelsMaxConcurrency(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	return ensureColumn(ctx, db, dialect, "channels", "max_concurrency",
+		"INT NOT NULL DEFAULT 0",
+		"INTEGER NOT NULL DEFAULT 0")
+}
+
 // ensureChannelsCostMultiplier 确保channels表有cost_multiplier字段（2026-04新增，渠道成本倍率）
 func ensureChannelsCostMultiplier(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	return ensureColumn(ctx, db, dialect, "channels", "cost_multiplier",
