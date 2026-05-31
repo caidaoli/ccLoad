@@ -454,6 +454,7 @@ func (s *Server) handleProxyErrorResponse(
 	duration float64,
 	reqCtx *proxyRequestContext,
 	deferChannelCooldown bool,
+	forceReturnClient bool,
 ) (*proxyResult, cooldown.Action) {
 	// 日志改进: 明确标识上游返回的499错误
 	errMsg := ""
@@ -477,6 +478,11 @@ func (s *Server) handleProxyErrorResponse(
 		channelID: &cfg.ID,
 		duration:  duration,
 		succeeded: false,
+	}
+
+	if forceReturnClient {
+		failure.nextAction = cooldown.ActionReturnClient
+		return failure, cooldown.ActionReturnClient
 	}
 
 	input := httpErrorInput(cfg.ID, keyIndex, res)
