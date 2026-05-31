@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	neturl "net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -93,7 +94,7 @@ func isPrivateChannelHost(host string) bool {
 	}
 	addr, err := netip.ParseAddr(host)
 	if err != nil {
-		return false
+		return isLegacyIPv4Literal(host)
 	}
 	addr = addr.Unmap()
 	return addr.IsLoopback() ||
@@ -101,6 +102,39 @@ func isPrivateChannelHost(host string) bool {
 		addr.IsLinkLocalUnicast() ||
 		addr.IsLinkLocalMulticast() ||
 		addr.IsUnspecified()
+}
+
+func isLegacyIPv4Literal(host string) bool {
+	// Base 0 covers legacy numeric IPv4 forms: decimal, octal, and hex.
+	parts := strings.Split(host, ".")
+	if len(parts) == 0 || len(parts) > 4 {
+		return false
+	}
+
+	nums := make([]uint64, 0, len(parts))
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		n, err := strconv.ParseUint(part, 0, 32)
+		if err != nil {
+			return false
+		}
+		nums = append(nums, n)
+	}
+
+	switch len(nums) {
+	case 1:
+		return nums[0] <= 0xffffffff
+	case 2:
+		return nums[0] <= 0xff && nums[1] <= 0xffffff
+	case 3:
+		return nums[0] <= 0xff && nums[1] <= 0xff && nums[2] <= 0xffff
+	case 4:
+		return nums[0] <= 0xff && nums[1] <= 0xff && nums[2] <= 0xff && nums[3] <= 0xff
+	default:
+		return false
+	}
 }
 
 // validateChannelURLs 校验换行分隔的多URL字段，逐个验证并标准化
