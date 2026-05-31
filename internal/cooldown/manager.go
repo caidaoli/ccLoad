@@ -51,10 +51,13 @@ type Manager struct {
 }
 
 type cooldownDecision struct {
-	action              Action
-	keyCooldownUntil    time.Time
-	hasKeyCooldownUntil bool
-	keyCooldownReason   string
+	action                  Action
+	keyCooldownUntil        time.Time
+	hasKeyCooldownUntil     bool
+	keyCooldownReason       string
+	channelCooldownUntil    time.Time
+	hasChannelCooldownUntil bool
+	channelCooldownReason   string
 }
 
 // NewManager 创建冷却管理器实例
@@ -93,8 +96,10 @@ func (m *Manager) classifyDecision(ctx context.Context, in ErrorInput) cooldownD
 
 	// 2. [TARGET] 动态调整:单Key渠道的Key级错误应该直接冷却渠道
 	// 设计原则:如果没有其他Key可以重试,Key级错误等同于渠道级错误
-	// [WARN] 例外：带固定Key冷却截止时间的错误保持Key级（例如1308、每日限额、Key配额耗尽）。
-	if errLevel == util.ErrorLevelKey && !decision.hasKeyCooldownUntil {
+	// [WARN] 例外：多数带固定Key冷却截止时间的错误保持Key级（例如1308、每日限额、Key配额耗尽）。
+	// 上游明确要求 retry-in/model cooldown 时，单Key渠道没有可替换Key，应按同一截止时间冷却渠道。
+	if errLevel == util.ErrorLevelKey &&
+		(!decision.hasKeyCooldownUntil || promotesFixedKeyCooldownToChannel(decision.keyCooldownReason)) {
 		var config *model.Config
 		var err error
 
@@ -107,6 +112,11 @@ func (m *Manager) classifyDecision(ctx context.Context, in ErrorInput) cooldownD
 
 		// 查询失败或单Key渠道:直接升级为渠道级错误
 		if err != nil || config == nil || config.KeyCount <= 1 {
+			if decision.hasKeyCooldownUntil && promotesFixedKeyCooldownToChannel(decision.keyCooldownReason) {
+				decision.channelCooldownUntil = decision.keyCooldownUntil
+				decision.hasChannelCooldownUntil = true
+				decision.channelCooldownReason = decision.keyCooldownReason
+			}
 			errLevel = util.ErrorLevelChannel
 		}
 	}
@@ -124,6 +134,15 @@ func (m *Manager) classifyDecision(ctx context.Context, in ErrorInput) cooldownD
 	}
 
 	return decision
+}
+
+func promotesFixedKeyCooldownToChannel(reason string) bool {
+	switch reason {
+	case "model_cooldown", "RESOURCE_EXHAUSTED_RETRY_IN":
+		return true
+	default:
+		return false
+	}
 }
 
 // DecideAction 仅做错误分类和动作决策，不写入任何冷却状态。
@@ -183,6 +202,19 @@ func (m *Manager) HandleError(ctx context.Context, in ErrorInput) Action {
 
 	case ActionRetryChannel:
 		// 渠道级错误:冷却整个渠道,切换到其他渠道
+		if decision.hasChannelCooldownUntil {
+			if err := m.store.SetChannelCooldown(ctx, channelID, decision.channelCooldownUntil); err != nil {
+				log.Printf("[WARN] 按重置时间设置渠道冷却失败 (channel=%d, until=%v): %v",
+					channelID, decision.channelCooldownUntil, err)
+			} else {
+				duration := time.Until(decision.channelCooldownUntil)
+				log.Printf("[COOLDOWN] 渠道冷却(%s): 渠道=%d 禁用至 %s (%.1f分钟)",
+					decision.channelCooldownReason, channelID,
+					decision.channelCooldownUntil.Format("2006-01-02 15:04:05"), duration.Minutes())
+			}
+			return ActionRetryChannel
+		}
+
 		// 默认逻辑: 使用指数退避策略
 		_, err := m.store.BumpChannelCooldown(ctx, channelID, time.Now(), statusCode)
 		if err != nil {

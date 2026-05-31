@@ -689,6 +689,190 @@ func TestHandleError_Structured429QuotaCooldown(t *testing.T) {
 	})
 }
 
+func TestHandleError_ModelCooldownResetSeconds(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	manager := NewManager(store, nil)
+	ctx := context.Background()
+
+	body := []byte(`{"error":{"code":"model_cooldown","message":"All credentials for model gpt-5.5 are cooling down via provider codex","model":"gpt-5.5","provider":"codex","reset_seconds":13792,"reset_time":"3h49m51s"}}`)
+
+	t.Run("多Key渠道冷却当前Key到reset_seconds", func(t *testing.T) {
+		cfg := createTestChannel(t, store, "test-model-cooldown-multi-key")
+		_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+			{
+				ChannelID:   cfg.ID,
+				KeyIndex:    0,
+				APIKey:      "sk-model-cooldown-0",
+				KeyStrategy: model.KeyStrategySequential,
+			},
+			{
+				ChannelID:   cfg.ID,
+				KeyIndex:    1,
+				APIKey:      "sk-model-cooldown-1",
+				KeyStrategy: model.KeyStrategySequential,
+			},
+		})
+
+		before := time.Now()
+		action := manager.HandleError(ctx, ErrorInput{
+			ChannelID:      cfg.ID,
+			KeyIndex:       0,
+			StatusCode:     429,
+			ErrorBody:      body,
+			IsNetworkError: false,
+			Headers:        nil,
+		})
+		after := time.Now()
+
+		if action != ActionRetryKey {
+			t.Fatalf("expected ActionRetryKey, got %v", action)
+		}
+
+		cooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0)
+		if !exists {
+			t.Fatal("expected key cooldown")
+		}
+
+		if !cooldownWithinResetSeconds(cooldownUntil, before, after, 13792) {
+			t.Fatalf("key cooldownUntil=%s, want reset_seconds based cooldown",
+				cooldownUntil.Format(time.RFC3339))
+		}
+
+		channelCfg, err := store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("get config: %v", err)
+		}
+		if channelCfg.CooldownUntil > 0 && time.Unix(channelCfg.CooldownUntil, 0).After(time.Now()) {
+			t.Fatal("multi-key model_cooldown should not cool channel")
+		}
+	})
+
+	t.Run("单Key渠道冷却渠道到reset_seconds", func(t *testing.T) {
+		cfg := createTestChannel(t, store, "test-model-cooldown-single-key")
+		_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+			ChannelID:   cfg.ID,
+			KeyIndex:    0,
+			APIKey:      "sk-model-cooldown-single",
+			KeyStrategy: model.KeyStrategySequential,
+		}})
+
+		before := time.Now()
+		action := manager.HandleError(ctx, ErrorInput{
+			ChannelID:      cfg.ID,
+			KeyIndex:       0,
+			StatusCode:     429,
+			ErrorBody:      body,
+			IsNetworkError: false,
+			Headers:        nil,
+		})
+		after := time.Now()
+
+		if action != ActionRetryChannel {
+			t.Fatalf("expected ActionRetryChannel, got %v", action)
+		}
+
+		channelCfg, err := store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("get config: %v", err)
+		}
+
+		channelCooldownUntil := time.Unix(channelCfg.CooldownUntil, 0)
+		if channelCfg.CooldownUntil == 0 || !cooldownWithinResetSeconds(channelCooldownUntil, before, after, 13792) {
+			t.Fatalf("channel cooldownUntil=%s, want reset_seconds based cooldown",
+				channelCooldownUntil.Format(time.RFC3339))
+		}
+	})
+}
+
+func TestHandleError_GeminiResourceExhaustedRetryIn(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	manager := NewManager(store, nil)
+	ctx := context.Background()
+
+	body := []byte(`{"error":{"code":429,"message":"You exceeded your current quota, please check your plan and billing details.\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3.5-flash\nPlease retry in 17.409754061s.","status":"RESOURCE_EXHAUSTED"}}`)
+	retryAfter := 17*time.Second + 409754061*time.Nanosecond
+
+	t.Run("多Key渠道冷却当前Key到retry-in", func(t *testing.T) {
+		cfg := createTestChannel(t, store, "test-gemini-resource-exhausted-multi-key")
+		_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+			{
+				ChannelID:   cfg.ID,
+				KeyIndex:    0,
+				APIKey:      "sk-gemini-resource-0",
+				KeyStrategy: model.KeyStrategySequential,
+			},
+			{
+				ChannelID:   cfg.ID,
+				KeyIndex:    1,
+				APIKey:      "sk-gemini-resource-1",
+				KeyStrategy: model.KeyStrategySequential,
+			},
+		})
+
+		before := time.Now()
+		action := manager.HandleError(ctx, ErrorInput{
+			ChannelID:      cfg.ID,
+			KeyIndex:       0,
+			StatusCode:     429,
+			ErrorBody:      body,
+			IsNetworkError: false,
+			Headers:        nil,
+		})
+		after := time.Now()
+
+		if action != ActionRetryKey {
+			t.Fatalf("expected ActionRetryKey, got %v", action)
+		}
+
+		cooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0)
+		if !exists {
+			t.Fatal("expected key cooldown")
+		}
+		if !cooldownWithinDuration(cooldownUntil, before, after, retryAfter) {
+			t.Fatalf("key cooldownUntil=%s, want retry-in based cooldown",
+				cooldownUntil.Format(time.RFC3339))
+		}
+	})
+
+	t.Run("单Key渠道冷却渠道到retry-in", func(t *testing.T) {
+		cfg := createTestChannel(t, store, "test-gemini-resource-exhausted-single-key")
+		_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+			ChannelID:   cfg.ID,
+			KeyIndex:    0,
+			APIKey:      "sk-gemini-resource-single",
+			KeyStrategy: model.KeyStrategySequential,
+		}})
+
+		before := time.Now()
+		action := manager.HandleError(ctx, ErrorInput{
+			ChannelID:      cfg.ID,
+			KeyIndex:       0,
+			StatusCode:     429,
+			ErrorBody:      body,
+			IsNetworkError: false,
+			Headers:        nil,
+		})
+		after := time.Now()
+
+		if action != ActionRetryChannel {
+			t.Fatalf("expected ActionRetryChannel, got %v", action)
+		}
+
+		channelCfg, err := store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("get config: %v", err)
+		}
+
+		channelCooldownUntil := time.Unix(channelCfg.CooldownUntil, 0)
+		if channelCfg.CooldownUntil == 0 || !cooldownWithinDuration(channelCooldownUntil, before, after, retryAfter) {
+			t.Fatalf("channel cooldownUntil=%s, want retry-in based cooldown",
+				channelCooldownUntil.Format(time.RFC3339))
+		}
+	})
+}
+
 func TestHandleError_FreeTierBudgetExceededWrappedIn500CoolsKeyThirtyMinutes(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
@@ -905,6 +1089,16 @@ func nextBeijingTime(now time.Time, days int, hour int, minute int) time.Time {
 
 func sameTimeSecond(a, b time.Time) bool {
 	return a.Sub(b).Abs() <= 2*time.Second
+}
+
+func cooldownWithinResetSeconds(until time.Time, before time.Time, after time.Time, resetSeconds int) bool {
+	return cooldownWithinDuration(until, before, after, time.Duration(resetSeconds)*time.Second)
+}
+
+func cooldownWithinDuration(until time.Time, before time.Time, after time.Time, duration time.Duration) bool {
+	minUntil := before.Add(duration - 2*time.Second)
+	maxUntil := after.Add(duration + 2*time.Second)
+	return !until.Before(minUntil) && !until.After(maxUntil)
 }
 
 // getKeyCooldownUntil 获取指定Key的冷却时间（测试辅助函数）

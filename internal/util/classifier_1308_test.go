@@ -112,3 +112,58 @@ func TestParseResetTimeFrom1308Error_MultipleOccurrences(t *testing.T) {
 		t.Errorf("时间匹配错误: got %v, want %v", resetTime, expectedTime)
 	}
 }
+
+func TestClassifyHTTPResponseWithMeta_ModelCooldownUsesResetSeconds(t *testing.T) {
+	body := []byte(`{"error":{"code":"model_cooldown","message":"All credentials for model gpt-5.5 are cooling down via provider codex","model":"gpt-5.5","provider":"codex","reset_seconds":13792,"reset_time":"3h49m51s"}}`)
+
+	before := time.Now()
+	got := ClassifyHTTPResponseWithMeta(429, nil, body)
+	after := time.Now()
+
+	if got.Level != ErrorLevelKey {
+		t.Fatalf("Level=%v, want ErrorLevelKey", got.Level)
+	}
+	if !got.HasKeyCooldownUntil {
+		t.Fatal("expected fixed key cooldown until")
+	}
+	if got.KeyCooldownReason != "model_cooldown" {
+		t.Fatalf("KeyCooldownReason=%q, want model_cooldown", got.KeyCooldownReason)
+	}
+
+	minUntil := before.Add(13792*time.Second - 2*time.Second)
+	maxUntil := after.Add(13792*time.Second + 2*time.Second)
+	if got.KeyCooldownUntil.Before(minUntil) || got.KeyCooldownUntil.After(maxUntil) {
+		t.Fatalf("KeyCooldownUntil=%s, want between %s and %s",
+			got.KeyCooldownUntil.Format(time.RFC3339),
+			minUntil.Format(time.RFC3339),
+			maxUntil.Format(time.RFC3339))
+	}
+}
+
+func TestClassifyHTTPResponseWithMeta_GeminiResourceExhaustedUsesRetryIn(t *testing.T) {
+	body := []byte(`{"error":{"code":429,"message":"You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3.5-flash\nPlease retry in 59.409754061s.","status":"RESOURCE_EXHAUSTED"}}`)
+
+	before := time.Now()
+	got := ClassifyHTTPResponseWithMeta(429, nil, body)
+	after := time.Now()
+
+	if got.Level != ErrorLevelKey {
+		t.Fatalf("Level=%v, want ErrorLevelKey", got.Level)
+	}
+	if !got.HasKeyCooldownUntil {
+		t.Fatal("expected fixed key cooldown until")
+	}
+	if got.KeyCooldownReason != "RESOURCE_EXHAUSTED_RETRY_IN" {
+		t.Fatalf("KeyCooldownReason=%q, want RESOURCE_EXHAUSTED_RETRY_IN", got.KeyCooldownReason)
+	}
+
+	retryAfter := 59*time.Second + 409754061*time.Nanosecond
+	minUntil := before.Add(retryAfter - 2*time.Second)
+	maxUntil := after.Add(retryAfter + 2*time.Second)
+	if got.KeyCooldownUntil.Before(minUntil) || got.KeyCooldownUntil.After(maxUntil) {
+		t.Fatalf("KeyCooldownUntil=%s, want between %s and %s",
+			got.KeyCooldownUntil.Format(time.RFC3339Nano),
+			minUntil.Format(time.RFC3339Nano),
+			maxUntil.Format(time.RFC3339Nano))
+	}
+}
