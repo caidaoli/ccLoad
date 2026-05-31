@@ -3,10 +3,8 @@ package app
 import (
 	"encoding/json"
 	"fmt"
-	"net/netip"
 	neturl "net/url"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -63,9 +61,6 @@ func validateChannelBaseURL(raw string) (string, error) {
 	if u.RawQuery != "" || u.Fragment != "" {
 		return "", fmt.Errorf("url must not contain query or fragment")
 	}
-	if isPrivateChannelHost(u.Hostname()) {
-		return "", fmt.Errorf("url host must not be private or local: %q", u.Hostname())
-	}
 
 	// [FIX] 只禁止包含 /v1 的 path（防止误填 API endpoint 如 /v1/messages）
 	// 允许其他 path（如 /api, /openai 等用于反向代理或 API gateway）
@@ -81,60 +76,6 @@ func validateChannelBaseURL(raw string) (string, error) {
 		normalized += model.ExactUpstreamURLMarker
 	}
 	return normalized, nil
-}
-
-func isPrivateChannelHost(host string) bool {
-	host = strings.ToLower(strings.TrimSpace(host))
-	host = strings.TrimRight(host, ".")
-	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
-		return true
-	}
-	if zoneStart := strings.Index(host, "%"); zoneStart >= 0 {
-		host = host[:zoneStart]
-	}
-	addr, err := netip.ParseAddr(host)
-	if err != nil {
-		return isLegacyIPv4Literal(host)
-	}
-	addr = addr.Unmap()
-	return addr.IsLoopback() ||
-		addr.IsPrivate() ||
-		addr.IsLinkLocalUnicast() ||
-		addr.IsLinkLocalMulticast() ||
-		addr.IsUnspecified()
-}
-
-func isLegacyIPv4Literal(host string) bool {
-	// Base 0 covers legacy numeric IPv4 forms: decimal, octal, and hex.
-	parts := strings.Split(host, ".")
-	if len(parts) == 0 || len(parts) > 4 {
-		return false
-	}
-
-	nums := make([]uint64, 0, len(parts))
-	for _, part := range parts {
-		if part == "" {
-			return false
-		}
-		n, err := strconv.ParseUint(part, 0, 32)
-		if err != nil {
-			return false
-		}
-		nums = append(nums, n)
-	}
-
-	switch len(nums) {
-	case 1:
-		return nums[0] <= 0xffffffff
-	case 2:
-		return nums[0] <= 0xff && nums[1] <= 0xffffff
-	case 3:
-		return nums[0] <= 0xff && nums[1] <= 0xff && nums[2] <= 0xffff
-	case 4:
-		return nums[0] <= 0xff && nums[1] <= 0xff && nums[2] <= 0xff && nums[3] <= 0xff
-	default:
-		return false
-	}
 }
 
 // validateChannelURLs 校验换行分隔的多URL字段，逐个验证并标准化
