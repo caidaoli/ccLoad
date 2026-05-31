@@ -2716,23 +2716,30 @@
       }
 
       .channel-editor-section-header--inline {
-        flex-direction: row;
-        align-items: center;
+        flex-direction: column;
+        align-items: stretch;
         flex-wrap: nowrap;
-        gap: 8px;
+        gap: 6px;
       }
 
       .channel-editor-section-header--inline .channel-editor-section-title {
-        width: auto;
-        flex: 1 1 auto;
+        width: 100%;
+        flex: none;
         min-width: 0;
-        flex-wrap: nowrap;
-        overflow: hidden;
+        flex-wrap: wrap;
+        overflow: visible;
+      }
+
+      .channel-editor-section-header--inline .channel-editor-exact-url-hint {
+        flex: 0 0 100%;
+        width: 100%;
+        margin-top: 2px;
       }
 
       .channel-editor-section-header--inline .channel-editor-section-actions {
-        flex: 0 0 auto;
-        width: auto;
+        flex: none;
+        width: 100%;
+        justify-content: flex-start;
       }
 
       .channel-editor-section-title,
@@ -2821,6 +2828,12 @@
         gap: 8px;
       }
 
+      .channel-editor-scheduled-model-control {
+        width: 100%;
+        min-width: 0;
+        max-width: none;
+      }
+
       .channel-editor-inline-field-input {
         justify-content: flex-start;
         gap: 4px;
@@ -2862,24 +2875,33 @@
         overflow-y: auto;
       }
 
+      #channelModal .inline-table-container.tall {
+        max-height: none;
+        min-height: 0;
+        height: auto;
+        overflow: visible;
+      }
+
       #channelForm.channel-editor-form {
         min-height: 0;
-        padding-bottom: 220px;
+        padding-bottom: 0;
         overflow: visible;
       }
 
       #channelModal .channel-editor-footer {
-        position: fixed;
-        left: 24px;
-        right: 24px;
-        bottom: 24px;
-        z-index: 120;
+        position: static;
+        left: auto;
+        right: auto;
+        bottom: auto;
+        z-index: auto;
         margin-top: 0;
-        padding: 10px 12px 0;
+        width: 100%;
+        box-sizing: border-box;
+        padding: 10px 12px;
         border: 1px solid var(--neutral-200);
-        border-radius: 18px;
+        border-radius: 14px;
         background: rgba(255, 255, 255, 0.98);
-        box-shadow: 0 -8px 20px rgba(15, 23, 42, 0.08);
+        box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
       }
 
       #channelModal .channel-editor-group--footer {
