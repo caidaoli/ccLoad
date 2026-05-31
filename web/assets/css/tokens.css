@@ -463,6 +463,8 @@
       padding: 0;
       border-radius: 12px;
       max-width: 600px;
+      max-height: calc(100vh - 24px);
+      overflow-y: auto;
       box-shadow: 0 10px 40px rgba(0,0,0,0.2);
       animation: slideUp 0.3s;
     }
@@ -1286,28 +1288,71 @@
       }
       .modal {
         padding: 12px;
+        overflow-y: auto;
       }
       .modal-content {
         width: min(720px, calc(100vw - 24px));
         max-width: none;
+        max-height: calc(100vh - 24px);
+        overflow-y: auto;
         margin: 0 auto;
       }
       .modal-content--wide {
         width: min(720px, calc(100vw - 24px));
       }
-      .token-edit-modal {
+      #editModal .token-edit-modal {
         min-height: auto;
+        max-height: calc(100vh - 24px);
+        overflow: hidden;
+        font-size: 14px;
+        line-height: 1.45;
+      }
+      #editModal .token-edit-modal .modal-title {
+        font-size: 18px;
+        line-height: 1.3;
+      }
+      #editModal .token-edit-modal .form-input {
+        font-size: 14px;
+      }
+      #editModal .token-edit-modal .token-edit-section-title {
+        font-size: 12px;
+      }
+      #editModal .token-edit-modal .token-edit-field .form-label,
+      #editModal .token-edit-modal .token-edit-active-label,
+      #editModal .token-edit-modal .token-limit-hint,
+      #editModal .token-edit-modal .token-edit-cost-used {
+        font-size: 13px;
       }
       .token-edit-body {
         gap: 12px;
+        min-height: 0;
+        overflow-y: auto;
+        overflow-x: hidden;
       }
       .token-edit-layout {
         display: flex;
         flex-direction: column;
       }
+      .token-edit-sidebar,
+      .token-edit-main {
+        flex: 0 0 auto;
+        min-height: auto;
+      }
       .token-edit-main {
         display: flex;
         flex-direction: column;
+      }
+      .token-edit-section--channels,
+      .token-edit-section--models {
+        flex: 0 0 auto;
+        min-height: auto;
+      }
+      .token-edit-channels-table,
+      .token-edit-models-table {
+        flex: none;
+        max-height: none;
+        height: auto;
+        overflow: visible;
       }
       .token-edit-field {
         flex-direction: row;
