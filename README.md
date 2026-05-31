@@ -5,7 +5,7 @@
 **[English](README_EN.md) | 简体中文**
 
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8.svg)](https://golang.org)
-[![Gin](https://img.shields.io/badge/Gin-v1.11+-blue.svg)](https://github.com/gin-gonic/gin)
+[![Gin](https://img.shields.io/badge/Gin-v1.12+-blue.svg)](https://github.com/gin-gonic/gin)
 [![Docker](https://img.shields.io/badge/Docker-Supported-2496ED.svg)](https://hub.docker.com)
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-yellow)](https://huggingface.co/spaces)
 [![GitHub Actions](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-2088FF.svg)](https://github.com/features/actions)
@@ -719,10 +719,10 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-opus-4-6\"]",true
 | 组件 | 版本 | 用途 | 性能优势 |
 |------|------|------|----------|
 | **Go** | 1.25.0+ | 运行时环境 | 原生并发支持，内置 min 函数 |
-| **Gin** | v1.11.0 | Web框架 | 高性能HTTP路由 |
-| **modernc/sqlite** | v1.45.0 | 嵌入式数据库 | 纯Go实现，零CGO依赖，单文件存储（默认） |
-| **MySQL** | v1.9.3 | 关系型数据库 | 可选，适合高并发生产环境 |
-| **Sonic** | v1.15.0 | JSON库 | 比标准库快2-3倍 |
+| **Gin** | v1.12.0 | Web框架 | 高性能HTTP路由 |
+| **modernc/sqlite** | v1.51.0 | 嵌入式数据库 | 纯Go实现，零CGO依赖，单文件存储（默认） |
+| **MySQL** | v1.10.0 | 关系型数据库 | 可选，适合高并发生产环境 |
+| **Sonic** | v1.15.1 | JSON库 | 比标准库快2-3倍 |
 | **godotenv** | v1.5.1 | 环境配置 | 简化配置管理 |
 
 ### 架构特点
@@ -762,6 +762,7 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-opus-4-6\"]",true
   - `cooldown/manager.go`：统一冷却决策引擎
   - 消除重复代码，冷却逻辑统一管理
   - 区分网络错误和HTTP错误的分类策略
+  - 识别结构化配额/模型冷却响应，按上游返回的重置时间精确冷却
   - 内置单Key渠道自动升级逻辑
 - **多URL选择器**（URLSelector）：
   - `url_selector.go`：单渠道多URL智能调度
