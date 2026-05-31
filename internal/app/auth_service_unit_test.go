@@ -161,6 +161,7 @@ func TestReloadAuthTokens_DoesNotRegressUsage(t *testing.T) {
 			ID:                1,
 			CostUsedMicroUSD:  100, // DB 落盘值（滞后）
 			CostLimitMicroUSD: 1000,
+			MaxConcurrency:    1,
 		}},
 	}
 

@@ -398,7 +398,8 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 
 	var testReq testutil.TestChannelRequest
 	if err := BindAndValidate(c, &testReq); err != nil {
-		RespondErrorMsg(c, http.StatusBadRequest, "invalid request: "+err.Error())
+		log.Printf("[WARN] invalid channel test request: %v", err)
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid request")
 		return
 	}
 
@@ -891,13 +892,14 @@ func (s *Server) parseTestTranslatedSSEResponse(
 	recorder := httptest.NewRecorder()
 	var rawUpstreamBuf bytes.Buffer
 	upstreamTee := io.TeeReader(resp.Body, &rawUpstreamBuf)
+	streamReader := readerWithCloser{Reader: upstreamTee, Closer: resp.Body}
 	firstContentCaptured := false
 	firstContentParser := newSSEUsageParser(requestPlan.upstreamProtocol)
 	var state any
 
 	streamErr := streamTransformSSEEvents(
 		ctx,
-		upstreamTee,
+		streamReader,
 		recorder,
 		func(rawEvent []byte) error {
 			if !firstContentCaptured && len(rawEvent) > 0 {

@@ -206,6 +206,10 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 	if req.MaxConcurrency != nil {
 		authToken.MaxConcurrency = *req.MaxConcurrency
 	}
+	if err := authToken.ValidateUsageLimits(); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
@@ -301,6 +305,10 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 	}
 	if req.MaxConcurrency != nil {
 		token.MaxConcurrency = *req.MaxConcurrency
+	}
+	if err := token.ValidateUsageLimits(); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	if err := s.store.UpdateAuthToken(ctx, token); err != nil {

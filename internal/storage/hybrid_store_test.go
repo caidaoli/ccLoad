@@ -354,6 +354,72 @@ func TestHybridStore_AddLog(t *testing.T) {
 	}
 }
 
+func TestHybridStore_BatchAddLogs_DoesNotDuplicateSurvivingLogsAfterDeletedChannelFilter(t *testing.T) {
+	mysql := createTestSQLiteStore(t)
+	sqlite := createTestSQLiteStore(t)
+	defer func() {
+		_ = sqlite.Close()
+		_ = mysql.Close()
+	}()
+
+	hybrid := NewHybridStore(sqlite, mysql)
+	defer func() { _ = hybrid.Close() }()
+
+	ctx := context.Background()
+	created, err := hybrid.CreateConfig(ctx, &model.Config{
+		Name:    "deleted-channel",
+		URL:     "https://api.example.com",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create config: %v", err)
+	}
+	if err := hybrid.DeleteConfig(ctx, created.ID); err != nil {
+		t.Fatalf("delete config: %v", err)
+	}
+
+	now := time.Now()
+	if err := hybrid.BatchAddLogs(ctx, []*model.LogEntry{
+		{
+			Time:       model.JSONTime{Time: now},
+			ChannelID:  created.ID,
+			Model:      "stale-channel-log",
+			StatusCode: 200,
+		},
+		{
+			Time:       model.JSONTime{Time: now},
+			ChannelID:  0,
+			Model:      "system-log",
+			StatusCode: 503,
+		},
+	}); err != nil {
+		t.Fatalf("batch add logs: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	var logs []*model.LogEntry
+	for {
+		logs, err = mysql.ListLogsRange(ctx, now.Add(-time.Minute), now.Add(time.Minute), 10, 0, nil)
+		if err != nil {
+			t.Fatalf("mysql.ListLogsRange failed: %v", err)
+		}
+		if len(logs) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expected surviving system log to sync to MySQL")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if len(logs) != 1 {
+		t.Fatalf("expected exactly one surviving log synced to MySQL, got %+v", logs)
+	}
+	if logs[0].ChannelID != 0 || logs[0].Model != "system-log" {
+		t.Fatalf("unexpected synced log: %+v", logs[0])
+	}
+}
+
 func TestHybridStore_GracefulClose(t *testing.T) {
 	mysql := createTestSQLiteStore(t)
 	sqlite := createTestSQLiteStore(t)

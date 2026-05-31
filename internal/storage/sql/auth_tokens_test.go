@@ -202,6 +202,86 @@ func TestAuthToken_NegativeMaxConcurrency_ReturnsError(t *testing.T) {
 	}
 }
 
+func TestAuthToken_ExistingCostLimitWithoutMaxConcurrencyBackfillsDefault(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "cost_limit_without_max_concurrency.db")
+
+	store, err := storage.CreateSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("create sqlite store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	token := &model.AuthToken{
+		Token:          "legacy-limited-token",
+		Description:    "Legacy Limited Token",
+		IsActive:       true,
+		MaxConcurrency: 1,
+		CreatedAt:      time.Now(),
+	}
+	if err := store.CreateAuthToken(ctx, token); err != nil {
+		t.Fatalf("create auth token: %v", err)
+	}
+
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", "file:"+dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite db: %v", err)
+	}
+	_, err = db.ExecContext(ctx, `UPDATE auth_tokens SET cost_limit_microusd = ?, max_concurrency = ? WHERE id = ?`, 1000, 0, token.ID)
+	_ = db.Close()
+	if err != nil {
+		t.Fatalf("tamper auth token limit: %v", err)
+	}
+
+	store2, err := storage.CreateSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("expected reopen sqlite store to backfill max_concurrency, got %v", err)
+	}
+	defer func() { _ = store2.Close() }()
+
+	got, err := store2.GetAuthToken(ctx, token.ID)
+	if err != nil {
+		t.Fatalf("GetAuthToken after migration: %v", err)
+	}
+	if got.MaxConcurrency != 100 {
+		t.Fatalf("MaxConcurrency=%d, want default backfill 100", got.MaxConcurrency)
+	}
+}
+
+func TestAuthToken_CostLimitRequiresMaxConcurrency(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "cost_limit_requires_max_concurrency.db")
+	ctx := context.Background()
+
+	token := &model.AuthToken{
+		Token:             model.HashToken("limited-without-concurrency"),
+		Description:       "bad limit",
+		IsActive:          true,
+		CostLimitMicroUSD: 1000,
+		CreatedAt:         time.Now(),
+	}
+	if err := store.CreateAuthToken(ctx, token); err == nil {
+		t.Fatal("expected CreateAuthToken to reject cost limit without max_concurrency")
+	}
+
+	token.CostLimitMicroUSD = 0
+	if err := store.CreateAuthToken(ctx, token); err != nil {
+		t.Fatalf("CreateAuthToken without limit failed: %v", err)
+	}
+	token.CostLimitMicroUSD = 1000
+	if err := store.UpdateAuthToken(ctx, token); err == nil {
+		t.Fatal("expected UpdateAuthToken to reject cost limit without max_concurrency")
+	}
+}
+
 func TestAuthToken_List(t *testing.T) {
 	t.Parallel()
 

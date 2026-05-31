@@ -175,6 +175,73 @@ func TestEnsureAuthTokensCostLimit_SQLite(t *testing.T) {
 	}
 }
 
+func TestMigrateSQLite_LegacyCostLimitedAuthTokenGetsDefaultMaxConcurrency(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	_, err := db.ExecContext(ctx, `
+		CREATE TABLE auth_tokens (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			token TEXT NOT NULL UNIQUE,
+			description TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL DEFAULT 0,
+			last_used_at INTEGER NOT NULL DEFAULT 0,
+			is_active INTEGER NOT NULL DEFAULT 1,
+			success_count INTEGER NOT NULL DEFAULT 0,
+			failure_count INTEGER NOT NULL DEFAULT 0,
+			stream_avg_ttfb REAL NOT NULL DEFAULT 0.0,
+			non_stream_avg_rt REAL NOT NULL DEFAULT 0.0,
+			stream_count INTEGER NOT NULL DEFAULT 0,
+			non_stream_count INTEGER NOT NULL DEFAULT 0,
+			prompt_tokens_total INTEGER NOT NULL DEFAULT 0,
+			completion_tokens_total INTEGER NOT NULL DEFAULT 0,
+			cache_read_tokens_total INTEGER NOT NULL DEFAULT 0,
+			cache_creation_tokens_total INTEGER NOT NULL DEFAULT 0,
+			total_cost_usd REAL NOT NULL DEFAULT 0.0,
+			cost_used_microusd INTEGER NOT NULL DEFAULT 0,
+			cost_limit_microusd INTEGER NOT NULL DEFAULT 0,
+			allowed_models TEXT NOT NULL DEFAULT '',
+			allowed_channel_ids TEXT NOT NULL DEFAULT ''
+		)
+	`)
+	if err != nil {
+		t.Fatalf("create legacy auth_tokens: %v", err)
+	}
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO auth_tokens (token, description, created_at, cost_limit_microusd)
+		VALUES ('limited-legacy', 'limited legacy token', 1, 1000),
+		       ('unlimited-legacy', 'unlimited legacy token', 1, 0)
+	`)
+	if err != nil {
+		t.Fatalf("insert legacy auth_tokens: %v", err)
+	}
+
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate legacy auth_tokens: %v", err)
+	}
+
+	var limitedMaxConcurrency int
+	if err := db.QueryRowContext(ctx, `
+		SELECT max_concurrency FROM auth_tokens WHERE token = 'limited-legacy'
+	`).Scan(&limitedMaxConcurrency); err != nil {
+		t.Fatalf("query limited max_concurrency: %v", err)
+	}
+	if limitedMaxConcurrency != authTokenCostLimitDefaultMaxConcurrency {
+		t.Fatalf("limited max_concurrency=%d, want %d", limitedMaxConcurrency, authTokenCostLimitDefaultMaxConcurrency)
+	}
+
+	var unlimitedMaxConcurrency int
+	if err := db.QueryRowContext(ctx, `
+		SELECT max_concurrency FROM auth_tokens WHERE token = 'unlimited-legacy'
+	`).Scan(&unlimitedMaxConcurrency); err != nil {
+		t.Fatalf("query unlimited max_concurrency: %v", err)
+	}
+	if unlimitedMaxConcurrency != 0 {
+		t.Fatalf("unlimited max_concurrency=%d, want 0", unlimitedMaxConcurrency)
+	}
+}
+
 func TestEnsureChannelModelsRedirectField_SQLite(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

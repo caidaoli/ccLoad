@@ -259,6 +259,8 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 		existingNameByID[ec.ID] = ec.Name
 	}
 
+	importedIDs := make([]int64, 0, len(channels))
+
 	// 使用事务确保原子性
 	err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
 		nowUnix := timeToUnix(time.Now())
@@ -389,6 +391,7 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 			}
 
 			config.ID = channelID
+			importedIDs = append(importedIDs, channelID)
 
 			// 删除旧的API Keys（模型索引统一交给 saveModelEntriesImpl 处理）
 			if isUpdate {
@@ -435,6 +438,9 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 
 	if err != nil {
 		return 0, 0, err
+	}
+	for _, id := range importedIDs {
+		s.unmarkChannelDeleted(id)
 	}
 
 	return created, updated, nil

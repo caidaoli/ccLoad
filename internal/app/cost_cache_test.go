@@ -36,8 +36,20 @@ func TestCostCache_Add_Get_GetAll_CrossDayBehavior(t *testing.T) {
 	if got := c.Get(1); got != 0 {
 		t.Fatalf("Get() should return 0 after day boundary, got %v", got)
 	}
+	c.mu.RLock()
+	gotDay := c.dayStart
+	c.mu.RUnlock()
+	if !gotDay.Equal(todayStart(time.Now())) {
+		t.Fatalf("Get() should advance dayStart after day boundary: got=%v want=%v", gotDay, todayStart(time.Now()))
+	}
 	if got := c.GetAll(); len(got) != 0 {
 		t.Fatalf("GetAll() should return empty after day boundary, got len=%d", len(got))
+	}
+	c.mu.RLock()
+	oldCostCount := len(c.costs)
+	c.mu.RUnlock()
+	if oldCostCount != 0 {
+		t.Fatalf("cross-day read should clear stale costs, got len=%d", oldCostCount)
 	}
 
 	// Add() 会在写锁下重置并累加。

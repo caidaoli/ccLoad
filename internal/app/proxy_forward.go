@@ -29,8 +29,8 @@ const (
 	softErrorProbeSize = 512
 )
 
-// prependedBody 将已读取的前缀数据与原始Body合并，保留原Closer
-type prependedBody struct {
+// readerWithCloser 给 Reader 补回底层 Closer，避免 bufio/TeeReader 包装后取消无法打断阻塞 Read。
+type readerWithCloser struct {
 	io.Reader
 	io.Closer
 }
@@ -51,7 +51,7 @@ func (rc *onceCloseReadCloser) Close() error {
 
 // prependToBody 将前缀数据合并到resp.Body（用于恢复已探测的数据）
 func prependToBody(resp *http.Response, prefix []byte) {
-	resp.Body = prependedBody{
+	resp.Body = readerWithCloser{
 		Reader: io.MultiReader(bytes.NewReader(prefix), resp.Body),
 		Closer: resp.Body,
 	}
@@ -264,14 +264,15 @@ func streamAndParseResponse(
 	if strings.Contains(contentType, "text/plain") && isStreaming {
 		reader := bufio.NewReader(body)
 		probe, _ := reader.Peek(SSEProbeSize)
+		streamBody := readerWithCloser{Reader: reader, Closer: body}
 
 		if looksLikeSSE(probe) {
 			parser := newSSEUsageParser(channelType)
-			sseErr := streamCopySSE(ctx, io.NopCloser(reader), w, makeFeed(parser))
+			sseErr := streamCopySSE(ctx, streamBody, w, makeFeed(parser))
 			return parser, sseErr
 		}
 		parser := newJSONUsageParser(channelType)
-		copyErr := streamCopy(ctx, io.NopCloser(reader), w, makeFeed(parser))
+		copyErr := streamCopy(ctx, streamBody, w, makeFeed(parser))
 		return parser, copyErr
 	}
 

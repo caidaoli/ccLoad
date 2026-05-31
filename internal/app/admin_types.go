@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	neturl "net/url"
 	"slices"
 	"strings"
@@ -61,6 +62,9 @@ func validateChannelBaseURL(raw string) (string, error) {
 	if u.RawQuery != "" || u.Fragment != "" {
 		return "", fmt.Errorf("url must not contain query or fragment")
 	}
+	if isPrivateChannelHost(u.Hostname()) {
+		return "", fmt.Errorf("url host must not be private or local: %q", u.Hostname())
+	}
 
 	// [FIX] 只禁止包含 /v1 的 path（防止误填 API endpoint 如 /v1/messages）
 	// 允许其他 path（如 /api, /openai 等用于反向代理或 API gateway）
@@ -76,6 +80,27 @@ func validateChannelBaseURL(raw string) (string, error) {
 		normalized += model.ExactUpstreamURLMarker
 	}
 	return normalized, nil
+}
+
+func isPrivateChannelHost(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	host = strings.TrimRight(host, ".")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	if zoneStart := strings.Index(host, "%"); zoneStart >= 0 {
+		host = host[:zoneStart]
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	addr = addr.Unmap()
+	return addr.IsLoopback() ||
+		addr.IsPrivate() ||
+		addr.IsLinkLocalUnicast() ||
+		addr.IsLinkLocalMulticast() ||
+		addr.IsUnspecified()
 }
 
 // validateChannelURLs 校验换行分隔的多URL字段，逐个验证并标准化

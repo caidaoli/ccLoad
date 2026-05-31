@@ -144,6 +144,9 @@ func scanAuthToken(scanner interface {
 			return nil, fmt.Errorf("invalid allowed_channel_ids json: %w", err)
 		}
 	}
+	if err := token.ValidateUsageLimits(); err != nil {
+		return nil, err
+	}
 
 	return token, nil
 }
@@ -156,6 +159,9 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 	}
 	if token.ID == 0 {
 		return errors.New("token id cannot be 0")
+	}
+	if err := token.ValidateUsageLimits(); err != nil {
+		return err
 	}
 	if token.CreatedAt.IsZero() {
 		token.CreatedAt = time.Now()
@@ -327,6 +333,9 @@ func authTokenInsertCommonArgs(token *model.AuthToken) ([]any, error) {
 	}
 	if token.Token == "" {
 		return nil, errors.New("token hash cannot be empty")
+	}
+	if err := token.ValidateUsageLimits(); err != nil {
+		return nil, err
 	}
 	if token.CreatedAt.IsZero() {
 		token.CreatedAt = time.Now()
@@ -563,6 +572,13 @@ func (s *SQLStore) ListActiveAuthTokens(ctx context.Context) ([]*model.AuthToken
 
 // UpdateAuthToken 更新令牌信息
 func (s *SQLStore) UpdateAuthToken(ctx context.Context, token *model.AuthToken) error {
+	if token == nil {
+		return errors.New("token cannot be nil")
+	}
+	if err := token.ValidateUsageLimits(); err != nil {
+		return err
+	}
+
 	var expiresAt any = int64(0)
 	if token.ExpiresAt != nil {
 		expiresAt = *token.ExpiresAt

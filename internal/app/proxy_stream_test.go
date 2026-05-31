@@ -1,9 +1,12 @@
 package app
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 )
 
 // errorReader 模拟返回特定错误的 Reader
@@ -13,6 +16,35 @@ type errorReader struct {
 
 func (r *errorReader) Read(_ []byte) (int, error) {
 	return 0, r.err
+}
+
+type blockingReadCloser struct {
+	closeOnce sync.Once
+	readOnce  sync.Once
+	entered   chan struct{}
+	closed    chan struct{}
+}
+
+func newBlockingReadCloser() *blockingReadCloser {
+	return &blockingReadCloser{
+		entered: make(chan struct{}),
+		closed:  make(chan struct{}),
+	}
+}
+
+func (r *blockingReadCloser) Read(_ []byte) (int, error) {
+	r.readOnce.Do(func() {
+		close(r.entered)
+	})
+	<-r.closed
+	return 0, errors.New("read closed")
+}
+
+func (r *blockingReadCloser) Close() error {
+	r.closeOnce.Do(func() {
+		close(r.closed)
+	})
+	return nil
 }
 
 // TestStreamCopySSE_ContextCanceledDuringRead 测试在 Read 期间 context 被取消的场景
@@ -97,5 +129,63 @@ func TestStreamCopy_ContextCanceledDuringRead(t *testing.T) {
 
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("streamCopy should return context.Canceled when ctx is canceled, got: %v", err)
+	}
+}
+
+func TestStreamCopy_ClosesReadCloserOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	reader := newBlockingReadCloser()
+	done := make(chan error, 1)
+
+	go func() {
+		done <- streamCopy(ctx, reader, newRecorder(), nil)
+	}()
+
+	select {
+	case <-reader.entered:
+	case <-time.After(200 * time.Millisecond):
+		_ = reader.Close()
+		t.Fatal("streamCopy did not enter Read")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("streamCopy err=%v, want context.Canceled", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		_ = reader.Close()
+		t.Fatal("streamCopy did not unblock Read after context cancellation")
+	}
+}
+
+func TestStreamCopy_ClosesWrappedUnderlyingCloserOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	underlying := newBlockingReadCloser()
+	reader := bufio.NewReader(underlying)
+	wrapped := readerWithCloser{Reader: reader, Closer: underlying}
+	done := make(chan error, 1)
+
+	go func() {
+		done <- streamCopy(ctx, wrapped, newRecorder(), nil)
+	}()
+
+	select {
+	case <-underlying.entered:
+	case <-time.After(200 * time.Millisecond):
+		_ = underlying.Close()
+		t.Fatal("streamCopy did not enter wrapped Read")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("streamCopy err=%v, want context.Canceled", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		_ = underlying.Close()
+		t.Fatal("streamCopy did not close wrapped underlying reader after context cancellation")
 	}
 }
